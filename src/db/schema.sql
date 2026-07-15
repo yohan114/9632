@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS projects (
   code          TEXT UNIQUE,                 -- CEP-03, etc.
   name          TEXT NOT NULL,               -- "Iginimitiya Project"
   location      TEXT,
+  name_norm     TEXT,                        -- normalised name for resolving project references
   active        INTEGER NOT NULL DEFAULT 1,
   created_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -55,6 +56,8 @@ CREATE TABLE IF NOT EXISTS assets (
   status             TEXT NOT NULL DEFAULT 'active'
                        CHECK (status IN ('active','idle','under_repair','decommissioned')),
   running_hours      REAL,                    -- for service-interval reminders
+  in_register        INTEGER NOT NULL DEFAULT 0, -- 1 = from the fleet register; 0 = seen only in Stores/Jobs (review)
+  legacy_fleet_id    INTEGER,                 -- source fleet_assets.id (old->new id map)
   notes              TEXT,
   created_at         TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at         TEXT NOT NULL DEFAULT (datetime('now'))
@@ -170,7 +173,8 @@ CREATE TABLE IF NOT EXISTS mrn_lines (
   description   TEXT NOT NULL,
   qty           REAL NOT NULL DEFAULT 0,
   unit          TEXT DEFAULT 'nos',
-  qty_received  REAL NOT NULL DEFAULT 0
+  qty_received  REAL NOT NULL DEFAULT 0,
+  legacy_item_id INTEGER                     -- source items.id (bridges receipts.itemId -> GRN)
 );
 CREATE INDEX IF NOT EXISTS idx_mrn_lines_mrn ON mrn_lines(mrn_id);
 
@@ -188,8 +192,8 @@ CREATE TABLE IF NOT EXISTS grn (
   invoice_no     TEXT,
   invoice_date   TEXT,
   delivery_date  TEXT,
-  purchase_source TEXT
-                  CHECK (purchase_source IN ('local_purchase','head_office','local_store')),
+  purchase_source TEXT,                       -- raw value (real data has 4 clean values + combos)
+  purchase_source_norm TEXT,                  -- normalised bucket for cost-by-source reporting
   created_at     TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_grn_mrn ON grn(mrn_id);
@@ -255,10 +259,13 @@ CREATE TABLE IF NOT EXISTS products (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
   code          TEXT UNIQUE,
   name          TEXT NOT NULL,               -- CI4, HD46, HD68, 80W90, MP140, grease, diesel...
-  unit          TEXT NOT NULL DEFAULT 'L'    CHECK (unit IN ('L','kg','nos')),
+  sheet_name    TEXT,                         -- source key for matching oil_prices back to products
+  unit          TEXT NOT NULL DEFAULT 'L',
   category      TEXT,                         -- engine_oil / hydraulic / gear / grease / fuel
   reorder_level REAL DEFAULT 0,
   unit_price    REAL,                         -- latest price (history in product_prices)
+  sort_order    INTEGER,
+  active        INTEGER NOT NULL DEFAULT 1,
   created_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -274,8 +281,11 @@ CREATE TABLE IF NOT EXISTS stock_ledger (
   project_id    INTEGER REFERENCES projects(id),
   job_id        INTEGER REFERENCES job_cards(id),
   consumer      TEXT,                         -- free-text internal consumer if not an asset
+  consumer_type TEXT,                         -- asset / project / unknown / internal (from source)
   mr_no         TEXT,                         -- cross-links to Stores MRN
   mtn_no        TEXT,                         -- cross-links to Stores MTN
+  voided        INTEGER NOT NULL DEFAULT 0,
+  legacy_id     INTEGER,                      -- source transactions.id
   txn_date      TEXT NOT NULL DEFAULT (date('now')),
   note          TEXT,
   created_at    TEXT NOT NULL DEFAULT (datetime('now'))
@@ -318,12 +328,12 @@ CREATE TABLE IF NOT EXISTS batteries (
   serial_no        TEXT NOT NULL UNIQUE,      -- one serial = one battery
   brand            TEXT,
   capacity_ah      REAL,
-  condition        TEXT DEFAULT 'new' CHECK (condition IN ('new','old')),
+  condition        TEXT,                       -- raw (real: new/old/Expired/...)
   purchase_date    TEXT,
   warranty_date    TEXT,                       -- expiry / warranty end
   current_asset_id INTEGER REFERENCES assets(id),
-  state            TEXT NOT NULL DEFAULT 'in_store'
-                     CHECK (state IN ('installed','in_store','handed_over','decommissioned')),
+  state            TEXT NOT NULL DEFAULT 'in_store', -- raw (real: In Store/Disposed/...)
+  state_norm       TEXT,                       -- normalised: installed/in_store/handed_over/decommissioned
   photo_path       TEXT,
   created_at       TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -332,8 +342,7 @@ CREATE INDEX IF NOT EXISTS idx_batteries_current ON batteries(current_asset_id);
 CREATE TABLE IF NOT EXISTS battery_events (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
   battery_id    INTEGER NOT NULL REFERENCES batteries(id) ON DELETE CASCADE,
-  event_type    TEXT NOT NULL
-                  CHECK (event_type IN ('add','install','transfer','return','decommission','warranty')),
+  event_type    TEXT NOT NULL,                 -- raw action (real: register/add/decommission/transfer/...)
   from_asset_id INTEGER REFERENCES assets(id),
   to_asset_id   INTEGER REFERENCES assets(id),
   reason        TEXT,
@@ -406,6 +415,9 @@ CREATE TABLE IF NOT EXISTS job_cards (
   id                   INTEGER PRIMARY KEY AUTOINCREMENT,
   job_no               TEXT NOT NULL UNIQUE,  -- YYYY/M/R/seq (repair) or YYYY/M/S/seq (service)
   ref                  TEXT,
+  legacy_ref           TEXT,                  -- c_job "Ref." (e.g. 24-063)
+  is_historical        INTEGER NOT NULL DEFAULT 0, -- imported history: keep recorded totals, don't recompute
+  synthesized_no       INTEGER NOT NULL DEFAULT 0, -- job_no was generated (source had none)
   asset_id             INTEGER REFERENCES assets(id),
   project_id           INTEGER REFERENCES projects(id),
   site                 TEXT,
@@ -510,8 +522,13 @@ CREATE TABLE IF NOT EXISTS service_specs (
   id                INTEGER PRIMARY KEY AUTOINCREMENT,
   asset_id          INTEGER REFERENCES assets(id),
   machine_label     TEXT,
-  interval_hours    REAL,                     -- service every N running hours
-  filter_cost       REAL,
+  interval_hours    REAL,                     -- service every N running hours (NOT in source — owner sets it)
+  filter_cost       REAL,                     -- total of the individual filters below
+  diesel_filter     REAL,
+  oil_filter        REAL,
+  air_filter        REAL,
+  trans_filter      REAL,
+  hy_filter         REAL,
   oil_qty           REAL,
   hydraulic_qty     REAL,
   transmission_qty  REAL,

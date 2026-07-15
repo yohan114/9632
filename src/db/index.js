@@ -22,6 +22,23 @@ function migrate() {
   // columns to a table that already exists).
   ensureColumn('job_cards', 'flat_labour', 'REAL');
   ensureColumn('users', 'must_change_password', 'INTEGER NOT NULL DEFAULT 0');
+  // Phase 1 migration deltas (additive; CHECK relaxations live in schema.sql).
+  ensureColumn('assets', 'in_register', 'INTEGER NOT NULL DEFAULT 0');
+  ensureColumn('assets', 'legacy_fleet_id', 'INTEGER');
+  ensureColumn('projects', 'name_norm', 'TEXT');
+  ensureColumn('mrn_lines', 'legacy_item_id', 'INTEGER');
+  ensureColumn('grn', 'purchase_source_norm', 'TEXT');
+  ensureColumn('stock_ledger', 'consumer_type', 'TEXT');
+  ensureColumn('stock_ledger', 'voided', 'INTEGER NOT NULL DEFAULT 0');
+  ensureColumn('stock_ledger', 'legacy_id', 'INTEGER');
+  ensureColumn('products', 'sheet_name', 'TEXT');
+  ensureColumn('products', 'sort_order', 'INTEGER');
+  ensureColumn('products', 'active', 'INTEGER NOT NULL DEFAULT 1');
+  ensureColumn('batteries', 'state_norm', 'TEXT');
+  for (const c of ['diesel_filter', 'oil_filter', 'air_filter', 'trans_filter', 'hy_filter']) ensureColumn('service_specs', c, 'REAL');
+  ensureColumn('job_cards', 'legacy_ref', 'TEXT');
+  ensureColumn('job_cards', 'is_historical', 'INTEGER NOT NULL DEFAULT 0');
+  ensureColumn('job_cards', 'synthesized_no', 'INTEGER NOT NULL DEFAULT 0');
   return db;
 }
 
