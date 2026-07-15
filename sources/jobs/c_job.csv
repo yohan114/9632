@@ -1,0 +1,511 @@
+Job no,Ref.,Vehicle,Repair Description,Start,End,Hrs,Cost,Site,Remarks
+2023/12/R/658,23-658,40-8060,"Tinkering & painting, Engine repair(replaced E/head, water pump with fan blade, heater plug, radiator hose, fan belt 6450, 6440,radiator cleaning, injector pump service), repaired gear cable, Starter motor repair(motor clutch),suspension repair(drag link assy.tie rod end repair) ,wiper spindle, floor board carpet,tail light lence 2, seat cushion,   ",2023-12-12 00:00:00,2024-05-15 00:00:00,377,442794.65,Galenbidunuwewa,MNW
+2024/1/R/063,24-063,HS-1794,"Engine minor repair(replaced gasket,head facing, check valve seat, valve seal kit, manifold stud & nut, Exhaust manifold, radiator hose, radiator mount, accelerator ball joint,radiator cooler, injector chamber washer, fan belt, water manifolt rubber hose, water cooler,injector pump & nozzel service, engine machine work repair-Edirisinghe ) ,elec .repair(head light , starter switch, push button swithc, tail light,), brake chamber repair2, brake chamber spring 2, engine stop cable, wiper blades, wiper arm, wiper groove, service wash & grease, ",2024-02-16 00:00:00,2024-04-30 00:00:00,168,134947.92,cep-03,
+2024/2/R/112,24-112,SL-03,"Replaced travelling motor seal, engine mount 4, hy. Pump oil seal, (removed engine with Hy. Pump out side of  the machine to check hy. Leak), replaced air cleaner suction hose, top up hy. HD 46 oil, wash & grease",2024-03-09 00:00:00,2024-05-28 00:00:00,120,144156,cep-03,
+2024/3/R/161,24-604,SL-09,"replaced travelling motor seal 2,engine mount",2024-03-09 00:00:00,2024-06-13 00:00:00,20,159100,cep-03,
+2024/3/R/176,24-161,PTR-05,"change roof,wash & grease , check battery water, E/oil & hy.level, brake oil, check brakes, clutch system",2024-03-13 00:00:00,2024-05-06 00:00:00,60,17400,cep-03,
+2024/3/R/180,24-176,ZA-8373,agitator oil seal,2024-03-13 00:00:00,2024-04-20 00:00:00,1,9030,cep-03,
+2024/3/R/196,24-196,68-5115,"Battery charging line checked & repaired, check horn -ok, starter motor repaired, Replced king pin R/kit, wire harness repair(battery discharging when switch off starter key-Ex. Kamal katana, adjusted brakes F & R, replaced brake washers, tie rod end, winder cable repair",2024-03-30 00:00:00,2024-05-28 00:00:00,82,64462.18,Thalawa,
+2024/3/R/198,24-180,AP-11,Replaced blower fan(removed fan from AP-09 & sent to asphalt team Thanthirimale),2024-03-18 00:00:00,2024-03-20 00:00:00,1,300,Thanthirimale,
+2024/3/R/213,24-213,PA-6399,"Engine overhaul (Replaced engine head-recondition, head checked with Edirisinghe, block faced, replaced sleeve, piston ,rings, con .rods, big end bearing, main bearing, thrust bearing, gudgeon pin bush, overhaul packing kit, inlet air hose, fan belt, p/s belt, radiator hose, R/cap,valve guide,crank wheel,), p/s oil leak repair, clutch R/kit, brake caliper assy. , starter motor repair(armature)",2024-03-30 00:00:00,2024-05-04 00:00:00,155,496025.52,Thalawa,MNW
+2024/3/R/236,24-236,HEX-29,"Replaced engine mount, travelling motor oil leak repair, wash & grease , due to high cost of repair, AC was not repaired, removed counter weight for E/mount replacement, & assemble, ",2024-03-30 00:00:00,2024-06-07 00:00:00,51,62109,Erawur,
+2024/3/R/237,24-198,LL-0920,"Replaced king pin R/kit, wheel cylinders4 , hub bearing inner, outer, both sides, drag link R/kit, tie rod ends",2024-04-19 00:00:00,2024-05-03 00:00:00,32,83360,cep-03,
+2024/3/R/238,24-237,LC-0434,"replaced clutch master pump, clutch oil tank hose, speed meter cable",2024-04-02 00:00:00,2024-04-04 00:00:00,18,14030,Erawur,388048Km
+2024/4/R/248,24-248,LD-8875,"Chassis repair-Ex, fabricate inlet air hose, turbo oil leak repair-tightened union, replaced rear crank oil seal, p/s filter, starter motr repair-ex, clutch R/kit low, dissemble & asemble gear box ,wire harness & air hose set, electical repair",2024-04-19 00:00:00,2024-08-27 00:00:00,180,446636.49,Galnewa,
+2024/4/R/264,24-238,HEX-39,"Replaced boom bush , pin filling, & turningout, bucket repair, replaced tie rod end 2 nos, air filter, wash & grease, high/low gear selector oil leak repair",2024-04-19 00:00:00,2024-05-09 00:00:00,120,102949,Galnewa,1938Hr
+2024/4/R/265,24-265,MG-11,"Transmission repair(replaced transmission full seal kit, trans. Plate 20, plate 02, plate 04, valve body packing), changed hy. filter JS-2092, pump joint groove, trans. Oil SAE 30 48L, gear cable repair ",2024-04-22 00:00:00,2024-06-26 00:00:00,226,855739.88,Badalgama,8080Hr
+2024/4/R/267,24-264,ZB-1496,"Brake Repair(replaced all brake liners), AC repair, Added spring blades for Rear LH & RH-ex repair",2024-04-21 00:00:00,2024-04-27 00:00:00,78,122720,Moragahakanda,12127Km
+2024/4/R/268,24-268,PH-3945,"Radiator fan doesn’t work properly.signal doesn’t come to relay from ECM.Repaired Externally(Kamal-Katana), checked abnormal noise-ok, hand brake cable lubricated,fixed temperature sensor",2024-04-26 00:00:00,2024-05-09 00:00:00,31,13575,H/O,192884Km
+2024/4/R/269,24-582,LK-5041,"Replaced spring bushes-Ex, gear lever rod end,air hose",2024-04-26 00:00:00,2024-05-02 00:00:00,7,18378,Badalgama,
+2024/4/R/270,24-267,LN-8278,Adjusted brakes,2024-04-23 00:00:00,2024-04-23 00:00:00,1,350,Badalgama,860036Km
+2024/4/R/271,24-271,ZA-6069,"Replaced tie rod end 2, fan belt 8PK-1835, belt adjuster, bucket jack bush, grease seal, multi jack seal kit 2, arm end bush 2, seal, H-bush 2 nos, bucket & H pin filling & lathening",2024-04-23 00:00:00,2024-05-04 00:00:00,67,152758,kadawatha,
+2024/4/R/272,24-272,LO-4824,"Fuel system reapir(serviced 4 injectors - AGM , fuel feed pum prepair, cleaned fuel pipe lines, cut & cleaned diesel tank, ",2024-04-23 00:00:00,2024-04-30 00:00:00,37,14000,Thebuwana,
+2024/4/R/273,24-273,LK-2276,"Replaced air driyer R/kit, repaired water leak",2024-04-23 00:00:00,2024-04-25 00:00:00,24,11750,Katana,
+2024/4/R/274,24-274,PR-1469,"Radiator cooling fan not work, supply direct current to fan motor",2024-04-24 00:00:00,2024-04-24 00:00:00,4,1400,Badalgama,MNW
+2024/4/R/275,24-275,LD-05,Fexed new hour meter,2024-04-25 00:00:00,2024-04-25 00:00:00,3,5680,Badalgama,
+2024/4/R/276,24-276,RD-6318,"Battery guard repair, hitch assy. Repair",2024-04-26 00:00:00,2024-04-27 00:00:00,18,6050,Katana,
+2024/4/R/277,24-277,HEX-41,"swing motor repair(replaced planetary gear wheel assy-Done by C-COM), boom jack seal kit 2, checked travelling motor oil level, air filter, wash & grease,battery post filling",2024-04-29 00:00:00,2024-05-22 00:00:00,28,205255.75,cep-03,
+2024/4/R/278,24-269,4WD bike,"wire harness repair, replaced accelerator cable",2024-04-29 00:00:00,2024-05-31 00:00:00,12,7320,Mundalama Estate,
+2024/4/R/279,24-270,43-3416,"service, wash & grease, replaced fan belt  with pulley, battery terminal, battery post repair, fixed fog light,rear bituman engine belt C-68 2nos, pulley turning out & key cutting ",2024-04-30 00:00:00,2024-06-07 00:00:00,32,37915,Doramadalawa,MNW
+2024/4/R/280,24-278,LH-5475,Replaced clutch R/kit,2024-04-26 00:00:00,2024-04-29 00:00:00,4,11705,Badalgama,
+2024/4/R/281,24-281,ZA-6255,"Fuel system repair(replaced filter FC-1001, line filter, fuel filter blocked)",2024-04-26 00:00:00,2024-04-28 00:00:00,3,5450,Badalgama,
+2024/4/R/282,24-282,LY-1614,"Brake repair(replaced air tank drain valve 3), ramp motor field coil repair, replaced brush set",2024-04-30 00:00:00,2024-07-12 00:00:00,13,28250,Badalgama,MNW
+2024/4/R/283,24-283,LO-4821,"Wash & grease, replaced ait filter, speed meter sensor",2024-04-29 00:00:00,2024-04-30 00:00:00,8,27250,Bulnewa,MNW
+2024/4/R/284,24-284,PH-0765,"Replaced F/RH upper arm & lower arm ball joints, rear all brake shoes, propellar shaft sliding joint, u-joints 2",2024-05-01 00:00:00,2024-05-04 00:00:00,44,48435,Katana,
+2024/4/R/285,24-279,LK-2276,"Rear LH brake drum doesn't rotate, loosen brakes & check the brake cam doesn't return when release brakes.therefore lubricate brake cam & complete the repair",2024-05-02 00:00:00,2024-05-03 00:00:00,10,2300,Katana,
+2024/4/R/286,24-280,RF-0748,"Clutch repair, adjusted brakes,replaced radiator hose, fuel leak repair, wash & grease",2024-04-30 00:00:00,2024-05-03 00:00:00,,27625,Mundalama Estate,2728Hr
+2024/4/R/287,24-287,47-5112,"Replaced brake load sensing valve, adjusted brakes, replaced rear Hub seal,brake washer, brake shoe both sides",2024-05-01 00:00:00,2024-05-09 00:00:00,36,34769.75,Badalgama,294644Km
+2024/4/R/288,24-283,LL-0936,"Replaced u-joint, sliding joint, PTO lever repaired,adjusted brakes, Elec. Repair(signal, wiper, tail light)",2024-05-05 00:00:00,2024-05-17 00:00:00,40,22870,Dekatana,196578KM
+2024/4/R/289,24-586,HEX-23,Replaced RPM sensor,2024-04-30 00:00:00,2024-05-03 00:00:00,5,16500,cep-03,
+2024/4/R/290,24-290,LD-06,"Replaced U-joint, pinio oil seal",2024-04-30 00:00:00,2024-05-03 00:00:00,18,39650,Muthur,
+2024/4/R/291,24-291,DAH-2230,"replaced fuel tank pump, injector & low pressure pump Repair & service(replaced 3 nozzels),changed fuel filter",2024-05-07 00:00:00,2024-05-17 00:00:00,45,95500,Badalgama,208209Km
+2024/5/R/292,24-285,HEX-01,"Radiator cleaned, repaired reserve tank, replaced high pressure pump, wash & grease, radiator hose extend, checked water pump, replaced air filter,starter switch, AC belt, AC compressor top up hy. oil,AC repair",2024-05-08 00:00:00,2024-05-22 00:00:00,88,233828,Muthur,11.5Hrs
+2024/5/R/293,24-286,TM-13,"Replaced cabin door glass-Autobacs, Elec repair(tail light,replaced hr meter, wire harness, ), replaced battery 120A ,shooter repair, adjusted radiator fan guard, electric fuel feed pump fuel pipe repair",2024-05-11 00:00:00,2024-06-18 00:00:00,70,30965,Buttala,0Hr
+2024/5/R/294,24-288,ASC-21,"Engine repair(Replaced connecting rod, piston with ring set, air filter)",2024-05-01 00:00:00,2024-05-09 00:00:00,18,26650,Katana,
+2024/5/R/295,24-295,ZB-1547,"Loader & backhoe bucket repair, (replaced cutting edge), replaced stabilizer pads, king post nylon pads, elec. Horn 12v, ",2024-05-14 00:00:00,2024-06-08 00:00:00,88,46829,Dekatana,5303Hr
+2024/5/R/296,24-289,LM-6653,"Clutch repair(Replaced c/plate, c/bearing, f/bearing,)replaced fuel overflow valve,crank oil seal, speed meter sensor",2024-05-13 00:00:00,2024-05-17 00:00:00,60,61250,Erawur,
+2024/5/R/298,24-292,48-4849,"E/oil leak repaired (from breather hose),fixed recondition alternator",2024-05-13 00:00:00,2024-05-16 00:00:00,13,16990,Badalgama,
+2024/5/R/299,24-583,LL-0920,"Radiator cleaning, water pump repair, replaced 3 fan belts, R/hose, hub brearing with seal",2024-05-16 00:00:00,2024-05-19 00:00:00,,19338,cep-03,SSO
+2024/5/R/300,24-293,LA-1359,"starter motor repair, removed all brake drums, check liners, wheel cylinders, adjusted brakes, brake master pump repaired",2024-05-16 00:00:00,2024-05-20 00:00:00,16,3200,cep-03,
+2024/5/R/304,24-294,LK-4061,"Engine overhaul(Replaced sleeve Z-2, Y-4, piston with ring set, con rod bearing, valve oil seal, head bolt 6, engine valve 12,valve guide set, con rod bush , cylinder head check & facing, engine repair-edirisinghe, injector service) , clutch repair(replaced clutch liner set, clutch bearing), Gear box repair (Top shaft bearing, bearing lock, lock cover, counter shaft bearing, gear box packing, bearing, F & R oil seal, genuine fork guide, top shaft bearing, bearing lock, lock cover, counter shaft bearing, clutch release bearing, ), speed meter assy.",2024-05-14 00:00:00,2024-06-06 00:00:00,226,426412.52,cep-03,
+2024/5/R/305,24-296,LP-1582,"Adjusted brakes, wash & grease, abnormal color of diesel(removed fuel in the tank, replaced fuel filter ,w/sep filter, cleaned fuel pipes)",2024-05-20 00:00:00,2024-05-21 00:00:00,28,20500,kilinochchi,52546Km
+2024/5/R/306,24-298,LK-5041,"replaced wiper link,wiper blades",2024-05-27 00:00:00,2024-05-27 00:00:00,2,3595,Badalgama,MNW
+2024/5/R/307,24-299,SR-05,"wash & grease, made a silensor, wire harness repair, service, (oil, fuel ,air, hy. filter changed,), top up hy. oil., operating seat repair, replaced steering jack seal 2 nos, repaired vibration solenoid coil, checked vibration  & travelling system",2024-05-27 00:00:00,2024-06-07 00:00:00,84,60845,Badalgama,
+2024/5/R/309,24-300,LP-1580,replaced e/mount & gear box mounts,2024-05-28 00:00:00,2024-05-30 00:00:00,8,26350,Erawur,
+2024/5/R/310,24-304,DAH-2228,"starter motor repair(replaced motor clutch assy,)canopy repair-ex, side mirror",2024-05-17 00:00:00,2024-05-31 00:00:00,4,54040,asphalt team ,200045Km
+2024/5/R/311,24-311,LH-5586,"Engine overhaul(Replaced Sleeve set, piston with ring set, main bearing set, big end bearing set, thrust bearing, gudgeon pin bush set, cam bush set, valve guide set, idler wheel bush, cam follower set, cam shaft, idle wheel thrust washer, valve spring retainer, oil pump,engine mount ,crank seal, oil pressure regulator valve, injector boot, valve cotter 12, air compressor piston ring set, bearing sea, packing set, accelerator spring , injector service, radiator cleaning, injector pump repair,), Clutch repair(pressure plate & flywheel facing, clutch bearing, clutch liner set, clutch fork lock, ), Gear box repair(counter wheel bearing, main shaft bearing, lock cover, gear box seal F & R, packing set, top shaft bearing,  ), belt A-56 2nos, Alternator repair(voltage regulator, brush set), oil presure meter, ",2024-05-28 00:00:00,2024-07-03 00:00:00,275,630236.75,cep-03,
+2024/5/R/316,24-305,LO-5984,"service(oil ,fuel filter change, top up gear box pinion oil ), replaced benjo washer with bolt of filter head,fuel supply  hose of feed pump, fuel pump overflow valve, wash & grease ",2024-05-20 00:00:00,2024-05-28 00:00:00,36,26960,cep-03,1615C   112820Km
+2024/5/R/317,24-317,40-8060,"replaced cable ball joint, gear cable bush, adjusted gear cable, replaced idle arm bush, fixed Hr meter, removed upper arm shims F/LH",2024-05-21 00:00:00,2024-05-28 00:00:00,14,16172,Badalgama,mnw
+2024/5/R/324,24-324,PT-1569,S/motor repair(replaced contact pieces),2024-05-28 00:00:00,2024-05-28 00:00:00,3,2250,Katana,
+2024/5/R/325,24-306,PA-4879,"Replaced electric fuel feed pump, heat timer, silensor packing, door post repair, light repair",2024-05-22 00:00:00,2024-05-28 00:00:00,13,11390,Muthur,MNW
+2024/5/R/327,24-327,28-4314,"Service(oil ,fuel, air filter change)check gear box ,pinion oil, Replaced filter head(fuel filter), diesel hose, door winder repair, p/s oil hose tightened, F/brake caliper hose tightened, wash & grease, repaced accelerator cable",2024-05-27 00:00:00,2024-05-31 00:00:00,22,17636.82,Badalgama,
+2024/5/R/331,24-331,253-2574,"Steering & suspension sys. Repair(lower arm ball joint, repaired both side upper arm ball joints, fitman arm ball joint, idle arm ball joint & bush)check wheel alignment, LH door glass fixed, service(diesel tank leak repair), ",2024-05-27 00:00:00,2024-05-28 00:00:00,27,19840,Serunuwara,409455Km
+2024/5/R/332,24-307,325-5120,"Replaced rear LH  hub seal inner outer, cleaned brake wheel cylinder R LH, R/LH hub bolt, P/S belt 8490",2024-05-29 00:00:00,2024-06-06 00:00:00,28,24265,Badalgama,MNW
+2024/5/R/332,24-332,MGS-01,"service, wash & grease , brake hose repair, top up B/oil , made a brake oil tank cap, replaced hy. brake hose 2 nos, alternator repair(replaced brush holder with regulator , ), replaced parking brake valve, brake repair, check all oil levels.",2024-05-31 00:00:00,2024-06-10 00:00:00,63,110832,solution,
+2024/5/R/334,24-309,LK-4058,starter motor- Recondition,2024-05-28 00:00:00,2024-05-29 00:00:00,,32000,cep-03,
+2024/5/R/335,24-335,LA-1359,Replaced vaccum brake booster-Recondition,2024-05-28 00:00:00,2024-05-31 00:00:00,,29950,cep-03,
+2024/5/R/336,24-336,HEX-21,"Hy. leak repair, repaired hy. tank suction hose oil leak, top up hy. oil, replaced top roller",2024-05-28 00:00:00,2024-05-30 00:00:00,8,38800,Erawur,
+2024/5/R/337,24-337,LL-0623,Vehicle cleaning,2024-05-31 00:00:00,2024-06-10 00:00:00,18,10502.5,Badalgama,
+2024/5/R/338,24-310,PY-2408,"Replaced radiator fan , fan belt, alternator belt, water pump repair(replaced water seal kit, bearing 2 nos, pum pshaft turning out), wash & grease",2024-06-01 00:00:00,2024-06-10 00:00:00,38,26903.5,Katana,MNW
+2024/5/R/339,24-316,DAH-2228,"Replaced rear all brake liners,P/S belt",2024-06-01 00:00:00,2024-06-06 00:00:00,17,9850,Asphalt team,200278Km
+2024/5/R/340,24-325,LO-4816,"Replaced PTO lever, checked sump oil leak, wash & grease, replaced air filter, Elec. Repair(signal), no need to replaced sump packing immediately",2024-05-29 00:00:00,2024-05-29 00:00:00,17,34778,cep-03,MNW
+2024/5/R/341,24-341,LO-8348,"Service, wash & grease, axel oil leak repair, check accelerator cable",2024-05-29 00:00:00,2024-05-30 00:00:00,9,9575,cep-03,MNW
+2024/5/R/342,24-342,ASC-24,"Engine repair(Re-boring, piston rings, gasket, spark plug, E/oil)",2024-06-01 00:00:00,2024-06-26 00:00:00,24,33994.18,kadawatha,
+2024/5/R/343,24-332,HEX-33,"Replaced bucket jack seal ,top up hy. oil, E/oil, Travelling motor oil",2024-05-29 00:00:00,2024-05-30 00:00:00,16,42892.5,Erawur,
+2024/5/R/344,24-344,HEX-18,"travelling motor oil leak-tightened union with hose, hy.leak repair, starter motor repair",2024-06-03 00:00:00,2024-07-19 00:00:00,36,13176,Mundalama Estate,
+2024/5/R/345,24-602,RS-0483,welded shims for U-joint caps & stopped U-joint movement in th Yoke,2024-05-31 00:00:00,2024-05-31 00:00:00,10,2800,Marandagahamula,
+2024/5/R/346,24-346,HEX-39,"Hy. oil cooler leak repair, hy. hose, change R/coolant, AC filter, High /low gear selector oil leak repair, top up hy. oil ,replaced R/hose",2024-06-03 00:00:00,2024-06-13 00:00:00,58,74642,Biyagama,5193Hr
+2024/5/R/347,24-334,ZB-1979,"Turbocharger repair, injector cleaning, changed fuel filter, water seperator, silensor cleaning, backhoe bucket arm end & bucket pin filling ,turning out, replaced bushes 45x55x42mm 8nos, 45x60x60 mm 2 nos, wash &  grease, fuel system check & repair",2024-06-03 00:00:00,2024-06-28 00:00:00,110,110800,Dekatana,4828Hr
+2024/5/R/348,24-338,LK-5041,"wiper motor replaced -recondition, replaced winder assy. New, starter motor repair(solenoid coil wire welding-soldering work)",2024-06-05 00:00:00,2024-06-07 00:00:00,11,26375,Badalgama,MNW
+2024/5/R/349,24-339,ZA-8337,"hy. pump housing, 4WD propellarshaft yoke, u-joints, sliding joint,trans, seal,  rear axel u-bolt , service( change trans,  oil with filter, oil filter, fuel filter, top up hy. oil), Elec .repair(light, battery charging, s/motor. Hr meter, horn), ",2024-08-05 00:00:00,2024-06-26 00:00:00,106,495890,cep-03,
+2024/6/R/350,24-599,40-8060,"repaired gear engage problem, fixed Hr meter, 1 st service after engine overhaul, elec. Repair(tail light), removed shims of upper arm",2024-06-05 00:00:00,2024-06-10 00:00:00,22,13000,Badalgama,MNW
+2024/6/R/351,24-340,VR-49,"changed silensor assy, replaced air filter, inlet manifold repair, E/oil change, check & repair vibration sys. Radiator leak repair, injector with pump repair",2024-06-07 00:00:00,2024-06-11 00:00:00,18,19744,Dekatana,
+2024/6/R/352,24-592,LK-6740,"starter motor repair, no tipping(check Hy. elec. System for PTO operating",2024-06-07 00:00:00,2024-06-15 00:00:00,28,13176,Dekatana,MNW
+2024/6/R/353,24-597,51-7158,"replaced side door handle, winder handle, sliding door bearing, heat timer, heater plug 4nos, wash & grease, elec repair(tail light, signal)",2024-06-06 00:00:00,2024-06-14 00:00:00,72,36195,Dekatana,379616Km
+2024/6/R/354,24-587,ZB-2587,"service, greasing(change oil, fuel air filters), top up hy. oil",2024-06-06 00:00:00,2024-06-06 00:00:00,5,18400,Kebithigollawa,1759HR
+2024/6/R/355,24-343,LI-3401,P/S pump oil leak-Ex,2024-06-08 00:00:00,2024-06-12 00:00:00,,5500,cep-03,
+2024/6/R/356,24-345,LI-7620,"Turbocharger repair-(Ex Mendis Kandana), air hose, turbo hose clips",2024-06-08 00:00:00,2024-06-14 00:00:00,,77400,cep-03,
+2024/6/R/357,24-347,PJ-6376,"disemble rear brake drum clean & assemble, lubricate gear cable, repaired air leak from vaccume pump",2024-06-08 00:00:00,2024-06-10 00:00:00,28,8750,Badalgama,235516Km
+2024/6/R/358,24-589,48-4849,"Engine ovehaul(water pump R/kit, cam fillower set, idle wheel thrust washer, bolt lock set, air compressor R/kit, oil pressure relief valve, overhaul gasket kit, oil pump, comp. piston ring set, rocker arm braket, r/mount, E/mount, crank oil seal, top shaft bearing,piston ring set,,silensor packing ,pinion seal, main bearing set, big end bearing set, thrust bearing, sleeve set, cam bush set, valve guide set, gudgeon pin bush set, cam shaft, crank sleeve, idle wheel bush, cam plate, compressor-recondition, comp. bearing, r/hose, ), injector service & repair, radiator repair, water reserve tank repair, egine repaire-Edirisinghe,   ",2024-06-08 00:00:00,2024-07-31 00:00:00,258,609613.24,Badalgama,
+2024/6/R/360,24-348,SL-03,"Bucket pin repair, starter switch",2024-06-08 00:00:00,2024-09-07 00:00:00,23,9037,Dekatana,2716Hr
+2024/6/R/361,24-349,LO-4824,"service, check fuel & trans. System, injector serviced by AGM",2024-06-08 00:00:00,2024-06-15 00:00:00,28,8200,Badalgama,64227Km
+2024/6/R/362,24-350,LH-5475,Replaced clutch slave cylinder assy.,2024-06-08 00:00:00,2024-06-11 00:00:00,4,8986.25,Badalgama,MNW
+2024/6/R/363,24-351,LP-1566,"adjusted brakes, service",2024-06-09 00:00:00,2024-06-10 00:00:00,1,370,cep-03,
+2024/6/R/364,24-352,LC-0434,"Brake hoses & wire harness damaged due to combination with propellaer shaft, disemble & repair, fuel filter leak repair, wash & grease",2024-06-09 00:00:00,2024-06-11 00:00:00,29,11060,Badalgama,MNW
+2024/6/R/365,24-353,VR-44,"wash & grease, service, replaced water pump seal, check vibration & travelling, travelling lever repair",2024-06-10 00:00:00,2024-06-16 00:00:00,72,28300,cep-03,MNW
+2024/6/R/366,24-354,LI-7701,"replaced tipping jack -recondition, elec. Repair(replaced fuse box, horn , etc), replaced clutch pump up, adjusted gear linkage, check brakes, wash & grease",2024-06-10 00:00:00,2024-06-27 00:00:00,55,120400.5,cep-03,MNW
+2024/6/R/368,24-355,SL-25,"service, wash & grease",2024-06-10 00:00:00,2024-06-12 00:00:00,5,3375,Dekatana,1257Hr
+2024/6/R/370,24-356,LN-9046,"Replaced king pin R/.kit, service, elec. Repair(horn), tir rod end R/kit, shock bush 4, shock absorber 2",2024-06-11 00:00:00,2024-06-16 00:00:00,40,68415,Buttala,131511Km
+2024/6/R/371,24-357,LN-8278,checked wheel alignment & shock absorbers,2024-06-11 00:00:00,2024-06-11 00:00:00,1,2850,Badalgama,867145Km
+2024/6/R/372,24-358,TB-15,"replaced axel bearing inne, outer, hub greasing, water pump E/oil change, carb replaced clean plug, carb tune up",2024-06-11 00:00:00,2024-06-14 00:00:00,14,17568,kadawatha,
+2024/6/R/373,24-360,GE-156,"stand making for stand up, the gnerator, replaced starting rachet, -used, change E/oil carb clean, check spark plug, clean, check poer out put",2024-06-11 00:00:00,2024-06-11 00:00:00,16,7497,Katana,
+2024/6/R/374,24-361,LM-7949,Brake drum facing-2nos,2024-06-11 00:00:00,2024-06-12 00:00:00,8,3000,cep-03,
+2024/6/R/375,24-362,SR-08,drum mount 9nos,2024-06-11 00:00:00,2024-06-30 00:00:00,,83700,cep-03,SSO
+2024/6/R/376,24-363,LL-0936,"Alternator repair( replaced bearing 2nos 6303,6201), alternator belt 2nos",2024-06-11 00:00:00,2024-06-14 00:00:00,5,4579,Dekatana,
+2024/6/R/377,24-364,VR-61,"checked all oil levels battery charging, wash & grease, fixed another machine fuel tank cap",2024-06-11 00:00:00,2024-06-14 00:00:00,6,2725,Port city,
+2024/6/R/379,24-366,HEX-23,Replaced oil pressure sensor,2024-06-11 00:00:00,2024-06-13 00:00:00,4,20700,cep-03,
+2024/6/R/380,24-368,LO-4823,"Clutch repair(replaced clutch plate new ), fuel hose damage repair, service, wash & grease",2024-06-13 00:00:00,2024-06-15 00:00:00,42,51203,Erawur,183258Km
+2024/6/R/382,24-370,PT-1569,"Replaced hub seal, bearings, top up pinion oil",2024-06-13 00:00:00,2024-06-13 00:00:00,16,17206,Katana,
+2024/6/R/383,24-371,LK-2276,"Repaired water leak(replaced radiator hose), wash & grease",2024-06-14 00:00:00,2024-06-14 00:00:00,10,6827,Katana,159163Km
+2024/6/R/384,24-372,PH-6742,"Replaced king pin R/kit, tie rod end 2, grease cup, F/ hub bearing inner & outer L & R, brake shoe re lining F LH ,RH, shockabsorber repair F LH & RH , shock absorber bush, brake washer 8",2024-06-14 00:00:00,2024-06-22 00:00:00,31,70702,cep-03,
+2024/6/R/385,24-373,RS-0483,"replaced stabilizer seal kit ,top up hy. oil",2024-06-14 00:00:00,2024-06-14 00:00:00,16,18300,Katana,
+2024/6/R/386,24-374,GE-107,"service, check power Output, machine cleaning, fuel tank cleaning",2024-06-15 00:00:00,2024-06-18 00:00:00,18,8800,cep-03,
+2024/6/R/387,24-375,28-4314,"replaced caliper piston 2, clutch R/kit, brake R/kit, ",2024-06-17 00:00:00,2024-06-20 00:00:00,13,22010,Badalgama,MNW
+2024/6/R/388,24-376,47-5112,"Fuel system repair, cleaned fuel tank, changed fuel filter FC-1001",2024-06-17 00:00:00,2024-06-17 00:00:00,14,7050,Badalgama,299167Km
+2024/6/R/389,24-377,325-5120,"adjusted brakes, gear linkage, replaced gear lever rod end 2 nos",2024-06-17 00:00:00,2024-06-17 00:00:00,7,10950,Badalgama,MNW
+2024/6/R/390,24-378,LK-5041,"Adjusted gear linkage, tightened hy. hose,disemble F/fog lamp",2024-06-17 00:00:00,2024-06-17 00:00:00,5,10650,Badalgama,423266Km MNW
+2024/6/R/391,24-379,PR-1469,"adjusted steering free play, wash & grease, repaired tappet cover oil leak",2024-06-18 00:00:00,2024-06-18 00:00:00,3,2800,Badalgama,MNW
+2024/6/R/392,24-380,LK-2276,"replaced fuel cut off solenoid, tipper door lock repair",2024-06-18 00:00:00,2024-06-24 00:00:00,4,9710,katana,159270Km
+2024/6/R/393,24-382,HEX-26,"Replaced sprocket wheel 2, bucket repair,bucket teeth, coller bush 4",2024-06-17 00:00:00,2024-06-22 00:00:00,56,167100,kilinochchi,
+2024/6/R/394,24-383,HEX-41,Replaced alternator -new,2024-06-18 00:00:00,2024-06-18 00:00:00,,245000,cep-03,SSO
+2024/6/R/395,24-384,LJ-5559,replaced tipping jack seal,2024-06-18 00:00:00,2024-06-26 00:00:00,22,14600,cep-03,
+2024/6/R/396,24-385,325-5120,"Replaced clutch washer, gear lever rod ends",2024-06-21 00:00:00,2024-06-22 00:00:00,8,4800,Badalgama,MNW
+2024/6/R/397,24-386,LN-1867,"fuel system check clean water seperator,feed pump, service",2024-06-22 00:00:00,2024-06-22 00:00:00,10,3400,kilinochchi,300419Km
+2024/6/R/398,24-387,ZA-7810,"Replaced mixture cleaning water pump water seal, bearing 2 nos, reverse plug, ",2024-06-24 00:00:00,2024-06-26 00:00:00,6,10691.85,cep-03,
+2024/6/R/400,24-388,MG-10,gear cable repair-ex,2024-06-24 00:00:00,2024-06-25 00:00:00,,4500,cep-03,
+2024/6/R/401,24-389,HEX-41,"bucket pin filling, turning out 3nos, replaced H bushes 4, welding cutting edge for bucket, bucket welding work, pin holder",2024-06-24 00:00:00,2024-06-26 00:00:00,72,29300,cep-03,
+2024/6/R/402,24-390,LI-3401,Replaced oil cooler packing,2024-06-24 00:00:00,2024-06-25 00:00:00,,1600,cep-03,SSO
+2024/6/R/403,24-391,VR-12,"service,check vibration,replaced battery",2024-06-24 00:00:00,2024-06-25 00:00:00,2,40190,Port city,
+2024/6/R/404,24-392,DAH-2228,"injector cleaned, diesel tank & high pressure pump cleaned,replaced fuel filter adjusted fan belt  ",2024-06-24 00:00:00,2024-06-25 00:00:00,29,52000,Batticaloa,202749Km
+2024/6/R/405,24-393,LB-4824,"Starter motor repair, ",2024-06-24 00:00:00,2024-06-25 00:00:00,3,900,Katana,
+2024/6/R/406,24-394,AC-37,"Accident repair(Replaced engine mount, paint items,tinkering, painting)",2024-06-24 00:00:00,2024-07-24 00:00:00,105,48030,cep-03,
+2024/6/R/407,24-395,RD-3536,"changed battery, check all oil levels, brake, battery charging, starting",2024-06-24 00:00:00,2024-06-24 00:00:00,6,2100,alawwa,4983Hr
+2024/6/R/407-1,24-396,LM-5720,"Accident repair, replaced clutch master cylinder, clutch slave cylinder, air hose, fuel feed pump R/kit, wash & grease, service",2024-06-24 00:00:00,2024-06-27 00:00:00,22,36580,cep-03,MNW
+2024/6/R/408,24-397,LD-06,Replaced steering jack seal 2,2024-06-26 00:00:00,2024-06-27 00:00:00,12,29960,Muthur,
+2024/6/R/410,24-398,PA-4879,"T-belt(replaced t-belt, adjuster, idle wheel bearing, ),PS belt, fan belt 2",2024-06-25 00:00:00,2024-06-27 00:00:00,24,32900,Muthur,
+2024/6/R/411,24-400,LI-7618,"replaced king pin R/kit, clutch repair(pressure plate facing, clutch liner set,finger R/kit, clutch bearing assy.), Gear box repair(top shaft repair, counter shaft repair, top shaft seal, brass corn 1, gear box packing kit, counter shaft bearing outer,inner bearing, ) shockabsorber repair 2 nos, F/axel bearing inner 2, outer bearing 2, top shaft bearing, ball joint set, center bolt2, U bolt 2, grease seal set 2, U-joint 2 R/hub bearing 2, hub seal 2",2024-06-26 00:00:00,2024-07-10 00:00:00,18,171670,cep-03,
+2024/6/R/412,24-401,LM-5723,"Clutch Repair(replaced clutch liner set, clutch bearing, pressure plate Finger R/kit, p/plate spring set, clutch fork), Gear box repair(brass corn small 2, large 1, counter shaft bearing 2, thrust washer, gasket kit, pilot bearing, main shaft oil seal, top shaft oil seal), u-joint ",2024-06-26 00:00:00,2024-07-15 00:00:00,22,129487.5,cep-03,
+2024/6/R/413,24-402,47-5112,"cleaned diesel tank, changed fuel filter, removed contaminated diesel & fill new 15Ltrs, check E/starting",2024-06-26 00:00:00,2024-06-27 00:00:00,20,12855,Badalgama,299775Km
+2024/6/R/414,24-403,PA-6398,"Tinkering & painting, repaired oil leak from tappet cover, wash & grease, fixed f brake caliper assy., Elec. Repair(replaced signal light LH, tail light , foot board, parking light), suspension repair(D bush 2, stabilizer bush 8, shockabsorber bush 4, strut rod bush 4, lower arm bush 2), door lock, winder assy. LH, wiper blade, starter motor contact pcs, (alternator repair, upper arm, lower arm ball joint, steering link , wheel alignment, upholstery repair, seat cusion)",2024-06-26 00:00:00,2024-08-29 00:00:00,33,186148,Serunuwara,
+2024/6/R/415,24-404,Wacker & sub. Pump,"sub pump. Replaced capacitor, wacker-check clutch system,clutch housing lathening, clutch liner rough, check carb. , spark plug, check working condion",2024-06-26 00:00:00,2024-06-27 00:00:00,16,11432.5,Katana,
+2024/6/R/416,24-405,28-4314,replaced fan belt 6370,2024-06-26 00:00:00,2024-06-26 00:00:00,4,2100,Badalgama,
+2024/6/R/417,24-406,LM-2298,Bituman pump housing damage(repaired bituman pump),2024-06-27 00:00:00,2024-07-08 00:00:00,58,29635,cep-03,
+2024/6/R/418,24-407,HU-5097,"Suspension repar(replaced upper arm  & lower arm ball joints, tie rod ends, tie rod inner ball joint, fitman arm, CV joint boot, gear box mount, 7380 belt 2nos",2024-06-27 00:00:00,2024-07-04 00:00:00,28,92405,Badalgama,
+2024/6/R/419,24-407-1,LN-8279,"Claned air dryer, radiator repaired, top up hy. oil, E/oil , replaced radiator hose",2024-06-28 00:00:00,2024-07-12 00:00:00,39,69542.44,Badalgama,MNW
+2024/6/R/420,24-408,PR-1469,"Replaced F/axel bearing inner,outer, hub ,hub seal",2024-06-28 00:00:00,2024-07-04 00:00:00,18,15830,Badalgama,MNW
+2024/6/R/421,24-410,LP-1710,service & elec. Repair,2024-06-30 00:00:00,2024-06-30 00:00:00,4,3540,kilinochchi,
+2024/6/R/424,24-413,LP-1579,Replaced fan clutch gel,2024-06-30 00:00:00,2024-06-30 00:00:00,2,7200,kilinochchi,
+2024/6/R/425,24-414,ZB-1047,Starter motor repair(replaced starter relay),2024-06-30 00:00:00,2024-06-30 00:00:00,3,2100,kilinochchi,
+2024/6/R/426,24-415,41-1130,"bowser tank repaired, clutch repair( replaced clutch plate, pressure plate, clutch bearing, pilot bearing), center bearing,joint mount)",2024-06-30 00:00:00,2024-07-11 00:00:00,64,81356,cep-03,224Hr
+2024/6/R/427,24-416,40-2955,"check starting, change battery, clutch cylinder air bleeding",2024-06-30 00:00:00,2024-06-30 00:00:00,4,1400,Badalgama,
+2024/6/R/428,24-417,PA-6399,"Replaced gear box mount, clutch fork, adjusted fan belt, clutch fork ball repair, replaced P/S belt, top up P/S oil",2024-07-01 00:00:00,2024-07-10 00:00:00,30,35055.34,Badalgama,MNW
+2024/6/R/429,24-418,LO-9810,"replaced brake pads,repaired driving seat",2024-07-01 00:00:00,2024-07-04 00:00:00,4,23081.25,Badalgama,108633Km
+2024/6/R/430,24-419,LN-8278,"repaired shock absorbers,top up B/oil, adjusted fan belt, changed boom cable, adjusted gear lever, repaired door winder motor",2024-07-04 00:00:00,2024-07-15 00:00:00,22,14250,Badalgama,869102Km
+2024/6/R/431,24-420,LL-0936,"Replaced tail light lences, RH side mirror, accelerator cable, battery guard repair, wash & grease , top up gear oil",2024-07-04 00:00:00,2024-07-06 00:00:00,11,14421,Katana,mnw
+2024/6/R/435,24-421,HEX-22,"repaired tappet cover oil leak,bucket repair, replaced hour meter, bucket teeth, elec. Repair(check engine starting by starter key switch)",2024-07-05 00:00:00,2024-07-10 00:00:00,68,91670,Thissamaharama,CAT 314C
+2024/6/R/436,24-422,PJ-6376,"clutch repair(replaced clutch plate, pressure plate, clutch bearing), replaced F/LH hub bearings, brake liners, ",2024-07-04 00:00:00,2024-07-13 00:00:00,34,67209.4,Badalgama,
+2024/6/R/437,24-423,LY-4524,"Replaced emergency light, center lock, door lock, tail light,AC repair",2024-07-06 00:00:00,2024-07-11 00:00:00,5,76577.5,Badalgama,831693KM
+2024/6/R/439,24-424,LO-8348,"Clutch repair(Replaced clutch plate ,pressure plate, flywheel, clutch bearing, pilot bearing, clutch bearing spring)",2024-07-05 00:00:00,2024-07-12 00:00:00,61,221606,kilinochchi,MNW
+2024/6/R/439-01,24-425,ZA-7968,replaced bucket tilt jack seal,2024-07-07 00:00:00,2024-07-08 00:00:00,10,28365,Gampaha bridge,11870Hr
+2024/7/R/422,24-411,PD-6917,"Suspension & brake repair(Replaced balnce bar bush 2, link end ball joint 2 , balance bar link end bush 4, brake master pump )",2024-07-07 00:00:00,2024-07-12 00:00:00,,34450,cep-03,SSO
+2024/7/R/423,24-412,ZA-6255,"Clutch repair(replaced clutch plate, pressure plate, top shaft bearing), gear box mount, rear all brake liners ,B/wheel cylinders 4nos, u-joint , ",2024-07-07 00:00:00,2024-07-17 00:00:00,56,100629.16,Badalgama,MNw
+2024/7/R/440,24-426,GL-0019,Elec. Repair(lights),2024-07-08 00:00:00,2024-07-08 00:00:00,2,1249,Badalgama,
+2024/7/R/441,24-427,HD-9005,replaced hub bolts 5nos,2024-07-08 00:00:00,2024-07-11 00:00:00,34,7100,Badalgama,
+2024/7/R/452-1,24-428,LD-09,alternator repair-ex Kamal katana,2024-07-09 00:00:00,2024-07-12 00:00:00,,5300,cep-03,
+2024/7/R/452-1,24-429,PH-6744,Starter motor clutch repair(replaced bearing),2024-07-09 00:00:00,2024-07-10 00:00:00,2,2470,cep-03,
+2024/7/R/453,24-430,LO-4824,"Diesel mixed with E/oil, replaced injector O-rings, oil filter, changed E/oil",2024-07-10 00:00:00,2024-07-13 00:00:00,16,32700,Badalgama,66650Km
+2024/7/R/454,24-431,LP-1581,"Clutch master pump R/kit, greased clutch fork, elec. Repair(replaced tail light lences, )",2024-07-12 00:00:00,2024-07-18 00:00:00,10,19670,Badalgama,83278Km
+2024/7/R/456,24-435,LP-1569,Electrical repair(check lights),2024-07-08 00:00:00,2024-07-09 00:00:00,4,3100,cep-03,41961Km
+2024/7/R/457,24-436,HEX-37,AC repair(expansion valve),2024-07-10 00:00:00,2024-07-14 00:00:00,,7500,cep-03,
+2024/7/R/458,24-437,LO-4822,"Replaced wiper spindles, wiper blades,wash & grease, Elec. Repair(check lights)",2024-07-15 00:00:00,2024-07-19 00:00:00,17,18662,Badalgama,158103Km
+2024/7/R/458-01,24-439,LA-9208,"Replaced clutch master cylinder R/kit, side mirror",2024-07-10 00:00:00,2024-07-18 00:00:00,3,7860,Badalgama,
+2024/7/R/459,24-439-1,LP-1578,"AC repair(compressor, expansion valve)",2024-07-10 00:00:00,2024-07-16 00:00:00,,97175,cep-03,
+2024/7/R/460,24-440,LK-4058,"replaced rear all brake liner set, dial plate, hub seal, engine stop cable, rim repair,  ",2024-07-12 00:00:00,2024-07-19 00:00:00,77,93920,cep-03,MNW
+2024/7/R/461,24-441,"PE-30,39,109","replaced air filter assy. , change E/oil ",2024-07-12 00:00:00,2024-07-24 00:00:00,8,9097.5,Badalgama,
+2024/7/R/462,24-452,LP-1567,"AC repair(compressor, expansion valve)",2024-07-12 00:00:00,2024-07-21 00:00:00,,97175,cep-03,
+2024/7/R/463,24-452-1,SL-11,"Replaced battery, fan belt, bucket pin repair",2024-07-12 00:00:00,2024-08-09 00:00:00,15,72706.25,cep-03,
+2024/7/R/464,24-453,PD-7049,"T-belt replacing,cam oil seal, turbo hose, injector holder",2024-07-14 00:00:00,2024-07-19 00:00:00,45,67595.5,solution,185253Km
+2024/7/R/466,24-454,LO-9810,Adjusted & clean rear brakes,2024-07-15 00:00:00,2024-07-15 00:00:00,3,450,Badalgama,109443Km
+2024/7/R/467,24-456,LC-0434,"replaced center bearing, adjusted clutch, repaired alternator wire",2024-07-15 00:00:00,2024-07-23 00:00:00,13,16096,Badalgama,396155Km
+2024/7/R/468-01,24-457,LP-1711,"Replaced hub bolt Rear, elec. Repair (tail light)",2024-07-16 00:00:00,2024-07-17 00:00:00,29,23490,cep-03,55691Km
+2024/7/R/469,24-458,CR-01,"Brake repair(replaced brake hose, top up brake oil seiken DOT 5)",2024-07-16 00:00:00,2024-07-16 00:00:00,17,36850,cep-03,
+2024/7/R/470,24-458-1,PR-1469,"Repaired starter motor(brush holder, brush set), clutch repair(c/plate, c/bearing, p/plate, top shaft bearing",2024-07-16 00:00:00,2024-08-02 00:00:00,25,24255,Badalgama,
+2024/7/R/471-01,24-459,PR-1469,Adjusted clutch cable,2024-07-16 00:00:00,2024-07-16 00:00:00,1,350,Badalgama,MNW
+2024/7/R/472,24-460,PA-6399,"Replaced alternator diode plate with oil seal, tail light lence set, fuel tank cap, adjusted brakes, repaired P/S pump pin bush ",2024-07-18 00:00:00,2024-07-25 00:00:00,12,19375,Badalgama,
+2024/7/R/474,24-461,51-7158,"cleaned diesel tank, pipe lines, repaired starter motor",2024-07-18 00:00:00,2024-07-19 00:00:00,10,2602,Dekatana,381544Km
+2024/7/R/474-01,24-462,59-5421,"service,check brake pads,tie rod, ball joints",2024-07-18 00:00:00,2024-07-18 00:00:00,4,11251.75,kilinochchi,166117Km
+2024/7/R/475,24-463,LK-5041,"changed fuel line filter, check fuel system",2024-07-18 00:00:00,2024-07-19 00:00:00,8,3500,Badalgama,
+2024/7/R/476,24-464,VR-40,vibration system repair,2024-07-18 00:00:00,2024-07-18 00:00:00,4,1400,Biyagama,
+2024/7/R/478,24-466,LK-2366,"Repaired drag link, silensor, buffer, R-door.",2024-07-18 00:00:00,2024-07-22 00:00:00,40,19368.5,Biyagama,MNW
+2024/7/R/479,24-467,LB-4824,"repaired fuel feed pump, accelerator cable",2024-07-22 00:00:00,2024-07-23 00:00:00,6,2350,Katana,
+2024/7/R/480,24-468-1,LD-05,Starter motor repair(replaced motor clutch),2024-07-22 00:00:00,2024-07-25 00:00:00,5,16350,Badalgama,
+2024/7/R/481,24-469,BET-8552,"Clutch repair(Replaced clutch plates, clutch hub, pressure plate, oil filter, clutch cable)",2024-07-22 00:00:00,2024-07-28 00:00:00,12,14847.5,Gampaha bridge,15412Km
+2024/7/R/482,24-470,LN-8277,"repaired cable winch motor oil leak,service",2024-07-24 00:00:00,2024-07-25 00:00:00,32,39474,cep-03,741394Km
+2024/7/R/482,24-471-1,PH-0765,Starter motor repair(replaced contact pcs),2024-07-23 00:00:00,2024-07-23 00:00:00,3,1800,Katana,MNW
+2024/7/R/483,24-472,57-3062,"Replaced T-belt(t-belt, belt tensioner, idler wheel, ), fuel filter, P/S belt, Alternator belt, air filter, ",2024-07-24 00:00:00,2024-08-14 00:00:00,32,49844.75,Badalgama,202239Km
+2024/7/R/484,24-474,LP-1566,"AC repair(compressor, expansion valve)",2024-07-26 00:00:00,2024-07-28 00:00:00,,97175,cep-03,
+2024/7/R/485,24-474-1,LI-2427,"Gear box repair(clutch bearing, main shaft bearing 2, counter shaft bearing 2,follower kit, top shaft thrust washer, oil seal 2, needle bearing 2, main shaft lock, recondition gear box, brass corn 6 ,clutch liner set, flywheel disc, ring gear wheel, pilot bearing ",2024-07-26 00:00:00,2024-08-20 00:00:00,40,388640,cep-03,
+2024/7/R/486,24-475,LP-1573,"AC repair(compressor, expansion valve)",2024-07-26 00:00:00,2024-07-28 00:00:00,,97175,cep-03,
+2024/7/R/487,24-476,LP-1715,"Replaced door winder assy. , tail light repair",2024-07-26 00:00:00,2024-07-28 00:00:00,7,6334,Erawur,55646Km
+2024/7/R/488,24-478,ZA-2963,"replaced boom jack seal , outtriger jack seal 2, backhoe bucket jack seal , arm jack seal , multi seal , loader tilt seal , hr meter, voltage regulator,radiator reserve tank hose,wash & grease",2024-07-26 00:00:00,2024-08-31 00:00:00,66,163976.75,cep-03,0Hr
+2024/7/R/489,24-479,ZA-2609,"replaced outtriger , arm jack seals, manifold packing, turbocharger, fan belt, belt adjuster, radiator cap, backhoe bucket seal kit, starter switch, u-joint, multi seal kit, loader tilt seal kit, bush 40*30, service, top up hy. Oil",2024-07-16 00:00:00,2024-08-10 00:00:00,79,313711,Ranpokunagama,
+2024/7/R/490,24-480,LP-1569,"AC repair(compressor, expansion valve)",2024-07-26 00:00:00,2024-07-29 00:00:00,,97175,cep-03,
+2024/7/R/491,24-481,LL-1782,"Replaced tie rod end, adjusted clutch,wash & greased",2024-07-26 00:00:00,2024-07-28 00:00:00,18,74070,Badalgama,MNW
+2024/7/R/493,24-482,HEX-22,"bucket repair, replaced sprocket 2, top roller 2, track adjustment grease nipple 2, track link set 2,wash & grease,service",2024-07-27 00:00:00,2024-08-10 00:00:00,42,135444,Rattota,24Hrs
+2024/7/R/494,24-482,HEX-23,"boom crack repair, arm end & bucket repair, replaced injector rubber, tappet cover packing, grease seal, idler wheel duocorn seal, idler bush, bucket jack seal kit, Undercarriage repair(top roller 4, bucket teeth5, sprocket wheel 2, repaired bucket jack shaft, repaired idler wheel -ex. ,track reapir-ex",2024-07-29 00:00:00,2024-08-13 00:00:00,344,868272.5,cep-03,20137HR
+2024/7/R/495,24-483,PH-0765,replaced F/RH lower arm ball joint,2024-07-29 00:00:00,2024-07-30 00:00:00,6,13100,Katana,301608Km
+2024/7/R/497-01,24-484,LH-5475,"Tightened u-bolts, top up P/S oil",2024-07-29 00:00:00,2024-07-29 00:00:00,3,1609.63,Badalgama,
+2024/7/R/498,24-485,LK-5041,"Replaced diesel return line hose, wiper spindle, starter motor wire, wiper repair",2024-07-30 00:00:00,2024-07-31 00:00:00,6,5604,Badalgama,
+2024/7/R/498-01,24-486,LM-7940,Starter motor repair-Ex kamal katana,2024-07-30 00:00:00,2024-07-31 00:00:00,,3500,cep-03,
+2024/7/R/500,24-487,LD-09,Brake oil reserve tank replaced,2024-07-30 00:00:00,2024-07-30 00:00:00,,7000,cep-03,SSO
+2024/7/R/502,24-488,ZB-2587,Replaced oil pressure sensor,2024-07-31 00:00:00,2024-07-31 00:00:00,2,42013,Ranpokunagama,1843Hr
+2024/7/R/504,24-489,PJ-6376,"replaced fuel feed pump, w/sep filter, chasis filter, ",2024-07-30 00:00:00,2024-07-21 00:00:00,10,10531,Badalgama,
+2024/7/R/504-01,24-490,PA-6399,"Replaced gear lever ball joint 2, fan belt 6320A, p/s belt, engine mount 2, gear selector oil seal, silensor mount 4, repaired P/S pump housing",2024-07-31 00:00:00,2024-08-02 00:00:00,21,35093.5,Badalgama,MNW
+2024/7/R/505,24-491,47-5112,"changed filter head used, fuel filter",2024-08-01 00:00:00,2024-08-01 00:00:00,4,4210,Badalgama,
+2024/7/R/506,24-493,LK-5041,"Replaced clutch master cylinder R/kit, hose, elec. Repair(lights)",2024-08-01 00:00:00,2024-08-02 00:00:00,11,15409,Badalgama,
+2024/7/R/507,24-494,AC-41,"changed fuel filter, battery, check engine starting",2024-08-01 00:00:00,2024-08-07 00:00:00,4,36545,Badalgama,
+2024/7/R/508,24-495,DAH-2228,"Replaced f/shell, elec. Repair",2024-08-01 00:00:00,2024-08-04 00:00:00,2,9600,A/team,206645KM
+2024/7/R/509,24-497-1,LC-0434,"service,,replaced hub seal, elec. Repair",2024-08-02 00:00:00,2024-08-06 00:00:00,12,9669,Badalgama,
+2024/7/R/510,24-498,BET-3772,chain sprocket replaced,2024-08-03 00:00:00,2024-08-05 00:00:00,3,7270,Badalgama,33050Km
+2024/7/R/511,24-498-1,LN-8278,"brake repair(replaced brake washers,dust boot) ",2024-08-03 00:00:00,2024-08-08 00:00:00,34,30425,Badalgama,873307Km
+2024/7/R/512,24-500,DAH-2230,"Electrical repair(Replaced head light assy. ), service, replaced wiper blades",2024-08-04 00:00:00,2024-08-08 00:00:00,6,35290,Serunuwara,216571KM
+2024/7/R/513,24-502,PY-2408,"service, replaced tail light lence, wiper blades,side mirrors",2024-08-04 00:00:00,2024-08-05 00:00:00,2,5750,Badalgama,
+2024/7/R/514,24-504,LP-1578,Head light repair(glass fixing)Ex,2024-08-04 00:00:00,2024-08-20 00:00:00,,1000,cep-03,
+2024/7/R/515,24-504-1,SR-11,"wash & grease, elec. Repair",2024-08-12 00:00:00,2024-08-15 00:00:00,6,4600,Thissamaharama,1624Hr
+2024/8/R/516,24-505,VR-62,"Wash & grease, checked hy, e/oil, battery water",2024-08-13 00:00:00,2024-08-14 00:00:00,7,7075,Badalgama,
+2024/8/R/517,24-506,VR-67,"repaired vibration switch, wash & grease",2024-08-13 00:00:00,2024-08-14 00:00:00,10,9621.25,Badalgama,
+2024/8/R/519,24-507,DAH-2228,"Replaced fuel filter, cleaned fuel tank, adjusted clutch",2024-08-07 00:00:00,2024-08-16 00:00:00,20,8318,Badalgama,206678KM
+2024/8/R/521,24-508,TR-001,"replaced wacker shoe, check & tune up carb. Check machine working condition",2024-08-14 00:00:00,2024-08-18 00:00:00,8,15343.5,Biyagama,
+2024/8/R/522,24-509,LL-0936,"Replaced clutch cylinder, hand brake cable repaired, head light repair, tightened power steering box union, repaired brake pipe,service, u-joint, joint bolt",2024-08-07 00:00:00,2024-08-14 00:00:00,27,65236.5,Mathale,
+2024/8/R/524,24-510,TR-144,"replaced wacker shoe, check & tune up carb. Check machine working condition",2024-08-14 00:00:00,2024-08-18 00:00:00,11,16743.5,Biyagama,
+2024/8/R/525,24-511,48-4849,replaced batteries 2,2024-08-15 00:00:00,2024-08-16 00:00:00,3,102910.01,Badalgama,
+2024/8/R/530,24-512,PD-4739,Steering rack repair-ex,2024-08-07 00:00:00,2024-08-07 00:00:00,,12000,Badalgama,
+2024/8/R/531,24-513,SL-02,"Repaired parking solenoid, hy.leaks, battery charging system,starter motor repair (brush set)",2024-08-10 00:00:00,2024-08-26 00:00:00,18,15700,Buttala,S130    7265Hrs
+2024/8/R/532,24-514,LI-7701,air filter sent to wadakada,2024-08-09 00:00:00,2024-08-10 00:00:00,,10450,cep-03,SSO
+2024/8/R/532,24-515,VR-29,"check & start Engine, changed E/oil ,air filter ",2024-08-08 00:00:00,2024-08-09 00:00:00,6,5800,Gampaha bridge,
+2024/8/R/533,24-516,LI-7620,send filters & feed pump to cep-03,2024-08-10 00:00:00,2024-08-10 00:00:00,,14500,cep-03,
+2024/8/R/534,24-517,325-5120,"brake repair(replaced compressor piston ring set, con rod bearing, f/diaphram 320)",2024-08-11 00:00:00,2024-08-14 00:00:00,11,14600,Badalgama,
+2024/8/R/535,24-519,PC-7812,"Replaced tappet cover packing, R/brake re-lining, F/brake pads, F/hub bolts, clutch slave cylinder R/kit, steering rack repair, check wheel alignment, adhusted hand brakes",2024-08-12 00:00:00,2024-08-22 00:00:00,38,74893.59,Anuradhapura lab,289067Km
+2024/8/R/536,24-521,Concrete mixer,"Engine repair(replaced gasket, crankshaft bearing, )check running condition",2024-08-15 00:00:00,2024-08-22 00:00:00,18,17782,Neluwa-solution,
+2024/8/R/537,24-522,LP-1569,"change fuel filters FF-5540,2207 4770 9902",2024-08-16 00:00:00,2024-08-16 00:00:00,,11800,cep-03,SSO
+2024/8/R/537,24-524,PR-1504,Replaced alternator belt,2024-08-16 00:00:00,2024-08-17 00:00:00,1,1750,Katana,MNW
+2024/8/R/538,24-525,LO-4822,"Accident repair(windscreen),elec. (lights)",2024-08-17 00:00:00,2024-08-23 00:00:00,3,3166,kilinochchi,160655Km
+2024/8/R/540,24-530,LN-8279,"clutch washer,check & repair starter motor, ",2024-08-17 00:00:00,2024-08-23 00:00:00,18,34580,Badalgama,MNW
+2024/8/R/542,24-531,LP-1715,Replaced side door glass-accident repair-Autobacs,2024-08-18 00:00:00,2024-08-26 00:00:00,,,cep-03,
+2024/8/R/543,24-532,PA-6399,"Repaired stater motor, replaced main relay",2024-08-18 00:00:00,2024-08-24 00:00:00,6,14225.5,Badalgama,
+2024/8/R/544,24-532,PR-1504,"Wash & grease, signal light repair, replaced brake disc, pad, hub bearing",2024-08-20 00:00:00,2024-08-21 00:00:00,23,23400,Katana,
+2024/8/R/545,24-533,47-5112,Repaired F/shockabsorber,2024-08-20 00:00:00,2024-08-28 00:00:00,7,4450,Badalgama,308656Km
+2024/8/R/547,24-534,LP-1569,"adjusted clutch , brakes, wash 7 grease, change fuel filters",2024-08-20 00:00:00,2024-08-22 00:00:00,11,6439,cep-03,44612Km
+2024/8/R/551,24-535,VR-68,"Wash & grease, checked hy, e/oil, battery water",2024-08-22 00:00:00,2024-08-22 00:00:00,7,6362.25,Badalgama,
+2024/8/R/559,24-536,VR-49,Repaired vibration system.,2024-08-22 00:00:00,2024-08-26 00:00:00,8,2400,Dekatana,
+2024/8/R/561,24-537,GE-102,Generator coil rewinding-Ex. Buddika,2024-08-26 00:00:00,2024-08-31 00:00:00,,11280,Abanpola,
+2024/8/R/563,24-537,LK-5041,"check battery charging,replaced battery",2024-08-23 00:00:00,2024-08-23 00:00:00,,58480,Badalgama,MNW
+2024/8/R/564,24-538,VR-48,Repaired vibration switch & elec. Repair,2024-08-23 00:00:00,2024-08-24 00:00:00,4,1395,Badalgama,
+2024/8/R/565,24-540,HEX-29,Replaced track link,2024-08-26 00:00:00,2024-08-27 00:00:00,,5000,Ududumbara,
+2024/8/R/567,24-542,HEX-21,"Replaced valve box pressure sensor 2, air filter, black smoke, machine slow,repaired",2024-08-26 00:00:00,2024-08-31 00:00:00,17,37750,Erawur,SK115SR
+2024/8/R/568,24-543,LK-2276,"Replaced silensor packing, wash & grease",2024-08-26 00:00:00,2024-08-26 00:00:00,8,4500,Katana,
+2024/8/R/570,24-544,DAH-2228,"Replaced steering u-joint 2 , fuel filter, starter motor solenoid, brush set, elec. Horn, checked clutch system",2024-08-27 00:00:00,2024-08-28 00:00:00,30,38425,Badalgama,
+2024/8/R/572,24-545,HEX-18,Replace hy. pressure sensor.top up hy. oil,2024-08-28 00:00:00,2024-08-31 00:00:00,6,26250,Erawur,
+2024/8/R/573,24-547,LK-2366,"Replaced clutch R/kit, lubricated accelerator cable,adjusted brakes.",2024-08-24 00:00:00,2024-08-30 00:00:00,12,10400,Biyagama,
+2024/8/R/574,24-551,AC-41,"Replaced alternator recondition, check & repair electrical system, engine stopped when reduce RPM to idle speed, increase idle rpm check fuel sys., change E/oil, check battery charging",2024-08-28 00:00:00,2024-08-29 00:00:00,40,70130,Biyagama,2691Hr
+2024/8/R/576,24-559,PA-6399,Starter motor repair-Ex kamal katana,2024-08-29 00:00:00,2024-08-30 00:00:00,,20700,Port city,3L
+2024/8/R/579,24-561,MGS-01,"Change tyre 6, battery 2, elec. Repair",2024-08-06 00:00:00,2024-08-16 00:00:00,9,434517.74,solution,MG230
+2024/8/R/582,24-563,LO-5981,"Fuel system repair(replaced fuel cut off solenoid, change fuel filters, air filter, cleaned fuel pipe lines, check feed pump), wash & grease",2024-04-22 00:00:00,2024-05-08 00:00:00,32,41115,cep-03,
+2024/8/R/583,24-564,LH-5475,Starter motor repair-Ex kamal katana,2024-05-07 00:00:00,2024-05-08 00:00:00,,5500,Badalgama,
+2024/8/R/586,24-565,LI-7620,Starter motor repair-Ex kamal katana,2024-04-30 00:00:00,2024-05-03 00:00:00,,19500,cep-03,
+2024/8/R/587,24-567,LK-2366,"starter motor repair(replaced solenoid coil, brush set, bronze bush set), repaired fuel leak from injector pipe, hy. leak repair, spring  blade repair-ex.",2024-06-01 00:00:00,2024-06-04 00:00:00,10,21750,kadawatha,MNW
+2024/8/R/589,24-568,LC-0434,"Fuel system repair(changed fuel filter, ), top up p/s oil",2024-06-03 00:00:00,2024-06-03 00:00:00,6,6198,Badalgama,mnw
+2024/8/R/592,24-570,SR-06,"Alternator repair(battery not charging) replaced bearing 2, regulator, slip ring",2024-06-01 00:00:00,2024-06-01 00:00:00,6,9255,cep-03,
+2024/8/R/597,24-572,325-3448,Replaced speed meter cable,2024-06-01 00:00:00,2024-06-01 00:00:00,,2680,cep-03,SSO
+2024/8/R/599,24-573,PR-1504,Radiator cooling fan motor not work.checked supply current & fixed the repair,2024-06-01 00:00:00,2024-06-01 00:00:00,2,600,Katana,MNW
+2024/8/R/602,24-574,CR-02,Replaced air dryer R/kit,2024-05-31 00:00:00,2024-06-01 00:00:00,4,12050,cep-03,
+2024/8/R/604,24-576,"2"" water pump","Replaced air filter housing carburator,change E/oil",2024-03-06 00:00:00,2024-05-20 00:00:00,4,8350,cep-03,
+2024/8/R/S-01,24-579,LY-4524,Replaced air baloon-ex,2024-01-27 00:00:00,2024-02-10 00:00:00,,136950,Badalgama,
+2024/6/R/378,24-365,PTR-08,"replaced rear tyre 5 nos, wheel cylinder 3 nos, grease seal 4 nos, hub greased, replaced brake hose, wash & grease ",2024-04-26 00:00:00,2024-05-03 00:00:00,136,136210,asphalt team ,
+2023/9/R/498,23-498,LD-02,"Engine repair(repaired water leak from engine head, head bolt, con rod nut), radiator cleaning, injector service",2023-10-17 00:00:00,2023-11-20 00:00:00,138,,cep-03,616Hr
+2023/5/R/150,23-150,SL-12,"service(change E/oil, oil filter, fuel, air & hy filters",2023-08-15 00:00:00,2023-08-25 00:00:00,,,Badalgama,
+2023/9/R/462,23-462,PTR-04,"steering pump repair, change front wheel",2023-09-12 00:00:00,2023-09-12 00:00:00,,,Badalgama,
+2023/9/R/448,23-448,PTR-06,"Clutch Repair(re-lining clutch plate, replaced clutch bearing),replaced F/tyre 3 nos ",2023-09-08 00:00:00,2023-09-15 00:00:00,,,Badalgama,
+2023/12/R/635,23-635,ZA-6255,Fuel system repair( change filter head),2023-12-04 00:00:00,2023-12-05 00:00:00,3,,Katana,
+2024/1/R/068,24-068,LJ-8055,"F/RH hub greased, replaced all brake washers, replaced clutch booster pump, clutch master cylinder R/kit, service",2024-01-30 00:00:00,2024-02-08 00:00:00,26,,Badalgama,
+2024/1/R/016,24-016,LD-05,"check elec. System, replaced A/C filters",2024-01-07 00:00:00,2024-02-06 00:00:00,6,,A/Plant ,
+2023/12/R/688,23-688,RA-3052,Replaced LH brake pads,2023-12-24 00:00:00,2023-12-27 00:00:00,8,,Buttala,0Hr
+2023/12/R/689,23-689,LK-6740,"Replaced P/S belt,wiper arm repair, signal lever repair, wash & grease, accelerator pedal repair",2023-12-27 00:00:00,2023-12-29 00:00:00,14,,kadawatha,
+2023/12/R/642,23-642,LI-2427,"Service, replaced tipping jack seal, reverse gear wheel & bearing, tie rod end, windscreen, turbo hose, tipping bucket door pin, elec repair(check lights), silensor repair, LH door lock  repaired, changed gear oil ",2023-12-07 00:00:00,2024-01-02 00:00:00,100,,cep-03,MNW
+2023/12/R/671,23-671,HEX-37,"Removed pile hammer, dissemble long arm and fixed short arm boom ,bucket",2023-12-18 00:00:00,2023-12-19 00:00:00,,,Maggona Bridge,
+2023/12/R/672,23-672,HEX-41,replaced fuel cut off solenoid,2023-12-18 00:00:00,2023-12-19 00:00:00,2,,cep-03,
+2023/12/R/673,23-673,LB-01,Replaced fan belt -used,2024-12-18 00:00:00,2023-12-20 00:00:00,,,Alawwa,
+2023/12/R/674,23-674,ZA-2964,"Replaced king pin bearing, gease seal, pinion seal, extradig seal kit",2023-12-18 00:00:00,2023-12-20 00:00:00,,,cep-03,
+2023/12/R/668,23-668,LO-8348,Brake repair(adjusted brakes),2023-12-17 00:00:00,2023-12-20 00:00:00,2,,Badalgama,55556Km
+2023/12/R/665,23-665,ZA-6069,"Replaced fan belt 8PK-1835, belt adjuster (320-08651)",2023-12-15 00:00:00,2023-12-15 00:00:00,10,,Weliweriya,
+2023/12/R/663,23-663,LK-2366,Brake(Air leak repair),2023-12-15 00:00:00,2023-12-16 00:00:00,,,kadawatha,
+2023/10/R/547,23-547,LI-3401,"wash & grease, starter motor repair, door lock repair-auto Bacs",2023-10-28 00:00:00,2023-12-01 00:00:00,8,,Badalgama,
+2023/12/R/645,23-645,PH-0765,"Hand brake cable repair, replaced speed meter cable,propellarshaft u-joint 2, gear box seal, check service, ",2023-12-08 00:00:00,2023-12-16 00:00:00,21,,Katana,300595Km
+2023/12/R/641,23-641,LO-5986,"Replaced accelerator cable, side mirror, reverse horn, Elec .repair(light, wiper, alternator, s/motor)",2023-12-06 00:00:00,2023-12-20 00:00:00,8,,Badalgama,156299Km
+2023/12/R/651,23-651,RA-3052,"Fuel mixed with E/oil(injector pump repair)(ex), check brakes(replaced LH brake pads), replaced tail lights, repaired oil pressure indicator ",2023-12-11 00:00:00,2023-12-27 00:00:00,16,,kadawatha,
+2023/12/R/698,23-698,CR-02,Machine can't swing(valve box internal leak repair),2023-12-30 00:00:00,2023-12-30 00:00:00,18,,wadakada,
+2023/12/R/697,23-697,ZA-7965,"replaced stabilizer seal kit-RH ,top up hy. oil",2023-12-30 00:00:00,2023-12-30 00:00:00,16,,Minuwangoda,
+2023/12/R/695,23-695,LM-7942,"Wash & grease, service, check battery, check lights, M230090498",2023-12-29 00:00:00,2023-12-30 00:00:00,9,,cep-03,
+2023/12/R/694,23-694,PH-3945,"Replaced mud cover, tail lamp lences, b/light bulb,repaired fog lamps",2023-12-29 00:00:00,2023-12-29 00:00:00,5,,H/O,
+2023/12/R/638,23-638,LM-7942,"Radiator cleaning, replaced water pump, water temp. plug, adjusted brakes",2023-12-05 00:00:00,2023-12-11 00:00:00,33,,Mihinthale,178436Km
+2023/12/R/643,23-643,"6"" water pump","service, clean pump impeler, repaired air filter housing & silensor, cleaned fuel tank, made starting handle, change fan belt adjuster",2023-12-08 00:00:00,2023-12-09 00:00:00,27,,Kallanchiya,
+2023/7/R/335,23-335,LI-3405,"Accident(damaged to geabox completely), Clutch repair(replaced clutch plate, pressure plate, flywheel), replaced recondiotion geae box , silensor repair, deck doo & gear cable repair(change gear linkage to cables from steel shafts) , wash & grease, Engine overhaul, deck repair(welding angle iron to trans. bolders)",2023-07-25 00:00:00,2023-12-25 00:00:00,340,,cep-03,
+2023/12/R/664,23-664,CR-01,"Brake repair, Emergency light repair",2023-12-15 00:00:00,2023-12-28 00:00:00,,,Badalgama,
+2023/12/R/679,23-679,LO-4816,"Replaced battery, reverse plug, R/RH tail light , speed meter sensor, wash & grease, repaired park light",2023-12-20 00:00:00,2023-12-29 00:00:00,,,Erawur,173931Km
+2023/12/R/686,23-686,LN-8277,Boom hy. leak repair,2023-12-19 00:00:00,2023-12-20 00:00:00,,,Katana,734557Km
+2023/12/R/670,23-670,LP-1580,"check battery charging, RH door winder, tail ight, F/LH signal light",2023-12-16 00:00:00,2023-12-22 00:00:00,,,Mihinthale,50529Km
+2023/12/R/632,23-632,ZB-1979,"Adjusted outtriger pads, replaced F/pinion seal, extradig pads, wash & grease, signal light repair, changed hy. filter",2023-12-02 00:00:00,2023-12-05 00:00:00,,,kadawatha,
+2023/12/R/660,23-660,LP-1720,Replaced RH side mirror,2023-12-12 00:00:00,2023-12-12 00:00:00,,,Badalgama,44625Km
+2023/9/R/476,23-476,Plate compactor,"replaced rubber mount, plate repair",2023-09-16 00:00:00,2023-11-02 00:00:00,,,A/team,
+2023/10/R/554,23-554,ZA-7291,"check diesel leak, replaced Radiator cap, fixed ZA-8337 battery",2023-10-31 00:00:00,2023-10-31 00:00:00,4,,Doramadalawa,
+2023/9/R/502,23-502,LA-9208,"Diesel pump housing bushing, check fuel delivery",2023-09-30 00:00:00,2023-10-04 00:00:00,24,,Badalgama,
+2023/11/R/620,23-620,LX-1679,Replaced ramp jack union,2023-11-29 00:00:00,2023-11-30 00:00:00,5,,Badalgama,
+2024/1/R/009,24-9,LO-8350,"Replaced LH wiper,ball mirror, checked RH wiper blade, brake light, number plate light, E/oil reverse horn, repaired wiper motor",2024-01-04 00:00:00,2024-01-10 00:00:00,3,,Buttala,55409Km/2362Hr
+2024/1/R/004,24-4,CM,"Fixed used engine-removed from 1T roller, injector & pump repair, replaced B70 fan belt, belt pulley, air filter housing repair, greasing, change E/oil",2024-01-02 00:00:00,2024-01-11 00:00:00,28,,Badalgama,
+2024/1/R/017,24-17,PH-6747,starter motor repair(replaced solenoid),2024-01-08 00:00:00,2024-01-08 00:00:00,2,,cep-03,
+2023/12/R/693,23-693,57-3062,AC repair-AC baba,2023-12-29 00:00:00,2024-01-07 00:00:00,,,Badalgama,
+2024/1/R/002,24-2,HEX-23,"Bucket pin bush repair, H- support repair, bucket end holes re-boring & bushing, bucket pin filling & turningout, replaced arm end bushes, H-bushes",2024-01-03 00:00:00,2024-01-09 00:00:00,65,,cep-03,Long arm
+2024/1/R/001,24-1,PR-1504,"Replaced R/RH hub bearing,seal, change diff. oil, check light, wash & grease, serviced s/motor",2024-01-01 00:00:00,2024-01-04 00:00:00,13,,Katana,MNW
+2024/8/R/516,24-516,47-5112,"change filter head -used, changed fuel filter FC-1821",2024-08-01 00:00:00,2024-08-01 00:00:00,4,3210,Badalgama,
+2024/7/R/482,24-482,PR-1469,"Starter motor repair(brush holder, brush set), Clutch repair(replaced clutch plate, pressure plate, c/bearing,pilot bearing ), wash & grease",2024-07-16 00:00:00,2024-08-02 00:00:00,25,24255,Badalgama,163877Km
+2024/8/R/517,24-517,LK-5041,"Replaced clutch master cylinder R/kit, elec. Repair (lights)",2024-08-01 00:00:00,2024-08-02 00:00:00,11,15409,Badalgama,MNW
+2024/7/R/515,24-515,PA-6399,"Replaced P/S belt, fan belt 6320A 2nos, engine mount 2, gear lever ball joints, gear selector oil seal, silensor mounts 4, repaired silensor, p/s pump housing & bracket, changed gear box oil",2024-07-31 00:00:00,2024-08-02 00:00:00,21,35093.5,Badalgama,
+2024/8/R/519,24-519,AC-41,"Chec kengine starting, changed fuel filter FC-1821, change battery 65A, top up E/oil 2L",2024-08-01 00:00:00,2024-08-07 00:00:00,4,36545,Biyagama,
+2024/8/R/521,24-521,DAH-2228,"Replaced f/shell, elec. repair",2024-08-01 00:00:00,2024-08-04 00:00:00,2,9600,A/team,206645Km
+2024/5/R/323,24-323,40-2955,"repaired radiator, steering linkage, replaced radiator fan blade, clutch master cylinder & slave cylinder R/kit, strut bar repair, check wheel alignment",2024-05-21 00:00:00,2024-06-29 00:00:00,96,48097,Badalgama,
+2023/11/R/622,23-622,LN-8278,Replaced rear all brake liner & hub seal,2023-11-30 00:00:00,2023-12-03 00:00:00,35,,Badalgama,
+2023/12/R/662,23-662,325-5120,Starter motor repair-Ex kamal katana,2023-12-14 00:00:00,2023-12-18 00:00:00,,,Badalgama,
+2023/12/R/652,23-652,LN-8278,spring blade form work,2023-12-11 00:00:00,2023-12-20 00:00:00,,,Badalgama,845078Km
+2023/11/R/612,23-612,LB-4824,"Clutch repair,signal light repair",2023-11-27 00:00:00,2023-12-02 00:00:00,3,,Katana,MNW
+2024/1/R/020,24-20,LL-0936,Replaced LH side mirror,2024-01-08 00:00:00,2024-01-11 00:00:00,,,kadawatha,MNW
+2024/1/R/014,24-14,LI-2427,"Replaced tipping jack seal kit, adjusted door pins",2024-01-06 00:00:00,2024-01-11 00:00:00,18,,cep-03,MNW
+2024/1/R/018,24-18,LJ-5203,"Collect emission test, checked fuel consumption -ok, replaced tail light lences.",2024-01-08 00:00:00,2024-01-14 00:00:00,5,,cep-03,7042Km
+2024/1/R/013,24-13,LH-5475,"checked battery charging, replaced air filter, starter motr repair, fixed tail light assy. LH RH",2024-01-06 00:00:00,2024-01-14 00:00:00,10,,Badalgama,
+2024/1/R/010,24-10,LX-1679,Replaced ramp motor brush & springs,2024-01-04 00:00:00,2024-01-22 00:00:00,8,,Badalgama,
+2024/1/R/006,24-6,LP-1571,"Reverse horn, fog light",2024-01-02 00:00:00,2024-01-22 00:00:00,4,,Badalgama,
+2023/12/R/677,23-677,LBS-01,"Service, wash & grease, trans. Oil change, check hy.",2023-12-19 00:00:00,2024-01-16 00:00:00,12,,solution,ZB-1521 2698Hr
+2024/1/R/007,24-7,VR-68,"Replaced air filter, wash & grease, ",2024-01-04 00:00:00,2024-01-04 00:00:00,6,,Gampaha bridge,976Hr
+2023/12/R/700,23-700,LN-1867,alternator repair(battery not charging),2023-12-30 00:00:00,2024-01-03 00:00:00,4,,Badalgama,
+2024/1/R/041,24-41,41-1130,Checked E/oil & no need to change immediately,2024-01-14 00:00:00,2024-01-15 00:00:00,1,,wadakada,525194Km
+2024/1/R/052,24-52,LB-24,Repaired accelearator cable,2024-01-22 00:00:00,2024-01-22 00:00:00,4,,Trinco,
+2024/1/R/039,24-39,LK-5041,S/motor repair(replaced another motor temperily),2024-01-14 00:00:00,2024-01-17 00:00:00,4,,Badalgama,
+2024/1/R/054,24-54,PH-0765,F/RH lower arm ball joint replaced.(spare supplied from site,2024-01-22 00:00:00,2024-01-22 00:00:00,4,,Katana,
+2024/1/R/037,24-37,SR-08,Exhaust manifold repair,2024-01-14 00:00:00,2024-01-20 00:00:00,15,,wadakada,
+2024/1/R/031,24-31,VR-063,"Starter key cutting, operating seal repair, replaced battery, replaced hy. drain plug",2024-01-13 00:00:00,2024-01-16 00:00:00,4,,wadakada,
+2024/1/R/035,24-35,LD-06,S/motor repair,2024-01-15 00:00:00,2024-01-16 00:00:00,6,,Muthur,
+2024/1/R/027,24-27,LO-4822,Replaced brake rachets Rear 2nos,2024-01-12 00:00:00,2024-01-13 00:00:00,8,,Thebuwana,
+2024/1/R/029,24-29,LP-1715,Brake hose,2024-01-12 00:00:00,2024-01-12 00:00:00,2,,Thebuwana,
+2023/12/R/691,23-691,59-5421,"Radiator clean & repair, replaced fan blade, door winder, reverse plug, check lights",2023-12-27 00:00:00,2024-01-05 00:00:00,10,,wadakada,
+2023/12/R/687,23-687,HEX-21,"Track link pin repair, boom jack seal kit replaced, check fan belt, light, horn",2024-12-24 00:00:00,2024-01-07 00:00:00,18,,Erawur,19816Hr
+2023/12/R/699,23-699,LB-4824,"Replaced gear box coupling, U-joint with bolt, cap, service",2023-12-30 00:00:00,2024-01-05 00:00:00,10,,Katana,181722Km
+2023/12/R/680,23-680,LM-6653,"Service, Replaced Speed meter sensor, spring bushes, Rear middle RH hub seal, elec. Repair(replaced deck light, tail light), ramp pin making",2023-12-20 00:00:00,2024-01-11 00:00:00,22,,Erawur,
+2024/1/R/011,24-11,SL-09,"Removed water in fuel tank, wash & grease, service, replaced bucket bushes 40*45*45mm pin filling, turning out, replaced 2 hy hoses, LH bucket  jack seal kit 723-6275",2024-01-04 00:00:00,2024-01-11 00:00:00,54,,Thalawa,5107Hr
+2023/11/R/591,23-591,MG-11,Roof tent repair,2023-11-17 00:00:00,2024-01-02 00:00:00,5,,wadakada,
+2023/11/R/599,23-599,LP-1582,"Water mixed with diesel, abnormal sound in engine, replaced fuel filters, 6 injectors by Dimo, tail light assy. LH & RH, side mirror LH & RH, LH square mirror, fog lamp 24V",2023-11-23 00:00:00,2024-01-11 00:00:00,15,,Kallanchiya,41155Km
+2024/2/R/115,24-115,LN-8277,Alternator repair,2024-02-16 00:00:00,2024-02-17 00:00:00,,,cep-03,
+2024/2/R/116,24-116,PC-01,Hy. cooling fan repair-Ex,2024-02-16 00:00:00,2024-02-17 00:00:00,,,cep-03,ex
+2024/2/R/110,24-110,BGY-6446,"Running repair(wash & clean bike, carb cleaning, side mirror, adjusted drive chain, check air pressure in tyres)",2024-02-15 00:00:00,2024-02-16 00:00:00,8,,cep-03,242331Km
+2024/1/R/073,24-73,ZA-7965,"replaced outtriger jack seal, AC pump",2024-01-31 00:00:00,2024-02-02 00:00:00,16,,Katana,
+2024/7/R/468,24-468,Heat Burner,cleaning & testing heat burner,2024-07-11 00:00:00,2024-07-25 00:00:00,10,,Badalgama,
+2023/12/R/700,23-700,LN-1867,"Alternator repair(replaced bearing 2 , brush set, oil seal)",2023-12-30 00:00:00,2024-01-03 00:00:00,4,,Badalgama,
+2024/1/R/007,24-7,VR-68,"Replaced air filter, wash & grease, hy.hose",2024-01-04 00:00:00,2024-01-04 00:00:00,6,,Gampaha bridge,976Hr
+2023/12/R/677,23-677,LBS-01,"Service, wash & grease, change Trans. Oil,  check hy. level",2023-12-19 00:00:00,2024-01-16 00:00:00,12,,solution,2698Hr
+2024/7/R/468,24-468,Heat Burner,cleaning & testing heat burner,2024-07-11 00:00:00,2024-07-25 00:00:00,10,,Badalgama,
+2024/11/R/833,24-833,LM-7942,"Replaced fan belt, alternator bearing",2024-11-07 00:00:00,2024-11-08 00:00:00,10,,Neluwa,
+2024/11/R/829,24-829,VR-40,"Battery chrging, check machine working condition",2024-11-05 00:00:00,2024-11-06 00:00:00,3,,Biyagama,
+2024/11/R/834,24-834,Elec. Hoist,"Fixed new single phase motor with overload switch, supplied electrical wire 100m",2024-11-07 00:00:00,2024-11-09 00:00:00,20,,Neluwa-solution,
+2024/11/R/832,24-832,LO-7855,check & adjusted brakes,2024-11-06 00:00:00,2024-11-06 00:00:00,2,,solution,
+2024/11/R/826,24-826,ZA-6068,"Replaced steering jack seal kit, rack end 2, tie rod end 2",2024-11-04 00:00:00,2024-11-06 00:00:00,20,,cep-03,
+2024/10/R/813,24-813,LL-1782,"Clutch repair(replaced clutch bearing, pilot bearing, clutch plate Re-lining(plate liner thickness 5mm one side), clutch R/kit low top up gear oil), repaired door hingers RH, wash & grease, elec. Repair(deck light 8 nos,check battery charging)",2024-10-30 00:00:00,2024-11-08 00:00:00,76,,Badalgama,
+2024/10/R/790,24-790,325-5120,"Starter motor repair-Ex kamal katana, replaced hub seal 2, injector pump -recondition, injector nozel 4nos, recondition injector pump serviced by Granville diesel centre",2024-10-22 00:00:00,2024-11-07 00:00:00,56,,Badalgama,
+2024/10/R/752,24-752,LK-4058,tipper deck door repair,2024-10-10 00:00:00,2024-10-30 00:00:00,52,,cep-03,
+2024/10/R/847,24-847,MG-05,Propellarshft coupling repaired-lathe work,2024-11-10 00:00:00,2024-11-11 00:00:00,8,,cep-03,
+2024/11/R/846,24-846,LM-5723,"replaced PTO lever-new, brake booster R/kit",2024-11-10 00:00:00,2024-11-11 00:00:00,,,cep-03,
+2024/11/R/845,24-845,LH-5586,"repaired door winder & door lock, horn, p/s oil leak, s/motor,roof,wash & greased",2024-11-09 00:00:00,2024-11-18 00:00:00,37,,cep-03,351443Km
+2024/9/R/703,24-703,LI-3851,"Tipper deck repair, greased F/axel braing, replaced F LH brake liners, Rear LH RH hub seal, hub bolt 2, sump oil drain nut repaired, service, wash & grease",2024-09-30 00:00:00,2024-11-12 00:00:00,62,,Muthur,
+2024/10/R/809,24-809,Wacker,"Replaced wacker boot, check working condition",2024-10-30 00:00:00,2024-11-08 00:00:00,8,,Ruwanwella,
+2024/10/R/807,24-807,MG-07,"transmission Repair(trans. Plate 20, 03, 04, bearing 3, oil seal 2 , O-ring 4, clutch plate ,trans. filter )Radiator cleaning, elec. Repaire(lights), top up trans. Oil SAE 30, tandem oil 10W",2024-10-29 00:00:00,2024-11-16 00:00:00,144,,cep-03,10021Hr
+2024/9/R/628,24-628,MG-04,Hy.pump repair-warranty repair by C-COM,2024-09-04 00:00:00,2024-11-12 00:00:00,,,cep-03,
+2024/11/R/853,24-853,DAH-2231,Fuel system repair(low pressure pump solenoid valve block repair),2024-11-16 00:00:00,2024-11-17 00:00:00,10,,cep-03,216480Km
+2024/11/R/844,24-844,LN-1867,"Replaced head gasket(Fuji), fan clutch gel, Starter motor repair(replaced bearing)",2024-11-09 00:00:00,2024-11-10 00:00:00,42,,Badalgama,
+2024/11/R/843,24-843,28-4314,"E/overheating, replace gasket, tappet cover packing, radiator cleaning",2024-11-11 00:00:00,2024-11-16 00:00:00,32,,Badalgama,
+2024/9/R/683,24-683,LI-3395,"Deck repair, replaced starter relay, tyre change R RH two wheel, starter motor repair(replaced solenoid), F/RH door post tinkering & painting, replaced tipping jack seal , hy. pump oil leak repair, replaced F all brake liners & axel outer bearings, wash & grease, replaced gear lever ball joint S-3, L-1, gear link bush set, tail light set LH RH",2024-09-16 00:00:00,2024-11-06 00:00:00,137,,Muthur,
+2024/11/R/840,24-840,HEX-22,"Replaced hy. pump coupling, oil seal, o-ring, top up hy. oil ",2024-11-07 00:00:00,2024-11-10 00:00:00,34,,Erawur,
+2024/11/R/839,24-839,LC-0434,replaced starter relay,2024-11-07 00:00:00,2024-11-07 00:00:00,3,,Badalgama,
+2024/11/R/837,24-837,LJ-5203,starter motor repair(replaced carbon brush set),2024-11-07 00:00:00,2024-11-07 00:00:00,,,cep-03,SSO
+2024/11/R/841,24-841,HEX-21,Hy. leak repair.,2024-11-07 00:00:00,2024-11-07 00:00:00,16,,Erawur,
+2024/11/R/836,24-836,LM-7940,"Clutch repair(replaced clutch liner set, pilot bearing, clutch bearing, top shaft)",2024-11-07 00:00:00,2024-11-09 00:00:00,,,cep-03,SSO
+2024/11/R/827,24-827,SL-06,Hy.leak repair,2024-11-04 00:00:00,2024-11-05 00:00:00,10,,Ududumbara,
+2024/11/R/831,24-831,LK-4061,"Rear spring blade repair(increase one blade for one set of blades), wash & grease",2024-11-06 00:00:00,2024-11-06 00:00:00,3,,cep-03,
+2024/11/R/835,24-835,CR-02,Replaced brake booster pump & air dryer assy. New,2024-11-07 00:00:00,2024-11-09 00:00:00,,,cep-03,SSO
+2024/8/R/518,24-518,ZA-2608,"repaired accelerator cable, replaced stabilizer jack seal kit, bucket tilt seal kit, backhoe bucket seal kit, backhoe boom seal kit, oil level stick, vaccum pump, spool vale o-rings, fan belt, cabin jack, hy. hose 6, hy. clamp seal 2, spool valve solenoid 4, extra dig pad set, oil plug, wiper blade set, cabin door jack, rear glass jack, trans. filter, hy. filter, battery, wash & grease",2024-08-01 00:00:00,2024-11-06 00:00:00,112,,Doramadalawa,
+2024/3/R/174,24-174,LX-1679,wire harness repair,2024-03-08 00:00:00,2024-03-08 00:00:00,6,,Badalgama,
+2024/2/R/105,24-105,Concrete mixer,Running repair,2024-02-15 00:00:00,2024-02-16 00:00:00,6,,kilinochchi,
+2024/2/R/107,24-107,RS-0483,Replaced backhoe clamp seal kit,2024-02-15 00:00:00,2024-02-15 00:00:00,15,,Katana,
+2024/1/R/5,24-5,BGY-6440,"service, oil leak repair",2024-01-02 00:00:00,2024-01-03 00:00:00,4,,Badalgama,
+2024/1/R/3,24-3,LI-3396,"Clutch repair(replaced clutch liner set, pressure plate spring with fingers, pressure plate & flywheel facing)",2024-01-03 00:00:00,2024-01-07 00:00:00,10,,wadakada,
+2024/1/R/8,24-8,325-5120,Replaced clutch R/kit Low,2024-01-04 00:00:00,2024-01-04 00:00:00,3,,Badalgama,
+2023/11/R/621,23-621,41-1130,"Replaced gear box -Recondition, repaired door winder, door hinger repair, wash & grease, fixed hr meter, replaced tail light lences, center bearing winder motor 2, service",2023-12-07 00:00:00,2024-01-04 00:00:00,116,,cep-03,0Hr
+2024/1/R/24,24-24,LN-1867,"starter motor wire harness repair, fixed radiator hose, replaced battery terminals, gear lever lubricated, replaced h/light bulb, ",2024-01-17 00:00:00,2024-01-18 00:00:00,22,,kilinochchi,281412km
+2024/1/R/23,24-23,LO-7855,Electrical repair(fog light),2024-01-11 00:00:00,2024-01-11 00:00:00,4,,solution,266404km
+2024/1/R/21,24-21,MG-11,"servcie , wash & grease, Elec. Repair(horn, light, charging,etc), operating seat repair, side mirror, change rear 4 tyres",2024-01-11 00:00:00,2024-01-16 00:00:00,16,,cep-03,7839Hr
+2024/1/R/69,24-69,PTR-01,"Replaced brake master pump R/kit, 120A batteries2 , wash & grease, check all oil levels",2024-01-31 00:00:00,2024-03-09 00:00:00,44,,cep-03,
+2024/2/R/129,24-129,LD-09,Repaired auto greasing valve,2024-02-24 00:00:00,2024-03-08 00:00:00,11,,cep-03,
+2024/3/R/165,24-165,PC-02,F/spring blade repair(replaced 3 nos spring blades),2024-03-07 00:00:00,2024-03-10 00:00:00,120,,Moragahakanda,
+2024/3/R/171,24-171,LK-2366,"Replaced P/s oil tank, top up P/S oil",2024-03-08 00:00:00,2024-03-08 00:00:00,3,,kadawatha,
+2024/3/R/178,24-178,HEX-23,"Starter motor repair(repaired field coil & armature, replaced brush set)",2024-03-09 00:00:00,2024-03-11 00:00:00,4,,cep-03,
+2024/3/R/183,24-183,LP-1713,"service, replaced tail light assy.",2024-03-11 00:00:00,2024-03-11 00:00:00,14,,Badalgama,
+2024/3/R/158,24-158,RC-9894,"wash & grease, replaced fuel filters, Rear rim repair, check battery charging, changed gear box oil, replaced air filter pre-cleaner",2024-03-06 00:00:00,2024-03-07 00:00:00,24,,chilaw,
+2024/3/R/159,24-159,1t roller,"check wire harness(vibrator solenoid coil, fixed rectifier), removed water on piston of the engine, changed E/oil check starting, hy. level, vibration, changed fuel filter",2024-03-06 00:00:00,2024-03-07 00:00:00,20,,chilaw,
+2024/3/R/160,24-160,"2"" water pump","Spark plug cleaning, service carburator, check E/oil",2024-03-06 00:00:00,2024-03-07 00:00:00,4,,chilaw,
+2024/3/R/162,24-162,VR-62,"wash & grease, check all oil level",2024-03-06 00:00:00,2024-03-06 00:00:00,4,,Katana,1007Hr
+2024/3/R/163,24-163,PT-1569,"Tightened steering wheel nut, check lights(tail, signal ,head light),check clutch system",2024-03-06 00:00:00,2024-03-06 00:00:00,8,,Badalgama,
+2024/3/R/164,24-164,PR-1504,"starter motor repair, wash & grease",2024-03-06 00:00:00,2024-03-06 00:00:00,8,,Katana,
+2024/3/R/169,24-169,FL-03,replaced starter motor brush set,2024-03-08 00:00:00,2024-03-08 00:00:00,3,,Badalgama,
+2024/3/R/170,24-170,ZA-6255,Fuel system repair(FC-1001),2024-03-08 00:00:00,2024-03-08 00:00:00,2,,Badalgama,
+2024/3/R/172,24-172,RC-9894,Fuel sys. Repair(F-4000400 & 500),2024-03-08 00:00:00,2024-03-08 00:00:00,4,,Badalgama,
+2024/3/R/173,24-173,DAH-2230,Fuel sys. Repair(injector repair),2024-03-08 00:00:00,2024-03-08 00:00:00,16,,Katana,
+2024/10/R/779,24-779,LO-7180,"Clutch repair(Clutch plate Re-lining, replaced clutch bearing with hub,withdrawal plate, top shaft bearing, p/plate finger R/kit, facing p/plate & flywheel )",2024-10-18 00:00:00,2024-11-06 00:00:00,22,,cep-03,
+2024/10/R/796,24-796,43-1191,"Replaced center bearing with bracket(recondition), replaced air hose with union, brake chamber R/kit, wiper blade, wiper armwash & grease, repaired lights",2024-10-23 00:00:00,2024-11-06 00:00:00,58,,Badalgama,
+2024/10/R/805,24-805,PY-2408,"Replaced water pump assy. New, fan blet",2024-10-28 00:00:00,2024-11-01 00:00:00,22,,Neluwa,
+2024/11/R/824,24-824,LB-4824,Check elec. Sys. Check 7 lubricate accelerator cable,2024-11-02 00:00:00,2024-11-05 00:00:00,7,,Katana,
+2024/10/R/780,24-780,LB-9496,"Replaced radiator core, signal flasher",2024-10-18 00:00:00,2024-11-02 00:00:00,22,,kilinochchi,
+2024/10/R/814,24-814,CR-01,silensor repair,2024-10-30 00:00:00,2024-11-01 00:00:00,14,,cep-03,
+2024/10/R/815,24-815,LO-5983,"Clutch repair(Replaced C/plate, c/bearing, p/plate finger springs, pilot bearing), brake rachet 2 ",2024-10-30 00:00:00,2024-10-31 00:00:00,4,,cep-03,SSO
+2024/10/R/816,24-816,LM-7948,Replaced radiator tank,2024-10-30 00:00:00,2024-11-02 00:00:00,,,cep-03,SSO
+2024/10/R/817,24-817,LH-5586,starter motor repair,2024-10-30 00:00:00,2024-11-01 00:00:00,4,,cep-03,
+2024/10/R/818,24-818,ZA-8337,Starter motor repair(replaced brush with holder),2024-10-30 00:00:00,2024-11-01 00:00:00,6,,cep-03,
+2024/11/R/821,24-821,SL-05,"Elec. Repair(check & repair parking solenoid wire harness),drive belt",2024-10-31 00:00:00,2024-10-31 00:00:00,6,,Ja-Ela,
+2024/2/R/101,24-101,PT-1569,"Steering sys. Repair(ball joint,idle arm, bushing)",2024-02-10 00:00:00,2024-02-13 00:00:00,12,,Badalgama,
+2024/2/R/119,24-119,LN-8279,Air brake sys. Repair(rear brake check valve cleaning & o-ring replacing),2024-02-18 00:00:00,2024-02-19 00:00:00,15,,Badalgama,
+2024/2/R/114,24-114,325-5120,"Accelerator cable repair, wash & grease, wire harness repair, F/hub seal replace",2024-02-16 00:00:00,2024-02-19 00:00:00,12,,Badalgama,
+2024/1/R/53,24-53,PD-4739,"Service, cut & polish head light glass",2024-01-22 00:00:00,2024-02-09 00:00:00,4,,Badalgama,
+2024/2/R/117,24-117,AC-07,"adjusted air pressure, tensioned non return valve spring",2024-02-19 00:00:00,2024-02-19 00:00:00,4,,Badalgama,
+2024/2/R/112,24-112,HEX-46,"boom jack pin welding & turning out, grease seal 8",2024-02-16 00:00:00,2024-02-17 00:00:00,25,,cep-03,
+2023/12/R/657,23-657,ZA-2963,"check traveling, RHS door glass, extradig pads, stabilizer pads, oil leak repair from valvebox, replaced F/LH hub oil seal, gear lever bush set, injector pump service & repair",2023-12-12 00:00:00,2024-02-22 00:00:00,34,,Katana,3627Hr
+2023/9/R/494,23-494,ZA-8337,"Replaced F/valve box, multi jack seal 2, extradig pads set, engine stop solenoid,gear lever bush set, grease gun hose , tie rod end 2, wash & grease, Elec. Repair(light, battery charging, wiper ,water temp. meter, etc) ",2023-09-27 00:00:00,2024-02-22 00:00:00,186,,Abanpola,10938Hr
+2024/2/R/78,24-78,LO-4824,"Fuel sys .repair(injector service & repair  by AGM), injector pump repair, radiatoe fan clutch locked-ex, replaced fuel filters2, feed pump R/kit, clutch R/kit, feed pump",2024-02-05 00:00:00,2024-02-23 00:00:00,115,,Thebuwana,
+2024/2/R/77,24-77,GL-0019,"Replaced U-joint, joint bolt, top up Gear oil  80W90, grease, sealed fuel return line",2024-02-05 00:00:00,2024-02-12 00:00:00,42,,Badalgama,
+2024/1/R/38,24-38,ZB-1496,"replaced all brake rachets, replaced spring plate between axel & blade set, wash & grease, service, AC repair, (gas charging, check leaks), adblue tank elec. Supply repair",2024-01-14 00:00:00,2024-01-17 00:00:00,43,,Moragahakanda,3370Hr
+2024/1/R/51,24-51,MG-14,"blade jack shaft repair, replaced seal kit",2024-01-22 00:00:00,2024-01-22 00:00:00,18,,Trinco,
+2024/1/R/34,24-34,LD-02,"wire harness repair, starter motor repair(clutch)",2024-01-15 00:00:00,2024-01-20 00:00:00,12,,Muthur,
+2024/2/R/106,24-106,Concrete mixer,"Running repair(concrete mixing pot welding, engine service, grease, check bearing, travelling wheel repair)",2024-02-15 00:00:00,2024-02-22 00:00:00,45,,kilinochchi,
+2024/2/R/134,24-134,BGY-6447,"engine repair(Re-bore engine, piston with ring set, timing chain, chain gaurds, rubber roller, valve seal, clean carb. , change E/oil, bike cleaning",2024-02-24 00:00:00,2024-03-03 00:00:00,18,,Badalgama,89482Km
+2024/3/R/143,24-143,SR-08,replaced oil plug,2024-03-01 00:00:00,2024-03-01 00:00:00,,,cep-03,
+2024/3/R/144,24-144,PT-1569,"Disemble  & cleaned clutch pump, upholstery repair",2024-03-01 00:00:00,2024-03-04 00:00:00,4,,Badalgama,
+2024/2/R/140,24-140,PH-0765,"replaced steering U-joint, checked suspension system, electric horn,gear lever bushes, replaced propellar shaft u-joint",,,,,,
+2024/12/R/924,24-924,LD-05,"replaced steering jack seal LH,top up HD 68 5Ltrs",2024-12-08 00:00:00,2024-12-10 00:00:00,10,,Badalgama,
+2024/10/R/751,24-751,BDJ-2375,"Engine repair(Re-boring engine, replaced timing chain, cam racer,vale in,ex, valve rubber, spark plug, tappet adjusting bolt, oil filter, plug top), clutch plate, pressure plate, horn, signal flasher, speed meter wheel , battery terminalE/oil, ",2024-10-10 00:00:00,2024-12-02 00:00:00,16,,Katana,
+2024/12/R/907,24-907,LO-9810,"clean fuel tank, feed pump repair",2024-12-02 00:00:00,2024-12-03 00:00:00,12,,Badalgama,
+2024/11/R/870,24-870,Crusher-cep03,32mm tor steel bended bar thread cutting 600mm,2024-11-19 00:00:00,2024-11-19 00:00:00,8,,cep-03,
+2024/11/R/895,24-895,SR-12,Repaired hy. pump coupling,2024-11-26 00:00:00,2024-11-28 00:00:00,10,,cep-03,
+2024/11/R/886,24-886,LP-1569,"Repaired 1st gear shifting defect, wash & grease, replaced tail light set 2, wiper blade set, ",2024-11-22 00:00:00,2024-11-23 00:00:00,13,,cep-03,
+2024/11/R/850,24-850,LM-7942,"Repaired E/oil leak from injector pump, serviced injector pump, elec. Repair(h/light, horn,wiper , tail light), rear deck door  & bucket repair, wash & grease, repalced air filter, wiper bled side mirror LH",2024-11-12 00:00:00,2024-12-07 00:00:00,62,,Neluwa,23890Km
+2024/12/R/915,24-915,BDJ-2375,"replaced rear hub bearing ,rubber mount",2024-12-05 00:00:00,2024-12-05 00:00:00,4,,Ruwanwella,
+2024/12/R/909,24-909,"TRN-05,19","TRN-05 Replaced carb assy, rachet -used, air filter-new, reduced E/oil upto standard level, TRN-19 removed excess E/oil in the engine, cleaned carb. , machine testing ",2024-12-04 00:00:00,2024-12-05 00:00:00,8,,port city,
+2024/12/R/922,24-922,LN-8278,Readiator water leak repair-ex,2024-12-07 00:00:00,2024-12-07 00:00:00,,,Badalgama,
+2024/12/R/923,24-923,47-5112,"Repaired water leak,brake light repair",2024-12-07 00:00:00,2024-12-07 00:00:00,3,,Badalgama,
+2024/2/R/123,24-123,HEX-29,"Replaced bucket & arm jack seals, bucket pin welding & lathening, bucket repair, spool seal replacing, replaced hy. pump coupling, service, wash & grease, top up oils, repaired safety lever switch, replaced battery 95A 2nos, issued grease gun 500g, arm end bushing, 24V fan, ",2024-02-20 00:00:00,2024-03-01 00:00:00,133,,cep-03,1417Hr
+2024/12/R/933,24-933,SL-04,Replaced air filter,2024-12-11 00:00:00,2024-12-11 00:00:00,,,batticaloa,SSO
+2024/12/R/934,24-934,SL-18,Repaired accelearator cable,2024-12-11 00:00:00,2024-12-11 00:00:00,,,cep-03,SSO
+2024/12/R/936,24-936,MGS-01,Starter motor repair,2024-12-11 00:00:00,2024-12-15 00:00:00,,,cep-03,Ex
+2024/12/R/937,24-937,LI-7618,"Clutch repair(top shaft welding-filling & turning out, replaced clutch liner set, clutch bearing)",2024-12-11 00:00:00,2024-12-12 00:00:00,,,cep-03,
+2024/12/R/941,24-941,PT-1569,Clutch repair(replaced clutch plate),2024-12-11 00:00:00,2024-12-12 00:00:00,,,cep-03,SSO
+2024/12/R/942,24-942,LA-1359,Replaced engine stop booster,2024-12-11 00:00:00,2024-12-14 00:00:00,,,cep-03,SSO
+2024/12/R/943,24-943,ZB-1521,"Replaced f/pinion seal, u-joint 4X4 drive shaft, service",2024-12-11 00:00:00,2024-12-11 00:00:00,,,Mathale,Solution
+2024/12/R/944,24-944,HEX-05,Replaced hy.hose,2024-12-11 00:00:00,2024-12-11 00:00:00,20,,Mathale,
+2024/12/R/945,24-945,LK-2366,Air brake system repair(replaced air dryer R/kit),2024-12-13 00:00:00,2024-12-13 00:00:00,18,,Ruwanwella,
+2024/12/R/946,24-946,HEX-28,"Replaced hy. hose, Elec .repair, removed broken bolts of exhaust manifold and replace bolts, hy. cylinder broken bolt remove & replace",2024-12-12 00:00:00,2024-12-13 00:00:00,24,,Ruwanwella,
+2024/12/R/950,24-950,LB-4824,"Elec. Repair(starting defect), top up E/oil, P/S oil , Brake oil",2024-12-12 00:00:00,2024-12-12 00:00:00,4,,Badalgama,
+2024/12/R/952,24-952,HEX-39,"Replaced parking switch, elec. Repair(short cct of wire harness)",2024-12-13 00:00:00,2024-12-13 00:00:00,6,,Ruwanwella,
+2024/12/R/953,24-953,MG-17,"Change E/oil with filter, greasing, guide rail -used,made battery guard",2024-12-14 00:00:00,2024-12-14 00:00:00,18,,Badalgama,
+2024/12/R/921,24-921,LK-5041,Alternator repair(replaced brush with regulator),2024-12-10 00:00:00,2024-12-11 00:00:00,8,,Badalgama,
+2023/7/R/277,23-277,DAH-2231,"Replaced gasket, valve oil seal, air filter, clutch master pump, fuel filter, bumper mount, brake caliper R/kit 2, brake pad set, belt 2, balance bar bush 4, link end bar with bush",2023-07-20 00:00:00,2023-10-31 00:00:00,,,Muthur,autobacs
+2024/2/R/139,24-139,LN-8279,"replaced brake chamber diaphram R/kit 2, elec .repair lights",2024-02-26 00:00:00,2024-02-27 00:00:00,5,,Badalgama,
+2024/2/R/132,24-132,LP-1566,"Replaced tail lamp lences,check horn",2024-02-24 00:00:00,2024-02-24 00:00:00,2,,Thebuwana,78817Km
+2024/2/R/135,24-135,PT-1569,"LH tail light repair, steering box oil top up",2024-02-26 00:00:00,2024-02-26 00:00:00,3,,Badalgama,287479Km
+2024/2/R/138,24-138,LH-5586,Starter motor repair(replaced starter motor solenoid with brush set,2024-02-26 00:00:00,2024-02-27 00:00:00,5,,cep-03,
+2024/11/R/899,24-899,TM-20,"replaced bucket tilt jack seal 2, lift cylinder seal kit 2, service, wash & grease, replaced windscreen - used done by c-com, ele. Repair(check lights, replaced fog lamp 2, push button switch, fuses,halogen bulb, travelling lever repaired), issued grease gun 500g, wiper blades,  top up hy/ oil HD-46",2024-11-29 00:00:00,2024-12-13 00:00:00,68,,Kilinochchi,4910HR
+2024/11/R/906,24-906,LX-1679,"Replaced Ramp jack seal 2, ramp motor with hy. pump -recondition, ramp cylinder mounting shafts repaired by fabrication, elec. Repair(lights)",2024-11-30 00:00:00,2024-12-03 00:00:00,98,,Badalgama,
+2024/11/R/903,24-903,41-7225,Feed pump repaired & gear cable lubricated,2024-11-30 00:00:00,2024-12-03 00:00:00,6,,Solution,
+2024/11/R/887,24-887,40-2955,Engine starting defect(battery charging),2024-11-23 00:00:00,2024-11-23 00:00:00,3,,Badalgama,
+2024/12/R/910,24-910,LY-1614,"Changed driving seat from 48-4849, upholstery repair-Ex",2024-12-04 00:00:00,2024-12-07 00:00:00,,,Badalgama,
+2024/12/R/938,24-938,PD-7049,"Brake repair(Replaced brake shoe 4,brake washer 8, dust boot, ), replaced cv boot with cv grease, rack end, horn set, f/shockabsorber bush, shock absorber repair 2nos, change gear oil, wash & grease",2024-12-11 00:00:00,2024-12-17 00:00:00,54,,Solution,Erawur
+2024/11/R/842,24-842,LI-3402,"Replaced accelerator cable, check clutch ,brake liners,F-axel bearing LH RH, driving seat cushion work, starter motor repair, deck repair",2024-11-07 00:00:00,2024-12-18 00:00:00,71,,Muthur,
+2024/11/R/885,24-885,28-4314,Elec reapir(re-wiring the electrical circuit-damaged only) couldn't  claim insurance,2024-11-22 00:00:00,2024-12-14 00:00:00,20,,Badalgama,
+2024/11/R/904,24-904,LO-5984,Starter motor repair(replaced field coil )-ex Kamal katana,2024-11-30 00:00:00,2024-12-14 00:00:00,,,cep-03,
+2024/12/R/918,24-918,ASC-21,"Engine overhaul (Replaced piston rings, gasket, re-sleeving engine block), spark plug",2024-12-05 00:00:00,2024-12-20 00:00:00,22,,Ruwanwella,
+2024/12/R/935,24-935,water pump,"Replaced water seal, bearing 2, impeler repair",2024-12-11 00:00:00,2024-12-18 00:00:00,16,,cep-03,
+2024/12/R/949,24-949,PH-0765,"Repaired R- signal lights, park light, upper arm ball joint, checked lower arm ball joint with suspension system, check hub bearing & brake pads, ",2024-12-11 00:00:00,2024-12-16 00:00:00,36,,Ruwanwella,
+2024/12/R/951,24-951,PY-2408,"Repaired door hingers LH & RH, elec .repair(tail light, signal)",2024-12-12 00:00:00,2024-12-20 00:00:00,19,,Ruwanwella,
+2024/12/R/954,24-954,57-3062,injector pump solenoid wire amage repaired ,2024-12-14 00:00:00,2024-12-17 00:00:00,2,,Badalgama,217610Km
+2024/12/R/955,24-955,PA-6399,"Replaced rear all brake liners, wiper blades, wiper arm, wiper spindle, R/ deck door repair, disemble & clean head light RH",2024-12-15 00:00:00,2024-12-18 00:00:00,22,,Badalgama,
+2024/11/R/849,24-849,HEX-26,"supply 500g grease gun, replaced  arm & boom jack seal , ac blower, hy. hose, stop solenoid, side glass, governor motor, track adjuster spring, track adjuster bolt outer thread & hub inner thread cutting, change hy. oil with all hy. filters(SFF-6141, JS-4049), track adjuster guide repair(welding & grinding), Bucket repair, arm end bush replace,sid e mirror, cabin light, AC belt 6460",2024-11-12 00:00:00,2024-12-08 00:00:00,198,,Kilinochchi,9066Hr
+2024/9/R/646,24-646,HS-1773,"Tinkering & painting-Autobacs, Deck repair & painting, injector pump repair, replaced disel pipe, R-crank oil seal, R-tipping deck shaft, side mirror, crank oil seal housing, wiper arm groove,injector pump housing, Elec. Repair(H-light, signal ,battery charging checking) ",2024-09-05 00:00:00,2024-12-10 00:00:00,85,,Badalgama,
+2024/10/R/761,24-761,RS-0483,"Service, loader lift & backhoe arm jack seal, H-bushes , loader arm bushes 44*52*20mm 24nos, gear lever ball joint, planetary wheel bearing, side mirror, fuel feed pump, fan belt 6490, solenoid 4WD,  u-joint with F/ propellar shaft assy, loader arm support lever line boring, R/ RH hub bearing with seal, loader lift arm pin & hole repair, alternator bearing, wash & grease, bucket repair, Elec. repair",2024-10-14 00:00:00,2024-12-03 00:00:00,163,,Siyabalanduwa,2246Hr
+2024/10/R/764,24-764,LY-1614,Tinkering & painting-Autobacs,2024-10-15 00:00:00,2024-12-04 00:00:00,,,Badalgama,
+2024/11/R/857,24-857,ZA-2963,"E/oil leak repaired from tappet cover, Backhoe pin bush repair 45*55*60-2 , 45*55*50 - 4, gear lever bush set, crank oil seal - F, air filter, fuel filter, filter head, cut & clean silensor, adjusted tappets, replaced tie rod end with rack ends 2 , outtriger shoe repair, wash & grease, check all oil levels",2024-11-17 00:00:00,2024-12-12 00:00:00,127,,Thissamaharama,
+2024/11/R/864-1,24-864-1,51-8083,"Gear box repair( needle bearing, brass corn, bearin 4, 4/5 spring with dog teeth 3 , 1/R spring with dog teeth, slector fork lock ball pin, selector fork spring, selector ball 6, 4WD oil seal, top shaft seal, clutch release bearing, ), clutch plate, clutch slave cylinder, cmc R/kit, brake hose, caliper pin replace",2024-11-18 00:00:00,2024-12-06 00:00:00,61,,Kallanchi,
+2024/11/R/896,24-896,CR-02,Swival repair-done by CEP-03 repair team with operator Harischandra & Darshana,2024-11-29 00:00:00,2024-12-06 00:00:00,,,cep-03,9264Hr
+2024/11/R/897,24-897,HEX-05,"service, repaired accelerator cable, replaced track bottom rollers 6, roller bolts, check travelling defect, fog light set, travelling hy. hose, wash & grease",2024-11-28 00:00:00,2024-12-06 00:00:00,81,,Raththota,9270Hr
+2024/12/R/913,24-913,LL-0920,"Gear lever & selector repair(gear handle bush set, needle bearing 2, oil seal, dust boot, selector shaft, selector lever, ball joint set",2024-12-05 00:00:00,2024-12-10 00:00:00,,,cep-03,SSO
+2024/12/R/912,24-912,HEX-46,"cabin door lock, allenkey bolt 6, upholstery lock 10",2024-12-05 00:00:00,2024-12-14 00:00:00,,,cep-03,SSO
+2024/12/R/914,24-914,RD-3536,"Starter motor repair(solenoid, brush set)",2024-12-05 00:00:00,2024-12-06 00:00:00,5,,Ruwanwella,
+2024/12/R/916,24-916,LP-1580,"Replaced R/brake rachet 2, battery post repair, wash & grease, Adblue cut-uvindu, top up battery water, repalced b/terminal",2024-12-05 00:00:00,2024-12-11 00:00:00,11,,batticaloa,70452Km
+2024/12/R/917,24-917,GE-115,"Check machine starting, power o/p, E/oil -ok",2024-12-05 00:00:00,2024-12-07 00:00:00,4,,Badalgama,
+2024/12/R/920,24-920,47-5112,Repaired water leak(blocked blower water line),2024-12-07 00:00:00,2024-12-07 00:00:00,6,,Badalgama,319123Km
+2024/12/R/926,24-926,VR-08,"Fuel system repair(cleaned fuel tank, fuel filter with system)",2024-12-08 00:00:00,2024-12-10 00:00:00,6,,,
+2024/12/R/925,24-925,PA-6399,"Checked engine after installation of reconditioned engine, check elec. System",2024-12-08 00:00:00,2024-12-11 00:00:00,8,,Badalgama,
+2024/12/R/927,24-927,51-7158,"Replaced E/mount 2, gear box mount, oil seal,F/RH hub  bearing 2 , changed E/oil with filter C-111), Elec. Repair(check lights)",2024-12-10 00:00:00,2024-12-11 00:00:00,11,,Ruwanwella,391853Km
+2024/12/R/929,24-929,SL-06,Replaced drive belt,2024-12-10 00:00:00,2024-12-10 00:00:00,2,,ududumbara,
+2024/12/R/930,24-930,SL-02,Replaced drive belt,2024-12-10 00:00:00,2024-12-10 00:00:00,2,,port city,

@@ -1,0 +1,104 @@
+id,transferDate,transferDateISO,mtnNum,itemName,itemDesc,qty,category,fromLocation,toLocation,transferredBy,receivedBy,mrnNum,notes,createdAt,updatedAt
+9,2026-06-08,2026-06-08,MTN-TEST-100,Hydraulic Oil 15W40,,25.0,Consumables,Main Store,Excavator 02,Storekeeper A,Driver B,,Refill hydraulic system (updated qty),2026-06-23T05:54:05.687Z,2026-06-23T05:54:05.699Z
+18,2026-01-02,2026-01-02,64992,12v/90Ah Battery,Ser No M150563037,1.0,Battery,PA-4879,Main Stores,RSD Pathinayake,Bandara,,For Warrenty,2026-06-24T13:51:15.438Z,2026-06-24T13:51:15.438Z
+19,2026-01-02,2026-01-02,64993,12V/90Ah Battery,Ser No M230002093,1.0,Battery,LK-4061,Main Store,RSD Pathinayake,Bandara,,For Dispose,2026-06-24T14:04:53.746Z,2026-06-24T14:04:53.746Z
+20,2026-01-02,2026-01-02,64993,12V / 120Ah Battery,Sr No M230072146,1.0,Battery,ZA-7290,Main Stores,RSD Pathinayake,Bandara,,For Dispose,2026-06-24T14:10:51.865Z,2026-06-24T14:10:51.865Z
+21,2026-01-02,2026-01-02,64994,Brake Pad Set,With Sample,1.0,General Items,PI-3982,CEP-03 Wadakada Machanic,Bandula,Thilina,,,2026-06-24T14:13:42.946Z,2026-06-24T14:13:42.946Z
+22,2026-01-07,2026-01-07,64994,Brake Pad Lock,with Samplle,1.0,General Items,PI-3982,CEP-03 Wadakada Machanic,Bandula,Thilina,,,2026-06-24T14:14:51.859Z,2026-06-24T14:14:51.859Z
+23,2026-01-07,2026-01-07,64994,Brake Disc,with Sample,2.0,General Items,PI-3982,CEP-03 Wadakada Machanic,Bandula,Thilina,,,2026-06-24T14:24:06.758Z,2026-06-24T14:24:06.758Z
+24,2026-01-02,2026-01-02,64994,Wheel Stud & Nut,with sample,3.0,Tyre,PI-3982,CEP-03 Wadakada Machanic,Bandula,Thilina,,,2026-06-24T14:29:34.988Z,2026-06-24T14:29:34.988Z
+25,2025-04-11,2025-04-11,64951,Dash Board,,1.0,General Items,Work Shop,CEP-03 Wadakada Machanic,Bandula,Nishantha,,Sample,2026-06-25T09:04:40.786Z,2026-06-25T09:09:35.767Z
+26,2025-04-11,2025-04-11,64951,Signal Cup,,2.0,General Items,Work SHop,CEP-03 Wadakada Machanic,Bandula,Nishantha,,Sample,2026-06-25T09:08:52.038Z,2026-06-25T09:09:25.552Z
+27,2025-04-11,2025-04-11,64952,Starter Motor,,1.0,General Items,253-2574,Batticoloa,Bandula,Nuwan,,,2026-06-25T09:11:12.571Z,2026-06-25T09:11:37.734Z
+28,2025-04-11,2025-04-11,64952,Power Steering Box,,1.0,General Items,253-2574,Batticoloa,Bandula,Nuwan,,,2026-06-25T09:11:13.236Z,2026-06-25T09:11:13.236Z
+29,2025-11-05,2025-11-05,64953,Excavator Arm,,1.0,General Items,HEX-19,CEP-03 Wadakada Machanic,Bandula,Sangeeth,,After Repair,2026-06-25T09:13:58.862Z,2026-06-25T09:20:08.023Z
+30,2025-11-05,2025-11-05,64953,Bucket,,1.0,General Items,HEX-19,CEP-03 Wadakada Machanic,Bandula,Sangeeth,,After Repair,2026-06-25T09:13:59.306Z,2026-06-25T09:19:58.518Z
+31,2025-11-05,2025-11-05,64953,Pin,,5.0,General Items,HEX-19,CEP-03 Wadakada Machanic,Bandula,Sangeeth,,After Repair,2026-06-25T09:16:43.990Z,2026-06-25T09:19:51.368Z
+32,2025-11-05,2025-11-05,64953,Small Arm,,4.0,General Items,HEX-19,CEP-03 Wadakada Machanic,Bandula,Sangeeth,,After Repair,2026-06-25T09:17:44.732Z,2026-06-25T09:19:41.233Z
+33,2025-11-05,2025-11-05,64953,Bush,,13.0,Bearings & Seals,HEX-19,CEP-03 Wadakada Machanic,Bandula,Sangeeth,,After Repair,2026-06-25T09:18:51.179Z,2026-06-25T09:19:31.380Z
+34,2025-11-06,2025-11-06,64954,MP-90 Gear OIl,,25.0,Oil & Lubricants,Work Shop Stores,CEP-03 Wadakada Machanic,Bandula,Thushara,2176,,2026-06-25T09:21:18.062Z,2026-06-25T09:21:18.062Z
+35,2025-11-06,2025-11-06,64955,HD 68 Hydrolic Oil,,20.0,Oil & Lubricants,Work Shop Stores,Bridge No 01 & 02 Tharathiu,Bandula,Nuwan,207020,,2026-06-25T09:26:20.800Z,2026-06-25T09:26:20.800Z
+36,2025-11-06,2025-11-06,64955,15w 40 CI 4,,5.0,General Items,Work Shop Stores,Bridge No 01 & 02 Tharathiu,Bandula,Nuwan,207020,,2026-06-25T09:28:17.488Z,2026-06-25T09:28:17.488Z
+37,2025-11-07,2025-11-07,64956,Oil Filter (C-101),,1.0,Filters,325-3448,CEP-03,R.S.D Pathinayaka,..,,,2026-06-25T09:32:46.120Z,2026-06-25T09:32:46.120Z
+38,2025-11-07,2025-11-07,64956,Fuel Filter (FC-1104),,1.0,Filters,325-3448,CEP-03,R.S.D Pathinayaka,Thushara,,,2026-06-25T09:57:54.839Z,2026-06-25T10:00:22.697Z
+39,2025-11-08,2025-11-08,64957,Fuel Line Filter (6683101),,2.0,Filters,SL-15,Marawila,RSD Pathinayake,Sagara,,,2026-06-25T10:00:05.037Z,2026-06-25T10:00:05.037Z
+40,2025-11-07,2025-11-07,64958,HD 68 Oil (Servo),,20.0,Oil & Lubricants,Work SHop,Marawila I Road Project,Bandula,Shamil,142755,,2026-06-25T10:10:55.862Z,2026-06-25T10:10:55.862Z
+41,2025-11-07,2025-11-07,64958,15w 40 Engine Oil,,20.0,Oil & Lubricants,Work SHop,Marawila I Road Project,Bandula,.,142765,,2026-06-25T10:21:30.173Z,2026-06-25T10:21:30.173Z
+42,2025-11-07,2025-11-07,64958,Power Oil 1888,,8.0,Oil & Lubricants,Work SHop,Marawila I Road Project,Bandula,.,142765,,2026-06-25T10:25:57.085Z,2026-06-25T10:25:57.085Z
+43,2025-11-07,2025-11-07,64958,Grease,,20.0,Oil & Lubricants,Work Shop,Marawila I Road Project,Bandula,..,142765,,2026-06-25T10:26:58.208Z,2026-06-25T10:26:58.208Z
+44,2025-11-08,2025-11-08,64959,Fuel Line Filter,,1.0,Filters,Sr-19,Mallawagedara Bridge,RSD Pathinayake,..,,,2026-06-25T10:34:54.491Z,2026-06-25T10:34:54.491Z
+45,2025-11-08,2025-11-08,64960,Radiator Hose,,2.0,Hydraulics,CR-02,CEP-03 Wadakada Machanic,Bandula,Ananda,,Sample & New,2026-06-25T10:37:09.885Z,2026-06-25T10:37:09.885Z
+46,2025-11-09,2025-11-09,64961,Grease,,10.0,Oil & Lubricants,Work Shop,Marawila Aphalt Cutter,Bandula,..,142787,,2026-06-25T10:38:43.657Z,2026-06-25T10:38:43.657Z
+47,2025-11-10,2025-11-10,64962,Hour Meter,,5.0,General Items,Work Shop Stores,Muthur Plant,Bandula,..,,,2026-06-25T10:39:54.210Z,2026-06-25T10:39:54.210Z
+48,2025-11-10,2025-11-10,64963,Grease,,15.0,Oil & Lubricants,Work Shop Stores,Port City,Bandula,Laxman,,,2026-06-25T10:41:26.321Z,2026-06-25T10:41:26.321Z
+49,2025-11-10,2025-11-10,64964,HD-46 (Servo),,20.0,General Items,Work Shop Stores,Ruwanwella W/Project,Bandula,Rathnayake,206018,,2026-06-25T10:42:59.279Z,2026-06-25T10:42:59.279Z
+50,2025-11-11,2025-11-11,64965,Hydrolic Filter (7319444),,1.0,Filters,SL-14 CEP,CEP-03 Wadakada Machanic,Bandula,Nuwan,,,2026-06-25T10:45:34.637Z,2026-06-25T10:52:59.610Z
+51,2025-11-11,2025-11-11,64965,Hydrolic Filter (6692337),,1.0,Filters,SL-14 CEP,CEP-03 Wadakada Machanic,Bandula,Nuwan,,,2026-06-25T10:48:51.035Z,2026-06-25T10:52:45.639Z
+52,2025-11-11,2025-11-11,64965,Cabin Lifting Pump,,1.0,General Items,LO-4925,CEP-03 Wadakada Machanic,Bandula,Nuwan,,,2026-06-25T10:52:25.753Z,2026-06-25T10:52:25.753Z
+53,2025-11-11,2025-11-11,64966,Grease,,10.0,Oil & Lubricants,Work Shop Stores,BT/03,Bandula,Nuwan,24387,,2026-06-25T11:00:50.193Z,2026-06-25T11:00:50.193Z
+54,2025-11-11,2025-11-11,64967,Grease,,5.0,Oil & Lubricants,Work Shop Stores,Batticoloa Lot/2,Bandula,Nuwan,206977,,2026-06-25T11:06:13.771Z,2026-06-25T11:06:13.771Z
+55,2025-11-11,2025-11-11,64968,Grease,,20.0,Oil & Lubricants,Work Shop Stores,Ruwanwella Water Project,Bandula,Upul,206018,,2026-06-25T11:21:57.541Z,2026-06-25T11:21:57.541Z
+56,2025-11-12,2025-11-12,64969,Universal Joint,,1.0,General Items,LD-01,Muthur Plant,Bandula,Dulantha,,,2026-06-25T11:24:38.990Z,2026-06-25T11:46:13.938Z
+57,2025-11-12,2025-11-12,64969,Spring Blade,,4.0,General Items,LI-3402,Muthur Plant,Bandula,Dulantha,,,2026-06-25T11:46:01.747Z,2026-06-25T11:46:01.747Z
+58,2025-11-12,2025-11-12,64969,Spring Anchor,,2.0,General Items,LI-3402,Muthur Plant,Bandula,Dulantha,,,2026-06-25T11:48:03.176Z,2026-06-25T11:48:03.176Z
+59,2025-11-13,2025-11-13,64970,HD-68 HydrolicOil,,40.0,General Items,Work Shop Stores,Port City,Bandula,Upul,127542,,2026-06-25T13:27:10.654Z,2026-06-25T13:27:10.654Z
+60,2025-11-13,2025-11-13,64970,CI 4 15w 40,,5.0,General Items,Work Shop Stores,Port City,Bandula,Mr Upul,127542,,2026-06-25T13:28:16.000Z,2026-06-25T13:28:16.000Z
+61,2025-11-22,2025-11-22,64971,Jack,,1.0,General Items,MG-15 (Motor Grader),Batticoloa,Rajitha,Madura,,,2026-06-25T13:29:45.532Z,2026-06-25T13:29:45.532Z
+62,2025-11-23,2025-11-23,64972,HD 68 Oil,,20.0,Oil & Lubricants,Work Shop Stores,Marawila Site,Rajitha,Nishantha,127691,,2026-06-25T13:32:12.393Z,2026-06-25T13:32:12.393Z
+63,2025-11-23,2025-11-23,64972,DS-40,,20.0,General Items,Work Shop Stores,Marawila Site,Rajitha,Nishantha,127651,,2026-06-25T13:33:04.553Z,2026-06-25T13:33:04.553Z
+64,2025-11-23,2025-11-23,64972,Grease,,17.0,Oil & Lubricants,Work Shop Stores,Marawila Site,Rajitha,Nishantha,127651,,2026-06-25T13:34:03.571Z,2026-06-25T13:34:03.571Z
+65,2025-11-24,2025-11-24,64973,Starter Motor (After Repair),,1.0,Electrical,SR-14,Marawila,Pathinayaka,Nuwan,,,2026-06-25T13:35:53.553Z,2026-06-25T13:35:53.553Z
+66,2025-11-24,2025-11-24,64974,12V/90Ah Battery,"Ser No M240179217
+Purchase From HEX-17
+Recieved  From HEX-17",1.0,Battery,Work Shop Stores,Main Store,Pathinayaka,Bandara,,,2026-06-25T13:40:17.656Z,2026-06-25T13:40:17.656Z
+67,2025-11-24,2025-11-24,64974,12V/90Ah Battery,"Ser No M230795542
+Purchase From HEX-17
+Recieved  From HEX-17",1.0,Battery,Work Shop Stores,Main Store,Pathinayaka,Bandara,,,2026-06-25T13:42:17.751Z,2026-06-25T13:42:17.751Z
+68,2025-11-24,2025-11-24,64974,12V 90Ah Battery,"Ser No M230034241
+Purchase From SR-06
+Recieved  From LK-5586",1.0,Battery,Work Shop Stores,Main Store,Pathinayaka,Bandara,,,2026-06-25T13:44:01.686Z,2026-06-25T13:44:01.686Z
+69,2025-11-24,2025-11-24,64974,12V/90Ah  Battery,"Ser No M230814808
+Purchase From SL-09
+Recieved  From SL-06",1.0,Battery,Work Shop Stores,Main Stores,Pathinayaka,Banadara,,,2026-06-25T13:46:29.135Z,2026-06-25T13:46:29.135Z
+70,2025-11-24,2025-11-24,64974,12V/90Ah Battery,"Ser No M220712495
+Purchase From SL-03
+Recieved  From PR-1504",1.0,Battery,Work Shop Stores,Main Stores,Pathinayaka,Bandara,,,2026-06-25T13:49:11.616Z,2026-06-25T13:49:11.616Z
+71,2025-11-24,2025-11-24,64975,Tie Rod End,,2.0,General Items,ZB-1979,Batticoloa,Pathinayaka,..,,,2026-06-25T13:51:41.305Z,2026-06-25T13:51:41.305Z
+72,2025-11-24,2025-11-24,64976,24V Starter Relay,,1.0,Electrical,PTR-01,Marawila Site,Pathinayaka,..,,,2026-06-25T13:53:05.978Z,2026-06-25T13:53:05.978Z
+73,2025-11-25,2025-11-25,64977,Tie Rod End,,2.0,General Items,ZB-1979,Batticoloa,Rajitha,.,,,2026-06-25T13:54:15.954Z,2026-06-25T13:54:15.954Z
+74,2025-11-25,2025-11-25,64977,Oil Filter (7393870),,1.0,Filters,LB-24,Batticoloa,Rajitha,.,,,2026-06-25T13:55:30.620Z,2026-06-25T13:55:30.620Z
+75,2025-11-29,2025-11-29,64978,Starter Relay,,1.0,Electrical,PTR-01,Marawila,Work Shop Stores,Wasala,142799,,2026-06-25T13:58:57.109Z,2026-06-25T13:58:57.109Z
+76,2025-11-24,2025-11-24,64978,Drum Mount,,2.0,General Items,SR-14,Marawila Site,Rajitha,Wasala,142799,,2026-06-25T14:00:29.103Z,2026-06-25T14:00:29.103Z
+77,2025-11-29,2025-11-29,64978,Elec Horn 12V,,1.0,Electrical,DAH-2228,Marawila Site,Rajitha,Wasala,142799,,2026-06-25T14:01:57.879Z,2026-06-25T14:01:57.879Z
+78,2025-11-29,2025-11-29,64978,Drum Mount,,6.0,General Items,SR-09,Marawila Site,Rajitha,Wasala,142799,To Be Rtd,2026-06-25T14:03:26.378Z,2026-06-25T14:03:26.378Z
+79,2025-11-25,2025-11-25,64979,Starter Motor,,1.0,Electrical,Work Shop Stores,Katana Kamal Motors,Bandula,..,,To Be Rtd,2026-06-25T14:06:45.543Z,2026-06-25T14:06:45.543Z
+80,2025-11-25,2025-11-25,64979,Stop Solonoid,,1.0,General Items,Work Shop Stores,Katana Kamal Motors,Bandula,..,,,2026-06-25T14:08:02.793Z,2026-06-25T14:08:02.793Z
+81,2025-11-27,2025-11-27,64981,Tie Rod End,,2.0,General Items,ZA-6069,CEP/3,Bandula,.,,,2026-06-25T14:11:58.347Z,2026-06-25T14:11:58.347Z
+82,2025-11-27,2025-11-27,64980,Starter Motor Repair,,1.0,Electrical,LI-3401,Katana Kamal Motors,Bandula,Chathuranga,,,2026-06-25T14:13:47.801Z,2026-06-25T14:13:47.801Z
+83,2025-12-13,2025-12-13,64982,Grease,,3.0,Oil & Lubricants,Work Shop Stores,Mallawagedara Bridge,Bandula,.,,,2026-06-25T14:35:49.651Z,2026-06-25T14:35:49.651Z
+84,2025-12-13,2025-12-13,64983,15w 40 CI-04,,50.0,General Items,Work Shop Stores,CEP/3,Bandula,Nuwan,,,2026-06-25T14:38:38.683Z,2026-06-25T14:38:38.683Z
+85,2025-12-14,2025-12-14,64984,Circuit Board (For Repair),,4.0,General Items,Work Shop Stores,Meerigama,Bandula,Pushpakumara,,,2026-06-25T14:40:38.886Z,2026-06-25T14:40:38.886Z
+86,2025-12-14,2025-12-14,64985,Brake Liner,,2.0,General Items,Work Shop Stores,CEP/3,Bandula,Thushara,,,2026-06-25T14:42:46.696Z,2026-06-25T14:42:46.696Z
+87,2025-12-14,2025-12-14,64985,Hub Bolt,,2.0,General Items,Work Shop Stores,CEP/3,Bandula,Thushara,,,2026-06-25T14:44:01.570Z,2026-06-25T14:44:01.570Z
+88,2025-12-16,2025-12-16,64986,HD-68 Oil,,80.0,Oil & Lubricants,Work Shop Stores,Ruwanwella Water Project,Bandula,SNP,,,2026-06-25T14:46:22.891Z,2026-06-25T14:46:22.891Z
+89,2025-12-16,2025-12-16,64986,Hydrolic Filter (Return),,1.0,Filters,Work Shop Stores,Ruwanwella Water Project,Bandula,SNP,,,2026-06-25T14:48:13.525Z,2026-06-25T14:48:13.525Z
+90,2025-12-17,2025-12-17,64987,C-509 Oil Filter(Return),,1.0,Filters,Work Shop Stores,Kumara Filters,Bandula,.,,,2026-06-25T14:50:32.185Z,2026-06-25T14:50:32.185Z
+91,2025-12-17,2025-12-17,64987,JS-3029 Air Filter(Return),,1.0,Filters,Work Shop Stores,Kumara Filters,Bandula,Nuwan,,,2026-06-25T14:52:04.101Z,2026-06-25T14:53:13.850Z
+92,2025-12-20,2025-12-20,64988,Wiper Motor,,1.0,General Items,Work Shop Stores,Marawila water Project,Bandula,Mahawaththa,,,2026-06-25T14:59:36.994Z,2026-06-25T14:59:36.994Z
+93,2025-12-20,2025-12-20,64989,Fuel Filter (F-1503),,4.0,Filters,Work Shop Stores,Semini Motors,Bandula,Sisil,,,2026-06-25T15:02:59.630Z,2026-06-25T15:02:59.630Z
+94,2025-12-20,2025-12-20,64990,Starter Motor (After Repair),,1.0,Electrical,LI-3401,Muthur Plant,Pathinayaka,.,,,2026-06-25T15:05:44.289Z,2026-06-25T15:05:44.289Z
+95,2025-12-31,2025-12-31,64991,Air Filter (11110175),,1.0,Filters,Work Shop Stores,CEP-03,Bandula,Mahawaththa,,,2026-06-25T15:07:28.406Z,2026-06-25T15:07:28.406Z
+96,2026-01-09,2026-01-09,64995,Diesel,,8.0,General Items,FL-03,.,Bandula,Theshan,,Removed Diesel,2026-06-25T15:10:31.071Z,2026-06-25T15:12:45.517Z
+97,2026-01-09,2026-01-09,64995,Diesel,,10.0,General Items,325-3448,..,Bandula,Theshan,,Removed Diesel,2026-06-25T15:11:48.972Z,2026-06-25T15:15:57.767Z
+98,2026-01-10,2026-01-10,64996,MP-90 Gear Oil,,50.0,Oil & Lubricants,Work Shop Stores,CEP-03,Bandula,Nalin,02306,,2026-06-25T15:14:31.332Z,2026-06-25T15:15:43.235Z
+99,2026-01-10,2026-01-10,64997,HD-68 Oil,,5.0,Oil & Lubricants,SL-06,Mundalama State,Bandula,Naiel,,,2026-06-25T15:18:25.931Z,2026-06-25T15:18:25.931Z
+100,2026-01-10,2026-01-10,64997,15w 40 CI-4,,2.0,General Items,SL-06,Mundalama State,Bandula,Naiel,,,2026-06-25T15:19:28.095Z,2026-06-25T15:19:28.095Z
+101,2026-01-11,2026-01-11,64998,HD-46OIl,,30.0,Oil & Lubricants,Work Shop Stores,Ruwanwella Water Project,Bandula,Sumanasekara,205986,,2026-06-25T15:20:46.135Z,2026-06-25T15:21:13.756Z
+102,2026-01-11,2026-01-11,64998,HD-68 OIl,,40.0,Oil & Lubricants,Work Shop Stores,Ruwanwella Water Project,Bandula,Sumanasekara,205986,,2026-06-25T15:20:49.928Z,2026-06-25T15:20:49.928Z
+103,2026-01-11,2026-01-11,64998,Grease,,20.0,Oil & Lubricants,Work Shop Stores,Ruwanwella Water Project,Bandula,Sumanasekara,205986,,2026-06-25T15:22:10.166Z,2026-06-25T15:22:10.166Z
+104,2026-01-11,2026-01-11,64998,Tractor Hitch,,2.0,General Items,Work Shop Stores,Ruwanwella Water Project,Bandula,Sumanasekara,205986,,2026-06-25T15:23:38.517Z,2026-06-25T15:23:38.517Z
+105,2026-01-13,2026-01-13,64999,Brake Rachart,,2.0,General Items,ZA-8511,CEP-03 Wadakada Machanic,Bandula,Saliya,,,2026-06-25T15:25:32.525Z,2026-06-25T15:25:32.525Z
+106,2026-01-15,2026-01-15,65000,Starter Motor (After Repair),,1.0,Electrical,LD-8875,Marawila Rd Project,Bandula,Ananda,,,2026-06-25T15:28:24.615Z,2026-06-25T15:28:24.615Z
+107,2026-03-10,2026-03-10,57851,Trail Light Set,,2.0,General Items,Work Shop Stores,LP-1568,Bandula,Lakmal,,,2026-07-04T05:10:15.954Z,2026-07-04T05:10:15.954Z
+108,2026-03-10,2026-03-10,57851,Wiper Blade,,2.0,General Items,Work Shop Stores,LP-1568,Bandula,Lakmal,,,2026-07-04T05:50:27.495Z,2026-07-04T05:50:27.495Z
+109,2026-03-11,2026-03-11,57852,CI 4/15W 40,,10.0,General Items,Work Shop Stores,Marawila I Road Project,Bandula,Lakmal,,,2026-07-04T05:54:50.216Z,2026-07-04T05:54:50.216Z
