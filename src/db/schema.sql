@@ -422,6 +422,10 @@ CREATE TABLE IF NOT EXISTS job_cards (
   started_at           TEXT,
   completed_at         TEXT,
   closed_at            TEXT,
+  -- Service jobs use a FLAT labour charge (not hours×rate). When set, costing
+  -- uses this as labour_cost and does NOT run the hourly engine. Repairs leave
+  -- it NULL and cost labour hourly (split across the crew).
+  flat_labour          REAL,
   -- live running totals (a snapshot is frozen in job_costs on CLOSE)
   labour_cost          REAL DEFAULT 0,
   material_cost        REAL DEFAULT 0,

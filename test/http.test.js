@@ -98,9 +98,10 @@ test('a multi-mechanic daily-work entry splits into one costed row per mechanic'
   const r = await req(`/api/jobs/${id}/daily-work`, { method: 'POST', body: { mechanic: 'Anura, Buddhika', hours: 4 } });
   assert.strictEqual(r.status, 201);
   assert.strictEqual(r.body.length, 2, 'two mechanics => two rows');
+  assert.strictEqual(r.body[0].hours, 2, 'total 4h split across 2 mechanics = 2h each');
   const detail = await req(`/api/jobs/${id}`);
-  // 4h × 400 (Anura) + 4h × 300 (Buddhika) = 2800
-  assert.strictEqual(detail.body.cost.labour_cost, 2800);
+  // hours split: 2h × 400 (Anura) + 2h × 300 (Buddhika) = 1400  [= H × avg crew rate]
+  assert.strictEqual(detail.body.cost.labour_cost, 1400);
 });
 
 test('unresolved asset text is queued as a pending alias', async () => {

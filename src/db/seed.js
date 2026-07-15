@@ -265,10 +265,11 @@ tx(() => {
   seedLedger('HD46', 'issue', 12, daysAgo(3), { asset_id: assetId['CAT-320'], project_id: projId['IGM'], job_id: jobB, unit_price: 980 });
   costing.refreshJobTotals(jobB);
 
-  // Job C: fresh service job awaiting approvals (demonstrates the approval flow).
+  // Job C: fresh service job awaiting approvals — service labour is a FLAT charge
+  // (not hours×rate), demonstrating the second labour model.
   const jobC = run(
-    `INSERT INTO job_cards (job_no, asset_id, project_id, type, severity, description, status, requested_by, requested_at)
-     VALUES ('2025/7/S/12', ?, ?, 'service', 'minor', '500-hour service — filters + oil change', 'REQUESTED', 'Pradeep', ?)`,
+    `INSERT INTO job_cards (job_no, asset_id, project_id, type, severity, description, status, requested_by, requested_at, flat_labour)
+     VALUES ('2025/7/S/12', ?, ?, 'service', 'minor', '500-hour service — filters + oil change', 'REQUESTED', 'Pradeep', ?, 1500)`,
     assetId['KOM-PC200'], projId['IGM'], daysAgo(1)
   ).lastInsertRowid;
   costing.refreshJobTotals(jobC);

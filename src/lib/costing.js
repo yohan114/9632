@@ -62,14 +62,25 @@ function computeJobCost(jobId) {
   if (!job) throw new Error('Job not found');
   const jobDate = (job.requested_at || todayISO()).slice(0, 10);
 
-  // --- labour (non-external daily work × rate) ---
+  // --- labour ---
+  // Two models: SERVICE jobs carry a flat recorded labour amount (not hours×rate);
+  // REPAIRS cost hourly. For repairs, a multi-mechanic entry already stores one
+  // row per mechanic with the hours split across the crew (H/N each), so simply
+  // summing (row.hours × rate) yields (H/N)×Σ(crew rates).
   const labourLines = [];
   let labour = 0;
-  for (const w of all('SELECT * FROM job_daily_work WHERE job_id = ? AND is_external = 0', jobId)) {
-    const rate = labourRateFor(w.mechanic, (w.work_date || jobDate).slice(0, 10));
-    const amount = rate != null ? (w.hours || 0) * rate : 0;
-    labour += amount;
-    labourLines.push({ mechanic: w.mechanic, hours: w.hours || 0, rate, amount, work_date: w.work_date });
+  if (job.type === 'service') {
+    labour = job.flat_labour != null ? job.flat_labour : 0;
+    if (job.flat_labour != null) {
+      labourLines.push({ mechanic: '(service flat charge)', hours: 0, rate: null, amount: job.flat_labour, work_date: jobDate, flat: true });
+    }
+  } else {
+    for (const w of all('SELECT * FROM job_daily_work WHERE job_id = ? AND is_external = 0', jobId)) {
+      const rate = labourRateFor(w.mechanic, (w.work_date || jobDate).slice(0, 10));
+      const amount = rate != null ? (w.hours || 0) * rate : 0;
+      labour += amount;
+      labourLines.push({ mechanic: w.mechanic, hours: w.hours || 0, rate, amount, work_date: w.work_date });
+    }
   }
 
   // --- material (job_parts grn/issue, non-external repair) ---
@@ -122,6 +133,7 @@ function computeJobCost(jobId) {
  */
 function closureReadiness(jobId) {
   const missing = [];
+  const job = get('SELECT type, flat_labour FROM job_cards WHERE id = ?', jobId);
 
   // every requested part has a GRN (MRN lines fully received)
   for (const l of all(
@@ -151,10 +163,14 @@ function closureReadiness(jobId) {
     if (g.unit_price == null) missing.push(`General item issue #${g.id} awaiting price`);
   }
 
-  // every labour line has a rate
-  for (const w of all('SELECT * FROM job_daily_work WHERE job_id = ? AND is_external = 0', jobId)) {
-    if (labourRateFor(w.mechanic, w.work_date) == null) {
-      missing.push(`Labour rate missing for mechanic "${w.mechanic || '(unnamed)'}"`);
+  // labour: services need a flat charge set; repairs need a rate per labour line
+  if (job && job.type === 'service') {
+    if (job.flat_labour == null) missing.push('Service labour (flat charge) not set');
+  } else {
+    for (const w of all('SELECT * FROM job_daily_work WHERE job_id = ? AND is_external = 0', jobId)) {
+      if (labourRateFor(w.mechanic, w.work_date) == null) {
+        missing.push(`Labour rate missing for mechanic "${w.mechanic || '(unnamed)'}"`);
+      }
     }
   }
 

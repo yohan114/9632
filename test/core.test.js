@@ -93,6 +93,23 @@ test('mechanic resolver maps a spelling alias to the canonical rate', () => {
   assert.ok(mechanics.pendingMechanicAliases().some((a) => a.raw_text === 'Vinod M'));
 });
 
+test('service jobs use a flat labour charge, not the hourly engine', () => {
+  const sid = run(
+    `INSERT INTO job_cards (job_no, asset_id, type, status, requested_at, flat_labour) VALUES ('T/S1', ?, 'service', 'REQUESTED', '2024-03-10', NULL)`,
+    asset.id
+  ).lastInsertRowid;
+  // even with logged hours, a service with no flat charge costs 0 labour and can't close
+  run("INSERT INTO job_daily_work (job_id, work_date, mechanic, hours) VALUES (?, '2024-03-10', 'Anura', 6)", sid);
+  assert.strictEqual(costing.computeJobCost(sid).labour_cost, 0);
+  assert.strictEqual(costing.closureReadiness(sid).ready, false); // flat charge not set
+  // set the flat charge -> that IS the labour, hourly ignored
+  run('UPDATE job_cards SET flat_labour = 1500 WHERE id = ?', sid);
+  costing.refreshJobTotals(sid); // materialises job_labour rows (guards the NOT NULL path)
+  assert.strictEqual(get('SELECT labour_cost FROM job_cards WHERE id = ?', sid).labour_cost, 1500);
+  assert.strictEqual(costing.computeJobCost(sid).labour_cost, 1500);
+  assert.strictEqual(costing.closureReadiness(sid).ready, true);
+});
+
 test('snapshot freezes the total even if a price later changes', () => {
   costing.snapshotJobCost(jobId);
   const snap = get('SELECT total_cost FROM job_costs WHERE job_id = ? ORDER BY id DESC LIMIT 1', jobId);

@@ -55,11 +55,17 @@ cell into one `job_daily_work` row per mechanic **before** costing.
   spellings of one person (`Seethananda/seetha`).
 - Reuse `lib/mechanics.splitMechanics()` (already built + tested).
 
-> **Open question for the owner (cost-critical):** when a daily row lists N
-> mechanics against H hours, does **each** mechanic get H hours (current
-> assumption — one row per mechanic, each H×rate), or is H **shared/divided**
-> among them? This changes historical labour cost materially. Confirm before the
-> import runs.
+**Hours are TOTAL man-hours, split equally across the crew** (owner-confirmed
+from the data: a solo oil change = 3h, a 2-mechanic oil change = 6.5h ≈ 2×, so
+"Time(Hrs)" scales with crew size). Therefore:
+
+```
+labour(row) = (H / N) × Σ(crew rates)      ≡  H × average crew rate
+```
+
+Each of the N split rows stores **H/N** hours; summing (hours × rate) yields the
+formula above. Built + tested (`hours / crew` in the daily-work split; core +
+HTTP tests assert it). Owner to give final sign-off, but this is the default.
 
 ## Correction #4 — mechanic-name resolver for rate lookup
 
@@ -67,6 +73,20 @@ Same spelling problem as vehicles ("seetha" vs "Seethananda/seetha",
 "Vinod" vs "Vinod M"). Resolve every raw mechanic name to one canonical
 mechanic before costing. Reuse `lib/mechanics.resolveMechanic()` (built + tested);
 unknown spellings queue as pending mechanic aliases for a human to link.
+
+## Two labour models — repairs hourly, services flat
+
+Confirmed from the data: **service jobs carry a FLAT labour charge** (the
+`service` sheet's labour column is 1000/1500/1750…, not hours×rate). Do **not**
+run service jobs through the hourly engine.
+
+- Schema: `job_cards.flat_labour` (built). When set, costing uses it as
+  `labour_cost` and skips the hourly engine; the closure gate requires it to be
+  set for a service to close.
+- Repairs: hourly, with the H/N crew split above.
+- **Migration:** carry each `service` row's recorded labour amount straight into
+  `flat_labour` (and its filter/oil/total columns into the respective buckets);
+  carry `C-job` repair rows through the hourly path via their daily-work rows.
 
 ## Import order
 

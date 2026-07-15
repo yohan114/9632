@@ -275,13 +275,18 @@ router.post(
       }
     }
 
+    // "Time(Hrs)" is TOTAL man-hours for the crew, so split equally across the N
+    // mechanics: each row gets H/N hours -> labour = (H/N)×Σ(crew rates).
+    const crew = insertRows.length || 1;
+    const perRowHours = isExternal ? 0 : hours / crew;
+
     const created = tx(() => {
       const ids = [];
       for (const mech of insertRows) {
         const info = run(
           `INSERT INTO job_daily_work (job_id, work_date, mechanic, description, hours, is_external, external_value)
            VALUES (?, ?, ?, ?, ?, ?, ?)`,
-          id, workDate, mech, b.description || null, hours, isExternal, isExternal ? toNum(b.external_value, 0) : 0
+          id, workDate, mech, b.description || null, perRowHours, isExternal, isExternal ? toNum(b.external_value, 0) : 0
         );
         ids.push(info.lastInsertRowid);
       }
@@ -368,6 +373,26 @@ router.delete(
     run('DELETE FROM job_parts WHERE id = ? AND job_id = ?', toInt(req.params.partId), id);
     costing.refreshJobTotals(id);
     res.json({ ok: true });
+  })
+);
+
+// ---- service flat labour --------------------------------------------------
+
+router.patch(
+  '/:id/flat-labour',
+  requireAuth,
+  requireRole('workshop', 'operational_manager'),
+  asyncHandler((req, res) => {
+    const id = toInt(req.params.id);
+    const job = get('SELECT * FROM job_cards WHERE id = ?', id);
+    if (!job) return res.status(404).json({ error: 'Job not found' });
+    if (!editable(job, req.user)) return res.status(423).json({ error: 'Job is closed (locked)' });
+    if (job.type !== 'service') return res.status(400).json({ error: 'Flat labour applies to service jobs only' });
+    const amount = req.body.flat_labour === '' || req.body.flat_labour == null ? null : toNum(req.body.flat_labour);
+    run('UPDATE job_cards SET flat_labour = ? WHERE id = ?', amount, id);
+    costing.refreshJobTotals(id);
+    audit.record({ userId: req.user.id, entity: 'job_card', entityId: id, action: 'set_flat_labour', after: { flat_labour: amount } });
+    res.json(loadJob(id));
   })
 );
 

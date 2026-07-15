@@ -18,7 +18,15 @@ db.pragma('foreign_keys = ON');
 function migrate() {
   const schema = fs.readFileSync(path.join(__dirname, 'schema.sql'), 'utf8');
   db.exec(schema);
+  // Upgrade-safe additive column checks (CREATE TABLE IF NOT EXISTS won't add
+  // columns to a table that already exists).
+  ensureColumn('job_cards', 'flat_labour', 'REAL');
   return db;
+}
+
+function ensureColumn(table, col, def) {
+  const exists = db.prepare(`PRAGMA table_info(${table})`).all().some((c) => c.name === col);
+  if (!exists) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${def}`);
 }
 
 // Thin helpers so route code reads the same everywhere.

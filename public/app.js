@@ -321,8 +321,10 @@ async function jobDetail(c, id) {
       <a href="#/assets/${job.asset_id}">${esc(job.asset_code || '—')}</a>
       <span class="muted">${esc(job.project_name || '')}</span>
       <div class="spacer"></div>
+      ${job.type === 'service' && can('workshop', 'operational_manager') && job.status !== 'CLOSED' ? `<button class="sm" id="flatlabour">Service labour${job.flat_labour != null ? ': ' + money(job.flat_labour) : ' (flat)'}</button>` : ''}
       <a class="btn sm" href="/api/reports/job/${job.id}/costsheet.html" target="_blank">🖨 Cost Sheet</a>
     </div>
+    ${job.type === 'service' ? `<p class="muted" style="font-size:12px">Service job — labour is a flat charge${job.flat_labour == null ? ' (not set yet)' : ''}, not hours×rate.</p>` : ''}
     <p>${esc(job.description || '')}</p>
     ${transitions ? `<div class="card section"><h3>Actions</h3><div class="pill-row" id="transitions">${transitions}</div>
       ${!r.ready ? `<p class="err" style="margin-top:10px">⚠ Closure gate — ${r.missing.length} line(s) awaiting price:</p><ul>${r.missing.map((m) => `<li class="muted">${esc(m)}</li>`).join('')}</ul>` : '<p class="ok" style="margin-top:10px">✓ Fully priced — ready to close</p>'}
@@ -362,6 +364,9 @@ async function jobDetail(c, id) {
 
   // wire actions
   qsa('#transitions button').forEach((b) => b.onclick = () => doTransition(job.id, b.dataset.to, job.status));
+  if (qs('#flatlabour')) qs('#flatlabour').onclick = () => modal('Service Labour (flat charge)',
+    field('Flat labour amount (Rs)', 'flat_labour', { type: 'number', value: job.flat_labour ?? '' }) + '<div style="margin-top:12px;text-align:right"><button class="primary" id="s">Save</button></div>',
+    (body, close) => { qs('#s', body).onclick = async () => { try { await api(`/jobs/${job.id}/flat-labour`, { method: 'PATCH', body: formData(body) }); close(); render(); } catch (e) { toast(e.message, 'err'); } }; });
   if (qs('#adddaily')) qs('#adddaily').onclick = () => addDailyModal(job.id);
   if (qs('#addpart')) qs('#addpart').onclick = () => addPartModal(job.id);
   qsa('[data-del-daily]').forEach((b) => b.onclick = async () => { await api(`/jobs/${job.id}/daily-work/${b.dataset.delDaily}`, { method: 'DELETE' }); render(); });
@@ -390,7 +395,7 @@ async function doTransition(jobId, to, current) {
 async function addDailyModal(jobId) {
   modal('Add Daily Work', `
     <div class="row">${field('Date', 'work_date', { type: 'date', value: new Date().toISOString().slice(0, 10) })}${field('Mechanic(s) — comma / & separated', 'mechanic', { placeholder: 'e.g. Buddhika, Krishna' })}</div>
-    <p class="muted" style="font-size:12px;margin:2px 0 0">Several mechanics create one costed row each. A slash name ("Seethananda/seetha") stays one person.</p>
+    <p class="muted" style="font-size:12px;margin:2px 0 0">Several mechanics split the total hours equally (one costed row each). A slash name ("Seethananda/seetha") stays one person.</p>
     ${field('Description', 'description')}
     ${field('Hours', 'hours', { type: 'number' })}
     ${field('External repair (outside work)', 'is_external', { type: 'checkbox' })}
