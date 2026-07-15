@@ -10,6 +10,7 @@
     "migrate": "node src/db/migrate.js",
     "seed": "node src/db/seed.js",
     "reset": "node src/db/migrate.js --reset && node src/db/seed.js",
+    "migrate:real": "node src/migrate/run.js --reset",
     "backup": "node scripts/backup.js",
     "restore": "node scripts/restore.js",
     "admin": "node scripts/admin.js",

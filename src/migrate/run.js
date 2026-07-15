@@ -20,7 +20,7 @@ const only = process.argv.includes('--step') ? process.argv[process.argv.indexOf
 
 function banner(t) { console.log('\n' + '='.repeat(64) + '\n  ' + t + '\n' + '='.repeat(64)); }
 
-if (!only || only === '1') {
+if (!only || only === '1' || only === 'assets') {
   banner('Step 3 — Asset registry + alias resolver');
   const rep = require('./01_assets').runStep();
   console.log(`  Projects migrated:              ${rep.projects}`);
@@ -34,6 +34,17 @@ if (!only || only === '1') {
   console.log('  ' + '-'.repeat(50));
   console.log(`  TOTAL assets:                   ${rep.total_assets}  (register ${rep.register_assets} + usage ${rep.usage_created})`);
   console.log(`  TOTAL aliases:                  ${rep.total_aliases}  (resolved ${rep.aliases_resolved}, pending ${rep.aliases_pending})`);
+}
+
+if (!only || only === 'jobs') {
+  banner('Job history import (c_job + requested — unified)');
+  const j = require('./05_jobs').runStep();
+  console.log(`  Requested rows:                 ${j.requested_rows}  (duplicate job-no skipped: ${j.duplicates_skipped})`);
+  console.log(`  C-job rows:                     ${j.cjob_rows}  (enriched existing: ${j.enriched_from_cjob}, new: ${j.cjob_rows - j.enriched_from_cjob})`);
+  console.log(`  Vehicles unlinked to an asset:  ${j.unlinked_vehicle}${j.unresolved_samples.length ? '  e.g. ' + j.unresolved_samples.join(', ') : ''}`);
+  console.log('  ' + '-'.repeat(50));
+  console.log(`  TOTAL job cards:                ${j.total_jobs}  (CLOSED ${j.closed}, open/requested ${j.open})`);
+  console.log(`  With a recorded cost:           ${j.with_recorded_cost}  (Σ Rs ${j.recorded_cost_sum.toLocaleString('en-US')})`);
 }
 
 console.log('\nDone.');
