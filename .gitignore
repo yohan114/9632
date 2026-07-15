@@ -1,0 +1,23 @@
+node_modules/
+*.log
+npm-debug.log*
+
+# Local database + backups (data is seeded/migrated, never committed)
+data/*.db
+data/*.db-shm
+data/*.db-wal
+backups/
+
+# Uploaded evidence photos
+uploads/*
+!uploads/.gitkeep
+
+# Environment
+.env
+.env.local
+
+# Editor / OS
+.DS_Store
+.vscode/
+.idea/
+*.swp

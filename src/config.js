@@ -1,0 +1,51 @@
+'use strict';
+
+const fs = require('fs');
+const path = require('path');
+
+// Minimal .env loader (avoids an extra dependency). Only sets vars not already
+// present in the real environment, so container/CI env always wins.
+function loadDotEnv(file) {
+  try {
+    const raw = fs.readFileSync(file, 'utf8');
+    for (const line of raw.split(/\r?\n/)) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith('#')) continue;
+      const eq = trimmed.indexOf('=');
+      if (eq === -1) continue;
+      const key = trimmed.slice(0, eq).trim();
+      let val = trimmed.slice(eq + 1).trim();
+      if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+        val = val.slice(1, -1);
+      }
+      if (!(key in process.env)) process.env[key] = val;
+    }
+  } catch {
+    /* no .env file — fall back to defaults below */
+  }
+}
+
+const ROOT = path.resolve(__dirname, '..');
+loadDotEnv(path.join(ROOT, '.env'));
+
+function int(name, def) {
+  const v = parseInt(process.env[name], 10);
+  return Number.isFinite(v) ? v : def;
+}
+
+const config = {
+  root: ROOT,
+  port: int('PORT', 3000),
+  dbPath: path.resolve(ROOT, process.env.DB_PATH || './data/workshopone.db'),
+  sessionSecret: process.env.SESSION_SECRET || 'dev-insecure-secret-change-me',
+  sessionTtlHours: int('SESSION_TTL_HOURS', 12),
+  uploadDir: path.resolve(ROOT, process.env.UPLOAD_DIR || './uploads'),
+  backupDir: path.resolve(ROOT, process.env.BACKUP_DIR || './backups'),
+  backupIntervalMinutes: int('BACKUP_INTERVAL_MINUTES', 60),
+  backupRetention: int('BACKUP_RETENTION', 48),
+  forecastWindowDays: int('FORECAST_WINDOW_DAYS', 90),
+  lowStockDays: int('LOW_STOCK_DAYS', 14),
+  isProduction: process.env.NODE_ENV === 'production',
+};
+
+module.exports = config;

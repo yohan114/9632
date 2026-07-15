@@ -1,0 +1,36 @@
+{
+  "name": "workshopone",
+  "version": "0.1.0",
+  "description": "WorkshopOne — Central Workshop Master System for Edward & Christie (Pvt) Ltd. Unifies Stores, Oil & Lubricant, and Job Cards so every part, litre, battery and labour hour rolls up to the asset and the job card.",
+  "type": "commonjs",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "migrate": "node src/db/migrate.js",
+    "seed": "node src/db/seed.js",
+    "reset": "node src/db/migrate.js --reset && node src/db/seed.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "keywords": [
+    "workshop",
+    "fleet",
+    "inventory",
+    "job-cards",
+    "costing",
+    "sqlite"
+  ],
+  "author": "Edward & Christie Central Work Shop",
+  "license": "UNLICENSED",
+  "private": true,
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "better-sqlite3": "^11.10.0",
+    "cookie-parser": "^1.4.7",
+    "exceljs": "^4.4.0",
+    "express": "^4.22.2"
+  }
+}
