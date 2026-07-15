@@ -10,6 +10,10 @@
     "migrate": "node src/db/migrate.js",
     "seed": "node src/db/seed.js",
     "reset": "node src/db/migrate.js --reset && node src/db/seed.js",
+    "backup": "node scripts/backup.js",
+    "restore": "node scripts/restore.js",
+    "admin": "node scripts/admin.js",
+    "acceptance": "node scripts/acceptance.js",
     "test": "node --test"
   },
   "engines": {

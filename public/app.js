@@ -43,14 +43,34 @@ function toast(msg, kind = 'ok') {
   setTimeout(() => t.remove(), 3000);
 }
 
-function modal(title, bodyHtml, onMount) {
+function modal(title, bodyHtml, onMount, opts = {}) {
   const bg = document.createElement('div');
   bg.className = 'modal-bg';
   bg.innerHTML = `<div class="modal"><h2>${esc(title)}</h2><div class="mbody">${bodyHtml}</div></div>`;
-  bg.addEventListener('click', (e) => { if (e.target === bg) bg.remove(); });
+  if (!opts.persistent) bg.addEventListener('click', (e) => { if (e.target === bg) bg.remove(); });
   document.body.appendChild(bg);
   if (onMount) onMount(qs('.mbody', bg), () => bg.remove());
   return bg;
+}
+
+function forceChangePassword() {
+  modal('Set a new password', `
+    <p class="muted">Your account requires a new password before you can continue.</p>
+    ${field('New password', 'new_password', { type: 'password' })}
+    ${field('Confirm password', 'confirm', { type: 'password' })}
+    <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Set password</button></div>`,
+    (body, close) => {
+      qs('#s', body).onclick = async () => {
+        const d = formData(body);
+        if (!d.new_password || d.new_password.length < 6) return toast('At least 6 characters', 'err');
+        if (d.new_password !== d.confirm) return toast('Passwords do not match', 'err');
+        try {
+          await api('/auth/change-password', { method: 'POST', body: { new_password: d.new_password } });
+          if (ME) ME.mustChangePassword = false;
+          toast('Password updated'); close(); render();
+        } catch (e) { toast(e.message, 'err'); }
+      };
+    }, { persistent: true });
 }
 
 function field(label, name, opts = {}) {
@@ -97,6 +117,7 @@ function renderShell() {
       <div class="brand">Workshop<span>One</span></div>
       <div class="spacer"></div>
       <div class="who">${esc(ME.fullName || ME.username)} · ${ME.roles.join(', ')}</div>
+      <button class="sm" id="chpw">Password</button>
       <button class="sm" id="logout">Logout</button>
     </div>
     <div class="layout">
@@ -104,6 +125,11 @@ function renderShell() {
       <main class="content" id="content"><div class="muted">Loading…</div></main>
     </div>`;
   qs('#logout').onclick = async () => { await api('/auth/logout', { method: 'POST' }); ME = null; location.hash = ''; boot(); };
+  qs('#chpw').onclick = () => modal('Change password', `
+    ${field('Current password', 'current_password', { type: 'password' })}
+    ${field('New password', 'new_password', { type: 'password' })}
+    <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Update</button></div>`,
+    (body, close) => { qs('#s', body).onclick = async () => { try { await api('/auth/change-password', { method: 'POST', body: formData(body) }); toast('Password updated'); close(); } catch (e) { toast(e.message, 'err'); } }; });
   qs('#ham').onclick = () => qs('#nav').classList.toggle('open');
   qsa('#nav a').forEach((a) => a.addEventListener('click', () => qs('#nav').classList.remove('open')));
 }
@@ -675,15 +701,22 @@ function renderLogin(err) {
     <p class="muted" style="text-align:center;margin-top:14px;font-size:12px">Demo: admin/admin · store/store · mech/mech · transport/transport · ops/ops</p>
   </div></div>`;
   const go = async () => {
-    try { ME = await api('/auth/login', { method: 'POST', body: { username: qs('#u').value, password: qs('#p').value } }); location.hash = '#/dashboard'; render(); }
-    catch (e) { renderLogin(e.message); }
+    try {
+      ME = await api('/auth/login', { method: 'POST', body: { username: qs('#u').value, password: qs('#p').value } });
+      location.hash = '#/dashboard'; render();
+      if (ME.mustChangePassword) forceChangePassword();
+    } catch (e) { renderLogin(e.message); }
   };
   qs('#login').onclick = go;
   qs('#p').addEventListener('keydown', (e) => { if (e.key === 'Enter') go(); });
 }
 
 async function boot() {
-  try { ME = await api('/auth/me'); if (!location.hash) location.hash = '#/dashboard'; render(); }
-  catch { renderLogin(); }
+  try {
+    ME = await api('/auth/me');
+    if (!location.hash) location.hash = '#/dashboard';
+    render();
+    if (ME.mustChangePassword) forceChangePassword();
+  } catch { renderLogin(); }
 }
 boot();

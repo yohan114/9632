@@ -29,7 +29,31 @@ router.post(
       username: user.username,
       fullName: user.full_name,
       roles: auth.rolesForUser(user.id),
+      mustChangePassword: !!user.must_change_password,
     });
+  })
+);
+
+router.post(
+  '/change-password',
+  auth.requireAuth,
+  asyncHandler((req, res) => {
+    require_(req.body, ['new_password']);
+    const user = get('SELECT * FROM users WHERE id = ?', req.user.id);
+    // The current password is required unless this is the forced first-login change.
+    if (!req.user.mustChangePassword) {
+      require_(req.body, ['current_password']);
+      if (!auth.verifyPassword(req.body.current_password, user.password_hash)) {
+        return res.status(401).json({ error: 'Current password is incorrect' });
+      }
+    }
+    if (String(req.body.new_password).length < 6) {
+      return res.status(400).json({ error: 'New password must be at least 6 characters' });
+    }
+    require('../db').run('UPDATE users SET password_hash = ?, must_change_password = 0 WHERE id = ?',
+      auth.hashPassword(req.body.new_password), req.user.id);
+    audit.record({ userId: req.user.id, entity: 'user', entityId: req.user.id, action: 'change_password' });
+    res.json({ ok: true });
   })
 );
 

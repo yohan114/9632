@@ -45,6 +45,35 @@ Configuration is via `.env` (see `.env.example`) — port, DB path, session
 lifetime, upload/backup dirs, and the forecasting windows (90-day window,
 14-day low-stock threshold, matching the existing Oil & Lubricant settings).
 
+## Deployment & operations (Phase 4)
+
+Runs as one always-on Node process on a single PC that owns the SQLite file;
+other PCs/phones use it via browser over the LAN. Full guides in `deploy/`:
+
+- **`deploy/DEPLOY.md`** — server packaging (pm2 `ecosystem.config.js` /
+  systemd `deploy/workshopone.service`), binding `0.0.0.0`, static IP + firewall
+  for LAN access, and the UPS note.
+- **`deploy/CUTOVER.md`** — parallel-run then switch-over plan; old systems kept
+  archived read-only.
+- **`deploy/RUNBOOK.md`** — operator one-pager: URL, add a user, daily 2-min
+  health check, restart, restore.
+
+Operational scripts:
+
+```bash
+npm run backup                          # take a DB snapshot now
+npm run restore -- --verify --latest    # prove a restore works (non-destructive)
+npm run restore -- --replace --yes --latest   # restore into the live DB (stop server first)
+npm run admin -- create-admin boss 'TempPass1'   # real admin (forced pw change on first login)
+npm run admin -- rotate-seed            # force pw change on all demo accounts before go-live
+npm run acceptance                      # run the go-live acceptance checklist (8 checks)
+```
+
+Backups run automatically every `BACKUP_INTERVAL_MINUTES` (default 30) with
+retention and an optional second-location mirror; a restore is verifiable with
+one command. New/created users are forced to change their password on first
+login (enforced server-side).
+
 ---
 
 ## Architecture

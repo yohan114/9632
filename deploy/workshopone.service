@@ -1,0 +1,25 @@
+# systemd unit for WorkshopOne (Linux server option, alternative to pm2).
+# 1. Edit the placeholders below (User, WorkingDirectory, paths).
+# 2. sudo cp deploy/workshopone.service /etc/systemd/system/workshopone.service
+# 3. sudo systemctl daemon-reload && sudo systemctl enable --now workshopone
+# Manage with: systemctl {status|restart|stop} workshopone ; logs: journalctl -u workshopone -f
+
+[Unit]
+Description=WorkshopOne — Central Workshop Master System
+After=network.target
+
+[Service]
+Type=simple
+User=REPLACE_WITH_SERVICE_USER
+WorkingDirectory=REPLACE_WITH_APP_DIR
+ExecStart=/usr/bin/node src/server.js
+Restart=always
+RestartSec=3
+Environment=NODE_ENV=production
+Environment=PORT=3000
+Environment=HOST=0.0.0.0
+# Optional: mirror backups to a mounted drive/share
+# Environment=BACKUP_MIRROR_DIR=/mnt/backup-drive/workshopone
+
+[Install]
+WantedBy=multi-user.target

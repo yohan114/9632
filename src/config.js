@@ -36,13 +36,16 @@ function int(name, def) {
 const config = {
   root: ROOT,
   port: int('PORT', 3000),
+  host: process.env.HOST || '0.0.0.0', // bind all interfaces so the LAN can reach it
   dbPath: path.resolve(ROOT, process.env.DB_PATH || './data/workshopone.db'),
   sessionSecret: process.env.SESSION_SECRET || 'dev-insecure-secret-change-me',
   sessionTtlHours: int('SESSION_TTL_HOURS', 12),
   uploadDir: path.resolve(ROOT, process.env.UPLOAD_DIR || './uploads'),
   backupDir: path.resolve(ROOT, process.env.BACKUP_DIR || './backups'),
-  backupIntervalMinutes: int('BACKUP_INTERVAL_MINUTES', 60),
-  backupRetention: int('BACKUP_RETENTION', 48),
+  // Optional second location (external drive / network share) mirrored on each snapshot.
+  backupMirrorDir: process.env.BACKUP_MIRROR_DIR ? path.resolve(ROOT, process.env.BACKUP_MIRROR_DIR) : null,
+  backupIntervalMinutes: int('BACKUP_INTERVAL_MINUTES', 30),
+  backupRetention: int('BACKUP_RETENTION', 96),
   forecastWindowDays: int('FORECAST_WINDOW_DAYS', 90),
   lowStockDays: int('LOW_STOCK_DAYS', 14),
   isProduction: process.env.NODE_ENV === 'production',

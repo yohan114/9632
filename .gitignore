@@ -1,6 +1,7 @@
 node_modules/
 *.log
 npm-debug.log*
+logs/
 
 # Local database + backups (data is seeded/migrated, never committed)
 data/*.db

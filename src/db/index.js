@@ -21,6 +21,7 @@ function migrate() {
   // Upgrade-safe additive column checks (CREATE TABLE IF NOT EXISTS won't add
   // columns to a table that already exists).
   ensureColumn('job_cards', 'flat_labour', 'REAL');
+  ensureColumn('users', 'must_change_password', 'INTEGER NOT NULL DEFAULT 0');
   return db;
 }
 
