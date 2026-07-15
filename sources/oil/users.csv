@@ -1,0 +1,6 @@
+id,username,password_hash,full_name,role,active,created_at,updated_at
+1,admin,[REDACTED],Administrator,admin,1,2026-06-18 14:30:55,2026-06-20 06:15:09
+2,Bandula,[REDACTED],Bandula Ekanayake,storekeeper,1,2026-06-18 14:34:13,2026-06-18 14:34:13
+3,Priyankara,[REDACTED],,storekeeper,1,2026-06-18 14:34:40,2026-06-19 03:44:12
+4,gggg,[REDACTED],gggg,manager,1,2026-06-18 14:37:06,2026-06-18 14:37:06
+5,malinga,[REDACTED],Malinga Livera,admin,1,2026-07-04 06:17:32,2026-07-04 06:19:11

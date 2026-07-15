@@ -1,0 +1,86 @@
+id,batteryId,serialNumber,movementType,movementDate,movementDateISO,fromLocation,toLocation,conditionAfter,issuedBy,mrnNum,notes,createdAt
+61,19,M239972243,Register,2026-06-08,2026-06-08,Unknown,In Store,Old,,,Initial registration. ,2026-06-08T12:44:58.771Z
+62,20,M230056860,Register,2026-06-08,2026-06-08,Unknown,In Store,Old,,,Initial registration. ,2026-06-08T12:55:08.585Z
+63,21,M240255857,Register,2026-06-08,2026-06-08,Unknown,In Store,Old,,,Initial registration. ,2026-06-08T12:57:00.998Z
+64,22,M249228196,Register,2026-06-08,2026-06-08,Unknown,In Store,Old,,,Initial registration. Work Shop,2026-06-08T13:01:45.052Z
+65,23,AC1423624,Register,2026-06-08,2026-06-08,Unknown,In Store,Old,,,Initial registration. 28-4314,2026-06-08T13:04:04.406Z
+66,24,M238123689,Register,2026-06-08,2026-06-08,Unknown,In Store,Old,,,Initial registration. 40-800,2026-06-08T13:06:57.510Z
+67,25,M230066365,Register,2026-06-08,2026-06-08,Unknown,In Store,Old,,,Initial registration. LK-6738,2026-06-08T13:08:51.554Z
+68,26,M230795540,Register,2026-06-08,2026-06-08,Unknown,In Store,Old,,,Initial registration. PY-2408,2026-06-08T13:10:54.680Z
+69,27,M250333846,Register,2026-06-08,2026-06-08,Unknown,In Store,Old,,,Initial registration. LK-2366,2026-06-08T13:12:43.564Z
+70,28,AAF2242X116322,Register,2026-06-08,2026-06-08,Unknown,In Store,Old,,,Initial registration. PH-3945,2026-06-08T13:13:57.746Z
+71,29,M24024700,Register,2026-06-08,2026-06-08,Unknown,In Store,Old,,,Initial registration. PR-1409,2026-06-08T13:15:04.795Z
+72,30,M230081876,Register,2026-06-08,2026-06-08,Unknown,In Store,Old,,,Initial registration. LK-4058,2026-06-08T13:15:58.044Z
+73,31,M142255963,Register,2026-06-08,2026-06-08,Unknown,In Store,Old,,,Initial registration. SL-08,2026-06-08T13:16:54.655Z
+74,32,M230068165,Register,2026-06-08,2026-06-08,Unknown,In Store,Old,,,Initial registration. PTA-08,2026-06-08T13:46:24.232Z
+75,33,M230081997,Register,2026-06-08,2026-06-08,Unknown,In Store,Old,,,Initial registration. LK-4058,2026-06-08T13:47:31.893Z
+76,34,M230039820,Register,2026-06-08,2026-06-08,Unknown,In Store,Old,,,Initial registration. VR-44,2026-06-08T13:48:30.017Z
+77,35,M230039478,Register,2026-06-08,2026-06-08,Unknown,In Store,Old,,,Initial registration. VR-44,2026-06-08T13:49:09.776Z
+78,36,M229766347,Register,2026-06-08,2026-06-08,Unknown,In Store,Old,,,Initial registration. PX-2180,2026-06-08T13:50:54.194Z
+79,37,AAF2217X1,Register,2026-06-08,2026-06-08,Unknown,In Store,Old,,,Initial registration. PA-4879,2026-06-08T13:52:21.825Z
+80,38,M140395913,Register,2026-06-08,2026-06-08,Unknown,In Store,Old,,,Initial registration. 325-3448,2026-06-08T13:53:07.839Z
+81,39,M23000289,Register,2026-06-08,2026-06-08,Unknown,In Store,Old,,,Initial registration. LK-4061,2026-06-08T13:54:11.849Z
+82,40,M250338265,Register,2026-06-08,2026-06-08,Unknown,In Store,Old,,,Initial registration. ZB-1047,2026-06-08T13:55:03.679Z
+83,41,M240297377,Register,2026-06-08,2026-06-08,Unknown,In Store,Old,,,Initial registration. PTR-01,2026-06-08T13:56:01.709Z
+84,42,M240297955,Register,2026-06-08,2026-06-08,Unknown,In Store,Old,,,Initial registration. LM-5721,2026-06-08T13:57:14.476Z
+85,43,M248225832,Register,2026-06-08,2026-06-08,Unknown,In Store,Old,,,Initial registration. Work Shop,2026-06-08T13:58:55.669Z
+86,44,M230814790,Register,2026-06-08,2026-06-08,Unknown,In Store,Old,,,Initial registration. AC-27,2026-06-08T14:00:06.965Z
+87,45,M230070523,Register,2026-06-08,2026-06-08,Unknown,In Store,Old,,,Initial registration. LO-4822,2026-06-08T14:00:55.320Z
+88,46,M230069096,Register,2026-06-08,2026-06-08,Unknown,In Store,Old,,,Initial registration. LO-4822,2026-06-08T14:01:44.267Z
+89,47,M210536526,Register,2026-06-08,2026-06-08,Unknown,In Store,Old,,,"Initial registration. MG-06 , LO-8350",2026-06-08T14:02:44.714Z
+90,48,M230069463,Register,2026-06-08,2026-06-08,Unknown,In Store,Old,,,Initial registration. ZA-7925,2026-06-08T14:03:33.058Z
+105,53,M230072124,Register,2026-06-11,2026-06-11,Unknown,In Store,Old,,,Initial registration. 325-5120,2026-06-13T13:55:16.668Z
+106,23,AC1423624,Transfer,2026-06-11,2026-06-11,Store,PA-4879,Old,Bandula,,,2026-06-13T14:00:35.363Z
+107,54,M260464362,Register,2026-06-11,2026-06-11,Unknown,PA-4879,Old,,,Initial registration. PA-4879,2026-06-13T14:02:17.111Z
+108,31,M142255963,Transfer,2026-06-15,2026-06-15,Store,HEX - 21,Old,Priyankara,,,2026-06-15T10:23:15.741Z
+109,28,AAF2242X116322,Transfer,2026-06-15,2026-06-15,Store,HEX - 21,Old,Priyankara,,,2026-06-15T10:23:50.468Z
+110,23,AC1423624,Transfer,2026-06-15,2026-06-15,PA-4879,SL-08,Old,Bandula,,,2026-06-15T10:25:22.308Z
+111,54,M260464362,Transfer,2026-06-15,2026-06-15,Store,PA-4879,Old,Bandula,,,2026-06-15T10:30:39.732Z
+112,40,M250338265,Transfer,2026-06-16,2026-06-16,Store,ZB-1047,Old,Priyankara,,,2026-06-17T04:27:01.664Z
+113,55,250421138,Register,2026-06-17,2026-06-17,Unknown,In Store,Old,,,Initial registration. SR-11,2026-06-17T05:11:08.854Z
+114,55,250421138,Transfer,2026-06-18,2026-06-18,Store,SR-11,Old,Priyankara,,,2026-06-18T02:57:23.192Z
+115,56,M50564225,Register,2026-06-17,2026-06-17,Unknown,RS-0401,Old,,,Initial registration. PR-1504,2026-06-18T02:59:28.748Z
+116,57,M230104913,Register,2026-06-16,2026-06-16,Unknown,In Store,Old,,,Initial registration. GL-0019,2026-06-20T11:12:10.496Z
+117,58,M230072159,Register,2026-06-18,2026-06-18,Unknown,In Store,Old,,,Initial registration. LJ-5203,2026-06-20T11:12:59.537Z
+118,38,M140395913,Issue,2026-06-19,2026-06-19,Store,PR-1469,Old,Priyankara,,,2026-06-20T11:15:41.661Z
+119,57,M230104913,Transfer,2026-06-20,2026-06-20,Store,GL-0019,Old,,,,2026-06-20T11:16:25.982Z
+120,58,M230072159,Transfer,2026-06-20,2026-06-20,Store,GL-0019,Old,,,,2026-06-20T11:16:47.704Z
+184,77,M140514590,Register,2026-06-24,2026-06-24,Unknown,In Store,Old,,,Initial registration. LN-1867,2026-06-24T10:19:56.838Z
+185,77,M140514590,Transfer,2026-06-24,2026-06-24,Store,GE-120,Old,Priyankara,,,2026-06-24T10:20:58.168Z
+186,19,M239972243,Dispose,2026-06-24,2026-06-24,Store,Disposed,Expired,Priyankara,MTN-5713,H/O to Mr Bandara (SK),2026-07-09T06:55:57.867Z
+187,19,M239972243,Dispose,2026-06-24,2026-06-24,Disposed,Disposed,Expired,Priyankara,MTN-5713,H/O to Mr Bandara (SK),2026-07-09T06:55:59.017Z
+188,21,M240255857,Dispose,2026-06-24,2026-06-24,Store,Disposed,Expired,Priyankara,MTN-5713,H/O to Mr Bandara (SK),2026-07-09T06:56:59.197Z
+189,78,.,Register,2026-06-24,2026-06-24,Unknown,In Store,Old,,,Initial registration. LM-7949,2026-07-09T08:13:30.896Z
+190,22,M249228196,Dispose,2026-07-09,2026-07-09,Store,Disposed,Old,Priyankara,MTN-5713,H/O to Mr Bandara (SK),2026-07-09T08:17:20.701Z
+191,22,M249228196,Dispose,2026-07-09,2026-07-09,Disposed,Disposed,Old,Priyankara,MTN-5713,H/O to Mr Bandara (SK),2026-07-09T08:17:23.110Z
+192,26,M230795540,Return,2026-06-24,2026-06-24,Store,Store,Old,Priyankara,MTN-5713,H/O To Mr Bandara (SK) For Warranty Repair,2026-07-09T08:25:50.355Z
+193,26,M230795540,Transfer,2026-06-24,2026-06-24,Store,Main Store,Old,Priyankara,MTN-5711,H/O to Mr Bandara For Warranty Repair,2026-07-09T08:42:03.816Z
+194,29,M24024700,Dispose,2026-06-24,2026-06-24,Store,Disposed,Expired,Priyankara,MTN-5713,H/O to Mr Bandara (SK),2026-07-09T08:43:54.876Z
+195,32,M230068165,Dispose,2026-06-24,2026-06-24,Store,Disposed,Expired,Priyankara,MTN-5711,H/O to Mr Bandara (SK),2026-07-09T08:58:51.734Z
+196,35,M230039478,Dispose,2026-06-24,2026-06-24,Store,Disposed,Expired,Priyankara,MTN-5711,H/O to Mr Bandara (SK),2026-07-09T09:02:46.966Z
+197,37,AAF2217X1,Transfer,2026-06-24,2026-06-24,Store,Main Store,Old,Priyankara,MTN-57812,H/O to Mr Bandara (SK) For Warrenty Reapair,2026-07-09T09:25:39.922Z
+198,26,M230795540,Transfer,2026-06-24,2026-06-24,Main Store,PR-1505,Old,Priyankara,Dinesha,,2026-07-09T09:26:50.459Z
+199,39,M23000289,Dispose,2026-06-24,2026-06-24,Store,Disposed,Expired,Priyankara,MTN-57812,H/O to Mr Bandara (SK),2026-07-09T09:30:44.963Z
+200,42,M240297055,Dispose,2026-06-24,2026-06-24,Store,Disposed,Expired,priyankara,MTN-57812,H/O to Mr Bandara (SK),2026-07-09T09:34:05.779Z
+201,43,M248225832,Dispose,2026-06-24,2026-06-24,Store,Disposed,Expired,Priyakara,MTN-57812,H/O to Mr Bandara (SK),2026-07-09T09:34:48.594Z
+202,44,M230814790,Dispose,2026-06-24,2026-06-24,Store,Disposed,Expired,Priyankara,MTN-57812,H/O to Mr Bandara (SK),2026-07-09T09:35:30.474Z
+203,78,.,Dispose,2026-06-24,2026-06-24,Store,Disposed,Expired,Priyankara,MTN-57813,H/O to Mr Bandara (SK),2026-07-09T09:36:12.153Z
+204,25,M230066365,Transfer,2026-06-25,2026-06-25,Store,LK-5586,Old,,,,2026-07-09T09:37:07.800Z
+205,34,M230039820,Transfer,2026-06-24,2026-06-24,Store,LK-5586,Old,,,,2026-07-09T09:38:48.480Z
+206,79,M233120940,Register,2026-06-25,2026-06-25,Unknown,In Store,Old,,,Initial registration. MG-06,2026-07-09T09:39:55.669Z
+207,22,M249228196,Dispose,2026-06-24,2026-06-24,Disposed,Disposed,Expired,Priyankara,MTN-57813,H/O to Mr Bandara (SK),2026-07-09T09:53:45.532Z
+208,77,M140514590,Transfer,2026-06-25,2026-06-25,GE-120,LK-4058,Old,Priyankara,,,2026-07-09T09:56:28.131Z
+209,40,M250338265,Transfer,2026-07-09,2026-07-09,ZB-1047,ZB-1047,Old,Priyankara,,,2026-07-09T10:07:56.698Z
+210,30,M230081876,Transfer,2026-06-26,2026-06-26,Store,LK-4058,Old,Priyankara,,,2026-07-09T10:33:10.279Z
+211,36,M229766347,Transfer,2026-06-27,2026-06-27,Store,PX-2180,Old,Priyankara,,,2026-07-09T10:38:26.622Z
+212,40,M250338265,Transfer,2026-06-27,2026-06-27,ZB-1047,ZB 1047,Old,Priyankara,,,2026-07-09T10:39:52.946Z
+213,80,M140537953,Register,2026-07-04,2026-07-04,Unknown,In Store,Old,,,Initial registration. PA-6399,2026-07-09T10:42:02.130Z
+214,81,M158752495,Register,2026-07-04,2026-07-04,Unknown,In Store,Old,,,Initial registration. LK-5047,2026-07-09T11:13:57.998Z
+215,80,M140537953,Transfer,2026-07-04,2026-07-04,Store,28-4314 Double Cab,Old,Priyankara,,,2026-07-09T11:14:39.086Z
+216,81,M158752495,Transfer,2026-07-05,2026-07-05,Store,VR-59,Old,Priyankara,,,2026-07-09T11:15:32.539Z
+217,81,M158752495,Return,2026-07-06,2026-07-06,VR-59,Store,Old,,,,2026-07-09T11:16:22.466Z
+218,82,AAF224323,Register,2026-07-08,2026-07-08,Unknown,In Store,Old,,,Initial registration. ,2026-07-09T11:17:41.708Z
+219,82,AAF224323,Transfer,2026-08-09,2026-08-09,Store,RC-9894,Old,Priyankara,,Kumara,2026-07-09T11:43:56.597Z
+220,81,M158752495,Transfer,2026-07-08,2026-07-08,Store,Main Store,Old,Priyankara,MTN-57814,H/O to Mr Bandara For Warranty repair,2026-07-09T11:48:08.043Z
+221,40,M250338265,Return,2026-07-08,2026-07-08,ZB 1047,Store,Old,Priyankara,,,2026-07-09T11:49:54.875Z
+222,40,M250338265,Transfer,2026-07-09,2026-07-09,Store,Main Store,Old,Priyankara,MTN-57814,H/O to Mr Bandara for Warranty Repair,2026-07-09T11:50:48.166Z

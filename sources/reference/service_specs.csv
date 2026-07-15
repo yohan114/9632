@@ -1,0 +1,6 @@
+machine,diesel_filter,oil_filter,air_filter,trans_filter,hy_filter,oil_qty,hy_qty,trans_qty
+LD-06,4100,7750,13600,13800,21300,14,140,30
+HEX-26,19056,12850,18340,,35000,26,3,
+LI-3395,3300,4890,18340,,,16,40,9
+LA-4229,1950,3100,17500,,,18,40,9
+GE-121,55500,23400,,,,65,,
