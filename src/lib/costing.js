@@ -15,20 +15,23 @@
 // ===========================================================================
 
 const { get, all, run, tx } = require('../db');
+const mechanics = require('./mechanics');
 
-/** Hourly rate effective for a mechanic on a given date. */
+/** Hourly rate effective for a mechanic on a given date (via the name resolver). */
 function labourRateFor(mechanic, onDate) {
   if (!mechanic) return null;
+  // Resolve any raw spelling to the canonical mechanic name (read-only).
+  const name = mechanics.resolveMechanicName(mechanic);
   const row = get(
     `SELECT rate FROM labour_rates
       WHERE mechanic = ? AND effective_from <= ?
       ORDER BY effective_from DESC, id DESC LIMIT 1`,
-    mechanic,
+    name,
     onDate || todayISO()
   );
   if (row) return row.rate;
   // fall back to the most recent rate regardless of date
-  const any = get('SELECT rate FROM labour_rates WHERE mechanic = ? ORDER BY effective_from DESC, id DESC LIMIT 1', mechanic);
+  const any = get('SELECT rate FROM labour_rates WHERE mechanic = ? ORDER BY effective_from DESC, id DESC LIMIT 1', name);
   return any ? any.rate : null;
 }
 

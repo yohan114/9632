@@ -357,6 +357,50 @@ CREATE TABLE IF NOT EXISTS labour_rates (
 );
 CREATE INDEX IF NOT EXISTS idx_labour_mech ON labour_rates(mechanic, effective_from);
 
+-- Canonical mechanic registry + resolver (mirrors assets / asset_aliases).
+-- The source daily-work data spells the same person several ways
+-- ("seetha" vs "Seethananda/seetha", "Vinod" vs "Vinod M") — the resolver maps
+-- any raw spelling to one canonical mechanic so labour rates cost correctly.
+CREATE TABLE IF NOT EXISTS mechanics (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  name       TEXT NOT NULL,               -- canonical display name (matches labour_rates.mechanic)
+  name_norm  TEXT NOT NULL UNIQUE,        -- uppercase, symbols stripped
+  active     INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS mechanic_aliases (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  raw_text    TEXT NOT NULL,
+  raw_norm    TEXT NOT NULL UNIQUE,
+  mechanic_id INTEGER REFERENCES mechanics(id) ON DELETE SET NULL,
+  resolved    INTEGER NOT NULL DEFAULT 0,   -- 0 = pending human link
+  hit_count   INTEGER NOT NULL DEFAULT 0,
+  source      TEXT,
+  created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_mech_alias_mech ON mechanic_aliases(mechanic_id);
+CREATE INDEX IF NOT EXISTS idx_mech_alias_resolved ON mechanic_aliases(resolved);
+
+-- Standalone historical cost log from the Excel `job cost` sheet. Its numbers
+-- are its OWN sequence (4-984) with 0/410 matches to C-job.ref or job_no, so it
+-- is imported as a standalone log and NOT auto-linked to job_cards (job_id is
+-- left NULL until a mapping is confirmed by the owner).
+CREATE TABLE IF NOT EXISTS historical_job_costs (
+  id               INTEGER PRIMARY KEY AUTOINCREMENT,
+  seq              TEXT,                    -- the sheet's own running number
+  description      TEXT,
+  spare_parts_cost REAL,
+  external_cost    REAL,
+  labour_cost      REAL,
+  total_cost       REAL,
+  raw_ref          TEXT,                    -- any ref text carried verbatim
+  job_id           INTEGER REFERENCES job_cards(id),  -- intentionally NULL (no auto-link)
+  note             TEXT,
+  created_at       TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS job_cards (
   id                   INTEGER PRIMARY KEY AUTOINCREMENT,
   job_no               TEXT NOT NULL UNIQUE,  -- YYYY/M/R/seq (repair) or YYYY/M/S/seq (service)

@@ -12,6 +12,7 @@ const test = require('node:test');
 const assert = require('node:assert');
 const { migrate, get, run } = require('../src/db');
 const aliases = require('../src/lib/aliases');
+const mechanics = require('../src/lib/mechanics');
 const jobstate = require('../src/lib/jobstate');
 const costing = require('../src/lib/costing');
 
@@ -71,6 +72,25 @@ test('closure gate blocks an unpriced line, then clears', () => {
   assert.ok(blocked.missing.length >= 1);
   run('UPDATE job_parts SET unit_price = 250 WHERE id = ?', p);
   assert.strictEqual(costing.closureReadiness(jobId).ready, true);
+});
+
+test('mechanic split separates on comma/&/and but keeps slash-names whole', () => {
+  assert.deepStrictEqual(mechanics.splitMechanics('Buddhika, Krishna'), ['Buddhika', 'Krishna']);
+  assert.deepStrictEqual(mechanics.splitMechanics('Amal & Nuwan and Saman'), ['Amal', 'Nuwan', 'Saman']);
+  assert.deepStrictEqual(mechanics.splitMechanics('Seethananda/seetha'), ['Seethananda/seetha']); // ONE person
+  assert.deepStrictEqual(mechanics.splitMechanics('Anandan'), ['Anandan']); // internal "and" not split
+});
+
+test('mechanic resolver maps a spelling alias to the canonical rate', () => {
+  const m = mechanics.findOrCreateMechanic('Seethananda/seetha');
+  run("INSERT INTO labour_rates (mechanic, rate, effective_from) VALUES ('Seethananda/seetha', 250, '2020-01-01')");
+  const link = mechanics.resolveMechanic('seetha', { source: 'test' });
+  mechanics.linkMechanicAlias(link.aliasId, m.id);
+  assert.strictEqual(mechanics.resolveMechanicName('seetha'), 'Seethananda/seetha');
+  assert.strictEqual(costing.labourRateFor('seetha', '2024-03-10'), 250); // rate via alias
+  // an unknown spelling stays pending, never lost
+  mechanics.resolveMechanic('Vinod M', { source: 'test' });
+  assert.ok(mechanics.pendingMechanicAliases().some((a) => a.raw_text === 'Vinod M'));
 });
 
 test('snapshot freezes the total even if a price later changes', () => {

@@ -12,6 +12,7 @@ const { db, migrate, get, run, tx } = require('./index');
 const auth = require('../lib/auth');
 const aliases = require('../lib/aliases');
 const costing = require('../lib/costing');
+const mechanicsLib = require('../lib/mechanics');
 
 migrate();
 
@@ -104,11 +105,20 @@ tx(() => {
   }
 
   // ---- labour rates (from "Labor Hour") ----
-  const mechanics = [
+  const mechRates = [
     ['Anura', 425], ['Buddhika', 425], ['Chaminda', 250], ['Nuwan', 350],
     ['Saman', 300], ['Kasun', 400], ['Pradeep', 375], ['Ruwan', 325],
+    ['Seethananda/seetha', 250], // a person known by two spellings (kept as one)
   ];
-  for (const [m, r] of mechanics) run('INSERT INTO labour_rates (mechanic, rate, effective_from) VALUES (?, ?, ?)', m, r, EARLY);
+  for (const [m, r] of mechRates) {
+    mechanicsLib.findOrCreateMechanic(m);          // canonical registry
+    run('INSERT INTO labour_rates (mechanic, rate, effective_from) VALUES (?, ?, ?)', m, r, EARLY);
+  }
+  // Resolver demo: "seetha" is an alias of "Seethananda/seetha"; "Vinod M" is an
+  // unknown spelling queued for a human to link (mirrors the asset alias queue).
+  const seeAlias = mechanicsLib.resolveMechanic('seetha', { source: 'seed' });
+  mechanicsLib.linkMechanicAlias(seeAlias.aliasId, get('SELECT id FROM mechanics WHERE name_norm = ?', mechanicsLib.normalizeMechanic('Seethananda/seetha')).id);
+  mechanicsLib.resolveMechanic('Vinod M', { source: 'seed' }); // stays pending
 
   // ---- assets (canonical fleet, real-style codes) ----
   const assets = [

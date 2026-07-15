@@ -24,6 +24,7 @@ for (const r of ['admin', 'transport_manager', 'operational_manager', 'workshop'
   run('INSERT INTO user_roles (user_id, role_id) VALUES (?, (SELECT id FROM roles WHERE name = ?))', uid, r);
 }
 run('INSERT INTO labour_rates (mechanic, rate, effective_from) VALUES (?, ?, ?)', 'Anura', 400, '2020-01-01');
+run('INSERT INTO labour_rates (mechanic, rate, effective_from) VALUES (?, ?, ?)', 'Buddhika', 300, '2020-01-01');
 aliases.findOrCreateAsset('28-4314', {});
 
 const app = require('../src/server');
@@ -89,6 +90,17 @@ test('full job lifecycle + closure gate over HTTP', async () => {
   assert.strictEqual(closed.status, 200);
   assert.strictEqual(closed.body.status, 'CLOSED');
   assert.ok(get('SELECT id FROM job_costs WHERE job_id = ?', id));
+});
+
+test('a multi-mechanic daily-work entry splits into one costed row per mechanic', async () => {
+  const create = await req('/api/jobs', { method: 'POST', body: { asset: '28-4314', type: 'repair', description: 'multi mech' } });
+  const id = create.body.job.id;
+  const r = await req(`/api/jobs/${id}/daily-work`, { method: 'POST', body: { mechanic: 'Anura, Buddhika', hours: 4 } });
+  assert.strictEqual(r.status, 201);
+  assert.strictEqual(r.body.length, 2, 'two mechanics => two rows');
+  const detail = await req(`/api/jobs/${id}`);
+  // 4h × 400 (Anura) + 4h × 300 (Buddhika) = 2800
+  assert.strictEqual(detail.body.cost.labour_cost, 2800);
 });
 
 test('unresolved asset text is queued as a pending alias', async () => {

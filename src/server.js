@@ -37,6 +37,7 @@ app.use('/api/stores', require('./routes/stores'));
 app.use('/api/oil', require('./routes/oil'));
 app.use('/api/batteries', require('./routes/batteries'));
 app.use('/api/jobs', require('./routes/jobcards'));
+app.use('/api/mechanics', require('./routes/mechanics'));
 app.use('/api/users', require('./routes/users'));
 app.use('/api/reports', require('./routes/reports'));
 

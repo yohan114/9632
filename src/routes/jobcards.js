@@ -6,6 +6,7 @@ const { requireAuth, requireRole, hasRole } = require('../lib/auth');
 const { asyncHandler, require_, toInt, toNum } = require('../lib/http');
 const audit = require('../lib/audit');
 const aliases = require('../lib/aliases');
+const mechanics = require('../lib/mechanics');
 const jobstate = require('../lib/jobstate');
 const costing = require('../lib/costing');
 
@@ -253,20 +254,42 @@ router.post(
     if (!editable(job, req.user)) return res.status(423).json({ error: 'Job is closed (locked)' });
     const b = req.body;
     const isExternal = b.is_external ? 1 : 0;
-    const info = run(
-      `INSERT INTO job_daily_work (job_id, work_date, mechanic, description, hours, is_external, external_value)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      id,
-      b.work_date || new Date().toISOString().slice(0, 10),
-      b.mechanic || null,
-      b.description || null,
-      toNum(b.hours, 0),
-      isExternal,
-      isExternal ? toNum(b.external_value, 0) : 0
-    );
+    const workDate = b.work_date || new Date().toISOString().slice(0, 10);
+    const hours = toNum(b.hours, 0);
+
+    // A single entry may list several mechanics ("Buddhika, Krishna"). Split into
+    // one row per mechanic (each costs its own hours × rate). "/" is NOT a
+    // separator — "Seethananda/seetha" is one person, handled by the resolver.
+    let names = [];
+    if (Array.isArray(b.mechanics)) names = b.mechanics.filter(Boolean);
+    else if (b.mechanic) names = mechanics.splitMechanics(b.mechanic);
+
+    const insertRows = [];
+    if (isExternal || names.length === 0) {
+      // external repair (no mechanic) or a labour line with no named mechanic
+      insertRows.push(isExternal ? null : (b.mechanic || null));
+    } else {
+      for (const n of names) {
+        const r = mechanics.resolveMechanic(n, { source: 'job_card' });
+        insertRows.push(r.resolved ? r.name : n); // store canonical; queue unknowns
+      }
+    }
+
+    const created = tx(() => {
+      const ids = [];
+      for (const mech of insertRows) {
+        const info = run(
+          `INSERT INTO job_daily_work (job_id, work_date, mechanic, description, hours, is_external, external_value)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          id, workDate, mech, b.description || null, hours, isExternal, isExternal ? toNum(b.external_value, 0) : 0
+        );
+        ids.push(info.lastInsertRowid);
+      }
+      return ids;
+    });
     costing.refreshJobTotals(id);
-    audit.record({ userId: req.user.id, entity: 'job_daily_work', entityId: info.lastInsertRowid, action: 'create' });
-    res.status(201).json(get('SELECT * FROM job_daily_work WHERE id = ?', info.lastInsertRowid));
+    audit.record({ userId: req.user.id, entity: 'job_daily_work', entityId: created[0], action: 'create', after: { rows: created.length } });
+    res.status(201).json(created.map((cid) => get('SELECT * FROM job_daily_work WHERE id = ?', cid)));
   })
 );
 

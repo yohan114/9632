@@ -389,7 +389,8 @@ async function doTransition(jobId, to, current) {
 
 async function addDailyModal(jobId) {
   modal('Add Daily Work', `
-    <div class="row">${field('Date', 'work_date', { type: 'date', value: new Date().toISOString().slice(0, 10) })}${field('Mechanic', 'mechanic')}</div>
+    <div class="row">${field('Date', 'work_date', { type: 'date', value: new Date().toISOString().slice(0, 10) })}${field('Mechanic(s) — comma / & separated', 'mechanic', { placeholder: 'e.g. Buddhika, Krishna' })}</div>
+    <p class="muted" style="font-size:12px;margin:2px 0 0">Several mechanics create one costed row each. A slash name ("Seethananda/seetha") stays one person.</p>
     ${field('Description', 'description')}
     ${field('Hours', 'hours', { type: 'number' })}
     ${field('External repair (outside work)', 'is_external', { type: 'checkbox' })}
@@ -574,23 +575,38 @@ routes.projects = async (c, params) => {
   if (qs('#npr')) qs('#npr').onclick = () => simpleCreateModal('New Project', '/projects', [['Code', 'code'], ['Name *', 'name'], ['Location', 'location']]);
 };
 
-// ---- Alias queue
+// ---- Alias queue (assets + mechanics)
 routes.aliases = async (c) => {
-  const pending = await api('/aliases?resolved=0');
-  const all = await api('/aliases?resolved=1&limit=100');
-  const assets = await api('/assets?limit=1000');
+  const [pending, all, assets, mPending, mechs] = await Promise.all([
+    api('/aliases?resolved=0'), api('/aliases?resolved=1&limit=100'), api('/assets?limit=1000'),
+    api('/mechanics/aliases?resolved=0'), api('/mechanics'),
+  ]);
   const aopts = assets.map((a) => `<option value="${a.id}">${esc(a.code)} — ${esc(a.brand || '')} ${esc(a.type || '')}</option>`).join('');
-  c.innerHTML = `${pageHeader('Alias Resolver Queue', 'The learning glue: unrecognised vehicle text is queued here, never lost.')}
-    <div class="card section"><h3>Pending — need a human link (${pending.length})</h3>
+  const mopts = mechs.map((m) => `<option value="${m.id}">${esc(m.name)}${m.rate ? ' (Rs ' + m.rate + '/h)' : ''}</option>`).join('');
+  c.innerHTML = `${pageHeader('Resolver Queues', 'The learning glue: unrecognised vehicle & mechanic text is queued here, never lost.')}
+    <div class="card section"><h3>Vehicles — pending link (${pending.length})</h3>
       ${pending.length ? tableWrap([{ label: 'Raw Text' }, { label: 'Hits', num: true }, { label: 'Source' }, { label: 'Link to Asset' }],
         pending.map((a) => `<tr><td>${esc(a.raw_text)}</td><td class="num">${a.hit_count}</td><td>${esc(a.source || '')}</td>
           <td>${can('storekeeper') ? `<select data-alias="${a.id}" style="width:auto;display:inline-block"><option value="">— pick —</option>${aopts}</select> <button class="sm" data-link="${a.id}">Link</button>` : '<span class="muted">read-only</span>'}</td></tr>`)) : '<span class="muted">Queue empty — every name resolves.</span>'}</div>
-    <div class="card"><h3>Resolved aliases (learning)</h3>
-      ${tableWrap([{ label: 'Raw Text' }, { label: 'Asset' }, { label: 'Hits', num: true }], all.map((a) => `<tr><td>${esc(a.raw_text)}</td><td>${esc(a.asset_code || '')}</td><td class="num">${a.hit_count}</td></tr>`), { scroll: true })}</div>`;
+    <div class="card section"><h3>Mechanic names — pending link (${mPending.length})</h3>
+      ${mPending.length ? tableWrap([{ label: 'Raw Text' }, { label: 'Hits', num: true }, { label: 'Source' }, { label: 'Link to Mechanic' }],
+        mPending.map((a) => `<tr><td>${esc(a.raw_text)}</td><td class="num">${a.hit_count}</td><td>${esc(a.source || '')}</td>
+          <td>${can('storekeeper', 'manager') ? `<select data-malias="${a.id}" style="width:auto;display:inline-block"><option value="">— pick —</option>${mopts}</select> <button class="sm" data-mlink="${a.id}">Link</button>` : '<span class="muted">read-only</span>'}</td></tr>`)) : '<span class="muted">Queue empty — every mechanic name resolves.</span>'}</div>
+    <div class="grid">
+      <div class="card"><h3>Resolved vehicle aliases</h3>
+        ${tableWrap([{ label: 'Raw Text' }, { label: 'Asset' }, { label: 'Hits', num: true }], all.map((a) => `<tr><td>${esc(a.raw_text)}</td><td>${esc(a.asset_code || '')}</td><td class="num">${a.hit_count}</td></tr>`), { scroll: true })}</div>
+      <div class="card"><h3>Mechanics &amp; rates</h3>
+        ${tableWrap([{ label: 'Mechanic' }, { label: 'Rate/h', num: true }], mechs.map((m) => `<tr><td>${esc(m.name)}</td><td class="num">${m.rate == null ? '<span class="badge amber">no rate</span>' : money(m.rate)}</td></tr>`), { scroll: true })}</div>
+    </div>`;
   qsa('[data-link]').forEach((b) => b.onclick = async () => {
     const sel = qs(`[data-alias="${b.dataset.link}"]`);
     if (!sel.value) return toast('Pick an asset', 'err');
     try { await api(`/aliases/${b.dataset.link}/link`, { method: 'POST', body: { asset_id: sel.value } }); toast('Linked'); render(); } catch (e) { toast(e.message, 'err'); }
+  });
+  qsa('[data-mlink]').forEach((b) => b.onclick = async () => {
+    const sel = qs(`[data-malias="${b.dataset.mlink}"]`);
+    if (!sel.value) return toast('Pick a mechanic', 'err');
+    try { await api(`/mechanics/aliases/${b.dataset.mlink}/link`, { method: 'POST', body: { mechanic_id: sel.value } }); toast('Linked'); render(); } catch (e) { toast(e.message, 'err'); }
   });
 };
 
