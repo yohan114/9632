@@ -48,7 +48,16 @@ const config = {
   backupRetention: int('BACKUP_RETENTION', 96),
   forecastWindowDays: int('FORECAST_WINDOW_DAYS', 90),
   lowStockDays: int('LOW_STOCK_DAYS', 14),
+  // Anomaly thresholds — BUSINESS CALLS. Defaults are sensible starting points;
+  // the owner should tune them (see Phase 5 §1).
+  anomalyConsumptionFactor: num('ANOMALY_CONSUMPTION_FACTOR', 2.5), // recent rate > N× the asset's own baseline
+  anomalyPriceSpikeFactor: num('ANOMALY_PRICE_SPIKE_FACTOR', 1.5), // GRN price > N× the item's recent average
   isProduction: process.env.NODE_ENV === 'production',
 };
+
+function num(name, def) {
+  const v = Number(process.env[name]);
+  return Number.isFinite(v) ? v : def;
+}
 
 module.exports = config;

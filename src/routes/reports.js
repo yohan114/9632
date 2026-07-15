@@ -3,7 +3,9 @@
 const express = require('express');
 const { get, all } = require('../db');
 const { asyncHandler, toInt } = require('../lib/http');
+const config = require('../config');
 const costing = require('../lib/costing');
+const intelligence = require('../lib/intelligence');
 const { sendXlsx } = require('../lib/export');
 
 const router = express.Router();
@@ -50,8 +52,25 @@ router.get('/dashboard', asyncHandler((_req, res) => {
   res.json({
     jobs_by_status, awaiting_price: awaiting, low_stock_oil, batteries_warranty,
     month_cost_by_project, open_jobs_count, closed_this_month_count,
+    needs_attention: intelligence.needsAttentionSummary(),
   });
 }));
+
+// ---- advisory intelligence (Phase 5 §1/§4) — read-only, flags only --------
+router.get('/service-due', asyncHandler((_req, res) => res.json(intelligence.serviceDue())));
+
+router.get('/anomalies', asyncHandler((_req, res) => res.json({
+  unusual_consumption: intelligence.unusualConsumption(),
+  duplicate_mrn: intelligence.duplicateMrn(),
+  grn_price_spikes: intelligence.grnPriceSpikes(),
+  thresholds: {
+    consumption_factor: config.anomalyConsumptionFactor,
+    price_spike_factor: config.anomalyPriceSpikeFactor,
+    note: 'Thresholds are business calls — set ANOMALY_CONSUMPTION_FACTOR / ANOMALY_PRICE_SPIKE_FACTOR in .env',
+  },
+})));
+
+router.get('/integrity', asyncHandler((_req, res) => res.json(intelligence.integrityCheck())));
 
 // ---- cost reports ---------------------------------------------------------
 const COST_COLS = [

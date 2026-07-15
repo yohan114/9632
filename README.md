@@ -260,9 +260,28 @@ brief's Phases 1–3 plus much of Phase 4:
   ~12,000 records flow in.
 - Photo upload UI (the schema + `/uploads` static serving + `photo_path` fields
   are in place; the multipart upload endpoint is the remaining piece).
-- Phase-5 polish: PostgreSQL migration, service-interval auto-scheduling,
-  anomaly/duplicate-MRN detection beyond the variance flags, and permission
-  hardening.
+- **PostgreSQL migration** — deliberately not done. The schema is designed to
+  port (money `REAL` → `numeric` is the one correctness upgrade to make then),
+  but on a single-server LAN with a handful of writers SQLite is the right choice;
+  migrate only when concurrency actually strains it (see Phase 5 §5).
+
+## Advisory intelligence (Phase 5)
+
+A read-only **Needs Attention** screen (and dashboard panel) that flags — never
+auto-corrects — via `src/lib/intelligence.js`:
+
+- **Global service-due list** — fleet-wide machines due/overdue from
+  `service_specs` + running hours, with the expected service cost.
+- **Unusual consumption** — each asset×lubricant's recent rate vs **that asset's
+  own** history (not a fleet average); flagged above a configurable factor.
+- **Duplicate MRN** — repeated MRN numbers and likely double-entries
+  (same asset + item + qty + date).
+- **GRN price spike** — a unit price beyond a factor of the item's recent average.
+- **Integrity check** — orphaned references, ledger balances that don't
+  reconcile, and jobs closed without a cost snapshot.
+
+Thresholds (`ANOMALY_CONSUMPTION_FACTOR`, `ANOMALY_PRICE_SPIKE_FACTOR`) are
+business calls set in `.env`.
 
 ### Assumptions made (per the brief's "ask before assuming" guardrail)
 

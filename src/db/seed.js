@@ -206,6 +206,20 @@ tx(() => {
   run("INSERT INTO stock_counts (product_id, period, book_qty, counted_qty, variance, note, counted_by) VALUES (?, ?, ?, ?, ?, 'Monthly count', 'Sunil')",
     prodId.CI4, daysAgo(5).slice(0, 7), 25, 23, -2);
 
+  // ---- demo anomalies so the "Needs Attention" panel is illustrative ----
+  // Unusual consumption: GRD-140 sips 15W40 historically, then a recent 3x+ spike.
+  seedLedger('15W40', 'issue', 5, daysAgo(80), { asset_id: assetId['GRD-140'] });
+  seedLedger('15W40', 'issue', 5, daysAgo(50), { asset_id: assetId['GRD-140'] });
+  seedLedger('15W40', 'issue', 30, daysAgo(3), { asset_id: assetId['GRD-140'] });
+  // GRN price spike: same item, normal prices then a spike (20000 vs ~8600 avg).
+  run("INSERT INTO grn (grn_no, description, qty, unit_price, supplier, purchase_source, invoice_date) VALUES ('GRN-90020','Brake Pad Set',1,8700,'Auto Parts Lanka','local_purchase',?)", daysAgo(20));
+  run("INSERT INTO grn (grn_no, description, qty, unit_price, supplier, purchase_source, invoice_date) VALUES ('GRN-90031','Brake Pad Set',1,20000,'New Supplier','local_purchase',?)", daysAgo(2));
+  // Duplicate MRN double-entry: same asset + item + qty + date on two MRNs.
+  const dmA = run("INSERT INTO mrn (mrn_no, req_date, asset_id, purpose, requested_by, status) VALUES ('167444', ?, ?, 'Air filter', 'Kasun', 'open')", daysAgo(6), assetId['28-4315']).lastInsertRowid;
+  run("INSERT INTO mrn_lines (mrn_id, description, qty, unit) VALUES (?, 'Air Filter Element', 2, 'nos')", dmA);
+  const dmB = run("INSERT INTO mrn (mrn_no, req_date, asset_id, purpose, requested_by, status) VALUES ('167445', ?, ?, 'Air filter', 'Kasun', 'open')", daysAgo(6), assetId['28-4315']).lastInsertRowid;
+  run("INSERT INTO mrn_lines (mrn_id, description, qty, unit) VALUES (?, 'Air Filter Element', 2, 'nos')", dmB);
+
   // ---- batteries (merged; includes the shared serial M158752495) ----
   const bat1 = run("INSERT INTO batteries (serial_no, brand, capacity_ah, condition, purchase_date, warranty_date, current_asset_id, state) VALUES ('M158752495', 'Exide', 150, 'new', ?, ?, ?, 'installed')",
     daysAgo(200), new Date(today.getTime() + 40 * 86400 * 1000).toISOString().slice(0, 10), assetId['28-4314']);

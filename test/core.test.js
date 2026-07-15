@@ -15,8 +15,11 @@ const aliases = require('../src/lib/aliases');
 const mechanics = require('../src/lib/mechanics');
 const jobstate = require('../src/lib/jobstate');
 const costing = require('../src/lib/costing');
+const intelligence = require('../src/lib/intelligence');
 
 migrate();
+
+const isoDaysAgo = (n) => new Date(Date.now() - n * 86400 * 1000).toISOString().slice(0, 10);
 
 // ---- shared fixture ----
 run("INSERT INTO labour_rates (mechanic, rate, effective_from) VALUES ('Anura', 425, '2020-01-01')");
@@ -108,6 +111,32 @@ test('service jobs use a flat labour charge, not the hourly engine', () => {
   assert.strictEqual(get('SELECT labour_cost FROM job_cards WHERE id = ?', sid).labour_cost, 1500);
   assert.strictEqual(costing.computeJobCost(sid).labour_cost, 1500);
   assert.strictEqual(costing.closureReadiness(sid).ready, true);
+});
+
+test('intelligence: consumption flag compares an asset to itself; price spike vs item history', () => {
+  const prod = require('../src/db').get('SELECT id FROM products WHERE code = ?', 'CI4') || { id: 1 };
+  const a2 = aliases.findOrCreateAsset('GRD-999', {});
+  // baseline: small usage in the older window; recent: a big spike
+  run(`INSERT INTO stock_ledger (product_id, kind, qty, balance_after, asset_id, txn_date) VALUES (?, 'issue', -5, 95, ?, ?)`, prod.id, a2.id, isoDaysAgo(80));
+  run(`INSERT INTO stock_ledger (product_id, kind, qty, balance_after, asset_id, txn_date) VALUES (?, 'issue', -5, 90, ?, ?)`, prod.id, a2.id, isoDaysAgo(50));
+  run(`INSERT INTO stock_ledger (product_id, kind, qty, balance_after, asset_id, txn_date) VALUES (?, 'issue', -30, 60, ?, ?)`, prod.id, a2.id, isoDaysAgo(3));
+  const flagged = intelligence.unusualConsumption(2.5);
+  assert.ok(flagged.some((f) => f.asset_code === 'GRD-999' && f.ratio > 2.5), 'GRD-999 should be flagged for a self-relative spike');
+
+  // GRN price spike: two normal prices, one spike
+  run("INSERT INTO grn (description, qty, unit_price) VALUES ('Widget', 1, 100)");
+  run("INSERT INTO grn (description, qty, unit_price) VALUES ('Widget', 1, 110)");
+  run("INSERT INTO grn (description, qty, unit_price) VALUES ('Widget', 1, 500)");
+  const spikes = intelligence.grnPriceSpikes(1.5);
+  assert.ok(spikes.some((s) => s.item === 'Widget' && s.unit_price === 500), 'the 500 Widget GRN should be flagged');
+  // the normal-priced ones are NOT flagged
+  assert.ok(!spikes.some((s) => s.unit_price === 110));
+});
+
+test('intelligence: integrity check catches a closed job with no cost snapshot', () => {
+  run(`INSERT INTO job_cards (job_no, type, status, requested_at) VALUES ('T/NOSNAP', 'repair', 'CLOSED', '2024-01-01')`);
+  const r = intelligence.integrityCheck();
+  assert.ok(r.issues.some((i) => i.type === 'closed_without_snapshot'));
 });
 
 test('snapshot freezes the total even if a price later changes', () => {

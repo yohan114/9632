@@ -102,6 +102,7 @@ const NAV = [
   ['batteries', '🔋', 'Batteries'],
   ['projects', '🏗️', 'Projects'],
   ['aliases', '🔗', 'Alias Queue'],
+  ['attention', '⚠️', 'Needs Attention'],
   ['reports', '📈', 'Reports'],
   ['users', '👤', 'Users', 'admin'],
 ];
@@ -164,6 +165,8 @@ function tableWrap(headers, rows, opts = {}) {
 // ---- Dashboard
 routes.dashboard = async (c) => {
   const d = await api('/reports/dashboard');
+  const na = d.needs_attention || {};
+  const naTotal = Object.values(na).reduce((a, b) => a + (b || 0), 0);
   const statusRows = d.jobs_by_status.map((s) => `<tr><td>${statusBadge(s.status)}</td><td class="num">${s.count}</td></tr>`);
   const maxProj = Math.max(1, ...d.month_cost_by_project.map((p) => p.total));
   const projBars = d.month_cost_by_project.map((p) => `
@@ -178,6 +181,16 @@ routes.dashboard = async (c) => {
       <div class="card stat"><span class="n">${d.low_stock_oil.length}</span><span class="l">Low-stock Lubricants</span></div>
       <div class="card stat"><span class="n">${d.batteries_warranty.length}</span><span class="l">Battery Warranty ≤60d</span></div>
     </div>
+    <a href="#/attention" style="text-decoration:none"><div class="card section" style="border-left:4px solid ${naTotal ? 'var(--amber)' : 'var(--green)'}">
+      <div class="toolbar" style="margin:0"><h3 style="margin:0">⚠ Needs Attention</h3><div class="spacer"></div><span class="badge ${naTotal ? 'amber' : 'green'}">${naTotal} flag${naTotal === 1 ? '' : 's'}</span></div>
+      <div class="pill-row" style="margin-top:8px">
+        <span class="badge ${na.service_due ? 'amber' : ''}">Service due: ${na.service_due || 0}</span>
+        <span class="badge ${na.unusual_consumption ? 'red' : ''}">Unusual consumption: ${na.unusual_consumption || 0}</span>
+        <span class="badge ${na.duplicate_mrn ? 'red' : ''}">Duplicate MRN: ${na.duplicate_mrn || 0}</span>
+        <span class="badge ${na.grn_price_spikes ? 'red' : ''}">GRN price spikes: ${na.grn_price_spikes || 0}</span>
+        <span class="badge ${na.integrity_issues ? 'red' : ''}">Integrity issues: ${na.integrity_issues || 0}</span>
+      </div>
+    </div></a>
     <div class="grid">
       <div class="card"><h3>Jobs by Status</h3>${tableWrap([{ label: 'Status' }, { label: 'Count', num: true }], statusRows)}</div>
       <div class="card"><h3>Awaiting Price — blocking closure</h3>
@@ -659,6 +672,36 @@ routes.reports = async (c) => {
       <div class="card"><h3>Stock Variance Flags</h3>
         ${variance.length ? variance.map((v) => `<div class="cost-line"><span>${esc(v.product)} · ${esc(v.period)}</span><span class="badge red">${num(v.variance)}</span></div>`).join('') : '<span class="muted">No variances</span>'}</div>
     </div>`;
+};
+
+// ---- Needs Attention (advisory intelligence — read-only)
+routes.attention = async (c) => {
+  const [due, anom, integ] = await Promise.all([
+    api('/reports/service-due'), api('/reports/anomalies'), api('/reports/integrity'),
+  ]);
+  const dueList = due.filter((s) => s.due);
+  c.innerHTML = `${pageHeader('Needs Attention', 'Advisory only — the system flags, you decide. Nothing here is auto-corrected.')}
+    <div class="card section"><h3>Service due / overdue (${dueList.length})</h3>
+      ${dueList.length ? tableWrap([{ label: 'Asset' }, { label: 'Machine' }, { label: 'Running h', num: true }, { label: 'Interval', num: true }, { label: 'Overdue by', num: true }, { label: 'Expected Cost', num: true }],
+        dueList.map((s) => `<tr><td><a href="#/assets/${s.asset_id}">${esc(s.asset_code)}</a></td><td>${esc(s.machine_label || '')}</td><td class="num">${num(s.running_hours)}</td><td class="num">${num(s.interval_hours)}</td><td class="num"><span class="badge red">${num(s.overdue_by)}</span></td><td class="num">${money(s.expected_cost)}</td></tr>`)) : '<span class="muted">No machines due.</span>'}</div>
+
+    <div class="card section"><h3>Unusual lubricant consumption (${anom.unusual_consumption.length})</h3>
+      <p class="muted" style="font-size:12px;margin-top:0">Each asset compared to its <b>own</b> history. Flagged above ${anom.thresholds.consumption_factor}× baseline.</p>
+      ${anom.unusual_consumption.length ? tableWrap([{ label: 'Asset' }, { label: 'Product' }, { label: 'Recent rate/day', num: true }, { label: 'Baseline rate/day', num: true }, { label: 'Ratio', num: true }],
+        anom.unusual_consumption.map((u) => `<tr><td>${esc(u.asset_code)}</td><td>${esc(u.product_name)}</td><td class="num">${num(u.recent_rate)} ${esc(u.unit)}</td><td class="num">${num(u.baseline_rate)}</td><td class="num"><span class="badge red">${u.ratio}×</span></td></tr>`)) : '<span class="muted">Nothing unusual.</span>'}</div>
+
+    <div class="card section"><h3>GRN price spikes (${anom.grn_price_spikes.length})</h3>
+      <p class="muted" style="font-size:12px;margin-top:0">Flagged above ${anom.thresholds.price_spike_factor}× the item's recent average price.</p>
+      ${anom.grn_price_spikes.length ? tableWrap([{ label: 'Item' }, { label: 'GRN price', num: true }, { label: 'Baseline avg', num: true }, { label: 'Ratio', num: true }],
+        anom.grn_price_spikes.map((g) => `<tr><td>${esc(g.item || '')}</td><td class="num">${money(g.unit_price)}</td><td class="num">${money(g.baseline_avg)}</td><td class="num"><span class="badge red">${g.ratio}×</span></td></tr>`)) : '<span class="muted">No price spikes.</span>'}</div>
+
+    <div class="card section"><h3>Duplicate MRN / likely double-entries (${anom.duplicate_mrn.duplicate_numbers.length + anom.duplicate_mrn.likely_double_entries.length})</h3>
+      ${anom.duplicate_mrn.duplicate_numbers.map((d) => `<div class="cost-line"><span>Duplicate MRN number ${esc(d.mrn_no)}</span><span class="badge red">×${d.c}</span></div>`).join('')}
+      ${anom.duplicate_mrn.likely_double_entries.map((d) => `<div class="cost-line"><span>${esc(d.asset_code || '?')} · ${esc(d.description)} × ${num(d.qty)} on ${esc(d.req_date)} (${esc(d.mrn_nos)})</span><span class="badge amber">×${d.c}</span></div>`).join('')}
+      ${anom.duplicate_mrn.duplicate_numbers.length + anom.duplicate_mrn.likely_double_entries.length === 0 ? '<span class="muted">No duplicates.</span>' : ''}</div>
+
+    <div class="card"><h3>Integrity check (${integ.count})</h3>
+      ${integ.count ? integ.issues.map((i) => `<div class="cost-line"><span>${esc(i.detail)}</span><span class="badge red">${esc(i.type)}</span></div>`).join('') : '<span class="ok">✓ No integrity problems found.</span>'}</div>`;
 };
 
 // ---- Users (admin)
