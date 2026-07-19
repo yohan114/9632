@@ -1,0 +1,1816 @@
+rack,item,date,mr_no,vehicle,qty,balance
+Rack 3D,Hour Meter,2026-06-13,,FL-02,1,2
+Rack 13A,Toggle Switch,2026-05-25,,SR-11,1,8
+Rack 13A,Fuse 10A,2026-05-25,,LP-1574,1,57
+Rack 13A,Fuse 10A,2026-05-27,,LP-1720,1,56
+Rack 13A,Fuse 10A,2026-05-29,,51-7158,2,54
+Rack 13A,Fuse 10A,2026-06-15,,SL-08,1,53
+Rack 13A,Fuse 10A,2026-06-15,,HEX-26,2,51
+Rack 13A,Fuse 10A,2026-06-15,,LO-5985,1,50
+Rack 13A,Fuse 10A,2026-06-16,,HEX-21,2,48
+Rack 13A,Fuse 10A,2026-06-16,,HEX-39,3,45
+Rack 13A,Fuse 10A,2026-06-16,,HEX-39,2,43
+Rack 13A,Fuse 10A,2026-06-27,,SL-09,4,39
+Rack 13A,Fuse 10A,2026-06-30,,SL-09,1,38
+Rack 13A,Fuse 10A,2026-06-30,,PH-6744,1,37
+Rack 13A,Fuse 10A,2026-07-01,,SL-09,1,36
+Rack 13A,Fuse 10A,2026-07-02,,PY-2408,1,35
+Rack 13A,Fuse 10A,2026-07-06,,LI-3851,2,33
+Rack 13A,Fuse 20A,2026-05-25,,LP-1566,1,89
+Rack 13A,Fuse 20A,2026-05-27,,28-4314,1,88
+Rack 13A,Fuse 20A,2026-06-03,,TH-6744,1,87
+Rack 13A,Fuse 20A,2026-06-15,,HEX-26,2,85
+Rack 13A,Fuse 20A,2026-06-15,,HEX-21,1,84
+Rack 13A,Fuse 20A,2026-07-02,,HEX-26,1,83
+Rack 13A,Fuse 20A,2026-07-02,,PY-2408,2,81
+Rack 13A,Fuse 20A,2026-07-06,,LI-3851,2,79
+Rack 13A,Fuse 30A,2026-06-02,,VR-48,1,27
+Rack 13A,Fuse 30A,2026-06-09,,HEX-33,1,26
+Rack 13A,Fuse 30A,2026-07-01,,SL-09,2,24
+Rack 13A,Fuse 30A,2026-07-02,,PY-2408,2,22
+Rack 13A,Fuse 30A,2026-07-06,,LI-3851,2,20
+Rack 13A,Fuse 7.5A,2026-06-04,,HEX-23,1,16
+Rack 13A,Fuse 7.5A,2026-06-06,,HEX-23,1,15
+Rack 13A,Fuse 7.5A,2026-06-08,,LY-4524,2,13
+Rack 13A,Fuse 7.5A,2026-07-02,,HEX-26,1,12
+Rack 13A,Fuse 15A,2026-05-27,,25-4314,1,67
+Rack 13A,Fuse 15A,2026-05-27,,LN-8278,1,66
+Rack 13A,Fuse 15A,2026-05-30,,51-7158,1,65
+Rack 13A,Fuse 15A,2026-06-06,,HEX-21,1,64
+Rack 13A,Fuse 15A,2026-06-08,,LY-4524,1,63
+Rack 13A,Fuse 15A,2026-06-15,,HEX-21,5,58
+Rack 13A,Fuse 15A,2026-06-16,,HEX-21,1,57
+Rack 13A,Fuse 15A,2026-06-16,,HEX-39,2,55
+Rack 13A,Fuse 15A,2026-06-16,,HEX-39,3,52
+Rack 13A,Fuse 15A,2026-06-18,,ZB-1047,1,51
+Rack 13A,Fuse 15A,2026-06-27,,SL-09,2,49
+Rack 13A,Fuse 15A,2026-07-02,,PY-2408,2,47
+Rack 13A,Fuse 15A,2026-07-06,,LI-3851,2,45
+Rack 13A,Fuse 15A,2026-07-06,,LI-3851,3,42
+Rack 13A,Fuse 25A,2026-05-27,,28-4314,1,22
+Rack 13A,Fuse 25A,2026-06-06,,HEX-23,1,21
+Rack 13A,Fuse 25A,2026-06-08,,LY-4524,2,19
+Rack 13A,Fuse 25A,2026-06-11,,PTR-20,1,18
+Rack 13A,Fuse 25A,2026-06-27,,SL-09,7,11
+Rack 13A,Fuse 25A,2026-06-30,,SL-09,2,9
+Rack 13A,Fuse 25A,2026-07-01,,SL-09,2,7
+Rack 13A,Fuse 25A,2026-07-02,,PY-2408,2,5
+Rack 13A,Fuse 25A,2026-07-06,,LI-3851,2,3
+Rack 13A,12V Signal Flasher,2026-07-02,,PY-2408,1,3
+Rack 13A,12V Signal Flasher,2026-07-06,,LI-3851,1,2
+Rack 13A,Relay 12V 20A,2026-06-06,,HEX-23,2,0
+Rack 13A,3 Pin Flasher 24V,2026-07-06,,RC-9894,1,5
+Rack 13A,Unversal Relay 5Pin 30A,2026-07-03,,HEX-17,2,4
+Rack 13A,Relay 24V 5P,2026-07-02,,HEX-26,1,9
+Rack 13A,Light Relay 5P 12V,2026-06-27,,SL-09,2,6
+Rack 13A,Halogan Lamp 12V,2026-05-21,,Tinkering w/s,2,10
+Rack 13A,Halogan Lamp 12V,2026-07-06,,LI-3851,1,9
+Rack 13A,Spark Plug (NGK Water Pump),2026-06-16,,Waker (HC401199),1,4
+Rack 13A,Spark Plug (NGK Water Pump),2026-06-26,,ASC-25,1,3
+Rack 13A,Spark Plug (NGK Water Pump),2026-06-30,,TR-05,1,2
+Rack 13A,30A Mini Fuse,2026-06-27,,SL-09,2,18
+Rack 13A,30A Mini Fuse,2026-07-06,,LI-3851,1,17
+Rack 13A,Fuse 25A Mini Fuse,2026-06-27,,SL-09,4,11
+Rack 13A,Fuse 25A Mini Fuse,2026-07-06,,LI-3851,1,10
+Rack 13A,Fuse 20A Mini Fuse,2026-07-06,,LI-3851,1,19
+Rack 13A,Fuse 15A Mini Fuse,2026-06-27,,SL-09,1,19
+Rack 13A,Fuse 15A Mini Fuse,2026-07-06,,LI-3851,1,18
+Rack 13A,Fuse 10A Mini Fuse,2026-07-06,,LI-3851,1,12
+Rack 13A,Fuse 7.5A Mini Fuse,2026-06-27,,SL-09,4,3
+Rack 13B,Rubber Grease,2026-05-21,,LN-8278,1,2
+Rack 13B,Rubber Grease,2026-05-23,,41-7225,1,1
+Rack 13B,Rubber Grease,2026-05-26,,LN-8278,1,0
+Rack 13B,Rubber Grease,2026-06-10,,ASC-21,1,7
+Rack 13B,Rubber Grease,2026-06-21,,SR-11,1,6
+Rack 13B,Rubber Grease,2026-06-27,,LK-5586,1,5
+Rack 13B,Rubber Grease,2026-07-04,,LK-5047,1,4
+Rack 13B,Rubber Grease,2026-07-05,,RC-9894,1,3
+Rack 13B,Auto Bulb 12V 10W,2026-06-24,,PY-2408,1,16
+Rack 13B,D F Bulb 12V 21 5W,2026-06-21,,41-1130,1,26
+Rack 13B,Auto Bulb 24V 10W,2026-06-11,,LN-8278,1,3
+Rack 13B,Auto Lamp Bulb 12V 21W,2026-06-09,,LO-8348,1,4
+Rack 13B,Auto Lamp Bulb 12V 21W,2026-07-01,,SL-09,1,3
+Rack 13B,Single Filament Bulb 24V 21W,2026-05-25,,LP-1566,6,22
+Rack 13B,Single Filament Bulb 24V 21W,2026-05-25,,LP-1574,5,17
+Rack 13B,Single Filament Bulb 24V 21W,2026-06-06,,CR-02,1,16
+Rack 13B,Single Filament Bulb 24V 21W,2026-06-07,,LO-8348,1,15
+Rack 13B,Single Filament Bulb 24V 21W,2026-06-09,,CR-02,1,14
+Rack 13B,Single Filament Bulb 24V 21W,2026-06-10,,LO-7855,3,11
+Rack 13B,Single Filament Bulb 24V 21W,2026-06-17,,LL-1782,1,10
+Rack 13B,Double Filament Bulb 24V 21 5W,2026-06-10,,LO-7855,2,35
+Rack 13B,Double Filament Bulb 24V 21 5W,2026-07-02,,PY-2408,1,34
+Rack 13C,"Tread Seal .5""",2026-05-27,,LN-8278,1,12
+Rack 13C,"Tread Seal .5""",2026-06-02,,Mallawagedara Bridge,1,11
+Rack 13C,"Tread Seal .5""",2026-06-06,,ZA-0447,1,10
+Rack 13C,Selastic Gasket Maker,2026-05-22,,PA-4879,1,1
+Rack 13C,Selastic Gasket Maker,2026-05-23,,HEX-41,1,0
+Rack 13C,Selastic Gasket Maker,2026-06-02,,DAH-2228,1,4
+Rack 13C,Selastic Gasket Maker,2026-06-06,,HEX-21,1,3
+Rack 13C,Selastic Gasket Maker,2026-06-07,,LO-8348,1,2
+Rack 13C,Selastic Gasket Maker,2026-06-08,,PV-6889,1,1
+Rack 13C,Selastic Gasket Maker,2026-06-16,,HEX-39,1,6
+Rack 13C,Selastic Gasket Maker,2026-06-16,,HEX-39,1,5
+Rack 13C,Selastic Gasket Maker,2026-06-23,,41-1130,1,4
+Rack 13C,Selastic Gasket Maker,2026-06-25,,LK-4058,1,3
+Rack 13C,Selastic Gasket Maker,2026-06-25,,LK-4058,1,8
+Rack 13C,Selastic Gasket Maker,2026-06-26,,Diesel Tank Repair,1,7
+Rack 13C,Selastic Gasket Maker,2026-07-04,,41-1130,1,6
+Rack 13C,Selastic Gasket Maker,2026-07-05,,RC-9894,1,5
+Rack 13C,Selastic Gasket Maker,2026-07-05,,RC-9894,1,4
+Rack 13C,Selastic Gasket Maker,2026-07-06,,41-1130,1,3
+Rack 13C,Super Glue,2026-05-22,,41-7225,1,2
+Rack 13C,Super Glue,2026-05-23,,HEX-33,1,1
+Rack 13C,Super Glue,2026-05-25,,HEX-23,1,0
+Rack 13C,Super Glue,2026-05-27,,28-4314,1,11
+Rack 13C,Super Glue,2026-06-03,,TH-6744,1,10
+Rack 13C,Super Glue,2026-06-04,,HEX-23,3,7
+Rack 13C,Super Glue,2026-06-04,,HEX-23,1,6
+Rack 13C,Super Glue,2026-06-05,,LN-8278,1,5
+Rack 13C,Super Glue,2026-06-06,,HEX-23,1,4
+Rack 13C,Super Glue,2026-06-07,,LP-1566,1,3
+Rack 13C,Super Glue,2026-06-07,,HEX-21,1,2
+Rack 13C,Super Glue,2026-06-11,,CR-02,1,1
+Rack 13C,Super Glue,2026-06-13,,LB-4824,1,0
+Rack 13C,Super Glue,2026-06-26,,SL-09,1,11
+Rack 13C,Super Glue,2026-06-30,,PY-2408,1,10
+Rack 13C,Tread Lock,2026-06-12,,28-4314,1,1
+Rack 13C,Insulatin Tape,2026-05-21,,SR-11,1,24
+Rack 13C,Insulatin Tape,2026-05-22,,51-7158,1,23
+Rack 13C,Insulatin Tape,2026-05-23,,HEX-26,1,22
+Rack 13C,Insulatin Tape,2026-05-24,,Electric Works,3,19
+Rack 13C,Insulatin Tape,2026-05-24,,44-4849,1,18
+Rack 13C,Insulatin Tape,2026-05-25,,LP-1578,1,17
+Rack 13C,Insulatin Tape,2026-05-25,,HEX-41,1,16
+Rack 13C,Insulatin Tape,2026-05-25,,SR-11,1,15
+Rack 13C,Insulatin Tape,2026-05-25,,LP-1574,1,14
+Rack 13C,Insulatin Tape,2026-05-27,,28-4314,1,13
+Rack 13C,Insulatin Tape,2026-05-27,,LO-8349,1,12
+Rack 13C,Insulatin Tape,2026-05-27,,41-7223,1,11
+Rack 13C,Insulatin Tape,2026-05-27,,Hydrolic Room,2,9
+Rack 13C,Insulatin Tape,2026-05-28,,LN-8278,1,8
+Rack 13C,Insulatin Tape,2026-05-28,,LK-4058,1,7
+Rack 13C,Insulatin Tape,2026-06-02,,LO-8348,1,18
+Rack 13C,Insulatin Tape,2026-06-03,,SL-15,1,17
+Rack 13C,Insulatin Tape,2026-06-05,,41-7225,2,15
+Rack 13C,Insulatin Tape,2026-06-05,,LL-1782,1,14
+Rack 13C,Insulatin Tape,2026-06-06,,CR-02,1,13
+Rack 13C,Insulatin Tape,2026-06-06,,HEX-23,2,11
+Rack 13C,Insulatin Tape,2026-06-09,,LO-8348,1,10
+Rack 13C,Insulatin Tape,2026-06-09,,HEX-21,1,9
+Rack 13C,Insulatin Tape,2026-06-09,,HEX-33,1,8
+Rack 13C,Insulatin Tape,2026-06-09,,LP-1568,1,7
+Rack 13C,Insulatin Tape,2026-06-11,,CR-02,1,6
+Rack 13C,Insulatin Tape,2026-06-11,,HEX-21,1,5
+Rack 13C,Insulatin Tape,2026-06-11,,HEX-21,1,4
+Rack 13C,Insulatin Tape,2026-06-12,,LO-5985,1,27
+Rack 13C,Insulatin Tape,2026-06-15,,LP-1578,1,26
+Rack 13C,Insulatin Tape,2026-06-16,,SR-12,1,25
+Rack 13C,Insulatin Tape,2026-06-17,,CR-02,1,24
+Rack 13C,Insulatin Tape,2026-06-17,,LB-9496,1,23
+Rack 13C,Insulatin Tape,2026-06-17,,LY-4524,1,22
+Rack 13C,Insulatin Tape,2026-06-21,,SR-13,1,21
+Rack 13C,Insulatin Tape,2026-06-21,,51-7158,1,20
+Rack 13C,Insulatin Tape,2026-06-25,,Line Repair,2,18
+Rack 13C,Insulatin Tape,2026-07-02,,LO-8349,1,17
+Rack 13C,Insulatin Tape,2026-07-03,,HEX-17,2,15
+Rack 13C,Insulatin Tape,2026-07-06,,LN-8278,1,14
+Rack 13C,Insulatin Tape,2026-07-06,,RC-9894,1,13
+Rack 13C,Break Oil 1L,2026-06-04,,LI-3851,0.5,3.5
+Rack 13C,Break Oil 1L,2026-06-04,,LC-0434,0.5,3
+Rack 13C,Break Oil 1L,2026-06-07,,Service Truck,1,2
+Rack 13C,Break Oil 1L,2026-06-08,,PV-6889,0.5,1.5
+Rack 13C,Break Oil 1L,2026-06-19,,51-7158,0.5,1
+Rack 13C,Break Oil 1L,2026-06-30,,PTR-10,0.5,2.5
+Rack 13C,Break Oil 1L,2026-07-04,,PTR-10,0.1,2.4
+Rack 13C,Break Oil 500ml,2026-05-23,,41-7225,1,2
+Rack 13C,Break Oil 500ml,2026-05-27,,LN-8278,1,1
+Rack 13C,Break Oil 500ml,2026-06-03,,FL-02,1,0
+Rack 13C,Break Oil 355ml,2026-05-26,,LK-2366,1,1
+Rack 13C,Break Oil 355ml,2026-07-02,,PY-2408,1,0
+Rack 13C,Parking Bulb 24V,2026-05-25,,LP-1566,3,17
+Rack 13C,Aroldite,2026-05-25,,LP-1574,1,1
+Rack 13C,Aroldite,2026-05-27,,FL-01,1,0
+Rack 13C,Aroldite,2026-06-02,,51-3062,1,5
+Rack 13C,Aroldite,2026-06-03,,DAH-2230,1,4
+Rack 13C,Aroldite,2026-06-05,,LN-8278,1,3
+Rack 13C,Aroldite,2026-06-06,,HEX-21,1,2
+Rack 13C,Aroldite,2026-06-17,,CR-02,1,1
+Rack 13C,Aroldite,2026-06-24,,PY-2408,1,3
+Rack 13C,Aroldite,2026-06-26,,Diesel Tank Repair,1,2
+Rack 13C,Aroldite,2026-06-26,,LK-4058,1,1
+Rack 13C,Aroldite,2026-07-03,,HEX-17,1,0
+Rack 13C,Aroldite,2026-07-06,,LK-4057,1,-1
+Rack 13C,Cup Brush,2026-05-20,,HEX-01,1,5
+Rack 13C,Cup Brush,2026-05-26,,HEX-26,1,4
+Rack 13C,Cup Brush,2026-07-01,,LP-1720,1,6
+Rack 13C,Cup Brush,2026-07-01,,LP-1720,1,5
+Rack 13C,Cup Brush,2026-07-06,,LO-4824,2,3
+Rack 13C,Contact Cleaner,2026-06-12,,SR-11,1,3
+Rack 13C,Contact Cleaner,2026-06-16,,HEX-39,1,2
+Rack 13C,Contact Cleaner,2026-06-18,,48-8072,1,1
+Rack 13C,Contact Cleaner,2026-06-21,,LY-4524,1,0
+Rack 13C,Contact Cleaner,2026-07-02,,PY-2408,1,4
+Rack 13C,Contact Cleaner,2026-07-03,,HEX-17,1,3
+Rack 13C,Contact Cleaner,2026-07-06,,LI-3851,0.5,2.5
+Rack 13C,Contact Cleaner,2026-07-06,,LI-3851,0.25,2.25
+Rack 13C,Contact Cleaner,2026-07-06,,LI-3851,0.25,2
+Rack 13C,Contact Cleaner,2026-07-06,,LK-4057,0.25,1.75
+Rack 13C,Lead,2026-06-23,,LB-01,1,4
+Rack 13C,Lead,2026-06-25,,48-8072,1,3
+Rack 13C,Lead,2026-06-27,,Electrician,2,1
+Rack 13C,Lead,2026-06-27,,LK-5586,0.5,0.5
+Rack 13C,Lead,2026-07-05,,RC-9894,0.5,0
+Rack 13C,Gasket Shellak,2026-07-02,,41-1130,1,4
+Rack 1C,Air Socket (6mm),2026-05-21,,LK-5041,1,38
+Rack 1C,Air Socket (6mm),2026-06-18,,ZB-1496,2,36
+Rack 1C,Air Socket (6mm),2026-06-30,,LK-5586,1,35
+Rack 1C,Sand Paper(1000),2026-06-05,,HEX-21,1,7
+Rack 1C,Sand Paper(1000),2026-06-25,,LY-4524,1,6
+Rack 1C,Sand Paper(2000),2026-06-24,,LK-4058,1,6
+Rack 1C,Sand Paper(800),2026-06-05,,LL-1781,0.5,8.5
+Rack 1C,Sand Paper(800),2026-06-30,,SL-17,1,7.5
+Rack 1C,Sand Paper(400),2026-05-21,,LN-8278,1,5
+Rack 1C,Sand Paper(400),2026-06-04,,HEX-21,1,4
+Rack 1C,Sand Paper(400),2026-06-24,,LK-4058,1,3
+Rack 1C,Sand Paper(400),2026-06-24,,LK-4058,0.5,2.5
+Rack 1C,Sand Paper(400),2026-06-27,,SL-09,1,1.5
+Rack 1C,Sand Paper(400),2026-07-05,,RC-9894,0.5,1
+Rack 1C,Sand Paper(400),2026-07-05,,RC-9894,1,0
+Rack 1C,Sand Paper(320),2026-05-23,,HEX-41,1,4
+Rack 1C,Sand Paper(320),2026-05-26,,LN-8278,0.5,3.5
+Rack 1C,Sand Paper(320),2026-06-03,,,0.5,3
+Rack 1C,Sand Paper(320),2026-06-05,,LO-9810,0.5,2.5
+Rack 1C,Sand Paper(320),2026-06-13,,LC-0434,0.5,2
+Rack 1C,Sand Paper(320),2026-06-14,,CR-02,1.5,0.5
+Rack 1C,Sand Paper(320),2026-06-19,,51-7158,0.5,0
+Rack 1C,Sand Paper(150),2026-05-21,,HEX-41,1,5
+Rack 1C,Sand Paper(150),2026-05-23,,41-7225,1,4
+Rack 1C,Sand Paper(150),2026-05-25,,LD-08,1,3
+Rack 1C,Sand Paper(150),2026-06-25,,LK-4058,1,2
+Rack 1C,Sand Paper(120),2026-05-24,,HEX-41,1,5
+Rack 1C,Sand Paper(120),2026-06-14,,CR-02,2,3
+Rack 1C,Sand Paper(120),2026-07-05,,RC-9894,0.5,2.5
+Rack 1C,Sand Paper(100),2026-05-23,,HEX-41,1,7
+Rack 1C,Sand Paper(100),2026-06-02,,PA-4879,1,6
+Rack 1C,Sand Paper(100),2026-06-24,,LK-4058,0.5,5.5
+Rack 1C,Sand Paper(100),2026-06-25,,LK-4058,0.5,5
+Rack 1C,Fuse Holder,2026-06-06,,HEX-21,1,7
+Rack 1C,Fuse Holder,2026-06-11,,PTR-10,1,6
+Rack 1C,Fuse Holder,2026-06-18,,ZB-1047,1,5
+Rack 1C,Bulb Holder,2026-06-06,,CR-02,1,12
+Rack 1C,Cable Tie,2026-05-20,,Hydrolic Room,11,89
+Rack 1C,Cable Tie,2026-05-21,,LO-5985,4,85
+Rack 1C,Cable Tie,2026-05-22,,51-7158,2,83
+Rack 1C,Cable Tie,2026-05-24,,LD-08,2,81
+Rack 1C,Cable Tie,2026-05-25,,HEX-23,2,79
+Rack 1C,Cable Tie,2026-05-27,,LC-0434,1,78
+Rack 1C,Cable Tie,2026-05-27,,Hydrolic Room,5,73
+Rack 1C,Cable Tie,2026-05-28,,LN-8278,4,69
+Rack 1C,Cable Tie,2026-05-29,,51-7158,6,63
+Rack 1C,Cable Tie,2026-06-02,,BR-48,1,62
+Rack 1C,Cable Tie,2026-06-02,,DAH-2228,3,59
+Rack 1C,Cable Tie,2026-06-05,,LI-3851,4,55
+Rack 1C,Cable Tie,2026-06-06,,PV-6789,2,53
+Rack 1C,Cable Tie,2026-06-06,,CR-02,4,49
+Rack 1C,Cable Tie,2026-06-06,,CR-02,3,46
+Rack 1C,Cable Tie,2026-06-07,,57-3062,2,44
+Rack 1C,Cable Tie,2026-06-07,,LO-8348,2,42
+Rack 1C,Cable Tie,2026-06-08,,LY-4524,5,37
+Rack 1C,Cable Tie,2026-06-09,,LP-1568,2,35
+Rack 1C,Cable Tie,2026-06-09,,CR-02,2,33
+Rack 1C,Cable Tie,2026-06-09,,LO-8348,4,29
+Rack 1C,Cable Tie,2026-06-10,,HEX-21,8,21
+Rack 1C,Cable Tie,2026-06-10,,LO-7855,4,17
+Rack 1C,Cable Tie,2026-06-11,,HEX-21,4,13
+Rack 1C,Cable Tie,2026-06-12,,SR-11,5,8
+Rack 1C,Cable Tie,2026-06-12,,LO-5985,4,4
+Rack 1C,Cable Tie,2026-06-17,,Compresure Motor,2,302
+Rack 1C,Cable Tie,2026-06-17,,MG-14,2,300
+Rack 1C,Cable Tie,2026-06-21,,SR-13,1,299
+Rack 1C,Cable Tie,2026-06-23,,41-1130,2,297
+Rack 1C,Cable Tie,2026-06-24,,HEX-23,6,291
+Rack 1C,Cable Tie,2026-06-25,,LB-10,4,287
+Rack 1C,Cable Tie,2026-06-27,,SL-09,8,279
+Rack 1C,Cable Tie,2026-06-30,,PH-6744,10,269
+Rack 1C,Cable Tie,2026-06-30,,PTR-10,4,265
+Rack 1C,Cable Tie,2026-06-30,,SL-19,4,261
+Rack 1C,Cable Tie,2026-07-01,,TR-05,4,257
+Rack 1C,Cable Tie,2026-07-01,,SL-09,5,252
+Rack 1C,Cable Tie,2026-07-03,,GL-0019,10,242
+Rack 1C,Cable Tie,2026-07-03,,PY-2408,2,240
+Rack 1C,Cable Tie,2026-07-04,,LK-5047,4,236
+Rack 1C,Cable Tie,2026-07-04,,41-1130,2,234
+Rack 1C,Cable Tie,2026-07-05,,LC-0434,3,231
+Rack 1C,Oxigen Welding Rode,2026-06-04,,ZA-9716,4,4
+Rack 1C,Oxigen Welding Rode,2026-06-09,,HEX-33,10,117
+Rack 1C,Oxigen Welding Rode,2026-06-10,,HEX-33,5,112
+Rack 1C,Oxigen Welding Rode,2026-06-12,,PY-2408,10,102
+Rack 1C,Oxigen Welding Rode,2026-06-12,,ZA-9716,5,97
+Rack 1C,Oxigen Welding Rode,2026-06-13,,PY-2408,10,87
+Rack 1C,Oxigen Welding Rode,2026-06-16,,LB-15,1,86
+Rack 1C,Oxigen Welding Rode,2026-06-16,,PY-2408,5,81
+Rack 1C,Oxigen Welding Rode,2026-06-17,,PH-6744,7,74
+Rack 1C,Oxigen Welding Rode,2026-06-18,,PY-2408,5,69
+Rack 1C,Oxigen Welding Rode,2026-06-23,,48-8072,8,61
+Rack 1C,Oxigen Welding Rode,2026-06-26,,48-8072,5,56
+Rack 1C,Oxigen Welding Rode,2026-07-02,,LK-5047,5,51
+Rack 1C,Brass Welding Rode,2026-05-25,,Hydrolic Room,1,22
+Rack 1C,Brass Welding Rode,2026-05-27,,LN-8270,1,21
+Rack 1C,Brass Welding Rode,2026-06-05,,48-8072,1,20
+Rack 1C,Brass Welding Rode,2026-06-07,,HEX-27,1,19
+Rack 1C,Brass Welding Rode,2026-06-14,,Lathe Shop,1,18
+Rack 1C,Brass Welding Rode,2026-06-17,,SL-17 Baticoloa,1,17
+Rack 1C,Brass Welding Rode,2026-06-18,,Lathe Shop,1,16
+Rack 1C,Brass Welding Rode,2026-06-28,,48-8072,1,15
+Rack 1C,Brass Welding Rode,2026-07-01,,PH-6744,0.5,14.5
+Rack 1C,Masking Tape,2026-05-20,,HEX-45,1,5
+Rack 1C,Masking Tape,2026-05-20,,HEX-45,1,4
+Rack 1C,Masking Tape,2026-05-20,,HEX-45,2,2
+Rack 1C,Masking Tape,2026-05-22,,HEX-26,1,1
+Rack 1C,Masking Tape,2026-05-23,,HEX-01,2,9
+Rack 1C,Masking Tape,2026-05-25,,HEX-21,1,8
+Rack 1C,Masking Tape,2026-05-26,,HEX-23,1,7
+Rack 1C,Masking Tape,2026-05-28,,HEX-21,1,6
+Rack 1C,Masking Tape,2026-06-02,,HEX-21,1,15
+Rack 1C,Masking Tape,2026-06-17,,LP-1713,1,14
+Rack 1C,Masking Tape,2026-07-01,,LP-1720,1,13
+Rack 1C,Masking Tape,2026-07-02,,LP-1720,1,12
+Rack 1C,Masking Tape,2026-07-02,,New Warehouse Building,1,11
+Rack 1C,Masking Tape,2026-07-04,,LO-5982,1,10
+Rack 1C,Masking Tape,2026-07-06,,LO-5984,1,9
+Rack 1C,Battery Water,2026-06-02,,,0.5,4.5
+Rack 1C,Battery Water,2026-06-03,,LP-1574,2,2.5
+Rack 1C,Battery Water,2026-06-06,,LP-1566,2,0.5
+Rack 1C,Battery Water,2026-06-20,,PTR-01,0.5,0
+Rack 1C,Silicon,2026-06-06,,PV-6889,1,1
+Rack 1C,Silicon,2026-06-27,,ZB-1047,1,1
+Rack 1C,Auto WIre,2026-06-06,,HEX-23,4,2
+Rack 1C,Auto WIre,2026-06-09,,HEX-33,2,0
+Rack 1C,Auto WIre,2026-06-15,,PH-6744,6,24
+Rack 1C,Auto WIre,2026-06-16,,SR-12,8,16
+Rack 1C,Auto WIre,2026-06-19,,LC-0434,1,15
+Rack 1C,Auto WIre,2026-06-27,,SL-09,3,42
+Rack 1C,Auto WIre,2026-07-02,,PY-2408,1,41
+Rack 1C,Auto WIre,2026-07-07,,RC-9894,3,38
+Rack 1C,Costic Soda,2026-06-23,,Service Bay,1,4
+Rack 1C,Costic Soda,2026-06-27,,Service Bay,1,3
+Rack 1C,Costic Soda,2026-07-03,,Service Bay,1,2
+Rack 1C,Costic Soda,2026-07-06,,CR-02,1,1
+Thinner/Paint/Others,Thinner,2026-05-23,,HEX-01,2,8
+Thinner/Paint/Others,Thinner,2026-05-23,,HEX 01,3,5
+Thinner/Paint/Others,Thinner,2026-05-25,,HEX-33,1,4
+Thinner/Paint/Others,Thinner,2026-05-25,,HEX-23,1,3
+Thinner/Paint/Others,Thinner,2026-05-26,,HEX-23,2,1
+Thinner/Paint/Others,Thinner,2026-05-27,,HEX-26,2,9
+Thinner/Paint/Others,Thinner,2026-06-03,,HEX-21,2,11.5
+Thinner/Paint/Others,Thinner,2026-06-16,,CR-02,1,10.5
+Thinner/Paint/Others,Thinner,2026-06-20,,LL-1782,0.75,9.75
+Thinner/Paint/Others,Thinner,2026-06-21,,PY-2408,1.5,8.25
+Thinner/Paint/Others,Thinner,2026-06-23,,PY-2408,1,7.25
+Thinner/Paint/Others,Thinner,2026-06-24,,PY-2408,1.5,5.75
+Thinner/Paint/Others,Thinner,2026-07-04,,LO-5984,2,3.75
+Thinner/Paint/Others,Thinner,2026-07-05,,LO-5984,3,0.75
+Thinner/Paint/Others,Thinner,2026-07-06,,Roof Reapair,0.75,0
+Thinner/Paint/Others,Car Wash,2026-05-26,,LP-1578,0.5,1.5
+Thinner/Paint/Others,Car Wash,2026-05-27,,LD-05,0.2,1.3
+Thinner/Paint/Others,Car Wash,2026-06-05,,LP-1578,0.15,11.15
+Thinner/Paint/Others,Car Wash,2026-06-06,,LO-9810,0.2,10.95
+Thinner/Paint/Others,Car Wash,2026-06-06,,57-3062,0.2,10.75
+Thinner/Paint/Others,Car Wash,2026-06-06,,HEX-21,0.2,10.55
+Thinner/Paint/Others,Car Wash,2026-06-06,,LO-8348,0.2,10.35
+Thinner/Paint/Others,Car Wash,2026-06-06,,LC-0434,0.75,9.6
+Thinner/Paint/Others,Car Wash,2026-06-07,,LC-0434,0.25,9.35
+Thinner/Paint/Others,Car Wash,2026-06-07,,57-3062,0.2,9.15
+Thinner/Paint/Others,Car Wash,2026-06-07,,LO-9810,0.5,8.65
+Thinner/Paint/Others,Car Wash,2026-06-08,,51-7157,0.25,8.4
+Thinner/Paint/Others,Car Wash,2026-06-08,,LK-4061,0.25,8.15
+Thinner/Paint/Others,Car Wash,2026-06-08,,48-4849,0.25,7.9
+Thinner/Paint/Others,Car Wash,2026-06-09,,HEX-33,0.25,7.65
+Thinner/Paint/Others,Car Wash,2026-06-10,,LO-7855,0.3,7.35
+Thinner/Paint/Others,Car Wash,2026-06-12,,ZA-9716,0.2,7.15
+Thinner/Paint/Others,Car Wash,2026-06-13,,LO-8350,0.25,6.9
+Thinner/Paint/Others,Car Wash,2026-06-14,,HEX-26,0.25,6.65
+Thinner/Paint/Others,Car Wash,2026-06-15,,57-3062,0.25,6.4
+Thinner/Paint/Others,Car Wash,2026-06-15,,LO-9810,0.5,5.9
+Thinner/Paint/Others,Car Wash,2026-06-15,,LL-1782,0.5,5.4
+Thinner/Paint/Others,Car Wash,2026-06-16,,LL-1782,0.25,5.15
+Thinner/Paint/Others,Car Wash,2026-06-17,,LD-05,0.5,14.65
+Thinner/Paint/Others,Car Wash,2026-06-18,,Service Bay,0.25,14.4
+Thinner/Paint/Others,Car Wash,2026-06-18,,51-8083,0.5,13.9
+Thinner/Paint/Others,Car Wash,2026-06-19,,LM-7959,0.5,13.4
+Thinner/Paint/Others,Car Wash,2026-06-20,,LO-7810,0.25,13.15
+Thinner/Paint/Others,Car Wash,2026-06-20,,HU-5097,0.2,12.95
+Thinner/Paint/Others,Car Wash,2026-06-21,,DAH-2228,0.3,12.65
+Thinner/Paint/Others,Car Wash,2026-06-23,,LD-05,0.3,12.35
+Thinner/Paint/Others,Car Wash,2026-06-24,,LK-4054,0.35,12
+Thinner/Paint/Others,Car Wash,2026-06-24,,LK-4524,0.35,11.65
+Thinner/Paint/Others,Car Wash,2026-06-25,,LH-5586,0.4,11.25
+Thinner/Paint/Others,Car Wash,2026-06-25,,LB-15,0.3,10.95
+Thinner/Paint/Others,Car Wash,2026-06-25,,LB-01,0.3,10.65
+Thinner/Paint/Others,Car Wash,2026-06-26,,LN-8278,0.3,10.35
+Thinner/Paint/Others,Car Wash,2026-06-26,,LD-08,0.4,9.95
+Thinner/Paint/Others,Car Wash,2026-06-30,,LD-06,0.4,19.55
+Thinner/Paint/Others,Car Wash,2026-06-30,,48-8072,0.1,19.45
+Thinner/Paint/Others,Car Wash,2026-06-30,,LO-9810,0.32,19.13
+Thinner/Paint/Others,Car Wash,2026-07-01,,LK-5586,0.15,18.98
+Thinner/Paint/Others,Car Wash,2026-07-02,,PH-6747,0.35,18.63
+Thinner/Paint/Others,Car Wash,2026-07-02,,HS-1794,0.3,18.33
+Thinner/Paint/Others,Car Wash,2026-07-03,,28-4314,0.2,18.13
+Thinner/Paint/Others,Car Wash,2026-07-03,,HEX-17,0.2,17.93
+Thinner/Paint/Others,Car Wash,2026-07-05,,51-7158,0.2,17.73
+Thinner/Paint/Others,Car Wash,2026-07-05,,LC-0434,0.5,17.23
+Thinner/Paint/Others,Car Wash,2026-07-06,,CR-02,0.2,17.03
+Thinner/Paint/Others,Car Wash,2026-07-06,,57-3062,0.2,16.83
+Thinner/Paint/Others,Car Wash,2026-07-06,,CR-02,0.2,16.63
+Thinner/Paint/Others,WD-40,2026-05-22,,41-7225,1,2
+Thinner/Paint/Others,WD-40,2026-05-23,,41-7225,1,1
+Thinner/Paint/Others,WD-40,2026-06-05,,LL-1782,1,2
+Thinner/Paint/Others,WD-40,2026-06-06,,LL-1782,1,1
+Thinner/Paint/Others,WD-40,2026-06-12,,SR-11,1,4
+Thinner/Paint/Others,WD-40,2026-06-16,,"SL-08, Waker (HC401199)",1,3
+Thinner/Paint/Others,WD-40,2026-06-16,,HEX-39,1,2
+Thinner/Paint/Others,WD-40,2026-06-18,,PTR-06,1,1
+Thinner/Paint/Others,WD-40,2026-06-19,,Concrete Plant,1,0
+Thinner/Paint/Others,WD-40,2026-06-27,,ASC-25,0.5,1.5
+Thinner/Paint/Others,WD-40,2026-07-02,,Tamping Rammer,0.1,1.4
+Thinner/Paint/Others,WD-40,2026-07-03,,PY-2408,0.25,1.15
+Thinner/Paint/Others,WD-40,2026-07-06,,RC-9894,0.25,0.9
+Thinner/Paint/Others,WD-40,2026-07-06,,LI-3851,0.25,0.65
+Thinner/Paint/Others,WD-40,2026-07-06,,LI-3851,0.25,0.4
+Thinner/Paint/Others,WD-40,2026-07-06,,HEX-17,0.2,0.2
+Thinner/Paint/Others,Grease Nipple,2026-07-05,,RC-9894,2,43
+Thinner/Paint/Others,Grease Nipple,2026-07-06,,CR-02,10,33
+Legacy Log,25 Amp Fuse,2025-11-02,,L0-7183,2,0
+Legacy Log,20 Amp Fuse,2025-11-02,,L0-7183,3,0
+Legacy Log,Fuse Holder,2025-11-02,,L0-7183,1,0
+Legacy Log,LP-Cable Tie,2025-11-03,,LP-1712,4,0
+Legacy Log,Rubber Gnease,2025-11-03,,LK-6738,1,0
+Legacy Log,Cable Tie,2025-11-03,,LD-8875,4,0
+Legacy Log,B/ oil 500 ml,2025-11-03,,LK-6738,1,0
+Legacy Log,19 mm washer,2025-11-03,,LM-6653,1,0
+Legacy Log,Insulating Tape,2025-11-03,,LP-1578,1,0
+Legacy Log,Panel Paper 120,2025-11-03,,LK-2366,1,0
+Legacy Log,Insulating Tape,2025-11-03,,LK-2366,1,0
+Legacy Log,Cable Tie,2025-11-04,,LK-2366,10,0
+Legacy Log,20mp Fuse,2025-11-04,,L0-7183,8,0
+Legacy Log,Seastic,2025-11-06,,LK-6738,3,0
+Legacy Log,320 sand Paper,2025-11-06,,PH-6744,1,0
+Legacy Log,B/ one 500ml,2025-11-06,,PH-6744,1,0
+Legacy Log,Insulation Tape,2025-11-07,,LP-1578,1,0
+Legacy Log,(Used) side light,2025-11-07,,LP-1578,4,0
+Legacy Log,Emergency light (Brown),2025-11-07,,LP-1578,1,0
+Legacy Log,"1/2"" Hose Clip",2025-11-08,,AC-01,4,0
+Legacy Log,Cable Tie,2025-11-08,,48-4849,3,0
+Legacy Log,8mm Air Sock,2025-11-08,,48-4849,1,0
+Legacy Log,Battery water,2025-11-08,,CPU Battery Workshop,1,0
+Legacy Log,Insulation Tape,2025-11-09,,Generator Diesel Pump,1,0
+Legacy Log,B/ oil - 250 g,2025-11-09,,HU-5097,1,0
+Legacy Log,Cable Tie,2025-11-10,,LO-,5,0
+Legacy Log,Insulating Tape,2025-11-10,,LO-,1,0
+Legacy Log,Cable Tie,2025-11-10,,PH-6744,3,0
+Legacy Log,Battery water,2025-11-10,,LK-5041,1,0
+Legacy Log,Selastic,2025-11-10,,DAH-2491,1,0
+Legacy Log,Brake oil,2025-11-11,,DAH-2491,1,0
+Legacy Log,Cable Tile,2025-11-11,,DAH-2491,2,0
+Legacy Log,Sealastic,2025-11-11,,L0-4925,1,0
+Legacy Log,Nut and bolt (19mm),2025-11-11,,One bag mixer,4,0
+Legacy Log,Insulating Tape,2025-11-12,,Fabrication,1,0
+Legacy Log,Insulating Tape,2025-11-12,,SL-08,1,0
+Legacy Log,Cable Tile,2025-11-12,,DAH-2491,2,0
+Legacy Log,Stop cable (L5-8055),2025-11-12,,FL-02,1,0
+Legacy Log,Fuse 10A,2025-11-12,,L0-5984,3,0
+Legacy Log,Fuse 20A,2025-11-12,,L0-5984,2,0
+Legacy Log,Fuse Holder,2025-11-12,,L0-5984,1,0
+Legacy Log,Hone clip,2025-11-12,,L0-5984,3,0
+Legacy Log,24V Relay,2025-11-12,,L0-5984,1,0
+Legacy Log,Cable Tile,2025-11-12,,L0-5984,5,0
+Legacy Log,Cable Tile,2025-11-13,,L0-5984,8,0
+Legacy Log,B/ oil 250 ml,2025-11-13,,DAH-2491,1,0
+Legacy Log,Insulating Tape,2025-11-13,,LC-0434,1,0
+Legacy Log,"17x4"" Bolt & Nut",2025-11-13,,LD-7183,4,0
+Legacy Log,Bulb (12V 0/1F),2025-11-13,,DAH-2491,1,0
+Legacy Log,120 Sand Paper,2025-11-14,,325-5120,1,0
+Legacy Log,12V Relay,2025-11-14,,VR-13,1,0
+Legacy Log,Sand Paper 320,2025-11-14,,LI-3401,1,0
+Legacy Log,17mm Bolt & Nut,2025-11-14,,ZB-1529,2,0
+Legacy Log,24 Relay,2025-11-15,,HEX-40,2,0
+Legacy Log,Relay Buse,2025-11-15,,HEX-40,2,0
+Legacy Log,Fuse Buse,2025-11-15,,HEX-40,4,0
+Legacy Log,Fush Buttan,2025-11-15,,HEX-40,2,0
+Legacy Log,10 Lug,2025-11-15,,HEX-40,6,0
+Legacy Log,Hone clip,2025-11-15,,HEX-40,6,0
+Legacy Log,Fuse 10,2025-11-15,,HEX-40,3,0
+Legacy Log,Fuse 90,2025-11-15,,HEX-40,3,0
+Legacy Log,Fuse 25,2025-11-15,,HEX-40,3,0
+Legacy Log,Fuse 30,2025-11-15,,HEX-40,3,0
+Legacy Log,Insulating Tape,2025-11-15,,HEX-40,2,0
+Legacy Log,Cable Tile,2025-11-15,,HEX-40,10,0
+Legacy Log,10 mm Bolt,2025-11-15,,HEX-40,6,0
+Legacy Log,washer,2025-11-15,,HEX-40,12,0
+Legacy Log,Battery,2025-11-15,,LM-5720,1,0
+Legacy Log,Dalley Terminal,2025-11-15,,ZA-8337,1,0
+Legacy Log,Insulating Tape,2025-11-15,,Tinkershop NIS. Balegan,1,0
+Legacy Log,Insulating Tape,2025-11-15,,49-5294,1,0
+Legacy Log,12V D/7 Bulb,2025-11-15,,DAH-2231,3,0
+Legacy Log,Bulb Holder,2025-11-15,,DAH-2231,1,0
+Legacy Log,Avaldite,2025-11-16,,GE-143,1,0
+Legacy Log,Insulating Tape,2025-11-16,,L0-9810,1,0
+Legacy Log,Cable Tile,2025-11-16,,L0-9810,15,0
+Legacy Log,120 Sand Paper,2025-11-16,,TM-17,1,0
+Legacy Log,Selastic,2025-11-16,,LK-2366,1,0
+Legacy Log,Brake oil ml 250,2025-11-16,,LN-8278,1,0
+Legacy Log,Cable Tile,2025-11-16,,LP-1569,4,0
+Legacy Log,Avaldite,2025-11-16,,DAH-2228,1,0
+Legacy Log,Cable Tile,2025-11-16,,LM-8278,2,0
+Legacy Log,Insulating Tape,2025-11-16,,LM-8278,1,0
+Legacy Log,B/oil,2025-11-16,,,4,0
+Legacy Log,Sand Paper,2025-11-16,,LP-1566,1,0
+Legacy Log,WSP 400,2025-11-18,,HEX-37,1,0
+Legacy Log,Cable Tile,2025-11-18,,LP-1566,3,0
+Legacy Log,Insulating Tape,2025-11-18,,LP-1566,1,0
+Legacy Log,Castic soda,2025-11-18,,Service Bay,1,0
+Legacy Log,Greass Nipper,2025-11-18,,ZA-8337,3,0
+Legacy Log,In. Tape,2025-11-18,,L0-9810,2,0
+Legacy Log,In. Tape,2025-11-18,,ZA-8337,2,0
+Legacy Log,In. Tape,2025-11-18,,L0-9810 Service Cab,1,0
+Legacy Log,Cable Tie,2025-11-18,,L0-9810,6,0
+Legacy Log,In·Tape,2025-11-19,,325-5120,1,0
+Legacy Log,Insulation tape,2025-11-19,,325-5120,1,0
+Legacy Log,Cable Tie,2025-11-19,,LK-6738,4,0
+Legacy Log,Battery water,2025-11-19,,28-4914,1,0
+Legacy Log,Cable Tie,2025-11-19,,325-5120,5,0
+Legacy Log,Insulating Tape,2025-11-19,,325-5120,1,0
+Legacy Log,Epoxy Gum,2025-11-19,,325-5120,1,0
+Legacy Log,Insulating Tape,2025-11-20,,PV-6889,1,0
+Legacy Log,Thread Seal,2025-11-20,,Water Line Repair Service Bay,1,0
+Legacy Log,Soda,2025-11-20,,Serice Bay,1,0
+Legacy Log,In·Tape,2025-11-20,,PV-6889,1,0
+Legacy Log,Shellac,2025-11-20,,HEX-37,1,0
+Legacy Log,Sand Paper 320,2025-11-20,,HEX-37,1,0
+Legacy Log,Battery Terminal,2025-11-20,,GG-02,1,0
+Legacy Log,Thread Lock,2025-11-20,,HEX-37,1,0
+Legacy Log,Fuse Holder,2025-11-20,,L0-7183,1,0
+Legacy Log,Relay,2025-11-20,,L0-7183,1,0
+Legacy Log,Sand Paper New,2025-11-20,,Ele. Air compressor,1,0
+Legacy Log,10 Amp Fuse,2025-11-20,,LK-6738,3,0
+Legacy Log,20 Amp Fuse,2025-11-20,,LK-6738,3,0
+Legacy Log,Thread Seal,2025-11-20,,Ele. Air compressor,1,0
+Legacy Log,12v/low Auto Bulb,2025-11-20,,LK-6738,2,0
+Legacy Log,Light Beam,2025-11-20,,LK-6738,2,0
+Legacy Log,Nut and Bolt (13 mm),2025-11-22,,L0-7183,6,0
+Legacy Log,Insulating Seal,2025-11-22,,WS,1,0
+Legacy Log,Super Glue,2025-11-22,,Lp-1582,1,0
+Legacy Log,Gireass Nippel,2025-11-22,,ZA-8337,2,0
+Legacy Log,Wire Tie,2025-11-22,,One ton Roller,4,0
+Legacy Log,Super Glue,2025-11-22,,PR-1504,1,0
+Legacy Log,Battery terminal set,2025-11-23,,LB-01,2,0
+Legacy Log,80A Relay,2025-11-22,,LB-01,2,0
+Legacy Log,In/Tape,2025-11-23,,LB-01,1,0
+Legacy Log,Hose clips,2025-11-22,,LB-01,6,0
+Legacy Log,Hose,2025-11-23,,LB-01,1,0
+Legacy Log,Hose clips,2025-11-22,,LY-4524,1,0
+Legacy Log,Disabling Tape,2025-11-23,,LO-9840,1,0
+Legacy Log,Grease nepal,2025-11-22,,48-4849,4,0
+Legacy Log,Battery terminal (+/-) butter fly,2025-11-23,,PTR-04,2,0
+Legacy Log,washer (12 mm),2025-11-22,,Electrical Repair,4,0
+Legacy Log,Battery water,2025-11-23,,LP-1563,4,0
+Legacy Log,Battery terminal (+),2025-11-22,,VR-71,1,0
+Legacy Log,12v/SLF bulb (10w),2025-11-23,,VR-71,3,0
+Legacy Log,12v/DLF bulb (21w),2025-11-22,,VR-71,1,0
+Legacy Log,Reverse horn,2025-11-23,,VR-71,1,0
+Legacy Log,White Tyre,2025-11-24,,L0-9810,5,0
+Legacy Log,Grease nipple (SLK),2025-11-24,,ZB-1521,5,0
+Legacy Log,Grease nipple (bent),2025-11-24,,ZB-1521,1,0
+Legacy Log,Hose clips,2025-11-24,,Service Center,3,0
+Legacy Log,Grease nipple,2025-11-24,,HEX-18,1,0
+Legacy Log,White Tyre,2025-11-25,,LP-1571,4,0
+Legacy Log,Sandpaper,2025-11-25,,Service Capture Bag,1,0
+Legacy Log,Bulb Holder,2025-11-25,,PV-6889,1,0
+Legacy Log,Bulb 12v/DF-,2025-11-25,,PV-6889,1,0
+Legacy Log,Cable Tile,2025-11-25,,LP-1569,17,0
+Legacy Log,Seastic,2025-11-25,,PV-6889,1,0
+Legacy Log,Super Glue,2025-11-25,,LY-0065,1,0
+Legacy Log,Insu. Tape,2025-11-25,,PV-6889,1,0
+Legacy Log,Fog Light,2025-11-25,,HEX-27,1,0
+Legacy Log,Silica Tape,2025-11-26,,PH-3945,1,0
+Legacy Log,Insulating Pole,2025-11-26,,WS,7,0
+Legacy Log,White Tray,2025-11-26,,WS,2,0
+Legacy Log,Wiper Blade,2025-11-26,,LP-1582,2,0
+Legacy Log,Wiper Blade,2025-11-26,,LP-1569,2,0
+Legacy Log,Wiper Blade,2025-11-26,,LK-5041,2,0
+Legacy Log,8mm Bolt,2025-11-27,,LM-8278,20,0
+Legacy Log,Reather Grease,2025-11-27,,PTR/10,1,0
+Legacy Log,Brake Oil,2025-11-27,,PTR/10,2,0
+Legacy Log,Gasket Shellak,2025-11-27,,AC 38,1,0
+Legacy Log,"½"" Hose cup",2025-11-27,,AC 38,1,0
+Legacy Log,Super Glue,2025-11-27,,AC 38,1,0
+Legacy Log,Insulation Tape,2025-11-27,,ZA-8337,1,0
+Legacy Log,Head light Hub 12v 60/55w,2025-11-27,,ZA-8337,1,0
+Legacy Log,Head light holder,2025-11-27,,ZA-8337,1,0
+Legacy Log,Park Hub 3w/12v,2025-11-27,,ZA-8337,1,0
+Legacy Log,120 Sand Paper,2025-11-27,,water Pump.,1,0
+Legacy Log,Brake light cup,2025-12-14,,LP-1571,2,0
+Legacy Log,Insulating Tape,2025-12-15,,PA-3945,1,0
+Legacy Log,Insulating Tape,2025-12-15,,LY-4524,1,0
+Legacy Log,Contract Cleaner 12,2025-12-15,,ZA-8337,1,0
+Legacy Log,5pm/12v Relay,2025-12-15,,ZA-8337,1,0
+Legacy Log,Theard Seal,2025-12-15,,Compressor plant,1,0
+Legacy Log,"320,400 Shand Puls.",2025-12-16,,LD-02,2,0
+Legacy Log,Insulating Tape,2025-12-16,,LN-8279,1,0
+Legacy Log,Insulating Tape,2025-12-17,,LK-5041,1,0
+Legacy Log,Insulating Tape,2025-12-18,,HEX.22,7,0
+Legacy Log,Insulating Tape,2025-12-18,,Petretun Cinder,1,0
+Legacy Log,Delastic,2020-12-18,,Pay Wess,1,0
+Legacy Log,Insulating Tape,2025-12-18,,GL-0019,1,0
+Legacy Log,Super Glue,2025-12-18,,GL-0013,1,0
+Legacy Log,12V Spin Relay,2025-12-18,,ZA-8337,2,0
+Legacy Log,13mm nut and Bolt,2025-12-17,,ZA-8337,3,0
+Legacy Log,Terminal,2025-12-19,,LC-0434,2,0
+Legacy Log,Soda,2025-12-19,,Service Bay,1,0
+Legacy Log,WD-40,2025-12-19,,PH-3945,1,0
+Legacy Log,Contract Cleaner,2025-12-19,,PH-3945,1,0
+Legacy Log,120 Sand Paper,2025-12-19,,PH-3945,1,0
+Legacy Log,Shelate,2025-12-19,,Asphalt Plant Motor Repair,1,0
+Legacy Log,120 Sand Paper,2025-12-19,,Asphalt Plant Motor Repair,1,0
+Legacy Log,In. Tape,2025-12-19,,HEX-22,2,0
+Legacy Log,10mm Bolt,2025-12-19,,325-5120,4,0
+Legacy Log,Nut,2025-12-19,,325-5120,4,0
+Legacy Log,Washer,2025-12-19,,325-5120,4,0
+Legacy Log,Cable Tile,2025-12-19,,HEX-22,12,0
+Legacy Log,Insulating Tape,2025-12-19,,325-5120,2,0
+Legacy Log,Lable Tile,2025-12-19,,325-5120,6,0
+Legacy Log,Cable Tile,2025-12-20,,LO-9810,2,0
+Legacy Log,Wiper Motor,2025-12-20,,LO-4823,1,0
+Legacy Log,Selastic,2025-12-20,,A Plant,1,0
+Legacy Log,Insulating Tape,2025-12-20,,CR-01,1,0
+Legacy Log,Super Glove,2025-12-20,,Tintening shop,1,0
+Legacy Log,Cable Tile,2025-12-20,,ZA-2609,5,0
+Legacy Log,Contract Cleaner,2025-12-20,,PV-6889,1,0
+Legacy Log,10mm Nut,2025-12-20,,PV-6889,10,0
+Legacy Log,10mm Bolt,2025-12-20,,PV-6889,10,0
+Legacy Log,Insulating Tape,2025-12-20,,Asphalt Counter,1,0
+Legacy Log,Selastic,2025-12-20,,57-3062,1,0
+Legacy Log,Hose Clip (8-12),2025-12-20,,PR-1469,1,0
+Legacy Log,Throne Leve,2025-12-20,,Service Bay,1,0
+Legacy Log,Selcon Fuse,2025-12-20,,Service Bay,1,0
+Legacy Log,Thread Seal,2025-12-20,,A Plant,1,0
+Legacy Log,Tie Regulator,2025-12-22,,LK-6738,1,0
+Legacy Log,10 Bolt,2025-12-22,,LK-6738,1,0
+Legacy Log,10 nut,2025-12-22,,LK-6738,1,0
+Legacy Log,Washer,2025-12-22,,LK-6738,2,0
+Legacy Log,Insulating Tape,2025-12-22,,LK-6738,1,0
+Legacy Log,10 Bolt,2025-12-22,,PV-6889,40,0
+Legacy Log,Nut,2025-12-22,,PV-6889,40,0
+Legacy Log,13mm Bolt & Nut,2025-12-22,,PV-6889,1,0
+Legacy Log,13mm washer,2025-12-22,,PV-6889,2,0
+Legacy Log,14/15gw Holder,2025-12-22,,PV-6889,2,0
+Legacy Log,Bulb,2025-12-22,,PV-6889,2,0
+Legacy Log,13mm Wrist & Bolt,2025-12-22,,PV-6889,4,0
+Legacy Log,13mm Bolt,2025-12-22,,PV-6889,3,0
+Legacy Log,S/washer,2025-12-22,,PV-6889,14,0
+Legacy Log,Cable Tie,2025-12-22,,LP-1569,2,0
+Legacy Log,12V Relay,2025-12-22,,PV-6889,1,0
+Legacy Log,Insulation tape,2025-12-22,,PV-6889,1,0
+Legacy Log,12V 21w S/F,2025-12-22,,PV-6889,3,0
+Legacy Log,12V 21w/5w/8DF,2025-12-22,,PV-6889,1,0
+Legacy Log,12V - 10w S/F,2025-12-22,,PV-6889,2,0
+Legacy Log,Insulating Tape,2025-12-23,,Service Bay Wiring,1,0
+Legacy Log,WD-40,2025-12-23,,LJ-8055,1,0
+Legacy Log,Contact Cleaner,2025-12-23,,LK-6738,1,0
+Legacy Log,10mm Washer,2025-12-23,,PV-6889,30,0
+Legacy Log,Selastic,2025-12-23,,HEX-43,1,0
+Legacy Log,Insulating Tape,2025-12-23,,ZA-8337,1,0
+Legacy Log,Cable tie,2025-12-23,,ZA-8337,3,0
+Legacy Log,13 washer,2025-12-23,,ZA-8337,3,0
+Legacy Log,WD-40,2025-12-23,,LK-6738,1,0
+Legacy Log,12V/3w bulb,2025-12-23,,LK-6738,1,0
+Legacy Log,Fuse 15A,2025-12-23,,LK-6738,12,0
+Legacy Log,Fuse 10A,2025-12-23,,LK-6738,8,0
+Legacy Log,Horm Clip,2025-12-23,,LV-4524,4,0
+Legacy Log,Sealastic,2025-12-24,,PV-6889,1,0
+Legacy Log,Sand Paper (400),2025-12-24,,RS-0401,1,0
+Legacy Log,Gue 30A,2025-12-26,,SL-10,2,0
+Legacy Log,15A,2025-12-26,,SL-10,1,0
+Legacy Log,Mini fuse 25,2025-12-26,,SL-10,5,0
+Legacy Log,Mini fuse 20,2025-12-26,,SL-10,3,0
+Legacy Log,Mini fuse 7.5,2025-12-26,,SL-10,8,0
+Legacy Log,Mini fuse 25,2025-12-26,,SL-10,1,0
+Legacy Log,Mini fuse 30,2025-12-26,,SL-10,1,0
+Legacy Log,12V 5pin relay,2025-12-26,,SL-10,2,0
+Legacy Log,Insulation Tape,2025-12-26,,SL-10,2,0
+Legacy Log,Contact Cleaner,2025-12-26,,SL-10,1,0
+Legacy Log,Contact Cleaner,2025-12-27,,HEX-43,1,0
+Legacy Log,SPW Hose clip,2025-12-27,,HEX-43,1,0
+Legacy Log,Whur. Tug,2025-12-27,,RS-0401,4,0
+Legacy Log,Hose clip,2025-12-27,,LB-01,7,0
+Legacy Log,Hose clip 7-12,2025-12-27,,PA-4879,1,0
+Legacy Log,Brake oil,2025-12-27,,PA-4879,1,0
+Legacy Log,Relay Holder,2025-12-27,,SL-10,1,0
+Legacy Log,Cable Tire,2025-12-27,,SL-10,6,0
+Legacy Log,(+) terminal,2025-12-28,,PA-4879,1,0
+Legacy Log,WD 40,2025-12-28,,LK-4058,1,0
+Legacy Log,Cable Tire,2025-12-28,,PA-4879,2,0
+Legacy Log,Air Hose Soket - T 10mm,2025-12-28,,LO-7183,1,0
+Legacy Log,Air Hose Soket T 8mm,2025-12-28,,LO-7183,1,0
+Legacy Log,10 grease Mipple Lead,2025-12-29,,LK-6738,2,0
+Legacy Log,13mm lug,2025-12-29,,325-5120,1,0
+Legacy Log,Insulating Tape,2025-12-29,,325-5120,1,0
+Legacy Log,Cable Tire,2025-12-29,,325-5120,4,0
+Legacy Log,Selastic,2025-12-29,,HS-1794,1,0
+Legacy Log,Lug 12,2025-12-29,,LK-4061,1,0
+Legacy Log,Gneacne MPPLE 8mm,2025-12-30,,Lathe shop L0-5983,2,0
+Legacy Log,Sandpaper 400,2025-12-30,,LD-08,1,0
+Legacy Log,Sand Paper L00,2025-12-30,,LD-08,1,0
+Legacy Log,24V/5W Cables Bulb,2025-12-30,,GL-0019,2,0
+Legacy Log,WD-40,2025-12-30,,L0-5721,1,0
+Legacy Log,Hour meter,2025-12-30,,HEX-28,1,0
+Legacy Log,wire,2025-12-30,,Ruwanwalla,12,0
+Legacy Log,Aape Insularnis,2025-12-30,,Ruwanwalla,1,0
+Legacy Log,24V S/F Bulb,2025-12-31,,LD-7182,2,0
+Legacy Log,Araldite,2025-12-31,,Fabrication,1,0
+Legacy Log,contract cleaner,2026-01-02,,LB-01,1,0
+Legacy Log,Araldite Garm,2025-01-02,,HEX-28,1,0
+Legacy Log,contact cleaner,2025-01-02,,ZA-2609,1,0
+Legacy Log,Aape Clip (1/2),2026-01-02,,LK-5586,2,0
+Legacy Log,Samuel Brenne (400),2026-01-02,,LM-5721,7,0
+Legacy Log,Hose Clip 16-25,2026-01-02,,HEX-28,1,0
+Legacy Log,Hose Clip 16-25,2026-01-02,,LL-0623,1,0
+Legacy Log,Lifaboury,2026-01-03,,325-3448,1,0
+Legacy Log,In. Tape,2026-01-03,,325-5420,1,0
+Legacy Log,Bolt 12mm,2026-01-03,,ZA-2609,4,0
+Legacy Log,Nut n,2026-01-03,,ZA-2609,4,0
+Legacy Log,Sl washer,2026-01-03,,ZA-2609,4,0
+Legacy Log,Flat washer,2026-01-03,,ZA-2609,8,0
+Legacy Log,18mm Bolt,2026-01-03,,G2-0019,4,0
+Legacy Log,Nut,2026-01-03,,G2-0019,4,0
+Legacy Log,Flat washer,2026-01-03,,G2-0019,8,0
+Legacy Log,13mm Bolt,2026-01-03,,ZA-2609,4,0
+Legacy Log,Nut,2026-01-03,,ZA-2609,4,0
+Legacy Log,F/washer,2026-01-03,,ZA-2609,4,0
+Legacy Log,Home clip,2026-01-03,,28-4314,4,0
+Legacy Log,Amp 15 Fuse,2026-01-03,,28-4314,1,0
+Legacy Log,12V DF Bulb,2026-01-03,,LN-9046,1,0
+Legacy Log,Insulating Tape,2026-01-04,,LK-5041,1,0
+Legacy Log,8-12 Hose clip,2026-01-04,,PD-7049,1,0
+Legacy Log,Selastic,2026-01-04,,A/ Plant motor Repair,1,0
+Legacy Log,Shelak Cantrack Clenner Slab,2026-01-05,,A/ Plant motor Repair,1,0
+Legacy Log,320 Sand Paper,2026-01-05,,A/ Plant motor Repair,1,0
+Legacy Log,Insulating Gap,2026-01-05,,AC-38,7,0
+Legacy Log,Selastic Insulating Tape,2026-01-05,,AC-38,7,0
+Legacy Log,Selastic,2026-01-05,,Lathe Shop,1,0
+Legacy Log,Installation Tape,2026-01-05,,Lathe Shop,1,0
+Legacy Log,Cable Tire,2026-01-05,,SR-11.,8,0
+Legacy Log,Battery terminal (butterfly),2026-01-05,,MG-03,2,0
+Legacy Log,320 Sand Paper,2026-01-05,,LD-08,1,0
+Legacy Log,8mm Woolar 07,2025-01-05,,Fabrication,7,0
+Legacy Log,8mm Nut 07,2025-01-05,,Fabrication,7,0
+Legacy Log,8mm Bolt,2025-01-05,,Fabrication,5,0
+Legacy Log,8mm Bolt,2025-01-05,,Fabrication,5,0
+Legacy Log,nut,2025-01-05,,Fabrication,5,0
+Legacy Log,washer,2025-01-05,,Fabrication,5,0
+Legacy Log,24V/ Auto Bulb,2026-01-06,,L0-8348,3,0
+Legacy Log,Brake Oil 500ml,2026-01-06,,325-3448,1,0
+Legacy Log,Araldite Gum,2026-01-06,,325-3448,1,0
+Legacy Log,Selastic,2026-01-06,,LD-08.,1,0
+Legacy Log,Oil pump,2026-01-06,,LD-08.,1,0
+Legacy Log,Hous Clip,2026-01-06,,Concrete Machine.,1,0
+Legacy Log,Puse Holder,2026-01-06,,LN-8179,1,0
+Legacy Log,15 Puse,2026-01-06,,LN-8179.,1,0
+Legacy Log,320 Sand Paper,2026-01-07,,lN.9046,1,0
+Legacy Log,20 Amp Fuse,2026-01-07,,ZA-8337,3,0
+Legacy Log,320 Sand Paper,2026-01-07,,325-3448,1,0
+Legacy Log,East Costic Soda,2026-01-07,,Service Boy,1,0
+Legacy Log,Duct wire,2026-01-07,,ZA-8337,3,0
+Legacy Log,Cable Tape,2026-01-07,,ZA-1521,3,0
+Legacy Log,Insulation Tape,2026-01-07,,ZA-8337,1,0
+Legacy Log,Auto Ball 12V,2026-01-07,,ZA-8337,1,0
+Legacy Log,Hour Meter,2026-01-07,,ZA-8337,1,0
+Legacy Log,Insulating Tape,2026-01-07,,A/Plant,1,0
+Legacy Log,100/90 cm Head Light,2026-01-07,,325-5120,2,0
+Legacy Log,Hose clip (16*25),2026-01-07,,325-5120,2,0
+Legacy Log,Hose clip (16*25),2026-01-07,,28-4314,5,0
+Legacy Log,Draldite,2026-01-07,,28-4314,1,0
+Legacy Log,Hous Cilp,2026-01-07,,LD.08,1,0
+Legacy Log,Belastic,2026-01-07,,LD-08,1,0
+Legacy Log,10 Amp Fuse,2026-01-08,,VR-64,1,0
+Legacy Log,20 Amp Fuse,2026-01-08,,VR-64,1,0
+Legacy Log,Aradite,2026-01-08,,GE-05,1,0
+Legacy Log,13 mm Bolt,2026-01-08,,Elect compressor Fabricator,4,0
+Legacy Log,washer,2026-01-08,,Elect compressor Fabricator,4,0
+Legacy Log,Mut,2026-01-08,,Elect compressor Fabricator,2,0
+Legacy Log,Hose clip 12*20,2026-01-08,,325-3448,1,0
+Legacy Log,Insulating Tape,2026-01-09,,LD-0348,1,0
+Legacy Log,Hand Gloves,2026-01-09,,wls.,2,0
+Legacy Log,Gringing Stone,2026-01-09,,Lathe Shop,1,0
+Legacy Log,Sand Paper,2026-01-09,,LD-08.,1,0
+Legacy Log,15 Amp Fuse,2026-01-09,,PV-6889,4,0
+Legacy Log,20 Amp Fuse,2026-01-09,,PV-6889,2,0
+Legacy Log,Grinding Stone,2026-01-09,,Lathe Shop,1,0
+Legacy Log,Brake Oil ml. 500,2026-01-09,,LL-1782,2,0
+Legacy Log,Shims 195×95×1,2026-01-09,,HEX·43,8,0
+Legacy Log,Shims 150×95×1,2026-01-09,,HEX·43,4,0
+Legacy Log,C Bush (Dim),2026-01-09,,HEX·43,1,0
+Legacy Log,Grease Seal,2026-01-09,,HEX·43,4,0
+Legacy Log,Thread Lock,2026-01-09,,Trucker Shop,1,0
+Legacy Log,12V/10W Auto Bulb,2026-01-10,,LP-1576,2,0
+Legacy Log,Steel Proxy,2026-01-10,,LN-8279,1,0
+Legacy Log,Hose cup 8-12,2026-01-10,,LY 4524,1,0
+Legacy Log,Nut and Bolt,2026-01-10,,HEX-37,2,0
+Legacy Log,Selastic Thinner,2026-01-10,,VR-64,1,0
+Legacy Log,Paint,2026-01-10,,Trucker Shop,0.5,0
+Legacy Log,Paint Brush,2026-01-10,,Trucker Shop,0.25,0
+Legacy Log,Wine Brush,2026-01-10,,Trucker Shop,1,0
+Legacy Log,Silicon (Black) Free sheet,2026-01-10,,JCB-2A/2609,1,0
+Legacy Log,Toggle Switch,2026-01-10,,SR-11,1,0
+Legacy Log,Ansulating Tape Contract Clearner Brake Oil 250ml,2026-01-10,,SR-11,1,0
+Legacy Log,Hg Hose,2026-01-11,,HU-5097,1,0
+Legacy Log,Cable Tape,2026-01-11,,HEX-18,5,0
+Legacy Log,Insulation Tape,2026-01-11,,ZA·8337,1,0
+Legacy Log,Super glum,2026-01-11,,ZA·8337,1,0
+Legacy Log,Angulation Tape,2026-01-11,,ZA·8337,1,0
+Legacy Log,W.D - 40 150ml,2026-01-11,,LK-5048,1,0
+Legacy Log,Grease mipple,2026-01-11,,LK-5048,1,0
+Legacy Log,Bolt,2026-01-11,,Pile Hammer,1,0
+Legacy Log,Battery Terminal + Normal,2026-01-11,,LK-5048,1,0
+Legacy Log,Battery Terminal,2026-01-11,,ZA·8337,1,0
+Legacy Log,Flasher 12V Rel,2026-01-11,,ZA-8337,1,0
+Legacy Log,Relay 12V,2026-01-11,,ZA-8337,1,0
+Legacy Log,20A Fuse,2026-01-11,,ZA-8337,2,0
+Legacy Log,Gelastick,2026-01-11,,ZA-8337,1,0
+Legacy Log,10A Fuse,2026-01-11,,ZA-8337,6,0
+Legacy Log,Insulating Tape,2026-01-11,,HEX-43,2,0
+Legacy Log,Hose Clip 16-28,2026-01-11,,Service,3,0
+Legacy Log,Grease wippe,2026-01-11,,HEX-43,4,0
+Legacy Log,Limin Plastic washer,2026-01-11,,51-7158,7,0
+Legacy Log,Cable Tile,2026-01-11,,51-7158,4,0
+Legacy Log,Coolic Soda,2026-01-11,,Service Bay,1,0
+Legacy Log,Super Glue,2026-01-11,,LD-08,1,0
+Legacy Log,80090 servo,2026-01-11,,L0-8350,1,0
+Legacy Log,250ml Brake oil,2026-01-11,,L0-8350,1,0
+Legacy Log,Insulating Tape,2026-01-11,,48-4849,1,0
+Legacy Log,Contract cleaner,2026-01-13,,2A-2609,1,0
+Legacy Log,Fuse Holder,2026-01-13,,LB-01,1,0
+Legacy Log,Wamp Fuse,2026-01-13,,2A-2609,6,0
+Legacy Log,20 Amp Fuse,2026-01-13,,2A-2609,5,0
+Legacy Log,10 Amp Fuse,2026-01-13,,2A-2609,7,0
+Legacy Log,16-28 Hose Clip,2026-01-13,,Service,2,0
+Legacy Log,Home Clip,2026-01-13,,LB-01,8,0
+Legacy Log,Relay 12V,2026-01-13,,325-3448,2,0
+Legacy Log,Relay Holder,2026-01-13,,325-3448,1,0
+Legacy Log,Insulating Tape,2026-01-13,,325-3448,1,0
+Legacy Log,Hand Grease Gun (500g),2026-01-13,,ZB-1521,1,0
+Legacy Log,Cable Tile,2026-01-13,,325-3448,4,0
+Legacy Log,Home clip,2026-01-13,,325.3448.,507,0
+Legacy Log,Cable Tile,2026-01-13,,325-3448,4,0
+Legacy Log,Cable Tile,2026-01-13,,PV-6889,4,0
+Legacy Log,Air Hous,2026-01-14,,AP-09,40,0
+Legacy Log,Home Clip (10.22),2026-01-14,,AP-09,2,0
+Legacy Log,Cosmetic soda,2026-01-14,,Service Bany,1,0
+Legacy Log,Brake Oil,2026-01-14,,LE-4986,1,0
+Legacy Log,12V Signal Lasher,2026-01-14,,PV-6889,1,0
+Legacy Log,WD-40,2026-01-14,,Pile Hammer,1,0
+Legacy Log,Grease Nipal,2026-01-14,,48-4849,2,0
+Legacy Log,Battery Terminal normal,2026-01-14,,AP-9,2,0
+Legacy Log,Batterfly,2026-01-14,,AP-9,1,0
+Legacy Log,Normal,2026-01-14,,AP-9,2,0
+Legacy Log,WD-40 150ml,2026-01-14,,AP-9,1,0
+Legacy Log,Brecke Oil,2026-01-14,,LE-4986,1,0
+Legacy Log,Cable Tug,2026-01-14,,LE-08,6,0
+Legacy Log,Cabel Tipe,2026-01-14,,LK-8048,3,0
+Legacy Log,24W/10W Auto Bulb,2026-01-14,,LP,4,0
+Legacy Log,Brake oil 250ml,2026-01-15,,L0-8350,2,0
+Legacy Log,Brake oil 250ml,2026-01-15,,LK-5048,3,0
+Legacy Log,Belastic,2026-01-15,,LB-01,1,0
+Legacy Log,Rubber Grease,2026-01-15,,L0-8350,1,0
+Legacy Log,WD-40,2026-01-15,,LK-5048,1,0
+Legacy Log,Insulating Tape,2026-01-15,,LK-5048,1,0
+Legacy Log,240 Paicing Bulb,2026-01-15,,LK-8048,2,0
+Legacy Log,240 Brecker Light,2026-01-15,,LK-8048,2,0
+Legacy Log,Band Depar 100,2026-01-15,,LK-8048,1,0
+Legacy Log,Beladric,2026-01-15,,Generator light,1,0
+Legacy Log,Cubel Tie,2026-01-15,,LK-8041,2,0
+Legacy Log,240 Haed Light,2026-01-15,,LK-1572,2,0
+Legacy Log,Brack oil 280 ml,2026-01-15,,LK-5048,1,0
+Legacy Log,24V/21W S/F Bulb,2026-01-16,,LY-1614,1,0
+Legacy Log,Washer,2026-01-16,,LY-1614,2,0
+Legacy Log,13mm Bolt,2026-01-16,,LY-1614,1,0
+Legacy Log,Brake oil,2026-01-16,,51-7158,1,0
+Legacy Log,24V/DF Bulb,2026-01-17,,LN-8278,2,0
+Legacy Log,24V/10W S/F,2026-01-17,,LN-8278,2,0
+Legacy Log,Electric Soda,2026-01-17,,service Bay,1,0
+Legacy Log,Head Light Bulb 12V,2026-01-17,,325-5120,2,0
+Legacy Log,12V/3W Auto Bulb,2026-01-17,,LP-1720,4,0
+Legacy Log,12mm Bot,2026-01-17,,LP-1720,3,0
+Legacy Log,Nut,2026-01-17,,LP-1720,3,0
+Legacy Log,washer,2026-01-17,,LP-1720,2,0
+Legacy Log,12V/100w HH bulb,2026-01-17,,325-5120,1,0
+Legacy Log,12V relay,2026-01-17,,325-5120,1,0
+Legacy Log,Relay holder 5P10,2026-01-17,,325-5120,1,0
+Legacy Log,Super Gum,2026-01-18,,325-5120,2,0
+Legacy Log,Silicone Gue,2026-01-18,,325-5120,1,0
+Legacy Log,Araldite,2026-01-18,,Service Term.Battcoil Site.,1,0
+Legacy Log,Insulation Gue,2026-01-18,,Service Term.Battcoil Site.,1,0
+Legacy Log,Travel Scau,2026-01-18,,Service Term.Battcoil Site.,1,0
+Legacy Log,Shovel Pipe (120),2026-01-18,,Service Term.Battcoil Site.,2,0
+Legacy Log,Coatic Soda,2026-01-18,,Service Bay,1,0
+Legacy Log,400 Sand Paper,2026-01-18,,DAH-2491,1,0
+Legacy Log,Selistre,2026-01-18,,PA-4879,1,0
+Legacy Log,Sand Paper 120,2026-01-19,,41-1130,1,0
+Legacy Log,Mount (Dream),2026-01-19,,SR-09,3,0
+Legacy Log,Insulating Tape,2026-01-19,,SR-09,1,0
+Legacy Log,Hone Clip,2026-01-19,,SR-09,2,0
+Legacy Log,Creease Mipple 10mm,2026-01-19,,VR-14,1,0
+Legacy Log,washer crommy,2026-01-20,,PV-6689,8,0
+Legacy Log,120 Sand Paper,2026-01-20,,MG-03,1,0
+Legacy Log,Hour meter,2026-01-20,,LD-05,1,0
+Legacy Log,Cable Tile,2026-01-20,,VR-14,4,0
+Legacy Log,8 mm nut and bolt,2026-01-20,,DAH-2491,8,0
+Legacy Log,Toggle switch,2026-01-20,,Lathe machine Slop Drill machine,1,0
+Legacy Log,10-16 close chip,2026-01-20,,SR-09,2,0
+Legacy Log,Super glue,2026-01-20,,VR-14,1,0
+Legacy Log,Grease nipple,2026-01-20,,LD-06,4,0
+Legacy Log,Hour meter,2026-01-20,,VR-14,1,0
+Legacy Log,12V/21W B/F Ball,2026-01-20,,LK-5041,1,0
+Legacy Log,Horn chip (male),2026-01-20,,VR-14,2,0
+Legacy Log,Brake oil 250ml,2026-01-20,,51-7158,1,0
+Legacy Log,Selastic,2026-01-20,,LK-5041,1,0
+Legacy Log,Super glue,2026-01-21,,51-7158,1,0
+Legacy Log,18A mini Fuse,2026-01-21,,SL-08,1,0
+Legacy Log,SLF build holder,2026-01-21,,51-7158,1,0
+Legacy Log,12V/21W SLF bulb,2026-01-21,,51-7158,1,0
+Legacy Log,400 Sand Paper,2026-01-21,,LD-8,4,0
+Legacy Log,15A Fuse,2026-01-21,,51-7158,2,0
+Legacy Log,250 ml B/Oil,2026-01-21,,PV-6889,2,0
+Legacy Log,Insulating Tape,2026-01-21,,28-4314,1,0
+Legacy Log,15A Fuse,2026-01-21,,51-7158,1,0
+Legacy Log,Fuse Holder,2026-01-21,,51-7158,1,0
+Legacy Log,Insulating Tape,2026-01-21,,51-7158,3,0
+Legacy Log,12V/21W D/T Bulb,2026-01-21,,51-7158,1,0
+Legacy Log,Cosmetic Soda,2026-01-21,,Service Buy,1,0
+Legacy Log,12-20) Hose cup,2026-01-21,,Fabrication,4,0
+Legacy Log,Radiator coolant,2026-01-21,,PH-3945,143,0
+Legacy Log,12v S/F bulb,2026-01-21,,PH-3945,1,0
+Legacy Log,12v D/F bulb,2026-01-21,,PH-3945,1,0
+Legacy Log,Lotten waste,2026-01-21,,Fabrication,319,0
+Legacy Log,Insulating Tape,2026-01-21,,51-7158,1,0
+Legacy Log,Super Glue,2026-01-21,,48-4849,1,0
+Legacy Log,MD-40,2026-01-21,,AP-09,1,0
+Legacy Log,Brake oil 250ml,2026-01-21,,51-7158,1,0
+Legacy Log,24V/21W S/F Bulb,2026-01-21,,LP-1710,6,0
+Legacy Log,24V/10W Parrot Bulb,2026-01-21,,LP-1710,2,0
+Legacy Log,24V/100/190W Head light Bulb,2026-01-21,,LP-1710,1,0
+Legacy Log,12V/5W Capless Bulb,2026-01-21,,LC-0434,2,0
+Legacy Log,12V/100w head light bulb,2026-01-21,,LC-0434,2,0
+Legacy Log,Fuse 15A,2026-01-21,,AP-9,1,0
+Legacy Log,Insulating Tape,2026-01-21,,LP-1710,1,0
+Legacy Log,12V/Head light Bulb,2026-01-21,,LC-0434,1,0
+Legacy Log,Hose Clip (12-20),2026-01-23,,PV-6889,2,0
+Legacy Log,Selastic,2026-01-23,,VR-12,1,0
+Legacy Log,Insulation tape,2026-01-23,,Tinkering Painting Bay,1,0
+Legacy Log,WD-40,2026-01-23,,PV-6889,4,0
+Legacy Log,Super Glue,2026-01-23,,PV-6889,1,0
+Legacy Log,Hone clip,2026-01-23,,AC-38,1,0
+Legacy Log,Battery Terminal Butterfly,2026-01-23,,AC-38,1,0
+Legacy Log,Table Tile 300,2026-01-23,,LY-4824,2,0
+Legacy Log,Thread Lock,2026-01-23,,PV-6889,1,0
+Legacy Log,320 Sand Paper,2026-01-23,,VR-12,1,0
+Legacy Log,Battery Terminal Normal,2026-01-23,,LE-4296,1,0
+Legacy Log,Corrosion Mist,2026-01-23,,HEX-27,4,0
+Legacy Log,contact cleaner,2026-01-24,,A/Plant,1,0
+Legacy Log,Super Glue,2026-01-25,,ZA-8337,1,0
+Legacy Log,Battery Terminal (Butterfly),2026-01-25,,LE-4986,1,0
+Legacy Log,Cable Lug,2026-01-25,,LE-4986,1,0
+Legacy Log,Potty,2026-01-25,,LM-7949,2,0
+Legacy Log,Grease Wipple,2026-01-25,,L0-4925,2,0
+Legacy Log,Costic Soda,2026-01-25,,Service Bay,1,0
+Legacy Log,24V D/F,2026-01-25,,LY-4524 / LX-1679,4,0
+Legacy Log,24V/10W Auto,2026-01-25,,LY-4524 / LX-1679,6,0
+Legacy Log,B/Fuse,2026-01-25,,LY-4524 / LX-1679,6,0
+Legacy Log,Aralday Gum,2026-01-26,,41-1130,1,0
+Legacy Log,Thinner,2026-01-26,,AP-09,0.4,0
+Legacy Log,1000 Sand Paper,2026-01-26,,41-1130,40,0
+Legacy Log,12V Self bulb,2026-01-26,,LK-5041,1,0
+Legacy Log,Lug L,2026-01-26,,LY-4524,1,0
+Legacy Log,Lug Small,2026-01-26,,LY-4524,2,0
+Legacy Log,Insulating Tape,2026-01-26,,HEX-40,1,0
+Legacy Log,Insulating Tape,2026-01-26,,HEX-40,1,0
+Legacy Log,Belastic,2026-01-26,,LK-5041,1,0
+Legacy Log,Insulating Tape,2026-01-26,,LY-4524,1,0
+Legacy Log,Lug (L),2026-01-26,,GL-001A,1,0
+Legacy Log,Nut,2026-01-26,,LY-4524,4,0
+Legacy Log,Worm Bolt,2026-01-26,,LY-4524,4,0
+Legacy Log,Plat Wusher,2026-01-26,,LY-4524,4,0
+Legacy Log,24V/10W S/F bulb,2026-01-26,,LP-1709,3,0
+Legacy Log,Cable Tile 300,2026-01-26,,LK-5041,1,0
+Legacy Log,Insulating Tape Araldite,2026-01-27,,41-1130,1,0
+Legacy Log,Hose Clip (12-20),2026-01-27,,325-5120,1,0
+Legacy Log,Hose Clip (20-32),2026-01-27,,41-1130,1,0
+Legacy Log,Hose Clip (25-35),2026-01-27,,41-1130,1,0
+Legacy Log,Hone clip,2026-01-27,,AC/38,2,0
+Legacy Log,Hose clip (32-54),2026-01-27,,41-1130,3,0
+Legacy Log,Hose clip (40-60),2026-01-27,,41-1130,1,0
+Legacy Log,Selastic,2026-01-27,,41-1130,1,0
+Legacy Log,Hose clip (12-20),2026-01-27,,Electric Compressor,2,0
+Legacy Log,Super glue,2026-01-27,,PH-3945,1,0
+Legacy Log,Lubricator & Inspector clean,2026-01-27,,Electric Petrol Mechanic Section,1,0
+Legacy Log,Petrol 24V/5F Bulb,2026-01-27,,LD-7183,2,0
+Legacy Log,Hose clip,2026-01-27,,PH-3945,4,0
+Legacy Log,Cable Tile,2026-01-27,,PH-3945,6,0
+Legacy Log,Battery Asid,2026-01-27,,41-1130,2,0
+Legacy Log,Super glue,2026-01-27,,LL-1782,1,0
+Legacy Log,12V/21W S/F,2026-01-28,,LE-0434,1,0
+Legacy Log,Thinner,2026-01-28,,LM-7949,1,0
+Legacy Log,Oxygen welding Rod (12 No),2026-01-28,,AP-9,0.25,0
+Legacy Log,Oxygen weld (12 No),2026-01-28,,LM-7949,0.7,0
+Legacy Log,Super Glue,2026-01-28,,LP-1712,1,0
+Legacy Log,24V/10W Auto Bulb,2026-01-28,,LD-4823,2,0
+Legacy Log,24V/21W S/F Bulb,2026-01-28,,LO-4823,2,0
+Legacy Log,Costic Soda,2026-01-29,,Service Baye,1,0
+Legacy Log,Brake Oil 250ml,2026-01-29,,51-7158,1,0
+Legacy Log,Selastic,2026-01-29,,LD-08,1,0
+Legacy Log,1000 Sand Paper,2026-01-29,,51-7158,1,0
+Legacy Log,Brake Oil 250ml,2026-01-29,,51-7158,1,0
+Legacy Log,40-60 Hose Clip,2026-01-29,,LD-08,1,0
+Legacy Log,25-35 Hose Clip,2026-01-29,,LD-08,1,0
+Legacy Log,Condenser,2026-01-29,,Lyme Raum,1,0
+Legacy Log,Insulating Tape,2026-01-29,,GE-39,1,0
+Legacy Log,Cable Tile,2026-01-29,,325 - 5120,5,0
+Legacy Log,Cable Tile,2026-01-29,,325 - 5120,7,0
+Legacy Log,Hose clamp (1/2),2026-01-30,,Welding Shop,4,0
+Legacy Log,24v/10w S/F bulb,2026-01-30,,GL-0019 / HD-9005,4,0
+Legacy Log,24v/100w Fog light bulb(H1),2026-01-30,,GL-0019 / HD-9005,1,0
+Legacy Log,Cable bit,2026-01-30,,GL-0019 / HD-9005,6,0
+Legacy Log,Cable Tie.,2026-01-30,,SI-7158.,10,0
+Legacy Log,15 am Fuse,2026-01-30,,LP-1710.,2,0
+Legacy Log,Insulated Tape,2026-01-30,,GL-0019,1,0
+Legacy Log,Battery Terminal,2026-01-30,,GE-137,2,0
+Legacy Log,Costic soda,2026-01-30,,Service Bay,1,0
+Legacy Log,Insulating Tape,2026-01-31,,Hu-5097,1,0
+Legacy Log,19mm Bolt,2026-01-31,,RD-G318,4,0
+Legacy Log,19mm S/ washer,2026-01-31,,RD-G318,4,0
+Legacy Log,19mm F/ washer,2026-01-31,,RD-G318,4,0
+Legacy Log,Battery Premium,2026-01-31,,2A-8425,7,0
+Legacy Log,Parking Plug,2026-01-31,,LP-1574.,2,0
+Legacy Log,Super Blue,2026-01-31,,HEX-40,1,0
+Legacy Log,Oxygen welding Rod,2026-01-31,,LD-08,5,0
+Legacy Log,24v/21w S/F bulb,2026-01-31,,LP-1568,2,0
+Legacy Log,Cable Tile,2026-02-01,,LP-1571,6,0
+Legacy Log,Fuse 15amp,2026-02-02,,LP-1571,2,0
+Legacy Log,Fuse 20 amp,2026-02-02,,LP-1571,1,0
+Legacy Log,Fuse 25 amp,2026-02-02,,LP-1571,3,0
+Legacy Log,Insulating Tape,2026-02-02,,HEX-40,1,0
+Legacy Log,Super Blue,2026-02-02,,Lathre shop,1,0
+Legacy Log,Black Paint,2026-02-02,,Fire Bottle area painting,0.25,0
+Legacy Log,Insulating Tape,2026-02-02,,PA-4819,1,0
+Legacy Log,Main Switch,2026-02-02,,LP-1710.,1,0
+Legacy Log,Araldite,2026-02-02,,Shoe repair,1,0
+Legacy Log,Insulating Tape,2026-02-02,,LP-1571,1,0
+Legacy Log,Battery Terminal,2026-02-03,,LB-9496,1,0
+Legacy Log,Cable Tie,2026-02-03,,For wood Dust Bag,6,0
+Legacy Log,8mm Bolt,2026-02-03,,Engine Room Cuboacid Lock,4,0
+Legacy Log,8mm Nut,2026-02-03,,Engine Room Cuboacid Lock,4,0
+Legacy Log,8 mm Washer,2026-02-03,,Engine Room Cuboacid Lock,4,0
+Legacy Log,"Hose Clip (1/2"", 1"")",2026-02-03,,LD-06.,3,0
+Legacy Log,Gasket Sheak,2026-02-03,,LC-0434,1,0
+Legacy Log,(12-20) Hose Clip,2026-02-03,,LC-0434,2,0
+Legacy Log,Red Potty,2026-02-03,,PH-3945,11,0
+Legacy Log,Cattley Past Boddy Frill,2026-02-03,,PH-3945,1,0
+Legacy Log,washer,2026-02-03,,2C. 0434,5,0
+Legacy Log,Brass Welding Rod,2026-02-04,,Plant (compressor Fully),2,0
+Legacy Log,120 sand Paper,2026-02-05,,Lathe shop,1,0
+Legacy Log,oxygen welding Rod,2026-02-05,,PV-6889,5,0
+Legacy Log,24V/ Caples Bulb,2026-02-05,,LP-1571,1,0
+Legacy Log,costic soda,2026-02-05,,Service Bay,1,0
+Legacy Log,Insulating Tape,2026-02-05,,LD-08,1,0
+Legacy Log,Cable Tile,2026-02-05,,FL-02,4,0
+Legacy Log,Insulating Tape,2026-02-05,,LP-1569,1,0
+Legacy Log,24V/ Fog Light bulb,2026-02-05,,LY-4324,2,0
+Legacy Log,Insulating Tape,2026-02-05,,Fabrication,1,0
+Legacy Log,Battery Terminal Butterfly,2026-02-05,,LD-08,4,0
+Legacy Log,B-cut Super 250ml (Compound),2026-02-06,,PH-3945,1,0
+Legacy Log,Mascing Tape,2026-02-06,,PH-3945,1,0
+Legacy Log,Fuse 15 Am,2026-02-06,,LD-08,5,0
+Legacy Log,Fuse 25,2026-02-06,,LD-08,4,0
+Legacy Log,Fuse 20,2026-02-06,,LD-08,2,0
+Legacy Log,Fuse 30,2026-02-06,,LD-08,1,0
+Legacy Log,Thinner,2026-02-06,,PH-3945,1,0
+Legacy Log,Insulating Tape,2026-02-06,,PH-3945,1,0
+Legacy Log,Cable Tile,2026-02-06,,LP-1578,1,0
+Legacy Log,Hone chip,2026-02-06,,PH-3945,4,0
+Legacy Log,Selastic,2026-02-06,,LD-08,1,0
+Legacy Log,320 sand paper,2026-02-06,,HEX-23,1,0
+Legacy Log,Insulating Tape,2026-02-06,,LI-3851,1,0
+Legacy Log,1000 sand paper,2026-02-06,,HEX-41,1,0
+Legacy Log,Cable Tile,2026-02-08,,LP-1578,8,0
+Legacy Log,Hose Clip 1/2,2026-02-08,,Water Line Tinker Shot,1,0
+Legacy Log,Hose Clip 1,2026-02-08,,Water Line Tinker Shot,1,0
+Legacy Log,Hose Clip 3/4,2026-02-08,,Water Line Tinker Shot,2,0
+Legacy Log,Costic soda (200g),2026-02-08,,VR-23,2,0
+Legacy Log,Brake oil 250 ml,2026-02-08,,PA-4879,1,0
+Legacy Log,Clear paint,2026-02-08,,PH-3945,0.5,0
+Legacy Log,Thinner,2026-02-08,,PH-3945,0.5,0
+Legacy Log,400 sand paper,2026-02-09,,PH-3945,1,0
+Legacy Log,Insulating Tape,2026-02-09,,LP-1571,1,0
+Legacy Log,costic soda,2026-02-09,,Service Bay,1,0
+Legacy Log,Hone clip,2026-02-09,,HEX-40,1,0
+Legacy Log,Cable Tile,2026-02-09,,HEX-40,4,0
+Legacy Log,Insulating Tape,2026-02-09,,HEX-40,1,0
+Legacy Log,Oil Primer Paint,2026-02-09,,HEX-41,1.25,0
+Legacy Log,Thinner,2026-02-09,,HEX-41,0.5,0
+Legacy Log,Sand Paper,2026-02-10,,MG-15,0.5,0
+Legacy Log,Brake oil 250 ml,2026-02-10,,PV-6889,2,0
+Legacy Log,Brass welding Rod,2026-02-10,,LC-0434,1,0
+Legacy Log,Sand Paper 320,2026-02-10,,HEX-23,1,0
+Legacy Log,Sand Paper 320,2026-02-10,,HEX-23,1,0
+Legacy Log,B/oie 250 ml,2026-02-10,,41-1130,1,0
+Legacy Log,17mm Bolt,2026-02-10,,L0-7855,6,0
+Legacy Log,17mm Nat,2026-02-10,,L0-7855,6,0
+Legacy Log,17mm washer,2026-02-10,,L0-7855,12,0
+Legacy Log,17mm S/ washer,2026-02-10,,L0-7855,6,0
+Legacy Log,Costic soda,2026-02-10,,Service Bay,1,0
+Legacy Log,Costic soda,2026-02-11,,Service Bay,1,0
+Legacy Log,320 sand paper,2026-02-11,,325-5120,1,0
+Legacy Log,Selastin (999),2026-02-11,,FL-01,1,0
+Legacy Log,Selastin (999),2026-02-11,,LD-08,1,0
+Legacy Log,Hose clip (40-60),2026-02-11,,LD-08,2,0
+Legacy Log,WD-40,2026-02-11,,41-1130,1,0
+Legacy Log,Brake oil 250 ml,2026-02-11,,PT-1569,2,0
+Legacy Log,Cable Tile,2026-02-11,,LD-08,4,0
+Legacy Log,Cable Tile,2026-02-11,,LY-24524,5,0
+Legacy Log,Cable Tile,2026-02-11,,SR-13,10,0
+Legacy Log,Insulating Tape,2026-02-11,,SR-13,1,0
+Legacy Log,Hone clip,2026-02-12,,HEX-40,2,0
+Legacy Log,Insulating Tape,2026-02-12,,Fabrication,1,0
+Legacy Log,WD-40,2026-02-12,,Fabrication,1,0
+Legacy Log,Brake oil 250 ml,2026-02-12,,PTR-01,1,0
+Legacy Log,17mm Flat washer,2026-02-12,,L0-7850,24,0
+Legacy Log,15Am fuse,2026-02-12,,L0-5981,3,0
+Legacy Log,24V/10w Bulb,2026-02-12,,L0-5981,1,0
+Legacy Log,Single Filament Holder,2026-02-12,,L0-5981,2,0
+Legacy Log,22V/21w Quib,2026-02-12,,L0-5981,1,0
+Legacy Log,10amp Fuse,2026-02-12,,L0-5981,2,0
+Legacy Log,15amp Fuse,2026-02-12,,L0-5981,2,0
+Legacy Log,Insulation tape,2026-02-12,,L0-5981,1,0
+Legacy Log,Cable Tile,2026-02-12,,PTR-01,2,0
+Legacy Log,Cable Tile,2026-02-13,,L0-4823,7,0
+Legacy Log,400 Sand Paper,2026-02-13,,HEX-37,1,0
+Legacy Log,10mm Nuford Balls,2026-02-13,,LO-4824,1,0
+Legacy Log,Selastic,2026-02-13,,PA-4879,1,0
+Legacy Log,WD-40,2026-02-13,,LA-4229,1,0
+Legacy Log,24V/21W bulb,2026-02-14,,LO-5981,4,0
+Legacy Log,Selastic,2026-02-14,,HEX-23,1,0
+Legacy Log,24V/21W bulb,2026-02-14,,GL-0019,2,0
+Legacy Log,20A Fuse,2026-02-14,,,1,0
+Legacy Log,Insulation tape,2026-02-14,,,1,0
+Legacy Log,24V/161/20W bulb,2026-02-15,,GL-0049,2,0
+Legacy Log,Cable Tray,2026-02-15,,3 G2-0019,2,0
+Legacy Log,Cable tie,2026-02-15,,PA-4879,4,0
+Legacy Log,Cable tie,2026-02-15,,LO-4057,10,0
+Legacy Log,Brake Oil,2026-02-15,,LD-08,4,0
+Legacy Log,D/F bulb holder,2026-02-15,,GL-0019,1,0
+Legacy Log,24/ DIF bulb,2026-02-15,,GL-0019,1,0
+Legacy Log,Hose Clip,2026-02-15,,20-7855,2,0
+Legacy Log,Brake Oil,2026-02-16,,20-7855,2,0
+Legacy Log,Conduct cleaner,2026-02-16,,HEX-41,1,0
+Legacy Log,Governor motor assembly,2026-02-16,,HEX-41,1,0
+Legacy Log,10 Amp Fuse,2026-02-16,,,5,0
+Legacy Log,15 Amp Fuse,2026-02-16,,Kilinochke,5,0
+Legacy Log,20 Amp Fuse,2026-02-16,,HEX-40 / HEX-41,5,0
+Legacy Log,25 Amp Fuse,2026-02-16,,HEX-40 / HEX-41,5,0
+Legacy Log,Insulating Tube,2026-02-16,,HEX-40 / HEX-41,1,0
+Legacy Log,Cable Tube,2026-02-16,,HEX-40 / HEX-41,10,0
+Legacy Log,Home chip,2026-02-16,,HEX-40 / HEX-41,10,0
+Legacy Log,WD-40,2026-02-16,,41-1130,1,0
+Legacy Log,Toggle Switch,2026-02-16,,LR-1569,1,0
+Legacy Log,Ostic Soda,2026-02-16,,LI-3851,1,0
+Legacy Log,Cable Tie,2026-02-16,,41-1130,4,0
+Legacy Log,(20-32) Hose Clip,2026-02-16,,Service Bay,4,0
+Legacy Log,coste Soda,2026-02-16,,Service Bay,1,0
+Legacy Log,Cable Tie,2026-02-16,,41-1130,4,0
+Legacy Log,(20-32) Hose Clip,2026-02-16,,Service Bay,4,0
+Legacy Log,Insulating Tape,2026-02-17,,FL-02,1,0
+Legacy Log,Brake oil 250ml,2026-02-17,,LP-1710,1,0
+Legacy Log,contact cleaner,2026-02-17,,FL-02,1,0
+Legacy Log,Selastatic 999,2026-02-17,,FL-02,1,0
+Legacy Log,24V/5W D/F Bulb,2026-02-17,,LN-8277,2,0
+Legacy Log,Super Glue,2026-02-18,,PA-4879,1,0
+Legacy Log,Thread Seal,2026-02-18,,Service Karcher,1,0
+Legacy Log,Brake oil 250ml,2026-02-18,,LK-5048,2,0
+Legacy Log,Thread Lock,2026-02-18,,48-4849,1,0
+Legacy Log,Oxygen w/ Rod,2026-02-19,,48-4849,5,0
+Legacy Log,Capture water Seal,2026-02-19,,Service Bay Karturte,12,0
+Legacy Log,n value,2026-02-19,,Service Bay Karturte,5,0
+Legacy Log,Super Glue,2026-02-19,,PJ-6376,1,0
+Legacy Log,WD-40,2026-02-19,,LK-0434,1,0
+Legacy Log,Oxygen w/ Rod,2026-02-19,,48-4849,5,0
+Legacy Log,24V Hi 70w bulb,2026-02-19,,LY-4524,2,0
+Legacy Log,Brake oil 250ml,2026-02-19,,LL-0690,4,0
+Legacy Log,Salak,2026-02-19,,BDI-8556,1,0
+Legacy Log,Brass welding Rod,2026-02-20,,LO-7855,1,0
+Legacy Log,Thinet,2026-02-20,,HEX-17,2,0
+Legacy Log,Battery Terminal,2026-02-20,,41-1130,2,0
+Legacy Log,mini fuse 10amp,2026-02-20,,HEX-17,1,0
+Legacy Log,Super Glue,2026-02-20,,FL-03,1,0
+Legacy Log,Silicon Tube,2026-02-20,,FL-03,2,0
+Legacy Log,Silicon Tube,2026-02-20,,48-4849,1,0
+Legacy Log,Hose clamp 70+60,2026-02-20,,48-4849,4,0
+Legacy Log,Wasa clamp - 25+35,2026-02-20,,48-4849,1,0
+Legacy Log,320 sand Paper,2026-02-20,,68-5115,2,0
+Legacy Log,14mm natural Balls,2026-02-20,,LO-8988,3,0
+Legacy Log,Rubber Grease,2026-02-20,,68-5115,1,0
+Legacy Log,Super Glue,2026-02-21,,68-5115,1,0
+Legacy Log,24V/5W Pancin Bulb,2026-02-21,,L0-9810,1,0
+Legacy Log,Brass welding Rod,2026-02-21,,HEX-17,2,0
+Legacy Log,12-20 Hose Clip,2026-02-21,,PJ-6376,0.25,0
+Legacy Log,Paint Black Lacker,,,SMG-01,0.25,0
+Legacy Log,Soda (costric),2026-02-22,,LK-4061,1,0
+Legacy Log,Contact Clearner,2026-02-22,,PH-3945,1,0
+Legacy Log,Tread Seal,2026-02-22,,Hose Fix,1,0
+Legacy Log,8-12 Hose Clip,2026-02-22,,48-4849,1,0
+Legacy Log,24V/S/F Bulb 21W,2026-02-22,,L0-5985,6,0
+Legacy Log,24V/10W Bulb,2026-02-22,,L0-5985,2,0
+Legacy Log,(14mm) must Belt,2026-02-22,,PJ-6376,2,0
+Legacy Log,Insulating Tape,2026-02-22,,L0-5985,1,0
+Legacy Log,Cable Tie,2026-02-22,,L0-5985,10,0
+Legacy Log,Fuse 10A,2026-02-22,,L0-5985,2,0
+Legacy Log,WD-40,2026-02-22,,HEX-27,1,0
+Legacy Log,Thinnet,2026-02-22,,LM-7948,1,0
+Legacy Log,25-35 Hose Clip,2026-02-22,,LC-0434,2,0
+Legacy Log,12-20 Hose Clip,2026-02-22,,LC-0434,2,0
+Legacy Log,20-32 Hose Clip,2026-02-22,,LC-0434,2,0
+Legacy Log,Super Glue,2026-02-22,,L0-5985,1,0
+Legacy Log,Solastic aa9,2026-02-22,,LC-0434,1,0
+Legacy Log,10 amp Fuse,2026-02-22,,L0-5985,7,0
+Legacy Log,Brass welding Rod,2026-02-23,,L0-7855,1,0
+Legacy Log,Insulating Tape,2026-02-23,,PJ-6376,1,0
+Legacy Log,costic soda,2026-02-23,,Service Bay,1,0
+Legacy Log,24/21W·81F Bulb,2026-02-23,,48-4849,1,0
+Legacy Log,Insulating Tape,2026-02-23,,48-4849,1,0
+Legacy Log,Super Glue,2026-02-23,,PJ-6376,1,0
+Legacy Log,Cable Tie,2026-02-23,,48-4849,2,0
+Legacy Log,Super Glue,2026-02-23,,LP-1567,1,0
+Legacy Log,WD4D.,2026-02-23,,HEX-17.,1,0
+Legacy Log,Roeletr Cap.,2026-02-23,,48-4849,1,0
+Legacy Log,Battery Terminal Battery,2026-02-24,,LD-08,2,0
+Legacy Log,Thinner,2026-02-24,,PH-3945,0.5,0
+Legacy Log,mini Fuse 10 amp,2026-02-24,,PH-3945,4,0
+Legacy Log,h 20 amp,2026-02-24,,PH-3945,3,0
+Legacy Log,5 amp,2026-02-24,,PH-3945,1,0
+Legacy Log,Cable Tie,2026-02-24,,48-4849,5,0
+Legacy Log,Push Button Switch,2026-02-24,,LO-5965,1,0
+Legacy Log,Hon Col,2026-02-24,,48-4849,2,0
+Legacy Log,Tiner,2026-02-24,,LM-7949,7,0
+Legacy Log,Paint (white),2026-02-24,,LM-7949,3,0
+Legacy Log,Lacher,2026-02-24,,LM-7949,2,0
+Legacy Log,OSR (washer),2026-02-24,,LM-7949,10,0
+Legacy Log,Insulating Tape,2026-02-24,,LO-4824,1,0
+Legacy Log,Selastic,2026-02-24,,HEX-23,1,0
+Legacy Log,Super Glue,2026-02-25,,LO-9810,1,0
+Legacy Log,24v Blub (small),2026-02-25,,20-4824,4,0
+Legacy Log,24v Blub (Beg),2026-02-25,,20-4824,4,0
+Legacy Log,Cable Tie,2026-02-25,,PH-6742,4,0
+Legacy Log,Jet Black Paint,2026-02-25,,LM-7949,0.75,0
+Legacy Log,Hose Clip,2026-02-25,,PD 6917,2,0
+Legacy Log,Whitr Tuy,2026-02-25,,PD 6917,2,0
+Legacy Log,10mm Bolt,2026-02-25,,LP-1712,8,0
+Legacy Log,10mm nut,2026-02-25,,LP-1712,8,0
+Legacy Log,10mm washer,2026-02-25,,LP-1712,8,0
+Legacy Log,Jet Black (Paint),2026-02-26,,LM-7949,1,0
+Legacy Log,Insulation tape,2026-02-26,,HEX-23,4,0
+Legacy Log,8mm nut and Balls,2026-02-26,,LC-0434,2,0
+Legacy Log,Insulating Tape,2026-02-26,,LP-1712,1,0
+Legacy Log,Cable Tie,2026-02-26,,LP-1712,6,0
+Legacy Log,24V/10W Bulb,2026-02-26,,LP-1712,4,0
+Legacy Log,24V/21W D1F,2026-02-26,,LP-1712,3,0
+Legacy Log,12-20 Hose Clip,2026-02-26,,PJ-6378,2,0
+Legacy Log,Plastic Primer,2026-02-26,,LM-7949,0.5,0
+Legacy Log,Asb colour,2026-02-26,,LM-7949,1,0
+Legacy Log,Tinner,2026-02-26,,LM-7949,2,0
+Legacy Log,Insulating Tape,2026-02-26,,HEX-23,1,0
+Legacy Log,Battery Terminal ± normal,2026-02-26,,PA-48,2,0
+Legacy Log,Battery Terminal ±,2026-02-27,,ZA-7990,2,0
+Legacy Log,Insulating Tape,2026-02-27,,HEX-23,2,0
+Legacy Log,Bolt & nut 12mm with washer,2026-02-27,,LM-7949,30,0
+Legacy Log,Bolt & nut 8mm with washer,2026-02-27,,LM-7949,15,0
+Legacy Log,Brush Set,2026-02-27,,LM-7949,1,0
+Legacy Log,Insulation Tape,2026-02-27,,HEX-23,1,0
+Legacy Log,12mm Flat washer,2026-02-28,,LM-7949,10,0
+Legacy Log,Brake Oil 250ml,2026-02-28,,LL-1782,1,0
+Legacy Log,Insulating Tape,2026-02-28,,HEX-23,2,0
+Legacy Log,Contact Cleaner,2026-03-03,,HEX-23,1,0
+Legacy Log,Cable Tie,2026-03-03,,LD-08,2,0
+Legacy Log,Minifuse 10A,2026-03-03,,HEX-23,8,0
+Legacy Log,5A,2026-03-03,,HEX-23,10,0
+Legacy Log,20A,2026-03-03,,HEX-23,4,0
+Legacy Log,Brake Oil 250ml,2026-03-03,,HU-5097,1,0
+Legacy Log,Brake Oil 250ml,2026-03-04,,HU-5097,1,0
+Legacy Log,Insulating Tape,2026-03-04,,HEX-23,4,0
+Legacy Log,Seastic 999,2026-03-04,,HEX-23,1,0
+Legacy Log,Cable Lug,2026-03-04,,RI-8340,1,0
+Legacy Log,Terminal (Butterfly),2026-03-04,,RI-8340,1,0
+Legacy Log,12V/10W Auto Bulb,2026-03-04,,TestLamp,1,0
+Legacy Log,Cable Tie,2026-03-04,,HEX-23,10,0
+Legacy Log,Welding Rod,2026-03-05,,PD-6917,2,0
+Legacy Log,Insulating Tape,2026-03-05,,ZA-8395,1,0
+Legacy Log,WDD-40,2026-03-05,,PD-0912,1,0
+Legacy Log,Thread Seal,2026-03-07,,LC-0434,1,0
+Legacy Log,30 amp Fuse,2026-03-07,,L0-5985,5,0
+Legacy Log,10 amp n,2026-03-07,,L0-5985,5,0
+Legacy Log,15 amp n,2026-03-07,,L0-5985,5,0
+Legacy Log,20 amp,2026-03-07,,L0-5985,5,0
+Legacy Log,8mm Bolt a Nut,2026-03-07,,L0-5985,5,0
+Legacy Log,24V/21W S/F Bulb,2026-03-07,,L0-5985,3,0
+Legacy Log,24V/21W S/F Bulb,2026-03-07,,L0-5985,3,0
+Legacy Log,400 Sound Paper,2026-03-07,,FL-01,0.5,0
+Legacy Log,15Am Fuse,2026-03-07,,FL-02,1,0
+Legacy Log,Insulation Tape,2026-03-07,,LB-01,1,0
+Legacy Log,Leg - 8mm,2026-03-07,,LB-01,5,0
+Legacy Log,Cable Tie,2026-03-07,,FL-01,2,0
+Legacy Log,24V/21W S/F Bulb,2026-03-07,,ZA-6395,7,0
+Legacy Log,Washing 8mm,2026-03-07,,PD-6917,8,0
+Legacy Log,10mm Bolt a Nut,2026-03-07,,HEX-17,2,0
+Legacy Log,Cable Tie,2026-03-07,,PD-6917,3,0
+Legacy Log,Cosmetic Soda,2026-03-08,,Service Bay,1,0
+Legacy Log,13mm Bolt,2026-03-08,,L0-8348,20,0
+Legacy Log,13mm Nut,2026-03-08,,L0-8348,20,0
+Legacy Log,13mm Flat washer,2026-03-08,,L0-8348,20,0
+Legacy Log,Oxygen w/Rods,2026-03-08,,PD-6917,2,0
+Legacy Log,Insulation Tape,2026-03-08,,LB-01,1,0
+Legacy Log,17mm Bolt,2026-03-08,,RS-0483,1,0
+Legacy Log,Fuse 15A,2026-03-08,,LY-4524,2,0
+Legacy Log,Fuse 10A,2026-03-08,,LY-4524,2,0
+Legacy Log,Fuse 20,2026-03-08,,LY-4524,2,0
+Legacy Log,Fuse 25,2026-03-08,,LY-4524,2,0
+Legacy Log,Fuse 30,2026-03-08,,LY-4524,2,0
+Legacy Log,Tread Seal,2026-03-08,,Fork Lift,1,0
+Legacy Log,WD-40,2026-03-09,,PT-06,1,0
+Legacy Log,Oxygen Weldy Rod,2026-03-09,,Generator,2,0
+Legacy Log,Cable Tie,2026-03-09,,Camera Fowling,10,0
+Legacy Log,Oxygen Weldy Rod,2026-03-09,,L0-5985,2,0
+Legacy Log,Battery Terminal,2026-03-09,,L0-5985,1,0
+Legacy Log,Nut 13mm,2026-03-10,,L0-5985,5,0
+Legacy Log,Bolt 13mm,2026-03-10,,L0-5985,5,0
+Legacy Log,Fog Light Bulb 12V,2026-03-10,,L0-5985,1,0
+Legacy Log,12V Head Light Bulb (H4),2026-03-10,,L0-5985,1,0
+Legacy Log,Cable Tie,2026-03-10,,LC-0434,4,0
+Legacy Log,12V/5W Parking Bulb,2026-03-10,,PD-8917,1,0
+Legacy Log,12V/Relay,2026-03-10,,Load Tester,1,0
+Legacy Log,12V/Relay Holder,2026-03-10,,Load Tester,1,0
+Legacy Log,400 Sand Paper,2026-03-11,,PC-7810,1,0
+Legacy Log,1000 sand paper,2026-03-11,,PC-7810,1,0
+Legacy Log,Insulating Tape,2026-03-11,,Three Phase Line Repair Service Panel Board,1,0
+Legacy Log,Main Relay (24V),2026-03-11,,HEX-17,1,0
+Legacy Log,Grease Nipple,2026-03-11,,Lk-2276,5,0
+Legacy Log,Ignition Switch 24V,2026-03-11,,HEX-17,1,0
+Legacy Log,Starter Relay 24V,2026-03-11,,HEX-17,2,0
+Legacy Log,Sand Paper 150,2026-03-11,,HEX-17,1,0
+Legacy Log,Super Glue,2026-03-11,,LY-24524,1,0
+Legacy Log,Insulation tape,2026-03-11,,PA-6399,1,0
+Legacy Log,Break Light Holder,2026-03-11,,PA-6399,1,0
+Legacy Log,Air socket 12m,2026-03-11,,GL-0014,1,0
+Legacy Log,Super Glue,2026-03-11,,GL-0014,1,0
+Legacy Log,Hose clip (12-20),2026-03-11,,GL-0014,2,0
+Legacy Log,Insulation tape,2026-03-12,,LX-1679,1,0
+Legacy Log,Shellack,2026-03-12,,PC-7812,1,0
+Legacy Log,Selastic,2026-03-12,,PC-7812,1,0
+Legacy Log,Masking Tape,2026-03-12,,Office,1,0
+Legacy Log,17 Bolt,2026-03-12,,PTR-10,3,0
+Legacy Log,17 Nut,2026-03-12,,PTR-10,3,0
+Legacy Log,Brake oil 250ml,2026-03-12,,PTR-10,4,0
+Legacy Log,Sound Paper 120,2026-03-12,,VR-12,1,0
+Legacy Log,10 amp Fuse,2026-03-12,,HEX-23,1,0
+Legacy Log,sand Paper 1000,2026-03-12,,LN-8279,1,0
+Legacy Log,Rabber oneare,2026-03-12,,LN-8279,1,0
+Legacy Log,2nd Pad Lock,2026-03-12,,Feature shop,1,0
+Legacy Log,Selastic,2026-03-13,,PTR-10,1,0
+Legacy Log,Sound Paper 800,2026-03-13,,PTR-10,1,0
+Legacy Log,sand Paper 1000,2026-03-13,,PTR-10,1,0
+Legacy Log,costic soda,2026-03-13,,Service Bay,1,0
+Legacy Log,Araldite,2026-03-13,,PC-7812,1,0
+Legacy Log,Sand Paper (150),2026-03-13,,PC-7812,1,0
+Legacy Log,Sand Paper (320),2026-03-13,,PTR-10,1,0
+Legacy Log,oxygen welding rod,2026-03-13,,Fabrication,6,0
+Legacy Log,Brass welding rods,2026-03-13,,PTR-10,1,0
+Legacy Log,13mm flat washer,2026-03-13,,PTR-10,2,0
+Legacy Log,Super Glue,2026-03-13,,PT-6376,1,0
+Legacy Log,Insulating Tape,2026-03-13,,Electric Line Repair Tinkering shop general,2,0
+Legacy Log,Costic soda,2026-03-13,,Service Bay,1,0
+Legacy Log,Adrenaline Gum,2026-03-14,,01 Ton Roll,1,0
+Legacy Log,Rubber Gnecure,2026-03-14,,HEX-23,1,0
+Legacy Log,Contact Cleaner,2026-03-14,,HEX-23,2,0
+Legacy Log,Insulating Tape,2026-03-14,,1T Ton Roller,1,0
+Legacy Log,Insulation tape,2026-03-14,,HEX-23,2,0
+Legacy Log,Brake oil 250 ml,2026-03-14,,PTR-10,2,0
+Legacy Log,2nd Pad Look,2026-03-14,,Service Bay,2,0
+Legacy Log,Cable Tile,2026-03-14,,HEX-23,4,0
+Legacy Log,Cable Tile,2026-03-14,,L0-5985,5,0
+Legacy Log,Insulation Tape,2026-03-14,,L0-5985,1,0
+Legacy Log,Cable Tile,2026-03-14,,LC-0434,3,0
+Legacy Log,Brake Oil,2026-03-14,,HU-5097,1,0
+Legacy Log,Filler,2026-03-15,,L0-5985,2,0
+Legacy Log,320 Sand Paper,2026-03-15,,L0-5985,3,0
+Legacy Log,Thinner,2026-03-15,,L0-5985,1,0
+Legacy Log,Masking Tape,2026-03-15,,L0-5985,1,0
+Legacy Log,Insulating Tape,2026-03-15,,LO-8548,1,0
+Legacy Log,Costic soda,2026-03-15,,Service Bay,1,0
+Legacy Log,Cable Tie,2026-03-15,,workshop,1,0
+Legacy Log,500ml Brake Oil,2026-03-15,,PT-10,1,0
+Legacy Log,Aradite,2026-03-15,,PC-7812,1,0
+Legacy Log,Auto Wire,2026-03-15,,LP-1578,4,0
+Legacy Log,Selastic,2026-03-16,,PC-7812,1,0
+Legacy Log,Installation Tape,2026-03-16,,51-7158,1,0
+Legacy Log,Auto Wire,2026-03-16,,51-7158,4,0
+Legacy Log,Plug Cover,2026-03-16,,Service,1,0
+Legacy Log,LED Flasher 100w,2026-03-16,,WS (tinkering yard),1,0
+Legacy Log,Clear Locker,2026-03-16,,LO-5985,2,0
+Legacy Log,Jet Black,2026-03-16,,LO-5985,1,0
+Legacy Log,White Paint,2026-03-16,,LO-5985,3,0
+Legacy Log,Thinner,2026-03-16,,LO-5985,2,0
+Legacy Log,Auto Wire,2026-03-16,,LB-01,26,0
+Legacy Log,Brake Oil 250ml,2026-03-17,,HU-5097,1,0
+Legacy Log,10mm Air Socket,2026-03-17,,LC-0438,1,0
+Legacy Log,Battery Terminal + Normal,2026-03-17,,FL-02,2,0
+Legacy Log,Battery Terminal -,2026-03-17,,FL-02,2,0
+Legacy Log,Installation Tape,2026-03-17,,WS,2,0
+Legacy Log,Cable Tie,2026-03-17,,WS,10,0
+Legacy Log,Cable Tie,2026-03-17,,HEX-37,21,0
+Legacy Log,Fuse 10A,2026-03-17,,HEX-17,12,0
+Legacy Log,Fuse 20A,2026-03-17,,HEX-17,12,0
+Legacy Log,Fuse 25A,2026-03-17,,HEX-17,7,0
+Legacy Log,Contact Cleaner,2026-03-17,,HEX-17,1,0
+Legacy Log,Oxygen Welding,2026-03-17,,LJ-5559,5,0
+Legacy Log,Installation Tape,2026-03-17,,LB-01,2,0
+Legacy Log,10mm Bolt,2026-03-17,,LY-4524,8,0
+Legacy Log,10mm Nut,2026-03-17,,LY-4524,8,0
+Legacy Log,10mm Washer,2026-03-17,,LY-4524,16,0
+Legacy Log,13mm Bolt,2026-03-17,,LY-4524,6,0
+Legacy Log,13mm Nut,2026-03-17,,LY-4524,6,0
+Legacy Log,13mm washer,2026-03-17,,LY-4524,12,0
+Legacy Log,Installation Tape,2026-03-18,,PC-7812,3,0
+Legacy Log,Installation Tape,2026-03-18,,PC-7812,1,0
+Legacy Log,Cable Tie,2026-03-18,,PC-7812,11,0
+Legacy Log,19mm Bolt,2026-03-18,,GL-0019,2,0
+Legacy Log,19mm Nut,2026-03-18,,GL-0019,2,0
+Legacy Log,150 Sand Paper,2026-03-18,,DAH-2230,1,0
+Legacy Log,Installation Tape,2026-03-18,,Electric Wire Repair,1,0
+Legacy Log,8mm Bolt,2026-03-18,,59-5427,4,0
+Legacy Log,8mm Nut,2026-03-18,,59-5427,4,0
+Legacy Log,Installation Tape,2026-03-18,,LB-01,4,0
+Legacy Log,Shelak,2026-03-18,,DAH-2230,1,0
+Legacy Log,Fuse 15A,2026-03-18,,LL-1782,3,0
+Legacy Log,Fuse 10A,2026-03-18,,LL-1782,2,0
+Legacy Log,Thread Seal,2026-03-18,,DAH-2230,1,0
+Legacy Log,Selastic,2026-03-18,,DAH-2230,4,0
+Legacy Log,Hose Clip (37-50),2026-03-18,,DAH-2230,4,0
+Legacy Log,Brake Oil 250ml,2026-03-19,,DAH-2230,1,0
+Legacy Log,Cable Tie,2026-03-19,,DAH-2230,10,0
+Legacy Log,Diesel,2026-03-19,,Service,4,0
+Legacy Log,Cable Tie,2026-03-19,,51-7158,4,0
+Legacy Log,WD-40,2026-03-19,,Asphalt Plant,1,0
+Legacy Log,Cable tie,2026-03-20,,DAH-2230,2,0
+Legacy Log,12V-5W Bulk,2026-03-20,,DAH-2230,2,0
+Legacy Log,Hose Clip 20-32,2026-03-21,,59-5421,2,0
+Legacy Log,breather Sleeve,2026-03-21,,Welding Shop,0.5,0
+Legacy Log,WD-40,2026-03-21,,PH-3945,1,0
+Legacy Log,Hose Clip,2026-03-21,,57-3062,1,0
+Legacy Log,Cable Tile,2026-03-21,,57-3062,10,0
+Legacy Log,12V/10W Auto Bulb,2026-03-21,,57-3062,1,0
+Legacy Log,Selastic 999,2026-03-21,,"6"" water Pump",1,0
+Legacy Log,19mm Nut & Bolt with crasher,2026-03-21,,"6"" water Pump",4,0
+Legacy Log,Grease Nipple,2026-03-21,,L0-8347,3,0
+Legacy Log,Ssnd Paper 1000,2026-03-21,,PH-3945,1,0
+Legacy Log,5amp mini fuse,2026-03-21,,PH-3945,1,0
+Legacy Log,Brass welding Rod,2026-03-21,,PH-3945,0.5,0
+Legacy Log,Oxygen welding Rod,2026-03-21,,"6"" water Pump Clean",4,0
+Legacy Log,15amp fuse,2026-03-21,,LK-1760,4,0
+Legacy Log,I tape,2026-03-22,,BDI-8556,1,0
+Legacy Log,250ml Brake oil,2026-03-22,,PC-7812,1,0
+Legacy Log,10mm Bolt & nut,2026-03-22,,PJ-5559,2,0
+Legacy Log,150 sand paper,2026-03-23,,LD-05,1,0
+Legacy Log,24V/10W S/F Bulb,2026-03-23,,L0-8348,6,0
+Legacy Log,12mm nut & Bolt,2026-03-23,,L0-8348,4,0
+Legacy Log,10mm nut & Bolt (washer 36),2026-03-23,,L0-8348,24,0
+Legacy Log,19mm Bolt & Nut,2026-03-23,,59-5421,1,0
+Legacy Log,10mm Bolt,2026-03-23,,PC-7812,5,0
+Legacy Log,10mm Nut,2026-03-23,,PC-7812,5,0
+Legacy Log,Battery Terminal,2026-03-23,,AC-25,2,0
+Legacy Log,Nut and bolt,2026-03-23,,LK-2276,14,0
+Legacy Log,19mm Bolt & nut,2026-03-23,,"6"" water Pump",4,0
+Legacy Log,150 sand paper,2026-03-23,,"6"" water Pump",1,0
+Legacy Log,Hrs meter,2026-03-24,,LD-08,1,0
+Legacy Log,Selastic,2026-03-24,,SL-15,1,0
+Legacy Log,Insulating Tape,2026-03-24,,Electrical work ground,2,0
+Legacy Log,Cable Tie,2026-03-24,,51-7158,6,0
+Legacy Log,Costic soda,2026-03-24,,Service Bay,1,0
+Legacy Log,Cable Tie,2026-03-24,,LP-1578,1,0
+Legacy Log,Epoxy Gum,2026-03-24,,"6"" water Pump",1,0
+Legacy Log,Battery Terminal,2026-03-25,,SR-14,2,0
+Legacy Log,24v/10w S/F,2026-03-25,,LL-1782,2,0
+Legacy Log,Insulating Tape,2026-03-25,,LL-1782,1,0
+Legacy Log,Jackseal kit 7236275,2026-03-25,,],2,0
+Legacy Log,Insulating Tape,2026-03-25,,DAH-2230,11,0
+Legacy Log,320 Sand Paper,2026-03-25,,LD-6,1,0
+Legacy Log,100 Sand Paper,2026-03-25,,SL-15,1,0
+Legacy Log,Thread Seal,2026-03-25,,LK-8041,1,0
+Legacy Log,Thread lock,2026-03-25,,SL-15,1,0
+Legacy Log,Ignition key,2026-03-25,,LB-01,2,0
+Legacy Log,Sand paper 150,2026-03-25,,Camera line repair,1,0
+Legacy Log,Epoxy Gum,2026-03-25,,Camera line repair,2,0
+Legacy Log,Super glue,2026-03-25,,PA-4193,2,0
+Legacy Log,Fuse Box,2026-03-25,,HU-5097,1,0
+Legacy Log,Fuse 20A,2026-03-25,,HU-5097,1,0
+Legacy Log,Hose Clip 20/32,2026-03-25,,Con. mixer,1,0
+Legacy Log,Cable Try / Cable Tray,2026-03-26,,PA-4193,4,0
+Legacy Log,Lug,2026-03-26,,LB-01,3,0
+Legacy Log,Insulation tape,2026-03-26,,LB-01,2,0
+Legacy Log,Insulation tape,2026-03-26,,Lathe Shop,1,0
+Legacy Log,20 amp mini fuse,2026-03-26,,PH-3945,2,0
+Legacy Log,Brake oil 250 ml,2026-03-26,,PH-3945,1,0
+Legacy Log,320 sand paper,2026-03-26,,59-5421,1,0
+Legacy Log,WD-40,2026-03-26,,59-5421,1,0
+Legacy Log,Shellak / Shellac,2026-03-26,,59-5421,1,0
+Legacy Log,5mm Lug,2026-03-26,,LD-06,1,0
+Legacy Log,14 mm Nut & Bolt,2026-03-27,,59-5421,2,0
+Legacy Log,Welding Rod,2026-03-27,,Service Bay G.I. pipe welding,1,0
+Legacy Log,8mm Nut & Bolt,2026-03-27,,LJ-5559,4,0
+Legacy Log,Hose clip (25–35),2026-03-27,,59-5421,1,0
+Legacy Log,Patax / Patos?,2026-03-27,,LK-5048,2,0
+Legacy Log,Nut,2026-03-27,,LK-5048,1,0
+Legacy Log,Bulb Holder D/F,2026-03-27,,LB-01,1,0
+Legacy Log,12V signal flasher,2026-03-27,,LB-01,1,0
+Legacy Log,Cable try / tray,2026-03-27,,HU-5092,2,0
+Legacy Log,10mm Nut,2026-03-28,,LY-4524,2,0
+Legacy Log,Bolt,2026-03-28,,LY-4524,2,0
+Legacy Log,13mm Bolt & Nut,2026-03-28,,New water pump engine,4,0
+Legacy Log,Selastic,2026-03-28,,[ditto / same as above],1,0
+Legacy Log,Oxygen welding rod,2026-03-28,,LJ-5559,5,0
+Legacy Log,19mm Bolt,2026-03-28,,Water Pump,8,0
+Legacy Log,19mm Nut,2026-03-28,,Water Pump,8,0
+Legacy Log,OSR Washer,2026-03-29,,GL-0019,7,0
+Legacy Log,Washer 10 No.,2026-03-29,,GL-0019,2,0
+Legacy Log,12mm Bolt,2026-03-30,,DAH-2230,1,0
+Legacy Log,Cable Tie,2026-03-30,,DAH-2230,5,0
+Legacy Log,Insulating Tape,2026-03-31,,Fabrication,1,0
+Legacy Log,Thread Seal,2026-03-31,,"4"" new C/P repair",2,0
+Legacy Log,320 Sand Paper,2026-03-31,,LD-05,2,0
+Legacy Log,8x12 Hose Clip,2026-03-31,,PA-4879,2,0
+Legacy Log,150 Sand Paper,2026-03-31,,"4"" new C/P repair",1,0
+Legacy Log,Sealant,2026-03-31,,LD-5,1,0
+Legacy Log,Insulating Tape,2026-04-01,,Electrical work,2,0
+Legacy Log,Insulation Tape,2026-04-01,,28-4314,1,0
+Legacy Log,Oxygen welding rod,2026-04-02,,LE-4986,6,0
+Legacy Log,Cable Tie,2026-03-06,,LE-4986,2,0
+Legacy Log,Insulating Tape,2026-03-14,,49-5294,1,0
+Legacy Log,Cable Tie,2026-03-20,,HEX-17,1,0
+Legacy Log,19mm Nut,2026-04-06,,SR-12,2,0
+Legacy Log,19 Bolt,2026-04-06,,SR-12,2,0
+Legacy Log,19 Flat washer,2026-04-06,,SR-12,4,0
+Legacy Log,Cable Tie,2026-04-04,,49-5294,5,0
+Legacy Log,Battery water,2026-04-04,,FL-03,1,0
+Legacy Log,Banjo washer,2026-04-04,,49-5294,6,0
+Legacy Log,Oxygen welding rods,2026-04-04,,PH-0765,2,0
+Legacy Log,Fuse base,2026-04-04,,59-5421,8,0
+Legacy Log,Fuse 15A,2026-04-04,,59-5421,8,0
+Legacy Log,Insulation tape,2026-04-04,,59-5421,1,0
+Legacy Log,Signal flasher,2026-04-04,,59-5421,1,0
+Legacy Log,S/F 12V Bulb,2026-04-04,,59-5421,1,0
+Legacy Log,Single holder,2026-04-04,,59-5421,1,0
+Legacy Log,13mm Bolt,2026-04-04,,SR-12,5,0
+Legacy Log,12V Bulb 5w,2026-04-04,,59-5421,1,0
+Legacy Log,Bulb holder,2026-04-04,,59-5421,1,0
+Legacy Log,Brake oil 250ml,2026-04-06,,SR-12,1,0
+Legacy Log,Cable Tie,2026-04-06,,HEX-23,5,0
+Legacy Log,Super Glue,2026-04-06,,Light plant turbine,1,0
+Legacy Log,12mm Bolt,2026-04-06,,Light plant tyre,3,0
+Legacy Log,Insulating Tape,2026-04-06,,28-4314,1,0
+Legacy Log,Cable tie,2026-04-06,,LT-19,4,0
+Legacy Log,Oxygen welding rod,2026-04-06,,PH-0765,5,0
+Legacy Log,costic soda,2026-04-07,,Service bay,0.5,0
+Legacy Log,thread lock,2026-04-07,,LD-06,1,0
+Legacy Log,cable tie,2026-04-07,,LD-06,5,0
+Legacy Log,17mm bolt,2026-04-08,,HEX-18,4,0
+Legacy Log,17mm nut,2026-04-08,,HEX-18,4,0
+Legacy Log,17mm washer,2026-04-08,,HEX-18,4,0
+Legacy Log,Selastic,2026-04-08,,LD-06,1,0
+Legacy Log,Oxygen welding rod,2026-04-09,,Fabrication,2,0
+Legacy Log,cable tie,2026-04-09,,GL-0019,8,0
+Legacy Log,10mm washer,2026-04-09,,PH-0765,8,0
+Legacy Log,thread seal,2026-04-09,,Diesel Pump,1,0
+Legacy Log,Sand Paper 400,2026-04-20,,ZA-1047,2,0
+Legacy Log,Sand Paper 320,2026-04-20,,ZA-1047,1,0
+Legacy Log,Cable Tie,2026-04-20,,LO-7855,2,0
+Legacy Log,Oxygen wall rod,2026-04-21,,PH-0765,5,0
+Legacy Log,Selastic Gum,2026-04-22,,LB-4824,1,0
+Legacy Log,Thread Seal,2026-04-22,,HEX-01,1,0
+Legacy Log,Thread Lock,2026-04-22,,HEX-01,1,0
+Legacy Log,costic soda,2026-04-22,,LN-8277,1,0
+Legacy Log,Rubber Grease,2026-04-22,,LN-8277,1,0
+Legacy Log,Super Glue,2026-04-23,,LP-1577,1,0
+Legacy Log,Insulating Tape,2026-04-23,,RD-3536,1,0
+Legacy Log,320 Sand Paper,2026-04-23,,RD-3536,1,0
+Legacy Log,12V Signal Flasher,2026-04-23,,ZB-2587,1,0
+Legacy Log,Baby Fuse 15amp,2026-04-23,,ZB-2587,1,0
+Legacy Log,12V DF Bulb,2026-04-23,,ZB-2587,2,0
+Legacy Log,Oxygen welding rods,2026-04-23,,LB-4824,2,0
+Legacy Log,Oxygen welding rods,2026-04-24,,PH-0765,2,0
+Legacy Log,320 Sand Paper,2026-04-24,,New Block Stone Machine,1,0
+Legacy Log,17 mm Bolt & Nut,2026-04-25,,48-4849,3,0
+Legacy Log,WD-40,2026-04-25,,FT-07,1,0
+Legacy Log,Super Glue,2026-04-25,,LP-1712,1,0
+Legacy Log,Thinner,2026-04-25,,PH-0765,1,0
+Legacy Log,12*20 Hose clip,2026-04-25,,LB-4824,2,0
+Legacy Log,15 amp Fuse,2026-04-26,,48-4849,1,0
+Legacy Log,20amp,2026-04-26,,48-4849,1,0
+Legacy Log,25Amp Fuse,2026-04-26,,SL-15,1,0
+Legacy Log,Insulating Tape,2026-04-26,,SL-15,1,0
+Legacy Log,15am Fuse,2026-04-26,,SL-48,1,0
+Legacy Log,40-60 Hose Clip,2026-04-26,,57-3062,1,0
+Legacy Log,24V 5F Auto Bulb,2026-04-26,,LP-1569,2,0
+Legacy Log,Insulating Tape,2026-04-26,,LK-2276,1,0
+Legacy Log,25 Amp fuse,2026-04-26,,SL-15,1,0
+Legacy Log,Insulating Tape,2026-04-26,,SL-15,1,0
+Legacy Log,15 Am Fase,2026-04-26,,SL-15,1,0
+Legacy Log,(40-60) Hose clip,2026-04-26,,57-3062,1,0
+Legacy Log,244/ -F Auto Belb,2026-04-26,,LP-1569,2,0
+Legacy Log,Insulating Tape,2026-04-26,,LK-2276,1,0
+Legacy Log,Sand Paper,2026-04-27,,HEX-01,1,0
+Legacy Log,10 min Bolt,2026-04-27,,LB-4824,6,0
+Legacy Log,Washer,2026-04-27,,LB-4824,12,0
+Legacy Log,Filler,2026-04-27,,PH-0765,1.5,0
+Legacy Log,Bucket Bush,2026-04-27,,ZB-1548,4,0
+Legacy Log,oxg/welding Rod,2026-04-27,,PV-6889,5,0
+Legacy Log,10mm Bolt,2026-04-27,,PV 6889,7,0
+Legacy Log,Nut,2026-04-27,,PV 6889,7,0
+Legacy Log,Washer,2026-04-27,,PV 6889,7,0
+Legacy Log,JCB bush,2026-04-27,,ZB-15H8/LB-18,4,0
+Legacy Log,Oxygen Welding Rods,2026-04-27,,PH-0765,3,0
+Legacy Log,8mm Bolt,2026-04-27,,ZB-1548,6,0
+Legacy Log,Nut,2026-04-27,,ZB-1548,6,0
+Legacy Log,Washer,2026-04-27,,ZB-1548,12,0
+Legacy Log,bulb,2026-04-27,,LN-1867,1,0
+Legacy Log,12mm Bolt,2026-04-27,,PH-0765,6,0
+Legacy Log,400 Skund Paper,2026-04-27,,ZB-15H8/LB-18,1,0
+Legacy Log,Cable Tie,2026-04-29,,New Store block,25,0
+Legacy Log,WD-40,2026-04-30,,New Store block,1,0
+Legacy Log,Insulating Tape,2026-04-30,,ZB-1548,1,0
+Legacy Log,H/L Bulb 124,2026-04-30,,ZB-1548,1,0
+Legacy Log,Sand Paper 320,2026-04-30,,PH-0765,2,0
+Legacy Log,WD-40,2026-04-30,,LK-1679,1,0
+Legacy Log,24v Sf Bulb,2026-04-30,,LL-1782,2,0
+Legacy Log,24V DF Bulb.,2026-04-30,,LL-1782,2,0
+Legacy Log,Thinner,2026-04-30,,PH-0765,2,0
+Legacy Log,Lacker,2026-04-30,,PH-0765,1,0
+Legacy Log,Silver paint,2026-04-30,,PH-0765,1,0
+Legacy Log,19mm nut,2026-04-30,,LN-8272,4,0
+Legacy Log,Bolt,2026-04-30,,LN-8272,2,0
+Legacy Log,Insulation tape,2026-04-30,,GL-0019,1,0
+Legacy Log,24 S/F Bulb,2026-05-02,,GL-0019,2,0
+Legacy Log,Cable tie,2026-05-02,,GL-0019,6,0
+Legacy Log,320 Sand Paper,2026-05-02,,GL-6019,1,0
+Legacy Log,Insulation Tape,2026-05-03,,PH-0765,1,0
+Legacy Log,Cable tie,2026-05-04,,PH 0765,5,0
+Legacy Log,12V DF bulb,2026-05-04,,PH 0765,1,0
+Legacy Log,8mm bolt,2026-05-04,,PH 0765,15,0
+Legacy Log,washer,2026-05-04,,PH 0765,15,0
+Legacy Log,nut,2026-05-04,,PH 0765,15,0
+Legacy Log,Brake Oil (500ml),2026-05-04,,LN-8278,1,0
+Legacy Log,oxygen weld/Rod,2026-05-04,,Fabrication,2,0
+Legacy Log,Super glue,2026-05-04,,LN-8278,1,0
+Legacy Log,Insulating Tape,2026-05-04,,Electrical works,3,0
+Legacy Log,Shelak,2026-05-04,,VR-29,1,0
+Legacy Log,Insulating Tape,2026-05-04,,LN-8277,1,0
+Legacy Log,Lead,2026-05-04,,ZB-4824,0.5,0
+Legacy Log,17 mm,2026-05-04,,1 T roller,4,0
+Legacy Log,17 mm,2026-05-04,,1 T roller,12,0
+Legacy Log,Spring washer,2026-05-04,,1 T roller,12,0
+Legacy Log,WD-40,2026-05-04,,LN-1867,1,0
+Legacy Log,10amp fuse,2026-05-04,,LB-4824,1,0
+Legacy Log,Insulation Tape,2026-05-04,,ZB-1548,1,0
+Legacy Log,Cable tie,2026-05-04,,LO-9810,2,0
+Legacy Log,Sand paper,2026-05-04,,LB-02,1,0
+Legacy Log,cotton waste,2026-05-04,,ZB -1548,1,0
+Legacy Log,Greare mipple-11-5 L,2026-05-05,,ZA-2609,5,0
+Legacy Log,Greare mipple-11-5 L,2026-05-05,,ZA-2609,5,0
+Legacy Log,Washer,2026-05-05,,LB-4824,3,0
+Legacy Log,washer,2026-05-05,,LB-4824,1,0
+Legacy Log,Nut,2026-05-05,,LB-4824,1,0
+Legacy Log,Brass weldin Rood.,2026-05-05,,LN 1864,2,0
+Legacy Log,Insulation Tape.,2026-05-05,,LB-4824,1,0
+Legacy Log,17 Nut,2026-05-06,,LN-1864,2,0
+Legacy Log,Fuel cut out Solenoid,2026-05-06,,VR-71,1,0
+Legacy Log,Rediater fan.,2026-05-06,,VR-71,1,0
+Legacy Log,8mm Nut,2026-05-06,,LB-4824,2,0
+Legacy Log,Starter Relay,2026-05-06,,LB-4824,1,0
+Legacy Log,Starter Motor CAfter Repairy,2026-05-06,,HEX-29,1,0
+Legacy Log,Sand Paper (400),2026-05-06,,LC-0434,1,0
+Legacy Log,Wire tie.,2026-05-06,,LB-4824,1,0
+Legacy Log,10 Nut,2026-05-07,,LB-4824,1,0
+Legacy Log,Hy oil level tank gauge,2026-05-07,,HEX-01,1,0
+Legacy Log,8 lug,2026-05-07,,LD-07,1,0
+Legacy Log,Heeling skeeve,2026-05-07,,LB-4824,0.5,0
+Legacy Log,8 washer,2026-05-07,,SERVICE,4,0
+Legacy Log,12w Auto bulb,2026-05-07,,LB-4824,1,0
+Legacy Log,Wire,2026-05-07,,LB-4824,1,0
+Legacy Log,Oxygen Welding Rods,2026-05-07,,PY-2408,5,0
+Legacy Log,Protection wal repair kit,2026-05-07,,LK-2366.,1,0
+Legacy Log,fuse 15,2026-05-07,,LB-4824,1,0
+Legacy Log,fuse 20,2026-05-07,,LB-4824,1,0
+Legacy Log,cable tie,2026-05-07,,LK-5041.,6,0
+Legacy Log,Auto Lamp bulp,2026-05-07,,LB-4824,12,0
+Legacy Log,Fuse 25,2026-05-07,,LL-1782,5,0
+Legacy Log,Brake oil,2026-05-07,,LL-1782,0.25,0
+Legacy Log,Sand paper,2026-05-07,,LC-0434,1,0
+Legacy Log,Gasket Maker (Serastic),2026-05-07,,LC-0434,1,0
+Legacy Log,Hone clip,2026-05-07,,LB-4824,1,0
+Legacy Log,Rubber Grese,2026-05-07,,LC-0434,1,0
+Legacy Log,Soda,2026-05-08,,MG-15,1,0
+Legacy Log,10a fuse,2026-05-08,,HU-5097,1,0
+Legacy Log,30 a fuse,2026-05-08,,HU-5097,1,0
+Legacy Log,Fuse 10,2026-05-08,,LB-4824,1,0
+Legacy Log,fuse 15,2026-05-08,,LB-4824,1,0
+Legacy Log,Selastic,2026-05-08,,LN-8277,1,0
+Legacy Log,Selastic,2026-05-08,,LC-0434,1,0
+Legacy Log,Battery water,2026-05-08,,PV-6889,1,0
+Legacy Log,Selac Bottle.,2026-05-08,,51-7158,1,0
+Legacy Log,wire tie,2026-05-08,,LC-0434,6,0
+Legacy Log,124/5 Pin Relay.,2026-05-08,,51-7158,1,0
+Legacy Log,Bulb,2026-05-08,,51-7158,1,0
+Legacy Log,Fuse holder,2026-05-08,,LB-4824,1,0
+Legacy Log,battery luck.,2026-05-08,,LB-4824,1,0
+Legacy Log,Speed meter Sensar,2026-05-08,,LK-2366,1,0
+Legacy Log,washer and nut,2026-05-09,,51-7158,1,0
+Legacy Log,Brake oil 500 ml,2026-05-09,,LL-1782,1,0
+Legacy Log,Hub Sear,2026-05-09,,LN-1867,2,0
+Legacy Log,Cable Tie,2026-05-09,,LN-8275,3,0
+Legacy Log,8mm Nut,2026-05-09,,LN-1867,6,0
+Legacy Log,20 Amp Fuse.,2026-05-09,,Workshop,2,0
+Legacy Log,Araldite.,2026-05-09,,HU-5097,1,0
+Legacy Log,Came Thy,2026-05-09,,HU-5097,5,0
+Legacy Log,Insulation Tape,2026-05-09,,LB-4824,2,0
+Legacy Log,Super Glue,2026-05-12,,LD-07,1,0
+Legacy Log,Gasket Maker (selastinge,2026-05-12,,LD-07,1,0
+Legacy Log,12v/row Auto Bulb Singaaly,2026-05-12,,LB-4824,2,0
+Legacy Log,12v DF Balb,2026-05-12,,57-3062,1,0
+Legacy Log,Super glue,2026-05-12,,LN-8277,1,0
+Legacy Log,Super glue,2026-05-12,,LB-4824,1,0
+Legacy Log,Hose clip 25-35,2026-05-12,,LN-8277,2,0
+Legacy Log,Insulating Tape,2026-05-12,,LB-4824,3,0
+Legacy Log,Sand Paper,2026-05-12,,"3"" Water pump",1,0
+Legacy Log,Washer,2026-05-12,,"3"" Water pump",6,0
+Legacy Log,Gasket maker,2026-05-12,,"3"" Water pump",1,0
+Legacy Log,Insulation tape,2026-05-12,,LB-4824,3,0
+Legacy Log,Insulation tape,2026-05-13,,57-3062,1,0
+Legacy Log,Araldite gum,2026-05-13,,HEX-01,1,0
+Legacy Log,12v/21w bulb,2026-05-13,,LB-4824,2,0
+Legacy Log,cable tie,2026-05-13,,LB-4824,4,0
+Legacy Log,bulb holder,2026-05-13,,LB-4824,1,0
+Legacy Log,bulb holder,2026-05-13,,For Test lamp ws,1,0
+Legacy Log,12v/21w bulb,2026-05-13,,For Test lamp ws,1,0
+Legacy Log,capless bulb holder,2026-05-13,,LB-4824,2,0
+Legacy Log,insulation tape,2026-05-14,,LB-4824,1,0
+Legacy Log,10 a fuse,2026-05-14,,PT-1569,1,0
+Legacy Log,selastic,2026-05-14,,LN-1867,1,0
+Legacy Log,wire tie,2026-05-14,,LN-1867,5,0
+Legacy Log,super glue,2026-05-15,,LN-1867,1,0
+Legacy Log,cable tie,2026-05-15,,LN-1867,5,0
+Legacy Log,coolent,2026-05-15,,VR-71,4,0
+Legacy Log,termind,2026-05-15,,HEX-29,2,0
+Legacy Log,cable lug,2026-05-15,,HEX-29,2,0
+Legacy Log,auto wire,2026-05-15,,HEX-29,15,0
+Legacy Log,24v 80a 5pin relay,2026-05-15,,HEX-29,4,0
+Legacy Log,"fuse 10,20amp",2026-05-15,,HEX-29,2,0
+Legacy Log,bulb holder,2026-05-15,,LD-9005,1,0
+Legacy Log,15a fuse,2026-05-16,,VR-48,2,0
+Legacy Log,welding rod,2026-05-16,,SL-14,2,0
+Legacy Log,Threal Lock,2026-05-16,,LN-1867,1,0
+Legacy Log,2000 Send Paper,2026-05-17,,LN-1867,0.5,0
+Legacy Log,super glue,2026-05-17,,LN-1867,1,0
+Legacy Log,12w/10w sf bulb,2026-05-17,,LM-7949,4,0
+Legacy Log,12w/21w sf bulb,2026-05-17,,LM-7949,4,0
+Legacy Log,Insulating Tape,2026-05-17,,LM-7949,1,0
+Legacy Log,Thread seal,2026-05-17,,ZA-8511,1,0
+Legacy Log,Araldiant. Qum.,2026-05-17,,LN-8278,1,0
+Legacy Log,Battery Terminal Butterfly,2026-05-17,,HEX-33,1,0
+Legacy Log,WD-40,2026-05-17,,LN-1867,1,0
+Legacy Log,k-oil,2026-05-18,,LN-1867,0.25,0
+Legacy Log,k-oil,2026-05-18,,ZA-8511,1,0
+Legacy Log,costic soda,2026-05-18,,Service bay,1,0
+Legacy Log,12v head light bulb,2026-05-18,,LM-7949,2,0
+Legacy Log,12v/10w auto bulb,2026-05-18,,LM-7949,2,0
+Legacy Log,320 sand paper,2026-05-19,,Hex-33,1,0
+Legacy Log,10amp fuse,2026-05-19,,LM-7949,8,0
+Legacy Log,wire tie,2026-05-19,,LM-7949,2,0
+Legacy Log,sand paper 150,2026-05-19,,41-7225,1,0
+Legacy Log,sand papeer 120,2026-05-19,,HEX-45,1,0
+Legacy Log,Thread seal,2026-05-19,,LP-1569,1,0
+Legacy Log,hose clip 2,2026-05-19,,Asphalt Plant,2,0
+Legacy Log,Super Glue,2026-05-19,,LP-1572,1,0
+Legacy Log,10mm bulb,2026-05-19,,LP-1572,4,0
+Legacy Log,15 fuse,2026-05-19,,LP-1572,2,0
+Legacy Log,sand paper 400,2026-05-19,,CR-01,0.5,0
+Legacy Log,sand paper 320,2026-05-19,,CR-01,1,0
+Legacy Log,Sand paper 120,2026-05-19,,CR-01,1,0
+Legacy Log,Cable tie,2026-05-19,,LP-1569,8,0
+Legacy Log,Cable tie,2026-05-19,,LP-1571,6,0
+Legacy Log,Insulation Tape,2026-05-19,,HEX-45,1,0
+Legacy Log,Sand Paper 100,2026-05-19,,Tinker Shop,1,0

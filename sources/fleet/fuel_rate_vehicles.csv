@@ -1,0 +1,476 @@
+ec_no,reg_no,category,model,year,fuel
+AP-01,,Asphalt Paver,Sumitomo Ha45C-2065,2012,Diesel
+AP-02,,Asphalt Paver,Mitsubishi Mf40Wh,2013,Diesel
+AP-03,,Asphalt Paver,Mitsubishi Mf-55Wh,2014,Diesel
+AP-04,,Asphalt Paver,Mitsubishi Mf60Wd,2014,Diesel
+AP-05,,Asphalt Paver,Nigata —,2012,Diesel
+AP-06,,Asphalt Paver,,,Diesel
+AP-07,,Asphalt Paver,,,Diesel
+AP-08,,Asphalt Paver,Volvo P6820C,2019,Diesel
+AP-09,,Asphalt Paver,Sumitomo Ha60W-7,2012,Diesel
+AP-10,,Asphalt Paver,Dynapac Sd2500C,2020,Diesel
+AP-11,,Asphalt Paver,Sumitomo Ha60W-5,2006,Diesel
+LB-01,ZA-2609,Backhoe Loader,Jcb 3Dx,2012,Diesel
+LB-02,ZA-2963,Backhoe Loader,Jcb 3Dx,2012,Diesel
+LB-03,ZA-2964,Backhoe Loader,Jcb 3Dx,2012,Diesel
+LB-04,RS-0401,Backhoe Loader,Jcb Slp3Cx,1999,Diesel
+LB-05,RS-0483,Backhoe Loader,Jcb 3Dx,2006,Diesel
+LB-06,ZA-0447,Backhoe Loader,Jcb 3Cx,2002,Diesel
+LB-07,ZA-2608,Backhoe Loader,Jcb Jcb 3Cx,2004,Diesel
+LB-08,ZA-6068,Backhoe Loader,Jcb Jcb 3Dx,2015,Diesel
+LB-09,ZA-6069,Backhoe Loader,Jcb 3Dx,2015,Diesel
+LB-10,ZA-7034,Backhoe Loader,Jcb Jcb 3Dx,2016,Diesel
+LB-11,ZA-7092,Backhoe Loader,Jcb 3Dx,2016,Diesel
+LB-12,ZA-8337,Backhoe Loader,Jcb 3Dx,2016,Diesel
+LB-13,ZA-7965,Backhoe Loader,Jcb 3Dx,2016,Diesel
+LB-14,ZA-7968,Backhoe Loader,Jcb Jcb 3Dx,2016,Diesel
+LB-15,ZB-1047,Backhoe Loader,J.C.B 570St,2019,Diesel
+LB-16,ZB-1547,Backhoe Loader,J.C.B 3Dx,2020,Diesel
+LB-17,ZB-1546,Backhoe Loader,J.C.B 3Dx,2020,Diesel
+LB-18,ZB-1548,Backhoe Loader,J.C.B 3Dx,2020,Diesel
+LB-19,ZB-1978,Backhoe Loader,J.C.B Jcb 3Dx,2020,Diesel
+LB-19,ZB-1979,Backhoe Loader,J.C.B 3Dx,2020,Diesel
+LB-21,ZB-1980,Backhoe Loader,J.C.B 3Dx,2020,Diesel
+LB-22,ZB-2586,Backhoe Loader,Bob Cat B760,2021,Diesel
+LB-23,ZB-2587,Backhoe Loader,Bob Cat B760,2021,Diesel
+LB-24,ZB-2583,Backhoe Loader,Bob Cat B760,2021,Diesel
+BS-01,43-3416,Bitumen Bowser,Ashok Leyland Comet Super,1992,Diesel
+BS-02,LL-0623,Bitumen Bowser,Tata Lpt 709,2013,Diesel
+BS-04,LM-2298,Bitumen Bowser,Foton Bj1056R,2012,Diesel
+BS-05,ZB-1469,Bitumen Bowser,Dfac Eq1110Sj8Bdc,2019,Diesel
+BM-01,48-4849,Boom Truck,Freight Rover —,1996,Diesel
+BM-02,LC-0434,Boom Truck,Tata Lpt1613,2006,Diesel
+BM-03,LN-8277,Boom Truck,Isuzu Pj.Cyz51V5.Oioa,2005,Diesel
+BM-04,LN-8278,Boom Truck,Isuzu Kl.Fsr34Larforward,2003,Diesel
+HCC-01,PA-4879,Crew Cab,Toyota Ko-Ly132,2000,Diesel
+HCC-02,PA-6398,Crew Cab,Toyota Kc-Ly101,1997,Diesel
+HCC-03,PA-6399,Crew Cab,Toyota Kc-Ly111,1997,Diesel
+HCC-04,325-3448,Crew Cab,Toyota Bu19,1973,Diesel
+HCC-05,PH-6742,Crew Cab,Jmc Jx1032Dsr,2016,Diesel
+HCC-06,PH-6744,Crew Cab,Jmc Jx1032Dsr,2016,Diesel
+HCC-07,PH-6747,Crew Cab,Jmc Jx1032Dsr,2016,Diesel
+HCC-08,LN-1867,Crew Cab,Jmc 1X1041Dsla2Rs,2017,Diesel
+HCC-09,PJ-6376,Crew Cab,Jmc Jx1032Dsr,2019,Diesel
+HCC-10,40-8060,Crew Cab,Datsun Agy720-921207,1984,Diesel
+HCC-11,LO-9810,Crew Cab,Isuzu Pr75Kj7104331,2018,Diesel
+DB-01,LA-9208,Diesel Bowser,Tata 207 Di,2005,Diesel
+DB-02,68-5115,Diesel Bowser,Isuzu 207 Di,1990,Diesel
+DB-03,40-2955,Diesel Bowser,Nissan Atlas,,Diesel
+DB-04,41-1130,Diesel Bowser,Isuzu —,2005,Diesel
+DB-05,LA-1359,Diesel Bowser,Tata —,1990,Diesel
+DC-06,PA-4193,Double Cab (Pickup),Toyota Hilux,2005,Diesel
+DC-07,51-8083,Double Cab (Pickup),Datzen Motor Pic-Up,,Diesel
+DC-08,59-5421,Double Cab (Pickup),Isuzu Motor Pic-Up,1997,Diesel
+DC-10,28-4314,Double Cab (Pickup),Datzen Motor Pic-Up,1985,Diesel
+DC-11,HU-5097,Double Cab (Pickup),Mitsubishi L 200,2003,Diesel
+DC-12,253-2574,Double Cab (Pickup),Mitsubishi Motor Pic-Up,1999,Diesel
+DC-14,PD-6917,Double Cab (Pickup),Mahindra Bolero Camper Gold,2011,Diesel
+DC-15,PE-6582,Double Cab (Pickup),Mitsubishi L 200,2008,Diesel
+DC-16,PA-4102,Double Cab (Pickup),Volkswagon T5 Transporter,2005,Diesel
+DC-18,PE-5879,Double Cab (Pickup),Toyota Hilux Vigo,2008,Diesel
+DC-19,PD-8451,Double Cab (Pickup),Toyota Hilux Vigo,2007,Diesel
+DC-20,PH-0765,Double Cab (Pickup),Mahindra Bolero Camper Gold,2015,Diesel
+DC-21,PH-3945,Double Cab (Pickup),Mahindra Imperio Dcvx,2016,Diesel
+DC-22,PE-3911,Double Cab (Pickup),Toyota Hilux,2012,Diesel
+DC-23,PD-4739,Double Cab (Pickup),Toyota Hilux,2007,Diesel
+DC-24,PC-7812,Double Cab (Pickup),Toyota Hilux Hl2 D-4D 4*4,2007,Diesel
+DC-25,PJ-5688,Double Cab (Pickup),Toyota Hilux,2019,Diesel
+DC-26,PJ-7604,Double Cab (Pickup),Toyota Hilux,2019,Diesel
+DC-27,PJ-7605,Double Cab (Pickup),Toyota Hilux,2019,Diesel
+DC-28,PJ-7606,Double Cab (Pickup),Toyota Hilux,2019,Diesel
+DC-29,PJ-7598,Double Cab (Pickup),Toyota Hilux,2019,Diesel
+DC-30,PJ-7601,Double Cab (Pickup),Toyota Hilux,2019,Diesel
+DC-31,PI-3982,Double Cab (Pickup),Toyota Hilux Cun126R Dttlh,2017,Diesel
+DC-32,PH-9072,Double Cab (Pickup),Toyota Hilux,2017,Diesel
+DT-01,LB-9496,Dump Truck (Tipper),Ashok Leland Comet,2006,Diesel
+DT-02,LL-0920,Dump Truck (Tipper),Tata Lpk 407,2013,Diesel
+DT-03,LK-4057,Dump Truck (Tipper),Ashok Leland Commet Tipper 1613,2012,Diesel
+DT-04,HS-1794,Dump Truck (Tipper),Ashok Leland Comet,2003,Diesel
+DT-05,HS-1773,Dump Truck (Tipper),Ashok Leland Commet Tipper 1613,2003,Diesel
+DT-07,LI-7618,Dump Truck (Tipper),Tata Lpk 1615,2011,Diesel
+DT-08,LI-7620,Dump Truck (Tipper),Tata Lpk1618,2011,Diesel
+DT-09,LI-7701,Dump Truck (Tipper),Tata Lpk1618,2011,Diesel
+DT-10,LK-6740,Dump Truck (Tipper),Tata Lpk 407,2012,Diesel
+DT-11,LK-6738,Dump Truck (Tipper),Tata Lpk1618,2012,Diesel
+DT-12,LK-2276,Dump Truck (Tipper),Tata Lpk 909,2012,Diesel
+DT-13,LK-2366,Dump Truck (Tipper),Tata Lpk1618,2012,Diesel
+DT-14,LK-4056,Dump Truck (Tipper),Ashok Leland Commet Tipper 1613,2012,Diesel
+DT-15,LM-5722,Dump Truck (Tipper),Tata Lpk 1615,2016,Diesel
+DT-16,LK-4059,Dump Truck (Tipper),Ashok Leland Taurus 2516,2012,Diesel
+DT-17,LI-3402,Dump Truck (Tipper),Elcher Terra16 Hdr,2011,Diesel
+DT-18,LM-5721,Dump Truck (Tipper),Tata Lpk1618,2016,Diesel
+DT-19,LI-3396,Dump Truck (Tipper),Elcher Terra16 Hdr,2011,Diesel
+DT-20,LI-3401,Dump Truck (Tipper),Elcher Terra16 Hdr,2011,Diesel
+DT-21,LI-3395,Dump Truck (Tipper),Elcher Terra16 Hdr,2011,Diesel
+DT-22,LH-5586,Dump Truck (Tipper),Ashok Leland Taurus,2010,Diesel
+DT-23,LK-5586,Dump Truck (Tipper),Ashok Leland Taurus 2516,2010,Diesel
+DT-24,LI-2427,Dump Truck (Tipper),Ashok Leland Taurus 2516,2011,Diesel
+DT-25,LK-4058,Dump Truck (Tipper),Ashok Leland Taurus 2516,2012,Diesel
+DT-26,LK-4061,Dump Truck (Tipper),Ashok Leland Comet,2012,Diesel
+DT-27,LL-0936,Dump Truck (Tipper),Ashok Leland Lpk 407,2013,Diesel
+DT-28,LJ-5203,Dump Truck (Tipper),Tata Lpk 1615,2012,Diesel
+DT-29,LJ-5559,Dump Truck (Tipper),Tata Lpk1618,2012,Diesel
+DT-30,LI-3851,Dump Truck (Tipper),Tata Lpk1618,2011,Diesel
+DT-31,LE-4986,Dump Truck (Tipper),Elcher 20.16,2007,Diesel
+DT-32,LM-5719,Dump Truck (Tipper),Tata Lpk1618,2016,Diesel
+DT-33,LM-5723,Dump Truck (Tipper),Tata Lpk1618,2016,Diesel
+DT-34,LM-5720,Dump Truck (Tipper),Tata Lpk1618,2016,Diesel
+DT-35,LM-7940,Dump Truck (Tipper),Tata Lpk1618,2016,Diesel
+DT-36,LM-7948,Dump Truck (Tipper),Tata Lpk1618,2016,Diesel
+DT-37,LM-7949,Dump Truck (Tipper),Tata Lpk1618,2016,Diesel
+DT-38,LM-7942,Dump Truck (Tipper),Tata Lpk1618,2016,Diesel
+DT-39,LM-7951,Dump Truck (Tipper),Tata Lpk1618,2016,Diesel
+DT-40,LN-9046,Dump Truck (Tipper),Tata 10.80 Tipper,2017,Diesel
+DT-41,HO-9850,Dump Truck (Tipper),Ashok Leland Commet Tipper 1613,2003,Diesel
+DT-42,LO-4822,Dump Truck (Tipper),Tata Lpk 1618,2018,Diesel
+DT-43,LO-4823,Dump Truck (Tipper),Tata Lpk1618,2018,Diesel
+DT-44,LO-4824,Dump Truck (Tipper),Tata Lpk1618,2018,Diesel
+DT-45,LO-4816,Dump Truck (Tipper),Tata Lpk1618,2018,Diesel
+DT-46,LO-4821,Dump Truck (Tipper),Tata Lpk1618,2018,Diesel
+DT-47,LO-5983,Dump Truck (Tipper),Tata Lpk1615Tc,2016,Diesel
+DT-48,LO-5986,Dump Truck (Tipper),Tata Lpk1615Tc,2018,Diesel
+DT-49,LO-5984,Dump Truck (Tipper),Tata Lpk1618,2016,Diesel
+DT-50,LO-5985,Dump Truck (Tipper),Tata Lpk1618,2016,Diesel
+DT-51,LO-5981,Dump Truck (Tipper),Tata Lpk1618,2018,Diesel
+DT-52,LA-4229,Dump Truck (Tipper),Tata Commet Tipper 1613,2005,Diesel
+DT-53,LO-7183,Dump Truck (Tipper),Tata Lpk1618,2018,Diesel
+DT-54,LO-7180,Dump Truck (Tipper),Tata Lpk1618,2018,Diesel
+DT-55,LO-7182,Dump Truck (Tipper),Tata Lpk1618,2018,Diesel
+DT-56,LO-7181,Dump Truck (Tipper),Tata Lpk1618,2018,Diesel
+DT-57,LO-7184,Dump Truck (Tipper),Tata Lpk1618,2018,Diesel
+DT-58,LO-8349,Dump Truck (Tipper),Tata Lpk1618,2018,Diesel
+DT-59,LO-8348,Dump Truck (Tipper),Tata Lpk 1618,2018,Diesel
+DT-60,LO-8350,Dump Truck (Tipper),Tata Lpk 1618,2018,Diesel
+DT-61,LP-1581,Dump Truck (Tipper),Tata Lpk1618,2021,Diesel
+DT-62,LP-1573,Dump Truck (Tipper),Tata Lpk 1618,2021,Diesel
+DT-63,LP-1567,Dump Truck (Tipper),Tata Lpk1615Tc,2021,Diesel
+DT-64,LP-1576,Dump Truck (Tipper),Tata Lpk1615Tc,2021,Diesel
+DT-65,LP-1571,Dump Truck (Tipper),Tata Lpk1615Tc,2021,Diesel
+DT-66,LP-1582,Dump Truck (Tipper),Tata Lpk1615Tc,2021,Diesel
+DT-67,LP-1572,Dump Truck (Tipper),Tata Lpk1615Tc,2021,Diesel
+DT-68,LP-1569,Dump Truck (Tipper),Tata Lpk1615Tc,2021,Diesel
+DT-69,LP-1579,Dump Truck (Tipper),Tata Lpk1615Tc,2021,Diesel
+DT-70,LP-1574,Dump Truck (Tipper),Tata Lpk1615Tc,2021,Diesel
+DT-71,LP-1578,Dump Truck (Tipper),Tata Lpk1615Tc,2021,Diesel
+DT-72,LP-1580,Dump Truck (Tipper),Tata Lpk1615Tc,2021,Diesel
+DT-73,LP-1568,Dump Truck (Tipper),Tata Lpk 1615,2021,Diesel
+DT-74,LP-1577,Dump Truck (Tipper),Tata Lpk 1615,2021,Diesel
+DT-75,LP-1566,Dump Truck (Tipper),Tata Lpk 1615,2021,Diesel
+DT-76,LP-1710,Dump Truck (Tipper),Tata Lpk 1615,2021,Diesel
+DT-77,LP-1719,Dump Truck (Tipper),Tata Lpk 1615,2021,Diesel
+DT-78,LP-1709,Dump Truck (Tipper),Tata Lpk 1615,2021,Diesel
+DT-79,LP-1713,Dump Truck (Tipper),Tata Lpk 1615,2021,Diesel
+DT-80,LP-1720,Dump Truck (Tipper),Tata Lpk 1615,2021,Diesel
+DT-81,LP-1715,Dump Truck (Tipper),Tata Lpk 1615,2021,Diesel
+DT-82,LP-1716,Dump Truck (Tipper),Tata Lpk1615Tc,2021,Diesel
+DT-83,LP-1712,Dump Truck (Tipper),Tata Lpk1615Tc,2021,Diesel
+DT-84,LP-1711,Dump Truck (Tipper),Tata Lpk 407,2021,Diesel
+DT-85,LP-1718,Dump Truck (Tipper),Tata Lpk 909,2021,Diesel
+HEX-01,,Excavator,Volvo Ec210V,2013,Diesel
+HEX-02,,Excavator,Komatsu Pc-100,2010,Diesel
+HEX-03,,Excavator,Hitachi Uh045,2010,Diesel
+HEX-04,,Excavator,Komatsu Pc-100,2011,Diesel
+HEX-05,,Excavator,Komatsu Pc60,2009,Diesel
+HEX-06,,Excavator,Komatsu Pcs50Uu-01,2009,Diesel
+HEX-07,,Excavator,Kobelko Yd-00418,2014,Diesel
+HEX-09,,Excavator,Komatsu Pc27R-8,2009,Diesel
+HEX-12,,Excavator,,,Diesel
+HEX-13,,Excavator,Kubota U-25-35,2010,Diesel
+HEX-14,,Excavator,Cat 303 Cr,2014,Diesel
+HEX-15,,Excavator,Kubota Kx-040,2013,Diesel
+HEX-17,,Excavator,Hyundai 0Bex220Lc-9S,,Diesel
+HEX-18,,Excavator,Hithachi Ex75Ur-3,2014,Diesel
+HEX-19,,Excavator,Komatsu Pc-120-6Eo,2009,Diesel
+HEX-20,,Excavator,Komatsu Pc-40Mr-02,2009,Diesel
+HEX-21,,Excavator,Kobelko Sk115Sr,2012,Diesel
+HEX-22,,Excavator,Catapillar 314C,2014,Diesel
+HEX-23,,Excavator,Kobelko 200,2015,Diesel
+HEX-24,,Excavator,Komatsu Pc-40Mr-1,2012,Diesel
+HEX-25,14160,Excavator,Hyundai R230Lm,2017,Diesel
+HEX-26,,Excavator,Hyundai Robex330Lc-9S,,Diesel
+HEX-27,,Excavator,Hyundai E55W,,Diesel
+HEX-28,,Excavator,Komatsu Pc-60-6,2012,Diesel
+HEX-29,,Excavator,Cat Cat308Ccr,2013,Diesel
+HEX-31,,Excavator,Komatsu Pc-30,2014,Diesel
+HEX-32,14160,Excavator,Hyundai R230Lm,2017,Diesel
+HEX-33,14160,Excavator,Hyundai R230Lm,2017,Diesel
+HEX-34,,Excavator,Hyundai R220Lc-9S,2017,Diesel
+HEX-35,14160,Excavator,Hyundai R230Lm,2017,Diesel
+HEX-36,,Excavator,Hyundai E55W,2018,Diesel
+HEX-37,,Excavator,Hyundai (Robex330Lc-96),,Diesel
+HEX-38,14160,Excavator,Hyundai R230Lm,2017,Diesel
+HEX-39,,Excavator,Hyundai R220Lc-9S,2017,Diesel
+HEX-40,,Excavator,Santui Se210,,Diesel
+HEX-41,,Excavator,Hyundai 220Lc-7,,Diesel
+HEX-42,,Excavator,Case Cx220C Lc Hd,2021,Diesel
+HEX-43,,Excavator,Case Cx220C Lc Hd,2021,Diesel
+HEX-44,,Excavator,Kobelco Sx 120,,Diesel
+HEX-45,,Excavator,Case Cx220C Lc Hd,2021,Diesel
+HEX-46,,Excavator,Case Cx220C Lc Hd,2021,Diesel
+FT-02,49-2289,Farm Tractor,Massey Furguson 135,1974,Diesel
+FT-03,RA-3051,Farm Tractor,Tafe 45Di,2005,Diesel
+FT-04,RA-3052,Farm Tractor,Tafe 45Di,2005,Diesel
+FT-05,RF-0748,Farm Tractor,Massey Ferouson Mf 240,,Diesel
+FT-06,RD-3536,Farm Tractor,Mahindra 575Di,2012,Diesel
+FT-07,RC-9894,Farm Tractor,Tafe 45Di,2012,Diesel
+FT-08,RD-3537,Farm Tractor,Mahindra 575Di,2012,Diesel
+FT-09,49-5294,Farm Tractor,Massey Furguson 45Di,1980,Diesel
+FT-10,RD-6318,Farm Tractor,Mahindra 275 Di,2012,Diesel
+FT-11,RF-0748,Farm Tractor,Massey Ferouson Mf 240,2008,Diesel
+FL-01,,Forklift,Barrol Fork Lift —,,Diesel
+FL-02,,Forklift,Blade Fock Lift —,,Diesel
+FL-03,,Forklift,Blade Fock Lift —,,Diesel
+CR-01,ZA-8395,Mobile Crane,Tadano Tr-350M-3-00101,1998,Diesel
+CR-02,ZA-9716,Mobile Crane,Kobelco Rk 250,1995,Diesel
+MB-05,HO-0217,Motor Bicycle,Bajaj Bajaj Boxerct-Deluxe,2003,Petrol
+MB-07,MP-3092,Motor Bicycle,Tvs Star City,2006,Petrol
+MB-08,MV-4276,Motor Bicycle,Bajaj Ct100,2006,Petrol
+MB-09,MV-5841,Motor Bicycle,Bajaj Cd Dream Dlx 110,2006,Petrol
+MB-10,BEF-7850,Motor Bicycle,Bajaj Discover 125,2016,Petrol
+MB-11,BET-3726,Motor Bicycle,Bajaj Platina,2017,Petrol
+MB-13,TS-5399,Motor Bicycle,Bajaj Discover Dtsi,2007,Petrol
+MB-14,XG-6801,Motor Bicycle,Bajaj Platina Bm 125,2011,Petrol
+MB-15,BEF-7836,Motor Bicycle,Bajaj Platina,2016,Petrol
+MB-16,XP-8682,Motor Bicycle,Honda Cb-125T,2004,Petrol
+MB-17,XW-9221,Motor Bicycle,Bajaj Platina,2012,Petrol
+MB-18,WQ-9941,Motor Bicycle,Bajaj Platina,2011,Petrol
+MB-19,BET-3772,Motor Bicycle,Bajaj Platina,2017,Petrol
+MB-20,XW-9217,Motor Bicycle,Bajaj —,,Petrol
+MB-21,XW-9222,Motor Bicycle,Bajaj —,,Petrol
+MB-22,BAB-8828,Motor Bicycle,Bajaj Platina Bm 125,2012,Petrol
+MB-23,BAB-8832,Motor Bicycle,Bajaj —,,Petrol
+MB-25,BDJ-2374,Motor Bicycle,Bajaj Platina,2015,Petrol
+MB-26,BDI-8546,Motor Bicycle,Bajaj —,,Petrol
+MB-27,BDI-8556,Motor Bicycle,Bajaj —,2015,Petrol
+MB-28,BDJ-2375,Motor Bicycle,Bajaj —,2016,Petrol
+MB-29,BCN-9805,Motor Bicycle,Bajaj Discover 125 M,2015,Petrol
+MB-30,BCN-9802,Motor Bicycle,Bajaj —,2015,Petrol
+MB-31,BAB-8839,Motor Bicycle,Bajaj —,2012,Petrol
+MB-32,BAN-2012,Motor Bicycle,Bajaj Platina Bm 125,2013,Petrol
+MB-33,BAN-2021,Motor Bicycle,Bajaj —,,Petrol
+MB-34,WQ-9935,Motor Bicycle,Bajaj —,2011,Petrol
+MB-35,BEB-3132,Motor Bicycle,Platina Platina,2016,Petrol
+MB-36,BIE-8589,Motor Bicycle,Discovery —,,Petrol
+MB-37,BET-8556,Motor Bicycle,Platina —,2017,Petrol
+MG-01,,Motor Grader,Komatsu —,,Diesel
+MG-02,,Motor Grader,,,Diesel
+MG-03,,Motor Grader,Mitsubishi 452-65-147,,Diesel
+MG-04,,Motor Grader,Komatsu —,,Diesel
+MG-05,,Motor Grader,Komatsu 2501,,Diesel
+MG-06,,Motor Grader,Mitsubishi 320-11-21Gd,,Diesel
+MG-07,ZA-4344,Motor Grader,Komatsu —,,Diesel
+MG-08,ZB-2561,Motor Grader,Sany Stg170C-8,2020,Diesel
+MG-09,ZB-2562,Motor Grader,Sany Stg170C-8,2020,Diesel
+MG-10,ZB-2559,Motor Grader,Sany Stg170C-8,2020,Diesel
+MG-11,,Motor Grader,Mitsubhishi Mg 230,,Diesel
+MG-12,ZB-2564,Motor Grader,Sany Stg170C-8,2021,Diesel
+MG-13,ZB-2585,Motor Grader,Sany Stg170C-9,2021,Diesel
+MG-14,,Motor Grader,Mitsubishi 2Gb00258,2014,Diesel
+MG-15,,Motor Grader,Mitsubishi 2Gb01241,2008,Diesel
+MG-16,,Motor Grader,Caterpiller *Cat0140Hc5Hm03479*,,Diesel
+PTR-01,,Pneumatic Roller,Kawasaki Kr-20 D,2012,Diesel
+PTR-02,,Pneumatic Roller,Sakai 6Bd1Lj-01,2012,Diesel
+PTR-03,,Pneumatic Roller,,2012,Diesel
+PTR-04,,Pneumatic Roller,Dynapac Cp-201W,2012,Diesel
+PTR-05,,Pneumatic Roller,Dynapac Cp-201W,2012,Diesel
+PTR-06,,Pneumatic Roller,Ktdto Rt-200W,2012,Diesel
+PTR-07,,Pneumatic Roller,Furukawa Ft-20W,2012,Diesel
+PTR-08,,Pneumatic Roller,Komatsu J.W 200,,Diesel
+PTR-09,,Pneumatic Roller,Sakai C200,2000,Diesel
+PTR-10,,Pneumatic Roller,Sakai Ts200,1990,Diesel
+BD-01,LL-1782,Prime Mover / Bed,Isuzu Giga,1995,Diesel
+BD-02,GL-0019,Prime Mover / Bed,Renault —,1996,Diesel
+BD-03,LY-1614,Prime Mover / Bed,Tata Lps4018,2011,Diesel
+BD-04,LY-4524,Prime Mover / Bed,Renault Premium,2012,Diesel
+BD-05,LM-6653,Prime Mover / Bed,Ashok Leland Taurus 2518,2016,Diesel
+BD-06,325-5120,Prime Mover / Bed,Ashok Leland Caroo 709,1998,Diesel
+BD-08,LN-8279,Prime Mover / Bed,Hino Profla,2008,Diesel
+BM-05,LK-5041,Prime Mover / Bed,Tata Lpt2516,2010,Diesel
+PC-01,ZA-8373,Pump Truck (Concrete),Hino Fs1Ewy,2008,Diesel
+PC-02,ZB-1496,Pump Truck (Concrete),Sany Lzz1Bckh2Kw579978,2019,Diesel
+TM-13,Fiori,Self Loader Mixer,Fiori 8Fo8H01246,2017,Diesel
+TM-17,Fiori,Self Loader Mixer,Fiori 8Fo8H01252,2017,Diesel
+TM-20,Fiori,Self Loader Mixer,Fiori Bf08H01307,2018,Diesel
+SC-02,LB-4824,Single Cab,Tata 207 Di,2006,Diesel
+SC-04,PT-1569,Single Cab,Tata 207Di/28,2012,Diesel
+SC-05,PV-6889,Single Cab,Tata 207Di/28,2012,Diesel
+SC-06,PY-2408,Single Cab,Tata 207 Rx Pickup,2014,Diesel
+SC-07,PX-2180,Single Cab,Dfsk Eq1020Dr,2013,Diesel
+SC-08,PR-1504,Single Cab,Tata Ace,2011,Diesel
+SC-09,PR-1469,Single Cab,Tata 207Di/28,2011,Diesel
+SC-10,DAH-2228,Single Cab,Mahindra Bmt Plus Mti,2019,Diesel
+SC-11,DAH-2229,Single Cab,Mahindra Bmt Plus Mti,2019,Diesel
+SC-12,DAH-2230,Single Cab,Mahindra Bmt Plus Mti,2019,Diesel
+SC-13,DAH-2231,Single Cab,Mahindra Bmt Plus Mti,2019,Diesel
+SC-14,DAH-2491,Single Cab,Tata Yodha Bsiv,2019,Diesel
+SC-15,47-5112,Single Cab,Liteace Ace,2011,Diesel
+SL-01,,Skid Steer,Bob Cat —,2014,Diesel
+SL-02,,Skid Steer,Bob Cat S130,2014,Diesel
+SL-03,,Skid Steer,Bob Cat —,2014,Diesel
+SL-04,,Skid Steer,Bob Cat —,2014,Diesel
+SL-05,,Skid Steer,Bob Cat —,2017,Diesel
+SL-06,,Skid Steer,Bob Cat —,2017,Diesel
+SL-07,,Skid Steer,Bob Cat —,2017,Diesel
+SL-08,,Skid Steer,Cat 216B3,2017,Diesel
+SL-09,,Skid Steer,Bob Cat —,2017,Diesel
+SL-10,,Skid Steer,Bob Cat S450 S-450,2017,Diesel
+SL-11,,Skid Steer,Bob Cat S-450,2017,Diesel
+SL-12,,Skid Steer,Bob Cat S-450,2016,Diesel
+SL-13,,Skid Steer,Bob Cat S-450,2016,Diesel
+SL-14,,Skid Steer,Bob Cat S-16,2016,Diesel
+SL-15,,Skid Steer,Bob Cat S-450,2016,Diesel
+SL-16,,Skid Steer,Bob Cat S-450,2017,Diesel
+SL-17,,Skid Steer,Bob Cat S-450,2017,Diesel
+SL-18,,Skid Steer,Bob Cat S-450,2017,Diesel
+SL-19,,Skid Steer,Bob Cat S770,2016,Diesel
+SL-20,,Skid Steer,Bob Cat S-450,2020,Diesel
+SL-21,,Skid Steer,Bob Cat S-450,2021,Diesel
+SL-22,,Skid Steer,Bob Cat S-450,2021,Diesel
+SL-23,,Skid Steer,Bob Cat S-450,2021,Diesel
+SL-24,,Skid Steer,Bob Cat S-16,2021,Diesel
+SL-25,,Skid Steer,Bob Cat S130,2021,Diesel
+SR-01,,Static Roller,Case —,2012,Diesel
+SR-02,,Static Roller,,2009,Diesel
+SR-03,,Static Roller,,2012,Diesel
+SR-04,,Static Roller,,2013,Diesel
+SR-05,,Static Roller,Sakai Sw-900,2014,Diesel
+SR-06,,Static Roller,Case —,2014,Diesel
+SR-07,,Static Roller,Ir 2860-01,2010,Diesel
+SR-08,,Static Roller,Case 1107Exd,2017,Diesel
+SR-09,,Static Roller,Case —,,Diesel
+SR-10,,Static Roller,Macadam —,,Diesel
+SR-11,,Static Roller,Hamm Hamm 311D,,Diesel
+SR-12,,Static Roller,Hamm Hamm 311D,2016,Diesel
+SR-13,,Static Roller,Dynapac Ca250D,,Diesel
+SR-14,,Static Roller,Sakai R2V,,Diesel
+SR-15,,Static Roller,Macadam 1107Exd,2017,Diesel
+SR-16,,Static Roller,Dynapac Ca30D,,Diesel
+SR-17,,Static Roller,Dynapac Cc425,2021,Diesel
+SR-18,,Static Roller,Dynapac Ca30D,2021,Diesel
+SR-19,,Static Roller,Dynapac Ca30D,2021,Diesel
+TB-01,,Tractor Bowser,Tractor Triler Tractor Bowser,,Diesel
+TB-04,,Tractor Bowser,Tractor Triler Tractor Bowser,,Diesel
+TB-09,RY-0299,Tractor Bowser,Tractor Triler Tractor Bowser,2017,Diesel
+TB-10,RY-0304,Tractor Bowser,Locally Built Tractor Bowser,2017,Diesel
+TB-11,RY-0301,Tractor Bowser,Locally Built Tractor Bowser,2017,Diesel
+TB-12,,Tractor Bowser,Tanker Tractor Bowser,2017,Diesel
+TB-15,,Tractor Bowser,Tractor Triler Tractor Bowser,,Diesel
+TB-16,,Tractor Bowser,Tractor Triler Tractor Bowser,,Diesel
+TB-17,,Tractor Bowser,Tractor Triler Tractor Bowser,,Diesel
+TB-18,,Tractor Bowser,Tractor Triler Tractor Bowser,,Diesel
+TM-01,LK-5048,Truck Mixer,Mitsubishi Kc-Fh217C,1996,Diesel
+TM-03,LK-5047,Truck Mixer,Isuzu Kc-Nrr33C20,1996,Diesel
+TM-04,LL-0690,Truck Mixer,Isuzu Kk-Nrr35C4 Forward,2000,Diesel
+TM-05,LH-5474,Truck Mixer,Mitsubishi Kc-Fe517Bn,1996,Diesel
+TM-06,LH-5475,Truck Mixer,Mitsubishi U.Fe315Bn,1991,Diesel
+TM-08,LJ-8055,Truck Mixer,Isuzu Kc-Nrr33C20,1996,Diesel
+TM-09,ZA-6255,Truck Mixer,Mitsubishi Kk-Fe73Eb Canter,2003,Diesel
+TM-10,ZA-6395,Truck Mixer,Ashok Leyland Tusker Super 1613,2015,Diesel
+TM-11,ZA-7291,Truck Mixer,Elcher Terra 16,2016,Diesel
+TM-12,ZA-7290,Truck Mixer,Elcher Terra 16,2016,Diesel
+TM-14,ZA-7810,Truck Mixer,Tata Lpk 2518,2016,Diesel
+TM-15,ZA-7925,Truck Mixer,Tata Lpk 1618,2016,Diesel
+TM-16,ZA-8033,Truck Mixer,Tata Lpk 2518,2016,Diesel
+TM-18,ZA-8511,Truck Mixer,Tata Lpk 1618,2017,Diesel
+TM-19,ZA-8445,Truck Mixer,Tata Lpk 2518,2017,Diesel
+TM-21,ZA-0050,Truck Mixer,Tata Lpk 2518,2017,Diesel
+PV-01,51-7158,Van,Toyota Liteace,1987,Diesel
+VR-01,,Vibrating Roller,,2010,Diesel
+VR-02,,Vibrating Roller,Komatsu Sl203468,2012,Diesel
+VR-03,,Vibrating Roller,,2013,Diesel
+VR-04,,Vibrating Roller,,2010,Diesel
+VR-05,,Vibrating Roller,,2012,Diesel
+VR-06,,Vibrating Roller,Bomag —,2015,Diesel
+VR-07,,Vibrating Roller,Cat 1650Nk0285,2013,Diesel
+VR-08,,Vibrating Roller,Atlas —,2012,Diesel
+VR-09,,Vibrating Roller,Dynapac Cc142 Ii,2013,Diesel
+VR-10,,Vibrating Roller,Bomag Bw 138 Ad-05,2013,Diesel
+VR-11,,Vibrating Roller,Dynapac Cc1300,2013,Diesel
+VR-12,,Vibrating Roller,Bomag —,2013,Diesel
+VR-13,,Vibrating Roller,Hamm —,2012,Diesel
+VR-14,,Vibrating Roller,Bomag Bw-138 Ad,2016,Diesel
+VR-15,,Vibrating Roller,Komatsu —,2012,Diesel
+VR-16,,Vibrating Roller,,2010,Diesel
+VR-17,,Vibrating Roller,,2010,Diesel
+VR-18,,Vibrating Roller,Bomag Sa-00-350,2016,Diesel
+VR-19,,Vibrating Roller,,,Diesel
+VR-20,,Vibrating Roller,Sakai Sw-300,2013,Diesel
+VR-21,,Vibrating Roller,Tacom Tfr60Tds,2014,Diesel
+VR-22,,Vibrating Roller,,,Diesel
+VR-23,,Vibrating Roller,,,Diesel
+VR-24,,Vibrating Roller,Bomag Bw 75 H,2013,Diesel
+VR-25,,Vibrating Roller,Bomag —,,Diesel
+VR-26,,Vibrating Roller,,,Diesel
+VR-27,,Vibrating Roller,Bomag Bw 75 H,2014,Diesel
+VR-28,,Vibrating Roller,Bomag Bw 75 H,2015,Diesel
+VR-29,,Vibrating Roller,Tacom Tfr60Tds,2015,Diesel
+VR-30,,Vibrating Roller,Tacom Tfr60Tds,2016,Diesel
+VR-31,,Vibrating Roller,Bomag Bw 75 H,2016,Diesel
+VR-32,,Vibrating Roller,Tacom Bw 75 H,2016,Diesel
+VR-33,,Vibrating Roller,Tacom —,,Diesel
+VR-34,,Vibrating Roller,,,Diesel
+VR-35,,Vibrating Roller,,,Diesel
+VR-36,,Vibrating Roller,,,Diesel
+VR-37,,Vibrating Roller,Sakai —,,Diesel
+VR-38,,Vibrating Roller,,,Diesel
+VR-39,,Vibrating Roller,,,Diesel
+VR-40,,Vibrating Roller,,,Diesel
+VR-41,,Vibrating Roller,,,Diesel
+VR-42,,Vibrating Roller,,,Diesel
+VR-43,,Vibrating Roller,Sakai —,,Diesel
+VR-44,,Vibrating Roller,Cat Cb-504C,,Diesel
+VR-45,,Vibrating Roller,Sakai Tw-41,,Diesel
+VR-46,,Vibrating Roller,,,Diesel
+VR-47,,Vibrating Roller,,,Diesel
+VR-48,,Vibrating Roller,,,Diesel
+VR-49,,Vibrating Roller,,,Diesel
+VR-50,,Vibrating Roller,,,Diesel
+VR-51,,Vibrating Roller,,,Diesel
+VR-52,,Vibrating Roller,,,Diesel
+VR-53,,Vibrating Roller,,,Diesel
+VR-54,,Vibrating Roller,,,Diesel
+VR-55,,Vibrating Roller,,,Diesel
+VR-56,,Vibrating Roller,,,Diesel
+VR-57,,Vibrating Roller,,,Diesel
+VR-58,,Vibrating Roller,,,Diesel
+VR-59,,Vibrating Roller,,,Diesel
+VR-60,,Vibrating Roller,,,Diesel
+VR-61,,Vibrating Roller,,,Diesel
+VR-62,,Vibrating Roller,,,Diesel
+VR-63,,Vibrating Roller,,,Diesel
+VR-64,,Vibrating Roller,,,Diesel
+VR-65,,Vibrating Roller,,,Diesel
+VR-66,,Vibrating Roller,,,Diesel
+VR-67,,Vibrating Roller,Atlas —,,Diesel
+VR-68,,Vibrating Roller,Sakai —,,Diesel
+VR-69,,Vibrating Roller,Tacom Bw 75 H,2016,Diesel
+VR-70,,Vibrating Roller,Bomag Bw 138 Ad-05,2013,Diesel
+VR-71,,Vibrating Roller,Bomag Bw 75 H,2013,Diesel
+WB-01,48-8072,Water Bowser,Tata S1313/42 Tanker,1997,Diesel
+WB-02,43-1191,Water Bowser,Tata 1210Se-Closed,1991,Diesel
+WB-03,HO-9850,Water Bowser,Ashok Leyland Comet,2003,Diesel
+WB-04,LI-3405,Water Bowser,Elcher Terra16 Hdr,2011,Diesel
+WB-05,LA-4229,Water Bowser,Ashok Leyland Comet,2005,Diesel
+WB-06,227-7971,Water Bowser,Ashok Leyland Iveco-Cargo,2000,Diesel
+WB-08,,Water Bowser,,,Diesel
+WB-09,RY-0299,Water Bowser,,,Diesel
+WB-10,RY-0301,Water Bowser,,,Diesel
+WB-11,RY-0304,Water Bowser,,,Diesel
+WB-12,RY-2392,Water Bowser,,,Diesel
+WB-13,,Water Bowser,,,Diesel
+WB-14,,Water Bowser,,,Diesel
+WB-15,RY-2390,Water Bowser,,,Diesel
+WB-16,,Water Bowser,,,Diesel
+WB-17,,Water Bowser,,,Diesel
+WB-18,LO-1059,Water Bowser,Tata Lpt1615Tc,2018,Diesel
+WB-19,,Water Bowser,,,Diesel
+WB-20,LD-8875,Water Bowser,,,Diesel
+LD-01,,Wheel Loader,Cat 910E,2009,Diesel
+LD-02,,Wheel Loader,Cat Cat910,2010,Diesel
+LD-03,,Wheel Loader,Komatsu Wa100,2012,Diesel
+LD-04,,Wheel Loader,Komatsu 924F,2013,Diesel
+LD-05,,Wheel Loader,Komatsu Wa150,2014,Diesel
+LD-06,ZA-3116,Wheel Loader,Komatsu 510,2013,Diesel
+LD-07,,Wheel Loader,Komatsu Wa-80Ss,2015,Diesel
+LD-08,,Wheel Loader,Santui Sl30W,2014,Diesel
+LD-09,,Wheel Loader,Shantui Sl-50Wn,2020,Diesel

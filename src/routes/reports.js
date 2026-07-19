@@ -76,7 +76,8 @@ router.get('/integrity', asyncHandler((_req, res) => res.json(intelligence.integ
 const COST_COLS = [
   { header: 'Labour', key: 'labour' }, { header: 'Material', key: 'material' },
   { header: 'Oil', key: 'oil' }, { header: 'General', key: 'general' },
-  { header: 'External', key: 'external' }, { header: 'Total', key: 'total' },
+  { header: 'External', key: 'external' }, { header: 'Other/Recorded', key: 'other' },
+  { header: 'Total', key: 'total' },
 ];
 
 router.get('/cost/by-asset', asyncHandler(async (req, res) => {
@@ -84,7 +85,8 @@ router.get('/cost/by-asset', asyncHandler(async (req, res) => {
     `SELECT j.asset_id, a.code AS asset_code,
             COALESCE(SUM(j.labour_cost),0) labour, COALESCE(SUM(j.material_cost),0) material,
             COALESCE(SUM(j.oil_cost),0) oil, COALESCE(SUM(j.general_cost),0) general,
-            COALESCE(SUM(j.external_cost),0) external, COALESCE(SUM(j.total_cost),0) total,
+            COALESCE(SUM(j.external_cost),0) external, COALESCE(SUM(j.other_cost),0) other,
+            COALESCE(SUM(j.total_cost),0) total,
             COUNT(*) job_count
        FROM job_cards j LEFT JOIN assets a ON a.id = j.asset_id
       GROUP BY j.asset_id ORDER BY total DESC`
@@ -100,7 +102,8 @@ router.get('/cost/by-project', asyncHandler(async (req, res) => {
     `SELECT j.project_id, COALESCE(p.name,'(unassigned)') project,
             COALESCE(SUM(j.labour_cost),0) labour, COALESCE(SUM(j.material_cost),0) material,
             COALESCE(SUM(j.oil_cost),0) oil, COALESCE(SUM(j.general_cost),0) general,
-            COALESCE(SUM(j.external_cost),0) external, COALESCE(SUM(j.total_cost),0) total
+            COALESCE(SUM(j.external_cost),0) external, COALESCE(SUM(j.other_cost),0) other,
+            COALESCE(SUM(j.total_cost),0) total
        FROM job_cards j LEFT JOIN projects p ON p.id = j.project_id
       GROUP BY j.project_id ORDER BY total DESC`
   );
@@ -110,10 +113,31 @@ router.get('/cost/by-project', asyncHandler(async (req, res) => {
   res.json(rows);
 }));
 
+router.get('/cost/by-site', asyncHandler(async (req, res) => {
+  const rows = all(
+    `SELECT COALESCE(NULLIF(TRIM(site),''),'(no site)') site,
+            COALESCE(SUM(j.labour_cost),0) labour, COALESCE(SUM(j.material_cost),0) material,
+            COALESCE(SUM(j.oil_cost),0) oil, COALESCE(SUM(j.general_cost),0) general,
+            COALESCE(SUM(j.external_cost),0) external, COALESCE(SUM(j.other_cost),0) other,
+            COALESCE(SUM(j.total_cost),0) total, COUNT(*) jobs
+       FROM job_cards j GROUP BY 1 ORDER BY total DESC`
+  );
+  if (req.query.format === 'xlsx') {
+    return sendXlsx(res, 'cost-by-site.xlsx', [{ name: 'By Site', columns: [{ header: 'Site', key: 'site' }, ...COST_COLS, { header: 'Jobs', key: 'jobs' }], rows }]);
+  }
+  res.json(rows);
+}));
+
 router.get('/cost/by-source', asyncHandler(async (req, res) => {
   const rows = all(
-    `SELECT COALESCE(purchase_source,'(unspecified)') purchase_source, COALESCE(SUM(qty*unit_price),0) total, COUNT(*) lines
-       FROM grn WHERE unit_price IS NOT NULL GROUP BY purchase_source ORDER BY total DESC`
+    `SELECT CASE
+              WHEN purchase_source_norm IN ('head_office','direct_purchase','mixed') THEN 'Head Office'
+              WHEN purchase_source_norm IN ('local_purchase','local_store') THEN 'Local Purchase'
+              ELSE '(unspecified)'
+            END purchase_source,
+            COALESCE(SUM(qty*unit_price),0) total, COUNT(*) lines
+       FROM grn WHERE unit_price IS NOT NULL
+      GROUP BY 1 ORDER BY total DESC`
   );
   if (req.query.format === 'xlsx') {
     return sendXlsx(res, 'cost-by-source.xlsx', [{ name: 'By Source', columns: [{ header: 'Purchase Source', key: 'purchase_source' }, { header: 'Total', key: 'total' }, { header: 'Lines', key: 'lines' }], rows }]);
@@ -138,7 +162,7 @@ function costSheet(id) {
        LEFT JOIN assets a ON a.id = j.asset_id LEFT JOIN projects p ON p.id = j.project_id WHERE j.id = ?`, id
   );
   if (!job) return null;
-  const cost = costing.computeJobCost(id);
+  const cost = costing.reconciledCost(id);
   const parts = all(`SELECT * FROM job_parts WHERE job_id = ? AND source_type IN ('grn','issue') AND is_external_repair = 0`, id);
   const oil = all(`SELECT sl.*, pr.name product_name, pr.unit FROM stock_ledger sl JOIN products pr ON pr.id=sl.product_id WHERE sl.job_id = ? AND sl.kind='issue'`, id);
   const general = all(`SELECT g.*, si.name item_name FROM general_item_txns g JOIN store_items si ON si.id=g.store_item_id WHERE g.job_id = ? AND g.txn_type='issue'`, id);
@@ -203,6 +227,7 @@ router.get('/job/:id/costsheet.html', asyncHandler((req, res) => {
   <tr><td>Oil</td><td class="num">${money(t.oil_cost)}</td></tr>
   <tr><td>General</td><td class="num">${money(t.general_cost)}</td></tr>
   <tr><td>External</td><td class="num">${money(t.external_cost)}</td></tr>
+  ${t.other_cost ? `<tr><td>Other / Recorded</td><td class="num">${money(t.other_cost)}</td></tr>` : ''}
   <tr class="tot"><td>TOTAL</td><td class="num">${money(t.total_cost)}</td></tr>
 </table></div>
 </body></html>`;

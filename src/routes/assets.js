@@ -27,6 +27,7 @@ function listAssets(query = {}) {
   if (query.project_id) { clauses.push('a.current_project_id = ?'); params.push(toInt(query.project_id)); }
   if (query.status) { clauses.push('a.status = ?'); params.push(query.status); }
   if (query.asset_class) { clauses.push('a.asset_class = ?'); params.push(query.asset_class); }
+  if (query.in_register !== undefined) { clauses.push('a.in_register = ?'); params.push(toInt(query.in_register)); }
   const where = clauses.length ? 'WHERE ' + clauses.join(' AND ') : '';
   return all(
     `SELECT a.*, p.name AS current_project,
@@ -49,13 +50,29 @@ router.get('/export.xlsx', asyncHandler(async (req, res) => {
   await sendXlsx(res, 'assets.xlsx', [{
     name: 'Assets',
     columns: [
-      { header: 'Code', key: 'code' }, { header: 'Class', key: 'asset_class' },
+      { header: 'Code', key: 'code' }, { header: 'E&C No', key: 'ec_code' }, { header: 'Reg No', key: 'registration' },
+      { header: 'Class', key: 'asset_class' },
       { header: 'Brand', key: 'brand' }, { header: 'Type', key: 'type' },
       { header: 'Project', key: 'current_project' }, { header: 'Status', key: 'status' },
       { header: 'Open Jobs', key: 'open_jobs' }, { header: 'Lifetime Cost', key: 'lifetime_cost' },
     ],
     rows,
   }]);
+}));
+
+// Lightweight typeahead for vehicle/asset pickers — code + registration only.
+router.get('/search', asyncHandler((req, res) => {
+  const q = String(req.query.q || '').trim();
+  if (q) {
+    const like = '%' + q + '%';
+    return res.json(all(
+      `SELECT id, code, registration, asset_class FROM assets
+        WHERE code LIKE ? OR registration LIKE ? OR ec_code LIKE ?
+        ORDER BY (code = ?) DESC, in_register DESC, code
+        LIMIT ${toInt(req.query.limit, 20)}`,
+      like, like, like, q));
+  }
+  res.json(all(`SELECT id, code, registration, asset_class FROM assets ORDER BY in_register DESC, code LIMIT ${toInt(req.query.limit, 20)}`));
 }));
 
 router.get('/:id', asyncHandler((req, res) => {

@@ -12,6 +12,15 @@ const costing = require('../lib/costing');
 
 const router = express.Router();
 
+// Order by the job number itself — YYYY/M/(R|S)/seq — newest first: year, then month,
+// then the sequence number (xxx), all compared numerically (so 12 > 6 and 383 > 59).
+const JOB_NO_ORDER = `
+  CAST(substr(j.job_no, 1, instr(j.job_no, '/') - 1) AS INTEGER) DESC,
+  CAST(substr(substr(j.job_no, instr(j.job_no, '/') + 1), 1,
+              instr(substr(j.job_no, instr(j.job_no, '/') + 1), '/') - 1) AS INTEGER) DESC,
+  CAST(substr(j.job_no, instr(j.job_no, '/R/') + instr(j.job_no, '/S/') + 3) AS INTEGER) DESC,
+  j.id DESC`;
+
 // ---- helpers --------------------------------------------------------------
 
 function jobNo(type) {
@@ -43,7 +52,9 @@ function loadJob(id) {
 
 function editable(job, user) {
   if (job.status !== 'CLOSED') return true;
-  return hasRole(user, 'admin'); // closed cards are locked; admin edits are audited
+  // Closed cards can still receive items/edits from the managing roles (admin
+  // included via hasRole); all such edits are audited. Historical totals are kept.
+  return hasRole(user, 'workshop', 'storekeeper', 'manager');
 }
 
 // ---- list / create --------------------------------------------------------
@@ -67,17 +78,51 @@ router.get(
       clauses.push('j.project_id = ?');
       params.push(toInt(req.query.project_id));
     }
+    // Free-text search across job number, vehicle and references. A vehicle the
+    // user types (e.g. "LO-5981") may live in the asset's canonical code, its
+    // registration, its ec_code, or only as an alias — so we check them all, plus
+    // a normalised form (letters+digits only) so "LO 5981"/"lo-5981" also match.
+    // LIKE is case-insensitive for ASCII in SQLite.
+    if (req.query.q && String(req.query.q).trim()) {
+      const raw = String(req.query.q).trim();
+      const like = '%' + raw + '%';
+      const normq = raw.replace(/[^a-z0-9]/gi, '').toUpperCase();
+      const ors = ['j.job_no LIKE ?', 'a.code LIKE ?', 'a.registration LIKE ?', 'a.ec_code LIKE ?', 'j.ref LIKE ?', 'j.legacy_ref LIKE ?'];
+      params.push(like, like, like, like, like, like);
+      if (normq) {
+        const normLike = '%' + normq + '%';
+        ors.push('a.code_norm LIKE ?');
+        params.push(normLike);
+        ors.push('j.asset_id IN (SELECT asset_id FROM asset_aliases WHERE asset_id IS NOT NULL AND (raw_text LIKE ? OR raw_norm LIKE ?))');
+        params.push(like, normLike);
+      } else {
+        ors.push('j.asset_id IN (SELECT asset_id FROM asset_aliases WHERE asset_id IS NOT NULL AND raw_text LIKE ?)');
+        params.push(like);
+      }
+      clauses.push('(' + ors.join(' OR ') + ')');
+    }
+    // Date filters on the job date. requested_at is stored 'YYYY-MM-DD…' for both
+    // imported history and live jobs, so substr() slices the year / month out.
+    // Filter by the YEAR and MONTH encoded in the job number (YYYY/M/…), matching the sort.
+    if (req.query.year) {
+      clauses.push("substr(j.job_no, 1, instr(j.job_no, '/') - 1) = ?");
+      params.push(String(req.query.year));
+    }
+    if (req.query.month) {
+      clauses.push("CAST(substr(substr(j.job_no, instr(j.job_no, '/') + 1), 1, instr(substr(j.job_no, instr(j.job_no, '/') + 1), '/') - 1) AS INTEGER) = ?");
+      params.push(toInt(req.query.month));
+    }
     const where = clauses.length ? 'WHERE ' + clauses.join(' AND ') : '';
     const rows = all(
       `SELECT j.id, j.job_no, j.type, j.severity, j.status, j.description,
-              j.total_cost, j.requested_at, j.closed_at,
+              j.total_cost, j.material_cost, j.labour_cost, j.requested_at, j.closed_at,
               a.code AS asset_code, p.name AS project_name
          FROM job_cards j
          LEFT JOIN assets a ON a.id = j.asset_id
          LEFT JOIN projects p ON p.id = j.project_id
          ${where}
-        ORDER BY j.id DESC
-        LIMIT ${toInt(req.query.limit, 200)}`,
+        ORDER BY ${JOB_NO_ORDER}
+        LIMIT ${toInt(req.query.limit, 500)}`,
       ...params
     );
     res.json(rows);
@@ -135,6 +180,20 @@ router.get(
     const approvals = all('SELECT * FROM job_approvals WHERE job_id = ? ORDER BY id', id);
     const dailyWork = all('SELECT * FROM job_daily_work WHERE job_id = ? ORDER BY work_date, id', id);
     const parts = all('SELECT * FROM job_parts WHERE job_id = ? ORDER BY id', id);
+    // MRN request lines behind this job's assigned items (the request side), limited
+    // to the job's date frame: [job start − 3 days … job close + 3 days].
+    const mrnItems = all(
+      `SELECT m.id AS mrn_id, m.mrn_no, m.req_date, ml.description, ml.category, ml.qty, ml.qty_received
+         FROM job_parts jp
+         JOIN mrn_lines ml ON ml.id = jp.mrn_line_id
+         JOIN mrn m ON m.id = ml.mrn_id
+         JOIN job_cards j ON j.id = jp.job_id
+        WHERE jp.job_id = ? AND jp.mrn_line_id IS NOT NULL
+          AND date(m.req_date) BETWEEN date(j.requested_at, '-3 days')
+                                   AND date(COALESCE(j.closed_at, j.completed_at, j.requested_at), '+3 days')
+        ORDER BY CAST(m.mrn_no AS INTEGER), m.mrn_no, ml.id`,
+      id
+    );
     const labour = all('SELECT * FROM job_labour WHERE job_id = ? ORDER BY id', id);
     const oilIssues = all(
       `SELECT sl.*, pr.name AS product_name, pr.unit FROM stock_ledger sl
@@ -148,7 +207,7 @@ router.get(
         WHERE g.job_id = ? AND g.txn_type = 'issue' ORDER BY g.id`,
       id
     );
-    const cost = costing.computeJobCost(id);
+    const cost = costing.reconciledCost(id);
     const readiness = costing.closureReadiness(id);
     const snapshot = get('SELECT * FROM job_costs WHERE job_id = ? ORDER BY id DESC LIMIT 1', id);
 
@@ -157,6 +216,7 @@ router.get(
       approvals,
       dailyWork,
       parts,
+      mrnItems,
       labour: cost.labourLines,
       labourStored: labour,
       oilIssues,
@@ -275,10 +335,10 @@ router.post(
       }
     }
 
-    // "Time(Hrs)" is TOTAL man-hours for the crew, so split equally across the N
-    // mechanics: each row gets H/N hours -> labour = (H/N)×Σ(crew rates).
-    const crew = insertRows.length || 1;
-    const perRowHours = isExternal ? 0 : hours / crew;
+    // Owner's rule: each mechanic is charged the FULL hours at their own rate, so
+    // every per-mechanic row keeps the full Time(Hrs) -> labour = H × Σ(crew rates).
+    // (Matches the import model and dailywork.js; do NOT divide by crew size.)
+    const perRowHours = isExternal ? 0 : hours;
 
     const created = tx(() => {
       const ids = [];
@@ -404,7 +464,7 @@ router.get(
     const id = toInt(req.params.id);
     const job = get('SELECT * FROM job_cards WHERE id = ?', id);
     if (!job) return res.status(404).json({ error: 'Job not found' });
-    res.json({ cost: costing.computeJobCost(id), readiness: costing.closureReadiness(id) });
+    res.json({ cost: costing.reconciledCost(id), readiness: costing.closureReadiness(id) });
   })
 );
 

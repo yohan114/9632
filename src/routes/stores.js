@@ -106,37 +106,127 @@ router.post('/items/:id/txn', requireRole('storekeeper'), asyncHandler((req, res
 router.get('/reorder', asyncHandler((_req, res) =>
   res.json(all('SELECT * FROM store_items WHERE is_general = 1 AND min_stock > 0 AND balance <= min_stock ORDER BY name'))));
 
+// ---- Category breakdown (for the Categories tab) --------------------------
+const CAT = "COALESCE(NULLIF(TRIM(category),''),'(uncategorised)')";
+router.get('/categories', asyncHandler((_req, res) => {
+  res.json({
+    lines: all(`SELECT ${CAT} category, COUNT(*) lines, COUNT(DISTINCT description) distinct_items,
+                       ROUND(COALESCE(SUM(qty),0),1) qty, ROUND(COALESCE(SUM(qty_received),0),1) received
+                  FROM mrn_lines GROUP BY category ORDER BY lines DESC`),
+    issues: all(`SELECT ${CAT} category, COUNT(*) issues, ROUND(COALESCE(SUM(qty),0),1) qty
+                   FROM issues GROUP BY category ORDER BY issues DESC`),
+    transfers: all(`SELECT ${CAT} category, COUNT(*) transfers, ROUND(COALESCE(SUM(qty),0),1) qty
+                      FROM mtn GROUP BY category ORDER BY transfers DESC`),
+    catalogue: all(`SELECT ${CAT} category, COUNT(*) items FROM store_items GROUP BY category ORDER BY items DESC`),
+  });
+}));
+
+// ---- General item catalogue (deduped MRN items, each with an item number) --
+// The consolidated master built from every MRN request description: synonym /
+// spelling variants merged, all part numbers unioned, classified and numbered
+// (see migrate/14_item_catalogue). These are the rows where item_no IS NOT NULL.
+const CAT_KIND = "COALESCE(NULLIF(TRIM(catalogue_kind),''),'part')";
+
+router.get('/catalogue/facets', asyncHandler((_req, res) => {
+  res.json({
+    total: get('SELECT COUNT(*) c FROM store_items WHERE item_no IS NOT NULL').c,
+    by_kind: all(`SELECT ${CAT_KIND} kind, COUNT(*) count FROM store_items WHERE item_no IS NOT NULL GROUP BY kind ORDER BY count DESC`),
+    categories: all(`SELECT ${CAT} category, COUNT(*) count FROM store_items WHERE item_no IS NOT NULL GROUP BY category ORDER BY category`),
+  });
+}));
+
+router.get('/catalogue', asyncHandler((req, res) => {
+  const clauses = ['item_no IS NOT NULL'];
+  const params = [];
+  if (req.query.q && String(req.query.q).trim()) {
+    const like = '%' + String(req.query.q).trim() + '%';
+    clauses.push('(item_no LIKE ? OR name LIKE ? OR part_numbers LIKE ?)');
+    params.push(like, like, like);
+  }
+  if (req.query.category) { clauses.push(`${CAT} = ?`); params.push(req.query.category); }
+  if (req.query.kind) { clauses.push(`${CAT_KIND} = ?`); params.push(req.query.kind); }
+  const where = 'WHERE ' + clauses.join(' AND ');
+  res.json(all(
+    `SELECT id, item_no, name, category, catalogue_kind, req_count, part_numbers, part_number, unit, is_general, balance
+       FROM store_items ${where} ORDER BY item_no LIMIT ${toInt(req.query.limit, 2000)}`, ...params));
+}));
+
+router.get('/export/catalogue.xlsx', asyncHandler(async (_req, res) => {
+  const rows = all(`SELECT item_no, name, category, ${CAT_KIND} kind, req_count AS requests, COALESCE(part_numbers,'') part_numbers
+                      FROM store_items WHERE item_no IS NOT NULL ORDER BY item_no`);
+  await sendXlsx(res, 'item_catalogue.xlsx', [{
+    name: 'Item Catalogue',
+    columns: [
+      { header: 'Item No', key: 'item_no' }, { header: 'Item Name', key: 'name' },
+      { header: 'Category', key: 'category' }, { header: 'Kind', key: 'kind' },
+      { header: 'Requests', key: 'requests' }, { header: 'Part Numbers', key: 'part_numbers' },
+    ], rows,
+  }]);
+}));
+
 // ---- MRN ------------------------------------------------------------------
+// Two consolidated purchase sources: Head Office (absorbs Direct Purchase) and
+// Local Purchase (absorbs Local Store).
+const PURCHASE_SOURCES = ['head_office', 'local_purchase'];
+function purchaseSourceNorm(s) {
+  s = String(s == null ? '' : s).trim().toLowerCase();
+  if (!s) return null;
+  if (s.includes('direct') || s.includes('head office') || s === 'head_office') return 'head_office';
+  if (s.includes('local')) return 'local_purchase'; // local purchase OR local store
+  return 'head_office'; // combos / anything else roll up to Head Office
+}
+const MRN_SORTS = {
+  date_desc: 'm.req_date DESC, m.id DESC',
+  date_asc: 'm.req_date ASC, m.id ASC',
+  mrn_desc: 'CAST(m.mrn_no AS INTEGER) DESC, m.id DESC',
+  mrn_asc: 'CAST(m.mrn_no AS INTEGER) ASC, m.id ASC',
+};
+
 router.get('/mrn', asyncHandler((req, res) => {
   const clauses = [];
   const params = [];
   if (req.query.asset_id) { clauses.push('m.asset_id = ?'); params.push(toInt(req.query.asset_id)); }
   if (req.query.status) { clauses.push('m.status = ?'); params.push(req.query.status); }
+  // Free-text search: MRN number, vehicle, purpose, or any item description on the MRN.
+  if (req.query.q && String(req.query.q).trim()) {
+    const like = '%' + String(req.query.q).trim() + '%';
+    clauses.push(`(m.mrn_no LIKE ? OR a.code LIKE ? OR m.purpose LIKE ?
+                   OR EXISTS (SELECT 1 FROM mrn_lines ml WHERE ml.mrn_id = m.id AND ml.description LIKE ?))`);
+    params.push(like, like, like, like);
+  }
   const where = clauses.length ? 'WHERE ' + clauses.join(' AND ') : '';
+  const order = MRN_SORTS[req.query.sort] || 'm.id DESC';
   res.json(all(
-    `SELECT m.*, a.code AS asset_code, (SELECT COUNT(*) FROM mrn_lines ml WHERE ml.mrn_id = m.id) AS line_count
-       FROM mrn m LEFT JOIN assets a ON a.id = m.asset_id ${where} ORDER BY m.id DESC LIMIT ${toInt(req.query.limit, 300)}`,
+    `SELECT m.*, a.code AS asset_code,
+            (SELECT COUNT(*)            FROM mrn_lines ml WHERE ml.mrn_id = m.id) AS line_count,
+            (SELECT COALESCE(SUM(qty),0)          FROM mrn_lines ml WHERE ml.mrn_id = m.id) AS qty_requested,
+            (SELECT COALESCE(SUM(qty_received),0) FROM mrn_lines ml WHERE ml.mrn_id = m.id) AS qty_received
+       FROM mrn m LEFT JOIN assets a ON a.id = m.asset_id ${where} ORDER BY ${order} LIMIT ${toInt(req.query.limit, 300)}`,
     ...params
   ));
 }));
 
 router.post('/mrn', requireRole('storekeeper'), asyncHandler((req, res) => {
   const b = req.body;
-  require_(b, ['purpose']);
   const { assetId, unresolved } = resolveAssetId(b);
-  const mrnNo = nextMrnNo();
+  const mrnNo = String(b.mrn_no || '').trim() || nextMrnNo();
+  if (get('SELECT id FROM mrn WHERE mrn_no = ?', mrnNo)) {
+    return res.status(409).json({ error: `MRN number ${mrnNo} already exists` });
+  }
+  const source = b.purchase_source || null;
+  if (source && !PURCHASE_SOURCES.includes(source)) return res.status(400).json({ error: 'Invalid purchase_source' });
   const result = tx(() => {
     const info = run(
-      `INSERT INTO mrn (mrn_no, req_date, asset_id, project_id, job_id, purpose, requested_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO mrn (mrn_no, req_date, asset_id, project_id, job_id, purpose, requested_by, purchase_source)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       mrnNo, b.req_date || new Date().toISOString().slice(0, 10), assetId || null,
-      toInt(b.project_id), toInt(b.job_id), b.purpose, b.requested_by || null
+      toInt(b.project_id), toInt(b.job_id), b.purpose || null, b.requested_by || null, source
     );
     const mrnId = info.lastInsertRowid;
     const lines = Array.isArray(b.lines) ? b.lines : [];
     for (const l of lines) {
-      run('INSERT INTO mrn_lines (mrn_id, store_item_id, description, qty, unit) VALUES (?, ?, ?, ?, ?)',
-        mrnId, toInt(l.store_item_id), l.description || '', toNum(l.qty, 0), l.unit || 'nos');
+      run('INSERT INTO mrn_lines (mrn_id, store_item_id, description, qty, unit, category) VALUES (?, ?, ?, ?, ?, ?)',
+        mrnId, toInt(l.store_item_id), l.description || '', toNum(l.qty, 0), l.unit || 'nos', l.category || null);
     }
     return mrnId;
   });
@@ -152,7 +242,11 @@ router.get('/mrn/:id', asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   const mrn = get('SELECT m.*, a.code AS asset_code FROM mrn m LEFT JOIN assets a ON a.id = m.asset_id WHERE m.id = ?', id);
   if (!mrn) return res.status(404).json({ error: 'MRN not found' });
-  res.json({ mrn, lines: all('SELECT * FROM mrn_lines WHERE mrn_id = ?', id) });
+  res.json({
+    mrn,
+    lines: all('SELECT * FROM mrn_lines WHERE mrn_id = ? ORDER BY id', id),
+    grns: all('SELECT * FROM grn WHERE mrn_id = ? ORDER BY id', id),
+  });
 }));
 
 router.post('/mrn/:id/lines', requireRole('storekeeper'), asyncHandler((req, res) => {
@@ -168,27 +262,37 @@ router.get('/grn', asyncHandler((req, res) => {
   const clauses = [];
   const params = [];
   if (req.query.mrn_id) { clauses.push('g.mrn_id = ?'); params.push(toInt(req.query.mrn_id)); }
+  if (req.query.awaiting === '1') clauses.push('g.unit_price IS NULL');
+  if (req.query.q && String(req.query.q).trim()) {
+    const like = '%' + String(req.query.q).trim() + '%';
+    clauses.push('(g.grn_no LIKE ? OR g.description LIKE ? OR g.supplier LIKE ? OR m.mrn_no LIKE ? OR a.code LIKE ?)');
+    params.push(like, like, like, like, like);
+  }
   const where = clauses.length ? 'WHERE ' + clauses.join(' AND ') : '';
   res.json(all(
     `SELECT g.*, m.mrn_no, a.code AS asset_code FROM grn g
        LEFT JOIN mrn m ON m.id = g.mrn_id LEFT JOIN assets a ON a.id = m.asset_id
-       ${where} ORDER BY g.id DESC LIMIT ${toInt(req.query.limit, 300)}`, ...params));
+       ${where} ORDER BY g.id DESC LIMIT ${toInt(req.query.limit, 500)}`, ...params));
 }));
+
+// Count of GRN records still awaiting a price (for the badge / progress).
+router.get('/grn/awaiting-count', asyncHandler((_req, res) =>
+  res.json({ awaiting: get('SELECT COUNT(*) c FROM grn WHERE unit_price IS NULL').c, total: get('SELECT COUNT(*) c FROM grn').c })));
 
 router.post('/grn', requireRole('storekeeper'), asyncHandler((req, res) => {
   const b = req.body;
   require_(b, ['qty']);
   const source = b.purchase_source;
-  if (source && !['local_purchase', 'head_office', 'local_store'].includes(source)) {
+  if (source && !PURCHASE_SOURCES.includes(source)) {
     return res.status(400).json({ error: 'Invalid purchase_source' });
   }
   const result = tx(() => {
     const info = run(
-      `INSERT INTO grn (grn_no, mrn_id, mrn_line_id, store_item_id, description, qty, unit_price, supplier, invoice_no, invoice_date, delivery_date, purchase_source)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO grn (grn_no, mrn_id, mrn_line_id, store_item_id, description, qty, unit_price, supplier, invoice_no, invoice_date, delivery_date, purchase_source, purchase_source_norm)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       b.grn_no || null, toInt(b.mrn_id), toInt(b.mrn_line_id), toInt(b.store_item_id), b.description || null,
       toNum(b.qty, 0), b.unit_price === undefined || b.unit_price === '' ? null : toNum(b.unit_price),
-      b.supplier || null, b.invoice_no || null, b.invoice_date || null, b.delivery_date || null, source || null
+      b.supplier || null, b.invoice_no || null, b.invoice_date || null, b.delivery_date || null, source || null, purchaseSourceNorm(source)
     );
     if (b.mrn_line_id) {
       run('UPDATE mrn_lines SET qty_received = qty_received + ? WHERE id = ?', toNum(b.qty, 0), toInt(b.mrn_line_id));
@@ -210,6 +314,9 @@ router.patch('/grn/:id', requireRole('storekeeper'), asyncHandler((req, res) => 
   const id = toInt(req.params.id);
   const before = get('SELECT * FROM grn WHERE id = ?', id);
   if (!before) return res.status(404).json({ error: 'GRN not found' });
+  if (req.body.purchase_source !== undefined && req.body.purchase_source && !PURCHASE_SOURCES.includes(req.body.purchase_source)) {
+    return res.status(400).json({ error: 'Invalid purchase_source' });
+  }
   const sets = [];
   const params = [];
   for (const c of ['unit_price', 'supplier', 'invoice_no', 'invoice_date', 'delivery_date', 'purchase_source']) {
@@ -217,6 +324,11 @@ router.patch('/grn/:id', requireRole('storekeeper'), asyncHandler((req, res) => 
       sets.push(`${c} = ?`);
       params.push(c === 'unit_price' ? (req.body[c] === '' || req.body[c] === null ? null : toNum(req.body[c])) : req.body[c]);
     }
+  }
+  // Keep the normalised bucket in step when the source changes.
+  if (req.body.purchase_source !== undefined) {
+    sets.push('purchase_source_norm = ?');
+    params.push(purchaseSourceNorm(req.body.purchase_source));
   }
   if (sets.length) run(`UPDATE grn SET ${sets.join(', ')} WHERE id = ?`, ...params, id);
   const after = get('SELECT * FROM grn WHERE id = ?', id);
@@ -230,8 +342,13 @@ router.get('/issues', asyncHandler((req, res) => {
   const params = [];
   if (req.query.asset_id) { clauses.push('i.asset_id = ?'); params.push(toInt(req.query.asset_id)); }
   if (req.query.job_id) { clauses.push('i.job_id = ?'); params.push(toInt(req.query.job_id)); }
+  if (req.query.q && String(req.query.q).trim()) {
+    const like = '%' + String(req.query.q).trim() + '%';
+    clauses.push('(a.code LIKE ? OR i.description LIKE ? OR i.issued_by LIKE ? OR i.category LIKE ?)');
+    params.push(like, like, like, like);
+  }
   const where = clauses.length ? 'WHERE ' + clauses.join(' AND ') : '';
-  res.json(all(`SELECT i.*, a.code AS asset_code FROM issues i LEFT JOIN assets a ON a.id = i.asset_id ${where} ORDER BY i.id DESC LIMIT ${toInt(req.query.limit, 300)}`, ...params));
+  res.json(all(`SELECT i.*, a.code AS asset_code FROM issues i LEFT JOIN assets a ON a.id = i.asset_id ${where} ORDER BY i.id DESC LIMIT ${toInt(req.query.limit, 500)}`, ...params));
 }));
 
 router.post('/issues', requireRole('storekeeper'), asyncHandler((req, res) => {
@@ -239,11 +356,11 @@ router.post('/issues', requireRole('storekeeper'), asyncHandler((req, res) => {
   require_(b, ['description']);
   const { assetId, unresolved } = resolveAssetId(b);
   const info = run(
-    `INSERT INTO issues (asset_id, job_id, store_item_id, description, qty, unit_price, issue_date, issued_by)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO issues (asset_id, job_id, store_item_id, description, qty, unit_price, issue_date, issued_by, category)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     assetId || null, toInt(b.job_id), toInt(b.store_item_id), b.description, toNum(b.qty, 1),
     b.unit_price === undefined || b.unit_price === '' ? null : toNum(b.unit_price),
-    b.issue_date || new Date().toISOString().slice(0, 10), b.issued_by || null
+    b.issue_date || new Date().toISOString().slice(0, 10), b.issued_by || null, b.category || null
   );
   audit.record({ userId: req.user.id, entity: 'issue', entityId: info.lastInsertRowid, action: 'create' });
   res.status(201).json({ issue: get('SELECT * FROM issues WHERE id = ?', info.lastInsertRowid), unresolved });

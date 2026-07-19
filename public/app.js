@@ -35,6 +35,48 @@ const STATUS_CLASS = {
 };
 const statusBadge = (s) => `<span class="badge ${STATUS_CLASS[s] || ''}">${esc(s)}</span>`;
 
+// Two consolidated sources; legacy values fold in (direct→Head Office, local store→Local Purchase).
+const SOURCE_LABEL = { head_office: 'Head Office', local_purchase: 'Local Purchase', direct_purchase: 'Head Office', local_store: 'Local Purchase', mixed: 'Head Office', 'Head Office': 'Head Office', 'Local Purchase': 'Local Purchase', 'Local Store': 'Local Purchase', 'Direct Purchase': 'Head Office' };
+const sourceLabel = (s) => (s ? (SOURCE_LABEL[s] || s) : '—');
+const SOURCE_OPTS = [{ value: '', label: '—' }, { value: 'head_office', label: 'Head Office' }, { value: 'local_purchase', label: 'Local Purchase' }];
+const MRN_STATUS_CLASS = { open: '', partially_received: 'amber', received: 'green', cancelled: 'red' };
+const mrnStatusBadge = (s) => `<span class="badge ${MRN_STATUS_CLASS[s] || ''}">${esc(String(s || '').replace(/_/g, ' '))}</span>`;
+
+const STORE_CATEGORIES = ['General Items', 'Filters', 'Electrical', 'Bearings & Seals', 'Hydraulics', 'Battery', 'Oil & Lubricants', 'Belts', 'Tyre', 'Consumables'];
+
+// Searchable vehicle/asset picker: type to search, click to select. Emits two form
+// fields — `asset_id` (selected id) and `asset` (typed text, resolved server-side if
+// no id was picked). Call wireAssetPicker(modalBody) after inserting the HTML.
+function assetPickerHtml(label) {
+  return `<label>${esc(label)}</label>
+    <div class="apick" style="position:relative">
+      <input type="text" name="asset" class="apick-input" autocomplete="off" placeholder="Type a vehicle code…">
+      <input type="hidden" name="asset_id">
+      <div class="apick-menu" style="position:absolute;z-index:60;left:0;right:0;top:100%;background:var(--surface);border:1px solid var(--border);border-radius:8px;box-shadow:var(--shadow);max-height:220px;overflow:auto;display:none"></div>
+    </div>`;
+}
+function wireAssetPicker(root) {
+  qsa('.apick', root).forEach((pick) => {
+    const input = qs('.apick-input', pick), hidden = qs('input[type=hidden]', pick), menu = qs('.apick-menu', pick);
+    let deb;
+    const close = () => { menu.style.display = 'none'; };
+    const search = async () => {
+      hidden.value = ''; // typing invalidates any prior selection until re-picked
+      let rows = [];
+      try { rows = await api('/assets/search?q=' + encodeURIComponent(input.value.trim()) + '&limit=25'); } catch (e) { return; }
+      if (!rows.length) { menu.innerHTML = '<div class="muted" style="padding:8px 10px">No match — will be queued for linking</div>'; menu.style.display = 'block'; return; }
+      menu.innerHTML = rows.map((r) => `<div class="apick-item" data-id="${r.id}" data-code="${esc(r.code)}" style="padding:7px 10px;cursor:pointer;border-bottom:1px solid var(--border)">${esc(r.code)}${r.registration ? ` <span class="muted">· ${esc(r.registration)}</span>` : ''}</div>`).join('');
+      menu.style.display = 'block';
+      qsa('.apick-item', menu).forEach((it) => {
+        it.onmousedown = (e) => { e.preventDefault(); input.value = it.dataset.code; hidden.value = it.dataset.id; close(); };
+      });
+    };
+    input.oninput = () => { clearTimeout(deb); deb = setTimeout(search, 200); };
+    input.onfocus = search;
+    input.onblur = () => setTimeout(close, 150);
+  });
+}
+
 function toast(msg, kind = 'ok') {
   const t = document.createElement('div');
   t.textContent = msg;
@@ -97,6 +139,8 @@ const NAV = [
   ['dashboard', '📊', 'Dashboard'],
   ['assets', '🚜', 'Assets'],
   ['jobs', '🔧', 'Job Cards'],
+  ['dailywork', '📅', 'Daily Work'],
+  ['labour', '💵', 'Labour Rates'],
   ['stores', '📦', 'Stores'],
   ['oil', '🛢️', 'Oil & Lube'],
   ['batteries', '🔋', 'Batteries'],
@@ -209,29 +253,42 @@ routes.dashboard = async (c) => {
 // ---- Assets
 routes.assets = async (c, params) => {
   if (params[0]) return assetDetail(c, params[0]);
-  const q = new URLSearchParams(location.search);
-  const list = await api('/assets?limit=500');
-  const rows = list.map((a) => `<tr data-id="${a.id}" style="cursor:pointer">
-    <td><a href="#/assets/${a.id}">${esc(a.code)}</a></td>
-    <td><span class="badge">${esc(a.asset_class)}</span></td>
-    <td>${esc(a.brand || '')} ${esc(a.type || '')}</td>
-    <td>${esc(a.current_project || '—')}</td>
-    <td><span class="badge ${a.status === 'active' ? 'green' : a.status === 'under_repair' ? 'amber' : ''}">${esc(a.status)}</span></td>
-    <td class="num">${a.open_jobs}</td>
-    <td class="num">${money(a.lifetime_cost)}</td></tr>`);
   c.innerHTML = `${pageHeader('Fleet & Asset Registry')}
     <div class="toolbar">
-      <input id="asearch" placeholder="Search code / brand / type…" style="max-width:280px">
+      <input id="asearch" type="search" placeholder="Search vehicle no / E&C / brand / type…" style="max-width:280px">
+      <label style="display:flex;gap:6px;align-items:center;flex-direction:row;width:auto"><input type="checkbox" id="aregonly" checked style="width:auto"> Registered fleet only</label>
       <div class="spacer"></div>
-      <a class="btn" href="/api/assets/export.xlsx">⬇ Excel</a>
+      <span class="muted" id="acount"></span>
+      <a class="btn sm" href="/api/assets/export.xlsx">⬇ Excel</a>
       ${can('storekeeper') ? '<button class="primary" id="newasset">+ New Asset</button>' : ''}
     </div>
-    ${tableWrap([{ label: 'Code' }, { label: 'Class' }, { label: 'Make/Type' }, { label: 'Project' }, { label: 'Status' }, { label: 'Open Jobs', num: true }, { label: 'Lifetime Cost', num: true }], rows, { scroll: true })}`;
+    <div id="atable"><div class="muted">Loading…</div></div>`;
+  const load = async () => {
+    const regOnly = qs('#aregonly').checked;
+    const list = await api('/assets?limit=1500' + (regOnly ? '&in_register=1' : ''));
+    const rows = list.map((a) => `<tr data-id="${a.id}" style="cursor:pointer">
+      <td><a href="#/assets/${a.id}">${esc(a.registration || a.code)}</a></td>
+      <td>${esc(a.ec_code || '—')}</td>
+      <td><span class="badge">${esc(a.asset_class)}</span></td>
+      <td>${esc([a.brand, a.type].filter(Boolean).join(' ') || '')}</td>
+      <td>${esc(a.current_project || '—')}</td>
+      <td><span class="badge ${a.status === 'active' ? 'green' : a.status === 'under_repair' ? 'amber' : ''}">${esc(a.status)}</span></td>
+      <td class="num">${a.open_jobs}</td>
+      <td class="num">${money(a.lifetime_cost)}</td></tr>`);
+    qs('#acount').textContent = `${list.length}${list.length === 1500 ? '+' : ''} asset${list.length === 1 ? '' : 's'}`;
+    qs('#atable').innerHTML = tableWrap(
+      [{ label: 'Code' }, { label: 'E&C No' }, { label: 'Class' }, { label: 'Type' }, { label: 'Project' }, { label: 'Status' }, { label: 'Open Jobs', num: true }, { label: 'Lifetime Cost', num: true }],
+      rows, { scroll: true });
+    const term = qs('#asearch').value.toLowerCase();
+    if (term) qsa('#atable tbody tr').forEach((tr) => { tr.style.display = tr.textContent.toLowerCase().includes(term) ? '' : 'none'; });
+  };
   qs('#asearch').oninput = (e) => {
     const v = e.target.value.toLowerCase();
-    qsa('#content tbody tr').forEach((tr) => { tr.style.display = tr.textContent.toLowerCase().includes(v) ? '' : 'none'; });
+    qsa('#atable tbody tr').forEach((tr) => { tr.style.display = tr.textContent.toLowerCase().includes(v) ? '' : 'none'; });
   };
+  qs('#aregonly').onchange = load;
   if (qs('#newasset')) qs('#newasset').onclick = newAssetModal;
+  await load();
 };
 
 async function newAssetModal() {
@@ -304,27 +361,193 @@ async function editAssetModal(asset) {
 }
 
 // ---- Job Cards
+const JOB_STATUSES = ['REQUESTED', 'APPROVED_TRANSPORT', 'APPROVED_OPERATIONS', 'IN_WORKSHOP', 'IN_PROGRESS', 'WORK_COMPLETE', 'CLOSED', 'REJECTED'];
+const MONTHS = [['01', 'Jan'], ['02', 'Feb'], ['03', 'Mar'], ['04', 'Apr'], ['05', 'May'], ['06', 'Jun'], ['07', 'Jul'], ['08', 'Aug'], ['09', 'Sep'], ['10', 'Oct'], ['11', 'Nov'], ['12', 'Dec']];
+
 routes.jobs = async (c, params) => {
   if (params[0]) return jobDetail(c, params[0]);
-  const status = new URLSearchParams(location.hash.split('?')[1] || '').get('status') || '';
-  const list = await api('/jobs' + (status ? '?status=' + status : ''));
-  const rows = list.map((j) => `<tr>
-    <td><a href="#/jobs/${j.id}">${esc(j.job_no)}</a></td>
-    <td>${esc(j.asset_code || '—')}</td>
-    <td><span class="badge ${j.type === 'service' ? 'blue' : ''}">${esc(j.type)}</span></td>
-    <td>${statusBadge(j.status)}</td>
-    <td>${esc(j.project_name || '')}</td>
-    <td class="num">${money(j.total_cost)}</td>
-    <td class="muted">${esc((j.requested_at || '').slice(0, 10))}</td></tr>`);
+  const sp = new URLSearchParams(location.hash.split('?')[1] || '');
+  const cur = { q: sp.get('q') || '', year: sp.get('year') || '', month: sp.get('month') || '', status: sp.get('status') || '' };
+
+  const nowY = new Date().getFullYear();
+  const years = [];
+  for (let y = nowY + 1; y >= 2020; y--) years.push(y);
+
   c.innerHTML = `${pageHeader('Job Cards')}
     <div class="toolbar">
-      <select id="jstatus" style="max-width:200px"><option value="">All statuses</option>${['REQUESTED', 'APPROVED_TRANSPORT', 'APPROVED_OPERATIONS', 'IN_WORKSHOP', 'IN_PROGRESS', 'WORK_COMPLETE', 'CLOSED', 'REJECTED'].map((s) => `<option ${s === status ? 'selected' : ''}>${s}</option>`).join('')}</select>
+      <input id="jq" type="search" placeholder="Search job no or vehicle…" value="${esc(cur.q)}" style="max-width:240px">
+      <select id="jyear" style="max-width:120px"><option value="">All years</option>${years.map((y) => `<option ${String(y) === cur.year ? 'selected' : ''}>${y}</option>`).join('')}</select>
+      <select id="jmonth" style="max-width:140px"><option value="">All months</option>${MONTHS.map(([v, l]) => `<option value="${v}" ${v === cur.month ? 'selected' : ''}>${l}</option>`).join('')}</select>
+      <select id="jstatus" style="max-width:200px"><option value="">All statuses</option>${JOB_STATUSES.map((s) => `<option ${s === cur.status ? 'selected' : ''}>${s}</option>`).join('')}</select>
+      <button class="sm" id="jclear">Clear</button>
+      <span class="muted" id="jcount"></span>
       <div class="spacer"></div>
       ${can('transport_manager', 'workshop') ? '<button class="primary" id="newjob">+ New Job Card</button>' : ''}
     </div>
-    ${tableWrap([{ label: 'Job No' }, { label: 'Asset' }, { label: 'Type' }, { label: 'Status' }, { label: 'Project' }, { label: 'Total', num: true }, { label: 'Requested' }], rows, { scroll: true })}`;
-  qs('#jstatus').onchange = (e) => { location.hash = '#/jobs' + (e.target.value ? '?status=' + e.target.value : ''); };
+    <div id="jtable"><div class="muted">Loading…</div></div>`;
+
+  const buildParams = () => {
+    const p = new URLSearchParams();
+    const q = qs('#jq').value.trim();
+    if (q) p.set('q', q);
+    if (qs('#jyear').value) p.set('year', qs('#jyear').value);
+    if (qs('#jmonth').value) p.set('month', qs('#jmonth').value);
+    if (qs('#jstatus').value) p.set('status', qs('#jstatus').value);
+    return p;
+  };
+
+  const load = async () => {
+    const p = buildParams();
+    const query = p.toString();
+    // Keep the URL shareable/bookmarkable without triggering a full re-render.
+    history.replaceState(null, '', '#/jobs' + (query ? '?' + query : ''));
+    const list = await api('/jobs' + (query ? '?' + query : ''));
+    const rows = list.map((j) => `<tr>
+      <td><a href="#/jobs/${j.id}">${esc(j.job_no)}</a></td>
+      <td>${esc(j.asset_code || '—')}</td>
+      <td style="max-width:340px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(j.description || '')}">${esc(j.description || '')}</td>
+      <td><span class="badge ${j.type === 'service' ? 'blue' : ''}">${esc(j.type)}</span></td>
+      <td>${statusBadge(j.status)}</td>
+      <td>${esc(j.project_name || '')}</td>
+      <td class="num">${j.labour_cost ? money(j.labour_cost) : '—'}</td>
+      <td class="num">${j.material_cost ? money(j.material_cost) : '—'}</td>
+      <td class="num">${money(j.total_cost)}</td>
+      <td class="muted">${esc((j.requested_at || '').slice(0, 10))}</td></tr>`);
+    const labTotal = list.reduce((s, j) => s + (Number(j.labour_cost) || 0), 0);
+    const matTotal = list.reduce((s, j) => s + (Number(j.material_cost) || 0), 0);
+    qs('#jcount').textContent = list.length ? `${list.length}${list.length === 500 ? '+' : ''} job${list.length === 1 ? '' : 's'}${labTotal ? ' · labour ' + money(labTotal) : ''}${matTotal ? ' · material ' + money(matTotal) : ''}` : '';
+    qs('#jtable').innerHTML = list.length
+      ? tableWrap([{ label: 'Job No' }, { label: 'Asset' }, { label: 'Description' }, { label: 'Type' }, { label: 'Status' }, { label: 'Project' }, { label: 'Labour', num: true }, { label: 'Material', num: true }, { label: 'Total', num: true }, { label: 'Requested' }], rows, { scroll: true })
+      : '<div class="card"><p class="muted">No job cards match your search.</p></div>';
+  };
+
+  let deb;
+  qs('#jq').oninput = () => { clearTimeout(deb); deb = setTimeout(load, 250); };
+  qs('#jq').onkeydown = (e) => { if (e.key === 'Enter') { clearTimeout(deb); load(); } };
+  qs('#jyear').onchange = load;
+  qs('#jmonth').onchange = load;
+  qs('#jstatus').onchange = load;
+  qs('#jclear').onclick = () => { qs('#jq').value = ''; qs('#jyear').value = ''; qs('#jmonth').value = ''; qs('#jstatus').value = ''; load(); };
   if (qs('#newjob')) qs('#newjob').onclick = newJobModal;
+  await load();
+};
+
+// ---- Daily Work (day-by-day review of job_daily_work)
+routes.dailywork = async (c) => {
+  const days = await api('/daily-work/days'); // [{date, entries, jobs, hours}] newest first
+  if (!days.length) {
+    c.innerHTML = `${pageHeader('Daily Work')}<div class="card"><p class="muted">No daily work has been logged yet.</p></div>`;
+    return;
+  }
+  const sp = new URLSearchParams(location.hash.split('?')[1] || '');
+  let date = sp.get('date');
+  if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) date = days[0].date; // default = most recent day with work
+
+  c.innerHTML = `${pageHeader('Daily Work')}
+    <div class="toolbar">
+      <button class="sm" id="dprev">← Older</button>
+      <input id="ddate" type="date" value="${esc(date)}" style="max-width:170px">
+      <button class="sm" id="dnext">Newer →</button>
+      <select id="ddays" style="max-width:260px">${days.map((d) => `<option value="${d.date}" ${d.date === date ? 'selected' : ''}>${d.date} · ${d.entries} entr${d.entries === 1 ? 'y' : 'ies'} · ${d.hours || 0}h</option>`).join('')}</select>
+      <input id="dq" type="search" placeholder="Filter vehicle / mechanic…" style="max-width:220px">
+      <div class="spacer"></div>
+      <span class="muted" id="dsum"></span>
+    </div>
+    <div id="dtable"><div class="muted">Loading…</div></div>`;
+
+  const dayList = days.map((d) => d.date);
+  const go = (dt) => {
+    history.replaceState(null, '', '#/dailywork?date=' + dt);
+    qs('#ddate').value = dt;
+    if (dayList.includes(dt)) qs('#ddays').value = dt;
+    load(dt);
+  };
+  const canEdit = can('workshop', 'manager');
+  const load = async (dt) => {
+    const q = qs('#dq').value.trim();
+    const data = await api('/daily-work?date=' + encodeURIComponent(dt) + (q ? '&q=' + encodeURIComponent(q) : ''));
+    const rows = data.entries.map((e) => {
+      const hoursCell = e.is_external
+        ? '<span class="badge">external</span>'
+        : (canEdit
+          ? `<input type="number" step="0.5" min="0" value="${Number(e.hours) || 0}" data-hours="${e.id}" style="width:66px;text-align:right">`
+          : (Number(e.hours) || 0));
+      const costCell = e.is_external
+        ? money(e.external_value)
+        : money(e.labour_cost) + (e.unrated && e.unrated.length ? ` <span class="badge amber" title="No rate for: ${esc(e.unrated.join(', '))}">no rate</span>` : '');
+      return `<tr>
+      <td>${esc(e.asset_code || '—')}</td>
+      <td><a href="#/jobs/${e.job_id}">${esc(e.job_no)}</a></td>
+      <td>${esc(e.mechanic || '—')}</td>
+      <td>${esc(e.description || '')}</td>
+      <td class="num">${hoursCell}</td>
+      <td class="num">${costCell}</td></tr>`;
+    });
+    qs('#dsum').textContent = `${data.count} entr${data.count === 1 ? 'y' : 'ies'} · ${data.total_hours || 0} hrs · ${money(data.total_labour || 0)} labour`;
+    qs('#dtable').innerHTML = data.entries.length
+      ? tableWrap([{ label: 'Vehicle' }, { label: 'Job No' }, { label: 'Mechanic' }, { label: 'Description' }, { label: 'Hours', num: true }, { label: 'Labour (Rs)', num: true }], rows, { scroll: true })
+      : '<div class="card"><p class="muted">No daily work logged on this day.</p></div>';
+    if (canEdit) qsa('[data-hours]').forEach((inp) => {
+      inp.onchange = async () => {
+        try { await api('/daily-work/' + inp.dataset.hours, { method: 'PATCH', body: { hours: inp.value } }); toast('Hours updated'); load(qs('#ddate').value); }
+        catch (err) { toast(err.message, 'err'); }
+      };
+    });
+  };
+
+  qs('#ddate').onchange = (e) => go(e.target.value);
+  qs('#ddays').onchange = (e) => go(e.target.value);
+  // days are sorted newest→oldest; "Older" = closest date before the current one.
+  qs('#dprev').onclick = () => { const older = dayList.filter((x) => x < qs('#ddate').value); if (older.length) go(older[0]); };
+  qs('#dnext').onclick = () => { const newer = dayList.filter((x) => x > qs('#ddate').value); if (newer.length) go(newer[newer.length - 1]); };
+  let deb; qs('#dq').oninput = () => { clearTimeout(deb); deb = setTimeout(() => load(qs('#ddate').value), 250); };
+  await load(date);
+};
+
+// ---- Labour Rates (hourly rates + unassigned labour used in daily work)
+routes.labour = async (c) => {
+  const [mechs, unassigned] = await Promise.all([api('/mechanics'), api('/mechanics/unassigned')]);
+  const canEdit = can('admin', 'manager');
+  const rateRows = mechs.map((m) => `<tr>
+    <td>${esc(m.name)}</td>
+    <td class="num">${m.rate != null ? money(m.rate) + '/hr' : '<span class="badge amber">no rate</span>'}</td>
+    ${canEdit ? `<td class="num"><button class="sm" data-setrate="${esc(m.name)}" data-rate="${m.rate != null ? m.rate : ''}">Edit</button></td>` : ''}</tr>`);
+  const unRows = unassigned.map((u) => `<tr>
+    <td>${esc(u.name)}${u.resolved && u.resolvedName && u.resolvedName !== u.name ? ` <span class="muted">(→ ${esc(u.resolvedName)})</span>` : ''}</td>
+    <td class="num">${u.entries}</td>
+    ${canEdit ? `<td class="num"><button class="sm primary" data-setrate="${esc(u.resolvedName || u.name)}" data-rate="">Set rate</button></td>` : ''}</tr>`);
+
+  c.innerHTML = `${pageHeader('Labour Rates')}
+    <div class="toolbar">
+      ${canEdit ? '<button class="primary" id="addrate">+ Add / update rate</button>' : ''}
+      <div class="spacer"></div>
+    </div>
+    <div class="card">
+      <h3>Hourly rates <span class="muted">(${mechs.length})</span></h3>
+      ${tableWrap([{ label: 'Labour' }, { label: 'Rate', num: true }].concat(canEdit ? [{ label: '', num: true }] : []), rateRows, { scroll: true })}
+    </div>
+    <div class="card">
+      <h3>Unassigned labour <span class="muted">— appear in daily work, no rate (${unassigned.length})</span></h3>
+      ${unassigned.length
+        ? tableWrap([{ label: 'Labour name' }, { label: 'Daily-work entries', num: true }].concat(canEdit ? [{ label: '', num: true }] : []), unRows, { scroll: true })
+        : '<p class="muted">Every labour name in the daily-work log has a rate. 🎉</p>'}
+    </div>`;
+
+  const setRate = (name, rate) => modal('Set hourly rate', `
+    ${field('Labour name', 'mechanic', { value: name })}
+    ${field('Hourly rate (Rs)', 'rate', { type: 'number', value: rate })}
+    <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Save rate</button></div>`,
+    (body, close) => {
+      qs('#s', body).onclick = async () => {
+        const d = formData(body);
+        if (!d.mechanic || !d.rate) return toast('Name and rate are required', 'err');
+        try { await api('/mechanics/rates', { method: 'POST', body: { mechanic: d.mechanic, rate: d.rate } }); toast('Rate saved'); close(); render(); }
+        catch (e) { toast(e.message, 'err'); }
+      };
+    });
+
+  if (qs('#addrate')) qs('#addrate').onclick = () => setRate('', '');
+  qsa('[data-setrate]').forEach((b) => b.onclick = () => setRate(b.dataset.setrate, b.dataset.rate));
 };
 
 async function newJobModal() {
@@ -375,31 +598,68 @@ async function jobDetail(c, id) {
         <div class="cost-line"><span>Oil</span><span>${money(j.cost.oil_cost)}</span></div>
         <div class="cost-line"><span>General</span><span>${money(j.cost.general_cost)}</span></div>
         <div class="cost-line"><span>External</span><span>${money(j.cost.external_cost)}</span></div>
+        ${j.cost.other_cost ? `<div class="cost-line"><span>Other / Recorded</span><span>${money(j.cost.other_cost)}</span></div>` : ''}
         <div class="cost-line total"><span>Total</span><span>${money(j.cost.total_cost)}</span></div>
       </div>
       <div class="card"><h3>Approvals</h3>
         ${j.approvals.length ? j.approvals.map((a) => `<div class="cost-line"><span>${esc(a.role.replace(/_/g, ' '))}</span><span class="badge ${a.decision === 'approved' ? 'green' : 'red'}">${esc(a.decision)}</span></div>${a.reason ? `<div class="muted" style="font-size:12px">${esc(a.reason)}</div>` : ''}`).join('') : '<span class="muted">No approvals yet</span>'}
       </div>
     </div>
-    <div class="card section"><div class="toolbar" style="margin:0 0 10px"><h3 style="margin:0">Daily Work</h3><div class="spacer"></div>${can('workshop') && job.status !== 'CLOSED' ? '<button class="sm" id="adddaily">+ Add</button>' : ''}</div>
-      ${tableWrap([{ label: 'Date' }, { label: 'Mechanic' }, { label: 'Description' }, { label: 'Hours', num: true }, { label: 'Rate', num: true }, { label: 'Amount', num: true }, { label: '' }],
-        j.dailyWork.map((w) => {
-          const lab = j.labour.find((l) => l.mechanic === w.mechanic && l.work_date === w.work_date) || {};
-          return `<tr><td>${esc(w.work_date)}</td><td>${esc(w.mechanic || (w.is_external ? '(external)' : ''))}</td><td>${esc(w.description || '')}</td>
-            <td class="num">${w.is_external ? '—' : num(w.hours)}</td><td class="num">${w.is_external ? '—' : money(lab.rate)}</td>
-            <td class="num">${w.is_external ? money(w.external_value) : money(lab.amount)}</td>
-            <td>${can('workshop') && job.status !== 'CLOSED' ? `<button class="sm danger" data-del-daily="${w.id}">✕</button>` : ''}</td></tr>`;
-        }))}
+    <div class="card section"><div class="toolbar" style="margin:0 0 10px"><h3 style="margin:0">Daily Work</h3><div class="spacer"></div>${can('workshop') ? '<button class="sm" id="adddaily">+ Add</button>' : ''}</div>
+      ${(() => {
+        // Each mechanic in a crew is shown on its own line: rate × hours = amount.
+        const rateOf = {};
+        j.labour.forEach((l) => { if (l.mechanic != null) rateOf[l.mechanic] = l.rate; });
+        const splitMechs = (raw) => String(raw || '').split(/\s*(?:,|&|\+|\band\b)\s*/i).map((s) => s.trim()).filter(Boolean);
+        const canDel = can('workshop');
+        const rows = [];
+        let labourTotal = 0;
+        for (const w of j.dailyWork) {
+          const del = canDel ? `<button class="sm danger" data-del-daily="${w.id}">✕</button>` : '';
+          const date = esc((w.work_date || '').slice(0, 10));
+          if (w.is_external) { rows.push(`<tr><td>${date}</td><td>(external)</td><td>${esc(w.description || '')}</td><td class="num">—</td><td class="num">—</td><td class="num">${money(w.external_value)}</td><td>${del}</td></tr>`); continue; }
+          const names = splitMechs(w.mechanic);
+          const hrs = Number(w.hours) || 0;
+          if (!names.length) { rows.push(`<tr><td>${date}</td><td>—</td><td>${esc(w.description || '')}</td><td class="num">${num(hrs)}</td><td class="num">—</td><td class="num">${money(0)}</td><td>${del}</td></tr>`); continue; }
+          names.forEach((nm, i) => {
+            const rate = rateOf[nm];
+            const amount = rate != null ? hrs * rate : 0;
+            labourTotal += amount;
+            rows.push(`<tr>
+              <td>${i === 0 ? date : ''}</td>
+              <td>${esc(nm)}</td>
+              <td>${i === 0 ? esc(w.description || '') : ''}</td>
+              <td class="num">${num(hrs)}</td>
+              <td class="num">${rate == null ? '<span class="badge amber">no rate</span>' : money(rate)}</td>
+              <td class="num">${money(amount)}</td>
+              <td>${i === 0 ? del : ''}</td></tr>`);
+          });
+        }
+        if (j.dailyWork.length) rows.push(`<tr><td colspan="5" class="num"><b>Labour total</b></td><td class="num"><b>${money(labourTotal)}</b></td><td></td></tr>`);
+        return tableWrap([{ label: 'Date' }, { label: 'Mechanic' }, { label: 'Description' }, { label: 'Hours', num: true }, { label: 'Rate', num: true }, { label: 'Amount', num: true }, { label: '' }], rows);
+      })()}
     </div>
-    <div class="card section"><div class="toolbar" style="margin:0 0 10px"><h3 style="margin:0">Parts &amp; External</h3><div class="spacer"></div>${can('workshop', 'storekeeper') && job.status !== 'CLOSED' ? '<button class="sm" id="addpart">+ Add</button>' : ''}</div>
+    <div class="card section"><div class="toolbar" style="margin:0 0 10px"><h3 style="margin:0">Parts &amp; External</h3><div class="spacer"></div>${can('workshop', 'storekeeper') ? '<button class="sm" id="addpart">+ Add item</button>' : ''}</div>
       ${tableWrap([{ label: 'Source' }, { label: 'Description' }, { label: 'Qty', num: true }, { label: 'Unit Price', num: true }, { label: 'Amount', num: true }, { label: '' }],
         j.parts.map((p) => `<tr><td><span class="badge">${esc(p.source_type)}${p.is_external_repair ? ' · ext' : ''}</span></td><td>${esc(p.description || '')}</td>
           <td class="num">${num(p.qty)}</td>
           <td class="num">${p.unit_price == null ? '<span class="badge amber">awaiting</span>' : money(p.unit_price)}</td>
           <td class="num">${p.unit_price == null ? '—' : money(p.qty * p.unit_price)}</td>
-          <td>${can('workshop', 'storekeeper') && job.status !== 'CLOSED' ? `<button class="sm" data-price="${p.id}">Price</button> <button class="sm danger" data-del-part="${p.id}">✕</button>` : ''}</td></tr>`))}
+          <td>${can('workshop', 'storekeeper') ? `<button class="sm" data-price="${p.id}">Price</button> <button class="sm danger" data-del-part="${p.id}">✕</button>` : ''}</td></tr>`))}
     </div>
-    ${j.oilIssues.length ? `<div class="card section"><h3>Oil / Lubricant Issued</h3>${tableWrap([{ label: 'Product' }, { label: 'Qty', num: true }, { label: 'Unit Price', num: true }], j.oilIssues.map((o) => `<tr><td>${esc(o.product_name)}</td><td class="num">${num(Math.abs(o.qty))} ${esc(o.unit)}</td><td class="num">${money(o.unit_price)}</td></tr>`))}</div>` : ''}`;
+    ${j.mrnItems && j.mrnItems.length ? `<div class="card section"><h3>MRN Items <span class="muted">— requested materials (${j.mrnItems.length})</span></h3>
+      ${tableWrap([{ label: 'MRN No' }, { label: 'Date' }, { label: 'Item' }, { label: 'Category' }, { label: 'Qty Req', num: true }, { label: 'Qty Recd', num: true }],
+        j.mrnItems.map((m) => `<tr>
+          <td><a href="#/stores?tab=mrn&id=${m.mrn_id}">${esc(m.mrn_no)}</a></td>
+          <td>${esc((m.req_date || '').slice(0, 10))}</td>
+          <td>${esc(m.description || '')}</td>
+          <td>${esc(m.category || '')}</td>
+          <td class="num">${num(m.qty)}</td>
+          <td class="num">${num(m.qty_received)}</td></tr>`), { scroll: true })}</div>` : ''}
+    ${j.oilIssues.length ? `<div class="card section"><h3>Oil / Lubricant Issued</h3>${tableWrap([{ label: 'Product' }, { label: 'Qty', num: true }, { label: 'Unit Price', num: true }], j.oilIssues.map((o) => `<tr><td>${esc(o.product_name)}</td><td class="num">${num(Math.abs(o.qty))} ${esc(o.unit)}</td><td class="num">${money(o.unit_price)}</td></tr>`))}</div>` : ''}
+    ${j.generalIssues && j.generalIssues.length ? `<div class="card section"><h3>General Items Issued <span class="muted">(${j.generalIssues.length})</span></h3>
+      ${tableWrap([{ label: 'Date' }, { label: 'Item' }, { label: 'Qty', num: true }, { label: 'Ref / MR' }],
+        j.generalIssues.map((g) => `<tr><td>${esc((g.txn_date || '').slice(0, 10))}</td><td>${esc(g.item_name || '')}</td><td class="num">${num(Math.abs(g.qty))}</td><td>${esc(g.ref || '')}</td></tr>`), { scroll: true })}</div>` : ''}`;
 
   // wire actions
   qsa('#transitions button').forEach((b) => b.onclick = () => doTransition(job.id, b.dataset.to, job.status));
@@ -434,7 +694,7 @@ async function doTransition(jobId, to, current) {
 async function addDailyModal(jobId) {
   modal('Add Daily Work', `
     <div class="row">${field('Date', 'work_date', { type: 'date', value: new Date().toISOString().slice(0, 10) })}${field('Mechanic(s) — comma / & separated', 'mechanic', { placeholder: 'e.g. Buddhika, Krishna' })}</div>
-    <p class="muted" style="font-size:12px;margin:2px 0 0">Several mechanics split the total hours equally (one costed row each). A slash name ("Seethananda/seetha") stays one person.</p>
+    <p class="muted" style="font-size:12px;margin:2px 0 0">Each mechanic is charged the full hours at their own rate (one costed row each). A slash name ("Seethananda/seetha") stays one person.</p>
     ${field('Description', 'description')}
     ${field('Hours', 'hours', { type: 'number' })}
     ${field('External repair (outside work)', 'is_external', { type: 'checkbox' })}
@@ -456,12 +716,62 @@ async function addPartModal(jobId) {
 
 // ---- Stores
 routes.stores = async (c) => {
-  const tab = (location.hash.split('?')[1] && new URLSearchParams(location.hash.split('?')[1]).get('tab')) || 'items';
-  const tabs = ['items', 'reorder', 'mrn', 'grn', 'issues', 'mtn'];
-  const tabBar = `<div class="toolbar">${tabs.map((t) => `<button class="sm ${t === tab ? 'primary' : ''}" onclick="location.hash='#/stores?tab=${t}'">${t.toUpperCase()}</button>`).join('')}</div>`;
+  const tab = (location.hash.split('?')[1] && new URLSearchParams(location.hash.split('?')[1]).get('tab')) || 'categories';
+  const tabs = ['categories', 'general', 'items', 'reorder', 'mrn', 'grn', 'issues', 'mtn'];
+  const TAB_LABELS = { general: 'GENERAL ITEMS' };
+  const tabBar = `<div class="toolbar">${tabs.map((t) => `<button class="sm ${t === tab ? 'primary' : ''}" onclick="location.hash='#/stores?tab=${t}'">${TAB_LABELS[t] || t.toUpperCase()}</button>`).join('')}</div>`;
   c.innerHTML = pageHeader('Stores & Inventory') + tabBar + '<div id="storebody" class="muted">Loading…</div>';
   const body = qs('#storebody');
-  if (tab === 'items') {
+  if (tab === 'categories') {
+    const d = await api('/stores/categories');
+    const totLines = d.lines.reduce((s, r) => s + r.lines, 0);
+    body.innerHTML = `
+      <div class="card"><h3>Requested items by category <span class="muted">— MRN request lines (${num(totLines)})</span></h3>
+        ${tableWrap([{ label: 'Category' }, { label: 'Request lines', num: true }, { label: 'Distinct items', num: true }, { label: 'Total qty', num: true }, { label: 'Received qty', num: true }],
+          d.lines.map((r) => `<tr><td>${esc(r.category)}</td><td class="num">${num(r.lines)}</td><td class="num">${num(r.distinct_items)}</td><td class="num">${num(r.qty)}</td><td class="num">${num(r.received)}</td></tr>`), { scroll: true })}</div>
+      <div class="card"><h3>Issued by category</h3>
+        ${tableWrap([{ label: 'Category' }, { label: 'Issues', num: true }, { label: 'Qty', num: true }],
+          d.issues.map((r) => `<tr><td>${esc(r.category)}</td><td class="num">${num(r.issues)}</td><td class="num">${num(r.qty)}</td></tr>`), { scroll: true })}</div>
+      <div class="card"><h3>Transfers (MTN) by category</h3>
+        ${d.transfers.length ? tableWrap([{ label: 'Category' }, { label: 'Transfers', num: true }, { label: 'Qty', num: true }],
+          d.transfers.map((r) => `<tr><td>${esc(r.category)}</td><td class="num">${num(r.transfers)}</td><td class="num">${num(r.qty)}</td></tr>`), { scroll: true }) : '<p class="muted">None</p>'}</div>
+      <div class="card"><h3>General catalogue by category</h3>
+        ${tableWrap([{ label: 'Category' }, { label: 'Items', num: true }],
+          d.catalogue.map((r) => `<tr><td>${esc(r.category)}</td><td class="num">${num(r.items)}</td></tr>`))}</div>`;
+  } else if (tab === 'general') {
+    const facets = await api('/stores/catalogue/facets');
+    const kindBadge = (k) => { const cls = k === 'consumable' ? 'amber' : (k === 'service' ? '' : 'blue'); return `<span class="badge ${cls}">${esc(k || 'part')}</span>`; };
+    body.innerHTML = `
+      <div class="toolbar">
+        <input id="cq" type="search" placeholder="Search item no / name / part number…" style="max-width:300px">
+        <select id="ccat" style="max-width:210px"><option value="">All categories</option>${facets.categories.map((r) => `<option value="${esc(r.category)}">${esc(r.category)} (${r.count})</option>`).join('')}</select>
+        <select id="ckind" style="max-width:170px"><option value="">All kinds</option>${facets.by_kind.map((r) => `<option value="${esc(r.kind)}">${esc(r.kind)} (${r.count})</option>`).join('')}</select>
+        <a class="btn sm" href="/api/stores/export/catalogue.xlsx">⬇ Excel</a>
+        <div class="spacer"></div><span class="muted" id="ccount"></span>
+      </div>
+      <p class="muted" style="margin:0 0 8px">${num(facets.total)} general items — deduped from every MRN request, each with a category-prefixed item number. The Part Numbers column lists every code ever seen for that item.</p>
+      <div id="ctable"><div class="muted">Loading…</div></div>`;
+    const load = async () => {
+      const q = qs('#cq').value.trim(), cat = qs('#ccat').value, kind = qs('#ckind').value;
+      const list = await api('/stores/catalogue?limit=2000'
+        + (q ? '&q=' + encodeURIComponent(q) : '')
+        + (cat ? '&category=' + encodeURIComponent(cat) : '')
+        + (kind ? '&kind=' + encodeURIComponent(kind) : ''));
+      qs('#ccount').textContent = `${list.length}${list.length === 2000 ? '+' : ''} item${list.length === 1 ? '' : 's'}`;
+      qs('#ctable').innerHTML = tableWrap(
+        [{ label: 'Item No' }, { label: 'Item Name' }, { label: 'Category' }, { label: 'Kind' }, { label: 'Requests', num: true }, { label: 'Part Numbers' }],
+        list.map((i) => { const pn = i.part_numbers || ''; return `<tr>
+          <td><code>${esc(i.item_no)}</code></td>
+          <td>${esc(i.name)}</td>
+          <td>${esc(i.category || '')}</td>
+          <td>${kindBadge(i.catalogue_kind)}</td>
+          <td class="num">${num(i.req_count || 0)}</td>
+          <td title="${esc(pn)}" style="max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(pn.length > 70 ? pn.slice(0, 70) + '…' : pn)}</td></tr>`; }), { scroll: true });
+    };
+    let cdeb; qs('#cq').oninput = () => { clearTimeout(cdeb); cdeb = setTimeout(load, 250); };
+    qs('#ccat').onchange = load; qs('#ckind').onchange = load;
+    await load();
+  } else if (tab === 'items') {
     const items = await api('/stores/items?limit=500');
     body.innerHTML = `${can('storekeeper') ? '<div class="toolbar"><button class="primary" id="ni">+ New Item</button></div>' : ''}
       ${tableWrap([{ label: 'Name' }, { label: 'Part No' }, { label: 'Category' }, { label: 'Unit' }, { label: 'General?' }, { label: 'Balance', num: true }, { label: 'Min', num: true }],
@@ -471,21 +781,65 @@ routes.stores = async (c) => {
     const items = await api('/stores/reorder');
     body.innerHTML = tableWrap([{ label: 'Name' }, { label: 'Balance', num: true }, { label: 'Min Stock', num: true }], items.map((i) => `<tr><td>${esc(i.name)}</td><td class="num"><span class="badge red">${num(i.balance)}</span></td><td class="num">${num(i.min_stock)}</td></tr>`));
   } else if (tab === 'mrn') {
-    const list = await api('/stores/mrn');
-    body.innerHTML = `${can('storekeeper') ? '<div class="toolbar"><button class="primary" id="nm">+ New MRN</button></div>' : ''}
-      ${tableWrap([{ label: 'MRN No' }, { label: 'Date' }, { label: 'Asset' }, { label: 'Purpose' }, { label: 'Lines', num: true }, { label: 'Status' }],
-        list.map((m) => `<tr><td>${esc(m.mrn_no)}</td><td>${esc(m.req_date)}</td><td>${esc(m.asset_code || '—')}</td><td>${esc(m.purpose || '')}</td><td class="num">${m.line_count}</td><td><span class="badge ${m.status === 'received' ? 'green' : 'amber'}">${esc(m.status)}</span></td></tr>`), { scroll: true })}`;
-    if (qs('#nm')) qs('#nm').onclick = newMrnModal;
+    const params = new URLSearchParams(location.hash.split('?')[1] || '');
+    if (params.get('id')) return mrnDetail(body, params.get('id'));
+    return mrnList(body, params);
   } else if (tab === 'grn') {
-    const list = await api('/stores/grn');
-    body.innerHTML = tableWrap([{ label: 'GRN' }, { label: 'MRN' }, { label: 'Description' }, { label: 'Qty', num: true }, { label: 'Unit Price', num: true }, { label: 'Supplier' }, { label: 'Source' }],
-      list.map((g) => `<tr><td>${esc(g.grn_no || '')}</td><td>${esc(g.mrn_no || '')}</td><td>${esc(g.description || '')}</td><td class="num">${num(g.qty)}</td><td class="num">${g.unit_price == null ? '<span class="badge amber">awaiting</span>' : money(g.unit_price)}</td><td>${esc(g.supplier || '')}</td><td>${esc(g.purchase_source || '')}</td></tr>`), { scroll: true });
+    const canRx = can('storekeeper');
+    body.innerHTML = `
+      <div class="toolbar">
+        <input id="gq" type="search" placeholder="Search GRN / item / supplier / MRN…" style="max-width:280px">
+        <label style="display:flex;gap:6px;align-items:center;flex-direction:row;width:auto"><input type="checkbox" id="gawait" style="width:auto"> Awaiting price only</label>
+        <div class="spacer"></div><span class="muted" id="gcount"></span>
+      </div>
+      <div id="gtable"><div class="muted">Loading…</div></div>`;
+    const load = async () => {
+      const q = qs('#gq').value.trim(), awaiting = qs('#gawait').checked;
+      const list = await api('/stores/grn?limit=500' + (q ? '&q=' + encodeURIComponent(q) : '') + (awaiting ? '&awaiting=1' : ''));
+      qs('#gcount').textContent = `${list.length}${list.length === 500 ? '+' : ''} record${list.length === 1 ? '' : 's'}`;
+      qs('#gtable').innerHTML = tableWrap(
+        [{ label: 'GRN' }, { label: 'MRN' }, { label: 'Description' }, { label: 'Qty', num: true }, { label: 'Unit Price', num: true }, { label: 'Value', num: true }, { label: 'Supplier' }, { label: 'Source' }].concat(canRx ? [{ label: '', num: true }] : []),
+        list.map((g) => `<tr>
+          <td>${esc(g.grn_no || '')}</td>
+          <td>${g.mrn_id ? `<a href="#/stores?tab=mrn&id=${g.mrn_id}">${esc(g.mrn_no || '')}</a>` : ''}</td>
+          <td>${esc(g.description || '')}</td>
+          <td class="num">${num(g.qty)}</td>
+          <td class="num">${g.unit_price == null ? '<span class="badge amber">awaiting</span>' : money(g.unit_price)}</td>
+          <td class="num">${g.unit_price == null ? '—' : money((Number(g.qty) || 0) * g.unit_price)}</td>
+          <td>${esc(g.supplier || '')}</td>
+          <td>${esc(sourceLabel(g.purchase_source))}</td>
+          ${canRx ? `<td class="num"><button class="sm ${g.unit_price == null ? 'primary' : ''}" data-price="${g.id}">${g.unit_price == null ? 'Add price' : 'Edit'}</button></td>` : ''}</tr>`), { scroll: true });
+      if (canRx) qsa('[data-price]', qs('#gtable')).forEach((btn) => btn.onclick = () => grnPriceModal(list.find((x) => String(x.id) === btn.dataset.price), load));
+    };
+    let gdeb; qs('#gq').oninput = () => { clearTimeout(gdeb); gdeb = setTimeout(load, 250); };
+    qs('#gawait').onchange = load;
+    await load();
   } else if (tab === 'issues') {
-    const list = await api('/stores/issues');
-    body.innerHTML = `${can('storekeeper') ? '<div class="toolbar"><button class="primary" id="nis">+ New Issue</button></div>' : ''}
-      ${tableWrap([{ label: 'Date' }, { label: 'Asset' }, { label: 'Description' }, { label: 'Qty', num: true }, { label: 'Unit Price', num: true }],
-        list.map((i) => `<tr><td>${esc(i.issue_date)}</td><td>${esc(i.asset_code || '—')}</td><td>${esc(i.description)}</td><td class="num">${num(i.qty)}</td><td class="num">${i.unit_price == null ? '—' : money(i.unit_price)}</td></tr>`), { scroll: true })}`;
-    if (qs('#nis')) qs('#nis').onclick = () => simpleCreateModal('New Issue', '/stores/issues', [['Asset (code/text) *', 'asset'], ['Description *', 'description'], ['Qty', 'qty', 'number'], ['Unit Price', 'unit_price', 'number'], ['Issued by', 'issued_by']]);
+    body.innerHTML = `
+      <div class="toolbar">
+        ${can('storekeeper') ? '<button class="primary" id="nis">+ New Issue</button>' : ''}
+        <input id="iq" type="search" placeholder="Search vehicle / item / issued by…" style="max-width:260px">
+        <div class="spacer"></div><span class="muted" id="icount"></span>
+      </div>
+      <div id="itable"><div class="muted">Loading…</div></div>`;
+    const load = async () => {
+      const q = qs('#iq').value.trim();
+      const list = await api('/stores/issues?limit=500' + (q ? '&q=' + encodeURIComponent(q) : ''));
+      qs('#icount').textContent = `${list.length}${list.length === 500 ? '+' : ''} issue${list.length === 1 ? '' : 's'}`;
+      qs('#itable').innerHTML = tableWrap(
+        [{ label: 'Date' }, { label: 'Vehicle' }, { label: 'Item / description' }, { label: 'Category' }, { label: 'Qty', num: true }, { label: 'Unit Price', num: true }, { label: 'Issued by' }],
+        list.map((i) => `<tr>
+          <td>${esc((i.issue_date || '').slice(0, 10))}</td>
+          <td>${esc(i.asset_code || '—')}</td>
+          <td>${esc(i.description)}</td>
+          <td>${esc(i.category || '')}</td>
+          <td class="num">${num(i.qty)}</td>
+          <td class="num">${i.unit_price == null ? '—' : money(i.unit_price)}</td>
+          <td>${esc(i.issued_by || '')}</td></tr>`), { scroll: true });
+    };
+    let ideb; qs('#iq').oninput = () => { clearTimeout(ideb); ideb = setTimeout(load, 250); };
+    if (qs('#nis')) qs('#nis').onclick = () => newIssueModal(load);
+    await load();
   } else if (tab === 'mtn') {
     const list = await api('/stores/mtn');
     body.innerHTML = `${can('storekeeper') ? '<div class="toolbar"><button class="primary" id="nt">+ New MTN</button></div>' : ''}
@@ -495,10 +849,151 @@ routes.stores = async (c) => {
   }
 };
 
+async function mrnList(body, params) {
+  const cur = { q: params.get('q') || '', sort: params.get('sort') || 'date_desc' };
+  body.innerHTML = `
+    <div class="toolbar">
+      ${can('storekeeper') ? '<button class="primary" id="nm">+ New MRN</button>' : ''}
+      <input id="mq" type="search" placeholder="Search MRN no / vehicle / item…" value="${esc(cur.q)}" style="max-width:260px">
+      <select id="msort" style="max-width:160px">
+        <option value="date_desc">Newest first</option>
+        <option value="date_asc">Oldest first</option>
+        <option value="mrn_desc">MRN no ↓</option>
+        <option value="mrn_asc">MRN no ↑</option>
+      </select>
+      <div class="spacer"></div><span class="muted" id="mcount"></span>
+    </div>
+    <div id="mtable"><div class="muted">Loading…</div></div>`;
+  qs('#msort').value = cur.sort;
+  const load = async () => {
+    const q = qs('#mq').value.trim(), sort = qs('#msort').value;
+    const sp = new URLSearchParams({ tab: 'mrn' });
+    if (q) sp.set('q', q);
+    if (sort) sp.set('sort', sort);
+    history.replaceState(null, '', '#/stores?' + sp.toString());
+    const list = await api('/stores/mrn?' + (q ? 'q=' + encodeURIComponent(q) + '&' : '') + 'sort=' + sort + '&limit=500');
+    qs('#mcount').textContent = `${list.length}${list.length === 500 ? '+' : ''} MRN${list.length === 1 ? '' : 's'}`;
+    qs('#mtable').innerHTML = tableWrap(
+      [{ label: 'MRN No' }, { label: 'Date' }, { label: 'Vehicle' }, { label: 'Source' }, { label: 'Lines', num: true }, { label: 'Qty Req', num: true }, { label: 'Qty Recd', num: true }, { label: 'Status' }],
+      list.map((m) => `<tr data-mrn="${m.id}" style="cursor:pointer">
+        <td><a href="#/stores?tab=mrn&id=${m.id}">${esc(m.mrn_no)}</a></td>
+        <td>${esc((m.req_date || '').slice(0, 10))}</td>
+        <td>${esc(m.asset_code || '—')}</td>
+        <td>${esc(sourceLabel(m.purchase_source))}</td>
+        <td class="num">${m.line_count}</td>
+        <td class="num">${num(m.qty_requested)}</td>
+        <td class="num">${num(m.qty_received)}</td>
+        <td>${mrnStatusBadge(m.status)}</td></tr>`), { scroll: true });
+    qsa('[data-mrn]').forEach((tr) => tr.onclick = (e) => { if (e.target.tagName !== 'A') location.hash = '#/stores?tab=mrn&id=' + tr.dataset.mrn; });
+  };
+  let deb; qs('#mq').oninput = () => { clearTimeout(deb); deb = setTimeout(load, 250); };
+  qs('#msort').onchange = load;
+  if (qs('#nm')) qs('#nm').onclick = newMrnModal;
+  await load();
+}
+
+async function mrnDetail(body, id) {
+  const d = await api('/stores/mrn/' + id);
+  const m = d.mrn;
+  const canRx = can('storekeeper');
+  const lineRows = d.lines.map((l) => {
+    const remaining = Math.max(0, (Number(l.qty) || 0) - (Number(l.qty_received) || 0));
+    return `<tr>
+      <td>${esc(l.description || '')}</td>
+      <td>${esc(l.category || '')}</td>
+      <td class="num">${num(l.qty)} ${esc(l.unit || '')}</td>
+      <td class="num">${num(l.qty_received)}</td>
+      <td class="num">${remaining > 0 ? `<span class="badge amber">${num(remaining)}</span>` : '<span class="badge green">0</span>'}</td>
+      ${canRx ? `<td class="num">${remaining > 0 ? `<button class="sm primary" data-rx="${l.id}" data-desc="${esc(l.description || '')}" data-rem="${remaining}">Receive</button>` : '✓'}</td>` : ''}</tr>`;
+  });
+  const grnRows = d.grns.map((g) => `<tr>
+    <td>${esc(g.grn_no || '—')}</td>
+    <td>${esc(g.description || '')}</td>
+    <td class="num">${num(g.qty)}</td>
+    <td class="num">${g.unit_price == null ? '<span class="badge amber">awaiting</span>' : money(g.unit_price)}</td>
+    <td class="num">${g.unit_price == null ? '—' : money((Number(g.qty) || 0) * g.unit_price)}</td>
+    <td>${esc(g.supplier || '')}</td>
+    <td>${esc(sourceLabel(g.purchase_source))}</td>
+    ${canRx ? `<td class="num"><button class="sm ${g.unit_price == null ? 'primary' : ''}" data-price="${g.id}">${g.unit_price == null ? 'Add price' : 'Edit'}</button></td>` : ''}</tr>`);
+  body.innerHTML = `
+    <div class="toolbar"><a class="btn sm" href="#/stores?tab=mrn">← MRN list</a></div>
+    <div class="card">
+      <h3>MRN ${esc(m.mrn_no)} ${mrnStatusBadge(m.status)}</h3>
+      <p class="muted">Date ${esc((m.req_date || '').slice(0, 10))} · Vehicle ${esc(m.asset_code || '—')} · Source ${esc(sourceLabel(m.purchase_source))}${m.purpose ? ' · ' + esc(m.purpose) : ''}${m.requested_by ? ' · by ' + esc(m.requested_by) : ''}</p>
+      ${tableWrap([{ label: 'Item description' }, { label: 'Category' }, { label: 'Qty requested', num: true }, { label: 'Qty received', num: true }, { label: 'Remaining', num: true }].concat(canRx ? [{ label: '', num: true }] : []), lineRows, { scroll: true })}
+    </div>
+    <div class="card">
+      <h3>Received records — GRN <span class="muted">(${d.grns.length})</span></h3>
+      ${d.grns.length
+        ? tableWrap([{ label: 'GRN No' }, { label: 'Description' }, { label: 'Qty', num: true }, { label: 'Unit Price', num: true }, { label: 'Value', num: true }, { label: 'Supplier' }, { label: 'Source' }].concat(canRx ? [{ label: '', num: true }] : []), grnRows, { scroll: true })
+        : '<p class="muted">Nothing received against this MRN yet.</p>'}
+    </div>`;
+  if (canRx) {
+    qsa('[data-rx]').forEach((btn) => btn.onclick = () => receiveModal(m, btn.dataset.rx, btn.dataset.desc, btn.dataset.rem, () => mrnDetail(body, id)));
+    qsa('[data-price]').forEach((btn) => btn.onclick = () => grnPriceModal(d.grns.find((x) => String(x.id) === btn.dataset.price), () => mrnDetail(body, id)));
+  }
+}
+
+function receiveModal(mrn, lineId, desc, remaining, onDone) {
+  modal('Receive against MRN ' + mrn.mrn_no, `
+    <p class="muted">${esc(desc)} — remaining ${esc(remaining)}</p>
+    ${field('Qty received *', 'qty', { type: 'number', value: remaining })}
+    ${field('Unit price (Rs)', 'unit_price', { type: 'number' })}
+    ${field('Purchase source', 'purchase_source', { type: 'select', options: SOURCE_OPTS, value: mrn.purchase_source || '' })}
+    ${field('Supplier', 'supplier')}
+    ${field('GRN No', 'grn_no')}
+    ${field('Invoice No', 'invoice_no')}
+    ${field('Delivery date', 'delivery_date', { type: 'date' })}
+    <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Record receipt</button></div>`,
+    (mbody, close) => {
+      qs('#s', mbody).onclick = async () => {
+        const f = formData(mbody);
+        if (!f.qty || Number(f.qty) <= 0) return toast('Enter a quantity received', 'err');
+        try {
+          await api('/stores/grn', { method: 'POST', body: {
+            mrn_id: mrn.id, mrn_line_id: lineId, description: desc, qty: f.qty,
+            unit_price: f.unit_price, purchase_source: f.purchase_source || undefined,
+            supplier: f.supplier, grn_no: f.grn_no, invoice_no: f.invoice_no, delivery_date: f.delivery_date,
+          } });
+          toast('Receipt recorded'); close(); onDone();
+        } catch (e) { toast(e.message, 'err'); }
+      };
+    });
+}
+
+// Add / edit the price (and supplier/invoice) on a received record (GRN).
+function grnPriceModal(g, onDone) {
+  modal((g.unit_price == null ? 'Add price — GRN ' : 'Edit price — GRN ') + (g.grn_no || ''), `
+    <p class="muted">${esc(g.description || '')} — qty ${num(g.qty)}</p>
+    ${field('Unit price (Rs) *', 'unit_price', { type: 'number', value: g.unit_price == null ? '' : g.unit_price })}
+    ${field('Supplier', 'supplier', { value: g.supplier || '' })}
+    ${field('Invoice No', 'invoice_no', { value: g.invoice_no || '' })}
+    ${field('Invoice date', 'invoice_date', { type: 'date', value: (g.invoice_date || '').slice(0, 10) })}
+    ${field('Purchase source', 'purchase_source', { type: 'select', options: SOURCE_OPTS, value: g.purchase_source || '' })}
+    <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Save price</button></div>`,
+    (mb, close) => {
+      qs('#s', mb).onclick = async () => {
+        const f = formData(mb);
+        if (f.unit_price === '' || Number(f.unit_price) < 0 || isNaN(Number(f.unit_price))) return toast('Enter a valid unit price', 'err');
+        try {
+          await api('/stores/grn/' + g.id, { method: 'PATCH', body: {
+            unit_price: f.unit_price, supplier: f.supplier, invoice_no: f.invoice_no,
+            invoice_date: f.invoice_date, purchase_source: f.purchase_source || undefined,
+          } });
+          toast('Price saved'); close(); onDone();
+        } catch (e) { toast(e.message, 'err'); }
+      };
+    });
+}
+
 async function newMrnModal() {
+  let nextNo = '';
+  try { nextNo = (await api('/stores/numbers')).next_mrn; } catch (e) { /* leave blank -> auto */ }
   modal('New MRN', `
+    ${field('MRN Number', 'mrn_no', { value: nextNo, placeholder: 'auto if left blank' })}
     ${field('Asset (code/text)', 'asset')}
-    ${field('Purpose *', 'purpose')}
+    ${field('Purchase source', 'purchase_source', { type: 'select', options: SOURCE_OPTS })}
+    ${field('Purpose', 'purpose')}
     ${field('Requested by', 'requested_by')}
     <h3>Lines</h3><div id="lines"></div>
     <button class="sm" id="addline">+ line</button>
@@ -511,10 +1006,40 @@ async function newMrnModal() {
       const d = formData(body);
       const descs = qsa('[name=ldesc]', body).map((e) => e.value);
       const qtys = qsa('[name=lqty]', body).map((e) => e.value);
-      const payload = { asset: d.asset, purpose: d.purpose, requested_by: d.requested_by, lines: descs.map((desc, i) => ({ description: desc, qty: qtys[i] })).filter((l) => l.description) };
-      try { const r = await api('/stores/mrn', { method: 'POST', body: payload }); close(); toast('MRN ' + r.mrn.mrn_no + ' created'); render(); } catch (e) { toast(e.message, 'err'); }
+      const payload = {
+        mrn_no: d.mrn_no, asset: d.asset, purchase_source: d.purchase_source || undefined,
+        purpose: d.purpose, requested_by: d.requested_by,
+        lines: descs.map((desc, i) => ({ description: desc, qty: qtys[i] })).filter((l) => l.description),
+      };
+      try { const r = await api('/stores/mrn', { method: 'POST', body: payload }); close(); toast('MRN ' + r.mrn.mrn_no + ' created'); location.hash = '#/stores?tab=mrn&id=' + r.mrn.id; } catch (e) { toast(e.message, 'err'); }
     };
   });
+}
+
+function newIssueModal(onDone) {
+  const today = new Date().toISOString().slice(0, 10);
+  modal('New Issue', `
+    ${field('Issue date', 'issue_date', { type: 'date', value: today })}
+    ${assetPickerHtml('Vehicle (search & select)')}
+    ${field('Item / description *', 'description')}
+    ${field('Category', 'category', { type: 'select', options: [{ value: '', label: '—' }].concat(STORE_CATEGORIES.map((c) => ({ value: c, label: c }))) })}
+    <div class="row">${field('Qty', 'qty', { type: 'number', value: 1 })}${field('Unit price (Rs)', 'unit_price', { type: 'number' })}</div>
+    ${field('Issued by', 'issued_by')}
+    <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Record issue</button></div>`,
+    (body, close) => {
+      wireAssetPicker(body);
+      qs('#s', body).onclick = async () => {
+        const d = formData(body);
+        if (!d.description) return toast('Item / description is required', 'err');
+        try {
+          const r = await api('/stores/issues', { method: 'POST', body: d });
+          close();
+          if (r.unresolved) toast('Issue recorded — vehicle "' + r.unresolved.raw + '" queued in the Alias Queue', 'err');
+          else toast('Issue recorded');
+          if (onDone) onDone(); else render();
+        } catch (e) { toast(e.message, 'err'); }
+      };
+    });
 }
 
 // ---- Oil
@@ -656,16 +1181,19 @@ routes.aliases = async (c) => {
 
 // ---- Reports
 routes.reports = async (c) => {
-  const [byAsset, byProject, bySource, variance] = await Promise.all([
-    api('/reports/cost/by-asset'), api('/reports/cost/by-project'), api('/reports/cost/by-source'), api('/reports/variance'),
+  const [byAsset, byProject, bySite, bySource, variance] = await Promise.all([
+    api('/reports/cost/by-asset'), api('/reports/cost/by-project'), api('/reports/cost/by-site'), api('/reports/cost/by-source'), api('/reports/variance'),
   ]);
   c.innerHTML = `${pageHeader('Cost Reports & Analytics')}
     <div class="card section"><div class="toolbar" style="margin:0 0 8px"><h3 style="margin:0">Cost by Project</h3><div class="spacer"></div><a class="btn sm" href="/api/reports/cost/by-project?format=xlsx">⬇ Excel</a></div>
-      ${tableWrap([{ label: 'Project' }, { label: 'Labour', num: true }, { label: 'Material', num: true }, { label: 'Oil', num: true }, { label: 'External', num: true }, { label: 'Total', num: true }],
-        byProject.map((p) => `<tr><td>${esc(p.project)}</td><td class="num">${money(p.labour)}</td><td class="num">${money(p.material)}</td><td class="num">${money(p.oil)}</td><td class="num">${money(p.external)}</td><td class="num"><b>${money(p.total)}</b></td></tr>`))}</div>
+      ${tableWrap([{ label: 'Project' }, { label: 'Labour', num: true }, { label: 'Material', num: true }, { label: 'Oil', num: true }, { label: 'General', num: true }, { label: 'External', num: true }, { label: 'Other/Rec.', num: true }, { label: 'Total', num: true }],
+        byProject.map((p) => `<tr><td>${esc(p.project)}</td><td class="num">${money(p.labour)}</td><td class="num">${money(p.material)}</td><td class="num">${money(p.oil)}</td><td class="num">${money(p.general)}</td><td class="num">${money(p.external)}</td><td class="num">${money(p.other)}</td><td class="num"><b>${money(p.total)}</b></td></tr>`))}</div>
+    <div class="card section"><div class="toolbar" style="margin:0 0 8px"><h3 style="margin:0">Cost by Site <span class="muted" style="font-weight:400">— full location breakdown (${bySite.length})</span></h3><div class="spacer"></div><a class="btn sm" href="/api/reports/cost/by-site?format=xlsx">⬇ Excel</a></div>
+      ${tableWrap([{ label: 'Site' }, { label: 'Jobs', num: true }, { label: 'Labour', num: true }, { label: 'Material', num: true }, { label: 'Oil', num: true }, { label: 'General', num: true }, { label: 'External', num: true }, { label: 'Other/Rec.', num: true }, { label: 'Total', num: true }],
+        bySite.map((p) => `<tr><td>${esc(p.site)}</td><td class="num">${p.jobs}</td><td class="num">${money(p.labour)}</td><td class="num">${money(p.material)}</td><td class="num">${money(p.oil)}</td><td class="num">${money(p.general)}</td><td class="num">${money(p.external)}</td><td class="num">${money(p.other)}</td><td class="num"><b>${money(p.total)}</b></td></tr>`), { scroll: true })}</div>
     <div class="card section"><div class="toolbar" style="margin:0 0 8px"><h3 style="margin:0">Cost by Asset</h3><div class="spacer"></div><a class="btn sm" href="/api/reports/cost/by-asset?format=xlsx">⬇ Excel</a></div>
-      ${tableWrap([{ label: 'Asset' }, { label: 'Jobs', num: true }, { label: 'Labour', num: true }, { label: 'Material', num: true }, { label: 'Oil', num: true }, { label: 'Total', num: true }],
-        byAsset.map((p) => `<tr><td>${esc(p.asset_code || '—')}</td><td class="num">${p.job_count}</td><td class="num">${money(p.labour)}</td><td class="num">${money(p.material)}</td><td class="num">${money(p.oil)}</td><td class="num"><b>${money(p.total)}</b></td></tr>`), { scroll: true })}</div>
+      ${tableWrap([{ label: 'Asset' }, { label: 'Jobs', num: true }, { label: 'Labour', num: true }, { label: 'Material', num: true }, { label: 'Oil', num: true }, { label: 'General', num: true }, { label: 'External', num: true }, { label: 'Other/Rec.', num: true }, { label: 'Total', num: true }],
+        byAsset.map((p) => `<tr><td>${esc(p.asset_code || '—')}</td><td class="num">${p.job_count}</td><td class="num">${money(p.labour)}</td><td class="num">${money(p.material)}</td><td class="num">${money(p.oil)}</td><td class="num">${money(p.general)}</td><td class="num">${money(p.external)}</td><td class="num">${money(p.other)}</td><td class="num"><b>${money(p.total)}</b></td></tr>`), { scroll: true })}</div>
     <div class="grid">
       <div class="card"><div class="toolbar" style="margin:0 0 8px"><h3 style="margin:0">Material by Purchase Source</h3><div class="spacer"></div><a class="btn sm" href="/api/reports/cost/by-source?format=xlsx">⬇</a></div>
         ${bySource.map((s) => `<div class="cost-line"><span>${esc(s.purchase_source)}</span><span>${money(s.total)}</span></div>`).join('') || '<span class="muted">none</span>'}</div>

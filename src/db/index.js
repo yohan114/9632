@@ -27,6 +27,17 @@ function migrate() {
   ensureColumn('assets', 'legacy_fleet_id', 'INTEGER');
   ensureColumn('projects', 'name_norm', 'TEXT');
   ensureColumn('mrn_lines', 'legacy_item_id', 'INTEGER');
+  // Preserve the source item category on stores records (9-category breakdown).
+  ensureColumn('mrn_lines', 'category', 'TEXT');
+  ensureColumn('issues', 'category', 'TEXT');
+  ensureColumn('mtn', 'category', 'TEXT');
+  ensureColumn('mrn', 'purchase_source', 'TEXT'); // Head Office / Local Purchase / ...
+  ensureColumn('general_item_txns', 'source', 'TEXT'); // import source tag (idempotent re-import)
+  // Consolidated MRN item catalogue (deduped from mrn_lines descriptions).
+  ensureColumn('store_items', 'item_no', 'TEXT');          // catalogue number, e.g. FIL-0001
+  ensureColumn('store_items', 'catalogue_kind', 'TEXT');   // part | consumable | service
+  ensureColumn('store_items', 'part_numbers', 'TEXT');     // all merged part/reference codes ( | -joined)
+  ensureColumn('store_items', 'req_count', 'INTEGER');     // historical MRN request count
   ensureColumn('grn', 'purchase_source_norm', 'TEXT');
   ensureColumn('stock_ledger', 'consumer_type', 'TEXT');
   ensureColumn('stock_ledger', 'voided', 'INTEGER NOT NULL DEFAULT 0');
@@ -39,6 +50,13 @@ function migrate() {
   ensureColumn('job_cards', 'legacy_ref', 'TEXT');
   ensureColumn('job_cards', 'is_historical', 'INTEGER NOT NULL DEFAULT 0');
   ensureColumn('job_cards', 'synthesized_no', 'INTEGER NOT NULL DEFAULT 0');
+  // Cost reconciliation (Phase 1): freeze the imported recorded total once, and
+  // carry a balancing bucket so labour+material+oil+general+external+other == total_cost.
+  ensureColumn('job_cards', 'recorded_cost', 'REAL');   // original imported total; total falls back to computed when this is 0/NULL
+  ensureColumn('job_cards', 'other_cost', 'REAL NOT NULL DEFAULT 0'); // total_cost − Σ(components) so columns always reconcile
+  // Unambiguous link from a job_part to the MRN request line it came from (Phase 3):
+  // avoids overloading the polymorphic source_id (a manual GRN part won't mislink to mrn_lines).
+  ensureColumn('job_parts', 'mrn_line_id', 'INTEGER');
   return db;
 }
 

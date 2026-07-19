@@ -22,3 +22,20 @@ uploads/*
 .vscode/
 .idea/
 *.swp
+
+# Raw source uploads (curated CSVs live under sources/)
+*.xlsx
+sources/stores/inventory.db
+
+# Generated review / analysis artifacts (produced by migrations, not source data)
+cost_reconciliation.csv
+asset_merge_candidates.csv
+item_catalogue_final.csv
+job_materials_unassigned.csv
+general_issues_unallocated.csv
+daily_work_unmatched_review.csv
+unassigned_vehicles.csv
+SYSTEM_AUDIT_PLAN.json
+
+# Throwaway design preview
+public/_mockup.html
