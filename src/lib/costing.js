@@ -64,9 +64,9 @@ function computeJobCost(jobId) {
 
   // --- labour ---
   // Two models: SERVICE jobs carry a flat recorded labour amount (not hours×rate);
-  // REPAIRS cost hourly. For repairs, a multi-mechanic entry already stores one
-  // row per mechanic with the hours split across the crew (H/N each), so simply
-  // summing (row.hours × rate) yields (H/N)×Σ(crew rates).
+  // REPAIRS cost hourly. For repairs, each named mechanic in a crew is charged the
+  // FULL hours at their own rate (owner's rule: 2 mechanics × 8h = 8h×r1 + 8h×r2),
+  // so a crew of N summed over (row.hours × rate) yields hours × Σ(crew rates).
   const labourLines = [];
   let labour = 0;
   if (job.type === 'service') {
@@ -75,11 +75,19 @@ function computeJobCost(jobId) {
       labourLines.push({ mechanic: '(service flat charge)', hours: 0, rate: null, amount: job.flat_labour, work_date: jobDate, flat: true });
     }
   } else {
+    // A daily-work entry may name a crew ("Buddhika, Krishna"); each named mechanic
+    // is charged the FULL hours at their own rate (owner's rule, matches Daily Work view).
     for (const w of all('SELECT * FROM job_daily_work WHERE job_id = ? AND is_external = 0', jobId)) {
-      const rate = labourRateFor(w.mechanic, (w.work_date || jobDate).slice(0, 10));
-      const amount = rate != null ? (w.hours || 0) * rate : 0;
-      labour += amount;
-      labourLines.push({ mechanic: w.mechanic, hours: w.hours || 0, rate, amount, work_date: w.work_date });
+      const wd = (w.work_date || jobDate).slice(0, 10);
+      const hrs = w.hours || 0;
+      const names = mechanics.splitMechanics(w.mechanic);
+      if (!names.length) { labourLines.push({ mechanic: w.mechanic, hours: hrs, rate: null, amount: 0, work_date: w.work_date }); continue; }
+      for (const nm of names) {
+        const rate = labourRateFor(nm, wd);
+        const amount = rate != null ? hrs * rate : 0;
+        labour += amount;
+        labourLines.push({ mechanic: nm, hours: hrs, rate, amount, work_date: w.work_date });
+      }
     }
   }
 
@@ -125,6 +133,21 @@ function computeJobCost(jobId) {
     total_cost: round2(total),
     labourLines,
   };
+}
+
+/** Read-only reconciled cost view: computed components + the recorded-aware total
+ *  and balancing other_cost that refreshJobTotals persists — without writing. Use
+ *  this wherever a cost breakdown is shown so the displayed columns sum to the
+ *  same total that is stored on the card. */
+function reconciledCost(jobId) {
+  const c = computeJobCost(jobId);
+  const job = get('SELECT is_historical, recorded_cost FROM job_cards WHERE id = ?', jobId);
+  const recorded = job ? job.recorded_cost : null;
+  const useRecorded = job && job.is_historical && recorded != null && recorded > 0;
+  const total = useRecorded ? recorded : c.total_cost;
+  c.other_cost = round2(total - c.total_cost);
+  c.total_cost = total;
+  return c;
 }
 
 /**
@@ -184,9 +207,18 @@ function closureReadiness(jobId) {
   return { ready: missing.length === 0, missing };
 }
 
-/** Recompute live totals on the job card and rebuild job_labour lines. */
+/** Recompute live totals on the job card and rebuild job_labour lines.
+ *  A historical (imported) job keeps its RECORDED total when one exists (recorded_cost > 0);
+ *  when it has no recorded total (recorded_cost 0/NULL) the computed component total is stored
+ *  instead — so jobs whose only cost is reconstructed from items stop reading as Rs 0.
+ *  other_cost balances any gap (recorded − Σcomponents) so the columns always sum to total_cost. */
 function refreshJobTotals(jobId) {
   const c = computeJobCost(jobId);
+  const job = get('SELECT is_historical, recorded_cost FROM job_cards WHERE id = ?', jobId);
+  const recorded = job ? job.recorded_cost : null;
+  const useRecorded = job && job.is_historical && recorded != null && recorded > 0;
+  const totalToStore = useRecorded ? recorded : c.total_cost;
+  const otherCost = round2(totalToStore - c.total_cost); // balancing bucket (recorded vs itemised)
   tx(() => {
     run('DELETE FROM job_labour WHERE job_id = ?', jobId);
     const stmt = require('../db').db.prepare(
@@ -195,13 +227,13 @@ function refreshJobTotals(jobId) {
     for (const l of c.labourLines) stmt.run(jobId, l.mechanic, l.hours, l.rate, l.amount, l.work_date);
     run(
       `UPDATE job_cards
-         SET labour_cost=?, material_cost=?, oil_cost=?, general_cost=?, external_cost=?, total_cost=?,
+         SET labour_cost=?, material_cost=?, oil_cost=?, general_cost=?, external_cost=?, other_cost=?, total_cost=?,
              updated_at=datetime('now')
        WHERE id=?`,
-      c.labour_cost, c.material_cost, c.oil_cost, c.general_cost, c.external_cost, c.total_cost, jobId
+      c.labour_cost, c.material_cost, c.oil_cost, c.general_cost, c.external_cost, otherCost, totalToStore, jobId
     );
   });
-  return c;
+  return { ...c, other_cost: otherCost, total_cost: totalToStore };
 }
 
 /** Freeze a cost snapshot (called on CLOSE). Historical costs never shift after. */
@@ -223,6 +255,7 @@ module.exports = {
   labourRateFor,
   productPriceOn,
   computeJobCost,
+  reconciledCost,
   closureReadiness,
   refreshJobTotals,
   snapshotJobCost,
