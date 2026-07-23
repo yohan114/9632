@@ -18,6 +18,124 @@ db.pragma('foreign_keys = ON');
 function migrate() {
   const schema = fs.readFileSync(path.join(__dirname, 'schema.sql'), 'utf8');
   db.exec(schema);
+  // MRN approval trail (SK request → Workshop certify → Operational Manager approve).
+  // Each row is an e-signature: who signed, the role they signed as, the decision, when.
+  db.exec(`CREATE TABLE IF NOT EXISTS mrn_approvals (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    mrn_id      INTEGER NOT NULL REFERENCES mrn(id) ON DELETE CASCADE,
+    stage       TEXT NOT NULL,          -- 'certify' | 'approve'
+    role        TEXT,                   -- role the signer acted as
+    approver_id INTEGER REFERENCES users(id),
+    signed_name TEXT,                   -- e-signature: signer's full name at signing
+    decision    TEXT NOT NULL,          -- 'approved' | 'rejected'
+    reason      TEXT,
+    created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_mrn_approvals ON mrn_approvals(mrn_id);`);
+  // Job Request (Transport) — Assistant Transport raises → Transport Manager certifies
+  // → Operational Manager approves; on final approval a job card is auto-created.
+  db.exec(`CREATE TABLE IF NOT EXISTS job_requests (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    jr_no             TEXT NOT NULL UNIQUE,      -- editable, continues from the last number
+    req_date          TEXT NOT NULL DEFAULT (date('now')),
+    asset_id          INTEGER REFERENCES assets(id),
+    project_id        INTEGER REFERENCES projects(id),
+    type              TEXT NOT NULL DEFAULT 'repair',  -- repair | service
+    severity          TEXT,                     -- major | minor
+    priority          TEXT,                     -- normal | urgent
+    description       TEXT,
+    required_date     TEXT,
+    approval_status   TEXT NOT NULL DEFAULT 'requested', -- requested | certified | approved | rejected
+    requested_by      TEXT,
+    requested_by_user INTEGER REFERENCES users(id),
+    requested_sig     TEXT,
+    certified_by      TEXT, certified_at TEXT, certified_sig TEXT,
+    approved_by       TEXT, approved_at TEXT, approved_sig TEXT,
+    job_id            INTEGER REFERENCES job_cards(id),  -- the job card created on final approval
+    created_at        TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_job_requests_asset ON job_requests(asset_id);
+  CREATE INDEX IF NOT EXISTS idx_job_requests_status ON job_requests(approval_status);
+  CREATE TABLE IF NOT EXISTS job_request_approvals (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_request_id INTEGER NOT NULL REFERENCES job_requests(id) ON DELETE CASCADE,
+    stage          TEXT NOT NULL,          -- 'certify' | 'approve'
+    role           TEXT,
+    approver_id    INTEGER REFERENCES users(id),
+    signed_name    TEXT,
+    signature      TEXT,
+    decision       TEXT NOT NULL,          -- 'approved' | 'rejected'
+    reason         TEXT,
+    created_at     TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_jr_approvals ON job_request_approvals(job_request_id);`);
+  // Role-based access control — one row per (role, module) with a level
+  // (none/view/edit/full). Seeded once from the code policy, then admin-editable.
+  db.exec(`CREATE TABLE IF NOT EXISTS role_permissions (
+    role   TEXT NOT NULL,
+    module TEXT NOT NULL,
+    level  TEXT NOT NULL DEFAULT 'none',
+    PRIMARY KEY (role, module)
+  );`);
+  // Filter price book — one row per distinct filter number (as typed on a service).
+  // unit_price NULL/0 = missing. Typing a new number saves a row here (the learning
+  // catalogue), so a filter's price is remembered and auto-fills on the next service.
+  db.exec(`CREATE TABLE IF NOT EXISTS filter_prices (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    filter_no      TEXT NOT NULL,
+    filter_no_norm TEXT NOT NULL UNIQUE,   -- uppercased, symbols/parens stripped, for matching
+    category       TEXT,
+    unit_price     REAL,                   -- NULL / 0 = price still missing
+    uses           INTEGER NOT NULL DEFAULT 0, -- times seen in the service history (ranking)
+    source         TEXT DEFAULT 'manual',  -- import | manual | auto
+    notes          TEXT,
+    updated_by     TEXT,
+    updated_at     TEXT NOT NULL DEFAULT (datetime('now')),
+    created_at     TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_filter_prices_norm ON filter_prices(filter_no_norm);
+  CREATE TABLE IF NOT EXISTS service_jobs (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    legacy_service_id  INTEGER,
+    vehicle_label      TEXT,
+    asset_id           INTEGER REFERENCES assets(id),
+    service_date       TEXT,
+    job_no             TEXT,
+    meter_reading      TEXT,
+    next_service_meter TEXT,
+    service_type       TEXT,
+    site_location      TEXT,
+    repair_details     TEXT,
+    parts_subtotal     REAL DEFAULT 0,
+    labour_charge      REAL DEFAULT 0,
+    sundry_amount      REAL DEFAULT 0,
+    grand_total        REAL DEFAULT 0,
+    created_at         TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_service_jobs_asset ON service_jobs(asset_id);
+  CREATE INDEX IF NOT EXISTS idx_service_jobs_date ON service_jobs(service_date);
+  CREATE TABLE IF NOT EXISTS service_filters (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    service_id     INTEGER NOT NULL REFERENCES service_jobs(id) ON DELETE CASCADE,
+    filter_no      TEXT,
+    filter_no_norm TEXT,
+    category       TEXT,
+    action_type    TEXT,
+    qty            INTEGER DEFAULT 1,
+    price          REAL DEFAULT 0
+  );
+  CREATE INDEX IF NOT EXISTS idx_service_filters_svc ON service_filters(service_id);
+  CREATE INDEX IF NOT EXISTS idx_service_filters_norm ON service_filters(filter_no_norm);
+  CREATE TABLE IF NOT EXISTS service_oils (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    service_id  INTEGER NOT NULL REFERENCES service_jobs(id) ON DELETE CASCADE,
+    oil_name    TEXT,
+    oil_type    TEXT,
+    action_type TEXT,
+    qty         REAL DEFAULT 0,
+    price       REAL DEFAULT 0
+  );
+  CREATE INDEX IF NOT EXISTS idx_service_oils_svc ON service_oils(service_id);`);
   // Upgrade-safe additive column checks (CREATE TABLE IF NOT EXISTS won't add
   // columns to a table that already exists).
   ensureColumn('job_cards', 'flat_labour', 'REAL');
@@ -32,6 +150,17 @@ function migrate() {
   ensureColumn('issues', 'category', 'TEXT');
   ensureColumn('mtn', 'category', 'TEXT');
   ensureColumn('mrn', 'purchase_source', 'TEXT'); // Head Office / Local Purchase / ...
+  ensureColumn('mrn', 'required_date', 'TEXT');   // "Required Date" on the printed requisition form
+  ensureColumn('mrn_lines', 'purchase_source', 'TEXT'); // per-item Head Office / Local Purchase (one MRN can mix)
+  ensureColumn('mrn', 'request_type', "TEXT NOT NULL DEFAULT 'vehicle'"); // 'general' (store) | 'vehicle' (against a job card)
+  // MRN approval flow (request → certify → approve) with e-signature names + timestamps.
+  ensureColumn('mrn', 'approval_status', "TEXT NOT NULL DEFAULT 'requested'"); // requested | certified | approved | rejected
+  ensureColumn('mrn', 'certified_by', 'TEXT'); ensureColumn('mrn', 'certified_at', 'TEXT');
+  ensureColumn('mrn', 'approved_by', 'TEXT'); ensureColumn('mrn', 'approved_at', 'TEXT');
+  // Visual e-signatures (drawn or uploaded PNG data URLs).
+  ensureColumn('users', 'signature', 'TEXT');       // each user's saved signature image
+  ensureColumn('mrn', 'requested_sig', 'TEXT'); ensureColumn('mrn', 'certified_sig', 'TEXT'); ensureColumn('mrn', 'approved_sig', 'TEXT');
+  ensureColumn('mrn_approvals', 'signature', 'TEXT'); // signature snapshot applied at signing
   ensureColumn('general_item_txns', 'source', 'TEXT'); // import source tag (idempotent re-import)
   // Consolidated MRN item catalogue (deduped from mrn_lines descriptions).
   ensureColumn('store_items', 'item_no', 'TEXT');          // catalogue number, e.g. FIL-0001
@@ -39,6 +168,7 @@ function migrate() {
   ensureColumn('store_items', 'part_numbers', 'TEXT');     // all merged part/reference codes ( | -joined)
   ensureColumn('store_items', 'req_count', 'INTEGER');     // historical MRN request count
   ensureColumn('grn', 'purchase_source_norm', 'TEXT');
+  ensureColumn('grn', 'priced_at', 'TEXT'); // when a unit price was first entered (procurement tracking)
   ensureColumn('stock_ledger', 'consumer_type', 'TEXT');
   ensureColumn('stock_ledger', 'voided', 'INTEGER NOT NULL DEFAULT 0');
   ensureColumn('stock_ledger', 'legacy_id', 'INTEGER');
@@ -57,6 +187,8 @@ function migrate() {
   // Unambiguous link from a job_part to the MRN request line it came from (Phase 3):
   // avoids overloading the polymorphic source_id (a manual GRN part won't mislink to mrn_lines).
   ensureColumn('job_parts', 'mrn_line_id', 'INTEGER');
+  // Seed the RBAC matrix once (safe to require here — db exports are already set).
+  try { require('../lib/permissions').seedDefaults(); } catch (e) { /* table may not exist yet on very first pass */ }
   return db;
 }
 

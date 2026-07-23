@@ -29,6 +29,7 @@ tx(() => {
     ['admin', 'Administrator'],
     ['storekeeper', 'Storekeeper'],
     ['transport_manager', 'Transport Manager'],
+    ['assistant_transport_manager', 'Assistant Transport Manager'],
     ['operational_manager', 'Operational Manager'],
     ['workshop', 'Workshop / Mechanic Supervisor'],
     ['manager', 'Manager'],
@@ -42,6 +43,7 @@ tx(() => {
     ['admin', 'admin', 'System Admin', ['admin']],
     ['store', 'store', 'Sunil (Storekeeper)', ['storekeeper']],
     ['transport', 'transport', 'Transport Manager', ['transport_manager']],
+    ['asst', 'asst', 'Assistant Transport Manager', ['assistant_transport_manager']],
     ['ops', 'ops', 'Operational Manager', ['operational_manager', 'manager']],
     ['mech', 'mech', 'Workshop Supervisor', ['workshop']],
     ['viewer', 'viewer', 'Read-only Viewer', ['viewer']],
@@ -290,5 +292,5 @@ tx(() => {
 });
 
 console.log('Seed complete.');
-console.log('Login: admin/admin, store/store, transport/transport, ops/ops, mech/mech, viewer/viewer');
+console.log('Login: admin/admin, store/store, transport/transport, asst/asst, ops/ops, mech/mech, viewer/viewer');
 db.close();

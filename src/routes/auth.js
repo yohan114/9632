@@ -1,8 +1,9 @@
 'use strict';
 
 const express = require('express');
-const { get } = require('../db');
+const { get, run } = require('../db');
 const auth = require('../lib/auth');
+const permissions = require('../lib/permissions');
 const audit = require('../lib/audit');
 const { asyncHandler, require_ } = require('../lib/http');
 
@@ -24,11 +25,13 @@ router.post(
       expires: new Date(expires),
     });
     audit.record({ userId: user.id, entity: 'session', action: 'login' });
+    const roles = auth.rolesForUser(user.id);
     res.json({
       id: user.id,
       username: user.username,
       fullName: user.full_name,
-      roles: auth.rolesForUser(user.id),
+      roles,
+      permissions: permissions.userPermissions(roles),
       mustChangePassword: !!user.must_change_password,
     });
   })
@@ -66,7 +69,25 @@ router.post('/logout', (req, res) => {
 
 router.get('/me', (req, res) => {
   if (!req.user) return res.status(401).json({ error: 'Not signed in' });
-  res.json(req.user);
+  const u = get('SELECT signature FROM users WHERE id = ?', req.user.id);
+  res.json({ ...req.user, permissions: permissions.userPermissions(req.user.roles), hasSignature: !!(u && u.signature) });
 });
+
+// Save (or clear) the signed-in user's e-signature image (drawn or uploaded PNG/JPEG data URL).
+router.post('/signature', auth.requireAuth, asyncHandler((req, res) => {
+  const sig = req.body.signature;
+  if (sig) {
+    if (!/^data:image\/(png|jpeg|jpg);base64,/.test(String(sig))) return res.status(400).json({ error: 'Signature must be a PNG/JPEG image' });
+    if (String(sig).length > 400000) return res.status(413).json({ error: 'Signature image too large (max ~300 KB)' });
+  }
+  run('UPDATE users SET signature = ? WHERE id = ?', sig || null, req.user.id);
+  audit.record({ userId: req.user.id, entity: 'user', entityId: req.user.id, action: sig ? 'set_signature' : 'clear_signature' });
+  res.json({ ok: true, hasSignature: !!sig });
+}));
+
+router.get('/signature', auth.requireAuth, asyncHandler((req, res) => {
+  const u = get('SELECT signature FROM users WHERE id = ?', req.user.id);
+  res.json({ signature: u ? u.signature : null });
+}));
 
 module.exports = router;

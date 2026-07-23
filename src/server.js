@@ -8,6 +8,7 @@ const cookieParser = require('cookie-parser');
 const config = require('./config');
 const { migrate } = require('./db');
 const { authenticate, enforcePasswordChange } = require('./lib/auth');
+const { requireModule } = require('./lib/permissions');
 const { errorHandler } = require('./lib/http');
 const { startScheduler } = require('./lib/backup');
 
@@ -29,26 +30,40 @@ app.use('/uploads', express.static(config.uploadDir));
 // Health check.
 app.get('/api/health', (_req, res) => res.json({ ok: true, name: 'WorkshopOne' }));
 
-// API routers. Each module is a self-contained Express Router.
+// API routers. Each module is a self-contained Express Router. Operational
+// modules are gated by the RBAC matrix (requireModule); reference/analytics
+// routers (aliases, projects, mechanics, reports) stay open to any authenticated
+// user (they feed dropdowns + dashboards) and are hidden at the nav level only.
 app.use('/api/auth', require('./routes/auth'));
-app.use('/api/assets', require('./routes/assets'));
+app.use('/api/access', require('./routes/access'));
+app.use('/api/assets', requireModule('assets'), require('./routes/assets'));
 app.use('/api/aliases', require('./routes/aliases'));
 app.use('/api/projects', require('./routes/projects'));
-app.use('/api/stores', require('./routes/stores'));
-app.use('/api/oil', require('./routes/oil'));
-app.use('/api/batteries', require('./routes/batteries'));
-app.use('/api/jobs', require('./routes/jobcards'));
-app.use('/api/daily-work', require('./routes/dailywork'));
+app.use('/api/stores', requireModule('stores'), require('./routes/stores'));
+app.use('/api/oil', requireModule('oil'), require('./routes/oil'));
+app.use('/api/batteries', requireModule('batteries'), require('./routes/batteries'));
+app.use('/api/filters', requireModule('filters'), require('./routes/filters'));
+app.use('/api/jobs', requireModule('jobs'), require('./routes/jobcards'));
+app.use('/api/job-requests', requireModule('jobrequests'), require('./routes/jobrequests'));
+app.use('/api/daily-work', requireModule('dailywork'), require('./routes/dailywork'));
 app.use('/api/mechanics', require('./routes/mechanics'));
 app.use('/api/users', require('./routes/users'));
 app.use('/api/reports', require('./routes/reports'));
 
-// Static frontend (SPA).
+// Static frontend (SPA). index.html is served with a per-boot cache-bust token on
+// app.js / styles.css so a normal reload always picks up the latest build.
 const publicDir = path.join(__dirname, '..', 'public');
-app.use(express.static(publicDir));
+const BUILD = Date.now();
+const sendIndex = (res) => {
+  const html = fs.readFileSync(path.join(publicDir, 'index.html'), 'utf8')
+    .replace(/(\/(?:app\.js|styles\.css))(\?v=[^"']*)?/g, `$1?v=${BUILD}`);
+  res.type('html').set('Cache-Control', 'no-cache').send(html);
+};
+app.get('/', (_req, res) => sendIndex(res));
+app.use(express.static(publicDir, { index: false }));
 app.get('*', (req, res, next) => {
   if (req.path.startsWith('/api/')) return next();
-  res.sendFile(path.join(publicDir, 'index.html'));
+  sendIndex(res);
 });
 
 app.use(errorHandler);

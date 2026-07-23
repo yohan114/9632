@@ -15,19 +15,35 @@ function resolveAsset(text) {
   return r.assetId;
 }
 
+// Battery photos are stored as resized base64 data URLs (same as e-signatures) so
+// they travel with the DB backups. Validate type + cap size (client resizes first).
+const PHOTO_RE = /^data:image\/(png|jpe?g|webp);base64,/;
+function photoError(p) {
+  if (!p) return null;
+  if (!PHOTO_RE.test(String(p))) return { status: 400, error: 'Photo must be a PNG, JPEG or WebP image' };
+  if (String(p).length > 900000) return { status: 413, error: 'Image too large — please choose a smaller photo (max ~700 KB)' };
+  return null;
+}
+
 router.get('/', asyncHandler((req, res) => {
   const clauses = [];
   const params = [];
   if (req.query.state) { clauses.push('b.state = ?'); params.push(req.query.state); }
   if (req.query.q) { clauses.push('(b.serial_no LIKE ? OR b.brand LIKE ?)'); params.push('%' + req.query.q + '%', '%' + req.query.q + '%'); }
   const where = clauses.length ? 'WHERE ' + clauses.join(' AND ') : '';
-  res.json(all(`SELECT b.*, a.code AS current_asset_code FROM batteries b LEFT JOIN assets a ON a.id = b.current_asset_id ${where} ORDER BY b.serial_no`, ...params));
+  // The list omits the photo blob (only a has_photo flag) to keep the payload light;
+  // the full image is returned by GET /:id.
+  res.json(all(`SELECT b.id, b.serial_no, b.brand, b.capacity_ah, b.condition, b.purchase_date, b.warranty_date,
+                       b.current_asset_id, b.state, (b.photo_path IS NOT NULL AND b.photo_path <> '') AS has_photo,
+                       a.code AS current_asset_code
+                  FROM batteries b LEFT JOIN assets a ON a.id = b.current_asset_id ${where} ORDER BY b.serial_no`, ...params));
 }));
 
 router.post('/', requireRole('storekeeper'), asyncHandler((req, res) => {
   const b = req.body;
   require_(b, ['serial_no']);
   if (get('SELECT id FROM batteries WHERE serial_no = ?', b.serial_no)) return res.status(409).json({ error: 'Serial already exists' });
+  const pe = photoError(b.photo_path); if (pe) return res.status(pe.status).json({ error: pe.error });
   const assetId = toInt(b.current_asset_id) || resolveAsset(b.current_asset);
   const state = b.state || (assetId ? 'installed' : 'in_store');
   const result = tx(() => {
@@ -85,6 +101,17 @@ router.get('/:id', asyncHandler((req, res) => {
   res.json({ battery, events });
 }));
 
+// Set / replace / clear a battery's photo (no lifecycle event).
+router.patch('/:id/photo', requireRole('storekeeper'), asyncHandler((req, res) => {
+  const id = toInt(req.params.id);
+  if (!get('SELECT id FROM batteries WHERE id = ?', id)) return res.status(404).json({ error: 'Battery not found' });
+  const p = req.body.photo_path;
+  const pe = photoError(p); if (pe) return res.status(pe.status).json({ error: pe.error });
+  run('UPDATE batteries SET photo_path = ? WHERE id = ?', p || null, id);
+  audit.record({ userId: req.user.id, entity: 'battery', entityId: id, action: p ? 'set_photo' : 'clear_photo' });
+  res.json(get('SELECT * FROM batteries WHERE id = ?', id));
+}));
+
 router.post('/:id/event', requireRole('storekeeper'), asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   const battery = get('SELECT * FROM batteries WHERE id = ?', id);
@@ -93,6 +120,7 @@ router.post('/:id/event', requireRole('storekeeper'), asyncHandler((req, res) =>
   require_(b, ['event_type']);
   const valid = ['install', 'transfer', 'return', 'decommission', 'warranty'];
   if (!valid.includes(b.event_type)) return res.status(400).json({ error: 'Invalid event_type' });
+  const pe = photoError(b.photo_path); if (pe) return res.status(pe.status).json({ error: pe.error });
   const toAssetId = toInt(b.to_asset_id) || resolveAsset(b.to_asset);
   const fromAssetId = toInt(b.from_asset_id) || resolveAsset(b.from_asset) || battery.current_asset_id;
 

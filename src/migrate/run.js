@@ -174,6 +174,18 @@ if (!only || only === 'oil') {
   console.log(`  Service specs / stock counts:   ${o.service_specs} / ${o.stock_counts}`);
 }
 
+if (!only || only === 'stores-update') {
+  banner('Stores update — new MRN items + receipts from tracker backup JSON');
+  const su = require('./19_stores_update').runStep();
+  if (su.no_file) console.log('  No sources/stores/tracker_backup.json — skipped.');
+  else {
+    console.log(`  JSON items:                     ${su.json_items}  (already imported: ${su.already})`);
+    console.log(`  New MRN lines added:            ${su.new_lines}  (MRN headers: ${su.mrn_created} new, ${su.mrn_reused} reused)`);
+    console.log(`  GRN receipts added:             ${su.grn}`);
+    console.log(`  TOTAL mrn_lines now:            ${su.total_mrn_lines}`);
+  }
+}
+
 if (!only || only === 'dimensions') {
   banner('Restore project/site dimension (map site → project; asset home project)');
   const dm = require('./17_dimensions').runStep();
@@ -204,6 +216,37 @@ if (!only || only === 'reconcile-costs') {
   console.log(`  Σ total_cost (all jobs) now:     Rs ${rc.total_after.toLocaleString('en-US')}`);
   console.log(`  Columns-sum-to-total check:     ${rc.unreconciled === 0 ? 'OK (all reconcile)' : rc.unreconciled + ' jobs FAIL'}`);
   console.log(`  Recorded≠itemised (in other):   ${rc.mismatches}${rc.review_file ? '  → ' + rc.review_file : ''}`);
+}
+
+if (!only || only === 'job-requests') {
+  banner('Job Request (Transport) workflow — seed role + demo user (asst/asst)');
+  const jr = require('./20_job_requests').runStep();
+  console.log(`  Role assistant_transport_manager: ${jr.role_added ? 'ensured' : 'MISSING'}`);
+  console.log(`  Demo user asst/asst:             ${jr.user_created ? 'created' : (jr.already ? 'already present' : 'n/a')}  (role linked: ${jr.role_linked ? 'yes' : 'already'})`);
+}
+
+if (!only || only === 'service-filters') {
+  banner('Service Record import — service jobs, filter usages, filter price book');
+  const sf = require('./21_service_filters').runStep();
+  if (sf.no_file) console.log('  No sources/service/service.db — skipped.');
+  else if (sf.already) console.log('  Already imported (service_jobs present) — skipped.');
+  else {
+    console.log(`  Service jobs:                   ${sf.service_jobs}  (vehicles linked to fleet: ${sf.assets_linked})`);
+    console.log(`  Filter usages:                  ${sf.service_filters}`);
+    console.log(`  Price-book filter numbers:      ${sf.filters}  (priced: ${sf.priced} = ${sf.from_service} from service history + ${sf.from_catalogue} from supplier catalogue)`);
+    console.log(`  Still missing a price:          ${sf.filters - sf.priced}`);
+  }
+}
+
+if (!only || only === 'service-extras') {
+  banner('Service Record extras — oils, unmatched vehicles, cross-ref pricing');
+  const se = require('./22_service_extras').runStep();
+  if (se.no_file) console.log('  No sources/service/service.db — skipped.');
+  else {
+    console.log(`  Service oils:                   ${se.oils_skipped ? 'already loaded' : se.oils}`);
+    console.log(`  Unmatched vehicles → assets:    ${se.vehicles_created} created  (service jobs linked: ${se.jobs_linked})`);
+    console.log(`  Filters auto-priced by cross-ref:${se.priced_xref} + genuine ${se.priced_genuine}  (cross-ref notes added: ${se.notes_added})`);
+  }
 }
 
 console.log('\nDone.');

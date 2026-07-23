@@ -24,7 +24,154 @@ async function api(path, opts = {}) {
 const esc = (v) => String(v == null ? '' : v).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const money = (n) => 'Rs ' + (Number(n) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const num = (n) => (Number(n) || 0).toLocaleString('en-US');
+const moneyC = (n) => { n = Number(n) || 0; const a = Math.abs(n); return a >= 1e6 ? 'Rs ' + (n / 1e6).toFixed(2) + 'M' : a >= 1e3 ? 'Rs ' + Math.round(n / 1e3) + 'K' : 'Rs ' + Math.round(n); };
+const MONTH_NAMES = ['', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const monthName = (m) => { const [y, mo] = String(m).split('-'); return (MONTH_NAMES[+mo] || mo) + ' ' + y; };
+
+// ---- signature pad (draw or upload a signature; PNG data URL) ----
+function signaturePad(canvas) {
+  const ctx = canvas.getContext('2d');
+  ctx.lineWidth = 2.2; ctx.lineJoin = ctx.lineCap = 'round'; ctx.strokeStyle = '#0b2447';
+  let drawing = false, last = null;
+  const pos = (e) => { const r = canvas.getBoundingClientRect(); const t = (e.touches && e.touches[0]) || e; return { x: (t.clientX - r.left) * (canvas.width / r.width), y: (t.clientY - r.top) * (canvas.height / r.height) }; };
+  const start = (e) => { drawing = true; last = pos(e); e.preventDefault(); };
+  const move = (e) => { if (!drawing) return; const p = pos(e); ctx.beginPath(); ctx.moveTo(last.x, last.y); ctx.lineTo(p.x, p.y); ctx.stroke(); last = p; e.preventDefault(); };
+  const end = () => { drawing = false; };
+  canvas.addEventListener('mousedown', start); canvas.addEventListener('mousemove', move); document.addEventListener('mouseup', end);
+  canvas.addEventListener('touchstart', start, { passive: false }); canvas.addEventListener('touchmove', move, { passive: false }); canvas.addEventListener('touchend', end);
+  const self = {
+    clear: () => ctx.clearRect(0, 0, canvas.width, canvas.height),
+    isEmpty: () => { const dd = ctx.getImageData(0, 0, canvas.width, canvas.height).data; for (let i = 3; i < dd.length; i += 4) if (dd[i] !== 0) return false; return true; },
+    dataURL: () => canvas.toDataURL('image/png'),
+    load: (url) => { if (!url) return; const img = new Image(); img.onload = () => { self.clear(); ctx.drawImage(img, 0, 0, canvas.width, canvas.height); }; img.src = url; },
+    loadFile: (file) => { const fr = new FileReader(); fr.onload = () => { const img = new Image(); img.onload = () => { self.clear(); const s = Math.min(canvas.width / img.width, canvas.height / img.height); ctx.drawImage(img, 0, 0, img.width * s, img.height * s); }; img.src = fr.result; }; fr.readAsDataURL(file); },
+  };
+  return self;
+}
+function signaturePadHtml(id) {
+  return `<canvas id="${id}" width="360" height="120" style="border:1px solid var(--border);border-radius:4px;background:#fff;touch-action:none;width:100%;max-width:360px;display:block"></canvas>
+    <div class="toolbar" style="margin:6px 0 0">
+      <button type="button" class="sm" id="${id}_clear">Clear</button>
+      <label class="btn sm" style="cursor:pointer;margin:0">Upload image<input type="file" id="${id}_file" accept="image/png,image/jpeg" style="display:none"></label>
+      <span class="muted" style="font-size:11px">draw above, or upload a signature image</span>
+    </div>`;
+}
+function wireSignaturePad(root, id, savedUrl) {
+  const pad = signaturePad(qs('#' + id, root));
+  if (savedUrl) pad.load(savedUrl);
+  qs('#' + id + '_clear', root).onclick = () => pad.clear();
+  qs('#' + id + '_file', root).onchange = (e) => { if (e.target.files[0]) pad.loadFile(e.target.files[0]); };
+  return pad;
+}
+
+// Reusable photo picker: choose an image, resize it client-side to a modest JPEG
+// data URL (kept small so it stores in the DB alongside the record), show a preview.
+function imageUploadHtml(id, existing) {
+  return `<div class="imgup" id="${id}">
+    <div class="imgup-preview" style="margin:6px 0">${existing ? `<img src="${existing}" style="max-height:150px;max-width:100%;border:1px solid var(--border);border-radius:6px">` : '<span class="muted">No photo</span>'}</div>
+    <label class="btn sm" style="cursor:pointer;margin:0">📷 Choose photo<input type="file" accept="image/png,image/jpeg,image/webp" style="display:none"></label>
+    <button type="button" class="btn sm" data-imgclear style="margin-left:6px">Remove</button>
+  </div>`;
+}
+function wireImageUpload(root, id, existing) {
+  const box = qs('#' + id, root);
+  const preview = qs('.imgup-preview', box);
+  const fileInput = qs('input[type=file]', box);
+  let dataUrl = existing || null;
+  const setPreview = () => { preview.innerHTML = dataUrl ? `<img src="${dataUrl}" style="max-height:150px;max-width:100%;border:1px solid var(--border);border-radius:6px">` : '<span class="muted">No photo</span>'; };
+  fileInput.onchange = (e) => {
+    const file = e.target.files[0]; if (!file) return;
+    const fr = new FileReader();
+    fr.onload = () => {
+      const img = new Image();
+      img.onload = () => {
+        const max = 1000; let w = img.width, h = img.height;
+        if (Math.max(w, h) > max) { const s = max / Math.max(w, h); w = Math.round(w * s); h = Math.round(h * s); }
+        const cv = document.createElement('canvas'); cv.width = w; cv.height = h;
+        cv.getContext('2d').drawImage(img, 0, 0, w, h);
+        dataUrl = cv.toDataURL('image/jpeg', 0.7);
+        setPreview();
+      };
+      img.src = fr.result;
+    };
+    fr.readAsDataURL(file);
+  };
+  qs('[data-imgclear]', box).onclick = () => { dataUrl = null; fileInput.value = ''; setPreview(); };
+  return { dataURL: () => dataUrl };
+}
+// Show both the vehicle/registration number and the E&C number, since staff
+// may know one but not the other. Vehicle number comes FIRST (many staff know the
+// plate, not the E&C number); the E&C number is appended when it exists and differs.
+function vehText(j) {
+  const ecNo = j.asset_ec || j.asset_code || '';
+  const vehNo = j.asset_reg || '';
+  return (vehNo && ecNo && vehNo !== ecNo) ? vehNo + ' · ' + ecNo : (vehNo || ecNo || '');
+}
+// Same vehicle-first rule for the flat display objects (MRN / daily-work / job rows)
+// that carry bare keys (asset_code/registration/ec_code) rather than the job shape.
+// For plant/machines the registration is null and code === ec_code, so it collapses
+// to a single token instead of rendering "E&C · E&C".
+function idLabel(o) {
+  if (!o) return '';
+  const reg = o.asset_reg || o.registration || '';
+  const ec = o.asset_ec || o.ec_code || '';
+  const code = o.asset_code || o.code || '';
+  const primary = reg || code;                        // vehicle number first, else the code
+  const secondary = (ec && ec !== primary) ? ec : ''; // E&C only if present and distinct
+  return secondary ? primary + ' · ' + secondary : (primary || '');
+}
+
+// ---- request-target picker: General item OR Machine/Vehicle → pick a job card ----
+function targetPickerHtml(idp, opts) {
+  const o = opts || {};
+  return `<label>${esc(o.label || 'Request for')}</label>
+    <div class="pill-row" style="margin-bottom:6px">
+      <label style="font-weight:400"><input type="radio" name="${idp}_type" value="general" checked style="width:auto"> ${esc(o.generalLabel || 'General item')}</label>
+      <label style="font-weight:400"><input type="radio" name="${idp}_type" value="vehicle" style="width:auto"> Machine / Vehicle</label>
+    </div>
+    <div id="${idp}_veh" style="display:none;position:relative">
+      <input type="text" id="${idp}_jq" autocomplete="off" placeholder="Search job no / vehicle no / E&C no…">
+      <div id="${idp}_menu" style="position:absolute;z-index:60;left:0;right:0;top:100%;background:var(--surface);border:1px solid var(--border);border-radius:6px;box-shadow:var(--shadow);max-height:220px;overflow:auto;display:none"></div>
+      <div id="${idp}_sel" class="muted" style="font-size:12px;margin-top:4px">Pick the job card this is for.</div>
+    </div>`;
+}
+function wireTargetPicker(root, idp) {
+  const state = { type: 'general', job_id: '', asset_code: '', job_no: '' };
+  const veh = qs('#' + idp + '_veh', root), jq = qs('#' + idp + '_jq', root), menu = qs('#' + idp + '_menu', root), sel = qs('#' + idp + '_sel', root);
+  qsa('input[name=' + idp + '_type]', root).forEach((r) => { r.onchange = () => { state.type = r.value; veh.style.display = state.type === 'vehicle' ? 'block' : 'none'; if (state.type === 'general') { state.job_id = ''; state.asset_code = ''; state.job_no = ''; } }; });
+  let deb;
+  const search = async () => {
+    const q = jq.value.trim(); if (!q) { menu.style.display = 'none'; return; }
+    let rows = []; try { rows = await api('/jobs?open=1&limit=15&q=' + encodeURIComponent(q)); } catch (e) { return; }
+    menu.innerHTML = rows.length
+      ? rows.map((j) => `<div class="tpick" data-id="${j.id}" data-veh="${esc(vehText(j))}" data-no="${esc(j.job_no || '')}" style="padding:7px 10px;cursor:pointer;border-bottom:1px solid var(--border)"><b>${esc(j.job_no || '')}</b> <span class="muted">· ${esc(vehText(j) || '—')} · ${esc(j.status || '')}</span></div>`).join('')
+      : '<div class="muted" style="padding:8px 10px">No matching <b>open</b> job card</div>';
+    menu.style.display = 'block';
+    qsa('.tpick', menu).forEach((it) => { it.onmousedown = (e) => { e.preventDefault(); state.job_id = it.dataset.id; state.asset_code = it.dataset.veh; state.job_no = it.dataset.no; jq.value = it.dataset.no; sel.innerHTML = `Job <b>${esc(it.dataset.no)}</b> · ${esc(it.dataset.veh || 'no vehicle')}`; menu.style.display = 'none'; }; });
+  };
+  jq.oninput = () => { clearTimeout(deb); deb = setTimeout(search, 220); };
+  jq.onblur = () => setTimeout(() => { menu.style.display = 'none'; }, 150);
+  return () => state;
+}
+
+async function mySignatureModal() {
+  let saved = null;
+  try { saved = (await api('/auth/signature')).signature; } catch (e) { /* ignore */ }
+  modal('My Signature', `
+    <p class="muted">Draw your signature below or upload an image. It is saved to your profile and applied automatically when you certify or approve.</p>
+    ${signaturePadHtml('mysigpad')}
+    <div style="margin-top:12px;text-align:right"><button class="sm" id="rm">Remove</button> <button class="primary" id="s">Save signature</button></div>`, (body, close) => {
+    const pad = wireSignaturePad(body, 'mysigpad', saved);
+    qs('#s', body).onclick = async () => { if (pad.isEmpty()) return toast('Draw or upload a signature first', 'err'); try { await api('/auth/signature', { method: 'POST', body: { signature: pad.dataURL() } }); toast('Signature saved'); if (window.ME) ME.hasSignature = true; close(); } catch (e) { toast(e.message, 'err'); } };
+    qs('#rm', body).onclick = async () => { try { await api('/auth/signature', { method: 'POST', body: { signature: null } }); toast('Signature removed'); if (window.ME) ME.hasSignature = false; close(); } catch (e) { toast(e.message, 'err'); } };
+  });
+}
 const can = (...roles) => ME && (ME.roles.includes('admin') || roles.some((r) => ME.roles.includes(r)));
+// RBAC — a module's clearance level for the signed-in user (from the permission matrix).
+const RANKL = { none: 0, view: 1, edit: 2, full: 3 };
+const rankL = (l) => RANKL[l] || 0;
+const canView = (m) => can('admin') || (ME && ME.permissions ? rankL(ME.permissions[m]) >= 1 : true);
+const canEdit = (m) => can('admin') || (ME && ME.permissions ? rankL(ME.permissions[m]) >= 2 : true);
 const qs = (s, r = document) => r.querySelector(s);
 const qsa = (s, r = document) => [...r.querySelectorAll(s)];
 
@@ -41,6 +188,13 @@ const sourceLabel = (s) => (s ? (SOURCE_LABEL[s] || s) : '—');
 const SOURCE_OPTS = [{ value: '', label: '—' }, { value: 'head_office', label: 'Head Office' }, { value: 'local_purchase', label: 'Local Purchase' }];
 const MRN_STATUS_CLASS = { open: '', partially_received: 'amber', received: 'green', cancelled: 'red' };
 const mrnStatusBadge = (s) => `<span class="badge ${MRN_STATUS_CLASS[s] || ''}">${esc(String(s || '').replace(/_/g, ' '))}</span>`;
+// True receipt status derived from actual line coverage (the stored mrn.status can be stale).
+const receiptBadge = (requested, received) => {
+  const req = Number(requested) || 0, rec = Number(received) || 0;
+  if (rec <= 0) return '<span class="badge amber">Pending received</span>';
+  if (rec < req) return '<span class="badge blue">Partially received</span>';
+  return '<span class="badge green">✓ Received</span>';
+};
 
 const STORE_CATEGORIES = ['General Items', 'Filters', 'Electrical', 'Bearings & Seals', 'Hydraulics', 'Battery', 'Oil & Lubricants', 'Belts', 'Tyre', 'Consumables'];
 
@@ -65,7 +219,7 @@ function wireAssetPicker(root) {
       let rows = [];
       try { rows = await api('/assets/search?q=' + encodeURIComponent(input.value.trim()) + '&limit=25'); } catch (e) { return; }
       if (!rows.length) { menu.innerHTML = '<div class="muted" style="padding:8px 10px">No match — will be queued for linking</div>'; menu.style.display = 'block'; return; }
-      menu.innerHTML = rows.map((r) => `<div class="apick-item" data-id="${r.id}" data-code="${esc(r.code)}" style="padding:7px 10px;cursor:pointer;border-bottom:1px solid var(--border)">${esc(r.code)}${r.registration ? ` <span class="muted">· ${esc(r.registration)}</span>` : ''}</div>`).join('');
+      menu.innerHTML = rows.map((r) => `<div class="apick-item" data-id="${r.id}" data-code="${esc(r.code)}" style="padding:7px 10px;cursor:pointer;border-bottom:1px solid var(--border)">${esc(r.registration || r.code)}${(r.registration && r.code && r.registration !== r.code) ? ` <span class="muted">· ${esc(r.code)}</span>` : ''}</div>`).join('');
       menu.style.display = 'block';
       qsa('.apick-item', menu).forEach((it) => {
         it.onmousedown = (e) => { e.preventDefault(); input.value = it.dataset.code; hidden.value = it.dataset.id; close(); };
@@ -139,22 +293,39 @@ const NAV = [
   ['dashboard', '📊', 'Dashboard'],
   ['assets', '🚜', 'Assets'],
   ['jobs', '🔧', 'Job Cards'],
+  ['jobrequests', '📋', 'Job Requests'],
   ['dailywork', '📅', 'Daily Work'],
   ['labour', '💵', 'Labour Rates'],
   ['stores', '📦', 'Stores'],
   ['oil', '🛢️', 'Oil & Lube'],
   ['batteries', '🔋', 'Batteries'],
+  ['filters', '🧰', 'Filters & Prices'],
   ['projects', '🏗️', 'Projects'],
   ['aliases', '🔗', 'Alias Queue'],
   ['attention', '⚠️', 'Needs Attention'],
+  ['progress', '📆', 'Daily Progress'],
+  ['teardown', '📉', 'Cost Teardown'],
   ['reports', '📈', 'Reports'],
-  ['users', '👤', 'Users', 'admin'],
+  ['access', '🔐', 'Access Control', 'admin'],
 ];
+// Which permission module governs each nav item's visibility (dashboard always on).
+const NAV_MODULE = {
+  assets: 'assets', jobs: 'jobs', jobrequests: 'jobrequests', dailywork: 'dailywork',
+  labour: 'labour', stores: 'stores', oil: 'oil', batteries: 'batteries', filters: 'filters',
+  projects: 'projects', aliases: 'aliases', attention: 'reports', progress: 'reports',
+  teardown: 'reports', reports: 'reports',
+};
+function navVisible(n) {
+  if (n[3] === 'admin') return can('admin');
+  if (n[0] === 'dashboard') return true;
+  const m = NAV_MODULE[n[0]];
+  return !m || canView(m);
+}
 
 function renderShell() {
   const route = (location.hash.replace('#/', '').split('?')[0].split('/')[0]) || 'dashboard';
-  const nav = NAV.filter((n) => !n[3] || can(n[3])).map(
-    (n) => `<a href="#/${n[0]}" class="${route === n[0] ? 'active' : ''}"><span class="ico">${n[1]}</span>${n[2]}</a>`
+  const nav = NAV.filter(navVisible).map(
+    (n, i) => `<a href="#/${n[0]}" class="${route === n[0] ? 'active' : ''}"><span class="ix">${String(i + 1).padStart(2, '0')}</span><span class="ico">${n[1]}</span>${n[2]}</a>`
   ).join('');
   qs('#app').innerHTML = `
     <div class="topbar">
@@ -162,6 +333,7 @@ function renderShell() {
       <div class="brand">Workshop<span>One</span></div>
       <div class="spacer"></div>
       <div class="who">${esc(ME.fullName || ME.username)} · ${ME.roles.join(', ')}</div>
+      <button class="sm" id="mysig">Signature</button>
       <button class="sm" id="chpw">Password</button>
       <button class="sm" id="logout">Logout</button>
     </div>
@@ -175,6 +347,7 @@ function renderShell() {
     ${field('New password', 'new_password', { type: 'password' })}
     <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Update</button></div>`,
     (body, close) => { qs('#s', body).onclick = async () => { try { await api('/auth/change-password', { method: 'POST', body: formData(body) }); toast('Password updated'); close(); } catch (e) { toast(e.message, 'err'); } }; });
+  qs('#mysig').onclick = mySignatureModal;
   qs('#ham').onclick = () => qs('#nav').classList.toggle('open');
   qsa('#nav a').forEach((a) => a.addEventListener('click', () => qs('#nav').classList.remove('open')));
 }
@@ -208,7 +381,38 @@ function tableWrap(headers, rows, opts = {}) {
 
 // ---- Dashboard
 routes.dashboard = async (c) => {
-  const d = await api('/reports/dashboard');
+  const sp = new URLSearchParams(location.hash.split('?')[1] || '');
+  const month = sp.get('month'), asset = sp.get('asset');
+  if (month && asset) return dashVehicleMonth(c, month, asset);
+  if (month) return dashMonthAssets(c, month);
+  return dashMain(c);
+};
+
+// Managers' time is precious: their dashboard leads with what needs their sign-off.
+function renderPendingApprovals(pa) {
+  if (!pa || !pa.is_approver) return '';
+  const mrnRow = (m, action) => `<div class="cost-line"><a href="#/stores?tab=mrn&id=${m.id}"><b>MRN ${esc(m.mrn_no)}</b> · ${esc(idLabel(m) || 'general')} · ${m.lines} item(s)${m.requested_by ? ' · by ' + esc(m.requested_by) : ''}${m.certified_by ? ' · certified ' + esc(m.certified_by) : ''}</a><span class="badge ${action === 'Approve' ? 'blue' : 'amber'}">${action} →</span></div>`;
+  const jobRow = (j, action) => `<div class="cost-line"><a href="#/jobs/${j.id}"><b>${esc(j.job_no)}</b> · ${esc(idLabel(j) || '—')}</a><span class="badge amber">${action} →</span></div>`;
+  const jrRow = (r, action) => `<div class="cost-line"><a href="#/jobrequests/${r.id}"><b>${esc(r.jr_no)}</b> · ${esc(idLabel(r) || '—')}${r.description ? ' · ' + esc(String(r.description).slice(0, 40)) : ''}${r.requested_by ? ' · by ' + esc(r.requested_by) : ''}</a><span class="badge ${action === 'Approve' ? 'blue' : 'amber'}">${action} →</span></div>`;
+  const section = (title, rows) => rows.length ? `<div style="margin-top:6px"><div class="muted" style="font-size:12px;margin:6px 0 2px">${title} (${rows.length})</div>${rows}</div>` : '';
+  const body = [
+    section('Job requests awaiting your <b>certification</b>', (pa.jr_certify || []).map((r) => jrRow(r, 'Certify')).join('')),
+    section('Job requests awaiting your <b>approval</b>', (pa.jr_approve || []).map((r) => jrRow(r, 'Approve')).join('')),
+    section('MRNs awaiting your <b>certification</b>', pa.certify.map((m) => mrnRow(m, 'Certify')).join('')),
+    section('MRNs awaiting your <b>approval</b>', pa.approve.map((m) => mrnRow(m, 'Approve')).join('')),
+    section('Job cards awaiting <b>transport approval</b>', pa.transport.map((j) => jobRow(j, 'Approve')).join('')),
+    section('Job cards awaiting <b>operations approval</b>', pa.ops.map((j) => jobRow(j, 'Approve')).join('')),
+  ].join('');
+  return `<div class="card section" style="border-left:4px solid ${pa.total ? 'var(--red)' : 'var(--green)'}">
+    <div class="toolbar" style="margin:0"><h3 style="margin:0">⚡ Pending Your Approval</h3><div class="spacer"></div><span class="badge ${pa.total ? 'red' : 'green'}">${pa.total} pending</span></div>
+    ${pa.total ? body : '<span class="muted">✓ Nothing awaiting your approval — you\'re all caught up.</span>'}</div>`;
+}
+
+async function dashMain(c) {
+  const [d, mc, pa] = await Promise.all([
+    api('/reports/dashboard'), api('/reports/monthly'),
+    api('/reports/pending-approvals').catch(() => ({ total: 0, is_approver: false, certify: [], approve: [], transport: [], ops: [], jr_certify: [], jr_approve: [] })),
+  ]);
   const na = d.needs_attention || {};
   const naTotal = Object.values(na).reduce((a, b) => a + (b || 0), 0);
   const statusRows = d.jobs_by_status.map((s) => `<tr><td>${statusBadge(s.status)}</td><td class="num">${s.count}</td></tr>`);
@@ -216,15 +420,45 @@ routes.dashboard = async (c) => {
   const projBars = d.month_cost_by_project.map((p) => `
     <div class="cost-line"><span>${esc(p.project)}</span><span>${money(p.total)}</span></div>
     <div class="bar-track"><div class="bar" style="width:${(p.total / maxProj) * 100}%"></div></div>`).join('') || '<span class="muted">No cost this month</span>';
-  c.innerHTML = `
-    ${pageHeader('Dashboard')}
+  // Role-tailored cockpit: quick-launch tiles for the sections this user can work in.
+  const wsTiles = [
+    { m: 'stores', route: 'stores', ico: '📦', title: 'Stores', sub: 'MRNs · receive · issue' },
+    { m: 'oil', route: 'oil', ico: '🛢️', title: 'Oil & Lube', sub: 'issue · stock book' },
+    { m: 'jobrequests', route: 'jobrequests', ico: '📋', title: 'Job Requests', sub: 'raise · certify · approve' },
+    { m: 'jobs', route: 'jobs', ico: '🔧', title: 'Job Cards', sub: 'manage work' },
+    { m: 'dailywork', route: 'dailywork', ico: '📅', title: 'Daily Work', sub: 'log hours' },
+    { m: 'batteries', route: 'batteries', ico: '🔋', title: 'Batteries', sub: 'track · swap' },
+    { m: 'assets', route: 'assets', ico: '🚜', title: 'Assets', sub: 'fleet registry' },
+  ].filter((w) => canEdit(w.m)).map((w) => `<a class="card stat" href="#/${w.route}" style="text-decoration:none;align-items:flex-start;gap:2px"><span class="n" style="font-size:26px">${w.ico}</span><span class="l"><b>${w.title}</b><br>${w.sub}</span></a>`).join('');
+  const S = [pageHeader('Dashboard', `${esc(ME.fullName || ME.username)} · ${esc(ME.roles.join(', '))}`), renderPendingApprovals(pa)];
+  if (wsTiles) S.push(`<div class="card section"><h3 style="margin-top:0">Your workspace</h3><div class="grid">${wsTiles}</div></div>`);
+  if (canView('reports')) S.push(`
+    <h3 style="margin-top:0">This Month · ${monthName(mc.this_month.month)}</h3>
     <div class="grid section">
-      <div class="card stat"><span class="n">${d.open_jobs_count}</span><span class="l">Open Job Cards</span></div>
-      <div class="card stat"><span class="n">${d.closed_this_month_count}</span><span class="l">Closed This Month</span></div>
-      <div class="card stat"><span class="n">${d.awaiting_price.length}</span><span class="l">Awaiting Price (blocked)</span></div>
-      <div class="card stat"><span class="n">${d.low_stock_oil.length}</span><span class="l">Low-stock Lubricants</span></div>
-      <div class="card stat"><span class="n">${d.batteries_warranty.length}</span><span class="l">Battery Warranty ≤60d</span></div>
+      <div class="card stat"><span class="n">${moneyC(mc.this_month.total)}</span><span class="l">Total Cost</span></div>
+      <div class="card stat"><span class="n">${moneyC(mc.this_month.labour)}</span><span class="l">Labour</span></div>
+      <div class="card stat"><span class="n">${moneyC(mc.this_month.head_office)}</span><span class="l">Head Office Purchase</span></div>
+      <div class="card stat"><span class="n">${moneyC(mc.this_month.local_purchase)}</span><span class="l">Local Purchase</span></div>
+      <div class="card stat"><span class="n">${moneyC(mc.this_month.oil)}</span><span class="l">Oil &amp; Lube</span></div>
     </div>
+    <div class="card section"><div class="toolbar" style="margin:0 0 8px"><h3 style="margin:0">Monthly Cost History</h3><div class="spacer"></div><span class="muted">click a month to drill in →</span></div>
+      ${tableWrap([{ label: 'Month' }, { label: 'Jobs', num: true }, { label: 'Labour', num: true }, { label: 'Head Office', num: true }, { label: 'Local', num: true }, { label: 'Oil', num: true }, { label: 'Total', num: true }],
+        mc.months.map((m) => `<tr style="cursor:pointer" onclick="location.hash='#/dashboard?month=${m.month}'">
+          <td><b>${monthName(m.month)}</b></td>
+          <td class="num">${m.jobs}</td>
+          <td class="num">${money(m.labour)}</td>
+          <td class="num">${money(m.head_office)}</td>
+          <td class="num">${money(m.local_purchase)}</td>
+          <td class="num">${money(m.oil)}</td>
+          <td class="num"><b>${money(m.total)}</b></td></tr>`), { scroll: true })}</div>`);
+  const opStats = [];
+  if (canView('jobs')) opStats.push(`<div class="card stat"><span class="n">${d.open_jobs_count}</span><span class="l">Open Job Cards</span></div>
+      <div class="card stat"><span class="n">${d.closed_this_month_count}</span><span class="l">Closed This Month</span></div>
+      <div class="card stat"><span class="n">${d.awaiting_price.length}</span><span class="l">Awaiting Price (blocked)</span></div>`);
+  if (canView('oil')) opStats.push(`<div class="card stat"><span class="n">${d.low_stock_oil.length}</span><span class="l">Low-stock Lubricants</span></div>`);
+  if (canView('batteries')) opStats.push(`<div class="card stat"><span class="n">${d.batteries_warranty.length}</span><span class="l">Battery Warranty ≤60d</span></div>`);
+  if (opStats.length) S.push(`<div class="grid section">${opStats.join('')}</div>`);
+  if (canView('reports')) S.push(`
     <a href="#/attention" style="text-decoration:none"><div class="card section" style="border-left:4px solid ${naTotal ? 'var(--amber)' : 'var(--green)'}">
       <div class="toolbar" style="margin:0"><h3 style="margin:0">⚠ Needs Attention</h3><div class="spacer"></div><span class="badge ${naTotal ? 'amber' : 'green'}">${naTotal} flag${naTotal === 1 ? '' : 's'}</span></div>
       <div class="pill-row" style="margin-top:8px">
@@ -234,21 +468,70 @@ routes.dashboard = async (c) => {
         <span class="badge ${na.grn_price_spikes ? 'red' : ''}">GRN price spikes: ${na.grn_price_spikes || 0}</span>
         <span class="badge ${na.integrity_issues ? 'red' : ''}">Integrity issues: ${na.integrity_issues || 0}</span>
       </div>
-    </div></a>
-    <div class="grid">
-      <div class="card"><h3>Jobs by Status</h3>${tableWrap([{ label: 'Status' }, { label: 'Count', num: true }], statusRows)}</div>
+    </div></a>`);
+  const G = [];
+  if (canView('jobs')) G.push(`<div class="card"><h3>Jobs by Status</h3>${tableWrap([{ label: 'Status' }, { label: 'Count', num: true }], statusRows)}</div>
       <div class="card"><h3>Awaiting Price — blocking closure</h3>
         ${d.awaiting_price.length ? d.awaiting_price.map((j) => `<div class="cost-line"><a href="#/jobs/${j.id}">${esc(j.job_no)} · ${esc(j.asset_code || '?')}</a><span class="badge red">${j.missing_count} unpriced</span></div>`).join('') : '<span class="muted">None — all priced</span>'}
-      </div>
-      <div class="card"><h3>This-Month Cost by Project</h3>${projBars}</div>
-      <div class="card"><h3>Low-stock Lubricants</h3>
+      </div>`);
+  if (canView('reports')) G.push(`<div class="card"><h3>This-Month Cost by Project</h3>${projBars}</div>`);
+  if (canView('oil')) G.push(`<div class="card"><h3>Low-stock Lubricants</h3>
         ${d.low_stock_oil.length ? d.low_stock_oil.map((p) => `<div class="cost-line"><span>${esc(p.name)}</span><span class="badge amber">${num(p.balance)} / ${num(p.reorder_level)} ${esc(p.unit)}</span></div>`).join('') : '<span class="muted">All above reorder level</span>'}
-      </div>
-      <div class="card"><h3>Battery Warranty Radar</h3>
+      </div>`);
+  if (canView('batteries')) G.push(`<div class="card"><h3>Battery Warranty Radar</h3>
         ${d.batteries_warranty.length ? d.batteries_warranty.map((b) => `<div class="cost-line"><span>${esc(b.serial_no)} ${b.asset_code ? '· ' + esc(b.asset_code) : ''}</span><span class="badge amber">${esc(b.warranty_date)}</span></div>`).join('') : '<span class="muted">Nothing expiring soon</span>'}
-      </div>
-    </div>`;
-};
+      </div>`);
+  if (G.length) S.push(`<div class="grid">${G.join('')}</div>`);
+  c.innerHTML = S.join('\n');
+}
+
+// Drill 1: which vehicles cost the most in a given month.
+async function dashMonthAssets(c, month) {
+  const data = await api('/reports/monthly/' + month + '/assets');
+  const rows = data.assets.map((a) => `<tr style="cursor:pointer" onclick="location.hash='#/dashboard?month=${month}&asset=${a.asset_id}'">
+    <td>${a.asset_code ? `<span class="stamp">${esc(a.asset_code)}</span>` : '—'}</td>
+    <td class="num">${money(a.labour)}</td>
+    <td class="num">${money(a.material)}</td>
+    <td class="num">${money(a.oil)}</td>
+    <td class="num"><b>${money(a.total)}</b></td></tr>`);
+  c.innerHTML = `${pageHeader('Cost · ' + monthName(month), 'Vehicles by cost this month — highest first. Click a vehicle for its detail.')}
+    <div class="toolbar"><a class="btn sm" href="#/dashboard">← Back to months</a><div class="spacer"></div><span class="muted">${data.assets.length} vehicle(s)</span></div>
+    ${data.assets.length ? tableWrap([{ label: 'Vehicle' }, { label: 'Labour', num: true }, { label: 'Material', num: true }, { label: 'Oil', num: true }, { label: 'Total', num: true }], rows, { scroll: true })
+      : '<div class="card"><p class="muted">No vehicle cost recorded this month.</p></div>'}`;
+}
+
+// Drill 2: one vehicle's cost for that month, with the line items.
+async function dashVehicleMonth(c, month, assetId) {
+  const d = await api('/reports/monthly/' + month + '/asset/' + assetId);
+  const lbl = (idLabel(d) || '(vehicle)');
+  const matRows = d.material_lines.map((m) => `<tr>
+    <td>${esc((m.delivery_date || '').slice(0, 10))}</td><td>${esc(m.description || '')}</td>
+    <td class="num">${num(m.qty)}</td><td class="num">${money(m.unit_price)}</td>
+    <td class="num">${money((Number(m.qty) || 0) * (Number(m.unit_price) || 0))}</td>
+    <td>${esc(sourceLabel(m.source))}</td><td>${esc(m.supplier || '')}</td></tr>`);
+  const labRows = d.labour_lines.map((l) => `<tr>
+    <td>${esc((l.work_date || '').slice(0, 10))}</td><td>${esc(l.mechanic || '')}</td>
+    <td class="num">${num(l.hours)}</td><td class="num">${money(l.rate)}</td><td class="num">${money(l.amount)}</td>
+    <td><a href="#/jobs?q=${encodeURIComponent(l.job_no || '')}">${esc(l.job_no || '')}</a></td></tr>`);
+  const oilRows = d.oil_lines.map((o) => `<tr>
+    <td>${esc((o.txn_date || '').slice(0, 10))}</td><td>${esc(o.product || '')}</td>
+    <td class="num">${num(o.qty)} ${esc(o.unit || '')}</td><td class="num">${money(o.unit_price)}</td>
+    <td class="num">${money((Number(o.qty) || 0) * (Number(o.unit_price) || 0))}</td></tr>`);
+  c.innerHTML = `${pageHeader(lbl + ' · ' + monthName(month))}
+    <div class="toolbar"><a class="btn sm" href="#/dashboard?month=${month}">← Back to ${monthName(month)}</a></div>
+    <div class="grid section">
+      <div class="card stat"><span class="n">${moneyC(d.total)}</span><span class="l">Total This Month</span></div>
+      <div class="card stat"><span class="n">${moneyC(d.labour)}</span><span class="l">Labour</span></div>
+      <div class="card stat"><span class="n">${moneyC(d.material)}</span><span class="l">Material</span></div>
+      <div class="card stat"><span class="n">${moneyC(d.oil)}</span><span class="l">Oil</span></div>
+    </div>
+    <div class="card section"><h3>Material / Purchases (${d.material_lines.length})</h3>
+      ${d.material_lines.length ? tableWrap([{ label: 'Received' }, { label: 'Item' }, { label: 'Qty', num: true }, { label: 'Unit Price', num: true }, { label: 'Value', num: true }, { label: 'Source' }, { label: 'Supplier' }], matRows, { scroll: true }) : '<span class="muted">None</span>'}</div>
+    <div class="card section"><h3>Labour (${d.labour_lines.length})</h3>
+      ${d.labour_lines.length ? tableWrap([{ label: 'Date' }, { label: 'Mechanic' }, { label: 'Hours', num: true }, { label: 'Rate', num: true }, { label: 'Amount', num: true }, { label: 'Job' }], labRows, { scroll: true }) : '<span class="muted">None</span>'}</div>
+    <div class="card section"><h3>Oil &amp; Lubricant (${d.oil_lines.length})</h3>
+      ${d.oil_lines.length ? tableWrap([{ label: 'Date' }, { label: 'Product' }, { label: 'Qty', num: true }, { label: 'Unit Price', num: true }, { label: 'Value', num: true }], oilRows, { scroll: true }) : '<span class="muted">None</span>'}</div>`;
+}
 
 // ---- Assets
 routes.assets = async (c, params) => {
@@ -312,7 +595,7 @@ async function assetDetail(c, id) {
   const a = await api('/assets/' + id);
   const lc = a.lifetime_cost;
   const sd = a.service_due;
-  c.innerHTML = `${pageHeader(a.asset.code, '<a href="#/assets">← Assets</a>')}
+  c.innerHTML = `${pageHeader(idLabel(a.asset), '<a href="#/assets">← Assets</a>')}
     <div class="toolbar"><span class="badge">${esc(a.asset.asset_class)}</span>
       <span class="badge ${a.asset.status === 'active' ? 'green' : a.asset.status === 'under_repair' ? 'amber' : ''}">${esc(a.asset.status)}</span>
       <span class="muted">${esc(a.asset.brand || '')} ${esc(a.asset.type || '')} · ${esc(a.current_project ? a.current_project.name : 'no project')}</span>
@@ -404,7 +687,7 @@ routes.jobs = async (c, params) => {
     const list = await api('/jobs' + (query ? '?' + query : ''));
     const rows = list.map((j) => `<tr>
       <td><a href="#/jobs/${j.id}">${esc(j.job_no)}</a></td>
-      <td>${esc(j.asset_code || '—')}</td>
+      <td>${vehText(j) ? `<span class="stamp">${esc(vehText(j))}</span>` : '—'}</td>
       <td style="max-width:340px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(j.description || '')}">${esc(j.description || '')}</td>
       <td><span class="badge ${j.type === 'service' ? 'blue' : ''}">${esc(j.type)}</span></td>
       <td>${statusBadge(j.status)}</td>
@@ -445,6 +728,7 @@ routes.dailywork = async (c) => {
 
   c.innerHTML = `${pageHeader('Daily Work')}
     <div class="toolbar">
+      ${can('workshop', 'manager') ? '<button class="primary sm" id="dadd">+ Add Work Done</button>' : ''}
       <button class="sm" id="dprev">← Older</button>
       <input id="ddate" type="date" value="${esc(date)}" style="max-width:170px">
       <button class="sm" id="dnext">Newer →</button>
@@ -476,7 +760,7 @@ routes.dailywork = async (c) => {
         ? money(e.external_value)
         : money(e.labour_cost) + (e.unrated && e.unrated.length ? ` <span class="badge amber" title="No rate for: ${esc(e.unrated.join(', '))}">no rate</span>` : '');
       return `<tr>
-      <td>${esc(e.asset_code || '—')}</td>
+      <td>${esc(idLabel(e) || '—')}</td>
       <td><a href="#/jobs/${e.job_id}">${esc(e.job_no)}</a></td>
       <td>${esc(e.mechanic || '—')}</td>
       <td>${esc(e.description || '')}</td>
@@ -501,8 +785,50 @@ routes.dailywork = async (c) => {
   qs('#dprev').onclick = () => { const older = dayList.filter((x) => x < qs('#ddate').value); if (older.length) go(older[0]); };
   qs('#dnext').onclick = () => { const newer = dayList.filter((x) => x > qs('#ddate').value); if (newer.length) go(newer[newer.length - 1]); };
   let deb; qs('#dq').oninput = () => { clearTimeout(deb); deb = setTimeout(() => load(qs('#ddate').value), 250); };
+  if (qs('#dadd')) qs('#dadd').onclick = () => addWorkDoneModal(qs('#ddate').value, go);
   await load(date);
 };
+
+// Log a single daily-work entry from the Daily Work section (day by day).
+async function addWorkDoneModal(defaultDate, onDone) {
+  let mechs = [];
+  try { mechs = await api('/mechanics'); } catch (e) { /* falls back to an empty list */ }
+  const mechOpts = mechs.map((m) => `<option value="${esc(m.name)}">${esc(m.name)}${m.rate != null ? ' · Rs ' + m.rate + '/h' : ' · no rate'}</option>`).join('');
+  modal('Add Work Done', `
+    ${field('Date', 'work_date', { type: 'date', value: defaultDate })}
+    ${targetPickerHtml('dwt', { label: 'Work for', generalLabel: 'General workshop' })}
+    ${field('Description of work', 'description')}
+    <label>Mechanic(s)</label>
+    <select id="dwmech"><option value="">— add a mechanic —</option>${mechOpts}</select>
+    <div id="dwcrew" class="pill-row" style="margin:6px 0;min-height:6px"></div>
+    <input type="hidden" name="mechanic">
+    ${field('Hours', 'hours', { type: 'number' })}
+    <p class="muted" style="font-size:12px;margin:2px 0 0">Pick each mechanic who worked — each is charged the full hours at their own rate.</p>
+    <div class="row">${field('External repair (outside work)', 'is_external', { type: 'checkbox' })}${field('External value (Rs, if external)', 'external_value', { type: 'number' })}</div>
+    <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Add</button></div>`, (body, close) => {
+    const getTarget = wireTargetPicker(body, 'dwt');
+    const crew = [];
+    const hidden = qs('input[name=mechanic]', body);
+    const chips = qs('#dwcrew', body);
+    const paint = () => {
+      hidden.value = crew.join(', ');
+      chips.innerHTML = crew.map((n) => `<span class="badge blue" data-rm="${esc(n)}" style="cursor:pointer" title="Remove">${esc(n)} ✕</span>`).join('');
+      qsa('[data-rm]', chips).forEach((el) => { el.onclick = () => { const i = crew.indexOf(el.dataset.rm); if (i >= 0) crew.splice(i, 1); paint(); }; });
+    };
+    qs('#dwmech', body).onchange = (e) => { const v = e.target.value; if (v && !crew.includes(v)) { crew.push(v); paint(); } e.target.value = ''; };
+    qs('#s', body).onclick = async () => {
+      const f = formData(body);
+      const t = getTarget();
+      if (t.type === 'vehicle' && !t.job_id) return toast('Pick the machine/vehicle job card', 'err');
+      try {
+        const r = await api('/daily-work', { method: 'POST', body: { ...f, request_type: t.type, job_id: t.type === 'vehicle' ? t.job_id : undefined } });
+        toast('Logged to job ' + r.job_no);
+        close();
+        onDone(r.date);
+      } catch (e) { toast(e.message, 'err'); }
+    };
+  });
+}
 
 // ---- Labour Rates (hourly rates + unassigned labour used in daily work)
 routes.labour = async (c) => {
@@ -580,7 +906,7 @@ async function jobDetail(c, id) {
   c.innerHTML = `${pageHeader(job.job_no, '<a href="#/jobs">← Job Cards</a>')}
     <div class="toolbar">${statusBadge(job.status)}<span class="badge ${job.type === 'service' ? 'blue' : ''}">${esc(job.type)}</span>
       ${job.severity ? `<span class="badge">${esc(job.severity)}</span>` : ''}
-      <a href="#/assets/${job.asset_id}">${esc(job.asset_code || '—')}</a>
+      <a href="#/assets/${job.asset_id}">${esc(idLabel(job) || '—')}</a>
       <span class="muted">${esc(job.project_name || '')}</span>
       <div class="spacer"></div>
       ${job.type === 'service' && can('workshop', 'operational_manager') && job.status !== 'CLOSED' ? `<button class="sm" id="flatlabour">Service labour${job.flat_labour != null ? ': ' + money(job.flat_labour) : ' (flat)'}</button>` : ''}
@@ -717,8 +1043,8 @@ async function addPartModal(jobId) {
 // ---- Stores
 routes.stores = async (c) => {
   const tab = (location.hash.split('?')[1] && new URLSearchParams(location.hash.split('?')[1]).get('tab')) || 'categories';
-  const tabs = ['categories', 'general', 'items', 'reorder', 'mrn', 'grn', 'issues', 'mtn'];
-  const TAB_LABELS = { general: 'GENERAL ITEMS' };
+  const tabs = ['categories', 'general', 'items', 'reorder', 'mrn', 'grn', 'awaiting', 'pending', 'issues', 'mtn'];
+  const TAB_LABELS = { general: 'GENERAL ITEMS', awaiting: 'AWAITING GRN', pending: 'PENDING PURCHASES' };
   const tabBar = `<div class="toolbar">${tabs.map((t) => `<button class="sm ${t === tab ? 'primary' : ''}" onclick="location.hash='#/stores?tab=${t}'">${TAB_LABELS[t] || t.toUpperCase()}</button>`).join('')}</div>`;
   c.innerHTML = pageHeader('Stores & Inventory') + tabBar + '<div id="storebody" class="muted">Loading…</div>';
   const body = qs('#storebody');
@@ -761,7 +1087,7 @@ routes.stores = async (c) => {
       qs('#ctable').innerHTML = tableWrap(
         [{ label: 'Item No' }, { label: 'Item Name' }, { label: 'Category' }, { label: 'Kind' }, { label: 'Requests', num: true }, { label: 'Part Numbers' }],
         list.map((i) => { const pn = i.part_numbers || ''; return `<tr>
-          <td><code>${esc(i.item_no)}</code></td>
+          <td><span class="stamp">${esc(i.item_no)}</span></td>
           <td>${esc(i.name)}</td>
           <td>${esc(i.category || '')}</td>
           <td>${kindBadge(i.catalogue_kind)}</td>
@@ -786,33 +1112,119 @@ routes.stores = async (c) => {
     return mrnList(body, params);
   } else if (tab === 'grn') {
     const canRx = can('storekeeper');
+    const fmtD = (d) => (d ? String(d).slice(0, 10) : '—');
     body.innerHTML = `
       <div class="toolbar">
-        <input id="gq" type="search" placeholder="Search GRN / item / supplier / MRN…" style="max-width:280px">
+        <input id="gq" type="search" placeholder="Search GRN / item / supplier / MRN…" style="max-width:240px">
+        <select id="gsrc" style="max-width:160px"><option value="">All sources</option><option value="head_office">Head Office</option><option value="local_purchase">Local Purchase</option></select>
         <label style="display:flex;gap:6px;align-items:center;flex-direction:row;width:auto"><input type="checkbox" id="gawait" style="width:auto"> Awaiting price only</label>
         <div class="spacer"></div><span class="muted" id="gcount"></span>
       </div>
+      <p class="muted" id="gawaitsum" style="margin:0 0 8px"></p>
       <div id="gtable"><div class="muted">Loading…</div></div>`;
     const load = async () => {
-      const q = qs('#gq').value.trim(), awaiting = qs('#gawait').checked;
-      const list = await api('/stores/grn?limit=500' + (q ? '&q=' + encodeURIComponent(q) : '') + (awaiting ? '&awaiting=1' : ''));
+      const q = qs('#gq').value.trim(), awaiting = qs('#gawait').checked, src = qs('#gsrc').value;
+      const list = await api('/stores/grn?limit=500' + (q ? '&q=' + encodeURIComponent(q) : '') + (awaiting ? '&awaiting=1' : '') + (src ? '&source=' + src : ''));
       qs('#gcount').textContent = `${list.length}${list.length === 500 ? '+' : ''} record${list.length === 1 ? '' : 's'}`;
       qs('#gtable').innerHTML = tableWrap(
-        [{ label: 'GRN' }, { label: 'MRN' }, { label: 'Description' }, { label: 'Qty', num: true }, { label: 'Unit Price', num: true }, { label: 'Value', num: true }, { label: 'Supplier' }, { label: 'Source' }].concat(canRx ? [{ label: '', num: true }] : []),
+        [{ label: 'GRN' }, { label: 'MRN' }, { label: 'Req Date' }, { label: 'Received' }, { label: 'Description' }, { label: 'Qty', num: true }, { label: 'Unit Price', num: true }, { label: 'Value', num: true }, { label: 'Supplier' }, { label: 'Source' }].concat(canRx ? [{ label: '', num: true }] : []),
         list.map((g) => `<tr>
           <td>${esc(g.grn_no || '')}</td>
           <td>${g.mrn_id ? `<a href="#/stores?tab=mrn&id=${g.mrn_id}">${esc(g.mrn_no || '')}</a>` : ''}</td>
+          <td>${fmtD(g.mrn_req_date)}</td>
+          <td>${fmtD(g.delivery_date)}</td>
           <td>${esc(g.description || '')}</td>
           <td class="num">${num(g.qty)}</td>
-          <td class="num">${g.unit_price == null ? '<span class="badge amber">awaiting</span>' : money(g.unit_price)}</td>
+          <td class="num">${g.unit_price == null ? '<span class="badge amber">awaiting</span>' : money(g.unit_price) + (g.priced_at ? `<div class="muted" style="font-size:10px">priced ${fmtD(g.priced_at)}</div>` : '')}</td>
           <td class="num">${g.unit_price == null ? '—' : money((Number(g.qty) || 0) * g.unit_price)}</td>
           <td>${esc(g.supplier || '')}</td>
           <td>${esc(sourceLabel(g.purchase_source))}</td>
           ${canRx ? `<td class="num"><button class="sm ${g.unit_price == null ? 'primary' : ''}" data-price="${g.id}">${g.unit_price == null ? 'Add price' : 'Edit'}</button></td>` : ''}</tr>`), { scroll: true });
       if (canRx) qsa('[data-price]', qs('#gtable')).forEach((btn) => btn.onclick = () => grnPriceModal(list.find((x) => String(x.id) === btn.dataset.price), load));
     };
+    api('/stores/grn/awaiting-count').then((c) => {
+      const bits = (c.by_source || []).filter((s) => s.source !== '(unset)').map((s) => `${sourceLabel(s.source)}: ${num(s.awaiting)}`).join('  ·  ');
+      const el = qs('#gawaitsum'); if (el) el.innerHTML = bits ? `⏳ Awaiting price — ${bits}  ·  ${num(c.awaiting_grn)} item(s) awaiting receipt` : '';
+    }).catch(() => {});
     let gdeb; qs('#gq').oninput = () => { clearTimeout(gdeb); gdeb = setTimeout(load, 250); };
-    qs('#gawait').onchange = load;
+    qs('#gawait').onchange = load; qs('#gsrc').onchange = load;
+    await load();
+  } else if (tab === 'awaiting') {
+    const fmtD = (d) => (d ? String(d).slice(0, 10) : '—');
+    body.innerHTML = `
+      <div class="toolbar">
+        <input id="aq" type="search" placeholder="Search MRN / item / vehicle…" style="max-width:260px">
+        <select id="asrc" style="max-width:160px"><option value="">All sources</option><option value="head_office">Head Office</option><option value="local_purchase">Local Purchase</option></select>
+        <div class="spacer"></div><span class="muted" id="acount"></span>
+      </div>
+      <p class="muted" style="margin:0 0 8px">Items requested (MRN) but not yet received. Purchase source is chosen when the item is received, so it may be blank here.</p>
+      <div id="atable"><div class="muted">Loading…</div></div>`;
+    const load = async () => {
+      const q = qs('#aq').value.trim(), src = qs('#asrc').value;
+      const list = await api('/stores/awaiting-grn?limit=500' + (q ? '&q=' + encodeURIComponent(q) : '') + (src ? '&source=' + src : ''));
+      qs('#acount').textContent = `${list.length}${list.length === 500 ? '+' : ''} item${list.length === 1 ? '' : 's'} awaiting receipt`;
+      qs('#atable').innerHTML = list.length ? tableWrap(
+        [{ label: 'Req Date' }, { label: 'MRN' }, { label: 'Vehicle' }, { label: 'Item' }, { label: 'Category' }, { label: 'Ordered', num: true }, { label: 'Received', num: true }, { label: 'Outstanding', num: true }, { label: 'Source' }],
+        list.map((r) => `<tr>
+          <td>${fmtD(r.req_date)}</td>
+          <td>${r.mrn_id ? `<a href="#/stores?tab=mrn&id=${r.mrn_id}">${esc(r.mrn_no || '')}</a>` : esc(r.mrn_no || '')}</td>
+          <td>${r.asset_code ? `<span class="stamp">${esc(r.asset_code)}</span>` : '—'}</td>
+          <td>${esc(r.description || '')}</td>
+          <td>${esc(r.category || '')}</td>
+          <td class="num">${num(r.qty)}</td>
+          <td class="num">${num(r.qty_received || 0)}</td>
+          <td class="num"><span class="badge amber">${num((Number(r.qty) || 0) - (Number(r.qty_received) || 0))}</span></td>
+          <td>${esc(sourceLabel(r.purchase_source))}</td></tr>`), { scroll: true })
+        : '<div class="card"><p class="muted">Nothing awaiting receipt — every requested item has a GRN.</p></div>';
+    };
+    let adeb; qs('#aq').oninput = () => { clearTimeout(adeb); adeb = setTimeout(load, 250); };
+    qs('#asrc').onchange = load;
+    await load();
+  } else if (tab === 'pending') {
+    const canRx = can('storekeeper');
+    body.innerHTML = `
+      <div class="toolbar">
+        <input id="pq" type="search" placeholder="Search MRN / item / vehicle…" style="max-width:220px">
+        <select id="psrc" style="max-width:150px"><option value="">All sources</option><option value="head_office">Head Office</option><option value="local_purchase">Local Purchase</option><option value="unsourced">Not sourced yet</option></select>
+        <select id="pstatus" style="max-width:160px"><option value="">Partial + Not rec.</option><option value="partial">Partial only</option><option value="not_received">Not received only</option></select>
+        <a class="btn sm" id="pprint" href="#" target="_blank">🖨 Print</a>
+        <div class="spacer"></div><span class="muted" id="pcount"></span>
+      </div>
+      <p class="muted" id="psum" style="margin:0 0 8px"></p>
+      <div id="ptable"><div class="muted">Loading…</div></div>`;
+    const qstr = () => { const s = qs('#psrc').value, st = qs('#pstatus').value, q = qs('#pq').value.trim(); return (s ? '&source=' + s : '') + (st ? '&status=' + st : '') + (q ? '&q=' + encodeURIComponent(q) : ''); };
+    const load = async () => {
+      const list = await api('/stores/pending?limit=2000' + qstr());
+      qs('#pcount').textContent = `${list.length} pending line(s)`;
+      qs('#pprint').href = '/api/stores/pending/print.html?x=1' + qstr();
+      qs('#ptable').innerHTML = list.length ? tableWrap(
+        [{ label: 'MRN' }, { label: 'Req Date' }, { label: 'Vehicle' }, { label: 'Item' }, { label: 'Ordered', num: true }, { label: 'Received', num: true }, { label: 'Pending', num: true }, { label: 'Status' }, { label: 'Source' }].concat(canRx ? [{ label: '' }] : []),
+        list.map((r) => `<tr>
+          <td><a href="#/stores?tab=mrn&id=${r.mrn_id}">${esc(r.mrn_no || '')}</a></td>
+          <td>${esc((r.req_date || '').slice(0, 10))}</td>
+          <td>${r.asset_code ? `<span class="stamp">${esc(r.asset_code)}</span>` : '—'}</td>
+          <td>${esc(r.description || '')}</td>
+          <td class="num">${num(r.ordered)}</td>
+          <td class="num">${num(r.received)}</td>
+          <td class="num"><span class="badge amber">${num(r.pending)}</span></td>
+          <td><span class="badge ${r.status === 'partial' ? 'blue' : ''}">${r.status === 'partial' ? 'Partial' : 'Not received'}</span></td>
+          <td>${r.source ? esc(sourceLabel(r.source)) : '<span class="muted">—</span>'}</td>
+          ${canRx ? `<td><select data-setsrc="${r.id}" style="width:auto;font-size:12px"><option value="">set source…</option><option value="head_office">→ Head Office</option><option value="local_purchase">→ Local Purchase</option></select></td>` : ''}</tr>`), { scroll: true })
+        : '<div class="card"><p class="muted">Nothing pending — every requested item is fully received.</p></div>';
+      if (canRx) qsa('[data-setsrc]', qs('#ptable')).forEach((sel) => { sel.onchange = async () => { if (!sel.value) return; try { await api('/stores/mrn/line/' + sel.dataset.setsrc, { method: 'PATCH', body: { purchase_source: sel.value } }); toast('Source set'); load(); loadSummary(); } catch (e) { toast(e.message, 'err'); sel.value = ''; } }; });
+    };
+    const loadSummary = async () => {
+      try {
+        const s = await api('/stores/pending/summary');
+        const by = { head_office: { partial: 0, not_received: 0 }, local_purchase: { partial: 0, not_received: 0 }, unsourced: { partial: 0, not_received: 0 } };
+        for (const r of s) { const k = r.source || 'unsourced'; (by[k] || by.unsourced)[r.status] = r.count; }
+        const fmt = (k, name) => `${name}: ${(by[k].partial || 0) + (by[k].not_received || 0)} (${by[k].partial || 0} partial · ${by[k].not_received || 0} not rec.)`;
+        qs('#psum').textContent = `${fmt('head_office', 'Head Office')}   ·   ${fmt('local_purchase', 'Local Purchase')}   ·   ${fmt('unsourced', 'Not sourced')}`;
+      } catch (e) { /* ignore */ }
+    };
+    let pdeb; qs('#pq').oninput = () => { clearTimeout(pdeb); pdeb = setTimeout(load, 250); };
+    qs('#psrc').onchange = load; qs('#pstatus').onchange = load;
+    loadSummary();
     await load();
   } else if (tab === 'issues') {
     body.innerHTML = `
@@ -875,15 +1287,15 @@ async function mrnList(body, params) {
     qs('#mcount').textContent = `${list.length}${list.length === 500 ? '+' : ''} MRN${list.length === 1 ? '' : 's'}`;
     qs('#mtable').innerHTML = tableWrap(
       [{ label: 'MRN No' }, { label: 'Date' }, { label: 'Vehicle' }, { label: 'Source' }, { label: 'Lines', num: true }, { label: 'Qty Req', num: true }, { label: 'Qty Recd', num: true }, { label: 'Status' }],
-      list.map((m) => `<tr data-mrn="${m.id}" style="cursor:pointer">
+      list.map((m) => `<tr data-mrn="${m.id}" style="cursor:pointer${m.approval_status === 'rejected' ? ';background:rgba(196,57,44,.06)' : ''}">
         <td><a href="#/stores?tab=mrn&id=${m.id}">${esc(m.mrn_no)}</a></td>
         <td>${esc((m.req_date || '').slice(0, 10))}</td>
-        <td>${esc(m.asset_code || '—')}</td>
+        <td>${esc(idLabel(m) || '—')}</td>
         <td>${esc(sourceLabel(m.purchase_source))}</td>
         <td class="num">${m.line_count}</td>
         <td class="num">${num(m.qty_requested)}</td>
         <td class="num">${num(m.qty_received)}</td>
-        <td>${mrnStatusBadge(m.status)}</td></tr>`), { scroll: true });
+        <td>${m.approval_status === 'rejected' ? '<span class="badge red">✕ Cancelled (rejected)</span>' : receiptBadge(m.qty_requested, m.qty_received)}</td></tr>`), { scroll: true });
     qsa('[data-mrn]').forEach((tr) => tr.onclick = (e) => { if (e.target.tagName !== 'A') location.hash = '#/stores?tab=mrn&id=' + tr.dataset.mrn; });
   };
   let deb; qs('#mq').oninput = () => { clearTimeout(deb); deb = setTimeout(load, 250); };
@@ -897,13 +1309,18 @@ async function mrnDetail(body, id) {
   const m = d.mrn;
   const canRx = can('storekeeper');
   const lineRows = d.lines.map((l) => {
-    const remaining = Math.max(0, (Number(l.qty) || 0) - (Number(l.qty_received) || 0));
+    const req = Number(l.qty) || 0, rec = Number(l.qty_received) || 0;
+    const remaining = Math.max(0, req - rec);
+    const status = rec <= 0 ? '<span class="badge amber">Pending received</span>'
+      : rec < req ? '<span class="badge blue">Partial received</span>'
+      : '<span class="badge green">✓ Received</span>';
     return `<tr>
       <td>${esc(l.description || '')}</td>
       <td>${esc(l.category || '')}</td>
       <td class="num">${num(l.qty)} ${esc(l.unit || '')}</td>
       <td class="num">${num(l.qty_received)}</td>
       <td class="num">${remaining > 0 ? `<span class="badge amber">${num(remaining)}</span>` : '<span class="badge green">0</span>'}</td>
+      <td>${status}</td>
       ${canRx ? `<td class="num">${remaining > 0 ? `<button class="sm primary" data-rx="${l.id}" data-desc="${esc(l.description || '')}" data-rem="${remaining}">Receive</button>` : '✓'}</td>` : ''}</tr>`;
   });
   const grnRows = d.grns.map((g) => `<tr>
@@ -915,12 +1332,36 @@ async function mrnDetail(body, id) {
     <td>${esc(g.supplier || '')}</td>
     <td>${esc(sourceLabel(g.purchase_source))}</td>
     ${canRx ? `<td class="num"><button class="sm ${g.unit_price == null ? 'primary' : ''}" data-price="${g.id}">${g.unit_price == null ? 'Add price' : 'Edit'}</button></td>` : ''}</tr>`);
+  const astatus = m.approval_status || 'requested';
+  // Imported/historical MRNs (no live requester) predate the approval workflow → treat as approved.
+  const isImported = astatus === 'requested' && !(m.requested_by && String(m.requested_by).trim());
+  const aBadge = isImported
+    ? '<span class="badge green">✓ Approved (imported)</span>'
+    : ({ requested: '<span class="badge amber">Awaiting certification</span>', certified: '<span class="badge blue">Certified · awaiting approval</span>', approved: '<span class="badge green">✓ Approved</span>', rejected: '<span class="badge red">✕ Cancelled (rejected)</span>' }[astatus] || '');
+  const sig = (name, at) => name ? `${esc(name)} <span class="muted">· ${esc((at || '').slice(0, 16).replace('T', ' '))}</span>` : '<span class="muted">pending</span>';
+  const canCertify = !isImported && can('workshop') && astatus === 'requested';
+  const canApprove = can('operational_manager') && astatus === 'certified';
+  const canReject = !isImported && (can('workshop') || can('operational_manager')) && astatus !== 'approved' && astatus !== 'rejected';
   body.innerHTML = `
-    <div class="toolbar"><a class="btn sm" href="#/stores?tab=mrn">← MRN list</a></div>
+    <div class="toolbar"><a class="btn sm" href="#/stores?tab=mrn">← MRN list</a><div class="spacer"></div><a class="btn sm" href="/api/stores/mrn/${m.id}/print.html" target="_blank">🖨 Print MRN</a></div>
     <div class="card">
-      <h3>MRN ${esc(m.mrn_no)} ${mrnStatusBadge(m.status)}</h3>
-      <p class="muted">Date ${esc((m.req_date || '').slice(0, 10))} · Vehicle ${esc(m.asset_code || '—')} · Source ${esc(sourceLabel(m.purchase_source))}${m.purpose ? ' · ' + esc(m.purpose) : ''}${m.requested_by ? ' · by ' + esc(m.requested_by) : ''}</p>
-      ${tableWrap([{ label: 'Item description' }, { label: 'Category' }, { label: 'Qty requested', num: true }, { label: 'Qty received', num: true }, { label: 'Remaining', num: true }].concat(canRx ? [{ label: '', num: true }] : []), lineRows, { scroll: true })}
+      <div class="toolbar" style="margin:0"><h3 style="margin:0">Approval flow</h3><div class="spacer"></div>${aBadge}
+        ${canCertify ? '<button class="sm primary" id="mcertify">✍ Certify</button>' : ''}
+        ${canApprove ? '<button class="sm primary" id="mapprove">✅ Approve</button>' : ''}
+        ${canReject ? '<button class="sm danger" id="mreject">Reject</button>' : ''}
+      </div>
+      ${isImported ? '<p class="muted" style="margin:8px 0 0">Imported record — predates the approval workflow, so it is treated as already approved. No certification/approval is required.</p>' : `
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-top:8px;font-size:13px">
+        <div><b>1 · Requested</b>${m.requested_sig ? `<div style="height:30px"><img src="${m.requested_sig}" style="max-height:30px;max-width:130px"></div>` : ''}<br>${sig(m.requested_by, m.req_date)}<br><span class="muted">Storekeeper</span></div>
+        <div><b>2 · Certified</b>${m.certified_sig ? `<div style="height:30px"><img src="${m.certified_sig}" style="max-height:30px;max-width:130px"></div>` : ''}<br>${sig(m.certified_by, m.certified_at)}<br><span class="muted">Workshop Engineer</span></div>
+        <div><b>3 · Approved</b>${m.approved_sig ? `<div style="height:30px"><img src="${m.approved_sig}" style="max-height:30px;max-width:130px"></div>` : ''}<br>${sig(m.approved_by, m.approved_at)}<br><span class="muted">Operational Manager</span></div>
+      </div>
+      ${(d.approvals && d.approvals.length) ? `<div style="margin-top:10px;border-top:1px solid var(--border);padding-top:6px">${d.approvals.map((a) => `<div class="cost-line"><span>${a.decision === 'rejected' ? '✕' : '✓'} ${esc(a.stage)} — <b>${esc(a.signed_name || '')}</b> <span class="muted">(${esc(a.role || '')})</span>${a.reason ? ' · ' + esc(a.reason) : ''}</span><span class="muted">${esc((a.created_at || '').slice(0, 16).replace('T', ' '))}</span></div>`).join('')}</div>` : ''}`}
+    </div>
+    <div class="card">
+      <h3>MRN ${esc(m.mrn_no)} ${receiptBadge(d.lines.reduce((s, l) => s + (Number(l.qty) || 0), 0), d.lines.reduce((s, l) => s + (Number(l.qty_received) || 0), 0))} ${aBadge}</h3>
+      <p class="muted">Date ${esc((m.req_date || '').slice(0, 10))} · Vehicle ${esc(idLabel(m) || '—')} · Source ${esc(sourceLabel(m.purchase_source))}${m.purpose ? ' · ' + esc(m.purpose) : ''}${m.requested_by ? ' · by ' + esc(m.requested_by) : ''}</p>
+      ${tableWrap([{ label: 'Item description' }, { label: 'Category' }, { label: 'Qty requested', num: true }, { label: 'Qty received', num: true }, { label: 'Remaining', num: true }, { label: 'Status' }].concat(canRx ? [{ label: '', num: true }] : []), lineRows, { scroll: true })}
     </div>
     <div class="card">
       <h3>Received records — GRN <span class="muted">(${d.grns.length})</span></h3>
@@ -932,6 +1373,39 @@ async function mrnDetail(body, id) {
     qsa('[data-rx]').forEach((btn) => btn.onclick = () => receiveModal(m, btn.dataset.rx, btn.dataset.desc, btn.dataset.rem, () => mrnDetail(body, id)));
     qsa('[data-price]').forEach((btn) => btn.onclick = () => grnPriceModal(d.grns.find((x) => String(x.id) === btn.dataset.price), () => mrnDetail(body, id)));
   }
+  if (qs('#mcertify')) qs('#mcertify').onclick = () => mrnSignModal(m, 'certify', () => mrnDetail(body, id));
+  if (qs('#mapprove')) qs('#mapprove').onclick = () => mrnSignModal(m, 'approve', () => mrnDetail(body, id));
+  if (qs('#mreject')) qs('#mreject').onclick = () => mrnSignModal(m, 'reject', () => mrnDetail(body, id));
+}
+
+// E-signature modal for MRN certify / approve / reject.
+function mrnSignModal(mrn, action, onDone) {
+  const meta = {
+    certify: { title: 'Certify MRN', verb: 'certify', btn: 'Sign & Certify' },
+    approve: { title: 'Approve MRN', verb: 'approve', btn: 'Sign & Approve' },
+    reject: { title: 'Reject MRN', verb: 'reject', btn: 'Reject' },
+  }[action];
+  const who = esc(ME.fullName || ME.username);
+  const withSig = action !== 'reject';
+  modal(meta.title + ' — ' + esc(mrn.mrn_no), `
+    <p class="muted">Signing as <b>${who}</b> <span class="badge blue">${esc(ME.roles.join(', '))}</span></p>
+    ${action === 'reject'
+      ? field('Reason (required)', 'reason')
+      : `<label style="display:flex;gap:8px;align-items:flex-start;font-weight:400"><input type="checkbox" id="confirm" style="width:auto;margin-top:3px"> I, ${who}, ${meta.verb} this material requisition. This records my e-signature and time.</label>
+         <label>Signature</label>${signaturePadHtml('signpad')}
+         ${field('Remark (optional)', 'reason')}`}
+    <div style="margin-top:12px;text-align:right"><button class="primary" id="s">${meta.btn}</button></div>`, (body, close) => {
+    let pad = null;
+    if (withSig) { pad = wireSignaturePad(body, 'signpad', null); (async () => { try { const s = (await api('/auth/signature')).signature; if (s) pad.load(s); } catch (e) { /* no saved sig */ } })(); }
+    qs('#s', body).onclick = async () => {
+      const f = formData(body);
+      if (action !== 'reject' && !qs('#confirm', body).checked) return toast('Tick the confirmation to e-sign', 'err');
+      if (action === 'reject' && !String(f.reason || '').trim()) return toast('A reason is required to reject', 'err');
+      const signature = (withSig && pad && !pad.isEmpty()) ? pad.dataURL() : undefined;
+      const past = { certify: 'certified', approve: 'approved', reject: 'rejected' }[action];
+      try { await api('/stores/mrn/' + mrn.id + '/' + action, { method: 'POST', body: { reason: f.reason, signature } }); toast('MRN ' + past + (action !== 'reject' ? ' · e-signed' : '')); close(); onDone(); } catch (e) { toast(e.message, 'err'); }
+    };
+  });
 }
 
 function receiveModal(mrn, lineId, desc, remaining, onDone) {
@@ -990,26 +1464,37 @@ async function newMrnModal() {
   let nextNo = '';
   try { nextNo = (await api('/stores/numbers')).next_mrn; } catch (e) { /* leave blank -> auto */ }
   modal('New MRN', `
-    ${field('MRN Number', 'mrn_no', { value: nextNo, placeholder: 'auto if left blank' })}
-    ${field('Asset (code/text)', 'asset')}
-    ${field('Purchase source', 'purchase_source', { type: 'select', options: SOURCE_OPTS })}
-    ${field('Purpose', 'purpose')}
-    ${field('Requested by', 'requested_by')}
-    <h3>Lines</h3><div id="lines"></div>
-    <button class="sm" id="addline">+ line</button>
+    <div class="row">${field('MRN Number (edit to override)', 'mrn_no', { value: nextNo })}${field('Date', 'req_date', { type: 'date', value: new Date().toISOString().slice(0, 10) })}</div>
+    <p class="muted" style="font-size:12px;margin:0 0 4px">Continues from the last number (${esc(nextNo || 'auto')}). Change it to set a specific number.</p>
+    <div class="row">${field('Project / Workshop', 'purpose', { placeholder: 'e.g. Badalgama W/Shop' })}${field('Required date', 'required_date', { type: 'date' })}</div>
+    ${targetPickerHtml('mrnt', { label: 'Request for', generalLabel: 'General item (store)' })}
+    <div class="row">${field('Requested by', 'requested_by')}${field('Default source (per item below)', 'purchase_source', { type: 'select', options: SOURCE_OPTS })}</div>
+    <h3>Items <span class="muted" style="font-weight:400;font-size:12px">— set Head Office / Local per item</span></h3><div id="lines"></div>
+    <button class="sm" id="addline">+ item</button>
     <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Create MRN</button></div>`, (body, close) => {
+    const getTarget = wireTargetPicker(body, 'mrnt');
     const lines = qs('#lines', body);
-    const addLine = () => { const d = document.createElement('div'); d.className = 'row'; d.innerHTML = field('Description', 'ldesc') + field('Qty', 'lqty', { type: 'number', value: 1 }); lines.appendChild(d); };
+    const addLine = () => {
+      const defSrc = qs('[name=purchase_source]', body) ? qs('[name=purchase_source]', body).value : '';
+      const d = document.createElement('div');
+      d.style.cssText = 'border-bottom:1px solid var(--border);padding-bottom:8px;margin-bottom:8px';
+      d.innerHTML = field('Description', 'ldesc') + '<div class="row">' + field('Unit', 'lunit', { value: 'nos' }) + field('Qty', 'lqty', { type: 'number', value: 1 }) + field('Source', 'lsrc', { type: 'select', options: SOURCE_OPTS, value: defSrc }) + '</div>';
+      lines.appendChild(d);
+    };
     addLine();
     qs('#addline', body).onclick = addLine;
     qs('#s', body).onclick = async () => {
       const d = formData(body);
       const descs = qsa('[name=ldesc]', body).map((e) => e.value);
+      const units = qsa('[name=lunit]', body).map((e) => e.value);
       const qtys = qsa('[name=lqty]', body).map((e) => e.value);
+      const srcs = qsa('[name=lsrc]', body).map((e) => e.value);
+      const t = getTarget();
+      if (t.type === 'vehicle' && !t.job_id) return toast('Pick a job card for the machine/vehicle request', 'err');
       const payload = {
-        mrn_no: d.mrn_no, asset: d.asset, purchase_source: d.purchase_source || undefined,
-        purpose: d.purpose, requested_by: d.requested_by,
-        lines: descs.map((desc, i) => ({ description: desc, qty: qtys[i] })).filter((l) => l.description),
+        mrn_no: d.mrn_no, req_date: d.req_date, request_type: t.type, job_id: t.type === 'vehicle' ? t.job_id : undefined,
+        purchase_source: d.purchase_source || undefined, purpose: d.purpose, required_date: d.required_date, requested_by: d.requested_by,
+        lines: descs.map((desc, i) => ({ description: desc, unit: units[i] || 'nos', qty: qtys[i], purchase_source: srcs[i] || undefined })).filter((l) => l.description),
       };
       try { const r = await api('/stores/mrn', { method: 'POST', body: payload }); close(); toast('MRN ' + r.mrn.mrn_no + ' created'); location.hash = '#/stores?tab=mrn&id=' + r.mrn.id; } catch (e) { toast(e.message, 'err'); }
     };
@@ -1042,6 +1527,155 @@ function newIssueModal(onDone) {
     });
 }
 
+// ---- Job Requests (Transport) — Assistant Transport raises → Transport Manager
+// certifies → Operational Manager approves (auto-creates a job card).
+const JR_STATUS = {
+  requested: '<span class="badge amber">Awaiting certification</span>',
+  certified: '<span class="badge blue">Certified · awaiting approval</span>',
+  approved: '<span class="badge green">✓ Approved</span>',
+  rejected: '<span class="badge red">✕ Rejected</span>',
+};
+const jrBadge = (s) => JR_STATUS[s] || mrnStatusBadge(s);
+
+routes.jobrequests = async (c, params) => {
+  if (params[0]) return jobRequestDetail(c, params[0]);
+  return jobRequestList(c);
+};
+
+async function jobRequestList(c) {
+  const sp = new URLSearchParams(location.hash.split('?')[1] || '');
+  const cur = { q: sp.get('q') || '' };
+  c.innerHTML = `${pageHeader('Job Requests', 'Transport → Assistant raises · Transport Manager certifies · Operational Manager approves')}
+    <div class="toolbar">
+      ${can('assistant_transport_manager') ? '<button class="primary" id="njr">+ New Job Request</button>' : ''}
+      <input id="jrq" type="search" placeholder="Search JR no / vehicle / description…" value="${esc(cur.q)}" style="max-width:280px">
+      <div class="spacer"></div><span class="muted" id="jrcount"></span>
+    </div>
+    <div id="jrtable"><div class="muted">Loading…</div></div>`;
+  const load = async () => {
+    const q = qs('#jrq').value.trim();
+    history.replaceState(null, '', '#/jobrequests' + (q ? '?q=' + encodeURIComponent(q) : ''));
+    const list = await api('/job-requests?' + (q ? 'q=' + encodeURIComponent(q) + '&' : '') + 'limit=500');
+    qs('#jrcount').textContent = `${list.length}${list.length === 500 ? '+' : ''} request${list.length === 1 ? '' : 's'}`;
+    qs('#jrtable').innerHTML = tableWrap(
+      [{ label: 'JR No' }, { label: 'Date' }, { label: 'Vehicle' }, { label: 'Type' }, { label: 'Work requested' }, { label: 'Requested By' }, { label: 'Job Card' }, { label: 'Status' }],
+      list.map((r) => `<tr data-jr="${r.id}" style="cursor:pointer${r.approval_status === 'rejected' ? ';background:rgba(196,57,44,.06)' : ''}">
+        <td><a href="#/jobrequests/${r.id}">${esc(r.jr_no)}</a></td>
+        <td>${esc((r.req_date || '').slice(0, 10))}</td>
+        <td>${esc(idLabel(r) || '—')}</td>
+        <td>${esc(r.type || '')}${r.severity ? ' · ' + esc(r.severity) : ''}</td>
+        <td>${esc(String(r.description || '').slice(0, 60))}</td>
+        <td>${esc(r.requested_by || '')}</td>
+        <td>${r.job_no ? `<a href="#/jobs/${r.job_id}">${esc(r.job_no)}</a>` : '—'}</td>
+        <td>${jrBadge(r.approval_status)}</td></tr>`), { scroll: true });
+    qsa('[data-jr]').forEach((tr) => tr.onclick = (e) => { if (e.target.tagName !== 'A') location.hash = '#/jobrequests/' + tr.dataset.jr; });
+  };
+  let deb; qs('#jrq').oninput = () => { clearTimeout(deb); deb = setTimeout(load, 250); };
+  if (qs('#njr')) qs('#njr').onclick = newJobRequestModal;
+  await load();
+}
+
+async function jobRequestDetail(c, id) {
+  const d = await api('/job-requests/' + id);
+  const r = d.request;
+  const st = r.approval_status || 'requested';
+  const sig = (name, at) => name ? `${esc(name)} <span class="muted">· ${esc((at || '').slice(0, 16).replace('T', ' '))}</span>` : '<span class="muted">pending</span>';
+  const canCertify = can('transport_manager') && st === 'requested';
+  const canApprove = (can('operational_manager') || can('manager')) && st === 'certified';
+  const canReject = (can('transport_manager') || can('operational_manager') || can('manager')) && st !== 'approved' && st !== 'rejected';
+  c.innerHTML = `
+    <div class="toolbar"><a class="btn sm" href="#/jobrequests">← Job Requests</a><div class="spacer"></div><a class="btn sm" href="/api/job-requests/${r.id}/print.html" target="_blank">🖨 Print Job Request</a></div>
+    <div class="card">
+      <div class="toolbar" style="margin:0"><h3 style="margin:0">Approval flow</h3><div class="spacer"></div>${jrBadge(st)}
+        ${canCertify ? '<button class="sm primary" id="jrcertify">✍ Certify</button>' : ''}
+        ${canApprove ? '<button class="sm primary" id="jrapprove">✅ Approve</button>' : ''}
+        ${canReject ? '<button class="sm danger" id="jrreject">Reject</button>' : ''}
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-top:8px;font-size:13px">
+        <div><b>1 · Requested</b>${r.requested_sig ? `<div style="height:30px"><img src="${r.requested_sig}" style="max-height:30px;max-width:130px"></div>` : ''}<br>${sig(r.requested_by, r.req_date)}<br><span class="muted">Assistant Transport Manager</span></div>
+        <div><b>2 · Certified</b>${r.certified_sig ? `<div style="height:30px"><img src="${r.certified_sig}" style="max-height:30px;max-width:130px"></div>` : ''}<br>${sig(r.certified_by, r.certified_at)}<br><span class="muted">Transport Manager</span></div>
+        <div><b>3 · Approved</b>${r.approved_sig ? `<div style="height:30px"><img src="${r.approved_sig}" style="max-height:30px;max-width:130px"></div>` : ''}<br>${sig(r.approved_by, r.approved_at)}<br><span class="muted">Operational Manager</span></div>
+      </div>
+      ${(d.approvals && d.approvals.length) ? `<div style="margin-top:10px;border-top:1px solid var(--border);padding-top:6px">${d.approvals.map((a) => `<div class="cost-line"><span>${a.decision === 'rejected' ? '✕' : '✓'} ${esc(a.stage)} — <b>${esc(a.signed_name || '')}</b> <span class="muted">(${esc(a.role || '')})</span>${a.reason ? ' · ' + esc(a.reason) : ''}</span><span class="muted">${esc((a.created_at || '').slice(0, 16).replace('T', ' '))}</span></div>`).join('')}</div>` : ''}
+    </div>
+    <div class="card">
+      <h3>Job Request ${esc(r.jr_no)} ${jrBadge(st)}</h3>
+      <p class="muted">Date ${esc((r.req_date || '').slice(0, 10))} · Vehicle ${esc(idLabel(r) || '—')} · ${esc((r.type || '').toUpperCase())}${r.severity ? ' / ' + esc(r.severity) : ''} · Priority ${esc(r.priority || 'normal')}${r.project_name ? ' · ' + esc(r.project_name) : ''}${r.required_date ? ' · required ' + esc((r.required_date || '').slice(0, 10)) : ''}</p>
+      <div style="white-space:pre-wrap;border:1px solid var(--border);border-radius:6px;padding:10px;background:var(--surface)">${esc(r.description || '')}</div>
+      ${r.job_no ? `<p style="margin-top:10px">✅ Approved — job card created: <a href="#/jobs/${r.job_id}"><b>${esc(r.job_no)}</b></a>${r.job_status ? ' <span class="badge">' + esc(r.job_status) + '</span>' : ''}</p>` : ''}
+    </div>`;
+  if (qs('#jrcertify')) qs('#jrcertify').onclick = () => jobRequestSignModal(r, 'certify', () => jobRequestDetail(c, id));
+  if (qs('#jrapprove')) qs('#jrapprove').onclick = () => jobRequestSignModal(r, 'approve', () => jobRequestDetail(c, id));
+  if (qs('#jrreject')) qs('#jrreject').onclick = () => jobRequestSignModal(r, 'reject', () => jobRequestDetail(c, id));
+}
+
+// E-signature modal for Job Request certify / approve / reject.
+function jobRequestSignModal(jr, action, onDone) {
+  const meta = {
+    certify: { title: 'Certify Job Request', verb: 'certify', btn: 'Sign & Certify' },
+    approve: { title: 'Approve Job Request', verb: 'approve', btn: 'Sign & Approve' },
+    reject: { title: 'Reject Job Request', verb: 'reject', btn: 'Reject' },
+  }[action];
+  const who = esc(ME.fullName || ME.username);
+  const withSig = action !== 'reject';
+  modal(meta.title + ' — ' + esc(jr.jr_no), `
+    <p class="muted">Signing as <b>${who}</b> <span class="badge blue">${esc(ME.roles.join(', '))}</span></p>
+    ${action === 'approve' ? '<p class="muted">Approving will create the job card and route it to the workshop.</p>' : ''}
+    ${action === 'reject'
+      ? field('Reason (required)', 'reason')
+      : `<label style="display:flex;gap:8px;align-items:flex-start;font-weight:400"><input type="checkbox" id="confirm" style="width:auto;margin-top:3px"> I, ${who}, ${meta.verb} this job request. This records my e-signature and time.</label>
+         <label>Signature</label>${signaturePadHtml('jrsignpad')}
+         ${field('Remark (optional)', 'reason')}`}
+    <div style="margin-top:12px;text-align:right"><button class="primary" id="s">${meta.btn}</button></div>`, (body, close) => {
+    let pad = null;
+    if (withSig) { pad = wireSignaturePad(body, 'jrsignpad', null); (async () => { try { const s = (await api('/auth/signature')).signature; if (s) pad.load(s); } catch (e) { /* no saved sig */ } })(); }
+    qs('#s', body).onclick = async () => {
+      const f = formData(body);
+      if (action !== 'reject' && !qs('#confirm', body).checked) return toast('Tick the confirmation to e-sign', 'err');
+      if (action === 'reject' && !String(f.reason || '').trim()) return toast('A reason is required to reject', 'err');
+      const signature = (withSig && pad && !pad.isEmpty()) ? pad.dataURL() : undefined;
+      const past = { certify: 'certified', approve: 'approved', reject: 'rejected' }[action];
+      try {
+        const r = await api('/job-requests/' + jr.id + '/' + action, { method: 'POST', body: { reason: f.reason, signature } });
+        toast('Job request ' + past + (action === 'approve' && r.job ? ' · job card ' + r.job.job_no + ' created' : (action !== 'reject' ? ' · e-signed' : '')));
+        close(); onDone();
+      } catch (e) { toast(e.message, 'err'); }
+    };
+  });
+}
+
+async function newJobRequestModal() {
+  let nextNo = '';
+  try { nextNo = (await api('/job-requests/numbers')).next_jr; } catch (e) { /* leave blank -> auto */ }
+  let projects = [];
+  try { projects = await api('/projects'); } catch (e) { /* optional */ }
+  const projOpts = [{ value: '', label: '—' }].concat(projects.map((p) => ({ value: p.id, label: p.name })));
+  modal('New Job Request', `
+    <div class="row">${field('JR Number (edit to override)', 'jr_no', { value: nextNo })}${field('Date', 'req_date', { type: 'date', value: new Date().toISOString().slice(0, 10) })}</div>
+    <p class="muted" style="font-size:12px;margin:0 0 4px">Continues from the last number (${esc(nextNo || 'auto')}). Change it to set a specific number.</p>
+    ${assetPickerHtml('Vehicle / Machine (search & select) *')}
+    <div class="row">${field('Type', 'type', { type: 'select', options: [{ value: 'repair', label: 'Repair' }, { value: 'service', label: 'Service' }] })}${field('Severity', 'severity', { type: 'select', options: [{ value: '', label: '—' }, { value: 'major', label: 'Major' }, { value: 'minor', label: 'Minor' }] })}</div>
+    <div class="row">${field('Priority', 'priority', { type: 'select', options: [{ value: 'normal', label: 'Normal' }, { value: 'urgent', label: 'Urgent' }] })}${field('Required date', 'required_date', { type: 'date' })}</div>
+    ${field('Project', 'project_id', { type: 'select', options: projOpts })}
+    ${field('Work requested *', 'description', { type: 'textarea' })}
+    ${field('Requested by', 'requested_by')}
+    <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Create Job Request</button></div>`, (body, close) => {
+    wireAssetPicker(body);
+    qs('#s', body).onclick = async () => {
+      const d = formData(body);
+      if (!String(d.description || '').trim()) return toast('Describe the work requested', 'err');
+      if (!d.asset && !d.asset_id) return toast('Pick the vehicle / machine', 'err');
+      try {
+        const r = await api('/job-requests', { method: 'POST', body: d });
+        close();
+        if (r.unresolved) toast('Job request created — vehicle "' + r.unresolved.raw + '" queued in the Alias Queue', 'err');
+        else toast('Job request ' + r.request.jr_no + ' created');
+        location.hash = '#/jobrequests/' + r.request.id;
+      } catch (e) { toast(e.message, 'err'); }
+    };
+  });
+}
+
 // ---- Oil
 routes.oil = async (c) => {
   const tab = (location.hash.split('?')[1] && new URLSearchParams(location.hash.split('?')[1]).get('tab')) || 'products';
@@ -1050,11 +1684,12 @@ routes.oil = async (c) => {
   const body = qs('#oilbody');
   if (tab === 'products') {
     const list = await api('/oil/products');
-    body.innerHTML = `${can('storekeeper') ? '<div class="toolbar"><button class="primary" id="np">+ New Product</button><button class="sm" id="nl">+ Ledger Txn</button></div>' : ''}
+    body.innerHTML = `${can('storekeeper') ? '<div class="toolbar"><button class="primary" id="ntop">⛽ Issue / Top-up</button><button class="sm" id="np">+ New Product</button><button class="sm" id="nl">+ Ledger Txn</button></div>' : ''}
       ${tableWrap([{ label: 'Code' }, { label: 'Name' }, { label: 'Unit' }, { label: 'Category' }, { label: 'Balance', num: true }, { label: 'Reorder', num: true }, { label: 'Unit Price', num: true }],
         list.map((p) => `<tr><td>${esc(p.code || '')}</td><td>${esc(p.name)}</td><td>${esc(p.unit)}</td><td>${esc(p.category || '')}</td><td class="num ${p.current_balance <= p.reorder_level ? '' : ''}">${p.current_balance <= p.reorder_level && p.reorder_level > 0 ? `<span class="badge amber">${num(p.current_balance)}</span>` : num(p.current_balance)}</td><td class="num">${num(p.reorder_level)}</td><td class="num">${money(p.unit_price)}</td></tr>`), { scroll: true })}`;
     if (qs('#np')) qs('#np').onclick = () => simpleCreateModal('New Product', '/oil/products', [['Code', 'code'], ['Name *', 'name'], ['Unit (L/kg/nos)', 'unit'], ['Category', 'category'], ['Reorder level', 'reorder_level', 'number'], ['Unit price', 'unit_price', 'number']]);
     if (qs('#nl')) qs('#nl').onclick = () => newLedgerModal(list);
+    if (qs('#ntop')) qs('#ntop').onclick = () => oilTopupModal(list);
   } else if (tab === 'ledger') {
     const list = await api('/oil/ledger');
     body.innerHTML = tableWrap([{ label: 'Date' }, { label: 'Product' }, { label: 'Kind' }, { label: 'Qty', num: true }, { label: 'Balance', num: true }, { label: 'Unit Price', num: true }, { label: 'Asset' }],
@@ -1079,6 +1714,29 @@ routes.oil = async (c) => {
   }
 };
 
+// Issue lubricant — General store use OR a machine/vehicle top-up (against a job card).
+async function oilTopupModal(products) {
+  modal('Issue / Top-up Lubricant', `
+    ${targetPickerHtml('oilt', { label: 'Issue for', generalLabel: 'General / store use' })}
+    <div class="row">${field('Product', 'product_id', { type: 'select', options: products.map((p) => ({ value: p.id, label: p.name + ' (' + p.unit + ')' })) })}${field('Qty', 'qty', { type: 'number', value: 1 })}</div>
+    <div class="row">${field('Date', 'txn_date', { type: 'date', value: new Date().toISOString().slice(0, 10) })}${field('Unit price (blank = auto)', 'unit_price', { type: 'number' })}</div>
+    ${field('Note (e.g. oil top-up)', 'note')}
+    <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Issue</button></div>`, (body, close) => {
+    const getTarget = wireTargetPicker(body, 'oilt');
+    qs('#s', body).onclick = async () => {
+      const f = formData(body);
+      if (!f.qty || Number(f.qty) <= 0) return toast('Enter a quantity', 'err');
+      const t = getTarget();
+      if (t.type === 'vehicle' && !t.job_id) return toast('Pick the machine/vehicle job card', 'err');
+      try {
+        await api('/oil/ledger', { method: 'POST', body: { ...f, kind: 'issue', job_id: t.type === 'vehicle' ? t.job_id : undefined } });
+        toast(t.type === 'vehicle' ? 'Lubricant issued to ' + (t.asset_code || 'vehicle') : 'General lubricant issue posted');
+        close(); render();
+      } catch (e) { toast(e.message, 'err'); }
+    };
+  });
+}
+
 async function newLedgerModal(products) {
   modal('New Oil Ledger Txn', `
     ${field('Product', 'product_id', { type: 'select', options: products.map((p) => ({ value: p.id, label: p.name })) })}
@@ -1098,29 +1756,201 @@ routes.batteries = async (c, params) => {
   c.innerHTML = `${pageHeader('Battery Lifecycle')}
     <div class="toolbar">
       <input id="bwhere" placeholder="Where is serial…?" style="max-width:220px"><button class="sm" id="bwbtn">Find</button>
-      <div class="spacer"></div>${can('storekeeper') ? '<button class="primary" id="nb">+ Add Battery</button>' : ''}
+      <div class="spacer"></div>${canEdit('batteries') ? '<button class="primary" id="nb">+ Add Battery</button>' : ''}
     </div>
     ${radar.expiring.length ? `<div class="card section"><h3>Warranty expiring ≤60 days</h3>${radar.expiring.map((b) => `<div class="cost-line"><a href="#/batteries/${b.id}">${esc(b.serial_no)}</a><span class="badge amber">${esc(b.warranty_date)} · ${esc(b.current_asset_code || 'store')}</span></div>`).join('')}</div>` : ''}
     ${tableWrap([{ label: 'Serial' }, { label: 'Brand' }, { label: 'Ah', num: true }, { label: 'State' }, { label: 'Current Asset' }, { label: 'Warranty' }],
-      list.map((b) => `<tr><td><a href="#/batteries/${b.id}">${esc(b.serial_no)}</a></td><td>${esc(b.brand || '')}</td><td class="num">${b.capacity_ah || ''}</td><td><span class="badge ${b.state === 'installed' ? 'green' : b.state === 'decommissioned' ? 'red' : ''}">${esc(b.state)}</span></td><td>${esc(b.current_asset_code || '—')}</td><td>${esc(b.warranty_date || '')}</td></tr>`), { scroll: true })}`;
+      list.map((b) => `<tr><td>${b.has_photo ? '📷 ' : ''}<a href="#/batteries/${b.id}">${esc(b.serial_no)}</a></td><td>${esc(b.brand || '')}</td><td class="num">${b.capacity_ah || ''}</td><td><span class="badge ${b.state === 'installed' ? 'green' : b.state === 'decommissioned' ? 'red' : ''}">${esc(b.state)}</span></td><td>${esc(b.current_asset_code || '—')}</td><td>${esc(b.warranty_date || '')}</td></tr>`), { scroll: true })}`;
   qs('#bwbtn').onclick = async () => { const s = qs('#bwhere').value.trim(); if (!s) return; try { const r = await api('/batteries/whereis/' + encodeURIComponent(s)); toast(s + ' → ' + (r.current_asset ? r.current_asset.code : 'in store') + ' (' + r.battery.state + ')'); } catch { toast('Serial not found', 'err'); } };
-  if (qs('#nb')) qs('#nb').onclick = () => simpleCreateModal('Add Battery', '/batteries', [['Serial No *', 'serial_no'], ['Brand', 'brand'], ['Capacity Ah', 'capacity_ah', 'number'], ['Condition (new/old)', 'condition'], ['Purchase date', 'purchase_date', 'date'], ['Warranty date', 'warranty_date', 'date'], ['Install on asset (code/text)', 'current_asset']]);
+  if (qs('#nb')) qs('#nb').onclick = newBatteryModal;
 };
+
+function newBatteryModal() {
+  modal('Add Battery', `
+    <div class="row">${field('Serial No *', 'serial_no')}${field('Brand', 'brand')}</div>
+    <div class="row">${field('Capacity Ah', 'capacity_ah', { type: 'number' })}${field('Condition', 'condition', { type: 'select', options: [{ value: 'new', label: 'new' }, { value: 'old', label: 'old' }] })}</div>
+    <div class="row">${field('Purchase date', 'purchase_date', { type: 'date' })}${field('Warranty date', 'warranty_date', { type: 'date' })}</div>
+    ${field('Install on asset (code/text)', 'current_asset')}
+    <label>Battery photo</label>${imageUploadHtml('batimg')}
+    <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Add Battery</button></div>`, (body, close) => {
+    const up = wireImageUpload(body, 'batimg');
+    qs('#s', body).onclick = async () => {
+      const d = formData(body);
+      if (!String(d.serial_no || '').trim()) return toast('Serial No is required', 'err');
+      d.photo_path = up.dataURL() || undefined;
+      try { await api('/batteries', { method: 'POST', body: d }); toast('Battery added'); close(); render(); }
+      catch (e) { toast(e.message, 'err'); }
+    };
+  });
+}
 
 async function batteryDetail(c, id) {
   const b = await api('/batteries/' + id);
-  c.innerHTML = `${pageHeader(b.battery.serial_no, '<a href="#/batteries">← Batteries</a>')}
-    <div class="toolbar"><span class="badge ${b.battery.state === 'installed' ? 'green' : ''}">${esc(b.battery.state)}</span>
-      <span class="muted">${esc(b.battery.brand || '')} · ${b.battery.capacity_ah || '?'}Ah · ${esc(b.battery.current_asset_code || 'in store')}</span>
-      <div class="spacer"></div>${can('storekeeper') ? '<button class="sm" id="ev">+ Event</button>' : ''}</div>
+  const bat = b.battery;
+  const editable = canEdit('batteries');
+  c.innerHTML = `${pageHeader(bat.serial_no, '<a href="#/batteries">← Batteries</a>')}
+    <div class="toolbar"><span class="badge ${bat.state === 'installed' ? 'green' : bat.state === 'decommissioned' ? 'red' : ''}">${esc(bat.state)}</span>
+      <span class="muted">${esc(bat.brand || '')} · ${bat.capacity_ah || '?'}Ah · ${esc(bat.current_asset_code || 'in store')}</span>
+      <div class="spacer"></div>${editable ? `<button class="sm" id="photo">📷 ${bat.photo_path ? 'Change' : 'Add'} photo</button><button class="sm" id="ev">+ Event</button>` : ''}</div>
+    <div class="grid section">
+      <div class="card"><h3>Photo</h3>
+        ${bat.photo_path ? `<img src="${bat.photo_path}" alt="Battery ${esc(bat.serial_no)}" style="max-width:100%;max-height:280px;border:1px solid var(--border);border-radius:8px">` : `<p class="muted">No photo yet.${editable ? ' Use “Add photo”.' : ''}</p>`}</div>
+      <div class="card"><h3>Details</h3>
+        <div class="cost-line"><span>Serial</span><span>${esc(bat.serial_no)}</span></div>
+        <div class="cost-line"><span>Brand</span><span>${esc(bat.brand || '—')}</span></div>
+        <div class="cost-line"><span>Capacity</span><span>${bat.capacity_ah || '?'} Ah</span></div>
+        <div class="cost-line"><span>Condition</span><span>${esc(bat.condition || '—')}</span></div>
+        <div class="cost-line"><span>Purchase date</span><span>${esc(bat.purchase_date || '—')}</span></div>
+        <div class="cost-line"><span>Warranty date</span><span>${esc(bat.warranty_date || '—')}</span></div>
+        <div class="cost-line"><span>Current asset</span><span>${esc(bat.current_asset_code || 'in store')}</span></div>
+      </div>
+    </div>
     <div class="card"><h3>Event History</h3>
-      ${tableWrap([{ label: 'Date' }, { label: 'Event' }, { label: 'From' }, { label: 'To' }, { label: 'Reason' }, { label: 'MTN' }],
-        b.events.map((e) => `<tr><td>${esc(e.event_date)}</td><td><span class="badge">${esc(e.event_type)}</span></td><td>${esc(e.from_asset_code || '')}</td><td>${esc(e.to_asset_code || '')}</td><td>${esc(e.reason || '')}</td><td>${esc(e.mtn_ref || '')}</td></tr>`))}</div>`;
+      ${tableWrap([{ label: 'Date' }, { label: 'Event' }, { label: 'From' }, { label: 'To' }, { label: 'Reason' }, { label: 'MTN' }, { label: 'Photo' }],
+        b.events.map((e) => `<tr><td>${esc(e.event_date)}</td><td><span class="badge">${esc(e.event_type)}</span></td><td>${esc(e.from_asset_code || '')}</td><td>${esc(e.to_asset_code || '')}</td><td>${esc(e.reason || '')}</td><td>${esc(e.mtn_ref || '')}</td><td>${e.photo_path ? `<a href="${e.photo_path}" target="_blank"><img src="${e.photo_path}" style="height:38px;border:1px solid var(--border);border-radius:4px"></a>` : ''}</td></tr>`))}</div>`;
+  if (qs('#photo')) qs('#photo').onclick = () => modal((bat.photo_path ? 'Change' : 'Add') + ' battery photo — ' + bat.serial_no, `
+    <label>Battery photo</label>${imageUploadHtml('bpimg', bat.photo_path)}
+    <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Save photo</button></div>`,
+    (body, close) => {
+      const up = wireImageUpload(body, 'bpimg', bat.photo_path);
+      qs('#s', body).onclick = async () => {
+        try { await api(`/batteries/${id}/photo`, { method: 'PATCH', body: { photo_path: up.dataURL() || null } }); toast('Photo saved'); close(); batteryDetail(c, id); }
+        catch (e) { toast(e.message, 'err'); }
+      };
+    });
   if (qs('#ev')) qs('#ev').onclick = () => modal('Battery Event', `
     ${field('Event', 'event_type', { type: 'select', options: ['install', 'transfer', 'return', 'warranty', 'decommission'].map((v) => ({ value: v, label: v })) })}
-    ${field('To asset (code/text)', 'to_asset')}${field('Reason', 'reason')}${field('MTN ref', 'mtn_ref')}
+    ${field('To asset (code/text)', 'to_asset')}${field('Reason', 'reason')}${field('MTN ref', 'mtn_ref')}${field('Date', 'event_date', { type: 'date', value: new Date().toISOString().slice(0, 10) })}
+    <label>Photo (optional evidence)</label>${imageUploadHtml('evimg')}
     <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Record</button></div>`,
-    (body, close) => { qs('#s', body).onclick = async () => { try { await api(`/batteries/${id}/event`, { method: 'POST', body: formData(body) }); close(); render(); } catch (e) { toast(e.message, 'err'); } }; });
+    (body, close) => {
+      const up = wireImageUpload(body, 'evimg');
+      qs('#s', body).onclick = async () => {
+        const d = formData(body); d.photo_path = up.dataURL() || undefined;
+        try { await api(`/batteries/${id}/event`, { method: 'POST', body: d }); close(); batteryDetail(c, id); }
+        catch (e) { toast(e.message, 'err'); }
+      };
+    });
+}
+
+// ---- Filters & Prices — the filter price book + service records -------------
+routes.filters = async (c, params) => {
+  if (params[0] === 'service' && params[1]) return serviceDetail(c, params[1]);
+  const sp = new URLSearchParams(location.hash.split('?')[1] || '');
+  const tab = sp.get('tab') === 'services' ? 'services' : 'book';
+  c.innerHTML = `${pageHeader('Filters & Prices', 'The filter price book — every filter number, missing prices flagged. Type a new number to save it with a price.')}
+    <div class="pill-row" style="margin-bottom:12px">
+      <button class="btn sm ${tab === 'book' ? 'primary' : ''}" id="tb-book">Price Book</button>
+      <button class="btn sm ${tab === 'services' ? 'primary' : ''}" id="tb-svc">Service Records</button>
+    </div>
+    <div id="fpane"><div class="muted">Loading…</div></div>`;
+  qs('#tb-book').onclick = () => { location.hash = '#/filters?tab=book'; };
+  qs('#tb-svc').onclick = () => { location.hash = '#/filters?tab=services'; };
+  if (tab === 'services') await renderServiceRecords(qs('#fpane'));
+  else await renderPriceBook(qs('#fpane'));
+};
+
+function filterPriceModal(filterNo, category, value, cats, onDone) {
+  const isNew = !filterNo;
+  modal(isNew ? 'Add filter number' : 'Price — ' + filterNo, `
+    ${isNew ? field('Filter number *', 'filter_no') : `<p class="muted">Filter <b>${esc(filterNo)}</b></p><input type="hidden" name="filter_no" value="${esc(filterNo)}">`}
+    ${field('Category', 'category', { type: 'select', options: [{ value: '', label: '—' }].concat((cats || []).map((x) => ({ value: x, label: x }))), value: category || '' })}
+    ${field('Unit price (LKR)', 'unit_price', { type: 'number', value: value || '' })}
+    ${isNew ? '<p class="muted" style="font-size:12px">Saved to the price book — this number will auto-price on future services.</p>' : ''}
+    <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Save price</button></div>`, (body, close) => {
+    qs('#s', body).onclick = async () => {
+      const d = formData(body);
+      if (isNew && !String(d.filter_no || '').trim()) return toast('Enter a filter number', 'err');
+      try { await api('/filters/prices', { method: 'POST', body: { filter_no: d.filter_no, category: d.category || undefined, unit_price: d.unit_price } }); toast('Price saved'); close(); onDone(); }
+      catch (e) { toast(e.message, 'err'); }
+    };
+  });
+}
+
+async function renderPriceBook(c) {
+  const editable = canEdit('filters');
+  const cats = await api('/filters/categories').catch(() => []);
+  c.innerHTML = `
+    <div class="grid section">
+      <div class="card stat"><span class="n" id="st-total">—</span><span class="l">Filter Numbers</span></div>
+      <div class="card stat"><span class="n" id="st-priced">—</span><span class="l">Priced</span></div>
+      <div class="card stat" style="border-left:3px solid var(--amber)"><span class="n" id="st-missing">—</span><span class="l">Missing Price</span></div>
+    </div>
+    <div class="toolbar">
+      ${editable ? '<button class="primary" id="addf">+ Add filter number</button>' : ''}
+      <input id="fq" type="search" placeholder="Search filter no / category…" style="max-width:260px">
+      <label style="display:flex;gap:6px;align-items:center;flex-direction:row;width:auto"><input type="checkbox" id="fmiss" style="width:auto"> Missing price only</label>
+      <div class="spacer"></div><span class="muted" id="fcount"></span>
+    </div>
+    <div id="ftable"><div class="muted">Loading…</div></div>`;
+  const refreshStats = async () => {
+    try { const s = await api('/filters/stats'); qs('#st-total').textContent = num(s.total); qs('#st-priced').textContent = num(s.priced); qs('#st-missing').textContent = num(s.missing); } catch (e) { /* ignore */ }
+  };
+  const load = async () => {
+    const q = qs('#fq').value.trim(), miss = qs('#fmiss').checked ? '1' : '';
+    const list = await api('/filters/prices?' + (q ? 'q=' + encodeURIComponent(q) + '&' : '') + (miss ? 'missing=1&' : '') + 'limit=1000');
+    qs('#fcount').textContent = `${list.length} filter${list.length === 1 ? '' : 's'}`;
+    qs('#ftable').innerHTML = tableWrap(
+      [{ label: 'Filter No' }, { label: 'Category' }, { label: 'Uses', num: true }, { label: 'Unit Price (LKR)', num: true }].concat(editable ? [{ label: '' }] : []),
+      list.map((f) => `<tr${f.has_price ? '' : ' style="background:rgba(224,168,0,.06)"'}>
+        <td><b>${esc(f.filter_no)}</b>${f.notes ? `<br><span class="muted" style="font-size:11px" title="${esc(f.notes)}">${esc(String(f.notes).slice(0, 60))}${String(f.notes).length > 60 ? '…' : ''}</span>` : ''}</td>
+        <td>${esc(f.category || '—')}</td>
+        <td class="num">${num(f.uses)}</td>
+        <td class="num">${f.has_price ? money(f.unit_price) + (f.source && f.source !== 'manual' && f.source !== 'import' ? ` <span class="muted" style="font-size:10px">(${esc(f.source)})</span>` : '') : '<span class="badge amber">no price</span>'}</td>
+        ${editable ? `<td class="num"><button class="sm ${f.has_price ? '' : 'primary'}" data-price="${esc(f.filter_no)}" data-cat="${esc(f.category || '')}" data-val="${f.unit_price == null ? '' : f.unit_price}">${f.has_price ? 'Edit' : 'Add price'}</button></td>` : ''}
+      </tr>`), { scroll: true });
+    qsa('[data-price]', c).forEach((b) => b.onclick = () => filterPriceModal(b.dataset.price, b.dataset.cat, b.dataset.val, cats, async () => { await load(); await refreshStats(); }));
+  };
+  if (qs('#addf')) qs('#addf').onclick = () => filterPriceModal('', '', '', cats, async () => { await load(); await refreshStats(); });
+  let deb; qs('#fq').oninput = () => { clearTimeout(deb); deb = setTimeout(load, 250); };
+  qs('#fmiss').onchange = load;
+  await refreshStats();
+  await load();
+}
+
+async function renderServiceRecords(c) {
+  c.innerHTML = `<div class="toolbar"><input id="sq" type="search" placeholder="Search vehicle / site / type…" style="max-width:280px"><div class="spacer"></div><span class="muted" id="scount"></span></div>
+    <div id="stable"><div class="muted">Loading…</div></div>`;
+  const load = async () => {
+    const q = qs('#sq').value.trim();
+    const list = await api('/filters/services?' + (q ? 'q=' + encodeURIComponent(q) + '&' : '') + 'limit=500');
+    qs('#scount').textContent = `${list.length} service${list.length === 1 ? '' : 's'}`;
+    qs('#stable').innerHTML = tableWrap(
+      [{ label: 'Date' }, { label: 'Vehicle' }, { label: 'Type' }, { label: 'Site' }, { label: 'Filters', num: true }, { label: 'Missing', num: true }, { label: 'Total', num: true }],
+      list.map((s) => `<tr data-svc="${s.id}" style="cursor:pointer">
+        <td>${esc((s.service_date || '').slice(0, 10))}</td>
+        <td>${esc(idLabel(s) || s.vehicle_label || '—')}</td>
+        <td>${esc(s.service_type || '')}</td>
+        <td>${esc(s.site_location || '')}</td>
+        <td class="num">${num(s.filter_count)}</td>
+        <td class="num">${s.missing_count > 0 ? `<span class="badge amber">${num(s.missing_count)}</span>` : '<span class="badge green">0</span>'}</td>
+        <td class="num">${money(s.grand_total)}</td></tr>`), { scroll: true });
+    qsa('[data-svc]', c).forEach((tr) => tr.onclick = () => { location.hash = '#/filters/service/' + tr.dataset.svc; });
+  };
+  let deb; qs('#sq').oninput = () => { clearTimeout(deb); deb = setTimeout(load, 250); };
+  await load();
+}
+
+async function serviceDetail(c, id) {
+  const d = await api('/filters/services/' + id);
+  const s = d.service;
+  const editable = canEdit('filters');
+  const cats = await api('/filters/categories').catch(() => []);
+  c.innerHTML = `${pageHeader('Service · ' + ((s.service_date || '').slice(0, 10)), '<a href="#/filters?tab=services">← Service Records</a>')}
+    <div class="card"><h3>${esc(idLabel(s) || s.vehicle_label || 'Vehicle')}</h3>
+      <p class="muted">${esc((s.service_date || '').slice(0, 10))}${s.service_type ? ' · ' + esc(s.service_type) : ''}${s.site_location ? ' · ' + esc(s.site_location) : ''}${s.meter_reading ? ' · meter ' + esc(s.meter_reading) : ''}${s.grand_total ? ' · total ' + money(s.grand_total) : ''}</p>
+      ${s.repair_details ? `<div style="white-space:pre-wrap;border:1px solid var(--border);border-radius:6px;padding:8px">${esc(s.repair_details)}</div>` : ''}</div>
+    <div class="card"><h3>Filters used <span class="muted" style="font-weight:400">(${d.filters.length})</span></h3>
+      ${tableWrap([{ label: 'Filter No' }, { label: 'Category' }, { label: 'Qty', num: true }, { label: 'Book Price', num: true }].concat(editable ? [{ label: '' }] : []),
+        d.filters.map((f) => `<tr${(f.book_price > 0) ? '' : ' style="background:rgba(224,168,0,.06)"'}>
+          <td><b>${esc(f.filter_no || '')}</b></td><td>${esc(f.category || '')}</td><td class="num">${num(f.qty)}</td>
+          <td class="num">${f.book_price > 0 ? money(f.book_price) : '<span class="badge amber">no price</span>'}</td>
+          ${editable ? `<td class="num"><button class="sm ${f.book_price > 0 ? '' : 'primary'}" data-price="${esc(f.filter_no || '')}" data-cat="${esc(f.category || '')}" data-val="${f.book_price == null ? '' : f.book_price}">${f.book_price > 0 ? 'Edit' : 'Add price'}</button></td>` : ''}
+        </tr>`), { scroll: true })}</div>
+    ${(d.oils && d.oils.length) ? `<div class="card"><h3>Oils used <span class="muted" style="font-weight:400">(${d.oils.length})</span></h3>
+      ${tableWrap([{ label: 'Oil' }, { label: 'Type' }, { label: 'Qty', num: true }, { label: 'Price', num: true }],
+        d.oils.map((o) => `<tr><td>${esc(o.oil_name || '')}</td><td>${esc(o.oil_type || '')}</td><td class="num">${num(o.qty)}</td><td class="num">${o.price > 0 ? money(o.price) : '—'}</td></tr>`), { scroll: true })}</div>` : ''}`;
+  qsa('[data-price]', c).forEach((b) => b.onclick = () => filterPriceModal(b.dataset.price, b.dataset.cat, b.dataset.val, cats, () => serviceDetail(c, id)));
 }
 
 // ---- Projects
@@ -1233,21 +2063,155 @@ routes.attention = async (c) => {
 };
 
 // ---- Users (admin)
-routes.users = async (c) => {
+// ---- Daily Progress Report — one day's workshop output ----------------------
+routes.progress = async (c) => {
+  const sp = new URLSearchParams(location.hash.split('?')[1] || '');
+  const today = new Date().toISOString().slice(0, 10);
+  const date0 = sp.get('date') || today;
+  c.innerHTML = `${pageHeader('Daily Progress Report', 'One day’s workshop output — jobs worked, hours, labour, materials & oil.')}
+    <div class="toolbar">
+      <label style="display:flex;gap:6px;align-items:center;flex-direction:row;width:auto">Date <input type="date" id="pgdate" value="${esc(date0)}" style="width:auto"></label>
+      <div class="spacer"></div>
+      <a class="btn sm" id="pgprint" href="/api/reports/daily-progress/print.html?date=${encodeURIComponent(date0)}" target="_blank">🖨 Print</a>
+    </div>
+    <div id="pgbody"><div class="muted">Loading…</div></div>`;
+  const load = async () => {
+    const dt = qs('#pgdate').value || today;
+    history.replaceState(null, '', '#/progress?date=' + dt);
+    qs('#pgprint').href = '/api/reports/daily-progress/print.html?date=' + encodeURIComponent(dt);
+    let rep;
+    try { rep = await api('/reports/daily-progress?date=' + encodeURIComponent(dt)); }
+    catch (e) { qs('#pgbody').innerHTML = `<div class="card err">${esc(e.message)}</div>`; return; }
+    const t = rep.totals;
+    const jobRows = rep.jobs.map((j) => `<tr>
+        <td><a href="#/jobs/${j.job_id}">${esc(j.job_no)}</a></td>
+        <td>${esc(idLabel(j) || '—')}</td>
+        <td>${esc(j.mechanics.join(', '))}</td>
+        <td>${esc(j.tasks.map((x) => x.description || (x.is_external ? 'External repair' : '')).filter(Boolean).join('; '))}</td>
+        <td class="num">${num(j.hours)}</td>
+        <td class="num">${money(j.labour)}</td></tr>`);
+    qs('#pgbody').innerHTML = `
+      <div class="grid section">
+        <div class="card stat"><span class="n">${t.jobs}</span><span class="l">Jobs Worked</span></div>
+        <div class="card stat"><span class="n">${num(t.hours)}</span><span class="l">Mechanic-Hours</span></div>
+        <div class="card stat"><span class="n">${moneyC(t.labour)}</span><span class="l">Labour</span></div>
+        <div class="card stat"><span class="n">${moneyC(t.material)}</span><span class="l">Material</span></div>
+        <div class="card stat"><span class="n">${moneyC(t.oil)}</span><span class="l">Oil &amp; Lube</span></div>
+        <div class="card stat"><span class="n">${moneyC(t.grand)}</span><span class="l">Day Total</span></div>
+      </div>
+      <div class="card"><h3>Jobs worked · ${esc(dt)}</h3>
+        ${tableWrap([{ label: 'Job No' }, { label: 'Vehicle' }, { label: 'Mechanic(s)' }, { label: 'Work done' }, { label: 'Hours', num: true }, { label: 'Labour', num: true }], jobRows, { scroll: true })}</div>
+      ${rep.issues.length ? `<div class="card"><h3>Materials issued</h3>${tableWrap([{ label: 'Item' }, { label: 'Job' }, { label: 'Qty', num: true }, { label: 'Value', num: true }], rep.issues.map((i) => `<tr><td>${esc(i.description)}</td><td>${esc(i.job_no || '')}</td><td class="num">${num(i.qty)}</td><td class="num">${money((Number(i.qty) || 0) * (Number(i.unit_price) || 0))}</td></tr>`), { scroll: true })}</div>` : ''}
+      ${rep.oil.length ? `<div class="card"><h3>Oil &amp; lubricants issued</h3>${tableWrap([{ label: 'Product' }, { label: 'Job' }, { label: 'Qty', num: true }, { label: 'Value', num: true }], rep.oil.map((o) => `<tr><td>${esc(o.product)}</td><td>${esc(o.job_no || '')}</td><td class="num">${num(Math.abs(o.qty))}</td><td class="num">${money(Math.abs(o.qty) * (Number(o.unit_price) || 0))}</td></tr>`), { scroll: true })}</div>` : ''}`;
+  };
+  qs('#pgdate').onchange = load;
+  await load();
+};
+
+// ---- Reverse Costing — per-vehicle cost teardown ----------------------------
+routes.teardown = async (c) => {
+  const sp = new URLSearchParams(location.hash.split('?')[1] || '');
+  const preId = sp.get('asset');
+  c.innerHTML = `${pageHeader('Cost Teardown', 'Reverse costing — where a vehicle’s spend went, by bucket, job, part and mechanic.')}
+    <div class="card">${assetPickerHtml('Vehicle / Machine (search & select)')}</div>
+    <div id="tdbody"></div>`;
+  wireAssetPicker(c);
+  const show = async (id) => {
+    let t;
+    try { t = await api('/reports/teardown/asset/' + id); }
+    catch (e) { qs('#tdbody').innerHTML = `<div class="card err">${esc(e.message)}</div>`; return; }
+    const b = t.buckets;
+    const total = Number(b.total) || 0;
+    const pct = (n) => total > 0 ? (100 * (Number(n) || 0) / total) : 0;
+    const BUCKETS = [['Labour', b.labour], ['Material', b.material], ['Oil & Lube', b.oil], ['General', b.general], ['External', b.external], ['Other', b.other]];
+    const bars = BUCKETS.filter(([, v]) => (Number(v) || 0) > 0.005).map(([label, v]) => `
+      <div class="cost-line"><span>${label}</span><span>${money(v)} · ${pct(v).toFixed(1)}%</span></div>
+      <div class="bar-track"><div class="bar" style="width:${pct(v)}%"></div></div>`).join('') || '<span class="muted">No recorded cost for this vehicle.</span>';
+    const jobRows = t.jobs.map((j) => `<tr>
+        <td><a href="#/jobs/${j.id}">${esc(j.job_no)}</a></td><td>${esc(j.type)}</td>
+        <td class="num">${money(j.labour_cost)}</td><td class="num">${money(j.material_cost)}</td>
+        <td class="num">${money(j.oil_cost)}</td><td class="num">${money(j.external_cost)}</td>
+        <td class="num"><b>${money(j.total_cost)}</b></td></tr>`);
+    history.replaceState(null, '', '#/teardown?asset=' + id);
+    qs('#tdbody').innerHTML = `
+      <div class="toolbar"><h3 style="margin:0">${esc(idLabel(t.asset) || t.asset.code)} <span class="muted" style="font-weight:400">${esc([t.asset.brand, t.asset.type].filter(Boolean).join(' '))}</span></h3>
+        <div class="spacer"></div><span class="badge">${b.jobs} jobs</span><span class="badge amber">Lifetime ${money(total)}</span>
+        <a class="btn sm" href="/api/reports/teardown/asset/${id}/print.html" target="_blank">🖨 Print</a></div>
+      <div class="card"><h3>Cost by bucket</h3>${bars}</div>
+      <div class="grid">
+        <div class="card"><h3>Jobs by cost</h3>${tableWrap([{ label: 'Job No' }, { label: 'Type' }, { label: 'Labour', num: true }, { label: 'Material', num: true }, { label: 'Oil', num: true }, { label: 'External', num: true }, { label: 'Total', num: true }], jobRows, { scroll: true })}</div>
+        <div class="card"><h3>Top parts by value</h3>${t.parts.length ? t.parts.map((p) => `<div class="cost-line"><span>${esc(p.description)} <span class="muted">×${p.lines}</span></span><span>${money(p.value)}</span></div>`).join('') : '<span class="muted">No priced parts.</span>'}</div>
+        <div class="card"><h3>Labour by mechanic</h3>${t.mechanics.length ? t.mechanics.map((mm) => `<div class="cost-line"><span>${esc(mm.mechanic)} <span class="muted">${num(mm.hours)}h</span></span><span>${money(mm.amount)}</span></div>`).join('') : '<span class="muted">No labour recorded.</span>'}</div>
+      </div>`;
+  };
+  // The picker sets the hidden asset_id via JS on item mousedown — hook the same event.
+  c.addEventListener('mousedown', (e) => {
+    const it = e.target.closest && e.target.closest('.apick-item');
+    if (it && it.dataset.id) setTimeout(() => show(it.dataset.id), 0);
+  }, true);
+  if (preId) await show(preId);
+};
+
+// ---- Access Control (admin) — clearance board + user/role management --------
+routes.access = async (c) => {
   if (!can('admin')) { c.innerHTML = '<div class="card err">Admin only.</div>'; return; }
+  const sp = new URLSearchParams(location.hash.split('?')[1] || '');
+  const tab = sp.get('tab') === 'users' ? 'users' : 'board';
+  c.innerHTML = `${pageHeader('Access Control', 'Who holds the keys to which bay — set each role’s clearance per section.')}
+    <div class="pill-row" style="margin-bottom:12px">
+      <button class="btn sm ${tab === 'board' ? 'primary' : ''}" id="tb-board">Clearance Board</button>
+      <button class="btn sm ${tab === 'users' ? 'primary' : ''}" id="tb-users">Users &amp; Roles</button>
+    </div>
+    <div id="apane"><div class="muted">Loading…</div></div>`;
+  qs('#tb-board').onclick = () => { location.hash = '#/access?tab=board'; };
+  qs('#tb-users').onclick = () => { location.hash = '#/access?tab=users'; };
+  if (tab === 'users') await renderUsersManager(qs('#apane'));
+  else await renderClearanceBoard(qs('#apane'));
+};
+routes.users = async (c) => { location.hash = '#/access?tab=users'; };
+
+const lvlChip = (lvl) => {
+  const cls = lvl === 'full' ? 'amber' : lvl === 'edit' ? 'green' : '';
+  const txt = lvl === 'none' ? '—' : lvl.toUpperCase();
+  return `<span class="badge ${cls}"${lvl === 'none' ? ' style="opacity:.4"' : ''}>${txt}</span>`;
+};
+
+async function renderClearanceBoard(c) {
+  const m = await api('/access/matrix');
+  const LV = m.levels;
+  const headCols = m.modules.map((mod) => `<th style="text-align:center">${esc(mod.label)}${mod.enforce ? '' : ' <span class="muted" title="Hidden in the sidebar but not API-blocked (reference/analytics)">*</span>'}</th>`).join('');
+  const rows = m.roles.map((r) => `<tr><td><b>${esc(r.label || r.name)}</b><br><span class="muted" style="font-size:11px">${esc(r.name)}</span></td>${m.modules.map((mod) => {
+    const lvl = m.grid[r.name][mod.key];
+    const locked = r.name === 'admin';
+    return `<td style="text-align:center;cursor:${locked ? 'default' : 'pointer'}"${locked ? '' : ` data-cell="${r.name}:${mod.key}" data-lvl="${lvl}" title="click to change"`}>${lvlChip(lvl)}</td>`;
+  }).join('')}</tr>`).join('');
+  c.innerHTML = `<div class="card">
+    <p class="muted" style="margin-top:0">Click a cell to cycle clearance: — → VIEW → EDIT → FULL. <b>Admin</b> is always full. Changes apply immediately; a signed-in user sees nav changes after their next login. <span title="nav-level only">*</span> = hidden in the sidebar but not API-blocked.</p>
+    <div class="table-wrap scroll"><table><thead><tr><th>Role</th>${headCols}</tr></thead><tbody>${rows}</tbody></table></div>
+    <div class="pill-row" style="margin-top:12px"><span class="muted">Legend:</span> ${lvlChip('full')} manage ${lvlChip('edit')} add / modify ${lvlChip('view')} read-only ${lvlChip('none')} no access</div>
+  </div>`;
+  qsa('[data-cell]', c).forEach((td) => td.onclick = async () => {
+    const [role, mod] = td.dataset.cell.split(':');
+    const next = LV[(LV.indexOf(td.dataset.lvl) + 1) % LV.length];
+    try { await api('/access/matrix', { method: 'POST', body: { role, module: mod, level: next } }); renderClearanceBoard(c); }
+    catch (e) { toast(e.message, 'err'); }
+  });
+}
+
+async function renderUsersManager(c) {
   const [users, roles] = await Promise.all([api('/users'), api('/users/roles')]);
-  c.innerHTML = `${pageHeader('Users & Roles')}<div class="toolbar"><button class="primary" id="nu">+ New User</button></div>
+  const roleNames = roles.map((r) => r.name);
+  c.innerHTML = `<div class="toolbar"><button class="primary" id="nu">+ New User</button><div class="spacer"></div><span class="muted">${users.length} user(s)</span></div>
     ${tableWrap([{ label: 'Username' }, { label: 'Name' }, { label: 'Roles' }, { label: 'Active' }, { label: '' }],
       users.map((u) => `<tr><td>${esc(u.username)}</td><td>${esc(u.full_name || '')}</td><td>${u.roles.map((r) => `<span class="badge">${esc(r)}</span>`).join(' ')}</td><td>${u.active ? '✓' : '✕'}</td><td><button class="sm" data-roles="${u.id}">Roles</button></td></tr>`))}`;
-  const roleNames = roles.map((r) => r.name);
-  if (qs('#nu')) qs('#nu').onclick = () => modal('New User', `${field('Username *', 'username')}${field('Password *', 'password', { type: 'password' })}${field('Full name', 'full_name')}<label>Roles</label>${roleNames.map((r) => `<label style="flex-direction:row;display:flex;gap:6px;align-items:center"><input type="checkbox" style="width:auto" data-role="${r}"> ${r}</label>`).join('')}<div style="margin-top:12px;text-align:right"><button class="primary" id="s">Create</button></div>`,
-    (body, close) => { qs('#s', body).onclick = async () => { const d = formData(body); d.roles = qsa('[data-role]', body).filter((x) => x.checked).map((x) => x.dataset.role); try { await api('/users', { method: 'POST', body: d }); close(); render(); } catch (e) { toast(e.message, 'err'); } }; });
-  qsa('[data-roles]').forEach((b) => b.onclick = async () => {
+  if (qs('#nu', c)) qs('#nu', c).onclick = () => modal('New User', `${field('Username *', 'username')}${field('Password *', 'password', { type: 'password' })}${field('Full name', 'full_name')}<label>Roles</label>${roleNames.map((r) => `<label style="flex-direction:row;display:flex;gap:6px;align-items:center"><input type="checkbox" style="width:auto" data-role="${r}"> ${r}</label>`).join('')}<div style="margin-top:12px;text-align:right"><button class="primary" id="s">Create</button></div>`,
+    (body, close) => { qs('#s', body).onclick = async () => { const d = formData(body); d.roles = qsa('[data-role]', body).filter((x) => x.checked).map((x) => x.dataset.role); try { await api('/users', { method: 'POST', body: d }); close(); renderUsersManager(c); } catch (e) { toast(e.message, 'err'); } }; });
+  qsa('[data-roles]', c).forEach((b) => b.onclick = async () => {
     const u = users.find((x) => x.id == b.dataset.roles);
     modal('Roles for ' + u.username, roleNames.map((r) => `<label style="flex-direction:row;display:flex;gap:6px;align-items:center"><input type="checkbox" style="width:auto" data-role="${r}" ${u.roles.includes(r) ? 'checked' : ''}> ${r}</label>`).join('') + '<div style="margin-top:12px;text-align:right"><button class="primary" id="s">Save</button></div>',
-      (body, close) => { qs('#s', body).onclick = async () => { const rs = qsa('[data-role]', body).filter((x) => x.checked).map((x) => x.dataset.role); try { await api(`/users/${u.id}/roles`, { method: 'POST', body: { roles: rs } }); close(); render(); } catch (e) { toast(e.message, 'err'); } }; });
+      (body, close) => { qs('#s', body).onclick = async () => { const rs = qsa('[data-role]', body).filter((x) => x.checked).map((x) => x.dataset.role); try { await api(`/users/${u.id}/roles`, { method: 'POST', body: { roles: rs } }); close(); renderUsersManager(c); } catch (e) { toast(e.message, 'err'); } }; });
   });
-};
+}
 
 // generic create modal for simple flat forms
 function simpleCreateModal(title, path, fields) {

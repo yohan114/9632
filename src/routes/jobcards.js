@@ -41,6 +41,7 @@ function jobNo(type) {
 function loadJob(id) {
   return get(
     `SELECT j.*, a.code AS asset_code, a.code_norm AS asset_code_norm,
+            a.registration AS asset_reg, a.ec_code AS asset_ec,
             p.name AS project_name
        FROM job_cards j
        LEFT JOIN assets a ON a.id = j.asset_id
@@ -78,6 +79,8 @@ router.get(
       clauses.push('j.project_id = ?');
       params.push(toInt(req.query.project_id));
     }
+    // Only currently-open job cards (for pickers that log against an active job).
+    if (req.query.open === '1') clauses.push("j.status NOT IN ('CLOSED', 'REJECTED')");
     // Free-text search across job number, vehicle and references. A vehicle the
     // user types (e.g. "LO-5981") may live in the asset's canonical code, its
     // registration, its ec_code, or only as an alias — so we check them all, plus
@@ -116,7 +119,7 @@ router.get(
     const rows = all(
       `SELECT j.id, j.job_no, j.type, j.severity, j.status, j.description,
               j.total_cost, j.material_cost, j.labour_cost, j.requested_at, j.closed_at,
-              a.code AS asset_code, p.name AS project_name
+              a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec, p.name AS project_name
          FROM job_cards j
          LEFT JOIN assets a ON a.id = j.asset_id
          LEFT JOIN projects p ON p.id = j.project_id

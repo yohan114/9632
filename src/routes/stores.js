@@ -2,7 +2,7 @@
 
 const express = require('express');
 const { get, all, run, tx } = require('../db');
-const { requireRole } = require('../lib/auth');
+const { requireRole, hasRole } = require('../lib/auth');
 const { asyncHandler, require_, toInt, toNum } = require('../lib/http');
 const audit = require('../lib/audit');
 const aliases = require('../lib/aliases');
@@ -197,7 +197,7 @@ router.get('/mrn', asyncHandler((req, res) => {
   const where = clauses.length ? 'WHERE ' + clauses.join(' AND ') : '';
   const order = MRN_SORTS[req.query.sort] || 'm.id DESC';
   res.json(all(
-    `SELECT m.*, a.code AS asset_code,
+    `SELECT m.*, a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec,
             (SELECT COUNT(*)            FROM mrn_lines ml WHERE ml.mrn_id = m.id) AS line_count,
             (SELECT COALESCE(SUM(qty),0)          FROM mrn_lines ml WHERE ml.mrn_id = m.id) AS qty_requested,
             (SELECT COALESCE(SUM(qty_received),0) FROM mrn_lines ml WHERE ml.mrn_id = m.id) AS qty_received
@@ -208,26 +208,42 @@ router.get('/mrn', asyncHandler((req, res) => {
 
 router.post('/mrn', requireRole('storekeeper'), asyncHandler((req, res) => {
   const b = req.body;
-  const { assetId, unresolved } = resolveAssetId(b);
+  // Request target: 'general' (store stock) or 'vehicle' (against a job card, which sets the vehicle).
+  const requestType = b.request_type === 'general' ? 'general' : 'vehicle';
+  const jobId = requestType === 'vehicle' ? toInt(b.job_id) : null;
+  let assetId = null, unresolved = null;
+  if (jobId) { const job = get('SELECT asset_id FROM job_cards WHERE id = ?', jobId); assetId = job ? job.asset_id : null; }
+  else if (requestType === 'vehicle') { const r = resolveAssetId(b); assetId = r.assetId; unresolved = r.unresolved; }
   const mrnNo = String(b.mrn_no || '').trim() || nextMrnNo();
   if (get('SELECT id FROM mrn WHERE mrn_no = ?', mrnNo)) {
     return res.status(409).json({ error: `MRN number ${mrnNo} already exists` });
   }
   const source = b.purchase_source || null;
   if (source && !PURCHASE_SOURCES.includes(source)) return res.status(400).json({ error: 'Invalid purchase_source' });
+  // Record the requesting storekeeper (also marks this as a live, in-flow MRN vs imported history).
+  const ru = get('SELECT full_name, username FROM users WHERE id = ?', req.user.id);
+  const reqBy = String(b.requested_by || '').trim() || (ru ? (ru.full_name || ru.username) : null);
   const result = tx(() => {
     const info = run(
-      `INSERT INTO mrn (mrn_no, req_date, asset_id, project_id, job_id, purpose, requested_by, purchase_source)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO mrn (mrn_no, req_date, asset_id, project_id, job_id, purpose, requested_by, purchase_source, required_date, request_type)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       mrnNo, b.req_date || new Date().toISOString().slice(0, 10), assetId || null,
-      toInt(b.project_id), toInt(b.job_id), b.purpose || null, b.requested_by || null, source
+      toInt(b.project_id), jobId, b.purpose || null, reqBy, source, b.required_date || null, requestType
     );
     const mrnId = info.lastInsertRowid;
     const lines = Array.isArray(b.lines) ? b.lines : [];
+    const lineSrcs = new Set();
     for (const l of lines) {
-      run('INSERT INTO mrn_lines (mrn_id, store_item_id, description, qty, unit, category) VALUES (?, ?, ?, ?, ?, ?)',
-        mrnId, toInt(l.store_item_id), l.description || '', toNum(l.qty, 0), l.unit || 'nos', l.category || null);
+      const ls = PURCHASE_SOURCES.includes(l.purchase_source) ? l.purchase_source : (source || null);
+      if (ls) lineSrcs.add(ls);
+      run('INSERT INTO mrn_lines (mrn_id, store_item_id, description, qty, unit, category, purchase_source) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        mrnId, toInt(l.store_item_id), l.description || '', toNum(l.qty, 0), l.unit || 'nos', l.category || null, ls);
     }
+    // Header source = the single source if every line agrees, else leave the given/default.
+    if (lineSrcs.size === 1) run('UPDATE mrn SET purchase_source = ? WHERE id = ?', [...lineSrcs][0], mrnId);
+    // Requester's e-signature (the SK who raised it).
+    const uSig = get('SELECT signature FROM users WHERE id = ?', req.user.id);
+    if (uSig && uSig.signature) run('UPDATE mrn SET requested_sig = ? WHERE id = ?', uSig.signature, mrnId);
     return mrnId;
   });
   audit.record({ userId: req.user.id, entity: 'mrn', entityId: result, action: 'create', after: { mrn_no: mrnNo } });
@@ -240,13 +256,152 @@ router.post('/mrn', requireRole('storekeeper'), asyncHandler((req, res) => {
 
 router.get('/mrn/:id', asyncHandler((req, res) => {
   const id = toInt(req.params.id);
-  const mrn = get('SELECT m.*, a.code AS asset_code FROM mrn m LEFT JOIN assets a ON a.id = m.asset_id WHERE m.id = ?', id);
+  const mrn = get('SELECT m.*, a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec FROM mrn m LEFT JOIN assets a ON a.id = m.asset_id WHERE m.id = ?', id);
   if (!mrn) return res.status(404).json({ error: 'MRN not found' });
   res.json({
     mrn,
     lines: all('SELECT * FROM mrn_lines WHERE mrn_id = ? ORDER BY id', id),
     grns: all('SELECT * FROM grn WHERE mrn_id = ? ORDER BY id', id),
+    approvals: all('SELECT a.*, u.username FROM mrn_approvals a LEFT JOIN users u ON u.id = a.approver_id WHERE a.mrn_id = ? ORDER BY a.id', id),
   });
+}));
+
+// ---- MRN approval flow (e-signatures + logging) ----------------------------
+// SK requests (create) → Workshop certifies → Operational Manager approves.
+const signer = (userId) => { const u = get('SELECT full_name, username, signature FROM users WHERE id = ?', userId); return { name: u ? (u.full_name || u.username) : 'user', sig: u ? u.signature : null }; };
+
+router.post('/mrn/:id/certify', requireRole('workshop', 'manager'), asyncHandler((req, res) => {
+  const id = toInt(req.params.id);
+  const mrn = get('SELECT * FROM mrn WHERE id = ?', id);
+  if (!mrn) return res.status(404).json({ error: 'MRN not found' });
+  if (mrn.approval_status === 'approved') return res.status(409).json({ error: 'Already approved — cannot re-certify' });
+  const s = signer(req.user.id); const sig = req.body.signature || s.sig || null;
+  tx(() => {
+    run(`UPDATE mrn SET approval_status = 'certified', certified_by = ?, certified_at = datetime('now'), certified_sig = ? WHERE id = ?`, s.name, sig, id);
+    run(`INSERT INTO mrn_approvals (mrn_id, stage, role, approver_id, signed_name, signature, decision, reason) VALUES (?, 'certify', 'workshop', ?, ?, ?, 'approved', ?)`, id, req.user.id, s.name, sig, req.body.reason || null);
+  });
+  audit.record({ userId: req.user.id, entity: 'mrn', entityId: id, action: 'certify', after: { certified_by: s.name }, reason: req.body.reason });
+  res.json(get('SELECT * FROM mrn WHERE id = ?', id));
+}));
+
+router.post('/mrn/:id/approve', requireRole('operational_manager', 'manager'), asyncHandler((req, res) => {
+  const id = toInt(req.params.id);
+  const mrn = get('SELECT * FROM mrn WHERE id = ?', id);
+  if (!mrn) return res.status(404).json({ error: 'MRN not found' });
+  if (mrn.approval_status !== 'certified') return res.status(409).json({ error: 'MRN must be certified (Workshop Engineer) before Operational Manager approval' });
+  const s = signer(req.user.id); const sig = req.body.signature || s.sig || null;
+  tx(() => {
+    run(`UPDATE mrn SET approval_status = 'approved', approved_by = ?, approved_at = datetime('now'), approved_sig = ? WHERE id = ?`, s.name, sig, id);
+    run(`INSERT INTO mrn_approvals (mrn_id, stage, role, approver_id, signed_name, signature, decision, reason) VALUES (?, 'approve', 'operational_manager', ?, ?, ?, 'approved', ?)`, id, req.user.id, s.name, sig, req.body.reason || null);
+  });
+  audit.record({ userId: req.user.id, entity: 'mrn', entityId: id, action: 'approve', after: { approved_by: s.name }, reason: req.body.reason });
+  res.json(get('SELECT * FROM mrn WHERE id = ?', id));
+}));
+
+router.post('/mrn/:id/reject', requireRole('workshop', 'operational_manager', 'manager'), asyncHandler((req, res) => {
+  const id = toInt(req.params.id);
+  const mrn = get('SELECT * FROM mrn WHERE id = ?', id);
+  if (!mrn) return res.status(404).json({ error: 'MRN not found' });
+  if (!String(req.body.reason || '').trim()) return res.status(400).json({ error: 'A reason is required to reject' });
+  const s = signer(req.user.id);
+  const asApprover = hasRole(req.user, 'operational_manager') || hasRole(req.user, 'manager');
+  const stage = asApprover ? 'approve' : 'certify';
+  tx(() => {
+    run(`UPDATE mrn SET approval_status = 'rejected' WHERE id = ?`, id);
+    run(`INSERT INTO mrn_approvals (mrn_id, stage, role, approver_id, signed_name, signature, decision, reason) VALUES (?, ?, ?, ?, ?, ?, 'rejected', ?)`,
+      id, stage, asApprover ? 'operational_manager' : 'workshop', req.user.id, s.name, req.body.signature || s.sig || null, req.body.reason);
+  });
+  audit.record({ userId: req.user.id, entity: 'mrn', entityId: id, action: 'reject', after: { by: s.name }, reason: req.body.reason });
+  res.json(get('SELECT * FROM mrn WHERE id = ?', id));
+}));
+
+// Printable Material Requisition form (matches the paper EC1.ST.FO.01 layout).
+router.get('/mrn/:id/print.html', asyncHandler((req, res) => {
+  const id = toInt(req.params.id);
+  const mrn = get('SELECT m.*, a.code AS asset_code, p.name AS project_name FROM mrn m LEFT JOIN assets a ON a.id = m.asset_id LEFT JOIN projects p ON p.id = m.project_id WHERE m.id = ?', id);
+  if (!mrn) return res.status(404).send('MRN not found');
+  const lines = all('SELECT * FROM mrn_lines WHERE mrn_id = ? ORDER BY id', id);
+  const esc = (v) => String(v == null ? '' : v).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+  const d = (v) => (v ? String(v).slice(0, 10) : '');
+  const srcLbl = (s) => (s === 'head_office' ? 'H/O' : s === 'local_purchase' ? 'Local' : '');
+  const lineSrcs = [...new Set(lines.map((l) => l.purchase_source).filter(Boolean))];
+  const srcTag = lineSrcs.length === 1 ? srcLbl(lineSrcs[0]) : lineSrcs.length > 1 ? 'Mixed' : srcLbl(mrn.purchase_source);
+  const MIN_ROWS = 12;
+  const rowHtml = (l, i) => `<tr>
+    <td class="c">${i + 1}</td>
+    <td>${esc(l ? l.description : '')}</td>
+    <td class="c">${esc(l ? (l.unit || 'nos') : '')}</td>
+    <td class="c">${l ? srcLbl(l.purchase_source || mrn.purchase_source) : ''}</td>
+    <td class="num">${l && l.qty_received ? l.qty_received : ''}</td>
+    <td></td>
+    <td class="num">${l && l.qty ? l.qty : ''}</td>
+    <td></td></tr>`;
+  const rows = [];
+  for (let i = 0; i < Math.max(MIN_ROWS, lines.length); i++) rows.push(rowHtml(lines[i], i));
+  const sigBlock = (title, name, dateVal, designation, sigImg, isLast) => `
+    <div class="${isLast ? '' : 'l'}"><b>${title}</b>
+      ${sigImg ? `<div style="height:36px;margin:2px 0"><img src="${sigImg}" style="max-height:36px;max-width:160px"></div>`
+        : '<div class="sig-line" style="margin-top:22px">Signature</div>'}
+      <div class="rowline"><span class="k">Name:</span> ${name ? esc(name) + (sigImg ? '' : ' <span style="color:#0a7a0a;font-size:9px">&#10003; e-signed</span>') : ''}</div>
+      <div class="rowline"><span class="k">Designation:</span> ${esc(designation)}</div>
+      <div class="rowline"><span class="k">Date:</span> ${dateVal ? esc(d(dateVal)) : ''}</div></div>`;
+  const html = `<!doctype html><html><head><meta charset="utf-8"><title>MRN ${esc(mrn.mrn_no)}</title>
+<style>
+  @page { size: A4; margin: 12mm; }
+  body { font-family: Arial, sans-serif; color: #000; margin: 0; font-size: 12px; }
+  .sheet { border: 1.5px solid #000; }
+  .hd { display: flex; align-items: stretch; border-bottom: 1.5px solid #000; }
+  .hd .co { flex: 1; padding: 6px 10px; font-weight: bold; font-size: 15px; border-right: 1.5px solid #000; display:flex; align-items:center; }
+  .hd .ti { width: 210px; padding: 6px 10px; font-weight: bold; font-size: 15px; display:flex; align-items:center; justify-content:center; }
+  .meta { display: grid; grid-template-columns: 1fr 1fr 1fr; border-bottom: 1.5px solid #000; }
+  .meta div { padding: 4px 10px; border-right: 1px solid #000; }
+  .meta div:last-child { border-right: none; }
+  .meta b { display:inline-block; min-width: 64px; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { border: 1px solid #000; padding: 4px 6px; vertical-align: top; }
+  th { background: #f0f0f0; font-size: 11px; text-align: center; }
+  td.c { text-align: center; } td.num { text-align: right; }
+  td:nth-child(2) { min-width: 260px; }
+  tbody td { height: 22px; }
+  .sign { display: grid; grid-template-columns: 1fr 1fr 1fr; border-top: 1.5px solid #000; }
+  .sign > div { padding: 8px 10px; }
+  .sign .l { border-right: 1.5px solid #000; }
+  .sig-line { margin-top: 26px; border-top: 1px solid #000; padding-top: 2px; font-size: 11px; }
+  .foot { display:flex; justify-content: space-between; padding: 4px 10px; border-top: 1.5px solid #000; font-size: 10px; color:#222; }
+  .rowline { display:flex; gap:6px; margin: 6px 0; font-size: 11px; } .rowline .k { min-width: 78px; }
+  button { padding: 8px 14px; font-size: 14px; margin: 10px; cursor: pointer; }
+  @media print { .noprint { display: none; } }
+</style></head>
+<body>
+<button class="noprint" onclick="window.print()">🖨 Print / Save as PDF</button>
+<div class="sheet">
+  <div class="hd"><div class="co">Edward and Christie (Pvt) Ltd</div><div class="ti">Material Requisition</div></div>
+  <div class="meta">
+    <div><b>Project:</b> ${esc(mrn.project_name || mrn.purpose || '')}</div>
+    <div><b>Date:</b> ${esc(d(mrn.req_date))}</div>
+    <div><b>MR No.:</b> ${esc(mrn.mrn_no)} ${srcTag ? '&nbsp; <b>' + srcTag + '</b>' : ''}</div>
+    <div><b>Vehicle:</b> ${esc(mrn.asset_code || '')}</div>
+    <div><b>Required Date:</b> ${esc(d(mrn.required_date))}</div>
+    <div><b>Requested by:</b> ${esc(mrn.requested_by || '')}</div>
+  </div>
+  <table>
+    <thead><tr>
+      <th style="width:34px">Item No.</th><th>Description</th><th style="width:40px">Unit</th><th style="width:44px">Source</th>
+      <th style="width:66px">Received Qty (Cumulative)</th><th style="width:56px">Available Qty</th>
+      <th style="width:56px">Required Qty</th><th style="width:66px">Required Date</th>
+    </tr></thead>
+    <tbody>${rows.join('')}</tbody>
+  </table>
+  <div class="sign">
+    ${sigBlock('Requested By', mrn.requested_by, mrn.req_date, 'Storekeeper', mrn.requested_sig, false)}
+    ${sigBlock('Certified By', mrn.certified_by, mrn.certified_at, 'Workshop Engineer', mrn.certified_sig, false)}
+    ${sigBlock('Approved By', mrn.approved_by, mrn.approved_at, 'Operational Manager', mrn.approved_sig, true)}
+  </div>
+  <div class="foot"><span>Doc. No.: EC1.ST.FO.01</span><span>Date of Issue: 2018.11.14</span></div>
+</div>
+</body></html>`;
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  res.send(html);
 }));
 
 router.post('/mrn/:id/lines', requireRole('storekeeper'), asyncHandler((req, res) => {
@@ -263,6 +418,7 @@ router.get('/grn', asyncHandler((req, res) => {
   const params = [];
   if (req.query.mrn_id) { clauses.push('g.mrn_id = ?'); params.push(toInt(req.query.mrn_id)); }
   if (req.query.awaiting === '1') clauses.push('g.unit_price IS NULL');
+  if (req.query.source && PURCHASE_SOURCES.includes(req.query.source)) { clauses.push('g.purchase_source_norm = ?'); params.push(req.query.source); }
   if (req.query.q && String(req.query.q).trim()) {
     const like = '%' + String(req.query.q).trim() + '%';
     clauses.push('(g.grn_no LIKE ? OR g.description LIKE ? OR g.supplier LIKE ? OR m.mrn_no LIKE ? OR a.code LIKE ?)');
@@ -270,14 +426,133 @@ router.get('/grn', asyncHandler((req, res) => {
   }
   const where = clauses.length ? 'WHERE ' + clauses.join(' AND ') : '';
   res.json(all(
-    `SELECT g.*, m.mrn_no, a.code AS asset_code FROM grn g
+    `SELECT g.*, m.mrn_no, m.req_date AS mrn_req_date, a.code AS asset_code FROM grn g
        LEFT JOIN mrn m ON m.id = g.mrn_id LEFT JOIN assets a ON a.id = m.asset_id
        ${where} ORDER BY g.id DESC LIMIT ${toInt(req.query.limit, 500)}`, ...params));
 }));
 
-// Count of GRN records still awaiting a price (for the badge / progress).
+// Count of GRN records still awaiting a price (for the badge / progress), split by source.
 router.get('/grn/awaiting-count', asyncHandler((_req, res) =>
-  res.json({ awaiting: get('SELECT COUNT(*) c FROM grn WHERE unit_price IS NULL').c, total: get('SELECT COUNT(*) c FROM grn').c })));
+  res.json({
+    awaiting: get('SELECT COUNT(*) c FROM grn WHERE unit_price IS NULL').c,
+    total: get('SELECT COUNT(*) c FROM grn').c,
+    by_source: all(`SELECT COALESCE(purchase_source_norm,'(unset)') source, COUNT(*) awaiting
+                      FROM grn WHERE unit_price IS NULL GROUP BY 1 ORDER BY awaiting DESC`),
+    awaiting_grn: get('SELECT COUNT(*) c FROM mrn_lines WHERE COALESCE(qty_received,0) < qty').c,
+  })));
+
+// Items requested but not yet received (awaiting a GRN), with the request date.
+router.get('/awaiting-grn', asyncHandler((req, res) => {
+  const clauses = ['COALESCE(ml.qty_received,0) < ml.qty', "COALESCE(m.approval_status,'') <> 'rejected'"];
+  const params = [];
+  if (req.query.source && PURCHASE_SOURCES.includes(req.query.source)) { clauses.push('COALESCE(ml.purchase_source, m.purchase_source) = ?'); params.push(req.query.source); }
+  if (req.query.q && String(req.query.q).trim()) {
+    const like = '%' + String(req.query.q).trim() + '%';
+    clauses.push('(m.mrn_no LIKE ? OR ml.description LIKE ? OR a.code LIKE ?)');
+    params.push(like, like, like);
+  }
+  res.json(all(
+    `SELECT ml.id, ml.description, ml.qty, ml.qty_received, ml.category,
+            m.id AS mrn_id, m.mrn_no, m.req_date, COALESCE(ml.purchase_source, m.purchase_source) AS purchase_source, a.code AS asset_code
+       FROM mrn_lines ml JOIN mrn m ON m.id = ml.mrn_id LEFT JOIN assets a ON a.id = m.asset_id
+      WHERE ${clauses.join(' AND ')}
+      ORDER BY m.req_date DESC, m.mrn_no LIMIT ${toInt(req.query.limit, 500)}`, ...params));
+}));
+
+// ---- Pending purchases (partial + not received), split by purchase source ----
+// Source of a pending line = the source of any GRN it already has (partial receipts),
+// else the MRN header's intended purchase_source, else unsourced (chosen on receipt).
+function pendingRows(query) {
+  const outer = [];
+  const params = [];
+  const src = query.source;
+  if (src === 'unsourced') outer.push('source IS NULL');
+  else if (src && PURCHASE_SOURCES.includes(src)) { outer.push('source = ?'); params.push(src); }
+  if (query.status === 'partial') outer.push("status = 'partial'");
+  else if (query.status === 'not_received') outer.push("status = 'not_received'");
+  if (query.q && String(query.q).trim()) {
+    const like = '%' + String(query.q).trim() + '%';
+    outer.push('(mrn_no LIKE ? OR description LIKE ? OR asset_code LIKE ?)');
+    params.push(like, like, like);
+  }
+  const where = outer.length ? 'WHERE ' + outer.join(' AND ') : '';
+  return all(
+    `SELECT * FROM (
+       SELECT ml.id, m.id AS mrn_id, m.mrn_no, m.req_date, a.code AS asset_code, ml.description, ml.category,
+              ml.qty AS ordered, COALESCE(ml.qty_received,0) AS received, (ml.qty - COALESCE(ml.qty_received,0)) AS pending,
+              CASE WHEN COALESCE(ml.qty_received,0) > 0 THEN 'partial' ELSE 'not_received' END AS status,
+              COALESCE((SELECT g.purchase_source_norm FROM grn g WHERE g.mrn_line_id = ml.id AND g.purchase_source_norm IS NOT NULL LIMIT 1), ml.purchase_source, m.purchase_source) AS source,
+              (SELECT g.supplier FROM grn g WHERE g.mrn_line_id = ml.id AND g.supplier IS NOT NULL LIMIT 1) AS supplier,
+              (SELECT MAX(g.delivery_date) FROM grn g WHERE g.mrn_line_id = ml.id) AS last_received
+         FROM mrn_lines ml JOIN mrn m ON m.id = ml.mrn_id LEFT JOIN assets a ON a.id = m.asset_id
+        WHERE COALESCE(ml.qty_received,0) < ml.qty AND COALESCE(m.approval_status,'') <> 'rejected'
+     ) ${where} ORDER BY source, req_date DESC, mrn_no LIMIT ${toInt(query.limit, 2000)}`, ...params);
+}
+
+router.get('/pending', asyncHandler((req, res) => res.json(pendingRows(req.query))));
+
+router.get('/pending/summary', asyncHandler((_req, res) => {
+  res.json(all(
+    `SELECT source, status, COUNT(*) count FROM (
+       SELECT CASE WHEN COALESCE(ml.qty_received,0) > 0 THEN 'partial' ELSE 'not_received' END AS status,
+              COALESCE((SELECT g.purchase_source_norm FROM grn g WHERE g.mrn_line_id = ml.id AND g.purchase_source_norm IS NOT NULL LIMIT 1), ml.purchase_source, m.purchase_source) AS source
+         FROM mrn_lines ml JOIN mrn m ON m.id = ml.mrn_id
+        WHERE COALESCE(ml.qty_received,0) < ml.qty AND COALESCE(m.approval_status,'') <> 'rejected'
+     ) GROUP BY source, status`));
+}));
+
+// Set an MRN's intended purchase source (so not-received items can be planned/printed).
+router.patch('/mrn/:id', requireRole('storekeeper'), asyncHandler((req, res) => {
+  const id = toInt(req.params.id);
+  const mrn = get('SELECT * FROM mrn WHERE id = ?', id);
+  if (!mrn) return res.status(404).json({ error: 'MRN not found' });
+  if (req.body.purchase_source !== undefined) {
+    const s = req.body.purchase_source || null;
+    if (s && !PURCHASE_SOURCES.includes(s)) return res.status(400).json({ error: 'Invalid purchase_source' });
+    run('UPDATE mrn SET purchase_source = ? WHERE id = ?', s, id);
+    audit.record({ userId: req.user.id, entity: 'mrn', entityId: id, action: 'update', before: { purchase_source: mrn.purchase_source }, after: { purchase_source: s }, reason: 'set purchase source' });
+  }
+  res.json(get('SELECT * FROM mrn WHERE id = ?', id));
+}));
+
+// Set ONE MRN line's purchase source (mixed-source MRNs — per item).
+router.patch('/mrn/line/:id', requireRole('storekeeper'), asyncHandler((req, res) => {
+  const id = toInt(req.params.id);
+  const line = get('SELECT * FROM mrn_lines WHERE id = ?', id);
+  if (!line) return res.status(404).json({ error: 'MRN line not found' });
+  if (req.body.purchase_source !== undefined) {
+    const s = req.body.purchase_source || null;
+    if (s && !PURCHASE_SOURCES.includes(s)) return res.status(400).json({ error: 'Invalid purchase_source' });
+    run('UPDATE mrn_lines SET purchase_source = ? WHERE id = ?', s, id);
+  }
+  res.json(get('SELECT * FROM mrn_lines WHERE id = ?', id));
+}));
+
+// Printable pending-purchases list, grouped by source.
+router.get('/pending/print.html', asyncHandler((req, res) => {
+  const rows = pendingRows({ ...req.query, limit: 5000 });
+  const esc = (v) => String(v == null ? '' : v).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+  const d = (v) => (v ? String(v).slice(0, 10) : '');
+  const label = { head_office: 'Head Office', local_purchase: 'Local Purchase' };
+  const groups = { head_office: [], local_purchase: [], unsourced: [] };
+  for (const r of rows) (groups[r.source] || groups.unsourced).push(r);
+  const section = (title, list) => !list.length ? '' : `
+    <h2>${esc(title)} — ${list.length} item(s)</h2>
+    <table><thead><tr><th>MRN</th><th>Req Date</th><th>Vehicle</th><th>Item</th><th class="num">Ordered</th><th class="num">Received</th><th class="num">Pending</th><th>Status</th><th>Supplier</th></tr></thead>
+    <tbody>${list.map((r) => `<tr><td>${esc(r.mrn_no)}</td><td>${d(r.req_date)}</td><td>${esc(r.asset_code || '')}</td><td>${esc(r.description)}</td><td class="num">${r.ordered}</td><td class="num">${r.received}</td><td class="num"><b>${r.pending}</b></td><td>${r.status === 'partial' ? 'Partial' : 'Not received'}</td><td>${esc(r.supplier || '')}</td></tr>`).join('')}</tbody></table>`;
+  const which = req.query.source && label[req.query.source] ? label[req.query.source] : 'All Sources';
+  const html = `<!doctype html><html><head><meta charset="utf-8"><title>Pending Purchases — ${esc(which)}</title>
+<style>body{font-family:system-ui,Arial,sans-serif;margin:22px;color:#111}h1{font-size:19px;margin:0 0 2px}h2{font-size:14px;margin:18px 0 6px;border-bottom:2px solid #333;padding-bottom:3px}
+.meta{color:#555;font-size:12px;margin-bottom:8px}table{width:100%;border-collapse:collapse;font-size:12px;margin-bottom:8px}th,td{border:1px solid #bbb;padding:4px 7px;text-align:left}th{background:#eee}td.num,th.num{text-align:right}
+button{padding:8px 14px;font-size:14px;cursor:pointer;margin-bottom:10px}@media print{.noprint{display:none}}</style></head>
+<body><button class="noprint" onclick="window.print()">Print / Save PDF</button>
+<h1>Pending Purchases — ${esc(which)}</h1>
+<div class="meta">Edward &amp; Christie · items requested but not fully received (partial + not received) · ${rows.length} item(s)</div>
+${req.query.source ? section(which, groups[req.query.source] || []) : section('Head Office', groups.head_office) + section('Local Purchase', groups.local_purchase) + section('Not Sourced Yet', groups.unsourced)}
+</body></html>`;
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  res.send(html);
+}));
 
 router.post('/grn', requireRole('storekeeper'), asyncHandler((req, res) => {
   const b = req.body;
@@ -329,6 +604,10 @@ router.patch('/grn/:id', requireRole('storekeeper'), asyncHandler((req, res) => 
   if (req.body.purchase_source !== undefined) {
     sets.push('purchase_source_norm = ?');
     params.push(purchaseSourceNorm(req.body.purchase_source));
+  }
+  // Stamp when a price is first entered (procurement tracking).
+  if (req.body.unit_price !== undefined && before.unit_price == null && req.body.unit_price !== '' && req.body.unit_price !== null && before.priced_at == null) {
+    sets.push("priced_at = datetime('now')");
   }
   if (sets.length) run(`UPDATE grn SET ${sets.join(', ')} WHERE id = ?`, ...params, id);
   const after = get('SELECT * FROM grn WHERE id = ?', id);

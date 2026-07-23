@@ -116,6 +116,7 @@ router.post('/ledger', requireRole('storekeeper'), asyncHandler((req, res) => {
   const txnDate = b.txn_date || new Date().toISOString().slice(0, 10);
   let assetId = toInt(b.asset_id);
   let unresolved = null;
+  if (!assetId && toInt(b.job_id)) { const j = get('SELECT asset_id FROM job_cards WHERE id = ?', toInt(b.job_id)); assetId = j ? j.asset_id : null; }
   if (!assetId && b.asset) {
     const r = aliases.resolveAsset(b.asset, { source: 'oil' });
     assetId = r.assetId;

@@ -39,3 +39,8 @@ SYSTEM_AUDIT_PLAN.json
 
 # Throwaway design preview
 public/_mockup.html
+sources/stores/tracker_backup.json
+
+# SQLite WAL sidecars (transient)
+*.db-shm
+*.db-wal

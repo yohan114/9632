@@ -235,4 +235,276 @@ router.get('/job/:id/costsheet.html', asyncHandler((req, res) => {
   res.send(html);
 }));
 
+// ---- monthly cost analytics (transaction-dated; drill-down) ----------------
+// Total = Labour + Head Office + Local Purchase + Oil, all attributed to the month
+// the work was done / the goods were received / the oil was issued.
+const MONTH_RE = /^\d{4}-\d{2}$/;
+const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+const OIL_VAL = 'ABS(sl.qty) * COALESCE(sl.unit_price, pr.unit_price, 0)';
+
+router.get('/monthly', asyncHandler((_req, res) => {
+  const map = new Map();
+  const M = (m) => { if (!map.has(m)) map.set(m, { month: m, labour: 0, head_office: 0, local_purchase: 0, oil: 0, jobs: 0 }); return map.get(m); };
+  for (const r of all(`SELECT substr(work_date,1,7) m, ROUND(SUM(amount),2) v FROM job_labour WHERE work_date IS NOT NULL GROUP BY m`)) if (r.m) M(r.m).labour = r.v || 0;
+  for (const r of all(`SELECT substr(delivery_date,1,7) m, purchase_source_norm src, ROUND(SUM(qty*unit_price),2) v
+                         FROM grn WHERE unit_price IS NOT NULL AND delivery_date IS NOT NULL GROUP BY m, src`)) {
+    if (!r.m) continue; const o = M(r.m);
+    if (r.src === 'head_office') o.head_office += r.v || 0; else if (r.src === 'local_purchase') o.local_purchase += r.v || 0;
+  }
+  for (const r of all(`SELECT substr(sl.txn_date,1,7) m, ROUND(SUM(${OIL_VAL}),2) v FROM stock_ledger sl
+                         JOIN products pr ON pr.id = sl.product_id WHERE sl.kind='issue' AND sl.txn_date IS NOT NULL GROUP BY m`)) if (r.m) M(r.m).oil = r.v || 0;
+  for (const r of all(`SELECT substr(requested_at,1,7) m, COUNT(*) c FROM job_cards WHERE requested_at IS NOT NULL GROUP BY m`)) if (r.m) M(r.m).jobs = r.c || 0;
+  const tm = new Date().toISOString().slice(0, 7);
+  const months = [...map.values()]
+    .map((o) => ({ ...o, total: r2(o.labour + o.head_office + o.local_purchase + o.oil) }))
+    .filter((o) => o.month <= tm) // drop spurious future-dated (data-error) months
+    .sort((a, b) => b.month.localeCompare(a.month));
+  res.json({ this_month: months.find((x) => x.month === tm) || { month: tm, labour: 0, head_office: 0, local_purchase: 0, oil: 0, jobs: 0, total: 0 }, months });
+}));
+
+router.get('/monthly/:month/assets', asyncHandler((req, res) => {
+  const month = String(req.params.month);
+  if (!MONTH_RE.test(month)) return res.status(400).json({ error: 'month must be YYYY-MM' });
+  const map = new Map();
+  const A = (id) => { if (!map.has(id)) map.set(id, { asset_id: id, labour: 0, material: 0, oil: 0 }); return map.get(id); };
+  for (const r of all(`SELECT j.asset_id id, ROUND(SUM(jl.amount),2) v FROM job_labour jl JOIN job_cards j ON j.id=jl.job_id
+                        WHERE j.asset_id IS NOT NULL AND substr(jl.work_date,1,7)=? GROUP BY j.asset_id`, month)) A(r.id).labour = r.v || 0;
+  for (const r of all(`SELECT m.asset_id id, ROUND(SUM(g.qty*g.unit_price),2) v FROM grn g JOIN mrn m ON m.id=g.mrn_id
+                        WHERE m.asset_id IS NOT NULL AND g.unit_price IS NOT NULL AND substr(g.delivery_date,1,7)=? GROUP BY m.asset_id`, month)) A(r.id).material = r.v || 0;
+  for (const r of all(`SELECT sl.asset_id id, ROUND(SUM(${OIL_VAL}),2) v FROM stock_ledger sl JOIN products pr ON pr.id=sl.product_id
+                        WHERE sl.asset_id IS NOT NULL AND sl.kind='issue' AND substr(sl.txn_date,1,7)=? GROUP BY sl.asset_id`, month)) A(r.id).oil = r.v || 0;
+  const assets = [...map.values()].map((o) => {
+    const a = get('SELECT code FROM assets WHERE id=?', o.asset_id);
+    return { ...o, asset_code: a ? a.code : '(unlinked)', total: r2(o.labour + o.material + o.oil) };
+  }).sort((a, b) => b.total - a.total);
+  res.json({ month, assets });
+}));
+
+router.get('/monthly/:month/asset/:id', asyncHandler((req, res) => {
+  const month = String(req.params.month); const id = toInt(req.params.id);
+  if (!MONTH_RE.test(month)) return res.status(400).json({ error: 'month must be YYYY-MM' });
+  const asset = get('SELECT code, registration, ec_code FROM assets WHERE id=?', id);
+  const labour_lines = all(`SELECT jl.work_date, jl.mechanic, jl.hours, jl.rate, jl.amount, j.job_no
+                              FROM job_labour jl JOIN job_cards j ON j.id=jl.job_id
+                             WHERE j.asset_id=? AND substr(jl.work_date,1,7)=? ORDER BY jl.work_date, jl.id`, id, month);
+  const material_lines = all(`SELECT g.delivery_date, g.description, g.qty, g.unit_price, g.supplier, g.purchase_source_norm source, m.mrn_no
+                                FROM grn g JOIN mrn m ON m.id=g.mrn_id
+                               WHERE m.asset_id=? AND g.unit_price IS NOT NULL AND substr(g.delivery_date,1,7)=? ORDER BY g.delivery_date, g.id`, id, month);
+  const oil_lines = all(`SELECT sl.txn_date, pr.name product, pr.unit, ABS(sl.qty) qty, COALESCE(sl.unit_price, pr.unit_price) unit_price
+                           FROM stock_ledger sl JOIN products pr ON pr.id=sl.product_id
+                          WHERE sl.asset_id=? AND sl.kind='issue' AND substr(sl.txn_date,1,7)=? ORDER BY sl.txn_date, sl.id`, id, month);
+  const labour = labour_lines.reduce((s, l) => s + (l.amount || 0), 0);
+  const material = material_lines.reduce((s, l) => s + (l.qty || 0) * (l.unit_price || 0), 0);
+  const oil = oil_lines.reduce((s, l) => s + (l.qty || 0) * (l.unit_price || 0), 0);
+  res.json({ month, asset_id: id, asset_code: asset ? asset.code : '(unlinked)',
+    asset_reg: asset ? asset.registration : null, asset_ec: asset ? asset.ec_code : null,
+    labour: r2(labour), material: r2(material), oil: r2(oil), total: r2(labour + material + oil),
+    labour_lines, material_lines, oil_lines });
+}));
+
+// ---- role-aware "pending your approval" queue (for the dashboard) ----------
+// Only live, in-flow MRNs (a real requester name) count — imported history has none.
+router.get('/pending-approvals', asyncHandler((req, res) => {
+  const roles = (req.user && req.user.roles) || [];
+  const has = (r) => roles.includes('admin') || roles.includes(r);
+  const out = { certify: [], approve: [], transport: [], ops: [], jr_certify: [], jr_approve: [] };
+  const INFLOW = "approval_status = 'requested' AND requested_by IS NOT NULL AND TRIM(requested_by) <> ''";
+  const lineCount = '(SELECT COUNT(*) FROM mrn_lines ml WHERE ml.mrn_id = m.id) lines';
+  if (has('workshop') || has('manager')) {
+    out.certify = all(`SELECT m.id, m.mrn_no, m.req_date, m.requested_by, a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec, ${lineCount}
+        FROM mrn m LEFT JOIN assets a ON a.id = m.asset_id WHERE ${INFLOW} ORDER BY m.req_date DESC, m.id DESC LIMIT 50`);
+  }
+  if (has('operational_manager') || has('manager')) {
+    out.approve = all(`SELECT m.id, m.mrn_no, m.req_date, m.requested_by, m.certified_by, m.certified_at, a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec, ${lineCount}
+        FROM mrn m LEFT JOIN assets a ON a.id = m.asset_id WHERE m.approval_status = 'certified' ORDER BY m.certified_at DESC, m.id DESC LIMIT 50`);
+  }
+  if (has('transport_manager')) {
+    out.transport = all(`SELECT j.id, j.job_no, a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec FROM job_cards j LEFT JOIN assets a ON a.id = j.asset_id
+        WHERE j.status = 'REQUESTED' AND j.approved_transport_at IS NULL AND j.is_historical = 0 ORDER BY j.id DESC LIMIT 50`);
+  }
+  if (has('operational_manager')) {
+    out.ops = all(`SELECT j.id, j.job_no, a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec FROM job_cards j LEFT JOIN assets a ON a.id = j.asset_id
+        WHERE j.approved_transport_at IS NOT NULL AND j.approved_ops_at IS NULL AND j.is_historical = 0 ORDER BY j.id DESC LIMIT 50`);
+  }
+  // Job Requests (Transport): Transport Manager certifies → Operational Manager approves.
+  if (has('transport_manager')) {
+    out.jr_certify = all(`SELECT r.id, r.jr_no, r.req_date, r.requested_by, r.description,
+          a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec
+        FROM job_requests r LEFT JOIN assets a ON a.id = r.asset_id
+        WHERE r.approval_status = 'requested' ORDER BY r.id DESC LIMIT 50`);
+  }
+  if (has('operational_manager') || has('manager')) {
+    out.jr_approve = all(`SELECT r.id, r.jr_no, r.req_date, r.requested_by, r.certified_by, r.description,
+          a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec
+        FROM job_requests r LEFT JOIN assets a ON a.id = r.asset_id
+        WHERE r.approval_status = 'certified' ORDER BY r.id DESC LIMIT 50`);
+  }
+  out.total = out.certify.length + out.approve.length + out.transport.length + out.ops.length
+            + out.jr_certify.length + out.jr_approve.length;
+  out.is_approver = has('workshop') || has('operational_manager') || has('transport_manager') || has('manager');
+  res.json(out);
+}));
+
+// ---- Daily Progress Report -------------------------------------------------
+// One day's workshop output: jobs worked, mechanic hours, costed labour, plus
+// materials + oil issued that day, with a printable sheet.
+function dailyProgress(date) {
+  const work = all(
+    `SELECT w.job_id, j.job_no, j.type, j.status, a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec,
+            p.name AS project_name, w.mechanic, w.description, w.hours, w.is_external, w.external_value
+       FROM job_daily_work w JOIN job_cards j ON j.id = w.job_id
+       LEFT JOIN assets a ON a.id = j.asset_id LEFT JOIN projects p ON p.id = j.project_id
+      WHERE w.work_date = ? ORDER BY j.job_no, w.id`, date);
+  const lab = all(`SELECT job_id, COALESCE(SUM(amount),0) amount FROM job_labour WHERE work_date = ? GROUP BY job_id`, date);
+  const labByJob = {}; for (const l of lab) labByJob[l.job_id] = l.amount;
+  const issues = all(
+    `SELECT i.description, i.qty, i.unit_price, j.job_no, a.code AS asset_code
+       FROM issues i LEFT JOIN job_cards j ON j.id = i.job_id LEFT JOIN assets a ON a.id = i.asset_id
+      WHERE i.issue_date = ? ORDER BY i.id`, date);
+  const oil = all(
+    `SELECT pr.name AS product, sl.qty, sl.unit_price, j.job_no, a.code AS asset_code
+       FROM stock_ledger sl JOIN products pr ON pr.id = sl.product_id
+       LEFT JOIN job_cards j ON j.id = sl.job_id LEFT JOIN assets a ON a.id = sl.asset_id
+      WHERE sl.txn_date = ? AND sl.kind = 'issue' ORDER BY sl.id`, date);
+  const jobsMap = {};
+  for (const w of work) {
+    const g = jobsMap[w.job_id] || (jobsMap[w.job_id] = {
+      job_id: w.job_id, job_no: w.job_no, type: w.type, status: w.status,
+      asset_code: w.asset_code, asset_reg: w.asset_reg, asset_ec: w.asset_ec, project_name: w.project_name,
+      mechanics: [], tasks: [], hours: 0, external: 0, labour: r2(labByJob[w.job_id] || 0),
+    });
+    if (w.mechanic && !g.mechanics.includes(w.mechanic)) g.mechanics.push(w.mechanic);
+    g.tasks.push({ mechanic: w.mechanic, description: w.description, hours: w.hours, is_external: w.is_external, external_value: w.external_value });
+    g.hours = r2(g.hours + (Number(w.hours) || 0));
+    g.external = r2(g.external + (Number(w.external_value) || 0));
+  }
+  const jobs = Object.values(jobsMap);
+  const total_labour = lab.reduce((s, l) => s + (Number(l.amount) || 0), 0);
+  const total_material = issues.reduce((s, i) => s + (Number(i.qty) || 0) * (Number(i.unit_price) || 0), 0);
+  const total_oil = oil.reduce((s, o) => s + Math.abs(Number(o.qty) || 0) * (Number(o.unit_price) || 0), 0);
+  const total_external = jobs.reduce((s, j) => s + j.external, 0);
+  const total_hours = jobs.reduce((s, j) => s + j.hours, 0);
+  return {
+    date, jobs, issues, oil,
+    totals: {
+      jobs: jobs.length, hours: r2(total_hours), labour: r2(total_labour), external: r2(total_external),
+      material: r2(total_material), oil: r2(total_oil), grand: r2(total_labour + total_external + total_material + total_oil),
+    },
+  };
+}
+
+const MDATE = /^\d{4}-\d{2}-\d{2}$/;
+router.get('/daily-progress', asyncHandler((req, res) => {
+  const date = String(req.query.date || '').slice(0, 10);
+  if (!MDATE.test(date)) return res.status(400).json({ error: 'A valid ?date=YYYY-MM-DD is required' });
+  res.json(dailyProgress(date));
+}));
+
+router.get('/daily-progress/print.html', asyncHandler((req, res) => {
+  const date = String(req.query.date || '').slice(0, 10);
+  if (!MDATE.test(date)) return res.status(400).send('A valid ?date=YYYY-MM-DD is required');
+  const rep = dailyProgress(date);
+  const esc = (v) => String(v == null ? '' : v).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+  const m = (n) => 'Rs ' + (Number(n) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const veh = (j) => [j.asset_reg, (j.asset_ec && j.asset_ec !== j.asset_reg) ? j.asset_ec : ''].filter(Boolean).join(' · ') || j.asset_code || '';
+  const jobRows = rep.jobs.map((j) => `<tr>
+      <td>${esc(j.job_no)}</td><td>${esc(veh(j))}</td><td>${esc(j.mechanics.join(', '))}</td>
+      <td>${j.tasks.map((t) => esc(t.description || (t.is_external ? 'External repair' : ''))).filter(Boolean).join('; ')}</td>
+      <td class="num">${j.hours}</td><td class="num">${m(j.labour)}</td></tr>`).join('') ||
+    '<tr><td colspan="6" style="text-align:center;color:#666">No work logged this day.</td></tr>';
+  const t = rep.totals;
+  const html = `<!doctype html><html><head><meta charset="utf-8"><title>Daily Progress ${esc(date)}</title>
+<style>
+  @page { size: A4; margin: 12mm; }
+  body { font-family: Arial, sans-serif; color:#000; font-size:12px; margin:0; }
+  h1 { font-size:18px; margin:0 0 2px; } .sub { color:#444; margin-bottom:10px; }
+  table { width:100%; border-collapse:collapse; margin-bottom:14px; }
+  th,td { border:1px solid #000; padding:4px 6px; vertical-align:top; } th { background:#f0f0f0; text-align:left; }
+  td.num, th.num { text-align:right; }
+  .tot { display:flex; gap:16px; flex-wrap:wrap; margin-bottom:10px; }
+  .tot div { border:1px solid #000; padding:6px 10px; } .tot b { display:block; font-size:15px; }
+  button { padding:8px 14px; font-size:14px; margin:10px 0; cursor:pointer; }
+  @media print { .noprint { display:none; } }
+</style></head><body>
+<button class="noprint" onclick="window.print()">🖨 Print / Save as PDF</button>
+<h1>Edward &amp; Christie (Pvt) Ltd — Daily Progress Report</h1>
+<div class="sub">Date: <b>${esc(date)}</b> · ${t.jobs} job(s) worked · ${t.hours} mechanic-hours</div>
+<div class="tot">
+  <div>Labour<b>${m(t.labour)}</b></div><div>Material<b>${m(t.material)}</b></div>
+  <div>Oil &amp; Lube<b>${m(t.oil)}</b></div><div>External<b>${m(t.external)}</b></div>
+  <div>Total<b>${m(t.grand)}</b></div>
+</div>
+<table><thead><tr><th>Job No</th><th>Vehicle</th><th>Mechanic(s)</th><th>Work done</th><th class="num">Hours</th><th class="num">Labour</th></tr></thead>
+<tbody>${jobRows}</tbody></table>
+${rep.issues.length ? `<h3>Materials issued</h3><table><thead><tr><th>Item</th><th>Job</th><th class="num">Qty</th><th class="num">Unit</th><th class="num">Value</th></tr></thead><tbody>${rep.issues.map((i) => `<tr><td>${esc(i.description)}</td><td>${esc(i.job_no || '')}</td><td class="num">${i.qty}</td><td class="num">${i.unit_price == null ? '—' : m(i.unit_price)}</td><td class="num">${m((Number(i.qty) || 0) * (Number(i.unit_price) || 0))}</td></tr>`).join('')}</tbody></table>` : ''}
+${rep.oil.length ? `<h3>Oil &amp; lubricants issued</h3><table><thead><tr><th>Product</th><th>Job</th><th class="num">Qty</th><th class="num">Value</th></tr></thead><tbody>${rep.oil.map((o) => `<tr><td>${esc(o.product)}</td><td>${esc(o.job_no || '')}</td><td class="num">${Math.abs(Number(o.qty) || 0)}</td><td class="num">${m(Math.abs(Number(o.qty) || 0) * (Number(o.unit_price) || 0))}</td></tr>`).join('')}</tbody></table>` : ''}
+</body></html>`;
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  res.send(html);
+}));
+
+// ---- Reverse Costing — per-vehicle cost teardown ---------------------------
+// Where did an asset's spend go? Decompose lifetime cost into buckets, rank the
+// jobs, parts and mechanics that drove it. A "should-cost" style breakdown.
+function assetTeardown(id) {
+  const asset = get('SELECT id, code, registration, ec_code, brand, type, asset_class FROM assets WHERE id = ?', id);
+  if (!asset) return null;
+  const buckets = get(
+    `SELECT COALESCE(SUM(labour_cost),0) labour, COALESCE(SUM(material_cost),0) material,
+            COALESCE(SUM(oil_cost),0) oil, COALESCE(SUM(general_cost),0) general,
+            COALESCE(SUM(external_cost),0) external, COALESCE(SUM(other_cost),0) other,
+            COALESCE(SUM(total_cost),0) total, COUNT(*) jobs
+       FROM job_cards WHERE asset_id = ?`, id);
+  const jobs = all(
+    `SELECT id, job_no, type, status, requested_at, labour_cost, material_cost, oil_cost, external_cost, total_cost
+       FROM job_cards WHERE asset_id = ? ORDER BY total_cost DESC LIMIT 50`, id);
+  const parts = all(
+    `SELECT jp.description, COUNT(*) lines, COALESCE(SUM(jp.qty * jp.unit_price),0) value
+       FROM job_parts jp JOIN job_cards j ON j.id = jp.job_id
+      WHERE j.asset_id = ? AND jp.unit_price IS NOT NULL AND jp.description IS NOT NULL
+      GROUP BY LOWER(jp.description) ORDER BY value DESC LIMIT 10`, id);
+  const mechanics = all(
+    `SELECT jl.mechanic, COALESCE(SUM(jl.hours),0) hours, COALESCE(SUM(jl.amount),0) amount
+       FROM job_labour jl JOIN job_cards j ON j.id = jl.job_id
+      WHERE j.asset_id = ? AND jl.mechanic IS NOT NULL
+      GROUP BY jl.mechanic ORDER BY amount DESC LIMIT 10`, id);
+  return { asset, buckets, jobs, parts, mechanics };
+}
+
+router.get('/teardown/asset/:id', asyncHandler((req, res) => {
+  const t = assetTeardown(toInt(req.params.id));
+  if (!t) return res.status(404).json({ error: 'Asset not found' });
+  res.json(t);
+}));
+
+router.get('/teardown/asset/:id/print.html', asyncHandler((req, res) => {
+  const t = assetTeardown(toInt(req.params.id));
+  if (!t) return res.status(404).send('Asset not found');
+  const esc = (v) => String(v == null ? '' : v).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+  const m = (n) => 'Rs ' + (Number(n) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const b = t.buckets;
+  const veh = [t.asset.registration, (t.asset.ec_code && t.asset.ec_code !== t.asset.registration) ? t.asset.ec_code : ''].filter(Boolean).join(' · ') || t.asset.code;
+  const pc = (n) => b.total > 0 ? (100 * (Number(n) || 0) / b.total).toFixed(1) + '%' : '—';
+  const bucketRow = (label, val) => `<tr><td>${label}</td><td class="num">${m(val)}</td><td class="num">${pc(val)}</td></tr>`;
+  const html = `<!doctype html><html><head><meta charset="utf-8"><title>Cost Teardown ${esc(veh)}</title>
+<style>
+  @page { size: A4; margin: 12mm; } body { font-family: Arial, sans-serif; color:#000; font-size:12px; margin:0; }
+  h1 { font-size:18px; margin:0 0 2px; } .sub { color:#444; margin-bottom:10px; }
+  table { width:100%; border-collapse:collapse; margin-bottom:14px; } th,td { border:1px solid #000; padding:4px 6px; } th { background:#f0f0f0; text-align:left; }
+  td.num, th.num { text-align:right; } button { padding:8px 14px; font-size:14px; margin:10px 0; cursor:pointer; }
+  @media print { .noprint { display:none; } }
+</style></head><body>
+<button class="noprint" onclick="window.print()">🖨 Print / Save as PDF</button>
+<h1>Edward &amp; Christie (Pvt) Ltd — Cost Teardown</h1>
+<div class="sub">Vehicle: <b>${esc(veh)}</b> · ${esc([t.asset.brand, t.asset.type].filter(Boolean).join(' '))} · ${b.jobs} job(s) · lifetime <b>${m(b.total)}</b></div>
+<table><thead><tr><th>Cost bucket</th><th class="num">Amount</th><th class="num">Share</th></tr></thead><tbody>
+  ${bucketRow('Labour', b.labour)}${bucketRow('Material', b.material)}${bucketRow('Oil &amp; Lube', b.oil)}${bucketRow('General', b.general)}${bucketRow('External repair', b.external)}${bucketRow('Other', b.other)}
+  <tr><td><b>Total</b></td><td class="num"><b>${m(b.total)}</b></td><td class="num">100%</td></tr></tbody></table>
+${t.jobs.length ? `<h3>Jobs by cost</h3><table><thead><tr><th>Job No</th><th>Type</th><th class="num">Labour</th><th class="num">Material</th><th class="num">Oil</th><th class="num">External</th><th class="num">Total</th></tr></thead><tbody>${t.jobs.map((j) => `<tr><td>${esc(j.job_no)}</td><td>${esc(j.type)}</td><td class="num">${m(j.labour_cost)}</td><td class="num">${m(j.material_cost)}</td><td class="num">${m(j.oil_cost)}</td><td class="num">${m(j.external_cost)}</td><td class="num"><b>${m(j.total_cost)}</b></td></tr>`).join('')}</tbody></table>` : ''}
+${t.parts.length ? `<h3>Top parts by value</h3><table><thead><tr><th>Part</th><th class="num">Lines</th><th class="num">Value</th></tr></thead><tbody>${t.parts.map((p) => `<tr><td>${esc(p.description)}</td><td class="num">${p.lines}</td><td class="num">${m(p.value)}</td></tr>`).join('')}</tbody></table>` : ''}
+</body></html>`;
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  res.send(html);
+}));
+
 module.exports = router;
