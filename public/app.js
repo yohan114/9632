@@ -440,9 +440,10 @@ async function dashMain(c) {
       <div class="card stat"><span class="n">${moneyC(mc.this_month.head_office)}</span><span class="l">Head Office Purchase</span></div>
       <div class="card stat"><span class="n">${moneyC(mc.this_month.local_purchase)}</span><span class="l">Local Purchase</span></div>
       <div class="card stat"><span class="n">${moneyC(mc.this_month.oil)}</span><span class="l">Oil &amp; Lube</span></div>
+      <div class="card stat"><span class="n">${moneyC(mc.this_month.service || 0)}</span><span class="l">Service</span></div>
     </div>
     <div class="card section"><div class="toolbar" style="margin:0 0 8px"><h3 style="margin:0">Monthly Cost History</h3><div class="spacer"></div><span class="muted">click a month to drill in →</span></div>
-      ${tableWrap([{ label: 'Month' }, { label: 'Jobs', num: true }, { label: 'Labour', num: true }, { label: 'Head Office', num: true }, { label: 'Local', num: true }, { label: 'Oil', num: true }, { label: 'Total', num: true }],
+      ${tableWrap([{ label: 'Month' }, { label: 'Jobs', num: true }, { label: 'Labour', num: true }, { label: 'Head Office', num: true }, { label: 'Local', num: true }, { label: 'Oil', num: true }, { label: 'Service', num: true }, { label: 'Total', num: true }],
         mc.months.map((m) => `<tr style="cursor:pointer" onclick="location.hash='#/dashboard?month=${m.month}'">
           <td><b>${monthName(m.month)}</b></td>
           <td class="num">${m.jobs}</td>
@@ -450,6 +451,7 @@ async function dashMain(c) {
           <td class="num">${money(m.head_office)}</td>
           <td class="num">${money(m.local_purchase)}</td>
           <td class="num">${money(m.oil)}</td>
+          <td class="num">${money(m.service || 0)}</td>
           <td class="num"><b>${money(m.total)}</b></td></tr>`), { scroll: true })}</div>`);
   const opStats = [];
   if (canView('jobs')) opStats.push(`<div class="card stat"><span class="n">${d.open_jobs_count}</span><span class="l">Open Job Cards</span></div>
@@ -1909,14 +1911,15 @@ async function renderPriceBook(c) {
 }
 
 async function renderServiceRecords(c) {
-  c.innerHTML = `<div class="toolbar"><input id="sq" type="search" placeholder="Search vehicle / site / type…" style="max-width:280px"><div class="spacer"></div><span class="muted" id="scount"></span></div>
+  const editable = canEdit('filters');
+  c.innerHTML = `<div class="toolbar">${editable ? '<button class="primary" id="nsvc">+ New Service</button>' : ''}<input id="sq" type="search" placeholder="Search vehicle / site / type…" style="max-width:280px"><div class="spacer"></div><span class="muted" id="scount"></span></div>
     <div id="stable"><div class="muted">Loading…</div></div>`;
   const load = async () => {
     const q = qs('#sq').value.trim();
     const list = await api('/filters/services?' + (q ? 'q=' + encodeURIComponent(q) + '&' : '') + 'limit=500');
     qs('#scount').textContent = `${list.length} service${list.length === 1 ? '' : 's'}`;
     qs('#stable').innerHTML = tableWrap(
-      [{ label: 'Date' }, { label: 'Vehicle' }, { label: 'Type' }, { label: 'Site' }, { label: 'Filters', num: true }, { label: 'Missing', num: true }, { label: 'Total', num: true }],
+      [{ label: 'Date' }, { label: 'Vehicle' }, { label: 'Type' }, { label: 'Site' }, { label: 'Filters', num: true }, { label: 'Missing', num: true }, { label: 'Cost', num: true }],
       list.map((s) => `<tr data-svc="${s.id}" style="cursor:pointer">
         <td>${esc((s.service_date || '').slice(0, 10))}</td>
         <td>${esc(idLabel(s) || s.vehicle_label || '—')}</td>
@@ -1924,11 +1927,67 @@ async function renderServiceRecords(c) {
         <td>${esc(s.site_location || '')}</td>
         <td class="num">${num(s.filter_count)}</td>
         <td class="num">${s.missing_count > 0 ? `<span class="badge amber">${num(s.missing_count)}</span>` : '<span class="badge green">0</span>'}</td>
-        <td class="num">${money(s.grand_total)}</td></tr>`), { scroll: true });
+        <td class="num">${money(s.computed_cost)}</td></tr>`), { scroll: true });
     qsa('[data-svc]', c).forEach((tr) => tr.onclick = () => { location.hash = '#/filters/service/' + tr.dataset.svc; });
   };
+  if (qs('#nsvc')) qs('#nsvc').onclick = () => newServiceModal();
   let deb; qs('#sq').oninput = () => { clearTimeout(deb); deb = setTimeout(load, 250); };
   await load();
+}
+
+async function newServiceModal() {
+  const cats = await api('/filters/categories').catch(() => []);
+  const catOpts = [{ value: '', label: '—' }].concat((cats || []).map((x) => ({ value: x, label: x })));
+  const today = new Date().toISOString().slice(0, 10);
+  modal('New Service Record', `
+    ${assetPickerHtml('Vehicle / Machine (search & select) *')}
+    <div class="row">${field('Service date', 'service_date', { type: 'date', value: today })}${field('Service type / meter', 'service_type', { placeholder: 'e.g. 5000, 10000' })}</div>
+    <div class="row">${field('Meter reading', 'meter_reading')}${field('Next service meter', 'next_service_meter')}</div>
+    ${field('Site / location', 'site_location')}
+    <h3 style="margin-bottom:4px">Filters <span class="muted" style="font-weight:400;font-size:12px">— price auto-fills from the book; a new number is saved</span></h3>
+    <div id="sfilters"></div><button type="button" class="sm" id="addsf">+ filter</button>
+    <h3 style="margin-bottom:4px">Oils</h3><div id="soils"></div><button type="button" class="sm" id="addso">+ oil</button>
+    <div class="row">${field('Labour charge (LKR)', 'labour_charge', { type: 'number' })}${field('Sundry (LKR)', 'sundry_amount', { type: 'number' })}</div>
+    ${field('Service / repair details', 'repair_details', { type: 'textarea' })}
+    <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Create Service</button></div>`, (body, close) => {
+    wireAssetPicker(body);
+    const sf = qs('#sfilters', body), so = qs('#soils', body);
+    const addFilter = () => {
+      const d = document.createElement('div');
+      d.style.cssText = 'border-bottom:1px solid var(--border);padding-bottom:6px;margin-bottom:6px';
+      d.innerHTML = '<div class="row">' + field('Filter no', 'fno') + field('Category', 'fcat', { type: 'select', options: catOpts }) + '</div><div class="row">' + field('Qty', 'fqty', { type: 'number', value: 1 }) + field('Unit price (LKR)', 'fprice', { type: 'number' }) + '</div>';
+      sf.appendChild(d);
+      const noIn = qs('[name=fno]', d), priceIn = qs('[name=fprice]', d), catIn = qs('[name=fcat]', d);
+      noIn.onblur = async () => {
+        const v = noIn.value.trim(); if (!v || priceIn.value) return;
+        try { const r = await api('/filters/prices/lookup?no=' + encodeURIComponent(v)); if (r.found) { if (r.unit_price != null && !priceIn.value) priceIn.value = r.unit_price; if (r.category && !catIn.value) catIn.value = r.category; } } catch (e) { /* ignore */ }
+      };
+    };
+    const addOil = () => {
+      const d = document.createElement('div');
+      d.style.cssText = 'border-bottom:1px solid var(--border);padding-bottom:6px;margin-bottom:6px';
+      d.innerHTML = '<div class="row">' + field('Oil name', 'oname') + field('Type', 'otype') + '</div><div class="row">' + field('Qty', 'oqty', { type: 'number' }) + field('Price (line total LKR)', 'oprice', { type: 'number' }) + '</div>';
+      so.appendChild(d);
+    };
+    addFilter(); addOil();
+    qs('#addsf', body).onclick = addFilter;
+    qs('#addso', body).onclick = addOil;
+    qs('#s', body).onclick = async () => {
+      const d = formData(body);
+      if (!d.asset && !d.asset_id) return toast('Pick the vehicle / machine', 'err');
+      const fno = qsa('[name=fno]', body).map((e) => e.value), fcat = qsa('[name=fcat]', body).map((e) => e.value), fqty = qsa('[name=fqty]', body).map((e) => e.value), fprice = qsa('[name=fprice]', body).map((e) => e.value);
+      const oname = qsa('[name=oname]', body).map((e) => e.value), otype = qsa('[name=otype]', body).map((e) => e.value), oqty = qsa('[name=oqty]', body).map((e) => e.value), oprice = qsa('[name=oprice]', body).map((e) => e.value);
+      const payload = {
+        asset: d.asset, asset_id: d.asset_id, service_date: d.service_date, service_type: d.service_type,
+        meter_reading: d.meter_reading, next_service_meter: d.next_service_meter, site_location: d.site_location,
+        labour_charge: d.labour_charge, sundry_amount: d.sundry_amount, repair_details: d.repair_details,
+        filters: fno.map((no, i) => ({ filter_no: no, category: fcat[i], qty: fqty[i], price: fprice[i] })).filter((f) => f.filter_no),
+        oils: oname.map((n, i) => ({ oil_name: n, oil_type: otype[i], qty: oqty[i], price: oprice[i] })).filter((o) => o.oil_name),
+      };
+      try { const r = await api('/filters/services', { method: 'POST', body: payload }); toast('Service recorded'); close(); location.hash = '#/filters/service/' + r.service.id; }
+      catch (e) { toast(e.message, 'err'); }
+    };
+  });
 }
 
 async function serviceDetail(c, id) {
@@ -1937,8 +1996,8 @@ async function serviceDetail(c, id) {
   const editable = canEdit('filters');
   const cats = await api('/filters/categories').catch(() => []);
   c.innerHTML = `${pageHeader('Service · ' + ((s.service_date || '').slice(0, 10)), '<a href="#/filters?tab=services">← Service Records</a>')}
-    <div class="card"><h3>${esc(idLabel(s) || s.vehicle_label || 'Vehicle')}</h3>
-      <p class="muted">${esc((s.service_date || '').slice(0, 10))}${s.service_type ? ' · ' + esc(s.service_type) : ''}${s.site_location ? ' · ' + esc(s.site_location) : ''}${s.meter_reading ? ' · meter ' + esc(s.meter_reading) : ''}${s.grand_total ? ' · total ' + money(s.grand_total) : ''}</p>
+    <div class="card"><div class="toolbar" style="margin:0"><h3 style="margin:0">${esc(idLabel(s) || s.vehicle_label || 'Vehicle')}</h3><div class="spacer"></div><span class="badge amber">Cost ${money(s.computed_cost)}</span></div>
+      <p class="muted">${esc((s.service_date || '').slice(0, 10))}${s.service_type ? ' · ' + esc(s.service_type) : ''}${s.site_location ? ' · ' + esc(s.site_location) : ''}${s.meter_reading ? ' · meter ' + esc(s.meter_reading) : ''}${s.labour_charge ? ' · labour ' + money(s.labour_charge) : ''}${s.grand_total ? ' · recorded ' + money(s.grand_total) : ''}</p>
       ${s.repair_details ? `<div style="white-space:pre-wrap;border:1px solid var(--border);border-radius:6px;padding:8px">${esc(s.repair_details)}</div>` : ''}</div>
     <div class="card"><h3>Filters used <span class="muted" style="font-weight:400">(${d.filters.length})</span></h3>
       ${tableWrap([{ label: 'Filter No' }, { label: 'Category' }, { label: 'Qty', num: true }, { label: 'Book Price', num: true }].concat(editable ? [{ label: '' }] : []),

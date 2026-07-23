@@ -244,7 +244,7 @@ const OIL_VAL = 'ABS(sl.qty) * COALESCE(sl.unit_price, pr.unit_price, 0)';
 
 router.get('/monthly', asyncHandler((_req, res) => {
   const map = new Map();
-  const M = (m) => { if (!map.has(m)) map.set(m, { month: m, labour: 0, head_office: 0, local_purchase: 0, oil: 0, jobs: 0 }); return map.get(m); };
+  const M = (m) => { if (!map.has(m)) map.set(m, { month: m, labour: 0, head_office: 0, local_purchase: 0, oil: 0, jobs: 0, service: 0 }); return map.get(m); };
   for (const r of all(`SELECT substr(work_date,1,7) m, ROUND(SUM(amount),2) v FROM job_labour WHERE work_date IS NOT NULL GROUP BY m`)) if (r.m) M(r.m).labour = r.v || 0;
   for (const r of all(`SELECT substr(delivery_date,1,7) m, purchase_source_norm src, ROUND(SUM(qty*unit_price),2) v
                          FROM grn WHERE unit_price IS NOT NULL AND delivery_date IS NOT NULL GROUP BY m, src`)) {
@@ -254,12 +254,22 @@ router.get('/monthly', asyncHandler((_req, res) => {
   for (const r of all(`SELECT substr(sl.txn_date,1,7) m, ROUND(SUM(${OIL_VAL}),2) v FROM stock_ledger sl
                          JOIN products pr ON pr.id = sl.product_id WHERE sl.kind='issue' AND sl.txn_date IS NOT NULL GROUP BY m`)) if (r.m) M(r.m).oil = r.v || 0;
   for (const r of all(`SELECT substr(requested_at,1,7) m, COUNT(*) c FROM job_cards WHERE requested_at IS NOT NULL GROUP BY m`)) if (r.m) M(r.m).jobs = r.c || 0;
+  // Service records — cost computed live: priced filters (book × qty) + oils + labour + sundry, by service month.
+  for (const r of all(`SELECT substr(j.service_date,1,7) m, ROUND(SUM(COALESCE(p.unit_price,0) * COALESCE(f.qty,1)),2) v
+                         FROM service_filters f JOIN service_jobs j ON j.id = f.service_id
+                         LEFT JOIN filter_prices p ON p.filter_no_norm = f.filter_no_norm
+                        WHERE j.service_date IS NOT NULL GROUP BY m`)) if (r.m) M(r.m).service += (r.v || 0);
+  for (const r of all(`SELECT substr(j.service_date,1,7) m, ROUND(SUM(COALESCE(o.price,0)),2) v
+                         FROM service_oils o JOIN service_jobs j ON j.id = o.service_id
+                        WHERE j.service_date IS NOT NULL GROUP BY m`)) if (r.m) M(r.m).service += (r.v || 0);
+  for (const r of all(`SELECT substr(service_date,1,7) m, ROUND(SUM(COALESCE(labour_charge,0)) + SUM(COALESCE(sundry_amount,0)),2) v
+                         FROM service_jobs WHERE service_date IS NOT NULL GROUP BY m`)) if (r.m) M(r.m).service += (r.v || 0);
   const tm = new Date().toISOString().slice(0, 7);
   const months = [...map.values()]
-    .map((o) => ({ ...o, total: r2(o.labour + o.head_office + o.local_purchase + o.oil) }))
+    .map((o) => ({ ...o, service: r2(o.service), total: r2(o.labour + o.head_office + o.local_purchase + o.oil + o.service) }))
     .filter((o) => o.month <= tm) // drop spurious future-dated (data-error) months
     .sort((a, b) => b.month.localeCompare(a.month));
-  res.json({ this_month: months.find((x) => x.month === tm) || { month: tm, labour: 0, head_office: 0, local_purchase: 0, oil: 0, jobs: 0, total: 0 }, months });
+  res.json({ this_month: months.find((x) => x.month === tm) || { month: tm, labour: 0, head_office: 0, local_purchase: 0, oil: 0, jobs: 0, service: 0, total: 0 }, months });
 }));
 
 router.get('/monthly/:month/assets', asyncHandler((req, res) => {

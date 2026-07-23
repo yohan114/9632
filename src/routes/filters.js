@@ -5,14 +5,39 @@
 // one) upserts the book so it is remembered and auto-fills on the next service.
 
 const express = require('express');
-const { get, all, run } = require('../db');
+const { get, all, run, tx } = require('../db');
 const { asyncHandler, require_, toInt, toNum } = require('../lib/http');
 const audit = require('../lib/audit');
+const aliases = require('../lib/aliases');
 
 const router = express.Router();
 
 const clean = (v) => (v == null ? null : String(v).trim() || null);
 const normF = (s) => String(s || '').toUpperCase().replace(/\([^)]*\)/g, '').replace(/[^A-Z0-9]/g, '');
+
+// A service's live cost = priced filters (book × qty) + oils (line total) + labour + sundry.
+const COST_SQL = `(
+    (SELECT COALESCE(SUM(COALESCE(p.unit_price,0) * COALESCE(f.qty,1)),0)
+       FROM service_filters f LEFT JOIN filter_prices p ON p.filter_no_norm = f.filter_no_norm WHERE f.service_id = s.id)
+  + (SELECT COALESCE(SUM(COALESCE(o.price,0)),0) FROM service_oils o WHERE o.service_id = s.id)
+  + COALESCE(s.labour_charge,0) + COALESCE(s.sundry_amount,0))`;
+
+// Record a filter number's use on the book: bump the usage count, fill/refresh its
+// price when one is supplied, and create the entry if the number is new (the auto-save).
+function bookTouch(filterNo, category, price, by) {
+  const norm = normF(filterNo);
+  if (!norm) return;
+  const ex = get('SELECT id FROM filter_prices WHERE filter_no_norm = ?', norm);
+  if (ex) {
+    run(`UPDATE filter_prices SET uses = uses + 1, category = COALESCE(category, ?),
+           unit_price = CASE WHEN ? IS NOT NULL AND ? > 0 THEN ? ELSE unit_price END,
+           updated_by = COALESCE(?, updated_by), updated_at = datetime('now') WHERE id = ?`,
+      clean(category), price, price, price, by, ex.id);
+  } else {
+    run(`INSERT INTO filter_prices (filter_no, filter_no_norm, category, unit_price, uses, source, updated_by)
+         VALUES (?, ?, ?, ?, 1, 'service', ?)`, clean(filterNo), norm, clean(category), (price && price > 0) ? price : null, by);
+  }
+}
 
 // ---- stats ----------------------------------------------------------------
 router.get('/stats', asyncHandler((_req, res) => {
@@ -88,17 +113,60 @@ router.get('/services', asyncHandler((req, res) => {
             a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec,
             (SELECT COUNT(*) FROM service_filters f WHERE f.service_id = s.id) AS filter_count,
             (SELECT COUNT(*) FROM service_filters f LEFT JOIN filter_prices p ON p.filter_no_norm = f.filter_no_norm
-               WHERE f.service_id = s.id AND COALESCE(p.unit_price, 0) = 0) AS missing_count
+               WHERE f.service_id = s.id AND COALESCE(p.unit_price, 0) = 0) AS missing_count,
+            ${COST_SQL} AS computed_cost
        FROM service_jobs s LEFT JOIN assets a ON a.id = s.asset_id
        ${where} ORDER BY s.service_date DESC, s.id DESC LIMIT ${toInt(req.query.limit, 300)}`,
     ...params
   ));
 }));
 
+router.post('/services', asyncHandler((req, res) => {
+  const b = req.body;
+  let assetId = toInt(b.asset_id);
+  let vehicleLabel = clean(b.vehicle_label);
+  if (!assetId && b.asset) {
+    const r = aliases.resolveAsset(b.asset, { source: 'service' });
+    assetId = r.assetId;
+    if (!vehicleLabel) vehicleLabel = clean(b.asset);
+  }
+  const by = req.user ? (req.user.fullName || req.user.username) : null;
+  const filters = Array.isArray(b.filters) ? b.filters : [];
+  const oils = Array.isArray(b.oils) ? b.oils : [];
+  const result = tx(() => {
+    const info = run(
+      `INSERT INTO service_jobs (vehicle_label, asset_id, service_date, job_no, meter_reading, next_service_meter,
+                                 service_type, site_location, repair_details, labour_charge, sundry_amount)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      vehicleLabel, assetId || null, clean(b.service_date) || new Date().toISOString().slice(0, 10), clean(b.job_no),
+      clean(b.meter_reading), clean(b.next_service_meter), clean(b.service_type), clean(b.site_location),
+      clean(b.repair_details), toNum(b.labour_charge, 0), toNum(b.sundry_amount, 0)
+    );
+    const sid = info.lastInsertRowid;
+    for (const f of filters) {
+      const fn = clean(f.filter_no);
+      if (!fn) continue;
+      const price = f.price === '' || f.price == null ? null : toNum(f.price);
+      run(`INSERT INTO service_filters (service_id, filter_no, filter_no_norm, category, qty, price)
+           VALUES (?, ?, ?, ?, ?, ?)`, sid, fn, normF(fn), clean(f.category), toNum(f.qty, 1), price || 0);
+      bookTouch(fn, f.category, price, by); // auto-save the number (+ price) to the book
+    }
+    for (const o of oils) {
+      const on = clean(o.oil_name);
+      if (!on) continue;
+      run(`INSERT INTO service_oils (service_id, oil_name, oil_type, qty, price)
+           VALUES (?, ?, ?, ?, ?)`, sid, on, clean(o.oil_type), toNum(o.qty, 0), toNum(o.price, 0));
+    }
+    return sid;
+  });
+  audit.record({ userId: req.user && req.user.id, entity: 'service_job', entityId: result, action: 'create', after: { asset_id: assetId } });
+  res.status(201).json({ service: get('SELECT * FROM service_jobs WHERE id = ?', result) });
+}));
+
 router.get('/services/:id', asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   const job = get(
-    `SELECT s.*, a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec
+    `SELECT s.*, a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec, ${COST_SQL} AS computed_cost
        FROM service_jobs s LEFT JOIN assets a ON a.id = s.asset_id WHERE s.id = ?`, id);
   if (!job) return res.status(404).json({ error: 'Service not found' });
   // Each filter line carries the book price so missing ones surface here too.
