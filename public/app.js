@@ -1694,8 +1694,10 @@ routes.oil = async (c) => {
     if (qs('#ntop')) qs('#ntop').onclick = () => oilTopupModal(list);
   } else if (tab === 'ledger') {
     const list = await api('/oil/ledger');
-    body.innerHTML = tableWrap([{ label: 'Date' }, { label: 'Product' }, { label: 'Kind' }, { label: 'Qty', num: true }, { label: 'Balance', num: true }, { label: 'Unit Price', num: true }, { label: 'Asset' }],
-      list.map((l) => `<tr><td>${esc(l.txn_date)}</td><td>${esc(l.product_name)}</td><td><span class="badge ${l.kind === 'issue' ? 'amber' : 'green'}">${esc(l.kind)}</span></td><td class="num">${num(l.qty)}</td><td class="num">${num(l.balance_after)}</td><td class="num">${money(l.unit_price)}</td><td>${esc(l.asset_code || '')}</td></tr>`), { scroll: true });
+    const svcRef = (l) => { const m = String(l.note || '').match(/Service record #(\d+)/); return m ? m[1] : null; };
+    body.innerHTML = `<p class="muted" style="margin-top:0">Issues tagged <span class="badge blue">Service</span> are consumed by a service record — their <b>cost is counted in that service</b>, not here (stock-out only, to avoid double-counting).</p>` +
+      tableWrap([{ label: 'Date' }, { label: 'Product' }, { label: 'Kind' }, { label: 'Qty', num: true }, { label: 'Balance', num: true }, { label: 'Unit Price', num: true }, { label: 'Asset' }, { label: 'Reference' }],
+      list.map((l) => { const sid = svcRef(l); return `<tr${sid ? ' style="background:rgba(46,120,210,.05)"' : ''}><td>${esc(l.txn_date)}</td><td>${esc(l.product_name)}</td><td><span class="badge ${l.kind === 'issue' ? 'amber' : 'green'}">${esc(l.kind)}</span></td><td class="num">${num(l.qty)}</td><td class="num">${num(l.balance_after)}</td><td class="num">${sid ? '<span class="muted">' + money(l.unit_price) + '</span>' : money(l.unit_price)}</td><td>${esc(l.asset_code || '')}</td><td>${sid ? `<a href="#/filters/service/${sid}"><span class="badge blue">Service #${sid}</span></a>` : esc(l.consumer || l.note || '')}</td></tr>`; }), { scroll: true });
   } else if (tab === 'forecast') {
     const f = await api('/oil/forecast');
     body.innerHTML = `<p class="muted">Days-of-cover from consumption over the last ${f.window_days} days; low-stock threshold ${f.low_stock_days} days.</p>` +

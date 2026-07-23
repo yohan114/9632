@@ -74,10 +74,12 @@ function postOilIssue(oilName, oilType, liters, unitPrice, assetId, date, servic
   const pid = resolveProduct(oilName, oilType);
   if (!pid || !(liters > 0)) return false;
   const prev = currentBalance(pid);
-  run(`INSERT INTO stock_ledger (product_id, kind, qty, balance_after, unit_price, asset_id, consumer, txn_date, note)
-       VALUES (?, 'issue', ?, ?, ?, ?, ?, ?, ?)`,
+  // consumer_type='service' marks this as a stock-only movement: the COST is owned
+  // by the service record, so every oil-cost report excludes these to avoid double-counting.
+  run(`INSERT INTO stock_ledger (product_id, kind, qty, balance_after, unit_price, asset_id, consumer, consumer_type, job_id, txn_date, note)
+       VALUES (?, 'issue', ?, ?, ?, ?, 'Service', 'service', NULL, ?, ?)`,
     pid, -Math.abs(liters), prev - Math.abs(liters), unitPrice || null, assetId || null,
-    'Service', date, 'Service record #' + serviceId + (oilName ? ' · ' + oilName : ''));
+    date, 'Service record #' + serviceId + (oilName ? ' · ' + oilName : ''));
   return true;
 }
 

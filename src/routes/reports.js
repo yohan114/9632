@@ -241,6 +241,9 @@ router.get('/job/:id/costsheet.html', asyncHandler((req, res) => {
 const MONTH_RE = /^\d{4}-\d{2}$/;
 const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
 const OIL_VAL = 'ABS(sl.qty) * COALESCE(sl.unit_price, pr.unit_price, 0)';
+// Oil issued for a service is costed inside the service (Service column), so its
+// stock-ledger issue is stock-only — excluded from every oil COST aggregation.
+const OIL_NOT_SERVICE = "COALESCE(sl.consumer_type,'') <> 'service'";
 
 router.get('/monthly', asyncHandler((_req, res) => {
   const map = new Map();
@@ -253,8 +256,7 @@ router.get('/monthly', asyncHandler((_req, res) => {
   }
   for (const r of all(`SELECT substr(sl.txn_date,1,7) m, ROUND(SUM(${OIL_VAL}),2) v FROM stock_ledger sl
                          JOIN products pr ON pr.id = sl.product_id
-                        WHERE sl.kind='issue' AND sl.txn_date IS NOT NULL
-                          AND (sl.note IS NULL OR sl.note NOT LIKE 'Service record #%') GROUP BY m`)) if (r.m) M(r.m).oil = r.v || 0;
+                        WHERE sl.kind='issue' AND sl.txn_date IS NOT NULL AND ${OIL_NOT_SERVICE} GROUP BY m`)) if (r.m) M(r.m).oil = r.v || 0;
   for (const r of all(`SELECT substr(requested_at,1,7) m, COUNT(*) c FROM job_cards WHERE requested_at IS NOT NULL GROUP BY m`)) if (r.m) M(r.m).jobs = r.c || 0;
   // Service records — cost computed live: priced filters (book × qty) + oils + labour + sundry, by service month.
   for (const r of all(`SELECT substr(j.service_date,1,7) m, ROUND(SUM(COALESCE(p.unit_price,0) * COALESCE(f.qty,1)),2) v
@@ -284,7 +286,7 @@ router.get('/monthly/:month/assets', asyncHandler((req, res) => {
   for (const r of all(`SELECT m.asset_id id, ROUND(SUM(g.qty*g.unit_price),2) v FROM grn g JOIN mrn m ON m.id=g.mrn_id
                         WHERE m.asset_id IS NOT NULL AND g.unit_price IS NOT NULL AND substr(g.delivery_date,1,7)=? GROUP BY m.asset_id`, month)) A(r.id).material = r.v || 0;
   for (const r of all(`SELECT sl.asset_id id, ROUND(SUM(${OIL_VAL}),2) v FROM stock_ledger sl JOIN products pr ON pr.id=sl.product_id
-                        WHERE sl.asset_id IS NOT NULL AND sl.kind='issue' AND substr(sl.txn_date,1,7)=? GROUP BY sl.asset_id`, month)) A(r.id).oil = r.v || 0;
+                        WHERE sl.asset_id IS NOT NULL AND sl.kind='issue' AND ${OIL_NOT_SERVICE} AND substr(sl.txn_date,1,7)=? GROUP BY sl.asset_id`, month)) A(r.id).oil = r.v || 0;
   const assets = [...map.values()].map((o) => {
     const a = get('SELECT code FROM assets WHERE id=?', o.asset_id);
     return { ...o, asset_code: a ? a.code : '(unlinked)', total: r2(o.labour + o.material + o.oil) };
@@ -304,7 +306,7 @@ router.get('/monthly/:month/asset/:id', asyncHandler((req, res) => {
                                WHERE m.asset_id=? AND g.unit_price IS NOT NULL AND substr(g.delivery_date,1,7)=? ORDER BY g.delivery_date, g.id`, id, month);
   const oil_lines = all(`SELECT sl.txn_date, pr.name product, pr.unit, ABS(sl.qty) qty, COALESCE(sl.unit_price, pr.unit_price) unit_price
                            FROM stock_ledger sl JOIN products pr ON pr.id=sl.product_id
-                          WHERE sl.asset_id=? AND sl.kind='issue' AND substr(sl.txn_date,1,7)=? ORDER BY sl.txn_date, sl.id`, id, month);
+                          WHERE sl.asset_id=? AND sl.kind='issue' AND ${OIL_NOT_SERVICE} AND substr(sl.txn_date,1,7)=? ORDER BY sl.txn_date, sl.id`, id, month);
   const labour = labour_lines.reduce((s, l) => s + (l.amount || 0), 0);
   const material = material_lines.reduce((s, l) => s + (l.qty || 0) * (l.unit_price || 0), 0);
   const oil = oil_lines.reduce((s, l) => s + (l.qty || 0) * (l.unit_price || 0), 0);
@@ -377,7 +379,7 @@ function dailyProgress(date) {
     `SELECT pr.name AS product, sl.qty, sl.unit_price, j.job_no, a.code AS asset_code
        FROM stock_ledger sl JOIN products pr ON pr.id = sl.product_id
        LEFT JOIN job_cards j ON j.id = sl.job_id LEFT JOIN assets a ON a.id = sl.asset_id
-      WHERE sl.txn_date = ? AND sl.kind = 'issue' ORDER BY sl.id`, date);
+      WHERE sl.txn_date = ? AND sl.kind = 'issue' AND ${OIL_NOT_SERVICE} ORDER BY sl.id`, date);
   const jobsMap = {};
   for (const w of work) {
     const g = jobsMap[w.job_id] || (jobsMap[w.job_id] = {
