@@ -256,4 +256,15 @@ if (!only || only === 'service-reference') {
   else console.log(`  Oil list: ${sr.oils} | Filter categories: ${sr.categories} | Oil-type prices: ${sr.oil_types}`);
 }
 
+if (!only || only === 'filter-xrefs') {
+  banner('Filter cross-reference graph — catalogue + cross-refs (VIC/Sakura/HIFI/…)');
+  const fx = require('./24_filter_xrefs').runStep();
+  if (fx.no_file) console.log('  No sources/service/service.db — skipped.');
+  else if (fx.already) console.log('  Already imported (filter_catalogue present) — skipped.');
+  else {
+    console.log(`  Catalogue filters: ${fx.catalogue} | cross-references: ${fx.xrefs}`);
+    console.log('  By brand: ' + Object.entries(fx.by_brand).sort((a, b) => b[1] - a[1]).map(([b, n]) => `${b} ${n}`).join(', '));
+  }
+}
+
 console.log('\nDone.');

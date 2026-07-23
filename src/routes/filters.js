@@ -142,6 +142,80 @@ router.post('/prices', asyncHandler((req, res) => {
   res.status(201).json(get('SELECT *, (unit_price IS NOT NULL AND unit_price > 0) AS has_price FROM filter_prices WHERE id = ?', info.lastInsertRowid));
 }));
 
+// ---- filter cross-references (VIC / Sakura / HIFI / … for the SL market) ----
+// All cross-ref part numbers for a catalogue filter, priced from the book, with
+// the brands you buy (VIC, Sakura) sorted first.
+function xrefsFor(catalogueId) {
+  return all(
+    `SELECT x.brand, x.part_number, x.part_number_norm, x.ref_type, x.source, x.note,
+            (SELECT unit_price FROM filter_prices p WHERE p.filter_no_norm = x.part_number_norm) AS price
+       FROM filter_xrefs x WHERE x.catalogue_id = ?
+      ORDER BY CASE UPPER(COALESCE(x.brand,'')) WHEN 'VIC' THEN 1 WHEN 'SAKURA' THEN 2 WHEN 'HIFI' THEN 3
+                 WHEN 'FLEETGUARD' THEN 4 WHEN 'DONALDSON' THEN 5 WHEN 'BALDWIN' THEN 6 ELSE 9 END,
+               x.ref_type, x.part_number`, catalogueId);
+}
+function catalogueIdForNo(no) {
+  const norm = normF(no);
+  if (!norm) return null;
+  const x = get('SELECT catalogue_id FROM filter_xrefs WHERE part_number_norm = ? AND catalogue_id IS NOT NULL LIMIT 1', norm);
+  if (x) return x.catalogue_id;
+  const c = get('SELECT id FROM filter_catalogue WHERE oem_pn_norm = ? OR hifi_pn_norm = ? LIMIT 1', norm, norm);
+  return c ? c.id : null;
+}
+
+router.get('/xref/brands', asyncHandler((_req, res) =>
+  res.json(all(`SELECT brand, COUNT(*) n FROM filter_xrefs WHERE brand IS NOT NULL AND TRIM(brand)<>'' GROUP BY brand ORDER BY n DESC`))));
+
+// Look up every equivalent for a part number.
+router.get('/xref/lookup', asyncHandler((req, res) => {
+  const no = String(req.query.no || '').trim();
+  const cid = catalogueIdForNo(no);
+  if (!cid) return res.json({ found: false, query: no });
+  const cat = get('SELECT * FROM filter_catalogue WHERE id = ?', cid);
+  const crossRefs = xrefsFor(cid);
+  res.json({ found: true, query: no, catalogue: cat, crossRefs });
+}));
+
+// Every filter this vehicle actually uses (from its service history) + how many
+// cross-ref brands each one has.
+router.get('/xref/vehicle/:assetId', asyncHandler((req, res) => {
+  const assetId = toInt(req.params.assetId);
+  const asset = get('SELECT id, code, registration, ec_code FROM assets WHERE id = ?', assetId);
+  const used = all(
+    `SELECT sf.filter_no, sf.filter_no_norm, sf.category, COUNT(*) uses
+       FROM service_filters sf JOIN service_jobs s ON s.id = sf.service_id
+      WHERE s.asset_id = ? AND sf.filter_no IS NOT NULL AND TRIM(sf.filter_no) <> ''
+      GROUP BY sf.filter_no_norm ORDER BY uses DESC`, assetId);
+  const filters = used.map((u) => {
+    const cid = catalogueIdForNo(u.filter_no);
+    const refs = cid ? xrefsFor(cid) : [];
+    const brands = [...new Set(refs.map((r) => r.brand).filter(Boolean))];
+    return { filter_no: u.filter_no, category: u.category, uses: u.uses, catalogue_id: cid, brands, xref_count: refs.length };
+  });
+  res.json({ asset, filters });
+}));
+
+router.get('/xref/catalogue/:id', asyncHandler((req, res) => {
+  const cid = toInt(req.params.id);
+  const cat = get('SELECT * FROM filter_catalogue WHERE id = ?', cid);
+  if (!cat) return res.status(404).json({ error: 'Not found' });
+  res.json({ catalogue: cat, crossRefs: xrefsFor(cid) });
+}));
+
+// Add a cross-reference you've confirmed at a supplier (e.g. a VIC / Sakura no.).
+router.post('/xref', asyncHandler((req, res) => {
+  const b = req.body;
+  require_(b, ['part_number']);
+  let cid = toInt(b.catalogue_id);
+  if (!cid && b.match_no) cid = catalogueIdForNo(b.match_no);
+  if (!cid) return res.status(400).json({ error: 'Unknown filter — provide catalogue_id or a known part number to match' });
+  const pn = clean(b.part_number);
+  run(`INSERT INTO filter_xrefs (catalogue_id, brand, part_number, part_number_norm, ref_type, source, note)
+       VALUES (?, ?, ?, ?, 'cross', 'manual', ?)`, cid, clean(b.brand), pn, normF(pn), clean(b.note));
+  audit.record({ userId: req.user && req.user.id, entity: 'filter_xref', action: 'create', after: { catalogue_id: cid, brand: b.brand, part_number: pn } });
+  res.status(201).json({ catalogue_id: cid, crossRefs: xrefsFor(cid) });
+}));
+
 // ---- service records ------------------------------------------------------
 router.get('/services', asyncHandler((req, res) => {
   const clauses = [];

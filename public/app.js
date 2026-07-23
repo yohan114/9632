@@ -1842,16 +1842,19 @@ routes.filters = async (c, params) => {
   if (params[0] === 'new-service') return renderNewServiceForm(c);
   if (params[0] === 'service' && params[1]) return serviceDetail(c, params[1]);
   const sp = new URLSearchParams(location.hash.split('?')[1] || '');
-  const tab = sp.get('tab') === 'services' ? 'services' : 'book';
-  c.innerHTML = `${pageHeader('Filters & Prices', 'The filter price book — every filter number, missing prices flagged. Type a new number to save it with a price.')}
+  const tab = ['services', 'xref'].includes(sp.get('tab')) ? sp.get('tab') : 'book';
+  c.innerHTML = `${pageHeader('Filters & Prices', 'Price book · service records · cross-references (VIC / Sakura / HIFI and the SL market).')}
     <div class="pill-row" style="margin-bottom:12px">
       <button class="btn sm ${tab === 'book' ? 'primary' : ''}" id="tb-book">Price Book</button>
       <button class="btn sm ${tab === 'services' ? 'primary' : ''}" id="tb-svc">Service Records</button>
+      <button class="btn sm ${tab === 'xref' ? 'primary' : ''}" id="tb-xref">Cross-References</button>
     </div>
     <div id="fpane"><div class="muted">Loading…</div></div>`;
   qs('#tb-book').onclick = () => { location.hash = '#/filters?tab=book'; };
   qs('#tb-svc').onclick = () => { location.hash = '#/filters?tab=services'; };
+  qs('#tb-xref').onclick = () => { location.hash = '#/filters?tab=xref'; };
   if (tab === 'services') await renderServiceRecords(qs('#fpane'));
+  else if (tab === 'xref') await renderCrossRefs(qs('#fpane'));
   else await renderPriceBook(qs('#fpane'));
 };
 
@@ -1870,6 +1873,93 @@ function filterPriceModal(filterNo, category, value, cats, onDone) {
       catch (e) { toast(e.message, 'err'); }
     };
   });
+}
+
+// ---- Cross-References (VIC / Sakura / HIFI … for the Sri Lankan market) ------
+const XREF_HOT = (b) => /^(vic|sakura)$/i.test(b || ''); // the brands you buy — highlighted
+
+function xrefResultHtml(r, editable) {
+  const cat = r.catalogue || {};
+  const rows = r.crossRefs.map((x) => `<tr${XREF_HOT(x.brand) ? ' style="background:rgba(224,168,0,.08)"' : ''}>
+      <td>${x.brand ? `<span class="badge ${XREF_HOT(x.brand) ? 'amber' : ''}">${esc(x.brand)}</span>` : ''}</td>
+      <td><b>${esc(x.part_number)}</b></td>
+      <td><span class="muted">${esc(x.ref_type || '')}</span></td>
+      <td class="num">${x.price ? money(x.price) : '—'}</td>
+      <td>${x.source === 'manual' ? '<span class="badge blue">added</span>' : x.source === 'research' ? '<span class="badge">researched</span>' : ''}</td></tr>`);
+  return `<div class="card">
+    <div class="toolbar" style="margin:0"><h3 style="margin:0">${esc(cat.category || 'Filter')} <span class="muted" style="font-weight:400">— ${r.crossRefs.length} equivalent${r.crossRefs.length === 1 ? '' : 's'}</span></h3><div class="spacer"></div>${editable ? '<button class="sm primary" id="xaddbtn">+ Add cross-ref</button>' : ''}</div>
+    <p class="muted">OEM <b>${esc(cat.oem_pn || '—')}</b> · HIFI <b>${esc(cat.hifi_pn || '—')}</b>${cat.top_vehicle ? ' · fits ' + esc(cat.top_vehicle) : ''}${cat.fleet_types ? ' · ' + esc(cat.fleet_types) : ''}</p>
+    ${tableWrap([{ label: 'Brand' }, { label: 'Part Number' }, { label: 'Type' }, { label: 'Price', num: true }, { label: '' }], rows, { scroll: true })}
+    ${cat.description ? `<p class="muted" style="font-size:12px;margin-top:8px">${esc(cat.description)}</p>` : ''}</div>`;
+}
+
+function xrefAddModal(catalogueId, cat, onDone) {
+  modal('Add cross-reference' + (cat && cat.category ? ' — ' + cat.category : ''), `
+    <p class="muted">Add an equivalent part number you've confirmed at a supplier (e.g. a VIC or Sakura number).</p>
+    ${field('Brand', 'brand', { type: 'select', options: ['VIC', 'Sakura', 'HIFI', 'Fleetguard', 'Donaldson', 'Baldwin', 'Bosch', 'Mann', 'Genuine', 'Other'].map((b) => ({ value: b, label: b })) })}
+    ${field('Part number *', 'part_number')}
+    ${field('Note (optional)', 'note')}
+    <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Add cross-reference</button></div>`, (body, close) => {
+    qs('#s', body).onclick = async () => {
+      const d = formData(body);
+      if (!String(d.part_number || '').trim()) return toast('Enter a part number', 'err');
+      try { await api('/filters/xref', { method: 'POST', body: { catalogue_id: catalogueId, brand: d.brand, part_number: d.part_number, note: d.note } }); toast('Cross-reference added'); close(); onDone(); }
+      catch (e) { toast(e.message, 'err'); }
+    };
+  });
+}
+
+async function renderCrossRefs(c) {
+  const editable = canEdit('filters');
+  c.innerHTML = `
+    <div class="pill-row" style="margin-bottom:10px">
+      <button class="btn sm primary" id="m-no">By Filter No</button>
+      <button class="btn sm" id="m-veh">By Vehicle</button>
+    </div>
+    <div id="xrbody"></div>`;
+  qs('#m-no', c).onclick = () => { qs('#m-no', c).classList.add('primary'); qs('#m-veh', c).classList.remove('primary'); xrefByNo(qs('#xrbody', c), editable); };
+  qs('#m-veh', c).onclick = () => { qs('#m-veh', c).classList.add('primary'); qs('#m-no', c).classList.remove('primary'); xrefByVehicle(qs('#xrbody', c), editable); };
+  xrefByNo(qs('#xrbody', c), editable);
+}
+
+function xrefByNo(c, editable) {
+  c.innerHTML = `<div class="card"><label>Filter part number <span class="muted" style="font-weight:400">— any brand (OEM · HIFI · VIC · Sakura · Fleetguard …)</span></label>
+    <div style="display:flex;gap:8px;margin-top:4px"><input id="xq" type="search" placeholder="e.g. SO 10058 · 252718130145 · C-115" style="flex:1"><button class="primary sm" id="xgo">Find equivalents</button></div></div>
+    <div id="xres"></div>`;
+  const lookup = async () => {
+    const no = qs('#xq', c).value.trim(); if (!no) return;
+    let r; try { r = await api('/filters/xref/lookup?no=' + encodeURIComponent(no)); } catch (e) { toast(e.message, 'err'); return; }
+    const res = qs('#xres', c);
+    if (!r.found) { res.innerHTML = `<div class="card"><p class="muted">No cross-reference on record for <b>${esc(no)}</b>.</p></div>`; return; }
+    res.innerHTML = xrefResultHtml(r, editable);
+    const add = qs('#xaddbtn', res); if (add) add.onclick = () => xrefAddModal(r.catalogue.id, r.catalogue, lookup);
+  };
+  qs('#xgo', c).onclick = lookup;
+  qs('#xq', c).onkeydown = (e) => { if (e.key === 'Enter') lookup(); };
+}
+
+function xrefByVehicle(c, editable) {
+  c.innerHTML = `<div class="card">${assetPickerHtml('Vehicle / Machine (search & select)')}</div><div id="xvres"></div>`;
+  wireAssetPicker(c);
+  c.addEventListener('mousedown', (e) => {
+    const it = e.target.closest && e.target.closest('.apick-item');
+    if (it && it.dataset.id) setTimeout(() => showVeh(it.dataset.id), 80);
+  }, true);
+  const showVeh = async (id) => {
+    let r; try { r = await api('/filters/xref/vehicle/' + id); } catch (e) { return; }
+    const res = qs('#xvres', c);
+    res.innerHTML = `<div class="card"><h3>${esc(idLabel(r.asset) || (r.asset && r.asset.code) || 'Vehicle')} — filters used <span class="muted" style="font-weight:400">(${r.filters.length})</span></h3>
+      ${r.filters.length ? tableWrap([{ label: 'Filter No' }, { label: 'Category' }, { label: 'Uses', num: true }, { label: 'Brands available' }, { label: '' }],
+        r.filters.map((f) => `<tr><td><b>${esc(f.filter_no)}</b></td><td>${esc(f.category || '')}</td><td class="num">${f.uses}</td><td>${f.brands.map((b) => `<span class="badge ${XREF_HOT(b) ? 'amber' : ''}">${esc(b)}</span>`).join(' ') || '<span class="muted">—</span>'}</td><td>${f.catalogue_id ? `<button class="sm" data-cid="${f.catalogue_id}">View refs</button>` : '<span class="muted">no refs</span>'}</td></tr>`), { scroll: true }) : '<p class="muted">No filters recorded for this vehicle yet.</p>'}</div>
+      <div id="xvdetail"></div>`;
+    qsa('[data-cid]', res).forEach((b) => b.onclick = async () => {
+      const r2 = await api('/filters/xref/catalogue/' + b.dataset.cid);
+      const detail = qs('#xvdetail', res);
+      detail.innerHTML = xrefResultHtml({ catalogue: r2.catalogue, crossRefs: r2.crossRefs, found: true }, editable);
+      const add = qs('#xaddbtn', detail); if (add) add.onclick = () => xrefAddModal(r2.catalogue.id, r2.catalogue, () => b.onclick());
+      detail.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    });
+  };
 }
 
 async function renderPriceBook(c) {

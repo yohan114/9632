@@ -156,7 +156,34 @@ function migrate() {
   );
   CREATE TABLE IF NOT EXISTS oil_type_prices (
     id INTEGER PRIMARY KEY AUTOINCREMENT, code TEXT NOT NULL, unit_price REAL DEFAULT 0
-  );`);
+  );
+  -- Filter cross-reference catalogue: one row per physical filter, with the brands
+  -- available in the Sri Lankan market (OEM, HIFI, VIC, Sakura, Fleetguard, Donaldson…).
+  CREATE TABLE IF NOT EXISTS filter_catalogue (
+    id            INTEGER PRIMARY KEY,   -- source FilterID
+    category      TEXT,
+    oem_pn        TEXT, oem_pn_norm TEXT,
+    hifi_pn       TEXT, hifi_pn_norm TEXT,
+    description   TEXT,
+    top_vehicle   TEXT,
+    fleet_types   TEXT,
+    uses          INTEGER DEFAULT 0,
+    cross_refs_text TEXT
+  );
+  CREATE TABLE IF NOT EXISTS filter_xrefs (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    catalogue_id     INTEGER REFERENCES filter_catalogue(id) ON DELETE CASCADE,
+    brand            TEXT,
+    part_number      TEXT NOT NULL,
+    part_number_norm TEXT NOT NULL,
+    ref_type         TEXT DEFAULT 'cross',   -- oem | hifi | cross
+    source           TEXT DEFAULT 'import',  -- import | manual | research
+    note             TEXT,
+    created_at       TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_filter_xrefs_cat ON filter_xrefs(catalogue_id);
+  CREATE INDEX IF NOT EXISTS idx_filter_xrefs_norm ON filter_xrefs(part_number_norm);
+  CREATE INDEX IF NOT EXISTS idx_filter_xrefs_brand ON filter_xrefs(brand);`);
   // Service header extras for the paper form.
   ensureColumn('service_jobs', 'upkeeping', 'TEXT');            // Good | Fair | Bad
   ensureColumn('service_jobs', 'reg_id', 'TEXT');               // registration snapshot at service time
