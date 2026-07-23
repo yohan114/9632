@@ -252,7 +252,9 @@ router.get('/monthly', asyncHandler((_req, res) => {
     if (r.src === 'head_office') o.head_office += r.v || 0; else if (r.src === 'local_purchase') o.local_purchase += r.v || 0;
   }
   for (const r of all(`SELECT substr(sl.txn_date,1,7) m, ROUND(SUM(${OIL_VAL}),2) v FROM stock_ledger sl
-                         JOIN products pr ON pr.id = sl.product_id WHERE sl.kind='issue' AND sl.txn_date IS NOT NULL GROUP BY m`)) if (r.m) M(r.m).oil = r.v || 0;
+                         JOIN products pr ON pr.id = sl.product_id
+                        WHERE sl.kind='issue' AND sl.txn_date IS NOT NULL
+                          AND (sl.note IS NULL OR sl.note NOT LIKE 'Service record #%') GROUP BY m`)) if (r.m) M(r.m).oil = r.v || 0;
   for (const r of all(`SELECT substr(requested_at,1,7) m, COUNT(*) c FROM job_cards WHERE requested_at IS NOT NULL GROUP BY m`)) if (r.m) M(r.m).jobs = r.c || 0;
   // Service records — cost computed live: priced filters (book × qty) + oils + labour + sundry, by service month.
   for (const r of all(`SELECT substr(j.service_date,1,7) m, ROUND(SUM(COALESCE(p.unit_price,0) * COALESCE(f.qty,1)),2) v

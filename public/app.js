@@ -1837,6 +1837,7 @@ async function batteryDetail(c, id) {
 
 // ---- Filters & Prices — the filter price book + service records -------------
 routes.filters = async (c, params) => {
+  if (params[0] === 'new-service') return renderNewServiceForm(c);
   if (params[0] === 'service' && params[1]) return serviceDetail(c, params[1]);
   const sp = new URLSearchParams(location.hash.split('?')[1] || '');
   const tab = sp.get('tab') === 'services' ? 'services' : 'book';
@@ -1930,64 +1931,119 @@ async function renderServiceRecords(c) {
         <td class="num">${money(s.computed_cost)}</td></tr>`), { scroll: true });
     qsa('[data-svc]', c).forEach((tr) => tr.onclick = () => { location.hash = '#/filters/service/' + tr.dataset.svc; });
   };
-  if (qs('#nsvc')) qs('#nsvc').onclick = () => newServiceModal();
+  if (qs('#nsvc')) qs('#nsvc').onclick = () => { location.hash = '#/filters/new-service'; };
   let deb; qs('#sq').oninput = () => { clearTimeout(deb); deb = setTimeout(load, 250); };
   await load();
 }
 
-async function newServiceModal() {
-  const cats = await api('/filters/categories').catch(() => []);
-  const catOpts = [{ value: '', label: '—' }].concat((cats || []).map((x) => ({ value: x, label: x })));
+// Full "Vehicle / Machinery Service Details" form — matches the paper layout.
+async function renderNewServiceForm(c) {
   const today = new Date().toISOString().slice(0, 10);
-  modal('New Service Record', `
-    ${assetPickerHtml('Vehicle / Machine (search & select) *')}
-    <div class="row">${field('Service date', 'service_date', { type: 'date', value: today })}${field('Service type / meter', 'service_type', { placeholder: 'e.g. 5000, 10000' })}</div>
-    <div class="row">${field('Meter reading', 'meter_reading')}${field('Next service meter', 'next_service_meter')}</div>
-    ${field('Site / location', 'site_location')}
-    <h3 style="margin-bottom:4px">Filters <span class="muted" style="font-weight:400;font-size:12px">— price auto-fills from the book; a new number is saved</span></h3>
-    <div id="sfilters"></div><button type="button" class="sm" id="addsf">+ filter</button>
-    <h3 style="margin-bottom:4px">Oils</h3><div id="soils"></div><button type="button" class="sm" id="addso">+ oil</button>
-    <div class="row">${field('Labour charge (LKR)', 'labour_charge', { type: 'number' })}${field('Sundry (LKR)', 'sundry_amount', { type: 'number' })}</div>
-    ${field('Service / repair details', 'repair_details', { type: 'textarea' })}
-    <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Create Service</button></div>`, (body, close) => {
-    wireAssetPicker(body);
-    const sf = qs('#sfilters', body), so = qs('#soils', body);
-    const addFilter = () => {
-      const d = document.createElement('div');
-      d.style.cssText = 'border-bottom:1px solid var(--border);padding-bottom:6px;margin-bottom:6px';
-      d.innerHTML = '<div class="row">' + field('Filter no', 'fno') + field('Category', 'fcat', { type: 'select', options: catOpts }) + '</div><div class="row">' + field('Qty', 'fqty', { type: 'number', value: 1 }) + field('Unit price (LKR)', 'fprice', { type: 'number' }) + '</div>';
-      sf.appendChild(d);
-      const noIn = qs('[name=fno]', d), priceIn = qs('[name=fprice]', d), catIn = qs('[name=fcat]', d);
-      noIn.onblur = async () => {
-        const v = noIn.value.trim(); if (!v || priceIn.value) return;
-        try { const r = await api('/filters/prices/lookup?no=' + encodeURIComponent(v)); if (r.found) { if (r.unit_price != null && !priceIn.value) priceIn.value = r.unit_price; if (r.category && !catIn.value) catIn.value = r.category; } } catch (e) { /* ignore */ }
-      };
-    };
-    const addOil = () => {
-      const d = document.createElement('div');
-      d.style.cssText = 'border-bottom:1px solid var(--border);padding-bottom:6px;margin-bottom:6px';
-      d.innerHTML = '<div class="row">' + field('Oil name', 'oname') + field('Type', 'otype') + '</div><div class="row">' + field('Qty', 'oqty', { type: 'number' }) + field('Price (line total LKR)', 'oprice', { type: 'number' }) + '</div>';
-      so.appendChild(d);
-    };
-    addFilter(); addOil();
-    qs('#addsf', body).onclick = addFilter;
-    qs('#addso', body).onclick = addOil;
-    qs('#s', body).onclick = async () => {
-      const d = formData(body);
-      if (!d.asset && !d.asset_id) return toast('Pick the vehicle / machine', 'err');
-      const fno = qsa('[name=fno]', body).map((e) => e.value), fcat = qsa('[name=fcat]', body).map((e) => e.value), fqty = qsa('[name=fqty]', body).map((e) => e.value), fprice = qsa('[name=fprice]', body).map((e) => e.value);
-      const oname = qsa('[name=oname]', body).map((e) => e.value), otype = qsa('[name=otype]', body).map((e) => e.value), oqty = qsa('[name=oqty]', body).map((e) => e.value), oprice = qsa('[name=oprice]', body).map((e) => e.value);
-      const payload = {
-        asset: d.asset, asset_id: d.asset_id, service_date: d.service_date, service_type: d.service_type,
-        meter_reading: d.meter_reading, next_service_meter: d.next_service_meter, site_location: d.site_location,
-        labour_charge: d.labour_charge, sundry_amount: d.sundry_amount, repair_details: d.repair_details,
-        filters: fno.map((no, i) => ({ filter_no: no, category: fcat[i], qty: fqty[i], price: fprice[i] })).filter((f) => f.filter_no),
-        oils: oname.map((n, i) => ({ oil_name: n, oil_type: otype[i], qty: oqty[i], price: oprice[i] })).filter((o) => o.oil_name),
-      };
-      try { const r = await api('/filters/services', { method: 'POST', body: payload }); toast('Service recorded'); close(); location.hash = '#/filters/service/' + r.service.id; }
-      catch (e) { toast(e.message, 'err'); }
-    };
+  const ref = await api('/filters/reference');
+  const oilTypeOpts = '<option value="">—</option>' + ref.oilTypes.map((t) => `<option value="${esc(t.code)}" data-price="${t.unit_price}">${esc(t.code)}</option>`).join('');
+  const oilRows = ref.oils.map((o) => `<tr>
+      <td>${esc(o.name)}<input type="hidden" class="o_name" value="${esc(o.name)}"></td>
+      <td><select class="o_type" style="width:100%">${oilTypeOpts}</select></td>
+      <td><select class="o_cv" style="width:56px"><option value=""></option><option>C</option><option>V</option></select></td>
+      <td><input type="number" class="o_lit" style="width:64px" step="0.1"></td>
+      <td><input type="number" class="o_price" style="width:96px"></td></tr>`).join('');
+  const filterRows = ref.filterCategories.map((cat) => `<tr>
+      <td>${esc(cat)}<input type="hidden" class="f_cat" value="${esc(cat)}"></td>
+      <td><input type="text" class="f_no" style="width:120px"></td>
+      <td><input type="number" class="f_qty" value="1" style="width:48px"></td>
+      <td><select class="f_xe" style="width:52px"><option value=""></option><option>X</option><option>E</option></select></td>
+      <td><input type="number" class="f_price" style="width:96px"></td></tr>`).join('');
+  c.innerHTML = `${pageHeader('Vehicle / Machinery Service Details', '<a href="#/filters?tab=services">← Service Records</a>')}
+    <div class="card">
+      <div class="row">${assetPickerHtml('Vehicle / Machine (search & select) *')}${field('Date', 'service_date', { type: 'date', value: today })}</div>
+      <div class="grid" style="grid-template-columns:1fr 1fr 1fr">
+        ${field('Reg. ID', 'reg_id')}${field('E&C Code', 'ec_code_disp')}${field('Model', 'model_no')}
+        ${field('Job / Service No.', 'job_no')}${field('Meter Reading', 'meter_reading')}${field('Next Service at', 'next_service_meter')}
+        ${field('Service Type', 'service_type', { placeholder: 'e.g. 5000 Hrs' })}${field('Location (Site)', 'site_location')}${field('Up-keeping', 'upkeeping', { type: 'select', options: [{ value: '', label: '—' }, { value: 'Good', label: 'Good (G)' }, { value: 'Fair', label: 'Fair (F)' }, { value: 'Bad', label: 'Bad (B)' }] })}
+      </div>
+    </div>
+    <div class="grid" style="grid-template-columns:1fr 1fr;align-items:start">
+      <div class="card"><h3 style="margin-top:0">Oils / Lubricants</h3>
+        <div class="table-wrap scroll"><table><thead><tr><th>Oil Name</th><th>Type</th><th>C/V</th><th>Liters</th><th>Price</th></tr></thead>
+          <tbody id="oilBody">${oilRows}</tbody></table></div></div>
+      <div class="card"><h3 style="margin-top:0">Filters <span class="muted" style="font-weight:400;font-size:12px">— No. auto-prices from the book</span></h3>
+        <div class="table-wrap scroll"><table><thead><tr><th>Filter</th><th>Filter No.</th><th>Qty</th><th>X/E</th><th>Price</th></tr></thead>
+          <tbody id="filterBody">${filterRows}</tbody></table></div></div>
+    </div>
+    <div class="card"><div class="toolbar" style="margin:0 0 8px"><h3 style="margin:0">Other Costs (parts, consumables)</h3><div class="spacer"></div><button type="button" class="sm" id="addpart">+ line</button></div>
+      <div class="table-wrap"><table><thead><tr><th>Description</th><th>Unit</th><th>Rate</th><th>Qty</th><th>Amount</th></tr></thead><tbody id="partBody"></tbody></table></div></div>
+    <div class="grid" style="grid-template-columns:2fr 1fr;align-items:start">
+      <div class="card"><h3 style="margin-top:0">Repair / Service Details</h3>${field('', 'repair_details', { type: 'textarea' })}</div>
+      <div class="card"><h3 style="margin-top:0">Totals</h3>
+        <div class="cost-line"><span>Parts Subtotal</span><span id="t_parts">Rs 0.00</span></div>
+        <div class="cost-line"><span>Labour Charge (<input type="number" id="labourRate" value="${ref.labourRate}" style="width:48px">%)</span><span id="t_labour">Rs 0.00</span></div>
+        <div class="cost-line"><span>Sundry (<input type="number" id="sundryRate" value="${ref.sundryRate}" style="width:44px">%)</span><span id="t_sundry">Rs 0.00</span></div>
+        <div class="cost-line total"><span><b>Grand Total</b></span><span id="t_grand"><b>Rs 0.00</b></span></div>
+        <div style="margin-top:12px;text-align:right"><a class="btn sm" href="#/filters?tab=services">Cancel</a> <button class="primary" id="saveService">Create Service</button></div>
+      </div>
+    </div>`;
+  wireAssetPicker(c);
+  // Fill Reg/E&C/Model when a vehicle is picked.
+  c.addEventListener('mousedown', (e) => {
+    const it = e.target.closest && e.target.closest('.apick-item');
+    if (it && it.dataset.id) setTimeout(async () => {
+      try { const a = (await api('/assets/' + it.dataset.id)).asset; if (a) { qs('[name=reg_id]', c).value = a.registration || ''; qs('[name=ec_code_disp]', c).value = a.ec_code || ''; qs('[name=model_no]', c).value = a.model_no || ''; } } catch (err) { /* ignore */ }
+    }, 80);
+  }, true);
+  const money0 = (n) => 'Rs ' + (Number(n) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const recalc = () => {
+    let sub = 0;
+    qsa('#oilBody tr', c).forEach((tr) => { sub += Number(qs('.o_price', tr).value) || 0; });
+    qsa('#filterBody tr', c).forEach((tr) => { sub += (Number(qs('.f_price', tr).value) || 0) * (Number(qs('.f_qty', tr).value) || 1); });
+    qsa('#partBody tr', c).forEach((tr) => { sub += Number(qs('.p_amount', tr).value) || 0; });
+    const lr = Number(qs('#labourRate', c).value) || 0, sr = Number(qs('#sundryRate', c).value) || 0;
+    const lab = sub * lr / 100, sun = sub * sr / 100;
+    qs('#t_parts', c).textContent = money0(sub);
+    qs('#t_labour', c).textContent = money0(lab);
+    qs('#t_sundry', c).textContent = money0(sun);
+    qs('#t_grand', c).innerHTML = '<b>' + money0(sub + lab + sun) + '</b>';
+  };
+  // Oil rows: type auto-fills unit price; liters × unit price → line price.
+  qsa('#oilBody tr', c).forEach((tr) => {
+    const typeSel = qs('.o_type', tr), lit = qs('.o_lit', tr), price = qs('.o_price', tr);
+    const fill = () => { const up = Number(typeSel.selectedOptions[0] && typeSel.selectedOptions[0].dataset.price) || 0; if (up && lit.value) price.value = Math.round(up * Number(lit.value) * 100) / 100; recalc(); };
+    typeSel.onchange = fill; lit.oninput = fill; price.oninput = recalc;
   });
+  // Filter rows: number blur → book price.
+  qsa('#filterBody tr', c).forEach((tr) => {
+    const noIn = qs('.f_no', tr), price = qs('.f_price', tr);
+    noIn.onblur = async () => { const v = noIn.value.trim(); if (!v || price.value) return; try { const r = await api('/filters/prices/lookup?no=' + encodeURIComponent(v)); if (r.found && r.unit_price != null) { price.value = r.unit_price; recalc(); } } catch (e) { /* ignore */ } };
+    price.oninput = recalc; qs('.f_qty', tr).oninput = recalc;
+  });
+  const addPart = () => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td><input type="text" class="p_desc" style="width:100%"></td><td><input type="text" class="p_unit" style="width:60px"></td><td><input type="number" class="p_rate" style="width:80px"></td><td><input type="number" class="p_qty" style="width:56px"></td><td><input type="number" class="p_amount" style="width:96px"></td>`;
+    qs('#partBody', c).appendChild(tr);
+    const rate = qs('.p_rate', tr), qty = qs('.p_qty', tr), amt = qs('.p_amount', tr);
+    const calc = () => { if (rate.value && qty.value) amt.value = Math.round(Number(rate.value) * Number(qty.value) * 100) / 100; recalc(); };
+    rate.oninput = calc; qty.oninput = calc; amt.oninput = recalc;
+  };
+  qs('#addpart', c).onclick = addPart; addPart();
+  qs('#labourRate', c).oninput = recalc; qs('#sundryRate', c).oninput = recalc;
+  qs('#saveService', c).onclick = async () => {
+    const assetInput = qs('.apick-input', c), assetId = qs('input[name=asset_id]', c).value;
+    if (!assetInput.value && !assetId) return toast('Pick the vehicle / machine', 'err');
+    const oils = qsa('#oilBody tr', c).map((tr) => ({ oil_name: qs('.o_name', tr).value, oil_type: qs('.o_type', tr).value, cv: qs('.o_cv', tr).value, qty: qs('.o_lit', tr).value, price: qs('.o_price', tr).value })).filter((o) => Number(o.qty) > 0 || Number(o.price) > 0);
+    const filters = qsa('#filterBody tr', c).map((tr) => ({ category: qs('.f_cat', tr).value, filter_no: qs('.f_no', tr).value.trim(), qty: qs('.f_qty', tr).value, xe: qs('.f_xe', tr).value, price: qs('.f_price', tr).value })).filter((f) => f.filter_no);
+    const parts = qsa('#partBody tr', c).map((tr) => ({ description: qs('.p_desc', tr).value.trim(), unit: qs('.p_unit', tr).value, rate: qs('.p_rate', tr).value, qty: qs('.p_qty', tr).value, amount: qs('.p_amount', tr).value })).filter((p) => p.description);
+    const payload = {
+      asset: assetInput.value, asset_id: assetId, service_date: qs('[name=service_date]', c).value,
+      job_no: qs('[name=job_no]', c).value, reg_id: qs('[name=reg_id]', c).value, model_no: qs('[name=model_no]', c).value,
+      meter_reading: qs('[name=meter_reading]', c).value, next_service_meter: qs('[name=next_service_meter]', c).value,
+      service_type: qs('[name=service_type]', c).value, site_location: qs('[name=site_location]', c).value,
+      upkeeping: qs('[name=upkeeping]', c).value, repair_details: qs('[name=repair_details]', c).value,
+      labour_rate: qs('#labourRate', c).value, sundry_rate: qs('#sundryRate', c).value,
+      oils, filters, parts,
+    };
+    try { const r = await api('/filters/services', { method: 'POST', body: payload }); toast('Service recorded' + (r.oil_issues ? ' · ' + r.oil_issues + ' oil issue(s) posted to Lubricants' : '')); location.hash = '#/filters/service/' + r.service.id; }
+    catch (e) { toast(e.message, 'err'); }
+  };
+  recalc();
 }
 
 async function serviceDetail(c, id) {
@@ -1995,20 +2051,39 @@ async function serviceDetail(c, id) {
   const s = d.service;
   const editable = canEdit('filters');
   const cats = await api('/filters/categories').catch(() => []);
-  c.innerHTML = `${pageHeader('Service · ' + ((s.service_date || '').slice(0, 10)), '<a href="#/filters?tab=services">← Service Records</a>')}
-    <div class="card"><div class="toolbar" style="margin:0"><h3 style="margin:0">${esc(idLabel(s) || s.vehicle_label || 'Vehicle')}</h3><div class="spacer"></div><span class="badge amber">Cost ${money(s.computed_cost)}</span></div>
-      <p class="muted">${esc((s.service_date || '').slice(0, 10))}${s.service_type ? ' · ' + esc(s.service_type) : ''}${s.site_location ? ' · ' + esc(s.site_location) : ''}${s.meter_reading ? ' · meter ' + esc(s.meter_reading) : ''}${s.labour_charge ? ' · labour ' + money(s.labour_charge) : ''}${s.grand_total ? ' · recorded ' + money(s.grand_total) : ''}</p>
+  const upk = { Good: 'green', Fair: 'amber', Bad: 'red' }[s.upkeeping] || '';
+  c.innerHTML = `${pageHeader('Vehicle / Machinery Service Details', '<a href="#/filters?tab=services">← Service Records</a>')}
+    <div class="toolbar"><a class="btn sm" href="#/filters?tab=services">← Service Records</a><div class="spacer"></div>
+      ${s.upkeeping ? `<span class="badge ${upk}">Up-keeping: ${esc(s.upkeeping)}</span>` : ''}
+      <span class="badge amber">Cost ${money(s.computed_cost)}</span>
+      <a class="btn sm" href="/api/filters/services/${s.id}/print.html" target="_blank">🖨 Print</a></div>
+    <div class="card"><h3 style="margin-top:0">${esc(idLabel(s) || s.vehicle_label || 'Vehicle')}</h3>
+      <p class="muted">${esc((s.service_date || '').slice(0, 10))}${s.job_no ? ' · Job ' + esc(s.job_no) : ''}${s.service_type ? ' · type ' + esc(s.service_type) : ''}${s.site_location ? ' · ' + esc(s.site_location) : ''}${s.meter_reading ? ' · meter ' + esc(s.meter_reading) : ''}${s.next_service_meter ? ' · next ' + esc(s.next_service_meter) : ''}</p>
       ${s.repair_details ? `<div style="white-space:pre-wrap;border:1px solid var(--border);border-radius:6px;padding:8px">${esc(s.repair_details)}</div>` : ''}</div>
-    <div class="card"><h3>Filters used <span class="muted" style="font-weight:400">(${d.filters.length})</span></h3>
-      ${tableWrap([{ label: 'Filter No' }, { label: 'Category' }, { label: 'Qty', num: true }, { label: 'Book Price', num: true }].concat(editable ? [{ label: '' }] : []),
-        d.filters.map((f) => `<tr${(f.book_price > 0) ? '' : ' style="background:rgba(224,168,0,.06)"'}>
-          <td><b>${esc(f.filter_no || '')}</b></td><td>${esc(f.category || '')}</td><td class="num">${num(f.qty)}</td>
-          <td class="num">${f.book_price > 0 ? money(f.book_price) : '<span class="badge amber">no price</span>'}</td>
-          ${editable ? `<td class="num"><button class="sm ${f.book_price > 0 ? '' : 'primary'}" data-price="${esc(f.filter_no || '')}" data-cat="${esc(f.category || '')}" data-val="${f.book_price == null ? '' : f.book_price}">${f.book_price > 0 ? 'Edit' : 'Add price'}</button></td>` : ''}
-        </tr>`), { scroll: true })}</div>
-    ${(d.oils && d.oils.length) ? `<div class="card"><h3>Oils used <span class="muted" style="font-weight:400">(${d.oils.length})</span></h3>
-      ${tableWrap([{ label: 'Oil' }, { label: 'Type' }, { label: 'Qty', num: true }, { label: 'Price', num: true }],
-        d.oils.map((o) => `<tr><td>${esc(o.oil_name || '')}</td><td>${esc(o.oil_type || '')}</td><td class="num">${num(o.qty)}</td><td class="num">${o.price > 0 ? money(o.price) : '—'}</td></tr>`), { scroll: true })}</div>` : ''}`;
+    <div class="grid" style="grid-template-columns:1fr 1fr;align-items:start">
+      <div class="card"><h3 style="margin-top:0">Oils / Lubricants <span class="muted" style="font-weight:400">(${d.oils.length})</span></h3>
+        ${d.oils.length ? tableWrap([{ label: 'Oil' }, { label: 'Type' }, { label: 'C/V' }, { label: 'Liters', num: true }, { label: 'Price', num: true }],
+          d.oils.map((o) => `<tr><td>${esc(o.oil_name || '')}</td><td>${esc(o.oil_type || '')}</td><td>${esc(o.action_type || '')}</td><td class="num">${num(o.qty)}</td><td class="num">${o.price > 0 ? money(o.price) : '—'}</td></tr>`), { scroll: true }) : '<p class="muted">None.</p>'}</div>
+      <div class="card"><h3 style="margin-top:0">Filters <span class="muted" style="font-weight:400">(${d.filters.length})</span></h3>
+        ${d.filters.length ? tableWrap([{ label: 'Filter No' }, { label: 'Category' }, { label: 'Qty', num: true }, { label: 'X/E' }, { label: 'Price', num: true }].concat(editable ? [{ label: '' }] : []),
+          d.filters.map((f) => `<tr${(f.book_price > 0) ? '' : ' style="background:rgba(224,168,0,.06)"'}>
+            <td><b>${esc(f.filter_no || '')}</b></td><td>${esc(f.category || '')}</td><td class="num">${num(f.qty)}</td><td>${esc(f.action_type || '')}</td>
+            <td class="num">${f.book_price > 0 ? money(f.book_price) : '<span class="badge amber">no price</span>'}</td>
+            ${editable ? `<td class="num"><button class="sm ${f.book_price > 0 ? '' : 'primary'}" data-price="${esc(f.filter_no || '')}" data-cat="${esc(f.category || '')}" data-val="${f.book_price == null ? '' : f.book_price}">${f.book_price > 0 ? 'Edit' : 'Add price'}</button></td>` : ''}
+          </tr>`), { scroll: true }) : '<p class="muted">None.</p>'}</div>
+    </div>
+    ${(d.parts && d.parts.length) ? `<div class="card"><h3 style="margin-top:0">Other Costs</h3>
+      ${tableWrap([{ label: 'Description' }, { label: 'Unit' }, { label: 'Rate', num: true }, { label: 'Qty', num: true }, { label: 'Amount', num: true }],
+        d.parts.map((p) => `<tr><td>${esc(p.description || '')}</td><td>${esc(p.unit || '')}</td><td class="num">${money(p.rate)}</td><td class="num">${num(p.qty)}</td><td class="num">${money(p.amount)}</td></tr>`))}</div>` : ''}
+    <div class="grid" style="grid-template-columns:2fr 1fr;align-items:start">
+      <div></div>
+      <div class="card"><h3 style="margin-top:0">Totals</h3>
+        <div class="cost-line"><span>Parts Subtotal</span><span>${money(s.parts_subtotal)}</span></div>
+        <div class="cost-line"><span>Labour Charge (${num(s.labour_rate)}%)</span><span>${money(s.labour_charge)}</span></div>
+        <div class="cost-line"><span>Sundry (${num(s.sundry_rate)}%)</span><span>${money(s.sundry_amount)}</span></div>
+        <div class="cost-line total"><span><b>Grand Total</b></span><span><b>${money(s.grand_total || s.computed_cost)}</b></span></div>
+      </div>
+    </div>`;
   qsa('[data-price]', c).forEach((b) => b.onclick = () => filterPriceModal(b.dataset.price, b.dataset.cat, b.dataset.val, cats, () => serviceDetail(c, id)));
 }
 

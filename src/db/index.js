@@ -135,7 +135,34 @@ function migrate() {
     qty         REAL DEFAULT 0,
     price       REAL DEFAULT 0
   );
-  CREATE INDEX IF NOT EXISTS idx_service_oils_svc ON service_oils(service_id);`);
+  CREATE INDEX IF NOT EXISTS idx_service_oils_svc ON service_oils(service_id);
+  -- "Other Costs" lines on a service (parts / consumables not in the oil/filter grids).
+  CREATE TABLE IF NOT EXISTS service_parts (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    service_id  INTEGER NOT NULL REFERENCES service_jobs(id) ON DELETE CASCADE,
+    description TEXT,
+    unit        TEXT,
+    rate        REAL DEFAULT 0,
+    qty         REAL DEFAULT 0,
+    amount      REAL DEFAULT 0
+  );
+  CREATE INDEX IF NOT EXISTS idx_service_parts_svc ON service_parts(service_id);
+  -- Reference lists that drive the fixed rows of the paper service form.
+  CREATE TABLE IF NOT EXISTS oil_list (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, unit TEXT DEFAULT 'L', sort_order INTEGER DEFAULT 0
+  );
+  CREATE TABLE IF NOT EXISTS filter_category_list (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, sort_order INTEGER DEFAULT 0
+  );
+  CREATE TABLE IF NOT EXISTS oil_type_prices (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, code TEXT NOT NULL, unit_price REAL DEFAULT 0
+  );`);
+  // Service header extras for the paper form.
+  ensureColumn('service_jobs', 'upkeeping', 'TEXT');            // Good | Fair | Bad
+  ensureColumn('service_jobs', 'reg_id', 'TEXT');               // registration snapshot at service time
+  ensureColumn('service_jobs', 'model_no', 'TEXT');
+  ensureColumn('service_jobs', 'labour_rate', "REAL DEFAULT 20"); // % of parts
+  ensureColumn('service_jobs', 'sundry_rate', "REAL DEFAULT 5");   // % of parts
   // Upgrade-safe additive column checks (CREATE TABLE IF NOT EXISTS won't add
   // columns to a table that already exists).
   ensureColumn('job_cards', 'flat_labour', 'REAL');

@@ -249,4 +249,11 @@ if (!only || only === 'service-extras') {
   }
 }
 
+if (!only || only === 'service-reference') {
+  banner('Service form reference lists — oils, filter categories, oil-type prices');
+  const sr = require('./23_service_reference').runStep();
+  if (sr.no_file) console.log('  No sources/service/service.db — skipped.');
+  else console.log(`  Oil list: ${sr.oils} | Filter categories: ${sr.categories} | Oil-type prices: ${sr.oil_types}`);
+}
+
 console.log('\nDone.');
