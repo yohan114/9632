@@ -174,3 +174,7 @@ label { display: block; font-size: 11.5px; color: var(--muted); margin: 8px 0 3p
 .cost-line.total span { font-family: var(--disp); }
 .section { margin-bottom: 20px; }
 .crumb { color: var(--muted); font-size: 13px; margin-bottom: 8px; font-family: var(--mono); }
+
+/* Sidebar group headings (SPA nav) */
+.nav-group { font-size: 10px; text-transform: uppercase; letter-spacing: .1em; color: #5c666d; font-weight: 700; padding: 14px 11px 4px; }
+.nav-group:first-child { padding-top: 4px; }

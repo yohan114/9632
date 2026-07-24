@@ -366,11 +366,25 @@ function navVisible(n) {
   return !m || canView(m);
 }
 
+// Sidebar grouping — headings shown above each cluster (a group with no visible item is hidden).
+const NAV_GROUP_ORDER = ['Operations', 'Inventory', 'Procurement', 'Fleet', 'Analysis', 'Admin'];
+const NAV_GROUP = {
+  dashboard: 'Operations', jobs: 'Operations', jobrequests: 'Operations', dailywork: 'Operations',
+  stores: 'Inventory', generalstock: 'Inventory', filterstock: 'Inventory', oil: 'Inventory', filters: 'Inventory', batteries: 'Inventory',
+  matreq: 'Procurement', stockissues: 'Procurement',
+  assets: 'Fleet',
+  reports: 'Analysis', attention: 'Analysis', progress: 'Analysis', teardown: 'Analysis', aliases: 'Analysis', projects: 'Analysis', labour: 'Analysis',
+  access: 'Admin',
+};
+
 function renderShell() {
   const route = (location.hash.replace('#/', '').split('?')[0].split('/')[0]) || 'dashboard';
-  const nav = NAV.filter(navVisible).map(
-    (n, i) => `<a href="${n[4] || '#/' + n[0]}" class="${!n[4] && route === n[0] ? 'active' : ''}"><span class="ix">${String(i + 1).padStart(2, '0')}</span><span class="ico">${n[1]}</span>${n[2]}</a>`
-  ).join('');
+  const link = (n, i) => `<a href="${n[4] || '#/' + n[0]}" class="${!n[4] && route === n[0] ? 'active' : ''}"><span class="ix">${String(i + 1).padStart(2, '0')}</span><span class="ico">${n[1]}</span>${n[2]}</a>`;
+  let i = 0;
+  const nav = NAV_GROUP_ORDER.map((g) => {
+    const items = NAV.filter((n) => (NAV_GROUP[n[0]] || 'Analysis') === g && navVisible(n));
+    return items.length ? `<div class="nav-group">${esc(g)}</div>` + items.map((n) => link(n, i++)).join('') : '';
+  }).join('');
   qs('#app').innerHTML = `
     <div class="topbar">
       <button class="hamburger" id="ham">☰</button>
