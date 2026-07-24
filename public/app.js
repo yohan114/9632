@@ -1640,22 +1640,23 @@ function newIssueModal(onDone) {
   const today = new Date().toISOString().slice(0, 10);
   modal('New Issue', `
     ${field('Issue date', 'issue_date', { type: 'date', value: today })}
-    ${assetPickerHtml('Vehicle (search & select)')}
+    ${targetPickerHtml('nis-tgt', { label: 'Issue to — job card (cost lands on the job) or general workshop', generalLabel: 'General workshop (no vehicle)' })}
     ${field('Item / description *', 'description')}
     ${field('Category', 'category', { type: 'select', options: [{ value: '', label: '—' }].concat(STORE_CATEGORIES.map((c) => ({ value: c, label: c }))) })}
     <div class="row">${field('Qty', 'qty', { type: 'number', value: 1 })}${field('Unit price (Rs)', 'unit_price', { type: 'number' })}</div>
     ${field('Issued by', 'issued_by')}
     <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Record issue</button></div>`,
     (body, close) => {
-      wireAssetPicker(body);
+      const getTarget = wireTargetPicker(body, 'nis-tgt');
       qs('#s', body).onclick = async () => {
         const d = formData(body);
+        const t = getTarget();
+        if (t.type === 'vehicle' && !t.job_id) return toast('Pick a job card for the selected vehicle', 'err');
         if (!d.description) return toast('Item / description is required', 'err');
         try {
-          const r = await api('/stores/issues', { method: 'POST', body: d });
+          await api('/stores/issues', { method: 'POST', body: { job_id: t.job_id || undefined, description: d.description, category: d.category, qty: d.qty, unit_price: d.unit_price, issue_date: d.issue_date, issued_by: d.issued_by } });
           close();
-          if (r.unresolved) toast('Issue recorded — vehicle "' + r.unresolved.raw + '" queued in the Alias Queue', 'err');
-          else toast('Issue recorded');
+          toast('Issue recorded');
           if (onDone) onDone(); else render();
         } catch (e) { toast(e.message, 'err'); }
       };

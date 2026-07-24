@@ -73,6 +73,16 @@ function runStep() {
     return prefix + (max + 1);
   }
 
+  // This is a one-time ETL that rebuilds grn/issue job_parts from the imported source
+  // data (DELETE + re-derive). Once the app is live, POST /issues creates its OWN
+  // source_type='issue' job_parts (with issues.job_id set) — re-running this step would
+  // delete them and re-home issues by nearest-date. Imported issues have job_id NULL, so
+  // refuse to run destructively as soon as any live (job_id-tagged) issue exists.
+  if (get('SELECT COUNT(*) c FROM issues WHERE job_id IS NOT NULL').c > 0) {
+    rep.skipped_live = 'job-materials ETL skipped: live stock issues exist (issues.job_id set). Re-running would clobber live-created job_parts.';
+    return rep;
+  }
+
   const touched = new Set();
   tx(() => {
     const prev = all("SELECT DISTINCT job_id FROM job_parts WHERE source_type IN ('grn','issue')").map((r) => r.job_id);
