@@ -175,6 +175,18 @@ const canEdit = (m) => can('admin') || (ME && ME.permissions ? rankL(ME.permissi
 const qs = (s, r = document) => r.querySelector(s);
 const qsa = (s, r = document) => [...r.querySelectorAll(s)];
 
+// Live-refresh helper: subscribe ONCE per (event,route) so re-visiting a view never
+// stacks listeners; re-render the current view only when its route is active.
+const _liveWired = {};
+function onLive(event, routeKey) {
+  if (!window.LiveERP || _liveWired[event + ':' + routeKey]) return;
+  _liveWired[event + ':' + routeKey] = true;
+  LiveERP.on(event, () => {
+    const cur = location.hash.replace('#/', '').split('?')[0].split('/')[0] || 'dashboard';
+    if (cur === routeKey) render();
+  });
+}
+
 const STATUS_CLASS = {
   REQUESTED: '', APPROVED_TRANSPORT: 'blue', APPROVED_OPERATIONS: 'blue',
   IN_WORKSHOP: 'amber', IN_PROGRESS: 'amber', WORK_COMPLETE: 'amber',
@@ -290,7 +302,7 @@ function formData(root) {
 
 // ---------------------------------------------------------------- shell
 const NAV = [
-  ['dashboard', '📊', 'Dashboard'],
+  ['dashboard', '📊', 'Dashboard', null, '/dashboard.html'],
   ['assets', '🚜', 'Assets'],
   ['jobs', '🔧', 'Job Cards'],
   ['jobrequests', '📋', 'Job Requests'],
@@ -300,12 +312,17 @@ const NAV = [
   ['oil', '🛢️', 'Oil & Lube'],
   ['batteries', '🔋', 'Batteries'],
   ['filters', '🧰', 'Filters & Prices'],
+  ['matreq', '📝', 'Material Requests', null, '/material-requests.html'],
+  ['stockissues', '📤', 'Stock Issues'],
+  ['generalstock', '🧰', 'General Stock'],
+  ['filterstock', '🛞', 'Filter Stock'],
+  ['oilstock', '🛢️', 'Oil Stock', null, '/oil-stock.html'],
   ['projects', '🏗️', 'Projects'],
   ['aliases', '🔗', 'Alias Queue'],
   ['attention', '⚠️', 'Needs Attention'],
   ['progress', '📆', 'Daily Progress'],
   ['teardown', '📉', 'Cost Teardown'],
-  ['reports', '📈', 'Reports'],
+  ['reports', '📈', 'Reports', null, '/reports.html'],
   ['access', '🔐', 'Access Control', 'admin'],
 ];
 // Which permission module governs each nav item's visibility (dashboard always on).
@@ -314,6 +331,7 @@ const NAV_MODULE = {
   labour: 'labour', stores: 'stores', oil: 'oil', batteries: 'batteries', filters: 'filters',
   projects: 'projects', aliases: 'aliases', attention: 'reports', progress: 'reports',
   teardown: 'reports', reports: 'reports',
+  matreq: 'stores', stockissues: 'stores', generalstock: 'stores', filterstock: 'filters', oilstock: 'oil',
 };
 function navVisible(n) {
   if (n[3] === 'admin') return can('admin');
@@ -325,7 +343,7 @@ function navVisible(n) {
 function renderShell() {
   const route = (location.hash.replace('#/', '').split('?')[0].split('/')[0]) || 'dashboard';
   const nav = NAV.filter(navVisible).map(
-    (n, i) => `<a href="#/${n[0]}" class="${route === n[0] ? 'active' : ''}"><span class="ix">${String(i + 1).padStart(2, '0')}</span><span class="ico">${n[1]}</span>${n[2]}</a>`
+    (n, i) => `<a href="${n[4] || '#/' + n[0]}" class="${!n[4] && route === n[0] ? 'active' : ''}"><span class="ix">${String(i + 1).padStart(2, '0')}</span><span class="ico">${n[1]}</span>${n[2]}</a>`
   ).join('');
   qs('#app').innerHTML = `
     <div class="topbar">
@@ -2449,6 +2467,289 @@ function simpleCreateModal(title, path, fields) {
     };
   });
 }
+
+// ===== General Stock — native SPA view (was public/general-stock.html) =====
+// General consumables held in store_items with is_general=1. Backed by /api/general-stock.
+const gsStatus = (s) => (s === 'critical' ? '<span class="badge red">CRITICAL</span>' : s === 'low' ? '<span class="badge amber">LOW</span>' : '<span class="badge green">OK</span>');
+routes.generalstock = async (c) => {
+  if (!canView('stores')) { c.innerHTML = `<div class="card"><p class="err">You do not have access to Stores.</p></div>`; return; }
+  const edit = canEdit('stores');
+  c.innerHTML = pageHeader('General Stock') + `
+    <div class="grid section" id="gs-stats"></div>
+    <div class="toolbar">
+      <input type="search" id="gs-q" placeholder="Search name / item no / category…" style="max-width:240px">
+      <select id="gs-cat" style="max-width:180px"><option value="">All categories</option></select>
+      <button class="sm" id="gs-low">Low stock only</button>
+      <div class="spacer"></div>
+      ${edit ? '<button class="primary sm" id="gs-add">+ Add Item</button>' : ''}
+      <span class="muted" id="gs-count"></span>
+    </div>
+    <div id="gs-table" class="muted">Loading…</div>`;
+
+  try { (await api('/general-stock/categories')).forEach((cat) => { const o = document.createElement('option'); o.value = cat; o.textContent = cat; qs('#gs-cat').appendChild(o); }); } catch (e) { /* dropdown optional */ }
+
+  let lowOnly = false, rows = [];
+  const load = async () => {
+    const q = qs('#gs-q').value.trim(), cat = qs('#gs-cat').value;
+    const query = '?' + (q ? 'q=' + encodeURIComponent(q) + '&' : '') + (cat ? 'category=' + encodeURIComponent(cat) + '&' : '') + (lowOnly ? 'low_stock=1' : '');
+    try {
+      const [s, items] = await Promise.all([api('/general-stock/summary'), api('/general-stock/items' + query)]);
+      qs('#gs-stats').innerHTML = [
+        [num(s.total_items), 'Total Items'], [moneyC(s.total_value), 'Total Value (LKR)'],
+        [num(s.low_stock_count), 'Low Stock'], [num(s.categories), 'Categories'],
+      ].map(([n, l]) => `<div class="card stat"><span class="n">${n}</span><span class="l">${esc(l)}</span></div>`).join('');
+      rows = items;
+      qs('#gs-count').textContent = items.length + (items.length === 1 ? ' item' : ' items');
+      const headers = [{ label: 'Item No' }, { label: 'Name' }, { label: 'Category' }, { label: 'Unit' }, { label: 'Balance', num: true }, { label: 'Min Stock', num: true }, { label: 'Unit Cost', num: true }, { label: 'Total Value', num: true }, { label: 'Status' }, { label: 'Actions' }];
+      const body = items.map((r) => `<tr${r.status !== 'ok' ? ' style="background:rgba(224,168,0,.06)"' : ''}>
+        <td>${esc(r.item_no || '')}</td>
+        <td><b>${esc(r.name)}</b>${r.description ? `<br><span class="muted" style="font-size:11px">${esc(r.description)}</span>` : ''}</td>
+        <td>${esc(r.category || '—')}</td><td>${esc(r.unit || '')}</td>
+        <td class="num">${num(r.balance)}</td><td class="num">${num(r.min_stock)}</td>
+        <td class="num">${money(r.unit_cost)}</td><td class="num">${money(r.total_value)}</td>
+        <td>${gsStatus(r.status)}</td>
+        <td>${edit ? `<button class="sm" data-adj="${r.id}">Adjust</button>` : ''}</td></tr>`);
+      qs('#gs-table').innerHTML = tableWrap(headers, body, { scroll: true });
+      qsa('[data-adj]').forEach((b) => { b.onclick = () => gsAdjust(rows.find((x) => String(x.id) === b.dataset.adj)); });
+    } catch (e) { qs('#gs-table').innerHTML = `<div class="card"><p class="err">${esc(e.message)}</p></div>`; }
+  };
+
+  const gsAdd = () => modal('Add General Stock Item', `
+    <div class="row">${field('Name', 'name')}${field('Category', 'category')}</div>
+    <div class="row">${field('Unit', 'unit', { value: 'nos' })}${field('Item No (auto if blank)', 'item_no', { placeholder: 'GS-####' })}</div>
+    <div class="row">${field('Opening balance', 'balance', { type: 'number', value: '0' })}${field('Min stock (reorder)', 'min_stock', { type: 'number', value: '0' })}</div>
+    <div class="row">${field('Unit cost (LKR)', 'unit_cost', { type: 'number', value: '0' })}${field('Location', 'location')}</div>
+    ${field('Description', 'description')}
+    <div style="margin-top:12px;text-align:right"><button class="primary" id="gs-save">Add Item</button></div>`, (body, close) => {
+    qs('#gs-save', body).onclick = async () => {
+      const d = formData(body);
+      if (!d.name.trim()) return toast('Name is required', 'err');
+      try { await api('/general-stock/items', { method: 'POST', body: d }); toast('Item added'); close(); load(); } catch (e) { toast(e.message, 'err'); }
+    };
+  });
+
+  const gsAdjust = (item) => {
+    if (!item) return;
+    const today = new Date().toISOString().slice(0, 10);
+    modal('Adjust Stock — ' + item.name, `
+      <p class="muted" style="margin-top:0">${esc(item.item_no || '')} · current balance <b>${num(item.balance)}</b> ${esc(item.unit || '')}</p>
+      <div class="row">${field('Type', 'txn_type', { type: 'select', options: [{ value: 'receipt', label: 'Receipt (+)' }, { value: 'issue', label: 'Issue (−)' }, { value: 'adjustment', label: 'Adjustment (set to)' }] })}${field('Quantity', 'qty', { type: 'number' })}</div>
+      <div class="row">${field('Unit price (optional)', 'unit_price', { type: 'number' })}${field('Date', 'txn_date', { type: 'date', value: today })}</div>
+      ${field('Reason / reference', 'reason')}
+      <div style="margin-top:12px;text-align:right"><button class="primary" id="gs-adj">Record</button></div>`, (body, close) => {
+      qs('#gs-adj', body).onclick = async () => {
+        try { await api('/general-stock/items/' + item.id + '/adjust', { method: 'POST', body: formData(body) }); toast('Stock updated'); close(); load(); } catch (e) { toast(e.message, 'err'); }
+      };
+    });
+  };
+
+  let deb;
+  qs('#gs-q').oninput = () => { clearTimeout(deb); deb = setTimeout(load, 250); };
+  qs('#gs-cat').onchange = load;
+  qs('#gs-low').onclick = () => { lowOnly = !lowOnly; qs('#gs-low').classList.toggle('primary', lowOnly); load(); };
+  if (edit && qs('#gs-add')) qs('#gs-add').onclick = gsAdd;
+  onLive('stock_updated', 'generalstock');
+  load();
+};
+
+// ===== Filter Stock — native SPA view (was public/filter-stock.html) =====
+// Dedicated filter inventory (filter_stock + filter_stock_ledger). Backed by /api/filter-stock.
+const fsStatus = (s) => (s === 'critical' ? '<span class="badge red">CRITICAL</span>' : s === 'low' ? '<span class="badge amber">LOW</span>' : '<span class="badge green">OK</span>');
+const fsPills = (v) => (v ? String(v).split(/[,;\n]/).map((x) => x.trim()).filter(Boolean).map((x) => `<span class="badge" style="font-weight:400">${esc(x)}</span>`).join(' ') : '<span class="muted">—</span>');
+routes.filterstock = async (c) => {
+  if (!canView('filters')) { c.innerHTML = `<div class="card"><p class="err">You do not have access to Filters.</p></div>`; return; }
+  const edit = canEdit('filters');
+  c.innerHTML = pageHeader('Filter Stock') + `
+    <div class="grid section" id="fs-stats"></div>
+    <div class="toolbar">
+      <input type="search" id="fs-q" placeholder="Search type / brand / part no / vehicle…" style="max-width:280px">
+      <button class="sm" id="fs-low">Low stock only</button>
+      <div class="spacer"></div>
+      ${edit ? '<button class="primary sm" id="fs-add">+ Add Filter Type</button>' : ''}
+      <span class="muted" id="fs-count"></span>
+    </div>
+    <div id="fs-table" class="muted">Loading…</div>`;
+  let lowOnly = false, rows = [];
+  const load = async () => {
+    const q = qs('#fs-q').value.trim();
+    const query = '?' + (q ? 'q=' + encodeURIComponent(q) + '&' : '') + (lowOnly ? 'low_stock=1' : '');
+    try {
+      const [s, items] = await Promise.all([api('/filter-stock/summary'), api('/filter-stock/' + query)]);
+      qs('#fs-stats').innerHTML = [
+        [num(s.total_types), 'Total Filter Types'], [moneyC(s.total_value), 'Total Stock Value (LKR)'], [num(s.low_stock_count), 'Low Stock Count'],
+      ].map(([n, l]) => `<div class="card stat"><span class="n">${n}</span><span class="l">${esc(l)}</span></div>`).join('');
+      rows = items;
+      qs('#fs-count').textContent = items.length + (items.length === 1 ? ' type' : ' types');
+      const headers = [{ label: 'Type' }, { label: 'Brand' }, { label: 'Part No' }, { label: 'Compatible Vehicles' }, { label: 'In Stock', num: true }, { label: 'Reorder', num: true }, { label: 'Unit Cost', num: true }, { label: 'Status' }, { label: 'Actions' }];
+      const body = items.map((r) => `<tr${r.status !== 'ok' ? ' style="background:rgba(224,168,0,.06)"' : ''}>
+        <td><a href="javascript:void 0" data-led="${r.id}"><b>${esc(r.filter_type)}</b></a></td>
+        <td>${esc(r.brand || '—')}</td><td>${esc(r.part_no || '—')}</td><td>${fsPills(r.compatible_assets)}</td>
+        <td class="num">${num(r.qty_in_stock)} ${esc(r.unit || '')}</td><td class="num">${num(r.reorder_level)}</td>
+        <td class="num">${money(r.unit_cost)}</td><td>${fsStatus(r.status)}</td>
+        <td style="white-space:nowrap">${edit ? `<button class="sm" data-rcv="${r.id}">Receive</button> <button class="sm" data-iss="${r.id}">Issue</button>` : ''}</td></tr>`);
+      qs('#fs-table').innerHTML = tableWrap(headers, body, { scroll: true });
+      const byId = (id) => rows.find((x) => String(x.id) === String(id));
+      qsa('[data-led]').forEach((a) => { a.onclick = () => fsLedger(a.dataset.led); });
+      qsa('[data-rcv]').forEach((b) => { b.onclick = () => fsReceive(byId(b.dataset.rcv)); });
+      qsa('[data-iss]').forEach((b) => { b.onclick = () => fsIssue(byId(b.dataset.iss)); });
+    } catch (e) { qs('#fs-table').innerHTML = `<div class="card"><p class="err">${esc(e.message)}</p></div>`; }
+  };
+
+  const fsAdd = () => modal('Add Filter Type', `
+    <div class="row">${field('Filter type', 'filter_type', { placeholder: 'e.g. Oil Filter' })}${field('Brand', 'brand', { placeholder: 'VIC / Sakura…' })}</div>
+    <div class="row">${field('Part No', 'part_no')}${field('Unit', 'unit', { value: 'nos' })}</div>
+    <div class="row">${field('Opening qty', 'qty_in_stock', { type: 'number', value: '0' })}${field('Reorder level', 'reorder_level', { type: 'number', value: '5' })}</div>
+    <div class="row">${field('Unit cost (LKR)', 'unit_cost', { type: 'number', value: '0' })}${field('Supplier', 'supplier')}</div>
+    ${field('Compatible vehicles (comma separated)', 'compatible_assets', { placeholder: 'LO-5981, GE-126' })}
+    <div style="margin-top:12px;text-align:right"><button class="primary" id="fs-save">Add</button></div>`, (body, close) => {
+    qs('#fs-save', body).onclick = async () => {
+      const d = formData(body);
+      if (!d.filter_type.trim()) return toast('Filter type is required', 'err');
+      try { await api('/filter-stock', { method: 'POST', body: d }); toast('Filter type added'); close(); load(); } catch (e) { toast(e.message, 'err'); }
+    };
+  });
+
+  const fsReceive = (f) => {
+    if (!f) return;
+    const today = new Date().toISOString().slice(0, 10);
+    modal('Receive Stock — ' + f.filter_type, `
+      <p class="muted" style="margin-top:0">Current stock <b>${num(f.qty_in_stock)}</b> ${esc(f.unit || '')}</p>
+      <div class="row">${field('Quantity', 'qty', { type: 'number' })}${field('Unit cost (LKR)', 'unit_cost', { type: 'number', value: f.unit_cost || '' })}</div>
+      <div class="row">${field('Supplier', 'supplier', { value: f.supplier || '' })}${field('Invoice no', 'invoice_no')}</div>
+      ${field('Date', 'date', { type: 'date', value: today })}
+      <div style="margin-top:12px;text-align:right"><button class="primary" id="fs-r">Receive</button></div>`, (body, close) => {
+      qs('#fs-r', body).onclick = async () => {
+        const d = formData(body);
+        if (!(Number(d.qty) > 0)) return toast('Enter a quantity greater than 0', 'err');
+        try { await api('/filter-stock/' + f.id + '/receive', { method: 'POST', body: d }); toast('Stock received'); close(); load(); } catch (e) { toast(e.message, 'err'); }
+      };
+    });
+  };
+
+  const fsIssue = (f) => {
+    if (!f) return;
+    const today = new Date().toISOString().slice(0, 10);
+    modal('Issue Filter — ' + f.filter_type, `
+      <p class="muted" style="margin-top:0">Available <b>${num(f.qty_in_stock)}</b> ${esc(f.unit || '')} · costed at ${money(f.unit_cost)} each</p>
+      ${assetPickerHtml('Vehicle / machinery')}
+      <div class="row">${field('Quantity', 'qty', { type: 'number', value: '1' })}${field('Date', 'date', { type: 'date', value: today })}</div>
+      ${field('Note', 'note')}
+      <div style="margin-top:12px;text-align:right"><button class="primary" id="fs-i">Issue</button></div>`, (body, close) => {
+      wireAssetPicker(body);
+      qs('#fs-i', body).onclick = async () => {
+        const d = formData(body);
+        if (!d.asset_id) return toast('Pick a vehicle', 'err');
+        if (!(Number(d.qty) > 0)) return toast('Enter a quantity greater than 0', 'err');
+        if (Number(d.qty) > Number(f.qty_in_stock)) return toast('Only ' + num(f.qty_in_stock) + ' in stock', 'err');
+        try { await api('/filter-stock/' + f.id + '/issue', { method: 'POST', body: { asset_id: d.asset_id, qty: d.qty, date: d.date, note: d.note } }); toast('Filter issued'); close(); load(); } catch (e) { toast(e.message, 'err'); }
+      };
+    });
+  };
+
+  const fsLedger = async (id) => {
+    try {
+      const d = await api('/filter-stock/' + id + '/ledger');
+      const f = d.filter, l = d.ledger || [];
+      const kindB = (k) => (k === 'issue' ? '<span class="badge red">Issue</span>' : k === 'receipt' ? '<span class="badge green">Receipt</span>' : '<span class="badge">Adj</span>');
+      const headers = [{ label: 'Date' }, { label: 'Type' }, { label: 'Qty', num: true }, { label: 'Balance', num: true }, { label: 'Unit Price', num: true }, { label: 'Vehicle / Note' }];
+      const body = l.map((t) => `<tr><td>${esc((t.txn_date || '').slice(0, 10))}</td><td>${kindB(t.kind)}</td><td class="num">${num(t.qty)}</td><td class="num">${num(t.balance_after)}</td><td class="num">${t.unit_price == null ? '—' : money(t.unit_price)}</td><td>${esc(idLabel(t) || t.note || '—')}${t.job_no ? ` <span class="badge">${esc(t.job_no)}</span>` : ''}</td></tr>`);
+      modal('Ledger — ' + f.filter_type, `<p class="muted" style="margin-top:0">${esc(f.brand || '')} · ${esc(f.part_no || '')} · in stock <b>${num(f.qty_in_stock)}</b> ${esc(f.unit || '')} ${fsStatus(f.status)}</p>${tableWrap(headers, body, { scroll: true })}`);
+    } catch (e) { toast(e.message, 'err'); }
+  };
+
+  let deb;
+  qs('#fs-q').oninput = () => { clearTimeout(deb); deb = setTimeout(load, 250); };
+  qs('#fs-low').onclick = () => { lowOnly = !lowOnly; qs('#fs-low').classList.toggle('primary', lowOnly); load(); };
+  if (edit && qs('#fs-add')) qs('#fs-add').onclick = fsAdd;
+  onLive('filter_updated', 'filterstock');
+  load();
+};
+
+// ===== Stock Issues — native SPA view (was public/stock-issues.html) =====
+// Parts/consumables issued to a vehicle/job. Backed by /api/stores/issues (+ /kpis).
+routes.stockissues = async (c) => {
+  if (!canView('stores')) { c.innerHTML = `<div class="card"><p class="err">You do not have access to Stores.</p></div>`; return; }
+  const edit = canEdit('stores');
+  c.innerHTML = pageHeader('Stock Issues') + `
+    <div class="grid section" id="si-kpi"></div>
+    <div class="toolbar">
+      <label style="width:auto">From <input type="date" id="si-from" style="max-width:150px"></label>
+      <label style="width:auto">To <input type="date" id="si-to" style="max-width:150px"></label>
+      <input type="search" id="si-q" placeholder="Vehicle / item…" style="max-width:180px">
+      <select id="si-cat" style="max-width:170px"><option value="">All categories</option></select>
+      <div class="spacer"></div>
+      ${edit ? '<button class="primary sm" id="si-new">+ New Issue</button>' : ''}
+      <span class="muted" id="si-count"></span>
+    </div>
+    <div id="si-table" class="muted">Loading…</div>`;
+  try { (await api('/stores/issue-categories')).forEach((cat) => { const o = document.createElement('option'); o.value = cat; o.textContent = cat; qs('#si-cat').appendChild(o); }); } catch (e) { /* optional */ }
+  const load = async () => {
+    let query = '?limit=500';
+    if (qs('#si-from').value) query += '&date_from=' + qs('#si-from').value;
+    if (qs('#si-to').value) query += '&date_to=' + qs('#si-to').value;
+    if (qs('#si-q').value.trim()) query += '&q=' + encodeURIComponent(qs('#si-q').value.trim());
+    if (qs('#si-cat').value) query += '&category=' + encodeURIComponent(qs('#si-cat').value);
+    try {
+      const [k, rows] = await Promise.all([api('/stores/issues/kpis'), api('/stores/issues' + query)]);
+      qs('#si-kpi').innerHTML = [
+        [num(k.issues_today), 'Issues Today'], [moneyC(k.cost_today), 'Cost Today (LKR)'],
+        [num(k.issues_month), 'This Month Issues'], [moneyC(k.cost_month), 'Monthly Cost (LKR)'],
+      ].map(([n, l]) => `<div class="card stat"><span class="n">${n}</span><span class="l">${esc(l)}</span></div>`).join('');
+      qs('#si-count').textContent = rows.length + (rows.length === 1 ? ' issue' : ' issues');
+      const headers = [{ label: 'Date' }, { label: 'Vehicle' }, { label: 'Job' }, { label: 'Item' }, { label: 'Qty', num: true }, { label: 'Unit Price', num: true }, { label: 'Total Cost', num: true }, { label: 'Issued By' }, { label: 'Category' }];
+      const body = rows.map((r) => `<tr>
+        <td>${esc((r.issue_date || '').slice(0, 10))}</td><td>${esc(idLabel(r) || 'General')}</td>
+        <td>${r.job_no ? esc(r.job_no) : '<span class="muted">—</span>'}</td><td>${esc(r.description || '')}</td>
+        <td class="num">${num(r.qty)}</td><td class="num">${r.unit_price == null ? '<span class="muted">—</span>' : money(r.unit_price)}</td>
+        <td class="num">${money(r.total_cost)}</td><td>${esc(r.issued_by || '—')}</td>
+        <td>${r.category ? `<span class="badge">${esc(r.category)}</span>` : '—'}</td></tr>`);
+      qs('#si-table').innerHTML = tableWrap(headers, body, { scroll: true });
+    } catch (e) { qs('#si-table').innerHTML = `<div class="card"><p class="err">${esc(e.message)}</p></div>`; }
+  };
+
+  const newIssue = () => {
+    const today = new Date().toISOString().slice(0, 10);
+    modal('New Stock Issue', `
+      ${assetPickerHtml('Vehicle / machinery (optional)')}
+      <div style="position:relative"><label>Item</label>
+        <input type="text" id="si-item" autocomplete="off" placeholder="Search store items…">
+        <input type="hidden" name="store_item_id"><input type="hidden" name="description">
+        <div id="si-item-menu" style="position:absolute;z-index:60;left:0;right:0;top:100%;background:var(--surface);border:1px solid var(--border);border-radius:8px;box-shadow:var(--shadow);max-height:220px;overflow:auto;display:none"></div>
+      </div>
+      <div class="row">${field('Quantity', 'qty', { type: 'number', value: '1' })}${field('Unit Price (LKR)', 'unit_price', { type: 'number' })}</div>
+      <div class="row">${field('Date', 'issue_date', { type: 'date', value: today })}${field('Category', 'category')}</div>
+      ${field('Issued By', 'issued_by', { value: (ME.fullName || ME.username) })}
+      <div style="margin-top:12px;text-align:right"><button class="primary" id="si-save">Record Issue</button></div>`, (body, close) => {
+      wireAssetPicker(body);
+      const input = qs('#si-item', body), menu = qs('#si-item-menu', body);
+      const hId = qs('input[name=store_item_id]', body), hDesc = qs('input[name=description]', body);
+      let deb2;
+      input.oninput = () => { clearTimeout(deb2); deb2 = setTimeout(async () => {
+        const q = input.value.trim(); hId.value = ''; hDesc.value = q; // typed text is the fallback description
+        if (q.length < 2) { menu.style.display = 'none'; return; }
+        let items = []; try { items = await api('/stores/items?limit=8&q=' + encodeURIComponent(q)); } catch (e) { return; }
+        menu.innerHTML = items.length ? items.map((it) => `<div class="si-it" data-id="${it.id}" data-name="${esc(it.name)}" data-cost="${it.unit_cost || ''}" data-cat="${esc(it.category || '')}" style="padding:7px 10px;cursor:pointer;border-bottom:1px solid var(--border)"><b>${esc(it.name)}</b>${it.part_number ? ` <span class="muted">· ${esc(it.part_number)}</span>` : ''}</div>`).join('') : '<div class="muted" style="padding:8px 10px">No item — free text kept</div>';
+        menu.style.display = 'block';
+        qsa('.si-it', menu).forEach((el) => { el.onmousedown = (e) => { e.preventDefault(); input.value = el.dataset.name; hId.value = el.dataset.id; hDesc.value = el.dataset.name; if (el.dataset.cost) qs('input[name=unit_price]', body).value = el.dataset.cost; if (el.dataset.cat) qs('input[name=category]', body).value = el.dataset.cat; menu.style.display = 'none'; }; });
+      }, 200); };
+      input.onblur = () => setTimeout(() => { menu.style.display = 'none'; }, 150);
+      qs('#si-save', body).onclick = async () => {
+        const d = formData(body);
+        const description = (d.description || input.value).trim();
+        if (!description) return toast('Pick or type an item', 'err');
+        if (!(Number(d.qty) > 0)) return toast('Enter a quantity greater than 0', 'err');
+        try { await api('/stores/issues', { method: 'POST', body: { asset_id: d.asset_id || undefined, description, store_item_id: d.store_item_id || undefined, qty: d.qty, unit_price: d.unit_price, issue_date: d.issue_date, category: d.category, issued_by: d.issued_by } }); toast('Issue recorded'); close(); load(); } catch (e) { toast(e.message, 'err'); }
+      };
+    });
+  };
+
+  let deb;
+  qs('#si-q').oninput = () => { clearTimeout(deb); deb = setTimeout(load, 260); };
+  ['si-from', 'si-to', 'si-cat'].forEach((id) => { qs('#' + id).onchange = load; });
+  if (edit && qs('#si-new')) qs('#si-new').onclick = newIssue;
+  onLive('stock_updated', 'stockissues');
+  load();
+};
 
 // ---------------------------------------------------------------- login + boot
 function renderLogin(err) {
