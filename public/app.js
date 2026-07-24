@@ -202,17 +202,34 @@ const canEdit = (m) => can('admin') || (ME && ME.permissions ? rankL(ME.permissi
 const qs = (s, r = document) => r.querySelector(s);
 const qsa = (s, r = document) => [...r.querySelectorAll(s)];
 
-// Live-refresh helper: subscribe ONCE per (event,route) so re-visiting a view never
-// stacks listeners; re-render the current view only when its route is active.
-const _liveWired = {};
-function onLive(event, routeKey) {
-  if (!window.LiveERP || _liveWired[event + ':' + routeKey]) return;
-  _liveWired[event + ':' + routeKey] = true;
-  LiveERP.on(event, () => {
-    const cur = location.hash.replace('#/', '').split('?')[0].split('/')[0] || 'dashboard';
-    if (cur === routeKey) render();
+// ---- Real-time: ONE global subscriber auto-refreshes the active view when the data
+// it shows changes. audit.record broadcasts a generic 'data_changed' {entity,action,...}
+// for every mutation, so no view needs to wire its own listeners.
+const LIVE_ENTITY_ROUTES = {
+  store_item: ['generalstock', 'stores', 'stockissues'], issue: ['stockissues', 'stores'],
+  mrn: ['stores', 'matreq'], grn: ['stores'], mtn: ['stores'], stock_count: ['oil'],
+  product: ['oil'], product_price: ['oil'], stock_ledger: ['oil', 'stockissues'],
+  filter_stock: ['filterstock'], filter_price: ['filters'], filter_xref: ['filters'], service_job: ['filters'],
+  job_card: ['jobs', 'jobrequests'], job_request: ['jobrequests', 'jobs'], job_daily_work: ['dailywork', 'jobs'],
+  battery: ['batteries'], asset: ['assets'],
+  mechanic: ['mechanics', 'labour'], labour_rate: ['labour', 'mechanics'], mechanic_alias: ['mechanics'],
+};
+const LIVE_AGG_ROUTES = ['dashboard', 'attention']; // aggregate views refresh on ANY change
+let _liveWired = false;
+function wireLiveUpdates() {
+  if (_liveWired || !window.LiveERP) return;
+  _liveWired = true;
+  let deb;
+  const refresh = () => { clearTimeout(deb); deb = setTimeout(() => { if (ME) render(); }, 300); };
+  const curRoute = () => location.hash.replace('#/', '').split('?')[0].split('/')[0] || 'dashboard';
+  LiveERP.on('data_changed', (p) => {
+    const cur = curRoute();
+    if (LIVE_AGG_ROUTES.includes(cur) || ((p && LIVE_ENTITY_ROUTES[p.entity]) || []).includes(cur)) refresh();
   });
+  LiveERP.on('connect', () => { if (ME) render(); }); // reconnect catch-up — never leave a stale view
 }
+// live-client.js self-loads the socket client asynchronously; wire up as soon as it exists.
+(function tryWireLive() { if (window.LiveERP) return void wireLiveUpdates(); setTimeout(tryWireLive, 800); })();
 
 const STATUS_CLASS = {
   REQUESTED: '', APPROVED_TRANSPORT: 'blue', APPROVED_OPERATIONS: 'blue',
@@ -390,6 +407,7 @@ function renderShell() {
       <button class="hamburger" id="ham">☰</button>
       <div class="brand">Workshop<span>One</span></div>
       <div class="spacer"></div>
+      <span class="live-dot" title="Live updates — green when connected">●</span>
       <div class="who">${esc(ME.fullName || ME.username)} · ${ME.roles.join(', ')}</div>
       <button class="sm" id="mysig">Signature</button>
       <button class="sm" id="chpw">Password</button>
@@ -552,7 +570,6 @@ async function dashMain(c) {
   S.push(`<div class="card section"><h3 style="margin-top:0">Recent Activity</h3><div id="dc-feed" class="muted">Loading…</div></div>`);
   c.innerHTML = S.join('\n');
   dashRenderOverview();
-  onLive('dashboard_refresh', 'dashboard');
 }
 
 // Charts + activity feed for the dashboard (additive; isolated so a failure never
@@ -2687,7 +2704,6 @@ routes.generalstock = async (c) => {
   qs('#gs-cat').onchange = load;
   qs('#gs-low').onclick = () => { lowOnly = !lowOnly; qs('#gs-low').classList.toggle('primary', lowOnly); load(); };
   if (edit && qs('#gs-add')) qs('#gs-add').onclick = gsAdd;
-  onLive('stock_updated', 'generalstock');
   load();
 };
 
@@ -2800,7 +2816,6 @@ routes.filterstock = async (c) => {
   qs('#fs-q').oninput = () => { clearTimeout(deb); deb = setTimeout(load, 250); };
   qs('#fs-low').onclick = () => { lowOnly = !lowOnly; qs('#fs-low').classList.toggle('primary', lowOnly); load(); };
   if (edit && qs('#fs-add')) qs('#fs-add').onclick = fsAdd;
-  onLive('filter_updated', 'filterstock');
   load();
 };
 
@@ -2886,7 +2901,6 @@ routes.stockissues = async (c) => {
   qs('#si-q').oninput = () => { clearTimeout(deb); deb = setTimeout(load, 260); };
   ['si-from', 'si-to', 'si-cat'].forEach((id) => { qs('#' + id).onchange = load; });
   if (edit && qs('#si-new')) qs('#si-new').onclick = newIssue;
-  onLive('stock_updated', 'stockissues');
   load();
 };
 

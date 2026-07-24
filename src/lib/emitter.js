@@ -20,6 +20,10 @@ bus.setMaxListeners(50);
 module.exports = {
   /** Fire an event with an optional payload. */
   emit(event, data) { return bus.emit(event, data); },
+  /** Standardised change notification for the real-time layer. Emits a single generic
+   *  'data_changed' event carrying { entity, action, ...extra } so the client can
+   *  auto-refresh any view showing that entity. Call after the DB write commits. */
+  notify(entity, action, extra) { return bus.emit('data_changed', Object.assign({ entity, action }, extra || {})); },
   /** Subscribe to an event. */
   on(event, cb) { bus.on(event, cb); return () => bus.off(event, cb); },
   /** Unsubscribe. */

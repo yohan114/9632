@@ -92,7 +92,7 @@ const httpServer = http.createServer(app);
 const io = new Server(httpServer, { cors: { origin: '*' } });
 app.set('io', io); // available to routes via req.app.get('io') if ever needed directly
 
-const LIVE_EVENTS = ['stock_updated', 'oil_updated', 'filter_updated', 'job_updated', 'request_updated', 'dashboard_refresh'];
+const LIVE_EVENTS = ['stock_updated', 'oil_updated', 'filter_updated', 'job_updated', 'request_updated', 'dashboard_refresh', 'data_changed'];
 for (const event of LIVE_EVENTS) {
   emitter.on(event, (data) => io.emit(event, data));
 }
