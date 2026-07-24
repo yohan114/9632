@@ -2864,7 +2864,7 @@ routes.stockissues = async (c) => {
   const newIssue = () => {
     const today = new Date().toISOString().slice(0, 10);
     modal('New Stock Issue', `
-      ${assetPickerHtml('Vehicle / machinery (optional)')}
+      ${targetPickerHtml('si-tgt', { label: 'Issue to — job card (cost lands on the job) or general workshop', generalLabel: 'General workshop (no vehicle)' })}
       <div style="position:relative"><label>Item</label>
         <input type="text" id="si-item" autocomplete="off" placeholder="Search store items…">
         <input type="hidden" name="store_item_id"><input type="hidden" name="description">
@@ -2874,7 +2874,7 @@ routes.stockissues = async (c) => {
       <div class="row">${field('Date', 'issue_date', { type: 'date', value: today })}${field('Category', 'category')}</div>
       ${field('Issued By', 'issued_by', { value: (ME.fullName || ME.username) })}
       <div style="margin-top:12px;text-align:right"><button class="primary" id="si-save">Record Issue</button></div>`, (body, close) => {
-      wireAssetPicker(body);
+      const getTarget = wireTargetPicker(body, 'si-tgt');
       const input = qs('#si-item', body), menu = qs('#si-item-menu', body);
       const hId = qs('input[name=store_item_id]', body), hDesc = qs('input[name=description]', body);
       let deb2;
@@ -2889,10 +2889,12 @@ routes.stockissues = async (c) => {
       input.onblur = () => setTimeout(() => { menu.style.display = 'none'; }, 150);
       qs('#si-save', body).onclick = async () => {
         const d = formData(body);
+        const t = getTarget();
+        if (t.type === 'vehicle' && !t.job_id) return toast('Pick a job card for the selected vehicle', 'err');
         const description = (d.description || input.value).trim();
         if (!description) return toast('Pick or type an item', 'err');
         if (!(Number(d.qty) > 0)) return toast('Enter a quantity greater than 0', 'err');
-        try { await api('/stores/issues', { method: 'POST', body: { asset_id: d.asset_id || undefined, asset: d.asset || undefined, description, store_item_id: d.store_item_id || undefined, qty: d.qty, unit_price: d.unit_price, issue_date: d.issue_date, category: d.category, issued_by: d.issued_by } }); toast('Issue recorded'); close(); load(); } catch (e) { toast(e.message, 'err'); }
+        try { await api('/stores/issues', { method: 'POST', body: { job_id: t.job_id || undefined, description, store_item_id: d.store_item_id || undefined, qty: d.qty, unit_price: d.unit_price, issue_date: d.issue_date, category: d.category, issued_by: d.issued_by } }); toast('Issue recorded'); close(); load(); } catch (e) { toast(e.message, 'err'); }
       };
     });
   };

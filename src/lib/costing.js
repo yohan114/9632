@@ -96,6 +96,9 @@ function computeJobCost(jobId) {
   // OR source_type='external'; material captures everything else. (Previously grn/issue
   // only, which silently dropped priced source_type 'external'/'general' lines from the total.)
   let material = 0;
+  // Includes stock issues booked to this job: POST /issues materialises each as a
+  // source_type='issue' job_part (mirroring migrate/09), so they are already summed here
+  // exactly once. (Counting the issues table again would double them.)
   for (const p of all(
     `SELECT * FROM job_parts WHERE job_id = ? AND is_external_repair = 0 AND source_type <> 'external'`,
     jobId

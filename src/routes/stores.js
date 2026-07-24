@@ -6,6 +6,7 @@ const { requireRole, hasRole } = require('../lib/auth');
 const { asyncHandler, require_, toInt, toNum } = require('../lib/http');
 const audit = require('../lib/audit');
 const aliases = require('../lib/aliases');
+const costing = require('../lib/costing');
 const { sendXlsx } = require('../lib/export');
 const emitter = require('../lib/emitter');
 
@@ -29,6 +30,16 @@ function resolveAssetId(body, prefix) {
     return { assetId: r.assetId, unresolved: r.resolved ? null : { aliasId: r.aliasId, raw: body[textKey] } };
   }
   return { assetId: null, unresolved: null };
+}
+
+// The shared container job for stores issues that aren't tied to a specific vehicle job
+// (general consumables). Same 'general-workshop' card daily-work uses — every issue keeps
+// a cost object. Created once, reused thereafter.
+function generalWorkshopJobId() {
+  const j = get("SELECT id FROM job_cards WHERE legacy_ref = 'general-workshop' LIMIT 1");
+  if (j) return j.id;
+  return run(`INSERT INTO job_cards (job_no, type, description, status, requested_by, requested_at, is_historical, synthesized_no, legacy_ref)
+              VALUES ('GENERAL-WS', 'repair', 'General workshop stores issues (not vehicle-specific)', 'REQUESTED', 'system', date('now'), 0, 1, 'general-workshop')`).lastInsertRowid;
 }
 
 router.get('/numbers', asyncHandler((_req, res) => res.json({ next_mrn: nextMrnNo(), next_mtn: nextMtnNo() })));
@@ -704,7 +715,15 @@ router.get('/issue-categories', asyncHandler((_req, res) =>
 router.post('/issues', requireRole('storekeeper'), asyncHandler((req, res) => {
   const b = req.body;
   require_(b, ['description']);
-  const { assetId, unresolved } = resolveAssetId(b);
+  // Cost object: every issue lands on a JOB card or a SERVICE record, and the vehicle is
+  // derived from it (not entered separately). If neither is given, it falls to the
+  // General-Workshop container job so nothing is ever un-costed.
+  let jobId = toInt(b.job_id) || null;
+  const serviceId = toInt(b.service_id) || null;
+  let assetId = null;
+  if (jobId) { const j = get('SELECT asset_id FROM job_cards WHERE id = ?', jobId); if (!j) return res.status(400).json({ error: 'Unknown job card' }); assetId = j.asset_id; }
+  else if (serviceId) { const s = get('SELECT asset_id FROM service_jobs WHERE id = ?', serviceId); if (!s) return res.status(400).json({ error: 'Unknown service record' }); assetId = s.asset_id; }
+  else { jobId = generalWorkshopJobId(); }
   const qty = toNum(b.qty, 1);
   const unitPrice = b.unit_price === undefined || b.unit_price === '' ? null : toNum(b.unit_price);
   const issueDate = b.issue_date || new Date().toISOString().slice(0, 10);
@@ -717,11 +736,17 @@ router.post('/issues', requireRole('storekeeper'), asyncHandler((req, res) => {
 
   const issueId = tx(() => {
     const info = run(
-      `INSERT INTO issues (asset_id, job_id, store_item_id, description, qty, unit_price, issue_date, issued_by, category)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      assetId || null, toInt(b.job_id), toInt(b.store_item_id), b.description, qty,
+      `INSERT INTO issues (asset_id, job_id, service_id, store_item_id, description, qty, unit_price, issue_date, issued_by, category)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      assetId || null, jobId, serviceId, toInt(b.store_item_id), b.description, qty,
       unitPrice, issueDate, b.issued_by || null, b.category || null
     );
+    // Materialise the issue as a source_type='issue' job_part (mirrors migrate/09) so it
+    // counts EXACTLY ONCE in the job's cost via computeJobCost's existing parts sum.
+    if (jobId) run(
+      `INSERT INTO job_parts (job_id, source_type, source_id, description, qty, unit_price, is_external_repair)
+       VALUES (?, 'issue', ?, ?, ?, ?, 0)`,
+      jobId, info.lastInsertRowid, b.description, qty, unitPrice);
     // Roll the line cost into the vehicle's month bucket (parts component). Only for
     // asset-linked issues; general (assetless) issues are counted in KPIs but have no
     // vehicle to attribute to. Incremental upsert keeps total = Σ components, matching
@@ -739,12 +764,15 @@ router.post('/issues', requireRole('storekeeper'), asyncHandler((req, res) => {
     }
     return info.lastInsertRowid;
   });
-  audit.record({ userId: req.user.id, entity: 'issue', entityId: issueId, action: 'create', after: { asset_id: assetId || null, total_cost: lineCost } });
+  // Refresh the job's stored totals so job-based cost reports reflect the new issue
+  // (computeJobCost is live, but reports read the stored job_cards/job_costs columns).
+  if (jobId) { try { costing.refreshJobTotals(jobId); } catch (e) { /* non-fatal */ } }
+  audit.record({ userId: req.user.id, entity: 'issue', entityId: issueId, action: 'create', after: { asset_id: assetId || null, job_id: jobId, service_id: serviceId, total_cost: lineCost } });
   // KPIs count every issue, so refresh regardless of asset; the vehicle rollup only
   // moved for asset-linked ones.
   emitter.emit('stock_updated', { issue_id: issueId, asset_id: assetId || null, action: 'issue', cost: lineCost });
   emitter.emit('dashboard_refresh', { reason: 'issue', asset_id: assetId || null, year: yr, month: mo });
-  res.status(201).json({ issue: get('SELECT * FROM issues WHERE id = ?', issueId), unresolved });
+  res.status(201).json({ issue: get('SELECT * FROM issues WHERE id = ?', issueId) });
 }));
 
 // ---- MTN ------------------------------------------------------------------

@@ -59,6 +59,9 @@ function runStep() {
   // when a row is edited. (SQLite ALTER TABLE supports adding VIRTUAL — not STORED —
   // generated columns; this file already relies on that for store_items.total_value.)
   addColumn('issues', 'total_cost', 'REAL GENERATED ALWAYS AS (qty * COALESCE(unit_price, 0)) VIRTUAL');
+  // A stock issue must land on a cost object — a job card (job_id, already present) or a
+  // service record (service_id). The vehicle is derived from whichever it links to.
+  addColumn('issues', 'service_id', 'INTEGER REFERENCES service_jobs(id)');
 
   // -- mrn: approval / workflow columns ------------------------------------
   addColumn('mrn', 'approval_status', "TEXT NOT NULL DEFAULT 'requested'");
