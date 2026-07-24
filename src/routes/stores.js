@@ -7,6 +7,7 @@ const { asyncHandler, require_, toInt, toNum } = require('../lib/http');
 const audit = require('../lib/audit');
 const aliases = require('../lib/aliases');
 const { sendXlsx } = require('../lib/export');
+const emitter = require('../lib/emitter');
 
 const router = express.Router();
 
@@ -187,6 +188,12 @@ router.get('/mrn', asyncHandler((req, res) => {
   const params = [];
   if (req.query.asset_id) { clauses.push('m.asset_id = ?'); params.push(toInt(req.query.asset_id)); }
   if (req.query.status) { clauses.push('m.status = ?'); params.push(req.query.status); }
+  // Approval-workflow tabs. 'pending' = live MRNs awaiting certification (excludes
+  // imported history, whose approval_status is 'requested' but has no requester).
+  if (req.query.approval) {
+    if (req.query.approval === 'pending') clauses.push("m.approval_status = 'requested' AND m.requested_by IS NOT NULL AND TRIM(m.requested_by) <> ''");
+    else { clauses.push('m.approval_status = ?'); params.push(req.query.approval); }
+  }
   // Free-text search: MRN number, vehicle, purpose, or any item description on the MRN.
   if (req.query.q && String(req.query.q).trim()) {
     const like = '%' + String(req.query.q).trim() + '%';
@@ -247,11 +254,23 @@ router.post('/mrn', requireRole('storekeeper'), asyncHandler((req, res) => {
     return mrnId;
   });
   audit.record({ userId: req.user.id, entity: 'mrn', entityId: result, action: 'create', after: { mrn_no: mrnNo } });
+  emitter.emit('request_updated', { mrn_id: result, mrn_no: mrnNo, action: 'create', approval_status: 'requested' });
   res.status(201).json({
     mrn: get('SELECT * FROM mrn WHERE id = ?', result),
     lines: all('SELECT * FROM mrn_lines WHERE mrn_id = ?', result),
     unresolved,
   });
+}));
+
+// Pending counts for notification badges. Registered BEFORE '/mrn/:id' so the
+// literal path isn't captured by the :id param. 'pending' counts only LIVE MRNs
+// awaiting the Workshop Engineer's certification (approval_status 'requested'
+// with a real requester — imported history is excluded); 'certified' counts
+// those awaiting the Operational Manager's approval.
+router.get('/mrn/pending-count', asyncHandler((_req, res) => {
+  const pending = get(`SELECT COUNT(*) c FROM mrn WHERE approval_status = 'requested' AND requested_by IS NOT NULL AND TRIM(requested_by) <> ''`).c;
+  const certified = get(`SELECT COUNT(*) c FROM mrn WHERE approval_status = 'certified'`).c;
+  res.json({ pending, certified, total_open: pending + certified });
 }));
 
 router.get('/mrn/:id', asyncHandler((req, res) => {
@@ -281,6 +300,7 @@ router.post('/mrn/:id/certify', requireRole('workshop', 'manager'), asyncHandler
     run(`INSERT INTO mrn_approvals (mrn_id, stage, role, approver_id, signed_name, signature, decision, reason) VALUES (?, 'certify', 'workshop', ?, ?, ?, 'approved', ?)`, id, req.user.id, s.name, sig, req.body.reason || null);
   });
   audit.record({ userId: req.user.id, entity: 'mrn', entityId: id, action: 'certify', after: { certified_by: s.name }, reason: req.body.reason });
+  emitter.emit('request_updated', { mrn_id: id, action: 'certify', approval_status: 'certified' });
   res.json(get('SELECT * FROM mrn WHERE id = ?', id));
 }));
 
@@ -295,6 +315,7 @@ router.post('/mrn/:id/approve', requireRole('operational_manager', 'manager'), a
     run(`INSERT INTO mrn_approvals (mrn_id, stage, role, approver_id, signed_name, signature, decision, reason) VALUES (?, 'approve', 'operational_manager', ?, ?, ?, 'approved', ?)`, id, req.user.id, s.name, sig, req.body.reason || null);
   });
   audit.record({ userId: req.user.id, entity: 'mrn', entityId: id, action: 'approve', after: { approved_by: s.name }, reason: req.body.reason });
+  emitter.emit('request_updated', { mrn_id: id, action: 'approve', approval_status: 'approved' });
   res.json(get('SELECT * FROM mrn WHERE id = ?', id));
 }));
 
@@ -312,6 +333,7 @@ router.post('/mrn/:id/reject', requireRole('workshop', 'operational_manager', 'm
       id, stage, asApprover ? 'operational_manager' : 'workshop', req.user.id, s.name, req.body.signature || s.sig || null, req.body.reason);
   });
   audit.record({ userId: req.user.id, entity: 'mrn', entityId: id, action: 'reject', after: { by: s.name }, reason: req.body.reason });
+  emitter.emit('request_updated', { mrn_id: id, action: 'reject', approval_status: 'rejected' });
   res.json(get('SELECT * FROM mrn WHERE id = ?', id));
 }));
 
@@ -338,13 +360,20 @@ router.get('/mrn/:id/print.html', asyncHandler((req, res) => {
     <td></td></tr>`;
   const rows = [];
   for (let i = 0; i < Math.max(MIN_ROWS, lines.length); i++) rows.push(rowHtml(lines[i], i));
-  const sigBlock = (title, name, dateVal, designation, sigImg, isLast) => `
+  // Render a signature image ONLY when it is a genuine base64 image data-URL. esc() here
+  // does not escape double-quotes, so interpolating an arbitrary stored signature would
+  // allow an attribute-breakout XSS (e.g. `x" onerror=...`); the allowlist forecloses it.
+  const sigSrc = (v) => (/^data:image\/(png|jpe?g|gif|webp);base64,[A-Za-z0-9+/=]+$/.test(String(v || '')) ? String(v) : '');
+  const sigBlock = (title, name, dateVal, designation, sigImg, isLast) => {
+    const safe = sigSrc(sigImg);
+    return `
     <div class="${isLast ? '' : 'l'}"><b>${title}</b>
-      ${sigImg ? `<div style="height:36px;margin:2px 0"><img src="${sigImg}" style="max-height:36px;max-width:160px"></div>`
+      ${safe ? `<div style="height:36px;margin:2px 0"><img src="${safe}" style="max-height:36px;max-width:160px"></div>`
         : '<div class="sig-line" style="margin-top:22px">Signature</div>'}
-      <div class="rowline"><span class="k">Name:</span> ${name ? esc(name) + (sigImg ? '' : ' <span style="color:#0a7a0a;font-size:9px">&#10003; e-signed</span>') : ''}</div>
+      <div class="rowline"><span class="k">Name:</span> ${name ? esc(name) + (safe ? '' : ' <span style="color:#0a7a0a;font-size:9px">&#10003; e-signed</span>') : ''}</div>
       <div class="rowline"><span class="k">Designation:</span> ${esc(designation)}</div>
       <div class="rowline"><span class="k">Date:</span> ${dateVal ? esc(d(dateVal)) : ''}</div></div>`;
+  };
   const html = `<!doctype html><html><head><meta charset="utf-8"><title>MRN ${esc(mrn.mrn_no)}</title>
 <style>
   @page { size: A4; margin: 12mm; }
@@ -616,33 +645,106 @@ router.patch('/grn/:id', requireRole('storekeeper'), asyncHandler((req, res) => 
 }));
 
 // ---- Issues ---------------------------------------------------------------
+// KPI headline numbers for the Stock Issues page. Cost is qty × unit_price summed
+// (computed inline so it works whether or not the generated total_cost column exists).
+router.get('/issues/kpis', asyncHandler((_req, res) => {
+  const today = new Date().toISOString().slice(0, 10);
+  const ym = today.slice(0, 7); // 'YYYY-MM'
+  const d = get(`SELECT COUNT(*) c, COALESCE(SUM(qty * COALESCE(unit_price, 0)), 0) cost FROM issues WHERE issue_date = ?`, today);
+  const m = get(`SELECT COUNT(*) c, COALESCE(SUM(qty * COALESCE(unit_price, 0)), 0) cost FROM issues WHERE substr(issue_date, 1, 7) = ?`, ym);
+  res.json({ issues_today: d.c, cost_today: d.cost, issues_month: m.c, cost_month: m.cost });
+}));
+
+// Per-vehicle cost history for the charts: monthly totals from the rollup table
+// (oldest→newest) plus a live category breakdown from the issues themselves (the
+// rollup keeps no per-category split).
+router.get('/vehicle-costs', asyncHandler((req, res) => {
+  const assetId = toInt(req.query.asset_id);
+  if (!assetId) return res.status(400).json({ error: 'asset_id is required' });
+  const months = Math.min(Math.max(toInt(req.query.months, 6) || 6, 1), 24);
+  const monthly = all(
+    `SELECT year, month, parts_cost, fuel_cost, oil_cost, filter_cost, battery_cost, labour_cost, total_cost
+       FROM vehicle_monthly_costs WHERE asset_id = ?
+       ORDER BY year DESC, month DESC LIMIT ?`, assetId, months).reverse();
+  const categories = all(
+    `SELECT COALESCE(NULLIF(TRIM(category), ''), 'Uncategorised') AS category,
+            ROUND(SUM(qty * COALESCE(unit_price, 0)), 2) AS total, COUNT(*) AS n
+       FROM issues WHERE asset_id = ?
+       GROUP BY 1 HAVING total > 0 ORDER BY total DESC`, assetId);
+  const asset = get(`SELECT id, code, registration, ec_code FROM assets WHERE id = ?`, assetId);
+  res.json({ asset, monthly, categories });
+}));
+
 router.get('/issues', asyncHandler((req, res) => {
   const clauses = [];
   const params = [];
   if (req.query.asset_id) { clauses.push('i.asset_id = ?'); params.push(toInt(req.query.asset_id)); }
   if (req.query.job_id) { clauses.push('i.job_id = ?'); params.push(toInt(req.query.job_id)); }
+  if (req.query.category) { clauses.push('i.category = ?'); params.push(req.query.category); }
+  if (req.query.date_from) { clauses.push('i.issue_date >= ?'); params.push(req.query.date_from); }
+  if (req.query.date_to) { clauses.push('i.issue_date <= ?'); params.push(req.query.date_to); }
   if (req.query.q && String(req.query.q).trim()) {
     const like = '%' + String(req.query.q).trim() + '%';
-    clauses.push('(a.code LIKE ? OR i.description LIKE ? OR i.issued_by LIKE ? OR i.category LIKE ?)');
-    params.push(like, like, like, like);
+    clauses.push('(a.code LIKE ? OR a.registration LIKE ? OR a.ec_code LIKE ? OR i.description LIKE ? OR i.issued_by LIKE ? OR i.category LIKE ?)');
+    params.push(like, like, like, like, like, like);
   }
   const where = clauses.length ? 'WHERE ' + clauses.join(' AND ') : '';
-  res.json(all(`SELECT i.*, a.code AS asset_code FROM issues i LEFT JOIN assets a ON a.id = i.asset_id ${where} ORDER BY i.id DESC LIMIT ${toInt(req.query.limit, 500)}`, ...params));
+  res.json(all(
+    `SELECT i.*, a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec, j.job_no
+       FROM issues i
+       LEFT JOIN assets a ON a.id = i.asset_id
+       LEFT JOIN job_cards j ON j.id = i.job_id
+       ${where} ORDER BY i.issue_date DESC, i.id DESC LIMIT ${toInt(req.query.limit, 500)}`, ...params));
 }));
+
+// Distinct issue categories (for the filter dropdown).
+router.get('/issue-categories', asyncHandler((_req, res) =>
+  res.json(all(`SELECT DISTINCT category FROM issues WHERE category IS NOT NULL AND TRIM(category) <> '' ORDER BY category`).map((r) => r.category))));
 
 router.post('/issues', requireRole('storekeeper'), asyncHandler((req, res) => {
   const b = req.body;
   require_(b, ['description']);
   const { assetId, unresolved } = resolveAssetId(b);
-  const info = run(
-    `INSERT INTO issues (asset_id, job_id, store_item_id, description, qty, unit_price, issue_date, issued_by, category)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    assetId || null, toInt(b.job_id), toInt(b.store_item_id), b.description, toNum(b.qty, 1),
-    b.unit_price === undefined || b.unit_price === '' ? null : toNum(b.unit_price),
-    b.issue_date || new Date().toISOString().slice(0, 10), b.issued_by || null, b.category || null
-  );
-  audit.record({ userId: req.user.id, entity: 'issue', entityId: info.lastInsertRowid, action: 'create' });
-  res.status(201).json({ issue: get('SELECT * FROM issues WHERE id = ?', info.lastInsertRowid), unresolved });
+  const qty = toNum(b.qty, 1);
+  const unitPrice = b.unit_price === undefined || b.unit_price === '' ? null : toNum(b.unit_price);
+  const issueDate = b.issue_date || new Date().toISOString().slice(0, 10);
+  // Require a canonical date so the monthly rollup can't be mis-bucketed (e.g. a
+  // DD-MM-YYYY value would land in a garbage year). The UI always sends YYYY-MM-DD.
+  if (!/^\d{4}-\d{2}-\d{2}/.test(issueDate)) return res.status(400).json({ error: 'issue_date must be YYYY-MM-DD' });
+  const lineCost = qty * (unitPrice || 0);
+  const [yr, mo] = issueDate.split('-').map((n) => parseInt(n, 10)); // rollup period
+  const validPeriod = yr >= 1900 && mo >= 1 && mo <= 12;
+
+  const issueId = tx(() => {
+    const info = run(
+      `INSERT INTO issues (asset_id, job_id, store_item_id, description, qty, unit_price, issue_date, issued_by, category)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      assetId || null, toInt(b.job_id), toInt(b.store_item_id), b.description, qty,
+      unitPrice, issueDate, b.issued_by || null, b.category || null
+    );
+    // Roll the line cost into the vehicle's month bucket (parts component). Only for
+    // asset-linked issues; general (assetless) issues are counted in KPIs but have no
+    // vehicle to attribute to. Incremental upsert keeps total = Σ components, matching
+    // the invariant the 015 backfill establishes.
+    if (assetId && validPeriod) {
+      run(
+        `INSERT INTO vehicle_monthly_costs (asset_id, year, month, parts_cost, total_cost)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(asset_id, year, month) DO UPDATE SET
+           parts_cost = parts_cost + excluded.parts_cost,
+           total_cost = total_cost + excluded.parts_cost,
+           updated_at = datetime('now')`,
+        assetId, yr, mo, lineCost, lineCost
+      );
+    }
+    return info.lastInsertRowid;
+  });
+  audit.record({ userId: req.user.id, entity: 'issue', entityId: issueId, action: 'create', after: { asset_id: assetId || null, total_cost: lineCost } });
+  // KPIs count every issue, so refresh regardless of asset; the vehicle rollup only
+  // moved for asset-linked ones.
+  emitter.emit('stock_updated', { issue_id: issueId, asset_id: assetId || null, action: 'issue', cost: lineCost });
+  emitter.emit('dashboard_refresh', { reason: 'issue', asset_id: assetId || null, year: yr, month: mo });
+  res.status(201).json({ issue: get('SELECT * FROM issues WHERE id = ?', issueId), unresolved });
 }));
 
 // ---- MTN ------------------------------------------------------------------

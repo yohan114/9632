@@ -2,6 +2,7 @@
 
 const express = require('express');
 const { get, all } = require('../db');
+const { requireAuth } = require('../lib/auth');
 const { asyncHandler, toInt } = require('../lib/http');
 const config = require('../config');
 const costing = require('../lib/costing');
@@ -519,6 +520,110 @@ ${t.parts.length ? `<h3>Top parts by value</h3><table><thead><tr><th>Part</th><t
 </body></html>`;
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
   res.send(html);
+}));
+
+// ===========================================================================
+// Rollup / valuation / analysis reports (read from vehicle_monthly_costs, the stock
+// tables, mrn and issues). These four carry requireAuth explicitly — the rest of this
+// router is historically ungated, but cost/valuation data should not be anonymous.
+// ===========================================================================
+
+// 1) Complete per-vehicle cost from the monthly rollup. month optional (full year).
+router.get('/vehicle-cost-complete', requireAuth, asyncHandler((req, res) => {
+  const assetId = toInt(req.query.asset_id);
+  const year = toInt(req.query.year);
+  if (!assetId || !year) return res.status(400).json({ error: 'asset_id and year are required' });
+  const month = req.query.month ? toInt(req.query.month) : null;
+  const asset = get('SELECT id, code, registration, ec_code FROM assets WHERE id = ?', assetId);
+  if (!asset) return res.status(404).json({ error: 'Asset not found' });
+
+  const where = 'asset_id = ? AND year = ?' + (month ? ' AND month = ?' : '');
+  const params = month ? [assetId, year, month] : [assetId, year];
+  const SUMS = ['fuel_cost', 'oil_cost', 'filter_cost', 'battery_cost', 'parts_cost', 'labour_cost', 'total_cost']
+    .map((c) => `ROUND(COALESCE(SUM(${c}),0),2) AS ${c}`).join(', ');
+  const cost_summary = get(`SELECT ${SUMS} FROM vehicle_monthly_costs WHERE ${where}`, ...params);
+  const monthly_breakdown = all(
+    `SELECT month, ROUND(fuel_cost,2) fuel_cost, ROUND(oil_cost,2) oil_cost, ROUND(filter_cost,2) filter_cost,
+            ROUND(battery_cost,2) battery_cost, ROUND(parts_cost,2) parts_cost, ROUND(labour_cost,2) labour_cost,
+            ROUND(total_cost,2) total_cost
+       FROM vehicle_monthly_costs WHERE ${where} ORDER BY month`, ...params);
+  res.json({ asset, year, month, cost_summary, monthly_breakdown });
+}));
+
+// 2) Inventory valuation across general stock, oil and filters.
+router.get('/stock-valuation', requireAuth, asyncHandler((_req, res) => {
+  const general = get(`SELECT COUNT(*) items, ROUND(COALESCE(SUM(balance * COALESCE(unit_cost,0)),0),2) value
+     FROM store_items WHERE is_general = 1`);
+  const oil = get(`SELECT COUNT(*) items, ROUND(COALESCE(SUM(COALESCE(stock_qty,0) * COALESCE(unit_price,0)),0),2) value
+     FROM products WHERE active = 1`);
+  const filter = get(`SELECT COUNT(*) items, ROUND(COALESCE(SUM(qty_in_stock * COALESCE(unit_cost,0)),0),2) value
+     FROM filter_stock`);
+  const grand_total = Math.round((general.value + oil.value + filter.value) * 100) / 100;
+  const by_category = all(`
+    SELECT category, kind, ROUND(SUM(value),2) value, SUM(items) items FROM (
+      SELECT COALESCE(NULLIF(TRIM(category),''),'Uncategorised') category, 'general' kind, balance * COALESCE(unit_cost,0) value, 1 items FROM store_items WHERE is_general = 1
+      UNION ALL
+      SELECT COALESCE(NULLIF(TRIM(category),''),'Oil') category, 'oil' kind, COALESCE(stock_qty,0) * COALESCE(unit_price,0) value, 1 items FROM products WHERE active = 1
+      UNION ALL
+      SELECT COALESCE(NULLIF(TRIM(brand),''),'Filter') category, 'filter' kind, qty_in_stock * COALESCE(unit_cost,0) value, 1 items FROM filter_stock
+    ) GROUP BY category, kind HAVING SUM(value) > 0 ORDER BY value DESC`);
+  res.json({
+    general_parts_value: general.value, oil_value: oil.value, filter_value: filter.value, grand_total,
+    counts: { general: general.items, oil: oil.items, filter: filter.items },
+    by_category,
+  });
+}));
+
+// 3) MRN analysis — status mix, avg time to certify, top requested items.
+router.get('/mrn-analysis', requireAuth, asyncHandler((req, res) => {
+  const year = req.query.year ? toInt(req.query.year) : null;
+  const month = req.query.month ? toInt(req.query.month) : null;
+  const mc = [];
+  const mp = [];
+  if (year) { mc.push("CAST(strftime('%Y', m.req_date) AS INTEGER) = ?"); mp.push(year); }
+  if (month) { mc.push("CAST(strftime('%m', m.req_date) AS INTEGER) = ?"); mp.push(month); }
+  const andClause = mc.length ? ' AND ' + mc.join(' AND ') : '';
+
+  const by_status = all(
+    `SELECT m.approval_status, COUNT(*) count FROM mrn m ${mc.length ? 'WHERE ' + mc.join(' AND ') : ''}
+      GROUP BY m.approval_status ORDER BY count DESC`, ...mp);
+  const timing = get(
+    `SELECT COUNT(*) n, ROUND(AVG(julianday(m.certified_at) - julianday(m.req_date)),2) avg_days_to_certify
+       FROM mrn m WHERE m.certified_at IS NOT NULL AND m.req_date IS NOT NULL${andClause}`, ...mp);
+  const top_requested_items = all(
+    `SELECT TRIM(ml.description) description, COUNT(*) times, ROUND(SUM(ml.qty),2) total_qty
+       FROM mrn_lines ml JOIN mrn m ON m.id = ml.mrn_id
+      WHERE ml.description IS NOT NULL AND TRIM(ml.description) <> ''${andClause}
+      GROUP BY LOWER(TRIM(ml.description)) ORDER BY times DESC LIMIT 10`, ...mp);
+  res.json({ year, month, by_status, timing, top_requested_items });
+}));
+
+// 4) Issues for one vehicle — list, category breakdown, date timeline.
+router.get('/issues-by-vehicle', requireAuth, asyncHandler((req, res) => {
+  const assetId = toInt(req.query.asset_id);
+  if (!assetId) return res.status(400).json({ error: 'asset_id is required' });
+  const asset = get('SELECT id, code, registration, ec_code FROM assets WHERE id = ?', assetId);
+  if (!asset) return res.status(404).json({ error: 'Asset not found' });
+  const clauses = ['i.asset_id = ?'];
+  const params = [assetId];
+  if (req.query.from_date) { clauses.push('i.issue_date >= ?'); params.push(req.query.from_date); }
+  if (req.query.to_date) { clauses.push('i.issue_date <= ?'); params.push(req.query.to_date); }
+  const where = 'WHERE ' + clauses.join(' AND ');
+  const COST = 'i.qty * COALESCE(i.unit_price, 0)';
+
+  const summary = get(`SELECT COUNT(*) count, ROUND(COALESCE(SUM(i.qty),0),2) total_qty, ROUND(COALESCE(SUM(${COST}),0),2) total_cost FROM issues i ${where}`, ...params);
+  const issues = all(
+    `SELECT i.id, i.issue_date, i.description, i.category, i.qty, i.unit_price, ROUND(${COST},2) total_cost, j.job_no
+       FROM issues i LEFT JOIN job_cards j ON j.id = i.job_id ${where}
+      ORDER BY i.issue_date DESC, i.id DESC LIMIT 1000`, ...params);
+  const by_category = all(
+    `SELECT COALESCE(NULLIF(TRIM(i.category),''),'Uncategorised') category, COUNT(*) count,
+            ROUND(SUM(i.qty),2) qty, ROUND(SUM(${COST}),2) total_cost
+       FROM issues i ${where} GROUP BY 1 ORDER BY total_cost DESC`, ...params);
+  const timeline = all(
+    `SELECT i.issue_date date, COUNT(*) count, ROUND(SUM(${COST}),2) total_cost
+       FROM issues i ${where} GROUP BY i.issue_date ORDER BY i.issue_date`, ...params);
+  res.json({ asset, summary, issues, by_category, timeline });
 }));
 
 module.exports = router;

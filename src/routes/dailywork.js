@@ -24,7 +24,9 @@ function jobForEntry(assetId, date) {
   const day = (v) => String(v || '').slice(0, 10);
   const pick = (arr) => arr.filter((j) => day(j.requested_at) <= date).sort((a, b) => day(b.requested_at).localeCompare(day(a.requested_at)))[0]
     || arr.slice().sort((a, b) => day(a.requested_at).localeCompare(day(b.requested_at)))[0];
-  const open = jobs.filter((j) => j.status !== 'CLOSED');
+  // "Open" excludes both CLOSED and REJECTED (the codebase-wide rule) — daily work must
+  // never accrue onto a declined card.
+  const open = jobs.filter((j) => j.status !== 'CLOSED' && j.status !== 'REJECTED');
   if (open.length) return pick(open);
   let best = null, bg = Infinity;
   for (const j of jobs) {

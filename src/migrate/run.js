@@ -273,4 +273,14 @@ if (!only || only === 'filter-research') {
   console.log(`  Added: ${fr.added} | skipped (already present / no match): ${fr.skipped}`);
 }
 
+if (!only || only === 'erp-gaps') {
+  banner('Phase 4 ERP gap-fill — missing columns + inventory tables (idempotent)');
+  const eg = require('./015_phase4_erp_gaps').runStep();
+  console.log(`  Columns added:    ${eg.columns_added.length}${eg.columns_added.length ? '  (' + eg.columns_added.join(', ') + ')' : ''}`);
+  console.log(`  Columns existing: ${eg.columns_existing.length}  (already present, skipped)`);
+  console.log(`  Tables created:   ${eg.tables_created.length}${eg.tables_created.length ? '  (' + eg.tables_created.join(', ') + ')' : ''}`);
+  console.log(`  Tables existing:  ${eg.tables_existing.length}  | indexes ensured: ${eg.indexes}`);
+  if (eg.errors.length) console.log('  ⚠ errors: ' + eg.errors.join(' | '));
+}
+
 console.log('\nDone.');

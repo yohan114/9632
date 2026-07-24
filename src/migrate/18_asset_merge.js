@@ -11,6 +11,7 @@
 
 const { get, all, run, tx, db } = require('../db');
 const aliases = require('../lib/aliases');
+const { repointAssetRefs } = require('../lib/asset_repoint');
 const norm = aliases.normalize;
 
 function assetRefCols() {
@@ -58,9 +59,9 @@ function runStep() {
       const base = canon[0];
       for (const v of members) {
         if (v.id === base.id) continue;
-        for (const { table, col } of refCols) {
-          rep.refs_repointed += run(`UPDATE ${table} SET ${col} = ? WHERE ${col} = ?`, base.id, v.id).changes;
-        }
+        // Repoint every assets-FK (vehicle_monthly_costs is folded, not blindly moved,
+        // to respect its UNIQUE(asset_id,year,month) — see lib/asset_repoint).
+        rep.refs_repointed += repointAssetRefs(refCols, v.id, base.id);
         if (v.code && norm(v.code)) {
           run(
             `INSERT INTO asset_aliases (raw_text, raw_norm, asset_id, resolved, hit_count, source)

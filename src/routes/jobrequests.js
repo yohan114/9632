@@ -200,13 +200,19 @@ router.get('/:id/print.html', asyncHandler((req, res) => {
   const d = (v) => (v ? String(v).slice(0, 10) : '');
   // Vehicle number first, then E&C number (matches the on-screen convention).
   const veh = [jr.asset_reg, (jr.asset_ec && jr.asset_ec !== jr.asset_reg) ? jr.asset_ec : ''].filter(Boolean).join(' · ') || jr.asset_code || '';
-  const sigBlock = (title, name, dateVal, designation, sigImg, isLast) => `
+  // Only render a signature image when it is a genuine base64 image data-URL (prevents an
+  // attribute-breakout XSS from an arbitrary stored signature string).
+  const sigSrc = (v) => (/^data:image\/(png|jpe?g|gif|webp);base64,[A-Za-z0-9+/=]+$/.test(String(v || '')) ? String(v) : '');
+  const sigBlock = (title, name, dateVal, designation, sigImg, isLast) => {
+    const safe = sigSrc(sigImg);
+    return `
     <div class="${isLast ? '' : 'l'}"><b>${title}</b>
-      ${sigImg ? `<div style="height:36px;margin:2px 0"><img src="${sigImg}" style="max-height:36px;max-width:160px"></div>`
+      ${safe ? `<div style="height:36px;margin:2px 0"><img src="${safe}" style="max-height:36px;max-width:160px"></div>`
         : '<div class="sig-line" style="margin-top:22px">Signature</div>'}
-      <div class="rowline"><span class="k">Name:</span> ${name ? esc(name) + (sigImg ? '' : ' <span style="color:#0a7a0a;font-size:9px">&#10003; e-signed</span>') : ''}</div>
+      <div class="rowline"><span class="k">Name:</span> ${name ? esc(name) + (safe ? '' : ' <span style="color:#0a7a0a;font-size:9px">&#10003; e-signed</span>') : ''}</div>
       <div class="rowline"><span class="k">Designation:</span> ${esc(designation)}</div>
       <div class="rowline"><span class="k">Date:</span> ${dateVal ? esc(d(dateVal)) : ''}</div></div>`;
+  };
   const html = `<!doctype html><html><head><meta charset="utf-8"><title>Job Request ${esc(jr.jr_no)}</title>
 <style>
   @page { size: A4; margin: 12mm; }

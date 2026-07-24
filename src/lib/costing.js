@@ -91,10 +91,13 @@ function computeJobCost(jobId) {
     }
   }
 
-  // --- material (job_parts grn/issue, non-external repair) ---
+  // --- material (all non-external job_parts: grn/issue/general) ---
+  // Every job_part is bucketed exactly once: external below captures is_external_repair
+  // OR source_type='external'; material captures everything else. (Previously grn/issue
+  // only, which silently dropped priced source_type 'external'/'general' lines from the total.)
   let material = 0;
   for (const p of all(
-    `SELECT * FROM job_parts WHERE job_id = ? AND source_type IN ('grn','issue') AND is_external_repair = 0`,
+    `SELECT * FROM job_parts WHERE job_id = ? AND is_external_repair = 0 AND source_type <> 'external'`,
     jobId
   )) {
     if (p.unit_price != null) material += (p.qty || 0) * p.unit_price;
@@ -119,7 +122,7 @@ function computeJobCost(jobId) {
   for (const w of all('SELECT * FROM job_daily_work WHERE job_id = ? AND is_external = 1', jobId)) {
     external += w.external_value || 0;
   }
-  for (const p of all('SELECT * FROM job_parts WHERE job_id = ? AND is_external_repair = 1', jobId)) {
+  for (const p of all(`SELECT * FROM job_parts WHERE job_id = ? AND (is_external_repair = 1 OR source_type = 'external')`, jobId)) {
     if (p.unit_price != null) external += (p.qty || 0) * p.unit_price;
   }
 
@@ -141,13 +144,21 @@ function computeJobCost(jobId) {
  *  same total that is stored on the card. */
 function reconciledCost(jobId) {
   const c = computeJobCost(jobId);
-  const job = get('SELECT is_historical, recorded_cost FROM job_cards WHERE id = ?', jobId);
-  const recorded = job ? job.recorded_cost : null;
-  const useRecorded = job && job.is_historical && recorded != null && recorded > 0;
-  const total = useRecorded ? recorded : c.total_cost;
+  const job = get('SELECT is_historical, recorded_cost, total_cost FROM job_cards WHERE id = ?', jobId);
+  const total = historicalTotal(job, c.total_cost);
   c.other_cost = round2(total - c.total_cost);
   c.total_cost = total;
   return c;
+}
+
+// Historical (imported) jobs keep their recorded/imported total and are NEVER recomputed
+// down to the near-empty itemised components. Prefer recorded_cost, else the already-stored
+// total_cost (the c_job import populates total_cost but leaves recorded_cost 0). Live jobs
+// use the freshly computed total.
+function historicalTotal(job, computedTotal) {
+  if (!job || !job.is_historical) return computedTotal;
+  if (job.recorded_cost != null && job.recorded_cost > 0) return job.recorded_cost;
+  return job.total_cost || 0;
 }
 
 /**
@@ -191,8 +202,13 @@ function closureReadiness(jobId) {
     if (job.flat_labour == null) missing.push('Service labour (flat charge) not set');
   } else {
     for (const w of all('SELECT * FROM job_daily_work WHERE job_id = ? AND is_external = 0', jobId)) {
-      if (labourRateFor(w.mechanic, w.work_date) == null) {
-        missing.push(`Labour rate missing for mechanic "${w.mechanic || '(unnamed)'}"`);
+      // A cell may name a crew ("Buddhika, Krishna"); price each mechanic individually,
+      // exactly as computeJobCost does — otherwise the combined string never resolves to a
+      // rate and a fully-priced crew job is falsely blocked from closing.
+      const names = mechanics.splitMechanics(w.mechanic);
+      if (!names.length) { missing.push(`Labour rate missing for mechanic "${w.mechanic || '(unnamed)'}"`); continue; }
+      for (const nm of names) {
+        if (labourRateFor(nm, w.work_date) == null) missing.push(`Labour rate missing for mechanic "${nm}"`);
       }
     }
   }
@@ -214,10 +230,8 @@ function closureReadiness(jobId) {
  *  other_cost balances any gap (recorded − Σcomponents) so the columns always sum to total_cost. */
 function refreshJobTotals(jobId) {
   const c = computeJobCost(jobId);
-  const job = get('SELECT is_historical, recorded_cost FROM job_cards WHERE id = ?', jobId);
-  const recorded = job ? job.recorded_cost : null;
-  const useRecorded = job && job.is_historical && recorded != null && recorded > 0;
-  const totalToStore = useRecorded ? recorded : c.total_cost;
+  const job = get('SELECT is_historical, recorded_cost, total_cost FROM job_cards WHERE id = ?', jobId);
+  const totalToStore = historicalTotal(job, c.total_cost); // historical: keep imported total, don't recompute to ~0
   const otherCost = round2(totalToStore - c.total_cost); // balancing bucket (recorded vs itemised)
   tx(() => {
     run('DELETE FROM job_labour WHERE job_id = ?', jobId);

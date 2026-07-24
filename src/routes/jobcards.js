@@ -9,6 +9,7 @@ const aliases = require('../lib/aliases');
 const mechanics = require('../lib/mechanics');
 const jobstate = require('../lib/jobstate');
 const costing = require('../lib/costing');
+const emitter = require('../lib/emitter');
 
 const router = express.Router();
 
@@ -167,6 +168,8 @@ router.post(
       req.user.id
     );
     audit.record({ userId: req.user.id, entity: 'job_card', entityId: info.lastInsertRowid, action: 'create', after: { job_no: no } });
+    emitter.emit('job_updated', { job_id: info.lastInsertRowid, action: 'create' });
+    emitter.emit('dashboard_refresh', { reason: 'job_create' });
     res.status(201).json({ job: loadJob(info.lastInsertRowid), unresolved });
   })
 );
@@ -300,6 +303,8 @@ router.post(
     });
 
     audit.record({ userId: req.user.id, entity: 'job_card', entityId: id, action: 'transition', before: { status: job.status }, after: { status: target }, reason });
+    emitter.emit('job_updated', { job_id: id, action: 'transition', status: target });
+    emitter.emit('dashboard_refresh', { reason: 'job_transition', status: target });
     res.json({ ...loadJob(id), nextStates: jobstate.nextStates(target) });
   })
 );

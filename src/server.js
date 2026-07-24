@@ -1,9 +1,11 @@
 'use strict';
 
 const fs = require('fs');
+const http = require('http');
 const path = require('path');
 const express = require('express');
 const cookieParser = require('cookie-parser');
+const { Server } = require('socket.io');
 
 const config = require('./config');
 const { migrate } = require('./db');
@@ -11,6 +13,7 @@ const { authenticate, enforcePasswordChange } = require('./lib/auth');
 const { requireModule } = require('./lib/permissions');
 const { errorHandler } = require('./lib/http');
 const { startScheduler } = require('./lib/backup');
+const emitter = require('./lib/emitter');
 
 // Apply schema on boot (idempotent).
 migrate();
@@ -39,13 +42,25 @@ app.use('/api/access', require('./routes/access'));
 app.use('/api/assets', requireModule('assets'), require('./routes/assets'));
 app.use('/api/aliases', require('./routes/aliases'));
 app.use('/api/projects', require('./routes/projects'));
-app.use('/api/stores', requireModule('stores'), require('./routes/stores'));
+// MRN approval transitions (certify/approve/reject) are authorised by ROLE, not by
+// stores-edit level: the Workshop Engineer and Operational Manager who sign off an
+// MRN deliberately hold only stores=view (they must not edit stock). Let those three
+// POST paths past the module-edit gate; each route still enforces its own requireRole.
+const MRN_APPROVAL_PATH = /\/mrn\/\d+\/(certify|approve|reject)$/;
+const storesGate = (req, res, next) =>
+  (req.method === 'POST' && MRN_APPROVAL_PATH.test(req.path))
+    ? next()
+    : requireModule('stores')(req, res, next);
+app.use('/api/stores', storesGate, require('./routes/stores'));
+app.use('/api/general-stock', requireModule('stores'), require('./routes/general_stock'));
 app.use('/api/oil', requireModule('oil'), require('./routes/oil'));
 app.use('/api/batteries', requireModule('batteries'), require('./routes/batteries'));
 app.use('/api/filters', requireModule('filters'), require('./routes/filters'));
+app.use('/api/filter-stock', requireModule('filters'), require('./routes/filter_stock'));
 app.use('/api/jobs', requireModule('jobs'), require('./routes/jobcards'));
 app.use('/api/job-requests', requireModule('jobrequests'), require('./routes/jobrequests'));
 app.use('/api/daily-work', requireModule('dailywork'), require('./routes/dailywork'));
+app.use('/api/dashboard', require('./routes/dashboard'));
 app.use('/api/mechanics', require('./routes/mechanics'));
 app.use('/api/users', require('./routes/users'));
 app.use('/api/reports', require('./routes/reports'));
@@ -68,6 +83,23 @@ app.get('*', (req, res, next) => {
 
 app.use(errorHandler);
 
+// ---- Real-time layer (socket.io) ------------------------------------------
+// Wrap the Express app in a raw HTTP server so socket.io can share the same port,
+// then bridge our in-process event bus (lib/emitter) out to all connected clients.
+// Route files stay unchanged — they just call emitter.emit('<event>', data); we
+// forward each known event to every socket. Nothing above this line changed.
+const httpServer = http.createServer(app);
+const io = new Server(httpServer, { cors: { origin: '*' } });
+app.set('io', io); // available to routes via req.app.get('io') if ever needed directly
+
+const LIVE_EVENTS = ['stock_updated', 'oil_updated', 'filter_updated', 'job_updated', 'request_updated', 'dashboard_refresh'];
+for (const event of LIVE_EVENTS) {
+  emitter.on(event, (data) => io.emit(event, data));
+}
+io.on('connection', (socket) => {
+  socket.emit('live_hello', { ok: true, at: new Date().toISOString() });
+});
+
 function lanUrls(port) {
   const os = require('os');
   const urls = [`http://localhost:${port}`];
@@ -82,11 +114,14 @@ function lanUrls(port) {
 
 if (require.main === module) {
   startScheduler();
-  app.listen(config.port, config.host, () => {
+  httpServer.listen(config.port, config.host, () => {
     console.log(`WorkshopOne listening on ${config.host}:${config.port}`);
+    console.log('Real-time (socket.io) enabled');
     console.log('Reachable on this network at:');
     for (const u of lanUrls(config.port)) console.log('  ' + u);
   });
 }
 
 module.exports = app;
+module.exports.httpServer = httpServer;
+module.exports.io = io;

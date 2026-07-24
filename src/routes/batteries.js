@@ -123,6 +123,11 @@ router.post('/:id/event', requireRole('storekeeper'), asyncHandler((req, res) =>
   const pe = photoError(b.photo_path); if (pe) return res.status(pe.status).json({ error: pe.error });
   const toAssetId = toInt(b.to_asset_id) || resolveAsset(b.to_asset);
   const fromAssetId = toInt(b.from_asset_id) || resolveAsset(b.from_asset) || battery.current_asset_id;
+  // install/transfer must land on a real vehicle — otherwise the battery would be marked
+  // 'installed' with current_asset_id NULL (an inconsistent state).
+  if ((b.event_type === 'install' || b.event_type === 'transfer') && !toAssetId) {
+    return res.status(400).json({ error: 'A known target vehicle is required to install or transfer a battery' });
+  }
 
   const result = tx(() => {
     const info = run(

@@ -8,6 +8,7 @@
 
 const { get, all, run, tx, db } = require('../db');
 const aliases = require('../lib/aliases');
+const { repointAssetRefs } = require('../lib/asset_repoint');
 const norm = aliases.normalize;
 
 // [variant spelling, canonical code]
@@ -60,9 +61,8 @@ function runStep() {
       const variant = get('SELECT * FROM assets WHERE code = ?', variantCode) || assetByCode(variantCode);
       const base = assetByCode(baseCode);
       if (!variant || !base || variant.id === base.id) { rep.skipped.push(`merge ${variantCode}→${baseCode}`); continue; }
-      for (const { table, col } of refCols) {
-        rep.refs_repointed += run(`UPDATE ${table} SET ${col} = ? WHERE ${col} = ?`, base.id, variant.id).changes;
-      }
+      // vehicle_monthly_costs is folded (UNIQUE-safe), not blindly moved — see lib/asset_repoint.
+      rep.refs_repointed += repointAssetRefs(refCols, variant.id, base.id);
       run(
         `INSERT INTO asset_aliases (raw_text, raw_norm, asset_id, resolved, hit_count, source)
            VALUES (?, ?, ?, 1, 0, 'merge')
