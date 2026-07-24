@@ -2828,7 +2828,7 @@ routes.stockissues = async (c) => {
         let items = []; try { items = await api('/stores/items?limit=8&q=' + encodeURIComponent(q)); } catch (e) { return; }
         menu.innerHTML = items.length ? items.map((it) => `<div class="si-it" data-id="${it.id}" data-name="${esc(it.name)}" data-cost="${it.unit_cost || ''}" data-cat="${esc(it.category || '')}" style="padding:7px 10px;cursor:pointer;border-bottom:1px solid var(--border)"><b>${esc(it.name)}</b>${it.part_number ? ` <span class="muted">· ${esc(it.part_number)}</span>` : ''}</div>`).join('') : '<div class="muted" style="padding:8px 10px">No item — free text kept</div>';
         menu.style.display = 'block';
-        qsa('.si-it', menu).forEach((el) => { el.onmousedown = (e) => { e.preventDefault(); input.value = el.dataset.name; hId.value = el.dataset.id; hDesc.value = el.dataset.name; if (el.dataset.cost) qs('input[name=unit_price]', body).value = el.dataset.cost; if (el.dataset.cat) qs('input[name=category]', body).value = el.dataset.cat; menu.style.display = 'none'; }; });
+        qsa('.si-it', menu).forEach((el) => { el.onmousedown = (e) => { e.preventDefault(); clearTimeout(deb2); input.value = el.dataset.name; hId.value = el.dataset.id; hDesc.value = el.dataset.name; if (el.dataset.cost) qs('input[name=unit_price]', body).value = el.dataset.cost; if (el.dataset.cat) qs('input[name=category]', body).value = el.dataset.cat; menu.style.display = 'none'; }; });
       }, 200); };
       input.onblur = () => setTimeout(() => { menu.style.display = 'none'; }, 150);
       qs('#si-save', body).onclick = async () => {
@@ -2836,7 +2836,7 @@ routes.stockissues = async (c) => {
         const description = (d.description || input.value).trim();
         if (!description) return toast('Pick or type an item', 'err');
         if (!(Number(d.qty) > 0)) return toast('Enter a quantity greater than 0', 'err');
-        try { await api('/stores/issues', { method: 'POST', body: { asset_id: d.asset_id || undefined, description, store_item_id: d.store_item_id || undefined, qty: d.qty, unit_price: d.unit_price, issue_date: d.issue_date, category: d.category, issued_by: d.issued_by } }); toast('Issue recorded'); close(); load(); } catch (e) { toast(e.message, 'err'); }
+        try { await api('/stores/issues', { method: 'POST', body: { asset_id: d.asset_id || undefined, asset: d.asset || undefined, description, store_item_id: d.store_item_id || undefined, qty: d.qty, unit_price: d.unit_price, issue_date: d.issue_date, category: d.category, issued_by: d.issued_by } }); toast('Issue recorded'); close(); load(); } catch (e) { toast(e.message, 'err'); }
       };
     });
   };
