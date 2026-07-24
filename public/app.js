@@ -2357,6 +2357,14 @@ routes.reports = async (c) => {
     api('/reports/cost/by-asset'), api('/reports/cost/by-project'), api('/reports/cost/by-site'), api('/reports/cost/by-source'), api('/reports/variance'),
   ]);
   c.innerHTML = `${pageHeader('Cost Reports & Analytics')}
+    <div class="card section"><h3 style="margin-top:0">Vehicle Cost Report</h3>
+      <div class="toolbar">
+        <div style="flex:1;min-width:220px">${assetPickerHtml('Vehicle / machinery')}</div>
+        <div><label>Year</label><select id="vcr-year"></select></div>
+        <div><label>Month</label><select id="vcr-month"><option value="">Full year</option></select></div>
+        <button class="primary sm" id="vcr-gen">Generate</button>
+      </div>
+      <div id="vcr-result"></div></div>
     <div class="card section"><div class="toolbar" style="margin:0 0 8px"><h3 style="margin:0">Cost by Project</h3><div class="spacer"></div><a class="btn sm" href="/api/reports/cost/by-project?format=xlsx">⬇ Excel</a></div>
       ${tableWrap([{ label: 'Project' }, { label: 'Labour', num: true }, { label: 'Material', num: true }, { label: 'Oil', num: true }, { label: 'General', num: true }, { label: 'External', num: true }, { label: 'Other/Rec.', num: true }, { label: 'Total', num: true }],
         byProject.map((p) => `<tr><td>${esc(p.project)}</td><td class="num">${money(p.labour)}</td><td class="num">${money(p.material)}</td><td class="num">${money(p.oil)}</td><td class="num">${money(p.general)}</td><td class="num">${money(p.external)}</td><td class="num">${money(p.other)}</td><td class="num"><b>${money(p.total)}</b></td></tr>`))}</div>
@@ -2372,6 +2380,39 @@ routes.reports = async (c) => {
       <div class="card"><h3>Stock Variance Flags</h3>
         ${variance.length ? variance.map((v) => `<div class="cost-line"><span>${esc(v.product)} · ${esc(v.period)}</span><span class="badge red">${num(v.variance)}</span></div>`).join('') : '<span class="muted">No variances</span>'}</div>
     </div>`;
+
+  // Vehicle Cost Report — interactive drill from vehicle_monthly_costs (/reports/vehicle-cost-complete).
+  const yearSel = qs('#vcr-year', c), mSel = qs('#vcr-month', c);
+  const yNow = new Date().getFullYear();
+  for (let i = 0; i < 6; i++) { const o = document.createElement('option'); o.value = yNow - i; o.textContent = yNow - i; yearSel.appendChild(o); }
+  for (let m = 1; m <= 12; m++) { const o = document.createElement('option'); o.value = m; o.textContent = MONTH_NAMES[m]; mSel.appendChild(o); }
+  wireAssetPicker(c);
+  let vcrChart;
+  qs('#vcr-gen', c).onclick = async () => {
+    const assetId = qs('input[name=asset_id]', c).value;
+    if (!assetId) return toast('Pick a vehicle first', 'err');
+    const month = mSel.value, res = qs('#vcr-result', c);
+    res.innerHTML = '<div class="muted">Generating…</div>';
+    let d;
+    try { d = await api('/reports/vehicle-cost-complete?asset_id=' + assetId + '&year=' + yearSel.value + (month ? '&month=' + month : '')); }
+    catch (e) { res.innerHTML = `<p class="err">${esc(e.message)}</p>`; return; }
+    const s = d.cost_summary || {}, mb = d.monthly_breakdown || [];
+    const cards = [['Fuel', s.fuel_cost], ['Oil', s.oil_cost], ['Filters', s.filter_cost], ['Parts', s.parts_cost], ['Labour', s.labour_cost], ['Total', s.total_cost]];
+    const detail = mb.length ? tableWrap([{ label: 'Month' }, { label: 'Fuel', num: true }, { label: 'Oil', num: true }, { label: 'Filter', num: true }, { label: 'Parts', num: true }, { label: 'Labour', num: true }, { label: 'Total', num: true }],
+      mb.map((r) => `<tr><td>${MONTH_NAMES[r.month] || r.month}</td><td class="num">${money(r.fuel_cost)}</td><td class="num">${money(r.oil_cost)}</td><td class="num">${money(r.filter_cost)}</td><td class="num">${money(r.parts_cost)}</td><td class="num">${money(r.labour_cost)}</td><td class="num"><b>${money(r.total_cost)}</b></td></tr>`), { scroll: true }) : '<span class="muted">No cost recorded for this period.</span>';
+    res.innerHTML = `<div class="grid section">${cards.map(([l, v]) => `<div class="card stat"><span class="n">${moneyC(v)}</span><span class="l">${esc(l)}</span></div>`).join('')}</div>
+      ${mb.length > 1 ? '<div style="position:relative;height:240px"><canvas id="vcr-chart"></canvas></div>' : ''}
+      <h4 style="margin:12px 0 6px">Cost detail</h4>${detail}`;
+    if (mb.length > 1) loadChartJs((ok) => {
+      if (!ok || !qs('#vcr-chart', c)) return;
+      if (vcrChart) { try { vcrChart.destroy(); } catch (e) { /* detached */ } }
+      vcrChart = new Chart(qs('#vcr-chart', c).getContext('2d'), {
+        type: 'bar',
+        data: { labels: mb.map((r) => MONTH_NAMES[r.month] || r.month), datasets: [['Fuel', 'fuel_cost', '#6a7379'], ['Oil', 'oil_cost', '#f2a900'], ['Filters', 'filter_cost', '#3c7d5a'], ['Parts', 'parts_cost', '#1d5a73'], ['Labour', 'labour_cost', '#8a949b']].map((dd) => ({ label: dd[0], backgroundColor: dd[2], data: mb.map((r) => Number(r[dd[1]]) || 0) })) },
+        options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom', labels: { boxWidth: 12, font: { size: 10 } } } }, scales: { x: { stacked: true }, y: { stacked: true, beginAtZero: true, ticks: { callback: (v) => moneyC(v) } } } },
+      });
+    });
+  };
 };
 
 // ---- Needs Attention (advisory intelligence — read-only)
