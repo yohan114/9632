@@ -267,4 +267,10 @@ if (!only || only === 'filter-xrefs') {
   }
 }
 
+if (!only || only === 'filter-research') {
+  banner('Researched cross-references (VIC/Sakura, source-verified)');
+  const fr = require('./25_filter_research').runStep();
+  console.log(`  Added: ${fr.added} | skipped (already present / no match): ${fr.skipped}`);
+}
+
 console.log('\nDone.');
