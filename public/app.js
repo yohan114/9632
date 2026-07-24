@@ -28,6 +28,33 @@ const moneyC = (n) => { n = Number(n) || 0; const a = Math.abs(n); return a >= 1
 const MONTH_NAMES = ['', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const monthName = (m) => { const [y, mo] = String(m).split('-'); return (MONTH_NAMES[+mo] || mo) + ' ' + y; };
 
+// Lazy-load Chart.js (dashboard charts). Resolves cb(true/false) — degrades gracefully offline.
+let _chartLoading;
+function loadChartJs(cb) {
+  if (window.Chart) return cb(true);
+  if (!_chartLoading) {
+    _chartLoading = new Promise((resolve) => {
+      const s = document.createElement('script');
+      s.src = 'https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js';
+      s.onload = () => resolve(true); s.onerror = () => resolve(false);
+      document.head.appendChild(s);
+    });
+  }
+  _chartLoading.then(() => cb(!!window.Chart));
+}
+function timeAgo(s) {
+  if (!s) return '';
+  let iso = String(s).replace(' ', 'T'); if (!/[zZ]|[+-]\d\d:?\d\d$/.test(iso)) iso += 'Z';
+  let diff = (Date.now() - new Date(iso).getTime()) / 1000;
+  if (isNaN(diff)) return esc(String(s)); if (diff < 0) diff = 0;
+  if (diff < 60) return 'just now';
+  if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
+  if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
+  if (diff < 2592000) return Math.floor(diff / 86400) + 'd ago';
+  return new Date(iso).toISOString().slice(0, 10);
+}
+const ENTITY_ICON = { mrn: '📝', issue: '📤', stock_ledger: '🛢️', filter_stock: '🛞', store_item: '📦', product: '🛢️', job_card: '🔧', stock_count: '🔢', session: '🔑', battery: '🔋', asset: '🚜' };
+
 // ---- signature pad (draw or upload a signature; PNG data URL) ----
 function signaturePad(canvas) {
   const ctx = canvas.getContext('2d');
@@ -302,7 +329,7 @@ function formData(root) {
 
 // ---------------------------------------------------------------- shell
 const NAV = [
-  ['dashboard', '📊', 'Dashboard', null, '/dashboard.html'],
+  ['dashboard', '📊', 'Dashboard'],
   ['assets', '🚜', 'Assets'],
   ['jobs', '🔧', 'Job Cards'],
   ['jobrequests', '📋', 'Job Requests'],
@@ -312,17 +339,16 @@ const NAV = [
   ['oil', '🛢️', 'Oil & Lube'],
   ['batteries', '🔋', 'Batteries'],
   ['filters', '🧰', 'Filters & Prices'],
-  ['matreq', '📝', 'Material Requests', null, '/material-requests.html'],
+  ['matreq', '📝', 'Material Requests', null, '#/stores?tab=mrn'],
   ['stockissues', '📤', 'Stock Issues'],
   ['generalstock', '🧰', 'General Stock'],
   ['filterstock', '🛞', 'Filter Stock'],
-  ['oilstock', '🛢️', 'Oil Stock', null, '/oil-stock.html'],
   ['projects', '🏗️', 'Projects'],
   ['aliases', '🔗', 'Alias Queue'],
   ['attention', '⚠️', 'Needs Attention'],
   ['progress', '📆', 'Daily Progress'],
   ['teardown', '📉', 'Cost Teardown'],
-  ['reports', '📈', 'Reports', null, '/reports.html'],
+  ['reports', '📈', 'Reports'],
   ['access', '🔐', 'Access Control', 'admin'],
 ];
 // Which permission module governs each nav item's visibility (dashboard always on).
@@ -331,7 +357,7 @@ const NAV_MODULE = {
   labour: 'labour', stores: 'stores', oil: 'oil', batteries: 'batteries', filters: 'filters',
   projects: 'projects', aliases: 'aliases', attention: 'reports', progress: 'reports',
   teardown: 'reports', reports: 'reports',
-  matreq: 'stores', stockissues: 'stores', generalstock: 'stores', filterstock: 'filters', oilstock: 'oil',
+  matreq: 'stores', stockissues: 'stores', generalstock: 'stores', filterstock: 'filters',
 };
 function navVisible(n) {
   if (n[3] === 'admin') return can('admin');
@@ -502,7 +528,65 @@ async function dashMain(c) {
         ${d.batteries_warranty.length ? d.batteries_warranty.map((b) => `<div class="cost-line"><span>${esc(b.serial_no)} ${b.asset_code ? '· ' + esc(b.asset_code) : ''}</span><span class="badge amber">${esc(b.warranty_date)}</span></div>`).join('') : '<span class="muted">Nothing expiring soon</span>'}
       </div>`);
   if (G.length) S.push(`<div class="grid">${G.join('')}</div>`);
+  // Live overview (charts + activity) — additive, powered by /api/dashboard/overview.
+  if (canView('reports')) S.push(`<div class="card section"><h3 style="margin-top:0">📊 Live Overview</h3>
+    <div class="grid" style="grid-template-columns:1.5fr 1fr 1fr;gap:12px">
+      <div><div class="muted" style="font-size:12px">Monthly cost trend</div><div style="position:relative;height:220px"><canvas id="dc-trend"></canvas></div></div>
+      <div><div class="muted" style="font-size:12px">Job status (90 days)</div><div style="position:relative;height:220px"><canvas id="dc-jobs"></canvas></div></div>
+      <div><div class="muted" style="font-size:12px">Top 5 cost vehicles</div><div style="position:relative;height:220px"><canvas id="dc-top5"></canvas></div></div>
+    </div><div id="dc-charts-msg" class="muted" style="display:none;padding:8px"></div></div>`);
+  S.push(`<div class="card section"><h3 style="margin-top:0">Recent Activity</h3><div id="dc-feed" class="muted">Loading…</div></div>`);
   c.innerHTML = S.join('\n');
+  dashRenderOverview();
+  onLive('dashboard_refresh', 'dashboard');
+}
+
+// Charts + activity feed for the dashboard (additive; isolated so a failure never
+// breaks the rest of the page). Powered by /api/dashboard/overview.
+let _dcCharts = {};
+async function dashRenderOverview() {
+  let o;
+  try { o = await api('/dashboard/overview'); } catch (e) { const f = qs('#dc-feed'); if (f) f.innerHTML = '<span class="muted">Overview unavailable</span>'; return; }
+  const feed = qs('#dc-feed');
+  if (feed) {
+    const acts = o.recent_activity || [];
+    feed.innerHTML = acts.length ? acts.map((a) => {
+      const who = a.full_name || a.username || 'system';
+      const desc = ((a.action || 'update').replace(/_/g, ' ')) + ' ' + (a.entity || '').replace(/_/g, ' ') + (a.entity_id ? ' #' + a.entity_id : '');
+      return `<div class="cost-line"><span>${ENTITY_ICON[a.entity] || '•'} <b style="text-transform:capitalize">${esc(desc)}</b> <span class="muted">· ${esc(who)}</span></span><span class="muted">${esc(timeAgo(a.created_at))}</span></div>`;
+    }).join('') : '<span class="muted">No recent activity</span>';
+  }
+  if (!qs('#dc-trend')) return; // reports-gated section absent
+  loadChartJs((ok) => {
+    if (!ok) { const m = qs('#dc-charts-msg'); if (m) { m.textContent = 'Charts unavailable (offline).'; m.style.display = ''; } return; }
+    Object.values(_dcCharts).forEach((ch) => { try { ch.destroy(); } catch (e) { /* detached */ } });
+    _dcCharts = {};
+    const tr = o.monthly_cost_trend || [];
+    if (qs('#dc-trend') && tr.length) {
+      _dcCharts.trend = new Chart(qs('#dc-trend').getContext('2d'), {
+        type: 'bar',
+        data: { labels: tr.map((t) => t.month), datasets: [['Parts', 'parts_cost', '#1d5a73'], ['Oil', 'oil_cost', '#f2a900'], ['Filters', 'filter_cost', '#3c7d5a'], ['Labour', 'labour_cost', '#6a7379']].map((d) => ({ label: d[0], backgroundColor: d[2], data: tr.map((t) => Number(t[d[1]]) || 0) })) },
+        options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom', labels: { boxWidth: 12, font: { size: 10 } } } }, scales: { x: { stacked: true }, y: { stacked: true, beginAtZero: true, ticks: { callback: (v) => moneyC(v) } } } },
+      });
+    }
+    const js = o.job_status_breakdown || [];
+    const JC = { REQUESTED: '#f2a900', WORK_COMPLETE: '#3c7d5a', CLOSED: '#6a7379', REJECTED: '#c4392d' };
+    if (qs('#dc-jobs') && js.length) {
+      _dcCharts.jobs = new Chart(qs('#dc-jobs').getContext('2d'), {
+        type: 'doughnut',
+        data: { labels: js.map((b) => b.status), datasets: [{ data: js.map((b) => b.count), backgroundColor: js.map((b) => JC[b.status] || '#1d5a73') }] },
+        options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom', labels: { boxWidth: 12, font: { size: 10 } } } } },
+      });
+    }
+    const t5 = o.top_5_cost_vehicles || [];
+    if (qs('#dc-top5') && t5.length) {
+      _dcCharts.top5 = new Chart(qs('#dc-top5').getContext('2d'), {
+        type: 'bar',
+        data: { labels: t5.map((v) => idLabel(v) || v.code || ('#' + v.asset_id)), datasets: [{ data: t5.map((v) => Number(v.total_cost) || 0), backgroundColor: '#1d5a73' }] },
+        options: { indexAxis: 'y', responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { x: { beginAtZero: true, ticks: { callback: (v) => moneyC(v) } } } },
+      });
+    }
+  });
 }
 
 // Drill 1: which vehicles cost the most in a given month.
