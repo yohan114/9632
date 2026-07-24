@@ -100,6 +100,12 @@ router.get('/ledger', asyncHandler((req, res) => {
 router.post('/ledger', requireRole('storekeeper'), asyncHandler((req, res) => {
   const b = req.body;
   require_(b, ['product_id', 'kind', 'qty']);
+  // Single source of truth for service lubricants: they may ONLY be issued through the
+  // Service form (which tags them consumer_type='service' and owns the cost). Blocking it
+  // here removes the second entry point, so a service's oil can never be double-counted.
+  if (b.consumer_type === 'service') {
+    return res.status(400).json({ error: 'Service lubricants must be entered on the Service record, not as a manual oil issue — this keeps each service\'s oil cost in one place.' });
+  }
   const productId = toInt(b.product_id);
   if (!get('SELECT id FROM products WHERE id = ?', productId)) return res.status(400).json({ error: 'Unknown product' });
   const qtyMag = Math.abs(toNum(b.qty, 0));
