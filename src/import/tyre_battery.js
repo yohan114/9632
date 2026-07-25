@@ -13,12 +13,14 @@ const crypto = require('crypto');
 const ExcelJS = require('exceljs');
 const { db, migrate, run, get } = require('../db');
 
+const HASH_SEP = String.fromCharCode(31); // unit separator — collision-proof field delimiter
 const DEFAULT_FILE = 'C:/Users/HP/Downloads/TYRE BATTERY ISSUE DETAILS (25).xlsx';
 
 const cellText = (c) => {
   let v = c && c.value;
   if (v && typeof v === 'object') {
-    if (v.formula) v = v.result;
+    if (v instanceof Date) v = v.toISOString().slice(0, 10); // a date-typed cell → YYYY-MM-DD (parseDate handles it)
+    else if (v.formula) v = v.result;
     else if (v.richText) v = v.richText.map((t) => t.text).join('');
     else if (v.text) v = v.text;
     else v = '';
@@ -98,13 +100,13 @@ async function importFile(file) {
       const vehicle = cellText(row.getCell(sh.cols.vehicle));
       const category = cellText(row.getCell(sh.cols.category));
       const d = parseDate(dateRaw);
-      if (d) cur = d; // a real date updates the running date; integers/blanks carry it forward
+      if (d && plausible(d)) cur = d; // a real, plausible date updates the running date; integers/blanks/typos carry it forward
       if (!vehicle && !category) continue; // skip fully empty / heading rows
       const issueDate = plausible(cur) ? cur : null;
       if (!issueDate) nullDate++; else months.add(issueDate.slice(0, 7));
       const qtyRaw = cellText(row.getCell(sh.cols.qty));
       const row_hash = crypto.createHash('md5')
-        .update([sh.kind, sh.name, rn, dateRaw, vehicle, category, qtyRaw].join('')).digest('hex');
+        .update([sh.kind, sh.name, rn, dateRaw, vehicle, category, qtyRaw].join(HASH_SEP)).digest('hex');
       rows.push({
         kind: sh.kind, issue_date: issueDate, vehicle,
         asset_id: assetMap.get(assetNorm(vehicle)) || null,

@@ -58,7 +58,7 @@ router.get('/issues', requireAuth, asyncHandler((req, res) => {
     clauses.push('(i.vehicle LIKE ? OR i.category LIKE ? OR i.site LIKE ?)');
     const like = '%' + String(req.query.q) + '%'; params.push(like, like, like);
   }
-  const limit = Math.min(toInt(req.query.limit) || 500, 2000);
+  const limit = Math.max(1, Math.min(toInt(req.query.limit) || 500, 2000)); // clamp low too — a negative LIMIT is unbounded in SQLite
   const where = 'WHERE ' + clauses.join(' AND ');
   const summary = get(
     `SELECT COUNT(*) count, ROUND(COALESCE(SUM(i.qty),0),2) qty,
@@ -86,7 +86,8 @@ router.post('/prices', requireAuth, asyncHandler((req, res) => {
   tx(() => {
     for (const p of prices) {
       const cat = String(p.category_norm);
-      const price = p.unit_price == null || p.unit_price === '' ? null : toNum(p.unit_price);
+      const n = toNum(p.unit_price);
+      const price = (p.unit_price == null || p.unit_price === '' || !(n >= 0)) ? null : n; // negatives are invalid → unset
       run(
         `INSERT INTO tyre_battery_prices (kind, category_norm, category, unit_price, updated_by, updated_at)
          VALUES (?, ?, ?, ?, ?, datetime('now'))
@@ -107,7 +108,8 @@ router.patch('/issues/:id', requireAuth, asyncHandler((req, res) => {
   const row = get('SELECT id FROM tyre_battery_issues WHERE id = ?', id);
   if (!row) return res.status(404).json({ error: 'Issue not found' });
   const raw = (req.body || {}).unit_price;
-  const price = raw == null || raw === '' ? null : toNum(raw);
+  const n = toNum(raw);
+  const price = (raw == null || raw === '' || !(n >= 0)) ? null : n; // negatives are invalid → clear the override
   run('UPDATE tyre_battery_issues SET unit_price = ? WHERE id = ?', price, id);
   res.json({ ok: true, id, unit_price: price });
 }));

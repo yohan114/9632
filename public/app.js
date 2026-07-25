@@ -2452,19 +2452,22 @@ routes.tyrebattery = async (c) => {
       .map(([l, v]) => `<div class="card stat"><span class="n">${v}</span><span class="l">${esc(l)}</span></div>`).join('');
   };
 
-  let catState = [];
+  let catState = [], dirty = new Set();
   const loadCats = async () => {
     let d; try { d = await api('/tyre-battery/categories?kind=' + kind); } catch (e) { qs('#tb-cats', c).innerHTML = `<span class="err">${esc(e.message)}</span>`; return; }
-    catState = d.categories;
+    catState = d.categories; dirty = new Set();
     qs('#tb-cats', c).innerHTML = tableWrap(
       [{ label: 'Category' }, { label: 'Issues', num: true }, { label: 'Total qty', num: true }, { label: 'Unit price (Rs)', num: true }],
       catState.map((r, i) => `<tr><td>${esc(r.category)}</td><td class="num">${r.issues}</td><td class="num">${num(r.qty)}</td><td class="num"><input type="number" min="0" step="0.01" data-i="${i}" class="tb-price" value="${r.unit_price == null ? '' : r.unit_price}" style="width:120px;text-align:right"></td></tr>`),
       { scroll: true });
-    qsa('.tb-price', c).forEach((inp) => { inp.oninput = () => { catState[+inp.dataset.i].unit_price = inp.value === '' ? null : Number(inp.value); }; });
+    qsa('.tb-price', c).forEach((inp) => { inp.oninput = () => { const r = catState[+inp.dataset.i]; r.unit_price = inp.value === '' ? null : Number(inp.value); dirty.add(r.category_norm); }; });
   };
   qs('#tb-save', c).onclick = async () => {
-    const prices = catState.map((r) => ({ category_norm: r.category_norm, category: r.category, unit_price: r.unit_price }));
-    try { const res = await api('/tyre-battery/prices', { method: 'POST', body: { kind, prices } }); toast('Saved ' + res.saved + ' category prices'); loadSummary(); loadIssues(); }
+    // Only send the rows the user actually edited — sending the whole snapshot would let an
+    // untouched (stale) null clobber a price another session set concurrently.
+    const prices = catState.filter((r) => dirty.has(r.category_norm)).map((r) => ({ category_norm: r.category_norm, category: r.category, unit_price: r.unit_price }));
+    if (!prices.length) return toast('No price changes to save');
+    try { const res = await api('/tyre-battery/prices', { method: 'POST', body: { kind, prices } }); toast('Saved ' + res.saved + ' category price(s)'); loadCats(); loadSummary(); loadIssues(); }
     catch (e) { toast(e.message, 'err'); }
   };
 
@@ -2546,8 +2549,8 @@ routes.reports = async (c) => {
       [{ label: 'Sheet' }, { label: 'Rows', num: true }, { label: 'Total (Rs)', num: true }, { label: '' }],
       [line('Repair', p.repair.count, p.repair.total),
         line('Service', p.service.count, p.service.total),
-        line('Tyre', p.tyre.count, p.tyre.total, p.tyre.count === 0),
-        line('Battery', p.battery.count, p.battery.total, p.battery.count === 0),
+        line('Tyre', p.tyre.count, p.tyre.total, false),
+        line('Battery', p.battery.count, p.battery.total, false),
         line('Fuel', p.fuel.count, p.fuel.total, p.fuel.count === 0),
         line('Salaries (Staff)', p.salary.count, p.salary.staff_total, p.salary.count === 0),
         line('Other (overhead)', p.other.count, p.other.total, p.other.count === 0),
