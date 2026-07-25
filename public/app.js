@@ -2566,6 +2566,7 @@ routes.reports = async (c) => {
         line('Tyre', p.tyre.count, p.tyre.total, false),
         line('Battery', p.battery.count, p.battery.total, false),
         line('Oils & Lubrication', p.oils.count, p.oils.total, false),
+        line('General Items', p.general.count, p.general.total, false),
         line('Fuel', p.fuel.count, p.fuel.total, p.fuel.count === 0),
         line('Salaries (Staff)', p.salary.count, p.salary.staff_total, p.salary.count === 0),
         line('Other (overhead)', p.other.count, p.other.total, p.other.count === 0),

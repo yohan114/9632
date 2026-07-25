@@ -493,7 +493,50 @@ function buildOils(wb, ym, period, repairOil, serviceOil, repairJobIds) {
 }
 
 // ---------------------------------------------------------------------------
-// Total cost — summary. 10% Sundry applied to Repair/Service/Tyre/Battery/Oils only.
+// General Items — workshop consumables & hardware issued from general stock. job_cards.general_cost
+// is 0 across the board (these were never priced), so nothing here is double-counted against Repair.
+// Value = qty × COALESCE(txn unit_price, store_item unit_cost, 0).
+// ---------------------------------------------------------------------------
+function buildGeneral(wb, ym, period) {
+  const ws = wb.addWorksheet('General Items');
+  [6, 14, 30, 24, 10, 13, 14, 18].forEach((w, i) => { ws.getColumn(i + 1).width = w; });
+  titleBand(ws, 8, 'General / store item consumption (workshop consumables & hardware)', period);
+  ['Se: no', 'Date', 'Item', 'Vehicle / Consumer', 'Qty', 'Unit Price (Rs)', 'Total Cost (Rs)', 'Remarks']
+    .forEach((t, i) => { ws.mergeCells(4, i + 1, 5, i + 1); const c = ws.getCell(4, i + 1); c.value = t; headerCell(c); });
+  const rows = all(
+    `SELECT t.txn_date, si.name item, ABS(t.qty) qty,
+            COALESCE(t.unit_price, si.unit_cost, 0) unit_price,
+            ABS(t.qty) * COALESCE(t.unit_price, si.unit_cost, 0) cost,
+            t.ref, a.registration reg, a.code code, jc.job_no
+       FROM general_item_txns t JOIN store_items si ON si.id = t.store_item_id
+       LEFT JOIN assets a ON a.id = t.asset_id LEFT JOIN job_cards jc ON jc.id = t.job_id
+      WHERE t.txn_type = 'issue' AND substr(t.txn_date,1,7) = ? ORDER BY t.txn_date, t.id`, ym);
+  let r = 6, se = 1, total = 0;
+  for (const x of rows) {
+    const cost = r2(x.cost);
+    textCell(ws, r, 1, se); textCell(ws, r, 2, dateOnly(x.txn_date)); textCell(ws, r, 3, x.item || '', { wrap: true });
+    textCell(ws, r, 4, x.reg || x.code || x.ref || '');
+    const qc = ws.getCell(r, 5); qc.value = r2(x.qty); qc.numFmt = '#,##0.##'; qc.alignment = { horizontal: 'right' }; border(qc);
+    moneyCell(ws, r, 6, x.unit_price); moneyCell(ws, r, 7, cost); textCell(ws, r, 8, x.job_no ? ('Job ' + x.job_no) : '');
+    total += cost; r++; se++;
+  }
+  const last = r - 1, gr = r;
+  ws.mergeCells(gr, 1, gr, 6); const gl = ws.getCell(gr, 1); gl.value = 'Grand total cost'; gl.font = { bold: true }; gl.alignment = { horizontal: 'right' }; border(gl);
+  for (let col = 2; col <= 6; col++) border(ws.getCell(gr, col));
+  if (last >= 6) formulaMoney(ws, gr, 7, `SUM(G6:G${last})`, total, true); else moneyCell(ws, gr, 7, 0).font = { bold: true };
+  textCell(ws, gr, 8, '');
+  const priced = rows.filter((x) => r2(x.cost) > 0).length;
+  const noteRow = gr + 2;
+  ws.mergeCells(noteRow, 1, noteRow, 8);
+  const nc = ws.getCell(noteRow, 1);
+  nc.value = `${rows.length} issue(s); ${priced} priced. Unpriced items show Rs 0 — set the item’s price to include its cost.`;
+  nc.font = { italic: true, size: 9 }; nc.alignment = { wrapText: true, vertical: 'top' };
+  signatures(ws, noteRow + 3, 8);
+  return { name: 'General Items', sums: { total }, count: rows.length, priced, refs: { total: `'General Items'!G${gr}` } };
+}
+
+// ---------------------------------------------------------------------------
+// Total cost — summary. 10% Sundry applied to Repair/Service/Tyre/Battery/Oils/General only.
 // Columns: C Labour, D Spare parts, E Lubricant, F Other material, G Outside,
 //          H Overhead, I Sundry, J Cost w/o Overhead, K Total.
 // ---------------------------------------------------------------------------
@@ -522,9 +565,11 @@ function buildTotal(wb, parts, period) {
     { row: 11, label: 'Battery cost', cells: { 4: [BT.battery, BS.battery], 6: [BT.other, BS.other] }, sundry: true },
     // Direct oil goes in the Lubricant column (E) and, like lubricant in Repair/Service, gets the 10% Sundry.
     { row: 12, label: 'Oils & Lubrication', cells: { 5: [parts.oils.refs.total, parts.oils.sums.total] }, sundry: true },
-    { row: 13, label: 'Fuel Cost', cells: { 8: [parts.fuel.refs.cost, parts.fuel.sums.cost] }, sundry: false },
-    { row: 14, label: 'Salaries Cost', cells: { 8: [parts.salaries.refs.total, parts.salaries.sums.total] }, sundry: false },
-    { row: 15, label: 'Other Cost', cells: { 8: [parts.other.refs.total, parts.other.sums.total] }, sundry: false },
+    // General items (consumables/hardware) go in the Other-material column (F) with the 10% Sundry.
+    { row: 13, label: 'General Items', cells: { 6: [parts.general.refs.total, parts.general.sums.total] }, sundry: true },
+    { row: 14, label: 'Fuel Cost', cells: { 8: [parts.fuel.refs.cost, parts.fuel.sums.cost] }, sundry: false },
+    { row: 15, label: 'Salaries Cost', cells: { 8: [parts.salaries.refs.total, parts.salaries.sums.total] }, sundry: false },
+    { row: 16, label: 'Other Cost', cells: { 8: [parts.other.refs.total, parts.other.sums.total] }, sundry: false },
   ];
 
   for (const d of rowDefs) {
@@ -545,8 +590,8 @@ function buildTotal(wb, parts, period) {
     formulaMoney(ws, d.row, 11, `SUM(C${d.row}:I${d.row})`, total, true);
   }
 
-  // Grand total row 16 (rows 8..15 are the category rows)
-  const gRow = 16;
+  // Grand total row 17 (rows 8..16 are the category rows)
+  const gRow = 17;
   const gl = ws.getCell(gRow, 2); gl.value = 'Grand total cost'; gl.font = { bold: true }; gl.alignment = { horizontal: 'right' }; border(gl);
   const colTotals = {};
   for (let col = 3; col <= 11; col++) {
@@ -556,7 +601,7 @@ function buildTotal(wb, parts, period) {
       if (c && typeof c === 'object' && 'result' in c) s += num(c.result);
     }
     colTotals[col] = s;
-    formulaMoney(ws, gRow, col, `SUM(${colL(col)}8:${colL(col)}15)`, s, true);
+    formulaMoney(ws, gRow, col, `SUM(${colL(col)}8:${colL(col)}16)`, s, true);
   }
   signatures(ws, gRow + 3, 11);
   return { grand_total: colTotals[11] || 0, columns: colTotals };
@@ -577,6 +622,7 @@ async function buildWorkbook(year, month) {
   parts.tyre = buildTyre(wb, ym, period);
   parts.battery = buildBattery(wb, ym, period);
   parts.oils = buildOils(wb, ym, period, parts.repair.sums.oil, parts.service.sums.oil, parts.repair.repair_job_ids);
+  parts.general = buildGeneral(wb, ym, period);
   parts.fuel = buildFuel(wb, year, month, period);
   parts.salaries = buildSalaries(wb, year, month, ym, period);
   parts.other = buildOther(wb, year, month, period);
