@@ -267,6 +267,39 @@ function migrate() {
   );
   CREATE INDEX IF NOT EXISTS idx_mri_period ON monthly_report_inputs(year, month, sheet);`);
   ensureColumn('monthly_report_inputs', 'line_date', 'TEXT'); // additive for tables created before this column existed
+  // Tyre & Battery issue ledger (imported from the workshop's issue-details workbook). One row per
+  // issue; price is filled later — per issue (unit_price) or by category via tyre_battery_prices.
+  // row_hash makes re-import idempotent. category_norm is the pricing join key.
+  db.exec(`CREATE TABLE IF NOT EXISTS tyre_battery_issues (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind          TEXT NOT NULL,               -- 'tyre' | 'battery'
+    issue_date    TEXT,                         -- YYYY-MM-DD (carried forward on blank rows at import)
+    vehicle       TEXT,                         -- raw vehicle / machine label
+    asset_id      INTEGER REFERENCES assets(id),
+    site          TEXT,
+    qty           REAL NOT NULL DEFAULT 0,      -- numeric parsed from "02 Nos"
+    qty_raw       TEXT,                         -- original text
+    category      TEXT,                         -- "1000 X 20" (tyre) / "120Amp" (battery)
+    category_norm TEXT,                         -- pricing join key (uppercased, spaces stripped)
+    min_number    TEXT,
+    km            TEXT,
+    unit_price    REAL,                         -- per-issue override; NULL = fall back to category price
+    source        TEXT,                         -- import tag
+    row_hash      TEXT UNIQUE,                  -- idempotent re-import key
+    created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_tbi_kind_date ON tyre_battery_issues(kind, issue_date);
+  CREATE INDEX IF NOT EXISTS idx_tbi_catnorm ON tyre_battery_issues(kind, category_norm);
+  CREATE TABLE IF NOT EXISTS tyre_battery_prices (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind          TEXT NOT NULL,               -- 'tyre' | 'battery'
+    category_norm TEXT NOT NULL,
+    category      TEXT,                         -- display form
+    unit_price    REAL,
+    updated_by    TEXT,
+    updated_at    TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(kind, category_norm)
+  );`);
   // Seed the RBAC matrix once (safe to require here — db exports are already set).
   try { require('../lib/permissions').seedDefaults(); } catch (e) { /* table may not exist yet on very first pass */ }
   return db;

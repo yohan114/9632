@@ -192,7 +192,7 @@ function buildService(wb, ym, period) {
 // ---------------------------------------------------------------------------
 // Tyre work cost (from monthly_report_inputs)
 // ---------------------------------------------------------------------------
-function buildTyre(wb, year, month, period) {
+function buildTyre(wb, ym, period) {
   const ws = wb.addWorksheet('Tyre work cost');
   [6, 14, 20, 12, 10, 18, 34, 13, 14, 13, 13, 12].forEach((w, i) => { ws.getColumn(i + 1).width = w; });
   titleBand(ws, 12, 'Tyre work cost calculation for vehicles and machinery', period);
@@ -202,16 +202,22 @@ function buildTyre(wb, year, month, period) {
   ['Tyre cost', 'Tube and Flap cost', 'Out side work cost', 'Total Cost'].forEach((t, i) => { const c = ws.getCell(5, 8 + i); c.value = t; headerCell(c); });
   ws.mergeCells(4, 12, 5, 12); const rem = ws.getCell(4, 12); rem.value = 'Remarks'; headerCell(rem);
 
-  const rows = inputRows(year, month, 'tyre');
+  // Auto-sourced from the tyre issue ledger. Tyre cost = qty × price (per-issue override, else category price).
+  const rows = all(
+    `SELECT i.issue_date, i.vehicle, i.qty, i.qty_raw, i.site, i.category,
+            COALESCE(i.unit_price, p.unit_price, 0) unit_price
+       FROM tyre_battery_issues i
+       LEFT JOIN tyre_battery_prices p ON p.kind = i.kind AND p.category_norm = i.category_norm
+      WHERE i.kind = 'tyre' AND substr(i.issue_date,1,7) = ? ORDER BY i.issue_date, i.id`, ym);
   const sums = { tyre: 0, tube: 0, outside: 0, total: 0 };
   let r = 6, se = 1;
   for (const x of rows) {
-    const t1 = num(x.amount1), t2 = num(x.amount2), t3 = num(x.amount3), tot = t1 + t2 + t3;
-    textCell(ws, r, 1, se); textCell(ws, r, 2, dateOnly(x.line_date)); textCell(ws, r, 3, '');
-    textCell(ws, r, 4, x.vehicle || ''); textCell(ws, r, 5, x.qty || '');
-    textCell(ws, r, 6, x.project || ''); textCell(ws, r, 7, x.label || '', { wrap: true });
-    moneyCell(ws, r, 8, t1); moneyCell(ws, r, 9, t2); moneyCell(ws, r, 10, t3); moneyCell(ws, r, 11, tot); textCell(ws, r, 12, '');
-    sums.tyre += t1; sums.tube += t2; sums.outside += t3; sums.total += tot;
+    const cost = r2(num(x.qty) * num(x.unit_price));
+    textCell(ws, r, 1, se); textCell(ws, r, 2, dateOnly(x.issue_date)); textCell(ws, r, 3, '');
+    textCell(ws, r, 4, x.vehicle || ''); textCell(ws, r, 5, x.qty_raw || x.qty || '');
+    textCell(ws, r, 6, x.site || ''); textCell(ws, r, 7, x.category || '', { wrap: true });
+    moneyCell(ws, r, 8, cost); moneyCell(ws, r, 9, 0); moneyCell(ws, r, 10, 0); moneyCell(ws, r, 11, cost); textCell(ws, r, 12, '');
+    sums.tyre += cost; sums.total += cost;
     r++; se++;
   }
   const last = r - 1, gr = r;
@@ -231,7 +237,7 @@ function buildTyre(wb, year, month, period) {
 // ---------------------------------------------------------------------------
 // Battery cost (from monthly_report_inputs)
 // ---------------------------------------------------------------------------
-function buildBattery(wb, year, month, period) {
+function buildBattery(wb, ym, period) {
   const ws = wb.addWorksheet('Battery cost');
   [6, 14, 20, 12, 10, 20, 16, 14, 13, 14, 12].forEach((w, i) => { ws.getColumn(i + 1).width = w; });
   titleBand(ws, 11, 'Battery cost calculation for vehicles and machinery', period);
@@ -241,15 +247,21 @@ function buildBattery(wb, year, month, period) {
   ['Battery Cost', 'Other', 'Total Cost'].forEach((t, i) => { const c = ws.getCell(5, 8 + i); c.value = t; headerCell(c); });
   ws.mergeCells(4, 11, 5, 11); const rem = ws.getCell(4, 11); rem.value = 'Remarks'; headerCell(rem);
 
-  const rows = inputRows(year, month, 'battery');
+  // Auto-sourced from the battery issue ledger. Battery cost = qty × price (per-issue override, else category price).
+  const rows = all(
+    `SELECT i.issue_date, i.vehicle, i.qty, i.qty_raw, i.site, i.category,
+            COALESCE(i.unit_price, p.unit_price, 0) unit_price
+       FROM tyre_battery_issues i
+       LEFT JOIN tyre_battery_prices p ON p.kind = i.kind AND p.category_norm = i.category_norm
+      WHERE i.kind = 'battery' AND substr(i.issue_date,1,7) = ? ORDER BY i.issue_date, i.id`, ym);
   const sums = { battery: 0, other: 0, total: 0 };
   let r = 6, se = 1;
   for (const x of rows) {
-    const b1 = num(x.amount1), b2 = num(x.amount2), tot = b1 + b2;
-    textCell(ws, r, 1, se); textCell(ws, r, 2, dateOnly(x.line_date)); textCell(ws, r, 3, '');
-    textCell(ws, r, 4, x.vehicle || ''); textCell(ws, r, 5, x.qty || ''); textCell(ws, r, 6, x.project || '');
-    textCell(ws, r, 7, x.label || ''); moneyCell(ws, r, 8, b1); moneyCell(ws, r, 9, b2); moneyCell(ws, r, 10, tot); textCell(ws, r, 11, '');
-    sums.battery += b1; sums.other += b2; sums.total += tot;
+    const cost = r2(num(x.qty) * num(x.unit_price));
+    textCell(ws, r, 1, se); textCell(ws, r, 2, dateOnly(x.issue_date)); textCell(ws, r, 3, '');
+    textCell(ws, r, 4, x.vehicle || ''); textCell(ws, r, 5, x.qty_raw || x.qty || ''); textCell(ws, r, 6, x.site || '');
+    textCell(ws, r, 7, x.category || ''); moneyCell(ws, r, 8, cost); moneyCell(ws, r, 9, 0); moneyCell(ws, r, 10, cost); textCell(ws, r, 11, '');
+    sums.battery += cost; sums.total += cost;
     r++; se++;
   }
   const last = r - 1, gr = r;
@@ -470,8 +482,8 @@ async function buildWorkbook(year, month) {
   const parts = {
     repair: buildRepair(wb, ym, period),
     service: buildService(wb, ym, period),
-    tyre: buildTyre(wb, year, month, period),
-    battery: buildBattery(wb, year, month, period),
+    tyre: buildTyre(wb, ym, period),
+    battery: buildBattery(wb, ym, period),
     fuel: buildFuel(wb, year, month, period),
     salaries: buildSalaries(wb, year, month, ym, period),
     other: buildOther(wb, year, month, period),

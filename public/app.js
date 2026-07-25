@@ -365,6 +365,7 @@ const NAV = [
   ['attention', '⚠️', 'Needs Attention'],
   ['progress', '📆', 'Daily Progress'],
   ['teardown', '📉', 'Cost Teardown'],
+  ['tyrebattery', '🛞', 'Tyre & Battery'],
   ['reports', '📈', 'Reports'],
   ['access', '🔐', 'Access Control', 'admin'],
 ];
@@ -373,7 +374,7 @@ const NAV_MODULE = {
   assets: 'assets', jobs: 'jobs', jobrequests: 'jobrequests', dailywork: 'dailywork',
   labour: 'labour', stores: 'stores', oil: 'oil', batteries: 'batteries', filters: 'filters',
   projects: 'projects', aliases: 'aliases', attention: 'reports', progress: 'reports',
-  teardown: 'reports', reports: 'reports',
+  teardown: 'reports', reports: 'reports', tyrebattery: 'reports',
   matreq: 'stores', stockissues: 'stores', generalstock: 'stores', filterstock: 'filters',
 };
 function navVisible(n) {
@@ -390,7 +391,7 @@ const NAV_GROUP = {
   stores: 'Inventory', generalstock: 'Inventory', filterstock: 'Inventory', oil: 'Inventory', filters: 'Inventory', batteries: 'Inventory',
   matreq: 'Procurement', stockissues: 'Procurement',
   assets: 'Fleet',
-  reports: 'Analysis', attention: 'Analysis', progress: 'Analysis', teardown: 'Analysis', aliases: 'Analysis', projects: 'Analysis', labour: 'Analysis',
+  reports: 'Analysis', attention: 'Analysis', progress: 'Analysis', teardown: 'Analysis', tyrebattery: 'Analysis', aliases: 'Analysis', projects: 'Analysis', labour: 'Analysis',
   access: 'Admin',
 };
 
@@ -2371,10 +2372,10 @@ routes.aliases = async (c) => {
 
 // ---- Reports
 // ---- Monthly Cost Report — manual inputs editor (Tyre/Battery/Fuel/Other/Staff salaries)
-const MRI_SHEETS = [['tyre', 'Tyre'], ['battery', 'Battery'], ['fuel', 'Fuel'], ['other', 'Other (overhead)'], ['salary', 'Salaries (Staff)']];
+// Tyre & Battery are auto-sourced from the issue ledger (see routes.tyrebattery); only these
+// three sheets are entered by hand here.
+const MRI_SHEETS = [['fuel', 'Fuel'], ['other', 'Other (overhead)'], ['salary', 'Salaries (Staff)']];
 const MRI_COLS = {
-  tyre: [['line_date', 'Date', 'date'], ['vehicle', 'Reg No', 'text'], ['qty', 'Qty', 'text'], ['project', 'Project / Plant', 'text'], ['label', 'Details', 'text'], ['amount1', 'Tyre cost', 'num'], ['amount2', 'Tube & Flap', 'num'], ['amount3', 'Outside', 'num']],
-  battery: [['line_date', 'Date', 'date'], ['vehicle', 'Reg No', 'text'], ['qty', 'Qty', 'text'], ['project', 'Project / Plant', 'text'], ['label', 'Battery category', 'text'], ['amount1', 'Battery cost', 'num'], ['amount2', 'Other', 'num']],
   fuel: [['vehicle', 'Reg No', 'text'], ['label', 'Machine type', 'text'], ['qty', 'Qty (L)', 'num'], ['rate', 'Fuel rate', 'num'], ['amount2', 'Std rate', 'num']],
   other: [['label', 'Cost type', 'text'], ['project', 'Project / Plant', 'text'], ['amount1', 'Amount', 'num']],
   salary: [['label', 'Name', 'text'], ['qty', 'Qty', 'text'], ['project', 'Project / Plant', 'text'], ['amount1', 'Cost', 'num'], ['amount2', 'Other', 'num']],
@@ -2385,7 +2386,7 @@ async function openMonthlyInputs(year, month, onSaved) {
   catch (e) { return toast(e.message, 'err'); }
   const state = {};
   for (const [k] of MRI_SHEETS) state[k] = (data.inputs[k] || []).map((r) => ({ ...r }));
-  let active = 'tyre';
+  let active = 'fuel';
   const bg = modal(`Monthly inputs — ${MONTH_NAMES[month]} ${year}`, `
     <p class="muted" style="margin-top:0;font-size:12px">Only these five sheets are entered by hand — Repair, Service and the mechanic-hours table are pulled from live data automatically.</p>
     <div class="toolbar" id="mri-tabs" style="margin-top:0">${MRI_SHEETS.map(([k, l]) => `<button class="sm" data-k="${k}">${l}</button>`).join('')}</div>
@@ -2419,6 +2420,73 @@ async function openMonthlyInputs(year, month, onSaved) {
   }, { persistent: true });
   const box = qs('.modal', bg); if (box) { box.style.width = 'min(940px, 95vw)'; box.style.maxWidth = 'none'; }
 }
+
+// ---- Tyre & Battery Issues — imported ledger + category price book (feeds the Monthly Cost Report)
+routes.tyrebattery = async (c) => {
+  const sp = new URLSearchParams(location.hash.split('?')[1] || '');
+  const kind = sp.get('kind') === 'battery' ? 'battery' : 'tyre';
+  c.innerHTML = pageHeader('Tyre & Battery Issues', 'Imported issue ledger — set a price per category (or override a single issue). Feeds the Monthly Cost Report’s Tyre & Battery sheets.') + `
+    <div class="toolbar">
+      <button class="sm ${kind === 'tyre' ? 'primary' : ''}" id="tb-tyre">🛞 Tyre</button>
+      <button class="sm ${kind === 'battery' ? 'primary' : ''}" id="tb-batt">🔋 Battery</button>
+    </div>
+    <div id="tb-sum" class="grid section"></div>
+    <div class="card section">
+      <div class="toolbar" style="margin:0 0 8px"><h3 style="margin:0">Category prices</h3>
+        <span class="muted" style="font-weight:400">— set once per size / type; every matching issue is priced</span>
+        <div class="spacer"></div><button class="primary sm" id="tb-save">Save prices</button></div>
+      <div id="tb-cats" class="muted">Loading…</div></div>
+    <div class="card section">
+      <div class="toolbar" style="margin:0 0 8px"><h3 style="margin:0">Issues</h3>
+        <label style="width:auto">Month <input id="tb-month" type="month" style="width:auto"></label>
+        <input id="tb-q" placeholder="search vehicle / category / site" style="width:auto">
+        <div class="spacer"></div><span class="muted" id="tb-issum"></span></div>
+      <div id="tb-issues" class="muted">Loading…</div></div>`;
+  qs('#tb-tyre', c).onclick = () => { location.hash = '#/tyrebattery?kind=tyre'; };
+  qs('#tb-batt', c).onclick = () => { location.hash = '#/tyrebattery?kind=battery'; };
+
+  const loadSummary = async () => {
+    let s; try { s = await api('/tyre-battery/summary'); } catch (e) { return; }
+    const k = s[kind] || {};
+    qs('#tb-sum', c).innerHTML = [['Issues', k.issues], ['Total qty', num(k.qty)], ['Categories', k.categories], ['Priced issues', (k.priced_issues || 0) + ' / ' + (k.issues || 0)], ['Priced categories', k.priced_categories]]
+      .map(([l, v]) => `<div class="card stat"><span class="n">${v}</span><span class="l">${esc(l)}</span></div>`).join('');
+  };
+
+  let catState = [];
+  const loadCats = async () => {
+    let d; try { d = await api('/tyre-battery/categories?kind=' + kind); } catch (e) { qs('#tb-cats', c).innerHTML = `<span class="err">${esc(e.message)}</span>`; return; }
+    catState = d.categories;
+    qs('#tb-cats', c).innerHTML = tableWrap(
+      [{ label: 'Category' }, { label: 'Issues', num: true }, { label: 'Total qty', num: true }, { label: 'Unit price (Rs)', num: true }],
+      catState.map((r, i) => `<tr><td>${esc(r.category)}</td><td class="num">${r.issues}</td><td class="num">${num(r.qty)}</td><td class="num"><input type="number" min="0" step="0.01" data-i="${i}" class="tb-price" value="${r.unit_price == null ? '' : r.unit_price}" style="width:120px;text-align:right"></td></tr>`),
+      { scroll: true });
+    qsa('.tb-price', c).forEach((inp) => { inp.oninput = () => { catState[+inp.dataset.i].unit_price = inp.value === '' ? null : Number(inp.value); }; });
+  };
+  qs('#tb-save', c).onclick = async () => {
+    const prices = catState.map((r) => ({ category_norm: r.category_norm, category: r.category, unit_price: r.unit_price }));
+    try { const res = await api('/tyre-battery/prices', { method: 'POST', body: { kind, prices } }); toast('Saved ' + res.saved + ' category prices'); loadSummary(); loadIssues(); }
+    catch (e) { toast(e.message, 'err'); }
+  };
+
+  const loadIssues = async () => {
+    const month = qs('#tb-month', c).value, q = qs('#tb-q', c).value;
+    let d;
+    try { d = await api('/tyre-battery/issues?kind=' + kind + (month ? '&month=' + month : '') + (q ? '&q=' + encodeURIComponent(q) : '') + '&limit=500'); }
+    catch (e) { qs('#tb-issues', c).innerHTML = `<span class="err">${esc(e.message)}</span>`; return; }
+    qs('#tb-issum', c).textContent = `${d.summary.count} issues · ${num(d.summary.qty)} qty · ${money(d.summary.cost)}`;
+    qs('#tb-issues', c).innerHTML = tableWrap(
+      [{ label: 'Date' }, { label: 'Vehicle' }, { label: 'Site' }, { label: 'Qty', num: true }, { label: 'Category' }, { label: 'Override price', num: true }, { label: 'Cost', num: true }],
+      d.issues.map((r) => `<tr><td>${esc(r.issue_date || '—')}</td><td>${esc(r.vehicle || '')}${r.asset_code ? ` <span class="muted">(${esc(r.asset_code)})</span>` : ''}</td><td>${esc(r.site || '')}</td><td class="num">${esc(r.qty_raw || r.qty)}</td><td>${esc(r.category || '')}</td><td class="num"><input type="number" min="0" step="0.01" class="tb-ovr" data-id="${r.id}" value="${r.unit_price == null ? '' : r.unit_price}" placeholder="${r.effective_price || 0}" style="width:100px;text-align:right"></td><td class="num">${money(r.cost)}</td></tr>`),
+      { scroll: true });
+    qsa('.tb-ovr', c).forEach((inp) => { inp.onchange = async () => {
+      try { await api('/tyre-battery/issues/' + inp.dataset.id, { method: 'PATCH', body: { unit_price: inp.value === '' ? null : Number(inp.value) } }); toast('Override saved'); loadIssues(); loadSummary(); }
+      catch (e) { toast(e.message, 'err'); }
+    }; });
+  };
+  qs('#tb-month', c).onchange = loadIssues;
+  let qTimer; qs('#tb-q', c).oninput = () => { clearTimeout(qTimer); qTimer = setTimeout(loadIssues, 300); };
+  loadSummary(); loadCats(); loadIssues();
+};
 
 routes.reports = async (c) => {
   const [byAsset, byProject, bySite, bySource, variance] = await Promise.all([
@@ -2484,7 +2552,7 @@ routes.reports = async (c) => {
         line('Salaries (Staff)', p.salary.count, p.salary.staff_total, p.salary.count === 0),
         line('Other (overhead)', p.other.count, p.other.total, p.other.count === 0),
         `<tr><td><b>Grand Total (incl. 10% Sundry)</b></td><td></td><td class="num"><b>${money(p.grand_total)}</b></td><td></td></tr>`]) +
-      `<p class="muted" style="font-size:12px;margin:6px 0 0">Repair, Service &amp; the mechanic-hours table are pulled from live data. Tyre, Battery, Fuel, Overhead &amp; Staff salaries come from <b>Edit monthly inputs</b>.</p>`;
+      `<p class="muted" style="font-size:12px;margin:6px 0 0">Repair, Service &amp; the mechanic-hours table are pulled from live data. Tyre &amp; Battery come from the <a href="#/tyrebattery">Tyre &amp; Battery</a> ledger (qty × price). Fuel, Overhead &amp; Staff salaries come from <b>Edit monthly inputs</b>.</p>`;
   };
   mcrYear.onchange = loadMcr; mcrMonth.onchange = loadMcr;
   qs('#mcr-edit', c).onclick = () => openMonthlyInputs(+mcrYear.value, +mcrMonth.value, loadMcr);

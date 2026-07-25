@@ -634,7 +634,9 @@ router.get('/issues-by-vehicle', requireAuth, asyncHandler((req, res) => {
 // Other/overhead, Staff/Security salaries) are entered via /monthly-inputs and stored in
 // monthly_report_inputs. See src/lib/monthly_cost_report.js for the layout + column map.
 // ===========================================================================
-const MONTHLY_SHEETS = ['tyre', 'battery', 'fuel', 'other', 'salary'];
+// Tyre & Battery are auto-sourced from the issue ledger (tyre_battery_issues); only these three
+// sheets are entered by hand.
+const MONTHLY_SHEETS = ['fuel', 'other', 'salary'];
 
 function validPeriod(year, month) {
   return Number.isInteger(year) && year >= 2000 && year <= 2100 && Number.isInteger(month) && month >= 1 && month <= 12;

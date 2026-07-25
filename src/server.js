@@ -64,6 +64,7 @@ app.use('/api/dashboard', require('./routes/dashboard'));
 app.use('/api/mechanics', require('./routes/mechanics'));
 app.use('/api/users', require('./routes/users'));
 app.use('/api/reports', require('./routes/reports'));
+app.use('/api/tyre-battery', require('./routes/tyre_battery'));
 
 // Static frontend (SPA). index.html is served with a per-boot cache-bust token on
 // app.js / styles.css so a normal reload always picks up the latest build.
