@@ -437,7 +437,8 @@ function buildOther(wb, year, month, period) {
 // both are excluded here to avoid double-counting (see [[service-cost-reconciliation]]).
 // ---------------------------------------------------------------------------
 const OILVAL = 'ABS(sl.qty) * COALESCE(sl.unit_price, pr.unit_price, 0)';
-const LUBE = "pr.category <> 'fuel'"; // engine/gear/hydraulic/grease/other — fuel is its own sheet
+// True lubricants only — NOT fuel, and NOT non-oil consumables like Cotton Waste (category 'other').
+const LUBE = "pr.category IN ('engine_oil','gear_oil','hydraulic','grease')";
 function buildOils(wb, ym, period, repairOil, serviceOil, repairJobIds) {
   const ws = wb.addWorksheet('Oils & Lubrication');
   [6, 14, 26, 22, 18, 10, 13, 14, 16].forEach((w, i) => { ws.getColumn(i + 1).width = w; });
