@@ -2815,6 +2815,7 @@ routes.generalstock = async (c) => {
       <input type="search" id="gs-q" placeholder="Search name / item no / category…" style="max-width:240px">
       <select id="gs-cat" style="max-width:180px"><option value="">All categories</option></select>
       <button class="sm" id="gs-low">Low stock only</button>
+      <button class="sm" id="gs-unpriced">Unpriced only</button>
       <div class="spacer"></div>
       ${edit ? '<button class="primary sm" id="gs-add">+ Add Item</button>' : ''}
       <span class="muted" id="gs-count"></span>
@@ -2823,31 +2824,46 @@ routes.generalstock = async (c) => {
 
   try { (await api('/general-stock/categories')).forEach((cat) => { const o = document.createElement('option'); o.value = cat; o.textContent = cat; qs('#gs-cat').appendChild(o); }); } catch (e) { /* dropdown optional */ }
 
-  let lowOnly = false, rows = [];
+  let lowOnly = false, unpricedOnly = false, rows = [], suggMap = null;
   const load = async () => {
     const q = qs('#gs-q').value.trim(), cat = qs('#gs-cat').value;
     const query = '?' + (q ? 'q=' + encodeURIComponent(q) + '&' : '') + (cat ? 'category=' + encodeURIComponent(cat) + '&' : '') + (lowOnly ? 'low_stock=1' : '');
     try {
+      if (suggMap === null) { try { suggMap = await api('/general-stock/suggestions'); } catch (e) { suggMap = {}; } }
       const [s, items] = await Promise.all([api('/general-stock/summary'), api('/general-stock/items' + query)]);
       qs('#gs-stats').innerHTML = [
         [num(s.total_items), 'Total Items'], [moneyC(s.total_value), 'Total Value (LKR)'],
         [num(s.low_stock_count), 'Low Stock'], [num(s.categories), 'Categories'],
       ].map(([n, l]) => `<div class="card stat"><span class="n">${n}</span><span class="l">${esc(l)}</span></div>`).join('');
-      rows = items;
-      qs('#gs-count').textContent = items.length + (items.length === 1 ? ' item' : ' items');
-      const headers = [{ label: 'Item No' }, { label: 'Name' }, { label: 'Category' }, { label: 'Unit' }, { label: 'Balance', num: true }, { label: 'Min Stock', num: true }, { label: 'Unit Cost', num: true }, { label: 'Total Value', num: true }, { label: 'Status' }, { label: 'Actions' }];
-      const body = items.map((r) => `<tr${r.status !== 'ok' ? ' style="background:rgba(224,168,0,.06)"' : ''}>
+      rows = unpricedOnly ? items.filter((r) => !(Number(r.unit_cost) > 0)) : items;
+      qs('#gs-count').textContent = rows.length + (rows.length === 1 ? ' item' : ' items') + (unpricedOnly ? ' (unpriced)' : '');
+      const headers = [{ label: 'Item No' }, { label: 'Name' }, { label: 'Category' }, { label: 'Unit' }, { label: 'Balance', num: true }, { label: 'Min Stock', num: true }, { label: 'Unit Cost (Rs)', num: true }, { label: 'Total Value', num: true }, { label: 'Status' }, { label: 'Actions' }];
+      const priceCell = (r) => {
+        if (!edit) return `<td class="num">${money(r.unit_cost)}</td>`;
+        const sug = suggMap[r.id];
+        const hint = (!(Number(r.unit_cost) > 0) && sug) ? `<br><a href="#" class="gs-use muted" data-id="${r.id}" data-p="${sug}" style="font-size:11px">use ${money(sug)}</a>` : '';
+        return `<td class="num"><input type="number" min="0" step="0.01" class="gs-price" data-id="${r.id}" value="${Number(r.unit_cost) > 0 ? r.unit_cost : ''}" placeholder="${sug || 0}" style="width:92px;text-align:right">${hint}</td>`;
+      };
+      const body = rows.map((r) => `<tr${r.status !== 'ok' ? ' style="background:rgba(224,168,0,.06)"' : ''}>
         <td>${esc(r.item_no || '')}</td>
         <td><b>${esc(r.name)}</b>${r.description ? `<br><span class="muted" style="font-size:11px">${esc(r.description)}</span>` : ''}</td>
         <td>${esc(r.category || '—')}</td><td>${esc(r.unit || '')}</td>
         <td class="num">${num(r.balance)}</td><td class="num">${num(r.min_stock)}</td>
-        <td class="num">${money(r.unit_cost)}</td><td class="num">${money(r.total_value)}</td>
+        ${priceCell(r)}<td class="num">${money(r.total_value)}</td>
         <td>${gsStatus(r.status)}</td>
         <td>${edit ? `<button class="sm" data-adj="${r.id}">Adjust</button>` : ''}</td></tr>`);
       qs('#gs-table').innerHTML = tableWrap(headers, body, { scroll: true });
       qsa('[data-adj]').forEach((b) => { b.onclick = () => gsAdjust(rows.find((x) => String(x.id) === b.dataset.adj)); });
+      const savePrice = async (id, val) => {
+        try { await api('/general-stock/items/' + id + '/price', { method: 'POST', body: { unit_cost: val === '' ? null : Number(val) } });
+          const it = rows.find((x) => String(x.id) === String(id)); if (it) { it.unit_cost = val === '' ? 0 : Number(val); it.total_value = Math.round(it.balance * it.unit_cost * 100) / 100; }
+          toast('Price saved'); } catch (e) { toast(e.message, 'err'); }
+      };
+      qsa('.gs-price', qs('#gs-table')).forEach((inp) => { inp.onchange = () => savePrice(inp.dataset.id, inp.value); });
+      qsa('.gs-use', qs('#gs-table')).forEach((a) => { a.onclick = (ev) => { ev.preventDefault(); const inp = qs('.gs-price[data-id="' + a.dataset.id + '"]', qs('#gs-table')); if (inp) { inp.value = a.dataset.p; savePrice(a.dataset.id, a.dataset.p); a.remove(); } }; });
     } catch (e) { qs('#gs-table').innerHTML = `<div class="card"><p class="err">${esc(e.message)}</p></div>`; }
   };
+  qs('#gs-unpriced', c).onclick = () => { unpricedOnly = !unpricedOnly; qs('#gs-unpriced', c).classList.toggle('primary', unpricedOnly); load(); };
 
   const gsAdd = () => modal('Add General Stock Item', `
     <div class="row">${field('Name', 'name')}${field('Category', 'category')}</div>

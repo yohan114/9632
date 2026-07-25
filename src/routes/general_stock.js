@@ -147,4 +147,42 @@ router.get('/low-stock', asyncHandler((_req, res) => {
   res.json(rows);
 }));
 
+// ---- pricing ---------------------------------------------------------------
+// Set an item's unit_cost (the price used for valuation + the Monthly Cost Report's
+// General Items section). Storekeeper only.
+router.post('/items/:id/price', requireRole('storekeeper'), asyncHandler((req, res) => {
+  const id = toInt(req.params.id);
+  const item = get('SELECT id, name, unit_cost FROM store_items WHERE id = ? AND is_general = 1', id);
+  if (!item) return res.status(404).json({ error: 'Item not found' });
+  const raw = (req.body || {}).unit_cost;
+  const price = raw == null || raw === '' ? null : toNum(raw);
+  if (price != null && price < 0) return res.status(400).json({ error: 'Price cannot be negative' });
+  run('UPDATE store_items SET unit_cost = ? WHERE id = ?', price, id);
+  audit.record({ userId: req.user.id, entity: 'store_item', entityId: id, action: 'update', before: { unit_cost: item.unit_cost }, after: { unit_cost: price } });
+  try { emitter.notify('store_item', 'update', { id }); } catch (e) { /* live push best-effort */ }
+  res.json({ ok: true, id, unit_cost: price });
+}));
+
+// Suggested prices from GRN purchase records (highest, matched by item name — exact, size-variant,
+// word-order or tight typo). Returns { itemId: suggestedPrice } for items that match a purchase.
+const _norm = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+const _tok = (s) => [...new Set(String(s || '').toLowerCase().split(/[^a-z0-9]+/).filter(Boolean))].sort().join('|');
+function _lev(a, b) { const m = a.length, n = b.length; if (!m) return n; if (!n) return m; const d = Array.from({ length: m + 1 }, (_, i) => [i, ...Array(n).fill(0)]); for (let j = 1; j <= n; j++) d[0][j] = j; for (let i = 1; i <= m; i++) for (let j = 1; j <= n; j++) d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1)); return d[m][n]; }
+function _match(k, gk, tA, tB) { if (!k || !gk) return false; if (gk === k) return true; if (tA && tA === tB && tA.includes('|')) return true; if (k.length >= 6 && gk.startsWith(k)) { const r = gk.slice(k.length); if (/^\d/.test(r) || r.length <= 2) return true; } if (gk.length >= 6 && k.startsWith(gk)) { const r = k.slice(gk.length); if (/^\d/.test(r) || r.length <= 2) return true; } const d = _lev(k, gk), mx = Math.max(k.length, gk.length); return mx >= 6 && d / mx <= 0.12; }
+router.get('/suggestions', asyncHandler((_req, res) => {
+  const gmap = new Map();
+  for (const r of all("SELECT description, unit_price FROM grn WHERE unit_price > 0 AND TRIM(COALESCE(description,'')) <> ''")) {
+    const k = _norm(r.description); if (!k) continue;
+    const e = gmap.get(k) || { max: 0, tk: _tok(r.description) }; e.max = Math.max(e.max, r.unit_price); gmap.set(k, e);
+  }
+  const gkeys = [...gmap.entries()];
+  const out = {};
+  for (const it of all('SELECT id, name FROM store_items WHERE is_general = 1')) {
+    const k = _norm(it.name), tk = _tok(it.name); let p = 0;
+    for (const [gk, e] of gkeys) if (_match(k, gk, tk, e.tk) && e.max > p) p = e.max;
+    if (p > 0) out[it.id] = Math.round(p * 100) / 100;
+  }
+  res.json(out);
+}));
+
 module.exports = router;
