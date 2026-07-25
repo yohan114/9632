@@ -711,4 +711,80 @@ router.post('/monthly-inputs', requireAuth, asyncHandler((req, res) => {
   res.json({ ok: true, sheet, saved: lines.length });
 }));
 
+// Monthly Repair Detail — an itemized "bill" for every repair job in the month (same Closed +
+// Pending set as the report's Repair sheet), each broken into its labour / parts / oil / general /
+// external line items with a per-job total and a grand total. Printable / save-as-PDF.
+router.get('/monthly-repair-detail.html', requireAuth, asyncHandler((req, res) => {
+  const year = toInt(req.query.year), month = toInt(req.query.month);
+  if (!validPeriod(year, month)) return res.status(400).send('year (YYYY) and month (1-12) are required');
+  const ym = `${year}-${String(month).padStart(2, '0')}`;
+  const period = `${monthlyReport.MONTHS[month]} ${year}`;
+  const closedIds = all(`SELECT id FROM job_cards WHERE status = 'CLOSED' AND completed_at IS NOT NULL AND substr(completed_at,1,7) = ? ORDER BY completed_at, id`, ym).map((r) => r.id);
+  const pendingIds = all(`SELECT id FROM job_cards WHERE status NOT IN ('CLOSED','REJECTED') AND id IN (SELECT DISTINCT job_id FROM job_labour WHERE substr(work_date,1,7) = ?) ORDER BY COALESCE(requested_at, created_at), id`, ym).map((r) => r.id);
+
+  const esc = (v) => String(v == null ? '' : v).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+  const money = (n) => (Number(n) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const n2 = (n) => (Number(n) || 0).toLocaleString('en-US');
+  const g = { labour: 0, material: 0, oil: 0, other: 0, external: 0, total: 0, jobs: 0 };
+
+  const renderJob = (id, se) => {
+    const s = costSheet(id);
+    if (!s) return '';
+    const j = s.job;
+    const other = (Number(j.general_cost) || 0) + (Number(j.other_cost) || 0);
+    const total = (Number(j.labour_cost) || 0) + (Number(j.material_cost) || 0) + (Number(j.oil_cost) || 0) + other + (Number(j.external_cost) || 0);
+    g.labour += Number(j.labour_cost) || 0; g.material += Number(j.material_cost) || 0; g.oil += Number(j.oil_cost) || 0;
+    g.other += other; g.external += Number(j.external_cost) || 0; g.total += total; g.jobs++;
+    const line = (type, item, qty, rate, amt) => `<tr><td>${type}</td><td>${esc(item)}</td><td class="num">${qty}</td><td class="num">${rate}</td><td class="num">${money(amt)}</td></tr>`;
+    const rows = [];
+    for (const l of s.labour_lines) rows.push(line('Labour', (l.mechanic || '') + (l.work_date ? ` · ${String(l.work_date).slice(0, 10)}` : ''), n2(l.hours), money(l.rate), l.amount));
+    for (const p of s.part_lines) rows.push(line('Part', p.description || '', n2(p.qty), money(p.unit_price), (Number(p.qty) || 0) * (Number(p.unit_price) || 0)));
+    for (const o of s.oil_lines) rows.push(line('Oil', (o.product_name || '') + (o.unit ? ` (${o.unit})` : ''), n2(Math.abs(o.qty)), money(o.unit_price), Math.abs(Number(o.qty) || 0) * (Number(o.unit_price) || 0)));
+    for (const gl of s.general_lines) rows.push(line('General', gl.item_name || '', n2(Math.abs(gl.qty)), money(gl.unit_price), Math.abs(Number(gl.qty) || 0) * (Number(gl.unit_price) || 0)));
+    for (const e of s.external_lines) rows.push(line('External', e.description || 'External repair', '', '', e.value));
+    const body = rows.join('') || '<tr><td colspan="5" class="muted">No line items recorded.</td></tr>';
+    return `<div class="job">
+      <div class="jh"><b>${se}. Job ${esc(j.job_no)}</b> — ${esc(s.asset_code || '')}${j.project_name ? ` · ${esc(j.project_name)}` : ''} · <span class="st">${esc(j.status)}</span> · ${esc(String(j.completed_at || j.requested_at || '').slice(0, 10))}
+        ${j.description ? `<div class="desc">${esc(j.description)}</div>` : ''}</div>
+      <table class="det"><thead><tr><th>Type</th><th>Item / Description</th><th class="num">Qty</th><th class="num">Rate/Price</th><th class="num">Amount</th></tr></thead>
+      <tbody>${body}</tbody>
+      <tfoot><tr class="jt"><td colspan="4">Job total — Labour ${money(j.labour_cost)} · Spare ${money(j.material_cost)} · Lube ${money(j.oil_cost)} · Other ${money(other)} · Outside ${money(j.external_cost)}</td><td class="num"><b>${money(total)}</b></td></tr></tfoot>
+      </table></div>`;
+  };
+  const section = (title, ids) => `<h2>${esc(title)} (${ids.length})</h2>${ids.length ? ids.map((id, i) => renderJob(id, i + 1)).join('') : '<p class="muted">None.</p>'}`;
+  const closedHtml = section('Closed Jobs — completed & closed in ' + period, closedIds);
+  const pendingHtml = section('Pending Jobs — work-in-progress worked in ' + period, pendingIds);
+
+  const html = `<!doctype html><html><head><meta charset="utf-8"><title>Repair Detail ${esc(period)}</title>
+<style>
+  @page { size: A4; margin: 12mm; } body { font-family: Arial, sans-serif; color:#000; font-size:11px; margin:0; }
+  h1 { font-size:17px; margin:0 0 2px; } h2 { font-size:13px; margin:16px 0 6px; border-bottom:2px solid #333; padding-bottom:2px; }
+  .sub { color:#444; margin-bottom:8px; } button { padding:8px 14px; font-size:14px; margin:10px 0; cursor:pointer; }
+  .job { border:1px solid #bbb; border-radius:4px; padding:6px 8px; margin:0 0 8px; break-inside:avoid; }
+  .jh { margin-bottom:4px; } .jh .st { color:#1d5a73; font-weight:bold; } .desc { color:#555; font-size:10px; margin-top:2px; }
+  table.det { width:100%; border-collapse:collapse; } .det th,.det td { border:1px solid #ccc; padding:2px 5px; }
+  .det th { background:#f0f0f0; text-align:left; } td.num,th.num { text-align:right; white-space:nowrap; }
+  .det tfoot .jt td { background:#f7f7f7; font-weight:bold; } .muted { color:#999; }
+  .grand { margin-top:14px; border-top:3px double #333; padding-top:8px; }
+  .grand table { width:auto; margin-left:auto; border-collapse:collapse; } .grand td { padding:3px 12px; } .grand .tot { font-size:15px; font-weight:bold; border-top:2px solid #333; }
+  @media print { .noprint { display:none; } }
+</style></head><body>
+<button class="noprint" onclick="window.print()">🖨 Print / Save as PDF</button>
+<h1>Edward &amp; Christie (Pvt) Ltd — Badalgama W/S</h1>
+<div class="sub">Monthly Repair Detail — <b>${esc(period)}</b> · ${g.jobs} job(s)</div>
+${closedHtml}
+${pendingHtml}
+<div class="grand"><table>
+  <tr><td>Labour</td><td class="num">${money(g.labour)}</td></tr>
+  <tr><td>Spare parts</td><td class="num">${money(g.material)}</td></tr>
+  <tr><td>Lubricant</td><td class="num">${money(g.oil)}</td></tr>
+  <tr><td>Other material</td><td class="num">${money(g.other)}</td></tr>
+  <tr><td>Outside work</td><td class="num">${money(g.external)}</td></tr>
+  <tr class="tot"><td>Grand total (${g.jobs} jobs)</td><td class="num">${money(g.total)}</td></tr>
+</table></div>
+</body></html>`;
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  res.send(html);
+}));
+
 module.exports = router;

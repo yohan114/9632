@@ -2515,6 +2515,7 @@ routes.reports = async (c) => {
         <div><label>Year</label><select id="mcr-year"></select></div>
         <div><label>Month</label><select id="mcr-month"></select></div>
         <button class="sm" id="mcr-edit">✎ Edit monthly inputs</button>
+        <a class="btn sm" id="mcr-rd" href="#" target="_blank">🖨 Repair Detail</a>
         <a class="btn primary sm" id="mcr-dl" href="#">⬇ Download Excel</a>
       </div>
       <div id="mcr-preview" class="muted">Loading…</div></div>
@@ -2551,6 +2552,7 @@ routes.reports = async (c) => {
   const loadMcr = async () => {
     const y = mcrYear.value, mo = mcrMonth.value;
     mcrDl.href = `/api/reports/monthly-cost.xlsx?year=${y}&month=${mo}`;
+    qs('#mcr-rd', c).href = `/api/reports/monthly-repair-detail.html?year=${y}&month=${mo}`;
     mcrPrev.innerHTML = '<span class="muted">Loading…</span>';
     let p;
     try { p = (await api(`/reports/monthly-inputs?year=${y}&month=${mo}`)).preview; }
