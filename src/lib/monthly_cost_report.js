@@ -451,8 +451,14 @@ function buildOils(wb, ym, period, repairOil, serviceOil, repairJobIds) {
   // issues (job_id NULL) AND oil on jobs Repair never renders (REQUESTED/no-labour, rejected,
   // closed in another month) — which were previously dropped from every sheet.
   const rendered = new Set(repairJobIds || []);
+  // Oil issued to a vehicle on a day it was serviced IS that service's oil (already counted in the
+  // Service sheet via service_oils). Imported oilbook rows aren't tagged consumer_type='service', so
+  // the tag check below is not enough — also match by (asset_id, date) to a service in the month.
+  const svcSig = new Set(all(
+    `SELECT DISTINCT asset_id || '|' || substr(service_date,1,10) sig FROM service_jobs
+      WHERE substr(service_date,1,7) = ? AND asset_id IS NOT NULL`, ym).map((r) => r.sig));
   const rawRows = all(
-    `SELECT sl.job_id, sl.txn_date, pr.name product, pr.unit, ABS(sl.qty) qty,
+    `SELECT sl.job_id, sl.asset_id, sl.txn_date, pr.name product, pr.unit, ABS(sl.qty) qty,
             COALESCE(sl.unit_price, pr.unit_price, 0) unit_price, ${OILVAL} cost,
             sl.consumer, sl.consumer_type, a.registration reg, a.code code, prj.name project, jc.job_no job_no
        FROM stock_ledger sl JOIN products pr ON pr.id = sl.product_id
@@ -461,7 +467,9 @@ function buildOils(wb, ym, period, repairOil, serviceOil, repairJobIds) {
       WHERE sl.kind = 'issue' AND ${LUBE} AND COALESCE(sl.voided,0) = 0
         AND COALESCE(sl.consumer_type,'') <> 'service' AND substr(sl.txn_date,1,7) = ?
       ORDER BY sl.txn_date, sl.id`, ym);
-  const rows = rawRows.filter((x) => x.job_id == null || !rendered.has(x.job_id));
+  const rows = rawRows.filter((x) =>
+    (x.job_id == null || !rendered.has(x.job_id)) &&
+    !(x.asset_id != null && svcSig.has(x.asset_id + '|' + String(x.txn_date).slice(0, 10))));
 
   let r = 6, se = 1, total = 0;
   for (const x of rows) {
