@@ -44,6 +44,54 @@ router.get('/categories', requireAuth, asyncHandler((req, res) => {
   res.json({ kind, categories: rows });
 }));
 
+// Printable category price list (review / fill in on paper). Frequency-sorted, with totals.
+router.get('/categories/print.html', requireAuth, asyncHandler((req, res) => {
+  const kind = reqKind(req.query.kind);
+  if (!kind) return res.status(400).send('kind must be tyre or battery');
+  const rows = all(
+    `SELECT i.category_norm, MAX(i.category) category, COUNT(*) issues, ROUND(COALESCE(SUM(i.qty),0),2) qty,
+            MAX(p.unit_price) unit_price
+       FROM tyre_battery_issues i
+       LEFT JOIN tyre_battery_prices p ON p.kind = i.kind AND p.category_norm = i.category_norm
+      WHERE i.kind = ? AND COALESCE(i.category_norm,'') <> ''
+      GROUP BY i.category_norm ORDER BY issues DESC, i.category_norm`, kind);
+  const esc = (v) => String(v == null ? '' : v).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+  const money = (n) => (Number(n) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const title = kind === 'tyre' ? 'Tyre Category Prices' : 'Battery Category Prices';
+  const totQty = rows.reduce((s, r) => s + (Number(r.qty) || 0), 0);
+  const totVal = rows.reduce((s, r) => s + (Number(r.qty) || 0) * (Number(r.unit_price) || 0), 0);
+  const priced = rows.filter((r) => Number(r.unit_price) > 0).length;
+  const printed = new Date().toISOString().slice(0, 10);
+  const body = rows.map((r, i) => `<tr>
+      <td class="num">${i + 1}</td><td>${esc(r.category)}</td>
+      <td class="num">${r.issues}</td><td class="num">${money(r.qty)}</td>
+      <td class="num">${r.unit_price == null ? '' : money(r.unit_price)}</td>
+      <td class="num">${r.unit_price == null ? '' : money((Number(r.qty) || 0) * (Number(r.unit_price) || 0))}</td></tr>`).join('') ||
+    '<tr><td colspan="6" style="text-align:center;color:#666">No categories.</td></tr>';
+  const html = `<!doctype html><html><head><meta charset="utf-8"><title>${esc(title)}</title>
+<style>
+  @page { size: A4; margin: 12mm; }
+  body { font-family: Arial, sans-serif; color:#000; font-size:12px; margin:0; }
+  h1 { font-size:17px; margin:0 0 2px; } h2 { font-size:14px; margin:0 0 2px; } .sub { color:#444; margin-bottom:10px; }
+  table { width:100%; border-collapse:collapse; } th,td { border:1px solid #000; padding:4px 6px; } th { background:#f0f0f0; text-align:left; }
+  td.num, th.num { text-align:right; } tr.tot td { font-weight:bold; background:#f7f7f7; }
+  button { padding:8px 14px; font-size:14px; margin:10px 0; cursor:pointer; }
+  @media print { .noprint { display:none; } }
+</style></head><body>
+<button class="noprint" onclick="window.print()">🖨 Print / Save as PDF</button>
+<h1>Edward &amp; Christie (Pvt) Ltd — Badalgama W/S</h1>
+<h2>${esc(title)}</h2>
+<div class="sub">${rows.length} categories · ${priced} priced · printed ${esc(printed)}</div>
+<table>
+  <thead><tr><th class="num">Se</th><th>Category</th><th class="num">Issues</th><th class="num">Total Qty</th><th class="num">Unit Price (Rs)</th><th class="num">Value (Rs)</th></tr></thead>
+  <tbody>${body}</tbody>
+  <tfoot><tr class="tot"><td></td><td>Grand total</td><td class="num">${rows.length}</td><td class="num">${money(totQty)}</td><td></td><td class="num">${money(totVal)}</td></tr></tfoot>
+</table>
+</body></html>`;
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  res.send(html);
+}));
+
 // Issue list — filter by kind (required), optional month (YYYY-MM) and free-text query.
 router.get('/issues', requireAuth, asyncHandler((req, res) => {
   const kind = reqKind(req.query.kind);

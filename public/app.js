@@ -2434,7 +2434,9 @@ routes.tyrebattery = async (c) => {
     <div class="card section">
       <div class="toolbar" style="margin:0 0 8px"><h3 style="margin:0">Category prices</h3>
         <span class="muted" style="font-weight:400">— set once per size / type; every matching issue is priced</span>
-        <div class="spacer"></div><button class="primary sm" id="tb-save">Save prices</button></div>
+        <div class="spacer"></div>
+        <a class="btn sm" href="/api/tyre-battery/categories/print.html?kind=${kind}" target="_blank">🖨 Print</a>
+        <button class="primary sm" id="tb-save">Save prices</button></div>
       <div id="tb-cats" class="muted">Loading…</div></div>
     <div class="card section">
       <div class="toolbar" style="margin:0 0 8px"><h3 style="margin:0">Issues</h3>
