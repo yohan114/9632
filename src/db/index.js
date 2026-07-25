@@ -241,6 +241,32 @@ function migrate() {
   // Unambiguous link from a job_part to the MRN request line it came from (Phase 3):
   // avoids overloading the polymorphic source_id (a manual GRN part won't mislink to mrn_lines).
   ensureColumn('job_parts', 'mrn_line_id', 'INTEGER');
+  // Monthly Cost Report — manual inputs for the sheets the system can't source from
+  // transactions (Tyre, Battery, Fuel, Other/overhead, Staff/Security salaries). One row
+  // per line item, keyed by (year, month, sheet); generic columns cover all five sheets
+  // (see src/lib/monthly_cost_report.js for the per-sheet column mapping).
+  db.exec(`CREATE TABLE IF NOT EXISTS monthly_report_inputs (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    year       INTEGER NOT NULL,
+    month      INTEGER NOT NULL,            -- 1..12
+    sheet      TEXT NOT NULL,               -- 'tyre' | 'battery' | 'fuel' | 'other' | 'salary'
+    seq        INTEGER NOT NULL DEFAULT 0,  -- row order within the sheet
+    asset_id   INTEGER REFERENCES assets(id),
+    line_date  TEXT,                        -- date shown on the line (tyre/battery/fuel)
+    vehicle    TEXT,                        -- free-text Reg / machine label
+    label      TEXT,                        -- details / cost type / battery category / staff name
+    project    TEXT,                        -- Project / Plant
+    qty        TEXT,                        -- "02 Nos" / litres / headcount (free text like the paper form)
+    rate       REAL,                        -- fuel: per-litre rate (fuel cost = qty * rate)
+    amount1    REAL NOT NULL DEFAULT 0,     -- primary cost (tyre/battery/other/salary cost)
+    amount2    REAL NOT NULL DEFAULT 0,     -- secondary (tube&flap / battery-other / salary-other / fuel standard-rate)
+    amount3    REAL NOT NULL DEFAULT 0,     -- tertiary (tyre outside-work)
+    note       TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_mri_period ON monthly_report_inputs(year, month, sheet);`);
+  ensureColumn('monthly_report_inputs', 'line_date', 'TEXT'); // additive for tables created before this column existed
   // Seed the RBAC matrix once (safe to require here — db exports are already set).
   try { require('../lib/permissions').seedDefaults(); } catch (e) { /* table may not exist yet on very first pass */ }
   return db;

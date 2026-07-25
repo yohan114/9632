@@ -1,0 +1,475 @@
+'use strict';
+
+// Monthly Cost Report — replicates the company's "Job cost report" workbook (8 sheets:
+// Repair, Service, Tyre, Battery, Fuel, Salaries, Other, Total) for a given year+month.
+//
+// Data-backed sheets are computed from live data:
+//   Repair  ← job_cards completed in the month (+ an "Ongoing Job Labour" row for WIP)
+//   Service ← service_jobs in the month (labour + filter + lubricant + other; sundry excluded
+//             on the sheet — the Total sheet applies the uniform 10% Sundry, as in the original)
+//   Salaries (right "Actual" table) ← job_labour aggregated per mechanic in the month
+// The five sheets the system can't source from transactions read from monthly_report_inputs:
+//   Tyre, Battery, Fuel, Other (overhead), Salaries (left Staff/Security lump-sum table).
+//
+// Every grand total is written as a live Excel formula AND a pre-computed { result },
+// so the workbook shows correct figures immediately and stays a formula workbook.
+
+const ExcelJS = require('exceljs');
+const { all, get } = require('../db');
+
+const COMPANY = 'Edward and Christie (Pvt) Ltd — Badalgama W/S';
+const MONEY = '#,##0.00';
+const MONTHS = ['', 'January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+const SIG_TITLES = [
+  { role: 'Prepared By', title: '(Cost Officer)' },
+  { role: 'Checked By', title: '(Mechanical Engineer)' },
+  { role: 'Approved By', title: '(Senior Operation Manager)' },
+];
+
+const num = (v) => Number(v) || 0;
+const r2 = (v) => Math.round(num(v) * 100) / 100;   // 2-dp round — kills float noise (e.g. 5.4e-10)
+const dateOnly = (v) => (v ? String(v).slice(0, 10) : '');
+function colL(n) { let s = ''; while (n > 0) { const m = (n - 1) % 26; s = String.fromCharCode(65 + m) + s; n = (n - m - 1) / 26; } return s; }
+
+const THIN = { style: 'thin', color: { argb: 'FF999999' } };
+function border(c) { c.border = { top: THIN, left: THIN, bottom: THIN, right: THIN }; }
+function headerCell(c) {
+  c.font = { bold: true, size: 10 };
+  c.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
+  c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFEDEFF1' } };
+  border(c);
+}
+function moneyCell(ws, row, col, v) { const c = ws.getCell(row, col); c.value = r2(v); c.numFmt = MONEY; c.alignment = { horizontal: 'right' }; border(c); return c; }
+function textCell(ws, row, col, v, opts) { const c = ws.getCell(row, col); c.value = v == null ? '' : v; c.alignment = { vertical: 'top', wrapText: !!(opts && opts.wrap) }; border(c); return c; }
+function formulaMoney(ws, row, col, formula, result, bold) {
+  const c = ws.getCell(row, col); c.value = { formula, result: r2(result) };
+  c.numFmt = MONEY; c.alignment = { horizontal: 'right' }; if (bold) c.font = { bold: true }; border(c); return c;
+}
+
+// Company + subtitle band across the first two rows.
+function titleBand(ws, ncols, subtitle, period) {
+  ws.mergeCells(1, 1, 1, ncols);
+  const a = ws.getCell(1, 1); a.value = COMPANY; a.font = { bold: true, size: 13 }; a.alignment = { horizontal: 'center' };
+  ws.mergeCells(2, 1, 2, ncols);
+  const b = ws.getCell(2, 1); b.value = subtitle + ' — ' + period; b.font = { bold: true, size: 11 }; b.alignment = { horizontal: 'center' };
+  ws.getRow(1).height = 20; ws.getRow(2).height = 18;
+}
+
+// Standard three-column signature block starting at `row`.
+function signatures(ws, row, ncols) {
+  const span = Math.max(1, Math.floor(ncols / 3));
+  const cols = [1, 1 + span, 1 + 2 * span];
+  cols.forEach((col, i) => {
+    ws.getCell(row, col).value = '…................................';
+    const rc = ws.getCell(row + 1, col); rc.value = SIG_TITLES[i].role; rc.font = { bold: true };
+    ws.getCell(row + 2, col).value = SIG_TITLES[i].title;
+  });
+}
+
+function inputRows(year, month, sheet) {
+  return all('SELECT * FROM monthly_report_inputs WHERE year = ? AND month = ? AND sheet = ? ORDER BY seq, id', year, month, sheet);
+}
+
+// ---------------------------------------------------------------------------
+// Repair cost
+// ---------------------------------------------------------------------------
+function buildRepair(wb, ym, period) {
+  const ws = wb.addWorksheet('Repair cost');
+  [6, 14, 16, 20, 12, 12, 18, 44, 12, 13, 12, 13, 13, 14, 12].forEach((w, i) => { ws.getColumn(i + 1).width = w; });
+  titleBand(ws, 15, 'Workshop repairing cost calculation for vehicles and machinery', period);
+  const single = ['Se: no', 'Date (complete date)', 'Job Card No', 'Type of Machinery / Vehicle', 'Reg: No', 'Company Code', 'Project / Plant', 'Details of Repairing'];
+  single.forEach((t, i) => { ws.mergeCells(4, i + 1, 5, i + 1); const c = ws.getCell(4, i + 1); c.value = t; headerCell(c); });
+  ws.mergeCells(4, 9, 4, 14); const grp = ws.getCell(4, 9); grp.value = 'Repairing Cost (Rs)'; headerCell(grp);
+  ['Labor cost', 'Spare parts cost', 'Lubricant cost', 'Other material cost', 'Out side work cost', 'Total Cost'].forEach((t, i) => { const c = ws.getCell(5, 9 + i); c.value = t; headerCell(c); });
+  ws.mergeCells(4, 15, 5, 15); const rem = ws.getCell(4, 15); rem.value = 'Remarks'; headerCell(rem);
+
+  const rows = all(
+    `SELECT j.job_no, j.completed_at, j.description, j.site,
+            a.type atype, a.registration reg, a.code code, a.ec_code ec, p.name project,
+            COALESCE(j.labour_cost,0) labour, COALESCE(j.material_cost,0) material, COALESCE(j.oil_cost,0) oil,
+            COALESCE(j.general_cost,0) general, COALESCE(j.other_cost,0) other, COALESCE(j.external_cost,0) external
+       FROM job_cards j LEFT JOIN assets a ON a.id = j.asset_id LEFT JOIN projects p ON p.id = j.project_id
+      WHERE j.completed_at IS NOT NULL AND substr(j.completed_at,1,7) = ? AND j.status <> 'REJECTED'
+      ORDER BY j.completed_at, j.id`, ym);
+
+  const sums = { labour: 0, material: 0, oil: 0, other: 0, external: 0, total: 0 };
+  let r = 6, se = 1;
+  for (const j of rows) {
+    const other = num(j.general) + num(j.other);
+    const total = num(j.labour) + num(j.material) + num(j.oil) + other + num(j.external);
+    textCell(ws, r, 1, se); textCell(ws, r, 2, dateOnly(j.completed_at)); textCell(ws, r, 3, j.job_no);
+    textCell(ws, r, 4, j.atype || ''); textCell(ws, r, 5, j.reg || j.code || ''); textCell(ws, r, 6, j.ec || '');
+    textCell(ws, r, 7, j.project || j.site || ''); textCell(ws, r, 8, j.description || '', { wrap: true });
+    moneyCell(ws, r, 9, j.labour); moneyCell(ws, r, 10, j.material); moneyCell(ws, r, 11, j.oil);
+    moneyCell(ws, r, 12, other); moneyCell(ws, r, 13, j.external); moneyCell(ws, r, 14, total); textCell(ws, r, 15, '');
+    sums.labour += num(j.labour); sums.material += num(j.material); sums.oil += num(j.oil);
+    sums.other += other; sums.external += num(j.external); sums.total += total;
+    r++; se++;
+  }
+  // Ongoing Job Labour — labour logged this month on jobs NOT completed this month (work-in-progress).
+  const ongoing = num(get(
+    `SELECT COALESCE(SUM(jl.amount),0) v FROM job_labour jl JOIN job_cards j ON j.id = jl.job_id
+      WHERE substr(jl.work_date,1,7) = ? AND j.status <> 'REJECTED'
+        AND (j.completed_at IS NULL OR substr(j.completed_at,1,7) <> ?)`, ym, ym).v);
+  if (ongoing > 0) {
+    ws.mergeCells(r, 1, r, 8); const lab = ws.getCell(r, 1); lab.value = 'Ongoing Job Labour'; lab.font = { italic: true }; border(lab);
+    for (let col = 2; col <= 8; col++) border(ws.getCell(r, col));
+    moneyCell(ws, r, 9, ongoing); moneyCell(ws, r, 10, 0); moneyCell(ws, r, 11, 0); moneyCell(ws, r, 12, 0); moneyCell(ws, r, 13, 0); moneyCell(ws, r, 14, ongoing);
+    textCell(ws, r, 15, '');
+    sums.labour += ongoing; sums.total += ongoing;
+    r++;
+  }
+  const last = r - 1;
+  const gr = r;
+  ws.mergeCells(gr, 1, gr, 8); const gl = ws.getCell(gr, 1); gl.value = 'Grand total cost'; gl.font = { bold: true }; gl.alignment = { horizontal: 'right' }; border(gl);
+  for (let col = 2; col <= 8; col++) border(ws.getCell(gr, col));
+  const colKeys = [[9, 'labour'], [10, 'material'], [11, 'oil'], [12, 'other'], [13, 'external'], [14, 'total']];
+  for (const [col, key] of colKeys) {
+    if (last >= 6) formulaMoney(ws, gr, col, `SUM(${colL(col)}6:${colL(col)}${last})`, sums[key], true);
+    else moneyCell(ws, gr, col, 0).font = { bold: true };
+  }
+  textCell(ws, gr, 15, '');
+  signatures(ws, gr + 3, 15);
+  const q = (col) => `'Repair cost'!${colL(col)}${gr}`;
+  return { name: 'Repair cost', sums, count: rows.length, refs: { labour: q(9), material: q(10), oil: q(11), other: q(12), external: q(13), total: q(14) } };
+}
+
+// ---------------------------------------------------------------------------
+// Service cost
+// ---------------------------------------------------------------------------
+function buildService(wb, ym, period) {
+  const ws = wb.addWorksheet('Service cost');
+  [6, 14, 16, 20, 12, 12, 18, 40, 12, 13, 12, 13, 12, 14, 12].forEach((w, i) => { ws.getColumn(i + 1).width = w; });
+  titleBand(ws, 15, 'Workshop servicing cost calculation for vehicles and machinery', period);
+  const single = ['Se: no', 'Date (complete date)', 'Job Card No', 'Type of Machinery / Vehicle', 'Reg: No', 'Company Code', 'Project / Plant', 'Details'];
+  single.forEach((t, i) => { ws.mergeCells(4, i + 1, 5, i + 1); const c = ws.getCell(4, i + 1); c.value = t; headerCell(c); });
+  ws.mergeCells(4, 9, 4, 14); const grp = ws.getCell(4, 9); grp.value = 'Repairing Cost (Rs)'; headerCell(grp);
+  ['Labor cost', 'Filter cost', 'Lubricant cost', 'Other material cost', 'Out side work cost', 'Total Cost'].forEach((t, i) => { const c = ws.getCell(5, 9 + i); c.value = t; headerCell(c); });
+  ws.mergeCells(4, 15, 5, 15); const rem = ws.getCell(4, 15); rem.value = 'Remarks'; headerCell(rem);
+
+  const rows = all(
+    `SELECT s.id, s.service_date, s.job_no, s.vehicle_label, s.site_location, s.repair_details,
+            COALESCE(s.labour_charge,0) labour, COALESCE(s.parts_subtotal,0) parts,
+            a.type atype, a.registration reg, a.code code, a.ec_code ec,
+            (SELECT COALESCE(SUM(price),0) FROM service_filters WHERE service_id = s.id) filter,
+            (SELECT COALESCE(SUM(price),0) FROM service_oils WHERE service_id = s.id) oil
+       FROM service_jobs s LEFT JOIN assets a ON a.id = s.asset_id
+      WHERE substr(s.service_date,1,7) = ? ORDER BY s.service_date, s.id`, ym);
+
+  const sums = { labour: 0, filter: 0, oil: 0, other: 0, external: 0, total: 0 };
+  let r = 6, se = 1;
+  for (const s of rows) {
+    const filter = r2(s.filter), oil = r2(s.oil);
+    const other = Math.max(0, r2(num(s.parts) - filter - oil));
+    const total = r2(num(s.labour) + filter + oil + other);
+    textCell(ws, r, 1, se); textCell(ws, r, 2, dateOnly(s.service_date)); textCell(ws, r, 3, s.job_no);
+    textCell(ws, r, 4, s.atype || ''); textCell(ws, r, 5, s.reg || s.code || s.vehicle_label || ''); textCell(ws, r, 6, s.ec || '');
+    textCell(ws, r, 7, s.site_location || ''); textCell(ws, r, 8, s.repair_details || 'service', { wrap: true });
+    moneyCell(ws, r, 9, s.labour); moneyCell(ws, r, 10, filter); moneyCell(ws, r, 11, oil);
+    moneyCell(ws, r, 12, other); moneyCell(ws, r, 13, 0); moneyCell(ws, r, 14, total); textCell(ws, r, 15, '');
+    sums.labour += num(s.labour); sums.filter += filter; sums.oil += oil; sums.other += other; sums.total += total;
+    r++; se++;
+  }
+  const last = r - 1, gr = r;
+  ws.mergeCells(gr, 1, gr, 8); const gl = ws.getCell(gr, 1); gl.value = 'Grand total cost'; gl.font = { bold: true }; gl.alignment = { horizontal: 'right' }; border(gl);
+  for (let col = 2; col <= 8; col++) border(ws.getCell(gr, col));
+  const colKeys = [[9, 'labour'], [10, 'filter'], [11, 'oil'], [12, 'other'], [13, 'external'], [14, 'total']];
+  for (const [col, key] of colKeys) {
+    if (last >= 6) formulaMoney(ws, gr, col, `SUM(${colL(col)}6:${colL(col)}${last})`, sums[key], true);
+    else moneyCell(ws, gr, col, 0).font = { bold: true };
+  }
+  textCell(ws, gr, 15, '');
+  signatures(ws, gr + 3, 15);
+  const q = (col) => `'Service cost'!${colL(col)}${gr}`;
+  return { name: 'Service cost', sums, count: rows.length, refs: { labour: q(9), filter: q(10), oil: q(11), other: q(12), external: q(13), total: q(14) } };
+}
+
+// ---------------------------------------------------------------------------
+// Tyre work cost (from monthly_report_inputs)
+// ---------------------------------------------------------------------------
+function buildTyre(wb, year, month, period) {
+  const ws = wb.addWorksheet('Tyre work cost');
+  [6, 14, 20, 12, 10, 18, 34, 13, 14, 13, 13, 12].forEach((w, i) => { ws.getColumn(i + 1).width = w; });
+  titleBand(ws, 12, 'Tyre work cost calculation for vehicles and machinery', period);
+  const single = ['Se: no', 'Date', 'Type of Machinery / Vehicle', 'Reg: No', 'Qty', 'Project / Plant', 'Details of Repairing'];
+  single.forEach((t, i) => { ws.mergeCells(4, i + 1, 5, i + 1); const c = ws.getCell(4, i + 1); c.value = t; headerCell(c); });
+  ws.mergeCells(4, 8, 4, 11); const grp = ws.getCell(4, 8); grp.value = 'Repairing Cost (Rs)'; headerCell(grp);
+  ['Tyre cost', 'Tube and Flap cost', 'Out side work cost', 'Total Cost'].forEach((t, i) => { const c = ws.getCell(5, 8 + i); c.value = t; headerCell(c); });
+  ws.mergeCells(4, 12, 5, 12); const rem = ws.getCell(4, 12); rem.value = 'Remarks'; headerCell(rem);
+
+  const rows = inputRows(year, month, 'tyre');
+  const sums = { tyre: 0, tube: 0, outside: 0, total: 0 };
+  let r = 6, se = 1;
+  for (const x of rows) {
+    const t1 = num(x.amount1), t2 = num(x.amount2), t3 = num(x.amount3), tot = t1 + t2 + t3;
+    textCell(ws, r, 1, se); textCell(ws, r, 2, dateOnly(x.line_date)); textCell(ws, r, 3, '');
+    textCell(ws, r, 4, x.vehicle || ''); textCell(ws, r, 5, x.qty || '');
+    textCell(ws, r, 6, x.project || ''); textCell(ws, r, 7, x.label || '', { wrap: true });
+    moneyCell(ws, r, 8, t1); moneyCell(ws, r, 9, t2); moneyCell(ws, r, 10, t3); moneyCell(ws, r, 11, tot); textCell(ws, r, 12, '');
+    sums.tyre += t1; sums.tube += t2; sums.outside += t3; sums.total += tot;
+    r++; se++;
+  }
+  const last = r - 1, gr = r;
+  ws.mergeCells(gr, 1, gr, 7); const gl = ws.getCell(gr, 1); gl.value = 'Grand total cost'; gl.font = { bold: true }; gl.alignment = { horizontal: 'right' }; border(gl);
+  for (let col = 2; col <= 7; col++) border(ws.getCell(gr, col));
+  const colKeys = [[8, 'tyre'], [9, 'tube'], [10, 'outside'], [11, 'total']];
+  for (const [col, key] of colKeys) {
+    if (last >= 6) formulaMoney(ws, gr, col, `SUM(${colL(col)}6:${colL(col)}${last})`, sums[key], true);
+    else moneyCell(ws, gr, col, 0).font = { bold: true };
+  }
+  textCell(ws, gr, 12, '');
+  signatures(ws, gr + 3, 12);
+  const q = (col) => `'Tyre work cost'!${colL(col)}${gr}`;
+  return { name: 'Tyre work cost', sums, count: rows.length, refs: { tyre: q(8), tube: q(9), outside: q(10), total: q(11) } };
+}
+
+// ---------------------------------------------------------------------------
+// Battery cost (from monthly_report_inputs)
+// ---------------------------------------------------------------------------
+function buildBattery(wb, year, month, period) {
+  const ws = wb.addWorksheet('Battery cost');
+  [6, 14, 20, 12, 10, 20, 16, 14, 13, 14, 12].forEach((w, i) => { ws.getColumn(i + 1).width = w; });
+  titleBand(ws, 11, 'Battery cost calculation for vehicles and machinery', period);
+  const single = ['Se: no', 'Date', 'Type of Machinery / Vehicle', 'Reg: No', 'Qty', 'Project / Plant', 'Battery Category'];
+  single.forEach((t, i) => { ws.mergeCells(4, i + 1, 5, i + 1); const c = ws.getCell(4, i + 1); c.value = t; headerCell(c); });
+  ws.mergeCells(4, 8, 4, 10); const grp = ws.getCell(4, 8); grp.value = 'Repairing Cost (Rs)'; headerCell(grp);
+  ['Battery Cost', 'Other', 'Total Cost'].forEach((t, i) => { const c = ws.getCell(5, 8 + i); c.value = t; headerCell(c); });
+  ws.mergeCells(4, 11, 5, 11); const rem = ws.getCell(4, 11); rem.value = 'Remarks'; headerCell(rem);
+
+  const rows = inputRows(year, month, 'battery');
+  const sums = { battery: 0, other: 0, total: 0 };
+  let r = 6, se = 1;
+  for (const x of rows) {
+    const b1 = num(x.amount1), b2 = num(x.amount2), tot = b1 + b2;
+    textCell(ws, r, 1, se); textCell(ws, r, 2, dateOnly(x.line_date)); textCell(ws, r, 3, '');
+    textCell(ws, r, 4, x.vehicle || ''); textCell(ws, r, 5, x.qty || ''); textCell(ws, r, 6, x.project || '');
+    textCell(ws, r, 7, x.label || ''); moneyCell(ws, r, 8, b1); moneyCell(ws, r, 9, b2); moneyCell(ws, r, 10, tot); textCell(ws, r, 11, '');
+    sums.battery += b1; sums.other += b2; sums.total += tot;
+    r++; se++;
+  }
+  const last = r - 1, gr = r;
+  ws.mergeCells(gr, 1, gr, 7); const gl = ws.getCell(gr, 1); gl.value = 'Grand total cost'; gl.font = { bold: true }; gl.alignment = { horizontal: 'right' }; border(gl);
+  for (let col = 2; col <= 7; col++) border(ws.getCell(gr, col));
+  const colKeys = [[8, 'battery'], [9, 'other'], [10, 'total']];
+  for (const [col, key] of colKeys) {
+    if (last >= 6) formulaMoney(ws, gr, col, `SUM(${colL(col)}6:${colL(col)}${last})`, sums[key], true);
+    else moneyCell(ws, gr, col, 0).font = { bold: true };
+  }
+  textCell(ws, gr, 11, '');
+  signatures(ws, gr + 3, 11);
+  const q = (col) => `'Battery cost'!${colL(col)}${gr}`;
+  return { name: 'Battery cost', sums, count: rows.length, refs: { battery: q(8), other: q(9), total: q(10) } };
+}
+
+// ---------------------------------------------------------------------------
+// Fuel cost (from monthly_report_inputs; fuel cost = qty litres × rate)
+// ---------------------------------------------------------------------------
+function buildFuel(wb, year, month, period) {
+  const ws = wb.addWorksheet('Fuel Cost');
+  [6, 14, 14, 20, 12, 10, 12, 14, 13, 12].forEach((w, i) => { ws.getColumn(i + 1).width = w; });
+  titleBand(ws, 10, 'Fuel cost calculation for vehicles and machinery', period);
+  const single = ['Se: no', 'Date (from)', 'Date (to)', 'Type of Machinery / Vehicle', 'Reg: No', 'Qty (L)'];
+  single.forEach((t, i) => { ws.mergeCells(4, i + 1, 5, i + 1); const c = ws.getCell(4, i + 1); c.value = t; headerCell(c); });
+  ws.mergeCells(4, 7, 4, 8); const grp = ws.getCell(4, 7); grp.value = 'Fuel Cost (Rs)'; headerCell(grp);
+  ['Fuel Rate', 'Fuel Cost'].forEach((t, i) => { const c = ws.getCell(5, 7 + i); c.value = t; headerCell(c); });
+  ws.mergeCells(4, 9, 5, 9); const sr = ws.getCell(4, 9); sr.value = 'Standard Rate'; headerCell(sr);
+  ws.mergeCells(4, 10, 5, 10); const rem = ws.getCell(4, 10); rem.value = 'Remarks'; headerCell(rem);
+
+  const rows = inputRows(year, month, 'fuel');
+  const mFrom = `${year}-${String(month).padStart(2, '0')}-01`;
+  const mTo = `${year}-${String(month).padStart(2, '0')}-${String(new Date(year, month, 0).getDate()).padStart(2, '0')}`;
+  const sums = { qty: 0, cost: 0 };
+  let r = 6, se = 1;
+  for (const x of rows) {
+    const litres = num(x.qty), rate = num(x.rate), cost = litres * rate;
+    textCell(ws, r, 1, se); textCell(ws, r, 2, mFrom); textCell(ws, r, 3, mTo);
+    textCell(ws, r, 4, x.label || ''); textCell(ws, r, 5, x.vehicle || '');
+    const qc = ws.getCell(r, 6); qc.value = litres; qc.numFmt = '#,##0.##'; qc.alignment = { horizontal: 'right' }; border(qc);
+    moneyCell(ws, r, 7, rate);
+    formulaMoney(ws, r, 8, `F${r}*G${r}`, cost);
+    moneyCell(ws, r, 9, x.amount2); textCell(ws, r, 10, '');
+    sums.qty += litres; sums.cost += cost;
+    r++; se++;
+  }
+  const last = r - 1, gr = r;
+  ws.mergeCells(gr, 1, gr, 5); const gl = ws.getCell(gr, 1); gl.value = 'Grand total cost'; gl.font = { bold: true }; gl.alignment = { horizontal: 'right' }; border(gl);
+  for (let col = 2; col <= 5; col++) border(ws.getCell(gr, col));
+  if (last >= 6) { const qc = ws.getCell(gr, 6); qc.value = { formula: `SUM(F6:F${last})`, result: sums.qty }; qc.numFmt = '#,##0.##'; qc.alignment = { horizontal: 'right' }; qc.font = { bold: true }; border(qc); }
+  else { const qc = ws.getCell(gr, 6); qc.value = 0; border(qc); }
+  border(ws.getCell(gr, 7));
+  if (last >= 6) formulaMoney(ws, gr, 8, `SUM(H6:H${last})`, sums.cost, true); else moneyCell(ws, gr, 8, 0).font = { bold: true };
+  border(ws.getCell(gr, 9)); textCell(ws, gr, 10, '');
+  signatures(ws, gr + 3, 10);
+  return { name: 'Fuel Cost', sums, count: rows.length, refs: { cost: `'Fuel Cost'!H${gr}` } };
+}
+
+// ---------------------------------------------------------------------------
+// Salaries cost — left "Staff/Security" table from inputs (feeds the Total sheet),
+// right "Actual" mechanic-hours table auto-derived from job_labour (informational).
+// ---------------------------------------------------------------------------
+function buildSalaries(wb, year, month, ym, period) {
+  const ws = wb.addWorksheet('Salaries Cost');
+  [6, 22, 8, 20, 14, 12, 14, 4, 18, 16, 12, 14].forEach((w, i) => { ws.getColumn(i + 1).width = w; });
+  titleBand(ws, 12, 'Salaries cost calculation', period);
+  // Left table headers (A..G)
+  ['Se: no', 'Name', 'Qty', 'Project / Plant'].forEach((t, i) => { ws.mergeCells(4, i + 1, 5, i + 1); const c = ws.getCell(4, i + 1); c.value = t; headerCell(c); });
+  ws.mergeCells(4, 5, 4, 7); const grp = ws.getCell(4, 5); grp.value = 'Salaries Cost (Rs)'; headerCell(grp);
+  ['Cost', 'Other', 'Total Cost'].forEach((t, i) => { const c = ws.getCell(5, 5 + i); c.value = t; headerCell(c); });
+  // Right table headers (I..L)
+  [['Name', 9], ['Total Working Hours', 10], ['Hourly Rate', 11], ['Total', 12]].forEach(([t, col]) => { ws.mergeCells(4, col, 5, col); const c = ws.getCell(4, col); c.value = t; headerCell(c); });
+
+  // Left: manual staff/security lump sums
+  const staff = inputRows(year, month, 'salary');
+  const sums = { cost: 0, other: 0, total: 0 };
+  let r = 6, se = 1;
+  for (const x of staff) {
+    const c1 = num(x.amount1), c2 = num(x.amount2), tot = c1 + c2;
+    textCell(ws, r, 1, se); textCell(ws, r, 2, x.label || ''); textCell(ws, r, 3, x.qty || ''); textCell(ws, r, 4, x.project || '');
+    moneyCell(ws, r, 5, c1); moneyCell(ws, r, 6, c2); moneyCell(ws, r, 7, tot);
+    sums.cost += c1; sums.other += c2; sums.total += tot;
+    r++; se++;
+  }
+  const lLast = r - 1, lGr = r;
+  ws.mergeCells(lGr, 1, lGr, 4); const gl = ws.getCell(lGr, 1); gl.value = 'Grand total cost'; gl.font = { bold: true }; gl.alignment = { horizontal: 'right' }; border(gl);
+  for (let col = 2; col <= 4; col++) border(ws.getCell(lGr, col));
+  const lKeys = [[5, 'cost'], [6, 'other'], [7, 'total']];
+  for (const [col, key] of lKeys) {
+    if (lLast >= 6) formulaMoney(ws, lGr, col, `SUM(${colL(col)}6:${colL(col)}${lLast})`, sums[key], true);
+    else moneyCell(ws, lGr, col, 0).font = { bold: true };
+  }
+
+  // Right: auto mechanic hours from job_labour
+  const mechs = all(
+    `SELECT jl.mechanic, ROUND(SUM(jl.hours),2) hours, ROUND(SUM(jl.amount),2) amount
+       FROM job_labour jl WHERE substr(jl.work_date,1,7) = ? AND jl.mechanic IS NOT NULL AND TRIM(jl.mechanic) <> ''
+      GROUP BY jl.mechanic ORDER BY amount DESC`, ym);
+  let rr = 6; const mTot = { hours: 0, amount: 0 };
+  for (const m of mechs) {
+    const hours = num(m.hours), amount = num(m.amount), rate = hours ? amount / hours : 0;
+    textCell(ws, rr, 9, m.mechanic); const hc = ws.getCell(rr, 10); hc.value = hours; hc.numFmt = '#,##0.##'; hc.alignment = { horizontal: 'right' }; border(hc);
+    moneyCell(ws, rr, 11, rate); moneyCell(ws, rr, 12, amount);
+    mTot.hours += hours; mTot.amount += amount;
+    rr++;
+  }
+  if (mechs.length) {
+    ws.getCell(rr, 9).value = 'Total'; ws.getCell(rr, 9).font = { bold: true }; border(ws.getCell(rr, 9));
+    const hc = ws.getCell(rr, 10); hc.value = { formula: `SUM(J6:J${rr - 1})`, result: mTot.hours }; hc.numFmt = '#,##0.##'; hc.alignment = { horizontal: 'right' }; hc.font = { bold: true }; border(hc);
+    border(ws.getCell(rr, 11));
+    formulaMoney(ws, rr, 12, `SUM(L6:L${rr - 1})`, mTot.amount, true);
+  }
+  const sigRow = Math.max(lGr, rr) + 3;
+  signatures(ws, sigRow, 7);
+  return { name: 'Salaries Cost', sums, count: staff.length, mechanic_total: mTot.amount, refs: { total: `'Salaries Cost'!G${lGr}` } };
+}
+
+// ---------------------------------------------------------------------------
+// Other cost (overhead — from monthly_report_inputs)
+// ---------------------------------------------------------------------------
+function buildOther(wb, year, month, period) {
+  const ws = wb.addWorksheet('Other Cost');
+  [6, 24, 22, 16, 14].forEach((w, i) => { ws.getColumn(i + 1).width = w; });
+  titleBand(ws, 5, 'Other (overhead) cost', period);
+  ['Se: no', 'Cost Type', 'Project / Plant', 'Total Cost', 'Remarks'].forEach((t, i) => { ws.mergeCells(4, i + 1, 5, i + 1); const c = ws.getCell(4, i + 1); c.value = t; headerCell(c); });
+  const rows = inputRows(year, month, 'other');
+  let r = 6, se = 1, sum = 0;
+  for (const x of rows) {
+    const amt = num(x.amount1);
+    textCell(ws, r, 1, se); textCell(ws, r, 2, x.label || ''); textCell(ws, r, 3, x.project || ''); moneyCell(ws, r, 4, amt); textCell(ws, r, 5, '');
+    sum += amt; r++; se++;
+  }
+  const last = r - 1, gr = r;
+  ws.mergeCells(gr, 1, gr, 3); const gl = ws.getCell(gr, 1); gl.value = 'Grand total cost'; gl.font = { bold: true }; gl.alignment = { horizontal: 'right' }; border(gl);
+  for (let col = 2; col <= 3; col++) border(ws.getCell(gr, col));
+  if (last >= 6) formulaMoney(ws, gr, 4, `SUM(D6:D${last})`, sum, true); else moneyCell(ws, gr, 4, 0).font = { bold: true };
+  textCell(ws, gr, 5, '');
+  signatures(ws, gr + 3, 5);
+  return { name: 'Other Cost', sums: { total: sum }, count: rows.length, refs: { total: `'Other Cost'!D${gr}` } };
+}
+
+// ---------------------------------------------------------------------------
+// Total cost — summary. 10% Sundry applied to Repair/Service/Tyre/Battery only.
+// Columns: C Labour, D Spare parts, E Lubricant, F Other material, G Outside,
+//          H Overhead, I Sundry, J Cost w/o Overhead, K Total.
+// ---------------------------------------------------------------------------
+function buildTotal(wb, parts, period) {
+  const ws = wb.addWorksheet('Total cost');
+  [4, 18, 15, 15, 14, 15, 15, 15, 14, 18, 16].forEach((w, i) => { ws.getColumn(i + 1).width = w; });
+  ws.mergeCells(1, 2, 1, 11); const a = ws.getCell(1, 2); a.value = COMPANY; a.font = { bold: true, size: 13 }; a.alignment = { horizontal: 'center' };
+  ws.mergeCells(2, 2, 2, 11); const b = ws.getCell(2, 2); b.value = 'Workshop repairing and servicing cost calculation'; b.font = { bold: true, size: 11 }; b.alignment = { horizontal: 'center' };
+  ws.mergeCells(3, 2, 3, 11); const cc = ws.getCell(3, 2); cc.value = 'Summary for the month of ' + period; cc.font = { bold: true, size: 11 }; cc.alignment = { horizontal: 'center' };
+
+  const hdr = ['', '', 'Labor cost', 'Spare parts cost', 'Lubricant cost', 'Other material cost', 'Out side work cost', 'Overhead cost', 'Sundry', 'Cost Without Overhead', 'Total Cost'];
+  hdr.forEach((t, i) => { if (t) { const c = ws.getCell(7, i + 1); c.value = t; headerCell(c); } });
+
+  const SUNDRY = 0.10;
+  // each entry: label, and a map of column→{formula,result}. Repair-type rows get sundry.
+  const R = parts.repair.refs, RS = parts.repair.sums;
+  const SV = parts.service.refs, SS = parts.service.sums;
+  const TY = parts.tyre.refs, TS = parts.tyre.sums;
+  const BT = parts.battery.refs, BS = parts.battery.sums;
+
+  // rows: [rowIdx, label, cells{col:{f,v}}, isRepairType]
+  const rowDefs = [
+    { row: 8, label: 'Repair', cells: { 3: [R.labour, RS.labour], 4: [R.material, RS.material], 5: [R.oil, RS.oil], 6: [R.other, RS.other], 7: [R.external, RS.external] }, sundry: true },
+    { row: 9, label: 'Service', cells: { 3: [SV.labour, SS.labour], 4: [SV.filter, SS.filter], 5: [SV.oil, SS.oil], 6: [SV.other, SS.other], 7: [SV.external, SS.external] }, sundry: true },
+    { row: 10, label: 'Tyre work cost', cells: { 4: [TY.tyre, TS.tyre], 6: [TY.tube, TS.tube], 7: [TY.outside, TS.outside] }, sundry: true },
+    { row: 11, label: 'Battery cost', cells: { 4: [BT.battery, BS.battery], 6: [BT.other, BS.other] }, sundry: true },
+    { row: 12, label: 'Fuel Cost', cells: { 8: [parts.fuel.refs.cost, parts.fuel.sums.cost] }, sundry: false },
+    { row: 13, label: 'Salaries Cost', cells: { 8: [parts.salaries.refs.total, parts.salaries.sums.total] }, sundry: false },
+    { row: 14, label: 'Other Cost', cells: { 8: [parts.other.refs.total, parts.other.sums.total] }, sundry: false },
+  ];
+
+  for (const d of rowDefs) {
+    const lc = ws.getCell(d.row, 2); lc.value = d.label; lc.font = { bold: true }; border(lc);
+    let direct = 0;
+    for (let col = 3; col <= 8; col++) {
+      if (d.cells[col]) { const [f, v] = d.cells[col]; formulaMoney(ws, d.row, col, f, v); direct += r2(v); }
+      else border(ws.getCell(d.row, col));
+    }
+    const sundry = d.sundry ? r2(direct * SUNDRY) : 0;
+    if (d.sundry) formulaMoney(ws, d.row, 9, `SUM(C${d.row}:H${d.row})*10%`, sundry);
+    else border(ws.getCell(d.row, 9));
+    const total = r2(direct + sundry);
+    formulaMoney(ws, d.row, 10, `SUM(C${d.row}:I${d.row})`, total);
+    formulaMoney(ws, d.row, 11, `SUM(C${d.row}:I${d.row})`, total, true);
+  }
+
+  // Grand total row 15
+  const gl = ws.getCell(15, 2); gl.value = 'Grand total cost'; gl.font = { bold: true }; gl.alignment = { horizontal: 'right' }; border(gl);
+  const colTotals = {};
+  for (let col = 3; col <= 11; col++) {
+    let s = 0;
+    for (const d of rowDefs) {
+      const c = ws.getCell(d.row, col).value;
+      if (c && typeof c === 'object' && 'result' in c) s += num(c.result);
+    }
+    colTotals[col] = s;
+    formulaMoney(ws, 15, col, `SUM(${colL(col)}8:${colL(col)}14)`, s, true);
+  }
+  signatures(ws, 18, 11);
+  return { grand_total: colTotals[11] || 0, columns: colTotals };
+}
+
+async function buildWorkbook(year, month) {
+  const wb = new ExcelJS.Workbook();
+  wb.creator = 'WorkshopOne';
+  wb.created = new Date(Date.UTC(year, month - 1, 1));
+  // Force Excel/LibreOffice to recompute all formulas on open, so cross-sheet totals and the
+  // 10% Sundry are always current even after a viewer that doesn't cache zero results.
+  wb.calcProperties = Object.assign({}, wb.calcProperties, { fullCalcOnLoad: true });
+  const ym = `${year}-${String(month).padStart(2, '0')}`;
+  const period = `${MONTHS[month]} ${year}`;
+  const parts = {
+    repair: buildRepair(wb, ym, period),
+    service: buildService(wb, ym, period),
+    tyre: buildTyre(wb, year, month, period),
+    battery: buildBattery(wb, year, month, period),
+    fuel: buildFuel(wb, year, month, period),
+    salaries: buildSalaries(wb, year, month, ym, period),
+    other: buildOther(wb, year, month, period),
+  };
+  const total = buildTotal(wb, parts, period);
+  return { wb, parts, total };
+}
+
+module.exports = { buildWorkbook, MONTHS };

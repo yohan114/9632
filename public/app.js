@@ -2370,11 +2370,72 @@ routes.aliases = async (c) => {
 };
 
 // ---- Reports
+// ---- Monthly Cost Report — manual inputs editor (Tyre/Battery/Fuel/Other/Staff salaries)
+const MRI_SHEETS = [['tyre', 'Tyre'], ['battery', 'Battery'], ['fuel', 'Fuel'], ['other', 'Other (overhead)'], ['salary', 'Salaries (Staff)']];
+const MRI_COLS = {
+  tyre: [['line_date', 'Date', 'date'], ['vehicle', 'Reg No', 'text'], ['qty', 'Qty', 'text'], ['project', 'Project / Plant', 'text'], ['label', 'Details', 'text'], ['amount1', 'Tyre cost', 'num'], ['amount2', 'Tube & Flap', 'num'], ['amount3', 'Outside', 'num']],
+  battery: [['line_date', 'Date', 'date'], ['vehicle', 'Reg No', 'text'], ['qty', 'Qty', 'text'], ['project', 'Project / Plant', 'text'], ['label', 'Battery category', 'text'], ['amount1', 'Battery cost', 'num'], ['amount2', 'Other', 'num']],
+  fuel: [['vehicle', 'Reg No', 'text'], ['label', 'Machine type', 'text'], ['qty', 'Qty (L)', 'num'], ['rate', 'Fuel rate', 'num'], ['amount2', 'Std rate', 'num']],
+  other: [['label', 'Cost type', 'text'], ['project', 'Project / Plant', 'text'], ['amount1', 'Amount', 'num']],
+  salary: [['label', 'Name', 'text'], ['qty', 'Qty', 'text'], ['project', 'Project / Plant', 'text'], ['amount1', 'Cost', 'num'], ['amount2', 'Other', 'num']],
+};
+async function openMonthlyInputs(year, month, onSaved) {
+  let data;
+  try { data = await api(`/reports/monthly-inputs?year=${year}&month=${month}`); }
+  catch (e) { return toast(e.message, 'err'); }
+  const state = {};
+  for (const [k] of MRI_SHEETS) state[k] = (data.inputs[k] || []).map((r) => ({ ...r }));
+  let active = 'tyre';
+  const bg = modal(`Monthly inputs — ${MONTH_NAMES[month]} ${year}`, `
+    <p class="muted" style="margin-top:0;font-size:12px">Only these five sheets are entered by hand — Repair, Service and the mechanic-hours table are pulled from live data automatically.</p>
+    <div class="toolbar" id="mri-tabs" style="margin-top:0">${MRI_SHEETS.map(([k, l]) => `<button class="sm" data-k="${k}">${l}</button>`).join('')}</div>
+    <div id="mri-grid"></div>
+    <div class="toolbar" style="margin-top:12px">
+      <span class="muted" id="mri-note"></span><div class="spacer"></div>
+      <button class="sm" id="mri-add">+ Add row</button>
+      <button class="primary sm" id="mri-save">Save all &amp; close</button>
+    </div>`, (body) => {
+    const grid = qs('#mri-grid', body);
+    const close = () => bg.remove();
+    const paintTabs = () => qsa('#mri-tabs button', body).forEach((b) => b.classList.toggle('primary', b.dataset.k === active));
+    const paintGrid = () => {
+      const cols = MRI_COLS[active], rows = state[active];
+      grid.innerHTML = `<div style="overflow-x:auto"><table style="border-collapse:collapse;font-size:12px;width:100%">
+        <thead><tr>${cols.map((cd) => `<th style="text-align:left;padding:4px 6px;border-bottom:2px solid var(--line,#ccc);white-space:nowrap">${esc(cd[1])}</th>`).join('')}<th></th></tr></thead>
+        <tbody>${rows.length ? rows.map((r, i) => `<tr data-i="${i}">${cols.map((cd) => `<td style="padding:2px 4px"><input data-f="${cd[0]}" type="${cd[2] === 'num' ? 'number' : (cd[2] === 'date' ? 'date' : 'text')}" value="${esc(r[cd[0]] ?? '')}" style="width:${cd[2] === 'num' ? '92px' : (cd[2] === 'date' ? '132px' : '120px')}"></td>`).join('')}<td style="padding:2px 4px"><button class="sm mri-del" data-i="${i}" title="Remove row">✕</button></td></tr>`).join('') : `<tr><td colspan="${cols.length + 1}" class="muted" style="padding:8px">No rows — click “Add row”.</td></tr>`}</tbody></table></div>`;
+      qsa('tr[data-i] input', grid).forEach((inp) => { inp.oninput = () => { state[active][+inp.closest('tr').dataset.i][inp.dataset.f] = inp.value; }; });
+      qsa('.mri-del', grid).forEach((b) => { b.onclick = () => { state[active].splice(+b.dataset.i, 1); paintGrid(); }; });
+      qs('#mri-note', body).textContent = `${rows.length} row(s) on “${active}”`;
+    };
+    qsa('#mri-tabs button', body).forEach((b) => { b.onclick = () => { active = b.dataset.k; paintTabs(); paintGrid(); }; });
+    qs('#mri-add', body).onclick = () => { state[active].push({}); paintGrid(); };
+    qs('#mri-save', body).onclick = async () => {
+      try {
+        for (const [k] of MRI_SHEETS) await api('/reports/monthly-inputs', { method: 'POST', body: { year, month, sheet: k, lines: state[k] } });
+        toast('Monthly inputs saved'); close(); if (onSaved) onSaved();
+      } catch (e) { toast(e.message, 'err'); }
+    };
+    paintTabs(); paintGrid();
+  }, { persistent: true });
+  const box = qs('.modal', bg); if (box) { box.style.width = 'min(940px, 95vw)'; box.style.maxWidth = 'none'; }
+}
+
 routes.reports = async (c) => {
   const [byAsset, byProject, bySite, bySource, variance] = await Promise.all([
     api('/reports/cost/by-asset'), api('/reports/cost/by-project'), api('/reports/cost/by-site'), api('/reports/cost/by-source'), api('/reports/variance'),
   ]);
   c.innerHTML = `${pageHeader('Cost Reports & Analytics')}
+    <div class="card section">
+      <div class="toolbar" style="margin-top:0">
+        <h3 style="margin:0">Monthly Cost Report</h3>
+        <span class="muted" style="font-weight:400">— full 8-sheet workbook (Repair · Service · Tyre · Battery · Fuel · Salaries · Other · Total)</span>
+        <div class="spacer"></div>
+        <div><label>Year</label><select id="mcr-year"></select></div>
+        <div><label>Month</label><select id="mcr-month"></select></div>
+        <button class="sm" id="mcr-edit">✎ Edit monthly inputs</button>
+        <a class="btn primary sm" id="mcr-dl" href="#">⬇ Download Excel</a>
+      </div>
+      <div id="mcr-preview" class="muted">Loading…</div></div>
     <div class="card section"><h3 style="margin-top:0">Vehicle Cost Report</h3>
       <div class="toolbar">
         <div style="flex:1;min-width:220px">${assetPickerHtml('Vehicle / machinery')}</div>
@@ -2398,6 +2459,36 @@ routes.reports = async (c) => {
       <div class="card"><h3>Stock Variance Flags</h3>
         ${variance.length ? variance.map((v) => `<div class="cost-line"><span>${esc(v.product)} · ${esc(v.period)}</span><span class="badge red">${num(v.variance)}</span></div>`).join('') : '<span class="muted">No variances</span>'}</div>
     </div>`;
+
+  // Monthly Cost Report — 8-sheet workbook download + manual-inputs editor + live totals preview.
+  const mcrYear = qs('#mcr-year', c), mcrMonth = qs('#mcr-month', c);
+  const now = new Date();
+  for (let i = 0; i < 6; i++) { const o = document.createElement('option'); o.value = now.getFullYear() - i; o.textContent = now.getFullYear() - i; mcrYear.appendChild(o); }
+  for (let m = 1; m <= 12; m++) { const o = document.createElement('option'); o.value = m; o.textContent = MONTH_NAMES[m]; if (m === now.getMonth() + 1) o.selected = true; mcrMonth.appendChild(o); }
+  const mcrDl = qs('#mcr-dl', c), mcrPrev = qs('#mcr-preview', c);
+  const loadMcr = async () => {
+    const y = mcrYear.value, mo = mcrMonth.value;
+    mcrDl.href = `/api/reports/monthly-cost.xlsx?year=${y}&month=${mo}`;
+    mcrPrev.innerHTML = '<span class="muted">Loading…</span>';
+    let p;
+    try { p = (await api(`/reports/monthly-inputs?year=${y}&month=${mo}`)).preview; }
+    catch (e) { mcrPrev.innerHTML = `<span class="err">${esc(e.message)}</span>`; return; }
+    const line = (label, count, total, warn) => `<tr><td>${esc(label)}</td><td class="num">${count}</td><td class="num">${money(total)}</td><td>${warn ? '<span class="badge amber">enter inputs</span>' : ''}</td></tr>`;
+    mcrPrev.innerHTML = tableWrap(
+      [{ label: 'Sheet' }, { label: 'Rows', num: true }, { label: 'Total (Rs)', num: true }, { label: '' }],
+      [line('Repair', p.repair.count, p.repair.total),
+        line('Service', p.service.count, p.service.total),
+        line('Tyre', p.tyre.count, p.tyre.total, p.tyre.count === 0),
+        line('Battery', p.battery.count, p.battery.total, p.battery.count === 0),
+        line('Fuel', p.fuel.count, p.fuel.total, p.fuel.count === 0),
+        line('Salaries (Staff)', p.salary.count, p.salary.staff_total, p.salary.count === 0),
+        line('Other (overhead)', p.other.count, p.other.total, p.other.count === 0),
+        `<tr><td><b>Grand Total (incl. 10% Sundry)</b></td><td></td><td class="num"><b>${money(p.grand_total)}</b></td><td></td></tr>`]) +
+      `<p class="muted" style="font-size:12px;margin:6px 0 0">Repair, Service &amp; the mechanic-hours table are pulled from live data. Tyre, Battery, Fuel, Overhead &amp; Staff salaries come from <b>Edit monthly inputs</b>.</p>`;
+  };
+  mcrYear.onchange = loadMcr; mcrMonth.onchange = loadMcr;
+  qs('#mcr-edit', c).onclick = () => openMonthlyInputs(+mcrYear.value, +mcrMonth.value, loadMcr);
+  loadMcr();
 
   // Vehicle Cost Report — interactive drill from vehicle_monthly_costs (/reports/vehicle-cost-complete).
   const yearSel = qs('#vcr-year', c), mSel = qs('#vcr-month', c);

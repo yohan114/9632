@@ -1,13 +1,14 @@
 'use strict';
 
 const express = require('express');
-const { get, all } = require('../db');
+const { get, all, run, tx } = require('../db');
 const { requireAuth } = require('../lib/auth');
-const { asyncHandler, toInt } = require('../lib/http');
+const { asyncHandler, toInt, toNum } = require('../lib/http');
 const config = require('../config');
 const costing = require('../lib/costing');
 const intelligence = require('../lib/intelligence');
 const { sendXlsx } = require('../lib/export');
+const monthlyReport = require('../lib/monthly_cost_report');
 
 const router = express.Router();
 
@@ -624,6 +625,81 @@ router.get('/issues-by-vehicle', requireAuth, asyncHandler((req, res) => {
     `SELECT i.issue_date date, COUNT(*) count, ROUND(SUM(${COST}),2) total_cost
        FROM issues i ${where} GROUP BY i.issue_date ORDER BY i.issue_date`, ...params);
   res.json({ asset, summary, issues, by_category, timeline });
+}));
+
+// ===========================================================================
+// Monthly Cost Report — the company's 8-sheet "Job cost report" workbook, generated
+// for any year+month. Data-backed sheets (Repair/Service/Salaries-hours) come from live
+// data; the five sheets the system can't source from transactions (Tyre, Battery, Fuel,
+// Other/overhead, Staff/Security salaries) are entered via /monthly-inputs and stored in
+// monthly_report_inputs. See src/lib/monthly_cost_report.js for the layout + column map.
+// ===========================================================================
+const MONTHLY_SHEETS = ['tyre', 'battery', 'fuel', 'other', 'salary'];
+
+function validPeriod(year, month) {
+  return Number.isInteger(year) && year >= 2000 && year <= 2100 && Number.isInteger(month) && month >= 1 && month <= 12;
+}
+
+// Download the workbook for a period.
+router.get('/monthly-cost.xlsx', requireAuth, asyncHandler(async (req, res) => {
+  const year = toInt(req.query.year), month = toInt(req.query.month);
+  if (!validPeriod(year, month)) return res.status(400).json({ error: 'year (YYYY) and month (1-12) are required' });
+  const { wb } = await monthlyReport.buildWorkbook(year, month);
+  const fname = `Job-cost-report-${monthlyReport.MONTHS[month]}-${year}.xlsx`;
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', `attachment; filename="${fname}"`);
+  await wb.xlsx.write(res);
+  res.end();
+}));
+
+// Fetch the saved manual inputs for a period, plus a live totals preview (all 8 sheets).
+router.get('/monthly-inputs', requireAuth, asyncHandler(async (req, res) => {
+  const year = toInt(req.query.year), month = toInt(req.query.month);
+  if (!validPeriod(year, month)) return res.status(400).json({ error: 'year and month are required' });
+  const inputs = {};
+  for (const sheet of MONTHLY_SHEETS) {
+    inputs[sheet] = all(
+      `SELECT id, seq, line_date, vehicle, label, project, qty, rate, amount1, amount2, amount3, note
+         FROM monthly_report_inputs WHERE year = ? AND month = ? AND sheet = ? ORDER BY seq, id`, year, month, sheet);
+  }
+  // Live preview of every sheet's grand totals (so the UI can show what the download will contain).
+  const { parts, total } = await monthlyReport.buildWorkbook(year, month);
+  const preview = {
+    repair: { count: parts.repair.count, total: parts.repair.sums.total },
+    service: { count: parts.service.count, total: parts.service.sums.total },
+    tyre: { count: parts.tyre.count, total: parts.tyre.sums.total },
+    battery: { count: parts.battery.count, total: parts.battery.sums.total },
+    fuel: { count: parts.fuel.count, total: parts.fuel.sums.cost },
+    salary: { count: parts.salaries.count, staff_total: parts.salaries.sums.total, mechanic_total: parts.salaries.mechanic_total },
+    other: { count: parts.other.count, total: parts.other.sums.total },
+    grand_total: total.grand_total,
+  };
+  res.json({ year, month, inputs, preview });
+}));
+
+// Replace all saved lines for one (year, month, sheet). Body: { year, month, sheet, lines:[...] }.
+router.post('/monthly-inputs', requireAuth, asyncHandler((req, res) => {
+  const b = req.body || {};
+  const year = toInt(b.year), month = toInt(b.month), sheet = String(b.sheet || '');
+  if (!validPeriod(year, month)) return res.status(400).json({ error: 'year and month are required' });
+  if (!MONTHLY_SHEETS.includes(sheet)) return res.status(400).json({ error: 'sheet must be one of ' + MONTHLY_SHEETS.join(', ') });
+  // Keep only well-formed line objects — a null/primitive element must not crash the insert (→ 500).
+  const lines = (Array.isArray(b.lines) ? b.lines : []).filter((ln) => ln && typeof ln === 'object');
+  tx(() => {
+    run('DELETE FROM monthly_report_inputs WHERE year = ? AND month = ? AND sheet = ?', year, month, sheet);
+    let seq = 0;
+    for (const ln of lines) {
+      run(
+        `INSERT INTO monthly_report_inputs (year, month, sheet, seq, line_date, vehicle, label, project, qty, rate, amount1, amount2, amount3, note)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        year, month, sheet, seq++,
+        ln.line_date || null, ln.vehicle || null, ln.label || null, ln.project || null,
+        ln.qty == null ? null : String(ln.qty),
+        ln.rate == null || ln.rate === '' ? null : toNum(ln.rate),
+        toNum(ln.amount1) || 0, toNum(ln.amount2) || 0, toNum(ln.amount3) || 0, ln.note || null);
+    }
+  });
+  res.json({ ok: true, sheet, saved: lines.length });
 }));
 
 module.exports = router;
