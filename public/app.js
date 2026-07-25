@@ -2435,6 +2435,7 @@ routes.tyrebattery = async (c) => {
       <div class="toolbar" style="margin:0 0 8px"><h3 style="margin:0">Category prices</h3>
         <span class="muted" style="font-weight:400">— set once per size / type; every matching issue is priced</span>
         <div class="spacer"></div>
+        <input id="tb-catq" placeholder="filter category…" style="width:auto">
         <a class="btn sm" href="/api/tyre-battery/categories/print.html?kind=${kind}" target="_blank">🖨 Print</a>
         <button class="primary sm" id="tb-save">Save prices</button></div>
       <div id="tb-cats" class="muted">Loading…</div></div>
@@ -2455,15 +2456,23 @@ routes.tyrebattery = async (c) => {
   };
 
   let catState = [], dirty = new Set();
+  // Client-side filter — keeps original catState indices (data-i) so edits + dirty-tracking
+  // still target the right row, and in-progress prices survive re-render (they live in catState).
+  const renderCats = () => {
+    const q = (qs('#tb-catq', c).value || '').trim().toLowerCase();
+    const rows = catState.map((r, i) => [r, i]).filter(([r]) => !q || (r.category || '').toLowerCase().includes(q) || (r.category_norm || '').toLowerCase().includes(q));
+    qs('#tb-cats', c).innerHTML = tableWrap(
+      [{ label: 'Category' }, { label: 'Issues', num: true }, { label: 'Total qty', num: true }, { label: 'Unit price (Rs)', num: true }],
+      rows.map(([r, i]) => `<tr><td>${esc(r.category)}</td><td class="num">${r.issues}</td><td class="num">${num(r.qty)}</td><td class="num"><input type="number" min="0" step="0.01" data-i="${i}" class="tb-price" value="${r.unit_price == null ? '' : r.unit_price}" style="width:120px;text-align:right"></td></tr>`),
+      { scroll: true }) + (q ? `<p class="muted" style="font-size:12px;margin:6px 0 0">Showing ${rows.length} of ${catState.length} categories</p>` : '');
+    qsa('.tb-price', c).forEach((inp) => { inp.oninput = () => { const r = catState[+inp.dataset.i]; r.unit_price = inp.value === '' ? null : Number(inp.value); dirty.add(r.category_norm); }; });
+  };
   const loadCats = async () => {
     let d; try { d = await api('/tyre-battery/categories?kind=' + kind); } catch (e) { qs('#tb-cats', c).innerHTML = `<span class="err">${esc(e.message)}</span>`; return; }
     catState = d.categories; dirty = new Set();
-    qs('#tb-cats', c).innerHTML = tableWrap(
-      [{ label: 'Category' }, { label: 'Issues', num: true }, { label: 'Total qty', num: true }, { label: 'Unit price (Rs)', num: true }],
-      catState.map((r, i) => `<tr><td>${esc(r.category)}</td><td class="num">${r.issues}</td><td class="num">${num(r.qty)}</td><td class="num"><input type="number" min="0" step="0.01" data-i="${i}" class="tb-price" value="${r.unit_price == null ? '' : r.unit_price}" style="width:120px;text-align:right"></td></tr>`),
-      { scroll: true });
-    qsa('.tb-price', c).forEach((inp) => { inp.oninput = () => { const r = catState[+inp.dataset.i]; r.unit_price = inp.value === '' ? null : Number(inp.value); dirty.add(r.category_norm); }; });
+    renderCats();
   };
+  let catTimer; qs('#tb-catq', c).oninput = () => { clearTimeout(catTimer); catTimer = setTimeout(renderCats, 120); };
   qs('#tb-save', c).onclick = async () => {
     // Only send the rows the user actually edited — sending the whole snapshot would let an
     // untouched (stale) null clobber a price another session set concurrently.
