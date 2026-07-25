@@ -83,55 +83,77 @@ function buildRepair(wb, ym, period) {
   ['Labor cost', 'Spare parts cost', 'Lubricant cost', 'Other material cost', 'Out side work cost', 'Total Cost'].forEach((t, i) => { const c = ws.getCell(5, 9 + i); c.value = t; headerCell(c); });
   ws.mergeCells(4, 15, 5, 15); const rem = ws.getCell(4, 15); rem.value = 'Remarks'; headerCell(rem);
 
-  const rows = all(
-    `SELECT j.job_no, j.completed_at, j.description, j.site,
+  // Two sections: CLOSED (status CLOSED, completed in the month — final costs) and
+  // PENDING (open jobs worked in the month — costs accrued to date). Grand total = both.
+  const JOB_COLS = `j.job_no, j.completed_at, j.requested_at, j.created_at, j.status, j.description, j.site,
             a.type atype, a.registration reg, a.code code, a.ec_code ec, p.name project,
             COALESCE(j.labour_cost,0) labour, COALESCE(j.material_cost,0) material, COALESCE(j.oil_cost,0) oil,
-            COALESCE(j.general_cost,0) general, COALESCE(j.other_cost,0) other, COALESCE(j.external_cost,0) external
-       FROM job_cards j LEFT JOIN assets a ON a.id = j.asset_id LEFT JOIN projects p ON p.id = j.project_id
-      WHERE j.completed_at IS NOT NULL AND substr(j.completed_at,1,7) = ? AND j.status <> 'REJECTED'
+            COALESCE(j.general_cost,0) general, COALESCE(j.other_cost,0) other, COALESCE(j.external_cost,0) external`;
+  const JOB_FROM = 'FROM job_cards j LEFT JOIN assets a ON a.id = j.asset_id LEFT JOIN projects p ON p.id = j.project_id';
+  const closed = all(`SELECT ${JOB_COLS} ${JOB_FROM}
+      WHERE j.status = 'CLOSED' AND j.completed_at IS NOT NULL AND substr(j.completed_at,1,7) = ?
       ORDER BY j.completed_at, j.id`, ym);
+  const pending = all(`SELECT ${JOB_COLS} ${JOB_FROM}
+      WHERE j.status NOT IN ('CLOSED','REJECTED')
+        AND j.id IN (SELECT DISTINCT job_id FROM job_labour WHERE substr(work_date,1,7) = ?)
+      ORDER BY COALESCE(j.requested_at, j.created_at), j.id`, ym);
 
   const sums = { labour: 0, material: 0, oil: 0, other: 0, external: 0, total: 0 };
+  const newSec = () => ({ labour: 0, material: 0, oil: 0, other: 0, external: 0, total: 0 });
+  const KEYS = [[9, 'labour'], [10, 'material'], [11, 'oil'], [12, 'other'], [13, 'external'], [14, 'total']];
   let r = 6, se = 1;
-  for (const j of rows) {
+
+  const jobRow = (j, dateVal, sec) => {
     const other = num(j.general) + num(j.other);
     const total = num(j.labour) + num(j.material) + num(j.oil) + other + num(j.external);
-    textCell(ws, r, 1, se); textCell(ws, r, 2, dateOnly(j.completed_at)); textCell(ws, r, 3, j.job_no);
+    textCell(ws, r, 1, se); textCell(ws, r, 2, dateOnly(dateVal)); textCell(ws, r, 3, j.job_no);
     textCell(ws, r, 4, j.atype || ''); textCell(ws, r, 5, j.reg || j.code || ''); textCell(ws, r, 6, j.ec || '');
     textCell(ws, r, 7, j.project || j.site || ''); textCell(ws, r, 8, j.description || '', { wrap: true });
     moneyCell(ws, r, 9, j.labour); moneyCell(ws, r, 10, j.material); moneyCell(ws, r, 11, j.oil);
     moneyCell(ws, r, 12, other); moneyCell(ws, r, 13, j.external); moneyCell(ws, r, 14, total); textCell(ws, r, 15, '');
-    sums.labour += num(j.labour); sums.material += num(j.material); sums.oil += num(j.oil);
-    sums.other += other; sums.external += num(j.external); sums.total += total;
+    const vals = { labour: num(j.labour), material: num(j.material), oil: num(j.oil), other, external: num(j.external), total };
+    for (const k of Object.keys(vals)) { sec[k] += vals[k]; sums[k] += vals[k]; }
     r++; se++;
-  }
-  // Ongoing Job Labour — labour logged this month on jobs NOT completed this month (work-in-progress).
-  const ongoing = num(get(
-    `SELECT COALESCE(SUM(jl.amount),0) v FROM job_labour jl JOIN job_cards j ON j.id = jl.job_id
-      WHERE substr(jl.work_date,1,7) = ? AND j.status <> 'REJECTED'
-        AND (j.completed_at IS NULL OR substr(j.completed_at,1,7) <> ?)`, ym, ym).v);
-  if (ongoing > 0) {
-    ws.mergeCells(r, 1, r, 8); const lab = ws.getCell(r, 1); lab.value = 'Ongoing Job Labour'; lab.font = { italic: true }; border(lab);
-    for (let col = 2; col <= 8; col++) border(ws.getCell(r, col));
-    moneyCell(ws, r, 9, ongoing); moneyCell(ws, r, 10, 0); moneyCell(ws, r, 11, 0); moneyCell(ws, r, 12, 0); moneyCell(ws, r, 13, 0); moneyCell(ws, r, 14, ongoing);
-    textCell(ws, r, 15, '');
-    sums.labour += ongoing; sums.total += ongoing;
+  };
+  const banner = (text) => {
+    ws.mergeCells(r, 1, r, 15); const c = ws.getCell(r, 1); c.value = text;
+    c.font = { bold: true, size: 11 }; c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE3E9EF' } };
+    for (let col = 1; col <= 15; col++) border(ws.getCell(r, col));
     r++;
-  }
-  const last = r - 1;
+  };
+  const subtotal = (label, first, lastRow, sec) => {
+    ws.mergeCells(r, 1, r, 8); const c = ws.getCell(r, 1); c.value = label; c.font = { bold: true }; c.alignment = { horizontal: 'right' }; border(c);
+    for (let col = 2; col <= 8; col++) border(ws.getCell(r, col));
+    for (const [col, key] of KEYS) {
+      if (lastRow >= first) formulaMoney(ws, r, col, `SUM(${colL(col)}${first}:${colL(col)}${lastRow})`, sec[key], true);
+      else moneyCell(ws, r, col, 0).font = { bold: true };
+    }
+    textCell(ws, r, 15, ''); return r++;
+  };
+
+  const closedSec = newSec(), pendingSec = newSec();
+  banner(`Closed Jobs — completed & closed in ${period} (${closed.length})`);
+  const cFirst = r; for (const j of closed) jobRow(j, j.completed_at, closedSec);
+  const cSub = subtotal('Closed jobs subtotal', cFirst, r - 1, closedSec);
+  banner(`Pending Jobs — open / work-in-progress worked in ${period}, cost accrued to date (${pending.length})`);
+  const pFirst = r; for (const j of pending) jobRow(j, j.requested_at || j.created_at, pendingSec);
+  const pSub = subtotal('Pending jobs subtotal', pFirst, r - 1, pendingSec);
+
+  // Grand total = closed subtotal + pending subtotal (NOT a contiguous SUM — that would
+  // re-add the banner/subtotal rows). Reference the two subtotal cells directly.
   const gr = r;
-  ws.mergeCells(gr, 1, gr, 8); const gl = ws.getCell(gr, 1); gl.value = 'Grand total cost'; gl.font = { bold: true }; gl.alignment = { horizontal: 'right' }; border(gl);
+  ws.mergeCells(gr, 1, gr, 8); const gl = ws.getCell(gr, 1); gl.value = 'Grand total cost (closed + pending)'; gl.font = { bold: true }; gl.alignment = { horizontal: 'right' }; border(gl);
   for (let col = 2; col <= 8; col++) border(ws.getCell(gr, col));
-  const colKeys = [[9, 'labour'], [10, 'material'], [11, 'oil'], [12, 'other'], [13, 'external'], [14, 'total']];
-  for (const [col, key] of colKeys) {
-    if (last >= 6) formulaMoney(ws, gr, col, `SUM(${colL(col)}6:${colL(col)}${last})`, sums[key], true);
-    else moneyCell(ws, gr, col, 0).font = { bold: true };
-  }
+  for (const [col, key] of KEYS) formulaMoney(ws, gr, col, `${colL(col)}${cSub}+${colL(col)}${pSub}`, sums[key], true);
   textCell(ws, gr, 15, '');
   signatures(ws, gr + 3, 15);
   const q = (col) => `'Repair cost'!${colL(col)}${gr}`;
-  return { name: 'Repair cost', sums, count: rows.length, refs: { labour: q(9), material: q(10), oil: q(11), other: q(12), external: q(13), total: q(14) } };
+  return {
+    name: 'Repair cost', sums, count: closed.length + pending.length,
+    closed_count: closed.length, pending_count: pending.length,
+    closed_total: closedSec.total, pending_total: pendingSec.total,
+    refs: { labour: q(9), material: q(10), oil: q(11), other: q(12), external: q(13), total: q(14) },
+  };
 }
 
 // ---------------------------------------------------------------------------

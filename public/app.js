@@ -2549,7 +2549,8 @@ routes.reports = async (c) => {
     const line = (label, count, total, warn) => `<tr><td>${esc(label)}</td><td class="num">${count}</td><td class="num">${money(total)}</td><td>${warn ? '<span class="badge amber">enter inputs</span>' : ''}</td></tr>`;
     mcrPrev.innerHTML = tableWrap(
       [{ label: 'Sheet' }, { label: 'Rows', num: true }, { label: 'Total (Rs)', num: true }, { label: '' }],
-      [line('Repair', p.repair.count, p.repair.total),
+      [line('Repair — Closed jobs', p.repair.closed_count, p.repair.closed_total),
+        line('Repair — Pending jobs', p.repair.pending_count, p.repair.pending_total),
         line('Service', p.service.count, p.service.total),
         line('Tyre', p.tyre.count, p.tyre.total, false),
         line('Battery', p.battery.count, p.battery.total, false),

@@ -667,7 +667,11 @@ router.get('/monthly-inputs', requireAuth, asyncHandler(async (req, res) => {
   // Live preview of every sheet's grand totals (so the UI can show what the download will contain).
   const { parts, total } = await monthlyReport.buildWorkbook(year, month);
   const preview = {
-    repair: { count: parts.repair.count, total: parts.repair.sums.total },
+    repair: {
+      count: parts.repair.count, total: parts.repair.sums.total,
+      closed_count: parts.repair.closed_count, closed_total: parts.repair.closed_total,
+      pending_count: parts.repair.pending_count, pending_total: parts.repair.pending_total,
+    },
     service: { count: parts.service.count, total: parts.service.sums.total },
     tyre: { count: parts.tyre.count, total: parts.tyre.sums.total },
     battery: { count: parts.battery.count, total: parts.battery.sums.total },
