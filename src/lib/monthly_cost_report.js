@@ -86,7 +86,7 @@ function buildRepair(wb, ym, period) {
 
   // Two sections: CLOSED (status CLOSED, completed in the month — final costs) and
   // PENDING (open jobs worked in the month — costs accrued to date). Grand total = both.
-  const JOB_COLS = `j.job_no, j.completed_at, j.requested_at, j.created_at, j.status, j.description, j.site,
+  const JOB_COLS = `j.id, j.job_no, j.completed_at, j.requested_at, j.created_at, j.status, j.description, j.site,
             a.type atype, a.registration reg, a.code code, a.ec_code ec, p.name project,
             COALESCE(j.labour_cost,0) labour, COALESCE(j.material_cost,0) material, COALESCE(j.oil_cost,0) oil,
             COALESCE(j.general_cost,0) general, COALESCE(j.other_cost,0) other, COALESCE(j.external_cost,0) external`;
@@ -153,6 +153,10 @@ function buildRepair(wb, ym, period) {
     name: 'Repair cost', sums, count: closed.length + pending.length,
     closed_count: closed.length, pending_count: pending.length,
     closed_total: closedSec.total, pending_total: pendingSec.total,
+    // Jobs actually shown on this sheet — their oil is in the Lubricant column, so the Oils sheet
+    // must EXCLUDE these (and only these) job ids to avoid double-count while still catching oil on
+    // jobs that never appear here (REQUESTED/no-labour, rejected, closed in another month).
+    repair_job_ids: closed.concat(pending).map((j) => j.id),
     refs: { labour: q(9), material: q(10), oil: q(11), other: q(12), external: q(13), total: q(14) },
   };
 }
@@ -434,22 +438,29 @@ function buildOther(wb, year, month, period) {
 // ---------------------------------------------------------------------------
 const OILVAL = 'ABS(sl.qty) * COALESCE(sl.unit_price, pr.unit_price, 0)';
 const LUBE = "pr.category <> 'fuel'"; // engine/gear/hydraulic/grease/other — fuel is its own sheet
-function buildOils(wb, ym, period, repairOil, serviceOil) {
+function buildOils(wb, ym, period, repairOil, serviceOil, repairJobIds) {
   const ws = wb.addWorksheet('Oils & Lubrication');
-  [6, 14, 26, 22, 18, 10, 13, 14, 12].forEach((w, i) => { ws.getColumn(i + 1).width = w; });
-  titleBand(ws, 9, 'Oils & Lubrication cost — direct issues (not billed to a repair job or service)', period);
+  [6, 14, 26, 22, 18, 10, 13, 14, 16].forEach((w, i) => { ws.getColumn(i + 1).width = w; });
+  titleBand(ws, 9, 'Oils & Lubrication cost — issues not billed to this report’s Repair jobs or a service', period);
   ['Se: no', 'Date', 'Product', 'Vehicle / Consumer', 'Project / Plant', 'Qty', 'Unit Price (Rs)', 'Total Cost (Rs)', 'Remarks']
     .forEach((t, i) => { ws.mergeCells(4, i + 1, 5, i + 1); const c = ws.getCell(4, i + 1); c.value = t; headerCell(c); });
 
-  const rows = all(
-    `SELECT sl.txn_date, pr.name product, pr.unit, ABS(sl.qty) qty,
+  // Every non-service, non-voided lubricant issue in the month EXCEPT oil on jobs actually shown on
+  // this month's Repair sheet (whose oil is already in its Lubricant column). This catches direct
+  // issues (job_id NULL) AND oil on jobs Repair never renders (REQUESTED/no-labour, rejected,
+  // closed in another month) — which were previously dropped from every sheet.
+  const rendered = new Set(repairJobIds || []);
+  const rawRows = all(
+    `SELECT sl.job_id, sl.txn_date, pr.name product, pr.unit, ABS(sl.qty) qty,
             COALESCE(sl.unit_price, pr.unit_price, 0) unit_price, ${OILVAL} cost,
-            sl.consumer, sl.consumer_type, a.registration reg, a.code code, prj.name project
+            sl.consumer, sl.consumer_type, a.registration reg, a.code code, prj.name project, jc.job_no job_no
        FROM stock_ledger sl JOIN products pr ON pr.id = sl.product_id
        LEFT JOIN assets a ON a.id = sl.asset_id LEFT JOIN projects prj ON prj.id = sl.project_id
-      WHERE sl.kind = 'issue' AND ${LUBE} AND sl.job_id IS NULL
+       LEFT JOIN job_cards jc ON jc.id = sl.job_id
+      WHERE sl.kind = 'issue' AND ${LUBE} AND COALESCE(sl.voided,0) = 0
         AND COALESCE(sl.consumer_type,'') <> 'service' AND substr(sl.txn_date,1,7) = ?
       ORDER BY sl.txn_date, sl.id`, ym);
+  const rows = rawRows.filter((x) => x.job_id == null || !rendered.has(x.job_id));
 
   let r = 6, se = 1, total = 0;
   for (const x of rows) {
@@ -457,7 +468,8 @@ function buildOils(wb, ym, period, repairOil, serviceOil) {
     textCell(ws, r, 1, se); textCell(ws, r, 2, dateOnly(x.txn_date)); textCell(ws, r, 3, x.product || '', { wrap: true });
     textCell(ws, r, 4, x.reg || x.code || x.consumer || ''); textCell(ws, r, 5, x.project || x.consumer_type || '');
     const qc = ws.getCell(r, 6); qc.value = r2(x.qty); qc.numFmt = '#,##0.##'; qc.alignment = { horizontal: 'right' }; border(qc);
-    moneyCell(ws, r, 7, x.unit_price); moneyCell(ws, r, 8, cost); textCell(ws, r, 9, '');
+    moneyCell(ws, r, 7, x.unit_price); moneyCell(ws, r, 8, cost);
+    textCell(ws, r, 9, x.job_no ? ('Job ' + x.job_no + ' (open — not on Repair sheet)') : '');
     total += cost; r++; se++;
   }
   const last = r - 1, gr = r;
@@ -472,7 +484,7 @@ function buildOils(wb, ym, period, repairOil, serviceOil) {
   const noteRow = gr + 2;
   ws.mergeCells(noteRow, 1, noteRow, 9);
   const nc = ws.getCell(noteRow, 1);
-  nc.value = `Note: this sheet counts DIRECT oil/lubricant issues only. Oil issued to repair jobs (Rs ${fmtMoney(jobOil)}) is already in the Repair sheet, and oil for services (Rs ${fmtMoney(svcOil)}) is in the Service sheet — neither is re-counted here. Total oil & lubricant issued this month: Rs ${fmtMoney(total + jobOil + svcOil)}.`;
+  nc.value = `Note: this sheet counts oil/lubricant issued directly (no job) plus oil on jobs NOT shown on this month’s Repair sheet. Oil on the Repair sheet’s own jobs (Rs ${fmtMoney(jobOil)}, its Lubricant column) and oil for services (Rs ${fmtMoney(svcOil)}, in the Service sheet) are counted there — not re-counted here. Total oil & lubricant in this report: Rs ${fmtMoney(total + jobOil + svcOil)}.`;
   nc.font = { italic: true, size: 9 }; nc.alignment = { wrapText: true, vertical: 'top' };
   ws.getRow(noteRow).height = 42;
   signatures(ws, noteRow + 3, 9);
@@ -563,7 +575,7 @@ async function buildWorkbook(year, month) {
   parts.service = buildService(wb, ym, period);
   parts.tyre = buildTyre(wb, ym, period);
   parts.battery = buildBattery(wb, ym, period);
-  parts.oils = buildOils(wb, ym, period, parts.repair.sums.oil, parts.service.sums.oil);
+  parts.oils = buildOils(wb, ym, period, parts.repair.sums.oil, parts.service.sums.oil, parts.repair.repair_job_ids);
   parts.fuel = buildFuel(wb, year, month, period);
   parts.salaries = buildSalaries(wb, year, month, ym, period);
   parts.other = buildOther(wb, year, month, period);
