@@ -147,20 +147,25 @@ function buildService(wb, ym, period) {
   ['Labor cost', 'Filter cost', 'Lubricant cost', 'Other material cost', 'Out side work cost', 'Total Cost'].forEach((t, i) => { const c = ws.getCell(5, 9 + i); c.value = t; headerCell(c); });
   ws.mergeCells(4, 15, 5, 15); const rem = ws.getCell(4, 15); rem.value = 'Remarks'; headerCell(rem);
 
+  // parts_subtotal is authoritative in BOTH data conventions (legacy import stored filter.price as a
+  // LINE total; the live service form stores it as a UNIT price with a separate qty). Oil.price and
+  // service_parts.amount are line totals in both. So derive Filter = parts_subtotal − oil − other_parts;
+  // this reconciles regardless of the filter convention (avoids under/over-counting qty>1 filter lines).
   const rows = all(
     `SELECT s.id, s.service_date, s.job_no, s.vehicle_label, s.site_location, s.repair_details,
             COALESCE(s.labour_charge,0) labour, COALESCE(s.parts_subtotal,0) parts,
             a.type atype, a.registration reg, a.code code, a.ec_code ec,
-            (SELECT COALESCE(SUM(price),0) FROM service_filters WHERE service_id = s.id) filter,
-            (SELECT COALESCE(SUM(price),0) FROM service_oils WHERE service_id = s.id) oil
+            (SELECT COALESCE(SUM(price),0) FROM service_oils WHERE service_id = s.id) oil,
+            (SELECT COALESCE(SUM(amount),0) FROM service_parts WHERE service_id = s.id) other_parts
        FROM service_jobs s LEFT JOIN assets a ON a.id = s.asset_id
       WHERE substr(s.service_date,1,7) = ? ORDER BY s.service_date, s.id`, ym);
 
   const sums = { labour: 0, filter: 0, oil: 0, other: 0, external: 0, total: 0 };
   let r = 6, se = 1;
   for (const s of rows) {
-    const filter = r2(s.filter), oil = r2(s.oil);
-    const other = Math.max(0, r2(num(s.parts) - filter - oil));
+    const oil = r2(s.oil), otherParts = r2(s.other_parts);
+    const filter = Math.max(0, r2(num(s.parts) - oil - otherParts));
+    const other = otherParts;
     const total = r2(num(s.labour) + filter + oil + other);
     textCell(ws, r, 1, se); textCell(ws, r, 2, dateOnly(s.service_date)); textCell(ws, r, 3, s.job_no);
     textCell(ws, r, 4, s.atype || ''); textCell(ws, r, 5, s.reg || s.code || s.vehicle_label || ''); textCell(ws, r, 6, s.ec || '');
@@ -430,7 +435,10 @@ function buildTotal(wb, parts, period) {
     if (d.sundry) formulaMoney(ws, d.row, 9, `SUM(C${d.row}:H${d.row})*10%`, sundry);
     else border(ws.getCell(d.row, 9));
     const total = r2(direct + sundry);
-    formulaMoney(ws, d.row, 10, `SUM(C${d.row}:I${d.row})`, total);
+    // "Cost Without Overhead" (J): only the repair-type rows carry it — the overhead-only rows
+    // (Fuel/Salaries/Other) leave J blank so J15 excludes overhead (K15 still includes it).
+    if (d.sundry) formulaMoney(ws, d.row, 10, `SUM(C${d.row}:I${d.row})`, total);
+    else border(ws.getCell(d.row, 10));
     formulaMoney(ws, d.row, 11, `SUM(C${d.row}:I${d.row})`, total, true);
   }
 

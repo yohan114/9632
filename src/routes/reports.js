@@ -685,6 +685,9 @@ router.post('/monthly-inputs', requireAuth, asyncHandler((req, res) => {
   if (!MONTHLY_SHEETS.includes(sheet)) return res.status(400).json({ error: 'sheet must be one of ' + MONTHLY_SHEETS.join(', ') });
   // Keep only well-formed line objects — a null/primitive element must not crash the insert (→ 500).
   const lines = (Array.isArray(b.lines) ? b.lines : []).filter((ln) => ln && typeof ln === 'object');
+  // Coerce every text field to a string or null — a non-string (object/array/boolean) field value
+  // would otherwise reach better-sqlite3's bind and throw (→ 500 instead of a clean save).
+  const s = (v) => (v == null || typeof v === 'object') ? null : String(v);
   tx(() => {
     run('DELETE FROM monthly_report_inputs WHERE year = ? AND month = ? AND sheet = ?', year, month, sheet);
     let seq = 0;
@@ -693,10 +696,9 @@ router.post('/monthly-inputs', requireAuth, asyncHandler((req, res) => {
         `INSERT INTO monthly_report_inputs (year, month, sheet, seq, line_date, vehicle, label, project, qty, rate, amount1, amount2, amount3, note)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         year, month, sheet, seq++,
-        ln.line_date || null, ln.vehicle || null, ln.label || null, ln.project || null,
-        ln.qty == null ? null : String(ln.qty),
+        s(ln.line_date), s(ln.vehicle), s(ln.label), s(ln.project), s(ln.qty),
         ln.rate == null || ln.rate === '' ? null : toNum(ln.rate),
-        toNum(ln.amount1) || 0, toNum(ln.amount2) || 0, toNum(ln.amount3) || 0, ln.note || null);
+        toNum(ln.amount1) || 0, toNum(ln.amount2) || 0, toNum(ln.amount3) || 0, s(ln.note));
     }
   });
   res.json({ ok: true, sheet, saved: lines.length });
