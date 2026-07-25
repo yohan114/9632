@@ -675,6 +675,7 @@ router.get('/monthly-inputs', requireAuth, asyncHandler(async (req, res) => {
     service: { count: parts.service.count, total: parts.service.sums.total },
     tyre: { count: parts.tyre.count, total: parts.tyre.sums.total },
     battery: { count: parts.battery.count, total: parts.battery.sums.total },
+    oils: { count: parts.oils.count, total: parts.oils.sums.total, job_oil: parts.oils.job_oil, service_oil: parts.oils.service_oil },
     fuel: { count: parts.fuel.count, total: parts.fuel.sums.cost },
     salary: { count: parts.salaries.count, staff_total: parts.salaries.sums.total, mechanic_total: parts.salaries.mechanic_total },
     other: { count: parts.other.count, total: parts.other.sums.total },

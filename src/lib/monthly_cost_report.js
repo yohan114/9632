@@ -28,6 +28,7 @@ const SIG_TITLES = [
 
 const num = (v) => Number(v) || 0;
 const r2 = (v) => Math.round(num(v) * 100) / 100;   // 2-dp round — kills float noise (e.g. 5.4e-10)
+const fmtMoney = (v) => r2(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const dateOnly = (v) => (v ? String(v).slice(0, 10) : '');
 function colL(n) { let s = ''; while (n > 0) { const m = (n - 1) % 26; s = String.fromCharCode(65 + m) + s; n = (n - m - 1) / 26; } return s; }
 
@@ -426,7 +427,60 @@ function buildOther(wb, year, month, period) {
 }
 
 // ---------------------------------------------------------------------------
-// Total cost — summary. 10% Sundry applied to Repair/Service/Tyre/Battery only.
+// Oils & Lubrication — DIRECT oil/lubricant issues (from stock_ledger) that aren't billed
+// to a repair job or a service, so they're counted nowhere else in the report. Oil issued to
+// a job is in the Repair sheet's Lubricant column; oil for a service is in the Service sheet —
+// both are excluded here to avoid double-counting (see [[service-cost-reconciliation]]).
+// ---------------------------------------------------------------------------
+const OILVAL = 'ABS(sl.qty) * COALESCE(sl.unit_price, pr.unit_price, 0)';
+const LUBE = "pr.category <> 'fuel'"; // engine/gear/hydraulic/grease/other — fuel is its own sheet
+function buildOils(wb, ym, period, repairOil, serviceOil) {
+  const ws = wb.addWorksheet('Oils & Lubrication');
+  [6, 14, 26, 22, 18, 10, 13, 14, 12].forEach((w, i) => { ws.getColumn(i + 1).width = w; });
+  titleBand(ws, 9, 'Oils & Lubrication cost — direct issues (not billed to a repair job or service)', period);
+  ['Se: no', 'Date', 'Product', 'Vehicle / Consumer', 'Project / Plant', 'Qty', 'Unit Price (Rs)', 'Total Cost (Rs)', 'Remarks']
+    .forEach((t, i) => { ws.mergeCells(4, i + 1, 5, i + 1); const c = ws.getCell(4, i + 1); c.value = t; headerCell(c); });
+
+  const rows = all(
+    `SELECT sl.txn_date, pr.name product, pr.unit, ABS(sl.qty) qty,
+            COALESCE(sl.unit_price, pr.unit_price, 0) unit_price, ${OILVAL} cost,
+            sl.consumer, sl.consumer_type, a.registration reg, a.code code, prj.name project
+       FROM stock_ledger sl JOIN products pr ON pr.id = sl.product_id
+       LEFT JOIN assets a ON a.id = sl.asset_id LEFT JOIN projects prj ON prj.id = sl.project_id
+      WHERE sl.kind = 'issue' AND ${LUBE} AND sl.job_id IS NULL
+        AND COALESCE(sl.consumer_type,'') <> 'service' AND substr(sl.txn_date,1,7) = ?
+      ORDER BY sl.txn_date, sl.id`, ym);
+
+  let r = 6, se = 1, total = 0;
+  for (const x of rows) {
+    const cost = r2(x.cost);
+    textCell(ws, r, 1, se); textCell(ws, r, 2, dateOnly(x.txn_date)); textCell(ws, r, 3, x.product || '', { wrap: true });
+    textCell(ws, r, 4, x.reg || x.code || x.consumer || ''); textCell(ws, r, 5, x.project || x.consumer_type || '');
+    const qc = ws.getCell(r, 6); qc.value = r2(x.qty); qc.numFmt = '#,##0.##'; qc.alignment = { horizontal: 'right' }; border(qc);
+    moneyCell(ws, r, 7, x.unit_price); moneyCell(ws, r, 8, cost); textCell(ws, r, 9, '');
+    total += cost; r++; se++;
+  }
+  const last = r - 1, gr = r;
+  ws.mergeCells(gr, 1, gr, 7); const gl = ws.getCell(gr, 1); gl.value = 'Grand total cost'; gl.font = { bold: true }; gl.alignment = { horizontal: 'right' }; border(gl);
+  for (let col = 2; col <= 7; col++) border(ws.getCell(gr, col));
+  if (last >= 6) formulaMoney(ws, gr, 8, `SUM(H6:H${last})`, total, true); else moneyCell(ws, gr, 8, 0).font = { bold: true };
+  textCell(ws, gr, 9, '');
+
+  // Reconciliation note — oil already counted elsewhere (the actual Repair & Service sheet lubricant
+  // totals), so the reader can see the full oil picture without any of it being re-added here.
+  const jobOil = r2(repairOil), svcOil = r2(serviceOil);
+  const noteRow = gr + 2;
+  ws.mergeCells(noteRow, 1, noteRow, 9);
+  const nc = ws.getCell(noteRow, 1);
+  nc.value = `Note: this sheet counts DIRECT oil/lubricant issues only. Oil issued to repair jobs (Rs ${fmtMoney(jobOil)}) is already in the Repair sheet, and oil for services (Rs ${fmtMoney(svcOil)}) is in the Service sheet — neither is re-counted here. Total oil & lubricant issued this month: Rs ${fmtMoney(total + jobOil + svcOil)}.`;
+  nc.font = { italic: true, size: 9 }; nc.alignment = { wrapText: true, vertical: 'top' };
+  ws.getRow(noteRow).height = 42;
+  signatures(ws, noteRow + 3, 9);
+  return { name: 'Oils & Lubrication', sums: { total }, count: rows.length, job_oil: jobOil, service_oil: svcOil, refs: { total: `'Oils & Lubrication'!H${gr}` } };
+}
+
+// ---------------------------------------------------------------------------
+// Total cost — summary. 10% Sundry applied to Repair/Service/Tyre/Battery/Oils only.
 // Columns: C Labour, D Spare parts, E Lubricant, F Other material, G Outside,
 //          H Overhead, I Sundry, J Cost w/o Overhead, K Total.
 // ---------------------------------------------------------------------------
@@ -453,9 +507,11 @@ function buildTotal(wb, parts, period) {
     { row: 9, label: 'Service', cells: { 3: [SV.labour, SS.labour], 4: [SV.filter, SS.filter], 5: [SV.oil, SS.oil], 6: [SV.other, SS.other], 7: [SV.external, SS.external] }, sundry: true },
     { row: 10, label: 'Tyre work cost', cells: { 4: [TY.tyre, TS.tyre], 6: [TY.tube, TS.tube], 7: [TY.outside, TS.outside] }, sundry: true },
     { row: 11, label: 'Battery cost', cells: { 4: [BT.battery, BS.battery], 6: [BT.other, BS.other] }, sundry: true },
-    { row: 12, label: 'Fuel Cost', cells: { 8: [parts.fuel.refs.cost, parts.fuel.sums.cost] }, sundry: false },
-    { row: 13, label: 'Salaries Cost', cells: { 8: [parts.salaries.refs.total, parts.salaries.sums.total] }, sundry: false },
-    { row: 14, label: 'Other Cost', cells: { 8: [parts.other.refs.total, parts.other.sums.total] }, sundry: false },
+    // Direct oil goes in the Lubricant column (E) and, like lubricant in Repair/Service, gets the 10% Sundry.
+    { row: 12, label: 'Oils & Lubrication', cells: { 5: [parts.oils.refs.total, parts.oils.sums.total] }, sundry: true },
+    { row: 13, label: 'Fuel Cost', cells: { 8: [parts.fuel.refs.cost, parts.fuel.sums.cost] }, sundry: false },
+    { row: 14, label: 'Salaries Cost', cells: { 8: [parts.salaries.refs.total, parts.salaries.sums.total] }, sundry: false },
+    { row: 15, label: 'Other Cost', cells: { 8: [parts.other.refs.total, parts.other.sums.total] }, sundry: false },
   ];
 
   for (const d of rowDefs) {
@@ -476,8 +532,9 @@ function buildTotal(wb, parts, period) {
     formulaMoney(ws, d.row, 11, `SUM(C${d.row}:I${d.row})`, total, true);
   }
 
-  // Grand total row 15
-  const gl = ws.getCell(15, 2); gl.value = 'Grand total cost'; gl.font = { bold: true }; gl.alignment = { horizontal: 'right' }; border(gl);
+  // Grand total row 16 (rows 8..15 are the category rows)
+  const gRow = 16;
+  const gl = ws.getCell(gRow, 2); gl.value = 'Grand total cost'; gl.font = { bold: true }; gl.alignment = { horizontal: 'right' }; border(gl);
   const colTotals = {};
   for (let col = 3; col <= 11; col++) {
     let s = 0;
@@ -486,9 +543,9 @@ function buildTotal(wb, parts, period) {
       if (c && typeof c === 'object' && 'result' in c) s += num(c.result);
     }
     colTotals[col] = s;
-    formulaMoney(ws, 15, col, `SUM(${colL(col)}8:${colL(col)}14)`, s, true);
+    formulaMoney(ws, gRow, col, `SUM(${colL(col)}8:${colL(col)}15)`, s, true);
   }
-  signatures(ws, 18, 11);
+  signatures(ws, gRow + 3, 11);
   return { grand_total: colTotals[11] || 0, columns: colTotals };
 }
 
@@ -501,15 +558,15 @@ async function buildWorkbook(year, month) {
   wb.calcProperties = Object.assign({}, wb.calcProperties, { fullCalcOnLoad: true });
   const ym = `${year}-${String(month).padStart(2, '0')}`;
   const period = `${MONTHS[month]} ${year}`;
-  const parts = {
-    repair: buildRepair(wb, ym, period),
-    service: buildService(wb, ym, period),
-    tyre: buildTyre(wb, ym, period),
-    battery: buildBattery(wb, ym, period),
-    fuel: buildFuel(wb, year, month, period),
-    salaries: buildSalaries(wb, year, month, ym, period),
-    other: buildOther(wb, year, month, period),
-  };
+  const parts = {};
+  parts.repair = buildRepair(wb, ym, period);
+  parts.service = buildService(wb, ym, period);
+  parts.tyre = buildTyre(wb, ym, period);
+  parts.battery = buildBattery(wb, ym, period);
+  parts.oils = buildOils(wb, ym, period, parts.repair.sums.oil, parts.service.sums.oil);
+  parts.fuel = buildFuel(wb, year, month, period);
+  parts.salaries = buildSalaries(wb, year, month, ym, period);
+  parts.other = buildOther(wb, year, month, period);
   const total = buildTotal(wb, parts, period);
   return { wb, parts, total };
 }
