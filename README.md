@@ -45,6 +45,14 @@ Configuration is via `.env` (see `.env.example`) — port, DB path, session
 lifetime, upload/backup dirs, and the forecasting windows (90-day window,
 14-day low-stock threshold, matching the existing Oil & Lubricant settings).
 
+## Android mobile app
+
+A native Android client for the same server lives in **`android/`** — sign-in
+with the existing accounts over the workshop LAN, dashboard, job cards with the
+full approval/closure workflow, Asset 360, oil forecast, batteries and the
+Needs Attention screens, all role-aware. Build with Android Studio or
+`cd android && ./gradlew assembleDebug`; see **`android/README.md`**.
+
 ## Deployment & operations (Phase 4)
 
 Runs as one always-on Node process on a single PC that owns the SQLite file;
