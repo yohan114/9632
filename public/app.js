@@ -1317,15 +1317,17 @@ routes.dailywork = async (c) => {
         const outsideCell = canEdit
           ? `<input type="number" step="0.01" min="0" value="${e.outside_labour == null ? '' : e.outside_labour}" data-mout="${e.id}" data-orig="${e.outside_labour == null ? '' : e.outside_labour}" class="dw-outside-input" placeholder="—" style="width:96px;text-align:right">`
           : (e.outside_labour == null ? '—' : money(e.outside_labour));
+        // No inline nowrap here. It beat every stylesheet rule, so a four-name crew could not wrap
+        // inside its column and ran across the Description beside it. Let the stylesheet decide.
         return `<tr>
-        <td style="white-space:nowrap">${esc(e.work_date || '—')}</td>
-        <td style="white-space:nowrap">${esc(idLabel(e) || '—')}</td>
-        <td style="white-space:nowrap"><a href="#/jobs/${e.job_id}">${esc(e.job_no)}</a></td>
-        <td style="white-space:nowrap"><b>${esc(e.mechanic || '—')}</b></td>
+        <td>${esc(e.work_date || '—')}</td>
+        <td>${esc(idLabel(e) || '—')}</td>
+        <td><a href="#/jobs/${e.job_id}">${esc(e.job_no)}</a></td>
+        <td><b>${esc(e.mechanic || '—')}</b></td>
         <td class="desc-col">${esc(e.description || '')}</td>
-        <td class="num" style="white-space:nowrap">${hoursCell}</td>
-        <td class="num" style="white-space:nowrap">${costCell}</td>
-        <td class="num" style="white-space:nowrap">${outsideCell}</td></tr>`;
+        <td class="num">${hoursCell}</td>
+        <td class="num">${costCell}</td>
+        <td class="num">${outsideCell}</td></tr>`;
       });
 
       qs('#dw-month-sum').textContent = `${data.count} entr${data.count === 1 ? 'y' : 'ies'} · ${data.total_hours || 0} hrs · ${money(data.total_labour || 0)} labour`;

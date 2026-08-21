@@ -103,10 +103,27 @@ th { background: var(--surface-2); color: var(--muted); font-weight: 600; font-s
 tbody tr:hover { background: var(--surface-2); }
 td.num, th.num { text-align: right; font-family: var(--mono); font-variant-numeric: tabular-nums; }
 .table-wrap.scroll { max-height: 62vh; overflow-y: scroll; }
-.table-wrap.no-hscroll { overflow-x: hidden; }
-table.fit-table { table-layout: fixed; width: 100%; }
+/* Sideways scrolling is suppressed so a wide table fits the window instead of running off it —
+   but `auto`, never `hidden`. They behave identically while the table fits, and on the day it does
+   not, `hidden` CUTS THE CONTENT OFF WITH NO SIGN OF IT while `auto` gives the reader a scrollbar.
+   Nothing on this screen should be able to disappear silently. */
+.table-wrap.no-hscroll { overflow-x: auto; }
+/* NOT table-layout:fixed. Sharing the window equally between eleven columns crushes each to about
+   90px, and then either the text is clipped (nowrap) or every row grows to ten lines — on the job
+   list at 1024px that made 496 of 500 rows over 200px tall, one of them 1,980px. Columns size to
+   their contents instead; the table still fills the window, the description column takes up the
+   slack by wrapping, and on the rare screen too narrow for all of it the wrapper scrolls. */
+table.fit-table { width: 100%; }
+/* Cells keep their single line (the base rule). With columns sized to their contents that no longer
+   clips anything — a cell gets the width it needs — and rows stay one line instead of ten. */
 table.fit-table td, table.fit-table th { padding: 7px 10px; }
-table.fit-table td.desc-col, table.fit-table th.desc-col { white-space: normal !important; word-break: break-word; line-height: 1.35; }
+/* The description is the column that gives: it wraps, so it absorbs whatever width is left over
+   and the rest stay readable.
+   overflow-wrap, NOT word-break. word-break:break-word tells the browser the column may be as
+   narrow as ONE CHARACTER, so the table crushed it and set the text on its side — a "200 Breaker"
+   plate came out 165px tall and every row carrying one stood 312px high. overflow-wrap breaks a
+   word only when it genuinely will not fit, and leaves the column's natural width alone. */
+table.fit-table td.desc-col, table.fit-table th.desc-col { white-space: normal !important; overflow-wrap: break-word; line-height: 1.35; }
 
 
 /* ---- badges ---- */
