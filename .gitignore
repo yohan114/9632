@@ -44,3 +44,7 @@ sources/stores/tracker_backup.json
 # SQLite WAL sidecars (transient)
 *.db-shm
 *.db-wal
+
+# env backups carry the same secrets as .env
+.env.bak-*
+.env.*.bak
