@@ -294,6 +294,19 @@ body.live-connected .live-dot { color: var(--green); }
 .mobile-nav-item.active { color: var(--accent); }
 
 @media (max-width: 768px) {
+  /* The top bar is one non-wrapping row of eight items — 558px of it on a 375px phone — and being
+     wider than the screen it pushed EVERY page sideways, so the whole thing slid under your thumb.
+     It takes a second line here instead: the brand and the live dot stay on top, and the account
+     buttons drop below (the spacer becomes the line break). */
+  .topbar { flex-wrap: wrap; height: auto; min-height: 52px; padding: 8px 10px; gap: 6px; }
+  .topbar .spacer { flex-basis: 100%; height: 0; }
+  /* The name gives way rather than shoving Logout onto a third line — it shortens with an ellipsis
+     and the three account buttons stay together. */
+  .topbar .who { font-size: 11.5px; flex: 0 1 auto; min-width: 0; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* The 44px touch minimum below is right for the page, but on three account buttons it makes the
+     bar tower over the content. Tighter here so the name, the dot and all three buttons share ONE
+     line — otherwise Logout drops to a third line and the header eats 156px of a 812px screen. */
+  .topbar button.sm { min-height: 32px; padding: 4px 9px; font-size: 11.5px; }
   .layout { flex-direction: column; padding-bottom: 60px; }
   .nav { display: none; } /* Hide desktop sidebar on mobile */
   .mobile-bottom-nav { display: flex; }
