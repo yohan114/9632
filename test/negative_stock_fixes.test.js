@@ -258,3 +258,49 @@ test('a handover with no receipt on the number it names is not blamed on somethi
   assert.strictEqual(bal('general', stock.itemKey('general', 'Universal Joint')), 2,
     'and the joint on that request is untouched');
 });
+
+// ---- two filters on one line ------------------------------------------------
+//
+// 105 service lines name TWO filters at once — "JS-1030 & 278 607 989 916". Joined up they make
+// a key no receipt will ever carry, so the filter is fitted and never meets the one that was
+// bought. The trap: the joined-up form is ITSELF in filter_prices, a junk catalogue entry built
+// from these same lines, so checking the whole string before splitting accepts the nonsense key
+// and nothing improves.
+
+run(`INSERT INTO filter_prices (filter_no, filter_no_norm, category, unit_price) VALUES ('JS-1030','JS1030','Water Separator',800)`);
+run(`INSERT INTO filter_prices (filter_no, filter_no_norm, category, unit_price) VALUES ('JS-1030 & FF-5052','JS1030FF5052','Water Separator',800)`);
+
+test('a service line naming two filters is filed under a real part number', () => {
+  const s = run(`INSERT INTO service_jobs (service_date, job_no) VALUES ('2026-08-14','SVC-N2')`).lastInsertRowid;
+  run(`INSERT INTO service_filters (service_id, filter_no, filter_no_norm, category, qty)
+       VALUES (?, 'JS-1030 & FF-5052', 'JS1030FF5052', 'Water Separator', 1)`, s);
+  stock.rebuild({ wipe: true });
+  assert.strictEqual(bal('filter', 'JS1030FF5052'), 0, 'the joined-up key must not be used, even though the price list holds it');
+  assert.strictEqual(bal('filter', 'JS1030'), -1, 'it lands on the first filter the catalogue knows');
+});
+
+test('the line keeps both numbers on it, so the second is not lost', () => {
+  const row = get(`SELECT item_name FROM stock_moves WHERE section='filter' AND item_key='JS1030' AND kind='out'`);
+  assert.match(row.item_name, /FF-5052/, 'the paperwork still says what was fitted');
+});
+
+test('the recorded quantity is not invented upwards', () => {
+  const row = get(`SELECT qty FROM stock_moves WHERE section='filter' AND item_key='JS1030' AND kind='out'`);
+  assert.strictEqual(row.qty, 1, 'a line that says one stays one — splitting it into two would be a guess');
+});
+
+// ---- opened to zero, not to plenty ------------------------------------------
+
+test('a filter fitted with no record of it arriving can be opened to exactly zero', () => {
+  run(`INSERT INTO filter_stock (filter_type, part_no, unit, qty_in_stock, supplier)
+       VALUES ('Water Separator','JS-1030','nos',1,'opening-backfill')`);
+  stock.rebuild({ wipe: true });
+  assert.strictEqual(bal('filter', 'JS1030'), 0,
+    'the opening is the shortfall and no more — it says one was there and was fitted, not that one is there now');
+});
+
+test('an opening backfill is dated at the cut-over', () => {
+  const o = get(`SELECT txn_date FROM stock_moves WHERE section='filter' AND source_table='filter_stock'
+                  AND source_id = (SELECT id FROM filter_stock WHERE supplier='opening-backfill' LIMIT 1)`);
+  assert.strictEqual(o.txn_date, CUTOVER);
+});

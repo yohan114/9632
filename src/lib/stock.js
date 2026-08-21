@@ -79,20 +79,19 @@ function filterCatalogue() {
 function filterKey(text) {
   const s = String(text || '');
   const cat = filterCatalogue();
-  // Brackets first — that is where the number usually hides — then the whole string.
-  const candidates = [];
-  for (const m of s.matchAll(/\(([^)]*)\)/g)) candidates.push(m[1]);
-  candidates.push(s.replace(/\([^)]*\)/g, ' '));
-  candidates.push(s);
-  for (const c of candidates) {
+  // SPLIT BEFORE ACCEPTING THE WHOLE STRING. "FF-5052 & FS-1275" is two filters on one line, and
+  // the joined-up form FF5052FS1275 is itself in filter_prices — a junk catalogue entry built
+  // from these same lines. Checking the whole string first would therefore accept the nonsense
+  // key and the filter would still never meet the one that was bought.
+  const parts = (t) => String(t).split(/[&+]| and /i).map((x) => x.trim()).filter(Boolean);
+  const tried = [];
+  for (const m of s.matchAll(/\(([^)]*)\)/g)) tried.push(...parts(m[1]));   // the number usually hides in the bracket
+  const bare = s.replace(/\([^)]*\)/g, ' ');
+  tried.push(...parts(bare));
+  tried.push(bare, s);                                                      // only then the line as written
+  for (const c of tried) {
     const k = normF(c);
     if (k && cat.has(k)) return k;
-    // "FF-5052 & FS-1275" is two filters on one line: take the first the catalogue knows, and
-    // leave the line's wording alone so the second is not lost from the paperwork.
-    for (const part of String(c).split(/[&,/+]| and /i)) {
-      const pk = normF(part);
-      if (pk && cat.has(pk)) return pk;
-    }
   }
   return null;
 }
@@ -273,7 +272,14 @@ function rebuild(opts = {}) {
               s.service_date, s.asset_id, s.job_no
          FROM service_filters f JOIN service_jobs s ON s.id = f.service_id
         WHERE COALESCE(f.qty,0) > 0`)) {
-      insert({ section: 'filter', kind: 'out', item_key: itemKey('filter', f.filter_no, f.filter_no_norm || f.filter_no),
+      // The issue side needs the number dug out of the writing just as much as the receipt side.
+      // 105 service lines name TWO filters at once — "JS-1030 & 278 607 989 916" — and joined up
+      // they make a key (JS1030278607989916) no receipt will ever carry, so the filter is fitted
+      // and never once meets the one that was bought. The first number the filter catalogue
+      // recognises is used, and the LINE KEEPS ITS FULL WORDING so the second is not lost from
+      // the paperwork. The recorded quantity is untouched: a line that says one is still one.
+      const fkey = filterKey(f.filter_no) || itemKey('filter', f.filter_no, f.filter_no_norm || f.filter_no);
+      insert({ section: 'filter', kind: 'out', item_key: fkey,
         item_name: f.filter_no || f.category, qty: f.qty, unit_price: null, txn_date: f.service_date,
         asset_id: f.asset_id, ref: f.job_no, note: f.category, source_table: 'service_filters', source_id: f.id });
     }

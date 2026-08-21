@@ -124,6 +124,48 @@ for (const [pid, v] of byProduct) {
   oilPlan.push({ pid, ...p, net: r3(v.net), counted, countedAt: c ? c.period : null, opening, existing, on: dayBefore(v.first) });
 }
 
+// ---- filters ---------------------------------------------------------------
+//
+// A filter fitted with no record of it ever arriving. The section deliberately starts from a
+// cut-over because filter purchases were never recorded in stores, and the owner's own register
+// is what opens it — but the register does not list these, or lists them at zero.
+//
+// There is NOTHING TO COUNT AGAINST here: no stock-take, no receipt. So the anchor is the same
+// one the owner chose for an item that has never been counted — ZERO. The opening is exactly the
+// shortfall and no more, which says "there was one on the shelf and it was fitted", not "there is
+// one on the shelf now". It is dated ON the cut-over, which is what a cut-over means.
+//
+// The rows go into filter_stock (the source the rebuild reads) marked `supplier = 'opening-backfill'`,
+// so they are identifiable and reversible, and are re-sized rather than duplicated on a re-run.
+const MARKF = 'opening-backfill';
+const filterCut = (get(`SELECT cutover FROM stock_opening WHERE section = 'filter' AND mode = 'cutover'`) || {}).cutover;
+const filterBackfillIds = new Set(all(`SELECT id FROM filter_stock WHERE supplier = ?`, MARKF).map((r) => r.id));
+const filPlan = [];
+if (filterCut) {
+  const rows = all(
+    `SELECT sm.item_key,
+            MAX(sm.item_name) AS nm,
+            ROUND(SUM(CASE WHEN sm.source_table = 'filter_stock' AND sm.source_id IN (SELECT id FROM filter_stock WHERE supplier = '${MARKF}') THEN 0
+                           WHEN sm.counts = 0 THEN 0
+                           WHEN sm.kind IN ('in','opening','adjust') THEN sm.qty ELSE -sm.qty END),3) AS net
+       FROM stock_moves sm WHERE sm.section = 'filter'
+      GROUP BY sm.item_key`);
+  for (const r of rows) {
+    const existing = all(`SELECT id, part_no, qty_in_stock FROM filter_stock WHERE supplier = ?`, MARKF)
+      .find((f) => require('../src/lib/stock').itemKey('filter', f.part_no, f.part_no) === r.item_key);
+    const opening = r3(-r.net);
+    if (opening <= 0) {
+      if (!existing || Math.abs(existing.qty_in_stock) < 0.001) continue;
+      filPlan.push({ ...r, opening: 0, existing, on: filterCut });
+      continue;
+    }
+    if (existing && Math.abs(existing.qty_in_stock - opening) < 0.001) continue;
+    // A readable number for the row, from the workshop's own price list where it knows one.
+    const p = get(`SELECT filter_no, category FROM filter_prices WHERE filter_no_norm = ?`, r.item_key);
+    filPlan.push({ ...r, opening, existing, on: filterCut, part_no: p ? p.filter_no : r.item_key, type: p ? p.category : null });
+  }
+}
+
 // ---- report ----------------------------------------------------------------
 console.log(`GENERAL — ${genPlan.length} items, opening ${genPlan.reduce((s, r) => s + r.opening, 0).toFixed(1)}`);
 console.log('   history   counted   opening   dated        item');
@@ -146,6 +188,17 @@ for (const r of oilPlan) {
     + (r.existing ? `   [re-sized from ${r.existing.qty}]` : ''));
 }
 if (oilPlan.some((r) => !r.countedAt)) console.log('   * never physically counted — opened to zero, not to plenty');
+
+console.log(`\nFILTERS — ${filPlan.length} part numbers, opening ${filPlan.reduce((s, r) => s + r.opening, 0)}`);
+if (filPlan.length) {
+  console.log('   history   opening   dated        part');
+  for (const r of filPlan) {
+    console.log('  ' + String(r.net).padStart(8) + String(r.opening).padStart(10) + '   ' + r.on
+      + '   ' + String(r.part_no || r.item_key).padEnd(18) + String(r.type || '').slice(0, 22)
+      + (r.existing ? `   [re-sized from ${r.existing.qty_in_stock}]` : ''));
+  }
+  console.log('   no count and no receipt to anchor to — opened to exactly the shortfall, so each reads zero, not plenty');
+}
 
 if (!APPLY) { console.log('\nDry run — nothing written.'); process.exit(0); }
 
@@ -171,7 +224,18 @@ tx(() => {
     }
   }
 });
-const resized = genPlan.filter((r) => r.existing).length + oilPlan.filter((r) => r.existing).length;
-console.log(`\nAPPLIED — ${genPlan.length} general and ${oilPlan.length} lubricant opening rows (${resized} re-sized, the rest new).`);
+tx(() => {
+  for (const r of filPlan) {
+    if (r.existing) {
+      run(`UPDATE filter_stock SET qty_in_stock = ?, updated_at = datetime('now') WHERE id = ?`, r.opening, r.existing.id);
+    } else {
+      run(`INSERT INTO filter_stock (filter_type, part_no, unit, qty_in_stock, supplier)
+           VALUES (?, ?, 'nos', ?, ?)`, r.type || 'Filter', r.part_no || r.item_key, r.opening, MARKF);
+    }
+  }
+});
+
+const resized = genPlan.filter((r) => r.existing).length + oilPlan.filter((r) => r.existing).length + filPlan.filter((r) => r.existing).length;
+console.log(`\nAPPLIED — ${genPlan.length} general, ${oilPlan.length} lubricant and ${filPlan.length} filter opening rows (${resized} re-sized, the rest new).`);
 console.log('Next: rebuild the stock, then re-run scripts/fix_general_running_balance.js --apply');
 console.log('so the Balance column reads correctly through the new rows.');
