@@ -221,6 +221,12 @@ function migrate() {
   // handover OF ITS OWN RECEIPT — the receipt sat under one item key and the issue under another,
   // and six items read negative for want of the link. Kept here so the tie survives the import.
   ensureColumn('issues', 'mrn_no', 'TEXT');
+  // One handover, written down twice — once free-hand in the storekeeper's tracker and once
+  // against the receipt through Stores. Voiding keeps the row (it carries the recipient's name
+  // and who issued it, which the receipt-linked row does not) but stops it deducting a second
+  // time. Same idea as stock_ledger.voided, and the rebuild honours it the same way.
+  ensureColumn('issues', 'voided', 'INTEGER NOT NULL DEFAULT 0');
+  ensureColumn('issues', 'voided_reason', 'TEXT');
   ensureColumn('users', 'must_change_password', 'INTEGER NOT NULL DEFAULT 0');
   // Phase 1 migration deltas (additive; CHECK relaxations live in schema.sql).
   ensureColumn('assets', 'in_register', 'INTEGER NOT NULL DEFAULT 0');

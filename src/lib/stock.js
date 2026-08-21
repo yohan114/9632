@@ -336,7 +336,7 @@ function rebuild(opts = {}) {
     // 6. Stores issues booked straight to a vehicle.
     for (const i of all(
       `SELECT i.id, i.description, i.qty, i.unit_price, i.issue_date, i.asset_id, i.job_id, i.store_item_id,
-              i.grn_id, i.mrn_no, si.category, si.name,
+              i.grn_id, i.mrn_no, COALESCE(i.voided,0) AS voided, si.category, si.name,
               g.description AS grn_desc, gml.category AS grn_category, gml.id AS grn_mrn_line_id,
               (SELECT sm.counts FROM stock_moves sm
                 WHERE sm.source_table = 'grn' AND sm.source_id = i.grn_id LIMIT 1) AS grn_counts
@@ -370,6 +370,10 @@ function rebuild(opts = {}) {
         qty: i.qty, unit_price: i.unit_price, txn_date: i.issue_date, asset_id: i.asset_id, job_id: i.job_id,
         store_item_id: i.store_item_id, grn_id: i.grn_id || null, mrn_line_id: i.grn_mrn_line_id || null,
         source_table: 'issues', source_id: i.id,
+        // A handover written down twice stays visible and stops counting the second time — the
+        // free-hand row is the only place the recipient's name survives, so it is muted, never
+        // deleted.
+        force_history: i.voided ? true : undefined,
         // Only a receipt-sourced handover overrides the rule; leave everything else to the
         // section's cut-over date, or pre-cut-over issues would start counting out of a
         // balance they were never counted into.

@@ -190,3 +190,71 @@ test('rebuilding twice lands on the same balances', () => {
   stock.rebuild({ wipe: true });
   assert.deepStrictEqual([bal('oil', 'OIL8001'), bal('filter', 'C206'), bal('filter', 'FF5052')], a);
 });
+
+// ---- one handover, one deduction -------------------------------------------
+//
+// A handover got written down twice: once free-hand in the storekeeper's tracker, and once
+// against the receipt through Stores. The free-hand row is the ONLY place the recipient and the
+// issuing storekeeper survive, so it is muted, never deleted.
+//
+// What decides it is the receipt, not the clock. Two identical tracker lines could be two real
+// handovers — the three in the live book were entered 26 seconds, 17 minutes and 43 minutes
+// apart, which settles nothing. What settles it is that the request each names received only
+// ONE: you cannot hand out two of something one of which was bought.
+
+const mkReceipt = (mrnNo, desc, qty, date) => {
+  const m = run(`INSERT INTO mrn (mrn_no, req_date, status) VALUES (?, ?, 'received')`, mrnNo, date).lastInsertRowid;
+  const l = run(`INSERT INTO mrn_lines (mrn_id, description, qty, category) VALUES (?, ?, ?, 'General Items')`, m, desc, qty).lastInsertRowid;
+  const g = run(`INSERT INTO grn (mrn_id, mrn_line_id, description, qty, unit_price, delivery_date) VALUES (?, ?, ?, ?, 100, ?)`,
+    m, l, desc, qty, date).lastInsertRowid;
+  return { mrnId: m, lineId: l, grnId: g };
+};
+
+test('a handover recorded in both books only comes off the shelf once', () => {
+  mkReceipt('950111', 'Dup Widget', 1, '2026-06-10');
+  const g = get(`SELECT id FROM grn WHERE description = 'Dup Widget'`);
+  run(`INSERT INTO issues (description, qty, issue_date, mrn_no) VALUES ('Dup Widget (to Anura)', 1, '2026-06-12', '950111')`);
+  run(`INSERT INTO issues (description, qty, issue_date, grn_id) VALUES ('Dup Widget', 1, '2026-06-12', ?)`, g.id);
+  stock.rebuild({ wipe: true });
+  const key = stock.itemKey('general', 'Dup Widget');
+  assert.strictEqual(bal('general', key), -1, 'both rows deduct while nothing is muted');
+
+  run(`UPDATE issues SET voided = 1, voided_reason = 'written twice' WHERE description = 'Dup Widget (to Anura)'`);
+  stock.rebuild({ wipe: true });
+  assert.strictEqual(bal('general', key), 0, 'one received, one handed over');
+});
+
+test('a muted handover is still there, with the recipient it was written for', () => {
+  const row = get(`SELECT item_name, counts FROM stock_moves WHERE item_name = 'Dup Widget (to Anura)'`);
+  assert.ok(row, 'muting must not hide the row — the receipt-linked twin carries no recipient');
+  assert.strictEqual(row.counts, 0, 'visible, but it no longer moves the balance');
+});
+
+test('un-muting puts it back, so the call is reversible', () => {
+  run(`UPDATE issues SET voided = 0, voided_reason = NULL WHERE description = 'Dup Widget (to Anura)'`);
+  stock.rebuild({ wipe: true });
+  assert.strictEqual(bal('general', stock.itemKey('general', 'Dup Widget')), -1);
+  run(`UPDATE issues SET voided = 1 WHERE description = 'Dup Widget (to Anura)'`);
+  stock.rebuild({ wipe: true });
+});
+
+test('two handovers the receipt CAN account for are both left standing', () => {
+  mkReceipt('950222', 'Pair Widget', 2, '2026-06-10');
+  for (let n = 0; n < 2; n++) {
+    run(`INSERT INTO issues (description, qty, issue_date, mrn_no, issued_by) VALUES ('Pair Widget (to Anura)', 1, '2026-06-12', '950222', 'Priyankara')`);
+  }
+  stock.rebuild({ wipe: true });
+  assert.strictEqual(bal('general', stock.itemKey('general', 'Pair Widget')), 0,
+    'two bought and two handed out is not a double entry');
+});
+
+test('a handover with no receipt on the number it names is not blamed on something else', () => {
+  // "York (to Krishna)" — its request holds a Universal Joint and a Belt, and no York at all.
+  mkReceipt('950333', 'Universal Joint', 2, '2026-06-15');
+  run(`INSERT INTO issues (description, qty, issue_date, mrn_no) VALUES ('Yorkish Thing (to Krishna)', 1, '2026-06-21', '950333')`);
+  stock.rebuild({ wipe: true });
+  assert.strictEqual(bal('general', stock.itemKey('general', 'Yorkish Thing')), -1,
+    'it stays negative and visible — a missing receipt is a different problem from a double entry');
+  assert.strictEqual(bal('general', stock.itemKey('general', 'Universal Joint')), 2,
+    'and the joint on that request is untouched');
+});
