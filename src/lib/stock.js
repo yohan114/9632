@@ -16,6 +16,7 @@
 
 const { get, all, run, tx } = require('../db');
 const lubricants = require('./lubricants');
+const { normF } = require('./filter_no');
 
 const SECTIONS = ['oil', 'filter', 'battery', 'tyre', 'general'];
 
@@ -57,6 +58,45 @@ function openingRules() {
  * `opts.wipe` clears stock_moves first (a full recalculation); otherwise existing rows
  * are kept and only missing ones are inserted.
  */
+// The part number a filter is really known by, dug out of however it was written down.
+//
+// "Oil Filter (C-206)" is C206. "C-206" is C206. "Oil Filter" alone is nothing — a description
+// with no number in it is left in its generic bucket rather than guessed at, because there are
+// dozens of oil filters and picking one would be inventing a fact.
+//
+// A candidate only counts if the workshop's own filter catalogue recognises it (filter_prices,
+// then the cross-reference table). That is what stops "(2 Nos)" or "(Tata)" being read as a part
+// number: they are not in the catalogue, so they are not numbers.
+const knownFilterNo = new Map();
+function filterCatalogue() {
+  if (knownFilterNo.size) return knownFilterNo;
+  for (const r of all(`SELECT filter_no_norm AS k FROM filter_prices WHERE NULLIF(filter_no_norm,'') IS NOT NULL
+                       UNION SELECT part_number_norm FROM filter_xrefs WHERE NULLIF(part_number_norm,'') IS NOT NULL`)) {
+    knownFilterNo.set(r.k, true);
+  }
+  return knownFilterNo;
+}
+function filterKey(text) {
+  const s = String(text || '');
+  const cat = filterCatalogue();
+  // Brackets first — that is where the number usually hides — then the whole string.
+  const candidates = [];
+  for (const m of s.matchAll(/\(([^)]*)\)/g)) candidates.push(m[1]);
+  candidates.push(s.replace(/\([^)]*\)/g, ' '));
+  candidates.push(s);
+  for (const c of candidates) {
+    const k = normF(c);
+    if (k && cat.has(k)) return k;
+    // "FF-5052 & FS-1275" is two filters on one line: take the first the catalogue knows, and
+    // leave the line's wording alone so the second is not lost from the paperwork.
+    for (const part of String(c).split(/[&,/+]| and /i)) {
+      const pk = normF(part);
+      if (pk && cat.has(pk)) return pk;
+    }
+  }
+  return null;
+}
+
 function rebuild(opts = {}) {
   const rep = { in: 0, out: 0, history_only: 0, by_section: {} };
   const rules = openingRules();
@@ -73,15 +113,37 @@ function rebuild(opts = {}) {
     return (date && d10(date) >= r.cutover) ? 1 : 0;
   };
 
+  // A lubricant's identity is the PRODUCT in the oil book, not the words written on the paper.
+  // The oil ledger keys its rows by the product code (itemKey('oil', name, 'OIL-0021') ->
+  // OIL0021) while every other door keys by the written name (HD68OIL, HD68OILVALVOLINE), so one
+  // product's receipts and issues landed in DIFFERENT rows: HD 68 Oil read -573 under its code
+  // while 1,000 L of the same oil sat under two spellings of its name. Keyed by product, all its
+  // spellings collapse to one row and the balance is simply right.
+  // The code form is used rather than the name form because itemKey() strips brackets — the
+  // brand lives in the bracket, so "HD 68 Oil (Servo)" and "HD 68 Oil (Valvoline)" would merge
+  // into one row. The code cannot collide.
+  const lubeKeyCache = new Map();
+  const lubeKey = (productId) => {
+    if (!lubeKeyCache.has(productId)) {
+      const p = get('SELECT code, name FROM products WHERE id = ?', productId);
+      lubeKeyCache.set(productId, p && (p.code || p.name) ? itemKey('oil', p.name, p.code || p.name) : null);
+    }
+    return lubeKeyCache.get(productId);
+  };
+
   const insert = (m) => {
     // The section rule runs BOTH ways. A drum of kerosene bought on a request someone
     // categorised "General Items" is still kerosene, and leaving it in the general section put
     // its receipts in one book and its issues in another — which is how five lubricants came
     // to show a NEGATIVE balance (WD-40 -46, Karosine -49.5) while the general balance
     // carried 1,100 units of oil, diesel and grease that were never general items.
-    // A lubricant is oil stock wherever it was written down. (itemKey ignores the section, so
-    // promoting here does not change how the movement is identified.)
-    if (m.section !== 'oil' && lubricants.isLubricant(m.item_name, m.txn_date)) m.section = 'oil';
+    // A lubricant is oil stock wherever it was written down — and is identified by its product.
+    const lube = lubricants.resolveLubricant(m.item_name, { record: false, on: m.txn_date });
+    if (lube.resolved && lube.productId) {
+      m.section = 'oil';
+      const k = lubeKey(lube.productId);
+      if (k) m.item_key = k;
+    }
     // force_history: a real movement that must not affect the balance (already counted
     // elsewhere). Still stored so the paperwork stays visible.
     // An explicit `counts` beats the date rule: a handover of a pre-cut-over receipt is dated
@@ -99,7 +161,7 @@ function rebuild(opts = {}) {
     // Asked AS AT the movement's own date: a name can mean one product then and another now
     // (HD-68 was Caltex, then Valvoline), so a 2025 receipt must be judged by what the name
     // meant in 2025.
-    if (counts && m.section === 'oil' && !lubricants.isLubricant(m.item_name, m.txn_date)) {
+    if (counts && m.section === 'oil' && !(lube.resolved && lube.productId)) {
       lubricants.resolveLubricant(m.item_name, { source: m.source_table });  // remember it
       counts = 0;
     }
@@ -130,13 +192,20 @@ function rebuild(opts = {}) {
         WHERE COALESCE(g.qty,0) > 0`)) {
       const section = sectionOf(g.line_cat || g.item_cat);
       const name = g.description || g.line_desc || g.item_name || '';
+      // A FILTER IS ITS PART NUMBER, and on 74% of receipts that number is written inside the
+      // brackets — "Oil Filter (C-206)". itemKey() drops brackets, so those receipts all piled
+      // into three generic buckets (OILFILTER, FUELFILTER, AIRFILTER) while the service that
+      // fitted the filter went out against C206. 149 receipt keys against 1,070 issue keys, and
+      // only 10 keys ever carried both, so a filter could be received and fitted and never once
+      // meet itself. Here the number is pulled OUT of the bracket instead of thrown away.
+      const key = section === 'filter' ? (filterKey(name) || itemKey(section, name)) : itemKey(section, name);
       // Oil bought through stores used to be muted wholesale, because some of it was ALSO
       // booked as a top-up in the oil book's own ledger and would have been counted twice.
       // That blanket rule hid 17 genuine deliveries the ledger never knew about — more than
       // it protected. The seven that really were written twice are now settled on the other
       // side: their ledger row is voided (scripts/reconcile_oil_receipts.js), and a voided
       // ledger row is skipped a few blocks below. So a receipt is simply a receipt.
-      insert({ section, kind: 'in', item_key: itemKey(section, name), item_name: name,
+      insert({ section, kind: 'in', item_key: key, item_name: name,
         qty: g.qty, unit_price: g.unit_price, txn_date: g.delivery_date, asset_id: g.asset_id, job_id: g.job_id,
         mrn_line_id: g.mrn_line_id, store_item_id: g.store_item_id,
         ref: g.grn_no || g.mrn_no || null, source_table: 'grn', source_id: g.id });
@@ -159,6 +228,30 @@ function rebuild(opts = {}) {
         force_history: dup, note: dup ? 'same delivery as the GRN receipt — counted there' : null });
     }
 
+    // A STOCK-TAKE CORRECTION CAN GO DOWN, and the book does not say so in its qty. All 24
+    // adjustments in the oil ledger are stored as a positive MAGNITUDE, but ten of them are
+    // write-DOWNS — the level they were counted at is in balance_after, and the level the book
+    // claimed is the previous row's. Read from qty alone, `Math.abs()` turned every write-down
+    // into a write-up: HD-46 was counted at 221.75 L and the shelf carried 629.75, exactly twice
+    // the 204 L that was written off. Against the owner's July count the whole section read
+    // 3,111 L for a counted 1,384 L.
+    //
+    // The signed delta is the gap between the two figures, and BOTH are already recorded — it is
+    // not a new number. Where an adjustment is the first thing a product ever had (nothing to
+    // compare against) the old reading stands, because there is no book figure to difference.
+    const adjustDelta = new Map();
+    {
+      let prev = null; let prevProduct = null;
+      for (const r of all(`SELECT id, product_id, kind, balance_after FROM stock_ledger
+                            WHERE COALESCE(voided,0) = 0 ORDER BY product_id, txn_date, id`)) {
+        if (r.product_id !== prevProduct) { prevProduct = r.product_id; prev = null; }
+        if (r.kind === 'adjustment' && r.balance_after != null && prev != null) {
+          adjustDelta.set(r.id, n2(r.balance_after - prev));
+        }
+        if (r.balance_after != null) prev = r.balance_after;
+      }
+    }
+
     // 3. OIL — its own ledger already carries receipts and issues.
     for (const s of all(
       `SELECT s.id, s.kind, s.qty, s.unit_price, s.txn_date, s.asset_id, s.job_id, s.mr_no, s.consumer,
@@ -166,8 +259,11 @@ function rebuild(opts = {}) {
          FROM stock_ledger s JOIN products p ON p.id = s.product_id
         WHERE COALESCE(s.voided,0) = 0`)) {
       const kind = s.kind === 'issue' ? 'out' : (s.kind === 'opening' ? 'opening' : (s.kind === 'adjustment' ? 'adjust' : 'in'));
+      // `adjust` is the one kind that carries a sign: every balance reads it as `THEN qty`, so a
+      // negative delta subtracts with no change to a single balance query.
+      const qty = kind === 'adjust' && adjustDelta.has(s.id) ? adjustDelta.get(s.id) : Math.abs(s.qty);
       insert({ section: 'oil', kind, item_key: itemKey('oil', s.name, s.code || s.name), item_name: s.name,
-        qty: Math.abs(s.qty), unit_price: s.unit_price, txn_date: s.txn_date, asset_id: s.asset_id, job_id: s.job_id,
+        qty, unit_price: s.unit_price, txn_date: s.txn_date, asset_id: s.asset_id, job_id: s.job_id,
         ref: s.mr_no, note: s.consumer, source_table: 'stock_ledger', source_id: s.id });
     }
 
@@ -182,6 +278,33 @@ function rebuild(opts = {}) {
         asset_id: f.asset_id, ref: f.job_no, note: f.category, source_table: 'service_filters', source_id: f.id });
     }
 
+    // 4b. THE FILTER SHELF ITSELF, as the workshop counts it.
+    //
+    // The filter section starts from a cut-over instead of counting all history, because filter
+    // purchases were never recorded in stores — and nothing was ever brought in to open it FROM.
+    // rebuild() read the GRNs, the services, the tyre and battery ledgers and the oil book, and
+    // never once read filter_stock: 144 rows, 663 units, kept from the owner's own filter folders
+    // and backed by its own ledger. So every filter fitted after the cut-over came off a shelf the
+    // system believed was empty, and read minus one.
+    //
+    // The count is placed ON the cut-over date, which is what a cut-over means: this is what was
+    // there when we started counting. Only a filter the catalogue recognises is opened — the key
+    // has to be the one the services issue against, or the opening would sit in its own row and
+    // help nothing.
+    const filterCutover = (rules.filter && rules.filter.mode === 'cutover' && rules.filter.cutover) || null;
+    if (filterCutover) {
+      for (const f of all(`SELECT id, part_no, filter_type, qty_in_stock, unit_cost FROM filter_stock
+                            WHERE COALESCE(qty_in_stock,0) > 0 AND NULLIF(part_no,'') IS NOT NULL`)) {
+        const key = filterKey(f.part_no) || normF(f.part_no);
+        if (!key) continue;
+        insert({ section: 'filter', kind: 'opening', item_key: key,
+          item_name: f.part_no + (f.filter_type ? ' — ' + f.filter_type : ''),
+          qty: f.qty_in_stock, unit_price: f.unit_cost, txn_date: filterCutover,
+          note: 'on the shelf at the cut-over, from the filter register',
+          source_table: 'filter_stock', source_id: f.id, counts: 1 });
+      }
+    }
+
     // 5. TYRE / BATTERY issues from their imported ledger.
     for (const t of all(
       `SELECT id, kind, issue_date, vehicle, asset_id, qty, category, category_norm, site
@@ -192,10 +315,28 @@ function rebuild(opts = {}) {
         ref: t.vehicle, note: t.site, source_table: 'tyre_battery_issues', source_id: t.id });
     }
 
+    // A HANDOVER FROM THE TRACKER STILL KNOWS WHICH RECEIPT IT CAME OUT OF — through the MR
+    // number the storekeeper wrote on it. The import flattened the item into free text,
+    // "AC-Belt (45) — Mellawagedara (to Madushan)": itemKey() drops the bracket so the recipient
+    // falls away, but "— Mellawagedara" is the SITE and it survives into the key, filing the
+    // handover apart from the receipt of the very same belt. Six items read negative for want of
+    // this link. The description is left exactly as written — the site and the recipient are
+    // information the receipt does not carry — and only the KEY follows the receipt.
+    const mrnLinesByNo = new Map();
+    for (const l of all(`SELECT m.mrn_no, ml.id, ml.description, ml.category,
+                                (SELECT g.id FROM grn g WHERE g.mrn_line_id = ml.id LIMIT 1) AS grn_id
+                           FROM mrn_lines ml JOIN mrn m ON m.id = ml.mrn_id
+                          WHERE NULLIF(m.mrn_no,'') IS NOT NULL`)) {
+      if (!mrnLinesByNo.has(l.mrn_no)) mrnLinesByNo.set(l.mrn_no, []);
+      mrnLinesByNo.get(l.mrn_no).push(l);
+    }
+    // What the storekeeper actually handed over, with the recipient and the site stripped off.
+    const baseItem = (desc) => String(desc || '').split(' — ')[0].replace(/\(\s*to\b[^)]*\)/gi, ' ').trim();
+
     // 6. Stores issues booked straight to a vehicle.
     for (const i of all(
       `SELECT i.id, i.description, i.qty, i.unit_price, i.issue_date, i.asset_id, i.job_id, i.store_item_id,
-              i.grn_id, si.category, si.name,
+              i.grn_id, i.mrn_no, si.category, si.name,
               g.description AS grn_desc, gml.category AS grn_category, gml.id AS grn_mrn_line_id,
               (SELECT sm.counts FROM stock_moves sm
                 WHERE sm.source_table = 'grn' AND sm.source_id = i.grn_id LIMIT 1) AS grn_counts
@@ -208,9 +349,24 @@ function rebuild(opts = {}) {
       // key, and the same counts flag — a cut-over receipt was never added to the balance, so
       // taking it out must not subtract from one either.
       const fromReceipt = i.grn_id != null;
-      const name = (fromReceipt ? (i.grn_desc || i.description) : (i.name || i.description)) || '';
-      const section = sectionOf(fromReceipt ? (i.grn_category || name) : (i.category || i.description));
-      insert({ section, kind: 'out', item_key: itemKey(section, name), item_name: name,
+      let name = (fromReceipt ? (i.grn_desc || i.description) : (i.name || i.description)) || '';
+      let section = sectionOf(fromReceipt ? (i.grn_category || name) : (i.category || i.description));
+      let key = itemKey(section, name);
+      // No GRN on the row, but an MR number that names one: file it under the line it came from.
+      // Matched on the item alone, and only when exactly ONE line on that request is that item —
+      // a request listing the same thing twice is not something to guess between.
+      if (!fromReceipt && i.mrn_no && mrnLinesByNo.has(i.mrn_no)) {
+        const want = itemKey(section, baseItem(i.description));
+        const hits = mrnLinesByNo.get(i.mrn_no)
+          .filter((l) => itemKey(sectionOf(l.category || l.description), l.description) === want);
+        if (hits.length === 1) {
+          const l = hits[0];
+          section = sectionOf(l.category || l.description);
+          key = itemKey(section, l.description);
+          name = i.description;                     // what the storekeeper wrote stays on the row
+        }
+      }
+      insert({ section, kind: 'out', item_key: key, item_name: name,
         qty: i.qty, unit_price: i.unit_price, txn_date: i.issue_date, asset_id: i.asset_id, job_id: i.job_id,
         store_item_id: i.store_item_id, grn_id: i.grn_id || null, mrn_line_id: i.grn_mrn_line_id || null,
         source_table: 'issues', source_id: i.id,
@@ -263,20 +419,34 @@ function summary(section) {
 function items(section, q, limit = 500) {
   const like = q ? '%' + String(q).trim() + '%' : null;
   return all(
-    `SELECT item_key, MAX(item_name) AS item_name,
-            ROUND(COALESCE(SUM(CASE WHEN counts = 1 AND kind IN ('in','opening','adjust') THEN qty ELSE 0 END),0),2) AS received,
+    // Several spellings now share one row (a lubricant is keyed by its product), so MAX(item_name)
+    // would label the shelf with whichever spelling sorted last — "Grease (to RA-3051)" for the
+    // grease. Where the catalogue knows the item, its name is the one the workshop agreed on.
+    `SELECT sm.item_key, COALESCE(MAX(ci.name), MAX(sm.item_name)) AS item_name,
+            -- A stock-take write-down is a negative 'adjust'. It belongs in the balance, but not
+            -- in "Received" — nothing arrived. So the column stays a receipts figure, and a
+            -- corrected shelf reads lower than received minus issued, which is what happened.
+            ROUND(COALESCE(SUM(CASE WHEN counts = 1 AND (kind IN ('in','opening') OR (kind = 'adjust' AND qty > 0)) THEN qty ELSE 0 END),0),2) AS received,
             ROUND(COALESCE(SUM(CASE WHEN counts = 1 AND kind = 'out' THEN qty ELSE 0 END),0),2) AS issued,
             ROUND(COALESCE(SUM(CASE WHEN counts = 0 THEN 0 WHEN kind IN ('in','opening','adjust') THEN qty ELSE -qty END),0),2) AS balance,
             ROUND(COALESCE(SUM(CASE WHEN kind = 'out' THEN qty ELSE 0 END),0),2) AS issued_all_time,
             MAX(txn_date) AS last_move,
             SUM(CASE WHEN kind = 'out' THEN 1 ELSE 0 END) AS issue_count
-       FROM stock_moves
-      WHERE section = ? ${like ? 'AND (item_name LIKE ? OR item_key LIKE ?)' : ''}
-      GROUP BY item_key
+       FROM stock_moves sm
+       LEFT JOIN stock_items ci ON ci.section = sm.section AND ci.item_key = sm.item_key
+      WHERE sm.section = ? ${like ? `AND sm.item_key IN (
+              -- Pick which ITEMS match, then total ALL of each one's movements. Filtering the
+              -- movements instead would show a partial balance: several spellings share one row
+              -- now, so searching "HD-68" would total only the rows spelt that way (600 of 427).
+              SELECT item_key FROM stock_moves WHERE section = ? AND (item_name LIKE ? OR item_key LIKE ?)
+              UNION
+              SELECT item_key FROM stock_items WHERE section = ? AND (name LIKE ? OR code LIKE ?))` : ''}
+      GROUP BY sm.item_key
       -- Stock on hand first; then, for a section that has just cut over (every balance 0),
       -- the items that actually move — most used, most recent — rather than an arbitrary order.
       ORDER BY balance DESC, issued_all_time DESC, last_move DESC
-      LIMIT ${Number(limit) || 500}`, ...(like ? [section, like, like] : [section]));
+      LIMIT ${Number(limit) || 500}`,
+    ...(like ? [section, section, like, like, section, like, like] : [section]));
 }
 
 /** Every movement, newest first — the audit trail behind a section or one item. */

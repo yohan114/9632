@@ -216,6 +216,11 @@ function migrate() {
   // Movements before a section's stock cut-over stay visible as history but are excluded
   // from the balance (CREATE TABLE IF NOT EXISTS won't add this to an existing table).
   ensureColumn('stock_moves', 'counts', 'INTEGER NOT NULL DEFAULT 1');
+  // The MR number the storekeeper writes on every handover in the tracker. All 299 imported rows
+  // carry one and the importer threw it away, so a handover could never be recognised as the
+  // handover OF ITS OWN RECEIPT — the receipt sat under one item key and the issue under another,
+  // and six items read negative for want of the link. Kept here so the tie survives the import.
+  ensureColumn('issues', 'mrn_no', 'TEXT');
   ensureColumn('users', 'must_change_password', 'INTEGER NOT NULL DEFAULT 0');
   // Phase 1 migration deltas (additive; CHECK relaxations live in schema.sql).
   ensureColumn('assets', 'in_register', 'INTEGER NOT NULL DEFAULT 0');

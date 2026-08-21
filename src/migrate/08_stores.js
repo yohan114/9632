@@ -175,11 +175,15 @@ function runStep() {
         const desc = clean(i.itemName)
           + (clean(i.itemDesc) ? ' — ' + clean(i.itemDesc) : '')
           + (clean(i.issuedTo) ? ' (to ' + clean(i.issuedTo) + ')' : '');
+        // The MR number ties the handover to the receipt it came out of. Dropping it is what
+        // orphaned six items: the receipt keeps the storekeeper's own wording while the issue
+        // carries a "— <site>" tail and a "(to <person>)" suffix, so the two never meet.
         run(
-          `INSERT INTO issues (asset_id, description, qty, unit_price, issue_date, issued_by, category)
-           VALUES (?, ?, ?, NULL, ?, ?, ?)`,
+          `INSERT INTO issues (asset_id, description, qty, unit_price, issue_date, issued_by, category, mrn_no)
+           VALUES (?, ?, ?, NULL, ?, ?, ?, ?)`,
           lookupAsset(i.vehicleMachinery), desc || '(item)', Number(i.qty) || 1,
-          isoOr('2020-01-01', i.issueDateISO, i.issueDate), clean(i.issuedBy) || null, clean(i.category) || null
+          isoOr('2020-01-01', i.issueDateISO, i.issueDate), clean(i.issuedBy) || null, clean(i.category) || null,
+          clean(i.mrnNum) || null
         );
         rep.issues++;
       }

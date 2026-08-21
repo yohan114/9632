@@ -380,3 +380,94 @@ test('picking one records the canonical name, so it resolves with no new alias',
   assert.strictEqual(get('SELECT COUNT(*) c FROM lubricant_aliases WHERE resolved = 0').c, before,
     'a picked lubricant never adds to the queue');
 });
+
+// ---- one row per lubricant, whatever it was called ---------------------------
+//
+// Promoting a lubricant into the oil section was only half of identifying it. The oil ledger
+// keys its movements by the product CODE (itemKey('oil', name, 'OIL-0021') -> OIL0021) while
+// every other door keys by the written NAME (HD68OIL, HD68OILVALVOLINE) — so one product's
+// receipts and issues sat in DIFFERENT rows and the shelf was counted in pieces. On the live
+// book HD 68 Oil read -573 under its code while 1,000 L of the same oil sat under two spellings
+// of its name. Nothing was missing. Keyed by product, the spellings collapse and it reads 427.
+//
+// The CODE form is used, not the name form: itemKey() strips brackets and the brand lives in the
+// bracket, so "HD 68 Oil (Servo)" and "HD 68 Oil (Valvoline)" would otherwise merge into one row.
+
+const KEYTEST = mkProduct('Keytest Hy/Oil (Brandex)', 'hydraulic', 'L');
+run('UPDATE products SET code = ? WHERE id = ?', 'OIL-9101', KEYTEST);
+run(`INSERT INTO stock_items (code, section, name, item_key, unit, source_table, source_id, active)
+     VALUES ('OIL-9101', 'oil', 'Keytest Hy/Oil (Brandex)', 'OIL9101', 'L', 'products', ?, 1)`, KEYTEST);
+lubricants.seedCatalogueAliases();
+
+test('every spelling of a lubricant lands on one row, keyed by its product', () => {
+  // Received on the oil ledger (keyed by code) and issued through stores (keyed by name).
+  run(`INSERT INTO stock_ledger (product_id, kind, qty, balance_after, txn_date, note)
+       VALUES (?, 'receipt', 500, 500, '2026-08-02', 'keytest')`, KEYTEST);
+  // …and bought again through a door that keys by the written NAME, not the product code.
+  const m = run(`INSERT INTO mrn (mrn_no, req_date, status) VALUES ('KEY-1', '2026-08-04', 'open')`).lastInsertRowid;
+  const l = run(`INSERT INTO mrn_lines (mrn_id, description, qty, category)
+                 VALUES (?, 'Keytest Hy/Oil (Brandex)', 120, 'General Items')`, m).lastInsertRowid;
+  run(`INSERT INTO grn (mrn_id, mrn_line_id, description, qty, unit_price, delivery_date)
+       VALUES (?, ?, 'Keytest Hy/Oil (Brandex)', 120, 90, '2026-08-04')`, m, l);
+  stock.rebuild({ wipe: true });
+  const rows = all(`SELECT item_key, ROUND(SUM(CASE WHEN counts=0 THEN 0 WHEN kind IN ('in','opening','adjust') THEN qty ELSE -qty END),2) bal
+                      FROM stock_moves WHERE section='oil' AND item_name LIKE 'Keytest%' GROUP BY item_key`);
+  assert.strictEqual(rows.length, 1, 'one product, one row — not one row per spelling');
+  assert.strictEqual(rows[0].item_key, 'OIL9101', 'and it is keyed by the product code');
+});
+
+test('a lubricant written by a different name joins the same row', () => {
+  run(`INSERT INTO lubricant_aliases (raw_text, raw_norm, effective_from, product_id, resolved)
+       VALUES ('Brandex 68', ?, '', ?, 1)`, lubricants.normLube('Brandex 68'), KEYTEST);
+  run(`INSERT INTO stock_ledger (product_id, kind, qty, balance_after, txn_date, note)
+       VALUES (?, 'receipt', 40, 40, '2026-08-05', 'keytest alias')`, KEYTEST);
+  stock.rebuild({ wipe: true });
+  const keys = all(`SELECT DISTINCT item_key FROM stock_moves WHERE section='oil' AND item_name LIKE '%eytest%'`);
+  assert.strictEqual(keys.length, 1, 'an alias is the same thing, so it is the same row');
+});
+
+test('the code is the key, so two brands of one grade stay apart', () => {
+  const A = mkProduct('Twin 68 Oil (Alpha)', 'hydraulic', 'L');
+  const B = mkProduct('Twin 68 Oil (Beta)', 'hydraulic', 'L');
+  run('UPDATE products SET code = ? WHERE id = ?', 'OIL-9102', A);
+  run('UPDATE products SET code = ? WHERE id = ?', 'OIL-9103', B);
+  assert.strictEqual(stock.itemKey('oil', 'Twin 68 Oil (Alpha)'), stock.itemKey('oil', 'Twin 68 Oil (Beta)'),
+    'the NAME form flattens them together — this is why it cannot be the key');
+  assert.notStrictEqual(stock.itemKey('oil', 'Twin 68 Oil (Alpha)', 'OIL-9102'),
+    stock.itemKey('oil', 'Twin 68 Oil (Beta)', 'OIL-9103'),
+    'the CODE form keeps two oils the workshop buys separately apart');
+});
+
+test('the shelf is labelled with the name the workshop agreed on', () => {
+  const row = stock.items('oil', 'Keytest', 5).find((r) => r.item_key === 'OIL9101');
+  assert.ok(row);
+  assert.strictEqual(row.item_name, 'Keytest Hy/Oil (Brandex)',
+    'not whichever spelling happened to sort last');
+});
+
+test('searching shows the whole balance, not just the rows spelt that way', () => {
+  const full = stock.items('oil', null, 500).find((r) => r.item_key === 'OIL9101');
+  const found = stock.items('oil', 'Keytest', 10).find((r) => r.item_key === 'OIL9101');
+  assert.ok(full && found);
+  assert.strictEqual(found.balance, full.balance,
+    'filtering picks which ITEMS to show — it must not filter the movements being totalled');
+});
+
+test('a lubricant can be found by its code', () => {
+  const found = stock.items('oil', 'OIL-9101', 10).find((r) => r.item_key === 'OIL9101');
+  assert.ok(found, 'the code is on the drum and on the paperwork');
+});
+
+test('the catalogue sync finds the lubricant it already has, instead of minting a second one', () => {
+  // The first sync legitimately adds a row for any product that never had one. The trap is the
+  // SECOND: on the live book all 30 lubricant rows were keyed by NAME (they were made while
+  // products.code was still NULL), so the sync looked for the key it mints today — the CODE form —
+  // found nothing, and would have minted 30 duplicates with 30 new codes.
+  stock.syncItems();
+  const before = get("SELECT COUNT(*) c FROM stock_items WHERE section = 'oil'").c;
+  stock.syncItems();
+  const after = get("SELECT COUNT(*) c FROM stock_items WHERE section = 'oil'").c;
+  assert.strictEqual(after, before, 'a re-sync must not duplicate the oil catalogue');
+  assert.strictEqual(get("SELECT COUNT(*) c FROM stock_items WHERE section = 'oil' AND source_id = ?", KEYTEST).c, 1,
+    'one catalogue row per product');
+});
