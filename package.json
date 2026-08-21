@@ -15,7 +15,10 @@
     "restore": "node scripts/restore.js",
     "admin": "node scripts/admin.js",
     "acceptance": "node scripts/acceptance.js",
-    "test": "node --test"
+    "test": "node --test",
+    "cap:init": "cap init WorkshopOne com.edwardchristie.workshopone",
+    "cap:sync": "cap sync",
+    "build:android": "cap sync android"
   },
   "engines": {
     "node": ">=20"
@@ -32,6 +35,9 @@
   "license": "UNLICENSED",
   "private": true,
   "dependencies": {
+    "@capacitor/android": "^8.4.2",
+    "@capacitor/cli": "^8.4.2",
+    "@capacitor/core": "^8.4.2",
     "bcryptjs": "^2.4.3",
     "better-sqlite3": "^12.4.1",
     "cookie-parser": "^1.4.7",
