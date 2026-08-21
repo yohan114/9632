@@ -3,8 +3,9 @@
 // ===========================================================================
 // The Costing Engine (brief §7).
 //   labour_cost   = Σ (daily_work.hours × labour_rate(mechanic, on job date))
-//   material_cost = Σ (job_parts grn/issue: qty × unit_price)
+//   material_cost = Σ (job_parts grn/issue: qty × unit_price)  — lubricants excluded, see below
 //   oil_cost      = Σ (oil ledger issues to this job: qty × price on date)
+//                 + Σ (job_parts that ARE lubricants: qty × unit_price)
 //   general_cost  = Σ (general items issued to this job: qty × price)
 //   external_cost = Σ (daily_work.external_value) + Σ (job_parts external repair)
 //   TOTAL_COST    = labour + material + oil + general + external
@@ -16,6 +17,7 @@
 
 const { get, all, run, tx } = require('../db');
 const mechanics = require('./mechanics');
+const lubricants = require('./lubricants');
 
 /** Hourly rate effective for a mechanic on a given date (via the name resolver). */
 function labourRateFor(mechanic, onDate) {
@@ -97,15 +99,24 @@ function computeJobCost(jobId) {
   // owner's personally-tracked "external cost of our job"), which stays excluded. So every job_part
   // is summed here, including external-repair lines.
   let material = 0;
+  // A LUBRICANT is oil cost wherever it was written down. Since the Oil section's own
+  // Issue/Top-up was retired, a drum handed over on a job arrives here as a job_part like any
+  // other part — so oil cost has to follow the ITEM, not the book it was recorded in, or the
+  // Oil column would empty out into Material as the storekeeper moves to the Stores screen.
+  // These lines are added to `oil` below instead; the total is unchanged either way.
+  const lubeParts = [];
   // Includes stock issues booked to this job: POST /issues materialises each as a
   // source_type='issue' job_part (mirroring migrate/09), so they are already summed here
   // exactly once. (Counting the issues table again would double them.)
   for (const p of all(`SELECT * FROM job_parts WHERE job_id = ?`, jobId)) {
-    if (p.unit_price != null) material += (p.qty || 0) * p.unit_price;
+    if (p.unit_price == null) continue;
+    if (lubricants.isLubricant(p.description, (p.created_at || jobDate || '').slice(0, 10))) { lubeParts.push(p); continue; }
+    material += (p.qty || 0) * p.unit_price;
   }
 
-  // --- oil (stock ledger issues to this job) ---
+  // --- oil (stock ledger issues to this job, plus lubricants issued through Stores) ---
   let oil = 0;
+  for (const p of lubeParts) oil += (p.qty || 0) * p.unit_price;
   for (const l of all(`SELECT * FROM stock_ledger WHERE job_id = ? AND kind = 'issue'`, jobId)) {
     const qty = Math.abs(l.qty || 0);
     const price = l.unit_price != null ? l.unit_price : productPriceOn(l.product_id, (l.txn_date || jobDate).slice(0, 10));

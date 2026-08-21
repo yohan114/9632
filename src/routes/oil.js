@@ -175,6 +175,13 @@ router.post('/ledger', requireRole('storekeeper'), asyncHandler((req, res) => {
   if (b.consumer_type === 'service') {
     return res.status(400).json({ error: 'Service lubricants must be entered on the Service record, not as a manual oil issue — this keeps each service\'s oil cost in one place.' });
   }
+  // RETIRED (owner, 2026-08-21): handing lubricants out has ONE door — Stores → Issue. The Oil
+  // section kept a second one, so the same drum could be written down twice and its cost land in
+  // two different places. Receipts, openings, counts and adjustments still belong here; only the
+  // handover moved. Stores can find every lubricant by name now, which is what made this possible.
+  if (b.kind === 'issue') {
+    return res.status(400).json({ error: 'Lubricants are issued from Stores → Issue now, not here. That way one handover is recorded once, and its cost reaches the job and the vehicle.' });
+  }
   const productId = toInt(b.product_id);
   if (!get('SELECT id FROM products WHERE id = ?', productId)) return res.status(400).json({ error: 'Unknown product' });
   const qtyMag = Math.abs(toNum(b.qty, 0));

@@ -9,6 +9,7 @@ const ExcelJS = require('exceljs');
 const { all, get } = require('../db');
 const costing = require('./costing');
 const mechanics = require('./mechanics');
+const lubricants = require('./lubricants');
 
 const COMPANY = 'Edward and Christie (Pvt) Ltd — Badalgama W/S';
 const MONEY = '#,##0.00';
@@ -243,12 +244,20 @@ function buildRepair(wb, ym, period) {
   // and oil/general to issues this month, so still-open jobs whose parts were bought earlier show no
   // new cost (matching the owner's "this month's cost only" pending rows).
   for (const j of pending) {
-    j.material = (get(`SELECT ROUND(SUM(jp.qty * COALESCE(jp.unit_price, 0)), 2) v
+    // A lubricant bought on an MRN is a job_part, so it would land in Material. It belongs in the
+    // Oil column — and must count under the SAME rule the oil query below uses (lubeMonthCost),
+    // or a drum would drop out of both columns and the row would no longer add up.
+    let material = 0; let oilFromParts = 0;
+    for (const p of all(`SELECT jp.description, jp.qty, jp.unit_price, m.req_date
          FROM job_parts jp JOIN mrn_lines ml ON ml.id = jp.mrn_line_id JOIN mrn m ON m.id = ml.mrn_id
-        WHERE jp.job_id = ? AND substr(m.req_date,1,7) = ?`, j.id, ym) || {}).v || 0;
-    j.oil = (get(`SELECT ROUND(SUM(ABS(sl.qty) * COALESCE(sl.unit_price, pr.unit_price, 0)), 2) v
+        WHERE jp.job_id = ? AND substr(m.req_date,1,7) = ?`, j.id, ym)) {
+      const v = (p.qty || 0) * (p.unit_price || 0);
+      if (isReportOil(p.description, p.req_date)) oilFromParts += v; else material += v;
+    }
+    j.material = r2(material);
+    j.oil = r2(oilFromParts + ((get(`SELECT ROUND(SUM(ABS(sl.qty) * COALESCE(sl.unit_price, pr.unit_price, 0)), 2) v
          FROM stock_ledger sl JOIN products pr ON pr.id = sl.product_id
-        WHERE sl.job_id = ? AND sl.kind = 'issue' AND ${LUBE} AND COALESCE(sl.voided,0) = 0 AND substr(sl.txn_date,1,7) = ?`, j.id, ym) || {}).v || 0;
+        WHERE sl.job_id = ? AND sl.kind = 'issue' AND ${LUBE} AND COALESCE(sl.voided,0) = 0 AND substr(sl.txn_date,1,7) = ?`, j.id, ym) || {}).v || 0));
     j.general = (get(`SELECT ROUND(SUM(ABS(t.qty) * COALESCE(t.unit_price, si.unit_cost, 0)), 2) v
          FROM general_item_txns t JOIN store_items si ON si.id = t.store_item_id
         WHERE t.job_id = ? AND t.txn_type = 'issue' AND substr(t.txn_date,1,7) = ?`, j.id, ym) || {}).v || 0;
@@ -684,6 +693,18 @@ function buildTyre(wb, ym, period) {
 // ---------------------------------------------------------------------------
 const OILVAL = 'ABS(sl.qty) * COALESCE(sl.unit_price, pr.unit_price, 0)';
 const LUBE = "pr.category IN ('engine_oil','gear_oil','hydraulic','grease')";
+// The same rule as LUBE, applied to a free-text description rather than a joined product row:
+// resolve the words to a product in the oil book, then ask whether that product is one of the
+// categories this report counts as Oil. Deliberately NOT "any lubricant" — brake fluid, coolant,
+// kerosene and WD-40 are in the oil book but have never appeared in this report's Oil column, and
+// widening it here would restate months the owner has already signed off.
+const REPORT_OIL_CATEGORIES = new Set(['engine_oil', 'gear_oil', 'hydraulic', 'grease']);
+function isReportOil(description, on) {
+  const pid = lubricants.resolveLubricant(description, { record: false, on: on || null }).productId;
+  if (!pid) return false;
+  const p = get('SELECT category FROM products WHERE id = ?', pid);
+  return !!(p && REPORT_OIL_CATEGORIES.has(p.category));
+}
 function buildOils(wb, ym, period, repairOil, serviceOil, repairJobIds) {
   const ws = wb.addWorksheet('Oils & Lubrication');
   [6, 14, 26, 22, 18, 10, 13, 14, 16].forEach((w, i) => { ws.getColumn(i + 1).width = w; });

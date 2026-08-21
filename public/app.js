@@ -3869,12 +3869,14 @@ routes.oil = async (c) => {
     return stockPanel(body, 'oil');
   } else if (tab === 'products') {
     const list = await api('/oil/products');
-    body.innerHTML = `${can('storekeeper') ? '<div class="toolbar"><button class="primary" id="ntop">⛽ Issue / Top-up</button><button class="sm" id="np">+ New Product</button><button class="sm" id="nl">+ Ledger Txn</button></div>' : ''}
+    body.innerHTML = `${can('storekeeper') ? '<div class="toolbar"><button class="primary" id="ntop">⛽ Issue a lubricant</button><button class="sm" id="np">+ New Product</button><button class="sm" id="nl">+ Ledger Txn</button></div>' : ''}
       ${tableWrap([{ label: 'Code' }, { label: 'Name' }, { label: 'Unit' }, { label: 'Category' }, { label: 'Balance', num: true }, { label: 'Reorder', num: true }, { label: 'Unit Price', num: true }],
         list.map((p) => `<tr><td>${esc(p.code || '')}</td><td>${esc(p.name)}</td><td>${esc(p.unit)}</td><td>${esc(p.category || '')}</td><td class="num ${p.current_balance <= p.reorder_level ? '' : ''}">${p.current_balance <= p.reorder_level && p.reorder_level > 0 ? `<span class="badge amber">${num(p.current_balance)}</span>` : num(p.current_balance)}</td><td class="num">${num(p.reorder_level)}</td><td class="num">${money(p.unit_price)}</td></tr>`), { scroll: true })}`;
     if (qs('#np')) qs('#np').onclick = () => simpleCreateModal('New Product', '/oil/products', [['Code', 'code'], ['Name *', 'name'], ['Unit (L/kg/nos)', 'unit'], ['Category', 'category'], ['Reorder level', 'reorder_level', 'number'], ['Unit price', 'unit_price', 'number']]);
     if (qs('#nl')) qs('#nl').onclick = () => newLedgerModal(list);
-    if (qs('#ntop')) qs('#ntop').onclick = () => oilTopupModal(list);
+    // Issuing moved to Stores (owner, 2026-08-21) — one door, so a drum handed over is written
+    // down once. The button stays where the storekeeper's hand already goes, and takes them there.
+    if (qs('#ntop')) qs('#ntop').onclick = () => { location.hash = '#/stores?tab=movements&sub=issues'; };
   } else if (tab === 'names') {
     // The same drum is written differently on every piece of paper it touches. Until a name is
     // matched to a product it is not lubricant stock — so this list is the gap between what the
@@ -3947,33 +3949,13 @@ routes.oil = async (c) => {
   }
 };
 
-// Issue lubricant — General store use OR a machine/vehicle top-up (against a job card).
-async function oilTopupModal(products) {
-  modal('Issue / Top-up Lubricant', `
-    ${targetPickerHtml('oilt', { label: 'Issue for', generalLabel: 'General / store use' })}
-    <div class="row">${field('Product', 'product_id', { type: 'select', options: products.map((p) => ({ value: p.id, label: p.name + ' (' + p.unit + ')' })) })}${field('Qty', 'qty', { type: 'number', value: 1 })}</div>
-    <div class="row">${field('Date', 'txn_date', { type: 'date', value: new Date().toISOString().slice(0, 10) })}${field('Unit price (blank = auto)', 'unit_price', { type: 'number' })}</div>
-    ${field('Note (e.g. oil top-up)', 'note')}
-    <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Issue</button></div>`, (body, close) => {
-    const getTarget = wireTargetPicker(body, 'oilt');
-    qs('#s', body).onclick = async () => {
-      const f = formData(body);
-      if (!f.qty || Number(f.qty) <= 0) return toast('Enter a quantity', 'err');
-      const t = getTarget();
-      if (t.type === 'vehicle' && !t.job_id) return toast('Pick the machine/vehicle job card', 'err');
-      try {
-        await api('/oil/ledger', { method: 'POST', body: { ...f, kind: 'issue', job_id: t.type === 'vehicle' ? t.job_id : undefined } });
-        toast(t.type === 'vehicle' ? 'Lubricant issued to ' + (t.asset_code || 'vehicle') : 'General lubricant issue posted');
-        close(); render();
-      } catch (e) { toast(e.message, 'err'); }
-    };
-  });
-}
+// oilTopupModal was the second door for handing a lubricant out. Retired 2026-08-21 — Stores →
+// Issue is now the only one, so the handover, the stock move and the cost all come from one record.
 
 async function newLedgerModal(products) {
   modal('New Oil Ledger Txn', `
     ${field('Product', 'product_id', { type: 'select', options: products.map((p) => ({ value: p.id, label: p.name })) })}
-    <div class="row">${field('Kind', 'kind', { type: 'select', options: ['receipt', 'issue', 'opening', 'adjustment'].map((v) => ({ value: v, label: v })) })}${field('Qty', 'qty', { type: 'number' })}</div>
+    <div class="row">${field('Kind', 'kind', { type: 'select', options: ['receipt', 'opening', 'adjustment'].map((v) => ({ value: v, label: v })) })}${field('Qty', 'qty', { type: 'number' })}</div>
     <div class="row">${field('Asset (code/text)', 'asset')}${field('Unit Price (blank=auto)', 'unit_price', { type: 'number' })}</div>
     ${field('Note', 'note')}
     <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Post</button></div>`, (body, close) => {
