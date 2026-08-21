@@ -53,6 +53,13 @@ const config = {
   anomalyConsumptionFactor: num('ANOMALY_CONSUMPTION_FACTOR', 2.5), // recent rate > N× the asset's own baseline
   anomalyPriceSpikeFactor: num('ANOMALY_PRICE_SPIKE_FACTOR', 1.5), // GRN price > N× the item's recent average
   isProduction: process.env.NODE_ENV === 'production',
+
+  // The Service Planner (the fuel system). It knows what each machine has actually RUN —
+  // meter growth and fuel-derived hours/km — which is the only honest basis for "due for
+  // service"; WorkshopOne holds no meter or fuel data of its own. Left unset, the Service &
+  // Filter Plan falls back to its own date estimate and says so on screen.
+  servicePlannerUrl: process.env.SERVICE_PLANNER_URL || 'http://localhost:3300',
+  servicePlannerToken: process.env.SERVICE_PLANNER_TOKEN || '',
 };
 
 function num(name, def) {

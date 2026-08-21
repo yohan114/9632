@@ -12,6 +12,9 @@ const monthlyReport = require('../lib/monthly_cost_report');
 
 const router = express.Router();
 
+// Coerce any value to a finite number (blank/NaN -> 0); matches the report generator's helper.
+const num = (v) => Number(v) || 0;
+
 function currentBalance(productId) {
   const r = get('SELECT balance_after FROM stock_ledger WHERE product_id = ? ORDER BY id DESC LIMIT 1', productId);
   return r ? r.balance_after : 0;
@@ -165,15 +168,495 @@ function costSheet(id) {
   );
   if (!job) return null;
   const cost = costing.reconciledCost(id);
-  const parts = all(`SELECT * FROM job_parts WHERE job_id = ? AND source_type IN ('grn','issue') AND is_external_repair = 0`, id);
+  // All job_parts (incl. external-REPAIR charges) are part lines — they now count in material_cost,
+  // so the line items sum to the shown total.
+  const parts = all(`SELECT * FROM job_parts WHERE job_id = ?`, id);
   const oil = all(`SELECT sl.*, pr.name product_name, pr.unit FROM stock_ledger sl JOIN products pr ON pr.id=sl.product_id WHERE sl.job_id = ? AND sl.kind='issue'`, id);
   const general = all(`SELECT g.*, si.name item_name FROM general_item_txns g JOIN store_items si ON si.id=g.store_item_id WHERE g.job_id = ? AND g.txn_type='issue'`, id);
-  const external = [
-    ...all(`SELECT work_date, description, external_value FROM job_daily_work WHERE job_id = ? AND is_external = 1`, id).map((w) => ({ description: w.description, value: w.external_value })),
-    ...all(`SELECT description, qty, unit_price FROM job_parts WHERE job_id = ? AND is_external_repair = 1`, id).map((p) => ({ description: p.description, value: (p.qty || 0) * (p.unit_price || 0) })),
-  ];
+  // "external" here = external WORK only (daily-work) — the owner's personally-tracked outside cost,
+  // shown for reference but NOT in the total. External REPAIR is a normal counted part above.
+  const external = all(`SELECT work_date, description, external_value FROM job_daily_work WHERE job_id = ? AND is_external = 1`, id).map((w) => ({ description: w.description, value: w.external_value }));
   return { job, asset_code: job.asset_code, labour_lines: cost.labourLines, part_lines: parts, oil_lines: oil, general_lines: general, external_lines: external, totals: cost };
 }
+
+// ---- Full Job Report -------------------------------------------------------
+// The whole story of one job on a single page: what was asked for (MRN lines), what
+// actually arrived (GRN receipts), what the mechanics did day by day, the oil and general
+// items drawn, and the cost summary. The cost sheet above is the money view; this is the
+// working record.
+function jobReport(id) {
+  const job = get(
+    `SELECT j.*, a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec,
+            a.type AS asset_type, a.brand AS asset_brand, p.name AS project_name
+       FROM job_cards j LEFT JOIN assets a ON a.id = j.asset_id LEFT JOIN projects p ON p.id = j.project_id
+      WHERE j.id = ?`, id);
+  if (!job) return null;
+  const cost = costing.reconciledCost(id);
+
+  // 1. Requested — MRN lines reached EITHER by an MRN raised against the job, OR by the parts
+  //    allocated to it (job_parts.mrn_line_id). Most history links the second way, so both count.
+  const requested = all(
+    `SELECT DISTINCT ml.id, m.mrn_no, m.req_date, ml.description, ml.category, ml.qty,
+            COALESCE(ml.qty_received,0) AS qty_received, (ml.qty - COALESCE(ml.qty_received,0)) AS pending,
+            -- the source is usually only decided when the goods are received, so fall back to the GRN
+            COALESCE(ml.purchase_source, m.purchase_source,
+                     (SELECT g.purchase_source_norm FROM grn g
+                       WHERE g.mrn_line_id = ml.id AND g.purchase_source_norm IS NOT NULL LIMIT 1)) AS source
+       FROM mrn_lines ml JOIN mrn m ON m.id = ml.mrn_id
+      WHERE m.job_id = ?
+         OR ml.id IN (SELECT mrn_line_id FROM job_parts WHERE job_id = ? AND mrn_line_id IS NOT NULL)
+      ORDER BY m.req_date, m.mrn_no, ml.id`, id, id);
+
+  // 2. Received — the GRN receipts behind those lines (what physically came in).
+  const received = all(
+    `SELECT DISTINCT g.id, g.grn_no, g.description, g.qty, g.unit_price, g.supplier, g.invoice_no,
+            g.delivery_date, COALESCE(g.purchase_source_norm, ml.purchase_source, m.purchase_source) AS source,
+            m.mrn_no
+       FROM grn g
+       LEFT JOIN mrn m ON m.id = g.mrn_id
+       LEFT JOIN mrn_lines ml ON ml.id = g.mrn_line_id
+      WHERE m.job_id = ?
+         OR g.id IN (SELECT source_id FROM job_parts WHERE job_id = ? AND source_type = 'grn')
+      ORDER BY g.delivery_date, g.id`, id, id);
+
+  // 3. What we did — the daily programme, newest last so it reads as a diary.
+  const dailyWork = all(
+    `SELECT work_date, mechanic, description, hours, is_external, external_value, outside_labour
+       FROM job_daily_work WHERE job_id = ? ORDER BY work_date, id`, id);
+
+  const parts = all('SELECT * FROM job_parts WHERE job_id = ?', id);
+  const oil = all(
+    `SELECT sl.txn_date, sl.qty, sl.unit_price, pr.name AS product_name, pr.unit
+       FROM stock_ledger sl JOIN products pr ON pr.id = sl.product_id
+      WHERE sl.job_id = ? AND sl.kind = 'issue' AND COALESCE(sl.voided,0) = 0 ORDER BY sl.txn_date`, id);
+  const general = all(
+    `SELECT g.txn_date, g.qty, g.unit_price, si.name AS item_name
+       FROM general_item_txns g JOIN store_items si ON si.id = g.store_item_id
+      WHERE g.job_id = ? AND g.txn_type = 'issue' ORDER BY g.txn_date`, id);
+
+  const totals = {
+    ...cost,
+    hours: r2(dailyWork.reduce((s, w) => s + (Number(w.hours) || 0), 0)),
+    requested_lines: requested.length,
+    requested_qty: r2(requested.reduce((s, r) => s + (Number(r.qty) || 0), 0)),
+    received_qty: r2(requested.reduce((s, r) => s + (Number(r.qty_received) || 0), 0)),
+    pending_qty: r2(requested.reduce((s, r) => s + Math.max(0, Number(r.pending) || 0), 0)),
+    received_value: r2(received.reduce((s, g) => s + (Number(g.qty) || 0) * (Number(g.unit_price) || 0), 0)),
+    unpriced: received.filter((g) => g.unit_price == null).length,
+    outside_labour: r2(dailyWork.reduce((s, w) => s + (Number(w.outside_labour) || 0), 0)),
+  };
+  return { job, requested, received, dailyWork, parts, oil, general, totals };
+}
+
+router.get('/job/:id/report', asyncHandler((req, res) => {
+  const r = jobReport(toInt(req.params.id));
+  if (!r) return res.status(404).json({ error: 'Job not found' });
+  res.json(r);
+}));
+
+router.get('/job/:id/report.html', asyncHandler((req, res) => {
+  const s = jobReport(toInt(req.params.id));
+  if (!s) return res.status(404).send('Job not found');
+  const esc = (v) => String(v == null ? '' : v).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+  const m = (n) => 'Rs ' + (Number(n) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const d = (v) => (v ? String(v).slice(0, 10) : '');
+  const SRC = { head_office: 'Head Office', local_purchase: 'Local Purchase' };
+  const j = s.job, t = s.totals;
+  const veh = [j.asset_reg, (j.asset_ec && j.asset_ec !== j.asset_reg) ? j.asset_ec : ''].filter(Boolean).join(' · ') || j.asset_code || '—';
+  const sect = (n, title, cols, rows, empty) => `<h2>${n}. ${esc(title)}</h2><table>
+    <thead><tr>${cols.map((c) => `<th class="${c.num ? 'num' : ''}">${esc(c.h)}</th>`).join('')}</tr></thead>
+    <tbody>${rows || `<tr><td colspan="${cols.length}" style="text-align:center;color:#666">${esc(empty)}</td></tr>`}</tbody></table>`;
+
+  const html = `<!doctype html><html><head><meta charset="utf-8"><title>Job Report ${esc(j.job_no)}</title>
+<style>
+  @page { size: A4; margin: 12mm; }
+  body{font-family:Arial,sans-serif;color:#000;font-size:12px;margin:0}
+  h1{font-size:19px;margin:0 0 2px} h2{font-size:13px;margin:16px 0 5px;border-bottom:2px solid #333;padding-bottom:3px}
+  .sub{color:#444;margin-bottom:8px}
+  table{width:100%;border-collapse:collapse;margin-bottom:8px}
+  th,td{border:1px solid #999;padding:4px 6px;vertical-align:top;text-align:left}
+  th{background:#eee} td.num,th.num{text-align:right;white-space:nowrap}
+  .hdr{display:flex;flex-wrap:wrap;gap:0;border:1px solid #999;margin-bottom:10px}
+  .hdr div{padding:5px 9px;border-right:1px solid #ccc;min-width:120px} .hdr b{display:block;font-size:13px}
+  .hdr span{color:#555;font-size:10px;text-transform:uppercase;letter-spacing:.05em}
+  .tot{display:flex;gap:0;flex-wrap:wrap;border:1px solid #000;margin:8px 0}
+  .tot div{padding:6px 10px;border-right:1px solid #ccc;min-width:110px} .tot b{display:block;font-size:14px}
+  button{padding:8px 14px;font-size:14px;margin:10px 0;cursor:pointer}
+  @media print{.noprint{display:none}}
+</style></head><body>
+<button class="noprint" onclick="window.print()">🖨 Print / Save as PDF</button>
+<h1>Edward &amp; Christie (Pvt) Ltd — Job Report</h1>
+<div class="sub">Job <b>${esc(j.job_no)}</b> · ${esc(veh)}${j.asset_type ? ' · ' + esc(j.asset_type) : ''}${j.project_name ? ' · ' + esc(j.project_name) : ''}</div>
+<div class="hdr">
+  <div><span>Status</span><b>${esc(j.status)}</b></div>
+  <div><span>Type</span><b>${esc(j.type || '')}</b></div>
+  <div><span>Requested</span><b>${d(j.requested_at) || '—'}</b></div>
+  <div><span>Completed</span><b>${d(j.completed_at) || '—'}</b></div>
+  <div><span>Mechanic-hours</span><b>${t.hours}</b></div>
+  <div><span>Items requested</span><b>${t.requested_lines}</b></div>
+</div>
+<h2>Complaint / work requested</h2>
+<p style="border:1px solid #999;padding:6px 9px;margin:0 0 6px">${esc(j.description || '—')}</p>
+
+${sect(1, 'Spare parts REQUESTED (material requisitions)',
+  [{ h: 'MRN No' }, { h: 'Req Date' }, { h: 'Item' }, { h: 'Category' }, { h: 'Source' }, { h: 'Qty', num: true }, { h: 'Received', num: true }, { h: 'Pending', num: true }],
+  s.requested.map((r) => `<tr><td>${esc(r.mrn_no || '')}</td><td>${d(r.req_date)}</td><td>${esc(r.description || '')}</td><td>${esc(r.category || '')}</td><td>${esc(SRC[r.source] || '')}</td><td class="num">${r.qty}</td><td class="num">${r.qty_received}</td><td class="num">${r.pending > 0 ? '<b>' + r.pending + '</b>' : '—'}</td></tr>`).join(''),
+  'No material requisitions raised against this job.')}
+
+${sect(2, 'Spare parts RECEIVED (goods received)',
+  [{ h: 'GRN / MRN' }, { h: 'Delivered' }, { h: 'Item' }, { h: 'Supplier' }, { h: 'Invoice' }, { h: 'Qty', num: true }, { h: 'Unit Price', num: true }, { h: 'Value', num: true }],
+  s.received.map((g) => `<tr><td>${esc(g.grn_no || g.mrn_no || '')}</td><td>${d(g.delivery_date)}</td><td>${esc(g.description || '')}</td><td>${esc(g.supplier || '')}</td><td>${esc(g.invoice_no || '')}</td><td class="num">${g.qty}</td><td class="num">${g.unit_price == null ? 'awaiting' : m(g.unit_price)}</td><td class="num">${g.unit_price == null ? '—' : m((Number(g.qty) || 0) * g.unit_price)}</td></tr>`).join(''),
+  'Nothing received against this job yet.')}
+
+${sect(3, 'What we did — daily work',
+  [{ h: 'Date' }, { h: 'Mechanic(s)' }, { h: 'Work done' }, { h: 'Hours', num: true }, { h: 'Outside labor', num: true }],
+  s.dailyWork.map((w) => `<tr><td>${d(w.work_date)}</td><td>${esc(w.mechanic || (w.is_external ? '(outside)' : '—'))}</td><td>${esc(w.description || '')}</td><td class="num">${w.hours || 0}</td><td class="num">${w.outside_labour ? m(w.outside_labour) : '—'}</td></tr>`).join(''),
+  'No daily work logged against this job.')}
+
+${s.oil.length ? sect(4, 'Oil & lubricants issued',
+  [{ h: 'Date' }, { h: 'Product' }, { h: 'Qty', num: true }, { h: 'Unit Price', num: true }, { h: 'Value', num: true }],
+  s.oil.map((o) => `<tr><td>${d(o.txn_date)}</td><td>${esc(o.product_name)}</td><td class="num">${Math.abs(Number(o.qty) || 0)} ${esc(o.unit || '')}</td><td class="num">${o.unit_price == null ? '—' : m(o.unit_price)}</td><td class="num">${m(Math.abs(Number(o.qty) || 0) * (Number(o.unit_price) || 0))}</td></tr>`).join(''), '') : ''}
+
+${s.general.length ? sect(5, 'General / store items issued',
+  [{ h: 'Date' }, { h: 'Item' }, { h: 'Qty', num: true }, { h: 'Value', num: true }],
+  s.general.map((g) => `<tr><td>${d(g.txn_date)}</td><td>${esc(g.item_name)}</td><td class="num">${Math.abs(Number(g.qty) || 0)}</td><td class="num">${m(Math.abs(Number(g.qty) || 0) * (Number(g.unit_price) || 0))}</td></tr>`).join(''), '') : ''}
+
+<h2>Cost summary</h2>
+<div class="tot">
+  <div><span>Labour</span><b>${m(t.labour_cost)}</b></div>
+  <div><span>Spare parts</span><b>${m(t.material_cost)}</b></div>
+  <div><span>Oil &amp; lube</span><b>${m(t.oil_cost)}</b></div>
+  <div><span>General</span><b>${m(t.general_cost)}</b></div>
+  <div><span>TOTAL</span><b>${m(t.total_cost)}</b></div>
+</div>
+<p style="color:#555;font-size:11px;margin:4px 0 0">
+  Requested ${t.requested_qty} item(s) · received ${t.received_qty} · pending ${t.pending_qty}${t.unpriced ? ` · ${t.unpriced} receipt(s) awaiting a price` : ''}${t.outside_labour ? ` · outside labor value ${m(t.outside_labour)}` : ''}.
+</p>
+<div style="margin-top:26px;display:flex;gap:40px">
+  <div>…................................<br>Prepared By</div>
+  <div>…................................<br>Checked By</div>
+  <div>…................................<br>Approved By</div>
+</div>
+</body></html>`;
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  res.send(html);
+}));
+
+// ---- Jobs-attended summary (a date onward) ---------------------------------
+// Every job we touched from ?from= onward — worked on, opened, closed, or had materials
+// requested — with the same three views as the single-job report: parts requested, parts
+// received, and the work done. ?detail=0 gives the one-line-per-job summary only.
+// Current-era jobs (2026 onward — the older imported history is excluded), newest attended
+// first. `from` is optional: give one to show only jobs touched on/after that date.
+function jobsAttended(from, to) {
+  const params = [];
+  let window = '';
+  if (from) {
+    window = ` AND ( EXISTS (SELECT 1 FROM job_daily_work w WHERE w.job_id = j.id AND w.work_date >= ?)
+                  OR substr(COALESCE(j.requested_at, j.created_at),1,10) >= ?
+                  OR (j.status = 'CLOSED' AND substr(j.completed_at,1,10) >= ?)
+                  OR EXISTS (SELECT 1 FROM mrn m WHERE m.job_id = j.id AND substr(m.req_date,1,10) >= ?) )`;
+    params.push(from, from, from, from);
+  }
+  if (to) { window += ' AND substr(COALESCE(j.completed_at, j.requested_at, j.created_at),1,10) <= ?'; params.push(to); }
+
+  const rows = all(
+    `SELECT j.id, j.job_no, j.status, j.type, j.description, j.requested_at, j.completed_at,
+            a.registration AS asset_reg, a.code AS asset_code, a.ec_code AS asset_ec, a.type AS asset_type,
+            p.name AS project_name,
+            (SELECT MAX(w.work_date) FROM job_daily_work w WHERE w.job_id = j.id) AS last_work
+       FROM job_cards j LEFT JOIN assets a ON a.id = j.asset_id LEFT JOIN projects p ON p.id = j.project_id
+      WHERE j.status <> 'REJECTED'
+        AND CAST(substr(j.job_no, 1, instr(j.job_no, '/') - 1) AS INTEGER) >= 2026
+        ${window}
+      ORDER BY (last_work IS NULL),                                   -- worked-on jobs first…
+               last_work DESC,                                        -- …newest attended at the top
+               substr(COALESCE(j.completed_at, j.requested_at, j.created_at),1,10) DESC,
+               j.id DESC`, ...params);
+  return rows.map((r) => ({ ...r, detail: jobReport(r.id) }));
+}
+
+// ---- Ongoing jobs watchlist (delay points) ---------------------------------
+// Every job still open that was raised within the last N months (default 8) — older
+// never-closed history is deliberately left out. Ranked by how stalled it is, with the
+// reason it is stuck: nothing started, waiting on parts, or simply idle.
+function ongoingJobs(months) {
+  const today = new Date().toISOString().slice(0, 10);
+  const cutDate = new Date(today + 'T00:00:00Z');
+  cutDate.setUTCMonth(cutDate.getUTCMonth() - (Number(months) || 8));
+  const cut = cutDate.toISOString().slice(0, 10);
+  const days = (from) => (from ? Math.round((new Date(today + 'T00:00:00Z') - new Date(String(from).slice(0, 10) + 'T00:00:00Z')) / 86400000) : null);
+
+  // The job NUMBER carries the year/month the card was raised (YYYY/M/R/seq) and is the reliable
+  // signal: 66 open cards share the placeholder date 2026-07-16 stamped by an import, which would
+  // otherwise make 2023-2025 jobs look brand new. So the era filter runs off the number, and the
+  // age is measured from the number's month whenever the recorded date disagrees with it.
+  const rows = all(
+    `SELECT j.id, j.job_no, j.status, j.type, j.description,
+            substr(COALESCE(j.requested_at, j.created_at),1,10) AS opened,
+            CAST(substr(j.job_no, 1, instr(j.job_no,'/') - 1) AS INTEGER) AS jn_year,
+            CAST(substr(substr(j.job_no, instr(j.job_no,'/') + 1), 1,
+                        instr(substr(j.job_no, instr(j.job_no,'/') + 1), '/') - 1) AS INTEGER) AS jn_month,
+            a.registration AS asset_reg, a.code AS asset_code, a.ec_code AS asset_ec, a.type AS asset_type,
+            p.name AS project_name,
+            (SELECT MAX(w.work_date) FROM job_daily_work w WHERE w.job_id = j.id) AS last_work,
+            (SELECT COUNT(*)         FROM job_daily_work w WHERE w.job_id = j.id) AS work_entries,
+            (SELECT COALESCE(SUM(w.hours),0) FROM job_daily_work w WHERE w.job_id = j.id) AS hours,
+            COALESCE(j.labour_cost,0) AS labour_cost, COALESCE(j.material_cost,0) AS material_cost,
+            COALESCE(j.total_cost,0)  AS total_cost
+       FROM job_cards j LEFT JOIN assets a ON a.id = j.asset_id LEFT JOIN projects p ON p.id = j.project_id
+      WHERE j.status NOT IN ('CLOSED','REJECTED')
+        AND j.job_no LIKE '____/%'
+        AND (CAST(substr(j.job_no, 1, instr(j.job_no,'/') - 1) AS INTEGER) * 12
+             + CAST(substr(substr(j.job_no, instr(j.job_no,'/') + 1), 1,
+                           instr(substr(j.job_no, instr(j.job_no,'/') + 1), '/') - 1) AS INTEGER))
+            >= (CAST(substr(?,1,4) AS INTEGER) * 12 + CAST(substr(?,6,2) AS INTEGER))`, cut, cut);
+
+  const out = rows.map((j) => {
+    // Outstanding materials — the usual reason a job sits. Same dual linkage as the job report.
+    const pending = all(
+      `SELECT DISTINCT ml.id, m.mrn_no, m.req_date, ml.description, ml.qty,
+              COALESCE(ml.qty_received,0) AS qty_received, (ml.qty - COALESCE(ml.qty_received,0)) AS pending,
+              COALESCE(ml.purchase_source, m.purchase_source,
+                       (SELECT g.purchase_source_norm FROM grn g WHERE g.mrn_line_id = ml.id AND g.purchase_source_norm IS NOT NULL LIMIT 1)) AS source
+         FROM mrn_lines ml JOIN mrn m ON m.id = ml.mrn_id
+        WHERE (m.job_id = ? OR ml.id IN (SELECT mrn_line_id FROM job_parts WHERE job_id = ? AND mrn_line_id IS NOT NULL))
+          AND COALESCE(ml.qty_received,0) < ml.qty
+        ORDER BY m.req_date`, j.id, j.id);
+    const requestedCount = get(
+      `SELECT COUNT(DISTINCT ml.id) c FROM mrn_lines ml JOIN mrn m ON m.id = ml.mrn_id
+        WHERE m.job_id = ? OR ml.id IN (SELECT mrn_line_id FROM job_parts WHERE job_id = ? AND mrn_line_id IS NOT NULL)`, j.id, j.id).c;
+
+    // Raised-on: the job number's month is authoritative. If the recorded date sits more than
+    // ~45 days away from it, that date is an import placeholder — flag it and age the job from
+    // the number's month instead, so "days open" reflects reality.
+    const jnStart = (j.jn_year && j.jn_month) ? `${j.jn_year}-${String(j.jn_month).padStart(2, '0')}-01` : null;
+    const gap = (jnStart && j.opened) ? Math.abs(days(jnStart) - days(j.opened)) : 0;
+    const dateSuspect = !!(jnStart && j.opened && gap > 45);
+    const raised = dateSuspect ? jnStart : (j.opened || jnStart);
+    const ageDays = days(raised) || 0;
+    const idleDays = days(j.last_work || raised) || 0;
+    const oldestPending = pending.length ? days(pending[0].req_date) : null;
+
+    // Why is it sitting? Most actionable reason first.
+    let flag, reason;
+    if (pending.length && oldestPending != null && oldestPending > 21) { flag = 'CRITICAL'; reason = `Waiting ${pending.length} part(s) — oldest request ${oldestPending} days ago`; }
+    else if (!j.work_entries && ageDays > 14) { flag = 'CRITICAL'; reason = `Not started — open ${ageDays} days, no work logged`; }
+    else if (idleDays > 30) { flag = 'CRITICAL'; reason = `No work for ${idleDays} days`; }
+    else if (pending.length) { flag = 'WATCH'; reason = `Waiting ${pending.length} part(s)`; }
+    else if (!j.work_entries) { flag = 'WATCH'; reason = `Not started — open ${ageDays} days`; }
+    else if (idleDays > 7) { flag = 'WATCH'; reason = `No work for ${idleDays} days`; }
+    else { flag = 'ACTIVE'; reason = `Worked ${idleDays} day(s) ago`; }
+
+    return { ...j, raised, dateSuspect, jnStart, ageDays, idleDays, pending, pendingLines: pending.length,
+      pendingQty: r2(pending.reduce((s, p) => s + (Number(p.pending) || 0), 0)),
+      requestedCount, oldestPending, flag, reason };
+  });
+
+  const rank = { CRITICAL: 0, WATCH: 1, ACTIVE: 2 };
+  out.sort((a, b) => (rank[a.flag] - rank[b.flag]) || (b.idleDays - a.idleDays) || (b.ageDays - a.ageDays));
+  return { today, cut, months: Number(months) || 8, jobs: out };
+}
+
+router.get('/ongoing-jobs.xlsx', asyncHandler(async (req, res) => {
+  const { jobs, cut, months } = ongoingJobs(req.query.months);
+  const SRC = { head_office: 'Head Office', local_purchase: 'Local Purchase' };
+  await sendXlsx(res, `ongoing-jobs-${cut}.xlsx`, [
+    {
+      name: 'Ongoing jobs',
+      columns: [
+        { header: 'Priority', key: 'flag', width: 10 }, { header: 'Delay reason', key: 'reason', width: 42 },
+        { header: 'Job No', key: 'job_no', width: 15 }, { header: 'Vehicle', key: 'vehicle', width: 18 },
+        { header: 'Machine', key: 'asset_type', width: 16 }, { header: 'Work requested', key: 'description', width: 50 },
+        { header: 'Status', key: 'status', width: 13 }, { header: 'Raised (from job no)', key: 'raised', width: 18 },
+        { header: 'Date on card', key: 'opened', width: 13 }, { header: 'Date looks wrong?', key: 'dateFlag', width: 16 },
+        { header: 'Days open', key: 'ageDays', width: 10 }, { header: 'Last attended', key: 'last_work', width: 12 },
+        { header: 'Idle days', key: 'idleDays', width: 10 }, { header: 'Hours', key: 'hours', width: 9 },
+        { header: 'Items requested', key: 'requestedCount', width: 14 }, { header: 'Parts pending', key: 'pendingLines', width: 12 },
+        { header: 'Qty pending', key: 'pendingQty', width: 11 }, { header: 'Cost so far (Rs)', key: 'total_cost', width: 15 },
+        { header: 'Project', key: 'project_name', width: 20 },
+      ],
+      rows: jobs.map((j) => ({ ...j, vehicle: j.asset_reg || j.asset_code || '', last_work: j.last_work || 'never',
+        dateFlag: j.dateSuspect ? 'YES — placeholder' : '' })),
+    },
+    {
+      name: 'Parts still pending',
+      columns: [
+        { header: 'Job No', key: 'job_no', width: 15 }, { header: 'Vehicle', key: 'vehicle', width: 18 },
+        { header: 'MRN No', key: 'mrn_no', width: 13 }, { header: 'Requested', key: 'req_date', width: 12 },
+        { header: 'Waiting days', key: 'waiting', width: 12 }, { header: 'Item', key: 'description', width: 42 },
+        { header: 'Purchase from', key: 'source', width: 16 }, { header: 'Qty', key: 'qty', width: 8 },
+        { header: 'Received', key: 'qty_received', width: 10 }, { header: 'Pending', key: 'pending', width: 9 },
+      ],
+      rows: jobs.flatMap((j) => j.pending.map((p) => ({
+        job_no: j.job_no, vehicle: j.asset_reg || j.asset_code || '',
+        mrn_no: p.mrn_no, req_date: String(p.req_date || '').slice(0, 10),
+        waiting: p.req_date ? Math.round((new Date() - new Date(String(p.req_date).slice(0, 10))) / 86400000) : '',
+        description: p.description, source: SRC[p.source] || '', qty: p.qty, qty_received: p.qty_received, pending: p.pending,
+      }))),
+    },
+  ]);
+}));
+
+router.get('/ongoing-jobs.html', asyncHandler((req, res) => {
+  const { jobs, today, cut, months } = ongoingJobs(req.query.months);
+  const esc = (v) => String(v == null ? '' : v).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+  const m = (n) => 'Rs ' + (Number(n) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const d = (v) => (v ? String(v).slice(0, 10) : '');
+  const SRC = { head_office: 'Head Office', local_purchase: 'Local Purchase' };
+  const veh = (j) => [j.asset_reg, (j.asset_ec && j.asset_ec !== j.asset_reg) ? j.asset_ec : ''].filter(Boolean).join(' · ') || j.asset_code || '—';
+  const C = jobs.filter((j) => j.flag === 'CRITICAL'), W = jobs.filter((j) => j.flag === 'WATCH'), A = jobs.filter((j) => j.flag === 'ACTIVE');
+  const waitingParts = jobs.filter((j) => j.pendingLines > 0);
+
+  const row = (j) => `<tr class="${j.flag.toLowerCase()}">
+    <td><b>${esc(j.flag)}</b></td><td class="w">${esc(j.reason)}</td>
+    <td>${esc(j.job_no)}</td><td>${esc(veh(j))}</td>
+    <td class="w">${esc(String(j.description || '').slice(0, 80))}</td>
+    <td>${esc(j.raised)}${j.dateSuspect ? ` <span class="sus" title="The card's recorded date is ${esc(j.opened)}, which does not match the job number's month — taken from the job number instead">*</span>` : ''}</td><td class="num">${j.ageDays}</td>
+    <td>${j.last_work ? esc(j.last_work) : '<i>never</i>'}</td><td class="num"><b>${j.idleDays}</b></td>
+    <td class="num">${j.pendingLines || '—'}</td><td class="num">${j.total_cost ? m(j.total_cost) : '—'}</td></tr>`;
+
+  const html = `<!doctype html><html><head><meta charset="utf-8"><title>Ongoing Jobs — delay watchlist</title>
+<style>
+  @page{size:A4 landscape;margin:10mm} body{font-family:Arial,sans-serif;color:#000;font-size:11px;margin:0}
+  h1{font-size:19px;margin:0 0 2px} h2{font-size:13px;margin:14px 0 5px;border-bottom:2px solid #333;padding-bottom:3px}
+  .sub{color:#444;margin-bottom:8px}
+  table{width:100%;border-collapse:collapse;margin-bottom:8px}
+  th,td{border:1px solid #999;padding:3px 5px;text-align:left;vertical-align:top}
+  th{background:#eee} td.num,th.num{text-align:right;white-space:nowrap} td.w{white-space:normal}
+  tr.critical td{background:#fdeaea} tr.watch td{background:#fff6e5}
+  .sus{color:#b00;font-weight:bold} .note{font-size:10.5px;color:#444;margin:2px 0 10px}
+  .tot{display:flex;flex-wrap:wrap;border:1px solid #000;margin-bottom:10px}
+  .tot div{padding:6px 10px;border-right:1px solid #ccc;min-width:112px} .tot b{display:block;font-size:15px}
+  .tot span{color:#555;font-size:10px;text-transform:uppercase;letter-spacing:.05em}
+  button{padding:8px 14px;font-size:14px;margin:10px 0;cursor:pointer}
+  @media print{.noprint{display:none}}
+</style></head><body>
+<button class="noprint" onclick="window.print()">🖨 Print / Save as PDF</button>
+<h1>Edward &amp; Christie (Pvt) Ltd — Ongoing Jobs &amp; Delay Points</h1>
+<div class="sub">All jobs still open, raised since <b>${esc(cut)}</b> (last ${months} months) · as at ${esc(today)} · ${jobs.length} job(s) · older never-closed jobs excluded</div>
+<div class="tot">
+  <div><span>Ongoing jobs</span><b>${jobs.length}</b></div>
+  <div><span>Critical</span><b style="color:#b00">${C.length}</b></div>
+  <div><span>Watch</span><b style="color:#a60">${W.length}</b></div>
+  <div><span>Active</span><b style="color:#070">${A.length}</b></div>
+  <div><span>Waiting on parts</span><b>${waitingParts.length}</b></div>
+  <div><span>Never started</span><b>${jobs.filter((j) => !j.work_entries).length}</b></div>
+  <div><span>Cost so far</span><b>${m(jobs.reduce((s, j) => s + j.total_cost, 0))}</b></div>
+</div>
+<h2>Delay watchlist — most critical first</h2>
+<div class="note">“Raised” is taken from the job number (YYYY/M/…), which is the reliable record of when the card was written.
+${jobs.filter((j) => j.dateSuspect).length} card(s) marked <span class="sus">*</span> carry a stored date that disagrees with their number — an import placeholder — so their age is measured from the job number instead.</div>
+<table><thead><tr><th>Priority</th><th>Delay reason</th><th>Job No</th><th>Vehicle</th><th>Work requested</th><th>Raised</th><th class="num">Days open</th><th>Last attended</th><th class="num">Idle</th><th class="num">Parts pending</th><th class="num">Cost so far</th></tr></thead>
+<tbody>${jobs.map(row).join('') || '<tr><td colspan="11" style="text-align:center;color:#666">No ongoing jobs.</td></tr>'}</tbody></table>
+${waitingParts.length ? `<h2>What they are waiting for — outstanding spare parts (${waitingParts.reduce((s, j) => s + j.pendingLines, 0)} line(s))</h2>
+<table><thead><tr><th>Job No</th><th>Vehicle</th><th>MRN No</th><th>Requested</th><th class="num">Waiting days</th><th>Item</th><th>Purchase from</th><th class="num">Qty</th><th class="num">Recv</th><th class="num">Pending</th></tr></thead>
+<tbody>${waitingParts.flatMap((j) => j.pending.map((p) => {
+    const w = p.req_date ? Math.round((new Date(today) - new Date(String(p.req_date).slice(0, 10))) / 86400000) : '';
+    return `<tr class="${w > 21 ? 'critical' : ''}"><td>${esc(j.job_no)}</td><td>${esc(veh(j))}</td><td>${esc(p.mrn_no || '')}</td><td>${d(p.req_date)}</td><td class="num"><b>${w}</b></td><td class="w">${esc(p.description || '')}</td><td>${esc(SRC[p.source] || '')}</td><td class="num">${p.qty}</td><td class="num">${p.qty_received}</td><td class="num"><b>${p.pending}</b></td></tr>`;
+  })).join('')}</tbody></table>` : ''}
+</body></html>`;
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  res.send(html);
+}));
+
+router.get('/jobs-summary.html', asyncHandler((req, res) => {
+  // No ?from= means every current-era job; a date narrows it to jobs touched since then.
+  const from = MDATE.test(String(req.query.from || '')) ? req.query.from : null;
+  const to = MDATE.test(String(req.query.to || '')) ? req.query.to : null;
+  const withDetail = String(req.query.detail || '1') !== '0';
+  const jobs = jobsAttended(from, to);
+
+  const esc = (v) => String(v == null ? '' : v).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+  const m = (n) => 'Rs ' + (Number(n) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const d = (v) => (v ? String(v).slice(0, 10) : '');
+  const SRC = { head_office: 'Head Office', local_purchase: 'Local Purchase' };
+  const veh = (j) => [j.asset_reg, (j.asset_ec && j.asset_ec !== j.asset_reg) ? j.asset_ec : ''].filter(Boolean).join(' · ') || j.asset_code || '—';
+
+  const T = jobs.reduce((a, j) => {
+    const t = j.detail.totals;
+    a.hours += t.hours; a.req += t.requested_qty; a.recv += t.received_qty; a.pend += t.pending_qty;
+    a.labour += t.labour_cost; a.material += t.material_cost; a.oil += t.oil_cost; a.total += t.total_cost;
+    a.unpriced += t.unpriced;
+    if (j.status === 'CLOSED') a.closed++; else a.open++;
+    return a;
+  }, { hours: 0, req: 0, recv: 0, pend: 0, labour: 0, material: 0, oil: 0, total: 0, unpriced: 0, closed: 0, open: 0 });
+
+  const summaryRows = jobs.map((j) => {
+    const t = j.detail.totals;
+    return `<tr>
+      <td>${esc(j.job_no)}</td><td>${esc(veh(j))}</td>
+      <td><span class="st">${esc(j.status)}</span></td>
+      <td class="w">${esc(String(j.description || '').slice(0, 90))}</td>
+      <td><b>${d(j.last_work) || '—'}</b></td>
+      <td class="num">${t.hours}</td>
+      <td class="num">${t.requested_qty || '—'}</td>
+      <td class="num">${t.pending_qty ? '<b>' + t.pending_qty + '</b>' : '—'}</td>
+      <td class="num">${m(t.total_cost)}</td></tr>`;
+  }).join('') || '<tr><td colspan="9" style="text-align:center;color:#666">No jobs attended in this period.</td></tr>';
+
+  const block = (j) => {
+    const s = j.detail, t = s.totals;
+    const tbl = (title, cols, rows, empty) => `<div class="sh">${esc(title)}</div><table>
+      <thead><tr>${cols.map((c) => `<th class="${c.num ? 'num' : ''}">${esc(c.h)}</th>`).join('')}</tr></thead>
+      <tbody>${rows || `<tr><td colspan="${cols.length}" style="color:#777">${esc(empty)}</td></tr>`}</tbody></table>`;
+    return `<div class="job">
+      <div class="jh"><b style="font-size:13px">${esc(j.job_no)}</b> &nbsp; <b>${esc(veh(j))}</b>${j.asset_type ? ' · ' + esc(j.asset_type) : ''}
+        &nbsp;<span class="st">${esc(j.status)}</span>
+        <div class="meta">Last attended: <b>${d(j.last_work) || '—'}</b> · opened ${d(j.requested_at) || '—'}${j.completed_at ? ' · closed ' + d(j.completed_at) : ''}${j.project_name ? ' · ' + esc(j.project_name) : ''} · ${t.hours} hrs</div>
+        <div class="desc">${esc(j.description || '')}</div></div>
+      ${tbl('Spare parts REQUESTED', [{ h: 'MRN No' }, { h: 'Date' }, { h: 'Item' }, { h: 'Purchase from' }, { h: 'Qty', num: true }, { h: 'Recv', num: true }, { h: 'Pending', num: true }],
+        s.requested.map((r) => `<tr><td>${esc(r.mrn_no || '')}</td><td>${d(r.req_date)}</td><td>${esc(r.description || '')}</td><td><b>${esc(SRC[r.source] || '— not set —')}</b></td><td class="num">${r.qty}</td><td class="num">${r.qty_received}</td><td class="num">${r.pending > 0 ? '<b>' + r.pending + '</b>' : '—'}</td></tr>`).join(''), 'no spare parts requested')}
+      ${tbl('Spare parts RECEIVED', [{ h: 'Delivered' }, { h: 'Item' }, { h: 'Purchase from' }, { h: 'Supplier' }, { h: 'Qty', num: true }, { h: 'Unit', num: true }, { h: 'Value', num: true }],
+        s.received.map((g) => `<tr><td>${d(g.delivery_date)}</td><td>${esc(g.description || '')}</td><td>${esc(SRC[g.source] || '')}</td><td>${esc(g.supplier || '')}</td><td class="num">${g.qty}</td><td class="num">${g.unit_price == null ? 'awaiting' : m(g.unit_price)}</td><td class="num">${g.unit_price == null ? '—' : m((Number(g.qty) || 0) * g.unit_price)}</td></tr>`).join(''), 'nothing received')}
+      ${tbl('What we did (daily work)', [{ h: 'Date' }, { h: 'Mechanic(s)' }, { h: 'Work done' }, { h: 'Hrs', num: true }],
+        s.dailyWork.map((w) => `<tr><td>${d(w.work_date)}</td><td>${esc(w.mechanic || '—')}</td><td>${esc(w.description || '')}</td><td class="num">${w.hours || 0}</td></tr>`).join(''), 'no work logged')}
+      <div class="jt">Labour ${m(t.labour_cost)} · Spares ${m(t.material_cost)} · Oil ${m(t.oil_cost)} · <b>Total ${m(t.total_cost)}</b>${t.unpriced ? ` · ${t.unpriced} receipt(s) awaiting price` : ''}</div>
+    </div>`;
+  };
+
+  const html = `<!doctype html><html><head><meta charset="utf-8"><title>Jobs Attended — from ${esc(from)}</title>
+<style>
+  @page{size:A4;margin:11mm} body{font-family:Arial,sans-serif;color:#000;font-size:11.5px;margin:0}
+  h1{font-size:19px;margin:0 0 2px} h2{font-size:14px;margin:16px 0 6px;border-bottom:2px solid #333;padding-bottom:3px}
+  .sub{color:#444;margin-bottom:8px}
+  table{width:100%;border-collapse:collapse;margin-bottom:8px}
+  th,td{border:1px solid #999;padding:3px 6px;text-align:left;vertical-align:top}
+  th{background:#eee} td.num,th.num{text-align:right;white-space:nowrap} td.w{white-space:normal}
+  .tot{display:flex;flex-wrap:wrap;border:1px solid #000;margin-bottom:10px}
+  .tot div{padding:6px 10px;border-right:1px solid #ccc;min-width:104px} .tot b{display:block;font-size:14px}
+  .tot span{color:#555;font-size:10px;text-transform:uppercase;letter-spacing:.05em}
+  .job{border:1px solid #666;padding:7px 9px;margin-bottom:9px;page-break-inside:avoid}
+  .jh{margin-bottom:5px} .jh .st{color:#1d5a73;font-weight:bold}
+  .meta{color:#333;font-size:11px;margin-top:2px} .desc{color:#444;font-size:11px;margin-top:2px;font-style:italic}
+  .sh{font-weight:bold;font-size:11px;margin:6px 0 3px}
+  .jt{border-top:1px solid #999;padding-top:4px;font-size:11px}
+  button{padding:8px 14px;font-size:14px;margin:10px 0;cursor:pointer}
+  @media print{.noprint{display:none}}
+</style></head><body>
+<button class="noprint" onclick="window.print()">🖨 Print / Save as PDF</button>
+<h1>Edward &amp; Christie (Pvt) Ltd — Jobs Attended</h1>
+<div class="sub">${from ? 'From <b>' + esc(from) + '</b>' + (to ? ' to <b>' + esc(to) + '</b>' : ' onward') : 'All current jobs (2026 onward)'} · ${jobs.length} job(s) · most recently attended first</div>
+<div class="tot">
+  <div><span>Jobs</span><b>${jobs.length}</b></div>
+  <div><span>Still open</span><b>${T.open}</b></div>
+  <div><span>Closed</span><b>${T.closed}</b></div>
+  <div><span>Mechanic-hours</span><b>${r2(T.hours)}</b></div>
+  <div><span>Items requested</span><b>${r2(T.req)}</b></div>
+  <div><span>Received</span><b>${r2(T.recv)}</b></div>
+  <div><span>Still pending</span><b>${r2(T.pend)}</b></div>
+  <div><span>Labour</span><b>${m(T.labour)}</b></div>
+  <div><span>Spares</span><b>${m(T.material)}</b></div>
+  <div><span>TOTAL</span><b>${m(T.total)}</b></div>
+</div>
+<h2>Summary — one line per job</h2>
+<table><thead><tr><th>Job No</th><th>Vehicle</th><th>Status</th><th>Work</th><th>Last worked</th><th class="num">Hrs</th><th class="num">Items req</th><th class="num">Pending</th><th class="num">Job total</th></tr></thead>
+<tbody>${summaryRows}</tbody></table>
+${withDetail ? '<h2>Job by job — parts requested, parts received, work done</h2>' + jobs.map(block).join('') : ''}
+</body></html>`;
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  res.send(html);
+}));
 
 router.get('/job/:id/costsheet', asyncHandler((req, res) => {
   const sheet = costSheet(toInt(req.params.id));
@@ -395,16 +878,65 @@ function dailyProgress(date) {
     g.external = r2(g.external + (Number(w.external_value) || 0));
   }
   const jobs = Object.values(jobsMap);
+
+  // --- the rest of the day's picture: cards opened / closed, what's still to do, stores in/out ---
+  const VEH = 'a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec';
+  const opened = all(
+    `SELECT j.job_no, j.description, j.status, ${VEH}
+       FROM job_cards j LEFT JOIN assets a ON a.id = j.asset_id
+      WHERE substr(COALESCE(j.requested_at, j.created_at),1,10) = ? ORDER BY j.id`, date);
+  const closed = all(
+    `SELECT j.job_no, j.description, ${VEH}, COALESCE(j.total_cost,0) total_cost
+       FROM job_cards j LEFT JOIN assets a ON a.id = j.asset_id
+      WHERE j.status = 'CLOSED' AND substr(j.completed_at,1,10) = ? ORDER BY j.id`, date);
+
+  // Still to do — open cards that are actually live: worked or raised within the last 30 days.
+  // (open_total counts every open card so nothing is hidden by that window.)
+  const pending = all(
+    `SELECT j.job_no, j.description, j.status, ${VEH},
+            substr(COALESCE(j.requested_at, j.created_at),1,10) AS since,
+            CAST(julianday(?) - julianday(substr(COALESCE(j.requested_at, j.created_at),1,10)) AS INTEGER) AS age_days,
+            (SELECT MAX(w.work_date) FROM job_daily_work w WHERE w.job_id = j.id) AS last_work
+       FROM job_cards j LEFT JOIN assets a ON a.id = j.asset_id
+      WHERE j.status NOT IN ('CLOSED','REJECTED')
+        AND substr(COALESCE(j.requested_at, j.created_at),1,10) <= ?
+        AND (
+          substr(COALESCE(j.requested_at, j.created_at),1,10) >= date(?, '-30 day')
+          OR EXISTS (SELECT 1 FROM job_daily_work w WHERE w.job_id = j.id AND w.work_date >= date(?, '-30 day') AND w.work_date <= ?)
+        )
+      ORDER BY age_days DESC, j.job_no`, date, date, date, date, date);
+  const open_total = get(
+    `SELECT COUNT(*) c FROM job_cards
+      WHERE status NOT IN ('CLOSED','REJECTED') AND substr(COALESCE(requested_at, created_at),1,10) <= ?`, date).c;
+
+  // Requested today (MRN lines raised) and received today (GRN deliveries).
+  const requested = all(
+    `SELECT m.mrn_no, ml.description, ml.qty, ml.category, a.code AS asset_code,
+            COALESCE(ml.purchase_source, m.purchase_source) AS source
+       FROM mrn_lines ml JOIN mrn m ON m.id = ml.mrn_id LEFT JOIN assets a ON a.id = m.asset_id
+      WHERE substr(m.req_date,1,10) = ? ORDER BY m.mrn_no, ml.id`, date);
+  const received = all(
+    `SELECT g.description, g.qty, g.unit_price, g.supplier, m.mrn_no, a.code AS asset_code,
+            COALESCE(g.purchase_source_norm, m.purchase_source) AS source
+       FROM grn g LEFT JOIN mrn m ON m.id = g.mrn_id LEFT JOIN assets a ON a.id = m.asset_id
+      WHERE substr(g.delivery_date,1,10) = ? ORDER BY g.id`, date);
+
   const total_labour = lab.reduce((s, l) => s + (Number(l.amount) || 0), 0);
   const total_material = issues.reduce((s, i) => s + (Number(i.qty) || 0) * (Number(i.unit_price) || 0), 0);
   const total_oil = oil.reduce((s, o) => s + Math.abs(Number(o.qty) || 0) * (Number(o.unit_price) || 0), 0);
   const total_external = jobs.reduce((s, j) => s + j.external, 0);
   const total_hours = jobs.reduce((s, j) => s + j.hours, 0);
+  const received_value = received.reduce((s, g) => s + (Number(g.qty) || 0) * (Number(g.unit_price) || 0), 0);
   return {
-    date, jobs, issues, oil,
+    date, jobs, issues, oil, opened, closed, pending, requested, received,
     totals: {
       jobs: jobs.length, hours: r2(total_hours), labour: r2(total_labour), external: r2(total_external),
-      material: r2(total_material), oil: r2(total_oil), grand: r2(total_labour + total_external + total_material + total_oil),
+      material: r2(total_material), oil: r2(total_oil),
+      opened: opened.length, closed: closed.length, pending: pending.length, open_total,
+      requested: requested.length, received: received.length, received_value: r2(received_value),
+      received_unpriced: received.filter((g) => g.unit_price == null).length,
+      // Outside/external work is excluded from the day's cost total (owner tracks it as a personal value).
+      grand: r2(total_labour + total_material + total_oil),
     },
   };
 }
@@ -423,6 +955,9 @@ router.get('/daily-progress/print.html', asyncHandler((req, res) => {
   const esc = (v) => String(v == null ? '' : v).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
   const m = (n) => 'Rs ' + (Number(n) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const veh = (j) => [j.asset_reg, (j.asset_ec && j.asset_ec !== j.asset_reg) ? j.asset_ec : ''].filter(Boolean).join(' · ') || j.asset_code || '';
+  const SRC = { head_office: 'Head Office', local_purchase: 'Local Purchase' };
+  // Keep the printed sheet short — the longest-waiting open jobs are the ones worth chasing.
+  const pendingShown = rep.pending.slice(0, 25);
   const jobRows = rep.jobs.map((j) => `<tr>
       <td>${esc(j.job_no)}</td><td>${esc(veh(j))}</td><td>${esc(j.mechanics.join(', '))}</td>
       <td>${j.tasks.map((t) => esc(t.description || (t.is_external ? 'External repair' : ''))).filter(Boolean).join('; ')}</td>
@@ -443,17 +978,43 @@ router.get('/daily-progress/print.html', asyncHandler((req, res) => {
   @media print { .noprint { display:none; } }
 </style></head><body>
 <button class="noprint" onclick="window.print()">🖨 Print / Save as PDF</button>
-<h1>Edward &amp; Christie (Pvt) Ltd — Daily Progress Report</h1>
+<h1>Edward &amp; Christie (Pvt) Ltd — Daily Report</h1>
 <div class="sub">Date: <b>${esc(date)}</b> · ${t.jobs} job(s) worked · ${t.hours} mechanic-hours</div>
 <div class="tot">
+  <div>Jobs worked<b>${t.jobs}</b></div>
+  <div>Opened<b>${t.opened}</b></div><div>Closed<b>${t.closed}</b></div>
+  <div>Still open<b>${t.open_total}</b></div>
+  <div>Requested<b>${t.requested}</b></div><div>Received<b>${t.received}</b></div>
   <div>Labour<b>${m(t.labour)}</b></div><div>Material<b>${m(t.material)}</b></div>
-  <div>Oil &amp; Lube<b>${m(t.oil)}</b></div><div>External<b>${m(t.external)}</b></div>
-  <div>Total<b>${m(t.grand)}</b></div>
+  <div>Oil &amp; Lube<b>${m(t.oil)}</b></div>
+  <div>Day total<b>${m(t.grand)}</b></div>
 </div>
+<h3>1. Work done today</h3>
 <table><thead><tr><th>Job No</th><th>Vehicle</th><th>Mechanic(s)</th><th>Work done</th><th class="num">Hours</th><th class="num">Labour</th></tr></thead>
 <tbody>${jobRows}</tbody></table>
-${rep.issues.length ? `<h3>Materials issued</h3><table><thead><tr><th>Item</th><th>Job</th><th class="num">Qty</th><th class="num">Unit</th><th class="num">Value</th></tr></thead><tbody>${rep.issues.map((i) => `<tr><td>${esc(i.description)}</td><td>${esc(i.job_no || '')}</td><td class="num">${i.qty}</td><td class="num">${i.unit_price == null ? '—' : m(i.unit_price)}</td><td class="num">${m((Number(i.qty) || 0) * (Number(i.unit_price) || 0))}</td></tr>`).join('')}</tbody></table>` : ''}
-${rep.oil.length ? `<h3>Oil &amp; lubricants issued</h3><table><thead><tr><th>Product</th><th>Job</th><th class="num">Qty</th><th class="num">Value</th></tr></thead><tbody>${rep.oil.map((o) => `<tr><td>${esc(o.product)}</td><td>${esc(o.job_no || '')}</td><td class="num">${Math.abs(Number(o.qty) || 0)}</td><td class="num">${m(Math.abs(Number(o.qty) || 0) * (Number(o.unit_price) || 0))}</td></tr>`).join('')}</tbody></table>` : ''}
+<h3>2. Jobs opened today (${rep.opened.length})</h3>
+<table><thead><tr><th>Job No</th><th>Vehicle</th><th>Complaint / work requested</th><th>Status</th></tr></thead><tbody>${
+  rep.opened.map((j) => `<tr><td>${esc(j.job_no)}</td><td>${esc(veh(j))}</td><td>${esc(j.description || '')}</td><td>${esc(j.status)}</td></tr>`).join('')
+  || '<tr><td colspan="4" style="text-align:center;color:#666">No new job cards opened.</td></tr>'}</tbody></table>
+<h3>3. Jobs closed today (${rep.closed.length})</h3>
+<table><thead><tr><th>Job No</th><th>Vehicle</th><th>Work done</th><th class="num">Job total</th></tr></thead><tbody>${
+  rep.closed.map((j) => `<tr><td>${esc(j.job_no)}</td><td>${esc(veh(j))}</td><td>${esc(j.description || '')}</td><td class="num">${m(j.total_cost)}</td></tr>`).join('')
+  || '<tr><td colspan="4" style="text-align:center;color:#666">No jobs closed.</td></tr>'}</tbody></table>
+<h3>4. Still to do — open jobs (${rep.pending.length} active${t.open_total > rep.pending.length ? ` of ${t.open_total} open in total` : ''})</h3>
+<table><thead><tr><th>Job No</th><th>Vehicle</th><th>Work to do</th><th>Status</th><th>Opened</th><th class="num">Days</th><th>Last worked</th></tr></thead><tbody>${
+  pendingShown.map((j) => `<tr><td>${esc(j.job_no)}</td><td>${esc(veh(j))}</td><td>${esc(j.description || '')}</td><td>${esc(j.status)}</td><td>${esc(j.since || '')}</td><td class="num">${j.age_days}</td><td>${esc(j.last_work || '—')}</td></tr>`).join('')
+  || '<tr><td colspan="7" style="text-align:center;color:#666">Nothing open.</td></tr>'}${
+  rep.pending.length > pendingShown.length ? `<tr><td colspan="7" style="color:#555">…and ${rep.pending.length - pendingShown.length} more open job(s) — longest-waiting shown first; full list in Job Cards.</td></tr>` : ''}</tbody></table>
+<h3>5. Items requested today (${rep.requested.length})</h3>
+<table><thead><tr><th>MRN No</th><th>Vehicle</th><th>Item</th><th>Category</th><th class="num">Qty</th><th>Source</th></tr></thead><tbody>${
+  rep.requested.map((r) => `<tr><td>${esc(r.mrn_no || '')}</td><td>${esc(r.asset_code || '')}</td><td>${esc(r.description || '')}</td><td>${esc(r.category || '')}</td><td class="num">${r.qty}</td><td>${esc(SRC[r.source] || '')}</td></tr>`).join('')
+  || '<tr><td colspan="6" style="text-align:center;color:#666">No material requests raised.</td></tr>'}</tbody></table>
+<h3>6. Items received today (${rep.received.length}${t.received_unpriced ? ` · ${t.received_unpriced} awaiting price` : ''})</h3>
+<table><thead><tr><th>MRN No</th><th>Vehicle</th><th>Item</th><th class="num">Qty</th><th>Supplier</th><th>Source</th><th class="num">Value</th></tr></thead><tbody>${
+  rep.received.map((g) => `<tr><td>${esc(g.mrn_no || '')}</td><td>${esc(g.asset_code || '')}</td><td>${esc(g.description || '')}</td><td class="num">${g.qty}</td><td>${esc(g.supplier || '')}</td><td>${esc(SRC[g.source] || '')}</td><td class="num">${g.unit_price == null ? 'awaiting price' : m((Number(g.qty) || 0) * g.unit_price)}</td></tr>`).join('')
+  || '<tr><td colspan="7" style="text-align:center;color:#666">Nothing received.</td></tr>'}</tbody></table>
+${rep.issues.length ? `<h3>7. Materials issued out (${rep.issues.length})</h3><table><thead><tr><th>Item</th><th>Job</th><th class="num">Qty</th><th class="num">Unit</th><th class="num">Value</th></tr></thead><tbody>${rep.issues.map((i) => `<tr><td>${esc(i.description)}</td><td>${esc(i.job_no || '')}</td><td class="num">${i.qty}</td><td class="num">${i.unit_price == null ? '—' : m(i.unit_price)}</td><td class="num">${m((Number(i.qty) || 0) * (Number(i.unit_price) || 0))}</td></tr>`).join('')}</tbody></table>` : ''}
+${rep.oil.length ? `<h3>8. Oil &amp; lubricants issued (${rep.oil.length})</h3><table><thead><tr><th>Product</th><th>Job</th><th class="num">Qty</th><th class="num">Value</th></tr></thead><tbody>${rep.oil.map((o) => `<tr><td>${esc(o.product)}</td><td>${esc(o.job_no || '')}</td><td class="num">${Math.abs(Number(o.qty) || 0)}</td><td class="num">${m(Math.abs(Number(o.qty) || 0) * (Number(o.unit_price) || 0))}</td></tr>`).join('')}</tbody></table>` : ''}
 </body></html>`;
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
   res.send(html);
@@ -636,7 +1197,7 @@ router.get('/issues-by-vehicle', requireAuth, asyncHandler((req, res) => {
 // ===========================================================================
 // Tyre & Battery are auto-sourced from the issue ledger (tyre_battery_issues); only these three
 // sheets are entered by hand.
-const MONTHLY_SHEETS = ['fuel', 'other', 'salary'];
+const MONTHLY_SHEETS = ['fuel', 'other', 'salary', 'daily_outside'];
 
 function validPeriod(year, month) {
   return Number.isInteger(year) && year >= 2000 && year <= 2100 && Number.isInteger(month) && month >= 1 && month <= 12;
@@ -664,13 +1225,41 @@ router.get('/monthly-inputs', requireAuth, asyncHandler(async (req, res) => {
       `SELECT id, seq, line_date, vehicle, label, project, qty, rate, amount1, amount2, amount3, note
          FROM monthly_report_inputs WHERE year = ? AND month = ? AND sheet = ? ORDER BY seq, id`, year, month, sheet);
   }
-  // Live preview of every sheet's grand totals (so the UI can show what the download will contain).
   const { parts, total } = await monthlyReport.buildWorkbook(year, month);
+  const repCLab = parts.repair.closed_total - (parts.repair.closed_jobs.reduce((a, b) => a + (num(b.material) + num(b.oil) + num(b.general) + num(b.other)), 0));
+  const repPLab = parts.repair.pending_jobs.reduce((a, b) => a + num(b.labour), 0);
+  const repCOut = parts.repair.closed_jobs.reduce((a, b) => a + num(b.outside_estimate), 0);
+  const repPOut = parts.repair.pending_jobs.reduce((a, b) => a + num(b.outside_estimate), 0);
+  const repOLab = num(parts.repair.other_labour_total);
+  const repOOut = num(parts.repair.other_labour_outside);
+  const svcLab = parts.service.sums.labour;
+  const svcOut = parts.service.sums.outsideWithTrn;
+  const totOurLab = repCLab + repPLab + repOLab + svcLab;
+  const totOutEst = repCOut + repPOut + repOOut + svcOut;
+  const totSaving = totOutEst - totOurLab;
+  const savingPct = totOutEst > 0 ? (totSaving / totOutEst) : 0;
+
+  const totWages = parts.salaries.sums.total;
+  const totVehicles = parts.fuel.sums.cost + parts.fuel.sums.rental;
+  const totOverheads = parts.other.sums.total;
+  const totAbsorbed = totWages + totVehicles + totOverheads;
+  const absorbedSaving = totOutEst - totAbsorbed;
+  const absorbedPct = totOutEst > 0 ? (absorbedSaving / totOutEst) : 0;
+
   const preview = {
+    profit_loss: {
+      is_profit: absorbedSaving >= 0,
+      saving_amount: Math.abs(absorbedSaving),
+      saving_pct: Math.abs(absorbedPct),
+      in_house_cost: totAbsorbed,
+      outside_cost: totOutEst,
+    },
     repair: {
       count: parts.repair.count, total: parts.repair.sums.total,
       closed_count: parts.repair.closed_count, closed_total: parts.repair.closed_total,
       pending_count: parts.repair.pending_count, pending_total: parts.repair.pending_total,
+      other_labour_count: parts.repair.other_labour_count, other_labour_total: parts.repair.other_labour_total,
+      spares_supply_count: parts.repair.spares_supply_count, spares_supply_total: parts.repair.spares_supply_total,
     },
     service: { count: parts.service.count, total: parts.service.sums.total },
     tyre: { count: parts.tyre.count, total: parts.tyre.sums.total },
@@ -680,9 +1269,44 @@ router.get('/monthly-inputs', requireAuth, asyncHandler(async (req, res) => {
     fuel: { count: parts.fuel.count, total: parts.fuel.sums.cost },
     salary: { count: parts.salaries.count, staff_total: parts.salaries.sums.total, mechanic_total: parts.salaries.mechanic_total },
     other: { count: parts.other.count, total: parts.other.sums.total },
+    total_cost: {
+      our_labour: total.columns ? total.columns[3] : 0,
+      materials: total.columns ? (total.columns[5] + total.columns[6] + total.columns[7]) : 0,
+      overheads: total.columns ? total.columns[8] : 0,
+      sundry: total.columns ? total.columns[9] : 0,
+      grand_total: total.grand_total,
+    },
+    material_summary: {
+      spares: parts.repair.sums.material,
+      filters: parts.service.sums.filter,
+      oils: parts.repair.sums.oil + parts.service.sums.oil + parts.oils.sums.total,
+      tyres: parts.tyre.sums.total,
+      batteries: parts.battery.sums.total,
+      general: parts.general.sums.total,
+      total_material: parts.repair.sums.material + parts.service.sums.filter + parts.repair.sums.oil + parts.service.sums.oil + parts.oils.sums.total + parts.tyre.sums.total + parts.battery.sums.total + parts.general.sums.total,
+    },
+    cost_comparison: {
+      our_labour: totOurLab,
+      outside_estimate: totOutEst,
+      saving: totSaving,
+      saving_pct: savingPct,
+    },
+    job_wise_comparison: {
+      total_jobs: parts.repair.count + parts.service.count,
+      labour_cost: totOurLab,
+      outside_estimate: totOutEst,
+      saving: totSaving,
+    },
     grand_total: total.grand_total,
   };
-  res.json({ year, month, inputs, preview });
+  // Lists that drive the manual "outside labour price" editors — the month's daily-work vehicles and
+  // service jobs, each with our labour and the currently-saved outside price.
+  const daily_work = (parts.repair.other_labour || []).map((o) => ({ vehicle: o.reg, labour: num(o.labour), outside: num(o.outside) }));
+  const service_jobs = (parts.service.service_jobs || []).map((s) => ({
+    id: s.id, job_no: s.job_no, vehicle: s.reg || s.code || s.vehicle_label || '',
+    labour: num(s.labour), outside: num(s.outside_estimate),
+  }));
+  res.json({ year, month, inputs, preview, daily_work, service_jobs });
 }));
 
 // Replace all saved lines for one (year, month, sheet). Body: { year, month, sheet, lines:[...] }.
@@ -712,49 +1336,115 @@ router.post('/monthly-inputs', requireAuth, asyncHandler((req, res) => {
   res.json({ ok: true, sheet, saved: lines.length });
 }));
 
+// Save manual outside-labour prices for service jobs (service_jobs.outside_estimate). The daily-work
+// outside prices ride on monthly_report_inputs (sheet 'daily_outside'); service prices live on the
+// service row itself, so they get their own tiny endpoint. Body: { items: [{ id, outside }] }.
+router.post('/service-outside', requireAuth, asyncHandler((req, res) => {
+  const items = Array.isArray(req.body && req.body.items) ? req.body.items : [];
+  let saved = 0;
+  tx(() => {
+    for (const it of items) {
+      const id = toInt(it && it.id); if (!id) continue;
+      const val = (it.outside == null || it.outside === '') ? null : toNum(it.outside);
+      run('UPDATE service_jobs SET outside_estimate = ? WHERE id = ?', val, id);
+      saved++;
+    }
+  });
+  res.json({ ok: true, saved });
+}));
+
 // Monthly Repair Detail — an itemized "bill" for every repair job in the month (same Closed +
-// Pending set as the report's Repair sheet), each broken into its labour / parts / oil / general /
-// external line items with a per-job total and a grand total. Printable / save-as-PDF.
+// Pending set as the report's Repair sheet), each broken into its labour / parts / oil / general
+// line items with a per-job total and a grand total. Outside/external work cost is excluded
+// (owner tracks it as a personal value). Printable / save-as-PDF.
 router.get('/monthly-repair-detail.html', requireAuth, asyncHandler((req, res) => {
   const year = toInt(req.query.year), month = toInt(req.query.month);
   if (!validPeriod(year, month)) return res.status(400).send('year (YYYY) and month (1-12) are required');
   const ym = `${year}-${String(month).padStart(2, '0')}`;
   const period = `${monthlyReport.MONTHS[month]} ${year}`;
-  const closedIds = all(`SELECT id FROM job_cards WHERE status = 'CLOSED' AND completed_at IS NOT NULL AND substr(completed_at,1,7) = ? ORDER BY completed_at, id`, ym).map((r) => r.id);
-  const pendingIds = all(`SELECT id FROM job_cards WHERE status NOT IN ('CLOSED','REJECTED') AND id IN (SELECT DISTINCT job_id FROM job_labour WHERE substr(work_date,1,7) = ?) ORDER BY COALESCE(requested_at, created_at), id`, ym).map((r) => r.id);
+  // Order both sections by JOB NUMBER, lowest to highest. Job numbers are YEAR/MONTH/R/SEQ,
+  // so compare each "/"-segment numerically (a plain string sort would place /R/10 before /R/2,
+  // and 2026/6 before 2026/10 wrongly). Pure-numeric segments are zero-padded for the compare;
+  // non-numeric segments (e.g. the "R", legacy refs) fall back to case-insensitive text order.
+  const jobNoKey = (s) => String(s || '').split('/').map((t) => { t = t.trim(); return /^\d+$/.test(t) ? t.padStart(10, '0') : t.toLowerCase(); });
+  const byJobNo = (a, b) => {
+    const ka = jobNoKey(a.job_no), kb = jobNoKey(b.job_no);
+    for (let i = 0; i < Math.max(ka.length, kb.length); i++) {
+      const x = ka[i] || '', y = kb[i] || '';
+      if (x !== y) return x < y ? -1 : 1;
+    }
+    return 0;
+  };
+  const sparesIds = all(`SELECT id FROM job_cards
+      WHERE substr(COALESCE(completed_at, requested_at, created_at),1,7) = ?
+        AND (description LIKE 'Stores materials%' OR description LIKE 'auto-created container%' OR description LIKE 'Spares Supply%')
+      ORDER BY completed_at, id`, ym).map((r) => r.id);
+
+  const usedIds = [...closedIds, ...pendingIds, ...sparesIds];
+  const usedIdsStr = usedIds.length > 0 ? usedIds.join(',') : '0';
+
+  const otherLabour = all(`
+    SELECT COALESCE(a.type, '') atype,
+           COALESCE(a.registration, a.code, l.mechanic, 'Unassigned') reg,
+           a.ec_code ec,
+           p.name project,
+           GROUP_CONCAT(DISTINCT j.description) desc,
+           SUM(l.amount) labour
+      FROM job_labour l
+      LEFT JOIN job_cards j ON j.id = l.job_id
+      LEFT JOIN assets a ON a.id = j.asset_id
+      LEFT JOIN projects p ON p.id = j.project_id
+     WHERE substr(l.work_date,1,7) = ?
+       AND (l.job_id IS NULL OR l.job_id NOT IN (${usedIdsStr}))
+     GROUP BY COALESCE(a.registration, a.code, l.mechanic)
+     HAVING labour > 0
+     ORDER BY labour DESC
+  `, ym);
 
   const esc = (v) => String(v == null ? '' : v).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
   const money = (n) => (Number(n) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const n2 = (n) => (Number(n) || 0).toLocaleString('en-US');
-  const g = { labour: 0, material: 0, oil: 0, other: 0, external: 0, total: 0, jobs: 0 };
+  const g = { labour: 0, material: 0, oil: 0, other: 0, total: 0, jobs: 0 };
 
   const renderJob = (id, se) => {
     const s = costSheet(id);
     if (!s) return '';
     const j = s.job;
     const other = (Number(j.general_cost) || 0) + (Number(j.other_cost) || 0);
-    const total = (Number(j.labour_cost) || 0) + (Number(j.material_cost) || 0) + (Number(j.oil_cost) || 0) + other + (Number(j.external_cost) || 0);
+    const total = (Number(j.labour_cost) || 0) + (Number(j.material_cost) || 0) + (Number(j.oil_cost) || 0) + other;
     g.labour += Number(j.labour_cost) || 0; g.material += Number(j.material_cost) || 0; g.oil += Number(j.oil_cost) || 0;
-    g.other += other; g.external += Number(j.external_cost) || 0; g.total += total; g.jobs++;
+    g.other += other; g.total += total; g.jobs++;
     const line = (type, item, qty, rate, amt) => `<tr><td>${type}</td><td>${esc(item)}</td><td class="num">${qty}</td><td class="num">${rate}</td><td class="num">${money(amt)}</td></tr>`;
     const rows = [];
     for (const l of s.labour_lines) rows.push(line('Labour', (l.mechanic || '') + (l.work_date ? ` · ${String(l.work_date).slice(0, 10)}` : ''), n2(l.hours), money(l.rate), l.amount));
     for (const p of s.part_lines) rows.push(line('Part', p.description || '', n2(p.qty), money(p.unit_price), (Number(p.qty) || 0) * (Number(p.unit_price) || 0)));
     for (const o of s.oil_lines) rows.push(line('Oil', (o.product_name || '') + (o.unit ? ` (${o.unit})` : ''), n2(Math.abs(o.qty)), money(o.unit_price), Math.abs(Number(o.qty) || 0) * (Number(o.unit_price) || 0)));
     for (const gl of s.general_lines) rows.push(line('General', gl.item_name || '', n2(Math.abs(gl.qty)), money(gl.unit_price), Math.abs(Number(gl.qty) || 0) * (Number(gl.unit_price) || 0)));
-    for (const e of s.external_lines) rows.push(line('External', e.description || 'External repair', '', '', e.value));
     const body = rows.join('') || '<tr><td colspan="5" class="muted">No line items recorded.</td></tr>';
     return `<div class="job">
       <div class="jh"><b>${se}. Job ${esc(j.job_no)}</b> — ${esc(s.asset_code || '')}${j.project_name ? ` · ${esc(j.project_name)}` : ''} · <span class="st">${esc(j.status)}</span> · ${esc(String(j.completed_at || j.requested_at || '').slice(0, 10))}
         ${j.description ? `<div class="desc">${esc(j.description)}</div>` : ''}</div>
       <table class="det"><thead><tr><th>Type</th><th>Item / Description</th><th class="num">Qty</th><th class="num">Rate/Price</th><th class="num">Amount</th></tr></thead>
       <tbody>${body}</tbody>
-      <tfoot><tr class="jt"><td colspan="4">Job total — Labour ${money(j.labour_cost)} · Spare ${money(j.material_cost)} · Lube ${money(j.oil_cost)} · Other ${money(other)} · Outside ${money(j.external_cost)}</td><td class="num"><b>${money(total)}</b></td></tr></tfoot>
+      <tfoot><tr class="jt"><td colspan="4">Job total — Labour ${money(j.labour_cost)} · Spare ${money(j.material_cost)} · Lube ${money(j.oil_cost)} · Other ${money(other)}</td><td class="num"><b>${money(total)}</b></td></tr></tfoot>
       </table></div>`;
   };
+
+  const renderOtherLabour = () => {
+    if (!otherLabour.length) return '<p class="muted">None.</p>';
+    const rows = otherLabour.map((ol, i) => {
+      g.labour += Number(ol.labour) || 0; g.total += Number(ol.labour) || 0;
+      return `<tr><td>${i + 1}</td><td>${esc(ol.atype || '')}</td><td><b>${esc(ol.reg || '')}</b></td><td>${esc(ol.ec || '')}</td><td>${esc(ol.project || '')}</td><td>${esc(ol.desc || '')}</td><td class="num">${money(ol.labour)}</td></tr>`;
+    }).join('');
+    return `<table class="det"><thead><tr><th>#</th><th>Type</th><th>Vehicle</th><th>EC</th><th>Project</th><th>Description</th><th class="num">Labour Cost</th></tr></thead>
+      <tbody>${rows}</tbody></table>`;
+  };
+
   const section = (title, ids) => `<h2>${esc(title)} (${ids.length})</h2>${ids.length ? ids.map((id, i) => renderJob(id, i + 1)).join('') : '<p class="muted">None.</p>'}`;
   const closedHtml = section('Closed Jobs — completed & closed in ' + period, closedIds);
-  const pendingHtml = section('Pending Jobs — work-in-progress worked in ' + period, pendingIds);
+  const pendingHtml = section('Pending Jobs — repairs still in progress as of ' + period + ' (newest start first)', pendingIds);
+  const sparesHtml = section('Spares Supply — stores materials issued (spare parts only, no repair) in ' + period, sparesIds);
+  const otherHtml = `<h2>Other Labour — daily work in ${esc(period)} not on a job above (${otherLabour.length} vehicles)</h2>${renderOtherLabour()}`;
 
   const html = `<!doctype html><html><head><meta charset="utf-8"><title>Repair Detail ${esc(period)}</title>
 <style>
@@ -775,12 +1465,13 @@ router.get('/monthly-repair-detail.html', requireAuth, asyncHandler((req, res) =
 <div class="sub">Monthly Repair Detail — <b>${esc(period)}</b> · ${g.jobs} job(s)</div>
 ${closedHtml}
 ${pendingHtml}
+${otherHtml}
+${sparesHtml}
 <div class="grand"><table>
   <tr><td>Labour</td><td class="num">${money(g.labour)}</td></tr>
   <tr><td>Spare parts</td><td class="num">${money(g.material)}</td></tr>
   <tr><td>Lubricant</td><td class="num">${money(g.oil)}</td></tr>
   <tr><td>Other material</td><td class="num">${money(g.other)}</td></tr>
-  <tr><td>Outside work</td><td class="num">${money(g.external)}</td></tr>
   <tr class="tot"><td>Grand total (${g.jobs} jobs)</td><td class="num">${money(g.total)}</td></tr>
 </table></div>
 </body></html>`;
@@ -789,3 +1480,103 @@ ${pendingHtml}
 }));
 
 module.exports = router;
+
+// ---------------------------------------------------------------------------
+// Daily reports — Pending Parts and the Maintenance Summery job record.
+// Each day's copy is frozen so it still reads the same later, and the narrative
+// columns carry forward until the supervisor edits them.
+// ---------------------------------------------------------------------------
+const daily = require('../lib/daily_reports');
+const KINDS = ['pending_parts', 'job_summary', 'pending_price'];
+const kindOf = (v) => (KINDS.includes(v) ? v : null);
+
+// Today's live figures, or a saved day if one exists for that date.
+router.get('/daily/:kind', requireAuth, asyncHandler((req, res) => {
+  const kind = kindOf(req.params.kind);
+  if (!kind) return res.status(404).json({ error: 'Unknown report' });
+  const date = String(req.query.date || '').slice(0, 10) || null;
+  const today = new Date().toISOString().slice(0, 10);
+  // TODAY is always live and editable — the scheduler freezes a copy every hour, and reading
+  // that copy back would leave the supervisor looking at a read-only sheet for the day they are
+  // actually working on. Earlier days read their frozen copy, which is the point of keeping one.
+  const isToday = !date || date === today;
+  const saved = (!isToday && date) ? daily.readSnapshot(kind, date) : null;
+  if (saved && !req.query.live) {
+    return res.json({ ...saved.data, saved: true, generated_at: saved.generated_at, row_count: saved.row_count });
+  }
+  const lastSave = get('SELECT generated_at FROM daily_report_snapshots WHERE kind = ? AND report_date = ?', kind, date || today);
+  res.json({ ...daily.build(kind, { asOf: date }), saved: false, last_saved_at: lastSave ? lastSave.generated_at : null });
+}));
+
+// Freeze the day. Running it again the same day replaces the copy, so it always holds the latest.
+router.post('/daily/:kind/save', requireAuth, asyncHandler((req, res) => {
+  const kind = kindOf(req.params.kind);
+  if (!kind) return res.status(404).json({ error: 'Unknown report' });
+  const snap = daily.snapshot(kind, { asOf: req.body && req.body.date, userId: req.user.id });
+  res.json({ ok: true, ...snap });
+}));
+
+router.get('/daily/:kind/history', requireAuth, asyncHandler((req, res) => {
+  const kind = kindOf(req.params.kind);
+  if (!kind) return res.status(404).json({ error: 'Unknown report' });
+  res.json(daily.history(kind, toInt(req.query.limit, 60)));
+}));
+
+// Its own path rather than "/daily/:kind.xlsx": that form is matched by the "/daily/:kind"
+// route above with kind = "pending_parts.xlsx", which then fails the whitelist and 404s.
+router.get('/daily/:kind/export.xlsx', requireAuth, asyncHandler(async (req, res) => {
+  const kind = kindOf(req.params.kind);
+  if (!kind) return res.status(404).send('Unknown report');
+  const date = String(req.query.date || '').slice(0, 10) || null;
+  const saved = date ? daily.readSnapshot(kind, date) : null;
+  const data = saved && !req.query.live ? saved.data : daily.build(kind, { asOf: date });
+  const wb = daily.workbookFor(kind, data);
+  const name = kind === 'pending_parts' ? 'Pending parts' : 'Job report';
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', `attachment; filename="${name} ${data.as_of}.xlsx"`);
+  await wb.xlsx.write(res);
+  res.end();
+}));
+
+// The supervisor's running notes for a job — they persist and carry into every later day.
+router.put('/daily/job-summary/notes/:jobId', requireAuth,
+  require('../lib/auth').requireRole('workshop', 'operational_manager', 'manager', 'storekeeper'),
+  asyncHandler((req, res) => {
+    const id = toInt(req.params.jobId);
+    if (!get('SELECT 1 v FROM job_cards WHERE id = ?', id)) return res.status(404).json({ error: 'Job not found' });
+    const b = req.body || {};
+    const clean = (v) => (v == null ? null : String(v).trim().slice(0, 2000) || null);
+    run(`INSERT INTO job_summary_notes (job_id, completed_repairs, pending_repairs, job_status, spare_parts, updated_by)
+         VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT(job_id) DO UPDATE SET
+           completed_repairs = excluded.completed_repairs, pending_repairs = excluded.pending_repairs,
+           job_status = excluded.job_status, spare_parts = excluded.spare_parts,
+           updated_at = datetime('now'), updated_by = excluded.updated_by`,
+      id, clean(b.completed_repairs), clean(b.pending_repairs), clean(b.job_status), clean(b.spare_parts), req.user.id);
+    res.json({ ok: true, notes: get('SELECT * FROM job_summary_notes WHERE job_id = ?', id) });
+  }));
+
+router.put('/daily/pending-parts/notes/:lineId', requireAuth,
+  require('../lib/auth').requireRole('workshop', 'operational_manager', 'manager', 'storekeeper'),
+  asyncHandler((req, res) => {
+    const id = toInt(req.params.lineId);
+    if (!get('SELECT 1 v FROM mrn_lines WHERE id = ?', id)) return res.status(404).json({ error: 'Request line not found' });
+    const remarks = req.body && req.body.remarks != null ? String(req.body.remarks).trim().slice(0, 500) || null : null;
+    run(`INSERT INTO pending_part_notes (mrn_line_id, remarks, updated_by) VALUES (?, ?, ?)
+         ON CONFLICT(mrn_line_id) DO UPDATE SET remarks = excluded.remarks,
+           updated_at = datetime('now'), updated_by = excluded.updated_by`, id, remarks, req.user.id);
+    res.json({ ok: true });
+  }));
+
+// A remark against a receipt still waiting for its price ("invoice chased", "supplier to confirm").
+router.put('/daily/pending-price/notes/:grnId', requireAuth,
+  require('../lib/auth').requireRole('workshop', 'operational_manager', 'manager', 'storekeeper'),
+  asyncHandler((req, res) => {
+    const id = toInt(req.params.grnId);
+    if (!get('SELECT 1 v FROM grn WHERE id = ?', id)) return res.status(404).json({ error: 'Receipt not found' });
+    const remarks = req.body && req.body.remarks != null ? String(req.body.remarks).trim().slice(0, 500) || null : null;
+    run(`INSERT INTO receipt_price_notes (grn_id, remarks, updated_by) VALUES (?, ?, ?)
+         ON CONFLICT(grn_id) DO UPDATE SET remarks = excluded.remarks,
+           updated_at = datetime('now'), updated_by = excluded.updated_by`, id, remarks, req.user.id);
+    res.json({ ok: true });
+  }));

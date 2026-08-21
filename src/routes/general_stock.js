@@ -11,6 +11,7 @@ const { requireRole } = require('../lib/auth');
 const { asyncHandler, require_, toInt, toNum } = require('../lib/http');
 const audit = require('../lib/audit');
 const emitter = require('../lib/emitter');
+const categories = require('../lib/categories');
 
 const router = express.Router();
 
@@ -19,9 +20,10 @@ const statusOf = (balance, min) => (balance <= 0 ? 'critical' : (balance <= (Num
 
 // total_value is a generated column (absent from PRAGMA table_info) — compute it
 // explicitly so the SELECT is unambiguous regardless of the SQLite build.
-const ITEM_COLS = `id, item_no, name, category, unit, balance, min_stock,
+const ITEM_COLS = `id, item_no, name, category, category_id, unit, balance, min_stock,
   COALESCE(unit_cost, 0) AS unit_cost, ROUND(balance * COALESCE(unit_cost, 0), 2) AS total_value,
-  rack AS location, part_number, description`;
+  rack AS location, part_number, description,
+  (SELECT sub.name FROM item_categories sub WHERE sub.id = store_items.category_id) AS sub_category`;
 
 // One item with its computed status attached.
 const oneItem = (id) => {
@@ -59,9 +61,18 @@ router.get('/items/:id', asyncHandler((req, res) => {
   const item = get(`SELECT ${ITEM_COLS} FROM store_items WHERE id = ? AND is_general = 1`, id);
   if (!item) return res.status(404).json({ error: 'Item not found' });
   item.status = statusOf(item.balance, item.min_stock);
+  // Newest movement first, BY DATE. Ordering on the row id instead put imported history in
+  // whatever order it happened to be loaded, so the running balance beside it read as though
+  // it jumped about — an item's ledger has rows from several imports interleaved.
+  // The machine comes with it: on an issue, who it went to is the point of the line.
   const ledger = all(
-    `SELECT id, txn_type, qty, balance_after, unit_price, ref, txn_date, created_at
-       FROM general_item_txns WHERE store_item_id = ? ORDER BY id DESC LIMIT 500`, id);
+    `SELECT t.id, t.txn_type, t.qty, t.balance_after, t.unit_price, t.ref, t.txn_date, t.created_at, t.source,
+            a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec, j.job_no
+       FROM general_item_txns t
+       LEFT JOIN assets a ON a.id = t.asset_id
+       LEFT JOIN job_cards j ON j.id = t.job_id
+      WHERE t.store_item_id = ?
+      ORDER BY date(t.txn_date) DESC, t.id DESC LIMIT 500`, id);
   res.json({ item, ledger });
 }));
 
@@ -73,10 +84,11 @@ router.post('/items', requireRole('storekeeper'), asyncHandler((req, res) => {
   const opening = toNum(b.balance, 0);
   const unitCost = toNum(b.unit_cost, 0);
   const result = tx(() => {
+    const cat = categories.resolve(b);
     const info = run(
-      `INSERT INTO store_items (name, category, unit, min_stock, balance, unit_cost, rack, part_number, description, is_general, item_no, catalogue_kind)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, 'general')`,
-      b.name, b.category || null, b.unit || 'nos', toNum(b.min_stock, 0), opening, unitCost,
+      `INSERT INTO store_items (name, category, category_id, unit, min_stock, balance, unit_cost, rack, part_number, description, is_general, item_no, catalogue_kind)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, 'general')`,
+      b.name, cat.category, cat.category_id, b.unit || 'nos', toNum(b.min_stock, 0), opening, unitCost,
       b.location || b.rack || null, b.part_number || null, b.description || null, givenNo || null
     );
     const id = info.lastInsertRowid;

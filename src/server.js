@@ -13,6 +13,7 @@ const { authenticate, enforcePasswordChange } = require('./lib/auth');
 const { requireModule } = require('./lib/permissions');
 const { errorHandler } = require('./lib/http');
 const { startScheduler } = require('./lib/backup');
+const dailyReports = require('./lib/daily_reports');
 const emitter = require('./lib/emitter');
 
 // Apply schema on boot (idempotent).
@@ -117,6 +118,8 @@ function lanUrls(port) {
 
 if (require.main === module) {
   startScheduler();
+  // Freeze the day's Pending Parts and Maintenance Summery, hourly, so the record keeps itself.
+  dailyReports.startScheduler();
   httpServer.listen(config.port, config.host, () => {
     console.log(`WorkshopOne listening on ${config.host}:${config.port}`);
     console.log('Real-time (socket.io) enabled');

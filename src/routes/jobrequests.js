@@ -12,6 +12,7 @@ const { asyncHandler, require_, toInt } = require('../lib/http');
 const audit = require('../lib/audit');
 const aliases = require('../lib/aliases');
 const costing = require('../lib/costing');
+const jobstate = require('../lib/jobstate');
 
 const router = express.Router();
 
@@ -116,7 +117,13 @@ router.post('/', requireRole('assistant_transport_manager'), asyncHandler((req, 
     type, severity, priority, b.description, b.required_date || null, reqBy, req.user.id, ru ? ru.signature : null
   );
   audit.record({ userId: req.user.id, entity: 'job_request', entityId: result.lastInsertRowid, action: 'create', after: { jr_no: jrNo } });
-  res.status(201).json({ request: get('SELECT * FROM job_requests WHERE id = ?', result.lastInsertRowid), unresolved });
+  // Raising a request is never blocked — transport must always be able to log a fault.
+  // The one-open-card rule bites at approval, so flag it here as a heads-up instead.
+  res.status(201).json({
+    request: get('SELECT * FROM job_requests WHERE id = ?', result.lastInsertRowid),
+    unresolved,
+    open_job: jobstate.openJobFor(assetId),
+  });
 }));
 
 // ---- certify (Transport Manager) ------------------------------------------
@@ -142,6 +149,16 @@ router.post('/:id/approve', requireRole('operational_manager', 'manager'), async
   if (!jr) return res.status(404).json({ error: 'Job request not found' });
   if (jr.approval_status === 'rejected') return res.status(409).json({ error: 'This request was rejected' });
   if (jr.approval_status !== 'certified') return res.status(409).json({ error: 'Request must be certified (Transport Manager) before Operational Manager approval' });
+  // Approval is what creates the job card — so the one-open-card-per-vehicle rule
+  // applies here too. Checked BEFORE anything is written, so a blocked approval
+  // leaves the request exactly as it was.
+  const guard = jobstate.checkOneOpenJob(jr.asset_id);
+  if (!guard.ok) {
+    return res.status(409).json({
+      error: `${guard.blocking.job_no} (${guard.blocking.status}) is still open for this vehicle — close it, or add this work to that card.`,
+      blocking_job: guard.blocking,
+    });
+  }
   const s = signer(req.user.id); const sig = req.body.signature || s.sig || null;
   const out = tx(() => {
     // Create the job card — already past both approval gates (this request WAS the approval).

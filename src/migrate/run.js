@@ -273,6 +273,82 @@ if (!only || only === 'filter-research') {
   console.log(`  Added: ${fr.added} | skipped (already present / no match): ${fr.skipped}`);
 }
 
+// Not part of the default sweep — it writes to live records, so it must be asked for.
+if (only === 'service-sync') {
+  banner('Service Record re-sync — merge an updated export into the live system');
+  const fromIdx = process.argv.indexOf('--from');
+  const ss = require('./29_service_sync').runStep({
+    apply: process.argv.includes('--apply'),
+    source: fromIdx !== -1 ? process.argv[fromIdx + 1] : undefined,
+  });
+  if (ss.no_file) console.log('  Source not found: ' + ss.source);
+  else {
+    console.log(`  Source:                         ${ss.source}`);
+    console.log(`  Services at source:             ${ss.source_services}`);
+    console.log(`  ${ss.apply ? 'Added' : 'Would add'} services:${' '.repeat(ss.apply ? 15 : 11)}${ss.new_services.length}`);
+    console.log(`  ${ss.apply ? 'Updated' : 'Would update'} headers:${' '.repeat(ss.apply ? 14 : 9)}${ss.header_updates.length}`);
+    console.log(`  Filter lines in:                ${ss.new_filter_lines}   |  Oil lines in: ${ss.new_oil_lines}`);
+    if (ss.apply) {
+      console.log(`  Vehicles linked / created:      ${ss.assets_linked} / ${ss.assets_created.length}${ss.assets_created.length ? '  (' + ss.assets_created.map((a) => a.code).join(', ') + ')' : ''}`);
+      console.log(`  Price book — added / filled:    ${ss.price_book_added} / ${ss.price_book_filled}`);
+    }
+    for (const s of ss.new_services.slice(0, 20)) {
+      console.log(`    + ${String(s.date || '').padEnd(11)} ${String(s.job_no || '—').padEnd(20)} ${String(s.vehicle || '').slice(0, 34).padEnd(34)} Rs ${s.total}`);
+    }
+    if (ss.new_services.length > 20) console.log(`    … and ${ss.new_services.length - 20} more`);
+    for (const u of ss.header_updates) console.log(`    ~ ${String(u.date || '').padEnd(11)} ${String(u.job_no || '—').padEnd(20)} changed: ${u.fields}`);
+    if (ss.extra_lines_here.length) console.log(`  ⚠ ${ss.extra_lines_here.length} line(s) exist here but not at source — left alone, not deleted.`);
+    console.log(`  Totals now — services ${ss.services_now} | filter lines ${ss.filter_lines_now} | oil lines ${ss.oil_lines_now}`);
+    if (!ss.apply) console.log('\n  DRY RUN — nothing was changed. Re-run with --apply to merge.');
+  }
+}
+
+if (only === 'service-filters-backfill') {
+  banner('Service filters — backfill lines the original import dropped (blank filter numbers)');
+  const sf = require('./28_service_filters_backfill').runStep({ apply: process.argv.includes('--apply') });
+  if (sf.no_file) console.log('  No sources/service/service.db — skipped.');
+  else {
+    console.log(`  Services checked:               ${sf.services_checked}`);
+    console.log(`  Services missing line(s):       ${sf.services_short}`);
+    console.log(`  ${sf.apply ? 'Inserted' : 'Would insert'}:${' '.repeat(sf.apply ? 23 : 19)}${sf.lines.length} line(s)`);
+    for (const l of sf.lines.slice(0, 20)) {
+      console.log(`    ${String(l.service_date || '').padEnd(11)} ${String(l.job_no || '—').padEnd(16)} ${String(l.category || '?').padEnd(18)} ${String(l.action_type || '-').padEnd(3)} ${l.filter_no || '(no filter number)'}`);
+    }
+    if (sf.lines.length > 20) console.log(`    … and ${sf.lines.length - 20} more`);
+    console.log(`  service_filters rows now:       ${sf.total_now}`);
+    if (!sf.apply) console.log('\n  DRY RUN — nothing was changed. Re-run with --apply to insert.');
+  }
+}
+
+// Not part of the default sweep — it merges live records, so it must be asked for.
+if (only === 'asset-dedup') {
+  banner('Vehicle de-duplication — dual-identity variants (E&C number + number plate)');
+  const ad = require('./27_asset_dedup_dual_identity').runStep({ apply: process.argv.includes('--apply') });
+  console.log(`  Registered vehicles:            ${ad.registered}`);
+  console.log(`  Usage-created variants:         ${ad.variants}`);
+  console.log(`  ${ad.apply ? 'FOLDED' : 'Would fold'}:${' '.repeat(ad.apply ? 25 : 21)}${ad.folds.length} variant(s) carrying ${ad.folds.reduce((n, f) => n + f.records, 0)} record(s)`);
+  if (ad.apply) console.log(`  References repointed:           ${ad.refs_repointed}`);
+  for (const f of ad.folds.slice(0, 15)) {
+    console.log(`    ${String(f.variant_code).padEnd(34)} → ${f.canonical_code} (${f.canonical_reg || '—'})   ${f.records} record(s)`);
+  }
+  if (ad.folds.length > 15) console.log(`    … and ${ad.folds.length - 15} more`);
+  console.log(`  Left for manual review:         ${ad.skipped_second_plate.length} naming two plates, ${ad.skipped_shared_identity.length} contested identity`);
+  for (const s of ad.skipped_second_plate.slice(0, 8)) console.log(`    ? ${s.code}  (would have folded into ${s.canonical_code})`);
+  console.log(`  Assets now:                     ${ad.assets_now}`);
+  if (!ad.apply) console.log('\n  DRY RUN — nothing was changed. Re-run with --apply to perform the merge.');
+}
+
+if (!only || only === 'subcategories') {
+  banner('Item category tree — Category → Sub-category + backfill (idempotent)');
+  const sc = require('./26_subcategories').runStep();
+  console.log(`  Categories:                     ${sc.total_parents}  (created ${sc.parents_created}, already present ${sc.parents_existing})`);
+  console.log(`  Sub-categories:                 ${sc.total_subs}  (created ${sc.subs_created}, already present ${sc.subs_existing})`);
+  for (const [t, n] of Object.entries(sc.backfilled)) console.log(`  Backfilled ${t.padEnd(22)}${String(n).padStart(6)} row(s)`);
+  console.log(`  Auto-placed by keyword:         ${sc.auto_placed}  |  left in the parent's "General": ${sc.defaulted}`);
+  console.log(`  Legacy labels folded in:        ${sc.labels_normalised}  (e.g. Belts → Belts & Hoses, Tyre → Tyres & Wheels)`);
+  if (sc.unknown_categories.length) console.log(`  ⚠ unrecognised categories → Other: ${sc.unknown_categories.join(', ')}`);
+}
+
 if (!only || only === 'erp-gaps') {
   banner('Phase 4 ERP gap-fill — missing columns + inventory tables (idempotent)');
   const eg = require('./015_phase4_erp_gaps').runStep();

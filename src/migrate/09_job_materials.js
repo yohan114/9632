@@ -123,6 +123,13 @@ function runStep() {
       cur.qty += (g.qty || 0);
       lineRecv.set(g.mrn_line_id, cur);
     }
+    // How much actually turned up, priced or not. lineRecv above only knows about PRICED
+    // receipts, so it cannot answer "did anything arrive" — a delivery still awaiting its
+    // invoice looks identical to one that never came.
+    const lineDelivered = new Map();
+    for (const g of all('SELECT mrn_line_id, qty FROM grn WHERE mrn_line_id IS NOT NULL')) {
+      lineDelivered.set(g.mrn_line_id, (lineDelivered.get(g.mrn_line_id) || 0) + (g.qty || 0));
+    }
 
     // Fallback price-by-item-name (initiative 6): a line with no priced GRN of its own
     // borrows the average price of the SAME item name from any priced GRN receipt.
@@ -154,10 +161,17 @@ function runStep() {
       run('UPDATE mrn SET job_id = ? WHERE id = ?', job.id, m.id); // init 9: closure gate can now traverse mrn.job_id
       for (const l of lines) {
         const rv = lineRecv.get(l.id);
+        const delivered = lineDelivered.get(l.id) || 0;
+        // Nothing ever turned up against this request, so nothing was fitted to the vehicle and
+        // nothing may be charged to it. The line stays visible as a request through mrn.job_id
+        // (set just above); it simply is not a consumed part.
+        if (!(delivered > 0)) { rep.never_received = (rep.never_received || 0) + 1; continue; }
         let qty, price;
         if (rv && rv.value > 0 && rv.qty > 0) { qty = rv.qty; price = round2(rv.value / rv.qty); rep.priced_items++; rep.material_value += rv.value; }
         else {
-          qty = l.qty || 0;
+          // It arrived but carries no price — charge the quantity that actually ARRIVED, not the
+          // quantity ordered, so a part-delivery is not billed as if it came in full.
+          qty = delivered;
           const fb = fallbackPrice(l.description);
           if (fb != null) { price = fb; rep.backfilled_items++; rep.material_value += qty * fb; }
           else { price = null; rep.unpriced_items++; }

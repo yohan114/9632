@@ -11,7 +11,76 @@ const costing = require('../lib/costing');
 const emitter = require('../lib/emitter');
 const { sendXlsx } = require('../lib/export');
 
+const lubricants = require('../lib/lubricants');
+
 const router = express.Router();
+
+// ---- naming: which lubricant is this? -------------------------------------
+// Every product now carries the code the unified catalogue minted for it (OIL-0001…), and a
+// name written any other way is remembered until somebody says what it is. Nothing is guessed:
+// "HD 68 Oil (Valvoline)" and "HD-68 Hy/Oil Caltex" are two real oils, so a bare "HD-68 Oil"
+// on a receipt is an open question, not a match.
+
+router.get('/lubricants', asyncHandler((_req, res) => res.json(lubricants.catalogue())));
+
+/** Names seen on requests, receipts, issues and transfers that resolve to no product yet. */
+router.get('/aliases/unresolved', asyncHandler((req, res) => {
+  const rows = lubricants.unresolvedAliases(toInt(req.query.limit, 200));
+  // What each unidentified name is holding, counted through the SAME identity the alias uses.
+  // Matching on the stored item_key or on a LIKE would not do: stock.js's key strips brackets,
+  // so "HD 68 Oil (Valvoline)" and a bare "HD-68 Oil" share one key while being two different
+  // questions — and a name's tally would swallow movements that belong to a product already
+  // identified. Grouped in JS because the rule lives in one place, not in SQL as well.
+  const tally = new Map();
+  for (const m of all(
+    `SELECT item_name, kind, qty, counts, txn_date FROM stock_moves
+      WHERE section = 'oil' AND item_name IS NOT NULL AND TRIM(item_name) <> ''`)) {
+    const key = lubricants.normLube(m.item_name);
+    const t = tally.get(key) || { moves: 0, net: 0, counting: 0, first: null, last: null };
+    t.moves++;
+    t.net += (m.kind === 'out' ? -1 : 1) * (Number(m.qty) || 0);
+    if (m.counts) t.counting++;
+    if (m.txn_date && (!t.first || m.txn_date < t.first)) t.first = m.txn_date;
+    if (m.txn_date && (!t.last || m.txn_date > t.last)) t.last = m.txn_date;
+    tally.set(key, t);
+  }
+  for (const r of rows) {
+    const t = tally.get(r.raw_norm) || { moves: 0, net: 0, counting: 0, first: null, last: null };
+    r.moves = t.moves;
+    r.qty_outside_balance = Math.round(t.net * 10) / 10;
+    r.counting = t.counting;      // how many of them are in the balance right now
+    r.first_seen = t.first;
+    r.last_seen = t.last;         // when it was used tells you which era's stock it was
+  }
+  // Ruled out, and kept visible: a name marked "not a lubricant" by mistake would otherwise be
+  // unreachable from the screen that marked it.
+  const ruledOut = lubricants.notLubricantAliases(toInt(req.query.limit, 200));
+  for (const r of ruledOut) {
+    const t = tally.get(r.raw_norm);
+    r.moves = t ? t.moves : 0;
+  }
+  res.json({ unresolved: rows, not_lubricant: ruledOut, catalogue: lubricants.catalogue() });
+}));
+
+/** Say what a remembered name is — or clear it back to unknown (product_id null). */
+router.patch('/aliases/:id', requireRole('storekeeper'), asyncHandler((req, res) => {
+  const id = toInt(req.params.id);
+  const before = get('SELECT * FROM lubricant_aliases WHERE id = ?', id);
+  if (!before) return res.status(404).json({ error: 'Name not found' });
+  const productId = toInt(req.body.product_id) || null;
+  if (productId && !get('SELECT id FROM products WHERE id = ?', productId)) {
+    return res.status(400).json({ error: 'No such lubricant' });
+  }
+  // `reset` puts a name back to unidentified. Without it, no product means "decided: this is
+  // not a lubricant" — which is a different answer from "nobody has looked yet".
+  const reset = req.body.reset === true || req.body.reset === 'true';
+  const row = lubricants.setAlias(id, productId, req.user.username, { reset });
+  audit.record({ userId: req.user.id, entity: 'lubricant_alias', entityId: id,
+    action: reset ? 'reopen' : (productId ? 'resolve' : 'not_a_lubricant'),
+    before: { product_id: before.product_id, resolved: before.resolved },
+    after: { product_id: productId, raw_text: before.raw_text } });
+  res.json(row);
+}));
 
 function currentBalance(productId) {
   const r = get('SELECT balance_after FROM stock_ledger WHERE product_id = ? ORDER BY id DESC LIMIT 1', productId);

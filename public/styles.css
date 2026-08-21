@@ -102,7 +102,12 @@ th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--bor
 th { background: var(--surface-2); color: var(--muted); font-weight: 600; font-size: 10.5px; text-transform: uppercase; letter-spacing: .07em; position: sticky; top: 0; border-bottom: 2px solid var(--graphite); }
 tbody tr:hover { background: var(--surface-2); }
 td.num, th.num { text-align: right; font-family: var(--mono); font-variant-numeric: tabular-nums; }
-.table-wrap.scroll { max-height: 62vh; overflow-y: auto; }
+.table-wrap.scroll { max-height: 62vh; overflow-y: scroll; }
+.table-wrap.no-hscroll { overflow-x: hidden; }
+table.fit-table { table-layout: fixed; width: 100%; }
+table.fit-table td, table.fit-table th { padding: 7px 10px; }
+table.fit-table td.desc-col, table.fit-table th.desc-col { white-space: normal !important; word-break: break-word; line-height: 1.35; }
+
 
 /* ---- badges ---- */
 .badge {
@@ -133,6 +138,13 @@ button.primary:hover { background: var(--primary-dark); border-color: var(--prim
 button.sm { padding: 5px 10px; font-size: 12.5px; }
 button:disabled { opacity: .5; cursor: not-allowed; }
 button.danger { color: var(--red); }
+/* A consequential confirm (reopen a closed card): solid, but red rather than the usual primary
+   blue, so it does not read as the routine "save" button. */
+button.primary.danger, .btn.primary.danger { background: var(--red); border-color: var(--red); color: #fff; }
+button.primary.danger:hover { filter: brightness(.92); }
+/* An inline consequence note — softer than .err, more prominent than .muted. */
+.note { color: var(--muted); background: var(--surface-2); border-left: 3px solid var(--accent);
+  padding: 7px 10px; border-radius: 0 4px 4px 0; margin: 8px 0; }
 /* topbar chrome buttons */
 .topbar button.sm { background: var(--graphite-2); border-color: #333b42; color: #c4cbd0; }
 .topbar button.sm:hover { background: #2a323a; color: #fff; }
@@ -154,6 +166,55 @@ label { display: block; font-size: 11.5px; color: var(--muted); margin: 8px 0 3p
 .modal-bg { position: fixed; inset: 0; background: rgba(12,15,18,.55); display: flex; align-items: center; justify-content: center; z-index: 50; padding: 16px; }
 .modal { background: var(--surface); border-radius: var(--radius); padding: 20px; width: 100%; max-width: 520px; max-height: 90vh; overflow-y: auto; box-shadow: 0 10px 40px rgba(0,0,0,.3); border-top: 3px solid var(--accent); }
 .modal h2 { margin-top: 0; }
+.modal.wide { max-width: 900px; }
+
+/* ---- New Issue dialog ----
+   Numbered steps down the page instead of nested popups, then a line table so one
+   trip to the store is one record. */
+.istep { font-weight: 600; font-size: 13px; margin: 0 0 6px; display: flex; align-items: center; gap: 7px; }
+.istep-n { display: inline-flex; align-items: center; justify-content: center; width: 19px; height: 19px;
+  border-radius: 50%; background: var(--accent); color: #fff; font-size: 11px; flex-shrink: 0; }
+.istep .spacer { flex: 1; }
+.ni-res { max-height: 210px; overflow-y: auto; margin-top: 6px; }
+.ni-res:not(:empty) { border: 1px solid var(--border); border-radius: 6px; }
+.ni-hit { padding: 7px 10px; cursor: pointer; border-bottom: 1px solid var(--border); display: flex; align-items: baseline; gap: 5px; }
+.ni-hit:last-child { border-bottom: 0; }
+.ni-hit:hover { background: var(--surface-2); }
+.ni-bal { margin-left: auto; font-family: var(--mono); font-size: 12px; color: var(--muted); flex-shrink: 0; padding-left: 10px; }
+.ni-bal.ok { color: var(--success, #2a7d4f); }
+/* "In store for this vehicle" — the parts already bought for it, waiting to be handed over. */
+.ni-recv { max-height: 230px; overflow-y: auto; border: 1px solid var(--border); border-radius: 6px; }
+.ni-recv:empty { display: none; }
+.ni-mrn { font-family: var(--mono); font-size: 11.5px; background: var(--surface-2); color: var(--muted);
+  border-radius: 3px; padding: 1px 5px; flex-shrink: 0; }
+.ni-hit.done { opacity: .5; cursor: default; }
+.ni-hit.done:hover { background: none; }
+/* group heading inside the search results */
+.ni-grp { font-size: 10.5px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted);
+  background: var(--surface-2); padding: 4px 10px; border-bottom: 1px solid var(--border); font-weight: 600; }
+.ni-tab { width: 100%; border-collapse: collapse; font-size: 13px; }
+.ni-tab th { text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: .03em;
+  color: var(--muted); border-bottom: 1px solid var(--border); padding: 4px 6px; font-weight: 600; }
+.ni-tab td { padding: 5px 6px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+.ni-tab .r { text-align: right; }
+.ni-tab .r.warn { color: var(--danger, #c4392c); font-weight: 600; }
+.ni-tab input { padding: 4px 6px; font-size: 13px; }
+.ni-warn td { background: #fdf3f2; color: var(--danger, #c4392c); font-size: 12px; border-bottom: 1px solid var(--border); }
+
+/* ---- form layout inside dialogs ----
+   field() emits a <label> and its control as siblings, so putting two fields straight into a
+   flex/grid row splits the pairs apart. .fld keeps each pair together as one cell. */
+.fld { min-width: 0; }
+.fld > label { display: block; }
+.fld > input, .fld > select, .fld > textarea { width: 100%; }
+.fgrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px 14px; align-items: end; }
+.mrnsec { border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 14px; margin-bottom: 12px; }
+.mrnsec-h { font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: .06em;
+  color: var(--muted); border-bottom: 1px solid var(--border); padding-bottom: 6px; margin-bottom: 10px; }
+.mrnline { border: 1px solid var(--border); border-left: 3px solid var(--accent); border-radius: 6px;
+  padding: 10px 12px; margin-bottom: 10px; background: var(--surface-2); }
+.mrnline-h { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
+.mrnline-n { font-weight: 700; font-size: 12px; color: var(--muted); }
 
 /* ---- login ---- */
 .login-wrap { display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 20px; }
@@ -182,3 +243,46 @@ label { display: block; font-size: 11.5px; color: var(--muted); margin: 8px 0 3p
 /* Live-update indicator (green when the realtime socket is connected) */
 .live-dot { color: var(--muted); font-size: 11px; transition: color .3s; margin-right: 4px; }
 body.live-connected .live-dot { color: var(--green); }
+
+/* ---- Mobile Bottom Navigation & Touch Utilities ---- */
+.mobile-bottom-nav {
+  display: none;
+  position: fixed;
+  bottom: 0; left: 0; right: 0;
+  height: 56px;
+  background: var(--graphite);
+  border-top: 1px solid var(--border);
+  z-index: 100;
+  justify-content: space-around;
+  align-items: center;
+  padding-bottom: env(safe-area-inset-bottom);
+}
+.mobile-nav-item {
+  background: transparent;
+  border: none;
+  color: #8a949b;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  flex: 1;
+  height: 100%;
+  padding: 4px 0;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.mobile-nav-item .nav-icon { font-size: 18px; line-height: 1; }
+.mobile-nav-item .nav-label { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
+.mobile-nav-item.active { color: var(--accent); }
+
+@media (max-width: 768px) {
+  .layout { flex-direction: column; padding-bottom: 60px; }
+  .nav { display: none; } /* Hide desktop sidebar on mobile */
+  .mobile-bottom-nav { display: flex; }
+  .main { padding: 12px; }
+  button, input, select { min-height: 44px; } /* Minimum touch target size */
+  .grid { grid-template-columns: 1fr !important; }
+  .table-responsive { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+}
+

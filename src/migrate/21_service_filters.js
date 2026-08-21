@@ -80,14 +80,18 @@ function runStep() {
         const sid = info.lastInsertRowid;
         rep.service_jobs++;
         for (const f of (byJob.get(j.ServiceID) || [])) {
+          // A line with no filter number is still part of the service record — it is how
+          // a CLEANED filter is logged ("Air Filter Inner, action E, no part number").
+          // Keep the row so the service history is complete; it carries no price and
+          // cannot join the price book, so it adds nothing to any cost. Only NUMBERED
+          // lines go on to build the catalogue below.
           const fn = clean(f.FilterNo);
-          if (!fn) continue;
-          const norm = normF(fn);
+          const norm = fn ? normF(fn) : null;
           run(`INSERT INTO service_filters (service_id, filter_no, filter_no_norm, category, action_type, qty, price)
                VALUES (?, ?, ?, ?, ?, ?, ?)`,
-            sid, fn, norm, clean(f.FilterCategory), clean(f.ActionType), f.Quantity || 1, f.Price || 0);
+            sid, fn, norm || null, clean(f.FilterCategory), clean(f.ActionType), f.Quantity || 1, f.Price || 0);
           rep.service_filters++;
-          if (!norm) continue;
+          if (!norm) { rep.unnumbered_lines = (rep.unnumbered_lines || 0) + 1; continue; }
           let e = catalogue.get(norm);
           if (!e) { e = { filter_no: fn, cats: new Map(), uses: 0, maxPrice: 0 }; catalogue.set(norm, e); }
           e.uses++;

@@ -7,13 +7,16 @@
 const express = require('express');
 const { get, all, run, tx } = require('../db');
 const { asyncHandler, require_, toInt, toNum } = require('../lib/http');
+const { requireRole } = require('../lib/auth');
 const audit = require('../lib/audit');
 const aliases = require('../lib/aliases');
+const servicePlan = require('../lib/service_plan');
+const { sendXlsx } = require('../lib/export');
 
 const router = express.Router();
 
 const clean = (v) => (v == null ? null : String(v).trim() || null);
-const normF = (s) => String(s || '').toUpperCase().replace(/\([^)]*\)/g, '').replace(/[^A-Z0-9]/g, '');
+const { normF } = require('../lib/filter_no');
 
 // A service's live cost = priced filters (book × qty) + oils (line total) + labour + sundry.
 const COST_SQL = `(
@@ -24,18 +27,21 @@ const COST_SQL = `(
 
 // Record a filter number's use on the book: bump the usage count, fill/refresh its
 // price when one is supplied, and create the entry if the number is new (the auto-save).
-function bookTouch(filterNo, category, price, by) {
+// `countUse` is false when a service is being edited and this number was already on it —
+// the price and category still refresh, but the usage tally must not climb every time
+// someone corrects a date.
+function bookTouch(filterNo, category, price, by, countUse = true) {
   const norm = normF(filterNo);
   if (!norm) return;
   const ex = get('SELECT id FROM filter_prices WHERE filter_no_norm = ?', norm);
   if (ex) {
-    run(`UPDATE filter_prices SET uses = uses + 1, category = COALESCE(category, ?),
+    run(`UPDATE filter_prices SET uses = uses + ?, category = COALESCE(category, ?),
            unit_price = CASE WHEN ? IS NOT NULL AND ? > 0 THEN ? ELSE unit_price END,
            updated_by = COALESCE(?, updated_by), updated_at = datetime('now') WHERE id = ?`,
-      clean(category), price, price, price, by, ex.id);
+      countUse ? 1 : 0, clean(category), price, price, price, by, ex.id);
   } else {
     run(`INSERT INTO filter_prices (filter_no, filter_no_norm, category, unit_price, uses, source, updated_by)
-         VALUES (?, ?, ?, ?, 1, 'service', ?)`, clean(filterNo), norm, clean(category), (price && price > 0) ? price : null, by);
+         VALUES (?, ?, ?, ?, ?, 'service', ?)`, clean(filterNo), norm, clean(category), (price && price > 0) ? price : null, countUse ? 1 : 0, by);
   }
 }
 
@@ -70,6 +76,14 @@ function resolveProduct(oilName, oilType) {
   return null;
 }
 // Post an oil issue tied to the service. Returns true if a product resolved.
+// Every stock movement this service owns. The service id is written into the note in one
+// fixed shape so an edit can find its own movements later; the " · " (or end of string)
+// after the number is what stops "#165" matching "#1654".
+const oilNote = (serviceId, oilName) => 'Service record #' + serviceId + (oilName ? ' · ' + oilName : '');
+// Matches the bare note and every "#N <anything>" variant. The space after the number is what
+// keeps "#165" from swallowing "#1654" — so any suffix is safe as long as a space starts it.
+const OIL_NOTE_LIKE = (serviceId) => ['Service record #' + serviceId, 'Service record #' + serviceId + ' %'];
+
 function postOilIssue(oilName, oilType, liters, unitPrice, assetId, date, serviceId) {
   const pid = resolveProduct(oilName, oilType);
   if (!pid || !(liters > 0)) return false;
@@ -79,7 +93,36 @@ function postOilIssue(oilName, oilType, liters, unitPrice, assetId, date, servic
   run(`INSERT INTO stock_ledger (product_id, kind, qty, balance_after, unit_price, asset_id, consumer, consumer_type, job_id, txn_date, note)
        VALUES (?, 'issue', ?, ?, ?, ?, 'Service', 'service', NULL, ?, ?)`,
     pid, -Math.abs(liters), prev - Math.abs(liters), unitPrice || null, assetId || null,
-    date, 'Service record #' + serviceId + (oilName ? ' · ' + oilName : ''));
+    date, oilNote(serviceId, oilName));
+  return true;
+}
+
+// What this service has actually taken off the shelf so far, per product, read from the
+// ledger rather than re-derived from its oil lines — the ledger is the record, and reading it
+// back means repeated edits settle against reality instead of compounding.
+function oilIssuedSoFar(serviceId) {
+  const [exact, like] = OIL_NOTE_LIKE(serviceId);
+  const m = new Map();
+  for (const r of all(
+    `SELECT product_id, SUM(-qty) AS liters FROM stock_ledger
+      WHERE consumer_type = 'service' AND (note = ? OR note LIKE ?)
+      GROUP BY product_id`, exact, like)) m.set(r.product_id, r.liters);
+  return m;
+}
+
+// Correct the shelf by the difference, never by rewriting history: balances here are a
+// running balance_after carried on each row, so voiding or deleting an old movement would
+// leave every later balance untouched and the stock silently wrong. A service that now uses
+// more oil issues the extra; one that uses less gives the difference back.
+function postOilDelta(pid, deltaLiters, unitPrice, assetId, date, serviceId, oilName) {
+  if (!pid || !deltaLiters) return false;
+  const prev = currentBalance(pid);
+  const qty = -deltaLiters;                       // more used → negative movement
+  run(`INSERT INTO stock_ledger (product_id, kind, qty, balance_after, unit_price, asset_id, consumer, consumer_type, job_id, txn_date, note)
+       VALUES (?, ?, ?, ?, ?, ?, 'Service', 'service', NULL, ?, ?)`,
+    pid, deltaLiters > 0 ? 'issue' : 'adjustment', qty, prev + qty, unitPrice || null,
+    assetId || null, date,
+    oilNote(serviceId, oilName) + (deltaLiters > 0 ? ' (edited — extra)' : ' (edited — returned)'));
   return true;
 }
 
@@ -116,6 +159,64 @@ router.get('/prices/lookup', asyncHandler((req, res) => {
   if (!norm) return res.json({ found: false });
   const r = get('SELECT filter_no, category, unit_price FROM filter_prices WHERE filter_no_norm = ?', norm);
   res.json(r ? { found: true, filter_no: r.filter_no, category: r.category, unit_price: r.unit_price } : { found: false });
+}));
+
+// Type-ahead over every filter number we know: the price book, the OEM/HIFI catalogue and
+// the cross-reference table. Ranked so the useful ones come first — numbers that start with
+// what was typed, then the priced ones, then by how often they have been used.
+router.get('/search', asyncHandler((req, res) => {
+  const raw = String(req.query.q || '').trim();
+  const norm = normF(raw);
+  const cat = String(req.query.category || '').trim();
+  // Empty box + a category (clicking into a row) lists that category's filters; otherwise
+  // search from the very first character typed.
+  if (!norm && !cat) return res.json([]);
+  const like = norm ? '%' + norm + '%' : '%';
+  const pre = norm ? norm + '%' : '%';
+  const limit = Math.min(toInt(req.query.limit, 12), 40);
+  const catKey = cat.toLowerCase();
+
+  const rows = all(
+    `SELECT * FROM (
+       SELECT p.filter_no AS filter_no, p.filter_no_norm AS norm, p.category AS category,
+              p.unit_price AS unit_price, COALESCE(p.uses,0) AS uses, 'price book' AS src
+         FROM filter_prices p WHERE p.filter_no_norm LIKE ?
+       UNION ALL
+       SELECT c.oem_pn, c.oem_pn_norm, c.category,
+              (SELECT unit_price FROM filter_prices q WHERE q.filter_no_norm = c.oem_pn_norm),
+              COALESCE(c.uses,0), 'catalogue (OEM)'
+         FROM filter_catalogue c WHERE c.oem_pn_norm LIKE ? AND COALESCE(c.oem_pn,'') <> ''
+       UNION ALL
+       SELECT c.hifi_pn, c.hifi_pn_norm, c.category,
+              (SELECT unit_price FROM filter_prices q WHERE q.filter_no_norm = c.hifi_pn_norm),
+              COALESCE(c.uses,0), 'catalogue (HIFI)'
+         FROM filter_catalogue c WHERE c.hifi_pn_norm LIKE ? AND COALESCE(c.hifi_pn,'') <> ''
+       UNION ALL
+       SELECT x.part_number, x.part_number_norm, (SELECT category FROM filter_catalogue fc WHERE fc.id = x.catalogue_id),
+              (SELECT unit_price FROM filter_prices q WHERE q.filter_no_norm = x.part_number_norm),
+              0, 'cross-ref' || COALESCE(' ' || x.brand, '')
+         FROM filter_xrefs x WHERE x.part_number_norm LIKE ?
+     )
+     ORDER BY (CASE WHEN ? <> '' AND LOWER(COALESCE(category,'')) = ? THEN 0 ELSE 1 END),
+              (CASE WHEN norm LIKE ? THEN 0 ELSE 1 END),
+              (CASE WHEN unit_price IS NOT NULL AND unit_price > 0 THEN 0 ELSE 1 END),
+              uses DESC, length(norm), norm
+     LIMIT 400`, like, like, like, like, catKey, catKey, pre);
+
+  // One entry per distinct filter number; keep the best-ranked source, note the rest.
+  const seen = new Map();
+  for (const r of rows) {
+    if (!r.norm) continue;
+    const hit = seen.get(r.norm);
+    if (!hit) seen.set(r.norm, { filter_no: r.filter_no, norm: r.norm, category: r.category || null, unit_price: r.unit_price, uses: r.uses, src: r.src });
+    else {
+      if (hit.unit_price == null && r.unit_price != null) hit.unit_price = r.unit_price;
+      if (!hit.category && r.category) hit.category = r.category;
+      if (r.uses > hit.uses) hit.uses = r.uses;
+    }
+    if (seen.size >= limit) break;
+  }
+  res.json([...seen.values()]);
 }));
 
 // Add / update a filter price. Typing a NEW number here creates it (the learning
@@ -220,18 +321,51 @@ router.post('/xref', asyncHandler((req, res) => {
 router.get('/services', asyncHandler((req, res) => {
   const clauses = [];
   const params = [];
-  if (req.query.q) {
-    const like = '%' + String(req.query.q).trim() + '%';
-    clauses.push('(s.vehicle_label LIKE ? OR a.code LIKE ? OR s.site_location LIKE ? OR s.service_type LIKE ?)');
-    params.push(like, like, like, like);
+  // A machine answers to several names — the code we file it under, its registration, its E&C
+  // number, and whatever the paperwork called it that day. Matching only the free-text label
+  // and the code meant the registration found FEWER services than the E&C number for the very
+  // same vehicle (ZA-2964 found 5 of its 7; LN-8278 found 13 of 16), because 145 services
+  // carry a label that does not contain the registration. Resolve the ASSET and every one of
+  // its services comes back, whichever name was typed — the same rule the job-card search uses.
+  if (req.query.q && String(req.query.q).trim()) {
+    const raw = String(req.query.q).trim();
+    // % and _ are LIKE's own wildcards. Left unescaped, typing a single "%" matched every
+    // service — the search appeared to ignore what was typed and list the lot.
+    const esc = raw.replace(/[\\%_]/g, (ch) => '\\' + ch);
+    const like = '%' + esc + '%';
+    const normq = raw.replace(/[^a-z0-9]/gi, '').toUpperCase();
+    const L = (col) => `${col} LIKE ? ESCAPE '\\'`;
+    const ors = [L('s.vehicle_label'), L('a.code'), L('a.registration'), L('a.ec_code'),
+      L('s.site_location'), L('s.service_type'), L('s.job_no')];
+    params.push(like, like, like, like, like, like, like);
+    if (normq) {
+      const normLike = '%' + normq + '%';
+      // "LO 5981", "lo-5981" and "LO5981" are one vehicle — and that has to hold for the
+      // registration and the E&C number too, not just the code we happen to file it under.
+      const bare = (col) => `REPLACE(REPLACE(REPLACE(UPPER(COALESCE(${col},'')),'-',''),' ',''),'/','')`;
+      ors.push(L('a.code_norm'));
+      params.push(normLike);
+      for (const col of ['s.vehicle_label', 'a.registration', 'a.ec_code', 'a.code']) {
+        ors.push(L(bare(col)));
+        params.push(normLike);
+      }
+      ors.push(`s.asset_id IN (SELECT asset_id FROM asset_aliases WHERE asset_id IS NOT NULL
+                                AND (${L('raw_text')} OR ${L('raw_norm')}))`);
+      params.push(like, normLike);
+    }
+    clauses.push('(' + ors.join(' OR ') + ')');
   }
   const where = clauses.length ? 'WHERE ' + clauses.join(' AND ') : '';
   res.json(all(
     `SELECT s.id, s.vehicle_label, s.service_date, s.service_type, s.site_location, s.grand_total,
+            s.labour_charge, s.outside_estimate,
             a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec,
             (SELECT COUNT(*) FROM service_filters f WHERE f.service_id = s.id) AS filter_count,
+            -- Only NUMBERED lines can ever be priced. A blank-number line is a cleaned
+            -- filter logged against a category, so it must not count as "needs a price".
             (SELECT COUNT(*) FROM service_filters f LEFT JOIN filter_prices p ON p.filter_no_norm = f.filter_no_norm
-               WHERE f.service_id = s.id AND COALESCE(p.unit_price, 0) = 0) AS missing_count,
+               WHERE f.service_id = s.id AND COALESCE(p.unit_price, 0) = 0
+                 AND f.filter_no IS NOT NULL AND TRIM(f.filter_no) <> '') AS missing_count,
             ${COST_SQL} AS computed_cost
        FROM service_jobs s LEFT JOIN assets a ON a.id = s.asset_id
        ${where} ORDER BY s.service_date DESC, s.id DESC LIMIT ${toInt(req.query.limit, 300)}`,
@@ -239,8 +373,9 @@ router.get('/services', asyncHandler((req, res) => {
   ));
 }));
 
-router.post('/services', asyncHandler((req, res) => {
-  const b = req.body;
+// Read a service payload the same way whichever verb sent it, so a record cannot come out
+// with different totals depending on whether it was created or edited.
+function readServicePayload(b, user) {
   let assetId = toInt(b.asset_id);
   let vehicleLabel = clean(b.vehicle_label);
   if (!assetId && b.asset) {
@@ -248,8 +383,6 @@ router.post('/services', asyncHandler((req, res) => {
     assetId = r.assetId;
     if (!vehicleLabel) vehicleLabel = clean(b.asset);
   }
-  const by = req.user ? (req.user.fullName || req.user.username) : null;
-  const date = clean(b.service_date) || new Date().toISOString().slice(0, 10);
   const filters = (Array.isArray(b.filters) ? b.filters : []).filter((f) => clean(f.filter_no));
   const oils = (Array.isArray(b.oils) ? b.oils : []).filter((o) => clean(o.oil_name) && (toNum(o.qty, 0) > 0 || toNum(o.price, 0) > 0));
   const parts = (Array.isArray(b.parts) ? b.parts : []).filter((p) => clean(p.description));
@@ -262,7 +395,39 @@ router.post('/services', asyncHandler((req, res) => {
   const partsSubtotal = Math.round((filterSub + oilSub + partSub) * 100) / 100;
   const labourCharge = Math.round(partsSubtotal * labourRate) / 100;
   const sundryAmount = Math.round(partsSubtotal * sundryRate) / 100;
-  const grandTotal = Math.round((partsSubtotal + labourCharge + sundryAmount) * 100) / 100;
+  return {
+    assetId: assetId || null, vehicleLabel, filters, oils, parts, labourRate, sundryRate,
+    partsSubtotal, labourCharge, sundryAmount,
+    grandTotal: Math.round((partsSubtotal + labourCharge + sundryAmount) * 100) / 100,
+    by: user ? (user.fullName || user.username) : null,
+    date: clean(b.service_date) || new Date().toISOString().slice(0, 10),
+  };
+}
+
+// Write a service's line tables. Shared by create and edit; on edit the old lines have
+// already been cleared, so this always starts from nothing.
+function writeServiceLines(sid, p, opts = {}) {
+  const alreadyCounted = opts.alreadyCounted || new Set();
+  for (const f of p.filters) {
+    const fn = clean(f.filter_no);
+    const price = f.price === '' || f.price == null ? null : toNum(f.price);
+    run(`INSERT INTO service_filters (service_id, filter_no, filter_no_norm, category, action_type, qty, price)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`, sid, fn, normF(fn), clean(f.category), clean(f.xe) || clean(f.action_type), toNum(f.qty, 1), price || 0);
+    // Editing a service must not keep re-counting the same filter number as a fresh use.
+    bookTouch(fn, f.category, price, p.by, !alreadyCounted.has(normF(fn)));
+  }
+  for (const p2 of p.parts) {
+    const amount = toNum(p2.amount, 0) || toNum(p2.rate, 0) * toNum(p2.qty, 0);
+    run(`INSERT INTO service_parts (service_id, description, unit, rate, qty, amount) VALUES (?, ?, ?, ?, ?, ?)`,
+      sid, clean(p2.description), clean(p2.unit), toNum(p2.rate, 0), toNum(p2.qty, 0), Math.round(amount * 100) / 100);
+  }
+}
+
+router.post('/services', asyncHandler((req, res) => {
+  const b = req.body;
+  const p = readServicePayload(b, req.user);
+  const { assetId, vehicleLabel, oils, labourRate, sundryRate,
+    partsSubtotal, labourCharge, sundryAmount, grandTotal, date } = p;
 
   const out = tx(() => {
     const info = run(
@@ -277,13 +442,7 @@ router.post('/services', asyncHandler((req, res) => {
     );
     const sid = info.lastInsertRowid;
     let oilIssues = 0;
-    for (const f of filters) {
-      const fn = clean(f.filter_no);
-      const price = f.price === '' || f.price == null ? null : toNum(f.price);
-      run(`INSERT INTO service_filters (service_id, filter_no, filter_no_norm, category, action_type, qty, price)
-           VALUES (?, ?, ?, ?, ?, ?, ?)`, sid, fn, normF(fn), clean(f.category), clean(f.xe) || clean(f.action_type), toNum(f.qty, 1), price || 0);
-      bookTouch(fn, f.category, price, by); // auto-save number (+ price) to the book
-    }
+    writeServiceLines(sid, p);
     for (const o of oils) {
       const on = clean(o.oil_name);
       const liters = toNum(o.qty, 0);
@@ -293,15 +452,179 @@ router.post('/services', asyncHandler((req, res) => {
       const unit = liters > 0 ? toNum(o.price, 0) / liters : null;
       if (postOilIssue(on, clean(o.oil_type), liters, unit, assetId, date, sid)) oilIssues++;
     }
-    for (const p of parts) {
-      const amount = toNum(p.amount, 0) || toNum(p.rate, 0) * toNum(p.qty, 0);
-      run(`INSERT INTO service_parts (service_id, description, unit, rate, qty, amount) VALUES (?, ?, ?, ?, ?, ?)`,
-        sid, clean(p.description), clean(p.unit), toNum(p.rate, 0), toNum(p.qty, 0), Math.round(amount * 100) / 100);
-    }
     return { sid, oilIssues };
   });
   audit.record({ userId: req.user && req.user.id, entity: 'service_job', entityId: out.sid, action: 'create', after: { asset_id: assetId, grand_total: grandTotal } });
   res.status(201).json({ service: get('SELECT * FROM service_jobs WHERE id = ?', out.sid), oil_issues: out.oilIssues });
+}));
+
+// Edit a service that has already been recorded. The header, the oil / filter / other-cost
+// lines and the totals are all replaced from the form, exactly as if it were being entered
+// again — but the oil already taken off the shelf is settled by difference rather than
+// re-issued, so correcting a typo does not consume the stock twice.
+router.put('/services/:id', asyncHandler((req, res) => {
+  const id = toInt(req.params.id);
+  const before = get('SELECT * FROM service_jobs WHERE id = ?', id);
+  if (!before) return res.status(404).json({ error: 'Service not found' });
+
+  const b = req.body;
+  const p = readServicePayload(b, req.user);
+  // A vehicle is required to record a service, and an edit must not be able to strip it.
+  const assetId = p.assetId || before.asset_id || null;
+  const vehicleLabel = p.vehicleLabel || before.vehicle_label || null;
+
+  // Filter numbers this service already used — re-saving them must not inflate the book's
+  // usage count, but a number added by the edit is a genuine new use.
+  const alreadyCounted = new Set(all('SELECT filter_no_norm FROM service_filters WHERE service_id = ?', id)
+    .map((r) => r.filter_no_norm).filter(Boolean));
+
+  const out = tx(() => {
+    const issued = oilIssuedSoFar(id);          // by product, from the ledger itself
+
+    run(`UPDATE service_jobs SET vehicle_label = ?, asset_id = ?, service_date = ?, job_no = ?, reg_id = ?,
+            model_no = ?, meter_reading = ?, next_service_meter = ?, service_type = ?, site_location = ?,
+            repair_details = ?, upkeeping = ?, labour_rate = ?, sundry_rate = ?,
+            parts_subtotal = ?, labour_charge = ?, sundry_amount = ?, grand_total = ?
+          WHERE id = ?`,
+      vehicleLabel, assetId, p.date, clean(b.job_no), clean(b.reg_id), clean(b.model_no),
+      clean(b.meter_reading), clean(b.next_service_meter), clean(b.service_type), clean(b.site_location),
+      clean(b.repair_details), clean(b.upkeeping), p.labourRate, p.sundryRate,
+      p.partsSubtotal, p.labourCharge, p.sundryAmount, p.grandTotal, id);
+
+    run('DELETE FROM service_filters WHERE service_id = ?', id);
+    run('DELETE FROM service_oils WHERE service_id = ?', id);
+    run('DELETE FROM service_parts WHERE service_id = ?', id);
+    writeServiceLines(id, p, { alreadyCounted });
+
+    // What the service says it uses now, per product.
+    const wanted = new Map();
+    const label = new Map();
+    for (const o of p.oils) {
+      const on = clean(o.oil_name);
+      const liters = toNum(o.qty, 0);
+      run(`INSERT INTO service_oils (service_id, oil_name, oil_type, action_type, qty, price)
+           VALUES (?, ?, ?, ?, ?, ?)`, id, on, clean(o.oil_type), clean(o.cv) || clean(o.action_type), liters, toNum(o.price, 0));
+      const pid = resolveProduct(on, clean(o.oil_type));
+      if (!pid || !(liters > 0)) continue;
+      wanted.set(pid, (wanted.get(pid) || 0) + liters);
+      if (!label.has(pid)) label.set(pid, { name: on, unit: liters > 0 ? toNum(o.price, 0) / liters : null });
+    }
+
+    let moves = 0;
+    for (const pid of new Set([...issued.keys(), ...wanted.keys()])) {
+      const delta = Math.round(((wanted.get(pid) || 0) - (issued.get(pid) || 0)) * 1000) / 1000;
+      if (!delta) continue;
+      // An oil taken off the service entirely has no line left to name it, so the note falls
+      // back to the product — a give-back that said only "Service record #12" would be far
+      // harder to read in the lubricants ledger.
+      const l = label.get(pid) || { name: (get('SELECT name FROM products WHERE id = ?', pid) || {}).name || null, unit: null };
+      if (postOilDelta(pid, delta, l.unit, assetId, p.date, id, l.name)) moves++;
+    }
+    return { moves };
+  });
+
+  audit.record({
+    userId: req.user && req.user.id, entity: 'service_job', entityId: id, action: 'update',
+    before: { asset_id: before.asset_id, service_date: before.service_date, grand_total: before.grand_total },
+    after: { asset_id: assetId, service_date: p.date, grand_total: p.grandTotal },
+  });
+  res.json({ service: get('SELECT * FROM service_jobs WHERE id = ?', id), stock_moves: out.moves });
+}));
+
+// ---- service & filter plan -------------------------------------------------
+// Which machines are candidates for service in a month, and the filters each would need.
+// Read-only; the maths and its limits live in src/lib/service_plan.js.
+router.get('/service-plan', asyncHandler(async (req, res) => {
+  const opts = { month: req.query.month, includeLongOverdue: req.query.include_long_overdue === '1' };
+  // The Service Planner decides WHICH machines are due — it measures what each has actually
+  // run. `local=1` asks for this system's own date estimate instead, for comparison.
+  const plan = req.query.local === '1'
+    ? servicePlan.buildServicePlan(opts)
+    : await servicePlan.buildServicePlanLinked(opts);
+  if (req.query.format !== 'xlsx') {
+    if (req.query.never_serviced === '1') plan.never_serviced = servicePlan.neverServiced();
+    return res.json(plan);
+  }
+
+  // One row per machine-and-category, so the sheet pivots and filters like the office expects,
+  // and the two lists sit on their own tabs — overdue is what gets worked, due-soon is what
+  // gets prepared for.
+  const linked = plan.source === 'service planner';
+  const rowsFor = (list) => {
+    const out = [];
+    for (const v of list) {
+      const p = v.planner || {};
+      const base = {
+        asset: v.asset_code, reg: v.asset_reg, ec: v.asset_ec, site: v.site,
+        basis: p.basis || null,
+        interval: p.interval != null ? p.interval : null,
+        used: p.usedSince != null ? Math.round(p.usedSince) : null,
+        // Negative "remaining" is how far past due it already is — spell that out.
+        over_by: p.remaining != null && p.remaining < 0 ? Math.round(-p.remaining) : null,
+        left: p.remaining != null && p.remaining >= 0 ? Math.round(p.remaining) : null,
+        last_service: v.last_service || p.lastServiceDate || null,
+        projected_due: p.projectedDueDate || v.due_date || null,
+        services: v.visits || 0,
+        meter: v.meter_broken ? 'meter not working' : (v.meter || null),
+      };
+      if (!v.core || !v.core.length) { out.push({ ...base, category: '(no filter history in WorkshopOne)' }); continue; }
+      for (const c of v.core) {
+        out.push({ ...base,
+          category: c.category, part: c.part || '(no number in this machine’s history)',
+          last_fitted: c.last_fitted, times_used: c.times_used, different_numbers: c.distinct_numbers,
+          alternates: c.alternates.join(', '), confirm: c.confirm ? 'confirm at the machine' : '' });
+      }
+    }
+    return out;
+  };
+
+  const machineCols = [
+    { header: 'Machine', key: 'asset', width: 14 }, { header: 'Registration', key: 'reg', width: 14 },
+    { header: 'E&C', key: 'ec', width: 12 }, { header: 'Site', key: 'site', width: 18 },
+    { header: 'Basis', key: 'basis', width: 8 }, { header: 'Service every', key: 'interval', width: 13 },
+    { header: 'Run since service', key: 'used', width: 17 },
+    { header: 'Over by', key: 'over_by', width: 10 }, { header: 'Still to run', key: 'left', width: 12 },
+    { header: 'Last service', key: 'last_service', width: 13 },
+    { header: 'Projected due', key: 'projected_due', width: 13 },
+    { header: 'Services on record', key: 'services', width: 17 },
+    { header: 'Meter', key: 'meter', width: 15 },
+    { header: 'Filter', key: 'category', width: 24 }, { header: 'Suggested part', key: 'part', width: 24 },
+    { header: 'Last fitted', key: 'last_fitted', width: 12 }, { header: 'Times used', key: 'times_used', width: 11 },
+    { header: 'Different numbers', key: 'different_numbers', width: 17 },
+    { header: 'Alternates', key: 'alternates', width: 38 }, { header: 'Check', key: 'confirm', width: 22 },
+  ];
+
+  await sendXlsx(res, `service-filter-plan-${plan.month}.xlsx`, [
+    { name: 'Overdue', columns: machineCols, rows: rowsFor(plan.carry) },
+    { name: 'Due Soon', columns: machineCols, rows: rowsFor(plan.due) },
+    { name: 'Order by Category',
+      columns: [
+        { header: 'Category', key: 'category', width: 28 }, { header: 'Qty needed', key: 'qty', width: 12 },
+        { header: 'Vehicles', key: 'vehicles', width: 10 }, { header: 'On hand', key: 'on_hand', width: 10 },
+        { header: 'Shortfall', key: 'shortfall', width: 11 }],
+      rows: plan.categories },
+    { name: 'Order by Part',
+      columns: [
+        { header: 'Part number', key: 'part', width: 24 }, { header: 'Category', key: 'category', width: 26 },
+        { header: 'Vehicles', key: 'vehicles', width: 10 }, { header: 'Qty needed', key: 'qty', width: 12 },
+        { header: 'On hand', key: 'on_hand', width: 10 }, { header: 'To buy', key: 'to_buy', width: 10 },
+        { header: 'Unit price', key: 'unit_price', width: 12 }, { header: 'Value', key: 'value', width: 14 },
+        { header: 'Not on the stock sheet', key: 'no_stock_row', width: 22 }],
+      rows: plan.parts.map((p) => ({ ...p, no_stock_row: p.no_stock_row ? 'yes' : '' })) },
+    { name: 'How this was worked out',
+      columns: [{ header: 'Note', key: 'note', width: 120 }],
+      rows: [
+        { note: linked
+          ? `Month ${plan.month} · the Service Planner decided which machines are due, as at ${plan.planner_as_of} — it measures meter growth and fuel-derived running (machinery 500 hr, road 5,000 km).`
+          : `Month ${plan.month} · measured as at ${plan.as_of} · WorkshopOne's OWN date estimate — the Service Planner was not used (${plan.planner_error || 'unavailable'}). This system holds no meter or fuel data, so a machine that has barely run can read as overdue.` },
+        { note: linked
+          ? `Fleet: ${plan.fleet.overdue} overdue · ${plan.fleet.due_soon} due soon · ${plan.fleet.ok} OK · ${plan.fleet.unknown} unknown, of ${plan.fleet.tracked} tracked. This workbook lists the overdue and due-soon machines only.`
+          : `Rule ${plan.rule_version} · fleet prior ${plan.fleet_prior} days from ${plan.fleet_gaps} intervals.` },
+        { note: 'The filters come from WorkshopOne: what each machine actually took at its own past services.' },
+        // plan.warnings already names the unmatched machines — don't say it twice.
+        ...plan.warnings.map((w) => ({ note: w })),
+      ] },
+  ]);
 }));
 
 router.get('/services/:id', asyncHandler((req, res) => {
@@ -312,14 +635,83 @@ router.get('/services/:id', asyncHandler((req, res) => {
   if (!job) return res.status(404).json({ error: 'Service not found' });
   // Each filter line carries the book price so missing ones surface here too.
   const filters = all(
-    `SELECT f.id, f.filter_no, f.filter_no_norm, f.category, f.action_type, f.qty,
+    `SELECT f.id, f.filter_no, f.filter_no_norm, f.category, f.action_type, f.qty, f.price,
             p.unit_price AS book_price
        FROM service_filters f LEFT JOIN filter_prices p ON p.filter_no_norm = f.filter_no_norm
       WHERE f.service_id = ? ORDER BY f.id`, id);
   const oils = all('SELECT id, oil_name, oil_type, action_type, qty, price FROM service_oils WHERE service_id = ? ORDER BY id', id);
   const parts = all('SELECT id, description, unit, rate, qty, amount FROM service_parts WHERE service_id = ? ORDER BY id', id);
-  res.json({ service: job, filters, oils, parts });
+  res.json({ service: job, filters, oils, parts, attachments: attachmentList(id) });
 }));
+
+// ---- scanned service sheets ------------------------------------------------
+// Everything EXCEPT the bytes — listing a service must never pull its PDFs into memory.
+const attachmentList = (serviceId) => all(
+  `SELECT a.id, a.filename, a.mime, a.size_bytes, a.note, a.uploaded_at, u.username AS uploaded_by_name
+     FROM service_attachments a LEFT JOIN users u ON u.id = a.uploaded_by
+    WHERE a.service_id = ? ORDER BY a.id DESC`, serviceId);
+
+const MAX_ATTACHMENT = 15 * 1024 * 1024;   // a scanned sheet; well under SQLite's blob ceiling
+const PDF_MAGIC = Buffer.from('%PDF-');
+
+router.get('/services/:id/attachments', asyncHandler((req, res) => {
+  res.json(attachmentList(toInt(req.params.id)));
+}));
+
+// The PDF arrives as the raw request body — base64 in JSON would inflate it by a third and
+// cost a decode on every upload.
+router.post(
+  '/services/:id/attachments',
+  requireRole('workshop', 'storekeeper', 'operational_manager', 'manager'),
+  express.raw({ type: ['application/pdf', 'application/octet-stream'], limit: MAX_ATTACHMENT }),
+  asyncHandler((req, res) => {
+    const id = toInt(req.params.id);
+    if (!get('SELECT 1 v FROM service_jobs WHERE id = ?', id)) return res.status(404).json({ error: 'Service not found' });
+
+    const data = Buffer.isBuffer(req.body) ? req.body : null;
+    if (!data || !data.length) return res.status(400).json({ error: 'No file received' });
+    // Trust the bytes, not the extension — a renamed .doc would be unopenable later.
+    if (!data.subarray(0, 5).equals(PDF_MAGIC)) return res.status(400).json({ error: 'That file is not a PDF' });
+
+    const raw = String(req.query.filename || 'service.pdf');
+    // Keep a recognisable name but never a path — this is echoed back in a download header.
+    const filename = raw.split(/[\\/]/).pop().replace(/[\r\n"]/g, '').slice(0, 160) || 'service.pdf';
+
+    const info = run(
+      `INSERT INTO service_attachments (service_id, filename, mime, size_bytes, note, data, uploaded_by)
+       VALUES (?, ?, 'application/pdf', ?, ?, ?, ?)`,
+      id, filename, data.length, req.query.note ? String(req.query.note).slice(0, 300) : null, data, req.user.id);
+
+    audit.record({ userId: req.user.id, entity: 'service_attachment', entityId: info.lastInsertRowid,
+      action: 'upload', after: { service_id: id, filename, size_bytes: data.length } });
+    res.status(201).json({ ok: true, attachment: get(
+      'SELECT id, filename, mime, size_bytes, note, uploaded_at FROM service_attachments WHERE id = ?', info.lastInsertRowid) });
+  })
+);
+
+// Open in the browser's viewer by default; ?download=1 saves it instead.
+router.get('/attachments/:aid', asyncHandler((req, res) => {
+  const a = get('SELECT * FROM service_attachments WHERE id = ?', toInt(req.params.aid));
+  if (!a) return res.status(404).send('Attachment not found');
+  const disp = req.query.download ? 'attachment' : 'inline';
+  res.setHeader('Content-Type', a.mime || 'application/pdf');
+  res.setHeader('Content-Length', a.size_bytes);
+  res.setHeader('Content-Disposition', `${disp}; filename="${a.filename.replace(/"/g, '')}"`);
+  res.send(a.data);
+}));
+
+router.delete(
+  '/attachments/:aid',
+  requireRole('workshop', 'storekeeper', 'operational_manager', 'manager'),
+  asyncHandler((req, res) => {
+    const aid = toInt(req.params.aid);
+    const a = get('SELECT id, service_id, filename, size_bytes FROM service_attachments WHERE id = ?', aid);
+    if (!a) return res.status(404).json({ error: 'Attachment not found' });
+    run('DELETE FROM service_attachments WHERE id = ?', aid);
+    audit.record({ userId: req.user.id, entity: 'service_attachment', entityId: aid, action: 'delete', before: a });
+    res.json({ ok: true });
+  })
+);
 
 // Printable service form — matches the paper "Vehicle/Machinery Service Details".
 router.get('/services/:id/print.html', asyncHandler((req, res) => {

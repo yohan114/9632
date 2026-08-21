@@ -77,6 +77,23 @@ function migrate() {
     level  TEXT NOT NULL DEFAULT 'none',
     PRIMARY KEY (role, module)
   );`);
+  // Item category tree — exactly TWO levels: parent_id NULL = a top-level Category,
+  // otherwise a Sub-category of that parent (the API refuses a third level). `code`
+  // carries the 3-letter item_no prefix (ELE, TRN, FIL…) so catalogue numbering stays
+  // stable: a sub-category never renumbers an item.
+  db.exec(`CREATE TABLE IF NOT EXISTS item_categories (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    parent_id  INTEGER REFERENCES item_categories(id),
+    name       TEXT NOT NULL,
+    name_norm  TEXT NOT NULL,             -- uppercased, symbols stripped (uniqueness key)
+    code       TEXT,                      -- item_no prefix, parents only
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    active     INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_item_cat_uniq ON item_categories(COALESCE(parent_id, 0), name_norm);
+  CREATE INDEX IF NOT EXISTS idx_item_cat_parent ON item_categories(parent_id);`);
   // Filter price book — one row per distinct filter number (as typed on a service).
   // unit_price NULL/0 = missing. Typing a new number saves a row here (the learning
   // catalogue), so a filter's price is remembered and auto-fills on the next service.
@@ -193,6 +210,12 @@ function migrate() {
   // Upgrade-safe additive column checks (CREATE TABLE IF NOT EXISTS won't add
   // columns to a table that already exists).
   ensureColumn('job_cards', 'flat_labour', 'REAL');
+  // Owner-entered "outside labor value" per daily-work entry — what this piece of work would cost
+  // sent to an outside repairer. Rolls into the Job Cost Report's make-or-buy comparison.
+  ensureColumn('job_daily_work', 'outside_labour', 'REAL');
+  // Movements before a section's stock cut-over stay visible as history but are excluded
+  // from the balance (CREATE TABLE IF NOT EXISTS won't add this to an existing table).
+  ensureColumn('stock_moves', 'counts', 'INTEGER NOT NULL DEFAULT 1');
   ensureColumn('users', 'must_change_password', 'INTEGER NOT NULL DEFAULT 0');
   // Phase 1 migration deltas (additive; CHECK relaxations live in schema.sql).
   ensureColumn('assets', 'in_register', 'INTEGER NOT NULL DEFAULT 0');
@@ -203,6 +226,13 @@ function migrate() {
   ensureColumn('mrn_lines', 'category', 'TEXT');
   ensureColumn('issues', 'category', 'TEXT');
   ensureColumn('mtn', 'category', 'TEXT');
+  // Sub-category link (item_categories.id, always a LEAF/sub-category). The free-text
+  // `category` column above stays and is written in step with it — every existing
+  // report groups by that text — but category_id is the master from here on.
+  ensureColumn('store_items', 'category_id', 'INTEGER');
+  ensureColumn('mrn_lines', 'category_id', 'INTEGER');
+  ensureColumn('issues', 'category_id', 'INTEGER');
+  ensureColumn('mtn', 'category_id', 'INTEGER');
   ensureColumn('mrn', 'purchase_source', 'TEXT'); // Head Office / Local Purchase / ...
   ensureColumn('mrn', 'required_date', 'TEXT');   // "Required Date" on the printed requisition form
   ensureColumn('mrn_lines', 'purchase_source', 'TEXT'); // per-item Head Office / Local Purchase (one MRN can mix)
@@ -238,9 +268,99 @@ function migrate() {
   // carry a balancing bucket so labour+material+oil+general+external+other == total_cost.
   ensureColumn('job_cards', 'recorded_cost', 'REAL');   // original imported total; total falls back to computed when this is 0/NULL
   ensureColumn('job_cards', 'other_cost', 'REAL NOT NULL DEFAULT 0'); // total_cost − Σ(components) so columns always reconcile
+  ensureColumn('job_cards', 'outside_estimate', 'REAL DEFAULT 0'); // outside workshop quote / estimate for comparison
+  // Set the FIRST time a closed card is reopened and never overwritten after: the month the
+  // card was originally closed in. Re-closing restores completed_at from it, so a cost report
+  // the owner has already issued cannot change because someone reopened an old job.
+  ensureColumn('job_cards', 'original_completed_at', 'TEXT');
+  ensureColumn('service_jobs', 'outside_estimate', 'REAL DEFAULT 0'); // outside service value without transport
   // Unambiguous link from a job_part to the MRN request line it came from (Phase 3):
   // avoids overloading the polymorphic source_id (a manual GRN part won't mislink to mrn_lines).
   ensureColumn('job_parts', 'mrn_line_id', 'INTEGER');
+  // Which physical RECEIPT a handover came out of. An MRN line can be delivered in several
+  // GRNs (56 are), so "how much of this delivery is left" has to be counted per receipt, not
+  // per request line. Held on `issues` because that is a source table: a stock_moves rebuild
+  // regenerates the ledger from it, so the link survives.
+  // The date written on the GRN itself. Distinct from delivery_date (when the goods actually
+  // arrived) and invoice_date (the supplier's own document) — the source system only ever held
+  // those two, so this is blank on everything imported and is captured from now on.
+  ensureColumn('grn', 'grn_date', 'TEXT');
+  // What physically arrived, when it is not the number that was asked for. Filters are
+  // routinely supplied as an equivalent — a VIC or Sakura part against a genuine number — and
+  // the receipt has to record the box on the shelf, not the wish on the request, or nobody
+  // can find it later. grn.description stays as the requested text.
+  ensureColumn('grn', 'received_part_no', 'TEXT');
+  ensureColumn('issues', 'grn_id', 'INTEGER');
+  ensureColumn('stock_moves', 'grn_id', 'INTEGER');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_issues_grn ON issues(grn_id)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_sm_grn ON stock_moves(grn_id)');
+  // Indexed here rather than in schema.sql — the column only exists once the line above has run.
+  // The job report resolves requested/received spares through this link.
+  db.exec('CREATE INDEX IF NOT EXISTS idx_jp_line ON job_parts(mrn_line_id)');
+  // lubricant_aliases was first created with raw_norm UNIQUE on its own, which allows a name
+  // exactly one meaning for all time. HD-68 was bought as Caltex and later as Valvoline under
+  // the same written name, so the key has to be (name, effective_from). Rebuild it once,
+  // carrying the rows over — CREATE TABLE IF NOT EXISTS cannot change a constraint.
+  if (!db.prepare('PRAGMA table_info(lubricant_aliases)').all().some((c) => c.name === 'effective_from')) {
+    db.exec(`
+      ALTER TABLE lubricant_aliases RENAME TO lubricant_aliases_old;
+      CREATE TABLE lubricant_aliases (
+        id             INTEGER PRIMARY KEY AUTOINCREMENT,
+        raw_text       TEXT NOT NULL,
+        raw_norm       TEXT NOT NULL,
+        product_id     INTEGER REFERENCES products(id),
+        effective_from TEXT NOT NULL DEFAULT '',
+        resolved       INTEGER NOT NULL DEFAULT 0,
+        hit_count      INTEGER NOT NULL DEFAULT 0,
+        source         TEXT,
+        created_at     TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at     TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE (raw_norm, effective_from)
+      );
+      INSERT INTO lubricant_aliases (id, raw_text, raw_norm, product_id, effective_from, resolved, hit_count, source, created_at, updated_at)
+        SELECT id, raw_text, raw_norm, product_id, '', resolved, hit_count, source, created_at, updated_at
+          FROM lubricant_aliases_old;
+      DROP TABLE lubricant_aliases_old;
+      CREATE INDEX IF NOT EXISTS idx_lube_alias_norm ON lubricant_aliases(raw_norm);`);
+  }
+  // An item put on a request AFTER it was approved. The Operational Manager signed for the
+  // items in front of them, so anything added later has to carry its own mark — who added it,
+  // when and why — or the request would silently claim authority for something nobody approved.
+  // Only an admin can do it; the approval itself stands so that receiving already in progress
+  // is not interrupted (17 of the 25 approved requests already have goods against them).
+  ensureColumn('mrn_lines', 'added_after_approval', 'INTEGER NOT NULL DEFAULT 0');
+  ensureColumn('mrn_lines', 'added_by', 'TEXT');
+  ensureColumn('mrn_lines', 'added_at', 'TEXT');
+  ensureColumn('mrn_lines', 'added_reason', 'TEXT');
+  // Give every lubricant the code the unified catalogue already minted for it (OIL-0001…).
+  // products.code has sat NULL since the oil book was imported, so the oil section had no way
+  // to name a product that a request, receipt, issue or transfer could point back at.
+  db.exec(`UPDATE products SET code = (
+             SELECT si.code FROM stock_items si
+              WHERE si.section = 'oil' AND si.source_table = 'products' AND si.source_id = products.id)
+           WHERE code IS NULL
+             AND EXISTS (SELECT 1 FROM stock_items si
+                          WHERE si.section = 'oil' AND si.source_table = 'products' AND si.source_id = products.id)`);
+  // Every product answers to its own name, seeded through the SAME normaliser the resolver
+  // uses — a second copy of that rule in SQL would drift from it. Required here rather than at
+  // the top of the file because lubricants.js needs this module back.
+  require('../lib/lubricants').seedCatalogueAliases();
+  // Carry a battery's single photo into the gallery, so nothing taken before it existed is
+  // stranded on a column nothing renders any more. Keyed on "has no photos yet", so it is a
+  // no-op on re-run and never re-adds one the storekeeper deleted.
+  db.exec(`INSERT INTO battery_photos (battery_id, seq, photo, uploaded_at)
+           SELECT b.id, 1, b.photo_path, b.created_at
+             FROM batteries b
+            WHERE b.photo_path IS NOT NULL AND b.photo_path <> ''
+              AND NOT EXISTS (SELECT 1 FROM battery_photos p WHERE p.battery_id = b.id)`);
+  // Give every transfer written before mtn_lines existed its one item, so the note and its
+  // contents are read the same way everywhere from here on. Keyed on "has no lines yet", so
+  // re-running is a no-op and a note deliberately emptied is never silently refilled — a
+  // transfer always keeps at least one line, enforced by the API.
+  db.exec(`INSERT INTO mtn_lines (mtn_id, line_no, store_item_id, description, qty, category, category_id, created_at)
+           SELECT m.id, 1, m.store_item_id, m.description, m.qty, m.category, m.category_id, m.created_at
+             FROM mtn m
+            WHERE NOT EXISTS (SELECT 1 FROM mtn_lines l WHERE l.mtn_id = m.id)`);
   // Monthly Cost Report — manual inputs for the sheets the system can't source from
   // transactions (Tyre, Battery, Fuel, Other/overhead, Staff/Security salaries). One row
   // per line item, keyed by (year, month, sheet); generic columns cover all five sheets
