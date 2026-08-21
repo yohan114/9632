@@ -16,6 +16,16 @@ db.pragma('foreign_keys = ON');
  * Apply the schema. Idempotent — every statement is CREATE ... IF NOT EXISTS.
  */
 function migrate() {
+  // stock_moves' unique key gained item_key, so one service line can record BOTH of the filters
+  // it fits. CREATE TABLE IF NOT EXISTS cannot change a constraint, and SQLite cannot alter one
+  // in place — but stock_moves is a PROJECTION, regenerated from the source tables by
+  // rebuild({ wipe: true }), so dropping it loses nothing that is not rebuilt. Detected by
+  // reading the constraint back rather than by a version number, so it runs once and then never.
+  const sm = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='stock_moves'").get();
+  if (sm) {
+    const uniq = (String(sm.sql).match(/UNIQUE\s*\([^)]*\)/i) || [''])[0];
+    if (uniq && !/item_key/i.test(uniq)) db.exec('DROP TABLE stock_moves');
+  }
   const schema = fs.readFileSync(path.join(__dirname, 'schema.sql'), 'utf8');
   db.exec(schema);
   // MRN approval trail (SK request → Workshop certify → Operational Manager approve).

@@ -68,32 +68,77 @@ function openingRules() {
 // then the cross-reference table). That is what stops "(2 Nos)" or "(Tata)" being read as a part
 // number: they are not in the catalogue, so they are not numbers.
 const knownFilterNo = new Map();
+let knownFilterStamp = null;
 function filterCatalogue() {
-  if (knownFilterNo.size) return knownFilterNo;
+  // Cached, because it is asked once per movement — but NOT for the life of the process. A filter
+  // priced today has to be recognised today, and a cache that never lets go would keep it
+  // invisible until the server was restarted. The row counts are the cheap stamp that catches it.
+  const stamp = get(`SELECT (SELECT COUNT(*) FROM filter_prices) AS p, (SELECT COUNT(*) FROM filter_xrefs) AS x`);
+  const key = stamp.p + ':' + stamp.x;
+  if (knownFilterStamp === key) return knownFilterNo;
+  knownFilterNo.clear();
   for (const r of all(`SELECT filter_no_norm AS k FROM filter_prices WHERE NULLIF(filter_no_norm,'') IS NOT NULL
                        UNION SELECT part_number_norm FROM filter_xrefs WHERE NULLIF(part_number_norm,'') IS NOT NULL`)) {
     knownFilterNo.set(r.k, true);
   }
+  knownFilterStamp = key;
   return knownFilterNo;
 }
 function filterKey(text) {
   const s = String(text || '');
   const cat = filterCatalogue();
-  // SPLIT BEFORE ACCEPTING THE WHOLE STRING. "FF-5052 & FS-1275" is two filters on one line, and
-  // the joined-up form FF5052FS1275 is itself in filter_prices — a junk catalogue entry built
-  // from these same lines. Checking the whole string first would therefore accept the nonsense
-  // key and the filter would still never meet the one that was bought.
-  const parts = (t) => String(t).split(/[&+]| and /i).map((x) => x.trim()).filter(Boolean);
-  const tried = [];
-  for (const m of s.matchAll(/\(([^)]*)\)/g)) tried.push(...parts(m[1]));   // the number usually hides in the bracket
+  // A BRACKET IS THE SAME FILTER SPELT ANOTHER WAY, not a second filter. "C-112 (C-1111)" is one
+  // element and its cross-reference; "TH-93286 (2534 1813 0129 tata)" is one element and its Tata
+  // number. So the number OUTSIDE the bracket wins when the catalogue knows it, and the bracket
+  // is only consulted when it does not — which is the "Oil Filter (C-206)" case, where the words
+  // outside carry nothing and the number is in the bracket.
   const bare = s.replace(/\([^)]*\)/g, ' ');
-  tried.push(...parts(bare));
-  tried.push(bare, s);                                                      // only then the line as written
+  const tried = [bare];
+  for (const m of s.matchAll(/\(([^)]*)\)/g)) tried.push(m[1]);
+  // SPLIT BEFORE ACCEPTING THE WHOLE STRING. The joined-up form of a two-filter line
+  // (FF5052FS1275) is itself in filter_prices — a junk catalogue entry built from these same
+  // lines — so checking the line as written first would accept the nonsense key.
+  tried.push(...bare.split(/[&+]| and /i));
+  tried.push(s);
   for (const c of tried) {
     const k = normF(c);
     if (k && cat.has(k)) return k;
   }
   return null;
+}
+
+/**
+ * EVERY filter named on one line, not just the first. The owner confirmed (2026-08-21) that a
+ * line reading "JS-1030 & 278 607 989 916" means both were fitted, so both come off the shelf.
+ * Each is returned with the words it was written as, so the movement can be read back.
+ * Falls back to a single entry when the line names one filter, and to none when it names no
+ * number the catalogue recognises — "Hy. return filter replaced" is not guessed at.
+ */
+function filterParts(text) {
+  const s = String(text || '');
+  // ONLY AN "&" MEANS A SECOND FILTER. A bracket is the same filter written another way, so it
+  // must not be split off — "C-112 (C-1111)" is one element, and reading it as two would take a
+  // filter off the shelf that was never fitted.
+  //
+  // An "&" INSIDE a bracket is prose, not a separator: "AF-25910/11 (inner & outer Fleet Guard)"
+  // describes one part. So the line is split only at the TOP level, and each segment is then
+  // resolved on its own — brackets and all.
+  const segs = ['']; let depth = 0;
+  for (const c of s) {
+    if (c === '(') depth++;
+    else if (c === ')') depth = Math.max(0, depth - 1);
+    if (depth === 0 && (c === '&' || c === '+')) { segs.push(''); continue; }
+    segs[segs.length - 1] += c;
+  }
+  const out = []; const taken = new Set();
+  for (const seg of segs.flatMap((x) => x.split(/ and /i))) {
+    const frag = seg.trim();
+    if (!frag) continue;
+    const k = filterKey(frag);
+    if (!k || taken.has(k)) continue;
+    taken.add(k); out.push({ key: k, text: frag });
+  }
+  return out;
 }
 
 function rebuild(opts = {}) {
@@ -274,14 +319,25 @@ function rebuild(opts = {}) {
         WHERE COALESCE(f.qty,0) > 0`)) {
       // The issue side needs the number dug out of the writing just as much as the receipt side.
       // 105 service lines name TWO filters at once — "JS-1030 & 278 607 989 916" — and joined up
-      // they make a key (JS1030278607989916) no receipt will ever carry, so the filter is fitted
-      // and never once meets the one that was bought. The first number the filter catalogue
-      // recognises is used, and the LINE KEEPS ITS FULL WORDING so the second is not lost from
-      // the paperwork. The recorded quantity is untouched: a line that says one is still one.
-      const fkey = filterKey(f.filter_no) || itemKey('filter', f.filter_no, f.filter_no_norm || f.filter_no);
-      insert({ section: 'filter', kind: 'out', item_key: fkey,
-        item_name: f.filter_no || f.category, qty: f.qty, unit_price: null, txn_date: f.service_date,
-        asset_id: f.asset_id, ref: f.job_no, note: f.category, source_table: 'service_filters', source_id: f.id });
+      // they made a key no receipt could ever carry, so a filter was fitted and never once met
+      // the one that was bought.
+      //
+      // The owner confirmed (2026-08-21) that BOTH filters are fitted on such a line, so both
+      // come off the shelf: one movement each, at the line's own quantity. That is why
+      // stock_moves' unique key includes item_key — otherwise the second movement collides with
+      // the first and INSERT OR IGNORE drops it without a word.
+      const found = filterParts(f.filter_no);
+      const lines = found.length
+        ? found.map((p) => ({ key: p.key, name: p.text }))
+        : [{ key: itemKey('filter', f.filter_no, f.filter_no_norm || f.filter_no), name: f.filter_no || f.category }];
+      for (const ln of lines) {
+        insert({ section: 'filter', kind: 'out', item_key: ln.key,
+          item_name: ln.name, qty: f.qty, unit_price: null, txn_date: f.service_date,
+          asset_id: f.asset_id, ref: f.job_no,
+          // The line as the fitter wrote it, so a split movement can always be read back to it.
+          note: lines.length > 1 ? `${f.category || 'filter'} · fitted with ${f.filter_no}` : f.category,
+          source_table: 'service_filters', source_id: f.id });
+      }
     }
 
     // 4b. THE FILTER SHELF ITSELF, as the workshop counts it.
@@ -657,5 +713,5 @@ function receivedLine(grnId) {
   return r;
 }
 
-module.exports = { SECTIONS, PREFIX, sectionOf, itemKey, rebuild, summary, items, moves, openingRules,
+module.exports = { filterParts, filterKey, SECTIONS, PREFIX, sectionOf, itemKey, rebuild, summary, items, moves, openingRules,
   nextCode, syncItems, searchItems, receivedLines, receivedLine };

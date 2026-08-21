@@ -279,9 +279,10 @@ test('a service line naming two filters is filed under a real part number', () =
   assert.strictEqual(bal('filter', 'JS1030'), -1, 'it lands on the first filter the catalogue knows');
 });
 
-test('the line keeps both numbers on it, so the second is not lost', () => {
-  const row = get(`SELECT item_name FROM stock_moves WHERE section='filter' AND item_key='JS1030' AND kind='out'`);
-  assert.match(row.item_name, /FF-5052/, 'the paperwork still says what was fitted');
+test('a split movement records the line it came from', () => {
+  const row = get(`SELECT item_name, note FROM stock_moves WHERE section='filter' AND item_key='JS1030' AND kind='out'`);
+  assert.strictEqual(row.item_name, 'JS-1030', 'the movement names the filter it is');
+  assert.match(row.note, /JS-1030 & FF-5052/, 'and the note carries the line as the fitter wrote it');
 });
 
 test('the recorded quantity is not invented upwards', () => {
@@ -303,4 +304,70 @@ test('an opening backfill is dated at the cut-over', () => {
   const o = get(`SELECT txn_date FROM stock_moves WHERE section='filter' AND source_table='filter_stock'
                   AND source_id = (SELECT id FROM filter_stock WHERE supplier='opening-backfill' LIMIT 1)`);
   assert.strictEqual(o.txn_date, CUTOVER);
+});
+
+// ---- a line that fits two filters takes two off the shelf -------------------
+//
+// The owner confirmed (2026-08-21) that "JS-1030 & 278 607 989 916" means BOTH were fitted, so
+// both come off. That is why stock_moves' unique key includes item_key: one source row moving two
+// DIFFERENT items. Without it the second movement collides with the first and INSERT OR IGNORE
+// drops it in silence.
+//
+// The hard part is knowing when a line names two filters and when it names one twice over. A
+// BRACKET IS THE SAME FILTER SPELT ANOTHER WAY — "C-112 (C-1111)" is one element and its
+// cross-reference — and reading it as two would take a filter off the shelf that was never
+// fitted. Only a top-level "&" separates.
+
+test('an "&" between two part numbers means two filters', () => {
+  assert.deepStrictEqual(stock.filterParts('C-206 & FF-5052').map((p) => p.key), ['C206', 'FF5052']);
+});
+
+test('a bracket is the same filter written another way, not a second one', () => {
+  run(`INSERT INTO filter_prices (filter_no, filter_no_norm, category, unit_price) VALUES ('C-112','C112','Oil Filter',700)`);
+  run(`INSERT INTO filter_prices (filter_no, filter_no_norm, category, unit_price) VALUES ('C-1111','C1111','Oil Filter',700)`);
+  const p = stock.filterParts('C-112(C-1111)');
+  assert.strictEqual(p.length, 1, 'one element and its cross-reference is ONE filter');
+  assert.strictEqual(p[0].key, 'C112', 'and the number outside the bracket is the one it is filed under');
+});
+
+test('an "&" inside a bracket is prose, not a separator', () => {
+  run(`INSERT INTO filter_prices (filter_no, filter_no_norm, category, unit_price) VALUES ('AF-25910/11','AF2591011','Air Filter',900)`);
+  const p = stock.filterParts('AF-25910/11(inner & outer Fleet Guard)');
+  assert.strictEqual(p.length, 1, '"inner & outer" describes one part');
+  assert.strictEqual(p[0].key, 'AF2591011');
+});
+
+test('a line naming no number the catalogue knows is not guessed at', () => {
+  assert.deepStrictEqual(stock.filterParts('Hy. return filter & hy. air breather filter replaced'), []);
+});
+
+test('a second number the catalogue does not know is skipped, not invented', () => {
+  const p = stock.filterParts('C-206 & NOSUCHFILTER-999');
+  assert.deepStrictEqual(p.map((x) => x.key), ['C206'], 'only what the workshop actually stocks');
+});
+
+test('both filters on one service line come off the shelf', () => {
+  const s = run(`INSERT INTO service_jobs (service_date, job_no) VALUES ('2026-08-16','SVC-N3')`).lastInsertRowid;
+  run(`INSERT INTO service_filters (service_id, filter_no, filter_no_norm, category, qty)
+       VALUES (?, 'C-112 & C-1111', 'C112C1111', 'Oil Filter', 1)`, s);
+  stock.rebuild({ wipe: true });
+  const moves = all(`SELECT item_key, qty FROM stock_moves WHERE source_table='service_filters' AND source_id=?
+                      ORDER BY item_key`, get(`SELECT id FROM service_filters WHERE filter_no='C-112 & C-1111'`).id);
+  assert.deepStrictEqual(moves.map((m) => m.item_key), ['C1111', 'C112'],
+    'two movements from one line — this is why item_key is part of the unique key');
+  assert.deepStrictEqual(moves.map((m) => m.qty), [1, 1], 'each at the quantity the line records');
+});
+
+test('each split movement says which line it came from', () => {
+  const m = get(`SELECT note FROM stock_moves WHERE item_key='C1111' AND source_table='service_filters'`);
+  assert.match(m.note, /C-112 & C-1111/, 'so a split can always be read back to what the fitter wrote');
+});
+
+test('rebuilding twice does not double a split line', () => {
+  const id = get(`SELECT id FROM service_filters WHERE filter_no='C-112 & C-1111'`).id;
+  stock.rebuild({ wipe: true });
+  const a = get(`SELECT COUNT(*) c FROM stock_moves WHERE source_table='service_filters' AND source_id=?`, id).c;
+  stock.rebuild({ wipe: true });
+  assert.strictEqual(get(`SELECT COUNT(*) c FROM stock_moves WHERE source_table='service_filters' AND source_id=?`, id).c, a);
+  assert.strictEqual(a, 2);
 });

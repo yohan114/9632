@@ -239,7 +239,11 @@ CREATE TABLE IF NOT EXISTS stock_moves (
   -- they stay fully visible as history without dragging the balance negative.
   counts        INTEGER NOT NULL DEFAULT 1,
   created_at    TEXT NOT NULL DEFAULT (datetime('now')),
-  UNIQUE (source_table, source_id, kind)
+  -- item_key is part of the key because ONE source row can move TWO DIFFERENT items: a service
+  -- line that reads "JS-1030 & 278 607 989 916" fits two filters. Without it the second movement
+  -- collided with the first and INSERT OR IGNORE dropped it in silence. A rebuild stays
+  -- idempotent — the same source row always produces the same (source, kind, item) tuples.
+  UNIQUE (source_table, source_id, kind, item_key)
 );
 CREATE INDEX IF NOT EXISTS idx_sm_section ON stock_moves(section, item_key);
 CREATE INDEX IF NOT EXISTS idx_sm_date ON stock_moves(txn_date);
