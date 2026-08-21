@@ -3289,8 +3289,8 @@ function wireMrnLine(row) {
       let rows = [];
       try { rows = await api('/stores/items/search?q=' + encodeURIComponent(q) + '&limit=12'); } catch (e) { return; }
       menu.innerHTML = rows.length
-        ? rows.map((r) => `<div class="mrnpick" data-id="${r.id}" data-name="${esc(r.name)}" data-unit="${esc(r.unit || 'nos')}" data-cat="${r.category_id || ''}" style="padding:7px 10px;cursor:pointer;border-bottom:1px solid var(--border)">
-            <b>${esc(r.name)}</b>${r.item_no ? ` <span class="stamp">${esc(r.item_no)}</span>` : ''}
+        ? rows.map((r) => `<div class="mrnpick" data-id="${r.id || ''}" data-lube="${r.is_lubricant ? 1 : ''}" data-name="${esc(r.name)}" data-unit="${esc(r.unit || 'nos')}" data-cat="${r.category_id || ''}" style="padding:7px 10px;cursor:pointer;border-bottom:1px solid var(--border)">
+            <b>${esc(r.name)}</b>${r.item_no ? ` <span class="stamp">${esc(r.item_no)}</span>` : ''}${r.is_lubricant ? ' <span class="badge blue">oil book</span>' : ''}
             <div class="muted" style="font-size:11px">${esc(catPath(r) || '')}${r.part_numbers ? ' · ' + esc(String(r.part_numbers).slice(0, 40)) : ''}${r.req_count ? ' · requested ' + num(r.req_count) + '×' : ''}</div></div>`).join('')
         : '<div class="muted" style="padding:8px 10px">No catalogue match — it will be requested as typed.</div>';
       menu.style.display = 'block';
@@ -3301,7 +3301,11 @@ function wireMrnLine(row) {
         hItem.value = it.dataset.id;
         if (it.dataset.unit) unit.value = it.dataset.unit;
         if (it.dataset.cat) setCategoryPicker(row, it.dataset.cat);
-        hint.textContent = 'Catalogue item — name, unit and category come from the catalogue.';
+        // A lubricant's identity is its catalogue NAME — written exactly, it resolves to that
+        // product everywhere without anyone having to teach the system another spelling.
+        hint.textContent = it.dataset.lube
+          ? 'From the oil book — recorded against this exact lubricant, so it counts as oil stock.'
+          : 'Catalogue item — name, unit and category come from the catalogue.';
         isNew.checked = false;
         close();
       }; });
@@ -5435,7 +5439,7 @@ function wireMtnLine(row) {
       let rows = [];
       try { rows = await api('/stores/items/search?q=' + encodeURIComponent(q) + '&limit=12'); } catch (e) { return; }
       if (!rows.length) return close();
-      menu.innerHTML = rows.map((r) => `<div class="mrnpick" data-id="${r.id}" data-name="${esc(r.name)}" data-unit="${esc(r.unit || 'nos')}" data-cat="${r.category_id || ''}" style="padding:7px 10px;cursor:pointer;border-bottom:1px solid var(--border)">
+      menu.innerHTML = rows.map((r) => `<div class="mrnpick" data-id="${r.id || ''}" data-lube="${r.is_lubricant ? 1 : ''}" data-name="${esc(r.name)}" data-unit="${esc(r.unit || 'nos')}" data-cat="${r.category_id || ''}" style="padding:7px 10px;cursor:pointer;border-bottom:1px solid var(--border)">
           <b>${esc(r.name)}</b>${r.item_no ? ` <span class="stamp">${esc(r.item_no)}</span>` : ''}</div>`).join('');
       menu.style.display = '';
       qsa('.mrnpick', menu).forEach((el) => { el.onclick = () => {

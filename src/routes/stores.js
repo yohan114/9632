@@ -13,6 +13,7 @@ const emitter = require('../lib/emitter');
 const stock = require('../lib/stock');
 const jobstate = require('../lib/jobstate');
 const { lineReceiptSql, mrnReceiptSql, receivedLabel, d10 } = require('../lib/received_date');
+const lubricants = require('../lib/lubricants');
 
 // One cell's worth of "when did this arrive", for a sheet or a printout. A spreadsheet has no
 // tooltip, so whatever the hover would have said has to be in the cell itself.
@@ -165,12 +166,23 @@ router.get('/reorder', asyncHandler((_req, res) =>
 // One search across the whole catalogue for the "which item?" pickers: item number,
 // name, every part number ever seen for it, and the category. Most-requested first,
 // so the items the workshop actually asks for surface at the top.
+// The category a lubricant line is filed under. Looked up once and remembered — it is the same
+// row for every search, and it may not exist on a bare database.
+let _lubeCat;
+function lubeCategoryId() {
+  if (_lubeCat === undefined) {
+    const c = get(`SELECT id FROM item_categories WHERE name = 'Lubricants & Fluids' LIMIT 1`);
+    _lubeCat = c ? c.id : null;
+  }
+  return _lubeCat;
+}
+
 router.get('/items/search', asyncHandler((req, res) => {
   const raw = String(req.query.q || '').trim();
   if (!raw) return res.json([]);
   const like = '%' + raw + '%';
   const starts = raw + '%';
-  res.json(all(
+  const rows = all(
     `SELECT s.id, s.item_no, s.name, s.part_number, s.part_numbers, s.unit, s.is_general, s.balance,
             s.category, s.category_id, s.req_count, s.unit_cost,
             sub.name AS sub_category, p.name AS parent_category,
@@ -191,7 +203,43 @@ router.get('/items/search', asyncHandler((req, res) => {
       WHERE s.name LIKE ? OR s.item_no LIKE ? OR s.part_number LIKE ? OR s.part_numbers LIKE ? OR s.category LIKE ?
       ORDER BY (s.name LIKE ?) DESC, COALESCE(s.req_count, 0) DESC, s.name
       LIMIT ${toInt(req.query.limit, 20)}`,
-    like, like, like, like, like, starts));
+    like, like, like, like, like, starts);
+
+  // Lubricants live in the oil book, not the stores catalogue — 19 of the 30 have no
+  // store_items row at all, so until now HD-68 could only be typed free-hand on a request or
+  // a transfer. That is precisely how the same drum came to be written five different ways.
+  // They are offered here by their own code (OIL-0021), and picking one writes the CANONICAL
+  // product name, so the line resolves to that product with no alias needed. No second
+  // catalogue row is created: the oil book stays the one place a lubricant is defined.
+  // Searched by every name it has ever been known by, not just its catalogue spelling: the
+  // storekeeper types "Kerosine" and the book calls it "Karosine Oil". That is what the alias
+  // table is for, and without it the picker sends them back to typing free-hand.
+  const lubes = all(
+    `SELECT p.id, p.code, p.name, p.unit, p.category, p.unit_price
+       FROM products p
+      WHERE COALESCE(p.active, 1) = 1
+        AND (p.name LIKE ? OR p.code LIKE ? OR p.category LIKE ?
+             OR EXISTS (SELECT 1 FROM lubricant_aliases a
+                         WHERE a.product_id = p.id AND a.resolved = 1 AND a.raw_norm LIKE ?))
+      ORDER BY (p.name LIKE ?) DESC, p.code
+      LIMIT 10`, like, like, like, '%' + lubricants.normLube(raw) + '%', starts)
+    .map((p) => ({
+      id: null,                       // not a store_items row — the name carries the identity
+      lubricant_id: p.id,
+      item_no: p.code,
+      name: p.name,
+      unit: p.unit,
+      category: 'Lubricants & Fluids',
+      // So the line is filed under Lubricants & Fluids like the rest. The stock section does
+      // not depend on it — a lubricant is promoted to the oil book by its name whatever the
+      // category says — but a request that reads "(uncategorised)" is a request nobody trusts.
+      category_id: lubeCategoryId(),
+      last_price: p.unit_price,
+      is_lubricant: 1,
+      balance: null,
+    }));
+
+  res.json(lubes.concat(rows));
 }));
 
 // Next catalogue number for a category, e.g. FIL-0037. The 3-letter prefix comes from

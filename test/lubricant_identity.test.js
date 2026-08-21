@@ -31,6 +31,30 @@ const stock = require('../src/lib/stock');
 
 migrate();
 
+// store_items.unit_cost comes from a numbered migration rather than the base schema, and the
+// stores item picker selects it — same as test/issue_job.test.js does.
+require('../src/migrate/015_phase4_erp_gaps').runStep();
+
+// A signed-in storekeeper, so the stores item picker can be exercised over HTTP.
+for (const n of ['admin', 'storekeeper']) run('INSERT INTO roles (name) VALUES (?)', n);
+const uid = run('INSERT INTO users (username, password_hash, active) VALUES (?, ?, 1)', 'sk',
+  require('../src/lib/auth').hashPassword('pw')).lastInsertRowid;
+for (const r of ['admin', 'storekeeper']) {
+  run('INSERT INTO user_roles (user_id, role_id) VALUES (?, (SELECT id FROM roles WHERE name = ?))', uid, r);
+}
+const app = require('../src/server');
+let server; let base; let cookie;
+test.before(async () => {
+  await new Promise((res) => { server = app.listen(0, res); });
+  base = `http://127.0.0.1:${server.address().port}`;
+  const r = await fetch(`${base}/api/auth/login`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ username: 'sk', password: 'pw' }),
+  });
+  cookie = (r.headers.get('set-cookie') || '').split(';')[0];
+});
+test.after(() => server && server.close());
+
 // The oil book, as the workshop keeps it: two brands of the same grade, and a kerosene whose
 // name is spelt a third way everywhere else.
 const mkProduct = (name, cat, unit) => run(
@@ -321,4 +345,38 @@ test('a product keeps one balance, not one per section', () => {
   const rows = all(`SELECT section, COUNT(*) n FROM stock_moves WHERE item_name='Phase3 Test Oil' GROUP BY section`);
   assert.deepStrictEqual(rows.map((r) => r.section), ['oil'],
     'every movement of it lands in the same book — receipts and issues cannot drift apart');
+});
+
+// ---- the doors offer lubricants ---------------------------------------------
+//
+// 19 of the 30 lubricants have no store_items row, so until now HD-68 could only be typed
+// free-hand on a request or a transfer — which is exactly how one drum came to be written five
+// different ways and the alias queue filled up. The stores picker now offers them from the oil
+// book itself, by code and by every name they have been known by.
+
+test('the stores picker offers a lubricant that has no catalogue row', async () => {
+  const r = await fetch(`${base}/api/stores/items/search?q=` + encodeURIComponent('Phase3 Test Oil'), { headers: { cookie } });
+  const rows = await r.json();
+  const hit = rows.find((x) => x.is_lubricant && x.name === 'Phase3 Test Oil');
+  assert.ok(hit, 'offered from the oil book');
+  assert.strictEqual(hit.item_no, 'OIL-9900', 'by its own code');
+  assert.strictEqual(hit.id, null, 'and NOT as a second catalogue row — the oil book stays the one definition');
+});
+
+test('…and by a name it is only known by through an alias', async () => {
+  const alias = get('SELECT id FROM lubricant_aliases WHERE raw_norm = ?', lubricants.normLube('HD-68 Oil'));
+  assert.ok(alias, 'the alias exists from the date-split test above');
+  const r = await fetch(`${base}/api/stores/items/search?q=` + encodeURIComponent('HD-68 Oil'), { headers: { cookie } });
+  const rows = await r.json();
+  assert.ok(rows.some((x) => x.is_lubricant), 'typing the spelling on the paperwork finds the product');
+});
+
+test('picking one records the canonical name, so it resolves with no new alias', () => {
+  // The picker writes the product's own name into the line. That is the whole mechanism:
+  // identity travels as the name, so nothing has to be taught a sixth spelling.
+  const before = get('SELECT COUNT(*) c FROM lubricant_aliases WHERE resolved = 0').c;
+  const r = lubricants.resolveLubricant('Phase3 Test Oil', { record: true, source: 'picker' });
+  assert.ok(r.resolved);
+  assert.strictEqual(get('SELECT COUNT(*) c FROM lubricant_aliases WHERE resolved = 0').c, before,
+    'a picked lubricant never adds to the queue');
 });
