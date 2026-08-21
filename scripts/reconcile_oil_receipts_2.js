@@ -56,7 +56,15 @@ const grn = all(`SELECT g.id, COALESCE(g.description, ml.description) AS descrip
 // have been a lie. So: if the ledger row carries an MR number, only that MRN can be its twin.
 // Where it carries none — most of the kerosene run — product + exact quantity + the same window
 // still stands, because there is nothing better to go on.
+// A RECEIPT CAN ONLY ABSORB ONE TWIN, AND IT REMEMBERS THE ONE IT ABSORBED. Re-running without
+// this, a GRN whose twin was voided on an earlier run is free again and pairs with a DIFFERENT
+// ledger row — voiding a second, genuine delivery against the same single receipt and quietly
+// removing stock that really arrived. Every void already records "recorded as GRN #n", so the
+// receipts already spoken for can simply be read back.
 const taken = new Set();
+for (const v of all(`SELECT note FROM stock_ledger WHERE COALESCE(voided,0) = 1 AND note LIKE '%GRN #%'`)) {
+  for (const m of String(v.note).matchAll(/GRN #(\d+)/g)) taken.add(Number(m[1]));
+}
 const pairs = [];
 const unmatchedWithRef = [];
 for (const l of ledger) {
@@ -124,7 +132,8 @@ tx(() => {
                 note = TRIM(COALESCE(note,'') || ' | voided ' || ? || ': the same delivery is recorded as GRN #' || ?
                             || ' (' || ? || ', ' || ? || '), which carries the supplier and the price')
           WHERE id = ?`,
-    new Date().toISOString().slice(0, 10), p.g.id, String(p.g.qty), String(p.g.delivery_date).slice(0, 10), p.l.id);
+    // Bound as text: a JS number binds as REAL, and SQLite's || would write "GRN #6209.0".
+    new Date().toISOString().slice(0, 10), String(p.g.id), String(p.g.qty), String(p.g.delivery_date).slice(0, 10), p.l.id);
   }
 });
 console.log(`\nAPPLIED — ${pairs.length} duplicate ledger receipts voided, ${Math.round(units * 100) / 100} units.`);
