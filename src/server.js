@@ -68,6 +68,11 @@ app.use('/api/reports', require('./routes/reports'));
 // Gated on the reports module: GET needs reports:view (all roles), price/override writes need
 // reports:edit (managers/admin) — a read-only viewer can't tamper with cost-report pricing.
 app.use('/api/tyre-battery', requireModule('reports'), require('./routes/tyre_battery'));
+// Requesting, issuing and accounting for the old unit. Mounted apart from the reporting routes
+// above because those are gated on `reports` — a storekeeper who may not read cost reports still
+// has to be able to issue a tyre. Each endpoint carries its own role check instead, and the
+// specification picklist is deliberately open to any signed-in user so the form can be filled in.
+app.use('/api/tb', require('./routes/tyre_battery_requests'));
 
 // Static frontend (SPA). index.html is served with a per-boot cache-bust token on
 // app.js / styles.css so a normal reload always picks up the latest build.

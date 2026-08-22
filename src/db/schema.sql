@@ -834,3 +834,82 @@ CREATE TABLE IF NOT EXISTS settings (
   key   TEXT PRIMARY KEY,
   value TEXT
 );
+
+-- ---------------------------------------------------------------------------
+-- TYRES & BATTERIES — request, approval, issue, and what came off
+--
+-- The register the workshop has kept since 2012 holds 4,305 tyre lines and
+-- 1,781 battery lines, and its weakness is that the item was always free text:
+-- 804 spellings of about 170 real tyre sizes, so a third of tyre issues never
+-- reached a price. These tables put a picklist in front of the storekeeper so
+-- the next ten years read better than the last ten.
+--
+-- The REQUEST is an ordinary MRN — same number, same certify/approve trail,
+-- same inbox the managers already sign. Only the detail a tyre or battery
+-- needs (which wheel, what the meter read, why, what came off) lives here.
+-- ---------------------------------------------------------------------------
+
+-- The catalogue. One row per thing that can be asked for: a tyre size in a
+-- given type, or a battery rating. spec_key is what an old free-text line is
+-- matched back to, so history and new requests meet on the same shelf.
+CREATE TABLE IF NOT EXISTS tb_specs (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  kind        TEXT NOT NULL CHECK (kind IN ('tyre','battery')),
+  size        TEXT,                       -- tyre only: "1000 X 20", normalised
+  tyre_type   TEXT,                       -- ORIGINAL | CANVAS | RADIAL | DAG | ORIGINAL - RADIAL | …
+  rating      TEXT,                       -- battery only: "95 Amp"
+  label       TEXT NOT NULL,              -- what the storekeeper reads on the picklist
+  spec_key    TEXT NOT NULL,              -- normalised join key
+  unit_price  REAL,
+  active      INTEGER NOT NULL DEFAULT 1,
+  source      TEXT,                       -- where the row came from (workbook import, or a person)
+  created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE (kind, spec_key)
+);
+CREATE INDEX IF NOT EXISTS idx_tb_specs_kind ON tb_specs(kind, active);
+
+-- The tyre/battery detail of one MRN line. The line itself (description, qty,
+-- category) stays where every other requested item lives; this is what a wheel
+-- or a battery needs on top of it.
+CREATE TABLE IF NOT EXISTS tb_request_lines (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  mrn_line_id    INTEGER NOT NULL REFERENCES mrn_lines(id) ON DELETE CASCADE,
+  kind           TEXT NOT NULL CHECK (kind IN ('tyre','battery')),
+  spec_id        INTEGER REFERENCES tb_specs(id),
+  asset_id       INTEGER REFERENCES assets(id),
+  site           TEXT,
+  position       TEXT,                    -- tyre: FL, FR, RL1, RR1, SPARE …
+  km_reading     REAL,                    -- odometer or hour meter as found
+  km_remark      TEXT,                    -- "NOT WORK" and the like, kept out of the number
+  reason         TEXT NOT NULL,           -- worn, puncture, burst, no-crank, accident …
+  priority       TEXT NOT NULL DEFAULT 'normal' CHECK (priority IN ('normal','urgent','breakdown')),
+  old_serial     TEXT,                    -- what is coming off, if it is known
+  notes          TEXT,
+  created_at     TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE (mrn_line_id)
+);
+CREATE INDEX IF NOT EXISTS idx_tb_reqline_asset ON tb_request_lines(asset_id);
+
+-- What came off the machine. A replacement is not finished until the old unit
+-- is accounted for: an old battery has scrap value and an old tyre may still be
+-- worth repairing or retreading. Where it genuinely cannot be returned (lost on
+-- the road, taken by the supplier in exchange) that is recorded as an exception
+-- with a reason, rather than left blank and forgotten.
+CREATE TABLE IF NOT EXISTS tb_returns (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  issue_id       INTEGER REFERENCES tyre_battery_issues(id) ON DELETE CASCADE,
+  kind           TEXT NOT NULL CHECK (kind IN ('tyre','battery')),
+  asset_id       INTEGER REFERENCES assets(id),
+  serial_no      TEXT,
+  condition      TEXT NOT NULL CHECK (condition IN
+                   ('repairable','retreadable','reusable','warranty','scrap','not_returned')),
+  exception_reason TEXT,                  -- required when condition = not_returned
+  km_reading     REAL,
+  returned_to    TEXT,                    -- which store took it in
+  received_by    TEXT,
+  notes          TEXT,
+  return_date    TEXT NOT NULL DEFAULT (date('now')),
+  created_at     TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_tb_returns_issue ON tb_returns(issue_id);
+CREATE INDEX IF NOT EXISTS idx_tb_returns_cond ON tb_returns(kind, condition);

@@ -646,6 +646,7 @@ const NAV = [
   ['attention', '⚠️', 'Needs Attention'],
   ['progress', '📆', 'Daily Progress'],
   ['teardown', '📉', 'Cost Teardown'],
+  ['tbrequests', '🛞', 'Tyre & Battery Requests'],
   ['tyrebattery', '🛞', 'Tyre & Battery'],
   ['reports', '📈', 'Reports'],
   ['access', '🔐', 'Access Control', 'admin'],
@@ -4872,6 +4873,222 @@ async function openMonthlyInputs(year, month, onSaved) {
 }
 
 // ---- Tyre & Battery Issues — imported ledger + category price book (feeds the Monthly Cost Report)
+// ===== Tyre & Battery — request, approve, issue, and what came off ==========
+//
+// The register has recorded ISSUES since 2012 with nothing behind them saying who asked or who
+// agreed, and the item was always typed by hand — 804 spellings of about 170 real tyre sizes.
+// These screens put a request in front of the issue, and a PICKLIST in front of the item.
+//
+// The approval itself is deliberately NOT here. A tyre request is an ordinary MRN, so it is
+// certified and approved in the same inbox as everything else — two inboxes is how things stop
+// being read.
+
+const TB_POS = ['FL', 'FR', 'RL1', 'RR1', 'RL2', 'RR2', 'SPARE', 'TRAILER'];
+const TB_REASON_LABEL = {
+  worn: 'Worn out', puncture: 'Puncture', sidewall: 'Sidewall damage', burst: 'Burst',
+  accident: 'Accident', rotation: 'Rotation', planned: 'Planned replacement', other: 'Other',
+  low_capacity: 'Low capacity', no_crank: 'Will not crank', leakage: 'Leaking', damage: 'Damaged',
+  warranty: 'Warranty failure',
+};
+const TB_COND_LABEL = {
+  repairable: 'Repairable', retreadable: 'Retreadable', reusable: 'Reusable spare',
+  warranty: 'Warranty claim', scrap: 'Scrap', not_returned: 'Not returned',
+};
+const tbBadge = (s) => {
+  const m = { requested: 'amber', certified: 'blue', approved: 'green', rejected: 'red' };
+  return '<span class="badge ' + (m[s] || '') + '">' + esc(s || 'requested') + '</span>';
+};
+
+routes.tbrequests = async (c) => {
+  const sp = new URLSearchParams(location.hash.split('?')[1] || '');
+  const kind = sp.get('kind') === 'battery' ? 'battery' : 'tyre';
+  const tab = sp.get('tab') || 'requests';
+  const go = (t, k) => `location.hash='#/tbrequests?tab=${t}&kind=${k || kind}'`;
+
+  c.innerHTML = pageHeader('Tyre & Battery Requests',
+    'Ask for one, have it approved, issue it against the request, and record what came off.') + `
+    <div class="toolbar" style="margin-bottom:4px">
+      <button class="sm ${kind === 'tyre' ? 'primary' : ''}" onclick="${go(tab, 'tyre')}">🛞 Tyre</button>
+      <button class="sm ${kind === 'battery' ? 'primary' : ''}" onclick="${go(tab, 'battery')}">🔋 Battery</button>
+      <div class="spacer"></div>
+      <button class="primary sm" id="tb-new">+ New request</button>
+    </div>
+    <div class="toolbar" style="margin:0 0 10px 0">
+      ${[['requests', 'Requests'], ['issue', 'Ready to issue'], ['returns', 'Old units due'], ['specs', 'Sizes &amp; prices']]
+    .map(([t, l]) => `<button class="sm ${t === tab ? 'primary' : ''}" onclick="${go(t)}">${l}</button>`).join('')}
+    </div>
+    <div id="tb-body" class="muted">Loading…</div>`;
+
+  qs('#tb-new', c).onclick = () => tbRequestModal(kind, () => render());
+  const body = qs('#tb-body', c);
+
+  if (tab === 'requests') {
+    const rows = await api('/tb/requests?kind=' + kind);
+    body.innerHTML = rows.length ? tableWrap(
+      [{ label: 'Request' }, { label: 'Date' }, { label: 'Vehicle' }, { label: 'Items', num: true },
+        { label: 'Qty', num: true }, { label: 'Approval' }, { label: 'Issued', num: true }, { label: 'Requested by' }],
+      rows.map((r) => `<tr>
+        <td><a href="#/tbrequests?tab=one&id=${r.id}&kind=${kind}"><b>${esc(r.mrn_no)}</b></a></td>
+        <td>${esc(String(r.req_date || '').slice(0, 10))}</td>
+        <td>${esc(r.asset_code || '—')}${r.registration ? ' <span class="muted">' + esc(r.registration) + '</span>' : ''}</td>
+        <td class="num">${r.lines}</td><td class="num">${num(r.qty)}</td>
+        <td>${tbBadge(r.approval_status)}</td>
+        <td class="num">${r.issued_lines}/${r.lines}</td>
+        <td>${esc(r.requested_by || '—')}</td></tr>`), { scroll: true })
+      : `<div class="card"><p class="muted">No ${kind} requests yet — the button above raises one.</p></div>`;
+    return;
+  }
+
+  if (tab === 'one') {
+    const d = await api('/tb/requests/' + sp.get('id'));
+    body.innerHTML = `<div class="card section">
+        <div class="toolbar" style="margin:0 0 8px"><h3 style="margin:0">Request ${esc(d.mrn_no)}</h3>
+          ${tbBadge(d.approval_status)}<div class="spacer"></div>
+          <span class="muted">${esc(d.asset_code || '')} ${esc(d.registration || '')}${d.job_no ? ' · job ' + esc(d.job_no) : ''}</span></div>
+        <div class="note">Certifying and approving happen in the ordinary request inbox —
+          <a href="#/stores?tab=mrn&id=${d.id}">open ${esc(d.mrn_no)} there</a>.</div>
+        ${tableWrap([{ label: 'Item' }, { label: 'Qty', num: true }, { label: 'Position' }, { label: 'Reason' },
+    { label: 'Meter' }, { label: 'Issued', num: true }, { label: '' }],
+    d.lines.map((l) => `<tr>
+            <td>${esc(l.spec_label || l.description)}</td>
+            <td class="num">${num(l.qty)}</td>
+            <td>${esc(l.position || '—')}</td>
+            <td>${esc(TB_REASON_LABEL[l.reason] || l.reason || '—')}</td>
+            <td>${l.km_reading != null ? num(l.km_reading) : esc(l.km_remark || '—')}</td>
+            <td class="num">${l.issued || 0}</td>
+            <td>${d.approval_status === 'approved' && (l.issued || 0) < l.qty
+    ? '<button class="sm primary" data-issue="' + l.mrn_line_id + '">Issue…</button>' : ''}</td></tr>`))}
+      </div>`;
+    qsa('[data-issue]', body).forEach((b) => {
+      b.onclick = () => tbIssueModal(d, d.lines.find((l) => String(l.mrn_line_id) === b.dataset.issue), () => render());
+    });
+    return;
+  }
+
+  if (tab === 'issue') {
+    const rows = (await api('/tb/requests?kind=' + kind + '&status=approved')).filter((r) => r.issued_lines < r.lines);
+    body.innerHTML = rows.length ? tableWrap(
+      [{ label: 'Request' }, { label: 'Date' }, { label: 'Vehicle' }, { label: 'Items', num: true }, { label: 'Issued', num: true }, { label: '' }],
+      rows.map((r) => `<tr><td><b>${esc(r.mrn_no)}</b></td><td>${esc(String(r.req_date || '').slice(0, 10))}</td>
+        <td>${esc(r.asset_code || '—')}</td><td class="num">${r.lines}</td><td class="num">${r.issued_lines}/${r.lines}</td>
+        <td><a class="btn sm primary" href="#/tbrequests?tab=one&id=${r.id}&kind=${kind}">Open</a></td></tr>`), { scroll: true })
+      : '<div class="card"><p class="muted">Nothing approved is waiting to go out.</p></div>';
+    return;
+  }
+
+  if (tab === 'returns') {
+    const rows = await api('/tb/returns/outstanding?kind=' + kind);
+    body.innerHTML = `<div class="note">A replacement is not finished until the old one is accounted for —
+      an old battery is worth money, and an old tyre may still be repairable or retreadable.</div>`
+      + (rows.length ? tableWrap(
+        [{ label: 'Issued' }, { label: 'Request' }, { label: 'Vehicle' }, { label: 'Item' },
+          { label: 'Qty', num: true }, { label: 'Position' }, { label: '' }],
+        rows.map((r) => `<tr><td>${esc(String(r.issue_date || '').slice(0, 10))}</td><td>${esc(r.mrn_no || '—')}</td>
+        <td>${esc(r.asset_code || '—')}</td><td>${esc(r.spec_label || '—')}</td><td class="num">${num(r.qty)}</td>
+        <td>${esc(r.position || '—')}</td>
+        <td><button class="sm primary" data-ret="${r.issue_id}">Record…</button></td></tr>`), { scroll: true })
+        : '<div class="card"><p class="muted">Every old unit has been accounted for.</p></div>');
+    qsa('[data-ret]', body).forEach((b) => {
+      b.onclick = () => tbReturnModal(rows.find((r) => String(r.issue_id) === b.dataset.ret), () => render());
+    });
+    return;
+  }
+
+  const specs = await api('/tb/specs?kind=' + kind);
+  body.innerHTML = `<div class="note">A request can only name a size on this list. That is what stops the next ten
+    years reading like the last ten, when 804 spellings covered about 170 real sizes and a third of
+    tyre issues never reached a price.</div>` + tableWrap(
+    [{ label: kind === 'tyre' ? 'Size & type' : 'Rating' }, { label: 'Used', num: true }, { label: 'Unit price (Rs)', num: true }],
+    specs.map((s) => `<tr><td>${esc(s.label)}</td><td class="num">${s.used || 0}</td>
+      <td class="num">${s.unit_price == null ? '<span class="badge amber">needs a price</span>' : money(s.unit_price)}</td></tr>`),
+    { scroll: true });
+};
+
+// ---- raising one ----------------------------------------------------------
+async function tbRequestModal(kind, done) {
+  const specs = await api('/tb/specs?kind=' + kind);
+  const reasons = (await api('/tb/reasons'))[kind] || [];
+  modal(kind === 'tyre' ? '🛞 New tyre request' : '🔋 New battery request', `
+    <!-- The ASSET picker, not the job/general one: a tyre is always for a particular machine, and
+         the general picker's default option is one this form has to refuse. -->
+    <div class="fld">${assetPickerHtml('For which vehicle / machine *')}</div>
+    <div class="row">${field('Site', 'site')}${field('Priority', 'priority', { type: 'select',
+    options: [['normal', 'Normal'], ['urgent', 'Urgent'], ['breakdown', 'Breakdown']].map(([v, l]) => ({ value: v, label: l })) })}</div>
+    <div class="fld"><label>${kind === 'tyre' ? 'Size &amp; type' : 'Rating'}</label>
+      <select name="spec_id">${specs.map((s) => `<option value="${s.id}">${esc(s.label)}${s.unit_price == null ? ' — no price yet' : ''}</option>`).join('')}</select></div>
+    <div class="row">${field('How many', 'qty', { type: 'number', value: kind === 'tyre' ? 2 : 1 })}
+      ${field('Reason', 'reason', { type: 'select', options: reasons.map((r) => ({ value: r, label: TB_REASON_LABEL[r] || r })) })}</div>
+    <div class="row">${kind === 'tyre'
+    ? field('Wheel position', 'position', { type: 'select', options: [{ value: '', label: '—' }].concat(TB_POS.map((p) => ({ value: p, label: p }))) })
+    : field('Old battery serial (if known)', 'old_serial')}
+      ${field('Meter reading (km / hr)', 'km_reading', { type: 'number' })}</div>
+    ${field('Note', 'notes')}
+    <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Raise request</button></div>`,
+  (body, close) => {
+    wireAssetPicker(body);
+    qs('#s', body).onclick = async () => {
+      const f = formData(body);
+      // Typing a code without picking it from the list leaves asset_id empty on purpose — the
+      // request has to name a machine the register actually knows.
+      if (!f.asset_id) return toast('Pick the vehicle or machine from the list', 'err');
+      try {
+        const r = await api('/tb/requests', { method: 'POST', body: {
+          kind, asset_id: f.asset_id, site: f.site, purpose: f.notes,
+          lines: [{ spec_id: f.spec_id, qty: f.qty, reason: f.reason, position: f.position,
+            km_reading: f.km_reading, old_serial: f.old_serial, priority: f.priority, notes: f.notes }],
+        } });
+        toast('Request ' + r.mrn_no + ' raised — it now needs certifying and approving');
+        close(); done && done();
+      } catch (e) { toast(e.message, 'err'); }
+    };
+  }, { wide: true });
+}
+
+// ---- issuing against it ---------------------------------------------------
+function tbIssueModal(request, line, done) {
+  modal('Issue against ' + request.mrn_no, `
+    <div class="note">${esc(line.spec_label || line.description)} · approved ${num(line.qty)}${line.position ? ' · ' + esc(line.position) : ''}</div>
+    <div class="row">${field('How many are going out', 'qty', { type: 'number', value: Math.max(0, (line.qty || 0) - (line.issued || 0)) })}
+      ${field('Date', 'issue_date', { type: 'date', value: new Date().toISOString().slice(0, 10) })}</div>
+    <div class="row">${field('Serial number (if it has one)', 'serial_no')}${field('Unit price (blank = the list price)', 'unit_price', { type: 'number' })}</div>
+    ${field('Issued by', 'issued_by')}
+    <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Issue</button></div>`,
+  (body, close) => {
+    qs('#s', body).onclick = async () => {
+      try {
+        const r = await api('/tb/issue', { method: 'POST', body: { mrn_line_id: line.mrn_line_id, ...formData(body) } });
+        toast(r.message || 'Issued');
+        close(); done && done();
+      } catch (e) { toast(e.message, 'err'); }
+    };
+  });
+}
+
+// ---- what came off --------------------------------------------------------
+function tbReturnModal(row, done) {
+  // A tyre can be repaired or retreaded; a battery cannot. Offering the whole list for both would
+  // invite an answer that means nothing.
+  const conds = row.kind === 'tyre'
+    ? ['repairable', 'retreadable', 'reusable', 'warranty', 'scrap', 'not_returned']
+    : ['reusable', 'warranty', 'scrap', 'not_returned'];
+  modal('What came off ' + (row.asset_code || 'the machine'), `
+    <div class="note">${esc(row.spec_label || '')} issued ${esc(String(row.issue_date || '').slice(0, 10))}${row.mrn_no ? ' on ' + esc(row.mrn_no) : ''}</div>
+    <div class="row">${field('Condition', 'condition', { type: 'select', options: conds.map((v) => ({ value: v, label: TB_COND_LABEL[v] })) })}
+      ${field('Old serial (if known)', 'serial_no')}</div>
+    <div class="row">${field('Meter reading', 'km_reading', { type: 'number' })}${field('Taken in by', 'received_by')}</div>
+    ${field('If it is not coming back, why', 'exception_reason')}
+    ${field('Note', 'notes')}
+    <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Record</button></div>`,
+  (body, close) => {
+    qs('#s', body).onclick = async () => {
+      try {
+        await api('/tb/returns', { method: 'POST', body: { issue_id: row.issue_id, ...formData(body) } });
+        toast('Recorded'); close(); done && done();
+      } catch (e) { toast(e.message, 'err'); }
+    };
+  });
+}
+
 routes.tyrebattery = async (c) => {
   const sp = new URLSearchParams(location.hash.split('?')[1] || '');
   const kind = sp.get('kind') === 'battery' ? 'battery' : 'tyre';

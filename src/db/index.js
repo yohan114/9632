@@ -441,6 +441,18 @@ function migrate() {
     updated_at    TEXT NOT NULL DEFAULT (datetime('now')),
     UNIQUE(kind, category_norm)
   );`);
+  // Ten years of these were written as free text — 804 spellings of about 170 real tyre sizes, so
+  // a third of tyre issues never reached a price. spec_id ties each line to the catalogue row it
+  // really is, so the old register and a new request meet on the same shelf. The rest is what a
+  // request-driven issue carries that an imported one never did.
+  // These sit HERE, after the table is created a few lines above — up with the other ensureColumn
+  // calls they ran before the table existed and broke every fresh install.
+  ensureColumn('tyre_battery_issues', 'spec_id', 'INTEGER REFERENCES tb_specs(id)');
+  ensureColumn('tyre_battery_issues', 'mrn_line_id', 'INTEGER REFERENCES mrn_lines(id)');
+  ensureColumn('tyre_battery_issues', 'serial_no', 'TEXT');
+  ensureColumn('tyre_battery_issues', 'position', 'TEXT');
+  ensureColumn('tyre_battery_issues', 'issued_by', 'TEXT');
+  ensureColumn('tyre_battery_issues', 'job_id', 'INTEGER REFERENCES job_cards(id)');
   // Seed the RBAC matrix once (safe to require here — db exports are already set).
   try { require('../lib/permissions').seedDefaults(); } catch (e) { /* table may not exist yet on very first pass */ }
   return db;
