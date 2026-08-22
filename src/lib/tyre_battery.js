@@ -61,7 +61,11 @@ function tyreSize(text) {
   const m = s.match(/(\d+(?:\.\d+)?)(?:\s*[X/\-]\s*|\s+)(\d+(?:\.\d+)?)(?:\s*[X/\-]\s*(\d+(?:\.\d+)?))?/);
   if (!m) return null;
   const parts = [m[1], m[2]];
-  if (m[3]) parts.push(m[3]);
+  // A THIRD COMPONENT WRITTEN WITH A LEADING ZERO IS A QUANTITY, NOT A RIM. "1100 X 20 X 02" is
+  // two of a 1100 X 20, and "10 X 16.5 X 01" is one of a 10 X 16.5 — the workbook's own
+  // normalisation carried eight of these through, and each one spawned a tyre, a tube and a flap
+  // that nobody sells. Real rim diameters (12.5 X 80 X 18, 265 X 65 X 17) never carry the zero.
+  if (m[3] && !/^0\d$/.test(m[3])) parts.push(m[3]);
   if (parts.some((p) => !(Number(p) > 0))) return null;
   return parts.join(' X ');
 }
@@ -85,11 +89,17 @@ function batteryRating(text) {
 }
 const trimNum = (n) => String(Number(n)).replace(/\.0+$/, '');
 
+// A TUBE AND A FLAP ARE SIZED, NOT TYPED. A 750 X 16 tube fits the 750 X 16 tyre whether that
+// tyre is canvas or a remould, so their key is the size alone — putting the tyre's type on them
+// would split one tube into five.
+const SIZED_ONLY = ['tube', 'flap'];
+const sizeKey = (size) => String(size || 'UNKNOWN').replace(/[^0-9.]/g, 'X').replace(/X+/g, 'X');
+
 /** The stored join key. Built from the pieces, never from the words as written. */
 function specKey(kind, parts) {
   if (kind === 'battery') return String(parts.rating || 'NOT SPECIFIED').toUpperCase().replace(/[^A-Z0-9.]/g, '');
-  const size = String(parts.size || 'UNKNOWN').replace(/[^0-9.]/g, 'X').replace(/X+/g, 'X');
-  return size + '|' + String(parts.tyre_type || 'NOT SPECIFIED').replace(/[^A-Z]/g, '');
+  if (SIZED_ONLY.includes(kind)) return sizeKey(parts.size);
+  return sizeKey(parts.size) + '|' + String(parts.tyre_type || 'NOT SPECIFIED').replace(/[^A-Z]/g, '');
 }
 
 /** Read a free-text register line into the pieces a spec is made of. */
@@ -99,6 +109,10 @@ function parse(kind, text) {
     return { kind, rating, label: rating, spec_key: specKey('battery', { rating }) };
   }
   const size = tyreSize(text);
+  if (SIZED_ONLY.includes(kind)) {
+    const label = (size || 'NOT SPECIFIED') + ' ' + (kind === 'tube' ? 'tube' : 'flap');
+    return { kind, size, tyre_type: null, label, spec_key: specKey(kind, { size }) };
+  }
   const tyre_type = tyreType(text);
   const label = (size || 'NOT SPECIFIED') + (tyre_type === 'NOT SPECIFIED' ? '' : ' · ' + tyre_type);
   return { kind, size, tyre_type, label, radial: hasRadialMark(text), spec_key: specKey('tyre', { size, tyre_type }) };

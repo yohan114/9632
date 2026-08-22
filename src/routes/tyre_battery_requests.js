@@ -29,6 +29,12 @@ const KINDS = ['tyre', 'battery'];
 const clean = (v) => (v == null ? null : String(v).trim() || null);
 const kindOf = (v) => (KINDS.includes(String(v)) ? String(v) : null);
 
+// A TYRE RARELY GOES ON ALONE. The register has been writing "750 X 16 TYER /TUBE/COLLER" into the
+// tyre's own description for want of anywhere else to put it, so one tyre request carries the tyre,
+// its tube and its flap. A battery has no such companions.
+const ALLOWED_LINES = { tyre: ['tyre', 'tube', 'flap'], battery: ['battery'] };
+const LINE_LABEL = { tyre: 'tyre', tube: 'tube', flap: 'flap', battery: 'battery' };
+
 // Old units, and what the store decided about each.
 const CONDITIONS = ['repairable', 'retreadable', 'reusable', 'warranty', 'scrap', 'not_returned'];
 // Why the machine needs one. Free text hides the pattern; a list makes "how many burst this year"
@@ -109,10 +115,16 @@ router.post('/requests', requireRole('workshop', 'storekeeper', 'manager', 'oper
     for (const [i, ln] of lines.entries()) {
       const spec = get('SELECT * FROM tb_specs WHERE id = ? AND COALESCE(active,1) = 1', toInt(ln.spec_id));
       if (!spec) return res.status(400).json({ error: `Line ${i + 1}: pick the size or rating from the list` });
-      if (spec.kind !== kind) return res.status(400).json({ error: `Line ${i + 1}: that is a ${spec.kind}, not a ${kind}` });
+      if (!ALLOWED_LINES[kind].includes(spec.kind)) {
+        return res.status(400).json({
+          error: `Line ${i + 1}: a ${LINE_LABEL[spec.kind] || spec.kind} does not belong on a ${kind} request`,
+        });
+      }
       const qty = toNum(ln.qty, 0);
       if (!(qty > 0)) return res.status(400).json({ error: `Line ${i + 1}: how many?` });
-      const reason = clean(ln.reason);
+      // The reason belongs to the JOB, so a tube going on with a worn tyre inherits it rather than
+      // asking the fitter to justify a tube separately.
+      const reason = clean(ln.reason) || clean(b.reason);
       if (!reason || !REASONS[kind].includes(reason)) {
         return res.status(400).json({ error: `Line ${i + 1}: say why it is needed (${REASONS[kind].join(', ')})` });
       }
@@ -148,7 +160,9 @@ router.post('/requests', requireRole('workshop', 'storekeeper', 'manager', 'oper
           `INSERT INTO tb_request_lines (mrn_line_id, kind, spec_id, asset_id, site, position,
                                          km_reading, km_remark, reason, priority, old_serial, notes)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          lineId, kind, p.spec.id, asset.id, clean(b.site), p.position,
+          // The LINE's own kind, not the request's — a tyre request holds tubes and flaps too, and
+          // recording them all as "tyre" would make "how many tubes did we fit" unanswerable.
+          lineId, p.spec.kind, p.spec.id, asset.id, clean(b.site), p.position,
           p.km_reading, p.km_remark, p.reason, p.priority, p.old_serial, p.notes);
       }
       return mrnId;

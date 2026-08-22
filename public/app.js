@@ -5005,37 +5005,82 @@ routes.tbrequests = async (c) => {
 };
 
 // ---- raising one ----------------------------------------------------------
+//
+// SEVERAL ITEMS TO A REQUEST. A tyre rarely goes on alone — it wants its tube and often a flap —
+// and the register has been writing "750 X 16 TYER /TUBE/COLLER" into the tyre's own description
+// for want of anywhere else to put them. Each row picks its own item, so a tube is a tube and
+// "how many tubes did we fit this year" becomes a question with an answer.
+const TB_LINE_KINDS = { tyre: [['tyre', '🛞 Tyre'], ['tube', '⭕ Tube'], ['flap', '➰ Flap']], battery: [['battery', '🔋 Battery']] };
+
 async function tbRequestModal(kind, done) {
-  const specs = await api('/tb/specs?kind=' + kind);
+  // Every list the rows can choose from, fetched once rather than per row.
+  const catalogue = {};
+  for (const [k] of TB_LINE_KINDS[kind]) catalogue[k] = await api('/tb/specs?kind=' + k);
   const reasons = (await api('/tb/reasons'))[kind] || [];
   modal(kind === 'tyre' ? '🛞 New tyre request' : '🔋 New battery request', `
+    <div class="istep"><span class="istep-n">1</span> Which machine, and why</div>
     <!-- The ASSET picker, not the job/general one: a tyre is always for a particular machine, and
          the general picker's default option is one this form has to refuse. -->
     <div class="fld">${assetPickerHtml('For which vehicle / machine *')}</div>
     <div class="row">${field('Site', 'site')}${field('Priority', 'priority', { type: 'select',
     options: [['normal', 'Normal'], ['urgent', 'Urgent'], ['breakdown', 'Breakdown']].map(([v, l]) => ({ value: v, label: l })) })}</div>
-    <div class="fld"><label>${kind === 'tyre' ? 'Size &amp; type' : 'Rating'}</label>
-      <select name="spec_id">${specs.map((s) => `<option value="${s.id}">${esc(s.label)}${s.unit_price == null ? ' — no price yet' : ''}</option>`).join('')}</select></div>
-    <div class="row">${field('How many', 'qty', { type: 'number', value: kind === 'tyre' ? 2 : 1 })}
-      ${field('Reason', 'reason', { type: 'select', options: reasons.map((r) => ({ value: r, label: TB_REASON_LABEL[r] || r })) })}</div>
-    <div class="row">${kind === 'tyre'
-    ? field('Wheel position', 'position', { type: 'select', options: [{ value: '', label: '—' }].concat(TB_POS.map((p) => ({ value: p, label: p }))) })
-    : field('Old battery serial (if known)', 'old_serial')}
+    <div class="row">${field('Reason', 'reason', { type: 'select', options: reasons.map((r) => ({ value: r, label: TB_REASON_LABEL[r] || r })) })}
       ${field('Meter reading (km / hr)', 'km_reading', { type: 'number' })}</div>
+    <div class="istep"><span class="istep-n">2</span> What is needed</div>
+    <div id="tb-lines"></div>
+    <div class="toolbar" style="margin:6px 0 0">
+      ${TB_LINE_KINDS[kind].map(([k, l]) => `<button type="button" class="sm" data-add="${k}">+ ${l}</button>`).join('')}
+    </div>
     ${field('Note', 'notes')}
     <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Raise request</button></div>`,
   (body, close) => {
     wireAssetPicker(body);
+    const rows = [];
+    const host = qs('#tb-lines', body);
+    const draw = () => {
+      host.innerHTML = rows.length ? `<table class="ni-tab"><thead><tr>
+          <th>Item</th><th>Size / rating</th><th class="r">Qty</th>
+          ${kind === 'tyre' ? '<th>Position</th>' : '<th>Old serial</th>'}<th></th></tr></thead><tbody>
+        ${rows.map((r, i) => `<tr>
+          <td>${esc((TB_LINE_KINDS[kind].find(([k]) => k === r.kind) || [, r.kind])[1])}</td>
+          <td><select data-spec="${i}">${(catalogue[r.kind] || []).map((s) =>
+    `<option value="${s.id}"${String(s.id) === String(r.spec_id) ? ' selected' : ''}>${esc(s.label)}${s.unit_price == null ? ' — no price yet' : ''}</option>`).join('')}</select></td>
+          <td class="r"><input type="number" min="0.01" step="1" value="${r.qty}" data-qty="${i}" style="width:70px;text-align:right"></td>
+          <td>${kind === 'tyre'
+    ? `<select data-pos="${i}"><option value="">—</option>${TB_POS.map((p) => `<option${p === r.position ? ' selected' : ''}>${p}</option>`).join('')}</select>`
+    : `<input data-old="${i}" value="${esc(r.old_serial || '')}" placeholder="if known">`}</td>
+          <td class="r"><button type="button" class="sm" data-del="${i}">✕</button></td></tr>`).join('')}
+        </tbody></table>`
+        : '<p class="muted" style="margin:4px 0">Nothing on the request yet — add the tyre, and its tube if it takes one.</p>';
+      qsa('[data-spec]', host).forEach((el) => { el.onchange = () => { rows[+el.dataset.spec].spec_id = el.value; }; });
+      qsa('[data-qty]', host).forEach((el) => { el.oninput = () => { rows[+el.dataset.qty].qty = el.value; }; });
+      qsa('[data-pos]', host).forEach((el) => { el.onchange = () => { rows[+el.dataset.pos].position = el.value; }; });
+      qsa('[data-old]', host).forEach((el) => { el.oninput = () => { rows[+el.dataset.old].old_serial = el.value; }; });
+      qsa('[data-del]', host).forEach((el) => { el.onclick = () => { rows.splice(+el.dataset.del, 1); draw(); }; });
+    };
+    qsa('[data-add]', body).forEach((b) => {
+      b.onclick = () => {
+        const k = b.dataset.add;
+        const first = (catalogue[k] || [])[0];
+        rows.push({ kind: k, spec_id: first ? first.id : '', qty: k === 'tyre' ? 2 : 1, position: '', old_serial: '' });
+        draw();
+      };
+    });
+    // Open with the obvious first row already there, so the common case is one click.
+    qs('[data-add]', body).click();
+
     qs('#s', body).onclick = async () => {
       const f = formData(body);
       // Typing a code without picking it from the list leaves asset_id empty on purpose — the
       // request has to name a machine the register actually knows.
       if (!f.asset_id) return toast('Pick the vehicle or machine from the list', 'err');
+      if (!rows.length) return toast('Add at least one item to the request', 'err');
+      if (rows.some((r) => !r.spec_id)) return toast('Every line needs a size or rating', 'err');
       try {
         const r = await api('/tb/requests', { method: 'POST', body: {
-          kind, asset_id: f.asset_id, site: f.site, purpose: f.notes,
-          lines: [{ spec_id: f.spec_id, qty: f.qty, reason: f.reason, position: f.position,
-            km_reading: f.km_reading, old_serial: f.old_serial, priority: f.priority, notes: f.notes }],
+          kind, asset_id: f.asset_id, site: f.site, purpose: f.notes, reason: f.reason,
+          lines: rows.map((ln) => ({ spec_id: ln.spec_id, qty: ln.qty, reason: f.reason, position: ln.position,
+            km_reading: f.km_reading, old_serial: ln.old_serial, priority: f.priority, notes: f.notes })),
         } });
         toast('Request ' + r.mrn_no + ' raised — it now needs certifying and approving');
         close(); done && done();

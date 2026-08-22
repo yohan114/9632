@@ -453,6 +453,32 @@ function migrate() {
   ensureColumn('tyre_battery_issues', 'position', 'TEXT');
   ensureColumn('tyre_battery_issues', 'issued_by', 'TEXT');
   ensureColumn('tyre_battery_issues', 'job_id', 'INTEGER REFERENCES job_cards(id)');
+  // A TYRE RARELY GOES ON ALONE. The register has been writing "750 X 16 TYER /TUBE/COLLER" into
+  // the tyre's own description because there was nowhere else to put the tube and the flap. They
+  // are their own items, sized like the tyre they go inside, so 'tube' and 'flap' join the kinds.
+  // SQLite cannot alter a CHECK, and these tables are young — but tyre_battery_issues.spec_id
+  // already points at 6,061 rows of tb_specs, so the table is rebuilt in place with its ids kept
+  // rather than dropped. Detected by reading the constraint back, so it runs once and then never.
+  for (const [table, cols] of [
+    ['tb_specs', 'id, kind, size, tyre_type, rating, label, spec_key, unit_price, active, source, created_at'],
+    ['tb_request_lines', 'id, mrn_line_id, kind, spec_id, asset_id, site, position, km_reading, km_remark, reason, priority, old_serial, notes, created_at'],
+  ]) {
+    const cur = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name = ?").get(table);
+    if (!cur || /'tube'/.test(cur.sql)) continue;
+    const widened = cur.sql
+      .replace(/CREATE TABLE (IF NOT EXISTS )?tb_/, 'CREATE TABLE tmp_tb_')
+      .replace(/kind\s+TEXT NOT NULL CHECK \(kind IN \('tyre','battery'\)\)/,
+        "kind        TEXT NOT NULL CHECK (kind IN ('tyre','battery','tube','flap'))");
+    db.pragma('foreign_keys = OFF');
+    db.exec(`${widened};
+             INSERT INTO tmp_${table} (${cols}) SELECT ${cols} FROM ${table};
+             DROP TABLE ${table};
+             ALTER TABLE tmp_${table} RENAME TO ${table};`);
+    db.pragma('foreign_keys = ON');
+  }
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_tb_specs_kind ON tb_specs(kind, active);
+           CREATE INDEX IF NOT EXISTS idx_tb_reqline_asset ON tb_request_lines(asset_id);`);
+
   // Seed the RBAC matrix once (safe to require here — db exports are already set).
   try { require('../lib/permissions').seedDefaults(); } catch (e) { /* table may not exist yet on very first pass */ }
   return db;

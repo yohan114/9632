@@ -45,9 +45,12 @@ const WORKBOOK = process.argv.find((a) => a.endsWith('.xlsx'))
     const size = cell(ts.getCell(r, 2)); const type = cell(ts.getCell(r, 3));
     if (!size || String(size).toUpperCase() === 'TOTAL') continue;
     const p = tb.parse('tyre', String(size) + ' ' + String(type || ''));
-    // The workbook's own size wins for the label — it is what the owner reads.
-    addSpec({ kind: 'tyre', size: String(size).trim(), tyre_type: String(type || 'NOT SPECIFIED').trim() || 'NOT SPECIFIED',
-      rating: null, label: String(size).trim() + (type ? ' · ' + String(type).trim() : ''), spec_key: p.spec_key });
+    // The PARSED size wins over the written one, so the label and the key can never disagree. It
+    // matters for the eight workbook sizes that absorbed a quantity — "1100 X 20 X 02" is read as
+    // 1100 X 20, and labelling it otherwise would put a tyre nobody sells on the picklist.
+    const shown = p.size || String(size).trim();
+    addSpec({ kind: 'tyre', size: shown, tyre_type: String(type || 'NOT SPECIFIED').trim() || 'NOT SPECIFIED',
+      rating: null, label: shown + (type ? ' · ' + String(type).trim() : ''), spec_key: p.spec_key });
   }
   const bs = wb.getWorksheet('BATTERY SPEC SUMMARY');
   for (let r = 4; r <= bs.rowCount; r++) {
@@ -72,9 +75,22 @@ const WORKBOOK = process.argv.find((a) => a.endsWith('.xlsx'))
     extra.push(row.kind + ' ' + p.label + '  (from ' + row.n + ' line(s) written "' + String(row.category).slice(0, 28) + '")');
   }
 
+  // ---- 2b. a tube and a flap for every tyre size -------------------------
+  // The register has been writing these INTO the tyre's description — "750 X 16 TYER /TUBE/COLLER"
+  // — because a request could only ever name one thing. They are sized like the tyre they go
+  // inside and carry no type: one 750 X 16 tube serves the canvas and the remould alike.
+  const tyreSizes = new Set([...specs.values()].filter((s) => s.kind === 'tyre' && s.size).map((s) => s.size));
+  for (const size of tyreSizes) {
+    for (const kind of ['tube', 'flap']) {
+      const p = tb.parse(kind, size);
+      addSpec({ kind, size, tyre_type: null, rating: null, label: p.label, spec_key: p.spec_key });
+    }
+  }
+
   const list = [...specs.values()];
   console.log(`CATALOGUE — ${list.length} specifications`);
-  console.log(`   tyre ${list.filter((s) => s.kind === 'tyre').length} · battery ${list.filter((s) => s.kind === 'battery').length}`);
+  console.log('   ' + ['tyre', 'tube', 'flap', 'battery']
+    .map((k) => k + ' ' + list.filter((s) => s.kind === k).length).join(' · '));
   if (extra.length) {
     console.log(`\n   ${extra.length} the workbook's summary did not carry, taken from the register itself:`);
     for (const e of extra.slice(0, 10)) console.log('      ' + e);
@@ -142,6 +158,7 @@ const WORKBOOK = process.argv.find((a) => a.endsWith('.xlsx'))
     if (conflicted.length > 10) console.log(`      … and ${conflicted.length - 10} more`);
   }
 
+  const stale = { removed: [], kept: [] };
   if (!APPLY) { console.log('\nDry run — nothing written.'); process.exit(0); }
 
   tx(() => {
@@ -160,7 +177,31 @@ const WORKBOOK = process.argv.find((a) => a.endsWith('.xlsx'))
       const id = idOf.get(key);
       if (id) run('UPDATE tyre_battery_issues SET spec_id = ? WHERE id = ?', id, issueId);
     }
+
+    // SWEEP UP WHAT AN EARLIER RUN LEFT BEHIND. This script has been improved since it first ran —
+    // the parser used to absorb a quantity into the size and mint "1100 X 20 X 02" — and updating
+    // in place never removed those. A shelf the seed no longer produces, that nothing points at
+    // and that nobody has priced by hand, was a mistake and is dropped. Anything still referenced
+    // stays put: an orphaned issue would be worse than an odd-looking picklist entry.
+    const wanted = new Set(list.map((s) => s.kind + s.spec_key));
+    for (const s of all(`SELECT id, kind, spec_key, label, source FROM tb_specs`)) {
+      if (wanted.has(s.kind + s.spec_key)) continue;
+      if (s.source !== 'workbook') { stale.kept.push(s.label + ' (priced by ' + s.source + ')'); continue; }
+      const used = get('SELECT COUNT(*) c FROM tyre_battery_issues WHERE spec_id = ?', s.id).c;
+      if (used) { stale.kept.push(s.label + ' (' + used + ' issues still point at it)'); continue; }
+      run('DELETE FROM tb_specs WHERE id = ?', s.id);
+      stale.removed.push(s.label);
+    }
   });
+  if (stale.removed.length) {
+    console.log(`\nSwept up ${stale.removed.length} specifications an earlier run left behind:`);
+    for (const l of stale.removed.slice(0, 8)) console.log('   ' + l);
+    if (stale.removed.length > 8) console.log(`   … and ${stale.removed.length - 8} more`);
+  }
+  if (stale.kept.length) {
+    console.log(`\n${stale.kept.length} the seed no longer produces were KEPT because something needs them:`);
+    for (const l of stale.kept.slice(0, 6)) console.log('   ' + l);
+  }
   console.log(`\nAPPLIED — ${list.length} specifications, ${assign.size} register lines tied to one.`);
   console.log('No issue line was edited; only the shelf it belongs to is now recorded.');
 })().catch((e) => { console.error('FAILED:', e.message); process.exit(1); });

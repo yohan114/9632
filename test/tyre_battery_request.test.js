@@ -153,7 +153,7 @@ test('a battery cannot be requested on a tyre request', async () => {
     kind: 'tyre', asset_id: ASSET, lines: [{ spec_id: BATT, qty: 1, reason: 'worn' }],
   });
   assert.strictEqual(r.status, 400);
-  assert.match((await json(r)).error, /battery, not a tyre/i);
+  assert.match((await json(r)).error, /battery does not belong on a tyre request/i);
 });
 
 test('a request with no machine on it is refused', async () => {
@@ -290,4 +290,87 @@ test('a request naming neither a machine nor a job is still refused', async () =
     kind: 'battery', lines: [{ spec_id: BATT, qty: 1, reason: 'no_crank' }],
   });
   assert.strictEqual(r.status, 400);
+});
+
+// ---- a tyre rarely goes on alone ------------------------------------------
+//
+// The register has been writing "750 X 16 TYER /TUBE/COLLER" into the tyre's own description
+// because a request could only ever name one thing. A tyre request now carries the tyre, its tube
+// and its flap as separate lines — which is what makes "how many tubes did we fit" answerable.
+
+const TUBE = run(`INSERT INTO tb_specs (kind, size, label, spec_key, source)
+                  VALUES ('tube','750 X 16','750 X 16 tube',?,'workbook')`,
+tb.parse('tube', '750 X 16').spec_key).lastInsertRowid;
+const FLAP = run(`INSERT INTO tb_specs (kind, size, label, spec_key, source)
+                  VALUES ('flap','750 X 16','750 X 16 flap',?,'workbook')`,
+tb.parse('flap', '750 X 16').spec_key).lastInsertRowid;
+
+test('a tube is keyed by size alone — one tube fits the canvas and the remould', () => {
+  assert.strictEqual(tb.parse('tube', '750 X 16 CANVAS').spec_key, tb.parse('tube', '750 X 16 DAG').spec_key,
+    'putting the tyre type on a tube would split one tube into five');
+});
+
+test('a quantity written with a leading zero is not a rim', () => {
+  assert.strictEqual(tb.parse('tyre', '1100 X 20 X 02').size, '1100 X 20',
+    'the workbook carried eight of these through, and each spawned a tyre, a tube and a flap nobody sells');
+  assert.strictEqual(tb.parse('tyre', '12.5 X 80 X 18').size, '12.5 X 80 X 18', 'a real rim still survives');
+  assert.strictEqual(tb.parse('tyre', '265 X 65 X 17').size, '265 X 65 X 17');
+});
+
+test('one request carries the tyre, its tube and its flap', async () => {
+  const r = await as('fitter', 'POST', '/api/tb/requests', {
+    kind: 'tyre', asset_id: ASSET, reason: 'worn',
+    lines: [
+      { spec_id: TYRE, qty: 2, position: 'RL1' },
+      { spec_id: TUBE, qty: 2 },
+      { spec_id: FLAP, qty: 2 },
+    ],
+  });
+  const b = await json(r);
+  assert.strictEqual(r.status, 201, JSON.stringify(b));
+  assert.strictEqual(b.lines, 3, 'three items on one request, not three requests');
+  const kinds = all(`SELECT r.kind FROM tb_request_lines r JOIN mrn_lines l ON l.id = r.mrn_line_id
+                      WHERE l.mrn_id = ? ORDER BY r.kind`, b.id).map((x) => x.kind);
+  assert.deepStrictEqual(kinds, ['flap', 'tube', 'tyre'],
+    'each line keeps its OWN kind — recording them all as "tyre" makes the tube uncountable');
+});
+
+test('the reason is given once for the job, not argued for each tube', async () => {
+  const r = await as('fitter', 'POST', '/api/tb/requests', {
+    kind: 'tyre', asset_id: ASSET, reason: 'puncture',
+    lines: [{ spec_id: TYRE, qty: 1 }, { spec_id: TUBE, qty: 1 }],
+  });
+  const b = await json(r);
+  assert.strictEqual(r.status, 201, JSON.stringify(b));
+  const reasons = all(`SELECT r.reason FROM tb_request_lines r JOIN mrn_lines l ON l.id = r.mrn_line_id
+                        WHERE l.mrn_id = ?`, b.id).map((x) => x.reason);
+  assert.deepStrictEqual(reasons, ['puncture', 'puncture']);
+});
+
+test('a battery request will not carry a tube', async () => {
+  const r = await as('fitter', 'POST', '/api/tb/requests', {
+    kind: 'battery', asset_id: ASSET, reason: 'no_crank',
+    lines: [{ spec_id: BATT, qty: 1 }, { spec_id: TUBE, qty: 1 }],
+  });
+  assert.strictEqual(r.status, 400);
+  assert.match((await json(r)).error, /tube does not belong on a battery request/i);
+});
+
+test('each line on a multi-item request is approved and issued on its own', async () => {
+  const made = await json(await as('fitter', 'POST', '/api/tb/requests', {
+    kind: 'tyre', asset_id: ASSET, reason: 'worn',
+    lines: [{ spec_id: TYRE, qty: 1, position: 'FL' }, { spec_id: TUBE, qty: 1 }],
+  }));
+  await as('fitter', 'POST', `/api/stores/mrn/${made.id}/certify`, { signed_name: 'fitter' });
+  await as('opsman', 'POST', `/api/stores/mrn/${made.id}/approve`, { signed_name: 'opsman' });
+  const detail = await json(await as('keeper', 'GET', '/api/tb/requests/' + made.id));
+  assert.strictEqual(detail.lines.length, 2);
+  // Issue only the tyre; the tube stays outstanding on the same approved request.
+  const tyreLine = detail.lines.find((l) => l.kind === 'tyre');
+  const r = await as('keeper', 'POST', '/api/tb/issue', { mrn_line_id: tyreLine.mrn_line_id, qty: 1 });
+  assert.strictEqual(r.status, 201, JSON.stringify(await json(r)));
+  const after = await json(await as('keeper', 'GET', '/api/tb/requests/' + made.id));
+  assert.strictEqual(after.lines.find((l) => l.kind === 'tyre').issued, 1);
+  assert.strictEqual(after.lines.find((l) => l.kind === 'tube').issued, 0,
+    'one approval, but each item leaves the store when the store actually has it');
 });
