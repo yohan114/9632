@@ -27,7 +27,11 @@ tx(() => {
   // ---- roles ----
   const roles = [
     ['admin', 'Administrator'],
-    ['storekeeper', 'Storekeeper'],
+    // Two stores, two keepers. The workshop store ASKS for tyres and batteries; Head Office /
+    // Main Stores buys them. Giving both the same role would let the main-stores keeper issue
+    // stock out of the workshop store, which is the one thing the split exists to prevent.
+    ['storekeeper', 'Workshop Storekeeper'],
+    ['main_storekeeper', 'Main Stores Storekeeper'],
     ['transport_manager', 'Transport Manager'],
     ['assistant_transport_manager', 'Assistant Transport Manager'],
     ['operational_manager', 'Operational Manager'],

@@ -565,3 +565,53 @@ test('an ordinary workshop request is untouched by any of this', async () => {
   const list = await json(await as('keeper', 'GET', '/api/tb/requests'));
   assert.ok(!list.some((r) => r.id === m), 'only tyres and batteries carry the purchase stage');
 });
+
+// ---- two stores, two keepers ----------------------------------------------
+//
+// The workshop store ASKS for tyres and batteries; Head Office / Main Stores buys them. Giving
+// both keepers the same role would let the main-stores keeper issue stock out of the workshop
+// store, which is the one thing the split exists to prevent.
+
+test('main_storekeeper is a role in its own right', () => {
+  const p = require('../src/lib/permissions');
+  assert.ok(Object.keys(p.DEFAULT_MATRIX || {}).includes('main_storekeeper')
+    || get("SELECT 1 v FROM role_permissions WHERE role = 'main_storekeeper' LIMIT 1"),
+  'without its own row it inherits nothing and the split is decorative');
+});
+
+test('Main Stores sees the request and the purchase queue', () => {
+  const p = require('../src/lib/permissions');
+  p.seedDefaults();
+  assert.strictEqual(p.levelForRoles(['main_storekeeper'], 'tb_request'), 'view');
+  assert.strictEqual(p.levelForRoles(['main_storekeeper'], 'tb_purchase'), 'view');
+});
+
+test('but Main Stores cannot issue out of the workshop store', async () => {
+  const p = require('../src/lib/permissions');
+  assert.strictEqual(p.levelForRoles(['main_storekeeper'], 'tb_issue'), 'none');
+
+  run('INSERT OR IGNORE INTO roles (name, label) VALUES (?, ?)', 'main_storekeeper', 'Main Stores Storekeeper');
+  mkUser('mainkeep', ['main_storekeeper']);
+  const login = await fetch(`${base}/api/auth/login`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ username: 'mainkeep', password: 'pw' }),
+  });
+  cookies.mainkeep = (login.headers.get('set-cookie') || '').split(';')[0];
+
+  const made = await json(await as('fitter', 'POST', '/api/tb/requests', {
+    kind: 'tyre', asset_id: ASSET, reason: 'worn', lines: [{ spec_id: TYRE, qty: 1 }],
+  }));
+  await as('fitter', 'POST', `/api/stores/mrn/${made.id}/certify`, { signed_name: 'fitter' });
+  await as('opsman', 'POST', `/api/stores/mrn/${made.id}/approve`, { signed_name: 'opsman' });
+  const detail = await json(await as('keeper', 'GET', '/api/tb/requests/' + made.id));
+
+  const denied = await as('mainkeep', 'POST', '/api/tb/issue', { mrn_line_id: detail.lines[0].mrn_line_id, qty: 1 });
+  assert.strictEqual(denied.status, 403, 'the store that buys it is not the store that hands it over');
+  assert.strictEqual(get('SELECT COUNT(*) c FROM tyre_battery_issues WHERE mrn_line_id = ?', detail.lines[0].mrn_line_id).c, 0);
+});
+
+test('and Main Stores does not send requests to be bought — it receives them', () => {
+  const p = require('../src/lib/permissions');
+  assert.ok(!['edit', 'full'].includes(p.levelForRoles(['main_storekeeper'], 'tb_purchase')),
+    'the workshop store sends it; Head Office is the other end of that, not the sender');
+});

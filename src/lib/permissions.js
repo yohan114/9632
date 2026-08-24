@@ -53,6 +53,10 @@ const MODULE_KEYS = MODULES.map((m) => m.key);
 // Seed policy — mirrors today's effective access. Admin omitted (always full).
 const DEFAULT_MATRIX = {
   storekeeper: { tb_request: 'edit', tb_purchase: 'edit', tb_grn: 'edit', tb_issue: 'edit', assets: 'view', jobs: 'view', jobrequests: 'none', dailywork: 'none', stores: 'full', oil: 'full', batteries: 'full', filters: 'full', labour: 'none', projects: 'view', aliases: 'view', reports: 'view', users: 'none' },
+  // Main Stores buys what the workshop asks for. It sees the requests and the purchase queue but
+  // does NOT issue out of the workshop store, and does not post workshop receipts — those belong
+  // to the keeper who holds that shelf. Loosen any cell on the board when the split needs to move.
+  main_storekeeper: { tb_request: 'view', tb_purchase: 'view', tb_grn: 'view', tb_issue: 'none', assets: 'view', jobs: 'view', jobrequests: 'none', dailywork: 'none', stores: 'view', oil: 'view', batteries: 'view', filters: 'view', labour: 'none', projects: 'view', aliases: 'view', reports: 'view', users: 'none' },
   transport_manager: { tb_request: 'view', tb_purchase: 'none', tb_grn: 'none', tb_issue: 'none', assets: 'edit', jobs: 'edit', jobrequests: 'edit', dailywork: 'view', stores: 'none', oil: 'none', batteries: 'view', filters: 'view', labour: 'view', projects: 'view', aliases: 'view', reports: 'view', users: 'none' },
   assistant_transport_manager: { tb_request: 'view', tb_purchase: 'none', tb_grn: 'none', tb_issue: 'none', assets: 'view', jobs: 'view', jobrequests: 'edit', dailywork: 'view', stores: 'none', oil: 'none', batteries: 'view', filters: 'view', labour: 'none', projects: 'view', aliases: 'none', reports: 'view', users: 'none' },
   operational_manager: { tb_request: 'edit', tb_purchase: 'view', tb_grn: 'view', tb_issue: 'view', assets: 'edit', jobs: 'edit', jobrequests: 'edit', dailywork: 'view', stores: 'view', oil: 'view', batteries: 'view', filters: 'view', labour: 'view', projects: 'edit', aliases: 'view', reports: 'full', users: 'none' },
