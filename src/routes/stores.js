@@ -12,6 +12,7 @@ const { sendXlsx } = require('../lib/export');
 const emitter = require('../lib/emitter');
 const stock = require('../lib/stock');
 const jobstate = require('../lib/jobstate');
+const permissions = require('../lib/permissions');
 const { lineReceiptSql, mrnReceiptSql, receivedLabel, d10 } = require('../lib/received_date');
 const lubricants = require('../lib/lubricants');
 
@@ -1335,12 +1336,37 @@ ${req.query.source ? section(which, groups[req.query.source] || []) : section('H
   res.send(html);
 }));
 
+/**
+ * May this user take THIS request line into stores? Only tyre and battery lines are asked about;
+ * everything else is governed by `stores` as before, so a tightened tyre cell can never stop a
+ * storekeeper receiving an ordinary part. A line that is not a tyre or a battery — or a receipt
+ * with no request line behind it at all — is always allowed through here.
+ */
+function tbGrnAllowed(user, mrnLineId) {
+  if (!mrnLineId) return true;
+  if (!user || !user.roles) return false;
+  if (user.roles.includes('admin')) return true;
+  const line = get('SELECT category FROM mrn_lines WHERE id = ?', mrnLineId);
+  const cat = String((line && line.category) || '').toLowerCase();
+  if (!/tyre|batter/.test(cat)) return true;
+  return permissions.meets(permissions.levelForRoles(user.roles, 'tb_grn'), 'edit');
+}
+
 router.post('/grn', requireRole('storekeeper'), asyncHandler((req, res) => {
   const b = req.body;
   require_(b, ['qty']);
   const source = b.purchase_source;
   if (source && !PURCHASE_SOURCES.includes(source)) {
     return res.status(400).json({ error: 'Invalid purchase_source' });
+  }
+  // TAKING A TYRE OR A BATTERY IN IS ITS OWN PERMISSION. They are high-value and traceable, and
+  // the owner asked for receiving to be grantable apart from the rest of stores — so the line's
+  // own category decides which board cell applies. Everything else on a request is unaffected,
+  // which is why this is checked HERE rather than by gating the whole route.
+  if (!tbGrnAllowed(req.user, toInt(b.mrn_line_id))) {
+    return res.status(403).json({
+      error: 'Your role may not take tyres or batteries into stores — ask an admin for "T&B · Receive (GRN)"',
+    });
   }
   const result = tx(() => {
     const info = run(

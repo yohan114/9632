@@ -374,3 +374,108 @@ test('each line on a multi-item request is approved and issued on its own', asyn
   assert.strictEqual(after.lines.find((l) => l.kind === 'tube').issued, 0,
     'one approval, but each item leaves the store when the store actually has it');
 });
+
+// ---- who may do what ------------------------------------------------------
+//
+// Tyres and batteries are held in MAIN STORES, and asking for one, taking it in from the supplier
+// and handing it out are three different jobs done by three different people. One permission
+// column cannot say that, so the board carries three: tb_request, tb_grn, tb_issue. They gate the
+// ACTIONS rather than the router — the size picklist stays open to anyone signed in, because a
+// gated dropdown is an empty dropdown.
+
+const perms = require('../src/lib/permissions');
+const setLevel = (role, mod, lvl) => run(
+  `INSERT INTO role_permissions (role, module, level) VALUES (?, ?, ?)
+   ON CONFLICT(role, module) DO UPDATE SET level = excluded.level`, role, mod, lvl);
+
+test('the three columns are on the board', () => {
+  const keys = perms.MODULES.map((m) => m.key);
+  for (const k of ['tb_request', 'tb_grn', 'tb_issue']) assert.ok(keys.includes(k), k + ' is missing from the board');
+});
+
+test('the seeded policy is the one the owner asked for', () => {
+  perms.seedDefaults();
+  assert.strictEqual(perms.levelForRoles(['workshop'], 'tb_request'), 'edit', 'the workshop raises requests');
+  assert.strictEqual(perms.levelForRoles(['workshop'], 'tb_issue'), 'none', 'but does not hand stock out');
+  assert.strictEqual(perms.levelForRoles(['storekeeper'], 'tb_grn'), 'edit', 'the Main Store takes goods in');
+  assert.strictEqual(perms.levelForRoles(['storekeeper'], 'tb_issue'), 'edit', 'and hands them out');
+  assert.strictEqual(perms.levelForRoles(['manager'], 'tb_issue'), 'view', 'managers watch, they do not move stock');
+});
+
+test('the picklist stays open even to a role with nothing granted', async () => {
+  setLevel('workshop', 'tb_request', 'none');
+  const r = await as('fitter', 'GET', '/api/tb/specs?kind=tyre');
+  assert.strictEqual(r.status, 200, 'gating reference data is how a form comes up with an empty dropdown');
+  setLevel('workshop', 'tb_request', 'edit');
+});
+
+test('a role without Request cannot raise one', async () => {
+  setLevel('workshop', 'tb_request', 'view');
+  const r = await as('fitter', 'POST', '/api/tb/requests', {
+    kind: 'tyre', asset_id: ASSET, reason: 'worn', lines: [{ spec_id: TYRE, qty: 1 }],
+  });
+  assert.strictEqual(r.status, 403);
+  assert.match((await json(r)).error, /tb_request/);
+  setLevel('workshop', 'tb_request', 'edit');
+});
+
+test('a role without Issue cannot issue, even on an approved request', async () => {
+  const made = await json(await as('fitter', 'POST', '/api/tb/requests', {
+    kind: 'tyre', asset_id: ASSET, reason: 'worn', lines: [{ spec_id: TYRE, qty: 1 }],
+  }));
+  await as('fitter', 'POST', `/api/stores/mrn/${made.id}/certify`, { signed_name: 'fitter' });
+  await as('opsman', 'POST', `/api/stores/mrn/${made.id}/approve`, { signed_name: 'opsman' });
+  const detail = await json(await as('keeper', 'GET', '/api/tb/requests/' + made.id));
+  const lineId = detail.lines[0].mrn_line_id;
+
+  setLevel('storekeeper', 'tb_issue', 'view');
+  const denied = await as('keeper', 'POST', '/api/tb/issue', { mrn_line_id: lineId, qty: 1 });
+  assert.strictEqual(denied.status, 403, 'approval is not the same thing as being allowed to hand it over');
+  assert.strictEqual(get('SELECT COUNT(*) c FROM tyre_battery_issues WHERE mrn_line_id = ?', lineId).c, 0);
+
+  setLevel('storekeeper', 'tb_issue', 'edit');
+  const ok = await as('keeper', 'POST', '/api/tb/issue', { mrn_line_id: lineId, qty: 1 });
+  assert.strictEqual(ok.status, 201, 'and granting it live lets the same request through');
+});
+
+test('receiving a tyre needs its own permission, not just Stores', async () => {
+  const made = await json(await as('fitter', 'POST', '/api/tb/requests', {
+    kind: 'tyre', asset_id: ASSET, reason: 'worn', lines: [{ spec_id: TYRE, qty: 4 }],
+  }));
+  const detail = await json(await as('keeper', 'GET', '/api/tb/requests/' + made.id));
+  const lineId = detail.lines[0].mrn_line_id;
+
+  setLevel('storekeeper', 'tb_grn', 'view');
+  const denied = await as('keeper', 'POST', '/api/stores/grn', { mrn_id: made.id, mrn_line_id: lineId, qty: 4 });
+  assert.strictEqual(denied.status, 403);
+  assert.match((await json(denied)).error, /tyres or batteries/i);
+
+  setLevel('storekeeper', 'tb_grn', 'edit');
+  const ok = await as('keeper', 'POST', '/api/stores/grn', { mrn_id: made.id, mrn_line_id: lineId, qty: 4 });
+  assert.strictEqual(ok.status, 201, JSON.stringify(await json(ok)));
+});
+
+test('tightening the tyre cell never blocks an ordinary part', async () => {
+  // The guard asks the LINE's own category, so a bolt is still governed by `stores` alone.
+  const m = run(`INSERT INTO mrn (mrn_no, req_date, status) VALUES ('TBPERM-1', '2026-08-22', 'open')`).lastInsertRowid;
+  const l = run(`INSERT INTO mrn_lines (mrn_id, description, qty, category) VALUES (?, 'Wheel Stud', 10, 'Fasteners')`, m).lastInsertRowid;
+  setLevel('storekeeper', 'tb_grn', 'none');
+  const r = await as('keeper', 'POST', '/api/stores/grn', { mrn_id: m, mrn_line_id: l, qty: 10 });
+  assert.strictEqual(r.status, 201, 'a tightened tyre cell must not stop the store receiving a bolt');
+  setLevel('storekeeper', 'tb_grn', 'edit');
+});
+
+test('a receipt with no request line behind it is not blocked by the tyre cell', async () => {
+  setLevel('storekeeper', 'tb_grn', 'none');
+  const r = await as('keeper', 'POST', '/api/stores/grn', { description: 'loose delivery', qty: 1 });
+  assert.strictEqual(r.status, 201);
+  setLevel('storekeeper', 'tb_grn', 'edit');
+});
+
+test('admin is never locked out of any of it', async () => {
+  for (const m of ['tb_request', 'tb_grn', 'tb_issue']) assert.strictEqual(perms.levelForRoles(['admin'], m), 'full');
+  const r = await as('boss', 'POST', '/api/tb/requests', {
+    kind: 'tyre', asset_id: ASSET, reason: 'worn', lines: [{ spec_id: TYRE, qty: 1 }],
+  });
+  assert.strictEqual(r.status, 201);
+});

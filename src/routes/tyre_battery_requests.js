@@ -19,6 +19,7 @@
 const express = require('express');
 const { get, all, run, tx } = require('../db');
 const { requireAuth, requireRole } = require('../lib/auth');
+const { requireModule } = require('../lib/permissions');
 const { asyncHandler, require_, toInt, toNum } = require('../lib/http');
 const tb = require('../lib/tyre_battery');
 
@@ -88,7 +89,7 @@ function nextMrnNo() {
   return String((last ? parseInt(last.mrn_no, 10) : 167000) + 1);
 }
 
-router.post('/requests', requireRole('workshop', 'storekeeper', 'manager', 'operational_manager', 'transport_manager'),
+router.post('/requests', requireModule('tb_request'),
   asyncHandler((req, res) => {
     const b = req.body || {};
     require_(b, ['kind', 'lines']);
@@ -216,7 +217,7 @@ router.get('/requests/:id', requireAuth, asyncHandler((req, res) => {
 // ---------------------------------------------------------------------------
 // Issuing against an approved request
 // ---------------------------------------------------------------------------
-router.post('/issue', requireRole('storekeeper'), asyncHandler((req, res) => {
+router.post('/issue', requireModule('tb_issue'), asyncHandler((req, res) => {
   const b = req.body || {};
   require_(b, ['mrn_line_id', 'qty']);
   const line = get(
@@ -284,7 +285,7 @@ router.post('/issue', requireRole('storekeeper'), asyncHandler((req, res) => {
 // ---------------------------------------------------------------------------
 // What came off
 // ---------------------------------------------------------------------------
-router.post('/returns', requireRole('storekeeper'), asyncHandler((req, res) => {
+router.post('/returns', requireModule('tb_issue'), asyncHandler((req, res) => {
   const b = req.body || {};
   require_(b, ['issue_id', 'condition']);
   const issue = get('SELECT * FROM tyre_battery_issues WHERE id = ?', toInt(b.issue_id));

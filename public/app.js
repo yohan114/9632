@@ -657,6 +657,9 @@ const NAV_MODULE = {
   labour: 'labour', stores: 'stores', oil: 'oil', batteries: 'batteries', filters: 'filters',
   projects: 'projects', aliases: 'aliases', attention: 'reports', progress: 'reports',
   teardown: 'reports', reports: 'reports', tyrebattery: 'reports',
+  // The request screen belongs to whoever may raise one. The ledger above stays on 'reports',
+  // because reading what was issued is a different question from being allowed to issue it.
+  tbrequests: 'tb_request',
   matreq: 'stores', stockissues: 'stores', generalstock: 'stores', filterstock: 'filters', serviceplan: 'filters',
 };
 function navVisible(n) {
@@ -4911,7 +4914,7 @@ routes.tbrequests = async (c) => {
       <button class="sm ${kind === 'tyre' ? 'primary' : ''}" onclick="${go(tab, 'tyre')}">🛞 Tyre</button>
       <button class="sm ${kind === 'battery' ? 'primary' : ''}" onclick="${go(tab, 'battery')}">🔋 Battery</button>
       <div class="spacer"></div>
-      <button class="primary sm" id="tb-new">+ New request</button>
+      ${canEdit('tb_request') ? '<button class="primary sm" id="tb-new">+ New request</button>' : ''}
     </div>
     <div class="toolbar" style="margin:0 0 10px 0">
       ${[['requests', 'Requests'], ['issue', 'Ready to issue'], ['returns', 'Old units due'], ['specs', 'Sizes &amp; prices']]
@@ -4919,7 +4922,9 @@ routes.tbrequests = async (c) => {
     </div>
     <div id="tb-body" class="muted">Loading…</div>`;
 
-  qs('#tb-new', c).onclick = () => tbRequestModal(kind, () => render());
+  // A role that may not raise one is not shown the button at all — a form that 403s on submit
+  // is a worse answer than a screen that simply does not offer it.
+  if (qs('#tb-new', c)) qs('#tb-new', c).onclick = () => tbRequestModal(kind, () => render());
   const body = qs('#tb-body', c);
 
   if (tab === 'requests') {
@@ -4956,7 +4961,7 @@ routes.tbrequests = async (c) => {
             <td>${esc(TB_REASON_LABEL[l.reason] || l.reason || '—')}</td>
             <td>${l.km_reading != null ? num(l.km_reading) : esc(l.km_remark || '—')}</td>
             <td class="num">${l.issued || 0}</td>
-            <td>${d.approval_status === 'approved' && (l.issued || 0) < l.qty
+            <td>${d.approval_status === 'approved' && (l.issued || 0) < l.qty && canEdit('tb_issue')
     ? '<button class="sm primary" data-issue="' + l.mrn_line_id + '">Issue…</button>' : ''}</td></tr>`))}
       </div>`;
     qsa('[data-issue]', body).forEach((b) => {
@@ -4986,7 +4991,7 @@ routes.tbrequests = async (c) => {
         rows.map((r) => `<tr><td>${esc(String(r.issue_date || '').slice(0, 10))}</td><td>${esc(r.mrn_no || '—')}</td>
         <td>${esc(r.asset_code || '—')}</td><td>${esc(r.spec_label || '—')}</td><td class="num">${num(r.qty)}</td>
         <td>${esc(r.position || '—')}</td>
-        <td><button class="sm primary" data-ret="${r.issue_id}">Record…</button></td></tr>`), { scroll: true })
+        <td>${canEdit('tb_issue') ? '<button class="sm primary" data-ret="' + r.issue_id + '">Record…</button>' : ''}</td></tr>`), { scroll: true })
         : '<div class="card"><p class="muted">Every old unit has been accounted for.</p></div>');
     qsa('[data-ret]', body).forEach((b) => {
       b.onclick = () => tbReturnModal(rows.find((r) => String(r.issue_id) === b.dataset.ret), () => render());

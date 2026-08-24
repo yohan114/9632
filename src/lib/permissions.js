@@ -33,6 +33,14 @@ const MODULES = [
   { key: 'oil', label: 'Oil & Lube', enforce: true },
   { key: 'batteries', label: 'Batteries', enforce: true },
   { key: 'filters', label: 'Filters & Prices', enforce: true },
+  // Tyres and batteries are held in MAIN STORES, and asking for one, taking it in from the
+  // supplier and handing it out are three different jobs done by three different people. One
+  // column cannot say that — a fitter who may raise a request must not be able to issue against
+  // it — so the three stand on their own. They gate the ACTIONS, not the whole router: the size
+  // picklist stays open to anyone signed in, or the request form comes up with an empty dropdown.
+  { key: 'tb_request', label: 'T&B · Request', enforce: false },
+  { key: 'tb_grn', label: 'T&B · Receive (GRN)', enforce: false },
+  { key: 'tb_issue', label: 'T&B · Issue', enforce: false },
   { key: 'labour', label: 'Labour Rates', enforce: false },
   { key: 'projects', label: 'Projects', enforce: false },
   { key: 'aliases', label: 'Alias Queue', enforce: false },
@@ -43,13 +51,13 @@ const MODULE_KEYS = MODULES.map((m) => m.key);
 
 // Seed policy — mirrors today's effective access. Admin omitted (always full).
 const DEFAULT_MATRIX = {
-  storekeeper: { assets: 'view', jobs: 'view', jobrequests: 'none', dailywork: 'none', stores: 'full', oil: 'full', batteries: 'full', filters: 'full', labour: 'none', projects: 'view', aliases: 'view', reports: 'view', users: 'none' },
-  transport_manager: { assets: 'edit', jobs: 'edit', jobrequests: 'edit', dailywork: 'view', stores: 'none', oil: 'none', batteries: 'view', filters: 'view', labour: 'view', projects: 'view', aliases: 'view', reports: 'view', users: 'none' },
-  assistant_transport_manager: { assets: 'view', jobs: 'view', jobrequests: 'edit', dailywork: 'view', stores: 'none', oil: 'none', batteries: 'view', filters: 'view', labour: 'none', projects: 'view', aliases: 'none', reports: 'view', users: 'none' },
-  operational_manager: { assets: 'edit', jobs: 'edit', jobrequests: 'edit', dailywork: 'view', stores: 'view', oil: 'view', batteries: 'view', filters: 'view', labour: 'view', projects: 'edit', aliases: 'view', reports: 'full', users: 'none' },
-  manager: { assets: 'view', jobs: 'edit', jobrequests: 'edit', dailywork: 'view', stores: 'view', oil: 'view', batteries: 'view', filters: 'view', labour: 'view', projects: 'view', aliases: 'view', reports: 'full', users: 'none' },
-  workshop: { assets: 'view', jobs: 'edit', jobrequests: 'none', dailywork: 'edit', stores: 'view', oil: 'edit', batteries: 'edit', filters: 'full', labour: 'edit', projects: 'view', aliases: 'edit', reports: 'view', users: 'none' },
-  viewer: { assets: 'view', jobs: 'view', jobrequests: 'view', dailywork: 'view', stores: 'view', oil: 'view', batteries: 'view', filters: 'view', labour: 'view', projects: 'view', aliases: 'view', reports: 'view', users: 'none' },
+  storekeeper: { tb_request: 'edit', tb_grn: 'edit', tb_issue: 'edit', assets: 'view', jobs: 'view', jobrequests: 'none', dailywork: 'none', stores: 'full', oil: 'full', batteries: 'full', filters: 'full', labour: 'none', projects: 'view', aliases: 'view', reports: 'view', users: 'none' },
+  transport_manager: { tb_request: 'view', tb_grn: 'none', tb_issue: 'none', assets: 'edit', jobs: 'edit', jobrequests: 'edit', dailywork: 'view', stores: 'none', oil: 'none', batteries: 'view', filters: 'view', labour: 'view', projects: 'view', aliases: 'view', reports: 'view', users: 'none' },
+  assistant_transport_manager: { tb_request: 'view', tb_grn: 'none', tb_issue: 'none', assets: 'view', jobs: 'view', jobrequests: 'edit', dailywork: 'view', stores: 'none', oil: 'none', batteries: 'view', filters: 'view', labour: 'none', projects: 'view', aliases: 'none', reports: 'view', users: 'none' },
+  operational_manager: { tb_request: 'edit', tb_grn: 'view', tb_issue: 'view', assets: 'edit', jobs: 'edit', jobrequests: 'edit', dailywork: 'view', stores: 'view', oil: 'view', batteries: 'view', filters: 'view', labour: 'view', projects: 'edit', aliases: 'view', reports: 'full', users: 'none' },
+  manager: { tb_request: 'edit', tb_grn: 'view', tb_issue: 'view', assets: 'view', jobs: 'edit', jobrequests: 'edit', dailywork: 'view', stores: 'view', oil: 'view', batteries: 'view', filters: 'view', labour: 'view', projects: 'view', aliases: 'view', reports: 'full', users: 'none' },
+  workshop: { tb_request: 'edit', tb_grn: 'none', tb_issue: 'none', assets: 'view', jobs: 'edit', jobrequests: 'none', dailywork: 'edit', stores: 'view', oil: 'edit', batteries: 'edit', filters: 'full', labour: 'edit', projects: 'view', aliases: 'edit', reports: 'view', users: 'none' },
+  viewer: { tb_request: 'view', tb_grn: 'view', tb_issue: 'view', assets: 'view', jobs: 'view', jobrequests: 'view', dailywork: 'view', stores: 'view', oil: 'view', batteries: 'view', filters: 'view', labour: 'view', projects: 'view', aliases: 'view', reports: 'view', users: 'none' },
 };
 
 // Backfill any missing (role, module) cell from the seed policy — idempotent, and
