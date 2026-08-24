@@ -4917,7 +4917,7 @@ routes.tbrequests = async (c) => {
       ${canEdit('tb_request') ? '<button class="primary sm" id="tb-new">+ New request</button>' : ''}
     </div>
     <div class="toolbar" style="margin:0 0 10px 0">
-      ${[['requests', 'Requests'], ['issue', 'Ready to issue'], ['returns', 'Old units due'], ['specs', 'Sizes &amp; prices']]
+      ${[['requests', 'Requests'], ['purchase', 'To purchase'], ['issue', 'Ready to issue'], ['returns', 'Old units due'], ['specs', 'Sizes &amp; prices']]
     .map(([t, l]) => `<button class="sm ${t === tab ? 'primary' : ''}" onclick="${go(t)}">${l}</button>`).join('')}
     </div>
     <div id="tb-body" class="muted">Loading…</div>`;
@@ -4937,7 +4937,7 @@ routes.tbrequests = async (c) => {
         <td>${esc(String(r.req_date || '').slice(0, 10))}</td>
         <td>${esc(r.asset_code || '—')}${r.registration ? ' <span class="muted">' + esc(r.registration) + '</span>' : ''}</td>
         <td class="num">${r.lines}</td><td class="num">${num(r.qty)}</td>
-        <td>${tbBadge(r.approval_status)}</td>
+        <td>${tbBadge(r.approval_status)}${r.purchase_requested_at ? ' <span class="badge blue">sent to buy</span>' : ''}</td>
         <td class="num">${r.issued_lines}/${r.lines}</td>
         <td>${esc(r.requested_by || '—')}</td></tr>`), { scroll: true })
       : `<div class="card"><p class="muted">No ${kind} requests yet — the button above raises one.</p></div>`;
@@ -4966,6 +4966,26 @@ routes.tbrequests = async (c) => {
       </div>`;
     qsa('[data-issue]', body).forEach((b) => {
       b.onclick = () => tbIssueModal(d, d.lines.find((l) => String(l.mrn_line_id) === b.dataset.issue), () => render());
+    });
+    return;
+  }
+
+  if (tab === 'purchase') {
+    // THE WORKSHOP STORE DOES NOT BUY TYRES. Approved is not the end of the story here — the
+    // request goes to Head Office to be bought, and without this queue an approved request simply
+    // sat there with nobody able to say whether anyone had been asked for it.
+    const rows = await api('/tb/requests?kind=' + kind + '&awaiting_purchase=1');
+    body.innerHTML = `<div class="note">Approved, and waiting to be sent to Head Office to be bought.
+      An ordinary workshop request does not come through here — only tyres and batteries.</div>`
+      + (rows.length ? tableWrap(
+        [{ label: 'Request' }, { label: 'Approved' }, { label: 'Vehicle' }, { label: 'Items', num: true },
+          { label: 'Qty', num: true }, { label: '' }],
+        rows.map((r) => `<tr><td><b>${esc(r.mrn_no)}</b></td><td>${esc(String(r.req_date || '').slice(0, 10))}</td>
+          <td>${esc(r.asset_code || '—')}</td><td class="num">${r.lines}</td><td class="num">${num(r.qty)}</td>
+          <td>${canEdit('tb_purchase') ? '<button class="sm primary" data-buy="' + r.id + '">Send to purchase…</button>' : ''}</td></tr>`), { scroll: true })
+        : '<div class="card"><p class="muted">Nothing approved is waiting to be bought.</p></div>');
+    qsa('[data-buy]', body).forEach((b) => {
+      b.onclick = () => tbPurchaseModal(rows.find((r) => String(r.id) === b.dataset.buy), () => render());
     });
     return;
   }
@@ -5092,6 +5112,26 @@ async function tbRequestModal(kind, done) {
       } catch (e) { toast(e.message, 'err'); }
     };
   }, { wide: true });
+}
+
+// ---- sending it to be bought ----------------------------------------------
+function tbPurchaseModal(row, done) {
+  modal('Send ' + row.mrn_no + ' to be purchased', `
+    <div class="note">Approved for ${esc(row.asset_code || 'the machine')} · ${row.lines} item(s), ${num(row.qty)} in total.</div>
+    ${field('Bought by', 'purchase_source', { type: 'select', options: [
+    { value: 'head_office', label: 'Head Office' }, { value: 'local_purchase', label: 'Local purchase' }] })}
+    <div class="row">${field('Their reference (if they gave one)', 'purchase_ref')}
+      ${field('Date', 'date', { type: 'date', value: new Date().toISOString().slice(0, 10) })}</div>
+    <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Send to purchase</button></div>`,
+  (body, close) => {
+    qs('#s', body).onclick = async () => {
+      try {
+        await api('/tb/requests/' + row.id + '/purchase', { method: 'POST', body: formData(body) });
+        toast(row.mrn_no + ' sent to be bought');
+        close(); done && done();
+      } catch (e) { toast(e.message, 'err'); }
+    };
+  });
 }
 
 // ---- issuing against it ---------------------------------------------------

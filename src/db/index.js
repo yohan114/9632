@@ -258,6 +258,16 @@ function migrate() {
   ensureColumn('mrn', 'required_date', 'TEXT');   // "Required Date" on the printed requisition form
   ensureColumn('mrn_lines', 'purchase_source', 'TEXT'); // per-item Head Office / Local Purchase (one MRN can mix)
   ensureColumn('mrn', 'request_type', "TEXT NOT NULL DEFAULT 'vehicle'"); // 'general' (store) | 'vehicle' (against a job card)
+  // Which KIND of tyre/battery request this is. It needs a column of its own: request_type already
+  // means general-vs-vehicle on all 1,709 existing requests, and writing 'tyre' into it would
+  // quietly redefine a field that stores and daily work both read.
+  ensureColumn('mrn', 'tb_kind', 'TEXT');                                // 'tyre' | 'battery' | NULL
+  // THE WORKSHOP STORE DOES NOT BUY TYRES. It raises the request, the request is approved, and then
+  // it goes to Head Office to be purchased — so an approved request is not the end of the story
+  // here the way it is for an ordinary part off the workshop shelf. These three record that step.
+  ensureColumn('mrn', 'purchase_requested_at', 'TEXT');
+  ensureColumn('mrn', 'purchase_requested_by', 'TEXT');
+  ensureColumn('mrn', 'purchase_ref', 'TEXT');                           // Head Office's own reference, when they give one
   // MRN approval flow (request → certify → approve) with e-signature names + timestamps.
   ensureColumn('mrn', 'approval_status', "TEXT NOT NULL DEFAULT 'requested'"); // requested | certified | approved | rejected
   ensureColumn('mrn', 'certified_by', 'TEXT'); ensureColumn('mrn', 'certified_at', 'TEXT');

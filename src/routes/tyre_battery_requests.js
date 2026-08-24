@@ -147,8 +147,10 @@ router.post('/requests', requireModule('tb_request'),
     const mrnNo = nextMrnNo();
     const out = tx(() => {
       const mrnId = run(
-        `INSERT INTO mrn (mrn_no, req_date, asset_id, job_id, purpose, requested_by, status, approval_status, request_type)
-         VALUES (?, date('now'), ?, ?, ?, ?, 'open', 'requested', ?)`,
+        // request_type keeps its own meaning — general vs vehicle — which stores and daily work
+        // both read on all 1,709 existing requests. The tyre/battery kind has a column of its own.
+        `INSERT INTO mrn (mrn_no, req_date, asset_id, job_id, purpose, requested_by, status, approval_status, request_type, tb_kind)
+         VALUES (?, date('now'), ?, ?, ?, ?, 'open', 'requested', 'vehicle', ?)`,
         mrnNo, asset.id, jobId, clean(b.purpose) || (kind === 'tyre' ? 'Tyre replacement' : 'Battery replacement'),
         clean(b.requested_by) || req.user.username, kind).lastInsertRowid;
 
@@ -177,12 +179,16 @@ router.post('/requests', requireModule('tb_request'),
 /** Requests, with where each one has got to. */
 router.get('/requests', requireAuth, asyncHandler((req, res) => {
   const kind = kindOf(req.query.kind);
-  const w = ['m.request_type IN (\'tyre\',\'battery\')'];
+  const w = ['m.tb_kind IS NOT NULL'];
   const p = [];
-  if (kind) { w.push('m.request_type = ?'); p.push(kind); }
+  if (kind) { w.push('m.tb_kind = ?'); p.push(kind); }
   if (req.query.status) { w.push('m.approval_status = ?'); p.push(String(req.query.status)); }
+  // Approved, but nobody has sent it to Head Office to be bought yet — the queue the Workshop
+  // Store works from, and the one thing an approved request used to fall silently out of.
+  if (req.query.awaiting_purchase) w.push("m.approval_status = 'approved' AND m.purchase_requested_at IS NULL");
   res.json(all(
-    `SELECT m.id, m.mrn_no, m.req_date, m.request_type AS kind, m.approval_status, m.status,
+    `SELECT m.id, m.mrn_no, m.req_date, m.tb_kind AS kind, m.approval_status, m.status,
+            m.purchase_requested_at, m.purchase_requested_by, m.purchase_ref, m.purchase_source,
             m.requested_by, m.certified_by, m.approved_by, m.purpose,
             a.code AS asset_code, a.registration, j.job_no,
             (SELECT COUNT(*) FROM mrn_lines l WHERE l.mrn_id = m.id) AS lines,
@@ -212,6 +218,43 @@ router.get('/requests/:id', requireAuth, asyncHandler((req, res) => {
        LEFT JOIN tb_specs s ON s.id = r.spec_id
       WHERE l.mrn_id = ? ORDER BY l.id`, m.id);
   res.json({ ...m, lines, approvals: all('SELECT * FROM mrn_approvals WHERE mrn_id = ? ORDER BY id', m.id) });
+}));
+
+// ---------------------------------------------------------------------------
+// Sending it to be bought
+//
+// THE WORKSHOP STORE DOES NOT BUY TYRES. It raises the request and has it approved, and then the
+// request goes to Head Office, who purchase. So for a tyre or a battery an approval is not the end
+// of the story the way it is for an ordinary part off the workshop shelf — and without this step
+// an approved request simply sat there, with nobody able to say whether anyone had been asked to
+// buy it. An ordinary workshop MRN is untouched: only tyres and batteries carry this stage.
+// ---------------------------------------------------------------------------
+router.post('/requests/:id/purchase', requireModule('tb_purchase'), asyncHandler((req, res) => {
+  const m = get('SELECT * FROM mrn WHERE id = ? AND tb_kind IS NOT NULL', toInt(req.params.id));
+  if (!m) return res.status(404).json({ error: 'That is not a tyre or battery request' });
+  if (m.approval_status !== 'approved') {
+    return res.status(409).json({
+      error: `Request ${m.mrn_no} is ${m.approval_status || 'not approved'} — nothing is sent to be bought before it is approved`,
+    });
+  }
+  if (m.purchase_requested_at) {
+    return res.status(409).json({ error: `Request ${m.mrn_no} was already sent to be bought on ${String(m.purchase_requested_at).slice(0, 10)}` });
+  }
+  // Head Office by default, because that is who buys these. A line bought locally instead is a
+  // deliberate exception and says so.
+  const source = ['head_office', 'local_purchase'].includes(String(req.body.purchase_source))
+    ? String(req.body.purchase_source) : 'head_office';
+
+  run(`UPDATE mrn SET purchase_requested_at = ?, purchase_requested_by = ?, purchase_ref = ?, purchase_source = ?
+        WHERE id = ?`,
+  /^\d{4}-\d{2}-\d{2}$/.test(String(req.body.date || '')) ? req.body.date : new Date().toISOString().slice(0, 10),
+  clean(req.body.requested_by) || req.user.username, clean(req.body.purchase_ref), source, m.id);
+  // The lines carry it too, so a receipt against one of them knows where it came from.
+  run(`UPDATE mrn_lines SET purchase_source = ? WHERE mrn_id = ?`, source, m.id);
+
+  audit.record({ userId: req.user.id, entity: 'mrn', entityId: m.id, action: 'purchase_request',
+    after: { mrn_no: m.mrn_no, purchase_source: source, ref: clean(req.body.purchase_ref) } });
+  res.json(get('SELECT id, mrn_no, purchase_requested_at, purchase_requested_by, purchase_ref, purchase_source FROM mrn WHERE id = ?', m.id));
 }));
 
 // ---------------------------------------------------------------------------

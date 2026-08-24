@@ -136,7 +136,8 @@ test('a request names the machine, the shelf and the reason', async () => {
 test('it is an ordinary MRN, so it lands in the inbox the managers already read', () => {
   const m = get('SELECT * FROM mrn WHERE id = ?', requestId);
   assert.strictEqual(m.approval_status, 'requested');
-  assert.strictEqual(m.request_type, 'tyre');
+  assert.strictEqual(m.tb_kind, 'tyre');
+  assert.strictEqual(m.request_type, 'vehicle', 'and it does not squat in a column that already means something else');
   assert.strictEqual(get('SELECT COUNT(*) c FROM mrn_lines WHERE mrn_id = ?', requestId).c, 1);
 });
 
@@ -478,4 +479,89 @@ test('admin is never locked out of any of it', async () => {
     kind: 'tyre', asset_id: ASSET, reason: 'worn', lines: [{ spec_id: TYRE, qty: 1 }],
   });
   assert.strictEqual(r.status, 201);
+});
+
+// ---- the workshop store does not buy tyres --------------------------------
+//
+// We are the WORKSHOP STORE. It raises the request and has it approved, and then the request goes
+// to Head Office, who purchase. So for a tyre an approval is not the end of the story the way it
+// is for an ordinary part off the workshop shelf — and without this step an approved request sat
+// there with nobody able to say whether anyone had been asked to buy it.
+
+test('the tyre/battery kind does not squat in request_type', async () => {
+  const b = await json(await as('fitter', 'POST', '/api/tb/requests', {
+    kind: 'tyre', asset_id: ASSET, reason: 'worn', lines: [{ spec_id: TYRE, qty: 1 }],
+  }));
+  const m = get('SELECT request_type, tb_kind FROM mrn WHERE id = ?', b.id);
+  assert.strictEqual(m.request_type, 'vehicle',
+    'request_type means general-vs-vehicle on all 1,709 existing requests; stores and daily work read it');
+  assert.strictEqual(m.tb_kind, 'tyre', 'the kind has a column of its own');
+});
+
+let buyId;
+test('an unapproved request cannot be sent to be bought', async () => {
+  const b = await json(await as('fitter', 'POST', '/api/tb/requests', {
+    kind: 'tyre', asset_id: ASSET, reason: 'worn', lines: [{ spec_id: TYRE, qty: 4 }],
+  }));
+  buyId = b.id;
+  const r = await as('keeper', 'POST', `/api/tb/requests/${buyId}/purchase`, {});
+  assert.strictEqual(r.status, 409);
+  assert.match((await json(r)).error, /approved/i);
+});
+
+test('an approved one stands in the purchase queue until somebody sends it', async () => {
+  await as('fitter', 'POST', `/api/stores/mrn/${buyId}/certify`, { signed_name: 'fitter' });
+  await as('opsman', 'POST', `/api/stores/mrn/${buyId}/approve`, { signed_name: 'opsman' });
+  const q = await json(await as('keeper', 'GET', '/api/tb/requests?kind=tyre&awaiting_purchase=1'));
+  assert.ok(q.some((r) => r.id === buyId), 'approved and unbought is the queue the store works from');
+});
+
+test('the workshop storekeeper sends it to Head Office', async () => {
+  const r = await as('keeper', 'POST', `/api/tb/requests/${buyId}/purchase`, { purchase_ref: 'HO/2026/114' });
+  assert.strictEqual(r.status, 200, JSON.stringify(await json(r)));
+  const m = get('SELECT purchase_requested_at, purchase_requested_by, purchase_ref, purchase_source FROM mrn WHERE id = ?', buyId);
+  assert.ok(m.purchase_requested_at);
+  assert.strictEqual(m.purchase_requested_by, 'keeper');
+  assert.strictEqual(m.purchase_ref, 'HO/2026/114');
+  assert.strictEqual(m.purchase_source, 'head_office', 'Head Office buys these — that is the default, not a guess');
+  const lines = all('SELECT purchase_source FROM mrn_lines WHERE mrn_id = ?', buyId);
+  assert.ok(lines.every((l) => l.purchase_source === 'head_office'), 'the lines carry it, so a receipt knows where it came from');
+});
+
+test('it leaves the queue once sent, and is not sent twice', async () => {
+  const q = await json(await as('keeper', 'GET', '/api/tb/requests?kind=tyre&awaiting_purchase=1'));
+  assert.ok(!q.some((r) => r.id === buyId));
+  const again = await as('keeper', 'POST', `/api/tb/requests/${buyId}/purchase`, {});
+  assert.strictEqual(again.status, 409);
+  assert.match((await json(again)).error, /already sent to be bought/i);
+});
+
+test('a local purchase is a deliberate exception, and says so', async () => {
+  const b = await json(await as('fitter', 'POST', '/api/tb/requests', {
+    kind: 'battery', asset_id: ASSET, reason: 'no_crank', lines: [{ spec_id: BATT, qty: 1 }],
+  }));
+  await as('fitter', 'POST', `/api/stores/mrn/${b.id}/certify`, { signed_name: 'fitter' });
+  await as('opsman', 'POST', `/api/stores/mrn/${b.id}/approve`, { signed_name: 'opsman' });
+  await as('keeper', 'POST', `/api/tb/requests/${b.id}/purchase`, { purchase_source: 'local_purchase' });
+  assert.strictEqual(get('SELECT purchase_source FROM mrn WHERE id = ?', b.id).purchase_source, 'local_purchase');
+});
+
+test('sending to purchase needs its own permission', async () => {
+  const b = await json(await as('fitter', 'POST', '/api/tb/requests', {
+    kind: 'tyre', asset_id: ASSET, reason: 'worn', lines: [{ spec_id: TYRE, qty: 1 }],
+  }));
+  await as('fitter', 'POST', `/api/stores/mrn/${b.id}/certify`, { signed_name: 'fitter' });
+  await as('opsman', 'POST', `/api/stores/mrn/${b.id}/approve`, { signed_name: 'opsman' });
+  // The fitter who raised it may not send it to be bought.
+  const denied = await as('fitter', 'POST', `/api/tb/requests/${b.id}/purchase`, {});
+  assert.strictEqual(denied.status, 403);
+  assert.match((await json(denied)).error, /tb_purchase/);
+  assert.strictEqual(get('SELECT purchase_requested_at FROM mrn WHERE id = ?', b.id).purchase_requested_at, null);
+});
+
+test('an ordinary workshop request is untouched by any of this', async () => {
+  const m = run(`INSERT INTO mrn (mrn_no, req_date, status, request_type) VALUES ('TBP-ORD-1', '2026-08-24', 'open', 'vehicle')`).lastInsertRowid;
+  assert.strictEqual(get('SELECT tb_kind FROM mrn WHERE id = ?', m).tb_kind, null);
+  const list = await json(await as('keeper', 'GET', '/api/tb/requests'));
+  assert.ok(!list.some((r) => r.id === m), 'only tyres and batteries carry the purchase stage');
 });
