@@ -423,3 +423,8 @@ id,ec_code,ec_code_norm,registration,registration_norm,brand,type,model_no,capac
 422,ASC-25,ASC25,,,,,,,,,,,plant,,2026-07-07 11:29:03,pending,3
 423,TR-146,TR146,,,,,,,,,,,plant,,2026-07-07 11:31:17,pending,3
 424,Tamping Rammer HC 40 1009,TAMPINGRAMMERHC401009,,,,,,,,,,,plant,,2026-07-07 11:32:08,pending,3
+425,TB-02,TB02,,,,,,,,,,,plant,,2026-07-13 03:10:57,pending,3
+426,AC-24,AC24,,,,,,,,,,,plant,,2026-07-13 04:16:04,registered,3
+427,BDI-8156,BDI8156,,,,,,,,,,,plant,,2026-07-13 04:32:33,pending,3
+428,SMG-02,SMG02,,,,,,,,,,,plant,,2026-07-13 09:11:02,pending,3
+429,BDI-5685,BDI5685,,,,,,,,,,,plant,,2026-08-10 06:01:33,pending,3
