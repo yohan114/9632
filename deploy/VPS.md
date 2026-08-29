@@ -300,13 +300,67 @@ sudo ufw allow 80/tcp                   # leave 80 open only if you want the red
 - [ ] Every person signs in once and sets their own password
 - [ ] A backup file has appeared within the half-hour: `sudo -u workshopone ls -l /opt/workshopone/backups`
 
+## When nobody can sign in
+
+Start here, always:
+
+```bash
+sudo -u workshopone bash -c 'cd /opt/workshopone/app && node scripts/doctor.js'
+```
+
+It prints which database is open, how big it is, how many accounts are in it, the bind address and
+the addresses of recent sign-ins. `0 user accounts` means the wrong `DB_PATH` — go back to step 5.
+
+If the doctor is happy and the website still refuses everyone, **ask the app directly**, with no
+browser, no Cloudflare and no nginx in the way:
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' -X POST http://127.0.0.1:3000/api/auth/login -H 'content-type: application/json' -d '{"username":"admin","password":"<the password you set>"}'
+```
+
+- `200` — the app is fine. **Then the website is not reaching this app.** See below.
+- `401` — the app really is refusing: wrong password, or it is on a different database than the
+  doctor examined (check `journalctl -u workshopone -n 20`, which prints the path the *service*
+  opened rather than the one a separate command resolves).
+- `429` — rate-limited by earlier failed attempts. That state is in memory:
+  `sudo systemctl restart workshopone` clears it at once.
+
+### `200` on the app but `401` through the website
+
+Something other than this app is answering the domain. Compare the two directly — if the page
+served publicly differs from the one the app serves, they are not the same program:
+
+```bash
+curl -s http://127.0.0.1:3000/app.js | grep -c 'Demo: admin/admin'      # the app on this machine
+curl -sk https://storesdb.ec-workshops.online/app.js | grep -c 'Demo: admin/admin'   # what the world sees
+```
+
+Then find out who is really listening, and where nginx is sending traffic:
+
+```bash
+sudo ss -ltnp | grep -E 'nginx|node'
+sudo grep -rn 'proxy_pass|server_name' /etc/nginx/sites-enabled/ /etc/nginx/conf.d/
+sudo nginx -t
+```
+
+Two `node` processes means an earlier deployment is still running and holding the port that nginx
+proxies to. Stop it, and make sure it cannot come back at boot (`systemctl list-units | grep -i
+workshop`, and check for pm2: `pm2 list`).
+
+**And check `nginx -t` even if you ran it before.** A failed `nginx -t` means the reload never
+happened, so nginx is still serving the configuration it had in memory — including its old
+`proxy_pass`. Deleting `sites-enabled/default` and adding the new site changes nothing until a
+reload actually succeeds. This is easy to miss because every subsequent command looks like it
+worked.
+
 ## Afterwards
 
 | | |
 |---|---|
 | Logs | `journalctl -u workshopone -f` |
 | Restart | `sudo systemctl restart workshopone` |
-| Update | `git pull && npm ci --omit=dev && sudo systemctl restart workshopone` |
+| Update | `sudo -u workshopone git -C /opt/workshopone/app pull && sudo -u workshopone bash -c 'cd /opt/workshopone/app && npm ci --omit=dev' && sudo systemctl restart workshopone` |
+| Diagnose | `sudo -u workshopone bash -c 'cd /opt/workshopone/app && node scripts/doctor.js'` |
 | Backups | every 30 min to `/opt/workshopone/backups`, 96 kept (two days) |
 
 **Those backups are on the same machine as the database.** That protects against a mistake in the
