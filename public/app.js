@@ -6475,7 +6475,13 @@ function renderLogin(err) {
     <label>Username</label><input id="u" autofocus>
     <label>Password</label><input id="p" type="password">
     <button class="primary" id="login" style="width:100%;margin-top:14px">Sign In</button>
-    <button type="button" class="btn" onclick="window.configureServerIp()" style="width:100%;margin-top:8px;font-size:12px;cursor:pointer">⚙️ Server: ${esc(currentServer)}</button>
+    ${window.WORKSHOPONE_IS_PACKAGED_APP
+      // Only the packaged app needs a server address — it is loaded off the device and has no
+      // origin of its own. In a browser this button offered a way to point the app at a machine
+      // that is not the one serving it, which is never right and, on the day the system went
+      // public, left PCs calling an unreachable LAN address and reporting only "Failed to fetch".
+      ? `<button type="button" class="btn" onclick="window.configureServerIp()" style="width:100%;margin-top:8px;font-size:12px;cursor:pointer">⚙️ Server: ${esc(currentServer)}</button>`
+      : ''}
     <!-- The demo credentials that used to be printed here (admin/admin, store/store, …) are gone.
          They were seed passwords, all since rotated, so the hint was wrong as well as unwise:
          people read it, typed admin/admin, were refused, and concluded the system was broken.
