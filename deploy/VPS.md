@@ -366,6 +366,13 @@ that can still ruin this quietly.
 sudo bash /opt/workshopone/app/deploy/update.sh
 ```
 
+**The very first time, that file is not there yet** — it arrives in the update it is meant to
+apply, and a script cannot pull itself into existence. Bootstrap once by hand, then never again:
+
+```bash
+sudo -u workshopone git -C /opt/workshopone/app pull && sudo -u workshopone bash -c 'cd /opt/workshopone/app && npm ci --omit=dev' && sudo systemctl restart workshopone
+```
+
 Backs up, fetches, installs, restarts, and then **checks that it worked** — the app answering, the
 right database, accounts present, nginx up. If any check fails it puts the previous version back
 and says so. Do not update by hand: `git pull && systemctl restart` has no backup and no verdict,
