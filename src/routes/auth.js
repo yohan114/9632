@@ -5,6 +5,7 @@ const { get, run } = require('../db');
 const auth = require('../lib/auth');
 const permissions = require('../lib/permissions');
 const audit = require('../lib/audit');
+const ratelimit = require('../lib/ratelimit');
 const { asyncHandler, require_ } = require('../lib/http');
 
 const router = express.Router();
@@ -13,10 +14,23 @@ router.post(
   '/login',
   asyncHandler((req, res) => {
     require_(req.body, ['username', 'password']);
+    // Checked BEFORE the password is verified, so a locked key costs nothing to refuse and no
+    // timing difference tells an attacker whether the username exists.
+    const ip = req.ip || (req.connection && req.connection.remoteAddress) || 'unknown';
+    const wait = ratelimit.check(ip, req.body.username);
+    if (wait) {
+      return res.status(429).set('Retry-After', String(wait)).json({
+        error: `Too many failed sign-ins. Try again in ${Math.ceil(wait / 60)} minute(s).`,
+      });
+    }
     const user = get('SELECT * FROM users WHERE username = ? AND active = 1', req.body.username);
     if (!user || !auth.verifyPassword(req.body.password, user.password_hash)) {
+      ratelimit.fail(ip, req.body.username);
+      // The message stays the same either way: saying "no such user" hands an attacker a list of
+      // which names are worth guessing at.
       return res.status(401).json({ error: 'Invalid username or password' });
     }
+    ratelimit.succeed(ip, req.body.username);
     const { token, expires } = auth.createSession(user.id, req);
     res.cookie(auth.COOKIE, token, {
       httpOnly: true,

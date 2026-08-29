@@ -38,7 +38,12 @@ const config = {
   port: int('PORT', 3000),
   host: process.env.HOST || '0.0.0.0', // bind all interfaces so the LAN can reach it
   dbPath: path.resolve(ROOT, process.env.DB_PATH || './data/workshopone.db'),
-  sessionSecret: process.env.SESSION_SECRET || 'dev-insecure-secret-change-me',
+  // NOT USED, and deliberately left saying so. A session token is 32 random bytes from
+  // crypto.randomBytes stored server-side in `sessions` — nothing is signed, so there is no secret
+  // to keep. The deployment notes used to tell you to change this before go-live, which sent you
+  // hunting for a risk that was never there while the real one (accounts still on their demo
+  // password) sat untouched. Left in place only so an existing .env does not become invalid.
+  sessionSecret: process.env.SESSION_SECRET || 'unused-session-tokens-are-random',
   sessionTtlHours: int('SESSION_TTL_HOURS', 12),
   uploadDir: path.resolve(ROOT, process.env.UPLOAD_DIR || './uploads'),
   backupDir: path.resolve(ROOT, process.env.BACKUP_DIR || './backups'),

@@ -98,7 +98,12 @@ app.use(errorHandler);
 // Route files stay unchanged — they just call emitter.emit('<event>', data); we
 // forward each known event to every socket. Nothing above this line changed.
 const httpServer = http.createServer(app);
-const io = new Server(httpServer, { cors: { origin: '*' } });
+// On the LAN any origin was fine — nothing else was on the network. Behind a public domain an
+// open socket accepts a connection from any page on the internet, so in production it is pinned to
+// the site's own origin. PUBLIC_ORIGIN is the https:// address the workshop actually types.
+const io = new Server(httpServer, {
+  cors: { origin: process.env.PUBLIC_ORIGIN || (process.env.NODE_ENV === 'production' ? false : '*') },
+});
 app.set('io', io); // available to routes via req.app.get('io') if ever needed directly
 
 const LIVE_EVENTS = ['stock_updated', 'oil_updated', 'filter_updated', 'job_updated', 'request_updated', 'dashboard_refresh', 'data_changed'];

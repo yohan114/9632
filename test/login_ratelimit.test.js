@@ -1,0 +1,115 @@
+'use strict';
+
+// Slowing down someone guessing passwords.
+//
+// On the workshop LAN this hardly mattered: to reach the login page you had to be standing in the
+// building. Behind storesdb.ec-workshops.online it matters a great deal — a login page on the open
+// internet is found by scanners within hours of the DNS resolving, and an unlimited number of
+// guesses against a short password is only a matter of time.
+//
+// The trap in the obvious implementation is counting by username alone: one attacker could then
+// lock every real user out of the system by guessing at their names, which hands over a denial of
+// service for free. So both the name and the address are counted, and either is enough to refuse.
+
+const os = require('os');
+const path = require('path');
+const fs = require('fs');
+const TEST_DB = path.join(os.tmpdir(), 'workshopone-ratelimit-test.db');
+for (const s of ['', '-shm', '-wal']) { try { fs.unlinkSync(TEST_DB + s); } catch {} }
+process.env.DB_PATH = TEST_DB;
+process.env.BACKUP_INTERVAL_MINUTES = '0';
+
+const test = require('node:test');
+const assert = require('node:assert');
+const { migrate, run } = require('../src/db');
+const ratelimit = require('../src/lib/ratelimit');
+
+migrate();
+run('INSERT INTO roles (name) VALUES (?)', 'admin');
+const uid = run('INSERT INTO users (username, password_hash, active) VALUES (?, ?, 1)', 'sam',
+  require('../src/lib/auth').hashPassword('correct-horse')).lastInsertRowid;
+run('INSERT INTO user_roles (user_id, role_id) VALUES (?, (SELECT id FROM roles WHERE name = ?))', uid, 'admin');
+
+const app = require('../src/server');
+let server; let base;
+test.before(async () => {
+  await new Promise((res) => { server = app.listen(0, res); });
+  base = `http://127.0.0.1:${server.address().port}`;
+});
+test.after(() => server && server.close());
+
+const login = (username, password) => fetch(`${base}/api/auth/login`, {
+  method: 'POST', headers: { 'content-type': 'application/json' },
+  body: JSON.stringify({ username, password }),
+});
+
+test.beforeEach(() => ratelimit.reset());
+
+test('a wrong password is refused, and says nothing about which part was wrong', async () => {
+  const r = await login('sam', 'nope');
+  assert.strictEqual(r.status, 401);
+  const bad = await login('nosuchperson', 'nope');
+  assert.strictEqual(bad.status, 401);
+  assert.strictEqual((await bad.json()).error, (await (await login('sam', 'nope2')).json()).error,
+    'a different message for an unknown name hands over a list of which names are worth guessing');
+});
+
+test('guessing at one name stops being answered', async () => {
+  let last;
+  for (let i = 0; i < ratelimit.MAX_PER_USER + 1; i++) last = await login('sam', 'guess' + i);
+  assert.strictEqual(last.status, 429);
+  const body = await last.json();
+  assert.match(body.error, /too many/i);
+  assert.ok(last.headers.get('retry-after'), 'and says how long to wait');
+});
+
+test('the right password is still refused while the lockout stands', async () => {
+  for (let i = 0; i < ratelimit.MAX_PER_USER + 1; i++) await login('sam', 'guess' + i);
+  const r = await login('sam', 'correct-horse');
+  assert.strictEqual(r.status, 429, 'otherwise the lockout only delays the attacker until they hit it');
+});
+
+test('a good sign-in clears the slate before the limit is reached', async () => {
+  await login('sam', 'wrong-once');
+  const ok = await login('sam', 'correct-horse');
+  assert.strictEqual(ok.status, 200, JSON.stringify(await ok.clone().json().catch(() => null)));
+  // and the earlier failure is forgotten, so a full run of guesses is needed again
+  for (let i = 0; i < ratelimit.MAX_PER_USER - 1; i++) {
+    assert.strictEqual((await login('sam', 'g' + i)).status, 401);
+  }
+});
+
+test('locking one name does not lock the others out', () => {
+  // Counting by username ALONE would let one attacker lock the whole workshop out by guessing at
+  // every name in turn. The address is counted too, and a name's lockout is its own.
+  ratelimit.reset();
+  for (let i = 0; i < ratelimit.MAX_PER_USER + 1; i++) ratelimit.fail('10.0.0.9', 'sam');
+  assert.ok(ratelimit.check('10.0.0.9', 'sam') > 0, 'the guessed name rests');
+  assert.strictEqual(ratelimit.check('10.0.0.50', 'priya'), 0,
+    'a different person at a different address is unaffected');
+});
+
+test('one address cannot spread its guesses across many names', () => {
+  ratelimit.reset();
+  for (let i = 0; i < ratelimit.MAX_PER_IP + 1; i++) ratelimit.fail('203.0.113.7', 'name' + i);
+  assert.ok(ratelimit.check('203.0.113.7', 'someone-new') > 0,
+    'counting by name alone would let a scanner try every username once, for free');
+  assert.strictEqual(ratelimit.check('198.51.100.2', 'someone-new'), 0);
+});
+
+test('a lockout expires on its own', () => {
+  ratelimit.reset();
+  for (let i = 0; i < ratelimit.MAX_PER_USER + 1; i++) ratelimit.fail('10.0.0.1', 'sam');
+  const wait = ratelimit.check('10.0.0.1', 'sam');
+  assert.ok(wait > 0 && wait <= ratelimit.LOCKOUT_MS / 1000,
+    'a storekeeper who mistypes is unblocked by waiting, not by a phone call to the admin');
+});
+
+test('the session token owes nothing to a shared secret', () => {
+  // Worth pinning: the deployment notes used to say "change SESSION_SECRET before go-live", which
+  // sent people hunting a risk that was never there. Tokens are random and stored server-side.
+  const a = require('../src/lib/auth').createSession(uid, null);
+  const b = require('../src/lib/auth').createSession(uid, null);
+  assert.notStrictEqual(a.token, b.token);
+  assert.ok(a.token.length >= 64, '32 random bytes, hex — not a signed value');
+});
