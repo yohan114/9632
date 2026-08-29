@@ -85,18 +85,34 @@ firewall were wrong. Both, deliberately.
 
 ## 4. The code
 
+`/opt/workshopone` is the service account's home and your login cannot read into it — `cd` there
+returns "Permission denied" for anyone but root. Rather than loosening the permissions, every
+command below names the directory instead of relying on the working directory.
+
 ```bash
-sudo -u workshopone git clone https://github.com/yohan114/9632.git /opt/workshopone/app
-cd /opt/workshopone/app
-sudo -u workshopone git checkout feature/spa-native-views
-sudo -u workshopone npm ci --omit=dev
+sudo -u workshopone git clone -b feature/spa-native-views https://github.com/yohan114/9632.git /opt/workshopone/app
+sudo -u workshopone bash -c 'cd /opt/workshopone/app && npm ci --omit=dev'
 ```
+
+Already cloned? `git clone` refuses a non-empty directory, which is what you want — it is telling
+you the code is there. Update it in place instead:
+
+```bash
+sudo -u workshopone git -C /opt/workshopone/app pull
+sudo -u workshopone bash -c 'cd /opt/workshopone/app && npm ci --omit=dev'
+```
+
+> **`npm audit` will report advisories, and npm will suggest `npm audit fix --force`. Do not run
+> it.** It downgrades exceljs to 3.4.0, a major version backwards, and exceljs is required by
+> `src/lib/export.js`, `src/lib/daily_reports.js`, `src/lib/monthly_cost_report.js` and
+> migration 030. The remaining advisory (uuid, missing buffer bounds check in v3/v5/v6 when `buf`
+> is supplied) is not on any path this app takes — exceljs uses v4 and passes no buffer.
 
 ## 5. Configuration
 
 ```bash
-sudo -u workshopone cp .env.example .env
-sudo -u workshopone nano .env
+sudo -u workshopone cp /opt/workshopone/app/.env.example /opt/workshopone/app/.env
+sudo -u workshopone nano /opt/workshopone/app/.env
 ```
 
 ```ini
@@ -118,21 +134,27 @@ the public internet beside nginx, bypassing TLS entirely.
 The workshop is not starting from nothing — ten years of history, the tyre catalogue, the corrected
 balances and the accounts all live in the database on the office PC.
 
-**On the office PC**, take a clean copy. SQLite in WAL mode keeps recent writes in a side file, so
-copying `workshopone.db` alone gives a database missing its most recent work:
+### 6a. On the OFFICE PC — a Windows terminal, not the ssh session
+
+The two commands below fail on the server: there is no `D:` drive there, and `scp`-ing from the
+server to itself will sit asking for a password that will not work. Close or minimise the ssh
+window if that helps keep them apart.
+
+SQLite in WAL mode keeps recent writes in a side file, so copying `workshopone.db` by hand gives a
+database missing its most recent work. Take a proper snapshot:
 
 ```bash
-cd "D:/Master system 1"
-node scripts/backup.js          # writes a consistent single file to backups/
+cd "D:/Master system 1" && node scripts/backup.js
 ```
 
-Send the newest file from `backups/` to the server (about 44 MB):
+Send the newest file from `backups/` (about 47 MB), signing in as **your own login** — root
+password authentication is normally disabled, which is why `root@` is refused:
 
 ```bash
-scp backups/workshopone-<newest>.db root@20.204.51.43:/tmp/w1.db
+scp "D:/Master system 1/backups/workshopone-<newest>.db" yohanudara@20.204.51.43:/tmp/w1.db
 ```
 
-**On the server:**
+### 6b. On the SERVER — back in the ssh session
 
 ```bash
 sudo mkdir -p /opt/workshopone/data /opt/workshopone/backups
