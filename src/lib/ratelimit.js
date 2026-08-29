@@ -15,9 +15,27 @@
 // system — a denial of service handed over for free. Counting only by address lets a botnet spread
 // its guesses. So both are counted, and either tripping is enough to refuse.
 
+const int = (name, def) => {
+  const v = parseInt(process.env[name], 10);
+  return Number.isFinite(v) && v > 0 ? v : def;
+};
+
 const WINDOW_MS = 15 * 60 * 1000;      // how long a run of failures is remembered
-const MAX_PER_USER = 8;                // guesses at one username before it rests
-const MAX_PER_IP = 30;                 // guesses from one address, across all usernames
+const MAX_PER_USER = int('RATELIMIT_MAX_PER_USER', 8);   // guesses at one username before it rests
+
+// AN OFFICE IS ONE ADDRESS. This was 30, chosen when the app was on the workshop LAN and every PC
+// had its own address. Behind Cloudflare it is the opposite: everyone in the building shares the
+// company's single public address, so this is not "one attacker's budget", it is the WHOLE
+// COMPANY'S budget for mistyped passwords in a quarter of an hour. Thirty was reached on the first
+// morning, and the entire office was locked out together while one person who happened to be on a
+// phone connection could still sign in.
+//
+// Raised, and made adjustable without a code change. The real protection against guessing a
+// particular person's password is MAX_PER_USER, which is untouched at 8: an attacker who spreads
+// guesses across usernames to stay under this ceiling still only gets 8 tries at each. This number
+// exists to slow a botnet spraying many names, and it still does that.
+const MAX_PER_IP = int('RATELIMIT_MAX_PER_IP', 120);
+
 const LOCKOUT_MS = 15 * 60 * 1000;
 
 const buckets = new Map();             // key -> { count, first, until }

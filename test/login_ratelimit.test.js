@@ -151,3 +151,44 @@ test('the limit counts the address the app was told, so a forged one must not re
   assert.strictEqual(ratelimit.check('203.0.113.10', 'anyone'), 0,
     'if a client could pick this value it would simply pick a new one each time');
 });
+
+// ---- an office is one address ---------------------------------------------
+//
+// On the LAN every PC had its own address. Behind Cloudflare everyone in the building shares the
+// company's single public address, so the per-address ceiling stopped being "one attacker's
+// budget" and became the whole company's budget for mistyped passwords in a quarter of an hour.
+// It was reached on the first morning and locked the entire office out at once.
+
+test('a building full of people mistyping does not lock the building out', () => {
+  ratelimit.reset();
+  // fifteen people, two fumbles each, all arriving from the office's one public address
+  for (let person = 0; person < 15; person++) {
+    for (let attempt = 0; attempt < 2; attempt++) ratelimit.fail('203.0.113.5', 'person' + person);
+  }
+  assert.strictEqual(ratelimit.check('203.0.113.5', 'someone-else'), 0,
+    'thirty honest mistakes across a shared address must not shut out the next person to try');
+});
+
+test('but one name is still rested after a run of guesses at it', () => {
+  // The protection that actually matters for a given account is per-USERNAME, and it is untouched.
+  // An attacker spreading guesses across names to stay under the address ceiling still gets only
+  // MAX_PER_USER attempts at each one.
+  ratelimit.reset();
+  for (let i = 0; i <= ratelimit.MAX_PER_USER; i++) ratelimit.fail('203.0.113.5', 'sam');
+  assert.ok(ratelimit.check('203.0.113.5', 'sam') > 0);
+  assert.strictEqual(ratelimit.check('203.0.113.5', 'priya'), 0,
+    'and a colleague at the same desk is unaffected');
+});
+
+test('the address ceiling still exists, and still stops a spray', () => {
+  ratelimit.reset();
+  for (let i = 0; i <= ratelimit.MAX_PER_IP; i++) ratelimit.fail('198.51.100.7', 'name' + i);
+  assert.ok(ratelimit.check('198.51.100.7', 'anyone') > 0,
+    'raising the ceiling must not mean removing it — a botnet trying every username still stops');
+});
+
+test('the ceilings can be tuned without a code change', () => {
+  // A workshop of 60 is not a workshop of 6. The owner should not need a deploy to widen this.
+  assert.ok(ratelimit.MAX_PER_IP >= 100, 'default must clear a normal morning in a shared office');
+  assert.ok(ratelimit.MAX_PER_USER <= 10, 'per-account guessing must stay tight');
+});
