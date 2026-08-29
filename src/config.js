@@ -5,23 +5,53 @@ const path = require('path');
 
 // Minimal .env loader (avoids an extra dependency). Only sets vars not already
 // present in the real environment, so container/CI env always wins.
+//
+// Two rules here were learned on the VPS cut-over, where a mis-parsed .env sent the app to an
+// empty database and every correct password came back "incorrect":
+//
+//   WITHIN THE FILE, THE LAST LINE WINS. This used to be first-wins, which is not what anyone
+//   editing a config file expects and is not what dotenv does. It mattered because the runbook
+//   said to copy .env.example and then add your settings: appending HOST and DB_PATH below the
+//   example's own HOST and DB_PATH left the EXAMPLE's values in force, silently. The app bound
+//   0.0.0.0 and opened ./data/workshopone.db — a new, empty file beside the code — instead of the
+//   database that had just been carried across. A duplicate key now warns as well, because
+//   whichever way it resolves, someone typed something they are not getting.
+//
+//   AN UNQUOTED VALUE ENDS AT A COMMENT. `HOST=127.0.0.1  # nginx reaches it` used to set HOST to
+//   the whole string including the comment, and the app then could not bind. Quote the value if
+//   you genuinely need a "#" in it.
 function loadDotEnv(file) {
+  let raw;
   try {
-    const raw = fs.readFileSync(file, 'utf8');
-    for (const line of raw.split(/\r?\n/)) {
-      const trimmed = line.trim();
-      if (!trimmed || trimmed.startsWith('#')) continue;
-      const eq = trimmed.indexOf('=');
-      if (eq === -1) continue;
-      const key = trimmed.slice(0, eq).trim();
-      let val = trimmed.slice(eq + 1).trim();
-      if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
-        val = val.slice(1, -1);
-      }
-      if (!(key in process.env)) process.env[key] = val;
-    }
+    raw = fs.readFileSync(file, 'utf8');
   } catch {
-    /* no .env file — fall back to defaults below */
+    return; // no .env file — fall back to the defaults below
+  }
+
+  const parsed = new Map();
+  const repeated = new Set();
+  for (const line of raw.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const eq = trimmed.indexOf('=');
+    if (eq === -1) continue;
+    const key = trimmed.slice(0, eq).trim();
+    let val = trimmed.slice(eq + 1).trim();
+    if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+      val = val.slice(1, -1);
+    } else {
+      const comment = val.match(/\s#/);
+      if (comment) val = val.slice(0, comment.index).trim();
+    }
+    if (parsed.has(key)) repeated.add(key);
+    parsed.set(key, val);
+  }
+
+  for (const key of repeated) {
+    console.warn(`.env: "${key}" is set more than once — the last one wins ("${parsed.get(key)}")`);
+  }
+  for (const [key, val] of parsed) {
+    if (!(key in process.env)) process.env[key] = val;
   }
 }
 

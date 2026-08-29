@@ -113,21 +113,45 @@ sudo -u workshopone bash -c 'cd /opt/workshopone/app && npm ci --omit=dev'
 
 ## 5. Configuration
 
-```bash
-sudo -u workshopone cp /opt/workshopone/app/.env.example /opt/workshopone/app/.env
-sudo -u workshopone nano /opt/workshopone/app/.env
-```
+**Write the file whole. Do not copy `.env.example` and add to it** — that is how this went wrong
+once already. Paste this as a single block:
 
-```ini
+```bash
+sudo -u workshopone tee /opt/workshopone/app/.env > /dev/null <<'EOF'
 PORT=3000
-HOST=127.0.0.1                                        # nginx reaches it; the internet does not
+HOST=127.0.0.1
 NODE_ENV=production
-PUBLIC_ORIGIN=https://storesdb.ec-workshops.online     # pins the live-update socket
+PUBLIC_ORIGIN=https://storesdb.ec-workshops.online
 DB_PATH=/opt/workshopone/data/workshopone.db
 BACKUP_DIR=/opt/workshopone/backups
 BACKUP_INTERVAL_MINUTES=30
 BACKUP_RETENTION=96
+EOF
 ```
+
+Then check what the app **resolved**, not what you typed:
+
+```bash
+sudo -u workshopone node -e 'const c=require("/opt/workshopone/app/src/config");console.log(c.host, c.dbPath, c.backupDir)'
+```
+
+Must print exactly:
+
+```
+127.0.0.1 /opt/workshopone/data/workshopone.db /opt/workshopone/backups
+```
+
+> **Why a heredoc instead of `cp` + `nano`.** `.env.example` ships live values for `HOST`,
+> `DB_PATH` and `BACKUP_DIR`. Append your own below them and you get each key twice — and this
+> file is read top to bottom, so on the cut-over the *example's* values won. The app bound
+> `0.0.0.0` and opened `./data/workshopone.db`: a brand-new empty database beside the code, while
+> the 47 MB file carried across in step 6 sat unused. It started perfectly and rejected every
+> correct password, because there were no accounts in it to match.
+>
+> The loader now takes the last setting of a key and warns about the duplicate, so that exact trap
+> is closed — but writing the file whole means there is nothing to resolve in the first place.
+> Note also that comments must be on their own line: `HOST=127.0.0.1 # note` used to put the note
+> inside the value. Also fixed, and also avoided entirely by the block above.
 
 `HOST=127.0.0.1` is the important line. The LAN default of `0.0.0.0` would put the app itself on
 the public internet beside nginx, bypassing TLS entirely.
@@ -173,14 +197,30 @@ additive — nothing is dropped.
 
 ## 7. Run it
 
+The unit ships with two placeholders. Fill them in with `sed` rather than opening an editor — the
+absolute source path matters, because you are standing in your own home directory and cannot `cd`
+into the app:
+
 ```bash
-sudo cp deploy/workshopone.service /etc/systemd/system/
-sudo nano /etc/systemd/system/workshopone.service     # User=workshopone, WorkingDirectory=/opt/workshopone/app
-sudo systemctl daemon-reload
-sudo systemctl enable --now workshopone
-systemctl status workshopone
-journalctl -u workshopone -f
+sudo cp /opt/workshopone/app/deploy/workshopone.service /etc/systemd/system/workshopone.service && sudo sed -i 's|REPLACE_WITH_SERVICE_USER|workshopone|; s|REPLACE_WITH_APP_DIR|/opt/workshopone/app|' /etc/systemd/system/workshopone.service && grep -E '^(User|WorkingDirectory|Environment)=' /etc/systemd/system/workshopone.service
 ```
+
+That must echo `User=workshopone` and `WorkingDirectory=/opt/workshopone/app`, with no
+`REPLACE_WITH_` left. (With a *relative* `deploy/...` path the `cp` fails, the editor then opens an
+empty buffer with no placeholders to fill in, and `systemctl enable` reports a unit that does not
+exist — by which time the `cp` error has scrolled away.)
+
+```bash
+sudo systemctl daemon-reload && sudo systemctl enable --now workshopone && systemctl status workshopone --no-pager
+```
+
+```bash
+journalctl -u workshopone -n 20 --no-pager
+```
+
+The startup lines name the database and count the accounts in it. **You want `(9 user accounts)`.**
+`0` means the wrong `DB_PATH` — a new empty database, and every password will be refused as
+incorrect. Go back to step 5.
 
 Then check what it actually bound to, because a value set in the unit file beats `.env` — the loader
 in `src/config.js` only fills in keys the environment does not already have:
@@ -247,13 +287,18 @@ sudo ufw allow 80/tcp                   # leave 80 open only if you want the red
 - [ ] `https://` loads and the padlock is clean
 - [ ] Signing in sets a cookie marked **Secure** (browser dev tools → Application → Cookies)
 - [ ] `curl http://20.204.51.43:3000` from your own machine **times out**
-- [ ] The app sees the real visitor address, not a Cloudflare one — sign in, then check the newest
-      row: `sqlite3 /opt/workshopone/data/workshopone.db "SELECT ip FROM sessions ORDER BY id DESC LIMIT 1;"`
-      If that shows a Cloudflare address, the real-IP block is not working and the rate limiter is
-      counting every visitor as the same person
+- [ ] The app sees the real visitor address, not a Cloudflare one. Sign in, then:
+
+      sudo -u workshopone sqlite3 /opt/workshopone/data/workshopone.db "SELECT ip, created_at FROM sessions ORDER BY id DESC LIMIT 1;"
+
+      It must show **your own public address** — `curl -s ifconfig.me` from the office PC to see
+      what that is. A `104.x`, `172.6x.x` or `162.158.x` value means the real-IP block is not
+      working and the rate limiter is counting every visitor on the internet as one person.
+      The `sudo -u workshopone` matters: `/opt/workshopone` is the service account's home and your
+      own login cannot read into it.
 - [ ] Eight wrong passwords in a row are answered with "Try again in 15 minutes"
 - [ ] Every person signs in once and sets their own password
-- [ ] A backup file has appeared in `/opt/workshopone/backups` within the half-hour
+- [ ] A backup file has appeared within the half-hour: `sudo -u workshopone ls -l /opt/workshopone/backups`
 
 ## Afterwards
 
