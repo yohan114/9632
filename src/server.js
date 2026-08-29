@@ -89,9 +89,20 @@ app.use('/api/tb', require('./routes/tyre_battery_requests'));
 // app.js / styles.css so a normal reload always picks up the latest build.
 const publicDir = path.join(__dirname, '..', 'public');
 const BUILD = Date.now();
+// EVERY script and stylesheet gets the token, not just app.js and styles.css.
+//
+// It used to cover only those two, and the files under /js/ were left to the browser's own
+// caching. That held until app.js started calling a function that had just been ADDED to
+// /js/live-client.js: browsers took the new app.js and kept the old live-client.js, and the
+// mismatch threw "LiveERP.connect is not a function" during boot — which the login screen reported
+// as a server connection problem, so a live-update nicety broke signing in altogether.
+//
+// The quieter half was worse. The stale live-client had no handling for a refused socket and
+// retried once a second forever, against a server that had just started refusing anonymous ones.
+// Every open tab became a permanent stream of failing connections, and the site felt slow.
 const sendIndex = (res) => {
   const html = fs.readFileSync(path.join(publicDir, 'index.html'), 'utf8')
-    .replace(/(\/(?:app\.js|styles\.css))(\?v=[^"']*)?/g, `$1?v=${BUILD}`);
+    .replace(/(\/(?:app\.js|styles\.css|js\/[\w.-]+\.(?:js|css)))(\?v=[^"']*)?/g, `$1?v=${BUILD}`);
   res.type('html').set('Cache-Control', 'no-cache').send(html);
 };
 app.get('/', (_req, res) => sendIndex(res));

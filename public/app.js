@@ -4,6 +4,23 @@
 // ---------------------------------------------------------------- API + util
 let ME = null;
 
+// Live updates are a convenience. Signing in is not.
+//
+// These two files are cached separately by the browser, so a visitor can hold a NEW app.js against
+// an OLD live-client.js. That happened: app.js called LiveERP.connect(), the cached client had no
+// such function, the exception escaped boot(), and the login screen reported "Server connection
+// issue: LiveERP.connect is not a function" — a real deployment, where nobody could sign in because
+// of a stale copy of an optional feature. The cache-busting hole is fixed in src/server.js; this
+// makes the dependency one-way regardless, so a missing or half-loaded live client degrades to
+// "no live updates" instead of "no way in".
+function live(method) {
+  try {
+    if (window.LiveERP && typeof window.LiveERP[method] === 'function') window.LiveERP[method]();
+  } catch (e) {
+    console.warn('live updates unavailable:', e && e.message);
+  }
+}
+
 async function api(path, opts = {}) {
   const baseUrl = (window.WORKSHOPONE_API_BASE || '').replace(/\/+$/, '');
   const url = (baseUrl ? baseUrl : '') + '/api' + path;
@@ -705,7 +722,7 @@ function renderShell() {
     </div>`;
   qs('#logout').onclick = async () => {
     await api('/auth/logout', { method: 'POST' });
-    if (window.LiveERP) LiveERP.disconnect();   // the socket holds the session of whoever just left
+    live('disconnect');   // the socket holds the session of whoever just left
     ME = null; location.hash = ''; boot();
   };
   qs('#chpw').onclick = () => modal('Change password', `
@@ -6467,7 +6484,7 @@ function renderLogin(err) {
   const go = async () => {
     try {
       ME = await api('/auth/login', { method: 'POST', body: { username: qs('#u').value, password: qs('#p').value } });
-      if (window.LiveERP) LiveERP.connect();   // the socket is refused until a session exists
+      live('connect');   // the socket is refused until a session exists
       location.hash = '#/dashboard'; render();
       if (ME.mustChangePassword) forceChangePassword();
     } catch (e) { renderLogin(e.message || 'Connection failed'); }
@@ -6479,7 +6496,7 @@ function renderLogin(err) {
 async function boot() {
   try {
     ME = await api('/auth/me');
-    if (window.LiveERP) LiveERP.connect();   // an existing session — open the live socket
+    live('connect');   // an existing session — open the live socket
     if (!location.hash) location.hash = '#/dashboard';
     render();
     if (ME.mustChangePassword) forceChangePassword();
