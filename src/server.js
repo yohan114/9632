@@ -20,7 +20,18 @@ const emitter = require('./lib/emitter');
 migrate();
 
 const app = express();
-app.set('trust proxy', true);
+// WHO IS ALLOWED TO TELL US THE VISITOR'S ADDRESS.
+//
+// `true` trusts any X-Forwarded-For header from anyone. On the workshop LAN that was harmless.
+// Facing the internet it is a hole: a client sends "X-Forwarded-For: 1.2.3.4", changes it every
+// request, and walks straight through the login rate limiter, which counts by address.
+//
+// In production only the proxy on this machine is believed. nginx sits on 127.0.0.1, rewrites the
+// address to the real visitor using Cloudflare's CF-Connecting-IP (see deploy/nginx-storesdb.conf),
+// and passes it on — so the chain of trust ends at something we control. A request arriving from
+// anywhere else has its forwarding headers ignored, which is exactly what should happen.
+app.set('trust proxy', process.env.TRUST_PROXY
+  || (process.env.NODE_ENV === 'production' ? 'loopback' : true));
 app.use(express.json({ limit: '5mb' }));
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());

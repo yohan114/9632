@@ -113,3 +113,41 @@ test('the session token owes nothing to a shared secret', () => {
   assert.notStrictEqual(a.token, b.token);
   assert.ok(a.token.length >= 64, '32 random bytes, hex — not a signed value');
 });
+
+// ---- who may speak for the visitor ----------------------------------------
+//
+// `trust proxy: true` believes any X-Forwarded-For header from anyone. On the workshop LAN that
+// was harmless. Facing the internet it is a hole: a client sends "X-Forwarded-For: 1.2.3.4",
+// changes it every request, and walks straight through a limiter that counts by address.
+//
+// In production only the proxy on this machine is believed. nginx sits on 127.0.0.1, works out the
+// real visitor from Cloudflare's CF-Connecting-IP, and passes it on — so the chain of trust ends
+// at something we control.
+
+test('production believes only the proxy on this machine', () => {
+  const prev = process.env.NODE_ENV;
+  const fresh = () => {
+    for (const k of Object.keys(require.cache)) if (k.includes('server.js')) delete require.cache[k];
+    return require('../src/server');
+  };
+  try {
+    process.env.NODE_ENV = 'production';
+    assert.strictEqual(fresh().get('trust proxy fn') && 'set', 'set');
+    const app = fresh();
+    assert.notStrictEqual(app.get('trust proxy'), true,
+      'trusting every hop lets a client forge its own address and defeat the rate limit');
+  } finally {
+    process.env.NODE_ENV = prev;
+    for (const k of Object.keys(require.cache)) if (k.includes('server.js')) delete require.cache[k];
+  }
+});
+
+test('the limit counts the address the app was told, so a forged one must not reach it', () => {
+  // The guard is the trust setting above; this pins the consequence. Two different addresses are
+  // counted apart, which is only safe because a client cannot choose which address it appears as.
+  ratelimit.reset();
+  for (let i = 0; i < ratelimit.MAX_PER_IP + 1; i++) ratelimit.fail('203.0.113.9', 'u' + i);
+  assert.ok(ratelimit.check('203.0.113.9', 'anyone') > 0);
+  assert.strictEqual(ratelimit.check('203.0.113.10', 'anyone'), 0,
+    'if a client could pick this value it would simply pick a new one each time');
+});

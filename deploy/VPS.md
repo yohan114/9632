@@ -28,26 +28,41 @@ resolving. Three things follow, and all three are already done in the code:
 
 ---
 
-## 1. Point the name at the server
+## 1. Cloudflare, and what it changes
 
-Before anything else, so the certificate can be issued:
+`storesdb.ec-workshops.online` is proxied by Cloudflare (orange cloud), and that is the chosen
+setup. It hides the server's address and absorbs traffic before it reaches you. It also means:
 
-```
-A    storesdb    20.204.51.43
-```
+    visitor  --https-->  Cloudflare  --https-->  your nginx  --http-->  app on 127.0.0.1:3000
 
-Check it from your own machine — a certificate request against a name that still points elsewhere
-fails in a way that is tiresome to unpick:
+**Both encrypted hops matter.** In the dashboard set **SSL/TLS -> Overview -> Full (Strict)**.
+Do NOT leave it on *Flexible*: that carries Cloudflare-to-origin as plain HTTP across the public
+internet while showing the visitor a padlock, which is worse than no padlock because it looks safe.
+
+There is no certbot in this path. Cloudflare issues the origin certificate instead:
+**SSL/TLS -> Origin Server -> Create Certificate**, then on the server:
 
 ```bash
-nslookup storesdb.ec-workshops.online
+sudo mkdir -p /etc/ssl/cloudflare
+sudo nano /etc/ssl/cloudflare/storesdb.pem     # paste the certificate
+sudo nano /etc/ssl/cloudflare/storesdb.key     # paste the private key
+sudo chmod 600 /etc/ssl/cloudflare/storesdb.key
 ```
+
+Point the DNS record at the server, proxy left **on**:
+
+```
+A    storesdb    20.204.51.43    Proxied (orange cloud)
+```
+
+> Today the name answers with a redirect loop, which is what Cloudflare does when the origin
+> behind it is not serving anything yet. That resolves itself once nginx is up at step 8.
 
 ## 2. Prepare the server
 
 ```bash
 sudo apt update && sudo apt upgrade -y
-sudo apt install -y nginx certbot python3-certbot-nginx git curl ufw
+sudo apt install -y nginx git curl ufw     # no certbot — Cloudflare issues the origin certificate
 
 # Node 20+ — better-sqlite3 is compiled, so the build tools are not optional
 curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
@@ -142,20 +157,39 @@ systemctl status workshopone
 journalctl -u workshopone -f
 ```
 
-## 8. nginx, then the certificate
+## 8. nginx
+
+The visitor's real address has to survive the trip, or the login rate limiter will treat the whole
+internet as one caller. nginx learns it from Cloudflare's `CF-Connecting-IP` header, but only
+trusts that header from Cloudflare's own networks — so generate the list rather than typing it:
 
 ```bash
+curl -s https://www.cloudflare.com/ips-v4 > /tmp/cf.txt
+curl -s https://www.cloudflare.com/ips-v6 >> /tmp/cf.txt
+sed 's|^|set_real_ip_from |; s|$|;|' /tmp/cf.txt | sudo tee /etc/nginx/cloudflare-real-ip.conf
+echo 'real_ip_header CF-Connecting-IP;' | sudo tee -a /etc/nginx/cloudflare-real-ip.conf
+cat /etc/nginx/cloudflare-real-ip.conf      # sanity-check it is a list of CIDRs, not an error page
+
 sudo cp deploy/nginx-storesdb.conf /etc/nginx/sites-available/storesdb
 sudo ln -s /etc/nginx/sites-available/storesdb /etc/nginx/sites-enabled/storesdb
 sudo rm -f /etc/nginx/sites-enabled/default
 sudo nginx -t && sudo systemctl reload nginx
 ```
 
-Check `http://storesdb.ec-workshops.online` loads. **Then** ask for the certificate:
+Cloudflare adds ranges from time to time; re-run the first command after a change, or monthly.
+
+### Optional, and worth it: refuse anyone who bypasses Cloudflare
+
+With the proxy on, the only legitimate traffic to port 443 comes from Cloudflare. Anyone who
+discovers `20.204.51.43` can otherwise talk to the origin directly and skip everything Cloudflare
+is there to do:
 
 ```bash
-sudo certbot --nginx -d storesdb.ec-workshops.online
-sudo certbot renew --dry-run
+for ip in $(curl -s https://www.cloudflare.com/ips-v4) $(curl -s https://www.cloudflare.com/ips-v6); do
+  sudo ufw allow from $ip to any port 443 proto tcp
+done
+sudo ufw delete allow 'Nginx Full'      # drop the open 80/443 rule from step 3
+sudo ufw allow 80/tcp                   # leave 80 open only if you want the redirect to work
 ```
 
 ## 9. Before you hand out the address
@@ -163,6 +197,10 @@ sudo certbot renew --dry-run
 - [ ] `https://` loads and the padlock is clean
 - [ ] Signing in sets a cookie marked **Secure** (browser dev tools → Application → Cookies)
 - [ ] `curl http://20.204.51.43:3000` from your own machine **times out**
+- [ ] The app sees the real visitor address, not a Cloudflare one — sign in, then check the newest
+      row: `sqlite3 /opt/workshopone/data/workshopone.db "SELECT ip FROM sessions ORDER BY id DESC LIMIT 1;"`
+      If that shows a Cloudflare address, the real-IP block is not working and the rate limiter is
+      counting every visitor as the same person
 - [ ] Eight wrong passwords in a row are answered with "Try again in 15 minutes"
 - [ ] Every person signs in once and sets their own password
 - [ ] A backup file has appeared in `/opt/workshopone/backups` within the half-hour
