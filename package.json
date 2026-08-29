@@ -35,14 +35,16 @@
   "license": "UNLICENSED",
   "private": true,
   "dependencies": {
-    "@capacitor/android": "^8.4.2",
-    "@capacitor/cli": "^8.4.2",
-    "@capacitor/core": "^8.4.2",
     "bcryptjs": "^2.4.3",
     "better-sqlite3": "^12.4.1",
     "cookie-parser": "^1.4.7",
     "exceljs": "^4.4.0",
     "express": "^4.22.2",
     "socket.io": "^4.7.0"
+  },
+  "devDependencies": {
+    "@capacitor/android": "^8.4.2",
+    "@capacitor/cli": "^8.4.2",
+    "@capacitor/core": "^8.4.2"
   }
 }
