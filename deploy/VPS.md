@@ -353,15 +353,83 @@ happened, so nginx is still serving the configuration it had in memory — inclu
 reload actually succeeds. This is easy to miss because every subsequent command looks like it
 worked.
 
-## Afterwards
+## Running it from here on
+
+**The server is the system of record.** Since the cut-over, the workshop's real figures live in
+`/opt/workshopone/data/workshopone.db` on the VPS. The copy on the office PC is a development
+machine and nothing more — see "The office copy" below, because leaving it in use is the one thing
+that can still ruin this quietly.
+
+### Updating
+
+```bash
+sudo bash /opt/workshopone/app/deploy/update.sh
+```
+
+Backs up, fetches, installs, restarts, and then **checks that it worked** — the app answering, the
+right database, accounts present, nginx up. If any check fails it puts the previous version back
+and says so. Do not update by hand: `git pull && systemctl restart` has no backup and no verdict,
+and a bad deploy is then discovered by a storekeeper rather than by you.
+
+It refuses if someone has edited files directly on the server, rather than discarding their work.
+
+### Day to day
 
 | | |
 |---|---|
 | Logs | `journalctl -u workshopone -f` |
 | Restart | `sudo systemctl restart workshopone` |
-| Update | `sudo -u workshopone git -C /opt/workshopone/app pull && sudo -u workshopone bash -c 'cd /opt/workshopone/app && npm ci --omit=dev' && sudo systemctl restart workshopone` |
-| Diagnose | `sudo -u workshopone bash -c 'cd /opt/workshopone/app && node scripts/doctor.js'` |
-| Backups | every 30 min to `/opt/workshopone/backups`, 96 kept (two days) |
+| Diagnose ("nobody can sign in") | `sudo -u workshopone bash -c 'cd /opt/workshopone/app && node scripts/doctor.js'` |
+| Add people | `sudo -u workshopone bash -c 'cd /opt/workshopone/app && node scripts/create_staff.js --file staff.csv --apply'` |
+| Reset one password | `sudo -u workshopone bash -c 'cd /opt/workshopone/app && node scripts/admin.js set-password <user> "<temporary>"'` |
+| Backup now | `sudo -u workshopone bash -c 'cd /opt/workshopone/app && node scripts/backup.js'` |
+| Backups | automatic every 30 min to `/opt/workshopone/backups`, 96 kept (two days) |
+
+### Importing data, and any script that writes
+
+Every script here is dry-run by default and needs `--apply`. Run them **on the server**, against the
+server's database, and take a backup first — `update.sh` does that for you but a manual import does
+not:
+
+```bash
+sudo -u workshopone bash -c 'cd /opt/workshopone/app && node scripts/backup.js && node scripts/<script>.js'      # dry run
+sudo -u workshopone bash -c 'cd /opt/workshopone/app && node scripts/<script>.js --apply'
+```
+
+Spreadsheets to import go up with `scp` from the office PC — **run that on the PC, not in the ssh
+session**:
+
+```bash
+scp "D:/path/to/file.xlsx" yohanudara@20.204.51.43:/tmp/
+sudo mv /tmp/file.xlsx /opt/workshopone/app/sources/ && sudo chown workshopone:workshopone /opt/workshopone/app/sources/file.xlsx
+```
+
+### The office copy
+
+`D:\Master system 1` still has its own database and its own backup scheduler. Nothing connects the
+two, nothing syncs, and neither will ever complain — so anything entered there is invisible to the
+workshop and will be lost.
+
+Use it for development only, and start it on a port nobody has bookmarked:
+
+```bash
+PORT=1929 node src/server.js
+```
+
+If the office PC is ever to take live entry again, that is a cut-over — copy the server's database
+down the same way step 6 copied it up — not something to drift into.
+
+### Off-site backups
+
+The automatic backups sit on the same machine as the database. That covers a mistake in the app; it
+covers nothing about losing the server. Copy them somewhere else on a schedule — from the office PC,
+for instance:
+
+```bash
+scp yohanudara@20.204.51.43:/opt/workshopone/backups/$(ssh yohanudara@20.204.51.43 'ls -t /opt/workshopone/backups | head -1') "D:/WorkshopOne-offsite/"
+```
+
+Worth doing now rather than later: this is the only copy of ten years of records.
 
 **Those backups are on the same machine as the database.** That protects against a mistake in the
 app; it does nothing about losing the server. Copy them somewhere else on a schedule — that is a
