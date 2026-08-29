@@ -510,10 +510,15 @@ router.post('/', requireRole('workshop', 'manager', 'storekeeper'), asyncHandler
   const job = get('SELECT * FROM job_cards WHERE id = ?', jobId);
   if (!job) return res.status(404).json({ error: 'Job not found' });
 
+  // The machine goes ON THE LINE now, not just into the choice of job card. This route already
+  // worked the asset out — to find or create the card — and then threw it away, which is why the
+  // GENERAL-WS pool has 159 rows whose vehicle is knowable only from the prose someone typed.
+  const lineAsset = toInt(b.asset_id) || job.asset_id || null;
+
   const info = run(
-    `INSERT INTO job_daily_work (job_id, work_date, mechanic, description, hours, is_external, external_value)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    jobId, date, mechanic, description, hours, isExternal, isExternal ? toNum(b.external_value, 0) : 0
+    `INSERT INTO job_daily_work (job_id, work_date, mechanic, description, hours, is_external, external_value, asset_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    jobId, date, mechanic, description, hours, isExternal, isExternal ? toNum(b.external_value, 0) : 0, lineAsset
   );
   costing.refreshJobTotals(jobId);
   mechanics.syncJobLabourForMonth(date.slice(0, 7));
@@ -543,6 +548,18 @@ router.patch('/:id', requireRole('admin', 'workshop', 'manager'), asyncHandler((
     const d = String(req.body.work_date).slice(0, 10);
     if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return res.status(400).json({ error: 'A valid work date (YYYY-MM-DD) is required' });
     put('work_date', d);
+  }
+  // Naming the machine on an existing line. This is how the unassigned pool improves: somebody who
+  // recognises "Compressor clean and repair" says which compressor, and it is recorded from then on.
+  // Blank clears it back to unknown, which is honest — better than a wrong vehicle.
+  if (req.body.asset_id !== undefined) {
+    const v = req.body.asset_id;
+    if (v === null || v === '') put('asset_id', null);
+    else {
+      const a = toInt(v);
+      if (!a || !get('SELECT id FROM assets WHERE id = ?', a)) return res.status(400).json({ error: 'Unknown vehicle' });
+      put('asset_id', a);
+    }
   }
   if (!sets.length) return res.status(400).json({ error: 'Nothing to update' });
 

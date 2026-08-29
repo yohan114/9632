@@ -156,11 +156,15 @@ test('an id that is not on this job is refused rather than quietly doing nothing
 // So the vehicle is not guessed. It is already in the work text. What was missing was the search.
 
 test('searching by vehicle finds the work, however the code is punctuated', async () => {
+  // An unrelated line that has never been near the AC-06 card, so it must never match. (Not
+  // DW_SHOP — that one was attached to the AC-06 card earlier in this file, which RECORDED AC-06
+  // on it, so it now matches for a perfectly good reason.)
+  const other = dw(CATCH, 'Grader blade replaced', 1);
   for (const q of ['AC-06', 'ac-06', 'AC06', 'ac 06']) {
     const r = await api('/jobs/unassigned/daily-work?q=' + encodeURIComponent(q));
     assert.ok(r.body.some((x) => x.id === DW_POOL),
       `"${q}" should find "AC-06 — Compressor clean and repair" — nobody types a code the same way twice`);
-    assert.ok(!r.body.some((x) => String(x.description).startsWith('Workshop')),
+    assert.ok(!r.body.some((x) => x.id === other),
       `"${q}" must not drag in work on other machines`);
   }
 });
@@ -176,11 +180,23 @@ test('no vehicle is invented for work that names none', async () => {
   // The failure the measurement caught: "Workshop — Service bay door fixing" was being labelled
   // with the registry's "Workshop" cost-centre row and badged as belonging to whichever card was
   // open, which would float unrelated hours to the top for someone to attach.
+  //
+  // A vehicle IS reported now — but only a recorded one (job_daily_work.asset_id). This row has
+  // never been on a vehicle card and nobody has named it, so it must come back as unknown.
+  const fresh = dw(CATCH, 'Workshop — Service bay door fixing', 1);
   const pool = await api('/jobs/unassigned/daily-work?limit=200');
-  for (const r of pool.body) {
-    assert.strictEqual(r.asset_code, undefined,
-      'the endpoint must not report a vehicle it only inferred from prose');
-  }
+  const row = pool.body.find((r) => r.id === fresh);
+  assert.ok(row, 'the new line should be in the pool');
+  assert.strictEqual(row.asset_id, null, 'the old guesser read "Service" here as a cost-centre asset');
+  assert.strictEqual(row.asset_code, null);
+});
+
+test('a vehicle that WAS recorded is reported', async () => {
+  // DW_POOL was attached to the AC-06 card and taken off again, which settles its machine — so the
+  // pool can now say what it was, which is the whole point of the column.
+  const pool = await api('/jobs/unassigned/daily-work?limit=200');
+  const row = pool.body.find((r) => r.id === DW_POOL);
+  assert.strictEqual(row.asset_code, 'AC-06');
 });
 
 test('a search matching nothing returns nothing, rather than everything', async () => {

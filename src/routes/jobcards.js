@@ -516,13 +516,18 @@ router.post(
     // (Matches the import model and dailywork.js; do NOT divide by crew size.)
     const perRowHours = isExternal ? 0 : hours;
 
+    // The machine, recorded on the line itself. Defaults to the card's vehicle, which is right
+    // almost always; the exception that makes it worth asking for is the GENERAL-WS card, which
+    // has no vehicle of its own and is where every unassigned line is written.
+    const lineAsset = toInt(b.asset_id) || job.asset_id || null;
+
     const created = tx(() => {
       const ids = [];
       for (const mech of insertRows) {
         const info = run(
-          `INSERT INTO job_daily_work (job_id, work_date, mechanic, description, hours, is_external, external_value)
-           VALUES (?, ?, ?, ?, ?, ?, ?)`,
-          id, workDate, mech, b.description || null, perRowHours, isExternal, isExternal ? toNum(b.external_value, 0) : 0
+          `INSERT INTO job_daily_work (job_id, work_date, mechanic, description, hours, is_external, external_value, asset_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+          id, workDate, mech, b.description || null, perRowHours, isExternal, isExternal ? toNum(b.external_value, 0) : 0, lineAsset
         );
         ids.push(info.lastInsertRowid);
       }
@@ -626,61 +631,64 @@ function ensureCatchAllJobId() {
 /**
  * Work nobody has put on a job yet, searchable BY VEHICLE.
  *
- * The ask was "show the vehicle so I can search vehicle-wise". The obvious build was to infer the
- * machine from the description and show it in a column. I built that, measured it against the real
- * book, and threw it away:
+ * The vehicle is now a column on the line (job_daily_work.asset_id), recorded when the work is
+ * written down. It used to be inferred from the description, and that was measured and thrown away:
+ * over the 2,535 rows whose job card already names a vehicle the guess fired 86 times and was RIGHT
+ * 7, because 223 registry rows are cost centres whose code carries no digit — so "Service bay door
+ * fixing" became the asset "Service", and "AC-06 — Compressor clean and repair", the row the whole
+ * feature was built around, resolved to nothing at all.
  *
- *   - over the 2,535 daily-work rows whose job card already names a vehicle, the guess fired 86
- *     times and was RIGHT 7 times;
- *   - on the live 159-row pool it labelled 39 rows, and the commonest labels were "Service" (13),
- *     "Workshop" (10), "Accomadation" (3), "WS" (3) — the asset registry holds 223 rows whose code
- *     contains no digit at all, because cost centres are registered as assets too;
- *   - and "AC-06 — Compressor clean and repair", the row the feature was designed around, resolved
- *     to nothing.
+ * The 159 rows already in the pool have no vehicle recorded, and are shown as unknown rather than
+ * filled in with a guess. PATCH /api/daily-work/:id { asset_id } is how one gets named, by somebody
+ * who actually recognises the work.
  *
- * A column that is wrong four times out of five is worse than no column, and it would have fed the
- * "this job" badge and the sort — quietly floating unrelated work to the top of somebody's job card
- * for them to attach.
- *
- * So the vehicle is not guessed. It is already on screen: these descriptions carry the machine in
- * their text, which is how the paper sheets were written. What was missing was the SEARCH, and that
- * is what this does — matching the description and the mechanic, and normalising punctuation so
- * "AC06", "ac-06" and "AC 06" all find "AC-06 — Compressor clean and repair". Nobody types a code
- * the same way twice.
- *
- * Recording the machine properly means a column on job_daily_work, captured when the work is
- * written down. That is a real change and worth doing; it is not something to fake from prose.
+ * The search still matches the description, because that is where the machine was written for ten
+ * years, and it normalises punctuation both ways: AC06, ac-06, AC 06 and AC-06 all find each other.
  */
 router.get('/unassigned/daily-work', requireAuth, asyncHandler((req, res) => {
   const gid = catchAllJobId();
   if (!gid) return res.json([]);
+  const assetId = toInt(req.query.asset_id);
   const clauses = ['d.job_id = ?']; const params = [gid];
 
   if (req.query.q && String(req.query.q).trim()) {
     const raw = String(req.query.q).trim();
     const esc = (t) => t.replace(/[\\%_]/g, (c) => '\\' + c);
     const like = '%' + esc(raw) + '%';
-    const ors = [`d.description LIKE ? ESCAPE '\\'`, `d.mechanic LIKE ? ESCAPE '\\'`];
-    params.push(like, like);
-    // Punctuation-insensitive: strip everything but letters and digits from BOTH sides, so a
-    // search for AC06 matches "AC-06" and a search for "AC-06" matches "AC 06".
+    const ors = [
+      `d.description LIKE ? ESCAPE '\\'`,
+      `d.mechanic LIKE ? ESCAPE '\\'`,
+      `a.code LIKE ? ESCAPE '\\'`,
+      `a.registration LIKE ? ESCAPE '\\'`,
+    ];
+    params.push(like, like, like, like);
     const norm = aliases.normalize(raw);
     if (norm.length >= 2) {
-      // Strip the punctuation out of the DESCRIPTION in SQL and compare against the stripped
-      // search term, so "AC06" finds "AC-06" and "AC-06" finds "AC 06" — one rule, both directions.
+      const normLike = '%' + esc(norm) + '%';
+      // Punctuation stripped from BOTH sides, so it does not matter how either was typed.
       ors.push(`REPLACE(REPLACE(REPLACE(UPPER(d.description), '-', ''), ' ', ''), '/', '') LIKE ? ESCAPE '\\'`);
-      params.push('%' + esc(norm) + '%');
+      ors.push(`a.code_norm LIKE ? ESCAPE '\\'`);
+      params.push(normLike, normLike);
     }
     clauses.push('(' + ors.join(' OR ') + ')');
   }
   if (req.query.from) { clauses.push('date(d.work_date) >= date(?)'); params.push(String(req.query.from)); }
   if (req.query.to) { clauses.push('date(d.work_date) <= date(?)'); params.push(String(req.query.to)); }
 
+  // This job's own machine first, then newest — the same ordering the parts picker uses, and for
+  // the same reason: the line you are looking for is nearly always about the vehicle in front of
+  // you. Ordered in SQL so the LIMIT cannot truncate the rows the sort was meant to surface.
+  const ownFirst = assetId ? '(d.asset_id IS NOT NULL AND d.asset_id = ?) DESC,' : '';
+  const orderParams = assetId ? [assetId] : [];
+
   res.json(all(
-    `SELECT d.id, d.work_date, d.mechanic, d.description, d.hours, d.is_external, d.external_value
+    `SELECT d.id, d.work_date, d.mechanic, d.description, d.hours, d.is_external, d.external_value,
+            d.asset_id, a.code AS asset_code, a.registration AS asset_reg
        FROM job_daily_work d
+       LEFT JOIN assets a ON a.id = d.asset_id
       WHERE ${clauses.join(' AND ')}
-      ORDER BY date(d.work_date) DESC, d.id DESC LIMIT ${toInt(req.query.limit, 200)}`, ...params));
+      ORDER BY ${ownFirst} date(d.work_date) DESC, d.id DESC
+      LIMIT ${toInt(req.query.limit, 200)}`, ...params, ...orderParams));
 }));
 
 router.get('/unassigned/parts', requireAuth, asyncHandler((req, res) => {
@@ -751,7 +759,18 @@ router.post('/:id/daily-work/attach', requireAuth, requireRole('workshop'), asyn
   if (rows.length !== ids.length || notFree.length) {
     return res.status(409).json({ error: 'Some of those entries are already on a job card — reload and try again' });
   }
-  tx(() => { for (const r of rows) run('UPDATE job_daily_work SET job_id = ? WHERE id = ?', id, r.id); });
+  // Claiming a line for a card also settles which machine it was on — but only when the line does
+  // not already say. A line that names a DIFFERENT vehicle from the card is somebody's record, and
+  // overwriting it would erase the one signal that the wrong row is being attached.
+  tx(() => {
+    for (const r of rows) {
+      if (r.asset_id == null && job.asset_id) {
+        run('UPDATE job_daily_work SET job_id = ?, asset_id = ? WHERE id = ?', id, job.asset_id, r.id);
+      } else {
+        run('UPDATE job_daily_work SET job_id = ? WHERE id = ?', id, r.id);
+      }
+    }
+  });
   settleAfterMove(gid, id, job.asset_id);
   audit.record({ userId: req.user.id, entity: 'job_daily_work', entityId: id, action: 'attach',
     before: { job_id: gid }, after: { job_id: id, rows: rows.length } });

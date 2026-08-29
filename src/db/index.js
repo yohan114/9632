@@ -223,6 +223,23 @@ function migrate() {
   // Owner-entered "outside labor value" per daily-work entry — what this piece of work would cost
   // sent to an outside repairer. Rolls into the Job Cost Report's make-or-buy comparison.
   ensureColumn('job_daily_work', 'outside_labour', 'REAL');
+  // WHICH MACHINE THE WORK WAS ON, recorded rather than inferred.
+  //
+  // The line never carried one: the machine was only implied by the job card, and for work booked
+  // to the GENERAL-WS catch-all it was implied by nothing at all — written into the description if
+  // the mechanic happened to type it ("AC-06 — Compressor clean and repair"). Reading it back out
+  // of that prose was tried and measured: over the 2,535 rows whose job already names a vehicle it
+  // answered 86 times and was RIGHT 7, because 223 registry rows are cost centres whose code has no
+  // digit, so "Service bay door fixing" confidently became the asset "Service". A column ends that.
+  ensureColumn('job_daily_work', 'asset_id', 'INTEGER REFERENCES assets(id)');
+  // Backfill from the job card, which is authoritative wherever it names a vehicle: a line on
+  // AC-06's card is work on AC-06. Rows on the catch-all stay NULL — genuinely unknown, and better
+  // shown as unknown than filled with a guess. Runs on every boot and only fills NULLs, so it also
+  // heals a row whose vehicle was never set.
+  db.exec(`UPDATE job_daily_work
+              SET asset_id = (SELECT asset_id FROM job_cards WHERE job_cards.id = job_daily_work.job_id)
+            WHERE asset_id IS NULL
+              AND (SELECT asset_id FROM job_cards WHERE job_cards.id = job_daily_work.job_id) IS NOT NULL`);
   // Movements before a section's stock cut-over stay visible as history but are excluded
   // from the balance (CREATE TABLE IF NOT EXISTS won't add this to an existing table).
   ensureColumn('stock_moves', 'counts', 'INTEGER NOT NULL DEFAULT 1');

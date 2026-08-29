@@ -2006,6 +2006,28 @@ function wirePickerTabs(body, onPool) {
   qs('#tabPool', body).onclick = () => showNew(false);
 }
 
+// Naming the machine on a line that never recorded one. The 159 rows written before
+// job_daily_work.asset_id existed are the reason this exists: somebody who recognises the work says
+// which machine it was, and from then on it is searchable rather than a guess in prose.
+function setDailyWorkVehicle(lineId, onDone) {
+  modal('Which machine was this work on?', `
+    ${assetPickerHtml('Vehicle / machine')}
+    <p class="muted" style="font-size:12px;margin:8px 0 0">Leave blank to say it is still unknown — better than a vehicle that might be wrong.</p>
+    <div style="margin-top:12px;text-align:right"><button class="primary" id="sv">Save</button></div>`,
+  (body, close) => {
+    wireAssetPicker(body);
+    qs('#sv', body).onclick = async () => {
+      const id = qs('input[name=asset_id]', body).value;
+      try {
+        await api('/daily-work/' + lineId, { method: 'PATCH', body: { asset_id: id || null } });
+        toast(id ? 'Vehicle recorded' : 'Vehicle cleared');
+        close();
+        if (onDone) onDone();
+      } catch (e) { toast(e.message, 'err'); }
+    };
+  });
+}
+
 async function addDailyModal(jobId, assetId) {
   modal('Add Daily Work', `
     ${pickerTabs('✎ New entry', '📋 Not yet assigned')}
@@ -2014,12 +2036,13 @@ async function addDailyModal(jobId, assetId) {
       <p class="muted" style="font-size:12px;margin:2px 0 0">Each mechanic is charged the full hours at their own rate (one costed row each). A slash name ("Seethananda/seetha") stays one person.</p>
       ${field('Description', 'description')}
       ${field('Hours', 'hours', { type: 'number' })}
+      ${assetPickerHtml('Vehicle / machine' + (assetId ? ' (defaults to this card)' : ' — this card has none, so name it here'))}
       ${field('External repair (outside work)', 'is_external', { type: 'checkbox' })}
       ${field('External value (if external)', 'external_value', { type: 'number' })}
       <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Add</button></div>
     </div>
     <div id="panePool" style="display:none">
-      <p class="muted" style="font-size:12px;margin:0 0 8px">Work booked to the general workshop rather than to a job card. Tick what belongs to this job — the hours and their cost move across with it.<br>Search by vehicle: the machine is written into the work text, and <b>AC06</b>, <b>ac-06</b> and <b>AC 06</b> all find it.</p>
+      <p class="muted" style="font-size:12px;margin:0 0 8px">Work booked to the general workshop rather than to a job card. Tick what belongs to this job — the hours and their cost move across with it.<br>Search by vehicle — <b>AC06</b>, <b>ac-06</b> and <b>AC 06</b> all find the same machine, in the recorded vehicle or in the work text.</p>
       <input id="dwq" type="search" placeholder="Search vehicle, description or mechanic…" style="max-width:320px">
       <div id="dwlist" style="margin-top:8px"><div class="muted">Loading…</div></div>
       <div style="margin-top:12px;display:flex;align-items:center;gap:8px">
@@ -2027,6 +2050,7 @@ async function addDailyModal(jobId, assetId) {
         <button class="primary" id="dwAttach" disabled>Attach selected</button>
       </div>
     </div>`, (body, close) => {
+    wireAssetPicker(body);
     qs('#s', body).onclick = async () => { try { await api(`/jobs/${jobId}/daily-work`, { method: 'POST', body: formData(body) }); close(); render(); } catch (e) { toast(e.message, 'err'); } };
 
     const chosen = new Set();
@@ -2037,17 +2061,22 @@ async function addDailyModal(jobId, assetId) {
     const load = async () => {
       const q = qs('#dwq', body).value.trim();
       let rows = [];
-      // No asset_id: unlike the parts picker, these rows have no recorded vehicle to sort on.
-      // The machine is written into the Work text, so the SEARCH is what finds it.
+      // asset_id sorts this job's own machine to the top, as the parts picker does.
       try { rows = await api('/jobs/unassigned/daily-work?limit=200'
+        + (assetId ? '&asset_id=' + assetId : '')
         + (q ? '&q=' + encodeURIComponent(q) : '')); }
       catch (e) { qs('#dwlist', body).innerHTML = `<div class="card err">${esc(e.message)}</div>`; return; }
       qs('#poolN', body).textContent = rows.length ? `(${rows.length})` : '';
       qs('#dwlist', body).innerHTML = rows.length ? tableWrap(
-        [{ label: '', width: '34px' }, { label: 'Date', width: '104px' }, { label: 'Mechanic' }, { label: 'Work', cls: 'desc-col' }, { label: 'Hrs', num: true, width: '60px' }],
-        rows.map((r) => `<tr>
+        [{ label: '', width: '34px' }, { label: 'Date', width: '104px' }, { label: 'Vehicle', width: '150px' }, { label: 'Mechanic' }, { label: 'Work', cls: 'desc-col' }, { label: 'Hrs', num: true, width: '60px' }],
+        rows.map((r) => `<tr${assetId && r.asset_id === assetId ? ' style="background:var(--surface-2)"' : ''}>
           <td><input type="checkbox" data-dw="${r.id}" ${chosen.has(String(r.id)) ? 'checked' : ''} style="width:auto"></td>
           <td>${esc(String(r.work_date || '').slice(0, 10))}</td>
+          <td>${r.asset_code
+            ? `<span class="stamp">${esc(r.asset_code)}</span>${assetId && r.asset_id === assetId ? ' <span class="badge green">this job</span>' : ''}`
+            // Not recorded — say so, and offer to record it. This is the only way the 159 rows
+            // written before the column existed ever become searchable by machine.
+            : `<button class="sm" data-setveh="${r.id}" title="Say which machine this work was on">set vehicle</button>`}</td>
           <td>${esc(r.mechanic || (r.is_external ? 'outside' : ''))}</td>
           <td class="desc-col">${esc(r.description || '')}</td>
           <td class="num">${num(r.hours)}</td></tr>`), { scroll: true })
@@ -2056,6 +2085,7 @@ async function addDailyModal(jobId, assetId) {
         if (cb.checked) chosen.add(cb.dataset.dw); else chosen.delete(cb.dataset.dw);
         refreshSel();
       }; });
+      qsa('[data-setveh]', body).forEach((b) => { b.onclick = () => setDailyWorkVehicle(b.dataset.setveh, load); });
       refreshSel();
     };
     let deb; qs('#dwq', body).oninput = () => { clearTimeout(deb); deb = setTimeout(load, 250); };
