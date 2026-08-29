@@ -62,7 +62,10 @@ A    storesdb    20.204.51.43    Proxied (orange cloud)
 
 ```bash
 sudo apt update && sudo apt upgrade -y
-sudo apt install -y nginx git curl ufw     # no certbot — Cloudflare issues the origin certificate
+# no certbot — Cloudflare issues the origin certificate.
+# sqlite3 is the command-line client, separate from the database itself: the app carries its own
+# copy through better-sqlite3, but steps 6b and 9 check the data by hand and need this.
+sudo apt install -y nginx git curl ufw sqlite3
 
 # Node 20+ — better-sqlite3 is compiled, so the build tools are not optional
 curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
