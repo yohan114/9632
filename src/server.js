@@ -8,8 +8,8 @@ const cookieParser = require('cookie-parser');
 const { Server } = require('socket.io');
 
 const config = require('./config');
-const { migrate } = require('./db');
-const { authenticate, enforcePasswordChange } = require('./lib/auth');
+const { migrate, get } = require('./db');
+const { authenticate, enforcePasswordChange, COOKIE } = require('./lib/auth');
 const { requireModule } = require('./lib/permissions');
 const { errorHandler } = require('./lib/http');
 const { startScheduler } = require('./lib/backup');
@@ -116,6 +116,46 @@ const io = new Server(httpServer, {
   cors: { origin: process.env.PUBLIC_ORIGIN || (process.env.NODE_ENV === 'production' ? false : '*') },
 });
 app.set('io', io); // available to routes via req.app.get('io') if ever needed directly
+
+// ---- who may open a live socket -------------------------------------------
+//
+// THE CORS OPTION ABOVE IS NOT A DOOR LOCK. Browsers do not apply the same-origin rules to
+// WebSocket connections, so `origin` stops nothing once the transport upgrades: any page on the
+// internet could open a socket here and sit on it. Everything the workshop does is broadcast down
+// that socket — stock movements, job updates, requests as they are raised — so an unauthenticated
+// listener is a live feed of the company's operations to whoever asks for it. On the LAN that was
+// theoretical. Behind a public domain it is not.
+//
+// So a socket is authenticated exactly like every other request: by the session cookie the browser
+// already sends with the handshake, checked against the sessions table. The cors pin stays as
+// defence in depth for the polling transport, but this is the part that actually decides.
+function sessionTokenFromCookies(header) {
+  for (const part of String(header || '').split(';')) {
+    const eq = part.indexOf('=');
+    if (eq === -1) continue;
+    if (part.slice(0, eq).trim() !== COOKIE) continue;
+    const raw = part.slice(eq + 1).trim();
+    try { return decodeURIComponent(raw); } catch { return raw; }
+  }
+  return null;
+}
+
+io.use((socket, next) => {
+  const token = sessionTokenFromCookies(socket.handshake.headers.cookie);
+  // The message matters: the browser client reads it to tell "not signed in" (stop retrying, wait
+  // for a login) apart from "server is down" (keep retrying). Without that distinction the login
+  // page reconnects once a second forever and toasts about it.
+  if (!token) return next(new Error('unauthorized'));
+  const sess = get(
+    `SELECT u.id, u.username, u.active
+       FROM sessions s JOIN users u ON u.id = s.user_id
+      WHERE s.token = ? AND s.expires_at > datetime('now')`,
+    token
+  );
+  if (!sess || !sess.active) return next(new Error('unauthorized'));
+  socket.data.user = { id: sess.id, username: sess.username };
+  return next();
+});
 
 const LIVE_EVENTS = ['stock_updated', 'oil_updated', 'filter_updated', 'job_updated', 'request_updated', 'dashboard_refresh', 'data_changed'];
 for (const event of LIVE_EVENTS) {

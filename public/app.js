@@ -703,7 +703,11 @@ function renderShell() {
       <nav class="nav" id="nav">${nav}</nav>
       <main class="content" id="content"><div class="muted">Loading…</div></main>
     </div>`;
-  qs('#logout').onclick = async () => { await api('/auth/logout', { method: 'POST' }); ME = null; location.hash = ''; boot(); };
+  qs('#logout').onclick = async () => {
+    await api('/auth/logout', { method: 'POST' });
+    if (window.LiveERP) LiveERP.disconnect();   // the socket holds the session of whoever just left
+    ME = null; location.hash = ''; boot();
+  };
   qs('#chpw').onclick = () => modal('Change password', `
     ${field('Current password', 'current_password', { type: 'password' })}
     ${field('New password', 'new_password', { type: 'password' })}
@@ -6455,11 +6459,15 @@ function renderLogin(err) {
     <label>Password</label><input id="p" type="password">
     <button class="primary" id="login" style="width:100%;margin-top:14px">Sign In</button>
     <button type="button" class="btn" onclick="window.configureServerIp()" style="width:100%;margin-top:8px;font-size:12px;cursor:pointer">⚙️ Server: ${esc(currentServer)}</button>
-    <p class="muted" style="text-align:center;margin-top:14px;font-size:12px">Demo: admin/admin · store/store · mech/mech · transport/transport · ops/ops</p>
+    <!-- The demo credentials that used to be printed here (admin/admin, store/store, …) are gone.
+         They were seed passwords, all since rotated, so the hint was wrong as well as unwise:
+         people read it, typed admin/admin, were refused, and concluded the system was broken.
+         On a login page facing the internet it was also a list of which names are worth guessing. -->
   </div></div>`;
   const go = async () => {
     try {
       ME = await api('/auth/login', { method: 'POST', body: { username: qs('#u').value, password: qs('#p').value } });
+      if (window.LiveERP) LiveERP.connect();   // the socket is refused until a session exists
       location.hash = '#/dashboard'; render();
       if (ME.mustChangePassword) forceChangePassword();
     } catch (e) { renderLogin(e.message || 'Connection failed'); }
@@ -6471,6 +6479,7 @@ function renderLogin(err) {
 async function boot() {
   try {
     ME = await api('/auth/me');
+    if (window.LiveERP) LiveERP.connect();   // an existing session — open the live socket
     if (!location.hash) location.hash = '#/dashboard';
     render();
     if (ME.mustChangePassword) forceChangePassword();

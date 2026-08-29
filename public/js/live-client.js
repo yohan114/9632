@@ -38,6 +38,8 @@
 
   // -- wire a live socket ---------------------------------------------------
   function bind() {
+    if (socket) { socket.connect(); return; }   // re-open the one we already have (after a login)
+
     // Same-origin connection; socket.io auto-detects the host from the page.
     socket = window.io({ reconnection: true, reconnectionAttempts: Infinity, reconnectionDelay: 1000 });
 
@@ -47,7 +49,20 @@
       document.body.classList.remove('live-disconnected');
     });
 
+    // The server refuses a socket that carries no valid session (see src/server.js). That is a
+    // normal state on the login page, NOT a fault: retrying it once a second forever would spin
+    // and toast at someone who simply has not signed in yet. So stop, quietly, and wait to be
+    // asked again — app.js calls LiveERP.connect() once a session exists.
+    socket.on('connect_error', function (err) {
+      if (!err || err.message !== 'unauthorized') return;   // a real outage: let socket.io retry
+      status = 'unauthenticated';
+      socket.io.reconnection(false);
+      socket.disconnect();
+      document.body.classList.remove('live-connected');
+    });
+
     socket.on('disconnect', function () {
+      if (status === 'unauthenticated') return;             // expected; already explained above
       status = 'disconnected';
       document.body.classList.add('live-disconnected');
       document.body.classList.remove('live-connected');
@@ -72,6 +87,24 @@
       return this;
     },
     connectionStatus: function () { return status; },
+
+    // Called by app.js once a session exists (sign-in, or a page load that finds one already).
+    // Safe to call repeatedly — it is a no-op while a socket is up.
+    connect: function () {
+      if (socket && socket.connected) return this;
+      if (socket) { status = 'connecting'; socket.io.reconnection(true); }
+      start();
+      return this;
+    },
+
+    // Called on sign-out: the socket carries the credentials of whoever just left, and the events
+    // on it are not theirs to keep receiving.
+    disconnect: function () {
+      status = 'unauthenticated';
+      if (socket) { socket.io.reconnection(false); socket.disconnect(); }
+      document.body.classList.remove('live-connected', 'live-disconnected');
+      return this;
+    },
   };
 
   // -- boot: ensure the socket.io client is present, then connect -----------
