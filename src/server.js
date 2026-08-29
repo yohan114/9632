@@ -144,6 +144,24 @@ if (require.main === module) {
   httpServer.listen(config.port, config.host, () => {
     console.log(`WorkshopOne listening on ${config.host}:${config.port}`);
     console.log('Real-time (socket.io) enabled');
+
+    // WHICH DATABASE, AND DOES ANYONE LIVE IN IT.
+    //
+    // DB_PATH is resolved against the app directory, so a relative value in .env — which is what
+    // .env.example ships — points beside the code rather than at wherever the real database was
+    // put. SQLite then creates the file, migrate() fills in the schema, and the app starts
+    // perfectly on an empty database. The only symptom is that every correct password is
+    // rejected, because there are no accounts to match: it reads as "I forgot the password",
+    // which sends you looking in entirely the wrong place. It cost an hour on the VPS cut-over.
+    const { get } = require('./db');
+    const users = get('SELECT COUNT(*) c FROM users').c;
+    console.log(`Database: ${config.dbPath} (${users} user account${users === 1 ? '' : 's'})`);
+    if (users === 0) {
+      console.warn('  ** NO USER ACCOUNTS — nobody can sign in. **');
+      console.warn('  ** Almost always the wrong DB_PATH: this is a new, empty database. **');
+      console.warn('  ** Check .env against where the real file actually is. **');
+    }
+
     console.log('Reachable on this network at:');
     for (const u of lanUrls(config.port)) console.log('  ' + u);
   });
