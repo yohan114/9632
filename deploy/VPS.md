@@ -200,19 +200,33 @@ internet as one caller. nginx learns it from Cloudflare's `CF-Connecting-IP` hea
 trusts that header from Cloudflare's own networks — so generate the list rather than typing it:
 
 ```bash
-curl -s https://www.cloudflare.com/ips-v4 > /tmp/cf.txt
-curl -s https://www.cloudflare.com/ips-v6 >> /tmp/cf.txt
-sed 's|^|set_real_ip_from |; s|$|;|' /tmp/cf.txt | sudo tee /etc/nginx/cloudflare-real-ip.conf
-echo 'real_ip_header CF-Connecting-IP;' | sudo tee -a /etc/nginx/cloudflare-real-ip.conf
-cat /etc/nginx/cloudflare-real-ip.conf      # sanity-check it is a list of CIDRs, not an error page
+{ curl -sf https://www.cloudflare.com/ips-v4; echo; curl -sf https://www.cloudflare.com/ips-v6; echo; } | tr -d '\r' | grep -E '^[0-9a-fA-F.:]+/[0-9]{1,3}$' | sed 's|^|set_real_ip_from |; s|$|;|' | sudo tee /etc/nginx/cloudflare-real-ip.conf > /dev/null && echo 'real_ip_header CF-Connecting-IP;' | sudo tee -a /etc/nginx/cloudflare-real-ip.conf > /dev/null && grep -c set_real_ip_from /etc/nginx/cloudflare-real-ip.conf
+```
 
-sudo cp deploy/nginx-storesdb.conf /etc/nginx/sites-available/storesdb
-sudo ln -s /etc/nginx/sites-available/storesdb /etc/nginx/sites-enabled/storesdb
-sudo rm -f /etc/nginx/sites-enabled/default
+That prints a count, currently about 22. **If it prints 0, stop.** nginx would start with an empty
+list, every request would look like it came from Cloudflare, and the rate limiter would count the
+whole internet as one caller — silently, with nothing else to tell you.
+
+Three details in that line are load-bearing, and the middle one cost a failed `nginx -t`:
+
+- the bare `echo` after each `curl` — **neither Cloudflare file ends in a newline**, so a plain
+  `>>` append glues the last IPv4 range onto the first IPv6 one, giving
+  `set_real_ip_from 131.0.72.0/222400:cb00::/32;` and
+  `nginx: [emerg] host not found in set_real_ip_from`. The same collision silently swallows
+  `2400:cb00::/32`, so even a config that *did* load would be missing a live Cloudflare range;
+- `grep -E` for a CIDR shape — if a fetch fails you get an empty file rather than an HTML error
+  page pasted into your nginx config;
+- `curl -sf` rather than `-s`, so an HTTP error is a failure instead of a body to parse.
+
+```bash
+sudo cp /opt/workshopone/app/deploy/nginx-storesdb.conf /etc/nginx/sites-available/storesdb && sudo ln -sf /etc/nginx/sites-available/storesdb /etc/nginx/sites-enabled/storesdb && sudo rm -f /etc/nginx/sites-enabled/default
+```
+
+```bash
 sudo nginx -t && sudo systemctl reload nginx
 ```
 
-Cloudflare adds ranges from time to time; re-run the first command after a change, or monthly.
+Cloudflare adds ranges from time to time; re-run the generation line after a change, or monthly.
 
 ### Optional, and worth it: refuse anyone who bypasses Cloudflare
 
