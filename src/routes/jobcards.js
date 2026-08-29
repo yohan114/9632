@@ -534,18 +534,56 @@ router.post(
   })
 );
 
+/**
+ * Taking a row OFF a job card, which is the exact inverse of attaching one.
+ *
+ * It used to DELETE. That threw the work away: a mechanic's four hours, or a receipt someone had
+ * matched to a line, gone with no way back and nothing in the unassigned pool to re-claim. In
+ * practice "remove" almost never means "this never happened" — it means "this is not THIS job's",
+ * which is precisely what the catch-all is for. So the row moves there and can be claimed again by
+ * the right card, using the picker that already exists.
+ *
+ * A genuine mistake can still be deleted outright — do it on the GENERAL-WS card itself, which is
+ * the one place where "remove" really is the end of the line (see the guard in each handler).
+ */
+function settleAfterDetach(job, catchAllId) {
+  // The months are read BEFORE the row moves, deliberately. vehicleMonthsForJob derives them from
+  // the job's remaining rows, so a month whose only entry was the one being removed would no longer
+  // be listed — and its bucket would keep the cost for ever, with nothing pointing at it.
+  const months = costing.vehicleMonthsForJob(job.id, job.asset_id);
+  return () => {
+    costing.refreshJobTotals(job.id);
+    if (catchAllId) costing.refreshJobTotals(catchAllId);
+    for (const b of months) costing.recalcVehicleMonth(b.assetId, b.year, b.month);
+  };
+}
+
 router.delete(
   '/:id/daily-work/:lineId',
   requireAuth,
   requireRole('workshop'),
   asyncHandler((req, res) => {
     const id = toInt(req.params.id);
+    const lineId = toInt(req.params.lineId);
     const job = get('SELECT * FROM job_cards WHERE id = ?', id);
     if (!job) return res.status(404).json({ error: 'Job not found' });
     if (!editable(job, req.user)) return res.status(423).json({ error: 'Job is closed (locked)' });
-    run('DELETE FROM job_daily_work WHERE id = ? AND job_id = ?', toInt(req.params.lineId), id);
-    costing.refreshJobTotals(id);
-    res.json({ ok: true });
+    const row = get('SELECT * FROM job_daily_work WHERE id = ? AND job_id = ?', lineId, id);
+    if (!row) return res.status(404).json({ error: 'Entry not found on this job' });
+
+    const gid = catchAllJobId();
+    // On the catch-all there is nowhere further to send it, so removing means removing.
+    const unlink = gid && gid !== id;
+    const settle = settleAfterDetach(job, unlink ? gid : null);
+
+    if (unlink) run('UPDATE job_daily_work SET job_id = ? WHERE id = ?', gid, lineId);
+    else run('DELETE FROM job_daily_work WHERE id = ?', lineId);
+    settle();
+
+    audit.record({ userId: req.user.id, entity: 'job_daily_work', entityId: lineId,
+      action: unlink ? 'unlink' : 'delete', before: { job_id: id }, after: unlink ? { job_id: gid } : null });
+    res.json({ ok: true, unlinked: !!unlink,
+      message: unlink ? 'Moved to unassigned daily work' : 'Entry deleted' });
   })
 );
 
@@ -564,22 +602,89 @@ const catchAllJobId = () => {
   return j ? j.id : 0;
 };
 
+/**
+ * Which vehicle a piece of unassigned labour is about, READ-ONLY.
+ *
+ * job_daily_work has no asset column — the machine is written into the description, the way the
+ * paper sheets always did it ("AC-06 — Compressor clean and repair"). That is fine for reading one
+ * line and useless for finding all of a vehicle's work, which is exactly what someone standing at
+ * a job card wants: "what else was done on AC-06 that nobody has claimed?"
+ *
+ * Deliberately NOT aliases.resolveAsset(). That one learns as it goes — it writes an alias row and
+ * bumps a hit count on every call — and a GET that renders a list must not teach the resolver
+ * anything, or merely opening a picker rewrites the alias table and inflates the counts that decide
+ * how future text resolves. This reads the same two tables and writes nothing.
+ */
+function vehicleGuesser() {
+  const byNorm = new Map();
+  for (const a of all('SELECT id, code, code_norm, registration FROM assets')) {
+    if (a.code_norm) byNorm.set(a.code_norm, a);
+  }
+  const aliasToAsset = new Map();
+  for (const r of all('SELECT raw_norm, asset_id FROM asset_aliases WHERE resolved = 1 AND asset_id IS NOT NULL')) {
+    aliasToAsset.set(r.raw_norm, r.asset_id);
+  }
+  const byId = new Map([...byNorm.values()].map((a) => [a.id, a]));
+
+  return (text) => {
+    if (!text) return null;
+    // The code is usually the first thing on the line, before a dash — but not always, so the
+    // extracted token is tried too.
+    const head = String(text).split(/[-—–:,(]/)[0];
+    for (const candidate of [aliases.extractCode(text), head, String(text).split(/\s+/)[0]]) {
+      const norm = aliases.normalize(candidate);
+      if (!norm || norm.length < 2) continue;
+      const direct = byNorm.get(norm);
+      if (direct) return direct;
+      const viaAlias = aliasToAsset.get(norm);
+      if (viaAlias && byId.has(viaAlias)) return byId.get(viaAlias);
+    }
+    return null;
+  };
+}
+
 router.get('/unassigned/daily-work', requireAuth, asyncHandler((req, res) => {
   const gid = catchAllJobId();
   if (!gid) return res.json([]);
+  const assetId = toInt(req.query.asset_id);
+  const limit = toInt(req.query.limit, 200);
+  const qRaw = req.query.q && String(req.query.q).trim() ? String(req.query.q).trim() : null;
+
+  // Dates still narrow in SQL. The text search does NOT, because it has to match the vehicle as
+  // well, and the vehicle is not a column — it is worked out from the description below.
   const clauses = ['d.job_id = ?']; const params = [gid];
-  if (req.query.q && String(req.query.q).trim()) {
-    const like = '%' + String(req.query.q).trim().replace(/[\\%_]/g, (c) => '\\' + c) + '%';
-    clauses.push(`(d.description LIKE ? ESCAPE '\\' OR d.mechanic LIKE ? ESCAPE '\\')`);
-    params.push(like, like);
-  }
   if (req.query.from) { clauses.push('date(d.work_date) >= date(?)'); params.push(String(req.query.from)); }
   if (req.query.to) { clauses.push('date(d.work_date) <= date(?)'); params.push(String(req.query.to)); }
-  res.json(all(
+
+  const guess = vehicleGuesser();
+  let rows = all(
     `SELECT d.id, d.work_date, d.mechanic, d.description, d.hours, d.is_external, d.external_value
        FROM job_daily_work d
       WHERE ${clauses.join(' AND ')}
-      ORDER BY date(d.work_date) DESC, d.id DESC LIMIT ${toInt(req.query.limit, 200)}`, ...params));
+      ORDER BY date(d.work_date) DESC, d.id DESC`, ...params
+  ).map((r) => {
+    const a = guess(r.description);
+    return { ...r, asset_id: a ? a.id : null, asset_code: a ? a.code : null, asset_reg: a ? a.registration : null };
+  });
+
+  if (qRaw) {
+    const needle = qRaw.toLowerCase();
+    const norm = aliases.normalize(qRaw);
+    rows = rows.filter((r) =>
+      String(r.description || '').toLowerCase().includes(needle)
+      || String(r.mechanic || '').toLowerCase().includes(needle)
+      || String(r.asset_code || '').toLowerCase().includes(needle)
+      || String(r.asset_reg || '').toLowerCase().includes(needle)
+      // "AC06" should find "AC-06" — punctuation is not something anyone types consistently.
+      || (norm.length >= 2 && aliases.normalize(r.asset_code).includes(norm)));
+  }
+
+  // This job's own vehicle first. The parts picker does the same, and it is the whole value of
+  // both — the line you want is almost always about the machine in front of you.
+  if (assetId) {
+    rows.sort((a, b) => (b.asset_id === assetId) - (a.asset_id === assetId));
+  }
+  res.json(rows.slice(0, limit));
 }));
 
 router.get('/unassigned/parts', requireAuth, asyncHandler((req, res) => {
@@ -751,12 +856,31 @@ router.delete(
   requireRole('workshop', 'storekeeper'),
   asyncHandler((req, res) => {
     const id = toInt(req.params.id);
+    const partId = toInt(req.params.partId);
     const job = get('SELECT * FROM job_cards WHERE id = ?', id);
     if (!job) return res.status(404).json({ error: 'Job not found' });
     if (!editable(job, req.user)) return res.status(423).json({ error: 'Job is closed (locked)' });
-    run('DELETE FROM job_parts WHERE id = ? AND job_id = ?', toInt(req.params.partId), id);
-    costing.refreshJobTotals(id);
-    res.json({ ok: true });
+    const row = get('SELECT * FROM job_parts WHERE id = ? AND job_id = ?', partId, id);
+    if (!row) return res.status(404).json({ error: 'Item not found on this job' });
+
+    const gid = catchAllJobId();
+    const unlink = gid && gid !== id;
+    const settle = settleAfterDetach(job, unlink ? gid : null);
+
+    // MOVED to the catch-all, not deleted — including receipt-sourced lines, which is the case
+    // worth being careful about. Deleting one would drop its job_parts row, and a receipt with no
+    // job_parts row carrying its mrn_line_id is how the pool decides something is unclaimed — so
+    // it would come back as a *receipt* while the row that recorded the price and quantity was
+    // gone. Moving it keeps one row, in one pool, with its figures intact. It also works when the
+    // request DOES name a job (mrn.job_id set), where deleting would return it to nothing at all.
+    if (unlink) run('UPDATE job_parts SET job_id = ? WHERE id = ?', gid, partId);
+    else run('DELETE FROM job_parts WHERE id = ?', partId);
+    settle();
+
+    audit.record({ userId: req.user.id, entity: 'job_parts', entityId: partId,
+      action: unlink ? 'unlink' : 'delete', before: { job_id: id }, after: unlink ? { job_id: gid } : null });
+    res.json({ ok: true, unlinked: !!unlink,
+      message: unlink ? 'Moved to unassigned parts' : 'Item deleted' });
   })
 );
 

@@ -1808,7 +1808,7 @@ async function jobDetail(c, id) {
         const rows = [];
         let labourTotal = 0;
         for (const w of j.dailyWork) {
-          const del = canDel ? `<button class="sm danger" data-del-daily="${w.id}">✕</button>` : '';
+          const del = canDel ? `<button class="sm" data-del-daily="${w.id}" title="Take off this job — the entry goes back to unassigned daily work, it is not deleted">✕</button>` : '';
           const date = esc((w.work_date || '').slice(0, 10));
           if (w.is_external) { rows.push(`<tr><td>${date}</td><td>(external)</td><td>${esc(w.description || '')}</td><td class="num">—</td><td class="num">—</td><td class="num">${money(w.external_value)}</td><td>${del}</td></tr>`); continue; }
           const names = splitMechs(w.mechanic);
@@ -1838,7 +1838,7 @@ async function jobDetail(c, id) {
           <td class="num">${num(p.qty)}</td>
           <td class="num">${p.unit_price == null ? '<span class="badge amber">awaiting</span>' : money(p.unit_price)}</td>
           <td class="num">${p.unit_price == null ? '—' : money(p.qty * p.unit_price)}</td>
-          <td>${can('workshop', 'storekeeper') ? `<button class="sm" data-price="${p.id}">Price</button> <button class="sm danger" data-del-part="${p.id}">✕</button>` : ''}</td></tr>`))}
+          <td>${can('workshop', 'storekeeper') ? `<button class="sm" data-price="${p.id}">Price</button> <button class="sm" data-del-part="${p.id}" title="Take off this job — the item goes back to unassigned parts, it is not deleted">✕</button>` : ''}</td></tr>`))}
     </div>
     ${j.mrnItems && j.mrnItems.length ? `<div class="card section"><h3>MRN Items <span class="muted">— requested materials (${j.mrnItems.length})</span></h3>
       ${tableWrap([{ label: 'MRN No' }, { label: 'Date' }, { label: 'Item' }, { label: 'Category' }, { label: 'Qty Req', num: true }, { label: 'Qty Recd', num: true }],
@@ -1862,10 +1862,16 @@ async function jobDetail(c, id) {
   if (qs('#flatlabour')) qs('#flatlabour').onclick = () => modal('Service Labour (flat charge)',
     field('Flat labour amount (Rs)', 'flat_labour', { type: 'number', value: job.flat_labour ?? '' }) + '<div style="margin-top:12px;text-align:right"><button class="primary" id="s">Save</button></div>',
     (body, close) => { qs('#s', body).onclick = async () => { try { await api(`/jobs/${job.id}/flat-labour`, { method: 'PATCH', body: formData(body) }); close(); render(); } catch (e) { toast(e.message, 'err'); } }; });
-  if (qs('#adddaily')) qs('#adddaily').onclick = () => addDailyModal(job.id);
+  if (qs('#adddaily')) qs('#adddaily').onclick = () => addDailyModal(job.id, job.asset_id);
   if (qs('#addpart')) qs('#addpart').onclick = () => addPartModal(job.id, job.asset_id);
-  qsa('[data-del-daily]').forEach((b) => b.onclick = async () => { await api(`/jobs/${job.id}/daily-work/${b.dataset.delDaily}`, { method: 'DELETE' }); render(); });
-  qsa('[data-del-part]').forEach((b) => b.onclick = async () => { await api(`/jobs/${job.id}/parts/${b.dataset.delPart}`, { method: 'DELETE' }); render(); });
+  qsa('[data-del-daily]').forEach((b) => b.onclick = async () => {
+    try { const r = await api(`/jobs/${job.id}/daily-work/${b.dataset.delDaily}`, { method: 'DELETE' }); toast(r.message || 'Removed'); render(); }
+    catch (e) { toast(e.message, 'err'); }
+  });
+  qsa('[data-del-part]').forEach((b) => b.onclick = async () => {
+    try { const r = await api(`/jobs/${job.id}/parts/${b.dataset.delPart}`, { method: 'DELETE' }); toast(r.message || 'Removed'); render(); }
+    catch (e) { toast(e.message, 'err'); }
+  });
   qsa('[data-price]').forEach((b) => b.onclick = () => {
     modal('Set Unit Price', field('Unit Price', 'unit_price', { type: 'number' }) + '<div style="margin-top:12px;text-align:right"><button class="primary" id="s">Save</button></div>', (body, close) => {
       qs('#s', body).onclick = async () => { await api(`/jobs/${job.id}/parts/${b.dataset.price}`, { method: 'PATCH', body: formData(body) }); close(); render(); };
@@ -2000,7 +2006,7 @@ function wirePickerTabs(body, onPool) {
   qs('#tabPool', body).onclick = () => showNew(false);
 }
 
-async function addDailyModal(jobId) {
+async function addDailyModal(jobId, assetId) {
   modal('Add Daily Work', `
     ${pickerTabs('✎ New entry', '📋 Not yet assigned')}
     <div id="paneNew">
@@ -2014,7 +2020,7 @@ async function addDailyModal(jobId) {
     </div>
     <div id="panePool" style="display:none">
       <p class="muted" style="font-size:12px;margin:0 0 8px">Work booked to the general workshop rather than to a job card. Tick what belongs to this job — the hours and their cost move across with it.</p>
-      <input id="dwq" type="search" placeholder="Search description or mechanic…" style="max-width:280px">
+      <input id="dwq" type="search" placeholder="Search vehicle, description or mechanic…" style="max-width:320px">
       <div id="dwlist" style="margin-top:8px"><div class="muted">Loading…</div></div>
       <div style="margin-top:12px;display:flex;align-items:center;gap:8px">
         <span class="muted" id="dwsel"></span><div class="spacer"></div>
@@ -2031,14 +2037,21 @@ async function addDailyModal(jobId) {
     const load = async () => {
       const q = qs('#dwq', body).value.trim();
       let rows = [];
-      try { rows = await api('/jobs/unassigned/daily-work?limit=200' + (q ? '&q=' + encodeURIComponent(q) : '')); }
+      // asset_id sorts this job's own vehicle to the top, the same way the parts picker does.
+      try { rows = await api('/jobs/unassigned/daily-work?limit=200'
+        + (assetId ? '&asset_id=' + assetId : '')
+        + (q ? '&q=' + encodeURIComponent(q) : '')); }
       catch (e) { qs('#dwlist', body).innerHTML = `<div class="card err">${esc(e.message)}</div>`; return; }
       qs('#poolN', body).textContent = rows.length ? `(${rows.length})` : '';
       qs('#dwlist', body).innerHTML = rows.length ? tableWrap(
-        [{ label: '', width: '34px' }, { label: 'Date', width: '104px' }, { label: 'Mechanic' }, { label: 'Work', cls: 'desc-col' }, { label: 'Hrs', num: true, width: '60px' }],
+        [{ label: '', width: '34px' }, { label: 'Date', width: '104px' }, { label: 'Vehicle', width: '120px' }, { label: 'Mechanic' }, { label: 'Work', cls: 'desc-col' }, { label: 'Hrs', num: true, width: '60px' }],
         rows.map((r) => `<tr>
           <td><input type="checkbox" data-dw="${r.id}" ${chosen.has(String(r.id)) ? 'checked' : ''} style="width:auto"></td>
           <td>${esc(String(r.work_date || '').slice(0, 10))}</td>
+          <td>${r.asset_code
+            // Badged when it is this job's machine — the line you want is nearly always that one.
+            ? `<span class="mono">${esc(r.asset_code)}</span>${assetId && r.asset_id === assetId ? ' <span class="pill ok">this job</span>' : ''}`
+            : '<span class="muted">—</span>'}</td>
           <td>${esc(r.mechanic || (r.is_external ? 'outside' : ''))}</td>
           <td class="desc-col">${esc(r.description || '')}</td>
           <td class="num">${num(r.hours)}</td></tr>`), { scroll: true })
