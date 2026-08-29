@@ -2019,7 +2019,7 @@ async function addDailyModal(jobId, assetId) {
       <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Add</button></div>
     </div>
     <div id="panePool" style="display:none">
-      <p class="muted" style="font-size:12px;margin:0 0 8px">Work booked to the general workshop rather than to a job card. Tick what belongs to this job — the hours and their cost move across with it.</p>
+      <p class="muted" style="font-size:12px;margin:0 0 8px">Work booked to the general workshop rather than to a job card. Tick what belongs to this job — the hours and their cost move across with it.<br>Search by vehicle: the machine is written into the work text, and <b>AC06</b>, <b>ac-06</b> and <b>AC 06</b> all find it.</p>
       <input id="dwq" type="search" placeholder="Search vehicle, description or mechanic…" style="max-width:320px">
       <div id="dwlist" style="margin-top:8px"><div class="muted">Loading…</div></div>
       <div style="margin-top:12px;display:flex;align-items:center;gap:8px">
@@ -2037,21 +2037,17 @@ async function addDailyModal(jobId, assetId) {
     const load = async () => {
       const q = qs('#dwq', body).value.trim();
       let rows = [];
-      // asset_id sorts this job's own vehicle to the top, the same way the parts picker does.
+      // No asset_id: unlike the parts picker, these rows have no recorded vehicle to sort on.
+      // The machine is written into the Work text, so the SEARCH is what finds it.
       try { rows = await api('/jobs/unassigned/daily-work?limit=200'
-        + (assetId ? '&asset_id=' + assetId : '')
         + (q ? '&q=' + encodeURIComponent(q) : '')); }
       catch (e) { qs('#dwlist', body).innerHTML = `<div class="card err">${esc(e.message)}</div>`; return; }
       qs('#poolN', body).textContent = rows.length ? `(${rows.length})` : '';
       qs('#dwlist', body).innerHTML = rows.length ? tableWrap(
-        [{ label: '', width: '34px' }, { label: 'Date', width: '104px' }, { label: 'Vehicle', width: '120px' }, { label: 'Mechanic' }, { label: 'Work', cls: 'desc-col' }, { label: 'Hrs', num: true, width: '60px' }],
+        [{ label: '', width: '34px' }, { label: 'Date', width: '104px' }, { label: 'Mechanic' }, { label: 'Work', cls: 'desc-col' }, { label: 'Hrs', num: true, width: '60px' }],
         rows.map((r) => `<tr>
           <td><input type="checkbox" data-dw="${r.id}" ${chosen.has(String(r.id)) ? 'checked' : ''} style="width:auto"></td>
           <td>${esc(String(r.work_date || '').slice(0, 10))}</td>
-          <td>${r.asset_code
-            // Badged when it is this job's machine — the line you want is nearly always that one.
-            ? `<span class="mono">${esc(r.asset_code)}</span>${assetId && r.asset_id === assetId ? ' <span class="pill ok">this job</span>' : ''}`
-            : '<span class="muted">—</span>'}</td>
           <td>${esc(r.mechanic || (r.is_external ? 'outside' : ''))}</td>
           <td class="desc-col">${esc(r.description || '')}</td>
           <td class="num">${num(r.hours)}</td></tr>`), { scroll: true })

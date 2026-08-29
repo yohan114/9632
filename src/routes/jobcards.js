@@ -571,9 +571,11 @@ router.delete(
     const row = get('SELECT * FROM job_daily_work WHERE id = ? AND job_id = ?', lineId, id);
     if (!row) return res.status(404).json({ error: 'Entry not found on this job' });
 
-    const gid = catchAllJobId();
+    // ensure, not read: on a database that has never had a general entry the card does not exist,
+    // and a 0 here would turn "send it back" into "destroy it".
+    const gid = id === catchAllJobId() ? id : ensureCatchAllJobId();
     // On the catch-all there is nowhere further to send it, so removing means removing.
-    const unlink = gid && gid !== id;
+    const unlink = gid !== id;
     const settle = settleAfterDetach(job, unlink ? gid : null);
 
     if (unlink) run('UPDATE job_daily_work SET job_id = ? WHERE id = ?', gid, lineId);
@@ -603,88 +605,82 @@ const catchAllJobId = () => {
 };
 
 /**
- * Which vehicle a piece of unassigned labour is about, READ-ONLY.
+ * The catch-all, CREATING it if this database has never needed one.
  *
- * job_daily_work has no asset column — the machine is written into the description, the way the
- * paper sheets always did it ("AC-06 — Compressor clean and repair"). That is fine for reading one
- * line and useless for finding all of a vehicle's work, which is exactly what someone standing at
- * a job card wants: "what else was done on AC-06 that nobody has claimed?"
+ * Nothing in the schema or the migrations makes this card — it is created lazily, by the first
+ * general daily-work entry (routes/dailywork.js) or the first general stores issue
+ * (routes/stores.js). So on a fresh install it does not exist, and a reader that returns 0 makes
+ * "send this row back to the pool" silently become "delete this row": the unlink guard below reads
+ * `gid && gid !== id`, and 0 is falsy. The screen would still promise the entry was kept.
  *
- * Deliberately NOT aliases.resolveAsset(). That one learns as it goes — it writes an alias row and
- * bumps a hit count on every call — and a GET that renders a list must not teach the resolver
- * anything, or merely opening a picker rewrites the alias table and inflates the counts that decide
- * how future text resolves. This reads the same two tables and writes nothing.
+ * Detaching must therefore be able to create it, exactly as the other two writers do. Same job_no,
+ * same legacy_ref, so all three converge on one card.
  */
-function vehicleGuesser() {
-  const byNorm = new Map();
-  for (const a of all('SELECT id, code, code_norm, registration FROM assets')) {
-    if (a.code_norm) byNorm.set(a.code_norm, a);
-  }
-  const aliasToAsset = new Map();
-  for (const r of all('SELECT raw_norm, asset_id FROM asset_aliases WHERE resolved = 1 AND asset_id IS NOT NULL')) {
-    aliasToAsset.set(r.raw_norm, r.asset_id);
-  }
-  const byId = new Map([...byNorm.values()].map((a) => [a.id, a]));
-
-  return (text) => {
-    if (!text) return null;
-    // The code is usually the first thing on the line, before a dash — but not always, so the
-    // extracted token is tried too.
-    const head = String(text).split(/[-—–:,(]/)[0];
-    for (const candidate of [aliases.extractCode(text), head, String(text).split(/\s+/)[0]]) {
-      const norm = aliases.normalize(candidate);
-      if (!norm || norm.length < 2) continue;
-      const direct = byNorm.get(norm);
-      if (direct) return direct;
-      const viaAlias = aliasToAsset.get(norm);
-      if (viaAlias && byId.has(viaAlias)) return byId.get(viaAlias);
-    }
-    return null;
-  };
+function ensureCatchAllJobId() {
+  const existing = catchAllJobId();
+  if (existing) return existing;
+  return run(`INSERT INTO job_cards (job_no, type, description, status, requested_by, requested_at, is_historical, synthesized_no, legacy_ref)
+              VALUES ('GENERAL-WS', 'repair', 'General workshop (not vehicle-specific)', 'REQUESTED', 'system', date('now'), 0, 1, 'general-workshop')`).lastInsertRowid;
 }
 
+/**
+ * Work nobody has put on a job yet, searchable BY VEHICLE.
+ *
+ * The ask was "show the vehicle so I can search vehicle-wise". The obvious build was to infer the
+ * machine from the description and show it in a column. I built that, measured it against the real
+ * book, and threw it away:
+ *
+ *   - over the 2,535 daily-work rows whose job card already names a vehicle, the guess fired 86
+ *     times and was RIGHT 7 times;
+ *   - on the live 159-row pool it labelled 39 rows, and the commonest labels were "Service" (13),
+ *     "Workshop" (10), "Accomadation" (3), "WS" (3) — the asset registry holds 223 rows whose code
+ *     contains no digit at all, because cost centres are registered as assets too;
+ *   - and "AC-06 — Compressor clean and repair", the row the feature was designed around, resolved
+ *     to nothing.
+ *
+ * A column that is wrong four times out of five is worse than no column, and it would have fed the
+ * "this job" badge and the sort — quietly floating unrelated work to the top of somebody's job card
+ * for them to attach.
+ *
+ * So the vehicle is not guessed. It is already on screen: these descriptions carry the machine in
+ * their text, which is how the paper sheets were written. What was missing was the SEARCH, and that
+ * is what this does — matching the description and the mechanic, and normalising punctuation so
+ * "AC06", "ac-06" and "AC 06" all find "AC-06 — Compressor clean and repair". Nobody types a code
+ * the same way twice.
+ *
+ * Recording the machine properly means a column on job_daily_work, captured when the work is
+ * written down. That is a real change and worth doing; it is not something to fake from prose.
+ */
 router.get('/unassigned/daily-work', requireAuth, asyncHandler((req, res) => {
   const gid = catchAllJobId();
   if (!gid) return res.json([]);
-  const assetId = toInt(req.query.asset_id);
-  const limit = toInt(req.query.limit, 200);
-  const qRaw = req.query.q && String(req.query.q).trim() ? String(req.query.q).trim() : null;
-
-  // Dates still narrow in SQL. The text search does NOT, because it has to match the vehicle as
-  // well, and the vehicle is not a column — it is worked out from the description below.
   const clauses = ['d.job_id = ?']; const params = [gid];
+
+  if (req.query.q && String(req.query.q).trim()) {
+    const raw = String(req.query.q).trim();
+    const esc = (t) => t.replace(/[\\%_]/g, (c) => '\\' + c);
+    const like = '%' + esc(raw) + '%';
+    const ors = [`d.description LIKE ? ESCAPE '\\'`, `d.mechanic LIKE ? ESCAPE '\\'`];
+    params.push(like, like);
+    // Punctuation-insensitive: strip everything but letters and digits from BOTH sides, so a
+    // search for AC06 matches "AC-06" and a search for "AC-06" matches "AC 06".
+    const norm = aliases.normalize(raw);
+    if (norm.length >= 2) {
+      // Strip the punctuation out of the DESCRIPTION in SQL and compare against the stripped
+      // search term, so "AC06" finds "AC-06" and "AC-06" finds "AC 06" — one rule, both directions.
+      ors.push(`REPLACE(REPLACE(REPLACE(UPPER(d.description), '-', ''), ' ', ''), '/', '') LIKE ? ESCAPE '\\'`);
+      params.push('%' + esc(norm) + '%');
+    }
+    clauses.push('(' + ors.join(' OR ') + ')');
+  }
   if (req.query.from) { clauses.push('date(d.work_date) >= date(?)'); params.push(String(req.query.from)); }
   if (req.query.to) { clauses.push('date(d.work_date) <= date(?)'); params.push(String(req.query.to)); }
 
-  const guess = vehicleGuesser();
-  let rows = all(
+  res.json(all(
     `SELECT d.id, d.work_date, d.mechanic, d.description, d.hours, d.is_external, d.external_value
        FROM job_daily_work d
       WHERE ${clauses.join(' AND ')}
-      ORDER BY date(d.work_date) DESC, d.id DESC`, ...params
-  ).map((r) => {
-    const a = guess(r.description);
-    return { ...r, asset_id: a ? a.id : null, asset_code: a ? a.code : null, asset_reg: a ? a.registration : null };
-  });
-
-  if (qRaw) {
-    const needle = qRaw.toLowerCase();
-    const norm = aliases.normalize(qRaw);
-    rows = rows.filter((r) =>
-      String(r.description || '').toLowerCase().includes(needle)
-      || String(r.mechanic || '').toLowerCase().includes(needle)
-      || String(r.asset_code || '').toLowerCase().includes(needle)
-      || String(r.asset_reg || '').toLowerCase().includes(needle)
-      // "AC06" should find "AC-06" — punctuation is not something anyone types consistently.
-      || (norm.length >= 2 && aliases.normalize(r.asset_code).includes(norm)));
-  }
-
-  // This job's own vehicle first. The parts picker does the same, and it is the whole value of
-  // both — the line you want is almost always about the machine in front of you.
-  if (assetId) {
-    rows.sort((a, b) => (b.asset_id === assetId) - (a.asset_id === assetId));
-  }
-  res.json(rows.slice(0, limit));
+      ORDER BY date(d.work_date) DESC, d.id DESC LIMIT ${toInt(req.query.limit, 200)}`, ...params));
 }));
 
 router.get('/unassigned/parts', requireAuth, asyncHandler((req, res) => {
@@ -863,8 +859,8 @@ router.delete(
     const row = get('SELECT * FROM job_parts WHERE id = ? AND job_id = ?', partId, id);
     if (!row) return res.status(404).json({ error: 'Item not found on this job' });
 
-    const gid = catchAllJobId();
-    const unlink = gid && gid !== id;
+    const gid = id === catchAllJobId() ? id : ensureCatchAllJobId();
+    const unlink = gid !== id;
     const settle = settleAfterDetach(job, unlink ? gid : null);
 
     // MOVED to the catch-all, not deleted — including receipt-sourced lines, which is the case

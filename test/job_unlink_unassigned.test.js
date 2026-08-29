@@ -146,25 +146,20 @@ test('an id that is not on this job is refused rather than quietly doing nothing
 
 // ---- finding it by vehicle -------------------------------------------------
 //
-// job_daily_work has no asset column: the machine is written into the description, the way the
-// paper sheets always did it. Fine for reading one line, useless for "what else is unclaimed on
-// AC-06?" — which is the question someone standing at a job card is actually asking.
+// The ask was "show the vehicle so I can search vehicle-wise". Inferring the machine from the
+// description was built, measured against the real book, and thrown away: over the 2,535 rows whose
+// job already names a vehicle it fired 86 times and was right 7; on the live 159-row pool its
+// commonest labels were "Service", "Workshop" and "Accomadation", because 223 registry rows are
+// cost centres with no digit in their code; and "AC-06 — Compressor clean and repair", the row it
+// was designed around, resolved to nothing.
+//
+// So the vehicle is not guessed. It is already in the work text. What was missing was the search.
 
-test('the pool says which vehicle each entry is about', async () => {
-  const pool = await api('/jobs/unassigned/daily-work?limit=200');
-  const row = pool.body.find((r) => r.id === DW_POOL);
-  assert.ok(row, 'DW_POOL was returned to the pool by the first test');
-  assert.strictEqual(row.asset_code, 'AC-06', 'read out of "AC-06 — Compressor clean and repair"');
-  assert.strictEqual(row.asset_id, ASSET);
-
-  const shop = pool.body.find((r) => String(r.description).startsWith('Workshop'));
-  assert.strictEqual(shop.asset_id, null, 'and it must not invent one for work naming no machine');
-});
-
-test('searching by vehicle finds it, punctuation or not', async () => {
-  for (const q of ['AC-06', 'ac-06', 'AC06']) {
+test('searching by vehicle finds the work, however the code is punctuated', async () => {
+  for (const q of ['AC-06', 'ac-06', 'AC06', 'ac 06']) {
     const r = await api('/jobs/unassigned/daily-work?q=' + encodeURIComponent(q));
-    assert.ok(r.body.some((x) => x.id === DW_POOL), `"${q}" should find the AC-06 entry`);
+    assert.ok(r.body.some((x) => x.id === DW_POOL),
+      `"${q}" should find "AC-06 — Compressor clean and repair" — nobody types a code the same way twice`);
     assert.ok(!r.body.some((x) => String(x.description).startsWith('Workshop')),
       `"${q}" must not drag in work on other machines`);
   }
@@ -177,16 +172,26 @@ test('the description and mechanic searches still work', async () => {
   assert.ok(byMech.body.length > 0, 'searching by mechanic was there before and must keep working');
 });
 
-test('this job’s own vehicle is offered first', async () => {
-  const r = await api(`/jobs/unassigned/daily-work?asset_id=${ASSET}&limit=200`);
-  assert.ok(r.body.length > 1, 'need more than one row for ordering to mean anything');
-  assert.strictEqual(r.body[0].asset_id, ASSET, 'the machine in front of you belongs at the top');
+test('no vehicle is invented for work that names none', async () => {
+  // The failure the measurement caught: "Workshop — Service bay door fixing" was being labelled
+  // with the registry's "Workshop" cost-centre row and badged as belonging to whichever card was
+  // open, which would float unrelated hours to the top for someone to attach.
+  const pool = await api('/jobs/unassigned/daily-work?limit=200');
+  for (const r of pool.body) {
+    assert.strictEqual(r.asset_code, undefined,
+      'the endpoint must not report a vehicle it only inferred from prose');
+  }
+});
+
+test('a search matching nothing returns nothing, rather than everything', async () => {
+  const r = await api('/jobs/unassigned/daily-work?q=' + encodeURIComponent('zzz-no-such-thing'));
+  assert.strictEqual(r.body.length, 0);
 });
 
 test('listing the pool teaches the alias resolver nothing', async () => {
-  // aliases.resolveAsset() writes an alias row and bumps a hit count on every call. Using it here
-  // would mean that merely OPENING the picker rewrites the alias table and inflates the counts that
-  // decide how future text resolves — a read that quietly changes what later reads mean.
+  // Worth keeping even now the guesser is gone: aliases.resolveAsset() writes an alias row and
+  // bumps a hit count on every call, so reaching for it here would mean that merely OPENING the
+  // picker rewrites the table that decides how future text resolves.
   const before = get('SELECT COUNT(*) c, COALESCE(SUM(hit_count), 0) h FROM asset_aliases');
   await api('/jobs/unassigned/daily-work?limit=200');
   await api('/jobs/unassigned/daily-work?q=AC-06');
