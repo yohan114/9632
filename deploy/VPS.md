@@ -157,6 +157,17 @@ systemctl status workshopone
 journalctl -u workshopone -f
 ```
 
+Then check what it actually bound to, because a value set in the unit file beats `.env` — the loader
+in `src/config.js` only fills in keys the environment does not already have:
+
+```bash
+sudo ss -ltnp | grep 3000
+```
+
+Must read `127.0.0.1:3000`. If it says `0.0.0.0:3000` the app is on the public interface beside
+nginx and only the firewall is keeping it off the internet — look for a `HOST=` line in the unit
+file and delete it, then `sudo systemctl daemon-reload && sudo systemctl restart workshopone`.
+
 ## 8. nginx
 
 The visitor's real address has to survive the trip, or the login rate limiter will treat the whole
