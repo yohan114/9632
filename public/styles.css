@@ -316,3 +316,59 @@ body.live-connected .live-dot { color: var(--green); }
   .table-responsive { overflow-x: auto; -webkit-overflow-scrolling: touch; }
 }
 
+/* ---- fitting the screen the workshop actually has -------------------------
+
+   The roomy layout needs about 1455px before a wide table starts running off the side of its box.
+   Measured on the live job list (500 rows, 11 columns), how much was cut off and unreachable
+   except by scrolling the table sideways — with nothing on screen saying it was there:
+
+       screen   1920    1440    1366    1280    1024
+       before      0     88px   162px   350px   606px
+
+   These tiers give the width back. Above 1500px nothing changes: the roomy layout is still the
+   roomy layout, because it was never the problem.
+
+   THE LEVER IS LETTING CELLS WRAP. That takes the job list's minimum from 1313px to 1082px and the
+   stores list's from 1342px to 896px — far more than shaving padding ever could. It sounds like
+   the mistake the note above warns about, and it is not: that disaster was `table-layout: fixed`,
+   which gives every column an equal share and then crushes the long ones. Columns still size to
+   their contents here; they are simply allowed to take a second line when the content is long.
+
+   Measured, not assumed — 500 job rows at 1024px, base vs wrapped:
+       tallest row   190px -> 171px          (better)
+       rows > 100px     34 -> 23             (better)
+       rows > 200px      0 -> 0
+       clipped cells     0 -> 0
+   Wrapping makes rows SHORTER here, because the smaller type buys back more than the extra lines
+   cost. Re-measure the same way before touching these numbers.
+
+   Floored at 781px so the phone rules keep the last word. These blocks are at the END of the file
+   (they must be, to override the base table rules) — which also means that without a floor they
+   would match a 375px screen and beat the phone layout that appears earlier.
+
+   1024x768 still scrolls, by choice. Eleven columns in 1009px is not a readable table at any type
+   size — the honest answer there is a scrollbar, which .table-wrap gives (auto, never hidden). */
+
+@media (min-width: 781px) and (max-width: 1500px) {
+  /* Fits 1440 and 1366 exactly — at 1366 the job list needs 1126px and gets 1126px. */
+  .nav { width: 176px; padding: 10px 7px; }
+  .nav a { padding: 8px 9px; font-size: 13px; gap: 8px; }
+  .content { padding: 14px 16px; }
+  table { font-size: 12px; }
+  table.fit-table td, table.fit-table th {
+    padding: 4px 6px;
+    /* overflow-wrap, NEVER word-break — see the note on .desc-col above for what word-break did to
+       a "200 Breaker" plate. */
+    white-space: normal; overflow-wrap: break-word;
+  }
+}
+
+@media (min-width: 781px) and (max-width: 1300px) {
+  /* 1280 needs another 42px to clear. The rail keeps its labels: an icon-only strip would save
+     another 120px and cost anyone who does not already know the menu by heart. */
+  .nav { width: 160px; padding: 8px 6px; }
+  .nav a { padding: 7px 8px; font-size: 12.5px; }
+  .nav .ix { display: none; }
+  .content { padding: 10px 12px; }
+  table.fit-table td, table.fit-table th { padding: 3px 5px; }
+}
