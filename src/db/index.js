@@ -231,6 +231,13 @@ function migrate() {
   // of that prose was tried and measured: over the 2,535 rows whose job already names a vehicle it
   // answered 86 times and was RIGHT 7, because 223 registry rows are cost centres whose code has no
   // digit, so "Service bay door fixing" confidently became the asset "Service". A column ends that.
+  // The oil balance the dashboard reads. It was only ever created by src/migrate/015, a one-off
+  // data script run with `npm run migrate:real` — so a FRESH install never got it, and the very
+  // first thing a new deployment loads, /api/dashboard/overview, answered 500 with
+  // "no such column: stock_qty". Nobody hit it because every existing database had been through
+  // 015 years ago. oil.js keeps the value in step on every ledger write, so starting at 0 is right.
+  ensureColumn('products', 'stock_qty', 'REAL DEFAULT 0');
+
   ensureColumn('job_daily_work', 'asset_id', 'INTEGER REFERENCES assets(id)');
   // Backfill from the job card, which is authoritative wherever it names a vehicle: a line on
   // AC-06's card is work on AC-06. Rows on the catch-all stay NULL — genuinely unknown, and better
@@ -327,6 +334,20 @@ function migrate() {
   db.exec(`INSERT OR IGNORE INTO roles (name, label) VALUES
     ('purchase_head_office', 'Purchasing Officer — Head Office'),
     ('purchase_local', 'Purchasing Officer — Local')`);
+
+  // ONE-TIME CORRECTION. The first cut of these two roles handed them read-only access to job
+  // cards, stores, filters, projects and the fleet. seedDefaults() only INSERTs missing cells, so
+  // fixing the policy in code does not fix a database that already has the wrong rows. This clears
+  // them once, letting the corrected defaults seed in their place.
+  //
+  // Guarded by a marker rather than run every boot, because role_permissions is admin-editable and
+  // a permanent overwrite would silently undo a deliberate change made from the Access screen.
+  const purgeKey = 'purchasing_roles_scoped_v2';
+  const done = db.prepare('SELECT value FROM settings WHERE key = ?').get(purgeKey);
+  if (!done) {
+    db.exec(`DELETE FROM role_permissions WHERE role IN ('purchase_head_office', 'purchase_local')`);
+    db.prepare("INSERT INTO settings (key, value) VALUES (?, datetime('now'))").run(purgeKey);
+  }
 
   ensureColumn('mrn', 'request_type', "TEXT NOT NULL DEFAULT 'vehicle'"); // 'general' (store) | 'vehicle' (against a job card)
   // Which KIND of tyre/battery request this is. It needs a column of its own: request_type already

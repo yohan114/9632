@@ -70,8 +70,17 @@ const DEFAULT_MATRIX = {
   // whose job is to buy has no business issuing stock or editing a job card. Which of the two
   // channels each one sees is decided inside the router by their ROLE, not by a level here: a
   // level can say "may use this screen", it cannot say "may use the local half of it".
-  purchase_head_office: { tb_request: 'none', tb_purchase: 'none', tb_grn: 'none', tb_issue: 'none', purchasing: 'full', assets: 'view', jobs: 'view', jobrequests: 'none', dailywork: 'none', stores: 'view', oil: 'none', batteries: 'none', filters: 'view', labour: 'none', projects: 'view', aliases: 'none', reports: 'none', users: 'none' },
-  purchase_local:       { tb_request: 'none', tb_purchase: 'none', tb_grn: 'none', tb_issue: 'none', purchasing: 'full', assets: 'view', jobs: 'view', jobrequests: 'none', dailywork: 'none', stores: 'view', oil: 'none', batteries: 'none', filters: 'view', labour: 'none', projects: 'view', aliases: 'none', reports: 'none', users: 'none' },
+  // THE PURCHASING OFFICERS SEE ONE SCREEN AND NOTHING ELSE.
+  //
+  // These two buy what has been approved; they do not run the workshop. Handing them a read-only
+  // view of job cards, stores, filters and the fleet — which the first cut of this did — puts the
+  // company's costs, stock and vehicle history in front of two people whose job needs none of it,
+  // and buries the one list they actually work from behind nine they never open.
+  //
+  // Every module is 'none' on purpose. Adding a cell here should take an argument about why that
+  // person's job cannot be done without it.
+  purchase_head_office: { tb_request: 'none', tb_purchase: 'none', tb_grn: 'none', tb_issue: 'none', purchasing: 'full', assets: 'none', jobs: 'none', jobrequests: 'none', dailywork: 'none', stores: 'none', oil: 'none', batteries: 'none', filters: 'none', labour: 'none', projects: 'none', aliases: 'none', reports: 'none', users: 'none' },
+  purchase_local:       { tb_request: 'none', tb_purchase: 'none', tb_grn: 'none', tb_issue: 'none', purchasing: 'full', assets: 'none', jobs: 'none', jobrequests: 'none', dailywork: 'none', stores: 'none', oil: 'none', batteries: 'none', filters: 'none', labour: 'none', projects: 'none', aliases: 'none', reports: 'none', users: 'none' },
   viewer: { tb_request: 'view', tb_purchase: 'view', tb_grn: 'view', tb_issue: 'view', assets: 'view', jobs: 'view', jobrequests: 'view', dailywork: 'view', stores: 'view', oil: 'view', batteries: 'view', filters: 'view', purchasing: 'view', labour: 'view', projects: 'view', aliases: 'view', reports: 'view', users: 'none' },
 };
 

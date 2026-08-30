@@ -412,7 +412,7 @@ const qsa = (s, r = document) => [...r.querySelectorAll(s)];
 const LIVE_ENTITY_ROUTES = {
   store_item: ['generalstock', 'stores', 'stockissues'], issue: ['stockissues', 'stores'],
   item_category: ['stores', 'generalstock', 'stockissues'],
-  mrn: ['stores', 'matreq'], grn: ['stores'], mtn: ['stores'], stock_count: ['oil'],
+  mrn: ['stores', 'matreq', 'purchasing'], mrn_lines: ['purchasing'], grn: ['stores', 'purchasing'], mtn: ['stores'], stock_count: ['oil'],
   product: ['oil'], product_price: ['oil'], stock_ledger: ['oil', 'stockissues'],
   filter_stock: ['filterstock'], filter_price: ['filters'], filter_xref: ['filters'], service_job: ['filters'],
   job_card: ['jobs', 'jobrequests'], job_request: ['jobrequests', 'jobs'], job_daily_work: ['dailywork', 'jobs'],
@@ -774,13 +774,57 @@ function tableWrap(headers, rows, opts = {}) {
 }
 
 // ---- Dashboard
+// Somebody whose only role is buying. Not "can see purchasing" — a manager can see it too, and
+// should still get the workshop dashboard.
+const isPurchasingOnly = () => !!(ME && ME.roles && ME.roles.length
+  && ME.roles.every((r) => r === 'purchase_head_office' || r === 'purchase_local'));
+
 routes.dashboard = async (c) => {
   const sp = new URLSearchParams(location.hash.split('?')[1] || '');
   const month = sp.get('month'), asset = sp.get('asset');
+  // The workshop dashboard is job costs, stock value and vehicle history — none of which is any of
+  // a purchasing officer's business, and none of which answers the only question they have.
+  if (isPurchasingOnly()) return dashPurchasing(c);
   if (month && asset) return dashVehicleMonth(c, month, asset);
   if (month) return dashMonthAssets(c, month);
   return dashMain(c);
 };
+
+// What is waiting to be bought, and how much of it is theirs. Refreshes itself: the dashboard is
+// in LIVE_AGG_ROUTES, so an MRN approved anywhere in the building lands here without a reload.
+async function dashPurchasing(c) {
+  c.innerHTML = pageHeader('Purchasing', 'What has been approved and still has to be bought.')
+    + '<div id="dp" class="muted">Loading…</div>';
+  let counts; let d;
+  try {
+    counts = await api('/purchasing/counts');
+    d = await api('/purchasing/queue?tab=to_buy&limit=12');
+  } catch (e) { qs('#dp', c).innerHTML = `<div class="card err">${esc(e.message)}</div>`; return; }
+
+  const mine = d.channels.map((s) => (s === 'head_office' ? 'Head Office' : 'Local Purchase')).join(' + ') || 'none yet';
+  qs('#dp', c).innerHTML = `
+    <div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(190px,1fr));margin-bottom:14px">
+      <div class="card"><div class="stat"><div class="n">${counts.to_buy}</div><div class="l">On your list</div></div></div>
+      <div class="card"><div class="stat"><div class="n">${counts.unassigned}</div><div class="l">Not yet assigned</div></div></div>
+      <div class="card"><div class="stat"><div class="n">${counts.bought}</div><div class="l">Bought</div></div></div>
+      <div class="card"><div class="stat"><div class="l">You buy</div><div>${esc(mine)}</div></div></div>
+    </div>
+    <div class="toolbar" style="margin:0 0 8px"><h2 style="margin:0">Waiting to be bought</h2><div class="spacer"></div>
+      <button class="sm primary" onclick="location.hash='#/purchasing'">Open the list</button></div>
+    <div id="dpl"></div>`;
+
+  qs('#dpl', c).innerHTML = d.rows.length ? tableWrap(
+    [{ label: 'Needed', width: '96px' }, { label: 'Request', width: '104px' },
+      { label: 'Vehicle', width: '120px' }, { label: 'Item', cls: 'desc-col' }, { label: 'Qty', num: true, width: '70px' }],
+    d.rows.map((r) => `<tr>
+      <td>${r.required_date ? esc(String(r.required_date).slice(0, 10)) : '<span class="muted">—</span>'}</td>
+      <td class="mono">${esc(r.mrn_no || '')}${r.is_new ? ' <span class="badge amber">new</span>' : ''}</td>
+      <td>${r.asset_code ? `<span class="stamp">${esc(r.asset_code)}</span>` : '<span class="muted">—</span>'}</td>
+      <td class="desc-col">${esc(r.description || '')}</td>
+      <td class="num">${num(r.qty)}${r.unit ? ' ' + esc(r.unit) : ''}</td></tr>`), { scroll: true })
+    : `<div class="card"><p class="muted">Nothing waiting${counts.unassigned
+      ? ` — but ${counts.unassigned} item(s) have not been given to an officer yet.` : '.'}</p></div>`;
+}
 
 // Managers' time is precious: their dashboard leads with what needs their sign-off.
 function renderPendingApprovals(pa) {
