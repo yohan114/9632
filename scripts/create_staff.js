@@ -119,9 +119,9 @@ for (const [username, fullName, roleSpec] of list) {
   console.log(`  ${APPLY ? 'OK  ' : 'would'}  ${username.padEnd(14)} ${String(fullName).padEnd(24)} ${roles.join(', ')}`);
 }
 
-if (created.length) {
+if (created.length && APPLY) {
   console.log(`\n${'='.repeat(72)}`);
-  console.log(APPLY ? 'HAND THESE OUT, ONE LINE EACH, THEN DESTROY THIS PRINTOUT' : 'Passwords shown are what WOULD be set:');
+  console.log('HAND THESE OUT, ONE LINE EACH, THEN DESTROY THIS PRINTOUT');
   console.log('='.repeat(72));
   for (const c of created) {
     console.log(`  ${String(c.fullName || c.username).padEnd(24)} username: ${c.username.padEnd(14)} password: ${c.password}`);
@@ -130,8 +130,25 @@ if (created.length) {
   console.log('Each must be changed at first sign-in, so these stop working immediately after use.');
 }
 
-console.log(`\n${created.length} to create, ${refused} skipped.`);
-if (!APPLY && created.length) console.log('Nothing was written. Re-run with --apply to create them.\n');
-else console.log('');
+// A DRY RUN PRINTS NO PASSWORDS.
+//
+// It used to print the full handout sheet under the heading "Passwords shown are what WOULD be
+// set". Read carefully that is accurate; skimmed, it is a list of usernames and passwords — and it
+// was taken for one. The accounts were written down, nobody could sign in, and the reason was that
+// they had never been created. A password that cannot possibly work should not appear beside a
+// username that does not exist yet.
+if (created.length && !APPLY) {
+  console.log(`\n${'='.repeat(72)}`);
+  console.log(`  NOTHING WAS CREATED — this is a dry run. ${created.length} account(s) WOULD be made.`);
+  console.log('  Passwords are generated at the moment of creation, so none are shown here.');
+  console.log('  Run the same command again with --apply to create them and print the handout.');
+  console.log('='.repeat(72));
+}
+
+console.log(`\n${created.length} ${APPLY ? 'created' : 'to create'}, ${refused} skipped.`);
+if (refused && !created.length) {
+  console.log('Nothing was created. An "unknown role" skip above usually means the server has not');
+  console.log('been updated yet — a role arrives with the code that uses it.\n');
+} else console.log('');
 
 process.exit(0);
