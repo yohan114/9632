@@ -84,6 +84,10 @@ app.use('/api/tyre-battery', requireModule('reports'), require('./routes/tyre_ba
 // has to be able to issue a tyre. Each endpoint carries its own role check instead, and the
 // specification picklist is deliberately open to any signed-in user so the form can be filled in.
 app.use('/api/tb', require('./routes/tyre_battery_requests'));
+// Buying what the workshop asked for. Gated on its own module so the two purchasing officers see
+// the queue and nobody else does; WHICH of the two channels each sees is decided inside the router
+// by role, because a permission level can say "may use this screen" but not "may use half of it".
+app.use('/api/purchasing', requireModule('purchasing'), require('./routes/purchasing'));
 
 // Static frontend (SPA). index.html is served with a per-boot cache-bust token on
 // app.js / styles.css so a normal reload always picks up the latest build.

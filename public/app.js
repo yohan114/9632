@@ -663,6 +663,7 @@ const NAV = [
   ['attention', '⚠️', 'Needs Attention'],
   ['progress', '📆', 'Daily Progress'],
   ['teardown', '📉', 'Cost Teardown'],
+  ['purchasing', '🛒', 'Purchasing'],
   ['tbrequests', '🛞', 'Tyre & Battery Requests'],
   ['tyrebattery', '🛞', 'Tyre & Battery'],
   ['reports', '📈', 'Reports'],
@@ -677,6 +678,9 @@ const NAV_MODULE = {
   // The request screen belongs to whoever may raise one. The ledger above stays on 'reports',
   // because reading what was issued is a different question from being allowed to issue it.
   tbrequests: 'tb_request',
+  // Enforced, so the two buying officers see this and nobody else does. Which of the two
+  // channels each one sees is decided by the server from their role — the nav only opens the door.
+  purchasing: 'purchasing',
   matreq: 'stores', stockissues: 'stores', generalstock: 'stores', filterstock: 'filters', serviceplan: 'filters',
 };
 function navVisible(n) {
@@ -691,7 +695,7 @@ const NAV_GROUP_ORDER = ['Operations', 'Inventory', 'Procurement', 'Fleet', 'Ana
 const NAV_GROUP = {
   dashboard: 'Operations', jobs: 'Operations', jobrequests: 'Operations', dailywork: 'Operations',
   stores: 'Inventory', generalstock: 'Inventory', filterstock: 'Inventory', oil: 'Inventory', filters: 'Inventory', batteries: 'Inventory',
-  matreq: 'Procurement', stockissues: 'Procurement',
+  matreq: 'Procurement', stockissues: 'Procurement', purchasing: 'Procurement', tbrequests: 'Procurement',
   assets: 'Fleet', serviceplan: 'Fleet',
   reports: 'Analysis', attention: 'Analysis', progress: 'Analysis', teardown: 'Analysis', tyrebattery: 'Analysis', aliases: 'Analysis', projects: 'Analysis', labour: 'Analysis',
   access: 'Admin',
@@ -4961,6 +4965,204 @@ const tbBadge = (s) => {
   const m = { requested: 'amber', certified: 'blue', approved: 'green', rejected: 'red' };
   return '<span class="badge ' + (m[s] || '') + '">' + esc(s || 'requested') + '</span>';
 };
+
+// ---- Purchasing -----------------------------------------------------------
+// Two officers buy what the workshop asked for: one on the Head Office account, one locally. Each
+// sees their own channel only — the server decides which from their role, so this screen never has
+// to know, and cannot be talked into showing the other list.
+routes.purchasing = async (c) => {
+  const sp = new URLSearchParams(location.hash.split('?')[1] || '');
+  const tab = ['to_buy', 'unassigned', 'bought'].includes(sp.get('tab')) ? sp.get('tab') : 'to_buy';
+  const go = (t) => `location.hash='#/purchasing?tab=${t}'`;
+
+  c.innerHTML = pageHeader('Purchasing',
+    'What has been approved and still has to be bought. Tick it off with the invoice once it is.') + `
+    <div class="toolbar" style="margin:0 0 10px 0">
+      <span id="pu-tabs"></span>
+      <div class="spacer"></div>
+      <input id="pu-q" type="search" placeholder="Item, request no, vehicle, invoice…" style="max-width:260px">
+    </div>
+    <div id="pu-body" class="muted">Loading…</div>`;
+
+  const counts = await api('/purchasing/counts').catch(() => ({ to_buy: 0, unassigned: 0, bought: 0 }));
+  qs('#pu-tabs', c).innerHTML = [
+    ['to_buy', 'To buy', counts.to_buy],
+    ['unassigned', 'Not yet assigned', counts.unassigned],
+    ['bought', 'Bought', counts.bought],
+  ].map(([t, l, n]) => `<button class="sm ${t === tab ? 'primary' : ''}" onclick="${go(t)}">${l}${n ? ` (${n})` : ''}</button>`).join(' ');
+
+  const load = async () => {
+    const q = qs('#pu-q', c).value.trim();
+    let d;
+    try { d = await api(`/purchasing/queue?tab=${tab}` + (q ? '&q=' + encodeURIComponent(q) : '')); }
+    catch (e) { qs('#pu-body', c).innerHTML = `<div class="card err">${esc(e.message)}</div>`; return; }
+
+    if (!d.rows.length) {
+      qs('#pu-body', c).innerHTML = `<div class="card"><p class="muted">${
+        tab === 'bought' ? 'Nothing bought yet.'
+          : tab === 'unassigned' ? 'Every approved item has been given to an officer.'
+            : d.channels.length ? 'Nothing waiting to be bought.'
+              : 'You are not set up as a purchasing officer, so there is no list of your own to show.'}</p></div>`;
+      return;
+    }
+
+    const chan = (s) => (s === 'head_office' ? '<span class="badge">Head Office</span>'
+      : s === 'local_purchase' ? '<span class="badge green">Local</span>'
+        : '<span class="muted">—</span>');
+
+    const headers = [
+      { label: 'Needed', width: '96px' }, { label: 'Request', width: '104px' },
+      { label: 'Vehicle', width: '120px' }, { label: 'Item', cls: 'desc-col' },
+      { label: 'Qty', num: true, width: '68px' },
+    ];
+    if (d.sees_both || tab === 'unassigned') headers.push({ label: 'Channel', width: '104px' });
+    if (tab === 'bought') headers.push({ label: 'Supplier' }, { label: 'Invoice', width: '120px' }, { label: 'Amount', num: true, width: '110px' });
+    headers.push({ label: '', width: tab === 'bought' ? '90px' : '190px' });
+
+    qs('#pu-body', c).innerHTML = tableWrap(headers, d.rows.map((r) => {
+      const cells = [
+        `<td>${r.required_date ? esc(String(r.required_date).slice(0, 10)) : '<span class="muted">—</span>'}</td>`,
+        `<td class="mono">${esc(r.mrn_no || '')}${r.is_new && tab !== 'bought' ? ' <span class="badge amber">new</span>' : ''}</td>`,
+        `<td>${r.asset_code ? `<span class="stamp">${esc(r.asset_code)}</span>` : '<span class="muted">—</span>'}</td>`,
+        `<td class="desc-col">${esc(r.description || '')}${r.source_changed_reason
+          // Why it was handed over is worth reading before buying it — usually it is the reason the
+          // last person could not.
+          ? `<div class="muted" style="font-size:11px">↔ from ${esc(r.source_changed_from || '?')}: ${esc(r.source_changed_reason)}</div>` : ''}</td>`,
+        `<td class="num">${num(r.qty)}${r.unit ? ' ' + esc(r.unit) : ''}</td>`,
+      ];
+      if (d.sees_both || tab === 'unassigned') cells.push(`<td>${chan(r.purchase_source)}</td>`);
+      if (tab === 'bought') {
+        cells.push(`<td>${esc(r.supplier || '')}</td>`,
+          `<td class="mono">${esc(r.invoice_no || '')}</td>`,
+          `<td class="num">${r.purchase_amount == null ? '<span class="muted">—</span>' : money(r.purchase_amount)}</td>`);
+      }
+      cells.push(`<td>${tab === 'bought'
+        ? `<button class="sm" data-view="${r.id}">View</button>`
+        : `<button class="sm primary" data-buy="${r.id}">✓ Bought</button> <button class="sm" data-move="${r.id}" data-src="${esc(r.purchase_source || '')}" title="Cannot buy this on your account — send it to the other officer">↔</button>`}</td>`);
+      return `<tr>${cells.join('')}</tr>`;
+    }), { scroll: true });
+
+    qsa('[data-buy]', c).forEach((b) => { b.onclick = () => markBought(b.dataset.buy, load); });
+    qsa('[data-move]', c).forEach((b) => { b.onclick = () => moveChannel(b.dataset.move, b.dataset.src, load); });
+    qsa('[data-view]', c).forEach((b) => { b.onclick = () => viewPurchase(b.dataset.view, load); });
+
+    // Looking at the list IS having seen it. Recorded per person, so two officers never clear each
+    // other badge.
+    if (tab === 'to_buy') api('/purchasing/seen', { method: 'POST' }).catch(() => {});
+  };
+
+  let deb; qs('#pu-q', c).oninput = () => { clearTimeout(deb); deb = setTimeout(load, 250); };
+  load();
+};
+
+// Hand an item to the other officer, with the reason that makes the record worth keeping.
+function moveChannel(lineId, current, onDone) {
+  const to = current === 'head_office' ? 'local_purchase' : 'head_office';
+  const label = to === 'head_office' ? 'Head Office' : 'Local Purchase';
+  modal(`Send to ${label}`, `
+    <p class="muted" style="font-size:12px;margin:0 0 10px">Why can this not be bought on the current account? A few months of these is the case for opening one.</p>
+    ${field('Reason', 'reason', { placeholder: 'e.g. No head office account with this supplier' })}
+    <div style="margin-top:12px;text-align:right"><button class="primary" id="mv">Send to ${label}</button></div>`,
+  (body, close) => {
+    qs('#mv', body).onclick = async () => {
+      try {
+        const r = await api(`/purchasing/lines/${lineId}/source`, { method: 'POST',
+          body: { purchase_source: to, reason: qs('[name=reason]', body).value } });
+        toast(r.message); close(); onDone();
+      } catch (e) { toast(e.message, 'err'); }
+    };
+  });
+}
+
+// The tick. The invoice photo is required — it is the evidence the whole screen exists to collect.
+function markBought(lineId, onDone) {
+  modal('Mark bought', `
+    <div class="row">${field('Supplier', 'supplier')}${field('Invoice no', 'invoice_no')}</div>
+    <div class="row">${field('Invoice date', 'invoice_date', { type: 'date' })}${field('Amount for this item (line total)', 'purchase_amount', { type: 'number' })}</div>
+    <label>Invoice photo *</label>
+    <input type="file" id="pu-img" accept="image/*" multiple>
+    <div id="pu-thumbs" style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap"></div>
+    <p class="muted" style="font-size:12px;margin:8px 0 0">Up to 3 photos. Marking it bought does not put it into stock — the storekeeper still receives it when it arrives.</p>
+    <div style="margin-top:12px;text-align:right"><button class="primary" id="pb">Mark bought</button></div>`,
+  (body, close) => {
+    const images = [];
+    qs('#pu-img', body).onchange = async (e) => {
+      for (const f of [...e.target.files].slice(0, 3 - images.length)) {
+        try { images.push(await shrinkImage(f)); } catch (err) { toast('Could not read that photo', 'err'); }
+      }
+      qs('#pu-thumbs', body).innerHTML = images.map((src, i) =>
+        `<img src="${src}" style="height:64px;border-radius:4px;border:1px solid var(--border)" alt="invoice ${i + 1}">`).join('');
+    };
+    qs('#pb', body).onclick = async () => {
+      if (!images.length) { toast('Attach a photo of the invoice', 'err'); return; }
+      const f = formData(body);
+      try {
+        const r = await api(`/purchasing/lines/${lineId}/purchase`, { method: 'POST', body: { ...f, images } });
+        toast(r.message); close(); onDone();
+      } catch (e) { toast(e.message, 'err'); }
+    };
+  }, { wide: true });
+}
+
+async function viewPurchase(lineId, onDone) {
+  let d;
+  try { d = await api(`/purchasing/lines/${lineId}`); } catch (e) { toast(e.message, 'err'); return; }
+  modal(`${d.description || 'Item'} — ${d.mrn_no || ''}`, `
+    <div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(160px,1fr))">
+      ${[['Supplier', d.supplier], ['Invoice', d.invoice_no], ['Invoice date', String(d.invoice_date || '').slice(0, 10)],
+    ['Amount', d.purchase_amount == null ? '—' : money(d.purchase_amount)], ['Bought by', d.purchased_by],
+    ['Bought on', String(d.purchased_at || '').slice(0, 10)]]
+    .map(([l, v]) => `<div class="card"><div class="stat"><div class="l">${l}</div><div>${esc(v || '—')}</div></div></div>`).join('')}
+    </div>
+    ${d.price_check ? `<div class="card err" style="margin-top:10px">
+      <b>The invoice and the receipt disagree.</b><br>
+      Invoice ${money(d.price_check.invoice)} · received ${money(d.price_check.received)} ·
+      difference ${money(d.price_check.difference)}.<br>
+      <span class="muted">Neither is overwritten — someone should say which is right.</span></div>` : ''}
+    ${d.invoices.length ? `<h3>Invoice</h3><div style="display:flex;gap:8px;flex-wrap:wrap">${
+    d.invoices.map((i) => `<a href="${i.image}" target="_blank" rel="noopener"><img src="${i.image}" style="height:150px;border-radius:4px;border:1px solid var(--border)" alt="invoice"></a>`).join('')}</div>` : ''}
+    ${d.receipts.length ? `<h3>Received</h3>${tableWrap(
+    [{ label: 'GRN' }, { label: 'Qty', num: true }, { label: 'Unit', num: true }, { label: 'Value', num: true }, { label: 'Delivered' }],
+    d.receipts.map((g) => `<tr><td class="mono">${esc(g.grn_no || '')}</td><td class="num">${num(g.qty)}</td>
+        <td class="num">${g.unit_price == null ? '—' : money(g.unit_price)}</td><td class="num">${money(g.value)}</td>
+        <td>${esc(String(g.delivery_date || '').slice(0, 10))}</td></tr>`))}`
+    : '<p class="muted">Not yet received into stores.</p>'}
+    <div style="margin-top:12px;text-align:right">
+      ${d.qty_received > 0 ? '' : '<button class="sm danger" id="undo">Clear this purchase</button>'}
+    </div>`,
+  (body, close) => {
+    const u = qs('#undo', body);
+    if (u) {
+      u.onclick = async () => {
+        try { const r = await api(`/purchasing/lines/${lineId}/purchase`, { method: 'DELETE' }); toast(r.message); close(); onDone(); }
+        catch (e) { toast(e.message, 'err'); }
+      };
+    }
+  }, { wide: true });
+}
+
+// Photos come off a phone at several megabytes. Resized here, before upload, because the database
+// is copied whole every 30 minutes — an oversized invoice does not just make one row big, it
+// multiplies every backup from here on.
+function shrinkImage(file, maxSide = 1400, quality = 0.72) {
+  return new Promise((resolve, reject) => {
+    const fr = new FileReader();
+    fr.onerror = () => reject(new Error('unreadable'));
+    fr.onload = () => {
+      const img = new Image();
+      img.onerror = () => reject(new Error('not an image'));
+      img.onload = () => {
+        const scale = Math.min(1, maxSide / Math.max(img.width, img.height));
+        const cv = document.createElement('canvas');
+        cv.width = Math.round(img.width * scale); cv.height = Math.round(img.height * scale);
+        cv.getContext('2d').drawImage(img, 0, 0, cv.width, cv.height);
+        resolve(cv.toDataURL('image/jpeg', quality));
+      };
+      img.src = fr.result;
+    };
+    fr.readAsDataURL(file);
+  });
+}
 
 routes.tbrequests = async (c) => {
   const sp = new URLSearchParams(location.hash.split('?')[1] || '');

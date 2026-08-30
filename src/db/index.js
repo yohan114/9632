@@ -274,6 +274,60 @@ function migrate() {
   ensureColumn('mrn', 'purchase_source', 'TEXT'); // Head Office / Local Purchase / ...
   ensureColumn('mrn', 'required_date', 'TEXT');   // "Required Date" on the printed requisition form
   ensureColumn('mrn_lines', 'purchase_source', 'TEXT'); // per-item Head Office / Local Purchase (one MRN can mix)
+
+  // ---- buying what the workshop asked for ---------------------------------
+  //
+  // Two officers do the buying, one on the Head Office account and one locally, and the split is
+  // per ITEM: a request can be part local and part head office, and an item one of them cannot
+  // source has to be handed to the other. mrn_lines.purchase_source already carried that split;
+  // what was missing was the state BETWEEN asking and receiving — "bought, invoice in hand, not
+  // yet delivered".
+  //
+  // BOUGHT IS NOT RECEIVED, and these columns must never be mistaken for a receipt. stock_moves is
+  // a projection rebuilt from grn, so anything here that added stock would be counted a second
+  // time the moment the storekeeper posts the real GRN. The tick records the purchase; the GRN
+  // stays the only thing that moves stock.
+  ensureColumn('mrn_lines', 'purchased_at', 'TEXT');
+  ensureColumn('mrn_lines', 'purchased_by', 'TEXT');
+  ensureColumn('mrn_lines', 'supplier', 'TEXT');
+  ensureColumn('mrn_lines', 'invoice_no', 'TEXT');
+  ensureColumn('mrn_lines', 'invoice_date', 'TEXT');
+  ensureColumn('mrn_lines', 'purchase_amount', 'REAL');
+  // Why an item moved channel. The reason is the valuable part: a few months of "Head Office has
+  // no account with this supplier" is the case for opening one.
+  ensureColumn('mrn_lines', 'source_changed_at', 'TEXT');
+  ensureColumn('mrn_lines', 'source_changed_by', 'TEXT');
+  ensureColumn('mrn_lines', 'source_changed_reason', 'TEXT');
+  ensureColumn('mrn_lines', 'source_changed_from', 'TEXT');
+
+  db.exec(`CREATE TABLE IF NOT EXISTS mrn_line_invoices (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    mrn_line_id INTEGER NOT NULL REFERENCES mrn_lines(id) ON DELETE CASCADE,
+    seq INTEGER NOT NULL DEFAULT 0,
+    image TEXT NOT NULL,
+    note TEXT,
+    uploaded_by INTEGER,
+    uploaded_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`);
+  db.exec('CREATE INDEX IF NOT EXISTS idx_mrn_line_invoices_line ON mrn_line_invoices(mrn_line_id)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_mrn_lines_purchase ON mrn_lines(purchase_source, purchased_at)');
+
+  // "New since I last looked", per person. A status column could not do this: two officers sharing
+  // one flag would clear each other's badge, and the answer to "what is new" differs by who is
+  // asking. Generic on purpose — any screen can claim a key.
+  db.exec(`CREATE TABLE IF NOT EXISTS user_seen_marks (
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    key TEXT NOT NULL,
+    seen_at TEXT NOT NULL,
+    PRIMARY KEY (user_id, key)
+  )`);
+
+  // The two buying roles. seed.js only runs on a fresh install, so a role added there never
+  // reaches a server that is already live — this is what puts them on the real machine.
+  db.exec(`INSERT OR IGNORE INTO roles (name, label) VALUES
+    ('purchase_head_office', 'Purchasing Officer — Head Office'),
+    ('purchase_local', 'Purchasing Officer — Local')`);
+
   ensureColumn('mrn', 'request_type', "TEXT NOT NULL DEFAULT 'vehicle'"); // 'general' (store) | 'vehicle' (against a job card)
   // Which KIND of tyre/battery request this is. It needs a column of its own: request_type already
   // means general-vs-vehicle on all 1,709 existing requests, and writing 'tyre' into it would
