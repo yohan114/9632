@@ -818,11 +818,17 @@ router.get('/pending-approvals', asyncHandler((req, res) => {
         FROM mrn m LEFT JOIN assets a ON a.id = m.asset_id WHERE m.approval_status = 'certified' ORDER BY m.certified_at DESC, m.id DESC LIMIT 50`);
   }
   if (has('transport_manager')) {
-    out.transport = all(`SELECT j.id, j.job_no, a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec FROM job_cards j LEFT JOIN assets a ON a.id = j.asset_id
+    // requested_at is what the approver is actually deciding on: a card raised three weeks ago and
+    // one raised this morning need different answers, and the row used to show neither.
+    out.transport = all(`SELECT j.id, j.job_no, j.requested_at, j.description,
+             a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec
+        FROM job_cards j LEFT JOIN assets a ON a.id = j.asset_id
         WHERE j.status = 'REQUESTED' AND j.approved_transport_at IS NULL AND j.is_historical = 0 ORDER BY j.id DESC LIMIT 50`);
   }
   if (has('operational_manager')) {
-    out.ops = all(`SELECT j.id, j.job_no, a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec FROM job_cards j LEFT JOIN assets a ON a.id = j.asset_id
+    out.ops = all(`SELECT j.id, j.job_no, j.requested_at, j.description,
+             a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec
+        FROM job_cards j LEFT JOIN assets a ON a.id = j.asset_id
         WHERE j.approved_transport_at IS NOT NULL AND j.approved_ops_at IS NULL AND j.is_historical = 0 ORDER BY j.id DESC LIMIT 50`);
   }
   // Job Requests (Transport): Transport Manager certifies → Operational Manager approves.

@@ -830,7 +830,19 @@ async function dashPurchasing(c) {
 function renderPendingApprovals(pa) {
   if (!pa || !pa.is_approver) return '';
   const mrnRow = (m, action) => `<div class="cost-line"><a href="#/stores?tab=mrn&id=${m.id}"><b>MRN ${esc(m.mrn_no)}</b> · ${esc(idLabel(m) || 'general')} · ${m.lines} item(s)${m.requested_by ? ' · by ' + esc(m.requested_by) : ''}${m.certified_by ? ' · certified ' + esc(m.certified_by) : ''}</a><span class="badge ${action === 'Approve' ? 'blue' : 'amber'}">${action} →</span></div>`;
-  const jobRow = (j, action) => `<div class="cost-line"><a href="#/jobs/${j.id}"><b>${esc(j.job_no)}</b> · ${esc(idLabel(j) || '—')}</a><span class="badge amber">${action} →</span></div>`;
+  // How long it has been waiting, from the request date. An approver deciding between a card raised
+  // this morning and one raised three weeks ago was previously shown neither — just a number and a
+  // vehicle — so the queue gave no sense of what was overdue.
+  const waited = (d) => {
+    const day = String(d || '').slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return '';
+    const days = Math.floor((Date.now() - new Date(day + 'T00:00:00').getTime()) / 86400000);
+    if (!Number.isFinite(days) || days < 0) return `<span class="muted"> · ${esc(day)}</span>`;
+    // Only worth calling out once it has actually sat there; "0 days" is noise on today's request.
+    const age = days >= 3 ? ` <span class="badge ${days >= 14 ? 'red' : 'amber'}">${days} days</span>` : '';
+    return `<span class="muted"> · requested ${esc(day)}</span>${age}`;
+  };
+  const jobRow = (j, action) => `<div class="cost-line"><a href="#/jobs/${j.id}"><b>${esc(j.job_no)}</b> · ${esc(idLabel(j) || '—')}${waited(j.requested_at)}</a><span class="badge amber">${action} →</span></div>`;
   const jrRow = (r, action) => `<div class="cost-line"><a href="#/jobrequests/${r.id}"><b>${esc(r.jr_no)}</b> · ${esc(idLabel(r) || '—')}${r.description ? ' · ' + esc(String(r.description).slice(0, 40)) : ''}${r.requested_by ? ' · by ' + esc(r.requested_by) : ''}</a><span class="badge ${action === 'Approve' ? 'blue' : 'amber'}">${action} →</span></div>`;
   const section = (title, rows) => rows.length ? `<div style="margin-top:6px"><div class="muted" style="font-size:12px;margin:6px 0 2px">${title} (${rows.length})</div>${rows}</div>` : '';
   const body = [
