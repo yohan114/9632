@@ -16,17 +16,10 @@ const jobstate = require('../lib/jobstate');
 
 const router = express.Router();
 
-// Job-card number generator — mirrors routes/jobcards.js jobNo(): YYYY/M/(R|S)/seq.
-function jobNo(type) {
-  const now = new Date();
-  const prefix = `${now.getFullYear()}/${now.getMonth() + 1}/${type === 'service' ? 'S' : 'R'}/`;
-  let max = 0;
-  for (const r of all('SELECT job_no FROM job_cards WHERE job_no LIKE ?', prefix + '%')) {
-    const seq = parseInt(String(r.job_no).split('/').pop(), 10);
-    if (Number.isFinite(seq) && seq > max) max = seq;
-  }
-  return prefix + (max + 1);
-}
+// One generator, shared with routes/jobcards.js. This file used to carry its own copy — identical,
+// separately maintained, and therefore free to drift: a card raised from a job request would have
+// numbered itself by whichever copy had been changed last.
+const jobNo = (type) => require('../lib/jobno').nextJobNo(type);
 
 // Next request number — continues from the last JR-#### (editable in the form).
 function nextJrNo() {

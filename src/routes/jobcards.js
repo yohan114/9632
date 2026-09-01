@@ -9,6 +9,7 @@ const aliases = require('../lib/aliases');
 const mechanics = require('../lib/mechanics');
 const jobstate = require('../lib/jobstate');
 const costing = require('../lib/costing');
+const jobno = require('../lib/jobno');
 const emitter = require('../lib/emitter');
 
 const router = express.Router();
@@ -27,20 +28,9 @@ const JOB_NO_ORDER_FLAT = JOB_NO_ORDER.replace(/\bj\./g, '');
 
 // ---- helpers --------------------------------------------------------------
 
-function jobNo(type) {
-  const now = new Date();
-  const year = now.getFullYear();
-  const month = now.getMonth() + 1;
-  const letter = type === 'service' ? 'S' : 'R';
-  const prefix = `${year}/${month}/${letter}/`;
-  const rows = all('SELECT job_no FROM job_cards WHERE job_no LIKE ?', prefix + '%');
-  let max = 0;
-  for (const r of rows) {
-    const seq = parseInt(String(r.job_no).split('/').pop(), 10);
-    if (Number.isFinite(seq) && seq > max) max = seq;
-  }
-  return prefix + (max + 1);
-}
+// The sequence runs through the YEAR, not the month — see src/lib/jobno.js. Shared with
+// routes/jobrequests.js, which used to keep its own copy of this.
+const jobNo = (type) => jobno.nextJobNo(type);
 
 function loadJob(id) {
   return get(
