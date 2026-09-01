@@ -2,13 +2,54 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <!-- Zoom is left ON. maximum-scale=1 / user-scalable=no gives an app-like feel but takes away the
+       one thing a storekeeper can do about a wide table on a small screen, and it is the usual
+       accessibility complaint. viewport-fit is kept for the notched phones. -->
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0f172a">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <title>WorkshopOne — Central Workshop Master System</title>
+  <link rel="manifest" href="/manifest.json">
   <link rel="stylesheet" href="/styles.css">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔧</text></svg>">
 </head>
 <body>
   <div id="app"><div class="login-wrap"><div class="muted">Loading…</div></div></div>
+  <script src="/js/server-config.js"></script>
   <script src="/app.js"></script>
+  <script src="/js/live-client.js"></script>
+  <script src="/js/mobile-nav.js"></script>
+  <script>
+    // The service worker gives the installed app something to show with no network. It also sits
+    // in front of every request, so a stale one can serve stale code indefinitely — that is what
+    // stranded staff on "LiveERP.connect is not a function" and survived hard reloads. Two guards:
+    // ask the browser to check for a new worker on every load, and when one is waiting, tell it to
+    // take over at once and reload rather than waiting for every tab to be closed.
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('/sw.js').then((reg) => {
+          reg.update();
+          reg.addEventListener('updatefound', () => {
+            const fresh = reg.installing;
+            if (!fresh) return;
+            fresh.addEventListener('statechange', () => {
+              // 'installed' with a controller present means an UPDATE, not a first install.
+              if (fresh.state === 'installed' && navigator.serviceWorker.controller) {
+                fresh.postMessage('skip-waiting');
+              }
+            });
+          });
+        }).catch(err => console.error('SW reg error:', err));
+
+        let reloading = false;
+        navigator.serviceWorker.addEventListener('controllerchange', () => {
+          if (reloading) return;          // guard: controllerchange can fire more than once
+          reloading = true;
+          location.reload();
+        });
+      });
+    }
+  </script>
 </body>
 </html>

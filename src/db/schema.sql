@@ -197,6 +197,96 @@ CREATE TABLE IF NOT EXISTS grn (
   created_at     TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_grn_mrn ON grn(mrn_id);
+-- Receipts are looked up per REQUEST LINE all over the stores views (search, pending, the
+-- receive/price workspace, the job report). Without this each lookup scans the whole GRN
+-- table, which made the Stores search take seconds.
+CREATE INDEX IF NOT EXISTS idx_grn_line ON grn(mrn_line_id);
+CREATE INDEX IF NOT EXISTS idx_grn_unpriced ON grn(mrn_line_id) WHERE unit_price IS NULL;
+CREATE INDEX IF NOT EXISTS idx_mrn_lines_legacy ON mrn_lines(legacy_item_id);
+CREATE INDEX IF NOT EXISTS idx_mrn_job ON mrn(job_id);
+-- idx_jp_line / idx_dw_date live with job_parts and job_daily_work further down: this file is
+-- executed top to bottom against an empty database, so an index cannot precede its table.
+
+-- ---------------------------------------------------------------------------
+-- Unified stock movements — one row per physical movement, whichever inventory
+-- section it belongs to (oil / filter / battery / tyre / general).
+--
+-- Receiving a GRN was never adding to stock: 3,837 receipts existed and stock only
+-- ever went down. This table is the single place a movement is recorded, so every
+-- section can answer the same four questions: on order, received, issued, balance.
+--
+-- `source_table` + `source_id` point back at the record that caused the movement
+-- (grn / issues / general_item_txns / stock_ledger / tyre_battery_issues …) so a
+-- rebuild is idempotent — a movement is only ever written once per source row.
+CREATE TABLE IF NOT EXISTS stock_moves (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  section       TEXT NOT NULL,              -- oil | filter | battery | tyre | general
+  kind          TEXT NOT NULL,              -- in | out | opening | adjust
+  item_key      TEXT NOT NULL,              -- normalised item identity within the section
+  item_name     TEXT,                       -- readable description as recorded
+  qty           REAL NOT NULL DEFAULT 0,    -- always positive; `kind` gives the direction
+  unit_price    REAL,
+  txn_date      TEXT,
+  asset_id      INTEGER REFERENCES assets(id),
+  job_id        INTEGER REFERENCES job_cards(id),
+  mrn_line_id   INTEGER REFERENCES mrn_lines(id),
+  store_item_id INTEGER REFERENCES store_items(id),
+  ref           TEXT,                       -- MRN/GRN/MTN number, service job no, etc.
+  note          TEXT,
+  source_table  TEXT NOT NULL,
+  source_id     INTEGER NOT NULL,
+  -- 1 = counts toward the balance. Movements from before a section's cut-over are kept at 0:
+  -- they stay fully visible as history without dragging the balance negative.
+  counts        INTEGER NOT NULL DEFAULT 1,
+  created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  -- item_key is part of the key because ONE source row can move TWO DIFFERENT items: a service
+  -- line that reads "JS-1030 & 278 607 989 916" fits two filters. Without it the second movement
+  -- collided with the first and INSERT OR IGNORE dropped it in silence. A rebuild stays
+  -- idempotent — the same source row always produces the same (source, kind, item) tuples.
+  UNIQUE (source_table, source_id, kind, item_key)
+);
+CREATE INDEX IF NOT EXISTS idx_sm_section ON stock_moves(section, item_key);
+CREATE INDEX IF NOT EXISTS idx_sm_date ON stock_moves(txn_date);
+CREATE INDEX IF NOT EXISTS idx_sm_asset ON stock_moves(asset_id);
+CREATE INDEX IF NOT EXISTS idx_sm_kind ON stock_moves(section, kind);
+-- "How much of this delivery has already gone out" — asked once per row by the received-stock
+-- panel in the issue form, so without this it re-scans the whole ledger per line.
+CREATE INDEX IF NOT EXISTS idx_sm_mrn_line ON stock_moves(mrn_line_id);
+
+-- Where each section's balance starts counting. Sections whose purchase history was
+-- never captured in stores (filters, batteries) open from a cut-over date instead of
+-- replaying history, which would otherwise show a large negative balance.
+-- Every issuable item across all five sections, each with ONE unique code.
+-- The row points back at whatever table owns it (products / store_items / filter_prices /
+-- tyre_battery_prices) so the source systems keep working untouched and can be re-imported.
+-- General stock keeps the codes it already has (ELE-0057, GEN-0245 — 1,874 of them, no
+-- duplicates); the other sections get OIL- / FIL- / BAT- / TYR- prefixes on the same pattern.
+CREATE TABLE IF NOT EXISTS stock_items (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  code         TEXT NOT NULL UNIQUE,       -- OIL-0001 | FIL-0001 | BAT-0001 | TYR-0001 | ELE-0057
+  section      TEXT NOT NULL,              -- oil | filter | battery | tyre | general
+  name         TEXT NOT NULL,
+  part_no      TEXT,                       -- manufacturer / supplier number, when there is one
+  item_key     TEXT NOT NULL,              -- ties the item to its stock_moves history
+  unit         TEXT,
+  unit_price   REAL,
+  source_table TEXT NOT NULL,
+  source_id    INTEGER,
+  active       INTEGER NOT NULL DEFAULT 1,
+  created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE (section, item_key)
+);
+CREATE INDEX IF NOT EXISTS idx_si_section ON stock_items(section, active);
+CREATE INDEX IF NOT EXISTS idx_si_name ON stock_items(name);
+CREATE INDEX IF NOT EXISTS idx_si_part ON stock_items(part_no);
+
+CREATE TABLE IF NOT EXISTS stock_opening (
+  section    TEXT PRIMARY KEY,              -- oil | filter | battery | tyre | general
+  mode       TEXT NOT NULL,                 -- history | cutover | count
+  cutover    TEXT,                          -- YYYY-MM-DD when mode = cutover
+  note       TEXT,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 CREATE INDEX IF NOT EXISTS idx_grn_no ON grn(grn_no);
 
 -- Item / repair charge issued directly to an asset.
@@ -233,6 +323,35 @@ CREATE TABLE IF NOT EXISTS mtn (
   created_at     TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_mtn_no ON mtn(mtn_no);
+
+-- The items on a transfer note. One note carries as many as the paper does; before this
+-- existed the store faked it by suffixing the number (58631, 58631-2 … 58631-5 is ONE note
+-- with five items), which is why 93 of the first 190 rows carry a -N.
+--
+-- from/to/reason repeat here because they genuinely vary line by line: transfer 64965 moved
+-- three filters off three DIFFERENT machines to one mechanic, and 58605 carried a separate
+-- invoice value per line. A line's own value wins; blank means "same as the note".
+--
+-- The mtn header keeps description/qty as a SUMMARY of these rows, maintained on write, so
+-- everything that already reads a transfer as one line keeps working.
+CREATE TABLE IF NOT EXISTS mtn_lines (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  mtn_id         INTEGER NOT NULL REFERENCES mtn(id) ON DELETE CASCADE,
+  line_no        INTEGER NOT NULL DEFAULT 1,
+  store_item_id  INTEGER REFERENCES store_items(id),
+  description    TEXT,
+  qty            REAL NOT NULL DEFAULT 0,
+  unit           TEXT,
+  category       TEXT,
+  category_id    INTEGER REFERENCES item_categories(id),
+  from_location  TEXT,
+  to_location    TEXT,
+  from_asset_id  INTEGER REFERENCES assets(id),
+  to_asset_id    INTEGER REFERENCES assets(id),
+  reason         TEXT,
+  created_at     TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_mtn_lines_mtn ON mtn_lines(mtn_id);
 
 -- Running-balance ledger for general consumables.
 CREATE TABLE IF NOT EXISTS general_item_txns (
@@ -338,6 +457,59 @@ CREATE TABLE IF NOT EXISTS batteries (
   created_at       TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_batteries_current ON batteries(current_asset_id);
+
+-- What a lubricant is called everywhere else.
+--
+-- The oil book keeps 22 products with proper codes (OIL-0001…), but a drum of the same oil is
+-- written differently on every piece of paper it touches: "Karosine Oil" in the oil ledger,
+-- "Kerosine Oil" on the request, "HD 68 Oil Valvoline" on the receipt against "HD 68 Oil
+-- (Valvoline)" in the book. Until these resolve to one product, a receipt and a top-up cannot
+-- be recognised as the same delivery.
+--
+-- Same shape as asset_aliases / mechanic_aliases: an unrecognised spelling is RECORDED with
+-- resolved = 0 rather than guessed at, so the owner decides what it is instead of the system
+-- inventing a match. hit_count shows which unknowns are worth resolving first.
+-- effective_from lets ONE name mean different products over time. The workshop bought HD-68
+-- in Caltex and then in Valvoline, wrote both simply as "HD-68 Oil", and the two overlapped
+-- for nine months — so a single mapping is wrong at one end of the book or the other.
+-- '' means "since the beginning" (NOT null: SQLite counts NULLs as distinct in a UNIQUE
+-- constraint, so ON CONFLICT would never fire and every save would add another row). A dated
+-- row takes over from its date on, and '' sorts before every real date so the newest meaning
+-- wins naturally. Three brands of 80W90 and three of 15W40 sit in the same catalogue, so this
+-- will be needed again.
+CREATE TABLE IF NOT EXISTS lubricant_aliases (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  raw_text       TEXT NOT NULL,
+  raw_norm       TEXT NOT NULL,
+  product_id     INTEGER REFERENCES products(id),
+  effective_from TEXT NOT NULL DEFAULT '',   -- '' = has always meant this
+  resolved       INTEGER NOT NULL DEFAULT 0,
+  hit_count      INTEGER NOT NULL DEFAULT 0,
+  source         TEXT,
+  created_at     TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at     TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE (raw_norm, effective_from)
+);
+CREATE INDEX IF NOT EXISTS idx_lube_alias_norm ON lubricant_aliases(raw_norm);
+
+-- Photographs of a battery — the serial plate, its condition on arrival, the damage behind a
+-- warranty claim. A claim is argued with several pictures, so a battery holds up to six.
+-- Stored as resized base64 data URLs like the e-signatures, so they travel with the backups
+-- rather than living in a directory that has to be backed up separately.
+--
+-- batteries.photo_path stays as the COVER — the first of these — because the battery list and
+-- its 📷 flag read a battery as having one photo. It is maintained from this table, never
+-- written on its own.
+CREATE TABLE IF NOT EXISTS battery_photos (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  battery_id  INTEGER NOT NULL REFERENCES batteries(id) ON DELETE CASCADE,
+  seq         INTEGER NOT NULL DEFAULT 1,
+  photo       TEXT NOT NULL,              -- data:image/...;base64,...
+  note        TEXT,
+  uploaded_by INTEGER REFERENCES users(id),
+  uploaded_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_battery_photos ON battery_photos(battery_id, seq);
 
 CREATE TABLE IF NOT EXISTS battery_events (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -473,9 +645,12 @@ CREATE TABLE IF NOT EXISTS job_daily_work (
   hours         REAL NOT NULL DEFAULT 0,
   is_external   INTEGER NOT NULL DEFAULT 0,
   external_value REAL DEFAULT 0,
+  outside_labour REAL,                        -- owner-entered outside labor value for this entry
   created_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_daily_job ON job_daily_work(job_id);
+-- The Daily Work day view and the monthly report both scan by date.
+CREATE INDEX IF NOT EXISTS idx_dw_date ON job_daily_work(work_date);
 
 -- Parts consumed by a job, each linked to its source document. Bridge to Stores/Oil.
 CREATE TABLE IF NOT EXISTS job_parts (
@@ -490,6 +665,8 @@ CREATE TABLE IF NOT EXISTS job_parts (
   created_at         TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_job_parts_job ON job_parts(job_id);
+-- idx_jp_line is created in db/index.js instead: mrn_line_id is added by ensureColumn, which
+-- runs after this file, so on a fresh database the column does not exist yet here.
 
 -- Computed labour lines (materialised from daily work × rate for the cost sheet).
 CREATE TABLE IF NOT EXISTS job_labour (
@@ -502,6 +679,118 @@ CREATE TABLE IF NOT EXISTS job_labour (
   work_date TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_job_labour_job ON job_labour(job_id);
+-- The monthly report scopes a closed job's labour to the report month by work_date.
+CREATE INDEX IF NOT EXISTS idx_jl_date ON job_labour(work_date);
+
+-- ---------------------------------------------------------------------------
+-- Daily reports: "Pending Parts" and the "Maintenance Summery" job record.
+--
+-- Both were kept as a hand-typed sheet per day (3HP/3LP/4HP… and 12/25/26). The narrative
+-- columns — what was completed, what is still pending, the job's status, parts on order — are
+-- the supervisor's words, not anything the system can derive, and they change little from one
+-- day to the next. So they are stored against the JOB (or the request line) and carried forward
+-- until edited, rather than retyped every morning.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS job_summary_notes (
+  job_id            INTEGER PRIMARY KEY REFERENCES job_cards(id) ON DELETE CASCADE,
+  completed_repairs TEXT,
+  pending_repairs   TEXT,
+  job_status        TEXT,          -- free text: Ongoing / No Technicians / sent to Colombo …
+  spare_parts       TEXT,
+  updated_at        TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_by        INTEGER REFERENCES users(id)
+);
+
+-- A remark against a RECEIPT waiting for its price ("invoice chased 12/8", "supplier to confirm").
+-- Keyed on the receipt rather than the request line, because one request can arrive in several
+-- deliveries and each carries its own invoice.
+CREATE TABLE IF NOT EXISTS receipt_price_notes (
+  grn_id     INTEGER PRIMARY KEY REFERENCES grn(id) ON DELETE CASCADE,
+  remarks    TEXT,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_by INTEGER REFERENCES users(id)
+);
+
+CREATE TABLE IF NOT EXISTS pending_part_notes (
+  mrn_line_id INTEGER PRIMARY KEY REFERENCES mrn_lines(id) ON DELETE CASCADE,
+  remarks     TEXT,
+  updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_by  INTEGER REFERENCES users(id)
+);
+
+-- One frozen copy per day per report. The day's sheet must still read the same next month even
+-- though the underlying jobs have moved on, which is exactly what the hand-kept workbook did.
+CREATE TABLE IF NOT EXISTS daily_report_snapshots (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  kind         TEXT NOT NULL,               -- 'pending_parts' | 'job_summary'
+  report_date  TEXT NOT NULL,               -- YYYY-MM-DD
+  generated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  generated_by INTEGER REFERENCES users(id),
+  row_count    INTEGER NOT NULL DEFAULT 0,
+  payload      TEXT NOT NULL,               -- the rendered rows, as JSON
+  UNIQUE(kind, report_date)
+);
+CREATE INDEX IF NOT EXISTS idx_daily_snap ON daily_report_snapshots(kind, report_date DESC);
+
+-- Scanned service sheets attached to a service record.
+--
+-- The bytes live in the database, not beside it: a backup is a SQLite .backup() of the single
+-- .db file and a restore swaps that file, so anything kept on disk would silently not be backed
+-- up and would not come back after a restore. Held as a BLOB rather than base64 so the stored
+-- size is the real file size.
+CREATE TABLE IF NOT EXISTS service_attachments (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  service_id  INTEGER NOT NULL REFERENCES service_jobs(id) ON DELETE CASCADE,
+  filename    TEXT NOT NULL,
+  mime        TEXT NOT NULL DEFAULT 'application/pdf',
+  size_bytes  INTEGER NOT NULL,
+  note        TEXT,
+  data        BLOB NOT NULL,
+  uploaded_by INTEGER REFERENCES users(id),
+  uploaded_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_svc_attach ON service_attachments(service_id);
+
+-- Per-asset × month cost rollup behind the dashboard and the per-vehicle cost report.
+-- Also declared by migrate/015 (which additionally backfills it); repeated here because
+-- costing.refreshJobTotals writes to it on every job cost change, so it has to exist on a
+-- brand-new database too — not only on one that has had the 015 step run against it.
+-- Invariant: total_cost = Σ(component columns). Every writer moves a component and the
+-- total together.
+CREATE TABLE IF NOT EXISTS vehicle_monthly_costs (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  asset_id     INTEGER NOT NULL REFERENCES assets(id),
+  year         INTEGER NOT NULL,
+  month        INTEGER NOT NULL,
+  fuel_cost    REAL DEFAULT 0,
+  oil_cost     REAL DEFAULT 0,
+  filter_cost  REAL DEFAULT 0,
+  battery_cost REAL DEFAULT 0,
+  parts_cost   REAL DEFAULT 0,
+  labour_cost  REAL DEFAULT 0,
+  total_cost   REAL DEFAULT 0,
+  updated_at   TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(asset_id, year, month)
+);
+CREATE INDEX IF NOT EXISTS idx_vmc_period ON vehicle_monthly_costs(year, month);
+
+-- Every reopen of a closed card, with the close it undid. Two jobs at once: the audit
+-- record ("who reopened 2026/5/R/281 and why"), and the anchor that keeps the card in its
+-- ORIGINAL cost-report month when it is closed again — prev_completed_at is copied to
+-- job_cards.original_completed_at so a month already reported to the owner never changes.
+CREATE TABLE IF NOT EXISTS job_reopens (
+  id                INTEGER PRIMARY KEY,
+  job_id            INTEGER NOT NULL REFERENCES job_cards(id),
+  reopened_at       TEXT NOT NULL DEFAULT (datetime('now')),
+  reopened_by       INTEGER REFERENCES users(id),
+  reason            TEXT NOT NULL,
+  prev_status       TEXT,
+  prev_completed_at TEXT,
+  prev_closed_at    TEXT,
+  prev_total_cost   REAL,
+  reclosed_at       TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_job_reopens_job ON job_reopens(job_id);
 
 -- Frozen cost snapshot taken on CLOSE (historical costs never shift afterwards).
 CREATE TABLE IF NOT EXISTS job_costs (
@@ -545,3 +834,82 @@ CREATE TABLE IF NOT EXISTS settings (
   key   TEXT PRIMARY KEY,
   value TEXT
 );
+
+-- ---------------------------------------------------------------------------
+-- TYRES & BATTERIES — request, approval, issue, and what came off
+--
+-- The register the workshop has kept since 2012 holds 4,305 tyre lines and
+-- 1,781 battery lines, and its weakness is that the item was always free text:
+-- 804 spellings of about 170 real tyre sizes, so a third of tyre issues never
+-- reached a price. These tables put a picklist in front of the storekeeper so
+-- the next ten years read better than the last ten.
+--
+-- The REQUEST is an ordinary MRN — same number, same certify/approve trail,
+-- same inbox the managers already sign. Only the detail a tyre or battery
+-- needs (which wheel, what the meter read, why, what came off) lives here.
+-- ---------------------------------------------------------------------------
+
+-- The catalogue. One row per thing that can be asked for: a tyre size in a
+-- given type, or a battery rating. spec_key is what an old free-text line is
+-- matched back to, so history and new requests meet on the same shelf.
+CREATE TABLE IF NOT EXISTS tb_specs (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  kind        TEXT NOT NULL CHECK (kind IN ('tyre','battery')),
+  size        TEXT,                       -- tyre only: "1000 X 20", normalised
+  tyre_type   TEXT,                       -- ORIGINAL | CANVAS | RADIAL | DAG | ORIGINAL - RADIAL | …
+  rating      TEXT,                       -- battery only: "95 Amp"
+  label       TEXT NOT NULL,              -- what the storekeeper reads on the picklist
+  spec_key    TEXT NOT NULL,              -- normalised join key
+  unit_price  REAL,
+  active      INTEGER NOT NULL DEFAULT 1,
+  source      TEXT,                       -- where the row came from (workbook import, or a person)
+  created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE (kind, spec_key)
+);
+CREATE INDEX IF NOT EXISTS idx_tb_specs_kind ON tb_specs(kind, active);
+
+-- The tyre/battery detail of one MRN line. The line itself (description, qty,
+-- category) stays where every other requested item lives; this is what a wheel
+-- or a battery needs on top of it.
+CREATE TABLE IF NOT EXISTS tb_request_lines (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  mrn_line_id    INTEGER NOT NULL REFERENCES mrn_lines(id) ON DELETE CASCADE,
+  kind           TEXT NOT NULL CHECK (kind IN ('tyre','battery')),
+  spec_id        INTEGER REFERENCES tb_specs(id),
+  asset_id       INTEGER REFERENCES assets(id),
+  site           TEXT,
+  position       TEXT,                    -- tyre: FL, FR, RL1, RR1, SPARE …
+  km_reading     REAL,                    -- odometer or hour meter as found
+  km_remark      TEXT,                    -- "NOT WORK" and the like, kept out of the number
+  reason         TEXT NOT NULL,           -- worn, puncture, burst, no-crank, accident …
+  priority       TEXT NOT NULL DEFAULT 'normal' CHECK (priority IN ('normal','urgent','breakdown')),
+  old_serial     TEXT,                    -- what is coming off, if it is known
+  notes          TEXT,
+  created_at     TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE (mrn_line_id)
+);
+CREATE INDEX IF NOT EXISTS idx_tb_reqline_asset ON tb_request_lines(asset_id);
+
+-- What came off the machine. A replacement is not finished until the old unit
+-- is accounted for: an old battery has scrap value and an old tyre may still be
+-- worth repairing or retreading. Where it genuinely cannot be returned (lost on
+-- the road, taken by the supplier in exchange) that is recorded as an exception
+-- with a reason, rather than left blank and forgotten.
+CREATE TABLE IF NOT EXISTS tb_returns (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  issue_id       INTEGER REFERENCES tyre_battery_issues(id) ON DELETE CASCADE,
+  kind           TEXT NOT NULL CHECK (kind IN ('tyre','battery')),
+  asset_id       INTEGER REFERENCES assets(id),
+  serial_no      TEXT,
+  condition      TEXT NOT NULL CHECK (condition IN
+                   ('repairable','retreadable','reusable','warranty','scrap','not_returned')),
+  exception_reason TEXT,                  -- required when condition = not_returned
+  km_reading     REAL,
+  returned_to    TEXT,                    -- which store took it in
+  received_by    TEXT,
+  notes          TEXT,
+  return_date    TEXT NOT NULL DEFAULT (date('now')),
+  created_at     TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_tb_returns_issue ON tb_returns(issue_id);
+CREATE INDEX IF NOT EXISTS idx_tb_returns_cond ON tb_returns(kind, condition);

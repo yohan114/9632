@@ -98,10 +98,10 @@ test('a multi-mechanic daily-work entry splits into one costed row per mechanic'
   const r = await req(`/api/jobs/${id}/daily-work`, { method: 'POST', body: { mechanic: 'Anura, Buddhika', hours: 4 } });
   assert.strictEqual(r.status, 201);
   assert.strictEqual(r.body.length, 2, 'two mechanics => two rows');
-  assert.strictEqual(r.body[0].hours, 2, 'total 4h split across 2 mechanics = 2h each');
+  assert.strictEqual(r.body[0].hours, 4, 'each mechanic worked full 4h');
   const detail = await req(`/api/jobs/${id}`);
-  // hours split: 2h × 400 (Anura) + 2h × 300 (Buddhika) = 1400  [= H × avg crew rate]
-  assert.strictEqual(detail.body.cost.labour_cost, 1400);
+  // full hours per mechanic: 4h × 400 (Anura) + 4h × 300 (Buddhika) = 1600 + 1200 = 2800
+  assert.strictEqual(detail.body.cost.labour_cost, 2800);
 });
 
 test('unresolved asset text is queued as a pending alias', async () => {
@@ -109,4 +109,31 @@ test('unresolved asset text is queued as a pending alias', async () => {
   assert.strictEqual(r.status, 201);
   assert.ok(r.body.unresolved, 'should report an unresolved alias');
   assert.ok(aliases.pendingAliases().some((a) => a.raw_text === 'mystery machine 9000'));
+});
+
+// The New Asset form posts every field it renders, so an untouched "Home Project" dropdown
+// arrives as "". Passing that straight into an INTEGER ... REFERENCES projects(id) column
+// failed the foreign key and the form died on a 500 with no message.
+test('creating an asset with blank optional fields does not 500', async () => {
+  const r = await req('/api/assets', {
+    method: 'POST',
+    body: { code: 'BLANK-1', asset_class: 'vehicle', brand: 'Isuzu', type: 'Tipper',
+            registration: 'BL-0001', home_project_id: '', current_project_id: '' },
+  });
+  assert.strictEqual(r.status, 201, 'an empty dropdown means "not set", not a broken FK');
+  assert.strictEqual(r.body.home_project_id, null);
+  assert.strictEqual(r.body.brand, 'Isuzu', 'the fields the user did fill in are kept');
+
+  // and the same on edit — clearing a project back to none must work too
+  const p = await req(`/api/assets/${r.body.id}`, { method: 'PATCH', body: { home_project_id: '', running_hours: '' } });
+  assert.strictEqual(p.status, 200);
+  assert.strictEqual(p.body.home_project_id, null);
+  assert.strictEqual(p.body.running_hours, null);
+});
+
+test('a real project id still links, as a number', async () => {
+  const proj = run("INSERT INTO projects (name) VALUES ('Site A')").lastInsertRowid;
+  const r = await req('/api/assets', { method: 'POST', body: { code: 'BLANK-2', home_project_id: String(proj) } });
+  assert.strictEqual(r.status, 201);
+  assert.strictEqual(r.body.home_project_id, proj, 'a numeric string is stored as a number');
 });

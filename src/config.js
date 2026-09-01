@@ -5,23 +5,53 @@ const path = require('path');
 
 // Minimal .env loader (avoids an extra dependency). Only sets vars not already
 // present in the real environment, so container/CI env always wins.
+//
+// Two rules here were learned on the VPS cut-over, where a mis-parsed .env sent the app to an
+// empty database and every correct password came back "incorrect":
+//
+//   WITHIN THE FILE, THE LAST LINE WINS. This used to be first-wins, which is not what anyone
+//   editing a config file expects and is not what dotenv does. It mattered because the runbook
+//   said to copy .env.example and then add your settings: appending HOST and DB_PATH below the
+//   example's own HOST and DB_PATH left the EXAMPLE's values in force, silently. The app bound
+//   0.0.0.0 and opened ./data/workshopone.db — a new, empty file beside the code — instead of the
+//   database that had just been carried across. A duplicate key now warns as well, because
+//   whichever way it resolves, someone typed something they are not getting.
+//
+//   AN UNQUOTED VALUE ENDS AT A COMMENT. `HOST=127.0.0.1  # nginx reaches it` used to set HOST to
+//   the whole string including the comment, and the app then could not bind. Quote the value if
+//   you genuinely need a "#" in it.
 function loadDotEnv(file) {
+  let raw;
   try {
-    const raw = fs.readFileSync(file, 'utf8');
-    for (const line of raw.split(/\r?\n/)) {
-      const trimmed = line.trim();
-      if (!trimmed || trimmed.startsWith('#')) continue;
-      const eq = trimmed.indexOf('=');
-      if (eq === -1) continue;
-      const key = trimmed.slice(0, eq).trim();
-      let val = trimmed.slice(eq + 1).trim();
-      if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
-        val = val.slice(1, -1);
-      }
-      if (!(key in process.env)) process.env[key] = val;
-    }
+    raw = fs.readFileSync(file, 'utf8');
   } catch {
-    /* no .env file — fall back to defaults below */
+    return; // no .env file — fall back to the defaults below
+  }
+
+  const parsed = new Map();
+  const repeated = new Set();
+  for (const line of raw.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const eq = trimmed.indexOf('=');
+    if (eq === -1) continue;
+    const key = trimmed.slice(0, eq).trim();
+    let val = trimmed.slice(eq + 1).trim();
+    if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+      val = val.slice(1, -1);
+    } else {
+      const comment = val.match(/\s#/);
+      if (comment) val = val.slice(0, comment.index).trim();
+    }
+    if (parsed.has(key)) repeated.add(key);
+    parsed.set(key, val);
+  }
+
+  for (const key of repeated) {
+    console.warn(`.env: "${key}" is set more than once — the last one wins ("${parsed.get(key)}")`);
+  }
+  for (const [key, val] of parsed) {
+    if (!(key in process.env)) process.env[key] = val;
   }
 }
 
@@ -38,7 +68,12 @@ const config = {
   port: int('PORT', 3000),
   host: process.env.HOST || '0.0.0.0', // bind all interfaces so the LAN can reach it
   dbPath: path.resolve(ROOT, process.env.DB_PATH || './data/workshopone.db'),
-  sessionSecret: process.env.SESSION_SECRET || 'dev-insecure-secret-change-me',
+  // NOT USED, and deliberately left saying so. A session token is 32 random bytes from
+  // crypto.randomBytes stored server-side in `sessions` — nothing is signed, so there is no secret
+  // to keep. The deployment notes used to tell you to change this before go-live, which sent you
+  // hunting for a risk that was never there while the real one (accounts still on their demo
+  // password) sat untouched. Left in place only so an existing .env does not become invalid.
+  sessionSecret: process.env.SESSION_SECRET || 'unused-session-tokens-are-random',
   sessionTtlHours: int('SESSION_TTL_HOURS', 12),
   uploadDir: path.resolve(ROOT, process.env.UPLOAD_DIR || './uploads'),
   backupDir: path.resolve(ROOT, process.env.BACKUP_DIR || './backups'),
@@ -53,6 +88,13 @@ const config = {
   anomalyConsumptionFactor: num('ANOMALY_CONSUMPTION_FACTOR', 2.5), // recent rate > N× the asset's own baseline
   anomalyPriceSpikeFactor: num('ANOMALY_PRICE_SPIKE_FACTOR', 1.5), // GRN price > N× the item's recent average
   isProduction: process.env.NODE_ENV === 'production',
+
+  // The Service Planner (the fuel system). It knows what each machine has actually RUN —
+  // meter growth and fuel-derived hours/km — which is the only honest basis for "due for
+  // service"; WorkshopOne holds no meter or fuel data of its own. Left unset, the Service &
+  // Filter Plan falls back to its own date estimate and says so on screen.
+  servicePlannerUrl: process.env.SERVICE_PLANNER_URL || 'http://localhost:3300',
+  servicePlannerToken: process.env.SERVICE_PLANNER_TOKEN || '',
 };
 
 function num(name, def) {

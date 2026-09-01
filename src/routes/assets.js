@@ -16,6 +16,17 @@ const MUTABLE = [
   'current_project_id', 'status', 'running_hours', 'notes',
 ];
 
+// Columns that must hold a number or nothing. An HTML <select>/<input> that the user left
+// alone posts "" — storing that in a project FK fails the foreign key ("no project 0"), and
+// in a number column it silently becomes text. "" means "not set", so it becomes NULL.
+const NUMERIC = new Set(['home_project_id', 'current_project_id', 'running_hours', 'legacy_fleet_id', 'in_register']);
+const cleanValue = (col, v) => {
+  if (v === '' || v === null || v === undefined) return null;
+  if (!NUMERIC.has(col)) return v;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+};
+
 function listAssets(query = {}) {
   const clauses = [];
   const params = [];
@@ -27,6 +38,7 @@ function listAssets(query = {}) {
   if (query.project_id) { clauses.push('a.current_project_id = ?'); params.push(toInt(query.project_id)); }
   if (query.status) { clauses.push('a.status = ?'); params.push(query.status); }
   if (query.asset_class) { clauses.push('a.asset_class = ?'); params.push(query.asset_class); }
+  if (query.in_register !== undefined) { clauses.push('a.in_register = ?'); params.push(toInt(query.in_register)); }
   const where = clauses.length ? 'WHERE ' + clauses.join(' AND ') : '';
   return all(
     `SELECT a.*, p.name AS current_project,
@@ -49,13 +61,29 @@ router.get('/export.xlsx', asyncHandler(async (req, res) => {
   await sendXlsx(res, 'assets.xlsx', [{
     name: 'Assets',
     columns: [
-      { header: 'Code', key: 'code' }, { header: 'Class', key: 'asset_class' },
+      { header: 'Code', key: 'code' }, { header: 'E&C No', key: 'ec_code' }, { header: 'Reg No', key: 'registration' },
+      { header: 'Class', key: 'asset_class' },
       { header: 'Brand', key: 'brand' }, { header: 'Type', key: 'type' },
       { header: 'Project', key: 'current_project' }, { header: 'Status', key: 'status' },
       { header: 'Open Jobs', key: 'open_jobs' }, { header: 'Lifetime Cost', key: 'lifetime_cost' },
     ],
     rows,
   }]);
+}));
+
+// Lightweight typeahead for vehicle/asset pickers — code + registration only.
+router.get('/search', asyncHandler((req, res) => {
+  const q = String(req.query.q || '').trim();
+  if (q) {
+    const like = '%' + q + '%';
+    return res.json(all(
+      `SELECT id, code, registration, asset_class FROM assets
+        WHERE code LIKE ? OR registration LIKE ? OR ec_code LIKE ?
+        ORDER BY (code = ?) DESC, in_register DESC, code
+        LIMIT ${toInt(req.query.limit, 20)}`,
+      like, like, like, q));
+  }
+  res.json(all(`SELECT id, code, registration, asset_class FROM assets ORDER BY in_register DESC, code LIMIT ${toInt(req.query.limit, 20)}`));
 }));
 
 router.get('/:id', asyncHandler((req, res) => {
@@ -95,7 +123,15 @@ router.get('/:id', asyncHandler((req, res) => {
     timeline.push({ date: i.d, kind: 'issue', ref: null, description: `${i.description} x${i.qty}` });
   for (const m of all(`SELECT req_date d, mrn_no, purpose FROM mrn WHERE asset_id = ? ORDER BY id DESC LIMIT 50`, id))
     timeline.push({ date: m.d, kind: 'mrn', ref: m.mrn_no, description: m.purpose || 'Material request' });
-  for (const t of all(`SELECT txn_date d, mtn_no, description FROM mtn WHERE from_asset_id = ? OR to_asset_id = ? ORDER BY id DESC LIMIT 50`, id, id))
+  // A transfer reaches this machine either as the whole note's from/to, or through a single
+  // item on it — one note routinely pulls parts off several machines at once, and each of
+  // those belongs in that machine's history, described by the item rather than the note.
+  for (const t of all(
+    `SELECT t.txn_date d, t.mtn_no, COALESCE(l.description, t.description) AS description
+       FROM mtn t
+       LEFT JOIN mtn_lines l ON l.mtn_id = t.id AND (l.from_asset_id = ? OR l.to_asset_id = ?)
+      WHERE t.from_asset_id = ? OR t.to_asset_id = ? OR l.id IS NOT NULL
+      ORDER BY t.id DESC LIMIT 50`, id, id, id, id))
     timeline.push({ date: t.d, kind: 'mtn', ref: t.mtn_no, description: t.description || 'Transfer' });
   for (const e of all(`SELECT event_date d, event_type, reason FROM battery_events WHERE from_asset_id = ? OR to_asset_id = ? ORDER BY id DESC LIMIT 50`, id, id))
     timeline.push({ date: e.d, kind: 'battery', ref: e.event_type, description: e.reason || e.event_type });
@@ -111,8 +147,9 @@ router.post('/', requireRole('storekeeper'), asyncHandler((req, res) => {
   require_(b, ['code']);
   const norm = aliases.normalize(b.code);
   if (get('SELECT id FROM assets WHERE code_norm = ?', norm)) return res.status(409).json({ error: 'Asset code already exists' });
-  const cols = ['code', 'code_norm', ...MUTABLE.filter((c) => b[c] !== undefined)];
-  const vals = [b.code, norm, ...MUTABLE.filter((c) => b[c] !== undefined).map((c) => b[c])];
+  const given = MUTABLE.filter((c) => b[c] !== undefined);
+  const cols = ['code', 'code_norm', ...given];
+  const vals = [b.code, norm, ...given.map((c) => cleanValue(c, b[c]))];
   const info = run(`INSERT INTO assets (${cols.join(',')}) VALUES (${cols.map(() => '?').join(',')})`, ...vals);
   audit.record({ userId: req.user.id, entity: 'asset', entityId: info.lastInsertRowid, action: 'create', after: { code: b.code } });
   res.status(201).json(get('SELECT * FROM assets WHERE id = ?', info.lastInsertRowid));
@@ -127,7 +164,7 @@ router.patch('/:id', requireRole('storekeeper'), asyncHandler((req, res) => {
   for (const c of MUTABLE) {
     if (req.body[c] !== undefined) {
       sets.push(`${c} = ?`);
-      params.push(c === 'running_hours' ? toNum(req.body[c]) : req.body[c]);
+      params.push(cleanValue(c, req.body[c]));
     }
   }
   if (!sets.length) return res.json(before);

@@ -23,12 +23,32 @@ function normalizeMechanic(name) {
  * Separators: comma, ampersand, plus, and the word "and". NOT the slash — a
  * slash joins two spellings of the SAME person (kept intact, resolver handles).
  */
+// Split a daily-work mechanic cell into individual names. Separators inside brackets do NOT
+// split: the office writes group entries like "UTE trainees (Silva, Jayakodi)", and cutting on
+// that inner comma invented two mechanics ("UTE trainees (Silva" and "Jayakodi)"), each of whom
+// then earned the default rate — so one entry was charged twice over.
 function splitMechanics(raw) {
   if (raw == null) return [];
-  return String(raw)
-    .split(/\s*(?:,|&|\+|\band\b)\s*/i)
-    .map((s) => s.trim())
-    .filter(Boolean);
+  const out = [];
+  let cur = '';
+  let depth = 0;
+  const s = String(raw);
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (ch === '(' || ch === '[') depth++;
+    else if (ch === ')' || ch === ']') depth = Math.max(0, depth - 1);
+
+    if (!depth) {
+      if (ch === ',' || ch === '&' || ch === '+') { out.push(cur); cur = ''; continue; }
+      // " and " as a separator, but not the "and" inside a name
+      if ((ch === 'a' || ch === 'A') && /^\s?and\s/i.test(s.slice(i - 1, i + 4)) && /\s$/.test(cur)) {
+        out.push(cur); cur = ''; i += 2; continue;
+      }
+    }
+    cur += ch;
+  }
+  out.push(cur);
+  return out.map((x) => x.trim()).filter(Boolean);
 }
 
 /** Read-only lookup — never writes. Returns {mechanicId, name, resolved} or unresolved. */
@@ -110,6 +130,41 @@ function pendingMechanicAliases() {
   return all('SELECT * FROM mechanic_aliases WHERE resolved = 0 ORDER BY hit_count DESC, updated_at DESC');
 }
 
+/** Re-sync job_labour entries from job_daily_work for a given YYYY-MM month. */
+function syncJobLabourForMonth(ym) {
+  if (!ym || !/^\d{4}-\d{2}$/.test(ym)) return;
+  run(`DELETE FROM job_labour WHERE substr(work_date,1,7) = ?`, ym);
+  const dwRows = all(`
+    SELECT w.id, w.job_id, w.work_date, w.mechanic, w.hours, w.is_external
+      FROM job_daily_work w
+     WHERE substr(w.work_date,1,7) = ? AND (w.is_external IS NULL OR w.is_external = 0)
+  `, ym);
+
+  for (const w of dwRows) {
+    const hrs = Number(w.hours) || 0;
+    if (!hrs) continue;
+    const names = splitMechanics(w.mechanic);
+    if (!names.length) continue;
+
+    for (const rawName of names) {
+      const canonical = resolveMechanicName(rawName);
+      // The rate that applied ON THE DAY, not the newest one on file. Without the date bound a
+      // rebuild silently re-prices history: a rise recorded in August was being applied back
+      // through every earlier month, inflating labour that was already reported.
+      const r = get(
+        `SELECT rate FROM labour_rates WHERE mechanic = ? AND effective_from <= ?
+          ORDER BY effective_from DESC, id DESC LIMIT 1`, canonical, w.work_date);
+      const rate = r ? r.rate : 250;
+      const amt = hrs * rate;
+
+      run(`
+        INSERT INTO job_labour (job_id, work_date, mechanic, hours, rate, amount)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `, w.job_id, w.work_date, canonical, hrs, rate, amt);
+    }
+  }
+}
+
 module.exports = {
   normalizeMechanic,
   splitMechanics,
@@ -119,4 +174,5 @@ module.exports = {
   findOrCreateMechanic,
   linkMechanicAlias,
   pendingMechanicAliases,
+  syncJobLabourForMonth,
 };

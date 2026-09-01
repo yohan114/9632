@@ -129,6 +129,8 @@ function needsAttentionSummary() {
     duplicate_mrn: dup.duplicate_numbers.length + dup.likely_double_entries.length,
     grn_price_spikes: grnPriceSpikes().length,
     integrity_issues: integrityCheck().count,
+    // Vehicles carrying more than one open job card (pre-date the one-open-card rule).
+    vehicle_conflicts: require('./jobstate').duplicateOpenJobs().length,
   };
 }
 

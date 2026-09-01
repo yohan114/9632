@@ -72,7 +72,9 @@ switch (cmd) {
     break;
   }
   case 'rotate-seed': {
-    const demo = ['admin', 'store', 'transport', 'ops', 'mech', 'viewer'];
+    // 'asst' arrived later, with the assistant-transport-manager migration, and was never added
+    // here — so it would have gone to the public internet still answering to asst/asst.
+    const demo = ['admin', 'store', 'transport', 'asst', 'ops', 'mech', 'viewer'];
     const r = run(`UPDATE users SET must_change_password = 1 WHERE username IN (${demo.map(() => '?').join(',')})`, ...demo);
     console.log(`Forced password change on ${r.changes} demo account(s). They must set a new password at next login.`);
     break;

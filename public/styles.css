@@ -1,69 +1,82 @@
+/* WorkshopOne — "Machine Deck" theme. Industrial data-plate aesthetic for a
+   heavy-plant / fleet workshop: graphite chrome, steel workspace, diesel-blue +
+   safety-amber accents, condensed display + monospace data. Light + dark. */
+
+@import url('https://fonts.googleapis.com/css2?family=Saira+Condensed:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@500;600&display=swap');
+
 :root {
-  --bg: #f4f6f8;
-  --surface: #ffffff;
-  --surface-2: #f0f3f6;
-  --border: #dfe4ea;
-  --text: #1c2733;
-  --muted: #6b7885;
-  --primary: #1f6feb;
-  --primary-dark: #1a5fce;
-  --green: #1a7f47;
-  --amber: #b7791f;
-  --red: #c2372c;
-  --shadow: 0 1px 3px rgba(0, 0, 0, 0.08), 0 1px 2px rgba(0, 0, 0, 0.04);
-  --radius: 10px;
+  --graphite: #16191c; --graphite-2: #20262d;
+  --bg: #edefec; --surface: #ffffff; --surface-2: #e7eae5;
+  --border: #d7dad4; --text: #1a1f24; --muted: #6a7379;
+  --primary: #1d5a73; --primary-dark: #12455a;
+  --accent: #f2a900;                 /* safety amber — rules, active marker, signature */
+  --amber: #9a6e00; --green: #3c7d5a; --red: #c4392d;
+  --shadow: 0 1px 2px rgba(20,24,28,.06), 0 1px 3px rgba(20,24,28,.05);
+  --radius: 4px;
+  --disp: 'Saira Condensed', system-ui, sans-serif;
+  --body: 'IBM Plex Sans', system-ui, sans-serif;
+  --mono: 'IBM Plex Mono', ui-monospace, monospace;
 }
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #0f141a; --surface: #171e26; --surface-2: #1e2732; --border: #2a333f;
-    --text: #e6ebf1; --muted: #97a3b0; --primary: #4c8dff; --primary-dark: #3f7ae0;
-    --green: #3fb96e; --amber: #e0a63a; --red: #ef5a4d;
-    --shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+    --graphite: #0c0f12; --graphite-2: #161b20;
+    --bg: #14181c; --surface: #1b2025; --surface-2: #222931;
+    --border: #2a3138; --text: #e6eaed; --muted: #8a949b;
+    --primary: #3e8ba8; --primary-dark: #5aa6c2;
+    --accent: #f2a900; --amber: #e0a63a; --green: #4fa372; --red: #e5645a;
+    --shadow: 0 1px 3px rgba(0,0,0,.4);
   }
 }
 * { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; }
 body {
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  font-family: var(--body);
   background: var(--bg); color: var(--text); font-size: 14px; line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
 }
 a { color: var(--primary); text-decoration: none; cursor: pointer; }
 a:hover { text-decoration: underline; }
-h1 { font-size: 20px; margin: 0 0 4px; }
-h2 { font-size: 16px; margin: 20px 0 8px; }
-h3 { font-size: 14px; margin: 14px 0 6px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+code, .mono { font-family: var(--mono); }
+h1 { font-family: var(--disp); font-weight: 600; font-size: 26px; letter-spacing: .02em; margin: 0 0 4px; text-transform: uppercase; }
+h2 { font-family: var(--disp); font-weight: 600; font-size: 19px; letter-spacing: .02em; margin: 20px 0 8px; }
+h3 { font-size: 12px; margin: 14px 0 6px; color: var(--muted); text-transform: uppercase; letter-spacing: .09em; font-weight: 600; }
 
 /* ---- layout ---- */
 #app { min-height: 100%; display: flex; flex-direction: column; }
 .topbar {
-  display: flex; align-items: center; gap: 14px; padding: 10px 16px;
-  background: var(--surface); border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 20;
+  display: flex; align-items: center; gap: 14px; padding: 0 18px; height: 52px;
+  background: var(--graphite); border-bottom: none;
+  position: sticky; top: 0; z-index: 20;
 }
-.topbar .brand { font-weight: 700; font-size: 16px; color: var(--text); white-space: nowrap; }
-.topbar .brand span { color: var(--primary); }
+.topbar::after { /* hazard-stripe rule — the signature */
+  content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 3px;
+  background: repeating-linear-gradient(45deg, var(--accent) 0 11px, var(--graphite) 11px 22px);
+}
+.topbar .brand { font-family: var(--disp); font-weight: 700; font-size: 20px; letter-spacing: .06em; color: #fff; white-space: nowrap; text-transform: uppercase; }
+.topbar .brand span { color: var(--accent); }
 .topbar .spacer { flex: 1; }
-.topbar .who { color: var(--muted); font-size: 13px; }
+.topbar .who { color: #aeb6bc; font-size: 12.5px; }
 .layout { display: flex; flex: 1; min-height: 0; }
 .nav {
-  width: 210px; background: var(--surface); border-right: 1px solid var(--border);
-  padding: 10px 8px; flex-shrink: 0; overflow-y: auto;
+  width: 212px; background: var(--graphite); border-right: 1px solid rgba(255,255,255,.06);
+  padding: 12px 10px; flex-shrink: 0; overflow-y: auto;
 }
 .nav a {
-  display: flex; align-items: center; gap: 9px; padding: 9px 12px; border-radius: 8px;
-  color: var(--text); font-weight: 500; margin-bottom: 2px;
+  display: flex; align-items: center; gap: 10px; padding: 9px 11px; border-radius: 3px;
+  color: #aeb6bc; font-weight: 500; font-size: 13.5px; margin-bottom: 1px; position: relative;
 }
-.nav a:hover { background: var(--surface-2); text-decoration: none; }
-.nav a.active { background: var(--primary); color: #fff; }
-.nav .ico { width: 18px; text-align: center; }
+.nav a:hover { background: var(--graphite-2); color: #eaeef1; text-decoration: none; }
+.nav a.active { background: var(--graphite-2); color: #fff; }
+.nav a.active::before { content: ""; position: absolute; left: 0; top: 6px; bottom: 6px; width: 3px; background: var(--accent); border-radius: 0 2px 2px 0; }
+.nav .ix { font-family: var(--mono); font-size: 10.5px; color: #5c666d; width: 16px; flex-shrink: 0; }
+.nav a.active .ix { color: var(--accent); }
+.nav .ico { width: 18px; text-align: center; opacity: .9; }
 .content { flex: 1; padding: 18px 22px; overflow-y: auto; min-width: 0; }
 
 /* mobile */
-.hamburger { display: none; background: none; border: none; color: var(--text); font-size: 22px; cursor: pointer; }
+.hamburger { display: none; background: none; border: none; color: #fff; font-size: 22px; cursor: pointer; }
 @media (max-width: 780px) {
-  .nav {
-    position: fixed; top: 51px; bottom: 0; left: 0; z-index: 30; transform: translateX(-100%);
-    transition: transform .2s; box-shadow: var(--shadow);
-  }
+  .nav { position: fixed; top: 52px; bottom: 0; left: 0; z-index: 30; transform: translateX(-100%); transition: transform .2s; box-shadow: var(--shadow); }
   .nav.open { transform: translateX(0); }
   .hamburger { display: block; }
   .content { padding: 14px; }
@@ -73,47 +86,91 @@ h3 { font-size: 14px; margin: 14px 0 6px; color: var(--muted); text-transform: u
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 12px; }
 .card {
   background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
-  padding: 14px 16px; box-shadow: var(--shadow);
+  padding: 14px 16px; box-shadow: var(--shadow); position: relative;
 }
+/* stat cards become gauge readout plates with a thin coloured top rule */
+.card:has(.stat) { overflow: hidden; }
+.card:has(.stat)::before { content: ""; position: absolute; top: 0; left: 0; right: 0; height: 3px; background: var(--primary); }
 .stat { display: flex; flex-direction: column; gap: 2px; }
-.stat .n { font-size: 26px; font-weight: 700; }
-.stat .l { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .03em; }
+.stat .n { font-family: var(--disp); font-size: 34px; font-weight: 700; line-height: 1.05; letter-spacing: .01em; }
+.stat .l { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .07em; font-weight: 600; }
 
-/* ---- tables ---- */
+/* ---- tables (spec sheet) ---- */
 .table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
 table { width: 100%; border-collapse: collapse; font-size: 13px; }
-th, td { text-align: left; padding: 8px 11px; border-bottom: 1px solid var(--border); white-space: nowrap; }
-th { background: var(--surface-2); color: var(--muted); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: .03em; position: sticky; top: 0; }
+th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+th { background: var(--surface-2); color: var(--muted); font-weight: 600; font-size: 10.5px; text-transform: uppercase; letter-spacing: .07em; position: sticky; top: 0; border-bottom: 2px solid var(--graphite); }
 tbody tr:hover { background: var(--surface-2); }
-td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
-.table-wrap.scroll { max-height: 62vh; overflow-y: auto; }
+td.num, th.num { text-align: right; font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.table-wrap.scroll { max-height: 62vh; overflow-y: scroll; }
+/* Sideways scrolling is suppressed so a wide table fits the window instead of running off it —
+   but `auto`, never `hidden`. They behave identically while the table fits, and on the day it does
+   not, `hidden` CUTS THE CONTENT OFF WITH NO SIGN OF IT while `auto` gives the reader a scrollbar.
+   Nothing on this screen should be able to disappear silently. */
+.table-wrap.no-hscroll { overflow-x: auto; }
+/* NOT table-layout:fixed. Sharing the window equally between eleven columns crushes each to about
+   90px, and then either the text is clipped (nowrap) or every row grows to ten lines — on the job
+   list at 1024px that made 496 of 500 rows over 200px tall, one of them 1,980px. Columns size to
+   their contents instead; the table still fills the window, the description column takes up the
+   slack by wrapping, and on the rare screen too narrow for all of it the wrapper scrolls. */
+table.fit-table { width: 100%; }
+/* Cells keep their single line (the base rule). With columns sized to their contents that no longer
+   clips anything — a cell gets the width it needs — and rows stay one line instead of ten. */
+table.fit-table td, table.fit-table th { padding: 7px 10px; }
+/* The description is the column that gives: it wraps, so it absorbs whatever width is left over
+   and the rest stay readable.
+   overflow-wrap, NOT word-break. word-break:break-word tells the browser the column may be as
+   narrow as ONE CHARACTER, so the table crushed it and set the text on its side — a "200 Breaker"
+   plate came out 165px tall and every row carrying one stood 312px high. overflow-wrap breaks a
+   word only when it genuinely will not fit, and leaves the column's natural width alone. */
+table.fit-table td.desc-col, table.fit-table th.desc-col { white-space: normal !important; overflow-wrap: break-word; line-height: 1.35; }
+
 
 /* ---- badges ---- */
 .badge {
-  display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 11.5px; font-weight: 600;
+  display: inline-block; padding: 2px 9px; border-radius: 3px; font-size: 11px; font-weight: 600;
+  font-family: var(--mono); letter-spacing: .02em;
   background: var(--surface-2); color: var(--muted); border: 1px solid var(--border);
 }
-.badge.green { background: rgba(26,127,71,.13); color: var(--green); border-color: transparent; }
-.badge.amber { background: rgba(183,121,31,.15); color: var(--amber); border-color: transparent; }
-.badge.red { background: rgba(194,55,44,.13); color: var(--red); border-color: transparent; }
-.badge.blue { background: rgba(31,111,235,.13); color: var(--primary); border-color: transparent; }
+.badge.green { background: rgba(60,125,90,.13); color: var(--green); border-color: transparent; }
+.badge.amber { background: rgba(242,169,0,.15); color: var(--amber); border-color: transparent; }
+.badge.red { background: rgba(196,57,44,.13); color: var(--red); border-color: transparent; }
+.badge.blue { background: rgba(29,90,115,.13); color: var(--primary); border-color: transparent; }
+
+/* ---- data-plate stamp (fleet codes / item numbers) ---- */
+.stamp {
+  display: inline-block; font-family: var(--mono); font-weight: 600; font-size: 12px; letter-spacing: .03em;
+  padding: 1px 7px; border: 1px solid var(--border); border-radius: 2px;
+  background: var(--surface-2); color: var(--text);
+}
 
 /* ---- forms & buttons ---- */
 button, .btn {
-  font: inherit; padding: 8px 14px; border-radius: 8px; border: 1px solid var(--border);
-  background: var(--surface); color: var(--text); cursor: pointer; font-weight: 600;
+  font: inherit; font-weight: 600; padding: 8px 14px; border-radius: var(--radius);
+  border: 1px solid var(--border); background: var(--surface); color: var(--text); cursor: pointer;
 }
 button:hover, .btn:hover { background: var(--surface-2); }
 button.primary, .btn.primary { background: var(--primary); border-color: var(--primary); color: #fff; }
-button.primary:hover { background: var(--primary-dark); }
+button.primary:hover { background: var(--primary-dark); border-color: var(--primary-dark); }
 button.sm { padding: 5px 10px; font-size: 12.5px; }
 button:disabled { opacity: .5; cursor: not-allowed; }
 button.danger { color: var(--red); }
+/* A consequential confirm (reopen a closed card): solid, but red rather than the usual primary
+   blue, so it does not read as the routine "save" button. */
+button.primary.danger, .btn.primary.danger { background: var(--red); border-color: var(--red); color: #fff; }
+button.primary.danger:hover { filter: brightness(.92); }
+/* An inline consequence note — softer than .err, more prominent than .muted. */
+.note { color: var(--muted); background: var(--surface-2); border-left: 3px solid var(--accent);
+  padding: 7px 10px; border-radius: 0 4px 4px 0; margin: 8px 0; }
+/* topbar chrome buttons */
+.topbar button.sm { background: var(--graphite-2); border-color: #333b42; color: #c4cbd0; }
+.topbar button.sm:hover { background: #2a323a; color: #fff; }
 input, select, textarea {
-  font: inherit; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--border);
+  font: inherit; padding: 8px 10px; border-radius: var(--radius); border: 1px solid var(--border);
   background: var(--surface); color: var(--text); width: 100%;
 }
-label { display: block; font-size: 12.5px; color: var(--muted); margin: 8px 0 3px; font-weight: 600; }
+input:focus, select:focus, textarea:focus { outline: 2px solid var(--primary); outline-offset: -1px; border-color: var(--primary); }
+label { display: block; font-size: 11.5px; color: var(--muted); margin: 8px 0 3px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
 .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-end; }
 .row > * { flex: 1; min-width: 120px; }
 .toolbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 14px; }
@@ -123,27 +180,195 @@ label { display: block; font-size: 12.5px; color: var(--muted); margin: 8px 0 3p
 .ok { color: var(--green); font-weight: 600; }
 
 /* ---- modal ---- */
-.modal-bg {
-  position: fixed; inset: 0; background: rgba(0,0,0,.45); display: flex; align-items: center;
-  justify-content: center; z-index: 50; padding: 16px;
-}
-.modal { background: var(--surface); border-radius: var(--radius); padding: 20px; width: 100%; max-width: 520px; max-height: 90vh; overflow-y: auto; box-shadow: var(--shadow); }
+.modal-bg { position: fixed; inset: 0; background: rgba(12,15,18,.55); display: flex; align-items: center; justify-content: center; z-index: 50; padding: 16px; }
+.modal { background: var(--surface); border-radius: var(--radius); padding: 20px; width: 100%; max-width: 520px; max-height: 90vh; overflow-y: auto; box-shadow: 0 10px 40px rgba(0,0,0,.3); border-top: 3px solid var(--accent); }
 .modal h2 { margin-top: 0; }
+.modal.wide { max-width: 900px; }
+
+/* ---- New Issue dialog ----
+   Numbered steps down the page instead of nested popups, then a line table so one
+   trip to the store is one record. */
+.istep { font-weight: 600; font-size: 13px; margin: 0 0 6px; display: flex; align-items: center; gap: 7px; }
+.istep-n { display: inline-flex; align-items: center; justify-content: center; width: 19px; height: 19px;
+  border-radius: 50%; background: var(--accent); color: #fff; font-size: 11px; flex-shrink: 0; }
+.istep .spacer { flex: 1; }
+.ni-res { max-height: 210px; overflow-y: auto; margin-top: 6px; }
+.ni-res:not(:empty) { border: 1px solid var(--border); border-radius: 6px; }
+.ni-hit { padding: 7px 10px; cursor: pointer; border-bottom: 1px solid var(--border); display: flex; align-items: baseline; gap: 5px; }
+.ni-hit:last-child { border-bottom: 0; }
+.ni-hit:hover { background: var(--surface-2); }
+.ni-bal { margin-left: auto; font-family: var(--mono); font-size: 12px; color: var(--muted); flex-shrink: 0; padding-left: 10px; }
+.ni-bal.ok { color: var(--success, #2a7d4f); }
+/* "In store for this vehicle" — the parts already bought for it, waiting to be handed over. */
+.ni-recv { max-height: 230px; overflow-y: auto; border: 1px solid var(--border); border-radius: 6px; }
+.ni-recv:empty { display: none; }
+.ni-mrn { font-family: var(--mono); font-size: 11.5px; background: var(--surface-2); color: var(--muted);
+  border-radius: 3px; padding: 1px 5px; flex-shrink: 0; }
+.ni-hit.done { opacity: .5; cursor: default; }
+.ni-hit.done:hover { background: none; }
+/* group heading inside the search results */
+.ni-grp { font-size: 10.5px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted);
+  background: var(--surface-2); padding: 4px 10px; border-bottom: 1px solid var(--border); font-weight: 600; }
+.ni-tab { width: 100%; border-collapse: collapse; font-size: 13px; }
+.ni-tab th { text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: .03em;
+  color: var(--muted); border-bottom: 1px solid var(--border); padding: 4px 6px; font-weight: 600; }
+.ni-tab td { padding: 5px 6px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+.ni-tab .r { text-align: right; }
+.ni-tab .r.warn { color: var(--danger, #c4392c); font-weight: 600; }
+.ni-tab input { padding: 4px 6px; font-size: 13px; }
+.ni-warn td { background: #fdf3f2; color: var(--danger, #c4392c); font-size: 12px; border-bottom: 1px solid var(--border); }
+
+/* ---- form layout inside dialogs ----
+   field() emits a <label> and its control as siblings, so putting two fields straight into a
+   flex/grid row splits the pairs apart. .fld keeps each pair together as one cell. */
+.fld { min-width: 0; }
+.fld > label { display: block; }
+.fld > input, .fld > select, .fld > textarea { width: 100%; }
+.fgrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px 14px; align-items: end; }
+.mrnsec { border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 14px; margin-bottom: 12px; }
+.mrnsec-h { font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: .06em;
+  color: var(--muted); border-bottom: 1px solid var(--border); padding-bottom: 6px; margin-bottom: 10px; }
+.mrnline { border: 1px solid var(--border); border-left: 3px solid var(--accent); border-radius: 6px;
+  padding: 10px 12px; margin-bottom: 10px; background: var(--surface-2); }
+.mrnline-h { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
+.mrnline-n { font-weight: 700; font-size: 12px; color: var(--muted); }
 
 /* ---- login ---- */
 .login-wrap { display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 20px; }
-.login-card { width: 100%; max-width: 360px; }
-.login-card .brand { font-size: 24px; font-weight: 700; text-align: center; margin-bottom: 4px; }
+.login-card { width: 100%; max-width: 360px; border-top: 3px solid var(--accent); }
+.login-card .brand { font-family: var(--disp); font-size: 30px; font-weight: 700; text-align: center; margin-bottom: 4px; text-transform: uppercase; letter-spacing: .05em; }
 .login-card .sub { text-align: center; color: var(--muted); margin-bottom: 18px; font-size: 13px; }
 
 /* ---- misc ---- */
 .pill-row { display: flex; gap: 6px; flex-wrap: wrap; }
 .timeline { list-style: none; padding: 0; margin: 0; }
 .timeline li { display: flex; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--border); }
-.timeline .date { color: var(--muted); font-size: 12px; width: 92px; flex-shrink: 0; }
-.bar { height: 8px; border-radius: 4px; background: var(--primary); }
-.bar-track { background: var(--surface-2); border-radius: 4px; overflow: hidden; }
+.timeline .date { color: var(--muted); font-size: 12px; width: 92px; flex-shrink: 0; font-family: var(--mono); }
+.bar { height: 8px; border-radius: 2px; background: var(--primary); }
+.bar-track { background: var(--surface-2); border-radius: 2px; overflow: hidden; }
 .cost-line { display: flex; justify-content: space-between; padding: 4px 0; }
-.cost-line.total { border-top: 2px solid var(--border); font-weight: 700; font-size: 15px; margin-top: 4px; padding-top: 8px; }
+.cost-line span:last-child { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.cost-line.total { border-top: 2px solid var(--graphite); font-weight: 700; font-size: 15px; margin-top: 4px; padding-top: 8px; }
+.cost-line.total span { font-family: var(--disp); }
 .section { margin-bottom: 20px; }
-.crumb { color: var(--muted); font-size: 13px; margin-bottom: 8px; }
+.crumb { color: var(--muted); font-size: 13px; margin-bottom: 8px; font-family: var(--mono); }
+
+/* Sidebar group headings (SPA nav) */
+.nav-group { font-size: 10px; text-transform: uppercase; letter-spacing: .1em; color: #5c666d; font-weight: 700; padding: 14px 11px 4px; }
+.nav-group:first-child { padding-top: 4px; }
+
+/* Live-update indicator (green when the realtime socket is connected) */
+.live-dot { color: var(--muted); font-size: 11px; transition: color .3s; margin-right: 4px; }
+body.live-connected .live-dot { color: var(--green); }
+
+/* ---- Mobile Bottom Navigation & Touch Utilities ---- */
+.mobile-bottom-nav {
+  display: none;
+  position: fixed;
+  bottom: 0; left: 0; right: 0;
+  height: 56px;
+  background: var(--graphite);
+  border-top: 1px solid var(--border);
+  z-index: 100;
+  justify-content: space-around;
+  align-items: center;
+  padding-bottom: env(safe-area-inset-bottom);
+}
+.mobile-nav-item {
+  background: transparent;
+  border: none;
+  color: #8a949b;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  flex: 1;
+  height: 100%;
+  padding: 4px 0;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.mobile-nav-item .nav-icon { font-size: 18px; line-height: 1; }
+.mobile-nav-item .nav-label { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
+.mobile-nav-item.active { color: var(--accent); }
+
+@media (max-width: 768px) {
+  /* The top bar is one non-wrapping row of eight items — 558px of it on a 375px phone — and being
+     wider than the screen it pushed EVERY page sideways, so the whole thing slid under your thumb.
+     It takes a second line here instead: the brand and the live dot stay on top, and the account
+     buttons drop below (the spacer becomes the line break). */
+  .topbar { flex-wrap: wrap; height: auto; min-height: 52px; padding: 8px 10px; gap: 6px; }
+  .topbar .spacer { flex-basis: 100%; height: 0; }
+  /* The name gives way rather than shoving Logout onto a third line — it shortens with an ellipsis
+     and the three account buttons stay together. */
+  .topbar .who { font-size: 11.5px; flex: 0 1 auto; min-width: 0; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* The 44px touch minimum below is right for the page, but on three account buttons it makes the
+     bar tower over the content. Tighter here so the name, the dot and all three buttons share ONE
+     line — otherwise Logout drops to a third line and the header eats 156px of a 812px screen. */
+  .topbar button.sm { min-height: 32px; padding: 4px 9px; font-size: 11.5px; }
+  .layout { flex-direction: column; padding-bottom: 60px; }
+  .nav { display: none; } /* Hide desktop sidebar on mobile */
+  .mobile-bottom-nav { display: flex; }
+  .main { padding: 12px; }
+  button, input, select { min-height: 44px; } /* Minimum touch target size */
+  .grid { grid-template-columns: 1fr !important; }
+  .table-responsive { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+}
+
+/* ---- fitting the screen the workshop actually has -------------------------
+
+   The roomy layout needs about 1455px before a wide table starts running off the side of its box.
+   Measured on the live job list (500 rows, 11 columns), how much was cut off and unreachable
+   except by scrolling the table sideways — with nothing on screen saying it was there:
+
+       screen   1920    1440    1366    1280    1024
+       before      0     88px   162px   350px   606px
+
+   These tiers give the width back. Above 1500px nothing changes: the roomy layout is still the
+   roomy layout, because it was never the problem.
+
+   THE LEVER IS LETTING CELLS WRAP. That takes the job list's minimum from 1313px to 1082px and the
+   stores list's from 1342px to 896px — far more than shaving padding ever could. It sounds like
+   the mistake the note above warns about, and it is not: that disaster was `table-layout: fixed`,
+   which gives every column an equal share and then crushes the long ones. Columns still size to
+   their contents here; they are simply allowed to take a second line when the content is long.
+
+   Measured, not assumed — 500 job rows at 1024px, base vs wrapped:
+       tallest row   190px -> 171px          (better)
+       rows > 100px     34 -> 23             (better)
+       rows > 200px      0 -> 0
+       clipped cells     0 -> 0
+   Wrapping makes rows SHORTER here, because the smaller type buys back more than the extra lines
+   cost. Re-measure the same way before touching these numbers.
+
+   Floored at 781px so the phone rules keep the last word. These blocks are at the END of the file
+   (they must be, to override the base table rules) — which also means that without a floor they
+   would match a 375px screen and beat the phone layout that appears earlier.
+
+   1024x768 still scrolls, by choice. Eleven columns in 1009px is not a readable table at any type
+   size — the honest answer there is a scrollbar, which .table-wrap gives (auto, never hidden). */
+
+@media (min-width: 781px) and (max-width: 1500px) {
+  /* Fits 1440 and 1366 exactly — at 1366 the job list needs 1126px and gets 1126px. */
+  .nav { width: 176px; padding: 10px 7px; }
+  .nav a { padding: 8px 9px; font-size: 13px; gap: 8px; }
+  .content { padding: 14px 16px; }
+  table { font-size: 12px; }
+  table.fit-table td, table.fit-table th {
+    padding: 4px 6px;
+    /* overflow-wrap, NEVER word-break — see the note on .desc-col above for what word-break did to
+       a "200 Breaker" plate. */
+    white-space: normal; overflow-wrap: break-word;
+  }
+}
+
+@media (min-width: 781px) and (max-width: 1300px) {
+  /* 1280 needs another 42px to clear. The rail keeps its labels: an icon-only strip would save
+     another 120px and cost anyone who does not already know the menu by heart. */
+  .nav { width: 160px; padding: 8px 6px; }
+  .nav a { padding: 7px 8px; font-size: 12.5px; }
+  .nav .ix { display: none; }
+  .content { padding: 10px 12px; }
+  table.fit-table td, table.fit-table th { padding: 3px 5px; }
+}

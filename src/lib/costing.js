@@ -3,8 +3,9 @@
 // ===========================================================================
 // The Costing Engine (brief §7).
 //   labour_cost   = Σ (daily_work.hours × labour_rate(mechanic, on job date))
-//   material_cost = Σ (job_parts grn/issue: qty × unit_price)
+//   material_cost = Σ (job_parts grn/issue: qty × unit_price)  — lubricants excluded, see below
 //   oil_cost      = Σ (oil ledger issues to this job: qty × price on date)
+//                 + Σ (job_parts that ARE lubricants: qty × unit_price)
 //   general_cost  = Σ (general items issued to this job: qty × price)
 //   external_cost = Σ (daily_work.external_value) + Σ (job_parts external repair)
 //   TOTAL_COST    = labour + material + oil + general + external
@@ -16,6 +17,7 @@
 
 const { get, all, run, tx } = require('../db');
 const mechanics = require('./mechanics');
+const lubricants = require('./lubricants');
 
 /** Hourly rate effective for a mechanic on a given date (via the name resolver). */
 function labourRateFor(mechanic, onDate) {
@@ -64,9 +66,9 @@ function computeJobCost(jobId) {
 
   // --- labour ---
   // Two models: SERVICE jobs carry a flat recorded labour amount (not hours×rate);
-  // REPAIRS cost hourly. For repairs, a multi-mechanic entry already stores one
-  // row per mechanic with the hours split across the crew (H/N each), so simply
-  // summing (row.hours × rate) yields (H/N)×Σ(crew rates).
+  // REPAIRS cost hourly. For repairs, each named mechanic in a crew is charged the
+  // FULL hours at their own rate (owner's rule: 2 mechanics × 8h = 8h×r1 + 8h×r2),
+  // so a crew of N summed over (row.hours × rate) yields hours × Σ(crew rates).
   const labourLines = [];
   let labour = 0;
   if (job.type === 'service') {
@@ -75,25 +77,46 @@ function computeJobCost(jobId) {
       labourLines.push({ mechanic: '(service flat charge)', hours: 0, rate: null, amount: job.flat_labour, work_date: jobDate, flat: true });
     }
   } else {
+    // A daily-work entry may name a crew ("Buddhika, Krishna"); each named mechanic
+    // is charged the FULL hours at their own rate (owner's rule, matches Daily Work view).
     for (const w of all('SELECT * FROM job_daily_work WHERE job_id = ? AND is_external = 0', jobId)) {
-      const rate = labourRateFor(w.mechanic, (w.work_date || jobDate).slice(0, 10));
-      const amount = rate != null ? (w.hours || 0) * rate : 0;
-      labour += amount;
-      labourLines.push({ mechanic: w.mechanic, hours: w.hours || 0, rate, amount, work_date: w.work_date });
+      const wd = (w.work_date || jobDate).slice(0, 10);
+      const hrs = w.hours || 0;
+      const names = mechanics.splitMechanics(w.mechanic);
+      if (!names.length) { labourLines.push({ mechanic: w.mechanic, hours: hrs, rate: null, amount: 0, work_date: w.work_date }); continue; }
+      for (const nm of names) {
+        const rate = labourRateFor(nm, wd);
+        const amount = rate != null ? hrs * rate : 0;
+        labour += amount;
+        labourLines.push({ mechanic: nm, hours: hrs, rate, amount, work_date: w.work_date });
+      }
     }
   }
 
-  // --- material (job_parts grn/issue, non-external repair) ---
+  // --- material (ALL job_parts: grn/issue/general + external-REPAIR charges) ---
+  // Owner (2026-07-27): an external REPAIR charge (job_parts is_external_repair / source 'external')
+  // IS a real job cost and MUST count — it is distinct from the external WORK value below (the
+  // owner's personally-tracked "external cost of our job"), which stays excluded. So every job_part
+  // is summed here, including external-repair lines.
   let material = 0;
-  for (const p of all(
-    `SELECT * FROM job_parts WHERE job_id = ? AND source_type IN ('grn','issue') AND is_external_repair = 0`,
-    jobId
-  )) {
-    if (p.unit_price != null) material += (p.qty || 0) * p.unit_price;
+  // A LUBRICANT is oil cost wherever it was written down. Since the Oil section's own
+  // Issue/Top-up was retired, a drum handed over on a job arrives here as a job_part like any
+  // other part — so oil cost has to follow the ITEM, not the book it was recorded in, or the
+  // Oil column would empty out into Material as the storekeeper moves to the Stores screen.
+  // These lines are added to `oil` below instead; the total is unchanged either way.
+  const lubeParts = [];
+  // Includes stock issues booked to this job: POST /issues materialises each as a
+  // source_type='issue' job_part (mirroring migrate/09), so they are already summed here
+  // exactly once. (Counting the issues table again would double them.)
+  for (const p of all(`SELECT * FROM job_parts WHERE job_id = ?`, jobId)) {
+    if (p.unit_price == null) continue;
+    if (lubricants.isLubricant(p.description, (p.created_at || jobDate || '').slice(0, 10))) { lubeParts.push(p); continue; }
+    material += (p.qty || 0) * p.unit_price;
   }
 
-  // --- oil (stock ledger issues to this job) ---
+  // --- oil (stock ledger issues to this job, plus lubricants issued through Stores) ---
   let oil = 0;
+  for (const p of lubeParts) oil += (p.qty || 0) * p.unit_price;
   for (const l of all(`SELECT * FROM stock_ledger WHERE job_id = ? AND kind = 'issue'`, jobId)) {
     const qty = Math.abs(l.qty || 0);
     const price = l.unit_price != null ? l.unit_price : productPriceOn(l.product_id, (l.txn_date || jobDate).slice(0, 10));
@@ -106,25 +129,53 @@ function computeJobCost(jobId) {
     if (g.unit_price != null) general += Math.abs(g.qty || 0) * g.unit_price;
   }
 
-  // --- external (daily-work external value + job_parts external repairs) ---
+  // --- external WORK value (daily-work is_external only): the "external cost of our job" from the
+  // owner's Excel, tracked PERSONALLY. Computed for reference but NOT added to the total. External
+  // REPAIR charges are counted inside material above — they are a different thing. ---
   let external = 0;
   for (const w of all('SELECT * FROM job_daily_work WHERE job_id = ? AND is_external = 1', jobId)) {
     external += w.external_value || 0;
   }
-  for (const p of all('SELECT * FROM job_parts WHERE job_id = ? AND is_external_repair = 1', jobId)) {
-    if (p.unit_price != null) external += (p.qty || 0) * p.unit_price;
-  }
 
-  const total = labour + material + oil + general + external;
+  // The external WORK value is deliberately EXCLUDED (owner's personal value): not added to the total,
+  // external_cost stays 0. External REPAIR charges DO count (they sit inside material).
+  const total = labour + material + oil + general;
   return {
     labour_cost: round2(labour),
     material_cost: round2(material),
     oil_cost: round2(oil),
     general_cost: round2(general),
-    external_cost: round2(external),
+    external_cost: 0,
     total_cost: round2(total),
     labourLines,
   };
+}
+
+/** Read-only reconciled cost view: computed components + the recorded-aware total
+ *  and balancing other_cost that refreshJobTotals persists — without writing. Use
+ *  this wherever a cost breakdown is shown so the displayed columns sum to the
+ *  same total that is stored on the card. */
+function reconciledCost(jobId) {
+  const c = computeJobCost(jobId);
+  const job = get('SELECT is_historical, recorded_cost, total_cost FROM job_cards WHERE id = ?', jobId);
+  const total = historicalTotal(job, c.total_cost);
+  c.other_cost = round2(total - c.total_cost);
+  c.total_cost = total;
+  return c;
+}
+
+// Total to store for a job.
+//   • Live jobs → the freshly computed component total.
+//   • Historical jobs with a real recorded_cost (>0) → that imported/agreed total, frozen.
+//   • Historical jobs with recorded_cost 0/NULL → the RECONSTRUCTED component total
+//     (labour from the daily programme + parts + oil + general). Trusting the reconstruction is
+//     deliberate (owner rule): daily-programme updates must actually drive the total, up or down.
+//     We only fall back to the imported total_cost when there is nothing reconstructable
+//     (computed 0), so a sparse c_job import never reads Rs 0.
+function historicalTotal(job, computedTotal) {
+  if (!job || !job.is_historical) return computedTotal;
+  if (job.recorded_cost != null && job.recorded_cost > 0) return job.recorded_cost;
+  return computedTotal > 0 ? computedTotal : (job.total_cost || 0);
 }
 
 /**
@@ -168,8 +219,13 @@ function closureReadiness(jobId) {
     if (job.flat_labour == null) missing.push('Service labour (flat charge) not set');
   } else {
     for (const w of all('SELECT * FROM job_daily_work WHERE job_id = ? AND is_external = 0', jobId)) {
-      if (labourRateFor(w.mechanic, w.work_date) == null) {
-        missing.push(`Labour rate missing for mechanic "${w.mechanic || '(unnamed)'}"`);
+      // A cell may name a crew ("Buddhika, Krishna"); price each mechanic individually,
+      // exactly as computeJobCost does — otherwise the combined string never resolves to a
+      // rate and a fully-priced crew job is falsely blocked from closing.
+      const names = mechanics.splitMechanics(w.mechanic);
+      if (!names.length) { missing.push(`Labour rate missing for mechanic "${w.mechanic || '(unnamed)'}"`); continue; }
+      for (const nm of names) {
+        if (labourRateFor(nm, w.work_date) == null) missing.push(`Labour rate missing for mechanic "${nm}"`);
       }
     }
   }
@@ -184,10 +240,25 @@ function closureReadiness(jobId) {
   return { ready: missing.length === 0, missing };
 }
 
-/** Recompute live totals on the job card and rebuild job_labour lines. */
+/** Recompute live totals on the job card and rebuild job_labour lines.
+ *  A historical (imported) job keeps its RECORDED total when one exists (recorded_cost > 0);
+ *  when it has no recorded total (recorded_cost 0/NULL) the computed component total is stored
+ *  instead — so jobs whose only cost is reconstructed from items stop reading as Rs 0.
+ *  other_cost balances any gap (recorded − Σcomponents) so the columns always sum to total_cost. */
 function refreshJobTotals(jobId) {
   const c = computeJobCost(jobId);
+  // asset_id is needed by the per-vehicle rollup below — omitting it made `if (job.asset_id)`
+  // always false, so vehicle_monthly_costs.labour_cost never moved after the 015 backfill.
+  const job = get('SELECT asset_id, is_historical, recorded_cost, total_cost FROM job_cards WHERE id = ?', jobId);
+  const totalToStore = historicalTotal(job, c.total_cost); // historical: keep imported total, don't recompute to ~0
+  const otherCost = round2(totalToStore - c.total_cost); // balancing bucket (recorded vs itemised)
   tx(() => {
+    // Months this job touched BEFORE the rebuild. Needed because the rollup below walks the
+    // months in the new labour lines: if the last entry in a month is deleted, that month has
+    // no new line to walk and its vehicle total would keep the old, now-wrong figure.
+    const prevMonths = all(
+      "SELECT DISTINCT substr(work_date,1,7) ym FROM job_labour WHERE job_id = ? AND work_date IS NOT NULL", jobId
+    ).map((r) => r.ym);
     run('DELETE FROM job_labour WHERE job_id = ?', jobId);
     const stmt = require('../db').db.prepare(
       'INSERT INTO job_labour (job_id, mechanic, hours, rate, amount, work_date) VALUES (?, ?, ?, ?, ?, ?)'
@@ -195,13 +266,90 @@ function refreshJobTotals(jobId) {
     for (const l of c.labourLines) stmt.run(jobId, l.mechanic, l.hours, l.rate, l.amount, l.work_date);
     run(
       `UPDATE job_cards
-         SET labour_cost=?, material_cost=?, oil_cost=?, general_cost=?, external_cost=?, total_cost=?,
+         SET labour_cost=?, material_cost=?, oil_cost=?, general_cost=?, external_cost=?, other_cost=?, total_cost=?,
              updated_at=datetime('now')
        WHERE id=?`,
-      c.labour_cost, c.material_cost, c.oil_cost, c.general_cost, c.external_cost, c.total_cost, jobId
+      c.labour_cost, c.material_cost, c.oil_cost, c.general_cost, c.external_cost, otherCost, totalToStore, jobId
     );
+    if (job && job.asset_id) {
+      const dates = c.labourLines.map((l) => l.work_date).filter(Boolean);
+      const ymSet = new Set([...dates.map((d) => d.slice(0, 7)), ...prevMonths]);
+      for (const ym of ymSet) {
+        const [yr, mo] = ym.split('-').map(Number);
+        if (yr && mo) {
+          const tot = get(
+            `SELECT ROUND(COALESCE(SUM(jl.amount),0),2) v
+               FROM job_labour jl JOIN job_cards j ON j.id = jl.job_id
+              WHERE j.asset_id = ? AND substr(jl.work_date,1,7) = ?`,
+            job.asset_id, ym
+          ).v || 0;
+          const ex = get('SELECT id FROM vehicle_monthly_costs WHERE asset_id = ? AND year = ? AND month = ?', job.asset_id, yr, mo);
+          if (ex) {
+            run(
+              `UPDATE vehicle_monthly_costs
+                 SET labour_cost = ?,
+                     total_cost = ROUND(COALESCE(fuel_cost,0) + COALESCE(oil_cost,0) + COALESCE(filter_cost,0) + COALESCE(battery_cost,0) + COALESCE(parts_cost,0) + ?, 2),
+                     updated_at = datetime('now')
+               WHERE id = ?`,
+              tot, tot, ex.id
+            );
+          } else if (tot > 0) {
+            run(
+              `INSERT INTO vehicle_monthly_costs (asset_id, year, month, labour_cost, total_cost, updated_at)
+               VALUES (?, ?, ?, ?, ?, datetime('now'))`,
+              job.asset_id, yr, mo, tot, tot
+            );
+          }
+        }
+      }
+    }
   });
-  return c;
+  return { ...c, other_cost: otherCost, total_cost: totalToStore };
+}
+
+/**
+ * Absolutely recompute one vehicle-month's labour and parts in the rollup.
+ *
+ * Needed when a job MOVES between vehicles: the losing vehicle-month has to give the cost up
+ * and the gaining one has to take it on, and neither can be done with the incremental "+= Δ"
+ * upsert the issue paths use. Both components are recomputed from their defining source
+ * (job_labour for labour, issues for parts) and total_cost is re-derived from every component,
+ * so the table's total = Σ(components) invariant holds. Idempotent.
+ */
+function recalcVehicleMonth(assetId, year, month) {
+  if (!assetId || !year || !month) return null;
+  const ym = `${year}-${String(month).padStart(2, '0')}`;
+  const labour = round2(get(
+    `SELECT COALESCE(SUM(jl.amount),0) v FROM job_labour jl JOIN job_cards j ON j.id = jl.job_id
+      WHERE j.asset_id = ? AND substr(jl.work_date,1,7) = ?`, assetId, ym).v);
+  const parts = round2(get(
+    `SELECT COALESCE(SUM(qty * COALESCE(unit_price,0)),0) v FROM issues
+      WHERE asset_id = ? AND substr(issue_date,1,7) = ?`, assetId, ym).v);
+
+  const row = get('SELECT * FROM vehicle_monthly_costs WHERE asset_id = ? AND year = ? AND month = ?', assetId, year, month);
+  if (!row) {
+    if (!labour && !parts) return null;               // nothing to record
+    run(`INSERT INTO vehicle_monthly_costs (asset_id, year, month, labour_cost, parts_cost, total_cost, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, datetime('now'))`, assetId, year, month, labour, parts, round2(labour + parts));
+    return { labour, parts };
+  }
+  const others = ['fuel_cost', 'oil_cost', 'filter_cost', 'battery_cost'].reduce((s, c) => s + (row[c] || 0), 0);
+  run(`UPDATE vehicle_monthly_costs
+          SET labour_cost = ?, parts_cost = ?, total_cost = ?, updated_at = datetime('now')
+        WHERE id = ?`, labour, parts, round2(others + labour + parts), row.id);
+  return { labour, parts };
+}
+
+/** Every (asset, year, month) a job's costs touch — the buckets to refresh when it moves. */
+function vehicleMonthsForJob(jobId, assetId) {
+  if (!assetId) return [];
+  const months = new Set();
+  for (const r of all("SELECT DISTINCT substr(work_date,1,7) ym FROM job_labour WHERE job_id = ? AND work_date IS NOT NULL", jobId)) months.add(r.ym);
+  for (const r of all("SELECT DISTINCT substr(issue_date,1,7) ym FROM issues WHERE job_id = ? AND issue_date IS NOT NULL", jobId)) months.add(r.ym);
+  return [...months].filter(Boolean).map((ym) => {
+    const [y, m] = ym.split('-').map(Number);
+    return { assetId, year: y, month: m };
+  });
 }
 
 /** Freeze a cost snapshot (called on CLOSE). Historical costs never shift after. */
@@ -223,7 +371,10 @@ module.exports = {
   labourRateFor,
   productPriceOn,
   computeJobCost,
+  reconciledCost,
   closureReadiness,
   refreshJobTotals,
   snapshotJobCost,
+  recalcVehicleMonth,
+  vehicleMonthsForJob,
 };

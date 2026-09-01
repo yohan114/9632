@@ -8,9 +8,79 @@ const { asyncHandler, require_, toInt, toNum } = require('../lib/http');
 const audit = require('../lib/audit');
 const aliases = require('../lib/aliases');
 const costing = require('../lib/costing');
+const emitter = require('../lib/emitter');
 const { sendXlsx } = require('../lib/export');
 
+const lubricants = require('../lib/lubricants');
+
 const router = express.Router();
+
+// ---- naming: which lubricant is this? -------------------------------------
+// Every product now carries the code the unified catalogue minted for it (OIL-0001…), and a
+// name written any other way is remembered until somebody says what it is. Nothing is guessed:
+// "HD 68 Oil (Valvoline)" and "HD-68 Hy/Oil Caltex" are two real oils, so a bare "HD-68 Oil"
+// on a receipt is an open question, not a match.
+
+router.get('/lubricants', asyncHandler((_req, res) => res.json(lubricants.catalogue())));
+
+/** Names seen on requests, receipts, issues and transfers that resolve to no product yet. */
+router.get('/aliases/unresolved', asyncHandler((req, res) => {
+  const rows = lubricants.unresolvedAliases(toInt(req.query.limit, 200));
+  // What each unidentified name is holding, counted through the SAME identity the alias uses.
+  // Matching on the stored item_key or on a LIKE would not do: stock.js's key strips brackets,
+  // so "HD 68 Oil (Valvoline)" and a bare "HD-68 Oil" share one key while being two different
+  // questions — and a name's tally would swallow movements that belong to a product already
+  // identified. Grouped in JS because the rule lives in one place, not in SQL as well.
+  const tally = new Map();
+  for (const m of all(
+    `SELECT item_name, kind, qty, counts, txn_date FROM stock_moves
+      WHERE section = 'oil' AND item_name IS NOT NULL AND TRIM(item_name) <> ''`)) {
+    const key = lubricants.normLube(m.item_name);
+    const t = tally.get(key) || { moves: 0, net: 0, counting: 0, first: null, last: null };
+    t.moves++;
+    t.net += (m.kind === 'out' ? -1 : 1) * (Number(m.qty) || 0);
+    if (m.counts) t.counting++;
+    if (m.txn_date && (!t.first || m.txn_date < t.first)) t.first = m.txn_date;
+    if (m.txn_date && (!t.last || m.txn_date > t.last)) t.last = m.txn_date;
+    tally.set(key, t);
+  }
+  for (const r of rows) {
+    const t = tally.get(r.raw_norm) || { moves: 0, net: 0, counting: 0, first: null, last: null };
+    r.moves = t.moves;
+    r.qty_outside_balance = Math.round(t.net * 10) / 10;
+    r.counting = t.counting;      // how many of them are in the balance right now
+    r.first_seen = t.first;
+    r.last_seen = t.last;         // when it was used tells you which era's stock it was
+  }
+  // Ruled out, and kept visible: a name marked "not a lubricant" by mistake would otherwise be
+  // unreachable from the screen that marked it.
+  const ruledOut = lubricants.notLubricantAliases(toInt(req.query.limit, 200));
+  for (const r of ruledOut) {
+    const t = tally.get(r.raw_norm);
+    r.moves = t ? t.moves : 0;
+  }
+  res.json({ unresolved: rows, not_lubricant: ruledOut, catalogue: lubricants.catalogue() });
+}));
+
+/** Say what a remembered name is — or clear it back to unknown (product_id null). */
+router.patch('/aliases/:id', requireRole('storekeeper'), asyncHandler((req, res) => {
+  const id = toInt(req.params.id);
+  const before = get('SELECT * FROM lubricant_aliases WHERE id = ?', id);
+  if (!before) return res.status(404).json({ error: 'Name not found' });
+  const productId = toInt(req.body.product_id) || null;
+  if (productId && !get('SELECT id FROM products WHERE id = ?', productId)) {
+    return res.status(400).json({ error: 'No such lubricant' });
+  }
+  // `reset` puts a name back to unidentified. Without it, no product means "decided: this is
+  // not a lubricant" — which is a different answer from "nobody has looked yet".
+  const reset = req.body.reset === true || req.body.reset === 'true';
+  const row = lubricants.setAlias(id, productId, req.user.username, { reset });
+  audit.record({ userId: req.user.id, entity: 'lubricant_alias', entityId: id,
+    action: reset ? 'reopen' : (productId ? 'resolve' : 'not_a_lubricant'),
+    before: { product_id: before.product_id, resolved: before.resolved },
+    after: { product_id: productId, raw_text: before.raw_text } });
+  res.json(row);
+}));
 
 function currentBalance(productId) {
   const r = get('SELECT balance_after FROM stock_ledger WHERE product_id = ? ORDER BY id DESC LIMIT 1', productId);
@@ -29,8 +99,8 @@ router.post('/products', requireRole('storekeeper'), asyncHandler((req, res) => 
   require_(b, ['name']);
   const result = tx(() => {
     const info = run(
-      `INSERT INTO products (code, name, unit, category, reorder_level, unit_price) VALUES (?, ?, ?, ?, ?, ?)`,
-      b.code || null, b.name, b.unit || 'L', b.category || null, toNum(b.reorder_level, 0),
+      `INSERT INTO products (code, name, sheet_name, unit, category, reorder_level, unit_price) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      b.code || null, b.name, b.sheet_name || null, b.unit || 'L', b.category || null, toNum(b.reorder_level, 0),
       b.unit_price === undefined || b.unit_price === '' ? null : toNum(b.unit_price)
     );
     const pid = info.lastInsertRowid;
@@ -52,7 +122,7 @@ router.patch('/products/:id', requireRole('storekeeper'), asyncHandler((req, res
   tx(() => {
     const sets = [];
     const params = [];
-    for (const c of ['code', 'name', 'unit', 'category', 'reorder_level', 'unit_price']) {
+    for (const c of ['code', 'name', 'sheet_name', 'unit', 'category', 'reorder_level', 'unit_price']) {
       if (b[c] !== undefined) { sets.push(`${c} = ?`); params.push(b[c]); }
     }
     if (sets.length) run(`UPDATE products SET ${sets.join(', ')} WHERE id = ?`, ...params, id);
@@ -99,6 +169,19 @@ router.get('/ledger', asyncHandler((req, res) => {
 router.post('/ledger', requireRole('storekeeper'), asyncHandler((req, res) => {
   const b = req.body;
   require_(b, ['product_id', 'kind', 'qty']);
+  // Single source of truth for service lubricants: they may ONLY be issued through the
+  // Service form (which tags them consumer_type='service' and owns the cost). Blocking it
+  // here removes the second entry point, so a service's oil can never be double-counted.
+  if (b.consumer_type === 'service') {
+    return res.status(400).json({ error: 'Service lubricants must be entered on the Service record, not as a manual oil issue — this keeps each service\'s oil cost in one place.' });
+  }
+  // RETIRED (owner, 2026-08-21): handing lubricants out has ONE door — Stores → Issue. The Oil
+  // section kept a second one, so the same drum could be written down twice and its cost land in
+  // two different places. Receipts, openings, counts and adjustments still belong here; only the
+  // handover moved. Stores can find every lubricant by name now, which is what made this possible.
+  if (b.kind === 'issue') {
+    return res.status(400).json({ error: 'Lubricants are issued from Stores → Issue now, not here. That way one handover is recorded once, and its cost reaches the job and the vehicle.' });
+  }
   const productId = toInt(b.product_id);
   if (!get('SELECT id FROM products WHERE id = ?', productId)) return res.status(400).json({ error: 'Unknown product' });
   const qtyMag = Math.abs(toNum(b.qty, 0));
@@ -116,25 +199,115 @@ router.post('/ledger', requireRole('storekeeper'), asyncHandler((req, res) => {
   const txnDate = b.txn_date || new Date().toISOString().slice(0, 10);
   let assetId = toInt(b.asset_id);
   let unresolved = null;
+  if (!assetId && toInt(b.job_id)) { const j = get('SELECT asset_id FROM job_cards WHERE id = ?', toInt(b.job_id)); assetId = j ? j.asset_id : null; }
   if (!assetId && b.asset) {
     const r = aliases.resolveAsset(b.asset, { source: 'oil' });
     assetId = r.assetId;
     if (!r.resolved) unresolved = { aliasId: r.aliasId, raw: b.asset };
   }
   const unitPrice = b.unit_price === undefined || b.unit_price === '' ? costing.productPriceOn(productId, txnDate) : toNum(b.unit_price);
-  const info = run(
-    `INSERT INTO stock_ledger (product_id, kind, qty, balance_after, unit_price, asset_id, project_id, job_id, consumer, mr_no, mtn_no, txn_date, note)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    productId, b.kind, signed, balanceAfter, unitPrice == null ? null : unitPrice, assetId || null,
-    toInt(b.project_id), toInt(b.job_id), b.consumer || null, b.mr_no || null, b.mtn_no || null, txnDate, b.note || null
-  );
-  audit.record({ userId: req.user.id, entity: 'stock_ledger', entityId: info.lastInsertRowid, action: 'create' });
-  res.status(201).json({ ledger: get('SELECT * FROM stock_ledger WHERE id = ?', info.lastInsertRowid), unresolved });
+  // Rollup period + guards. Service-consumed oil is accounted under the service record's
+  // cost, so it is NOT rolled into the vehicle's oil_cost bucket (avoids double count).
+  const [yr, mo] = txnDate.split('-').map((n) => parseInt(n, 10));
+  const validPeriod = /^\d{4}-\d{2}-\d{2}/.test(txnDate) && yr >= 1900 && mo >= 1 && mo <= 12;
+  const isService = b.consumer_type === 'service';
+  const lineCost = qtyMag * (unitPrice || 0);
+
+  const ledgerId = tx(() => {
+    const info = run(
+      `INSERT INTO stock_ledger (product_id, kind, qty, balance_after, unit_price, asset_id, project_id, job_id, consumer, consumer_type, mr_no, mtn_no, txn_date, note)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      productId, b.kind, signed, balanceAfter, unitPrice == null ? null : unitPrice, assetId || null,
+      toInt(b.project_id), toInt(b.job_id), b.consumer || null, b.consumer_type || null, b.mr_no || null, b.mtn_no || null, txnDate, b.note || null
+    );
+    // Keep the denormalised balance in lock-step with the ledger (source of truth stays
+    // balance_after; stock_qty simply mirrors the latest balance so lookups are cheap).
+    run('UPDATE products SET stock_qty = ? WHERE id = ?', balanceAfter, productId);
+    // Issue to a vehicle → roll the oil cost into that month's bucket (component += Δ,
+    // total += Δ; single basis qty × unit_price — see lib vehicle_monthly_costs invariant).
+    if (b.kind === 'issue' && assetId && validPeriod && !isService) {
+      run(
+        `INSERT INTO vehicle_monthly_costs (asset_id, year, month, oil_cost, total_cost)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(asset_id, year, month) DO UPDATE SET
+           oil_cost = oil_cost + excluded.oil_cost,
+           total_cost = total_cost + excluded.oil_cost,
+           updated_at = datetime('now')`,
+        assetId, yr, mo, lineCost, lineCost
+      );
+    }
+    return info.lastInsertRowid;
+  });
+  audit.record({ userId: req.user.id, entity: 'stock_ledger', entityId: ledgerId, action: 'create', after: { kind: b.kind, balance: balanceAfter } });
+  emitter.emit('oil_updated', { product_id: productId, kind: b.kind, balance: balanceAfter, asset_id: assetId || null });
+  emitter.emit('dashboard_refresh', { reason: 'oil_' + b.kind, asset_id: assetId || null, year: yr, month: mo });
+  res.status(201).json({ ledger: get('SELECT * FROM stock_ledger WHERE id = ?', ledgerId), unresolved });
 }));
 
 router.get('/balances', asyncHandler((_req, res) => {
   const rows = all('SELECT id, name, unit, reorder_level FROM products ORDER BY name');
   res.json(rows.map((p) => ({ product_id: p.id, name: p.name, unit: p.unit, balance: currentBalance(p.id), reorder_level: p.reorder_level })));
+}));
+
+// ---- stock summary / low stock / consumption (oil-stock page) --------------
+// green OK / orange Low / red Critical, by stock_qty vs reorder_level.
+const oilStatus = (qty, reorder) => (qty <= 0 ? 'critical' : (reorder > 0 && qty <= reorder ? 'low' : 'ok'));
+const OIL_STOCK_COLS = `id, code, name, sheet_name, unit, category, COALESCE(reorder_level,0) AS reorder_level,
+  COALESCE(unit_price,0) AS unit_price, COALESCE(stock_qty,0) AS stock_qty,
+  ROUND(COALESCE(stock_qty,0) * COALESCE(unit_price,0), 2) AS total_value`;
+
+// Products with current stock + valuation, grouped by category, plus headline totals.
+router.get('/stock-summary', asyncHandler((_req, res) => {
+  const products = all(`SELECT ${OIL_STOCK_COLS} FROM products WHERE active = 1 ORDER BY category, name`);
+  const groups = {};
+  let totalLitres = 0, totalValue = 0, lowCount = 0;
+  for (const p of products) {
+    p.status = oilStatus(p.stock_qty, p.reorder_level);
+    totalLitres += p.stock_qty; totalValue += p.total_value;
+    if (p.status !== 'ok') lowCount++;
+    const c = p.category || 'other';
+    if (!groups[c]) groups[c] = { category: c, litres: 0, value: 0, count: 0, products: [] };
+    groups[c].products.push(p); groups[c].litres += p.stock_qty; groups[c].value += p.total_value; groups[c].count++;
+  }
+  const round2 = (n) => Math.round(n * 100) / 100;
+  res.json({
+    summary: { total_products: products.length, total_litres: round2(totalLitres), total_value: round2(totalValue), low_stock_count: lowCount },
+    groups: Object.values(groups).map((g) => ({ ...g, litres: round2(g.litres), value: round2(g.value) })),
+  });
+}));
+
+// Products at or below their reorder level (or out of stock).
+router.get('/low-stock', asyncHandler((_req, res) => {
+  const rows = all(`SELECT ${OIL_STOCK_COLS} FROM products
+     WHERE active = 1 AND (COALESCE(stock_qty,0) <= 0 OR (COALESCE(reorder_level,0) > 0 AND COALESCE(stock_qty,0) <= reorder_level))
+     ORDER BY (COALESCE(stock_qty,0) - COALESCE(reorder_level,0)) ASC, name`);
+  for (const r of rows) r.status = oilStatus(r.stock_qty, r.reorder_level);
+  res.json(rows);
+}));
+
+// Oil consumption for one month: issued litres + cost by product, category and vehicle.
+// Physical consumption, so ALL non-voided issues count (voided entries excluded).
+router.get('/consumption/:year/:month', asyncHandler((req, res) => {
+  const year = toInt(req.params.year), month = toInt(req.params.month);
+  if (!(year >= 1900 && month >= 1 && month <= 12)) return res.status(400).json({ error: 'Invalid year/month' });
+  const ym = String(year) + '-' + String(month).padStart(2, '0'); // 'YYYY-MM'
+  const CONS = `SUM(ABS(sl.qty))`;
+  const COST = `SUM(ABS(sl.qty) * COALESCE(sl.unit_price, p.unit_price, 0))`;
+  const where = `sl.kind = 'issue' AND COALESCE(sl.voided,0) = 0 AND substr(sl.txn_date,1,7) = ?`;
+  const by_product = all(
+    `SELECT p.id AS product_id, p.name, p.category, p.unit, ROUND(${CONS},2) AS litres, ROUND(${COST},2) AS cost
+       FROM stock_ledger sl JOIN products p ON p.id = sl.product_id
+      WHERE ${where} GROUP BY p.id ORDER BY litres DESC`, ym);
+  const by_category = all(
+    `SELECT COALESCE(p.category,'other') AS category, ROUND(${CONS},2) AS litres, ROUND(${COST},2) AS cost
+       FROM stock_ledger sl JOIN products p ON p.id = sl.product_id
+      WHERE ${where} GROUP BY 1 ORDER BY litres DESC`, ym);
+  const by_vehicle = all(
+    `SELECT sl.asset_id, a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec,
+            ROUND(${CONS},2) AS litres, ROUND(${COST},2) AS cost
+       FROM stock_ledger sl JOIN products p ON p.id = sl.product_id LEFT JOIN assets a ON a.id = sl.asset_id
+      WHERE ${where} AND sl.asset_id IS NOT NULL GROUP BY sl.asset_id ORDER BY litres DESC LIMIT 50`, ym);
+  res.json({ year, month, by_product, by_category, by_vehicle });
 }));
 
 // ---- stock counts ---------------------------------------------------------
@@ -167,10 +340,13 @@ router.post('/counts', requireRole('storekeeper'), asyncHandler((req, res) => {
          VALUES (?, 'adjustment', ?, ?, ?, ?)`,
         productId, variance, counted, new Date().toISOString().slice(0, 10), `Stock count adjustment ${b.period}`
       );
+      // Keep the denormalised balance in step with the adjustment.
+      run('UPDATE products SET stock_qty = ? WHERE id = ?', counted, productId);
     }
     return get('SELECT * FROM stock_counts WHERE product_id = ? AND period = ?', productId, b.period);
   });
   audit.record({ userId: req.user.id, entity: 'stock_count', entityId: result.id, action: 'create' });
+  if (b.post_adjustment && variance !== 0) emitter.emit('oil_updated', { product_id: productId, kind: 'adjustment', balance: counted });
   res.status(201).json(result);
 }));
 

@@ -45,6 +45,35 @@ router.post('/rates', requireRole('admin', 'manager'), asyncHandler((req, res) =
   res.status(201).json(get('SELECT * FROM labour_rates WHERE id = ?', info.lastInsertRowid));
 }));
 
+// Labour names that appear in the daily-work log but have NO hourly rate yet.
+// Split the crew strings ("Buddhika, Krishna") into individuals, resolve each to a
+// canonical mechanic, and flag those without a current rate — the owner's to-do list.
+router.get('/unassigned', asyncHandler((_req, res) => {
+  const rated = new Set(
+    all('SELECT DISTINCT mechanic FROM labour_rates').map((r) => mechanics.normalizeMechanic(r.mechanic))
+  );
+  const acc = new Map(); // canonicalNorm -> { name, norm, entries, resolved, resolvedName }
+  for (const row of all(
+    `SELECT mechanic, COUNT(*) c FROM job_daily_work
+      WHERE mechanic IS NOT NULL AND mechanic <> '' GROUP BY mechanic`
+  )) {
+    for (const raw of mechanics.splitMechanics(row.mechanic)) {
+      const norm = mechanics.normalizeMechanic(raw);
+      if (!norm) continue;
+      const look = mechanics.lookupMechanic(raw);
+      const canonicalNorm = look.resolved ? mechanics.normalizeMechanic(look.name) : norm;
+      if (rated.has(canonicalNorm)) continue; // already has a rate
+      const cur = acc.get(canonicalNorm) || {
+        name: look.resolved ? look.name : raw, norm: canonicalNorm, entries: 0,
+        resolved: look.resolved, resolvedName: look.resolved ? look.name : null,
+      };
+      cur.entries += row.c;
+      acc.set(canonicalNorm, cur);
+    }
+  }
+  res.json([...acc.values()].sort((a, b) => b.entries - a.entries));
+}));
+
 // The pending mechanic-name queue (mirrors the asset alias queue).
 router.get('/aliases', asyncHandler((req, res) => {
   const resolved = req.query.resolved;

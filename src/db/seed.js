@@ -27,8 +27,13 @@ tx(() => {
   // ---- roles ----
   const roles = [
     ['admin', 'Administrator'],
-    ['storekeeper', 'Storekeeper'],
+    // Two stores, two keepers. The workshop store ASKS for tyres and batteries; Head Office /
+    // Main Stores buys them. Giving both the same role would let the main-stores keeper issue
+    // stock out of the workshop store, which is the one thing the split exists to prevent.
+    ['storekeeper', 'Workshop Storekeeper'],
+    ['main_storekeeper', 'Main Stores Storekeeper'],
     ['transport_manager', 'Transport Manager'],
+    ['assistant_transport_manager', 'Assistant Transport Manager'],
     ['operational_manager', 'Operational Manager'],
     ['workshop', 'Workshop / Mechanic Supervisor'],
     ['manager', 'Manager'],
@@ -42,6 +47,7 @@ tx(() => {
     ['admin', 'admin', 'System Admin', ['admin']],
     ['store', 'store', 'Sunil (Storekeeper)', ['storekeeper']],
     ['transport', 'transport', 'Transport Manager', ['transport_manager']],
+    ['asst', 'asst', 'Assistant Transport Manager', ['assistant_transport_manager']],
     ['ops', 'ops', 'Operational Manager', ['operational_manager', 'manager']],
     ['mech', 'mech', 'Workshop Supervisor', ['workshop']],
     ['viewer', 'viewer', 'Read-only Viewer', ['viewer']],
@@ -290,5 +296,5 @@ tx(() => {
 });
 
 console.log('Seed complete.');
-console.log('Login: admin/admin, store/store, transport/transport, ops/ops, mech/mech, viewer/viewer');
+console.log('Login: admin/admin, store/store, transport/transport, asst/asst, ops/ops, mech/mech, viewer/viewer');
 db.close();
