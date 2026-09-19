@@ -6,6 +6,7 @@ const { requireRole } = require('../lib/auth');
 const { asyncHandler, require_, toInt, toNum } = require('../lib/http');
 const audit = require('../lib/audit');
 const mechanics = require('../lib/mechanics');
+const aliases = require('../lib/aliases');
 
 const router = express.Router();
 
@@ -76,13 +77,16 @@ router.get('/unassigned', asyncHandler((_req, res) => {
 
 // The pending mechanic-name queue (mirrors the asset alias queue).
 router.get('/aliases', asyncHandler((req, res) => {
-  const resolved = req.query.resolved;
-  const where = resolved === undefined ? '' : 'WHERE ma.resolved = ' + (toInt(resolved) ? 1 : 0);
-  res.json(all(
-    `SELECT ma.*, m.name AS mechanic_name FROM mechanic_aliases ma
-       LEFT JOIN mechanics m ON m.id = ma.mechanic_id ${where}
-      ORDER BY ma.resolved ASC, ma.hit_count DESC`
-  ));
+  res.json(aliases.queryAliasQueue({
+    table: 'mechanic_aliases',
+    targetTable: 'mechanics',
+    targetIdCol: 'mechanic_id',
+    targetNameCol: 'name',
+    targetAlias: 'mechanic_name',
+    resolved: req.query.resolved,
+    q: req.query.q,
+    limit: req.query.limit,
+  }));
 }));
 
 router.post('/aliases/:id/link', requireRole('storekeeper', 'manager'), asyncHandler((req, res) => {

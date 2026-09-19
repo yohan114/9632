@@ -527,6 +527,98 @@ router.post('/', requireRole('workshop', 'manager', 'storekeeper'), asyncHandler
   res.status(201).json({ id: info.lastInsertRowid, job_no: job.job_no, date, unresolved, auto_created: autoCreated });
 }));
 
+// Rapid multi-row timesheet logging endpoint
+router.post('/bulk-log', requireRole('workshop', 'manager', 'admin'), asyncHandler((req, res) => {
+  const b = req.body || {};
+  const date = String(b.date || '').slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return res.status(400).json({ error: 'Valid date (YYYY-MM-DD) required' });
+
+  const rawEntries = Array.isArray(b.entries) ? b.entries : [];
+  if (!rawEntries.length) return res.status(400).json({ error: 'entries array required' });
+
+  const affectedJobs = new Set();
+  const createdIds = [];
+
+  tx(() => {
+    for (let i = 0; i < rawEntries.length; i++) {
+      const e = rawEntries[i];
+      const mechanic = String(e.mechanic || '').trim();
+      const hours = toNum(e.hours, 0);
+      let description = String(e.description || '').trim();
+      const isExternal = e.is_external ? 1 : 0;
+      const rawVeh = String(e.asset || '').trim();
+
+      if (!mechanic) continue; // skip blank row
+      if (hours <= 0 && !isExternal) continue;
+
+      let jobId = null;
+      let lineAsset = toInt(e.asset_id) || null;
+
+      if (e.request_type === 'general') {
+        let assetId = lineAsset;
+        if (!assetId && rawVeh) {
+          const r = aliases.resolveAsset(rawVeh, { source: 'daily_work' });
+          assetId = r.assetId;
+        }
+        if (assetId) {
+          jobId = autoVehicleJob(assetId, date, rawVeh || null).id;
+          lineAsset = assetId;
+        } else {
+          jobId = generalWorkshopJob();
+          if (rawVeh) description = description ? `${rawVeh} — ${description}` : rawVeh;
+        }
+      } else if (toInt(e.job_id)) {
+        jobId = toInt(e.job_id);
+      } else {
+        let assetId = lineAsset;
+        if (!assetId && rawVeh) {
+          const r = aliases.resolveAsset(rawVeh, { source: 'daily_work' });
+          assetId = r.assetId;
+        }
+        if (assetId) {
+          const job = jobForEntry(assetId, date);
+          jobId = job ? job.id : autoVehicleJob(assetId, date, rawVeh || null).id;
+          lineAsset = assetId;
+        } else {
+          jobId = generalWorkshopJob();
+        }
+      }
+
+      const job = get('SELECT id, asset_id, job_no FROM job_cards WHERE id = ?', jobId);
+      if (!job) continue;
+      if (!lineAsset && job.asset_id) lineAsset = job.asset_id;
+
+      const info = run(
+        `INSERT INTO job_daily_work (job_id, work_date, mechanic, description, hours, is_external, external_value, asset_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        jobId, date, mechanic, description, hours, isExternal, isExternal ? toNum(e.external_value, 0) : 0, lineAsset
+      );
+      createdIds.push(info.lastInsertRowid);
+      affectedJobs.add(jobId);
+    }
+  });
+
+  for (const jId of affectedJobs) {
+    costing.refreshJobTotals(jId);
+  }
+  mechanics.syncJobLabourForMonth(date.slice(0, 7));
+  rateCache.clear();
+
+  audit.record({
+    userId: req.user.id,
+    entity: 'job_daily_work',
+    action: 'bulk_log',
+    after: { date, count: createdIds.length, jobs: [...affectedJobs] }
+  });
+
+  res.status(201).json({
+    ok: true,
+    date,
+    entries_logged: createdIds.length,
+    jobs_affected: affectedJobs.size
+  });
+}));
+
 // Edit a daily-work line (hours, and optionally the mechanic string).
 router.patch('/:id', requireRole('admin', 'workshop', 'manager'), asyncHandler((req, res) => {
   const id = toInt(req.params.id);

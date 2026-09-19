@@ -60,24 +60,30 @@ function signatures(ws, row, ncols) {
 }
 
 function inputRows(year, month, sheet) {
-  const rows = all('SELECT * FROM monthly_report_inputs WHERE year = ? AND month = ? AND sheet = ? ORDER BY seq, id', year, month, sheet);
-  if (rows.length > 0) return rows;
-
-  const latest = get(
-    'SELECT year, month FROM monthly_report_inputs WHERE sheet = ? ORDER BY year DESC, month DESC LIMIT 1',
-    sheet
-  );
-  if (!latest) return [];
-
-  return all('SELECT * FROM monthly_report_inputs WHERE year = ? AND month = ? AND sheet = ? ORDER BY seq, id', latest.year, latest.month, sheet);
+  return all('SELECT * FROM monthly_report_inputs WHERE year = ? AND month = ? AND sheet = ? ORDER BY seq, id', year, month, sheet);
 }
 
 // ---------------------------------------------------------------------------
 // 1. PROFIT OR LOSS
 // ---------------------------------------------------------------------------
-function buildProfitLoss(ws, period) {
+function buildProfitLoss(ws, period, parts) {
   [4, 38, 18, 20, 20, 12, 12, 12].forEach((w, i) => { ws.getColumn(i + 1).width = w; });
   titleBand(ws, 7, 'PROFIT OR LOSS — running the workshop in-house vs sending the work outside', period);
+
+  const totWages = parts && parts.salaries ? num(parts.salaries.sums.total) : 0;
+  const totVehicles = parts && parts.fuel ? (num(parts.fuel.sums.cost) + num(parts.fuel.sums.rental)) : 0;
+  const totOverheads = parts && parts.other ? num(parts.other.sums.total) : 0;
+  const totAbsorbed = totWages + totVehicles + totOverheads;
+
+  const repCOut = parts && parts.repair ? parts.repair.closed_jobs.reduce((a, b) => a + num(b.outside_estimate), 0) : 0;
+  const repPOut = parts && parts.repair ? parts.repair.pending_jobs.reduce((a, b) => a + num(b.outside_estimate), 0) : 0;
+  const repOOut = parts && parts.repair ? num(parts.repair.other_labour_outside) : 0;
+  const svcOut = parts && parts.service ? num(parts.service.sums.outsideWithTrn) : 0;
+  const totOutEst = repCOut + repPOut + repOOut + svcOut;
+
+  const absorbedSaving = totOutEst - totAbsorbed;
+  const absorbedPct = totOutEst > 0 ? (absorbedSaving / totOutEst) : 0;
+  const isZeroActivity = (totAbsorbed === 0 && totOutEst === 0);
 
   ws.mergeCells(5, 2, 5, 7);
   const h5 = ws.getCell(5, 2); h5.value = 'HEADLINE RESULT — fully absorbed basis (wages + workshop vehicles + site overheads)';
@@ -85,22 +91,43 @@ function buildProfitLoss(ws, period) {
 
   ws.mergeCells(6, 2, 7, 7);
   const resCell = ws.getCell(6, 2);
-  resCell.value = { formula: 'IF($E$17>=0,"PROFIT","LOSS")', result: 'PROFIT' };
-  resCell.font = { bold: true, size: 24, color: { argb: 'FF008000' } }; resCell.alignment = { horizontal: 'center', vertical: 'middle' };
+  resCell.value = {
+    formula: 'IF($E$17>=0,"PROFIT","LOSS")',
+    result: isZeroActivity ? 'PROFIT' : (absorbedSaving >= 0 ? 'PROFIT' : 'LOSS')
+  };
+  resCell.font = { bold: true, size: 24, color: { argb: (absorbedSaving < 0 && !isZeroActivity) ? 'FFC5221F' : 'FF008000' } };
+  resCell.alignment = { horizontal: 'center', vertical: 'middle' };
 
   ws.mergeCells(8, 2, 9, 7);
   const valCell = ws.getCell(8, 2);
-  valCell.value = { formula: '"Rs "&TEXT(ABS($E$17),"#,##0.00")', result: 'Rs 1,206,842.32' };
+  valCell.value = {
+    formula: '"Rs "&TEXT(ABS($E$17),"#,##0.00")',
+    result: `Rs ${Number(Math.abs(absorbedSaving)).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+  };
   valCell.font = { bold: true, size: 20 }; valCell.alignment = { horizontal: 'center', vertical: 'middle' };
 
   ws.mergeCells(10, 2, 10, 7);
   const pctCell = ws.getCell(10, 2);
-  pctCell.value = { formula: 'IF($E$17>=0,"That is "&TEXT(ABS($F$17),"0.0%")&" CHEAPER than sending the same work to an outside repairer.","That is "&TEXT(ABS($F$17),"0.0%")&" MORE EXPENSIVE than sending the same work to an outside repairer.")', result: 'That is 29.0% CHEAPER than sending the same work to an outside repairer.' };
+  pctCell.value = {
+    formula: 'IF($E$17>=0,"That is "&TEXT(ABS($F$17),"0.0%")&" CHEAPER than sending the same work to an outside repairer.","That is "&TEXT(ABS($F$17),"0.0%")&" MORE EXPENSIVE than sending the same work to an outside repairer.")',
+    result: isZeroActivity
+      ? 'That is 0.0% CHEAPER than sending the same work to an outside repairer.'
+      : (absorbedSaving >= 0
+        ? `That is ${(absorbedPct * 100).toFixed(1)}% CHEAPER than sending the same work to an outside repairer.`
+        : `That is ${(Math.abs(absorbedPct) * 100).toFixed(1)}% MORE EXPENSIVE than sending the same work to an outside repairer.`)
+  };
   pctCell.font = { bold: true, size: 11 }; pctCell.alignment = { horizontal: 'center' };
 
   ws.mergeCells(11, 2, 11, 7);
   const stmtCell = ws.getCell(11, 2);
-  stmtCell.value = { formula: 'IF($E$17>=0,"We are BETTER OFF keeping this work in our own workshop.","We are WORSE OFF keeping this work in our own workshop.")', result: 'We are BETTER OFF keeping this work in our own workshop.' };
+  stmtCell.value = {
+    formula: 'IF($E$17>=0,"We are BETTER OFF keeping this work in our own workshop.","We are WORSE OFF keeping this work in our own workshop.")',
+    result: isZeroActivity
+      ? 'No workshop activity recorded for this period.'
+      : (absorbedSaving >= 0
+        ? 'We are BETTER OFF keeping this work in our own workshop.'
+        : 'We are WORSE OFF keeping this work in our own workshop.')
+  };
   stmtCell.font = { bold: true, size: 11 }; stmtCell.alignment = { horizontal: 'center' };
 
   ws.mergeCells(13, 2, 13, 7);
@@ -591,6 +618,11 @@ function buildService(wb, ym, period) {
     formulaMoney(ws, gr, 15, `SUM(O6:O${last})`, sums.outsideNoTrn, true);
     textCell(ws, gr, 16, '');
     formulaMoney(ws, gr, 17, `SUM(Q6:Q${last})`, sums.outsideWithTrn, true);
+  } else {
+    moneyCell(ws, gr, 14, 0).font = { bold: true };
+    moneyCell(ws, gr, 15, 0).font = { bold: true };
+    textCell(ws, gr, 16, '');
+    moneyCell(ws, gr, 17, 0).font = { bold: true };
   }
 
   signatures(ws, gr + 3, 17);
@@ -902,7 +934,8 @@ function buildSalaries(wb, year, month, ym, period) {
   }
   const sigRow = Math.max(lGr, rr) + 3;
   signatures(ws, sigRow, 7);
-  return { name: 'Salaries Cost', sums, count: staff.length, grand_row: lGr, mechanic_total: mTot.amount, refs: { total: `'Salaries Cost'!G${lGr}` } };
+  const overheadTotal = staff.slice(0, 8).reduce((a, b) => a + num(b.amount1), 0);
+  return { name: 'Salaries Cost', sums, count: staff.length, grand_row: lGr, overhead_total: overheadTotal, mechanic_total: mTot.amount, refs: { total: `'Salaries Cost'!G${lGr}` } };
 }
 
 // ---------------------------------------------------------------------------
@@ -987,8 +1020,9 @@ function buildTotal(wb, parts, period) {
   }
 
   // Overhead Staff (Row 17)
+  const overheadStaffCost = parts.salaries.overhead_total || 0;
   textCell(ws, 17, 2, 'Overhead Staff').font = { bold: true };
-  const c17_3 = ws.getCell(17, 3); c17_3.value = { formula: "SUM('Salaries Cost'!G6:G13)", result: 622440 }; c17_3.numFmt = MONEY; border(c17_3);
+  const c17_3 = ws.getCell(17, 3); c17_3.value = { formula: "SUM('Salaries Cost'!G6:G13)", result: overheadStaffCost }; c17_3.numFmt = MONEY; border(c17_3);
   for (let col = 4; col <= 13; col++) border(ws.getCell(17, col));
 
   // Grand total row 18
@@ -1002,7 +1036,7 @@ function buildTotal(wb, parts, period) {
       const c = ws.getCell(d.row, col).value;
       if (c && typeof c === 'object' && 'result' in c) s += num(c.result);
     }
-    if (col === 3) s += 622440; // include Overhead Staff in Col C
+    if (col === 3) s += overheadStaffCost; // include Overhead Staff in Col C
     colTotals[col] = s;
     const fStr = col === 3 ? `SUM(C8:C17)` : `SUM(${colL(col)}8:${colL(col)}16)`;
     formulaMoney(ws, gRow, col, fStr, s, true);
@@ -1281,11 +1315,16 @@ function buildJobWiseComparison(wb, parts, period) {
   const gr = r;
   ws.mergeCells(gr, 2, gr, 5); const gl = ws.getCell(gr, 2); gl.value = 'Grand Total'; gl.font = { bold: true }; gl.alignment = { horizontal: 'right' }; border(gl);
   for (let col = 3; col <= 5; col++) border(ws.getCell(gr, col));
-  formulaMoney(ws, gr, 6, `SUM(F6:F${gr-1})`, parts.repair.sums.labour + parts.service.sums.labour, true);
-  formulaMoney(ws, gr, 7, `SUM(G6:G${gr-1})`, parts.repair.sums.total + parts.service.sums.total, true);
-  formulaMoney(ws, gr, 8, `SUM(H6:H${gr-1})`, parts.repair.sums.outside + parts.service.sums.outsideWithTrn, true);
-  formulaMoney(ws, gr, 9, `H${gr}-F${gr}`, (parts.repair.sums.outside + parts.service.sums.outsideWithTrn) - (parts.repair.sums.labour + parts.service.sums.labour), true);
-  const pGr = ws.getCell(gr, 10); pGr.value = { formula: `I${gr}/H${gr}`, result: 0.6989 }; pGr.numFmt = '0.0%'; pGr.font = { bold: true }; border(pGr);
+  const totLab = parts.repair.sums.labour + parts.service.sums.labour;
+  const totTotal = parts.repair.sums.total + parts.service.sums.total;
+  const totOutside = parts.repair.sums.outside + parts.service.sums.outsideWithTrn;
+  const totSaving = totOutside - totLab;
+  const savingPct = totOutside > 0 ? (totSaving / totOutside) : 0;
+  formulaMoney(ws, gr, 6, `SUM(F6:F${gr-1})`, totLab, true);
+  formulaMoney(ws, gr, 7, `SUM(G6:G${gr-1})`, totTotal, true);
+  formulaMoney(ws, gr, 8, `SUM(H6:H${gr-1})`, totOutside, true);
+  formulaMoney(ws, gr, 9, `H${gr}-F${gr}`, totSaving, true);
+  const pGr = ws.getCell(gr, 10); pGr.value = { formula: `IFERROR(I${gr}/H${gr},0)`, result: savingPct }; pGr.numFmt = '0.0%'; pGr.font = { bold: true }; border(pGr);
   textCell(ws, gr, 11, ''); textCell(ws, gr, 12, '');
 
   signatures(ws, gr + 3, 11);
@@ -1325,7 +1364,7 @@ async function buildWorkbook(year, month) {
   buildJobWiseComparison(wb, parts, period);
   
   // Populate PROFIT OR LOSS sheet content
-  buildProfitLoss(plSheet, period);
+  buildProfitLoss(plSheet, period, parts);
 
   return { wb, parts, total: parts.total };
 }

@@ -372,3 +372,41 @@ body.live-connected .live-dot { color: var(--green); }
   .content { padding: 10px 12px; }
   table.fit-table td, table.fit-table th { padding: 3px 5px; }
 }
+
+/* ---- Material Pipeline Cockpit Styles ---- */
+.pipe-card-active {
+  border-color: var(--accent) !important;
+  background: var(--surface-2) !important;
+  box-shadow: 0 0 0 1px var(--accent), var(--shadow) !important;
+}
+.pipe-card-active::before {
+  background: var(--accent) !important;
+  height: 4px !important;
+}
+.pipe-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 7px;
+  border-radius: 3px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+}
+.pipe-badge.avail {
+  background: rgba(60, 125, 90, .14);
+  color: var(--green);
+  border: 1px solid rgba(60, 125, 90, .3);
+}
+.pipe-badge.order {
+  background: rgba(29, 90, 115, .14);
+  color: var(--primary);
+  border: 1px solid rgba(29, 90, 115, .3);
+}
+.pipe-badge.pend {
+  background: rgba(154, 110, 0, .14);
+  color: var(--amber);
+  border: 1px solid rgba(154, 110, 0, .3);
+}
+

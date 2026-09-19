@@ -2,13 +2,15 @@
 
 const express = require('express');
 const { get, all, run, tx } = require('../db');
-const { requireAuth } = require('../lib/auth');
+const { requireAuth, requireRole } = require('../lib/auth');
 const { asyncHandler, toInt, toNum } = require('../lib/http');
 const config = require('../config');
 const costing = require('../lib/costing');
 const intelligence = require('../lib/intelligence');
 const { sendXlsx } = require('../lib/export');
 const monthlyReport = require('../lib/monthly_cost_report');
+const mechanics = require('../lib/mechanics');
+const lubricants = require('../lib/lubricants');
 
 const router = express.Router();
 
@@ -29,18 +31,12 @@ router.get('/dashboard', asyncHandler((_req, res) => {
       WHERE j.status = 'WORK_COMPLETE' ORDER BY j.id DESC`
   ).map((j) => ({ ...j, missing_count: costing.closureReadiness(j.id).missing.length }));
 
-  const products = all('SELECT * FROM products');
-  const low_stock_oil = products
-    .map((p) => ({ id: p.id, name: p.name, unit: p.unit, balance: currentBalance(p.id), reorder_level: p.reorder_level }))
-    .filter((p) => p.reorder_level > 0 && p.balance <= p.reorder_level);
+  const low_stock_oil = lubricants.oilForecast().products
+    .filter((p) => p.low)
+    .map((p) => ({ id: p.id, name: p.name, unit: p.unit, balance: p.balance, reorder_level: p.reorder_level }));
 
-  const today = new Date().toISOString().slice(0, 10);
-  const in60 = new Date(Date.now() + 60 * 86400 * 1000).toISOString().slice(0, 10);
-  const batteries_warranty = all(
-    `SELECT b.serial_no, b.warranty_date, a.code AS asset_code FROM batteries b LEFT JOIN assets a ON a.id=b.current_asset_id
-      WHERE b.warranty_date IS NOT NULL AND b.warranty_date >= ? AND b.warranty_date <= ? AND b.state <> 'decommissioned'
-      ORDER BY b.warranty_date`, today, in60
-  );
+  const batteries_warranty = intelligence.warrantyRadar().expiring
+    .map((b) => ({ serial_no: b.serial_no, warranty_date: b.warranty_date, asset_code: b.asset_code }));
 
   const month_cost_by_project = all(
     `SELECT COALESCE(p.name, '(unassigned)') project, COALESCE(SUM(j.total_cost),0) total
@@ -59,6 +55,11 @@ router.get('/dashboard', asyncHandler((_req, res) => {
     month_cost_by_project, open_jobs_count, closed_this_month_count,
     needs_attention: intelligence.needsAttentionSummary(),
   });
+}));
+
+// Consolidated project cost rollup across all projects
+router.get('/cost/by-project', asyncHandler((_req, res) => {
+  res.json(costing.projectsCostSummary());
 }));
 
 // ---- advisory intelligence (Phase 5 §1/§4) — read-only, flags only --------
@@ -1252,11 +1253,14 @@ router.get('/monthly-inputs', requireAuth, asyncHandler(async (req, res) => {
   const absorbedSaving = totOutEst - totAbsorbed;
   const absorbedPct = totOutEst > 0 ? (absorbedSaving / totOutEst) : 0;
 
+  const isZeroActivity = totAbsorbed === 0 && totOutEst === 0;
+
   const preview = {
     profit_loss: {
-      is_profit: absorbedSaving >= 0,
-      saving_amount: Math.abs(absorbedSaving),
-      saving_pct: Math.abs(absorbedPct),
+      is_profit: isZeroActivity ? true : (absorbedSaving >= 0),
+      is_zero: isZeroActivity,
+      saving_amount: isZeroActivity ? 0 : Math.abs(absorbedSaving),
+      saving_pct: isZeroActivity ? 0 : Math.abs(absorbedPct),
       in_house_cost: totAbsorbed,
       outside_cost: totOutEst,
     },
@@ -1381,6 +1385,20 @@ router.get('/monthly-repair-detail.html', requireAuth, asyncHandler((req, res) =
     }
     return 0;
   };
+  const closedJobs = all(`SELECT id, job_no FROM job_cards
+      WHERE status = 'CLOSED' AND completed_at IS NOT NULL AND substr(completed_at,1,7) = ?
+        AND (description IS NULL OR (description NOT LIKE 'Stores materials%' AND description NOT LIKE 'auto-created container%'))
+      ORDER BY completed_at, id`, ym).sort(byJobNo);
+  const closedIds = closedJobs.map((r) => r.id);
+
+  const pendingJobs = all(`SELECT id, job_no FROM job_cards
+      WHERE status <> 'CLOSED'
+        AND (description IS NULL OR (description NOT LIKE 'Stores materials%' AND description NOT LIKE 'auto-created container%'))
+        AND substr(COALESCE(requested_at, created_at),1,7) <= ?
+        AND EXISTS (SELECT 1 FROM job_daily_work w WHERE w.job_id = job_cards.id AND substr(w.work_date,1,7) = ?)
+      ORDER BY COALESCE(requested_at, created_at) DESC, id DESC`, ym, ym).sort(byJobNo);
+  const pendingIds = pendingJobs.map((r) => r.id);
+
   const sparesIds = all(`SELECT id FROM job_cards
       WHERE substr(COALESCE(completed_at, requested_at, created_at),1,7) = ?
         AND (description LIKE 'Stores materials%' OR description LIKE 'auto-created container%' OR description LIKE 'Spares Supply%')
@@ -1483,6 +1501,82 @@ ${sparesHtml}
 </body></html>`;
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
   res.send(html);
+}));
+
+// ---- Repair Cost Sections Reconciler API -----------------------------------
+// Returns structured JSON for the 4 sections of the monthly repair cost report:
+// Section A: Closed Jobs
+// Section B: Pending Jobs
+// Section C: Other Labour
+// Section D: Spares Supply
+// Plus the grand totals and the mathematical daily work vs labour tally.
+router.get('/repair-sections', requireAuth, asyncHandler(async (req, res) => {
+  const year = toInt(req.query.year), month = toInt(req.query.month);
+  if (!validPeriod(year, month)) return res.status(400).json({ error: 'year (YYYY) and month (1-12) are required' });
+  const ym = `${year}-${String(month).padStart(2, '0')}`;
+  const period = `${monthlyReport.MONTHS[month]} ${year}`;
+
+  const { parts } = await monthlyReport.buildWorkbook(year, month);
+  const rep = parts.repair;
+
+  // Verify daily work total with effective dated rates
+  const dwRows = all(`
+    SELECT w.id, w.job_id, w.work_date, w.mechanic, w.hours, w.is_external
+      FROM job_daily_work w
+     WHERE substr(w.work_date,1,7) = ? AND (w.is_external IS NULL OR w.is_external = 0)
+  `, ym);
+
+  let totalDailyWorkLabour = 0;
+  for (const w of dwRows) {
+    const hrs = Number(w.hours) || 0;
+    if (!hrs) continue;
+    for (const raw of mechanics.splitMechanics(w.mechanic)) {
+      const canonical = mechanics.resolveMechanicName(raw);
+      const r = get(
+        `SELECT rate FROM labour_rates WHERE mechanic = ? AND effective_from <= ?
+          ORDER BY effective_from DESC, id DESC LIMIT 1`, canonical, w.work_date);
+      const rate = r ? r.rate : 250;
+      totalDailyWorkLabour += hrs * rate;
+    }
+  }
+  totalDailyWorkLabour = Math.round(totalDailyWorkLabour * 100) / 100;
+
+  const repCLab = Math.round(rep.closed_jobs.reduce((a, b) => a + Number(b.labour || 0), 0) * 100) / 100;
+  const repPLab = Math.round(rep.pending_jobs.reduce((a, b) => a + Number(b.labour || 0), 0) * 100) / 100;
+  const repOLab = Math.round(Number(rep.other_labour_total || 0) * 100) / 100;
+  const allocatedLabour = Math.round((repCLab + repPLab + repOLab) * 100) / 100;
+  const diff = Math.round((totalDailyWorkLabour - allocatedLabour) * 100) / 100;
+
+  res.json({
+    year, month, ym, period,
+    closed_jobs: rep.closed_jobs,
+    pending_jobs: rep.pending_jobs,
+    other_labour: rep.other_labour,
+    spares_supply: rep.spares_supply,
+    closed_total: rep.closed_total,
+    pending_total: rep.pending_total,
+    other_labour_total: rep.other_labour_total,
+    other_labour_outside: rep.other_labour_outside,
+    spares_supply_total: rep.spares_supply_total,
+    sums: rep.sums,
+    tally: {
+      total_daily_work_labour: totalDailyWorkLabour,
+      closed_labour: repCLab,
+      pending_labour: repPLab,
+      other_labour: repOLab,
+      allocated_sum: allocatedLabour,
+      difference: diff,
+      is_balanced: Math.abs(diff) < 0.01,
+    }
+  });
+}));
+
+router.post('/repair-sections/sync-labour', requireRole('admin', 'operational_manager', 'workshop'), asyncHandler((req, res) => {
+  const year = toInt(req.body.year), month = toInt(req.body.month);
+  if (!validPeriod(year, month)) return res.status(400).json({ error: 'year (YYYY) and month (1-12) are required' });
+  const ym = `${year}-${String(month).padStart(2, '0')}`;
+  mechanics.syncJobLabourForMonth(ym);
+  res.json({ ok: true, message: `Re-synchronized labour for ${ym}` });
 }));
 
 module.exports = router;

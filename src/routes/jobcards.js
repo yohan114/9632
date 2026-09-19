@@ -241,20 +241,23 @@ router.get(
     const approvals = all('SELECT * FROM job_approvals WHERE job_id = ? ORDER BY id', id);
     const dailyWork = all('SELECT * FROM job_daily_work WHERE job_id = ? ORDER BY work_date, id', id);
     const parts = all('SELECT * FROM job_parts WHERE job_id = ? ORDER BY id', id);
-    // MRN request lines behind this job's assigned items (the request side), limited
-    // to the job's date frame: [job start − 3 days … job close + 3 days]. While the card is
-    // OPEN the frame runs to today — otherwise a reopened card (whose close dates are cleared)
-    // would collapse to requested_at + 3 days and hide the parts it was reopened to add.
+    // MRN request lines behind this job (requested, on order, or received), linked by
+    // job_id, job_parts attachment, or vehicle date window [job start - 7d ... job close + 7d].
     const mrnItems = all(
-      `SELECT m.id AS mrn_id, m.mrn_no, m.req_date, ml.description, ml.category, ml.qty, ml.qty_received
-         FROM job_parts jp
-         JOIN mrn_lines ml ON ml.id = jp.mrn_line_id
+      `SELECT m.id AS mrn_id, m.mrn_no, m.req_date, m.approval_status,
+              ml.id AS mrn_line_id, ml.description, ml.category, ml.qty, ml.qty_received,
+              g.id AS grn_id, g.grn_no, g.delivery_date, g.unit_price,
+              ROUND(COALESCE((SELECT SUM(i.qty) FROM issues i WHERE i.grn_id = g.id), 0), 2) AS qty_issued,
+              ROUND(MAX(0, COALESCE(g.qty, ml.qty_received, 0) - COALESCE((SELECT SUM(i.qty) FROM issues i WHERE i.grn_id = g.id), 0)), 2) AS remaining_in_store
+         FROM mrn_lines ml
          JOIN mrn m ON m.id = ml.mrn_id
-         JOIN job_cards j ON j.id = jp.job_id
-        WHERE jp.job_id = ? AND jp.mrn_line_id IS NOT NULL
-          AND date(m.req_date) BETWEEN date(j.requested_at, '-3 days')
-                                   AND date(COALESCE(j.closed_at, j.completed_at, date('now')), '+3 days')
-        ORDER BY CAST(m.mrn_no AS INTEGER), m.mrn_no, ml.id`,
+         LEFT JOIN grn g ON g.mrn_line_id = ml.id
+         JOIN job_cards j ON j.id = ?
+        WHERE m.job_id = j.id
+           OR ml.id IN (SELECT mrn_line_id FROM job_parts WHERE job_id = j.id AND mrn_line_id IS NOT NULL)
+           OR (m.asset_id = j.asset_id AND date(m.req_date) BETWEEN date(j.requested_at, '-7 days')
+                                                               AND date(COALESCE(j.closed_at, j.completed_at, date('now')), '+7 days'))
+        ORDER BY m.id DESC, ml.id`,
       id
     );
     const labour = all('SELECT * FROM job_labour WHERE job_id = ? ORDER BY id', id);
@@ -273,6 +276,7 @@ router.get(
     const cost = costing.reconciledCost(id);
     const readiness = costing.closureReadiness(id);
     const snapshot = get('SELECT * FROM job_costs WHERE job_id = ? ORDER BY id DESC LIMIT 1', id);
+    const unissued_shelf_parts = mrnItems.filter((m) => m.grn_id && m.remaining_in_store > 0.001);
 
     res.json({
       job,
@@ -280,6 +284,7 @@ router.get(
       dailyWork,
       parts,
       mrnItems,
+      unissued_shelf_parts,
       labour: cost.labourLines,
       labourStored: labour,
       oilIssues,
@@ -409,6 +414,132 @@ router.post(
     emitter.emit('job_updated', { job_id: id, action: 'transition', status: target });
     emitter.emit('dashboard_refresh', { reason: 'job_transition', status: target });
     res.json({ ...loadJob(id), nextStates: jobstate.nextStates(target) });
+  })
+);
+
+// Bulk transition multiple job cards (for triage & batch approval trays)
+router.post(
+  '/bulk-transition',
+  requireAuth,
+  asyncHandler((req, res) => {
+    const ids = Array.isArray(req.body.ids) ? req.body.ids.map(toInt).filter(Boolean) : [];
+    const target = req.body.to;
+    const reason = req.body.reason ? String(req.body.reason).trim() : null;
+
+    if (!ids.length) return res.status(400).json({ error: 'ids array required' });
+    if (!jobstate.isValidState(target)) return res.status(400).json({ error: `Invalid target state: ${target}` });
+
+    const succeeded = [];
+    const failed = [];
+
+    tx(() => {
+      for (const id of ids) {
+        const job = loadJob(id);
+        if (!job) {
+          failed.push({ id, error: 'Job not found' });
+          continue;
+        }
+
+        const check = jobstate.checkTransition(job.status, target, req.user.roles);
+        if (!check.ok) {
+          failed.push({ id, job_no: job.job_no, error: check.error });
+          continue;
+        }
+
+        const isReopen = job.status === 'CLOSED' && target === 'IN_PROGRESS';
+        if (isReopen) {
+          const guard = jobstate.checkOneOpenJob(job.asset_id, { excludeJobId: id });
+          if (!guard.ok) {
+            failed.push({ id, job_no: job.job_no, error: guard.error });
+            continue;
+          }
+          if (!reason) {
+            failed.push({ id, job_no: job.job_no, error: 'Reason required to reopen' });
+            continue;
+          }
+        }
+
+        if (target === 'CLOSED') {
+          const wasReopened = get('SELECT 1 v FROM job_reopens WHERE job_id = ? LIMIT 1', id);
+          const readiness = costing.closureReadiness(id);
+          if (!readiness.ready && !wasReopened) {
+            failed.push({ id, job_no: job.job_no, error: 'Not fully priced or has unissued store shelf parts', missing: readiness.missing });
+            continue;
+          }
+        }
+
+        const now = "datetime('now')";
+        const sets = ["status = ?", "updated_at = " + now];
+        const params = [target];
+
+        switch (check.def.action) {
+          case 'transport_approve':
+            sets.push('approved_transport_at = ' + now);
+            run(`INSERT INTO job_approvals (job_id, role, approver_id, decision, reason) VALUES (?, 'transport_manager', ?, 'approved', ?)`, id, req.user.id, reason);
+            break;
+          case 'ops_approve':
+            sets.push('approved_ops_at = ' + now);
+            run(`INSERT INTO job_approvals (job_id, role, approver_id, decision, reason) VALUES (?, 'operational_manager', ?, 'approved', ?)`, id, req.user.id, reason);
+            break;
+          case 'reject':
+          case 'return': {
+            const role = hasRole(req.user, 'operational_manager') ? 'operational_manager' : 'transport_manager';
+            run(`INSERT INTO job_approvals (job_id, role, approver_id, decision, reason) VALUES (?, ?, ?, 'rejected', ?)`, id, role, req.user.id, reason);
+            break;
+          }
+          case 'assign':
+            break;
+          case 'start_or_reopen':
+            if (!job.started_at) sets.push('started_at = ' + now);
+            if (isReopen) {
+              run(
+                `INSERT INTO job_reopens (job_id, reopened_by, reason, prev_status, prev_completed_at, prev_closed_at, prev_total_cost)
+                 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+                id, req.user.id, reason, job.status, job.completed_at, job.closed_at, job.total_cost);
+              if (!job.original_completed_at && job.completed_at) {
+                sets.push('original_completed_at = ?');
+                params.push(job.completed_at);
+              }
+              sets.push('completed_at = NULL', 'closed_at = NULL');
+            }
+            run(`UPDATE assets SET status='under_repair' WHERE id = ? AND status <> 'decommissioned'`, job.asset_id);
+            break;
+          case 'mark_complete':
+            if (job.original_completed_at) { sets.push('completed_at = ?'); params.push(job.original_completed_at); }
+            else sets.push('completed_at = ' + now);
+            break;
+          case 'close':
+            sets.push('closed_at = ' + now);
+            run(`UPDATE job_reopens SET reclosed_at = datetime('now') WHERE job_id = ? AND reclosed_at IS NULL`, id);
+            break;
+        }
+
+        params.push(id);
+        run(`UPDATE job_cards SET ${sets.join(', ')} WHERE id = ?`, ...params);
+
+        if (target === 'CLOSED') {
+          costing.snapshotJobCost(id);
+          run(`UPDATE assets SET status='active' WHERE id = ? AND status='under_repair'`, job.asset_id);
+        }
+
+        audit.record({ userId: req.user.id, entity: 'job_card', entityId: id, action: 'bulk_transition', before: { status: job.status }, after: { status: target }, reason });
+        emitter.emit('job_updated', { job_id: id, action: 'transition', status: target });
+        succeeded.push({ id, job_no: job.job_no, prev_status: job.status, new_status: target });
+      }
+    });
+
+    if (succeeded.length) {
+      emitter.emit('dashboard_refresh', { reason: 'bulk_transition', count: succeeded.length });
+    }
+
+    res.json({
+      ok: true,
+      succeeded,
+      failed,
+      total: ids.length,
+      success_count: succeeded.length,
+      fail_count: failed.length
+    });
   })
 );
 

@@ -9,7 +9,7 @@
 // Every resolved link bumps hit_count so common variants auto-resolve next time.
 // ===========================================================================
 
-const { get, run } = require('../db');
+const { get, all, run } = require('../db');
 
 /**
  * Normalise any asset/vehicle string to a comparable key: uppercase, keep only
@@ -134,6 +134,31 @@ function findOrCreateAsset(code, extra = {}) {
   return get('SELECT * FROM assets WHERE id = ?', info.lastInsertRowid);
 }
 
+/**
+ * Shared query helper for alias queues (vehicles and mechanics).
+ * Keeps sorting, filtering, and pagination unified across entities.
+ */
+function queryAliasQueue(opts = {}) {
+  const { table, targetTable, targetIdCol, targetNameCol, targetAlias = 'canonical_name', resolved, q, limit = 500 } = opts;
+  const clauses = [];
+  const params = [];
+  if (resolved !== undefined && resolved !== null && resolved !== '') {
+    clauses.push('al.resolved = ?');
+    params.push(Number(resolved) ? 1 : 0);
+  }
+  if (q && String(q).trim()) {
+    clauses.push('al.raw_text LIKE ?');
+    params.push('%' + String(q).trim() + '%');
+  }
+  const where = clauses.length ? 'WHERE ' + clauses.join(' AND ') : '';
+  const sql = `SELECT al.*, tgt.${targetNameCol} AS ${targetAlias} FROM ${table} al
+     LEFT JOIN ${targetTable} tgt ON tgt.id = al.${targetIdCol}
+     ${where}
+    ORDER BY al.resolved ASC, al.hit_count DESC, al.updated_at DESC
+    LIMIT ${Number(limit) || 500}`;
+  return all(sql, ...params);
+}
+
 module.exports = {
   normalize,
   extractCode,
@@ -141,4 +166,6 @@ module.exports = {
   linkAlias,
   pendingAliases,
   findOrCreateAsset,
+  queryAliasQueue,
 };
+

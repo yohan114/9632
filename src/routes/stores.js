@@ -2,7 +2,7 @@
 
 const express = require('express');
 const { get, all, run, tx } = require('../db');
-const { requireRole, hasRole } = require('../lib/auth');
+const { requireRole, hasRole, requireAuth } = require('../lib/auth');
 const { asyncHandler, require_, toInt, toNum } = require('../lib/http');
 const audit = require('../lib/audit');
 const aliases = require('../lib/aliases');
@@ -1441,7 +1441,302 @@ router.get('/received', asyncHandler((req, res) => {
     q: req.query.q || null,
     limit: toInt(req.query.limit, 200),
     includeDone: req.query.include_done === '1',
+    allowEmpty: req.query.all === '1' || req.query.allow_empty === '1',
   }));
+}));
+
+// Quick stage counts across the material pipeline (ReQuest -> On Order -> Ready in Store -> Issued).
+router.get('/pipeline/summary', asyncHandler((_req, res) => {
+  const requests_pending = get(`SELECT COUNT(*) c FROM mrn WHERE approval_status IN ('requested', 'certified') AND TRIM(COALESCE(requested_by, '')) != ''`).c;
+  const awaiting_delivery = get(`
+    SELECT COUNT(*) c
+      FROM mrn_lines ml
+      JOIN mrn m ON m.id = ml.mrn_id
+     WHERE (m.approval_status = 'approved' OR (m.approval_status = 'requested' AND TRIM(COALESCE(m.requested_by, '')) = ''))
+       AND COALESCE(ml.qty_received, 0) < ml.qty
+  `).c;
+  const ready_in_store = get(`
+    SELECT COUNT(*) c
+      FROM grn g
+     WHERE g.qty > 0
+       AND (COALESCE(g.qty, 0) - COALESCE((SELECT SUM(i.qty) FROM issues i WHERE i.grn_id = g.id), 0)) > 0.001
+  `).c;
+  const issued_today = get(`SELECT COUNT(*) c FROM issues WHERE date(issue_date) = date('now')`).c;
+
+  res.json({ requests_pending, awaiting_delivery, ready_in_store, issued_today });
+}));
+
+// ---- Material Pipeline Full Lifecycle Traceability -------------------------
+// Reconstructs the complete lifecycle across Job Card ➔ MRN ➔ GRN ➔ Shelf ➔ Issue ➔ Costing.
+// Can start from job_id, job_no, mrn_id, mrn_no, grn_id, grn_no, or issue_id.
+router.get('/pipeline/trace', requireAuth, asyncHandler((req, res) => {
+  const p = req.query || {};
+  let jobId = toInt(p.job_id) || null;
+  let mrnId = toInt(p.mrn_id) || null;
+  let grnId = toInt(p.grn_id) || null;
+  let issueId = toInt(p.issue_id) || null;
+
+  if (!jobId && p.job_no) {
+    const j = get('SELECT id FROM job_cards WHERE job_no = ?', String(p.job_no).trim());
+    if (j) jobId = j.id;
+  }
+  if (!mrnId && p.mrn_no) {
+    const m = get('SELECT id FROM mrn WHERE mrn_no = ?', String(p.mrn_no).trim());
+    if (m) mrnId = m.id;
+  }
+  if (!grnId && p.grn_no) {
+    const g = get('SELECT id FROM grn WHERE grn_no = ?', String(p.grn_no).trim());
+    if (g) grnId = g.id;
+  }
+
+  if (!jobId && !mrnId && !grnId && !issueId) {
+    return res.status(400).json({ error: 'Please specify a job_id, mrn_id, grn_id, or issue_id to trace' });
+  }
+
+  let rootType = null;
+  let rootId = null;
+
+  if (issueId) {
+    rootType = 'issue';
+    rootId = issueId;
+    const iss = get('SELECT * FROM issues WHERE id = ?', issueId);
+    if (!iss) return res.status(404).json({ error: 'Issue record not found' });
+    if (iss.job_id) jobId = iss.job_id;
+    if (iss.grn_id) grnId = iss.grn_id;
+  }
+
+  if (grnId && !rootType) {
+    rootType = 'grn';
+    rootId = grnId;
+  }
+  if (grnId) {
+    const grn = get('SELECT * FROM grn WHERE id = ?', grnId);
+    if (!grn && !rootType) return res.status(404).json({ error: 'GRN record not found' });
+    if (grn && grn.mrn_id) mrnId = grn.mrn_id;
+  }
+
+  if (mrnId && !rootType) {
+    rootType = 'mrn';
+    rootId = mrnId;
+  }
+  if (mrnId && !jobId) {
+    const m = get('SELECT job_id, asset_id, req_date FROM mrn WHERE id = ?', mrnId);
+    if (!m && !rootType) return res.status(404).json({ error: 'MRN record not found' });
+    if (m && m.job_id) {
+      jobId = m.job_id;
+    } else if (m) {
+      const jp = get(`SELECT jp.job_id FROM job_parts jp
+        JOIN mrn_lines ml ON ml.id = jp.mrn_line_id
+        WHERE ml.mrn_id = ? AND jp.job_id IS NOT NULL LIMIT 1`, mrnId);
+      if (jp) jobId = jp.job_id;
+      else if (m.asset_id) {
+        const nearJob = get(`
+          SELECT id FROM job_cards
+           WHERE asset_id = ?
+             AND date(requested_at, '-7 days') <= date(?)
+             AND date(COALESCE(closed_at, completed_at, date('now')), '+7 days') >= date(?)
+           ORDER BY id DESC LIMIT 1
+        `, m.asset_id, m.req_date, m.req_date);
+        if (nearJob) jobId = nearJob.id;
+      }
+    }
+  }
+
+  if (jobId && !rootType) {
+    rootType = 'job';
+    rootId = jobId;
+  }
+
+  // 1. Load Job Card
+  let job = null;
+  if (jobId) {
+    job = get(`
+      SELECT j.id, j.job_no, j.status, j.type, j.description, j.requested_at, j.closed_at, j.asset_id,
+             a.code AS asset_code, a.registration AS asset_reg,
+             ROUND(COALESCE(j.material_cost, 0), 2) AS material_cost,
+             ROUND(COALESCE(j.total_cost, 0), 2) AS total_cost
+        FROM job_cards j
+        LEFT JOIN assets a ON a.id = j.asset_id
+       WHERE j.id = ?
+    `, jobId);
+    if (!job && rootType === 'job') return res.status(404).json({ error: 'Job card not found' });
+  }
+
+  // 2. Discover MRNs
+  let mrns = [];
+  if (jobId) {
+    mrns = all(`
+      SELECT DISTINCT m.id, m.mrn_no, m.req_date, m.purpose, m.requested_by, m.certified_by, m.approved_by,
+             m.approval_status, m.status, m.purchase_source, m.job_id, m.asset_id
+        FROM mrn m
+       WHERE m.job_id = ?
+          OR EXISTS (
+            SELECT 1 FROM mrn_lines ml
+            JOIN job_parts jp ON jp.mrn_line_id = ml.id
+            WHERE ml.mrn_id = m.id AND jp.job_id = ?
+          )
+       ORDER BY m.id DESC
+    `, jobId, jobId);
+  } else if (mrnId) {
+    const single = get(`
+      SELECT m.id, m.mrn_no, m.req_date, m.purpose, m.requested_by, m.certified_by, m.approved_by,
+             m.approval_status, m.status, m.purchase_source, m.job_id, m.asset_id
+        FROM mrn m WHERE m.id = ?
+    `, mrnId);
+    if (single) mrns = [single];
+  }
+
+  const mrnIds = mrns.map((m) => m.id);
+
+  // 3. Discover MRN lines
+  let mrnLines = [];
+  if (mrnIds.length) {
+    mrnLines = all(`
+      SELECT ml.id, ml.mrn_id, ml.store_item_id, ml.description, ml.category, ml.unit,
+             ml.qty AS qty_requested, ml.qty_received, ml.purchase_source
+        FROM mrn_lines ml
+       WHERE ml.mrn_id IN (${mrnIds.map(() => '?').join(',')})
+       ORDER BY ml.id
+    `, ...mrnIds);
+  }
+
+  // 4. Discover GRNs
+  let grns = [];
+  const ph = mrnIds.length ? mrnIds.map(() => '?').join(',') : '0';
+  if (mrnIds.length || jobId) {
+    grns = all(`
+      SELECT g.id, g.grn_no, g.delivery_date, g.supplier, g.invoice_no, g.mrn_id, g.mrn_line_id,
+             g.description, g.qty AS qty_received, g.unit_price,
+             ROUND(COALESCE(g.qty * g.unit_price, 0), 2) AS total_cost
+        FROM grn g
+       WHERE (g.mrn_id IN (${ph}))
+          ${jobId ? "OR EXISTS (SELECT 1 FROM job_parts jp WHERE jp.source_type = 'grn' AND jp.source_id = g.id AND jp.job_id = ?)" : ''}
+       ORDER BY g.id DESC
+    `, ...(mrnIds.length ? mrnIds : []), ...(jobId ? [jobId] : []));
+  } else if (grnId) {
+    const single = get(`
+      SELECT g.id, g.grn_no, g.delivery_date, g.supplier, g.invoice_no, g.mrn_id, g.mrn_line_id,
+             g.description, g.qty AS qty_received, g.unit_price,
+             ROUND(COALESCE(g.qty * g.unit_price, 0), 2) AS total_cost
+        FROM grn g WHERE g.id = ?
+    `, grnId);
+    if (single) grns = [single];
+  }
+
+  const grnIds = grns.map((g) => g.id);
+
+  // 5. Discover Issues
+  let issues = [];
+  const grnPh = grnIds.length ? grnIds.map(() => '?').join(',') : '0';
+  if (jobId || grnIds.length) {
+    issues = all(`
+      SELECT i.id, i.issue_date, i.job_id, i.grn_id, i.store_item_id, i.description,
+             i.qty AS qty_issued, i.unit_price,
+             ROUND(COALESCE(i.qty * i.unit_price, 0), 2) AS total_cost,
+             i.issued_by
+        FROM issues i
+       WHERE ${jobId ? 'i.job_id = ? OR ' : ''}(i.grn_id IN (${grnPh}))
+       ORDER BY i.id DESC
+    `, ...(jobId ? [jobId] : []), ...(grnIds.length ? grnIds : []));
+  }
+
+  // 6. Build Consolidated Lifecycle Items
+  const items = [];
+  for (const line of mrnLines) {
+    const m = mrns.find((x) => x.id === line.mrn_id) || {};
+    const lineGrns = grns.filter((g) => g.mrn_line_id === line.id || (g.mrn_id === line.mrn_id && g.description === line.description));
+    const lineGrnIds = lineGrns.map((g) => g.id);
+    const lineIssues = issues.filter((i) => lineGrnIds.includes(i.grn_id) || (line.store_item_id && i.store_item_id === line.store_item_id));
+
+    const qtyReq = Number(line.qty_requested || 0);
+    const qtyRec = lineGrns.reduce((s, g) => s + (Number(g.qty_received) || 0), 0);
+    const qtyIss = lineIssues.reduce((s, i) => s + (Number(i.qty_issued) || 0), 0);
+    const qtyShelf = Math.max(0, Math.round((qtyRec - qtyIss) * 100) / 100);
+
+    let stage = 'REQUESTED';
+    if (qtyShelf > 0) stage = 'READY_ON_SHELF';
+    else if (qtyRec > 0 && qtyIss >= qtyRec) stage = 'FULLY_ISSUED';
+    else if (qtyRec > 0) stage = 'PARTIALLY_RECEIVED';
+    else if (m.approval_status === 'approved') stage = 'AWAITING_DELIVERY';
+
+    items.push({
+      mrn_line_id: line.id,
+      mrn_id: line.mrn_id,
+      mrn_no: m.mrn_no || '—',
+      req_date: m.req_date || null,
+      description: line.description,
+      category: line.category || 'general',
+      unit: line.unit || 'nos',
+      purchase_source: line.purchase_source || m.purchase_source || 'Head Office',
+      qty_requested: qtyReq,
+      qty_received: qtyRec,
+      qty_issued: qtyIss,
+      qty_on_shelf: qtyShelf,
+      stage,
+      grns: lineGrns,
+      issues: lineIssues,
+    });
+  }
+
+  // Standalone GRNs without MRN lines
+  const claimedGrnIds = items.flatMap((it) => it.grns.map((g) => g.id));
+  const unclaimedGrns = grns.filter((g) => !claimedGrnIds.includes(g.id));
+  for (const g of unclaimedGrns) {
+    const directIssues = issues.filter((i) => i.grn_id === g.id);
+    const qtyRec = Number(g.qty_received || 0);
+    const qtyIss = directIssues.reduce((s, i) => s + (Number(i.qty_issued) || 0), 0);
+    const qtyShelf = Math.max(0, Math.round((qtyRec - qtyIss) * 100) / 100);
+    items.push({
+      mrn_line_id: null,
+      mrn_id: g.mrn_id || null,
+      mrn_no: g.mrn_id ? (mrns.find((m) => m.id === g.mrn_id)?.mrn_no || 'MRN') : 'Direct Receipt',
+      req_date: null,
+      description: g.description,
+      category: 'General',
+      unit: 'nos',
+      purchase_source: 'Head Office',
+      qty_requested: qtyRec,
+      qty_received: qtyRec,
+      qty_issued: qtyIss,
+      qty_on_shelf: qtyShelf,
+      stage: qtyShelf > 0 ? 'READY_ON_SHELF' : 'FULLY_ISSUED',
+      grns: [g],
+      issues: directIssues,
+    });
+  }
+
+  // Summary Metrics
+  const summary = {
+    total_lines: items.length,
+    total_qty_requested: items.reduce((s, it) => s + it.qty_requested, 0),
+    total_qty_received: items.reduce((s, it) => s + it.qty_received, 0),
+    total_qty_issued: items.reduce((s, it) => s + it.qty_issued, 0),
+    total_qty_on_shelf: items.reduce((s, it) => s + it.qty_on_shelf, 0),
+    total_received_cost: Math.round(grns.reduce((s, g) => s + (g.total_cost || 0), 0) * 100) / 100,
+    total_issued_cost: Math.round(issues.reduce((s, i) => s + (i.total_cost || 0), 0) * 100) / 100,
+  };
+
+  const uncollected = items.filter((it) => it.qty_on_shelf > 0.001);
+  const pendingDel = items.filter((it) => it.qty_received < it.qty_requested);
+  const unpriced = items.filter((it) => it.grns.some((g) => g.unit_price == null) || it.issues.some((i) => i.unit_price == null));
+
+  const integrity = {
+    is_safe_to_close: uncollected.length === 0 && pendingDel.length === 0,
+    uncollected_shelf_parts_count: uncollected.length,
+    pending_delivery_count: pendingDel.length,
+    unpriced_count: unpriced.length,
+  };
+
+  res.json({
+    root: { type: rootType, id: rootId },
+    job,
+    mrns,
+    items,
+    grns,
+    issues,
+    summary,
+    integrity,
+  });
 }));
 
 // Rebuild the item registry (new codes for anything not yet registered; existing codes kept).

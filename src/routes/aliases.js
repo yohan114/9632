@@ -10,19 +10,16 @@ const aliases = require('../lib/aliases');
 const router = express.Router();
 
 router.get('/', asyncHandler((req, res) => {
-  const clauses = [];
-  const params = [];
-  if (req.query.resolved !== undefined) { clauses.push('al.resolved = ?'); params.push(toInt(req.query.resolved)); }
-  if (req.query.q) { clauses.push('al.raw_text LIKE ?'); params.push('%' + req.query.q + '%'); }
-  const where = clauses.length ? 'WHERE ' + clauses.join(' AND ') : '';
-  res.json(all(
-    `SELECT al.*, a.code AS asset_code FROM asset_aliases al
-       LEFT JOIN assets a ON a.id = al.asset_id
-       ${where}
-      ORDER BY al.resolved ASC, al.hit_count DESC, al.updated_at DESC
-      LIMIT ${toInt(req.query.limit, 500)}`,
-    ...params
-  ));
+  res.json(aliases.queryAliasQueue({
+    table: 'asset_aliases',
+    targetTable: 'assets',
+    targetIdCol: 'asset_id',
+    targetNameCol: 'code',
+    targetAlias: 'asset_code',
+    resolved: req.query.resolved,
+    q: req.query.q,
+    limit: toInt(req.query.limit, 500),
+  }));
 }));
 
 router.get('/pending', asyncHandler((_req, res) => res.json(aliases.pendingAliases())));

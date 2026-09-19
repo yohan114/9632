@@ -5,6 +5,7 @@ const { get, all, run } = require('../db');
 const { requireRole } = require('../lib/auth');
 const { asyncHandler, require_, toInt } = require('../lib/http');
 const audit = require('../lib/audit');
+const costing = require('../lib/costing');
 const { sendXlsx } = require('../lib/export');
 
 const router = express.Router();
@@ -32,12 +33,7 @@ router.get('/:id', asyncHandler((req, res) => {
   if (!project) return res.status(404).json({ error: 'Project not found' });
   const sites = all('SELECT * FROM sites WHERE project_id = ? ORDER BY name', id);
   const assets = all('SELECT id, code, brand, type, status FROM assets WHERE current_project_id = ? ORDER BY code', id);
-  const cost = get(
-    `SELECT COALESCE(SUM(labour_cost),0) labour, COALESCE(SUM(material_cost),0) material,
-            COALESCE(SUM(oil_cost),0) oil, COALESCE(SUM(general_cost),0) general,
-            COALESCE(SUM(external_cost),0) external, COALESCE(SUM(total_cost),0) total
-       FROM job_cards WHERE project_id = ?`, id
-  );
+  const cost = costing.projectCost(id);
   res.json({ project, sites, assets, cost });
 }));
 

@@ -6,6 +6,7 @@ const { requireRole } = require('../lib/auth');
 const { asyncHandler, require_, toInt, toNum } = require('../lib/http');
 const audit = require('../lib/audit');
 const aliases = require('../lib/aliases');
+const intelligence = require('../lib/intelligence');
 
 const router = express.Router();
 
@@ -135,16 +136,7 @@ router.post('/', requireRole('storekeeper'), asyncHandler((req, res) => {
 }));
 
 router.get('/warranty-radar', asyncHandler((_req, res) => {
-  const today = new Date().toISOString().slice(0, 10);
-  const in60 = new Date(Date.now() + 60 * 86400 * 1000).toISOString().slice(0, 10);
-  res.json({
-    expiring: all(
-      `SELECT b.*, a.code AS current_asset_code FROM batteries b LEFT JOIN assets a ON a.id=b.current_asset_id
-        WHERE b.warranty_date IS NOT NULL AND b.warranty_date >= ? AND b.warranty_date <= ?
-          AND b.state <> 'decommissioned' ORDER BY b.warranty_date`, today, in60
-    ),
-    idle_in_store: all(`SELECT * FROM batteries WHERE state = 'in_store' ORDER BY serial_no`),
-  });
+  res.json(intelligence.warrantyRadar());
 }));
 
 router.get('/whereis/:serial', asyncHandler((req, res) => {

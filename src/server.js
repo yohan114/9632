@@ -69,6 +69,7 @@ app.use('/api/oil', requireModule('oil'), require('./routes/oil'));
 app.use('/api/batteries', requireModule('batteries'), require('./routes/batteries'));
 app.use('/api/filters', requireModule('filters'), require('./routes/filters'));
 app.use('/api/filter-stock', requireModule('filters'), require('./routes/filter_stock'));
+app.use('/api/stock-cockpit', require('./routes/stock_cockpit'));
 app.use('/api/jobs', requireModule('jobs'), require('./routes/jobcards'));
 app.use('/api/job-requests', requireModule('jobrequests'), require('./routes/jobrequests'));
 app.use('/api/daily-work', requireModule('dailywork'), require('./routes/dailywork'));

@@ -352,29 +352,7 @@ router.post('/counts', requireRole('storekeeper'), asyncHandler((req, res) => {
 
 // ---- forecast -------------------------------------------------------------
 router.get('/forecast', asyncHandler((_req, res) => {
-  const windowDays = config.forecastWindowDays;
-  const since = new Date(Date.now() - windowDays * 86400 * 1000).toISOString().slice(0, 10);
-  const products = all('SELECT * FROM products ORDER BY name');
-  const out = products.map((p) => {
-    const consRow = get(
-      `SELECT COALESCE(SUM(ABS(qty)),0) c FROM stock_ledger WHERE product_id = ? AND kind = 'issue' AND txn_date >= ?`,
-      p.id, since
-    );
-    const consumption = consRow.c || 0;
-    const dailyRate = consumption / windowDays;
-    const balance = currentBalance(p.id);
-    const daysOfCover = dailyRate > 0 ? balance / dailyRate : null;
-    const low = (daysOfCover != null && daysOfCover <= config.lowStockDays) || (p.reorder_level > 0 && balance <= p.reorder_level);
-    return {
-      product_id: p.id, name: p.name, unit: p.unit, balance,
-      reorder_level: p.reorder_level, consumption_window: consumption,
-      daily_rate: Math.round(dailyRate * 100) / 100,
-      days_of_cover: daysOfCover == null ? null : Math.round(daysOfCover),
-      low, suggested_reorder: low,
-    };
-  });
-  out.sort((a, b) => (a.low === b.low ? (a.days_of_cover ?? 1e9) - (b.days_of_cover ?? 1e9) : (a.low ? -1 : 1)));
-  res.json({ window_days: windowDays, low_stock_days: config.lowStockDays, products: out });
+  res.json(lubricants.oilForecast());
 }));
 
 router.get('/export/ledger.xlsx', asyncHandler(async (_req, res) => {

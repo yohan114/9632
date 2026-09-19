@@ -629,18 +629,18 @@ function searchItems(q, section, limit = 25) {
  * hiding stock that is physically on the shelf. It reads from `issues` rather than the ledger
  * so that rebuilding stock_moves cannot resurrect stock that has already been handed out.
  */
-function receivedLines({ assetId, jobId, mrn, q, limit = 200, includeDone = false } = {}) {
+function receivedLines({ assetId, jobId, mrn, q, limit = 200, includeDone = false, allowEmpty = false } = {}) {
   const where = [];
   const p = [];
   if (assetId) { where.push('(m.asset_id = ? OR j.asset_id = ?)'); p.push(assetId, assetId); }
   if (jobId) { where.push('(m.job_id = ? OR jp.job_id = ?)'); p.push(jobId, jobId); }
   if (mrn) { where.push('m.mrn_no LIKE ?'); p.push('%' + String(mrn).trim() + '%'); }
   if (q) {
-    where.push("(COALESCE(g.description, ml.description) LIKE ? OR m.mrn_no LIKE ? OR g.grn_no LIKE ?)");
+    where.push("(COALESCE(g.description, ml.description) LIKE ? OR m.mrn_no LIKE ? OR g.grn_no LIKE ? OR a.code LIKE ? OR a.registration LIKE ?)");
     const like = '%' + String(q).trim() + '%';
-    p.push(like, like, like);
+    p.push(like, like, like, like, like);
   }
-  if (!where.length) return [];
+  if (!where.length && !allowEmpty) return [];
 
   const rows = all(
     `SELECT g.id                                   AS grn_id,
@@ -655,8 +655,10 @@ function receivedLines({ assetId, jobId, mrn, q, limit = 200, includeDone = fals
             ml.id                                   AS mrn_line_id,
             ml.category, ml.unit,
             m.mrn_no, m.req_date, m.asset_id        AS mrn_asset_id,
+            COALESCE(m.asset_id, j.asset_id)        AS asset_id,
             COALESCE(m.purchase_source, g.purchase_source_norm) AS source,
             a.code AS asset_code, a.registration AS asset_reg,
+            COALESCE(jc.id, m.job_id, jp.job_id)    AS job_id,
             jc.job_no,
             ROUND(COALESCE((SELECT SUM(i.qty) FROM issues i WHERE i.grn_id = g.id), 0), 2) AS issued
        FROM grn g
@@ -665,8 +667,8 @@ function receivedLines({ assetId, jobId, mrn, q, limit = 200, includeDone = fals
        LEFT JOIN job_parts jp ON jp.mrn_line_id = ml.id
        LEFT JOIN job_cards j  ON j.id = jp.job_id
        LEFT JOIN job_cards jc ON jc.id = COALESCE(m.job_id, jp.job_id)
-       LEFT JOIN assets a     ON a.id = m.asset_id
-      WHERE ${where.join(' AND ')}
+       LEFT JOIN assets a     ON a.id = COALESCE(m.asset_id, j.asset_id)
+      ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
       GROUP BY g.id
       ${includeDone ? '' : 'HAVING COALESCE(g.qty,0) - COALESCE((SELECT SUM(i2.qty) FROM issues i2 WHERE i2.grn_id = g.id), 0) > 0.001'}
       ORDER BY date(NULLIF(g.delivery_date, '')) IS NULL, date(NULLIF(g.delivery_date, '')) DESC, g.id DESC

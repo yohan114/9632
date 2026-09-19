@@ -156,7 +156,7 @@ async function seedTransfers() {
     from_location: 'Quarry Yard', to_location: 'Central Store', to_asset_id: A,
   } });
   await api('/stores/mtn', { method: 'POST', body: {
-    mtn_no: 'S-102', qty: 2, description: '100% synthetic grease', txn_date: '2026-09-09',
+    mtn_no: 'S-102', qty: 2, description: '100% synthetic grease', txn_date: '2099-09-09',
   } });
 }
 
@@ -196,7 +196,7 @@ test('nothing matching gives nothing, not everything', async () => {
 
 test('the list can be held to a date range', async () => {
   assert.deepStrictEqual((await search({ from: '2026-03-01', to: '2026-06-30' })).sort(), ['S-100', 'S-101']);
-  assert.deepStrictEqual(await search({ from: '2026-09-01' }), ['S-102'], 'an open-ended range works');
+  assert.deepStrictEqual(await search({ from: '2099-09-01' }), ['S-102'], 'an open-ended range works');
   assert.deepStrictEqual(await search({ to: '2026-03-04' }), ['S-100'], 'and the bounds are inclusive');
 });
 

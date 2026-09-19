@@ -196,6 +196,17 @@ function closureReadiness(jobId) {
     }
   }
 
+  // every delivered shelf part must be issued to the job (or accounted for)
+  for (const g of all(`
+    SELECT g.id, g.description, (g.qty - COALESCE((SELECT SUM(i.qty) FROM issues i WHERE i.grn_id = g.id), 0)) AS unissued, m.mrn_no
+      FROM grn g
+      JOIN mrn m ON m.id = g.mrn_id
+     WHERE m.job_id = ?
+       AND (g.qty - COALESCE((SELECT SUM(i.qty) FROM issues i WHERE i.grn_id = g.id), 0)) > 0.001
+  `, jobId)) {
+    missing.push(`Store shelf item "${g.description}" (${g.unissued} unissued from MRN ${g.mrn_no || '—'})`);
+  }
+
   // every material / external part line priced
   for (const p of all('SELECT * FROM job_parts WHERE job_id = ?', jobId)) {
     if (p.unit_price == null) {
@@ -367,6 +378,43 @@ function round2(n) {
   return Math.round((Number(n) || 0) * 100) / 100;
 }
 
+/**
+ * Standard project cost rollup across all job cards belonging to a project.
+ * Locks the row schema across single project view and consolidated reports.
+ */
+function projectCost(projectId) {
+  const cost = get(
+    `SELECT COALESCE(SUM(labour_cost),0) labour, COALESCE(SUM(material_cost),0) material,
+            COALESCE(SUM(oil_cost),0) oil, COALESCE(SUM(general_cost),0) general,
+            COALESCE(SUM(external_cost),0) external, COALESCE(SUM(total_cost),0) total
+       FROM job_cards WHERE project_id = ?`, projectId
+  ) || { labour: 0, material: 0, oil: 0, general: 0, external: 0, total: 0 };
+  return {
+    labour: round2(cost.labour),
+    material: round2(cost.material),
+    oil: round2(cost.oil),
+    general: round2(cost.general),
+    external: round2(cost.external),
+    total: round2(cost.total),
+  };
+}
+
+/**
+ * Consolidated project cost summary across all registered projects.
+ */
+function projectsCostSummary() {
+  const projects = all('SELECT id, code, name FROM projects ORDER BY name');
+  return projects.map((p) => {
+    const c = projectCost(p.id);
+    return {
+      project_id: p.id,
+      project_code: p.code || '',
+      project_name: p.name,
+      ...c,
+    };
+  });
+}
+
 module.exports = {
   labourRateFor,
   productPriceOn,
@@ -377,4 +425,7 @@ module.exports = {
   snapshotJobCost,
   recalcVehicleMonth,
   vehicleMonthsForJob,
+  projectCost,
+  projectsCostSummary,
 };
+

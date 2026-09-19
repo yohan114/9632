@@ -26,7 +26,7 @@
 // one; quietly serving a remembered balance because the connection dropped would be worse than
 // showing an error. Offline reads are not worth a wrong number.
 
-const CACHE = 'workshopone-v2';
+const CACHE = 'workshopone-v3';
 
 // Only what is genuinely useful with no network. NOT index.html, and NOT any versioned asset.
 const OFFLINE_FALLBACK = '/index.html';

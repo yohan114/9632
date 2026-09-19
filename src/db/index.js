@@ -370,6 +370,7 @@ function migrate() {
   ensureColumn('mrn_approvals', 'signature', 'TEXT'); // signature snapshot applied at signing
   ensureColumn('general_item_txns', 'source', 'TEXT'); // import source tag (idempotent re-import)
   // Consolidated MRN item catalogue (deduped from mrn_lines descriptions).
+  ensureColumn('store_items', 'unit_cost', 'REAL DEFAULT 0');
   ensureColumn('store_items', 'item_no', 'TEXT');          // catalogue number, e.g. FIL-0001
   ensureColumn('store_items', 'catalogue_kind', 'TEXT');   // part | consumable | service
   ensureColumn('store_items', 'part_numbers', 'TEXT');     // all merged part/reference codes ( | -joined)
@@ -579,7 +580,23 @@ function migrate() {
     db.pragma('foreign_keys = ON');
   }
   db.exec(`CREATE INDEX IF NOT EXISTS idx_tb_specs_kind ON tb_specs(kind, active);
-           CREATE INDEX IF NOT EXISTS idx_tb_reqline_asset ON tb_request_lines(asset_id);`);
+           CREATE INDEX IF NOT EXISTS idx_tb_reqline_asset ON tb_request_lines(asset_id);
+           CREATE TABLE IF NOT EXISTS filter_stock (
+             id            INTEGER PRIMARY KEY AUTOINCREMENT,
+             filter_type   TEXT NOT NULL,
+             brand         TEXT,
+             part_no       TEXT,
+             unit          TEXT DEFAULT 'nos',
+             qty_in_stock  REAL DEFAULT 0,
+             reorder_level REAL DEFAULT 5,
+             unit_cost     REAL DEFAULT 0,
+             supplier      TEXT,
+             compatible_assets TEXT,
+             created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+             updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
+           );
+           CREATE INDEX IF NOT EXISTS idx_filter_stock_type ON filter_stock(filter_type);
+           CREATE INDEX IF NOT EXISTS idx_filter_stock_part ON filter_stock(part_no);`);
 
   // Seed the RBAC matrix once (safe to require here — db exports are already set).
   try { require('../lib/permissions').seedDefaults(); } catch (e) { /* table may not exist yet on very first pass */ }

@@ -21,6 +21,7 @@
 // different brands of the same grade and the workshop buys both.
 
 const { get, all, run } = require('../db');
+const config = require('../config');
 
 /**
  * Identity of a lubricant name: punctuation and spacing go, everything else stays, so
@@ -171,6 +172,49 @@ const catalogue = () => all(
   `SELECT p.id, p.code, p.name, p.category, p.unit, p.unit_price
      FROM products p WHERE COALESCE(p.active, 1) = 1 ORDER BY p.code, p.name`);
 
+/** Balance of a lubricant product derived from the stock ledger. */
+function currentBalance(productId) {
+  const r = get('SELECT balance_after FROM stock_ledger WHERE product_id = ? ORDER BY id DESC LIMIT 1', productId);
+  return r ? r.balance_after : 0;
+}
+
+/**
+ * Unified oil forecast and reorder threshold evaluator.
+ * Centralizes consumption rates, days of cover, and low stock flags.
+ */
+function oilForecast(opts = {}) {
+  const windowDays = opts.windowDays || config.forecastWindowDays;
+  const lowStockDays = opts.lowStockDays || config.lowStockDays;
+  const since = new Date(Date.now() - windowDays * 86400 * 1000).toISOString().slice(0, 10);
+  const products = all('SELECT * FROM products ORDER BY name');
+  const out = products.map((p) => {
+    const consRow = get(
+      `SELECT COALESCE(SUM(ABS(qty)),0) c FROM stock_ledger WHERE product_id = ? AND kind = 'issue' AND txn_date >= ?`,
+      p.id, since
+    );
+    const consumption = consRow.c || 0;
+    const dailyRate = consumption / windowDays;
+    const balance = currentBalance(p.id);
+    const daysOfCover = dailyRate > 0 ? balance / dailyRate : null;
+    const low = (daysOfCover != null && daysOfCover <= lowStockDays) || (p.reorder_level > 0 && balance <= p.reorder_level);
+    return {
+      product_id: p.id,
+      id: p.id,
+      name: p.name,
+      unit: p.unit,
+      balance,
+      reorder_level: p.reorder_level,
+      consumption_window: consumption,
+      daily_rate: Math.round(dailyRate * 100) / 100,
+      days_of_cover: daysOfCover == null ? null : Math.round(daysOfCover),
+      low,
+      suggested_reorder: low,
+    };
+  });
+  out.sort((a, b) => (a.low === b.low ? (a.days_of_cover ?? 1e9) - (b.days_of_cover ?? 1e9) : (a.low ? -1 : 1)));
+  return { window_days: windowDays, low_stock_days: lowStockDays, products: out };
+}
+
 module.exports = {
   displayName,
   splitAliasAt,
@@ -183,4 +227,7 @@ module.exports = {
   unresolvedAliases,
   notLubricantAliases,
   catalogue,
+  currentBalance,
+  oilForecast,
 };
+
