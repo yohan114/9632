@@ -186,19 +186,22 @@ test('Master inventory API endpoints are 100% active and preserved', async () =>
 test('public/app.js enforces single canonical navigation paths and redirect shims', () => {
   const appJs = fs.readFileSync(path.join(__dirname, '../public/app.js'), 'utf8');
 
-  // Verify single canonical nav items
-  assert.match(appJs, /\['stockcockpit',\s*'🏪',\s*'Stock Cockpit'\]/);
+  // Verify single canonical nav items for Inventory
   assert.match(appJs, /\['stores',\s*'📦',\s*'Stores'\]/);
-  assert.match(appJs, /\['generalstock',\s*'🧰',\s*'General Stock'\]/);
-  assert.match(appJs, /\['oil',\s*'🛢️',\s*'Oil & Lubricants'\]/);
-  assert.match(appJs, /\['filters',\s*'🧰',\s*'Filters & Prices'\]/);
-  assert.match(appJs, /\['batteries',\s*'🔋',\s*'Batteries'\]/);
+  assert.match(appJs, /\['stocktake',\s*'📋',\s*'Stock Take'\]/);
 
   // Verify redundant sidebar shortcuts are removed from NAV array
   assert.ok(!appJs.includes("['matreq', '📝'"), 'matreq shortcut should be removed from NAV');
   assert.ok(!appJs.includes("['stockissues', '📤'"), 'stockissues shortcut should be removed from NAV');
+  assert.ok(!appJs.includes("['stockcockpit', '🏪'"), 'stockcockpit should be consolidated into stocktake');
+  assert.ok(!appJs.includes("['generalstock', '🧰'"), 'generalstock should be consolidated into stocktake');
 
   // Verify backward-compatibility redirect shims are present
+  assert.match(appJs, /routes\.stockcockpit\s*=\s*async/);
+  assert.match(appJs, /routes\.generalstock\s*=\s*async/);
+  assert.match(appJs, /routes\.oil\s*=\s*async/);
+  assert.match(appJs, /routes\.filters\s*=\s*async/);
+  assert.match(appJs, /routes\.batteries\s*=\s*async/);
   assert.match(appJs, /routes\.filterstock\s*=\s*async/);
   assert.match(appJs, /routes\.stockissues\s*=\s*async/);
   assert.match(appJs, /routes\.matreq\s*=\s*async/);

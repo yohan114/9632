@@ -427,13 +427,13 @@ const qsa = (s, r = document) => [...r.querySelectorAll(s)];
 // it shows changes. audit.record broadcasts a generic 'data_changed' {entity,action,...}
 // for every mutation, so no view needs to wire its own listeners.
 const LIVE_ENTITY_ROUTES = {
-  store_item: ['generalstock', 'stores', 'stockissues', 'stockcockpit'], issue: ['stockissues', 'stores', 'stockcockpit'],
-  item_category: ['stores', 'generalstock', 'stockissues'],
-  mrn: ['stores', 'matreq', 'purchasing', 'stockcockpit'], mrn_lines: ['purchasing', 'stockcockpit'], grn: ['stores', 'purchasing', 'stockcockpit'], mtn: ['stores'], stock_count: ['oil'],
-  product: ['oil', 'stockcockpit'], product_price: ['oil'], stock_ledger: ['oil', 'stockissues', 'stockcockpit'],
-  filter_stock: ['filters', 'filterstock', 'stockcockpit'], filter_price: ['filters'], filter_xref: ['filters'], service_job: ['filters', 'services'],
+  store_item: ['generalstock', 'stores', 'stockissues', 'stockcockpit', 'stocktake'], issue: ['stockissues', 'stores', 'stockcockpit', 'stocktake'],
+  item_category: ['stores', 'generalstock', 'stockissues', 'stocktake'],
+  mrn: ['stores', 'matreq', 'purchasing', 'stockcockpit', 'stocktake'], mrn_lines: ['purchasing', 'stockcockpit', 'stocktake'], grn: ['stores', 'purchasing', 'stockcockpit', 'stocktake'], mtn: ['stores'], stock_count: ['oil', 'stocktake'],
+  product: ['oil', 'stockcockpit', 'stocktake'], product_price: ['oil', 'stocktake'], stock_ledger: ['oil', 'stockissues', 'stockcockpit', 'stocktake'],
+  filter_stock: ['filters', 'filterstock', 'stockcockpit', 'stocktake'], filter_price: ['filters', 'stocktake'], filter_xref: ['filters', 'stocktake'], service_job: ['filters', 'services'],
   job_card: ['jobs', 'jobrequests'], job_request: ['jobrequests', 'jobs'], job_daily_work: ['dailywork', 'jobs'],
-  battery: ['batteries', 'stockcockpit'], asset: ['assets'],
+  battery: ['batteries', 'stockcockpit', 'stocktake'], asset: ['assets'],
   mechanic: ['mechanics', 'labour'], labour_rate: ['labour', 'mechanics'], mechanic_alias: ['mechanics'],
 };
 const LIVE_AGG_ROUTES = ['dashboard', 'attention']; // aggregate views refresh on ANY change
@@ -667,12 +667,8 @@ const NAV = [
   ['services', '🛠️', 'Service Records'],
   ['assets', '🚜', 'Assets'],
   ['labour', '💵', 'Labour Rates'],
-  ['stockcockpit', '🏪', 'Stock Cockpit'],
   ['stores', '📦', 'Stores'],
-  ['generalstock', '🧰', 'General Stock'],
-  ['oil', '🛢️', 'Oil & Lubricants'],
-  ['filters', '🧰', 'Filters & Prices'],
-  ['batteries', '🔋', 'Batteries'],
+  ['stocktake', '📋', 'Stock Take'],
   ['serviceplan', '🗓️', 'Service & Filter Plan'],
   ['projects', '🏗️', 'Projects'],
   ['aliases', '🔗', 'Alias Queue'],
@@ -688,7 +684,7 @@ const NAV = [
 // Which permission module governs each nav item's visibility (dashboard always on).
 const NAV_MODULE = {
   assets: 'assets', jobs: 'jobs', jobrequests: 'jobrequests', dailywork: 'dailywork', services: 'filters',
-  labour: 'labour', stores: 'stores', stockcockpit: 'stores', generalstock: 'stores', oil: 'oil', batteries: 'batteries', filters: 'filters', filterstock: 'filters',
+  labour: 'labour', stores: 'stores', stocktake: 'stores', stockcockpit: 'stores', generalstock: 'stores', oil: 'oil', batteries: 'batteries', filters: 'filters', filterstock: 'filters',
   projects: 'projects', aliases: 'aliases', attention: 'reports', progress: 'reports',
   teardown: 'reports', reports: 'reports', tyrebattery: 'reports',
   // The request screen belongs to whoever may raise one. The ledger above stays on 'reports',
@@ -710,7 +706,7 @@ function navVisible(n) {
 const NAV_GROUP_ORDER = ['Operations', 'Inventory', 'Procurement', 'Fleet', 'Analysis', 'Admin'];
 const NAV_GROUP = {
   dashboard: 'Operations', jobs: 'Operations', jobrequests: 'Operations', dailywork: 'Operations', services: 'Operations',
-  stockcockpit: 'Inventory', stores: 'Inventory', generalstock: 'Inventory', oil: 'Inventory', filters: 'Inventory', batteries: 'Inventory',
+  stores: 'Inventory', stocktake: 'Inventory',
   purchasing: 'Procurement', tbrequests: 'Procurement',
   assets: 'Fleet', serviceplan: 'Fleet',
   reports: 'Analysis', attention: 'Analysis', progress: 'Analysis', teardown: 'Analysis', tyrebattery: 'Analysis', aliases: 'Analysis', projects: 'Analysis', labour: 'Analysis',
@@ -4639,11 +4635,20 @@ async function newJobRequestModal() {
 }
 
 // ---- Oil
-routes.oil = async (c) => {
-  const tab = (location.hash.split('?')[1] && new URLSearchParams(location.hash.split('?')[1]).get('tab')) || 'products';
+async function renderOilSection(c) {
+  const sp = new URLSearchParams(location.hash.split('?')[1] || '');
+  const tab = ['products', 'names', 'ledger', 'stock', 'forecast', 'counts'].includes(sp.get('sub') || sp.get('tab')) ? (sp.get('sub') || sp.get('tab')) : 'products';
   const tabs = ['products', 'names', 'ledger', 'stock', 'forecast', 'counts'];
-  c.innerHTML = pageHeader('Oil & Lubricant Stock Book') + `<div class="toolbar">${tabs.map((t) => `<button class="sm ${t === tab ? 'primary' : ''}" onclick="location.hash='#/oil?tab=${t}'">${t.toUpperCase()}</button>`).join('')}<div class="spacer"></div><a class="btn sm" href="/api/oil/export/ledger.xlsx">⬇ Ledger Excel</a></div><div id="oilbody" class="muted">Loading…</div>`;
-  const body = qs('#oilbody');
+  const setTab = (t) => {
+    if (location.hash.startsWith('#/stocktake')) location.hash = '#/stocktake?tab=oil&sub=' + t;
+    else location.hash = '#/oil?tab=' + t;
+  };
+  c.innerHTML = `<div class="toolbar" style="margin-bottom:12px">${tabs.map((t) => `<button class="sm ${t === tab ? 'primary' : ''}" id="oil-tb-${t}">${t.toUpperCase()}</button>`).join('')}<div class="spacer"></div><a class="btn sm" href="/api/oil/export/ledger.xlsx">⬇ Ledger Excel</a></div><div id="oilbody" class="muted">Loading…</div>`;
+  tabs.forEach((t) => {
+    const btn = qs('#oil-tb-' + t, c);
+    if (btn) btn.onclick = () => setTab(t);
+  });
+  const body = qs('#oilbody', c);
   if (tab === 'stock') {
     return stockPanel(body, 'oil');
   } else if (tab === 'products') {
@@ -4694,7 +4699,7 @@ routes.oil = async (c) => {
         try {
           await api('/oil/aliases/' + sel.dataset.alias, { method: 'PATCH', body: { product_id: sel.value || null } });
           toast(sel.value ? 'Name identified — rebuild stock to apply it' : 'Marked as not a lubricant');
-          routes.oil(c);
+          renderOilSection(c);
         } catch (e) { toast(e.message, 'err'); sel.value = ''; }
       };
     });
@@ -4702,7 +4707,7 @@ routes.oil = async (c) => {
       b.onclick = async () => {
         try {
           await api('/oil/aliases/' + b.dataset.reopen, { method: 'PATCH', body: { reset: true } });
-          toast('Back on the list to identify'); routes.oil(c);
+          toast('Back on the list to identify'); renderOilSection(c);
         } catch (e) { toast(e.message, 'err'); }
       };
     });
@@ -4730,6 +4735,12 @@ routes.oil = async (c) => {
         (b, close) => { qs('#s', b).onclick = async () => { try { await api('/oil/counts', { method: 'POST', body: formData(b) }); close(); render(); } catch (e) { toast(e.message, 'err'); } }; });
     };
   }
+}
+
+routes.oil = async () => {
+  const sp = new URLSearchParams(location.hash.split('?')[1] || '');
+  const sub = sp.get('tab') || 'products';
+  location.replace('#/stocktake?tab=oil' + (sub !== 'products' ? '&sub=' + sub : ''));
 };
 
 // oilTopupModal was the second door for handing a lubricant out. Retired 2026-08-21 — Stores →
@@ -4747,11 +4758,11 @@ async function newLedgerModal(products) {
 }
 
 // ---- Batteries
-routes.batteries = async (c, params) => {
-  if (params[0]) return batteryDetail(c, params[0]);
+async function renderBatteriesSection(c, params) {
+  if (params && params[0]) return batteryDetail(c, params[0]);
   const list = await api('/batteries');
   const radar = await api('/batteries/warranty-radar');
-  c.innerHTML = `${pageHeader('Battery Lifecycle')}
+  c.innerHTML = `
     <div class="card section"><h3 style="margin-top:0">Stock position <span class="muted" style="font-weight:400;font-size:12px">— requested, received, issued and what's left, from the shared stock ledger</span></h3>
       <div id="bt-stock"></div></div>
     <div class="toolbar">
@@ -4768,7 +4779,12 @@ routes.batteries = async (c, params) => {
         <td>${esc(b.warranty_date || '')}</td></tr>`), { scroll: true })}`;
   stockPanel(qs('#bt-stock', c), 'battery');
   qs('#bwbtn').onclick = async () => { const s = qs('#bwhere').value.trim(); if (!s) return; try { const r = await api('/batteries/whereis/' + encodeURIComponent(s)); toast(s + ' → ' + (r.current_asset ? r.current_asset.code : 'in store') + ' (' + r.battery.state + ')'); } catch { toast('Serial not found', 'err'); } };
-  if (qs('#nb')) qs('#nb').onclick = newBatteryModal;
+  if (qs('#nb', c)) qs('#nb', c).onclick = newBatteryModal;
+}
+
+routes.batteries = async (c, params) => {
+  if (params && params[0]) return batteryDetail(c, params[0]);
+  location.replace('#/stocktake?tab=batteries');
 };
 
 // Kept in step with MAX_PHOTOS / MAX_PER_VEHICLE in src/routes/batteries.js, which enforce them.
@@ -4890,25 +4906,35 @@ routes.services = async (c, params) => {
   await renderServiceRecords(qs('#spane', c));
 };
 
-routes.filters = async (c, params) => {
-  if (params[0] === 'new-service') return location.replace('#/services/new');
-  if (params[0] === 'service' && params[1] && params[2] === 'edit') {
-    return location.replace('#/services/' + params[1] + '/edit');
-  }
-  if (params[0] === 'service' && params[1]) return location.replace('#/services/' + params[1]);
+async function renderFiltersSection(c) {
   const sp = new URLSearchParams(location.hash.split('?')[1] || '');
-  if (sp.get('tab') === 'services') return location.replace('#/services');
-  const tab = sp.get('tab') === 'xref' ? 'xref' : 'book';
-  c.innerHTML = `${pageHeader('Filters & Prices', 'Filter price book · cross-references (VIC / Sakura / HIFI).')}
+  const tab = ['book', 'xref'].includes(sp.get('sub') || sp.get('tab')) ? (sp.get('sub') || sp.get('tab')) : 'book';
+  const setTab = (t) => {
+    if (location.hash.startsWith('#/stocktake')) location.hash = '#/stocktake?tab=filters&sub=' + t;
+    else location.hash = '#/filters?tab=' + t;
+  };
+  c.innerHTML = `
     <div class="pill-row" style="margin-bottom:12px">
       <button class="btn sm ${tab === 'book' ? 'primary' : ''}" id="tb-book">Price Book</button>
       <button class="btn sm ${tab === 'xref' ? 'primary' : ''}" id="tb-xref">Cross-References</button>
     </div>
     <div id="fpane"><div class="muted">Loading…</div></div>`;
-  qs('#tb-book', c).onclick = () => { location.hash = '#/filters?tab=book'; };
-  qs('#tb-xref', c).onclick = () => { location.hash = '#/filters?tab=xref'; };
+  qs('#tb-book', c).onclick = () => setTab('book');
+  qs('#tb-xref', c).onclick = () => setTab('xref');
   if (tab === 'xref') await renderCrossRefs(qs('#fpane', c));
   else await renderPriceBook(qs('#fpane', c));
+}
+
+routes.filters = async (c, params) => {
+  if (params && (params[0] === 'new-service' || params[0] === 'service')) {
+    if (params[0] === 'new-service') return location.replace('#/services/new');
+    if (params[1] && params[2] === 'edit') return location.replace('#/services/' + params[1] + '/edit');
+    if (params[1]) return location.replace('#/services/' + params[1]);
+  }
+  const sp = new URLSearchParams(location.hash.split('?')[1] || '');
+  if (sp.get('tab') === 'services') return location.replace('#/services');
+  const sub = sp.get('tab') || 'book';
+  location.replace('#/stocktake?tab=filters' + (sub !== 'book' ? '&sub=' + sub : ''));
 };
 
 function filterPriceModal(filterNo, category, value, cats, onDone) {
@@ -7362,15 +7388,11 @@ function simpleCreateModal(title, path, fields) {
 
 // ===== Central Stock Cockpit & Automated Reorder Alerts =====
 // Unified inventory valuation, reorder alerts board, and universal search. Backed by /api/stock-cockpit.
-routes.stockcockpit = async (c) => {
-  if (!canView('stores')) {
-    c.innerHTML = `<div class="card"><p class="err">You do not have access to Stores.</p></div>`;
-    return;
-  }
+async function renderStockCockpitSection(c) {
   const edit = canEdit('stores');
   const canRestock = can('storekeeper', 'workshop', 'manager', 'admin');
 
-  c.innerHTML = pageHeader('Stock Cockpit', 'Inventory') + `
+  c.innerHTML = `
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:10px">
       <div>
         <p class="muted" style="margin:0;font-size:13px">Unified live inventory valuation, automated reorder shortfalls &amp; 1-click restock procurement across all stores.</p>
@@ -7761,17 +7783,24 @@ routes.stockcockpit = async (c) => {
   });
 
   await Promise.all([loadOverview(), loadSearch()]);
+}
+
+routes.stockcockpit = async () => {
+  location.replace('#/stocktake?tab=overview');
 };
 
 // ===== General Stock — Master Consumables & Spare Parts Inventory =====
 const gsStatus = (s) => (s === 'critical' ? '<span class="badge red">CRITICAL</span>' : s === 'low' ? '<span class="badge amber">LOW</span>' : '<span class="badge green">OK</span>');
 
-routes.generalstock = async (c) => {
-  if (!canView('stores')) { c.innerHTML = `<div class="card"><p class="err">You do not have access to Stores.</p></div>`; return; }
+async function renderGeneralStockSection(c) {
   const sp = new URLSearchParams(location.hash.split('?')[1] || '');
-  const tab = ['stock', 'catalogue', 'categories', 'reorder'].includes(sp.get('tab')) ? sp.get('tab') : 'stock';
+  const tab = ['stock', 'catalogue', 'categories', 'reorder'].includes(sp.get('sub') || sp.get('tab')) ? (sp.get('sub') || sp.get('tab')) : 'stock';
+  const setTab = (t) => {
+    if (location.hash.startsWith('#/stocktake')) location.hash = '#/stocktake?tab=general&sub=' + t;
+    else location.hash = '#/generalstock?tab=' + t;
+  };
 
-  c.innerHTML = pageHeader('General Stock', 'Master register · Live balances · Catalogue · Categories · Re-order') + `
+  c.innerHTML = `
     <div class="pill-row" style="margin-bottom:12px">
       <button class="btn sm ${tab === 'stock' ? 'primary' : ''}" id="gs-tb-stock">📦 Live Balances</button>
       <button class="btn sm ${tab === 'catalogue' ? 'primary' : ''}" id="gs-tb-cat">📑 Catalogue &amp; Part Numbers</button>
@@ -7780,10 +7809,10 @@ routes.generalstock = async (c) => {
     </div>
     <div id="gspane"><div class="muted">Loading…</div></div>`;
 
-  qs('#gs-tb-stock', c).onclick = () => { location.hash = '#/generalstock?tab=stock'; };
-  qs('#gs-tb-cat', c).onclick = () => { location.hash = '#/generalstock?tab=catalogue'; };
-  qs('#gs-tb-tree', c).onclick = () => { location.hash = '#/generalstock?tab=categories'; };
-  qs('#gs-tb-reorder', c).onclick = () => { location.hash = '#/generalstock?tab=reorder'; };
+  qs('#gs-tb-stock', c).onclick = () => setTab('stock');
+  qs('#gs-tb-cat', c).onclick = () => setTab('catalogue');
+  qs('#gs-tb-tree', c).onclick = () => setTab('categories');
+  qs('#gs-tb-reorder', c).onclick = () => setTab('reorder');
 
   const pane = qs('#gspane', c);
   if (tab === 'catalogue') {
@@ -7798,6 +7827,51 @@ routes.generalstock = async (c) => {
     </div>`;
   } else {
     await renderGeneralStockLive(pane);
+  }
+}
+
+routes.generalstock = async () => {
+  const sp = new URLSearchParams(location.hash.split('?')[1] || '');
+  const sub = sp.get('tab') || 'stock';
+  location.replace('#/stocktake?tab=general' + (sub !== 'stock' ? '&sub=' + sub : ''));
+};
+
+// Unified Stock Take Hub — single entry point for all stock-taking & balances
+routes.stocktake = async (c, params) => {
+  if (!canView('stores')) {
+    c.innerHTML = `<div class="card"><p class="err">You do not have access to Stores / Stock Take.</p></div>`;
+    return;
+  }
+  const sp = new URLSearchParams(location.hash.split('?')[1] || '');
+  const tab = ['overview', 'general', 'oil', 'filters', 'batteries'].includes(sp.get('tab')) ? sp.get('tab') : 'overview';
+
+  c.innerHTML = `${pageHeader('Stock Take', 'Master stock balances, counts, categories & inventory valuation across all stores')}
+    <div class="pill-row" style="margin-bottom:16px;gap:8px;flex-wrap:wrap">
+      <button class="btn sm ${tab === 'overview' ? 'primary' : ''}" id="stk-tb-overview">📊 Master Overview</button>
+      <button class="btn sm ${tab === 'general' ? 'primary' : ''}" id="stk-tb-general">📦 General Stock</button>
+      <button class="btn sm ${tab === 'oil' ? 'primary' : ''}" id="stk-tb-oil">🛢️ Oil &amp; Lubricants</button>
+      <button class="btn sm ${tab === 'filters' ? 'primary' : ''}" id="stk-tb-filters">🧰 Filters</button>
+      <button class="btn sm ${tab === 'batteries' ? 'primary' : ''}" id="stk-tb-batteries">🔋 Batteries</button>
+    </div>
+    <div id="stk-pane"><div class="muted">Loading…</div></div>`;
+
+  qs('#stk-tb-overview', c).onclick = () => { location.hash = '#/stocktake?tab=overview'; };
+  qs('#stk-tb-general', c).onclick = () => { location.hash = '#/stocktake?tab=general'; };
+  qs('#stk-tb-oil', c).onclick = () => { location.hash = '#/stocktake?tab=oil'; };
+  qs('#stk-tb-filters', c).onclick = () => { location.hash = '#/stocktake?tab=filters'; };
+  qs('#stk-tb-batteries', c).onclick = () => { location.hash = '#/stocktake?tab=batteries'; };
+
+  const pane = qs('#stk-pane', c);
+  if (tab === 'general') {
+    await renderGeneralStockSection(pane);
+  } else if (tab === 'oil') {
+    await renderOilSection(pane);
+  } else if (tab === 'filters') {
+    await renderFiltersSection(pane);
+  } else if (tab === 'batteries') {
+    await renderBatteriesSection(pane, params);
+  } else {
+    await renderStockCockpitSection(pane);
   }
 };
 
