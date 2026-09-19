@@ -913,3 +913,81 @@ CREATE TABLE IF NOT EXISTS tb_returns (
 );
 CREATE INDEX IF NOT EXISTS idx_tb_returns_issue ON tb_returns(issue_id);
 CREATE INDEX IF NOT EXISTS idx_tb_returns_cond ON tb_returns(kind, condition);
+
+-- ===========================================================================
+-- FLEET VEHICLE & EQUIPMENT LUBRICANT CAPACITIES
+-- ===========================================================================
+
+-- Master capacity specifications per vehicle (from Fleet_Oil_Lubricant_Capacities.xlsx)
+CREATE TABLE IF NOT EXISTS vehicle_lubricant_capacities (
+  id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+  asset_id             INTEGER REFERENCES assets(id) ON DELETE SET NULL,
+  sheet_id             INTEGER,                 -- original row ID (#) from the spreadsheet
+  ec_no                TEXT,                    -- E&C vehicle code, e.g. AP-06, EX-14
+  registration         TEXT,                    -- Vehicle registration number
+  category             TEXT,                    -- Vehicle category (e.g. Asphalt Paver, Dump Truck)
+  brand                TEXT,
+  model                TEXT,
+  year                 TEXT,
+  engine_oil_l         REAL,
+  engine_oil_grade     TEXT,
+  gearbox_oil_l        REAL,
+  gearbox_oil_grade    TEXT,
+  diff_oil_l           REAL,
+  diff_oil_grade       TEXT,
+  front_axle_oil_l     REAL,
+  hydraulic_oil_l      REAL,
+  final_drive_oil_l    REAL,
+  swing_oil_l          REAL,
+  other_gearbox_oil_l  REAL,
+  coolant_l            REAL,
+  brake_fluid_l        REAL,
+  engine_oil_basis     TEXT,                    -- Own record / Same model / Category median / Estimate
+  engine_oil_records   INTEGER DEFAULT 0,
+  notes                TEXT,
+  updated_by           TEXT,
+  created_at           TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at           TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_vlc_asset ON vehicle_lubricant_capacities(asset_id);
+CREATE INDEX IF NOT EXISTS idx_vlc_ec ON vehicle_lubricant_capacities(ec_no);
+CREATE INDEX IF NOT EXISTS idx_vlc_reg ON vehicle_lubricant_capacities(registration);
+CREATE INDEX IF NOT EXISTS idx_vlc_cat ON vehicle_lubricant_capacities(category);
+
+-- Service record audit trail evidence linked to vehicle capacities
+CREATE TABLE IF NOT EXISTS lubricant_capacity_evidence (
+  id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+  capacity_id          INTEGER REFERENCES vehicle_lubricant_capacities(id) ON DELETE SET NULL,
+  asset_id             INTEGER REFERENCES assets(id) ON DELETE SET NULL,
+  vehicle_raw          TEXT,
+  ec_no                TEXT,
+  registration         TEXT,
+  category             TEXT,
+  brand                TEXT,
+  model                TEXT,
+  year                 TEXT,
+  component            TEXT,                    -- Engine, Transmission / gearbox, Differential, etc.
+  qty_l                REAL,
+  grade                TEXT,
+  source_sheet         TEXT,
+  source_row           INTEGER,
+  record_date          TEXT,
+  note                 TEXT,
+  created_at           TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_lce_capacity ON lubricant_capacity_evidence(capacity_id);
+CREATE INDEX IF NOT EXISTS idx_lce_ec ON lubricant_capacity_evidence(ec_no);
+CREATE INDEX IF NOT EXISTS idx_lce_comp ON lubricant_capacity_evidence(component);
+
+-- Other equipment in service records (generators, rollers, compressors, unmatched equipment)
+CREATE TABLE IF NOT EXISTS other_equipment_capacities (
+  id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+  equipment_name       TEXT NOT NULL,
+  component            TEXT,
+  qty_l                REAL,
+  records_count        INTEGER DEFAULT 0,
+  all_quantities       TEXT,
+  created_at           TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_oec_name ON other_equipment_capacities(equipment_name);
+
