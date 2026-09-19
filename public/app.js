@@ -5371,36 +5371,11 @@ async function renderServiceRecords(c) {
 // ---- Operations: Vehicle Lubricant Capacities (Fleet_Oil_Lubricant_Capacities.xlsx) ---
 routes.lubecapacities = async (c) => {
   const isAdmin = can('admin');
-  const sp = new URLSearchParams(location.hash.split('?')[1] || '');
-  const tab = ['vehicles', 'evidence', 'other'].includes(sp.get('tab')) ? sp.get('tab') : 'vehicles';
-
-  const setTab = (t) => {
-    location.hash = '#/lubecapacities?tab=' + t;
-  };
-
   c.innerHTML = `
-    ${pageHeader('Lubricant Capacities', 'Fleet oil & fluid capacities per vehicle · Engine, gearbox, differential, hydraulics · Real service history evidence')}
-    <div class="pill-row" style="margin-bottom:14px;gap:8px;flex-wrap:wrap">
-      <button class="btn sm ${tab === 'vehicles' ? 'primary' : ''}" id="lcap-tb-veh">🚗 Vehicle Capacities (518)</button>
-      <button class="btn sm ${tab === 'evidence' ? 'primary' : ''}" id="lcap-tb-evi">📋 Service Record Evidence (1,199)</button>
-      <button class="btn sm ${tab === 'other' ? 'primary' : ''}" id="lcap-tb-oth">⚙️ Other Equipment (62)</button>
-    </div>
-    <div id="lcap-pane"><div class="muted">Loading lubricant capacities…</div></div>
+    ${pageHeader('Lubricant Capacities', 'Vehicle-wise oil & fluid capacities · Engine, gearbox, differential, hydraulics, coolant, and brake fluid')}
+    <div id="lcap-pane"></div>
   `;
-
-  qs('#lcap-tb-veh', c).onclick = () => setTab('vehicles');
-  qs('#lcap-tb-evi', c).onclick = () => setTab('evidence');
-  qs('#lcap-tb-oth', c).onclick = () => setTab('other');
-
-  const pane = qs('#lcap-pane', c);
-
-  if (tab === 'evidence') {
-    await renderLubricantEvidence(pane);
-  } else if (tab === 'other') {
-    await renderOtherEquipmentCapacities(pane);
-  } else {
-    await renderVehicleCapacitiesList(pane, isAdmin);
-  }
+  await renderVehicleCapacitiesList(qs('#lcap-pane', c), isAdmin);
 };
 
 async function renderVehicleCapacitiesList(c, isAdmin) {
@@ -5592,26 +5567,10 @@ async function showVehicleCapacityModal(id, isAdmin, onReload) {
         ${fieldBlock('Brake Fluid', it.brake_fluid_l, 'L')}
       </div>
 
-      <div class="card section" style="margin-bottom:14px;background:#fff">
+      <div class="card section" style="background:#fff">
         <div style="font-weight:700;font-size:12px;margin-bottom:4px">Capacity Attribution Basis</div>
-        <p style="margin:0;font-size:12px"><b>${esc(it.engine_oil_basis || 'Manual entry')}</b> ${it.engine_oil_records ? `· ${it.engine_oil_records} historical service record extract(s)` : ''}</p>
+        <p style="margin:0;font-size:12px"><b>${esc(it.engine_oil_basis || 'Standard specification')}</b></p>
         ${it.notes ? `<p class="muted" style="margin:4px 0 0;font-size:11.5px">Notes: ${esc(it.notes)}</p>` : ''}
-      </div>
-
-      <div>
-        <h4 style="margin:0 0 8px">📋 Linked Service Record Evidence (${evidence.length})</h4>
-        ${evidence.length ? tableWrap(
-          [{ label: 'Date' }, { label: 'Component' }, { label: 'Quantity', num: true }, { label: 'Grade / Brand' }, { label: 'Source Sheet & Row' }, { label: 'Note' }],
-          evidence.map((ev) => `<tr>
-            <td>${esc(ev.record_date || '—')}</td>
-            <td><b>${esc(ev.component || '—')}</b></td>
-            <td class="num"><b>${num(ev.qty_l)} L</b></td>
-            <td>${esc(ev.grade || '—')}</td>
-            <td>${esc(ev.source_sheet || '')} ${ev.source_row ? `row ${ev.source_row}` : ''}</td>
-            <td class="muted" style="font-size:11px">${esc(ev.note || '—')}</td>
-          </tr>`),
-          { scroll: true }
-        ) : '<p class="muted" style="font-size:12px">No individual service fills found in the evidence archive for this machine.</p>'}
       </div>
     `;
 
@@ -5739,136 +5698,7 @@ async function showVehicleCapacityEditModal(id, onDone) {
   });
 }
 
-// Tab: Service Record Evidence Log (1,199 historical fills)
-async function renderLubricantEvidence(c) {
-  c.innerHTML = `
-    <div class="toolbar" style="margin-bottom:12px;gap:8px;flex-wrap:wrap">
-      <input type="text" id="evi-q" placeholder="Search vehicle, grade, date, source sheet/row…" style="max-width:320px">
-      <select id="evi-comp" style="max-width:200px"><option value="">All Components</option></select>
-      <div class="spacer"></div>
-      <span class="muted" id="evi-count" style="font-size:12px;align-self:center"></span>
-    </div>
-    <div id="evi-table" class="muted">Loading service evidence…</div>
-  `;
 
-  let deb;
-  const load = async () => {
-    const q = qs('#evi-q', c).value.trim();
-    const comp = qs('#evi-comp', c).value;
-
-    let url = '/lubricant-capacities/evidence?limit=300';
-    if (q) url += '&q=' + encodeURIComponent(q);
-    if (comp) url += '&component=' + encodeURIComponent(comp);
-
-    try {
-      const data = await api(url);
-      const items = data.items || [];
-
-      qs('#evi-count', c).textContent = `${num(data.total)} record(s) found`;
-
-      const compSelect = qs('#evi-comp', c);
-      if (compSelect && compSelect.children.length <= 1 && data.components) {
-        compSelect.innerHTML = '<option value="">All Components (' + data.components.length + ')</option>' +
-          data.components.map((k) => `<option value="${esc(k.component)}">${esc(k.component)} (${k.c})</option>`).join('');
-        if (comp) compSelect.value = comp;
-      }
-
-      if (!items.length) {
-        qs('#evi-table', c).innerHTML = '<div class="card"><p class="muted">No evidence records match your search.</p></div>';
-        return;
-      }
-
-      const headers = [
-        { label: 'Date', width: '90px' },
-        { label: 'Vehicle' },
-        { label: 'Category' },
-        { label: 'Brand & Model' },
-        { label: 'Component' },
-        { label: 'Quantity', num: true },
-        { label: 'Grade / Brand' },
-        { label: 'Source Reference' },
-        { label: 'Note' },
-      ];
-
-      const rows = items.map((ev) => `<tr>
-        <td>${esc(ev.record_date || '—')}</td>
-        <td><b>${esc(ev.ec_no || ev.vehicle_raw || '—')}</b>${ev.registration ? `<br><span class="muted" style="font-size:11px">${esc(ev.registration)}</span>` : ''}</td>
-        <td><span class="badge" style="font-size:11px">${esc(ev.category || '—')}</span></td>
-        <td><b>${esc(ev.brand || '—')}</b> ${esc(ev.model || '')}</td>
-        <td><b>${esc(ev.component || '—')}</b></td>
-        <td class="num"><b>${num(ev.qty_l)} L</b></td>
-        <td>${esc(ev.grade || '—')}</td>
-        <td><span class="badge" style="font-size:10.5px">${esc(ev.source_sheet || '')}</span> ${ev.source_row ? `row ${ev.source_row}` : ''}</td>
-        <td class="muted" style="font-size:11px">${esc(ev.note || '—')}</td>
-      </tr>`);
-
-      qs('#evi-table', c).innerHTML = tableWrap(headers, rows, { scroll: true });
-
-    } catch (e) {
-      qs('#evi-table', c).innerHTML = `<div class="card"><p class="err">${esc(e.message)}</p></div>`;
-    }
-  };
-
-  qs('#evi-q', c).oninput = () => { clearTimeout(deb); deb = setTimeout(load, 250); };
-  qs('#evi-comp', c).onchange = load;
-
-  await load();
-}
-
-// Tab: Other Equipment Capacities (Generators, Rollers, Compressors)
-async function renderOtherEquipmentCapacities(c) {
-  c.innerHTML = `
-    <div class="toolbar" style="margin-bottom:12px;gap:8px">
-      <input type="text" id="oth-q" placeholder="Search equipment, component, quantities…" style="max-width:320px">
-      <div class="spacer"></div>
-      <span class="muted" id="oth-count" style="font-size:12px;align-self:center"></span>
-    </div>
-    <div id="oth-table" class="muted">Loading other equipment…</div>
-  `;
-
-  let deb;
-  const load = async () => {
-    const q = qs('#oth-q', c).value.trim();
-    let url = '/lubricant-capacities/other-equipment';
-    if (q) url += '?q=' + encodeURIComponent(q);
-
-    try {
-      const data = await api(url);
-      const items = data.items || [];
-      qs('#oth-count', c).textContent = `${items.length} equipment entries`;
-
-      if (!items.length) {
-        qs('#oth-table', c).innerHTML = '<div class="card"><p class="muted">No other equipment matches your search.</p></div>';
-        return;
-      }
-
-      const headers = [
-        { label: 'Equipment Name / ID' },
-        { label: 'Component' },
-        { label: 'Typical Qty (L)', num: true },
-        { label: 'Records (n)', num: true },
-        { label: 'All Quantities Recorded' },
-      ];
-
-      const rows = items.map((o) => `<tr>
-        <td><b>${esc(o.equipment_name)}</b></td>
-        <td><b>${esc(o.component || '—')}</b></td>
-        <td class="num"><b>${num(o.qty_l)} L</b></td>
-        <td class="num">${num(o.records_count)}</td>
-        <td><code>${esc(o.all_quantities || '—')}</code></td>
-      </tr>`);
-
-      qs('#oth-table', c).innerHTML = tableWrap(headers, rows, { scroll: true });
-
-    } catch (e) {
-      qs('#oth-table', c).innerHTML = `<div class="card"><p class="err">${esc(e.message)}</p></div>`;
-    }
-  };
-
-  qs('#oth-q', c).oninput = () => { clearTimeout(deb); deb = setTimeout(load, 250); };
-
-  await load();
-}
 
 // Full "Vehicle / Machinery Service Details" form — matches the paper layout.
 // The same form records a service and edits one back: `existing` is the payload from

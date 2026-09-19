@@ -66,7 +66,7 @@ const api = async (p, opts = {}, cookie = adminCookie) => {
   return { status: r.status, body: await r.json().catch(() => null) };
 };
 
-test('Seed sample data into vehicle_lubricant_capacities, evidence and other_equipment', () => {
+test('Seed sample data into vehicle_lubricant_capacities', () => {
   const capId = run(`
     INSERT INTO vehicle_lubricant_capacities (
       ec_no, registration, category, brand, model,
@@ -83,29 +83,11 @@ test('Seed sample data into vehicle_lubricant_capacities, evidence and other_equ
       24.0, '85W140',
       120.0,
       45.0, 2.5,
-      'Own record: average', 8
+      'Standard specification', 0
     )
   `).lastInsertRowid;
 
   assert.ok(capId > 0);
-
-  run(`
-    INSERT INTO lubricant_capacity_evidence (
-      capacity_id, vehicle_raw, ec_no, registration, category, brand, model,
-      component, qty_l, grade, source_sheet, source_row, record_date, note
-    ) VALUES (
-      ?, 'DA-01', 'DA-01', 'WP-NA-1234', 'Dump Truck', 'CAT', '740',
-      'Engine Oil', 36.0, 'Mobil Delvac 15W40', 'Service Records', 105, '2026-03-01', 'Periodic service'
-    )
-  `, capId);
-
-  run(`
-    INSERT INTO other_equipment_capacities (
-      equipment_name, component, qty_l, records_count, all_quantities
-    ) VALUES (
-      'Perkins 100kVA Generator', 'Engine Oil', 19.0, 4, '19, 19, 18.5, 19'
-    )
-  `);
 });
 
 test('GET /api/lubricant-capacities allows access to viewer and returns KPIs & records', async () => {
@@ -118,16 +100,14 @@ test('GET /api/lubricant-capacities allows access to viewer and returns KPIs & r
   assert.strictEqual(res.body.summary.count_engine_oil, 1);
 });
 
-test('GET /api/lubricant-capacities/:id returns spec plus attached service evidence', async () => {
+test('GET /api/lubricant-capacities/:id returns single vehicle spec', async () => {
   const listRes = await api('/lubricant-capacities', {}, viewerCookie);
   const item = listRes.body.items[0];
 
   const detailRes = await api(`/lubricant-capacities/${item.id}`, {}, viewerCookie);
   assert.strictEqual(detailRes.status, 200);
   assert.strictEqual(detailRes.body.item.ec_no, 'DA-01');
-  assert.ok(Array.isArray(detailRes.body.evidence));
-  assert.strictEqual(detailRes.body.evidence.length, 1);
-  assert.strictEqual(detailRes.body.evidence[0].source_sheet, 'Service Records');
+  assert.strictEqual(detailRes.body.item.engine_oil_l, 35.5);
 });
 
 test('Non-admin user cannot mutate lubricant capacities (HTTP 403)', async () => {
@@ -199,18 +179,12 @@ test('Admin user can create, update, and delete vehicle capacity', async () => {
   assert.strictEqual(getAfterDel.status, 404);
 });
 
-test('Evidence and Other Equipment endpoints return seeded data', async () => {
-  const evRes = await api('/lubricant-capacities/evidence?q=DA-01', {}, viewerCookie);
-  assert.strictEqual(evRes.status, 200);
-  assert.ok(Array.isArray(evRes.body.items));
-  assert.strictEqual(evRes.body.items.length, 1);
-  assert.strictEqual(evRes.body.items[0].component, 'Engine Oil');
+test('Evidence and Other Equipment endpoints are removed (HTTP 404)', async () => {
+  const evRes = await api('/lubricant-capacities/evidence', {}, viewerCookie);
+  assert.strictEqual(evRes.status, 404);
 
-  const eqRes = await api('/lubricant-capacities/other-equipment?q=Perkins', {}, viewerCookie);
-  assert.strictEqual(eqRes.status, 200);
-  assert.ok(Array.isArray(eqRes.body.items));
-  assert.strictEqual(eqRes.body.items.length, 1);
-  assert.strictEqual(eqRes.body.items[0].equipment_name, 'Perkins 100kVA Generator');
+  const eqRes = await api('/lubricant-capacities/other-equipment', {}, viewerCookie);
+  assert.strictEqual(eqRes.status, 404);
 });
 
 test('Frontend app.js registers lubecapacities under Operations in NAV and NAV_GROUP', () => {

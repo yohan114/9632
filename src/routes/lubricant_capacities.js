@@ -125,74 +125,7 @@ router.get('/', requireAuth, asyncHandler((req, res) => {
   });
 }));
 
-// ---- 2. Other Equipment List ------------------------------------------------
-router.get('/other-equipment', requireAuth, asyncHandler((req, res) => {
-  const q = String(req.query.q || '').trim();
-  let where = '';
-  const params = [];
-  if (q) {
-    where = 'WHERE equipment_name LIKE ? OR component LIKE ? OR all_quantities LIKE ?';
-    const term = `%${q}%`;
-    params.push(term, term, term);
-  }
-  const items = all(
-    `SELECT * FROM other_equipment_capacities ${where} ORDER BY equipment_name ASC, component ASC`,
-    ...params
-  );
-  res.json({ items, total: items.length });
-}));
-
-// ---- 3. Service Record Evidence Log ----------------------------------------
-router.get('/evidence', requireAuth, asyncHandler((req, res) => {
-  const q = String(req.query.q || '').trim();
-  const component = String(req.query.component || '').trim();
-  const capacityId = toInt(req.query.capacity_id);
-  const limit = Math.min(Math.max(toInt(req.query.limit) || 100, 1), 1000);
-  const offset = Math.max(toInt(req.query.offset) || 0, 0);
-
-  const where = [];
-  const params = [];
-
-  if (capacityId) {
-    where.push('capacity_id = ?');
-    params.push(capacityId);
-  }
-  if (component) {
-    where.push('component = ?');
-    params.push(component);
-  }
-  if (q) {
-    where.push(`(
-      vehicle_raw LIKE ? OR
-      ec_no LIKE ? OR
-      registration LIKE ? OR
-      category LIKE ? OR
-      brand LIKE ? OR
-      model LIKE ? OR
-      note LIKE ? OR
-      source_sheet LIKE ?
-    )`);
-    const term = `%${q}%`;
-    params.push(term, term, term, term, term, term, term, term);
-  }
-
-  const whereClause = where.length ? `WHERE ${where.join(' AND ')}` : '';
-  const totalRow = get(`SELECT COUNT(*) AS c FROM lubricant_capacity_evidence ${whereClause}`, ...params);
-  const items = all(
-    `SELECT * FROM lubricant_capacity_evidence ${whereClause} ORDER BY id DESC LIMIT ? OFFSET ?`,
-    ...params,
-    limit,
-    offset
-  );
-
-  const components = all(
-    `SELECT component, COUNT(*) AS c FROM lubricant_capacity_evidence WHERE component IS NOT NULL GROUP BY component ORDER BY c DESC`
-  );
-
-  res.json({ items, total: totalRow ? totalRow.c : 0, components });
-}));
-
-// ---- 4. Single Vehicle Capacity Detail -------------------------------------
+// ---- 2. Single Vehicle Capacity Detail -------------------------------------
 router.get('/:id', requireAuth, asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   const item = get(
@@ -204,16 +137,7 @@ router.get('/:id', requireAuth, asyncHandler((req, res) => {
   );
   if (!item) return res.status(404).json({ error: 'Vehicle capacity record not found' });
 
-  // Get service record evidence entries for this vehicle
-  const evidence = all(
-    `SELECT * FROM lubricant_capacity_evidence
-      WHERE capacity_id = ? OR (ec_no IS NOT NULL AND ec_no = ?)
-      ORDER BY record_date DESC, id DESC`,
-    id,
-    item.ec_no || ''
-  );
-
-  res.json({ item, evidence });
+  res.json({ item });
 }));
 
 // ---- 5. Admin Create Vehicle Capacity --------------------------------------
@@ -379,11 +303,7 @@ router.delete('/:id', requireRole('admin'), asyncHandler((req, res) => {
   const existing = get('SELECT * FROM vehicle_lubricant_capacities WHERE id = ?', id);
   if (!existing) return res.status(404).json({ error: 'Vehicle capacity record not found' });
 
-  tx(() => {
-    // Disconnect linked evidence records so audit history is not destroyed
-    run('UPDATE lubricant_capacity_evidence SET capacity_id = NULL WHERE capacity_id = ?', id);
-    run('DELETE FROM vehicle_lubricant_capacities WHERE id = ?', id);
-  });
+  run('DELETE FROM vehicle_lubricant_capacities WHERE id = ?', id);
 
   audit.record({
     userId: req.user.id,
