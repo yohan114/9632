@@ -4880,21 +4880,18 @@ routes.filters = async (c, params) => {
   }
   if (params[0] === 'service' && params[1]) return serviceDetail(c, params[1]);
   const sp = new URLSearchParams(location.hash.split('?')[1] || '');
-  const tab = ['stock', 'book', 'services', 'xref'].includes(sp.get('tab')) ? sp.get('tab') : 'stock';
-  c.innerHTML = `${pageHeader('Filters & Prices', 'Stock position · price book · service records · cross-references (VIC / Sakura / HIFI).')}
+  const tab = ['book', 'services', 'xref'].includes(sp.get('tab')) ? sp.get('tab') : 'services';
+  c.innerHTML = `${pageHeader('Service Records & Filter Prices', 'Vehicle & machinery service records · filter price book · cross-references (VIC / Sakura / HIFI).')}
     <div class="pill-row" style="margin-bottom:12px">
-      <button class="btn sm ${tab === 'stock' ? 'primary' : ''}" id="tb-stock">Stock Position</button>
-      <button class="btn sm ${tab === 'book' ? 'primary' : ''}" id="tb-book">Price Book</button>
       <button class="btn sm ${tab === 'services' ? 'primary' : ''}" id="tb-svc">Service Records</button>
+      <button class="btn sm ${tab === 'book' ? 'primary' : ''}" id="tb-book">Price Book</button>
       <button class="btn sm ${tab === 'xref' ? 'primary' : ''}" id="tb-xref">Cross-References</button>
     </div>
     <div id="fpane"><div class="muted">Loading…</div></div>`;
-  qs('#tb-stock', c).onclick = () => { location.hash = '#/filters?tab=stock'; };
-  qs('#tb-book', c).onclick = () => { location.hash = '#/filters?tab=book'; };
   qs('#tb-svc', c).onclick = () => { location.hash = '#/filters?tab=services'; };
+  qs('#tb-book', c).onclick = () => { location.hash = '#/filters?tab=book'; };
   qs('#tb-xref', c).onclick = () => { location.hash = '#/filters?tab=xref'; };
-  if (tab === 'stock') await renderFilterStock(qs('#fpane', c));
-  else if (tab === 'services') await renderServiceRecords(qs('#fpane', c));
+  if (tab === 'services') await renderServiceRecords(qs('#fpane', c));
   else if (tab === 'xref') await renderCrossRefs(qs('#fpane', c));
   else await renderPriceBook(qs('#fpane', c));
 };
@@ -8056,7 +8053,7 @@ async function renderFilterStock(c) {
 }
 
 routes.filterstock = async (c) => {
-  location.replace('#/filters?tab=stock');
+  location.replace('#/filters?tab=services');
 };
 
 // ===== Stock Issues — Redirect Shim to Stores Movements (Issues) =====
