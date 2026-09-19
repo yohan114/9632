@@ -11,7 +11,8 @@ Every section in the master inventory system now has exactly **one canonical pat
 | **Stock Cockpit** | `#/stockcockpit` | Executive Board | Master valuation across all stores, active SKUs, automated reorder alerts, universal search across all categories, 1-click restock MRN generator. |
 | **Stores** | `#/stores` | `tab=pipeline`<br/>`tab=workspace`<br/>`tab=paperwork` (`sub=mrn`, `sub=grn`)<br/>`tab=movements` (`sub=issues`, `sub=mtn`)<br/>`tab=search` | Physical warehouse logistics & operations pipeline: intake pipeline, fast receive & price workspace, material requests (MRN), receipts (GRN), issues, and transfers (MTN). |
 | **General Stock** | `#/generalstock` | `tab=stock` (Live Balances)<br/>`tab=catalogue` (Part Numbers & Facets)<br/>`tab=categories` (2-Level Hierarchy)<br/>`tab=reorder` (Re-Order Shortfalls) | Single canonical home for general consumables & spare parts catalog, shelf balances, live pricing, stock adjustments, and movements ledger. |
-| **Service Records & Filter Prices** | `#/filters` | `tab=services` (Service Records, default)<br/>`tab=book` (Price Book)<br/>`tab=xref` (Cross-References) | Dedicated Service Records center: historical vehicle/machinery service records, filter price book, and Sakura/VIC/HIFI cross-references. Filter stock operations are now unified under Inventory (Stock Cockpit / Stores). |
+| **Service Records** | `#/services` | `#/services` (List)<br/>`#/services/new`<br/>`#/services/:id`<br/>`#/services/:id/edit` | Operations section: canonical home for vehicle & machinery maintenance service logs, meter readings, filter/oil consumption, and service histories. |
+| **Filters & Prices** | `#/filters` | `tab=book` (Price Book, default)<br/>`tab=xref` (Cross-References) | Inventory section: filter price book and Sakura/VIC/HIFI cross-references. Filter stock operations are unified under Stock Cockpit & Stores. |
 | **Oil & Lubricants** | `#/oil` | `tab=products`<br/>`tab=stock`<br/>`tab=ledger`<br/>`tab=forecast`<br/>`tab=names`<br/>`tab=counts` | Fluid & lubricant products, pricing, stock panel, transaction ledger, 60-day consumption forecast, and name alias queue. |
 | **Batteries** | `#/batteries` | Lifecycle Registry | Serial-tracked rotables, vehicle battery assignments, 60-day warranty radar, photo inspections, and serial search. |
 
@@ -23,9 +24,12 @@ To avoid confusion where the same section could be viewed from 2 or 3 paths, red
 
 | Redundant / Secondary Path | Canonical Destination | Resolution in System |
 |---|---|---|
+| **Legacy `#/filters?tab=services`** | `#/services` | Automatically redirects to the canonical Service Records view under Operations. |
+| **Legacy `#/filters/service/:id`** | `#/services/:id` | Seamlessly redirects to Service Record details. |
+| **Legacy `#/filters/new-service`** | `#/services/new` | Seamlessly redirects to New Service Form. |
 | **Sidebar "Material Requests"** | `#/stores?tab=paperwork&sub=mrn` | Removed from sidebar; accessed directly in Stores -> Requests (MRN). `#/matreq` redirects here. |
 | **Sidebar "Stock Issues"** | `#/stores?tab=movements&sub=issues` | Removed from sidebar; accessed directly in Stores -> Issues. `#/stockissues` redirects here. |
-| **Separate "Filter Stock" (`#/filterstock`)** | `#/filters?tab=services` | `#/filterstock` and `#/filters?tab=stock` redirect to Service Records. Stock operations are handled in the Inventory section. |
+| **Separate "Filter Stock" (`#/filterstock`)** | `#/filters?tab=book` | `#/filterstock` and `#/filters?tab=stock` redirect to Filters & Prices book. Stock operations are handled in the Inventory section. |
 | **Stores "📦 GENERAL STOCK →" button** | `#/generalstock` | Removed from Stores toolbar so Stores focuses strictly on warehouse intake/movements and General Stock is accessed via its canonical nav. |
 | **Legacy `#/stores?tab=catalogue`** | `#/generalstock?tab=catalogue` | Seamlessly redirects to Catalogue & Part Numbers in General Stock. |
 | **Legacy `#/stores?tab=categories`** | `#/generalstock?tab=categories` | Seamlessly redirects to Categories tree in General Stock. |

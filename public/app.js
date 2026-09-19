@@ -431,7 +431,7 @@ const LIVE_ENTITY_ROUTES = {
   item_category: ['stores', 'generalstock', 'stockissues'],
   mrn: ['stores', 'matreq', 'purchasing', 'stockcockpit'], mrn_lines: ['purchasing', 'stockcockpit'], grn: ['stores', 'purchasing', 'stockcockpit'], mtn: ['stores'], stock_count: ['oil'],
   product: ['oil', 'stockcockpit'], product_price: ['oil'], stock_ledger: ['oil', 'stockissues', 'stockcockpit'],
-  filter_stock: ['filters', 'filterstock', 'stockcockpit'], filter_price: ['filters'], filter_xref: ['filters'], service_job: ['filters'],
+  filter_stock: ['filters', 'filterstock', 'stockcockpit'], filter_price: ['filters'], filter_xref: ['filters'], service_job: ['filters', 'services'],
   job_card: ['jobs', 'jobrequests'], job_request: ['jobrequests', 'jobs'], job_daily_work: ['dailywork', 'jobs'],
   battery: ['batteries', 'stockcockpit'], asset: ['assets'],
   mechanic: ['mechanics', 'labour'], labour_rate: ['labour', 'mechanics'], mechanic_alias: ['mechanics'],
@@ -661,10 +661,11 @@ function formData(root) {
 // ---------------------------------------------------------------- shell
 const NAV = [
   ['dashboard', '📊', 'Dashboard'],
-  ['assets', '🚜', 'Assets'],
   ['jobs', '🔧', 'Job Cards'],
   ['jobrequests', '📋', 'Job Requests'],
   ['dailywork', '📅', 'Daily Work'],
+  ['services', '🛠️', 'Service Records'],
+  ['assets', '🚜', 'Assets'],
   ['labour', '💵', 'Labour Rates'],
   ['stockcockpit', '🏪', 'Stock Cockpit'],
   ['stores', '📦', 'Stores'],
@@ -686,7 +687,7 @@ const NAV = [
 ];
 // Which permission module governs each nav item's visibility (dashboard always on).
 const NAV_MODULE = {
-  assets: 'assets', jobs: 'jobs', jobrequests: 'jobrequests', dailywork: 'dailywork',
+  assets: 'assets', jobs: 'jobs', jobrequests: 'jobrequests', dailywork: 'dailywork', services: 'filters',
   labour: 'labour', stores: 'stores', stockcockpit: 'stores', generalstock: 'stores', oil: 'oil', batteries: 'batteries', filters: 'filters', filterstock: 'filters',
   projects: 'projects', aliases: 'aliases', attention: 'reports', progress: 'reports',
   teardown: 'reports', reports: 'reports', tyrebattery: 'reports',
@@ -708,7 +709,7 @@ function navVisible(n) {
 // Sidebar grouping — headings shown above each cluster (a group with no visible item is hidden).
 const NAV_GROUP_ORDER = ['Operations', 'Inventory', 'Procurement', 'Fleet', 'Analysis', 'Admin'];
 const NAV_GROUP = {
-  dashboard: 'Operations', jobs: 'Operations', jobrequests: 'Operations', dailywork: 'Operations',
+  dashboard: 'Operations', jobs: 'Operations', jobrequests: 'Operations', dailywork: 'Operations', services: 'Operations',
   stockcockpit: 'Inventory', stores: 'Inventory', generalstock: 'Inventory', oil: 'Inventory', filters: 'Inventory', batteries: 'Inventory',
   purchasing: 'Procurement', tbrequests: 'Procurement',
   assets: 'Fleet', serviceplan: 'Fleet',
@@ -4710,7 +4711,7 @@ routes.oil = async (c) => {
     const svcRef = (l) => { const m = String(l.note || '').match(/Service record #(\d+)/); return m ? m[1] : null; };
     body.innerHTML = `<p class="muted" style="margin-top:0">Issues tagged <span class="badge blue">Service</span> are consumed by a service record — their <b>cost is counted in that service</b>, not here (stock-out only, to avoid double-counting).</p>` +
       tableWrap([{ label: 'Date' }, { label: 'Product' }, { label: 'Kind' }, { label: 'Qty', num: true }, { label: 'Balance', num: true }, { label: 'Unit Price', num: true }, { label: 'Asset' }, { label: 'Reference' }],
-        list.map((l) => { const sid = svcRef(l); return `<tr${sid ? ' style="background:rgba(46,120,210,.05)"' : ''}><td>${esc(l.txn_date)}</td><td>${esc(l.product_name)}</td><td><span class="badge ${l.kind === 'issue' ? 'amber' : 'green'}">${esc(l.kind)}</span></td><td class="num">${num(l.qty)}</td><td class="num">${num(l.balance_after)}</td><td class="num">${sid ? '<span class="muted">' + money(l.unit_price) + '</span>' : money(l.unit_price)}</td><td>${esc(l.asset_code || '')}</td><td>${sid ? `<a href="#/filters/service/${sid}"><span class="badge blue">Service #${sid}</span></a>` : esc(l.consumer || l.note || '')}</td></tr>`; }), { scroll: true });
+        list.map((l) => { const sid = svcRef(l); return `<tr${sid ? ' style="background:rgba(46,120,210,.05)"' : ''}><td>${esc(l.txn_date)}</td><td>${esc(l.product_name)}</td><td><span class="badge ${l.kind === 'issue' ? 'amber' : 'green'}">${esc(l.kind)}</span></td><td class="num">${num(l.qty)}</td><td class="num">${num(l.balance_after)}</td><td class="num">${sid ? '<span class="muted">' + money(l.unit_price) + '</span>' : money(l.unit_price)}</td><td>${esc(l.asset_code || '')}</td><td>${sid ? `<a href="#/services/${sid}"><span class="badge blue">Service #${sid}</span></a>` : esc(l.consumer || l.note || '')}</td></tr>`; }), { scroll: true });
   } else if (tab === 'forecast') {
     const f = await api('/oil/forecast');
     body.innerHTML = `<p class="muted">Days-of-cover from consumption over the last ${f.window_days} days; low-stock threshold ${f.low_stock_days} days.</p>` +
@@ -4872,27 +4873,41 @@ async function batteryDetail(c, id) {
 }
 
 // ---- Filters — the unified filter stock position + price book + service records + cross-references -------------
-routes.filters = async (c, params) => {
-  if (params[0] === 'new-service') return renderNewServiceForm(c);
+routes.services = async (c, params) => {
+  if (params[0] === 'new-service' || params[0] === 'new') return renderNewServiceForm(c);
   if (params[0] === 'service' && params[1] && params[2] === 'edit') {
     if (!canEdit('filters')) return toast('You do not have permission to edit services', 'err');
     return renderNewServiceForm(c, await api('/filters/services/' + params[1]));
   }
+  if (params[0] && params[1] === 'edit') {
+    if (!canEdit('filters')) return toast('You do not have permission to edit services', 'err');
+    return renderNewServiceForm(c, await api('/filters/services/' + params[0]));
+  }
   if (params[0] === 'service' && params[1]) return serviceDetail(c, params[1]);
+  if (params[0]) return serviceDetail(c, params[0]);
+  c.innerHTML = `${pageHeader('Service Records', 'Vehicle & machinery maintenance service logs, meter readings, and service histories.')}
+    <div id="spane"><div class="muted">Loading…</div></div>`;
+  await renderServiceRecords(qs('#spane', c));
+};
+
+routes.filters = async (c, params) => {
+  if (params[0] === 'new-service') return location.replace('#/services/new');
+  if (params[0] === 'service' && params[1] && params[2] === 'edit') {
+    return location.replace('#/services/' + params[1] + '/edit');
+  }
+  if (params[0] === 'service' && params[1]) return location.replace('#/services/' + params[1]);
   const sp = new URLSearchParams(location.hash.split('?')[1] || '');
-  const tab = ['book', 'services', 'xref'].includes(sp.get('tab')) ? sp.get('tab') : 'services';
-  c.innerHTML = `${pageHeader('Service Records & Filter Prices', 'Vehicle & machinery service records · filter price book · cross-references (VIC / Sakura / HIFI).')}
+  if (sp.get('tab') === 'services') return location.replace('#/services');
+  const tab = sp.get('tab') === 'xref' ? 'xref' : 'book';
+  c.innerHTML = `${pageHeader('Filters & Prices', 'Filter price book · cross-references (VIC / Sakura / HIFI).')}
     <div class="pill-row" style="margin-bottom:12px">
-      <button class="btn sm ${tab === 'services' ? 'primary' : ''}" id="tb-svc">Service Records</button>
       <button class="btn sm ${tab === 'book' ? 'primary' : ''}" id="tb-book">Price Book</button>
       <button class="btn sm ${tab === 'xref' ? 'primary' : ''}" id="tb-xref">Cross-References</button>
     </div>
     <div id="fpane"><div class="muted">Loading…</div></div>`;
-  qs('#tb-svc', c).onclick = () => { location.hash = '#/filters?tab=services'; };
   qs('#tb-book', c).onclick = () => { location.hash = '#/filters?tab=book'; };
   qs('#tb-xref', c).onclick = () => { location.hash = '#/filters?tab=xref'; };
-  if (tab === 'services') await renderServiceRecords(qs('#fpane', c));
-  else if (tab === 'xref') await renderCrossRefs(qs('#fpane', c));
+  if (tab === 'xref') await renderCrossRefs(qs('#fpane', c));
   else await renderPriceBook(qs('#fpane', c));
 };
 
@@ -5077,9 +5092,9 @@ async function renderServiceRecords(c) {
         <td class="num">${money(s.labour_charge)}</td>
         <td class="num">${money(s.computed_cost)}</td>
         <td class="num"><input type="number" min="0" step="0.01" class="svc-out" data-id="${s.id}" value="${!s.outside_estimate ? '' : s.outside_estimate}" placeholder="—" style="width:100%;max-width:110px;box-sizing:border-box;text-align:right" ${editable ? '' : 'disabled'}></td>
-        ${editable ? `<td><a class="btn sm svc-edit" href="#/filters/service/${s.id}/edit" title="Edit this service">✏️</a></td>` : ''}</tr>`),
+        ${editable ? `<td><a class="btn sm svc-edit" href="#/services/${s.id}/edit" title="Edit this service">✏️</a></td>` : ''}</tr>`),
       { scroll: true, fit: true, noHScroll: true });
-    qsa('[data-svc]', c).forEach((tr) => tr.onclick = () => { location.hash = '#/filters/service/' + tr.dataset.svc; });
+    qsa('[data-svc]', c).forEach((tr) => tr.onclick = () => { location.hash = '#/services/' + tr.dataset.svc; });
     // The outside-value box saves in place (same store the Job Cost Report reads) — clicks inside it
     // must not open the service-detail page.
     // The pencil is inside a row that opens the record — let the link do its own job.
@@ -5095,7 +5110,7 @@ async function renderServiceRecords(c) {
       };
     });
   };
-  if (qs('#nsvc')) qs('#nsvc').onclick = () => { location.hash = '#/filters/new-service'; };
+  if (qs('#nsvc')) qs('#nsvc').onclick = () => { location.hash = '#/services/new'; };
   let deb; qs('#sq').oninput = () => { clearTimeout(deb); deb = setTimeout(load, 250); };
   await load();
 }
@@ -5122,7 +5137,7 @@ async function renderNewServiceForm(c, existing) {
       <td><input type="number" class="f_qty" value="1" style="width:48px"></td>
       <td><select class="f_xe" style="width:52px"><option value=""></option><option>X</option><option>E</option></select></td>
       <td><input type="number" class="f_price" style="width:96px"></td></tr>`).join('');
-  const back = edit ? `<a href="#/filters/service/${edit.id}">← Back to the record</a>` : '<a href="#/filters?tab=services">← Service Records</a>';
+  const back = edit ? `<a href="#/services/${edit.id}">← Back to the record</a>` : '<a href="#/services">← Service Records</a>';
   c.innerHTML = `${pageHeader('Vehicle / Machinery Service Details', back)}
     <div class="card">
       <div class="mrnsec">
@@ -5179,7 +5194,7 @@ async function renderNewServiceForm(c, existing) {
         <div class="cost-line"><span>Labour Charge (<input type="number" id="labourRate" value="${ref.labourRate}" style="width:48px">%)</span><span id="t_labour">Rs 0.00</span></div>
         <div class="cost-line"><span>Sundry (<input type="number" id="sundryRate" value="${ref.sundryRate}" style="width:44px">%)</span><span id="t_sundry">Rs 0.00</span></div>
         <div class="cost-line total"><span><b>Grand Total</b></span><span id="t_grand"><b>Rs 0.00</b></span></div>
-        <div style="margin-top:12px;text-align:right"><a class="btn sm" href="${edit ? '#/filters/service/' + edit.id : '#/filters?tab=services'}">Cancel</a> <button class="primary" id="saveService">${edit ? 'Save Changes' : 'Create Service'}</button></div>
+        <div style="margin-top:12px;text-align:right"><a class="btn sm" href="${edit ? '#/services/' + edit.id : '#/services'}">Cancel</a> <button class="primary" id="saveService">${edit ? 'Save Changes' : 'Create Service'}</button></div>
       </div>
     </div>`;
 
@@ -5400,11 +5415,11 @@ async function renderNewServiceForm(c, existing) {
         // The shelf is settled by difference, so say plainly whether anything moved — an edit
         // that only fixed a date must not look like it consumed oil again.
         toast('Service updated' + (r.stock_moves ? ' · ' + r.stock_moves + ' oil correction(s) posted to Lubricants' : ''));
-        location.hash = '#/filters/service/' + edit.id;
+        location.hash = '#/services/' + edit.id;
       } else {
         const r = await api('/filters/services', { method: 'POST', body: payload });
         toast('Service recorded' + (r.oil_issues ? ' · ' + r.oil_issues + ' oil issue(s) posted to Lubricants' : ''));
-        location.hash = '#/filters/service/' + r.service.id;
+        location.hash = '#/services/' + r.service.id;
       }
     } catch (e) { toast(e.message, 'err'); btn.disabled = false; }
   };
@@ -5417,11 +5432,11 @@ async function serviceDetail(c, id) {
   const editable = canEdit('filters');
   const cats = await api('/filters/categories').catch(() => []);
   const upk = { Good: 'green', Fair: 'amber', Bad: 'red' }[s.upkeeping] || '';
-  c.innerHTML = `${pageHeader('Vehicle / Machinery Service Details', '<a href="#/filters?tab=services">← Service Records</a>')}
-    <div class="toolbar"><a class="btn sm" href="#/filters?tab=services">← Service Records</a><div class="spacer"></div>
+  c.innerHTML = `${pageHeader('Vehicle / Machinery Service Details', '<a href="#/services">← Service Records</a>')}
+    <div class="toolbar"><a class="btn sm" href="#/services">← Service Records</a><div class="spacer"></div>
       ${s.upkeeping ? `<span class="badge ${upk}">Up-keeping: ${esc(s.upkeeping)}</span>` : ''}
       <span class="badge amber">Cost ${money(s.computed_cost)}</span>
-      ${editable ? `<a class="btn sm primary" href="#/filters/service/${s.id}/edit">✏️ Edit</a>` : ''}
+      ${editable ? `<a class="btn sm primary" href="#/services/${s.id}/edit">✏️ Edit</a>` : ''}
       <a class="btn sm" href="/api/filters/services/${s.id}/print.html" target="_blank">🖨 Print</a></div>
     <div class="card"><h3 style="margin-top:0">${esc(idLabel(s) || s.vehicle_label || 'Vehicle')}</h3>
       <p class="muted">${esc((s.service_date || '').slice(0, 10))}${s.job_no ? ' · Job ' + esc(s.job_no) : ''}${s.service_type ? ' · type ' + esc(s.service_type) : ''}${s.site_location ? ' · ' + esc(s.site_location) : ''}${s.meter_reading ? ' · meter ' + esc(s.meter_reading) : ''}${s.next_service_meter ? ' · next ' + esc(s.next_service_meter) : ''}</p>
@@ -8053,7 +8068,7 @@ async function renderFilterStock(c) {
 }
 
 routes.filterstock = async (c) => {
-  location.replace('#/filters?tab=services');
+  location.replace('#/filters?tab=book');
 };
 
 // ===== Stock Issues — Redirect Shim to Stores Movements (Issues) =====
