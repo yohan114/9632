@@ -5058,20 +5058,211 @@ async function renderPriceBook(c) {
 
 async function renderServiceRecords(c) {
   const editable = canEdit('filters');
-  c.innerHTML = `<div class="toolbar">${editable ? '<button class="primary" id="nsvc">+ New Service</button>' : ''}<input id="sq" type="search" placeholder="Search vehicle / site / type…" style="max-width:280px"><div class="spacer"></div><span class="muted" id="scount"></span></div>
+  c.innerHTML = `
+    <div class="toolbar" style="gap:8px;flex-wrap:wrap">
+      ${editable ? '<button class="primary" id="nsvc">+ New Service</button>' : ''}
+      <input id="sq" type="search" placeholder="Search vehicle / site / type…" style="max-width:240px">
+      <select id="vselect" style="max-width:220px;background:#fff;border:1px solid var(--border);border-radius:4px;padding:4px 8px;font-size:13px">
+        <option value="">— Quick Vehicle History —</option>
+      </select>
+      <button type="button" class="btn sm" id="btn-toggle-all" title="Expand or collapse all service details on screen">▼ Expand All</button>
+      <div class="spacer"></div>
+      <span class="muted" id="scount"></span>
+    </div>
     <div id="stable"><div class="muted">Loading…</div></div>`;
+
+  // Populate vehicle selector dropdown for 1-click vehicle history
+  try {
+    const assets = await api('/assets');
+    if (Array.isArray(assets) && assets.length && qs('#vselect', c)) {
+      const items = assets
+        .map((a) => {
+          const val = (a.code || a.registration || a.ec_code || '').trim();
+          const label = [a.code, a.registration || a.ec_code].filter(Boolean).join(' · ') || val;
+          return { val, label };
+        })
+        .filter((x) => x.val && x.label);
+      const seen = new Set();
+      const unique = [];
+      for (const it of items) {
+        if (!seen.has(it.val.toUpperCase())) {
+          seen.add(it.val.toUpperCase());
+          unique.push(it);
+        }
+      }
+      unique.sort((a, b) => a.label.localeCompare(b.label));
+      qs('#vselect', c).innerHTML = '<option value="">— Quick Vehicle History —</option>' +
+        unique.map((o) => `<option value="${esc(o.val)}">${esc(o.label)}</option>`).join('');
+    }
+  } catch (e) {
+    console.warn('Could not populate vehicle dropdown:', e && e.message);
+  }
+
+  // In-memory cache for loaded service details (instant re-open with 0ms delay)
+  const svcCache = new Map();
+  let allExpanded = false;
+
+  const buildServiceHistoryHtml = (s, d) => {
+    const filters = d.filters || [];
+    const oils = d.oils || [];
+    const parts = d.parts || [];
+    const svc = d.service || s;
+    const upk = { Good: 'green', Fair: 'amber', Bad: 'red' }[svc.upkeeping] || '';
+    const vehLabel = esc(idLabel(svc) || svc.vehicle_label || 'Vehicle');
+
+    const filtersHtml = filters.length ? `
+      <table class="table sm" style="margin:0;width:100%;font-size:12px">
+        <thead><tr><th>Filter #</th><th>Category</th><th class="num">Qty</th><th>Action</th><th class="num">Price</th></tr></thead>
+        <tbody>
+          ${filters.map((f) => `<tr${f.book_price > 0 ? '' : ' style="background:rgba(224,168,0,.08)"'}>
+            <td><b>${esc(f.filter_no || '—')}</b></td>
+            <td>${esc(f.category || '—')}</td>
+            <td class="num">${num(f.qty)}</td>
+            <td><span class="badge ${f.action_type === 'Cleaned' ? 'blue' : 'green'}">${esc(f.action_type || 'Replaced')}</span></td>
+            <td class="num">${f.book_price > 0 ? money(f.book_price) : (f.price > 0 ? money(f.price) : '<span class="badge amber">no price</span>')}</td>
+          </tr>`).join('')}
+        </tbody>
+      </table>` : '<p class="muted" style="margin:4px 0;font-size:12px">No filters recorded on this service.</p>';
+
+    const oilsHtml = oils.length ? `
+      <table class="table sm" style="margin:0;width:100%;font-size:12px">
+        <thead><tr><th>Oil / Lubricant</th><th>Type</th><th class="num">Liters</th><th class="num">Price</th></tr></thead>
+        <tbody>
+          ${oils.map((o) => `<tr>
+            <td><b>${esc(o.oil_name || '—')}</b></td>
+            <td>${esc(o.oil_type || '—')}</td>
+            <td class="num">${num(o.qty)} L</td>
+            <td class="num">${o.price > 0 ? money(o.price) : '—'}</td>
+          </tr>`).join('')}
+        </tbody>
+      </table>` : '<p class="muted" style="margin:4px 0;font-size:12px">No oils or lubricants recorded.</p>';
+
+    const partsHtml = parts.length ? `
+      <div style="margin-top:8px">
+        <div class="muted" style="font-size:11px;font-weight:700;text-transform:uppercase;margin-bottom:4px">Other Spares / Costs</div>
+        <table class="table sm" style="margin:0;width:100%;font-size:12px">
+          <thead><tr><th>Item</th><th class="num">Qty</th><th class="num">Amount</th></tr></thead>
+          <tbody>
+            ${parts.map((p) => `<tr><td>${esc(p.description || '')}</td><td class="num">${num(p.qty)} ${esc(p.unit || '')}</td><td class="num">${money(p.amount)}</td></tr>`).join('')}
+          </tbody>
+        </table>
+      </div>` : '';
+
+    return `
+      <div class="svc-quick-panel" style="padding:14px 18px;background:var(--card-bg, #fff);border:1px solid #c7d2e0;border-radius:6px;margin:6px 8px 12px;box-shadow:0 3px 10px rgba(0,0,0,0.06)">
+        <!-- Top info bar -->
+        <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;padding-bottom:10px;border-bottom:1px solid var(--border)">
+          <div><span class="muted" style="font-size:10px;font-weight:700;text-transform:uppercase;display:block">Vehicle</span><b>${vehLabel}</b></div>
+          <div><span class="muted" style="font-size:10px;font-weight:700;text-transform:uppercase;display:block">Service Date</span>${esc((svc.service_date || '').slice(0, 10))}</div>
+          ${svc.job_no ? `<div><span class="muted" style="font-size:10px;font-weight:700;text-transform:uppercase;display:block">Job Card</span><span class="badge blue">#${esc(svc.job_no)}</span></div>` : ''}
+          ${svc.service_type ? `<div><span class="muted" style="font-size:10px;font-weight:700;text-transform:uppercase;display:block">Service Type</span>${esc(svc.service_type)}</div>` : ''}
+          ${svc.site_location ? `<div><span class="muted" style="font-size:10px;font-weight:700;text-transform:uppercase;display:block">Location / Site</span>${esc(svc.site_location)}</div>` : ''}
+          ${svc.meter_reading ? `<div><span class="muted" style="font-size:10px;font-weight:700;text-transform:uppercase;display:block">Meter Reading</span><span class="badge green">⏱️ ${esc(svc.meter_reading)}</span></div>` : ''}
+          ${svc.next_service_meter ? `<div><span class="muted" style="font-size:10px;font-weight:700;text-transform:uppercase;display:block">Next Service Due</span><span class="badge">⏩ ${esc(svc.next_service_meter)}</span></div>` : ''}
+          ${svc.upkeeping ? `<div><span class="muted" style="font-size:10px;font-weight:700;text-transform:uppercase;display:block">Condition</span><span class="badge ${upk}">${esc(svc.upkeeping)}</span></div>` : ''}
+          <div style="margin-left:auto;text-align:right">
+            <span class="muted" style="font-size:10px;font-weight:700;text-transform:uppercase;display:block">Total Computed Cost</span>
+            <span style="font-weight:700;font-size:15px;color:var(--text, #111)">${money(svc.computed_cost || svc.grand_total)}</span>
+          </div>
+        </div>
+
+        <!-- Details Grid -->
+        <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(280px, 1fr));gap:14px;margin-top:10px">
+          <!-- Filters Column -->
+          <div style="background:#fafbfc;border:1px solid var(--border);border-radius:6px;padding:8px 10px">
+            <div style="font-weight:700;font-size:12px;color:var(--text);margin-bottom:6px">
+              🧰 Filters Fitted / Serviced (${filters.length})
+            </div>
+            ${filtersHtml}
+          </div>
+
+          <!-- Oils Column -->
+          <div style="background:#fafbfc;border:1px solid var(--border);border-radius:6px;padding:8px 10px">
+            <div style="font-weight:700;font-size:12px;color:var(--text);margin-bottom:6px">
+              🛢️ Oils & Lubricants (${oils.length})
+            </div>
+            ${oilsHtml}
+          </div>
+
+          <!-- Notes & Spares -->
+          ${(svc.repair_details || parts.length) ? `
+          <div style="background:#fafbfc;border:1px solid var(--border);border-radius:6px;padding:8px 10px">
+            <div style="font-weight:700;font-size:12px;color:var(--text);margin-bottom:6px">
+              📝 Repair Notes & Additional Spares
+            </div>
+            ${svc.repair_details ? `<div style="font-size:12px;white-space:pre-wrap;background:#fff;border:1px solid var(--border);border-radius:4px;padding:6px 8px;margin-bottom:6px">${esc(svc.repair_details)}</div>` : ''}
+            ${partsHtml}
+          </div>` : ''}
+        </div>
+
+        <!-- Action Toolbar -->
+        <div style="display:flex;align-items:center;gap:8px;margin-top:12px;padding-top:8px;border-top:1px solid var(--border)">
+          <a class="btn sm primary" href="#/services/${s.id}" title="Open the full service details and attachments">📄 Full View →</a>
+          <a class="btn sm" href="/api/filters/services/${s.id}/print.html" target="_blank" title="Print this service sheet">🖨️ Print Sheet</a>
+          ${editable ? `<a class="btn sm" href="#/services/${s.id}/edit" title="Edit this service record">✏️ Edit Service</a>` : ''}
+          <div style="margin-left:auto">
+            <button type="button" class="btn sm ghost svc-close-btn" data-id="${s.id}">▲ Close History</button>
+          </div>
+        </div>
+      </div>
+    `;
+  };
+
+  const toggleRow = async (tr, id, forceOpen) => {
+    const existing = tr.nextElementSibling && tr.nextElementSibling.classList.contains('svc-detail-tr') ? tr.nextElementSibling : null;
+    const btn = qs('.svc-expand-toggle', tr);
+    const colCount = editable ? 11 : 10;
+
+    if (existing && forceOpen !== true) {
+      existing.remove();
+      tr.classList.remove('svc-open-parent');
+      tr.style.background = '';
+      if (btn) { btn.innerHTML = '▶'; btn.title = 'View simple history'; }
+      return;
+    }
+
+    if (!existing && forceOpen !== false) {
+      tr.classList.add('svc-open-parent');
+      tr.style.background = 'rgba(46, 120, 210, 0.05)';
+      if (btn) { btn.innerHTML = '▼'; btn.title = 'Hide simple history'; }
+
+      const detailTr = document.createElement('tr');
+      detailTr.className = 'svc-detail-tr';
+      detailTr.dataset.for = String(id);
+      detailTr.innerHTML = `<td colspan="${colCount}" style="padding:0;background:var(--bg-subtle, #f6f8fa);border-top:none;border-bottom:2px solid #0969da">
+        <div class="svc-detail-box" style="padding:12px;text-align:center"><span class="muted">Loading service history…</span></div>
+      </td>`;
+      detailTr.onclick = (e) => e.stopPropagation();
+      tr.parentNode.insertBefore(detailTr, tr.nextSibling);
+
+      const box = qs('.svc-detail-box', detailTr);
+      try {
+        let data = svcCache.get(id);
+        if (!data) {
+          data = await api('/filters/services/' + id);
+          svcCache.set(id, data);
+        }
+        const s = (window._lastServicesList || []).find((x) => String(x.id) === String(id)) || data.service || {};
+        box.outerHTML = buildServiceHistoryHtml(s, data);
+        const closeBtn = qs(`.svc-close-btn[data-id="${id}"]`, detailTr);
+        if (closeBtn) closeBtn.onclick = (e) => { e.stopPropagation(); toggleRow(tr, id, false); };
+      } catch (err) {
+        box.innerHTML = `<div style="padding:10px;color:var(--err,#cf222e)">Failed to load service details: ${esc(err.message)}</div>`;
+      }
+    }
+  };
+
   const load = async () => {
-    const q = qs('#sq').value.trim();
+    const q = qs('#sq', c).value.trim();
     const CAP = 500;
     const list = await api('/filters/services?' + (q ? 'q=' + encodeURIComponent(q) + '&' : '') + 'limit=' + CAP);
-    // Say when the list is cut off. A bare "500 services" reads as "that is all of them",
-    // and there are over sixteen hundred.
-    qs('#scount').textContent = `${list.length} service${list.length === 1 ? '' : 's'}`
+    window._lastServicesList = list;
+    qs('#scount', c).textContent = `${list.length} service${list.length === 1 ? '' : 's'}`
       + (list.length >= CAP ? ` — showing the newest ${CAP}, search a vehicle to narrow it` : '');
-    // fit-table + wrapping text columns → the table always fills the window and adapts to any
-    // screen size (no horizontal or inner vertical scrollbar); number columns keep fixed widths.
-    qs('#stable').innerHTML = tableWrap(
+
+    qs('#stable', c).innerHTML = tableWrap(
       [
+        { label: '▾', width: '38px' },
         { label: 'Date', width: '92px' },
         { label: 'Vehicle', cls: 'desc-col' },
         { label: 'Type', cls: 'desc-col', width: '90px' },
@@ -5082,9 +5273,10 @@ async function renderServiceRecords(c) {
         { label: 'Cost', num: true, width: '112px' },
         { label: 'Outside Labor Value', num: true, width: '118px' },
       ].concat(editable ? [{ label: '', width: '52px' }] : []),
-      list.map((s) => `<tr data-svc="${s.id}" style="cursor:pointer">
+      list.map((s) => `<tr data-svc="${s.id}" style="cursor:pointer" title="Click row to view simple history">
+        <td style="text-align:center"><button type="button" class="btn sm ghost svc-expand-toggle" data-id="${s.id}" title="View simple history" style="padding:1px 6px;font-size:11px;font-weight:700">▶</button></td>
         <td>${esc((s.service_date || '').slice(0, 10))}</td>
-        <td class="desc-col">${esc(idLabel(s) || s.vehicle_label || '—')}</td>
+        <td class="desc-col"><b>${esc(idLabel(s) || s.vehicle_label || '—')}</b></td>
         <td class="desc-col">${esc(s.service_type || '')}</td>
         <td class="desc-col">${esc(s.site_location || '')}</td>
         <td class="num">${num(s.filter_count)}</td>
@@ -5094,11 +5286,12 @@ async function renderServiceRecords(c) {
         <td class="num"><input type="number" min="0" step="0.01" class="svc-out" data-id="${s.id}" value="${!s.outside_estimate ? '' : s.outside_estimate}" placeholder="—" style="width:100%;max-width:110px;box-sizing:border-box;text-align:right" ${editable ? '' : 'disabled'}></td>
         ${editable ? `<td><a class="btn sm svc-edit" href="#/services/${s.id}/edit" title="Edit this service">✏️</a></td>` : ''}</tr>`),
       { scroll: true, fit: true, noHScroll: true });
-    qsa('[data-svc]', c).forEach((tr) => tr.onclick = () => { location.hash = '#/services/' + tr.dataset.svc; });
-    // The outside-value box saves in place (same store the Job Cost Report reads) — clicks inside it
-    // must not open the service-detail page.
-    // The pencil is inside a row that opens the record — let the link do its own job.
-    qsa('.svc-edit', c).forEach((a) => { a.onclick = (e) => e.stopPropagation(); });
+
+    // Wire row click to toggle simple history dropdown
+    qsa('tr[data-svc]', c).forEach((tr) => {
+      tr.onclick = () => toggleRow(tr, tr.dataset.svc);
+    });
+    // The outside-value box saves in place — clicks inside it must not toggle dropdown
     qsa('.svc-out', c).forEach((inp) => {
       inp.onclick = (e) => e.stopPropagation();
       inp.onchange = async (e) => {
@@ -5109,9 +5302,42 @@ async function renderServiceRecords(c) {
         } catch (err) { toast(err.message, 'err'); }
       };
     });
+    // The edit pencil must not toggle dropdown
+    qsa('.svc-edit', c).forEach((a) => { a.onclick = (e) => e.stopPropagation(); });
+    // Expand toggle button inside row
+    qsa('.svc-expand-toggle', c).forEach((btn) => {
+      btn.onclick = (e) => {
+        e.stopPropagation();
+        const tr = btn.closest('tr[data-svc]');
+        if (tr) toggleRow(tr, tr.dataset.svc);
+      };
+    });
   };
-  if (qs('#nsvc')) qs('#nsvc').onclick = () => { location.hash = '#/services/new'; };
-  let deb; qs('#sq').oninput = () => { clearTimeout(deb); deb = setTimeout(load, 250); };
+
+  if (qs('#nsvc', c)) qs('#nsvc', c).onclick = () => { location.hash = '#/services/new'; };
+  let deb;
+  qs('#sq', c).oninput = () => {
+    if (qs('#vselect', c)) qs('#vselect', c).value = '';
+    clearTimeout(deb);
+    deb = setTimeout(load, 250);
+  };
+  if (qs('#vselect', c)) {
+    qs('#vselect', c).onchange = () => {
+      const val = qs('#vselect', c).value;
+      qs('#sq', c).value = val;
+      load();
+    };
+  }
+  if (qs('#btn-toggle-all', c)) {
+    qs('#btn-toggle-all', c).onclick = async () => {
+      allExpanded = !allExpanded;
+      qs('#btn-toggle-all', c).textContent = allExpanded ? '▲ Collapse All' : '▼ Expand All';
+      const rows = Array.from(qsa('tr[data-svc]', c));
+      for (const tr of rows) {
+        await toggleRow(tr, tr.dataset.svc, allExpanded);
+      }
+    };
+  }
   await load();
 }
 

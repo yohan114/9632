@@ -358,7 +358,8 @@ router.get('/services', asyncHandler((req, res) => {
   const where = clauses.length ? 'WHERE ' + clauses.join(' AND ') : '';
   res.json(all(
     `SELECT s.id, s.vehicle_label, s.service_date, s.service_type, s.site_location, s.grand_total,
-            s.labour_charge, s.outside_estimate,
+            s.labour_charge, s.outside_estimate, s.meter_reading, s.next_service_meter, s.job_no,
+            s.repair_details, s.upkeeping,
             a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec,
             (SELECT COUNT(*) FROM service_filters f WHERE f.service_id = s.id) AS filter_count,
             -- Only NUMBERED lines can ever be priced. A blank-number line is a cleaned
