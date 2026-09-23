@@ -7,7 +7,7 @@
 
 const express = require('express');
 const { get, all, run, tx } = require('../db');
-const { requireRole, hasRole } = require('../lib/auth');
+const { requireCap, hasCap } = require('../lib/auth');
 const { asyncHandler, require_, toInt } = require('../lib/http');
 const audit = require('../lib/audit');
 const aliases = require('../lib/aliases');
@@ -81,7 +81,7 @@ router.get('/:id', asyncHandler((req, res) => {
 }));
 
 // ---- create (Assistant Transport Manager) ---------------------------------
-router.post('/', requireRole('assistant_transport_manager'), asyncHandler((req, res) => {
+router.post('/', requireCap('jobrequests.create'), asyncHandler((req, res) => {
   const b = req.body;
   require_(b, ['description']);
   const type = TYPES.includes(b.type) ? b.type : 'repair';
@@ -120,7 +120,7 @@ router.post('/', requireRole('assistant_transport_manager'), asyncHandler((req, 
 }));
 
 // ---- certify (Transport Manager) ------------------------------------------
-router.post('/:id/certify', requireRole('transport_manager'), asyncHandler((req, res) => {
+router.post('/:id/certify', requireCap('jobrequests.certify'), asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   const jr = get('SELECT * FROM job_requests WHERE id = ?', id);
   if (!jr) return res.status(404).json({ error: 'Job request not found' });
@@ -136,7 +136,7 @@ router.post('/:id/certify', requireRole('transport_manager'), asyncHandler((req,
 }));
 
 // ---- approve (Operational Manager) → creates the job card ------------------
-router.post('/:id/approve', requireRole('operational_manager', 'manager'), asyncHandler((req, res) => {
+router.post('/:id/approve', requireCap('jobrequests.approve'), asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   const jr = get('SELECT * FROM job_requests WHERE id = ?', id);
   if (!jr) return res.status(404).json({ error: 'Job request not found' });
@@ -180,14 +180,14 @@ router.post('/:id/approve', requireRole('operational_manager', 'manager'), async
 }));
 
 // ---- reject (Transport Manager or Operational Manager) --------------------
-router.post('/:id/reject', requireRole('transport_manager', 'operational_manager', 'manager'), asyncHandler((req, res) => {
+router.post('/:id/reject', requireCap('jobrequests.reject'), asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   const jr = get('SELECT * FROM job_requests WHERE id = ?', id);
   if (!jr) return res.status(404).json({ error: 'Job request not found' });
   if (jr.approval_status === 'approved') return res.status(409).json({ error: 'Already approved — cannot reject' });
   if (!String(req.body.reason || '').trim()) return res.status(400).json({ error: 'A reason is required to reject' });
   const s = signer(req.user.id);
-  const asApprover = hasRole(req.user, 'operational_manager') || hasRole(req.user, 'manager');
+  const asApprover = hasCap(req.user, 'jobrequests.approve');
   const stage = asApprover ? 'approve' : 'certify';
   tx(() => {
     run(`UPDATE job_requests SET approval_status = 'rejected' WHERE id = ?`, id);

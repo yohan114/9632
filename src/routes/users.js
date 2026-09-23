@@ -3,10 +3,11 @@
 const express = require('express');
 const { get, all, run, tx } = require('../db');
 const auth = require('../lib/auth');
-const { requireAuth, requireRole } = auth;
+const { requireAuth, requireCap } = auth;
 const { asyncHandler, require_, toInt } = require('../lib/http');
 const audit = require('../lib/audit');
 const passwordPolicy = require('../lib/password_policy');
+const rules = require('../lib/access_rules');
 
 // A password an admin types is a TEMPORARY one: the admin knows it, and so may whoever it was
 // passed to on paper or over the phone. So it must still meet the rules (it is live until first
@@ -25,6 +26,20 @@ function userWithRoles(id) {
   return u;
 }
 
+// The roles being handed out must exist and be in use. A name that does not match used to be
+// dropped without a word, so a typo gave the person less than the admin thought they had given.
+function checkedRoleNames(roleNames) {
+  if (roleNames == null) return [];
+  if (!Array.isArray(roleNames)) { const e = new Error('roles must be a list'); e.status = 400; throw e; }
+  const names = [...new Set(roleNames.map(String))];
+  for (const name of names) {
+    const role = get('SELECT active FROM roles WHERE name = ?', name);
+    if (!role) { const e = new Error(`No role "${name}"`); e.status = 400; throw e; }
+    if (role.active === 0) { const e = new Error(`The role "${name}" is retired`); e.status = 400; throw e; }
+  }
+  return names;
+}
+
 function setRoles(userId, roleNames) {
   run('DELETE FROM user_roles WHERE user_id = ?', userId);
   for (const name of roleNames || []) {
@@ -33,35 +48,40 @@ function setRoles(userId, roleNames) {
   }
 }
 
-// Any signed-in user can read the role list (to populate pickers).
-router.get('/roles', requireAuth, asyncHandler((_req, res) => res.json(all('SELECT id, name, label FROM roles ORDER BY id'))));
+// Any signed-in user can read the role list (to populate pickers). Retired roles are not offered.
+router.get('/roles', requireAuth, asyncHandler((_req, res) => res.json(
+  all('SELECT id, name, label, description FROM roles WHERE COALESCE(active, 1) = 1 ORDER BY id'))));
 
-router.get('/', requireRole('admin'), asyncHandler((_req, res) => {
+router.get('/', requireCap('users.manage'), asyncHandler((_req, res) => {
   const users = all('SELECT id, username, full_name, active, created_at FROM users ORDER BY username');
   for (const u of users) u.roles = auth.rolesForUser(u.id);
   res.json(users);
 }));
 
-router.post('/', requireRole('admin'), asyncHandler((req, res) => {
+router.post('/', requireCap('users.manage'), asyncHandler((req, res) => {
   const b = req.body;
   require_(b, ['username', 'password']);
   if (get('SELECT id FROM users WHERE username = ?', b.username)) return res.status(409).json({ error: 'Username exists' });
   checkAdminPassword(b.password, b.username);
+  const roles = checkedRoleNames(b.roles);
+  rules.assertCanAssignRoles(req.user, roles);
   const id = tx(() => {
     const info = run('INSERT INTO users (username, password_hash, full_name, active, must_change_password) VALUES (?, ?, ?, 1, 1)',
       b.username, auth.hashPassword(b.password), b.full_name || null);
-    setRoles(info.lastInsertRowid, b.roles);
+    setRoles(info.lastInsertRowid, roles);
     return info.lastInsertRowid;
   });
-  audit.record({ userId: req.user.id, entity: 'user', entityId: id, action: 'create', after: { username: b.username } });
+  audit.record({ userId: req.user.id, entity: 'user', entityId: id, action: 'create', after: { username: b.username, roles } });
   res.status(201).json(userWithRoles(id));
 }));
 
-router.patch('/:id', requireRole('admin'), asyncHandler((req, res) => {
+router.patch('/:id', requireCap('users.manage'), asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   const before = get('SELECT id, username, full_name, active FROM users WHERE id = ?', id);
   if (!before) return res.status(404).json({ error: 'User not found' });
   const b = req.body;
+  rules.assertCanManageUser(req.user, id);
+  if (b.active !== undefined && !b.active) rules.assertKeepsAnAdmin({ userId: id, deactivate: true });
   const sets = [];
   const params = [];
   const self = id === req.user.id;
@@ -88,12 +108,19 @@ router.patch('/:id', requireRole('admin'), asyncHandler((req, res) => {
   res.json(userWithRoles(id));
 }));
 
-router.post('/:id/roles', requireRole('admin'), asyncHandler((req, res) => {
+router.post('/:id/roles', requireCap('users.manage'), asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   if (!get('SELECT id FROM users WHERE id = ?', id)) return res.status(404).json({ error: 'User not found' });
   require_(req.body, ['roles']);
-  tx(() => setRoles(id, req.body.roles));
-  audit.record({ userId: req.user.id, entity: 'user', entityId: id, action: 'set_roles', after: { roles: req.body.roles } });
+  const roles = checkedRoleNames(req.body.roles);
+  rules.assertCanManageUser(req.user, id);
+  // The account's existing roles were checked by assertCanManageUser; what is being ADDED must be
+  // within the actor's reach too.
+  const current = all('SELECT r.name FROM user_roles ur JOIN roles r ON r.id = ur.role_id WHERE ur.user_id = ?', id).map((r) => r.name);
+  rules.assertCanAssignRoles(req.user, roles.filter((r) => !current.includes(r)));
+  rules.assertKeepsAnAdmin({ userId: id, newRoles: roles });
+  tx(() => setRoles(id, roles));
+  audit.record({ userId: req.user.id, entity: 'user', entityId: id, action: 'set_roles', before: { roles: current }, after: { roles } });
   res.json(userWithRoles(id));
 }));
 

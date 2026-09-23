@@ -6,7 +6,7 @@
 
 const express = require('express');
 const { get, all, run, tx } = require('../db');
-const { requireRole } = require('../lib/auth');
+const { requireCap } = require('../lib/auth');
 const { asyncHandler, toNum, toInt } = require('../lib/http');
 const audit = require('../lib/audit');
 const costing = require('../lib/costing');
@@ -457,7 +457,7 @@ router.get('/', asyncHandler((req, res) => {
 
 // Log a new daily-work entry from the Daily Work section (one at a time, day by day).
 // Attaches to the vehicle's open/nearest job; each named mechanic is charged full hours.
-router.post('/', requireRole('workshop', 'manager', 'storekeeper'), asyncHandler((req, res) => {
+router.post('/', requireCap('dailywork.add'), asyncHandler((req, res) => {
   const b = req.body;
   const date = String(b.work_date || '').slice(0, 10);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return res.status(400).json({ error: 'A valid work date (YYYY-MM-DD) is required' });
@@ -528,7 +528,7 @@ router.post('/', requireRole('workshop', 'manager', 'storekeeper'), asyncHandler
 }));
 
 // Rapid multi-row timesheet logging endpoint
-router.post('/bulk-log', requireRole('workshop', 'manager', 'admin'), asyncHandler((req, res) => {
+router.post('/bulk-log', requireCap('dailywork.edit'), asyncHandler((req, res) => {
   const b = req.body || {};
   const date = String(b.date || '').slice(0, 10);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return res.status(400).json({ error: 'Valid date (YYYY-MM-DD) required' });
@@ -620,7 +620,7 @@ router.post('/bulk-log', requireRole('workshop', 'manager', 'admin'), asyncHandl
 }));
 
 // Edit a daily-work line (hours, and optionally the mechanic string).
-router.patch('/:id', requireRole('admin', 'workshop', 'manager'), asyncHandler((req, res) => {
+router.patch('/:id', requireCap('dailywork.edit'), asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   const w = get('SELECT * FROM job_daily_work WHERE id = ?', id);
   if (!w) return res.status(404).json({ error: 'Entry not found' });
@@ -677,7 +677,7 @@ router.patch('/:id', requireRole('admin', 'workshop', 'manager'), asyncHandler((
 
 // Remove a daily-work line (mis-keyed entry / duplicate). The job total and that month's labour
 // are re-costed straight away, and the deletion is audited with the full line it removed.
-router.delete('/:id', requireRole('admin', 'workshop', 'manager'), asyncHandler((req, res) => {
+router.delete('/:id', requireCap('dailywork.edit'), asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   const w = get('SELECT * FROM job_daily_work WHERE id = ?', id);
   if (!w) return res.status(404).json({ error: 'Entry not found' });
@@ -693,7 +693,7 @@ router.delete('/:id', requireRole('admin', 'workshop', 'manager'), asyncHandler(
 }));
 
 // Batch update working hours for multiple daily work entries at once.
-router.post('/batch-update', requireRole('admin', 'workshop', 'manager'), asyncHandler((req, res) => {
+router.post('/batch-update', requireCap('dailywork.edit'), asyncHandler((req, res) => {
   const updates = req.body.updates;
   if (!Array.isArray(updates) || !updates.length) {
     return res.status(400).json({ error: 'Provide an array of updates: [{ id, hours?, outside_labour? }]' });

@@ -71,6 +71,8 @@ router.post(
       fullName: user.full_name,
       roles,
       permissions: permissions.userPermissions(roles),
+      caps: require('../lib/capabilities').capsForRoles(roles),
+      capNeeds: require('../lib/capabilities').needsFor(require('../lib/capabilities').capsForRoles(roles)),
       mustChangePassword: !!user.must_change_password,
       passwordPolicy: passwordPolicy.describe(),
     });
@@ -121,6 +123,7 @@ router.get('/me', (req, res) => {
   // script cannot read it. Echoing it back in a JSON body would undo that.
   const { token: _token, ...me } = req.user;
   res.json({ ...me, permissions: permissions.userPermissions(req.user.roles), hasSignature: !!(u && u.signature),
+    capNeeds: require('../lib/capabilities').needsFor(req.user.caps || []),
     passwordPolicy: passwordPolicy.describe() });
 });
 

@@ -418,12 +418,18 @@ async function mySignatureModal() {
     qs('#rm', body).onclick = async () => { try { await api('/auth/signature', { method: 'POST', body: { signature: null } }); toast('Signature removed'); if (window.ME) ME.hasSignature = false; close(); } catch (e) { toast(e.message, 'err'); } };
   });
 }
-const can = (...roles) => ME && (ME.roles.includes('admin') || roles.some((r) => ME.roles.includes(r)));
 // RBAC — a module's clearance level for the signed-in user (from the permission matrix).
 const RANKL = { none: 0, view: 1, edit: 2, full: 3 };
 const rankL = (l) => RANKL[l] || 0;
-const canView = (m) => can('admin') || (ME && ME.permissions ? rankL(ME.permissions[m]) >= 1 : true);
-const canEdit = (m) => can('admin') || (ME && ME.permissions ? rankL(ME.permissions[m]) >= 2 : true);
+const isAdmin = () => !!(ME && ME.roles && ME.roles.includes('admin'));
+const canView = (m) => isAdmin() || (ME && ME.permissions ? rankL(ME.permissions[m]) >= 1 : true);
+const canEdit = (m) => isAdmin() || (ME && ME.permissions ? rankL(ME.permissions[m]) >= 2 : true);
+// May the signed-in user do this? Asked by CAPABILITY (src/lib/capabilities.js), never by role
+// name, so a role an admin creates works on every screen. Some actions also sit behind a section's
+// router gate on the server, which wants EDIT clearance on that section; the server says which
+// (capNeeds), and a button whose request the server would refuse is not shown.
+const canDo = (...caps) => !!ME && caps.some((c) => (ME.caps || []).includes(c)
+  && (!(ME.capNeeds && ME.capNeeds[c]) || canEdit(ME.capNeeds[c])));
 const qs = (s, r = document) => r.querySelector(s);
 const qsa = (s, r = document) => [...r.querySelectorAll(s)];
 
@@ -706,7 +712,7 @@ const NAV_MODULE = {
   matreq: 'stores', stockissues: 'stores', serviceplan: 'filters',
 };
 function navVisible(n) {
-  if (n[3] === 'admin') return can('admin');
+  if (n[3] === 'admin') return canDo('access.manage', 'users.manage');
   if (n[0] === 'dashboard') return true;
   const m = NAV_MODULE[n[0]];
   return !m || canView(m);
@@ -1083,7 +1089,7 @@ routes.assets = async (c, params) => {
       <div class="spacer"></div>
       <span class="muted" id="acount"></span>
       <a class="btn sm" href="/api/assets/export.xlsx">⬇ Excel</a>
-      ${can('storekeeper') ? '<button class="primary" id="newasset">+ New Asset</button>' : ''}
+      ${canDo('assets.create') ? '<button class="primary" id="newasset">+ New Asset</button>' : ''}
     </div>
     <div id="atable"><div class="muted">Loading…</div></div>`;
   const load = async () => {
@@ -1140,7 +1146,7 @@ async function assetDetail(c, id) {
       <span class="badge ${a.asset.status === 'active' ? 'green' : a.asset.status === 'under_repair' ? 'amber' : ''}">${esc(a.asset.status)}</span>
       <span class="muted">${esc(a.asset.brand || '')} ${esc(a.asset.type || '')} · ${esc(a.current_project ? a.current_project.name : 'no project')}</span>
       <div class="spacer"></div>
-      ${can('storekeeper') ? '<button class="sm" id="editasset">Edit</button>' : ''}
+      ${canDo('assets.edit') ? '<button class="sm" id="editasset">Edit</button>' : ''}
     </div>
     <div class="grid section">
       <div class="card"><h3>Lifetime Cost</h3>
@@ -1206,15 +1212,15 @@ routes.jobs = async (c, params) => {
       <button class="sm" id="jfilter-backlog" style="background:#fff3cd;color:#856404;border-color:#ffeeba;font-weight:600" title="Filter to backlog cards awaiting triage / approval">⚡ Backlog: Requested</button>
       <span class="muted" id="jcount"></span>
       <div class="spacer"></div>
-      ${can('transport_manager', 'workshop') ? '<button class="primary" id="newjob">+ New Job Card</button>' : ''}
+      ${canDo('jobs.create') ? '<button class="primary" id="newjob">+ New Job Card</button>' : ''}
     </div>
     <div id="jbulk-tray" class="card" style="display:none;background:#f0fdf4;border:1px solid #86efac;margin-bottom:12px;padding:10px 14px;align-items:center;gap:10px;flex-wrap:wrap">
       <span id="jbulk-count" style="font-weight:700;color:#166534">0 cards selected</span>
       <div class="spacer"></div>
-      ${can('transport_manager', 'manager') ? '<button class="sm primary" id="jbulk-btn-trans" style="background:#2563eb">✓ Approve Transport</button>' : ''}
-      ${can('operational_manager', 'manager') ? '<button class="sm primary" id="jbulk-btn-ops" style="background:#059669">✓ Approve Operations</button>' : ''}
-      ${can('workshop', 'manager') ? '<button class="sm" id="jbulk-btn-ws">In Workshop</button><button class="sm" id="jbulk-btn-prog">In Progress</button>' : ''}
-      <button class="sm danger" id="jbulk-btn-reject">✕ Reject</button>
+      ${canDo('jobs.approve_transport') ? '<button class="sm primary" id="jbulk-btn-trans" style="background:#2563eb">✓ Approve Transport</button>' : ''}
+      ${canDo('jobs.approve_operations') ? '<button class="sm primary" id="jbulk-btn-ops" style="background:#059669">✓ Approve Operations</button>' : ''}
+      ${canDo('jobs.assign_workshop') ? '<button class="sm" id="jbulk-btn-ws">In Workshop</button>' : ''}${canDo('jobs.start') ? '<button class="sm" id="jbulk-btn-prog">In Progress</button>' : ''}
+      ${canDo('jobs.reject') ? '<button class="sm danger" id="jbulk-btn-reject">✕ Reject</button>' : ''}
       <button class="sm" id="jbulk-btn-clear">Clear</button>
     </div>
     <div id="jconflicts"></div>
@@ -1251,9 +1257,9 @@ routes.jobs = async (c, params) => {
     // Keep the URL shareable/bookmarkable without triggering a full re-render.
     history.replaceState(null, '', '#/jobs' + (query ? '?' + query : ''));
     const list = await api('/jobs' + (query ? '?' + query : ''));
-    const canCloseDate = can('operational_manager', 'workshop', 'manager');
-    // Mirrors jobstate.canReopen — keep the two in step if the roles change.
-    const canReopenJob = can('operational_manager', 'workshop', 'manager');
+    const canCloseDate = canDo('jobs.close_on_date');
+    // The same permission jobstate.canReopen checks on the server.
+    const canReopenJob = canDo('jobs.reopen');
     const rows = list.map((j) => `<tr>
       <td style="text-align:center;width:36px"><input type="checkbox" class="jrow-chk" data-id="${j.id}" data-status="${j.status}" data-jobno="${esc(j.job_no)}"></td>
       <td><a href="#/jobs/${j.id}">${esc(j.job_no)}</a></td>
@@ -1410,7 +1416,7 @@ routes.dailywork = async (c) => {
         <h3 style="margin:0">Month-Wise Daily Work Entries (Time Update)</h3>
         <span class="muted" style="font-weight:400">— check full month list &amp; update working hours</span>
         <div class="spacer"></div>
-        ${can('workshop', 'manager') ? '<button class="primary sm" id="dw-save-all-btn" disabled style="margin-right:6px">💾 Save Changes</button>' : ''}
+        ${canDo('dailywork.edit') ? '<button class="primary sm" id="dw-save-all-btn" disabled style="margin-right:6px">💾 Save Changes</button>' : ''}
         <div><label>Laborer</label><select id="dw-mech-select" style="max-width:180px"><option value="">All Laborers</option></select></div>
         <input id="dw-month-search" type="search" placeholder="Filter vehicle / desc / job…" style="max-width:220px">
         <a class="btn sm" id="dw-month-log-dl" href="#" target="_blank">⬇ Excel Month Log</a>
@@ -1423,7 +1429,7 @@ routes.dailywork = async (c) => {
       <div class="toolbar" style="margin-top:0">
         <h3 style="margin:0">Daily Work Log (Day View)</h3>
         <div class="spacer"></div>
-        ${can('workshop', 'manager') ? '<button class="primary sm" id="dadd">+ Add Work Done</button> <button class="sm" id="dquickgrid" style="background:#e0e7ff;color:#3730a3;border-color:#c7d2fe;font-weight:600" title="Quickly enter daily timesheet hours for multiple mechanics across jobs in one table">📋 Quick Timesheet Grid</button>' : ''}
+        ${canDo('dailywork.add') ? '<button class="primary sm" id="dadd">+ Add Work Done</button> <button class="sm" id="dquickgrid" style="background:#e0e7ff;color:#3730a3;border-color:#c7d2fe;font-weight:600" title="Quickly enter daily timesheet hours for multiple mechanics across jobs in one table">📋 Quick Timesheet Grid</button>' : ''}
         <button class="sm" id="dprev">← Older</button>
         <input id="ddate" type="date" value="${esc(date)}" style="max-width:170px">
         <button class="sm" id="dnext">Newer →</button>
@@ -1434,7 +1440,7 @@ routes.dailywork = async (c) => {
       <div style="margin-top:8px;text-align:right"><span class="muted" id="dsum"></span></div>
     </div>`;
 
-  const canEdit = can('workshop', 'manager');
+  const canEdit = canDo('dailywork.edit');
   let currentMonthlyData = null;
   const pendingEdits = new Map();
 
@@ -1911,7 +1917,7 @@ async function editWorkDoneModal(entry, onDone) {
 // ---- Labour Rates (hourly rates + unassigned labour used in daily work)
 routes.labour = async (c) => {
   const [mechs, unassigned] = await Promise.all([api('/mechanics'), api('/mechanics/unassigned')]);
-  const canEdit = can('admin', 'manager');
+  const canEdit = canDo('labour.rates.edit');
   const rateRows = mechs.map((m) => `<tr>
     <td>${esc(m.name)}</td>
     <td class="num">${m.rate === 0 ? '<span class="badge blue">Staff / Foreman (Rs 0/h)</span>' : (m.rate != null ? money(m.rate) + '/hr' : '<span class="badge amber">no rate</span>')}</td>
@@ -2048,17 +2054,17 @@ async function jobDetail(c, id) {
       <a href="#/assets/${job.asset_id}">${esc(idLabel(job) || '—')}</a>
       <span class="muted">${esc(job.project_name || '')}</span>
       <div class="spacer"></div>
-      ${!isClosed && can('workshop', 'operational_manager', 'storekeeper') ? '<button class="sm" id="jobreqmrn" title="Create a Material Request Note (MRN) for this job">+ Request Parts (MRN)</button>' : ''}
-      ${!isClosed && can('storekeeper', 'workshop') ? '<button class="sm primary" id="jobissue" title="Issue stock from store to this job card">⚡ Issue to Job</button>' : ''}
-      ${can('workshop', 'operational_manager', 'manager') ? '<button class="sm" id="editjob" title="Change the vehicle, description or type">✎ Edit</button>' : ''}
-      ${job.type === 'service' && can('workshop', 'operational_manager') && job.status !== 'CLOSED' ? `<button class="sm" id="flatlabour">Service labour${job.flat_labour != null ? ': ' + money(job.flat_labour) : ' (flat)'}</button>` : ''}
+      ${!isClosed && canDo('stores.mrn.create') ? '<button class="sm" id="jobreqmrn" title="Create a Material Request Note (MRN) for this job">+ Request Parts (MRN)</button>' : ''}
+      ${!isClosed && canDo('stores.stock_issue') ? '<button class="sm primary" id="jobissue" title="Issue stock from store to this job card">⚡ Issue to Job</button>' : ''}
+      ${canDo('jobs.edit') ? '<button class="sm" id="editjob" title="Change the vehicle, description or type">✎ Edit</button>' : ''}
+      ${job.type === 'service' && canDo('jobs.flat_labour') && job.status !== 'CLOSED' ? `<button class="sm" id="flatlabour">Service labour${job.flat_labour != null ? ': ' + money(job.flat_labour) : ' (flat)'}</button>` : ''}
       <a class="btn primary sm" href="/api/reports/job/${job.id}/report.html" target="_blank" title="Full job report — parts requested & received, daily work done, and costs">📋 Job Report</a>
       <a class="btn sm" href="/api/reports/job/${job.id}/costsheet.html" target="_blank">🖨 Cost Sheet</a>
     </div>
     ${job.type === 'service' ? `<p class="muted" style="font-size:12px">Service job — labour is a flat charge${job.flat_labour == null ? ' (not set yet)' : ''}, not hours×rate.</p>` : ''}
     <p>${esc(job.description || '')}</p>
-    ${(transitions || reopenBtn || (!isClosed && can('operational_manager', 'workshop', 'manager'))) ? `<div class="card section"><h3>Actions</h3><div class="pill-row" id="transitions">${transitions}${reopenBtn}
-      ${!isClosed && can('operational_manager', 'workshop', 'manager') ? '<button class="sm" id="closedate" title="Close this card with a chosen (past) completion date — for old cards missed at the time">📅 Close on date…</button>' : ''}</div>
+    ${(transitions || reopenBtn || (!isClosed && canDo('jobs.close_on_date'))) ? `<div class="card section"><h3>Actions</h3><div class="pill-row" id="transitions">${transitions}${reopenBtn}
+      ${!isClosed && canDo('jobs.close_on_date') ? '<button class="sm" id="closedate" title="Close this card with a chosen (past) completion date — for old cards missed at the time">📅 Close on date…</button>' : ''}</div>
       ${isClosed
         ? `<p class="muted" style="margin-top:10px">Closed ${esc(String(job.completed_at || job.closed_at || '').slice(0, 10))} — locked for editing. ${j.canReopen ? 'Reopen it to add more work or costs.' : 'Ask a manager or the admin to reopen it.'}</p>`
         : !r.ready ? `<p class="err" style="margin-top:10px">⚠ Closure gate — ${r.missing.length} line(s) awaiting price:</p><ul>${r.missing.map((m) => `<li class="muted">${esc(m)}</li>`).join('')}</ul>` : '<p class="ok" style="margin-top:10px">✓ Fully priced — ready to close</p>'}
@@ -2081,7 +2087,7 @@ async function jobDetail(c, id) {
                 <b>${esc(p.description)}</b>
                 <span class="muted" style="margin-left:8px;font-size:12px">MRN: ${esc(p.mrn_no || '—')} · GRN: ${esc(p.grn_no || '—')} · Unissued: <b style="color:#b45309">${num(p.remaining_in_store)} ${esc(p.unit || 'nos')}</b></span>
               </div>
-              ${!isClosed && can('storekeeper', 'workshop') ? `
+              ${!isClosed && canDo('stores.stock_issue') ? `
                 <button class="sm primary issue-shelf-shortcut" data-shelf-item='${esc(JSON.stringify({
           job_id: job.id, job_no: job.job_no, asset_id: job.asset_id,
           grn_id: p.grn_id, mrn_no: p.mrn_no, grn_no: p.grn_no,
@@ -2106,13 +2112,13 @@ async function jobDetail(c, id) {
         ${j.approvals.length ? j.approvals.map((a) => `<div class="cost-line"><span>${esc(a.role.replace(/_/g, ' '))}</span><span class="badge ${a.decision === 'approved' ? 'green' : 'red'}">${esc(a.decision)}</span></div>${a.reason ? `<div class="muted" style="font-size:12px">${esc(a.reason)}</div>` : ''}`).join('') : '<span class="muted">No approvals yet</span>'}
       </div>
     </div>
-    <div class="card section"><div class="toolbar" style="margin:0 0 10px"><h3 style="margin:0">Daily Work</h3><div class="spacer"></div>${can('workshop') ? '<button class="sm" id="adddaily">+ Add</button>' : ''}</div>
+    <div class="card section"><div class="toolbar" style="margin:0 0 10px"><h3 style="margin:0">Daily Work</h3><div class="spacer"></div>${canDo('jobs.dailywork') ? '<button class="sm" id="adddaily">+ Add</button>' : ''}</div>
       ${(() => {
       // Each mechanic in a crew is shown on its own line: rate × hours = amount.
       const rateOf = {};
       j.labour.forEach((l) => { if (l.mechanic != null) rateOf[l.mechanic] = l.rate; });
       const splitMechs = (raw) => String(raw || '').split(/\s*(?:,|&|\+|\band\b)\s*/i).map((s) => s.trim()).filter(Boolean);
-      const canDel = can('workshop');
+      const canDel = canDo('jobs.dailywork');
       const rows = [];
       let labourTotal = 0;
       for (const w of j.dailyWork) {
@@ -2140,13 +2146,13 @@ async function jobDetail(c, id) {
       return tableWrap([{ label: 'Date' }, { label: 'Mechanic' }, { label: 'Description' }, { label: 'Hours', num: true }, { label: 'Rate', num: true }, { label: 'Amount', num: true }, { label: '' }], rows);
     })()}
     </div>
-    <div class="card section"><div class="toolbar" style="margin:0 0 10px"><h3 style="margin:0">Parts &amp; External</h3><div class="spacer"></div>${can('workshop', 'storekeeper') ? '<button class="sm" id="addpart">+ Add item</button>' : ''}</div>
+    <div class="card section"><div class="toolbar" style="margin:0 0 10px"><h3 style="margin:0">Parts &amp; External</h3><div class="spacer"></div>${canDo('jobs.parts') ? '<button class="sm" id="addpart">+ Add item</button>' : ''}</div>
       ${tableWrap([{ label: 'Source' }, { label: 'Description' }, { label: 'Qty', num: true }, { label: 'Unit Price', num: true }, { label: 'Amount', num: true }, { label: '' }],
       j.parts.map((p) => `<tr><td><span class="badge">${esc(p.source_type)}${p.is_external_repair ? ' · ext' : ''}</span></td><td>${esc(p.description || '')}</td>
           <td class="num">${num(p.qty)}</td>
           <td class="num">${p.unit_price == null ? '<span class="badge amber">awaiting</span>' : money(p.unit_price)}</td>
           <td class="num">${p.unit_price == null ? '—' : money(p.qty * p.unit_price)}</td>
-          <td>${can('workshop', 'storekeeper') ? `<button class="sm" data-price="${p.id}">Price</button> <button class="sm" data-del-part="${p.id}" title="Take off this job — the item goes back to unassigned parts, it is not deleted">✕</button>` : ''}</td></tr>`))}
+          <td>${canDo('jobs.parts') ? `<button class="sm" data-price="${p.id}">Price</button> <button class="sm" data-del-part="${p.id}" title="Take off this job — the item goes back to unassigned parts, it is not deleted">✕</button>` : ''}</td></tr>`))}
     </div>
     ${j.mrnItems && j.mrnItems.length ? `<div class="card section"><h3>MRN Items <span class="muted">— requested materials (${j.mrnItems.length})</span></h3>
       ${tableWrap([{ label: 'MRN No' }, { label: 'Date' }, { label: 'Item' }, { label: 'Category' }, { label: 'Qty Req', num: true }, { label: 'Qty Recd', num: true }, { label: 'Shelf Status' }, { label: 'Action' }],
@@ -2160,7 +2166,7 @@ async function jobDetail(c, id) {
           else if (recd > 0) statusBadgeHtml = `<span class="badge blue">Partial (${num(recd)}/${num(req)})</span>`;
           else statusBadgeHtml = `<span class="pipe-badge pend">Awaiting delivery</span>`;
 
-          const actBtn = (avail > 0 && !isClosed && can('storekeeper', 'workshop'))
+          const actBtn = (avail > 0 && !isClosed && canDo('stores.stock_issue'))
             ? `<button class="sm primary issue-mrn-btn" data-mrn-item='${esc(JSON.stringify({
               job_id: job.id, job_no: job.job_no, asset_id: job.asset_id,
               grn_id: m.grn_id, mrn_no: m.mrn_no, grn_no: m.grn_no,
@@ -2708,7 +2714,7 @@ routes.stores = async (c) => {
     return storeCatalogueTab(body);
   } else if (tab === 'items') {
     const items = await api('/stores/items?limit=500');
-    body.innerHTML = `${can('storekeeper') ? '<div class="toolbar"><button class="primary" id="ni">+ New Item</button></div>' : ''}
+    body.innerHTML = `${canDo('stores.items.edit') ? '<div class="toolbar"><button class="primary" id="ni">+ New Item</button></div>' : ''}
       ${tableWrap([{ label: 'Name' }, { label: 'Part No' }, { label: 'Category' }, { label: 'Sub-category' }, { label: 'Unit' }, { label: 'General?' }, { label: 'Balance', num: true }, { label: 'Min', num: true }],
       items.map((i) => `<tr><td>${esc(i.name)}</td><td>${esc(i.part_number || '')}</td><td>${esc(i.parent_category || i.category || '')}</td><td class="muted">${esc(i.sub_category || '')}</td><td>${esc(i.unit)}</td><td>${i.is_general ? '✓' : ''}</td><td class="num">${i.is_general ? num(i.balance) : '—'}</td><td class="num">${i.min_stock || ''}</td></tr>`), { scroll: true })}`;
     if (qs('#ni')) qs('#ni').onclick = () => simpleCreateModal('New Store Item', '/stores/items', [['Name *', 'name'], ['Part Number', 'part_number'], ['Category', 'category_id', 'category'], ['Unit', 'unit'], ['Min Stock', 'min_stock', 'number'], ['General consumable', 'is_general', 'checkbox']]);
@@ -2720,7 +2726,7 @@ routes.stores = async (c) => {
     if (params.get('id')) return mrnDetail(body, params.get('id'));
     return mrnList(body, params);
   } else if (tab === 'grn') {
-    const canRx = can('storekeeper');
+    const canRx = canDo('stores.grn.edit');     // price / correct a receipt
     const fmtD = (d) => (d ? String(d).slice(0, 10) : '—');
     body.innerHTML = `
       <div class="toolbar">
@@ -2802,7 +2808,7 @@ routes.stores = async (c) => {
     qs('#asrc').onchange = load;
     await load();
   } else if (tab === 'pending') {
-    const canRx = can('storekeeper');
+    const canRx = canDo('stores.mrn.edit');     // set a line's purchase source
     body.innerHTML = `
       <div class="toolbar">
         <input id="pq" type="search" placeholder="Search MRN / item / vehicle…" style="max-width:220px">
@@ -2853,7 +2859,7 @@ routes.stores = async (c) => {
   } else if (tab === 'issues') {
     body.innerHTML = `
       <div class="toolbar">
-        ${can('storekeeper') ? '<button class="primary" id="nis">+ New Issue</button>' : ''}
+        ${canDo('stores.stock_issue') ? '<button class="primary" id="nis">+ New Issue</button>' : ''}
         <input id="iq" type="search" placeholder="Search vehicle / item / issued by…" style="max-width:260px">
         <div class="spacer"></div><span class="muted" id="icount"></span>
       </div>
@@ -2910,7 +2916,7 @@ routes.stores = async (c) => {
     if (qs('#nis')) qs('#nis').onclick = () => newIssueModal(load);
     await load();
   } else if (tab === 'mtn') {
-    const canT = can('storekeeper');
+    const canT = canDo('stores.mtn.edit');
     const CAP = 300;
     body.innerHTML = `
       <div class="toolbar">
@@ -3143,9 +3149,9 @@ async function pipelineTab(body, sp) {
           <span class="muted" style="font-size:12px">End-to-end trace: Material Requisitions (MRN) ➔ Goods Received (GRN) ➔ Material Issues (Job Cards)</span>
         </div>
         <div style="display:flex;gap:6px">
-          ${can('workshop', 'storekeeper', 'operational_manager') ? '<button class="sm" id="pipenewmrn">+ New Request (MRN)</button>' : ''}
-          ${can('storekeeper') ? '<a class="btn sm" href="#/stores?tab=workspace&mode=receive">📥 Fast Receive</a>' : ''}
-          ${can('storekeeper', 'workshop') ? '<button class="sm primary" id="pipenewissue">⚡ Direct Issue</button>' : ''}
+          ${canDo('stores.mrn.create') ? '<button class="sm" id="pipenewmrn">+ New Request (MRN)</button>' : ''}
+          ${canDo('stores.grn.receive') ? '<a class="btn sm" href="#/stores?tab=workspace&mode=receive">📥 Fast Receive</a>' : ''}
+          ${canDo('stores.stock_issue') ? '<button class="sm primary" id="pipenewissue">⚡ Direct Issue</button>' : ''}
         </div>
       </div>
     </div>
@@ -3268,7 +3274,7 @@ async function pipelineTab(body, sp) {
             unit_price: r.unit_price,
           };
 
-          const actBtn = can('storekeeper', 'workshop')
+          const actBtn = canDo('stores.stock_issue')
             ? `<button class="sm primary pipe-issue-btn" data-shelf-item='${esc(JSON.stringify(issueData))}'>⚡ Issue to Job</button>`
             : '—';
 
@@ -3406,7 +3412,7 @@ async function pipelineTab(body, sp) {
 //   • PRICE    — type prices down the column for stock that arrived without one
 // Edits are held until "Save Changes", then written in a single batched request.
 async function receivePriceTab(body) {
-  const canRx = can('storekeeper');
+  const canRx = canDo('stores.grn.receive', 'stores.grn.edit');
   const sp = new URLSearchParams(location.hash.split('?')[1] || '');
   let mode = sp.get('mode') === 'price' ? 'price' : 'receive';
   const edits = new Map();               // row id -> { field: value }
@@ -3585,7 +3591,7 @@ async function mrnList(body, params) {
   const cur = { q: params.get('q') || '', sort: params.get('sort') || 'date_desc' };
   body.innerHTML = `
     <div class="toolbar">
-      ${can('storekeeper') ? '<button class="primary" id="nm">+ New MRN</button>' : ''}
+      ${canDo('stores.mrn.create') ? '<button class="primary" id="nm">+ New MRN</button>' : ''}
       <input id="mq" type="search" placeholder="Search MRN no / vehicle / item…" value="${esc(cur.q)}" style="max-width:260px">
       <select id="msort" style="max-width:160px">
         <option value="date_desc">Newest first</option>
@@ -3660,9 +3666,14 @@ async function mrnList(body, params) {
 async function mrnDetail(body, id) {
   const d = await api('/stores/mrn/' + id);
   const m = d.mrn;
-  const canRx = can('storekeeper');
+  const canRx = canDo('stores.grn.receive');
+  const canMrnEdit = canDo('stores.mrn.edit');
+  const canGrnPrice = canDo('stores.grn.edit');
+  const canGrnIssue = canDo('stores.stock_issue');
+  const lineCol = canRx || canMrnEdit;          // the action column on the item lines
+  const grnCol = canGrnPrice || canGrnIssue;    // the action column on the received records
   const astatus0 = m.approval_status || 'requested';
-  const canEditLines = canRx && astatus0 !== 'approved' && astatus0 !== 'rejected'
+  const canEditLines = canMrnEdit && astatus0 !== 'approved' && astatus0 !== 'rejected'
     && !(astatus0 === 'requested' && !(m.requested_by && String(m.requested_by).trim()));
   const lineRows = d.lines.map((l) => {
     const req = Number(l.qty) || 0, rec = Number(l.qty_received) || 0;
@@ -3679,7 +3690,7 @@ async function mrnDetail(body, id) {
       <td style="white-space:nowrap">${receivedDate(l)}</td>
       <td class="num">${remaining > 0 ? `<span class="badge amber">${num(remaining)}</span>` : '<span class="badge green">0</span>'}</td>
       <td>${status}</td>
-      ${canRx ? `<td class="num" style="white-space:nowrap">${remaining > 0 ? `<button class="sm primary" data-rx="${l.id}" data-desc="${esc(l.description || '')}" data-rem="${remaining}">Receive</button>` : '✓'}${
+      ${lineCol ? `<td class="num" style="white-space:nowrap">${remaining > 0 ? (canRx ? `<button class="sm primary" data-rx="${l.id}" data-desc="${esc(l.description || '')}" data-rem="${remaining}">Receive</button>` : '') : '✓'}${
         // An item can be corrected until approval; one already part-received can only have its
         // quantity raised, and cannot be removed at all.
         canEditLines ? ` <button class="sm" data-ledit="${l.id}">✎</button>${rec > 0 ? '' : ` <button class="sm danger" data-ldel="${l.id}" data-desc="${esc(l.description || '')}">✕</button>`}` : ''}</td>` : ''}</tr>`;
@@ -3693,7 +3704,7 @@ async function mrnDetail(body, id) {
     <td class="num">${g.unit_price == null ? '—' : money((Number(g.qty) || 0) * g.unit_price)}</td>
     <td>${esc(g.supplier || '')}</td>
     <td>${esc(sourceLabel(g.purchase_source))}</td>
-    ${canRx ? `<td class="num" style="white-space:nowrap"><button class="sm primary" data-issue-grn="${g.id}" title="Issue this received item to vehicle or job card">⚡ Issue</button> <button class="sm ${g.unit_price == null ? 'primary' : ''}" data-price="${g.id}">${g.unit_price == null ? 'Add price' : 'Edit'}</button></td>` : ''}</tr>`);
+    ${grnCol ? `<td class="num" style="white-space:nowrap">${canGrnIssue ? `<button class="sm primary" data-issue-grn="${g.id}" title="Issue this received item to vehicle or job card">⚡ Issue</button>` : ''} ${canGrnPrice ? `<button class="sm ${g.unit_price == null ? 'primary' : ''}" data-price="${g.id}">${g.unit_price == null ? 'Add price' : 'Edit'}</button>` : ''}</td>` : ''}</tr>`);
   const astatus = m.approval_status || 'requested';
   // Imported/historical MRNs (no live requester) predate the approval workflow → treat as approved.
   const isImported = astatus === 'requested' && !(m.requested_by && String(m.requested_by).trim());
@@ -3702,15 +3713,15 @@ async function mrnDetail(body, id) {
     : ({ requested: '<span class="badge amber">Awaiting certification</span>', certified: '<span class="badge blue">Certified · awaiting approval</span>', approved: '<span class="badge green">✓ Approved</span>', rejected: '<span class="badge red">✕ Cancelled (rejected)</span>' }[astatus] || '');
   const sig = (name, at) => name ? `${esc(name)} <span class="muted">· ${esc((at || '').slice(0, 16).replace('T', ' '))}</span>` : '<span class="muted">pending</span>';
   // Correctable right up until approval. After that the request IS the authority to spend.
-  const canEditReq = canRx && astatus !== 'approved' && astatus !== 'rejected' && !isImported;
+  const canEditReq = canMrnEdit && astatus !== 'approved' && astatus !== 'rejected' && !isImported;
   // A settled request — signed off, or an imported record shown as "approved (imported)" — is
   // frozen to everyone but an admin, who may still put a forgotten item on it rather than raise
   // a second request for one line. That covers almost the whole book: 25 approved and 1,651
   // imported. The approval is not disturbed; the item itself is marked, with the reason.
-  const adminAmend = can('admin') && (astatus === 'approved' || isImported);
-  const canCertify = !isImported && can('workshop') && astatus === 'requested';
-  const canApprove = can('operational_manager') && astatus === 'certified';
-  const canReject = !isImported && (can('workshop') || can('operational_manager')) && astatus !== 'approved' && astatus !== 'rejected';
+  const adminAmend = canDo('stores.mrn.amend_settled') && (astatus === 'approved' || isImported);
+  const canCertify = !isImported && canDo('stores.mrn.certify') && astatus === 'requested';
+  const canApprove = canDo('stores.mrn.approve') && astatus === 'certified';
+  const canReject = !isImported && canDo('stores.mrn.reject') && astatus !== 'approved' && astatus !== 'rejected';
   body.innerHTML = `
     <div class="toolbar"><a class="btn sm" href="#/stores?tab=mrn">← MRN list</a><div class="spacer"></div><button class="btn sm primary" id="mrntrace">🔍 Trace Lifecycle</button> <a class="btn sm" href="/api/stores/mrn/${m.id}/print.html" target="_blank">🖨 Print MRN</a></div>
     <div class="card">
@@ -3739,15 +3750,15 @@ async function mrnDetail(body, id) {
       ${astatus === 'approved' ? `<p class="muted" style="font-size:12px;margin:0 0 6px">Approved — the request is now the authority to spend, so it can no longer be changed.${
       // Telling an admin it cannot be changed, next to a button that changes it, would be a lie.
       adminAmend ? ' As an admin you may still add a forgotten item: the approval stands, and the item is marked as added after it.' : ''}</p>` : ''}
-      ${tableWrap([{ label: 'Item description' }, { label: 'Category' }, { label: 'Qty requested', num: true }, { label: 'Qty received', num: true }, { label: 'Received date' }, { label: 'Remaining', num: true }, { label: 'Status' }].concat(canRx ? [{ label: '', num: true }] : []), lineRows, { scroll: true })}
+      ${tableWrap([{ label: 'Item description' }, { label: 'Category' }, { label: 'Qty requested', num: true }, { label: 'Qty received', num: true }, { label: 'Received date' }, { label: 'Remaining', num: true }, { label: 'Status' }].concat(lineCol ? [{ label: '', num: true }] : []), lineRows, { scroll: true })}
     </div>
     <div class="card">
       <h3>Received records — GRN <span class="muted">(${d.grns.length})</span></h3>
       ${d.grns.length
-      ? tableWrap([{ label: 'GRN No' }, { label: 'Received' }, { label: 'Description' }, { label: 'Qty', num: true }, { label: 'Unit Price', num: true }, { label: 'Value', num: true }, { label: 'Supplier' }, { label: 'Source' }].concat(canRx ? [{ label: '', num: true }] : []), grnRows, { scroll: true })
+      ? tableWrap([{ label: 'GRN No' }, { label: 'Received' }, { label: 'Description' }, { label: 'Qty', num: true }, { label: 'Unit Price', num: true }, { label: 'Value', num: true }, { label: 'Supplier' }, { label: 'Source' }].concat(grnCol ? [{ label: '', num: true }] : []), grnRows, { scroll: true })
       : '<p class="muted">Nothing received against this MRN yet.</p>'}
     </div>`;
-  if (canRx) {
+  if (lineCol || grnCol) {
     qsa('[data-rx]').forEach((btn) => btn.onclick = () => receiveModal(m, btn.dataset.rx, btn.dataset.desc, btn.dataset.rem, () => mrnDetail(body, id)));
     qsa('[data-price]').forEach((btn) => btn.onclick = () => grnPriceModal(d.grns.find((x) => String(x.id) === btn.dataset.price), () => mrnDetail(body, id)));
     qsa('[data-issue-grn]').forEach((btn) => btn.onclick = () => {
@@ -4514,7 +4525,7 @@ async function jobRequestList(c) {
   const cur = { q: sp.get('q') || '' };
   c.innerHTML = `${pageHeader('Job Requests', 'Transport → Assistant raises · Transport Manager certifies · Operational Manager approves')}
     <div class="toolbar">
-      ${can('assistant_transport_manager') ? '<button class="primary" id="njr">+ New Job Request</button>' : ''}
+      ${canDo('jobrequests.create') ? '<button class="primary" id="njr">+ New Job Request</button>' : ''}
       <input id="jrq" type="search" placeholder="Search JR no / vehicle / description…" value="${esc(cur.q)}" style="max-width:280px">
       <div class="spacer"></div><span class="muted" id="jrcount"></span>
     </div>
@@ -4547,9 +4558,9 @@ async function jobRequestDetail(c, id) {
   const r = d.request;
   const st = r.approval_status || 'requested';
   const sig = (name, at) => name ? `${esc(name)} <span class="muted">· ${esc((at || '').slice(0, 16).replace('T', ' '))}</span>` : '<span class="muted">pending</span>';
-  const canCertify = can('transport_manager') && st === 'requested';
-  const canApprove = (can('operational_manager') || can('manager')) && st === 'certified';
-  const canReject = (can('transport_manager') || can('operational_manager') || can('manager')) && st !== 'approved' && st !== 'rejected';
+  const canCertify = canDo('jobrequests.certify') && st === 'requested';
+  const canApprove = canDo('jobrequests.approve') && st === 'certified';
+  const canReject = canDo('jobrequests.reject') && st !== 'approved' && st !== 'rejected';
   c.innerHTML = `
     <div class="toolbar"><a class="btn sm" href="#/jobrequests">← Job Requests</a><div class="spacer"></div><a class="btn sm" href="/api/job-requests/${r.id}/print.html" target="_blank">🖨 Print Job Request</a></div>
     <div class="card">
@@ -4664,7 +4675,7 @@ async function renderOilSection(c) {
     return stockPanel(body, 'oil');
   } else if (tab === 'products') {
     const list = await api('/oil/products');
-    body.innerHTML = `${can('storekeeper') ? '<div class="toolbar"><button class="primary" id="ntop">⛽ Issue a lubricant</button><button class="sm" id="np">+ New Product</button><button class="sm" id="nl">+ Ledger Txn</button></div>' : ''}
+    body.innerHTML = `${canDo('oil.ledger.post', 'oil.products.edit') ? `<div class="toolbar">${canDo('oil.ledger.post') ? '<button class="primary" id="ntop">⛽ Issue a lubricant</button>' : ''}${canDo('oil.products.edit') ? '<button class="sm" id="np">+ New Product</button>' : ''}${canDo('oil.ledger.post') ? '<button class="sm" id="nl">+ Ledger Txn</button>' : ''}</div>` : ''}
       ${tableWrap([{ label: 'Code' }, { label: 'Name' }, { label: 'Unit' }, { label: 'Category' }, { label: 'Balance', num: true }, { label: 'Reorder', num: true }, { label: 'Unit Price', num: true }],
       list.map((p) => `<tr><td>${esc(p.code || '')}</td><td>${esc(p.name)}</td><td>${esc(p.unit)}</td><td>${esc(p.category || '')}</td><td class="num ${p.current_balance <= p.reorder_level ? '' : ''}">${p.current_balance <= p.reorder_level && p.reorder_level > 0 ? `<span class="badge amber">${num(p.current_balance)}</span>` : num(p.current_balance)}</td><td class="num">${num(p.reorder_level)}</td><td class="num">${money(p.unit_price)}</td></tr>`), { scroll: true })}`;
     if (qs('#np')) qs('#np').onclick = () => simpleCreateModal('New Product', '/oil/products', [['Code', 'code'], ['Name *', 'name'], ['Unit (L/kg/nos)', 'unit'], ['Category', 'category'], ['Reorder level', 'reorder_level', 'number'], ['Unit price', 'unit_price', 'number']]);
@@ -4677,7 +4688,7 @@ async function renderOilSection(c) {
     // matched to a product it is not lubricant stock — so this list is the gap between what the
     // store recorded and what the oil book knows about.
     const d = await api('/oil/aliases/unresolved');
-    const editable = can('storekeeper');
+    const editable = canDo('oil.identity.resolve');
     const opts = (sel) => ['<option value="">— not a lubricant —</option>']
       .concat(d.catalogue.map((p) => `<option value="${p.id}"${String(sel) === String(p.id) ? ' selected' : ''}>${esc(p.code || '')} · ${esc(p.name)}</option>`)).join('');
     body.innerHTML = `
@@ -4735,7 +4746,7 @@ async function renderOilSection(c) {
         f.products.map((p) => `<tr><td>${esc(p.name)}</td><td class="num">${num(p.balance)} ${esc(p.unit)}</td><td class="num">${num(p.daily_rate)}</td><td class="num">${p.days_of_cover == null ? '∞' : num(p.days_of_cover)}</td><td>${p.suggested_reorder ? '<span class="badge red">ORDER</span>' : '<span class="badge green">ok</span>'}</td></tr>`), { scroll: true });
   } else if (tab === 'counts') {
     const list = await api('/oil/counts');
-    body.innerHTML = `${can('storekeeper') ? '<div class="toolbar"><button class="primary" id="nc">+ New Count</button></div>' : ''}
+    body.innerHTML = `${canDo('oil.count') ? '<div class="toolbar"><button class="primary" id="nc">+ New Count</button></div>' : ''}
       ${tableWrap([{ label: 'Period' }, { label: 'Product' }, { label: 'Book', num: true }, { label: 'Counted', num: true }, { label: 'Variance', num: true }],
       list.map((s) => `<tr><td>${esc(s.period)}</td><td>${esc(s.product_name)}</td><td class="num">${num(s.book_qty)}</td><td class="num">${num(s.counted_qty)}</td><td class="num"><span class="badge ${Math.abs(s.variance) > 0.001 ? 'red' : 'green'}">${num(s.variance)}</span></td></tr>`), { scroll: true })}`;
     if (qs('#nc')) qs('#nc').onclick = async () => {
@@ -5815,7 +5826,7 @@ routes.projects = async (c, params) => {
     return;
   }
   const list = await api('/projects');
-  c.innerHTML = `${pageHeader('Projects')}${can('manager') ? '<div class="toolbar"><button class="primary" id="npr">+ New Project</button></div>' : ''}
+  c.innerHTML = `${pageHeader('Projects')}${canDo('projects.manage') ? '<div class="toolbar"><button class="primary" id="npr">+ New Project</button></div>' : ''}
     ${tableWrap([{ label: 'Code' }, { label: 'Name' }, { label: 'Location' }, { label: 'Assets', num: true }, { label: 'This-Month Cost', num: true }],
     list.map((p) => `<tr><td>${esc(p.code || '')}</td><td><a href="#/projects/${p.id}">${esc(p.name)}</a></td><td>${esc(p.location || '')}</td><td class="num">${p.asset_count}</td><td class="num">${money(p.month_cost)}</td></tr>`), { scroll: true })}`;
   if (qs('#npr')) qs('#npr').onclick = () => simpleCreateModal('New Project', '/projects', [['Code', 'code'], ['Name *', 'name'], ['Location', 'location']]);
@@ -5833,11 +5844,11 @@ routes.aliases = async (c) => {
     <div class="card section"><h3>Vehicles — pending link (${pending.length})</h3>
       ${pending.length ? tableWrap([{ label: 'Raw Text' }, { label: 'Hits', num: true }, { label: 'Source' }, { label: 'Link to Asset' }],
     pending.map((a) => `<tr><td>${esc(a.raw_text)}</td><td class="num">${a.hit_count}</td><td>${esc(a.source || '')}</td>
-          <td>${can('storekeeper') ? `<select data-alias="${a.id}" style="width:auto;display:inline-block"><option value="">— pick —</option>${aopts}</select> <button class="sm" data-link="${a.id}">Link</button>` : '<span class="muted">read-only</span>'}</td></tr>`)) : '<span class="muted">Queue empty — every name resolves.</span>'}</div>
+          <td>${canDo('aliases.vehicle.resolve') ? `<select data-alias="${a.id}" style="width:auto;display:inline-block"><option value="">— pick —</option>${aopts}</select> <button class="sm" data-link="${a.id}">Link</button>` : '<span class="muted">read-only</span>'}</td></tr>`)) : '<span class="muted">Queue empty — every name resolves.</span>'}</div>
     <div class="card section"><h3>Mechanic names — pending link (${mPending.length})</h3>
       ${mPending.length ? tableWrap([{ label: 'Raw Text' }, { label: 'Hits', num: true }, { label: 'Source' }, { label: 'Link to Mechanic' }],
       mPending.map((a) => `<tr><td>${esc(a.raw_text)}</td><td class="num">${a.hit_count}</td><td>${esc(a.source || '')}</td>
-          <td>${can('storekeeper', 'manager') ? `<select data-malias="${a.id}" style="width:auto;display:inline-block"><option value="">— pick —</option>${mopts}</select> <button class="sm" data-mlink="${a.id}">Link</button>` : '<span class="muted">read-only</span>'}</td></tr>`)) : '<span class="muted">Queue empty — every mechanic name resolves.</span>'}</div>
+          <td>${canDo('aliases.mechanic.resolve') ? `<select data-malias="${a.id}" style="width:auto;display:inline-block"><option value="">— pick —</option>${mopts}</select> <button class="sm" data-mlink="${a.id}">Link</button>` : '<span class="muted">read-only</span>'}</td></tr>`)) : '<span class="muted">Queue empty — every mechanic name resolves.</span>'}</div>
     <div class="grid">
       <div class="card"><h3>Resolved vehicle aliases</h3>
         ${tableWrap([{ label: 'Raw Text' }, { label: 'Asset' }, { label: 'Hits', num: true }], all.map((a) => `<tr><td>${esc(a.raw_text)}</td><td>${esc(a.asset_code || '')}</td><td class="num">${a.hit_count}</td></tr>`), { scroll: true })}</div>
@@ -6814,7 +6825,7 @@ routes.reports = async (c) => {
   // printed last week still says what it said then.
   let drKind = 'pending_parts';
   const drDate = qs('#dr-date', c), drBody = qs('#dr-body', c), drStamp = qs('#dr-stamp', c);
-  const drCanEdit = can('workshop', 'operational_manager', 'manager', 'storekeeper');
+  const drCanEdit = canDo('reports.daily.notes');
 
   const drNote = (id, field, value, ph) => drCanEdit
     ? `<textarea class="dr-note" data-id="${id}" data-f="${field}" rows="2" placeholder="${esc(ph || '')}"
@@ -7139,23 +7150,40 @@ routes.teardown = async (c) => {
   if (preId) await show(preId);
 };
 
-// ---- Access Control (admin) — clearance board + user/role management --------
+// ---- Access Control — roles & permissions, clearance board, users --------------------------
+//
+// Three tabs, each shown to whoever may use it: Roles & Permissions and the Clearance Board need
+// access.manage, Users & Roles needs users.manage. The server enforces every rule (only give what
+// you hold, only an admin touches the admin role, there is always an admin); these screens just
+// make the rules visible before someone runs into them.
 routes.access = async (c) => {
-  if (!can('admin')) { c.innerHTML = '<div class="card err">Admin only.</div>'; return; }
+  if (!canDo('access.manage', 'users.manage')) { c.innerHTML = '<div class="card err">You do not have access to this page.</div>'; return; }
+  const tabs = [];
+  if (canDo('access.manage')) tabs.push(['roles', 'Roles & Permissions'], ['board', 'Clearance Board']);
+  if (canDo('users.manage')) tabs.push(['users', 'Users & Roles']);
   const sp = new URLSearchParams(location.hash.split('?')[1] || '');
-  const tab = sp.get('tab') === 'users' ? 'users' : 'board';
-  c.innerHTML = `${pageHeader('Access Control', 'Who holds the keys to which bay — set each role’s clearance per section.')}
+  const tab = tabs.some((t) => t[0] === sp.get('tab')) ? sp.get('tab') : tabs[0][0];
+  c.innerHTML = `${pageHeader('Access Control', 'Who may do what — roles, the permissions in each role, and who holds them.')}
+    <div id="admin-warn"></div>
     <div class="pill-row" style="margin-bottom:12px">
-      <button class="btn sm ${tab === 'board' ? 'primary' : ''}" id="tb-board">Clearance Board</button>
-      <button class="btn sm ${tab === 'users' ? 'primary' : ''}" id="tb-users">Users &amp; Roles</button>
+      ${tabs.map(([k, label]) => `<button class="btn sm ${tab === k ? 'primary' : ''}" data-atab="${k}">${esc(label)}</button>`).join('')}
     </div>
     <div id="apane"><div class="muted">Loading…</div></div>`;
-  qs('#tb-board').onclick = () => { location.hash = '#/access?tab=board'; };
-  qs('#tb-users').onclick = () => { location.hash = '#/access?tab=users'; };
-  if (tab === 'users') await renderUsersManager(qs('#apane'));
-  else await renderClearanceBoard(qs('#apane'));
+  qsa('[data-atab]', c).forEach((b) => { b.onclick = () => { location.hash = '#/access?tab=' + b.dataset.atab; }; });
+  // One admin is a single point of failure: if that account is lost, only someone with a shell on
+  // the server can get the system back (scripts/admin.js).
+  api('/access/roles').then((r) => {
+    if (r.active_admins < 2) {
+      qs('#admin-warn', c).innerHTML = `<div class="card" style="border-left:4px solid #d97706;margin-bottom:12px"><b>Only ${r.active_admins} active admin.</b>
+        If that account is lost or locked, nobody can manage users without logging in to the server. Give a second trusted person the admin role.</div>`;
+    }
+  }).catch(() => {});
+  const pane = qs('#apane', c);
+  if (tab === 'users') await renderUsersManager(pane);
+  else if (tab === 'board') await renderClearanceBoard(pane);
+  else await renderRolesManager(pane, sp.get('role'));
 };
-routes.users = async (c) => { location.hash = '#/access?tab=users'; };
+routes.users = async () => { location.hash = '#/access?tab=users'; };
 
 const lvlChip = (lvl) => {
   const cls = lvl === 'full' ? 'amber' : lvl === 'edit' ? 'green' : '';
@@ -7163,17 +7191,114 @@ const lvlChip = (lvl) => {
   return `<span class="badge ${cls}"${lvl === 'none' ? ' style="opacity:.4"' : ''}>${txt}</span>`;
 };
 
+async function renderRolesManager(c, wanted) {
+  const [cat, board] = await Promise.all([api('/access/capabilities'), api('/access/matrix')]);
+  const roles = cat.roles;
+  const sel = roles.find((r) => r.name === wanted) || roles.find((r) => r.active && !r.locked) || roles[0];
+  const modLabel = Object.fromEntries(cat.modules.map((m) => [m.key, m.label]));
+  modLabel.users = 'Users & Access';
+  const levelOf = (role, m) => (board.grid[role] && board.grid[role][m]) || 'none';
+  const held = new Set(sel.caps);
+  const mine = new Set(ME.caps || []);
+
+  // Permissions grouped by section, in catalogue order.
+  const groups = [];
+  for (const cap of cat.capabilities) {
+    let g = groups.find((x) => x.module === cap.module);
+    if (!g) groups.push(g = { module: cap.module, caps: [] });
+    g.caps.push(cap);
+  }
+  const editable = !sel.locked && sel.active;
+  const capRows = groups.map((g) => {
+    const lvl = levelOf(sel.name, g.module);
+    const rows = g.caps.map((cap) => {
+      const has = sel.locked || held.has(cap.key);
+      // You can take away anything, but only give what you hold yourself (the server says the same).
+      const canTick = editable && (has || isAdmin() || mine.has(cap.key));
+      const short = cap.needs && has && !sel.locked && rankL(levelOf(sel.name, cap.needs)) < 2
+        ? ` <span class="badge amber" title="The ${esc(modLabel[cap.needs] || cap.needs)} section blocks changes for this role until its clearance is EDIT or FULL">needs ${esc(modLabel[cap.needs] || cap.needs)} EDIT</span>` : '';
+      return `<label style="display:flex;flex-direction:row;gap:8px;align-items:flex-start;margin:3px 0;font-weight:normal">
+        <input type="checkbox" style="width:auto;margin-top:3px" data-cap="${esc(cap.key)}" ${has ? 'checked' : ''} ${canTick ? '' : 'disabled'}>
+        <span>${esc(cap.label)}${short}<br><span class="muted" style="font-size:11px">${esc(cap.key)}</span></span></label>`;
+    }).join('');
+    return `<div class="card section" style="margin-bottom:10px"><h3 style="margin:0 0 6px">${esc(modLabel[g.module] || g.module)}
+      <span class="muted" style="font-size:12px;font-weight:normal">— section clearance ${lvlChip(sel.locked ? 'full' : lvl)}</span></h3>${rows}</div>`;
+  }).join('');
+
+  const roleList = roles.map((r) => `<tr data-pick="${esc(r.name)}" style="cursor:pointer;${r.name === sel.name ? 'background:#eef2ff;' : ''}${r.active ? '' : 'opacity:.55;'}">
+    <td><b>${esc(r.label || r.name)}</b>${r.locked ? ' <span class="badge amber">everything</span>' : ''}${r.is_system ? '' : ' <span class="badge blue">custom</span>'}${r.active ? '' : ' <span class="badge">retired</span>'}
+    <br><span class="muted" style="font-size:11px">${r.users} user(s) · ${r.locked ? 'all' : r.caps.length} permission(s)</span></td></tr>`).join('');
+
+  c.innerHTML = `<div style="display:grid;grid-template-columns:minmax(220px,300px) 1fr;gap:14px;align-items:start">
+    <div class="card"><div class="toolbar" style="margin:0 0 8px"><h3 style="margin:0">Roles</h3><div class="spacer"></div><button class="primary sm" id="newrole">+ New Role</button></div>
+      <div class="table-wrap scroll"><table><tbody>${roleList}</tbody></table></div></div>
+    <div>
+      <div class="card" style="margin-bottom:10px">
+        <div class="toolbar" style="margin:0"><h2 style="margin:0">${esc(sel.label || sel.name)}</h2><div class="spacer"></div>
+          ${sel.locked ? '' : `<button class="sm" id="editrole">✎ Rename / describe</button>
+          ${sel.active ? '<button class="sm danger" id="retirerole">Retire</button>' : '<button class="sm" id="reinstaterole">Reinstate</button>'}`}
+        </div>
+        <p class="muted" style="margin:6px 0 0">${esc(sel.description || '')}${sel.description ? '<br>' : ''}Key <code>${esc(sel.name)}</code> · held by ${sel.users} active user(s).
+          ${sel.locked ? ' Admin always holds every permission and cannot be changed.' : ''}
+          ${!sel.active ? ' Retired — it grants nothing until reinstated.' : ''}
+          ${editable ? ' Ticking a box applies from each holder\'s next click. Section clearance is set on the Clearance Board.' : ''}</p>
+      </div>
+      ${capRows}
+    </div></div>`;
+
+  const reload = (name) => { location.hash = '#/access?tab=roles&role=' + encodeURIComponent(name || sel.name); };
+  qsa('[data-pick]', c).forEach((tr) => { tr.onclick = () => reload(tr.dataset.pick); });
+  qsa('[data-cap]', c).forEach((box) => {
+    box.onchange = async () => {
+      try {
+        await api('/access/capabilities', { method: 'POST', body: { role: sel.name, capability: box.dataset.cap, granted: box.checked } });
+        await renderRolesManager(c, sel.name);
+      } catch (e) { box.checked = !box.checked; toast(e.message, 'err'); }
+    };
+  });
+  qs('#newrole', c).onclick = () => modal('New role', `
+    ${field('Name *', 'label', { placeholder: 'e.g. Site Storekeeper' })}
+    ${field('What this role is for', 'description', { type: 'textarea' })}
+    ${field('Start from', 'clone_from', { type: 'select', options: [{ value: '', label: '— no permissions (tick them after) —' }]
+      .concat(roles.filter((r) => !r.locked && r.active).map((r) => ({ value: r.name, label: 'a copy of ' + (r.label || r.name) }))) })}
+    <p class="muted">A copy takes the other role's permissions and section clearance. You can then change either.</p>
+    <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Create</button></div>`,
+    (body, close) => {
+      qs('#s', body).onclick = async () => {
+        const d = formData(body);
+        try { const r = await api('/access/roles', { method: 'POST', body: d }); close(); toast('Role created'); reload(r.name); }
+        catch (e) { toast(e.message, 'err'); }
+      };
+    });
+  if (qs('#editrole', c)) qs('#editrole', c).onclick = () => modal('Rename / describe', `
+    ${field('Name *', 'label', { value: sel.label || '' })}
+    ${field('What this role is for', 'description', { type: 'textarea', value: sel.description || '' })}
+    <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Save</button></div>`,
+    (body, close) => {
+      qs('#s', body).onclick = async () => {
+        try { await api('/access/roles/' + encodeURIComponent(sel.name), { method: 'PATCH', body: formData(body) }); close(); reload(); }
+        catch (e) { toast(e.message, 'err'); }
+      };
+    });
+  const setActive = async (active) => {
+    try { await api('/access/roles/' + encodeURIComponent(sel.name), { method: 'PATCH', body: { active } }); toast(active ? 'Role reinstated' : 'Role retired'); reload(); }
+    catch (e) { toast(e.message, 'err'); }
+  };
+  if (qs('#retirerole', c)) qs('#retirerole', c).onclick = () => { if (confirm(`Retire "${sel.label || sel.name}"? It will grant nothing until reinstated.`)) setActive(false); };
+  if (qs('#reinstaterole', c)) qs('#reinstaterole', c).onclick = () => setActive(true);
+}
+
 async function renderClearanceBoard(c) {
   const m = await api('/access/matrix');
   const LV = m.levels;
   const headCols = m.modules.map((mod) => `<th style="text-align:center">${esc(mod.label)}${mod.enforce ? '' : ' <span class="muted" title="Hidden in the sidebar but not API-blocked (reference/analytics)">*</span>'}</th>`).join('');
-  const rows = m.roles.map((r) => `<tr><td><b>${esc(r.label || r.name)}</b><br><span class="muted" style="font-size:11px">${esc(r.name)}</span></td>${m.modules.map((mod) => {
+  const rows = m.roles.map((r) => `<tr${r.active ? '' : ' style="opacity:.5"'}><td><b>${esc(r.label || r.name)}</b>${r.active ? '' : ' <span class="badge">retired</span>'}<br><span class="muted" style="font-size:11px">${esc(r.name)}</span></td>${m.modules.map((mod) => {
     const lvl = m.grid[r.name][mod.key];
     const locked = r.name === 'admin';
-    return `<td style="text-align:center;cursor:${locked ? 'default' : 'pointer'}"${locked ? '' : ` data-cell="${r.name}:${mod.key}" data-lvl="${lvl}" title="click to change"`}>${lvlChip(lvl)}</td>`;
+    return `<td style="text-align:center;cursor:${locked ? 'default' : 'pointer'}"${locked ? '' : ` data-cell="${esc(r.name)}:${mod.key}" data-lvl="${lvl}" title="click to change"`}>${lvlChip(lvl)}</td>`;
   }).join('')}</tr>`).join('');
   c.innerHTML = `<div class="card">
-    <p class="muted" style="margin-top:0">Click a cell to cycle clearance: — → VIEW → EDIT → FULL. <b>Admin</b> is always full. Changes apply immediately; a signed-in user sees nav changes after their next login. <span title="nav-level only">*</span> = hidden in the sidebar but not API-blocked.</p>
+    <p class="muted" style="margin-top:0">Section clearance opens a whole section; the permissions on the <b>Roles &amp; Permissions</b> tab decide each action inside it. Click a cell to cycle: — → VIEW → EDIT → FULL. <b>Admin</b> is always full. Changes apply immediately; a signed-in user sees sidebar changes after their next login. <span title="nav-level only">*</span> = hidden in the sidebar but not blocked (reference data used by other screens).</p>
     <div class="table-wrap scroll"><table><thead><tr><th>Role</th>${headCols}</tr></thead><tbody>${rows}</tbody></table></div>
     <div class="pill-row" style="margin-top:12px"><span class="muted">Legend:</span> ${lvlChip('full')} manage ${lvlChip('edit')} add / modify ${lvlChip('view')} read-only ${lvlChip('none')} no access</div>
   </div>`;
@@ -7187,16 +7312,53 @@ async function renderClearanceBoard(c) {
 
 async function renderUsersManager(c) {
   const [users, roles] = await Promise.all([api('/users'), api('/users/roles')]);
-  const roleNames = roles.map((r) => r.name);
+  const labelOf = Object.fromEntries(roles.map((r) => [r.name, r.label || r.name]));
+  const roleBoxes = (checked = []) => roles.map((r) => `<label style="flex-direction:row;display:flex;gap:6px;align-items:flex-start;font-weight:normal">
+      <input type="checkbox" style="width:auto;margin-top:3px" data-role="${esc(r.name)}" ${checked.includes(r.name) ? 'checked' : ''}>
+      <span>${esc(r.label || r.name)}${r.description ? `<br><span class="muted" style="font-size:11px">${esc(r.description)}</span>` : ''}</span></label>`).join('');
+  const picked = (body) => qsa('[data-role]', body).filter((x) => x.checked).map((x) => x.dataset.role);
+
   c.innerHTML = `<div class="toolbar"><button class="primary" id="nu">+ New User</button><div class="spacer"></div><span class="muted">${users.length} user(s)</span></div>
     ${tableWrap([{ label: 'Username' }, { label: 'Name' }, { label: 'Roles' }, { label: 'Active' }, { label: '' }],
-    users.map((u) => `<tr><td>${esc(u.username)}</td><td>${esc(u.full_name || '')}</td><td>${u.roles.map((r) => `<span class="badge">${esc(r)}</span>`).join(' ')}</td><td>${u.active ? '✓' : '✕'}</td><td><button class="sm" data-roles="${u.id}">Roles</button></td></tr>`))}`;
-  if (qs('#nu', c)) qs('#nu', c).onclick = () => modal('New User', `${field('Username *', 'username')}${field('Password *', 'password', { type: 'password' })}${field('Full name', 'full_name')}<label>Roles</label>${roleNames.map((r) => `<label style="flex-direction:row;display:flex;gap:6px;align-items:center"><input type="checkbox" style="width:auto" data-role="${r}"> ${r}</label>`).join('')}<div style="margin-top:12px;text-align:right"><button class="primary" id="s">Create</button></div>`,
-    (body, close) => { qs('#s', body).onclick = async () => { const d = formData(body); d.roles = qsa('[data-role]', body).filter((x) => x.checked).map((x) => x.dataset.role); try { await api('/users', { method: 'POST', body: d }); close(); renderUsersManager(c); } catch (e) { toast(e.message, 'err'); } }; });
-  qsa('[data-roles]', c).forEach((b) => b.onclick = async () => {
+    users.map((u) => `<tr${u.active ? '' : ' style="opacity:.55"'}><td>${esc(u.username)}</td><td>${esc(u.full_name || '')}</td>
+      <td>${u.roles.map((r) => `<span class="badge">${esc(labelOf[r] || r)}</span>`).join(' ')}</td><td>${u.active ? '✓' : '✕'}</td>
+      <td style="white-space:nowrap"><button class="sm" data-roles="${u.id}">Roles</button> <button class="sm" data-reset="${u.id}">Reset password</button>
+        <button class="sm ${u.active ? 'danger' : ''}" data-active="${u.id}">${u.active ? 'Deactivate' : 'Activate'}</button></td></tr>`))}`;
+
+  qs('#nu', c).onclick = () => modal('New User', `${field('Username *', 'username')}${field('Temporary password *', 'password', { type: 'password' })}
+    <p class="muted">${esc(passwordHint())} They must choose their own at first sign-in.</p>${field('Full name', 'full_name')}<label>Roles</label>${roleBoxes()}
+    <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Create</button></div>`,
+    (body, close) => {
+      qs('#s', body).onclick = async () => {
+        const d = formData(body); d.roles = picked(body);
+        try { await api('/users', { method: 'POST', body: d }); close(); toast('User created'); renderUsersManager(c); } catch (e) { toast(e.message, 'err'); }
+      };
+    });
+  qsa('[data-roles]', c).forEach((b) => b.onclick = () => {
     const u = users.find((x) => x.id == b.dataset.roles);
-    modal('Roles for ' + u.username, roleNames.map((r) => `<label style="flex-direction:row;display:flex;gap:6px;align-items:center"><input type="checkbox" style="width:auto" data-role="${r}" ${u.roles.includes(r) ? 'checked' : ''}> ${r}</label>`).join('') + '<div style="margin-top:12px;text-align:right"><button class="primary" id="s">Save</button></div>',
-      (body, close) => { qs('#s', body).onclick = async () => { const rs = qsa('[data-role]', body).filter((x) => x.checked).map((x) => x.dataset.role); try { await api(`/users/${u.id}/roles`, { method: 'POST', body: { roles: rs } }); close(); renderUsersManager(c); } catch (e) { toast(e.message, 'err'); } }; });
+    modal('Roles for ' + u.username, roleBoxes(u.roles) + '<div style="margin-top:12px;text-align:right"><button class="primary" id="s">Save</button></div>',
+      (body, close) => {
+        qs('#s', body).onclick = async () => {
+          try { await api(`/users/${u.id}/roles`, { method: 'POST', body: { roles: picked(body) } }); close(); toast('Roles saved'); renderUsersManager(c); } catch (e) { toast(e.message, 'err'); }
+        };
+      });
+  });
+  qsa('[data-reset]', c).forEach((b) => b.onclick = () => {
+    const u = users.find((x) => x.id == b.dataset.reset);
+    modal('Reset password — ' + u.username, `${field('Temporary password *', 'password', { type: 'password' })}
+      <p class="muted">${esc(passwordHint())} ${esc(u.username)} is signed out everywhere and must choose a new password at next sign-in.</p>
+      <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Reset</button></div>`,
+      (body, close) => {
+        qs('#s', body).onclick = async () => {
+          try { await api(`/users/${u.id}`, { method: 'PATCH', body: { password: formData(body).password } }); close(); toast('Password reset'); } catch (e) { toast(e.message, 'err'); }
+        };
+      });
+  });
+  qsa('[data-active]', c).forEach((b) => b.onclick = async () => {
+    const u = users.find((x) => x.id == b.dataset.active);
+    if (u.active && !confirm(`Deactivate ${u.username}? They are signed out at once and cannot sign in again until reactivated.`)) return;
+    try { await api(`/users/${u.id}`, { method: 'PATCH', body: { active: !u.active } }); toast(u.active ? 'User deactivated' : 'User activated'); renderUsersManager(c); }
+    catch (e) { toast(e.message, 'err'); }
   });
 }
 
@@ -7401,7 +7563,7 @@ function simpleCreateModal(title, path, fields) {
 // Unified inventory valuation, reorder alerts board, and universal search. Backed by /api/stock-cockpit.
 async function renderStockCockpitSection(c) {
   const edit = canEdit('stores');
-  const canRestock = can('storekeeper', 'workshop', 'manager', 'admin');
+  const canRestock = canDo('stores.reorder_mrn');
 
   c.innerHTML = `
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:10px">

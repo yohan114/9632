@@ -2,7 +2,7 @@
 
 const express = require('express');
 const { get, all, run, tx } = require('../db');
-const { requireAuth, requireRole, hasRole } = require('../lib/auth');
+const { requireAuth, requireCap, hasCap } = require('../lib/auth');
 const { asyncHandler, require_, toInt, toNum } = require('../lib/http');
 const audit = require('../lib/audit');
 const aliases = require('../lib/aliases');
@@ -54,7 +54,7 @@ function editable(job, user) {
   if (job.status !== 'CLOSED') return true;
   // Closed cards can still receive items/edits from the managing roles (admin
   // included via hasRole); all such edits are audited. Historical totals are kept.
-  return hasRole(user, 'workshop', 'storekeeper', 'manager');
+  return hasCap(user, 'jobs.edit_closed');
 }
 
 // ---- list / create --------------------------------------------------------
@@ -161,7 +161,7 @@ router.get(
 router.post(
   '/',
   requireAuth,
-  requireRole('transport_manager', 'workshop'),
+  requireCap('jobs.create'),
   asyncHandler((req, res) => {
     const b = req.body;
     require_(b, ['description']);
@@ -293,7 +293,7 @@ router.get(
       readiness,
       snapshot,
       nextStates: jobstate.nextStates(job.status),
-      canReopen: jobstate.canReopen(req.user.roles),
+      canReopen: jobstate.canReopen(req.user),
       reopens: all(
         `SELECT r.*, u.username AS reopened_by_name FROM job_reopens r
            LEFT JOIN users u ON u.id = r.reopened_by
@@ -314,7 +314,7 @@ router.post(
     const target = req.body.to;
     const reason = req.body.reason || null;
 
-    const check = jobstate.checkTransition(job.status, target, req.user.roles);
+    const check = jobstate.checkTransition(job.status, target, req.user);
     if (!check.ok) return res.status(400).json({ error: check.error });
 
     const isReopen = job.status === 'CLOSED' && target === 'IN_PROGRESS';
@@ -361,7 +361,7 @@ router.post(
           break;
         case 'reject':
         case 'return': {
-          const role = hasRole(req.user, 'operational_manager') ? 'operational_manager' : 'transport_manager';
+          const role = hasCap(req.user, 'jobs.approve_operations') ? 'operational_manager' : 'transport_manager';
           run(`INSERT INTO job_approvals (job_id, role, approver_id, decision, reason) VALUES (?, ?, ?, 'rejected', ?)`, id, role, req.user.id, reason);
           break;
         }
@@ -440,7 +440,7 @@ router.post(
           continue;
         }
 
-        const check = jobstate.checkTransition(job.status, target, req.user.roles);
+        const check = jobstate.checkTransition(job.status, target, req.user);
         if (!check.ok) {
           failed.push({ id, job_no: job.job_no, error: check.error });
           continue;
@@ -483,7 +483,7 @@ router.post(
             break;
           case 'reject':
           case 'return': {
-            const role = hasRole(req.user, 'operational_manager') ? 'operational_manager' : 'transport_manager';
+            const role = hasCap(req.user, 'jobs.approve_operations') ? 'operational_manager' : 'transport_manager';
             run(`INSERT INTO job_approvals (job_id, role, approver_id, decision, reason) VALUES (?, ?, ?, 'rejected', ?)`, id, role, req.user.id, reason);
             break;
           }
@@ -551,7 +551,7 @@ router.post(
 router.post(
   '/:id/close-on-date',
   requireAuth,
-  requireRole('admin', 'operational_manager', 'workshop', 'manager'),
+  requireCap('jobs.close_on_date'),
   asyncHandler((req, res) => {
     const id = toInt(req.params.id);
     const job = loadJob(id);
@@ -603,7 +603,7 @@ router.post(
 router.post(
   '/:id/daily-work',
   requireAuth,
-  requireRole('workshop'),
+  requireCap('jobs.dailywork'),
   asyncHandler((req, res) => {
     const id = toInt(req.params.id);
     const job = get('SELECT * FROM job_cards WHERE id = ?', id);
@@ -687,7 +687,7 @@ function settleAfterDetach(job, catchAllId) {
 router.delete(
   '/:id/daily-work/:lineId',
   requireAuth,
-  requireRole('workshop'),
+  requireCap('jobs.dailywork'),
   asyncHandler((req, res) => {
     const id = toInt(req.params.id);
     const lineId = toInt(req.params.lineId);
@@ -864,7 +864,7 @@ function settleAfterMove(fromJobId, toJobId, toAssetId) {
   }
 }
 
-router.post('/:id/daily-work/attach', requireAuth, requireRole('workshop'), asyncHandler((req, res) => {
+router.post('/:id/daily-work/attach', requireAuth, requireCap('jobs.dailywork'), asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   const job = get('SELECT * FROM job_cards WHERE id = ?', id);
   if (!job) return res.status(404).json({ error: 'Job not found' });
@@ -898,7 +898,7 @@ router.post('/:id/daily-work/attach', requireAuth, requireRole('workshop'), asyn
   res.json({ attached: rows.length, hours: rows.reduce((s, r) => s + (Number(r.hours) || 0), 0) });
 }));
 
-router.post('/:id/parts/attach', requireAuth, requireRole('workshop', 'storekeeper'), asyncHandler((req, res) => {
+router.post('/:id/parts/attach', requireAuth, requireCap('jobs.parts'), asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   const job = get('SELECT * FROM job_cards WHERE id = ?', id);
   if (!job) return res.status(404).json({ error: 'Job not found' });
@@ -943,7 +943,7 @@ router.post('/:id/parts/attach', requireAuth, requireRole('workshop', 'storekeep
 router.post(
   '/:id/parts',
   requireAuth,
-  requireRole('workshop', 'storekeeper'),
+  requireCap('jobs.parts'),
   asyncHandler((req, res) => {
     const id = toInt(req.params.id);
     const job = get('SELECT * FROM job_cards WHERE id = ?', id);
@@ -971,7 +971,7 @@ router.post(
 router.patch(
   '/:id/parts/:partId',
   requireAuth,
-  requireRole('workshop', 'storekeeper'),
+  requireCap('jobs.parts'),
   asyncHandler((req, res) => {
     const id = toInt(req.params.id);
     const partId = toInt(req.params.partId);
@@ -989,7 +989,7 @@ router.patch(
 router.delete(
   '/:id/parts/:partId',
   requireAuth,
-  requireRole('workshop', 'storekeeper'),
+  requireCap('jobs.parts'),
   asyncHandler((req, res) => {
     const id = toInt(req.params.id);
     const partId = toInt(req.params.partId);
@@ -1028,7 +1028,7 @@ router.delete(
 router.patch(
   '/:id',
   requireAuth,
-  requireRole('workshop', 'operational_manager', 'manager'),
+  requireCap('jobs.edit'),
   asyncHandler((req, res) => {
     const id = toInt(req.params.id);
     const job = loadJob(id);
@@ -1130,7 +1130,7 @@ router.patch(
 router.patch(
   '/:id/flat-labour',
   requireAuth,
-  requireRole('workshop', 'operational_manager'),
+  requireCap('jobs.flat_labour'),
   asyncHandler((req, res) => {
     const id = toInt(req.params.id);
     const job = get('SELECT * FROM job_cards WHERE id = ?', id);

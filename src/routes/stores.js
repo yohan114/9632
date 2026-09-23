@@ -2,7 +2,7 @@
 
 const express = require('express');
 const { get, all, run, tx } = require('../db');
-const { requireRole, hasRole, requireAuth } = require('../lib/auth');
+const { requireCap, hasCap, requireAuth } = require('../lib/auth');
 const { asyncHandler, require_, toInt, toNum } = require('../lib/http');
 const audit = require('../lib/audit');
 const aliases = require('../lib/aliases');
@@ -92,7 +92,7 @@ router.get('/items', asyncHandler((req, res) => {
        ${where} ORDER BY s.name LIMIT ${toInt(req.query.limit, 500)}`, ...params));
 }));
 
-router.post('/items', requireRole('storekeeper'), asyncHandler((req, res) => {
+router.post('/items', requireCap('stores.items.edit'), asyncHandler((req, res) => {
   const b = req.body;
   require_(b, ['name']);
   const cat = categories.resolve(b);
@@ -106,7 +106,7 @@ router.post('/items', requireRole('storekeeper'), asyncHandler((req, res) => {
   res.status(201).json(get('SELECT * FROM store_items WHERE id = ?', info.lastInsertRowid));
 }));
 
-router.patch('/items/:id', requireRole('storekeeper'), asyncHandler((req, res) => {
+router.patch('/items/:id', requireCap('stores.items.edit'), asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   const sets = [];
   const params = [];
@@ -126,7 +126,7 @@ router.patch('/items/:id', requireRole('storekeeper'), asyncHandler((req, res) =
 router.get('/items/:id/ledger', asyncHandler((req, res) =>
   res.json(all('SELECT * FROM general_item_txns WHERE store_item_id = ? ORDER BY id DESC', toInt(req.params.id)))));
 
-router.post('/items/:id/txn', requireRole('storekeeper'), asyncHandler((req, res) => {
+router.post('/items/:id/txn', requireCap('stores.items.txn'), asyncHandler((req, res) => {
   const itemId = toInt(req.params.id);
   const item = get('SELECT * FROM store_items WHERE id = ?', itemId);
   if (!item) return res.status(404).json({ error: 'Item not found' });
@@ -310,13 +310,13 @@ router.get('/categories/:id/usage', asyncHandler((req, res) => {
   res.json(u);
 }));
 
-router.post('/categories', requireRole('storekeeper'), asyncHandler((req, res) => {
+router.post('/categories', requireCap('stores.categories.edit'), asyncHandler((req, res) => {
   const row = categories.create(req.body);
   audit.record({ userId: req.user.id, entity: 'item_category', entityId: row.id, action: 'create', after: { name: row.name, parent_id: row.parent_id } });
   res.status(201).json(row);
 }));
 
-router.patch('/categories/:id', requireRole('storekeeper'), asyncHandler((req, res) => {
+router.patch('/categories/:id', requireCap('stores.categories.edit'), asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   const before = get('SELECT * FROM item_categories WHERE id = ?', id);
   const row = categories.update(id, req.body);
@@ -326,7 +326,7 @@ router.patch('/categories/:id', requireRole('storekeeper'), asyncHandler((req, r
 
 // Move every record (and, for a category, every sub-category) into another, then drop
 // the source — how the imported free-text vocabulary gets tidied up.
-router.post('/categories/:id/merge', requireRole('storekeeper'), asyncHandler((req, res) => {
+router.post('/categories/:id/merge', requireCap('stores.categories.edit'), asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   const into = toInt(req.body.into_id);
   if (!into) return res.status(400).json({ error: 'into_id is required' });
@@ -336,7 +336,7 @@ router.post('/categories/:id/merge', requireRole('storekeeper'), asyncHandler((r
   res.json({ ok: true, ...moved });
 }));
 
-router.delete('/categories/:id', requireRole('storekeeper'), asyncHandler((req, res) => {
+router.delete('/categories/:id', requireCap('stores.categories.edit'), asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   const before = get('SELECT * FROM item_categories WHERE id = ?', id);
   const out = categories.remove(id);
@@ -605,7 +605,7 @@ router.get('/mrn', asyncHandler((req, res) => {
   ));
 }));
 
-router.post('/mrn', requireRole('storekeeper'), asyncHandler((req, res) => {
+router.post('/mrn', requireCap('stores.mrn.create'), asyncHandler((req, res) => {
   const b = req.body;
   // Request target: 'general' (store stock) or 'vehicle'. The VEHICLE is authoritative —
   // any vehicle can be requested for, whether or not it has a job card open. A job card
@@ -702,7 +702,7 @@ router.get('/mrn/:id', asyncHandler((req, res) => {
 // SK requests (create) → Workshop certifies → Operational Manager approves.
 const signer = (userId) => { const u = get('SELECT full_name, username, signature FROM users WHERE id = ?', userId); return { name: u ? (u.full_name || u.username) : 'user', sig: u ? u.signature : null }; };
 
-router.post('/mrn/:id/certify', requireRole('workshop', 'manager'), asyncHandler((req, res) => {
+router.post('/mrn/:id/certify', requireCap('stores.mrn.certify'), asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   const mrn = get('SELECT * FROM mrn WHERE id = ?', id);
   if (!mrn) return res.status(404).json({ error: 'MRN not found' });
@@ -717,7 +717,7 @@ router.post('/mrn/:id/certify', requireRole('workshop', 'manager'), asyncHandler
   res.json(get('SELECT * FROM mrn WHERE id = ?', id));
 }));
 
-router.post('/mrn/:id/approve', requireRole('operational_manager', 'manager'), asyncHandler((req, res) => {
+router.post('/mrn/:id/approve', requireCap('stores.mrn.approve'), asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   const mrn = get('SELECT * FROM mrn WHERE id = ?', id);
   if (!mrn) return res.status(404).json({ error: 'MRN not found' });
@@ -732,13 +732,13 @@ router.post('/mrn/:id/approve', requireRole('operational_manager', 'manager'), a
   res.json(get('SELECT * FROM mrn WHERE id = ?', id));
 }));
 
-router.post('/mrn/:id/reject', requireRole('workshop', 'operational_manager', 'manager'), asyncHandler((req, res) => {
+router.post('/mrn/:id/reject', requireCap('stores.mrn.reject'), asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   const mrn = get('SELECT * FROM mrn WHERE id = ?', id);
   if (!mrn) return res.status(404).json({ error: 'MRN not found' });
   if (!String(req.body.reason || '').trim()) return res.status(400).json({ error: 'A reason is required to reject' });
   const s = signer(req.user.id);
-  const asApprover = hasRole(req.user, 'operational_manager') || hasRole(req.user, 'manager');
+  const asApprover = hasCap(req.user, 'stores.mrn.approve');
   const stage = asApprover ? 'approve' : 'certify';
   tx(() => {
     run(`UPDATE mrn SET approval_status = 'rejected' WHERE id = ?`, id);
@@ -852,7 +852,7 @@ router.get('/mrn/:id/print.html', asyncHandler((req, res) => {
   res.send(html);
 }));
 
-router.post('/mrn/:id/lines', requireRole('storekeeper'), asyncHandler((req, res) => {
+router.post('/mrn/:id/lines', requireCap('stores.mrn.edit'), asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   require_(req.body, ['description', 'qty']);
   const mrn = get('SELECT * FROM mrn WHERE id = ?', id);
@@ -870,7 +870,7 @@ router.post('/mrn/:id/lines', requireRole('storekeeper'), asyncHandler((req, res
   // A reason is required: an override without one is just a hole.
   const isImported = mrn.approval_status === 'requested' && !String(mrn.requested_by || '').trim();
   const settled = mrn.approval_status === 'approved' || isImported;
-  const isAdmin = hasRole(req.user, 'admin');
+  const isAdmin = hasCap(req.user, 'stores.mrn.amend_settled');
   if (settled && !isAdmin) {
     return res.status(409).json({
       error: isImported
@@ -1206,7 +1206,7 @@ function resetCertification(mrn, userId, what) {
 
 const MRN_EDITABLE = ['purpose', 'requested_by', 'required_date', 'req_date', 'asset_id', 'project_id', 'job_id'];
 
-router.patch('/mrn/:id', requireRole('storekeeper'), asyncHandler((req, res) => {
+router.patch('/mrn/:id', requireCap('stores.mrn.edit'), asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   const g = guardEditable(id);
   if (g.error) return res.status(g.code).json({ error: g.error });
@@ -1244,7 +1244,7 @@ router.patch('/mrn/:id', requireRole('storekeeper'), asyncHandler((req, res) => 
 
 const LINE_EDITABLE = ['description', 'unit', 'category'];
 
-router.patch('/mrn/line/:id', requireRole('storekeeper'), asyncHandler((req, res) => {
+router.patch('/mrn/line/:id', requireCap('stores.mrn.edit'), asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   const line = get('SELECT * FROM mrn_lines WHERE id = ?', id);
   if (!line) return res.status(404).json({ error: 'MRN line not found' });
@@ -1287,7 +1287,7 @@ router.patch('/mrn/line/:id', requireRole('storekeeper'), asyncHandler((req, res
 
 // Remove a line from a request that has not been approved. Anything already received stays —
 // deleting the line would orphan a receipt that is physically on the shelf.
-router.delete('/mrn/line/:id', requireRole('storekeeper'), asyncHandler((req, res) => {
+router.delete('/mrn/line/:id', requireCap('stores.mrn.edit'), asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   const line = get('SELECT * FROM mrn_lines WHERE id = ?', id);
   if (!line) return res.status(404).json({ error: 'MRN line not found' });
@@ -1352,7 +1352,7 @@ function tbGrnAllowed(user, mrnLineId) {
   return permissions.meets(permissions.levelForRoles(user.roles, 'tb_grn'), 'edit');
 }
 
-router.post('/grn', requireRole('storekeeper'), asyncHandler((req, res) => {
+router.post('/grn', requireCap('stores.grn.receive'), asyncHandler((req, res) => {
   const b = req.body;
   require_(b, ['qty']);
   const source = b.purchase_source;
@@ -1419,7 +1419,7 @@ router.get('/stock/:section/moves', asyncHandler((req, res) => {
 }));
 
 // Recalculate every movement from the underlying records (idempotent).
-router.post('/stock/rebuild', requireRole('storekeeper', 'manager'), asyncHandler((req, res) => {
+router.post('/stock/rebuild', requireCap('stores.stock.rebuild'), asyncHandler((req, res) => {
   const rep = stock.rebuild({ wipe: true });
   audit.record({ userId: req.user.id, entity: 'stock_moves', action: 'rebuild', after: rep });
   res.json(rep);
@@ -1740,7 +1740,7 @@ router.get('/pipeline/trace', requireAuth, asyncHandler((req, res) => {
 }));
 
 // Rebuild the item registry (new codes for anything not yet registered; existing codes kept).
-router.post('/stock-items/sync', requireRole('storekeeper', 'manager'), asyncHandler((req, res) => {
+router.post('/stock-items/sync', requireCap('stores.stock.rebuild'), asyncHandler((req, res) => {
   const rep = stock.syncItems();
   audit.record({ userId: req.user.id, entity: 'stock_items', action: 'sync', after: rep });
   res.json(rep);
@@ -1750,7 +1750,7 @@ router.post('/stock-items/sync', requireRole('storekeeper', 'manager'), asyncHan
 // Several lines in one go, against a job card OR a vehicle (either is enough). Each line
 // deducts its section's balance. Going negative is reported, not blocked — the part is in
 // the storekeeper's hand, so the record follows reality and gets corrected later.
-router.post('/stock-issue', requireRole('storekeeper', 'workshop', 'manager'), asyncHandler((req, res) => {
+router.post('/stock-issue', requireCap('stores.stock_issue'), asyncHandler((req, res) => {
   const b = req.body || {};
   const lines = Array.isArray(b.lines) ? b.lines : [];
   if (!lines.length) return res.status(400).json({ error: 'Add at least one item to issue' });
@@ -1939,7 +1939,7 @@ router.post('/stock-issue', requireRole('storekeeper', 'workshop', 'manager'), a
 
 // Price (and invoice details) for many existing receipts at once.
 // Body: { rows: [{ id, unit_price, supplier?, invoice_no?, invoice_date?, purchase_source? }] }
-router.post('/grn/bulk-price', requireRole('storekeeper'), asyncHandler((req, res) => {
+router.post('/grn/bulk-price', requireCap('stores.grn.edit'), asyncHandler((req, res) => {
   const rows = Array.isArray(req.body && req.body.rows) ? req.body.rows : [];
   if (!rows.length) return res.status(400).json({ error: 'Nothing to save' });
   let saved = 0;
@@ -1979,7 +1979,7 @@ router.post('/grn/bulk-price', requireRole('storekeeper'), asyncHandler((req, re
 // Receive many MRN lines at once (one row per line the storekeeper filled in).
 // Body: { rows: [{ mrn_line_id, qty, unit_price?, supplier?, invoice_no?, invoice_date?,
 //                  delivery_date?, grn_no?, purchase_source? }] }
-router.post('/grn/bulk-receive', requireRole('storekeeper'), asyncHandler((req, res) => {
+router.post('/grn/bulk-receive', requireCap('stores.grn.receive'), asyncHandler((req, res) => {
   const rows = Array.isArray(req.body && req.body.rows) ? req.body.rows : [];
   if (!rows.length) return res.status(400).json({ error: 'Nothing to receive' });
   const created = [];
@@ -2028,7 +2028,7 @@ router.post('/grn/bulk-receive', requireRole('storekeeper'), asyncHandler((req, 
   res.json({ ok: true, received: created.length, mrns: mrnIds.size, skipped });
 }));
 
-router.patch('/grn/:id', requireRole('storekeeper'), asyncHandler((req, res) => {
+router.patch('/grn/:id', requireCap('stores.grn.edit'), asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   const before = get('SELECT * FROM grn WHERE id = ?', id);
   if (!before) return res.status(404).json({ error: 'GRN not found' });
@@ -2125,7 +2125,7 @@ router.get('/issues', asyncHandler((req, res) => {
 router.get('/issue-categories', asyncHandler((_req, res) =>
   res.json(all(`SELECT DISTINCT category FROM issues WHERE category IS NOT NULL AND TRIM(category) <> '' ORDER BY category`).map((r) => r.category))));
 
-router.post('/issues', requireRole('storekeeper'), asyncHandler((req, res) => {
+router.post('/issues', requireCap('stores.issue'), asyncHandler((req, res) => {
   const b = req.body;
   require_(b, ['description']);
   // Cost object: every issue lands on a JOB CARD — no exceptions — and the vehicle is
@@ -2322,7 +2322,7 @@ function incomingMtnLines(b) {
     : [];
 }
 
-router.post('/mtn', requireRole('storekeeper'), asyncHandler((req, res) => {
+router.post('/mtn', requireCap('stores.mtn.edit'), asyncHandler((req, res) => {
   const b = req.body;
   const items = incomingMtnLines(b);
   if (!items.length) return res.status(400).json({ error: 'A transfer needs at least one item' });
@@ -2368,7 +2368,7 @@ router.get('/mtn/:id', asyncHandler((req, res) => {
 }));
 
 // Add an item to an existing note.
-router.post('/mtn/:id/lines', requireRole('storekeeper'), asyncHandler((req, res) => {
+router.post('/mtn/:id/lines', requireCap('stores.mtn.edit'), asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   if (!get('SELECT id FROM mtn WHERE id = ?', id)) return res.status(404).json({ error: 'MTN not found' });
   if (!(toNum(req.body.qty, 0) > 0)) return res.status(400).json({ error: 'Quantity must be more than 0' });
@@ -2386,7 +2386,7 @@ router.post('/mtn/:id/lines', requireRole('storekeeper'), asyncHandler((req, res
 
 const MTN_LINE_EDITABLE = ['description', 'unit', 'from_location', 'to_location', 'reason'];
 
-router.patch('/mtn/line/:id', requireRole('storekeeper'), asyncHandler((req, res) => {
+router.patch('/mtn/line/:id', requireCap('stores.mtn.edit'), asyncHandler((req, res) => {
   const lineId = toInt(req.params.id);
   const before = get('SELECT * FROM mtn_lines WHERE id = ?', lineId);
   if (!before) return res.status(404).json({ error: 'Item not found' });
@@ -2423,7 +2423,7 @@ router.patch('/mtn/line/:id', requireRole('storekeeper'), asyncHandler((req, res
   res.json(get('SELECT * FROM mtn_lines WHERE id = ?', lineId));
 }));
 
-router.delete('/mtn/line/:id', requireRole('storekeeper'), asyncHandler((req, res) => {
+router.delete('/mtn/line/:id', requireCap('stores.mtn.edit'), asyncHandler((req, res) => {
   const lineId = toInt(req.params.id);
   const line = get('SELECT * FROM mtn_lines WHERE id = ?', lineId);
   if (!line) return res.status(404).json({ error: 'Item not found' });
@@ -2447,7 +2447,7 @@ router.delete('/mtn/line/:id', requireRole('storekeeper'), asyncHandler((req, re
 const MTN_EDITABLE = ['txn_date', 'description', 'from_location', 'to_location',
   'transferred_by', 'received_by', 'reason'];
 
-router.patch('/mtn/:id', requireRole('storekeeper'), asyncHandler((req, res) => {
+router.patch('/mtn/:id', requireCap('stores.mtn.edit'), asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   const before = get('SELECT * FROM mtn WHERE id = ?', id);
   if (!before) return res.status(404).json({ error: 'MTN not found' });

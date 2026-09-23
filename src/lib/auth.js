@@ -18,11 +18,12 @@ function verifyPassword(pw, hash) {
   }
 }
 
+// Only ACTIVE roles count. A retired role stays on record (history, audit) but grants nothing.
 function rolesForUser(userId) {
   return all(
     `SELECT r.name FROM roles r
        JOIN user_roles ur ON ur.role_id = r.id
-      WHERE ur.user_id = ?`,
+      WHERE ur.user_id = ? AND COALESCE(r.active, 1) = 1`,
     userId
   ).map((r) => r.name);
 }
@@ -69,11 +70,15 @@ function authenticate(req, _res, next) {
       token
     );
     if (sess && sess.active) {
+      const roles = rolesForUser(sess.user_id);
       req.user = {
         id: sess.user_id,
         username: sess.username,
         fullName: sess.full_name,
-        roles: rolesForUser(sess.user_id),
+        roles,
+        // Read fresh on every request, like the roles: a permission granted or taken away on the
+        // Access screen applies from the person's next click, not their next sign-in.
+        caps: require('./capabilities').capsForRoles(roles),
         mustChangePassword: !!sess.must_change_password,
         token,
       };
@@ -113,6 +118,39 @@ function hasRole(user, ...roles) {
   return held.has('admin') || roles.some((r) => held.has(r));
 }
 
+// ---- capabilities ----------------------------------------------------------------------------
+//
+// requireRole/hasRole above are kept for scripts and old callers, but the app no longer decides
+// anything by role NAME — a role an admin creates would never be in those lists. Use these.
+
+/** The capability list for a user object, however it was built. Admin holds everything. */
+function capsOf(user) {
+  if (!user) return [];
+  if (Array.isArray(user.caps)) return user.caps;
+  return require('./capabilities').capsForRoles(user.roles || []);
+}
+
+/** Does this user hold ANY of the named capabilities? */
+function hasCap(user, ...caps) {
+  if (!user) return false;
+  const held = capsOf(user);
+  return caps.some((c) => held.includes(c));
+}
+
+/** Route guard: the user must hold ANY of the named capabilities. */
+function requireCap(...caps) {
+  const lib = require('./capabilities');
+  const unknown = caps.filter((c) => !lib.isCapability(c));
+  // A typo here would lock everyone out of a route at the first request — fail at startup instead.
+  if (unknown.length) throw new Error(`requireCap: unknown capability ${unknown.join(', ')}`);
+  return (req, res, next) => {
+    if (!req.user) return res.status(401).json({ error: 'Authentication required' });
+    if (hasCap(req.user, ...caps)) return next();
+    const labels = caps.map((c) => lib.get(c).label);
+    return res.status(403).json({ error: `Your role does not allow this: ${labels.join(' / ')}`, need: caps });
+  };
+}
+
 module.exports = {
   COOKIE,
   hashPassword,
@@ -126,4 +164,7 @@ module.exports = {
   requireAuth,
   requireRole,
   hasRole,
+  requireCap,
+  hasCap,
+  capsOf,
 };

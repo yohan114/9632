@@ -130,7 +130,7 @@ function requireModule(moduleKey) {
 
 // Full board for the Access Control page.
 function getMatrix() {
-  const roles = all('SELECT name, label FROM roles ORDER BY id');
+  const roles = all('SELECT name, label, COALESCE(active, 1) AS active FROM roles ORDER BY COALESCE(active, 1) DESC, id');
   const grid = {};
   for (const r of roles) {
     grid[r.name] = {};

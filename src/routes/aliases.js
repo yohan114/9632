@@ -2,7 +2,7 @@
 
 const express = require('express');
 const { get, all, run } = require('../db');
-const { requireRole } = require('../lib/auth');
+const { requireCap } = require('../lib/auth');
 const { asyncHandler, require_, toInt } = require('../lib/http');
 const audit = require('../lib/audit');
 const aliases = require('../lib/aliases');
@@ -31,7 +31,7 @@ router.post('/resolve', asyncHandler((req, res) => {
   res.json({ ...r, asset });
 }));
 
-router.post('/:id/link', requireRole('storekeeper'), asyncHandler((req, res) => {
+router.post('/:id/link', requireCap('aliases.vehicle.resolve'), asyncHandler((req, res) => {
   require_(req.body, ['asset_id']);
   const id = toInt(req.params.id);
   const before = get('SELECT * FROM asset_aliases WHERE id = ?', id);
@@ -43,7 +43,7 @@ router.post('/:id/link', requireRole('storekeeper'), asyncHandler((req, res) => 
   res.json(updated);
 }));
 
-router.delete('/:id', requireRole('storekeeper'), asyncHandler((req, res) => {
+router.delete('/:id', requireCap('aliases.vehicle.resolve'), asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   run('DELETE FROM asset_aliases WHERE id = ?', id);
   audit.record({ userId: req.user.id, entity: 'asset_alias', entityId: id, action: 'delete' });

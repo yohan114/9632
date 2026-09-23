@@ -9,7 +9,7 @@ const { Server } = require('socket.io');
 
 const config = require('./config');
 const { migrate, get } = require('./db');
-const { authenticate, enforcePasswordChange, requireAuth, COOKIE } = require('./lib/auth');
+const { authenticate, enforcePasswordChange, requireAuth, hasCap, COOKIE } = require('./lib/auth');
 const { requireModule } = require('./lib/permissions');
 const { errorHandler } = require('./lib/http');
 const { startScheduler } = require('./lib/backup');
@@ -55,7 +55,7 @@ app.use('/uploads', requireAuth, express.static(config.uploadDir));
 // backups are actually happening — the question nobody asks until the day they are needed.
 app.get('/api/health', (req, res) => {
   const out = { ok: true, name: 'WorkshopOne' };
-  if (req.user && req.user.roles.includes('admin')) out.backup = backupStatus.summary();
+  if (hasCap(req.user, 'system.status')) out.backup = backupStatus.summary();
   res.json(out);
 });
 

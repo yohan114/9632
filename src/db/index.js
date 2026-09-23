@@ -87,6 +87,22 @@ function migrate() {
     level  TEXT NOT NULL DEFAULT 'none',
     PRIMARY KEY (role, module)
   );`);
+  // Capabilities — the individual actions a role may take (src/lib/capabilities.js). Keyed by role
+  // NAME like role_permissions. Taking a capability away sets granted = 0 instead of deleting the
+  // row, so the boot-time seed (INSERT OR IGNORE) can never quietly give it back.
+  db.exec(`CREATE TABLE IF NOT EXISTS role_capabilities (
+    role       TEXT NOT NULL,
+    capability TEXT NOT NULL,
+    granted    INTEGER NOT NULL DEFAULT 1,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (role, capability)
+  );`);
+  // Roles become data an admin manages: a description, whether it shipped with the system, and
+  // whether it is still in use (a retired role grants nothing, and is kept for the history).
+  ensureColumn('roles', 'description', 'TEXT');
+  ensureColumn('roles', 'is_system', 'INTEGER NOT NULL DEFAULT 0');
+  ensureColumn('roles', 'active', 'INTEGER NOT NULL DEFAULT 1');
+  ensureColumn('roles', 'created_at', 'TEXT');
   // Item category tree — exactly TWO levels: parent_id NULL = a top-level Category,
   // otherwise a Sub-category of that parent (the API refuses a third level). `code`
   // carries the 3-letter item_no prefix (ELE, TRN, FIL…) so catalogue numbering stays
@@ -600,6 +616,14 @@ function migrate() {
 
   // Seed the RBAC matrix once (safe to require here — db exports are already set).
   try { require('../lib/permissions').seedDefaults(); } catch (e) { /* table may not exist yet on very first pass */ }
+  // Seed the built-in roles' capabilities (idempotent) and mark those roles as shipped with the
+  // system, so the Access screen can tell them apart from roles an admin created.
+  {
+    const caps = require('../lib/capabilities');
+    caps.seedCapabilities();
+    const names = [...caps.RESERVED_ROLE_NAMES];
+    db.prepare(`UPDATE roles SET is_system = 1 WHERE is_system = 0 AND name IN (${names.map(() => '?').join(',')})`).run(...names);
+  }
   return db;
 }
 

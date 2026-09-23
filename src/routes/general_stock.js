@@ -7,7 +7,7 @@
 
 const express = require('express');
 const { get, all, run, tx } = require('../db');
-const { requireRole } = require('../lib/auth');
+const { requireCap } = require('../lib/auth');
 const { asyncHandler, require_, toInt, toNum } = require('../lib/http');
 const audit = require('../lib/audit');
 const emitter = require('../lib/emitter');
@@ -77,7 +77,7 @@ router.get('/items/:id', asyncHandler((req, res) => {
 }));
 
 // ---- create ---------------------------------------------------------------
-router.post('/items', requireRole('storekeeper'), asyncHandler((req, res) => {
+router.post('/items', requireCap('general.items.edit'), asyncHandler((req, res) => {
   const b = req.body;
   require_(b, ['name']);
   const givenNo = b.item_no && String(b.item_no).trim();
@@ -106,7 +106,7 @@ router.post('/items', requireRole('storekeeper'), asyncHandler((req, res) => {
 }));
 
 // ---- adjust stock ---------------------------------------------------------
-router.post('/items/:id/adjust', requireRole('storekeeper'), asyncHandler((req, res) => {
+router.post('/items/:id/adjust', requireCap('general.stock.adjust'), asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   const item = get('SELECT id, name, balance, min_stock FROM store_items WHERE id = ? AND is_general = 1', id);
   if (!item) return res.status(404).json({ error: 'Item not found' });
@@ -162,7 +162,7 @@ router.get('/low-stock', asyncHandler((_req, res) => {
 // ---- pricing ---------------------------------------------------------------
 // Set an item's unit_cost (the price used for valuation + the Monthly Cost Report's
 // General Items section). Storekeeper only.
-router.post('/items/:id/price', requireRole('storekeeper'), asyncHandler((req, res) => {
+router.post('/items/:id/price', requireCap('general.items.price'), asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   const item = get('SELECT id, name, unit_cost FROM store_items WHERE id = ? AND is_general = 1', id);
   if (!item) return res.status(404).json({ error: 'Item not found' });
