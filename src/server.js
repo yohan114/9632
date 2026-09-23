@@ -9,10 +9,12 @@ const { Server } = require('socket.io');
 
 const config = require('./config');
 const { migrate, get } = require('./db');
-const { authenticate, enforcePasswordChange, COOKIE } = require('./lib/auth');
+const { authenticate, enforcePasswordChange, requireAuth, COOKIE } = require('./lib/auth');
 const { requireModule } = require('./lib/permissions');
 const { errorHandler } = require('./lib/http');
 const { startScheduler } = require('./lib/backup');
+const backupStatus = require('./lib/backup_status');
+const { securityHeaders, originGuard } = require('./lib/security');
 const dailyReports = require('./lib/daily_reports');
 const emitter = require('./lib/emitter');
 
@@ -32,18 +34,30 @@ const app = express();
 // anywhere else has its forwarding headers ignored, which is exactly what should happen.
 app.set('trust proxy', process.env.TRUST_PROXY
   || (process.env.NODE_ENV === 'production' ? 'loopback' : true));
+// "X-Powered-By: Express" tells a scanner which exploits to try first, and tells a user nothing.
+app.disable('x-powered-by');
+app.use(securityHeaders);
+// Before the body parsers: a cross-site write is refused before its body is even read.
+app.use('/api', originGuard());
 app.use(express.json({ limit: '5mb' }));
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 app.use(authenticate);
 app.use(enforcePasswordChange);
 
-// Uploaded evidence photos.
+// The old upload folder. Photos, signatures and service attachments now live in the database, so
+// nothing the app writes lands here — but it was served to ANYONE, signed in or not, and whatever
+// was ever copied into it on a server would be public. Kept for old links, behind a sign-in.
 fs.mkdirSync(config.uploadDir, { recursive: true });
-app.use('/uploads', express.static(config.uploadDir));
+app.use('/uploads', requireAuth, express.static(config.uploadDir));
 
-// Health check.
-app.get('/api/health', (_req, res) => res.json({ ok: true, name: 'WorkshopOne' }));
+// Health check. Public: "is it up" and nothing more. An admin additionally sees whether the
+// backups are actually happening — the question nobody asks until the day they are needed.
+app.get('/api/health', (req, res) => {
+  const out = { ok: true, name: 'WorkshopOne' };
+  if (req.user && req.user.roles.includes('admin')) out.backup = backupStatus.summary();
+  res.json(out);
+});
 
 // API routers. Each module is a self-contained Express Router. Operational
 // modules are gated by the RBAC matrix (requireModule); reference/analytics

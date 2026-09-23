@@ -55,7 +55,11 @@ async function api(path, opts = {}) {
   return data;
 }
 
-const esc = (v) => String(v == null ? '' : v).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+// The apostrophe matters as much as the double quote. Several buttons carry their data as JSON in a
+// SINGLE-quoted attribute (data-shelf-item='…'), so an item called "Driver's seat" used to end the
+// attribute early — and a name crafted to do that on purpose could add a script to the page of
+// everyone who opened the list.
+const esc = (v) => String(v == null ? '' : v).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const money = (n) => 'Rs ' + (Number(n) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const num = (n) => (Number(n) || 0).toLocaleString('en-US');
 const moneyC = (n) => { n = Number(n) || 0; const a = Math.abs(n); return a >= 1e6 ? 'Rs ' + (n / 1e6).toFixed(2) + 'M' : a >= 1e3 ? 'Rs ' + Math.round(n / 1e3) + 'K' : 'Rs ' + Math.round(n); };
@@ -619,16 +623,22 @@ function modal(title, bodyHtml, onMount, opts = {}) {
   return bg;
 }
 
+// The server decides what a good password is (src/lib/password_policy.js) and says so in /auth/me;
+// the screens only help before the request is sent. 10 is the server's default.
+const passwordMinLength = () => (ME && ME.passwordPolicy && ME.passwordPolicy.minLength) || 10;
+const passwordHint = () => `Use at least ${passwordMinLength()} characters. A few unrelated words work well — avoid your username, the company or workshop name, and common passwords.`;
+
 function forceChangePassword() {
   modal('Set a new password', `
     <p class="muted">Your account requires a new password before you can continue.</p>
+    <p class="muted">${esc(passwordHint())}</p>
     ${field('New password', 'new_password', { type: 'password' })}
     ${field('Confirm password', 'confirm', { type: 'password' })}
     <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Set password</button></div>`,
     (body, close) => {
       qs('#s', body).onclick = async () => {
         const d = formData(body);
-        if (!d.new_password || d.new_password.length < 6) return toast('At least 6 characters', 'err');
+        if (!d.new_password || d.new_password.length < passwordMinLength()) return toast(`At least ${passwordMinLength()} characters`, 'err');
         if (d.new_password !== d.confirm) return toast('Passwords do not match', 'err');
         try {
           await api('/auth/change-password', { method: 'POST', body: { new_password: d.new_password } });
@@ -742,6 +752,7 @@ function renderShell() {
     ME = null; location.hash = ''; boot();
   };
   qs('#chpw').onclick = () => modal('Change password', `
+    <p class="muted">${esc(passwordHint())} Other devices signed in to your account will be signed out.</p>
     ${field('Current password', 'current_password', { type: 'password' })}
     ${field('New password', 'new_password', { type: 'password' })}
     <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Update</button></div>`,

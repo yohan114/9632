@@ -6,6 +6,7 @@ const auth = require('../lib/auth');
 const permissions = require('../lib/permissions');
 const audit = require('../lib/audit');
 const ratelimit = require('../lib/ratelimit');
+const passwordPolicy = require('../lib/password_policy');
 const { asyncHandler, require_ } = require('../lib/http');
 
 const router = express.Router();
@@ -26,11 +27,35 @@ router.post(
     const user = get('SELECT * FROM users WHERE username = ? AND active = 1', req.body.username);
     if (!user || !auth.verifyPassword(req.body.password, user.password_hash)) {
       ratelimit.fail(ip, req.body.username);
+      // ON THE RECORD, BUT BOUNDED. A wrong password against a REAL account is logged — that is the
+      // one worth knowing about, and the per-user limit caps it at a few rows per quarter hour. A
+      // guess at a name that does not exist is not logged row by row (a botnet spraying invented
+      // names would otherwise fill the table); only the moment an address or name gets locked out.
+      if (user) {
+        audit.record({ userId: user.id, entity: 'session', action: 'login_failed', after: { ip }, notify: false });
+      }
+      if (ratelimit.check(ip, req.body.username)) {
+        audit.record({ userId: user ? user.id : null, entity: 'session', action: 'login_locked',
+          after: { ip, username: String(req.body.username).slice(0, 80) }, notify: false });
+      }
       // The message stays the same either way: saying "no such user" hands an attacker a list of
       // which names are worth guessing at.
       return res.status(401).json({ error: 'Invalid username or password' });
     }
     ratelimit.succeed(ip, req.body.username);
+    // DEFAULT PASSWORDS DO NOT SIGN IN ON A LIVE SERVER. The demo seed makes every account's
+    // password its username (admin/admin, store/store …). Forcing a change at first sign-in does not
+    // make that safe on the internet: the first person to sign in — anyone — chooses the new
+    // password and keeps the account. So on production the login is refused, and the account can
+    // only be unlocked by someone with the server: `node scripts/admin.js set-password <user> <pw>`.
+    // Local and test databases (NODE_ENV not production) keep the demo logins working.
+    if (process.env.NODE_ENV === 'production' && process.env.ALLOW_DEFAULT_PASSWORDS !== '1'
+        && String(req.body.password).toLowerCase() === String(user.username).toLowerCase()) {
+      audit.record({ userId: user.id, entity: 'session', action: 'login_blocked_default_password', after: { ip }, notify: false });
+      return res.status(403).json({
+        error: 'This account still has its default password and cannot sign in. Ask the administrator to set a new password.',
+      });
+    }
     const { token, expires } = auth.createSession(user.id, req);
     res.cookie(auth.COOKIE, token, {
       httpOnly: true,
@@ -47,6 +72,7 @@ router.post(
       roles,
       permissions: permissions.userPermissions(roles),
       mustChangePassword: !!user.must_change_password,
+      passwordPolicy: passwordPolicy.describe(),
     });
   })
 );
@@ -64,13 +90,20 @@ router.post(
         return res.status(401).json({ error: 'Current password is incorrect' });
       }
     }
-    if (String(req.body.new_password).length < 6) {
-      return res.status(400).json({ error: 'New password must be at least 6 characters' });
+    const why = passwordPolicy.problem(req.body.new_password, { username: req.user.username });
+    if (why) return res.status(400).json({ error: why });
+    // The forced first-login change exists to get rid of the password someone else chose or saw.
+    // Setting the same one again would tick the box and change nothing.
+    if (auth.verifyPassword(req.body.new_password, user.password_hash)) {
+      return res.status(400).json({ error: 'New password must be different from the current one.' });
     }
-    require('../db').run('UPDATE users SET password_hash = ?, must_change_password = 0 WHERE id = ?',
+    run('UPDATE users SET password_hash = ?, must_change_password = 0 WHERE id = ?',
       auth.hashPassword(req.body.new_password), req.user.id);
-    audit.record({ userId: req.user.id, entity: 'user', entityId: req.user.id, action: 'change_password' });
-    res.json({ ok: true });
+    // Everyone else holding this account's old sessions is signed out; this browser stays in.
+    const ended = auth.revokeSessions(req.user.id, { exceptToken: req.user.token });
+    audit.record({ userId: req.user.id, entity: 'user', entityId: req.user.id, action: 'change_password',
+      after: { other_sessions_ended: ended } });
+    res.json({ ok: true, otherSessionsEnded: ended });
   })
 );
 
@@ -84,7 +117,11 @@ router.post('/logout', (req, res) => {
 router.get('/me', (req, res) => {
   if (!req.user) return res.status(401).json({ error: 'Not signed in' });
   const u = get('SELECT signature FROM users WHERE id = ?', req.user.id);
-  res.json({ ...req.user, permissions: permissions.userPermissions(req.user.roles), hasSignature: !!(u && u.signature) });
+  // The session token is the key to this account; it lives in an httpOnly cookie precisely so page
+  // script cannot read it. Echoing it back in a JSON body would undo that.
+  const { token: _token, ...me } = req.user;
+  res.json({ ...me, permissions: permissions.userPermissions(req.user.roles), hasSignature: !!(u && u.signature),
+    passwordPolicy: passwordPolicy.describe() });
 });
 
 // Save (or clear) the signed-in user's e-signature image (drawn or uploaded PNG/JPEG data URL).

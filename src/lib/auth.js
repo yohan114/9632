@@ -45,6 +45,18 @@ function destroySession(token) {
   if (token) run('DELETE FROM sessions WHERE token = ?', token);
 }
 
+/**
+ * Sign a user out everywhere, optionally keeping the session making the request.
+ *
+ * Used when a password changes or is reset, and when an account is deactivated. Without it, a
+ * password change does nothing about whoever already has the old one: a session stolen or left
+ * open on a shared PC stays valid for its full 12 hours. Returns how many sessions were ended.
+ */
+function revokeSessions(userId, { exceptToken = null } = {}) {
+  if (exceptToken) return run('DELETE FROM sessions WHERE user_id = ? AND token <> ?', userId, exceptToken).changes;
+  return run('DELETE FROM sessions WHERE user_id = ?', userId).changes;
+}
+
 /** Populate req.user (or null) from the session cookie. Never blocks. */
 function authenticate(req, _res, next) {
   req.user = null;
@@ -108,6 +120,7 @@ module.exports = {
   rolesForUser,
   createSession,
   destroySession,
+  revokeSessions,
   authenticate,
   enforcePasswordChange,
   requireAuth,

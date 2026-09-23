@@ -1,0 +1,25 @@
+# Weekly restore check of the newest backup (run by workshopone-verify.timer).
+#
+# Restores the newest snapshot into a scratch file, runs SQLite's integrity_check on it, compares
+# row counts with the live database, and records PASS/FAIL in backups/backup-status.json — which an
+# admin sees on /api/health. A backup is only a backup once it has been restored; this proves it
+# every week instead of on the day it is needed.
+#
+# Install (paths as on the VPS; see deploy/VPS.md "Backups"):
+#   sudo cp /opt/workshopone/app/deploy/workshopone-verify.service /opt/workshopone/app/deploy/workshopone-verify.timer /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now workshopone-verify.timer
+# Run once now:   sudo systemctl start workshopone-verify.service && journalctl -u workshopone-verify -n 40 --no-pager
+
+[Unit]
+Description=WorkshopOne — restore check of the newest backup
+After=workshopone.service
+
+[Service]
+Type=oneshot
+User=workshopone
+WorkingDirectory=/opt/workshopone/app
+Environment=NODE_ENV=production
+ExecStart=/usr/bin/node scripts/restore.js --verify --latest
+# Background priority: the check reads the whole database and must not slow down the workshop.
+Nice=10
+IOSchedulingClass=idle

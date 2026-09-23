@@ -1,0 +1,13 @@
+# Runs workshopone-verify.service every Sunday night. See that file for what it does and how to install.
+
+[Unit]
+Description=WorkshopOne — weekly restore check of the newest backup
+
+[Timer]
+OnCalendar=Sun *-*-* 02:30:00
+RandomizedDelaySec=15m
+# If the server was off at that time, run as soon as it is back.
+Persistent=true
+
+[Install]
+WantedBy=timers.target
