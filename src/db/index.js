@@ -653,6 +653,7 @@ function migrate() {
   storesStage4();
   signoffsPerWorkshop();
   reportsPerWorkshop();
+  fieldStage6();
 
   // Seed the RBAC matrix once (safe to require here — db exports are already set).
   try { require('../lib/permissions').seedDefaults(); } catch (e) { /* table may not exist yet on very first pass */ }
@@ -870,6 +871,64 @@ function reportsPerWorkshop() {
            CREATE TRIGGER IF NOT EXISTS trg_mri_workshop AFTER INSERT ON monthly_report_inputs WHEN NEW.workshop_id IS NULL
            BEGIN UPDATE monthly_report_inputs SET workshop_id = (SELECT id FROM workshops WHERE is_default = 1 ORDER BY id LIMIT 1)
                   WHERE id = NEW.id; END;`);
+}
+
+// Stage 6: field work — a repair done at a site, not in the workshop (src/lib/field.js). A job card
+// says whether it is in the field and where, whether it began as a breakdown, and the times that
+// give the response time and the downtime; km driven by the field vehicle are charged at the rate in
+// force when they were entered. A daily-work line can be travel. Nothing existing changes: every
+// card is a workshop card until someone says otherwise.
+function fieldStage6() {
+  ensureColumn('job_cards', 'field', 'INTEGER NOT NULL DEFAULT 0');
+  ensureColumn('job_cards', 'field_place', 'TEXT');          // 'p:<id>' a project or 's:<id>' a site
+  ensureColumn('job_cards', 'field_location', 'TEXT');       // the place as written
+  ensureColumn('job_cards', 'breakdown', 'INTEGER NOT NULL DEFAULT 0');
+  ensureColumn('job_cards', 'reported_at', 'TEXT');          // YYYY-MM-DD HH:MM
+  ensureColumn('job_cards', 'arrived_at', 'TEXT');
+  ensureColumn('job_cards', 'working_at', 'TEXT');
+  ensureColumn('job_cards', 'field_km', 'REAL');
+  ensureColumn('job_cards', 'field_km_rate', 'REAL');
+  ensureColumn('job_daily_work', 'travel', 'INTEGER NOT NULL DEFAULT 0');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_jobs_field ON job_cards(field, status)');
+  allowReturnParts();
+}
+
+// Parts brought back unused (Stage 6) come off a job's cost as a 'return' line on job_parts. Its
+// source_type is a CHECK list SQLite cannot change in place — rebuilt once the same way as job_cards
+// above (allowPartiallyClosed): every row copied with its id, indexes and triggers put back, and the
+// swap undone if a single row or reference would be lost.
+function allowReturnParts() {
+  const cur = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='job_parts'").get();
+  if (!cur || /'return'/.test(cur.sql)) return;
+  const list = /(CHECK\s*\(\s*source_type\s+IN\s*\()/i;
+  if (!list.test(cur.sql)) return;
+  const widened = cur.sql
+    .replace(/^CREATE TABLE (IF NOT EXISTS )?("?)job_parts\2/i, 'CREATE TABLE tmp_job_parts')
+    .replace(list, "$1'return',");
+  if (!/^CREATE TABLE tmp_job_parts/.test(widened)) throw new Error('job_parts: unexpected table definition — source_type not widened');
+  const cols = db.prepare('PRAGMA table_info(job_parts)').all().map((c) => `"${c.name}"`).join(', ');
+  const indexes = db.prepare("SELECT sql FROM sqlite_master WHERE type='index' AND tbl_name='job_parts' AND sql IS NOT NULL").all();
+  const triggers = db.prepare("SELECT sql FROM sqlite_master WHERE type='trigger' AND tbl_name='job_parts'").all();
+  const seq = db.prepare("SELECT seq FROM sqlite_sequence WHERE name='job_parts'").get();
+  const dangling = () => db.prepare('PRAGMA foreign_key_check').all().filter((r) => r.parent === 'job_parts' || r.table === 'job_parts').length;
+  const before = dangling();
+  const count = db.prepare('SELECT COUNT(*) n FROM job_parts').get().n;
+  db.pragma('foreign_keys = OFF');
+  try {
+    db.transaction(() => {
+      db.exec(`${widened};
+               INSERT INTO tmp_job_parts (${cols}) SELECT ${cols} FROM job_parts;
+               DROP TABLE job_parts;
+               ALTER TABLE tmp_job_parts RENAME TO job_parts;`);
+      for (const x of [...indexes, ...triggers]) db.exec(x.sql);
+      if (seq) db.prepare("UPDATE sqlite_sequence SET seq = MAX(seq, ?) WHERE name = 'job_parts'").run(seq.seq);
+      if (db.prepare('SELECT COUNT(*) n FROM job_parts').get().n !== count || dangling() !== before) {
+        throw new Error('job_parts rebuild did not keep every line and reference — not applied');
+      }
+    })();
+  } finally {
+    db.pragma('foreign_keys = ON');
+  }
 }
 
 function ensureColumn(table, col, def) {

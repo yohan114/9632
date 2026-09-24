@@ -498,6 +498,17 @@ function rebuild(opts = {}) {
         counts: fromReceipt && i.grn_counts != null ? i.grn_counts : undefined });
     }
 
+    // 6b. RETURNS (Stage 6): parts brought back unused go back onto the shelf they left — the
+    // mirror of the issue's own movement written just above: same item, same store, same count.
+    for (const r of all(`SELECT r.id, r.qty, r.return_date, r.note, r.issue_id FROM issue_returns r`)) {
+      const om = get("SELECT * FROM stock_moves WHERE source_table = 'issues' AND source_id = ? AND kind = 'out' LIMIT 1", r.issue_id);
+      if (!om) continue;
+      if (writeMove({ section: om.section, kind: 'in', item_key: om.item_key, item_name: om.item_name, qty: r.qty,
+        unit_price: om.unit_price, txn_date: r.return_date, asset_id: om.asset_id, job_id: om.job_id, mrn_line_id: om.mrn_line_id,
+        grn_id: om.grn_id, store_item_id: om.store_item_id, ref: 'Return', note: r.note, source_table: 'issue_returns',
+        source_id: r.id, store_id: om.store_id }, om.counts, mainStore)) bump(om.section, 'in');
+    }
+
     // 7. TRANSFERS BETWEEN TWO STORES (Stage 4) — see transfers() above.
     transfers(null);
 
@@ -779,7 +790,8 @@ function receivedLines({ assetId, jobId, mrn, q, limit = 200, includeDone = fals
             a.code AS asset_code, a.registration AS asset_reg,
             COALESCE(jc.id, m.job_id, jp.job_id)    AS job_id,
             jc.job_no,
-            ROUND(COALESCE((SELECT SUM(i.qty) FROM issues i WHERE i.grn_id = g.id), 0), 2) AS issued
+            -- Stage 6: what came back unused (return notes) is on the shelf again.
+            ROUND((COALESCE((SELECT SUM(i.qty) FROM issues i WHERE i.grn_id = g.id), 0) - COALESCE((SELECT SUM(r.qty) FROM issue_returns r JOIN issues ir ON ir.id = r.issue_id WHERE ir.grn_id = g.id), 0)), 2) AS issued
        FROM grn g
        JOIN mrn_lines ml ON ml.id = g.mrn_line_id
        JOIN mrn m        ON m.id  = ml.mrn_id
@@ -789,7 +801,7 @@ function receivedLines({ assetId, jobId, mrn, q, limit = 200, includeDone = fals
        LEFT JOIN assets a     ON a.id = COALESCE(m.asset_id, j.asset_id)
       ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
       GROUP BY g.id
-      ${includeDone ? '' : 'HAVING COALESCE(g.qty,0) - COALESCE((SELECT SUM(i2.qty) FROM issues i2 WHERE i2.grn_id = g.id), 0) > 0.001'}
+      ${includeDone ? '' : 'HAVING COALESCE(g.qty,0) - (COALESCE((SELECT SUM(i2.qty) FROM issues i2 WHERE i2.grn_id = g.id), 0) - COALESCE((SELECT SUM(r2.qty) FROM issue_returns r2 JOIN issues ir2 ON ir2.id = r2.issue_id WHERE ir2.grn_id = g.id), 0)) > 0.001'}
       ORDER BY date(NULLIF(g.delivery_date, '')) IS NULL, date(NULLIF(g.delivery_date, '')) DESC, g.id DESC
       LIMIT ${Number(limit) || 200}`, ...p);
 
@@ -822,7 +834,9 @@ function receivedLine(grnId) {
   if (!r) return null;
   r.section = sectionOf(r.category);
   r.item_key = itemKey(r.section, r.description);
-  r.issued = get('SELECT ROUND(COALESCE(SUM(qty),0),2) v FROM issues WHERE grn_id = ?', grnId).v;
+  r.issued = get(`SELECT ROUND(COALESCE(SUM(qty),0) - COALESCE((SELECT SUM(r.qty) FROM issue_returns r JOIN issues ir ON ir.id = r.issue_id
+                                                          WHERE ir.grn_id = ?), 0), 2) v
+                    FROM issues WHERE grn_id = ?`, grnId, grnId).v;
   r.remaining = Math.round((Number(r.qty || 0) - Number(r.issued || 0)) * 100) / 100;
   // Whether the receipt itself counts toward the section balance. Filters, batteries, tyres and
   // oil open from a cut-over, so their older receipts are history (counts = 0) and were never

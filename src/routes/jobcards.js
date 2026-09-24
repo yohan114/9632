@@ -153,7 +153,7 @@ router.get(
     const where = clauses.length ? 'WHERE ' + clauses.join(' AND ') : '';
     const limit = toInt(req.query.limit, 500);
     const cols = `j.id, j.job_no, j.type, j.severity, j.status, j.description,
-              j.total_cost, j.material_cost, j.labour_cost, j.requested_at, j.closed_at, j.completed_at,
+              j.total_cost, j.material_cost, j.labour_cost, j.requested_at, j.closed_at, j.completed_at, j.field, j.breakdown, j.working_at,
               j.asset_id, j.workshop_id, w.code AS workshop_code,
               a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec, p.name AS project_name`;
     const from = `FROM job_cards j
@@ -357,8 +357,8 @@ router.get(
       `SELECT m.id AS mrn_id, m.mrn_no, m.req_date, m.approval_status,
               ml.id AS mrn_line_id, ml.description, ml.category, ml.qty, ml.qty_received,
               g.id AS grn_id, g.grn_no, g.delivery_date, g.unit_price,
-              ROUND(COALESCE((SELECT SUM(i.qty) FROM issues i WHERE i.grn_id = g.id), 0), 2) AS qty_issued,
-              ROUND(MAX(0, COALESCE(g.qty, ml.qty_received, 0) - COALESCE((SELECT SUM(i.qty) FROM issues i WHERE i.grn_id = g.id), 0)), 2) AS remaining_in_store
+              ROUND((COALESCE((SELECT SUM(i.qty) FROM issues i WHERE i.grn_id = g.id), 0) - COALESCE((SELECT SUM(r.qty) FROM issue_returns r JOIN issues ir ON ir.id = r.issue_id WHERE ir.grn_id = g.id), 0)), 2) AS qty_issued,
+              ROUND(MAX(0, COALESCE(g.qty, ml.qty_received, 0) - (COALESCE((SELECT SUM(i.qty) FROM issues i WHERE i.grn_id = g.id), 0) - COALESCE((SELECT SUM(r.qty) FROM issue_returns r JOIN issues ir ON ir.id = r.issue_id WHERE ir.grn_id = g.id), 0))), 2) AS remaining_in_store
          FROM mrn_lines ml
          JOIN mrn m ON m.id = ml.mrn_id
          LEFT JOIN grn g ON g.mrn_line_id = ml.id
@@ -390,6 +390,8 @@ router.get(
 
     res.json({
       job,
+      // Stage 6: the field side — site, times, response and downtime, km and their cost.
+      field: require('../lib/field').view(get('SELECT * FROM job_cards WHERE id = ?', id)),
       approvals,
       dailyWork,
       parts,
@@ -867,9 +869,10 @@ router.post(
       const ids = [];
       for (const mech of insertRows) {
         const info = run(
-          `INSERT INTO job_daily_work (job_id, work_date, mechanic, description, hours, is_external, external_value, asset_id)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-          id, workDate, mech, b.description || null, perRowHours, isExternal, isExternal ? toNum(b.external_value, 0) : 0, lineAsset
+          `INSERT INTO job_daily_work (job_id, work_date, mechanic, description, hours, is_external, external_value, asset_id, travel)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          id, workDate, mech, b.description || null, perRowHours, isExternal, isExternal ? toNum(b.external_value, 0) : 0, lineAsset,
+          b.travel && !isExternal ? 1 : 0   // Stage 6: travel to a field job — costed like any hour, shown apart
         );
         ids.push(info.lastInsertRowid);
       }

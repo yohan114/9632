@@ -77,6 +77,10 @@ const CAPABILITIES = [
   C('jobs.reopen_request', 'jobs', 'Ask for a partly closed or closed job card to be reopened', ['workshop', 'operational_manager', 'manager'], 'jobs'),
   // Switching partial close and reopen requests on or off: admin only unless given on purpose.
   C('jobs.settings', 'jobs', 'Switch partial close and reopen requests on or off', []),
+  // Stage 6: field work (src/lib/field.js). Reporting a breakdown is for whoever the site calls:
+  // the transport managers and their assistants, the workshop, and head office.
+  C('jobs.breakdown', 'jobs', 'Report a breakdown in the field (opens a field job card)', ['transport_manager', 'assistant_transport_manager', 'workshop', 'operational_manager', 'manager']),
+  C('jobs.field', 'jobs', 'Record field work on a job card (site, times, km)', ['workshop', 'operational_manager', 'manager'], 'jobs'),
 
   // ---- job requests --------------------------------------------------------------------------
   C('jobrequests.create', 'jobrequests', 'Raise a job request', ['assistant_transport_manager'], 'jobrequests'),
@@ -116,6 +120,7 @@ const CAPABILITIES = [
   C('stores.reorder_mrn', 'stores', 'Raise a reorder MRN from the stock cockpit', ['storekeeper', 'workshop', 'manager']),
   C('stores.stock.rebuild', 'stores', 'Rebuild stock balances and sync stock items', ['storekeeper', 'manager'], 'stores'),
   C('stores.mtn.edit', 'stores', 'Create and edit transfer notes (MTN)', ['storekeeper'], 'stores'),
+  C('stores.issue_return', 'stores', 'Return unused parts from a job to the store', ['storekeeper'], 'stores'),
   // Stage 4: a store per workshop (src/lib/stores.js) — the stock take and reorder levels of a store.
   C('stores.stock.count', 'stores', 'Count stock in a store (stock take)', ['storekeeper', 'manager'], 'stores'),
   C('stores.stock.levels', 'stores', 'Set a store\'s reorder levels', ['storekeeper', 'manager'], 'stores'),

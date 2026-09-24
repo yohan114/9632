@@ -8,7 +8,9 @@
 //                 + Σ (job_parts that ARE lubricants: qty × unit_price)
 //   general_cost  = Σ (general items issued to this job: qty × price)
 //   external_cost = Σ (daily_work.external_value) + Σ (job_parts external repair)
-//   TOTAL_COST    = labour + material + oil + general + external
+//   field cost    = km driven by the field vehicle × the rate per km then (Stage 6, src/lib/field.js),
+//                   stored inside other_cost so every place that adds the columns up still agrees
+//   TOTAL_COST    = labour + material + oil + general + external + field
 //
 // Prices use the value effective on the transaction/job date (price history).
 // Unpriced lines contribute 0 AND block closure (the §6 gate).
@@ -88,7 +90,8 @@ function computeJobCost(jobId) {
         const rate = labourRateFor(nm, wd);
         const amount = rate != null ? hrs * rate : 0;
         labour += amount;
-        labourLines.push({ mechanic: nm, hours: hrs, rate, amount, work_date: w.work_date });
+        // Stage 6: travel to a field job is labour like any hour, marked so it can be shown apart.
+        labourLines.push({ mechanic: nm, hours: hrs, rate, amount, work_date: w.work_date, travel: !!w.travel });
       }
     }
   }
@@ -137,15 +140,23 @@ function computeJobCost(jobId) {
     external += w.external_value || 0;
   }
 
+  // --- field transport (Stage 6): km × the rate per km in force when they were entered ---
+  const field = job.field && job.field_km > 0 && job.field_km_rate != null ? job.field_km * job.field_km_rate : 0;
+  const travel = labourLines.filter((l) => l.travel);
+
   // The external WORK value is deliberately EXCLUDED (owner's personal value): not added to the total,
   // external_cost stays 0. External REPAIR charges DO count (they sit inside material).
-  const total = labour + material + oil + general;
+  const total = labour + material + oil + general + field;
   return {
     labour_cost: round2(labour),
     material_cost: round2(material),
     oil_cost: round2(oil),
     general_cost: round2(general),
     external_cost: 0,
+    field_cost: round2(field),
+    // Hours of the travel LINES (a crew of two travelling 2 h is 2 h on the road, charged twice).
+    travel_hours: round2((get('SELECT COALESCE(SUM(hours),0) h FROM job_daily_work WHERE job_id = ? AND travel = 1 AND is_external = 0', jobId) || {}).h),
+    travel_cost: round2(travel.reduce((t, l) => t + (l.amount || 0), 0)),
     total_cost: round2(total),
     labourLines,
   };
@@ -159,7 +170,8 @@ function reconciledCost(jobId) {
   const c = computeJobCost(jobId);
   const job = get('SELECT is_historical, recorded_cost, total_cost FROM job_cards WHERE id = ?', jobId);
   const total = historicalTotal(job, c.total_cost);
-  c.other_cost = round2(total - c.total_cost);
+  // other_cost carries the field transport (Stage 6) as well as any gap to a recorded total.
+  c.other_cost = round2(total - (c.total_cost - c.field_cost));
   c.total_cost = total;
   return c;
 }
@@ -270,7 +282,9 @@ function refreshJobTotals(jobId) {
   // always false, so vehicle_monthly_costs.labour_cost never moved after the 015 backfill.
   const job = get('SELECT asset_id, is_historical, recorded_cost, total_cost FROM job_cards WHERE id = ?', jobId);
   const totalToStore = historicalTotal(job, c.total_cost); // historical: keep imported total, don't recompute to ~0
-  const otherCost = round2(totalToStore - c.total_cost); // balancing bucket (recorded vs itemised)
+  // Balancing bucket (recorded vs itemised) — and the field transport (Stage 6), which has no
+  // column of its own, so the stored columns still add up to total_cost.
+  const otherCost = round2(totalToStore - (c.total_cost - c.field_cost));
   tx(() => {
     // Months this job touched BEFORE the rebuild. Needed because the rollup below walks the
     // months in the new labour lines: if the last entry in a month is deleted, that month has
@@ -341,9 +355,12 @@ function recalcVehicleMonth(assetId, year, month) {
   const labour = round2(get(
     `SELECT COALESCE(SUM(jl.amount),0) v FROM job_labour jl JOIN job_cards j ON j.id = jl.job_id
       WHERE j.asset_id = ? AND substr(jl.work_date,1,7) = ?`, assetId, ym).v);
+  // Parts brought back unused (Stage 6 return notes) come off the month of the issue they undo.
   const parts = round2(get(
-    `SELECT COALESCE(SUM(qty * COALESCE(unit_price,0)),0) v FROM issues
-      WHERE asset_id = ? AND substr(issue_date,1,7) = ?`, assetId, ym).v);
+    `SELECT COALESCE(SUM(qty * COALESCE(unit_price,0)),0)
+          - COALESCE((SELECT SUM(r.qty * COALESCE(ir.unit_price,0)) FROM issue_returns r JOIN issues ir ON ir.id = r.issue_id
+                       WHERE ir.asset_id = ? AND substr(ir.issue_date,1,7) = ?), 0) v
+       FROM issues WHERE asset_id = ? AND substr(issue_date,1,7) = ?`, assetId, ym, assetId, ym).v);
 
   const row = get('SELECT * FROM vehicle_monthly_costs WHERE asset_id = ? AND year = ? AND month = ?', assetId, year, month);
   if (!row) {

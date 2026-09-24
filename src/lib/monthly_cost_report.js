@@ -235,7 +235,8 @@ function buildRepair(wb, ym, period, wsId) {
             COALESCE((SELECT SUM(outside_labour) FROM job_daily_work WHERE job_id = j.id), 0) entry_outside_all,
             COALESCE((SELECT SUM(outside_labour) FROM job_daily_work WHERE job_id = j.id AND substr(work_date,1,7) = '${ym}'), 0) entry_outside_month,
             COALESCE(j.material_cost,0) material, COALESCE(j.oil_cost,0) oil,
-            COALESCE(j.general_cost,0) general, COALESCE(j.other_cost,0) other`;
+            COALESCE(j.general_cost,0) general, COALESCE(j.other_cost,0) other,
+            j.field, j.field_km, j.field_location`;
   const JOB_FROM = 'FROM job_cards j LEFT JOIN assets a ON a.id = j.asset_id LEFT JOIN projects p ON p.id = j.project_id';
   
   // Closed = jobs completed & closed this month. Auto-created "Stores materials" containers are the
@@ -435,7 +436,8 @@ function buildRepair(wb, ym, period, wsId) {
     } else {
       textCell(ws, r, 14, '');
     }
-    textCell(ws, r, 15, '');
+    // Stage 6: a field job says so — its km driven sit in "Other" (field transport).
+    textCell(ws, r, 15, j.field ? `Field${j.field_km ? ` · ${j.field_km} km` : ''}` : '');
 
     const vals = { labour: num(j.labour), material: num(j.material), oil: num(j.oil), other, total, outside: outsideEst };
     for (const k of Object.keys(vals)) { sec[k] += vals[k]; sums[k] += vals[k]; }
@@ -1400,6 +1402,42 @@ function buildAttendance(wb, ym, period, wsId) {
 }
 
 // ---------------------------------------------------------------------------
+// Stage 6: Field work — every field job reported in the month, and per site the response and downtime.
+// ---------------------------------------------------------------------------
+function buildFieldWork(wb, ym, period, wsId) {
+  const f = require('./field').month(ym, wsId);
+  if (!f.rows.length) return null;
+  const ws = wb.addWorksheet('Field work');
+  const COLS = [['Se: no', 6], ['Reported', 16], ['Job Card No', 16], ['Machine', 14], ['Site', 22], ['Arrived', 16], ['Working again', 16],
+    ['Response (h)', 11], ['Downtime (h)', 11], ['Travel (h)', 10], ['Km', 8], ['Transport (Rs)', 13], ['Status', 14]];
+  COLS.forEach(([, w], i) => { ws.getColumn(i + 1).width = w; });
+  titleBand(ws, COLS.length, 'Field work — repairs done at the site', period);
+  COLS.forEach(([t], i) => { headerCell(ws.getCell(4, i + 1)).value = t; });
+  const hours = (row, col, v) => { const c = ws.getCell(row, col); c.value = v == null ? '' : r2(v); c.numFmt = '#,##0.00'; c.alignment = { horizontal: 'right' }; border(c); };
+  let r = 5;
+  f.rows.forEach((x, i) => {
+    textCell(ws, r, 1, i + 1); textCell(ws, r, 2, x.reported_at || ''); textCell(ws, r, 3, x.job_no + (x.breakdown ? ' (breakdown)' : ''));
+    textCell(ws, r, 4, x.asset_reg || x.asset_code || ''); textCell(ws, r, 5, x.field_location || '');
+    textCell(ws, r, 6, x.arrived_at || ''); textCell(ws, r, 7, x.working_at || '');
+    hours(r, 8, x.response_hours); hours(r, 9, x.downtime_hours); hours(r, 10, x.travel_hours); hours(r, 11, x.field_km);
+    moneyCell(ws, r, 12, x.transport_cost); textCell(ws, r, 13, x.working_at ? 'Working' : 'Still down');
+    r++;
+  });
+  r += 1;
+  const SC = [['Site', 1], ['Jobs', 2], ['Avg response (h)', 3], ['Downtime (h)', 4], ['Travel (h)', 5], ['Km', 6], ['Transport (Rs)', 7]];
+  SC.forEach(([t, col]) => { headerCell(ws.getCell(r, col)).value = t; });
+  r++;
+  for (const s of f.sites) {
+    textCell(ws, r, 1, s.site); textCell(ws, r, 2, s.jobs); hours(r, 3, s.avg_response_hours); hours(r, 4, s.downtime_hours);
+    hours(r, 5, s.travel_hours); hours(r, 6, s.km); moneyCell(ws, r, 7, s.transport_cost);
+    r++;
+  }
+  ws.getCell(r + 1, 1).value = 'Response = reported to arrived. Downtime = reported to working again. Field transport is inside each job\'s Other cost.';
+  ws.getCell(r + 1, 1).font = { italic: true, size: 9 };
+  return { name: 'Field work', jobs: f.rows.length, sites: f.sites.length };
+}
+
+// ---------------------------------------------------------------------------
 // MASTER WORKBOOK BUILDER
 // ---------------------------------------------------------------------------
 /**
@@ -1443,6 +1481,8 @@ async function buildWorkbook(year, month, opts = {}) {
   buildJobWiseComparison(wb, parts, period);
   // Optional, last: only with attendance switched on and a month the tally has run in.
   parts.attendance = buildAttendance(wb, ym, period, wsId);
+  // Stage 6: only in a month with field work.
+  parts.field = buildFieldWork(wb, ym, period, wsId);
   // Stage 5: the whole company's workbook, with more than one workshop — one row per workshop.
   if (!wsId && opts.compare !== false && require('./workshops').isMulti()) {
     parts.compared = await buildCompared(wb, year, month, period);

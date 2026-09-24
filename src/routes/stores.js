@@ -1591,7 +1591,7 @@ router.get('/pipeline/summary', asyncHandler((_req, res) => {
     SELECT COUNT(*) c
       FROM grn g
      WHERE g.qty > 0
-       AND (COALESCE(g.qty, 0) - COALESCE((SELECT SUM(i.qty) FROM issues i WHERE i.grn_id = g.id), 0)) > 0.001
+       AND (COALESCE(g.qty, 0) - (COALESCE((SELECT SUM(i.qty) FROM issues i WHERE i.grn_id = g.id), 0) - COALESCE((SELECT SUM(r.qty) FROM issue_returns r JOIN issues ir ON ir.id = r.issue_id WHERE ir.grn_id = g.id), 0))) > 0.001
   `).c;
   const issued_today = get(`SELECT COUNT(*) c FROM issues WHERE date(issue_date) = date('now')`).c;
 
@@ -2260,12 +2260,74 @@ router.get('/issues', asyncHandler((req, res) => {
   const where = clauses.length ? 'WHERE ' + clauses.join(' AND ') : '';
   res.json(all(
     `SELECT i.*, a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec, j.job_no,
-            sub.name AS sub_category
+            sub.name AS sub_category,
+            -- Stage 6: how much of it came back unused (return notes).
+            ROUND(COALESCE((SELECT SUM(r.qty) FROM issue_returns r WHERE r.issue_id = i.id), 0), 2) AS returned
        FROM issues i
        LEFT JOIN assets a ON a.id = i.asset_id
        LEFT JOIN job_cards j ON j.id = i.job_id
        LEFT JOIN item_categories sub ON sub.id = i.category_id
        ${where} ORDER BY i.issue_date DESC, i.id DESC LIMIT ${toInt(req.query.limit, 500)}`, ...params));
+}));
+
+// ---- Return unused parts (Stage 6) -----------------------------------------
+// A part handed over to a job and brought back unused — typically from a field job: back into the
+// store it left, and off the cost of the job that carried it. The issue stays exactly as written;
+// the return note sits beside it, so both the handover and the return can be read back.
+router.post('/issues/:id/return', requireCap('stores.issue_return'), asyncHandler((req, res) => {
+  const b = req.body || {};
+  const issueId = toInt(req.params.id);
+  const i = get('SELECT * FROM issues WHERE id = ?', issueId);
+  if (!i) return res.status(404).json({ error: 'Issue not found' });
+  if (i.voided) return res.status(409).json({ error: 'This issue was cancelled — there is nothing to return.' });
+  { const no = scope.jobRefusal(req.user, i.job_id); if (no) return res.status(403).json(no); }
+  const qty = toNum(b.qty, 0);
+  if (!(qty > 0)) return res.status(400).json({ error: 'How many came back?' });
+  const back = get('SELECT COALESCE(SUM(qty),0) v FROM issue_returns WHERE issue_id = ?', issueId).v;
+  const left = Math.round((Number(i.qty) - back) * 100) / 100;
+  if (qty > left + 0.001) return res.status(400).json({ error: `Only ${left} of this issue can come back.` });
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(String(b.return_date || '')) ? b.return_date : new Date().toISOString().slice(0, 10);
+  if (date < String(i.issue_date).slice(0, 10)) return res.status(400).json({ error: 'A return cannot be dated before the issue.' });
+
+  const out = tx(() => {
+    const rid = run(`INSERT INTO issue_returns (issue_id, qty, return_date, note, store_id, returned_by) VALUES (?, ?, ?, ?, ?, ?)`,
+      i.id, qty, date, clean(b.note) || null, i.store_id || null, req.user.id).lastInsertRowid;
+    // The cost comes off the job that carries it: the issue's own line, or — for a received line
+    // costed at receipt — the job the request was for.
+    const own = get("SELECT job_id, unit_price FROM job_parts WHERE source_type = 'issue' AND source_id = ?", i.id);
+    const atReceipt = !own && i.grn_id ? get(
+      `SELECT jp.job_id, jp.unit_price FROM job_parts jp JOIN grn g ON g.mrn_line_id = jp.mrn_line_id
+        WHERE g.id = ? AND jp.source_type = 'grn' LIMIT 1`, i.grn_id) : null;
+    const carrier = own || atReceipt;
+    if (carrier) {
+      const jp = run(`INSERT INTO job_parts (job_id, source_type, source_id, description, qty, unit_price, is_external_repair)
+                      VALUES (?, 'return', ?, ?, ?, ?, 0)`,
+      carrier.job_id, rid, 'Returned to store: ' + (i.description || ''), -qty, carrier.unit_price).lastInsertRowid;
+      run('UPDATE issue_returns SET job_part_id = ? WHERE id = ?', jp, rid);
+    }
+    // Back on the shelf it left: the mirror of the issue's own movement (same item, store and count).
+    const om = get("SELECT * FROM stock_moves WHERE source_table = 'issues' AND source_id = ? AND kind = 'out' LIMIT 1", i.id);
+    if (om) {
+      run(`INSERT OR IGNORE INTO stock_moves (section, kind, item_key, item_name, qty, unit_price, txn_date, asset_id, job_id,
+                                              mrn_line_id, grn_id, store_item_id, ref, note, source_table, source_id, counts, store_id)
+           VALUES (?, 'in', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Return', ?, 'issue_returns', ?, ?, ?)`,
+      om.section, om.item_key, om.item_name, qty, om.unit_price, date, om.asset_id, om.job_id,
+      om.mrn_line_id, om.grn_id, om.store_item_id, clean(b.note) || null, rid, om.counts, om.store_id);
+    }
+    // The vehicle's month carried the issue's value; take the returned part off it.
+    const value = qty * (Number(i.unit_price) || 0);
+    const [yr, mo] = String(i.issue_date).slice(0, 7).split('-').map(Number);
+    if (i.asset_id && value && yr && mo) {
+      run(`UPDATE vehicle_monthly_costs SET parts_cost = parts_cost - ?, total_cost = total_cost - ?, updated_at = datetime('now')
+            WHERE asset_id = ? AND year = ? AND month = ?`, value, value, i.asset_id, yr, mo);
+    }
+    return { id: rid, carrier_job: carrier ? carrier.job_id : null };
+  });
+  if (out.carrier_job) { try { costing.refreshJobTotals(out.carrier_job); } catch (e) { /* non-fatal */ } }
+  audit.record({ userId: req.user.id, entity: 'issue_returns', entityId: out.id, action: 'create',
+    after: { issue_id: i.id, description: i.description, qty, date, job_id: out.carrier_job } });
+  emitter.emit('dashboard_refresh', { reason: 'stock_return' });
+  res.status(201).json({ ok: true, id: out.id, qty, left: Math.round((left - qty) * 100) / 100 });
 }));
 
 // Distinct issue categories (for the filter dropdown).
