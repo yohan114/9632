@@ -2,7 +2,7 @@
 
 const express = require('express');
 const jobstate = require('../lib/jobstate');
-const { get, all, run } = require('../db');
+const { get, all, run, tx } = require('../db');
 const { requireCap } = require('../lib/auth');
 const { asyncHandler, require_, toInt, toNum } = require('../lib/http');
 const audit = require('../lib/audit');
@@ -157,7 +157,11 @@ router.get('/:id', asyncHandler((req, res) => {
   }
   timeline.sort((a, b) => String(b.date).localeCompare(String(a.date)));
 
-  res.json({ asset, current_project, current_battery, open_jobs, partly_closed_jobs, lifetime_cost: lc, service_due, timeline: timeline.slice(0, 100) });
+  // Stage 7: where the machine stands (a site of its project, if one is set) and every move.
+  const ops = require('../lib/operations');
+  const place = { key: ops.keyOf(asset.current_project_id, asset.current_site_id), label: ops.labelOf(ops.keyOf(asset.current_project_id, asset.current_site_id)) };
+  res.json({ asset, current_project, current_battery, open_jobs, partly_closed_jobs, lifetime_cost: lc, service_due, timeline: timeline.slice(0, 100),
+    place, moves: ops.history(id) });
 }));
 
 router.post('/', requireCap('assets.create'), asyncHandler((req, res) => {
@@ -187,7 +191,11 @@ router.patch('/:id', requireCap('assets.edit'), asyncHandler((req, res) => {
   }
   if (!sets.length) return res.json(before);
   sets.push("updated_at = datetime('now')");
-  run(`UPDATE assets SET ${sets.join(', ')} WHERE id = ?`, ...params, id);
+  tx(() => {
+    run(`UPDATE assets SET ${sets.join(', ')} WHERE id = ?`, ...params, id);
+    // Stage 7: a new project set here is a move today, kept in the machine's history.
+    require('../lib/operations').recordEdit(req.user, before, get('SELECT * FROM assets WHERE id = ?', id));
+  });
   const after = get('SELECT * FROM assets WHERE id = ?', id);
   audit.record({ userId: req.user.id, entity: 'asset', entityId: id, action: 'update', before, after });
   res.json(after);

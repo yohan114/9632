@@ -392,6 +392,8 @@ router.get(
       job,
       // Stage 6: the field side — site, times, response and downtime, km and their cost.
       field: require('../lib/field').view(get('SELECT * FROM job_cards WHERE id = ?', id)),
+      // Stage 7: the workshops this card was sent between, and why.
+      handovers: require('../lib/operations').jobHandovers(id),
       approvals,
       dailyWork,
       parts,
@@ -1256,10 +1258,13 @@ router.patch(
 
     // -- workshop (who does the repair)
     let newWorkshopId;
+    let handoverReason = null;
     if (b.workshop_id !== undefined && Number(b.workshop_id) !== job.workshop_id) {
       // A finished card stays with the workshop that did the work: its cost is already reported there.
       if (jobstate.isFinal(job.status)) return res.status(409).json({ error: 'A closed job card stays with the workshop that did the work.' });
       newWorkshopId = workshops.mustBeActive(b.workshop_id).id;
+      // Stage 7: sending a card to another workshop needs a reason, kept with the card (S7-D6).
+      handoverReason = require('../lib/operations').handoverReason(b);
       sets.push('workshop_id = ?'); params.push(newWorkshopId);
     }
 
@@ -1326,6 +1331,7 @@ router.patch(
 
     tx(() => {
       run(`UPDATE job_cards SET ${sets.join(', ')}, updated_at = datetime('now') WHERE id = ?`, ...params, id);
+      if (newWorkshopId !== undefined) require('../lib/operations').recordHandover(req.user, id, job.workshop_id, newWorkshopId, handoverReason);
       if (newAssetId !== undefined) {
         // The issues were raised against whatever vehicle the card named, so they follow it.
         run('UPDATE issues SET asset_id = ? WHERE job_id = ?', newAssetId, id);
@@ -1341,7 +1347,7 @@ router.patch(
 
     const after = { asset_id: newAssetId !== undefined ? newAssetId : job.asset_id, description: b.description, type: newType,
       workshop_id: newWorkshopId !== undefined ? newWorkshopId : job.workshop_id };
-    audit.record({ userId: req.user.id, entity: 'job_card', entityId: id, action: 'edit', before, after, reason: req.body.reason || null });
+    audit.record({ userId: req.user.id, entity: 'job_card', entityId: id, action: 'edit', before, after, reason: handoverReason || req.body.reason || null });
     emitter.emit('job_updated', { job_id: id, action: 'edit' });
     emitter.emit('dashboard_refresh', { reason: 'job_edit' });
     res.json({ ...loadJob(id), warnings });

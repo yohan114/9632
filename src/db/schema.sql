@@ -1103,3 +1103,34 @@ CREATE TABLE IF NOT EXISTS issue_returns (
   created_at   TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_issue_returns ON issue_returns(issue_id);
+
+-- Stage 7: every move of a machine from one project or site to another. The machine's current
+-- project (assets.current_project_id / current_site_id) is where the last move took it; the moves
+-- say where it was on any day, so a month's availability is counted at the right site.
+CREATE TABLE IF NOT EXISTS asset_moves (
+  id               INTEGER PRIMARY KEY AUTOINCREMENT,
+  asset_id         INTEGER NOT NULL REFERENCES assets(id),
+  move_date        TEXT NOT NULL,                  -- YYYY-MM-DD: at the new place from this day
+  from_project_id  INTEGER REFERENCES projects(id),
+  from_site_id     INTEGER REFERENCES sites(id),
+  to_project_id    INTEGER REFERENCES projects(id),
+  to_site_id       INTEGER REFERENCES sites(id),
+  note             TEXT,
+  moved_by         INTEGER REFERENCES users(id),
+  created_at       TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_asset_moves ON asset_moves(asset_id, move_date);
+
+-- Stage 7: a job card sent to another workshop — who sent it, from where to where, and why. The
+-- whole card moves (its costs so far go with it, S7-D6); these rows are its history.
+CREATE TABLE IF NOT EXISTS job_workshop_moves (
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  job_id            INTEGER NOT NULL REFERENCES job_cards(id) ON DELETE CASCADE,
+  from_workshop_id  INTEGER REFERENCES workshops(id),
+  to_workshop_id    INTEGER REFERENCES workshops(id),
+  reason            TEXT NOT NULL,
+  moved_by          INTEGER REFERENCES users(id),
+  moved_at          TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_job_ws_moves ON job_workshop_moves(job_id);
+CREATE INDEX IF NOT EXISTS idx_job_ws_moves_at ON job_workshop_moves(moved_at);

@@ -105,6 +105,8 @@ app.use('/api/daily-work', requireModule('dailywork'), require('./routes/dailywo
 app.use('/api/attendance', require('./routes/attendance'));
 // Field work (Stage 6): reading needs Job Cards view (checked inside); each write its own capability.
 app.use('/api/field', require('./routes/field'));
+// Stage 7: operations — machine moves, the site fleet board, workshops at a glance, handovers.
+app.use('/api/operations', require('./routes/operations'));
 app.use('/api/dashboard', require('./routes/dashboard'));
 app.use('/api/mechanics', require('./routes/mechanics'));
 app.use('/api/workshops', require('./routes/workshops'));
