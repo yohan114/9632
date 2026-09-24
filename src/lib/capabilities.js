@@ -40,6 +40,7 @@ const CAPABILITIES = [
   C('aliases.vehicle.resolve', 'aliases', 'Link or dismiss an unrecognised vehicle name', ['storekeeper']),
   C('aliases.mechanic.resolve', 'aliases', 'Link an unrecognised mechanic name', ['storekeeper', 'manager']),
   C('projects.manage', 'projects', 'Create and edit projects and their sites', ['manager']),
+  C('fleet.capacities.edit', 'assets', 'Add, edit or delete vehicle lubricant capacities', []),
 
   // ---- labour --------------------------------------------------------------------------------
   C('mechanics.create', 'labour', 'Add a mechanic', ['manager']),

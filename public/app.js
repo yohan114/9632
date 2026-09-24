@@ -5459,7 +5459,7 @@ async function renderServiceRecords(c) {
 
 // ---- Operations: Vehicle Lubricant Capacities (Fleet_Oil_Lubricant_Capacities.xlsx) ---
 routes.lubecapacities = async (c) => {
-  const isAdmin = can('admin');
+  const isAdmin = canDo('fleet.capacities.edit');   // may edit capacities (admin, unless given to another role)
   c.innerHTML = `
     ${pageHeader('Lubricant Capacities', 'Vehicle-wise oil & fluid capacities · Engine, gearbox, differential, hydraulics, coolant, and brake fluid')}
     <div id="lcap-pane"></div>
