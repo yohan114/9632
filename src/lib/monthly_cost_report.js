@@ -10,6 +10,7 @@ const { all, get } = require('../db');
 const costing = require('./costing');
 const mechanics = require('./mechanics');
 const lubricants = require('./lubricants');
+const jobstate = require('./jobstate');
 
 const COMPANY = 'Edward and Christie (Pvt) Ltd — Badalgama W/S';
 const MONEY = '#,##0.00';
@@ -214,7 +215,7 @@ function buildRepair(wb, ym, period) {
   ws.getCell(4, 16).value = 'Outside uplift factor'; headerCell(ws.getCell(4, 16));
   ws.getCell(5, 16).value = 1.67; moneyCell(ws, 5, 16, 1.67);
 
-  const JOB_COLS = `j.id, j.job_no, j.completed_at, j.requested_at, j.created_at, j.status, j.description, j.site, j.outside_estimate,
+  const JOB_COLS = `j.id, j.job_no, j.completed_at, j.requested_at, j.created_at, j.status, j.description, j.site, j.outside_estimate, j.partial_closed_at,
             a.type atype, a.registration reg, a.code code, a.ec_code ec, p.name project,
             COALESCE((SELECT SUM(amount) FROM job_labour WHERE job_id = j.id AND substr(work_date,1,7) = '${ym}'), 0) labour,
             COALESCE((SELECT SUM(outside_labour) FROM job_daily_work WHERE job_id = j.id), 0) entry_outside_all,
@@ -226,8 +227,11 @@ function buildRepair(wb, ym, period) {
   // Closed = jobs completed & closed this month. Auto-created "Stores materials" containers are the
   // Spares-Supply section (below); everything else — including "Spares Supply (…)" repair jobs that
   // carry a real job card — stays in Closed to match the owner's classification.
+  // A PARTLY closed job is here too, in its partial-close month (its completed_at), flagged "prices
+  // pending" — the one addition W3 makes (decision W-D9). Prices that arrive later land in that
+  // month, and closing it fully later does not move it.
   const closed = all(`SELECT ${JOB_COLS} ${JOB_FROM}
-      WHERE j.status = 'CLOSED' AND j.completed_at IS NOT NULL AND substr(j.completed_at,1,7) = ?
+      WHERE ${jobstate.reportClosedSql('j')} AND j.completed_at IS NOT NULL AND substr(j.completed_at,1,7) = ?
         AND (j.description IS NULL OR (j.description NOT LIKE 'Stores materials%' AND j.description NOT LIKE 'auto-created container%'))
       ORDER BY j.completed_at, j.id`, ym);
 
@@ -246,11 +250,12 @@ function buildRepair(wb, ym, period) {
     pending = [];
     for (const jn of pendingManual) {
       const row = get(`SELECT ${JOB_COLS} ${JOB_FROM} WHERE j.job_no = ?`, jn);
-      if (row) pending.push(row);
+      // A partly closed job reports in Closed (of its partial-close month), never in Pending.
+      if (row && row.status !== jobstate.PARTIAL) pending.push(row);
     }
   } else {
     pending = all(`SELECT ${JOB_COLS} ${JOB_FROM}
-        WHERE j.status <> 'CLOSED'
+        WHERE ${jobstate.reportPendingSql('j')}
           AND (j.description IS NULL OR (j.description NOT LIKE 'Stores materials%' AND j.description NOT LIKE 'auto-created container%'))
           AND (
             j.job_no = '2025/10/R/759'
@@ -449,14 +454,23 @@ function buildRepair(wb, ym, period) {
   const pending_job_rows = [];
 
   // Section 1: Closed Jobs
-  banner(`Closed Jobs — completed & closed in ${period}; labour = this month's work (${closed.length})`);
+  const partlyClosed = closed.filter((j) => j.status === jobstate.PARTIAL).length;
+  banner(`Closed Jobs — completed & closed in ${period}; labour = this month's work (${closed.length}`
+    + (partlyClosed ? `, of which ${partlyClosed} partly closed — prices pending)` : ')'));
   const cFirst = r;
   for (const j of closed) {
     // Effective outside estimate: the job-level Remarks value the owner typed, else the sum of the
     // per-entry "outside labor" boxes on its daily work (whole job — a closed job reports once).
     j.outside_estimate = num(j.outside_estimate) || num(j.entry_outside_all);
-    closed_job_rows.push({ id: j.id, job_no: j.job_no, row: r, labour: num(j.labour), outside: num(j.outside_estimate) });
-    jobRow(j, j.completed_at, closedSec);
+    const partly = j.status === jobstate.PARTIAL;
+    closed_job_rows.push({ id: j.id, job_no: j.job_no, row: r, labour: num(j.labour), outside: num(j.outside_estimate), partly_closed: partly });
+    const flagRow = r;
+    // Flagged in words on the row itself, so it survives printing and copying: the figures may
+    // still rise when the missing prices are entered.
+    jobRow(partly ? { ...j, description: `${j.description || ''} — PRICES PENDING (partly closed ${dateOnly(j.partial_closed_at)})`.replace(/^ — /, '') } : j, j.completed_at, closedSec);
+    if (partly) {
+      for (let col = 1; col <= 15; col++) ws.getCell(flagRow, col).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFF4CC' } };
+    }
     repair_job_ids.push(j.id);
   }
   const cSub = subtotal('Closed jobs subtotal', cFirst, r - 1, closedSec);
@@ -527,7 +541,7 @@ function buildRepair(wb, ym, period) {
   const q = (col) => `'Repair cost'!${colL(col)}${gr}`;
   return {
     name: 'Repair cost', sums, count: closed.length + pending.length + otherLabour.length + sparesSupply.length,
-    closed_count: closed.length, pending_count: pending.length,
+    closed_count: closed.length, pending_count: pending.length, partly_closed_count: partlyClosed,
     other_labour_count: otherLabour.length, spares_supply_count: sparesSupply.length,
     closed_total: closedSec.total, pending_total: pendingSec.total,
     other_labour_total: otherLabourSec.total, other_labour_outside: otherLabourSec.outside,
@@ -1331,6 +1345,42 @@ function buildJobWiseComparison(wb, parts, period) {
 }
 
 // ---------------------------------------------------------------------------
+// Attendance & utilisation (W3) — only while attendance is switched on, and only for a month the
+// tally has run in. Hours at work against hours booked on jobs, per mechanic. It moves no money:
+// every cost figure in this workbook is booked hours × rate, as it always was.
+// ---------------------------------------------------------------------------
+function buildAttendance(wb, ym, period) {
+  const attendance = require('./attendance');
+  if (!attendance.isEnabled()) return null;
+  const m = attendance.month(ym);
+  if (!m.from || !m.mechanics.length) return null;
+  const ws = wb.addWorksheet('Attendance & utilisation');
+  [6, 28, 12, 14, 14, 14, 12].forEach((w, i) => { ws.getColumn(i + 1).width = w; });
+  titleBand(ws, 7, `Mechanic attendance and utilisation (${m.from} to ${m.to})`, period);
+  ['No', 'Mechanic', 'Days at work', 'Attended (h)', 'Booked on jobs (h)', 'Utilisation', 'Red days']
+    .forEach((t, i) => { const c = ws.getCell(4, i + 1); c.value = t; headerCell(c); });
+  let r = 5;
+  const hours = (row, col, v) => { const c = ws.getCell(row, col); c.value = r2(v); c.numFmt = '#,##0.00'; c.alignment = { horizontal: 'right' }; border(c); };
+  m.mechanics.forEach((x, i) => {
+    textCell(ws, r, 1, i + 1); textCell(ws, r, 2, x.name); textCell(ws, r, 3, x.days_present);
+    hours(r, 4, x.attended_hours); hours(r, 5, x.booked_hours);
+    const u = ws.getCell(r, 6); u.value = x.utilisation == null ? '' : x.utilisation / 100; u.numFmt = '0.0%'; u.alignment = { horizontal: 'right' }; border(u);
+    textCell(ws, r, 7, x.red_days);
+    r++;
+  });
+  const att = m.mechanics.reduce((t, x) => t + x.attended_hours, 0);
+  const bk = m.mechanics.reduce((t, x) => t + x.booked_hours, 0);
+  ws.mergeCells(r, 1, r, 3); const tl = ws.getCell(r, 1); tl.value = 'Total'; tl.font = { bold: true }; tl.alignment = { horizontal: 'right' }; border(tl);
+  const tot = (col, v) => { const c = ws.getCell(r, col); c.value = { formula: `SUM(${colL(col)}5:${colL(col)}${r - 1})`, result: r2(v) }; c.numFmt = '#,##0.00'; c.font = { bold: true }; border(c); };
+  tot(4, att); tot(5, bk);
+  const tu = ws.getCell(r, 6); tu.value = { formula: `IFERROR(E${r}/D${r},0)`, result: att ? bk / att : 0 }; tu.numFmt = '0.0%'; tu.font = { bold: true }; border(tu);
+  textCell(ws, r, 7, m.days.filter((d) => d.red_count > 0).length);
+  ws.getCell(r + 2, 1).value = 'Utilisation = hours booked on jobs ÷ hours at work. Labour cost in this report is not changed by attendance.';
+  ws.getCell(r + 2, 1).font = { italic: true, size: 9 };
+  return { name: 'Attendance & utilisation', mechanics: m.mechanics.length, attended_hours: r2(att), booked_hours: r2(bk) };
+}
+
+// ---------------------------------------------------------------------------
 // MASTER WORKBOOK BUILDER
 // ---------------------------------------------------------------------------
 async function buildWorkbook(year, month) {
@@ -1362,6 +1412,8 @@ async function buildWorkbook(year, month) {
   buildMaterialSummary(wb, parts, period);
   buildCostComparison(wb, parts, period);
   buildJobWiseComparison(wb, parts, period);
+  // Optional, last: only with attendance switched on and a month the tally has run in.
+  parts.attendance = buildAttendance(wb, ym, period);
   
   // Populate PROFIT OR LOSS sheet content
   buildProfitLoss(plSheet, period, parts);

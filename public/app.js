@@ -950,6 +950,7 @@ function renderPendingApprovals(pa) {
     section('MRNs awaiting your <b>approval</b>', pa.approve || [], (m) => mrnRow(m, 'Approve')),
     section('Job cards awaiting <b>transport approval</b>', pa.transport || [], (j) => jobRow(j, 'Approve')),
     section('Job cards awaiting <b>operations approval</b>', pa.ops || [], (j) => jobRow(j, 'Approve')),
+    section('Days waiting for <b>sign-off</b>', pa.signoff || [], (d) => `<div class="cost-line"><a href="#/dailywork?att=${esc(d.date)}"><b>${esc(d.date)}</b> · attendance &amp; daily work${d.red_count ? ` · <span style="color:var(--red)">${d.red_count} red</span>` : ''}</a><span class="badge ${d.red_count ? 'red' : 'amber'}">Sign off →</span></div>`),
     section('Job cards asking to be <b>reopened</b>', pa.reopen || [], (r) => `<div class="cost-line"><a href="#/jobs/${r.job_id}"><b>${esc(r.job_no)}</b> · ${esc(idLabel(r) || '—')} · ${esc(String(r.reason || '').slice(0, 60))}${r.requested_by_name ? ' · by ' + esc(r.requested_by_name) : ''}${waited(r.requested_at)}</a><span class="badge amber">Decide →</span></div>`),
   ].join('');
   return `<div class="card section" style="border-left:4px solid ${pa.total ? 'var(--red)' : 'var(--green)'}">
@@ -1007,6 +1008,10 @@ async function dashMain(c) {
       <a class="card stat" href="#/jobs?status=CLOSED" style="text-decoration:none"><span class="n">${d.closed_this_month_count}</span><span class="l">Closed This Month</span></a>
       <a class="card stat" href="#/teardown" style="text-decoration:none"><span class="n">${d.awaiting_price.length}</span><span class="l">Awaiting Price (blocked)</span></a>
       ${(d.partly_closed || []).length ? `<a class="card stat" href="#/jobs?status=PARTIALLY_CLOSED" style="text-decoration:none"><span class="n">${d.partly_closed.length}</span><span class="l">Partly Closed — awaiting prices</span></a>` : ''}`);
+  // Attendance (W3): today's tally and the days still to sign off — only while attendance is on.
+  const at = d.attendance_today;
+  if (at && canView('dailywork')) opStats.push(`<a class="card stat" href="#/dailywork" style="text-decoration:none"><span class="n" style="color:${at.red_count ? 'var(--red)' : 'inherit'}">${at.before_start ? '—' : at.red_count}</span><span class="l">Today's tally — ${at.before_start ? 'not started' : (at.red_count ? 'red' : 'nothing red')}</span></a>
+      ${at.unsigned_days.length ? `<a class="card stat" href="#/dailywork?att=${esc(at.unsigned_days[0].date)}" style="text-decoration:none"><span class="n">${at.unsigned_days.length}</span><span class="l">Days to sign off</span></a>` : ''}`);
   if (canView('oil')) opStats.push(`<a class="card stat" href="#/oil?tab=forecast" style="text-decoration:none"><span class="n">${d.low_stock_oil.length}</span><span class="l">Low-stock Lubricants</span></a>`);
   if (canView('batteries')) opStats.push(`<a class="card stat" href="#/batteries" style="text-decoration:none"><span class="n">${d.batteries_warranty.length}</span><span class="l">Battery Warranty ≤60d</span></a>`);
   if (canView('stores') || canView('oil')) {
@@ -1874,7 +1879,9 @@ function attWorked(a) {
 let ATT_DRAFT = { date: null, rows: new Map() };
 
 async function attendanceCard(el, { onChanged, onDayView } = {}) {
-  let date = ATT_DRAFT.date || localDay();
+  // #/dailywork?att=YYYY-MM-DD (from "Days waiting for sign-off") opens that day.
+  const asked = new URLSearchParams(location.hash.split('?')[1] || '').get('att');
+  let date = (asked && /^\d{4}-\d{2}-\d{2}$/.test(asked) ? asked : null) || ATT_DRAFT.date || localDay();
   let d = null;
   const load = async () => {
     try { d = await api('/attendance/day?date=' + encodeURIComponent(date)); } catch (e) {
@@ -1963,6 +1970,8 @@ async function attendanceCard(el, { onChanged, onDayView } = {}) {
         <input id="att-date" type="date" value="${esc(date)}" max="${esc(d.today)}" style="max-width:160px">
         <button class="sm" id="att-next" ${date >= d.today ? 'disabled' : ''}>→</button>
         ${onDayView ? '<button class="sm" id="att-dayview" title="Show this day\'s work in the day view below">Day view ↓</button>' : ''}
+        <a class="btn sm" href="/api/reports/daily/day_tally/export.xlsx?date=${esc(date)}" title="This day's tally as a spreadsheet">⬇ Day</a>
+        <a class="btn sm" href="/api/attendance/month.xlsx?month=${esc(date.slice(0, 7))}" title="The month: attended, booked and utilisation per mechanic">⬇ Month</a>
         ${d.can.settings ? '<button class="sm" id="att-set" title="Attendance settings">⚙</button>' : ''}
       </div>
       <div class="toolbar" style="margin:0 0 8px">
@@ -1982,7 +1991,13 @@ async function attendanceCard(el, { onChanged, onDayView } = {}) {
   };
 
   const confirmLeave = () => !dirty() || confirm('You have attendance that is not saved. Leave it?');
-  const goTo = (dt) => { if (!dt || !confirmLeave()) return; ATT_DRAFT = { date: dt, rows: new Map() }; date = dt; load(); };
+  const goTo = (dt) => {
+    if (!dt || !confirmLeave()) return;
+    ATT_DRAFT = { date: dt, rows: new Map() }; date = dt;
+    // Drop a date that came in on the link, so a refresh keeps the day chosen here.
+    if (/[?&]att=/.test(location.hash)) history.replaceState(null, '', '#/dailywork');
+    load();
+  };
   const repaintWith = (day) => { d = day; paint(); if (onChanged) onChanged(); };
 
   const wire = () => {
@@ -7691,6 +7706,7 @@ routes.reports = async (c) => {
         <button class="sm primary" id="dr-t-pending">📦 Pending Parts</button>
         <button class="sm" id="dr-t-price">💰 Pending Price</button>
         <button class="sm" id="dr-t-jobs">🔧 Job Record Summary</button>
+        <button class="sm" id="dr-t-tally" style="display:none">⏱ Day Tally</button>
         <div class="spacer"></div>
         <span class="muted" id="dr-stamp" style="font-size:12px"></span>
         <button class="sm" id="dr-save">💾 Save this day</button>
@@ -7703,7 +7719,7 @@ routes.reports = async (c) => {
     <div class="card section">
       <div class="toolbar" style="margin-top:0">
         <h3 style="margin:0">Job Cost Report</h3>
-        <span class="muted" style="font-weight:400">— full 14-sheet master workbook (PROFIT OR LOSS · Repair · Service · Tyre · Battery · Oils · General · Fuel · Salaries · Overhead · Total Cost · Material Summary · Cost Comparison · Job-wise Comparison)</span>
+        <span class="muted" style="font-weight:400">— full 14-sheet master workbook (PROFIT OR LOSS · Repair · Service · Tyre · Battery · Oils · General · Fuel · Salaries · Overhead · Total Cost · Material Summary · Cost Comparison · Job-wise Comparison; plus Attendance &amp; utilisation while attendance is on). Partly closed jobs are in Closed, marked "prices pending".</span>
         <div class="spacer"></div>
         <div><label>Year</label><select id="mcr-year"></select></div>
         <div><label>Month</label><select id="mcr-month"></select></div>
@@ -7730,6 +7746,23 @@ routes.reports = async (c) => {
     drStamp.textContent = d.saved
       ? `frozen copy of that day · saved ${String(d.generated_at || '').slice(0, 16)}`
       : (d.last_saved_at ? `live · last saved ${String(d.last_saved_at).slice(0, 16)}` : 'live · not saved yet');
+    if (drKind === 'day_tally') {
+      if (!d.rows.length) { drBody.innerHTML = '<p class="muted">No attendance or daily work on this day.</p>'; return; }
+      const ST = { present: 'Present', absent: 'Absent', leave: 'Leave', half_day: 'Half day', holiday: 'Holiday' };
+      const c2 = d.counts || {};
+      drBody.innerHTML = `<p class="muted" style="margin:0 0 8px">${d.locked && d.signoff ? `🔒 Signed off by ${esc(d.signoff.signed_by || '—')} · ${esc(d.signoff.signed_at || '')}` : (d.before_start ? 'Before the attendance start date — not checked.' : 'Not signed off yet.')}
+          · ✅ ${c2.matched || 0} matched · 🟡 ${c2.unbooked || 0} unbooked · <b style="color:${d.red_count ? 'var(--red)' : 'inherit'}">🔴 ${d.red_count || 0} red</b></p>`
+        + tableWrap([{ label: 'No', width: '44px' }, { label: 'Mechanic' }, { label: 'Status' }, { label: 'In' }, { label: 'Out' },
+          { label: 'Worked', num: true }, { label: 'Booked', num: true }, { label: 'Difference', num: true }, { label: 'Tally' }, { label: 'Note / reason' }],
+        d.rows.map((r) => `<tr><td>${r.no}</td><td><b>${esc(r.mechanic)}</b></td><td>${esc(ST[r.status] || '—')}</td>
+            <td>${esc(r.time_in || '—')}</td><td>${esc(r.time_out || '—')}</td>
+            <td class="num">${fmtH(r.worked)}</td><td class="num">${fmtH(r.booked)}</td>
+            <td class="num">${r.diff == null ? '—' : (r.diff > 0 ? '+' : '') + fmtH(r.diff)}</td>
+            <td><span class="badge ${r.red ? 'red' : r.tally === 'matched' ? 'green' : r.tally === 'unbooked' ? 'amber' : ''}">${esc(r.tally_label)}</span></td>
+            <td class="muted">${esc(r.note || '')}</td></tr>`), { scroll: true })
+        + (d.unmatched && d.unmatched.length ? `<p class="muted" style="margin-top:8px"><b>Names not matched to a mechanic:</b> ${d.unmatched.map((u) => `${esc(u.name)} (${fmtH(u.hours)}, ${esc(u.jobs)})`).join(' · ')}</p>` : '');
+      return;
+    }
     if (drKind === 'pending_price') {
       if (!d.sections.length) { drBody.innerHTML = '<p class="muted">Everything received has a price. 🎉</p>'; return; }
       drBody.innerHTML = d.sections.map((s) => `
@@ -7801,6 +7834,7 @@ routes.reports = async (c) => {
     qs('#dr-t-pending', c).classList.toggle('primary', drKind === 'pending_parts');
     qs('#dr-t-price', c).classList.toggle('primary', drKind === 'pending_price');
     qs('#dr-t-jobs', c).classList.toggle('primary', drKind === 'job_summary');
+    qs('#dr-t-tally', c).classList.toggle('primary', drKind === 'day_tally');
     drBody.innerHTML = '<div class="muted">Loading…</div>';
     try { drRender(await api(`/reports/daily/${drKind}?date=${date}`)); }
     catch (e) { drBody.innerHTML = `<p class="err">${esc(e.message)}</p>`; }
@@ -7817,6 +7851,11 @@ routes.reports = async (c) => {
   qs('#dr-t-pending', c).onclick = () => { drKind = 'pending_parts'; drLoad(); };
   qs('#dr-t-price', c).onclick = () => { drKind = 'pending_price'; drLoad(); };
   qs('#dr-t-jobs', c).onclick = () => { drKind = 'job_summary'; drLoad(); };
+  qs('#dr-t-tally', c).onclick = () => { drKind = 'day_tally'; drLoad(); };
+  // The Day Tally tab is there only while attendance is on, and for those who may read Daily Work.
+  if (canView('dailywork')) {
+    api('/attendance/settings').then((s) => { if (s && s.enabled) qs('#dr-t-tally', c).style.display = ''; }).catch(() => {});
+  }
   drDate.onchange = drLoad;
   qs('#dr-save', c).onclick = async () => {
     try {
