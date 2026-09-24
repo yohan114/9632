@@ -9,6 +9,8 @@
 //   PATCH /roles/:name           rename / describe / retire / reinstate a role
 //   GET  /capabilities           the permission catalogue and every role's grants
 //   POST /capabilities           give or take away one permission from one role
+//   GET  /approval-limits        each role's money limit per kind of approval
+//   PUT  /approval-limits        set or clear one role's limit (src/lib/approval_limits.js)
 //
 // Every change is audited, and all of it is subject to src/lib/access_rules.js: you can only give
 // what you hold, only an admin touches the admin role, and there is always an active admin.
@@ -178,6 +180,19 @@ router.post('/capabilities', requireCap('access.manage'), asyncHandler((req, res
     before: { role: role.name, capability: req.body.capability, granted: before },
     after: { role: role.name, capability: req.body.capability, granted } });
   res.json(describeRoles().find((r) => r.name === role.name));
+}));
+
+// ---- approval limits (src/lib/approval_limits.js) ------------------------------------------
+
+router.get('/approval-limits', requireCap('access.manage'), asyncHandler((_req, res) => {
+  res.json(require('../lib/approval_limits').listForScreen());
+}));
+
+router.put('/approval-limits', requireCap('access.manage'), asyncHandler((req, res) => {
+  require_(req.body, ['role', 'kind']);
+  const limits = require('../lib/approval_limits');
+  const saved = limits.setLimit(req.user, req.body.role, req.body.kind, req.body.max_amount);
+  res.json({ saved, ...limits.listForScreen() });
 }));
 
 module.exports = router;

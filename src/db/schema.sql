@@ -202,6 +202,9 @@ CREATE INDEX IF NOT EXISTS idx_grn_mrn ON grn(mrn_id);
 -- table, which made the Stores search take seconds.
 CREATE INDEX IF NOT EXISTS idx_grn_line ON grn(mrn_line_id);
 CREATE INDEX IF NOT EXISTS idx_grn_unpriced ON grn(mrn_line_id) WHERE unit_price IS NULL;
+-- "The last price paid" for an item or a description (approval limits' MRN estimate, item search).
+CREATE INDEX IF NOT EXISTS idx_grn_item ON grn(store_item_id, id);
+CREATE INDEX IF NOT EXISTS idx_grn_desc ON grn(LOWER(TRIM(description)));
 CREATE INDEX IF NOT EXISTS idx_mrn_lines_legacy ON mrn_lines(legacy_item_id);
 CREATE INDEX IF NOT EXISTS idx_mrn_job ON mrn(job_id);
 -- idx_jp_line / idx_dw_date live with job_parts and job_daily_work further down: this file is
@@ -809,6 +812,17 @@ CREATE TABLE IF NOT EXISTS job_reopen_requests (
 );
 CREATE INDEX IF NOT EXISTS idx_job_reopen_req_job ON job_reopen_requests(job_id);
 CREATE INDEX IF NOT EXISTS idx_job_reopen_req_status ON job_reopen_requests(status);
+
+-- Approval limits (Stage 1): the most money a role may sign off on its own, per kind of approval
+-- (src/lib/approval_limits.js). No row = no limit, so nothing changes until an amount is set.
+CREATE TABLE IF NOT EXISTS approval_limits (
+  role        TEXT NOT NULL,
+  kind        TEXT NOT NULL,
+  max_amount  REAL NOT NULL CHECK (max_amount >= 0),
+  updated_by  INTEGER REFERENCES users(id),
+  updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (role, kind)
+);
 
 -- Frozen cost snapshot taken on CLOSE (historical costs never shift afterwards).
 CREATE TABLE IF NOT EXISTS job_costs (
