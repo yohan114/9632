@@ -155,10 +155,10 @@ router.post('/requests', requireModule('tb_request'),
       const mrnId = run(
         // request_type keeps its own meaning — general vs vehicle — which stores and daily work
         // both read on all 1,709 existing requests. The tyre/battery kind has a column of its own.
-        `INSERT INTO mrn (mrn_no, req_date, asset_id, job_id, purpose, requested_by, status, approval_status, request_type, tb_kind)
-         VALUES (?, date('now'), ?, ?, ?, ?, 'open', 'requested', 'vehicle', ?)`,
+        `INSERT INTO mrn (mrn_no, req_date, asset_id, job_id, purpose, requested_by, status, approval_status, request_type, tb_kind, workshop_id)
+         VALUES (?, date('now'), ?, ?, ?, ?, 'open', 'requested', 'vehicle', ?, ?)`,
         mrnNo, asset.id, jobId, clean(b.purpose) || (kind === 'tyre' ? 'Tyre replacement' : 'Battery replacement'),
-        clean(b.requested_by) || req.user.username, kind).lastInsertRowid;
+        clean(b.requested_by) || req.user.username, kind, require('../lib/workshops').forRequest(req.user, jobId)).lastInsertRowid;
 
       for (const p of prepared) {
         const lineId = run(

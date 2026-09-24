@@ -105,6 +105,7 @@ app.use('/api/daily-work', requireModule('dailywork'), require('./routes/dailywo
 app.use('/api/attendance', require('./routes/attendance'));
 app.use('/api/dashboard', require('./routes/dashboard'));
 app.use('/api/mechanics', require('./routes/mechanics'));
+app.use('/api/workshops', require('./routes/workshops'));
 app.use('/api/users', require('./routes/users'));
 app.use('/api/reports', require('./routes/reports'));
 // Vehicle lubricant capacities from Fleet_Oil_Lubricant_Capacities.xlsx

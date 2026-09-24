@@ -649,6 +649,8 @@ function migrate() {
            CREATE INDEX IF NOT EXISTS idx_filter_stock_type ON filter_stock(filter_type);
            CREATE INDEX IF NOT EXISTS idx_filter_stock_part ON filter_stock(part_no);`);
 
+  workshopsStage2();
+
   // Seed the RBAC matrix once (safe to require here — db exports are already set).
   try { require('../lib/permissions').seedDefaults(); } catch (e) { /* table may not exist yet on very first pass */ }
   // Seed the built-in roles' capabilities (idempotent) and mark those roles as shipped with the
@@ -703,6 +705,51 @@ function allowPartiallyClosed() {
     })();
   } finally {
     db.pragma('foreign_keys = ON');
+  }
+}
+
+// Multi-site Stage 2: every user, job card and request belongs to a workshop. The first start
+// creates Central Workshop — Badalgama as the default and gives it everything that exists. New
+// rows that arrive without a workshop take one from a trigger, so no insert path (imports, the
+// container cards, tests) can leave a gap: a request takes its job card's workshop, anything else
+// the default. A mechanic gets a starting row in mechanic_workshops the same way.
+function workshopsStage2() {
+  if (!db.prepare('SELECT 1 FROM workshops LIMIT 1').get()) {
+    db.prepare("INSERT INTO workshops (code, name, place, is_default) VALUES ('CW', 'Central Workshop — Badalgama', 'Badalgama', 1)").run();
+  }
+  // Transfer notes name their two ends as free text; each end can now also point at a place from
+  // the list ('w:<id>' a workshop, 'p:<id>' a project, 's:<id>' a site). The text stays as written.
+  ensureColumn('users', 'workshop_id', 'INTEGER REFERENCES workshops(id)');
+  ensureColumn('job_cards', 'workshop_id', 'INTEGER REFERENCES workshops(id)');
+  ensureColumn('mrn', 'workshop_id', 'INTEGER REFERENCES workshops(id)');
+  ensureColumn('mtn', 'from_place', 'TEXT');
+  ensureColumn('mtn', 'to_place', 'TEXT');
+  ensureColumn('mtn_lines', 'from_place', 'TEXT');
+  ensureColumn('mtn_lines', 'to_place', 'TEXT');
+  const DEF = "(SELECT id FROM workshops WHERE is_default = 1 ORDER BY id LIMIT 1)";
+  db.exec(`
+    UPDATE users SET workshop_id = ${DEF} WHERE workshop_id IS NULL;
+    UPDATE job_cards SET workshop_id = ${DEF} WHERE workshop_id IS NULL;
+    UPDATE mrn SET workshop_id = COALESCE((SELECT j.workshop_id FROM job_cards j WHERE j.id = mrn.job_id), ${DEF})
+     WHERE workshop_id IS NULL;
+    INSERT INTO mechanic_workshops (mechanic_id, workshop_id, from_date)
+      SELECT m.id, ${DEF}, '2000-01-01' FROM mechanics m
+       WHERE NOT EXISTS (SELECT 1 FROM mechanic_workshops mw WHERE mw.mechanic_id = m.id);
+    CREATE INDEX IF NOT EXISTS idx_jobs_workshop ON job_cards(workshop_id);
+    CREATE INDEX IF NOT EXISTS idx_mrn_workshop ON mrn(workshop_id);
+    CREATE TRIGGER IF NOT EXISTS trg_users_workshop AFTER INSERT ON users WHEN NEW.workshop_id IS NULL
+    BEGIN UPDATE users SET workshop_id = ${DEF} WHERE id = NEW.id; END;
+    CREATE TRIGGER IF NOT EXISTS trg_job_cards_workshop AFTER INSERT ON job_cards WHEN NEW.workshop_id IS NULL
+    BEGIN UPDATE job_cards SET workshop_id = ${DEF} WHERE id = NEW.id; END;
+    CREATE TRIGGER IF NOT EXISTS trg_mrn_workshop AFTER INSERT ON mrn WHEN NEW.workshop_id IS NULL
+    BEGIN UPDATE mrn SET workshop_id = COALESCE((SELECT j.workshop_id FROM job_cards j WHERE j.id = NEW.job_id), ${DEF})
+           WHERE id = NEW.id; END;
+    CREATE TRIGGER IF NOT EXISTS trg_mechanics_workshop AFTER INSERT ON mechanics
+    BEGIN INSERT OR IGNORE INTO mechanic_workshops (mechanic_id, workshop_id, from_date) VALUES (NEW.id, ${DEF}, '2000-01-01'); END;`);
+  // The transfer notes already written: link each end to the place its text clearly names. Once.
+  if (!db.prepare("SELECT 1 FROM settings WHERE key = 'mtn_places_matched'").get()) {
+    const r = require('../lib/places').matchOldTransfers();
+    db.prepare("INSERT INTO settings (key, value) VALUES ('mtn_places_matched', ?)").run(JSON.stringify({ at: new Date().toISOString(), ...r }));
   }
 }
 

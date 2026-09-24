@@ -14,7 +14,8 @@ const router = express.Router();
 router.get('/', asyncHandler((_req, res) => {
   res.json(all(
     `SELECT m.*,
-            (SELECT rate FROM labour_rates lr WHERE lr.mechanic = m.name ORDER BY effective_from DESC, id DESC LIMIT 1) AS rate
+            (SELECT rate FROM labour_rates lr WHERE lr.mechanic = m.name ORDER BY effective_from DESC, id DESC LIMIT 1) AS rate,
+            ${require('../lib/workshops').mechanicWorkshopSql('m')} AS workshop_id
        FROM mechanics m ORDER BY m.name`
   ));
 }));
