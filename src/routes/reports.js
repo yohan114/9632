@@ -837,6 +837,13 @@ router.get('/pending-approvals', asyncHandler((req, res) => {
   if (may('stores.mrn.approve')) {
     out.approve = all(`SELECT m.id, m.mrn_no, m.req_date, m.requested_by, m.certified_by, m.certified_at, a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec, ${lineCount}
         FROM mrn m LEFT JOIN assets a ON a.id = m.asset_id WHERE m.approval_status = 'certified' ORDER BY m.certified_at DESC, m.id DESC LIMIT 50`);
+    // Each with its estimated value, and whether it is above this person's approval limit.
+    const limits = require('../lib/approval_limits');
+    for (const m of out.approve) {
+      const worth = limits.mrnValue(m.id);
+      const within = limits.check(req.user, 'mrn_approve', worth.value);
+      Object.assign(m, { value: worth.value, unpriced: worth.unpriced, over_limit: !within.ok, limit: within.limit, who_can: within.who_can });
+    }
   }
   if (may('jobs.approve_transport')) {
     // requested_at is what the approver is actually deciding on: a card raised three weeks ago and

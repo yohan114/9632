@@ -18,6 +18,7 @@ const jobstate = require('../lib/jobstate');
 const permissions = require('../lib/permissions');
 const { lineReceiptSql, mrnReceiptSql, receivedLabel, d10 } = require('../lib/received_date');
 const lubricants = require('../lib/lubricants');
+const approvalLimits = require('../lib/approval_limits');
 
 // One cell's worth of "when did this arrive", for a sheet or a printout. A spreadsheet has no
 // tooltip, so whatever the hover would have said has to be in the cell itself.
@@ -702,8 +703,15 @@ router.get('/mrn/:id', asyncHandler((req, res) => {
                      FROM mrn m LEFT JOIN assets a ON a.id = m.asset_id
                      LEFT JOIN job_cards j ON j.id = m.job_id WHERE m.id = ?`, id);
   if (!mrn) return res.status(404).json({ error: 'MRN not found' });
+  // Its estimated value, and whether the viewer's approval limit covers it — for whoever approves.
+  let worth = null;
+  if (hasCap(req.user, 'stores.mrn.approve') && ['requested', 'certified'].includes(mrn.approval_status)) {
+    const v = approvalLimits.mrnValue(id);
+    worth = { value: v.value, unpriced: v.unpriced, limit: approvalLimits.check(req.user, 'mrn_approve', v.value) };
+  }
   res.json({
     mrn,
+    worth,
     lines: all(`SELECT ml.*, ${lineReceiptSql('ml.id')} FROM mrn_lines ml WHERE ml.mrn_id = ? ORDER BY ml.id`, id),
     grns: all('SELECT * FROM grn WHERE mrn_id = ? ORDER BY id', id),
     approvals: all('SELECT a.*, u.username FROM mrn_approvals a LEFT JOIN users u ON u.id = a.approver_id WHERE a.mrn_id = ? ORDER BY a.id', id),
@@ -739,6 +747,11 @@ router.post('/mrn/:id/approve', requireCap('stores.mrn.approve'), asyncHandler((
   if (certRow && certRow.approver_id === req.user.id && !isAdmin(req.user)) {
     return res.status(403).json({ error: 'Segregation of duties violation: approver cannot be the same person who certified the requisition.' });
   }
+  // Approval limit: an MRN worth more than this person may sign off stays certified, for someone
+  // with a higher limit. Checked before anything is written.
+  const worth = approvalLimits.mrnValue(id);
+  const within = approvalLimits.check(req.user, 'mrn_approve', worth.value);
+  if (!within.ok) return res.status(403).json({ ...approvalLimits.refusal(within, 'This MRN is worth about'), unpriced: worth.unpriced });
   const s = signer(req.user.id); const sig = req.body.signature || s.sig || null;
   const appRole = (isAdmin(req.user) || req.user.roles.includes('operational_manager')) ? 'operational_manager' : 'manager';
   tx(() => {

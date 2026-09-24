@@ -927,7 +927,12 @@ async function dashPurchasing(c) {
 // Managers' time is precious: their dashboard leads with what needs their sign-off.
 function renderPendingApprovals(pa) {
   if (!pa || !pa.is_approver) return '';
-  const mrnRow = (m, action) => `<div class="cost-line"><a href="#/stores?tab=mrn&id=${m.id}"><b>MRN ${esc(m.mrn_no)}</b> · ${esc(idLabel(m) || 'general')} · ${m.lines} item(s)${m.requested_by ? ' · by ' + esc(m.requested_by) : ''}${m.certified_by ? ' · certified ' + esc(m.certified_by) : ''}</a><span class="badge ${action === 'Approve' ? 'blue' : 'amber'}">${action} →</span></div>`;
+  // An MRN awaiting approval carries its estimated value, and says so when it is above this
+  // person's approval limit (it waits for someone with a higher one).
+  const mrnWorth = (m) => (m.value == null ? '' : ` · about ${esc(money(m.value))}${m.unpriced ? ` <span class="muted">(${m.unpriced} without a price)</span>` : ''}`);
+  const mrnRow = (m, action) => `<div class="cost-line"><a href="#/stores?tab=mrn&id=${m.id}"><b>MRN ${esc(m.mrn_no)}</b> · ${esc(idLabel(m) || 'general')} · ${m.lines} item(s)${mrnWorth(m)}${m.requested_by ? ' · by ' + esc(m.requested_by) : ''}${m.certified_by ? ' · certified ' + esc(m.certified_by) : ''}</a>${m.over_limit
+    ? `<span class="badge amber" title="Needs: ${esc((m.who_can || []).join(', '))}">Above your limit</span>`
+    : `<span class="badge ${action === 'Approve' ? 'blue' : 'amber'}">${action} →</span>`}</div>`;
   // How long it has been waiting, from the request date. An approver deciding between a card raised
   // this morning and one raised three weeks ago was previously shown neither — just a number and a
   // vehicle — so the queue gave no sense of what was overdue.
@@ -2506,8 +2511,10 @@ async function jobDetail(c, id) {
   // Reopen gets its own labelled button and confirm dialog — the raw CLOSED → IN_PROGRESS
   // state button read as "IN PROGRESS" and offered itself to users the server would refuse.
   // Partly close has its own button too (it asks for a note).
+  // Approval limit: a job that costs more than this person may sign off is closed by someone else.
+  const overCloseLimit = !!(j.closeLimit && !j.closeLimit.ok);
   const transitions = j.nextStates
-    .filter((s) => !((isClosed || isPartial) && s === 'IN_PROGRESS') && s !== 'PARTIALLY_CLOSED')
+    .filter((s) => !((isClosed || isPartial) && s === 'IN_PROGRESS') && s !== 'PARTIALLY_CLOSED' && !(overCloseLimit && s === 'CLOSED'))
     .map((s) => `<button class="sm ${s === 'CLOSED' ? 'primary' : ''}" data-to="${s}">${s === 'CLOSED' && partialOn ? '✓ Close fully' : s.replace(/_/g, ' ')}</button>`).join(' ');
   const partialBtn = partialOn && canDo('jobs.partial_close') && ['IN_PROGRESS', 'WORK_COMPLETE'].includes(job.status)
     ? '<button class="sm" id="partialclose" title="The work is done and the vehicle has left, but prices or records are missing">◐ Partly close…</button>' : '';
@@ -2551,6 +2558,7 @@ async function jobDetail(c, id) {
       ${isClosed
         ? `<p class="muted" style="margin-top:10px">Closed ${esc(String(job.completed_at || job.closed_at || '').slice(0, 10))} — locked for editing. ${partialOn ? 'Request a reopen to add more work or costs.' : (j.canReopen ? 'Reopen it to add more work or costs.' : 'Ask a manager or the admin to reopen it.')}</p>`
         : !r.ready ? `<p class="err" style="margin-top:10px">⚠ ${isPartial ? 'Still missing before it can close fully' : 'Closure gate'} — ${r.missing.length} line(s):</p><ul>${r.missing.map((m) => `<li class="muted">${esc(m)}</li>`).join('')}</ul>` : `<p class="ok" style="margin-top:10px">✓ Fully priced — ready to close${partialOn ? ' fully' : ''}</p>`}
+      ${overCloseLimit && j.nextStates.includes('CLOSED') ? `<p style="margin-top:8px"><span class="badge amber">Above your limit</span> This job costs ${esc(money(j.closeLimit.value))}. Your limit for closing a job is ${esc(money(j.closeLimit.limit))}. Needs: ${esc(j.closeLimit.who_can.join(', '))}.</p>` : ''}
       ${reopens.length ? `<p class="muted" style="margin-top:10px;font-size:12px"><b>Reopen history</b></p><ul style="margin:4px 0 0">${reopens.map((x) => `<li class="muted" style="font-size:12px">${esc(String(x.reopened_at || '').slice(0, 10))} by ${esc(x.reopened_by_name || '—')} — ${esc(x.reason)}${x.prev_completed_at ? ` <span class="note">(was closed ${esc(String(x.prev_completed_at).slice(0, 10))})</span>` : ''}</li>`).join('')}</ul>` : ''}
       ${job.original_completed_at && !isClosed ? `<p class="muted" style="margin-top:8px;font-size:12px">↩ Reopened. When you close it again it goes back into <b>${esc(String(job.original_completed_at).slice(0, 7))}</b>'s cost report, so that month's figures do not change.</p>` : ''}
     </div>` : ''}
@@ -4297,8 +4305,14 @@ async function mrnDetail(body, id) {
   // imported. The approval is not disturbed; the item itself is marked, with the reason.
   const adminAmend = canDo('stores.mrn.amend_settled') && (astatus === 'approved' || isImported);
   const canCertify = !isImported && canDo('stores.mrn.certify') && astatus === 'requested';
-  const canApprove = canDo('stores.mrn.approve') && astatus === 'certified';
+  // Approval limit: above it, the Approve button gives way to who can approve instead.
+  const worth = d.worth;
+  const overLimit = !!(worth && worth.limit && !worth.limit.ok);
+  const canApprove = canDo('stores.mrn.approve') && astatus === 'certified' && !overLimit;
   const canReject = !isImported && canDo('stores.mrn.reject') && astatus !== 'approved' && astatus !== 'rejected';
+  const worthLine = worth ? `<p style="margin:8px 0 0;font-size:13px">Estimated value: <b>${esc(money(worth.value))}</b>
+      <span class="muted">— quantity × last price paid${worth.unpriced ? `; ${worth.unpriced} item(s) have no price yet, so the real cost may be higher` : ''}</span>
+      ${overLimit ? `<br><span class="badge amber">Above your approval limit (${esc(money(worth.limit.limit))})</span> Needs: ${esc(worth.limit.who_can.join(', '))}.` : ''}</p>` : '';
   body.innerHTML = `
     <div class="toolbar"><a class="btn sm" href="#/stores?tab=mrn">← MRN list</a><div class="spacer"></div><button class="btn sm primary" id="mrntrace">🔍 Trace Lifecycle</button> <a class="btn sm" href="/api/stores/mrn/${m.id}/print.html" target="_blank">🖨 Print MRN</a></div>
     <div class="card">
@@ -4307,6 +4321,7 @@ async function mrnDetail(body, id) {
         ${canApprove ? '<button class="sm primary" id="mapprove">✅ Approve</button>' : ''}
         ${canReject ? '<button class="sm danger" id="mreject">Reject</button>' : ''}
       </div>
+      ${worthLine}
       ${isImported ? `<p class="muted" style="margin:8px 0 0">Imported record — predates the approval workflow, so it is treated as already approved. No certification/approval is required.${adminAmend ? ' As an admin you may still add a forgotten item to it: the item is marked as added later, with your reason.' : ''}</p>` : `
       <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-top:8px;font-size:13px">
         <div><b>1 · Requested</b>${m.requested_sig ? `<div style="height:30px"><img src="${m.requested_sig}" style="max-height:30px;max-width:130px"></div>` : ''}<br>${sig(m.requested_by, m.req_date)}<br><span class="muted">Storekeeper</span></div>
@@ -8192,7 +8207,7 @@ routes.jobreview = async (c) => {
 routes.access = async (c) => {
   if (!canDo('access.manage', 'users.manage')) { c.innerHTML = '<div class="card err">You do not have access to this page.</div>'; return; }
   const tabs = [];
-  if (canDo('access.manage')) tabs.push(['roles', 'Roles & Permissions'], ['board', 'Clearance Board']);
+  if (canDo('access.manage')) tabs.push(['roles', 'Roles & Permissions'], ['board', 'Clearance Board'], ['limits', 'Approval limits']);
   if (canDo('users.manage')) tabs.push(['users', 'Users & Roles']);
   const sp = new URLSearchParams(location.hash.split('?')[1] || '');
   const tab = tabs.some((t) => t[0] === sp.get('tab')) ? sp.get('tab') : tabs[0][0];
@@ -8214,9 +8229,46 @@ routes.access = async (c) => {
   const pane = qs('#apane', c);
   if (tab === 'users') await renderUsersManager(pane);
   else if (tab === 'board') await renderClearanceBoard(pane);
+  else if (tab === 'limits') await renderApprovalLimits(pane);
   else await renderRolesManager(pane, sp.get('role'));
 };
 routes.users = async () => { location.hash = '#/access?tab=users'; };
+
+// Approval limits: the most money each role may sign off on its own. Empty = no limit, which is
+// how every role starts, so nothing changes until an amount is typed in. Saved on leaving the box.
+async function renderApprovalLimits(c) {
+  const d = await api('/access/approval-limits');
+  const mine = new Set(ME.roles || []);
+  const cell = (r, k) => {
+    if (!r.gives[k.key] && r.limits[k.key] == null) return '<td class="muted">—</td>';
+    const v = r.limits[k.key];
+    const locked = !isAdmin() && mine.has(r.name);
+    return `<td><input type="number" min="0" step="1" style="max-width:160px" placeholder="No limit" data-lrole="${esc(r.name)}" data-lkind="${esc(k.key)}"
+      value="${v == null ? '' : esc(v)}" data-was="${v == null ? '' : esc(v)}" ${locked ? 'disabled title="Your own role — ask an admin"' : ''}></td>`;
+  };
+  c.innerHTML = `<div class="card">
+    <h3 style="margin:0 0 6px">Approval limits</h3>
+    <p class="muted" style="margin:0 0 10px">The most money (Rs) a role may sign off on its own. Leave a box empty for <b>no limit</b>.
+      Above the limit, the approval waits for someone with a higher limit. Admin never has a limit.
+      A person with two roles gets the higher limit.</p>
+    ${d.roles.length ? tableWrap([{ label: 'Role' }].concat(d.kinds.map((k) => ({ label: k.label }))),
+      d.roles.map((r) => `<tr><td><b>${esc(r.label)}</b>${r.active ? '' : ' <span class="badge">retired</span>'}</td>${d.kinds.map((k) => cell(r, k)).join('')}</tr>`))
+      : '<p class="muted">No role gives these approvals yet.</p>'}
+    <ul class="muted" style="font-size:12px;margin:10px 0 0">${d.kinds.map((k) => `<li><b>${esc(k.label)}</b> — ${esc(k.measure)}.</li>`).join('')}
+      <li>Job cards and job requests have no amount when they are approved, so the limit for a job is checked when it is closed fully.</li></ul>
+  </div>`;
+  qsa('[data-lrole]', c).forEach((inp) => {
+    inp.onchange = async () => {
+      const val = inp.value.trim();
+      if (val === inp.dataset.was) return;
+      try {
+        await api('/access/approval-limits', { method: 'PUT', body: { role: inp.dataset.lrole, kind: inp.dataset.lkind, max_amount: val === '' ? null : val } });
+        inp.dataset.was = val;
+        toast(val === '' ? 'No limit' : `Limit saved: ${money(val)}`);
+      } catch (e) { inp.value = inp.dataset.was; toast(e.message, 'err'); }
+    };
+  });
+}
 
 const lvlChip = (lvl) => {
   const cls = lvl === 'full' ? 'amber' : lvl === 'edit' ? 'green' : '';

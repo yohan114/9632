@@ -40,7 +40,7 @@ biggest of those: 254 job cards are stuck in REQUESTED, and each one blocks a ne
 | Vehicle lubricant capacities on `main` | ✅ merged | PR #9 |
 | Crash log (start / stop / crash written to a file; a crash exits) | 🟡 built, **no PR yet** | branch `claude/crash-log` |
 | **Deploy all of the above to the VPS** | ❌ **not done** | §4, Step 0 |
-| Stage 1 — approval limits | ⏸ waits for your amounts (decision D7) | §4 |
+| Stage 1 — approval limits | 🟡 built; the amounts (decision D7) are typed in later on Access Control → Approval limits | branch `claude/approval-limits` |
 | Stages 2–7 — workshops, sites, stores, scoping, reports, field, operations | ⏳ not started | v1 plan §4 |
 
 The office server (port 1929) runs `claude/crash-log` = `main` + the crash log.

@@ -104,7 +104,7 @@ const fail = (msg, extra) => { const e = new Error(msg); e.status = 400; if (ext
  * All or nothing: one invalid entry refuses the whole batch, because a half-applied clean-up is
  * worse than none. Returns { rejected, closed, jobs: [...] }.
  */
-function applyReview(actions, { userId, reason, approvalRole = 'transport_manager' }) {
+function applyReview(actions, { userId, user = null, reason, approvalRole = 'transport_manager' }) {
   if (!Array.isArray(actions) || !actions.length) fail('Choose at least one card.');
   const why = String(reason || '').trim();
   if (why.length < 5) fail('Say why (a few words) — it goes on every card changed.');
@@ -123,6 +123,12 @@ function applyReview(actions, { userId, reason, approvalRole = 'transport_manage
       const d = String(a.close_date || '').slice(0, 10);
       if (!/^\d{4}-\d{2}-\d{2}$/.test(d) || Number.isNaN(Date.parse(d))) { problems.push(`${job.job_no}: needs a close date`); continue; }
       if (d > today()) { problems.push(`${job.job_no}: close date is in the future`); continue; }
+      // A close is a close: the person's approval limit applies here as on the job card.
+      if (user) {
+        const limits = require('./approval_limits');
+        const within = limits.check(user, 'job_close', limits.jobValue(job.id));
+        if (!within.ok) { problems.push(`${job.job_no}: costs ${limits.rs(within.value)}, above your limit of ${limits.rs(within.limit)}`); continue; }
+      }
       plan.push({ job, action: 'close', date: d });
       continue;
     }

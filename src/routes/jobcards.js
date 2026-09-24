@@ -12,6 +12,7 @@ const aliases = require('../lib/aliases');
 const mechanics = require('../lib/mechanics');
 const jobstate = require('../lib/jobstate');
 const closeLib = require('../lib/job_close');
+const approvalLimits = require('../lib/approval_limits');
 const attendance = require('../lib/attendance');
 const costing = require('../lib/costing');
 const jobno = require('../lib/jobno');
@@ -249,7 +250,7 @@ router.post('/review/apply', requireAuth, requireCap('jobs.triage'), asyncHandle
   let done;
   try {
     done = require('../lib/job_review').applyReview(req.body.actions, {
-      userId: req.user.id, reason: req.body.reason,
+      userId: req.user.id, user: req.user, reason: req.body.reason,
       approvalRole: hasCap(req.user, 'jobs.approve_operations') ? 'operational_manager' : 'transport_manager' });
   } catch (e) {
     if (e.status === 400) return res.status(400).json({ error: e.message, problems: (e.extra && e.extra.problems) || [] });
@@ -383,6 +384,9 @@ router.get(
       continues: job.continues_job_id ? get('SELECT id, job_no, status FROM job_cards WHERE id = ?', job.continues_job_id) : null,
       continuedAs: all('SELECT id, job_no, status FROM job_cards WHERE continues_job_id = ? ORDER BY id', id),
       workRecorded: closeLib.workRecorded(job),
+      // Approval limit for closing it fully: does this person's limit cover the job's cost?
+      closeLimit: job.status !== 'CLOSED' && hasCap(req.user, 'jobs.close', 'jobs.close_on_date')
+        ? approvalLimits.check(req.user, 'job_close', cost.total_cost) : null,
       reopens: all(
         `SELECT r.*, u.username AS reopened_by_name FROM job_reopens r
            LEFT JOIN users u ON u.id = r.reopened_by
@@ -437,6 +441,10 @@ router.post(
     if (target === 'CLOSED') {
       const fail = closeGate(job);
       if (fail) return res.status(409).json(fail);
+      // Approval limit: a job that costs more than this person may sign off is closed by someone
+      // with a higher limit.
+      const within = approvalLimits.check(req.user, 'job_close', approvalLimits.jobValue(id));
+      if (!within.ok) return res.status(403).json(approvalLimits.refusal(within, 'This job costs'));
     }
 
     if (check.def.action === 'ops_approve') {
@@ -556,6 +564,11 @@ router.post(
           const fail = closeGate(job);
           if (fail) {
             failed.push({ id, job_no: job.job_no, error: jobstate.partialCloseEnabled() ? fail.error : 'Not fully priced or has unissued store shelf parts', missing: fail.missing });
+            continue;
+          }
+          const within = approvalLimits.check(req.user, 'job_close', approvalLimits.jobValue(id));
+          if (!within.ok) {
+            failed.push({ id, job_no: job.job_no, error: approvalLimits.refusalText(within, 'This job costs'), over_limit: true });
             continue;
           }
         }
@@ -682,6 +695,9 @@ router.post(
         missing: out.missing,
       });
     }
+    // A full close, so the approval limit applies as for any other.
+    const within = approvalLimits.check(req.user, 'job_close', approvalLimits.jobValue(id));
+    if (!within.ok) return res.status(403).json(approvalLimits.refusal(within, 'This job costs'));
     tx(() => {
       // The chosen date is explicit user intent, so it wins over the original-month anchor —
       // but the anchor is dropped at the same time, or a later re-close would silently pull
