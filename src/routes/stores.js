@@ -566,6 +566,32 @@ function lineSearchRows(query) {
 
 router.get('/search', asyncHandler((req, res) => res.json(lineSearchRows(req.query))));
 
+// ---- Stores plan, Part 1: one list of every requested item, and the Monitor -------------------
+// Every line of every request with how far it has come (requested → approved → bought → received →
+// priced → issued), filtered by the step it waits at; and the counts of what waits at each step.
+// Your own workshops' requests (Stage 3/4). See src/lib/stores_flow.js.
+const storesFlow = require('../lib/stores_flow');
+router.get('/flow', asyncHandler((req, res) => res.json(storesFlow.lines(req.user, req.query))));
+router.get('/flow/monitor', asyncHandler((req, res) => res.json(storesFlow.monitor(req.user))));
+router.get('/flow/export.xlsx', asyncHandler(async (req, res) => {
+  const rows = storesFlow.lines(req.user, { ...req.query, limit: 5000 });
+  const STEP_LABEL = { requested: 'To certify', certified: 'To approve', to_buy: 'To buy', on_order: 'On order',
+    unpriced: 'To price', ready: 'Ready to issue', done: 'Done', rejected: 'Rejected', imported: 'Imported history' };
+  await sendXlsx(res, 'stores-requests.xlsx', [{
+    name: 'Requested items',
+    columns: [
+      { header: 'MRN No', key: 'mrn_no', width: 12 }, { header: 'Date', key: 'req_date', width: 12 },
+      { header: 'Vehicle', key: 'vehicle', width: 16 }, { header: 'Job No', key: 'job_no', width: 16 },
+      { header: 'Item', key: 'description', width: 40 }, { header: 'Kind', key: 'kind', width: 10 },
+      { header: 'Qty', key: 'qty', width: 8 }, { header: 'Received', key: 'received', width: 10 },
+      { header: 'Issued', key: 'issued', width: 9 }, { header: 'Awaiting price', key: 'unpriced', width: 13 },
+      { header: 'Value (Rs)', key: 'value', width: 13 }, { header: 'Step', key: 'step_label', width: 16 },
+    ],
+    rows: rows.map((r) => ({ ...r, vehicle: r.asset_reg || r.asset_code || '', req_date: String(r.req_date || '').slice(0, 10),
+      step_label: STEP_LABEL[r.step] || r.step })),
+  }]);
+}));
+
 router.get('/search/export.xlsx', asyncHandler(async (req, res) => {
   const rows = lineSearchRows({ ...req.query, limit: 10000 });
   await sendXlsx(res, 'stores-search.xlsx', [{
@@ -2139,6 +2165,11 @@ router.post('/grn/bulk-receive', requireCap('stores.grn.receive'), asyncHandler(
       if (!lineId || !(qty > 0)) continue;
       const line = get('SELECT id, mrn_id, description, qty, COALESCE(qty_received,0) qty_received FROM mrn_lines WHERE id = ?', lineId);
       if (!line) continue;
+      // Tyres and batteries are taken in under their own permission, here as on a single receipt.
+      if (!tbGrnAllowed(req.user, lineId)) {
+        skipped.push({ mrn_line_id: lineId, reason: 'your role may not take tyres or batteries into stores' });
+        continue;
+      }
       // Never let a receipt take a line past what was asked for — flag it instead.
       if (line.qty_received + qty > line.qty + 0.0001) {
         skipped.push({ mrn_line_id: lineId, reason: `would exceed the requested ${line.qty} (already ${line.qty_received})` });

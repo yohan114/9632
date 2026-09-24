@@ -3518,7 +3518,7 @@ async function storeCatalogueTab(body) {
 // ---- Stores
 routes.stores = async (c) => {
   const sp = new URLSearchParams(location.hash.split('?')[1] || '');
-  let tab = sp.get('tab') || 'pipeline';
+  let tab = sp.get('tab') || 'monitor';
 
   // If someone lands on legacy catalogue/categories/reorder/general/items tab, redirect to generalstock
   if (['catalogue', 'categories', 'reorder', 'general', 'items'].includes(tab)) {
@@ -3527,19 +3527,17 @@ routes.stores = async (c) => {
     return;
   }
 
-  // Four everyday areas up front. Movements is a group: it shows a
-  // sub-bar and then reuses the existing view underneath, so nothing had to be rewritten.
+  // One Stores page (stores plan, Part 1): the Monitor, one road from request to issue, and the
+  // transfers. The old tabs still answer: the pipeline hub and the item search became the list of
+  // requested items; "requests & receipts" and "issues & transfers" are its views and Transfers.
+  if (tab === 'pipeline' || tab === 'search') tab = 'lines';
+  if (tab === 'paperwork') tab = sp.get('sub') || 'mrn';
+  if (tab === 'movements') tab = sp.get('sub') || 'issues';
   const GROUPS = {
-    paperwork: { label: '📄 REQUESTS & RECEIPTS', subs: [['mrn', 'Requests (MRN)'], ['grn', 'Receipts (GRN)']] },
-    movements: { label: '🔁 ISSUES & TRANSFERS', subs: [['issues', 'Issues'], ['mtn', 'Transfers (MTN)']] },
+    flow: { label: '🔄 REQUESTS → ISSUE',
+      subs: [['lines', '📋 Items'], ['mrn', 'Requests (MRN)'], ['grn', 'Receipts (GRN)'], ['issues', 'Issues'], ['workspace', '⚡ Receive & price many']] },
   };
-  const PRIMARY = [
-    ['pipeline', '🔄 PIPELINE HUB'],
-    ['search', '🔎 SEARCH'],
-    ['workspace', '⚡ RECEIVE & PRICE'],
-    ['paperwork', GROUPS.paperwork.label],
-    ['movements', GROUPS.movements.label],
-  ];
+  const PRIMARY = [['monitor', '📊 MONITOR'], ['flow', GROUPS.flow.label], ['mtn', '🔁 TRANSFERS']];
 
   const group = GROUPS[tab] ? tab : null;
   if (group) tab = sp.get('sub') || GROUPS[group].subs[0][0];      // a group renders its sub-view
@@ -3547,88 +3545,19 @@ routes.stores = async (c) => {
 
   const isOn = (t) => (owner ? t === owner : t === tab);
   const primaryBar = `<div class="toolbar" style="margin-bottom:4px">${PRIMARY
-    .map(([t, l]) => `<button class="sm ${isOn(t) ? 'primary' : ''}" onclick="location.hash='#/stores?tab=${t}'">${l}</button>`).join('')}</div>`;
+    .map(([t, l]) => `<button class="sm ${isOn(t) ? 'primary' : ''}" onclick="location.hash='#/stores?tab=${t}'">${l}</button>`).join('')}
+    ${canView('stores') ? '<a class="btn sm" href="#/stocktake" title="Balances, counts and reorder levels of every kind of stock">📦 STOCK &amp; COUNTS</a>' : ''}</div>`;
   const subBar = owner ? `<div class="toolbar" style="margin:0 0 10px 0">${GROUPS[owner].subs
     .map(([s, l]) => `<button class="sm ${s === tab ? 'primary' : ''}" onclick="location.hash='#/stores?tab=${owner}&sub=${s}'">${l}</button>`).join('')}</div>` : '';
 
   c.innerHTML = pageHeader('Stores') + primaryBar + subBar + '<div id="storebody" class="muted">Loading…</div>';
   const body = qs('#storebody');
-  if (tab === 'pipeline') {
-    return pipelineTab(body, sp);
+  if (tab === 'monitor') {
+    return storesMonitor(body);
+  } else if (tab === 'lines') {
+    return storesLines(body, sp);
   } else if (tab === 'workspace') {
     return receivePriceTab(body);
-  } else if (tab === 'search') {
-    // One row per requested item — search by vehicle, MRN no, item, job, supplier or invoice,
-    // and sort by any column. Clicking a header toggles asc/desc.
-    const sp0 = new URLSearchParams(location.hash.split('?')[1] || '');
-    let sort = sp0.get('sort') || 'date_desc';
-    body.innerHTML = `
-      <div class="toolbar">
-        <input id="sxq" type="search" placeholder="Search vehicle / MRN no / item / job / supplier…" value="${esc(sp0.get('q') || '')}" style="max-width:320px">
-        <select id="sxsrc" style="max-width:150px"><option value="">All sources</option><option value="head_office">Head Office</option><option value="local_purchase">Local Purchase</option></select>
-        <select id="sxstatus" style="max-width:170px"><option value="">All statuses</option><option value="pending">Pending (not full)</option><option value="received">Fully received</option><option value="unpriced">Has unpriced GRN</option></select>
-        <button class="sm" id="sxclear">Clear</button>
-        <a class="btn sm" id="sxxls" href="#">⬇ Excel</a>
-        <div class="spacer"></div><span class="muted" id="sxcount"></span>
-      </div>
-      <div id="sxtable"><div class="muted">Type to search, or browse the latest requests below…</div></div>`;
-
-    const qstr = () => {
-      const q = qs('#sxq').value.trim(), src = qs('#sxsrc').value, st = qs('#sxstatus').value;
-      return (q ? '&q=' + encodeURIComponent(q) : '') + (src ? '&source=' + src : '') + (st ? '&status=' + st : '') + '&sort=' + sort;
-    };
-    // Header definitions: [label, sort key base, numeric?, sort tooltip]
-    // The received date rides UNDER the Recv quantity rather than taking a column of its own:
-    // this table is fit + no-hscroll (table-layout:fixed, no sideways scroll) and already runs
-    // 111px over its 992px box at eleven columns, so a twelfth takes ~9px off every other one
-    // and doubles the number of clipped cells. The header still sorts by the date.
-    const COLS = [
-      ['MRN No', 'mrn'], ['Req Date', 'date'], ['Vehicle', 'vehicle'], ['Item', 'item'],
-      ['Category', null], ['Qty', 'qty', true], ['Recv', 'received', true, 'Quantity received, and the date it arrived — sorts by that date'],
-      ['Pending', 'pending', true],
-      ['Status', 'status'], ['Source', null], ['Value (Rs)', 'value', true],
-    ];
-    const load = async () => {
-      qs('#sxxls').href = '/api/stores/search/export.xlsx?x=1' + qstr();
-      let list;
-      try { list = await api('/stores/search?limit=500' + qstr()); }
-      catch (e) { qs('#sxtable').innerHTML = `<div class="card err">${esc(e.message)}</div>`; return; }
-      qs('#sxcount').textContent = `${list.length}${list.length === 500 ? '+' : ''} item line(s)`;
-      const head = COLS.map(([label, key, num, hint]) => {
-        if (!key) return { label, num };
-        const active = sort === key + '_asc' || sort === key + '_desc';
-        const arrow = active ? (sort.endsWith('_asc') ? ' ▲' : ' ▼') : '';
-        return { label: `<span class="sxsort" data-k="${key}"${hint ? ` title="${esc(hint)}"` : ''} style="cursor:pointer;text-decoration:underline dotted">${esc(label)}${arrow}</span>`, num, html: true };
-      });
-      qs('#sxtable').innerHTML = list.length ? tableWrap(
-        head.map((h) => ({ label: h.label, num: h.num, html: h.html })),
-        list.map((r) => `<tr>
-          <td><a href="#/stores?tab=mrn&id=${r.mrn_id}">${esc(r.mrn_no || '')}</a></td>
-          <td>${esc(String(r.req_date || '').slice(0, 10))}</td>
-          <td>${r.asset_reg || r.asset_code ? `<span class="stamp">${esc(r.asset_reg || r.asset_code)}</span>` : '—'}</td>
-          <td class="desc-col">${esc(r.description || '')}${r.job_no ? ` <span class="muted" style="font-size:11px">· ${esc(r.job_no)}</span>` : ''}</td>
-          <td>${esc(r.category || '')}</td>
-          <td class="num">${num(r.qty)}</td>
-          <td class="num">${num(r.qty_received)}${receivedUnder(r)}</td>
-          <td class="num">${r.pending > 0 ? `<span class="badge amber">${num(r.pending)}</span>` : '—'}</td>
-          <td><span class="badge ${r.status === 'received' ? 'green' : (r.status === 'partial' ? 'blue' : '')}">${esc(r.status)}</span></td>
-          <td>${esc(sourceLabel(r.source))}</td>
-          <td class="num">${r.value ? money(r.value) : '—'}${r.unpriced ? ` <span class="badge amber" title="${r.unpriced} receipt(s) awaiting a price">${r.unpriced} unpriced</span>` : ''}</td></tr>`),
-        { scroll: true, fit: true, noHScroll: true })
-        : '<div class="card"><p class="muted">Nothing matches that search.</p></div>';
-      // Header sorting — same key toggles direction, a new key starts descending.
-      qsa('.sxsort', qs('#sxtable')).forEach((el) => {
-        el.onclick = () => {
-          const k = el.dataset.k;
-          sort = (sort === k + '_desc') ? k + '_asc' : k + '_desc';
-          load();
-        };
-      });
-    };
-    let sxdeb; qs('#sxq').oninput = () => { clearTimeout(sxdeb); sxdeb = setTimeout(load, 250); };
-    qs('#sxsrc').onchange = load; qs('#sxstatus').onchange = load;
-    qs('#sxclear').onclick = () => { qs('#sxq').value = ''; qs('#sxsrc').value = ''; qs('#sxstatus').value = ''; sort = 'date_desc'; load(); };
-    return load();
   } else if (tab === 'categories') {
     return categoriesTab(body);
   } else if (tab === 'general' || tab === 'catalogue') {
@@ -4073,273 +4002,154 @@ async function categoriesTab(body) {
 }
 
 // ---- Material Pipeline Cockpit Hub (ReQuest ➔ Received ➔ Issue) ------------
-async function pipelineTab(body, sp) {
-  let activeStage = sp.get('stage') || 'ready';
-  let searchTerm = sp.get('q') || '';
+// ---- Stores plan, Part 1: the Monitor and the list of requested items -------------------------
+// src/lib/stores_flow.js. Every requested item walks one road — requested, approved, bought,
+// received, priced, issued — and each screen here reads where it has got to.
+const FLOW_STEPS = [
+  ['open', 'All to do'], ['requested', 'To certify'], ['certified', 'To approve'], ['to_buy', 'To buy'],
+  ['on_order', 'On order'], ['unpriced', 'To price'], ['ready', 'Ready to issue'], ['done', 'Done'],
+  ['rejected', 'Rejected'], ['all', 'All (with imported history)'],
+];
+const FLOW_STEP_LABEL = Object.fromEntries(FLOW_STEPS.concat([['imported', 'Imported history']]));
+const FLOW_KINDS = [['', 'All kinds'], ['general', 'Parts & general'], ['oil', 'Lubricants'], ['filter', 'Filters'], ['tyre', 'Tyres'], ['battery', 'Batteries']];
+const FLOW_KIND_LABEL = Object.fromEntries(FLOW_KINDS);
+const ROAD_WORD = { done: 'done', part: 'part done', now: 'waiting here', todo: 'not yet', stop: 'stopped' };
+const roadBar = (r) => `<div class="road">${r.road.map((x) => `<span class="rd rd-${x.state}" title="${esc(x.label)}: ${ROAD_WORD[x.state] || x.state}">${esc(x.label)}</span>`).join('')}</div>`;
 
+async function storesMonitor(body) {
+  const m = await api('/stores/flow/monitor');
+  const s = m.steps;
+  const card = (n, label, href, tone, note) => `<a class="card stat" href="${href}" style="text-decoration:none">
+      <span class="n"${tone && n ? ` style="color:var(--${tone})"` : ''}>${n}</span><span class="l">${esc(label)}</span>${note ? `<span class="muted" style="font-size:11px">${esc(note)}</span>` : ''}</a>`;
+  const at = (step) => `#/stores?tab=flow&sub=lines&step=${step}`;
   body.innerHTML = `
-    <div style="margin-bottom:12px">
-      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
-        <div>
-          <h2 style="margin:0;font-size:18px">🔄 Material Pipeline Hub</h2>
-          <span class="muted" style="font-size:12px">End-to-end trace: Material Requisitions (MRN) ➔ Goods Received (GRN) ➔ Material Issues (Job Cards)</span>
-        </div>
-        <div style="display:flex;gap:6px">
-          ${canDo('stores.mrn.create') ? '<button class="sm" id="pipenewmrn">+ New Request (MRN)</button>' : ''}
-          ${canDo('stores.grn.receive') ? '<a class="btn sm" href="#/stores?tab=workspace&mode=receive">📥 Fast Receive</a>' : ''}
-          ${canDo('stores.stock_issue') ? '<button class="sm primary" id="pipenewissue">⚡ Direct Issue</button>' : ''}
-        </div>
-      </div>
+    <p class="muted" style="margin-top:0">What is waiting at each step${m.store ? ` — ${esc(m.store.label)}` : ''}. Click a number to see the items.</p>
+    <h3 style="margin:10px 0 6px">Requests</h3>
+    <div class="grid">
+      ${card(s.requested, 'To certify', at('requested'), 'amber', `${m.to_certify} request${m.to_certify === 1 ? '' : 's'}`)}
+      ${card(s.certified, 'To approve', at('certified'), 'amber', `${m.to_approve} request${m.to_approve === 1 ? '' : 's'}`)}
+      ${card(s.to_buy, 'To buy', at('to_buy'), 'amber')}
+      ${card(s.on_order, 'On order', at('on_order'))}
     </div>
-
-    <!-- 4 Pipeline Stage KPI Cards -->
-    <div class="grid" id="pipe-kpis" style="grid-template-columns:repeat(auto-fit, minmax(200px, 1fr));gap:12px;margin-bottom:14px">
-      <div class="card muted" style="padding:12px">Loading pipeline metrics…</div>
+    <h3 style="margin:14px 0 6px">In the store</h3>
+    <div class="grid">
+      ${card(m.received_today, 'Received today', '#/stores?tab=flow&sub=grn')}
+      ${card(s.unpriced, 'To price', at('unpriced'), 'amber', `${s.unpriced_receipts} receipt${s.unpriced_receipts === 1 ? '' : 's'} without a price`)}
+      ${card(s.ready, 'Ready to issue', at('ready'), 'blue', 'received for a job, not handed over')}
+      ${card(m.issued_today, 'Issued today', '#/stores?tab=flow&sub=issues')}
     </div>
+    <h3 style="margin:14px 0 6px">Watch</h3>
+    <div class="grid">
+      ${card(m.transfers_week, 'Transfers (7 days)', '#/stores?tab=mtn')}
+      ${card(m.low_stock, 'At or under reorder level', '#/stocktake', 'red')}
+      ${card(m.battery_warranty, 'Battery warranties ending (60 days)', '#/stocktake?tab=batteries', 'amber')}
+      ${card(s.open, 'All items still to do', at('open'))}
+    </div>`;
+}
 
-    <!-- Toolbar: Search & Actions -->
-    <div class="toolbar" style="margin-bottom:10px">
-      <input id="pipeq" type="search" placeholder="Search vehicle / item / MRN / GRN…" value="${esc(searchTerm)}" style="max-width:320px">
-      <button class="sm" id="pipeclear">Clear</button>
-      <button class="sm" id="piperefresh">🔄 Refresh</button>
+async function storesLines(body, sp) {
+  const cur = { step: sp.get('step') || 'open', kind: sp.get('kind') || '', q: sp.get('q') || '', source: sp.get('source') || '' };
+  if (!FLOW_STEPS.some(([k]) => k === cur.step)) cur.step = 'open';
+  const counts = await api('/stores/flow/monitor').then((m) => m.steps).catch(() => ({}));
+  body.innerHTML = `
+    <div class="toolbar">
+      <input id="flq" type="search" placeholder="Search request no / vehicle / item / job / supplier…" value="${esc(cur.q)}" style="max-width:300px">
+      <select id="flkind" style="max-width:160px">${FLOW_KINDS.map(([v, l]) => `<option value="${v}" ${v === cur.kind ? 'selected' : ''}>${l}</option>`).join('')}</select>
+      <select id="flsrc" style="max-width:160px"><option value="">All sources</option><option value="head_office" ${cur.source === 'head_office' ? 'selected' : ''}>Head Office</option><option value="local_purchase" ${cur.source === 'local_purchase' ? 'selected' : ''}>Local Purchase</option></select>
+      <a class="btn sm" id="flxls" href="#">⬇ Excel</a>
       <div class="spacer"></div>
-      <span class="muted" id="pipecount"></span>
+      ${canDo('stores.mrn.create') ? '<button class="sm" id="flnew">+ New request (MRN)</button>' : ''}
+      ${canDo('stores.stock_issue') ? '<button class="sm primary" id="flissue">⚡ Direct issue</button>' : ''}
     </div>
-
-    <!-- Stage Table Content -->
-    <div id="pipetable"><div class="muted">Loading stage data…</div></div>
-  `;
-
-  // Wire top action buttons
-  const btnNewMrn = qs('#pipenewmrn', body);
-  if (btnNewMrn) btnNewMrn.onclick = () => newMrnModal();
-  const btnNewIssue = qs('#pipenewissue', body);
-  if (btnNewIssue) btnNewIssue.onclick = () => newIssueModal(() => loadData(activeStage));
-
-  const inputQ = qs('#pipeq', body);
-  const btnClear = qs('#pipeclear', body);
-  const btnRefresh = qs('#piperefresh', body);
-
-  if (btnClear) btnClear.onclick = () => { inputQ.value = ''; searchTerm = ''; loadData(activeStage); };
-  if (btnRefresh) btnRefresh.onclick = () => loadData(activeStage);
-
-  let searchTimer = null;
-  inputQ.oninput = () => {
-    clearTimeout(searchTimer);
-    searchTimer = setTimeout(() => {
-      searchTerm = inputQ.value.trim();
-      loadStageTable(activeStage);
-    }, 250);
+    <div class="pill-row" style="margin:0 0 10px;flex-wrap:wrap;gap:6px">${FLOW_STEPS.map(([k, l]) => `<button class="sm ${k === cur.step ? 'primary' : ''}" data-step="${k}">${esc(l)}${counts[k] != null ? ` <span class="badge">${counts[k]}</span>` : ''}</button>`).join('')}</div>
+    <div id="fltable"><div class="muted">Loading…</div></div>`;
+  const qstr = () => {
+    const p = new URLSearchParams({ step: cur.step });
+    if (cur.kind) p.set('kind', cur.kind);
+    if (cur.q) p.set('q', cur.q);
+    if (cur.source) p.set('source', cur.source);
+    return p.toString();
   };
-
-  let summary = null;
-  async function loadSummary() {
-    try {
-      summary = await api('/stores/pipeline/summary');
-    } catch (e) {
-      summary = { requests_pending: 0, awaiting_delivery: 0, ready_in_store: 0, issued_today: 0 };
-    }
-    renderKpis();
-  }
-
-  function renderKpis() {
-    const kpisEl = qs('#pipe-kpis', body);
-    if (!kpisEl || !summary) return;
-    const stages = [
-      { id: 'requests', num: '1', title: 'ReQuests (MRN)', count: summary.requests_pending, note: 'Pending approvals', icon: '📝' },
-      { id: 'delivery', num: '2', title: 'Awaiting Delivery', count: summary.awaiting_delivery, note: 'Ordered items', icon: '🚚' },
-      { id: 'ready', num: '3', title: 'Ready in Store', count: summary.ready_in_store, note: 'On shelf waiting to issue', icon: '📦' },
-      { id: 'issued', num: '4', title: 'Issued to Jobs', count: summary.issued_today, note: 'Issued today', icon: '⚡' },
-    ];
-
-    kpisEl.innerHTML = stages.map((s) => `
-      <div class="card ${s.id === activeStage ? 'pipe-card-active' : ''}" data-pipe-stage="${s.id}" style="cursor:pointer;padding:12px;transition:all 0.15s ease">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
-          <span style="font-size:12px;font-weight:600;color:var(--text-muted)">STAGE ${s.num}</span>
-          <span style="font-size:18px">${s.icon}</span>
-        </div>
-        <div style="font-size:22px;font-weight:700;margin-bottom:2px">
-          ${num(s.count)}
-        </div>
-        <div style="font-size:13px;font-weight:600">${esc(s.title)}</div>
-        <div class="muted" style="font-size:11px">${esc(s.note)}</div>
-      </div>
-    `).join('');
-
-    qsa('[data-pipe-stage]', kpisEl).forEach((card) => {
-      card.onclick = () => {
-        const stage = card.dataset.pipeStage;
-        if (stage === activeStage) return;
-        activeStage = stage;
-        qsa('[data-pipe-stage]', kpisEl).forEach((c) => c.classList.toggle('pipe-card-active', c.dataset.pipeStage === activeStage));
-        loadStageTable(activeStage);
+  const canRx = canDo('stores.grn.receive');
+  const canPrice = canDo('stores.grn.edit');
+  const canIssue = canDo('stores.stock_issue');
+  const load = async () => {
+    history.replaceState(null, '', '#/stores?tab=flow&sub=lines&' + qstr());
+    qs('#flxls', body).href = '/api/stores/flow/export.xlsx?' + qstr();
+    let rows;
+    try { rows = await api('/stores/flow?limit=300&' + qstr()); } catch (e) { qs('#fltable', body).innerHTML = `<div class="card err">${esc(e.message)}</div>`; return; }
+    const tb = (r) => r.kind === 'tyre' || r.kind === 'battery';
+    const actions = (r) => {
+      const b = [];
+      const live = !['rejected', 'imported'].includes(r.step);
+      const approved = r.road[1].state === 'done';
+      if (live && canRx && approved && r.received < r.qty - 0.001) b.push(`<button class="sm" data-rx="${r.id}">📥 Receive</button>`);
+      if (canPrice && r.price_grn) b.push(`<button class="sm" data-price="${r.id}">💲 Price</button>`);
+      if (live && r.on_shelf > 0) {
+        if (tb(r)) b.push('<a class="btn sm" href="#/tbrequests" title="Tyres and batteries are fitted from the Tyre &amp; Battery page">⚡ Issue</a>');
+        else if (canIssue && r.shelf) b.push(`<button class="sm primary" data-iss="${r.id}">⚡ Issue</button>`);
+      }
+      b.push(`<a class="btn sm" href="#/stores?tab=mrn&id=${r.mrn_id}">Open</a>`);
+      return b.join(' ');
+    };
+    const byId = new Map(rows.map((r) => [String(r.id), r]));
+    qs('#fltable', body).innerHTML = rows.length ? tableWrap(
+      [{ label: 'Request' }, { label: 'Item', cls: 'desc-col' }, { label: 'Progress' }, { label: '' }],
+      rows.map((r) => `<tr>
+        <td><a href="#/stores?tab=mrn&id=${r.mrn_id}"><b>${esc(r.mrn_no || '')}</b></a> <span class="muted" style="font-size:11px">${esc(String(r.req_date || '').slice(0, 10))}${wsMulti() && r.workshop_code ? ' · ' + esc(r.workshop_code) : ''}</span>
+          <br>${r.asset_reg || r.asset_code ? `<span class="stamp">${esc(r.asset_reg || r.asset_code)}</span>` : (r.request_type === 'general' ? '<span class="muted" style="font-size:12px">Store stock</span>' : '')}${r.job_no ? ` <a href="#/jobs/${r.job_id}" style="font-size:11px">${esc(r.job_no)}</a>` : ''}</td>
+        <td class="desc-col">${esc(r.description || '')} <span class="badge">${esc(FLOW_KIND_LABEL[r.kind] || r.kind)}</span>
+          <br><span class="muted" style="font-size:12px">received ${num(r.received)} of ${num(r.qty)}${r.issued > 0 ? ` · issued ${num(r.issued)}` : ''}</span>${r.unpriced ? ` <span class="badge amber">${r.unpriced} unpriced</span>` : ''}</td>
+        <td>${roadBar(r)}<span class="muted" style="font-size:11px">${esc(FLOW_STEP_LABEL[r.step] || r.step)}</span></td>
+        <td><div style="display:flex;flex-wrap:wrap;gap:4px;justify-content:flex-end">${actions(r)}</div></td></tr>`),
+      { scroll: true })
+      + (rows.length === 300 ? '<p class="muted" style="font-size:12px">Showing the newest 300. Search or choose a step to narrow the list.</p>' : '')
+      : '<div class="card"><p class="muted">Nothing here.</p></div>';
+    qsa('[data-rx]', body).forEach((b) => { b.onclick = () => flowReceiveModal(byId.get(b.dataset.rx), load); });
+    qsa('[data-price]', body).forEach((b) => { b.onclick = () => grnPriceModal(byId.get(b.dataset.price).price_grn, load); });
+    qsa('[data-iss]', body).forEach((b) => {
+      b.onclick = () => {
+        const r = byId.get(b.dataset.iss);
+        newIssueModal(load, { grn_id: r.shelf.grn_id, grn_no: r.shelf.grn_no, mrn_no: r.mrn_no, description: r.description, section: r.shelf.section,
+          unit: r.shelf.unit, unit_price: r.shelf.unit_price, remaining: r.shelf.remaining, job_id: r.job_id, job_no: r.job_no,
+          asset_id: r.asset_id, asset_code: r.asset_reg || r.asset_code });
       };
     });
-  }
+  };
+  qsa('[data-step]', body).forEach((b) => { b.onclick = () => { cur.step = b.dataset.step; qsa('[data-step]', body).forEach((x) => x.classList.toggle('primary', x === b)); load(); }; });
+  qs('#flkind', body).onchange = (e) => { cur.kind = e.target.value; load(); };
+  qs('#flsrc', body).onchange = (e) => { cur.source = e.target.value; load(); };
+  let deb; qs('#flq', body).oninput = (e) => { clearTimeout(deb); deb = setTimeout(() => { cur.q = e.target.value.trim(); load(); }, 250); };
+  if (qs('#flnew', body)) qs('#flnew', body).onclick = () => newMrnModal();
+  if (qs('#flissue', body)) qs('#flissue', body).onclick = () => newIssueModal(load);
+  await load();
+}
 
-  async function loadStageTable(stage) {
-    const tableBox = qs('#pipetable', body);
-    const countEl = qs('#pipecount', body);
-    tableBox.innerHTML = '<div class="muted" style="padding:16px 0">Loading…</div>';
-    countEl.textContent = '';
-
-    const q = searchTerm ? '&q=' + encodeURIComponent(searchTerm) : '';
-
-    if (stage === 'ready') {
+// Mark an item received: how many came, when, and — if known — from whom and at what price. The
+// price can follow later. The server refuses more than was asked for.
+function flowReceiveModal(r, onDone) {
+  const left = Math.round((r.qty - r.received) * 100) / 100;
+  modal('Mark received · ' + r.description, `
+    <p class="muted" style="margin-top:0">Request ${esc(r.mrn_no)} · asked ${num(r.qty)} · received so far ${num(r.received)}</p>
+    ${field('Quantity received now *', 'qty', { type: 'number', value: left })}
+    ${field('Date received', 'delivery_date', { type: 'date', value: localNowInput().slice(0, 10) })}
+    <div class="row"><div>${field('Supplier', 'supplier', { value: r.bought_from || '' })}</div><div>${field('Invoice no', 'invoice_no')}</div></div>
+    ${field('Unit price (Rs) — can be added later', 'unit_price', { type: 'number' })}
+    ${r.kind === 'filter' ? field('Part number on the box, if different', 'received_part_no') : ''}
+    <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Mark received</button></div>`, (mb, close) => {
+    qs('#s', mb).onclick = async () => {
+      const f = formData(mb);
+      if (!(Number(f.qty) > 0)) return toast('How many arrived?', 'err');
       try {
-        const list = await api('/stores/received?allow_empty=1&limit=300' + q);
-        countEl.textContent = `${list.length} shelf item(s)`;
-        if (!list.length) {
-          tableBox.innerHTML = '<div class="card muted" style="padding:20px;text-align:center">No received items currently waiting in store. Everything is fully issued!</div>';
-          return;
-        }
-        const rows = list.map((r) => {
-          const jobOrVeh = r.job_no
-            ? `<a href="#/jobs/${r.job_id}">Job ${esc(r.job_no)}</a>${r.asset_reg || r.asset_code ? ` <span class="stamp">${esc(r.asset_reg || r.asset_code)}</span>` : ''}`
-            : (r.asset_reg || r.asset_code ? `<span class="stamp">${esc(r.asset_reg || r.asset_code)}</span>` : '<span class="muted">General</span>');
-
-          const issueData = {
-            job_id: r.job_id,
-            job_no: r.job_no,
-            asset_id: r.asset_id,
-            grn_id: r.grn_id,
-            mrn_no: r.mrn_no,
-            grn_no: r.grn_no,
-            description: r.description,
-            remaining: r.remaining,
-            unit_price: r.unit_price,
-          };
-
-          const actBtn = canDo('stores.stock_issue')
-            ? `<button class="sm primary pipe-issue-btn" data-shelf-item='${esc(JSON.stringify(issueData))}'>⚡ Issue to Job</button>`
-            : '—';
-
-          return `<tr>
-            <td>${r.mrn_id ? `<a href="#/stores?tab=mrn&id=${r.mrn_id}">${esc(r.mrn_no || 'MRN')}</a>` : '—'}</td>
-            <td>${esc(String(r.received_date || '').slice(0, 10))}</td>
-            <td>${jobOrVeh}</td>
-            <td class="desc-col"><b>${esc(r.description || '')}</b></td>
-            <td>${esc(r.category || 'general')}</td>
-            <td class="num">${num(r.qty)}</td>
-            <td class="num">${num(r.qty - r.remaining)}</td>
-            <td class="num"><span class="pipe-badge avail">● ${num(r.remaining)}</span></td>
-            <td class="num">${r.unit_price != null ? money(r.unit_price) : '<span class="badge amber">unpriced</span>'}</td>
-            <td class="num">${r.unit_price != null ? money(r.remaining * r.unit_price) : '—'}</td>
-            <td>${actBtn}</td>
-          </tr>`;
-        });
-
-        tableBox.innerHTML = tableWrap([
-          { label: 'MRN' }, { label: 'Date Recd' }, { label: 'Target / Vehicle' },
-          { label: 'Item Description' }, { label: 'Category' },
-          { label: 'Qty Recd', num: true }, { label: 'Issued', num: true },
-          { label: 'Ready on Shelf', num: true }, { label: 'Unit Price', num: true },
-          { label: 'Value', num: true }, { label: 'Action' }
-        ], rows);
-
-        qsa('.pipe-issue-btn', tableBox).forEach((b) => {
-          b.onclick = () => {
-            try {
-              const item = JSON.parse(b.dataset.shelfItem);
-              newIssueModal(() => { loadSummary(); loadStageTable('ready'); }, item);
-            } catch (err) { console.error(err); }
-          };
-        });
-      } catch (e) {
-        tableBox.innerHTML = `<div class="card err">${esc(e.message)}</div>`;
-      }
-    } else if (stage === 'requests') {
-      try {
-        let list = await api('/stores/mrn?approval=pending&limit=100' + q);
-        countEl.textContent = `${list.length} pending request(s)`;
-        if (!list.length) {
-          tableBox.innerHTML = '<div class="card muted" style="padding:20px;text-align:center">No active material requests pending approval. All caught up!</div>';
-          return;
-        }
-        const rows = list.map((m) => `<tr>
-          <td><a href="#/stores?tab=mrn&id=${m.id}"><b>${esc(m.mrn_no)}</b></a></td>
-          <td>${esc(String(m.req_date || '').slice(0, 10))}</td>
-          <td>${m.asset_reg || m.asset_code ? `<span class="stamp">${esc(m.asset_reg || m.asset_code)}</span>` : esc(m.purpose || 'General')}</td>
-          <td>${esc(m.requested_by || '—')}</td>
-          <td class="num">${num(m.line_count)}</td>
-          <td><span class="badge amber">${esc(m.approval_status || m.status)}</span></td>
-          <td><a class="btn sm" href="#/stores?tab=mrn&id=${m.id}">Open MRN →</a></td>
-        </tr>`);
-
-        tableBox.innerHTML = tableWrap([
-          { label: 'MRN No' }, { label: 'Req Date' }, { label: 'Target / Vehicle' },
-          { label: 'Requested By' }, { label: 'Lines', num: true },
-          { label: 'Status' }, { label: 'Action' }
-        ], rows);
-      } catch (e) {
-        tableBox.innerHTML = `<div class="card err">${esc(e.message)}</div>`;
-      }
-    } else if (stage === 'delivery') {
-      try {
-        const list = await api('/stores/awaiting-grn?limit=200' + q);
-        countEl.textContent = `${list.length} item line(s) awaiting delivery`;
-        if (!list.length) {
-          tableBox.innerHTML = '<div class="card muted" style="padding:20px;text-align:center">No items awaiting delivery.</div>';
-          return;
-        }
-        const rows = list.map((r) => `<tr>
-          <td><a href="#/stores?tab=mrn&id=${r.mrn_id}">${esc(r.mrn_no)}</a></td>
-          <td>${esc(String(r.req_date || '').slice(0, 10))}</td>
-          <td>${r.asset_code ? `<span class="stamp">${esc(r.asset_code)}</span>` : '<span class="muted">General</span>'}</td>
-          <td class="desc-col"><b>${esc(r.description || '')}</b></td>
-          <td>${esc(r.category || '—')}</td>
-          <td class="num">${num(r.qty)}</td>
-          <td class="num">${num(r.qty_received || 0)}</td>
-          <td class="num"><span class="pipe-badge pend">${num(r.qty - (r.qty_received || 0))}</span></td>
-          <td>${esc(r.purchase_source || '—')}</td>
-          <td><a class="btn sm primary" href="#/stores?tab=workspace&mode=receive">📥 Receive →</a></td>
-        </tr>`);
-
-        tableBox.innerHTML = tableWrap([
-          { label: 'MRN No' }, { label: 'Req Date' }, { label: 'Vehicle' },
-          { label: 'Item Description' }, { label: 'Category' },
-          { label: 'Qty Req', num: true }, { label: 'Qty Recd', num: true },
-          { label: 'Pending Qty', num: true }, { label: 'Source' }, { label: 'Action' }
-        ], rows);
-      } catch (e) {
-        tableBox.innerHTML = `<div class="card err">${esc(e.message)}</div>`;
-      }
-    } else if (stage === 'issued') {
-      try {
-        const list = await api('/stores/issues?limit=100' + q);
-        countEl.textContent = `${list.length} recent issue(s)`;
-        if (!list.length) {
-          tableBox.innerHTML = '<div class="card muted" style="padding:20px;text-align:center">No issues found.</div>';
-          return;
-        }
-        const rows = list.map((i) => `<tr>
-          <td>${esc(String(i.issue_date || '').slice(0, 10))}</td>
-          <td>${i.job_no ? `<a href="#/jobs/${i.job_id}">Job ${esc(i.job_no)}</a>` : (i.asset_reg || i.asset_code ? `<span class="stamp">${esc(i.asset_reg || i.asset_code)}</span>` : '<span class="muted">General</span>')}</td>
-          <td class="desc-col">${esc(i.description || '')}</td>
-          <td class="num">${num(i.qty)}</td>
-          <td>${esc(i.category || '—')}</td>
-          <td>${esc(i.issued_by || '—')}</td>
-          <td class="num">${i.unit_price != null ? money(i.unit_price) : '—'}</td>
-          <td class="num">${i.unit_price != null ? money(i.qty * i.unit_price) : '—'}</td>
-        </tr>`);
-
-        tableBox.innerHTML = tableWrap([
-          { label: 'Date' }, { label: 'Job / Vehicle' }, { label: 'Item' },
-          { label: 'Qty', num: true }, { label: 'Category' }, { label: 'Issued By' },
-          { label: 'Unit Price', num: true }, { label: 'Total Value', num: true }
-        ], rows);
-      } catch (e) {
-        tableBox.innerHTML = `<div class="card err">${esc(e.message)}</div>`;
-      }
-    }
-  }
-
-  async function loadData(stage) {
-    await loadSummary();
-    await loadStageTable(stage);
-  }
-
-  await loadData(activeStage);
+        const res = await api('/stores/grn/bulk-receive', { method: 'POST', body: { rows: [{
+          mrn_line_id: r.id, qty: f.qty, delivery_date: f.delivery_date || undefined, supplier: f.supplier || undefined,
+          invoice_no: f.invoice_no || undefined, unit_price: f.unit_price === '' ? undefined : f.unit_price, received_part_no: f.received_part_no || undefined,
+        }] } });
+        if (!res.received) return toast('Not received: ' + (((res.skipped || [])[0] || {}).reason || 'nothing to receive'), 'err');
+        close(); toast('Received ' + num(f.qty)); if (onDone) onDone();
+      } catch (e) { toast(e.message, 'err'); }
+    };
+  });
 }
 
 // ---- Receive & Price workspace ---------------------------------------------
