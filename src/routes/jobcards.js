@@ -832,7 +832,7 @@ router.post(
     { const g = jobstate.checkAdd(job, 'daily_work', { user: req.user, dates: [workDate] }); if (!g.ok) return res.status(g.status).json(g.body); }
     const isExternal = b.is_external ? 1 : 0;
     // A signed-off day is locked (attendance, src/lib/attendance.js).
-    { const g = attendance.checkDaysOpen([workDate]); if (!g.ok) return res.status(g.status).json(g.body); }
+    { const g = attendance.checkDaysOpen([workDate], job.workshop_id); if (!g.ok) return res.status(g.status).json(g.body); }
     const hours = toNum(b.hours, 0);
 
     // A single entry may list several mechanics ("Buddhika, Krishna"). Split into
@@ -917,7 +917,7 @@ router.delete(
     const row = get('SELECT * FROM job_daily_work WHERE id = ? AND job_id = ?', lineId, id);
     { const g = jobstate.checkAdd(job, 'daily_work', { user: req.user, dates: row ? [row.work_date] : [] }); if (!g.ok) return res.status(g.status).json(g.body); }
     if (!row) return res.status(404).json({ error: 'Entry not found on this job' });
-    { const g = attendance.checkDaysOpen([row.work_date]); if (!g.ok) return res.status(g.status).json(g.body); }
+    { const g = attendance.checkDaysOpen([row.work_date], job.workshop_id); if (!g.ok) return res.status(g.status).json(g.body); }
 
     // ensure, not read: on a database that has never had a general entry the card does not exist,
     // and a 0 here would turn "send it back" into "destroy it".
@@ -1089,7 +1089,7 @@ router.post('/:id/daily-work/attach', requireAuth, requireCap('jobs.dailywork'),
     return res.status(409).json({ error: 'Some of those entries are already on a job card — reload and try again' });
   }
   // Moving a line off the pool changes a signed-off day's daily work too.
-  { const g = attendance.checkDaysOpen(rows.map((r) => r.work_date)); if (!g.ok) return res.status(g.status).json(g.body); }
+  { const g = attendance.checkDaysOpen(rows.map((r) => r.work_date), job.workshop_id); if (!g.ok) return res.status(g.status).json(g.body); }
   // Claiming a line for a card also settles which machine it was on — but only when the line does
   // not already say. A line that names a DIFFERENT vehicle from the card is somebody's record, and
   // overwriting it would erase the one signal that the wrong row is being attached.

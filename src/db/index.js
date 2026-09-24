@@ -651,6 +651,7 @@ function migrate() {
 
   workshopsStage2();
   storesStage4();
+  signoffsPerWorkshop();
 
   // Seed the RBAC matrix once (safe to require here — db exports are already set).
   try { require('../lib/permissions').seedDefaults(); } catch (e) { /* table may not exist yet on very first pass */ }
@@ -804,6 +805,32 @@ function storesStage4() {
     db.exec(`CREATE TRIGGER IF NOT EXISTS trg_${t}_store AFTER INSERT ON ${t} WHEN NEW.store_id IS NULL
              BEGIN UPDATE ${t} SET store_id = ${expr} WHERE id = NEW.id; END;`);
   }
+}
+
+// Stage 4: a day is signed off per workshop once the workshops are kept apart. workday_signoffs was
+// made with work_date UNIQUE, which SQLite cannot change in place — so the table is rebuilt once,
+// every row kept as a whole-company sign-off (workshop_id 0, which is what it was).
+function signoffsPerWorkshop() {
+  const cur = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='workday_signoffs'").get();
+  if (!cur || /workshop_id/.test(cur.sql)) return;
+  db.transaction(() => {
+    db.exec(`
+      CREATE TABLE workday_signoffs_new (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        work_date     TEXT NOT NULL,
+        workshop_id   INTEGER NOT NULL DEFAULT 0,
+        signed_by     INTEGER REFERENCES users(id),
+        signed_at     TEXT,
+        unlocked_by   INTEGER REFERENCES users(id),
+        unlocked_at   TEXT,
+        unlock_reason TEXT,
+        UNIQUE (work_date, workshop_id)
+      );
+      INSERT INTO workday_signoffs_new (id, work_date, workshop_id, signed_by, signed_at, unlocked_by, unlocked_at, unlock_reason)
+        SELECT id, work_date, 0, signed_by, signed_at, unlocked_by, unlocked_at, unlock_reason FROM workday_signoffs;
+      DROP TABLE workday_signoffs;
+      ALTER TABLE workday_signoffs_new RENAME TO workday_signoffs;`);
+  })();
 }
 
 function ensureColumn(table, col, def) {

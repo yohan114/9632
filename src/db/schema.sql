@@ -1015,15 +1015,18 @@ CREATE INDEX IF NOT EXISTS idx_attendance_date ON mechanic_attendance(work_date)
 
 -- A supervisor signs off a day once nobody is red. A signed-off day's attendance
 -- AND daily work are locked until someone with attendance.unlock unlocks it with a
--- reason. One row per day; every sign-off and unlock is also in audit_log.
+-- reason. One row per day — per workshop once the workshops are kept apart (Stage 4:
+-- workshop_id; 0 = the whole company, as before). Every sign-off and unlock is also in audit_log.
 CREATE TABLE IF NOT EXISTS workday_signoffs (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
-  work_date     TEXT NOT NULL UNIQUE,
+  work_date     TEXT NOT NULL,
+  workshop_id   INTEGER NOT NULL DEFAULT 0,
   signed_by     INTEGER REFERENCES users(id),
   signed_at     TEXT,
   unlocked_by   INTEGER REFERENCES users(id),
   unlocked_at   TEXT,
-  unlock_reason TEXT
+  unlock_reason TEXT,
+  UNIQUE (work_date, workshop_id)
 );
 
 -- Workshops (multi-site Stage 2): a place that repairs vehicles, with its own mechanics and job

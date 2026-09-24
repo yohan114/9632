@@ -29,7 +29,9 @@ const scope = require('../lib/scope');
 // signed off (attendance, src/lib/attendance.js) is locked — nothing on it changes until a
 // manager unlocks it. While attendance is switched off there is no lock.
 function assertDailyWorkAllowed(jobId, user, dates = []) {
-  attendance.assertDaysOpen(dates);
+  // The day lock of the card's own workshop (Stage 4; the whole company's while not kept apart).
+  const card = jobId ? get('SELECT workshop_id FROM job_cards WHERE id = ?', jobId) : null;
+  attendance.assertDaysOpen(dates, card && card.workshop_id);
   if (!jobId) return;
   // Stage 3: only your own workshop's cards (head office and store staff: any).
   const notMine = scope.jobRefusal(user, jobId);
@@ -521,7 +523,7 @@ router.get('/', asyncHandler((req, res) => {
     external_value: Math.round(external_value * 100) / 100,
     entries,
     // Only while attendance is on: a signed-off day's lines cannot be changed.
-    ...(attendance.isEnabled() ? { locked: attendance.isLocked(date) } : {}),
+    ...(attendance.isEnabled() ? { locked: attendance.isLocked(date, attendance.settings(), scope.onlyWorkshop(req.user, { store: false }) || workshops.homeOf(req.user)) } : {}),
   });
 }));
 
@@ -543,7 +545,7 @@ router.post('/', requireCap('dailywork.add'), asyncHandler((req, res) => {
   let autoCreated = false;
   const rawVeh = String(b.asset || '').trim();
   // Before anything is created: a vehicle with no card would otherwise get a new one for a locked day.
-  attendance.assertDaysOpen([date]);
+  attendance.assertDaysOpen([date], workshops.homeOf(req.user));
 
   const forVehicle = (assetId) => {
     const r = autoVehicleJob(assetId, date, rawVeh || null, req.user);
@@ -608,7 +610,7 @@ router.post('/bulk-log', requireCap('dailywork.edit'), asyncHandler((req, res) =
 
   const rawEntries = Array.isArray(b.entries) ? b.entries : [];
   if (!rawEntries.length) return res.status(400).json({ error: 'entries array required' });
-  attendance.assertDaysOpen([date]);
+  attendance.assertDaysOpen([date], workshops.homeOf(req.user));
 
   const affectedJobs = new Set();
   const createdIds = [];

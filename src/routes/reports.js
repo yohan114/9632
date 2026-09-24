@@ -24,6 +24,27 @@ function currentBalance(productId) {
 }
 
 // ---- dashboard ------------------------------------------------------------
+// Stage 4: the workshops whose attendance day this person looks after — the whole company (null)
+// while the workshops are not kept apart; your own when kept to it; head office, every workshop.
+function attendanceWorkshops(user) {
+  const scope = require('../lib/scope');
+  if (!scope.enabled()) return [null];
+  const own = scope.onlyWorkshop(user, { store: false });
+  if (own) return [own];
+  return all('SELECT id FROM workshops WHERE active = 1 ORDER BY is_default DESC, name').map((w) => w.id);
+}
+
+/** Days waiting for sign-off, for each of those workshops, named when there is more than one. */
+function unsignedFor(wsList) {
+  const att = require('../lib/attendance');
+  const out = [];
+  for (const ws of wsList) {
+    const name = ws ? get('SELECT name FROM workshops WHERE id = ?', ws).name : null;
+    for (const d of att.unsignedDays({ ws })) out.push(ws ? { ...d, workshop_id: ws, workshop_name: name } : d);
+  }
+  return out.sort((a, b) => String(b.date).localeCompare(String(a.date)));
+}
+
 router.get('/dashboard', asyncHandler((req, res) => {
   // Stage 3: the job-card figures are your own workshop's (head office and store staff: all).
   const own = require('../lib/scope').filter(req.user, 'j.workshop_id');
@@ -67,9 +88,14 @@ router.get('/dashboard', asyncHandler((req, res) => {
   const permissions = require('../lib/permissions');
   if (att.isEnabled() && permissions.meets(permissions.levelForRoles(req.user.roles || [], 'dailywork'), 'view')) {
     const t = att.today();
-    const d = att.day(t);
-    attendance_today = { date: t, red_count: d.red_count, counts: d.counts, locked: d.locked, before_start: d.before_start,
-      unsigned_days: att.unsignedDays() };
+    // Stage 4: your own workshop's day; head office, every workshop's added up.
+    const wsList = attendanceWorkshops(req.user);
+    const days = wsList.map((ws) => att.day(t, { ws }));
+    const counts = {};
+    for (const d of days) for (const [k, n] of Object.entries(d.counts)) counts[k] = (counts[k] || 0) + n;
+    attendance_today = { date: t, red_count: days.reduce((n, d) => n + d.red_count, 0), counts,
+      locked: days.every((d) => d.locked), before_start: days[0].before_start,
+      unsigned_days: unsignedFor(wsList) };
   }
 
   res.json({
@@ -894,7 +920,7 @@ router.get('/pending-approvals', asyncHandler((req, res) => {
   }
   // Days waiting for their sign-off (W3) — for whoever signs days off, while attendance is on.
   const signoffQueue = may('attendance.signoff') && require('../lib/attendance').isEnabled();
-  if (signoffQueue) out.signoff = require('../lib/attendance').unsignedDays();
+  if (signoffQueue) out.signoff = unsignedFor(attendanceWorkshops(req.user));
   out.total = out.certify.length + out.approve.length + out.transport.length + out.ops.length
             + out.jr_certify.length + out.jr_approve.length + out.reopen.length + out.signoff.length;
   out.is_approver = ['stores.mrn.certify', 'stores.mrn.approve', 'jobs.approve_transport', 'jobs.approve_operations',
