@@ -4,7 +4,7 @@ REPO AND BRANCH
 - Repo yohan114/9632. Start from main (it holds W0 and the crash-log change).
   Create branch claude/w1-attendance. Commit there and push that branch. Do NOT open a PR, do NOT
   merge, do NOT touch main. The owner tests it on the office server first.
-- The full design is docs/WORKSHOPONE_PLAN.md (§3.1, §3.4, Stage W1 in §4, decisions in §5).
+- The full design is docs/WORKSHOPONE_PLAN.md (appendix §A.1 and §A.4; decisions in §5).
   This brief is the short version and wins where they differ.
 - The repo is PUBLIC: never commit passwords, keys, database files or security plan documents.
 - Node/Express + better-sqlite3, vanilla SPA in public/app.js. Tests: `npm test` (node --test).
