@@ -8,6 +8,9 @@
 const express = require('express');
 const { get, all, run, tx } = require('../db');
 const { requireCap, hasCap } = require('../lib/auth');
+// The segregation-of-duties checks below exempt the admin. isAdmin() is the one admin test: routes
+// no longer check role names (Stage 1).
+const { isAdmin } = require('../lib/access_rules');
 const { asyncHandler, require_, toInt } = require('../lib/http');
 const audit = require('../lib/audit');
 const aliases = require('../lib/aliases');
@@ -142,6 +145,10 @@ router.post('/:id/approve', requireCap('jobrequests.approve'), asyncHandler((req
   if (!jr) return res.status(404).json({ error: 'Job request not found' });
   if (jr.approval_status === 'rejected') return res.status(409).json({ error: 'This request was rejected' });
   if (jr.approval_status !== 'certified') return res.status(409).json({ error: 'Request must be certified (Transport Manager) before Operational Manager approval' });
+  const certRow = get(`SELECT approver_id FROM job_request_approvals WHERE job_request_id = ? AND stage = 'certify' AND decision = 'approved' ORDER BY id DESC LIMIT 1`, id);
+  if (certRow && certRow.approver_id === req.user.id && !isAdmin(req.user)) {
+    return res.status(403).json({ error: 'Segregation of duties violation: approver cannot be the same person who certified the job request.' });
+  }
   // Approval is what creates the job card — so the one-open-card-per-vehicle rule
   // applies here too. Checked BEFORE anything is written, so a blocked approval
   // leaves the request exactly as it was.

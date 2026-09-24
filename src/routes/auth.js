@@ -9,9 +9,13 @@ const ratelimit = require('../lib/ratelimit');
 const passwordPolicy = require('../lib/password_policy');
 const capabilities = require('../lib/capabilities');
 const mfa = require('../lib/mfa');
-const { asyncHandler, require_ } = require('../lib/http');
+const { asyncHandler, require_, toInt } = require('../lib/http');
+const config = require('../config');
 
 const router = express.Router();
+
+// How long a session lasts, for the screens: the idle warning and the automatic sign-out use it.
+const sessionPolicy = () => ({ idleMinutes: config.sessionIdleMinutes || 0, ttlHours: config.sessionTtlHours });
 
 const clientIp = (req) => req.ip || (req.connection && req.connection.remoteAddress) || 'unknown';
 
@@ -41,6 +45,7 @@ function startSession(req, res, user, { mfaVerified = false, method = 'password'
     passwordPolicy: passwordPolicy.describe(),
     mfaEnabled: st.enabled,
     mfaSetupRequired: st.setupRequired,
+    sessionPolicy: sessionPolicy(),
     ...extra,
   });
 }
@@ -236,6 +241,33 @@ router.post(
   })
 );
 
+// ---- signed-in devices -----------------------------------------------------------------------
+//
+// Where am I signed in? A person sees every live session of their own account (never the tokens)
+// and can end any of them — the phone they lost, the PC at the stores counter they forgot.
+
+router.get('/sessions', auth.requireAuth, (req, res) => {
+  res.json({ sessions: auth.listSessions(req.user.id, req.user.token), policy: sessionPolicy() });
+});
+
+router.post('/sessions/:id/revoke', auth.requireAuth, asyncHandler((req, res) => {
+  const id = toInt(req.params.id);
+  const s = get('SELECT id, token, user_agent, ip FROM sessions WHERE id = ? AND user_id = ?', id, req.user.id);
+  if (!s) return res.status(404).json({ error: 'That session has already ended.' });
+  const current = s.token === req.user.token;
+  auth.destroySession(s.token);
+  if (current) res.clearCookie(auth.COOKIE);
+  audit.record({ userId: req.user.id, entity: 'session', entityId: id, action: 'session_revoked',
+    after: { device: auth.describeAgent(s.user_agent), ip: s.ip, own: true }, notify: false });
+  res.json({ ok: true, current });
+}));
+
+router.post('/sessions/revoke-others', auth.requireAuth, asyncHandler((req, res) => {
+  const ended = auth.revokeSessions(req.user.id, { exceptToken: req.user.token });
+  audit.record({ userId: req.user.id, entity: 'session', action: 'sessions_revoked_others', after: { ended }, notify: false });
+  res.json({ ok: true, ended });
+}));
+
 router.post('/logout', (req, res) => {
   const token = req.cookies && req.cookies[auth.COOKIE];
   auth.destroySession(token);
@@ -251,6 +283,7 @@ router.get('/me', (req, res) => {
   const { token: _token, ...me } = req.user;
   res.json({ ...me, permissions: permissions.userPermissions(req.user.roles), hasSignature: !!(u && u.signature),
     capNeeds: require('../lib/capabilities').needsFor(req.user.caps || []),
+    sessionPolicy: sessionPolicy(),
     passwordPolicy: passwordPolicy.describe() });
 });
 

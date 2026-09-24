@@ -111,6 +111,7 @@ function migrate() {
   ensureColumn('users', 'mfa_last_step', 'INTEGER');   // the last code's time step — a code works once
   ensureColumn('users', 'mfa_enabled_at', 'TEXT');
   ensureColumn('sessions', 'mfa_verified', 'INTEGER NOT NULL DEFAULT 0');
+  ensureColumn('sessions', 'last_seen_at', 'TEXT');   // last real input (mouse/keys/touch), for the idle timeout
   db.exec(`CREATE TABLE IF NOT EXISTS mfa_recovery_codes (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -415,6 +416,7 @@ function migrate() {
   ensureColumn('store_items', 'item_no', 'TEXT');          // catalogue number, e.g. FIL-0001
   ensureColumn('store_items', 'catalogue_kind', 'TEXT');   // part | consumable | service
   ensureColumn('store_items', 'part_numbers', 'TEXT');     // all merged part/reference codes ( | -joined)
+  ensureColumn('store_items', 'description', 'TEXT');
   ensureColumn('store_items', 'req_count', 'INTEGER');     // historical MRN request count
   ensureColumn('grn', 'purchase_source_norm', 'TEXT');
   ensureColumn('grn', 'priced_at', 'TEXT'); // when a unit price was first entered (procurement tracking)
