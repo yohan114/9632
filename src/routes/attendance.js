@@ -14,6 +14,9 @@
 //   GET  /month?month=        attended, booked and utilisation per mechanic
 //   GET  /hours-left?date=&names=&exclude_line=   for the daily-work entry forms
 //
+// Stage 4: with the workshops kept apart (src/lib/scope.js) every one of these is about ONE
+// workshop's day: your own, or — for head office — the one asked for with workshop_id.
+//
 // Reading follows the Daily Work section clearance (view). Writes are decided by capability, not
 // by the section's EDIT level: a manager holds Daily Work at view and still signs off and unlocks.
 
@@ -42,6 +45,18 @@ const capsOf = (user) => (Array.isArray(user.caps) ? user.caps : capabilities.ca
 const fail = (res, status, error) => res.status(status).json({ error });
 const needOn = (res) => (attendance.isEnabled() ? false : (fail(res, 409, 'Attendance is switched off'), true));
 
+// Whose day it is (Stage 4). Workshops not kept apart: the whole company's (null). Kept apart:
+// your own workshop's; head office picks one with workshop_id, else their home workshop's.
+function wsFor(req) {
+  const scope = require('../lib/scope');
+  if (!scope.enabled()) return null;
+  const own = scope.onlyWorkshop(req.user, { store: false });
+  if (own) return own;
+  const ws = require('../lib/workshops');
+  const asked = toInt((req.query || {}).workshop_id) || toInt((req.body || {}).workshop_id);
+  return asked && ws.byId(asked) ? asked : ws.homeOf(req.user);
+}
+
 // ---- settings ------------------------------------------------------------------------------------
 router.get('/settings', asyncHandler((_req, res) => res.json(attendance.settings())));
 
@@ -55,7 +70,7 @@ router.put('/settings', requireCap('attendance.settings'), asyncHandler((req, re
 // ---- one day -------------------------------------------------------------------------------------
 // The day, and what THIS person may do on it (the screen shows only the buttons that will work).
 function dayFor(req, date, opts) {
-  const d = attendance.day(date, opts);
+  const d = attendance.day(date, { ...opts, ws: wsFor(req) });
   const caps = capsOf(req.user);
   const rule = attendance.editRule(date, caps);
   d.can = {
@@ -81,8 +96,20 @@ router.post('/day', requireCap('attendance.record', 'attendance.unlock'), asyncH
   const date = String(b.date || '').slice(0, 10);
   const rule = attendance.editRule(date, capsOf(req.user));
   if (!rule.ok) return fail(res, rule.status, rule.error);
-  const lock = attendance.checkDaysOpen([date]);
+  const ws = wsFor(req);
+  const lock = attendance.checkDaysOpen([date], ws);
   if (!lock.ok) return res.status(lock.status).json(lock.body);
+  // One workshop's day: only its own mechanics (where each belonged on that date).
+  if (ws && Array.isArray(b.rows)) {
+    const workshops = require('../lib/workshops');
+    for (const r of b.rows) {
+      const at = workshops.mechanicWorkshop(toInt(r && r.mechanic_id), date);
+      if (at && at !== ws) {
+        const m = get('SELECT name FROM mechanics WHERE id = ?', toInt(r.mechanic_id));
+        return fail(res, 403, `${m ? m.name : 'That mechanic'} belongs to ${workshops.byId(at).name} on ${date}.`);
+      }
+    }
+  }
 
   const changes = attendance.saveRows(date, b.rows, req.user.id);
   for (const c of changes) {
@@ -100,10 +127,11 @@ router.post('/day/book-rest', requireCap('dailywork.add'), asyncHandler((req, re
   const date = String((req.body || {}).date || '').slice(0, 10);
   const mechanicId = toInt((req.body || {}).mechanic_id);
   if (!attendance.isDate(date)) return fail(res, 400, 'A valid date (YYYY-MM-DD) is required');
-  const lock = attendance.checkDaysOpen([date]);
+  const ws = wsFor(req);
+  const lock = attendance.checkDaysOpen([date], ws);
   if (!lock.ok) return res.status(lock.status).json(lock.body);
-  const row = attendance.day(date).rows.find((r) => r.mechanic_id === mechanicId);
-  if (!row) return fail(res, 404, 'Mechanic not found');
+  const row = attendance.day(date, { ws }).rows.find((r) => r.mechanic_id === mechanicId);
+  if (!row) return fail(res, 404, ws ? 'That mechanic is not in this workshop\'s day' : 'Mechanic not found');
   if (row.tally !== 'unbooked' || !(row.diff_hours > 0)) return fail(res, 409, `${row.name} has no unbooked hours on ${date}`);
 
   // The general card of the mechanic's own workshop on that day (one per workshop, Stage 3).
@@ -124,33 +152,35 @@ router.post('/day/book-rest', requireCap('dailywork.add'), asyncHandler((req, re
 
 router.post('/day/signoff', requireCap('attendance.signoff'), asyncHandler((req, res) => {
   const date = String((req.body || {}).date || '').slice(0, 10);
-  attendance.signOff(date, req.user.id);
-  const so = attendance.signoffFor(date);
-  audit.record({ userId: req.user.id, entity: 'workday_signoff', entityId: so && so.id, action: 'signoff', after: { work_date: date } });
+  const ws = wsFor(req);
+  attendance.signOff(date, req.user.id, ws);
+  const so = attendance.signoffFor(date, ws);
+  audit.record({ userId: req.user.id, entity: 'workday_signoff', entityId: so && so.id, action: 'signoff', after: { work_date: date, workshop_id: ws } });
   res.json(dayFor(req, date));
 }));
 
 router.post('/day/unlock', requireCap('attendance.unlock'), asyncHandler((req, res) => {
   const date = String((req.body || {}).date || '').slice(0, 10);
   const reason = String((req.body || {}).reason || '').trim();
-  const before = attendance.signoffFor(date);
-  attendance.unlock(date, req.user.id, reason);
+  const ws = wsFor(req);
+  const before = attendance.signoffFor(date, ws);
+  attendance.unlock(date, req.user.id, reason, ws);
   audit.record({ userId: req.user.id, entity: 'workday_signoff', entityId: before && before.id, action: 'unlock',
-    before: { work_date: date, signed_at: before && before.signed_at }, after: { work_date: date }, reason });
+    before: { work_date: date, signed_at: before && before.signed_at }, after: { work_date: date, workshop_id: ws }, reason });
   res.json(dayFor(req, date));
 }));
 
 // ---- a month, and hours left ---------------------------------------------------------------------
 router.get('/month', asyncHandler((req, res) => {
   const ym = String(req.query.month || attendance.today().slice(0, 7)).slice(0, 7);
-  res.json(attendance.month(ym));
+  res.json(attendance.month(ym, { ws: wsFor(req) }));
 }));
 
 // The month as a spreadsheet: attended, booked and utilisation per mechanic, and each day's red
 // count and sign-off.
 router.get('/month.xlsx', asyncHandler(async (req, res) => {
   const ym = String(req.query.month || attendance.today().slice(0, 7)).slice(0, 7);
-  const m = attendance.month(ym);
+  const m = attendance.month(ym, { ws: wsFor(req) });
   const sheets = [
     { name: `Mechanics ${ym}`, columns: [
       { header: 'Mechanic', key: 'name', width: 26 }, { header: 'Days at work', key: 'days_present', width: 13 },
@@ -168,7 +198,7 @@ router.get('/month.xlsx', asyncHandler(async (req, res) => {
 router.get('/hours-left', asyncHandler((req, res) => {
   const date = String(req.query.date || '').slice(0, 10);
   const names = String(req.query.names || '').split('|').map((s) => s.trim()).filter(Boolean);
-  res.json(attendance.hoursLeft(date, names, { excludeLineId: toInt(req.query.exclude_line) }));
+  res.json(attendance.hoursLeft(date, names, { excludeLineId: toInt(req.query.exclude_line), ws: wsFor(req) }));
 }));
 
 module.exports = router;
