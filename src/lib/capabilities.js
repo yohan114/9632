@@ -76,6 +76,15 @@ const CAPABILITIES = [
   C('dailywork.add', 'dailywork', 'Add daily work entries', ['workshop', 'manager', 'storekeeper'], 'dailywork'),
   C('dailywork.edit', 'dailywork', 'Edit, bulk-log or delete daily work', ['workshop', 'manager'], 'dailywork'),
 
+  // ---- attendance (src/lib/attendance.js) ----------------------------------------------------
+  // No `needs`: a manager holds Daily Work at VIEW and still signs off and unlocks days. The
+  // attendance routes check these capabilities themselves; reading needs Daily Work view.
+  C('attendance.record', 'dailywork', 'Enter and change today\'s and yesterday\'s attendance', ['workshop', 'manager']),
+  C('attendance.signoff', 'dailywork', 'Sign off a day (locks its attendance and daily work)', ['workshop', 'manager']),
+  C('attendance.unlock', 'dailywork', 'Unlock a signed-off day, or change attendance older than yesterday', ['manager', 'operational_manager']),
+  // Switching attendance on, its start date and its rules: admin only unless given on purpose.
+  C('attendance.settings', 'dailywork', 'Switch attendance on or off and set its rules', []),
+
   // ---- stores --------------------------------------------------------------------------------
   C('stores.items.edit', 'stores', 'Add or edit a store item', ['storekeeper'], 'stores'),
   C('stores.items.txn', 'stores', 'Post a manual transaction on a store item', ['storekeeper'], 'stores'),

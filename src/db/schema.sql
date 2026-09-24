@@ -954,3 +954,42 @@ CREATE INDEX IF NOT EXISTS idx_vlc_ec ON vehicle_lubricant_capacities(ec_no);
 CREATE INDEX IF NOT EXISTS idx_vlc_reg ON vehicle_lubricant_capacities(registration);
 CREATE INDEX IF NOT EXISTS idx_vlc_cat ON vehicle_lubricant_capacities(category);
 
+
+-- ---------------------------------------------------------------------------
+-- MECHANIC ATTENDANCE and the DAILY TALLY (docs/WORKSHOPONE_PLAN.md §3.1, W1)
+--
+-- Each mechanic's on-time and off-time for the day. The hours they were at work
+-- are checked against the hours booked on jobs in Daily Work (src/lib/attendance.js).
+-- Attendance adds a check and a utilisation figure only — it never changes labour
+-- cost, which stays booked hours × rate.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS mechanic_attendance (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  mechanic_id     INTEGER NOT NULL REFERENCES mechanics(id),
+  work_date       TEXT NOT NULL,              -- YYYY-MM-DD, the day the shift started
+  time_in         TEXT,                       -- HH:MM (24 h)
+  time_out        TEXT,                       -- HH:MM; earlier than time_in = an overnight shift
+  break_minutes   INTEGER NOT NULL DEFAULT 0,
+  status          TEXT NOT NULL DEFAULT 'present'
+                  CHECK (status IN ('present','absent','leave','half_day','holiday')),
+  note            TEXT,                       -- e.g. "at site X"
+  unbooked_reason TEXT,                       -- why some hours at work are not on a job
+  recorded_by     INTEGER REFERENCES users(id),
+  created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE (mechanic_id, work_date)
+);
+CREATE INDEX IF NOT EXISTS idx_attendance_date ON mechanic_attendance(work_date);
+
+-- A supervisor signs off a day once nobody is red. A signed-off day's attendance
+-- AND daily work are locked until someone with attendance.unlock unlocks it with a
+-- reason. One row per day; every sign-off and unlock is also in audit_log.
+CREATE TABLE IF NOT EXISTS workday_signoffs (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  work_date     TEXT NOT NULL UNIQUE,
+  signed_by     INTEGER REFERENCES users(id),
+  signed_at     TEXT,
+  unlocked_by   INTEGER REFERENCES users(id),
+  unlocked_at   TEXT,
+  unlock_reason TEXT
+);

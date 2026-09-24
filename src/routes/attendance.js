@@ -1,0 +1,154 @@
+'use strict';
+
+// Mechanic attendance and the daily tally (src/lib/attendance.js; docs/WORKSHOPONE_PLAN.md §3.1).
+//
+//   GET  /settings            the rules (flag, start date, shift, break, tolerance)
+//   PUT  /settings            change them                               attendance.settings
+//   GET  /day?date=           the grid and tally for one day
+//   POST /day                 save attendance rows for a day            attendance.record (today, yesterday)
+//                                                                       attendance.unlock (any past day)
+//   POST /day/book-rest       book a mechanic's unbooked hours to the General Workshop card
+//                                                                       dailywork.add
+//   POST /day/signoff         sign a day off (locks it)                 attendance.signoff
+//   POST /day/unlock          unlock a signed-off day, with a reason    attendance.unlock
+//   GET  /month?month=        attended, booked and utilisation per mechanic
+//   GET  /hours-left?date=&names=&exclude_line=   for the daily-work entry forms
+//
+// Reading follows the Daily Work section clearance (view). Writes are decided by capability, not
+// by the section's EDIT level: a manager holds Daily Work at view and still signs off and unlocks.
+
+const express = require('express');
+const { get, run } = require('../db');
+const { requireCap } = require('../lib/auth');
+const { asyncHandler, toInt } = require('../lib/http');
+const permissions = require('../lib/permissions');
+const capabilities = require('../lib/capabilities');
+const audit = require('../lib/audit');
+const attendance = require('../lib/attendance');
+const costing = require('../lib/costing');
+const mechanics = require('../lib/mechanics');
+const jobstate = require('../lib/jobstate');
+
+const router = express.Router();
+
+const dailyWorkLevel = (user) => permissions.levelForRoles(user.roles || [], 'dailywork');
+router.use((req, res, next) => {
+  if (!req.user) return res.status(401).json({ error: 'Authentication required' });
+  if (permissions.meets(dailyWorkLevel(req.user), 'view')) return next();
+  return res.status(403).json({ error: 'Your role has no view access to dailywork' });
+});
+
+const capsOf = (user) => (Array.isArray(user.caps) ? user.caps : capabilities.capsForRoles(user.roles || []));
+const fail = (res, status, error) => res.status(status).json({ error });
+const needOn = (res) => (attendance.isEnabled() ? false : (fail(res, 409, 'Attendance is switched off'), true));
+
+// ---- settings ------------------------------------------------------------------------------------
+router.get('/settings', asyncHandler((_req, res) => res.json(attendance.settings())));
+
+router.put('/settings', requireCap('attendance.settings'), asyncHandler((req, res) => {
+  const before = attendance.settings();
+  const after = attendance.saveSettings(req.body || {});
+  audit.record({ userId: req.user.id, entity: 'settings', action: 'attendance_settings', before, after });
+  res.json(after);
+}));
+
+// ---- one day -------------------------------------------------------------------------------------
+// The day, and what THIS person may do on it (the screen shows only the buttons that will work).
+function dayFor(req, date, opts) {
+  const d = attendance.day(date, opts);
+  const caps = capsOf(req.user);
+  const rule = attendance.editRule(date, caps);
+  d.can = {
+    edit: d.enabled && !d.locked && rule.ok,
+    edit_reason: !d.enabled ? 'Attendance is switched off' : d.locked ? 'The day is signed off' : (rule.ok ? null : rule.error),
+    signoff: d.enabled && caps.includes('attendance.signoff'),
+    unlock: d.enabled && caps.includes('attendance.unlock'),
+    book_rest: d.enabled && !d.locked && caps.includes('dailywork.add') && permissions.meets(dailyWorkLevel(req.user), 'edit'),
+    settings: caps.includes('attendance.settings'),
+  };
+  return d;
+}
+
+router.get('/day', asyncHandler((req, res) => {
+  const date = String(req.query.date || attendance.today()).slice(0, 10);
+  if (!attendance.isDate(date)) return fail(res, 400, 'A valid ?date=YYYY-MM-DD is required');
+  res.json(dayFor(req, date, { queue: true }));
+}));
+
+router.post('/day', requireCap('attendance.record', 'attendance.unlock'), asyncHandler((req, res) => {
+  if (needOn(res)) return;
+  const b = req.body || {};
+  const date = String(b.date || '').slice(0, 10);
+  const rule = attendance.editRule(date, capsOf(req.user));
+  if (!rule.ok) return fail(res, rule.status, rule.error);
+  const lock = attendance.checkDaysOpen([date]);
+  if (!lock.ok) return res.status(lock.status).json(lock.body);
+
+  const changes = attendance.saveRows(date, b.rows, req.user.id);
+  for (const c of changes) {
+    audit.record({ userId: req.user.id, entity: 'mechanic_attendance', entityId: c.id, action: c.action,
+      before: c.before, after: c.after ? { ...c.after, work_date: date, mechanic: c.name } : { work_date: date, mechanic: c.name } });
+  }
+  res.json({ saved: changes.length, day: dayFor(req, date) });
+}));
+
+// "Unbooked" — at work, but not every hour is on a job. One click books the rest to the General
+// Workshop card, as ordinary daily work: it is costed like any other line (hours × rate).
+router.post('/day/book-rest', requireCap('dailywork.add'), asyncHandler((req, res) => {
+  if (needOn(res)) return;
+  if (!permissions.meets(dailyWorkLevel(req.user), 'edit')) return fail(res, 403, 'Your role has no edit access to dailywork');
+  const date = String((req.body || {}).date || '').slice(0, 10);
+  const mechanicId = toInt((req.body || {}).mechanic_id);
+  if (!attendance.isDate(date)) return fail(res, 400, 'A valid date (YYYY-MM-DD) is required');
+  const lock = attendance.checkDaysOpen([date]);
+  if (!lock.ok) return res.status(lock.status).json(lock.body);
+  const row = attendance.day(date).rows.find((r) => r.mechanic_id === mechanicId);
+  if (!row) return fail(res, 404, 'Mechanic not found');
+  if (row.tally !== 'unbooked' || !(row.diff_hours > 0)) return fail(res, 409, `${row.name} has no unbooked hours on ${date}`);
+
+  const gid = require('./dailywork').generalWorkshopJob();
+  const job = get('SELECT id, job_no, status FROM job_cards WHERE id = ?', gid);
+  const g = jobstate.checkAdd(job, 'daily_work', { user: req.user });
+  if (!g.ok) return res.status(g.status).json(g.body);
+  const description = String((req.body || {}).description || '').trim() || 'Unbooked time (from attendance)';
+  const info = run(
+    `INSERT INTO job_daily_work (job_id, work_date, mechanic, description, hours, is_external, external_value, asset_id)
+     VALUES (?, ?, ?, ?, ?, 0, 0, NULL)`, gid, date, row.name, description, row.diff_hours);
+  costing.refreshJobTotals(gid);
+  mechanics.syncJobLabourForMonth(date.slice(0, 7));
+  audit.record({ userId: req.user.id, entity: 'job_daily_work', entityId: info.lastInsertRowid, action: 'create',
+    after: { job_no: job.job_no, date, mechanic: row.name, hours: row.diff_hours, from: 'attendance_book_rest' } });
+  res.status(201).json({ id: info.lastInsertRowid, job_no: job.job_no, hours: row.diff_hours, day: dayFor(req, date) });
+}));
+
+router.post('/day/signoff', requireCap('attendance.signoff'), asyncHandler((req, res) => {
+  const date = String((req.body || {}).date || '').slice(0, 10);
+  attendance.signOff(date, req.user.id);
+  const so = attendance.signoffFor(date);
+  audit.record({ userId: req.user.id, entity: 'workday_signoff', entityId: so && so.id, action: 'signoff', after: { work_date: date } });
+  res.json(dayFor(req, date));
+}));
+
+router.post('/day/unlock', requireCap('attendance.unlock'), asyncHandler((req, res) => {
+  const date = String((req.body || {}).date || '').slice(0, 10);
+  const reason = String((req.body || {}).reason || '').trim();
+  const before = attendance.signoffFor(date);
+  attendance.unlock(date, req.user.id, reason);
+  audit.record({ userId: req.user.id, entity: 'workday_signoff', entityId: before && before.id, action: 'unlock',
+    before: { work_date: date, signed_at: before && before.signed_at }, after: { work_date: date }, reason });
+  res.json(dayFor(req, date));
+}));
+
+// ---- a month, and hours left ---------------------------------------------------------------------
+router.get('/month', asyncHandler((req, res) => {
+  const ym = String(req.query.month || attendance.today().slice(0, 7)).slice(0, 7);
+  res.json(attendance.month(ym));
+}));
+
+router.get('/hours-left', asyncHandler((req, res) => {
+  const date = String(req.query.date || '').slice(0, 10);
+  const names = String(req.query.names || '').split('|').map((s) => s.trim()).filter(Boolean);
+  res.json(attendance.hoursLeft(date, names, { excludeLineId: toInt(req.query.exclude_line) }));
+}));
+
+module.exports = router;

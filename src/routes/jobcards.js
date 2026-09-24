@@ -11,6 +11,7 @@ const audit = require('../lib/audit');
 const aliases = require('../lib/aliases');
 const mechanics = require('../lib/mechanics');
 const jobstate = require('../lib/jobstate');
+const attendance = require('../lib/attendance');
 const costing = require('../lib/costing');
 const jobno = require('../lib/jobno');
 const emitter = require('../lib/emitter');
@@ -650,6 +651,8 @@ router.post(
     const b = req.body;
     const isExternal = b.is_external ? 1 : 0;
     const workDate = b.work_date || new Date().toISOString().slice(0, 10);
+    // A signed-off day is locked (attendance, src/lib/attendance.js).
+    { const g = attendance.checkDaysOpen([workDate]); if (!g.ok) return res.status(g.status).json(g.body); }
     const hours = toNum(b.hours, 0);
 
     // A single entry may list several mechanics ("Buddhika, Krishna"). Split into
@@ -734,6 +737,7 @@ router.delete(
     { const g = jobstate.checkAdd(job, 'daily_work', { user: req.user }); if (!g.ok) return res.status(g.status).json(g.body); }
     const row = get('SELECT * FROM job_daily_work WHERE id = ? AND job_id = ?', lineId, id);
     if (!row) return res.status(404).json({ error: 'Entry not found on this job' });
+    { const g = attendance.checkDaysOpen([row.work_date]); if (!g.ok) return res.status(g.status).json(g.body); }
 
     // ensure, not read: on a database that has never had a general entry the card does not exist,
     // and a 0 here would turn "send it back" into "destroy it".
@@ -918,6 +922,8 @@ router.post('/:id/daily-work/attach', requireAuth, requireCap('jobs.dailywork'),
   if (rows.length !== ids.length || notFree.length) {
     return res.status(409).json({ error: 'Some of those entries are already on a job card — reload and try again' });
   }
+  // Moving a line off the pool changes a signed-off day's daily work too.
+  { const g = attendance.checkDaysOpen(rows.map((r) => r.work_date)); if (!g.ok) return res.status(g.status).json(g.body); }
   // Claiming a line for a card also settles which machine it was on — but only when the line does
   // not already say. A line that names a DIFFERENT vehicle from the card is somebody's record, and
   // overwriting it would erase the one signal that the wrong row is being attached.
