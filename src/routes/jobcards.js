@@ -12,10 +12,10 @@ const aliases = require('../lib/aliases');
 const mechanics = require('../lib/mechanics');
 const jobstate = require('../lib/jobstate');
 const closeLib = require('../lib/job_close');
-const workshops = require('../lib/workshops');
 const attendance = require('../lib/attendance');
 const costing = require('../lib/costing');
 const jobno = require('../lib/jobno');
+const workshops = require('../lib/workshops');
 const emitter = require('../lib/emitter');
 
 const router = express.Router();

@@ -16,9 +16,9 @@ const emitter = require('../lib/emitter');
 const stock = require('../lib/stock');
 const jobstate = require('../lib/jobstate');
 const permissions = require('../lib/permissions');
+const places = require('../lib/places');
 const { lineReceiptSql, mrnReceiptSql, receivedLabel, d10 } = require('../lib/received_date');
 const lubricants = require('../lib/lubricants');
-const places = require('../lib/places');
 
 // One cell's worth of "when did this arrive", for a sheet or a printout. A spreadsheet has no
 // tooltip, so whatever the hover would have said has to be in the cell itself.
