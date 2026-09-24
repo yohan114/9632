@@ -746,6 +746,7 @@ const NAV = [
   ['dashboard', '📊', 'Dashboard'],
   ['jobs', '🔧', 'Job Cards'],
   ['jobrequests', '📋', 'Job Requests'],
+  ['field', '📍', 'Field Work'],
   ['dailywork', '📅', 'Daily Work'],
   ['services', '🛠️', 'Service Records'],
   ['lubecapacities', '🛢️', 'Lubricant Capacities'],
@@ -768,7 +769,7 @@ const NAV = [
 ];
 // Which permission module governs each nav item's visibility (dashboard always on).
 const NAV_MODULE = {
-  assets: 'assets', jobs: 'jobs', jobrequests: 'jobrequests', dailywork: 'dailywork', services: 'filters', lubecapacities: 'jobs',
+  assets: 'assets', jobs: 'jobs', jobrequests: 'jobrequests', field: 'jobs', dailywork: 'dailywork', services: 'filters', lubecapacities: 'jobs',
   labour: 'labour', stores: 'stores', stocktake: 'stores', stockcockpit: 'stores', generalstock: 'stores', oil: 'oil', batteries: 'batteries', filters: 'filters', filterstock: 'filters',
   projects: 'projects', aliases: 'aliases', attention: 'reports', progress: 'reports',
   teardown: 'reports', reports: 'reports', tyrebattery: 'reports',
@@ -791,7 +792,7 @@ function navVisible(n) {
 // Sidebar grouping — headings shown above each cluster (a group with no visible item is hidden).
 const NAV_GROUP_ORDER = ['Operations', 'Inventory', 'Procurement', 'Fleet', 'Analysis', 'Admin'];
 const NAV_GROUP = {
-  dashboard: 'Operations', jobs: 'Operations', jobrequests: 'Operations', dailywork: 'Operations', services: 'Operations', lubecapacities: 'Operations',
+  dashboard: 'Operations', jobs: 'Operations', jobrequests: 'Operations', field: 'Operations', dailywork: 'Operations', services: 'Operations', lubecapacities: 'Operations',
   stores: 'Inventory', stocktake: 'Inventory',
   purchasing: 'Procurement', tbrequests: 'Procurement',
   assets: 'Fleet', serviceplan: 'Fleet',
@@ -1018,7 +1019,8 @@ async function dashMain(c) {
   if (canView('jobs')) opStats.push(`<a class="card stat" href="#/jobs" style="text-decoration:none"><span class="n">${d.open_jobs_count}</span><span class="l">Open Job Cards</span></a>
       <a class="card stat" href="#/jobs?status=CLOSED" style="text-decoration:none"><span class="n">${d.closed_this_month_count}</span><span class="l">Closed This Month</span></a>
       <a class="card stat" href="#/teardown" style="text-decoration:none"><span class="n">${d.awaiting_price.length}</span><span class="l">Awaiting Price (blocked)</span></a>
-      ${(d.partly_closed || []).length ? `<a class="card stat" href="#/jobs?status=PARTIALLY_CLOSED" style="text-decoration:none"><span class="n">${d.partly_closed.length}</span><span class="l">Partly Closed — awaiting prices</span></a>` : ''}`);
+      ${(d.partly_closed || []).length ? `<a class="card stat" href="#/jobs?status=PARTIALLY_CLOSED" style="text-decoration:none"><span class="n">${d.partly_closed.length}</span><span class="l">Partly Closed — awaiting prices</span></a>` : ''}
+      ${d.field_down != null ? `<a class="card stat" href="#/field" style="text-decoration:none"><span class="n" style="color:${d.field_down ? 'var(--red)' : 'inherit'}">${d.field_down}</span><span class="l">Machines down in the field</span></a>` : ''}`);
   // Attendance (W3): today's tally and the days still to sign off — only while attendance is on.
   const at = d.attendance_today;
   if (at && canView('dailywork')) opStats.push(`<a class="card stat" href="#/dailywork" style="text-decoration:none"><span class="n" style="color:${at.red_count ? 'var(--red)' : 'inherit'}">${at.before_start ? '—' : at.red_count}</span><span class="l">Today's tally — ${at.before_start ? 'not started' : (at.red_count ? 'red' : 'nothing red')}</span></a>
@@ -1310,6 +1312,7 @@ routes.jobs = async (c, params) => {
       <span class="muted" id="jcount"></span>
       <div class="spacer"></div>
       ${canDo('jobs.create') ? '<button class="primary" id="newjob">+ New Job Card</button>' : ''}
+      ${canDo('jobs.breakdown') ? '<button class="danger" id="newbd" title="A machine stopped at a site: open a field job card now">🚨 Report a breakdown</button>' : ''}
       ${canDo('jobs.triage') ? '<a class="btn sm" href="#/jobreview" title="REQUESTED cards that hold their vehicle but never moved">🧹 Review stuck cards</a>' : ''}
       ${canDo('jobs.settings') ? `<button class="sm" id="jpartial" title="Partial close, full close check and reopen requests">⚙ Partial close: ${partialOn ? 'on' : 'off'}</button>` : ''}
     </div>
@@ -1365,7 +1368,7 @@ routes.jobs = async (c, params) => {
       <td><a href="#/jobs/${j.id}">${esc(j.job_no)}</a>${wsd && j.workshop_code ? `<br><span class="badge" title="${esc(wsName(wsd, j.workshop_id))}">${esc(j.workshop_code)}</span>` : ''}</td>
       <td class="desc-col">${vehText(j) ? `<span class="stamp">${esc(vehText(j))}</span>` : '—'}</td>
       <td class="desc-col" title="${esc(j.description || '')}">${esc(j.description || '')}</td>
-      <td><span class="badge ${j.type === 'service' ? 'blue' : ''}">${esc(j.type)}</span></td>
+      <td><span class="badge ${j.type === 'service' ? 'blue' : ''}">${esc(j.type)}</span>${j.field ? ` <span class="badge ${j.breakdown ? 'red' : 'amber'}" title="Repaired at the site">${j.breakdown ? 'Breakdown' : 'Field'}</span>` : ''}</td>
       <td>${statusBadge(j.status)}</td>
       <td class="desc-col">${esc(j.project_name || '')}</td>
       <td class="num">${j.labour_cost ? money(j.labour_cost) : '—'}</td>
@@ -1484,6 +1487,7 @@ routes.jobs = async (c, params) => {
     };
   }
   if (qs('#newjob')) qs('#newjob').onclick = newJobModal;
+  if (qs('#newbd')) qs('#newbd').onclick = breakdownModal;
   await load();
 };
 
@@ -2219,7 +2223,7 @@ async function addWorkDoneModal(defaultDate, onDone) {
     ${field('Hours', 'hours', { type: 'number' })}
     <div id="dw-hint" style="font-size:12px;margin-top:4px"></div>
     <p class="muted" style="font-size:12px;margin:2px 0 0">Pick each mechanic who worked — each is charged the full hours at their own rate.</p>
-    <div class="row">${field('External repair (outside work)', 'is_external', { type: 'checkbox' })}${field('External value (Rs, if external)', 'external_value', { type: 'number' })}</div>
+    <div class="row">${field('Travel (to or from a field job)', 'travel', { type: 'checkbox' })}${field('External repair (outside work)', 'is_external', { type: 'checkbox' })}${field('External value (Rs, if external)', 'external_value', { type: 'number' })}</div>
     <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Add</button></div>`, (body, close) => {
     const getTarget = wireTargetPicker(body, 'dwt');
     const crew = [];
@@ -2474,6 +2478,113 @@ async function loadVehicleConflicts(el) {
       </div>`).join('')}</div></details>`;
 }
 
+// ---- Field work (Stage 6) ------------------------------------------------------------------
+// A repair done at the site. The times are typed as 'YYYY-MM-DDTHH:MM' in the form and kept as
+// 'YYYY-MM-DD HH:MM'.
+const fldTime = (s) => (s ? esc(String(s).replace('T', ' ').slice(0, 16)) : '—');
+const fldInput = (s) => (s ? String(s).replace(' ', 'T').slice(0, 16) : '');
+// Under an hour in minutes ("25 min"), else hours ("3.5 h").
+const fldHours = (h) => (h == null ? '—' : (Math.abs(h) < 1 ? `${Math.round(h * 60)} min` : `${num(h)} h`));
+const localNowInput = () => new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+
+// A breakdown reported from a site: a field job card, open at once, so a mechanic can go now.
+async function breakdownModal() {
+  const places = await api('/field/places').catch(() => []);
+  const wsd = wsMulti() ? await workshopsData().catch(() => null) : null;
+  modal('Report a breakdown', `
+    <p class="muted" style="margin-top:0">This opens a field job card now, so a mechanic can go. The approvals follow as usual.</p>
+    <datalist id="bdplaces">${places.map((p) => `<option value="${esc(p.label)}">`).join('')}</datalist>
+    ${assetPickerHtml('Machine *')}
+    <label>Site *</label><input name="location" list="bdplaces" placeholder="Project or site" autocomplete="off">
+    ${field('What is wrong? *', 'description', { type: 'textarea' })}
+    <label>Stopped at</label><input type="datetime-local" name="stopped_at" value="${localNowInput()}">
+    ${wsd ? field('Workshop that sends the mechanic', 'workshop_id', { type: 'select', options: wsOptions(wsd), value: wsd.mine }) : ''}
+    <div style="margin-top:14px;text-align:right"><button class="primary" id="save">Report breakdown</button></div>`, (body, close) => {
+    wireAssetPicker(body);
+    qs('#save', body).onclick = async () => {
+      const f = formData(body);
+      const p = places.find((x) => x.label === String(f.location || '').trim());
+      try {
+        const r = await api('/field/breakdown', { method: 'POST', body: { ...f, place: p ? p.key : undefined } });
+        close(); toast('Breakdown reported — job card ' + r.job.job_no); location.hash = '#/jobs/' + r.job.id;
+      } catch (e) { toast(e.message, 'err'); }
+    };
+  });
+}
+
+// The field details of one card: in the field or not, the site, the times, the km.
+async function fieldModal(jobId, fld, onSaved) {
+  const places = await api('/field/places').catch(() => []);
+  modal('Field details', `
+    <datalist id="fdplaces">${places.map((p) => `<option value="${esc(p.label)}">`).join('')}</datalist>
+    <label style="display:flex;gap:8px;align-items:center;flex-direction:row;width:auto;margin-bottom:8px">
+      <input type="checkbox" name="field" style="width:auto" checked> In the field (repaired at the site)</label>
+    <div id="fdmore">
+      <label>Site</label><input name="location" list="fdplaces" value="${esc(fld.location || '')}" autocomplete="off">
+      <div class="row">
+        <div><label>Reported / stopped</label><input type="datetime-local" name="reported_at" value="${fldInput(fld.reported_at)}"></div>
+        <div><label>Mechanic arrived</label><input type="datetime-local" name="arrived_at" value="${fldInput(fld.arrived_at)}"></div>
+        <div><label>Working again</label><input type="datetime-local" name="working_at" value="${fldInput(fld.working_at)}"></div>
+      </div>
+      ${field('Km driven by the field vehicle', 'km', { type: 'number', value: fld.km == null ? '' : fld.km })}
+      <p class="muted" style="font-size:12px;margin:4px 0 0">Travel time goes in Daily Work as a line marked "Travel".</p>
+    </div>
+    <div style="margin-top:14px;text-align:right"><button class="primary" id="save">Save</button></div>`, (body, close) => {
+    const box = qs('input[name=field]', body);
+    box.onchange = () => { qs('#fdmore', body).style.display = box.checked ? '' : 'none'; };
+    qs('#save', body).onclick = async () => {
+      const f = formData(body);
+      let payload;
+      if (!box.checked) {
+        if (fld.field && !confirm('Take this job out of the field? Its site, times and km are cleared.')) return;
+        payload = { field: false };
+      } else {
+        const p = places.find((x) => x.label === String(f.location || '').trim());
+        payload = { field: true, location: f.location, place: p ? p.key : '', reported_at: f.reported_at, arrived_at: f.arrived_at, working_at: f.working_at, km: f.km };
+      }
+      try { await api('/field/jobs/' + jobId, { method: 'PATCH', body: payload }); close(); toast('Saved'); if (onSaved) onSaved(); }
+      catch (e) { toast(e.message, 'err'); }
+    };
+  });
+}
+
+// The field board: every field job still open, the machines still down first.
+routes.field = async (c) => {
+  if (!canView('jobs')) { c.innerHTML = '<div class="card err">You do not have access to this page.</div>'; return; }
+  const d = await api('/field/board');
+  const canBd = canDo('jobs.breakdown');
+  const canRate = canDo('jobs.settings');
+  const rows = d.rows.map((r) => `<tr>
+      <td><a href="#/jobs/${r.id}"><b>${esc(r.job_no)}</b></a>${r.breakdown ? ' <span class="badge red">Breakdown</span>' : ''}${wsMulti() && r.workshop_name ? `<br><span class="muted" style="font-size:11px">${esc(r.workshop_name)}</span>` : ''}</td>
+      <td>${esc(r.asset_reg || r.asset_code || '—')}<br><span class="muted" style="font-size:11px">${esc(r.asset_type || '')}</span></td>
+      <td class="desc-col">${esc(r.field_location || '—')}</td>
+      <td>${fldTime(r.reported_at)}</td>
+      <td>${r.arrived_at ? fldTime(r.arrived_at) : '<span class="badge amber">not yet</span>'}</td>
+      <td>${r.down ? `<span class="badge red">down${r.down_hours != null ? ' ' + fldHours(r.down_hours) : ''}</span>` : `<span class="badge green">working · ${fldHours(r.downtime_hours)}</span>`}</td>
+      <td class="desc-col">${esc(r.mechanics || '—')}</td>
+      <td>${statusBadge(r.status)}</td></tr>`);
+  c.innerHTML = `${pageHeader('Field work', 'Repairs done at the site: the machines still down first.')}
+    <div class="toolbar">
+      <span class="badge ${d.down ? 'red' : 'green'}">${d.down} machine${d.down === 1 ? '' : 's'} down</span>
+      <div class="spacer"></div>
+      ${canRate ? `<span class="muted" style="font-size:12px">Field vehicle: ${d.settings.km_rate != null ? money(d.settings.km_rate) + ' per km' : 'no rate per km set'}</span> <button class="sm" id="fdrate">Set rate…</button>` : ''}
+      ${canBd ? '<button class="primary" id="fdbd">🚨 Report a breakdown</button>' : ''}
+    </div>
+    ${rows.length ? tableWrap([{ label: 'Job' }, { label: 'Machine' }, { label: 'Site' }, { label: 'Reported' }, { label: 'Arrived' },
+    { label: 'Now' }, { label: 'Mechanics (3 days)' }, { label: 'Status' }], rows, { scroll: true })
+    : '<div class="card"><p class="muted">No open field jobs.</p></div>'}`;
+  if (qs('#fdbd', c)) qs('#fdbd', c).onclick = breakdownModal;
+  if (qs('#fdrate', c)) qs('#fdrate', c).onclick = () => modal('Field vehicle rate', `
+    ${field('Rate per km (Rs)', 'km_rate', { type: 'number', value: d.settings.km_rate == null ? '' : d.settings.km_rate })}
+    <p class="muted" style="font-size:12px">Used for km entered from now on. Km already entered keep the rate they were entered at.</p>
+    <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Save</button></div>`, (b, close) => {
+    qs('#s', b).onclick = async () => {
+      try { await api('/field/settings', { method: 'PUT', body: formData(b) }); close(); toast('Saved'); routes.field(c); }
+      catch (e) { toast(e.message, 'err'); }
+    };
+  });
+};
+
 async function newJobModal() {
   const projects = await api('/projects');
   const popts = [{ value: '', label: '—' }, ...projects.map((p) => ({ value: p.id, label: p.name }))];
@@ -2563,6 +2674,23 @@ async function jobDetail(c, id) {
   const mayDecide = pendingReq && canDo('jobs.reopen') && (pendingReq.requested_by !== ME.id || isAdmin());
   const linkJob = (x) => `<a href="#/jobs/${x.id}"><b>${esc(x.job_no)}</b></a> ${statusBadge(x.status)}`;
   const successor = (j.continuedAs || []).slice(-1)[0];
+  // Stage 6: field work — the site, the times (one button each, for the phone), response and downtime.
+  const fld = j.field || {};
+  const canField = canDo('jobs.field') && !isClosed && job.status !== 'REJECTED';
+  const fieldPanel = fld.field ? `<div class="card section" style="border-left:4px solid ${fld.down ? 'var(--red)' : 'var(--green)'}">
+      <div class="toolbar" style="margin:0 0 6px"><h3 style="margin:0">📍 In the field</h3>
+        ${fld.breakdown ? '<span class="badge red">Breakdown</span>' : ''}${fld.down ? '<span class="badge amber">Machine down</span>' : '<span class="badge green">Working again</span>'}
+        <div class="spacer"></div>${canField ? '<button class="sm" id="fldedit">✎ Field details</button>' : ''}</div>
+      <p style="margin:0 0 8px"><b>${esc(fld.location || 'Site not given')}</b></p>
+      <div class="grid">
+        <div class="card stat"><span class="n" style="font-size:16px">${fldTime(fld.reported_at)}</span><span class="l">Reported</span></div>
+        <div class="card stat"><span class="n" style="font-size:16px">${fld.arrived_at ? fldTime(fld.arrived_at) : (canField ? '<button class="primary" id="fldarr">Mechanic arrived</button>' : '—')}</span><span class="l">Mechanic arrived</span></div>
+        <div class="card stat"><span class="n" style="font-size:16px">${fld.working_at ? fldTime(fld.working_at) : (canField && fld.arrived_at ? '<button class="primary" id="fldwork">Machine working again</button>' : '—')}</span><span class="l">Working again</span></div>
+        <div class="card stat"><span class="n" style="font-size:16px">${fldHours(fld.response_hours)} · ${fld.downtime_hours != null ? fldHours(fld.downtime_hours) : (fld.down_hours != null ? 'down ' + fldHours(fld.down_hours) : '—')}</span><span class="l">Response · downtime</span></div>
+      </div>
+      <p class="muted" style="font-size:12px;margin:6px 0 0">Travel: ${num(fld.travel_hours || 0)} h · Field vehicle: ${fld.km != null
+    ? `${num(fld.km)} km × ${fld.km_rate != null ? money(fld.km_rate) : '(no rate set)'} = ${money(fld.transport_cost)}` : 'no km entered'}</p>
+    </div>` : '';
   c.innerHTML = `${pageHeader(job.job_no, '<a href="#/jobs">← Job Cards</a>')}
     <div class="toolbar">${statusBadge(job.status)}<span class="badge ${job.type === 'service' ? 'blue' : ''}">${esc(job.type)}</span>
       ${job.severity ? `<span class="badge">${esc(job.severity)}</span>` : ''}
@@ -2573,12 +2701,14 @@ async function jobDetail(c, id) {
       ${!isClosed && !isPartial && canDo('stores.mrn.create') ? '<button class="sm" id="jobreqmrn" title="Create a Material Request Note (MRN) for this job">+ Request Parts (MRN)</button>' : ''}
       ${!isClosed && !isPartial && canDo('stores.stock_issue') ? '<button class="sm primary" id="jobissue" title="Issue stock from store to this job card">⚡ Issue to Job</button>' : ''}
       ${canDo('jobs.edit') && !isPartial ? '<button class="sm" id="editjob" title="Change the vehicle, description or type">✎ Edit</button>' : ''}
+      ${!fld.field && canField && !isPartial ? '<button class="sm" id="fldmark" title="The repair is done at the site, not in the workshop">📍 In the field…</button>' : ''}
       ${job.type === 'service' && canDo('jobs.flat_labour') && job.status !== 'CLOSED' ? `<button class="sm" id="flatlabour">Service labour${job.flat_labour != null ? ': ' + money(job.flat_labour) : ' (flat)'}</button>` : ''}
       <a class="btn primary sm" href="/api/reports/job/${job.id}/report.html" target="_blank" title="Full job report — parts requested & received, daily work done, and costs">📋 Job Report</a>
       <a class="btn sm" href="/api/reports/job/${job.id}/costsheet.html" target="_blank">🖨 Cost Sheet</a>
     </div>
     ${job.type === 'service' ? `<p class="muted" style="font-size:12px">Service job — labour is a flat charge${job.flat_labour == null ? ' (not set yet)' : ''}, not hours×rate.</p>` : ''}
     <p>${esc(job.description || '')}</p>
+    ${fieldPanel}
     ${j.continues ? `<p class="muted" style="font-size:13px">↪ Continues ${linkJob(j.continues)} — the vehicle's earlier job, partly closed.</p>` : ''}
     ${isPartial ? `<div class="card section" style="border-left:4px solid var(--violet)">
       <b>◐ Partly closed ${esc(String(job.partial_closed_at || '').slice(0, 10))}</b>${job.partial_note ? ` — ${esc(job.partial_note)}` : ''}
@@ -2628,11 +2758,13 @@ async function jobDetail(c, id) {
     <div class="grid section">
       <div class="card"><h3>Cost Breakdown ${job.status === 'CLOSED' ? '(frozen snapshot)' : '(live)'}</h3>
         <div class="cost-line"><span>Labour</span><span>${money(j.cost.labour_cost)}</span></div>
+        ${j.cost.travel_hours ? `<div class="muted" style="font-size:12px;margin:-2px 0 4px">incl. travel ${fldHours(j.cost.travel_hours)} · ${money(j.cost.travel_cost)}</div>` : ''}
         <div class="cost-line"><span>Material</span><span>${money(j.cost.material_cost)}</span></div>
         <div class="cost-line"><span>Oil</span><span>${money(j.cost.oil_cost)}</span></div>
         <div class="cost-line"><span>General</span><span>${money(j.cost.general_cost)}</span></div>
         <div class="cost-line"><span>External</span><span>${money(j.cost.external_cost)}</span></div>
-        ${j.cost.other_cost ? `<div class="cost-line"><span>Other / Recorded</span><span>${money(j.cost.other_cost)}</span></div>` : ''}
+        ${j.cost.field_cost ? `<div class="cost-line"><span>Field transport</span><span>${money(j.cost.field_cost)}</span></div>` : ''}
+        ${Math.abs((j.cost.other_cost || 0) - (j.cost.field_cost || 0)) >= 0.005 ? `<div class="cost-line"><span>Other / Recorded</span><span>${money((j.cost.other_cost || 0) - (j.cost.field_cost || 0))}</span></div>` : ''}
         <div class="cost-line total"><span>Total</span><span>${money(j.cost.total_cost)}</span></div>
       </div>
       <div class="card"><h3>Approvals</h3>
@@ -2662,7 +2794,7 @@ async function jobDetail(c, id) {
           rows.push(`<tr>
               <td>${i === 0 ? date : ''}</td>
               <td>${esc(nm)}</td>
-              <td>${i === 0 ? esc(w.description || '') : ''}</td>
+              <td>${i === 0 ? `${w.travel ? '<span class="badge blue">Travel</span> ' : ''}${esc(w.description || '')}` : ''}</td>
               <td class="num">${num(hrs)}</td>
               <td class="num">${rate == null ? '<span class="badge amber">no rate</span>' : money(rate)}</td>
               <td class="num">${money(amount)}</td>
@@ -2735,6 +2867,15 @@ async function jobDetail(c, id) {
     catch (e) { toast(e.message, 'err'); }
   };
   if (qs('#editjob')) qs('#editjob').onclick = () => editJobModal(job, render);
+  // Stage 6: field work.
+  if (qs('#fldmark')) qs('#fldmark').onclick = () => fieldModal(job.id, { field: false }, render);
+  if (qs('#fldedit')) qs('#fldedit').onclick = () => fieldModal(job.id, fld, render);
+  const fieldStep = (step, label) => async () => {
+    try { await api(`/field/jobs/${job.id}/${step}`, { method: 'POST' }); toast(label); render(); }
+    catch (e) { toast(e.message, 'err'); }
+  };
+  if (qs('#fldarr')) qs('#fldarr').onclick = fieldStep('arrived', 'Arrival recorded');
+  if (qs('#fldwork')) qs('#fldwork').onclick = fieldStep('working', 'Machine working again — recorded');
   if (qs('#jobreqmrn')) qs('#jobreqmrn').onclick = () => newMrnModal({
     job_id: job.id,
     job_no: job.job_no,
@@ -3018,6 +3159,7 @@ async function addDailyModal(jobId, assetId) {
       ${field('Hours', 'hours', { type: 'number' })}
       <div id="jd-hint" style="font-size:12px;margin-top:4px"></div>
       ${assetPickerHtml('Vehicle / machine' + (assetId ? ' (defaults to this card)' : ' — this card has none, so name it here'))}
+      ${field('Travel (to or from a field job)', 'travel', { type: 'checkbox' })}
       ${field('External repair (outside work)', 'is_external', { type: 'checkbox' })}
       ${field('External value (if external)', 'external_value', { type: 'number' })}
       <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Add</button></div>
@@ -3526,17 +3668,32 @@ routes.stores = async (c) => {
       const list = await api('/stores/issues?limit=500' + (q ? '&q=' + encodeURIComponent(q) : ''));
       qs('#icount').textContent = `${list.length}${list.length === 500 ? '+' : ''} issue${list.length === 1 ? '' : 's'}`;
       qs('#itable').innerHTML = tableWrap(
-        [{ label: 'Date' }, { label: 'Vehicle' }, { label: 'Job Card' }, { label: 'Item / description' }, { label: 'Category' }, { label: 'Qty', num: true }, { label: 'Unit Price', num: true }, { label: 'Issued by' }],
+        [{ label: 'Date' }, { label: 'Vehicle' }, { label: 'Job Card' }, { label: 'Item / description' }, { label: 'Category' }, { label: 'Qty', num: true }, { label: 'Unit Price', num: true }, { label: 'Issued by' }]
+          .concat(canReturn ? [{ label: '' }] : []),
         list.map((i) => `<tr>
           <td>${esc((i.issue_date || '').slice(0, 10))}</td>
           <td>${esc(i.asset_code || '—')}</td>
           <td>${i.job_no ? `<a href="#/jobs/${i.job_id}">${esc(i.job_no)}</a>` : '<span class="muted">—</span>'}</td>
           <td>${esc(i.description)}</td>
           <td>${esc(i.category || '')}${i.sub_category ? ` <span class="muted" style="font-size:11px">› ${esc(i.sub_category)}</span>` : ''}</td>
-          <td class="num">${num(i.qty)}</td>
+          <td class="num">${num(i.qty)}${i.returned > 0 ? `<br><span class="badge blue" title="Brought back unused">${num(i.returned)} returned</span>` : ''}</td>
           <td class="num">${i.unit_price == null ? '—' : money(i.unit_price)}</td>
-          <td>${esc(i.issued_by || '')}</td></tr>`), { scroll: true });
+          <td>${esc(i.issued_by || '')}</td>
+          ${canReturn ? `<td>${!i.voided && i.qty - (i.returned || 0) > 0.001 ? `<button class="sm" data-ret="${i.id}" data-left="${i.qty - (i.returned || 0)}" data-desc="${esc(i.description)}" title="Parts brought back unused go back into the store">↩ Return</button>` : ''}</td>` : ''}</tr>`), { scroll: true });
+      // Stage 6: parts brought back unused — back into the store, off the job's cost.
+      qsa('[data-ret]', qs('#itable')).forEach((b) => { b.onclick = () => modal(`Return to store · ${b.dataset.desc}`, `
+        ${field('Quantity brought back', 'qty', { type: 'number', value: b.dataset.left })}
+        ${field('Date', 'return_date', { type: 'date', value: new Date().toISOString().slice(0, 10) })}
+        ${field('Note (optional)', 'note')}
+        <p class="muted" style="font-size:12px">It goes back into the store it left, and comes off the job's cost.</p>
+        <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Return to store</button></div>`, (mb, close) => {
+        qs('#s', mb).onclick = async () => {
+          try { const r = await api(`/stores/issues/${b.dataset.ret}/return`, { method: 'POST', body: formData(mb) }); close(); toast(`Returned ${num(r.qty)}`); load(); }
+          catch (e) { toast(e.message, 'err'); }
+        };
+      }); });
     };
+    const canReturn = canDo('stores.issue_return');
     let ideb; qs('#iq').oninput = () => { clearTimeout(ideb); ideb = setTimeout(load, 250); };
     if (qs('#nis')) qs('#nis').onclick = () => newIssueModal(load);
     await load();

@@ -659,7 +659,7 @@ CREATE INDEX IF NOT EXISTS idx_dw_date ON job_daily_work(work_date);
 CREATE TABLE IF NOT EXISTS job_parts (
   id                 INTEGER PRIMARY KEY AUTOINCREMENT,
   job_id             INTEGER NOT NULL REFERENCES job_cards(id) ON DELETE CASCADE,
-  source_type        TEXT NOT NULL CHECK (source_type IN ('grn','issue','oil','general','external')),
+  source_type        TEXT NOT NULL CHECK (source_type IN ('grn','issue','oil','general','external','return')),
   source_id          INTEGER,               -- id in grn / issues / stock_ledger / general_item_txns
   description        TEXT,
   qty                REAL NOT NULL DEFAULT 1,
@@ -1088,3 +1088,18 @@ CREATE TABLE IF NOT EXISTS store_reorder (
   set_at     TEXT NOT NULL DEFAULT (datetime('now')),
   UNIQUE (store_id, section, item_key)
 );
+
+-- Stage 6: parts handed over to a job and brought back unused (a return note). The stock goes back
+-- into the store it left; the job stops carrying their cost.
+CREATE TABLE IF NOT EXISTS issue_returns (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  issue_id     INTEGER NOT NULL REFERENCES issues(id),
+  qty          REAL NOT NULL,
+  return_date  TEXT NOT NULL,                    -- YYYY-MM-DD
+  note         TEXT,
+  store_id     INTEGER REFERENCES workshops(id),
+  job_part_id  INTEGER REFERENCES job_parts(id), -- the negative line that takes the cost off a job, if any
+  returned_by  INTEGER REFERENCES users(id),
+  created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_issue_returns ON issue_returns(issue_id);

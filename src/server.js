@@ -103,6 +103,8 @@ app.use('/api/daily-work', requireModule('dailywork'), require('./routes/dailywo
 // is decided by its own capability, because the managers who sign off and unlock a day hold Daily
 // Work at view only.
 app.use('/api/attendance', require('./routes/attendance'));
+// Field work (Stage 6): reading needs Job Cards view (checked inside); each write its own capability.
+app.use('/api/field', require('./routes/field'));
 app.use('/api/dashboard', require('./routes/dashboard'));
 app.use('/api/mechanics', require('./routes/mechanics'));
 app.use('/api/workshops', require('./routes/workshops'));

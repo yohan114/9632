@@ -401,7 +401,7 @@ router.get('/month', asyncHandler(async (req, res) => {
   if (own.sql) { conditions.push(own.sql); params.push(...own.params); }
 
   let rows = all(
-    `SELECT w.id, w.work_date, w.mechanic, w.description, w.hours, w.is_external, w.external_value, w.outside_labour,
+    `SELECT w.id, w.work_date, w.mechanic, w.description, w.hours, w.is_external, w.external_value, w.outside_labour, w.travel,
             j.id AS job_id, j.job_no, j.type, j.status,
             a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec, p.name AS project_name
        FROM job_daily_work w
@@ -591,9 +591,10 @@ router.post('/', requireCap('dailywork.add'), asyncHandler((req, res) => {
   const lineAsset = toInt(b.asset_id) || job.asset_id || null;
 
   const info = run(
-    `INSERT INTO job_daily_work (job_id, work_date, mechanic, description, hours, is_external, external_value, asset_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    jobId, date, mechanic, description, hours, isExternal, isExternal ? toNum(b.external_value, 0) : 0, lineAsset
+    `INSERT INTO job_daily_work (job_id, work_date, mechanic, description, hours, is_external, external_value, asset_id, travel)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    jobId, date, mechanic, description, hours, isExternal, isExternal ? toNum(b.external_value, 0) : 0, lineAsset,
+    b.travel && !isExternal ? 1 : 0   // Stage 6: travel to a field job — costed like any hour, shown apart
   );
   costing.refreshJobTotals(jobId);
   mechanics.syncJobLabourForMonth(date.slice(0, 7));
@@ -666,9 +667,10 @@ router.post('/bulk-log', requireCap('dailywork.edit'), asyncHandler((req, res) =
 
       assertDailyWorkAllowed(jobId, req.user, [date]);   // a whole batch is refused, not half-applied
       const info = run(
-        `INSERT INTO job_daily_work (job_id, work_date, mechanic, description, hours, is_external, external_value, asset_id)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-        jobId, date, mechanic, description, hours, isExternal, isExternal ? toNum(e.external_value, 0) : 0, lineAsset
+        `INSERT INTO job_daily_work (job_id, work_date, mechanic, description, hours, is_external, external_value, asset_id, travel)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        jobId, date, mechanic, description, hours, isExternal, isExternal ? toNum(e.external_value, 0) : 0, lineAsset,
+        e.travel && !isExternal ? 1 : 0   // Stage 6: a travel line
       );
       createdIds.push(info.lastInsertRowid);
       affectedJobs.add(jobId);
@@ -710,6 +712,8 @@ router.patch('/:id', requireCap('dailywork.edit'), asyncHandler((req, res) => {
   if (req.body.hours !== undefined) put('hours', toNum(req.body.hours, 0));
   if (req.body.mechanic !== undefined) put('mechanic', String(req.body.mechanic).trim() || null);
   if (req.body.description !== undefined) put('description', String(req.body.description).trim() || null);
+  // Stage 6: mark (or unmark) a line as travel to a field job.
+  if (req.body.travel !== undefined) put('travel', req.body.travel && !w.is_external ? 1 : 0);
   // Blank clears the outside labor value; a number sets it.
   if (req.body.outside_labour !== undefined) {
     const v = req.body.outside_labour;

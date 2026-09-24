@@ -106,9 +106,13 @@ router.get('/dashboard', asyncHandler((req, res) => {
       unsigned_days: unsignedFor(wsList) };
   }
 
+  // Stage 6: machines down in the field (your workshops'), once field work is in use at all.
+  const fieldInUse = !!get('SELECT 1 x FROM job_cards WHERE field = 1 LIMIT 1');
+  const field_down = fieldInUse ? require('../lib/field').downCount(req.user) : null;
+
   res.json({
     jobs_by_status, awaiting_price: awaiting, low_stock_oil, batteries_warranty,
-    month_cost_by_project, open_jobs_count, closed_this_month_count, partly_closed, attendance_today,
+    month_cost_by_project, open_jobs_count, closed_this_month_count, partly_closed, attendance_today, field_down,
     needs_attention: intelligence.needsAttentionSummary(),
   });
 }));
