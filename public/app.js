@@ -509,7 +509,8 @@ const LIVE_ENTITY_ROUTES = {
   job_card: ['jobs', 'jobrequests'], job_request: ['jobrequests', 'jobs'], job_daily_work: ['dailywork', 'jobs'],
   mechanic_attendance: ['dailywork'], workday_signoff: ['dailywork'], job_reopen_request: ['jobs'],
   battery: ['batteries', 'stockcockpit', 'stocktake'], asset: ['assets'],
-  mechanic: ['mechanics', 'labour'], labour_rate: ['labour', 'mechanics'], mechanic_alias: ['mechanics'],
+  mechanic: ['mechanics', 'labour', 'workshops'], labour_rate: ['labour', 'mechanics'], mechanic_alias: ['mechanics'],
+  workshop: ['workshops', 'access', 'jobs'],
 };
 const LIVE_AGG_ROUTES = ['dashboard', 'attention']; // aggregate views refresh on ANY change
 let _liveWired = false;
@@ -762,6 +763,7 @@ const NAV = [
   ['tbrequests', '🛞', 'Tyre & Battery Requests'],
   ['tyrebattery', '🛞', 'Tyre & Battery'],
   ['reports', '📈', 'Reports'],
+  ['workshops', '🏭', 'Workshops', 'workshops'],
   ['access', '🔐', 'Access Control', 'admin'],
 ];
 // Which permission module governs each nav item's visibility (dashboard always on).
@@ -780,6 +782,7 @@ const NAV_MODULE = {
 };
 function navVisible(n) {
   if (n[3] === 'admin') return canDo('access.manage', 'users.manage');
+  if (n[3] === 'workshops') return canDo('workshops.manage', 'mechanics.move');
   if (n[0] === 'dashboard') return true;
   const m = NAV_MODULE[n[0]];
   return !m || canView(m);
@@ -793,7 +796,7 @@ const NAV_GROUP = {
   purchasing: 'Procurement', tbrequests: 'Procurement',
   assets: 'Fleet', serviceplan: 'Fleet',
   reports: 'Analysis', attention: 'Analysis', progress: 'Analysis', teardown: 'Analysis', tyrebattery: 'Analysis', aliases: 'Analysis', projects: 'Analysis', labour: 'Analysis',
-  access: 'Admin',
+  workshops: 'Admin', access: 'Admin',
 };
 
 function renderShell() {
@@ -1273,7 +1276,10 @@ const MONTHS = [['01', 'Jan'], ['02', 'Feb'], ['03', 'Mar'], ['04', 'Apr'], ['05
 routes.jobs = async (c, params) => {
   if (params[0]) return jobDetail(c, params[0]);
   const sp = new URLSearchParams(location.hash.split('?')[1] || '');
-  const cur = { q: sp.get('q') || '', year: sp.get('year') || '', month: sp.get('month') || '', status: sp.get('status') || '' };
+  const cur = { q: sp.get('q') || '', year: sp.get('year') || '', month: sp.get('month') || '', status: sp.get('status') || '',
+    workshop: sp.get('workshop_id') || '' };
+  // Workshop filter and tag (Stage 2): only once there is more than one workshop.
+  const wsd = wsMulti() ? await workshopsData() : null;
 
   const nowY = new Date().getFullYear();
   const years = [];
@@ -1288,6 +1294,7 @@ routes.jobs = async (c, params) => {
       <select id="jyear" style="max-width:120px"><option value="">All years</option>${years.map((y) => `<option ${String(y) === cur.year ? 'selected' : ''}>${y}</option>`).join('')}</select>
       <select id="jmonth" style="max-width:140px"><option value="">All months</option>${MONTHS.map(([v, l]) => `<option value="${v}" ${v === cur.month ? 'selected' : ''}>${l}</option>`).join('')}</select>
       <select id="jstatus" style="max-width:200px"><option value="">All statuses</option>${JOB_STATUSES.map((s) => `<option ${s === cur.status ? 'selected' : ''}>${s}</option>`).join('')}</select>
+      ${wsd ? `<select id="jws" style="max-width:220px"><option value="">All workshops</option>${wsd.workshops.map((w) => `<option value="${w.id}" ${String(w.id) === cur.workshop ? 'selected' : ''}>${esc(w.name)}</option>`).join('')}</select>` : ''}
       <button class="sm" id="jclear">Clear</button>
       <button class="sm" id="jfilter-backlog" style="background:#fff3cd;color:#856404;border-color:#ffeeba;font-weight:600" title="Filter to backlog cards awaiting triage / approval">⚡ Backlog: Requested</button>
       <span class="muted" id="jcount"></span>
@@ -1317,6 +1324,7 @@ routes.jobs = async (c, params) => {
     if (qs('#jyear').value) p.set('year', qs('#jyear').value);
     if (qs('#jmonth').value) p.set('month', qs('#jmonth').value);
     if (qs('#jstatus').value) p.set('status', qs('#jstatus').value);
+    if (qs('#jws') && qs('#jws').value) p.set('workshop_id', qs('#jws').value);
     return p;
   };
 
@@ -1344,7 +1352,7 @@ routes.jobs = async (c, params) => {
     const canReopenJob = canDo('jobs.reopen');
     const rows = list.map((j) => `<tr>
       <td style="text-align:center;width:36px"><input type="checkbox" class="jrow-chk" data-id="${j.id}" data-status="${j.status}" data-jobno="${esc(j.job_no)}"></td>
-      <td><a href="#/jobs/${j.id}">${esc(j.job_no)}</a></td>
+      <td><a href="#/jobs/${j.id}">${esc(j.job_no)}</a>${wsd && j.workshop_code ? `<br><span class="badge" title="${esc(wsName(wsd, j.workshop_id))}">${esc(j.workshop_code)}</span>` : ''}</td>
       <td class="desc-col">${vehText(j) ? `<span class="stamp">${esc(vehText(j))}</span>` : '—'}</td>
       <td class="desc-col" title="${esc(j.description || '')}">${esc(j.description || '')}</td>
       <td><span class="badge ${j.type === 'service' ? 'blue' : ''}">${esc(j.type)}</span></td>
@@ -1454,7 +1462,8 @@ routes.jobs = async (c, params) => {
   qs('#jyear').onchange = load;
   qs('#jmonth').onchange = load;
   qs('#jstatus').onchange = load;
-  qs('#jclear').onclick = () => { qs('#jq').value = ''; qs('#jyear').value = ''; qs('#jmonth').value = ''; qs('#jstatus').value = ''; load(); };
+  if (qs('#jws')) qs('#jws').onchange = load;
+  qs('#jclear').onclick = () => { qs('#jq').value = ''; qs('#jyear').value = ''; qs('#jmonth').value = ''; qs('#jstatus').value = ''; if (qs('#jws')) qs('#jws').value = ''; load(); };
   if (qs('#jfilter-backlog')) {
     qs('#jfilter-backlog').onclick = () => {
       qs('#jstatus').value = 'REQUESTED';
@@ -2440,12 +2449,15 @@ async function loadVehicleConflicts(el) {
 async function newJobModal() {
   const projects = await api('/projects');
   const popts = [{ value: '', label: '—' }, ...projects.map((p) => ({ value: p.id, label: p.name }))];
+  // Which workshop does the repair (Stage 2): your home workshop unless you choose another.
+  const wsd = wsMulti() ? await workshopsData() : null;
   modal('New Job Card', `
     <p class="muted">One open job card per vehicle — if this vehicle already has one, close it first or add the work to it.</p>
     ${assetPickerHtml('Vehicle / machine *')}
     <div id="njblock" style="margin:4px 0"></div>
     <div class="row">${field('Type', 'type', { type: 'select', options: [{ value: 'repair', label: 'repair' }, { value: 'service', label: 'service' }] })}${field('Severity', 'severity', { type: 'select', options: [{ value: '', label: '—' }, { value: 'major', label: 'major' }, { value: 'minor', label: 'minor' }] })}</div>
     ${field('Project', 'project_id', { type: 'select', options: popts })}
+    ${wsd ? field('Workshop (who repairs it)', 'workshop_id', { type: 'select', options: wsOptions(wsd), value: wsd.mine }) : ''}
     ${field('Description *', 'description', { type: 'textarea' })}
     <div style="margin-top:14px;text-align:right"><button class="primary" id="save">Raise Job Card</button></div>`, (body, close) => {
     wireAssetPicker(body);
@@ -2526,6 +2538,7 @@ async function jobDetail(c, id) {
       ${job.severity ? `<span class="badge">${esc(job.severity)}</span>` : ''}
       <a href="#/assets/${job.asset_id}">${esc(idLabel(job) || '—')}</a>
       <span class="muted">${esc(job.project_name || '')}</span>
+      ${wsMulti() && job.workshop_name ? `<span class="badge" title="The workshop doing this repair">🏭 ${esc(job.workshop_name)}</span>` : ''}
       <div class="spacer"></div>
       ${!isClosed && !isPartial && canDo('stores.mrn.create') ? '<button class="sm" id="jobreqmrn" title="Create a Material Request Note (MRN) for this job">+ Request Parts (MRN)</button>' : ''}
       ${!isClosed && !isPartial && canDo('stores.stock_issue') ? '<button class="sm primary" id="jobissue" title="Issue stock from store to this job card">⚡ Issue to Job</button>' : ''}
@@ -2757,10 +2770,12 @@ async function doTransition(jobId, to, current) {
 // Edit the card itself — vehicle, description, type. The vehicle box is pre-filled with the
 // current one and left alone unless the user actually picks a different vehicle, so simply
 // correcting the description can never move a job to another machine by accident.
-function editJobModal(job, onDone) {
+async function editJobModal(job, onDone) {
   const fld = (...args) => `<div class="fld">${field(...args)}</div>`;
+  const wsd = wsMulti() ? await workshopsData() : null;
   modal(`Edit ${job.job_no}`, `
     ${fld('Description *', 'description', { value: job.description || '' })}
+    ${wsd ? fld('Workshop (who repairs it)', 'workshop_id', { type: 'select', options: wsOptions(wsd), value: job.workshop_id }) : ''}
     <div class="row" style="margin-top:8px">
       ${fld('Type', 'type', { type: 'select', value: job.type, options: [{ value: 'repair', label: 'Repair' }, { value: 'service', label: 'Service' }] })}
       <div class="fld">${assetPickerHtml('Vehicle')}</div>
@@ -2773,6 +2788,7 @@ function editJobModal(job, onDone) {
     qs('#s', body).onclick = async () => {
       const d = formData(body);
       const payload = { description: d.description, type: d.type };
+      if (d.workshop_id && Number(d.workshop_id) !== Number(job.workshop_id)) payload.workshop_id = Number(d.workshop_id);
       // Only send a vehicle when one was actually re-picked; a hidden id appears on selection.
       if (d.asset_id && Number(d.asset_id) !== Number(job.asset_id)) payload.asset_id = Number(d.asset_id);
       const send = async (p) => {
@@ -4322,7 +4338,7 @@ async function mrnDetail(body, id) {
         ${canEditReq ? '<button class="sm" id="medit">✎ Edit request</button> <button class="sm" id="maddline">+ Add item</button>' : ''}
         ${adminAmend ? '<button class="sm danger" id="maddline" title="Admin only — the approval stands, and the item is marked as added after it">+ Add item (after approval)</button>' : ''}
       </div>
-      <p class="muted">Date ${esc((m.req_date || '').slice(0, 10))} · Vehicle ${esc(idLabel(m) || '—')} · Job ${m.job_no ? `<a href="#/jobs/${m.job_id}">${esc(m.job_no)}</a> <span class="badge ${STATUS_CLASS[m.job_status] || ''}">${esc(m.job_status || '')}</span>` : 'not linked'} · Source ${esc(sourceLabel(m.purchase_source))}${m.purpose ? ' · ' + esc(m.purpose) : ''}${m.requested_by ? ' · by ' + esc(m.requested_by) : ''}</p>
+      <p class="muted">Date ${esc((m.req_date || '').slice(0, 10))}${wsMulti() && m.workshop_name ? ` · Workshop ${esc(m.workshop_name)}` : ''} · Vehicle ${esc(idLabel(m) || '—')} · Job ${m.job_no ? `<a href="#/jobs/${m.job_id}">${esc(m.job_no)}</a> <span class="badge ${STATUS_CLASS[m.job_status] || ''}">${esc(m.job_status || '')}</span>` : 'not linked'} · Source ${esc(sourceLabel(m.purchase_source))}${m.purpose ? ' · ' + esc(m.purpose) : ''}${m.requested_by ? ' · by ' + esc(m.requested_by) : ''}</p>
       ${canEditReq && astatus === 'certified' ? '<p class="muted" style="font-size:12px;margin:0 0 6px">This request is certified. Changing what was asked for withdraws that certification and sends it back to the Workshop Engineer.</p>' : ''}
       ${astatus === 'approved' ? `<p class="muted" style="font-size:12px;margin:0 0 6px">Approved — the request is now the authority to spend, so it can no longer be changed.${
       // Telling an admin it cannot be changed, next to a button that changes it, would be a lie.
@@ -8183,6 +8199,83 @@ routes.jobreview = async (c) => {
   draw();
 };
 
+// ---- Workshops (multi-site Stage 2) ---------------------------------------------------------
+//
+// A workshop repairs vehicles and has its own mechanics and job cards; a SITE is where a vehicle
+// works (the Projects list). Until a second workshop is added (ME.workshopsMulti), no workshop
+// picker, column or filter appears anywhere else — the screens look as they always did.
+let WS_CACHE = null;
+async function workshopsData(fresh) {
+  if (!WS_CACHE || fresh) WS_CACHE = await api('/workshops');
+  if (ME) ME.workshopsMulti = WS_CACHE.multi;
+  return WS_CACHE;
+}
+const wsMulti = () => !!(ME && ME.workshopsMulti);
+const wsOptions = (d) => d.workshops.filter((w) => w.active).map((w) => ({ value: w.id, label: w.name }));
+const wsName = (d, id) => { const w = d && d.workshops.find((x) => x.id === id); return w ? w.name : '—'; };
+
+routes.workshops = async (c) => {
+  if (!canDo('workshops.manage', 'mechanics.move')) { c.innerHTML = '<div class="card err">You do not have access to this page.</div>'; return; }
+  const [d, mechs] = await Promise.all([workshopsData(true), api('/workshops/mechanics')]);
+  const manage = canDo('workshops.manage');
+  const move = canDo('mechanics.move');
+  const rows = d.workshops.map((w) => `<tr${w.active ? '' : ' style="opacity:.55"'}>
+    <td><b>${esc(w.name)}</b>${w.is_default ? ' <span class="badge blue">main</span>' : ''}${w.active ? '' : ' <span class="badge">retired</span>'}<br><span class="muted" style="font-size:12px">${esc(w.code)}${w.place ? ' · ' + esc(w.place) : ''}</span></td>
+    <td class="num">${w.users}</td><td class="num">${w.mechanics}</td><td class="num">${w.open_jobs}</td>
+    ${manage ? `<td class="num" style="white-space:nowrap"><button class="sm" data-wedit="${w.id}">✎ Edit</button>
+      ${w.is_default ? '' : (w.active ? `<button class="sm danger" data-wretire="${w.id}">Retire</button>` : `<button class="sm" data-wback="${w.id}">Reinstate</button>`)}</td>` : ''}</tr>`);
+  const mrows = mechs.filter((m) => m.active).map((m) => `<tr><td>${esc(m.name)}</td><td>${esc(wsName(d, m.workshop_id))}</td>
+    <td class="muted">${m.last_move ? 'since ' + esc(m.last_move) : ''}</td>
+    ${move ? `<td class="num"><button class="sm" data-mmove="${m.id}" data-name="${esc(m.name)}" data-ws="${m.workshop_id}">Move…</button></td>` : ''}</tr>`);
+  c.innerHTML = `${pageHeader('Workshops', 'Where vehicles are repaired. Sites — where vehicles work — are on the Projects page.')}
+    <div class="card">
+      <div class="toolbar" style="margin:0 0 8px"><h3 style="margin:0">Workshops</h3><div class="spacer"></div>${manage ? '<button class="primary sm" id="wnew">+ Add workshop</button>' : ''}</div>
+      ${tableWrap([{ label: 'Workshop' }, { label: 'People', num: true }, { label: 'Mechanics', num: true }, { label: 'Open job cards', num: true }].concat(manage ? [{ label: '', num: true }] : []), rows)}
+      <p class="muted" style="font-size:12px;margin:8px 0 0">${d.multi
+        ? 'Each person has a home workshop (Access Control → Users). New job cards go to the home workshop of whoever raises them.'
+        : 'With one workshop, nothing else changes on any screen. When you add a second, job cards, requests and people show their workshop.'}</p>
+    </div>
+    <div class="card">
+      <h3 style="margin:0 0 8px">Mechanics</h3>
+      ${tableWrap([{ label: 'Mechanic' }, { label: 'Workshop' }, { label: '' }].concat(move ? [{ label: '', num: true }] : []), mrows, { scroll: true })}
+      <p class="muted" style="font-size:12px;margin:8px 0 0">A move keeps its date, so hours worked before it stay with the old workshop.</p>
+    </div>`;
+  const edit = (w) => modal(w ? `Edit ${w.name}` : 'Add a workshop', `
+    ${field('Name', 'name', { value: w ? w.name : '', placeholder: 'e.g. Muthur Site Workshop' })}
+    ${field('Short code', 'code', { value: w ? w.code : '', placeholder: 'e.g. MTR' })}
+    ${field('Place', 'place', { value: w ? (w.place || '') : '', placeholder: 'Town' })}
+    <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Save</button></div>`, (body, close) => {
+    qs('#s', body).onclick = async () => {
+      try {
+        await api(w ? `/workshops/${w.id}` : '/workshops', { method: w ? 'PATCH' : 'POST', body: formData(body) });
+        close(); toast('Saved'); routes.workshops(c);
+      } catch (e) { toast(e.message, 'err'); }
+    };
+  });
+  if (qs('#wnew', c)) qs('#wnew', c).onclick = () => edit(null);
+  qsa('[data-wedit]', c).forEach((b) => { b.onclick = () => edit(d.workshops.find((w) => String(w.id) === b.dataset.wedit)); });
+  const setActive = async (id, active) => {
+    try { await api(`/workshops/${id}`, { method: 'PATCH', body: { active } }); toast(active ? 'Reinstated' : 'Retired'); routes.workshops(c); }
+    catch (e) { toast(e.message, 'err'); }
+  };
+  qsa('[data-wretire]', c).forEach((b) => { b.onclick = () => { if (confirm('Retire this workshop? Nothing can be added to it until it is reinstated.')) setActive(b.dataset.wretire, false); }; });
+  qsa('[data-wback]', c).forEach((b) => { b.onclick = () => setActive(b.dataset.wback, true); });
+  qsa('[data-mmove]', c).forEach((b) => {
+    b.onclick = () => modal(`Move ${b.dataset.name}`, `
+      ${field('To workshop', 'workshop_id', { type: 'select', options: wsOptions(d), value: Number(b.dataset.ws) })}
+      ${field('From date', 'from_date', { type: 'date', value: new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10) })}
+      ${field('Note (optional)', 'note')}
+      <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Move</button></div>`, (body, close) => {
+      qs('#s', body).onclick = async () => {
+        try {
+          const r = await api(`/workshops/mechanics/${b.dataset.mmove}/move`, { method: 'POST', body: formData(body) });
+          close(); toast(`${r.mechanic} → ${r.workshop} from ${r.from_date}`); routes.workshops(c);
+        } catch (e) { toast(e.message, 'err'); }
+      };
+    });
+  });
+};
+
 // ---- Access Control — roles & permissions, clearance board, users --------------------------
 //
 // Three tabs, each shown to whoever may use it: Roles & Permissions and the Clearance Board need
@@ -8353,7 +8446,9 @@ async function renderClearanceBoard(c) {
 }
 
 async function renderUsersManager(c) {
-  const [users, roles] = await Promise.all([api('/users'), api('/users/roles')]);
+  const [users, roles, wsd] = await Promise.all([api('/users'), api('/users/roles'), workshopsData(true)]);
+  // Home workshop (Stage 2): shown once there is more than one workshop.
+  const multi = wsd.multi;
   const labelOf = Object.fromEntries(roles.map((r) => [r.name, r.label || r.name]));
   const roleBoxes = (checked = []) => roles.map((r) => `<label style="flex-direction:row;display:flex;gap:6px;align-items:flex-start;font-weight:normal">
       <input type="checkbox" style="width:auto;margin-top:3px" data-role="${esc(r.name)}" ${checked.includes(r.name) ? 'checked' : ''}>
@@ -8361,8 +8456,9 @@ async function renderUsersManager(c) {
   const picked = (body) => qsa('[data-role]', body).filter((x) => x.checked).map((x) => x.dataset.role);
 
   c.innerHTML = `<div class="toolbar"><button class="primary" id="nu">+ New User</button><div class="spacer"></div><span class="muted">${users.length} user(s)</span></div>
-    ${tableWrap([{ label: 'Username' }, { label: 'Name' }, { label: 'Roles' }, { label: '2FA' }, { label: 'Active' }, { label: '' }],
+    ${tableWrap([{ label: 'Username' }, { label: 'Name' }].concat(multi ? [{ label: 'Workshop' }] : []).concat([{ label: 'Roles' }, { label: '2FA' }, { label: 'Active' }, { label: '' }]),
     users.map((u) => `<tr${u.active ? '' : ' style="opacity:.55"'}><td>${esc(u.username)}</td><td>${esc(u.full_name || '')}</td>
+      ${multi ? `<td>${esc(wsName(wsd, u.workshop_id))} <button class="sm" data-uws="${u.id}" title="Change home workshop">✎</button></td>` : ''}
       <td>${u.roles.map((r) => `<span class="badge">${esc(labelOf[r] || r)}</span>`).join(' ')}</td>
       <td>${u.mfa_enabled ? '<span class="badge green">on</span>' : '<span class="muted">off</span>'}</td><td>${u.active ? '✓' : '✕'}</td>
       <td style="white-space:nowrap"><button class="sm" data-roles="${u.id}">Roles</button> <button class="sm" data-reset="${u.id}">Reset password</button>
@@ -8377,7 +8473,8 @@ async function renderUsersManager(c) {
   });
 
   qs('#nu', c).onclick = () => modal('New User', `${field('Username *', 'username')}${field('Temporary password *', 'password', { type: 'password' })}
-    <p class="muted">${esc(passwordHint())} They must choose their own at first sign-in.</p>${field('Full name', 'full_name')}<label>Roles</label>${roleBoxes()}
+    <p class="muted">${esc(passwordHint())} They must choose their own at first sign-in.</p>${field('Full name', 'full_name')}
+    ${multi ? field('Home workshop', 'workshop_id', { type: 'select', options: wsOptions(wsd), value: wsd.default_id }) : ''}<label>Roles</label>${roleBoxes()}
     <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Create</button></div>`,
     (body, close) => {
       qs('#s', body).onclick = async () => {
@@ -8385,6 +8482,17 @@ async function renderUsersManager(c) {
         try { await api('/users', { method: 'POST', body: d }); close(); toast('User created'); renderUsersManager(c); } catch (e) { toast(e.message, 'err'); }
       };
     });
+  qsa('[data-uws]', c).forEach((b) => b.onclick = () => {
+    const u = users.find((x) => x.id == b.dataset.uws);
+    modal('Home workshop — ' + u.username, `${field('Workshop', 'workshop_id', { type: 'select', options: wsOptions(wsd), value: u.workshop_id })}
+      <p class="muted">New job cards and requests they raise go to this workshop.</p>
+      <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Save</button></div>`, (body, close) => {
+      qs('#s', body).onclick = async () => {
+        try { await api(`/users/${u.id}`, { method: 'PATCH', body: { workshop_id: formData(body).workshop_id } }); close(); toast('Saved'); renderUsersManager(c); }
+        catch (e) { toast(e.message, 'err'); }
+      };
+    });
+  });
   qsa('[data-roles]', c).forEach((b) => b.onclick = () => {
     const u = users.find((x) => x.id == b.dataset.roles);
     modal('Roles for ' + u.username, roleBoxes(u.roles) + '<div style="margin-top:12px;text-align:right"><button class="primary" id="s">Save</button></div>',
@@ -8495,8 +8603,13 @@ async function mtnModal(existing, onDone) {
   } else {
     try { suggested = (await api('/stores/numbers')).next_mtn || ''; } catch (e) { /* type it in */ }
   }
+  // Places (Stage 2): workshops, projects and sites, offered as you type "From" and "To". Picking
+  // one links the note to that place; anything else typed (a machine, "Head Office") stays text.
+  const placeList = await api('/stores/places').catch(() => []);
+  const placeOf = (text) => { const p = placeList.find((x) => x.label === String(text || '').trim()); return p ? p.key : undefined; };
   const fld = (...args) => `<div class="fld">${field(...args)}</div>`;
   const bg = modal(existing ? 'Edit MTN ' + esc(v.mtn_no) : 'New MTN (transfer)', `
+    <datalist id="mtnplaces">${placeList.map((p) => `<option value="${esc(p.label)}">${esc(p.kind)}</option>`).join('')}</datalist>
     <div class="mrnsec">
       <div class="mrnsec-h">1 · The transfer note</div>
       <div class="fgrid">
@@ -8531,12 +8644,16 @@ async function mtnModal(existing, onDone) {
         const c = qs('#tlcount', root); if (c) c.textContent = `— ${rows.length} item(s)`;
       };
       const removed = [];                       // ids of existing items the user took off the note
+      const offerPlaces = (el) => qsa('input[name=from_location],input[name=to_location],input[name=tfrom],input[name=tto]', el)
+        .forEach((i) => i.setAttribute('list', 'mtnplaces'));
+      offerPlaces(root);
       const addLine = (line) => {
         const holder = document.createElement('div');
         holder.innerHTML = mtnLineHtml(line);
         const row = holder.firstElementChild;
         lines.appendChild(row);
         wireMtnLine(row);
+        offerPlaces(row);
         const x = qs('.mrnline-x', row);
         if (x) x.onclick = () => {
           if (row.dataset.lineId) removed.push(row.dataset.lineId);
@@ -8558,6 +8675,8 @@ async function mtnModal(existing, onDone) {
         category_id: qs('input[name=tcat]', row) ? qs('input[name=tcat]', row).value || undefined : undefined,
         from_location: qs('input[name=tfrom]', row).value.trim() || undefined,
         to_location: qs('input[name=tto]', row).value.trim() || undefined,
+        from_place: placeOf(qs('input[name=tfrom]', row).value),
+        to_place: placeOf(qs('input[name=tto]', row).value),
         reason: qs('input[name=treason]', row).value.trim() || undefined,
       })).filter((l) => l.description);
 
@@ -8573,7 +8692,7 @@ async function mtnModal(existing, onDone) {
         const head = {
           mtn_no: d.mtn_no, txn_date: d.txn_date, from_location: d.from_location,
           to_location: d.to_location, transferred_by: d.transferred_by, received_by: d.received_by,
-          reason: d.reason, to_asset: d.to_asset
+          reason: d.reason, to_asset: d.to_asset, from_place: placeOf(d.from_location), to_place: placeOf(d.to_location)
         };
         try {
           if (!existing) {

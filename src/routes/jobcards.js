@@ -15,6 +15,7 @@ const closeLib = require('../lib/job_close');
 const attendance = require('../lib/attendance');
 const costing = require('../lib/costing');
 const jobno = require('../lib/jobno');
+const workshops = require('../lib/workshops');
 const emitter = require('../lib/emitter');
 
 const router = express.Router();
@@ -41,10 +42,11 @@ function loadJob(id) {
   return get(
     `SELECT j.*, a.code AS asset_code, a.code_norm AS asset_code_norm,
             a.registration AS asset_reg, a.ec_code AS asset_ec,
-            p.name AS project_name
+            p.name AS project_name, w.code AS workshop_code, w.name AS workshop_name
        FROM job_cards j
        LEFT JOIN assets a ON a.id = j.asset_id
        LEFT JOIN projects p ON p.id = j.project_id
+       LEFT JOIN workshops w ON w.id = j.workshop_id
       WHERE j.id = ?`,
     id
   );
@@ -98,6 +100,11 @@ router.get(
       clauses.push('j.project_id = ?');
       params.push(toInt(req.query.project_id));
     }
+    // Which workshop does the repair (multi-site Stage 2).
+    if (req.query.workshop_id) {
+      clauses.push('j.workshop_id = ?');
+      params.push(toInt(req.query.workshop_id));
+    }
     // Only currently-open job cards (for pickers that log against an active job).
     if (req.query.open === '1') clauses.push(jobstate.openSql('j'));
     // Free-text search across job number, vehicle and references. A vehicle the
@@ -138,11 +145,12 @@ router.get(
     const limit = toInt(req.query.limit, 500);
     const cols = `j.id, j.job_no, j.type, j.severity, j.status, j.description,
               j.total_cost, j.material_cost, j.labour_cost, j.requested_at, j.closed_at, j.completed_at,
-              j.asset_id,
+              j.asset_id, j.workshop_id, w.code AS workshop_code,
               a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec, p.name AS project_name`;
     const from = `FROM job_cards j
          LEFT JOIN assets a ON a.id = j.asset_id
-         LEFT JOIN projects p ON p.id = j.project_id`;
+         LEFT JOIN projects p ON p.id = j.project_id
+         LEFT JOIN workshops w ON w.id = j.workshop_id`;
 
     // One row per machine, for the pickers. A vehicle can be carrying two, three, even four
     // cards left open years apart, and offering all of them side by side just invites logging
@@ -199,12 +207,14 @@ router.post(
     // One open card per vehicle — the next fault waits until this one closes.
     const guard = jobstate.checkOneOpenJob(assetId);
     if (!guard.ok) return res.status(409).json({ error: guard.error, blocking_job: guard.blocking });
+    // The workshop that does the repair: the one chosen, else the person's home workshop.
+    const workshopId = workshops.forNew(req.user, b.workshop_id);
 
     const no = jobNo(type);
     const info = run(
       `INSERT INTO job_cards (job_no, ref, asset_id, project_id, site, type, severity, description,
-                              status, requested_by, requested_by_user)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'REQUESTED', ?, ?)`,
+                              status, requested_by, requested_by_user, workshop_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'REQUESTED', ?, ?, ?)`,
       no,
       b.ref || null,
       assetId || null,
@@ -214,9 +224,10 @@ router.post(
       b.severity === 'major' || b.severity === 'minor' ? b.severity : null,
       b.description,
       b.requested_by || req.user.fullName || req.user.username,
-      req.user.id
+      req.user.id,
+      workshopId
     );
-    audit.record({ userId: req.user.id, entity: 'job_card', entityId: info.lastInsertRowid, action: 'create', after: { job_no: no } });
+    audit.record({ userId: req.user.id, entity: 'job_card', entityId: info.lastInsertRowid, action: 'create', after: { job_no: no, workshop_id: workshopId } });
     emitter.emit('job_updated', { job_id: info.lastInsertRowid, action: 'create' });
     emitter.emit('dashboard_refresh', { reason: 'job_create' });
     res.status(201).json({ job: loadJob(info.lastInsertRowid), unresolved });
@@ -1214,8 +1225,17 @@ router.patch(
     const b = req.body || {};
     const sets = [];
     const params = [];
-    const before = { asset_id: job.asset_id, description: job.description, type: job.type };
+    const before = { asset_id: job.asset_id, description: job.description, type: job.type, workshop_id: job.workshop_id };
     const warnings = [];
+
+    // -- workshop (who does the repair)
+    let newWorkshopId;
+    if (b.workshop_id !== undefined && Number(b.workshop_id) !== job.workshop_id) {
+      // A finished card stays with the workshop that did the work: its cost is already reported there.
+      if (jobstate.isFinal(job.status)) return res.status(409).json({ error: 'A closed job card stays with the workshop that did the work.' });
+      newWorkshopId = workshops.mustBeActive(b.workshop_id).id;
+      sets.push('workshop_id = ?'); params.push(newWorkshopId);
+    }
 
     // -- description
     if (b.description !== undefined) {
@@ -1293,7 +1313,8 @@ router.patch(
       for (const b2 of costing.vehicleMonthsForJob(id, newAssetId)) costing.recalcVehicleMonth(b2.assetId, b2.year, b2.month);
     }
 
-    const after = { asset_id: newAssetId !== undefined ? newAssetId : job.asset_id, description: b.description, type: newType };
+    const after = { asset_id: newAssetId !== undefined ? newAssetId : job.asset_id, description: b.description, type: newType,
+      workshop_id: newWorkshopId !== undefined ? newWorkshopId : job.workshop_id };
     audit.record({ userId: req.user.id, entity: 'job_card', entityId: id, action: 'edit', before, after, reason: req.body.reason || null });
     emitter.emit('job_updated', { job_id: id, action: 'edit' });
     emitter.emit('dashboard_refresh', { reason: 'job_edit' });

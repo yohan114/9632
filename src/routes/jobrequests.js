@@ -163,12 +163,14 @@ router.post('/:id/approve', requireCap('jobrequests.approve'), asyncHandler((req
   const out = tx(() => {
     // Create the job card — already past both approval gates (this request WAS the approval).
     const no = jobNo(jr.type);
+    // The card goes to the workshop of whoever raised the request (Stage 2), else the default.
     const info = run(
       `INSERT INTO job_cards (job_no, asset_id, project_id, type, severity, description, status,
-                              requested_by, requested_by_user, requested_at, approved_transport_at, approved_ops_at)
-       VALUES (?, ?, ?, ?, ?, ?, 'APPROVED_OPERATIONS', ?, ?, ?, datetime('now'), datetime('now'))`,
+                              requested_by, requested_by_user, requested_at, approved_transport_at, approved_ops_at, workshop_id)
+       VALUES (?, ?, ?, ?, ?, ?, 'APPROVED_OPERATIONS', ?, ?, ?, datetime('now'), datetime('now'), ?)`,
       no, jr.asset_id, jr.project_id, jr.type, jr.severity, jr.description,
-      jr.requested_by, jr.requested_by_user, jr.req_date || new Date().toISOString().slice(0, 10)
+      jr.requested_by, jr.requested_by_user, jr.req_date || new Date().toISOString().slice(0, 10),
+      require('../lib/workshops').homeOf(jr.requested_by_user ? { id: jr.requested_by_user } : null)
     );
     const jobId = info.lastInsertRowid;
     // Mirror the two approvals onto the job card's own audit trail.
