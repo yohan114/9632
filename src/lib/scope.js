@@ -86,6 +86,21 @@ function mayReach(user, workshopId, opts) {
   return r == null || r.includes(workshopId);
 }
 
+/**
+ * Whose reports a person reads (Stage 5). { ws, fixed, choices }: `ws` null = every workshop;
+ * `choices` null = any workshop or all of them.
+ *   - one workshop: the whole company, as always;
+ *   - head office (and everyone, while the workshops are not kept apart): the one asked for, else all;
+ *   - anyone else: their own workshop — store staff may pick among the workshops their store serves.
+ */
+function reportWorkshop(user, asked) {
+  if (!workshops.isMulti()) return { ws: null, fixed: false, choices: null };
+  const a = Number(asked) || null;
+  const r = reach(user);
+  if (r == null) return { ws: a && workshops.byId(a) ? a : null, fixed: false, choices: null };
+  return { ws: a && r.includes(a) ? a : workshops.homeOf(user), fixed: r.length === 1, choices: r };
+}
+
 /** The 403 body for a record of another workshop: what it is and whose it is. */
 function refusal(what, workshopId) {
   const w = workshops.byId(workshopId);
@@ -126,5 +141,5 @@ function jobParam(req, res, next, id) {
 
 module.exports = {
   FLAG, switchedOn, setSwitch, enabled, headOffice, storeStaff, seesAll, seesAllJobs, reach, onlyWorkshop,
-  filter, mayReach, refusal, jobRefusal, mrnRefusal, jobRequestRefusal, jobParam,
+  filter, mayReach, reportWorkshop, refusal, jobRefusal, mrnRefusal, jobRequestRefusal, jobParam,
 };

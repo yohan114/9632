@@ -13,6 +13,17 @@ const lubricants = require('./lubricants');
 const jobstate = require('./jobstate');
 
 const COMPANY = 'Edward and Christie (Pvt) Ltd — Badalgama W/S';
+// Stage 5: the workbook for ONE workshop (buildWorkbook's `ws`). Every cost goes to the workshop of
+// its job card; with no job card, a service, an oil or general issue or a tyre/battery goes to the
+// workshop of the store it came out of (its store_id); the monthly inputs are each workshop's own.
+// With no workshop given it is the whole company's workbook, exactly as it always was. `ws` is a
+// number (checked in buildWorkbook) before it is written into SQL.
+const MAIN_WS = '(SELECT id FROM workshops WHERE is_default = 1 ORDER BY id LIMIT 1)';
+const wsIs = (col, ws) => (ws ? ` AND COALESCE(${col}, ${MAIN_WS}) = ${Number(ws)}` : '');
+// A service is its job card's (found by the number written on it), else its store's.
+// A tyre or battery: its job card's workshop, else its store's.
+const TB_WS = 'COALESCE((SELECT jt.workshop_id FROM job_cards jt WHERE jt.id = i.job_id), i.store_id)';
+const SERVICE_WS = (s) => `COALESCE((SELECT jx.workshop_id FROM job_cards jx WHERE jx.job_no = ${s}.job_no AND COALESCE(${s}.job_no,'') <> '' ORDER BY jx.id DESC LIMIT 1), ${s}.store_id)`;
 const MONEY = '#,##0.00';
 const MONTHS = ['', 'January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 const SIG_TITLES = [
@@ -42,9 +53,11 @@ function formulaMoney(ws, row, col, formula, result, bold) {
   c.numFmt = MONEY; c.alignment = { horizontal: 'right' }; if (bold) c.font = { bold: true }; border(c); return c;
 }
 
+// The line at the top of every sheet: the company, or (Stage 5) the company and the one workshop.
+const titleOf = (sheet) => (sheet.workbook && sheet.workbook.company) || COMPANY;
 function titleBand(ws, ncols, subtitle, period) {
   ws.mergeCells(1, 1, 1, ncols);
-  const a = ws.getCell(1, 1); a.value = COMPANY; a.font = { bold: true, size: 13 }; a.alignment = { horizontal: 'center' };
+  const a = ws.getCell(1, 1); a.value = titleOf(ws); a.font = { bold: true, size: 13 }; a.alignment = { horizontal: 'center' };
   ws.mergeCells(2, 1, 2, ncols);
   const b = ws.getCell(2, 1); b.value = subtitle + ' — ' + period; b.font = { bold: true, size: 11 }; b.alignment = { horizontal: 'center' };
   ws.getRow(1).height = 20; ws.getRow(2).height = 18;
@@ -60,8 +73,9 @@ function signatures(ws, row, ncols) {
   });
 }
 
-function inputRows(year, month, sheet) {
-  return all('SELECT * FROM monthly_report_inputs WHERE year = ? AND month = ? AND sheet = ? ORDER BY seq, id', year, month, sheet);
+function inputRows(year, month, sheet, ws) {
+  return all(`SELECT * FROM monthly_report_inputs WHERE year = ? AND month = ? AND sheet = ?${wsIs('workshop_id', ws)}
+               ORDER BY workshop_id, seq, id`, year, month, sheet);
 }
 
 // ---------------------------------------------------------------------------
@@ -201,7 +215,7 @@ function buildProfitLoss(ws, period, parts) {
 // ---------------------------------------------------------------------------
 // 2. Repair cost
 // ---------------------------------------------------------------------------
-function buildRepair(wb, ym, period) {
+function buildRepair(wb, ym, period, wsId) {
   const ws = wb.addWorksheet('Repair cost');
   [6, 14, 16, 20, 12, 12, 18, 44, 12, 13, 12, 13, 14, 14, 12, 12].forEach((w, i) => { ws.getColumn(i + 1).width = w; });
   titleBand(ws, 15, 'Workshop repairing cost calculation for vehicles and machinery', period);
@@ -232,7 +246,7 @@ function buildRepair(wb, ym, period) {
   // month, and closing it fully later does not move it.
   const closed = all(`SELECT ${JOB_COLS} ${JOB_FROM}
       WHERE ${jobstate.reportClosedSql('j')} AND j.completed_at IS NOT NULL AND substr(j.completed_at,1,7) = ?
-        AND (j.description IS NULL OR (j.description NOT LIKE 'Stores materials%' AND j.description NOT LIKE 'auto-created container%'))
+        AND (j.description IS NULL OR (j.description NOT LIKE 'Stores materials%' AND j.description NOT LIKE 'auto-created container%'))${wsIs('j.workshop_id', wsId)}
       ORDER BY j.completed_at, j.id`, ym);
 
   // Pending = repairs still open. The owner hand-curates which open jobs to show (some carry no cost
@@ -241,7 +255,7 @@ function buildRepair(wb, ym, period) {
   // 'pending', one job number per row's label, in the order given.
   const [pyYear, pyMonth] = ym.split('-').map(Number);
   const pendingManual = all(
-    `SELECT label FROM monthly_report_inputs WHERE year = ? AND month = ? AND sheet = 'pending' ORDER BY seq, id`,
+    `SELECT label FROM monthly_report_inputs WHERE year = ? AND month = ? AND sheet = 'pending'${wsIs('workshop_id', wsId)} ORDER BY workshop_id, seq, id`,
     pyYear, pyMonth
   ).map((rr) => String(rr.label || '').trim()).filter(Boolean);
 
@@ -249,7 +263,7 @@ function buildRepair(wb, ym, period) {
   if (pendingManual.length) {
     pending = [];
     for (const jn of pendingManual) {
-      const row = get(`SELECT ${JOB_COLS} ${JOB_FROM} WHERE j.job_no = ?`, jn);
+      const row = get(`SELECT ${JOB_COLS} ${JOB_FROM} WHERE j.job_no = ?${wsIs('j.workshop_id', wsId)}`, jn);
       // A partly closed job reports in Closed (of its partial-close month), never in Pending.
       if (row && row.status !== jobstate.PARTIAL) pending.push(row);
     }
@@ -268,7 +282,7 @@ function buildRepair(wb, ym, period) {
             )
           )
           AND substr(COALESCE(j.requested_at, j.created_at),1,7) <= ?
-          AND EXISTS (SELECT 1 FROM job_daily_work w WHERE w.job_id = j.id AND substr(w.work_date,1,7) = ?)
+          AND EXISTS (SELECT 1 FROM job_daily_work w WHERE w.job_id = j.id AND substr(w.work_date,1,7) = ?)${wsIs('j.workshop_id', wsId)}
         ORDER BY COALESCE(j.requested_at, j.created_at) DESC, j.id DESC`, ym, ym);
   }
 
@@ -306,7 +320,7 @@ function buildRepair(wb, ym, period) {
       LEFT JOIN projects p ON p.id = j.project_id
      WHERE substr(COALESCE(j.completed_at, j.requested_at, j.created_at),1,7) = ?
        AND (j.description LIKE 'Stores materials%' OR j.description LIKE 'auto-created container%')
-       AND COALESCE(j.material_cost,0) > 0
+       AND COALESCE(j.material_cost,0) > 0${wsIs('j.workshop_id', wsId)}
      ORDER BY j.material_cost DESC, j.id
   `, ym);
 
@@ -355,7 +369,7 @@ function buildRepair(wb, ym, period) {
       LEFT JOIN assets a ON a.id = j.asset_id
       LEFT JOIN projects p ON p.id = j.project_id
      WHERE substr(l.work_date,1,7) = ?
-       AND (l.job_id IS NULL OR l.job_id NOT IN (${usedIdsStr}))
+       AND (l.job_id IS NULL OR l.job_id NOT IN (${usedIdsStr}))${wsIs('j.workshop_id', wsId)}
      GROUP BY COALESCE(a.registration, a.code, '${GW}')
      HAVING labour > 0
   `, ym);
@@ -366,7 +380,7 @@ function buildRepair(wb, ym, period) {
       LEFT JOIN assets a ON a.id = j.asset_id
      WHERE substr(w.work_date,1,7) = ?
        AND (w.job_id IS NULL OR w.job_id NOT IN (${usedIdsStr}))
-       AND COALESCE(w.description,'') <> ''
+       AND COALESCE(w.description,'') <> ''${wsIs('j.workshop_id', wsId)}
   `, ym);
   const descByVeh = {};
   for (const d of olDesc) { (descByVeh[d.vehkey] = descByVeh[d.vehkey] || []); if (!descByVeh[d.vehkey].includes(d.descr)) descByVeh[d.vehkey].push(d.descr); }
@@ -379,7 +393,7 @@ function buildRepair(wb, ym, period) {
   // Fallback: the per-vehicle value on monthly_report_inputs sheet 'daily_outside'. Rolls into the
   // Remarks/outside column and the make-or-buy comparison.
   const dailyOutside = {};
-  for (const row of all(`SELECT vehicle, amount1 FROM monthly_report_inputs WHERE year = ? AND month = ? AND sheet = 'daily_outside'`, pyYear, pyMonth)) {
+  for (const row of all(`SELECT vehicle, amount1 FROM monthly_report_inputs WHERE year = ? AND month = ? AND sheet = 'daily_outside'${wsIs('workshop_id', wsId)}`, pyYear, pyMonth)) {
     const key = String(row.vehicle || '').trim().toLowerCase();
     if (key) dailyOutside[key] = num(row.amount1);
   }
@@ -391,7 +405,7 @@ function buildRepair(wb, ym, period) {
       LEFT JOIN assets a ON a.id = j.asset_id
      WHERE substr(w.work_date,1,7) = ?
        AND (w.job_id IS NULL OR w.job_id NOT IN (${usedIdsStr}))
-       AND COALESCE(w.outside_labour, 0) > 0
+       AND COALESCE(w.outside_labour, 0) > 0${wsIs('j.workshop_id', wsId)}
      GROUP BY COALESCE(a.registration, a.code, '${GW}')`, ym)) {
     entryOutside[String(row.vehkey || '').trim().toLowerCase()] = num(row.outside);
   }
@@ -557,7 +571,7 @@ function buildRepair(wb, ym, period) {
 // ---------------------------------------------------------------------------
 // 3. Service cost
 // ---------------------------------------------------------------------------
-function buildService(wb, ym, period) {
+function buildService(wb, ym, period, wsId) {
   const ws = wb.addWorksheet('Service cost');
   [6, 14, 16, 20, 12, 12, 18, 40, 12, 13, 12, 13, 14, 14, 14, 4, 16, 20].forEach((w, i) => { ws.getColumn(i + 1).width = w; });
   titleBand(ws, 17, 'Workshop servicing cost calculation for vehicles and machinery', period);
@@ -574,18 +588,22 @@ function buildService(wb, ym, period) {
   ws.getCell(4, 18).value = 'Transport cost pool (Rs)'; headerCell(ws.getCell(4, 18));
   ws.getCell(5, 18).value = 482300; moneyCell(ws, 5, 18, 482300);
 
-  const rows = all(
+  const allRows = all(
     `SELECT s.id, s.service_date, s.job_no, s.vehicle_label, s.site_location, s.repair_details, s.outside_estimate,
             COALESCE(s.labour_charge,0) labour, COALESCE(s.parts_subtotal,0) parts,
             a.type atype, a.registration reg, a.code code, a.ec_code ec,
+            COALESCE(${SERVICE_WS('s')}, ${MAIN_WS}) ws_id,
             (SELECT COALESCE(SUM(price),0) FROM service_oils WHERE service_id = s.id) oil,
             (SELECT COALESCE(SUM(amount),0) FROM service_parts WHERE service_id = s.id) other_parts
        FROM service_jobs s LEFT JOIN assets a ON a.id = s.asset_id
       WHERE substr(s.service_date,1,7) = ? ORDER BY s.service_date, s.id`, ym);
+  // One workshop's services — but each one's share of the transport pool is still reckoned over
+  // the whole company's month, so the workshops' workbooks add up to the company's.
+  const rows = wsId ? allRows.filter((x) => x.ws_id === Number(wsId)) : allRows;
 
   const sums = { labour: 0, filter: 0, oil: 0, other: 0, total: 0, subCost: 0, transport: 0, outsideNoTrn: 0, outsideWithTrn: 0 };
   let r = 6, se = 1;
-  const totalSubCostPre = rows.reduce((acc, s) => {
+  const totalSubCostPre = allRows.reduce((acc, s) => {
     const oil = r2(s.oil), otherParts = r2(s.other_parts);
     const filter = Math.max(0, r2(num(s.parts) - oil - otherParts));
     return acc + r2(num(s.labour) + filter + oil + otherParts);
@@ -650,7 +668,7 @@ function buildService(wb, ym, period) {
 // ---------------------------------------------------------------------------
 // 4. Battery cost
 // ---------------------------------------------------------------------------
-function buildBattery(wb, ym, period) {
+function buildBattery(wb, ym, period, wsId) {
   const ws = wb.addWorksheet('Battery cost');
   [6, 14, 20, 12, 10, 20, 16, 14, 13, 14, 12].forEach((w, i) => { ws.getColumn(i + 1).width = w; });
   titleBand(ws, 11, 'Battery cost calculation for vehicles and machinery', period);
@@ -665,7 +683,7 @@ function buildBattery(wb, ym, period) {
             COALESCE(i.unit_price, p.unit_price, 0) unit_price
        FROM tyre_battery_issues i
        LEFT JOIN tyre_battery_prices p ON p.kind = i.kind AND p.category_norm = i.category_norm
-      WHERE i.kind = 'battery' AND substr(i.issue_date,1,7) = ? ORDER BY i.issue_date, i.id`, ym);
+      WHERE i.kind = 'battery' AND substr(i.issue_date,1,7) = ?${wsIs(TB_WS, wsId)} ORDER BY i.issue_date, i.id`, ym);
   const sums = { battery: 0, other: 0, total: 0 };
   let r = 6, se = 1;
   for (const x of rows) {
@@ -693,7 +711,7 @@ function buildBattery(wb, ym, period) {
 // ---------------------------------------------------------------------------
 // 5. Tyre work cost
 // ---------------------------------------------------------------------------
-function buildTyre(wb, ym, period) {
+function buildTyre(wb, ym, period, wsId) {
   const ws = wb.addWorksheet('Tyre work cost');
   [6, 14, 20, 12, 10, 18, 34, 13, 14, 13, 13, 12].forEach((w, i) => { ws.getColumn(i + 1).width = w; });
   titleBand(ws, 12, 'Tyre work cost calculation for vehicles and machinery', period);
@@ -708,7 +726,7 @@ function buildTyre(wb, ym, period) {
             COALESCE(i.unit_price, p.unit_price, 0) unit_price
        FROM tyre_battery_issues i
        LEFT JOIN tyre_battery_prices p ON p.kind = i.kind AND p.category_norm = i.category_norm
-      WHERE i.kind = 'tyre' AND substr(i.issue_date,1,7) = ? ORDER BY i.issue_date, i.id`, ym);
+      WHERE i.kind = 'tyre' AND substr(i.issue_date,1,7) = ?${wsIs(TB_WS, wsId)} ORDER BY i.issue_date, i.id`, ym);
   const sums = { tyre: 0, tube: 0, outside: 0, total: 0 };
   let r = 6, se = 1;
   for (const x of rows) {
@@ -751,7 +769,7 @@ function isReportOil(description, on) {
   const p = get('SELECT category FROM products WHERE id = ?', pid);
   return !!(p && REPORT_OIL_CATEGORIES.has(p.category));
 }
-function buildOils(wb, ym, period, repairOil, serviceOil, repairJobIds) {
+function buildOils(wb, ym, period, repairOil, serviceOil, repairJobIds, wsId) {
   const ws = wb.addWorksheet('Oils & Lubrication');
   [6, 14, 26, 22, 18, 10, 13, 14, 16].forEach((w, i) => { ws.getColumn(i + 1).width = w; });
   titleBand(ws, 9, 'Oils & Lubrication cost — issues not billed to this report’s Repair jobs or a service', period);
@@ -770,7 +788,7 @@ function buildOils(wb, ym, period, repairOil, serviceOil, repairJobIds) {
        LEFT JOIN assets a ON a.id = sl.asset_id LEFT JOIN projects prj ON prj.id = sl.project_id
        LEFT JOIN job_cards jc ON jc.id = sl.job_id
       WHERE sl.kind = 'issue' AND ${LUBE} AND COALESCE(sl.voided,0) = 0
-        AND COALESCE(sl.consumer_type,'') <> 'service' AND substr(sl.txn_date,1,7) = ?
+        AND COALESCE(sl.consumer_type,'') <> 'service' AND substr(sl.txn_date,1,7) = ?${wsIs('COALESCE(jc.workshop_id, sl.store_id)', wsId)}
       ORDER BY sl.txn_date, sl.id`, ym);
   const rows = rawRows.filter((x) =>
     (x.job_id == null || !rendered.has(x.job_id)) &&
@@ -806,7 +824,7 @@ function buildOils(wb, ym, period, repairOil, serviceOil, repairJobIds) {
 // ---------------------------------------------------------------------------
 // 7. General Items
 // ---------------------------------------------------------------------------
-function buildGeneral(wb, ym, period) {
+function buildGeneral(wb, ym, period, wsId) {
   const ws = wb.addWorksheet('General Items');
   [6, 14, 30, 24, 10, 13, 14, 18].forEach((w, i) => { ws.getColumn(i + 1).width = w; });
   titleBand(ws, 8, 'General / store item consumption (workshop consumables & hardware)', period);
@@ -819,7 +837,7 @@ function buildGeneral(wb, ym, period) {
             t.ref, a.registration reg, a.code code, jc.job_no
        FROM general_item_txns t JOIN store_items si ON si.id = t.store_item_id
        LEFT JOIN assets a ON a.id = t.asset_id LEFT JOIN job_cards jc ON jc.id = t.job_id
-      WHERE t.txn_type = 'issue' AND substr(t.txn_date,1,7) = ? ORDER BY t.txn_date, t.id`, ym);
+      WHERE t.txn_type = 'issue' AND substr(t.txn_date,1,7) = ?${wsIs('COALESCE(jc.workshop_id, t.store_id)', wsId)} ORDER BY t.txn_date, t.id`, ym);
   let r = 6, se = 1, total = 0;
   for (const x of rows) {
     const cost = r2(x.cost);
@@ -849,7 +867,7 @@ function buildGeneral(wb, ym, period) {
 // ---------------------------------------------------------------------------
 // 8. Fuel & Rental Cost
 // ---------------------------------------------------------------------------
-function buildFuel(wb, year, month, period) {
+function buildFuel(wb, year, month, period, wsId) {
   const ws = wb.addWorksheet('Fuel & Rental Cost');
   [6, 14, 14, 20, 12, 10, 12, 14, 14, 12, 14, 14, 12, 12].forEach((w, i) => { ws.getColumn(i + 1).width = w; });
   titleBand(ws, 14, 'Fuel cost calculation for vehicles and machinery', period);
@@ -862,7 +880,7 @@ function buildFuel(wb, year, month, period) {
   ws.mergeCells(4, 13, 5, 13); headerCell(ws.getCell(4, 13)).value = 'Standard Rate';
   ws.mergeCells(4, 14, 5, 14); headerCell(ws.getCell(4, 14)).value = 'Remarks';
 
-  const rows = inputRows(year, month, 'fuel');
+  const rows = inputRows(year, month, 'fuel', wsId);
   const mFrom = `${year}-${String(month).padStart(2, '0')}-01`;
   const mTo = `${year}-${String(month).padStart(2, '0')}-${String(new Date(year, month, 0).getDate()).padStart(2, '0')}`;
   const sums = { qty: 0, cost: 0, rental: 0 };
@@ -900,7 +918,7 @@ function buildFuel(wb, year, month, period) {
 // ---------------------------------------------------------------------------
 // 9. Salaries Cost
 // ---------------------------------------------------------------------------
-function buildSalaries(wb, year, month, ym, period) {
+function buildSalaries(wb, year, month, ym, period, wsId) {
   const ws = wb.addWorksheet('Salaries Cost');
   [6, 22, 8, 20, 14, 12, 14, 4, 18, 16, 12, 14].forEach((w, i) => { ws.getColumn(i + 1).width = w; });
   titleBand(ws, 12, 'Salaries cost calculation', period);
@@ -909,7 +927,7 @@ function buildSalaries(wb, year, month, ym, period) {
   ['Rate', 'Cost', 'Total Cost'].forEach((t, i) => { const c = ws.getCell(5, 5 + i); c.value = t; headerCell(c); });
   [['Name', 9], ['Total Working Hours', 10], ['Hourly Rate', 11], ['Total', 12]].forEach(([t, col]) => { ws.mergeCells(4, col, 5, col); const c = ws.getCell(4, col); c.value = t; headerCell(c); });
 
-  const staff = inputRows(year, month, 'salary');
+  const staff = inputRows(year, month, 'salary', wsId);
   const sums = { cost: 0, other: 0, total: 0 };
   let r = 6, se = 1;
   for (const x of staff) {
@@ -929,7 +947,8 @@ function buildSalaries(wb, year, month, ym, period) {
 
   const mechs = all(
     `SELECT jl.mechanic, ROUND(SUM(jl.hours),2) hours, ROUND(SUM(jl.amount),2) amount
-       FROM job_labour jl WHERE substr(jl.work_date,1,7) = ? AND jl.mechanic IS NOT NULL AND TRIM(jl.mechanic) <> ''
+       FROM job_labour jl LEFT JOIN job_cards j ON j.id = jl.job_id
+      WHERE substr(jl.work_date,1,7) = ? AND jl.mechanic IS NOT NULL AND TRIM(jl.mechanic) <> ''${wsIs('j.workshop_id', wsId)}
       GROUP BY jl.mechanic ORDER BY amount DESC`, ym);
   let rr = 6; const mTot = { hours: 0, amount: 0 };
   for (const m of mechs) {
@@ -955,12 +974,12 @@ function buildSalaries(wb, year, month, ym, period) {
 // ---------------------------------------------------------------------------
 // 10. Other Cost
 // ---------------------------------------------------------------------------
-function buildOther(wb, year, month, period) {
+function buildOther(wb, year, month, period, wsId) {
   const ws = wb.addWorksheet('Other Cost');
   [6, 24, 22, 16, 14].forEach((w, i) => { ws.getColumn(i + 1).width = w; });
   titleBand(ws, 5, 'Other (overhead) cost', period);
   ['Se: no', 'Cost Type', 'Project / Plant', 'Total Cost', 'Remarks'].forEach((t, i) => { ws.mergeCells(4, i + 1, 5, i + 1); const c = ws.getCell(4, i + 1); c.value = t; headerCell(c); });
-  const rows = inputRows(year, month, 'other');
+  const rows = inputRows(year, month, 'other', wsId);
   let r = 6, se = 1, sum = 0;
   for (const x of rows) {
     const amt = num(x.amount1);
@@ -982,7 +1001,7 @@ function buildOther(wb, year, month, period) {
 function buildTotal(wb, parts, period) {
   const ws = wb.addWorksheet('Total cost');
   [4, 18, 15, 15, 14, 15, 15, 14, 18, 16, 4, 16].forEach((w, i) => { ws.getColumn(i + 1).width = w; });
-  ws.mergeCells(1, 2, 1, 10); const a = ws.getCell(1, 2); a.value = COMPANY; a.font = { bold: true, size: 13 }; a.alignment = { horizontal: 'center' };
+  ws.mergeCells(1, 2, 1, 10); const a = ws.getCell(1, 2); a.value = titleOf(ws); a.font = { bold: true, size: 13 }; a.alignment = { horizontal: 'center' };
   ws.mergeCells(2, 2, 2, 10); const b = ws.getCell(2, 2); b.value = 'Workshop repairing and servicing cost calculation'; b.font = { bold: true, size: 11 }; b.alignment = { horizontal: 'center' };
   ws.mergeCells(3, 2, 3, 10); const cc = ws.getCell(3, 2); cc.value = 'Summary for the month of ' + period; cc.font = { bold: true, size: 11 }; cc.alignment = { horizontal: 'center' };
 
@@ -1349,10 +1368,10 @@ function buildJobWiseComparison(wb, parts, period) {
 // tally has run in. Hours at work against hours booked on jobs, per mechanic. It moves no money:
 // every cost figure in this workbook is booked hours × rate, as it always was.
 // ---------------------------------------------------------------------------
-function buildAttendance(wb, ym, period) {
+function buildAttendance(wb, ym, period, wsId) {
   const attendance = require('./attendance');
   if (!attendance.isEnabled()) return null;
-  const m = attendance.month(ym);
+  const m = attendance.month(ym, { ws: wsId, split: true });
   if (!m.from || !m.mechanics.length) return null;
   const ws = wb.addWorksheet('Attendance & utilisation');
   [6, 28, 12, 14, 14, 14, 12].forEach((w, i) => { ws.getColumn(i + 1).width = w; });
@@ -1383,12 +1402,22 @@ function buildAttendance(wb, ym, period) {
 // ---------------------------------------------------------------------------
 // MASTER WORKBOOK BUILDER
 // ---------------------------------------------------------------------------
-async function buildWorkbook(year, month) {
+/**
+ * The workbook for a month — the whole company's, or (Stage 5, opts.ws) one workshop's: the same
+ * sheets holding only that workshop's jobs, services, parts, oil, labour and monthly inputs, with
+ * its name at the top. The company's gains a "Workshops compared" sheet once there are two.
+ */
+async function buildWorkbook(year, month, opts = {}) {
+  const wsId = opts.ws ? Number(opts.ws) : null;
+  const wsRow = wsId ? get('SELECT id, code, name FROM workshops WHERE id = ?', wsId) : null;
+  if (wsId && !wsRow) { const e = new Error('No such workshop'); e.status = 400; throw e; }
   const wb = new ExcelJS.Workbook();
   wb.creator = 'WorkshopOne';
   wb.created = new Date(Date.UTC(year, month - 1, 1));
   wb.calcProperties = Object.assign({}, wb.calcProperties, { fullCalcOnLoad: true });
-  
+  // The line at the top of every sheet (titleOf). Unset = the company's line, exactly as before.
+  if (wsRow) wb.company = `Edward and Christie (Pvt) Ltd — ${wsRow.name}`;
+
   const ym = `${year}-${String(month).padStart(2, '0')}`;
   const period = `${MONTHS[month]} ${year}`;
   const parts = {};
@@ -1397,30 +1426,87 @@ async function buildWorkbook(year, month) {
   const plSheet = wb.addWorksheet('PROFIT OR LOSS');
 
   // Build source data sheets
-  parts.repair = buildRepair(wb, ym, period);
-  parts.service = buildService(wb, ym, period);
-  parts.battery = buildBattery(wb, ym, period);
-  parts.tyre = buildTyre(wb, ym, period);
-  parts.oils = buildOils(wb, ym, period, parts.repair.sums.oil, parts.service.sums.oil, parts.repair.repair_job_ids);
-  parts.general = buildGeneral(wb, ym, period);
-  parts.fuel = buildFuel(wb, year, month, period);
-  parts.salaries = buildSalaries(wb, year, month, ym, period);
-  parts.other = buildOther(wb, year, month, period);
-  
+  parts.repair = buildRepair(wb, ym, period, wsId);
+  parts.service = buildService(wb, ym, period, wsId);
+  parts.battery = buildBattery(wb, ym, period, wsId);
+  parts.tyre = buildTyre(wb, ym, period, wsId);
+  parts.oils = buildOils(wb, ym, period, parts.repair.sums.oil, parts.service.sums.oil, parts.repair.repair_job_ids, wsId);
+  parts.general = buildGeneral(wb, ym, period, wsId);
+  parts.fuel = buildFuel(wb, year, month, period, wsId);
+  parts.salaries = buildSalaries(wb, year, month, ym, period, wsId);
+  parts.other = buildOther(wb, year, month, period, wsId);
+
   // Build total & summary sheets
   parts.total = buildTotal(wb, parts, period);
   buildMaterialSummary(wb, parts, period);
   buildCostComparison(wb, parts, period);
   buildJobWiseComparison(wb, parts, period);
   // Optional, last: only with attendance switched on and a month the tally has run in.
-  parts.attendance = buildAttendance(wb, ym, period);
-  
+  parts.attendance = buildAttendance(wb, ym, period, wsId);
+  // Stage 5: the whole company's workbook, with more than one workshop — one row per workshop.
+  if (!wsId && opts.compare !== false && require('./workshops').isMulti()) {
+    parts.compared = await buildCompared(wb, year, month, period);
+  }
+
   // Populate PROFIT OR LOSS sheet content
   buildProfitLoss(plSheet, period, parts);
 
-  return { wb, parts, total: parts.total };
+  return { wb, parts, total: parts.total, workshop: wsRow };
 }
 
-module.exports = { buildWorkbook, MONTHS };
+// ---------------------------------------------------------------------------
+// Stage 5: Workshops compared — one row per workshop, from each one's own workbook.
+// ---------------------------------------------------------------------------
+async function compare(year, month) {
+  const ym = `${year}-${String(month).padStart(2, '0')}`;
+  const out = [];
+  for (const w of all('SELECT id, code, name FROM workshops WHERE active = 1 ORDER BY is_default DESC, name')) {
+    const { parts, total } = await buildWorkbook(year, month, { ws: w.id });
+    const c = total.columns || {};
+    const hours = get(`SELECT ROUND(COALESCE(SUM(dw.hours),0),2) h FROM job_daily_work dw JOIN job_cards j ON j.id = dw.job_id
+                        WHERE substr(dw.work_date,1,7) = ? AND COALESCE(dw.is_external,0) = 0${wsIs('j.workshop_id', w.id)}`, ym).h;
+    out.push({
+      workshop_id: w.id, code: w.code, name: w.name,
+      repair_jobs: num(parts.repair.closed_count) + num(parts.repair.pending_count),
+      jobs_closed: num(parts.repair.closed_count),
+      services: num(parts.service.count),
+      labour: r2(c[3]), spare_parts: r2(c[5]), lubricants: r2(c[6]), other_material: r2(c[7]),
+      overheads: r2(c[8]), total: r2(total.grand_total), hours_booked: num(hours),
+    });
+  }
+  return out;
+}
+
+async function buildCompared(wb, year, month, period) {
+  const rows = await compare(year, month);
+  const ws = wb.addWorksheet('Workshops compared');
+  const COLS = [['Workshop', 30], ['Repair jobs', 11], ['Jobs closed', 11], ['Services', 10], ['Labour', 14], ['Spare parts', 14],
+    ['Lubricants', 14], ['Other material', 14], ['Overheads', 14], ['Total cost', 15], ['Hours booked', 12]];
+  COLS.forEach(([, w], i) => { ws.getColumn(i + 1).width = w; });
+  titleBand(ws, COLS.length, 'Workshops compared', period);
+  COLS.forEach(([t], i) => headerCell(ws.getCell(4, i + 1)).value = t);
+  const KEYS = ['repair_jobs', 'jobs_closed', 'services', 'labour', 'spare_parts', 'lubricants', 'other_material', 'overheads', 'total', 'hours_booked'];
+  const MONEYK = new Set(['labour', 'spare_parts', 'lubricants', 'other_material', 'overheads', 'total']);
+  let r = 5;
+  for (const x of rows) {
+    textCell(ws, r, 1, x.name);
+    KEYS.forEach((k, i) => {
+      if (MONEYK.has(k)) moneyCell(ws, r, i + 2, x[k]);
+      else { const c = ws.getCell(r, i + 2); c.value = x[k]; c.alignment = { horizontal: 'right' }; border(c); }
+    });
+    r++;
+  }
+  const gl = ws.getCell(r, 1); gl.value = 'All workshops'; gl.font = { bold: true }; border(gl);
+  KEYS.forEach((k, i) => {
+    const col = i + 2; const sum = rows.reduce((t, x) => t + num(x[k]), 0);
+    if (MONEYK.has(k)) formulaMoney(ws, r, col, `SUM(${colL(col)}5:${colL(col)}${r - 1})`, sum, true);
+    else { const c = ws.getCell(r, col); c.value = { formula: `SUM(${colL(col)}5:${colL(col)}${r - 1})`, result: r2(sum) }; c.font = { bold: true }; border(c); }
+  });
+  ws.getCell(r + 2, 1).value = 'Each workshop\'s figures are its own workbook\'s Total cost sheet. A cost with no job card is the workshop of the store it came out of.';
+  ws.getCell(r + 2, 1).font = { italic: true, size: 9 };
+  return rows;
+}
+
+module.exports = { buildWorkbook, compare, MONTHS };
 
 
