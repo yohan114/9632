@@ -2,9 +2,10 @@
 
 const express = require('express');
 const { get, all, run } = require('../db');
-const { requireRole } = require('../lib/auth');
+const { requireCap } = require('../lib/auth');
 const { asyncHandler, require_, toInt } = require('../lib/http');
 const audit = require('../lib/audit');
+const costing = require('../lib/costing');
 const { sendXlsx } = require('../lib/export');
 
 const router = express.Router();
@@ -19,7 +20,7 @@ router.get('/', asyncHandler((_req, res) => {
   ));
 }));
 
-router.post('/', requireRole('manager'), asyncHandler((req, res) => {
+router.post('/', requireCap('projects.manage'), asyncHandler((req, res) => {
   require_(req.body, ['name']);
   const info = run('INSERT INTO projects (code, name, location) VALUES (?, ?, ?)', req.body.code || null, req.body.name, req.body.location || null);
   audit.record({ userId: req.user.id, entity: 'project', entityId: info.lastInsertRowid, action: 'create' });
@@ -32,16 +33,11 @@ router.get('/:id', asyncHandler((req, res) => {
   if (!project) return res.status(404).json({ error: 'Project not found' });
   const sites = all('SELECT * FROM sites WHERE project_id = ? ORDER BY name', id);
   const assets = all('SELECT id, code, brand, type, status FROM assets WHERE current_project_id = ? ORDER BY code', id);
-  const cost = get(
-    `SELECT COALESCE(SUM(labour_cost),0) labour, COALESCE(SUM(material_cost),0) material,
-            COALESCE(SUM(oil_cost),0) oil, COALESCE(SUM(general_cost),0) general,
-            COALESCE(SUM(external_cost),0) external, COALESCE(SUM(total_cost),0) total
-       FROM job_cards WHERE project_id = ?`, id
-  );
+  const cost = costing.projectCost(id);
   res.json({ project, sites, assets, cost });
 }));
 
-router.patch('/:id', requireRole('manager'), asyncHandler((req, res) => {
+router.patch('/:id', requireCap('projects.manage'), asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   const before = get('SELECT * FROM projects WHERE id = ?', id);
   if (!before) return res.status(404).json({ error: 'Project not found' });
@@ -82,7 +78,7 @@ router.get('/:id/cost', asyncHandler(async (req, res) => {
 
 router.get('/:id/sites', asyncHandler((req, res) => res.json(all('SELECT * FROM sites WHERE project_id = ? ORDER BY name', toInt(req.params.id)))));
 
-router.post('/:id/sites', requireRole('manager'), asyncHandler((req, res) => {
+router.post('/:id/sites', requireCap('projects.manage'), asyncHandler((req, res) => {
   require_(req.body, ['name']);
   const id = toInt(req.params.id);
   const info = run('INSERT INTO sites (project_id, name) VALUES (?, ?)', id, req.body.name);

@@ -1,0 +1,18 @@
+{
+  "appId": "com.edwardchristie.workshopone",
+  "appName": "WorkshopOne",
+  "webDir": "public",
+  "bundledWebRuntime": false,
+  "server": {
+    "androidScheme": "http",
+    "cleartext": true,
+    "allowNavigation": [
+      "*"
+    ]
+  },
+  "plugins": {
+    "CapacitorHttp": {
+      "enabled": true
+    }
+  }
+}

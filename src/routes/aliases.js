@@ -2,7 +2,7 @@
 
 const express = require('express');
 const { get, all, run } = require('../db');
-const { requireRole } = require('../lib/auth');
+const { requireCap } = require('../lib/auth');
 const { asyncHandler, require_, toInt } = require('../lib/http');
 const audit = require('../lib/audit');
 const aliases = require('../lib/aliases');
@@ -10,19 +10,16 @@ const aliases = require('../lib/aliases');
 const router = express.Router();
 
 router.get('/', asyncHandler((req, res) => {
-  const clauses = [];
-  const params = [];
-  if (req.query.resolved !== undefined) { clauses.push('al.resolved = ?'); params.push(toInt(req.query.resolved)); }
-  if (req.query.q) { clauses.push('al.raw_text LIKE ?'); params.push('%' + req.query.q + '%'); }
-  const where = clauses.length ? 'WHERE ' + clauses.join(' AND ') : '';
-  res.json(all(
-    `SELECT al.*, a.code AS asset_code FROM asset_aliases al
-       LEFT JOIN assets a ON a.id = al.asset_id
-       ${where}
-      ORDER BY al.resolved ASC, al.hit_count DESC, al.updated_at DESC
-      LIMIT ${toInt(req.query.limit, 500)}`,
-    ...params
-  ));
+  res.json(aliases.queryAliasQueue({
+    table: 'asset_aliases',
+    targetTable: 'assets',
+    targetIdCol: 'asset_id',
+    targetNameCol: 'code',
+    targetAlias: 'asset_code',
+    resolved: req.query.resolved,
+    q: req.query.q,
+    limit: toInt(req.query.limit, 500),
+  }));
 }));
 
 router.get('/pending', asyncHandler((_req, res) => res.json(aliases.pendingAliases())));
@@ -34,7 +31,7 @@ router.post('/resolve', asyncHandler((req, res) => {
   res.json({ ...r, asset });
 }));
 
-router.post('/:id/link', requireRole('storekeeper'), asyncHandler((req, res) => {
+router.post('/:id/link', requireCap('aliases.vehicle.resolve'), asyncHandler((req, res) => {
   require_(req.body, ['asset_id']);
   const id = toInt(req.params.id);
   const before = get('SELECT * FROM asset_aliases WHERE id = ?', id);
@@ -46,7 +43,7 @@ router.post('/:id/link', requireRole('storekeeper'), asyncHandler((req, res) => 
   res.json(updated);
 }));
 
-router.delete('/:id', requireRole('storekeeper'), asyncHandler((req, res) => {
+router.delete('/:id', requireCap('aliases.vehicle.resolve'), asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   run('DELETE FROM asset_aliases WHERE id = ?', id);
   audit.record({ userId: req.user.id, entity: 'asset_alias', entityId: id, action: 'delete' });

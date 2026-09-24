@@ -49,9 +49,16 @@ test('state machine transitions honour state + role', () => {
   assert.strictEqual(jobstate.checkTransition('REQUESTED', 'APPROVED_TRANSPORT', ['workshop']).ok, false);
   assert.strictEqual(jobstate.checkTransition('REQUESTED', 'CLOSED', ['admin']).ok, false); // illegal jump
   assert.strictEqual(jobstate.checkTransition('WORK_COMPLETE', 'CLOSED', ['operational_manager']).ok, true);
-  // reopening a CLOSED card is admin-only
-  assert.strictEqual(jobstate.checkTransition('CLOSED', 'IN_PROGRESS', ['workshop']).ok, false);
+  // Reopening a CLOSED card is restricted to admin + the managers and the workshop, because
+  // those are the people who spot a mistaken close — but not to storekeepers or viewers.
   assert.strictEqual(jobstate.checkTransition('CLOSED', 'IN_PROGRESS', ['admin']).ok, true);
+  assert.strictEqual(jobstate.checkTransition('CLOSED', 'IN_PROGRESS', ['workshop']).ok, true);
+  assert.strictEqual(jobstate.checkTransition('CLOSED', 'IN_PROGRESS', ['manager']).ok, true);
+  assert.strictEqual(jobstate.checkTransition('CLOSED', 'IN_PROGRESS', ['operational_manager']).ok, true);
+  assert.strictEqual(jobstate.checkTransition('CLOSED', 'IN_PROGRESS', ['storekeeper']).ok, false);
+  assert.strictEqual(jobstate.checkTransition('CLOSED', 'IN_PROGRESS', ['viewer']).ok, false);
+  assert.strictEqual(jobstate.canReopen(['workshop']), true);
+  assert.strictEqual(jobstate.canReopen(['viewer']), false);
 });
 
 test('costing rolls up labour + material + oil + external', () => {
@@ -63,8 +70,8 @@ test('costing rolls up labour + material + oil + external', () => {
   assert.strictEqual(c.labour_cost, 1700);   // 4 * 425
   assert.strictEqual(c.material_cost, 1000); // 2 * 500
   assert.strictEqual(c.oil_cost, 10000);     // 10 * 1000
-  assert.strictEqual(c.external_cost, 3000);
-  assert.strictEqual(c.total_cost, 15700);
+  assert.strictEqual(c.external_cost, 0);     // external WORK value is reference-only
+  assert.strictEqual(c.total_cost, 12700);
 });
 
 test('closure gate blocks an unpriced line, then clears', () => {
@@ -139,6 +146,37 @@ test('intelligence: integrity check catches a closed job with no cost snapshot',
   assert.ok(r.issues.some((i) => i.type === 'closed_without_snapshot'));
 });
 
+// This rollup silently did nothing for months: refreshJobTotals did not SELECT asset_id, so
+// its `if (job.asset_id)` guard was always false and vehicle_monthly_costs.labour_cost never
+// moved after the initial backfill. Pin the behaviour so it cannot go quiet again.
+test('refreshJobTotals keeps the per-vehicle monthly labour rollup in step', () => {
+  const asset = aliases.findOrCreateAsset('RU-01', {}).id;
+  const j = run(`INSERT INTO job_cards (job_no, asset_id, type, description, status)
+                 VALUES ('2026/9/R/1', ?, 'repair', 'rollup', 'IN_PROGRESS')`, asset).lastInsertRowid;
+  run("INSERT INTO job_daily_work (job_id, work_date, mechanic, hours) VALUES (?, '2026-09-03', 'Anura', 4)", j);
+  costing.refreshJobTotals(j);
+
+  const vmc = () => get('SELECT * FROM vehicle_monthly_costs WHERE asset_id = ? AND year = 2026 AND month = 9', asset);
+  assert.strictEqual(vmc().labour_cost, 4 * 425, 'the vehicle-month picks up the job labour');
+
+  // More work on the same vehicle-month accumulates.
+  run("INSERT INTO job_daily_work (job_id, work_date, mechanic, hours) VALUES (?, '2026-09-04', 'Anura', 2)", j);
+  costing.refreshJobTotals(j);
+  assert.strictEqual(vmc().labour_cost, 6 * 425, 'it is an absolute recompute, not a stale first value');
+
+  // Removing the labour must pull the figure back down — the month has no lines left to walk,
+  // so this only works because the rebuild also revisits the months it is clearing.
+  run('DELETE FROM job_daily_work WHERE job_id = ?', j);
+  costing.refreshJobTotals(j);
+  assert.strictEqual(vmc().labour_cost, 0, 'deleting the last entry in a month corrects it down');
+
+  const v = vmc();
+  const components = (v.fuel_cost || 0) + (v.oil_cost || 0) + (v.filter_cost || 0)
+                   + (v.battery_cost || 0) + (v.parts_cost || 0) + (v.labour_cost || 0);
+  assert.strictEqual(Math.round(v.total_cost * 100) / 100, Math.round(components * 100) / 100,
+    'total_cost = Σ(components) — the invariant every writer shares');
+});
+
 test('snapshot freezes the total even if a price later changes', () => {
   costing.snapshotJobCost(jobId);
   const snap = get('SELECT total_cost FROM job_costs WHERE job_id = ? ORDER BY id DESC LIMIT 1', jobId);
@@ -147,4 +185,40 @@ test('snapshot freezes the total even if a price later changes', () => {
   // recompute for a NEW job date would differ, but the snapshot must be unchanged
   const stillSnap = get('SELECT total_cost FROM job_costs WHERE job_id = ? ORDER BY id DESC LIMIT 1', jobId);
   assert.strictEqual(stillSnap.total_cost, frozen);
+});
+
+// A rebuild must re-price a month at the rates that applied THEN, not the newest ones on file.
+// Without the date bound, a pay rise recorded in August was applied back through every earlier
+// month, silently inflating labour that had already been reported.
+test('rebuilding a month uses the rate that applied on the work date', () => {
+  const mechanics = require('../src/lib/mechanics');
+  const v = aliases.findOrCreateAsset('RATE-01', {}).id;
+  const j = run(`INSERT INTO job_cards (job_no, asset_id, type, description, status)
+                 VALUES ('2026/10/R/1', ?, 'repair', 'rate test', 'IN_PROGRESS')`, v).lastInsertRowid;
+  run("INSERT INTO labour_rates (mechanic, rate, effective_from) VALUES ('Rateman', 100, '2020-01-01')");
+  run("INSERT INTO labour_rates (mechanic, rate, effective_from) VALUES ('Rateman', 300, '2026-11-01')");
+  run(`INSERT INTO job_daily_work (job_id, work_date, mechanic, hours) VALUES (?, '2026-10-05', 'Rateman', 4)`, j);
+
+  mechanics.syncJobLabourForMonth('2026-10');
+  const line = get("SELECT rate, amount FROM job_labour WHERE job_id = ? AND mechanic = 'Rateman'", j);
+  assert.strictEqual(line.rate, 100, 'October work is priced at the October rate, not November\'s');
+  assert.strictEqual(line.amount, 400);
+
+  // and work after the rise does get the new rate
+  run(`INSERT INTO job_daily_work (job_id, work_date, mechanic, hours) VALUES (?, '2026-11-05', 'Rateman', 2)`, j);
+  mechanics.syncJobLabourForMonth('2026-11');
+  const later = get("SELECT rate, amount FROM job_labour WHERE work_date = '2026-11-05' AND mechanic = 'Rateman'");
+  assert.strictEqual(later.rate, 300);
+  assert.strictEqual(later.amount, 600);
+});
+
+// A group entry written with a comma inside brackets is ONE crew line, not two mechanics.
+test('a bracketed crew name is not split on its inner comma', () => {
+  const { splitMechanics } = require('../src/lib/mechanics');
+  assert.deepStrictEqual(splitMechanics('UTE trainees (Silva, Jayakodi)'), ['UTE trainees (Silva, Jayakodi)']);
+  assert.deepStrictEqual(splitMechanics('Kumara, UTE trainees (Silva, Jayakodi)'), ['Kumara', 'UTE trainees (Silva, Jayakodi)']);
+  // ordinary separators still work
+  assert.deepStrictEqual(splitMechanics('Govinda, Vinod'), ['Govinda', 'Vinod']);
+  assert.deepStrictEqual(splitMechanics('Ruwan & Krishna'), ['Ruwan', 'Krishna']);
+  assert.deepStrictEqual(splitMechanics('Nimesh and Govinda'), ['Nimesh', 'Govinda']);
 });

@@ -129,7 +129,32 @@ function needsAttentionSummary() {
     duplicate_mrn: dup.duplicate_numbers.length + dup.likely_double_entries.length,
     grn_price_spikes: grnPriceSpikes().length,
     integrity_issues: integrityCheck().count,
+    // Vehicles carrying more than one open job card (pre-date the one-open-card rule).
+    vehicle_conflicts: require('./jobstate').duplicateOpenJobs().length,
   };
 }
 
-module.exports = { serviceDue, unusualConsumption, duplicateMrn, grnPriceSpikes, integrityCheck, needsAttentionSummary };
+// ---- battery warranty radar (≤60 days or configurable window) ------------
+function warrantyRadar(daysAhead = 60) {
+  const today = new Date().toISOString().slice(0, 10);
+  const targetDate = new Date(Date.now() + daysAhead * 86400 * 1000).toISOString().slice(0, 10);
+  const expiring = all(
+    `SELECT b.*, a.code AS current_asset_code, a.code AS asset_code
+       FROM batteries b LEFT JOIN assets a ON a.id = b.current_asset_id
+      WHERE b.warranty_date IS NOT NULL AND b.warranty_date >= ? AND b.warranty_date <= ?
+        AND b.state <> 'decommissioned'
+      ORDER BY b.warranty_date`, today, targetDate
+  );
+  const idle_in_store = all(`SELECT * FROM batteries WHERE state = 'in_store' ORDER BY serial_no`);
+  return { expiring, idle_in_store };
+}
+
+module.exports = {
+  serviceDue,
+  unusualConsumption,
+  duplicateMrn,
+  grnPriceSpikes,
+  integrityCheck,
+  needsAttentionSummary,
+  warrantyRadar,
+};

@@ -16,8 +16,15 @@ ExecStart=/usr/bin/node src/server.js
 Restart=always
 RestartSec=3
 Environment=NODE_ENV=production
-Environment=PORT=3000
-Environment=HOST=0.0.0.0
+
+# ANYTHING SET HERE BEATS .env. The .env loader in src/config.js only fills in keys that are not
+# already in the real environment, so a value in this file silently wins.
+#
+# That is why HOST is NOT set here. This unit used to carry `Environment=HOST=0.0.0.0`, which is
+# right for the LAN mini-PC but would have overridden the `HOST=127.0.0.1` line the VPS setup asks
+# for — putting the app on the public interface beside nginx, where only the firewall stood between
+# it and the internet. Leave HOST and PORT to .env, where each deployment states its own.
+#
 # Optional: mirror backups to a mounted drive/share
 # Environment=BACKUP_MIRROR_DIR=/mnt/backup-drive/workshopone
 
