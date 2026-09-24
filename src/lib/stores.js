@@ -22,7 +22,7 @@
 // With one store nothing changes: every movement is in it, and no screen shows a store.
 // ===========================================================================
 
-const { get, all, run, tx } = require('../db');
+const { get, all, run } = require('../db');
 const workshops = require('./workshops');
 
 const fail = (status, msg) => { const e = new Error(msg); e.status = status; throw e; };
@@ -177,7 +177,7 @@ function mayManage(user, storeId) {
   return homeStore(user) === Number(storeId);
 }
 
-// ---- stock take and reorder levels, per store -------------------------------------------------
+// ---- reorder levels, per store (a stock take is src/lib/stock_count.js) -------------------------
 
 function mustBeStore(storeId) {
   const s = byId(Number(storeId));
@@ -189,35 +189,6 @@ function itemName(section, key) {
   const r = get('SELECT name FROM stock_items WHERE section = ? AND item_key = ?', section, key)
     || get('SELECT item_name AS name FROM stock_moves WHERE section = ? AND item_key = ? ORDER BY id DESC LIMIT 1', section, key);
   return r ? r.name : null;
-}
-
-/**
- * Count one item on one store's shelf. The book figure then is kept beside the count, and the
- * difference goes in as a correction ('adjust') — nothing already recorded is changed.
- */
-function count(actor, { storeId, section, itemKey, counted, date, note }) {
-  const stock = require('./stock');
-  const s = mustBeStore(storeId);
-  if (!stock.SECTIONS.includes(section)) fail(400, 'Unknown section');
-  const key = String(itemKey || '').trim();
-  const name = key && itemName(section, key);
-  if (!name) fail(404, 'No such item in this section');
-  const qty = Number(counted);
-  if (counted === '' || counted == null || !Number.isFinite(qty) || qty < 0) fail(400, 'Give the quantity counted (0 or more).');
-  const day = date ? String(date).slice(0, 10) : today();
-  if (!isDate(day)) fail(400, 'Give the date of the count (YYYY-MM-DD).');
-  if (day > today()) fail(400, 'The count date cannot be in the future.');
-  return tx(() => {
-    const book = stock.balanceOf(section, key, s.id);
-    const delta = n2(qty - book);
-    const id = run(`INSERT INTO store_counts (store_id, section, item_key, item_name, count_date, book_qty, counted_qty, delta, note, counted_by)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    s.id, section, key, name, day, book, n2(qty), delta, String(note || '').trim().slice(0, 200) || null, actor.id).lastInsertRowid;
-    if (delta) stock.recordCount(get('SELECT * FROM store_counts WHERE id = ?', id));
-    audit({ userId: actor.id, entity: 'store_count', entityId: id, action: 'count',
-      after: { store: s.name, section, item: name, book, counted: n2(qty), delta, date: day } });
-    return { id, store_id: s.id, section, item_key: key, item_name: name, book, counted: n2(qty), delta, balance: stock.balanceOf(section, key, s.id) };
-  });
 }
 
 /** The level one store reorders an item at. Blank or 0 removes it. */
@@ -245,5 +216,5 @@ function setLevel(actor, { storeId, section, itemKey, level }) {
 
 module.exports = {
   DEF, storeSql, storeOf, byId, activeCount, isMulti, label, servedBy, list, homeStore, forEntry, hasMovements,
-  setStore, storeAtPlace, stampTransfer, checkTransfer, mayManage, wholeCountRefusal, count, setLevel,
+  setStore, storeAtPlace, stampTransfer, checkTransfer, mayManage, wholeCountRefusal, setLevel, itemName,
 };

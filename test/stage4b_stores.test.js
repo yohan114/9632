@@ -280,7 +280,11 @@ test('a stock take in one store: the difference goes in as a correction; a rebui
   assert.strictEqual((await req('POST', '/api/stores/stock/general/count', { cookie: await as('wsM'), body: { store_id: MTR, item_key: PAD, counted: 1 } })).status, 403);
   const r = await req('POST', '/api/stores/stock/general/count', { cookie: skM, body: { store_id: MTR, item_key: PAD, counted: 8, note: 'shelf 3' } });
   assert.strictEqual(r.status, 201, r.text);
-  assert.deepStrictEqual([r.body.book, r.body.counted, r.body.delta, r.body.balance], [11, 8, -3, 8]);
+  // Stores plan, Part 2: the correction waits for head office (ST-D5, ST-D14).
+  assert.deepStrictEqual([r.body.book, r.body.counted, r.body.delta, r.body.balance, r.body.status], [11, 8, -3, 11, 'submitted']);
+  const ok = await req('POST', `/api/stores/counts/${r.body.session_id}/approve`, { cookie: await as('mgr') });
+  assert.strictEqual(ok.status, 200, ok.text);
+  assert.strictEqual(bal(MTR), 8);
   assert.strictEqual(bal(CW), 2, 'the other store is untouched');
   stock.rebuild({ wipe: true });
   assert.strictEqual(bal(MTR), 8);

@@ -85,8 +85,10 @@ app.use('/api/projects', require('./routes/projects'));
 // MRN deliberately hold only stores=view (they must not edit stock). Let those three
 // POST paths past the module-edit gate; each route still enforces its own requireRole.
 const MRN_APPROVAL_PATH = /\/mrn\/\d+\/(certify|approve|reject)$/;
+// Head office approves a stock take (stores plan, Part 2) the same way: by capability, from stores=view.
+const COUNT_APPROVAL_PATH = /^\/counts\/\d+\/(approve|send-back|cancel)$/;
 const storesGate = (req, res, next) =>
-  (req.method === 'POST' && MRN_APPROVAL_PATH.test(req.path))
+  (req.method === 'POST' && (MRN_APPROVAL_PATH.test(req.path) || COUNT_APPROVAL_PATH.test(req.path)))
     ? next()
     : requireModule('stores')(req, res, next);
 app.use('/api/stores', storesGate, require('./routes/stores'));

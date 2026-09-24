@@ -1134,3 +1134,49 @@ CREATE TABLE IF NOT EXISTS job_workshop_moves (
 );
 CREATE INDEX IF NOT EXISTS idx_job_ws_moves ON job_workshop_moves(job_id);
 CREATE INDEX IF NOT EXISTS idx_job_ws_moves_at ON job_workshop_moves(moved_at);
+
+-- Stores plan, Part 2: a stock take is a count session in one store (src/lib/stock_count.js). Its
+-- lines keep the book figure from the start (ST-D4) and from the moment each item was counted; the
+-- corrections go into stock only when head office approves (ST-D5), as store_counts rows.
+CREATE TABLE IF NOT EXISTS count_sessions (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  count_no       TEXT UNIQUE,                    -- ST-2026-0001
+  store_id       INTEGER NOT NULL REFERENCES workshops(id),
+  kind           TEXT NOT NULL,                  -- all | general | oil | filter | tyre | battery
+  scope          TEXT NOT NULL DEFAULT 'full',   -- full (every item) | quick (one item, ST-D14)
+  status         TEXT NOT NULL DEFAULT 'counting', -- counting | submitted | approved | cancelled
+  count_date     TEXT NOT NULL,                  -- YYYY-MM-DD the count began
+  note           TEXT,
+  started_by     INTEGER REFERENCES users(id),
+  started_at     TEXT NOT NULL DEFAULT (datetime('now')),
+  submitted_by   INTEGER REFERENCES users(id),
+  submitted_at   TEXT,
+  decided_by     INTEGER REFERENCES users(id),
+  decided_at     TEXT,
+  decision_note  TEXT                            -- why it was sent back or cancelled
+);
+CREATE INDEX IF NOT EXISTS idx_count_sessions ON count_sessions(store_id, status);
+
+CREATE TABLE IF NOT EXISTS count_lines (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id      INTEGER NOT NULL REFERENCES count_sessions(id) ON DELETE CASCADE,
+  section         TEXT NOT NULL,
+  item_key        TEXT NOT NULL,
+  item_name       TEXT,
+  unit            TEXT,
+  unit_price      REAL,                          -- to value the difference
+  book_start      REAL NOT NULL,                 -- the book when the count began
+  book_at_count   REAL,                          -- the book when this item was counted
+  counted_qty     REAL,                          -- NULL = not counted yet
+  containers      REAL,                          -- lubricants (ST-D16): full drums or cans …
+  container_size  REAL,                          -- … of this many litres each …
+  loose_qty       REAL,                          -- … plus the part-used one, by dip reading
+  note            TEXT,
+  added           INTEGER NOT NULL DEFAULT 0,    -- found on the shelf, not on the list
+  counted_by      INTEGER REFERENCES users(id),
+  counted_on      TEXT,                          -- YYYY-MM-DD
+  counted_at      TEXT,
+  seen_count_id   INTEGER,                       -- the item's last correction (store_counts.id) when counted
+  UNIQUE (session_id, section, item_key)
+);
+CREATE INDEX IF NOT EXISTS idx_count_lines ON count_lines(session_id);
