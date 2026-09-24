@@ -97,9 +97,12 @@ router.post('/items', requireCap('general.items.edit'), asyncHandler((req, res) 
     if (!givenNo) run(`UPDATE store_items SET item_no = ? WHERE id = ?`, 'GS-' + String(id).padStart(4, '0'), id);
     // Record the opening balance as a ledger row so history is complete.
     // Stage 4: in the store of whoever added it.
-    if (opening > 0) run(
-      `INSERT INTO general_item_txns (store_item_id, txn_type, qty, balance_after, unit_price, ref, txn_date, store_id)
-       VALUES (?, 'opening', ?, ?, ?, 'opening', date('now'), ?)`, id, opening, opening, unitCost || null, stores.homeStore(req.user));
+    if (opening > 0) {
+      const t = run(
+        `INSERT INTO general_item_txns (store_item_id, txn_type, qty, balance_after, unit_price, ref, txn_date, store_id)
+         VALUES (?, 'opening', ?, ?, ?, 'opening', date('now'), ?)`, id, opening, opening, unitCost || null, stores.homeStore(req.user)).lastInsertRowid;
+      require('../lib/stock').sync({ general_item_txns: [t] });      // stores plan, Part 3: on the shelf now
+    }
     return id;
   });
   audit.record({ userId: req.user.id, entity: 'store_item', entityId: result, action: 'create', after: { name: b.name, is_general: 1 } });
@@ -129,15 +132,17 @@ router.post('/items/:id/adjust', requireCap('general.stock.adjust'), asyncHandle
   else { balanceAfter = qtyMag; signed = qtyMag - prev; } // adjustment sets the absolute count
 
   const out = tx(() => {
-    run(
+    const t = run(
       `INSERT INTO general_item_txns (store_item_id, txn_type, qty, balance_after, unit_price, ref, txn_date, store_id)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       id, kind, signed, balanceAfter,
       b.unit_price === '' || b.unit_price == null ? null : toNum(b.unit_price),
       b.reason || null, b.txn_date || new Date().toISOString().slice(0, 10),
       stores.forEntry(req.user, null, b.txn_date)   // Stage 4: the store of whoever wrote it down
-    );
+    ).lastInsertRowid;
     run(`UPDATE store_items SET balance = ? WHERE id = ?`, balanceAfter, id);
+    // Stores plan, Part 3: on the shelf now — and an issue, once the store's rule has started, not past zero.
+    require('../lib/stock_rule').check(require('../lib/stock').sync({ general_item_txns: [t] }));
     return balanceAfter;
   });
   audit.record({ userId: req.user.id, entity: 'store_item', entityId: id, action: 'stock_adjust', after: { kind, qty: signed, balance: out }, reason: b.reason });

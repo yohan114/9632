@@ -169,6 +169,12 @@ function recordCount(c) {
 
 function rebuild(opts = {}) {
   const rep = { in: 0, out: 0, history_only: 0, by_section: {} };
+  // opts.only = { table: [ids] }: project just these source rows (see sync() below). Every other
+  // source is left alone; each step's query is narrowed to the rows asked for, or to none.
+  const only = opts.only || null;
+  const want = (table) => !only || !!only[table];
+  const idsIn = (table, col) => (!only ? '' : (only[table] && only[table].length
+    ? ` AND ${col} IN (${only[table].map((v) => Number(v) || 0).join(',')})` : ' AND 0'));
   const rules = openingRules();
   const bump = (section, kind) => {
     rep.by_section[section] = rep.by_section[section] || { in: 0, out: 0 };
@@ -279,6 +285,15 @@ function rebuild(opts = {}) {
       return;
     }
     if (opts.wipe) run('DELETE FROM stock_moves');
+    // Just some rows: their old movements go, and so do any whose source row is gone (a service
+    // edit writes its filter lines again under new ids).
+    if (only) {
+      for (const [table, ids] of Object.entries(only)) {
+        if (!SOURCES.includes(table)) throw new Error('stock: unknown source ' + table);
+        run(`DELETE FROM stock_moves WHERE source_table = ?
+               AND (source_id IN (${[...ids, -1].map((v) => Number(v) || 0).join(',')}) OR source_id NOT IN (SELECT id FROM ${table}))`, table);
+      }
+    }
 
     // 1. RECEIPTS (all sections) — the link that was missing entirely.
     for (const g of all(
@@ -289,7 +304,7 @@ function rebuild(opts = {}) {
          LEFT JOIN mrn_lines ml ON ml.id = g.mrn_line_id
          LEFT JOIN store_items si ON si.id = g.store_item_id
          LEFT JOIN mrn m ON m.id = g.mrn_id
-        WHERE COALESCE(g.qty,0) > 0`)) {
+        WHERE COALESCE(g.qty,0) > 0${idsIn('grn', 'g.id')}`)) {
       const section = sectionOf(g.line_cat || g.item_cat);
       const name = g.description || g.line_desc || g.item_name || '';
       // A FILTER IS ITS PART NUMBER, and on 74% of receipts that number is written inside the
@@ -315,7 +330,7 @@ function rebuild(opts = {}) {
     for (const t of all(
       `SELECT t.id, t.txn_type, t.qty, t.unit_price, t.txn_date, t.asset_id, t.job_id, t.ref, t.store_item_id, t.store_id,
               si.name, si.category
-         FROM general_item_txns t JOIN store_items si ON si.id = t.store_item_id`)) {
+         FROM general_item_txns t JOIN store_items si ON si.id = t.store_item_id WHERE 1${idsIn('general_item_txns', 't.id')}`)) {
       const section = sectionOf(t.category);
       const kind = t.txn_type === 'issue' ? 'out' : (t.txn_type === 'opening' ? 'opening' : 'in');
       // Its 'receipt' rows are the same deliveries the GRN already records (23 of 32 match a
@@ -343,7 +358,7 @@ function rebuild(opts = {}) {
     {
       let prev = null; let prevProduct = null;
       for (const r of all(`SELECT id, product_id, kind, balance_after FROM stock_ledger
-                            WHERE COALESCE(voided,0) = 0 ORDER BY product_id, txn_date, id`)) {
+                            WHERE COALESCE(voided,0) = 0 AND ${want('stock_ledger') ? 1 : 0} ORDER BY product_id, txn_date, id`)) {
         if (r.product_id !== prevProduct) { prevProduct = r.product_id; prev = null; }
         if (r.kind === 'adjustment' && r.balance_after != null && prev != null) {
           adjustDelta.set(r.id, n2(r.balance_after - prev));
@@ -357,7 +372,7 @@ function rebuild(opts = {}) {
       `SELECT s.id, s.kind, s.qty, s.unit_price, s.txn_date, s.asset_id, s.job_id, s.mr_no, s.consumer, s.store_id,
               p.name, p.code
          FROM stock_ledger s JOIN products p ON p.id = s.product_id
-        WHERE COALESCE(s.voided,0) = 0`)) {
+        WHERE COALESCE(s.voided,0) = 0${idsIn('stock_ledger', 's.id')}`)) {
       const kind = s.kind === 'issue' ? 'out' : (s.kind === 'opening' ? 'opening' : (s.kind === 'adjustment' ? 'adjust' : 'in'));
       // `adjust` is the one kind that carries a sign: every balance reads it as `THEN qty`, so a
       // negative delta subtracts with no change to a single balance query.
@@ -372,7 +387,7 @@ function rebuild(opts = {}) {
       `SELECT f.id, f.filter_no, f.filter_no_norm, f.category, f.qty, f.price,
               s.service_date, s.asset_id, s.job_no, s.store_id
          FROM service_filters f JOIN service_jobs s ON s.id = f.service_id
-        WHERE COALESCE(f.qty,0) > 0`)) {
+        WHERE COALESCE(f.qty,0) > 0${idsIn('service_filters', 'f.id')}`)) {
       // The issue side needs the number dug out of the writing just as much as the receipt side.
       // 105 service lines name TWO filters at once — "JS-1030 & 278 607 989 916" — and joined up
       // they made a key no receipt could ever carry, so a filter was fitted and never once met
@@ -412,7 +427,7 @@ function rebuild(opts = {}) {
     const filterCutover = (rules.filter && rules.filter.mode === 'cutover' && rules.filter.cutover) || null;
     if (filterCutover) {
       for (const f of all(`SELECT id, part_no, filter_type, qty_in_stock, unit_cost FROM filter_stock
-                            WHERE COALESCE(qty_in_stock,0) > 0 AND NULLIF(part_no,'') IS NOT NULL`)) {
+                            WHERE COALESCE(qty_in_stock,0) > 0 AND NULLIF(part_no,'') IS NOT NULL${idsIn('filter_stock', 'id')}`)) {
         const key = filterKey(f.part_no) || normF(f.part_no);
         if (!key) continue;
         insert({ section: 'filter', kind: 'opening', item_key: key,
@@ -426,7 +441,7 @@ function rebuild(opts = {}) {
     // 5. TYRE / BATTERY issues from their imported ledger.
     for (const t of all(
       `SELECT id, kind, issue_date, vehicle, asset_id, qty, category, category_norm, site, store_id
-         FROM tyre_battery_issues WHERE COALESCE(qty,0) > 0`)) {
+         FROM tyre_battery_issues WHERE COALESCE(qty,0) > 0${idsIn('tyre_battery_issues', 'id')}`)) {
       const section = t.kind === 'battery' ? 'battery' : 'tyre';
       insert({ section, kind: 'out', item_key: itemKey(section, t.category, t.category_norm || t.category),
         item_name: t.category, qty: t.qty, txn_date: t.issue_date, asset_id: t.asset_id,
@@ -444,7 +459,7 @@ function rebuild(opts = {}) {
     for (const l of all(`SELECT m.mrn_no, ml.id, ml.description, ml.category,
                                 (SELECT g.id FROM grn g WHERE g.mrn_line_id = ml.id LIMIT 1) AS grn_id
                            FROM mrn_lines ml JOIN mrn m ON m.id = ml.mrn_id
-                          WHERE NULLIF(m.mrn_no,'') IS NOT NULL`)) {
+                          WHERE NULLIF(m.mrn_no,'') IS NOT NULL AND ${want('issues') ? 1 : 0}`)) {
       if (!mrnLinesByNo.has(l.mrn_no)) mrnLinesByNo.set(l.mrn_no, []);
       mrnLinesByNo.get(l.mrn_no).push(l);
     }
@@ -457,12 +472,14 @@ function rebuild(opts = {}) {
               i.grn_id, i.mrn_no, COALESCE(i.voided,0) AS voided, si.category, si.name, i.store_id,
               g.description AS grn_desc, gml.category AS grn_category, gml.id AS grn_mrn_line_id,
               (SELECT sm.counts FROM stock_moves sm
-                WHERE sm.source_table = 'grn' AND sm.source_id = i.grn_id LIMIT 1) AS grn_counts
+                WHERE sm.source_table = 'grn' AND sm.source_id = i.grn_id LIMIT 1) AS grn_counts,
+              (SELECT sm.section || '|' || sm.item_key FROM stock_moves sm
+                WHERE sm.source_table = 'grn' AND sm.source_id = i.grn_id LIMIT 1) AS grn_shelf
          FROM issues i
          LEFT JOIN store_items si ON si.id = i.store_item_id
          LEFT JOIN grn g          ON g.id = i.grn_id
          LEFT JOIN mrn_lines gml  ON gml.id = g.mrn_line_id
-        WHERE COALESCE(i.qty,0) > 0`)) {
+        WHERE COALESCE(i.qty,0) > 0${idsIn('issues', 'i.id')}`)) {
       // An issue raised against a specific receipt mirrors that receipt: same section, same
       // key, and the same counts flag — a cut-over receipt was never added to the balance, so
       // taking it out must not subtract from one either.
@@ -470,6 +487,9 @@ function rebuild(opts = {}) {
       let name = (fromReceipt ? (i.grn_desc || i.description) : (i.name || i.description)) || '';
       let section = sectionOf(fromReceipt ? (i.grn_category || name) : (i.category || i.description));
       let key = itemKey(section, name);
+      // The very shelf the receipt went onto (stores plan, Part 3): a filter received as
+      // "Oil Filter (C-206)" is filed under C206, and handing it over must take it from there.
+      if (fromReceipt && i.grn_shelf) [section, key] = i.grn_shelf.split('|');
       // No GRN on the row, but an MR number that names one: file it under the line it came from.
       // Matched on the item alone, and only when exactly ONE line on that request is that item —
       // a request listing the same thing twice is not something to guess between.
@@ -500,7 +520,7 @@ function rebuild(opts = {}) {
 
     // 6b. RETURNS (Stage 6): parts brought back unused go back onto the shelf they left — the
     // mirror of the issue's own movement written just above: same item, same store, same count.
-    for (const r of all(`SELECT r.id, r.qty, r.return_date, r.note, r.issue_id FROM issue_returns r`)) {
+    for (const r of all(`SELECT r.id, r.qty, r.return_date, r.note, r.issue_id FROM issue_returns r WHERE 1${idsIn('issue_returns', 'r.id')}`)) {
       const om = get("SELECT * FROM stock_moves WHERE source_table = 'issues' AND source_id = ? AND kind = 'out' LIMIT 1", r.issue_id);
       if (!om) continue;
       if (writeMove({ section: om.section, kind: 'in', item_key: om.item_key, item_name: om.item_name, qty: r.qty,
@@ -510,13 +530,48 @@ function rebuild(opts = {}) {
     }
 
     // 7. TRANSFERS BETWEEN TWO STORES (Stage 4) — see transfers() above.
-    transfers(null);
+    if (!only) transfers(null);
 
     // 8. STOCK TAKES, store by store (Stage 4): the difference each count found.
-    for (const c of all('SELECT * FROM store_counts WHERE delta <> 0')) insert(countMove(c));
+    for (const c of all(`SELECT * FROM store_counts WHERE delta <> 0${idsIn('store_counts', 'id')}`)) insert(countMove(c));
   });
 
   return rep;
+}
+
+// The source tables stock_moves is projected from, as sync() may name them.
+const SOURCES = ['grn', 'general_item_txns', 'stock_ledger', 'service_filters', 'filter_stock', 'tyre_battery_issues',
+  'issues', 'issue_returns', 'store_counts'];
+
+/**
+ * Bring the stock up to date with just-written source rows (stores plan, Part 3), in the same
+ * transaction as the write. `only` names the rows: { grn: [ids], service_filters: [ids], … }; a
+ * table named with no ids still drops movements whose source row has gone. Returns what changed
+ * on each shelf: [{ section, item_key, store_id, delta }] — the counted quantity, + in, − out.
+ * The stock rule (src/lib/stock_rule.js) reads that to refuse taking out what is not there.
+ */
+function sync(only) {
+  const tables = Object.keys(only || {});
+  if (!tables.length) return [];
+  for (const t of tables) if (!SOURCES.includes(t)) throw new Error('stock: unknown source ' + t);
+  const where = tables.map((t) => `(source_table = '${t}' AND (source_id IN (${[...only[t], -1].map((v) => Number(v) || 0).join(',')})
+                                     OR source_id NOT IN (SELECT id FROM ${t})))`).join(' OR ');
+  const sums = () => all(`SELECT section, item_key, store_id,
+                                 SUM(CASE WHEN counts = 0 THEN 0 WHEN kind IN ('in','opening','adjust') THEN qty ELSE -qty END) AS v
+                            FROM stock_moves WHERE ${where} GROUP BY section, item_key, store_id`);
+  return tx(() => {
+    const before = sums();
+    rebuild({ only });
+    const out = new Map();
+    const at = (r) => `${r.section}|${r.item_key}|${r.store_id}`;
+    for (const r of before) out.set(at(r), { section: r.section, item_key: r.item_key, store_id: r.store_id, delta: -r.v });
+    for (const r of sums()) {
+      const k = at(r);
+      if (out.has(k)) out.get(k).delta += r.v;
+      else out.set(k, { section: r.section, item_key: r.item_key, store_id: r.store_id, delta: r.v });
+    }
+    return [...out.values()].map((r) => ({ ...r, delta: n2(r.delta) })).filter((r) => r.delta);
+  });
 }
 
 // general_item_txns rows carry the store item's name in `name`.
@@ -879,4 +934,4 @@ function receivedLine(grnId) {
 }
 
 module.exports = { filterParts, filterKey, SECTIONS, PREFIX, sectionOf, itemKey, rebuild, summary, items, moves, openingRules,
-  nextCode, syncItems, searchItems, receivedLines, receivedLine, balanceOf, recordCount, valueOf };
+  nextCode, syncItems, searchItems, receivedLines, receivedLine, balanceOf, recordCount, valueOf, sync, SOURCES };

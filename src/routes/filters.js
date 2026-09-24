@@ -88,17 +88,70 @@ const OIL_NOTE_LIKE = (serviceId) => ['Service record #' + serviceId, 'Service r
 // Stage 4: a service's oil comes out of the service's own store (service_jobs.store_id).
 const serviceStore = (serviceId) => (get('SELECT store_id FROM service_jobs WHERE id = ?', serviceId) || {}).store_id || null;
 
+// ---- stores plan, Part 3: a service takes its filters and oil from the store's stock ----------
+const stock = require('../lib/stock');
+const stockRule = require('../lib/stock_rule');
+
+/** The shelf a filter number sits on: its catalogue number, as receipts and services file it. */
+const filterStockKey = (no) => ((stock.filterParts(no)[0] || {}).key || stock.itemKey('filter', no));
+
+/** The shelf a lubricant product sits on (the rebuild files every spelling under its product). */
+const productKey = (p) => stock.itemKey('oil', p.name, p.code || p.name);
+
+/**
+ * Once the store's rule has started for lubricants, a service's oil must be one the oil book knows —
+ * otherwise nothing would come off the shelf for it, and the stock would never show it went.
+ */
+function mustBeStockOil(storeId, oilName, oilType, liters) {
+  if (!(liters > 0) || !stockRule.since(storeId, 'oil')) return;
+  if (!resolveProduct(oilName, oilType)) {
+    const e = new Error(`${oilName}${oilType ? ' (' + oilType + ')' : ''} is not in the oil book, so it cannot come out of stock. Choose the oil type from the list.`);
+    e.status = 409; throw e;
+  }
+}
+
+/** Every number that is the same filter as `no` (the catalogue and its cross-references). */
+function equivalentNumbers(no) {
+  const cid = catalogueIdForNo(no);
+  if (!cid) return [];
+  const cat = get('SELECT oem_pn, hifi_pn FROM filter_catalogue WHERE id = ?', cid) || {};
+  const out = new Map();
+  for (const n of [cat.oem_pn, cat.hifi_pn, ...xrefsFor(cid).map((x) => x.part_number)]) {
+    const k = normF(n);
+    if (k && k !== normF(no) && !out.has(k)) out.set(k, n);
+  }
+  return [...out.values()];
+}
+
+/** The equivalents of `no` that one store holds, most first. */
+function equivalentsInStock(no, storeId) {
+  if (!storeId) return [];
+  return equivalentNumbers(no)
+    .map((n) => ({ filter_no: n, in_stock: stock.balanceOf('filter', filterStockKey(n), storeId),
+      unit_price: (get('SELECT unit_price FROM filter_prices WHERE filter_no_norm = ?', normF(n)) || {}).unit_price ?? null }))
+    .filter((e) => e.in_stock > 0)
+    .sort((a, b) => b.in_stock - a.in_stock);
+}
+
+/** The line a refusal adds for a filter that is short: what is on the shelf instead. */
+function equivalentsHint(short) {
+  const bits = short.filter((x) => x.section === 'filter').map((x) => {
+    const eq = equivalentsInStock(x.name, x.store_id);
+    return eq.length ? `${x.name}: ${eq.slice(0, 3).map((e) => `${e.filter_no} (${e.in_stock})`).join(', ')}` : null;
+  }).filter(Boolean);
+  return bits.length ? `Equivalents in stock — ${bits.join('; ')}.` : null;
+}
+
 function postOilIssue(oilName, oilType, liters, unitPrice, assetId, date, serviceId) {
   const pid = resolveProduct(oilName, oilType);
   if (!pid || !(liters > 0)) return false;
   const prev = currentBalance(pid);
   // consumer_type='service' marks this as a stock-only movement: the COST is owned
   // by the service record, so every oil-cost report excludes these to avoid double-counting.
-  run(`INSERT INTO stock_ledger (product_id, kind, qty, balance_after, unit_price, asset_id, consumer, consumer_type, job_id, txn_date, note, store_id)
+  return run(`INSERT INTO stock_ledger (product_id, kind, qty, balance_after, unit_price, asset_id, consumer, consumer_type, job_id, txn_date, note, store_id)
        VALUES (?, 'issue', ?, ?, ?, ?, 'Service', 'service', NULL, ?, ?, ?)`,
     pid, -Math.abs(liters), prev - Math.abs(liters), unitPrice || null, assetId || null,
-    date, oilNote(serviceId, oilName), serviceStore(serviceId));
-  return true;
+    date, oilNote(serviceId, oilName), serviceStore(serviceId)).lastInsertRowid;
 }
 
 // What this service has actually taken off the shelf so far, per product, read from the
@@ -122,12 +175,11 @@ function postOilDelta(pid, deltaLiters, unitPrice, assetId, date, serviceId, oil
   if (!pid || !deltaLiters) return false;
   const prev = currentBalance(pid);
   const qty = -deltaLiters;                       // more used → negative movement
-  run(`INSERT INTO stock_ledger (product_id, kind, qty, balance_after, unit_price, asset_id, consumer, consumer_type, job_id, txn_date, note, store_id)
+  return run(`INSERT INTO stock_ledger (product_id, kind, qty, balance_after, unit_price, asset_id, consumer, consumer_type, job_id, txn_date, note, store_id)
        VALUES (?, ?, ?, ?, ?, ?, 'Service', 'service', NULL, ?, ?, ?)`,
     pid, deltaLiters > 0 ? 'issue' : 'adjustment', qty, prev + qty, unitPrice || null,
     assetId || null, date,
-    oilNote(serviceId, oilName) + (deltaLiters > 0 ? ' (edited — extra)' : ' (edited — returned)'), serviceStore(serviceId));
-  return true;
+    oilNote(serviceId, oilName) + (deltaLiters > 0 ? ' (edited — extra)' : ' (edited — returned)'), serviceStore(serviceId)).lastInsertRowid;
 }
 
 // ---- stats ----------------------------------------------------------------
@@ -169,15 +221,19 @@ router.get('/prices/lookup', asyncHandler((req, res) => {
 // the cross-reference table. Ranked so the useful ones come first — numbers that start with
 // what was typed, then the priced ones, then by how often they have been used.
 router.get('/search', asyncHandler((req, res) => {
-  const raw = String(req.query.q || '').trim();
+  res.json(searchFilters(req.query.q, req.query.category, toInt(req.query.limit, 12)));
+}));
+
+function searchFilters(q, category, lim) {
+  const raw = String(q || '').trim();
   const norm = normF(raw);
-  const cat = String(req.query.category || '').trim();
+  const cat = String(category || '').trim();
   // Empty box + a category (clicking into a row) lists that category's filters; otherwise
   // search from the very first character typed.
-  if (!norm && !cat) return res.json([]);
+  if (!norm && !cat) return [];
   const like = norm ? '%' + norm + '%' : '%';
   const pre = norm ? norm + '%' : '%';
-  const limit = Math.min(toInt(req.query.limit, 12), 40);
+  const limit = Math.min(lim || 12, 40);
   const catKey = cat.toLowerCase();
 
   const rows = all(
@@ -220,7 +276,65 @@ router.get('/search', asyncHandler((req, res) => {
     }
     if (seen.size >= limit) break;
   }
-  res.json([...seen.values()]);
+  return [...seen.values()];
+}
+
+// ---- stores plan, Part 3: what the service form offers from stock ------------------------------
+// The store a service's filters and oil come out of: the service's own (an edit), else its job
+// card's workshop's, else yours — as the save will decide.
+function serviceStoreFor(req) {
+  const sid = toInt(req.query.service_id);
+  if (sid) return serviceStore(sid);
+  const jobNo = clean(req.query.job_no);
+  const j = jobNo ? get('SELECT id FROM job_cards WHERE job_no = ? ORDER BY id DESC LIMIT 1', jobNo) : null;
+  return stores.forEntry(req.user, j ? j.id : null, req.query.date);
+}
+// What a service already holds of each shelf (net): an edit may keep it without the shelf having it.
+function takenBy(serviceId) {
+  const m = new Map();
+  if (!serviceId) return m;
+  const [exact, like] = OIL_NOTE_LIKE(serviceId);
+  for (const r of all(`SELECT section, item_key,
+                              -SUM(CASE WHEN kind IN ('in','opening','adjust') THEN qty ELSE -qty END) AS q
+                         FROM stock_moves
+                        WHERE counts = 1 AND ((source_table = 'service_filters' AND source_id IN (SELECT id FROM service_filters WHERE service_id = ?))
+                           OR (source_table = 'stock_ledger' AND source_id IN (SELECT id FROM stock_ledger
+                                 WHERE consumer_type = 'service' AND (note = ? OR note LIKE ?))))
+                        GROUP BY section, item_key`, serviceId, exact, like)) m.set(r.section + '|' + r.item_key, r.q);
+  return m;
+}
+const n2 = (v) => Math.round((Number(v) || 0) * 100) / 100;
+const storeInfo = (id) => (id ? { id, name: stores.label(id), multi: stores.isMulti() } : null);
+
+// The store, whether its rule has started for oil and filters, and the litres of each lubricant
+// the oil rows may resolve to — by oil type first, then by name, exactly as the save resolves it.
+router.get('/stock-context', asyncHandler((req, res) => {
+  const store = serviceStoreFor(req);
+  const taken = takenBy(toInt(req.query.service_id));
+  const productOf = (id) => {
+    if (!id) return null;
+    const p = get('SELECT id, code, name, unit FROM products WHERE id = ?', id);
+    const k = productKey(p);
+    return { id: p.id, name: p.name, unit: p.unit || 'L', in_stock: n2(stock.balanceOf('oil', k, store) + (taken.get('oil|' + k) || 0)) };
+  };
+  const types = {};
+  for (const t of all('SELECT code FROM oil_type_prices')) types[t.code] = productOf(resolveProduct(null, t.code));
+  const names = {};
+  for (const o of all('SELECT name FROM oil_list')) names[o.name] = productOf(resolveProduct(o.name, null));
+  res.json({ store: storeInfo(store), rule: { oil: stockRule.since(store, 'oil'), filter: stockRule.since(store, 'filter') }, types, names });
+}));
+
+// Filters for a service row: the numbers that match, what the store holds of each, and — when the
+// number asked for is not on the shelf — its equivalents that are (ST-D15).
+router.get('/stock-search', asyncHandler((req, res) => {
+  const store = serviceStoreFor(req);
+  const taken = takenBy(toInt(req.query.service_id));
+  const avail = (no) => { const k = filterStockKey(no); return n2(stock.balanceOf('filter', k, store) + (taken.get('filter|' + k) || 0)); };
+  const items = searchFilters(req.query.q, req.query.category, toInt(req.query.limit, 12)).map((it) => ({ ...it, in_stock: avail(it.filter_no) }));
+  const q = String(req.query.q || '').trim();
+  const exact = normF(q) ? items.find((i) => i.norm === normF(q)) : null;
+  const equivalents = normF(q) && !(exact && exact.in_stock > 0) ? equivalentsInStock(q, store) : [];
+  res.json({ store: storeInfo(store), rule: stockRule.since(store, 'filter'), items, equivalents });
 }));
 
 // Add / update a filter price. Typing a NEW number here creates it (the learning
@@ -413,11 +527,15 @@ function readServicePayload(b, user) {
 // already been cleared, so this always starts from nothing.
 function writeServiceLines(sid, p, opts = {}) {
   const alreadyCounted = opts.alreadyCounted || new Set();
+  const ids = [];
   for (const f of p.filters) {
     const fn = clean(f.filter_no);
     const price = f.price === '' || f.price == null ? null : toNum(f.price);
-    run(`INSERT INTO service_filters (service_id, filter_no, filter_no_norm, category, action_type, qty, price)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`, sid, fn, normF(fn), clean(f.category), clean(f.xe) || clean(f.action_type), toNum(f.qty, 1), price || 0);
+    // An equivalent fitted in place of the vehicle's own number keeps both (ST-D15).
+    const reqNo = clean(f.required_no) && normF(f.required_no) !== normF(fn) ? clean(f.required_no) : null;
+    ids.push(run(`INSERT INTO service_filters (service_id, filter_no, filter_no_norm, category, action_type, qty, price, required_no, required_no_norm)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, sid, fn, normF(fn), clean(f.category), clean(f.xe) || clean(f.action_type), toNum(f.qty, 1), price || 0,
+    reqNo, reqNo ? normF(reqNo) : null).lastInsertRowid);
     // Editing a service must not keep re-counting the same filter number as a fresh use.
     bookTouch(fn, f.category, price, p.by, !alreadyCounted.has(normF(fn)));
   }
@@ -426,6 +544,7 @@ function writeServiceLines(sid, p, opts = {}) {
     run(`INSERT INTO service_parts (service_id, description, unit, rate, qty, amount) VALUES (?, ?, ?, ?, ?, ?)`,
       sid, clean(p2.description), clean(p2.unit), toNum(p2.rate, 0), toNum(p2.qty, 0), Math.round(amount * 100) / 100);
   }
+  return ids;
 }
 
 router.post('/services', asyncHandler((req, res) => {
@@ -448,17 +567,24 @@ router.post('/services', asyncHandler((req, res) => {
       stores.forEntry(req.user, (get('SELECT id FROM job_cards WHERE job_no = ? ORDER BY id DESC LIMIT 1', clean(b.job_no)) || {}).id, date)
     );
     const sid = info.lastInsertRowid;
+    const store = serviceStore(sid);
     let oilIssues = 0;
-    writeServiceLines(sid, p);
+    const filterLines = writeServiceLines(sid, p);
+    const ledger = [];
     for (const o of oils) {
       const on = clean(o.oil_name);
       const liters = toNum(o.qty, 0);
       run(`INSERT INTO service_oils (service_id, oil_name, oil_type, action_type, qty, price)
            VALUES (?, ?, ?, ?, ?, ?)`, sid, on, clean(o.oil_type), clean(o.cv) || clean(o.action_type), liters, toNum(o.price, 0));
+      mustBeStockOil(store, on, clean(o.oil_type), liters);
       // Issue the lubricant against this service (reduces oil stock, traceable to the service id).
       const unit = liters > 0 ? toNum(o.price, 0) / liters : null;
-      if (postOilIssue(on, clean(o.oil_type), liters, unit, assetId, date, sid)) oilIssues++;
+      const lid = postOilIssue(on, clean(o.oil_type), liters, unit, assetId, date, sid);
+      if (lid) { oilIssues++; ledger.push(lid); }
     }
+    // Stores plan, Part 3: the filters and the oil come off the store's shelf now — and, once the
+    // store's rule has started, only what is on it.
+    stockRule.check(stock.sync({ service_filters: filterLines, stock_ledger: ledger }), { hint: equivalentsHint });
     return { sid, oilIssues };
   });
   audit.record({ userId: req.user && req.user.id, entity: 'service_job', entityId: out.sid, action: 'create', after: { asset_id: assetId, grand_total: grandTotal } });
@@ -501,7 +627,9 @@ router.put('/services/:id', asyncHandler((req, res) => {
     run('DELETE FROM service_filters WHERE service_id = ?', id);
     run('DELETE FROM service_oils WHERE service_id = ?', id);
     run('DELETE FROM service_parts WHERE service_id = ?', id);
-    writeServiceLines(id, p, { alreadyCounted });
+    const filterLines = writeServiceLines(id, p, { alreadyCounted });
+    const store = before.store_id || serviceStore(id);
+    const ledger = [];
 
     // What the service says it uses now, per product.
     const wanted = new Map();
@@ -511,6 +639,7 @@ router.put('/services/:id', asyncHandler((req, res) => {
       const liters = toNum(o.qty, 0);
       run(`INSERT INTO service_oils (service_id, oil_name, oil_type, action_type, qty, price)
            VALUES (?, ?, ?, ?, ?, ?)`, id, on, clean(o.oil_type), clean(o.cv) || clean(o.action_type), liters, toNum(o.price, 0));
+      mustBeStockOil(store, on, clean(o.oil_type), liters);
       const pid = resolveProduct(on, clean(o.oil_type));
       if (!pid || !(liters > 0)) continue;
       wanted.set(pid, (wanted.get(pid) || 0) + liters);
@@ -525,8 +654,12 @@ router.put('/services/:id', asyncHandler((req, res) => {
       // back to the product — a give-back that said only "Service record #12" would be far
       // harder to read in the lubricants ledger.
       const l = label.get(pid) || { name: (get('SELECT name FROM products WHERE id = ?', pid) || {}).name || null, unit: null };
-      if (postOilDelta(pid, delta, l.unit, assetId, p.date, id, l.name)) moves++;
+      const lid = postOilDelta(pid, delta, l.unit, assetId, p.date, id, l.name);
+      if (lid) { moves++; ledger.push(lid); }
     }
+    // Only the difference moves (ST-D17): the old filter lines leave the shelf's record and the new
+    // ones go on, so a service saved again unchanged takes nothing and is never refused.
+    stockRule.check(stock.sync({ service_filters: filterLines, stock_ledger: ledger }), { hint: equivalentsHint });
     return { moves };
   });
 
@@ -642,7 +775,7 @@ router.get('/services/:id', asyncHandler((req, res) => {
   if (!job) return res.status(404).json({ error: 'Service not found' });
   // Each filter line carries the book price so missing ones surface here too.
   const filters = all(
-    `SELECT f.id, f.filter_no, f.filter_no_norm, f.category, f.action_type, f.qty, f.price,
+    `SELECT f.id, f.filter_no, f.filter_no_norm, f.category, f.action_type, f.qty, f.price, f.required_no,
             p.unit_price AS book_price
        FROM service_filters f LEFT JOIN filter_prices p ON p.filter_no_norm = f.filter_no_norm
       WHERE f.service_id = ? ORDER BY f.id`, id);

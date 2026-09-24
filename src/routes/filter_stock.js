@@ -2,9 +2,9 @@
 
 // Filter Stock — a dedicated filter inventory (distinct from filters.js, which prices
 // service_specs). Stock lives in filter_stock; every movement is recorded in
-// filter_stock_ledger with a running balance_after. Issuing a filter to an asset rolls
-// its cost into vehicle_monthly_costs.filter_cost (mirroring how stores.js issues roll
-// into parts_cost). Mounted under requireModule('filters') in server.js.
+// filter_stock_ledger with a running balance_after. It opens the filter shelf at the cut-over
+// (src/lib/stock.js). Issuing from here was retired in the stores plan, Part 3: a filter leaves on
+// the service record or from Stores → Issue. Mounted under requireModule('filters') in server.js.
 
 const express = require('express');
 const { get, all, run, tx } = require('../db');
@@ -99,6 +99,7 @@ router.post('/', requireCap('filters.stock.edit'), asyncHandler((req, res) => {
     if (opening > 0) run(
       `INSERT INTO filter_stock_ledger (filter_id, kind, qty, balance_after, unit_price, note, txn_date)
        VALUES (?, 'receipt', ?, ?, ?, 'opening balance', date('now'))`, newId, opening, opening, unitCost || null);
+    require('../lib/stock').sync({ filter_stock: [newId] });
     return newId;
   });
   audit.record({ userId: req.user.id, entity: 'filter_stock', entityId: id, action: 'create', after: { filter_type: b.filter_type } });
@@ -129,6 +130,8 @@ router.post('/:id/receive', requireCap('filters.stock.receive'), asyncHandler((r
       `UPDATE filter_stock SET qty_in_stock = ?, unit_cost = COALESCE(?, unit_cost),
               supplier = COALESCE(?, supplier), updated_at = datetime('now') WHERE id = ?`,
       balanceAfter, priceGiven ? toNum(b.unit_cost) : null, b.supplier || null, id);
+    // The register opens the filter shelf at the cut-over (src/lib/stock.js 4b): keep that in step.
+    require('../lib/stock').sync({ filter_stock: [id] });
   });
   audit.record({ userId: req.user.id, entity: 'filter_stock', entityId: id, action: 'receive', after: { qty, balance: balanceAfter } });
   emitter.emit('filter_updated', { filter_id: id, action: 'receive', balance: balanceAfter });
@@ -136,43 +139,11 @@ router.post('/:id/receive', requireCap('filters.stock.receive'), asyncHandler((r
 }));
 
 // ---- issue stock to a vehicle / job ---------------------------------------
-router.post('/:id/issue', requireCap('filters.stock.issue'), asyncHandler((req, res) => {
-  const id = toInt(req.params.id);
-  const f = get('SELECT id, qty_in_stock, unit_cost FROM filter_stock WHERE id = ?', id);
-  if (!f) return res.status(404).json({ error: 'Filter type not found' });
-  const b = req.body;
-  const qty = Math.abs(toNum(b.qty, 0));
-  if (!(qty > 0)) return res.status(400).json({ error: 'Enter a quantity greater than 0' });
-  const have = Number(f.qty_in_stock) || 0;
-  if (qty > have) return res.status(400).json({ error: `Only ${have} in stock` });
-  const assetId = toInt(b.asset_id) || null;
-  const jobId = toInt(b.job_id) || null;
-  const unitPrice = Number(f.unit_cost) || 0;
-  const lineCost = qty * unitPrice;
-  const issueDate = b.date || new Date().toISOString().slice(0, 10);
-  const [yr, mo] = issueDate.split('-').map((n) => parseInt(n, 10));
-  const balanceAfter = have - qty;
-  tx(() => {
-    run(
-      `INSERT INTO filter_stock_ledger (filter_id, kind, qty, balance_after, asset_id, job_id, unit_price, note, txn_date)
-       VALUES (?, 'issue', ?, ?, ?, ?, ?, ?, ?)`,
-      id, -qty, balanceAfter, assetId, jobId, unitPrice, b.note || null, issueDate);
-    run(`UPDATE filter_stock SET qty_in_stock = ?, updated_at = datetime('now') WHERE id = ?`, balanceAfter, id);
-    // Roll the filter cost into the vehicle's month bucket (filter component). Keeps
-    // total = Σ(component columns), matching the invariant the 015 backfill establishes.
-    if (assetId && yr && mo) run(
-      `INSERT INTO vehicle_monthly_costs (asset_id, year, month, filter_cost, total_cost)
-       VALUES (?, ?, ?, ?, ?)
-       ON CONFLICT(asset_id, year, month) DO UPDATE SET
-         filter_cost = filter_cost + excluded.filter_cost,
-         total_cost = total_cost + excluded.filter_cost,
-         updated_at = datetime('now')`,
-      assetId, yr, mo, lineCost, lineCost);
-  });
-  audit.record({ userId: req.user.id, entity: 'filter_stock', entityId: id, action: 'issue', after: { qty, asset_id: assetId, cost: lineCost, balance: balanceAfter } });
-  emitter.emit('filter_updated', { filter_id: id, action: 'issue', balance: balanceAfter });
-  emitter.emit('dashboard_refresh', { reason: 'filter_issue', asset_id: assetId, year: yr, month: mo });
-  res.status(201).json(oneFilter(id));
+// RETIRED (stores plan, Part 3): a filter leaves the store one way — on the service record, or from
+// Stores → Issue — and both take it off the store's own shelf, under the one issue rule. This door
+// only lowered the register's count, which the stock never saw.
+router.post('/:id/issue', requireCap('filters.stock.issue'), asyncHandler((_req, res) => {
+  res.status(410).json({ error: 'Filters are issued on the Service record, or from Stores → Issue, now. Both take them off the store\'s stock.' });
 }));
 
 module.exports = router;

@@ -20,6 +20,7 @@ const places = require('../lib/places');
 const scope = require('../lib/scope');
 const stores = require('../lib/stores');
 const stockCount = require('../lib/stock_count');
+const stockRule = require('../lib/stock_rule');
 const { lineReceiptSql, mrnReceiptSql, receivedLabel, d10 } = require('../lib/received_date');
 const lubricants = require('../lib/lubricants');
 const approvalLimits = require('../lib/approval_limits');
@@ -175,6 +176,7 @@ router.post('/items/:id/txn', requireCap('stores.items.txn'), asyncHandler((req,
       stores.forEntry(req.user, toInt(b.job_id), b.txn_date)
     );
     run('UPDATE store_items SET balance = ? WHERE id = ?', balanceAfter, itemId);
+    stockRule.check(stock.sync({ general_item_txns: [info.lastInsertRowid] }));      // Part 3
     return get('SELECT * FROM general_item_txns WHERE id = ?', info.lastInsertRowid);
   });
   audit.record({ userId: req.user.id, entity: 'general_item_txn', entityId: result.id, action: 'create' });
@@ -1477,6 +1479,8 @@ router.post('/grn', requireCap('stores.grn.receive'), asyncHandler((req, res) =>
         run('UPDATE mrn SET status = ? WHERE id = ?', status, line.mrn_id);
       }
     }
+    // Stores plan, Part 3: on the shelf now, not at the next rebuild.
+    stock.sync({ grn: [info.lastInsertRowid] });
     return info.lastInsertRowid;
   });
   audit.record({ userId: req.user.id, entity: 'grn', entityId: result, action: 'create' });
@@ -2052,9 +2056,17 @@ router.post('/stock-issue', requireCap('stores.stock_issue'), asyncHandler((req,
   const issueReceivedLine = (ln, qty) => {
     const rec = stock.receivedLine(toInt(ln.grn_id));
     if (!rec) { skipped.push(`receipt ${ln.grn_id} no longer exists — nothing issued for it`); return; }
+    // The shelf the receipt went onto (stores plan, Part 3): its own movement's section and key.
+    // A filter received as "Oil Filter (C-206)" sits under C206, not under OILFILTER.
+    const onShelf = get("SELECT section, item_key, counts FROM stock_moves WHERE source_table = 'grn' AND source_id = ? AND kind = 'in' LIMIT 1", rec.grn_id);
+    if (onShelf) Object.assign(rec, { section: onShelf.section, item_key: onShelf.item_key, counts: onShelf.counts });
     const price = ln.unit_price === '' || ln.unit_price == null ? rec.unit_price : toNum(ln.unit_price);
     const linePrice = price == null ? null : n2price(price);
     if (qty > rec.remaining + 0.001) {
+      // Once the store's stock rule has started, a receipt cannot hand over more than it brought in.
+      if (stockRule.since(rec.store_id, rec.section)) {
+        const e = new Error(`${rec.description}: only ${rec.remaining} of MRN ${rec.mrn_no} is left to issue.`); e.status = 409; throw e;
+      }
       warnings.push(`${rec.description}: issuing ${qty} but only ${rec.remaining} of MRN ${rec.mrn_no} is left`);
     }
     const cat = categories.resolve({ category: rec.category || SECTION_CATEGORY[rec.section] });
@@ -2105,6 +2117,9 @@ router.post('/stock-issue', requireCap('stores.stock_issue'), asyncHandler((req,
       assetId, jobId, rec.mrn_line_id, rec.grn_id, rec.store_item_id || null,
       rec.mrn_no ? 'MRN ' + rec.mrn_no : null, clean(ln.note) || null, info.lastInsertRowid, rec.counts,
       get('SELECT store_id FROM issues WHERE id = ?', info.lastInsertRowid).store_id);
+    // The one issue rule (Part 3): not more than the shelf holds.
+    stockRule.check([{ section: rec.section, item_key: rec.item_key, store_id: get('SELECT store_id FROM issues WHERE id = ?', info.lastInsertRowid).store_id,
+      delta: rec.counts ? -qty : 0 }]);
 
     done.push({
       code: 'MRN ' + rec.mrn_no, name: rec.description, section: rec.section, qty,
@@ -2167,6 +2182,9 @@ router.post('/stock-issue', requireCap('stores.stock_issue'), asyncHandler((req,
         assetId, jobId, item.source_table === 'store_items' ? item.source_id : null,
         item.code, clean(ln.note) || null, info.lastInsertRowid,
         get('SELECT store_id FROM issues WHERE id = ?', info.lastInsertRowid).store_id);
+      // The one issue rule (Part 3): once it has started in this store, nothing past zero.
+      stockRule.check([{ section: item.section, item_key: item.item_key,
+        store_id: get('SELECT store_id FROM issues WHERE id = ?', info.lastInsertRowid).store_id, delta: -qty }]);
 
       const after = Math.round((before - qty) * 100) / 100;
       done.push({ code: item.code, name: item.name, section: item.section, qty, balance_before: before, balance_after: after,
@@ -2227,6 +2245,7 @@ router.post('/grn/bulk-price', requireCap('stores.grn.edit'), asyncHandler((req,
       run(`UPDATE grn SET ${sets.join(', ')} WHERE id = ?`, ...params, id);
       touched.push(id); saved++;
     }
+    if (touched.length) stock.sync({ grn: touched });      // the price and date the shelf carries
   });
   if (saved) audit.record({ userId: req.user.id, entity: 'grn', action: 'bulk_price', after: { count: saved, ids: touched.slice(0, 50) } });
   res.json({ ok: true, saved });
@@ -2284,6 +2303,7 @@ router.post('/grn/bulk-receive', requireCap('stores.grn.receive'), asyncHandler(
       const any = get('SELECT COUNT(*) c FROM mrn_lines WHERE mrn_id = ? AND COALESCE(qty_received,0) > 0', mid).c;
       run('UPDATE mrn SET status = ? WHERE id = ?', open === 0 ? 'received' : (any > 0 ? 'partially_received' : 'open'), mid);
     }
+    if (created.length) stock.sync({ grn: created });      // Part 3: on the shelf now
   });
   if (created.length) audit.record({ userId: req.user.id, entity: 'grn', action: 'bulk_receive', after: { count: created.length, mrns: [...mrnIds] } });
   res.json({ ok: true, received: created.length, mrns: mrnIds.size, skipped });
@@ -2313,7 +2333,7 @@ router.patch('/grn/:id', requireCap('stores.grn.edit'), asyncHandler((req, res) 
   if (req.body.unit_price !== undefined && before.unit_price == null && req.body.unit_price !== '' && req.body.unit_price !== null && before.priced_at == null) {
     sets.push("priced_at = datetime('now')");
   }
-  if (sets.length) run(`UPDATE grn SET ${sets.join(', ')} WHERE id = ?`, ...params, id);
+  if (sets.length) tx(() => { run(`UPDATE grn SET ${sets.join(', ')} WHERE id = ?`, ...params, id); stock.sync({ grn: [id] }); });
   const after = get('SELECT * FROM grn WHERE id = ?', id);
   audit.record({ userId: req.user.id, entity: 'grn', entityId: id, action: 'update', before, after, reason: 'late pricing' });
   res.json(after);
@@ -2504,6 +2524,8 @@ router.post('/issues', requireCap('stores.issue'), asyncHandler((req, res) => {
         assetId, yr, mo, lineCost, lineCost
       );
     }
+    // Stores plan, Part 3: off the shelf now, and — once the store's rule has started — not past zero.
+    stockRule.check(stock.sync({ issues: [info.lastInsertRowid] }));
     return info.lastInsertRowid;
   });
   // Refresh the job's stored totals so job-based cost reports reflect the new issue
