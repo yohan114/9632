@@ -38,10 +38,17 @@ async function api(path, opts = {}) {
   const url = (baseUrl ? baseUrl : '') + '/api' + path;
   const res = await fetch(url, {
     method: opts.method || 'GET',
-    headers: opts.body ? { 'Content-Type': 'application/json' } : {},
+    // How long since the last mouse / keyboard / touch input: the server counts only REAL use
+    // towards the idle timeout, not the refreshes this page makes on its own (src/lib/auth.js).
+    headers: { ...(opts.body ? { 'Content-Type': 'application/json' } : {}), 'X-WO-Idle-Ms': String(idleMs()) },
     body: opts.body ? JSON.stringify(opts.body) : undefined,
     credentials: 'include',
   });
+  // The session is over (expired, idle, or signed out from another device): back to sign-in,
+  // instead of every panel on the page showing "Authentication required".
+  if (res.status === 401 && res.headers.get('X-WO-Session') === 'ended' && ME) {
+    sessionEnded('Your session has ended. Please sign in again.');
+  }
   if (method !== 'GET') clearRefCache();
   if (res.status === 204) return null;
   const ct = res.headers.get('content-type') || '';
@@ -49,11 +56,68 @@ async function api(path, opts = {}) {
   if (!res.ok) {
     const e = new Error((data && data.error) || res.statusText);
     e.status = res.status; e.data = data;
+    // The role now requires two-factor sign-in (perhaps switched on while this person was working).
+    if (res.status === 428 && data && data.mfaSetupRequired && ME) { ME.mfaSetupRequired = true; forceMfaSetup(); }
     throw e;
   }
   if (isRefPath) refCache.set(path, { time: Date.now(), data });
   return data;
 }
+
+// ---- idle sign-out -----------------------------------------------------------------------------
+//
+// A PC left signed in at the stores counter is anyone's. After the idle limit (from the server,
+// default 2 hours) without mouse, keyboard or touch input, this page signs itself out; a minute
+// before, it warns. Activity is shared across this browser's tabs (localStorage), so working in one
+// tab keeps the others signed in. The server enforces the same limit on its own (src/lib/auth.js).
+const ACTIVITY_KEY = 'wo_last_activity';
+let _lastInput = Date.now();
+let _lastStored = 0;
+let _idleWarned = false;
+function noteActivity() {
+  _lastInput = Date.now();
+  if (_lastInput - _lastStored > 5000) {
+    _lastStored = _lastInput;
+    try { localStorage.setItem(ACTIVITY_KEY, String(_lastInput)); } catch (e) { /* private mode */ }
+  }
+  if (_idleWarned) { _idleWarned = false; const w = document.getElementById('idle-warn'); if (w) w.remove(); }
+}
+['mousedown', 'mousemove', 'keydown', 'touchstart', 'wheel', 'scroll']
+  .forEach((ev) => window.addEventListener(ev, noteActivity, { passive: true, capture: true }));
+function lastActivity() {
+  let stored = 0;
+  try { stored = Number(localStorage.getItem(ACTIVITY_KEY)) || 0; } catch (e) { /* private mode */ }
+  return Math.max(_lastInput, stored);
+}
+function idleMs() { return Math.max(0, Date.now() - lastActivity()); }
+
+let _sessionEnding = false;
+// Back to the sign-in screen. `logout`: also end the session on the server (the idle case; when the
+// server already ended it there is nothing to end).
+function sessionEnded(message, { logout = false } = {}) {
+  if (_sessionEnding) return;
+  _sessionEnding = true;
+  const w = document.getElementById('idle-warn'); if (w) w.remove();
+  const done = () => { live('disconnect'); ME = null; location.hash = ''; _sessionEnding = false; renderLogin(message); };
+  if (!logout) return done();
+  const base = (window.WORKSHOPONE_API_BASE || '').replace(/\/+$/, '');
+  fetch(base + '/api/auth/logout', { method: 'POST', credentials: 'include' }).catch(() => {}).finally(done);
+}
+
+setInterval(() => {
+  const mins = ME && ME.sessionPolicy && ME.sessionPolicy.idleMinutes;
+  if (!mins) return;
+  const idle = idleMs();
+  if (idle >= mins * 60000) return sessionEnded(`Signed out after ${mins} minutes without activity.`, { logout: true });
+  if (idle >= mins * 60000 - 60000 && !_idleWarned) {
+    _idleWarned = true;
+    const bar = document.createElement('div');
+    bar.id = 'idle-warn';
+    bar.style.cssText = 'position:fixed;top:10px;left:50%;transform:translateX(-50%);z-index:9999;background:#b45309;color:#fff;padding:10px 16px;border-radius:8px;box-shadow:0 4px 12px rgba(0,0,0,.25);font-weight:600';
+    bar.textContent = 'No activity — you will be signed out in about a minute. Move the mouse or press a key to stay signed in.';
+    document.body.appendChild(bar);
+  }
+}, 15000);
 
 // The apostrophe matters as much as the double quote. Several buttons carry their data as JSON in a
 // SINGLE-quoted attribute (data-shelf-item='…'), so an item called "Driver's seat" used to end the
@@ -650,6 +714,7 @@ function forceChangePassword() {
           await api('/auth/change-password', { method: 'POST', body: { new_password: d.new_password } });
           if (ME) ME.mustChangePassword = false;
           toast('Password updated'); close(); render();
+          if (ME && ME.mfaSetupRequired) forceMfaSetup();
         } catch (e) { toast(e.message, 'err'); }
       };
     }, { persistent: true });
@@ -746,6 +811,7 @@ function renderShell() {
       <div class="who">${esc(ME.fullName || ME.username)} · ${ME.roles.join(', ')}</div>
       <button class="sm" id="mysig">Signature</button>
       <button class="sm" id="chpw">Password</button>
+      <button class="sm" id="mymfa" title="Signed-in devices and two-factor sign-in">🔐 Security${ME && ME.mfaEnabled ? ' ✓' : ''}</button>
       <button class="sm" id="logout">Logout</button>
     </div>
     <div class="layout">
@@ -764,6 +830,7 @@ function renderShell() {
     <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Update</button></div>`,
     (body, close) => { qs('#s', body).onclick = async () => { try { await api('/auth/change-password', { method: 'POST', body: formData(body) }); toast('Password updated'); close(); } catch (e) { toast(e.message, 'err'); } }; });
   qs('#mysig').onclick = mySignatureModal;
+  qs('#mymfa').onclick = securityModal;
   qs('#ham').onclick = () => qs('#nav').classList.toggle('open');
   qsa('#nav a').forEach((a) => a.addEventListener('click', () => qs('#nav').classList.remove('open')));
 }
@@ -873,14 +940,14 @@ function renderPendingApprovals(pa) {
   };
   const jobRow = (j, action) => `<div class="cost-line"><a href="#/jobs/${j.id}"><b>${esc(j.job_no)}</b> · ${esc(idLabel(j) || '—')}${waited(j.requested_at)}</a><span class="badge amber">${action} →</span></div>`;
   const jrRow = (r, action) => `<div class="cost-line"><a href="#/jobrequests/${r.id}"><b>${esc(r.jr_no)}</b> · ${esc(idLabel(r) || '—')}${r.description ? ' · ' + esc(String(r.description).slice(0, 40)) : ''}${r.requested_by ? ' · by ' + esc(r.requested_by) : ''}</a><span class="badge ${action === 'Approve' ? 'blue' : 'amber'}">${action} →</span></div>`;
-  const section = (title, rows) => rows.length ? `<div style="margin-top:6px"><div class="muted" style="font-size:12px;margin:6px 0 2px">${title} (${rows.length})</div>${rows}</div>` : '';
+  const section = (title, items, rowFn) => (items && items.length) ? `<div style="margin-top:6px"><div class="muted" style="font-size:12px;margin:6px 0 2px">${title} (${items.length})</div>${items.map(rowFn).join('')}</div>` : '';
   const body = [
-    section('Job requests awaiting your <b>certification</b>', (pa.jr_certify || []).map((r) => jrRow(r, 'Certify')).join('')),
-    section('Job requests awaiting your <b>approval</b>', (pa.jr_approve || []).map((r) => jrRow(r, 'Approve')).join('')),
-    section('MRNs awaiting your <b>certification</b>', pa.certify.map((m) => mrnRow(m, 'Certify')).join('')),
-    section('MRNs awaiting your <b>approval</b>', pa.approve.map((m) => mrnRow(m, 'Approve')).join('')),
-    section('Job cards awaiting <b>transport approval</b>', pa.transport.map((j) => jobRow(j, 'Approve')).join('')),
-    section('Job cards awaiting <b>operations approval</b>', pa.ops.map((j) => jobRow(j, 'Approve')).join('')),
+    section('Job requests awaiting your <b>certification</b>', pa.jr_certify || [], (r) => jrRow(r, 'Certify')),
+    section('Job requests awaiting your <b>approval</b>', pa.jr_approve || [], (r) => jrRow(r, 'Approve')),
+    section('MRNs awaiting your <b>certification</b>', pa.certify || [], (m) => mrnRow(m, 'Certify')),
+    section('MRNs awaiting your <b>approval</b>', pa.approve || [], (m) => mrnRow(m, 'Approve')),
+    section('Job cards awaiting <b>transport approval</b>', pa.transport || [], (j) => jobRow(j, 'Approve')),
+    section('Job cards awaiting <b>operations approval</b>', pa.ops || [], (j) => jobRow(j, 'Approve')),
   ].join('');
   return `<div class="card section" style="border-left:4px solid ${pa.total ? 'var(--red)' : 'var(--green)'}">
     <div class="toolbar" style="margin:0"><h3 style="margin:0">⚡ Pending Your Approval</h3><div class="spacer"></div><span class="badge ${pa.total ? 'red' : 'green'}">${pa.total} pending</span></div>
@@ -7238,6 +7305,9 @@ async function renderRolesManager(c, wanted) {
           ${sel.locked ? '' : `<button class="sm" id="editrole">✎ Rename / describe</button>
           ${sel.active ? '<button class="sm danger" id="retirerole">Retire</button>' : '<button class="sm" id="reinstaterole">Reinstate</button>'}`}
         </div>
+        <label style="flex-direction:row;display:flex;gap:6px;align-items:center;margin:8px 0 0;font-weight:normal">
+          <input type="checkbox" id="rolemfa" style="width:auto" ${sel.require_mfa ? 'checked' : ''} ${sel.active && (!sel.locked || isAdmin()) ? '' : 'disabled'}>
+          Require two-factor sign-in for everyone with this role <span class="muted" style="font-size:12px">— recommended for admins, approvers and purchasing</span></label>
         <p class="muted" style="margin:6px 0 0">${esc(sel.description || '')}${sel.description ? '<br>' : ''}Key <code>${esc(sel.name)}</code> · held by ${sel.users} active user(s).
           ${sel.locked ? ' Admin always holds every permission and cannot be changed.' : ''}
           ${!sel.active ? ' Retired — it grants nothing until reinstated.' : ''}
@@ -7248,6 +7318,12 @@ async function renderRolesManager(c, wanted) {
 
   const reload = (name) => { location.hash = '#/access?tab=roles&role=' + encodeURIComponent(name || sel.name); };
   qsa('[data-pick]', c).forEach((tr) => { tr.onclick = () => reload(tr.dataset.pick); });
+  qs('#rolemfa', c).onchange = async (e) => {
+    const on = e.target.checked;
+    if (on && !confirm(`Everyone with "${sel.label || sel.name}" will have to set up two-factor sign-in before they can use the system. Continue?`)) { e.target.checked = false; return; }
+    try { await api('/access/roles/' + encodeURIComponent(sel.name), { method: 'PATCH', body: { require_mfa: on } }); toast(on ? 'Two-factor sign-in required for this role' : 'No longer required'); reload(); }
+    catch (err) { e.target.checked = !on; toast(err.message, 'err'); }
+  };
   qsa('[data-cap]', c).forEach((box) => {
     box.onchange = async () => {
       try {
@@ -7319,11 +7395,20 @@ async function renderUsersManager(c) {
   const picked = (body) => qsa('[data-role]', body).filter((x) => x.checked).map((x) => x.dataset.role);
 
   c.innerHTML = `<div class="toolbar"><button class="primary" id="nu">+ New User</button><div class="spacer"></div><span class="muted">${users.length} user(s)</span></div>
-    ${tableWrap([{ label: 'Username' }, { label: 'Name' }, { label: 'Roles' }, { label: 'Active' }, { label: '' }],
+    ${tableWrap([{ label: 'Username' }, { label: 'Name' }, { label: 'Roles' }, { label: '2FA' }, { label: 'Active' }, { label: '' }],
     users.map((u) => `<tr${u.active ? '' : ' style="opacity:.55"'}><td>${esc(u.username)}</td><td>${esc(u.full_name || '')}</td>
-      <td>${u.roles.map((r) => `<span class="badge">${esc(labelOf[r] || r)}</span>`).join(' ')}</td><td>${u.active ? '✓' : '✕'}</td>
+      <td>${u.roles.map((r) => `<span class="badge">${esc(labelOf[r] || r)}</span>`).join(' ')}</td>
+      <td>${u.mfa_enabled ? '<span class="badge green">on</span>' : '<span class="muted">off</span>'}</td><td>${u.active ? '✓' : '✕'}</td>
       <td style="white-space:nowrap"><button class="sm" data-roles="${u.id}">Roles</button> <button class="sm" data-reset="${u.id}">Reset password</button>
+        <button class="sm" data-sessions="${u.id}">Sessions</button>
+        ${u.mfa_enabled ? `<button class="sm" data-mfareset="${u.id}" title="Lost or new phone">Reset 2FA</button>` : ''}
         <button class="sm ${u.active ? 'danger' : ''}" data-active="${u.id}">${u.active ? 'Deactivate' : 'Activate'}</button></td></tr>`))}`;
+  qsa('[data-sessions]', c).forEach((b) => b.onclick = () => userSessionsModal(users.find((x) => x.id == b.dataset.sessions)));
+  qsa('[data-mfareset]', c).forEach((b) => b.onclick = async () => {
+    const u = users.find((x) => x.id == b.dataset.mfareset);
+    if (!confirm(`Reset two-factor sign-in for ${u.username}? They are signed out, and set it up again with their new phone at next sign-in (if their role requires it) or when they choose to.`)) return;
+    try { await api(`/users/${u.id}/mfa-reset`, { method: 'POST' }); toast('Two-factor sign-in reset'); renderUsersManager(c); } catch (e) { toast(e.message, 'err'); }
+  });
 
   qs('#nu', c).onclick = () => modal('New User', `${field('Username *', 'username')}${field('Temporary password *', 'password', { type: 'password' })}
     <p class="muted">${esc(passwordHint())} They must choose their own at first sign-in.</p>${field('Full name', 'full_name')}<label>Roles</label>${roleBoxes()}
@@ -8554,6 +8639,227 @@ routes.matreq = async (c) => {
   location.replace('#/stores?tab=paperwork&sub=mrn');
 };
 
+// ---------------------------------------------------------------- two-factor sign-in
+//
+// The second step of signing in, enrolling a phone, and the settings box in the top bar. The
+// server holds every rule (src/lib/mfa.js); these screens only walk a person through it.
+
+// After a right password on an account with two-factor sign-in: ask for the code.
+function renderMfaStep(challenge, username, err) {
+  let recovery = false;
+  const draw = (msg) => {
+    qs('#app').innerHTML = `<div class="login-wrap"><div class="card login-card">
+      <div class="brand">Workshop<span style="color:var(--primary)">One</span></div>
+      <div class="sub">Two-factor sign-in · ${esc(username)}</div>
+      ${msg ? `<p class="err">${esc(msg)}</p>` : ''}
+      ${recovery
+        ? `<label>Recovery code</label><input id="mc" autocomplete="off" autocapitalize="characters" placeholder="ABCDE-FGHJK">
+           <p class="muted" style="font-size:12px">Each recovery code works once.</p>`
+        : `<label>6-digit code from your authenticator app</label>
+           <input id="mc" inputmode="numeric" autocomplete="one-time-code" maxlength="7" placeholder="123 456" style="font-size:22px;letter-spacing:4px;text-align:center">`}
+      <button class="primary" id="mgo" style="width:100%;margin-top:14px">Verify</button>
+      <button class="btn" id="mswap" style="width:100%;margin-top:8px;font-size:12px">${recovery ? 'Use the code from my app' : 'I don\'t have my phone — use a recovery code'}</button>
+      <button class="btn" id="mback" style="width:100%;margin-top:8px;font-size:12px">← Back to sign in</button>
+    </div></div>`;
+    const go = async () => {
+      try {
+        ME = await api('/auth/mfa/verify', { method: 'POST', body: { challenge, code: qs('#mc').value } });
+        afterSignIn();
+        if (ME.recoveryCodesLeft != null) {
+          toast(ME.recoveryCodesLeft <= 3
+            ? `Signed in with a recovery code — only ${ME.recoveryCodesLeft} left. Make new ones under Two-factor.`
+            : `Signed in with a recovery code (${ME.recoveryCodesLeft} left).`, ME.recoveryCodesLeft <= 3 ? 'err' : undefined);
+        }
+      } catch (e) {
+        if (e.data && e.data.restart) return renderLogin(e.message);
+        draw(e.message);
+      }
+    };
+    qs('#mgo').onclick = go;
+    qs('#mc').addEventListener('keydown', (e) => { if (e.key === 'Enter') go(); });
+    qs('#mswap').onclick = () => { recovery = !recovery; draw(); };
+    qs('#mback').onclick = () => renderLogin();
+    qs('#mc').focus();
+  };
+  draw(err);
+}
+
+// What happens once someone is fully signed in, however they got there.
+function afterSignIn() {
+  live('connect');   // the socket is refused until a session exists
+  location.hash = '#/dashboard'; render();
+  if (ME.mustChangePassword) forceChangePassword();
+  else if (ME.mfaSetupRequired) forceMfaSetup();
+}
+
+// The recovery codes, shown exactly once. The person must say they have kept them.
+function showRecoveryCodes(codes, onDone) {
+  const text = codes.join('\n');
+  modal('Your recovery codes', `
+    <p>If you lose your phone, each of these lets you sign in <b>once</b>. Keep them somewhere safe and
+    private — printed and locked away, or in a password manager. <b>They will not be shown again.</b></p>
+    <pre style="font-size:16px;line-height:1.7;background:#f8fafc;padding:10px;border-radius:6px;columns:2">${esc(text)}</pre>
+    <div class="pill-row"><button class="sm" id="rccopy">Copy</button><button class="sm" id="rcprint">Print</button></div>
+    <label style="flex-direction:row;display:flex;gap:6px;align-items:center;margin-top:12px"><input type="checkbox" id="rcok" style="width:auto"> I have saved these codes</label>
+    <div style="margin-top:12px;text-align:right"><button class="primary" id="rcdone" disabled>Done</button></div>`,
+  (body, close) => {
+    qs('#rcok', body).onchange = (e) => { qs('#rcdone', body).disabled = !e.target.checked; };
+    qs('#rccopy', body).onclick = async () => { try { await navigator.clipboard.writeText(text); toast('Copied'); } catch (e) { toast('Copy failed — select the codes and copy them by hand', 'err'); } };
+    qs('#rcprint', body).onclick = () => {
+      const w = window.open('', '_blank');
+      if (!w) return toast('Allow pop-ups to print', 'err');
+      w.document.write(`<pre style="font:16px monospace">WorkshopOne recovery codes — ${esc(ME.username)}\n\n${esc(text)}</pre>`);
+      w.document.close(); w.print();
+    };
+    qs('#rcdone', body).onclick = () => { close(); if (onDone) onDone(); };
+  }, { persistent: true });
+}
+
+// Enrol a phone. `forced`: the role requires it, so there is no "later" — only sign out.
+async function runMfaSetup({ forced = false, onDone } = {}) {
+  let s;
+  try { s = await api('/auth/mfa/setup', { method: 'POST' }); } catch (e) { return toast(e.message, 'err'); }
+  modal('Set up two-factor sign-in', `
+    ${forced ? '<p><b>Your role requires two-factor sign-in.</b> Set it up now to continue.</p>' : ''}
+    <ol style="padding-left:18px;line-height:1.6">
+      <li>On your phone, install <b>Google Authenticator</b> or <b>Microsoft Authenticator</b> (free, from the app store).</li>
+      <li>In the app, tap <b>+</b> → <b>Enter a setup key</b>. Account name: <b>WorkshopOne</b>. Key:
+        <div style="font:600 18px monospace;letter-spacing:2px;background:#f8fafc;padding:10px;border-radius:6px;margin:6px 0;word-break:break-all" id="mkey">${esc(s.grouped)}</div>
+        Type of key: <b>Time based</b>. <span class="muted">On this phone already? <a href="${esc(s.uri)}">Open in the authenticator app</a>.</span></li>
+      <li>Type the 6-digit code the app now shows:</li>
+    </ol>
+    <input id="mcode" inputmode="numeric" autocomplete="one-time-code" maxlength="7" placeholder="123 456" style="font-size:22px;letter-spacing:4px;text-align:center">
+    <div style="margin-top:12px;display:flex;gap:8px;justify-content:flex-end">
+      ${forced ? '<button class="btn" id="mout">Sign out</button>' : '<button class="btn" id="mcancel">Cancel</button>'}
+      <button class="primary" id="menable">Turn on</button>
+    </div>`,
+  (body, close) => {
+    const enable = async () => {
+      try {
+        const r = await api('/auth/mfa/enable', { method: 'POST', body: { code: qs('#mcode', body).value } });
+        close();
+        ME.mfaEnabled = true; ME.mfaSetupRequired = false;
+        showRecoveryCodes(r.recoveryCodes, () => {
+          toast('Two-factor sign-in is on');
+          live('connect');   // refused until now if the role required it
+          render();
+          if (onDone) onDone();
+        });
+      } catch (e) { toast(e.message, 'err'); }
+    };
+    qs('#menable', body).onclick = enable;
+    qs('#mcode', body).addEventListener('keydown', (e) => { if (e.key === 'Enter') enable(); });
+    if (qs('#mcancel', body)) qs('#mcancel', body).onclick = close;
+    if (qs('#mout', body)) qs('#mout', body).onclick = async () => { close(); await api('/auth/logout', { method: 'POST' }); ME = null; location.hash = ''; boot(); };
+  }, { persistent: forced });
+}
+
+// Asked for from several places (sign-in, boot, any request the server answers with 428) — only
+// one setup box at a time.
+let _mfaSetupPending = null;
+function forceMfaSetup() {
+  if (_mfaSetupPending || document.querySelector('#menable')) return;
+  _mfaSetupPending = runMfaSetup({ forced: true }).finally(() => { _mfaSetupPending = null; });
+}
+
+// ---- signed-in devices ---------------------------------------------------------------------------
+
+// Server times are UTC "YYYY-MM-DD HH:MM:SS" (or ISO). Shown as "12 min ago · 24 Sep 09:14".
+function whenText(t) {
+  if (!t) return '—';
+  const ms = Date.parse(String(t).includes('T') ? t : String(t).replace(' ', 'T') + 'Z');
+  if (!Number.isFinite(ms)) return esc(t);
+  const mins = Math.round((Date.now() - ms) / 60000);
+  const rel = mins < 1 ? 'just now' : mins < 60 ? `${mins} min ago` : mins < 1440 ? `${Math.round(mins / 60)} h ago` : `${Math.round(mins / 1440)} d ago`;
+  return `${rel} <span class="muted" style="font-size:11px">· ${esc(new Date(ms).toLocaleString([], { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }))}</span>`;
+}
+function sessionRows(list, { mine }) {
+  return list.map((x) => `<tr>
+    <td><b>${esc(x.device)}</b>${x.current ? ' <span class="badge green">this device</span>' : ''}${x.second_factor ? ' <span class="badge blue" title="Signed in with two-factor">2FA</span>' : ''}
+      <br><span class="muted" style="font-size:11px">${esc(x.ip || '')}</span></td>
+    <td>${whenText(x.signed_in_at)}</td><td>${whenText(x.last_active_at)}</td>
+    <td>${mine && !x.current ? `<button class="sm" data-endsess="${x.id}">Sign out</button>` : ''}</td></tr>`);
+}
+
+// The top-bar "Security" box: where I am signed in, and two-factor sign-in.
+async function securityModal() {
+  let d;
+  try { d = await api('/auth/sessions'); } catch (e) { return toast(e.message, 'err'); }
+  const others = d.sessions.filter((x) => !x.current).length;
+  modal('Security', `
+    <h3 style="margin-top:0">Where you are signed in</h3>
+    ${tableWrap([{ label: 'Device' }, { label: 'Signed in' }, { label: 'Last active' }, { label: '' }], sessionRows(d.sessions, { mine: true }))}
+    <p class="muted" style="font-size:12px">${d.policy.idleMinutes ? `You are signed out automatically after ${d.policy.idleMinutes} minutes without activity, and` : 'Sessions end'} after ${d.policy.ttlHours} hours in any case. Don't recognise a device? Sign it out and change your password.</p>
+    <div class="pill-row">
+      <button class="btn" id="endothers" ${others ? '' : 'disabled'}>Sign out all other devices${others ? ` (${others})` : ''}</button>
+      <button class="btn" id="open2fa">Two-factor sign-in: ${ME && ME.mfaEnabled ? 'on' : 'off'} …</button>
+    </div>`,
+  (body, close) => {
+    qsa('[data-endsess]', body).forEach((b) => b.onclick = async () => {
+      try { await api(`/auth/sessions/${b.dataset.endsess}/revoke`, { method: 'POST' }); toast('Signed out'); close(); securityModal(); }
+      catch (e) { toast(e.message, 'err'); }
+    });
+    qs('#endothers', body).onclick = async () => {
+      try { const r = await api('/auth/sessions/revoke-others', { method: 'POST' }); toast(`${r.ended} other device(s) signed out`); close(); securityModal(); }
+      catch (e) { toast(e.message, 'err'); }
+    };
+    qs('#open2fa', body).onclick = () => { close(); mfaSettingsModal(); };
+  });
+}
+
+// An admin looking at someone else's sessions (Users & Roles → Sessions).
+async function userSessionsModal(u) {
+  let d;
+  try { d = await api(`/users/${u.id}/sessions`); } catch (e) { return toast(e.message, 'err'); }
+  modal('Signed-in devices — ' + u.username, `
+    ${tableWrap([{ label: 'Device' }, { label: 'Signed in' }, { label: 'Last active' }, { label: '' }], sessionRows(d.sessions, { mine: false }))}
+    <div style="margin-top:12px;text-align:right"><button class="btn danger" id="endall" ${d.sessions.length ? '' : 'disabled'}>Sign out everywhere</button></div>`,
+  (body, close) => {
+    qs('#endall', body).onclick = async () => {
+      if (!confirm(`Sign ${u.username} out on every device? They can sign in again straight away with their password.`)) return;
+      try { const r = await api(`/users/${u.id}/sessions/revoke`, { method: 'POST' }); toast(`${r.ended} session(s) ended`); close(); }
+      catch (e) { toast(e.message, 'err'); }
+    };
+  });
+}
+
+// The top-bar box: is it on, recovery codes left, new codes, turn off.
+async function mfaSettingsModal() {
+  let st;
+  try { st = await api('/auth/mfa'); } catch (e) { return toast(e.message, 'err'); }
+  if (!st.enabled) {
+    return modal('Two-factor sign-in', `
+      <p>Two-factor sign-in is <b>off</b> for your account.</p>
+      <p class="muted">With it on, signing in needs your password <b>and</b> a 6-digit code from an app on your phone —
+      so a stolen or guessed password is not enough on its own.</p>
+      <div style="margin-top:12px;text-align:right"><button class="primary" id="mon">Set it up</button></div>`,
+    (body, close) => { qs('#mon', body).onclick = () => { close(); runMfaSetup(); }; });
+  }
+  modal('Two-factor sign-in', `
+    <p>Two-factor sign-in is <b>on</b>.${st.required ? ' Your role requires it.' : ''}</p>
+    <p>Recovery codes left: <b>${st.recoveryCodesLeft}</b>${st.recoveryCodesLeft <= 3 ? ' <span class="badge amber">running low</span>' : ''}</p>
+    <hr>
+    <label>Code from your app (needed for either button)</label>
+    <input id="mc" inputmode="numeric" autocomplete="one-time-code" maxlength="7" placeholder="123 456">
+    ${st.required ? '' : `<label>Password (only to turn it off)</label><input id="mpw" type="password">`}
+    <div style="margin-top:12px;display:flex;gap:8px;justify-content:flex-end">
+      <button class="btn" id="mnewrc">New recovery codes</button>
+      ${st.required ? '' : '<button class="btn danger" id="moff">Turn off</button>'}
+    </div>
+    <p class="muted" style="font-size:12px">New phone? Ask an administrator to reset your two-factor sign-in, then set it up again.</p>`,
+  (body, close) => {
+    qs('#mnewrc', body).onclick = async () => {
+      try { const r = await api('/auth/mfa/recovery-codes', { method: 'POST', body: { code: qs('#mc', body).value } }); close(); showRecoveryCodes(r.recoveryCodes); }
+      catch (e) { toast(e.message, 'err'); }
+    };
+    if (qs('#moff', body)) qs('#moff', body).onclick = async () => {
+      if (!confirm('Turn off two-factor sign-in? Your password alone will be enough to sign in.')) return;
+      try { await api('/auth/mfa/disable', { method: 'POST', body: { code: qs('#mc', body).value, password: qs('#mpw', body).value } }); ME.mfaEnabled = false; close(); toast('Two-factor sign-in is off'); }
+      catch (e) { toast(e.message, 'err'); }
+    };
+  });
+}
+
 // ---------------------------------------------------------------- login + boot
 function renderLogin(err) {
   const currentServer = window.WORKSHOPONE_API_BASE || window.location.origin;
@@ -8578,10 +8884,10 @@ function renderLogin(err) {
   </div></div>`;
   const go = async () => {
     try {
-      ME = await api('/auth/login', { method: 'POST', body: { username: qs('#u').value, password: qs('#p').value } });
-      live('connect');   // the socket is refused until a session exists
-      location.hash = '#/dashboard'; render();
-      if (ME.mustChangePassword) forceChangePassword();
+      const r = await api('/auth/login', { method: 'POST', body: { username: qs('#u').value, password: qs('#p').value } });
+      if (r.mfaRequired) return renderMfaStep(r.challenge, r.username);
+      ME = r;
+      afterSignIn();
     } catch (e) { renderLogin(e.message || 'Connection failed'); }
   };
   qs('#login').onclick = go;
@@ -8595,6 +8901,7 @@ async function boot() {
     if (!location.hash) location.hash = '#/dashboard';
     render();
     if (ME.mustChangePassword) forceChangePassword();
+    else if (ME.mfaSetupRequired) forceMfaSetup();
   } catch (e) {
     renderLogin(e && e.message ? 'Server connection issue: ' + e.message : null);
   }

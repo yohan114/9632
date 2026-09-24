@@ -3,6 +3,9 @@
 const express = require('express');
 const { get, all, run, tx } = require('../db');
 const { requireAuth, requireCap, hasCap } = require('../lib/auth');
+// The segregation-of-duties checks below exempt the admin. isAdmin() is the one admin test: routes
+// no longer check role names (Stage 1).
+const { isAdmin } = require('../lib/access_rules');
 const { asyncHandler, require_, toInt, toNum } = require('../lib/http');
 const audit = require('../lib/audit');
 const aliases = require('../lib/aliases');
@@ -345,6 +348,13 @@ router.post(
       }
     }
 
+    if (check.def.action === 'ops_approve') {
+      const transRow = get(`SELECT approver_id FROM job_approvals WHERE job_id = ? AND role = 'transport_manager' AND decision = 'approved' ORDER BY id DESC LIMIT 1`, id);
+      if (transRow && transRow.approver_id === req.user.id && !isAdmin(req.user)) {
+        return res.status(403).json({ error: 'Segregation of duties violation: Operational approval cannot be given by the same person who gave Transport approval.' });
+      }
+    }
+
     tx(() => {
       const now = "datetime('now')";
       const sets = ["status = ?", "updated_at = " + now];
@@ -464,6 +474,14 @@ router.post(
           const readiness = costing.closureReadiness(id);
           if (!readiness.ready && !wasReopened) {
             failed.push({ id, job_no: job.job_no, error: 'Not fully priced or has unissued store shelf parts', missing: readiness.missing });
+            continue;
+          }
+        }
+
+        if (check.def.action === 'ops_approve') {
+          const transRow = get(`SELECT approver_id FROM job_approvals WHERE job_id = ? AND role = 'transport_manager' AND decision = 'approved' ORDER BY id DESC LIMIT 1`, id);
+          if (transRow && transRow.approver_id === req.user.id && !isAdmin(req.user)) {
+            failed.push({ id, job_no: job.job_no, error: 'Segregation of duties violation: Operational approval cannot be given by the same person who gave Transport approval.' });
             continue;
           }
         }

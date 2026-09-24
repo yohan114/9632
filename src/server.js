@@ -9,7 +9,7 @@ const { Server } = require('socket.io');
 
 const config = require('./config');
 const { migrate, get } = require('./db');
-const { authenticate, enforcePasswordChange, requireAuth, hasCap, COOKIE } = require('./lib/auth');
+const { authenticate, enforcePasswordChange, enforceMfaSetup, requireAuth, hasCap, rolesForUser, liveSession, COOKIE } = require('./lib/auth');
 const { requireModule } = require('./lib/permissions');
 const { errorHandler } = require('./lib/http');
 const { startScheduler } = require('./lib/backup');
@@ -44,6 +44,9 @@ app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 app.use(authenticate);
 app.use(enforcePasswordChange);
+// Someone whose role requires two-factor sign-in, and who has not set it up, reaches only the
+// enrolment screens until they have (src/lib/auth.js).
+app.use(enforceMfaSetup);
 
 // The old upload folder. Photos, signatures and service attachments now live in the database, so
 // nothing the app writes lands here — but it was served to ANYONE, signed in or not, and whatever
@@ -57,6 +60,15 @@ app.get('/api/health', (req, res) => {
   const out = { ok: true, name: 'WorkshopOne' };
   if (hasCap(req.user, 'system.status')) out.backup = backupStatus.summary();
   res.json(out);
+});
+
+// Global API authentication gate (R-04):
+// Every /api route requires an authenticated session, except /api/auth/login, /api/health, and
+// /api/auth/mfa/verify — the second step of signing in, which by design comes before any session.
+app.use('/api', (req, res, next) => {
+  if (req.path === '/auth/login' || req.path === '/health' || req.path === '/auth/mfa/verify') return next();
+  if (!req.user) return res.status(401).json({ error: 'Authentication required' });
+  next();
 });
 
 // API routers. Each module is a self-contained Express Router. Operational
@@ -176,16 +188,33 @@ io.use((socket, next) => {
   // for a login) apart from "server is down" (keep retrying). Without that distinction the login
   // page reconnects once a second forever and toasts about it.
   if (!token) return next(new Error('unauthorized'));
-  const sess = get(
-    `SELECT u.id, u.username, u.active
-       FROM sessions s JOIN users u ON u.id = s.user_id
-      WHERE s.token = ? AND s.expires_at > datetime('now')`,
-    token
-  );
-  if (!sess || !sess.active) return next(new Error('unauthorized'));
-  socket.data.user = { id: sess.id, username: sess.username };
+  if (!socketAllowed(token)) return next(new Error('unauthorized'));
+  const { sess } = liveSession(token);
+  socket.data.user = { id: sess.user_id, username: sess.username };
+  socket.data.token = token;
   return next();
 });
+
+// The live feed carries the same data as the API, so it follows the same session rules: expired,
+// idle, revoked, or a second factor not passed — and someone who still has to enrol gets no feed.
+function socketAllowed(token) {
+  const { sess } = liveSession(token);
+  if (!sess) return false;
+  if (!sess.mfa_enabled && require('./lib/mfa').requiredByRoles(rolesForUser(sess.user_id))) return false;
+  return true;
+}
+
+// A socket is checked when it connects — and that used to be the only time. Signing someone out,
+// resetting their password or deactivating them left their open socket receiving every live update
+// until they happened to reconnect. So every connected socket is re-checked: at once when sessions
+// change, and every minute (which also catches sessions that simply ran out).
+function sweepSockets() {
+  for (const [, socket] of io.of('/').sockets) {
+    if (!socket.data || !socket.data.token || !socketAllowed(socket.data.token)) socket.disconnect(true);
+  }
+}
+emitter.on('sessions_changed', () => setImmediate(sweepSockets));
+setInterval(sweepSockets, 60 * 1000).unref();
 
 const LIVE_EVENTS = ['stock_updated', 'oil_updated', 'filter_updated', 'job_updated', 'request_updated', 'dashboard_refresh', 'data_changed'];
 for (const event of LIVE_EVENTS) {

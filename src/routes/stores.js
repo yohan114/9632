@@ -3,6 +3,9 @@
 const express = require('express');
 const { get, all, run, tx } = require('../db');
 const { requireCap, hasCap, requireAuth } = require('../lib/auth');
+// The segregation-of-duties checks below exempt the admin. isAdmin() is the one admin test: routes
+// no longer check role names (Stage 1).
+const { isAdmin } = require('../lib/access_rules');
 const { asyncHandler, require_, toInt, toNum } = require('../lib/http');
 const audit = require('../lib/audit');
 const aliases = require('../lib/aliases');
@@ -708,9 +711,10 @@ router.post('/mrn/:id/certify', requireCap('stores.mrn.certify'), asyncHandler((
   if (!mrn) return res.status(404).json({ error: 'MRN not found' });
   if (mrn.approval_status === 'approved') return res.status(409).json({ error: 'Already approved — cannot re-certify' });
   const s = signer(req.user.id); const sig = req.body.signature || s.sig || null;
+  const certRole = (isAdmin(req.user) || req.user.roles.includes('workshop')) ? 'workshop' : 'manager';
   tx(() => {
     run(`UPDATE mrn SET approval_status = 'certified', certified_by = ?, certified_at = datetime('now'), certified_sig = ? WHERE id = ?`, s.name, sig, id);
-    run(`INSERT INTO mrn_approvals (mrn_id, stage, role, approver_id, signed_name, signature, decision, reason) VALUES (?, 'certify', 'workshop', ?, ?, ?, 'approved', ?)`, id, req.user.id, s.name, sig, req.body.reason || null);
+    run(`INSERT INTO mrn_approvals (mrn_id, stage, role, approver_id, signed_name, signature, decision, reason) VALUES (?, 'certify', ?, ?, ?, ?, 'approved', ?)`, id, certRole, req.user.id, s.name, sig, req.body.reason || null);
   });
   audit.record({ userId: req.user.id, entity: 'mrn', entityId: id, action: 'certify', after: { certified_by: s.name }, reason: req.body.reason });
   emitter.emit('request_updated', { mrn_id: id, action: 'certify', approval_status: 'certified' });
@@ -722,10 +726,15 @@ router.post('/mrn/:id/approve', requireCap('stores.mrn.approve'), asyncHandler((
   const mrn = get('SELECT * FROM mrn WHERE id = ?', id);
   if (!mrn) return res.status(404).json({ error: 'MRN not found' });
   if (mrn.approval_status !== 'certified') return res.status(409).json({ error: 'MRN must be certified (Workshop Engineer) before Operational Manager approval' });
+  const certRow = get(`SELECT approver_id FROM mrn_approvals WHERE mrn_id = ? AND stage = 'certify' AND decision = 'approved' ORDER BY id DESC LIMIT 1`, id);
+  if (certRow && certRow.approver_id === req.user.id && !isAdmin(req.user)) {
+    return res.status(403).json({ error: 'Segregation of duties violation: approver cannot be the same person who certified the requisition.' });
+  }
   const s = signer(req.user.id); const sig = req.body.signature || s.sig || null;
+  const appRole = (isAdmin(req.user) || req.user.roles.includes('operational_manager')) ? 'operational_manager' : 'manager';
   tx(() => {
     run(`UPDATE mrn SET approval_status = 'approved', approved_by = ?, approved_at = datetime('now'), approved_sig = ? WHERE id = ?`, s.name, sig, id);
-    run(`INSERT INTO mrn_approvals (mrn_id, stage, role, approver_id, signed_name, signature, decision, reason) VALUES (?, 'approve', 'operational_manager', ?, ?, ?, 'approved', ?)`, id, req.user.id, s.name, sig, req.body.reason || null);
+    run(`INSERT INTO mrn_approvals (mrn_id, stage, role, approver_id, signed_name, signature, decision, reason) VALUES (?, 'approve', ?, ?, ?, ?, 'approved', ?)`, id, appRole, req.user.id, s.name, sig, req.body.reason || null);
   });
   audit.record({ userId: req.user.id, entity: 'mrn', entityId: id, action: 'approve', after: { approved_by: s.name }, reason: req.body.reason });
   emitter.emit('request_updated', { mrn_id: id, action: 'approve', approval_status: 'approved' });
