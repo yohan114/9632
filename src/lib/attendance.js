@@ -574,6 +574,29 @@ function month(ym) {
   return { month: ym, enabled: s.enabled, from, to, mechanics: mechanicsOut, days };
 }
 
+/**
+ * Recent days still waiting for a sign-off (W3: the dashboard reminder and "Pending your
+ * approval"). A day counts only if something happened on it — attendance or daily work — so a
+ * Sunday nobody worked is not nagged about. From the start date, up to yesterday: today is still
+ * being worked.
+ */
+function unsignedDays({ days = 14 } = {}) {
+  const s = settings();
+  if (!s.enabled || !s.start_date) return [];
+  const to = addDays(today(), -1);
+  let from = addDays(today(), -days);
+  if (s.start_date > from) from = s.start_date;
+  if (from > to) return [];
+  const active = new Set([
+    ...all('SELECT DISTINCT work_date d FROM mechanic_attendance WHERE work_date BETWEEN ? AND ?', from, to).map((r) => r.d),
+    ...all('SELECT DISTINCT work_date d FROM job_daily_work WHERE work_date BETWEEN ? AND ?', from, to).map((r) => r.d),
+  ]);
+  const signed = new Set(all('SELECT work_date d, signed_at, unlocked_at FROM workday_signoffs WHERE work_date BETWEEN ? AND ?', from, to)
+    .filter(signedOff).map((r) => r.d));
+  return [...active].filter((d) => !signed.has(d)).sort().reverse()
+    .map((d) => ({ date: d, red_count: day(d).red_count }));
+}
+
 function nextMonth(ym) {
   const [y, m] = ym.split('-').map(Number);
   return m === 12 ? `${y + 1}-01` : `${y}-${pad(m + 1)}`;
@@ -585,5 +608,5 @@ module.exports = {
   today, addDays, isDate, toMinutes, normTime, workedMinutes,
   bookedRange, tallyOne, day, saveRows, editRule,
   signoffFor, isLocked, checkDaysOpen, assertDaysOpen, signOff, unlock,
-  hoursLeft, month,
+  hoursLeft, month, unsignedDays,
 };

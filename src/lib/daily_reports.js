@@ -425,7 +425,36 @@ function pendingPrice({ asOf } = {}) {
   };
 }
 
-const BUILDERS = { pending_parts: pendingParts, job_summary: jobSummary, pending_price: pendingPrice };
+/**
+ * The attendance day tally (src/lib/attendance.js, W1), frozen day by day like the other sheets
+ * (W3): who was at work, the hours booked on jobs, and what did not match. Only while attendance is
+ * switched on — the scheduler does not freeze it otherwise.
+ */
+function dayTally({ asOf } = {}) {
+  const attendance = require('./attendance');
+  const day = d10(asOf) || attendance.today();
+  const d = attendance.day(day);
+  if (!d.enabled) return { as_of: day, enabled: false, rows: [], unmatched: [], counts: {}, red_count: 0, totals: {} };
+  const shown = d.rows.filter((r) => r.attendance || r.booked_hours > 0 || r.active);
+  return {
+    as_of: day, enabled: d.enabled, before_start: d.before_start, locked: d.locked, signoff: d.signoff,
+    counts: d.counts, red_count: d.red_count, totals: d.totals,
+    rows: shown.map((r, i) => ({
+      no: i + 1, mechanic_id: r.mechanic_id, mechanic: r.name,
+      status: r.attendance ? r.attendance.status : '',
+      time_in: r.attendance ? r.attendance.time_in || '' : '',
+      time_out: r.attendance ? r.attendance.time_out || '' : '',
+      break_minutes: r.attendance && r.attendance.status && !['absent', 'leave', 'holiday'].includes(r.attendance.status) ? r.attendance.break_minutes : null,
+      worked: r.worked_hours, booked: r.booked_hours, diff: r.diff_hours,
+      tally: r.tally, tally_label: r.tally_label, red: r.red,
+      note: [r.attendance && r.attendance.note, r.attendance && r.attendance.unbooked_reason].filter(Boolean).join(' — '),
+    })),
+    unmatched: d.unmatched.map((u) => ({ name: u.name || '(no mechanic named)', hours: u.hours,
+      jobs: [...new Set(u.lines.map((l) => l.job_no))].join(', ') })),
+  };
+}
+
+const BUILDERS = { pending_parts: pendingParts, job_summary: jobSummary, pending_price: pendingPrice, day_tally: dayTally };
 
 /** Build a report for a day, live from the system. */
 function build(kind, opts) {
@@ -467,7 +496,7 @@ function history(kind, limit = 60) {
       WHERE s.kind = ? ORDER BY s.report_date DESC LIMIT ?`, kind, Number(limit) || 60);
 }
 
-module.exports = { build, snapshot, readSnapshot, history, pendingParts, jobSummary, pendingPrice, dotDate, SOURCE_TABS, SOURCE_LABEL };
+module.exports = { build, snapshot, readSnapshot, history, pendingParts, jobSummary, pendingPrice, dayTally, dotDate, SOURCE_TABS, SOURCE_LABEL };
 
 // ---------------------------------------------------------------------------
 // Excel, laid out to match the workbook the office already reads.
@@ -598,12 +627,61 @@ function pendingPriceWorkbook(data) {
   return wb;
 }
 
-const WORKBOOKS = { pending_parts: pendingPartsWorkbook, job_summary: jobSummaryWorkbook, pending_price: pendingPriceWorkbook };
+/** Attendance & day tally — one worksheet for the day. */
+function dayTallyWorkbook(data) {
+  const wb = new ExcelJS.Workbook();
+  wb.creator = 'WorkshopOne';
+  const ws = wb.addWorksheet('Tally ' + Number(String(data.as_of).slice(8, 10)));
+  const COLS = [['No', 5], ['Mechanic', 24], ['Status', 11], ['In', 8], ['Out', 8], ['Break (min)', 10],
+    ['Worked (h)', 11], ['Booked (h)', 11], ['Difference (h)', 13], ['Tally', 18], ['Note / reason', 34]];
+  COLS.forEach(([, w], i) => { ws.getColumn(i + 1).width = w; });
+  const line = (row, text, opts = {}) => {
+    ws.mergeCells(row, 1, row, COLS.length);
+    const c = ws.getCell(row, 1);
+    c.value = text; c.font = { bold: !!opts.bold, size: opts.size || 11, italic: !!opts.italic };
+    c.alignment = { horizontal: opts.left ? 'left' : 'center' };
+  };
+  line(1, 'Attendance & day tally — Workshop', { bold: true, size: 13 });
+  line(2, `Date - ${dotDate(data.as_of).replace(/\./g, '/')}`, { bold: true });
+  line(3, data.locked && data.signoff ? `Signed off by ${data.signoff.signed_by || '-'} at ${data.signoff.signed_at || ''}`
+    : (data.before_start ? 'Before the attendance start date — not checked' : 'Not signed off'), { italic: true, size: 10 });
+  COLS.forEach(([label], i) => { const c = ws.getCell(4, i + 1); c.value = label; head(c); });
+  ws.views = [{ state: 'frozen', ySplit: 4 }];
+  const STATUS = { present: 'Present', absent: 'Absent', leave: 'Leave', half_day: 'Half day', holiday: 'Holiday' };
+  const h = (v) => (v == null ? null : Math.round(v * 100) / 100);
+  let r = 5;
+  for (const x of data.rows) {
+    const vals = [x.no, x.mechanic, STATUS[x.status] || '', x.time_in || null, x.time_out || null, x.break_minutes,
+      h(x.worked), h(x.booked), h(x.diff), x.tally_label, x.note || null];
+    vals.forEach((v, i) => {
+      const c = ws.getCell(r, i + 1);
+      c.value = v === '' ? null : v;
+      c.font = { size: 10, bold: i === 9 && x.red, color: i === 9 && x.red ? { argb: 'FFC4392D' } : undefined };
+      if (i >= 6 && i <= 8) c.numFmt = '0.00';
+      c.alignment = { vertical: 'top', wrapText: i === 10 };
+      if (x.red) c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFDECEA' } };
+      box(c);
+    });
+    r++;
+  }
+  const c = data.counts || {};
+  r++;
+  line(r++, `Matched ${c.matched || 0} · Unbooked ${c.unbooked || 0} · Red ${data.red_count || 0} · Not entered ${c.not_entered || 0}`
+    + ` · Worked ${h((data.totals || {}).worked_hours) || 0} h · Booked ${h((data.totals || {}).booked_hours) || 0} h`, { left: true, size: 10 });
+  if (data.unmatched && data.unmatched.length) {
+    line(r++, 'Names not matched to a mechanic (their hours are in no one\'s tally):', { left: true, bold: true, size: 10 });
+    for (const u of data.unmatched) line(r++, `${u.name} — ${h(u.hours)} h — ${u.jobs}`, { left: true, size: 10 });
+  }
+  return wb;
+}
+
+const WORKBOOKS = { pending_parts: pendingPartsWorkbook, job_summary: jobSummaryWorkbook, pending_price: pendingPriceWorkbook, day_tally: dayTallyWorkbook };
 const workbookFor = (kind, data) => WORKBOOKS[kind](data);
 
 module.exports.pendingPartsWorkbook = pendingPartsWorkbook;
 module.exports.jobSummaryWorkbook = jobSummaryWorkbook;
 module.exports.pendingPriceWorkbook = pendingPriceWorkbook;
+module.exports.dayTallyWorkbook = dayTallyWorkbook;
 module.exports.workbookFor = workbookFor;
 
 /**
@@ -622,6 +700,8 @@ function startScheduler({ everyMinutes = 60 } = {}) {
   const tick = () => {
     try {
       for (const kind of Object.keys(BUILDERS)) {
+        // The day tally is kept only while attendance is switched on.
+        if (kind === 'day_tally' && !require('./attendance').isEnabled()) continue;
         const today = d10(new Date().toISOString());
         snapshot(kind, { asOf: today });
         // Backfill: if the last saved day is older than yesterday, the server was down. Freeze

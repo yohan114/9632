@@ -45,6 +45,14 @@ const openSql = (alias) => `${col(alias)} NOT IN (${quoted(NOT_OPEN_STATUSES)})`
 /** SQL: the card is not finished with (prices, parts or records may still come in). */
 const notFinalSql = (alias) => `${col(alias)} NOT IN (${quoted(FINAL_STATUSES)})`;
 const isOpen = (status) => !NOT_OPEN_STATUSES.includes(status);
+// The monthly cost report (W3, decision W-D9): a partly closed card is reported in the CLOSED
+// section of its partial-close month, flagged "prices pending", so it shows once and in one month.
+// Pending is everything else — as before, apart from that one addition.
+const REPORT_CLOSED = [PARTIAL, 'CLOSED'];
+/** SQL: the card belongs in the report's Closed section (of its completed_at month). */
+const reportClosedSql = (alias) => `${col(alias)} IN (${quoted(REPORT_CLOSED)})`;
+/** SQL: the card may be in the report's Pending section. */
+const reportPendingSql = (alias) => `${col(alias)} NOT IN (${quoted(REPORT_CLOSED)})`;
 const isFinal = (status) => FINAL_STATUSES.includes(status);
 const OPEN_STATUSES = STATES.filter(isOpen);
 const OPEN_SQL = openSql();
@@ -318,7 +326,7 @@ function canReopen(who = []) {
 module.exports = {
   STATES, TRANSITIONS, OPEN_STATUSES, OPEN_SQL, REOPEN_CAP, PARTIAL, REOPENABLE,
   FINAL_STATUSES, openSql, notFinalSql, isOpen, isFinal, isReopen, ADD_RULES, PARTIAL_RULES, checkAdd,
-  successorFor, partialDay, PARTIAL_FLAG, partialCloseEnabled,
+  successorFor, partialDay, PARTIAL_FLAG, partialCloseEnabled, reportClosedSql, reportPendingSql,
   isValidState, nextStates, checkTransition, canReopen,
   openJobFor, checkOneOpenJob, duplicateOpenJobs,
 };

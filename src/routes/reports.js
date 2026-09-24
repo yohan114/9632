@@ -24,7 +24,7 @@ function currentBalance(productId) {
 }
 
 // ---- dashboard ------------------------------------------------------------
-router.get('/dashboard', asyncHandler((_req, res) => {
+router.get('/dashboard', asyncHandler((req, res) => {
   const jobs_by_status = all(`SELECT status, COUNT(*) count FROM job_cards GROUP BY status`);
 
   const awaiting = all(
@@ -57,9 +57,21 @@ router.get('/dashboard', asyncHandler((_req, res) => {
     `SELECT COUNT(*) c FROM job_cards WHERE status='CLOSED' AND strftime('%Y-%m', closed_at) = strftime('%Y-%m','now')`
   ).c;
 
+  // Attendance (W3): today's tally and the days still to be signed off — for whoever may read
+  // Daily Work, and only while attendance is switched on.
+  let attendance_today = null;
+  const att = require('../lib/attendance');
+  const permissions = require('../lib/permissions');
+  if (att.isEnabled() && permissions.meets(permissions.levelForRoles(req.user.roles || [], 'dailywork'), 'view')) {
+    const t = att.today();
+    const d = att.day(t);
+    attendance_today = { date: t, red_count: d.red_count, counts: d.counts, locked: d.locked, before_start: d.before_start,
+      unsigned_days: att.unsignedDays() };
+  }
+
   res.json({
     jobs_by_status, awaiting_price: awaiting, low_stock_oil, batteries_warranty,
-    month_cost_by_project, open_jobs_count, closed_this_month_count, partly_closed,
+    month_cost_by_project, open_jobs_count, closed_this_month_count, partly_closed, attendance_today,
     needs_attention: intelligence.needsAttentionSummary(),
   });
 }));
@@ -815,7 +827,7 @@ router.get('/pending-approvals', asyncHandler((req, res) => {
   // Each queue is shown to whoever may act on it — the same capability the approve/certify
   // endpoint itself requires, so a role an admin creates sees exactly the queues it can clear.
   const may = (cap) => hasCap(req.user, cap);
-  const out = { certify: [], approve: [], transport: [], ops: [], jr_certify: [], jr_approve: [], reopen: [] };
+  const out = { certify: [], approve: [], transport: [], ops: [], jr_certify: [], jr_approve: [], reopen: [], signoff: [] };
   const INFLOW = "approval_status = 'requested' AND requested_by IS NOT NULL AND TRIM(requested_by) <> ''";
   const lineCount = '(SELECT COUNT(*) FROM mrn_lines ml WHERE ml.mrn_id = m.id) lines';
   if (may('stores.mrn.certify')) {
@@ -860,10 +872,13 @@ router.get('/pending-approvals', asyncHandler((req, res) => {
     const admin = (req.user.roles || []).includes('admin');
     out.reopen = require('../lib/job_close').pendingRequests({ excludeRequester: admin ? null : req.user.id });
   }
+  // Days waiting for their sign-off (W3) — for whoever signs days off, while attendance is on.
+  const signoffQueue = may('attendance.signoff') && require('../lib/attendance').isEnabled();
+  if (signoffQueue) out.signoff = require('../lib/attendance').unsignedDays();
   out.total = out.certify.length + out.approve.length + out.transport.length + out.ops.length
-            + out.jr_certify.length + out.jr_approve.length + out.reopen.length;
+            + out.jr_certify.length + out.jr_approve.length + out.reopen.length + out.signoff.length;
   out.is_approver = ['stores.mrn.certify', 'stores.mrn.approve', 'jobs.approve_transport', 'jobs.approve_operations',
-    'jobrequests.certify', 'jobrequests.approve'].some(may) || reopenQueue;
+    'jobrequests.certify', 'jobrequests.approve'].some(may) || reopenQueue || signoffQueue;
   res.json(out);
 }));
 
@@ -1401,14 +1416,16 @@ router.get('/monthly-repair-detail.html', requireAuth, asyncHandler((req, res) =
     }
     return 0;
   };
+  // The same Closed / Pending rule as the Repair sheet (a partly closed job is in Closed, in its
+  // partial-close month) — jobstate.reportClosedSql / reportPendingSql.
   const closedJobs = all(`SELECT id, job_no FROM job_cards
-      WHERE status = 'CLOSED' AND completed_at IS NOT NULL AND substr(completed_at,1,7) = ?
+      WHERE ${jobstate.reportClosedSql()} AND completed_at IS NOT NULL AND substr(completed_at,1,7) = ?
         AND (description IS NULL OR (description NOT LIKE 'Stores materials%' AND description NOT LIKE 'auto-created container%'))
       ORDER BY completed_at, id`, ym).sort(byJobNo);
   const closedIds = closedJobs.map((r) => r.id);
 
   const pendingJobs = all(`SELECT id, job_no FROM job_cards
-      WHERE status <> 'CLOSED'
+      WHERE ${jobstate.reportPendingSql()}
         AND (description IS NULL OR (description NOT LIKE 'Stores materials%' AND description NOT LIKE 'auto-created container%'))
         AND substr(COALESCE(requested_at, created_at),1,7) <= ?
         AND EXISTS (SELECT 1 FROM job_daily_work w WHERE w.job_id = job_cards.id AND substr(w.work_date,1,7) = ?)
@@ -1603,13 +1620,22 @@ module.exports = router;
 // columns carry forward until the supervisor edits them.
 // ---------------------------------------------------------------------------
 const daily = require('../lib/daily_reports');
-const KINDS = ['pending_parts', 'job_summary', 'pending_price'];
+const KINDS = ['pending_parts', 'job_summary', 'pending_price', 'day_tally'];
 const kindOf = (v) => (KINDS.includes(v) ? v : null);
+// The day tally is attendance: it follows the Daily Work section clearance, like /api/attendance.
+function mayReadKind(req, res, kind) {
+  if (kind !== 'day_tally') return true;
+  const permissions = require('../lib/permissions');
+  if (permissions.meets(permissions.levelForRoles(req.user.roles || [], 'dailywork'), 'view')) return true;
+  res.status(403).json({ error: 'Your role has no view access to dailywork' });
+  return false;
+}
 
 // Today's live figures, or a saved day if one exists for that date.
 router.get('/daily/:kind', requireAuth, asyncHandler((req, res) => {
   const kind = kindOf(req.params.kind);
   if (!kind) return res.status(404).json({ error: 'Unknown report' });
+  if (!mayReadKind(req, res, kind)) return;
   const date = String(req.query.date || '').slice(0, 10) || null;
   const today = new Date().toISOString().slice(0, 10);
   // TODAY is always live and editable — the scheduler freezes a copy every hour, and reading
@@ -1628,6 +1654,7 @@ router.get('/daily/:kind', requireAuth, asyncHandler((req, res) => {
 router.post('/daily/:kind/save', requireAuth, asyncHandler((req, res) => {
   const kind = kindOf(req.params.kind);
   if (!kind) return res.status(404).json({ error: 'Unknown report' });
+  if (!mayReadKind(req, res, kind)) return;
   const snap = daily.snapshot(kind, { asOf: req.body && req.body.date, userId: req.user.id });
   res.json({ ok: true, ...snap });
 }));
@@ -1635,6 +1662,7 @@ router.post('/daily/:kind/save', requireAuth, asyncHandler((req, res) => {
 router.get('/daily/:kind/history', requireAuth, asyncHandler((req, res) => {
   const kind = kindOf(req.params.kind);
   if (!kind) return res.status(404).json({ error: 'Unknown report' });
+  if (!mayReadKind(req, res, kind)) return;
   res.json(daily.history(kind, toInt(req.query.limit, 60)));
 }));
 
@@ -1643,11 +1671,12 @@ router.get('/daily/:kind/history', requireAuth, asyncHandler((req, res) => {
 router.get('/daily/:kind/export.xlsx', requireAuth, asyncHandler(async (req, res) => {
   const kind = kindOf(req.params.kind);
   if (!kind) return res.status(404).send('Unknown report');
+  if (!mayReadKind(req, res, kind)) return;
   const date = String(req.query.date || '').slice(0, 10) || null;
   const saved = date ? daily.readSnapshot(kind, date) : null;
   const data = saved && !req.query.live ? saved.data : daily.build(kind, { asOf: date });
   const wb = daily.workbookFor(kind, data);
-  const name = kind === 'pending_parts' ? 'Pending parts' : 'Job report';
+  const name = { pending_parts: 'Pending parts', pending_price: 'Pending price', day_tally: 'Day tally' }[kind] || 'Job report';
   res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
   res.setHeader('Content-Disposition', `attachment; filename="${name} ${data.as_of}.xlsx"`);
   await wb.xlsx.write(res);

@@ -145,6 +145,25 @@ router.get('/month', asyncHandler((req, res) => {
   res.json(attendance.month(ym));
 }));
 
+// The month as a spreadsheet: attended, booked and utilisation per mechanic, and each day's red
+// count and sign-off.
+router.get('/month.xlsx', asyncHandler(async (req, res) => {
+  const ym = String(req.query.month || attendance.today().slice(0, 7)).slice(0, 7);
+  const m = attendance.month(ym);
+  const sheets = [
+    { name: `Mechanics ${ym}`, columns: [
+      { header: 'Mechanic', key: 'name', width: 26 }, { header: 'Days at work', key: 'days_present', width: 13 },
+      { header: 'Attended (h)', key: 'attended_hours', width: 13 }, { header: 'Booked on jobs (h)', key: 'booked_hours', width: 17 },
+      { header: 'Utilisation %', key: 'utilisation', width: 13 }, { header: 'Red days', key: 'red_days', width: 10 }],
+    rows: m.mechanics.map((x) => ({ ...x, utilisation: x.utilisation == null ? '' : x.utilisation })) },
+    { name: `Days ${ym}`, columns: [
+      { header: 'Date', key: 'date', width: 12 }, { header: 'Red', key: 'red_count', width: 8 },
+      { header: 'Unmatched names', key: 'unmatched', width: 16 }, { header: 'Signed off', key: 'signed', width: 11 }],
+    rows: m.days.map((d) => ({ ...d, signed: d.signed_off ? 'Yes' : '' })) },
+  ];
+  return require('../lib/export').sendXlsx(res, `attendance-${ym}.xlsx`, sheets);
+}));
+
 router.get('/hours-left', asyncHandler((req, res) => {
   const date = String(req.query.date || '').slice(0, 10);
   const names = String(req.query.names || '').split('|').map((s) => s.trim()).filter(Boolean);
