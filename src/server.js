@@ -9,7 +9,7 @@ const { Server } = require('socket.io');
 
 const config = require('./config');
 const { migrate, get } = require('./db');
-const { authenticate, enforcePasswordChange, requireAuth, hasCap, COOKIE } = require('./lib/auth');
+const { authenticate, enforcePasswordChange, enforceMfaSetup, requireAuth, hasCap, rolesForUser, COOKIE } = require('./lib/auth');
 const { requireModule } = require('./lib/permissions');
 const { errorHandler } = require('./lib/http');
 const { startScheduler } = require('./lib/backup');
@@ -44,6 +44,9 @@ app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 app.use(authenticate);
 app.use(enforcePasswordChange);
+// Someone whose role requires two-factor sign-in, and who has not set it up, reaches only the
+// enrolment screens until they have (src/lib/auth.js).
+app.use(enforceMfaSetup);
 
 // The old upload folder. Photos, signatures and service attachments now live in the database, so
 // nothing the app writes lands here — but it was served to ANYONE, signed in or not, and whatever
@@ -177,12 +180,16 @@ io.use((socket, next) => {
   // page reconnects once a second forever and toasts about it.
   if (!token) return next(new Error('unauthorized'));
   const sess = get(
-    `SELECT u.id, u.username, u.active
+    `SELECT u.id, u.username, u.active, u.mfa_enabled, s.mfa_verified
        FROM sessions s JOIN users u ON u.id = s.user_id
       WHERE s.token = ? AND s.expires_at > datetime('now')`,
     token
   );
   if (!sess || !sess.active) return next(new Error('unauthorized'));
+  // The live feed carries the same data as the API, so it has the same second lock: an enrolled
+  // user's session must have passed the code, and someone who still has to enrol gets no feed.
+  if (sess.mfa_enabled && !sess.mfa_verified) return next(new Error('unauthorized'));
+  if (!sess.mfa_enabled && require('./lib/mfa').requiredByRoles(rolesForUser(sess.id))) return next(new Error('unauthorized'));
   socket.data.user = { id: sess.id, username: sess.username };
   return next();
 });

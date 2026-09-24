@@ -423,6 +423,7 @@ It refuses if someone has edited files directly on the server, rather than disca
 | Diagnose ("nobody can sign in") | `sudo -u workshopone bash -c 'cd /opt/workshopone/app && node scripts/doctor.js'` |
 | Add people | `sudo -u workshopone bash -c 'cd /opt/workshopone/app && node scripts/create_staff.js --file staff.csv --apply'` |
 | Reset one password | `sudo -u workshopone bash -c 'cd /opt/workshopone/app && node scripts/admin.js set-password <user> "<temporary>"'` (at least 10 characters; signs that person out everywhere) |
+| Someone lost their 2FA phone | Access Control → Users & Roles → **Reset 2FA**. If it is the admin's own phone: `sudo -u workshopone bash -c 'cd /opt/workshopone/app && node scripts/admin.js reset-mfa <user>'` |
 | Find default passwords | `sudo -u workshopone bash -c 'cd /opt/workshopone/app && node scripts/admin.js audit-passwords'` — an account whose password is its username cannot sign in on this server |
 | Backup health | signed in as admin: `https://storesdb.ec-workshops.online/api/health` → `backup` |
 | Backup now | `sudo -u workshopone bash -c 'cd /opt/workshopone/app && node scripts/backup.js'` |
@@ -461,6 +462,34 @@ PORT=1929 node src/server.js
 
 If the office PC is ever to take live entry again, that is a cut-over — copy the server's database
 down the same way step 6 copied it up — not something to drift into.
+
+### Two-factor sign-in: turning it on, and the key to keep
+
+Anyone can switch it on for themselves (the **🔐 2FA** button at the top of every page). A role can
+require it: **Access Control → Roles & Permissions →** tick *Require two-factor sign-in*. Nothing
+requires it until you tick it, so this is the order that cannot lock you out:
+
+1. Sign in as admin, press **🔐 2FA**, set it up with Google or Microsoft Authenticator, and keep the
+   ten recovery codes somewhere safe.
+2. Sign out and in again, to see it ask for the code.
+3. Only then tick *Require two-factor sign-in* on the **admin** role, and afterwards on the roles
+   that approve or buy (operations manager, manager, purchasing officers).
+
+People who hold a role that requires it are asked to set it up at their next click, and can do
+nothing else until they have.
+
+**The key file.** Everyone's two-factor secret is stored encrypted, with a key kept outside the
+database at `/opt/workshopone/data/mfa.key` (created on first use). The backups do not contain it —
+that is deliberate, so a copied backup cannot produce anyone's codes. **Keep a copy of that file in
+the password manager:**
+
+```bash
+sudo cat /opt/workshopone/data/mfa.key
+```
+
+Moving to a new server? Copy `mfa.key` across with the database. Without it the system still
+starts, but everyone with two-factor sign-in is told to ask the admin for a reset, and the admin
+needs `admin.js reset-mfa` for their own account.
 
 ### Backups: prove them weekly, and keep a copy off the server
 

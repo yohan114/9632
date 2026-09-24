@@ -53,7 +53,7 @@ router.get('/roles', requireAuth, asyncHandler((_req, res) => res.json(
   all('SELECT id, name, label, description FROM roles WHERE COALESCE(active, 1) = 1 ORDER BY id'))));
 
 router.get('/', requireCap('users.manage'), asyncHandler((_req, res) => {
-  const users = all('SELECT id, username, full_name, active, created_at FROM users ORDER BY username');
+  const users = all('SELECT id, username, full_name, active, created_at, mfa_enabled FROM users ORDER BY username');
   for (const u of users) u.roles = auth.rolesForUser(u.id);
   res.json(users);
 }));
@@ -121,6 +121,20 @@ router.post('/:id/roles', requireCap('users.manage'), asyncHandler((req, res) =>
   rules.assertKeepsAnAdmin({ userId: id, newRoles: roles });
   tx(() => setRoles(id, roles));
   audit.record({ userId: req.user.id, entity: 'user', entityId: id, action: 'set_roles', before: { roles: current }, after: { roles } });
+  res.json(userWithRoles(id));
+}));
+
+// Someone lost or replaced their phone: take their two-factor sign-in off so they can enrol again.
+// Signs them out everywhere. If their role requires it, they are asked to set it up at next sign-in.
+router.post('/:id/mfa-reset', requireCap('users.manage'), asyncHandler((req, res) => {
+  const id = toInt(req.params.id);
+  const u = get('SELECT id, username, mfa_enabled FROM users WHERE id = ?', id);
+  if (!u) return res.status(404).json({ error: 'User not found' });
+  rules.assertCanManageUser(req.user, id);
+  require('../lib/mfa').clear(id);
+  const ended = auth.revokeSessions(id, id === req.user.id ? { exceptToken: req.user.token } : {});
+  audit.record({ userId: req.user.id, entity: 'user', entityId: id, action: 'mfa_reset',
+    before: { mfa_enabled: !!u.mfa_enabled }, after: { mfa_enabled: false, sessions_ended: ended } });
   res.json(userWithRoles(id));
 }));
 

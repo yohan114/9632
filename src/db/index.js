@@ -103,6 +103,31 @@ function migrate() {
   ensureColumn('roles', 'is_system', 'INTEGER NOT NULL DEFAULT 0');
   ensureColumn('roles', 'active', 'INTEGER NOT NULL DEFAULT 1');
   ensureColumn('roles', 'created_at', 'TEXT');
+  // Two-factor sign-in (src/lib/mfa.js). The keys are stored encrypted (src/lib/secretbox.js).
+  ensureColumn('roles', 'require_mfa', 'INTEGER NOT NULL DEFAULT 0');
+  ensureColumn('users', 'mfa_enabled', 'INTEGER NOT NULL DEFAULT 0');
+  ensureColumn('users', 'mfa_secret', 'TEXT');
+  ensureColumn('users', 'mfa_pending_secret', 'TEXT');
+  ensureColumn('users', 'mfa_last_step', 'INTEGER');   // the last code's time step — a code works once
+  ensureColumn('users', 'mfa_enabled_at', 'TEXT');
+  ensureColumn('sessions', 'mfa_verified', 'INTEGER NOT NULL DEFAULT 0');
+  db.exec(`CREATE TABLE IF NOT EXISTS mfa_recovery_codes (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    code_hash  TEXT NOT NULL,
+    used_at    TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_mfa_rc_user ON mfa_recovery_codes(user_id);
+  -- Between a right password and a right code: no session yet, only this short-lived token.
+  CREATE TABLE IF NOT EXISTS auth_challenges (
+    token      TEXT PRIMARY KEY,
+    user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    ip         TEXT,
+    attempts   INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    expires_at TEXT NOT NULL
+  );`);
   // Item category tree — exactly TWO levels: parent_id NULL = a top-level Category,
   // otherwise a Sub-category of that parent (the API refuses a third level). `code`
   // carries the 3-letter item_no prefix (ELE, TRN, FIL…) so catalogue numbering stays

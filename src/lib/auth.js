@@ -28,16 +28,19 @@ function rolesForUser(userId) {
   ).map((r) => r.name);
 }
 
-function createSession(userId, req) {
+// mfaVerified: the second factor was checked when this session was made. An enrolled user's session
+// without it is not honoured (authenticate below), so the only way to one is through the code.
+function createSession(userId, req, { mfaVerified = false } = {}) {
   const token = crypto.randomBytes(32).toString('hex');
   const expires = new Date(Date.now() + config.sessionTtlHours * 3600 * 1000).toISOString();
   run(
-    `INSERT INTO sessions (user_id, token, expires_at, ip, user_agent) VALUES (?, ?, ?, ?, ?)`,
+    `INSERT INTO sessions (user_id, token, expires_at, ip, user_agent, mfa_verified) VALUES (?, ?, ?, ?, ?, ?)`,
     userId,
     token,
     expires,
     (req && (req.ip || req.headers['x-forwarded-for'])) || null,
-    (req && req.headers['user-agent']) || null
+    (req && req.headers['user-agent']) || null,
+    mfaVerified ? 1 : 0
   );
   return { token, expires };
 }
@@ -64,12 +67,14 @@ function authenticate(req, _res, next) {
   const token = req.cookies && req.cookies[COOKIE];
   if (token) {
     const sess = get(
-      `SELECT s.*, u.username, u.full_name, u.active, u.must_change_password
+      `SELECT s.*, u.username, u.full_name, u.active, u.must_change_password, u.mfa_enabled
          FROM sessions s JOIN users u ON u.id = s.user_id
         WHERE s.token = ? AND s.expires_at > datetime('now')`,
       token
     );
-    if (sess && sess.active) {
+    // An enrolled user's session must have passed the code. One that did not (made before they
+    // enrolled, and somehow not revoked) is treated as no session at all.
+    if (sess && sess.active && !(sess.mfa_enabled && !sess.mfa_verified)) {
       const roles = rolesForUser(sess.user_id);
       req.user = {
         id: sess.user_id,
@@ -80,6 +85,10 @@ function authenticate(req, _res, next) {
         // Access screen applies from the person's next click, not their next sign-in.
         caps: require('./capabilities').capsForRoles(roles),
         mustChangePassword: !!sess.must_change_password,
+        mfaEnabled: !!sess.mfa_enabled,
+        // Their role requires two-factor sign-in and they have not set it up: until they do, this
+        // session reaches the enrolment screens and nothing else (enforceMfaSetup).
+        mfaSetupRequired: !sess.mfa_enabled && require('./mfa').requiredByRoles(roles),
         token,
       };
     }
@@ -95,6 +104,18 @@ function enforcePasswordChange(req, res, next) {
   const allowed = ['/api/auth/change-password', '/api/auth/logout'];
   if (allowed.includes(req.path)) return next();
   return res.status(428).json({ error: 'Password change required before continuing', mustChangePassword: true });
+}
+
+// What someone who still has to set up two-factor sign-in may reach. Everything else under /api and
+// /uploads answers 428 until they have — reads included: for a role that requires a second factor,
+// a password alone must not be enough to see the data either.
+const MFA_SETUP_ALLOWED = new Set(['/api/auth/me', '/api/auth/logout', '/api/auth/change-password',
+  '/api/auth/mfa', '/api/auth/mfa/setup', '/api/auth/mfa/enable', '/api/health']);
+function enforceMfaSetup(req, res, next) {
+  if (!req.user || !req.user.mfaSetupRequired) return next();
+  if (!req.path.startsWith('/api/') && !req.path.startsWith('/uploads')) return next();
+  if (MFA_SETUP_ALLOWED.has(req.path)) return next();
+  return res.status(428).json({ error: 'Your role requires two-factor sign-in. Set it up to continue.', mfaSetupRequired: true });
 }
 
 function requireAuth(req, res, next) {
@@ -161,6 +182,7 @@ module.exports = {
   revokeSessions,
   authenticate,
   enforcePasswordChange,
+  enforceMfaSetup,
   requireAuth,
   requireRole,
   hasRole,

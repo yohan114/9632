@@ -51,6 +51,10 @@ sources/stores/tracker_backup.json
 *.db-shm
 *.db-wal
 
+# The key that unlocks the two-factor secrets (src/lib/secretbox.js). Never in git — the whole point
+# is that a copy of the repository or the database alone cannot produce anyone's codes.
+mfa.key
+
 # env backups carry the same secrets as .env
 .env.bak-*
 .env.*.bak

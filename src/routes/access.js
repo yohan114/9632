@@ -28,18 +28,19 @@ const bad = (status, msg) => { const e = new Error(msg); e.status = status; thro
 const clean = (v, max) => (v == null ? '' : String(v).trim().slice(0, max));
 
 function roleRow(name) {
-  return get('SELECT id, name, label, description, is_system, active, created_at FROM roles WHERE name = ?', name);
+  return get('SELECT id, name, label, description, is_system, active, require_mfa, created_at FROM roles WHERE name = ?', name);
 }
 
 function describeRoles() {
   const holders = new Map(all(`SELECT r.name, COUNT(u.id) n FROM roles r
       JOIN user_roles ur ON ur.role_id = r.id JOIN users u ON u.id = ur.user_id AND u.active = 1
       GROUP BY r.name`).map((r) => [r.name, r.n]));
-  return all('SELECT name, label, description, is_system, active, created_at FROM roles ORDER BY active DESC, id')
+  return all('SELECT name, label, description, is_system, active, require_mfa, created_at FROM roles ORDER BY active DESC, id')
     .map((r) => ({
       ...r,
       is_system: !!r.is_system,
       active: r.active !== 0,
+      require_mfa: !!r.require_mfa,
       locked: r.name === 'admin',
       users: holders.get(r.name) || 0,
       caps: capabilities.capsForRole(r.name),
@@ -115,9 +116,19 @@ router.post('/roles', requireCap('access.manage'), asyncHandler((req, res) => {
 router.patch('/roles/:name', requireCap('access.manage'), asyncHandler((req, res) => {
   const role = roleRow(req.params.name);
   if (!role) bad(404, 'Role not found');
-  if (role.name === 'admin') bad(400, 'The admin role cannot be changed.');
+  // The admin role is fixed, with one exception: whether it requires two-factor sign-in.
+  const keys = Object.keys(req.body || {});
+  if (role.name === 'admin' && keys.some((k) => k !== 'require_mfa')) bad(400, 'The admin role cannot be changed.');
   const sets = [];
   const params = [];
+  if (req.body.require_mfa !== undefined) {
+    const on = !!req.body.require_mfa;
+    // Asking for MORE proof at sign-in only tightens things, so whoever manages roles may switch it
+    // on. Switching it OFF loosens every holder's sign-in, and is an admin's call.
+    if (!on && !rules.isAdmin(req.user)) bad(403, 'Only an admin can stop a role requiring two-factor sign-in.');
+    if (role.name === 'admin' && !rules.isAdmin(req.user)) bad(403, 'Only an admin can change this for the admin role.');
+    sets.push('require_mfa = ?'); params.push(on ? 1 : 0);
+  }
   if (req.body.label !== undefined) {
     const label = clean(req.body.label, 60);
     if (!label) bad(400, 'A role needs a name.');

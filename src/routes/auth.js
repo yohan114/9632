@@ -7,9 +7,43 @@ const permissions = require('../lib/permissions');
 const audit = require('../lib/audit');
 const ratelimit = require('../lib/ratelimit');
 const passwordPolicy = require('../lib/password_policy');
+const capabilities = require('../lib/capabilities');
+const mfa = require('../lib/mfa');
 const { asyncHandler, require_ } = require('../lib/http');
 
 const router = express.Router();
+
+const clientIp = (req) => req.ip || (req.connection && req.connection.remoteAddress) || 'unknown';
+
+// A session, its cookie, and the signed-in user as the screens need them. The one way into the
+// system: after a password (no second factor on the account), or after a code (/mfa/verify).
+function startSession(req, res, user, { mfaVerified = false, method = 'password', extra = {} } = {}) {
+  const { token, expires } = auth.createSession(user.id, req, { mfaVerified });
+  res.cookie(auth.COOKIE, token, {
+    httpOnly: true,
+    sameSite: 'lax',
+    secure: req.secure,
+    expires: new Date(expires),
+  });
+  audit.record({ userId: user.id, entity: 'session', action: 'login', after: method === 'password' ? null : { second_factor: method } });
+  const roles = auth.rolesForUser(user.id);
+  const caps = capabilities.capsForRoles(roles);
+  const st = mfa.status(user.id, roles);
+  return res.json({
+    id: user.id,
+    username: user.username,
+    fullName: user.full_name,
+    roles,
+    permissions: permissions.userPermissions(roles),
+    caps,
+    capNeeds: capabilities.needsFor(caps),
+    mustChangePassword: !!user.must_change_password,
+    passwordPolicy: passwordPolicy.describe(),
+    mfaEnabled: st.enabled,
+    mfaSetupRequired: st.setupRequired,
+    ...extra,
+  });
+}
 
 router.post(
   '/login',
@@ -17,7 +51,7 @@ router.post(
     require_(req.body, ['username', 'password']);
     // Checked BEFORE the password is verified, so a locked key costs nothing to refuse and no
     // timing difference tells an attacker whether the username exists.
-    const ip = req.ip || (req.connection && req.connection.remoteAddress) || 'unknown';
+    const ip = clientIp(req);
     const wait = ratelimit.check(ip, req.body.username);
     if (wait) {
       return res.status(429).set('Retry-After', String(wait)).json({
@@ -42,7 +76,6 @@ router.post(
       // which names are worth guessing at.
       return res.status(401).json({ error: 'Invalid username or password' });
     }
-    ratelimit.succeed(ip, req.body.username);
     // DEFAULT PASSWORDS DO NOT SIGN IN ON A LIVE SERVER. The demo seed makes every account's
     // password its username (admin/admin, store/store …). Forcing a change at first sign-in does not
     // make that safe on the internet: the first person to sign in — anyone — chooses the new
@@ -56,28 +89,122 @@ router.post(
         error: 'This account still has its default password and cannot sign in. Ask the administrator to set a new password.',
       });
     }
-    const { token, expires } = auth.createSession(user.id, req);
-    res.cookie(auth.COOKIE, token, {
-      httpOnly: true,
-      sameSite: 'lax',
-      secure: req.secure,
-      expires: new Date(expires),
-    });
-    audit.record({ userId: user.id, entity: 'session', action: 'login' });
-    const roles = auth.rolesForUser(user.id);
-    res.json({
-      id: user.id,
-      username: user.username,
-      fullName: user.full_name,
-      roles,
-      permissions: permissions.userPermissions(roles),
-      caps: require('../lib/capabilities').capsForRoles(roles),
-      capNeeds: require('../lib/capabilities').needsFor(require('../lib/capabilities').capsForRoles(roles)),
-      mustChangePassword: !!user.must_change_password,
-      passwordPolicy: passwordPolicy.describe(),
+    // TWO-FACTOR: an enrolled account gets no session from the password alone — only a challenge,
+    // good for five minutes and five codes. The failure counters are NOT cleared here: wrong codes
+    // count against the same per-user limit as wrong passwords, so a right password followed by
+    // guessed codes is throttled exactly like guessed passwords.
+    if (user.mfa_enabled) {
+      const challenge = mfa.createChallenge(user.id, ip);
+      audit.record({ userId: user.id, entity: 'session', action: 'login_password_ok', after: { ip, second_factor: 'pending' }, notify: false });
+      return res.json({ mfaRequired: true, challenge, username: user.username });
+    }
+    ratelimit.succeed(ip, req.body.username);
+    return startSession(req, res, user);
+  })
+);
+
+const tooMany = (wait) => `Too many failed sign-ins. Try again in ${Math.ceil(wait / 60)} minute(s).`;
+
+// The second step of signing in: the challenge from /login plus the code from the phone (or a
+// recovery code).
+router.post(
+  '/mfa/verify',
+  asyncHandler((req, res) => {
+    require_(req.body, ['challenge', 'code']);
+    const ip = clientIp(req);
+    const ch = mfa.getChallenge(req.body.challenge);
+    if (!ch) return res.status(401).json({ error: 'Sign-in timed out. Enter your password again.', restart: true });
+    const user = get('SELECT * FROM users WHERE id = ? AND active = 1', ch.user_id);
+    if (!user || !user.mfa_enabled) {
+      mfa.consumeChallenge(req.body.challenge);
+      return res.status(401).json({ error: 'Sign-in timed out. Enter your password again.', restart: true });
+    }
+    const wait = ratelimit.check(ip, user.username);
+    if (wait) return res.status(429).set('Retry-After', String(wait)).json({ error: tooMany(wait), restart: true });
+    const r = mfa.check(user.id, req.body.code);
+    if (r.unreadable) {
+      // Not the person's fault (the server's key file is missing or wrong), so not counted against them.
+      audit.record({ userId: user.id, entity: 'session', action: 'login_mfa_unreadable', after: { ip }, notify: false });
+      return res.status(409).json({ error: 'Your two-factor key cannot be read on this server. Ask the administrator to reset your two-factor sign-in.', restart: true });
+    }
+    if (!r.ok) {
+      ratelimit.fail(ip, user.username);
+      mfa.failChallenge(req.body.challenge);
+      audit.record({ userId: user.id, entity: 'session', action: 'login_mfa_failed', after: { ip }, notify: false });
+      if (ratelimit.check(ip, user.username)) {
+        audit.record({ userId: user.id, entity: 'session', action: 'login_locked', after: { ip, username: user.username }, notify: false });
+      }
+      const left = mfa.CHALLENGE_ATTEMPTS - (ch.attempts + 1);
+      return res.status(401).json(left > 0
+        ? { error: 'That code is not right. Type the code your app shows now.' }
+        : { error: 'Too many wrong codes. Enter your password again.', restart: true });
+    }
+    mfa.consumeChallenge(req.body.challenge);
+    ratelimit.succeed(ip, user.username);
+    return startSession(req, res, user, {
+      mfaVerified: true, method: r.method, extra: r.method === 'recovery' ? { recoveryCodesLeft: r.left } : {},
     });
   })
 );
+
+// ---- managing your own two-factor sign-in ---------------------------------------------------
+
+router.get('/mfa', auth.requireAuth, (req, res) => res.json(mfa.status(req.user.id, req.user.roles)));
+
+// Step 1 of enrolling: a new key to put into the authenticator app.
+router.post('/mfa/setup', auth.requireAuth, asyncHandler((req, res) => {
+  const out = mfa.beginSetup(req.user.id, req.user.username);
+  audit.record({ userId: req.user.id, entity: 'user', entityId: req.user.id, action: 'mfa_setup_started', notify: false });
+  res.json(out);
+}));
+
+// Step 2: a code from the app proves it was set up right. This session counts as verified; every
+// other session of this account is signed out, since none of them passed a second factor.
+router.post('/mfa/enable', auth.requireAuth, asyncHandler((req, res) => {
+  require_(req.body, ['code']);
+  const recoveryCodes = mfa.enable(req.user.id, req.body.code);
+  run('UPDATE sessions SET mfa_verified = 1 WHERE token = ?', req.user.token);
+  const ended = auth.revokeSessions(req.user.id, { exceptToken: req.user.token });
+  audit.record({ userId: req.user.id, entity: 'user', entityId: req.user.id, action: 'mfa_enabled', after: { other_sessions_ended: ended } });
+  res.json({ ok: true, recoveryCodes, otherSessionsEnded: ended });
+}));
+
+// Wrong codes on the two endpoints below count against the sign-in limiter too.
+function checkOwnCode(req, res, opts) {
+  const ip = clientIp(req);
+  const wait = ratelimit.check(ip, req.user.username);
+  if (wait) { res.status(429).json({ error: tooMany(wait) }); return false; }
+  const r = mfa.check(req.user.id, req.body.code, opts);
+  if (!r.ok) {
+    ratelimit.fail(ip, req.user.username);
+    res.status(401).json({ error: 'That code is not right.' });
+    return false;
+  }
+  return true;
+}
+
+// Turning it off needs the password AND a code — a session left open on a shared PC is not enough.
+router.post('/mfa/disable', auth.requireAuth, asyncHandler((req, res) => {
+  require_(req.body, ['password', 'code']);
+  if (mfa.requiredByRoles(req.user.roles)) {
+    return res.status(403).json({ error: 'Your role requires two-factor sign-in, so it cannot be turned off. If you have a new phone, ask an administrator to reset it.' });
+  }
+  const u = get('SELECT password_hash FROM users WHERE id = ?', req.user.id);
+  if (!auth.verifyPassword(req.body.password, u.password_hash)) return res.status(401).json({ error: 'Password is incorrect' });
+  if (!checkOwnCode(req, res)) return;
+  mfa.clear(req.user.id);
+  audit.record({ userId: req.user.id, entity: 'user', entityId: req.user.id, action: 'mfa_disabled' });
+  res.json({ ok: true });
+}));
+
+// New recovery codes (the old ones stop working). Needs a code from the app, not a recovery code.
+router.post('/mfa/recovery-codes', auth.requireAuth, asyncHandler((req, res) => {
+  require_(req.body, ['code']);
+  if (!checkOwnCode(req, res, { allowRecovery: false })) return;
+  const recoveryCodes = mfa.newRecoveryCodes(req.user.id);
+  audit.record({ userId: req.user.id, entity: 'user', entityId: req.user.id, action: 'mfa_recovery_codes_renewed' });
+  res.json({ recoveryCodes });
+}));
 
 router.post(
   '/change-password',
