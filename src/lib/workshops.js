@@ -158,6 +158,11 @@ function setActive(actor, id, active) {
     if (w.is_default) fail(409, `${w.name} is the main workshop and cannot be retired.`);
     const left = [w.users && `${w.users} user(s)`, w.mechanics && `${w.mechanics} mechanic(s)`, w.open_jobs && `${w.open_jobs} open job card(s)`].filter(Boolean);
     if (left.length) fail(409, `${w.name} still has ${left.join(', ')}. Move them to another workshop first.`);
+    // Stage 4: a store other workshops still use cannot go with it.
+    if (w.own_store) {
+      const others = require('./stores').servedBy(w.id).filter((x) => x !== w.id);
+      if (others.length) fail(409, `${others.map((x) => byId(x).name).join(', ')} still use ${w.name}'s store. Give them another store first.`);
+    }
   }
   run('UPDATE workshops SET active = ? WHERE id = ?', active ? 1 : 0, id);
   audit({ userId: actor.id, entity: 'workshop', entityId: id, action: active ? 'reinstate' : 'retire' });

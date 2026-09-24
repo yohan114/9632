@@ -17,6 +17,7 @@ const router = express.Router();
 
 const clean = (v) => (v == null ? null : String(v).trim() || null);
 const { normF } = require('../lib/filter_no');
+const stores = require('../lib/stores');
 
 // A service's live cost = priced filters (book × qty) + oils (line total) + labour + sundry.
 const COST_SQL = `(
@@ -84,16 +85,19 @@ const oilNote = (serviceId, oilName) => 'Service record #' + serviceId + (oilNam
 // keeps "#165" from swallowing "#1654" — so any suffix is safe as long as a space starts it.
 const OIL_NOTE_LIKE = (serviceId) => ['Service record #' + serviceId, 'Service record #' + serviceId + ' %'];
 
+// Stage 4: a service's oil comes out of the service's own store (service_jobs.store_id).
+const serviceStore = (serviceId) => (get('SELECT store_id FROM service_jobs WHERE id = ?', serviceId) || {}).store_id || null;
+
 function postOilIssue(oilName, oilType, liters, unitPrice, assetId, date, serviceId) {
   const pid = resolveProduct(oilName, oilType);
   if (!pid || !(liters > 0)) return false;
   const prev = currentBalance(pid);
   // consumer_type='service' marks this as a stock-only movement: the COST is owned
   // by the service record, so every oil-cost report excludes these to avoid double-counting.
-  run(`INSERT INTO stock_ledger (product_id, kind, qty, balance_after, unit_price, asset_id, consumer, consumer_type, job_id, txn_date, note)
-       VALUES (?, 'issue', ?, ?, ?, ?, 'Service', 'service', NULL, ?, ?)`,
+  run(`INSERT INTO stock_ledger (product_id, kind, qty, balance_after, unit_price, asset_id, consumer, consumer_type, job_id, txn_date, note, store_id)
+       VALUES (?, 'issue', ?, ?, ?, ?, 'Service', 'service', NULL, ?, ?, ?)`,
     pid, -Math.abs(liters), prev - Math.abs(liters), unitPrice || null, assetId || null,
-    date, oilNote(serviceId, oilName));
+    date, oilNote(serviceId, oilName), serviceStore(serviceId));
   return true;
 }
 
@@ -118,11 +122,11 @@ function postOilDelta(pid, deltaLiters, unitPrice, assetId, date, serviceId, oil
   if (!pid || !deltaLiters) return false;
   const prev = currentBalance(pid);
   const qty = -deltaLiters;                       // more used → negative movement
-  run(`INSERT INTO stock_ledger (product_id, kind, qty, balance_after, unit_price, asset_id, consumer, consumer_type, job_id, txn_date, note)
-       VALUES (?, ?, ?, ?, ?, ?, 'Service', 'service', NULL, ?, ?)`,
+  run(`INSERT INTO stock_ledger (product_id, kind, qty, balance_after, unit_price, asset_id, consumer, consumer_type, job_id, txn_date, note, store_id)
+       VALUES (?, ?, ?, ?, ?, ?, 'Service', 'service', NULL, ?, ?, ?)`,
     pid, deltaLiters > 0 ? 'issue' : 'adjustment', qty, prev + qty, unitPrice || null,
     assetId || null, date,
-    oilNote(serviceId, oilName) + (deltaLiters > 0 ? ' (edited — extra)' : ' (edited — returned)'));
+    oilNote(serviceId, oilName) + (deltaLiters > 0 ? ' (edited — extra)' : ' (edited — returned)'), serviceStore(serviceId));
   return true;
 }
 
@@ -434,12 +438,14 @@ router.post('/services', asyncHandler((req, res) => {
     const info = run(
       `INSERT INTO service_jobs (vehicle_label, asset_id, service_date, job_no, reg_id, model_no, meter_reading, next_service_meter,
                                  service_type, site_location, repair_details, upkeeping, labour_rate, sundry_rate,
-                                 parts_subtotal, labour_charge, sundry_amount, grand_total)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                                 parts_subtotal, labour_charge, sundry_amount, grand_total, store_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       vehicleLabel, assetId || null, date, clean(b.job_no), clean(b.reg_id), clean(b.model_no),
       clean(b.meter_reading), clean(b.next_service_meter), clean(b.service_type), clean(b.site_location),
       clean(b.repair_details), clean(b.upkeeping), labourRate, sundryRate,
-      partsSubtotal, labourCharge, sundryAmount, grandTotal
+      partsSubtotal, labourCharge, sundryAmount, grandTotal,
+      // Stage 4: the store its filters and oil come out of — its job card's workshop's, else yours.
+      stores.forEntry(req.user, (get('SELECT id FROM job_cards WHERE job_no = ? ORDER BY id DESC LIMIT 1', clean(b.job_no)) || {}).id, date)
     );
     const sid = info.lastInsertRowid;
     let oilIssues = 0;

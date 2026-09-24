@@ -18,6 +18,7 @@ const jobstate = require('../lib/jobstate');
 const permissions = require('../lib/permissions');
 const places = require('../lib/places');
 const scope = require('../lib/scope');
+const stores = require('../lib/stores');
 const { lineReceiptSql, mrnReceiptSql, receivedLabel, d10 } = require('../lib/received_date');
 const lubricants = require('../lib/lubricants');
 const approvalLimits = require('../lib/approval_limits');
@@ -150,6 +151,10 @@ router.post('/items/:id/txn', requireCap('stores.items.txn'), asyncHandler((req,
     case 'adjustment': balanceAfter = qtyMag; signedQty = qtyMag - prev; break;
     default: return res.status(400).json({ error: 'Invalid txn_type' });
   }
+  // Stage 4: an opening or an adjustment sets the whole company's figure — not with several stores.
+  if (['opening', 'adjustment'].includes(b.txn_type) && stores.wholeCountRefusal()) {
+    return res.status(409).json({ error: stores.wholeCountRefusal() });
+  }
   const { assetId } = resolveAssetId(b);
   // Onto a job card: it must exist, and a finished card takes it only after a confirmation.
   if (toInt(b.job_id)) {
@@ -160,11 +165,13 @@ router.post('/items/:id/txn', requireCap('stores.items.txn'), asyncHandler((req,
   }
   const result = tx(() => {
     const info = run(
-      `INSERT INTO general_item_txns (store_item_id, txn_type, qty, balance_after, asset_id, job_id, unit_price, ref, txn_date)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO general_item_txns (store_item_id, txn_type, qty, balance_after, asset_id, job_id, unit_price, ref, txn_date, store_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       itemId, b.txn_type, signedQty, balanceAfter, assetId || null, toInt(b.job_id),
       b.unit_price === undefined || b.unit_price === '' ? null : toNum(b.unit_price), b.ref || null,
-      b.txn_date || new Date().toISOString().slice(0, 10)
+      b.txn_date || new Date().toISOString().slice(0, 10),
+      // Stage 4: the job card's workshop's store, else the store of whoever wrote it down.
+      stores.forEntry(req.user, toInt(b.job_id), b.txn_date)
     );
     run('UPDATE store_items SET balance = ? WHERE id = ?', balanceAfter, itemId);
     return get('SELECT * FROM general_item_txns WHERE id = ?', info.lastInsertRowid);
@@ -1452,16 +1459,51 @@ router.post('/grn', requireCap('stores.grn.receive'), asyncHandler((req, res) =>
 // ---- Unified stock: one position per inventory section ---------------------
 // oil | filter | battery | tyre | general — each answers the same four questions
 // (on order → received → issued → balance) over the shared movement table.
-router.get('/stock/summary', asyncHandler((_req, res) => {
-  res.json(stock.SECTIONS.map((s) => stock.summary(s)));
+//
+// Stage 4: with more than one store, every figure is one store's — or, for head office, all of
+// them together. Someone outside head office, with the workshops kept apart, sees their own store.
+function stockStore(req) {
+  if (!stores.isMulti()) return { store: null, fixed: false };
+  if (scope.enabled() && !scope.headOffice(req.user)) return { store: stores.homeStore(req.user), fixed: true };
+  const asked = String(req.query.store_id || '').trim();
+  if (!asked || asked === 'all') return { store: null, fixed: false };
+  const s = stores.byId(toInt(asked));
+  if (!s || !s.active) { const e = new Error('No such store'); e.status = 400; throw e; }
+  return { store: s.id, fixed: false };
+}
+
+// The store a screen is showing, the stores it may switch between, and what this person may do there.
+function stockContext(req, where) {
+  if (!stores.isMulti()) return { multi: false, store: null, stores: [], can: {} };
+  const s = where.store ? stores.byId(where.store) : null;
+  const may = !where.store || stores.mayManage(req.user, where.store);
+  return {
+    multi: true,
+    store: s ? { id: s.id, code: s.code, name: s.name } : null,
+    fixed: where.fixed,
+    stores: where.fixed ? [] : stores.list().map((x) => ({ id: x.id, code: x.code, name: x.name })),
+    can: {
+      count: !!where.store && may && hasCap(req.user, 'stores.stock.count'),
+      levels: !!where.store && may && hasCap(req.user, 'stores.stock.levels'),
+    },
+  };
+}
+
+router.get('/stock/summary', asyncHandler((req, res) => {
+  const where = stockStore(req);
+  res.json(stock.SECTIONS.map((s) => stock.summary(s, { store: where.store })));
 }));
 
 router.get('/stock/:section', asyncHandler((req, res) => {
   const section = String(req.params.section || '').toLowerCase();
   if (!stock.SECTIONS.includes(section)) return res.status(400).json({ error: 'Unknown section' });
+  const where = stockStore(req);
+  const ctx = stockContext(req, where);
   res.json({
-    summary: stock.summary(section),
-    items: stock.items(section, req.query.q, toInt(req.query.limit, 500)),
+    summary: stock.summary(section, { store: where.store }),
+    items: stock.items(section, req.query.q, toInt(req.query.limit, 500),
+      { store: where.store, low: req.query.low === '1', byStore: ctx.multi && !where.store }),
+    ...ctx,
   });
 }));
 
@@ -1469,8 +1511,33 @@ router.get('/stock/:section', asyncHandler((req, res) => {
 router.get('/stock/:section/moves', asyncHandler((req, res) => {
   const section = String(req.params.section || '').toLowerCase();
   if (!stock.SECTIONS.includes(section)) return res.status(400).json({ error: 'Unknown section' });
+  const where = stockStore(req);
   res.json(stock.moves(section, {
-    item_key: req.query.item_key, kind: req.query.kind, q: req.query.q, limit: toInt(req.query.limit, 500),
+    item_key: req.query.item_key, kind: req.query.kind, q: req.query.q, limit: toInt(req.query.limit, 500), store: where.store,
+  }));
+}));
+
+// A stock take in one store: what is on the shelf now. The difference from the book goes in as a
+// correction. Head office counts any store; anyone else, with the workshops kept apart, their own.
+router.post('/stock/:section/count', requireCap('stores.stock.count'), asyncHandler((req, res) => {
+  const b = req.body || {};
+  if (!stores.mayManage(req.user, toInt(b.store_id))) {
+    return res.status(403).json({ error: `You count only your own store (${stores.label(stores.homeStore(req.user))}).` });
+  }
+  res.status(201).json(stores.count(req.user, {
+    storeId: toInt(b.store_id), section: String(req.params.section || '').toLowerCase(),
+    itemKey: b.item_key, counted: b.counted, date: b.count_date, note: b.note,
+  }));
+}));
+
+// The level one store reorders an item at (blank or 0 removes it).
+router.put('/stock/:section/level', requireCap('stores.stock.levels'), asyncHandler((req, res) => {
+  const b = req.body || {};
+  if (!stores.mayManage(req.user, toInt(b.store_id))) {
+    return res.status(403).json({ error: `You set levels only for your own store (${stores.label(stores.homeStore(req.user))}).` });
+  }
+  res.json(stores.setLevel(req.user, {
+    storeId: toInt(b.store_id), section: String(req.params.section || '').toLowerCase(), itemKey: b.item_key, level: b.level,
   }));
 }));
 
@@ -1483,7 +1550,14 @@ router.post('/stock/rebuild', requireCap('stores.stock.rebuild'), asyncHandler((
 
 // Item search for the issue form — code, name or supplier part number, any section.
 router.get('/stock-items/search', asyncHandler((req, res) => {
-  res.json(stock.searchItems(req.query.q, String(req.query.section || '').toLowerCase(), toInt(req.query.limit, 25)));
+  // Stage 4: the balance on the shelf the issue comes out of — the job card's workshop's store,
+  // else the person's own.
+  let store = null;
+  if (stores.isMulti()) {
+    const jobId = toInt(req.query.job_id);
+    store = jobId && !scope.jobRefusal(req.user, jobId) ? stores.forEntry(req.user, jobId) : stockStore(req).store || stores.homeStore(req.user);
+  }
+  res.json(stock.searchItems(req.query.q, String(req.query.section || '').toLowerCase(), toInt(req.query.limit, 25), store));
 }));
 
 // What was bought for this vehicle / job / MRN and is still on the shelf. Feeds the panel in
@@ -1498,6 +1572,8 @@ router.get('/received', asyncHandler((req, res) => {
     limit: toInt(req.query.limit, 200),
     includeDone: req.query.include_done === '1',
     allowEmpty: req.query.all === '1' || req.query.allow_empty === '1',
+    // Stage 4: with the workshops kept apart, only what is on your own store's shelf.
+    store: stores.isMulti() && scope.enabled() && !scope.headOffice(req.user) ? stores.homeStore(req.user) : null,
   }));
 }));
 
@@ -1852,6 +1928,10 @@ router.post('/stock-issue', requireCap('stores.stock_issue'), asyncHandler((req,
   const done = [];
   const warnings = [];
   const skipped = [];
+  // Stage 4: the store it all comes out of — the job card's workshop's (a received line: the store
+  // that received it, stamped on the issue row itself).
+  const multiStore = stores.isMulti();
+  const issueStore = stores.forEntry(req.user, jobId, issueDate);
 
   // Hand over something that was bought for this vehicle.
   //
@@ -1906,14 +1986,16 @@ router.post('/stock-issue', requireCap('stores.stock_issue'), asyncHandler((req,
     }
 
     // Out of the same bucket the receipt went into, so the ledger stays self-consistent even
-    // where the catalogue key is coarser than the receipt description.
+    // where the catalogue key is coarser than the receipt description — and (Stage 4) out of the
+    // store that received it, which is the store the issue row was stamped with.
     run(
       `INSERT INTO stock_moves (section, kind, item_key, item_name, qty, unit_price, txn_date,
-                                asset_id, job_id, mrn_line_id, grn_id, store_item_id, ref, note, source_table, source_id, counts)
-       VALUES (?, 'out', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'issues', ?, ?)`,
+                                asset_id, job_id, mrn_line_id, grn_id, store_item_id, ref, note, source_table, source_id, counts, store_id)
+       VALUES (?, 'out', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'issues', ?, ?, ?)`,
       rec.section, rec.item_key, rec.description, qty, linePrice, issueDate,
       assetId, jobId, rec.mrn_line_id, rec.grn_id, rec.store_item_id || null,
-      rec.mrn_no ? 'MRN ' + rec.mrn_no : null, clean(ln.note) || null, info.lastInsertRowid, rec.counts);
+      rec.mrn_no ? 'MRN ' + rec.mrn_no : null, clean(ln.note) || null, info.lastInsertRowid, rec.counts,
+      get('SELECT store_id FROM issues WHERE id = ?', info.lastInsertRowid).store_id);
 
     done.push({
       code: 'MRN ' + rec.mrn_no, name: rec.description, section: rec.section, qty,
@@ -1934,10 +2016,8 @@ router.post('/stock-issue', requireCap('stores.stock_issue'), asyncHandler((req,
       const item = get('SELECT * FROM stock_items WHERE id = ?', toInt(ln.stock_item_id));
       if (!item) { skipped.push(`item ${ln.stock_item_id} is not in the catalogue — nothing issued for it`); continue; }
 
-      const before = get(
-        `SELECT ROUND(COALESCE(SUM(CASE WHEN counts = 0 THEN 0
-                WHEN kind IN ('in','opening','adjust') THEN qty ELSE -qty END),0),2) v
-           FROM stock_moves WHERE section = ? AND item_key = ?`, item.section, item.item_key).v;
+      // Stage 4: the balance of the shelf it comes off — the job card's workshop's store.
+      const before = stock.balanceOf(item.section, item.item_key, multiStore ? issueStore : null);
       const price = ln.unit_price === '' || ln.unit_price == null ? item.unit_price : toNum(ln.unit_price);
 
       const linePrice = price == null ? null : n2price(price);
@@ -1972,15 +2052,17 @@ router.post('/stock-issue', requireCap('stores.stock_issue'), asyncHandler((req,
       // The stock movement — this is what deducts the balance and shows in the section view.
       run(
         `INSERT INTO stock_moves (section, kind, item_key, item_name, qty, unit_price, txn_date,
-                                  asset_id, job_id, store_item_id, ref, note, source_table, source_id, counts)
-         VALUES (?, 'out', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'issues', ?, 1)`,
+                                  asset_id, job_id, store_item_id, ref, note, source_table, source_id, counts, store_id)
+         VALUES (?, 'out', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'issues', ?, 1, ?)`,
         item.section, item.item_key, item.name, qty, price == null ? null : n2price(price), issueDate,
         assetId, jobId, item.source_table === 'store_items' ? item.source_id : null,
-        item.code, clean(ln.note) || null, info.lastInsertRowid);
+        item.code, clean(ln.note) || null, info.lastInsertRowid,
+        get('SELECT store_id FROM issues WHERE id = ?', info.lastInsertRowid).store_id);
 
       const after = Math.round((before - qty) * 100) / 100;
-      done.push({ code: item.code, name: item.name, section: item.section, qty, balance_before: before, balance_after: after });
-      if (after < 0) warnings.push(`${item.code} ${item.name}: stock is now ${after}`);
+      done.push({ code: item.code, name: item.name, section: item.section, qty, balance_before: before, balance_after: after,
+        store: multiStore ? stores.label(issueStore) : undefined });
+      if (after < 0) warnings.push(`${item.code} ${item.name}: stock${multiStore ? ` in ${stores.label(issueStore)}` : ''} is now ${after}`);
     }
   });
   if (!done.length) {
@@ -2299,7 +2381,9 @@ router.get('/mtn', asyncHandler((req, res) => {
   const where = clauses.length ? 'WHERE ' + clauses.join(' AND ') : '';
   res.json(all(
     `SELECT t.*, af.code AS from_asset_code, at2.code AS to_asset_code,
-            (SELECT COUNT(*) FROM mtn_lines ml WHERE ml.mtn_id = t.id) AS item_count
+            (SELECT COUNT(*) FROM mtn_lines ml WHERE ml.mtn_id = t.id) AS item_count,
+            -- Stage 4: items that move stock from one store to another (the rest are paper only).
+            (SELECT COUNT(*) FROM mtn_lines ml WHERE ml.mtn_id = t.id AND ml.from_store_id IS NOT NULL) AS moves_stock
        FROM mtn t
        LEFT JOIN assets af ON af.id = t.from_asset_id LEFT JOIN assets at2 ON at2.id = t.to_asset_id
        ${where}
@@ -2433,6 +2517,9 @@ router.post('/mtn', requireCap('stores.mtn.edit'), asyncHandler((req, res) => {
     );
     items.forEach((l, i) => insertMtnLine(info.lastInsertRowid, l, i + 1));
     syncMtnHeader(info.lastInsertRowid);
+    stores.stampTransfer(info.lastInsertRowid);
+    stores.checkTransfer(req.user, info.lastInsertRowid);
+    stock.rebuild({ transfersOf: info.lastInsertRowid });
     return info.lastInsertRowid;
   });
   audit.record({ userId: req.user.id, entity: 'mtn', entityId: id, action: 'create',
@@ -2441,10 +2528,12 @@ router.post('/mtn', requireCap('stores.mtn.edit'), asyncHandler((req, res) => {
 }));
 
 const mtnLines = (mtnId) => all(
-  `SELECT l.*, af.code AS from_asset_code, at2.code AS to_asset_code
+  `SELECT l.*, af.code AS from_asset_code, at2.code AS to_asset_code, fs.name AS from_store, ts.name AS to_store
      FROM mtn_lines l
      LEFT JOIN assets af  ON af.id  = l.from_asset_id
      LEFT JOIN assets at2 ON at2.id = l.to_asset_id
+     LEFT JOIN workshops fs ON fs.id = l.from_store_id
+     LEFT JOIN workshops ts ON ts.id = l.to_store_id
     WHERE l.mtn_id = ? ORDER BY l.line_no, l.id`, mtnId);
 
 router.get('/mtn/:id', asyncHandler((req, res) => {
@@ -2463,9 +2552,13 @@ router.post('/mtn/:id/lines', requireCap('stores.mtn.edit'), asyncHandler((req, 
   if (!(toNum(req.body.qty, 0) > 0)) return res.status(400).json({ error: 'Quantity must be more than 0' });
   if (!clean(req.body.description)) return res.status(400).json({ error: 'Describe the item' });
   const lineId = tx(() => {
+    stores.checkTransfer(req.user, id);
     const next = (get('SELECT MAX(line_no) m FROM mtn_lines WHERE mtn_id = ?', id).m || 0) + 1;
     const newId = insertMtnLine(id, req.body, next);
     syncMtnHeader(id);
+    stores.stampTransfer(id);
+    stores.checkTransfer(req.user, id);
+    stock.rebuild({ transfersOf: id });
     return newId;
   });
   audit.record({ userId: req.user.id, entity: 'mtn', entityId: id, action: 'update',
@@ -2511,8 +2604,13 @@ router.patch('/mtn/line/:id', requireCap('stores.mtn.edit'), asyncHandler((req, 
   }
   if (!sets.length) return res.json(before);
   tx(() => {
+    stores.checkTransfer(req.user, before.mtn_id);
     run(`UPDATE mtn_lines SET ${sets.join(', ')} WHERE id = ?`, ...params, lineId);
     syncMtnHeader(before.mtn_id);
+    // Stage 4: a new end may start (or stop) moving stock between two stores.
+    if (after.from_place !== undefined || after.to_place !== undefined) stores.stampTransfer(before.mtn_id);
+    stores.checkTransfer(req.user, before.mtn_id);
+    stock.rebuild({ transfersOf: before.mtn_id });
   });
   audit.record({ userId: req.user.id, entity: 'mtn', entityId: before.mtn_id, action: 'update',
     before: Object.fromEntries(Object.keys(after).map((k) => [k, before[k]])), after });
@@ -2529,8 +2627,10 @@ router.delete('/mtn/line/:id', requireCap('stores.mtn.edit'), asyncHandler((req,
     return res.status(409).json({ error: 'A transfer keeps at least one item — delete the transfer instead' });
   }
   tx(() => {
+    stores.checkTransfer(req.user, line.mtn_id);
     run('DELETE FROM mtn_lines WHERE id = ?', lineId);
     syncMtnHeader(line.mtn_id);
+    stock.rebuild({ transfersOf: line.mtn_id });
   });
   audit.record({ userId: req.user.id, entity: 'mtn', entityId: line.mtn_id, action: 'update',
     before: { removed_item: line.description, qty: line.qty }, after: {} });
@@ -2582,7 +2682,11 @@ router.patch('/mtn/:id', requireCap('stores.mtn.edit'), asyncHandler((req, res) 
   if (!sets.length && !itemFields.length) return res.json(before);
 
   tx(() => {
+    stores.checkTransfer(req.user, id);
     if (sets.length) run(`UPDATE mtn SET ${sets.join(', ')} WHERE id = ?`, ...params, id);
+    // Stage 4: new ends, or a new date, decide again which stores (if any) it moves stock between.
+    if (after.from_place !== undefined || after.to_place !== undefined || after.txn_date !== undefined) stores.stampTransfer(id);
+    stores.checkTransfer(req.user, id);
     if (itemFields.length && lines.length === 1) {
       const v = mtnLineValues({ ...lines[0], ...req.body });
       run(`UPDATE mtn_lines SET description = ?, qty = ?, unit = ?, category = ?, category_id = ? WHERE id = ?`,
@@ -2590,6 +2694,7 @@ router.patch('/mtn/:id', requireCap('stores.mtn.edit'), asyncHandler((req, res) 
       Object.assign(after, { qty: v.qty, description: v.description });
       syncMtnHeader(id);
     }
+    stock.rebuild({ transfersOf: id });
   });
   audit.record({ userId: req.user.id, entity: 'mtn', entityId: id, action: 'update',
     before: Object.fromEntries(Object.keys(after).map((k) => [k, before[k]])), after });

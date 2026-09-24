@@ -75,6 +75,7 @@ function describe(r, now = today()) {
 
 /** Every stuck REQUESTED card with a suggestion, and the vehicles that carry more than one open card. */
 function listStuck({ now, workshopId = null } = {}) {
+  const inWs = jobstate.workshopIn('j.workshop_id', workshopId);
   const rows = all(`
     SELECT j.id, j.job_no, j.is_historical, j.description, j.asset_id, j.requested_at,
            COALESCE(j.total_cost, 0) total_cost, a.code asset_code, a.registration asset_reg,
@@ -90,8 +91,8 @@ function listStuck({ now, workshopId = null } = {}) {
            (SELECT MAX(substr(l.txn_date, 1, 10)) FROM stock_ledger l WHERE l.job_id = j.id) last_oil,
            (SELECT MAX(substr(g.txn_date, 1, 10)) FROM general_item_txns g WHERE g.job_id = j.id) last_general
       FROM job_cards j LEFT JOIN assets a ON a.id = j.asset_id
-     WHERE j.status = 'REQUESTED' AND NOT ${CONTAINER_SQL} ${workshopId ? 'AND j.workshop_id = ?' : ''}
-     ORDER BY j.job_no`, ...(workshopId ? [workshopId] : []));
+     WHERE j.status = 'REQUESTED' AND NOT ${CONTAINER_SQL} ${inWs.sql}
+     ORDER BY j.job_no`, ...inWs.params);
   const cards = rows.map((r) => describe(r, now));
   const counts = { reject: 0, close: 0, keep: 0 };
   for (const c of cards) counts[c.suggestion]++;

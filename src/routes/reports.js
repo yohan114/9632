@@ -890,7 +890,7 @@ router.get('/pending-approvals', asyncHandler((req, res) => {
   const reopenQueue = may('jobs.reopen') && jobstate.partialCloseEnabled();
   if (reopenQueue) {
     const admin = (req.user.roles || []).includes('admin');
-    out.reopen = require('../lib/job_close').pendingRequests({ excludeRequester: admin ? null : req.user.id, workshopId: scope.onlyWorkshop(req.user) });
+    out.reopen = require('../lib/job_close').pendingRequests({ excludeRequester: admin ? null : req.user.id, workshopId: scope.reach(req.user) });
   }
   // Days waiting for their sign-off (W3) — for whoever signs days off, while attendance is on.
   const signoffQueue = may('attendance.signoff') && require('../lib/attendance').isEnabled();

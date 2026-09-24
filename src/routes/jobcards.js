@@ -250,7 +250,7 @@ router.post(
 router.get(
   '/duplicates',
   asyncHandler((req, res) => {
-    const vehicles = jobstate.duplicateOpenJobs({ workshopId: scope.onlyWorkshop(req.user) });
+    const vehicles = jobstate.duplicateOpenJobs({ workshopId: scope.reach(req.user) });
     res.json({
       vehicles,
       vehicle_count: vehicles.length,
@@ -263,7 +263,7 @@ router.get(
 // (src/lib/job_review.js). Nothing changes on its own. Registered before '/:id'.
 router.get('/review/stuck', requireAuth, requireCap('jobs.triage'), asyncHandler((req, res) => {
   // Stage 3: someone outside head office reviews their own workshop's cards only.
-  res.json(require('../lib/job_review').listStuck({ workshopId: scope.onlyWorkshop(req.user) }));
+  res.json(require('../lib/job_review').listStuck({ workshopId: scope.reach(req.user) }));
 }));
 
 router.post('/review/apply', requireAuth, requireCap('jobs.triage'), asyncHandler((req, res) => {
@@ -301,7 +301,7 @@ router.put('/close-settings', requireAuth, requireCap('jobs.settings'), asyncHan
 
 // Reopen requests waiting for a decision (the job card shows its own; this is the queue).
 router.get('/reopen-requests', requireAuth, requireCap('jobs.reopen'), asyncHandler((req, res) => {
-  res.json(closeLib.pendingRequests({ excludeRequester: isAdmin(req.user) ? null : req.user.id, workshopId: scope.onlyWorkshop(req.user) }));
+  res.json(closeLib.pendingRequests({ excludeRequester: isAdmin(req.user) ? null : req.user.id, workshopId: scope.reach(req.user) }));
 }));
 
 router.post('/reopen-requests/:rid/:decision', requireAuth, requireCap('jobs.reopen'), asyncHandler((req, res) => {

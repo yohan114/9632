@@ -4,7 +4,8 @@
 //
 //   With "Separate workshops" on and a second workshop in use, people outside head office see and
 //   work on only their own workshop's job cards, job requests, requests (MRN), daily work and
-//   approval queues. Head office sees everything; store staff too, while there is one store.
+//   approval queues. Head office sees everything; store staff every workshop their store serves
+//   (all of them, while there is one store).
 //   Vehicles are shared (another workshop's card shows number, status and workshop only), and one
 //   open card per vehicle holds across every workshop. Off, or with one workshop: nothing changes.
 
@@ -212,8 +213,10 @@ test('requests (MRN): your own workshop\'s to see and sign; the store sees them 
   const count = (await req('GET', '/api/stores/mrn/pending-count', { cookie: wsM })).body;
   assert.strictEqual(count.certified, get('SELECT COUNT(*) n FROM mrn WHERE approval_status = ? AND workshop_id = ?', 'certified', MTR).n);
   const sk = ids((await req('GET', '/api/stores/mrn', { cookie: await as('sk') })).body);
-  assert.ok(sk.includes(M.c) && sk.includes(M.m), 'one store serves every workshop until Stage 4');
+  assert.ok(sk.includes(M.c) && sk.includes(M.m), 'one store serves every workshop, so its staff reach every workshop (Stage 4: the workshops their store serves)');
   assert.strictEqual((await req('GET', `/api/stores/mrn/${M.m}`, { cookie: await as('sk') })).status, 200);
+  const skMe = (await req('GET', '/api/auth/me', { cookie: await as('sk') })).body;
+  assert.deepStrictEqual([skMe.seesAllWorkshops, skMe.workshopsSeen], [true, null], 'one store serving them all: every workshop, as before');
 });
 
 test('issuing shelf stock to another workshop\'s card is refused (the store itself may)', async () => {

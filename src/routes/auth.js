@@ -289,6 +289,8 @@ router.get('/me', (req, res) => {
     workshop: home ? { id: home.id, code: home.code, name: home.name } : null, workshopsMulti: ws.isMulti(),
     // Stage 3: whether this person sees every workshop's job cards (always, until scoping is on).
     seesAllWorkshops: require('../lib/scope').seesAllJobs(req.user),
+    // Stage 4: the workshops seen (null = all) — store staff see every workshop their store serves.
+    workshopsSeen: require('../lib/scope').reach(req.user),
     capNeeds: require('../lib/capabilities').needsFor(req.user.caps || []),
     sessionPolicy: sessionPolicy(),
     passwordPolicy: passwordPolicy.describe() });

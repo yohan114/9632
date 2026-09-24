@@ -1053,3 +1053,34 @@ CREATE TABLE IF NOT EXISTS mechanic_workshops (
   UNIQUE (mechanic_id, from_date)
 );
 CREATE INDEX IF NOT EXISTS idx_mech_ws ON mechanic_workshops(mechanic_id, from_date);
+
+-- Stage 4: a store per workshop (src/lib/stores.js). A store is known by the workshop that owns it.
+-- A stock take: what was counted on the shelf of one store, against what the book said then. The
+-- difference is the correction (an 'adjust' movement in stock_moves).
+CREATE TABLE IF NOT EXISTS store_counts (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  store_id     INTEGER NOT NULL REFERENCES workshops(id),
+  section      TEXT NOT NULL,
+  item_key     TEXT NOT NULL,
+  item_name    TEXT,
+  count_date   TEXT NOT NULL,                    -- YYYY-MM-DD
+  book_qty     REAL NOT NULL,
+  counted_qty  REAL NOT NULL,
+  delta        REAL NOT NULL,                    -- counted - book
+  note         TEXT,
+  counted_by   INTEGER REFERENCES users(id),
+  created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_store_counts ON store_counts(store_id, section, item_key);
+
+-- The level at which one store reorders an item. No row = no level set.
+CREATE TABLE IF NOT EXISTS store_reorder (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  store_id   INTEGER NOT NULL REFERENCES workshops(id),
+  section    TEXT NOT NULL,
+  item_key   TEXT NOT NULL,
+  level      REAL NOT NULL,
+  set_by     INTEGER REFERENCES users(id),
+  set_at     TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE (store_id, section, item_key)
+);
