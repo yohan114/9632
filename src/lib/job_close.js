@@ -205,8 +205,9 @@ function decideReopen(requestId, { user, approve, note, isAdmin = false }) {
 function pendingRequests({ excludeRequester = null, workshopId = null } = {}) {
   // workshopId: only that workshop's cards (Stage 3 scoping), else every workshop.
   const params = [];
+  const inWs = require('./jobstate').workshopIn('j.workshop_id', workshopId);
   if (excludeRequester) params.push(excludeRequester);
-  if (workshopId) params.push(workshopId);
+  params.push(...inWs.params);
   return all(
     `SELECT r.id, r.job_id, r.reason, r.requested_at, r.requested_by, u.username AS requested_by_name,
             j.job_no, j.status AS job_status, j.description, j.workshop_id,
@@ -216,7 +217,7 @@ function pendingRequests({ excludeRequester = null, workshopId = null } = {}) {
        LEFT JOIN users u ON u.id = r.requested_by
        LEFT JOIN assets a ON a.id = j.asset_id
       WHERE r.status = 'pending' ${excludeRequester ? 'AND COALESCE(r.requested_by, 0) <> ?' : ''}
-        ${workshopId ? 'AND j.workshop_id = ?' : ''}
+        ${inWs.sql}
       ORDER BY r.id DESC LIMIT 50`, ...params);
 }
 

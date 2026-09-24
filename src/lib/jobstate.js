@@ -174,8 +174,19 @@ function checkOneOpenJob(assetId, opts = {}) {
   };
 }
 
+/**
+ * A WHERE fragment for "these workshops only" (Stage 3 scoping): workshopId is one id, a list of
+ * ids (store staff see every workshop their store serves), or null for every workshop.
+ */
+function workshopIn(column, workshopId) {
+  if (workshopId == null) return { sql: '', params: [] };
+  const ids = [].concat(workshopId);
+  return { sql: `AND ${column} IN (${ids.map(() => '?').join(',')})`, params: ids };
+}
+
 /** Vehicles carrying more than one open card — the backlog to work off. */
 function duplicateOpenJobs({ workshopId = null } = {}) {
+  const inWs = workshopIn('j.workshop_id', workshopId);
   const rows = all(
     `SELECT j.asset_id, a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec,
             COUNT(*) AS open_count
@@ -189,11 +200,11 @@ function duplicateOpenJobs({ workshopId = null } = {}) {
               CAST(julianday('now') - julianday(j.requested_at) AS INTEGER) AS age_days
          FROM job_cards j
         WHERE j.asset_id = ? AND ${OPEN_SQL.replace(/status/g, 'j.status')}
-          ${workshopId ? 'AND j.workshop_id = ?' : ''}
-        ORDER BY j.requested_at, j.id`, r.asset_id, ...(workshopId ? [workshopId] : []));
+          ${inWs.sql}
+        ORDER BY j.requested_at, j.id`, r.asset_id, ...inWs.params);
   }
   // Scoped (Stage 3): only vehicles with an open card of that workshop, and only its cards.
-  return workshopId ? rows.filter((r) => r.jobs.length) : rows;
+  return workshopId != null ? rows.filter((r) => r.jobs.length) : rows;
 }
 
 // ---- adding anything to a card ------------------------------------------------------------------
@@ -329,7 +340,7 @@ function canReopen(who = []) {
   return capsFor(who).includes(REOPEN_CAP);
 }
 
-module.exports = {
+module.exports = { workshopIn,
   STATES, TRANSITIONS, OPEN_STATUSES, OPEN_SQL, REOPEN_CAP, PARTIAL, REOPENABLE,
   FINAL_STATUSES, openSql, notFinalSql, isOpen, isFinal, isReopen, ADD_RULES, PARTIAL_RULES, checkAdd,
   successorFor, partialDay, PARTIAL_FLAG, partialCloseEnabled, reportClosedSql, reportPendingSql,

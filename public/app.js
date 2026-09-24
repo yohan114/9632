@@ -1289,7 +1289,7 @@ routes.jobs = async (c, params) => {
   // Workshop filter and tag (Stage 2): only once there is more than one workshop. The filter is for
   // those who see every workshop; someone kept to their own (Stage 3) has nothing to choose.
   const wsd = wsMulti() ? await workshopsData() : null;
-  const wsFilter = wsd && ME.seesAllWorkshops !== false;
+  const wsFilter = wsd && (ME.seesAllWorkshops !== false || (ME.workshopsSeen || []).length > 1);
 
   const nowY = new Date().getFullYear();
   const years = [];
@@ -1304,7 +1304,7 @@ routes.jobs = async (c, params) => {
       <select id="jyear" style="max-width:120px"><option value="">All years</option>${years.map((y) => `<option ${String(y) === cur.year ? 'selected' : ''}>${y}</option>`).join('')}</select>
       <select id="jmonth" style="max-width:140px"><option value="">All months</option>${MONTHS.map(([v, l]) => `<option value="${v}" ${v === cur.month ? 'selected' : ''}>${l}</option>`).join('')}</select>
       <select id="jstatus" style="max-width:200px"><option value="">All statuses</option>${JOB_STATUSES.map((s) => `<option ${s === cur.status ? 'selected' : ''}>${s}</option>`).join('')}</select>
-      ${wsFilter ? `<select id="jws" style="max-width:220px"><option value="">All workshops</option>${wsd.workshops.map((w) => `<option value="${w.id}" ${String(w.id) === cur.workshop ? 'selected' : ''}>${esc(w.name)}</option>`).join('')}</select>` : ''}
+      ${wsFilter ? `<select id="jws" style="max-width:220px"><option value="">All workshops</option>${wsd.workshops.filter((w) => !ME.workshopsSeen || ME.workshopsSeen.includes(w.id)).map((w) => `<option value="${w.id}" ${String(w.id) === cur.workshop ? 'selected' : ''}>${esc(w.name)}</option>`).join('')}</select>` : ''}
       <button class="sm" id="jclear">Clear</button>
       <button class="sm" id="jfilter-backlog" style="background:#fff3cd;color:#856404;border-color:#ffeeba;font-weight:600" title="Filter to backlog cards awaiting triage / approval">⚡ Backlog: Requested</button>
       <span class="muted" id="jcount"></span>
@@ -3575,7 +3575,7 @@ routes.stores = async (c) => {
         list.map((t) => `<tr>
           <td>${(t.item_count || 1) > 1 ? `<button class="sm" data-exp="${t.id}" title="Show the items on this transfer" style="padding:0 6px;margin-right:4px">▸</button>` : ''}<b>${esc(t.mtn_no)}</b></td>
           <td>${esc(String(t.txn_date || '').slice(0, 10))}</td>
-          <td class="desc-col">${esc(t.description || '')}</td>
+          <td class="desc-col">${esc(t.description || '')}${t.moves_stock ? ' <span class="badge green" title="Moves stock from one store to another">moves stock</span>' : ''}</td>
           <td class="num">${(t.item_count || 1) > 1 ? `<span class="badge blue">${t.item_count}</span>` : '1'}</td>
           <td class="num">${num(t.qty)}</td>
           <td>${esc(t.from_location || t.from_asset_code || '')}</td><td>${esc(t.to_location || t.to_asset_code || '')}</td>
@@ -3600,7 +3600,7 @@ routes.stores = async (c) => {
             holder.firstChild.innerHTML = tableWrap(
               [{ label: '#', num: true, width: '38px' }, { label: 'Item' }, { label: 'Qty', num: true, width: '70px' },
               { label: 'Unit', width: '64px' }, { label: 'Category' }, { label: 'From' }, { label: 'To' }, { label: 'Reason' }],
-              d.lines.map((l, i) => `<tr><td class="num">${i + 1}</td><td>${esc(l.description || '')}</td>
+              d.lines.map((l, i) => `<tr><td class="num">${i + 1}</td><td>${esc(l.description || '')}${l.from_store ? `<br><span class="muted" style="font-size:12px">stock: ${esc(l.from_store)} → ${esc(l.to_store)}</span>` : ''}</td>
               <td class="num">${num(l.qty)}</td><td>${esc(l.unit || '')}</td><td>${esc(l.category || '')}</td>
               <td>${esc(l.from_location || l.from_asset_code || '')}</td>
               <td>${esc(l.to_location || l.to_asset_code || '')}</td>
@@ -5060,7 +5060,9 @@ function newIssueModal(onDone, prefill) {
         res.innerHTML = '<div class="muted" style="padding:8px 2px">Searching…</div>';
         const looksLikeMrn = /^[0-9][0-9/\-]{2,}$/.test(term);
         const [items, received] = await Promise.all([
-          api('/stores/stock-items/search?limit=25&section=' + encodeURIComponent(section) + '&q=' + encodeURIComponent(term)).catch(() => []),
+          // Stage 4: with a job card chosen, the balance is its workshop's store's.
+          api('/stores/stock-items/search?limit=25&section=' + encodeURIComponent(section) + '&q=' + encodeURIComponent(term)
+            + (mode === 'job' && getJob().job_id ? '&job_id=' + encodeURIComponent(getJob().job_id) : '')).catch(() => []),
           looksLikeMrn ? api('/stores/received?limit=40&mrn=' + encodeURIComponent(term)).catch(() => []) : Promise.resolve([]),
         ]);
         const recv = section ? received.filter((r) => r.section === section) : received;
@@ -8264,10 +8266,17 @@ routes.workshops = async (c) => {
   const [d, mechs] = await Promise.all([workshopsData(true), api('/workshops/mechanics')]);
   const manage = canDo('workshops.manage');
   const move = canDo('mechanics.move');
+  // Stage 4: each workshop has its own store or uses another's. Shown once there are two workshops.
+  const storeCell = (w) => {
+    if (w.own_store) return `<span class="badge green">Own store</span>${w.store_opened ? `<br><span class="muted" style="font-size:12px">since ${esc(w.store_opened)}</span>` : ''}`;
+    return `<span class="muted">Uses</span> ${esc(wsName(d, d.store_of[w.id]))}`;
+  };
   const rows = d.workshops.map((w) => `<tr${w.active ? '' : ' style="opacity:.55"'}>
     <td><b>${esc(w.name)}</b>${w.is_default ? ' <span class="badge blue">main</span>' : ''}${w.active ? '' : ' <span class="badge">retired</span>'}<br><span class="muted" style="font-size:12px">${esc(w.code)}${w.place ? ' · ' + esc(w.place) : ''}</span></td>
     <td class="num">${w.users}</td><td class="num">${w.mechanics}</td><td class="num">${w.open_jobs}</td>
+    ${d.multi ? `<td>${storeCell(w)}</td>` : ''}
     ${manage ? `<td class="num" style="white-space:nowrap"><button class="sm" data-wedit="${w.id}">✎ Edit</button>
+      ${d.multi && w.active && !w.is_default ? `<button class="sm" data-wstore="${w.id}">Store…</button>` : ''}
       ${w.is_default ? '' : (w.active ? `<button class="sm danger" data-wretire="${w.id}">Retire</button>` : `<button class="sm" data-wback="${w.id}">Reinstate</button>`)}</td>` : ''}</tr>`);
   const mrows = mechs.filter((m) => m.active).map((m) => `<tr><td>${esc(m.name)}</td><td>${esc(wsName(d, m.workshop_id))}</td>
     <td class="muted">${m.last_move ? 'since ' + esc(m.last_move) : ''}</td>
@@ -8275,10 +8284,14 @@ routes.workshops = async (c) => {
   c.innerHTML = `${pageHeader('Workshops', 'Where vehicles are repaired. Sites — where vehicles work — are on the Projects page.')}
     <div class="card">
       <div class="toolbar" style="margin:0 0 8px"><h3 style="margin:0">Workshops</h3><div class="spacer"></div>${manage ? '<button class="primary sm" id="wnew">+ Add workshop</button>' : ''}</div>
-      ${tableWrap([{ label: 'Workshop' }, { label: 'People', num: true }, { label: 'Mechanics', num: true }, { label: 'Open job cards', num: true }].concat(manage ? [{ label: '', num: true }] : []), rows)}
+      ${tableWrap([{ label: 'Workshop' }, { label: 'People', num: true }, { label: 'Mechanics', num: true }, { label: 'Open job cards', num: true }]
+    .concat(d.multi ? [{ label: 'Store' }] : []).concat(manage ? [{ label: '', num: true }] : []), rows)}
       <p class="muted" style="font-size:12px;margin:8px 0 0">${d.multi
         ? 'Each person has a home workshop (Access Control → Users). New job cards go to the home workshop of whoever raises them.'
         : 'With one workshop, nothing else changes on any screen. When you add a second, job cards, requests and people show their workshop.'}</p>
+      ${d.multi ? `<p class="muted" style="font-size:12px;margin:4px 0 0">${d.stores_multi
+    ? 'Each store has its own stock. Goods received go into the store of the request\'s workshop; issues come out of the store of the job\'s workshop.'
+    : 'All stock is in one store. Give a workshop its own store with Store…'}</p>` : ''}
     </div>
     <div class="card">
       <div class="toolbar" style="margin:0 0 6px"><h3 style="margin:0">Separate workshops</h3><div class="spacer"></div>
@@ -8288,7 +8301,7 @@ routes.workshops = async (c) => {
           : '<span class="badge amber">On, waiting</span> It takes effect when there is a second workshop.')
         : '<span class="badge">Off</span> Everyone sees every workshop\'s work, as before.'}</p>
       <p class="muted" style="font-size:12px;margin:6px 0 0">Head office (Admin, Manager, Operational Manager, Purchasing) always sees every workshop.
-        Store staff also see every workshop's requests and job cards, while there is one store. Vehicles, stock, attendance and reports stay shared.</p>
+        Store staff see the requests and job cards of every workshop their store serves. Vehicles and reports stay shared.</p>
     </div>
     <div class="card">
       <h3 style="margin:0 0 8px">Mechanics</h3>
@@ -8315,6 +8328,31 @@ routes.workshops = async (c) => {
     catch (e) { toast(e.message, 'err'); }
   };
   qsa('[data-wedit]', c).forEach((b) => { b.onclick = () => edit(d.workshops.find((w) => String(w.id) === b.dataset.wedit)); });
+  // Stage 4: its own store (from a date), or the store it uses.
+  qsa('[data-wstore]', c).forEach((b) => {
+    const w = d.workshops.find((x) => String(x.id) === b.dataset.wstore);
+    const others = d.stores.filter((st) => st.id !== w.id).map((st) => ({ value: st.id, label: st.name }));
+    const today = new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+    b.onclick = () => modal(`Store of ${w.name}`, `
+      <label style="display:block;margin:4px 0"><input type="radio" name="kind" value="own" ${w.own_store ? 'checked' : ''}> Own store</label>
+      <div id="st-own" style="margin-left:22px">${w.own_store
+    ? `<p class="muted" style="margin:0">Open${w.store_opened ? ' since ' + esc(w.store_opened) : ''}.</p>`
+    : field('Opens on', 'opened', { type: 'date', value: today })}</div>
+      <label style="display:block;margin:8px 0 4px"><input type="radio" name="kind" value="uses" ${w.own_store ? '' : 'checked'}> Uses another workshop's store</label>
+      <div id="st-uses" style="margin-left:22px">${field('Store', 'uses', { type: 'select', options: others, value: d.store_of[w.id] })}</div>
+      <p class="muted" style="font-size:12px">A new store starts empty. Send stock to it with a transfer note (MTN). What was received before it opened stays where it was.</p>
+      <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Save</button></div>`, (body, close) => {
+      qs('#s', body).onclick = async () => {
+        const own = qs('input[name="kind"]:checked', body).value === 'own';
+        if (own && !w.own_store && !confirm(`Open a store at ${w.name}? From then on its goods received and issues are in its own store.`)) return;
+        try {
+          const f = formData(body);
+          await api(`/workshops/${w.id}/store`, { method: 'PUT', body: own ? { own: true, opened: f.opened } : { own: false, uses: f.uses } });
+          close(); toast('Saved'); routes.workshops(c);
+        } catch (e) { toast(e.message, 'err'); }
+      };
+    });
+  });
   const setActive = async (id, active) => {
     try { await api(`/workshops/${id}`, { method: 'PATCH', body: { active } }); toast(active ? 'Reinstated' : 'Retired'); routes.workshops(c); }
     catch (e) { toast(e.message, 'err'); }
@@ -8705,6 +8743,7 @@ async function mtnModal(existing, onDone) {
   // one links the note to that place; anything else typed (a machine, "Head Office") stays text.
   const placeList = await api('/stores/places').catch(() => []);
   const placeOf = (text) => { const p = placeList.find((x) => x.label === String(text || '').trim()); return p ? p.key : undefined; };
+  const wsd = wsMulti() ? await workshopsData().catch(() => null) : null;
   const fld = (...args) => `<div class="fld">${field(...args)}</div>`;
   const bg = modal(existing ? 'Edit MTN ' + esc(v.mtn_no) : 'New MTN (transfer)', `
     <datalist id="mtnplaces">${placeList.map((p) => `<option value="${esc(p.label)}">${esc(p.kind)}</option>`).join('')}</datalist>
@@ -8720,6 +8759,7 @@ async function mtnModal(existing, onDone) {
       </div>
       ${existing ? '' : fld('To asset (code/text)', 'to_asset')}
       ${field('Reason', 'reason', { value: v.reason || '' })}
+      <p id="tstock" class="muted" style="font-size:12px;margin:6px 0 0;display:none"></p>
       ${existing ? '' : `<p class="muted" style="font-size:11.5px;margin:6px 0 0">${suggested ? `Next in the sequence is ${esc(suggested)} — change it to match the book.` : 'Type the number from the transfer book.'} Everything here applies to the whole note; an item that came from somewhere else can say so on its own row.</p>`}
     </div>
     <div class="mrnsec">
@@ -8762,6 +8802,26 @@ async function mtnModal(existing, onDone) {
       };
       if (lines0.length) lines0.forEach(addLine); else addLine();
       qs('#taddline', root).onclick = () => addLine();
+      // Stage 4: say when the note moves stock — from one workshop's store to another's, on its date.
+      if (wsd && wsd.stores_multi) {
+        const storeOn = (wsId, date) => {
+          const w = wsd.workshops.find((x) => x.id === wsId);
+          if (!w) return null;
+          return w.own_store && (!w.store_opened || w.store_opened <= date) ? w.id : (w.uses_store || wsd.default_id);
+        };
+        const wsAt = (text) => { const k = placeOf(text); return k && /^w:\d+$/.test(k) ? Number(k.slice(2)) : null; };
+        const hint = () => {
+          const date = qs('input[name=txn_date]', root).value;
+          const f = wsAt(qs('input[name=from_location]', root).value);
+          const t = wsAt(qs('input[name=to_location]', root).value);
+          const a = f && storeOn(f, date); const b = t && storeOn(t, date);
+          const el = qs('#tstock', root);
+          el.style.display = a && b && a !== b ? '' : 'none';
+          el.innerHTML = a && b && a !== b ? `<span class="badge green">moves stock</span> Out of ${esc(wsName(wsd, a))}'s store, into ${esc(wsName(wsd, b))}'s store, on ${esc(date)}.` : '';
+        };
+        qsa('input[name=from_location],input[name=to_location],input[name=txn_date]', root).forEach((i) => { i.addEventListener('input', hint); i.addEventListener('change', hint); });
+        hint();
+      }
       qs('#tcancel', root).onclick = close;
 
       const readLines = () => qsa('.mrnline', lines).map((row) => ({
@@ -9321,6 +9381,7 @@ async function renderGeneralStockLive(c) {
   c.innerHTML = `
     <div class="card section"><h3 style="margin-top:0">Stock position <span class="muted" style="font-weight:400;font-size:12px">— requested, received, issued and what's left, from the shared stock ledger</span></h3>
       <div id="gs-stock"></div></div>
+    <p class="muted" id="gs-whole" style="font-size:12px;margin:0 0 8px;display:none"></p>
     <div class="grid section" id="gs-stats"></div>
     <div class="toolbar">
       <input type="search" id="gs-q" placeholder="Search name / item no / category…" style="max-width:240px">
@@ -9335,6 +9396,7 @@ async function renderGeneralStockLive(c) {
     <div id="gs-table" class="muted">Loading…</div>`;
 
   stockPanel(qs('#gs-stock', c), 'general');
+  wholeCompanyNote(qs('#gs-whole', c));
   try { (await api('/general-stock/categories')).forEach((cat) => { const o = document.createElement('option'); o.value = cat; o.textContent = cat; qs('#gs-cat', c).appendChild(o); }); } catch (e) { /* dropdown optional */ }
 
   // The register carries ~700 zero-balance names left behind by the old warehouse import —
@@ -9469,15 +9531,38 @@ const fsPills = (v) => (v ? String(v).split(/[,;\n]/).map((x) => x.trim()).filte
 // One component, mounted in Oil & Lube / Batteries / General Stock / Filter Stock.
 // Every section answers the same four questions — on order, received, issued, balance —
 // and each item opens its full movement trail: what went where, when and to which vehicle.
+// Stage 4: under the stock panel, the older book of a section counts the whole company — every store
+// together. Say so once there is more than one store.
+async function wholeCompanyNote(el) {
+  if (!el || !wsMulti()) return;
+  const d = await workshopsData().catch(() => null);
+  if (!d || !d.stores_multi) return;
+  el.textContent = 'The list below is for the whole company (all stores together). For one store, use Stock position above. Counts are made there, store by store.';
+  el.style.display = '';
+}
+
+// Stage 4: with more than one store, the panel is one store's shelf — or, for head office, all of
+// them. The choice is kept while the page is open. Someone kept to their own store has no choice.
+let STOCK_STORE = '';
 async function stockPanel(host, section, opts = {}) {
   host.innerHTML = '<div class="muted">Loading stock…</div>';
+  const storeQ = () => (STOCK_STORE ? '&store_id=' + encodeURIComponent(STOCK_STORE) : '');
   let data;
-  try { data = await api(`/stores/stock/${section}?limit=400`); }
+  try { data = await api(`/stores/stock/${section}?limit=400${storeQ()}`); }
   catch (e) { host.innerHTML = `<div class="card err">${esc(e.message)}</div>`; return; }
   const s = data.summary;
   const cut = s.opening && s.opening.mode === 'cutover' ? s.opening.cutover : null;
+  const store = data.store;              // null = every store (or the only one)
+  const multi = !!data.multi;
+  const can = data.can || {};
 
   host.innerHTML = `
+    ${multi ? `<div class="toolbar" style="margin:0 0 8px">
+      ${data.fixed ? `<span class="badge blue">${esc(store ? store.name : '')}</span><span class="muted" style="font-size:12px">your store</span>`
+    : `<label class="muted" style="font-size:12px">Store</label><select id="sk-store" style="max-width:260px">
+          <option value="all" ${store ? '' : 'selected'}>All stores</option>
+          ${(data.stores || []).map((x) => `<option value="${x.id}" ${store && store.id === x.id ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select>`}
+    </div>` : ''}
     <div class="grid section">
       <div class="card stat"><span class="n">${num(s.received)}</span><span class="l">Received in</span></div>
       <div class="card stat"><span class="n">${num(s.issued)}</span><span class="l">Issued out</span></div>
@@ -9485,28 +9570,34 @@ async function stockPanel(host, section, opts = {}) {
       <div class="card stat"><span class="n">${num(s.items)}</span><span class="l">Items</span></div>
     </div>
     ${cut ? `<p class="muted" style="font-size:12px;margin:0 0 8px">Stock for this section counts from <b>${esc(cut)}</b> — earlier movements (${num(s.history_moves)}, ${num(s.history_issued)} issued) are kept as history below but don't affect the balance, because those purchases were never recorded in stores.</p>` : ''}
+    ${multi && !store ? '<p class="muted" style="font-size:12px;margin:0 0 8px">All stores together. Stock sent from one store to another is not counted as received or issued here.</p>' : ''}
     <div class="toolbar">
       <input id="sk-q" type="search" placeholder="Search item…" style="max-width:260px">
       <button class="sm primary" id="sk-items">By item</button>
       <button class="sm" id="sk-moves">All movements</button>
+      ${store ? '<button class="sm" id="sk-low" title="At or under the reorder level">Low only</button>' : ''}
       <div class="spacer"></div><span class="muted" id="sk-count"></span>
     </div>
     <div id="sk-body"><div class="muted">Loading…</div></div>`;
 
   let mode = 'items';
+  let lowOnly = false;
   const bodyEl = qs('#sk-body', host);
+  if (qs('#sk-store', host)) qs('#sk-store', host).onchange = (e) => { STOCK_STORE = e.target.value === 'all' ? 'all' : e.target.value; stockPanel(host, section, opts); };
 
   const showMoves = (rows, title) => {
     qs('#sk-count', host).textContent = `${rows.length} movement(s)`;
     bodyEl.innerHTML = (title ? `<h3 style="margin:0 0 6px">${esc(title)}</h3>` : '')
       + (rows.length ? tableWrap(
-        [{ label: 'Date' }, { label: 'In / Out' }, { label: 'Item', cls: 'desc-col' }, { label: 'Qty', num: true },
-        { label: 'Vehicle' }, { label: 'Job / Ref' }, { label: 'Counts?' }],
+        [{ label: 'Date' }, { label: 'In / Out' }, { label: 'Item', cls: 'desc-col' }, { label: 'Qty', num: true }]
+          .concat(multi ? [{ label: 'Store' }] : [])
+          .concat([{ label: 'Vehicle' }, { label: 'Job / Ref' }, { label: 'Counts?' }]),
         rows.map((m) => `<tr>
           <td>${esc(m.txn_date || '—')}</td>
           <td>${m.kind === 'out' ? '<span class="badge amber">issued</span>' : `<span class="badge green">${esc(m.kind)}</span>`}</td>
-          <td class="desc-col">${esc(m.item_name || '')}</td>
+          <td class="desc-col">${esc(m.item_name || '')}${m.source_table === 'mtn_lines' ? ` <span class="muted" style="font-size:12px">(${esc(m.note || 'transfer')})</span>` : ''}</td>
           <td class="num">${num(m.qty)}</td>
+          ${multi ? `<td>${esc(m.store_code || '')}</td>` : ''}
           <td>${m.asset_reg || m.asset_code ? `<span class="stamp">${esc(m.asset_reg || m.asset_code)}</span>` : '—'}</td>
           <td>${esc(m.job_no || m.ref || '')}</td>
           <td>${m.counts ? '<span class="badge green">yes</span>' : `<span class="badge" title="${esc(m.note || 'before the stock cut-over')}">history</span>`}</td></tr>`),
@@ -9514,41 +9605,78 @@ async function stockPanel(host, section, opts = {}) {
         : '<div class="card"><p class="muted">No movements.</p></div>');
   };
 
+  // A stock take of one item in this store: what is on the shelf now.
+  const countItem = (key, name, balance) => modal(`Count ${name}`, `
+    <p class="muted" style="margin:0 0 8px">${esc(store.name)} · the book says <b>${num(balance)}</b></p>
+    ${field('Counted on the shelf', 'counted', { type: 'number', value: '' })}
+    ${field('Date', 'count_date', { type: 'date', value: new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10) })}
+    ${field('Note (optional)', 'note')}
+    <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Save count</button></div>`, (b, close) => {
+    qs('#s', b).onclick = async () => {
+      try {
+        const r = await api(`/stores/stock/${section}/count`, { method: 'POST', body: { ...formData(b), store_id: store.id, item_key: key } });
+        close(); toast(r.delta ? `Counted ${num(r.counted)} · corrected by ${r.delta > 0 ? '+' : ''}${num(r.delta)}` : 'Counted · the book was right'); load();
+      } catch (e) { toast(e.message, 'err'); }
+    };
+  });
+  const setLevel = (key, name, level) => modal(`Reorder level · ${name}`, `
+    <p class="muted" style="margin:0 0 8px">${esc(store.name)}. Leave empty for no level.</p>
+    ${field('Reorder at', 'level', { type: 'number', value: level == null ? '' : level })}
+    <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Save</button></div>`, (b, close) => {
+    qs('#s', b).onclick = async () => {
+      try { await api(`/stores/stock/${section}/level`, { method: 'PUT', body: { ...formData(b), store_id: store.id, item_key: key } }); close(); toast('Saved'); load(); }
+      catch (e) { toast(e.message, 'err'); }
+    };
+  });
+
   const load = async () => {
     const q = qs('#sk-q', host).value.trim();
     qs('#sk-items', host).classList.toggle('primary', mode === 'items');
     qs('#sk-moves', host).classList.toggle('primary', mode === 'moves');
+    if (qs('#sk-low', host)) qs('#sk-low', host).classList.toggle('primary', lowOnly);
     bodyEl.innerHTML = '<div class="muted">Loading…</div>';
     if (mode === 'moves') {
-      showMoves(await api(`/stores/stock/${section}/moves?limit=400${q ? '&q=' + encodeURIComponent(q) : ''}`));
+      showMoves(await api(`/stores/stock/${section}/moves?limit=400${storeQ()}${q ? '&q=' + encodeURIComponent(q) : ''}`));
       return;
     }
-    const d = await api(`/stores/stock/${section}?limit=400${q ? '&q=' + encodeURIComponent(q) : ''}`);
+    const d = await api(`/stores/stock/${section}?limit=400${storeQ()}${lowOnly ? '&low=1' : ''}${q ? '&q=' + encodeURIComponent(q) : ''}`);
     qs('#sk-count', host).textContent = `${d.items.length} item(s)`;
+    const byStore = (i) => (i.by_store || []).map((b) => `${esc(b.store_code || '?')} ${num(b.balance)}`).join(' · ');
     bodyEl.innerHTML = d.items.length ? tableWrap(
       [{ label: 'Item', cls: 'desc-col' }, { label: 'Received', num: true }, { label: 'Issued', num: true },
-      { label: 'Balance', num: true }, { label: 'Issued (all time)', num: true }, { label: 'Last movement' }, { label: '' }],
-      d.items.map((i) => `<tr>
+      { label: 'Balance', num: true }]
+        .concat(multi && !store ? [{ label: 'By store' }] : [])
+        .concat(store ? [{ label: 'Reorder at', num: true }] : [])
+        .concat([{ label: 'Issued (all time)', num: true }, { label: 'Last movement' }, { label: '' }]),
+      d.items.map((i) => {
+        const low = store && i.reorder_level > 0 && i.balance <= i.reorder_level;
+        return `<tr>
         <td class="desc-col">${esc(i.item_name || i.item_key)}</td>
         <td class="num">${num(i.received)}</td>
         <td class="num">${num(i.issued)}</td>
-        <td class="num"><b style="color:${i.balance < 0 ? 'var(--danger,#c4392c)' : 'inherit'}">${num(i.balance)}</b></td>
+        <td class="num"><b style="color:${i.balance < 0 ? 'var(--danger,#c4392c)' : 'inherit'}">${num(i.balance)}</b>${low ? ' <span class="badge amber">low</span>' : ''}</td>
+        ${multi && !store ? `<td class="muted" style="font-size:12px">${byStore(i)}</td>` : ''}
+        ${store ? `<td class="num">${i.reorder_level ? num(i.reorder_level) : '<span class="muted">—</span>'}${can.levels ? ` <button class="sm" data-lvl="${esc(i.item_key)}" data-name="${esc(i.item_name || i.item_key)}" data-v="${i.reorder_level == null ? '' : i.reorder_level}" title="Set the reorder level">✎</button>` : ''}</td>` : ''}
         <td class="num muted">${num(i.issued_all_time)}</td>
         <td>${esc(i.last_move || '—')}</td>
-        <td><button class="sm" data-hist="${esc(i.item_key)}" data-name="${esc(i.item_name || i.item_key)}">history →</button></td></tr>`),
+        <td style="white-space:nowrap">${can.count ? `<button class="sm" data-cnt="${esc(i.item_key)}" data-name="${esc(i.item_name || i.item_key)}" data-bal="${i.balance}">Count</button> ` : ''}<button class="sm" data-hist="${esc(i.item_key)}" data-name="${esc(i.item_name || i.item_key)}">history →</button></td></tr>`;
+      }),
       { scroll: true, fit: true, noHScroll: true })
-      : '<div class="card"><p class="muted">Nothing recorded for this section yet.</p></div>';
+      : `<div class="card"><p class="muted">${lowOnly ? 'Nothing is at or under its reorder level.' : 'Nothing recorded for this section yet.'}</p></div>`;
     // Drill into one item: every movement, which vehicle, when, how much.
     qsa('[data-hist]', bodyEl).forEach((b) => b.onclick = async () => {
       bodyEl.innerHTML = '<div class="muted">Loading history…</div>';
-      const rows = await api(`/stores/stock/${section}/moves?item_key=${encodeURIComponent(b.dataset.hist)}&limit=400`);
+      const rows = await api(`/stores/stock/${section}/moves?item_key=${encodeURIComponent(b.dataset.hist)}&limit=400${storeQ()}`);
       showMoves(rows, b.dataset.name);
       bodyEl.insertAdjacentHTML('afterbegin', '<button class="sm" id="sk-back" style="margin-bottom:8px">← back to items</button>');
       qs('#sk-back', bodyEl).onclick = load;
     });
+    qsa('[data-cnt]', bodyEl).forEach((b) => { b.onclick = () => countItem(b.dataset.cnt, b.dataset.name, Number(b.dataset.bal)); });
+    qsa('[data-lvl]', bodyEl).forEach((b) => { b.onclick = () => setLevel(b.dataset.lvl, b.dataset.name, b.dataset.v === '' ? null : Number(b.dataset.v)); });
   };
   qs('#sk-items', host).onclick = () => { mode = 'items'; load(); };
   qs('#sk-moves', host).onclick = () => { mode = 'moves'; load(); };
+  if (qs('#sk-low', host)) qs('#sk-low', host).onclick = () => { lowOnly = !lowOnly; mode = 'items'; load(); };
   let skdeb; qs('#sk-q', host).oninput = () => { clearTimeout(skdeb); skdeb = setTimeout(load, 250); };
   await load();
 }
@@ -9703,6 +9831,7 @@ async function renderFilterStock(c) {
   c.innerHTML = `
     <div class="card section"><h3 style="margin-top:0">Stock position <span class="muted" style="font-weight:400;font-size:12px">— requested, received, issued and what's left, from the shared stock ledger</span></h3>
       <div id="fs-stock"></div></div>
+    <p class="muted" id="fs-whole" style="font-size:12px;margin:0 0 8px;display:none"></p>
     <div class="grid section" id="fs-stats"></div>
     <div class="toolbar">
       <input type="search" id="fs-q" placeholder="Search type / brand / part no / vehicle…" style="max-width:280px">
@@ -9713,6 +9842,7 @@ async function renderFilterStock(c) {
     </div>
     <div id="fs-table" class="muted">Loading…</div>`;
   stockPanel(qs('#fs-stock', c), 'filter');
+  wholeCompanyNote(qs('#fs-whole', c));
   let lowOnly = false, rows = [];
   const load = async () => {
     const q = qs('#fs-q', c).value.trim();

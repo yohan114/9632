@@ -8,17 +8,19 @@
 // turns on "Separate workshops" (Workshops page) AND there is more than one active workshop; until
 // then every check below lets everything through and nobody sees less than before.
 //
-// Who still sees every workshop:
-//   - head office: the admin, and anyone holding workshops.all (Manager, Operational Manager,
-//     Purchasing by default — src/lib/capabilities.js);
-//   - store staff (who receive or issue goods): until Stage 4 gives each workshop its own store,
-//     the one store serves every workshop, so they must reach every request and job card.
+// Who still sees every workshop: head office — the admin, and anyone holding workshops.all
+// (Manager, Operational Manager, Purchasing by default — src/lib/capabilities.js).
 //
-// Shared, not scoped here: vehicles (they move between workshops), stock and attendance (Stage 4),
-// and reports (Stage 5). The one-open-card-per-vehicle rule stays across all workshops.
+// Store staff (who receive or issue goods) see the job cards and requests of every workshop their
+// store serves (Stage 4, src/lib/stores.js): their own workshop's store, and each workshop that uses
+// it. While one store serves every workshop, that is every workshop, as in Stage 3.
+//
+// Shared, not scoped here: vehicles (they move between workshops), and reports (Stage 5). Stock is
+// kept per store (src/lib/stores.js) and attendance per workshop. The one-open-card-per-vehicle rule
+// stays across all workshops.
 // ===========================================================================
 
-const { get, run } = require('../db');
+const { get, all, run } = require('../db');
 const workshops = require('./workshops');
 
 const FLAG = 'workshops_separate';
@@ -42,28 +44,46 @@ const storeStaff = (user) => require('./auth').hasCap(user, 'stores.grn.receive'
 
 /** Sees every workshop's job requests (scoping off, or head office). */
 const seesAll = (user) => !enabled() || headOffice(user);
-/** Sees every workshop's job cards and requests (MRN): head office, and store staff until Stage 4. */
-const seesAllJobs = (user) => seesAll(user) || storeStaff(user);
 
-/** The one workshop a scoped person sees, or null when they see them all. */
-function onlyWorkshop(user, { store = true } = {}) {
-  if (store ? seesAllJobs(user) : seesAll(user)) return null;
-  return workshops.homeOf(user);
+/**
+ * The workshops a person sees, or null when they see them all. Store staff (unless opts.store is
+ * false): every workshop their store serves. Anyone else: their home workshop.
+ */
+function reach(user, { store = true } = {}) {
+  if (seesAll(user)) return null;
+  const home = workshops.homeOf(user);
+  if (store && storeStaff(user)) {
+    const stores = require('./stores');
+    const served = stores.servedBy(stores.storeOf(home));
+    // One store serving every workshop: everything, exactly as before there were several.
+    if (all('SELECT id FROM workshops WHERE active = 1').every((w) => served.includes(w.id))) return null;
+    return served.includes(home) ? served : [home, ...served];
+  }
+  return [home];
+}
+
+/** Sees every workshop's job cards and requests (MRN): head office, or a store serving them all. */
+const seesAllJobs = (user) => reach(user) == null;
+
+/** The one workshop a scoped person works in (their home), or null when they see them all. */
+function onlyWorkshop(user, opts) {
+  return reach(user, opts) == null ? null : workshops.homeOf(user);
 }
 
 /**
- * A WHERE fragment keeping a list to the person's workshop: { sql, params }. `sql` is '' when they
+ * A WHERE fragment keeping a list to the person's workshops: { sql, params }. `sql` is '' when they
  * see everything, so callers can push it onto their clauses unchanged.
  */
 function filter(user, column, opts) {
-  const w = onlyWorkshop(user, opts);
-  return w == null ? { sql: '', params: [] } : { sql: `${column} = ?`, params: [w] };
+  const r = reach(user, opts);
+  if (r == null) return { sql: '', params: [] };
+  return r.length === 1 ? { sql: `${column} = ?`, params: r } : { sql: `${column} IN (${r.map(() => '?').join(',')})`, params: r };
 }
 
 /** May this person see a record that belongs to `workshopId`? */
 function mayReach(user, workshopId, opts) {
-  const w = onlyWorkshop(user, opts);
-  return w == null || workshopId === w;
+  const r = reach(user, opts);
+  return r == null || r.includes(workshopId);
 }
 
 /** The 403 body for a record of another workshop: what it is and whose it is. */
@@ -105,6 +125,6 @@ function jobParam(req, res, next, id) {
 }
 
 module.exports = {
-  FLAG, switchedOn, setSwitch, enabled, headOffice, storeStaff, seesAll, seesAllJobs, onlyWorkshop,
+  FLAG, switchedOn, setSwitch, enabled, headOffice, storeStaff, seesAll, seesAllJobs, reach, onlyWorkshop,
   filter, mayReach, refusal, jobRefusal, mrnRefusal, jobRequestRefusal, jobParam,
 };

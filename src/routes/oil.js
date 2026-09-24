@@ -12,6 +12,7 @@ const emitter = require('../lib/emitter');
 const { sendXlsx } = require('../lib/export');
 
 const lubricants = require('../lib/lubricants');
+const stores = require('../lib/stores');
 
 const router = express.Router();
 
@@ -196,6 +197,10 @@ router.post('/ledger', requireCap('oil.ledger.post'), asyncHandler((req, res) =>
     case 'adjustment': balanceAfter = qtyMag; signed = qtyMag - prev; break;
     default: return res.status(400).json({ error: 'Invalid kind' });
   }
+  // Stage 4: an opening or an adjustment sets the whole company's figure — not with several stores.
+  if (['opening', 'adjustment'].includes(b.kind) && stores.wholeCountRefusal()) {
+    return res.status(409).json({ error: stores.wholeCountRefusal() });
+  }
   const txnDate = b.txn_date || new Date().toISOString().slice(0, 10);
   let assetId = toInt(b.asset_id);
   let unresolved = null;
@@ -215,10 +220,11 @@ router.post('/ledger', requireCap('oil.ledger.post'), asyncHandler((req, res) =>
 
   const ledgerId = tx(() => {
     const info = run(
-      `INSERT INTO stock_ledger (product_id, kind, qty, balance_after, unit_price, asset_id, project_id, job_id, consumer, consumer_type, mr_no, mtn_no, txn_date, note)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO stock_ledger (product_id, kind, qty, balance_after, unit_price, asset_id, project_id, job_id, consumer, consumer_type, mr_no, mtn_no, txn_date, note, store_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       productId, b.kind, signed, balanceAfter, unitPrice == null ? null : unitPrice, assetId || null,
-      toInt(b.project_id), toInt(b.job_id), b.consumer || null, b.consumer_type || null, b.mr_no || null, b.mtn_no || null, txnDate, b.note || null
+      toInt(b.project_id), toInt(b.job_id), b.consumer || null, b.consumer_type || null, b.mr_no || null, b.mtn_no || null, txnDate, b.note || null,
+      stores.forEntry(req.user, toInt(b.job_id), txnDate)   // Stage 4: the job's store, else the writer's
     );
     // Keep the denormalised balance in lock-step with the ledger (source of truth stays
     // balance_after; stock_qty simply mirrors the latest balance so lookups are cheap).
@@ -322,6 +328,8 @@ router.get('/counts', asyncHandler((req, res) => {
 router.post('/counts', requireCap('oil.count'), asyncHandler((req, res) => {
   const b = req.body;
   require_(b, ['product_id', 'period', 'counted_qty']);
+  // Stage 4: posting the count sets the whole company's figure — not with several stores.
+  if (b.post_adjustment && stores.wholeCountRefusal()) return res.status(409).json({ error: stores.wholeCountRefusal() });
   const productId = toInt(b.product_id);
   const counted = toNum(b.counted_qty, 0);
   const book = currentBalance(productId);

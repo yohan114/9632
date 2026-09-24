@@ -650,6 +650,7 @@ function migrate() {
            CREATE INDEX IF NOT EXISTS idx_filter_stock_part ON filter_stock(part_no);`);
 
   workshopsStage2();
+  storesStage4();
   signoffsPerWorkshop();
 
   // Seed the RBAC matrix once (safe to require here — db exports are already set).
@@ -762,6 +763,47 @@ function workshopsStage2() {
   if (!db.prepare("SELECT 1 FROM settings WHERE key = 'mtn_places_matched'").get()) {
     const r = require('../lib/places').matchOldTransfers();
     db.prepare("INSERT INTO settings (key, value) VALUES ('mtn_places_matched', ?)").run(JSON.stringify({ at: new Date().toISOString(), ...r }));
+  }
+}
+
+// Stage 4, part B: a store per workshop (src/lib/stores.js). A workshop has its own store or uses
+// another's; the main one always has its own, and everything recorded until now is in it. Each
+// source of stock movements carries the store it happened in, stamped when the row is written (the
+// triggers below — a route that knows better writes store_id itself), so rebuilding stock_moves
+// keeps it. A transfer note's items carry the two stores they move between (set by the route).
+function storesStage4() {
+  ensureColumn('workshops', 'own_store', 'INTEGER NOT NULL DEFAULT 0');
+  ensureColumn('workshops', 'uses_store', 'INTEGER REFERENCES workshops(id)');
+  ensureColumn('workshops', 'store_opened', 'TEXT');
+  db.exec('UPDATE workshops SET own_store = 1 WHERE is_default = 1 AND own_store = 0');
+  const DEF = "(SELECT id FROM workshops WHERE is_default = 1 ORDER BY id LIMIT 1)";
+  const tables = ['grn', 'issues', 'general_item_txns', 'stock_ledger', 'tyre_battery_issues', 'service_jobs', 'stock_moves'];
+  for (const t of tables) {
+    ensureColumn(t, 'store_id', 'INTEGER REFERENCES workshops(id)');
+    db.exec(`UPDATE ${t} SET store_id = ${DEF} WHERE store_id IS NULL`);
+  }
+  ensureColumn('mtn_lines', 'from_store_id', 'INTEGER REFERENCES workshops(id)');
+  ensureColumn('mtn_lines', 'to_store_id', 'INTEGER REFERENCES workshops(id)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_sm_store ON stock_moves(store_id, section, item_key)');
+
+  const { storeSql } = require('../lib/stores');
+  const jobWs = (jobCol) => `(SELECT j.workshop_id FROM job_cards j WHERE j.id = NEW.${jobCol})`;
+  const day = (col) => `date(COALESCE(NULLIF(NEW.${col}, ''), 'now'))`;
+  const stamp = {
+    // Received goods: the store of the request's workshop.
+    grn: storeSql(`SELECT m.workshop_id FROM mrn m WHERE m.id = COALESCE(NEW.mrn_id,
+                     (SELECT ml.mrn_id FROM mrn_lines ml WHERE ml.id = NEW.mrn_line_id))`, day('delivery_date')),
+    // A received line handed over leaves the store that received it; anything else, the job's.
+    issues: `COALESCE((SELECT g.store_id FROM grn g WHERE g.id = NEW.grn_id), ${storeSql(jobWs('job_id'), day('issue_date'))})`,
+    general_item_txns: storeSql(jobWs('job_id'), day('txn_date')),
+    stock_ledger: storeSql(jobWs('job_id'), day('txn_date')),
+    tyre_battery_issues: storeSql(`COALESCE(${jobWs('job_id')},
+                     (SELECT m.workshop_id FROM mrn_lines ml JOIN mrn m ON m.id = ml.mrn_id WHERE ml.id = NEW.mrn_line_id))`, day('issue_date')),
+    service_jobs: storeSql('SELECT j.workshop_id FROM job_cards j WHERE j.job_no = NEW.job_no ORDER BY j.id DESC LIMIT 1', day('service_date')),
+  };
+  for (const [t, expr] of Object.entries(stamp)) {
+    db.exec(`CREATE TRIGGER IF NOT EXISTS trg_${t}_store AFTER INSERT ON ${t} WHEN NEW.store_id IS NULL
+             BEGIN UPDATE ${t} SET store_id = ${expr} WHERE id = NEW.id; END;`);
   }
 }
 
