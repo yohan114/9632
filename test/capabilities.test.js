@@ -191,12 +191,27 @@ test('a custom role can be given a step of the job-card workflow', () => {
   assert.strictEqual(jobstate.checkTransition('APPROVED_TRANSPORT', 'APPROVED_OPERATIONS', ['fleet_approver']).ok, false);
 });
 
+test('every role that ships with the system is marked built-in, including ones no old check named', () => {
+  for (const name of ['admin', 'storekeeper', 'viewer', 'main_storekeeper', 'purchase_local']) {
+    assert.ok(capabilities.RESERVED_ROLE_NAMES.has(name), `${name} is reserved`);
+    assert.strictEqual(get('SELECT is_system s FROM roles WHERE name = ?', name).s, 1, `${name} is marked built-in`);
+  }
+});
+
 test('a new role never takes a built-in name, and so never inherits its seeded permissions', async () => {
   const admin = await login('chief');
   const r = await req('POST', '/api/access/roles', { cookie: admin, body: { label: 'Workshop' } });
   assert.strictEqual(r.status, 201, r.text);
   assert.notStrictEqual(r.body.name, 'workshop');
   assert.deepStrictEqual(r.body.caps, []);
+  const v = await req('POST', '/api/access/roles', { cookie: admin, body: { label: 'Viewer 2' } });
+  assert.strictEqual(v.status, 201);
+  run("DELETE FROM roles WHERE name = 'viewer'");   // even with the built-in row gone…
+  const v2 = await req('POST', '/api/access/roles', { cookie: admin, body: { label: 'Viewer' } });
+  assert.strictEqual(v2.status, 201, v2.text);
+  assert.notStrictEqual(v2.body.name, 'viewer', '…the name stays reserved');
+  assert.strictEqual(permissions.levelForRoles([v2.body.name], 'stores'), 'none', 'no seeded clearance inherited');
+  run("INSERT INTO roles (name, label, is_system) VALUES ('viewer', 'Built-in viewer', 1)");
   assert.strictEqual((await req('POST', '/api/access/roles', { cookie: admin, body: { label: 'workshop' } })).status, 409, 'labels are unique');
 });
 

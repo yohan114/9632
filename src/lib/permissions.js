@@ -152,6 +152,6 @@ function setPermission(role, moduleKey, level) {
 }
 
 module.exports = {
-  LEVELS, MODULES, MODULE_KEYS, rank, meets,
+  LEVELS, MODULES, MODULE_KEYS, DEFAULT_MATRIX, rank, meets,
   seedDefaults, levelForRoles, userPermissions, requireModule, getMatrix, setPermission,
 };

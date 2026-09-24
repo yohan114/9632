@@ -132,9 +132,13 @@ const CAP_KEYS = CAPABILITIES.map((c) => c.key);
 const BY_KEY = new Map(CAPABILITIES.map((c) => [c.key, c]));
 const isCapability = (k) => BY_KEY.has(k);
 
-// Role names the code once decided access by. A new role may not take one of these names: it
-// would silently inherit that role's seeded grants.
-const RESERVED_ROLE_NAMES = new Set(['admin', ...CAPABILITIES.flatMap((c) => c.legacy)]);
+// The roles that ship with the system: every role named by an old check (its capabilities are
+// seeded by name) AND every role in the default clearance matrix (its section levels are seeded by
+// name). A new role may not take one of these names, or it would silently inherit that seeding —
+// and they are marked built-in on the Access screen. Viewer and main storekeeper are only in the
+// second list: no old check ever named them.
+const RESERVED_ROLE_NAMES = new Set(['admin', ...CAPABILITIES.flatMap((c) => c.legacy),
+  ...Object.keys(require('./permissions').DEFAULT_MATRIX)]);
 
 /**
  * Give every built-in role the capabilities it had under the old checks. Idempotent (INSERT OR
