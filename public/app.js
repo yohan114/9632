@@ -746,6 +746,7 @@ const NAV = [
   ['jobrequests', '📋', 'Job Requests'],
   ['dailywork', '📅', 'Daily Work'],
   ['services', '🛠️', 'Service Records'],
+  ['lubecapacities', '🛢️', 'Lubricant Capacities'],
   ['assets', '🚜', 'Assets'],
   ['labour', '💵', 'Labour Rates'],
   ['stores', '📦', 'Stores'],
@@ -764,7 +765,7 @@ const NAV = [
 ];
 // Which permission module governs each nav item's visibility (dashboard always on).
 const NAV_MODULE = {
-  assets: 'assets', jobs: 'jobs', jobrequests: 'jobrequests', dailywork: 'dailywork', services: 'filters',
+  assets: 'assets', jobs: 'jobs', jobrequests: 'jobrequests', dailywork: 'dailywork', services: 'filters', lubecapacities: 'jobs',
   labour: 'labour', stores: 'stores', stocktake: 'stores', stockcockpit: 'stores', generalstock: 'stores', oil: 'oil', batteries: 'batteries', filters: 'filters', filterstock: 'filters',
   projects: 'projects', aliases: 'aliases', attention: 'reports', progress: 'reports',
   teardown: 'reports', reports: 'reports', tyrebattery: 'reports',
@@ -786,7 +787,7 @@ function navVisible(n) {
 // Sidebar grouping — headings shown above each cluster (a group with no visible item is hidden).
 const NAV_GROUP_ORDER = ['Operations', 'Inventory', 'Procurement', 'Fleet', 'Analysis', 'Admin'];
 const NAV_GROUP = {
-  dashboard: 'Operations', jobs: 'Operations', jobrequests: 'Operations', dailywork: 'Operations', services: 'Operations',
+  dashboard: 'Operations', jobs: 'Operations', jobrequests: 'Operations', dailywork: 'Operations', services: 'Operations', lubecapacities: 'Operations',
   stores: 'Inventory', stocktake: 'Inventory',
   purchasing: 'Procurement', tbrequests: 'Procurement',
   assets: 'Fleet', serviceplan: 'Fleet',
@@ -5455,6 +5456,338 @@ async function renderServiceRecords(c) {
   }
   await load();
 }
+
+// ---- Operations: Vehicle Lubricant Capacities (Fleet_Oil_Lubricant_Capacities.xlsx) ---
+routes.lubecapacities = async (c) => {
+  const isAdmin = canDo('fleet.capacities.edit');   // may edit capacities (admin, unless given to another role)
+  c.innerHTML = `
+    ${pageHeader('Lubricant Capacities', 'Vehicle-wise oil & fluid capacities · Engine, gearbox, differential, hydraulics, coolant, and brake fluid')}
+    <div id="lcap-pane"></div>
+  `;
+  await renderVehicleCapacitiesList(qs('#lcap-pane', c), isAdmin);
+};
+
+async function renderVehicleCapacitiesList(c, isAdmin) {
+  c.innerHTML = `
+    <div id="vlc-kpi" class="kpi-grid" style="margin-bottom:14px;display:grid;grid-template-columns:repeat(auto-fit, minmax(130px, 1fr));gap:8px">
+      <div class="card" style="padding:10px 12px;margin:0"><div class="muted" style="font-size:11px">TOTAL FLEET</div><div style="font-size:20px;font-weight:700" id="kpi-tot">—</div></div>
+      <div class="card" style="padding:10px 12px;margin:0"><div class="muted" style="font-size:11px">CATEGORIES</div><div style="font-size:20px;font-weight:700" id="kpi-cat">—</div></div>
+      <div class="card" style="padding:10px 12px;margin:0"><div class="muted" style="font-size:11px">ENGINE OIL SPECS</div><div style="font-size:20px;font-weight:700" id="kpi-eng">—</div></div>
+      <div class="card" style="padding:10px 12px;margin:0"><div class="muted" style="font-size:11px">HYDRAULIC SPECS</div><div style="font-size:20px;font-weight:700" id="kpi-hyd">—</div></div>
+      <div class="card" style="padding:10px 12px;margin:0"><div class="muted" style="font-size:11px">GEAR / DIFF SPECS</div><div style="font-size:20px;font-weight:700" id="kpi-gr">—</div></div>
+      <div class="card" style="padding:10px 12px;margin:0"><div class="muted" style="font-size:11px">OWN HISTORY</div><div style="font-size:20px;font-weight:700;color:var(--primary)" id="kpi-own">—</div></div>
+    </div>
+
+    <div class="toolbar" style="margin-bottom:12px;gap:8px;flex-wrap:wrap">
+      <input type="text" id="vlc-q" placeholder="Search vehicle code, reg, brand, model, category…" style="max-width:300px">
+      <select id="vlc-cat" style="max-width:180px"><option value="">All Categories</option></select>
+      <select id="vlc-basis" style="max-width:170px">
+        <option value="">All Evidence Types</option>
+        <option value="Own record">Own record (Green)</option>
+        <option value="Same model">Same model (Blue)</option>
+        <option value="Category median">Category median (Purple)</option>
+        <option value="Estimate">Estimate (Orange)</option>
+      </select>
+      <div class="spacer"></div>
+      ${isAdmin ? '<button class="primary sm" id="vlc-btn-new">+ Add Vehicle Capacity</button>' : '<span class="muted" style="font-size:12px;align-self:center">🔒 Admin only can edit</span>'}
+    </div>
+    <div id="vlc-table-wrap" class="muted">Loading table…</div>
+  `;
+
+  let deb;
+  const load = async () => {
+    const q = qs('#vlc-q', c).value.trim();
+    const cat = qs('#vlc-cat', c).value;
+    const basis = qs('#vlc-basis', c).value;
+
+    let url = '/lubricant-capacities?limit=520';
+    if (q) url += '&q=' + encodeURIComponent(q);
+    if (cat) url += '&category=' + encodeURIComponent(cat);
+    if (basis) url += '&basis=' + encodeURIComponent(basis);
+
+    try {
+      const data = await api(url);
+      const items = data.items || [];
+      const summary = data.summary || {};
+
+      qs('#kpi-tot', c).textContent = num(summary.total_vehicles || items.length);
+      qs('#kpi-cat', c).textContent = num(summary.total_categories || (data.categories || []).length);
+      qs('#kpi-eng', c).textContent = num(summary.count_engine_oil || 0);
+      qs('#kpi-hyd', c).textContent = num(summary.count_hydraulic || 0);
+      qs('#kpi-gr', c).textContent = num((summary.count_gearbox || 0) + (summary.count_diff || 0));
+      qs('#kpi-own', c).textContent = num(summary.count_own_records || 0);
+
+      // Populate category filter once
+      const catSelect = qs('#vlc-cat', c);
+      if (catSelect && catSelect.children.length <= 1 && data.categories) {
+        catSelect.innerHTML = '<option value="">All Categories (' + data.categories.length + ')</option>' +
+          data.categories.map((k) => `<option value="${esc(k.category)}">${esc(k.category)} (${k.count})</option>`).join('');
+        if (cat) catSelect.value = cat;
+      }
+
+      if (!items.length) {
+        qs('#vlc-table-wrap', c).innerHTML = '<div class="card"><p class="muted">No vehicle lubricant capacities match your search criteria.</p></div>';
+        return;
+      }
+
+      const basisBadge = (b) => {
+        if (!b) return '—';
+        if (b.includes('Own record')) return '<span class="badge green" title="Derived from this vehicle\'s own service history">Own record</span>';
+        if (b.includes('Same model')) return '<span class="badge blue" title="Derived from same brand/model vehicles">Same model</span>';
+        if (b.includes('Category median')) return '<span class="badge" style="background:#8a4fff;color:#fff" title="Median of other vehicles in category">Category median</span>';
+        if (b.includes('Estimate')) return '<span class="badge amber" title="Typical equipment class estimate">Estimate</span>';
+        return `<span class="badge">${esc(b)}</span>`;
+      };
+
+      const headers = [
+        { label: 'Vehicle' },
+        { label: 'Category' },
+        { label: 'Brand & Model' },
+        { label: 'Year', width: '60px' },
+        { label: 'Engine Oil', num: true },
+        { label: 'Gearbox', num: true },
+        { label: 'Diff / Axle', num: true },
+        { label: 'Hydraulic', num: true },
+        { label: 'Other Fluids', num: true },
+        { label: 'Evidence Basis' },
+        { label: 'Actions', width: isAdmin ? '130px' : '75px' },
+      ];
+
+      const rows = items.map((it) => {
+        const engText = it.engine_oil_l != null ? `<b>${num(it.engine_oil_l)} L</b>${it.engine_oil_grade ? `<br><span class="muted" style="font-size:11px">${esc(it.engine_oil_grade)}</span>` : ''}` : '<span class="muted">—</span>';
+        const gearText = it.gearbox_oil_l != null ? `${num(it.gearbox_oil_l)} L${it.gearbox_oil_grade ? `<br><span class="muted" style="font-size:11px">${esc(it.gearbox_oil_grade)}</span>` : ''}` : '<span class="muted">—</span>';
+        const diffText = it.diff_oil_l != null ? `${num(it.diff_oil_l)} L${it.diff_oil_grade ? `<br><span class="muted" style="font-size:11px">${esc(it.diff_oil_grade)}</span>` : ''}` : '<span class="muted">—</span>';
+        const hydText = it.hydraulic_oil_l != null ? `<b>${num(it.hydraulic_oil_l)} L</b>` : '<span class="muted">—</span>';
+
+        const otherParts = [];
+        if (it.front_axle_oil_l) otherParts.push(`Front: ${num(it.front_axle_oil_l)}L`);
+        if (it.final_drive_oil_l) otherParts.push(`Final: ${num(it.final_drive_oil_l)}L`);
+        if (it.swing_oil_l) otherParts.push(`Swing: ${num(it.swing_oil_l)}L`);
+        if (it.coolant_l) otherParts.push(`Coolant: ${num(it.coolant_l)}L`);
+        if (it.brake_fluid_l) otherParts.push(`Brake: ${num(it.brake_fluid_l)}L`);
+        const otherText = otherParts.length ? `<span style="font-size:11px">${otherParts.slice(0, 2).join('<br>')}${otherParts.length > 2 ? `<br><span class="muted">+${otherParts.length - 2} more</span>` : ''}</span>` : '<span class="muted">—</span>';
+
+        const vehLabel = `<b>${esc(it.ec_no || it.registration || 'Vehicle #' + it.id)}</b>${(it.ec_no && it.registration) ? `<br><span class="muted" style="font-size:11px">${esc(it.registration)}</span>` : ''}`;
+
+        return `<tr>
+          <td><a href="javascript:void(0)" class="vlc-view-link" data-id="${it.id}" style="text-decoration:none">${vehLabel}</a></td>
+          <td><span class="badge" style="font-size:11px">${esc(it.category || '—')}</span></td>
+          <td><b>${esc(it.brand || '—')}</b> ${esc(it.model || '')}</td>
+          <td>${esc(it.year || '—')}</td>
+          <td class="num">${engText}</td>
+          <td class="num">${gearText}</td>
+          <td class="num">${diffText}</td>
+          <td class="num">${hydText}</td>
+          <td class="num">${otherText}</td>
+          <td>${basisBadge(it.engine_oil_basis)}${it.engine_oil_records > 0 ? `<br><span class="muted" style="font-size:10.5px">${it.engine_oil_records} record${it.engine_oil_records === 1 ? '' : 's'}</span>` : ''}</td>
+          <td>
+            <button type="button" class="btn sm vlc-btn-view" data-id="${it.id}" title="View details and evidence">🔍 Details</button>
+            ${isAdmin ? `<button type="button" class="btn sm vlc-btn-edit" data-id="${it.id}" title="Edit capacity values">✏️ Edit</button>` : ''}
+          </td>
+        </tr>`;
+      });
+
+      qs('#vlc-table-wrap', c).innerHTML = tableWrap(headers, rows, { scroll: true });
+
+      // Wire detail views
+      qsa('.vlc-btn-view, .vlc-view-link', c).forEach((el) => {
+        el.onclick = () => showVehicleCapacityModal(el.dataset.id, isAdmin, load);
+      });
+
+      // Wire admin edit
+      if (isAdmin) {
+        qsa('.vlc-btn-edit', c).forEach((btn) => {
+          btn.onclick = () => showVehicleCapacityEditModal(btn.dataset.id, load);
+        });
+      }
+
+    } catch (e) {
+      qs('#vlc-table-wrap', c).innerHTML = `<div class="card"><p class="err">${esc(e.message)}</p></div>`;
+    }
+  };
+
+  qs('#vlc-q', c).oninput = () => { clearTimeout(deb); deb = setTimeout(load, 250); };
+  qs('#vlc-cat', c).onchange = load;
+  qs('#vlc-basis', c).onchange = load;
+
+  if (isAdmin && qs('#vlc-btn-new', c)) {
+    qs('#vlc-btn-new', c).onclick = () => showVehicleCapacityEditModal(null, load);
+  }
+
+  await load();
+}
+
+// Modal: Detailed View of Vehicle Capacities + Service Evidence History
+async function showVehicleCapacityModal(id, isAdmin, onReload) {
+  try {
+    const data = await api('/lubricant-capacities/' + id);
+    const it = data.item;
+    const evidence = data.evidence || [];
+
+    const fieldBlock = (label, val, unit = 'L', grade = null) => `
+      <div style="background:#f8fafc;border:1px solid var(--border);border-radius:6px;padding:8px 10px">
+        <div class="muted" style="font-size:11px;text-transform:uppercase">${esc(label)}</div>
+        <div style="font-size:16px;font-weight:700;margin-top:2px">
+          ${val != null ? num(val) + ' ' + unit : '<span class="muted" style="font-weight:400">—</span>'}
+        </div>
+        ${grade ? `<div class="muted" style="font-size:11px;margin-top:2px">Grade: <b>${esc(grade)}</b></div>` : ''}
+      </div>
+    `;
+
+    const modalHtml = `
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:8px">
+        <div>
+          <h3 style="margin:0">${esc(it.ec_no || '')} ${it.registration ? `· ${esc(it.registration)}` : ''}</h3>
+          <p class="muted" style="margin:2px 0 0;font-size:12.5px">${esc(it.category || '')} · <b>${esc(it.brand || '')}</b> ${esc(it.model || '')} ${it.year ? `(${esc(it.year)})` : ''}</p>
+        </div>
+        ${isAdmin ? `<button class="btn sm" id="vlc-modal-edit">✏️ Edit Specifications</button>` : ''}
+      </div>
+
+      <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(140px, 1fr));gap:8px;margin-bottom:14px">
+        ${fieldBlock('Engine Oil', it.engine_oil_l, 'L', it.engine_oil_grade)}
+        ${fieldBlock('Gearbox / Trans', it.gearbox_oil_l, 'L', it.gearbox_oil_grade)}
+        ${fieldBlock('Differential / Axle', it.diff_oil_l, 'L', it.diff_oil_grade)}
+        ${fieldBlock('Hydraulic Oil', it.hydraulic_oil_l, 'L')}
+        ${fieldBlock('Front Axle / Hub', it.front_axle_oil_l, 'L')}
+        ${fieldBlock('Final Drive', it.final_drive_oil_l, 'L')}
+        ${fieldBlock('Swing Motor', it.swing_oil_l, 'L')}
+        ${fieldBlock('Other Gearbox', it.other_gearbox_oil_l, 'L')}
+        ${fieldBlock('Coolant', it.coolant_l, 'L')}
+        ${fieldBlock('Brake Fluid', it.brake_fluid_l, 'L')}
+      </div>
+
+      <div class="card section" style="background:#fff">
+        <div style="font-weight:700;font-size:12px;margin-bottom:4px">Capacity Attribution Basis</div>
+        <p style="margin:0;font-size:12px"><b>${esc(it.engine_oil_basis || 'Standard specification')}</b></p>
+        ${it.notes ? `<p class="muted" style="margin:4px 0 0;font-size:11.5px">Notes: ${esc(it.notes)}</p>` : ''}
+      </div>
+    `;
+
+    modal('Vehicle Lubricant Capacities', modalHtml, (body, close) => {
+      if (isAdmin && qs('#vlc-modal-edit', body)) {
+        qs('#vlc-modal-edit', body).onclick = () => {
+          close();
+          showVehicleCapacityEditModal(id, onReload);
+        };
+      }
+    });
+
+  } catch (e) {
+    toast('Error loading vehicle details: ' + e.message, 'err');
+  }
+}
+
+// Modal: Admin Edit Vehicle Capacity
+async function showVehicleCapacityEditModal(id, onDone) {
+  let existing = null;
+  if (id) {
+    try {
+      const res = await api('/lubricant-capacities/' + id);
+      existing = res.item;
+    } catch (e) {
+      toast('Failed to load record: ' + e.message, 'err');
+      return;
+    }
+  }
+
+  const it = existing || {};
+  const isNew = !id;
+
+  const formHtml = `
+    <div class="row">
+      ${field('E&C Vehicle No. *', 'ec_no', { value: it.ec_no || '', placeholder: 'e.g. AP-06, EX-14, 28-4314' })}
+      ${field('Registration No.', 'registration', { value: it.registration || '', placeholder: 'e.g. WP NA-1234' })}
+    </div>
+    <div class="row">
+      ${field('Category *', 'category', { value: it.category || '', placeholder: 'e.g. Dump Truck, Excavator' })}
+      ${field('Brand', 'brand', { value: it.brand || '', placeholder: 'e.g. Caterpillar, Komatsu, Tata' })}
+    </div>
+    <div class="row">
+      ${field('Model', 'model', { value: it.model || '', placeholder: 'e.g. 320D, PC200, 1618' })}
+      ${field('Manufacturing Year', 'year', { value: it.year || '', placeholder: 'e.g. 2018' })}
+    </div>
+
+    <div style="font-weight:700;margin:12px 0 6px;border-bottom:1px solid var(--border);padding-bottom:4px">🛢️ Oil & Fluid Capacities (Litres per fill)</div>
+    <div class="row">
+      ${field('Engine Oil (L)', 'engine_oil_l', { type: 'number', step: '0.1', value: it.engine_oil_l ?? '' })}
+      ${field('Engine Oil Grade', 'engine_oil_grade', { value: it.engine_oil_grade || '', placeholder: 'e.g. 15W-40 CI-4' })}
+    </div>
+    <div class="row">
+      ${field('Gearbox Oil (L)', 'gearbox_oil_l', { type: 'number', step: '0.1', value: it.gearbox_oil_l ?? '' })}
+      ${field('Gearbox Grade', 'gearbox_oil_grade', { value: it.gearbox_oil_grade || '', placeholder: 'e.g. 80W-90, 85W-140' })}
+    </div>
+    <div class="row">
+      ${field('Differential Oil (L)', 'diff_oil_l', { type: 'number', step: '0.1', value: it.diff_oil_l ?? '' })}
+      ${field('Diff Grade', 'diff_oil_grade', { value: it.diff_oil_grade || '', placeholder: 'e.g. 85W-140 GL-5' })}
+    </div>
+    <div class="row">
+      ${field('Hydraulic Oil (L)', 'hydraulic_oil_l', { type: 'number', step: '0.1', value: it.hydraulic_oil_l ?? '' })}
+      ${field('Front Axle / Hub (L)', 'front_axle_oil_l', { type: 'number', step: '0.1', value: it.front_axle_oil_l ?? '' })}
+    </div>
+    <div class="row">
+      ${field('Final Drive (L)', 'final_drive_oil_l', { type: 'number', step: '0.1', value: it.final_drive_oil_l ?? '' })}
+      ${field('Swing Motor (L)', 'swing_oil_l', { type: 'number', step: '0.1', value: it.swing_oil_l ?? '' })}
+    </div>
+    <div class="row">
+      ${field('Other Gearbox (L)', 'other_gearbox_oil_l', { type: 'number', step: '0.1', value: it.other_gearbox_oil_l ?? '' })}
+      ${field('Coolant (L)', 'coolant_l', { type: 'number', step: '0.1', value: it.coolant_l ?? '' })}
+    </div>
+    <div class="row">
+      ${field('Brake Fluid (L)', 'brake_fluid_l', { type: 'number', step: '0.1', value: it.brake_fluid_l ?? '' })}
+      ${field('Evidence Basis', 'engine_oil_basis', { value: it.engine_oil_basis || 'Own record: verified', placeholder: 'e.g. Own record, OEM spec' })}
+    </div>
+    ${field('Notes & Remarks', 'notes', { value: it.notes || '', placeholder: 'Special fill instructions, component notes…' })}
+
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-top:16px;padding-top:10px;border-top:1px solid var(--border)">
+      ${!isNew ? `<button type="button" class="btn sm err" id="vlc-form-del">🗑️ Delete Vehicle</button>` : '<div></div>'}
+      <div style="display:flex;gap:8px">
+        <button type="button" class="btn sm" id="vlc-form-cancel">Cancel</button>
+        <button type="button" class="primary sm" id="vlc-form-save">${isNew ? 'Create Vehicle' : 'Save Changes'}</button>
+      </div>
+    </div>
+  `;
+
+  modal(isNew ? 'New Vehicle Capacity Record' : 'Edit Lubricant Capacity · ' + (it.ec_no || it.registration), formHtml, (body, close) => {
+    qs('#vlc-form-cancel', body).onclick = close;
+
+    if (!isNew && qs('#vlc-form-del', body)) {
+      qs('#vlc-form-del', body).onclick = async () => {
+        if (!confirm('Are you sure you want to delete this vehicle lubricant capacity record?')) return;
+        try {
+          await api('/lubricant-capacities/' + id, { method: 'DELETE' });
+          toast('Vehicle capacity record deleted');
+          close();
+          if (onDone) onDone();
+        } catch (e) {
+          toast(e.message, 'err');
+        }
+      };
+    }
+
+    qs('#vlc-form-save', body).onclick = async () => {
+      const data = formData(body);
+      if (!data.ec_no && !data.registration) {
+        return toast('Please provide an E&C vehicle number or registration', 'err');
+      }
+
+      try {
+        if (isNew) {
+          await api('/lubricant-capacities', { method: 'POST', body: data });
+          toast('Vehicle lubricant capacity created');
+        } else {
+          await api('/lubricant-capacities/' + id, { method: 'PUT', body: data });
+          toast('Vehicle capacity specifications updated');
+        }
+        close();
+        if (onDone) onDone();
+      } catch (e) {
+        toast(e.message, 'err');
+      }
+    };
+  });
+}
+
+
 
 // Full "Vehicle / Machinery Service Details" form — matches the paper layout.
 // The same form records a service and edits one back: `existing` is the payload from

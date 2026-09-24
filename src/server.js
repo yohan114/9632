@@ -103,8 +103,8 @@ app.use('/api/dashboard', require('./routes/dashboard'));
 app.use('/api/mechanics', require('./routes/mechanics'));
 app.use('/api/users', require('./routes/users'));
 app.use('/api/reports', require('./routes/reports'));
-// Gated on the reports module: GET needs reports:view (all roles), price/override writes need
-// reports:edit (managers/admin) — a read-only viewer can't tamper with cost-report pricing.
+// Vehicle lubricant capacities from Fleet_Oil_Lubricant_Capacities.xlsx
+app.use('/api/lubricant-capacities', require('./routes/lubricant_capacities'));
 app.use('/api/tyre-battery', requireModule('reports'), require('./routes/tyre_battery'));
 // Requesting, issuing and accounting for the old unit. Mounted apart from the reporting routes
 // above because those are gated on `reports` — a storekeeper who may not read cost reports still
