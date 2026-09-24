@@ -18,7 +18,7 @@
 
 const express = require('express');
 const { get, all, run, tx } = require('../db');
-const { requireAuth, requireRole } = require('../lib/auth');
+const { requireAuth, requireCap } = require('../lib/auth');
 const { requireModule } = require('../lib/permissions');
 const { asyncHandler, require_, toInt, toNum } = require('../lib/http');
 const tb = require('../lib/tyre_battery');
@@ -68,7 +68,7 @@ router.get('/specs/resolve', requireAuth, asyncHandler((req, res) => {
 
 // Setting a price is a manager's call, not a storekeeper's. Marked as set by a person so the
 // workbook re-seed never overwrites it.
-router.patch('/specs/:id', requireRole('manager', 'operational_manager'), asyncHandler((req, res) => {
+router.patch('/specs/:id', requireCap('tb.specs.edit'), asyncHandler((req, res) => {
   const spec = get('SELECT * FROM tb_specs WHERE id = ?', toInt(req.params.id));
   if (!spec) return res.status(404).json({ error: 'No such specification' });
   const price = req.body.unit_price === '' || req.body.unit_price == null ? null : toNum(req.body.unit_price);

@@ -2,7 +2,7 @@
 
 const express = require('express');
 const { get, all, run, tx } = require('../db');
-const { requireAuth, requireRole } = require('../lib/auth');
+const { requireAuth, requireCap, hasCap } = require('../lib/auth');
 const { asyncHandler, toInt, toNum } = require('../lib/http');
 const config = require('../config');
 const costing = require('../lib/costing');
@@ -805,20 +805,21 @@ router.get('/monthly/:month/asset/:id', asyncHandler((req, res) => {
 // ---- role-aware "pending your approval" queue (for the dashboard) ----------
 // Only live, in-flow MRNs (a real requester name) count — imported history has none.
 router.get('/pending-approvals', asyncHandler((req, res) => {
-  const roles = (req.user && req.user.roles) || [];
-  const has = (r) => roles.includes('admin') || roles.includes(r);
+  // Each queue is shown to whoever may act on it — the same capability the approve/certify
+  // endpoint itself requires, so a role an admin creates sees exactly the queues it can clear.
+  const may = (cap) => hasCap(req.user, cap);
   const out = { certify: [], approve: [], transport: [], ops: [], jr_certify: [], jr_approve: [] };
   const INFLOW = "approval_status = 'requested' AND requested_by IS NOT NULL AND TRIM(requested_by) <> ''";
   const lineCount = '(SELECT COUNT(*) FROM mrn_lines ml WHERE ml.mrn_id = m.id) lines';
-  if (has('workshop') || has('manager')) {
+  if (may('stores.mrn.certify')) {
     out.certify = all(`SELECT m.id, m.mrn_no, m.req_date, m.requested_by, a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec, ${lineCount}
         FROM mrn m LEFT JOIN assets a ON a.id = m.asset_id WHERE ${INFLOW} ORDER BY m.req_date DESC, m.id DESC LIMIT 50`);
   }
-  if (has('operational_manager') || has('manager')) {
+  if (may('stores.mrn.approve')) {
     out.approve = all(`SELECT m.id, m.mrn_no, m.req_date, m.requested_by, m.certified_by, m.certified_at, a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec, ${lineCount}
         FROM mrn m LEFT JOIN assets a ON a.id = m.asset_id WHERE m.approval_status = 'certified' ORDER BY m.certified_at DESC, m.id DESC LIMIT 50`);
   }
-  if (has('transport_manager')) {
+  if (may('jobs.approve_transport')) {
     // requested_at is what the approver is actually deciding on: a card raised three weeks ago and
     // one raised this morning need different answers, and the row used to show neither.
     out.transport = all(`SELECT j.id, j.job_no, j.requested_at, j.description,
@@ -826,20 +827,20 @@ router.get('/pending-approvals', asyncHandler((req, res) => {
         FROM job_cards j LEFT JOIN assets a ON a.id = j.asset_id
         WHERE j.status = 'REQUESTED' AND j.approved_transport_at IS NULL AND j.is_historical = 0 ORDER BY j.id DESC LIMIT 50`);
   }
-  if (has('operational_manager')) {
+  if (may('jobs.approve_operations')) {
     out.ops = all(`SELECT j.id, j.job_no, j.requested_at, j.description,
              a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec
         FROM job_cards j LEFT JOIN assets a ON a.id = j.asset_id
         WHERE j.approved_transport_at IS NOT NULL AND j.approved_ops_at IS NULL AND j.is_historical = 0 ORDER BY j.id DESC LIMIT 50`);
   }
   // Job Requests (Transport): Transport Manager certifies → Operational Manager approves.
-  if (has('transport_manager')) {
+  if (may('jobrequests.certify')) {
     out.jr_certify = all(`SELECT r.id, r.jr_no, r.req_date, r.requested_by, r.description,
           a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec
         FROM job_requests r LEFT JOIN assets a ON a.id = r.asset_id
         WHERE r.approval_status = 'requested' ORDER BY r.id DESC LIMIT 50`);
   }
-  if (has('operational_manager') || has('manager')) {
+  if (may('jobrequests.approve')) {
     out.jr_approve = all(`SELECT r.id, r.jr_no, r.req_date, r.requested_by, r.certified_by, r.description,
           a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec
         FROM job_requests r LEFT JOIN assets a ON a.id = r.asset_id
@@ -847,7 +848,8 @@ router.get('/pending-approvals', asyncHandler((req, res) => {
   }
   out.total = out.certify.length + out.approve.length + out.transport.length + out.ops.length
             + out.jr_certify.length + out.jr_approve.length;
-  out.is_approver = has('workshop') || has('operational_manager') || has('transport_manager') || has('manager');
+  out.is_approver = ['stores.mrn.certify', 'stores.mrn.approve', 'jobs.approve_transport', 'jobs.approve_operations',
+    'jobrequests.certify', 'jobrequests.approve'].some(may);
   res.json(out);
 }));
 
@@ -1571,7 +1573,7 @@ router.get('/repair-sections', requireAuth, asyncHandler(async (req, res) => {
   });
 }));
 
-router.post('/repair-sections/sync-labour', requireRole('admin', 'operational_manager', 'workshop'), asyncHandler((req, res) => {
+router.post('/repair-sections/sync-labour', requireCap('reports.repair_sections.sync'), asyncHandler((req, res) => {
   const year = toInt(req.body.year), month = toInt(req.body.month);
   if (!validPeriod(year, month)) return res.status(400).json({ error: 'year (YYYY) and month (1-12) are required' });
   const ym = `${year}-${String(month).padStart(2, '0')}`;
@@ -1640,7 +1642,7 @@ router.get('/daily/:kind/export.xlsx', requireAuth, asyncHandler(async (req, res
 
 // The supervisor's running notes for a job — they persist and carry into every later day.
 router.put('/daily/job-summary/notes/:jobId', requireAuth,
-  require('../lib/auth').requireRole('workshop', 'operational_manager', 'manager', 'storekeeper'),
+  require('../lib/auth').requireCap('reports.daily.notes'),
   asyncHandler((req, res) => {
     const id = toInt(req.params.jobId);
     if (!get('SELECT 1 v FROM job_cards WHERE id = ?', id)) return res.status(404).json({ error: 'Job not found' });
@@ -1657,7 +1659,7 @@ router.put('/daily/job-summary/notes/:jobId', requireAuth,
   }));
 
 router.put('/daily/pending-parts/notes/:lineId', requireAuth,
-  require('../lib/auth').requireRole('workshop', 'operational_manager', 'manager', 'storekeeper'),
+  require('../lib/auth').requireCap('reports.daily.notes'),
   asyncHandler((req, res) => {
     const id = toInt(req.params.lineId);
     if (!get('SELECT 1 v FROM mrn_lines WHERE id = ?', id)) return res.status(404).json({ error: 'Request line not found' });
@@ -1670,7 +1672,7 @@ router.put('/daily/pending-parts/notes/:lineId', requireAuth,
 
 // A remark against a receipt still waiting for its price ("invoice chased", "supplier to confirm").
 router.put('/daily/pending-price/notes/:grnId', requireAuth,
-  require('../lib/auth').requireRole('workshop', 'operational_manager', 'manager', 'storekeeper'),
+  require('../lib/auth').requireCap('reports.daily.notes'),
   asyncHandler((req, res) => {
     const id = toInt(req.params.grnId);
     if (!get('SELECT 1 v FROM grn WHERE id = ?', id)) return res.status(404).json({ error: 'Receipt not found' });

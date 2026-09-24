@@ -2,7 +2,7 @@
 
 const express = require('express');
 const { get, all, run, tx } = require('../db');
-const { requireRole } = require('../lib/auth');
+const { requireCap } = require('../lib/auth');
 const { asyncHandler, require_, toInt, toNum } = require('../lib/http');
 const audit = require('../lib/audit');
 const aliases = require('../lib/aliases');
@@ -98,7 +98,7 @@ router.get('/', asyncHandler((req, res) => {
                   FROM batteries b LEFT JOIN assets a ON a.id = b.current_asset_id ${where} ORDER BY b.serial_no`, ...params));
 }));
 
-router.post('/', requireRole('storekeeper'), asyncHandler((req, res) => {
+router.post('/', requireCap('batteries.register'), asyncHandler((req, res) => {
   const b = req.body;
   require_(b, ['serial_no']);
   if (get('SELECT id FROM batteries WHERE serial_no = ?', b.serial_no)) return res.status(409).json({ error: 'Serial already exists' });
@@ -172,7 +172,7 @@ router.get('/:id', asyncHandler((req, res) => {
 }));
 
 // Add one or several photos to a battery (no lifecycle event).
-router.post('/:id/photos', requireRole('storekeeper'), asyncHandler((req, res) => {
+router.post('/:id/photos', requireCap('batteries.photos'), asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   if (!get('SELECT id FROM batteries WHERE id = ?', id)) return res.status(404).json({ error: 'Battery not found' });
   const photos = (Array.isArray(req.body.photos) ? req.body.photos : [req.body.photo_path]).filter(Boolean);
@@ -183,7 +183,7 @@ router.post('/:id/photos', requireRole('storekeeper'), asyncHandler((req, res) =
   res.status(201).json(photosOf(id));
 }));
 
-router.delete('/:id/photos/:photoId', requireRole('storekeeper'), asyncHandler((req, res) => {
+router.delete('/:id/photos/:photoId', requireCap('batteries.photos'), asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   const p = get('SELECT * FROM battery_photos WHERE id = ? AND battery_id = ?', toInt(req.params.photoId), id);
   if (!p) return res.status(404).json({ error: 'Photo not found' });
@@ -200,7 +200,7 @@ router.delete('/:id/photos/:photoId', requireRole('storekeeper'), asyncHandler((
 
 // Legacy single-photo endpoint, kept working: a photo is added to the gallery, and clearing
 // still clears — which now means removing every photo, as it did when there could only be one.
-router.patch('/:id/photo', requireRole('storekeeper'), asyncHandler((req, res) => {
+router.patch('/:id/photo', requireCap('batteries.photos'), asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   if (!get('SELECT id FROM batteries WHERE id = ?', id)) return res.status(404).json({ error: 'Battery not found' });
   const p = req.body.photo_path;
@@ -215,7 +215,7 @@ router.patch('/:id/photo', requireRole('storekeeper'), asyncHandler((req, res) =
   res.json(get('SELECT * FROM batteries WHERE id = ?', id));
 }));
 
-router.post('/:id/event', requireRole('storekeeper'), asyncHandler((req, res) => {
+router.post('/:id/event', requireCap('batteries.event'), asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   const battery = get('SELECT * FROM batteries WHERE id = ?', id);
   if (!battery) return res.status(404).json({ error: 'Battery not found' });

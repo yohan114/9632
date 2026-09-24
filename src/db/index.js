@@ -87,6 +87,48 @@ function migrate() {
     level  TEXT NOT NULL DEFAULT 'none',
     PRIMARY KEY (role, module)
   );`);
+  // Capabilities — the individual actions a role may take (src/lib/capabilities.js). Keyed by role
+  // NAME like role_permissions. Taking a capability away sets granted = 0 instead of deleting the
+  // row, so the boot-time seed (INSERT OR IGNORE) can never quietly give it back.
+  db.exec(`CREATE TABLE IF NOT EXISTS role_capabilities (
+    role       TEXT NOT NULL,
+    capability TEXT NOT NULL,
+    granted    INTEGER NOT NULL DEFAULT 1,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (role, capability)
+  );`);
+  // Roles become data an admin manages: a description, whether it shipped with the system, and
+  // whether it is still in use (a retired role grants nothing, and is kept for the history).
+  ensureColumn('roles', 'description', 'TEXT');
+  ensureColumn('roles', 'is_system', 'INTEGER NOT NULL DEFAULT 0');
+  ensureColumn('roles', 'active', 'INTEGER NOT NULL DEFAULT 1');
+  ensureColumn('roles', 'created_at', 'TEXT');
+  // Two-factor sign-in (src/lib/mfa.js). The keys are stored encrypted (src/lib/secretbox.js).
+  ensureColumn('roles', 'require_mfa', 'INTEGER NOT NULL DEFAULT 0');
+  ensureColumn('users', 'mfa_enabled', 'INTEGER NOT NULL DEFAULT 0');
+  ensureColumn('users', 'mfa_secret', 'TEXT');
+  ensureColumn('users', 'mfa_pending_secret', 'TEXT');
+  ensureColumn('users', 'mfa_last_step', 'INTEGER');   // the last code's time step — a code works once
+  ensureColumn('users', 'mfa_enabled_at', 'TEXT');
+  ensureColumn('sessions', 'mfa_verified', 'INTEGER NOT NULL DEFAULT 0');
+  ensureColumn('sessions', 'last_seen_at', 'TEXT');   // last real input (mouse/keys/touch), for the idle timeout
+  db.exec(`CREATE TABLE IF NOT EXISTS mfa_recovery_codes (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    code_hash  TEXT NOT NULL,
+    used_at    TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_mfa_rc_user ON mfa_recovery_codes(user_id);
+  -- Between a right password and a right code: no session yet, only this short-lived token.
+  CREATE TABLE IF NOT EXISTS auth_challenges (
+    token      TEXT PRIMARY KEY,
+    user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    ip         TEXT,
+    attempts   INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    expires_at TEXT NOT NULL
+  );`);
   // Item category tree — exactly TWO levels: parent_id NULL = a top-level Category,
   // otherwise a Sub-category of that parent (the API refuses a third level). `code`
   // carries the 3-letter item_no prefix (ELE, TRN, FIL…) so catalogue numbering stays
@@ -374,6 +416,7 @@ function migrate() {
   ensureColumn('store_items', 'item_no', 'TEXT');          // catalogue number, e.g. FIL-0001
   ensureColumn('store_items', 'catalogue_kind', 'TEXT');   // part | consumable | service
   ensureColumn('store_items', 'part_numbers', 'TEXT');     // all merged part/reference codes ( | -joined)
+  ensureColumn('store_items', 'description', 'TEXT');
   ensureColumn('store_items', 'req_count', 'INTEGER');     // historical MRN request count
   ensureColumn('grn', 'purchase_source_norm', 'TEXT');
   ensureColumn('grn', 'priced_at', 'TEXT'); // when a unit price was first entered (procurement tracking)
@@ -600,6 +643,14 @@ function migrate() {
 
   // Seed the RBAC matrix once (safe to require here — db exports are already set).
   try { require('../lib/permissions').seedDefaults(); } catch (e) { /* table may not exist yet on very first pass */ }
+  // Seed the built-in roles' capabilities (idempotent) and mark those roles as shipped with the
+  // system, so the Access screen can tell them apart from roles an admin created.
+  {
+    const caps = require('../lib/capabilities');
+    caps.seedCapabilities();
+    const names = [...caps.RESERVED_ROLE_NAMES];
+    db.prepare(`UPDATE roles SET is_system = 1 WHERE is_system = 0 AND name IN (${names.map(() => '?').join(',')})`).run(...names);
+  }
   return db;
 }
 

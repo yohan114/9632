@@ -2,7 +2,7 @@
 
 const express = require('express');
 const { get, all, run, tx } = require('../db');
-const { requireRole } = require('../lib/auth');
+const { requireCap } = require('../lib/auth');
 const { asyncHandler, require_, toInt, toNum } = require('../lib/http');
 const audit = require('../lib/audit');
 const mechanics = require('../lib/mechanics');
@@ -19,7 +19,7 @@ router.get('/', asyncHandler((_req, res) => {
   ));
 }));
 
-router.post('/', requireRole('admin', 'manager'), asyncHandler((req, res) => {
+router.post('/', requireCap('mechanics.create'), asyncHandler((req, res) => {
   require_(req.body, ['name']);
   const m = mechanics.findOrCreateMechanic(req.body.name);
   audit.record({ userId: req.user.id, entity: 'mechanic', entityId: m.id, action: 'create' });
@@ -36,7 +36,7 @@ router.post('/resolve', asyncHandler((req, res) => {
 router.get('/rates', asyncHandler((_req, res) =>
   res.json(all('SELECT * FROM labour_rates ORDER BY mechanic, effective_from DESC'))));
 
-router.post('/rates', requireRole('admin', 'manager'), asyncHandler((req, res) => {
+router.post('/rates', requireCap('labour.rates.edit'), asyncHandler((req, res) => {
   const b = req.body;
   require_(b, ['mechanic', 'rate']);
   const m = mechanics.findOrCreateMechanic(b.mechanic); // keep the registry in step
@@ -89,7 +89,7 @@ router.get('/aliases', asyncHandler((req, res) => {
   }));
 }));
 
-router.post('/aliases/:id/link', requireRole('storekeeper', 'manager'), asyncHandler((req, res) => {
+router.post('/aliases/:id/link', requireCap('aliases.mechanic.resolve'), asyncHandler((req, res) => {
   require_(req.body, ['mechanic_id']);
   const id = toInt(req.params.id);
   if (!get('SELECT id FROM mechanic_aliases WHERE id = ?', id)) return res.status(404).json({ error: 'Alias not found' });

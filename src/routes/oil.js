@@ -3,7 +3,7 @@
 const express = require('express');
 const { get, all, run, tx } = require('../db');
 const config = require('../config');
-const { requireRole } = require('../lib/auth');
+const { requireCap } = require('../lib/auth');
 const { asyncHandler, require_, toInt, toNum } = require('../lib/http');
 const audit = require('../lib/audit');
 const aliases = require('../lib/aliases');
@@ -63,7 +63,7 @@ router.get('/aliases/unresolved', asyncHandler((req, res) => {
 }));
 
 /** Say what a remembered name is — or clear it back to unknown (product_id null). */
-router.patch('/aliases/:id', requireRole('storekeeper'), asyncHandler((req, res) => {
+router.patch('/aliases/:id', requireCap('oil.identity.resolve'), asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   const before = get('SELECT * FROM lubricant_aliases WHERE id = ?', id);
   if (!before) return res.status(404).json({ error: 'Name not found' });
@@ -94,7 +94,7 @@ router.get('/products', asyncHandler((_req, res) => {
   res.json(rows);
 }));
 
-router.post('/products', requireRole('storekeeper'), asyncHandler((req, res) => {
+router.post('/products', requireCap('oil.products.edit'), asyncHandler((req, res) => {
   const b = req.body;
   require_(b, ['name']);
   const result = tx(() => {
@@ -114,7 +114,7 @@ router.post('/products', requireRole('storekeeper'), asyncHandler((req, res) => 
   res.status(201).json(get('SELECT * FROM products WHERE id = ?', result));
 }));
 
-router.patch('/products/:id', requireRole('storekeeper'), asyncHandler((req, res) => {
+router.patch('/products/:id', requireCap('oil.products.edit'), asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   const before = get('SELECT * FROM products WHERE id = ?', id);
   if (!before) return res.status(404).json({ error: 'Product not found' });
@@ -139,7 +139,7 @@ router.patch('/products/:id', requireRole('storekeeper'), asyncHandler((req, res
 router.get('/products/:id/prices', asyncHandler((req, res) =>
   res.json(all('SELECT * FROM product_prices WHERE product_id = ? ORDER BY effective_from DESC, id DESC', toInt(req.params.id)))));
 
-router.post('/products/:id/prices', requireRole('storekeeper'), asyncHandler((req, res) => {
+router.post('/products/:id/prices', requireCap('oil.prices.edit'), asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   require_(req.body, ['unit_price']);
   const eff = req.body.effective_from || new Date().toISOString().slice(0, 10);
@@ -166,7 +166,7 @@ router.get('/ledger', asyncHandler((req, res) => {
        ${where} ORDER BY sl.id DESC LIMIT ${toInt(req.query.limit, 300)}`, ...params));
 }));
 
-router.post('/ledger', requireRole('storekeeper'), asyncHandler((req, res) => {
+router.post('/ledger', requireCap('oil.ledger.post'), asyncHandler((req, res) => {
   const b = req.body;
   require_(b, ['product_id', 'kind', 'qty']);
   // Single source of truth for service lubricants: they may ONLY be issued through the
@@ -319,7 +319,7 @@ router.get('/counts', asyncHandler((req, res) => {
   res.json(all(`SELECT sc.*, pr.name AS product_name FROM stock_counts sc JOIN products pr ON pr.id = sc.product_id ${where} ORDER BY sc.period DESC, pr.name`, ...params));
 }));
 
-router.post('/counts', requireRole('storekeeper'), asyncHandler((req, res) => {
+router.post('/counts', requireCap('oil.count'), asyncHandler((req, res) => {
   const b = req.body;
   require_(b, ['product_id', 'period', 'counted_qty']);
   const productId = toInt(b.product_id);

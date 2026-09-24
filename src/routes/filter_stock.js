@@ -8,7 +8,7 @@
 
 const express = require('express');
 const { get, all, run, tx } = require('../db');
-const { requireRole } = require('../lib/auth');
+const { requireCap } = require('../lib/auth');
 const { asyncHandler, require_, toInt, toNum } = require('../lib/http');
 const audit = require('../lib/audit');
 const emitter = require('../lib/emitter');
@@ -82,7 +82,7 @@ router.get('/:id/ledger', asyncHandler((req, res) => {
 }));
 
 // ---- create a new filter type ---------------------------------------------
-router.post('/', requireRole('storekeeper'), asyncHandler((req, res) => {
+router.post('/', requireCap('filters.stock.edit'), asyncHandler((req, res) => {
   const b = req.body;
   require_(b, ['filter_type']);
   const opening = toNum(b.qty_in_stock, 0);
@@ -107,7 +107,7 @@ router.post('/', requireRole('storekeeper'), asyncHandler((req, res) => {
 }));
 
 // ---- receive stock --------------------------------------------------------
-router.post('/:id/receive', requireRole('storekeeper'), asyncHandler((req, res) => {
+router.post('/:id/receive', requireCap('filters.stock.receive'), asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   const f = get('SELECT id, qty_in_stock, unit_cost FROM filter_stock WHERE id = ?', id);
   if (!f) return res.status(404).json({ error: 'Filter type not found' });
@@ -136,7 +136,7 @@ router.post('/:id/receive', requireRole('storekeeper'), asyncHandler((req, res) 
 }));
 
 // ---- issue stock to a vehicle / job ---------------------------------------
-router.post('/:id/issue', requireRole('storekeeper'), asyncHandler((req, res) => {
+router.post('/:id/issue', requireCap('filters.stock.issue'), asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   const f = get('SELECT id, qty_in_stock, unit_cost FROM filter_stock WHERE id = ?', id);
   if (!f) return res.status(404).json({ error: 'Filter type not found' });

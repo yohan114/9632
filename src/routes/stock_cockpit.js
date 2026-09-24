@@ -2,7 +2,7 @@
 
 const express = require('express');
 const { get, all, run, tx } = require('../db');
-const { requireAuth, requireRole } = require('../lib/auth');
+const { requireAuth, requireCap } = require('../lib/auth');
 const { asyncHandler, require_, toInt, toNum } = require('../lib/http');
 const audit = require('../lib/audit');
 const emitter = require('../lib/emitter');
@@ -316,7 +316,7 @@ router.get('/search', requireAuth, asyncHandler((req, res) => {
 }));
 
 // ---- 1-Click Auto-Draft Restock MRN ---------------------------------------
-router.post('/create-reorder-mrn', requireRole('storekeeper', 'workshop', 'manager', 'admin'), asyncHandler((req, res) => {
+router.post('/create-reorder-mrn', requireCap('stores.reorder_mrn'), asyncHandler((req, res) => {
   const b = req.body || {};
   const items = Array.isArray(b.items) ? b.items : [];
   if (!items.length) return res.status(400).json({ error: 'At least one item must be selected to generate a restock MRN' });
