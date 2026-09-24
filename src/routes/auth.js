@@ -281,7 +281,14 @@ router.get('/me', (req, res) => {
   // The session token is the key to this account; it lives in an httpOnly cookie precisely so page
   // script cannot read it. Echoing it back in a JSON body would undo that.
   const { token: _token, ...me } = req.user;
+  // Home workshop, and whether there is more than one (multi-site Stage 2): the screens show
+  // workshop pickers and filters only when there is.
+  const ws = require('../lib/workshops');
+  const home = ws.byId(ws.homeOf(req.user));
   res.json({ ...me, permissions: permissions.userPermissions(req.user.roles), hasSignature: !!(u && u.signature),
+    workshop: home ? { id: home.id, code: home.code, name: home.name } : null, workshopsMulti: ws.isMulti(),
+    // Stage 3: whether this person sees every workshop's job cards (always, until scoping is on).
+    seesAllWorkshops: require('../lib/scope').seesAllJobs(req.user),
     capNeeds: require('../lib/capabilities').needsFor(req.user.caps || []),
     sessionPolicy: sessionPolicy(),
     passwordPolicy: passwordPolicy.describe() });

@@ -108,10 +108,11 @@ function partialClose(job, { user, note = '', date = null, openNew = false, newJ
     if (openNew) {
       const desc = String(newJob.description || '').trim() || `Continued from ${job.job_no}${job.description ? ': ' + job.description : ''}`;
       newJobId = run(
-        `INSERT INTO job_cards (job_no, asset_id, project_id, site, type, description, status, requested_by, requested_by_user, continues_job_id)
-         VALUES (?, ?, ?, ?, ?, ?, 'REQUESTED', ?, ?, ?)`,
+        // Same workshop as the card it continues (Stage 2).
+        `INSERT INTO job_cards (job_no, asset_id, project_id, site, type, description, status, requested_by, requested_by_user, continues_job_id, workshop_id)
+         VALUES (?, ?, ?, ?, ?, ?, 'REQUESTED', ?, ?, ?, ?)`,
         jobno.nextJobNo(newType), job.asset_id, job.project_id || null, job.site || null, newType, desc.slice(0, 500),
-        (user && (user.fullName || user.username)) || null, user ? user.id : null, job.id).lastInsertRowid;
+        (user && (user.fullName || user.username)) || null, user ? user.id : null, job.id, job.workshop_id || null).lastInsertRowid;
     }
   });
   return { job: get('SELECT * FROM job_cards WHERE id = ?', job.id), newJobId, missing: readiness.missing };
@@ -201,17 +202,22 @@ function decideReopen(requestId, { user, approve, note, isAdmin = false }) {
 }
 
 /** Requests waiting for a decision — for "Pending your approval". */
-function pendingRequests({ excludeRequester = null } = {}) {
+function pendingRequests({ excludeRequester = null, workshopId = null } = {}) {
+  // workshopId: only that workshop's cards (Stage 3 scoping), else every workshop.
+  const params = [];
+  if (excludeRequester) params.push(excludeRequester);
+  if (workshopId) params.push(workshopId);
   return all(
     `SELECT r.id, r.job_id, r.reason, r.requested_at, r.requested_by, u.username AS requested_by_name,
-            j.job_no, j.status AS job_status, j.description,
+            j.job_no, j.status AS job_status, j.description, j.workshop_id,
             a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec
        FROM job_reopen_requests r
        JOIN job_cards j ON j.id = r.job_id
        LEFT JOIN users u ON u.id = r.requested_by
        LEFT JOIN assets a ON a.id = j.asset_id
       WHERE r.status = 'pending' ${excludeRequester ? 'AND COALESCE(r.requested_by, 0) <> ?' : ''}
-      ORDER BY r.id DESC LIMIT 50`, ...(excludeRequester ? [excludeRequester] : []));
+        ${workshopId ? 'AND j.workshop_id = ?' : ''}
+      ORDER BY r.id DESC LIMIT 50`, ...params);
 }
 
 function requestsFor(jobId) {

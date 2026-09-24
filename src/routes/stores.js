@@ -16,6 +16,8 @@ const emitter = require('../lib/emitter');
 const stock = require('../lib/stock');
 const jobstate = require('../lib/jobstate');
 const permissions = require('../lib/permissions');
+const places = require('../lib/places');
+const scope = require('../lib/scope');
 const { lineReceiptSql, mrnReceiptSql, receivedLabel, d10 } = require('../lib/received_date');
 const lubricants = require('../lib/lubricants');
 const approvalLimits = require('../lib/approval_limits');
@@ -589,6 +591,10 @@ router.get('/mrn', asyncHandler((req, res) => {
   const params = [];
   if (req.query.asset_id) { clauses.push('m.asset_id = ?'); params.push(toInt(req.query.asset_id)); }
   if (req.query.status) { clauses.push('m.status = ?'); params.push(req.query.status); }
+  // Which workshop asked (multi-site Stage 2).
+  if (req.query.workshop_id) { clauses.push('m.workshop_id = ?'); params.push(toInt(req.query.workshop_id)); }
+  // Stage 3: your own workshop's requests only (head office and store staff: all).
+  { const own = scope.filter(req.user, 'm.workshop_id'); if (own.sql) { clauses.push(own.sql); params.push(...own.params); } }
   // Approval-workflow tabs. 'pending' = live MRNs awaiting certification (excludes
   // imported history, whose approval_status is 'requested' but has no requester).
   if (req.query.approval) {
@@ -606,6 +612,7 @@ router.get('/mrn', asyncHandler((req, res) => {
   const order = MRN_SORTS[req.query.sort] || 'm.id DESC';
   res.json(all(
     `SELECT m.*, a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec, j.job_no,
+            (SELECT code FROM workshops w WHERE w.id = m.workshop_id) AS workshop_code,
             (SELECT COUNT(*)            FROM mrn_lines ml WHERE ml.mrn_id = m.id) AS line_count,
             (SELECT COALESCE(SUM(qty),0)          FROM mrn_lines ml WHERE ml.mrn_id = m.id) AS qty_requested,
             (SELECT COALESCE(SUM(qty_received),0) FROM mrn_lines ml WHERE ml.mrn_id = m.id) AS qty_received,
@@ -654,10 +661,11 @@ router.post('/mrn', requireCap('stores.mrn.create'), asyncHandler((req, res) => 
   const reqBy = String(b.requested_by || '').trim() || (ru ? (ru.full_name || ru.username) : null);
   const result = tx(() => {
     const info = run(
-      `INSERT INTO mrn (mrn_no, req_date, asset_id, project_id, job_id, purpose, requested_by, purchase_source, required_date, request_type)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO mrn (mrn_no, req_date, asset_id, project_id, job_id, purpose, requested_by, purchase_source, required_date, request_type, workshop_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       mrnNo, b.req_date || new Date().toISOString().slice(0, 10), assetId || null,
-      toInt(b.project_id), jobId, b.purpose || null, reqBy, source, b.required_date || null, requestType
+      toInt(b.project_id), jobId, b.purpose || null, reqBy, source, b.required_date || null, requestType,
+      require('../lib/workshops').forRequest(req.user, jobId)
     );
     const mrnId = info.lastInsertRowid;
     const lines = Array.isArray(b.lines) ? b.lines : [];
@@ -690,18 +698,22 @@ router.post('/mrn', requireCap('stores.mrn.create'), asyncHandler((req, res) => 
 // awaiting the Workshop Engineer's certification (approval_status 'requested'
 // with a real requester — imported history is excluded); 'certified' counts
 // those awaiting the Operational Manager's approval.
-router.get('/mrn/pending-count', asyncHandler((_req, res) => {
-  const pending = get(`SELECT COUNT(*) c FROM mrn WHERE approval_status = 'requested' AND requested_by IS NOT NULL AND TRIM(requested_by) <> ''`).c;
-  const certified = get(`SELECT COUNT(*) c FROM mrn WHERE approval_status = 'certified'`).c;
+router.get('/mrn/pending-count', asyncHandler((req, res) => {
+  const own = scope.filter(req.user, 'workshop_id');   // Stage 3: your own workshop's requests
+  const and = own.sql ? ` AND ${own.sql}` : '';
+  const pending = get(`SELECT COUNT(*) c FROM mrn WHERE approval_status = 'requested' AND requested_by IS NOT NULL AND TRIM(requested_by) <> ''${and}`, ...own.params).c;
+  const certified = get(`SELECT COUNT(*) c FROM mrn WHERE approval_status = 'certified'${and}`, ...own.params).c;
   res.json({ pending, certified, total_open: pending + certified });
 }));
 
 router.get('/mrn/:id', asyncHandler((req, res) => {
   const id = toInt(req.params.id);
+  { const no = scope.mrnRefusal(req.user, id); if (no) return res.status(403).json(no); }
   const mrn = get(`SELECT m.*, a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec,
-                          j.job_no, j.status AS job_status
+                          j.job_no, j.status AS job_status, w.name AS workshop_name
                      FROM mrn m LEFT JOIN assets a ON a.id = m.asset_id
-                     LEFT JOIN job_cards j ON j.id = m.job_id WHERE m.id = ?`, id);
+                     LEFT JOIN job_cards j ON j.id = m.job_id
+                     LEFT JOIN workshops w ON w.id = m.workshop_id WHERE m.id = ?`, id);
   if (!mrn) return res.status(404).json({ error: 'MRN not found' });
   // Its estimated value, and whether the viewer's approval limit covers it — for whoever approves.
   let worth = null;
@@ -724,6 +736,7 @@ const signer = (userId) => { const u = get('SELECT full_name, username, signatur
 
 router.post('/mrn/:id/certify', requireCap('stores.mrn.certify'), asyncHandler((req, res) => {
   const id = toInt(req.params.id);
+  { const no = scope.mrnRefusal(req.user, id); if (no) return res.status(403).json(no); }
   const mrn = get('SELECT * FROM mrn WHERE id = ?', id);
   if (!mrn) return res.status(404).json({ error: 'MRN not found' });
   if (mrn.approval_status === 'approved') return res.status(409).json({ error: 'Already approved — cannot re-certify' });
@@ -740,6 +753,7 @@ router.post('/mrn/:id/certify', requireCap('stores.mrn.certify'), asyncHandler((
 
 router.post('/mrn/:id/approve', requireCap('stores.mrn.approve'), asyncHandler((req, res) => {
   const id = toInt(req.params.id);
+  { const no = scope.mrnRefusal(req.user, id); if (no) return res.status(403).json(no); }
   const mrn = get('SELECT * FROM mrn WHERE id = ?', id);
   if (!mrn) return res.status(404).json({ error: 'MRN not found' });
   if (mrn.approval_status !== 'certified') return res.status(409).json({ error: 'MRN must be certified (Workshop Engineer) before Operational Manager approval' });
@@ -765,6 +779,7 @@ router.post('/mrn/:id/approve', requireCap('stores.mrn.approve'), asyncHandler((
 
 router.post('/mrn/:id/reject', requireCap('stores.mrn.reject'), asyncHandler((req, res) => {
   const id = toInt(req.params.id);
+  { const no = scope.mrnRefusal(req.user, id); if (no) return res.status(403).json(no); }
   const mrn = get('SELECT * FROM mrn WHERE id = ?', id);
   if (!mrn) return res.status(404).json({ error: 'MRN not found' });
   if (!String(req.body.reason || '').trim()) return res.status(400).json({ error: 'A reason is required to reject' });
@@ -783,6 +798,7 @@ router.post('/mrn/:id/reject', requireCap('stores.mrn.reject'), asyncHandler((re
 
 // Printable Material Requisition form (matches the paper EC1.ST.FO.01 layout).
 router.get('/mrn/:id/print.html', asyncHandler((req, res) => {
+  { const no = scope.mrnRefusal(req.user, toInt(req.params.id)); if (no) return res.status(403).json(no); }
   const id = toInt(req.params.id);
   const mrn = get('SELECT m.*, a.code AS asset_code, p.name AS project_name FROM mrn m LEFT JOIN assets a ON a.id = m.asset_id LEFT JOIN projects p ON p.id = m.project_id WHERE m.id = ?', id);
   if (!mrn) return res.status(404).send('MRN not found');
@@ -884,6 +900,7 @@ router.get('/mrn/:id/print.html', asyncHandler((req, res) => {
 }));
 
 router.post('/mrn/:id/lines', requireCap('stores.mrn.edit'), asyncHandler((req, res) => {
+  { const no = scope.mrnRefusal(req.user, toInt(req.params.id)); if (no) return res.status(403).json(no); }
   const id = toInt(req.params.id);
   require_(req.body, ['description', 'qty']);
   const mrn = get('SELECT * FROM mrn WHERE id = ?', id);
@@ -1243,6 +1260,7 @@ function resetCertification(mrn, userId, what) {
 const MRN_EDITABLE = ['purpose', 'requested_by', 'required_date', 'req_date', 'asset_id', 'project_id', 'job_id'];
 
 router.patch('/mrn/:id', requireCap('stores.mrn.edit'), asyncHandler((req, res) => {
+  { const no = scope.mrnRefusal(req.user, toInt(req.params.id)); if (no) return res.status(403).json(no); }
   const id = toInt(req.params.id);
   const g = guardEditable(id);
   if (g.error) return res.status(g.code).json({ error: g.error });
@@ -1281,6 +1299,7 @@ router.patch('/mrn/:id', requireCap('stores.mrn.edit'), asyncHandler((req, res) 
 const LINE_EDITABLE = ['description', 'unit', 'category'];
 
 router.patch('/mrn/line/:id', requireCap('stores.mrn.edit'), asyncHandler((req, res) => {
+  { const ln = get('SELECT mrn_id FROM mrn_lines WHERE id = ?', toInt(req.params.id)); const no = ln && scope.mrnRefusal(req.user, ln.mrn_id); if (no) return res.status(403).json(no); }
   const id = toInt(req.params.id);
   const line = get('SELECT * FROM mrn_lines WHERE id = ?', id);
   if (!line) return res.status(404).json({ error: 'MRN line not found' });
@@ -1324,6 +1343,7 @@ router.patch('/mrn/line/:id', requireCap('stores.mrn.edit'), asyncHandler((req, 
 // Remove a line from a request that has not been approved. Anything already received stays —
 // deleting the line would orphan a receipt that is physically on the shelf.
 router.delete('/mrn/line/:id', requireCap('stores.mrn.edit'), asyncHandler((req, res) => {
+  { const ln = get('SELECT mrn_id FROM mrn_lines WHERE id = ?', toInt(req.params.id)); const no = ln && scope.mrnRefusal(req.user, ln.mrn_id); if (no) return res.status(403).json(no); }
   const id = toInt(req.params.id);
   const line = get('SELECT * FROM mrn_lines WHERE id = ?', id);
   if (!line) return res.status(404).json({ error: 'MRN line not found' });
@@ -1822,6 +1842,8 @@ router.post('/stock-issue', requireCap('stores.stock_issue'), asyncHandler((req,
     jobId = open ? open.id : generalWorkshopJobId();
     landedOn = open ? open.job_no : 'General Workshop';
   }
+  // Stage 3: someone outside head office and the store issues only to their own workshop's cards.
+  { const no = scope.jobRefusal(req.user, jobId); if (no) return res.status(403).json(no); }
   const issueDate = /^\d{4}-\d{2}-\d{2}$/.test(String(b.issue_date || '')) ? b.issue_date : new Date().toISOString().slice(0, 10);
   const issuedBy = clean(b.issued_by) || null;
   const [yr, mo] = issueDate.split('-').map((n) => parseInt(n, 10)); // rollup period
@@ -2240,6 +2262,9 @@ router.post('/issues', requireCap('stores.issue'), asyncHandler((req, res) => {
 }));
 
 // ---- MTN ------------------------------------------------------------------
+// The places a transfer can go to or come from (Stage 2): workshops, projects, sites.
+router.get('/places', asyncHandler((_req, res) => res.json(places.list())));
+
 router.get('/mtn', asyncHandler((req, res) => {
   const clauses = [];
   const params = [];
@@ -2261,6 +2286,13 @@ router.get('/mtn', asyncHandler((req, res) => {
     'ml.reason', 'ml.category', 'mla.code', 'mla.registration', 'mlb.code', 'mlb.registration'].map(L).join(' OR ')}))`];
     params.push(...Array(12).fill(like), ...Array(9).fill(like));
     clauses.push('(' + ors.join(' OR ') + ')');
+  }
+  // Everything that went to or came from one place, on the note or on any of its items (Stage 2).
+  if (req.query.place && places.byKey(req.query.place)) {
+    const k = String(req.query.place);
+    clauses.push(`(t.from_place = ? OR t.to_place = ?
+                   OR EXISTS (SELECT 1 FROM mtn_lines ml WHERE ml.mtn_id = t.id AND (ml.from_place = ? OR ml.to_place = ?)))`);
+    params.push(k, k, k, k);
   }
   if (req.query.from && String(req.query.from).trim()) { clauses.push('date(t.txn_date) >= date(?)'); params.push(String(req.query.from).trim()); }
   if (req.query.to && String(req.query.to).trim()) { clauses.push('date(t.txn_date) <= date(?)'); params.push(String(req.query.to).trim()); }
@@ -2333,6 +2365,9 @@ function mtnLineValues(raw) {
     to_location: clean(raw.to_location),
     from_asset_id: resolveAssetId(raw, 'from').assetId || assetByCode(raw.from_location),
     to_asset_id: resolveAssetId(raw, 'to').assetId || assetByCode(raw.to_location),
+    // The place each end names, from the list (Stage 2) — picked, or read from the text.
+    from_place: places.forEnd(raw.from_place, raw.from_location),
+    to_place: places.forEnd(raw.to_place, raw.to_location),
     reason: clean(raw.reason),
   };
 }
@@ -2341,10 +2376,10 @@ function insertMtnLine(mtnId, raw, lineNo) {
   const v = mtnLineValues(raw);
   return run(
     `INSERT INTO mtn_lines (mtn_id, line_no, store_item_id, description, qty, unit, category, category_id,
-                            from_location, to_location, from_asset_id, to_asset_id, reason)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                            from_location, to_location, from_asset_id, to_asset_id, reason, from_place, to_place)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     mtnId, lineNo, v.store_item_id, v.description, v.qty, v.unit, v.category, v.category_id,
-    v.from_location, v.to_location, v.from_asset_id, v.to_asset_id, v.reason
+    v.from_location, v.to_location, v.from_asset_id, v.to_asset_id, v.reason, v.from_place, v.to_place
   ).lastInsertRowid;
 }
 
@@ -2360,6 +2395,20 @@ function incomingMtnLines(b) {
     : [];
 }
 
+// A note's two ends: the place picked from the list, or the one its text names (Stage 2). A place
+// picked with no text writes the place's name as the text, so every screen and printout that
+// reads the text still shows where the goods went.
+function endsOf(b) {
+  const out = {};
+  for (const side of ['from', 'to']) {
+    const key = places.forEnd(b[`${side}_place`], b[`${side}_location`]);
+    const text = clean(b[`${side}_location`]) || (b[`${side}_place`] && key ? places.byKey(key).label : '');
+    out[`${side}_place`] = key;
+    out[`${side}_location`] = text || null;
+  }
+  return out;
+}
+
 router.post('/mtn', requireCap('stores.mtn.edit'), asyncHandler((req, res) => {
   const b = req.body;
   const items = incomingMtnLines(b);
@@ -2372,13 +2421,15 @@ router.post('/mtn', requireCap('stores.mtn.edit'), asyncHandler((req, res) => {
   const n = mtnNoOrFail(b.mtn_no);
   if (n.error) return res.status(409).json({ error: n.error });
   const mtnNo = n.no;
+  const ends = endsOf(b);
   const id = tx(() => {
     const info = run(
-      `INSERT INTO mtn (mtn_no, txn_date, from_location, to_location, from_asset_id, to_asset_id, transferred_by, received_by, reason)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO mtn (mtn_no, txn_date, from_location, to_location, from_asset_id, to_asset_id, transferred_by, received_by, reason,
+                        from_place, to_place)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       mtnNo, b.txn_date || new Date().toISOString().slice(0, 10),
-      b.from_location || null, b.to_location || null, from.assetId || null, to.assetId || null,
-      b.transferred_by || null, b.received_by || null, b.reason || null
+      ends.from_location, ends.to_location, from.assetId || null, to.assetId || null,
+      b.transferred_by || null, b.received_by || null, b.reason || null, ends.from_place, ends.to_place
     );
     items.forEach((l, i) => insertMtnLine(info.lastInsertRowid, l, i + 1));
     syncMtnHeader(info.lastInsertRowid);
@@ -2451,6 +2502,13 @@ router.patch('/mtn/line/:id', requireCap('stores.mtn.edit'), asyncHandler((req, 
     sets.push(`${side}_asset_id = ?`);
     params.push(given ? (resolveAssetId(req.body, side).assetId || null) : assetByCode(req.body[`${side}_location`]));
   }
+  // The same for the place (Stage 2): a new text or a picked place re-derives it.
+  for (const side of ['from', 'to']) {
+    if (req.body[`${side}_place`] === undefined && req.body[`${side}_location`] === undefined) continue;
+    const text = req.body[`${side}_location`] !== undefined ? req.body[`${side}_location`] : before[`${side}_location`];
+    const key = places.forEnd(req.body[`${side}_place`], text);
+    sets.push(`${side}_place = ?`); params.push(key); after[`${side}_place`] = key;
+  }
   if (!sets.length) return res.json(before);
   tx(() => {
     run(`UPDATE mtn_lines SET ${sets.join(', ')} WHERE id = ?`, ...params, lineId);
@@ -2513,6 +2571,13 @@ router.patch('/mtn/:id', requireCap('stores.mtn.edit'), asyncHandler((req, res) 
   for (const c of MTN_EDITABLE) {
     if (req.body[c] === undefined) continue;
     sets.push(`${c} = ?`); params.push(clean(req.body[c])); after[c] = clean(req.body[c]);
+  }
+  // The place each end names (Stage 2): a new text or a picked place re-derives it.
+  for (const side of ['from', 'to']) {
+    if (req.body[`${side}_place`] === undefined && req.body[`${side}_location`] === undefined) continue;
+    const text = req.body[`${side}_location`] !== undefined ? req.body[`${side}_location`] : before[`${side}_location`];
+    const key = places.forEnd(req.body[`${side}_place`], text);
+    sets.push(`${side}_place = ?`); params.push(key); after[`${side}_place`] = key;
   }
   if (!sets.length && !itemFields.length) return res.json(before);
 

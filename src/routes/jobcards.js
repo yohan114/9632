@@ -16,9 +16,15 @@ const approvalLimits = require('../lib/approval_limits');
 const attendance = require('../lib/attendance');
 const costing = require('../lib/costing');
 const jobno = require('../lib/jobno');
+const workshops = require('../lib/workshops');
+const scope = require('../lib/scope');
 const emitter = require('../lib/emitter');
 
 const router = express.Router();
+
+// Stage 3: a card of another workshop is out of reach for anyone outside head office — every
+// route here whose :id is a job card, reading it or changing it.
+router.param('id', scope.jobParam);
 
 // Order by the job number itself — YYYY/M/(R|S)/seq — newest first: year, then month,
 // then the sequence number (xxx), all compared numerically (so 12 > 6 and 383 > 59).
@@ -42,10 +48,11 @@ function loadJob(id) {
   return get(
     `SELECT j.*, a.code AS asset_code, a.code_norm AS asset_code_norm,
             a.registration AS asset_reg, a.ec_code AS asset_ec,
-            p.name AS project_name
+            p.name AS project_name, w.code AS workshop_code, w.name AS workshop_name
        FROM job_cards j
        LEFT JOIN assets a ON a.id = j.asset_id
        LEFT JOIN projects p ON p.id = j.project_id
+       LEFT JOIN workshops w ON w.id = j.workshop_id
       WHERE j.id = ?`,
     id
   );
@@ -99,6 +106,14 @@ router.get(
       clauses.push('j.project_id = ?');
       params.push(toInt(req.query.project_id));
     }
+    // Stage 3: your own workshop's cards only (head office and store staff: all).
+    const own = scope.filter(req.user, 'j.workshop_id');
+    if (own.sql) { clauses.push(own.sql); params.push(...own.params); }
+    // Which workshop does the repair (multi-site Stage 2).
+    if (req.query.workshop_id) {
+      clauses.push('j.workshop_id = ?');
+      params.push(toInt(req.query.workshop_id));
+    }
     // Only currently-open job cards (for pickers that log against an active job).
     if (req.query.open === '1') clauses.push(jobstate.openSql('j'));
     // Free-text search across job number, vehicle and references. A vehicle the
@@ -139,11 +154,12 @@ router.get(
     const limit = toInt(req.query.limit, 500);
     const cols = `j.id, j.job_no, j.type, j.severity, j.status, j.description,
               j.total_cost, j.material_cost, j.labour_cost, j.requested_at, j.closed_at, j.completed_at,
-              j.asset_id,
+              j.asset_id, j.workshop_id, w.code AS workshop_code,
               a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec, p.name AS project_name`;
     const from = `FROM job_cards j
          LEFT JOIN assets a ON a.id = j.asset_id
-         LEFT JOIN projects p ON p.id = j.project_id`;
+         LEFT JOIN projects p ON p.id = j.project_id
+         LEFT JOIN workshops w ON w.id = j.workshop_id`;
 
     // One row per machine, for the pickers. A vehicle can be carrying two, three, even four
     // cards left open years apart, and offering all of them side by side just invites logging
@@ -200,12 +216,14 @@ router.post(
     // One open card per vehicle — the next fault waits until this one closes.
     const guard = jobstate.checkOneOpenJob(assetId);
     if (!guard.ok) return res.status(409).json({ error: guard.error, blocking_job: guard.blocking });
+    // The workshop that does the repair: the one chosen, else the person's home workshop.
+    const workshopId = workshops.forNew(req.user, b.workshop_id);
 
     const no = jobNo(type);
     const info = run(
       `INSERT INTO job_cards (job_no, ref, asset_id, project_id, site, type, severity, description,
-                              status, requested_by, requested_by_user)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'REQUESTED', ?, ?)`,
+                              status, requested_by, requested_by_user, workshop_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'REQUESTED', ?, ?, ?)`,
       no,
       b.ref || null,
       assetId || null,
@@ -215,9 +233,10 @@ router.post(
       b.severity === 'major' || b.severity === 'minor' ? b.severity : null,
       b.description,
       b.requested_by || req.user.fullName || req.user.username,
-      req.user.id
+      req.user.id,
+      workshopId
     );
-    audit.record({ userId: req.user.id, entity: 'job_card', entityId: info.lastInsertRowid, action: 'create', after: { job_no: no } });
+    audit.record({ userId: req.user.id, entity: 'job_card', entityId: info.lastInsertRowid, action: 'create', after: { job_no: no, workshop_id: workshopId } });
     emitter.emit('job_updated', { job_id: info.lastInsertRowid, action: 'create' });
     emitter.emit('dashboard_refresh', { reason: 'job_create' });
     res.status(201).json({ job: loadJob(info.lastInsertRowid), unresolved });
@@ -230,8 +249,8 @@ router.post(
 // before '/:id' so the literal path isn't swallowed by the param route.
 router.get(
   '/duplicates',
-  asyncHandler((_req, res) => {
-    const vehicles = jobstate.duplicateOpenJobs();
+  asyncHandler((req, res) => {
+    const vehicles = jobstate.duplicateOpenJobs({ workshopId: scope.onlyWorkshop(req.user) });
     res.json({
       vehicles,
       vehicle_count: vehicles.length,
@@ -242,11 +261,16 @@ router.get(
 
 // Stuck REQUESTED cards: the list with a suggestion for each, and applying what a person chose
 // (src/lib/job_review.js). Nothing changes on its own. Registered before '/:id'.
-router.get('/review/stuck', requireAuth, requireCap('jobs.triage'), asyncHandler((_req, res) => {
-  res.json(require('../lib/job_review').listStuck());
+router.get('/review/stuck', requireAuth, requireCap('jobs.triage'), asyncHandler((req, res) => {
+  // Stage 3: someone outside head office reviews their own workshop's cards only.
+  res.json(require('../lib/job_review').listStuck({ workshopId: scope.onlyWorkshop(req.user) }));
 }));
 
 router.post('/review/apply', requireAuth, requireCap('jobs.triage'), asyncHandler((req, res) => {
+  for (const a of (Array.isArray(req.body.actions) ? req.body.actions : [])) {
+    const no = scope.jobRefusal(req.user, toInt(a && a.job_id));
+    if (no) return res.status(403).json(no);
+  }
   let done;
   try {
     done = require('../lib/job_review').applyReview(req.body.actions, {
@@ -277,12 +301,15 @@ router.put('/close-settings', requireAuth, requireCap('jobs.settings'), asyncHan
 
 // Reopen requests waiting for a decision (the job card shows its own; this is the queue).
 router.get('/reopen-requests', requireAuth, requireCap('jobs.reopen'), asyncHandler((req, res) => {
-  res.json(closeLib.pendingRequests({ excludeRequester: isAdmin(req.user) ? null : req.user.id }));
+  res.json(closeLib.pendingRequests({ excludeRequester: isAdmin(req.user) ? null : req.user.id, workshopId: scope.onlyWorkshop(req.user) }));
 }));
 
 router.post('/reopen-requests/:rid/:decision', requireAuth, requireCap('jobs.reopen'), asyncHandler((req, res) => {
   const decision = req.params.decision;
   if (decision !== 'approve' && decision !== 'refuse') return res.status(404).json({ error: 'Not found' });
+  const asked = get('SELECT job_id FROM job_reopen_requests WHERE id = ?', toInt(req.params.rid));
+  const no = asked && scope.jobRefusal(req.user, asked.job_id);
+  if (no) return res.status(403).json(no);
   let out;
   try {
     out = closeLib.decideReopen(toInt(req.params.rid), { user: req.user, approve: decision === 'approve', note: (req.body || {}).note, isAdmin: isAdmin(req.user) });
@@ -530,6 +557,11 @@ router.post(
         const job = loadJob(id);
         if (!job) {
           failed.push({ id, error: 'Job not found' });
+          continue;
+        }
+        const notMine = scope.jobRefusal(req.user, id);
+        if (notMine) {
+          failed.push({ id, job_no: job.job_no, error: notMine.error });
           continue;
         }
 
@@ -889,7 +921,7 @@ router.delete(
 
     // ensure, not read: on a database that has never had a general entry the card does not exist,
     // and a 0 here would turn "send it back" into "destroy it".
-    const gid = id === catchAllJobId() ? id : ensureCatchAllJobId();
+    const gid = workshops.isGeneralCard(job) ? id : workshops.generalCardId(job.workshop_id, { create: true });
     // On the catch-all there is nowhere further to send it, so removing means removing.
     const unlink = gid !== id;
     const settle = settleAfterDetach(job, unlink ? gid : null);
@@ -915,28 +947,14 @@ router.delete(
 // Both used to be findable only by hunting. Now the job card's own Add buttons offer them,
 // which is the moment someone actually knows where they belong.
 
-const catchAllJobId = () => {
-  const j = get("SELECT id FROM job_cards WHERE legacy_ref = 'general-workshop' LIMIT 1");
-  return j ? j.id : 0;
-};
-
-/**
- * The catch-all, CREATING it if this database has never needed one.
- *
- * Nothing in the schema or the migrations makes this card — it is created lazily, by the first
- * general daily-work entry (routes/dailywork.js) or the first general stores issue
- * (routes/stores.js). So on a fresh install it does not exist, and a reader that returns 0 makes
- * "send this row back to the pool" silently become "delete this row": the unlink guard below reads
- * `gid && gid !== id`, and 0 is falsy. The screen would still promise the entry was kept.
- *
- * Detaching must therefore be able to create it, exactly as the other two writers do. Same job_no,
- * same legacy_ref, so all three converge on one card.
- */
-function ensureCatchAllJobId() {
-  const existing = catchAllJobId();
-  if (existing) return existing;
-  return run(`INSERT INTO job_cards (job_no, type, description, status, requested_by, requested_at, is_historical, synthesized_no, legacy_ref)
-              VALUES ('GENERAL-WS', 'repair', 'General workshop (not vehicle-specific)', 'REQUESTED', 'system', date('now'), 0, 1, 'general-workshop')`).lastInsertRowid;
+// The pool is the workshop's general card (src/lib/workshops.js): one per workshop, so with the
+// workshops kept apart (Stage 3) each sees and claims only its own. The pool a list is read from
+// is the job card's workshop when one is given (the job card's own Add buttons), else your own.
+function poolWorkshop(req) {
+  const jobId = toInt(req.query.job_id);
+  const j = jobId ? get('SELECT workshop_id FROM job_cards WHERE id = ?', jobId) : null;
+  if (j && !scope.jobRefusal(req.user, jobId)) return j.workshop_id;
+  return scope.onlyWorkshop(req.user) || workshops.homeOf(req.user);
 }
 
 /**
@@ -957,7 +975,7 @@ function ensureCatchAllJobId() {
  * years, and it normalises punctuation both ways: AC06, ac-06, AC 06 and AC-06 all find each other.
  */
 router.get('/unassigned/daily-work', requireAuth, asyncHandler((req, res) => {
-  const gid = catchAllJobId();
+  const gid = workshops.generalCardId(poolWorkshop(req));
   if (!gid) return res.json([]);
   const assetId = toInt(req.query.asset_id);
   const clauses = ['d.job_id = ?']; const params = [gid];
@@ -1003,7 +1021,7 @@ router.get('/unassigned/daily-work', requireAuth, asyncHandler((req, res) => {
 }));
 
 router.get('/unassigned/parts', requireAuth, asyncHandler((req, res) => {
-  const gid = catchAllJobId();
+  const gid = workshops.generalCardId(poolWorkshop(req));
   const assetId = toInt(req.query.asset_id);
   const q = req.query.q && String(req.query.q).trim()
     ? '%' + String(req.query.q).trim().replace(/[\\%_]/g, (c) => '\\' + c) + '%' : null;
@@ -1059,7 +1077,7 @@ router.post('/:id/daily-work/attach', requireAuth, requireCap('jobs.dailywork'),
   const job = get('SELECT * FROM job_cards WHERE id = ?', id);
   if (!job) return res.status(404).json({ error: 'Job not found' });
   { const g = jobstate.checkAdd(job, 'attach', { user: req.user }); if (!g.ok) return res.status(g.status).json(g.body); }
-  const gid = catchAllJobId();
+  const gid = workshops.generalCardId(job.workshop_id);
   const ids = (Array.isArray(req.body.ids) ? req.body.ids : []).map(toInt).filter(Boolean);
   if (!ids.length) return res.status(400).json({ error: 'Pick at least one entry' });
 
@@ -1095,7 +1113,7 @@ router.post('/:id/parts/attach', requireAuth, requireCap('jobs.parts'), asyncHan
   const job = get('SELECT * FROM job_cards WHERE id = ?', id);
   if (!job) return res.status(404).json({ error: 'Job not found' });
   { const g = jobstate.checkAdd(job, 'attach', { user: req.user }); if (!g.ok) return res.status(g.status).json(g.body); }
-  const gid = catchAllJobId();
+  const gid = workshops.generalCardId(job.workshop_id);
   const grnIds = (Array.isArray(req.body.receipts) ? req.body.receipts : []).map(toInt).filter(Boolean);
   const partIds = (Array.isArray(req.body.parts) ? req.body.parts : []).map(toInt).filter(Boolean);
   if (!grnIds.length && !partIds.length) return res.status(400).json({ error: 'Pick at least one item' });
@@ -1191,7 +1209,7 @@ router.delete(
     const row = get('SELECT * FROM job_parts WHERE id = ? AND job_id = ?', partId, id);
     if (!row) return res.status(404).json({ error: 'Item not found on this job' });
 
-    const gid = id === catchAllJobId() ? id : ensureCatchAllJobId();
+    const gid = workshops.isGeneralCard(job) ? id : workshops.generalCardId(job.workshop_id, { create: true });
     const unlink = gid !== id;
     const settle = settleAfterDetach(job, unlink ? gid : null);
 
@@ -1230,8 +1248,17 @@ router.patch(
     const b = req.body || {};
     const sets = [];
     const params = [];
-    const before = { asset_id: job.asset_id, description: job.description, type: job.type };
+    const before = { asset_id: job.asset_id, description: job.description, type: job.type, workshop_id: job.workshop_id };
     const warnings = [];
+
+    // -- workshop (who does the repair)
+    let newWorkshopId;
+    if (b.workshop_id !== undefined && Number(b.workshop_id) !== job.workshop_id) {
+      // A finished card stays with the workshop that did the work: its cost is already reported there.
+      if (jobstate.isFinal(job.status)) return res.status(409).json({ error: 'A closed job card stays with the workshop that did the work.' });
+      newWorkshopId = workshops.mustBeActive(b.workshop_id).id;
+      sets.push('workshop_id = ?'); params.push(newWorkshopId);
+    }
 
     // -- description
     if (b.description !== undefined) {
@@ -1309,7 +1336,8 @@ router.patch(
       for (const b2 of costing.vehicleMonthsForJob(id, newAssetId)) costing.recalcVehicleMonth(b2.assetId, b2.year, b2.month);
     }
 
-    const after = { asset_id: newAssetId !== undefined ? newAssetId : job.asset_id, description: b.description, type: newType };
+    const after = { asset_id: newAssetId !== undefined ? newAssetId : job.asset_id, description: b.description, type: newType,
+      workshop_id: newWorkshopId !== undefined ? newWorkshopId : job.workshop_id };
     audit.record({ userId: req.user.id, entity: 'job_card', entityId: id, action: 'edit', before, after, reason: req.body.reason || null });
     emitter.emit('job_updated', { job_id: id, action: 'edit' });
     emitter.emit('dashboard_refresh', { reason: 'job_edit' });

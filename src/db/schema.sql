@@ -1025,3 +1025,31 @@ CREATE TABLE IF NOT EXISTS workday_signoffs (
   unlocked_at   TEXT,
   unlock_reason TEXT
 );
+
+-- Workshops (multi-site Stage 2): a place that repairs vehicles, with its own mechanics and job
+-- cards. Starts with one, Central Workshop — Badalgama, which every existing record belongs to.
+-- A SITE is where a vehicle works: that is the projects list (and its sites), not this table.
+-- Exactly one workshop is the default: new records with no workshop of their own take it.
+CREATE TABLE IF NOT EXISTS workshops (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  code        TEXT NOT NULL UNIQUE,              -- short, e.g. CW
+  name        TEXT NOT NULL UNIQUE,              -- "Central Workshop — Badalgama"
+  place       TEXT,                              -- town or address
+  is_default  INTEGER NOT NULL DEFAULT 0,
+  active      INTEGER NOT NULL DEFAULT 1,
+  created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Which workshop a mechanic belongs to, from a date. The row in force on a day is the one with
+-- the latest from_date on or before it, so hours worked before a move stay with the old workshop.
+CREATE TABLE IF NOT EXISTS mechanic_workshops (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  mechanic_id  INTEGER NOT NULL REFERENCES mechanics(id),
+  workshop_id  INTEGER NOT NULL REFERENCES workshops(id),
+  from_date    TEXT NOT NULL,                    -- YYYY-MM-DD
+  set_by       INTEGER REFERENCES users(id),
+  set_at       TEXT NOT NULL DEFAULT (datetime('now')),
+  note         TEXT,
+  UNIQUE (mechanic_id, from_date)
+);
+CREATE INDEX IF NOT EXISTS idx_mech_ws ON mechanic_workshops(mechanic_id, from_date);

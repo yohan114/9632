@@ -106,7 +106,8 @@ router.post('/day/book-rest', requireCap('dailywork.add'), asyncHandler((req, re
   if (!row) return fail(res, 404, 'Mechanic not found');
   if (row.tally !== 'unbooked' || !(row.diff_hours > 0)) return fail(res, 409, `${row.name} has no unbooked hours on ${date}`);
 
-  const gid = require('./dailywork').generalWorkshopJob();
+  // The general card of the mechanic's own workshop on that day (one per workshop, Stage 3).
+  const gid = require('./dailywork').generalWorkshopJob(require('../lib/workshops').mechanicWorkshop(mechanicId, date));
   const job = get('SELECT id, job_no, status FROM job_cards WHERE id = ?', gid);
   const g = jobstate.checkAdd(job, 'daily_work', { user: req.user, dates: [date] });
   if (!g.ok) return res.status(g.status).json(g.body);

@@ -104,6 +104,9 @@ router.post('/requests', requireModule('tb_request'),
     const jobId = toInt(b.job_id) || null;
     // Naming a job card: it must exist, and a finished card takes no new request (jobstate.checkAdd).
     if (jobId) {
+      // Stage 3: only your own workshop's cards (head office and store staff: any).
+      const no = require('../lib/scope').jobRefusal(req.user, jobId);
+      if (no) return res.status(403).json(no);
       const g = jobstate.checkAdd(get('SELECT id, job_no, status FROM job_cards WHERE id = ?', jobId), 'tb_request', { user: req.user });
       if (!g.ok) return res.status(g.status).json(g.body);
     }
@@ -155,10 +158,10 @@ router.post('/requests', requireModule('tb_request'),
       const mrnId = run(
         // request_type keeps its own meaning — general vs vehicle — which stores and daily work
         // both read on all 1,709 existing requests. The tyre/battery kind has a column of its own.
-        `INSERT INTO mrn (mrn_no, req_date, asset_id, job_id, purpose, requested_by, status, approval_status, request_type, tb_kind)
-         VALUES (?, date('now'), ?, ?, ?, ?, 'open', 'requested', 'vehicle', ?)`,
+        `INSERT INTO mrn (mrn_no, req_date, asset_id, job_id, purpose, requested_by, status, approval_status, request_type, tb_kind, workshop_id)
+         VALUES (?, date('now'), ?, ?, ?, ?, 'open', 'requested', 'vehicle', ?, ?)`,
         mrnNo, asset.id, jobId, clean(b.purpose) || (kind === 'tyre' ? 'Tyre replacement' : 'Battery replacement'),
-        clean(b.requested_by) || req.user.username, kind).lastInsertRowid;
+        clean(b.requested_by) || req.user.username, kind, require('../lib/workshops').forRequest(req.user, jobId)).lastInsertRowid;
 
       for (const p of prepared) {
         const lineId = run(
@@ -192,6 +195,9 @@ router.get('/requests', requireAuth, asyncHandler((req, res) => {
   // Approved, but nobody has sent it to Head Office to be bought yet — the queue the Workshop
   // Store works from, and the one thing an approved request used to fall silently out of.
   if (req.query.awaiting_purchase) w.push("m.approval_status = 'approved' AND m.purchase_requested_at IS NULL");
+  // Stage 3: your own workshop's requests only (head office and store staff: all).
+  const own = require('../lib/scope').filter(req.user, 'm.workshop_id');
+  if (own.sql) { w.push(own.sql); p.push(...own.params); }
   res.json(all(
     `SELECT m.id, m.mrn_no, m.req_date, m.tb_kind AS kind, m.approval_status, m.status,
             m.purchase_requested_at, m.purchase_requested_by, m.purchase_ref, m.purchase_source,
@@ -210,6 +216,7 @@ router.get('/requests', requireAuth, asyncHandler((req, res) => {
 }));
 
 router.get('/requests/:id', requireAuth, asyncHandler((req, res) => {
+  { const no = require('../lib/scope').mrnRefusal(req.user, toInt(req.params.id)); if (no) return res.status(403).json(no); }
   const m = get(
     `SELECT m.*, a.code AS asset_code, a.registration, j.job_no
        FROM mrn m LEFT JOIN assets a ON a.id = m.asset_id LEFT JOIN job_cards j ON j.id = m.job_id

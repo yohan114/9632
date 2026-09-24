@@ -25,11 +25,14 @@ function currentBalance(productId) {
 
 // ---- dashboard ------------------------------------------------------------
 router.get('/dashboard', asyncHandler((req, res) => {
-  const jobs_by_status = all(`SELECT status, COUNT(*) count FROM job_cards GROUP BY status`);
+  // Stage 3: the job-card figures are your own workshop's (head office and store staff: all).
+  const own = require('../lib/scope').filter(req.user, 'j.workshop_id');
+  const andOwn = own.sql ? ` AND ${own.sql}` : '';
+  const jobs_by_status = all(`SELECT j.status, COUNT(*) count FROM job_cards j WHERE 1 = 1${andOwn} GROUP BY j.status`, ...own.params);
 
   const awaiting = all(
     `SELECT j.id, j.job_no, a.code AS asset_code FROM job_cards j LEFT JOIN assets a ON a.id = j.asset_id
-      WHERE j.status = 'WORK_COMPLETE' ORDER BY j.id DESC`
+      WHERE j.status = 'WORK_COMPLETE'${andOwn} ORDER BY j.id DESC`, ...own.params
   ).map((j) => ({ ...j, missing_count: costing.closureReadiness(j.id).missing.length }));
 
   const low_stock_oil = lubricants.oilForecast().products
@@ -42,19 +45,19 @@ router.get('/dashboard', asyncHandler((req, res) => {
   const month_cost_by_project = all(
     `SELECT COALESCE(p.name, '(unassigned)') project, COALESCE(SUM(j.total_cost),0) total
        FROM job_cards j LEFT JOIN projects p ON p.id = j.project_id
-      WHERE strftime('%Y-%m', j.requested_at) = strftime('%Y-%m','now')
-      GROUP BY j.project_id ORDER BY total DESC`
+      WHERE strftime('%Y-%m', j.requested_at) = strftime('%Y-%m','now')${andOwn}
+      GROUP BY j.project_id ORDER BY total DESC`, ...own.params
   );
 
-  const open_jobs_count = get(`SELECT COUNT(*) c FROM job_cards WHERE ${jobstate.openSql()}`).c;
+  const open_jobs_count = get(`SELECT COUNT(*) c FROM job_cards j WHERE ${jobstate.openSql('j')}${andOwn}`, ...own.params).c;
   // Partly closed (W2): the vehicle has left, prices or records are still to come.
   const partly_closed = all(
     `SELECT j.id, j.job_no, j.partial_closed_at, a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec
        FROM job_cards j LEFT JOIN assets a ON a.id = j.asset_id
-      WHERE j.status = ? ORDER BY j.partial_closed_at, j.id`, jobstate.PARTIAL
+      WHERE j.status = ?${andOwn} ORDER BY j.partial_closed_at, j.id`, jobstate.PARTIAL, ...own.params
   ).map((j) => ({ ...j, missing_count: costing.closureReadiness(j.id).missing.length }));
   const closed_this_month_count = get(
-    `SELECT COUNT(*) c FROM job_cards WHERE status='CLOSED' AND strftime('%Y-%m', closed_at) = strftime('%Y-%m','now')`
+    `SELECT COUNT(*) c FROM job_cards j WHERE j.status='CLOSED' AND strftime('%Y-%m', j.closed_at) = strftime('%Y-%m','now')${andOwn}`, ...own.params
   ).c;
 
   // Attendance (W3): today's tally and the days still to be signed off — for whoever may read
@@ -269,12 +272,14 @@ function jobReport(id) {
 }
 
 router.get('/job/:id/report', asyncHandler((req, res) => {
+  { const no = require('../lib/scope').jobRefusal(req.user, toInt(req.params.id)); if (no) return res.status(403).json(no); }
   const r = jobReport(toInt(req.params.id));
   if (!r) return res.status(404).json({ error: 'Job not found' });
   res.json(r);
 }));
 
 router.get('/job/:id/report.html', asyncHandler((req, res) => {
+  { const no = require('../lib/scope').jobRefusal(req.user, toInt(req.params.id)); if (no) return res.status(403).json(no); }
   const s = jobReport(toInt(req.params.id));
   if (!s) return res.status(404).send('Job not found');
   const esc = (v) => String(v == null ? '' : v).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
@@ -679,12 +684,14 @@ ${withDetail ? '<h2>Job by job — parts requested, parts received, work done</h
 }));
 
 router.get('/job/:id/costsheet', asyncHandler((req, res) => {
+  { const no = require('../lib/scope').jobRefusal(req.user, toInt(req.params.id)); if (no) return res.status(403).json(no); }
   const sheet = costSheet(toInt(req.params.id));
   if (!sheet) return res.status(404).json({ error: 'Job not found' });
   res.json(sheet);
 }));
 
 router.get('/job/:id/costsheet.html', asyncHandler((req, res) => {
+  { const no = require('../lib/scope').jobRefusal(req.user, toInt(req.params.id)); if (no) return res.status(403).json(no); }
   const s = costSheet(toInt(req.params.id));
   if (!s) return res.status(404).send('Job not found');
   const money = (n) => (Number(n) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -828,15 +835,21 @@ router.get('/pending-approvals', asyncHandler((req, res) => {
   // endpoint itself requires, so a role an admin creates sees exactly the queues it can clear.
   const may = (cap) => hasCap(req.user, cap);
   const out = { certify: [], approve: [], transport: [], ops: [], jr_certify: [], jr_approve: [], reopen: [], signoff: [] };
+  // Stage 3: each queue holds your own workshop's items (head office: every workshop's).
+  const scope = require('../lib/scope');
+  const mOwn = scope.filter(req.user, 'm.workshop_id');
+  const jOwn = scope.filter(req.user, 'j.workshop_id');
+  const rOwn = scope.filter(req.user, 'r.workshop_id', { store: false });
+  const and = (f) => (f.sql ? ` AND ${f.sql}` : '');
   const INFLOW = "approval_status = 'requested' AND requested_by IS NOT NULL AND TRIM(requested_by) <> ''";
   const lineCount = '(SELECT COUNT(*) FROM mrn_lines ml WHERE ml.mrn_id = m.id) lines';
   if (may('stores.mrn.certify')) {
     out.certify = all(`SELECT m.id, m.mrn_no, m.req_date, m.requested_by, a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec, ${lineCount}
-        FROM mrn m LEFT JOIN assets a ON a.id = m.asset_id WHERE ${INFLOW} ORDER BY m.req_date DESC, m.id DESC LIMIT 50`);
+        FROM mrn m LEFT JOIN assets a ON a.id = m.asset_id WHERE ${INFLOW}${and(mOwn)} ORDER BY m.req_date DESC, m.id DESC LIMIT 50`, ...mOwn.params);
   }
   if (may('stores.mrn.approve')) {
     out.approve = all(`SELECT m.id, m.mrn_no, m.req_date, m.requested_by, m.certified_by, m.certified_at, a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec, ${lineCount}
-        FROM mrn m LEFT JOIN assets a ON a.id = m.asset_id WHERE m.approval_status = 'certified' ORDER BY m.certified_at DESC, m.id DESC LIMIT 50`);
+        FROM mrn m LEFT JOIN assets a ON a.id = m.asset_id WHERE m.approval_status = 'certified'${and(mOwn)} ORDER BY m.certified_at DESC, m.id DESC LIMIT 50`, ...mOwn.params);
     // Each with its estimated value, and whether it is above this person's approval limit.
     const limits = require('../lib/approval_limits');
     for (const m of out.approve) {
@@ -851,33 +864,33 @@ router.get('/pending-approvals', asyncHandler((req, res) => {
     out.transport = all(`SELECT j.id, j.job_no, j.requested_at, j.description,
              a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec
         FROM job_cards j LEFT JOIN assets a ON a.id = j.asset_id
-        WHERE j.status = 'REQUESTED' AND j.approved_transport_at IS NULL AND j.is_historical = 0 ORDER BY j.id DESC LIMIT 50`);
+        WHERE j.status = 'REQUESTED' AND j.approved_transport_at IS NULL AND j.is_historical = 0${and(jOwn)} ORDER BY j.id DESC LIMIT 50`, ...jOwn.params);
   }
   if (may('jobs.approve_operations')) {
     out.ops = all(`SELECT j.id, j.job_no, j.requested_at, j.description,
              a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec
         FROM job_cards j LEFT JOIN assets a ON a.id = j.asset_id
-        WHERE j.approved_transport_at IS NOT NULL AND j.approved_ops_at IS NULL AND j.is_historical = 0 ORDER BY j.id DESC LIMIT 50`);
+        WHERE j.approved_transport_at IS NOT NULL AND j.approved_ops_at IS NULL AND j.is_historical = 0${and(jOwn)} ORDER BY j.id DESC LIMIT 50`, ...jOwn.params);
   }
   // Job Requests (Transport): Transport Manager certifies → Operational Manager approves.
   if (may('jobrequests.certify')) {
     out.jr_certify = all(`SELECT r.id, r.jr_no, r.req_date, r.requested_by, r.description,
           a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec
         FROM job_requests r LEFT JOIN assets a ON a.id = r.asset_id
-        WHERE r.approval_status = 'requested' ORDER BY r.id DESC LIMIT 50`);
+        WHERE r.approval_status = 'requested'${and(rOwn)} ORDER BY r.id DESC LIMIT 50`, ...rOwn.params);
   }
   if (may('jobrequests.approve')) {
     out.jr_approve = all(`SELECT r.id, r.jr_no, r.req_date, r.requested_by, r.certified_by, r.description,
           a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec
         FROM job_requests r LEFT JOIN assets a ON a.id = r.asset_id
-        WHERE r.approval_status = 'certified' ORDER BY r.id DESC LIMIT 50`);
+        WHERE r.approval_status = 'certified'${and(rOwn)} ORDER BY r.id DESC LIMIT 50`, ...rOwn.params);
   }
   // Reopen requests (W2): for whoever may reopen — except the person who asked, who cannot approve
   // their own (an admin excepted, as for the other approvals).
   const reopenQueue = may('jobs.reopen') && jobstate.partialCloseEnabled();
   if (reopenQueue) {
     const admin = (req.user.roles || []).includes('admin');
-    out.reopen = require('../lib/job_close').pendingRequests({ excludeRequester: admin ? null : req.user.id });
+    out.reopen = require('../lib/job_close').pendingRequests({ excludeRequester: admin ? null : req.user.id, workshopId: scope.onlyWorkshop(req.user) });
   }
   // Days waiting for their sign-off (W3) — for whoever signs days off, while attendance is on.
   const signoffQueue = may('attendance.signoff') && require('../lib/attendance').isEnabled();

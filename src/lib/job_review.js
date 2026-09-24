@@ -36,6 +36,7 @@ const today = () => new Date().toISOString().slice(0, 10);
 // auto-created holders for stores materials and daily work.
 const CONTAINER_SQL = `(j.asset_id IS NULL
    OR COALESCE(j.legacy_ref, '') IN ('general-workshop')
+   OR COALESCE(j.legacy_ref, '') LIKE 'general-workshop:%'
    OR COALESCE(j.legacy_ref, '') LIKE 'auto-container%'
    OR COALESCE(j.description, '') LIKE 'Stores materials%'
    OR COALESCE(j.description, '') LIKE 'auto-created container%')`;
@@ -73,7 +74,7 @@ function describe(r, now = today()) {
 }
 
 /** Every stuck REQUESTED card with a suggestion, and the vehicles that carry more than one open card. */
-function listStuck({ now } = {}) {
+function listStuck({ now, workshopId = null } = {}) {
   const rows = all(`
     SELECT j.id, j.job_no, j.is_historical, j.description, j.asset_id, j.requested_at,
            COALESCE(j.total_cost, 0) total_cost, a.code asset_code, a.registration asset_reg,
@@ -89,12 +90,12 @@ function listStuck({ now } = {}) {
            (SELECT MAX(substr(l.txn_date, 1, 10)) FROM stock_ledger l WHERE l.job_id = j.id) last_oil,
            (SELECT MAX(substr(g.txn_date, 1, 10)) FROM general_item_txns g WHERE g.job_id = j.id) last_general
       FROM job_cards j LEFT JOIN assets a ON a.id = j.asset_id
-     WHERE j.status = 'REQUESTED' AND NOT ${CONTAINER_SQL}
-     ORDER BY j.job_no`);
+     WHERE j.status = 'REQUESTED' AND NOT ${CONTAINER_SQL} ${workshopId ? 'AND j.workshop_id = ?' : ''}
+     ORDER BY j.job_no`, ...(workshopId ? [workshopId] : []));
   const cards = rows.map((r) => describe(r, now));
   const counts = { reject: 0, close: 0, keep: 0 };
   for (const c of cards) counts[c.suggestion]++;
-  return { stale_days: STALE_DAYS, total: cards.length, counts, cards, duplicate_vehicles: jobstate.duplicateOpenJobs() };
+  return { stale_days: STALE_DAYS, total: cards.length, counts, cards, duplicate_vehicles: jobstate.duplicateOpenJobs({ workshopId }) };
 }
 
 const fail = (msg, extra) => { const e = new Error(msg); e.status = 400; if (extra) e.extra = extra; throw e; };

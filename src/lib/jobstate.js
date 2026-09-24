@@ -150,7 +150,8 @@ function checkTransition(current, target, who = []) {
 function openJobFor(assetId, opts = {}) {
   if (!assetId) return null; // container cards belong to no vehicle
   const params = [assetId];
-  let sql = `SELECT id, job_no, status, type, description, requested_at
+  let sql = `SELECT id, job_no, status, type, description, requested_at, workshop_id,
+                    (SELECT name FROM workshops w WHERE w.id = job_cards.workshop_id) AS workshop_name
                FROM job_cards WHERE asset_id = ? AND ${OPEN_SQL}`;
   if (opts.excludeJobId) { sql += ' AND id <> ?'; params.push(opts.excludeJobId); }
   return get(sql + ' ORDER BY id LIMIT 1', ...params);
@@ -163,15 +164,18 @@ function openJobFor(assetId, opts = {}) {
 function checkOneOpenJob(assetId, opts = {}) {
   const blocking = openJobFor(assetId, opts);
   if (!blocking) return { ok: true };
+  // One open card per vehicle across ALL workshops (Stage 3): a vehicle is in one workshop at a
+  // time. With more than one workshop, say which one has it.
+  const where = blocking.workshop_name && require('./workshops').isMulti() ? `, at ${blocking.workshop_name}` : '';
   return {
     ok: false,
     blocking,
-    error: `This vehicle already has an open job card (${blocking.job_no} · ${blocking.status}). Close it before opening another.`,
+    error: `This vehicle already has an open job card (${blocking.job_no} · ${blocking.status}${where}). Close it before opening another.`,
   };
 }
 
 /** Vehicles carrying more than one open card — the backlog to work off. */
-function duplicateOpenJobs() {
+function duplicateOpenJobs({ workshopId = null } = {}) {
   const rows = all(
     `SELECT j.asset_id, a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec,
             COUNT(*) AS open_count
@@ -185,9 +189,11 @@ function duplicateOpenJobs() {
               CAST(julianday('now') - julianday(j.requested_at) AS INTEGER) AS age_days
          FROM job_cards j
         WHERE j.asset_id = ? AND ${OPEN_SQL.replace(/status/g, 'j.status')}
-        ORDER BY j.requested_at, j.id`, r.asset_id);
+          ${workshopId ? 'AND j.workshop_id = ?' : ''}
+        ORDER BY j.requested_at, j.id`, r.asset_id, ...(workshopId ? [workshopId] : []));
   }
-  return rows;
+  // Scoped (Stage 3): only vehicles with an open card of that workshop, and only its cards.
+  return workshopId ? rows.filter((r) => r.jobs.length) : rows;
 }
 
 // ---- adding anything to a card ------------------------------------------------------------------

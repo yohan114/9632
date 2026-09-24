@@ -40,11 +40,17 @@ const CAPABILITIES = [
   C('aliases.vehicle.resolve', 'aliases', 'Link or dismiss an unrecognised vehicle name', ['storekeeper']),
   C('aliases.mechanic.resolve', 'aliases', 'Link an unrecognised mechanic name', ['storekeeper', 'manager']),
   C('projects.manage', 'projects', 'Create and edit projects and their sites', ['manager']),
+  // Multi-site Stage 2 (src/lib/workshops.js). Adding and retiring workshops: admin only unless
+  // given on purpose. "All workshops" is the head-office view — recorded now, used for scoping in
+  // Stage 3; until then nobody sees less than before.
+  C('workshops.manage', 'projects', 'Add, rename and retire workshops', []),
+  C('workshops.all', 'users', 'Work across all workshops (head office)', ['manager', 'operational_manager', 'purchase_head_office', 'purchase_local']),
   C('fleet.capacities.edit', 'assets', 'Add, edit or delete vehicle lubricant capacities', []),
 
   // ---- labour --------------------------------------------------------------------------------
   C('mechanics.create', 'labour', 'Add a mechanic', ['manager']),
   C('labour.rates.edit', 'labour', 'Set a mechanic\'s labour rate', ['manager']),
+  C('mechanics.move', 'labour', 'Move a mechanic to another workshop', ['manager']),
 
   // ---- job cards -----------------------------------------------------------------------------
   C('jobs.create', 'jobs', 'Open a new job card', ['transport_manager', 'workshop'], 'jobs'),
