@@ -7,7 +7,7 @@
 const express = require('express');
 const { get, all, run, tx } = require('../db');
 const { asyncHandler, require_, toInt, toNum } = require('../lib/http');
-const { requireRole } = require('../lib/auth');
+const { requireCap } = require('../lib/auth');
 const audit = require('../lib/audit');
 const aliases = require('../lib/aliases');
 const servicePlan = require('../lib/service_plan');
@@ -663,7 +663,7 @@ router.get('/services/:id/attachments', asyncHandler((req, res) => {
 // cost a decode on every upload.
 router.post(
   '/services/:id/attachments',
-  requireRole('workshop', 'storekeeper', 'operational_manager', 'manager'),
+  requireCap('services.attachments'),
   express.raw({ type: ['application/pdf', 'application/octet-stream'], limit: MAX_ATTACHMENT }),
   asyncHandler((req, res) => {
     const id = toInt(req.params.id);
@@ -703,7 +703,7 @@ router.get('/attachments/:aid', asyncHandler((req, res) => {
 
 router.delete(
   '/attachments/:aid',
-  requireRole('workshop', 'storekeeper', 'operational_manager', 'manager'),
+  requireCap('services.attachments'),
   asyncHandler((req, res) => {
     const aid = toInt(req.params.aid);
     const a = get('SELECT id, service_id, filename, size_bytes FROM service_attachments WHERE id = ?', aid);

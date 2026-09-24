@@ -7,6 +7,7 @@ const fs = require('fs');
 const path = require('path');
 const config = require('../config');
 const { db } = require('../db');
+const status = require('./backup_status');
 
 const PREFIX = 'workshopone-';
 
@@ -20,18 +21,27 @@ function snapshot() {
     .then(() => {
       prune(config.backupDir);
       // Mirror to the second location if configured.
+      let mirror = null;
       if (config.backupMirrorDir) {
         try {
           fs.mkdirSync(config.backupMirrorDir, { recursive: true });
           fs.copyFileSync(dest, path.join(config.backupMirrorDir, name));
           prune(config.backupMirrorDir);
+          mirror = { ok: true };
         } catch (e) {
+          // An unplugged drive or a dropped share used to show up only as this log line, so the
+          // "second copy" could be missing for weeks. It is now in the status /api/health reports.
           console.error('Backup mirror failed:', e.message);
+          mirror = { ok: false, error: e.message };
         }
       }
+      status.write('snapshot', { ok: true, file: name, bytes: fs.statSync(dest).size, mirror });
       return dest;
     })
-    .catch((e) => console.error('Backup failed:', e.message));
+    .catch((e) => {
+      console.error('Backup failed:', e.message);
+      status.write('snapshot', { ok: false, error: e.message });
+    });
 }
 
 function prune(dir) {

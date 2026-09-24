@@ -75,6 +75,9 @@ const config = {
   // password) sat untouched. Left in place only so an existing .env does not become invalid.
   sessionSecret: process.env.SESSION_SECRET || 'unused-session-tokens-are-random',
   sessionTtlHours: int('SESSION_TTL_HOURS', 12),
+  // Signed out after this long with no mouse, keyboard or touch input (0 = never). A PC left signed
+  // in at the stores counter is the case this is for.
+  sessionIdleMinutes: int('SESSION_IDLE_MINUTES', 120),
   uploadDir: path.resolve(ROOT, process.env.UPLOAD_DIR || './uploads'),
   backupDir: path.resolve(ROOT, process.env.BACKUP_DIR || './backups'),
   // Optional second location (external drive / network share) mirrored on each snapshot.

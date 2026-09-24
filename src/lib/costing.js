@@ -61,7 +61,7 @@ function todayISO() {
  */
 function computeJobCost(jobId) {
   const job = get('SELECT * FROM job_cards WHERE id = ?', jobId);
-  if (!job) throw new Error('Job not found');
+  if (!job) { const e = new Error('Job not found'); e.status = 404; throw e; }
   const jobDate = (job.requested_at || todayISO()).slice(0, 10);
 
   // --- labour ---

@@ -15,7 +15,7 @@
 
 const express = require('express');
 const { get, all, run, tx } = require('../db');
-const { requireAuth, hasRole } = require('../lib/auth');
+const { requireAuth, hasCap } = require('../lib/auth');
 const { asyncHandler, require_, toInt, toNum } = require('../lib/http');
 const audit = require('../lib/audit');
 const emitter = require('../lib/emitter');
@@ -32,10 +32,10 @@ const CHANNEL_LABEL = { head_office: 'Head Office', local_purchase: 'Local Purch
  * the local half of it", and that distinction is the whole reason there are two officers.
  */
 function channelsFor(user) {
-  if (hasRole(user, 'admin', 'manager', 'operational_manager')) return CHANNELS.slice();
+  if (hasCap(user, 'purchasing.all_channels')) return CHANNELS.slice();
   const mine = [];
-  if (hasRole(user, 'purchase_head_office')) mine.push('head_office');
-  if (hasRole(user, 'purchase_local')) mine.push('local_purchase');
+  if (hasCap(user, 'purchasing.head_office')) mine.push('head_office');
+  if (hasCap(user, 'purchasing.local')) mine.push('local_purchase');
   return mine;
 }
 const seesBoth = (user) => channelsFor(user).length === CHANNELS.length;
@@ -267,7 +267,7 @@ router.delete('/lines/:id/purchase', requireAuth, asyncHandler((req, res) => {
   if (!line.purchased_at) return res.status(409).json({ error: 'That item is not marked bought' });
 
   // The officer who bought it, or a manager. Not the other officer.
-  const ownIt = claimChannel(req.user, line.purchase_source) || hasRole(req.user, 'admin', 'manager', 'operational_manager');
+  const ownIt = claimChannel(req.user, line.purchase_source) || hasCap(req.user, 'purchasing.all_channels');
   if (!ownIt) return res.status(403).json({ error: 'Only the officer who bought it, or a manager, can undo this' });
   // Once the goods are in, the purchase record is part of the receipt's history.
   if (Number(line.qty_received) > 0) {

@@ -266,21 +266,55 @@ sudo cp /opt/workshopone/app/deploy/nginx-storesdb.conf /etc/nginx/sites-availab
 sudo nginx -t && sudo systemctl reload nginx
 ```
 
-Cloudflare adds ranges from time to time; re-run the generation line after a change, or monthly.
+Cloudflare adds ranges from time to time. From here on, `deploy/cloudflare-refresh.sh` (next
+section) regenerates this file together with the firewall rules, so the one-liner above is only
+needed the first time.
 
-### Optional, and worth it: refuse anyone who bypasses Cloudflare
+### Required: refuse anyone who bypasses Cloudflare
 
 With the proxy on, the only legitimate traffic to port 443 comes from Cloudflare. Anyone who
 discovers `20.204.51.43` can otherwise talk to the origin directly and skip everything Cloudflare
-is there to do:
+is there to do — the sign-in rate limit rule, the attack filtering, the TLS settings. This used to
+be marked optional. With more workshops and sites on the system it is not.
+
+Dry run first — it prints what it would change and changes nothing:
 
 ```bash
-for ip in $(curl -s https://www.cloudflare.com/ips-v4) $(curl -s https://www.cloudflare.com/ips-v6); do
-  sudo ufw allow from $ip to any port 443 proto tcp
-done
-sudo ufw delete allow 'Nginx Full'      # drop the open 80/443 rule from step 3
-sudo ufw allow 80/tcp                   # leave 80 open only if you want the redirect to work
+sudo bash /opt/workshopone/app/deploy/cloudflare-refresh.sh
 ```
+
+Then apply:
+
+```bash
+sudo bash /opt/workshopone/app/deploy/cloudflare-refresh.sh --apply
+```
+
+It allows 443 from Cloudflare's published ranges only, removes the open `Nginx Full` rule, keeps
+port 80 (it only redirects to https), and rewrites `/etc/nginx/cloudflare-real-ip.conf` from the same
+download. It refuses to run if the download looks wrong or if ufw has no SSH rule, and it adds the
+new rules before removing the old ones, so the site never goes dark.
+
+Check from **your own PC**, not the server: `https://storesdb.ec-workshops.online` must still open,
+and `https://20.204.51.43` must now time out.
+
+Keep it current — Cloudflare adds ranges now and then. Monthly, from cron:
+
+```bash
+echo '17 3 1 * * root bash /opt/workshopone/app/deploy/cloudflare-refresh.sh --apply >> /var/log/workshopone-cloudflare.log 2>&1' | sudo tee /etc/cron.d/workshopone-cloudflare
+```
+
+### Cloudflare dashboard: a rate limit on sign-in
+
+The app limits sign-in attempts itself (8 per account and 120 per address in 15 minutes). A rule at
+Cloudflare stops a flood before it reaches the server at all. In the dashboard: **Security → WAF →
+Rate limiting rules → Create rule**:
+
+- *If incoming requests match*: URI Path **equals** `/api/auth/login` **and** Request Method **equals** `POST`
+- *Rate*: **20 requests per 1 minute**, counted **per IP**
+- *Then*: **Block** for **10 minutes**
+
+The office shares one public address, so do not set it lower than about 20 a minute, or one
+busy morning of mistyped passwords locks the whole office out.
 
 ## 9. Before you hand out the address
 
@@ -388,7 +422,11 @@ It refuses if someone has edited files directly on the server, rather than disca
 | Restart | `sudo systemctl restart workshopone` |
 | Diagnose ("nobody can sign in") | `sudo -u workshopone bash -c 'cd /opt/workshopone/app && node scripts/doctor.js'` |
 | Add people | `sudo -u workshopone bash -c 'cd /opt/workshopone/app && node scripts/create_staff.js --file staff.csv --apply'` |
-| Reset one password | `sudo -u workshopone bash -c 'cd /opt/workshopone/app && node scripts/admin.js set-password <user> "<temporary>"'` |
+| Reset one password | `sudo -u workshopone bash -c 'cd /opt/workshopone/app && node scripts/admin.js set-password <user> "<temporary>"'` (at least 10 characters; signs that person out everywhere) |
+| Sign someone out everywhere | Access Control → Users & Roles → **Sessions** → *Sign out everywhere*. Anyone can see and end their own under **🔐 Security** |
+| Someone lost their 2FA phone | Access Control → Users & Roles → **Reset 2FA**. If it is the admin's own phone: `sudo -u workshopone bash -c 'cd /opt/workshopone/app && node scripts/admin.js reset-mfa <user>'` |
+| Find default passwords | `sudo -u workshopone bash -c 'cd /opt/workshopone/app && node scripts/admin.js audit-passwords'` — an account whose password is its username cannot sign in on this server |
+| Backup health | signed in as admin: `https://storesdb.ec-workshops.online/api/health` → `backup` |
 | Backup now | `sudo -u workshopone bash -c 'cd /opt/workshopone/app && node scripts/backup.js'` |
 | Backups | automatic every 30 min to `/opt/workshopone/backups`, 96 kept (two days) |
 
@@ -426,18 +464,73 @@ PORT=1929 node src/server.js
 If the office PC is ever to take live entry again, that is a cut-over — copy the server's database
 down the same way step 6 copied it up — not something to drift into.
 
-### Off-site backups
+### Two-factor sign-in: turning it on, and the key to keep
 
-The automatic backups sit on the same machine as the database. That covers a mistake in the app; it
-covers nothing about losing the server. Copy them somewhere else on a schedule — from the office PC,
-for instance:
+Anyone can switch it on for themselves (the **🔐 2FA** button at the top of every page). A role can
+require it: **Access Control → Roles & Permissions →** tick *Require two-factor sign-in*. Nothing
+requires it until you tick it, so this is the order that cannot lock you out:
+
+1. Sign in as admin, press **🔐 2FA**, set it up with Google or Microsoft Authenticator, and keep the
+   ten recovery codes somewhere safe.
+2. Sign out and in again, to see it ask for the code.
+3. Only then tick *Require two-factor sign-in* on the **admin** role, and afterwards on the roles
+   that approve or buy (operations manager, manager, purchasing officers).
+
+People who hold a role that requires it are asked to set it up at their next click, and can do
+nothing else until they have.
+
+**The key file.** Everyone's two-factor secret is stored encrypted, with a key kept outside the
+database at `/opt/workshopone/data/mfa.key` (created on first use). The backups do not contain it —
+that is deliberate, so a copied backup cannot produce anyone's codes. **Keep a copy of that file in
+the password manager:**
 
 ```bash
-scp yohanudara@20.204.51.43:/opt/workshopone/backups/$(ssh yohanudara@20.204.51.43 'ls -t /opt/workshopone/backups | head -1') "D:/WorkshopOne-offsite/"
+sudo cat /opt/workshopone/data/mfa.key
 ```
 
-Worth doing now rather than later: this is the only copy of ten years of records.
+Moving to a new server? Copy `mfa.key` across with the database. Without it the system still
+starts, but everyone with two-factor sign-in is told to ask the admin for a reset, and the admin
+needs `admin.js reset-mfa` for their own account.
 
-**Those backups are on the same machine as the database.** That protects against a mistake in the
-app; it does nothing about losing the server. Copy them somewhere else on a schedule — that is a
-separate job, and worth doing before this holds the only copy of the workshop's records.
+### Backups: prove them weekly, and keep a copy off the server
+
+The automatic backups sit on the same machine as the database. That covers a mistake in the app; it
+covers nothing about losing the server. Two jobs close that gap. Both write their result to
+`/opt/workshopone/backups/backup-status.json`, and an **admin** who opens
+`https://storesdb.ec-workshops.online/api/health` while signed in sees a `backup` section: the age of
+the newest snapshot, whether the mirror copy worked, and the last restore check. `"ok": true` there
+means all of it is in order.
+
+**1. Weekly restore check (on the server).** Restores the newest snapshot into a scratch file, runs
+SQLite's `integrity_check` over every page, and compares row counts with the live database:
+
+```bash
+sudo cp /opt/workshopone/app/deploy/workshopone-verify.service /opt/workshopone/app/deploy/workshopone-verify.timer /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable --now workshopone-verify.timer
+```
+
+Run it once now and read the verdict:
+
+```bash
+sudo systemctl start workshopone-verify.service && journalctl -u workshopone-verify -n 40 --no-pager
+```
+
+**2. Daily off-site copy (on the office PC).** `deploy/offsite-pull.ps1` copies the newest snapshot
+down once a day, checks the SHA-256 on both ends, and keeps 30 days. It signs in as `wo-backup`, an
+ordinary account with no sudo that can read the backups but cannot change anything — so the key
+stored on the office PC cannot be used to take over the server. (It is still a key to a copy of the
+company's data: keep the office PC locked.)
+
+On the server:
+
+```bash
+sudo adduser --disabled-password --gecos "" wo-backup && sudo usermod -aG workshopone wo-backup && sudo chmod 750 /opt/workshopone/backups && sudo -u wo-backup ls /opt/workshopone/backups | head -3
+```
+
+The last command must list snapshot files. If it says *Permission denied*, the service account's
+home is closed to its own group: `sudo chmod 750 /opt/workshopone` and run the `ls` again (group
+members may then enter it; nobody else can). Then on the office PC, copy `deploy\offsite-pull.ps1` to
+`D:\WorkshopOne-offsite\` and follow the ONE-TIME SETUP at the top of that file (key, test run,
+scheduled task). The first run's log line must start with `OK`:
+`D:\WorkshopOne-offsite\offsite-pull.log`.
+
+Keep that folder on a BitLocker-encrypted drive: it is the company's whole database.

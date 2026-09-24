@@ -24,23 +24,24 @@ const STATES = [
 const OPEN_STATUSES = STATES.filter((s) => s !== 'CLOSED' && s !== 'REJECTED');
 const OPEN_SQL = "status NOT IN ('CLOSED', 'REJECTED')";
 
-// target -> { from:[...], roles:[...], action:label }
-// admin is implicitly allowed everywhere (checked in the route layer).
+// target -> { from:[...], cap:<capability>, action:label }
+// Who may make each move is a CAPABILITY (src/lib/capabilities.js), not a list of role names, so a
+// role an admin creates can be allowed a step. Admin holds every capability.
 const TRANSITIONS = {
-  APPROVED_TRANSPORT: { from: ['REQUESTED'], roles: ['transport_manager'], action: 'transport_approve' },
-  APPROVED_OPERATIONS: { from: ['APPROVED_TRANSPORT'], roles: ['operational_manager'], action: 'ops_approve' },
-  IN_WORKSHOP: { from: ['APPROVED_OPERATIONS'], roles: ['workshop'], action: 'assign' },
+  APPROVED_TRANSPORT: { from: ['REQUESTED'], cap: 'jobs.approve_transport', action: 'transport_approve' },
+  APPROVED_OPERATIONS: { from: ['APPROVED_TRANSPORT'], cap: 'jobs.approve_operations', action: 'ops_approve' },
+  IN_WORKSHOP: { from: ['APPROVED_OPERATIONS'], cap: 'jobs.assign_workshop', action: 'assign' },
   IN_PROGRESS: {
     from: ['IN_WORKSHOP', 'WORK_COMPLETE', 'CLOSED'],
-    roles: ['workshop'],
+    cap: 'jobs.start',
     action: 'start_or_reopen',
   },
-  WORK_COMPLETE: { from: ['IN_PROGRESS'], roles: ['workshop'], action: 'mark_complete' },
-  CLOSED: { from: ['WORK_COMPLETE'], roles: ['operational_manager', 'workshop'], action: 'close', gated: true },
+  WORK_COMPLETE: { from: ['IN_PROGRESS'], cap: 'jobs.complete', action: 'mark_complete' },
+  CLOSED: { from: ['WORK_COMPLETE'], cap: 'jobs.close', action: 'close', gated: true },
   // Rejection at either approval step.
-  REJECTED: { from: ['REQUESTED', 'APPROVED_TRANSPORT'], roles: ['transport_manager', 'operational_manager'], action: 'reject' },
+  REJECTED: { from: ['REQUESTED', 'APPROVED_TRANSPORT'], cap: 'jobs.reject', action: 'reject' },
   // A rejection can also bounce back to REQUESTED (with a reason).
-  REQUESTED: { from: ['APPROVED_TRANSPORT', 'REJECTED'], roles: ['transport_manager', 'operational_manager'], action: 'return' },
+  REQUESTED: { from: ['APPROVED_TRANSPORT', 'REJECTED'], cap: 'jobs.return', action: 'return' },
 };
 
 function isValidState(s) {
@@ -54,30 +55,40 @@ function nextStates(current) {
 
 // Who may reopen a CLOSED card. Wider than admin because the people who notice a card was
 // closed by mistake are the office and the workshop, not the owner — but narrower than the
-// whole staff, because a reopen changes what the monthly cost report shows.
-const REOPEN_ROLES = ['operational_manager', 'manager', 'workshop'];
+// whole staff, because a reopen changes what the monthly cost report shows. (Seeded to
+// operational_manager, manager and workshop — the old REOPEN_ROLES.)
+const REOPEN_CAP = 'jobs.reopen';
+
+// The capabilities of whoever is asking: a user object (req.user, with .caps) or, for older
+// callers and tests, a plain list of role names.
+function capsFor(who) {
+  const lib = require('./capabilities');
+  if (Array.isArray(who)) return lib.capsForRoles(who);
+  if (who && Array.isArray(who.caps)) return who.caps;
+  return lib.capsForRoles((who && who.roles) || []);
+}
 
 /**
  * Validate a transition. Reopening CLOSED -> IN_PROGRESS is restricted and audited.
  * @returns {{ok:boolean, error?:string, def?:object}}
  */
-function checkTransition(current, target, roles = []) {
+function checkTransition(current, target, who = []) {
   const def = TRANSITIONS[target];
   if (!def) return { ok: false, error: `Unknown target state ${target}` };
   if (!def.from.includes(current)) {
     return { ok: false, error: `Cannot move ${current} -> ${target}` };
   }
-  const held = new Set(roles);
-  const isAdmin = held.has('admin');
-  // Reopening a CLOSED card is restricted and audited. REOPEN_ROLES is the whole authority
-  // here — it must not then fall through to the target's own roles, which are about who may
-  // START work (workshop), not who may undo a close.
+  const held = capsFor(who);
+  const label = (cap) => require('./capabilities').get(cap).label;
+  // Reopening a CLOSED card is restricted and audited. The reopen permission is the whole
+  // authority here — it must not then fall through to the target's own permission, which is about
+  // who may START work, not who may undo a close.
   if (current === 'CLOSED') {
-    if (isAdmin || REOPEN_ROLES.some((r) => held.has(r))) return { ok: true, def };
-    return { ok: false, error: `Reopening a closed job requires one of: admin, ${REOPEN_ROLES.join(', ')}` };
+    if (held.includes(REOPEN_CAP)) return { ok: true, def };
+    return { ok: false, error: `Reopening a closed job needs the permission "${label(REOPEN_CAP)}"` };
   }
-  if (!isAdmin && !def.roles.some((r) => held.has(r))) {
-    return { ok: false, error: `Requires one of role: ${def.roles.join(', ')}` };
+  if (!held.includes(def.cap)) {
+    return { ok: false, error: `Needs the permission "${label(def.cap)}"` };
   }
   return { ok: true, def };
 }
@@ -141,13 +152,12 @@ function duplicateOpenJobs() {
 }
 
 /** Can this user reopen a closed card? Mirrors checkTransition's CLOSED gate exactly. */
-function canReopen(roles = []) {
-  const held = new Set(roles);
-  return held.has('admin') || REOPEN_ROLES.some((r) => held.has(r));
+function canReopen(who = []) {
+  return capsFor(who).includes(REOPEN_CAP);
 }
 
 module.exports = {
-  STATES, TRANSITIONS, OPEN_STATUSES, OPEN_SQL, REOPEN_ROLES,
+  STATES, TRANSITIONS, OPEN_STATUSES, OPEN_SQL, REOPEN_CAP,
   isValidState, nextStates, checkTransition, canReopen,
   openJobFor, checkOneOpenJob, duplicateOpenJobs,
 };

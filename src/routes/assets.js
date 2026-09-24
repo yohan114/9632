@@ -2,7 +2,7 @@
 
 const express = require('express');
 const { get, all, run } = require('../db');
-const { requireRole } = require('../lib/auth');
+const { requireCap } = require('../lib/auth');
 const { asyncHandler, require_, toInt, toNum } = require('../lib/http');
 const audit = require('../lib/audit');
 const aliases = require('../lib/aliases');
@@ -142,7 +142,7 @@ router.get('/:id', asyncHandler((req, res) => {
   res.json({ asset, current_project, current_battery, open_jobs, lifetime_cost: lc, service_due, timeline: timeline.slice(0, 100) });
 }));
 
-router.post('/', requireRole('storekeeper'), asyncHandler((req, res) => {
+router.post('/', requireCap('assets.create'), asyncHandler((req, res) => {
   const b = req.body;
   require_(b, ['code']);
   const norm = aliases.normalize(b.code);
@@ -155,7 +155,7 @@ router.post('/', requireRole('storekeeper'), asyncHandler((req, res) => {
   res.status(201).json(get('SELECT * FROM assets WHERE id = ?', info.lastInsertRowid));
 }));
 
-router.patch('/:id', requireRole('storekeeper'), asyncHandler((req, res) => {
+router.patch('/:id', requireCap('assets.edit'), asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   const before = get('SELECT * FROM assets WHERE id = ?', id);
   if (!before) return res.status(404).json({ error: 'Asset not found' });

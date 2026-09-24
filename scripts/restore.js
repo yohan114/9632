@@ -17,6 +17,7 @@ const fs = require('fs');
 const path = require('path');
 const Database = require('better-sqlite3');
 const config = require('../src/config');
+const backupStatus = require('../src/lib/backup_status');
 
 const args = process.argv.slice(2);
 const has = (f) => args.includes(f);
@@ -78,10 +79,35 @@ if (has('--replace')) {
 }
 
 // default: --verify (non-destructive)
+//
+// "It opened and the tables have rows" is not the same as "it is intact". A snapshot with a
+// damaged page can still open and still count most tables, and would have been reported as
+// VERIFIED. SQLite's own integrity_check reads every page and index; only that result counts, and
+// the verdict is written to backup-status.json (shown to admins on /api/health) and returned as
+// the exit code, so a scheduled run that fails is visible rather than a line in a terminal.
+function integrity(dbFile) {
+  const db = new Database(dbFile, { readonly: true });
+  try {
+    const rows = db.pragma('integrity_check');
+    const msgs = rows.map((r) => r.integrity_check);
+    return { ok: msgs.length === 1 && msgs[0] === 'ok', messages: msgs.slice(0, 10) };
+  } finally { db.close(); }
+}
+
 const scratch = path.join(config.backupDir, '_restore_verify_scratch.db');
+let verdict = { ok: false, snapshot: path.basename(snapshot), error: 'verify did not complete' };
 try {
   fs.copyFileSync(snapshot, scratch);
   stripWal(scratch);
+  const check = integrity(scratch);
+  if (!check.ok) {
+    verdict = { ok: false, snapshot: path.basename(snapshot), integrity: check.messages };
+    console.error('\n  RESTORE CHECK FAILED — integrity_check reported:');
+    for (const m of check.messages) console.error('    ' + m);
+    console.error('  Do NOT rely on this snapshot. Check the newest earlier one and the server disk.\n');
+    process.exitCode = 1;
+    return;
+  }
   const restored = tableCounts(scratch);
   const live = fs.existsSync(config.dbPath) ? tableCounts(config.dbPath) : {};
   const names = [...new Set([...Object.keys(restored), ...Object.keys(live)])].sort();
@@ -98,11 +124,17 @@ try {
     console.log('  ' + n.padEnd(30) + String(r).padStart(9) + String(l).padStart(9) + '   ' + (ok ? 'ok' : 'DIFF'));
   }
   console.log('  ' + '-'.repeat(58));
-  console.log(`\n  Restore VERIFIED: snapshot opened, ${names.length} tables, ${total} rows total.`);
+  console.log(`\n  Restore VERIFIED: integrity_check ok, ${names.length} tables, ${total} rows total.`);
   console.log(mismatches === 0
     ? '  Row counts match the live DB exactly.\n'
     : `  ${mismatches} table(s) differ from live (expected if the live DB has changed since the snapshot).\n`);
+  verdict = { ok: true, snapshot: path.basename(snapshot), tables: names.length, rows: total, differ_from_live: mismatches };
+} catch (e) {
+  verdict = { ok: false, snapshot: path.basename(snapshot), error: e.message };
+  console.error('\n  RESTORE CHECK FAILED:', e.message, '\n');
+  process.exitCode = 1;
 } finally {
   stripWal(scratch);
   try { fs.unlinkSync(scratch); } catch {}
+  backupStatus.write('verify', verdict);
 }

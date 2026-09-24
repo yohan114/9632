@@ -429,7 +429,7 @@ const BUILDERS = { pending_parts: pendingParts, job_summary: jobSummary, pending
 /** Build a report for a day, live from the system. */
 function build(kind, opts) {
   const fn = BUILDERS[kind];
-  if (!fn) throw new Error(`Unknown report: ${kind}`);
+  if (!fn) { const e = new Error(`Unknown report: ${kind}`); e.status = 404; throw e; }
   return fn(opts || {});
 }
 
