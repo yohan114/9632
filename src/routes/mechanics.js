@@ -11,12 +11,19 @@ const aliases = require('../lib/aliases');
 const router = express.Router();
 
 // Canonical mechanics with their current rate.
-router.get('/', asyncHandler((_req, res) => {
+router.get('/', asyncHandler((req, res) => {
+  // Stage 3: someone kept to their own workshop picks from its mechanics only — those at that
+  // workshop on ?date= (today by default). Head office may ask for one workshop with ?workshop_id=.
+  const ws = require('../lib/workshops');
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(String(req.query.date || '')) ? String(req.query.date) : null;
+  const only = require('../lib/scope').onlyWorkshop(req.user) || toInt(req.query.workshop_id) || null;
+  const wsOn = ws.mechanicWorkshopSql('m', date ? '?' : "date('now')");
   res.json(all(
-    `SELECT m.*,
+    `SELECT * FROM (SELECT m.*,
             (SELECT rate FROM labour_rates lr WHERE lr.mechanic = m.name ORDER BY effective_from DESC, id DESC LIMIT 1) AS rate,
-            ${require('../lib/workshops').mechanicWorkshopSql('m')} AS workshop_id
-       FROM mechanics m ORDER BY m.name`
+            ${wsOn} AS workshop_id
+       FROM mechanics m) x ${only ? 'WHERE x.workshop_id = ?' : ''} ORDER BY x.name`,
+    ...(date ? [date] : []), ...(only ? [only] : [])
   ));
 }));
 

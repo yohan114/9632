@@ -18,6 +18,14 @@ const costing = require('../lib/costing');
 const jobstate = require('../lib/jobstate');
 
 const router = express.Router();
+const scope = require('../lib/scope');
+const workshops = require('../lib/workshops');
+
+// Stage 3: a request of another workshop is out of reach for anyone outside head office.
+router.param('id', (req, res, next, id) => {
+  const no = scope.jobRequestRefusal(req.user, toInt(id));
+  return no ? res.status(403).json(no) : next();
+});
 
 // One generator, shared with routes/jobcards.js. This file used to carry its own copy — identical,
 // separately maintained, and therefore free to drift: a card raised from a job request would have
@@ -52,10 +60,14 @@ router.get('/', asyncHandler((req, res) => {
     clauses.push('(r.jr_no LIKE ? OR r.description LIKE ? OR a.code LIKE ? OR a.registration LIKE ? OR a.ec_code LIKE ?)');
     params.push(like, like, like, like, like);
   }
+  // Stage 3: your own workshop's requests (head office: all, or the one asked for).
+  const own = scope.filter(req.user, 'r.workshop_id', { store: false });
+  if (own.sql) { clauses.push(own.sql); params.push(...own.params); }
+  if (req.query.workshop_id) { clauses.push('r.workshop_id = ?'); params.push(toInt(req.query.workshop_id)); }
   const where = clauses.length ? 'WHERE ' + clauses.join(' AND ') : '';
   res.json(all(
     `SELECT r.*, a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec,
-            p.name AS project_name, j.job_no AS job_no
+            p.name AS project_name, j.job_no AS job_no, (SELECT code FROM workshops w WHERE w.id = r.workshop_id) AS workshop_code
        FROM job_requests r
        LEFT JOIN assets a ON a.id = r.asset_id
        LEFT JOIN projects p ON p.id = r.project_id
@@ -70,7 +82,8 @@ router.get('/:id', asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   const jr = get(
     `SELECT r.*, a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec,
-            p.name AS project_name, j.job_no AS job_no, j.status AS job_status
+            p.name AS project_name, j.job_no AS job_no, j.status AS job_status,
+            (SELECT name FROM workshops w WHERE w.id = r.workshop_id) AS workshop_name
        FROM job_requests r
        LEFT JOIN assets a ON a.id = r.asset_id
        LEFT JOIN projects p ON p.id = r.project_id
@@ -105,12 +118,14 @@ router.post('/', requireCap('jobrequests.create'), asyncHandler((req, res) => {
   }
   const ru = get('SELECT full_name, username, signature FROM users WHERE id = ?', req.user.id);
   const reqBy = String(b.requested_by || '').trim() || (ru ? (ru.full_name || ru.username) : null);
+  // The workshop it is for: the one chosen, else the raiser's own (Stage 3).
+  const workshopId = workshops.forNew(req.user, b.workshop_id);
   const result = run(
     `INSERT INTO job_requests (jr_no, req_date, asset_id, project_id, type, severity, priority, description,
-                               required_date, requested_by, requested_by_user, requested_sig)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                               required_date, requested_by, requested_by_user, requested_sig, workshop_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     jrNo, b.req_date || new Date().toISOString().slice(0, 10), assetId || null, toInt(b.project_id),
-    type, severity, priority, b.description, b.required_date || null, reqBy, req.user.id, ru ? ru.signature : null
+    type, severity, priority, b.description, b.required_date || null, reqBy, req.user.id, ru ? ru.signature : null, workshopId
   );
   audit.record({ userId: req.user.id, entity: 'job_request', entityId: result.lastInsertRowid, action: 'create', after: { jr_no: jrNo } });
   // Raising a request is never blocked — transport must always be able to log a fault.
@@ -163,14 +178,14 @@ router.post('/:id/approve', requireCap('jobrequests.approve'), asyncHandler((req
   const out = tx(() => {
     // Create the job card — already past both approval gates (this request WAS the approval).
     const no = jobNo(jr.type);
-    // The card goes to the workshop of whoever raised the request (Stage 2), else the default.
+    // The card goes to the request's workshop (the raiser's, unless another was chosen).
     const info = run(
       `INSERT INTO job_cards (job_no, asset_id, project_id, type, severity, description, status,
                               requested_by, requested_by_user, requested_at, approved_transport_at, approved_ops_at, workshop_id)
        VALUES (?, ?, ?, ?, ?, ?, 'APPROVED_OPERATIONS', ?, ?, ?, datetime('now'), datetime('now'), ?)`,
       no, jr.asset_id, jr.project_id, jr.type, jr.severity, jr.description,
       jr.requested_by, jr.requested_by_user, jr.req_date || new Date().toISOString().slice(0, 10),
-      require('../lib/workshops').homeOf(jr.requested_by_user ? { id: jr.requested_by_user } : null)
+      jr.workshop_id || workshops.homeOf(jr.requested_by_user ? { id: jr.requested_by_user } : null)
     );
     const jobId = info.lastInsertRowid;
     // Mirror the two approvals onto the job card's own audit trail.

@@ -746,6 +746,17 @@ function workshopsStage2() {
            WHERE id = NEW.id; END;
     CREATE TRIGGER IF NOT EXISTS trg_mechanics_workshop AFTER INSERT ON mechanics
     BEGIN INSERT OR IGNORE INTO mechanic_workshops (mechanic_id, workshop_id, from_date) VALUES (NEW.id, ${DEF}, '2000-01-01'); END;`);
+  // Job requests (Stage 3): the workshop they are for — the card they became, else the raiser's.
+  ensureColumn('job_requests', 'workshop_id', 'INTEGER REFERENCES workshops(id)');
+  db.exec(`
+    UPDATE job_requests SET workshop_id = COALESCE(
+        (SELECT j.workshop_id FROM job_cards j WHERE j.id = job_requests.job_id),
+        (SELECT u.workshop_id FROM users u WHERE u.id = job_requests.requested_by_user), ${DEF})
+     WHERE workshop_id IS NULL;
+    CREATE INDEX IF NOT EXISTS idx_jr_workshop ON job_requests(workshop_id);
+    CREATE TRIGGER IF NOT EXISTS trg_job_requests_workshop AFTER INSERT ON job_requests WHEN NEW.workshop_id IS NULL
+    BEGIN UPDATE job_requests SET workshop_id = COALESCE((SELECT u.workshop_id FROM users u WHERE u.id = NEW.requested_by_user), ${DEF})
+           WHERE id = NEW.id; END;`);
   // The transfer notes already written: link each end to the place its text clearly names. Once.
   if (!db.prepare("SELECT 1 FROM settings WHERE key = 'mtn_places_matched'").get()) {
     const r = require('../lib/places').matchOldTransfers();

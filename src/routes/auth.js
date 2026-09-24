@@ -287,6 +287,8 @@ router.get('/me', (req, res) => {
   const home = ws.byId(ws.homeOf(req.user));
   res.json({ ...me, permissions: permissions.userPermissions(req.user.roles), hasSignature: !!(u && u.signature),
     workshop: home ? { id: home.id, code: home.code, name: home.name } : null, workshopsMulti: ws.isMulti(),
+    // Stage 3: whether this person sees every workshop's job cards (always, until scoping is on).
+    seesAllWorkshops: require('../lib/scope').seesAllJobs(req.user),
     capNeeds: require('../lib/capabilities').needsFor(req.user.caps || []),
     sessionPolicy: sessionPolicy(),
     passwordPolicy: passwordPolicy.describe() });

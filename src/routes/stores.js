@@ -17,6 +17,7 @@ const stock = require('../lib/stock');
 const jobstate = require('../lib/jobstate');
 const permissions = require('../lib/permissions');
 const places = require('../lib/places');
+const scope = require('../lib/scope');
 const { lineReceiptSql, mrnReceiptSql, receivedLabel, d10 } = require('../lib/received_date');
 const lubricants = require('../lib/lubricants');
 
@@ -591,6 +592,8 @@ router.get('/mrn', asyncHandler((req, res) => {
   if (req.query.status) { clauses.push('m.status = ?'); params.push(req.query.status); }
   // Which workshop asked (multi-site Stage 2).
   if (req.query.workshop_id) { clauses.push('m.workshop_id = ?'); params.push(toInt(req.query.workshop_id)); }
+  // Stage 3: your own workshop's requests only (head office and store staff: all).
+  { const own = scope.filter(req.user, 'm.workshop_id'); if (own.sql) { clauses.push(own.sql); params.push(...own.params); } }
   // Approval-workflow tabs. 'pending' = live MRNs awaiting certification (excludes
   // imported history, whose approval_status is 'requested' but has no requester).
   if (req.query.approval) {
@@ -694,14 +697,17 @@ router.post('/mrn', requireCap('stores.mrn.create'), asyncHandler((req, res) => 
 // awaiting the Workshop Engineer's certification (approval_status 'requested'
 // with a real requester — imported history is excluded); 'certified' counts
 // those awaiting the Operational Manager's approval.
-router.get('/mrn/pending-count', asyncHandler((_req, res) => {
-  const pending = get(`SELECT COUNT(*) c FROM mrn WHERE approval_status = 'requested' AND requested_by IS NOT NULL AND TRIM(requested_by) <> ''`).c;
-  const certified = get(`SELECT COUNT(*) c FROM mrn WHERE approval_status = 'certified'`).c;
+router.get('/mrn/pending-count', asyncHandler((req, res) => {
+  const own = scope.filter(req.user, 'workshop_id');   // Stage 3: your own workshop's requests
+  const and = own.sql ? ` AND ${own.sql}` : '';
+  const pending = get(`SELECT COUNT(*) c FROM mrn WHERE approval_status = 'requested' AND requested_by IS NOT NULL AND TRIM(requested_by) <> ''${and}`, ...own.params).c;
+  const certified = get(`SELECT COUNT(*) c FROM mrn WHERE approval_status = 'certified'${and}`, ...own.params).c;
   res.json({ pending, certified, total_open: pending + certified });
 }));
 
 router.get('/mrn/:id', asyncHandler((req, res) => {
   const id = toInt(req.params.id);
+  { const no = scope.mrnRefusal(req.user, id); if (no) return res.status(403).json(no); }
   const mrn = get(`SELECT m.*, a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec,
                           j.job_no, j.status AS job_status, w.name AS workshop_name
                      FROM mrn m LEFT JOIN assets a ON a.id = m.asset_id
@@ -722,6 +728,7 @@ const signer = (userId) => { const u = get('SELECT full_name, username, signatur
 
 router.post('/mrn/:id/certify', requireCap('stores.mrn.certify'), asyncHandler((req, res) => {
   const id = toInt(req.params.id);
+  { const no = scope.mrnRefusal(req.user, id); if (no) return res.status(403).json(no); }
   const mrn = get('SELECT * FROM mrn WHERE id = ?', id);
   if (!mrn) return res.status(404).json({ error: 'MRN not found' });
   if (mrn.approval_status === 'approved') return res.status(409).json({ error: 'Already approved — cannot re-certify' });
@@ -738,6 +745,7 @@ router.post('/mrn/:id/certify', requireCap('stores.mrn.certify'), asyncHandler((
 
 router.post('/mrn/:id/approve', requireCap('stores.mrn.approve'), asyncHandler((req, res) => {
   const id = toInt(req.params.id);
+  { const no = scope.mrnRefusal(req.user, id); if (no) return res.status(403).json(no); }
   const mrn = get('SELECT * FROM mrn WHERE id = ?', id);
   if (!mrn) return res.status(404).json({ error: 'MRN not found' });
   if (mrn.approval_status !== 'certified') return res.status(409).json({ error: 'MRN must be certified (Workshop Engineer) before Operational Manager approval' });
@@ -758,6 +766,7 @@ router.post('/mrn/:id/approve', requireCap('stores.mrn.approve'), asyncHandler((
 
 router.post('/mrn/:id/reject', requireCap('stores.mrn.reject'), asyncHandler((req, res) => {
   const id = toInt(req.params.id);
+  { const no = scope.mrnRefusal(req.user, id); if (no) return res.status(403).json(no); }
   const mrn = get('SELECT * FROM mrn WHERE id = ?', id);
   if (!mrn) return res.status(404).json({ error: 'MRN not found' });
   if (!String(req.body.reason || '').trim()) return res.status(400).json({ error: 'A reason is required to reject' });
@@ -776,6 +785,7 @@ router.post('/mrn/:id/reject', requireCap('stores.mrn.reject'), asyncHandler((re
 
 // Printable Material Requisition form (matches the paper EC1.ST.FO.01 layout).
 router.get('/mrn/:id/print.html', asyncHandler((req, res) => {
+  { const no = scope.mrnRefusal(req.user, toInt(req.params.id)); if (no) return res.status(403).json(no); }
   const id = toInt(req.params.id);
   const mrn = get('SELECT m.*, a.code AS asset_code, p.name AS project_name FROM mrn m LEFT JOIN assets a ON a.id = m.asset_id LEFT JOIN projects p ON p.id = m.project_id WHERE m.id = ?', id);
   if (!mrn) return res.status(404).send('MRN not found');
@@ -877,6 +887,7 @@ router.get('/mrn/:id/print.html', asyncHandler((req, res) => {
 }));
 
 router.post('/mrn/:id/lines', requireCap('stores.mrn.edit'), asyncHandler((req, res) => {
+  { const no = scope.mrnRefusal(req.user, toInt(req.params.id)); if (no) return res.status(403).json(no); }
   const id = toInt(req.params.id);
   require_(req.body, ['description', 'qty']);
   const mrn = get('SELECT * FROM mrn WHERE id = ?', id);
@@ -1236,6 +1247,7 @@ function resetCertification(mrn, userId, what) {
 const MRN_EDITABLE = ['purpose', 'requested_by', 'required_date', 'req_date', 'asset_id', 'project_id', 'job_id'];
 
 router.patch('/mrn/:id', requireCap('stores.mrn.edit'), asyncHandler((req, res) => {
+  { const no = scope.mrnRefusal(req.user, toInt(req.params.id)); if (no) return res.status(403).json(no); }
   const id = toInt(req.params.id);
   const g = guardEditable(id);
   if (g.error) return res.status(g.code).json({ error: g.error });
@@ -1274,6 +1286,7 @@ router.patch('/mrn/:id', requireCap('stores.mrn.edit'), asyncHandler((req, res) 
 const LINE_EDITABLE = ['description', 'unit', 'category'];
 
 router.patch('/mrn/line/:id', requireCap('stores.mrn.edit'), asyncHandler((req, res) => {
+  { const ln = get('SELECT mrn_id FROM mrn_lines WHERE id = ?', toInt(req.params.id)); const no = ln && scope.mrnRefusal(req.user, ln.mrn_id); if (no) return res.status(403).json(no); }
   const id = toInt(req.params.id);
   const line = get('SELECT * FROM mrn_lines WHERE id = ?', id);
   if (!line) return res.status(404).json({ error: 'MRN line not found' });
@@ -1317,6 +1330,7 @@ router.patch('/mrn/line/:id', requireCap('stores.mrn.edit'), asyncHandler((req, 
 // Remove a line from a request that has not been approved. Anything already received stays —
 // deleting the line would orphan a receipt that is physically on the shelf.
 router.delete('/mrn/line/:id', requireCap('stores.mrn.edit'), asyncHandler((req, res) => {
+  { const ln = get('SELECT mrn_id FROM mrn_lines WHERE id = ?', toInt(req.params.id)); const no = ln && scope.mrnRefusal(req.user, ln.mrn_id); if (no) return res.status(403).json(no); }
   const id = toInt(req.params.id);
   const line = get('SELECT * FROM mrn_lines WHERE id = ?', id);
   if (!line) return res.status(404).json({ error: 'MRN line not found' });
@@ -1815,6 +1829,8 @@ router.post('/stock-issue', requireCap('stores.stock_issue'), asyncHandler((req,
     jobId = open ? open.id : generalWorkshopJobId();
     landedOn = open ? open.job_no : 'General Workshop';
   }
+  // Stage 3: someone outside head office and the store issues only to their own workshop's cards.
+  { const no = scope.jobRefusal(req.user, jobId); if (no) return res.status(403).json(no); }
   const issueDate = /^\d{4}-\d{2}-\d{2}$/.test(String(b.issue_date || '')) ? b.issue_date : new Date().toISOString().slice(0, 10);
   const issuedBy = clean(b.issued_by) || null;
   const [yr, mo] = issueDate.split('-').map((n) => parseInt(n, 10)); // rollup period

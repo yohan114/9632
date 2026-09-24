@@ -94,6 +94,28 @@ function forRequest(user, jobId) {
   return (j && j.workshop_id) || homeOf(user);
 }
 
+// ---- the general-work card of each workshop ------------------------------------------------
+//
+// Work not on any vehicle (and work nobody has put on a job yet) sits on a "general workshop" card.
+// There is one per workshop, so that with the workshops kept apart (Stage 3) each keeps its own:
+// the main workshop's is the card that always existed (legacy_ref 'general-workshop', GENERAL-WS);
+// another's is 'general-workshop:<id>', GENERAL-WS-<code>. With one workshop nothing changes.
+const GENERAL_REF = 'general-workshop';
+const generalRef = (workshopId) => (!workshopId || workshopId === defaultId() ? GENERAL_REF : `${GENERAL_REF}:${workshopId}`);
+const isGeneralCard = (job) => !!job && (job.legacy_ref === GENERAL_REF || String(job.legacy_ref || '').startsWith(`${GENERAL_REF}:`));
+
+/** The workshop's general card id (0 when it has none yet), creating it if asked. */
+function generalCardId(workshopId, { create = false, description = 'General workshop (not vehicle-specific)' } = {}) {
+  const ref = generalRef(workshopId);
+  const j = get('SELECT id FROM job_cards WHERE legacy_ref = ? LIMIT 1', ref);
+  if (j) return j.id;
+  if (!create) return 0;
+  const w = ref === GENERAL_REF ? null : byId(workshopId);
+  return run(`INSERT INTO job_cards (job_no, type, description, status, requested_by, requested_at, is_historical, synthesized_no, legacy_ref, workshop_id)
+              VALUES (?, 'repair', ?, 'REQUESTED', 'system', date('now'), 0, 1, ?, ?)`,
+  w ? `GENERAL-WS-${w.code}` : 'GENERAL-WS', description, ref, w ? w.id : null).lastInsertRowid;
+}
+
 // ---- managing the list ---------------------------------------------------------------------
 
 function create(actor, body) {
@@ -182,5 +204,5 @@ function moveMechanic(actor, mechanicId, workshopId, fromDate, note) {
 
 module.exports = {
   defaultId, byId, activeCount, isMulti, list, mustBeActive, homeOf, forNew, forRequest,
-  create, update, setActive, mechanicWorkshop, mechanicWorkshopSql, mechanicHistory, moveMechanic,
+  create, update, setActive, mechanicWorkshop, generalCardId, isGeneralCard, GENERAL_REF, mechanicWorkshopSql, mechanicHistory, moveMechanic,
 };
