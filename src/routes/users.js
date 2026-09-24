@@ -138,4 +138,23 @@ router.post('/:id/mfa-reset', requireCap('users.manage'), asyncHandler((req, res
   res.json(userWithRoles(id));
 }));
 
+// A person's signed-in sessions, and signing them out everywhere (a lost phone, a shared PC, someone
+// leaving). The same "within your reach" rule as every other change to an account.
+router.get('/:id/sessions', requireCap('users.manage'), asyncHandler((req, res) => {
+  const id = toInt(req.params.id);
+  if (!get('SELECT id FROM users WHERE id = ?', id)) return res.status(404).json({ error: 'User not found' });
+  rules.assertCanManageUser(req.user, id);
+  res.json({ sessions: auth.listSessions(id, req.user.token) });
+}));
+
+router.post('/:id/sessions/revoke', requireCap('users.manage'), asyncHandler((req, res) => {
+  const id = toInt(req.params.id);
+  const u = get('SELECT id, username FROM users WHERE id = ?', id);
+  if (!u) return res.status(404).json({ error: 'User not found' });
+  rules.assertCanManageUser(req.user, id);
+  const ended = auth.revokeSessions(id, id === req.user.id ? { exceptToken: req.user.token } : {});
+  audit.record({ userId: req.user.id, entity: 'user', entityId: id, action: 'sessions_revoked', after: { ended } });
+  res.json({ ok: true, ended });
+}));
+
 module.exports = router;

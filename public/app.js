@@ -38,10 +38,17 @@ async function api(path, opts = {}) {
   const url = (baseUrl ? baseUrl : '') + '/api' + path;
   const res = await fetch(url, {
     method: opts.method || 'GET',
-    headers: opts.body ? { 'Content-Type': 'application/json' } : {},
+    // How long since the last mouse / keyboard / touch input: the server counts only REAL use
+    // towards the idle timeout, not the refreshes this page makes on its own (src/lib/auth.js).
+    headers: { ...(opts.body ? { 'Content-Type': 'application/json' } : {}), 'X-WO-Idle-Ms': String(idleMs()) },
     body: opts.body ? JSON.stringify(opts.body) : undefined,
     credentials: 'include',
   });
+  // The session is over (expired, idle, or signed out from another device): back to sign-in,
+  // instead of every panel on the page showing "Authentication required".
+  if (res.status === 401 && res.headers.get('X-WO-Session') === 'ended' && ME) {
+    sessionEnded('Your session has ended. Please sign in again.');
+  }
   if (method !== 'GET') clearRefCache();
   if (res.status === 204) return null;
   const ct = res.headers.get('content-type') || '';
@@ -56,6 +63,61 @@ async function api(path, opts = {}) {
   if (isRefPath) refCache.set(path, { time: Date.now(), data });
   return data;
 }
+
+// ---- idle sign-out -----------------------------------------------------------------------------
+//
+// A PC left signed in at the stores counter is anyone's. After the idle limit (from the server,
+// default 2 hours) without mouse, keyboard or touch input, this page signs itself out; a minute
+// before, it warns. Activity is shared across this browser's tabs (localStorage), so working in one
+// tab keeps the others signed in. The server enforces the same limit on its own (src/lib/auth.js).
+const ACTIVITY_KEY = 'wo_last_activity';
+let _lastInput = Date.now();
+let _lastStored = 0;
+let _idleWarned = false;
+function noteActivity() {
+  _lastInput = Date.now();
+  if (_lastInput - _lastStored > 5000) {
+    _lastStored = _lastInput;
+    try { localStorage.setItem(ACTIVITY_KEY, String(_lastInput)); } catch (e) { /* private mode */ }
+  }
+  if (_idleWarned) { _idleWarned = false; const w = document.getElementById('idle-warn'); if (w) w.remove(); }
+}
+['mousedown', 'mousemove', 'keydown', 'touchstart', 'wheel', 'scroll']
+  .forEach((ev) => window.addEventListener(ev, noteActivity, { passive: true, capture: true }));
+function lastActivity() {
+  let stored = 0;
+  try { stored = Number(localStorage.getItem(ACTIVITY_KEY)) || 0; } catch (e) { /* private mode */ }
+  return Math.max(_lastInput, stored);
+}
+function idleMs() { return Math.max(0, Date.now() - lastActivity()); }
+
+let _sessionEnding = false;
+// Back to the sign-in screen. `logout`: also end the session on the server (the idle case; when the
+// server already ended it there is nothing to end).
+function sessionEnded(message, { logout = false } = {}) {
+  if (_sessionEnding) return;
+  _sessionEnding = true;
+  const w = document.getElementById('idle-warn'); if (w) w.remove();
+  const done = () => { live('disconnect'); ME = null; location.hash = ''; _sessionEnding = false; renderLogin(message); };
+  if (!logout) return done();
+  const base = (window.WORKSHOPONE_API_BASE || '').replace(/\/+$/, '');
+  fetch(base + '/api/auth/logout', { method: 'POST', credentials: 'include' }).catch(() => {}).finally(done);
+}
+
+setInterval(() => {
+  const mins = ME && ME.sessionPolicy && ME.sessionPolicy.idleMinutes;
+  if (!mins) return;
+  const idle = idleMs();
+  if (idle >= mins * 60000) return sessionEnded(`Signed out after ${mins} minutes without activity.`, { logout: true });
+  if (idle >= mins * 60000 - 60000 && !_idleWarned) {
+    _idleWarned = true;
+    const bar = document.createElement('div');
+    bar.id = 'idle-warn';
+    bar.style.cssText = 'position:fixed;top:10px;left:50%;transform:translateX(-50%);z-index:9999;background:#b45309;color:#fff;padding:10px 16px;border-radius:8px;box-shadow:0 4px 12px rgba(0,0,0,.25);font-weight:600';
+    bar.textContent = 'No activity — you will be signed out in about a minute. Move the mouse or press a key to stay signed in.';
+    document.body.appendChild(bar);
+  }
+}, 15000);
 
 // The apostrophe matters as much as the double quote. Several buttons carry their data as JSON in a
 // SINGLE-quoted attribute (data-shelf-item='…'), so an item called "Driver's seat" used to end the
@@ -749,7 +811,7 @@ function renderShell() {
       <div class="who">${esc(ME.fullName || ME.username)} · ${ME.roles.join(', ')}</div>
       <button class="sm" id="mysig">Signature</button>
       <button class="sm" id="chpw">Password</button>
-      <button class="sm" id="mymfa" title="Two-factor sign-in">🔐 2FA${ME && ME.mfaEnabled ? ' ✓' : ''}</button>
+      <button class="sm" id="mymfa" title="Signed-in devices and two-factor sign-in">🔐 Security${ME && ME.mfaEnabled ? ' ✓' : ''}</button>
       <button class="sm" id="logout">Logout</button>
     </div>
     <div class="layout">
@@ -768,7 +830,7 @@ function renderShell() {
     <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Update</button></div>`,
     (body, close) => { qs('#s', body).onclick = async () => { try { await api('/auth/change-password', { method: 'POST', body: formData(body) }); toast('Password updated'); close(); } catch (e) { toast(e.message, 'err'); } }; });
   qs('#mysig').onclick = mySignatureModal;
-  qs('#mymfa').onclick = mfaSettingsModal;
+  qs('#mymfa').onclick = securityModal;
   qs('#ham').onclick = () => qs('#nav').classList.toggle('open');
   qsa('#nav a').forEach((a) => a.addEventListener('click', () => qs('#nav').classList.remove('open')));
 }
@@ -7338,8 +7400,10 @@ async function renderUsersManager(c) {
       <td>${u.roles.map((r) => `<span class="badge">${esc(labelOf[r] || r)}</span>`).join(' ')}</td>
       <td>${u.mfa_enabled ? '<span class="badge green">on</span>' : '<span class="muted">off</span>'}</td><td>${u.active ? '✓' : '✕'}</td>
       <td style="white-space:nowrap"><button class="sm" data-roles="${u.id}">Roles</button> <button class="sm" data-reset="${u.id}">Reset password</button>
+        <button class="sm" data-sessions="${u.id}">Sessions</button>
         ${u.mfa_enabled ? `<button class="sm" data-mfareset="${u.id}" title="Lost or new phone">Reset 2FA</button>` : ''}
         <button class="sm ${u.active ? 'danger' : ''}" data-active="${u.id}">${u.active ? 'Deactivate' : 'Activate'}</button></td></tr>`))}`;
+  qsa('[data-sessions]', c).forEach((b) => b.onclick = () => userSessionsModal(users.find((x) => x.id == b.dataset.sessions)));
   qsa('[data-mfareset]', c).forEach((b) => b.onclick = async () => {
     const u = users.find((x) => x.id == b.dataset.mfareset);
     if (!confirm(`Reset two-factor sign-in for ${u.username}? They are signed out, and set it up again with their new phone at next sign-in (if their role requires it) or when they choose to.`)) return;
@@ -8696,6 +8760,67 @@ let _mfaSetupPending = null;
 function forceMfaSetup() {
   if (_mfaSetupPending || document.querySelector('#menable')) return;
   _mfaSetupPending = runMfaSetup({ forced: true }).finally(() => { _mfaSetupPending = null; });
+}
+
+// ---- signed-in devices ---------------------------------------------------------------------------
+
+// Server times are UTC "YYYY-MM-DD HH:MM:SS" (or ISO). Shown as "12 min ago · 24 Sep 09:14".
+function whenText(t) {
+  if (!t) return '—';
+  const ms = Date.parse(String(t).includes('T') ? t : String(t).replace(' ', 'T') + 'Z');
+  if (!Number.isFinite(ms)) return esc(t);
+  const mins = Math.round((Date.now() - ms) / 60000);
+  const rel = mins < 1 ? 'just now' : mins < 60 ? `${mins} min ago` : mins < 1440 ? `${Math.round(mins / 60)} h ago` : `${Math.round(mins / 1440)} d ago`;
+  return `${rel} <span class="muted" style="font-size:11px">· ${esc(new Date(ms).toLocaleString([], { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }))}</span>`;
+}
+function sessionRows(list, { mine }) {
+  return list.map((x) => `<tr>
+    <td><b>${esc(x.device)}</b>${x.current ? ' <span class="badge green">this device</span>' : ''}${x.second_factor ? ' <span class="badge blue" title="Signed in with two-factor">2FA</span>' : ''}
+      <br><span class="muted" style="font-size:11px">${esc(x.ip || '')}</span></td>
+    <td>${whenText(x.signed_in_at)}</td><td>${whenText(x.last_active_at)}</td>
+    <td>${mine && !x.current ? `<button class="sm" data-endsess="${x.id}">Sign out</button>` : ''}</td></tr>`);
+}
+
+// The top-bar "Security" box: where I am signed in, and two-factor sign-in.
+async function securityModal() {
+  let d;
+  try { d = await api('/auth/sessions'); } catch (e) { return toast(e.message, 'err'); }
+  const others = d.sessions.filter((x) => !x.current).length;
+  modal('Security', `
+    <h3 style="margin-top:0">Where you are signed in</h3>
+    ${tableWrap([{ label: 'Device' }, { label: 'Signed in' }, { label: 'Last active' }, { label: '' }], sessionRows(d.sessions, { mine: true }))}
+    <p class="muted" style="font-size:12px">${d.policy.idleMinutes ? `You are signed out automatically after ${d.policy.idleMinutes} minutes without activity, and` : 'Sessions end'} after ${d.policy.ttlHours} hours in any case. Don't recognise a device? Sign it out and change your password.</p>
+    <div class="pill-row">
+      <button class="btn" id="endothers" ${others ? '' : 'disabled'}>Sign out all other devices${others ? ` (${others})` : ''}</button>
+      <button class="btn" id="open2fa">Two-factor sign-in: ${ME && ME.mfaEnabled ? 'on' : 'off'} …</button>
+    </div>`,
+  (body, close) => {
+    qsa('[data-endsess]', body).forEach((b) => b.onclick = async () => {
+      try { await api(`/auth/sessions/${b.dataset.endsess}/revoke`, { method: 'POST' }); toast('Signed out'); close(); securityModal(); }
+      catch (e) { toast(e.message, 'err'); }
+    });
+    qs('#endothers', body).onclick = async () => {
+      try { const r = await api('/auth/sessions/revoke-others', { method: 'POST' }); toast(`${r.ended} other device(s) signed out`); close(); securityModal(); }
+      catch (e) { toast(e.message, 'err'); }
+    };
+    qs('#open2fa', body).onclick = () => { close(); mfaSettingsModal(); };
+  });
+}
+
+// An admin looking at someone else's sessions (Users & Roles → Sessions).
+async function userSessionsModal(u) {
+  let d;
+  try { d = await api(`/users/${u.id}/sessions`); } catch (e) { return toast(e.message, 'err'); }
+  modal('Signed-in devices — ' + u.username, `
+    ${tableWrap([{ label: 'Device' }, { label: 'Signed in' }, { label: 'Last active' }, { label: '' }], sessionRows(d.sessions, { mine: false }))}
+    <div style="margin-top:12px;text-align:right"><button class="btn danger" id="endall" ${d.sessions.length ? '' : 'disabled'}>Sign out everywhere</button></div>`,
+  (body, close) => {
+    qs('#endall', body).onclick = async () => {
+      if (!confirm(`Sign ${u.username} out on every device? They can sign in again straight away with their password.`)) return;
+      try { const r = await api(`/users/${u.id}/sessions/revoke`, { method: 'POST' }); toast(`${r.ended} session(s) ended`); close(); }
+      catch (e) { toast(e.message, 'err'); }
+    };
+  });
 }
 
 // The top-bar box: is it on, recovery codes left, new codes, turn off.
