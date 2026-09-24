@@ -419,6 +419,7 @@ It refuses if someone has edited files directly on the server, rather than disca
 | | |
 |---|---|
 | Logs | `journalctl -u workshopone -f` |
+| Why did it stop? | `sudo -u workshopone tail -n 30 /opt/workshopone/app/logs/workshopone-crash.log` — every start, stop and crash (with the error). A crash exits, and systemd starts it again |
 | Restart | `sudo systemctl restart workshopone` |
 | Diagnose ("nobody can sign in") | `sudo -u workshopone bash -c 'cd /opt/workshopone/app && node scripts/doctor.js'` |
 | Add people | `sudo -u workshopone bash -c 'cd /opt/workshopone/app && node scripts/create_staff.js --file staff.csv --apply'` |

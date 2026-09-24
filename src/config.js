@@ -79,6 +79,8 @@ const config = {
   // in at the stores counter is the case this is for.
   sessionIdleMinutes: int('SESSION_IDLE_MINUTES', 120),
   uploadDir: path.resolve(ROOT, process.env.UPLOAD_DIR || './uploads'),
+  // Every start, stop and crash, with the error (src/lib/lifecycle.js).
+  crashLog: path.resolve(ROOT, process.env.CRASH_LOG || './logs/workshopone-crash.log'),
   backupDir: path.resolve(ROOT, process.env.BACKUP_DIR || './backups'),
   // Optional second location (external drive / network share) mirrored on each snapshot.
   backupMirrorDir: process.env.BACKUP_MIRROR_DIR ? path.resolve(ROOT, process.env.BACKUP_MIRROR_DIR) : null,

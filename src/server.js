@@ -237,6 +237,12 @@ function lanUrls(port) {
 }
 
 if (require.main === module) {
+  // Why did it stop? Starts, stops and crashes go to logs/workshopone-crash.log; a crash exits with
+  // code 1 instead of carrying on half-broken (src/lib/lifecycle.js).
+  require('./lib/lifecycle').install({
+    file: config.crashLog,
+    onStop: () => require('./db').db.close(),
+  });
   startScheduler();
   // Freeze the day's Pending Parts and Maintenance Summery, hourly, so the record keeps itself.
   dailyReports.startScheduler();
