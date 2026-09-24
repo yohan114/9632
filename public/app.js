@@ -507,7 +507,7 @@ const LIVE_ENTITY_ROUTES = {
   product: ['oil', 'stockcockpit', 'stocktake'], product_price: ['oil', 'stocktake'], stock_ledger: ['oil', 'stockissues', 'stockcockpit', 'stocktake'],
   filter_stock: ['filters', 'filterstock', 'stockcockpit', 'stocktake'], filter_price: ['filters', 'stocktake'], filter_xref: ['filters', 'stocktake'], service_job: ['filters', 'services'],
   job_card: ['jobs', 'jobrequests'], job_request: ['jobrequests', 'jobs'], job_daily_work: ['dailywork', 'jobs'],
-  mechanic_attendance: ['dailywork'], workday_signoff: ['dailywork'],
+  mechanic_attendance: ['dailywork'], workday_signoff: ['dailywork'], job_reopen_request: ['jobs'],
   battery: ['batteries', 'stockcockpit', 'stocktake'], asset: ['assets'],
   mechanic: ['mechanics', 'labour'], labour_rate: ['labour', 'mechanics'], mechanic_alias: ['mechanics'],
 };
@@ -531,7 +531,7 @@ function wireLiveUpdates() {
 const STATUS_CLASS = {
   REQUESTED: '', APPROVED_TRANSPORT: 'blue', APPROVED_OPERATIONS: 'blue',
   IN_WORKSHOP: 'amber', IN_PROGRESS: 'amber', WORK_COMPLETE: 'amber',
-  CLOSED: 'green', REJECTED: 'red',
+  PARTIALLY_CLOSED: 'violet', CLOSED: 'green', REJECTED: 'red',
 };
 const statusBadge = (s) => `<span class="badge ${STATUS_CLASS[s] || ''}">${esc(s)}</span>`;
 
@@ -950,6 +950,7 @@ function renderPendingApprovals(pa) {
     section('MRNs awaiting your <b>approval</b>', pa.approve || [], (m) => mrnRow(m, 'Approve')),
     section('Job cards awaiting <b>transport approval</b>', pa.transport || [], (j) => jobRow(j, 'Approve')),
     section('Job cards awaiting <b>operations approval</b>', pa.ops || [], (j) => jobRow(j, 'Approve')),
+    section('Job cards asking to be <b>reopened</b>', pa.reopen || [], (r) => `<div class="cost-line"><a href="#/jobs/${r.job_id}"><b>${esc(r.job_no)}</b> · ${esc(idLabel(r) || '—')} · ${esc(String(r.reason || '').slice(0, 60))}${r.requested_by_name ? ' · by ' + esc(r.requested_by_name) : ''}${waited(r.requested_at)}</a><span class="badge amber">Decide →</span></div>`),
   ].join('');
   return `<div class="card section" style="border-left:4px solid ${pa.total ? 'var(--red)' : 'var(--green)'}">
     <div class="toolbar" style="margin:0"><h3 style="margin:0">⚡ Pending Your Approval</h3><div class="spacer"></div><span class="badge ${pa.total ? 'red' : 'green'}">${pa.total} pending</span></div>
@@ -1004,7 +1005,8 @@ async function dashMain(c) {
   const opStats = [];
   if (canView('jobs')) opStats.push(`<a class="card stat" href="#/jobs" style="text-decoration:none"><span class="n">${d.open_jobs_count}</span><span class="l">Open Job Cards</span></a>
       <a class="card stat" href="#/jobs?status=CLOSED" style="text-decoration:none"><span class="n">${d.closed_this_month_count}</span><span class="l">Closed This Month</span></a>
-      <a class="card stat" href="#/teardown" style="text-decoration:none"><span class="n">${d.awaiting_price.length}</span><span class="l">Awaiting Price (blocked)</span></a>`);
+      <a class="card stat" href="#/teardown" style="text-decoration:none"><span class="n">${d.awaiting_price.length}</span><span class="l">Awaiting Price (blocked)</span></a>
+      ${(d.partly_closed || []).length ? `<a class="card stat" href="#/jobs?status=PARTIALLY_CLOSED" style="text-decoration:none"><span class="n">${d.partly_closed.length}</span><span class="l">Partly Closed — awaiting prices</span></a>` : ''}`);
   if (canView('oil')) opStats.push(`<a class="card stat" href="#/oil?tab=forecast" style="text-decoration:none"><span class="n">${d.low_stock_oil.length}</span><span class="l">Low-stock Lubricants</span></a>`);
   if (canView('batteries')) opStats.push(`<a class="card stat" href="#/batteries" style="text-decoration:none"><span class="n">${d.batteries_warranty.length}</span><span class="l">Battery Warranty ≤60d</span></a>`);
   if (canView('stores') || canView('oil')) {
@@ -1235,6 +1237,7 @@ async function assetDetail(c, id) {
       </div>
       <div class="card"><h3>Open Job Cards</h3>
         ${a.open_jobs.length ? a.open_jobs.map((j) => `<div class="cost-line"><a href="#/jobs/${j.id}">${esc(j.job_no)}</a>${statusBadge(j.status)}</div>`).join('') : '<span class="muted">None open</span>'}
+        ${(a.partly_closed_jobs || []).length ? `<div class="muted" style="font-size:12px;margin:8px 0 2px">Partly closed — prices still to come</div>${a.partly_closed_jobs.map((j) => `<div class="cost-line"><a href="#/jobs/${j.id}">${esc(j.job_no)}</a>${statusBadge(j.status)}</div>`).join('')}` : ''}
       </div>
     </div>
     <div class="card"><h3>Unified Timeline</h3>
@@ -1259,7 +1262,7 @@ async function editAssetModal(asset) {
 }
 
 // ---- Job Cards
-const JOB_STATUSES = ['REQUESTED', 'APPROVED_TRANSPORT', 'APPROVED_OPERATIONS', 'IN_WORKSHOP', 'IN_PROGRESS', 'WORK_COMPLETE', 'CLOSED', 'REJECTED'];
+const JOB_STATUSES = ['REQUESTED', 'APPROVED_TRANSPORT', 'APPROVED_OPERATIONS', 'IN_WORKSHOP', 'IN_PROGRESS', 'WORK_COMPLETE', 'PARTIALLY_CLOSED', 'CLOSED', 'REJECTED'];
 const MONTHS = [['01', 'Jan'], ['02', 'Feb'], ['03', 'Mar'], ['04', 'Apr'], ['05', 'May'], ['06', 'Jun'], ['07', 'Jul'], ['08', 'Aug'], ['09', 'Sep'], ['10', 'Oct'], ['11', 'Nov'], ['12', 'Dec']];
 
 routes.jobs = async (c, params) => {
@@ -1270,6 +1273,9 @@ routes.jobs = async (c, params) => {
   const nowY = new Date().getFullYear();
   const years = [];
   for (let y = nowY + 1; y >= 2020; y--) years.push(y);
+  // Partial close and reopen requests (W2) — switched on or off by the admin.
+  const closeCfg = await api('/jobs/close-settings').catch(() => ({ partial_close_enabled: false }));
+  const partialOn = !!closeCfg.partial_close_enabled;
 
   c.innerHTML = `${pageHeader('Job Cards')}
     <div class="toolbar">
@@ -1283,6 +1289,7 @@ routes.jobs = async (c, params) => {
       <div class="spacer"></div>
       ${canDo('jobs.create') ? '<button class="primary" id="newjob">+ New Job Card</button>' : ''}
       ${canDo('jobs.triage') ? '<a class="btn sm" href="#/jobreview" title="REQUESTED cards that hold their vehicle but never moved">🧹 Review stuck cards</a>' : ''}
+      ${canDo('jobs.settings') ? `<button class="sm" id="jpartial" title="Partial close, full close check and reopen requests">⚙ Partial close: ${partialOn ? 'on' : 'off'}</button>` : ''}
     </div>
     <div id="jbulk-tray" class="card" style="display:none;background:#f0fdf4;border:1px solid #86efac;margin-bottom:12px;padding:10px 14px;align-items:center;gap:10px;flex-wrap:wrap">
       <span id="jbulk-count" style="font-weight:700;color:#166534">0 cards selected</span>
@@ -1342,9 +1349,13 @@ routes.jobs = async (c, params) => {
       <td class="num">${j.material_cost ? money(j.material_cost) : '—'}</td>
       <td class="num">${money(j.total_cost)}</td>
       <td class="muted">${esc((j.requested_at || '').slice(0, 10))}</td>
-      <td>${canCloseDate && j.status !== 'CLOSED' && j.status !== 'REJECTED'
+      <td>${canCloseDate && !['CLOSED', 'REJECTED', 'PARTIALLY_CLOSED'].includes(j.status)
         ? `<button class="sm" data-closedate="${j.id}" data-jobno="${esc(j.job_no)}" title="Close this card on a chosen (past) date">📅 Close…</button>`
-        : (j.status === 'CLOSED' && canReopenJob ? `<button class="sm danger" data-reopen="${j.id}" data-jobno="${esc(j.job_no)}" data-closed="${esc((j.completed_at || j.closed_at || '').slice(0, 10))}" title="Reopen this closed job card">↩ Reopen…</button>` : '')}</td></tr>`);
+        : (['CLOSED', 'PARTIALLY_CLOSED'].includes(j.status)
+          ? (partialOn
+            ? (canDo('jobs.reopen_request') ? `<button class="sm" data-reopenreq="${j.id}" data-jobno="${esc(j.job_no)}" title="Ask for this job card to be reopened">↩ Request reopen…</button>` : '')
+            : (canReopenJob ? `<button class="sm danger" data-reopen="${j.id}" data-jobno="${esc(j.job_no)}" data-closed="${esc((j.completed_at || j.closed_at || '').slice(0, 10))}" title="Reopen this closed job card">↩ Reopen…</button>` : ''))
+          : '')}</td></tr>`);
     const labTotal = list.reduce((s, j) => s + (Number(j.labour_cost) || 0), 0);
     const matTotal = list.reduce((s, j) => s + (Number(j.material_cost) || 0), 0);
     qs('#jcount').textContent = list.length ? `${list.length}${list.length === 500 ? '+' : ''} job${list.length === 1 ? '' : 's'}${labTotal ? ' · labour ' + money(labTotal) : ''}${matTotal ? ' · material ' + money(matTotal) : ''}` : '';
@@ -1385,7 +1396,9 @@ routes.jobs = async (c, params) => {
     qsa('[data-closedate]', c).forEach((b) => b.onclick = () => closeOnDateModal(b.dataset.closedate, b.dataset.jobno, load));
     qsa('[data-reopen]', c).forEach((b) => b.onclick = () => reopenJobModal(
       { id: b.dataset.reopen, job_no: b.dataset.jobno, completed_at: b.dataset.closed }, load));
+    qsa('[data-reopenreq]', c).forEach((b) => b.onclick = () => reopenRequestModal({ id: b.dataset.reopenreq, job_no: b.dataset.jobno }, load));
   };
+  if (qs('#jpartial')) qs('#jpartial').onclick = () => partialCloseSwitchModal(partialOn);
 
   const executeBulkTransition = async (targetStatus) => {
     const checkedBoxes = qsa('.jrow-chk:checked', c);
@@ -2471,34 +2484,58 @@ async function jobDetail(c, id) {
   const job = j.job;
   const r = j.readiness;
   const isClosed = job.status === 'CLOSED';
+  // Partly closed (W2): the work is done and the vehicle has left; prices and records still come in.
+  const isPartial = job.status === 'PARTIALLY_CLOSED';
+  const partialOn = !!j.partialCloseEnabled;
+  const pendingReq = (j.reopenRequests || []).find((q) => q.status === 'pending');
   // Reopen gets its own labelled button and confirm dialog — the raw CLOSED → IN_PROGRESS
   // state button read as "IN PROGRESS" and offered itself to users the server would refuse.
+  // Partly close has its own button too (it asks for a note).
   const transitions = j.nextStates
-    .filter((s) => !(isClosed && s === 'IN_PROGRESS'))
-    .map((s) => `<button class="sm ${s === 'CLOSED' ? 'primary' : ''}" data-to="${s}">${s.replace(/_/g, ' ')}</button>`).join(' ');
-  const reopenBtn = isClosed && j.canReopen
-    ? '<button class="sm danger" id="reopen" title="Reopen this closed job card so more work and costs can be added">↩ Reopen job…</button>' : '';
+    .filter((s) => !((isClosed || isPartial) && s === 'IN_PROGRESS') && s !== 'PARTIALLY_CLOSED')
+    .map((s) => `<button class="sm ${s === 'CLOSED' ? 'primary' : ''}" data-to="${s}">${s === 'CLOSED' && partialOn ? '✓ Close fully' : s.replace(/_/g, ' ')}</button>`).join(' ');
+  const partialBtn = partialOn && canDo('jobs.partial_close') && ['IN_PROGRESS', 'WORK_COMPLETE'].includes(job.status)
+    ? '<button class="sm" id="partialclose" title="The work is done and the vehicle has left, but prices or records are missing">◐ Partly close…</button>' : '';
+  // Switched on, a reopen is ASKED FOR and someone else approves it; off, a manager reopens directly.
+  const reopenBtn = (isClosed || isPartial)
+    ? (partialOn
+      ? (canDo('jobs.reopen_request') && !pendingReq ? '<button class="sm danger" id="reopenreq" title="Ask for this job card to be reopened — another manager approves it">↩ Request reopen…</button>' : '')
+      : (j.canReopen ? '<button class="sm danger" id="reopen" title="Reopen this closed job card so more work and costs can be added">↩ Reopen job…</button>' : ''))
+    : '';
   const reopens = j.reopens || [];
+  const mayDecide = pendingReq && canDo('jobs.reopen') && (pendingReq.requested_by !== ME.id || isAdmin());
+  const linkJob = (x) => `<a href="#/jobs/${x.id}"><b>${esc(x.job_no)}</b></a> ${statusBadge(x.status)}`;
+  const successor = (j.continuedAs || []).slice(-1)[0];
   c.innerHTML = `${pageHeader(job.job_no, '<a href="#/jobs">← Job Cards</a>')}
     <div class="toolbar">${statusBadge(job.status)}<span class="badge ${job.type === 'service' ? 'blue' : ''}">${esc(job.type)}</span>
       ${job.severity ? `<span class="badge">${esc(job.severity)}</span>` : ''}
       <a href="#/assets/${job.asset_id}">${esc(idLabel(job) || '—')}</a>
       <span class="muted">${esc(job.project_name || '')}</span>
       <div class="spacer"></div>
-      ${!isClosed && canDo('stores.mrn.create') ? '<button class="sm" id="jobreqmrn" title="Create a Material Request Note (MRN) for this job">+ Request Parts (MRN)</button>' : ''}
-      ${!isClosed && canDo('stores.stock_issue') ? '<button class="sm primary" id="jobissue" title="Issue stock from store to this job card">⚡ Issue to Job</button>' : ''}
-      ${canDo('jobs.edit') ? '<button class="sm" id="editjob" title="Change the vehicle, description or type">✎ Edit</button>' : ''}
+      ${!isClosed && !isPartial && canDo('stores.mrn.create') ? '<button class="sm" id="jobreqmrn" title="Create a Material Request Note (MRN) for this job">+ Request Parts (MRN)</button>' : ''}
+      ${!isClosed && !isPartial && canDo('stores.stock_issue') ? '<button class="sm primary" id="jobissue" title="Issue stock from store to this job card">⚡ Issue to Job</button>' : ''}
+      ${canDo('jobs.edit') && !isPartial ? '<button class="sm" id="editjob" title="Change the vehicle, description or type">✎ Edit</button>' : ''}
       ${job.type === 'service' && canDo('jobs.flat_labour') && job.status !== 'CLOSED' ? `<button class="sm" id="flatlabour">Service labour${job.flat_labour != null ? ': ' + money(job.flat_labour) : ' (flat)'}</button>` : ''}
       <a class="btn primary sm" href="/api/reports/job/${job.id}/report.html" target="_blank" title="Full job report — parts requested & received, daily work done, and costs">📋 Job Report</a>
       <a class="btn sm" href="/api/reports/job/${job.id}/costsheet.html" target="_blank">🖨 Cost Sheet</a>
     </div>
     ${job.type === 'service' ? `<p class="muted" style="font-size:12px">Service job — labour is a flat charge${job.flat_labour == null ? ' (not set yet)' : ''}, not hours×rate.</p>` : ''}
     <p>${esc(job.description || '')}</p>
-    ${(transitions || reopenBtn || (!isClosed && canDo('jobs.close_on_date'))) ? `<div class="card section"><h3>Actions</h3><div class="pill-row" id="transitions">${transitions}${reopenBtn}
-      ${!isClosed && canDo('jobs.close_on_date') ? '<button class="sm" id="closedate" title="Close this card with a chosen (past) completion date — for old cards missed at the time">📅 Close on date…</button>' : ''}</div>
+    ${j.continues ? `<p class="muted" style="font-size:13px">↪ Continues ${linkJob(j.continues)} — the vehicle's earlier job, partly closed.</p>` : ''}
+    ${isPartial ? `<div class="card section" style="border-left:4px solid var(--violet)">
+      <b>◐ Partly closed ${esc(String(job.partial_closed_at || '').slice(0, 10))}</b>${job.partial_note ? ` — ${esc(job.partial_note)}` : ''}
+      <p class="muted" style="margin:6px 0 0">This job is partly closed. You can price items, receive what was already requested and add general items. Daily work can be added up to ${esc(String(job.partial_closed_at || '').slice(0, 10))}. To add anything else, request a reopen${successor ? ` — or use the vehicle's new job ${linkJob(successor)}` : ''}.</p>
+    </div>` : (successor ? `<p class="muted" style="font-size:13px">↪ Continued as ${linkJob(successor)}</p>` : '')}
+    ${pendingReq ? `<div class="card section" style="border-left:4px solid var(--amber)">
+      <b>↩ Reopen asked for</b> by ${esc(pendingReq.requested_by_name || '—')} on ${esc(String(pendingReq.requested_at || '').slice(0, 10))}: ${esc(pendingReq.reason)}
+      ${mayDecide ? '<div class="pill-row" style="margin-top:8px"><button class="sm primary" id="reqapprove">✓ Approve reopen</button><button class="sm danger" id="reqrefuse">✕ Refuse</button></div>'
+        : `<p class="muted" style="margin:6px 0 0">Waiting for ${pendingReq.requested_by === ME.id ? 'another manager' : 'a manager'} to approve it.</p>`}
+    </div>` : ''}
+    ${(transitions || reopenBtn || partialBtn || (!isClosed && !isPartial && canDo('jobs.close_on_date'))) ? `<div class="card section"><h3>Actions</h3><div class="pill-row" id="transitions">${transitions}${partialBtn}${reopenBtn}
+      ${!isClosed && !isPartial && canDo('jobs.close_on_date') ? '<button class="sm" id="closedate" title="Close this card with a chosen (past) completion date — for old cards missed at the time">📅 Close on date…</button>' : ''}</div>
       ${isClosed
-        ? `<p class="muted" style="margin-top:10px">Closed ${esc(String(job.completed_at || job.closed_at || '').slice(0, 10))} — locked for editing. ${j.canReopen ? 'Reopen it to add more work or costs.' : 'Ask a manager or the admin to reopen it.'}</p>`
-        : !r.ready ? `<p class="err" style="margin-top:10px">⚠ Closure gate — ${r.missing.length} line(s) awaiting price:</p><ul>${r.missing.map((m) => `<li class="muted">${esc(m)}</li>`).join('')}</ul>` : '<p class="ok" style="margin-top:10px">✓ Fully priced — ready to close</p>'}
+        ? `<p class="muted" style="margin-top:10px">Closed ${esc(String(job.completed_at || job.closed_at || '').slice(0, 10))} — locked for editing. ${partialOn ? 'Request a reopen to add more work or costs.' : (j.canReopen ? 'Reopen it to add more work or costs.' : 'Ask a manager or the admin to reopen it.')}</p>`
+        : !r.ready ? `<p class="err" style="margin-top:10px">⚠ ${isPartial ? 'Still missing before it can close fully' : 'Closure gate'} — ${r.missing.length} line(s):</p><ul>${r.missing.map((m) => `<li class="muted">${esc(m)}</li>`).join('')}</ul>` : `<p class="ok" style="margin-top:10px">✓ Fully priced — ready to close${partialOn ? ' fully' : ''}</p>`}
       ${reopens.length ? `<p class="muted" style="margin-top:10px;font-size:12px"><b>Reopen history</b></p><ul style="margin:4px 0 0">${reopens.map((x) => `<li class="muted" style="font-size:12px">${esc(String(x.reopened_at || '').slice(0, 10))} by ${esc(x.reopened_by_name || '—')} — ${esc(x.reason)}${x.prev_completed_at ? ` <span class="note">(was closed ${esc(String(x.prev_completed_at).slice(0, 10))})</span>` : ''}</li>`).join('')}</ul>` : ''}
       ${job.original_completed_at && !isClosed ? `<p class="muted" style="margin-top:8px;font-size:12px">↩ Reopened. When you close it again it goes back into <b>${esc(String(job.original_completed_at).slice(0, 7))}</b>'s cost report, so that month's figures do not change.</p>` : ''}
     </div>` : ''}
@@ -2577,13 +2614,13 @@ async function jobDetail(c, id) {
       return tableWrap([{ label: 'Date' }, { label: 'Mechanic' }, { label: 'Description' }, { label: 'Hours', num: true }, { label: 'Rate', num: true }, { label: 'Amount', num: true }, { label: '' }], rows);
     })()}
     </div>
-    <div class="card section"><div class="toolbar" style="margin:0 0 10px"><h3 style="margin:0">Parts &amp; External</h3><div class="spacer"></div>${canDo('jobs.parts') ? '<button class="sm" id="addpart">+ Add item</button>' : ''}</div>
+    <div class="card section"><div class="toolbar" style="margin:0 0 10px"><h3 style="margin:0">Parts &amp; External</h3><div class="spacer"></div>${canDo('jobs.parts') && !isPartial ? '<button class="sm" id="addpart">+ Add item</button>' : ''}</div>
       ${tableWrap([{ label: 'Source' }, { label: 'Description' }, { label: 'Qty', num: true }, { label: 'Unit Price', num: true }, { label: 'Amount', num: true }, { label: '' }],
       j.parts.map((p) => `<tr><td><span class="badge">${esc(p.source_type)}${p.is_external_repair ? ' · ext' : ''}</span></td><td>${esc(p.description || '')}</td>
           <td class="num">${num(p.qty)}</td>
           <td class="num">${p.unit_price == null ? '<span class="badge amber">awaiting</span>' : money(p.unit_price)}</td>
           <td class="num">${p.unit_price == null ? '—' : money(p.qty * p.unit_price)}</td>
-          <td>${canDo('jobs.parts') ? `<button class="sm" data-price="${p.id}">Price</button> <button class="sm" data-del-part="${p.id}" title="Take off this job — the item goes back to unassigned parts, it is not deleted">✕</button>` : ''}</td></tr>`))}
+          <td>${canDo('jobs.parts') ? `<button class="sm" data-price="${p.id}">Price</button>${isPartial ? '' : ` <button class="sm" data-del-part="${p.id}" title="Take off this job — the item goes back to unassigned parts, it is not deleted">✕</button>`}` : ''}</td></tr>`))}
     </div>
     ${j.mrnItems && j.mrnItems.length ? `<div class="card section"><h3>MRN Items <span class="muted">— requested materials (${j.mrnItems.length})</span></h3>
       ${tableWrap([{ label: 'MRN No' }, { label: 'Date' }, { label: 'Item' }, { label: 'Category' }, { label: 'Qty Req', num: true }, { label: 'Qty Recd', num: true }, { label: 'Shelf Status' }, { label: 'Action' }],
@@ -2624,6 +2661,20 @@ async function jobDetail(c, id) {
   qsa('#transitions button[data-to]').forEach((b) => b.onclick = () => doTransition(job.id, b.dataset.to, job.status));
   if (qs('#closedate')) qs('#closedate').onclick = () => closeOnDateModal(job.id, job.job_no, render);
   if (qs('#reopen')) qs('#reopen').onclick = () => reopenJobModal(job, render);
+  if (qs('#reopenreq')) qs('#reopenreq').onclick = () => reopenRequestModal(job, render);
+  if (qs('#partialclose')) qs('#partialclose').onclick = () => partialCloseModal(job, j, render);
+  if (qs('#reqapprove')) qs('#reqapprove').onclick = async () => {
+    if (!confirm(`Reopen ${job.job_no}?\n\nIt goes back to IN PROGRESS and becomes the vehicle's open job.`)) return;
+    try { await api(`/jobs/reopen-requests/${pendingReq.id}/approve`, { method: 'POST', body: {} }); toast(`✓ ${job.job_no} reopened`); render(); }
+    catch (e) { toast(e.message, 'err'); }
+  };
+  if (qs('#reqrefuse')) qs('#reqrefuse').onclick = async () => {
+    const note = prompt('Why is the reopen refused?');
+    if (note == null) return;
+    if (!note.trim()) return toast('Say why — the person who asked will see it', 'err');
+    try { await api(`/jobs/reopen-requests/${pendingReq.id}/refuse`, { method: 'POST', body: { note: note.trim() } }); toast('Reopen refused'); render(); }
+    catch (e) { toast(e.message, 'err'); }
+  };
   if (qs('#editjob')) qs('#editjob').onclick = () => editJobModal(job, render);
   if (qs('#jobreqmrn')) qs('#jobreqmrn').onclick = () => newMrnModal({
     job_id: job.id,
@@ -2682,7 +2733,7 @@ async function doTransition(jobId, to, current) {
     toast('Moved to ' + to);
     render();
   } catch (e) {
-    if (e.data && e.data.missing) toast('Blocked: ' + e.data.missing.length + ' unpriced line(s)', 'err');
+    if (e.data && e.data.missing) toast(e.message, 'err');
     else if (e.data && e.data.blocking_job) toast(`Blocked — ${e.data.blocking_job.job_no} is already open for this vehicle`, 'err');
     else toast(e.message, 'err');
   }
@@ -2763,7 +2814,7 @@ function reopenJobModal(job, onDone) {
 // cards that were finished but never closed. The date drives the monthly report's Closed section.
 function closeOnDateModal(jobId, jobNo, onDone) {
   modal(`Close ${jobNo} on a chosen date`, `
-    <p class="muted" style="margin-top:0;font-size:12px">For old cards missed at the time — the card closes as if it was closed on this date, and it appears in that month's cost report. Unpriced lines don't block; they show as a warning so you can price them after.</p>
+    <p class="muted" style="margin-top:0;font-size:12px">For old cards missed at the time — the card closes as if it was closed on this date, and it appears in that month's cost report. Unpriced lines don't block; they show as a warning so you can price them after. (With partial close switched on, a card with something still missing is <b>partly</b> closed on that date instead.)</p>
     ${field('Close date *', 'date', { type: 'date', value: new Date().toISOString().slice(0, 10) })}
     ${field('Note (optional)', 'reason', { placeholder: 'e.g. missed closing — job finished on this date' })}
     <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Close job on this date</button></div>`, (body, close) => {
@@ -2772,8 +2823,81 @@ function closeOnDateModal(jobId, jobNo, onDone) {
       if (!data.date) return toast('Pick the close date', 'err');
       try {
         const res = await api(`/jobs/${jobId}/close-on-date`, { method: 'POST', body: data });
-        toast(`✓ ${jobNo} closed on ${data.date}` + (res.warning ? ` — ${res.warning}` : ''));
+        toast(res.partly_closed ? `◐ ${jobNo}: ${res.warning}` : `✓ ${jobNo} closed on ${data.date}` + (res.warning ? ` — ${res.warning}` : ''));
         close(); if (onDone) onDone();
+      } catch (e) { toast(e.message, 'err'); }
+    };
+  });
+}
+
+// ---- partial close and reopen requests (src/lib/job_close.js; docs/WORKSHOPONE_PLAN.md §3.2)
+
+// Partly close: the work is finished and the vehicle has left, but prices or records are missing.
+function partialCloseModal(job, detail, onDone) {
+  const missing = (detail.readiness && detail.readiness.missing) || [];
+  const canNew = !!job.asset_id && canDo('jobs.create');
+  modal(`Partly close ${job.job_no}?`, `
+    <p class="muted" style="margin-top:0;font-size:12px">Use this when the work is finished and the vehicle has left, but prices or records are still missing. The vehicle is free for a new job straight away. Close it fully once everything below is done.</p>
+    <p style="margin:6px 0 2px"><b>Still outstanding (${missing.length})</b></p>
+    <ul style="margin:0 0 8px">${missing.map((m) => `<li class="muted">${esc(m)}</li>`).join('') || '<li class="muted">Nothing — close it fully instead.</li>'}</ul>
+    ${detail.workRecorded ? '' : '<p class="err" style="margin:4px 0">No work is recorded on this job. Write why in the note.</p>'}
+    ${field('Note' + (detail.workRecorded ? ' (optional)' : ' *'), 'note', { type: 'textarea' })}
+    ${canNew ? `${field('Open a new job for this vehicle now', 'open_new', { type: 'checkbox' })}
+      <div id="pcnew" style="display:none">${field('New job — description', 'new_description', { placeholder: 'e.g. Next fault, or: continued from ' + job.job_no })}</div>` : ''}
+    <p class="muted" style="font-size:12px;margin:8px 0 0">After this the job takes only prices, items already requested, general items and daily work up to today. For anything else, request a reopen.</p>
+    <div style="margin-top:12px;text-align:right"><button class="primary" id="s">◐ Partly close</button></div>`, (body, close) => {
+    const tick = qs('input[name=open_new]', body);
+    if (tick) tick.onchange = () => { qs('#pcnew', body).style.display = tick.checked ? '' : 'none'; };
+    qs('#s', body).onclick = async () => {
+      const f = formData(body);
+      if (!detail.workRecorded && !String(f.note || '').trim()) return toast('Write why no work is recorded', 'err');
+      try {
+        const res = await api(`/jobs/${job.id}/partial-close`, { method: 'POST', body: {
+          note: f.note, open_new: !!f.open_new, new_description: f.new_description } });
+        close();
+        toast(`◐ ${job.job_no} partly closed` + (res.new_job ? ` — new job ${res.new_job.job_no} opened` : ''));
+        if (onDone) onDone();
+      } catch (e) {
+        toast(e.data && e.data.blocking_job ? `${e.message}` : e.message, 'err');
+      }
+    };
+  });
+}
+
+// Ask for a partly closed or closed card to be reopened. Someone else approves it.
+function reopenRequestModal(job, onDone) {
+  modal(`Request reopen of ${job.job_no}`, `
+    <p class="muted" style="margin-top:0;font-size:12px">A manager (not you) approves it. When approved the job goes back to <b>IN PROGRESS</b> and keeps its original report month. It can only be reopened when the vehicle has no other open job.</p>
+    ${field('Why should it be reopened? *', 'reason', { type: 'textarea' })}
+    <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Send request</button></div>`, (body, close) => {
+    qs('#s', body).onclick = async () => {
+      const reason = String(formData(body).reason || '').trim();
+      if (!reason) return toast('Give the reason', 'err');
+      try {
+        await api(`/jobs/${job.id}/reopen-request`, { method: 'POST', body: { reason } });
+        close(); toast('Reopen requested — waiting for approval');
+        if (onDone) onDone();
+      } catch (e) { toast(e.message, 'err'); }
+    };
+  });
+}
+
+// Admin: partial close, the stricter full close and reopen requests go on and off together.
+function partialCloseSwitchModal(isOn) {
+  modal('Partial close', `
+    <p class="muted" style="margin-top:0">When <b>on</b>:</p>
+    <ul class="muted" style="margin-top:0">
+      <li>a job can be <b>partly closed</b> — the vehicle is freed, prices can still be added;</li>
+      <li><b>close fully</b> needs every item priced and the work done recorded;</li>
+      <li>a closed or partly closed job is reopened by <b>request</b>, approved by someone else.</li>
+    </ul>
+    <p class="muted">When <b>off</b>, closing and reopening work as before. Jobs already partly closed stay partly closed.</p>
+    ${field('Partial close on', 'on', { type: 'checkbox', value: isOn })}
+    <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Save</button></div>`, (body, close) => {
+    qs('#s', body).onclick = async () => {
+      try {
+        const r = await api('/jobs/close-settings', { method: 'PUT', body: { partial_close_enabled: !!formData(body).on } });
+        close(); toast(`Partial close is ${r.partial_close_enabled ? 'on' : 'off'}`); render();
       } catch (e) { toast(e.message, 'err'); }
     };
   });

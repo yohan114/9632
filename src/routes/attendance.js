@@ -108,7 +108,7 @@ router.post('/day/book-rest', requireCap('dailywork.add'), asyncHandler((req, re
 
   const gid = require('./dailywork').generalWorkshopJob();
   const job = get('SELECT id, job_no, status FROM job_cards WHERE id = ?', gid);
-  const g = jobstate.checkAdd(job, 'daily_work', { user: req.user });
+  const g = jobstate.checkAdd(job, 'daily_work', { user: req.user, dates: [date] });
   if (!g.ok) return res.status(g.status).json(g.body);
   const description = String((req.body || {}).description || '').trim() || 'Unbooked time (from attendance)';
   const info = run(

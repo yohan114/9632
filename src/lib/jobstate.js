@@ -15,6 +15,7 @@ const STATES = [
   'IN_WORKSHOP',
   'IN_PROGRESS',
   'WORK_COMPLETE',
+  'PARTIALLY_CLOSED',
   'CLOSED',
   'REJECTED',
 ];
@@ -28,11 +29,15 @@ const STATES = [
 //   NOT FINAL the card is not finished with: prices, parts or records may still come in, so it
 //             belongs in "pending parts", "awaiting price" and similar lists.
 //
-// Today they give the same answer. They part company with partial close (docs/WORKSHOPONE_PLAN.md,
-// W2): a partly closed card will be NOT FINAL but no longer OPEN. Every caller now says which of
-// the two it means, so that change is made here, once, instead of in eight places.
+// They part company at partial close (docs/WORKSHOPONE_PLAN.md, W2): a PARTIALLY_CLOSED card is
+// NOT FINAL (prices and already-requested parts still come in) but no longer OPEN — the vehicle
+// has left, and a new card may be opened for it. Every caller says which of the two it means, so
+// this was changed here, once.
 const FINAL_STATUSES = ['CLOSED', 'REJECTED'];
-const NOT_OPEN_STATUSES = ['CLOSED', 'REJECTED'];
+const NOT_OPEN_STATUSES = ['PARTIALLY_CLOSED', 'CLOSED', 'REJECTED'];
+const PARTIAL = 'PARTIALLY_CLOSED';
+// The two states a card is REOPENED from (back to IN_PROGRESS).
+const REOPENABLE = ['CLOSED', PARTIAL];
 const quoted = (list) => list.map((st) => `'${st}'`).join(', ');
 const col = (alias) => (alias ? `${alias}.status` : 'status');
 /** SQL: the card holds the vehicle. `alias` is the job_cards table alias, if any. */
@@ -52,12 +57,15 @@ const TRANSITIONS = {
   APPROVED_OPERATIONS: { from: ['APPROVED_TRANSPORT'], cap: 'jobs.approve_operations', action: 'ops_approve' },
   IN_WORKSHOP: { from: ['APPROVED_OPERATIONS'], cap: 'jobs.assign_workshop', action: 'assign' },
   IN_PROGRESS: {
-    from: ['IN_WORKSHOP', 'WORK_COMPLETE', 'CLOSED'],
+    from: ['IN_WORKSHOP', 'WORK_COMPLETE', 'CLOSED', PARTIAL],
     cap: 'jobs.start',
     action: 'start_or_reopen',
   },
   WORK_COMPLETE: { from: ['IN_PROGRESS'], cap: 'jobs.complete', action: 'mark_complete' },
-  CLOSED: { from: ['WORK_COMPLETE'], cap: 'jobs.close', action: 'close', gated: true },
+  // Partly close: work finished, the vehicle has left, prices or records still missing. It has
+  // its own route (a note, and optionally a new card for the vehicle) — POST /jobs/:id/partial-close.
+  PARTIALLY_CLOSED: { from: ['IN_PROGRESS', 'WORK_COMPLETE'], cap: 'jobs.partial_close', action: 'partial_close', ownRoute: true },
+  CLOSED: { from: ['WORK_COMPLETE', PARTIAL], cap: 'jobs.close', action: 'close', gated: true },
   // Rejection at either approval step.
   REJECTED: { from: ['REQUESTED', 'APPROVED_TRANSPORT'], cap: 'jobs.reject', action: 'reject' },
   // A rejection can also bounce back to REQUESTED (with a reason).
@@ -88,8 +96,11 @@ function capsFor(who) {
   return lib.capsForRoles((who && who.roles) || []);
 }
 
+/** Is current -> target a reopen (a closed or partly closed card going back to work)? */
+const isReopen = (current, target) => target === 'IN_PROGRESS' && REOPENABLE.includes(current);
+
 /**
- * Validate a transition. Reopening CLOSED -> IN_PROGRESS is restricted and audited.
+ * Validate a transition. Reopening CLOSED / PARTIALLY_CLOSED -> IN_PROGRESS is restricted and audited.
  * @returns {{ok:boolean, error?:string, def?:object}}
  */
 function checkTransition(current, target, who = []) {
@@ -100,10 +111,10 @@ function checkTransition(current, target, who = []) {
   }
   const held = capsFor(who);
   const label = (cap) => require('./capabilities').get(cap).label;
-  // Reopening a CLOSED card is restricted and audited. The reopen permission is the whole
-  // authority here — it must not then fall through to the target's own permission, which is about
-  // who may START work, not who may undo a close.
-  if (current === 'CLOSED') {
+  // Reopening a CLOSED (or partly closed) card is restricted and audited. The reopen permission is
+  // the whole authority here — it must not then fall through to the target's own permission, which
+  // is about who may START work, not who may undo a close.
+  if (isReopen(current, target)) {
     if (held.includes(REOPEN_CAP)) return { ok: true, def };
     return { ok: false, error: `Reopening a closed job needs the permission "${label(REOPEN_CAP)}"` };
   }
@@ -188,7 +199,7 @@ function duplicateOpenJobs() {
 //                rule, which only ever locked CLOSED (a REJECTED card stayed editable, and still is).
 //   confirm      a late issue from stores: allowed once the person confirms (allow_closed), as before.
 //
-// Partial close (W2) adds its own column to this table rather than new checks in each route.
+// A PARTLY CLOSED card (W2) has its own column, PARTIAL_RULES below.
 const ADD_RULES = {
   mrn: 'refuse',
   tb_request: 'refuse',
@@ -201,17 +212,74 @@ const ADD_RULES = {
   general: 'confirm',
 };
 
+// What a PARTLY CLOSED card allows (docs/WORKSHOPONE_PLAN.md §3.2). The work is done and the
+// vehicle has left; what is still coming is prices, the parts already asked for, and the records.
+//
+//   allow         pricing any line; general rack items.
+//   own_receipts  issuing from stores: only what was received against THIS card's own requests.
+//                 Other shelf stock or oil is refused.
+//   until_date    daily work dated on or before the partial-close day (catching up). Later work
+//                 belongs on the vehicle's new card.
+//   refuse        everything else: a new request (MRN, tyre/battery), a new part or external line,
+//                 claiming unassigned work or receipts, changing the vehicle, description or type.
+//                 Nobody's permission gets past it — reopen the card instead.
+const PARTIAL_RULES = {
+  mrn: 'refuse',
+  tb_request: 'refuse',
+  daily_work: 'until_date',
+  part: 'refuse',
+  price: 'allow',
+  attach: 'refuse',
+  edit: 'refuse',
+  issue: 'own_receipts',
+  general: 'allow',
+};
+
+/** The card now holding the vehicle — the one a partly closed card's new work goes on. */
+function successorFor(job) {
+  if (!job) return null;
+  return get(`SELECT id, job_no, status FROM job_cards WHERE continues_job_id = ? AND ${OPEN_SQL} ORDER BY id DESC LIMIT 1`, job.id)
+    || (job.asset_id ? openJobFor(job.asset_id, { excludeJobId: job.id }) : null)
+    || null;
+}
+
+/** The day a card was partly closed (YYYY-MM-DD), or null. */
+const partialDay = (job) => (job && job.partial_closed_at ? String(job.partial_closed_at).slice(0, 10) : null);
+
+function checkPartial(job, kind, { dates = [], ownReceipts = false } = {}) {
+  const rule = PARTIAL_RULES[kind];
+  // The caller's row may be a narrow SELECT; what the rules need is read here.
+  if (job.partial_closed_at === undefined || job.asset_id === undefined) {
+    job = get('SELECT id, job_no, status, asset_id, partial_closed_at FROM job_cards WHERE id = ?', job.id) || job;
+  }
+  if (rule === 'allow') return { ok: true };
+  if (rule === 'own_receipts' && ownReceipts) return { ok: true };
+  const day = partialDay(job);
+  const given = (dates || []).filter(Boolean).map((d) => String(d).slice(0, 10));
+  if (rule === 'until_date' && given.length && day && given.every((d) => d <= day)) return { ok: true };
+  const next = successorFor(job);
+  const error = rule === 'until_date' && given.length && day
+    ? `Job ${job.job_no} was partly closed on ${day}. Work after that date goes on the vehicle's new job${next ? ` (${next.job_no})` : ''}.`
+    : `This job is partly closed. You can price items, receive what was already requested and add general items. `
+      + `To add anything else, request a reopen${next ? ` — or use the vehicle's new job ${next.job_no}` : ''}.`;
+  return { ok: false, status: 409, body: { error, job_no: job.job_no, job_status: job.status, partly_closed: true,
+    successor: next ? { id: next.id, job_no: next.job_no } : null } };
+}
+
 /**
  * May `kind` be added to this card? Returns { ok: true } or { ok: false, status, body } — the HTTP
  * status and JSON body to answer with (the existing shapes, so the screens need no change).
  * @param {object} job        a job_cards row (needs id, job_no, status)
  * @param {string} kind       one of ADD_RULES
- * @param {{user?: object, allowClosed?: boolean}} [opts]
+ * @param {{user?: object, allowClosed?: boolean, dates?: string[], ownReceipts?: boolean}} [opts]
+ *        dates: the work dates a daily-work write touches; ownReceipts: every line issued comes
+ *        from this card's own receipts. Both only matter on a partly closed card.
  */
-function checkAdd(job, kind, { user = null, allowClosed = false } = {}) {
+function checkAdd(job, kind, { user = null, allowClosed = false, dates = [], ownReceipts = false } = {}) {
   const rule = ADD_RULES[kind];
   if (!rule) throw new Error(`jobstate.checkAdd: unknown kind "${kind}"`);
   if (!job) return { ok: false, status: 404, body: { error: 'Job not found' } };
+  if (job.status === PARTIAL) return checkPartial(job, kind, { dates, ownReceipts });
   if (!isFinal(job.status)) return { ok: true };
   if (rule === 'refuse') {
     return { ok: false, status: 409, body: {
@@ -232,14 +300,25 @@ function checkAdd(job, kind, { user = null, allowClosed = false } = {}) {
   } };
 }
 
+// ---- the switch -----------------------------------------------------------------------------------
+// Partial close, the stricter full close and reopen REQUESTS are switched on together (settings
+// table). Off: closing and reopening work exactly as they did before W2. A card that was partly
+// closed while it was on keeps its state and its rules either way.
+const PARTIAL_FLAG = 'jobs_partial_close_enabled';
+function partialCloseEnabled() {
+  const r = get('SELECT value FROM settings WHERE key = ?', PARTIAL_FLAG);
+  return !!r && r.value === '1';
+}
+
 /** Can this user reopen a closed card? Mirrors checkTransition's CLOSED gate exactly. */
 function canReopen(who = []) {
   return capsFor(who).includes(REOPEN_CAP);
 }
 
 module.exports = {
-  STATES, TRANSITIONS, OPEN_STATUSES, OPEN_SQL, REOPEN_CAP,
-  FINAL_STATUSES, openSql, notFinalSql, isOpen, isFinal, ADD_RULES, checkAdd,
+  STATES, TRANSITIONS, OPEN_STATUSES, OPEN_SQL, REOPEN_CAP, PARTIAL, REOPENABLE,
+  FINAL_STATUSES, openSql, notFinalSql, isOpen, isFinal, isReopen, ADD_RULES, PARTIAL_RULES, checkAdd,
+  successorFor, partialDay, PARTIAL_FLAG, partialCloseEnabled,
   isValidState, nextStates, checkTransition, canReopen,
   openJobFor, checkOneOpenJob, duplicateOpenJobs,
 };

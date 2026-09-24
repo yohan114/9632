@@ -85,9 +85,12 @@ async function as(user) {
 
 // ---------------------------------------------------------------- one meaning of "open"
 test('"open" and "not final" come from one place', () => {
-  assert.strictEqual(jobstate.openSql('j'), "j.status NOT IN ('CLOSED', 'REJECTED')");
+  // They part company at partial close (W2): a PARTIALLY_CLOSED card no longer holds its vehicle,
+  // but is not finished with either.
+  assert.strictEqual(jobstate.openSql('j'), "j.status NOT IN ('PARTIALLY_CLOSED', 'CLOSED', 'REJECTED')");
   assert.strictEqual(jobstate.notFinalSql(), "status NOT IN ('CLOSED', 'REJECTED')");
   assert.ok(jobstate.isOpen('REQUESTED') && jobstate.isOpen('WORK_COMPLETE') && !jobstate.isOpen('CLOSED'));
+  assert.ok(!jobstate.isOpen('PARTIALLY_CLOSED') && !jobstate.isFinal('PARTIALLY_CLOSED'));
   assert.ok(jobstate.isFinal('REJECTED') && !jobstate.isFinal('IN_PROGRESS'));
 });
 

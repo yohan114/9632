@@ -65,6 +65,12 @@ const CAPABILITIES = [
   C('jobs.flat_labour', 'jobs', 'Set a service job\'s flat labour charge', ['workshop', 'operational_manager'], 'jobs'),
   // A bulk clean-up of stuck REQUESTED cards: admin-only unless given to a role on purpose.
   C('jobs.triage', 'jobs', 'Review stuck job cards and reject or close them in bulk', [], 'jobs'),
+  // Partial close (W2): the same people who close a card; asking for a reopen, the people who
+  // edit one. Approving a reopen request is jobs.reopen, above.
+  C('jobs.partial_close', 'jobs', 'Partly close a job card (work done, prices still missing)', ['operational_manager', 'workshop'], 'jobs'),
+  C('jobs.reopen_request', 'jobs', 'Ask for a partly closed or closed job card to be reopened', ['workshop', 'operational_manager', 'manager'], 'jobs'),
+  // Switching partial close and reopen requests on or off: admin only unless given on purpose.
+  C('jobs.settings', 'jobs', 'Switch partial close and reopen requests on or off', []),
 
   // ---- job requests --------------------------------------------------------------------------
   C('jobrequests.create', 'jobrequests', 'Raise a job request', ['assistant_transport_manager'], 'jobrequests'),

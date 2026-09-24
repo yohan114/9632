@@ -184,7 +184,7 @@ function historicalTotal(job, computedTotal) {
  */
 function closureReadiness(jobId) {
   const missing = [];
-  const job = get('SELECT type, flat_labour FROM job_cards WHERE id = ?', jobId);
+  const job = get('SELECT type, flat_labour, is_historical FROM job_cards WHERE id = ?', jobId);
 
   // every requested part has a GRN (MRN lines fully received)
   for (const l of all(
@@ -246,6 +246,14 @@ function closureReadiness(jobId) {
     if (w.external_value == null || w.external_value === '') {
       missing.push(`External repair on ${w.work_date} awaiting value`);
     }
+  }
+
+  // Work done is recorded (W2, while partial close is switched on). A service's work is its flat
+  // labour, already required above; a repair needs at least one daily-work line. Live cards only:
+  // imported history was never recorded this way and is not held to it.
+  if (job && !job.is_historical && job.type !== 'service' && require('./jobstate').partialCloseEnabled()
+      && !get('SELECT 1 x FROM job_daily_work WHERE job_id = ? LIMIT 1', jobId)) {
+    missing.push('No work done recorded — add the daily work');
   }
 
   return { ready: missing.length === 0, missing };

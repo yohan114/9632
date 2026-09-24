@@ -598,7 +598,7 @@ CREATE TABLE IF NOT EXISTS job_cards (
   description          TEXT,
   status               TEXT NOT NULL DEFAULT 'REQUESTED'
                          CHECK (status IN ('REQUESTED','APPROVED_TRANSPORT','APPROVED_OPERATIONS',
-                                           'IN_WORKSHOP','IN_PROGRESS','WORK_COMPLETE','CLOSED','REJECTED')),
+                                           'IN_WORKSHOP','IN_PROGRESS','WORK_COMPLETE','PARTIALLY_CLOSED','CLOSED','REJECTED')),
   requested_by         TEXT,
   requested_by_user    INTEGER REFERENCES users(id),
   requested_at         TEXT NOT NULL DEFAULT (datetime('now')),
@@ -791,6 +791,24 @@ CREATE TABLE IF NOT EXISTS job_reopens (
   reclosed_at       TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_job_reopens_job ON job_reopens(job_id);
+
+-- Asking for a partly closed or closed card to be reopened (docs/WORKSHOPONE_PLAN.md §3.2, W2).
+-- Anyone who may edit jobs asks, with a reason; someone holding jobs.reopen who is not the
+-- requester approves or refuses. An approved request is carried out like a reopen and also
+-- leaves its row in job_reopens.
+CREATE TABLE IF NOT EXISTS job_reopen_requests (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  job_id        INTEGER NOT NULL REFERENCES job_cards(id),
+  requested_by  INTEGER REFERENCES users(id),
+  requested_at  TEXT NOT NULL DEFAULT (datetime('now')),
+  reason        TEXT NOT NULL,
+  status        TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','approved','refused')),
+  decided_by    INTEGER REFERENCES users(id),
+  decided_at    TEXT,
+  decision_note TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_job_reopen_req_job ON job_reopen_requests(job_id);
+CREATE INDEX IF NOT EXISTS idx_job_reopen_req_status ON job_reopen_requests(status);
 
 -- Frozen cost snapshot taken on CLOSE (historical costs never shift afterwards).
 CREATE TABLE IF NOT EXISTS job_costs (
