@@ -37,6 +37,8 @@ const CAPABILITIES = [
   // ---- fleet ---------------------------------------------------------------------------------
   C('assets.create', 'assets', 'Register a new vehicle or machine', ['storekeeper'], 'assets'),
   C('assets.edit', 'assets', 'Edit a vehicle or machine', ['storekeeper'], 'assets'),
+  // Stage 7: moving a machine to another project or site, kept as a dated move (src/lib/operations.js).
+  C('assets.move', 'assets', 'Move a machine to another project or site', ['transport_manager', 'operational_manager', 'manager']),
   C('aliases.vehicle.resolve', 'aliases', 'Link or dismiss an unrecognised vehicle name', ['storekeeper']),
   C('aliases.mechanic.resolve', 'aliases', 'Link an unrecognised mechanic name', ['storekeeper', 'manager']),
   C('projects.manage', 'projects', 'Create and edit projects and their sites', ['manager']),

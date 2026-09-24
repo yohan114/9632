@@ -654,6 +654,7 @@ function migrate() {
   signoffsPerWorkshop();
   reportsPerWorkshop();
   fieldStage6();
+  operationsStage7();
 
   // Seed the RBAC matrix once (safe to require here — db exports are already set).
   try { require('../lib/permissions').seedDefaults(); } catch (e) { /* table may not exist yet on very first pass */ }
@@ -891,6 +892,11 @@ function fieldStage6() {
   ensureColumn('job_daily_work', 'travel', 'INTEGER NOT NULL DEFAULT 0');
   db.exec('CREATE INDEX IF NOT EXISTS idx_jobs_field ON job_cards(field, status)');
   allowReturnParts();
+}
+
+// Stage 7: a machine can stand at a site of a project, not only at the project (src/lib/operations.js).
+function operationsStage7() {
+  ensureColumn('assets', 'current_site_id', 'INTEGER REFERENCES sites(id)');
 }
 
 // Parts brought back unused (Stage 6) come off a job's cost as a 'return' line on job_parts. Its

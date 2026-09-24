@@ -154,7 +154,8 @@ test('a job card goes to the workshop of whoever raises it, or the one chosen; i
   assert.ok(mine.some((j) => j.id === a.body.job.id) && !mine.some((j) => j.id === b.body.job.id));
   assert.strictEqual(mine.find((j) => j.id === a.body.job.id).workshop_code, 'MTR');
   // Moved while open, audited; not onto a workshop that does not exist.
-  const mv = await req('PATCH', `/api/jobs/${b.body.job.id}`, { cookie: ws, body: { workshop_id: MTR } });
+  // Stage 7: with a reason (S7-D6).
+  const mv = await req('PATCH', `/api/jobs/${b.body.job.id}`, { cookie: ws, body: { workshop_id: MTR, workshop_reason: 'Muthur has the parts' } });
   assert.strictEqual(mv.status, 200, mv.text);
   assert.strictEqual(J(b.body.job.id).workshop_id, MTR);
   const trail = get("SELECT before_json, after_json FROM audit_log WHERE entity = 'job_card' AND action = 'edit' AND entity_id = ? ORDER BY id DESC", b.body.job.id);

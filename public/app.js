@@ -747,6 +747,7 @@ const NAV = [
   ['jobs', '🔧', 'Job Cards'],
   ['jobrequests', '📋', 'Job Requests'],
   ['field', '📍', 'Field Work'],
+  ['operations', '🧭', 'Operations'],
   ['dailywork', '📅', 'Daily Work'],
   ['services', '🛠️', 'Service Records'],
   ['lubecapacities', '🛢️', 'Lubricant Capacities'],
@@ -769,7 +770,7 @@ const NAV = [
 ];
 // Which permission module governs each nav item's visibility (dashboard always on).
 const NAV_MODULE = {
-  assets: 'assets', jobs: 'jobs', jobrequests: 'jobrequests', field: 'jobs', dailywork: 'dailywork', services: 'filters', lubecapacities: 'jobs',
+  assets: 'assets', jobs: 'jobs', jobrequests: 'jobrequests', field: 'jobs', operations: 'assets', dailywork: 'dailywork', services: 'filters', lubecapacities: 'jobs',
   labour: 'labour', stores: 'stores', stocktake: 'stores', stockcockpit: 'stores', generalstock: 'stores', oil: 'oil', batteries: 'batteries', filters: 'filters', filterstock: 'filters',
   projects: 'projects', aliases: 'aliases', attention: 'reports', progress: 'reports',
   teardown: 'reports', reports: 'reports', tyrebattery: 'reports',
@@ -792,7 +793,7 @@ function navVisible(n) {
 // Sidebar grouping — headings shown above each cluster (a group with no visible item is hidden).
 const NAV_GROUP_ORDER = ['Operations', 'Inventory', 'Procurement', 'Fleet', 'Analysis', 'Admin'];
 const NAV_GROUP = {
-  dashboard: 'Operations', jobs: 'Operations', jobrequests: 'Operations', field: 'Operations', dailywork: 'Operations', services: 'Operations', lubecapacities: 'Operations',
+  dashboard: 'Operations', jobs: 'Operations', jobrequests: 'Operations', field: 'Operations', operations: 'Operations', dailywork: 'Operations', services: 'Operations', lubecapacities: 'Operations',
   stores: 'Inventory', stocktake: 'Inventory',
   purchasing: 'Procurement', tbrequests: 'Procurement',
   assets: 'Fleet', serviceplan: 'Fleet',
@@ -1233,8 +1234,9 @@ async function assetDetail(c, id) {
   c.innerHTML = `${pageHeader(idLabel(a.asset), '<a href="#/assets">← Assets</a>')}
     <div class="toolbar"><span class="badge">${esc(a.asset.asset_class)}</span>
       <span class="badge ${a.asset.status === 'active' ? 'green' : a.asset.status === 'under_repair' ? 'amber' : ''}">${esc(a.asset.status)}</span>
-      <span class="muted">${esc(a.asset.brand || '')} ${esc(a.asset.type || '')} · ${esc(a.current_project ? a.current_project.name : 'no project')}</span>
+      <span class="muted">${esc(a.asset.brand || '')} ${esc(a.asset.type || '')} · 📍 ${esc(a.place && a.place.key ? a.place.label : (a.current_project ? a.current_project.name : 'no project'))}</span>
       <div class="spacer"></div>
+      ${canDo('assets.move') ? '<button class="sm" id="moveasset" title="The machine goes to another project or site">🚚 Move machine…</button>' : ''}
       ${canDo('assets.edit') ? '<button class="sm" id="editasset">Edit</button>' : ''}
     </div>
     <div class="grid section">
@@ -1258,10 +1260,37 @@ async function assetDetail(c, id) {
         ${(a.partly_closed_jobs || []).length ? `<div class="muted" style="font-size:12px;margin:8px 0 2px">Partly closed — prices still to come</div>${a.partly_closed_jobs.map(assetJobLine).join('')}` : ''}
       </div>
     </div>
+    <div class="card section"><h3>Moves</h3>
+      ${(a.moves || []).length ? `<ul class="timeline">${a.moves.map((m) => `<li><span class="date">${esc(m.move_date)}</span><span>${esc(m.from)} → <b>${esc(m.to)}</b>${m.note ? ` — ${esc(m.note)}` : ''}${m.moved_by ? ` <span class="muted">(${esc(m.moved_by)})</span>` : ''}</span></li>`).join('')}</ul>`
+    : '<span class="muted">No moves recorded yet.</span>'}
+    </div>
     <div class="card"><h3>Unified Timeline</h3>
       <ul class="timeline">${a.timeline.map((t) => `<li><span class="date">${esc(t.date || '')}</span><span class="badge ${t.kind === 'job' ? 'blue' : ''}">${esc(t.kind)}</span><span>${esc(t.ref ? t.ref + ' · ' : '')}${esc(t.description || '')}</span></li>`).join('') || '<li class="muted">No activity</li>'}</ul>
     </div>`;
   if (qs('#editasset')) qs('#editasset').onclick = () => editAssetModal(a.asset);
+  if (qs('#moveasset')) qs('#moveasset').onclick = () => moveMachineModal(a.asset, a.place, () => assetDetail(c, id));
+}
+
+// Stage 7: move a machine to another project or site, from a date. Every move is kept.
+async function moveMachineModal(asset, place, onDone) {
+  const places = await api('/operations/places').catch(() => []);
+  modal('Move ' + (asset.registration || asset.code), `
+    <p class="muted" style="margin-top:0">Now at: <b>${esc(place && place.key ? place.label : 'no site set')}</b></p>
+    <datalist id="mvplaces">${places.map((p) => `<option value="${esc(p.label)}">`).join('')}</datalist>
+    <label>Moves to *</label><input name="to" list="mvplaces" placeholder="Project or site" autocomplete="off">
+    ${field('Date of the move', 'move_date', { type: 'date', value: localNowInput().slice(0, 10) })}
+    ${field('Note', 'note', { placeholder: 'e.g. low-bed, for the new contract' })}
+    <div style="margin-top:14px;text-align:right"><button class="primary" id="s">Move machine</button></div>`, (body, close) => {
+    qs('#s', body).onclick = async () => {
+      const f = formData(body);
+      const p = places.find((x) => x.label === String(f.to || '').trim());
+      if (!p) return toast('Choose a project or site from the list.', 'err');
+      try {
+        await api(`/operations/machines/${asset.id}/move`, { method: 'POST', body: { place: p.key, move_date: f.move_date, note: f.note } });
+        close(); toast('Moved to ' + p.label); if (onDone) onDone();
+      } catch (e) { toast(e.message, 'err'); }
+    };
+  });
 }
 
 async function editAssetModal(asset) {
@@ -2585,6 +2614,117 @@ routes.field = async (c) => {
   });
 };
 
+// ---- Operations (Stage 7): the site fleet, workshops at a glance, job handovers.
+const OPS_STATE = { working: ['Working', 'green'], down_workshop: ['Down · workshop', 'red'], down_field: ['Down · field', 'red'],
+  idle: ['Idle', 'amber'], out_of_use: ['Out of use', ''] };
+const isHeadOffice = () => isAdmin() || !!(ME && (ME.caps || []).includes('workshops.all'));
+
+routes.operations = async (c) => {
+  const sp = new URLSearchParams(location.hash.split('?')[1] || '');
+  const tabs = [];
+  if (canView('assets')) tabs.push(['fleet', 'Site fleet']);
+  if (isHeadOffice()) tabs.push(['glance', 'Workshops at a glance']);
+  if (canView('jobs') && wsMulti()) tabs.push(['handovers', 'Job handovers']);
+  if (!tabs.length) { c.innerHTML = '<div class="card err">You do not have access to this page.</div>'; return; }
+  const tab = tabs.some((t) => t[0] === sp.get('tab')) ? sp.get('tab') : tabs[0][0];
+  c.innerHTML = `${pageHeader('Operations', 'Where the machines are, which are down, and how each workshop is doing.')}
+    <div class="toolbar">${tabs.map(([k, l]) => `<a class="btn sm ${k === tab ? 'primary' : ''}" href="#/operations?tab=${k}">${esc(l)}</a>`).join('')}</div>
+    <div id="opsbody"><div class="muted">Loading…</div></div>`;
+  const body = qs('#opsbody', c);
+  if (tab === 'fleet') return opsFleet(body, sp.get('month'));
+  if (tab === 'glance') return opsGlance(body);
+  return opsHandovers(body);
+};
+
+async function opsFleet(body, month) {
+  const d = await api('/operations/fleet' + (month ? '?month=' + encodeURIComponent(month) : ''));
+  const pct = (v) => (v == null ? '—' : `<b style="color:${v >= 90 ? 'var(--green)' : v >= 75 ? 'var(--amber)' : 'var(--red)'}">${num(v)}%</b>`);
+  const n = (v, tone) => (v ? `<span class="badge ${tone}">${v}</span>` : '<span class="muted">0</span>');
+  const machineRows = (r) => r.list.map((m) => `<tr>
+      <td><a href="#/assets/${m.id}">${esc(m.registration || m.code)}</a>${m.registration && m.code !== m.registration ? ` <span class="muted" style="font-size:11px">${esc(m.code)}</span>` : ''}</td>
+      <td>${esc(m.type || '')}</td>
+      <td><span class="badge ${OPS_STATE[m.state][1]}">${OPS_STATE[m.state][0]}</span></td>
+      <td>${m.job ? (m.job.reachable ? `<a href="#/jobs/${m.job.id}">${esc(m.job.job_no)}</a>` : esc(m.job.job_no)) + (wsMulti() && m.job.workshop_name ? ` <span class="muted" style="font-size:11px">${esc(m.job.workshop_name)}</span>` : '') : '—'}</td>
+      <td class="num">${m.down_days == null ? '—' : m.down_days}</td></tr>`).join('');
+  const rows = d.rows.map((r, i) => `<tr class="opsrow" data-i="${i}" style="cursor:pointer" title="Show the machines">
+      <td><b>${esc(r.label)}</b></td><td class="num">${r.machines}</td>
+      <td class="num">${n(r.working, 'green')}</td><td class="num">${n(r.down_workshop, 'red')}</td><td class="num">${n(r.down_field, 'red')}</td>
+      <td class="num">${n(r.idle, 'amber')}</td><td class="num">${n(r.out_of_use, '')}</td>
+      <td class="num">${pct(r.availability)}</td><td class="num muted">${r.down_days} / ${r.machine_days}</td></tr>
+    <tr class="opsdetail" data-i="${i}" style="display:none"><td colspan="9" style="background:var(--surface-2, #f6f6f3)">
+      ${r.list.length ? tableWrap([{ label: 'Machine' }, { label: 'Type' }, { label: 'Now' }, { label: 'Job card' }, { label: 'Down days this month', num: true }], [machineRows(r)])
+    : '<span class="muted">No machine here now; the days counted are from machines that were here earlier in the month.</span>'}
+    </td></tr>`);
+  const t = d.total;
+  body.innerHTML = `
+    <div class="toolbar">
+      <label style="width:auto">Month <input type="month" id="opsmonth" value="${esc(d.month)}" style="max-width:170px"></label>
+      <span class="muted">${esc(d.from)} to ${esc(d.to)} · ${d.days} day${d.days === 1 ? '' : 's'}</span>
+      <div class="spacer"></div>
+      <span>Availability: ${pct(t.availability)}</span>
+    </div>
+    <div class="grid section">
+      <div class="card stat"><span class="n">${t.machines}</span><span class="l">Machines</span></div>
+      <div class="card stat"><span class="n" style="color:var(--green)">${t.working}</span><span class="l">Working now</span></div>
+      <div class="card stat"><span class="n" style="color:${t.down_workshop + t.down_field ? 'var(--red)' : 'inherit'}">${t.down_workshop + t.down_field}</span><span class="l">Down now (workshop + field)</span></div>
+      <div class="card stat"><span class="n">${t.idle}</span><span class="l">Idle</span></div>
+    </div>
+    ${tableWrap([{ label: 'Project / site' }, { label: 'Machines', num: true }, { label: 'Working', num: true }, { label: 'Down · workshop', num: true },
+    { label: 'Down · field', num: true }, { label: 'Idle', num: true }, { label: 'Out of use', num: true }, { label: 'Availability', num: true }, { label: 'Down days / machine-days', num: true }], rows, { scroll: true })}
+    <p class="muted" style="font-size:12px">Availability = machine-days with no open repair ÷ all machine-days in the month. A machine counts where it stood each day. A machine is down from the day its repair card is opened (or the breakdown is reported) until the work is complete. Services and machines out of use are not counted. Click a row to see its machines.</p>`;
+  qs('#opsmonth', body).onchange = (e) => { location.hash = '#/operations?tab=fleet&month=' + e.target.value; };
+  qsa('.opsrow', body).forEach((tr) => {
+    tr.onclick = () => { const det = qs(`.opsdetail[data-i="${tr.dataset.i}"]`, body); det.style.display = det.style.display === 'none' ? '' : 'none'; };
+  });
+}
+
+async function opsGlance(body) {
+  const d = await api('/operations/glance');
+  const cell = (w, what, v, tone) => `<td class="num">${v == null ? '<span class="muted">—</span>'
+    : v ? `<button class="sm opsn" data-ws="${w.workshop_id}" data-what="${what}" data-name="${esc(w.name)}">${tone ? `<span style="color:var(--${tone})">${v}</span>` : v}</button>` : '<span class="muted">0</span>'}</td>`;
+  const rows = d.rows.map((w) => `<tr>
+      <td><b>${esc(w.name)}</b> <span class="muted" style="font-size:11px">${esc(w.code || '')}</span></td>
+      ${cell(w, 'open', w.open_jobs)}${cell(w, 'down', w.machines_down, 'red')}${cell(w, 'parts', w.waiting_parts, 'amber')}
+      ${cell(w, 'approvals', w.approvals)}${cell(w, 'present', w.present)}${cell(w, 'signoff', w.unsigned_days, 'red')}
+      <td class="num">${w.cost_month == null ? '—' : money(w.cost_month)}</td></tr>`);
+  body.innerHTML = `
+    <p class="muted" style="margin-top:0">Today, ${esc(d.date)}. Click a number to see the list behind it.</p>
+    ${tableWrap([{ label: 'Workshop' }, { label: 'Open jobs', num: true }, { label: 'Machines down', num: true }, { label: 'Waiting for parts', num: true },
+    { label: 'Requests to approve', num: true }, { label: d.attendance ? 'Mechanics present' : 'Mechanics with work today', num: true },
+    { label: 'Days to sign off', num: true }, { label: 'Cost this month', num: true }], rows, { scroll: true })}
+    <p class="muted" style="font-size:12px">Cost this month is the workshop's total in the Job Cost report for ${esc(d.month)}.${d.attendance ? '' : ' Attendance is off, so "mechanics" counts those with daily work booked today.'}</p>`;
+  const TITLES = { open: 'Open jobs', down: 'Machines down', parts: 'Waiting for parts', approvals: 'Requests to approve', present: 'Mechanics today', signoff: 'Days to sign off' };
+  qsa('.opsn', body).forEach((b) => {
+    b.onclick = async () => {
+      const list = await api(`/operations/glance/${b.dataset.ws}/${b.dataset.what}`);
+      const what = b.dataset.what;
+      let html;
+      if (['open', 'down', 'parts'].includes(what)) {
+        html = tableWrap([{ label: 'Job' }, { label: 'Machine' }, { label: 'Since' }, { label: 'Status' }],
+          list.map((j) => `<tr><td><a href="#/jobs/${j.id}">${esc(j.job_no)}</a></td><td>${esc(j.asset_reg || j.asset_code || '—')}</td><td>${esc(j.since || '')}</td><td>${statusBadge(j.status)}</td></tr>`));
+      } else if (what === 'approvals') {
+        html = tableWrap([{ label: 'Request' }, { label: 'Kind' }, { label: 'Machine' }, { label: 'Date' }, { label: 'Waiting for' }],
+          list.map((r) => `<tr><td>${esc(r.ref || '')}</td><td>${esc(r.kind)}</td><td>${esc(r.asset_code || '—')}</td><td>${esc(String(r.since || '').slice(0, 10))}</td><td>${r.status === 'certified' ? 'approval' : 'certification'}</td></tr>`));
+      } else if (what === 'present') {
+        html = tableWrap([{ label: 'Mechanic' }, { label: '' }], list.map((m) => `<tr><td>${esc(m.name)}</td><td class="muted">${esc(m.detail || '')}</td></tr>`));
+      } else {
+        html = tableWrap([{ label: 'Day' }], list.map((x) => `<tr><td>${esc(x.date)}</td></tr>`));
+      }
+      modal(`${TITLES[what] || ''} · ${b.dataset.name}`, html, (mb, close) => { qsa('a', mb).forEach((a) => { a.addEventListener('click', () => close()); }); }, { wide: true });
+    };
+  });
+}
+
+async function opsHandovers(body) {
+  const list = await api('/operations/handovers?days=90');
+  body.innerHTML = `
+    <p class="muted" style="margin-top:0">Job cards sent from one workshop to another in the last 90 days${isHeadOffice() ? '' : ', to or from your workshop'}.</p>
+    ${tableWrap([{ label: 'Date' }, { label: 'Job' }, { label: 'Machine' }, { label: 'From' }, { label: 'To' }, { label: 'Why' }, { label: 'By' }],
+    list.map((h) => `<tr><td>${esc(String(h.moved_at || '').slice(0, 10))}</td>
+      <td>${h.reachable ? `<a href="#/jobs/${h.job_id}">${esc(h.job_no)}</a>` : esc(h.job_no)}</td><td>${esc(h.asset_code || '—')}</td>
+      <td>${esc(h.from_name || '—')}</td><td><b>${esc(h.to_name || '—')}</b></td><td class="desc-col">${esc(h.reason)}</td><td>${esc(h.moved_by || '')}</td></tr>`), { scroll: true })}`;
+}
+
 async function newJobModal() {
   const projects = await api('/projects');
   const popts = [{ value: '', label: '—' }, ...projects.map((p) => ({ value: p.id, label: p.name }))];
@@ -2708,6 +2848,7 @@ async function jobDetail(c, id) {
     </div>
     ${job.type === 'service' ? `<p class="muted" style="font-size:12px">Service job — labour is a flat charge${job.flat_labour == null ? ' (not set yet)' : ''}, not hours×rate.</p>` : ''}
     <p>${esc(job.description || '')}</p>
+    ${(j.handovers || []).map((h) => `<p class="muted" style="font-size:13px;margin:4px 0">🔀 Sent from <b>${esc(h.from_name || '—')}</b> to <b>${esc(h.to_name || '—')}</b> on ${esc(String(h.moved_at || '').slice(0, 10))}${h.moved_by ? ` by ${esc(h.moved_by)}` : ''} — ${esc(h.reason)}</p>`).join('')}
     ${fieldPanel}
     ${j.continues ? `<p class="muted" style="font-size:13px">↪ Continues ${linkJob(j.continues)} — the vehicle's earlier job, partly closed.</p>` : ''}
     ${isPartial ? `<div class="card section" style="border-left:4px solid var(--violet)">
@@ -2948,6 +3089,7 @@ async function editJobModal(job, onDone) {
   modal(`Edit ${job.job_no}`, `
     ${fld('Description *', 'description', { value: job.description || '' })}
     ${wsd ? fld('Workshop (who repairs it)', 'workshop_id', { type: 'select', options: wsOptions(wsd), value: job.workshop_id }) : ''}
+    ${wsd ? `<div id="wsreason" style="display:none">${fld('Why does it go to another workshop? *', 'workshop_reason', { placeholder: 'e.g. no crane here, Central has the parts' })}</div>` : ''}
     <div class="row" style="margin-top:8px">
       ${fld('Type', 'type', { type: 'select', value: job.type, options: [{ value: 'repair', label: 'Repair' }, { value: 'service', label: 'Service' }] })}
       <div class="fld">${assetPickerHtml('Vehicle')}</div>
@@ -2957,10 +3099,16 @@ async function editJobModal(job, onDone) {
     wireAssetPicker(body);
     const cur = qs('.apick-input', body);
     if (cur) cur.value = job.asset_code || job.asset_reg || '';
+    // Stage 7: sending the card to another workshop asks why.
+    const wsSel = qs('select[name=workshop_id]', body);
+    if (wsSel) wsSel.onchange = () => { qs('#wsreason', body).style.display = Number(wsSel.value) !== Number(job.workshop_id) ? '' : 'none'; };
     qs('#s', body).onclick = async () => {
       const d = formData(body);
       const payload = { description: d.description, type: d.type };
-      if (d.workshop_id && Number(d.workshop_id) !== Number(job.workshop_id)) payload.workshop_id = Number(d.workshop_id);
+      if (d.workshop_id && Number(d.workshop_id) !== Number(job.workshop_id)) {
+        payload.workshop_id = Number(d.workshop_id);
+        payload.workshop_reason = d.workshop_reason;
+      }
       // Only send a vehicle when one was actually re-picked; a hidden id appears on selection.
       if (d.asset_id && Number(d.asset_id) !== Number(job.asset_id)) payload.asset_id = Number(d.asset_id);
       const send = async (p) => {
@@ -2975,6 +3123,12 @@ async function editJobModal(job, onDone) {
         const r = await send(payload);
         if (!r) return;
         close();
+        // Sent to a workshop out of your reach (Stage 3): the card is theirs now — back to your list.
+        if (payload.workshop_id && ME.workshopsSeen && !ME.workshopsSeen.includes(payload.workshop_id)) {
+          toast(`✓ ${job.job_no} sent to ${wsName(wsd, payload.workshop_id)}`);
+          location.hash = '#/jobs';
+          return;
+        }
         toast('✓ ' + job.job_no + ' updated');
         (r.warnings || []).forEach((w) => toast(w, 'err'));
         if (onDone) onDone();
