@@ -34,7 +34,7 @@ function createSession(userId, req, { mfaVerified = false } = {}) {
   const token = crypto.randomBytes(32).toString('hex');
   const expires = new Date(Date.now() + config.sessionTtlHours * 3600 * 1000).toISOString();
   run(
-    `INSERT INTO sessions (user_id, token, expires_at, ip, user_agent, mfa_verified) VALUES (?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO sessions (user_id, token, expires_at, ip, user_agent, mfa_verified, last_seen_at) VALUES (?, ?, ?, ?, ?, ?, datetime('now'))`,
     userId,
     token,
     expires,
@@ -47,6 +47,7 @@ function createSession(userId, req, { mfaVerified = false } = {}) {
 
 function destroySession(token) {
   if (token) run('DELETE FROM sessions WHERE token = ?', token);
+  require('./emitter').emit('sessions_changed', {});   // live sockets on that session are closed
 }
 
 /**
@@ -57,24 +58,112 @@ function destroySession(token) {
  * open on a shared PC stays valid for its full 12 hours. Returns how many sessions were ended.
  */
 function revokeSessions(userId, { exceptToken = null } = {}) {
-  if (exceptToken) return run('DELETE FROM sessions WHERE user_id = ? AND token <> ?', userId, exceptToken).changes;
-  return run('DELETE FROM sessions WHERE user_id = ?', userId).changes;
+  const n = exceptToken
+    ? run('DELETE FROM sessions WHERE user_id = ? AND token <> ?', userId, exceptToken).changes
+    : run('DELETE FROM sessions WHERE user_id = ?', userId).changes;
+  if (n) require('./emitter').emit('sessions_changed', { userId });
+  return n;
+}
+
+// ---- which sessions are still good ------------------------------------------------------------
+//
+// EXPIRY IS COMPARED AS A TIME, NOT AS TEXT. expires_at is written as an ISO string
+// ("2026-09-24T02:38:12Z") and used to be compared with datetime('now') ("2026-09-24 04:08:12").
+// As text, 'T' sorts after ' ', so on its expiry day a session was still "valid" hours after it
+// had expired — the 12-hour limit really ran to midnight UTC. julianday() reads both forms as times.
+//
+// IDLE means no INPUT, not no requests. The screens refresh themselves whenever data changes, so an
+// open dashboard sends requests all day with nobody at the PC. Every request carries how long it has
+// been since the last mouse, keyboard or touch input (X-WO-Idle-Ms), and last_seen_at moves only to
+// that moment. A request without the header (a script, curl) counts as activity.
+
+const idleLimitMs = () => Math.max(0, config.sessionIdleMinutes || 0) * 60000;
+const toDbTime = (ms) => new Date(ms).toISOString().replace('T', ' ').slice(0, 19);
+function fromDbTime(s) {
+  if (!s) return null;
+  const t = Date.parse(String(s).includes('T') ? String(s) : String(s).replace(' ', 'T') + 'Z');
+  return Number.isFinite(t) ? t : null;
+}
+
+/**
+ * The session behind a token, if it is still good: not past its expiry, not idle too long, the user
+ * still active, and the second factor passed if they have one. An idle session is deleted on the
+ * spot. Returns { sess } or { sess: null, ended } with the reason.
+ */
+function liveSession(token) {
+  if (!token) return { sess: null, ended: 'none' };
+  const sess = get(
+    `SELECT s.*, u.username, u.full_name, u.active, u.must_change_password, u.mfa_enabled
+       FROM sessions s JOIN users u ON u.id = s.user_id
+      WHERE s.token = ? AND julianday(s.expires_at) > julianday('now')`,
+    token
+  );
+  if (!sess) return { sess: null, ended: 'expired' };
+  if (!sess.active) return { sess: null, ended: 'inactive' };
+  // An enrolled user's session must have passed the code. One that did not (made before they
+  // enrolled, and somehow not revoked) is treated as no session at all.
+  if (sess.mfa_enabled && !sess.mfa_verified) return { sess: null, ended: 'mfa' };
+  const seen = fromDbTime(sess.last_seen_at);
+  if (idleLimitMs() && seen && Date.now() - seen > idleLimitMs()) {
+    run('DELETE FROM sessions WHERE id = ?', sess.id);
+    require('./audit').record({ userId: sess.user_id, entity: 'session', action: 'session_idle_expired',
+      after: { idle_minutes: config.sessionIdleMinutes }, notify: false });
+    require('./emitter').emit('sessions_changed', { userId: sess.user_id });
+    return { sess: null, ended: 'idle' };
+  }
+  return { sess, ended: null };
+}
+
+// Move last_seen_at to the last real input (see above). At most one write a minute per session.
+function touchSession(sess, req) {
+  const hdr = parseInt(req.headers['x-wo-idle-ms'], 10);
+  const idleFor = Number.isFinite(hdr) && hdr > 0 ? Math.min(hdr, 7 * 24 * 3600 * 1000) : 0;
+  const activeAt = Date.now() - idleFor;
+  const seen = fromDbTime(sess.last_seen_at);
+  if (!seen || activeAt - seen >= 60000) run('UPDATE sessions SET last_seen_at = ? WHERE id = ?', toDbTime(activeAt), sess.id);
+}
+
+// A short description of a browser, for the "signed-in devices" list.
+function describeAgent(ua) {
+  const s = String(ua || '');
+  if (!s) return 'Unknown device';
+  const browser = /Edg\//.test(s) ? 'Edge' : /OPR\//.test(s) ? 'Opera' : /; wv\)/.test(s) ? 'Android app'
+    : /Chrome\//.test(s) ? 'Chrome' : /Firefox\//.test(s) ? 'Firefox' : /Safari\//.test(s) ? 'Safari' : /^node|curl|undici/i.test(s) ? 'Script' : 'Browser';
+  const os = /Windows NT/.test(s) ? 'Windows' : /Android/.test(s) ? 'Android' : /iPhone|iPad/.test(s) ? 'iPhone / iPad'
+    : /Mac OS X/.test(s) ? 'Mac' : /Linux/.test(s) ? 'Linux' : '';
+  return os ? `${browser} on ${os}` : browser;
+}
+
+/** A person's signed-in sessions, newest activity first — never the tokens. */
+function listSessions(userId, currentToken) {
+  return all(`SELECT id, token, created_at, last_seen_at, expires_at, ip, user_agent, mfa_verified FROM sessions
+               WHERE user_id = ? AND julianday(expires_at) > julianday('now')
+               ORDER BY COALESCE(last_seen_at, created_at) DESC`, userId)
+    .map((r) => ({
+      id: r.id,
+      device: describeAgent(r.user_agent),
+      ip: r.ip,
+      signed_in_at: r.created_at,
+      last_active_at: r.last_seen_at || r.created_at,
+      expires_at: r.expires_at,
+      second_factor: !!r.mfa_verified,
+      current: !!currentToken && r.token === currentToken,
+    }));
 }
 
 /** Populate req.user (or null) from the session cookie. Never blocks. */
-function authenticate(req, _res, next) {
+function authenticate(req, res, next) {
   req.user = null;
   const token = req.cookies && req.cookies[COOKIE];
   if (token) {
-    const sess = get(
-      `SELECT s.*, u.username, u.full_name, u.active, u.must_change_password, u.mfa_enabled
-         FROM sessions s JOIN users u ON u.id = s.user_id
-        WHERE s.token = ? AND s.expires_at > datetime('now')`,
-      token
-    );
-    // An enrolled user's session must have passed the code. One that did not (made before they
-    // enrolled, and somehow not revoked) is treated as no session at all.
-    if (sess && sess.active && !(sess.mfa_enabled && !sess.mfa_verified)) {
+    const { sess } = liveSession(token);
+    if (!sess) {
+      // The browser sent a session that is over (expired, idle, revoked). Say so, so the page can go
+      // back to sign-in instead of showing errors — and stop the browser sending the dead token.
+      res.set('X-WO-Session', 'ended');
+      res.clearCookie(COOKIE);
+    } else {
+      touchSession(sess, req);
       const roles = rolesForUser(sess.user_id);
       req.user = {
         id: sess.user_id,
@@ -89,6 +178,7 @@ function authenticate(req, _res, next) {
         // Their role requires two-factor sign-in and they have not set it up: until they do, this
         // session reaches the enrolment screens and nothing else (enforceMfaSetup).
         mfaSetupRequired: !sess.mfa_enabled && require('./mfa').requiredByRoles(roles),
+        sessionId: sess.id,
         token,
       };
     }
@@ -180,6 +270,9 @@ module.exports = {
   createSession,
   destroySession,
   revokeSessions,
+  liveSession,
+  listSessions,
+  describeAgent,
   authenticate,
   enforcePasswordChange,
   enforceMfaSetup,

@@ -423,6 +423,7 @@ It refuses if someone has edited files directly on the server, rather than disca
 | Diagnose ("nobody can sign in") | `sudo -u workshopone bash -c 'cd /opt/workshopone/app && node scripts/doctor.js'` |
 | Add people | `sudo -u workshopone bash -c 'cd /opt/workshopone/app && node scripts/create_staff.js --file staff.csv --apply'` |
 | Reset one password | `sudo -u workshopone bash -c 'cd /opt/workshopone/app && node scripts/admin.js set-password <user> "<temporary>"'` (at least 10 characters; signs that person out everywhere) |
+| Sign someone out everywhere | Access Control → Users & Roles → **Sessions** → *Sign out everywhere*. Anyone can see and end their own under **🔐 Security** |
 | Someone lost their 2FA phone | Access Control → Users & Roles → **Reset 2FA**. If it is the admin's own phone: `sudo -u workshopone bash -c 'cd /opt/workshopone/app && node scripts/admin.js reset-mfa <user>'` |
 | Find default passwords | `sudo -u workshopone bash -c 'cd /opt/workshopone/app && node scripts/admin.js audit-passwords'` — an account whose password is its username cannot sign in on this server |
 | Backup health | signed in as admin: `https://storesdb.ec-workshops.online/api/health` → `backup` |

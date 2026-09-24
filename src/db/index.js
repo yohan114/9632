@@ -111,6 +111,7 @@ function migrate() {
   ensureColumn('users', 'mfa_last_step', 'INTEGER');   // the last code's time step — a code works once
   ensureColumn('users', 'mfa_enabled_at', 'TEXT');
   ensureColumn('sessions', 'mfa_verified', 'INTEGER NOT NULL DEFAULT 0');
+  ensureColumn('sessions', 'last_seen_at', 'TEXT');   // last real input (mouse/keys/touch), for the idle timeout
   db.exec(`CREATE TABLE IF NOT EXISTS mfa_recovery_codes (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
