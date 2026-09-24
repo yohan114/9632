@@ -65,6 +65,12 @@ const CAPABILITIES = [
   C('jobs.flat_labour', 'jobs', 'Set a service job\'s flat labour charge', ['workshop', 'operational_manager'], 'jobs'),
   // A bulk clean-up of stuck REQUESTED cards: admin-only unless given to a role on purpose.
   C('jobs.triage', 'jobs', 'Review stuck job cards and reject or close them in bulk', [], 'jobs'),
+  // Partial close (W2): the same people who close a card; asking for a reopen, the people who
+  // edit one. Approving a reopen request is jobs.reopen, above.
+  C('jobs.partial_close', 'jobs', 'Partly close a job card (work done, prices still missing)', ['operational_manager', 'workshop'], 'jobs'),
+  C('jobs.reopen_request', 'jobs', 'Ask for a partly closed or closed job card to be reopened', ['workshop', 'operational_manager', 'manager'], 'jobs'),
+  // Switching partial close and reopen requests on or off: admin only unless given on purpose.
+  C('jobs.settings', 'jobs', 'Switch partial close and reopen requests on or off', []),
 
   // ---- job requests --------------------------------------------------------------------------
   C('jobrequests.create', 'jobrequests', 'Raise a job request', ['assistant_transport_manager'], 'jobrequests'),
@@ -75,6 +81,15 @@ const CAPABILITIES = [
   // ---- daily work ----------------------------------------------------------------------------
   C('dailywork.add', 'dailywork', 'Add daily work entries', ['workshop', 'manager', 'storekeeper'], 'dailywork'),
   C('dailywork.edit', 'dailywork', 'Edit, bulk-log or delete daily work', ['workshop', 'manager'], 'dailywork'),
+
+  // ---- attendance (src/lib/attendance.js) ----------------------------------------------------
+  // No `needs`: a manager holds Daily Work at VIEW and still signs off and unlocks days. The
+  // attendance routes check these capabilities themselves; reading needs Daily Work view.
+  C('attendance.record', 'dailywork', 'Enter and change today\'s and yesterday\'s attendance', ['workshop', 'manager']),
+  C('attendance.signoff', 'dailywork', 'Sign off a day (locks its attendance and daily work)', ['workshop', 'manager']),
+  C('attendance.unlock', 'dailywork', 'Unlock a signed-off day, or change attendance older than yesterday', ['manager', 'operational_manager']),
+  // Switching attendance on, its start date and its rules: admin only unless given on purpose.
+  C('attendance.settings', 'dailywork', 'Switch attendance on or off and set its rules', []),
 
   // ---- stores --------------------------------------------------------------------------------
   C('stores.items.edit', 'stores', 'Add or edit a store item', ['storekeeper'], 'stores'),

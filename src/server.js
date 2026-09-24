@@ -99,6 +99,10 @@ app.use('/api/stock-cockpit', require('./routes/stock_cockpit'));
 app.use('/api/jobs', requireModule('jobs'), require('./routes/jobcards'));
 app.use('/api/job-requests', requireModule('jobrequests'), require('./routes/jobrequests'));
 app.use('/api/daily-work', requireModule('dailywork'), require('./routes/dailywork'));
+// Mechanic attendance and the day tally. Reading needs Daily Work view (checked inside); each write
+// is decided by its own capability, because the managers who sign off and unlock a day hold Daily
+// Work at view only.
+app.use('/api/attendance', require('./routes/attendance'));
 app.use('/api/dashboard', require('./routes/dashboard'));
 app.use('/api/mechanics', require('./routes/mechanics'));
 app.use('/api/users', require('./routes/users'));

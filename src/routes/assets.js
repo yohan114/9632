@@ -94,6 +94,8 @@ router.get('/:id', asyncHandler((req, res) => {
   const current_project = asset.current_project_id ? get('SELECT * FROM projects WHERE id = ?', asset.current_project_id) : null;
   const current_battery = get(`SELECT * FROM batteries WHERE current_asset_id = ? AND state='installed' LIMIT 1`, id);
   const open_jobs = all(`SELECT id, job_no, type, status, description, total_cost FROM job_cards WHERE asset_id = ? AND ${jobstate.openSql()} ORDER BY id DESC`, id);
+  // Partly closed (W2): the vehicle has left them, but prices or records are still to come.
+  const partly_closed_jobs = all('SELECT id, job_no, type, status, description, total_cost, partial_closed_at FROM job_cards WHERE asset_id = ? AND status = ? ORDER BY id DESC', id, jobstate.PARTIAL);
   const lc = get(
     `SELECT COALESCE(SUM(labour_cost),0) labour, COALESCE(SUM(material_cost),0) material,
             COALESCE(SUM(oil_cost),0) oil, COALESCE(SUM(general_cost),0) general,
@@ -140,7 +142,7 @@ router.get('/:id', asyncHandler((req, res) => {
     timeline.push({ date: (j.d || '').slice(0, 10), kind: 'job', ref: j.job_no, description: `${j.description || ''} [${j.status}]` });
   timeline.sort((a, b) => String(b.date).localeCompare(String(a.date)));
 
-  res.json({ asset, current_project, current_battery, open_jobs, lifetime_cost: lc, service_due, timeline: timeline.slice(0, 100) });
+  res.json({ asset, current_project, current_battery, open_jobs, partly_closed_jobs, lifetime_cost: lc, service_due, timeline: timeline.slice(0, 100) });
 }));
 
 router.post('/', requireCap('assets.create'), asyncHandler((req, res) => {

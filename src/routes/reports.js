@@ -47,13 +47,19 @@ router.get('/dashboard', asyncHandler((_req, res) => {
   );
 
   const open_jobs_count = get(`SELECT COUNT(*) c FROM job_cards WHERE ${jobstate.openSql()}`).c;
+  // Partly closed (W2): the vehicle has left, prices or records are still to come.
+  const partly_closed = all(
+    `SELECT j.id, j.job_no, j.partial_closed_at, a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec
+       FROM job_cards j LEFT JOIN assets a ON a.id = j.asset_id
+      WHERE j.status = ? ORDER BY j.partial_closed_at, j.id`, jobstate.PARTIAL
+  ).map((j) => ({ ...j, missing_count: costing.closureReadiness(j.id).missing.length }));
   const closed_this_month_count = get(
     `SELECT COUNT(*) c FROM job_cards WHERE status='CLOSED' AND strftime('%Y-%m', closed_at) = strftime('%Y-%m','now')`
   ).c;
 
   res.json({
     jobs_by_status, awaiting_price: awaiting, low_stock_oil, batteries_warranty,
-    month_cost_by_project, open_jobs_count, closed_this_month_count,
+    month_cost_by_project, open_jobs_count, closed_this_month_count, partly_closed,
     needs_attention: intelligence.needsAttentionSummary(),
   });
 }));
@@ -809,7 +815,7 @@ router.get('/pending-approvals', asyncHandler((req, res) => {
   // Each queue is shown to whoever may act on it — the same capability the approve/certify
   // endpoint itself requires, so a role an admin creates sees exactly the queues it can clear.
   const may = (cap) => hasCap(req.user, cap);
-  const out = { certify: [], approve: [], transport: [], ops: [], jr_certify: [], jr_approve: [] };
+  const out = { certify: [], approve: [], transport: [], ops: [], jr_certify: [], jr_approve: [], reopen: [] };
   const INFLOW = "approval_status = 'requested' AND requested_by IS NOT NULL AND TRIM(requested_by) <> ''";
   const lineCount = '(SELECT COUNT(*) FROM mrn_lines ml WHERE ml.mrn_id = m.id) lines';
   if (may('stores.mrn.certify')) {
@@ -847,10 +853,17 @@ router.get('/pending-approvals', asyncHandler((req, res) => {
         FROM job_requests r LEFT JOIN assets a ON a.id = r.asset_id
         WHERE r.approval_status = 'certified' ORDER BY r.id DESC LIMIT 50`);
   }
+  // Reopen requests (W2): for whoever may reopen — except the person who asked, who cannot approve
+  // their own (an admin excepted, as for the other approvals).
+  const reopenQueue = may('jobs.reopen') && jobstate.partialCloseEnabled();
+  if (reopenQueue) {
+    const admin = (req.user.roles || []).includes('admin');
+    out.reopen = require('../lib/job_close').pendingRequests({ excludeRequester: admin ? null : req.user.id });
+  }
   out.total = out.certify.length + out.approve.length + out.transport.length + out.ops.length
-            + out.jr_certify.length + out.jr_approve.length;
+            + out.jr_certify.length + out.jr_approve.length + out.reopen.length;
   out.is_approver = ['stores.mrn.certify', 'stores.mrn.approve', 'jobs.approve_transport', 'jobs.approve_operations',
-    'jobrequests.certify', 'jobrequests.approve'].some(may);
+    'jobrequests.certify', 'jobrequests.approve'].some(may) || reopenQueue;
   res.json(out);
 }));
 

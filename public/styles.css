@@ -10,7 +10,7 @@
   --border: #d7dad4; --text: #1a1f24; --muted: #6a7379;
   --primary: #1d5a73; --primary-dark: #12455a;
   --accent: #f2a900;                 /* safety amber — rules, active marker, signature */
-  --amber: #9a6e00; --green: #3c7d5a; --red: #c4392d;
+  --amber: #9a6e00; --green: #3c7d5a; --red: #c4392d; --violet: #6b46a3;
   --shadow: 0 1px 2px rgba(20,24,28,.06), 0 1px 3px rgba(20,24,28,.05);
   --radius: 4px;
   --disp: 'Saira Condensed', system-ui, sans-serif;
@@ -23,7 +23,7 @@
     --bg: #14181c; --surface: #1b2025; --surface-2: #222931;
     --border: #2a3138; --text: #e6eaed; --muted: #8a949b;
     --primary: #3e8ba8; --primary-dark: #5aa6c2;
-    --accent: #f2a900; --amber: #e0a63a; --green: #4fa372; --red: #e5645a;
+    --accent: #f2a900; --amber: #e0a63a; --green: #4fa372; --red: #e5645a; --violet: #a98be0;
     --shadow: 0 1px 3px rgba(0,0,0,.4);
   }
 }
@@ -136,6 +136,8 @@ table.fit-table td.desc-col, table.fit-table th.desc-col { white-space: normal !
 .badge.amber { background: rgba(242,169,0,.15); color: var(--amber); border-color: transparent; }
 .badge.red { background: rgba(196,57,44,.13); color: var(--red); border-color: transparent; }
 .badge.blue { background: rgba(29,90,115,.13); color: var(--primary); border-color: transparent; }
+/* partly closed: the work is done, prices still to come */
+.badge.violet { background: rgba(107,70,163,.13); color: var(--violet); border-color: transparent; }
 
 /* ---- data-plate stamp (fleet codes / item numbers) ---- */
 .stamp {

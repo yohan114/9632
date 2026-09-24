@@ -12,6 +12,8 @@ const audit = require('../lib/audit');
 const costing = require('../lib/costing');
 const mechanics = require('../lib/mechanics');
 const aliases = require('../lib/aliases');
+const attendance = require('../lib/attendance');
+const { sendXlsx } = require('../lib/export');
 
 const router = express.Router();
 const jobstate = require('../lib/jobstate');
@@ -20,9 +22,15 @@ const jobstate = require('../lib/jobstate');
 // (jobstate.checkAdd 'daily_work'): a CLOSED card needs "Change items on a CLOSED job card".
 // This page used to add to, edit and delete lines on closed cards without asking. Throws, so a
 // batch that touches one closed card it may not change is refused whole, not half-applied.
-function assertDailyWorkAllowed(jobId, user) {
+//
+// `dates`: the work dates the write touches (a moved line touches two). A day that has been
+// signed off (attendance, src/lib/attendance.js) is locked — nothing on it changes until a
+// manager unlocks it. While attendance is switched off there is no lock.
+function assertDailyWorkAllowed(jobId, user, dates = []) {
+  attendance.assertDaysOpen(dates);
   if (!jobId) return;
-  const g = jobstate.checkAdd(get('SELECT id, job_no, status FROM job_cards WHERE id = ?', jobId), 'daily_work', { user });
+  // The dates also matter on a partly closed card: only work up to its partial-close day.
+  const g = jobstate.checkAdd(get('SELECT id, job_no, status, asset_id, partial_closed_at FROM job_cards WHERE id = ?', jobId), 'daily_work', { user, dates });
   if (!g.ok) { const e = new Error(g.body.error); e.status = g.status; throw e; }
 }
 
@@ -38,14 +46,18 @@ const JOB_MATCH_SLACK_DAYS = 45;
 // then nothing — and "nothing" is the right answer, because the caller raises a fresh card for
 // the day rather than hanging the work on an unrelated job.
 function jobForEntry(assetId, date) {
-  const jobs = all('SELECT id, job_no, requested_at, completed_at, closed_at, status FROM job_cards WHERE asset_id = ?', assetId);
+  // A partly closed card takes no work dated after its partial-close day (jobstate.checkAdd), so
+  // it is never the answer for one: that work belongs on the vehicle's new card.
+  const jobs = all('SELECT id, job_no, requested_at, completed_at, closed_at, partial_closed_at, status FROM job_cards WHERE asset_id = ?', assetId)
+    .filter((j) => !(j.status === jobstate.PARTIAL && date > jobstate.partialDay(j)));
   if (!jobs.length) return null;
   const day = (v) => String(v || '').slice(0, 10);
   const isOpen = (j) => jobstate.isOpen(j.status);
   const span = (j) => {
     const s = day(j.requested_at);
-    // An open card has no end yet, so its window runs to today.
-    const e = isOpen(j) ? new Date().toISOString().slice(0, 10) : day(j.closed_at || j.completed_at || j.requested_at);
+    // An open card has no end yet, so its window runs to today. A partly closed one ends on its
+    // partial-close day: later work belongs on the vehicle's new card.
+    const e = isOpen(j) ? new Date().toISOString().slice(0, 10) : day(j.closed_at || j.partial_closed_at || j.completed_at || j.requested_at);
     return [s, e < s ? s : e];
   };
   const gap = (j) => {
@@ -270,6 +282,27 @@ router.get('/monthly-summary', asyncHandler(async (req, res) => {
       total_cost: Math.round(m.total_cost * 100) / 100,
     }))
     .sort((a, b) => b.total_cost - a.total_cost);
+  const mechanicsCount = laborSummary.length;
+
+  // Attendance (when switched on): hours at work, hours booked and utilisation, over the days the
+  // tally runs. A mechanic who was at work but booked nothing this month still gets a row — that is
+  // exactly the case worth seeing. Labour cost is untouched: it stays booked hours × rate.
+  let att = null;
+  if (attendance.isEnabled()) {
+    att = attendance.month(month);
+    const byNorm = new Map(att.mechanics.map((m) => [mechanics.normalizeMechanic(m.name), m]));
+    for (const l of laborSummary) {
+      const a = byNorm.get(mechanics.normalizeMechanic(l.mechanic));
+      byNorm.delete(mechanics.normalizeMechanic(l.mechanic));
+      l.attended_hours = a ? a.attended_hours : 0;
+      l.booked_hours = a ? a.booked_hours : 0;
+      l.utilisation = a ? a.utilisation : null;
+    }
+    for (const a of byNorm.values()) {
+      laborSummary.push({ mechanic: a.name, total_hours: 0, rate: currentRate(a.name), total_cost: 0, entries: 0,
+        attended_hours: a.attended_hours, booked_hours: a.booked_hours, utilisation: a.utilisation });
+    }
+  }
 
   const monthLabels = {
     '01': 'January', '02': 'February', '03': 'March', '04': 'April',
@@ -292,17 +325,26 @@ router.get('/monthly-summary', asyncHandler(async (req, res) => {
       total_hours: l.total_hours,
       rate: l.rate != null ? l.rate : 'No Rate',
       total_cost: l.total_cost,
-      entries: l.entries
+      entries: l.entries,
+      attended_hours: l.attended_hours,
+      booked_hours: l.booked_hours,
+      utilisation: l.utilisation == null ? '' : l.utilisation,
     }));
+    const columns = [
+      { header: 'Laborer / Mechanic', key: 'mechanic', width: 26 },
+      { header: 'Monthly Working Hours', key: 'total_hours', width: 22 },
+      { header: 'Hourly Rate (Rs/h)', key: 'rate', width: 18 },
+      { header: 'Monthly Labour Cost (Rs)', key: 'total_cost', width: 24 },
+      { header: 'Work Entries', key: 'entries', width: 14 },
+    ];
+    if (att) {
+      columns.push({ header: 'Attended (h)', key: 'attended_hours', width: 14 },
+        { header: 'Booked (h)', key: 'booked_hours', width: 12 },
+        { header: 'Utilisation %', key: 'utilisation', width: 14 });
+    }
     return sendXlsx(res, `labor-hours-${month}.xlsx`, [{
       name: `Labor Hours ${month}`,
-      columns: [
-        { header: 'Laborer / Mechanic', key: 'mechanic', width: 26 },
-        { header: 'Monthly Working Hours', key: 'total_hours', width: 22 },
-        { header: 'Hourly Rate (Rs/h)', key: 'rate', width: 18 },
-        { header: 'Monthly Labour Cost (Rs)', key: 'total_cost', width: 24 },
-        { header: 'Work Entries', key: 'entries', width: 14 },
-      ],
+      columns,
       rows: exportRows
     }]);
   }
@@ -314,9 +356,10 @@ router.get('/monthly-summary', asyncHandler(async (req, res) => {
     total_line_hours: Math.round(totalLineHours * 100) / 100,
     total_labour_cost: Math.round(totalLabourCost * 100) / 100,
     external_value_total: Math.round(externalValueTotal * 100) / 100,
-    mechanics_count: laborSummary.length,
+    mechanics_count: mechanicsCount,
     entries_count: rows.length,
     labor_summary: laborSummary,
+    ...(att ? { attendance: { from: att.from, to: att.to } } : {}),
   });
 }));
 
@@ -463,6 +506,8 @@ router.get('/', asyncHandler((req, res) => {
     total_labour: Math.round(total_labour * 100) / 100,
     external_value: Math.round(external_value * 100) / 100,
     entries,
+    // Only while attendance is on: a signed-off day's lines cannot be changed.
+    ...(attendance.isEnabled() ? { locked: attendance.isLocked(date) } : {}),
   });
 }));
 
@@ -483,6 +528,8 @@ router.post('/', requireCap('dailywork.add'), asyncHandler((req, res) => {
   let unresolved = null;
   let autoCreated = false;
   const rawVeh = String(b.asset || '').trim();
+  // Before anything is created: a vehicle with no card would otherwise get a new one for a locked day.
+  attendance.assertDaysOpen([date]);
 
   const forVehicle = (assetId) => {
     const r = autoVehicleJob(assetId, date, rawVeh || null);
@@ -520,7 +567,7 @@ router.post('/', requireCap('dailywork.add'), asyncHandler((req, res) => {
   }
   const job = get('SELECT * FROM job_cards WHERE id = ?', jobId);
   if (!job) return res.status(404).json({ error: 'Job not found' });
-  assertDailyWorkAllowed(job.id, req.user);
+  assertDailyWorkAllowed(job.id, req.user, [date]);
 
   // The machine goes ON THE LINE now, not just into the choice of job card. This route already
   // worked the asset out — to find or create the card — and then threw it away, which is why the
@@ -547,6 +594,7 @@ router.post('/bulk-log', requireCap('dailywork.edit'), asyncHandler((req, res) =
 
   const rawEntries = Array.isArray(b.entries) ? b.entries : [];
   if (!rawEntries.length) return res.status(400).json({ error: 'entries array required' });
+  attendance.assertDaysOpen([date]);
 
   const affectedJobs = new Set();
   const createdIds = [];
@@ -600,7 +648,7 @@ router.post('/bulk-log', requireCap('dailywork.edit'), asyncHandler((req, res) =
       if (!job) continue;
       if (!lineAsset && job.asset_id) lineAsset = job.asset_id;
 
-      assertDailyWorkAllowed(jobId, req.user);   // a whole batch is refused, not half-applied
+      assertDailyWorkAllowed(jobId, req.user, [date]);   // a whole batch is refused, not half-applied
       const info = run(
         `INSERT INTO job_daily_work (job_id, work_date, mechanic, description, hours, is_external, external_value, asset_id)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -637,7 +685,8 @@ router.patch('/:id', requireCap('dailywork.edit'), asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   const w = get('SELECT * FROM job_daily_work WHERE id = ?', id);
   if (!w) return res.status(404).json({ error: 'Entry not found' });
-  assertDailyWorkAllowed(w.job_id, req.user);
+  // Moving a line to another day touches both days.
+  assertDailyWorkAllowed(w.job_id, req.user, [w.work_date, req.body.work_date !== undefined ? String(req.body.work_date).slice(0, 10) : null]);
 
   const sets = [];
   const params = [];
@@ -695,7 +744,7 @@ router.delete('/:id', requireCap('dailywork.edit'), asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   const w = get('SELECT * FROM job_daily_work WHERE id = ?', id);
   if (!w) return res.status(404).json({ error: 'Entry not found' });
-  assertDailyWorkAllowed(w.job_id, req.user);
+  assertDailyWorkAllowed(w.job_id, req.user, [w.work_date]);
 
   run('DELETE FROM job_daily_work WHERE id = ?', id);
   if (w.job_id) costing.refreshJobTotals(w.job_id);
@@ -725,9 +774,9 @@ router.post('/batch-update', requireCap('dailywork.edit'), asyncHandler((req, re
       const hasOutside = item.outside_labour !== undefined;
       if (!hasHours && !hasOutside) continue;
 
-      const w = get('SELECT id, job_id, hours, outside_labour FROM job_daily_work WHERE id = ?', id);
+      const w = get('SELECT id, job_id, work_date, hours, outside_labour FROM job_daily_work WHERE id = ?', id);
       if (!w) continue;
-      assertDailyWorkAllowed(w.job_id, req.user);
+      assertDailyWorkAllowed(w.job_id, req.user, [w.work_date]);
 
       const hours = hasHours ? toNum(item.hours, 0) : w.hours;
       if (hasHours && hours < 0) continue;
@@ -766,4 +815,6 @@ module.exports = router;
 // re-created the very mis-attribution the screen had been fixed for.
 module.exports.jobForEntry = jobForEntry;
 module.exports.JOB_MATCH_SLACK_DAYS = JOB_MATCH_SLACK_DAYS;
+// The attendance screen books a mechanic's unbooked hours to the same General Workshop card.
+module.exports.generalWorkshopJob = generalWorkshopJob;
 

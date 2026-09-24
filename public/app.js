@@ -507,6 +507,7 @@ const LIVE_ENTITY_ROUTES = {
   product: ['oil', 'stockcockpit', 'stocktake'], product_price: ['oil', 'stocktake'], stock_ledger: ['oil', 'stockissues', 'stockcockpit', 'stocktake'],
   filter_stock: ['filters', 'filterstock', 'stockcockpit', 'stocktake'], filter_price: ['filters', 'stocktake'], filter_xref: ['filters', 'stocktake'], service_job: ['filters', 'services'],
   job_card: ['jobs', 'jobrequests'], job_request: ['jobrequests', 'jobs'], job_daily_work: ['dailywork', 'jobs'],
+  mechanic_attendance: ['dailywork'], workday_signoff: ['dailywork'], job_reopen_request: ['jobs'],
   battery: ['batteries', 'stockcockpit', 'stocktake'], asset: ['assets'],
   mechanic: ['mechanics', 'labour'], labour_rate: ['labour', 'mechanics'], mechanic_alias: ['mechanics'],
 };
@@ -530,7 +531,7 @@ function wireLiveUpdates() {
 const STATUS_CLASS = {
   REQUESTED: '', APPROVED_TRANSPORT: 'blue', APPROVED_OPERATIONS: 'blue',
   IN_WORKSHOP: 'amber', IN_PROGRESS: 'amber', WORK_COMPLETE: 'amber',
-  CLOSED: 'green', REJECTED: 'red',
+  PARTIALLY_CLOSED: 'violet', CLOSED: 'green', REJECTED: 'red',
 };
 const statusBadge = (s) => `<span class="badge ${STATUS_CLASS[s] || ''}">${esc(s)}</span>`;
 
@@ -949,6 +950,7 @@ function renderPendingApprovals(pa) {
     section('MRNs awaiting your <b>approval</b>', pa.approve || [], (m) => mrnRow(m, 'Approve')),
     section('Job cards awaiting <b>transport approval</b>', pa.transport || [], (j) => jobRow(j, 'Approve')),
     section('Job cards awaiting <b>operations approval</b>', pa.ops || [], (j) => jobRow(j, 'Approve')),
+    section('Job cards asking to be <b>reopened</b>', pa.reopen || [], (r) => `<div class="cost-line"><a href="#/jobs/${r.job_id}"><b>${esc(r.job_no)}</b> · ${esc(idLabel(r) || '—')} · ${esc(String(r.reason || '').slice(0, 60))}${r.requested_by_name ? ' · by ' + esc(r.requested_by_name) : ''}${waited(r.requested_at)}</a><span class="badge amber">Decide →</span></div>`),
   ].join('');
   return `<div class="card section" style="border-left:4px solid ${pa.total ? 'var(--red)' : 'var(--green)'}">
     <div class="toolbar" style="margin:0"><h3 style="margin:0">⚡ Pending Your Approval</h3><div class="spacer"></div><span class="badge ${pa.total ? 'red' : 'green'}">${pa.total} pending</span></div>
@@ -1003,7 +1005,8 @@ async function dashMain(c) {
   const opStats = [];
   if (canView('jobs')) opStats.push(`<a class="card stat" href="#/jobs" style="text-decoration:none"><span class="n">${d.open_jobs_count}</span><span class="l">Open Job Cards</span></a>
       <a class="card stat" href="#/jobs?status=CLOSED" style="text-decoration:none"><span class="n">${d.closed_this_month_count}</span><span class="l">Closed This Month</span></a>
-      <a class="card stat" href="#/teardown" style="text-decoration:none"><span class="n">${d.awaiting_price.length}</span><span class="l">Awaiting Price (blocked)</span></a>`);
+      <a class="card stat" href="#/teardown" style="text-decoration:none"><span class="n">${d.awaiting_price.length}</span><span class="l">Awaiting Price (blocked)</span></a>
+      ${(d.partly_closed || []).length ? `<a class="card stat" href="#/jobs?status=PARTIALLY_CLOSED" style="text-decoration:none"><span class="n">${d.partly_closed.length}</span><span class="l">Partly Closed — awaiting prices</span></a>` : ''}`);
   if (canView('oil')) opStats.push(`<a class="card stat" href="#/oil?tab=forecast" style="text-decoration:none"><span class="n">${d.low_stock_oil.length}</span><span class="l">Low-stock Lubricants</span></a>`);
   if (canView('batteries')) opStats.push(`<a class="card stat" href="#/batteries" style="text-decoration:none"><span class="n">${d.batteries_warranty.length}</span><span class="l">Battery Warranty ≤60d</span></a>`);
   if (canView('stores') || canView('oil')) {
@@ -1234,6 +1237,7 @@ async function assetDetail(c, id) {
       </div>
       <div class="card"><h3>Open Job Cards</h3>
         ${a.open_jobs.length ? a.open_jobs.map((j) => `<div class="cost-line"><a href="#/jobs/${j.id}">${esc(j.job_no)}</a>${statusBadge(j.status)}</div>`).join('') : '<span class="muted">None open</span>'}
+        ${(a.partly_closed_jobs || []).length ? `<div class="muted" style="font-size:12px;margin:8px 0 2px">Partly closed — prices still to come</div>${a.partly_closed_jobs.map((j) => `<div class="cost-line"><a href="#/jobs/${j.id}">${esc(j.job_no)}</a>${statusBadge(j.status)}</div>`).join('')}` : ''}
       </div>
     </div>
     <div class="card"><h3>Unified Timeline</h3>
@@ -1258,7 +1262,7 @@ async function editAssetModal(asset) {
 }
 
 // ---- Job Cards
-const JOB_STATUSES = ['REQUESTED', 'APPROVED_TRANSPORT', 'APPROVED_OPERATIONS', 'IN_WORKSHOP', 'IN_PROGRESS', 'WORK_COMPLETE', 'CLOSED', 'REJECTED'];
+const JOB_STATUSES = ['REQUESTED', 'APPROVED_TRANSPORT', 'APPROVED_OPERATIONS', 'IN_WORKSHOP', 'IN_PROGRESS', 'WORK_COMPLETE', 'PARTIALLY_CLOSED', 'CLOSED', 'REJECTED'];
 const MONTHS = [['01', 'Jan'], ['02', 'Feb'], ['03', 'Mar'], ['04', 'Apr'], ['05', 'May'], ['06', 'Jun'], ['07', 'Jul'], ['08', 'Aug'], ['09', 'Sep'], ['10', 'Oct'], ['11', 'Nov'], ['12', 'Dec']];
 
 routes.jobs = async (c, params) => {
@@ -1269,6 +1273,9 @@ routes.jobs = async (c, params) => {
   const nowY = new Date().getFullYear();
   const years = [];
   for (let y = nowY + 1; y >= 2020; y--) years.push(y);
+  // Partial close and reopen requests (W2) — switched on or off by the admin.
+  const closeCfg = await api('/jobs/close-settings').catch(() => ({ partial_close_enabled: false }));
+  const partialOn = !!closeCfg.partial_close_enabled;
 
   c.innerHTML = `${pageHeader('Job Cards')}
     <div class="toolbar">
@@ -1282,6 +1289,7 @@ routes.jobs = async (c, params) => {
       <div class="spacer"></div>
       ${canDo('jobs.create') ? '<button class="primary" id="newjob">+ New Job Card</button>' : ''}
       ${canDo('jobs.triage') ? '<a class="btn sm" href="#/jobreview" title="REQUESTED cards that hold their vehicle but never moved">🧹 Review stuck cards</a>' : ''}
+      ${canDo('jobs.settings') ? `<button class="sm" id="jpartial" title="Partial close, full close check and reopen requests">⚙ Partial close: ${partialOn ? 'on' : 'off'}</button>` : ''}
     </div>
     <div id="jbulk-tray" class="card" style="display:none;background:#f0fdf4;border:1px solid #86efac;margin-bottom:12px;padding:10px 14px;align-items:center;gap:10px;flex-wrap:wrap">
       <span id="jbulk-count" style="font-weight:700;color:#166534">0 cards selected</span>
@@ -1341,9 +1349,13 @@ routes.jobs = async (c, params) => {
       <td class="num">${j.material_cost ? money(j.material_cost) : '—'}</td>
       <td class="num">${money(j.total_cost)}</td>
       <td class="muted">${esc((j.requested_at || '').slice(0, 10))}</td>
-      <td>${canCloseDate && j.status !== 'CLOSED' && j.status !== 'REJECTED'
+      <td>${canCloseDate && !['CLOSED', 'REJECTED', 'PARTIALLY_CLOSED'].includes(j.status)
         ? `<button class="sm" data-closedate="${j.id}" data-jobno="${esc(j.job_no)}" title="Close this card on a chosen (past) date">📅 Close…</button>`
-        : (j.status === 'CLOSED' && canReopenJob ? `<button class="sm danger" data-reopen="${j.id}" data-jobno="${esc(j.job_no)}" data-closed="${esc((j.completed_at || j.closed_at || '').slice(0, 10))}" title="Reopen this closed job card">↩ Reopen…</button>` : '')}</td></tr>`);
+        : (['CLOSED', 'PARTIALLY_CLOSED'].includes(j.status)
+          ? (partialOn
+            ? (canDo('jobs.reopen_request') ? `<button class="sm" data-reopenreq="${j.id}" data-jobno="${esc(j.job_no)}" title="Ask for this job card to be reopened">↩ Request reopen…</button>` : '')
+            : (canReopenJob ? `<button class="sm danger" data-reopen="${j.id}" data-jobno="${esc(j.job_no)}" data-closed="${esc((j.completed_at || j.closed_at || '').slice(0, 10))}" title="Reopen this closed job card">↩ Reopen…</button>` : ''))
+          : '')}</td></tr>`);
     const labTotal = list.reduce((s, j) => s + (Number(j.labour_cost) || 0), 0);
     const matTotal = list.reduce((s, j) => s + (Number(j.material_cost) || 0), 0);
     qs('#jcount').textContent = list.length ? `${list.length}${list.length === 500 ? '+' : ''} job${list.length === 1 ? '' : 's'}${labTotal ? ' · labour ' + money(labTotal) : ''}${matTotal ? ' · material ' + money(matTotal) : ''}` : '';
@@ -1384,7 +1396,9 @@ routes.jobs = async (c, params) => {
     qsa('[data-closedate]', c).forEach((b) => b.onclick = () => closeOnDateModal(b.dataset.closedate, b.dataset.jobno, load));
     qsa('[data-reopen]', c).forEach((b) => b.onclick = () => reopenJobModal(
       { id: b.dataset.reopen, job_no: b.dataset.jobno, completed_at: b.dataset.closed }, load));
+    qsa('[data-reopenreq]', c).forEach((b) => b.onclick = () => reopenRequestModal({ id: b.dataset.reopenreq, job_no: b.dataset.jobno }, load));
   };
+  if (qs('#jpartial')) qs('#jpartial').onclick = () => partialCloseSwitchModal(partialOn);
 
   const executeBulkTransition = async (targetStatus) => {
     const checkedBoxes = qsa('.jrow-chk:checked', c);
@@ -1453,7 +1467,8 @@ routes.jobs = async (c, params) => {
 routes.dailywork = async (c) => {
   const days = await api('/daily-work/days'); // [{date, entries, jobs, hours}] newest first
   if (!days.length) {
-    c.innerHTML = `${pageHeader('Daily Work')}<div class="card"><p class="muted">No daily work has been logged yet.</p></div>`;
+    c.innerHTML = `${pageHeader('Daily Work')}<div id="att-card"></div><div class="card"><p class="muted">No daily work has been logged yet.</p></div>`;
+    await attendanceCard(qs('#att-card', c), { onChanged: () => render() });
     return;
   }
   const sp = new URLSearchParams(location.hash.split('?')[1] || '');
@@ -1463,6 +1478,7 @@ routes.dailywork = async (c) => {
   const initialMonth = date.slice(0, 7);
 
   c.innerHTML = `${pageHeader('Daily Work')}
+    <div id="att-card"></div>
     <div class="card section">
       <div class="toolbar" style="margin-top:0">
         <h3 style="margin:0">Monthly Labour Working Hours</h3>
@@ -1478,6 +1494,7 @@ routes.dailywork = async (c) => {
         <span class="muted" id="dwm-count"></span>
       </div>
       <div id="dwm-table"><div class="muted">Loading monthly working hours…</div></div>
+      <div id="dwm-att-note" class="muted" style="font-size:12px;margin-top:6px"></div>
     </div>
 
     <div class="card section">
@@ -1510,6 +1527,7 @@ routes.dailywork = async (c) => {
     </div>`;
 
   const canEdit = canDo('dailywork.edit');
+  const canEditDW = canEdit;
   let currentMonthlyData = null;
   const pendingEdits = new Map();
 
@@ -1531,16 +1549,26 @@ routes.dailywork = async (c) => {
     const q = (qs('#dwm-search').value || '').trim().toLowerCase();
     const list = (currentMonthlyData.labor_summary || []).filter((l) => !q || l.mechanic.toLowerCase().includes(q));
     qs('#dwm-count').textContent = `${list.length} laborer${list.length === 1 ? '' : 's'}`;
+    // Attendance on: hours at work, hours booked and utilisation, over the days the tally runs.
+    const att = currentMonthlyData.attendance;
     const rows = list.map((l) => `<tr>
       <td><b>${esc(l.mechanic)}</b></td>
       <td class="num"><b>${num(l.total_hours)} hrs</b></td>
       <td class="num">${l.rate === 0 ? '<span class="badge blue">Staff / Foreman (Rs 0/h)</span>' : (l.rate != null ? money(l.rate) + '/h' : '<span class="badge amber">no rate</span>')}</td>
       <td class="num">${money(l.total_cost)}</td>
       <td class="num">${l.entries}</td>
+      ${att ? `<td class="num">${l.attended_hours ? fmtH(l.attended_hours) : '—'}</td>
+      <td class="num">${l.booked_hours ? fmtH(l.booked_hours) : '—'}</td>
+      <td class="num">${l.utilisation == null ? '—' : `<span class="badge ${l.utilisation > 100 ? 'red' : l.utilisation >= 85 ? 'green' : 'amber'}">${l.utilisation}%</span>`}</td>` : ''}
     </tr>`);
+    const heads = [{ label: 'Laborer / Mechanic' }, { label: 'Monthly Working Hours', num: true }, { label: 'Hourly Rate', num: true }, { label: 'Monthly Labour Cost', num: true }, { label: 'Work Entries', num: true }];
+    if (att) heads.push({ label: 'Attended', num: true }, { label: 'Booked', num: true }, { label: 'Utilisation', num: true });
     qs('#dwm-table').innerHTML = list.length
-      ? tableWrap([{ label: 'Laborer / Mechanic' }, { label: 'Monthly Working Hours', num: true }, { label: 'Hourly Rate', num: true }, { label: 'Monthly Labour Cost', num: true }, { label: 'Work Entries', num: true }], rows, { scroll: true })
+      ? tableWrap(heads, rows, { scroll: true })
       : '<p class="muted">No laborer records match search.</p>';
+    qs('#dwm-att-note').textContent = att
+      ? (att.from ? `Attended, Booked and Utilisation count only the attendance days ${att.from} to ${att.to}. Utilisation = booked ÷ attended.` : 'Attendance has not started in this month.')
+      : '';
   };
 
   const populateMechanicFilter = (mechanicsList) => {
@@ -1743,6 +1771,8 @@ routes.dailywork = async (c) => {
   const load = async (dt) => {
     const q = qs('#dq').value.trim();
     const data = await api('/daily-work?date=' + encodeURIComponent(dt) + (q ? '&q=' + encodeURIComponent(q) : ''));
+    // A signed-off day (attendance) is locked: no edit controls on it.
+    const canEdit = canEditDW && !data.locked;
     const rows = data.entries.map((e) => {
       const hoursCell = e.is_external
         ? '<span class="badge">external</span>'
@@ -1762,7 +1792,7 @@ routes.dailywork = async (c) => {
       <td class="num">${e.outside_labour ? money(e.outside_labour) : '<span class="muted">—</span>'}</td>
       <td>${canEdit ? `<button class="sm" data-edit="${e.id}" title="Edit this entry">✎</button> <button class="sm danger" data-del="${e.id}" title="Delete this entry">✕</button>` : ''}</td></tr>`;
     });
-    qs('#dsum').textContent = `${data.count} entr${data.count === 1 ? 'y' : 'ies'} · ${data.total_hours || 0} hrs · ${money(data.total_labour || 0)} labour`;
+    qs('#dsum').textContent = `${data.locked ? '🔒 Signed off — locked · ' : ''}${data.count} entr${data.count === 1 ? 'y' : 'ies'} · ${data.total_hours || 0} hrs · ${money(data.total_labour || 0)} labour`;
     qs('#dtable').innerHTML = data.entries.length
       ? tableWrap([{ label: 'Vehicle' }, { label: 'Job No' }, { label: 'Mechanic' }, { label: 'Description', cls: 'desc-col' }, { label: 'Hours', num: true }, { label: 'Labour (Rs)', num: true }, { label: 'Outside Labor', num: true }, { label: '', width: '78px' }], rows, { scroll: true, fit: true, noHScroll: true })
       : '<div class="card"><p class="muted">No daily work logged on this day.</p></div>';
@@ -1773,6 +1803,7 @@ routes.dailywork = async (c) => {
       load(qs('#ddate').value);
       loadMonthly(curM);
       loadMonthEntries(curM);
+      if (attCtl) attCtl.reload();
     };
     if (canEdit) {
       qsa('[data-hours]').forEach((inp) => {
@@ -1799,11 +1830,326 @@ routes.dailywork = async (c) => {
   qs('#dprev').onclick = () => { const older = dayList.filter((x) => x < qs('#ddate').value); if (older.length) go(older[0]); };
   qs('#dnext').onclick = () => { const newer = dayList.filter((x) => x > qs('#ddate').value); if (newer.length) go(newer[newer.length - 1]); };
   let deb; qs('#dq').oninput = () => { clearTimeout(deb); deb = setTimeout(() => load(qs('#ddate').value), 250); };
-  if (qs('#dadd')) qs('#dadd').onclick = () => addWorkDoneModal(qs('#ddate').value, (newDate) => { go(newDate); loadMonthly(newDate.slice(0, 7)); });
-  if (qs('#dquickgrid')) qs('#dquickgrid').onclick = () => quickTimesheetGridModal(qs('#ddate').value, (newDate) => { go(newDate); loadMonthly(newDate.slice(0, 7)); });
+  let attCtl = null;
+  if (qs('#dadd')) qs('#dadd').onclick = () => addWorkDoneModal(qs('#ddate').value, (newDate) => { go(newDate); loadMonthly(newDate.slice(0, 7)); if (attCtl) attCtl.reload(); });
+  if (qs('#dquickgrid')) qs('#dquickgrid').onclick = () => quickTimesheetGridModal(qs('#ddate').value, (newDate) => { go(newDate); loadMonthly(newDate.slice(0, 7)); if (attCtl) attCtl.reload(); });
 
-  await Promise.all([loadMonthly(initialMonth), load(date)]);
+  // Attendance: after a save, booking or sign-off, the day view and the month follow.
+  const attEl = qs('#att-card', c);
+  const attDone = attendanceCard(attEl, {
+    onChanged: () => { const curM = qs('#dwm-month').value; load(qs('#ddate').value); loadMonthly(curM); },
+    onDayView: (dt) => { go(dt); qs('#dtable').scrollIntoView({ behavior: 'smooth', block: 'start' }); },
+  }).then((ctl) => { attCtl = ctl; });
+  await Promise.all([loadMonthly(initialMonth), load(date), attDone]);
 };
+
+// ---- Attendance & day tally (src/lib/attendance.js; docs/WORKSHOPONE_PLAN.md §3.1)
+//
+// In, out and break for every mechanic, checked against the hours booked on jobs that day. The
+// server does the counting; this card only shows it and sends what was typed. Nothing here
+// changes labour cost.
+const localDay = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+const shiftDay = (ymd, n) => { const d = new Date(ymd + 'T12:00:00Z'); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
+// 8 → "8.0 h", 7.75 → "7.75 h"
+const fmtH = (h) => {
+  if (h == null) return '—';
+  const n = Math.round(Number(h) * 100) / 100;
+  return (Math.round(n * 10) === n * 10 ? n.toFixed(1) : n.toFixed(2)) + ' h';
+};
+const ATT_STATUSES = [['', '—'], ['present', 'Present'], ['absent', 'Absent'], ['leave', 'Leave'], ['half_day', 'Half day'], ['holiday', 'Holiday']];
+const ATT_OFF = ['absent', 'leave', 'holiday'];
+const ATT_ICON = { green: '✅ ', amber: '🟡 ', red: '🔴 ', grey: '' };
+const attMinutes = (t) => { const m = /^(\d{1,2}):(\d{2})$/.exec(String(t || '')); return m ? Number(m[1]) * 60 + Number(m[2]) : null; };
+// Same rule as the server: (out − in) − break; out before in = overnight; off days = 0.
+function attWorked(a) {
+  if (!a || !a.status) return null;
+  if (ATT_OFF.includes(a.status)) return 0;
+  const i = attMinutes(a.time_in); const o = attMinutes(a.time_out);
+  if (i == null || o == null) return null;
+  let span = o - i; if (span < 0) span += 1440;
+  return Math.max(0, span - (Number(a.break_minutes) || 0)) / 60;
+}
+// Typed but not saved yet. Kept outside the page so a live refresh (somebody else saving) does
+// not throw away what is being typed.
+let ATT_DRAFT = { date: null, rows: new Map() };
+
+async function attendanceCard(el, { onChanged, onDayView } = {}) {
+  let date = ATT_DRAFT.date || localDay();
+  let d = null;
+  const load = async () => {
+    try { d = await api('/attendance/day?date=' + encodeURIComponent(date)); } catch (e) {
+      el.innerHTML = `<div class="card section"><p class="err">${esc(e.message)}</p></div>`; return;
+    }
+    paint();
+  };
+  const dirty = () => ATT_DRAFT.date === date && ATT_DRAFT.rows.size > 0;
+  const current = (r) => (ATT_DRAFT.date === date && ATT_DRAFT.rows.get(r.mechanic_id)) || r.attendance || { status: '' };
+  const setDraft = (mid, v) => { if (ATT_DRAFT.date !== date) ATT_DRAFT = { date, rows: new Map() }; ATT_DRAFT.rows.set(mid, v); };
+
+  const paint = () => {
+    if (!d.enabled) {
+      el.innerHTML = d.can.settings
+        ? `<div class="card section"><div class="toolbar" style="margin:0"><h3 style="margin:0">Attendance &amp; day tally</h3><span class="muted">— switched off</span><div class="spacer"></div><button class="sm" id="att-set">⚙ Switch on</button></div></div>`
+        : '';
+      if (qs('#att-set', el)) qs('#att-set', el).onclick = () => attendanceSettingsModal(d.settings);
+      return;
+    }
+    if (ATT_DRAFT.date !== date) ATT_DRAFT = { date, rows: new Map() };
+    const s = d.settings;
+    const edit = d.can.edit;
+    const rows = d.rows.map((r) => {
+      const a = current(r);
+      const changed = ATT_DRAFT.rows.has(r.mechanic_id);
+      const off = ATT_OFF.includes(a.status);
+      const worked = changed ? attWorked(a) : r.worked_hours;
+      const lines = r.lines.map((l) => `${l.job_no} · ${fmtH(l.hours)}${l.crew && l.crew !== r.name ? ` (${l.crew})` : ''}`).join('\n');
+      const diff = changed ? (worked == null ? null : Math.round((worked - r.booked_hours) * 100) / 100) : r.diff_hours;
+      let tally = changed
+        ? '<span class="muted">not saved</span>'
+        : `<span class="badge ${r.tone === 'grey' ? '' : r.tone}">${ATT_ICON[r.tone] || ''}${esc(r.tally_label)}</span>`;
+      if (!changed && r.tally === 'unbooked') {
+        const reason = r.attendance && r.attendance.unbooked_reason;
+        tally += reason
+          ? `<div class="muted" style="font-size:11px">Reason: ${esc(reason)}</div>`
+          : `<div style="margin-top:3px;display:flex;gap:4px;white-space:nowrap">${d.can.book_rest ? `<button class="sm" data-book="${r.mechanic_id}" title="Book the ${fmtH(r.diff_hours)} not on a job to the General Workshop card">Book to General</button>` : ''}${edit ? `<button class="sm" data-why="${r.mechanic_id}">Reason</button>` : ''}</div>`;
+      }
+      const t = (k) => esc(a[k] || '');
+      return `<tr data-mid="${r.mechanic_id}"${changed ? ' style="background:rgba(29,90,115,.06)"' : ''}>
+        <td><b>${esc(r.name)}</b>${r.active ? '' : ' <span class="badge">inactive</span>'}</td>
+        <td>${edit ? `<select class="att-st" style="min-width:92px">${ATT_STATUSES.map(([v, l]) => `<option value="${v}" ${v === (a.status || '') ? 'selected' : ''}>${l}</option>`).join('')}</select>` : esc((ATT_STATUSES.find(([v]) => v === a.status) || ['', '—'])[1])}</td>
+        <td>${edit ? `<input type="time" class="att-in" value="${t('time_in')}" ${off || !a.status ? 'disabled' : ''} style="width:126px">` : (t('time_in') || '—')}</td>
+        <td>${edit ? `<input type="time" class="att-out" value="${t('time_out')}" ${off || !a.status ? 'disabled' : ''} style="width:126px">` : (t('time_out') || '—')}</td>
+        <td class="num">${edit ? `<input type="number" class="att-br" min="0" step="5" value="${a.status && !off ? (a.break_minutes ?? '') : ''}" ${off || !a.status ? 'disabled' : ''} style="width:60px;text-align:right">` : (a.status && !off ? `${a.break_minutes || 0} min` : '—')}</td>
+        <td class="num">${fmtH(worked)}</td>
+        <td class="num" title="${esc(lines || 'Nothing booked')}">${fmtH(r.booked_hours)}</td>
+        <td class="num" style="color:${diff == null || Math.abs(diff) * 60 <= s.tolerance_minutes ? 'inherit' : diff > 0 ? 'var(--amber)' : 'var(--red)'}">${diff == null ? '—' : (diff > 0 ? '+' : '') + fmtH(diff)}</td>
+        <td>${tally}</td>
+        <td>${edit ? `<input class="att-note" value="${t('note')}" placeholder="e.g. at site X" maxlength="200" style="min-width:120px">` : esc(a.note || '')}</td>
+      </tr>`;
+    });
+
+    const c = d.counts;
+    const summary = [
+      c.matched ? `✅ ${c.matched} matched` : '',
+      c.unbooked ? `🟡 ${c.unbooked} unbooked` : '',
+      d.red_count ? `<b style="color:var(--red)">🔴 ${d.red_count} red</b>` : '',
+      c.not_entered ? `${c.not_entered} not entered` : '',
+    ].filter(Boolean).join(' · ');
+
+    let sign = '';
+    if (d.locked) {
+      sign = `<span class="badge green">🔒 Signed off by ${esc(d.signoff.signed_by || '—')} · ${esc(d.signoff.signed_at || '')}</span>
+        ${d.can.unlock ? '<button class="sm" id="att-unlock">Unlock day</button>' : ''}`;
+    } else if (d.before_start) {
+      sign = `<span class="muted">Before the start date (${esc(s.start_date || 'not set')}) — not checked.</span>`;
+    } else if (d.can.signoff) {
+      const why = d.red_count ? 'Fix the red rows first' : dirty() ? 'Save first' : '';
+      sign = `<button class="primary sm" id="att-sign" ${why ? 'disabled' : ''} title="${esc(why || 'Lock this day\'s attendance and daily work')}">✓ Sign off day</button>
+        ${why ? `<span class="muted">${esc(why)}</span>` : ''}`;
+    }
+    const unlocked = d.signoff && d.signoff.unlocked_at && !d.locked
+      ? `<div class="muted" style="font-size:12px;margin-top:4px">Unlocked by ${esc(d.signoff.unlocked_by || '—')} · ${esc(d.signoff.unlocked_at)} — ${esc(d.signoff.unlock_reason || '')}</div>` : '';
+
+    const unmatched = d.unmatched.length
+      ? `<div class="card" style="margin-top:10px;padding:10px 12px;border-color:var(--amber)"><b>Names not matched to a mechanic</b> — their hours are not in anyone's tally:
+          <ul style="margin:6px 0 4px 18px;padding:0">${d.unmatched.map((u) => `<li>${u.name ? `<b>${esc(u.name)}</b>` : '<i>(no mechanic named)</i>'} · ${fmtH(u.hours)} · ${u.lines.map((l) => `<a href="#/jobs/${l.job_id}">${esc(l.job_no)}</a>`).join(', ')}</li>`).join('')}</ul>
+          <a href="#/aliases">Link them in the Alias Queue →</a></div>` : '';
+
+    el.innerHTML = `<div class="card section">
+      <div class="toolbar" style="margin-top:0">
+        <h3 style="margin:0">Attendance &amp; day tally</h3>
+        <div class="spacer"></div>
+        <button class="sm" id="att-prev">←</button>
+        <input id="att-date" type="date" value="${esc(date)}" max="${esc(d.today)}" style="max-width:160px">
+        <button class="sm" id="att-next" ${date >= d.today ? 'disabled' : ''}>→</button>
+        ${onDayView ? '<button class="sm" id="att-dayview" title="Show this day\'s work in the day view below">Day view ↓</button>' : ''}
+        ${d.can.settings ? '<button class="sm" id="att-set" title="Attendance settings">⚙</button>' : ''}
+      </div>
+      <div class="toolbar" style="margin:0 0 8px">
+        ${edit ? `<button class="sm" id="att-fill">All present ${esc(s.shift_start)}–${esc(s.shift_end)}</button>
+          <button class="sm" id="att-copy">Copy yesterday</button>
+          <button class="primary sm" id="att-save" ${dirty() ? '' : 'disabled'}>💾 Save${dirty() ? ` (${ATT_DRAFT.rows.size})` : ''}</button>` : `<span class="muted">${esc(d.can.edit_reason || '')}</span>`}
+        <div class="spacer"></div>
+        ${sign}
+      </div>
+      ${unlocked}
+      ${tableWrap([{ label: 'Mechanic' }, { label: 'Status' }, { label: 'In' }, { label: 'Out' }, { label: 'Break', num: true },
+        { label: 'Worked', num: true }, { label: 'Booked on jobs', num: true }, { label: 'Difference', num: true }, { label: 'Tally' }, { label: 'Note' }], rows, { scroll: true })}
+      <div class="muted" style="margin-top:6px;font-size:12px">${summary || 'Nothing recorded yet.'} · Worked ${fmtH(d.totals.worked_hours)} · Booked ${fmtH(d.totals.booked_hours)} · Matched when within ${s.tolerance_minutes} min.</div>
+      ${unmatched}
+    </div>`;
+    wire();
+  };
+
+  const confirmLeave = () => !dirty() || confirm('You have attendance that is not saved. Leave it?');
+  const goTo = (dt) => { if (!dt || !confirmLeave()) return; ATT_DRAFT = { date: dt, rows: new Map() }; date = dt; load(); };
+  const repaintWith = (day) => { d = day; paint(); if (onChanged) onChanged(); };
+
+  const wire = () => {
+    qs('#att-prev', el).onclick = () => goTo(shiftDay(date, -1));
+    qs('#att-next', el).onclick = () => goTo(shiftDay(date, 1));
+    qs('#att-date', el).onchange = (e) => goTo(e.target.value);
+    if (qs('#att-dayview', el)) qs('#att-dayview', el).onclick = () => onDayView(date);
+    if (qs('#att-set', el)) qs('#att-set', el).onclick = () => attendanceSettingsModal(d.settings);
+
+    // Typing: every change goes into the draft; the Worked cell follows as you type.
+    const readRow = (tr) => {
+      const status = qs('.att-st', tr).value;
+      return { status, time_in: qs('.att-in', tr).value, time_out: qs('.att-out', tr).value,
+        break_minutes: qs('.att-br', tr).value === '' ? 0 : Number(qs('.att-br', tr).value), note: qs('.att-note', tr).value };
+    };
+    qsa('tr[data-mid]', el).forEach((tr) => {
+      if (!qs('.att-st', tr)) return;
+      const mid = Number(tr.dataset.mid);
+      const s = d.settings;
+      qs('.att-st', tr).onchange = () => {
+        const v = readRow(tr);
+        // Sensible times the moment a status is chosen; they can still be changed.
+        if ((v.status === 'present' || v.status === 'half_day') && !v.time_in && !v.time_out) {
+          v.time_in = s.shift_start;
+          if (v.status === 'present') { v.time_out = s.shift_end; v.break_minutes = s.break_minutes; } else {
+            const shift = ((attMinutes(s.shift_end) - attMinutes(s.shift_start) + 1440) % 1440) - s.break_minutes;
+            const out = (attMinutes(s.shift_start) + Math.round(shift / 2)) % 1440;
+            v.time_out = `${String(Math.floor(out / 60)).padStart(2, '0')}:${String(out % 60).padStart(2, '0')}`;
+            v.break_minutes = 0;
+          }
+        }
+        if (ATT_OFF.includes(v.status)) { v.time_in = ''; v.time_out = ''; v.break_minutes = 0; }
+        setDraft(mid, v); paint();
+      };
+      for (const cls of ['.att-in', '.att-out', '.att-br', '.att-note']) {
+        qs(cls, tr).onchange = () => { setDraft(mid, readRow(tr)); paint(); };
+      }
+    });
+
+    if (qs('#att-fill', el)) qs('#att-fill', el).onclick = () => {
+      const s = d.settings; let n = 0;
+      for (const r of d.rows) {
+        if (r.attendance || ATT_DRAFT.rows.has(r.mechanic_id) || !r.active) continue;
+        setDraft(r.mechanic_id, { status: 'present', time_in: s.shift_start, time_out: s.shift_end, break_minutes: s.break_minutes, note: '' }); n++;
+      }
+      paint(); toast(n ? `${n} filled — check them, then Save` : 'Everybody already has attendance');
+    };
+    if (qs('#att-copy', el)) qs('#att-copy', el).onclick = async () => {
+      // The last day with any attendance: yesterday, or Saturday when today is Monday.
+      let from = null;
+      for (let i = 1; i <= 7 && !from; i++) {
+        const prev = await api('/attendance/day?date=' + shiftDay(date, -i));
+        if (prev.rows.some((r) => r.attendance)) from = prev;
+      }
+      if (!from) return toast('No attendance in the last 7 days to copy', 'err');
+      let n = 0;
+      for (const r of d.rows) {
+        const p = from.rows.find((x) => x.mechanic_id === r.mechanic_id);
+        if (!p || !p.attendance || r.attendance || ATT_DRAFT.rows.has(r.mechanic_id)) continue;
+        const a = p.attendance;
+        setDraft(r.mechanic_id, { status: a.status, time_in: a.time_in || '', time_out: a.time_out || '', break_minutes: a.break_minutes || 0, note: a.note || '' }); n++;
+      }
+      paint(); toast(n ? `${n} copied from ${from.date} — check them, then Save` : 'Nothing to copy — everybody already has attendance');
+    };
+    if (qs('#att-save', el)) qs('#att-save', el).onclick = async () => {
+      const rows = [...ATT_DRAFT.rows.entries()].map(([mid, v]) => (v.status
+        ? { mechanic_id: mid, status: v.status, time_in: v.time_in || null, time_out: v.time_out || null, break_minutes: v.break_minutes || 0, note: v.note || '' }
+        : { mechanic_id: mid, clear: true }));
+      try {
+        const r = await api('/attendance/day', { method: 'POST', body: { date, rows } });
+        ATT_DRAFT = { date, rows: new Map() };
+        toast(`Saved (${r.saved})`);
+        repaintWith(r.day);
+      } catch (e) { toast(e.message, 'err'); }
+    };
+    qsa('[data-book]', el).forEach((b) => {
+      b.onclick = async () => {
+        try {
+          const r = await api('/attendance/day/book-rest', { method: 'POST', body: { date, mechanic_id: Number(b.dataset.book) } });
+          toast(`${fmtH(r.hours)} booked to ${r.job_no}`);
+          repaintWith(r.day);
+        } catch (e) { toast(e.message, 'err'); }
+      };
+    });
+    qsa('[data-why]', el).forEach((b) => {
+      b.onclick = async () => {
+        const reason = prompt('Why are these hours not on a job? (e.g. cleaning the bay, waiting for parts)');
+        if (reason == null || !reason.trim()) return;
+        try {
+          const r = await api('/attendance/day', { method: 'POST', body: { date, rows: [{ mechanic_id: Number(b.dataset.why), unbooked_reason: reason.trim() }] } });
+          repaintWith(r.day);
+        } catch (e) { toast(e.message, 'err'); }
+      };
+    });
+    if (qs('#att-sign', el)) qs('#att-sign', el).onclick = async () => {
+      if (!confirm(`Sign off ${date}?\n\nThe day's attendance and daily work will be locked. A manager can unlock it with a reason.`)) return;
+      try { repaintWith(await api('/attendance/day/signoff', { method: 'POST', body: { date } })); toast('Day signed off'); } catch (e) { toast(e.message, 'err'); }
+    };
+    if (qs('#att-unlock', el)) qs('#att-unlock', el).onclick = async () => {
+      const reason = prompt(`Unlock ${date}? Give the reason:`);
+      if (reason == null) return;
+      if (!reason.trim()) return toast('A reason is needed to unlock a day', 'err');
+      try { repaintWith(await api('/attendance/day/unlock', { method: 'POST', body: { date, reason: reason.trim() } })); toast('Day unlocked'); } catch (e) { toast(e.message, 'err'); }
+    };
+  };
+
+  await load();
+  // The page reloads the card after daily work changes (booked hours move); a draft survives it.
+  return { reload: () => load() };
+}
+
+function attendanceSettingsModal(s) {
+  modal('Attendance settings', `
+    ${field('Attendance on', 'enabled', { type: 'checkbox', value: s.enabled })}
+    <p class="muted" style="font-size:12px;margin:2px 0 8px">Off: Daily Work works exactly as before — no tally, no lock, no hints.</p>
+    ${field('Start date (days before it are not checked)', 'start_date', { type: 'date', value: s.start_date || '' })}
+    <div class="row"><div>${field('Shift start', 'shift_start', { type: 'time', value: s.shift_start })}</div><div>${field('Shift end', 'shift_end', { type: 'time', value: s.shift_end })}</div></div>
+    <div class="row"><div>${field('Break (minutes)', 'break_minutes', { type: 'number', value: s.break_minutes })}</div><div>${field('Matched within (minutes)', 'tolerance_minutes', { type: 'number', value: s.tolerance_minutes })}</div></div>
+    <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Save</button></div>`, (body, close) => {
+    qs('#s', body).onclick = async () => {
+      const f = formData(body);
+      try {
+        await api('/attendance/settings', { method: 'PUT', body: {
+          enabled: f.enabled, start_date: f.start_date, shift_start: f.shift_start, shift_end: f.shift_end,
+          break_minutes: Number(f.break_minutes), tolerance_minutes: Number(f.tolerance_minutes),
+        } });
+        toast('Attendance settings saved'); close(); render();
+      } catch (e) { toast(e.message, 'err'); }
+    };
+  });
+}
+
+// At the point of entry: "attended 8.0 h · booked 6.5 h · 1.5 h left" for each named mechanic, and
+// a warning when the new hours would book more than they were at work. It only WARNS — the entry
+// is still accepted; an over-booked day is stopped at sign-off. Says nothing while attendance is off.
+// `rows`: [{ names: 'Govinda, Vinod', hours }] — each named mechanic counts the full hours.
+let _hintSeq = 0;
+async function hoursLeftHint(box, { date, rows, excludeLine = null }) {
+  if (!box) return;
+  const seq = ++_hintSeq;
+  const split = (s) => String(s || '').split(/\s*(?:,|&|\+|\band\b)\s*/i).map((x) => x.trim()).filter(Boolean);
+  const entries = (rows || []).filter((r) => r.names && String(r.names).trim());
+  if (!date || !entries.length) { box.innerHTML = ''; return; }
+  let r;
+  try {
+    r = await api(`/attendance/hours-left?date=${encodeURIComponent(date)}&names=${encodeURIComponent(entries.map((e) => e.names).join('|'))}${excludeLine ? '&exclude_line=' + excludeLine : ''}`);
+  } catch (e) { box.innerHTML = ''; return; }
+  if (seq !== _hintSeq) return;                   // a newer request has already answered
+  if (!r.enabled) { box.innerHTML = ''; return; }
+  if (r.locked) { box.innerHTML = `<div class="err">🔒 ${esc(date)} is signed off — its daily work cannot be changed.</div>`; return; }
+  const norm = (s) => String(s || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  const tol = (r.tolerance_minutes || 0) / 60;
+  const out = r.mechanics.map((m) => {
+    if (!m.resolved) return `<div class="muted">${esc(m.name)}: not a known mechanic — it will show as an unmatched name</div>`;
+    const mine = new Set(m.raws.map(norm));
+    const adding = entries.reduce((t, e) => t + (split(e.names).some((n) => mine.has(norm(n))) ? (Number(e.hours) || 0) : 0), 0);
+    if (m.attended_hours == null) {
+      return `<div class="muted"><b>${esc(m.name)}</b>: no attendance yet${m.booked_hours ? ` · booked ${fmtH(m.booked_hours)}` : ''}</div>`;
+    }
+    const over = adding - m.left_hours;
+    const line = `<b>${esc(m.name)}</b>: attended ${fmtH(m.attended_hours)} · booked ${fmtH(m.booked_hours)} · ${fmtH(Math.max(0, m.left_hours))} left`;
+    return over > tol + 1e-9
+      ? `<div style="color:var(--red)">⚠ ${line} — this would over-book by ${fmtH(over)}</div>`
+      : `<div class="muted">${line}</div>`;
+  });
+  box.innerHTML = out.join('');
+}
 
 // Log a single daily-work entry from the Daily Work section (day by day).
 async function addWorkDoneModal(defaultDate, onDone) {
@@ -1819,6 +2165,7 @@ async function addWorkDoneModal(defaultDate, onDone) {
     <div id="dwcrew" class="pill-row" style="margin:6px 0;min-height:6px"></div>
     <input type="hidden" name="mechanic">
     ${field('Hours', 'hours', { type: 'number' })}
+    <div id="dw-hint" style="font-size:12px;margin-top:4px"></div>
     <p class="muted" style="font-size:12px;margin:2px 0 0">Pick each mechanic who worked — each is charged the full hours at their own rate.</p>
     <div class="row">${field('External repair (outside work)', 'is_external', { type: 'checkbox' })}${field('External value (Rs, if external)', 'external_value', { type: 'number' })}</div>
     <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Add</button></div>`, (body, close) => {
@@ -1826,11 +2173,18 @@ async function addWorkDoneModal(defaultDate, onDone) {
     const crew = [];
     const hidden = qs('input[name=mechanic]', body);
     const chips = qs('#dwcrew', body);
+    let hintT;
+    const hint = () => { clearTimeout(hintT); hintT = setTimeout(() => hoursLeftHint(qs('#dw-hint', body), {
+      date: qs('input[name=work_date]', body).value,
+      rows: qs('input[name=is_external]', body).checked ? [] : [{ names: hidden.value, hours: qs('input[name=hours]', body).value }],
+    }), 250); };
     const paint = () => {
       hidden.value = crew.join(', ');
       chips.innerHTML = crew.map((n) => `<span class="badge blue" data-rm="${esc(n)}" style="cursor:pointer" title="Remove">${esc(n)} ✕</span>`).join('');
       qsa('[data-rm]', chips).forEach((el) => { el.onclick = () => { const i = crew.indexOf(el.dataset.rm); if (i >= 0) crew.splice(i, 1); paint(); }; });
+      hint();
     };
+    for (const n of ['work_date', 'hours', 'is_external']) qs(`input[name=${n}]`, body).addEventListener(n === 'hours' ? 'input' : 'change', hint);
     qs('#dwmech', body).onchange = (e) => { const v = e.target.value; if (v && !crew.includes(v)) { crew.push(v); paint(); } e.target.value = ''; };
     qs('#s', body).onclick = async () => {
       const f = formData(body);
@@ -1877,6 +2231,7 @@ async function quickTimesheetGridModal(defaultDate, onDone) {
       </table>
     </div>
     <datalist id="tg-mech-dl">${mechListOptions}</datalist>
+    <div id="tg-hint" style="font-size:12px;margin-top:8px"></div>
     <div style="margin-top:14px;display:flex;align-items:center">
       <button class="sm" id="tg-add-1">+ Add Row</button>
       <div class="spacer"></div>
@@ -1899,6 +2254,16 @@ async function quickTimesheetGridModal(defaultDate, onDone) {
     };
 
     for (let i = 0; i < 5; i++) addRow();
+
+    // Hours left for everyone in the grid, adding up each mechanic's rows.
+    let hintT;
+    const hint = () => { clearTimeout(hintT); hintT = setTimeout(() => hoursLeftHint(qs('#tg-hint', body), {
+      date: qs('#tg-date', body).value,
+      rows: qsa('.tg-row', tbody).map((r) => ({ names: qs('.tg-mech', r).value.trim(), hours: qs('.tg-hours', r).value })),
+    }), 300); };
+    tbody.addEventListener('input', hint);
+    tbody.addEventListener('click', (e) => { if (e.target.closest('.tg-del')) setTimeout(hint, 0); });
+    qs('#tg-date', body).addEventListener('change', hint);
 
     qs('#tg-add-rows', body).onclick = () => { for (let i = 0; i < 5; i++) addRow(); };
     qs('#tg-add-1', body).onclick = () => addRow();
@@ -1927,7 +2292,7 @@ async function quickTimesheetGridModal(defaultDate, onDone) {
           method: 'POST',
           body: { date, entries }
         });
-        toast(`✓ Logged ${res.count} work entries across ${res.affected_jobs} job(s)!`, 'ok');
+        toast(`✓ Logged ${res.entries_logged} work entries across ${res.jobs_affected} job(s)!`, 'ok');
         close();
         if (onDone) onDone(date);
       } catch (err) {
@@ -1956,16 +2321,26 @@ async function editWorkDoneModal(entry, onDone) {
     <div id="ewcrew" class="pill-row" style="margin:6px 0;min-height:6px"></div>
     <input type="hidden" name="mechanic">
     <div class="row">${field('Hours', 'hours', { type: 'number', value: Number(entry.hours) || 0 })}${field('Outside labor (Rs)', 'outside_labour', { type: 'number', value: entry.outside_labour == null ? '' : entry.outside_labour })}</div>
+    <div id="ew-hint" style="font-size:12px;margin-top:4px"></div>
     <p class="muted" style="font-size:12px;margin:2px 0 0">Each mechanic is charged the full hours at their own rate. Outside labor is what this work would cost sent out — leave blank to clear it.</p>
     <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Save changes</button></div>`, (body, close) => {
     const crew = String(entry.mechanic || '').split(/\s*(?:,|&|\+|\band\b)\s*/i).map((s) => s.trim()).filter(Boolean);
     const hidden = qs('input[name=mechanic]', body);
     const chips = qs('#ewcrew', body);
+    // This line's own hours are left out of "booked" — they are the ones being changed.
+    let hintT;
+    const hint = () => { clearTimeout(hintT); hintT = setTimeout(() => hoursLeftHint(qs('#ew-hint', body), {
+      date: qs('input[name=work_date]', body).value, excludeLine: entry.is_external ? null : entry.id,
+      rows: entry.is_external ? [] : [{ names: hidden.value, hours: qs('input[name=hours]', body).value }],
+    }), 250); };
     const paint = () => {
       hidden.value = crew.join(', ');
       chips.innerHTML = crew.length ? crew.map((n) => `<span class="badge blue" data-rm="${esc(n)}" style="cursor:pointer" title="Remove">${esc(n)} ✕</span>`).join('') : '<span class="muted" style="font-size:12px">No mechanic on this line</span>';
       qsa('[data-rm]', chips).forEach((el) => { el.onclick = () => { const i = crew.indexOf(el.dataset.rm); if (i >= 0) crew.splice(i, 1); paint(); }; });
+      hint();
     };
+    qs('input[name=work_date]', body).addEventListener('change', hint);
+    qs('input[name=hours]', body).addEventListener('input', hint);
     qs('#ewmech', body).onchange = (e) => { const v = e.target.value; if (v && !crew.includes(v)) { crew.push(v); paint(); } e.target.value = ''; };
     paint();
     qs('#s', body).onclick = async () => {
@@ -2109,34 +2484,58 @@ async function jobDetail(c, id) {
   const job = j.job;
   const r = j.readiness;
   const isClosed = job.status === 'CLOSED';
+  // Partly closed (W2): the work is done and the vehicle has left; prices and records still come in.
+  const isPartial = job.status === 'PARTIALLY_CLOSED';
+  const partialOn = !!j.partialCloseEnabled;
+  const pendingReq = (j.reopenRequests || []).find((q) => q.status === 'pending');
   // Reopen gets its own labelled button and confirm dialog — the raw CLOSED → IN_PROGRESS
   // state button read as "IN PROGRESS" and offered itself to users the server would refuse.
+  // Partly close has its own button too (it asks for a note).
   const transitions = j.nextStates
-    .filter((s) => !(isClosed && s === 'IN_PROGRESS'))
-    .map((s) => `<button class="sm ${s === 'CLOSED' ? 'primary' : ''}" data-to="${s}">${s.replace(/_/g, ' ')}</button>`).join(' ');
-  const reopenBtn = isClosed && j.canReopen
-    ? '<button class="sm danger" id="reopen" title="Reopen this closed job card so more work and costs can be added">↩ Reopen job…</button>' : '';
+    .filter((s) => !((isClosed || isPartial) && s === 'IN_PROGRESS') && s !== 'PARTIALLY_CLOSED')
+    .map((s) => `<button class="sm ${s === 'CLOSED' ? 'primary' : ''}" data-to="${s}">${s === 'CLOSED' && partialOn ? '✓ Close fully' : s.replace(/_/g, ' ')}</button>`).join(' ');
+  const partialBtn = partialOn && canDo('jobs.partial_close') && ['IN_PROGRESS', 'WORK_COMPLETE'].includes(job.status)
+    ? '<button class="sm" id="partialclose" title="The work is done and the vehicle has left, but prices or records are missing">◐ Partly close…</button>' : '';
+  // Switched on, a reopen is ASKED FOR and someone else approves it; off, a manager reopens directly.
+  const reopenBtn = (isClosed || isPartial)
+    ? (partialOn
+      ? (canDo('jobs.reopen_request') && !pendingReq ? '<button class="sm danger" id="reopenreq" title="Ask for this job card to be reopened — another manager approves it">↩ Request reopen…</button>' : '')
+      : (j.canReopen ? '<button class="sm danger" id="reopen" title="Reopen this closed job card so more work and costs can be added">↩ Reopen job…</button>' : ''))
+    : '';
   const reopens = j.reopens || [];
+  const mayDecide = pendingReq && canDo('jobs.reopen') && (pendingReq.requested_by !== ME.id || isAdmin());
+  const linkJob = (x) => `<a href="#/jobs/${x.id}"><b>${esc(x.job_no)}</b></a> ${statusBadge(x.status)}`;
+  const successor = (j.continuedAs || []).slice(-1)[0];
   c.innerHTML = `${pageHeader(job.job_no, '<a href="#/jobs">← Job Cards</a>')}
     <div class="toolbar">${statusBadge(job.status)}<span class="badge ${job.type === 'service' ? 'blue' : ''}">${esc(job.type)}</span>
       ${job.severity ? `<span class="badge">${esc(job.severity)}</span>` : ''}
       <a href="#/assets/${job.asset_id}">${esc(idLabel(job) || '—')}</a>
       <span class="muted">${esc(job.project_name || '')}</span>
       <div class="spacer"></div>
-      ${!isClosed && canDo('stores.mrn.create') ? '<button class="sm" id="jobreqmrn" title="Create a Material Request Note (MRN) for this job">+ Request Parts (MRN)</button>' : ''}
-      ${!isClosed && canDo('stores.stock_issue') ? '<button class="sm primary" id="jobissue" title="Issue stock from store to this job card">⚡ Issue to Job</button>' : ''}
-      ${canDo('jobs.edit') ? '<button class="sm" id="editjob" title="Change the vehicle, description or type">✎ Edit</button>' : ''}
+      ${!isClosed && !isPartial && canDo('stores.mrn.create') ? '<button class="sm" id="jobreqmrn" title="Create a Material Request Note (MRN) for this job">+ Request Parts (MRN)</button>' : ''}
+      ${!isClosed && !isPartial && canDo('stores.stock_issue') ? '<button class="sm primary" id="jobissue" title="Issue stock from store to this job card">⚡ Issue to Job</button>' : ''}
+      ${canDo('jobs.edit') && !isPartial ? '<button class="sm" id="editjob" title="Change the vehicle, description or type">✎ Edit</button>' : ''}
       ${job.type === 'service' && canDo('jobs.flat_labour') && job.status !== 'CLOSED' ? `<button class="sm" id="flatlabour">Service labour${job.flat_labour != null ? ': ' + money(job.flat_labour) : ' (flat)'}</button>` : ''}
       <a class="btn primary sm" href="/api/reports/job/${job.id}/report.html" target="_blank" title="Full job report — parts requested & received, daily work done, and costs">📋 Job Report</a>
       <a class="btn sm" href="/api/reports/job/${job.id}/costsheet.html" target="_blank">🖨 Cost Sheet</a>
     </div>
     ${job.type === 'service' ? `<p class="muted" style="font-size:12px">Service job — labour is a flat charge${job.flat_labour == null ? ' (not set yet)' : ''}, not hours×rate.</p>` : ''}
     <p>${esc(job.description || '')}</p>
-    ${(transitions || reopenBtn || (!isClosed && canDo('jobs.close_on_date'))) ? `<div class="card section"><h3>Actions</h3><div class="pill-row" id="transitions">${transitions}${reopenBtn}
-      ${!isClosed && canDo('jobs.close_on_date') ? '<button class="sm" id="closedate" title="Close this card with a chosen (past) completion date — for old cards missed at the time">📅 Close on date…</button>' : ''}</div>
+    ${j.continues ? `<p class="muted" style="font-size:13px">↪ Continues ${linkJob(j.continues)} — the vehicle's earlier job, partly closed.</p>` : ''}
+    ${isPartial ? `<div class="card section" style="border-left:4px solid var(--violet)">
+      <b>◐ Partly closed ${esc(String(job.partial_closed_at || '').slice(0, 10))}</b>${job.partial_note ? ` — ${esc(job.partial_note)}` : ''}
+      <p class="muted" style="margin:6px 0 0">This job is partly closed. You can price items, receive what was already requested and add general items. Daily work can be added up to ${esc(String(job.partial_closed_at || '').slice(0, 10))}. To add anything else, request a reopen${successor ? ` — or use the vehicle's new job ${linkJob(successor)}` : ''}.</p>
+    </div>` : (successor ? `<p class="muted" style="font-size:13px">↪ Continued as ${linkJob(successor)}</p>` : '')}
+    ${pendingReq ? `<div class="card section" style="border-left:4px solid var(--amber)">
+      <b>↩ Reopen asked for</b> by ${esc(pendingReq.requested_by_name || '—')} on ${esc(String(pendingReq.requested_at || '').slice(0, 10))}: ${esc(pendingReq.reason)}
+      ${mayDecide ? '<div class="pill-row" style="margin-top:8px"><button class="sm primary" id="reqapprove">✓ Approve reopen</button><button class="sm danger" id="reqrefuse">✕ Refuse</button></div>'
+        : `<p class="muted" style="margin:6px 0 0">Waiting for ${pendingReq.requested_by === ME.id ? 'another manager' : 'a manager'} to approve it.</p>`}
+    </div>` : ''}
+    ${(transitions || reopenBtn || partialBtn || (!isClosed && !isPartial && canDo('jobs.close_on_date'))) ? `<div class="card section"><h3>Actions</h3><div class="pill-row" id="transitions">${transitions}${partialBtn}${reopenBtn}
+      ${!isClosed && !isPartial && canDo('jobs.close_on_date') ? '<button class="sm" id="closedate" title="Close this card with a chosen (past) completion date — for old cards missed at the time">📅 Close on date…</button>' : ''}</div>
       ${isClosed
-        ? `<p class="muted" style="margin-top:10px">Closed ${esc(String(job.completed_at || job.closed_at || '').slice(0, 10))} — locked for editing. ${j.canReopen ? 'Reopen it to add more work or costs.' : 'Ask a manager or the admin to reopen it.'}</p>`
-        : !r.ready ? `<p class="err" style="margin-top:10px">⚠ Closure gate — ${r.missing.length} line(s) awaiting price:</p><ul>${r.missing.map((m) => `<li class="muted">${esc(m)}</li>`).join('')}</ul>` : '<p class="ok" style="margin-top:10px">✓ Fully priced — ready to close</p>'}
+        ? `<p class="muted" style="margin-top:10px">Closed ${esc(String(job.completed_at || job.closed_at || '').slice(0, 10))} — locked for editing. ${partialOn ? 'Request a reopen to add more work or costs.' : (j.canReopen ? 'Reopen it to add more work or costs.' : 'Ask a manager or the admin to reopen it.')}</p>`
+        : !r.ready ? `<p class="err" style="margin-top:10px">⚠ ${isPartial ? 'Still missing before it can close fully' : 'Closure gate'} — ${r.missing.length} line(s):</p><ul>${r.missing.map((m) => `<li class="muted">${esc(m)}</li>`).join('')}</ul>` : `<p class="ok" style="margin-top:10px">✓ Fully priced — ready to close${partialOn ? ' fully' : ''}</p>`}
       ${reopens.length ? `<p class="muted" style="margin-top:10px;font-size:12px"><b>Reopen history</b></p><ul style="margin:4px 0 0">${reopens.map((x) => `<li class="muted" style="font-size:12px">${esc(String(x.reopened_at || '').slice(0, 10))} by ${esc(x.reopened_by_name || '—')} — ${esc(x.reason)}${x.prev_completed_at ? ` <span class="note">(was closed ${esc(String(x.prev_completed_at).slice(0, 10))})</span>` : ''}</li>`).join('')}</ul>` : ''}
       ${job.original_completed_at && !isClosed ? `<p class="muted" style="margin-top:8px;font-size:12px">↩ Reopened. When you close it again it goes back into <b>${esc(String(job.original_completed_at).slice(0, 7))}</b>'s cost report, so that month's figures do not change.</p>` : ''}
     </div>` : ''}
@@ -2215,13 +2614,13 @@ async function jobDetail(c, id) {
       return tableWrap([{ label: 'Date' }, { label: 'Mechanic' }, { label: 'Description' }, { label: 'Hours', num: true }, { label: 'Rate', num: true }, { label: 'Amount', num: true }, { label: '' }], rows);
     })()}
     </div>
-    <div class="card section"><div class="toolbar" style="margin:0 0 10px"><h3 style="margin:0">Parts &amp; External</h3><div class="spacer"></div>${canDo('jobs.parts') ? '<button class="sm" id="addpart">+ Add item</button>' : ''}</div>
+    <div class="card section"><div class="toolbar" style="margin:0 0 10px"><h3 style="margin:0">Parts &amp; External</h3><div class="spacer"></div>${canDo('jobs.parts') && !isPartial ? '<button class="sm" id="addpart">+ Add item</button>' : ''}</div>
       ${tableWrap([{ label: 'Source' }, { label: 'Description' }, { label: 'Qty', num: true }, { label: 'Unit Price', num: true }, { label: 'Amount', num: true }, { label: '' }],
       j.parts.map((p) => `<tr><td><span class="badge">${esc(p.source_type)}${p.is_external_repair ? ' · ext' : ''}</span></td><td>${esc(p.description || '')}</td>
           <td class="num">${num(p.qty)}</td>
           <td class="num">${p.unit_price == null ? '<span class="badge amber">awaiting</span>' : money(p.unit_price)}</td>
           <td class="num">${p.unit_price == null ? '—' : money(p.qty * p.unit_price)}</td>
-          <td>${canDo('jobs.parts') ? `<button class="sm" data-price="${p.id}">Price</button> <button class="sm" data-del-part="${p.id}" title="Take off this job — the item goes back to unassigned parts, it is not deleted">✕</button>` : ''}</td></tr>`))}
+          <td>${canDo('jobs.parts') ? `<button class="sm" data-price="${p.id}">Price</button>${isPartial ? '' : ` <button class="sm" data-del-part="${p.id}" title="Take off this job — the item goes back to unassigned parts, it is not deleted">✕</button>`}` : ''}</td></tr>`))}
     </div>
     ${j.mrnItems && j.mrnItems.length ? `<div class="card section"><h3>MRN Items <span class="muted">— requested materials (${j.mrnItems.length})</span></h3>
       ${tableWrap([{ label: 'MRN No' }, { label: 'Date' }, { label: 'Item' }, { label: 'Category' }, { label: 'Qty Req', num: true }, { label: 'Qty Recd', num: true }, { label: 'Shelf Status' }, { label: 'Action' }],
@@ -2262,6 +2661,20 @@ async function jobDetail(c, id) {
   qsa('#transitions button[data-to]').forEach((b) => b.onclick = () => doTransition(job.id, b.dataset.to, job.status));
   if (qs('#closedate')) qs('#closedate').onclick = () => closeOnDateModal(job.id, job.job_no, render);
   if (qs('#reopen')) qs('#reopen').onclick = () => reopenJobModal(job, render);
+  if (qs('#reopenreq')) qs('#reopenreq').onclick = () => reopenRequestModal(job, render);
+  if (qs('#partialclose')) qs('#partialclose').onclick = () => partialCloseModal(job, j, render);
+  if (qs('#reqapprove')) qs('#reqapprove').onclick = async () => {
+    if (!confirm(`Reopen ${job.job_no}?\n\nIt goes back to IN PROGRESS and becomes the vehicle's open job.`)) return;
+    try { await api(`/jobs/reopen-requests/${pendingReq.id}/approve`, { method: 'POST', body: {} }); toast(`✓ ${job.job_no} reopened`); render(); }
+    catch (e) { toast(e.message, 'err'); }
+  };
+  if (qs('#reqrefuse')) qs('#reqrefuse').onclick = async () => {
+    const note = prompt('Why is the reopen refused?');
+    if (note == null) return;
+    if (!note.trim()) return toast('Say why — the person who asked will see it', 'err');
+    try { await api(`/jobs/reopen-requests/${pendingReq.id}/refuse`, { method: 'POST', body: { note: note.trim() } }); toast('Reopen refused'); render(); }
+    catch (e) { toast(e.message, 'err'); }
+  };
   if (qs('#editjob')) qs('#editjob').onclick = () => editJobModal(job, render);
   if (qs('#jobreqmrn')) qs('#jobreqmrn').onclick = () => newMrnModal({
     job_id: job.id,
@@ -2320,7 +2733,7 @@ async function doTransition(jobId, to, current) {
     toast('Moved to ' + to);
     render();
   } catch (e) {
-    if (e.data && e.data.missing) toast('Blocked: ' + e.data.missing.length + ' unpriced line(s)', 'err');
+    if (e.data && e.data.missing) toast(e.message, 'err');
     else if (e.data && e.data.blocking_job) toast(`Blocked — ${e.data.blocking_job.job_no} is already open for this vehicle`, 'err');
     else toast(e.message, 'err');
   }
@@ -2401,7 +2814,7 @@ function reopenJobModal(job, onDone) {
 // cards that were finished but never closed. The date drives the monthly report's Closed section.
 function closeOnDateModal(jobId, jobNo, onDone) {
   modal(`Close ${jobNo} on a chosen date`, `
-    <p class="muted" style="margin-top:0;font-size:12px">For old cards missed at the time — the card closes as if it was closed on this date, and it appears in that month's cost report. Unpriced lines don't block; they show as a warning so you can price them after.</p>
+    <p class="muted" style="margin-top:0;font-size:12px">For old cards missed at the time — the card closes as if it was closed on this date, and it appears in that month's cost report. Unpriced lines don't block; they show as a warning so you can price them after. (With partial close switched on, a card with something still missing is <b>partly</b> closed on that date instead.)</p>
     ${field('Close date *', 'date', { type: 'date', value: new Date().toISOString().slice(0, 10) })}
     ${field('Note (optional)', 'reason', { placeholder: 'e.g. missed closing — job finished on this date' })}
     <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Close job on this date</button></div>`, (body, close) => {
@@ -2410,8 +2823,81 @@ function closeOnDateModal(jobId, jobNo, onDone) {
       if (!data.date) return toast('Pick the close date', 'err');
       try {
         const res = await api(`/jobs/${jobId}/close-on-date`, { method: 'POST', body: data });
-        toast(`✓ ${jobNo} closed on ${data.date}` + (res.warning ? ` — ${res.warning}` : ''));
+        toast(res.partly_closed ? `◐ ${jobNo}: ${res.warning}` : `✓ ${jobNo} closed on ${data.date}` + (res.warning ? ` — ${res.warning}` : ''));
         close(); if (onDone) onDone();
+      } catch (e) { toast(e.message, 'err'); }
+    };
+  });
+}
+
+// ---- partial close and reopen requests (src/lib/job_close.js; docs/WORKSHOPONE_PLAN.md §3.2)
+
+// Partly close: the work is finished and the vehicle has left, but prices or records are missing.
+function partialCloseModal(job, detail, onDone) {
+  const missing = (detail.readiness && detail.readiness.missing) || [];
+  const canNew = !!job.asset_id && canDo('jobs.create');
+  modal(`Partly close ${job.job_no}?`, `
+    <p class="muted" style="margin-top:0;font-size:12px">Use this when the work is finished and the vehicle has left, but prices or records are still missing. The vehicle is free for a new job straight away. Close it fully once everything below is done.</p>
+    <p style="margin:6px 0 2px"><b>Still outstanding (${missing.length})</b></p>
+    <ul style="margin:0 0 8px">${missing.map((m) => `<li class="muted">${esc(m)}</li>`).join('') || '<li class="muted">Nothing — close it fully instead.</li>'}</ul>
+    ${detail.workRecorded ? '' : '<p class="err" style="margin:4px 0">No work is recorded on this job. Write why in the note.</p>'}
+    ${field('Note' + (detail.workRecorded ? ' (optional)' : ' *'), 'note', { type: 'textarea' })}
+    ${canNew ? `${field('Open a new job for this vehicle now', 'open_new', { type: 'checkbox' })}
+      <div id="pcnew" style="display:none">${field('New job — description', 'new_description', { placeholder: 'e.g. Next fault, or: continued from ' + job.job_no })}</div>` : ''}
+    <p class="muted" style="font-size:12px;margin:8px 0 0">After this the job takes only prices, items already requested, general items and daily work up to today. For anything else, request a reopen.</p>
+    <div style="margin-top:12px;text-align:right"><button class="primary" id="s">◐ Partly close</button></div>`, (body, close) => {
+    const tick = qs('input[name=open_new]', body);
+    if (tick) tick.onchange = () => { qs('#pcnew', body).style.display = tick.checked ? '' : 'none'; };
+    qs('#s', body).onclick = async () => {
+      const f = formData(body);
+      if (!detail.workRecorded && !String(f.note || '').trim()) return toast('Write why no work is recorded', 'err');
+      try {
+        const res = await api(`/jobs/${job.id}/partial-close`, { method: 'POST', body: {
+          note: f.note, open_new: !!f.open_new, new_description: f.new_description } });
+        close();
+        toast(`◐ ${job.job_no} partly closed` + (res.new_job ? ` — new job ${res.new_job.job_no} opened` : ''));
+        if (onDone) onDone();
+      } catch (e) {
+        toast(e.data && e.data.blocking_job ? `${e.message}` : e.message, 'err');
+      }
+    };
+  });
+}
+
+// Ask for a partly closed or closed card to be reopened. Someone else approves it.
+function reopenRequestModal(job, onDone) {
+  modal(`Request reopen of ${job.job_no}`, `
+    <p class="muted" style="margin-top:0;font-size:12px">A manager (not you) approves it. When approved the job goes back to <b>IN PROGRESS</b> and keeps its original report month. It can only be reopened when the vehicle has no other open job.</p>
+    ${field('Why should it be reopened? *', 'reason', { type: 'textarea' })}
+    <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Send request</button></div>`, (body, close) => {
+    qs('#s', body).onclick = async () => {
+      const reason = String(formData(body).reason || '').trim();
+      if (!reason) return toast('Give the reason', 'err');
+      try {
+        await api(`/jobs/${job.id}/reopen-request`, { method: 'POST', body: { reason } });
+        close(); toast('Reopen requested — waiting for approval');
+        if (onDone) onDone();
+      } catch (e) { toast(e.message, 'err'); }
+    };
+  });
+}
+
+// Admin: partial close, the stricter full close and reopen requests go on and off together.
+function partialCloseSwitchModal(isOn) {
+  modal('Partial close', `
+    <p class="muted" style="margin-top:0">When <b>on</b>:</p>
+    <ul class="muted" style="margin-top:0">
+      <li>a job can be <b>partly closed</b> — the vehicle is freed, prices can still be added;</li>
+      <li><b>close fully</b> needs every item priced and the work done recorded;</li>
+      <li>a closed or partly closed job is reopened by <b>request</b>, approved by someone else.</li>
+    </ul>
+    <p class="muted">When <b>off</b>, closing and reopening work as before. Jobs already partly closed stay partly closed.</p>
+    ${field('Partial close on', 'on', { type: 'checkbox', value: isOn })}
+    <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Save</button></div>`, (body, close) => {
+    qs('#s', body).onclick = async () => {
+      try {
+        const r = await api('/jobs/close-settings', { method: 'PUT', body: { partial_close_enabled: !!formData(body).on } });
+        close(); toast(`Partial close is ${r.partial_close_enabled ? 'on' : 'off'}`); render();
       } catch (e) { toast(e.message, 'err'); }
     };
   });
@@ -2468,6 +2954,7 @@ async function addDailyModal(jobId, assetId) {
       <p class="muted" style="font-size:12px;margin:2px 0 0">Each mechanic is charged the full hours at their own rate (one costed row each). A slash name ("Seethananda/seetha") stays one person.</p>
       ${field('Description', 'description')}
       ${field('Hours', 'hours', { type: 'number' })}
+      <div id="jd-hint" style="font-size:12px;margin-top:4px"></div>
       ${assetPickerHtml('Vehicle / machine' + (assetId ? ' (defaults to this card)' : ' — this card has none, so name it here'))}
       ${field('External repair (outside work)', 'is_external', { type: 'checkbox' })}
       ${field('External value (if external)', 'external_value', { type: 'number' })}
@@ -2483,6 +2970,12 @@ async function addDailyModal(jobId, assetId) {
       </div>
     </div>`, (body, close) => {
     wireAssetPicker(body);
+    let hintT;
+    const hint = () => { clearTimeout(hintT); hintT = setTimeout(() => hoursLeftHint(qs('#jd-hint', body), {
+      date: qs('#paneNew input[name=work_date]', body).value,
+      rows: qs('#paneNew input[name=is_external]', body).checked ? [] : [{ names: qs('#paneNew input[name=mechanic]', body).value, hours: qs('#paneNew input[name=hours]', body).value }],
+    }), 300); };
+    for (const n of ['work_date', 'mechanic', 'hours', 'is_external']) qs(`#paneNew input[name=${n}]`, body).addEventListener(n === 'mechanic' || n === 'hours' ? 'input' : 'change', hint);
     qs('#s', body).onclick = async () => { try { await api(`/jobs/${jobId}/daily-work`, { method: 'POST', body: formData(body) }); close(); render(); } catch (e) { toast(e.message, 'err'); } };
 
     const chosen = new Set();

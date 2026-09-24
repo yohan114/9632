@@ -1769,6 +1769,16 @@ router.post('/stock-items/sync', requireCap('stores.stock.rebuild'), asyncHandle
   res.json(rep);
 }));
 
+// Was this receipt bought for this job card — its request names the card, or the card already
+// carries the received line? (What a partly closed card may still have handed over to it.)
+function receiptIsJobs(grnId, jobId) {
+  if (!grnId || !jobId) return false;
+  return !!get(
+    `SELECT 1 x FROM grn g JOIN mrn_lines ml ON ml.id = g.mrn_line_id JOIN mrn m ON m.id = ml.mrn_id
+      WHERE g.id = ? AND (m.job_id = ? OR EXISTS (SELECT 1 FROM job_parts jp WHERE jp.mrn_line_id = ml.id AND jp.job_id = ?))`,
+    grnId, jobId, jobId);
+}
+
 // ---- Issue stock ------------------------------------------------------------
 // Several lines in one go, against a job card OR a vehicle (either is enough). Each line
 // deducts its section's balance. Going negative is reported, not blocked — the part is in
@@ -1787,10 +1797,12 @@ router.post('/stock-issue', requireCap('stores.stock_issue'), asyncHandler((req,
   // vehicle's open card, falling back to the General Workshop container.
   let landedOn = null;
   if (jobId) {
-    const j = get('SELECT id, job_no, status, asset_id FROM job_cards WHERE id = ?', jobId);
+    const j = get('SELECT id, job_no, status, asset_id, partial_closed_at FROM job_cards WHERE id = ?', jobId);
     if (!j) return res.status(400).json({ error: 'Unknown job card' });
-    // A closed card can still take a late issue, but only deliberately (jobstate.checkAdd).
-    { const g = jobstate.checkAdd(j, 'issue', { user: req.user, allowClosed: !!b.allow_closed }); if (!g.ok) return res.status(g.status).json(g.body); }
+    // A closed card can still take a late issue, but only deliberately (jobstate.checkAdd). A partly
+    // closed one takes only what was received against its OWN requests — nothing else off the shelf.
+    const ownReceipts = lines.every((ln) => ln.grn_id && receiptIsJobs(toInt(ln.grn_id), jobId));
+    { const g = jobstate.checkAdd(j, 'issue', { user: req.user, allowClosed: !!b.allow_closed, ownReceipts }); if (!g.ok) return res.status(g.status).json(g.body); }
     if (!assetId) assetId = j.asset_id;
   } else {
     const open = jobstate.openJobFor(assetId);

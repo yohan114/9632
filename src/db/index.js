@@ -440,6 +440,14 @@ function migrate() {
   // card was originally closed in. Re-closing restores completed_at from it, so a cost report
   // the owner has already issued cannot change because someone reopened an old job.
   ensureColumn('job_cards', 'original_completed_at', 'TEXT');
+  // Partial close (docs/WORKSHOPONE_PLAN.md §3.2, W2): the work is finished and the vehicle has
+  // left, but prices or records are still missing. The card keeps when and by whom it was partly
+  // closed, and a new card for the vehicle points back to it through continues_job_id.
+  ensureColumn('job_cards', 'partial_closed_at', 'TEXT');
+  ensureColumn('job_cards', 'partial_closed_by', 'INTEGER REFERENCES users(id)');
+  ensureColumn('job_cards', 'partial_note', 'TEXT');
+  ensureColumn('job_cards', 'continues_job_id', 'INTEGER REFERENCES job_cards(id)');
+  allowPartiallyClosed();
   ensureColumn('service_jobs', 'outside_estimate', 'REAL DEFAULT 0'); // outside service value without transport
   // Unambiguous link from a job_part to the MRN request line it came from (Phase 3):
   // avoids overloading the polymorphic source_id (a manual GRN part won't mislink to mrn_lines).
@@ -652,6 +660,50 @@ function migrate() {
     db.prepare(`UPDATE roles SET is_system = 1 WHERE is_system = 0 AND name IN (${names.map(() => '?').join(',')})`).run(...names);
   }
   return db;
+}
+
+// PARTIALLY_CLOSED joins the job_cards status CHECK. SQLite cannot change a CHECK constraint, so
+// the table is rebuilt in place — the same way tb_specs was above: a copy with the widened
+// constraint, every row copied with its id, the old table dropped and the copy renamed. Foreign
+// keys are off during the swap, so the fifteen tables that point at job_cards keep pointing at the
+// same ids. Its indexes are re-created from their own definitions and the id sequence is kept, so
+// a deleted card's number is never handed out again. Detected by reading the constraint back:
+// it runs once, on the first start after the update, and never again.
+function allowPartiallyClosed() {
+  const cur = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='job_cards'").get();
+  if (!cur || /'PARTIALLY_CLOSED'/.test(cur.sql)) return;
+  const list = /(CHECK\s*\(\s*status\s+IN\s*\()/i;
+  if (!list.test(cur.sql)) return;                    // no status list at all: nothing to widen
+  const widened = cur.sql
+    .replace(/^CREATE TABLE (IF NOT EXISTS )?("?)job_cards\2/i, 'CREATE TABLE tmp_job_cards')
+    .replace(list, "$1'PARTIALLY_CLOSED',");
+  if (!/^CREATE TABLE tmp_job_cards/.test(widened)) throw new Error('job_cards: unexpected table definition — status not widened');
+  const cols = db.prepare('PRAGMA table_info(job_cards)').all().map((c) => `"${c.name}"`).join(', ');
+  const indexes = db.prepare("SELECT sql FROM sqlite_master WHERE type='index' AND tbl_name='job_cards' AND sql IS NOT NULL").all();
+  const triggers = db.prepare("SELECT sql FROM sqlite_master WHERE type='trigger' AND tbl_name='job_cards'").all();
+  const seq = db.prepare("SELECT seq FROM sqlite_sequence WHERE name='job_cards'").get();
+  // Old imported data may already hold a few dangling references; those are not this rebuild's to
+  // judge. What it must never do is ADD one — so the references to job_cards are counted before
+  // and after, and any difference undoes the whole swap.
+  const dangling = () => db.prepare('PRAGMA foreign_key_check').all().filter((r) => r.parent === 'job_cards').length;
+  const before = dangling();
+  const count = db.prepare('SELECT COUNT(*) n FROM job_cards').get().n;
+  db.pragma('foreign_keys = OFF');
+  try {
+    db.transaction(() => {
+      db.exec(`${widened};
+               INSERT INTO tmp_job_cards (${cols}) SELECT ${cols} FROM job_cards;
+               DROP TABLE job_cards;
+               ALTER TABLE tmp_job_cards RENAME TO job_cards;`);
+      for (const x of [...indexes, ...triggers]) db.exec(x.sql);
+      if (seq) db.prepare("UPDATE sqlite_sequence SET seq = MAX(seq, ?) WHERE name = 'job_cards'").run(seq.seq);
+      if (db.prepare('SELECT COUNT(*) n FROM job_cards').get().n !== count || dangling() !== before) {
+        throw new Error('job_cards rebuild did not keep every card and reference — not applied');
+      }
+    })();
+  } finally {
+    db.pragma('foreign_keys = ON');
+  }
 }
 
 function ensureColumn(table, col, def) {
