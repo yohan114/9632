@@ -655,6 +655,7 @@ function migrate() {
   reportsPerWorkshop();
   fieldStage6();
   operationsStage7();
+  storesCountsPart2();
 
   // Seed the RBAC matrix once (safe to require here — db exports are already set).
   try { require('../lib/permissions').seedDefaults(); } catch (e) { /* table may not exist yet on very first pass */ }
@@ -897,6 +898,11 @@ function fieldStage6() {
 // Stage 7: a machine can stand at a site of a project, not only at the project (src/lib/operations.js).
 function operationsStage7() {
   ensureColumn('assets', 'current_site_id', 'INTEGER REFERENCES sites(id)');
+}
+
+// Stores plan, Part 2: a correction posted by an approved count session says which one it came from.
+function storesCountsPart2() {
+  ensureColumn('store_counts', 'session_id', 'INTEGER REFERENCES count_sessions(id)');
 }
 
 // Parts brought back unused (Stage 6) come off a job's cost as a 'return' line on job_parts. Its

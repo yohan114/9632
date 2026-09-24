@@ -19,6 +19,7 @@ const permissions = require('../lib/permissions');
 const places = require('../lib/places');
 const scope = require('../lib/scope');
 const stores = require('../lib/stores');
+const stockCount = require('../lib/stock_count');
 const { lineReceiptSql, mrnReceiptSql, receivedLabel, d10 } = require('../lib/received_date');
 const lubricants = require('../lib/lubricants');
 const approvalLimits = require('../lib/approval_limits');
@@ -1500,7 +1501,12 @@ function stockStore(req) {
 
 // The store a screen is showing, the stores it may switch between, and what this person may do there.
 function stockContext(req, where) {
-  if (!stores.isMulti()) return { multi: false, store: null, stores: [], can: {} };
+  // One store: nothing to choose, and it is where a quick count goes.
+  if (!stores.isMulti()) {
+    const main = stores.byId(require('../lib/workshops').defaultId());
+    return { multi: false, store: null, stores: [], home: main ? { id: main.id, code: main.code, name: main.name } : null,
+      can: { count: !!main && hasCap(req.user, 'stores.stock.count'), levels: false, approve: stockCount.mayApprove(req.user) } };
+  }
   const s = where.store ? stores.byId(where.store) : null;
   const may = !where.store || stores.mayManage(req.user, where.store);
   return {
@@ -1511,13 +1517,32 @@ function stockContext(req, where) {
     can: {
       count: !!where.store && may && hasCap(req.user, 'stores.stock.count'),
       levels: !!where.store && may && hasCap(req.user, 'stores.stock.levels'),
+      approve: stockCount.mayApprove(req.user),
     },
   };
 }
 
 router.get('/stock/summary', asyncHandler((req, res) => {
   const where = stockStore(req);
-  res.json(stock.SECTIONS.map((s) => stock.summary(s, { store: where.store })));
+  res.json(stock.SECTIONS.map((s) => ({ ...stock.summary(s, { store: where.store }), ...stock.valueOf(s, where.store) })));
+}));
+
+// The Stock view's front page (stores plan, Part 2): every kind of stock in one store — or in all —
+// with its value, what is low, and when the store last counted it in full.
+router.get('/stock/overview', asyncHandler((req, res) => {
+  const where = stockStore(req);
+  const ctx = stockContext(req, where);
+  const main = where.store || (stores.isMulti() ? null : require('../lib/workshops').defaultId());
+  res.json({
+    ...ctx,
+    kinds: stock.SECTIONS.map((s) => ({
+      ...stock.summary(s, { store: where.store }),
+      ...stock.valueOf(s, where.store),
+      low: where.store ? stock.items(s, null, 100000, { store: where.store, low: true }).length : null,
+      full_count: main ? stockCount.fullyCounted(main, s) : null,
+    })),
+    counts: stockCount.waiting(where.store),
+  });
 }));
 
 router.get('/stock/:section', asyncHandler((req, res) => {
@@ -1526,7 +1551,7 @@ router.get('/stock/:section', asyncHandler((req, res) => {
   const where = stockStore(req);
   const ctx = stockContext(req, where);
   res.json({
-    summary: stock.summary(section, { store: where.store }),
+    summary: { ...stock.summary(section, { store: where.store }), ...stock.valueOf(section, where.store) },
     items: stock.items(section, req.query.q, toInt(req.query.limit, 500),
       { store: where.store, low: req.query.low === '1', byStore: ctx.multi && !where.store }),
     ...ctx,
@@ -1543,17 +1568,75 @@ router.get('/stock/:section/moves', asyncHandler((req, res) => {
   }));
 }));
 
-// A stock take in one store: what is on the shelf now. The difference from the book goes in as a
-// correction. Head office counts any store; anyone else, with the workshops kept apart, their own.
+// A quick count of one item in one store (stores plan, Part 2, ST-D14): what is on the shelf now.
+// The difference goes in as a correction once head office approves it — at once when head office
+// counts. Head office counts any store; anyone else, with the workshops kept apart, their own.
 router.post('/stock/:section/count', requireCap('stores.stock.count'), asyncHandler((req, res) => {
   const b = req.body || {};
-  if (!stores.mayManage(req.user, toInt(b.store_id))) {
-    return res.status(403).json({ error: `You count only your own store (${stores.label(stores.homeStore(req.user))}).` });
-  }
-  res.status(201).json(stores.count(req.user, {
+  res.status(201).json(stockCount.quick(req.user, {
     storeId: toInt(b.store_id), section: String(req.params.section || '').toLowerCase(),
     itemKey: b.item_key, counted: b.counted, date: b.count_date, note: b.note,
+    containers: b.containers, container_size: b.container_size, loose_qty: b.loose_qty,
   }));
+}));
+
+// ---- Stock take: count sessions (stores plan, Part 2). See src/lib/stock_count.js. ----------------
+router.get('/counts', asyncHandler((req, res) => res.json(stockCount.list(req.user, req.query))));
+router.post('/counts', requireCap('stores.stock.count'), asyncHandler((req, res) => {
+  const b = req.body || {};
+  res.status(201).json(stockCount.start(req.user, { storeId: toInt(b.store_id), kind: b.kind, date: b.count_date, note: b.note }));
+}));
+router.get('/counts/:id', asyncHandler((req, res) => res.json(stockCount.detail(req.user, toInt(req.params.id)))));
+router.put('/counts/:id/lines/:line', requireCap('stores.stock.count'), asyncHandler((req, res) => {
+  res.json(stockCount.countLine(req.user, toInt(req.params.id), toInt(req.params.line), req.body || {}));
+}));
+router.post('/counts/:id/lines', requireCap('stores.stock.count'), asyncHandler((req, res) => {
+  const b = req.body || {};
+  res.status(201).json(stockCount.addLine(req.user, toInt(req.params.id), { section: b.section, itemKey: b.item_key }));
+}));
+// Items to add to a count: the catalogue of the kinds it covers, with this store's balance.
+router.get('/counts/:id/find', asyncHandler((req, res) => {
+  const s = stockCount.detail(req.user, toInt(req.params.id));
+  const q = String(req.query.q || '').trim();
+  if (q.length < 2) return res.json([]);
+  const on = new Set(s.lines.map((l) => l.section + ':' + l.item_key));
+  const sections = s.kind === 'all' ? stock.SECTIONS : [s.kind];
+  res.json(sections.flatMap((sec) => stock.searchItems(q, sec, 15, s.store_id))
+    .map((i) => ({ section: i.section, item_key: i.item_key, code: i.code, name: i.name, unit: i.unit, balance: i.balance,
+      on_list: on.has(i.section + ':' + i.item_key) })));
+}));
+router.post('/counts/:id/submit', requireCap('stores.stock.count'), asyncHandler((req, res) => {
+  res.json(stockCount.submit(req.user, toInt(req.params.id)));
+}));
+router.post('/counts/:id/approve', requireCap('stores.count.approve'), asyncHandler((req, res) => {
+  res.json(stockCount.approve(req.user, toInt(req.params.id)));
+}));
+router.post('/counts/:id/send-back', requireCap('stores.count.approve'), asyncHandler((req, res) => {
+  res.json(stockCount.sendBack(req.user, toInt(req.params.id), (req.body || {}).reason));
+}));
+// Head office cancels from stores=view (src/server.js lets the path through); the store's own staff
+// need the stores edit level like any other change.
+const headOfficeOrEdit = (req, res, next) => (stockCount.mayApprove(req.user) ? next() : permissions.requireModule('stores')(req, res, next));
+router.post('/counts/:id/cancel', headOfficeOrEdit, asyncHandler((req, res) => {
+  res.json(stockCount.cancel(req.user, toInt(req.params.id), (req.body || {}).reason));
+}));
+// The difference report: system against physical, item by item, with the value of each difference.
+router.get('/counts/:id/export.xlsx', asyncHandler(async (req, res) => {
+  const s = stockCount.detail(req.user, toInt(req.params.id));
+  const KIND = { general: 'Parts & general', oil: 'Lubricants', filter: 'Filters', tyre: 'Tyres', battery: 'Batteries' };
+  const cols = [
+    { header: 'Kind', key: 'kind', width: 16 }, { header: 'Item', key: 'item_name', width: 40 }, { header: 'Unit', key: 'unit', width: 7 },
+    { header: 'Book at start', key: 'book_start', width: 13 }, { header: 'Moved during count', key: 'moved_during', width: 17 },
+    { header: 'Book when counted', key: 'book_at_count', width: 17 }, { header: 'Counted', key: 'counted_qty', width: 10 },
+    { header: 'Difference', key: 'diff', width: 11 }, { header: 'Unit price (Rs)', key: 'unit_price', width: 14 },
+    { header: 'Difference value (Rs)', key: 'diff_value', width: 19 }, { header: 'Counted on', key: 'counted_on', width: 12 },
+    { header: 'Note', key: 'note', width: 30 },
+  ];
+  const rows = s.lines.map((l) => ({ ...l, kind: KIND[l.section] || l.section }));
+  await sendXlsx(res, `stock-take-${s.count_no}.xlsx`, [
+    { name: 'Differences', columns: cols, rows: rows.filter((l) => l.diff) },
+    { name: 'All items', columns: cols, rows },
+  ]);
 }));
 
 // The level one store reorders an item at (blank or 0 removes it).

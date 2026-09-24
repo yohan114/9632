@@ -188,7 +188,9 @@ test('public/app.js enforces single canonical navigation paths and redirect shim
 
   // Verify single canonical nav items for Inventory
   assert.match(appJs, /\['stores',\s*'📦',\s*'Stores'\]/);
-  assert.match(appJs, /\['stocktake',\s*'📋',\s*'Stock Take'\]/);
+  // Stores plan, Part 2 (ST-D1): Stock Take is the Stores page's Stock and Stock take tabs now.
+  assert.ok(!/\['stocktake',\s*'📋'/.test(appJs), 'Stock Take should be folded into the Stores page');
+  assert.match(appJs, /routes\.stocktake\s*=\s*async/);
 
   // Verify redundant sidebar shortcuts are removed from NAV array
   assert.ok(!appJs.includes("['matreq', '📝'"), 'matreq shortcut should be removed from NAV');

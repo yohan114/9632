@@ -226,8 +226,11 @@ function monitor(user) {
 
   const battery_warranty = require('./intelligence').warrantyRadar(60).expiring.length;
 
+  // Stock takes (Part 2): being counted, and waiting for head office.
+  const stock_takes = require('./stock_count').waiting(store);
+
   return {
-    steps: counts, to_certify, to_approve, issued_today, received_today, transfers_week, low_stock, battery_warranty,
+    steps: counts, to_certify, to_approve, issued_today, received_today, transfers_week, low_stock, battery_warranty, stock_takes,
     store: store ? { id: store, label: stores.label(store) } : null,
   };
 }

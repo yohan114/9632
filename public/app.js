@@ -502,13 +502,14 @@ const qsa = (s, r = document) => [...r.querySelectorAll(s)];
 // for every mutation, so no view needs to wire its own listeners.
 const LIVE_ENTITY_ROUTES = {
   store_item: ['generalstock', 'stores', 'stockissues', 'stockcockpit', 'stocktake'], issue: ['stockissues', 'stores', 'stockcockpit', 'stocktake'],
+  count_session: ['stores'], store_count: ['stores'], store_reorder: ['stores'],
   item_category: ['stores', 'generalstock', 'stockissues', 'stocktake'],
-  mrn: ['stores', 'matreq', 'purchasing', 'stockcockpit', 'stocktake'], mrn_lines: ['purchasing', 'stockcockpit', 'stocktake'], grn: ['stores', 'purchasing', 'stockcockpit', 'stocktake'], mtn: ['stores'], stock_count: ['oil', 'stocktake'],
-  product: ['oil', 'stockcockpit', 'stocktake'], product_price: ['oil', 'stocktake'], stock_ledger: ['oil', 'stockissues', 'stockcockpit', 'stocktake'],
-  filter_stock: ['filters', 'filterstock', 'stockcockpit', 'stocktake'], filter_price: ['filters', 'stocktake'], filter_xref: ['filters', 'stocktake'], service_job: ['filters', 'services'],
+  mrn: ['stores', 'matreq', 'purchasing', 'stockcockpit', 'stocktake'], mrn_lines: ['purchasing', 'stockcockpit', 'stocktake'], grn: ['stores', 'purchasing', 'stockcockpit', 'stocktake'], mtn: ['stores'], stock_count: ['oil', 'stocktake', 'stores'],
+  product: ['oil', 'stockcockpit', 'stocktake', 'stores'], product_price: ['oil', 'stocktake', 'stores'], stock_ledger: ['oil', 'stockissues', 'stockcockpit', 'stocktake', 'stores'],
+  filter_stock: ['filters', 'filterstock', 'stockcockpit', 'stocktake', 'stores'], filter_price: ['filters', 'stocktake', 'stores'], filter_xref: ['filters', 'stocktake', 'stores'], service_job: ['filters', 'services'],
   job_card: ['jobs', 'jobrequests'], job_request: ['jobrequests', 'jobs'], job_daily_work: ['dailywork', 'jobs'],
   mechanic_attendance: ['dailywork'], workday_signoff: ['dailywork'], job_reopen_request: ['jobs'],
-  battery: ['batteries', 'stockcockpit', 'stocktake'], asset: ['assets'],
+  battery: ['batteries', 'stockcockpit', 'stocktake', 'stores'], asset: ['assets'],
   mechanic: ['mechanics', 'labour', 'workshops'], labour_rate: ['labour', 'mechanics'], mechanic_alias: ['mechanics'],
   workshop: ['workshops', 'access', 'jobs'],
 };
@@ -754,7 +755,6 @@ const NAV = [
   ['assets', '🚜', 'Assets'],
   ['labour', '💵', 'Labour Rates'],
   ['stores', '📦', 'Stores'],
-  ['stocktake', '📋', 'Stock Take'],
   ['serviceplan', '🗓️', 'Service & Filter Plan'],
   ['projects', '🏗️', 'Projects'],
   ['aliases', '🔗', 'Alias Queue'],
@@ -3537,7 +3537,8 @@ routes.stores = async (c) => {
     flow: { label: '🔄 REQUESTS → ISSUE',
       subs: [['lines', '📋 Items'], ['mrn', 'Requests (MRN)'], ['grn', 'Receipts (GRN)'], ['issues', 'Issues'], ['workspace', '⚡ Receive & price many']] },
   };
-  const PRIMARY = [['monitor', '📊 MONITOR'], ['flow', GROUPS.flow.label], ['mtn', '🔁 TRANSFERS']];
+  // Part 2: every kind of stock in one view, and the stock take.
+  const PRIMARY = [['monitor', '📊 MONITOR'], ['flow', GROUPS.flow.label], ['mtn', '🔁 TRANSFERS'], ['stock', '📦 STOCK'], ['counts', '🧮 STOCK TAKE']];
 
   const group = GROUPS[tab] ? tab : null;
   if (group) tab = sp.get('sub') || GROUPS[group].subs[0][0];      // a group renders its sub-view
@@ -3545,8 +3546,7 @@ routes.stores = async (c) => {
 
   const isOn = (t) => (owner ? t === owner : t === tab);
   const primaryBar = `<div class="toolbar" style="margin-bottom:4px">${PRIMARY
-    .map(([t, l]) => `<button class="sm ${isOn(t) ? 'primary' : ''}" onclick="location.hash='#/stores?tab=${t}'">${l}</button>`).join('')}
-    ${canView('stores') ? '<a class="btn sm" href="#/stocktake" title="Balances, counts and reorder levels of every kind of stock">📦 STOCK &amp; COUNTS</a>' : ''}</div>`;
+    .map(([t, l]) => `<button class="sm ${isOn(t) ? 'primary' : ''}" onclick="location.hash='#/stores?tab=${t}'">${l}</button>`).join('')}</div>`;
   const subBar = owner ? `<div class="toolbar" style="margin:0 0 10px 0">${GROUPS[owner].subs
     .map(([s, l]) => `<button class="sm ${s === tab ? 'primary' : ''}" onclick="location.hash='#/stores?tab=${owner}&sub=${s}'">${l}</button>`).join('')}</div>` : '';
 
@@ -3554,6 +3554,10 @@ routes.stores = async (c) => {
   const body = qs('#storebody');
   if (tab === 'monitor') {
     return storesMonitor(body);
+  } else if (tab === 'stock') {
+    return storesStock(body, sp);
+  } else if (tab === 'counts') {
+    return sp.get('id') ? countDetail(body, sp.get('id'), sp) : countList(body, sp);
   } else if (tab === 'lines') {
     return storesLines(body, sp);
   } else if (tab === 'workspace') {
@@ -4041,9 +4045,14 @@ async function storesMonitor(body) {
     <h3 style="margin:14px 0 6px">Watch</h3>
     <div class="grid">
       ${card(m.transfers_week, 'Transfers (7 days)', '#/stores?tab=mtn')}
-      ${card(m.low_stock, 'At or under reorder level', '#/stocktake', 'red')}
-      ${card(m.battery_warranty, 'Battery warranties ending (60 days)', '#/stocktake?tab=batteries', 'amber')}
+      ${card(m.low_stock, 'At or under reorder level', '#/stores?tab=stock', 'red')}
+      ${card(m.battery_warranty, 'Battery warranties ending (60 days)', '#/stores?tab=stock&kind=battery&sub=register', 'amber')}
       ${card(s.open, 'All items still to do', at('open'))}
+    </div>
+    <h3 style="margin:14px 0 6px">Stock take</h3>
+    <div class="grid">
+      ${card(m.stock_takes.counting, 'Being counted', '#/stores?tab=counts&status=counting', 'blue')}
+      ${card(m.stock_takes.submitted, 'Waiting for head office', '#/stores?tab=counts&status=submitted', 'amber')}
     </div>`;
 }
 
@@ -5417,7 +5426,7 @@ async function renderOilSection(c) {
   const tab = ['products', 'names', 'ledger', 'stock', 'forecast', 'counts'].includes(sp.get('sub') || sp.get('tab')) ? (sp.get('sub') || sp.get('tab')) : 'products';
   const tabs = ['products', 'names', 'ledger', 'stock', 'forecast', 'counts'];
   const setTab = (t) => {
-    if (location.hash.startsWith('#/stocktake')) location.hash = '#/stocktake?tab=oil&sub=' + t;
+    if (location.hash.startsWith('#/stocktake') || location.hash.startsWith('#/stores')) location.hash = stockBooksHash('oil', t);
     else location.hash = '#/oil?tab=' + t;
   };
   c.innerHTML = `<div class="toolbar" style="margin-bottom:12px">${tabs.map((t) => `<button class="sm ${t === tab ? 'primary' : ''}" id="oil-tb-${t}">${t.toUpperCase()}</button>`).join('')}<div class="spacer"></div><a class="btn sm" href="/api/oil/export/ledger.xlsx">⬇ Ledger Excel</a></div><div id="oilbody" class="muted">Loading…</div>`;
@@ -5687,7 +5696,7 @@ async function renderFiltersSection(c) {
   const sp = new URLSearchParams(location.hash.split('?')[1] || '');
   const tab = ['book', 'xref'].includes(sp.get('sub') || sp.get('tab')) ? (sp.get('sub') || sp.get('tab')) : 'book';
   const setTab = (t) => {
-    if (location.hash.startsWith('#/stocktake')) location.hash = '#/stocktake?tab=filters&sub=' + t;
+    if (location.hash.startsWith('#/stocktake') || location.hash.startsWith('#/stores')) location.hash = stockBooksHash('filter', t);
     else location.hash = '#/filters?tab=' + t;
   };
   c.innerHTML = `
@@ -9457,7 +9466,7 @@ async function renderStockCockpitSection(c) {
 }
 
 routes.stockcockpit = async () => {
-  location.replace('#/stocktake?tab=overview');
+  location.replace('#/stores?tab=stock');
 };
 
 // ===== General Stock — Master Consumables & Spare Parts Inventory =====
@@ -9467,7 +9476,7 @@ async function renderGeneralStockSection(c) {
   const sp = new URLSearchParams(location.hash.split('?')[1] || '');
   const tab = ['stock', 'catalogue', 'categories', 'reorder'].includes(sp.get('sub') || sp.get('tab')) ? (sp.get('sub') || sp.get('tab')) : 'stock';
   const setTab = (t) => {
-    if (location.hash.startsWith('#/stocktake')) location.hash = '#/stocktake?tab=general&sub=' + t;
+    if (location.hash.startsWith('#/stocktake') || location.hash.startsWith('#/stores')) location.hash = stockBooksHash('general', t);
     else location.hash = '#/generalstock?tab=' + t;
   };
 
@@ -9507,43 +9516,16 @@ routes.generalstock = async () => {
   location.replace('#/stocktake?tab=general' + (sub !== 'stock' ? '&sub=' + sub : ''));
 };
 
-// Unified Stock Take Hub — single entry point for all stock-taking & balances
-routes.stocktake = async (c, params) => {
-  if (!canView('stores')) {
-    c.innerHTML = `<div class="card"><p class="err">You do not have access to Stores / Stock Take.</p></div>`;
-    return;
-  }
+// The old Stock Take page is the Stores page's Stock tab now (stores plan, Part 2). Its links still
+// open the same place: the kind of stock, and the older book of it when one was asked for.
+routes.stocktake = async () => {
   const sp = new URLSearchParams(location.hash.split('?')[1] || '');
-  const tab = ['overview', 'general', 'oil', 'filters', 'batteries'].includes(sp.get('tab')) ? sp.get('tab') : 'overview';
-
-  c.innerHTML = `${pageHeader('Stock Take', 'Master stock balances, counts, categories & inventory valuation across all stores')}
-    <div class="pill-row" style="margin-bottom:16px;gap:8px;flex-wrap:wrap">
-      <button class="btn sm ${tab === 'overview' ? 'primary' : ''}" id="stk-tb-overview">📊 Master Overview</button>
-      <button class="btn sm ${tab === 'general' ? 'primary' : ''}" id="stk-tb-general">📦 General Stock</button>
-      <button class="btn sm ${tab === 'oil' ? 'primary' : ''}" id="stk-tb-oil">🛢️ Oil &amp; Lubricants</button>
-      <button class="btn sm ${tab === 'filters' ? 'primary' : ''}" id="stk-tb-filters">🧰 Filters</button>
-      <button class="btn sm ${tab === 'batteries' ? 'primary' : ''}" id="stk-tb-batteries">🔋 Batteries</button>
-    </div>
-    <div id="stk-pane"><div class="muted">Loading…</div></div>`;
-
-  qs('#stk-tb-overview', c).onclick = () => { location.hash = '#/stocktake?tab=overview'; };
-  qs('#stk-tb-general', c).onclick = () => { location.hash = '#/stocktake?tab=general'; };
-  qs('#stk-tb-oil', c).onclick = () => { location.hash = '#/stocktake?tab=oil'; };
-  qs('#stk-tb-filters', c).onclick = () => { location.hash = '#/stocktake?tab=filters'; };
-  qs('#stk-tb-batteries', c).onclick = () => { location.hash = '#/stocktake?tab=batteries'; };
-
-  const pane = qs('#stk-pane', c);
-  if (tab === 'general') {
-    await renderGeneralStockSection(pane);
-  } else if (tab === 'oil') {
-    await renderOilSection(pane);
-  } else if (tab === 'filters') {
-    await renderFiltersSection(pane);
-  } else if (tab === 'batteries') {
-    await renderBatteriesSection(pane, params);
-  } else {
-    await renderStockCockpitSection(pane);
-  }
+  const KIND = { general: 'general', oil: 'oil', filters: 'filter', batteries: 'battery' };
+  const kind = KIND[sp.get('tab')];
+  let sub = sp.get('sub');
+  if (kind === 'battery') sub = 'register';
+  if (kind === 'oil' && sub === 'stock') sub = null;
+  location.replace('#/stores?tab=stock' + (kind ? '&kind=' + kind : '') + (kind && sub ? '&sub=' + encodeURIComponent(sub) : ''));
 };
 
 async function renderGeneralStockLive(c) {
@@ -9725,6 +9707,7 @@ async function stockPanel(host, section, opts = {}) {
   const store = data.store;              // null = every store (or the only one)
   const multi = !!data.multi;
   const can = data.can || {};
+  const countStore = store || data.home || null;   // with one store, a count goes in it
 
   host.innerHTML = `
     ${multi ? `<div class="toolbar" style="margin:0 0 8px">
@@ -9738,6 +9721,7 @@ async function stockPanel(host, section, opts = {}) {
       <div class="card stat"><span class="n">${num(s.issued)}</span><span class="l">Issued out</span></div>
       <div class="card stat"><span class="n" style="color:${s.balance < 0 ? 'var(--danger,#c4392c)' : 'inherit'}">${num(s.balance)}</span><span class="l">Balance in stock</span></div>
       <div class="card stat"><span class="n">${num(s.items)}</span><span class="l">Items</span></div>
+      <div class="card stat"><span class="n">${moneyC(s.value || 0)}</span><span class="l">Value</span>${s.unpriced ? `<span class="muted" style="font-size:11px">${num(s.unpriced)} item(s) without a price</span>` : ''}</div>
     </div>
     ${cut ? `<p class="muted" style="font-size:12px;margin:0 0 8px">Stock for this section counts from <b>${esc(cut)}</b> — earlier movements (${num(s.history_moves)}, ${num(s.history_issued)} issued) are kept as history below but don't affect the balance, because those purchases were never recorded in stores.</p>` : ''}
     ${multi && !store ? '<p class="muted" style="font-size:12px;margin:0 0 8px">All stores together. Stock sent from one store to another is not counted as received or issued here.</p>' : ''}
@@ -9775,17 +9759,21 @@ async function stockPanel(host, section, opts = {}) {
         : '<div class="card"><p class="muted">No movements.</p></div>');
   };
 
-  // A stock take of one item in this store: what is on the shelf now.
+  // A quick count of one item in this store (stores plan, Part 2): head office approves the correction.
   const countItem = (key, name, balance) => modal(`Count ${name}`, `
-    <p class="muted" style="margin:0 0 8px">${esc(store.name)} · the book says <b>${num(balance)}</b></p>
-    ${field('Counted on the shelf', 'counted', { type: 'number', value: '' })}
+    <p class="muted" style="margin:0 0 8px">${esc(countStore.name)} · the book says <b>${num(balance)}</b>. Head office approves the change.</p>
+    ${section === 'oil' ? lubeCountFields() : field('Counted on the shelf', 'counted', { type: 'number', value: '' })}
     ${field('Date', 'count_date', { type: 'date', value: new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10) })}
     ${field('Note (optional)', 'note')}
     <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Save count</button></div>`, (b, close) => {
+    wireLubeCount(b);
     qs('#s', b).onclick = async () => {
       try {
-        const r = await api(`/stores/stock/${section}/count`, { method: 'POST', body: { ...formData(b), store_id: store.id, item_key: key } });
-        close(); toast(r.delta ? `Counted ${num(r.counted)} · corrected by ${r.delta > 0 ? '+' : ''}${num(r.delta)}` : 'Counted · the book was right'); load();
+        const r = await api(`/stores/stock/${section}/count`, { method: 'POST', body: { ...formData(b), store_id: countStore.id, item_key: key } });
+        close();
+        if (r.status !== 'approved') toast(`Counted ${num(r.counted)} · sent to head office (${r.count_no})`);
+        else toast(r.delta ? `Counted ${num(r.counted)} · corrected by ${r.delta > 0 ? '+' : ''}${num(r.delta)}` : 'Counted · the book was right');
+        load();
       } catch (e) { toast(e.message, 'err'); }
     };
   });
@@ -9814,10 +9802,10 @@ async function stockPanel(host, section, opts = {}) {
     const byStore = (i) => (i.by_store || []).map((b) => `${esc(b.store_code || '?')} ${num(b.balance)}`).join(' · ');
     bodyEl.innerHTML = d.items.length ? tableWrap(
       [{ label: 'Item', cls: 'desc-col' }, { label: 'Received', num: true }, { label: 'Issued', num: true },
-      { label: 'Balance', num: true }]
+      { label: 'Balance', num: true }, { label: 'Value', num: true }]
         .concat(multi && !store ? [{ label: 'By store' }] : [])
         .concat(store ? [{ label: 'Reorder at', num: true }] : [])
-        .concat([{ label: 'Issued (all time)', num: true }, { label: 'Last movement' }, { label: '' }]),
+        .concat([{ label: 'Issued (all time)', num: true }, { label: 'Last movement' }, { label: 'Last count' }, { label: '' }]),
       d.items.map((i) => {
         const low = store && i.reorder_level > 0 && i.balance <= i.reorder_level;
         return `<tr>
@@ -9825,10 +9813,12 @@ async function stockPanel(host, section, opts = {}) {
         <td class="num">${num(i.received)}</td>
         <td class="num">${num(i.issued)}</td>
         <td class="num"><b style="color:${i.balance < 0 ? 'var(--danger,#c4392c)' : 'inherit'}">${num(i.balance)}</b>${low ? ' <span class="badge amber">low</span>' : ''}</td>
+        <td class="num">${i.unit_price == null ? (i.balance > 0 ? '<span class="muted" title="No price yet">—</span>' : '') : money(i.value)}</td>
         ${multi && !store ? `<td class="muted" style="font-size:12px">${byStore(i)}</td>` : ''}
         ${store ? `<td class="num">${i.reorder_level ? num(i.reorder_level) : '<span class="muted">—</span>'}${can.levels ? ` <button class="sm" data-lvl="${esc(i.item_key)}" data-name="${esc(i.item_name || i.item_key)}" data-v="${i.reorder_level == null ? '' : i.reorder_level}" title="Set the reorder level">✎</button>` : ''}</td>` : ''}
         <td class="num muted">${num(i.issued_all_time)}</td>
         <td>${esc(i.last_move || '—')}</td>
+        <td>${esc(i.last_count || '—')}</td>
         <td style="white-space:nowrap">${can.count ? `<button class="sm" data-cnt="${esc(i.item_key)}" data-name="${esc(i.item_name || i.item_key)}" data-bal="${i.balance}">Count</button> ` : ''}<button class="sm" data-hist="${esc(i.item_key)}" data-name="${esc(i.item_name || i.item_key)}">history →</button></td></tr>`;
       }),
       { scroll: true, fit: true, noHScroll: true })
@@ -9849,6 +9839,321 @@ async function stockPanel(host, section, opts = {}) {
   if (qs('#sk-low', host)) qs('#sk-low', host).onclick = () => { lowOnly = !lowOnly; mode = 'items'; load(); };
   let skdeb; qs('#sk-q', host).oninput = () => { clearTimeout(skdeb); skdeb = setTimeout(load, 250); };
   await load();
+}
+
+// ---- Stores: the Stock view and the stock take (stores plan, Part 2) --------------------------
+// Every kind of stock in one view — Parts & general, Lubricants, Filters, Tyres, Batteries — each
+// with its value, reorder level, last count and history (the shared stock panel above). Each kind
+// keeps its older book (catalogue, oil book, filter price book, battery register) one click away.
+const STOCK_KINDS = [['overview', '📊 Overview'], ['general', '🔩 Parts & general'], ['oil', '🛢️ Lubricants'],
+  ['filter', '🧰 Filters'], ['tyre', '🛞 Tyres'], ['battery', '🔋 Batteries']];
+const KIND_LABEL = { all: 'All kinds', general: 'Parts & general', oil: 'Lubricants', filter: 'Filters', tyre: 'Tyres', battery: 'Batteries' };
+const STOCK_BOOKS = {
+  general: [['stock', 'Rack register'], ['catalogue', 'Catalogue'], ['categories', 'Categories'], ['reorder', 'Re-order watch']],
+  oil: [['products', 'Products'], ['names', 'Names'], ['ledger', 'Oil book'], ['forecast', 'Forecast'], ['counts', 'Old counts']],
+  filter: [['book', 'Price book'], ['xref', 'Cross-references']],
+  battery: [['register', 'Battery register']],
+};
+const stockBooksHash = (kind, sub) => `#/stores?tab=stock&kind=${kind}&sub=${encodeURIComponent(sub)}`;
+
+// Lubricants are counted in litres: full drums or cans × their size, plus the part-used one by dip.
+const lubeCountFields = (v = {}) => `
+  <div class="row">${field('Full drums / cans', 'containers', { type: 'number', value: v.containers ?? '' })}${field('Size of one (L)', 'container_size', { type: 'number', value: v.container_size ?? '', placeholder: 'e.g. 210' })}</div>
+  ${field('Part-used drum (L, dip reading)', 'loose_qty', { type: 'number', value: v.loose_qty ?? '' })}
+  <p class="muted" style="margin:4px 0 0" data-lube-total></p>`;
+function wireLubeCount(root) {
+  const out = qs('[data-lube-total]', root);
+  if (!out) return;
+  const show = () => {
+    const d = formData(root);
+    const total = (Number(d.containers) || 0) * (Number(d.container_size) || 0) + (Number(d.loose_qty) || 0);
+    out.textContent = d.containers || d.loose_qty ? `Total: ${num(total)} L` : '';
+  };
+  qsa('input', root).forEach((i) => { i.addEventListener('input', show); });
+  show();
+}
+
+async function storesStock(body, sp) {
+  const kind = STOCK_KINDS.some(([k]) => k === sp.get('kind')) ? sp.get('kind') : 'overview';
+  const sub = sp.get('sub');
+  const books = STOCK_BOOKS[kind] || [];
+  body.innerHTML = `<div class="toolbar" style="margin:0 0 10px">${STOCK_KINDS
+    .map(([k, l]) => `<button class="sm ${k === kind ? 'primary' : ''}" data-kind="${k}">${l}</button>`).join('')}</div><div id="stk-main"></div>`;
+  qsa('[data-kind]', body).forEach((b) => { b.onclick = () => { location.hash = '#/stores?tab=stock' + (b.dataset.kind === 'overview' ? '' : '&kind=' + b.dataset.kind); }; });
+  const host = qs('#stk-main', body);
+  if (kind === 'overview') return stockOverview(host);
+  if (sub && books.some(([k]) => k === sub)) {
+    host.innerHTML = `<div class="toolbar" style="margin:0 0 8px"><a class="btn sm" href="#/stores?tab=stock&kind=${kind}">← ${esc(KIND_LABEL[kind])}: stock</a></div><div id="stk-book"></div>`;
+    const bk = qs('#stk-book', host);
+    if (kind === 'general') return renderGeneralStockSection(bk);
+    if (kind === 'oil') return renderOilSection(bk);
+    if (kind === 'filter') return renderFiltersSection(bk);
+    return renderBatteriesSection(bk);
+  }
+  const links = books.map(([k, l]) => `<a class="btn sm" href="${stockBooksHash(kind, k)}">${esc(l)}</a>`)
+    .concat(kind === 'tyre' && canView('reports') ? ['<a class="btn sm" href="#/tyrebattery">Tyre &amp; battery ledger</a>'] : []);
+  host.innerHTML = `${links.length ? `<div class="toolbar" style="margin:0 0 8px"><span class="muted" style="font-size:12px">📚 Books</span>${links.join('')}</div>` : ''}<div id="stk-panel"></div>`;
+  return stockPanel(qs('#stk-panel', host), kind);
+}
+
+// The front page: every kind of stock in one store (or all) — value, what is low, and when the store
+// last counted it in full; then the reorder and restock list.
+async function stockOverview(host) {
+  let d;
+  try { d = await api('/stores/stock/overview' + (STOCK_STORE ? '?store_id=' + encodeURIComponent(STOCK_STORE) : '')); }
+  catch (e) { host.innerHTML = `<div class="card err">${esc(e.message)}</div>`; return; }
+  const store = d.store;
+  const total = d.kinds.reduce((t, k) => t + (k.value || 0), 0);
+  const waiting = d.counts.counting + d.counts.submitted;
+  host.innerHTML = `
+    ${d.multi ? `<div class="toolbar" style="margin:0 0 8px">
+      ${d.fixed ? `<span class="badge blue">${esc(store ? store.name : '')}</span><span class="muted" style="font-size:12px">your store</span>`
+    : `<label class="muted" style="font-size:12px">Store</label><select id="ov-store" style="max-width:260px">
+          <option value="all" ${store ? '' : 'selected'}>All stores</option>
+          ${(d.stores || []).map((x) => `<option value="${x.id}" ${store && store.id === x.id ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select>`}
+    </div>` : ''}
+    <p class="muted" style="margin:0 0 8px">All stock: <b>${money(total)}</b>${waiting ? ` · <a href="#/stores?tab=counts&status=open">${d.counts.counting} stock take(s) being counted, ${d.counts.submitted} waiting for head office</a>` : ''}</p>
+    <div class="grid section">${STOCK_KINDS.map(([s]) => d.kinds.find((k) => k.section === s)).filter(Boolean).map((k) => `<a class="card stat" href="#/stores?tab=stock&kind=${k.section}" style="text-decoration:none">
+        <span class="l" style="font-weight:600;color:inherit">${esc(KIND_LABEL[k.section])}</span>
+        <span class="n">${moneyC(k.value)}</span>
+        <span class="l">${num(k.items)} items${k.low ? ` · <span class="badge red">${num(k.low)} low</span>` : ''}</span>
+        ${store || !d.multi ? `<span class="muted" style="font-size:11px">${k.full_count ? 'Last full count: ' + esc(k.full_count) : 'No full count yet'}</span>` : ''}</a>`).join('')}</div>
+    <h3 style="margin:14px 0 6px">Reorder &amp; restock</h3>
+    <div id="ov-cockpit"></div>`;
+  if (qs('#ov-store', host)) qs('#ov-store', host).onchange = (e) => { STOCK_STORE = e.target.value; stockOverview(host); };
+  renderStockCockpitSection(qs('#ov-cockpit', host));
+}
+
+// ---- stock take: count sessions --------------------------------------------------------------
+const COUNT_STATUS = { counting: ['blue', 'Counting'], submitted: ['amber', 'Waiting for head office'], approved: ['green', 'Approved'], cancelled: ['', 'Cancelled'] };
+const countBadge = (st) => `<span class="badge ${(COUNT_STATUS[st] || [''])[0]}">${esc((COUNT_STATUS[st] || [0, st])[1])}</span>`;
+const countWhat = (r) => (r.scope === 'quick' ? `Quick count · ${r.item_name || ''}` : `${KIND_LABEL[r.kind] || r.kind} · full count`);
+const signed = (n) => `<span style="color:${n < 0 ? 'var(--danger,#c4392c)' : n > 0 ? 'var(--success,#2e7d32)' : 'inherit'}">${n > 0 ? '+' : ''}${num(n)}</span>`;
+const signedMoney = (n) => `<span style="color:${n < 0 ? 'var(--danger,#c4392c)' : n > 0 ? 'var(--success,#2e7d32)' : 'inherit'}">${n > 0 ? '+' : ''}${money(n)}</span>`;
+
+async function countList(body, sp) {
+  const FILTERS = [['open', 'Open'], ['submitted', 'Waiting for head office'], ['approved', 'Approved'], ['cancelled', 'Cancelled'], ['all', 'All']];
+  const status = FILTERS.some(([k]) => k === sp.get('status')) || sp.get('status') === 'counting' ? sp.get('status') : 'open';
+  const [rows, wd] = await Promise.all([api('/stores/counts?status=' + status), workshopsData().catch(() => null)]);
+  const multi = !!(wd && wd.stores_multi);
+  body.innerHTML = `
+    <div class="toolbar">
+      ${FILTERS.map(([k, l]) => `<button class="sm ${k === status ? 'primary' : ''}" data-st="${k}">${l}</button>`).join('')}
+      <div class="spacer"></div>
+      ${canDo('stores.stock.count') ? '<button class="primary sm" id="cnt-new">+ Start a stock take</button>' : ''}
+    </div>
+    <p class="muted" style="margin:0 0 8px">Count what is on the shelf. Head office approves, then the differences go into stock.</p>
+    ${rows.length ? tableWrap(
+    [{ label: 'No' }].concat(multi ? [{ label: 'Store' }] : []).concat([{ label: 'What' }, { label: 'Status' }, { label: 'Date' },
+      { label: 'Counted', num: true }, { label: 'Differences', num: true }, { label: 'Value of differences', num: true }, { label: '' }]),
+    rows.map((r) => `<tr>
+        <td><a href="#/stores?tab=counts&id=${r.id}">${esc(r.count_no)}</a></td>
+        ${multi ? `<td>${esc(r.store_name || '')}</td>` : ''}
+        <td>${esc(countWhat(r))}</td>
+        <td>${countBadge(r.status)}</td>
+        <td>${esc(r.count_date)}</td>
+        <td class="num">${num(r.totals.counted)} of ${num(r.totals.lines)}</td>
+        <td class="num">${num(r.totals.differ)}</td>
+        <td class="num">${r.totals.differ ? signedMoney(r.totals.net_value) : '—'}</td>
+        <td><a class="btn sm" href="#/stores?tab=counts&id=${r.id}">Open</a></td></tr>`), { scroll: true })
+    : '<div class="card"><p class="muted">No stock takes here.</p></div>'}`;
+  qsa('[data-st]', body).forEach((b) => { b.onclick = () => { location.hash = '#/stores?tab=counts&status=' + b.dataset.st; }; });
+  if (qs('#cnt-new', body)) qs('#cnt-new', body).onclick = () => countStartModal(multi, wd);
+}
+
+function countStartModal(multi, wd) {
+  const today = new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+  const pickStore = multi && ME && ME.seesAllWorkshops;
+  modal('Start a stock take', `
+    ${pickStore ? field('Store', 'store_id', { type: 'select', options: (wd.stores || []).map((x) => ({ value: x.id, label: x.name })) }) : ''}
+    ${field('What to count', 'kind', { type: 'select', options: [['all', 'All kinds'], ...STOCK_KINDS.filter(([k]) => k !== 'overview').map(([k]) => [k, KIND_LABEL[k]])].map(([value, label]) => ({ value, label })) })}
+    ${field('Date', 'count_date', { type: 'date', value: today })}
+    ${field('Note (optional)', 'note')}
+    <p class="muted" style="font-size:12px">The list holds every item the store's book knows. The book figure is kept from now; anything issued or received while you count is shown apart.</p>
+    <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Start</button></div>`, (b, close) => {
+    qs('#s', b).onclick = async () => {
+      try {
+        const r = await api('/stores/counts', { method: 'POST', body: formData(b) });
+        close(); toast(`${r.count_no} started · ${r.lines.length} items to count`);
+        location.hash = '#/stores?tab=counts&id=' + r.id;
+      } catch (e) { toast(e.message, 'err'); }
+    };
+  });
+}
+
+async function countDetail(body, id, sp) {
+  let d;
+  try { d = await api('/stores/counts/' + encodeURIComponent(id)); }
+  catch (e) { body.innerHTML = `<div class="card err">${esc(e.message)}</div>`; return; }
+  const VIEWS = [['sheet', '✏️ Count sheet'], ['diff', '⚖️ Differences'], ['all', 'All items']];
+  const view = VIEWS.some(([k]) => k === sp.get('view')) ? sp.get('view') : (d.can.count ? 'sheet' : 'diff');
+  const go = (v) => { location.hash = `#/stores?tab=counts&id=${d.id}&view=${v}`; };
+  const reload = () => countDetail(body, id, sp);
+  const t = d.totals;
+  const who = (name, at) => (name ? ` by ${esc(name)}${at ? ' on ' + esc(String(at).slice(0, 10)) : ''}` : '');
+  body.innerHTML = `
+    <div class="toolbar" style="margin:0 0 8px"><a class="btn sm" href="#/stores?tab=counts">← Stock takes</a></div>
+    <div class="card section">
+      <h3 style="margin:0 0 4px">${esc(d.count_no)} · ${esc(countWhat({ ...d, item_name: d.lines[0] && d.lines[0].item_name }))} ${countBadge(d.status)}</h3>
+      <p class="muted" style="margin:0">${esc(d.store_name || '')} · began ${esc(d.count_date)}${who(d.started_by_name)}${d.note ? ' · ' + esc(d.note) : ''}
+        ${d.submitted_at ? ` · sent${who(d.submitted_by_name, d.submitted_at)}` : ''}${d.decided_at ? ` · ${esc(d.status)}${who(d.decided_by_name, d.decided_at)}` : ''}</p>
+      ${d.decision_note && d.status === 'counting' ? `<p class="err" style="margin:6px 0 0">Sent back: ${esc(d.decision_note)}</p>` : ''}
+      ${d.decision_note && d.status === 'cancelled' ? `<p class="muted" style="margin:6px 0 0">Why: ${esc(d.decision_note)}</p>` : ''}
+      <div style="display:flex;gap:6px 18px;flex-wrap:wrap;margin-top:10px;font-size:15px">
+        <span><b id="cnt-counted">${num(t.counted)} / ${num(t.lines)}</b> <span class="muted">counted</span></span>
+        <span><b>${num(t.differ)}</b> <span class="muted">differences${t.unpriced ? ` (${t.unpriced} without a price)` : ''}</span></span>
+        <span>${signedMoney(t.over_value)} <span class="muted">more than the book</span></span>
+        <span>${signedMoney(t.short_value)} <span class="muted">less than the book</span></span>
+        <span><b>${signedMoney(t.net_value)}</b> <span class="muted">net</span></span>
+      </div>
+    </div>
+    <div class="toolbar">
+      ${VIEWS.map(([k, l]) => `<button class="sm ${k === view ? 'primary' : ''}" data-view="${k}">${l}</button>`).join('')}
+      <div class="spacer"></div>
+      ${d.can.submit ? '<button class="primary sm" id="c-submit">📨 Send to head office</button>' : ''}
+      ${d.can.approve ? '<button class="primary sm" id="c-approve">✔ Approve</button>' : ''}
+      ${d.can.send_back ? '<button class="sm" id="c-back">↩ Send back</button>' : ''}
+      ${d.can.cancel ? '<button class="sm" id="c-cancel">✖ Cancel</button>' : ''}
+      <a class="btn sm" href="/api/stores/counts/${d.id}/export.xlsx">⬇ Excel</a>
+    </div>
+    <div id="cnt-body"></div>`;
+  qsa('[data-view]', body).forEach((b) => { b.onclick = () => go(b.dataset.view); });
+  const host = qs('#cnt-body', body);
+  const act = async (path, payload, msg) => {
+    try { await api(`/stores/counts/${d.id}/${path}`, { method: 'POST', body: payload || {} }); toast(msg); reload(); }
+    catch (e) { toast(e.message, 'err'); }
+  };
+  const withReason = (title, label, path, msg) => modal(title, `${field(label, 'reason')}
+    <div style="margin-top:12px;text-align:right"><button class="primary" id="s">${esc(title)}</button></div>`, (b, close) => {
+    qs('#s', b).onclick = async () => { close(); await act(path, formData(b), msg); };
+  });
+  if (qs('#c-submit', body)) qs('#c-submit', body).onclick = () => act('submit', null, 'Sent to head office');
+  if (qs('#c-approve', body)) {
+    qs('#c-approve', body).onclick = () => modal('Approve this stock take?', `
+      <p>${num(t.differ)} difference(s), net ${money(t.net_value)}. They go into ${esc(d.store_name || 'the store')}'s stock now.</p>
+      <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Approve</button></div>`, (b, close) => {
+      qs('#s', b).onclick = async () => { close(); await act('approve', null, 'Approved · stock corrected'); };
+    });
+  }
+  if (qs('#c-back', body)) qs('#c-back', body).onclick = () => withReason('Send back', 'What to count again', 'send-back', 'Sent back to count again');
+  if (qs('#c-cancel', body)) qs('#c-cancel', body).onclick = () => withReason('Cancel', 'Why cancel this count', 'cancel', 'Cancelled');
+
+  if (view === 'sheet') return countSheet(host, d, reload);
+  const rows = view === 'diff'
+    ? d.lines.filter((l) => l.diff).sort((a, b) => Math.abs(b.diff_value ?? b.diff) - Math.abs(a.diff_value ?? a.diff))
+    : d.lines;
+  const kindCol = d.kind === 'all';
+  host.innerHTML = rows.length ? tableWrap(
+    [{ label: 'Item', cls: 'desc-col' }].concat(kindCol ? [{ label: 'Kind' }] : []).concat([{ label: 'Unit' },
+      { label: 'Book at start', num: true }, { label: 'Moved while counting', num: true }, { label: 'Book when counted', num: true },
+      { label: 'Counted', num: true }, { label: 'Difference', num: true }, { label: 'Value', num: true }, { label: 'Note' }]),
+    rows.map((l) => `<tr>
+      <td class="desc-col">${esc(l.item_name)}${l.added ? ' <span class="badge blue" title="Found on the shelf, not on the list">added</span>' : ''}</td>
+      ${kindCol ? `<td>${esc(KIND_LABEL[l.section])}</td>` : ''}
+      <td>${esc(l.unit || '')}</td>
+      <td class="num">${num(l.book_start)}</td>
+      <td class="num">${l.counted && l.moved_during ? signed(l.moved_during) : ''}</td>
+      <td class="num">${l.counted ? num(l.book_at_count) : ''}</td>
+      <td class="num">${l.counted ? `<b>${num(l.counted_qty)}</b>${l.containers ? `<div class="muted" style="font-size:11px">${num(l.containers)} × ${num(l.container_size)} L + ${num(l.loose_qty)} L</div>` : ''}` : '<span class="muted">not counted</span>'}</td>
+      <td class="num">${l.counted ? signed(l.diff) : ''}</td>
+      <td class="num">${l.diff_value != null && l.diff ? signedMoney(l.diff_value) : (l.diff ? '<span class="muted" title="No price yet">—</span>' : '')}</td>
+      <td class="muted" style="font-size:12px">${esc(l.note || '')}</td></tr>`), { scroll: true })
+    : `<div class="card"><p class="muted">${view === 'diff' ? (t.counted ? 'No differences: the shelf matches the book.' : 'Nothing counted yet.') : 'No items.'}</p></div>`;
+}
+
+// The count sheet: the items and what is on the shelf — not the book figure, so the count is what
+// was seen. Works on a phone; each count saves as soon as it is typed.
+function countSheet(host, d, reload) {
+  const editable = d.can.count;
+  let onlyLeft = editable;
+  const kindCol = d.kind === 'all';
+  host.innerHTML = `
+    <div class="toolbar">
+      <input id="cs-q" type="search" placeholder="Find an item…" style="max-width:240px">
+      <button class="sm" id="cs-left"></button><button class="sm" id="cs-all">All items</button>
+      <div class="spacer"></div>
+      ${editable ? '<button class="sm" id="cs-add">+ Item not on the list</button>' : ''}
+    </div>
+    ${editable ? '' : '<p class="muted" style="margin:0 0 8px">This count cannot be changed now.</p>'}
+    <div id="cs-rows"></div>`;
+  const left = () => d.lines.filter((l) => !l.counted).length;
+  const input = (l, name, value, ph, w = 90) => `<input type="number" min="0" step="any" data-f="${name}" value="${value ?? ''}" placeholder="${ph}" style="width:${w}px;text-align:right" ${editable ? '' : 'disabled'}>`;
+  const cell = (l) => (l.section === 'oil'
+    ? `<div style="display:flex;gap:4px;align-items:center;flex-wrap:wrap;justify-content:flex-end">${input(l, 'containers', l.containers, 'drums', 78)}<span>×</span>${input(l, 'container_size', l.container_size, 'size L', 78)}<span>+</span>${input(l, 'loose_qty', l.loose_qty, 'dip L', 78)}
+        <span class="muted" style="font-size:12px">or</span>${input(l, 'counted', l.containers ? '' : l.counted_qty, 'total L', 84)}</div>`
+    : input(l, 'counted', l.counted_qty, l.unit || 'qty'));
+  const mark = (l) => (l.counted ? `<span class="badge green" title="${esc(l.counted_by_name || '')}">✓ ${num(l.counted_qty)}</span>` : '<span class="muted">—</span>');
+  const draw = () => {
+    const q = qs('#cs-q', host).value.trim().toLowerCase();
+    qs('#cs-left', host).textContent = `Not counted (${left()})`;
+    qs('#cs-left', host).classList.toggle('primary', onlyLeft);
+    qs('#cs-all', host).classList.toggle('primary', !onlyLeft);
+    const rows = d.lines.filter((l) => (!onlyLeft || !l.counted) && (!q || String(l.item_name || '').toLowerCase().includes(q)));
+    qs('#cs-rows', host).innerHTML = rows.length ? tableWrap(
+      [{ label: 'Item', cls: 'desc-col' }].concat(kindCol ? [{ label: 'Kind' }] : []).concat([{ label: 'Unit' }, { label: 'On the shelf', num: true }, { label: '' }]),
+      rows.map((l) => `<tr data-line="${l.id}">
+        <td class="desc-col">${esc(l.item_name)}${l.added ? ' <span class="badge blue">added</span>' : ''}</td>
+        ${kindCol ? `<td>${esc(KIND_LABEL[l.section])}</td>` : ''}
+        <td>${esc(l.unit || '')}</td>
+        <td class="num">${cell(l)}</td>
+        <td data-mark>${mark(l)}</td></tr>`), { scroll: true, fit: true, noHScroll: true })
+      : `<div class="card"><p class="muted">${onlyLeft && !q ? 'Everything is counted. Check the differences, then send it to head office.' : 'Nothing matches.'}</p></div>`;
+    if (!editable) return;
+    qsa('tr[data-line]', host).forEach((tr) => {
+      const l = d.lines.find((x) => String(x.id) === tr.dataset.line);
+      const save = async (ev) => {
+        const vals = {};
+        qsa('[data-f]', tr).forEach((i) => { vals[i.dataset.f] = i.value; });
+        // For a lubricant, typing the drums clears a total typed before, and the other way round.
+        if (l.section === 'oil' && ev && ev.target.dataset.f !== 'counted' && (vals.containers || vals.loose_qty)) vals.counted = '';
+        if (l.section === 'oil' && ev && ev.target.dataset.f === 'counted') { vals.containers = ''; vals.container_size = ''; vals.loose_qty = ''; }
+        const body = l.section === 'oil' && (vals.containers || vals.loose_qty) ? vals : { counted: vals.counted };
+        if (l.section === 'oil' && body.containers && !body.container_size) { qs('[data-mark]', tr).innerHTML = '<span class="badge amber">size?</span>'; return; }
+        try {
+          const r = await api(`/stores/counts/${d.id}/lines/${l.id}`, { method: 'PUT', body });
+          Object.assign(l, r);
+          qs('[data-mark]', tr).innerHTML = mark(l);
+          qs('#cs-left', host).textContent = `Not counted (${left()})`;
+          const top = qs('#cnt-counted');
+          if (top) top.textContent = `${num(d.lines.length - left())} / ${num(d.lines.length)}`;
+        } catch (e) { toast(e.message, 'err'); }
+      };
+      qsa('[data-f]', tr).forEach((i) => { i.onchange = save; });
+    });
+  };
+  let deb;
+  qs('#cs-q', host).oninput = () => { clearTimeout(deb); deb = setTimeout(draw, 200); };
+  qs('#cs-left', host).onclick = () => { onlyLeft = true; draw(); };
+  qs('#cs-all', host).onclick = () => { onlyLeft = false; draw(); };
+  if (qs('#cs-add', host)) qs('#cs-add', host).onclick = () => countAddModal(d, reload);
+  draw();
+}
+
+// An item found on the shelf that the list did not name: find it in the catalogue and add it.
+function countAddModal(d, reload) {
+  modal('Item not on the list', `
+    <input id="ca-q" type="search" placeholder="Name, code or part number…">
+    <div id="ca-res" style="margin-top:8px"><p class="muted">Type at least 2 letters.</p></div>`, (b, close) => {
+    let deb;
+    const find = async () => {
+      const q = qs('#ca-q', b).value.trim();
+      const res = qs('#ca-res', b);
+      if (q.length < 2) { res.innerHTML = '<p class="muted">Type at least 2 letters.</p>'; return; }
+      const items = await api(`/stores/counts/${d.id}/find?q=${encodeURIComponent(q)}`);
+      res.innerHTML = items.length ? items.map((i) => `<div class="cost-line"><span>${esc(i.name)} <span class="muted" style="font-size:11px">${esc(i.code || '')} · ${esc(KIND_LABEL[i.section])}</span></span>
+          ${i.on_list ? '<span class="muted">on the list</span>' : `<button class="sm primary" data-add="${esc(i.section)}|${esc(i.item_key)}">Add</button>`}</div>`).join('')
+        : '<p class="muted">Nothing found.</p>';
+      qsa('[data-add]', res).forEach((x) => {
+        x.onclick = async () => {
+          const [section, key] = x.dataset.add.split('|');
+          try { await api(`/stores/counts/${d.id}/lines`, { method: 'POST', body: { section, item_key: key } }); close(); toast('Added · count it on the sheet'); reload(); }
+          catch (e) { toast(e.message, 'err'); }
+        };
+      });
+    };
+    qs('#ca-q', b).oninput = () => { clearTimeout(deb); deb = setTimeout(find, 250); };
+    qs('#ca-q', b).focus();
+  });
 }
 
 // ---- Service & Filter Plan -------------------------------------------------

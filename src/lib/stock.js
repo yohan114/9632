@@ -622,7 +622,15 @@ function items(section, q, limit = 500, opts = {}) {
           AND NOT EXISTS (SELECT 1 FROM stock_moves sm WHERE sm.store_id = r.store_id AND sm.section = r.section AND sm.item_key = r.item_key)`,
       store, section, ...matchParams);
     rows.push(...extra);
-  } else if (opts.byStore && rows.length) {
+  }
+  if (rows.length) {
+    // When each item was last counted (in this store, or in any), and what it is worth (stores plan, Part 2).
+    const last = new Map(all(`SELECT item_key, MAX(count_date) d FROM store_counts WHERE section = ?${store ? ' AND store_id = ?' : ''} GROUP BY item_key`,
+      section, ...(store ? [store] : [])).map((r) => [r.item_key, r.d]));
+    for (const r of rows) r.last_count = last.get(r.item_key) || null;
+  }
+  priceRows(section, rows);
+  if (!store && opts.byStore && rows.length) {
     const keys = rows.map((r) => r.item_key);
     const per = new Map();
     for (const b of all(
@@ -637,6 +645,28 @@ function items(section, q, limit = 500, opts = {}) {
     for (const r of rows) r.by_store = per.get(r.item_key) || [];
   }
   return rows;
+}
+
+/**
+ * What each item is worth: its last price paid (any store), else its catalogue price; the value of
+ * the stock is that price × what is on the shelf (nothing for a shelf at or under 0).
+ */
+function priceRows(section, rows) {
+  if (!rows.length) return;
+  const price = new Map();
+  for (const r of all("SELECT item_key, unit_price FROM stock_items WHERE section = ? AND unit_price > 0", section)) price.set(r.item_key, r.unit_price);
+  for (const r of all(`SELECT item_key, unit_price FROM stock_moves WHERE section = ? AND unit_price > 0 AND kind IN ('in','opening')
+                        ORDER BY txn_date, id`, section)) price.set(r.item_key, r.unit_price);
+  for (const r of rows) {
+    r.unit_price = price.has(r.item_key) ? n2(price.get(r.item_key)) : null;
+    r.value = r.unit_price != null && r.balance > 0 ? n2(r.balance * r.unit_price) : 0;
+  }
+}
+
+/** The value of what a section holds — in one store, or in all. */
+function valueOf(section, store) {
+  const rows = items(section, null, 100000, { store });
+  return { value: n2(rows.reduce((t, r) => t + r.value, 0)), unpriced: rows.filter((r) => r.balance > 0 && r.unit_price == null).length };
 }
 
 /** Every movement, newest first — the audit trail behind a section or one item (in one store, or all). */
@@ -849,4 +879,4 @@ function receivedLine(grnId) {
 }
 
 module.exports = { filterParts, filterKey, SECTIONS, PREFIX, sectionOf, itemKey, rebuild, summary, items, moves, openingRules,
-  nextCode, syncItems, searchItems, receivedLines, receivedLine, balanceOf, recordCount };
+  nextCode, syncItems, searchItems, receivedLines, receivedLine, balanceOf, recordCount, valueOf };

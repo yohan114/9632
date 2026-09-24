@@ -126,6 +126,8 @@ const CAPABILITIES = [
   // Stage 4: a store per workshop (src/lib/stores.js) — the stock take and reorder levels of a store.
   C('stores.stock.count', 'stores', 'Count stock in a store (stock take)', ['storekeeper', 'manager'], 'stores'),
   C('stores.stock.levels', 'stores', 'Set a store\'s reorder levels', ['storekeeper', 'manager'], 'stores'),
+  // Stores plan, Part 2: head office approves a stock take before its corrections go into stock.
+  C('stores.count.approve', 'stores', 'Approve a stock take and put its corrections into stock (head office)', ['operational_manager', 'manager']),
   C('general.items.edit', 'stores', 'Add a general rack item', ['storekeeper'], 'stores'),
   C('general.stock.adjust', 'stores', 'Adjust a general rack item\'s stock', ['storekeeper'], 'stores'),
   C('general.items.price', 'stores', 'Set a general rack item\'s price', ['storekeeper'], 'stores'),
