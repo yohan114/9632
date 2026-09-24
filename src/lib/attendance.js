@@ -281,6 +281,9 @@ const attRow = (a) => (a ? {
 
 /** The workshop a sign-off or lock is about: `ws` while the workshops are kept apart, else none. */
 const lockWs = (ws) => (ws && require('./scope').enabled() ? Number(ws) : null);
+/** The workshop a day or month is filtered to. `split` (a report for one workshop, Stage 5) filters
+ * even while the workshops are not kept apart; the lock and sign-off still follow lockWs. */
+const listWs = (ws, split) => (split ? (ws ? Number(ws) : null) : lockWs(ws));
 
 function signoffFor(date, ws = null) {
   const w = lockWs(ws);
@@ -336,10 +339,10 @@ function assertDaysOpen(dates, ws = null) {
  * The attendance grid and tally for one day: one row per ACTIVE mechanic, plus anyone inactive who
  * has attendance or booked work that day (so nothing hides).
  */
-function day(date, { queue = false, ws = null } = {}) {
+function day(date, { queue = false, ws = null, split = false } = {}) {
   if (!isDate(date)) throw bad('A valid date (YYYY-MM-DD) is required');
   const s = settings();
-  const w = lockWs(ws);
+  const w = listWs(ws, split);
   const beforeStart = !s.start_date || date < s.start_date;
   const booked = bookedRange(date, date).get(date) || { byMech: new Map(), unmatched: new Map() };
   // One workshop (Stage 4): names matching no mechanic are that workshop's only when they were
@@ -559,10 +562,10 @@ function hoursLeft(date, names, { excludeLineId = null, ws = null } = {}) {
  * Attended, booked and utilisation per mechanic for a month — counted only over the days the
  * tally runs (from the start date, up to today), so booked and attended cover the same days.
  */
-function month(ym, { ws = null } = {}) {
+function month(ym, { ws = null, split = false } = {}) {
   if (!/^\d{4}-\d{2}$/.test(String(ym || ''))) throw bad('A valid month (YYYY-MM) is required');
   const s = settings();
-  const w = lockWs(ws);
+  const w = listWs(ws, split);
   const first = `${ym}-01`;
   const last = addDays(`${nextMonth(ym)}-01`, -1);
   let from = first; let to = last;

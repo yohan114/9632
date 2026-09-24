@@ -15,6 +15,14 @@ const lubricants = require('../lib/lubricants');
 
 const router = express.Router();
 
+// Stage 5: whose report this is — one workshop's, or (null) the whole company's. Head office picks;
+// anyone else, with the workshops kept apart, gets their own (src/lib/scope.js reportWorkshop).
+const reportWs = (req) => require('../lib/scope')
+  .reportWorkshop(req.user, (req.query && req.query.workshop_id) || (req.body && req.body.workshop_id)).ws;
+const wsCode = (ws) => { const w = ws ? get('SELECT code FROM workshops WHERE id = ?', ws) : null; return w ? ' ' + w.code : ''; };
+// A cost's workshop in SQL: its job card's, else the store it came from (src/lib/daily_reports.js).
+const wsIs = (...a) => require('../lib/daily_reports').wsIs(...a);
+
 // Coerce any value to a finite number (blank/NaN -> 0); matches the report generator's helper.
 const num = (v) => Number(v) || 0;
 
@@ -931,24 +939,25 @@ router.get('/pending-approvals', asyncHandler((req, res) => {
 // ---- Daily Progress Report -------------------------------------------------
 // One day's workshop output: jobs worked, mechanic hours, costed labour, plus
 // materials + oil issued that day, with a printable sheet.
-function dailyProgress(date) {
+function dailyProgress(date, ws = null) {
   const work = all(
     `SELECT w.job_id, j.job_no, j.type, j.status, a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec,
             p.name AS project_name, w.mechanic, w.description, w.hours, w.is_external, w.external_value
        FROM job_daily_work w JOIN job_cards j ON j.id = w.job_id
        LEFT JOIN assets a ON a.id = j.asset_id LEFT JOIN projects p ON p.id = j.project_id
-      WHERE w.work_date = ? ORDER BY j.job_no, w.id`, date);
-  const lab = all(`SELECT job_id, COALESCE(SUM(amount),0) amount FROM job_labour WHERE work_date = ? GROUP BY job_id`, date);
+      WHERE w.work_date = ?${wsIs('j.workshop_id', ws)} ORDER BY j.job_no, w.id`, date);
+  const lab = all(`SELECT l.job_id, COALESCE(SUM(l.amount),0) amount FROM job_labour l LEFT JOIN job_cards j ON j.id = l.job_id
+                    WHERE l.work_date = ?${wsIs('j.workshop_id', ws)} GROUP BY l.job_id`, date);
   const labByJob = {}; for (const l of lab) labByJob[l.job_id] = l.amount;
   const issues = all(
     `SELECT i.description, i.qty, i.unit_price, j.job_no, a.code AS asset_code
        FROM issues i LEFT JOIN job_cards j ON j.id = i.job_id LEFT JOIN assets a ON a.id = i.asset_id
-      WHERE i.issue_date = ? ORDER BY i.id`, date);
+      WHERE i.issue_date = ?${wsIs('COALESCE(j.workshop_id, i.store_id)', ws)} ORDER BY i.id`, date);
   const oil = all(
     `SELECT pr.name AS product, sl.qty, sl.unit_price, j.job_no, a.code AS asset_code
        FROM stock_ledger sl JOIN products pr ON pr.id = sl.product_id
        LEFT JOIN job_cards j ON j.id = sl.job_id LEFT JOIN assets a ON a.id = sl.asset_id
-      WHERE sl.txn_date = ? AND sl.kind = 'issue' AND ${OIL_NOT_SERVICE} ORDER BY sl.id`, date);
+      WHERE sl.txn_date = ? AND sl.kind = 'issue' AND ${OIL_NOT_SERVICE}${wsIs('COALESCE(j.workshop_id, sl.store_id)', ws)} ORDER BY sl.id`, date);
   const jobsMap = {};
   for (const w of work) {
     const g = jobsMap[w.job_id] || (jobsMap[w.job_id] = {
@@ -968,11 +977,11 @@ function dailyProgress(date) {
   const opened = all(
     `SELECT j.job_no, j.description, j.status, ${VEH}
        FROM job_cards j LEFT JOIN assets a ON a.id = j.asset_id
-      WHERE substr(COALESCE(j.requested_at, j.created_at),1,10) = ? ORDER BY j.id`, date);
+      WHERE substr(COALESCE(j.requested_at, j.created_at),1,10) = ?${wsIs('j.workshop_id', ws)} ORDER BY j.id`, date);
   const closed = all(
     `SELECT j.job_no, j.description, ${VEH}, COALESCE(j.total_cost,0) total_cost
        FROM job_cards j LEFT JOIN assets a ON a.id = j.asset_id
-      WHERE j.status = 'CLOSED' AND substr(j.completed_at,1,10) = ? ORDER BY j.id`, date);
+      WHERE j.status = 'CLOSED' AND substr(j.completed_at,1,10) = ?${wsIs('j.workshop_id', ws)} ORDER BY j.id`, date);
 
   // Still to do — open cards that are actually live: worked or raised within the last 30 days.
   // (open_total counts every open card so nothing is hidden by that window.)
@@ -982,7 +991,7 @@ function dailyProgress(date) {
             CAST(julianday(?) - julianday(substr(COALESCE(j.requested_at, j.created_at),1,10)) AS INTEGER) AS age_days,
             (SELECT MAX(w.work_date) FROM job_daily_work w WHERE w.job_id = j.id) AS last_work
        FROM job_cards j LEFT JOIN assets a ON a.id = j.asset_id
-      WHERE ${jobstate.notFinalSql('j')}
+      WHERE ${jobstate.notFinalSql('j')}${wsIs('j.workshop_id', ws)}
         AND substr(COALESCE(j.requested_at, j.created_at),1,10) <= ?
         AND (
           substr(COALESCE(j.requested_at, j.created_at),1,10) >= date(?, '-30 day')
@@ -991,19 +1000,19 @@ function dailyProgress(date) {
       ORDER BY age_days DESC, j.job_no`, date, date, date, date, date);
   const open_total = get(
     `SELECT COUNT(*) c FROM job_cards
-      WHERE ${jobstate.notFinalSql()} AND substr(COALESCE(requested_at, created_at),1,10) <= ?`, date).c;
+      WHERE ${jobstate.notFinalSql()} AND substr(COALESCE(requested_at, created_at),1,10) <= ?${wsIs('workshop_id', ws)}`, date).c;
 
   // Requested today (MRN lines raised) and received today (GRN deliveries).
   const requested = all(
     `SELECT m.mrn_no, ml.description, ml.qty, ml.category, a.code AS asset_code,
             COALESCE(ml.purchase_source, m.purchase_source) AS source
        FROM mrn_lines ml JOIN mrn m ON m.id = ml.mrn_id LEFT JOIN assets a ON a.id = m.asset_id
-      WHERE substr(m.req_date,1,10) = ? ORDER BY m.mrn_no, ml.id`, date);
+      WHERE substr(m.req_date,1,10) = ?${wsIs('m.workshop_id', ws)} ORDER BY m.mrn_no, ml.id`, date);
   const received = all(
     `SELECT g.description, g.qty, g.unit_price, g.supplier, m.mrn_no, a.code AS asset_code,
             COALESCE(g.purchase_source_norm, m.purchase_source) AS source
        FROM grn g LEFT JOIN mrn m ON m.id = g.mrn_id LEFT JOIN assets a ON a.id = m.asset_id
-      WHERE substr(g.delivery_date,1,10) = ? ORDER BY g.id`, date);
+      WHERE substr(g.delivery_date,1,10) = ?${wsIs('COALESCE(m.workshop_id, g.store_id)', ws)} ORDER BY g.id`, date);
 
   const total_labour = lab.reduce((s, l) => s + (Number(l.amount) || 0), 0);
   const total_material = issues.reduce((s, i) => s + (Number(i.qty) || 0) * (Number(i.unit_price) || 0), 0);
@@ -1012,7 +1021,7 @@ function dailyProgress(date) {
   const total_hours = jobs.reduce((s, j) => s + j.hours, 0);
   const received_value = received.reduce((s, g) => s + (Number(g.qty) || 0) * (Number(g.unit_price) || 0), 0);
   return {
-    date, jobs, issues, oil, opened, closed, pending, requested, received,
+    date, workshop_id: ws || null, jobs, issues, oil, opened, closed, pending, requested, received,
     totals: {
       jobs: jobs.length, hours: r2(total_hours), labour: r2(total_labour), external: r2(total_external),
       material: r2(total_material), oil: r2(total_oil),
@@ -1029,13 +1038,14 @@ const MDATE = /^\d{4}-\d{2}-\d{2}$/;
 router.get('/daily-progress', asyncHandler((req, res) => {
   const date = String(req.query.date || '').slice(0, 10);
   if (!MDATE.test(date)) return res.status(400).json({ error: 'A valid ?date=YYYY-MM-DD is required' });
-  res.json(dailyProgress(date));
+  res.json(dailyProgress(date, reportWs(req)));
 }));
 
 router.get('/daily-progress/print.html', asyncHandler((req, res) => {
   const date = String(req.query.date || '').slice(0, 10);
   if (!MDATE.test(date)) return res.status(400).send('A valid ?date=YYYY-MM-DD is required');
-  const rep = dailyProgress(date);
+  const rep = dailyProgress(date, reportWs(req));
+  const wsName = rep.workshop_id ? (get('SELECT name FROM workshops WHERE id = ?', rep.workshop_id) || {}).name : null;
   const esc = (v) => String(v == null ? '' : v).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
   const m = (n) => 'Rs ' + (Number(n) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const veh = (j) => [j.asset_reg, (j.asset_ec && j.asset_ec !== j.asset_reg) ? j.asset_ec : ''].filter(Boolean).join(' · ') || j.asset_code || '';
@@ -1062,7 +1072,7 @@ router.get('/daily-progress/print.html', asyncHandler((req, res) => {
   @media print { .noprint { display:none; } }
 </style></head><body>
 <button class="noprint" onclick="window.print()">🖨 Print / Save as PDF</button>
-<h1>Edward &amp; Christie (Pvt) Ltd — Daily Report</h1>
+<h1>Edward &amp; Christie (Pvt) Ltd — Daily Report${wsName ? ` · ${esc(wsName)}` : ''}</h1>
 <div class="sub">Date: <b>${esc(date)}</b> · ${t.jobs} job(s) worked · ${t.hours} mechanic-hours</div>
 <div class="tot">
   <div>Jobs worked<b>${t.jobs}</b></div>
@@ -1117,7 +1127,8 @@ function assetTeardown(id) {
             COALESCE(SUM(total_cost),0) total, COUNT(*) jobs
        FROM job_cards WHERE asset_id = ?`, id);
   const jobs = all(
-    `SELECT id, job_no, type, status, requested_at, labour_cost, material_cost, oil_cost, external_cost, total_cost
+    `SELECT id, job_no, type, status, requested_at, labour_cost, material_cost, oil_cost, external_cost, total_cost,
+            workshop_id, (SELECT w.name FROM workshops w WHERE w.id = job_cards.workshop_id) AS workshop_name
        FROM job_cards WHERE asset_id = ? ORDER BY total_cost DESC LIMIT 50`, id);
   const parts = all(
     `SELECT jp.description, COUNT(*) lines, COALESCE(SUM(jp.qty * jp.unit_price),0) value
@@ -1287,12 +1298,25 @@ function validPeriod(year, month) {
   return Number.isInteger(year) && year >= 2000 && year <= 2100 && Number.isInteger(month) && month >= 1 && month <= 12;
 }
 
+// Stage 5: the month's figures side by side, one row per workshop — for those who read every
+// workshop's reports (head office; everyone, while the workshops are not kept apart).
+router.get('/workshops-compared', requireAuth, asyncHandler(async (req, res) => {
+  const year = toInt(req.query.year), month = toInt(req.query.month);
+  if (!validPeriod(year, month)) return res.status(400).json({ error: 'year (YYYY) and month (1-12) are required' });
+  if (!require('../lib/workshops').isMulti()) return res.json({ year, month, rows: [] });
+  if (require('../lib/scope').reportWorkshop(req.user).choices) {
+    return res.status(403).json({ error: 'Only head office compares the workshops.' });
+  }
+  res.json({ year, month, rows: await monthlyReport.compare(year, month) });
+}));
+
 // Download the workbook for a period.
 router.get('/monthly-cost.xlsx', requireAuth, asyncHandler(async (req, res) => {
   const year = toInt(req.query.year), month = toInt(req.query.month);
   if (!validPeriod(year, month)) return res.status(400).json({ error: 'year (YYYY) and month (1-12) are required' });
-  const { wb } = await monthlyReport.buildWorkbook(year, month);
-  const fname = `Job-cost-report-${monthlyReport.MONTHS[month]}-${year}.xlsx`;
+  const ws = reportWs(req);
+  const { wb } = await monthlyReport.buildWorkbook(year, month, { ws });
+  const fname = `Job-cost-report-${monthlyReport.MONTHS[month]}-${year}${wsCode(ws).replace(' ', '-')}.xlsx`;
   res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
   res.setHeader('Content-Disposition', `attachment; filename="${fname}"`);
   await wb.xlsx.write(res);
@@ -1303,13 +1327,19 @@ router.get('/monthly-cost.xlsx', requireAuth, asyncHandler(async (req, res) => {
 router.get('/monthly-inputs', requireAuth, asyncHandler(async (req, res) => {
   const year = toInt(req.query.year), month = toInt(req.query.month);
   if (!validPeriod(year, month)) return res.status(400).json({ error: 'year and month are required' });
+  // Stage 5: one workshop's inputs, or every workshop's (each line saying whose). With more than
+  // one workshop they are entered one workshop at a time.
+  const ws = reportWs(req);
+  const multi = require('../lib/workshops').isMulti();
   const inputs = {};
   for (const sheet of MONTHLY_SHEETS) {
     inputs[sheet] = all(
-      `SELECT id, seq, line_date, vehicle, label, project, qty, rate, amount1, amount2, amount3, note
-         FROM monthly_report_inputs WHERE year = ? AND month = ? AND sheet = ? ORDER BY seq, id`, year, month, sheet);
+      `SELECT i.id, i.seq, i.line_date, i.vehicle, i.label, i.project, i.qty, i.rate, i.amount1, i.amount2, i.amount3, i.note,
+              i.workshop_id, w.name AS workshop_name
+         FROM monthly_report_inputs i LEFT JOIN workshops w ON w.id = i.workshop_id
+        WHERE i.year = ? AND i.month = ? AND i.sheet = ?${wsIs('i.workshop_id', ws)} ORDER BY i.workshop_id, i.seq, i.id`, year, month, sheet);
   }
-  const { parts, total } = await monthlyReport.buildWorkbook(year, month);
+  const { parts, total } = await monthlyReport.buildWorkbook(year, month, { ws, compare: false });
   const repCLab = parts.repair.closed_total - (parts.repair.closed_jobs.reduce((a, b) => a + (num(b.material) + num(b.oil) + num(b.general) + num(b.other)), 0));
   const repPLab = parts.repair.pending_jobs.reduce((a, b) => a + num(b.labour), 0);
   const repCOut = parts.repair.closed_jobs.reduce((a, b) => a + num(b.outside_estimate), 0);
@@ -1393,7 +1423,7 @@ router.get('/monthly-inputs', requireAuth, asyncHandler(async (req, res) => {
     id: s.id, job_no: s.job_no, vehicle: s.reg || s.code || s.vehicle_label || '',
     labour: num(s.labour), outside: num(s.outside_estimate),
   }));
-  res.json({ year, month, inputs, preview, daily_work, service_jobs });
+  res.json({ year, month, workshop_id: ws, editable: !multi || !!ws, inputs, preview, daily_work, service_jobs });
 }));
 
 // Replace all saved lines for one (year, month, sheet). Body: { year, month, sheet, lines:[...] }.
@@ -1402,25 +1432,30 @@ router.post('/monthly-inputs', requireAuth, asyncHandler((req, res) => {
   const year = toInt(b.year), month = toInt(b.month), sheet = String(b.sheet || '');
   if (!validPeriod(year, month)) return res.status(400).json({ error: 'year and month are required' });
   if (!MONTHLY_SHEETS.includes(sheet)) return res.status(400).json({ error: 'sheet must be one of ' + MONTHLY_SHEETS.join(', ') });
+  // Stage 5: the lines of ONE workshop are replaced — yours, or (head office) the one chosen.
+  const workshops = require('../lib/workshops');
+  const ws = reportWs(req);
+  if (workshops.isMulti() && !ws) return res.status(400).json({ error: 'Choose a workshop to enter its monthly inputs.' });
+  const target = ws || workshops.defaultId();
   // Keep only well-formed line objects — a null/primitive element must not crash the insert (→ 500).
   const lines = (Array.isArray(b.lines) ? b.lines : []).filter((ln) => ln && typeof ln === 'object');
   // Coerce every text field to a string or null — a non-string (object/array/boolean) field value
   // would otherwise reach better-sqlite3's bind and throw (→ 500 instead of a clean save).
   const s = (v) => (v == null || typeof v === 'object') ? null : String(v);
   tx(() => {
-    run('DELETE FROM monthly_report_inputs WHERE year = ? AND month = ? AND sheet = ?', year, month, sheet);
+    run(`DELETE FROM monthly_report_inputs WHERE year = ? AND month = ? AND sheet = ?${wsIs('workshop_id', target)}`, year, month, sheet);
     let seq = 0;
     for (const ln of lines) {
       run(
-        `INSERT INTO monthly_report_inputs (year, month, sheet, seq, line_date, vehicle, label, project, qty, rate, amount1, amount2, amount3, note)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        year, month, sheet, seq++,
+        `INSERT INTO monthly_report_inputs (year, month, sheet, workshop_id, seq, line_date, vehicle, label, project, qty, rate, amount1, amount2, amount3, note)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        year, month, sheet, target, seq++,
         s(ln.line_date), s(ln.vehicle), s(ln.label), s(ln.project), s(ln.qty),
         ln.rate == null || ln.rate === '' ? null : toNum(ln.rate),
         toNum(ln.amount1) || 0, toNum(ln.amount2) || 0, toNum(ln.amount3) || 0, s(ln.note));
     }
   });
-  res.json({ ok: true, sheet, saved: lines.length });
+  res.json({ ok: true, sheet, saved: lines.length, workshop_id: target });
 }));
 
 // Save manual outside-labour prices for service jobs (service_jobs.outside_estimate). The daily-work
@@ -1432,6 +1467,10 @@ router.post('/service-outside', requireAuth, asyncHandler((req, res) => {
   tx(() => {
     for (const it of items) {
       const id = toInt(it && it.id); if (!id) continue;
+      // Stage 5: someone kept to their own workshop prices only its services.
+      const sv = get(`SELECT COALESCE((SELECT jx.workshop_id FROM job_cards jx WHERE jx.job_no = s.job_no AND COALESCE(s.job_no,'') <> ''
+                              ORDER BY jx.id DESC LIMIT 1), s.store_id) w FROM service_jobs s WHERE s.id = ?`, id);
+      if (sv && sv.w && !require('../lib/scope').mayReach(req.user, sv.w)) continue;
       const val = (it.outside == null || it.outside === '') ? null : toNum(it.outside);
       run('UPDATE service_jobs SET outside_estimate = ? WHERE id = ?', val, id);
       saved++;
@@ -1449,6 +1488,9 @@ router.get('/monthly-repair-detail.html', requireAuth, asyncHandler((req, res) =
   if (!validPeriod(year, month)) return res.status(400).send('year (YYYY) and month (1-12) are required');
   const ym = `${year}-${String(month).padStart(2, '0')}`;
   const period = `${monthlyReport.MONTHS[month]} ${year}`;
+  // Stage 5: one workshop's jobs, or every workshop's.
+  const ws = reportWs(req);
+  const wsName = ws ? (get('SELECT name FROM workshops WHERE id = ?', ws) || {}).name : null;
   // Order both sections by JOB NUMBER, lowest to highest. Job numbers are YEAR/MONTH/R/SEQ,
   // so compare each "/"-segment numerically (a plain string sort would place /R/10 before /R/2,
   // and 2026/6 before 2026/10 wrongly). Pure-numeric segments are zero-padded for the compare;
@@ -1466,7 +1508,7 @@ router.get('/monthly-repair-detail.html', requireAuth, asyncHandler((req, res) =
   // partial-close month) — jobstate.reportClosedSql / reportPendingSql.
   const closedJobs = all(`SELECT id, job_no FROM job_cards
       WHERE ${jobstate.reportClosedSql()} AND completed_at IS NOT NULL AND substr(completed_at,1,7) = ?
-        AND (description IS NULL OR (description NOT LIKE 'Stores materials%' AND description NOT LIKE 'auto-created container%'))
+        AND (description IS NULL OR (description NOT LIKE 'Stores materials%' AND description NOT LIKE 'auto-created container%'))${wsIs('workshop_id', ws)}
       ORDER BY completed_at, id`, ym).sort(byJobNo);
   const closedIds = closedJobs.map((r) => r.id);
 
@@ -1474,13 +1516,13 @@ router.get('/monthly-repair-detail.html', requireAuth, asyncHandler((req, res) =
       WHERE ${jobstate.reportPendingSql()}
         AND (description IS NULL OR (description NOT LIKE 'Stores materials%' AND description NOT LIKE 'auto-created container%'))
         AND substr(COALESCE(requested_at, created_at),1,7) <= ?
-        AND EXISTS (SELECT 1 FROM job_daily_work w WHERE w.job_id = job_cards.id AND substr(w.work_date,1,7) = ?)
+        AND EXISTS (SELECT 1 FROM job_daily_work w WHERE w.job_id = job_cards.id AND substr(w.work_date,1,7) = ?)${wsIs('workshop_id', ws)}
       ORDER BY COALESCE(requested_at, created_at) DESC, id DESC`, ym, ym).sort(byJobNo);
   const pendingIds = pendingJobs.map((r) => r.id);
 
   const sparesIds = all(`SELECT id FROM job_cards
       WHERE substr(COALESCE(completed_at, requested_at, created_at),1,7) = ?
-        AND (description LIKE 'Stores materials%' OR description LIKE 'auto-created container%' OR description LIKE 'Spares Supply%')
+        AND (description LIKE 'Stores materials%' OR description LIKE 'auto-created container%' OR description LIKE 'Spares Supply%')${wsIs('workshop_id', ws)}
       ORDER BY completed_at, id`, ym).map((r) => r.id);
 
   const usedIds = [...closedIds, ...pendingIds, ...sparesIds];
@@ -1498,7 +1540,7 @@ router.get('/monthly-repair-detail.html', requireAuth, asyncHandler((req, res) =
       LEFT JOIN assets a ON a.id = j.asset_id
       LEFT JOIN projects p ON p.id = j.project_id
      WHERE substr(l.work_date,1,7) = ?
-       AND (l.job_id IS NULL OR l.job_id NOT IN (${usedIdsStr}))
+       AND (l.job_id IS NULL OR l.job_id NOT IN (${usedIdsStr}))${wsIs('j.workshop_id', ws)}
      GROUP BY COALESCE(a.registration, a.code, l.mechanic)
      HAVING labour > 0
      ORDER BY labour DESC
@@ -1564,7 +1606,7 @@ router.get('/monthly-repair-detail.html', requireAuth, asyncHandler((req, res) =
   @media print { .noprint { display:none; } }
 </style></head><body>
 <button class="noprint" onclick="window.print()">🖨 Print / Save as PDF</button>
-<h1>Edward &amp; Christie (Pvt) Ltd — Badalgama W/S</h1>
+<h1>Edward &amp; Christie (Pvt) Ltd — ${wsName ? esc(wsName) : 'Badalgama W/S'}</h1>
 <div class="sub">Monthly Repair Detail — <b>${esc(period)}</b> · ${g.jobs} job(s)</div>
 ${closedHtml}
 ${pendingHtml}
@@ -1595,14 +1637,15 @@ router.get('/repair-sections', requireAuth, asyncHandler(async (req, res) => {
   const ym = `${year}-${String(month).padStart(2, '0')}`;
   const period = `${monthlyReport.MONTHS[month]} ${year}`;
 
-  const { parts } = await monthlyReport.buildWorkbook(year, month);
+  const ws = reportWs(req);
+  const { parts } = await monthlyReport.buildWorkbook(year, month, { ws, compare: false });
   const rep = parts.repair;
 
-  // Verify daily work total with effective dated rates
+  // Verify daily work total with effective dated rates (Stage 5: on this workshop's cards).
   const dwRows = all(`
     SELECT w.id, w.job_id, w.work_date, w.mechanic, w.hours, w.is_external
-      FROM job_daily_work w
-     WHERE substr(w.work_date,1,7) = ? AND (w.is_external IS NULL OR w.is_external = 0)
+      FROM job_daily_work w LEFT JOIN job_cards j ON j.id = w.job_id
+     WHERE substr(w.work_date,1,7) = ? AND (w.is_external IS NULL OR w.is_external = 0)${wsIs('j.workshop_id', ws)}
   `, ym);
 
   let totalDailyWorkLabour = 0;
@@ -1627,7 +1670,7 @@ router.get('/repair-sections', requireAuth, asyncHandler(async (req, res) => {
   const diff = Math.round((totalDailyWorkLabour - allocatedLabour) * 100) / 100;
 
   res.json({
-    year, month, ym, period,
+    year, month, ym, period, workshop_id: ws,
     closed_jobs: rep.closed_jobs,
     pending_jobs: rep.pending_jobs,
     other_labour: rep.other_labour,
@@ -1688,12 +1731,13 @@ router.get('/daily/:kind', requireAuth, asyncHandler((req, res) => {
   // that copy back would leave the supervisor looking at a read-only sheet for the day they are
   // actually working on. Earlier days read their frozen copy, which is the point of keeping one.
   const isToday = !date || date === today;
-  const saved = (!isToday && date) ? daily.readSnapshot(kind, date) : null;
+  const ws = reportWs(req);   // Stage 5: one workshop's copy, or the whole company's
+  const saved = (!isToday && date) ? daily.readSnapshot(kind, date, ws) : null;
   if (saved && !req.query.live) {
     return res.json({ ...saved.data, saved: true, generated_at: saved.generated_at, row_count: saved.row_count });
   }
-  const lastSave = get('SELECT generated_at FROM daily_report_snapshots WHERE kind = ? AND report_date = ?', kind, date || today);
-  res.json({ ...daily.build(kind, { asOf: date }), saved: false, last_saved_at: lastSave ? lastSave.generated_at : null });
+  const lastSave = get('SELECT generated_at FROM daily_report_snapshots WHERE kind = ? AND report_date = ? AND workshop_id = ?', kind, date || today, ws || 0);
+  res.json({ ...daily.build(kind, { asOf: date, ws }), saved: false, last_saved_at: lastSave ? lastSave.generated_at : null });
 }));
 
 // Freeze the day. Running it again the same day replaces the copy, so it always holds the latest.
@@ -1701,7 +1745,7 @@ router.post('/daily/:kind/save', requireAuth, asyncHandler((req, res) => {
   const kind = kindOf(req.params.kind);
   if (!kind) return res.status(404).json({ error: 'Unknown report' });
   if (!mayReadKind(req, res, kind)) return;
-  const snap = daily.snapshot(kind, { asOf: req.body && req.body.date, userId: req.user.id });
+  const snap = daily.snapshot(kind, { asOf: req.body && req.body.date, userId: req.user.id, ws: reportWs(req) });
   res.json({ ok: true, ...snap });
 }));
 
@@ -1709,7 +1753,7 @@ router.get('/daily/:kind/history', requireAuth, asyncHandler((req, res) => {
   const kind = kindOf(req.params.kind);
   if (!kind) return res.status(404).json({ error: 'Unknown report' });
   if (!mayReadKind(req, res, kind)) return;
-  res.json(daily.history(kind, toInt(req.query.limit, 60)));
+  res.json(daily.history(kind, toInt(req.query.limit, 60), reportWs(req)));
 }));
 
 // Its own path rather than "/daily/:kind.xlsx": that form is matched by the "/daily/:kind"
@@ -1719,12 +1763,13 @@ router.get('/daily/:kind/export.xlsx', requireAuth, asyncHandler(async (req, res
   if (!kind) return res.status(404).send('Unknown report');
   if (!mayReadKind(req, res, kind)) return;
   const date = String(req.query.date || '').slice(0, 10) || null;
-  const saved = date ? daily.readSnapshot(kind, date) : null;
-  const data = saved && !req.query.live ? saved.data : daily.build(kind, { asOf: date });
+  const ws = reportWs(req);
+  const saved = date ? daily.readSnapshot(kind, date, ws) : null;
+  const data = saved && !req.query.live ? saved.data : daily.build(kind, { asOf: date, ws });
   const wb = daily.workbookFor(kind, data);
   const name = { pending_parts: 'Pending parts', pending_price: 'Pending price', day_tally: 'Day tally' }[kind] || 'Job report';
   res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-  res.setHeader('Content-Disposition', `attachment; filename="${name} ${data.as_of}.xlsx"`);
+  res.setHeader('Content-Disposition', `attachment; filename="${name}${wsCode(ws)} ${data.as_of}.xlsx"`);
   await wb.xlsx.write(res);
   res.end();
 }));

@@ -20,6 +20,13 @@
 const { get, all, run } = require('../db');
 const jobstate = require('./jobstate');
 
+// Stage 5: each report can be one workshop's. A request is its workshop's; a job card is its
+// workshop's; a receipt with no request is the workshop of the store that took it in. `ws` is
+// validated to a number before it is written into SQL.
+const MAIN_WS = '(SELECT id FROM workshops WHERE is_default = 1 ORDER BY id LIMIT 1)';
+const wsIs = (col, ws) => (ws ? ` AND COALESCE(${col}, ${MAIN_WS}) = ${Number(ws)}` : '');
+const wsName = (ws) => { const w = ws ? get('SELECT name FROM workshops WHERE id = ?', ws) : null; return w ? w.name : null; };
+
 const d10 = (v) => String(v || '').slice(0, 10);
 /** The office writes dates as 14.08.2026. */
 const dotDate = (v) => {
@@ -50,7 +57,7 @@ const num2 = (v) => String(Math.round(Number(v || 0) * 100) / 100);
  * Everything still on order, grouped by request, split by purchase source.
  * `asOf` bounds the request date so a past day can be rebuilt as it stood.
  */
-function pendingParts({ asOf } = {}) {
+function pendingParts({ asOf, ws = null } = {}) {
   const cutoff = d10(asOf) || d10(new Date().toISOString());
   const rows = all(`
     SELECT ml.id AS line_id, m.id AS mrn_id, m.mrn_no, date(m.req_date) AS req_date,
@@ -68,7 +75,7 @@ function pendingParts({ asOf } = {}) {
       LEFT JOIN projects p  ON p.id = j.project_id
       LEFT JOIN pending_part_notes n ON n.mrn_line_id = ml.id
      WHERE COALESCE(ml.qty_received,0) < ml.qty
-       AND date(m.req_date) <= date(?)
+       AND date(m.req_date) <= date(?)${wsIs('m.workshop_id', ws)}
      ORDER BY COALESCE(ml.purchase_source, m.purchase_source), date(m.req_date), m.mrn_no, ml.id`, cutoff);
 
   const gkey = (r) => [r.mrn_id, r.source || '', r.unit, itemKey(r.description)].join('§');
@@ -149,6 +156,7 @@ function pendingParts({ asOf } = {}) {
 
   return {
     as_of: cutoff,
+    workshop_id: ws || null, workshop_name: wsName(ws),
     sections: Object.entries(groups)
       .filter(([, list]) => list.length)
       .map(([source, list]) => ({
@@ -163,7 +171,7 @@ function pendingParts({ asOf } = {}) {
  * The jobs the workshop is attending, with the supervisor's running notes.
  * A job appears while it is open; the notes persist against the job itself.
  */
-function jobSummary({ asOf, activeDays = 30 } = {}) {
+function jobSummary({ asOf, activeDays = 30, ws = null } = {}) {
   const day = d10(asOf) || d10(new Date().toISOString());
   const win = Number(activeDays) > 0 ? Number(activeDays) : 30;
   // "Attended" is the handful of machines actually in the workshop, not every card left open —
@@ -187,7 +195,7 @@ function jobSummary({ asOf, activeDays = 30 } = {}) {
       LEFT JOIN projects ap ON ap.id = COALESCE(a.current_project_id, a.home_project_id)
       LEFT JOIN job_summary_notes n ON n.job_id = j.id
      WHERE ${jobstate.notFinalSql('j')}   -- still in play: parts or prices may still come in
-       AND j.asset_id IS NOT NULL
+       AND j.asset_id IS NOT NULL${wsIs('j.workshop_id', ws)}
        AND date(COALESCE(j.requested_at, j.created_at)) <= date(?)
        AND (
          n.job_id IS NOT NULL
@@ -281,6 +289,7 @@ function jobSummary({ asOf, activeDays = 30 } = {}) {
 
   return {
     as_of: day,
+    workshop_id: ws || null, workshop_name: wsName(ws),
     rows: [...byMachine.values()].map((cards, i) => {
       const lead = cards[0];
       const one = cards.length === 1;
@@ -332,7 +341,7 @@ function jobSummary({ asOf, activeDays = 30 } = {}) {
  * these lines is a job cost sitting at zero until the invoice is entered. Unlike the pending-parts
  * sheet the source is well recorded here, because it is set on the receipt itself.
  */
-function pendingPrice({ asOf } = {}) {
+function pendingPrice({ asOf, ws = null } = {}) {
   const cutoff = d10(asOf) || d10(new Date().toISOString());
   const rows = all(`
     SELECT g.id AS grn_id, g.grn_no, date(g.delivery_date) AS recv_date, g.qty,
@@ -352,7 +361,7 @@ function pendingPrice({ asOf } = {}) {
       LEFT JOIN projects p   ON p.id  = j.project_id
       LEFT JOIN receipt_price_notes n ON n.grn_id = g.id
      WHERE g.unit_price IS NULL
-       AND date(COALESCE(g.delivery_date, g.created_at)) <= date(?)
+       AND date(COALESCE(g.delivery_date, g.created_at)) <= date(?)${wsIs('COALESCE(m.workshop_id, g.store_id)', ws)}
      ORDER BY COALESCE(g.purchase_source_norm, m.purchase_source, ml.purchase_source),
               date(g.delivery_date) DESC, g.id`, cutoff);
 
@@ -412,6 +421,7 @@ function pendingPrice({ asOf } = {}) {
 
   return {
     as_of: cutoff,
+    workshop_id: ws || null, workshop_name: wsName(ws),
     sections: Object.entries(groups)
       .filter(([, list]) => list.length)
       .map(([source, list]) => ({
@@ -430,14 +440,16 @@ function pendingPrice({ asOf } = {}) {
  * (W3): who was at work, the hours booked on jobs, and what did not match. Only while attendance is
  * switched on — the scheduler does not freeze it otherwise.
  */
-function dayTally({ asOf } = {}) {
+function dayTally({ asOf, ws = null } = {}) {
   const attendance = require('./attendance');
   const day = d10(asOf) || attendance.today();
-  const d = attendance.day(day);
-  if (!d.enabled) return { as_of: day, enabled: false, rows: [], unmatched: [], counts: {}, red_count: 0, totals: {} };
+  // One workshop: its own mechanics that day (Stage 4 part A), even with the workshops not kept apart.
+  const d = attendance.day(day, { ws, split: true });
+  const who = { workshop_id: ws || null, workshop_name: wsName(ws) };
+  if (!d.enabled) return { as_of: day, ...who, enabled: false, rows: [], unmatched: [], counts: {}, red_count: 0, totals: {} };
   const shown = d.rows.filter((r) => r.attendance || r.booked_hours > 0 || r.active);
   return {
-    as_of: day, enabled: d.enabled, before_start: d.before_start, locked: d.locked, signoff: d.signoff,
+    as_of: day, ...who, enabled: d.enabled, before_start: d.before_start, locked: d.locked, signoff: d.signoff,
     counts: d.counts, red_count: d.red_count, totals: d.totals,
     rows: shown.map((r, i) => ({
       no: i + 1, mechanic_id: r.mechanic_id, mechanic: r.name,
@@ -463,37 +475,39 @@ function build(kind, opts) {
   return fn(opts || {});
 }
 
-/** Freeze today's copy. Re-running on the same day replaces it, so it always holds the latest. */
-function snapshot(kind, { asOf, userId } = {}) {
-  const data = build(kind, { asOf });
+/** Freeze today's copy. Re-running on the same day replaces it, so it always holds the latest.
+ *  Stage 5: one copy per workshop, and one for the whole company (workshop 0). */
+function snapshot(kind, { asOf, userId, ws = null } = {}) {
+  const data = build(kind, { asOf, ws });
   const date = data.as_of;
+  const w = ws ? Number(ws) : 0;
   // Count by shape, not by name — a sectioned report has no top-level rows, and naming one kind
   // explicitly meant the next sectioned report added threw here, silently, inside the scheduler.
   const count = Array.isArray(data.sections)
     ? data.sections.reduce((s, x) => s + x.rows.length, 0)
     : (data.rows || []).length;
   run(
-    `INSERT INTO daily_report_snapshots (kind, report_date, generated_by, row_count, payload)
-     VALUES (?, ?, ?, ?, ?)
-     ON CONFLICT(kind, report_date) DO UPDATE SET
+    `INSERT INTO daily_report_snapshots (kind, report_date, workshop_id, generated_by, row_count, payload)
+     VALUES (?, ?, ?, ?, ?, ?)
+     ON CONFLICT(kind, report_date, workshop_id) DO UPDATE SET
        generated_at = datetime('now'), generated_by = excluded.generated_by,
        row_count = excluded.row_count, payload = excluded.payload`,
-    kind, date, userId || null, count, JSON.stringify(data));
-  return get('SELECT id, kind, report_date, generated_at, row_count FROM daily_report_snapshots WHERE kind = ? AND report_date = ?', kind, date);
+    kind, date, w, userId || null, count, JSON.stringify(data));
+  return get('SELECT id, kind, report_date, workshop_id, generated_at, row_count FROM daily_report_snapshots WHERE kind = ? AND report_date = ? AND workshop_id = ?', kind, date, w);
 }
 
-/** A saved day, or null. */
-function readSnapshot(kind, date) {
-  const row = get('SELECT * FROM daily_report_snapshots WHERE kind = ? AND report_date = ?', kind, d10(date));
+/** A saved day (of one workshop, or of the whole company), or null. */
+function readSnapshot(kind, date, ws = null) {
+  const row = get('SELECT * FROM daily_report_snapshots WHERE kind = ? AND report_date = ? AND workshop_id = ?', kind, d10(date), ws ? Number(ws) : 0);
   if (!row) return null;
   return { ...row, data: JSON.parse(row.payload) };
 }
 
-function history(kind, limit = 60) {
+function history(kind, limit = 60, ws = null) {
   return all(
-    `SELECT s.id, s.kind, s.report_date, s.generated_at, s.row_count, u.username AS generated_by_name
+    `SELECT s.id, s.kind, s.report_date, s.workshop_id, s.generated_at, s.row_count, u.username AS generated_by_name
        FROM daily_report_snapshots s LEFT JOIN users u ON u.id = s.generated_by
-      WHERE s.kind = ? ORDER BY s.report_date DESC LIMIT ?`, kind, Number(limit) || 60);
+      WHERE s.kind = ? AND s.workshop_id = ? ORDER BY s.report_date DESC LIMIT ?`, kind, ws ? Number(ws) : 0, Number(limit) || 60);
 }
 
 module.exports = { build, snapshot, readSnapshot, history, pendingParts, jobSummary, pendingPrice, dayTally, dotDate, SOURCE_TABS, SOURCE_LABEL };
@@ -559,7 +573,7 @@ function jobSummaryWorkbook(data) {
 
   ws.mergeCells(1, 1, 1, COLS.length);
   const t = ws.getCell(1, 1);
-  t.value = 'Maintenance Summery-  Workshop';
+  t.value = `Maintenance Summery-  ${data.workshop_name || 'Workshop'}`;
   t.font = { bold: true, size: 13 };
   t.alignment = { horizontal: 'center' };
 
@@ -641,7 +655,7 @@ function dayTallyWorkbook(data) {
     c.value = text; c.font = { bold: !!opts.bold, size: opts.size || 11, italic: !!opts.italic };
     c.alignment = { horizontal: opts.left ? 'left' : 'center' };
   };
-  line(1, 'Attendance & day tally — Workshop', { bold: true, size: 13 });
+  line(1, `Attendance & day tally — ${data.workshop_name || 'Workshop'}`, { bold: true, size: 13 });
   line(2, `Date - ${dotDate(data.as_of).replace(/\./g, '/')}`, { bold: true });
   line(3, data.locked && data.signoff ? `Signed off by ${data.signoff.signed_by || '-'} at ${data.signoff.signed_at || ''}`
     : (data.before_start ? 'Before the attendance start date — not checked' : 'Not signed off'), { italic: true, size: 10 });
@@ -699,21 +713,29 @@ function startScheduler({ everyMinutes = 60 } = {}) {
   if (!require('../config').backupIntervalMinutes) return null;
   const tick = () => {
     try {
+      // Stage 5: the whole company's copy always; with more than one workshop, each one's too.
+      const wsList = [null];
+      if (require('./workshops').isMulti()) {
+        for (const w of all('SELECT id FROM workshops WHERE active = 1 ORDER BY id')) wsList.push(w.id);
+      }
       for (const kind of Object.keys(BUILDERS)) {
         // The day tally is kept only while attendance is switched on.
         if (kind === 'day_tally' && !require('./attendance').isEnabled()) continue;
-        const today = d10(new Date().toISOString());
-        snapshot(kind, { asOf: today });
-        // Backfill: if the last saved day is older than yesterday, the server was down. Freeze
-        // the missing days from the data as it stands now — better a late record than none.
-        const last = get('SELECT report_date FROM daily_report_snapshots WHERE kind = ? ORDER BY report_date DESC LIMIT 1 OFFSET 1', kind);
-        if (last) {
-          const from = new Date(last.report_date + 'T00:00:00Z');
-          const to = new Date(today + 'T00:00:00Z');
-          for (let t = from.getTime() + 86400000; t < to.getTime(); t += 86400000) {
-            const day = new Date(t).toISOString().slice(0, 10);
-            if (!get('SELECT 1 v FROM daily_report_snapshots WHERE kind = ? AND report_date = ?', kind, day)) {
-              snapshot(kind, { asOf: day });
+        for (const ws of wsList) {
+          const w = ws || 0;
+          const today = d10(new Date().toISOString());
+          snapshot(kind, { asOf: today, ws });
+          // Backfill: if the last saved day is older than yesterday, the server was down. Freeze
+          // the missing days from the data as it stands now — better a late record than none.
+          const last = get('SELECT report_date FROM daily_report_snapshots WHERE kind = ? AND workshop_id = ? ORDER BY report_date DESC LIMIT 1 OFFSET 1', kind, w);
+          if (last) {
+            const from = new Date(last.report_date + 'T00:00:00Z');
+            const to = new Date(today + 'T00:00:00Z');
+            for (let t = from.getTime() + 86400000; t < to.getTime(); t += 86400000) {
+              const day = new Date(t).toISOString().slice(0, 10);
+              if (!get('SELECT 1 v FROM daily_report_snapshots WHERE kind = ? AND report_date = ? AND workshop_id = ?', kind, day, w)) {
+                snapshot(kind, { asOf: day, ws });
+              }
             }
           }
         }
@@ -731,3 +753,4 @@ function startScheduler({ everyMinutes = 60 } = {}) {
 }
 
 module.exports.startScheduler = startScheduler;
+module.exports.wsIs = wsIs;

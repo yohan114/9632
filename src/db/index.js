@@ -652,6 +652,7 @@ function migrate() {
   workshopsStage2();
   storesStage4();
   signoffsPerWorkshop();
+  reportsPerWorkshop();
 
   // Seed the RBAC matrix once (safe to require here — db exports are already set).
   try { require('../lib/permissions').seedDefaults(); } catch (e) { /* table may not exist yet on very first pass */ }
@@ -831,6 +832,44 @@ function signoffsPerWorkshop() {
       DROP TABLE workday_signoffs;
       ALTER TABLE workday_signoffs_new RENAME TO workday_signoffs;`);
   })();
+}
+
+// Stage 5: reports per workshop. The saved daily reports were keyed UNIQUE(kind, report_date) —
+// rebuilt once keyed by (kind, report_date, workshop_id), every saved day kept as the whole
+// company's (workshop 0, which is what it was). The monthly report inputs (fuel, salaries,
+// overheads, the pending list, outside prices) each belong to a workshop; the ones already
+// entered are the main workshop's.
+function reportsPerWorkshop() {
+  const cur = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='daily_report_snapshots'").get();
+  if (cur && !/workshop_id/.test(cur.sql)) {
+    db.transaction(() => {
+      db.exec(`
+        DROP INDEX IF EXISTS idx_daily_snap;
+        CREATE TABLE daily_report_snapshots_new (
+          id           INTEGER PRIMARY KEY AUTOINCREMENT,
+          kind         TEXT NOT NULL,
+          report_date  TEXT NOT NULL,
+          workshop_id  INTEGER NOT NULL DEFAULT 0,
+          generated_at TEXT NOT NULL DEFAULT (datetime('now')),
+          generated_by INTEGER REFERENCES users(id),
+          row_count    INTEGER NOT NULL DEFAULT 0,
+          payload      TEXT NOT NULL,
+          UNIQUE(kind, report_date, workshop_id)
+        );
+        INSERT INTO daily_report_snapshots_new (id, kind, report_date, workshop_id, generated_at, generated_by, row_count, payload)
+          SELECT id, kind, report_date, 0, generated_at, generated_by, row_count, payload FROM daily_report_snapshots;
+        DROP TABLE daily_report_snapshots;
+        ALTER TABLE daily_report_snapshots_new RENAME TO daily_report_snapshots;
+        CREATE INDEX IF NOT EXISTS idx_daily_snap ON daily_report_snapshots(kind, workshop_id, report_date DESC);`);
+    })();
+  }
+  ensureColumn('monthly_report_inputs', 'workshop_id', 'INTEGER REFERENCES workshops(id)');
+  db.exec(`UPDATE monthly_report_inputs SET workshop_id = (SELECT id FROM workshops WHERE is_default = 1 ORDER BY id LIMIT 1)
+            WHERE workshop_id IS NULL;
+           CREATE INDEX IF NOT EXISTS idx_mri_ws ON monthly_report_inputs(year, month, sheet, workshop_id);
+           CREATE TRIGGER IF NOT EXISTS trg_mri_workshop AFTER INSERT ON monthly_report_inputs WHEN NEW.workshop_id IS NULL
+           BEGIN UPDATE monthly_report_inputs SET workshop_id = (SELECT id FROM workshops WHERE is_default = 1 ORDER BY id LIMIT 1)
+                  WHERE id = NEW.id; END;`);
 }
 
 function ensureColumn(table, col, def) {

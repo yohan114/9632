@@ -6847,10 +6847,18 @@ const MRI_COLS = {
 };
 // The two "outside price" sheets are seeded from live lists (not free-form) and save differently.
 const MRI_SEEDED = new Set(['daily_outside', 'service_outside']);
+// Stage 5: the workshop the Reports page is showing ('' = all workshops, or the only one). Kept
+// while the app is open; the server decides what each person may actually read.
+let REP_WS = '';
+const repWsQ = () => (REP_WS ? '&workshop_id=' + encodeURIComponent(REP_WS) : '');
+
 async function openMonthlyInputs(year, month, onSaved) {
   let data;
-  try { data = await api(`/reports/monthly-inputs?year=${year}&month=${month}`); }
+  try { data = await api(`/reports/monthly-inputs?year=${year}&month=${month}${repWsQ()}`); }
   catch (e) { return toast(e.message, 'err'); }
+  // Stage 5: with more than one workshop, inputs are entered one workshop at a time.
+  if (data.editable === false) return toast('Choose a workshop at the top of the page to enter its monthly inputs.', 'err');
+  const wsLabel = data.workshop_id && WS_CACHE ? ' — ' + wsName(WS_CACHE, data.workshop_id) : '';
   const state = {};
   for (const [k] of MRI_SHEETS) state[k] = (data.inputs[k] || []).map((r) => ({ ...r }));
   // Seed the outside-price editors from the month's live daily-work vehicles and service jobs, with
@@ -6858,7 +6866,7 @@ async function openMonthlyInputs(year, month, onSaved) {
   state.daily_outside = (data.daily_work || []).map((d) => ({ vehicle: d.vehicle, labour: d.labour, amount1: (d.outside ? d.outside : '') }));
   state.service_outside = (data.service_jobs || []).map((s) => ({ id: s.id, job_no: s.job_no, vehicle: s.vehicle, labour: s.labour, amount1: (s.outside ? s.outside : '') }));
   let active = 'fuel';
-  const bg = modal(`Monthly inputs — ${MONTH_NAMES[month]} ${year}`, `
+  const bg = modal(`Monthly inputs — ${MONTH_NAMES[month]} ${year}${wsLabel}`, `
     <p class="muted" style="margin-top:0;font-size:12px">Fuel, Other &amp; Salaries are entered by hand. <b>Daily Work Outside</b> &amp; <b>Service Outside</b> let you type what each job would cost sent outside — those roll into the make-or-buy Profit/Loss. Repair, Service &amp; mechanic hours are pulled from live data.</p>
     <div class="toolbar" id="mri-tabs" style="margin-top:0">${MRI_SHEETS.map(([k, l]) => `<button class="sm" data-k="${k}">${l}</button>`).join('')}</div>
     <div id="mri-grid"></div>
@@ -6895,9 +6903,9 @@ async function openMonthlyInputs(year, month, onSaved) {
             await api('/reports/service-outside', { method: 'POST', body: { items: state[k].map((r) => ({ id: r.id, outside: r.amount1 })) } });
           } else if (k === 'daily_outside') {
             const lines = state[k].filter((r) => r.amount1 !== '' && r.amount1 != null).map((r) => ({ vehicle: r.vehicle, amount1: r.amount1 }));
-            await api('/reports/monthly-inputs', { method: 'POST', body: { year, month, sheet: k, lines } });
+            await api('/reports/monthly-inputs', { method: 'POST', body: { year, month, sheet: k, lines, workshop_id: data.workshop_id } });
           } else {
-            await api('/reports/monthly-inputs', { method: 'POST', body: { year, month, sheet: k, lines: state[k] } });
+            await api('/reports/monthly-inputs', { method: 'POST', body: { year, month, sheet: k, lines: state[k], workshop_id: data.workshop_id } });
           }
         }
         toast('Monthly inputs saved'); close(); if (onSaved) onSaved();
@@ -6913,7 +6921,7 @@ async function openRepairSectionsReconciler(year, month, onSync) {
   let repData;
   const loadData = async () => {
     try {
-      repData = await api(`/reports/repair-sections?year=${year}&month=${month}`);
+      repData = await api(`/reports/repair-sections?year=${year}&month=${month}${repWsQ()}`);
     } catch (e) {
       toast(e.message, 'err');
       throw e;
@@ -7751,7 +7759,22 @@ routes.tyrebattery = async (c) => {
 };
 
 routes.reports = async (c) => {
-  c.innerHTML = `${pageHeader('Reports', 'Edward and Christie (Pvt) Ltd — Badalgama Central Workshop')}
+  // Stage 5: a workshop picker once there is more than one workshop. Head office: "All workshops"
+  // or any one; someone kept to their own sees only theirs (store staff: the ones their store serves).
+  const wsd = wsMulti() ? await workshopsData().catch(() => null) : null;
+  const seen = ME && ME.workshopsSeen;
+  const wsChoices = wsd ? wsd.workshops.filter((w) => w.active && (!seen || seen.includes(w.id))) : [];
+  if (wsd && seen && !seen.includes(Number(REP_WS))) REP_WS = String((ME.workshop && seen.includes(ME.workshop.id)) ? ME.workshop.id : seen[0]);
+  if (wsd && !seen && REP_WS && !wsChoices.some((w) => String(w.id) === String(REP_WS))) REP_WS = '';
+  if (!wsd) REP_WS = '';
+  const repTitle = REP_WS && wsd ? `Edward and Christie (Pvt) Ltd — ${wsName(wsd, Number(REP_WS))}` : 'Edward and Christie (Pvt) Ltd — Badalgama Central Workshop';
+  c.innerHTML = `${pageHeader('Reports', repTitle)}
+    ${wsd ? `<div class="toolbar" style="margin:0 0 10px">
+      <label class="muted" style="font-size:12px">Workshop</label>
+      ${wsChoices.length === 1 && seen ? `<span class="badge blue">${esc(wsChoices[0].name)}</span>`
+    : `<select id="rep-ws" style="max-width:280px">${seen ? '' : `<option value="" ${REP_WS ? '' : 'selected'}>All workshops</option>`}
+          ${wsChoices.map((w) => `<option value="${w.id}" ${String(w.id) === String(REP_WS) ? 'selected' : ''}>${esc(w.name)}</option>`).join('')}</select>`}
+    </div>` : ''}
     <div class="card section">
       <div class="toolbar" style="margin-top:0">
         <h3 style="margin:0">Daily Reports</h3>
@@ -7785,7 +7808,10 @@ routes.reports = async (c) => {
         <a class="btn sm" id="mcr-rd" href="#" target="_blank">🖨 Repair Detail</a>
         <a class="btn primary sm" id="mcr-dl" href="#">⬇ Download Excel</a>
       </div>
-      <div id="mcr-preview" class="muted">Loading…</div></div>`;
+      <div id="mcr-preview" class="muted">Loading…</div></div>
+    ${wsd && !seen && !REP_WS ? `<div class="card section"><h3 style="margin-top:0">Workshops compared <span class="muted" style="font-weight:400;font-size:12px">— the month chosen above, one row per workshop</span></h3>
+      <div id="rep-cmp" class="muted">Loading…</div></div>` : ''}`;
+  if (qs('#rep-ws', c)) qs('#rep-ws', c).onchange = (e) => { REP_WS = e.target.value; routes.reports(c); };
 
   // ---- Daily Reports: the two sheets the office used to type by hand.
   // Today reads live so it is always current; an earlier day reads its frozen copy, so a sheet
@@ -7887,21 +7913,21 @@ routes.reports = async (c) => {
 
   const drLoad = async () => {
     const date = drDate.value;
-    qs('#dr-dl', c).href = `/api/reports/daily/${drKind}/export.xlsx?date=${date}`;
+    qs('#dr-dl', c).href = `/api/reports/daily/${drKind}/export.xlsx?date=${date}${repWsQ()}`;
     qs('#dr-t-pending', c).classList.toggle('primary', drKind === 'pending_parts');
     qs('#dr-t-price', c).classList.toggle('primary', drKind === 'pending_price');
     qs('#dr-t-jobs', c).classList.toggle('primary', drKind === 'job_summary');
     qs('#dr-t-tally', c).classList.toggle('primary', drKind === 'day_tally');
     drBody.innerHTML = '<div class="muted">Loading…</div>';
-    try { drRender(await api(`/reports/daily/${drKind}?date=${date}`)); }
+    try { drRender(await api(`/reports/daily/${drKind}?date=${date}${repWsQ()}`)); }
     catch (e) { drBody.innerHTML = `<p class="err">${esc(e.message)}</p>`; }
     try {
-      const h = await api(`/reports/daily/${drKind}/history?limit=30`);
+      const h = await api(`/reports/daily/${drKind}/history?limit=30${repWsQ()}`);
       qs('#dr-hist', c).innerHTML = h.length ? tableWrap(
         [{ label: 'Day' }, { label: 'Rows', num: true }, { label: 'Saved at' }, { label: 'By' }, { label: '' }],
         h.map((x) => `<tr><td>${esc(x.report_date)}</td><td class="num">${x.row_count}</td>
           <td class="muted">${esc(String(x.generated_at).slice(0, 16))}</td><td class="muted">${esc(x.generated_by_name || 'auto')}</td>
-          <td><a class="btn sm" href="/api/reports/daily/${drKind}/export.xlsx?date=${x.report_date}">⬇</a></td></tr>`))
+          <td><a class="btn sm" href="/api/reports/daily/${drKind}/export.xlsx?date=${x.report_date}${repWsQ()}">⬇</a></td></tr>`))
         : '<p class="muted" style="margin:0">No saved days yet.</p>';
     } catch (e) { /* history is a nicety */ }
   };
@@ -7916,7 +7942,7 @@ routes.reports = async (c) => {
   drDate.onchange = drLoad;
   qs('#dr-save', c).onclick = async () => {
     try {
-      const r = await api(`/reports/daily/${drKind}/save`, { method: 'POST', body: { date: drDate.value } });
+      const r = await api(`/reports/daily/${drKind}/save`, { method: 'POST', body: { date: drDate.value, workshop_id: REP_WS || undefined } });
       toast(`Saved ${r.report_date} — ${r.row_count} row(s)`); drLoad();
     }
     catch (e) { toast(e.message, 'err'); }
@@ -7931,11 +7957,25 @@ routes.reports = async (c) => {
   const mcrDl = qs('#mcr-dl', c), mcrPrev = qs('#mcr-preview', c);
   const loadMcr = async () => {
     const y = mcrYear.value, mo = mcrMonth.value;
-    mcrDl.href = `/api/reports/monthly-cost.xlsx?year=${y}&month=${mo}`;
-    qs('#mcr-rd', c).href = `/api/reports/monthly-repair-detail.html?year=${y}&month=${mo}`;
+    mcrDl.href = `/api/reports/monthly-cost.xlsx?year=${y}&month=${mo}${repWsQ()}`;
+    qs('#mcr-rd', c).href = `/api/reports/monthly-repair-detail.html?year=${y}&month=${mo}${repWsQ()}`;
     mcrPrev.innerHTML = '<span class="muted">Loading…</span>';
+    // Stage 5: one row per workshop, for head office looking at all of them.
+    if (qs('#rep-cmp', c)) {
+      api(`/reports/workshops-compared?year=${y}&month=${mo}`).then((d) => {
+        const rows = d.rows || [];
+        const sum = (k) => rows.reduce((t, r) => t + (Number(r[k]) || 0), 0);
+        const K = [['repair_jobs', 'Repair jobs', 0], ['jobs_closed', 'Closed', 0], ['services', 'Services', 0], ['labour', 'Labour', 1],
+          ['spare_parts', 'Spare parts', 1], ['lubricants', 'Lubricants', 1], ['other_material', 'Other material', 1],
+          ['overheads', 'Overheads', 1], ['total', 'Total cost', 1], ['hours_booked', 'Hours booked', 0]];
+        qs('#rep-cmp', c).innerHTML = tableWrap([{ label: 'Workshop' }].concat(K.map(([, l]) => ({ label: l, num: true }))),
+          rows.map((r) => `<tr><td>${esc(r.name)}</td>${K.map(([k, , m]) => `<td class="num">${m ? money(r[k]) : num(r[k])}</td>`).join('')}</tr>`)
+            .concat([`<tr><td><b>All workshops</b></td>${K.map(([k, , m]) => `<td class="num"><b>${m ? money(sum(k)) : num(sum(k))}</b></td>`).join('')}</tr>`]),
+          { scroll: true });
+      }).catch((e) => { qs('#rep-cmp', c).innerHTML = `<span class="err">${esc(e.message)}</span>`; });
+    }
     let p;
-    try { p = (await api(`/reports/monthly-inputs?year=${y}&month=${mo}`)).preview; }
+    try { p = (await api(`/reports/monthly-inputs?year=${y}&month=${mo}${repWsQ()}`)).preview; }
     catch (e) { mcrPrev.innerHTML = `<span class="err">${esc(e.message)}</span>`; return; }
 
     const pl = p.profit_loss;
@@ -7945,13 +7985,13 @@ routes.reports = async (c) => {
         <div style="font-weight:700;font-size:15px;color:#5f6368">ZERO VALUE · NO ACTIVITY: Rs 0.00</div>
         <div style="font-size:12px;color:#3c4043">In-house absorbed cost: <b>Rs 0.00</b> vs Outside estimate: <b>Rs 0.00</b> (No transactions or inputs recorded for this month)</div>
       </div>
-      <a class="btn primary sm" href="/api/reports/monthly-cost.xlsx?year=${y}&month=${mo}">⬇ Download 14-Sheet Bill</a>
+      <a class="btn primary sm" href="/api/reports/monthly-cost.xlsx?year=${y}&month=${mo}${repWsQ()}">⬇ Download 14-Sheet Bill</a>
     </div>` : `<div style="background:${pl.is_profit ? '#e6f4ea' : '#fce8e6'};border:1px solid ${pl.is_profit ? '#a8dab5' : '#f5c6cb'};padding:12px;border-radius:6px;margin-bottom:12px;display:flex;align-items:center;justify-content:space-between">
       <div>
         <div style="font-weight:700;font-size:15px;color:${pl.is_profit ? '#137333' : '#c5221f'}">${pl.is_profit ? 'PROFIT' : 'LOSS'}: Rs ${money(pl.saving_amount)}</div>
         <div style="font-size:12px;color:#3c4043">In-house absorbed cost: <b>Rs ${money(pl.in_house_cost)}</b> vs Outside estimate: <b>Rs ${money(pl.outside_cost)}</b> (${(pl.saving_pct * 100).toFixed(1)}% ${pl.is_profit ? 'cheaper than outside' : 'more expensive than outside'})</div>
       </div>
-      <a class="btn primary sm" href="/api/reports/monthly-cost.xlsx?year=${y}&month=${mo}">⬇ Download 14-Sheet Bill</a>
+      <a class="btn primary sm" href="/api/reports/monthly-cost.xlsx?year=${y}&month=${mo}${repWsQ()}">⬇ Download 14-Sheet Bill</a>
     </div>`) : '';
 
     const line = (label, count, total, warn) => `<tr><td>${esc(label)}</td><td class="num">${count}</td><td class="num">${money(total)}</td><td>${warn ? '<span class="badge amber">enter inputs</span>' : ''}</td></tr>`;
@@ -8021,11 +8061,19 @@ routes.progress = async (c) => {
   const sp = new URLSearchParams(location.hash.split('?')[1] || '');
   const today = new Date().toISOString().slice(0, 10);
   const date0 = sp.get('date') || today;
+  // Stage 5: the same workshop choice as the Reports page.
+  const wsd = wsMulti() ? await workshopsData().catch(() => null) : null;
+  const seen = ME && ME.workshopsSeen;
+  const wsChoices = wsd ? wsd.workshops.filter((w) => w.active && (!seen || seen.includes(w.id))) : [];
+  if (wsd && seen && !seen.includes(Number(REP_WS))) REP_WS = String((ME.workshop && seen.includes(ME.workshop.id)) ? ME.workshop.id : seen[0]);
+  if (!wsd) REP_WS = '';
   c.innerHTML = `${pageHeader('Daily Report', 'One day at a glance — work done, jobs opened & closed, what’s still to do, items requested & received.')}
     <div class="toolbar">
       <label style="display:flex;gap:6px;align-items:center;flex-direction:row;width:auto">Date <input type="date" id="pgdate" value="${esc(date0)}" style="width:auto"></label>
       <button class="sm" id="pgprev">← Previous day</button>
       <button class="sm" id="pgnext">Next day →</button>
+      ${wsd && !(seen && wsChoices.length === 1) ? `<select id="pgws" style="max-width:240px">${seen ? '' : `<option value="" ${REP_WS ? '' : 'selected'}>All workshops</option>`}
+        ${wsChoices.map((w) => `<option value="${w.id}" ${String(w.id) === String(REP_WS) ? 'selected' : ''}>${esc(w.name)}</option>`).join('')}</select>` : ''}
       <div class="spacer"></div>
       <a class="btn sm" id="pgongx" href="/api/reports/ongoing-jobs.xlsx" title="Excel: every open job from the last 8 months, ranked by delay, plus the parts they are waiting for">⬇ Ongoing Jobs (Excel)</a>
       <a class="btn sm" id="pgong" href="/api/reports/ongoing-jobs.html" target="_blank" title="PDF: every open job from the last 8 months, ranked by delay, plus the parts they are waiting for">⚠ Ongoing Jobs / Delays (PDF)</a>
@@ -8036,10 +8084,10 @@ routes.progress = async (c) => {
   const load = async () => {
     const dt = qs('#pgdate').value || today;
     history.replaceState(null, '', '#/progress?date=' + dt);
-    qs('#pgprint').href = '/api/reports/daily-progress/print.html?date=' + encodeURIComponent(dt);
+    qs('#pgprint').href = '/api/reports/daily-progress/print.html?date=' + encodeURIComponent(dt) + repWsQ();
     qs('#pgjobs').href = '/api/reports/jobs-summary.html?from=' + encodeURIComponent(dt);
     let rep;
-    try { rep = await api('/reports/daily-progress?date=' + encodeURIComponent(dt)); }
+    try { rep = await api('/reports/daily-progress?date=' + encodeURIComponent(dt) + repWsQ()); }
     catch (e) { qs('#pgbody').innerHTML = `<div class="card err">${esc(e.message)}</div>`; return; }
     const t = rep.totals;
     const jobRows = rep.jobs.map((j) => `<tr>
@@ -8093,6 +8141,7 @@ routes.progress = async (c) => {
   qs('#pgprev').onclick = () => shiftDay(-1);
   qs('#pgnext').onclick = () => shiftDay(1);
   qs('#pgdate').onchange = load;
+  if (qs('#pgws')) qs('#pgws').onchange = (e) => { REP_WS = e.target.value; load(); };
   await load();
 };
 
@@ -8116,7 +8165,7 @@ routes.teardown = async (c) => {
       <div class="cost-line"><span>${label}</span><span>${money(v)} · ${pct(v).toFixed(1)}%</span></div>
       <div class="bar-track"><div class="bar" style="width:${pct(v)}%"></div></div>`).join('') || '<span class="muted">No recorded cost for this vehicle.</span>';
     const jobRows = t.jobs.map((j) => `<tr>
-        <td><a href="#/jobs/${j.id}">${esc(j.job_no)}</a></td><td>${esc(j.type)}</td>
+        <td><a href="#/jobs/${j.id}">${esc(j.job_no)}</a>${wsMulti() && j.workshop_name ? `<br><span class="muted" style="font-size:11px">${esc(j.workshop_name)}</span>` : ''}</td><td>${esc(j.type)}</td>
         <td class="num">${money(j.labour_cost)}</td><td class="num">${money(j.material_cost)}</td>
         <td class="num">${money(j.oil_cost)}</td><td class="num">${money(j.external_cost)}</td>
         <td class="num"><b>${money(j.total_cost)}</b></td></tr>`);

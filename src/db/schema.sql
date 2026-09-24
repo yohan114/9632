@@ -725,15 +725,16 @@ CREATE TABLE IF NOT EXISTS pending_part_notes (
 -- though the underlying jobs have moved on, which is exactly what the hand-kept workbook did.
 CREATE TABLE IF NOT EXISTS daily_report_snapshots (
   id           INTEGER PRIMARY KEY AUTOINCREMENT,
-  kind         TEXT NOT NULL,               -- 'pending_parts' | 'job_summary'
+  kind         TEXT NOT NULL,               -- 'pending_parts' | 'job_summary' | 'pending_price' | 'day_tally'
   report_date  TEXT NOT NULL,               -- YYYY-MM-DD
+  workshop_id  INTEGER NOT NULL DEFAULT 0,  -- Stage 5: one workshop's copy; 0 = the whole company
   generated_at TEXT NOT NULL DEFAULT (datetime('now')),
   generated_by INTEGER REFERENCES users(id),
   row_count    INTEGER NOT NULL DEFAULT 0,
   payload      TEXT NOT NULL,               -- the rendered rows, as JSON
-  UNIQUE(kind, report_date)
+  UNIQUE(kind, report_date, workshop_id)
 );
-CREATE INDEX IF NOT EXISTS idx_daily_snap ON daily_report_snapshots(kind, report_date DESC);
+CREATE INDEX IF NOT EXISTS idx_daily_snap ON daily_report_snapshots(kind, workshop_id, report_date DESC);
 
 -- Scanned service sheets attached to a service record.
 --
