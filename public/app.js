@@ -961,7 +961,7 @@ function renderPendingApprovals(pa) {
     section('MRNs awaiting your <b>approval</b>', pa.approve || [], (m) => mrnRow(m, 'Approve')),
     section('Job cards awaiting <b>transport approval</b>', pa.transport || [], (j) => jobRow(j, 'Approve')),
     section('Job cards awaiting <b>operations approval</b>', pa.ops || [], (j) => jobRow(j, 'Approve')),
-    section('Days waiting for <b>sign-off</b>', pa.signoff || [], (d) => `<div class="cost-line"><a href="#/dailywork?att=${esc(d.date)}"><b>${esc(d.date)}</b> · attendance &amp; daily work${d.red_count ? ` · <span style="color:var(--red)">${d.red_count} red</span>` : ''}</a><span class="badge ${d.red_count ? 'red' : 'amber'}">Sign off →</span></div>`),
+    section('Days waiting for <b>sign-off</b>', pa.signoff || [], (d) => `<div class="cost-line"><a href="#/dailywork?att=${esc(d.date)}${d.workshop_id ? '&att_ws=' + d.workshop_id : ''}"><b>${esc(d.date)}</b>${d.workshop_name ? ` · ${esc(d.workshop_name)}` : ''} · attendance &amp; daily work${d.red_count ? ` · <span style="color:var(--red)">${d.red_count} red</span>` : ''}</a><span class="badge ${d.red_count ? 'red' : 'amber'}">Sign off →</span></div>`),
     section('Job cards asking to be <b>reopened</b>', pa.reopen || [], (r) => `<div class="cost-line"><a href="#/jobs/${r.job_id}"><b>${esc(r.job_no)}</b> · ${esc(idLabel(r) || '—')} · ${esc(String(r.reason || '').slice(0, 60))}${r.requested_by_name ? ' · by ' + esc(r.requested_by_name) : ''}${waited(r.requested_at)}</a><span class="badge amber">Decide →</span></div>`),
   ].join('');
   return `<div class="card section" style="border-left:4px solid ${pa.total ? 'var(--red)' : 'var(--green)'}">
@@ -1022,7 +1022,7 @@ async function dashMain(c) {
   // Attendance (W3): today's tally and the days still to sign off — only while attendance is on.
   const at = d.attendance_today;
   if (at && canView('dailywork')) opStats.push(`<a class="card stat" href="#/dailywork" style="text-decoration:none"><span class="n" style="color:${at.red_count ? 'var(--red)' : 'inherit'}">${at.before_start ? '—' : at.red_count}</span><span class="l">Today's tally — ${at.before_start ? 'not started' : (at.red_count ? 'red' : 'nothing red')}</span></a>
-      ${at.unsigned_days.length ? `<a class="card stat" href="#/dailywork?att=${esc(at.unsigned_days[0].date)}" style="text-decoration:none"><span class="n">${at.unsigned_days.length}</span><span class="l">Days to sign off</span></a>` : ''}`);
+      ${at.unsigned_days.length ? `<a class="card stat" href="#/dailywork?att=${esc(at.unsigned_days[0].date)}${at.unsigned_days[0].workshop_id ? '&att_ws=' + at.unsigned_days[0].workshop_id : ''}" style="text-decoration:none"><span class="n">${at.unsigned_days.length}</span><span class="l">Days to sign off</span></a>` : ''}`);
   if (canView('oil')) opStats.push(`<a class="card stat" href="#/oil?tab=forecast" style="text-decoration:none"><span class="n">${d.low_stock_oil.length}</span><span class="l">Low-stock Lubricants</span></a>`);
   if (canView('batteries')) opStats.push(`<a class="card stat" href="#/batteries" style="text-decoration:none"><span class="n">${d.batteries_warranty.length}</span><span class="l">Battery Warranty ≤60d</span></a>`);
   if (canView('stores') || canView('oil')) {
@@ -1896,14 +1896,25 @@ function attWorked(a) {
 // Typed but not saved yet. Kept outside the page so a live refresh (somebody else saving) does
 // not throw away what is being typed.
 let ATT_DRAFT = { date: null, rows: new Map() };
+// Stage 4: with the workshops kept apart, the day is one workshop's. Head office picks which;
+// everyone else always gets their own (the server decides). null = the server's default.
+let ATT_WS = null;
+const attWsQ = () => (ATT_WS ? '&workshop_id=' + ATT_WS : '');
+const attWsB = () => (ATT_WS ? { workshop_id: ATT_WS } : {});
 
 async function attendanceCard(el, { onChanged, onDayView } = {}) {
   // #/dailywork?att=YYYY-MM-DD (from "Days waiting for sign-off") opens that day.
-  const asked = new URLSearchParams(location.hash.split('?')[1] || '').get('att');
+  const hashQ = new URLSearchParams(location.hash.split('?')[1] || '');
+  const asked = hashQ.get('att');
+  // …and, for head office, whose day (Stage 4): #/dailywork?att=…&att_ws=<workshop>.
+  if (/^\d+$/.test(hashQ.get('att_ws') || '')) ATT_WS = Number(hashQ.get('att_ws'));
   let date = (asked && /^\d{4}-\d{2}-\d{2}$/.test(asked) ? asked : null) || ATT_DRAFT.date || localDay();
   let d = null;
   const load = async () => {
-    try { d = await api('/attendance/day?date=' + encodeURIComponent(date)); } catch (e) {
+    try {
+      d = await api('/attendance/day?date=' + encodeURIComponent(date) + attWsQ());
+      if (d.workshop_id && ME.seesAllWorkshops && !WS_CACHE) await workshopsData();
+    } catch (e) {
       el.innerHTML = `<div class="card section"><p class="err">${esc(e.message)}</p></div>`; return;
     }
     paint();
@@ -1984,13 +1995,16 @@ async function attendanceCard(el, { onChanged, onDayView } = {}) {
     el.innerHTML = `<div class="card section">
       <div class="toolbar" style="margin-top:0">
         <h3 style="margin:0">Attendance &amp; day tally</h3>
+        ${d.workshop_id && ME.seesAllWorkshops && WS_CACHE
+          ? `<select id="att-ws" style="max-width:220px" title="Whose day">${WS_CACHE.workshops.filter((w) => w.active).map((w) => `<option value="${w.id}" ${w.id === d.workshop_id ? 'selected' : ''}>${esc(w.name)}</option>`).join('')}</select>`
+          : (d.workshop_id && WS_CACHE ? `<span class="badge">🏭 ${esc(wsName(WS_CACHE, d.workshop_id))}</span>` : '')}
         <div class="spacer"></div>
         <button class="sm" id="att-prev">←</button>
         <input id="att-date" type="date" value="${esc(date)}" max="${esc(d.today)}" style="max-width:160px">
         <button class="sm" id="att-next" ${date >= d.today ? 'disabled' : ''}>→</button>
         ${onDayView ? '<button class="sm" id="att-dayview" title="Show this day\'s work in the day view below">Day view ↓</button>' : ''}
         <a class="btn sm" href="/api/reports/daily/day_tally/export.xlsx?date=${esc(date)}" title="This day's tally as a spreadsheet">⬇ Day</a>
-        <a class="btn sm" href="/api/attendance/month.xlsx?month=${esc(date.slice(0, 7))}" title="The month: attended, booked and utilisation per mechanic">⬇ Month</a>
+        <a class="btn sm" href="/api/attendance/month.xlsx?month=${esc(date.slice(0, 7))}${attWsQ()}" title="The month: attended, booked and utilisation per mechanic">⬇ Month</a>
         ${d.can.settings ? '<button class="sm" id="att-set" title="Attendance settings">⚙</button>' : ''}
       </div>
       <div class="toolbar" style="margin:0 0 8px">
@@ -2021,6 +2035,10 @@ async function attendanceCard(el, { onChanged, onDayView } = {}) {
 
   const wire = () => {
     qs('#att-prev', el).onclick = () => goTo(shiftDay(date, -1));
+    if (qs('#att-ws', el)) qs('#att-ws', el).onchange = (e) => {
+      if (dirty() && !confirm('Changes not saved will be lost. Continue?')) { e.target.value = String(d.workshop_id); return; }
+      ATT_WS = Number(e.target.value); ATT_DRAFT = { date: null, rows: new Map() }; load();
+    };
     qs('#att-next', el).onclick = () => goTo(shiftDay(date, 1));
     qs('#att-date', el).onchange = (e) => goTo(e.target.value);
     if (qs('#att-dayview', el)) qs('#att-dayview', el).onclick = () => onDayView(date);
@@ -2068,7 +2086,7 @@ async function attendanceCard(el, { onChanged, onDayView } = {}) {
       // The last day with any attendance: yesterday, or Saturday when today is Monday.
       let from = null;
       for (let i = 1; i <= 7 && !from; i++) {
-        const prev = await api('/attendance/day?date=' + shiftDay(date, -i));
+        const prev = await api('/attendance/day?date=' + shiftDay(date, -i) + attWsQ());
         if (prev.rows.some((r) => r.attendance)) from = prev;
       }
       if (!from) return toast('No attendance in the last 7 days to copy', 'err');
@@ -2086,7 +2104,7 @@ async function attendanceCard(el, { onChanged, onDayView } = {}) {
         ? { mechanic_id: mid, status: v.status, time_in: v.time_in || null, time_out: v.time_out || null, break_minutes: v.break_minutes || 0, note: v.note || '' }
         : { mechanic_id: mid, clear: true }));
       try {
-        const r = await api('/attendance/day', { method: 'POST', body: { date, rows } });
+        const r = await api('/attendance/day', { method: 'POST', body: { date, rows, ...attWsB() } });
         ATT_DRAFT = { date, rows: new Map() };
         toast(`Saved (${r.saved})`);
         repaintWith(r.day);
@@ -2095,7 +2113,7 @@ async function attendanceCard(el, { onChanged, onDayView } = {}) {
     qsa('[data-book]', el).forEach((b) => {
       b.onclick = async () => {
         try {
-          const r = await api('/attendance/day/book-rest', { method: 'POST', body: { date, mechanic_id: Number(b.dataset.book) } });
+          const r = await api('/attendance/day/book-rest', { method: 'POST', body: { date, mechanic_id: Number(b.dataset.book), ...attWsB() } });
           toast(`${fmtH(r.hours)} booked to ${r.job_no}`);
           repaintWith(r.day);
         } catch (e) { toast(e.message, 'err'); }
@@ -2106,20 +2124,20 @@ async function attendanceCard(el, { onChanged, onDayView } = {}) {
         const reason = prompt('Why are these hours not on a job? (e.g. cleaning the bay, waiting for parts)');
         if (reason == null || !reason.trim()) return;
         try {
-          const r = await api('/attendance/day', { method: 'POST', body: { date, rows: [{ mechanic_id: Number(b.dataset.why), unbooked_reason: reason.trim() }] } });
+          const r = await api('/attendance/day', { method: 'POST', body: { date, rows: [{ mechanic_id: Number(b.dataset.why), unbooked_reason: reason.trim() }], ...attWsB() } });
           repaintWith(r.day);
         } catch (e) { toast(e.message, 'err'); }
       };
     });
     if (qs('#att-sign', el)) qs('#att-sign', el).onclick = async () => {
       if (!confirm(`Sign off ${date}?\n\nThe day's attendance and daily work will be locked. A manager can unlock it with a reason.`)) return;
-      try { repaintWith(await api('/attendance/day/signoff', { method: 'POST', body: { date } })); toast('Day signed off'); } catch (e) { toast(e.message, 'err'); }
+      try { repaintWith(await api('/attendance/day/signoff', { method: 'POST', body: { date, ...attWsB() } })); toast('Day signed off'); } catch (e) { toast(e.message, 'err'); }
     };
     if (qs('#att-unlock', el)) qs('#att-unlock', el).onclick = async () => {
       const reason = prompt(`Unlock ${date}? Give the reason:`);
       if (reason == null) return;
       if (!reason.trim()) return toast('A reason is needed to unlock a day', 'err');
-      try { repaintWith(await api('/attendance/day/unlock', { method: 'POST', body: { date, reason: reason.trim() } })); toast('Day unlocked'); } catch (e) { toast(e.message, 'err'); }
+      try { repaintWith(await api('/attendance/day/unlock', { method: 'POST', body: { date, reason: reason.trim(), ...attWsB() } })); toast('Day unlocked'); } catch (e) { toast(e.message, 'err'); }
     };
   };
 
