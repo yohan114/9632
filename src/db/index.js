@@ -415,6 +415,7 @@ function migrate() {
   ensureColumn('store_items', 'item_no', 'TEXT');          // catalogue number, e.g. FIL-0001
   ensureColumn('store_items', 'catalogue_kind', 'TEXT');   // part | consumable | service
   ensureColumn('store_items', 'part_numbers', 'TEXT');     // all merged part/reference codes ( | -joined)
+  ensureColumn('store_items', 'description', 'TEXT');
   ensureColumn('store_items', 'req_count', 'INTEGER');     // historical MRN request count
   ensureColumn('grn', 'purchase_source_norm', 'TEXT');
   ensureColumn('grn', 'priced_at', 'TEXT'); // when a unit price was first entered (procurement tracking)

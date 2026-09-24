@@ -62,6 +62,15 @@ app.get('/api/health', (req, res) => {
   res.json(out);
 });
 
+// Global API authentication gate (R-04):
+// Every /api route requires an authenticated session, except /api/auth/login, /api/health, and
+// /api/auth/mfa/verify — the second step of signing in, which by design comes before any session.
+app.use('/api', (req, res, next) => {
+  if (req.path === '/auth/login' || req.path === '/health' || req.path === '/auth/mfa/verify') return next();
+  if (!req.user) return res.status(401).json({ error: 'Authentication required' });
+  next();
+});
+
 // API routers. Each module is a self-contained Express Router. Operational
 // modules are gated by the RBAC matrix (requireModule); reference/analytics
 // routers (aliases, projects, mechanics, reports) stay open to any authenticated

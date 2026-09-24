@@ -878,14 +878,14 @@ function renderPendingApprovals(pa) {
   };
   const jobRow = (j, action) => `<div class="cost-line"><a href="#/jobs/${j.id}"><b>${esc(j.job_no)}</b> · ${esc(idLabel(j) || '—')}${waited(j.requested_at)}</a><span class="badge amber">${action} →</span></div>`;
   const jrRow = (r, action) => `<div class="cost-line"><a href="#/jobrequests/${r.id}"><b>${esc(r.jr_no)}</b> · ${esc(idLabel(r) || '—')}${r.description ? ' · ' + esc(String(r.description).slice(0, 40)) : ''}${r.requested_by ? ' · by ' + esc(r.requested_by) : ''}</a><span class="badge ${action === 'Approve' ? 'blue' : 'amber'}">${action} →</span></div>`;
-  const section = (title, rows) => rows.length ? `<div style="margin-top:6px"><div class="muted" style="font-size:12px;margin:6px 0 2px">${title} (${rows.length})</div>${rows}</div>` : '';
+  const section = (title, items, rowFn) => (items && items.length) ? `<div style="margin-top:6px"><div class="muted" style="font-size:12px;margin:6px 0 2px">${title} (${items.length})</div>${items.map(rowFn).join('')}</div>` : '';
   const body = [
-    section('Job requests awaiting your <b>certification</b>', (pa.jr_certify || []).map((r) => jrRow(r, 'Certify')).join('')),
-    section('Job requests awaiting your <b>approval</b>', (pa.jr_approve || []).map((r) => jrRow(r, 'Approve')).join('')),
-    section('MRNs awaiting your <b>certification</b>', pa.certify.map((m) => mrnRow(m, 'Certify')).join('')),
-    section('MRNs awaiting your <b>approval</b>', pa.approve.map((m) => mrnRow(m, 'Approve')).join('')),
-    section('Job cards awaiting <b>transport approval</b>', pa.transport.map((j) => jobRow(j, 'Approve')).join('')),
-    section('Job cards awaiting <b>operations approval</b>', pa.ops.map((j) => jobRow(j, 'Approve')).join('')),
+    section('Job requests awaiting your <b>certification</b>', pa.jr_certify || [], (r) => jrRow(r, 'Certify')),
+    section('Job requests awaiting your <b>approval</b>', pa.jr_approve || [], (r) => jrRow(r, 'Approve')),
+    section('MRNs awaiting your <b>certification</b>', pa.certify || [], (m) => mrnRow(m, 'Certify')),
+    section('MRNs awaiting your <b>approval</b>', pa.approve || [], (m) => mrnRow(m, 'Approve')),
+    section('Job cards awaiting <b>transport approval</b>', pa.transport || [], (j) => jobRow(j, 'Approve')),
+    section('Job cards awaiting <b>operations approval</b>', pa.ops || [], (j) => jobRow(j, 'Approve')),
   ].join('');
   return `<div class="card section" style="border-left:4px solid ${pa.total ? 'var(--red)' : 'var(--green)'}">
     <div class="toolbar" style="margin:0"><h3 style="margin:0">⚡ Pending Your Approval</h3><div class="spacer"></div><span class="badge ${pa.total ? 'red' : 'green'}">${pa.total} pending</span></div>
