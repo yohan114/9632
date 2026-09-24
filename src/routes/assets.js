@@ -93,9 +93,15 @@ router.get('/:id', asyncHandler((req, res) => {
   if (!asset) return res.status(404).json({ error: 'Asset not found' });
   const current_project = asset.current_project_id ? get('SELECT * FROM projects WHERE id = ?', asset.current_project_id) : null;
   const current_battery = get(`SELECT * FROM batteries WHERE current_asset_id = ? AND state='installed' LIMIT 1`, id);
-  const open_jobs = all(`SELECT id, job_no, type, status, description, total_cost FROM job_cards WHERE asset_id = ? AND ${jobstate.openSql()} ORDER BY id DESC`, id);
+  // A vehicle is shared by every workshop (Stage 3), so all its cards are listed — but a card of
+  // another workshop shows only its number, status and workshop: no description, no cost, no link.
+  const scope = require('../lib/scope');
+  const WS = '(SELECT name FROM workshops w WHERE w.id = job_cards.workshop_id) AS workshop_name, workshop_id';
+  const veil = (j) => (scope.mayReach(req.user, j.workshop_id) ? { ...j, reachable: true }
+    : { id: j.id, job_no: j.job_no, status: j.status, type: j.type, workshop_name: j.workshop_name, workshop_id: j.workshop_id, reachable: false });
+  const open_jobs = all(`SELECT id, job_no, type, status, description, total_cost, ${WS} FROM job_cards WHERE asset_id = ? AND ${jobstate.openSql()} ORDER BY id DESC`, id).map(veil);
   // Partly closed (W2): the vehicle has left them, but prices or records are still to come.
-  const partly_closed_jobs = all('SELECT id, job_no, type, status, description, total_cost, partial_closed_at FROM job_cards WHERE asset_id = ? AND status = ? ORDER BY id DESC', id, jobstate.PARTIAL);
+  const partly_closed_jobs = all(`SELECT id, job_no, type, status, description, total_cost, partial_closed_at, ${WS} FROM job_cards WHERE asset_id = ? AND status = ? ORDER BY id DESC`, id, jobstate.PARTIAL).map(veil);
   const lc = get(
     `SELECT COALESCE(SUM(labour_cost),0) labour, COALESCE(SUM(material_cost),0) material,
             COALESCE(SUM(oil_cost),0) oil, COALESCE(SUM(general_cost),0) general,
@@ -124,8 +130,14 @@ router.get('/:id', asyncHandler((req, res) => {
     timeline.push({ date: l.d, kind: 'oil', ref: l.kind, description: `${l.pn} ${Math.abs(l.qty)} ${l.unit}` });
   for (const i of all(`SELECT issue_date d, description, qty FROM issues WHERE asset_id = ? ORDER BY id DESC LIMIT 50`, id))
     timeline.push({ date: i.d, kind: 'issue', ref: null, description: `${i.description} x${i.qty}` });
-  for (const m of all(`SELECT req_date d, mrn_no, purpose FROM mrn WHERE asset_id = ? ORDER BY id DESC LIMIT 50`, id))
-    timeline.push({ date: m.d, kind: 'mrn', ref: m.mrn_no, description: m.purpose || 'Material request' });
+  for (const m of all(`SELECT req_date d, mrn_no, purpose, workshop_id,
+                              (SELECT name FROM workshops w WHERE w.id = mrn.workshop_id) AS workshop_name
+                         FROM mrn WHERE asset_id = ? ORDER BY id DESC LIMIT 50`, id)) {
+    // Another workshop's request (Stage 3): its number and workshop only.
+    const mine = scope.mayReach(req.user, m.workshop_id);
+    timeline.push({ date: m.d, kind: 'mrn', ref: m.mrn_no,
+      description: mine ? (m.purpose || 'Material request') : `Material request at ${m.workshop_name || 'another workshop'}` });
+  }
   // A transfer reaches this machine either as the whole note's from/to, or through a single
   // item on it — one note routinely pulls parts off several machines at once, and each of
   // those belongs in that machine's history, described by the item rather than the note.
@@ -138,8 +150,11 @@ router.get('/:id', asyncHandler((req, res) => {
     timeline.push({ date: t.d, kind: 'mtn', ref: t.mtn_no, description: t.description || 'Transfer' });
   for (const e of all(`SELECT event_date d, event_type, reason FROM battery_events WHERE from_asset_id = ? OR to_asset_id = ? ORDER BY id DESC LIMIT 50`, id, id))
     timeline.push({ date: e.d, kind: 'battery', ref: e.event_type, description: e.reason || e.event_type });
-  for (const j of all(`SELECT requested_at d, job_no, description, status FROM job_cards WHERE asset_id = ? ORDER BY id DESC LIMIT 50`, id))
-    timeline.push({ date: (j.d || '').slice(0, 10), kind: 'job', ref: j.job_no, description: `${j.description || ''} [${j.status}]` });
+  for (const j of all(`SELECT requested_at d, job_no, description, status, ${WS} FROM job_cards WHERE asset_id = ? ORDER BY id DESC LIMIT 50`, id)) {
+    const mine = scope.mayReach(req.user, j.workshop_id);
+    timeline.push({ date: (j.d || '').slice(0, 10), kind: 'job', ref: j.job_no,
+      description: mine ? `${j.description || ''} [${j.status}]` : `[${j.status}] at ${j.workshop_name || 'another workshop'}` });
+  }
   timeline.sort((a, b) => String(b.date).localeCompare(String(a.date)));
 
   res.json({ asset, current_project, current_battery, open_jobs, partly_closed_jobs, lifetime_cost: lc, service_due, timeline: timeline.slice(0, 100) });

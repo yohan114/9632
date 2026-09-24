@@ -8,6 +8,7 @@
 //   GET   /mechanics               every mechanic with their workshop today
 //   GET   /mechanics/:id/history   a mechanic's workshops over time
 //   POST  /mechanics/:id/move      move a mechanic from a date           (mechanics.move)
+//   PUT   /separate                "Separate workshops" on or off (Stage 3) (workshops.manage)
 //
 // A person's home workshop is set on Users & Roles (routes/users.js).
 
@@ -21,8 +22,17 @@ const router = express.Router();
 router.use(requireAuth);
 
 router.get('/', asyncHandler((req, res) => {
+  const scope = require('../lib/scope');
   res.json({ workshops: workshops.list(), multi: workshops.isMulti(), default_id: workshops.defaultId(),
-    mine: workshops.homeOf(req.user) });
+    mine: workshops.homeOf(req.user),
+    // Stage 3: the switch, whether it is in force (on AND 2+ workshops), and whether you see them all.
+    separate: scope.switchedOn(), separate_in_force: scope.enabled(), sees_all: scope.seesAllJobs(req.user) });
+}));
+
+router.put('/separate', requireCap('workshops.manage'), asyncHandler((req, res) => {
+  const scope = require('../lib/scope');
+  scope.setSwitch(req.user, !!(req.body && req.body.on));
+  res.json({ separate: scope.switchedOn(), separate_in_force: scope.enabled() });
 }));
 
 router.post('/', requireCap('workshops.manage'), asyncHandler((req, res) => {

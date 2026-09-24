@@ -852,7 +852,10 @@ async function render() {
   try {
     await fn(content, parts.slice(1));
   } catch (e) {
-    content.innerHTML = `<div class="card"><p class="err">Error: ${esc(e.message)}</p></div>`;
+    // Stage 3: a record of another workshop is not an error, just not yours to open.
+    content.innerHTML = e.data && e.data.other_workshop
+      ? `<div class="card"><p><b>${esc(e.message)}</b></p><p class="muted">Each workshop sees its own work. Ask head office if you need it.</p><a class="btn sm" href="javascript:history.back()">← Back</a></div>`
+      : `<div class="card"><p class="err">Error: ${esc(e.message)}</p></div>`;
   }
 }
 window.addEventListener('hashchange', render);
@@ -1244,8 +1247,8 @@ async function assetDetail(c, id) {
           <div class="cost-line"><span>Expected cost</span><span>${money(sd.expected_cost)}</span></div>` : '<span class="muted">No service spec</span>'}
       </div>
       <div class="card"><h3>Open Job Cards</h3>
-        ${a.open_jobs.length ? a.open_jobs.map((j) => `<div class="cost-line"><a href="#/jobs/${j.id}">${esc(j.job_no)}</a>${statusBadge(j.status)}</div>`).join('') : '<span class="muted">None open</span>'}
-        ${(a.partly_closed_jobs || []).length ? `<div class="muted" style="font-size:12px;margin:8px 0 2px">Partly closed — prices still to come</div>${a.partly_closed_jobs.map((j) => `<div class="cost-line"><a href="#/jobs/${j.id}">${esc(j.job_no)}</a>${statusBadge(j.status)}</div>`).join('')}` : ''}
+        ${a.open_jobs.length ? a.open_jobs.map(assetJobLine).join('') : '<span class="muted">None open</span>'}
+        ${(a.partly_closed_jobs || []).length ? `<div class="muted" style="font-size:12px;margin:8px 0 2px">Partly closed — prices still to come</div>${a.partly_closed_jobs.map(assetJobLine).join('')}` : ''}
       </div>
     </div>
     <div class="card"><h3>Unified Timeline</h3>
@@ -1278,8 +1281,10 @@ routes.jobs = async (c, params) => {
   const sp = new URLSearchParams(location.hash.split('?')[1] || '');
   const cur = { q: sp.get('q') || '', year: sp.get('year') || '', month: sp.get('month') || '', status: sp.get('status') || '',
     workshop: sp.get('workshop_id') || '' };
-  // Workshop filter and tag (Stage 2): only once there is more than one workshop.
+  // Workshop filter and tag (Stage 2): only once there is more than one workshop. The filter is for
+  // those who see every workshop; someone kept to their own (Stage 3) has nothing to choose.
   const wsd = wsMulti() ? await workshopsData() : null;
+  const wsFilter = wsd && ME.seesAllWorkshops !== false;
 
   const nowY = new Date().getFullYear();
   const years = [];
@@ -1294,7 +1299,7 @@ routes.jobs = async (c, params) => {
       <select id="jyear" style="max-width:120px"><option value="">All years</option>${years.map((y) => `<option ${String(y) === cur.year ? 'selected' : ''}>${y}</option>`).join('')}</select>
       <select id="jmonth" style="max-width:140px"><option value="">All months</option>${MONTHS.map(([v, l]) => `<option value="${v}" ${v === cur.month ? 'selected' : ''}>${l}</option>`).join('')}</select>
       <select id="jstatus" style="max-width:200px"><option value="">All statuses</option>${JOB_STATUSES.map((s) => `<option ${s === cur.status ? 'selected' : ''}>${s}</option>`).join('')}</select>
-      ${wsd ? `<select id="jws" style="max-width:220px"><option value="">All workshops</option>${wsd.workshops.map((w) => `<option value="${w.id}" ${String(w.id) === cur.workshop ? 'selected' : ''}>${esc(w.name)}</option>`).join('')}</select>` : ''}
+      ${wsFilter ? `<select id="jws" style="max-width:220px"><option value="">All workshops</option>${wsd.workshops.map((w) => `<option value="${w.id}" ${String(w.id) === cur.workshop ? 'selected' : ''}>${esc(w.name)}</option>`).join('')}</select>` : ''}
       <button class="sm" id="jclear">Clear</button>
       <button class="sm" id="jfilter-backlog" style="background:#fff3cd;color:#856404;border-color:#ffeeba;font-weight:600" title="Filter to backlog cards awaiting triage / approval">⚡ Backlog: Requested</button>
       <span class="muted" id="jcount"></span>
@@ -3019,7 +3024,8 @@ async function addDailyModal(jobId, assetId) {
       let rows = [];
       // asset_id sorts this job's own machine to the top, as the parts picker does.
       try {
-        rows = await api('/jobs/unassigned/daily-work?limit=200'
+        // job_id: the pool of this card's workshop (one per workshop, Stage 3).
+        rows = await api('/jobs/unassigned/daily-work?limit=200&job_id=' + jobId
           + (assetId ? '&asset_id=' + assetId : '')
           + (q ? '&q=' + encodeURIComponent(q) : ''));
       }
@@ -3091,7 +3097,7 @@ async function addPartModal(jobId, assetId) {
       const q = qs('#ptq', body).value.trim();
       let d = { receipts: [], parts: [] };
       try {
-        d = await api('/jobs/unassigned/parts?limit=200'
+        d = await api('/jobs/unassigned/parts?limit=200&job_id=' + jobId
           + (assetId ? '&asset_id=' + assetId : '') + (q ? '&q=' + encodeURIComponent(q) : ''));
       } catch (e) { qs('#ptlist', body).innerHTML = `<div class="card err">${esc(e.message)}</div>`; return; }
       const rows = [...(d.receipts || []), ...(d.parts || [])];
@@ -8199,6 +8205,12 @@ routes.jobreview = async (c) => {
   draw();
 };
 
+// A vehicle's card on its page. Another workshop's card (Stage 3, workshops kept apart) shows only
+// its number, status and workshop, and does not open.
+const assetJobLine = (j) => (j.reachable === false
+  ? `<div class="cost-line"><span>${esc(j.job_no)} <span class="muted">· at ${esc(j.workshop_name || 'another workshop')}</span></span>${statusBadge(j.status)}</div>`
+  : `<div class="cost-line"><a href="#/jobs/${j.id}">${esc(j.job_no)}</a>${statusBadge(j.status)}</div>`);
+
 // ---- Workshops (multi-site Stage 2) ---------------------------------------------------------
 //
 // A workshop repairs vehicles and has its own mechanics and job cards; a SITE is where a vehicle
@@ -8236,6 +8248,16 @@ routes.workshops = async (c) => {
         : 'With one workshop, nothing else changes on any screen. When you add a second, job cards, requests and people show their workshop.'}</p>
     </div>
     <div class="card">
+      <div class="toolbar" style="margin:0 0 6px"><h3 style="margin:0">Separate workshops</h3><div class="spacer"></div>
+        ${manage ? `<button class="sm ${d.separate ? 'danger' : 'primary'}" id="wsep">${d.separate ? 'Turn off' : 'Turn on'}</button>` : ''}</div>
+      <p style="margin:0">${d.separate
+        ? (d.separate_in_force ? '<span class="badge green">On</span> Each workshop sees only its own job cards, job requests, requests (MRN), daily work and approvals.'
+          : '<span class="badge amber">On, waiting</span> It takes effect when there is a second workshop.')
+        : '<span class="badge">Off</span> Everyone sees every workshop\'s work, as before.'}</p>
+      <p class="muted" style="font-size:12px;margin:6px 0 0">Head office (Admin, Manager, Operational Manager, Purchasing) always sees every workshop.
+        Store staff also see every workshop's requests and job cards, while there is one store. Vehicles, stock, attendance and reports stay shared.</p>
+    </div>
+    <div class="card">
       <h3 style="margin:0 0 8px">Mechanics</h3>
       ${tableWrap([{ label: 'Mechanic' }, { label: 'Workshop' }, { label: '' }].concat(move ? [{ label: '', num: true }] : []), mrows, { scroll: true })}
       <p class="muted" style="font-size:12px;margin:8px 0 0">A move keeps its date, so hours worked before it stay with the old workshop.</p>
@@ -8253,6 +8275,12 @@ routes.workshops = async (c) => {
     };
   });
   if (qs('#wnew', c)) qs('#wnew', c).onclick = () => edit(null);
+  if (qs('#wsep', c)) qs('#wsep', c).onclick = async () => {
+    const on = !d.separate;
+    if (on && !confirm('Turn on "Separate workshops"? People outside head office will then see only their own workshop\'s job cards, requests and daily work.')) return;
+    try { await api('/workshops/separate', { method: 'PUT', body: { on } }); toast(on ? 'Separate workshops: on' : 'Separate workshops: off'); routes.workshops(c); }
+    catch (e) { toast(e.message, 'err'); }
+  };
   qsa('[data-wedit]', c).forEach((b) => { b.onclick = () => edit(d.workshops.find((w) => String(w.id) === b.dataset.wedit)); });
   const setActive = async (id, active) => {
     try { await api(`/workshops/${id}`, { method: 'PATCH', body: { active } }); toast(active ? 'Reinstated' : 'Retired'); routes.workshops(c); }
