@@ -1,7 +1,7 @@
 'use strict';
 
 // ===========================================================================
-// Mechanic attendance and the daily tally (docs/WORKSHOPONE_PLAN.md §3.1, Stage W1).
+// Mechanic attendance and the daily tally (docs/WORKSHOPONE_PLAN.md §A.1, Stage W1).
 //
 // Every mechanic's in and out time is recorded each day, and the hours they were at work are
 // checked against the hours booked on jobs in Daily Work:

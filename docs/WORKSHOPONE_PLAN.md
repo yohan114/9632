@@ -1,55 +1,257 @@
-# WorkshopOne — Updated Plan (v2)
+# WorkshopOne — Plan (v3)
 
-_Date: 2026-09-24 · replaces the order of work in `SECURITY_ACCESS_MULTISITE_PLAN.md` (v1).
-The v1 document still holds the full detail for the multi-site stages (2–7); this plan says what is
-done, what comes first now, and designs the two new features in full._
+_Date: 2026-09-24 · status after every stage was built. It replaces v2 (same file), which set the order
+of work. The first plan, `SECURITY_ACCESS_MULTISITE_PLAN.md` (v1), is not in this repository because
+the repository is public; §4 and §5 record the multi-site stages as they were built and the decisions
+chosen._
 
 ---
 
 ## 1. Summary
 
-The security and access work from v1 (Stage 0 and nearly all of Stage 1) is **built, tested and merged
-into `main`**, but **not yet deployed to the VPS**. Two workshop features now come **before** the
-multi-site stages:
-
-1. **Mechanic attendance and a daily tally.** Every mechanic's on-time and off-time is recorded each
-   day. The hours they actually worked must match the hours booked on jobs in Daily Work, day by day.
-2. **Partial close of a job card.** When a job's work is finished but its prices or records are not
-   yet complete, it can be **partly closed**. That locks it (only prices, already-requested items and
-   general items can still be added), frees the vehicle for a **new job**, and allows only a
-   **reopen request**. **Full close** needs every item priced and the work done recorded.
-
-These build on a short groundwork stage (**W0**) that fixes things both features depend on. The
-biggest of those: 254 job cards are stuck in REQUESTED, and each one blocks a new job for its vehicle.
-
-**Order:** deploy what is merged (now, in parallel) → W0 → W1 attendance → W2 partial close → W3 reports
-→ approval limits → multi-site Stages 2–7.
-**Effort for W0–W3:** about **21 developer-days** (4–5 weeks for one developer).
+- **Everything in the plan is built, tested and merged into `main`:** the security work (Stage 0 and
+  Stage 1), the groundwork W0, attendance W1, partial close W2, reports W3, approval limits, and the
+  multi-site Stages 2–7.
+- **None of it is on the live server yet.** That is the next step, and it is your action (§3).
+- **After the update, nothing changes on its own.** Each new feature is off, empty or unused until you
+  switch it on (§3.4). With one workshop, every screen looks as before, plus the new Field Work and
+  Operations pages.
+- A few extras were put off on purpose (§6). Build them only if you want them.
 
 ---
 
 ## 2. Where we are
 
-| Item (v1 plan) | Status | Where |
+| Item | Status | PR |
 |---|---|---|
-| Stage 0 — security fixes (headers, CSRF check, XSS fix, passwords, sessions, backups, Cloudflare lock script) | ✅ merged | PR #4 |
-| Stage 1 — custom roles and permissions (70 capabilities, roles as data, guardrails) | ✅ merged | PR #5 |
-| Stage 1 — two-factor sign-in | ✅ merged | PR #6 |
-| Phase 1 controls — segregation of duties, `/api` needs a session | ✅ merged | PR #7 |
-| Stage 1 — signed-in devices, idle timeout, session expiry fix | ✅ merged | PR #8 |
-| Vehicle lubricant capacities on `main` | ✅ merged | PR #9 |
-| Crash log (start / stop / crash written to a file; a crash exits) | 🟡 built, **no PR yet** | branch `claude/crash-log` |
-| **Deploy all of the above to the VPS** | ❌ **not done** | §4, Step 0 |
-| Stage 1 — approval limits | 🟡 built; the amounts (decision D7) are typed in later on Access Control → Approval limits | branch `claude/approval-limits` |
-| Stages 2–7 — workshops, sites, stores, scoping, reports, field, operations | ⏳ not started | v1 plan §4 |
+| Stage 0 — security fixes (headers, CSRF check, XSS fix, passwords, sessions, backups, Cloudflare lock script) | ✅ merged | #4 |
+| Stage 1 — custom roles and permissions | ✅ merged | #5 |
+| Stage 1 — two-factor sign-in | ✅ merged | #6 |
+| Phase 1 controls — segregation of duties, `/api` needs a session | ✅ merged | #7 |
+| Stage 1 — signed-in devices, idle timeout, session expiry fix | ✅ merged | #8 |
+| Vehicle lubricant capacities | ✅ merged | #9 |
+| Crash log (start, stop and crash written to a file; a crash exits) | ✅ merged | with #11 |
+| W0 — groundwork: one meaning of "open", one add guard, stuck-card review screen | ✅ merged | with #11 |
+| W1 — mechanic attendance and the daily tally | ✅ merged | #10 |
+| W2 — partial close, full close and reopen requests | ✅ merged | #11 |
+| W3 — reports and dashboards | ✅ merged | #12 |
+| Stage 1 — approval limits | ✅ merged; **your amounts (D7) are still to be typed in** | #14 |
+| Stage 2 — workshops and sites | ✅ merged | #15 |
+| Stage 3 — each workshop sees its own work ("Separate workshops") | ✅ merged | #16 |
+| Stage 4 part A — attendance and sign-off per workshop | ✅ merged | #17 |
+| Stage 4 part B — a store per workshop | ✅ merged | #18 |
+| Stage 5 — reports per workshop | ✅ merged | #19 |
+| Stage 6 — field work (breakdowns, repairs at the site) | ✅ merged | #20 |
+| Stage 7 — operations (machine moves, site fleet, workshops at a glance, handovers) | ✅ merged | #21 |
+| **Deploy all of the above to the live server** | ❌ **not done** | §3 |
 
-The office server (port 1929) runs `claude/crash-log` = `main` + the crash log.
+Test suite on `main`: all tests pass except the 2 in `monthly_cost_zero_value`, which need the office
+database and fail the same way without it.
 
 ---
 
-## 3. The two new features
+## 3. Deploy and switch on (your action)
 
-### 3.1 Mechanic attendance and the daily tally (W1)
+### 3.1 Before the update
+
+1. Check the branch: `git -C /opt/workshopone/app branch --show-current` must say `main`.
+2. **Take your own full backup of the database and of `mfa.key`.** `update.sh` also makes a backup,
+   but several tables are rebuilt on the first start (§3.2), so keep a copy of your own.
+3. **Try the update on a copy first** (the office server, or a copy of the live database), because of
+   the table rebuilds.
+4. Download the **June 2026 Job Cost report** from the live server, to compare after the update.
+5. `node scripts/admin.js audit-passwords`, and fix any account it lists.
+
+### 3.2 The update, and what changes in the database
+
+1. `sudo bash /opt/workshopone/app/deploy/update.sh`.
+2. On the first start, the database changes **once**. Each change keeps every row and every id, and
+   does not run again on later starts. Roughly in this order:
+
+| From | What changes on the first start |
+|---|---|
+| W1 | New tables `mechanic_attendance` and `workday_signoffs`. |
+| W2 | `job_cards` is **rebuilt** so a card can be PARTIALLY_CLOSED: every card, id, link and index kept. Four new columns on `job_cards`; new table `job_reopen_requests`. |
+| Approval limits | New table `approval_limits` (empty: no limits until you type them in). |
+| Stage 2 | New tables `workshops` and `mechanic_workshops`. **Central Workshop — Badalgama** is created and given every existing user, job card, request and mechanic. Workshop columns on `users`, `job_cards` and `mrn`. Transfer notes get proper from/to places; old notes are matched where the name is clear, the rest stay as text. |
+| Stage 3 | `job_requests.workshop_id`. The "Separate workshops" switch starts **off**. |
+| Stage 4 part A | `workday_signoffs` is **rebuilt** per workshop; existing sign-offs are kept as whole-company ones. |
+| Stage 4 part B | Store columns on `workshops` and on every source of stock movements. All stock recorded so far is Central's. New tables `store_counts` and `store_reorder`. |
+| Stage 5 | `daily_report_snapshots` is **rebuilt** per workshop; saved days are kept as whole-company copies. `monthly_report_inputs.workshop_id`: all inputs entered so far are Central's. |
+| Stage 6 | Field columns on `job_cards`, a `travel` column on `job_daily_work`. `job_parts` is **rebuilt** so a returned part can be recorded: every line, id and index kept. New table `issue_returns`. |
+| Stage 7 | `assets.current_site_id` (empty). New tables `asset_moves` and `job_workshop_moves`. No past moves are made up. |
+
+3. Finish the rest of the old Step 0:
+   - back up `/opt/workshopone/data/mfa.key` (again, now on the new version);
+   - run `deploy/cloudflare-refresh.sh` (dry run), then `--apply`;
+   - add the Cloudflare rate-limit rule, install the verify timer, and set up the off-site copy (`deploy/VPS.md`);
+   - enrol admin two-factor, then tick "Require" on the admin role.
+
+### 3.3 After the update: check
+
+- The **June 2026 Job Cost report** is the same as the one you downloaded before.
+- Open the job card list, one job card, Stores and the dashboard. They look as before.
+- The new pages are there: **Field Work** and **Operations**.
+
+### 3.4 Switch on, one at a time
+
+| # | What | Where | Notes |
+|---|---|---|---|
+| 1 | Clear the stuck REQUESTED job cards (W-D11) | Job Cards → 🧹 Review stuck cards | Do this first. A stuck card blocks a new job for its vehicle, and a card opened in the app counts as "down" on the Operations board until it is finished. |
+| 2 | Attendance | Daily Work → Attendance & day tally → ⚙ | Set the start date, shift, break and tolerance. Days before the start date are never flagged. |
+| 3 | Partial close | Job Cards → ⚙ Partial close | |
+| 4 | Approval limits (D7) | Access Control → Approval limits | Type in how much each role may approve. |
+| 5 | Field vehicle rate | Field Work → Set rate… | Km entered before a rate is set are not charged. |
+| 6 | A second workshop | Workshops → Add | Then: **Store…** (its own store from a date, or use another's), move its mechanics (with the date), and set each user's home workshop on Users & Roles. |
+| 7 | Separate workshops | Workshops → Separate workshops | Only after step 6 is complete. People outside head office then see only their own workshop's work. |
+
+---
+
+## 4. The multi-site stages as built
+
+- **Stage 2 — workshops and sites.** A Workshops list (add, rename, retire). A **workshop** repairs
+  vehicles and has its own mechanics; a **site** is one of your projects (and its sub-sites), where
+  vehicles work. Each user has a home workshop (or all, for head office); each mechanic has a
+  workshop, with the date of every move; each job card and material request says which workshop does
+  the work. Transfer notes name places from the list. With one workshop, the pickers and filters stay
+  hidden.
+- **Stage 3 — each workshop sees its own work.** With "Separate workshops" on, people outside head
+  office see only their workshop's job cards, requests, daily work and approval queues. A vehicle's
+  page still lists all its cards, but another workshop's card shows only its number, status and
+  workshop. The one-open-card rule stays across all workshops.
+- **Stage 4 — attendance and stores per workshop.** Each workshop signs off its own days. Each workshop
+  has its own store or uses another's. Receipts go to the store of the request's workshop, issues come
+  out of the store of the job's workshop, and a transfer note between two stores moves the stock.
+  Counts and reorder levels are per store; store staff see the workshops their store serves.
+- **Stage 5 — reports per workshop.** The Reports page and Daily Progress get a workshop picker (head
+  office: any workshop or all). Daily reports and their saved copies, the Job Cost workbook and the
+  monthly inputs are per workshop; the workshops' workbooks add up to the company one. The company
+  workbook gains a "Workshops compared" sheet. Vehicle reports stay whole-company.
+- **Stage 6 — field work.** A job card can be "In the field" at a project or site. **Report a
+  breakdown** opens a field card at once; approvals follow. Three times on the card (reported, mechanic
+  arrived, working again) give the response time and downtime. Travel is a daily-work line marked
+  Travel. Field vehicle km × a rate per km is charged as field transport. A Field Work board and a
+  dashboard tile show machines still down. Unused parts go back to the store with a return, off the
+  job's cost. A "Field work" sheet appears in months with field work.
+- **Stage 7 — operations.** **Move machine** sends a machine to another project or site from a date;
+  every move is kept. The **Operations** page has: **Site fleet** (what each machine is doing now and
+  the month's availability per site, counted in machine-days where the machine stood each day);
+  **Workshops at a glance** for head office (each number opens its list); and **Job handovers**
+  (sending a card to another workshop needs a reason, and both workshops see it). Cards imported
+  from the old job book do not count as downtime: the import stamped them all with the same day.
+
+---
+
+## 5. Decisions
+
+All the answers below are the recommended ones, which you accepted. Only **D7** is still open.
+
+### Open
+
+| # | Question | Status |
+|---|---|---|
+| D7 | Approval amounts: how much each role may approve | **Open.** Type them in on Access Control → Approval limits. Until then, approvals work as before. |
+
+### Workshop features (W0–W3)
+
+| # | Question | Chosen |
+|---|---|---|
+| W-D1 | Default shift and break? | 08:00–17:00, 60 min lunch |
+| W-D2 | How close must worked and booked be to count as matched? | 15 minutes |
+| W-D3 | When work would over-book a mechanic: warn or block? | Warn at entry; block the day sign-off |
+| W-D4 | Day sign-off: who, by when, and does it lock the day? | Workshop supervisor, by the next morning; locked, manager unlocks with a reason |
+| W-D5 | Who is tracked? | All active mechanics |
+| W-D6 | A mechanic working at a project site that day? | Present, with a note "at site X" |
+| W-D7 | Must some work done be recorded before a partial close? | Yes (or a written reason) |
+| W-D8 | Daily work on a partly closed job? | Only dates up to the partial close; later dates go on the new job |
+| W-D9 | Which report month does a partly closed job belong to? | The partial-close month (Closed, flagged), with late prices landing in that month |
+| W-D10 | Should fully CLOSED jobs also use reopen *requests*? | Yes, one flow for both |
+| W-D11 | The 254 REQUESTED jobs? | Imported with no activity in 90 days → reject "not carried out", after you review the list |
+| W-D12 | "Close on date" (backdating) for an incomplete job? | Becomes "partly close on date"; a backdated full close needs the full check |
+| W-D13 | Overnight or split shifts? | Overnight yes; split shifts later if needed (§6) |
+
+### Multi-site (Stages 2–7)
+
+| # | Question | Chosen |
+|---|---|---|
+| S2-D1 | Which workshops exist now? | Only Central Workshop; add others when they open |
+| S2-D2 | A project with a mechanic but no store (e.g. CEP-03 Wadakada)? | A site; the mechanic belongs to Central and works "at site X" |
+| S2-D3 | Who is "All workshops" (head office)? | Admin, Manager, Operational Manager, Purchasing |
+| S2-D4 | Can a user belong to two workshops? | No: one home workshop, or all |
+| S2-D5 | When a mechanic moves, keep the date? | Yes |
+| S2-D6 | Does a vehicle belong to a workshop? | No; it belongs to a project or site, and the job card says which workshop repairs it |
+| S2-D7 | Stock per workshop in Stage 2? | No, Stage 4 |
+| S3-D1 | Another workshop's job card, opened from a link? | Refused, saying which workshop it belongs to |
+| S3-D2 | A vehicle's history page? | All its cards; other workshops' cards show only number, status and workshop |
+| S3-D3 | One open job card per vehicle: per workshop or across all? | Across all |
+| S3-D4 | Daily work mechanic list? | Only mechanics of the job card's workshop on that date |
+| S3-D5 | Approval queues? | Own workshop only; head office sees all |
+| S3-D6 | Reports in Stage 3? | Unchanged (Stage 5 splits them) |
+| S3-D7 | Switch? | "Separate workshops", off until you turn it on |
+| S4-D1 | Two parts? | Yes: A (attendance) first, then B (stores) |
+| S4-D2 | Who signs off a workshop's day? | That workshop's supervisor; head office can sign any |
+| S4-D3 | A mechanic lent to another workshop for a day? | Attendance stays with their own workshop; hours on the other workshop's cards still count as booked |
+| S4-D4 | Does every workshop get its own store? | Its own, or it uses another's |
+| S4-D5 | A transfer between two stores? | One step, on the transfer date |
+| S4-D6 | Reorder levels per store? | Yes |
+| S4-D7 | Oil per store too? | Yes, like all other stock |
+| S5-D1 | Which reports split per workshop? | Daily Reports, the Job Cost report (with Repair Detail and the reconciler), Daily Progress |
+| S5-D2 | Which workshop does a cost belong to? | The job card's workshop; with no job card, the workshop of the store it came from |
+| S5-D3 | Monthly inputs: who enters them? | Each workshop its own; head office for any; existing lines are Central's |
+| S5-D4 | The All-workshops workbook? | As today, plus "Workshops compared" when there are 2 or more workshops |
+| S5-D5 | Who sees which workshop's reports? | Head office: any and the total; others with "Separate workshops" on: their own |
+| S5-D6 | Signature titles on the workbook? | The same for every workshop (per-workshop titles later, §6) |
+| S6-D1 | How is a field job marked? | A job card setting "In the field" plus the site |
+| S6-D2 | Must a breakdown wait for the job request steps? | No: it opens a field job card at once; approvals follow |
+| S6-D3 | Who may report a breakdown? | Transport managers and their assistants, workshop supervisors, head office |
+| S6-D4 | Travel time? | A "Travel" line in Daily Work, costed at the mechanic's rate, shown apart |
+| S6-D5 | Field vehicle cost? | Optional km × a rate per km (a setting) |
+| S6-D6 | Which times are recorded? | Reported, arrived, working again |
+| S6-D7 | Parts taken to the site? | Issued as today; unused parts returned to the store |
+| S7-D1 | What does Stage 7 cover? | Machine moves, site fleet board, workshops at a glance, job handovers |
+| S7-D2 | Who can move a machine? | Transport manager, operational manager, manager (and admin) |
+| S7-D3 | When is a machine "down"? | From the day its repair card is opened (or the breakdown reported) until the work is complete; services apart |
+| S7-D4 | How is availability measured? | In days (machine-days); hours later (§6) |
+| S7-D5 | Who sees "Workshops at a glance"? | Head office only |
+| S7-D6 | A job sent to another workshop: what moves? | The whole card with its costs; a reason is required and kept |
+| S7-D7 | A mechanic helping another workshop for a few days? | No new feature: use Move with a date, then move them back |
+| S7-D8 | A daily machine log (hours, fuel)? | Not in Stage 7 (§6) |
+
+---
+
+## 6. Later — only if you want them
+
+| Extra | Why it was left out |
+|---|---|
+| Split shifts (two in/out pairs a day) | W-D13: overnight shifts are handled; split shifts were not needed yet |
+| A daily machine log (hours worked, fuel per machine per day) | S7-D8: it needs site staff to enter data every day |
+| Availability in hours instead of days | S7-D4: days are reliable with today's data; hours need exact start and end times |
+| Signature titles per workshop on the Job Cost workbook | S5-D6: the same titles for every workshop for now |
+| Per-store figures on the older stock pages (Stock Cockpit, general items, filters, oil balances) | Stage 4: these still show whole-company totals; with several stores, a line on each page says so |
+| "In transit" for transfers between stores | S4-D5: a transfer is one step for now |
+
+---
+
+## 7. Risks at deploy
+
+| Risk | Mitigation |
+|---|---|
+| A table rebuild fails on the live data (`job_cards`, `workday_signoffs`, `daily_report_snapshots`, `job_parts`) | Each rebuild runs in one transaction, so a failure leaves the old table as it was; the `job_cards` and `job_parts` rebuilds also check that every row and reference is kept. Try on a copy first (§3.1); `update.sh` backup and rollback |
+| The June 2026 report changes | Compare before and after (§3.1, §3.3); report tests guard it |
+| Stuck REQUESTED cards block new jobs and show machines as down | Clear them first (§3.4, step 1) |
+| "Separate workshops" turned on before people have their home workshop | Turn it on last (§3.4, step 7); head office always sees everything |
+| Staff find the new screens a chore | Switch features on one at a time, with a few days in between |
+
+---
+
+## Appendix — the design of W0–W2, as agreed before building
+
+The sections below are the v2 design, kept for reference. The code follows them; where details
+changed while building, the code and its tests are the final word.
+
+### A. The two new features
+
+#### A.1 Mechanic attendance and the daily tally (W1)
 
 **What the workshop gets**
 
@@ -105,7 +307,7 @@ The office server (port 1929) runs `claude/crash-log` = `main` + the crash log.
 - `attendance.unlock`: change a signed-off day, with a reason. Default: manager, operational manager.
 - Reading attendance follows the **Daily Work** section clearance.
 
-### 3.2 Partial close, full close and reopen requests (W2)
+#### A.2 Partial close, full close and reopen requests (W2)
 
 **What changes for a job card**
 
@@ -156,7 +358,7 @@ IN_PROGRESS / WORK_COMPLETE ──"Partly close"──► PARTIALLY_CLOSED ─�
 - `jobs.reopen_request`: default holders are those of `jobs.edit` (workshop, operational manager, manager).
 - Approving a reopen: `jobs.reopen` (existing).
 
-### 3.3 Groundwork both features need (W0)
+#### A.3 Groundwork both features need (W0)
 
 1. **The 254 stuck REQUESTED job cards.** Most are imported history (imported with no end date).
    Each one blocks a new job for its vehicle, and would block the "new job after partial close"
@@ -171,14 +373,14 @@ IN_PROGRESS / WORK_COMPLETE ──"Partly close"──► PARTIALLY_CLOSED ─�
    - `OPEN_SQL`: blocks the vehicle; excludes PARTIALLY_CLOSED;
    - `NOT_FINAL_SQL`: not fully closed yet; includes PARTIALLY_CLOSED.
 
-   Each call site then chooses its meaning on purpose (table in §3.4).
+   Each call site then chooses its meaning on purpose (table in §A.4).
 3. **One guard for adding anything to a job**, `jobstate.checkAdd(job, kind, {date, user})`, called by
    every write path (there are about 20). Today the closed-job checks disagree: job-card screens use
    `editable()`, stores issues use `allow_closed`, and **a new MRN or a tyre/battery request can
    still be raised against a CLOSED job**. One guard fixes that now and carries the partial-close
    rules later.
 
-### 3.4 How the features touch every linked section
+#### A.4 How the features touch every linked section
 
 | Section / file | Attendance (W1) | Partial close (W2) |
 |---|---|---|
@@ -201,143 +403,3 @@ IN_PROGRESS / WORK_COMPLETE ──"Partly close"──► PARTIALLY_CLOSED ─�
 | Permissions (`src/lib/capabilities.js`) | `attendance.record` / `signoff` / `unlock` | `jobs.partial_close`, `jobs.reopen_request` |
 | Audit log | Every attendance change, sign-off and unlock | Partial close, full close, reopen request, approve, refuse |
 | Imports / re-sync scripts (memory: *daily-work-reimport-hazard*) | The tally exposes duplicated rows (over-booked) | Imported history is not affected |
-
----
-
-## 4. Updated order of work
-
-### Step 0 — Deploy what is merged (now, in parallel; your action on the VPS)
-
-These fixes are on `main` but the live server does not have them yet:
-
-1. Check the branch: `git -C /opt/workshopone/app branch --show-current` must say `main`.
-2. `node scripts/admin.js audit-passwords`, and fix any account it lists.
-3. `sudo bash /opt/workshopone/app/deploy/update.sh`.
-4. Back up `/opt/workshopone/data/mfa.key`.
-5. Run `deploy/cloudflare-refresh.sh` (dry run), then `--apply`.
-6. Add the Cloudflare rate-limit rule, install the verify timer, and set up the off-site copy (`deploy/VPS.md`).
-7. Enrol admin two-factor, then tick "Require" on the admin role.
-8. Open and merge the crash-log PR (`claude/crash-log`).
-
-### Stage W0 — Groundwork (3 days)
-
-- **Goal:** one meaning of "open", one guard for adding to a job, and the stuck REQUESTED jobs cleared.
-- **Tasks:**
-  1. The review screen and bulk action for the 254 REQUESTED jobs (confirm first; audited).
-  2. `OPEN_SQL` / `NOT_FINAL_SQL` helpers; replace the 8+ inline copies.
-  3. `jobstate.checkAdd()`, wired into every write path. Refuse MRNs and tyre/battery requests on CLOSED jobs.
-- **Rules:** *job-reopen-month-anchor* (reopen gates unchanged); *attach-unassigned-to-job* (moves still recompute).
-- **Done when:**
-  - a test calls every add path against a CLOSED job and each is refused, unless allowed on purpose;
-  - no inline `NOT IN ('CLOSED','REJECTED')` is left.
-- **Rollback:** normal `update.sh` rollback. The REQUESTED clean-up is audited and reversible, one job at a time.
-
-### Stage W1 — Attendance and the daily tally (7 days)
-
-- **Tasks:**
-  1. Tables and settings.
-  2. `lib/attendance.js`, the tally engine, using `splitMechanics` / `resolveMechanic`.
-  3. Routes: day grid get/save, sign-off, unlock, month summary.
-  4. The Attendance & tally card on Daily Work.
-  5. Hours-left hints and warnings in the three entry forms.
-  6. Attended, booked and utilisation columns in Monthly Labour Working Hours.
-  7. Lock daily work on a signed-off day.
-  8. Capabilities; audit; tests (the crew-line rule, overnight shift, absent with work, unmatched names).
-- **Rules:** *daily-work-hours-are-manhours*, *workshopone-costing-rules* (no cost change), *list-each-thing-once*.
-- **Done when:**
-  - a sample week of real data tallies correctly;
-  - crew lines count per person;
-  - no job's labour cost changes;
-  - a signed-off day refuses edits.
-- **Rollback:** an attendance feature flag. Daily Work works exactly as before without it.
-
-### Stage W2 — Partial close, full close and reopen requests (8 days)
-
-- **Tasks:**
-  1. The `PARTIALLY_CLOSED` state. SQLite cannot change a CHECK constraint, so `job_cards` is rebuilt
-     in place with ids kept and foreign keys off during the swap. This is the same pattern
-     `src/db/index.js` already uses for `tb_specs`. Run it on a staging copy first. *Alternative if
-     you prefer no rebuild:* keep status WORK_COMPLETE plus a `partial_closed_at` flag. The W0 helpers
-     make either work, but a real status is clearer on screens and in reports.
-  2. The columns `partial_closed_at`, `partial_closed_by`, `partial_note`, `continues_job_id`.
-  3. Transitions and capabilities.
-  4. The partial-close rules inside `checkAdd`.
-  5. The "work done recorded" closure rule.
-  6. Full close.
-  7. `job_reopen_requests` (request / approve / refuse, requester ≠ approver, one-open check on approve).
-  8. "Open a new job for this vehicle" with the back-link.
-  9. Job card UI: buttons, locked controls, status badge and colour, jobs-list filter, dashboard tile, approval queue.
-  10. Tests: every allowed and refused action, the one-open rule, a reopen blocked by the new job, the report month.
-- **Rules:** *job-reopen-month-anchor* (report month kept; reopen still needs a reason); *vehicle-monthly-costs-rollup*;
-  *attach-unassigned-to-job*; *external-cost-excluded*.
-- **Done when:**
-  - a partly closed job refuses exactly the listed actions;
-  - the vehicle gets a new job;
-  - a full close is refused until everything is priced and the work is recorded;
-  - an approved reopen works only when the vehicle has no other open job.
-- **Rollback:** the old flow stays available behind a flag for one release. No partly closed job
-  exists until someone uses the button.
-
-### Stage W3 — Reports and dashboards (3 days)
-
-- **Tasks:**
-  1. Monthly cost report: partly closed jobs in Closed with a "prices pending" flag (per W-D9); an
-     optional utilisation sheet.
-  2. The day tally in the daily summary snapshot.
-  3. Excel export of the tally.
-  4. Dashboard tiles.
-- **Rules:** *job-cost-report-gold-model* (section rules unchanged apart from the documented addition).
-- **Done when:** the June 2026 report is unchanged, and a test month with a partly closed job shows it once, flagged.
-
-### Then
-
-1. **Approval limits** (Stage 1 remainder, needs D7).
-2. **Multi-site Stages 2–7** as in the v1 plan. The attendance and partial-close designs already
-   leave room for workshop scoping (Stage 3) and per-workshop mechanics (Stage 4).
-
----
-
-## 5. Decisions needed from you
-
-| # | Question | Recommended |
-|---|---|---|
-| W-D1 | Default shift and break? | 08:00–17:00, 60 min lunch |
-| W-D2 | How close must worked and booked be to count as matched? | 15 minutes |
-| W-D3 | When work would over-book a mechanic: warn or block? | Warn at entry; block the day sign-off |
-| W-D4 | Day sign-off: who, by when, and does it lock the day? | Workshop supervisor, by the next morning; locked, manager unlocks with a reason |
-| W-D5 | Who is tracked: all 32 mechanics, including staff and foremen at Rs 0? Helpers too? | All active mechanics |
-| W-D6 | A mechanic working at a project site that day: present with hours, or a separate status? | Present, with a note "at site X" |
-| W-D7 | Must some work done be recorded before a partial close? | Yes (or a written reason) |
-| W-D8 | Daily work on a partly closed job: only dates up to the partial close? | Yes; later dates go on the new job |
-| W-D9 | Which report month does a partly closed job belong to? | The partial-close month (Closed, flagged), with late prices landing in that month — the same principle as your reopen rule |
-| W-D10 | Should fully CLOSED jobs also use reopen *requests*, instead of the direct reopen? | Yes, one flow for both |
-| W-D11 | The 254 REQUESTED jobs: what to do with each group? | Imported with no activity in 90 days → reject "not carried out", after you review the list |
-| W-D12 | "Close on date" (backdating) for an incomplete job? | Becomes "partly close on date"; a backdated full close needs the full check |
-| W-D13 | Overnight or split shifts (two in/out pairs a day)? | Overnight yes; split shifts later if needed |
-
----
-
-## 6. Risks
-
-| Risk | Mitigation |
-|---|---|
-| Crew lines or unresolved names make the tally wrong | Same resolver as costing; an "unmatched names" list; tests on real crew lines |
-| Old imported daily work over-books mechanics | The tally only runs from the attendance start date |
-| One add path forgets the partial-close rule | A single `checkAdd` guard; a test calls every path |
-| Changing the status CHECK on `job_cards` (table rebuild) | The in-place rebuild pattern already proven on `tb_specs` (ids and references kept); staging copy first; `update.sh` backup and rollback; or the flag alternative in W2 |
-| Partly closed jobs slip through in reports | Two named helpers, not inline SQL; the report test covers a partly closed job |
-| A reopen collides with the vehicle's new job | Approval checks the one-open rule and says which job to finish first |
-| Staff find a second screen a chore | Quick-fill buttons; entry takes seconds; sign-off reminders on the dashboard |
-
----
-
-## 7. Timeline (one developer)
-
-| Week | Work |
-|---|---|
-| 0 | Step 0: deploy to the VPS (you) · crash-log PR |
-| 1 | W0 groundwork · your answers to W-D1…W-D13 |
-| 2–3 | W1 attendance and tally → test on the office server |
-| 3–4 | W2 partial close and reopen requests → test on the office server |
-| 5 | W3 reports and dashboards → PRs → deploy |
-| 6+ | Approval limits, then multi-site Stages 2–7 (v1 plan) |

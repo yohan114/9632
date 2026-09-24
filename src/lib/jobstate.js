@@ -237,7 +237,7 @@ const ADD_RULES = {
   general: 'confirm',
 };
 
-// What a PARTLY CLOSED card allows (docs/WORKSHOPONE_PLAN.md §3.2). The work is done and the
+// What a PARTLY CLOSED card allows (docs/WORKSHOPONE_PLAN.md §A.2). The work is done and the
 // vehicle has left; what is still coming is prices, the parts already asked for, and the records.
 //
 //   allow         pricing any line; general rack items.

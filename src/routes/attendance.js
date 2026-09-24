@@ -1,6 +1,6 @@
 'use strict';
 
-// Mechanic attendance and the daily tally (src/lib/attendance.js; docs/WORKSHOPONE_PLAN.md §3.1).
+// Mechanic attendance and the daily tally (src/lib/attendance.js; docs/WORKSHOPONE_PLAN.md §A.1).
 //
 //   GET  /settings            the rules (flag, start date, shift, break, tolerance)
 //   PUT  /settings            change them                               attendance.settings

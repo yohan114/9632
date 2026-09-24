@@ -1900,7 +1900,7 @@ routes.dailywork = async (c) => {
   await Promise.all([loadMonthly(initialMonth), load(date), attDone]);
 };
 
-// ---- Attendance & day tally (src/lib/attendance.js; docs/WORKSHOPONE_PLAN.md §3.1)
+// ---- Attendance & day tally (src/lib/attendance.js; docs/WORKSHOPONE_PLAN.md §A.1)
 //
 // In, out and break for every mechanic, checked against the hours booked on jobs that day. The
 // server does the counting; this card only shows it and sends what was typed. Nothing here
@@ -3187,7 +3187,7 @@ function closeOnDateModal(jobId, jobNo, onDone) {
   });
 }
 
-// ---- partial close and reopen requests (src/lib/job_close.js; docs/WORKSHOPONE_PLAN.md §3.2)
+// ---- partial close and reopen requests (src/lib/job_close.js; docs/WORKSHOPONE_PLAN.md §A.2)
 
 // Partly close: the work is finished and the vehicle has left, but prices or records are missing.
 function partialCloseModal(job, detail, onDone) {

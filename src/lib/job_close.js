@@ -1,7 +1,7 @@
 'use strict';
 
 // ===========================================================================
-// Partial close, full close and reopen requests (docs/WORKSHOPONE_PLAN.md §3.2, Stage W2).
+// Partial close, full close and reopen requests (docs/WORKSHOPONE_PLAN.md §A.2, Stage W2).
 //
 //   IN_PROGRESS / WORK_COMPLETE ──"Partly close"──► PARTIALLY_CLOSED ──"Close fully"──► CLOSED
 //                                                         │

@@ -440,7 +440,7 @@ function migrate() {
   // card was originally closed in. Re-closing restores completed_at from it, so a cost report
   // the owner has already issued cannot change because someone reopened an old job.
   ensureColumn('job_cards', 'original_completed_at', 'TEXT');
-  // Partial close (docs/WORKSHOPONE_PLAN.md §3.2, W2): the work is finished and the vehicle has
+  // Partial close (docs/WORKSHOPONE_PLAN.md §A.2, W2): the work is finished and the vehicle has
   // left, but prices or records are still missing. The card keeps when and by whom it was partly
   // closed, and a new card for the vehicle points back to it through continues_job_id.
   ensureColumn('job_cards', 'partial_closed_at', 'TEXT');
