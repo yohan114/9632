@@ -19,6 +19,7 @@
 const express = require('express');
 const { get, all, run, tx } = require('../db');
 const { requireAuth, requireCap } = require('../lib/auth');
+const jobstate = require('../lib/jobstate');
 const { requireModule } = require('../lib/permissions');
 const { asyncHandler, require_, toInt, toNum } = require('../lib/http');
 const tb = require('../lib/tyre_battery');
@@ -101,6 +102,11 @@ router.post('/requests', requireModule('tb_request'),
     // A tyre or a battery is always FOR something. Without the machine there is no cost to carry
     // and no history to build, which is the whole point of asking.
     const jobId = toInt(b.job_id) || null;
+    // Naming a job card: it must exist, and a finished card takes no new request (jobstate.checkAdd).
+    if (jobId) {
+      const g = jobstate.checkAdd(get('SELECT id, job_no, status FROM job_cards WHERE id = ?', jobId), 'tb_request', { user: req.user });
+      if (!g.ok) return res.status(g.status).json(g.body);
+    }
     // A job card knows its own vehicle, so naming the job is enough — the same courtesy the
     // stores issue screen already extends.
     let assetId = toInt(b.asset_id);

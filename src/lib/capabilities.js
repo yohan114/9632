@@ -63,6 +63,8 @@ const CAPABILITIES = [
   C('jobs.dailywork', 'jobs', 'Add or remove daily work on a job card', ['workshop'], 'jobs'),
   C('jobs.parts', 'jobs', 'Add, price or remove parts on a job card', ['workshop', 'storekeeper'], 'jobs'),
   C('jobs.flat_labour', 'jobs', 'Set a service job\'s flat labour charge', ['workshop', 'operational_manager'], 'jobs'),
+  // A bulk clean-up of stuck REQUESTED cards: admin-only unless given to a role on purpose.
+  C('jobs.triage', 'jobs', 'Review stuck job cards and reject or close them in bulk', [], 'jobs'),
 
   // ---- job requests --------------------------------------------------------------------------
   C('jobrequests.create', 'jobrequests', 'Raise a job request', ['assistant_transport_manager'], 'jobrequests'),

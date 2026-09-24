@@ -1281,6 +1281,7 @@ routes.jobs = async (c, params) => {
       <span class="muted" id="jcount"></span>
       <div class="spacer"></div>
       ${canDo('jobs.create') ? '<button class="primary" id="newjob">+ New Job Card</button>' : ''}
+      ${canDo('jobs.triage') ? '<a class="btn sm" href="#/jobreview" title="REQUESTED cards that hold their vehicle but never moved">🧹 Review stuck cards</a>' : ''}
     </div>
     <div id="jbulk-tray" class="card" style="display:none;background:#f0fdf4;border:1px solid #86efac;margin-bottom:12px;padding:10px 14px;align-items:center;gap:10px;flex-wrap:wrap">
       <span id="jbulk-count" style="font-weight:700;color:#166534">0 cards selected</span>
@@ -7548,6 +7549,106 @@ routes.teardown = async (c) => {
     if (it && it.dataset.id) setTimeout(() => show(it.dataset.id), 0);
   }, true);
   if (preId) await show(preId);
+};
+
+// ---- Stuck job cards (W0) --------------------------------------------------------------------
+//
+// REQUESTED cards that hold their vehicle but will never move. The server suggests what to do with
+// each (src/lib/job_review.js); nothing changes until a person ticks cards and presses Apply.
+routes.jobreview = async (c) => {
+  if (!canDo('jobs.triage')) { c.innerHTML = '<div class="card err">You do not have access to this page.</div>'; return; }
+  const d = await api('/jobs/review/stuck');
+  const label = { reject: 'Reject — not carried out', close: 'Close — work was done', keep: 'Keep' };
+  const badge = { reject: 'red', close: 'amber', keep: 'green' };
+  let filter = 'reject';
+  const choice = new Map();          // job id -> { action, close_date }
+  for (const x of d.cards) if (x.preselected) choice.set(x.id, { action: x.suggestion, close_date: x.close_date });
+  // This month and the three before it: a close dated in one of these lands in a report you may
+  // already have handed out. Plain year*12+month arithmetic, so January looks back into December.
+  const now = new Date();
+  const recentMonths = new Set([0, 1, 2, 3].map((k) => {
+    const m = now.getFullYear() * 12 + now.getMonth() - k;
+    return `${Math.floor(m / 12)}-${String((m % 12) + 1).padStart(2, '0')}`;
+  }));
+
+  const draw = () => {
+    const rows = d.cards.filter((x) => filter === 'all' || x.suggestion === filter);
+    const act = (x) => {
+      const ch = choice.get(x.id);
+      return `<select data-act="${x.id}" style="width:auto">
+          <option value="">— no change —</option>
+          <option value="reject" ${ch && ch.action === 'reject' ? 'selected' : ''}>Reject</option>
+          <option value="close" ${ch && ch.action === 'close' ? 'selected' : ''}>Close</option>
+        </select>
+        ${ch && ch.action === 'close' ? `<input type="date" data-cdate="${x.id}" value="${esc(ch.close_date || x.close_date || x.period || '')}" style="width:auto">
+          <br><span class="muted" style="font-size:11px">goes in the <b>${esc(String(ch.close_date || x.close_date || '').slice(0, 7))}</b> cost report</span>` : ''}`;
+    };
+    const activityText = (a) => Object.entries(a).filter(([, n]) => n).map(([k, n]) => `${n} ${k.replace('_', ' ')}`).join(', ') || 'none';
+    qs('#rv-body', c).innerHTML = tableWrap(
+      [{ label: 'Job' }, { label: 'Vehicle' }, { label: 'Period' }, { label: 'Last activity' }, { label: 'Activity' }, { label: 'Cost', num: true }, { label: 'Suggestion' }, { label: 'Do' }],
+      rows.map((x) => `<tr>
+        <td><a href="#/jobs/${x.id}"><b>${esc(x.job_no)}</b></a>${x.imported ? ' <span class="badge">imported</span>' : ''}<br><span class="muted" style="font-size:11px">${esc(String(x.description || '').slice(0, 60))}</span></td>
+        <td>${esc(x.vehicle || '—')}</td><td>${esc(x.period || '—')}</td>
+        <td>${esc(x.last_activity || '—')}${x.age_days != null ? `<br><span class="muted" style="font-size:11px">${x.age_days} days ago</span>` : ''}</td>
+        <td style="font-size:12px">${esc(activityText(x.activity))}</td>
+        <td class="num">${x.total_cost ? money(x.total_cost) : '—'}</td>
+        <td><span class="badge ${badge[x.suggestion]}">${esc(label[x.suggestion])}</span></td>
+        <td style="white-space:nowrap">${act(x)}</td></tr>`),
+      { scroll: true });
+    const picked = [...choice.values()];
+    const nRej = picked.filter((p) => p.action === 'reject').length;
+    const nClose = picked.filter((p) => p.action === 'close').length;
+    const recentClose = picked.filter((p) => p.action === 'close' && recentMonths.has(String(p.close_date || '').slice(0, 7))).length;
+    qs('#rv-summary', c).innerHTML = `Chosen: <b>${nRej}</b> to reject, <b>${nClose}</b> to close.
+      ${recentClose ? `<span class="badge amber">${recentClose} would land in a recent cost-report month — check the dates</span>` : ''}`;
+    qs('#rv-apply', c).disabled = !picked.length;
+    qsa('[data-act]', c).forEach((sel) => sel.onchange = () => {
+      const x = d.cards.find((k) => k.id == sel.dataset.act);
+      if (!sel.value) choice.delete(x.id);
+      else choice.set(x.id, { action: sel.value, close_date: sel.value === 'close' ? (x.close_date || x.period) : null });
+      draw();
+    });
+    qsa('[data-cdate]', c).forEach((inp) => inp.onchange = () => {
+      const ch = choice.get(Number(inp.dataset.cdate)); if (ch) ch.close_date = inp.value; draw();
+    });
+    qsa('[data-rvf]', c).forEach((b) => b.classList.toggle('primary', b.dataset.rvf === filter));
+  };
+
+  const dup = d.duplicate_vehicles.map((v) => `<tr><td><b>${esc(v.asset_code || v.asset_reg || '')}</b></td><td>${v.open_count}</td>
+      <td>${v.jobs.map((j) => `<a href="#/jobs/${j.id}">${esc(j.job_no)}</a> <span class="muted">${esc(j.status)} · ${j.age_days} d</span>`).join('<br>')}</td></tr>`);
+
+  c.innerHTML = `${pageHeader('Stuck job cards', '<a href="#/jobs">Job Cards</a>')}
+    <div class="card">
+      <p style="margin-top:0">A card in REQUESTED holds its vehicle: no new job can be opened for it. These <b>${d.total}</b> cards have
+      not moved. The suggestions follow your rule: <b>no activity and nothing for ${d.stale_days} days → reject</b> ("not carried out");
+      <b>work recorded but nothing for ${d.stale_days} days → close</b> on the last activity date. <b>Nothing changes until you press Apply.</b></p>
+      <div class="pill-row">
+        <button class="btn sm" data-rvf="reject">Reject (${d.counts.reject})</button>
+        <button class="btn sm" data-rvf="close">Close (${d.counts.close})</button>
+        <button class="btn sm" data-rvf="keep">Keep (${d.counts.keep})</button>
+        <button class="btn sm" data-rvf="all">All (${d.total})</button>
+      </div>
+    </div>
+    <div class="card"><div id="rv-body"></div></div>
+    <div class="card">
+      <div id="rv-summary" style="margin-bottom:8px"></div>
+      <label>Why (goes on every card changed) *</label>
+      <textarea id="rv-reason" rows="2" placeholder="e.g. Clean-up of old imported cards, reviewed by the workshop manager"></textarea>
+      <div style="margin-top:10px;text-align:right"><button class="primary" id="rv-apply" disabled>Apply to the chosen cards</button></div>
+    </div>
+    <div class="card"><h3 style="margin-top:0">Vehicles with more than one open card (${d.duplicate_vehicles.length})</h3>
+      ${tableWrap([{ label: 'Vehicle' }, { label: 'Open cards' }, { label: 'Cards' }], dup)}</div>`;
+  qsa('[data-rvf]', c).forEach((b) => b.onclick = () => { filter = b.dataset.rvf; draw(); });
+  qs('#rv-apply', c).onclick = async () => {
+    const actions = [...choice.entries()].map(([job_id, p]) => ({ job_id, action: p.action, close_date: p.close_date }));
+    if (!confirm(`Change ${actions.length} card(s)? This is recorded against your name.`)) return;
+    try {
+      const r = await api('/jobs/review/apply', { method: 'POST', body: { actions, reason: qs('#rv-reason', c).value } });
+      toast(`${r.rejected} rejected, ${r.closed} closed`);
+      routes.jobreview(c);
+    } catch (e) { toast(e.message, 'err'); }
+  };
+  draw();
 };
 
 // ---- Access Control — roles & permissions, clearance board, users --------------------------

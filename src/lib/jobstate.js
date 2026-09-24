@@ -19,10 +19,30 @@ const STATES = [
   'REJECTED',
 ];
 
-// A card is "open" until it is closed or rejected — the single definition every
-// open-job check and picker uses.
-const OPEN_STATUSES = STATES.filter((s) => s !== 'CLOSED' && s !== 'REJECTED');
-const OPEN_SQL = "status NOT IN ('CLOSED', 'REJECTED')";
+// ---- what "open" means ------------------------------------------------------------------------
+//
+// Two questions that used to be one line of SQL copied into eight files:
+//
+//   OPEN      the card holds the vehicle. The one-open-card rule, "open job cards" counts, the card
+//             new daily work and stock issues land on.
+//   NOT FINAL the card is not finished with: prices, parts or records may still come in, so it
+//             belongs in "pending parts", "awaiting price" and similar lists.
+//
+// Today they give the same answer. They part company with partial close (docs/WORKSHOPONE_PLAN.md,
+// W2): a partly closed card will be NOT FINAL but no longer OPEN. Every caller now says which of
+// the two it means, so that change is made here, once, instead of in eight places.
+const FINAL_STATUSES = ['CLOSED', 'REJECTED'];
+const NOT_OPEN_STATUSES = ['CLOSED', 'REJECTED'];
+const quoted = (list) => list.map((st) => `'${st}'`).join(', ');
+const col = (alias) => (alias ? `${alias}.status` : 'status');
+/** SQL: the card holds the vehicle. `alias` is the job_cards table alias, if any. */
+const openSql = (alias) => `${col(alias)} NOT IN (${quoted(NOT_OPEN_STATUSES)})`;
+/** SQL: the card is not finished with (prices, parts or records may still come in). */
+const notFinalSql = (alias) => `${col(alias)} NOT IN (${quoted(FINAL_STATUSES)})`;
+const isOpen = (status) => !NOT_OPEN_STATUSES.includes(status);
+const isFinal = (status) => FINAL_STATUSES.includes(status);
+const OPEN_STATUSES = STATES.filter(isOpen);
+const OPEN_SQL = openSql();
 
 // target -> { from:[...], cap:<capability>, action:label }
 // Who may make each move is a CAPABILITY (src/lib/capabilities.js), not a list of role names, so a
@@ -151,6 +171,67 @@ function duplicateOpenJobs() {
   return rows;
 }
 
+// ---- adding anything to a card ------------------------------------------------------------------
+//
+// ONE ANSWER TO "may this go on that card?". It used to be decided in each place that writes to a
+// card, and the places disagreed: the job-card screen locked a CLOSED card (editable()), stores
+// issues asked for a confirmation, the Daily Work page did not check at all — and a new material
+// request or tyre/battery request could still be raised against a card closed months ago.
+//
+// Every write path now calls checkAdd() with the KIND of thing it adds. What a finished card allows,
+// per kind:
+//
+//   refuse       a NEW request (MRN, a line added to an MRN, a tyre/battery request). A closed card is
+//                finished with; asking for more on it is how material ends up on the wrong job.
+//   edit_closed  the card's own lines and details (daily work, parts, prices, attaching, editing).
+//                Needs "Change items on a CLOSED job card" (jobs.edit_closed) — the old editable()
+//                rule, which only ever locked CLOSED (a REJECTED card stayed editable, and still is).
+//   confirm      a late issue from stores: allowed once the person confirms (allow_closed), as before.
+//
+// Partial close (W2) adds its own column to this table rather than new checks in each route.
+const ADD_RULES = {
+  mrn: 'refuse',
+  tb_request: 'refuse',
+  daily_work: 'edit_closed',
+  part: 'edit_closed',
+  price: 'edit_closed',
+  attach: 'edit_closed',
+  edit: 'edit_closed',
+  issue: 'confirm',
+  general: 'confirm',
+};
+
+/**
+ * May `kind` be added to this card? Returns { ok: true } or { ok: false, status, body } — the HTTP
+ * status and JSON body to answer with (the existing shapes, so the screens need no change).
+ * @param {object} job        a job_cards row (needs id, job_no, status)
+ * @param {string} kind       one of ADD_RULES
+ * @param {{user?: object, allowClosed?: boolean}} [opts]
+ */
+function checkAdd(job, kind, { user = null, allowClosed = false } = {}) {
+  const rule = ADD_RULES[kind];
+  if (!rule) throw new Error(`jobstate.checkAdd: unknown kind "${kind}"`);
+  if (!job) return { ok: false, status: 404, body: { error: 'Job not found' } };
+  if (!isFinal(job.status)) return { ok: true };
+  if (rule === 'refuse') {
+    return { ok: false, status: 409, body: {
+      error: `Job ${job.job_no} is ${job.status}. Reopen it to ask for more items, or raise the request on the vehicle's open job card.`,
+      job_no: job.job_no, job_status: job.status,
+    } };
+  }
+  if (rule === 'edit_closed') {
+    if (job.status !== 'CLOSED') return { ok: true };
+    if (capsFor(user).includes('jobs.edit_closed')) return { ok: true };
+    return { ok: false, status: 423, body: { error: 'Job is closed (locked)' } };
+  }
+  // confirm
+  if (allowClosed) return { ok: true };
+  return { ok: false, status: 409, body: {
+    error: `Job ${job.job_no} is ${job.status} — confirm to record a late issue against it`,
+    job_no: job.job_no, job_status: job.status, needs_confirm: true,
+  } };
+}
+
 /** Can this user reopen a closed card? Mirrors checkTransition's CLOSED gate exactly. */
 function canReopen(who = []) {
   return capsFor(who).includes(REOPEN_CAP);
@@ -158,6 +239,7 @@ function canReopen(who = []) {
 
 module.exports = {
   STATES, TRANSITIONS, OPEN_STATUSES, OPEN_SQL, REOPEN_CAP,
+  FINAL_STATUSES, openSql, notFinalSql, isOpen, isFinal, ADD_RULES, checkAdd,
   isValidState, nextStates, checkTransition, canReopen,
   openJobFor, checkOneOpenJob, duplicateOpenJobs,
 };

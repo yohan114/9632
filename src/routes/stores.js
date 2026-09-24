@@ -148,6 +148,13 @@ router.post('/items/:id/txn', requireCap('stores.items.txn'), asyncHandler((req,
     default: return res.status(400).json({ error: 'Invalid txn_type' });
   }
   const { assetId } = resolveAssetId(b);
+  // Onto a job card: it must exist, and a finished card takes it only after a confirmation.
+  if (toInt(b.job_id)) {
+    const job = get('SELECT id, job_no, status FROM job_cards WHERE id = ?', toInt(b.job_id));
+    if (!job) return res.status(400).json({ error: 'Unknown job card' });
+    const g = jobstate.checkAdd(job, 'general', { user: req.user, allowClosed: !!b.allow_closed });
+    if (!g.ok) return res.status(g.status).json(g.body);
+  }
   const result = tx(() => {
     const info = run(
       `INSERT INTO general_item_txns (store_item_id, txn_type, qty, balance_after, asset_id, job_id, unit_price, ref, txn_date)
@@ -622,8 +629,10 @@ router.post('/mrn', requireCap('stores.mrn.create'), asyncHandler((req, res) => 
     unresolved = r.unresolved;
     jobId = toInt(b.job_id) || null;
     if (jobId) {
-      const job = get('SELECT id, asset_id FROM job_cards WHERE id = ?', jobId);
+      const job = get('SELECT id, job_no, status, asset_id FROM job_cards WHERE id = ?', jobId);
       if (!job) return res.status(400).json({ error: 'Unknown job card' });
+      // A finished card takes no new requests (jobstate.checkAdd).
+      { const g = jobstate.checkAdd(job, 'mrn', { user: req.user }); if (!g.ok) return res.status(g.status).json(g.body); }
       if (assetId && job.asset_id && job.asset_id !== assetId) {
         return res.status(409).json({ error: 'That job card belongs to a different vehicle' });
       }
@@ -866,6 +875,11 @@ router.post('/mrn/:id/lines', requireCap('stores.mrn.edit'), asyncHandler((req, 
   require_(req.body, ['description', 'qty']);
   const mrn = get('SELECT * FROM mrn WHERE id = ?', id);
   if (!mrn) return res.status(404).json({ error: 'MRN not found' });
+  // Adding an item asks for more material — on a finished card that is refused like a new request.
+  if (mrn.job_id) {
+    const g = jobstate.checkAdd(get('SELECT id, job_no, status FROM job_cards WHERE id = ?', mrn.job_id), 'mrn', { user: req.user });
+    if (!g.ok) return res.status(g.status).json(g.body);
+  }
 
   // A SETTLED request is one nobody is supposed to change any more — either signed off by the
   // Operational Manager, or an imported record that predates the approval workflow and is
@@ -1775,13 +1789,8 @@ router.post('/stock-issue', requireCap('stores.stock_issue'), asyncHandler((req,
   if (jobId) {
     const j = get('SELECT id, job_no, status, asset_id FROM job_cards WHERE id = ?', jobId);
     if (!j) return res.status(400).json({ error: 'Unknown job card' });
-    // A closed card can still take a late issue, but only deliberately.
-    if ((j.status === 'CLOSED' || j.status === 'REJECTED') && !b.allow_closed) {
-      return res.status(409).json({
-        error: `Job ${j.job_no} is ${j.status} — confirm to record a late issue against it`,
-        job_no: j.job_no, job_status: j.status, needs_confirm: true,
-      });
-    }
+    // A closed card can still take a late issue, but only deliberately (jobstate.checkAdd).
+    { const g = jobstate.checkAdd(j, 'issue', { user: req.user, allowClosed: !!b.allow_closed }); if (!g.ok) return res.status(g.status).json(g.body); }
     if (!assetId) assetId = j.asset_id;
   } else {
     const open = jobstate.openJobFor(assetId);
@@ -2147,13 +2156,8 @@ router.post('/issues', requireCap('stores.issue'), asyncHandler((req, res) => {
   if (!job) return res.status(400).json({ error: 'Unknown job card' });
   // A closed / rejected card can still take a late issue, but only deliberately: the
   // client has to come back with allow_closed so a mis-picked card can't slip through.
-  const isClosed = job.status === 'CLOSED' || job.status === 'REJECTED';
-  if (isClosed && !b.allow_closed) {
-    return res.status(409).json({
-      error: `Job ${job.job_no} is ${job.status} — confirm to record a late issue against it`,
-      job_no: job.job_no, job_status: job.status, needs_confirm: true,
-    });
-  }
+  const isClosed = jobstate.isFinal(job.status);   // also marks the audit entry as a late issue
+  { const g = jobstate.checkAdd(job, 'issue', { user: req.user, allowClosed: !!b.allow_closed }); if (!g.ok) return res.status(g.status).json(g.body); }
   const serviceId = toInt(b.service_id) || null;
   const assetId = job.asset_id;
   const qty = toNum(b.qty, 1);

@@ -21,7 +21,7 @@ const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', '
 
 // job_cards has no IN_PROGRESS/IN_WORKSHOP status in this system — "active/open" means
 // anything not yet CLOSED or REJECTED (the same convention jobcards.js uses).
-const OPEN_JOBS = "status NOT IN ('CLOSED', 'REJECTED')";
+const OPEN_JOBS = require('../lib/jobstate').openSql();   // cards that hold their vehicle
 // Live, in-flight MRNs awaiting a decision. approval_status is 'requested' | 'certified'
 // | 'approved' | 'rejected' (there is no 'pending'); the 1500+ imported rows are
 // 'requested' with no requester, so a real pending row must carry a requester.

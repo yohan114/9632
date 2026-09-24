@@ -1,6 +1,7 @@
 'use strict';
 
 const express = require('express');
+const jobstate = require('../lib/jobstate');
 const { get, all, run } = require('../db');
 const { requireCap } = require('../lib/auth');
 const { asyncHandler, require_, toInt, toNum } = require('../lib/http');
@@ -42,7 +43,7 @@ function listAssets(query = {}) {
   const where = clauses.length ? 'WHERE ' + clauses.join(' AND ') : '';
   return all(
     `SELECT a.*, p.name AS current_project,
-            (SELECT COUNT(*) FROM job_cards j WHERE j.asset_id = a.id AND j.status NOT IN ('CLOSED','REJECTED')) AS open_jobs,
+            (SELECT COUNT(*) FROM job_cards j WHERE j.asset_id = a.id AND ${jobstate.openSql('j')}) AS open_jobs,
             (SELECT b.serial_no FROM batteries b WHERE b.current_asset_id = a.id AND b.state='installed' LIMIT 1) AS current_battery,
             (SELECT COALESCE(SUM(j.total_cost),0) FROM job_cards j WHERE j.asset_id = a.id) AS lifetime_cost
        FROM assets a
@@ -92,7 +93,7 @@ router.get('/:id', asyncHandler((req, res) => {
   if (!asset) return res.status(404).json({ error: 'Asset not found' });
   const current_project = asset.current_project_id ? get('SELECT * FROM projects WHERE id = ?', asset.current_project_id) : null;
   const current_battery = get(`SELECT * FROM batteries WHERE current_asset_id = ? AND state='installed' LIMIT 1`, id);
-  const open_jobs = all(`SELECT id, job_no, type, status, description, total_cost FROM job_cards WHERE asset_id = ? AND status NOT IN ('CLOSED','REJECTED') ORDER BY id DESC`, id);
+  const open_jobs = all(`SELECT id, job_no, type, status, description, total_cost FROM job_cards WHERE asset_id = ? AND ${jobstate.openSql()} ORDER BY id DESC`, id);
   const lc = get(
     `SELECT COALESCE(SUM(labour_cost),0) labour, COALESCE(SUM(material_cost),0) material,
             COALESCE(SUM(oil_cost),0) oil, COALESCE(SUM(general_cost),0) general,

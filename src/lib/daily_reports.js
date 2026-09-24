@@ -18,6 +18,7 @@
 // Anything the supervisor types wins and carries forward, held in job_summary_notes.
 
 const { get, all, run } = require('../db');
+const jobstate = require('./jobstate');
 
 const d10 = (v) => String(v || '').slice(0, 10);
 /** The office writes dates as 14.08.2026. */
@@ -185,7 +186,7 @@ function jobSummary({ asOf, activeDays = 30 } = {}) {
       LEFT JOIN projects p ON p.id = j.project_id
       LEFT JOIN projects ap ON ap.id = COALESCE(a.current_project_id, a.home_project_id)
       LEFT JOIN job_summary_notes n ON n.job_id = j.id
-     WHERE j.status NOT IN ('CLOSED','REJECTED')
+     WHERE ${jobstate.notFinalSql('j')}   -- still in play: parts or prices may still come in
        AND j.asset_id IS NOT NULL
        AND date(COALESCE(j.requested_at, j.created_at)) <= date(?)
        AND (

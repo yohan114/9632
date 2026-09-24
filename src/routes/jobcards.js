@@ -53,12 +53,6 @@ function loadJob(id) {
 // paperwork, so it stays put and a later type change is reported as a mismatch instead.
 const JOB_TYPES = ['repair', 'service'];
 
-function editable(job, user) {
-  if (job.status !== 'CLOSED') return true;
-  // Closed cards can still receive items/edits from the managing roles (admin
-  // included via hasRole); all such edits are audited. Historical totals are kept.
-  return hasCap(user, 'jobs.edit_closed');
-}
 
 // ---- list / create --------------------------------------------------------
 
@@ -82,7 +76,7 @@ router.get(
       params.push(toInt(req.query.project_id));
     }
     // Only currently-open job cards (for pickers that log against an active job).
-    if (req.query.open === '1') clauses.push("j.status NOT IN ('CLOSED', 'REJECTED')");
+    if (req.query.open === '1') clauses.push(jobstate.openSql('j'));
     // Free-text search across job number, vehicle and references. A vehicle the
     // user types (e.g. "LO-5981") may live in the asset's canonical code, its
     // registration, its ec_code, or only as an alias — so we check them all, plus
@@ -145,7 +139,7 @@ router.get(
                    CASE WHEN j.asset_id IS NULL THEN 0 ELSE (
                      SELECT COUNT(*) - 1 FROM job_cards s
                       WHERE s.asset_id = j.asset_id
-                        AND s.status NOT IN ('CLOSED', 'REJECTED')) END AS open_siblings
+                        AND ${jobstate.openSql('s')}) END AS open_siblings
               ${from}
              ${where})
           WHERE rn = 1
@@ -221,6 +215,32 @@ router.get(
     });
   })
 );
+
+// Stuck REQUESTED cards: the list with a suggestion for each, and applying what a person chose
+// (src/lib/job_review.js). Nothing changes on its own. Registered before '/:id'.
+router.get('/review/stuck', requireAuth, requireCap('jobs.triage'), asyncHandler((_req, res) => {
+  res.json(require('../lib/job_review').listStuck());
+}));
+
+router.post('/review/apply', requireAuth, requireCap('jobs.triage'), asyncHandler((req, res) => {
+  let done;
+  try {
+    done = require('../lib/job_review').applyReview(req.body.actions, {
+      userId: req.user.id, reason: req.body.reason,
+      approvalRole: hasCap(req.user, 'jobs.approve_operations') ? 'operational_manager' : 'transport_manager' });
+  } catch (e) {
+    if (e.status === 400) return res.status(400).json({ error: e.message, problems: (e.extra && e.extra.problems) || [] });
+    throw e;
+  }
+  for (const j of done.jobs) {
+    audit.record({ userId: req.user.id, entity: 'job_card', entityId: j.id,
+      action: j.action === 'reject' ? 'review_reject' : 'review_close',
+      before: { status: 'REQUESTED' }, after: { status: j.action === 'reject' ? 'REJECTED' : 'CLOSED', completed_at: j.date },
+      reason: req.body.reason, notify: false });
+  }
+  emitter.emit('dashboard_refresh', { reason: 'job_review' });
+  res.json(done);
+}));
 
 // Is this vehicle free to take a new job card? Lets the UI warn before the form is
 // filled in rather than failing on save.
@@ -626,7 +646,7 @@ router.post(
     const id = toInt(req.params.id);
     const job = get('SELECT * FROM job_cards WHERE id = ?', id);
     if (!job) return res.status(404).json({ error: 'Job not found' });
-    if (!editable(job, req.user)) return res.status(423).json({ error: 'Job is closed (locked)' });
+    { const g = jobstate.checkAdd(job, 'daily_work', { user: req.user }); if (!g.ok) return res.status(g.status).json(g.body); }
     const b = req.body;
     const isExternal = b.is_external ? 1 : 0;
     const workDate = b.work_date || new Date().toISOString().slice(0, 10);
@@ -711,7 +731,7 @@ router.delete(
     const lineId = toInt(req.params.lineId);
     const job = get('SELECT * FROM job_cards WHERE id = ?', id);
     if (!job) return res.status(404).json({ error: 'Job not found' });
-    if (!editable(job, req.user)) return res.status(423).json({ error: 'Job is closed (locked)' });
+    { const g = jobstate.checkAdd(job, 'daily_work', { user: req.user }); if (!g.ok) return res.status(g.status).json(g.body); }
     const row = get('SELECT * FROM job_daily_work WHERE id = ? AND job_id = ?', lineId, id);
     if (!row) return res.status(404).json({ error: 'Entry not found on this job' });
 
@@ -886,7 +906,7 @@ router.post('/:id/daily-work/attach', requireAuth, requireCap('jobs.dailywork'),
   const id = toInt(req.params.id);
   const job = get('SELECT * FROM job_cards WHERE id = ?', id);
   if (!job) return res.status(404).json({ error: 'Job not found' });
-  if (!editable(job, req.user)) return res.status(423).json({ error: 'Job is closed (locked)' });
+  { const g = jobstate.checkAdd(job, 'attach', { user: req.user }); if (!g.ok) return res.status(g.status).json(g.body); }
   const gid = catchAllJobId();
   const ids = (Array.isArray(req.body.ids) ? req.body.ids : []).map(toInt).filter(Boolean);
   if (!ids.length) return res.status(400).json({ error: 'Pick at least one entry' });
@@ -920,7 +940,7 @@ router.post('/:id/parts/attach', requireAuth, requireCap('jobs.parts'), asyncHan
   const id = toInt(req.params.id);
   const job = get('SELECT * FROM job_cards WHERE id = ?', id);
   if (!job) return res.status(404).json({ error: 'Job not found' });
-  if (!editable(job, req.user)) return res.status(423).json({ error: 'Job is closed (locked)' });
+  { const g = jobstate.checkAdd(job, 'attach', { user: req.user }); if (!g.ok) return res.status(g.status).json(g.body); }
   const gid = catchAllJobId();
   const grnIds = (Array.isArray(req.body.receipts) ? req.body.receipts : []).map(toInt).filter(Boolean);
   const partIds = (Array.isArray(req.body.parts) ? req.body.parts : []).map(toInt).filter(Boolean);
@@ -966,7 +986,7 @@ router.post(
     const id = toInt(req.params.id);
     const job = get('SELECT * FROM job_cards WHERE id = ?', id);
     if (!job) return res.status(404).json({ error: 'Job not found' });
-    if (!editable(job, req.user)) return res.status(423).json({ error: 'Job is closed (locked)' });
+    { const g = jobstate.checkAdd(job, 'part', { user: req.user }); if (!g.ok) return res.status(g.status).json(g.body); }
     const b = req.body;
     require_(b, ['source_type', 'description']);
     const info = run(
@@ -995,7 +1015,7 @@ router.patch(
     const partId = toInt(req.params.partId);
     const job = get('SELECT * FROM job_cards WHERE id = ?', id);
     if (!job) return res.status(404).json({ error: 'Job not found' });
-    if (!editable(job, req.user)) return res.status(423).json({ error: 'Job is closed (locked)' });
+    { const g = jobstate.checkAdd(job, 'price', { user: req.user }); if (!g.ok) return res.status(g.status).json(g.body); }
     const b = req.body;
     if (b.unit_price !== undefined) run('UPDATE job_parts SET unit_price = ? WHERE id = ? AND job_id = ?', b.unit_price === '' || b.unit_price === null ? null : toNum(b.unit_price), partId, id);
     if (b.qty !== undefined) run('UPDATE job_parts SET qty = ? WHERE id = ? AND job_id = ?', toNum(b.qty, 1), partId, id);
@@ -1013,7 +1033,7 @@ router.delete(
     const partId = toInt(req.params.partId);
     const job = get('SELECT * FROM job_cards WHERE id = ?', id);
     if (!job) return res.status(404).json({ error: 'Job not found' });
-    if (!editable(job, req.user)) return res.status(423).json({ error: 'Job is closed (locked)' });
+    { const g = jobstate.checkAdd(job, 'part', { user: req.user }); if (!g.ok) return res.status(g.status).json(g.body); }
     const row = get('SELECT * FROM job_parts WHERE id = ? AND job_id = ?', partId, id);
     if (!row) return res.status(404).json({ error: 'Item not found on this job' });
 
@@ -1051,7 +1071,7 @@ router.patch(
     const id = toInt(req.params.id);
     const job = loadJob(id);
     if (!job) return res.status(404).json({ error: 'Job not found' });
-    if (!editable(job, req.user)) return res.status(423).json({ error: 'Job is closed (locked)' });
+    { const g = jobstate.checkAdd(job, 'edit', { user: req.user }); if (!g.ok) return res.status(g.status).json(g.body); }
 
     const b = req.body || {};
     const sets = [];
@@ -1100,7 +1120,7 @@ router.patch(
           const a = get('SELECT id FROM assets WHERE id = ?', newAssetId);
           if (!a) return res.status(400).json({ error: 'Unknown vehicle' });
           // Moving an OPEN card onto a vehicle is opening a job for that vehicle.
-          if (job.status !== 'CLOSED' && job.status !== 'REJECTED') {
+          if (jobstate.isOpen(job.status)) {
             const guard = jobstate.checkOneOpenJob(newAssetId, { excludeJobId: id });
             if (!guard.ok) {
               return res.status(409).json({
@@ -1153,7 +1173,7 @@ router.patch(
     const id = toInt(req.params.id);
     const job = get('SELECT * FROM job_cards WHERE id = ?', id);
     if (!job) return res.status(404).json({ error: 'Job not found' });
-    if (!editable(job, req.user)) return res.status(423).json({ error: 'Job is closed (locked)' });
+    { const g = jobstate.checkAdd(job, 'price', { user: req.user }); if (!g.ok) return res.status(g.status).json(g.body); }
     if (job.type !== 'service') return res.status(400).json({ error: 'Flat labour applies to service jobs only' });
     const amount = req.body.flat_labour === '' || req.body.flat_labour == null ? null : toNum(req.body.flat_labour);
     run('UPDATE job_cards SET flat_labour = ? WHERE id = ?', amount, id);

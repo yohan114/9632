@@ -1,6 +1,7 @@
 'use strict';
 
 const express = require('express');
+const jobstate = require('../lib/jobstate');
 const { get, all, run, tx } = require('../db');
 const { requireAuth, requireCap, hasCap } = require('../lib/auth');
 const { asyncHandler, toInt, toNum } = require('../lib/http');
@@ -45,7 +46,7 @@ router.get('/dashboard', asyncHandler((_req, res) => {
       GROUP BY j.project_id ORDER BY total DESC`
   );
 
-  const open_jobs_count = get(`SELECT COUNT(*) c FROM job_cards WHERE status NOT IN ('CLOSED','REJECTED')`).c;
+  const open_jobs_count = get(`SELECT COUNT(*) c FROM job_cards WHERE ${jobstate.openSql()}`).c;
   const closed_this_month_count = get(
     `SELECT COUNT(*) c FROM job_cards WHERE status='CLOSED' AND strftime('%Y-%m', closed_at) = strftime('%Y-%m','now')`
   ).c;
@@ -406,7 +407,7 @@ function ongoingJobs(months) {
             COALESCE(j.labour_cost,0) AS labour_cost, COALESCE(j.material_cost,0) AS material_cost,
             COALESCE(j.total_cost,0)  AS total_cost
        FROM job_cards j LEFT JOIN assets a ON a.id = j.asset_id LEFT JOIN projects p ON p.id = j.project_id
-      WHERE j.status NOT IN ('CLOSED','REJECTED')
+      WHERE ${jobstate.notFinalSql('j')}
         AND j.job_no LIKE '____/%'
         AND (CAST(substr(j.job_no, 1, instr(j.job_no,'/') - 1) AS INTEGER) * 12
              + CAST(substr(substr(j.job_no, instr(j.job_no,'/') + 1), 1,
@@ -907,7 +908,7 @@ function dailyProgress(date) {
             CAST(julianday(?) - julianday(substr(COALESCE(j.requested_at, j.created_at),1,10)) AS INTEGER) AS age_days,
             (SELECT MAX(w.work_date) FROM job_daily_work w WHERE w.job_id = j.id) AS last_work
        FROM job_cards j LEFT JOIN assets a ON a.id = j.asset_id
-      WHERE j.status NOT IN ('CLOSED','REJECTED')
+      WHERE ${jobstate.notFinalSql('j')}
         AND substr(COALESCE(j.requested_at, j.created_at),1,10) <= ?
         AND (
           substr(COALESCE(j.requested_at, j.created_at),1,10) >= date(?, '-30 day')
@@ -916,7 +917,7 @@ function dailyProgress(date) {
       ORDER BY age_days DESC, j.job_no`, date, date, date, date, date);
   const open_total = get(
     `SELECT COUNT(*) c FROM job_cards
-      WHERE status NOT IN ('CLOSED','REJECTED') AND substr(COALESCE(requested_at, created_at),1,10) <= ?`, date).c;
+      WHERE ${jobstate.notFinalSql()} AND substr(COALESCE(requested_at, created_at),1,10) <= ?`, date).c;
 
   // Requested today (MRN lines raised) and received today (GRN deliveries).
   const requested = all(

@@ -14,6 +14,17 @@ const mechanics = require('../lib/mechanics');
 const aliases = require('../lib/aliases');
 
 const router = express.Router();
+const jobstate = require('../lib/jobstate');
+
+// Daily work on a card follows the same rule as the job card's own Daily Work section
+// (jobstate.checkAdd 'daily_work'): a CLOSED card needs "Change items on a CLOSED job card".
+// This page used to add to, edit and delete lines on closed cards without asking. Throws, so a
+// batch that touches one closed card it may not change is refused whole, not half-applied.
+function assertDailyWorkAllowed(jobId, user) {
+  if (!jobId) return;
+  const g = jobstate.checkAdd(get('SELECT id, job_no, status FROM job_cards WHERE id = ?', jobId), 'daily_work', { user });
+  if (!g.ok) { const e = new Error(g.body.error); e.status = g.status; throw e; }
+}
 
 // How far outside a card's own window a day's work may still be claimed by it. An open card
 // legitimately runs past its start, so this is generous — but it is a LIMIT. Without one, the
@@ -30,7 +41,7 @@ function jobForEntry(assetId, date) {
   const jobs = all('SELECT id, job_no, requested_at, completed_at, closed_at, status FROM job_cards WHERE asset_id = ?', assetId);
   if (!jobs.length) return null;
   const day = (v) => String(v || '').slice(0, 10);
-  const isOpen = (j) => j.status !== 'CLOSED' && j.status !== 'REJECTED';
+  const isOpen = (j) => jobstate.isOpen(j.status);
   const span = (j) => {
     const s = day(j.requested_at);
     // An open card has no end yet, so its window runs to today.
@@ -97,7 +108,7 @@ function autoVehicleJob(assetId, date, rawLabel) {
   // the date bound the newest open card claimed everything: one REQUESTED card ended up holding
   // nine months of daily work for its vehicle.
   const open = get(
-    `SELECT id FROM job_cards WHERE asset_id = ? AND status NOT IN ('CLOSED', 'REJECTED')
+    `SELECT id FROM job_cards WHERE asset_id = ? AND ${jobstate.openSql()}
         AND date(COALESCE(requested_at, created_at)) <= date(?, '+' || ? || ' day')
         AND date(?) <= date('now', '+' || ? || ' day')
       ORDER BY date(COALESCE(requested_at, created_at)) DESC, id DESC LIMIT 1`,
@@ -509,6 +520,7 @@ router.post('/', requireCap('dailywork.add'), asyncHandler((req, res) => {
   }
   const job = get('SELECT * FROM job_cards WHERE id = ?', jobId);
   if (!job) return res.status(404).json({ error: 'Job not found' });
+  assertDailyWorkAllowed(job.id, req.user);
 
   // The machine goes ON THE LINE now, not just into the choice of job card. This route already
   // worked the asset out — to find or create the card — and then threw it away, which is why the
@@ -588,6 +600,7 @@ router.post('/bulk-log', requireCap('dailywork.edit'), asyncHandler((req, res) =
       if (!job) continue;
       if (!lineAsset && job.asset_id) lineAsset = job.asset_id;
 
+      assertDailyWorkAllowed(jobId, req.user);   // a whole batch is refused, not half-applied
       const info = run(
         `INSERT INTO job_daily_work (job_id, work_date, mechanic, description, hours, is_external, external_value, asset_id)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -624,6 +637,7 @@ router.patch('/:id', requireCap('dailywork.edit'), asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   const w = get('SELECT * FROM job_daily_work WHERE id = ?', id);
   if (!w) return res.status(404).json({ error: 'Entry not found' });
+  assertDailyWorkAllowed(w.job_id, req.user);
 
   const sets = [];
   const params = [];
@@ -681,6 +695,7 @@ router.delete('/:id', requireCap('dailywork.edit'), asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   const w = get('SELECT * FROM job_daily_work WHERE id = ?', id);
   if (!w) return res.status(404).json({ error: 'Entry not found' });
+  assertDailyWorkAllowed(w.job_id, req.user);
 
   run('DELETE FROM job_daily_work WHERE id = ?', id);
   if (w.job_id) costing.refreshJobTotals(w.job_id);
@@ -712,6 +727,7 @@ router.post('/batch-update', requireCap('dailywork.edit'), asyncHandler((req, re
 
       const w = get('SELECT id, job_id, hours, outside_labour FROM job_daily_work WHERE id = ?', id);
       if (!w) continue;
+      assertDailyWorkAllowed(w.job_id, req.user);
 
       const hours = hasHours ? toNum(item.hours, 0) : w.hours;
       if (hasHours && hours < 0) continue;
