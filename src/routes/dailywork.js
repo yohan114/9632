@@ -29,7 +29,8 @@ const jobstate = require('../lib/jobstate');
 function assertDailyWorkAllowed(jobId, user, dates = []) {
   attendance.assertDaysOpen(dates);
   if (!jobId) return;
-  const g = jobstate.checkAdd(get('SELECT id, job_no, status FROM job_cards WHERE id = ?', jobId), 'daily_work', { user });
+  // The dates also matter on a partly closed card: only work up to its partial-close day.
+  const g = jobstate.checkAdd(get('SELECT id, job_no, status, asset_id, partial_closed_at FROM job_cards WHERE id = ?', jobId), 'daily_work', { user, dates });
   if (!g.ok) { const e = new Error(g.body.error); e.status = g.status; throw e; }
 }
 
@@ -45,14 +46,18 @@ const JOB_MATCH_SLACK_DAYS = 45;
 // then nothing — and "nothing" is the right answer, because the caller raises a fresh card for
 // the day rather than hanging the work on an unrelated job.
 function jobForEntry(assetId, date) {
-  const jobs = all('SELECT id, job_no, requested_at, completed_at, closed_at, status FROM job_cards WHERE asset_id = ?', assetId);
+  // A partly closed card takes no work dated after its partial-close day (jobstate.checkAdd), so
+  // it is never the answer for one: that work belongs on the vehicle's new card.
+  const jobs = all('SELECT id, job_no, requested_at, completed_at, closed_at, partial_closed_at, status FROM job_cards WHERE asset_id = ?', assetId)
+    .filter((j) => !(j.status === jobstate.PARTIAL && date > jobstate.partialDay(j)));
   if (!jobs.length) return null;
   const day = (v) => String(v || '').slice(0, 10);
   const isOpen = (j) => jobstate.isOpen(j.status);
   const span = (j) => {
     const s = day(j.requested_at);
-    // An open card has no end yet, so its window runs to today.
-    const e = isOpen(j) ? new Date().toISOString().slice(0, 10) : day(j.closed_at || j.completed_at || j.requested_at);
+    // An open card has no end yet, so its window runs to today. A partly closed one ends on its
+    // partial-close day: later work belongs on the vehicle's new card.
+    const e = isOpen(j) ? new Date().toISOString().slice(0, 10) : day(j.closed_at || j.partial_closed_at || j.completed_at || j.requested_at);
     return [s, e < s ? s : e];
   };
   const gap = (j) => {

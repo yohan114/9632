@@ -11,6 +11,7 @@ const audit = require('../lib/audit');
 const aliases = require('../lib/aliases');
 const mechanics = require('../lib/mechanics');
 const jobstate = require('../lib/jobstate');
+const closeLib = require('../lib/job_close');
 const attendance = require('../lib/attendance');
 const costing = require('../lib/costing');
 const jobno = require('../lib/jobno');
@@ -47,6 +48,27 @@ function loadJob(id) {
       WHERE j.id = ?`,
     id
   );
+}
+
+// Full close: the closure check has to pass. Returns null (may close) or the 409 body.
+// Switched off (the flow before W2): only a card's FIRST close is checked — a card that was closed
+// once already cleared it, or was closed by import / close-on-date, which never checked. Switched
+// on, nothing needs that excuse any more (an unfinished card can be partly closed), so every live
+// card is checked, including "work done is recorded"; only reopened imported history is excused.
+function closeGate(job) {
+  const readiness = costing.closureReadiness(job.id);
+  if (readiness.ready) return null;
+  const wasReopened = !!get('SELECT 1 v FROM job_reopens WHERE job_id = ? LIMIT 1', job.id);
+  if (!jobstate.partialCloseEnabled()) {
+    return wasReopened ? null : { error: 'Job is not fully priced — cannot close', missing: readiness.missing };
+  }
+  if (wasReopened && job.is_historical) return null;
+  const n = readiness.missing.length;
+  return {
+    error: `Not ready to close fully — ${n} thing${n === 1 ? '' : 's'} still missing.`
+      + (job.status === jobstate.PARTIAL ? '' : ' Partly close it instead, and close it fully once they are done.'),
+    missing: readiness.missing,
+  };
 }
 
 // The only two kinds of card. The letter in the job number (…/R/… or …/S/…) is set from this
@@ -243,6 +265,42 @@ router.post('/review/apply', requireAuth, requireCap('jobs.triage'), asyncHandle
   res.json(done);
 }));
 
+// Partial close and reopen requests: on or off (jobstate.partialCloseEnabled). Registered before '/:id'.
+router.get('/close-settings', asyncHandler((_req, res) => res.json({ partial_close_enabled: jobstate.partialCloseEnabled() })));
+router.put('/close-settings', requireAuth, requireCap('jobs.settings'), asyncHandler((req, res) => {
+  const before = jobstate.partialCloseEnabled();
+  const on = closeLib.setEnabled(!!(req.body && (req.body.partial_close_enabled === true || req.body.partial_close_enabled === 1 || req.body.partial_close_enabled === '1')));
+  audit.record({ userId: req.user.id, entity: 'settings', action: 'partial_close_switch', before: { partial_close_enabled: before }, after: { partial_close_enabled: on } });
+  res.json({ partial_close_enabled: on });
+}));
+
+// Reopen requests waiting for a decision (the job card shows its own; this is the queue).
+router.get('/reopen-requests', requireAuth, requireCap('jobs.reopen'), asyncHandler((req, res) => {
+  res.json(closeLib.pendingRequests({ excludeRequester: isAdmin(req.user) ? null : req.user.id }));
+}));
+
+router.post('/reopen-requests/:rid/:decision', requireAuth, requireCap('jobs.reopen'), asyncHandler((req, res) => {
+  const decision = req.params.decision;
+  if (decision !== 'approve' && decision !== 'refuse') return res.status(404).json({ error: 'Not found' });
+  let out;
+  try {
+    out = closeLib.decideReopen(toInt(req.params.rid), { user: req.user, approve: decision === 'approve', note: (req.body || {}).note, isAdmin: isAdmin(req.user) });
+  } catch (e) {
+    if (e.status && e.extra && e.extra.blocking_job) return res.status(e.status).json({ error: e.message, blocking_job: e.extra.blocking_job });
+    throw e;
+  }
+  const r = out.request;
+  audit.record({ userId: req.user.id, entity: 'job_reopen_request', entityId: r.id, action: decision === 'approve' ? 'approve' : 'refuse',
+    after: { job_id: r.job_id, status: r.status }, reason: r.decision_note || null });
+  if (decision === 'approve') {
+    audit.record({ userId: req.user.id, entity: 'job_card', entityId: r.job_id, action: 'transition',
+      before: { status: out.before.status }, after: { status: 'IN_PROGRESS' }, reason: `Reopen request #${r.id}: ${r.reason}` });
+    emitter.emit('job_updated', { job_id: r.job_id, action: 'transition', status: 'IN_PROGRESS' });
+    emitter.emit('dashboard_refresh', { reason: 'job_transition', status: 'IN_PROGRESS' });
+  }
+  res.json({ request: r, job: loadJob(r.job_id) });
+}));
+
 // Is this vehicle free to take a new job card? Lets the UI warn before the form is
 // filled in rather than failing on save.
 router.get(
@@ -318,6 +376,13 @@ router.get(
       snapshot,
       nextStates: jobstate.nextStates(job.status),
       canReopen: jobstate.canReopen(req.user),
+      // Partial close (W2): whether it is switched on, this card's reopen requests, and the cards
+      // either side of a partial close — the one this continues, and the one continuing it.
+      partialCloseEnabled: jobstate.partialCloseEnabled(),
+      reopenRequests: closeLib.requestsFor(id),
+      continues: job.continues_job_id ? get('SELECT id, job_no, status FROM job_cards WHERE id = ?', job.continues_job_id) : null,
+      continuedAs: all('SELECT id, job_no, status FROM job_cards WHERE continues_job_id = ? ORDER BY id', id),
+      workRecorded: closeLib.workRecorded(job),
       reopens: all(
         `SELECT r.*, u.username AS reopened_by_name FROM job_reopens r
            LEFT JOIN users u ON u.id = r.reopened_by
@@ -338,35 +403,40 @@ router.post(
     const target = req.body.to;
     const reason = req.body.reason || null;
 
+    if (target === jobstate.PARTIAL) {
+      return res.status(400).json({ error: 'Use "Partly close" — it asks for a note and can open the vehicle\'s new job.' });
+    }
     const check = jobstate.checkTransition(job.status, target, req.user);
     if (!check.ok) return res.status(400).json({ error: check.error });
 
-    const isReopen = job.status === 'CLOSED' && target === 'IN_PROGRESS';
-    if (isReopen) {
-      // Reopening a closed card is still "opening a job" for that vehicle.
-      const guard = jobstate.checkOneOpenJob(job.asset_id, { excludeJobId: id });
-      if (!guard.ok) {
-        return res.status(409).json({
-          error: `Cannot reopen — ${guard.blocking.job_no} is already open for this vehicle.`,
-          blocking_job: guard.blocking,
-        });
+    if (jobstate.isReopen(job.status, target)) {
+      // With partial close switched on, a reopen is ASKED FOR and approved by somebody else.
+      if (jobstate.partialCloseEnabled()) {
+        return res.status(409).json({ error: 'Reopening now goes through a request: press "Request reopen", and another manager approves it.', use_request: true });
       }
+      // Reopening a closed card is still "opening a job" for that vehicle.
+      const blocked = closeLib.reopenBlocker(job);
+      if (blocked) return res.status(blocked.status).json({ error: blocked.error, blocking_job: blocked.blocking_job });
       // A reopen rewrites cost history, so it must say why. Every other transition is
       // self-explanatory from the state pair; this one is not.
       if (!String(reason || '').trim()) {
         return res.status(400).json({ error: 'A reason is required to reopen a closed job' });
       }
+      tx(() => closeLib.applyReopen(job, { userId: req.user.id, reason }));
+      audit.record({ userId: req.user.id, entity: 'job_card', entityId: id, action: 'transition', before: { status: job.status }, after: { status: target }, reason });
+      emitter.emit('job_updated', { job_id: id, action: 'transition', status: target });
+      emitter.emit('dashboard_refresh', { reason: 'job_transition', status: target });
+      return res.json({ ...loadJob(id), nextStates: jobstate.nextStates(target) });
     }
 
     // Closure gate. A card that was already closed once cleared this gate (or was closed by
     // import / close-on-date, which never enforced it) — re-blocking it would strand every
     // reopened legacy job in IN_PROGRESS forever, so the gate applies to first closures only.
+    // With partial close switched on nothing is stranded (an unfinished card can be partly
+    // closed), so the gate applies to every live card; only reopened imported history is excused.
     if (target === 'CLOSED') {
-      const wasReopened = get('SELECT 1 v FROM job_reopens WHERE job_id = ? LIMIT 1', id);
-      const readiness = costing.closureReadiness(id);
-      if (!readiness.ready && !wasReopened) {
-        return res.status(409).json({ error: 'Job is not fully priced — cannot close', missing: readiness.missing });
-      }
+      const fail = closeGate(job);
+      if (fail) return res.status(409).json(fail);
     }
 
     if (check.def.action === 'ops_approve') {
@@ -399,24 +469,8 @@ router.post(
         case 'assign':
           break;
         case 'start_or_reopen':
+          // (A reopen is handled above, by closeLib.applyReopen.)
           if (!job.started_at) sets.push('started_at = ' + now);
-          if (isReopen) {
-            // Remember the close being undone, then clear it. Leaving completed_at/closed_at
-            // set on an IN_PROGRESS card makes the status and the dates disagree everywhere
-            // (dashboard counts, the closed-this-month figure, and the card's own MRN window,
-            // which would otherwise stay clipped at the old close date and hide the very parts
-            // the job was reopened to add).
-            run(
-              `INSERT INTO job_reopens (job_id, reopened_by, reason, prev_status, prev_completed_at, prev_closed_at, prev_total_cost)
-               VALUES (?, ?, ?, ?, ?, ?, ?)`,
-              id, req.user.id, String(reason).trim(), job.status, job.completed_at, job.closed_at, job.total_cost);
-            // First reopen wins: the anchor is the month the card was ORIGINALLY closed in.
-            if (!job.original_completed_at && job.completed_at) {
-              sets.push('original_completed_at = ?');
-              params.push(job.completed_at);
-            }
-            sets.push('completed_at = NULL', 'closed_at = NULL');
-          }
           run(`UPDATE assets SET status='under_repair' WHERE id = ? AND status <> 'decommissioned'`, job.asset_id);
           break;
         case 'mark_complete':
@@ -471,17 +525,25 @@ router.post(
           continue;
         }
 
+        if (target === jobstate.PARTIAL) {
+          failed.push({ id, job_no: job.job_no, error: 'Partly close each card on its own (it asks for a note)' });
+          continue;
+        }
         const check = jobstate.checkTransition(job.status, target, req.user);
         if (!check.ok) {
           failed.push({ id, job_no: job.job_no, error: check.error });
           continue;
         }
 
-        const isReopen = job.status === 'CLOSED' && target === 'IN_PROGRESS';
+        const isReopen = jobstate.isReopen(job.status, target);
         if (isReopen) {
-          const guard = jobstate.checkOneOpenJob(job.asset_id, { excludeJobId: id });
-          if (!guard.ok) {
-            failed.push({ id, job_no: job.job_no, error: guard.error });
+          if (jobstate.partialCloseEnabled()) {
+            failed.push({ id, job_no: job.job_no, error: 'Reopening goes through a request' });
+            continue;
+          }
+          const blocked = closeLib.reopenBlocker(job);
+          if (blocked) {
+            failed.push({ id, job_no: job.job_no, error: blocked.error });
             continue;
           }
           if (!reason) {
@@ -491,10 +553,9 @@ router.post(
         }
 
         if (target === 'CLOSED') {
-          const wasReopened = get('SELECT 1 v FROM job_reopens WHERE job_id = ? LIMIT 1', id);
-          const readiness = costing.closureReadiness(id);
-          if (!readiness.ready && !wasReopened) {
-            failed.push({ id, job_no: job.job_no, error: 'Not fully priced or has unissued store shelf parts', missing: readiness.missing });
+          const fail = closeGate(job);
+          if (fail) {
+            failed.push({ id, job_no: job.job_no, error: jobstate.partialCloseEnabled() ? fail.error : 'Not fully priced or has unissued store shelf parts', missing: fail.missing });
             continue;
           }
         }
@@ -529,18 +590,11 @@ router.post(
           case 'assign':
             break;
           case 'start_or_reopen':
-            if (!job.started_at) sets.push('started_at = ' + now);
             if (isReopen) {
-              run(
-                `INSERT INTO job_reopens (job_id, reopened_by, reason, prev_status, prev_completed_at, prev_closed_at, prev_total_cost)
-                 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-                id, req.user.id, reason, job.status, job.completed_at, job.closed_at, job.total_cost);
-              if (!job.original_completed_at && job.completed_at) {
-                sets.push('original_completed_at = ?');
-                params.push(job.completed_at);
-              }
-              sets.push('completed_at = NULL', 'closed_at = NULL');
+              closeLib.applyReopen(job, { userId: req.user.id, reason });
+              break;
             }
+            if (!job.started_at) sets.push('started_at = ' + now);
             run(`UPDATE assets SET status='under_repair' WHERE id = ? AND status <> 'decommissioned'`, job.asset_id);
             break;
           case 'mark_complete':
@@ -596,6 +650,7 @@ router.post(
     const job = loadJob(id);
     if (!job) return res.status(404).json({ error: 'Job not found' });
     if (job.status === 'CLOSED') return res.status(409).json({ error: 'Job is already closed (' + String(job.completed_at || '').slice(0, 10) + ')' });
+    if (job.status === jobstate.PARTIAL) return res.status(409).json({ error: 'This job is partly closed — use "Close fully" once everything is priced.' });
 
     const date = String(req.body.date || '').slice(0, 10);
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || Number.isNaN(Date.parse(date))) {
@@ -607,6 +662,26 @@ router.post(
     const reason = req.body.reason || null;
 
     const readiness = costing.closureReadiness(id);
+    // W-D12: with partial close switched on, a live card that is not ready becomes PARTLY closed
+    // on that date — a backdated FULL close needs the full check like any other. Imported history
+    // closes as before.
+    if (jobstate.partialCloseEnabled() && !job.is_historical && !readiness.ready) {
+      const out = closeLib.partialClose(job, { user: req.user, note: reason, date,
+        fromStatuses: jobstate.STATES.filter((st) => !jobstate.isFinal(st) && st !== jobstate.PARTIAL) });
+      audit.record({
+        userId: req.user.id, entity: 'job_card', entityId: id, action: 'partial_close_on_date',
+        before: { status: job.status, completed_at: job.completed_at },
+        after: { status: jobstate.PARTIAL, completed_at: date, partial_closed_at: date }, reason,
+      });
+      emitter.emit('job_updated', { job_id: id, action: 'partial_close', status: jobstate.PARTIAL });
+      emitter.emit('dashboard_refresh', { reason: 'job_transition', status: jobstate.PARTIAL });
+      const n = out.missing.length;
+      return res.json({
+        ...loadJob(id), nextStates: jobstate.nextStates(jobstate.PARTIAL), partly_closed: true,
+        warning: `Partly closed on ${date} — ${n} thing${n === 1 ? '' : 's'} still missing. Close it fully once they are done.`,
+        missing: out.missing,
+      });
+    }
     tx(() => {
       // The chosen date is explicit user intent, so it wins over the original-month anchor —
       // but the anchor is dropped at the same time, or a later re-close would silently pull
@@ -637,6 +712,62 @@ router.post(
   })
 );
 
+// ---- partial close and reopen requests (src/lib/job_close.js) --------------
+
+// Partly close: the work is done and the vehicle has left, but prices or records are missing.
+// Optionally opens the vehicle's new card at the same time, pointing back to this one.
+router.post(
+  '/:id/partial-close',
+  requireAuth,
+  requireCap('jobs.partial_close'),
+  asyncHandler((req, res) => {
+    if (!jobstate.partialCloseEnabled()) return res.status(409).json({ error: 'Partial close is switched off' });
+    const id = toInt(req.params.id);
+    const job = loadJob(id);
+    if (!job) return res.status(404).json({ error: 'Job not found' });
+    const b = req.body || {};
+    let out;
+    try {
+      out = closeLib.partialClose(job, { user: req.user, note: b.note, openNew: !!b.open_new,
+        newJob: { description: b.new_description, type: b.new_type } });
+    } catch (e) {
+      if (e.status && e.extra && e.extra.blocking_job) return res.status(e.status).json({ error: e.message, blocking_job: e.extra.blocking_job });
+      throw e;
+    }
+    audit.record({ userId: req.user.id, entity: 'job_card', entityId: id, action: 'partial_close',
+      before: { status: job.status, completed_at: job.completed_at },
+      after: { status: jobstate.PARTIAL, completed_at: out.job.completed_at, missing: out.missing.length, new_job_id: out.newJobId },
+      reason: out.job.partial_note || null });
+    let newJob = null;
+    if (out.newJobId) {
+      newJob = loadJob(out.newJobId);
+      audit.record({ userId: req.user.id, entity: 'job_card', entityId: out.newJobId, action: 'create',
+        after: { job_no: newJob.job_no, continues_job_id: id } });
+    }
+    emitter.emit('job_updated', { job_id: id, action: 'partial_close', status: jobstate.PARTIAL });
+    emitter.emit('dashboard_refresh', { reason: 'job_transition', status: jobstate.PARTIAL });
+    res.json({ ...loadJob(id), nextStates: jobstate.nextStates(jobstate.PARTIAL), missing: out.missing, new_job: newJob });
+  })
+);
+
+// Ask for a partly closed or closed card to be reopened. Someone else holding jobs.reopen decides.
+router.post(
+  '/:id/reopen-request',
+  requireAuth,
+  requireCap('jobs.reopen_request'),
+  asyncHandler((req, res) => {
+    if (!jobstate.partialCloseEnabled()) return res.status(409).json({ error: 'Reopen requests are switched off — a manager reopens the job directly.' });
+    const id = toInt(req.params.id);
+    const job = loadJob(id);
+    if (!job) return res.status(404).json({ error: 'Job not found' });
+    const r = closeLib.requestReopen(job, { userId: req.user.id, reason: (req.body || {}).reason });
+    audit.record({ userId: req.user.id, entity: 'job_reopen_request', entityId: r.id, action: 'create',
+      after: { job_id: id, job_no: job.job_no, job_status: job.status }, reason: r.reason });
+    emitter.emit('dashboard_refresh', { reason: 'reopen_request' });
+    res.status(201).json(r);
+  })
+);
+
 // ---- daily work -----------------------------------------------------------
 
 router.post(
@@ -647,10 +778,11 @@ router.post(
     const id = toInt(req.params.id);
     const job = get('SELECT * FROM job_cards WHERE id = ?', id);
     if (!job) return res.status(404).json({ error: 'Job not found' });
-    { const g = jobstate.checkAdd(job, 'daily_work', { user: req.user }); if (!g.ok) return res.status(g.status).json(g.body); }
     const b = req.body;
-    const isExternal = b.is_external ? 1 : 0;
     const workDate = b.work_date || new Date().toISOString().slice(0, 10);
+    // The date matters on a partly closed card: work up to the partial-close day only.
+    { const g = jobstate.checkAdd(job, 'daily_work', { user: req.user, dates: [workDate] }); if (!g.ok) return res.status(g.status).json(g.body); }
+    const isExternal = b.is_external ? 1 : 0;
     // A signed-off day is locked (attendance, src/lib/attendance.js).
     { const g = attendance.checkDaysOpen([workDate]); if (!g.ok) return res.status(g.status).json(g.body); }
     const hours = toNum(b.hours, 0);
@@ -734,8 +866,8 @@ router.delete(
     const lineId = toInt(req.params.lineId);
     const job = get('SELECT * FROM job_cards WHERE id = ?', id);
     if (!job) return res.status(404).json({ error: 'Job not found' });
-    { const g = jobstate.checkAdd(job, 'daily_work', { user: req.user }); if (!g.ok) return res.status(g.status).json(g.body); }
     const row = get('SELECT * FROM job_daily_work WHERE id = ? AND job_id = ?', lineId, id);
+    { const g = jobstate.checkAdd(job, 'daily_work', { user: req.user, dates: row ? [row.work_date] : [] }); if (!g.ok) return res.status(g.status).json(g.body); }
     if (!row) return res.status(404).json({ error: 'Entry not found on this job' });
     { const g = attendance.checkDaysOpen([row.work_date]); if (!g.ok) return res.status(g.status).json(g.body); }
 
