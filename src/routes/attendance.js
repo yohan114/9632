@@ -41,7 +41,7 @@ router.use((req, res, next) => {
   return res.status(403).json({ error: 'Your role has no view access to dailywork' });
 });
 
-const capsOf = (user) => (Array.isArray(user.caps) ? user.caps : capabilities.capsForRoles(user.roles || []));
+const capsOf = (user) => (Array.isArray(user.caps) ? user.caps : capabilities.capsForUser(user));
 const fail = (res, status, error) => res.status(status).json({ error });
 const needOn = (res) => (attendance.isEnabled() ? false : (fail(res, 409, 'Attendance is switched off'), true));
 

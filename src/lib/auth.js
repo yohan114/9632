@@ -171,8 +171,9 @@ function authenticate(req, res, next) {
         fullName: sess.full_name,
         roles,
         // Read fresh on every request, like the roles: a permission granted or taken away on the
-        // Access screen applies from the person's next click, not their next sign-in.
-        caps: require('./capabilities').capsForRoles(roles),
+        // Access screen applies from the person's next click, not their next sign-in. Their roles'
+        // permissions, with any given to or taken from this person (access plan, Part 3).
+        caps: require('./capabilities').capsForUser({ id: sess.user_id, roles }),
         mustChangePassword: !!sess.must_change_password,
         mfaEnabled: !!sess.mfa_enabled,
         // Their role requires two-factor sign-in and they have not set it up: until they do, this
@@ -241,7 +242,7 @@ function hasRole(user, ...roles) {
 function capsOf(user) {
   if (!user) return [];
   if (Array.isArray(user.caps)) return user.caps;
-  return require('./capabilities').capsForRoles(user.roles || []);
+  return require('./capabilities').capsForUser(user);
 }
 
 /** Does this user hold ANY of the named capabilities? */

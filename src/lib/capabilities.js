@@ -214,6 +214,64 @@ function capsForRoles(roles) {
     .sort();
 }
 
+// ---- a person's own permissions (access plan, Part 3) --------------------------------------------
+// On the People screen a person can be given a permission their roles do not give, or have one
+// their roles give taken away — each optionally until a date. Their roles stay the template.
+
+/**
+ * A person's own permissions: { capability: { granted, until, set_by, set_at } }. Only those still
+ * in force, unless `ended` is asked for (each row then says whether it has ended).
+ */
+function personalCapsFor(userId, { ended = false } = {}) {
+  if (!userId) return {};
+  const { isLive } = require('./permissions');
+  return Object.fromEntries(all('SELECT capability, granted, until, set_by, set_at FROM user_capabilities WHERE user_id = ?', userId)
+    .filter((r) => isCapability(r.capability) && (ended || isLive(r.until)))
+    .map((r) => [r.capability, { granted: !!r.granted, until: r.until || null, set_by: r.set_by, set_at: r.set_at,
+      ...(ended ? { ended: !isLive(r.until) } : {}) }]));
+}
+
+/** Every capability a PERSON holds: their roles', plus what was given them, less what was taken away. */
+function capsForUser(user) {
+  if (!user) return [];
+  const roles = user.roles || [];
+  if (roles.includes('admin')) return CAP_KEYS.slice();
+  const held = new Set(capsForRoles(roles));
+  for (const [k, p] of Object.entries(personalCapsFor(user.id))) {
+    if (p.granted) held.add(k); else held.delete(k);
+  }
+  return [...held].sort();
+}
+
+/**
+ * Give one person a permission (granted true), take one away (false), or clear their own setting
+ * (null: back to their roles). The rules for who may do this are in src/lib/access_rules.js.
+ */
+function setPersonalCap(userId, capability, granted, setBy, until = null) {
+  if (!isCapability(capability)) { const e = new Error(`Unknown permission: ${capability}`); e.status = 400; throw e; }
+  if (granted === null || granted === undefined) {
+    return run('DELETE FROM user_capabilities WHERE user_id = ? AND capability = ?', userId, capability).changes;
+  }
+  return run(`INSERT INTO user_capabilities (user_id, capability, granted, until, set_by, set_at) VALUES (?, ?, ?, ?, ?, datetime('now'))
+              ON CONFLICT(user_id, capability) DO UPDATE SET granted = excluded.granted, until = excluded.until,
+                                                            set_by = excluded.set_by, set_at = excluded.set_at`,
+  userId, capability, granted ? 1 : 0, require('./permissions').cleanUntil(until), setBy || null).changes;
+}
+
+// Which of the 22 sections a permission belongs to, for the People screen: the section whose
+// permissions open it (Workshops, Access Control), else the section of its switch. "All workshops"
+// is shown with the Workshops section.
+const SECTION_EXTRA = { 'workshops.all': 'workshops' };
+function sectionOf(capKey) {
+  const { SECTIONS } = require('./permissions');
+  if (SECTION_EXTRA[capKey]) return SECTION_EXTRA[capKey];
+  const special = SECTIONS.find((s) => (s.special || []).includes(capKey));
+  if (special) return special.key;
+  const c = BY_KEY.get(capKey);
+  const s = c && SECTIONS.find((x) => (x.modules || []).includes(c.module));
+  return s ? s.key : null;
+}
+
 /** For the screens: which of these capabilities also need EDIT clearance on a section. */
 function needsFor(caps) {
   const out = {};
@@ -238,5 +296,6 @@ function setCapability(role, capability, granted) {
 module.exports = {
   CAPABILITIES, CAP_KEYS, RESERVED_ROLE_NAMES,
   isCapability, seedCapabilities, capsForRoles, capsForRole, setCapability, needsFor,
+  personalCapsFor, capsForUser, setPersonalCap, sectionOf,
   get: (k) => BY_KEY.get(k),
 };

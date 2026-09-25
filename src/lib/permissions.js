@@ -15,7 +15,8 @@
 //
 // A PERSON's level on a switch is their own, when one was set for them on the
 // People screen (user_permissions), else the best of their roles'. So a role is the
-// starting template and each person can be given more, or less, than it.
+// starting template and each person can be given more, or less, than it. A level of
+// their own can end on a date (Part 3); after it, their roles decide again.
 //
 // Every section is checked on the server, not only hidden in the sidebar (access
 // plan, Part 1). requireModule() gates a router by level (GET → view, writes →
@@ -28,6 +29,22 @@
 const { get, all, run } = require('../db');
 
 const LEVELS = ['none', 'view', 'add', 'edit', 'full'];
+
+// "Access until" (access plan, Part 3). A change made for one person — a level, a permission —
+// can carry a last day, for cover during someone's leave. From the day after, it is ignored and the
+// person is back to their roles; the row stays, so the screen can say it has ended.
+const today = () => { const d = new Date(); return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10); };
+const isLive = (until) => !until || String(until) >= today();
+const isDate = (s) => /^\d{4}-\d{2}-\d{2}$/.test(String(s || '')) && !Number.isNaN(Date.parse(s));
+
+/** An end date as typed: null for none; a real date, today or later. */
+function cleanUntil(until) {
+  if (until === null || until === undefined || String(until).trim() === '') return null;
+  const s = String(until).trim().slice(0, 10);
+  if (!isDate(s)) { const e = new Error('The end date is not a date.'); e.status = 400; throw e; }
+  if (s < today()) { const e = new Error('The end date has already passed.'); e.status = 400; throw e; }
+  return s;
+}
 const rank = (lvl) => Math.max(0, LEVELS.indexOf(lvl));
 const meets = (have, need) => rank(have) >= rank(need);
 
@@ -189,12 +206,15 @@ function userPermissions(roles) {
 
 const isAdminUser = (user) => !!(user && Array.isArray(user.roles) && user.roles.includes('admin'));
 
-/** A person's own levels, set for them on the People screen: { module: { level, set_by, set_at } }. */
-function personalFor(userId) {
+/**
+ * A person's own levels, set for them on the People screen: { module: { level, until, set_by, set_at } }.
+ * Only those still in force, unless `ended` is asked for (each row then says whether it has ended).
+ */
+function personalFor(userId, { ended = false } = {}) {
   if (!userId) return {};
-  return Object.fromEntries(all('SELECT module, level, set_by, set_at FROM user_permissions WHERE user_id = ?', userId)
-    .filter((r) => MODULE_KEYS.includes(r.module) && LEVELS.includes(r.level))
-    .map((r) => [r.module, { level: r.level, set_by: r.set_by, set_at: r.set_at }]));
+  return Object.fromEntries(all('SELECT module, level, until, set_by, set_at FROM user_permissions WHERE user_id = ?', userId)
+    .filter((r) => MODULE_KEYS.includes(r.module) && LEVELS.includes(r.level) && (ended || isLive(r.until)))
+    .map((r) => [r.module, { level: r.level, until: r.until || null, set_by: r.set_by, set_at: r.set_at, ...(ended ? { ended: !isLive(r.until) } : {}) }]));
 }
 
 /** Every switch's level for a person: their own where set, else their roles'. Admin: full. */
@@ -271,19 +291,20 @@ function setPermission(role, moduleKey, level) {
  * Set one person's own level on one switch, or clear it (level null: back to their roles'). The
  * rules for who may do this are in src/lib/access_rules.js; the route checks them first.
  */
-function setPersonal(userId, moduleKey, level, setBy) {
+function setPersonal(userId, moduleKey, level, setBy, until = null) {
   if (!MODULE_KEYS.includes(moduleKey)) { const e = new Error('Unknown section'); e.status = 400; throw e; }
   if (level === null || level === undefined || level === '') {
     return run('DELETE FROM user_permissions WHERE user_id = ? AND module = ?', userId, moduleKey).changes;
   }
   if (!LEVELS.includes(level)) { const e = new Error(`Level must be ${LEVELS.join('/')}`); e.status = 400; throw e; }
-  return run(`INSERT INTO user_permissions (user_id, module, level, set_by, set_at) VALUES (?, ?, ?, ?, datetime('now'))
-              ON CONFLICT(user_id, module) DO UPDATE SET level = excluded.level, set_by = excluded.set_by, set_at = excluded.set_at`,
-  userId, moduleKey, level, setBy || null).changes;
+  return run(`INSERT INTO user_permissions (user_id, module, level, until, set_by, set_at) VALUES (?, ?, ?, ?, ?, datetime('now'))
+              ON CONFLICT(user_id, module) DO UPDATE SET level = excluded.level, until = excluded.until,
+                                                        set_by = excluded.set_by, set_at = excluded.set_at`,
+  userId, moduleKey, level, cleanUntil(until), setBy || null).changes;
 }
 
 module.exports = {
-  LEVELS, MODULES, MODULE_KEYS, SECTIONS, SPLIT, DEFAULT_MATRIX, rank, meets, needFor,
+  LEVELS, MODULES, MODULE_KEYS, SECTIONS, SPLIT, DEFAULT_MATRIX, rank, meets, needFor, today, isLive, cleanUntil,
   splitSections, seedDefaults, levelForRoles, userPermissions, personalFor, userLevels, levelFor, setPersonal,
   reaches, requireView, requireModule, getMatrix, setPermission,
 };
