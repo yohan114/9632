@@ -15,6 +15,24 @@ const lubricants = require('../lib/lubricants');
 
 const router = express.Router();
 
+// ---- who may read a report --------------------------------------------------------------------
+// Every report needs the Reports section (view) on the server, not only in the menu. A few are read
+// from other sections and are checked for those instead: the Dashboard's own figures and your
+// approvals (everyone signed in; the figures are trimmed to what the person may see below), a job
+// card's report and cost sheet (Job Cards), the day tally (Daily Work, checked in mayReadKind), and
+// the outside prices of a service (Service Records, checked in the route).
+const permissions = require('../lib/permissions');
+const levelOf = (req, m) => permissions.levelForRoles((req.user && req.user.roles) || [], m);
+const mayView = (req, m) => permissions.meets(levelOf(req, m), 'view');
+const EVERYONE = new Set(['/dashboard', '/pending-approvals', '/service-outside']);
+const JOB_PAGE = /^\/job\/\d+\/(report|costsheet)(\.html)?$/;
+const DAY_TALLY = /^\/daily\/day_tally(\/|$)/;
+router.use((req, res, next) => {
+  if (EVERYONE.has(req.path) || DAY_TALLY.test(req.path)) return next();
+  if (JOB_PAGE.test(req.path) ? mayView(req, 'jobs') || mayView(req, 'reports') : mayView(req, 'reports')) return next();
+  return res.status(403).json({ error: 'Your role has no view access to reports' });
+});
+
 // Stage 5: whose report this is — one workshop's, or (null) the whole company's. Head office picks;
 // anyone else, with the workshops kept apart, gets their own (src/lib/scope.js reportWorkshop).
 const reportWs = (req) => require('../lib/scope')
@@ -114,10 +132,15 @@ router.get('/dashboard', asyncHandler((req, res) => {
   const flow = require('../lib/jobs_flow');
   const ready_to_close = flow.sees(req.user, 'jobs') ? flow.readyCount(req.user) : null;
 
+  // Each part only for whoever may see its section — the same rule the Dashboard screen shows it by.
+  const jobs = mayView(req, 'jobs');
   res.json({
-    jobs_by_status, awaiting_price: awaiting, low_stock_oil, batteries_warranty,
-    month_cost_by_project, open_jobs_count, closed_this_month_count, partly_closed, ready_to_close, attendance_today, field_down,
-    needs_attention: intelligence.needsAttentionSummary(),
+    jobs_by_status: jobs ? jobs_by_status : [], awaiting_price: jobs ? awaiting : [],
+    low_stock_oil: mayView(req, 'oil') ? low_stock_oil : [], batteries_warranty: mayView(req, 'batteries') ? batteries_warranty : [],
+    month_cost_by_project: mayView(req, 'reports') ? month_cost_by_project : [],
+    open_jobs_count: jobs ? open_jobs_count : null, closed_this_month_count: jobs ? closed_this_month_count : null,
+    partly_closed: jobs ? partly_closed : [], ready_to_close, attendance_today, field_down,
+    needs_attention: mayView(req, 'reports') ? intelligence.needsAttentionSummary() : {},
   });
 }));
 
@@ -1440,7 +1463,7 @@ router.get('/monthly-inputs', requireAuth, asyncHandler(async (req, res) => {
 }));
 
 // Replace all saved lines for one (year, month, sheet). Body: { year, month, sheet, lines:[...] }.
-router.post('/monthly-inputs', requireAuth, asyncHandler((req, res) => {
+router.post('/monthly-inputs', requireCap('reports.monthly_inputs'), asyncHandler((req, res) => {
   const b = req.body || {};
   const year = toInt(b.year), month = toInt(b.month), sheet = String(b.sheet || '');
   if (!validPeriod(year, month)) return res.status(400).json({ error: 'year and month are required' });
@@ -1475,6 +1498,10 @@ router.post('/monthly-inputs', requireAuth, asyncHandler((req, res) => {
 // outside prices ride on monthly_report_inputs (sheet 'daily_outside'); service prices live on the
 // service row itself, so they get their own tiny endpoint. Body: { items: [{ id, outside }] }.
 router.post('/service-outside', requireAuth, asyncHandler((req, res) => {
+  // Saved from Service Records (its edit level) and from the monthly inputs (their permission).
+  if (!hasCap(req.user, 'reports.monthly_inputs') && !permissions.meets(levelOf(req, 'filters'), 'edit')) {
+    return res.status(403).json({ error: 'Your role may not set outside prices' });
+  }
   const items = Array.isArray(req.body && req.body.items) ? req.body.items : [];
   let saved = 0;
   tx(() => {

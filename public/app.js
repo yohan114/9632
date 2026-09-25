@@ -974,7 +974,7 @@ function renderPendingApprovals(pa) {
 
 async function dashMain(c) {
   const [d, mc, pa] = await Promise.all([
-    api('/reports/dashboard'), api('/reports/monthly'),
+    api('/reports/dashboard'), canView('reports') ? api('/reports/monthly') : null,
     api('/reports/pending-approvals').catch(() => ({ total: 0, is_approver: false, certify: [], approve: [], transport: [], ops: [], jr_certify: [], jr_approve: [] })),
   ]);
   const na = d.needs_attention || {};
@@ -1072,7 +1072,7 @@ async function dashMain(c) {
     </div><div id="dc-charts-msg" class="muted" style="display:none;padding:8px"></div></div>`);
   S.push(`<div class="card section"><h3 style="margin-top:0">Recent Activity</h3><div id="dc-feed" class="muted">Loading…</div></div>`);
   c.innerHTML = S.join('\n');
-  dashRenderOverview();
+  if (canView('reports')) dashRenderOverview();
 }
 
 // Charts + activity feed for the dashboard (additive; isolated so a failure never
@@ -8474,7 +8474,7 @@ routes.reports = async (c) => {
         <div class="spacer"></div>
         <div><label>Year</label><select id="mcr-year"></select></div>
         <div><label>Month</label><select id="mcr-month"></select></div>
-        <button class="sm" id="mcr-edit">✎ Edit monthly inputs</button>
+        ${canDo('reports.monthly_inputs') ? '<button class="sm" id="mcr-edit">✎ Edit monthly inputs</button>' : ''}
         <button class="sm secondary" id="mcr-reconcile" title="Reconcile Closed, Pending, Other Labour and Spares Supply with live daily work tally">⚖️ Repair Sections Reconciler</button>
         <a class="btn sm" id="mcr-rd" href="#" target="_blank">🖨 Repair Detail</a>
         <a class="btn primary sm" id="mcr-dl" href="#">⬇ Download Excel</a>
@@ -8691,7 +8691,7 @@ routes.reports = async (c) => {
     if (qs('#mcr-row-repsec', c)) qs('#mcr-row-repsec', c).onclick = () => openRepairSectionsReconciler(+mcrYear.value, +mcrMonth.value, loadMcr);
   };
   mcrYear.onchange = loadMcr; mcrMonth.onchange = loadMcr;
-  qs('#mcr-edit', c).onclick = () => openMonthlyInputs(+mcrYear.value, +mcrMonth.value, loadMcr);
+  if (qs('#mcr-edit', c)) qs('#mcr-edit', c).onclick = () => openMonthlyInputs(+mcrYear.value, +mcrMonth.value, loadMcr);
   qs('#mcr-reconcile', c).onclick = () => openRepairSectionsReconciler(+mcrYear.value, +mcrMonth.value, loadMcr);
   loadMcr();
 };

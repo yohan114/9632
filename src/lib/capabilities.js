@@ -167,6 +167,11 @@ const CAPABILITIES = [
   // ---- reports -------------------------------------------------------------------------------
   C('reports.daily.notes', 'reports', 'Write notes on the daily reports', ['workshop', 'operational_manager', 'manager', 'storekeeper']),
   C('reports.repair_sections.sync', 'reports', 'Re-sync labour into the repair sections report', ['operational_manager', 'workshop']),
+  // The Job Cost workbook's monthly inputs and outside prices. Nothing checked this before, so the
+  // built-in roles given it are the ones that could open the Reports page — the read-only viewer
+  // left out on purpose.
+  C('reports.monthly_inputs', 'reports', 'Enter the monthly cost inputs (fuel, salaries, overheads, outside prices)',
+    ['workshop', 'storekeeper', 'main_storekeeper', 'transport_manager', 'assistant_transport_manager', 'operational_manager', 'manager']),
 ];
 
 const CAP_KEYS = CAPABILITIES.map((c) => c.key);
