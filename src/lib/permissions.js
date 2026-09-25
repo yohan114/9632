@@ -8,13 +8,12 @@
 // and seeded once from the DEFAULT_MATRIX below (the current code policy), then
 // edited by admins on the Access Control board.
 //
-// Enforcement is layered and additive: requireModule() gates a router by level
-// (GET → view, writes → edit) for the "operational" modules; the existing
-// requireRole() guards inside routes stay as a finer second gate. Reference /
-// analytics modules (projects, labour, aliases, reports) are NOT API-gated
-// (they feed dropdowns and dashboards everywhere) — they are hidden at the nav
-// level only. So tightening the matrix can only further restrict, never break a
-// role's own core workflow, and admins can loosen any cell live.
+// Every section is checked on the server, not only hidden in the sidebar (access
+// plan, Part 1). requireModule() gates a router by level (GET → view, writes →
+// edit); requireView() gates a section whose actions are decided by their own
+// permissions (src/lib/capabilities.js). The lists that fill drop-downs elsewhere
+// (project names, mechanic names) stay open to everyone signed in, but only the
+// names: costs, rates and history need the section.
 // ===========================================================================
 
 const { get, all, run } = require('../db');
@@ -23,36 +22,78 @@ const LEVELS = ['none', 'view', 'edit', 'full'];
 const rank = (lvl) => Math.max(0, LEVELS.indexOf(lvl));
 const meets = (have, need) => rank(have) >= rank(need);
 
-// Board columns. enforce=true → requireModule() guards its API router.
+// Board columns, in the sidebar's order. Every one is checked on the server (access plan, Part 1):
+// requireModule() guards the routers of most; the tyre-and-battery steps are checked by each action.
+// `from`: a section that used to share another's switch (Field Work shared Job Cards, and so on).
+// When it was split off, every role was given the level it had on that switch, so nobody's access
+// changed (splitSections below).
 const MODULES = [
-  { key: 'assets', label: 'Assets', enforce: true },
   { key: 'jobs', label: 'Job Cards', enforce: true },
-  { key: 'jobrequests', label: 'Job Requests', enforce: true },
+  { key: 'jobrequests', label: 'Job Cards · Job requests', enforce: true },
+  { key: 'field', label: 'Field Work', enforce: true, from: 'jobs' },
+  { key: 'operations', label: 'Operations', enforce: true, from: 'assets' },
   { key: 'dailywork', label: 'Daily Work', enforce: true },
+  { key: 'services', label: 'Service Records', enforce: true, from: 'filters' },
+  { key: 'lubecapacities', label: 'Lubricant Capacities', enforce: true, from: 'jobs' },
+  { key: 'assets', label: 'Assets', enforce: true },
+  { key: 'labour', label: 'Labour Rates', enforce: true },
   { key: 'stores', label: 'Stores', enforce: true },
-  { key: 'oil', label: 'Oil & Lube', enforce: true },
-  { key: 'batteries', label: 'Batteries', enforce: true },
-  { key: 'filters', label: 'Filters & Prices', enforce: true },
+  { key: 'oil', label: 'Stores · Oil & Lube', enforce: true },
+  { key: 'batteries', label: 'Stores · Batteries', enforce: true },
+  { key: 'filters', label: 'Stores · Filters & Prices', enforce: true },
+  { key: 'serviceplan', label: 'Service & Filter Plan', enforce: true, from: 'filters' },
+  { key: 'projects', label: 'Projects', enforce: true },
+  { key: 'aliases', label: 'Alias Queue', enforce: true },
+  { key: 'attention', label: 'Needs Attention', enforce: true, from: 'reports' },
+  { key: 'progress', label: 'Daily Progress', enforce: true, from: 'reports' },
+  { key: 'teardown', label: 'Cost Teardown', enforce: true, from: 'reports' },
+  // Buying what the workshop asked for. Only the two purchasing officers (and the managers above
+  // them) see the queue at all — and each officer sees their own channel. The channel filtering is
+  // done by ROLE inside the router, not by this level.
+  { key: 'purchasing', label: 'Purchasing', enforce: true },
   // Tyres and batteries are held in MAIN STORES, and asking for one, taking it in from the
   // supplier and handing it out are three different jobs done by three different people. One
   // column cannot say that — a fitter who may raise a request must not be able to issue against
-  // it — so the three stand on their own. They gate the ACTIONS, not the whole router: the size
+  // it — so the steps stand on their own. They gate the ACTIONS, not the whole router: the size
   // picklist stays open to anyone signed in, or the request form comes up with an empty dropdown.
-  { key: 'tb_request', label: 'T&B · Request', enforce: false },
-  { key: 'tb_purchase', label: 'T&B · Send to purchase', enforce: false },
-  { key: 'tb_grn', label: 'T&B · Receive (GRN)', enforce: false },
-  { key: 'tb_issue', label: 'T&B · Issue', enforce: false },
-  // Buying what the workshop asked for. Enforced, because the whole point is that only the two
-  // purchasing officers (and the managers above them) see the queue at all — and each officer sees
-  // their own channel. The channel filtering is done by ROLE inside the router, not by this level.
-  { key: 'purchasing', label: 'Purchasing', enforce: true },
-  { key: 'labour', label: 'Labour Rates', enforce: false },
-  { key: 'projects', label: 'Projects', enforce: false },
-  { key: 'aliases', label: 'Alias Queue', enforce: false },
-  { key: 'reports', label: 'Reports', enforce: false },
+  { key: 'tb_request', label: 'Tyre & Battery Requests', enforce: true },
+  { key: 'tb_purchase', label: 'T&B · Send to purchase', enforce: true },
+  { key: 'tb_grn', label: 'T&B · Receive (GRN)', enforce: true },
+  { key: 'tb_issue', label: 'T&B · Issue', enforce: true },
+  { key: 'tyrebattery', label: 'Tyre & Battery', enforce: true, from: 'reports' },
+  { key: 'reports', label: 'Reports', enforce: true },
   { key: 'users', label: 'Users & Access', enforce: false },
 ];
 const MODULE_KEYS = MODULES.map((m) => m.key);
+const SPLIT = MODULES.filter((m) => m.from).map((m) => [m.key, m.from]);
+
+// The 22 sections of the sidebar, in its order, and the switches that open each. The Dashboard is
+// always there (each of its parts follows its own section); Workshops and Access Control are opened
+// by their permissions (workshops.manage / mechanics.move, access.manage / users.manage).
+const SECTIONS = [
+  { key: 'dashboard', label: 'Dashboard', always: true },
+  { key: 'jobs', label: 'Job Cards', modules: ['jobs', 'jobrequests'] },
+  { key: 'field', label: 'Field Work', modules: ['field'] },
+  { key: 'operations', label: 'Operations', modules: ['operations'] },
+  { key: 'dailywork', label: 'Daily Work', modules: ['dailywork'] },
+  { key: 'services', label: 'Service Records', modules: ['services'] },
+  { key: 'lubecapacities', label: 'Lubricant Capacities', modules: ['lubecapacities'] },
+  { key: 'assets', label: 'Assets', modules: ['assets'] },
+  { key: 'labour', label: 'Labour Rates', modules: ['labour'] },
+  { key: 'stores', label: 'Stores', modules: ['stores', 'oil', 'batteries', 'filters'] },
+  { key: 'serviceplan', label: 'Service & Filter Plan', modules: ['serviceplan'] },
+  { key: 'projects', label: 'Projects', modules: ['projects'] },
+  { key: 'aliases', label: 'Alias Queue', modules: ['aliases'] },
+  { key: 'attention', label: 'Needs Attention', modules: ['attention'] },
+  { key: 'progress', label: 'Daily Progress', modules: ['progress'] },
+  { key: 'teardown', label: 'Cost Teardown', modules: ['teardown'] },
+  { key: 'purchasing', label: 'Purchasing', modules: ['purchasing'] },
+  { key: 'tbrequests', label: 'Tyre & Battery Requests', modules: ['tb_request', 'tb_purchase', 'tb_grn', 'tb_issue'] },
+  { key: 'tyrebattery', label: 'Tyre & Battery', modules: ['tyrebattery'] },
+  { key: 'reports', label: 'Reports', modules: ['reports'] },
+  { key: 'workshops', label: 'Workshops', special: ['workshops.manage', 'mechanics.move'] },
+  { key: 'access', label: 'Access Control', special: ['access.manage', 'users.manage'], modules: ['users'] },
+];
 
 // Seed policy — mirrors today's effective access. Admin omitted (always full).
 const DEFAULT_MATRIX = {
@@ -83,6 +124,26 @@ const DEFAULT_MATRIX = {
   purchase_local:       { tb_request: 'none', tb_purchase: 'none', tb_grn: 'none', tb_issue: 'none', purchasing: 'full', assets: 'none', jobs: 'none', jobrequests: 'none', dailywork: 'none', stores: 'none', oil: 'none', batteries: 'none', filters: 'none', labour: 'none', projects: 'none', aliases: 'none', reports: 'none', users: 'none' },
   viewer: { tb_request: 'view', tb_purchase: 'view', tb_grn: 'view', tb_issue: 'view', assets: 'view', jobs: 'view', jobrequests: 'view', dailywork: 'view', stores: 'view', oil: 'view', batteries: 'view', filters: 'view', purchasing: 'view', labour: 'view', projects: 'view', aliases: 'view', reports: 'view', users: 'none' },
 };
+
+// A split-off section starts where its old switch was, for the built-in roles as for the rest.
+for (const levels of Object.values(DEFAULT_MATRIX)) {
+  for (const [key, from] of SPLIT) if (levels[key] === undefined) levels[key] = levels[from] || 'none';
+}
+
+/**
+ * Give every role, for each split-off section, the level it has on the switch the section used to
+ * share — so the split changes nobody's access. Runs before seedDefaults on every start; it never
+ * overwrites a level already set (an admin's change stands), so after the first start it does
+ * nothing, and a role made later by old code is covered the next time the server starts.
+ */
+function splitSections() {
+  let copied = 0;
+  for (const [key, from] of SPLIT) {
+    copied += run(`INSERT OR IGNORE INTO role_permissions (role, module, level)
+                   SELECT role, ?, level FROM role_permissions WHERE module = ?`, key, from).changes;
+  }
+  return { copied };
+}
 
 // Backfill any missing (role, module) cell from the seed policy — idempotent, and
 // never overwrites an existing cell (so admin edits and new modules both survive).
@@ -117,7 +178,25 @@ function userPermissions(roles) {
   return out;
 }
 
-// Router guard: GET needs view, writes need edit. Only used on enforce:true modules.
+/** Does this user reach any of these switches at this level (admin: always)? */
+function reaches(user, keys, need = 'view') {
+  const roles = (user && user.roles) || [];
+  return (Array.isArray(keys) ? keys : [keys]).some((k) => meets(levelForRoles(roles, k), need));
+}
+
+/**
+ * Router guard for a section whose actions are decided by their own permissions: every request
+ * needs view on one of these switches. Writes are then checked by the action's capability.
+ */
+function requireView(...keys) {
+  return (req, res, next) => {
+    if (!req.user) return res.status(401).json({ error: 'Authentication required' });
+    if (reaches(req.user, keys)) return next();
+    return res.status(403).json({ error: `Your role has no view access to ${keys.join(' or ')}` });
+  };
+}
+
+// Router guard: GET needs view, writes need edit.
 function requireModule(moduleKey) {
   return (req, res, next) => {
     if (!req.user) return res.status(401).json({ error: 'Authentication required' });
@@ -138,7 +217,7 @@ function getMatrix() {
       grid[r.name][m] = r.name === 'admin' ? 'full' : levelForRoles([r.name], m);
     }
   }
-  return { modules: MODULES, levels: LEVELS, roles, grid };
+  return { modules: MODULES, sections: SECTIONS, levels: LEVELS, roles, grid };
 }
 
 function setPermission(role, moduleKey, level) {
@@ -152,6 +231,6 @@ function setPermission(role, moduleKey, level) {
 }
 
 module.exports = {
-  LEVELS, MODULES, MODULE_KEYS, DEFAULT_MATRIX, rank, meets,
-  seedDefaults, levelForRoles, userPermissions, requireModule, getMatrix, setPermission,
+  LEVELS, MODULES, MODULE_KEYS, SECTIONS, SPLIT, DEFAULT_MATRIX, rank, meets,
+  splitSections, seedDefaults, levelForRoles, userPermissions, reaches, requireView, requireModule, getMatrix, setPermission,
 };

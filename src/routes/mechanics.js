@@ -7,10 +7,12 @@ const { asyncHandler, require_, toInt, toNum } = require('../lib/http');
 const audit = require('../lib/audit');
 const mechanics = require('../lib/mechanics');
 const aliases = require('../lib/aliases');
+const { reaches, requireView } = require('../lib/permissions');
 
 const router = express.Router();
 
-// Canonical mechanics with their current rate.
+// Canonical mechanics with their current rate. The names fill the daily-work forms, so the list is
+// open to anyone signed in; the rate only to whoever may see Labour Rates.
 router.get('/', asyncHandler((req, res) => {
   // Stage 3: someone kept to their own workshop picks from its mechanics only — those at that
   // workshop on ?date= (today by default). Head office may ask for one workshop with ?workshop_id=.
@@ -18,13 +20,15 @@ router.get('/', asyncHandler((req, res) => {
   const date = /^\d{4}-\d{2}-\d{2}$/.test(String(req.query.date || '')) ? String(req.query.date) : null;
   const only = require('../lib/scope').onlyWorkshop(req.user) || toInt(req.query.workshop_id) || null;
   const wsOn = ws.mechanicWorkshopSql('m', date ? '?' : "date('now')");
-  res.json(all(
+  const rows = all(
     `SELECT * FROM (SELECT m.*,
             (SELECT rate FROM labour_rates lr WHERE lr.mechanic = m.name ORDER BY effective_from DESC, id DESC LIMIT 1) AS rate,
             ${wsOn} AS workshop_id
        FROM mechanics m) x ${only ? 'WHERE x.workshop_id = ?' : ''} ORDER BY x.name`,
     ...(date ? [date] : []), ...(only ? [only] : [])
-  ));
+  );
+  if (!reaches(req.user, 'labour')) for (const r of rows) delete r.rate;
+  res.json(rows);
 }));
 
 router.post('/', requireCap('mechanics.create'), asyncHandler((req, res) => {
@@ -41,7 +45,7 @@ router.post('/resolve', asyncHandler((req, res) => {
 }));
 
 // Labour rates (effective-dated).
-router.get('/rates', asyncHandler((_req, res) =>
+router.get('/rates', requireView('labour'), asyncHandler((_req, res) =>
   res.json(all('SELECT * FROM labour_rates ORDER BY mechanic, effective_from DESC'))));
 
 router.post('/rates', requireCap('labour.rates.edit'), asyncHandler((req, res) => {
@@ -57,7 +61,7 @@ router.post('/rates', requireCap('labour.rates.edit'), asyncHandler((req, res) =
 // Labour names that appear in the daily-work log but have NO hourly rate yet.
 // Split the crew strings ("Buddhika, Krishna") into individuals, resolve each to a
 // canonical mechanic, and flag those without a current rate — the owner's to-do list.
-router.get('/unassigned', asyncHandler((_req, res) => {
+router.get('/unassigned', requireView('labour'), asyncHandler((_req, res) => {
   const rated = new Set(
     all('SELECT DISTINCT mechanic FROM labour_rates').map((r) => mechanics.normalizeMechanic(r.mechanic))
   );
@@ -84,7 +88,7 @@ router.get('/unassigned', asyncHandler((_req, res) => {
 }));
 
 // The pending mechanic-name queue (mirrors the asset alias queue).
-router.get('/aliases', asyncHandler((req, res) => {
+router.get('/aliases', requireView('aliases'), asyncHandler((req, res) => {
   res.json(aliases.queryAliasQueue({
     table: 'mechanic_aliases',
     targetTable: 'mechanics',
@@ -97,7 +101,7 @@ router.get('/aliases', asyncHandler((req, res) => {
   }));
 }));
 
-router.post('/aliases/:id/link', requireCap('aliases.mechanic.resolve'), asyncHandler((req, res) => {
+router.post('/aliases/:id/link', requireView('aliases'), requireCap('aliases.mechanic.resolve'), asyncHandler((req, res) => {
   require_(req.body, ['mechanic_id']);
   const id = toInt(req.params.id);
   if (!get('SELECT id FROM mechanic_aliases WHERE id = ?', id)) return res.status(404).json({ error: 'Alias not found' });

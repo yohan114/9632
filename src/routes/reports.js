@@ -16,21 +16,30 @@ const lubricants = require('../lib/lubricants');
 const router = express.Router();
 
 // ---- who may read a report --------------------------------------------------------------------
-// Every report needs the Reports section (view) on the server, not only in the menu. A few are read
-// from other sections and are checked for those instead: the Dashboard's own figures and your
-// approvals (everyone signed in; the figures are trimmed to what the person may see below), a job
-// card's report and cost sheet (Job Cards), the day tally (Daily Work, checked in mayReadKind), and
-// the outside prices of a service (Service Records, checked in the route).
+// Every report is checked on the server by the section it belongs to, not only in the menu. Most are
+// the Reports section's; Needs Attention, Daily Progress and Cost Teardown have their own (access
+// plan, Part 1). A few are read from other sections and are checked for those instead: the
+// Dashboard's own figures and your approvals (everyone signed in; the figures are trimmed to what the
+// person may see below), a job card's report and cost sheet (Job Cards), the day tally (Daily Work,
+// checked in mayReadKind), and the outside prices of a service (Service Records, checked in the route).
 const permissions = require('../lib/permissions');
 const levelOf = (req, m) => permissions.levelForRoles((req.user && req.user.roles) || [], m);
 const mayView = (req, m) => permissions.meets(levelOf(req, m), 'view');
 const EVERYONE = new Set(['/dashboard', '/pending-approvals', '/service-outside']);
-const JOB_PAGE = /^\/job\/\d+\/(report|costsheet)(\.html)?$/;
 const DAY_TALLY = /^\/daily\/day_tally(\/|$)/;
+const SECTION_OF = [
+  [/^\/job\/\d+\/(report|costsheet)(\.html)?$/, ['jobs', 'reports']],
+  [/^\/(service-due|anomalies|integrity)$/, ['attention']],
+  [/^\/(daily-progress(\/print\.html)?|jobs-summary\.html)$/, ['progress']],
+  // The ongoing jobs list is downloaded from Daily Progress and from the Job Cards Ongoing tab.
+  [/^\/ongoing-jobs\.(xlsx|html)$/, ['progress', 'reports']],
+  [/^\/teardown\//, ['teardown']],
+];
 router.use((req, res, next) => {
   if (EVERYONE.has(req.path) || DAY_TALLY.test(req.path)) return next();
-  if (JOB_PAGE.test(req.path) ? mayView(req, 'jobs') || mayView(req, 'reports') : mayView(req, 'reports')) return next();
-  return res.status(403).json({ error: 'Your role has no view access to reports' });
+  const keys = (SECTION_OF.find(([re]) => re.test(req.path)) || [null, ['reports']])[1];
+  if (permissions.reaches(req.user, keys)) return next();
+  return res.status(403).json({ error: `Your role has no view access to ${keys.join(' or ')}` });
 });
 
 // Stage 5: whose report this is — one workshop's, or (null) the whole company's. Head office picks;
@@ -126,7 +135,7 @@ router.get('/dashboard', asyncHandler((req, res) => {
 
   // Stage 6: machines down in the field (your workshops'), once field work is in use at all.
   const fieldInUse = !!get('SELECT 1 x FROM job_cards WHERE field = 1 LIMIT 1');
-  const field_down = fieldInUse ? require('../lib/field').downCount(req.user) : null;
+  const field_down = fieldInUse && mayView(req, 'field') ? require('../lib/field').downCount(req.user) : null;
 
   // Job cards plan, Part 3: cards with nothing missing, waiting only to be closed (the Ready to close tab).
   const flow = require('../lib/jobs_flow');
@@ -140,7 +149,7 @@ router.get('/dashboard', asyncHandler((req, res) => {
     month_cost_by_project: mayView(req, 'reports') ? month_cost_by_project : [],
     open_jobs_count: jobs ? open_jobs_count : null, closed_this_month_count: jobs ? closed_this_month_count : null,
     partly_closed: jobs ? partly_closed : [], ready_to_close, attendance_today, field_down,
-    needs_attention: mayView(req, 'reports') ? intelligence.needsAttentionSummary() : {},
+    needs_attention: mayView(req, 'attention') ? intelligence.needsAttentionSummary() : {},
   });
 }));
 

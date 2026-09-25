@@ -651,7 +651,7 @@ function monitor(user) {
   out.finishing = { work_done: fc.work_done, partly_closed: fc.partly_closed, ready: fc.ready };
   const fieldInUse = !!get('SELECT 1 x FROM job_cards WHERE field = 1 LIMIT 1');
   out.watch = {
-    breakdowns_down: fieldInUse ? require('./field').downCount(user) : null,
+    breakdowns_down: fieldInUse && sees(user, 'field') ? require('./field').downCount(user) : null,
     reopen: n.reopen,
     stuck: n.stuck,
     two_open: jobstate.duplicateOpenJobs({ workshopId: r }).length,

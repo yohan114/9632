@@ -20,7 +20,8 @@ const express = require('express');
 const { get, all, run, tx } = require('../db');
 const { requireAuth, requireCap } = require('../lib/auth');
 const jobstate = require('../lib/jobstate');
-const { requireModule } = require('../lib/permissions');
+const permissions = require('../lib/permissions');
+const { requireModule } = permissions;
 const { asyncHandler, require_, toInt, toNum } = require('../lib/http');
 const tb = require('../lib/tyre_battery');
 
@@ -192,7 +193,12 @@ router.post('/requests', requireModule('tb_request'),
   }));
 
 /** Requests, with where each one has got to. */
-router.get('/requests', requireAuth, asyncHandler((req, res) => {
+// Reading the requests needs one of the tyre-and-battery steps; the tyre register needs Stores; a
+// vehicle's tyres and batteries either (the issue form and the Stores vehicle view read it). The
+// size and reason pick-lists stay open to anyone signed in.
+const TB = ['tb_request', 'tb_purchase', 'tb_grn', 'tb_issue'];
+const readsTB = permissions.requireView(...TB);
+router.get('/requests', requireAuth, readsTB, asyncHandler((req, res) => {
   const kind = kindOf(req.query.kind);
   const w = ['m.tb_kind IS NOT NULL'];
   const p = [];
@@ -222,7 +228,7 @@ router.get('/requests', requireAuth, asyncHandler((req, res) => {
       LIMIT ${toInt(req.query.limit, 200)}`, ...p));
 }));
 
-router.get('/requests/:id', requireAuth, asyncHandler((req, res) => {
+router.get('/requests/:id', requireAuth, readsTB, asyncHandler((req, res) => {
   { const no = require('../lib/scope').mrnRefusal(req.user, toInt(req.params.id)); if (no) return res.status(403).json(no); }
   const m = get(
     `SELECT m.*, a.code AS asset_code, a.registration, j.job_no
@@ -469,14 +475,14 @@ router.post('/returns', requireModule('tb_issue'), asyncHandler((req, res) => {
 }));
 
 // A vehicle's tyres (by wheel) and batteries, and every one fitted and taken off (Part 4).
-router.get('/vehicle/:assetId', requireAuth, asyncHandler((req, res) => res.json(units.vehicle(toInt(req.params.assetId)))));
+router.get('/vehicle/:assetId', requireAuth, permissions.requireView('stores', ...TB), asyncHandler((req, res) => res.json(units.vehicle(toInt(req.params.assetId)))));
 
 // ---------------------------------------------------------------------------
 // The tyre register (stores plan, Part 4): every tyre by its serial number, like the batteries.
 // ---------------------------------------------------------------------------
 const TYRE_STATES = ['in_store', 'installed', 'removed', 'repair', 'retread', 'warranty', 'scrap', 'lost', 'disposed'];
 
-router.get('/tyres', requireAuth, asyncHandler((req, res) => {
+router.get('/tyres', requireAuth, permissions.requireView('stores'), asyncHandler((req, res) => {
   const w = []; const p = [];
   if (TYRE_STATES.includes(req.query.state)) { w.push('t.state = ?'); p.push(req.query.state); }
   if (req.query.q) {
@@ -490,7 +496,7 @@ router.get('/tyres', requireAuth, asyncHandler((req, res) => {
                  ${w.length ? 'WHERE ' + w.join(' AND ') : ''} ORDER BY t.serial_no LIMIT ${Math.min(toInt(req.query.limit, 500), 2000)}`, ...p));
 }));
 
-router.get('/tyres/:id', requireAuth, asyncHandler((req, res) => {
+router.get('/tyres/:id', requireAuth, permissions.requireView('stores', 'tb_issue'), asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   const tyre = get(`SELECT t.*, s.label AS spec, a.code AS asset_code, a.registration AS asset_reg
                       FROM tyres t LEFT JOIN tb_specs s ON s.id = t.spec_id LEFT JOIN assets a ON a.id = t.current_asset_id WHERE t.id = ?`, id);
@@ -554,7 +560,7 @@ router.post('/tyres/:id/event', requireModule('tb_issue'), asyncHandler((req, re
 
 /** Issues still waiting for someone to say what came off. This is the list that stops old units
  *  quietly disappearing — an old battery is worth money and an old tyre may be retreadable. */
-router.get('/returns/outstanding', requireAuth, asyncHandler((req, res) => {
+router.get('/returns/outstanding', requireAuth, readsTB, asyncHandler((req, res) => {
   const kind = kindOf(req.query.kind);
   res.json(all(
     `SELECT i.id AS issue_id, i.kind, i.issue_date, i.qty, i.category AS spec_label, i.serial_no,
@@ -569,7 +575,7 @@ router.get('/returns/outstanding', requireAuth, asyncHandler((req, res) => {
 }));
 
 /** What the store is holding in old units, by what it decided about them. */
-router.get('/returns/summary', requireAuth, asyncHandler((_req, res) => {
+router.get('/returns/summary', requireAuth, readsTB, asyncHandler((_req, res) => {
   res.json(all(
     `SELECT kind, condition, COUNT(*) n
        FROM tb_returns GROUP BY kind, condition ORDER BY kind, n DESC`));
