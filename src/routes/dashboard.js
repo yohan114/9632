@@ -13,9 +13,16 @@ const { asyncHandler } = require('../lib/http');
 
 const router = express.Router();
 
-// No module gate (every role sees the dashboard) — but authentication IS required, so
-// an anonymous request can't read aggregate operational data.
 router.use(requireAuth);
+// The Live Overview (cost trends, the costliest vehicles, everyone's recent activity) is shown on
+// the Dashboard only with the Reports section, so the server asks for the same on those two
+// addresses. The rest — the workflow roads — follows the Dashboard section, checked where this
+// router is mounted (src/server.js). Per person, like every other check.
+const needsReports = (req, res, next) => {
+  const permissions = require('../lib/permissions');
+  if (permissions.meets(permissions.effectiveLevel(req.user, 'reports'), 'view')) return next();
+  return res.status(403).json({ error: 'Your account has no view access to reports' });
+};
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
@@ -74,7 +81,7 @@ function stockAlerts(limit = 30) {
 }
 
 // ---- overview -------------------------------------------------------------
-router.get('/overview', asyncHandler((_req, res) => {
+router.get('/overview', needsReports, asyncHandler((_req, res) => {
   const { year, month } = nowYM();
 
   const active_jobs = get(`SELECT COUNT(*) c FROM job_cards WHERE ${OPEN_JOBS}`).c;
@@ -447,7 +454,7 @@ router.get('/workflow-monitor', asyncHandler((req, res) => {
 }));
 
 // ---- lightweight poll -----------------------------------------------------
-router.get('/live-stats', asyncHandler((_req, res) => {
+router.get('/live-stats', needsReports, asyncHandler((_req, res) => {
   const { year, month } = nowYM();
   const active_jobs = get(`SELECT COUNT(*) c FROM job_cards WHERE ${OPEN_JOBS}`).c;
   const pending_requests = get(`SELECT COUNT(*) c FROM mrn WHERE ${LIVE_PENDING_MRN}`).c;

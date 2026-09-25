@@ -18,6 +18,31 @@ const { requireModule } = require('../lib/permissions');
 const router = express.Router();
 router.use(requireAuth);
 
+// ---- who may read a report --------------------------------------------------------------------
+// Every report needs the Reports section (view) on the server, not only in the menu. A few are read
+// from other sections and are checked for those instead: the Dashboard's own figures and your
+// approvals (everyone signed in; the figures are trimmed to what the person may see below), a job
+// card's report and cost sheet (Job Cards), the day tally (Daily Work, checked in mayReadKind), and
+// the outside prices of a service (Service Records, checked in the route).
+//
+// Levels are the PERSON's (effectiveLevel: personal overrides and time-limited access included),
+// like every other check since per-person access. Reports that belong to a section of their own are
+// checked by that section on the route itself (requireModule / canViewJobCost), so someone given,
+// say, Daily Progress but not Reports can read it: service plan, attention (anomalies, integrity,
+// variance), daily progress, cost teardown and a job's cost sheet.
+const permissions = require('../lib/permissions');
+const levelOf = (req, m) => permissions.effectiveLevel(req.user, m);
+const mayView = (req, m) => permissions.meets(levelOf(req, m), 'view');
+const EVERYONE = new Set(['/dashboard', '/pending-approvals', '/service-outside']);
+const JOB_REPORT = /^\/job\/\d+\/report(\.html)?$/;
+const DAY_TALLY = /^\/daily\/day_tally(\/|$)/;
+const OWN_SECTION = /^\/(service-due|anomalies|integrity|variance|daily-progress(\/print\.html)?|teardown\/asset\/\d+(\/print\.html)?|job\/\d+\/costsheet(\.html)?)$/;
+router.use((req, res, next) => {
+  if (EVERYONE.has(req.path) || DAY_TALLY.test(req.path) || OWN_SECTION.test(req.path)) return next();
+  if (JOB_REPORT.test(req.path) ? mayView(req, 'jobs') || mayView(req, 'reports') : mayView(req, 'reports')) return next();
+  return res.status(403).json({ error: 'Your account has no view access to reports' });
+});
+
 // Stage 5: whose report this is — one workshop's, or (null) the whole company's. Head office picks;
 // anyone else, with the workshops kept apart, gets their own (src/lib/scope.js reportWorkshop).
 const reportWs = (req) => require('../lib/scope')
@@ -117,10 +142,15 @@ router.get('/dashboard', asyncHandler((req, res) => {
   const flow = require('../lib/jobs_flow');
   const ready_to_close = flow.sees(req.user, 'jobs') ? flow.readyCount(req.user) : null;
 
+  // Each part only for whoever may see its section — the same rule the Dashboard screen shows it by.
+  const jobs = mayView(req, 'jobs');
   res.json({
-    jobs_by_status, awaiting_price: awaiting, low_stock_oil, batteries_warranty,
-    month_cost_by_project, open_jobs_count, closed_this_month_count, partly_closed, ready_to_close, attendance_today, field_down,
-    needs_attention: intelligence.needsAttentionSummary(),
+    jobs_by_status: jobs ? jobs_by_status : [], awaiting_price: jobs ? awaiting : [],
+    low_stock_oil: mayView(req, 'oil') ? low_stock_oil : [], batteries_warranty: mayView(req, 'batteries') ? batteries_warranty : [],
+    month_cost_by_project: mayView(req, 'reports') ? month_cost_by_project : [],
+    open_jobs_count: jobs ? open_jobs_count : null, closed_this_month_count: jobs ? closed_this_month_count : null,
+    partly_closed: jobs ? partly_closed : [], ready_to_close, attendance_today, field_down,
+    needs_attention: mayView(req, 'reports') ? intelligence.needsAttentionSummary() : {},
   });
 }));
 
@@ -1337,7 +1367,10 @@ const canEditMonthlyInputs = (req, res, next) => {
 const canEditServiceOutside = (req, res, next) => {
   if (req.user && req.user.roles && req.user.roles.includes('admin')) return next();
   const perm = require('../lib/permissions');
-  if (perm.meets(perm.effectiveLevel(req.user, 'services'), 'edit') || perm.meets(perm.effectiveLevel(req.user, 'reports'), 'edit')) return next();
+  // Saved from Service Records (its edit level) and from the monthly inputs (their rule: Reports
+  // edit, or the monthly-cost permission).
+  if (perm.meets(perm.effectiveLevel(req.user, 'services'), 'edit') || perm.meets(perm.effectiveLevel(req.user, 'reports'), 'edit')
+      || (req.user.caps || []).includes('reports.monthly_cost.edit')) return next();
   return res.status(403).json({ error: 'Your account does not have edit access to services' });
 };
 

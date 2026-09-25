@@ -1239,7 +1239,7 @@ function renderOnHoldWatchboard(oh) {
 
 async function dashMain(c) {
   const [d, mc, wm] = await Promise.all([
-    api('/reports/dashboard'), api('/reports/monthly'),
+    api('/reports/dashboard'), canView('reports') ? api('/reports/monthly') : null,
     api('/dashboard/workflow-monitor').catch(() => null),
   ]);
   const na = d.needs_attention || {};
@@ -1265,7 +1265,7 @@ async function dashMain(c) {
   const kp = (wm && wm.kpis) || {};
   const kpiRibbon = `
     <div class="grid section" style="grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;margin-bottom:14px">
-      <div class="card stat"><span class="n">${moneyC(mc.this_month.total)}</span><span class="l">This Month Spend</span></div>
+      ${mc ? `<div class="card stat"><span class="n">${moneyC(mc.this_month.total)}</span><span class="l">This Month Spend</span></div>` : ''}
       <a class="card stat" href="#/jobs" style="text-decoration:none"><span class="n">${kp.active_jobs ?? d.open_jobs_count}</span><span class="l">Active Job Cards</span></a>
       <a class="card stat" href="#/jobs?tab=ongoing" style="text-decoration:none"><span class="n">${kp.vehicles_in_workshop ?? 0}</span><span class="l">Vehicles in Workshop</span></a>
       <a class="card stat" href="#/dashboard" style="text-decoration:none"><span class="n" style="color:${kp.total_pending ? 'var(--amber)' : 'var(--green)'}">${kp.total_pending ?? 0}</span><span class="l">Pending Approvals</span></a>
@@ -1352,7 +1352,7 @@ async function dashMain(c) {
     </div><div id="dc-charts-msg" class="muted" style="display:none;padding:8px"></div></div>`);
   S.push(`<div class="card section"><h3 style="margin-top:0">Recent Activity</h3><div id="dc-feed" class="muted">Loading…</div></div>`);
   c.innerHTML = S.join('\n');
-  dashRenderOverview();
+  if (canView('reports')) dashRenderOverview();
 }
 
 // Charts + activity feed for the dashboard (additive; isolated so a failure never
@@ -8754,7 +8754,7 @@ routes.reports = async (c) => {
         <div class="spacer"></div>
         <div><label>Year</label><select id="mcr-year"></select></div>
         <div><label>Month</label><select id="mcr-month"></select></div>
-        <button class="sm" id="mcr-edit">✎ Edit monthly inputs</button>
+        ${canEdit('reports') || canDo('reports.monthly_cost.edit') ? '<button class="sm" id="mcr-edit">✎ Edit monthly inputs</button>' : ''}
         <button class="sm secondary" id="mcr-reconcile" title="Reconcile Closed, Pending, Other Labour and Spares Supply with live daily work tally">⚖️ Repair Sections Reconciler</button>
         <a class="btn sm" id="mcr-rd" href="#" target="_blank">🖨 Repair Detail</a>
         <a class="btn primary sm" id="mcr-dl" href="#">⬇ Download Excel</a>
@@ -8971,7 +8971,7 @@ routes.reports = async (c) => {
     if (qs('#mcr-row-repsec', c)) qs('#mcr-row-repsec', c).onclick = () => openRepairSectionsReconciler(+mcrYear.value, +mcrMonth.value, loadMcr);
   };
   mcrYear.onchange = loadMcr; mcrMonth.onchange = loadMcr;
-  qs('#mcr-edit', c).onclick = () => openMonthlyInputs(+mcrYear.value, +mcrMonth.value, loadMcr);
+  if (qs('#mcr-edit', c)) qs('#mcr-edit', c).onclick = () => openMonthlyInputs(+mcrYear.value, +mcrMonth.value, loadMcr);
   qs('#mcr-reconcile', c).onclick = () => openRepairSectionsReconciler(+mcrYear.value, +mcrMonth.value, loadMcr);
   loadMcr();
 };
