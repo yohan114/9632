@@ -106,10 +106,22 @@ async function as(user) {
   if (!cookies[user]) {
     const r = await req('POST', '/api/auth/login', { body: { username: user, password: PW } });
     assert.strictEqual(r.status, 200, r.text);
-    cookies[user] = r.cookie;
+    cookies[user] = secondFactorOn(r.cookie);
   }
   return cookies[user];
 }
+
+// Changing access needs 2-step sign-in (access plan, Part 4). The people here have it on, set
+// directly (signing in with it is tested in test/mfa.test.js), so every refusal below has only the
+// reason its test names: this person is marked as having it, and this session as having passed it.
+function secondFactorOn(cookie) {
+  const token = decodeURIComponent(cookie.split('=')[1]);
+  const s = get('SELECT user_id FROM sessions WHERE token = ?', token);
+  run('UPDATE users SET mfa_enabled = 1 WHERE id = ?', s.user_id);
+  run('UPDATE sessions SET mfa_verified = 1 WHERE token = ?', token);
+  return cookie;
+}
+
 
 // ================================================================== no limits: as before
 test('no limit set (the default): big MRNs are approved and big jobs closed exactly as before', async () => {

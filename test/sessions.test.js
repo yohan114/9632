@@ -64,6 +64,16 @@ async function login(username, ua) {
   assert.strictEqual(r.status, 200, r.text);
   return r.cookie;
 }
+// Changing access needs 2-step sign-in (access plan, Part 4). The people here have it on, set
+// directly (signing in with it is tested in test/mfa.test.js), so every refusal below has only the
+// reason its test names: this person is marked as having it, and this session as having passed it.
+function secondFactorOn(cookie) {
+  const token = decodeURIComponent(cookie.split('=')[1]);
+  const s = get('SELECT user_id FROM sessions WHERE token = ?', token);
+  run('UPDATE users SET mfa_enabled = 1 WHERE id = ?', s.user_id);
+  run('UPDATE sessions SET mfa_verified = 1 WHERE token = ?', token);
+  return cookie;
+}
 const tokenOf = (cookie) => cookie.split('=')[1];
 const dbTime = (msAgo) => new Date(Date.now() - msAgo).toISOString().replace('T', ' ').slice(0, 19);
 const MIN = 60000;
@@ -163,7 +173,8 @@ test('I can sign out one other device, or all of them, but not someone else\'s',
 test('an admin can see and end a person\'s sessions; a non-admin cannot do it to an admin', async () => {
   const uid = mkUser('gayan', ['storekeeper']);
   const g = await login('gayan');
-  const admin = await login('chief');
+  mkUser('warden', ['admin']);
+  const admin = secondFactorOn(await login('warden'));
   const list = await req('GET', `/api/users/${uid}/sessions`, { cookie: admin });
   assert.strictEqual(list.status, 200);
   assert.strictEqual(list.body.sessions.length, 1);
@@ -174,7 +185,7 @@ test('an admin can see and end a person\'s sessions; a non-admin cannot do it to
   run("INSERT INTO roles (name, label) VALUES ('hr_clerk', 'HR Clerk')");
   capabilities.setCapability('hr_clerk', 'users.manage', true);
   mkUser('hasini', ['hr_clerk']);
-  const h = await login('hasini');
+  const h = secondFactorOn(await login('hasini'));
   assert.strictEqual((await req('GET', `/api/users/${chiefId}/sessions`, { cookie: h })).status, 403);
   assert.strictEqual((await req('POST', `/api/users/${chiefId}/sessions/revoke`, { cookie: h })).status, 403);
 });

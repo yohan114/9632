@@ -9,7 +9,7 @@ const { Server } = require('socket.io');
 
 const config = require('./config');
 const { migrate, get } = require('./db');
-const { authenticate, enforcePasswordChange, enforceMfaSetup, requireAuth, hasCap, rolesForUser, liveSession, COOKIE } = require('./lib/auth');
+const { authenticate, enforcePasswordChange, enforceMfaSetup, requireAuth, hasCap, rolesForUser, liveSession, COOKIE, secondFactorToChange } = require('./lib/auth');
 const { requireModule, requireView } = require('./lib/permissions');
 const { errorHandler } = require('./lib/http');
 const { startScheduler } = require('./lib/backup');
@@ -76,7 +76,8 @@ app.use('/api', (req, res, next) => {
 // where one router serves several sections. Projects and mechanics also fill drop-downs everywhere,
 // so their lists stay open to anyone signed in — names only; costs and rates need the section.
 app.use('/api/auth', require('./routes/auth'));
-app.use('/api/access', require('./routes/access'));
+// Changing access needs 2-step sign-in (access plan, Part 4); reading it does not.
+app.use('/api/access', secondFactorToChange, require('./routes/access'));
 // The vehicle list fills the vehicle pickers in other sections (Service Records, Stores …), so it and
 // the typeahead are open to anyone signed in — the numbers only (routes/assets.js). Everything else
 // about a vehicle needs Assets.
@@ -129,7 +130,7 @@ app.use('/api/operations', require('./routes/operations'));
 app.use('/api/dashboard', require('./routes/dashboard'));
 app.use('/api/mechanics', require('./routes/mechanics'));
 app.use('/api/workshops', require('./routes/workshops'));
-app.use('/api/users', require('./routes/users'));
+app.use('/api/users', secondFactorToChange, require('./routes/users'));
 app.use('/api/reports', require('./routes/reports'));
 // Vehicle lubricant capacities from Fleet_Oil_Lubricant_Capacities.xlsx
 app.use('/api/lubricant-capacities', requireView('lubecapacities'), require('./routes/lubricant_capacities'));
@@ -244,9 +245,30 @@ function sweepSockets() {
 emitter.on('sessions_changed', () => setImmediate(sweepSockets));
 setInterval(sweepSockets, 60 * 1000).unref();
 
+// ---- who receives each live update (access plan, Part 4) -----------------------------------
+// Each note goes only to the people who may see a section that shows that kind of record
+// (src/lib/live_scope.js). Who a socket's person is — roles, permissions, levels — is worked out
+// when needed and kept for a minute, or until someone's access changes.
+const liveScope = require('./lib/live_scope');
+let accessStamp = 0;
+function socketPerson(socket) {
+  const d = socket.data;
+  if (!d.person || d.personStamp !== accessStamp || Date.now() - d.personAt > 60 * 1000) {
+    const roles = rolesForUser(d.user.id);
+    const person = { id: d.user.id, roles, caps: require('./lib/capabilities').capsForUser({ id: d.user.id, roles }) };
+    person.levels = require('./lib/permissions').userLevels(person);
+    Object.assign(d, { person, personStamp: accessStamp, personAt: Date.now() });
+  }
+  return d.person;
+}
 const LIVE_EVENTS = ['stock_updated', 'oil_updated', 'filter_updated', 'job_updated', 'request_updated', 'dashboard_refresh', 'data_changed'];
 for (const event of LIVE_EVENTS) {
-  emitter.on(event, (data) => io.emit(event, data));
+  emitter.on(event, (data) => {
+    if (event === 'data_changed' && data && liveScope.ACCESS_ENTITIES.has(data.entity)) accessStamp++;
+    for (const [, socket] of io.of('/').sockets) {
+      if (socket.data && socket.data.user && liveScope.allowed(event, data, socketPerson(socket))) socket.emit(event, data);
+    }
+  });
 }
 io.on('connection', (socket) => {
   socket.emit('live_hello', { ok: true, at: new Date().toISOString() });

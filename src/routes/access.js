@@ -18,11 +18,13 @@
 //   PUT  /people/:id/limits      set or clear this person's own approval limit for one kind
 //   POST /people/:id/reset       clear everything of their own (back to their roles)
 //   POST /people/:id/copy        give them another person's levels and permissions
+//   GET  /history                who changed whose access, when, and what (by person, by section)
 //   GET  /overview               everyone × every section: the Sections view
 //   GET  /report.xlsx|.html      the access report, as Excel or a page to print or save as PDF
 //
 // Every change is audited, and all of it is subject to src/lib/access_rules.js: you can only give
-// what you hold, only an admin touches the admin role, and there is always an active admin.
+// what you hold, only an admin touches the admin role, and there is always an active admin. Every
+// change also needs 2-step sign-in (auth.secondFactorToChange, where this router is mounted).
 
 const express = require('express');
 const { get, all, run, tx } = require('../db');
@@ -398,6 +400,16 @@ router.post('/people/:id/copy', requireCap('access.manage'), asyncHandler((req, 
   audit.record({ userId: req.user.id, entity: 'user_permission', entityId: id, action: 'copy',
     before, after: { from, from_name: nameOf(from), levels: levelsOnly(permissions.personalFor(id)), caps: capsOnly(capabilities.personalCapsFor(id)) } });
   res.json(describePerson(req.user, id));
+}));
+
+// ---- History: who changed whose access, when, and what (access plan, Part 4) ---------------------
+
+router.get('/history', requireCap('access.manage'), asyncHandler((req, res) => {
+  const num = (v) => (Number(v) > 0 ? Number(v) : null);
+  const section = req.query.section && permissions.SECTIONS.some((s) => s.key === req.query.section) ? String(req.query.section) : null;
+  res.json(require('../lib/access_history').history({
+    person: num(req.query.person), section, before: num(req.query.before), limit: Math.min(num(req.query.limit) || 100, 500),
+  }));
 }));
 
 // ---- everyone at once: the Sections view and the access report (access plan, Part 3) ------------

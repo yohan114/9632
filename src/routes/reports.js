@@ -383,7 +383,7 @@ router.get('/job/:id/report.html', asyncHandler((req, res) => {
   button{padding:8px 14px;font-size:14px;margin:10px 0;cursor:pointer}
   @media print{.noprint{display:none}}
 </style></head><body>
-<button class="noprint" onclick="window.print()">🖨 Print / Save as PDF</button>
+<button class="noprint" id="print">🖨 Print / Save as PDF</button>
 <h1>Edward &amp; Christie (Pvt) Ltd — Job Report</h1>
 <div class="sub">Job <b>${esc(j.job_no)}</b> · ${esc(veh)}${j.asset_type ? ' · ' + esc(j.asset_type) : ''}${j.project_name ? ' · ' + esc(j.project_name) : ''}</div>
 <div class="hdr">
@@ -436,7 +436,7 @@ ${s.general.length ? sect(5, 'General / store items issued',
   <div>…................................<br>Checked By</div>
   <div>…................................<br>Approved By</div>
 </div>
-</body></html>`;
+<script src="/js/print-page.js"></script></body></html>`;
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
   res.send(html);
 }));
@@ -636,7 +636,7 @@ router.get('/ongoing-jobs.html', asyncHandler((req, res) => {
   button{padding:8px 14px;font-size:14px;margin:10px 0;cursor:pointer}
   @media print{.noprint{display:none}}
 </style></head><body>
-<button class="noprint" onclick="window.print()">🖨 Print / Save as PDF</button>
+<button class="noprint" id="print">🖨 Print / Save as PDF</button>
 <h1>Edward &amp; Christie (Pvt) Ltd — Ongoing Jobs &amp; Delay Points</h1>
 <div class="sub">All jobs still open, raised since <b>${esc(cut)}</b> (last ${months} months) · as at ${esc(today)} · ${jobs.length} job(s) · older never-closed jobs excluded</div>
 <div class="tot">
@@ -659,7 +659,7 @@ ${waitingParts.length ? `<h2>What they are waiting for — outstanding spare par
     const w = p.req_date ? Math.round((new Date(today) - new Date(String(p.req_date).slice(0, 10))) / 86400000) : '';
     return `<tr class="${w > 21 ? 'critical' : ''}"><td>${esc(j.job_no)}</td><td>${esc(veh(j))}</td><td>${esc(p.mrn_no || '')}</td><td>${d(p.req_date)}</td><td class="num"><b>${w}</b></td><td class="w">${esc(p.description || '')}</td><td>${esc(SRC[p.source] || '')}</td><td class="num">${p.qty}</td><td class="num">${p.qty_received}</td><td class="num"><b>${p.pending}</b></td></tr>`;
   })).join('')}</tbody></table>` : ''}
-</body></html>`;
+<script src="/js/print-page.js"></script></body></html>`;
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
   res.send(html);
 }));
@@ -738,7 +738,7 @@ router.get('/jobs-summary.html', asyncHandler((req, res) => {
   button{padding:8px 14px;font-size:14px;margin:10px 0;cursor:pointer}
   @media print{.noprint{display:none}}
 </style></head><body>
-<button class="noprint" onclick="window.print()">🖨 Print / Save as PDF</button>
+<button class="noprint" id="print">🖨 Print / Save as PDF</button>
 <h1>Edward &amp; Christie (Pvt) Ltd — Jobs Attended</h1>
 <div class="sub">${from ? 'From <b>' + esc(from) + '</b>' + (to ? ' to <b>' + esc(to) + '</b>' : ' onward') : 'All current jobs (2026 onward)'} · ${jobs.length} job(s) · most recently attended first</div>
 <div class="tot">
@@ -757,7 +757,7 @@ router.get('/jobs-summary.html', asyncHandler((req, res) => {
 <table><thead><tr><th>Job No</th><th>Vehicle</th><th>Status</th><th>Work</th><th>Last worked</th><th class="num">Hrs</th><th class="num">Items req</th><th class="num">Pending</th><th class="num">Job total</th></tr></thead>
 <tbody>${summaryRows}</tbody></table>
 ${withDetail ? '<h2>Job by job — parts requested, parts received, work done</h2>' + jobs.map(block).join('') : ''}
-</body></html>`;
+<script src="/js/print-page.js"></script></body></html>`;
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
   res.send(html);
 }));
@@ -790,7 +790,7 @@ router.get('/job/:id/costsheet.html', asyncHandler((req, res) => {
   @media print{.noprint{display:none}}
   button{padding:8px 14px;font-size:14px;cursor:pointer;margin-bottom:12px}
 </style></head><body>
-<button class="noprint" onclick="window.print()">Print / Save PDF</button>
+<button class="noprint" id="print">Print / Save PDF</button>
 <h1>Job Cost Sheet — ${esc(s.job.job_no)}</h1>
 <div class="meta">
   <b>Asset:</b> ${esc(s.asset_code || '—')} &nbsp; <b>Project:</b> ${esc(s.job.project_name || '—')} &nbsp;
@@ -821,7 +821,7 @@ router.get('/job/:id/costsheet.html', asyncHandler((req, res) => {
   ${t.other_cost ? `<tr><td>Other / Recorded</td><td class="num">${money(t.other_cost)}</td></tr>` : ''}
   <tr class="tot"><td>TOTAL</td><td class="num">${money(t.total_cost)}</td></tr>
 </table></div>
-</body></html>`;
+<script src="/js/print-page.js"></script></body></html>`;
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
   res.send(html);
 }));
@@ -1116,7 +1116,7 @@ router.get('/daily-progress/print.html', asyncHandler((req, res) => {
   button { padding:8px 14px; font-size:14px; margin:10px 0; cursor:pointer; }
   @media print { .noprint { display:none; } }
 </style></head><body>
-<button class="noprint" onclick="window.print()">🖨 Print / Save as PDF</button>
+<button class="noprint" id="print">🖨 Print / Save as PDF</button>
 <h1>Edward &amp; Christie (Pvt) Ltd — Daily Report${wsName ? ` · ${esc(wsName)}` : ''}</h1>
 <div class="sub">Date: <b>${esc(date)}</b> · ${t.jobs} job(s) worked · ${t.hours} mechanic-hours</div>
 <div class="tot">
@@ -1154,7 +1154,7 @@ router.get('/daily-progress/print.html', asyncHandler((req, res) => {
   || '<tr><td colspan="7" style="text-align:center;color:#666">Nothing received.</td></tr>'}</tbody></table>
 ${rep.issues.length ? `<h3>7. Materials issued out (${rep.issues.length})</h3><table><thead><tr><th>Item</th><th>Job</th><th class="num">Qty</th><th class="num">Unit</th><th class="num">Value</th></tr></thead><tbody>${rep.issues.map((i) => `<tr><td>${esc(i.description)}</td><td>${esc(i.job_no || '')}</td><td class="num">${i.qty}</td><td class="num">${i.unit_price == null ? '—' : m(i.unit_price)}</td><td class="num">${m((Number(i.qty) || 0) * (Number(i.unit_price) || 0))}</td></tr>`).join('')}</tbody></table>` : ''}
 ${rep.oil.length ? `<h3>8. Oil &amp; lubricants issued (${rep.oil.length})</h3><table><thead><tr><th>Product</th><th>Job</th><th class="num">Qty</th><th class="num">Value</th></tr></thead><tbody>${rep.oil.map((o) => `<tr><td>${esc(o.product)}</td><td>${esc(o.job_no || '')}</td><td class="num">${Math.abs(Number(o.qty) || 0)}</td><td class="num">${m(Math.abs(Number(o.qty) || 0) * (Number(o.unit_price) || 0))}</td></tr>`).join('')}</tbody></table>` : ''}
-</body></html>`;
+<script src="/js/print-page.js"></script></body></html>`;
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
   res.send(html);
 }));
@@ -1211,7 +1211,7 @@ router.get('/teardown/asset/:id/print.html', asyncHandler((req, res) => {
   td.num, th.num { text-align:right; } button { padding:8px 14px; font-size:14px; margin:10px 0; cursor:pointer; }
   @media print { .noprint { display:none; } }
 </style></head><body>
-<button class="noprint" onclick="window.print()">🖨 Print / Save as PDF</button>
+<button class="noprint" id="print">🖨 Print / Save as PDF</button>
 <h1>Edward &amp; Christie (Pvt) Ltd — Cost Teardown</h1>
 <div class="sub">Vehicle: <b>${esc(veh)}</b> · ${esc([t.asset.brand, t.asset.type].filter(Boolean).join(' '))} · ${b.jobs} job(s) · lifetime <b>${m(b.total)}</b></div>
 <table><thead><tr><th>Cost bucket</th><th class="num">Amount</th><th class="num">Share</th></tr></thead><tbody>
@@ -1219,7 +1219,7 @@ router.get('/teardown/asset/:id/print.html', asyncHandler((req, res) => {
   <tr><td><b>Total</b></td><td class="num"><b>${m(b.total)}</b></td><td class="num">100%</td></tr></tbody></table>
 ${t.jobs.length ? `<h3>Jobs by cost</h3><table><thead><tr><th>Job No</th><th>Type</th><th class="num">Labour</th><th class="num">Material</th><th class="num">Oil</th><th class="num">External</th><th class="num">Total</th></tr></thead><tbody>${t.jobs.map((j) => `<tr><td>${esc(j.job_no)}</td><td>${esc(j.type)}</td><td class="num">${m(j.labour_cost)}</td><td class="num">${m(j.material_cost)}</td><td class="num">${m(j.oil_cost)}</td><td class="num">${m(j.external_cost)}</td><td class="num"><b>${m(j.total_cost)}</b></td></tr>`).join('')}</tbody></table>` : ''}
 ${t.parts.length ? `<h3>Top parts by value</h3><table><thead><tr><th>Part</th><th class="num">Lines</th><th class="num">Value</th></tr></thead><tbody>${t.parts.map((p) => `<tr><td>${esc(p.description)}</td><td class="num">${p.lines}</td><td class="num">${m(p.value)}</td></tr>`).join('')}</tbody></table>` : ''}
-</body></html>`;
+<script src="/js/print-page.js"></script></body></html>`;
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
   res.send(html);
 }));
@@ -1654,7 +1654,7 @@ router.get('/monthly-repair-detail.html', requireAuth, asyncHandler((req, res) =
   .grand table { width:auto; margin-left:auto; border-collapse:collapse; } .grand td { padding:3px 12px; } .grand .tot { font-size:15px; font-weight:bold; border-top:2px solid #333; }
   @media print { .noprint { display:none; } }
 </style></head><body>
-<button class="noprint" onclick="window.print()">🖨 Print / Save as PDF</button>
+<button class="noprint" id="print">🖨 Print / Save as PDF</button>
 <h1>Edward &amp; Christie (Pvt) Ltd — ${wsName ? esc(wsName) : 'Badalgama W/S'}</h1>
 <div class="sub">Monthly Repair Detail — <b>${esc(period)}</b> · ${g.jobs} job(s)</div>
 ${closedHtml}
@@ -1668,7 +1668,7 @@ ${sparesHtml}
   <tr><td>Other material</td><td class="num">${money(g.other)}</td></tr>
   <tr class="tot"><td>Grand total (${g.jobs} jobs)</td><td class="num">${money(g.total)}</td></tr>
 </table></div>
-</body></html>`;
+<script src="/js/print-page.js"></script></body></html>`;
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
   res.send(html);
 }));

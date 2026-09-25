@@ -64,10 +64,23 @@ function req(method, p, { body, cookie } = {}) {
   });
 }
 async function login(username) {
+  run('UPDATE users SET mfa_enabled = 0 WHERE username = ?', username);   // the password step alone
   const r = await req('POST', '/api/auth/login', { body: { username, password: PW } });
   assert.strictEqual(r.status, 200, r.text);
-  return r.cookie;
+  return secondFactorOn(r.cookie);
 }
+
+// Changing access needs 2-step sign-in (access plan, Part 4). The people here have it on, set
+// directly (signing in with it is tested in test/mfa.test.js), so every refusal below has only the
+// reason its test names: this person is marked as having it, and this session as having passed it.
+function secondFactorOn(cookie) {
+  const token = decodeURIComponent(cookie.split('=')[1]);
+  const s = get('SELECT user_id FROM sessions WHERE token = ?', token);
+  run('UPDATE users SET mfa_enabled = 1 WHERE id = ?', s.user_id);
+  run('UPDATE sessions SET mfa_verified = 1 WHERE token = ?', token);
+  return cookie;
+}
+
 
 // ---------------------------------------------------------------- the catalogue itself
 test('the catalogue is well-formed', () => {
