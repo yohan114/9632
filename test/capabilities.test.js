@@ -289,7 +289,9 @@ test('the last active admin cannot be switched off or demoted — not even by th
   assert.strictEqual(roles.body.active_admins, 1, 'the screen can warn about it');
 
   const secondId = mkUser('deputy', ['admin']);
-  assert.strictEqual((await req('POST', `/api/users/${chiefId}/roles`, { cookie: admin, body: { roles: ['admin', 'viewer'] } })).status, 200);
+  // Nobody changes their own roles (access plan, Part 2): the deputy changes the chief's.
+  assert.strictEqual((await req('POST', `/api/users/${chiefId}/roles`, { cookie: admin, body: { roles: ['admin', 'viewer'] } })).status, 403);
+  assert.strictEqual((await req('POST', `/api/users/${chiefId}/roles`, { cookie: await login('deputy'), body: { roles: ['admin', 'viewer'] } })).status, 200);
   assert.strictEqual((await req('PATCH', `/api/users/${secondId}`, { cookie: admin, body: { active: false } })).status, 200, 'with two, one may go');
   assert.ok(get('SELECT 1 x FROM users WHERE id = ? AND active = 1', chiefId));
 });

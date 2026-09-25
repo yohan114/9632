@@ -339,7 +339,8 @@ router.get('/stock-search', asyncHandler((req, res) => {
 
 // Add / update a filter price. Typing a NEW number here creates it (the learning
 // catalogue); an existing number updates its price. This is the auto-save.
-router.post('/prices', asyncHandler((req, res) => {
+// Sets the price of a filter, new or already listed: a change, so it needs edit (a POST alone asks add).
+router.post('/prices', require('../lib/permissions').requireModule('filters', 'edit'), asyncHandler((req, res) => {
   const b = req.body;
   require_(b, ['filter_no']);
   const fn = clean(b.filter_no);

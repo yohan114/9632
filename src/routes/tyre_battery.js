@@ -124,7 +124,8 @@ router.get('/issues', requireAuth, asyncHandler((req, res) => {
 }));
 
 // Save category prices (bulk upsert). Body: { kind, prices: [{ category_norm, category?, unit_price }] }.
-router.post('/prices', requireAuth, asyncHandler((req, res) => {
+// Changes the prices: needs edit on the ledger (a POST alone asks add).
+router.post('/prices', requireAuth, require('../lib/permissions').requireModule('tyrebattery', 'edit'), asyncHandler((req, res) => {
   const b = req.body || {};
   const kind = reqKind(b.kind);
   if (!kind) return res.status(400).json({ error: 'kind must be tyre or battery' });

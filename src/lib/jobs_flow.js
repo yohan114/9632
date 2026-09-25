@@ -23,12 +23,12 @@ const { get, all, run } = require('../db');
 const scope = require('./scope');
 const jobstate = require('./jobstate');
 const review = require('./job_review');
-const { meets, levelForRoles } = require('./permissions');
+const { reaches } = require('./permissions');
 
 const isAdmin = (user) => require('./access_rules').isAdmin(user);
 const hasCap = (user, cap) => require('./auth').hasCap(user, cap);
 /** May this person see a module's records at all (the same test as requireModule's GET; admin: always)? */
-const sees = (user, module) => meets(levelForRoles((user && user.roles) || [], module), 'view');
+const sees = (user, module) => reaches(user, module);
 const today = () => { const d = new Date(); return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10); };
 const day10 = (v) => (v ? String(v).slice(0, 10) : null);
 const daysSince = (d, now = today()) => (d ? Math.max(0, Math.round((Date.parse(now) - Date.parse(day10(d))) / 86400000)) : null);

@@ -18,7 +18,7 @@ const router = express.Router();
 router.use(requireAuth);
 router.use((req, res, next) => {
   const permissions = require('../lib/permissions');
-  if (permissions.meets(permissions.levelForRoles(req.user.roles || [], 'reports'), 'view')) return next();
+  if (permissions.reaches(req.user, 'reports')) return next();
   return res.status(403).json({ error: 'Your role has no view access to reports' });
 });
 

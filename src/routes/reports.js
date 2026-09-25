@@ -23,7 +23,7 @@ const router = express.Router();
 // person may see below), a job card's report and cost sheet (Job Cards), the day tally (Daily Work,
 // checked in mayReadKind), and the outside prices of a service (Service Records, checked in the route).
 const permissions = require('../lib/permissions');
-const levelOf = (req, m) => permissions.levelForRoles((req.user && req.user.roles) || [], m);
+const levelOf = (req, m) => permissions.levelFor(req.user, m);
 const mayView = (req, m) => permissions.meets(levelOf(req, m), 'view');
 const EVERYONE = new Set(['/dashboard', '/pending-approvals', '/service-outside']);
 const DAY_TALLY = /^\/daily\/day_tally(\/|$)/;
@@ -121,7 +121,7 @@ router.get('/dashboard', asyncHandler((req, res) => {
   let attendance_today = null;
   const att = require('../lib/attendance');
   const permissions = require('../lib/permissions');
-  if (att.isEnabled() && permissions.meets(permissions.levelForRoles(req.user.roles || [], 'dailywork'), 'view')) {
+  if (att.isEnabled() && permissions.reaches(req.user, 'dailywork')) {
     const t = att.today();
     // Stage 4: your own workshop's day; head office, every workshop's added up.
     const wsList = attendanceWorkshops(req.user);
@@ -1764,7 +1764,7 @@ const kindOf = (v) => (KINDS.includes(v) ? v : null);
 function mayReadKind(req, res, kind) {
   if (kind !== 'day_tally') return true;
   const permissions = require('../lib/permissions');
-  if (permissions.meets(permissions.levelForRoles(req.user.roles || [], 'dailywork'), 'view')) return true;
+  if (permissions.reaches(req.user, 'dailywork')) return true;
   res.status(403).json({ error: 'Your role has no view access to dailywork' });
   return false;
 }

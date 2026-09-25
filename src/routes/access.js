@@ -11,6 +11,11 @@
 //   POST /capabilities           give or take away one permission from one role
 //   GET  /approval-limits        each role's money limit per kind of approval
 //   PUT  /approval-limits        set or clear one role's limit (src/lib/approval_limits.js)
+//   GET  /people                 everyone, with how many of their levels are their own
+//   GET  /people/:id             one person: each switch's level, from the role or their own
+//   PUT  /people/:id/levels      set one switch's level for this person, or clear it (back to the role)
+//   POST /people/:id/reset       clear all their own levels
+//   POST /people/:id/copy        give them another person's levels
 //
 // Every change is audited, and all of it is subject to src/lib/access_rules.js: you can only give
 // what you hold, only an admin touches the admin role, and there is always an active admin.
@@ -180,6 +185,105 @@ router.post('/capabilities', requireCap('access.manage'), asyncHandler((req, res
     before: { role: role.name, capability: req.body.capability, granted: before },
     after: { role: role.name, capability: req.body.capability, granted } });
   res.json(describeRoles().find((r) => r.name === role.name));
+}));
+
+// ---- people: access person by person (access plan, Part 2) -------------------------------------
+// A role is the starting template. On the People screen a person can be given, on any switch, a
+// level of their own — more or less than their roles give. The rules: only what you hold yourself,
+// only for someone whose access is within yours, never an admin's (always full), never your own.
+
+const userRow = (id) => get('SELECT id, username, full_name, active FROM users WHERE id = ?', id);
+const rolesOf = (id) => require('../lib/auth').rolesForUser(id);
+const personOf = (id) => ({ id: Number(id), roles: rolesOf(id) });
+
+/** Why this actor may not change this person's levels, or null. */
+function blockedFor(actor, target) {
+  if (Number(actor.id) === Number(target.id)) return 'You cannot change your own access. Ask another manager or an admin.';
+  if (target.roles.includes('admin')) return 'An admin always has full access to everything.';
+  try { rules.assertCanManageUser(actor, target.id); } catch (e) { return e.message; }
+  return null;
+}
+
+function describePerson(actor, id) {
+  const u = userRow(id);
+  if (!u) bad(404, 'No such person');
+  const person = personOf(id);
+  const labels = new Map(all('SELECT name, COALESCE(label, name) label FROM roles').map((r) => [r.name, r.label]));
+  const own = permissions.personalFor(id);
+  const names = new Map(all('SELECT id, COALESCE(full_name, username) n FROM users').map((r) => [r.id, r.n]));
+  const blocked = blockedFor(actor, person);
+  return {
+    user: { ...u, active: !!u.active, roles: person.roles.map((r) => ({ name: r, label: labels.get(r) || r })), is_admin: person.roles.includes('admin'),
+      // For Workshops and Access Control, which open with a permission rather than a level.
+      caps: capabilities.capsForRoles(person.roles) },
+    sections: permissions.SECTIONS, modules: permissions.MODULES, levels: permissions.LEVELS,
+    role_levels: permissions.userPermissions(person.roles),
+    personal: Object.fromEntries(Object.entries(own).map(([m, p]) => [m, { ...p, set_by_name: names.get(p.set_by) || null }])),
+    effective: permissions.userLevels(person),
+    can: {
+      edit: !blocked, reason: blocked,
+      // The highest level this actor may give on each switch: their own (an admin: full).
+      max: Object.fromEntries(permissions.MODULE_KEYS.map((m) => [m, permissions.levelFor(actor, m)])),
+    },
+  };
+}
+
+function mayChange(actor, id) {
+  if (!userRow(id)) bad(404, 'No such person');
+  const why = blockedFor(actor, personOf(id));
+  if (why) bad(403, why);
+}
+
+router.get('/people', requireCap('access.manage'), asyncHandler((req, res) => {
+  const own = new Map(all('SELECT user_id, COUNT(*) n FROM user_permissions GROUP BY user_id').map((r) => [r.user_id, r.n]));
+  res.json(all('SELECT id, username, full_name, active FROM users ORDER BY active DESC, COALESCE(full_name, username)')
+    .map((u) => ({ ...u, active: !!u.active, roles: rolesOf(u.id), own_levels: own.get(u.id) || 0, self: u.id === req.user.id })));
+}));
+
+router.get('/people/:id', requireCap('access.manage'), asyncHandler((req, res) => res.json(describePerson(req.user, Number(req.params.id)))));
+
+router.put('/people/:id/levels', requireCap('access.manage'), asyncHandler((req, res) => {
+  const id = Number(req.params.id);
+  require_(req.body, ['module']);
+  mayChange(req.user, id);
+  const level = req.body.level === null || req.body.level === undefined || req.body.level === '' ? null : String(req.body.level);
+  if (level) rules.assertCanSetLevel(req.user, req.body.module, level);
+  const before = permissions.personalFor(id)[req.body.module] || null;
+  permissions.setPersonal(id, req.body.module, level, req.user.id);
+  audit.record({ userId: req.user.id, entity: 'user_permission', entityId: id, action: level ? 'set' : 'clear',
+    before: { module: req.body.module, level: before ? before.level : null }, after: { module: req.body.module, level } });
+  res.json(describePerson(req.user, id));
+}));
+
+router.post('/people/:id/reset', requireCap('access.manage'), asyncHandler((req, res) => {
+  const id = Number(req.params.id);
+  mayChange(req.user, id);
+  const before = permissions.personalFor(id);
+  run('DELETE FROM user_permissions WHERE user_id = ?', id);
+  audit.record({ userId: req.user.id, entity: 'user_permission', entityId: id, action: 'reset',
+    before: Object.fromEntries(Object.entries(before).map(([m, p]) => [m, p.level])), after: {} });
+  res.json(describePerson(req.user, id));
+}));
+
+// Give this person another person's levels, switch by switch: where they match this person's own
+// roles nothing is stored; where they differ, a level of their own.
+router.post('/people/:id/copy', requireCap('access.manage'), asyncHandler((req, res) => {
+  const id = Number(req.params.id);
+  const from = Number(req.body && req.body.from);
+  mayChange(req.user, id);
+  if (!userRow(from)) bad(404, 'No such person to copy from');
+  if (from === id) bad(400, 'Choose another person to copy from.');
+  const source = permissions.userLevels(personOf(from));
+  const template = permissions.userPermissions(rolesOf(id));
+  for (const [m, lvl] of Object.entries(source)) if (lvl !== template[m]) rules.assertCanSetLevel(req.user, m, lvl);
+  const before = permissions.personalFor(id);
+  tx(() => {
+    run('DELETE FROM user_permissions WHERE user_id = ?', id);
+    for (const [m, lvl] of Object.entries(source)) if (lvl !== template[m]) permissions.setPersonal(id, m, lvl, req.user.id);
+  });
+  audit.record({ userId: req.user.id, entity: 'user_permission', entityId: id, action: 'copy',
+    before: Object.fromEntries(Object.entries(before).map(([m, p]) => [m, p.level])), after: { from, levels: source } });
+  res.json(describePerson(req.user, id));
 }));
 
 // ---- approval limits (src/lib/approval_limits.js) ------------------------------------------

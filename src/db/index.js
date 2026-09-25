@@ -87,6 +87,16 @@ function migrate() {
     level  TEXT NOT NULL DEFAULT 'none',
     PRIMARY KEY (role, module)
   );`);
+  // A person's own level on a section switch, set on the People screen (access plan, Part 2). It
+  // replaces their roles' level on that switch — more or less. No row: their roles decide.
+  db.exec(`CREATE TABLE IF NOT EXISTS user_permissions (
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    module  TEXT NOT NULL,
+    level   TEXT NOT NULL,
+    set_by  INTEGER REFERENCES users(id),
+    set_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (user_id, module)
+  );`);
   // Capabilities — the individual actions a role may take (src/lib/capabilities.js). Keyed by role
   // NAME like role_permissions. Taking a capability away sets granted = 0 instead of deleting the
   // row, so the boot-time seed (INSERT OR IGNORE) can never quietly give it back.

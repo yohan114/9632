@@ -482,18 +482,21 @@ async function mySignatureModal() {
     qs('#rm', body).onclick = async () => { try { await api('/auth/signature', { method: 'POST', body: { signature: null } }); toast('Signature removed'); if (window.ME) ME.hasSignature = false; close(); } catch (e) { toast(e.message, 'err'); } };
   });
 }
-// RBAC — a module's clearance level for the signed-in user (from the permission matrix).
-const RANKL = { none: 0, view: 1, edit: 2, full: 3 };
+// RBAC — a section switch's level for the signed-in person: their own where one was set for them
+// on the People screen, else their roles' (access plan, Part 2). View reads, Add also adds new
+// records, Edit also changes and removes them, Full is everything.
+const RANKL = { none: 0, view: 1, add: 2, edit: 3, full: 4 };
 const rankL = (l) => RANKL[l] || 0;
 const isAdmin = () => !!(ME && ME.roles && ME.roles.includes('admin'));
 const canView = (m) => isAdmin() || (ME && ME.permissions ? rankL(ME.permissions[m]) >= 1 : true);
-const canEdit = (m) => isAdmin() || (ME && ME.permissions ? rankL(ME.permissions[m]) >= 2 : true);
+const canAdd = (m) => isAdmin() || (ME && ME.permissions ? rankL(ME.permissions[m]) >= 2 : true);
+const canEdit = (m) => isAdmin() || (ME && ME.permissions ? rankL(ME.permissions[m]) >= 3 : true);
 // May the signed-in user do this? Asked by CAPABILITY (src/lib/capabilities.js), never by role
 // name, so a role an admin creates works on every screen. Some actions also sit behind a section's
-// router gate on the server, which wants EDIT clearance on that section; the server says which
+// router gate on the server, which wants at least ADD on that section; the server says which
 // (capNeeds), and a button whose request the server would refuse is not shown.
 const canDo = (...caps) => !!ME && caps.some((c) => (ME.caps || []).includes(c)
-  && (!(ME.capNeeds && ME.capNeeds[c]) || canEdit(ME.capNeeds[c])));
+  && (!(ME.capNeeds && ME.capNeeds[c]) || canAdd(ME.capNeeds[c])));
 const qs = (s, r = document) => r.querySelector(s);
 const qsa = (s, r = document) => [...r.querySelectorAll(s)];
 
@@ -5975,7 +5978,7 @@ async function renderBatteriesSection(c, params) {
       <div id="bt-stock"></div></div>
     <div class="toolbar">
       <input id="bwhere" placeholder="Where is serial…?" style="max-width:220px"><button class="sm" id="bwbtn">Find</button>
-      <div class="spacer"></div>${canEdit('batteries') ? '<button class="primary" id="nb">+ Add Battery</button>' : ''}
+      <div class="spacer"></div>${canAdd('batteries') ? '<button class="primary" id="nb">+ Add Battery</button>' : ''}
     </div>
     ${radar.expiring.length ? `<div class="card section"><h3>Warranty expiring ≤60 days</h3>${radar.expiring.map((b) => `<div class="cost-line"><a href="#/batteries/${b.id}">${esc(b.serial_no)}</a><span class="badge amber">${esc(b.warranty_date)} · ${esc(b.current_asset_code || 'store')}</span></div>`).join('')}</div>` : ''}
     ${tableWrap([{ label: 'Serial' }, { label: 'Brand' }, { label: 'Ah', num: true }, { label: 'State' }, { label: 'Current Asset' }, { label: 'Warranty' }],
@@ -6294,7 +6297,7 @@ async function renderServiceRecords(c) {
   const editable = canEdit('services');
   c.innerHTML = `
     <div class="toolbar" style="gap:8px;flex-wrap:wrap">
-      ${editable ? '<button class="primary" id="nsvc">+ New Service</button>' : ''}
+      ${canAdd('services') ? '<button class="primary" id="nsvc">+ New Service</button>' : ''}
       <input id="sq" type="search" placeholder="Search vehicle / site / type…" style="max-width:240px">
       <select id="vselect" style="max-width:220px;background:#fff;border:1px solid var(--border);border-radius:4px;padding:4px 8px;font-size:13px">
         <option value="">— Quick Vehicle History —</option>
@@ -8016,7 +8019,7 @@ routes.tbrequests = async (c) => {
       <button class="sm ${kind === 'tyre' ? 'primary' : ''}" onclick="${go(tab, 'tyre')}">🛞 Tyre</button>
       <button class="sm ${kind === 'battery' ? 'primary' : ''}" onclick="${go(tab, 'battery')}">🔋 Battery</button>
       <div class="spacer"></div>
-      ${canEdit('tb_request') ? '<button class="primary sm" id="tb-new">+ New request</button>' : ''}
+      ${canAdd('tb_request') ? '<button class="primary sm" id="tb-new">+ New request</button>' : ''}
     </div>
     <div class="toolbar" style="margin:0 0 10px 0">
       ${[['requests', 'Requests'], ['purchase', 'To purchase'], ['issue', 'Ready to issue'], ['returns', 'Old units due'], ['specs', 'Sizes &amp; prices']]
@@ -8063,7 +8066,7 @@ routes.tbrequests = async (c) => {
             <td>${esc(TB_REASON_LABEL[l.reason] || l.reason || '—')}</td>
             <td>${l.km_reading != null ? num(l.km_reading) : esc(l.km_remark || '—')}</td>
             <td class="num">${l.issued || 0}</td>
-            <td>${d.approval_status === 'approved' && (l.issued || 0) < l.qty && canEdit('tb_issue')
+            <td>${d.approval_status === 'approved' && (l.issued || 0) < l.qty && canAdd('tb_issue')
           ? '<button class="sm primary" data-issue="' + l.mrn_line_id + '">Issue…</button>' : ''}</td></tr>`))}
       </div>`;
     qsa('[data-issue]', body).forEach((b) => {
@@ -8084,7 +8087,7 @@ routes.tbrequests = async (c) => {
         { label: 'Qty', num: true }, { label: '' }],
         rows.map((r) => `<tr><td><b>${esc(r.mrn_no)}</b></td><td>${esc(String(r.req_date || '').slice(0, 10))}</td>
           <td>${esc(r.asset_code || '—')}</td><td class="num">${r.lines}</td><td class="num">${num(r.qty)}</td>
-          <td>${canEdit('tb_purchase') ? '<button class="sm primary" data-buy="' + r.id + '">Send to purchase…</button>' : ''}</td></tr>`), { scroll: true })
+          <td>${canAdd('tb_purchase') ? '<button class="sm primary" data-buy="' + r.id + '">Send to purchase…</button>' : ''}</td></tr>`), { scroll: true })
         : '<div class="card"><p class="muted">Nothing approved is waiting to be bought.</p></div>');
     qsa('[data-buy]', body).forEach((b) => {
       b.onclick = () => tbPurchaseModal(rows.find((r) => String(r.id) === b.dataset.buy), () => render());
@@ -8113,7 +8116,7 @@ routes.tbrequests = async (c) => {
         rows.map((r) => `<tr><td>${esc(String(r.issue_date || '').slice(0, 10))}</td><td>${esc(r.mrn_no || '—')}</td>
         <td>${esc(r.asset_code || '—')}</td><td>${esc(r.spec_label || '—')}</td><td class="num">${num(r.qty)}</td>
         <td>${esc(r.position || '—')}</td>
-        <td>${canEdit('tb_issue') ? '<button class="sm primary" data-ret="' + r.issue_id + '">Record…</button>' : ''}</td></tr>`), { scroll: true })
+        <td>${canAdd('tb_issue') ? '<button class="sm primary" data-ret="' + r.issue_id + '">Record…</button>' : ''}</td></tr>`), { scroll: true })
         : '<div class="card"><p class="muted">Every old unit has been accounted for.</p></div>');
     qsa('[data-ret]', body).forEach((b) => {
       b.onclick = () => tbReturnModal(rows.find((r) => String(r.issue_id) === b.dataset.ret), () => render());
@@ -9107,7 +9110,7 @@ routes.workshops = async (c) => {
 routes.access = async (c) => {
   if (!canDo('access.manage', 'users.manage')) { c.innerHTML = '<div class="card err">You do not have access to this page.</div>'; return; }
   const tabs = [];
-  if (canDo('access.manage')) tabs.push(['roles', 'Roles & Permissions'], ['board', 'Clearance Board'], ['limits', 'Approval limits']);
+  if (canDo('access.manage')) tabs.push(['people', 'People'], ['roles', 'Roles & Permissions'], ['board', 'Clearance Board'], ['limits', 'Approval limits']);
   if (canDo('users.manage')) tabs.push(['users', 'Users & Roles']);
   const sp = new URLSearchParams(location.hash.split('?')[1] || '');
   const tab = tabs.some((t) => t[0] === sp.get('tab')) ? sp.get('tab') : tabs[0][0];
@@ -9128,6 +9131,7 @@ routes.access = async (c) => {
   }).catch(() => {});
   const pane = qs('#apane', c);
   if (tab === 'users') await renderUsersManager(pane);
+  else if (tab === 'people') await renderPeople(pane, sp.get('person'));
   else if (tab === 'board') await renderClearanceBoard(pane);
   else if (tab === 'limits') await renderApprovalLimits(pane);
   else await renderRolesManager(pane, sp.get('role'));
@@ -9171,7 +9175,7 @@ async function renderApprovalLimits(c) {
 }
 
 const lvlChip = (lvl) => {
-  const cls = lvl === 'full' ? 'amber' : lvl === 'edit' ? 'green' : '';
+  const cls = lvl === 'full' ? 'amber' : lvl === 'edit' ? 'green' : lvl === 'add' ? 'blue' : '';
   const txt = lvl === 'none' ? '—' : lvl.toUpperCase();
   return `<span class="badge ${cls}"${lvl === 'none' ? ' style="opacity:.4"' : ''}>${txt}</span>`;
 };
@@ -9282,6 +9286,87 @@ async function renderRolesManager(c, wanted) {
   if (qs('#reinstaterole', c)) qs('#reinstaterole', c).onclick = () => setActive(true);
 }
 
+// ---- People: access person by person (access plan, Part 2) --------------------------------------
+// A role is the starting template; on any section switch a person can be given a level of their
+// own, more or less than their roles give. Blue: from the role. Orange: changed for this person.
+async function renderPeople(c, personId) {
+  const people = await api('/access/people');
+  const roleLabel = Object.fromEntries((await api('/access/roles')).roles.map((r) => [r.name, r.label || r.name]));
+  let q = '';
+  c.innerHTML = `<div class="grid" style="grid-template-columns:minmax(220px,300px) 1fr;gap:12px;align-items:start" id="ppl-grid">
+    <div class="card" style="padding:10px"><input id="ppl-q" type="search" placeholder="Search a person…" style="width:100%;margin-bottom:8px">
+      <div id="ppl-list" style="max-height:70vh;overflow:auto"></div></div>
+    <div id="ppl-one"><div class="card"><p class="muted" style="margin:0">Choose a person to see and change their access.</p></div></div></div>`;
+  if (window.matchMedia('(max-width: 800px)').matches) qs('#ppl-grid', c).style.gridTemplateColumns = '1fr';
+  const paintList = () => {
+    const rows = people.filter((p) => !q || `${p.full_name || ''} ${p.username} ${p.roles.map((r) => roleLabel[r] || r).join(' ')}`.toLowerCase().includes(q));
+    qs('#ppl-list', c).innerHTML = rows.map((p) => `<a href="#/access?tab=people&person=${p.id}" style="display:block;padding:6px 8px;border-radius:6px;text-decoration:none;color:inherit;${String(p.id) === String(personId) ? 'background:rgba(29,90,115,.13);' : ''}${p.active ? '' : 'opacity:.5;'}">
+        <b>${esc(p.full_name || p.username)}</b>${p.self ? ' <span class="badge">you</span>' : ''}${p.own_levels ? ` <span class="badge amber" title="Levels changed for this person">${p.own_levels} own</span>` : ''}
+        <div class="muted" style="font-size:11.5px">${esc(p.username)} · ${esc(p.roles.map((r) => roleLabel[r] || r).join(', ') || 'no role')}</div></a>`).join('') || '<p class="muted">Nobody found.</p>';
+  };
+  qs('#ppl-q', c).oninput = (e) => { q = e.target.value.trim().toLowerCase(); paintList(); };
+  paintList();
+  if (personId) await renderPerson(qs('#ppl-one', c), personId, people, () => renderPeople(c, personId));
+}
+
+async function renderPerson(c, id, people, reload) {
+  let d;
+  try { d = await api('/access/people/' + id); } catch (e) { c.innerHTML = `<div class="card err">${esc(e.message)}</div>`; return; }
+  const u = d.user;
+  const mods = new Map(d.modules.map((m) => [m.key, m]));
+  const can = d.can.edit;
+  const partName = (s, m) => (s.modules.length > 1 ? mods.get(m).label.split(' · ').pop() : '');
+  const levelBox = (m) => {
+    const own = d.personal[m];
+    const lvl = d.effective[m];
+    const max = rankL(d.can.max[m]);
+    const opts = d.levels.map((l) => `<option value="${l}" ${l === lvl ? 'selected' : ''} ${rankL(l) > max ? 'disabled' : ''}>${l === 'none' ? 'None' : l[0].toUpperCase() + l.slice(1)}</option>`).join('');
+    return `<select data-lvl="${m}" ${can ? '' : 'disabled'} style="width:auto;min-width:96px;border:2px solid ${own ? 'var(--amber, #d97706)' : 'rgba(29,90,115,.45)'}">${opts}</select>
+      ${own ? ` <span class="badge amber" title="Set by ${esc(own.set_by_name || '—')} on ${esc(String(own.set_at || '').slice(0, 10))}">own</span>${can ? ` <button class="sm" data-clear="${m}" title="Back to the role's level">↺ role (${esc(d.role_levels[m])})</button>` : ''}` : ' <span class="muted" style="font-size:11.5px">from role</span>'}`;
+  };
+  const rows = d.sections.flatMap((s) => {
+    if (s.always) return [`<tr><td><b>${esc(s.label)}</b></td><td></td><td class="muted">Always on — each part follows its own section</td></tr>`];
+    if (s.special) {
+      const held = s.special.filter((k) => (u.caps || []).includes(k));
+      return [`<tr><td><b>${esc(s.label)}</b></td><td></td><td>${u.is_admin || held.length ? '<span class="badge green">Yes</span>' : '<span class="badge">No</span>'}
+        <span class="muted" style="font-size:11.5px">opens with a permission — set on the Roles &amp; Permissions tab</span></td></tr>`];
+    }
+    return s.modules.filter((m) => mods.has(m)).map((m, i) => `<tr><td>${i ? '' : `<b>${esc(s.label)}</b>`}</td><td class="muted" style="font-size:12px">${esc(partName(s, m))}</td><td>${levelBox(m)}</td></tr>`);
+  });
+  const ownCount = Object.keys(d.personal).length;
+  c.innerHTML = `<div class="card">
+    <div class="toolbar" style="margin:0 0 6px"><h3 style="margin:0">${esc(u.full_name || u.username)}</h3>
+      <span class="muted">${esc(u.username)}</span>${u.active ? '' : ' <span class="badge">inactive</span>'}<div class="spacer"></div>
+      ${can ? `<button class="sm" id="pp-copy">Copy from another person…</button>${ownCount ? '<button class="sm" id="pp-reset">↺ Reset all to role</button>' : ''}` : ''}</div>
+    <div style="margin-bottom:8px">${u.roles.map((r) => `<span class="badge">${esc(r.label)}</span>`).join(' ') || '<span class="muted">No role</span>'}
+      <span class="muted" style="font-size:12px">— the role is the starting point; change any section for this person below.</span></div>
+    ${can ? '' : `<div class="card" style="border-left:4px solid var(--amber, #d97706);margin:0 0 8px;padding:8px 10px">${esc(d.can.reason)}</div>`}
+    <p class="muted" style="font-size:12px;margin:0 0 8px"><span style="border:2px solid rgba(29,90,115,.45);padding:0 6px;border-radius:4px">blue</span> same as their role ·
+      <span style="border:2px solid var(--amber, #d97706);padding:0 6px;border-radius:4px">orange</span> changed for this person ·
+      View = see · Add = also add new · Edit = also change and remove · Full = everything. You can only give up to your own level.</p>
+    ${tableWrap([{ label: 'Section', width: '32%' }, { label: 'Part', width: '18%' }, { label: 'Level' }], rows, { scroll: true })}
+  </div>`;
+  const put = async (m, level) => {
+    try { await api(`/access/people/${id}/levels`, { method: 'PUT', body: { module: m, level } }); toast('Saved'); reload(); }
+    catch (e) { toast(e.message, 'err'); reload(); }
+  };
+  qsa('[data-lvl]', c).forEach((sel) => { sel.onchange = () => put(sel.dataset.lvl, sel.value === d.role_levels[sel.dataset.lvl] ? null : sel.value); });
+  qsa('[data-clear]', c).forEach((b) => { b.onclick = () => put(b.dataset.clear, null); });
+  if (qs('#pp-reset', c)) qs('#pp-reset', c).onclick = async () => {
+    if (!confirm(`Put all of ${u.full_name || u.username}'s sections back to their role?`)) return;
+    try { await api(`/access/people/${id}/reset`, { method: 'POST', body: {} }); toast('Back to the role'); reload(); } catch (e) { toast(e.message, 'err'); }
+  };
+  if (qs('#pp-copy', c)) qs('#pp-copy', c).onclick = () => modal(`Copy access to ${u.full_name || u.username}`, `
+    ${field('Copy the levels of', 'from', { type: 'select', options: people.filter((p) => String(p.id) !== String(id) && p.active).map((p) => ({ value: p.id, label: `${p.full_name || p.username} (${p.username})` })) })}
+    <p class="muted" style="font-size:12px">Their section levels become the same as this person's. Their roles do not change.</p>
+    <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Copy</button></div>`, (b, close) => {
+    qs('#s', b).onclick = async () => {
+      try { await api(`/access/people/${id}/copy`, { method: 'POST', body: { from: Number(formData(b).from) } }); toast('Copied'); close(); reload(); }
+      catch (e) { toast(e.message, 'err'); }
+    };
+  });
+}
+
 async function renderClearanceBoard(c) {
   const m = await api('/access/matrix');
   const LV = m.levels;
@@ -9299,9 +9384,9 @@ async function renderClearanceBoard(c) {
     return `<td style="text-align:center;cursor:${locked ? 'default' : 'pointer'}"${locked ? '' : ` data-cell="${esc(r.name)}:${mod.key}" data-lvl="${lvl}" title="click to change"`}>${lvlChip(lvl)}</td>`;
   }).join('')}</tr>`).join('');
   c.innerHTML = `<div class="card">
-    <p class="muted" style="margin-top:0">Each section of the sidebar has its own switch, and the server checks it. The permissions on the <b>Roles &amp; Permissions</b> tab decide each action inside a section. Click a cell to cycle: — → VIEW → EDIT → FULL. <b>Admin</b> is always FULL. Dashboard is always on; Workshops and Access Control open with their permissions.</p>
+    <p class="muted" style="margin-top:0">Each section of the sidebar has its own switch, and the server checks it. The permissions on the <b>Roles &amp; Permissions</b> tab decide each action inside a section. Click a cell to cycle: — → VIEW → ADD → EDIT → FULL. <b>Admin</b> is always FULL. Dashboard is always on; Workshops and Access Control open with their permissions.</p>
     <div class="table-wrap scroll"><table><thead><tr><th rowspan="2">Role</th>${groupRow}</tr><tr>${partRow}</tr></thead><tbody>${rows}</tbody></table></div>
-    <div class="pill-row" style="margin-top:12px"><span class="muted">Legend:</span> ${lvlChip('full')} manage ${lvlChip('edit')} add / modify ${lvlChip('view')} read-only ${lvlChip('none')} no access</div>
+    <div class="pill-row" style="margin-top:12px"><span class="muted">Legend:</span> ${lvlChip('full')} everything ${lvlChip('edit')} add, change and remove ${lvlChip('add')} add new ${lvlChip('view')} read only ${lvlChip('none')} no access</div>
   </div>`;
   qsa('[data-cell]', c).forEach((td) => td.onclick = async () => {
     const [role, mod] = td.dataset.cell.split(':');

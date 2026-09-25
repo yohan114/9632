@@ -8,6 +8,15 @@
 // and seeded once from the DEFAULT_MATRIX below (the current code policy), then
 // edited by admins on the Access Control board.
 //
+// LEVELS (access plan, Part 2): none < view < add < edit < full. View reads; Add
+// also adds new records (a POST); Edit also changes and removes them (PUT, PATCH,
+// DELETE, and the few POSTs that change a record, which ask for edit themselves);
+// Full is everything in the section.
+//
+// A PERSON's level on a switch is their own, when one was set for them on the
+// People screen (user_permissions), else the best of their roles'. So a role is the
+// starting template and each person can be given more, or less, than it.
+//
 // Every section is checked on the server, not only hidden in the sidebar (access
 // plan, Part 1). requireModule() gates a router by level (GET → view, writes →
 // edit); requireView() gates a section whose actions are decided by their own
@@ -18,7 +27,7 @@
 
 const { get, all, run } = require('../db');
 
-const LEVELS = ['none', 'view', 'edit', 'full'];
+const LEVELS = ['none', 'view', 'add', 'edit', 'full'];
 const rank = (lvl) => Math.max(0, LEVELS.indexOf(lvl));
 const meets = (have, need) => rank(have) >= rank(need);
 
@@ -171,17 +180,42 @@ function levelForRoles(roles, moduleKey) {
   return best;
 }
 
-// The full {module: level} map for a user (drives the nav + control gating).
+// The full {module: level} map for a set of roles (the role template).
 function userPermissions(roles) {
   const out = {};
   for (const m of MODULE_KEYS) out[m] = levelForRoles(roles, m);
   return out;
 }
 
+const isAdminUser = (user) => !!(user && Array.isArray(user.roles) && user.roles.includes('admin'));
+
+/** A person's own levels, set for them on the People screen: { module: { level, set_by, set_at } }. */
+function personalFor(userId) {
+  if (!userId) return {};
+  return Object.fromEntries(all('SELECT module, level, set_by, set_at FROM user_permissions WHERE user_id = ?', userId)
+    .filter((r) => MODULE_KEYS.includes(r.module) && LEVELS.includes(r.level))
+    .map((r) => [r.module, { level: r.level, set_by: r.set_by, set_at: r.set_at }]));
+}
+
+/** Every switch's level for a person: their own where set, else their roles'. Admin: full. */
+function userLevels(user) {
+  const roles = (user && user.roles) || [];
+  const out = userPermissions(roles);
+  if (isAdminUser(user)) return out;
+  for (const [m, p] of Object.entries(personalFor(user && user.id))) out[m] = p.level;
+  return out;
+}
+
+/** A person's level on one switch. Read from the map made once per request (auth.authenticate). */
+function levelFor(user, moduleKey) {
+  if (!user) return 'none';
+  if (user.levels && user.levels[moduleKey] !== undefined) return user.levels[moduleKey];
+  return userLevels(user)[moduleKey] || 'none';
+}
+
 /** Does this user reach any of these switches at this level (admin: always)? */
 function reaches(user, keys, need = 'view') {
-  const roles = (user && user.roles) || [];
-  return (Array.isArray(keys) ? keys : [keys]).some((k) => meets(levelForRoles(roles, k), need));
+  return (Array.isArray(keys) ? keys : [keys]).some((k) => meets(levelFor(user, k), need));
 }
 
 /**
@@ -196,14 +230,17 @@ function requireView(...keys) {
   };
 }
 
-// Router guard: GET needs view, writes need edit.
-function requireModule(moduleKey) {
+// What a request needs: reading is view, adding a record (POST) is add, changing or removing one
+// (PUT, PATCH, DELETE) is edit. A POST that changes an existing record asks for edit itself.
+const needFor = (method) => (method === 'GET' || method === 'HEAD' ? 'view' : (method === 'POST' ? 'add' : 'edit'));
+
+// Router guard: the level the request needs (needFor), or the level given.
+function requireModule(moduleKey, level = null) {
   return (req, res, next) => {
     if (!req.user) return res.status(401).json({ error: 'Authentication required' });
-    if (req.user.roles.includes('admin')) return next();
-    const need = req.method === 'GET' || req.method === 'HEAD' ? 'view' : 'edit';
-    if (meets(levelForRoles(req.user.roles, moduleKey), need)) return next();
-    return res.status(403).json({ error: `Your role has no ${need} access to ${moduleKey}` });
+    const need = level || needFor(req.method);
+    if (meets(levelFor(req.user, moduleKey), need)) return next();
+    return res.status(403).json({ error: `You have no ${need} access to ${moduleKey}` });
   };
 }
 
@@ -223,14 +260,30 @@ function getMatrix() {
 function setPermission(role, moduleKey, level) {
   if (role === 'admin') { const e = new Error('Admin always has full access and cannot be changed'); e.status = 400; throw e; }
   if (!MODULE_KEYS.includes(moduleKey)) { const e = new Error('Unknown module'); e.status = 400; throw e; }
-  if (!LEVELS.includes(level)) { const e = new Error('Level must be none/view/edit/full'); e.status = 400; throw e; }
+  if (!LEVELS.includes(level)) { const e = new Error(`Level must be ${LEVELS.join('/')}`); e.status = 400; throw e; }
   if (!get('SELECT id FROM roles WHERE name = ?', role)) { const e = new Error('Unknown role'); e.status = 400; throw e; }
   run(`INSERT INTO role_permissions (role, module, level) VALUES (?, ?, ?)
        ON CONFLICT(role, module) DO UPDATE SET level = excluded.level`, role, moduleKey, level);
   return getMatrix();
 }
 
+/**
+ * Set one person's own level on one switch, or clear it (level null: back to their roles'). The
+ * rules for who may do this are in src/lib/access_rules.js; the route checks them first.
+ */
+function setPersonal(userId, moduleKey, level, setBy) {
+  if (!MODULE_KEYS.includes(moduleKey)) { const e = new Error('Unknown section'); e.status = 400; throw e; }
+  if (level === null || level === undefined || level === '') {
+    return run('DELETE FROM user_permissions WHERE user_id = ? AND module = ?', userId, moduleKey).changes;
+  }
+  if (!LEVELS.includes(level)) { const e = new Error(`Level must be ${LEVELS.join('/')}`); e.status = 400; throw e; }
+  return run(`INSERT INTO user_permissions (user_id, module, level, set_by, set_at) VALUES (?, ?, ?, ?, datetime('now'))
+              ON CONFLICT(user_id, module) DO UPDATE SET level = excluded.level, set_by = excluded.set_by, set_at = excluded.set_at`,
+  userId, moduleKey, level, setBy || null).changes;
+}
+
 module.exports = {
-  LEVELS, MODULES, MODULE_KEYS, SECTIONS, SPLIT, DEFAULT_MATRIX, rank, meets,
-  splitSections, seedDefaults, levelForRoles, userPermissions, reaches, requireView, requireModule, getMatrix, setPermission,
+  LEVELS, MODULES, MODULE_KEYS, SECTIONS, SPLIT, DEFAULT_MATRIX, rank, meets, needFor,
+  splitSections, seedDefaults, levelForRoles, userPermissions, personalFor, userLevels, levelFor, setPersonal,
+  reaches, requireView, requireModule, getMatrix, setPermission,
 };
