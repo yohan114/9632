@@ -102,6 +102,7 @@ function computeJobCost(jobId) {
   // owner's personally-tracked "external cost of our job"), which stays excluded. So every job_part
   // is summed here, including external-repair lines.
   let material = 0;
+  let outside = 0; // the outside-repair charges inside material, shown apart on Ready to close
   // A LUBRICANT is oil cost wherever it was written down. Since the Oil section's own
   // Issue/Top-up was retired, a drum handed over on a job arrives here as a job_part like any
   // other part — so oil cost has to follow the ITEM, not the book it was recorded in, or the
@@ -115,6 +116,7 @@ function computeJobCost(jobId) {
     if (p.unit_price == null) continue;
     if (lubricants.isLubricant(p.description, (p.created_at || jobDate || '').slice(0, 10))) { lubeParts.push(p); continue; }
     material += (p.qty || 0) * p.unit_price;
+    if (p.is_external_repair || p.source_type === 'external') outside += (p.qty || 0) * p.unit_price;
   }
 
   // --- oil (stock ledger issues to this job, plus lubricants issued through Stores) ---
@@ -150,6 +152,7 @@ function computeJobCost(jobId) {
   return {
     labour_cost: round2(labour),
     material_cost: round2(material),
+    outside_cost: round2(outside),
     oil_cost: round2(oil),
     general_cost: round2(general),
     external_cost: 0,
@@ -192,10 +195,14 @@ function historicalTotal(job, computedTotal) {
 
 /**
  * Closure gate (brief §6): a card may close only when EVERY consumed line is
- * fully documented and priced. Returns { ready, missing:[...] }.
+ * fully documented and priced. Returns { ready, missing:[...], items:[...] }.
+ * `missing` is the words; `items` the same things with their kind (see MISSING_KINDS), so a list
+ * can group them and link each group to where it is fixed.
  */
+const MISSING_KINDS = ['received', 'shelf', 'part_price', 'oil_price', 'general_price', 'service_labour', 'labour_rate', 'outside_value', 'no_work'];
 function closureReadiness(jobId) {
-  const missing = [];
+  const items = [];
+  const add = (text, kind) => items.push({ kind, text });
   const job = get('SELECT type, flat_labour, is_historical FROM job_cards WHERE id = ?', jobId);
 
   // every requested part has a GRN (MRN lines fully received)
@@ -204,7 +211,7 @@ function closureReadiness(jobId) {
     jobId
   )) {
     if ((l.qty_received || 0) < (l.qty || 0)) {
-      missing.push(`MRN ${l.mrn_no}: "${l.description}" received ${l.qty_received || 0}/${l.qty} — awaiting GRN`);
+      add(`MRN ${l.mrn_no}: "${l.description}" received ${l.qty_received || 0}/${l.qty} — awaiting GRN`, 'received');
     }
   }
 
@@ -216,39 +223,39 @@ function closureReadiness(jobId) {
      WHERE m.job_id = ?
        AND (g.qty - COALESCE((SELECT SUM(i.qty) FROM issues i WHERE i.grn_id = g.id), 0)) > 0.001
   `, jobId)) {
-    missing.push(`Store shelf item "${g.description}" (${g.unissued} unissued from MRN ${g.mrn_no || '—'})`);
+    add(`Store shelf item "${g.description}" (${g.unissued} unissued from MRN ${g.mrn_no || '—'})`, 'shelf');
   }
 
   // every material / external part line priced
   for (const p of all('SELECT * FROM job_parts WHERE job_id = ?', jobId)) {
     if (p.unit_price == null) {
-      missing.push(`Part "${p.description || p.source_type}" awaiting price`);
+      add(`Part "${p.description || p.source_type}" awaiting price`, 'part_price');
     }
   }
 
   // every oil issue priced (either explicit or via price history)
   for (const l of all(`SELECT * FROM stock_ledger WHERE job_id = ? AND kind = 'issue'`, jobId)) {
     const price = l.unit_price != null ? l.unit_price : productPriceOn(l.product_id, l.txn_date);
-    if (price == null) missing.push(`Oil issue (product #${l.product_id}) awaiting price`);
+    if (price == null) add(`Oil issue (product #${l.product_id}) awaiting price`, 'oil_price');
   }
 
   // every general issue priced
   for (const g of all(`SELECT * FROM general_item_txns WHERE job_id = ? AND txn_type = 'issue'`, jobId)) {
-    if (g.unit_price == null) missing.push(`General item issue #${g.id} awaiting price`);
+    if (g.unit_price == null) add(`General item issue #${g.id} awaiting price`, 'general_price');
   }
 
   // labour: services need a flat charge set; repairs need a rate per labour line
   if (job && job.type === 'service') {
-    if (job.flat_labour == null) missing.push('Service labour (flat charge) not set');
+    if (job.flat_labour == null) add('Service labour (flat charge) not set', 'service_labour');
   } else {
     for (const w of all('SELECT * FROM job_daily_work WHERE job_id = ? AND is_external = 0', jobId)) {
       // A cell may name a crew ("Buddhika, Krishna"); price each mechanic individually,
       // exactly as computeJobCost does — otherwise the combined string never resolves to a
       // rate and a fully-priced crew job is falsely blocked from closing.
       const names = mechanics.splitMechanics(w.mechanic);
-      if (!names.length) { missing.push(`Labour rate missing for mechanic "${w.mechanic || '(unnamed)'}"`); continue; }
+      if (!names.length) { add(`Labour rate missing for mechanic "${w.mechanic || '(unnamed)'}"`, 'labour_rate'); continue; }
       for (const nm of names) {
-        if (labourRateFor(nm, w.work_date) == null) missing.push(`Labour rate missing for mechanic "${nm}"`);
+        if (labourRateFor(nm, w.work_date) == null) add(`Labour rate missing for mechanic "${nm}"`, 'labour_rate');
       }
     }
   }
@@ -256,7 +263,7 @@ function closureReadiness(jobId) {
   // external repairs have a value
   for (const w of all('SELECT * FROM job_daily_work WHERE job_id = ? AND is_external = 1', jobId)) {
     if (w.external_value == null || w.external_value === '') {
-      missing.push(`External repair on ${w.work_date} awaiting value`);
+      add(`External repair on ${w.work_date} awaiting value`, 'outside_value');
     }
   }
 
@@ -265,10 +272,10 @@ function closureReadiness(jobId) {
   // imported history was never recorded this way and is not held to it.
   if (job && !job.is_historical && job.type !== 'service' && require('./jobstate').partialCloseEnabled()
       && !get('SELECT 1 x FROM job_daily_work WHERE job_id = ? LIMIT 1', jobId)) {
-    missing.push('No work done recorded — add the daily work');
+    add('No work done recorded — add the daily work', 'no_work');
   }
 
-  return { ready: missing.length === 0, missing };
+  return { ready: items.length === 0, missing: items.map((i) => i.text), items };
 }
 
 /** Recompute live totals on the job card and rebuild job_labour lines.
@@ -446,6 +453,7 @@ module.exports = {
   computeJobCost,
   reconciledCost,
   closureReadiness,
+  MISSING_KINDS,
   refreshJobTotals,
   snapshotJobCost,
   recalcVehicleMonth,

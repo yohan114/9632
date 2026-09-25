@@ -58,27 +58,6 @@ function loadJob(id) {
   );
 }
 
-// Full close: the closure check has to pass. Returns null (may close) or the 409 body.
-// Switched off (the flow before W2): only a card's FIRST close is checked — a card that was closed
-// once already cleared it, or was closed by import / close-on-date, which never checked. Switched
-// on, nothing needs that excuse any more (an unfinished card can be partly closed), so every live
-// card is checked, including "work done is recorded"; only reopened imported history is excused.
-function closeGate(job) {
-  const readiness = costing.closureReadiness(job.id);
-  if (readiness.ready) return null;
-  const wasReopened = !!get('SELECT 1 v FROM job_reopens WHERE job_id = ? LIMIT 1', job.id);
-  if (!jobstate.partialCloseEnabled()) {
-    return wasReopened ? null : { error: 'Job is not fully priced — cannot close', missing: readiness.missing };
-  }
-  if (wasReopened && job.is_historical) return null;
-  const n = readiness.missing.length;
-  return {
-    error: `Not ready to close fully — ${n} thing${n === 1 ? '' : 's'} still missing.`
-      + (job.status === jobstate.PARTIAL ? '' : ' Partly close it instead, and close it fully once they are done.'),
-    missing: readiness.missing,
-  };
-}
-
 // The only two kinds of card. The letter in the job number (…/R/… or …/S/…) is set from this
 // at creation and is never rewritten afterwards — the number is what is printed on the
 // paperwork, so it stays put and a later type change is reported as a mismatch instead.
@@ -474,7 +453,7 @@ router.post(
     // With partial close switched on nothing is stranded (an unfinished card can be partly
     // closed), so the gate applies to every live card; only reopened imported history is excused.
     if (target === 'CLOSED') {
-      const fail = closeGate(job);
+      const fail = closeLib.closeGate(job);
       if (fail) return res.status(409).json(fail);
       // Approval limit: a job that costs more than this person may sign off is closed by someone
       // with a higher limit.
@@ -601,7 +580,7 @@ router.post(
         }
 
         if (target === 'CLOSED') {
-          const fail = closeGate(job);
+          const fail = closeLib.closeGate(job);
           if (fail) {
             failed.push({ id, job_no: job.job_no, error: jobstate.partialCloseEnabled() ? fail.error : 'Not fully priced or has unissued store shelf parts', missing: fail.missing });
             continue;

@@ -283,7 +283,8 @@ test('the Monitor counts each step; imported cards and holders are left out', as
   assert.deepStrictEqual(m.requests, { to_certify: 2, to_approve: 1, transport: 2, operations: 1, reopen: 1, open: 7 });
   assert.deepStrictEqual(m.workshop, { all: 3, not_started: 2, worked_today: 1, idle_1_2: 0, idle_3: 0, waiting_parts: 0, no_reason: 0, idle_mechanics: null },
     'the Ongoing counts (Part 2): two approved, not started; one worked on today');
-  assert.deepStrictEqual(m.finishing, { work_done: 1, partly_closed: 1 });
+  assert.deepStrictEqual(m.finishing, { work_done: 1, partly_closed: 0, ready: 1 },
+    'Part 3: the partly closed card has nothing missing, so it counts as ready to close');
   assert.deepStrictEqual(m.watch, { breakdowns_down: null, reopen: 1, stuck: 2, two_open: 4 });
   assert.strictEqual(m.scope, null, 'head office: every workshop');
 });

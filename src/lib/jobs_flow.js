@@ -1,7 +1,8 @@
 'use strict';
 
 // ===========================================================================
-// Job Cards: the Monitor and one list of everything waiting for a decision (job cards plan, Part 1).
+// Job Cards: the Monitor and one list of everything waiting for a decision (job cards plan, Part 1),
+// the cards in the workshop (Part 2), and the cards whose work is done, until they close (Part 3).
 //
 // Every job walks the same road:
 //
@@ -39,9 +40,11 @@ const ROAD = [['requested', 'Requested'], ['approved', 'Approved'], ['workshop',
 const AT = { REQUESTED: 1, APPROVED_TRANSPORT: 1, APPROVED_OPERATIONS: 2, IN_WORKSHOP: 3, IN_PROGRESS: 3,
   WORK_COMPLETE: 5, PARTIALLY_CLOSED: 5, CLOSED: ROAD.length };
 
-/** The road of a card by its status — or of a request not yet a card (`status` null). */
-function roadOf(status, { rejected = false } = {}) {
-  const now = rejected || status === 'REJECTED' ? -1 : (status ? AT[status] : 1);
+/** The road of a card by its status — or of a request not yet a card (`status` null). `priced`: its
+ *  work is done and nothing is missing, so it waits only to be closed. */
+function roadOf(status, { rejected = false, priced = false } = {}) {
+  let now = rejected || status === 'REJECTED' ? -1 : (status ? AT[status] : 1);
+  if (priced && now === AT.WORK_COMPLETE) now++;
   return ROAD.map(([key, label], i) => {
     let state;
     if (now === -1) state = i === 0 ? 'done' : (i === 1 ? 'stop' : 'todo');
@@ -473,6 +476,137 @@ function setReason(user, jobId, { reason, note } = {}) {
   return id;
 }
 
+// ---- Finishing and Ready to close (job cards plan, Part 3) -----------------------------------------
+//
+// A card whose work is done waits here until it is closed: WORK_COMPLETE, or PARTIALLY_CLOSED (the
+// vehicle has gone, prices are still coming). While the close check still finds something missing
+// the card is FINISHING, and the list shows what, in groups. The check is the Close button's own
+// (job_close.closeCheck), so the list and the button always agree. When the last thing is added the
+// card is READY TO CLOSE — nobody has to move it — with its final cost. Nothing closes by itself
+// (JC-D7): a person closes it, one card or several at once, within their approval limit (JC-D8).
+const FINISHING = ['WORK_COMPLETE', 'PARTIALLY_CLOSED'];
+const MISSING = {
+  received: 'Parts not received', shelf: 'Parts not handed over', part_price: 'Part prices', oil_price: 'Oil prices',
+  general_price: 'Item prices', service_labour: 'Service charge', labour_rate: 'Labour rates',
+  outside_value: 'Outside repair value', no_work: 'No work recorded',
+};
+const FIN_SHOW = ['all', 'work_done', 'partly_closed'].concat(Object.keys(MISSING));
+
+function finishRows(user, f = {}) {
+  const w = [`j.status IN (${FINISHING.map(() => '?').join(',')})`, 'COALESCE(j.is_historical, 0) = 0', `NOT ${review.CONTAINER_SQL}`];
+  const p = [...FINISHING];
+  const own = scope.filter(user, 'j.workshop_id');
+  if (own.sql) { w.push(own.sql); p.push(...own.params); }
+  if (f.workshop_id) { w.push('j.workshop_id = ?'); p.push(Number(f.workshop_id)); }
+  if (f.type) { w.push('j.type = ?'); p.push(f.type); }
+  if (f.q) {
+    w.push('(j.job_no LIKE ? OR j.description LIKE ? OR a.code LIKE ? OR a.registration LIKE ? OR a.ec_code LIKE ?)');
+    for (let i = 0; i < 5; i++) p.push(f.q);
+  }
+  return all(
+    `SELECT j.id, j.job_no, j.status, j.type, j.description, j.is_historical, j.completed_at, j.partial_closed_at,
+            j.partial_note, COALESCE(u.full_name, u.username) AS partly_by,
+            j.workshop_id, w.code AS workshop_code, j.asset_id, ${ASSET}
+       FROM job_cards j LEFT JOIN assets a ON a.id = j.asset_id LEFT JOIN workshops w ON w.id = j.workshop_id
+       LEFT JOIN users u ON u.id = j.partial_closed_by
+      WHERE ${w.join(' AND ')}`, ...p);
+}
+
+/** What is still missing on a card, in groups (in the check's own order), each thing said once. */
+function missingGroups(items) {
+  const by = new Map();
+  for (const it of items) {
+    if (!by.has(it.kind)) by.set(it.kind, new Set());
+    by.get(it.kind).add(it.text);
+  }
+  return [...by].map(([k, texts]) => ({ kind: k, label: MISSING[k], n: texts.size, items: [...texts].slice(0, 6) }));
+}
+
+/** Every finishing card in reach, with what is missing — ready or not. */
+function finishAll(user, f = {}) {
+  const closeLib = require('./job_close');
+  const now = today();
+  const mayClose = !!jobstate.checkTransition('WORK_COMPLETE', 'CLOSED', user).ok;
+  return finishRows(user, f).map((r) => {
+    const chk = closeLib.closeCheck(r);
+    // Waiting since the work was done — or, partly closed, since then (a reopened card keeps its
+    // first close month in completed_at).
+    const since = day10(r.status === jobstate.PARTIAL ? r.partial_closed_at : r.completed_at);
+    const groups = missingGroups(chk.readiness.items);
+    return {
+      id: r.id, job_no: r.job_no, status: r.status, type: r.type, description: r.description,
+      workshop_id: r.workshop_id, workshop_code: r.workshop_code, ...vehicle(r),
+      since, days: daysSince(since, now), partly_by: r.partly_by, note: r.partial_note,
+      ready: chk.ok, missing: { total: groups.reduce((t, g) => t + g.n, 0), groups },
+      road: roadOf(r.status, { priced: chk.ok }), link: '#/jobs/' + r.id,
+      can: { close: mayClose },
+    };
+  });
+}
+
+function finishCounts(rows) {
+  const n = { all: 0, work_done: 0, partly_closed: 0, ready: 0 };
+  for (const k of Object.keys(MISSING)) n[k] = 0;
+  for (const r of rows) {
+    if (r.ready) { n.ready++; continue; }
+    n.all++;
+    n[r.status === jobstate.PARTIAL ? 'partly_closed' : 'work_done']++;
+    for (const g of r.missing.groups) n[g.kind]++;
+  }
+  return n;
+}
+
+const finishFilter = (query) => ({
+  q: String(query.q || '').trim() ? '%' + String(query.q).trim() + '%' : null,
+  type: ['repair', 'service'].includes(query.type) ? query.type : null,
+  workshop_id: query.workshop_id ? Number(query.workshop_id) : null,
+});
+
+/**
+ * Finishing: cards whose work is done and something is still missing. query: show (see FIN_SHOW;
+ * default all), q, type, workshop_id, limit. Returns { rows, counts } — counts over every card in
+ * the person's reach. The longest waiting first.
+ */
+function finishing(user, query = {}) {
+  const f = finishFilter(query);
+  const everything = finishAll(user);
+  const counts = finishCounts(everything);
+  const show = FIN_SHOW.includes(query.show) ? query.show : 'all';
+  const keep = show === 'all' ? () => true
+    : show === 'work_done' ? (r) => r.status === 'WORK_COMPLETE'
+      : show === 'partly_closed' ? (r) => r.status === jobstate.PARTIAL
+        : (r) => r.missing.groups.some((g) => g.kind === show);
+  const narrowed = f.q || f.type || f.workshop_id ? new Set(finishRows(user, f).map((r) => r.id)) : null;
+  const rows = everything.filter((r) => !r.ready && keep(r) && (!narrowed || narrowed.has(r.id)))
+    .sort((a, b) => (b.days - a.days) || (a.job_no > b.job_no ? 1 : -1));
+  const limit = Math.min(Math.max(Number(query.limit) || 500, 1), 5000);
+  return { rows: rows.slice(0, limit), counts };
+}
+
+/**
+ * Ready to close: nothing is missing. Each card with its final cost, split as the card shows it
+ * (outside repair charges apart from the parts), and whether this person's approval limit covers it.
+ */
+function ready(user, query = {}) {
+  const costing = require('./costing');
+  const limits = require('./approval_limits');
+  const f = finishFilter(query);
+  const rows = finishAll(user, f).filter((r) => r.ready).map((r) => {
+    const c = costing.reconciledCost(r.id);
+    const cost = { labour: c.labour_cost, parts: Math.round((c.material_cost - c.outside_cost) * 100) / 100, outside: c.outside_cost,
+      oil: c.oil_cost, general: c.general_cost, other: c.other_cost, total: c.total_cost };
+    const within = limits.check(user, 'job_close', cost.total);
+    return { ...r, cost, can: { close: r.can.close && within.ok }, over_limit: within.ok ? null : { limit: within.limit } };
+  }).sort((a, b) => (b.days - a.days) || (a.job_no > b.job_no ? 1 : -1));
+  const total = Math.round(rows.reduce((t, r) => t + r.cost.total, 0) * 100) / 100;
+  return { rows, total };
+}
+
+/** How many cards are ready to close, in the person's reach (the Dashboard tile). */
+function readyCount(user) {
+  return finishAll(user).filter((r) => r.ready).length;
+}
+
 // ---- the Monitor -----------------------------------------------------------------------------------
 /**
  * Mechanics present today who are booked on no job (JC-D12) — from attendance, when it is recorded,
@@ -508,18 +642,13 @@ function monitor(user) {
   const r = scope.reach(user);
   out.scope = r && r.length === 1 ? { id: r[0], label: (get('SELECT name FROM workshops WHERE id = ?', r[0]) || {}).name || null } : null;
   if (!seesJobs) return out;
-  const own = scope.filter(user, 'j.workshop_id');
-  const LIVE = `COALESCE(j.is_historical, 0) = 0 AND NOT ${review.CONTAINER_SQL}${own.sql ? ' AND ' + own.sql : ''}`;
-  const c = get(
-    `SELECT SUM(j.status = 'WORK_COMPLETE') AS work_done,
-            SUM(j.status = 'PARTIALLY_CLOSED') AS partly_closed
-       FROM job_cards j WHERE ${LIVE}`, ...own.params);
-  for (const k of Object.keys(c)) c[k] = c[k] || 0;
   // In the workshop (Part 2): the Ongoing list's own counts.
   const og = ongoingCounts(shapeOngoing(user, ongoingRows(user, {})));
   out.workshop = { all: og.all, not_started: og.not_started, worked_today: og.today, idle_1_2: og.amber, idle_3: og.red,
     waiting_parts: og.parts, no_reason: og.no_reason, idle_mechanics: idleMechanics(user) };
-  out.finishing = { work_done: c.work_done, partly_closed: c.partly_closed };
+  // Finishing (Part 3): not ready yet, by status, and ready to close — the Finishing list's own counts.
+  const fc = finishCounts(finishAll(user));
+  out.finishing = { work_done: fc.work_done, partly_closed: fc.partly_closed, ready: fc.ready };
   const fieldInUse = !!get('SELECT 1 x FROM job_cards WHERE field = 1 LIMIT 1');
   out.watch = {
     breakdowns_down: fieldInUse ? require('./field').downCount(user) : null,
@@ -530,5 +659,5 @@ function monitor(user) {
   return out;
 }
 
-module.exports = { ROAD, STEPS, OPEN_STEPS, REASONS, SHOW, ONGOING, roadOf, requests, counts, monitor, sees,
-  workingDays, attendedState, ongoing, attendanceOf, setReason, labelsFor };
+module.exports = { ROAD, STEPS, OPEN_STEPS, REASONS, SHOW, ONGOING, MISSING, roadOf, requests, counts, monitor, sees,
+  workingDays, attendedState, ongoing, attendanceOf, setReason, labelsFor, finishing, ready, readyCount };
