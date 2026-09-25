@@ -244,4 +244,5 @@ function monitor(user) {
   };
 }
 
-module.exports = { KINDS, STEPS, lines, monitor, stepOf, roadOf };
+// LINE_SQL and STEP_WHERE: the Job Cards Ongoing tab reads a card's parts by the same rules (job cards plan, Part 2).
+module.exports = { KINDS, STEPS, LINE_SQL, STEP_WHERE, lines, monitor, stepOf, roadOf };

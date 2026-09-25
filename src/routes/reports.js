@@ -516,6 +516,9 @@ function ongoingJobs(months) {
       requestedCount, oldestPending, flag, reason };
   });
 
+  // The Job Cards Ongoing tab's own words (job cards plan, Part 2): attended or not, and why.
+  const said = require('../lib/jobs_flow').labelsFor(out.map((j) => j.id));
+  for (const j of out) Object.assign(j, said.get(j.id) || { attended: '', why: '' });
   const rank = { CRITICAL: 0, WATCH: 1, ACTIVE: 2 };
   out.sort((a, b) => (rank[a.flag] - rank[b.flag]) || (b.idleDays - a.idleDays) || (b.ageDays - a.ageDays));
   return { today, cut, months: Number(months) || 8, jobs: out };
@@ -534,7 +537,8 @@ router.get('/ongoing-jobs.xlsx', asyncHandler(async (req, res) => {
         { header: 'Status', key: 'status', width: 13 }, { header: 'Raised (from job no)', key: 'raised', width: 18 },
         { header: 'Date on card', key: 'opened', width: 13 }, { header: 'Date looks wrong?', key: 'dateFlag', width: 16 },
         { header: 'Days open', key: 'ageDays', width: 10 }, { header: 'Last attended', key: 'last_work', width: 12 },
-        { header: 'Idle days', key: 'idleDays', width: 10 }, { header: 'Hours', key: 'hours', width: 9 },
+        { header: 'Idle days', key: 'idleDays', width: 10 }, { header: 'Attended', key: 'attended', width: 20 },
+        { header: 'Why not', key: 'why', width: 34 }, { header: 'Hours', key: 'hours', width: 9 },
         { header: 'Items requested', key: 'requestedCount', width: 14 }, { header: 'Parts pending', key: 'pendingLines', width: 12 },
         { header: 'Qty pending', key: 'pendingQty', width: 11 }, { header: 'Cost so far (Rs)', key: 'total_cost', width: 15 },
         { header: 'Project', key: 'project_name', width: 20 },
@@ -577,6 +581,7 @@ router.get('/ongoing-jobs.html', asyncHandler((req, res) => {
     <td class="w">${esc(String(j.description || '').slice(0, 80))}</td>
     <td>${esc(j.raised)}${j.dateSuspect ? ` <span class="sus" title="The card's recorded date is ${esc(j.opened)}, which does not match the job number's month — taken from the job number instead">*</span>` : ''}</td><td class="num">${j.ageDays}</td>
     <td>${j.last_work ? esc(j.last_work) : '<i>never</i>'}</td><td class="num"><b>${j.idleDays}</b></td>
+    <td class="w">${esc(j.attended)}${j.why ? `<br><i>${esc(j.why)}</i>` : ''}</td>
     <td class="num">${j.pendingLines || '—'}</td><td class="num">${j.total_cost ? m(j.total_cost) : '—'}</td></tr>`;
 
   const html = `<!doctype html><html><head><meta charset="utf-8"><title>Ongoing Jobs — delay watchlist</title>
@@ -610,8 +615,8 @@ router.get('/ongoing-jobs.html', asyncHandler((req, res) => {
 <h2>Delay watchlist — most critical first</h2>
 <div class="note">“Raised” is taken from the job number (YYYY/M/…), which is the reliable record of when the card was written.
 ${jobs.filter((j) => j.dateSuspect).length} card(s) marked <span class="sus">*</span> carry a stored date that disagrees with their number — an import placeholder — so their age is measured from the job number instead.</div>
-<table><thead><tr><th>Priority</th><th>Delay reason</th><th>Job No</th><th>Vehicle</th><th>Work requested</th><th>Raised</th><th class="num">Days open</th><th>Last attended</th><th class="num">Idle</th><th class="num">Parts pending</th><th class="num">Cost so far</th></tr></thead>
-<tbody>${jobs.map(row).join('') || '<tr><td colspan="11" style="text-align:center;color:#666">No ongoing jobs.</td></tr>'}</tbody></table>
+<table><thead><tr><th>Priority</th><th>Delay reason</th><th>Job No</th><th>Vehicle</th><th>Work requested</th><th>Raised</th><th class="num">Days open</th><th>Last attended</th><th class="num">Idle</th><th>Attended · why not</th><th class="num">Parts pending</th><th class="num">Cost so far</th></tr></thead>
+<tbody>${jobs.map(row).join('') || '<tr><td colspan="12" style="text-align:center;color:#666">No ongoing jobs.</td></tr>'}</tbody></table>
 ${waitingParts.length ? `<h2>What they are waiting for — outstanding spare parts (${waitingParts.reduce((s, j) => s + j.pendingLines, 0)} line(s))</h2>
 <table><thead><tr><th>Job No</th><th>Vehicle</th><th>MRN No</th><th>Requested</th><th class="num">Waiting days</th><th>Item</th><th>Purchase from</th><th class="num">Qty</th><th class="num">Recv</th><th class="num">Pending</th></tr></thead>
 <tbody>${waitingParts.flatMap((j) => j.pending.map((p) => {

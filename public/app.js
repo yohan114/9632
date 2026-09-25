@@ -1316,11 +1316,11 @@ const MONTHS = [['01', 'Jan'], ['02', 'Feb'], ['03', 'Mar'], ['04', 'Apr'], ['05
 // ---- Job Cards (job cards plan): one page with tabs, like Stores — the Monitor, every request
 // waiting for a decision, and all the cards (src/lib/jobs_flow.js). The job request list became
 // the Requests tab; its own pages (#/jobrequests/:id) stay.
-const JOB_TABS = [['monitor', '📊 MONITOR'], ['requests', '📨 REQUESTS'], ['all', '🗂️ ALL CARDS']];
+const JOB_TABS = [['monitor', '📊 MONITOR'], ['requests', '📨 REQUESTS'], ['ongoing', '🛠️ ONGOING'], ['all', '🗂️ ALL CARDS']];
 routes.jobs = async (c, params) => {
   if (params[0]) return jobDetail(c, params[0]);
   const sp = new URLSearchParams(location.hash.split('?')[1] || '');
-  const tabs = JOB_TABS.filter(([t]) => t !== 'all' || canView('jobs'));
+  const tabs = JOB_TABS.filter(([t]) => !['all', 'ongoing'].includes(t) || canView('jobs'));
   // Old links to the list (#/jobs?status=…, the dashboard's) still open it.
   let tab = sp.get('tab') || (['q', 'year', 'month', 'status', 'workshop_id'].some((k) => sp.get(k)) ? 'all' : 'monitor');
   if (!tabs.some(([t]) => t === tab)) tab = 'monitor';
@@ -1330,6 +1330,7 @@ routes.jobs = async (c, params) => {
   const body = qs('#jobsbody');
   if (tab === 'requests') return jobsRequests(body, sp);
   if (tab === 'all') return jobsAllCards(body, sp);
+  if (tab === 'ongoing') return jobsOngoing(body, sp);
   return jobsMonitor(body);
 };
 
@@ -1341,6 +1342,7 @@ async function jobsMonitor(body) {
   const rq = m.requests;
   const R = (step) => `#/jobs?tab=requests&step=${step}`;
   const L = (status) => `#/jobs?tab=all&status=${status}`;
+  const O = (show) => `#/jobs?tab=ongoing&show=${show}`;
   const req = [
     ...(m.sees.jobrequests ? [monCard(rq.to_certify, 'Job requests to certify', R('to_certify'), 'amber'), monCard(rq.to_approve, 'Job requests to approve', R('to_approve'), 'amber')] : []),
     ...(m.sees.jobs ? [monCard(rq.transport, 'Cards waiting for transport approval', R('transport'), 'amber'), monCard(rq.operations, 'Cards waiting for operations approval', R('operations'), 'amber')] : []),
@@ -1349,10 +1351,14 @@ async function jobsMonitor(body) {
   body.innerHTML = `
     <p class="muted" style="margin-top:0">What is waiting at each step${m.scope && m.scope.label ? ` — ${esc(m.scope.label)}` : ''}. Click a number to see the jobs.</p>
     <h3 style="margin:10px 0 6px">Requests</h3><div class="grid">${req.join('')}</div>
-    ${w ? `<h3 style="margin:14px 0 6px">In the workshop</h3><div class="grid">
-      ${monCard(w.waiting_to_start, 'Approved, not started', L('APPROVED_OPERATIONS,IN_WORKSHOP'), 'blue')}
-      ${monCard(w.in_progress, 'In progress', L('IN_PROGRESS'))}
-      ${monCard(w.worked_today, 'Worked on today', '#/dailywork', 'green', 'a daily-work line today')}
+    ${w ? `<h3 style="margin:14px 0 6px">In the workshop <span class="muted" style="font-weight:400;font-size:12px">— ${w.all} card${w.all === 1 ? '' : 's'}</span></h3><div class="grid">
+      ${monCard(w.worked_today, 'Worked on today', O('today'), 'green')}
+      ${monCard(w.idle_1_2, 'Not attended 1–2 days', O('idle'), 'amber')}
+      ${monCard(w.idle_3, 'Not attended 3+ days', O('red'), 'red')}
+      ${monCard(w.not_started, 'Not started', O('not_started'), 'blue')}
+      ${monCard(w.waiting_parts, 'Waiting for parts', O('parts'), 'amber', 'from the Stores list')}
+      ${monCard(w.no_reason, 'No reason given', O('no_reason'), 'red', '3+ days, nobody said why')}
+      ${w.idle_mechanics != null ? monCard(w.idle_mechanics, 'Mechanics present, on no job', '#/dailywork', 'amber', 'from today\'s attendance') : ''}
     </div>` : ''}
     ${f ? `<h3 style="margin:14px 0 6px">Finishing</h3><div class="grid">
       ${monCard(f.work_done, 'Work done, not closed', L('WORK_COMPLETE'), 'amber')}
@@ -1466,6 +1472,102 @@ async function jobsRequests(body, sp) {
   if (qs('#jrf-newjr', body)) qs('#jrf-newjr', body).onclick = newJobRequestModal;
   if (qs('#jrf-newjob', body)) qs('#jrf-newjob', body).onclick = newJobModal;
   await load();
+}
+
+// ---- Ongoing (job cards plan, Part 2): every card in the workshop, attended or not ----------------
+// A card is attended on a day with a daily-work line; idle days are working days (Sundays skipped).
+// "Waiting for parts" comes from the Stores list; any other reason a supervisor gives.
+const JOB_REASONS = [['waiting_mechanic', 'Waiting for a mechanic'], ['waiting_parts', 'Waiting for parts (not in Stores)'],
+  ['outside_repair', 'Outside repair'], ['waiting_decision', 'Waiting for a decision'], ['vehicle_away', 'Vehicle not here'], ['other', 'Other']];
+const ONGOING_SHOW = [['all', 'All in the workshop'], ['today', 'Worked today'], ['idle', 'Not attended'], ['red', '3+ days'],
+  ['not_started', 'Not started'], ['parts', 'Waiting for parts'], ['no_reason', 'No reason given'], ['field', 'Field jobs']];
+const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
+function attendedChip(r) {
+  if (r.state === 'today') return `<span class="badge green">🟢 Worked today</span>`;
+  if (r.state === 'not_started') return `<span class="badge ${r.idle >= 3 ? 'red' : ''}">⚪ Not started${r.idle ? ' · ' + plural(r.idle, 'day') : ''}</span>`;
+  return `<span class="badge ${r.state === 'red' ? 'red' : 'amber'}">${r.state === 'red' ? '🔴' : '🟡'} Not attended ${plural(r.idle, 'day')}</span>`;
+}
+function whyNot(r) {
+  const out = [];
+  if (r.parts && r.parts.waiting) {
+    out.push(`<div><a href="#/stores?tab=flow&sub=lines&step=open&q=${encodeURIComponent(r.job_no)}"><span class="badge amber">🔧 Waiting for parts (${r.parts.waiting})</span></a>
+      <div class="muted" style="font-size:11.5px">${r.parts.lines.map((l) => `${esc(l.description)} — ${esc(FLOW_STEP_LABEL[l.step] || l.step)}`).join('<br>')}</div></div>`);
+  }
+  if (r.reason) out.push(`<div><b>${esc(r.reason.label)}</b>${r.reason.note ? ': ' + esc(r.reason.note) : ''}<div class="muted" style="font-size:11.5px">${esc(r.reason.set_by || '')} · ${esc(String(r.reason.set_at || '').slice(0, 10))}</div></div>`);
+  if (r.needs_reason) out.push('<span class="badge red">No reason given</span>');
+  return out.join('') || '<span class="muted">—</span>';
+}
+function reasonModal(job, done) {
+  modal('Why is ' + job.job_no + ' not being worked on?', `
+    ${field('Reason', 'reason', { type: 'select', options: JOB_REASONS.map(([value, label]) => ({ value, label })) })}
+    ${field('Note (needed for "Other")', 'note')}
+    <p class="muted" style="font-size:12px;margin:4px 0 0">Parts waiting in Stores show by themselves. A reason stays until work is recorded again.</p>
+    <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Save</button></div>`, (b, close) => {
+    qs('#s', b).onclick = async () => {
+      try { await api(`/job-flow/jobs/${job.id}/reason`, { method: 'POST', body: formData(b) }); toast('Saved'); close(); done && done(); }
+      catch (e) { toast(e.message, 'err'); }
+    };
+  });
+}
+
+async function jobsOngoing(body, sp) {
+  const cur = { show: sp.get('show') || 'all', q: sp.get('q') || '', type: sp.get('type') || '' };
+  if (!ONGOING_SHOW.some(([k]) => k === cur.show)) cur.show = 'all';
+  body.innerHTML = `
+    <div class="toolbar">
+      <input id="og-q" type="search" placeholder="Search job no, vehicle, work…" value="${esc(cur.q)}" style="max-width:260px">
+      <select id="og-type" style="max-width:140px"><option value="">Repair &amp; service</option>
+        <option value="repair" ${cur.type === 'repair' ? 'selected' : ''}>Repair</option><option value="service" ${cur.type === 'service' ? 'selected' : ''}>Service</option></select>
+      <div class="spacer"></div>
+      ${canView('reports') ? '<a class="btn sm" href="/api/reports/ongoing-jobs.xlsx">⬇ Excel</a><a class="btn sm" href="/api/reports/ongoing-jobs.html" target="_blank">🖨 PDF</a>' : ''}
+    </div>
+    <p class="muted" style="margin:0 0 8px;font-size:12.5px">Worked on = a daily-work line that day. Days count working days (not Sundays). 3 days or more is red.</p>
+    <div class="pill-row" id="og-show" style="margin:0 0 10px;flex-wrap:wrap;gap:6px"></div>
+    <div id="og-table"><div class="muted">Loading…</div></div>`;
+  const load = async () => {
+    const p = new URLSearchParams({ tab: 'ongoing', show: cur.show });
+    if (cur.q) p.set('q', cur.q);
+    if (cur.type) p.set('type', cur.type);
+    history.replaceState(null, '', '#/jobs?' + p.toString());
+    p.delete('tab');
+    let d;
+    try { d = await api('/job-flow/ongoing?' + p.toString()); } catch (e) { qs('#og-table', body).innerHTML = `<div class="card err">${esc(e.message)}</div>`; return; }
+    qs('#og-show', body).innerHTML = ONGOING_SHOW.map(([k, l]) => `<button class="sm ${k === cur.show ? 'primary' : ''}" data-show="${k}">${esc(l)} <span class="badge ${k === 'no_reason' && d.counts[k] ? 'red' : ''}">${d.counts[k]}</span></button>`).join('');
+    qsa('[data-show]', body).forEach((b) => { b.onclick = () => { cur.show = b.dataset.show; load(); }; });
+    const jobCell = (r) => `<a href="${r.link}"><b>${esc(r.job_no)}</b></a> · ${esc(idLabel(r) || '—')}${r.field ? ` <span class="badge ${r.breakdown ? 'red' : 'amber'}">${r.breakdown ? 'Breakdown' : 'Field'}</span>` : ''}${r.workshop_code && wsMulti() ? ` <span class="badge">${esc(r.workshop_code)}</span>` : ''}
+          <div style="font-size:12.5px">${r.type === 'service' ? '<span class="badge blue">service</span> ' : ''}${esc(String(r.description || '').slice(0, 120))}</div>
+          <div class="muted" style="font-size:12px">open ${plural(r.days_open || 0, 'day')}</div>`;
+    const workedCell = (r) => `${attendedChip(r)}
+          <div class="muted" style="font-size:12px">${r.state === 'today' ? esc(r.today_mechanics || '') : (r.last_worked ? `Last: ${esc(r.last_worked)} · ${esc(r.last_mechanics || '')}` : 'No work yet')}${r.hours ? ` · ${num(r.hours)} h so far` : ''}</div>`;
+    const whyCell = (r) => `${whyNot(r)}${r.can.reason ? `<div style="margin-top:4px"><button class="sm" data-why="${r.id}">Say why…</button></div>` : ''}`;
+    // On a phone, one box a card: what matters (worked on, why not) is never off the screen.
+    if (d.rows.length && window.matchMedia('(max-width: 700px)').matches) {
+      qs('#og-table', body).innerHTML = d.rows.map((r) => `<div class="card" style="padding:10px 12px;margin:0 0 8px">${jobCell(r)}
+        <div style="margin-top:6px">${workedCell(r)}</div><div style="margin-top:6px">${whyCell(r)}</div></div>`).join('');
+    } else qs('#og-table', body).innerHTML = d.rows.length ? tableWrap(
+      [{ label: 'Job', cls: 'desc-col' }, { label: 'Worked on', width: '34%' }, { label: 'Why not', width: '33%' }],
+      d.rows.map((r) => `<tr><td class="desc-col">${jobCell(r)}</td><td>${workedCell(r)}</td><td>${whyCell(r)}</td></tr>`), { scroll: true, fit: true, noHScroll: true })
+      : `<div class="card"><p class="muted">${cur.show === 'all' ? 'No cards in the workshop.' : 'None here.'}</p></div>`;
+    qsa('[data-why]', body).forEach((b) => { b.onclick = () => reasonModal(d.rows.find((r) => String(r.id) === b.dataset.why), load); });
+  };
+  let deb;
+  qs('#og-q', body).oninput = (e) => { cur.q = e.target.value.trim(); clearTimeout(deb); deb = setTimeout(load, 250); };
+  qs('#og-type', body).onchange = (e) => { cur.type = e.target.value; load(); };
+  await load();
+}
+
+// On the card's own page: is it being worked on, why not, and every reason given.
+function attendedPanel(a, job, reload) {
+  if (!a || (!a.ongoing && !(a.history || []).length)) return '';
+  const hist = (a.history || []).length ? `<details style="margin-top:6px"><summary class="muted" style="cursor:pointer;font-size:12px">Reasons given (${a.history.length})</summary>
+      ${a.history.map((h) => `<div class="cost-line"><span><b>${esc(h.label)}</b>${h.note ? ': ' + esc(h.note) : ''}</span><span class="muted">${esc(h.set_by || '')} · ${esc(String(h.set_at || '').slice(0, 16))}</span></div>`).join('')}</details>` : '';
+  if (!a.ongoing) return `<div class="card section">${hist}</div>`;
+  const tone = a.state === 'today' ? 'var(--green)' : (a.state === 'red' || a.late ? 'var(--red)' : 'var(--amber)');
+  return `<div class="card section" style="border-left:4px solid ${tone}">
+    <div class="toolbar" style="margin:0 0 6px"><b>🛠 Worked on?</b> ${attendedChip(a)}<div class="spacer"></div>${a.can.reason ? '<button class="sm" id="jwhy">Say why…</button>' : ''}</div>
+    <div class="muted" style="font-size:12.5px">${a.state === 'today' ? 'Today: ' + esc(a.today_mechanics || '') : (a.last_worked ? `Last worked ${esc(a.last_worked)} · ${esc(a.last_mechanics || '')}` : 'No work recorded yet')}${a.hours ? ` · ${num(a.hours)} h so far` : ''}</div>
+    ${a.state === 'today' ? '' : `<div style="margin-top:6px">${whyNot(a)}</div>`}
+    ${hist}</div>`;
 }
 
 // One decision on one row: each goes to the route that already makes it.
@@ -3034,6 +3136,7 @@ async function jobDetail(c, id) {
     <p>${esc(job.description || '')}</p>
     ${(j.handovers || []).map((h) => `<p class="muted" style="font-size:13px;margin:4px 0">🔀 Sent from <b>${esc(h.from_name || '—')}</b> to <b>${esc(h.to_name || '—')}</b> on ${esc(String(h.moved_at || '').slice(0, 10))}${h.moved_by ? ` by ${esc(h.moved_by)}` : ''} — ${esc(h.reason)}</p>`).join('')}
     ${fieldPanel}
+    ${attendedPanel(j.attended, job)}
     ${j.continues ? `<p class="muted" style="font-size:13px">↪ Continues ${linkJob(j.continues)} — the vehicle's earlier job, partly closed.</p>` : ''}
     ${isPartial ? `<div class="card section" style="border-left:4px solid var(--violet)">
       <b>◐ Partly closed ${esc(String(job.partial_closed_at || '').slice(0, 10))}</b>${job.partial_note ? ` — ${esc(job.partial_note)}` : ''}
@@ -3179,6 +3282,7 @@ async function jobDetail(c, id) {
   if (qs('#reopen')) qs('#reopen').onclick = () => reopenJobModal(job, render);
   if (qs('#reopenreq')) qs('#reopenreq').onclick = () => reopenRequestModal(job, render);
   if (qs('#partialclose')) qs('#partialclose').onclick = () => partialCloseModal(job, j, render);
+  if (qs('#jwhy')) qs('#jwhy').onclick = () => reasonModal(job, () => jobDetail(c, id));
   if (qs('#reqapprove')) qs('#reqapprove').onclick = async () => {
     if (!confirm(`Reopen ${job.job_no}?\n\nIt goes back to IN PROGRESS and becomes the vehicle's open job.`)) return;
     try { await api(`/jobs/reopen-requests/${pendingReq.id}/approve`, { method: 'POST', body: {} }); toast(`✓ ${job.job_no} reopened`); render(); }
