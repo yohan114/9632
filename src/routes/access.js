@@ -878,4 +878,19 @@ router.get('/report', requireCap('access.manage'), asyncHandler(async (req, res)
   res.json({ sections: permissions.SECTIONS, users: matrix, people: matrix });
 }));
 
+// ---- approval limits (src/lib/approval_limits.js) ------------------------------------------
+// The Approval Limits screen (Access Control) reads and saves through these two. They were lost
+// when this file was rewritten for per-person access; the screen still calls them.
+
+router.get('/approval-limits', requireCap('access.manage'), asyncHandler((_req, res) => {
+  res.json(require('../lib/approval_limits').listForScreen());
+}));
+
+router.put('/approval-limits', requireCap('access.manage'), asyncHandler((req, res) => {
+  require_(req.body, ['role', 'kind']);
+  const limits = require('../lib/approval_limits');
+  const saved = limits.setLimit(req.user, req.body.role, req.body.kind, req.body.max_amount);
+  res.json({ saved, ...limits.listForScreen() });
+}));
+
 module.exports = router;

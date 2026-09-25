@@ -24,9 +24,9 @@ for (const n of ['admin', 'storekeeper', 'workshop', 'mechanic', 'viewer']) {
 const adminUid = run('INSERT INTO users (username, password_hash, active) VALUES (?, ?, 1)', 'admin_lube', auth.hashPassword('admin123')).lastInsertRowid;
 run('INSERT OR IGNORE INTO user_roles (user_id, role_id) VALUES (?, (SELECT id FROM roles WHERE name = ?))', adminUid, 'admin');
 
-// Non-admin user (viewer / mechanic)
+// Non-admin user: the built-in viewer role, which may view the Lubricant Capacities section
 const viewerUid = run('INSERT INTO users (username, password_hash, active) VALUES (?, ?, 1)', 'viewer_lube', auth.hashPassword('view123')).lastInsertRowid;
-run('INSERT OR IGNORE INTO user_roles (user_id, role_id) VALUES (?, (SELECT id FROM roles WHERE name = ?))', viewerUid, 'mechanic');
+run('INSERT OR IGNORE INTO user_roles (user_id, role_id) VALUES (?, (SELECT id FROM roles WHERE name = ?))', viewerUid, 'viewer');
 
 const app = require('../src/server');
 let server;
