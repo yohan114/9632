@@ -13,9 +13,14 @@ const { asyncHandler } = require('../lib/http');
 
 const router = express.Router();
 
-// No module gate (every role sees the dashboard) — but authentication IS required, so
-// an anonymous request can't read aggregate operational data.
+// The Live Overview: cost trends, the costliest vehicles and everyone's recent activity. The
+// Dashboard shows it only with the Reports section, so the server asks for the same.
 router.use(requireAuth);
+router.use((req, res, next) => {
+  const permissions = require('../lib/permissions');
+  if (permissions.meets(permissions.levelForRoles(req.user.roles || [], 'reports'), 'view')) return next();
+  return res.status(403).json({ error: 'Your role has no view access to reports' });
+});
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
