@@ -13,7 +13,10 @@ const monthlyReport = require('../lib/monthly_cost_report');
 const mechanics = require('../lib/mechanics');
 const lubricants = require('../lib/lubricants');
 
+const { requireModule } = require('../lib/permissions');
+
 const router = express.Router();
+router.use(requireAuth);
 
 // Stage 5: whose report this is — one workshop's, or (null) the whole company's. Head office picks;
 // anyone else, with the workshops kept apart, gets their own (src/lib/scope.js reportWorkshop).
@@ -53,7 +56,7 @@ function unsignedFor(wsList) {
   return out.sort((a, b) => String(b.date).localeCompare(String(a.date)));
 }
 
-router.get('/dashboard', asyncHandler((req, res) => {
+router.get('/dashboard', requireModule('dashboard'), asyncHandler((req, res) => {
   // Stage 3: the job-card figures are your own workshop's (head office and store staff: all).
   const own = require('../lib/scope').filter(req.user, 'j.workshop_id');
   const andOwn = own.sql ? ` AND ${own.sql}` : '';
@@ -94,7 +97,7 @@ router.get('/dashboard', asyncHandler((req, res) => {
   let attendance_today = null;
   const att = require('../lib/attendance');
   const permissions = require('../lib/permissions');
-  if (att.isEnabled() && permissions.meets(permissions.levelForRoles(req.user.roles || [], 'dailywork'), 'view')) {
+  if (att.isEnabled() && permissions.meets(permissions.effectiveLevel(req.user, 'dailywork'), 'view')) {
     const t = att.today();
     // Stage 4: your own workshop's day; head office, every workshop's added up.
     const wsList = attendanceWorkshops(req.user);
@@ -122,14 +125,14 @@ router.get('/dashboard', asyncHandler((req, res) => {
 }));
 
 // Consolidated project cost rollup across all projects
-router.get('/cost/by-project', asyncHandler((_req, res) => {
+router.get('/cost/by-project', requireModule('reports'), asyncHandler((_req, res) => {
   res.json(costing.projectsCostSummary());
 }));
 
 // ---- advisory intelligence (Phase 5 §1/§4) — read-only, flags only --------
-router.get('/service-due', asyncHandler((_req, res) => res.json(intelligence.serviceDue())));
+router.get('/service-due', requireModule('service_plan'), asyncHandler((_req, res) => res.json(intelligence.serviceDue())));
 
-router.get('/anomalies', asyncHandler((_req, res) => res.json({
+router.get('/anomalies', requireModule('attention'), asyncHandler((_req, res) => res.json({
   unusual_consumption: intelligence.unusualConsumption(),
   duplicate_mrn: intelligence.duplicateMrn(),
   grn_price_spikes: intelligence.grnPriceSpikes(),
@@ -140,7 +143,7 @@ router.get('/anomalies', asyncHandler((_req, res) => res.json({
   },
 })));
 
-router.get('/integrity', asyncHandler((_req, res) => res.json(intelligence.integrityCheck())));
+router.get('/integrity', requireModule('attention'), asyncHandler((_req, res) => res.json(intelligence.integrityCheck())));
 
 // ---- cost reports ---------------------------------------------------------
 const COST_COLS = [
@@ -150,7 +153,7 @@ const COST_COLS = [
   { header: 'Total', key: 'total' },
 ];
 
-router.get('/cost/by-asset', asyncHandler(async (req, res) => {
+router.get('/cost/by-asset', requireModule('reports'), asyncHandler(async (req, res) => {
   const rows = all(
     `SELECT j.asset_id, a.code AS asset_code,
             COALESCE(SUM(j.labour_cost),0) labour, COALESCE(SUM(j.material_cost),0) material,
@@ -167,7 +170,7 @@ router.get('/cost/by-asset', asyncHandler(async (req, res) => {
   res.json(rows);
 }));
 
-router.get('/cost/by-project', asyncHandler(async (req, res) => {
+router.get('/cost/by-project', requireModule('reports'), asyncHandler(async (req, res) => {
   const rows = all(
     `SELECT j.project_id, COALESCE(p.name,'(unassigned)') project,
             COALESCE(SUM(j.labour_cost),0) labour, COALESCE(SUM(j.material_cost),0) material,
@@ -183,7 +186,7 @@ router.get('/cost/by-project', asyncHandler(async (req, res) => {
   res.json(rows);
 }));
 
-router.get('/cost/by-site', asyncHandler(async (req, res) => {
+router.get('/cost/by-site', requireModule('reports'), asyncHandler(async (req, res) => {
   const rows = all(
     `SELECT COALESCE(NULLIF(TRIM(site),''),'(no site)') site,
             COALESCE(SUM(j.labour_cost),0) labour, COALESCE(SUM(j.material_cost),0) material,
@@ -198,7 +201,7 @@ router.get('/cost/by-site', asyncHandler(async (req, res) => {
   res.json(rows);
 }));
 
-router.get('/cost/by-source', asyncHandler(async (req, res) => {
+router.get('/cost/by-source', requireModule('reports'), asyncHandler(async (req, res) => {
   const rows = all(
     `SELECT CASE
               WHEN purchase_source_norm IN ('head_office','direct_purchase','mixed') THEN 'Head Office'
@@ -216,7 +219,7 @@ router.get('/cost/by-source', asyncHandler(async (req, res) => {
 }));
 
 // ---- variance -------------------------------------------------------------
-router.get('/variance', asyncHandler((req, res) => {
+router.get('/variance', requireModule('attention'), asyncHandler((req, res) => {
   const threshold = req.query.threshold ? Number(req.query.threshold) : 0.001;
   res.json(all(
     `SELECT sc.id, pr.name AS product, sc.period, sc.book_qty, sc.counted_qty, sc.variance
@@ -730,14 +733,25 @@ ${withDetail ? '<h2>Job by job — parts requested, parts received, work done</h
   res.send(html);
 }));
 
-router.get('/job/:id/costsheet', asyncHandler((req, res) => {
+const canViewJobCost = (req, res, next) => {
+  if (req.user && req.user.roles && req.user.roles.includes('admin')) return next();
+  const perm = require('../lib/permissions');
+  if (perm.meets(perm.effectiveLevel(req.user, 'jobs'), 'view') ||
+      perm.meets(perm.effectiveLevel(req.user, 'reports'), 'view') ||
+      perm.meets(perm.effectiveLevel(req.user, 'cost_teardown'), 'view')) {
+    return next();
+  }
+  return res.status(403).json({ error: 'Your account does not have view access to job costs' });
+};
+
+router.get('/job/:id/costsheet', canViewJobCost, asyncHandler((req, res) => {
   { const no = require('../lib/scope').jobRefusal(req.user, toInt(req.params.id)); if (no) return res.status(403).json(no); }
   const sheet = costSheet(toInt(req.params.id));
   if (!sheet) return res.status(404).json({ error: 'Job not found' });
   res.json(sheet);
 }));
 
-router.get('/job/:id/costsheet.html', asyncHandler((req, res) => {
+router.get('/job/:id/costsheet.html', canViewJobCost, asyncHandler((req, res) => {
   { const no = require('../lib/scope').jobRefusal(req.user, toInt(req.params.id)); if (no) return res.status(403).json(no); }
   const s = costSheet(toInt(req.params.id));
   if (!s) return res.status(404).send('Job not found');
@@ -804,7 +818,7 @@ const OIL_VAL = 'ABS(sl.qty) * COALESCE(sl.unit_price, pr.unit_price, 0)';
 // stock-ledger issue is stock-only — excluded from every oil COST aggregation.
 const OIL_NOT_SERVICE = "COALESCE(sl.consumer_type,'') <> 'service'";
 
-router.get('/monthly', asyncHandler((_req, res) => {
+router.get('/monthly', requireModule('reports'), asyncHandler((_req, res) => {
   const map = new Map();
   const M = (m) => { if (!map.has(m)) map.set(m, { month: m, labour: 0, head_office: 0, local_purchase: 0, oil: 0, jobs: 0, service: 0 }); return map.get(m); };
   for (const r of all(`SELECT substr(work_date,1,7) m, ROUND(SUM(amount),2) v FROM job_labour WHERE work_date IS NOT NULL GROUP BY m`)) if (r.m) M(r.m).labour = r.v || 0;
@@ -835,7 +849,7 @@ router.get('/monthly', asyncHandler((_req, res) => {
   res.json({ this_month: months.find((x) => x.month === tm) || { month: tm, labour: 0, head_office: 0, local_purchase: 0, oil: 0, jobs: 0, service: 0, total: 0 }, months });
 }));
 
-router.get('/monthly/:month/assets', asyncHandler((req, res) => {
+router.get('/monthly/:month/assets', requireModule('reports'), asyncHandler((req, res) => {
   const month = String(req.params.month);
   if (!MONTH_RE.test(month)) return res.status(400).json({ error: 'month must be YYYY-MM' });
   const map = new Map();
@@ -853,7 +867,7 @@ router.get('/monthly/:month/assets', asyncHandler((req, res) => {
   res.json({ month, assets });
 }));
 
-router.get('/monthly/:month/asset/:id', asyncHandler((req, res) => {
+router.get('/monthly/:month/asset/:id', requireModule('reports'), asyncHandler((req, res) => {
   const month = String(req.params.month); const id = toInt(req.params.id);
   if (!MONTH_RE.test(month)) return res.status(400).json({ error: 'month must be YYYY-MM' });
   const asset = get('SELECT code, registration, ec_code FROM assets WHERE id=?', id);
@@ -1048,13 +1062,13 @@ function dailyProgress(date, ws = null) {
 }
 
 const MDATE = /^\d{4}-\d{2}-\d{2}$/;
-router.get('/daily-progress', asyncHandler((req, res) => {
+router.get('/daily-progress', requireModule('daily_progress'), asyncHandler((req, res) => {
   const date = String(req.query.date || '').slice(0, 10);
   if (!MDATE.test(date)) return res.status(400).json({ error: 'A valid ?date=YYYY-MM-DD is required' });
   res.json(dailyProgress(date, reportWs(req)));
 }));
 
-router.get('/daily-progress/print.html', asyncHandler((req, res) => {
+router.get('/daily-progress/print.html', requireModule('daily_progress'), asyncHandler((req, res) => {
   const date = String(req.query.date || '').slice(0, 10);
   if (!MDATE.test(date)) return res.status(400).send('A valid ?date=YYYY-MM-DD is required');
   const rep = dailyProgress(date, reportWs(req));
@@ -1156,13 +1170,13 @@ function assetTeardown(id) {
   return { asset, buckets, jobs, parts, mechanics };
 }
 
-router.get('/teardown/asset/:id', asyncHandler((req, res) => {
+router.get('/teardown/asset/:id', requireModule('cost_teardown'), asyncHandler((req, res) => {
   const t = assetTeardown(toInt(req.params.id));
   if (!t) return res.status(404).json({ error: 'Asset not found' });
   res.json(t);
 }));
 
-router.get('/teardown/asset/:id/print.html', asyncHandler((req, res) => {
+router.get('/teardown/asset/:id/print.html', requireModule('cost_teardown'), asyncHandler((req, res) => {
   const t = assetTeardown(toInt(req.params.id));
   if (!t) return res.status(404).send('Asset not found');
   const esc = (v) => String(v == null ? '' : v).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
@@ -1199,7 +1213,7 @@ ${t.parts.length ? `<h3>Top parts by value</h3><table><thead><tr><th>Part</th><t
 // ===========================================================================
 
 // 1) Complete per-vehicle cost from the monthly rollup. month optional (full year).
-router.get('/vehicle-cost-complete', requireAuth, asyncHandler((req, res) => {
+router.get('/vehicle-cost-complete', requireAuth, requireModule('reports'), asyncHandler((req, res) => {
   const assetId = toInt(req.query.asset_id);
   const year = toInt(req.query.year);
   if (!assetId || !year) return res.status(400).json({ error: 'asset_id and year are required' });
@@ -1221,7 +1235,7 @@ router.get('/vehicle-cost-complete', requireAuth, asyncHandler((req, res) => {
 }));
 
 // 2) Inventory valuation across general stock, oil and filters.
-router.get('/stock-valuation', requireAuth, asyncHandler((_req, res) => {
+router.get('/stock-valuation', requireAuth, requireModule('reports'), asyncHandler((_req, res) => {
   const general = get(`SELECT COUNT(*) items, ROUND(COALESCE(SUM(balance * COALESCE(unit_cost,0)),0),2) value
      FROM store_items WHERE is_general = 1`);
   const oil = get(`SELECT COUNT(*) items, ROUND(COALESCE(SUM(COALESCE(stock_qty,0) * COALESCE(unit_price,0)),0),2) value
@@ -1245,7 +1259,7 @@ router.get('/stock-valuation', requireAuth, asyncHandler((_req, res) => {
 }));
 
 // 3) MRN analysis — status mix, avg time to certify, top requested items.
-router.get('/mrn-analysis', requireAuth, asyncHandler((req, res) => {
+router.get('/mrn-analysis', requireAuth, requireModule('reports'), asyncHandler((req, res) => {
   const year = req.query.year ? toInt(req.query.year) : null;
   const month = req.query.month ? toInt(req.query.month) : null;
   const mc = [];
@@ -1269,7 +1283,7 @@ router.get('/mrn-analysis', requireAuth, asyncHandler((req, res) => {
 }));
 
 // 4) Issues for one vehicle — list, category breakdown, date timeline.
-router.get('/issues-by-vehicle', requireAuth, asyncHandler((req, res) => {
+router.get('/issues-by-vehicle', requireAuth, requireModule('reports'), asyncHandler((req, res) => {
   const assetId = toInt(req.query.asset_id);
   if (!assetId) return res.status(400).json({ error: 'asset_id is required' });
   const asset = get('SELECT id, code, registration, ec_code FROM assets WHERE id = ?', assetId);
@@ -1311,9 +1325,25 @@ function validPeriod(year, month) {
   return Number.isInteger(year) && year >= 2000 && year <= 2100 && Number.isInteger(month) && month >= 1 && month <= 12;
 }
 
+const canEditMonthlyInputs = (req, res, next) => {
+  if (req.user && req.user.roles && req.user.roles.includes('admin')) return next();
+  const perm = require('../lib/permissions');
+  const have = perm.effectiveLevel(req.user, 'reports');
+  const hasCap = (req.user.caps || []).includes('reports.monthly_cost.edit');
+  if (perm.meets(have, 'edit') || hasCap) return next();
+  return res.status(403).json({ error: 'Your account does not have edit access to reports' });
+};
+
+const canEditServiceOutside = (req, res, next) => {
+  if (req.user && req.user.roles && req.user.roles.includes('admin')) return next();
+  const perm = require('../lib/permissions');
+  if (perm.meets(perm.effectiveLevel(req.user, 'services'), 'edit') || perm.meets(perm.effectiveLevel(req.user, 'reports'), 'edit')) return next();
+  return res.status(403).json({ error: 'Your account does not have edit access to services' });
+};
+
 // Stage 5: the month's figures side by side, one row per workshop — for those who read every
 // workshop's reports (head office; everyone, while the workshops are not kept apart).
-router.get('/workshops-compared', requireAuth, asyncHandler(async (req, res) => {
+router.get('/workshops-compared', requireAuth, requireModule('reports'), asyncHandler(async (req, res) => {
   const year = toInt(req.query.year), month = toInt(req.query.month);
   if (!validPeriod(year, month)) return res.status(400).json({ error: 'year (YYYY) and month (1-12) are required' });
   if (!require('../lib/workshops').isMulti()) return res.json({ year, month, rows: [] });
@@ -1324,7 +1354,7 @@ router.get('/workshops-compared', requireAuth, asyncHandler(async (req, res) => 
 }));
 
 // Download the workbook for a period.
-router.get('/monthly-cost.xlsx', requireAuth, asyncHandler(async (req, res) => {
+router.get('/monthly-cost.xlsx', requireAuth, requireModule('reports'), asyncHandler(async (req, res) => {
   const year = toInt(req.query.year), month = toInt(req.query.month);
   if (!validPeriod(year, month)) return res.status(400).json({ error: 'year (YYYY) and month (1-12) are required' });
   const ws = reportWs(req);
@@ -1337,7 +1367,7 @@ router.get('/monthly-cost.xlsx', requireAuth, asyncHandler(async (req, res) => {
 }));
 
 // Fetch the saved manual inputs for a period, plus a live totals preview (all 8 sheets).
-router.get('/monthly-inputs', requireAuth, asyncHandler(async (req, res) => {
+router.get('/monthly-inputs', requireAuth, requireModule('reports'), asyncHandler(async (req, res) => {
   const year = toInt(req.query.year), month = toInt(req.query.month);
   if (!validPeriod(year, month)) return res.status(400).json({ error: 'year and month are required' });
   // Stage 5: one workshop's inputs, or every workshop's (each line saying whose). With more than
@@ -1440,7 +1470,7 @@ router.get('/monthly-inputs', requireAuth, asyncHandler(async (req, res) => {
 }));
 
 // Replace all saved lines for one (year, month, sheet). Body: { year, month, sheet, lines:[...] }.
-router.post('/monthly-inputs', requireAuth, asyncHandler((req, res) => {
+router.post('/monthly-inputs', requireAuth, canEditMonthlyInputs, asyncHandler((req, res) => {
   const b = req.body || {};
   const year = toInt(b.year), month = toInt(b.month), sheet = String(b.sheet || '');
   if (!validPeriod(year, month)) return res.status(400).json({ error: 'year and month are required' });
@@ -1474,7 +1504,7 @@ router.post('/monthly-inputs', requireAuth, asyncHandler((req, res) => {
 // Save manual outside-labour prices for service jobs (service_jobs.outside_estimate). The daily-work
 // outside prices ride on monthly_report_inputs (sheet 'daily_outside'); service prices live on the
 // service row itself, so they get their own tiny endpoint. Body: { items: [{ id, outside }] }.
-router.post('/service-outside', requireAuth, asyncHandler((req, res) => {
+router.post('/service-outside', requireAuth, canEditServiceOutside, asyncHandler((req, res) => {
   const items = Array.isArray(req.body && req.body.items) ? req.body.items : [];
   let saved = 0;
   tx(() => {
@@ -1496,7 +1526,7 @@ router.post('/service-outside', requireAuth, asyncHandler((req, res) => {
 // Pending set as the report's Repair sheet), each broken into its labour / parts / oil / general
 // line items with a per-job total and a grand total. Outside/external work cost is excluded
 // (owner tracks it as a personal value). Printable / save-as-PDF.
-router.get('/monthly-repair-detail.html', requireAuth, asyncHandler((req, res) => {
+router.get('/monthly-repair-detail.html', requireAuth, requireModule('reports'), asyncHandler((req, res) => {
   const year = toInt(req.query.year), month = toInt(req.query.month);
   if (!validPeriod(year, month)) return res.status(400).send('year (YYYY) and month (1-12) are required');
   const ym = `${year}-${String(month).padStart(2, '0')}`;
@@ -1644,7 +1674,7 @@ ${sparesHtml}
 // Section C: Other Labour
 // Section D: Spares Supply
 // Plus the grand totals and the mathematical daily work vs labour tally.
-router.get('/repair-sections', requireAuth, asyncHandler(async (req, res) => {
+router.get('/repair-sections', requireAuth, requireModule('reports'), asyncHandler(async (req, res) => {
   const year = toInt(req.query.year), month = toInt(req.query.month);
   if (!validPeriod(year, month)) return res.status(400).json({ error: 'year (YYYY) and month (1-12) are required' });
   const ym = `${year}-${String(month).padStart(2, '0')}`;
@@ -1726,10 +1756,11 @@ const KINDS = ['pending_parts', 'job_summary', 'pending_price', 'day_tally'];
 const kindOf = (v) => (KINDS.includes(v) ? v : null);
 // The day tally is attendance: it follows the Daily Work section clearance, like /api/attendance.
 function mayReadKind(req, res, kind) {
+  if (req.user && req.user.roles && req.user.roles.includes('admin')) return true;
   if (kind !== 'day_tally') return true;
   const permissions = require('../lib/permissions');
-  if (permissions.meets(permissions.levelForRoles(req.user.roles || [], 'dailywork'), 'view')) return true;
-  res.status(403).json({ error: 'Your role has no view access to dailywork' });
+  if (permissions.meets(permissions.effectiveLevel(req.user, 'dailywork'), 'view')) return true;
+  res.status(403).json({ error: 'Your account has no view access to dailywork' });
   return false;
 }
 

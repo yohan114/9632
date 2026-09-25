@@ -31,8 +31,10 @@ const router = express.Router();
 
 router.use((req, res, next) => {
   if (!req.user) return res.status(401).json({ error: 'Authentication required' });
-  if (permissions.meets(permissions.levelForRoles(req.user.roles || [], 'jobs'), 'view')) return next();
-  return res.status(403).json({ error: 'Your role has no view access to jobs' });
+  if (req.user.roles && req.user.roles.includes('admin')) return next();
+  if (permissions.meets(permissions.effectiveLevel(req.user, 'field'), 'view') ||
+      permissions.meets(permissions.effectiveLevel(req.user, 'jobs'), 'view')) return next();
+  return res.status(403).json({ error: 'Your account has no view access to field or jobs' });
 });
 router.param('id', scope.jobParam);
 

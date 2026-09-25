@@ -27,8 +27,10 @@ const router = express.Router();
 router.use((req, res, next) => (req.user ? next() : res.status(401).json({ error: 'Authentication required' })));
 
 const sees = (section) => (req, res, next) => {
-  if (permissions.meets(permissions.levelForRoles(req.user.roles || [], section), 'view')) return next();
-  return res.status(403).json({ error: `Your role has no view access to ${section}` });
+  if (req.user && req.user.roles && req.user.roles.includes('admin')) return next();
+  if (permissions.meets(permissions.effectiveLevel(req.user, 'operations'), 'view') ||
+      permissions.meets(permissions.effectiveLevel(req.user, section), 'view')) return next();
+  return res.status(403).json({ error: `Your account has no view access to ${section} or operations` });
 };
 const headOffice = (req, res, next) => (scope.headOffice(req.user) ? next()
   : res.status(403).json({ error: 'Only head office sees every workshop at a glance.' }));

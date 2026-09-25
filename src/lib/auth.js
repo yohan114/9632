@@ -165,18 +165,22 @@ function authenticate(req, res, next) {
     } else {
       touchSession(sess, req);
       const roles = rolesForUser(sess.user_id);
-      req.user = {
+      const userExtra = get('SELECT access_until, approval_limit, workshop_id FROM users WHERE id = ?', sess.user_id) || {};
+      const uBase = {
         id: sess.user_id,
         username: sess.username,
         fullName: sess.full_name,
         roles,
-        // Read fresh on every request, like the roles: a permission granted or taken away on the
-        // Access screen applies from the person's next click, not their next sign-in.
-        caps: require('./capabilities').capsForRoles(roles),
+        access_until: userExtra.access_until || null,
+        approval_limit: userExtra.approval_limit != null ? userExtra.approval_limit : null,
+        workshop_id: userExtra.workshop_id || null,
+      };
+      req.user = {
+        ...uBase,
+        caps: require('./capabilities').effectiveCaps(uBase),
+        permissions: require('./permissions').effectiveUserPermissions(uBase),
         mustChangePassword: !!sess.must_change_password,
         mfaEnabled: !!sess.mfa_enabled,
-        // Their role requires two-factor sign-in and they have not set it up: until they do, this
-        // session reaches the enrolment screens and nothing else (enforceMfaSetup).
         mfaSetupRequired: !sess.mfa_enabled && require('./mfa').requiredByRoles(roles),
         sessionId: sess.id,
         token,
@@ -238,7 +242,7 @@ function hasRole(user, ...roles) {
 function capsOf(user) {
   if (!user) return [];
   if (Array.isArray(user.caps)) return user.caps;
-  return require('./capabilities').capsForRoles(user.roles || []);
+  return require('./capabilities').effectiveCaps(user);
 }
 
 /** Does this user hold ANY of the named capabilities? */

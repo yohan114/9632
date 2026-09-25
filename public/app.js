@@ -483,11 +483,13 @@ async function mySignatureModal() {
   });
 }
 // RBAC — a module's clearance level for the signed-in user (from the permission matrix).
-const RANKL = { none: 0, view: 1, edit: 2, full: 3 };
+const RANKL = { none: 0, view: 1, add: 2, edit: 3, full: 4 };
 const rankL = (l) => RANKL[l] || 0;
 const isAdmin = () => !!(ME && ME.roles && ME.roles.includes('admin'));
 const canView = (m) => isAdmin() || (ME && ME.permissions ? rankL(ME.permissions[m]) >= 1 : true);
-const canEdit = (m) => isAdmin() || (ME && ME.permissions ? rankL(ME.permissions[m]) >= 2 : true);
+const canAdd = (m) => isAdmin() || (ME && ME.permissions ? rankL(ME.permissions[m]) >= 2 : true);
+const canEdit = (m) => isAdmin() || (ME && ME.permissions ? rankL(ME.permissions[m]) >= 3 : true);
+const canFull = (m) => isAdmin() || (ME && ME.permissions ? rankL(ME.permissions[m]) >= 4 : true);
 // May the signed-in user do this? Asked by CAPABILITY (src/lib/capabilities.js), never by role
 // name, so a role an admin creates works on every screen. Some actions also sit behind a section's
 // router gate on the server, which wants EDIT clearance on that section; the server says which
@@ -9322,17 +9324,34 @@ routes.workshops = async (c) => {
 routes.access = async (c) => {
   if (!canDo('access.manage', 'users.manage')) { c.innerHTML = '<div class="card err">You do not have access to this page.</div>'; return; }
   const tabs = [];
-  if (canDo('access.manage')) tabs.push(['roles', 'Roles & Permissions'], ['board', 'Clearance Board'], ['limits', 'Approval limits']);
-  if (canDo('users.manage')) tabs.push(['users', 'Users & Roles']);
+  if (canDo('access.manage')) {
+    tabs.push(['people', 'People (Overrides)']);
+    tabs.push(['sections', 'Sections Audit']);
+    tabs.push(['roles', 'Role Templates']);
+    tabs.push(['board', 'Clearance Board']);
+    tabs.push(['limits', 'Approval limits']);
+  }
+  if (canDo('users.manage')) tabs.push(['users', 'User Accounts']);
+  if (canDo('access.manage')) tabs.push(['history', 'Audit Trail']);
+
   const sp = new URLSearchParams(location.hash.split('?')[1] || '');
   const tab = tabs.some((t) => t[0] === sp.get('tab')) ? sp.get('tab') : tabs[0][0];
-  c.innerHTML = `${pageHeader('Access Control', 'Who may do what — roles, the permissions in each role, and who holds them.')}
+  c.innerHTML = `${pageHeader('Access Control', 'Access person-by-person, role starting templates, 22 canonical sections & audit compliance.')}
     <div id="admin-warn"></div>
-    <div class="pill-row" style="margin-bottom:12px">
-      ${tabs.map(([k, label]) => `<button class="btn sm ${tab === k ? 'primary' : ''}" data-atab="${k}">${esc(label)}</button>`).join('')}
+    <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:12px">
+      <div class="pill-row">
+        ${tabs.map(([k, label]) => `<button class="btn sm ${tab === k ? 'primary' : ''}" data-atab="${k}">${esc(label)}</button>`).join('')}
+      </div>
+      <div>
+        <button class="btn sm" id="btn-access-report">📥 Access Report (Excel)</button>
+      </div>
     </div>
     <div id="apane"><div class="muted">Loading…</div></div>`;
   qsa('[data-atab]', c).forEach((b) => { b.onclick = () => { location.hash = '#/access?tab=' + b.dataset.atab; }; });
+  const repBtn = qs('#btn-access-report', c);
+  if (repBtn) {
+    repBtn.onclick = () => { window.open('/api/access/report?format=xlsx', '_blank'); };
+  }
   // One admin is a single point of failure: if that account is lost, only someone with a shell on
   // the server can get the system back (scripts/admin.js).
   api('/access/roles').then((r) => {
@@ -9342,9 +9361,12 @@ routes.access = async (c) => {
     }
   }).catch(() => {});
   const pane = qs('#apane', c);
-  if (tab === 'users') await renderUsersManager(pane);
+  if (tab === 'people') await renderPeopleAccess(pane, sp.get('user'));
+  else if (tab === 'sections') await renderSectionsAudit(pane, sp.get('section'));
+  else if (tab === 'users') await renderUsersManager(pane);
   else if (tab === 'board') await renderClearanceBoard(pane);
   else if (tab === 'limits') await renderApprovalLimits(pane);
+  else if (tab === 'history') await renderAccessHistory(pane);
   else await renderRolesManager(pane, sp.get('role'));
 };
 routes.users = async () => { location.hash = '#/access?tab=users'; };
@@ -9386,6 +9408,565 @@ async function renderApprovalLimits(c) {
 }
 
 const lvlChip = (lvl) => {
+  const cls = lvl === 'full' ? 'amber' : lvl === 'edit' ? 'green' : lvl === 'add' ? 'blue' : '';
+  const txt = lvl === 'none' ? '—' : String(lvl).toUpperCase();
+  return `<span class="badge ${cls}"${lvl === 'none' ? ' style="opacity:.4"' : ''}>${txt}</span>`;
+};
+
+// ---- Tab 1: People & Overrides ------------------------------------------------
+async function renderPeopleAccess(c, wantedUserId) {
+  const [data, wsd] = await Promise.all([api('/access/people'), workshopsData(true)]);
+  const people = data.people || [];
+  if (!people.length) {
+    c.innerHTML = '<div class="card muted">No users found.</div>';
+    return;
+  }
+
+  let sel = people.find((u) => u.id == wantedUserId) || people[0];
+  const details = await api('/access/people/' + sel.id);
+  const u = details.user;
+  const sections = details.sections;
+
+  // Local state for edits
+  const sectionEdits = {};
+  const capEdits = {};
+
+  const canEditTarget = !isAdmin() && u.roles.some((r) => r.name === 'admin') ? false : true;
+  const isSelf = ME && ME.id == u.id;
+
+  const renderAll = () => {
+    const q = (qs('#person-search', c) ? qs('#person-search', c).value : '').toLowerCase().trim();
+    const filtered = people.filter((p) => {
+      if (!q) return true;
+      return (p.full_name || '').toLowerCase().includes(q) ||
+             (p.username || '').toLowerCase().includes(q) ||
+             p.roles.some((r) => (r.label || r.name).toLowerCase().includes(q));
+    });
+
+    const listHtml = filtered.map((p) => {
+      const isSel = p.id == u.id;
+      const roleStr = p.roles.map((r) => r.label || r.name).join(', ') || 'No roles';
+      return `<tr data-pick-user="${p.id}" style="cursor:pointer;${isSel ? 'background:var(--bg-active, #eef2ff);font-weight:600;' : ''}${p.active ? '' : 'opacity:.55;'}">
+        <td>
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:6px">
+            <span>${esc(p.full_name || p.username)}</span>
+            ${p.overrides_count > 0 ? `<span class="badge amber" style="font-size:10px" title="${p.overrides_count} custom overrides">${p.overrides_count} custom</span>` : ''}
+          </div>
+          <div class="muted" style="font-size:11px;font-weight:normal">${esc(p.username)} · ${esc(roleStr)}</div>
+        </td>
+      </tr>`;
+    }).join('') || '<tr><td class="muted" style="text-align:center">No matching people</td></tr>';
+
+    const GROUPS = [
+      { id: 'operations', name: 'Operations & Execution', icon: '🔧' },
+      { id: 'stores', name: 'Stores & Inventory', icon: '📦' },
+      { id: 'fleet', name: 'Fleet & Assets', icon: '🚜' },
+      { id: 'control', name: 'Control & Intelligence', icon: '📊' },
+      { id: 'governance', name: 'Governance & Access', icon: '🛡️' },
+    ];
+
+    const LV_BTN = [
+      { key: 'none', label: 'None' },
+      { key: 'view', label: 'View' },
+      { key: 'add', label: 'Add' },
+      { key: 'edit', label: 'Edit' },
+      { key: 'full', label: 'Full' },
+    ];
+
+    const groupCards = GROUPS.map((grp) => {
+      const grpSections = sections.filter((s) => s.group === grp.id);
+      if (!grpSections.length) return '';
+
+      const secHtml = grpSections.map((sec) => {
+        const curLevel = sectionEdits[sec.key] !== undefined ? sectionEdits[sec.key] : (sec.override_level !== null ? sec.override_level : sec.role_level);
+        const isCustom = sectionEdits[sec.key] !== undefined ? (sectionEdits[sec.key] !== sec.role_level) : (sec.override_level !== null && sec.override_level !== sec.role_level);
+
+        const lvlButtons = LV_BTN.map((b) => {
+          const isSelected = curLevel === b.key;
+          const cls = isSelected
+            ? (b.key === 'full' ? 'primary' : (b.key === 'edit' ? 'badge green' : (b.key === 'add' ? 'badge blue' : (b.key === 'view' ? 'badge' : 'badge amber'))))
+            : 'btn sm';
+          const style = isSelected ? 'font-weight:bold;padding:4px 10px;font-size:12px' : 'opacity:.7;padding:4px 10px;font-size:12px';
+          const disabled = isSelf || !canEditTarget ? 'disabled' : '';
+          return `<button class="${cls}" style="${style}" data-sec-lvl="${esc(sec.key)}:${b.key}" ${disabled}>${b.label}</button>`;
+        }).join(' ');
+
+        let capsHtml = '';
+        if (sec.capabilities && sec.capabilities.length > 0) {
+          const capItems = sec.capabilities.map((c) => {
+            const hasCap = capEdits[c.key] !== undefined ? capEdits[c.key] : c.effective_granted;
+            const isCapOverridden = capEdits[c.key] !== undefined ? (capEdits[c.key] !== c.role_granted) : c.is_override;
+            const disabled = isSelf || !canEditTarget ? 'disabled' : '';
+            return `<label style="display:flex;align-items:flex-start;gap:8px;margin:5px 0;font-weight:normal;font-size:12px">
+              <input type="checkbox" style="width:auto;margin-top:2px" data-pcap="${esc(c.key)}" ${hasCap ? 'checked' : ''} ${disabled}>
+              <div>
+                <span>${esc(c.label)}</span>
+                ${isCapOverridden ? `<span class="badge amber" style="font-size:9px;margin-left:4px">Custom override</span>` : `<span class="muted" style="font-size:10px;margin-left:4px">(${c.role_granted ? 'Granted by role' : 'Not in role'})</span>`}
+                <div class="muted" style="font-size:10px">${esc(c.key)}</div>
+              </div>
+            </label>`;
+          }).join('');
+
+          capsHtml = `<details style="margin-top:8px;border-top:1px dashed var(--border-light, #eee);padding-top:6px">
+            <summary style="cursor:pointer;font-size:11px;font-weight:600;color:var(--text-muted, #666)">
+              Special Capabilities & Approvals (${sec.capabilities.length})
+            </summary>
+            <div style="margin-top:6px;padding-left:4px">
+              ${capItems}
+            </div>
+          </details>`;
+        }
+
+        return `<div class="card" style="margin-bottom:10px;padding:12px;background:var(--card-sub-bg, #fff);border:1px solid var(--border-light, #e2e8f0);border-radius:6px">
+          <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:8px">
+            <div style="display:flex;align-items:center;gap:8px">
+              <span style="font-size:18px">${sec.icon}</span>
+              <div>
+                <b style="font-size:14px">${esc(sec.label)}</b>
+                <div class="muted" style="font-size:11px">${esc(sec.description || '')}</div>
+              </div>
+            </div>
+            <div style="display:flex;align-items:center;gap:6px">
+              ${isCustom
+                ? `<span class="badge amber" style="font-weight:600">⚡ Custom Override</span> <button class="btn sm" style="font-size:10px;padding:2px 6px" data-reset-sec="${esc(sec.key)}" title="Revert this section to role template">Reset</button>`
+                : `<span class="badge blue" style="font-weight:500">Role Default (${sec.role_level.toUpperCase()})</span>`}
+            </div>
+          </div>
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;background:var(--bg-muted, #f8fafc);padding:6px 10px;border-radius:6px">
+            <span class="muted" style="font-size:11px;font-weight:600;text-transform:uppercase">Clearance:</span>
+            <div style="display:flex;gap:4px;flex-wrap:wrap">${lvlButtons}</div>
+          </div>
+          ${capsHtml}
+        </div>`;
+      }).join('');
+
+      return `<div style="margin-bottom:18px">
+        <h3 style="margin:0 0 8px;font-size:14px;color:var(--text-muted, #475569);display:flex;align-items:center;gap:6px">
+          <span>${grp.icon}</span> <span>${esc(grp.name)}</span>
+        </h3>
+        ${secHtml}
+      </div>`;
+    }).join('');
+
+    const wsOptions = [{ value: '', label: '— Default (Any / Head Office) —' }].concat(
+      (wsd.workshops || []).map((w) => ({ value: String(w.id), label: w.name + (w.code ? ` (${w.code})` : '') }))
+    );
+
+    c.innerHTML = `<div style="display:grid;grid-template-columns:minmax(240px,310px) 1fr;gap:14px;align-items:start">
+      <div class="card" style="padding:12px">
+        <div style="margin-bottom:8px">
+          <input type="text" id="person-search" placeholder="Search people..." value="${esc(q)}" style="width:100%;box-sizing:border-box">
+        </div>
+        <div class="table-wrap scroll" style="max-height:calc(100vh - 250px)">
+          <table><tbody>${listHtml}</tbody></table>
+        </div>
+      </div>
+
+      <div>
+        <div class="card" style="margin-bottom:12px;border-top:3px solid var(--accent, #2563eb)">
+          <div style="display:flex;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;gap:12px;margin-bottom:12px">
+            <div>
+              <h2 style="margin:0;display:flex;align-items:center;gap:8px">
+                <span>${esc(u.full_name || u.username)}</span>
+                ${u.active ? '<span class="badge green">Active</span>' : '<span class="badge">Inactive</span>'}
+              </h2>
+              <div class="muted" style="font-size:12px;margin-top:2px">
+                Username: <code>${esc(u.username)}</code> · Roles: ${u.roles.map((r) => `<span class="badge blue">${esc(r.label || r.name)}</span>`).join(' ') || 'None'}
+              </div>
+            </div>
+            <div style="display:flex;gap:6px;flex-wrap:wrap">
+              <button class="btn sm" id="btn-compare" title="Compare this person's access with another person or role">🔍 Compare</button>
+              <button class="btn sm" id="btn-copy-from" ${isSelf || !canEditTarget ? 'disabled' : ''} title="Copy all overrides from another person">📋 Copy From...</button>
+              <button class="btn sm" id="btn-reset-user" ${isSelf || !canEditTarget ? 'disabled' : ''} title="Remove all personal overrides and revert to role template">↺ Reset to Role</button>
+              <button class="primary sm" id="btn-save-access" ${isSelf || !canEditTarget ? 'disabled' : ''}>💾 Save Access</button>
+            </div>
+          </div>
+
+          ${isSelf ? '<div class="card" style="background:#fffbeb;border-left:4px solid #f59e0b;padding:8px 12px;margin-bottom:10px;font-size:12px">⚠️ <b>Safety Rule:</b> You cannot modify your own access permissions. Have another administrator change them if needed.</div>' : ''}
+          ${!canEditTarget ? '<div class="card err" style="padding:8px 12px;margin-bottom:10px;font-size:12px">⛔ Only an administrator can modify an administrator account.</div>' : ''}
+
+          <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(200px, 1fr));gap:10px;background:var(--bg-muted, #f8fafc);padding:10px;border-radius:6px">
+            <div>
+              <label style="font-size:11px;font-weight:600;margin-bottom:4px">Home Workshop:</label>
+              <select id="user-ws" style="width:100%" ${isSelf || !canEditTarget ? 'disabled' : ''}>
+                ${wsOptions.map((o) => `<option value="${o.value}" ${String(u.home_workshop_id || '') === o.value ? 'selected' : ''}>${esc(o.label)}</option>`).join('')}
+              </select>
+            </div>
+            <div>
+              <label style="font-size:11px;font-weight:600;margin-bottom:4px">Personal Approval Limit (Rs):</label>
+              <input type="number" id="user-limit" placeholder="Role template default" value="${u.approval_limit != null ? esc(u.approval_limit) : ''}" style="width:100%" ${isSelf || !canEditTarget ? 'disabled' : ''}>
+            </div>
+            <div>
+              <label style="font-size:11px;font-weight:600;margin-bottom:4px">Temporary Access Until (Date):</label>
+              <input type="date" id="user-until" value="${u.access_until ? esc(u.access_until.slice(0, 10)) : ''}" style="width:100%" ${isSelf || !canEditTarget ? 'disabled' : ''}>
+            </div>
+          </div>
+        </div>
+
+        ${groupCards}
+      </div>
+    </div>`;
+
+    const searchInp = qs('#person-search', c);
+    if (searchInp) {
+      searchInp.oninput = () => renderAll();
+    }
+
+    qsa('[data-pick-user]', c).forEach((tr) => {
+      tr.onclick = async () => {
+        const uid = tr.dataset.pickUser;
+        await renderPeopleAccess(c, uid);
+      };
+    });
+
+    qsa('[data-sec-lvl]', c).forEach((btn) => {
+      btn.onclick = () => {
+        const [secKey, lvl] = btn.dataset.secLvl.split(':');
+        sectionEdits[secKey] = lvl;
+        renderAll();
+      };
+    });
+
+    qsa('[data-reset-sec]', c).forEach((btn) => {
+      btn.onclick = () => {
+        const secKey = btn.dataset.resetSec;
+        sectionEdits[secKey] = null;
+        renderAll();
+      };
+    });
+
+    qsa('[data-pcap]', c).forEach((box) => {
+      box.onchange = () => {
+        capEdits[box.dataset.pcap] = box.checked;
+        renderAll();
+      };
+    });
+
+    const saveBtn = qs('#btn-save-access', c);
+    if (saveBtn) {
+      saveBtn.onclick = async () => {
+        const wsVal = qs('#user-ws', c).value;
+        const limitVal = qs('#user-limit', c).value.trim();
+        const untilVal = qs('#user-until', c).value.trim();
+
+        const payload = {
+          sections: sectionEdits,
+          capabilities: capEdits,
+          home_workshop_id: wsVal || null,
+          approval_limit: limitVal === '' ? null : Number(limitVal),
+          access_until: untilVal || null,
+        };
+
+        try {
+          saveBtn.disabled = true;
+          saveBtn.innerText = 'Saving…';
+          await api('/access/people/' + u.id + '/save', { method: 'POST', body: payload });
+          toast(`Access permissions saved for ${u.full_name || u.username}`);
+          await renderPeopleAccess(c, u.id);
+        } catch (e) {
+          toast(e.message, 'err');
+          saveBtn.disabled = false;
+          saveBtn.innerText = '💾 Save Access';
+        }
+      };
+    }
+
+    const resetBtn = qs('#btn-reset-user', c);
+    if (resetBtn) {
+      resetBtn.onclick = async () => {
+        if (!confirm(`Reset all personal overrides for ${u.full_name || u.username} back to their role template defaults?`)) return;
+        try {
+          await api('/access/people/' + u.id + '/reset', { method: 'POST' });
+          toast(`Reset ${u.username} to role template.`);
+          await renderPeopleAccess(c, u.id);
+        } catch (e) { toast(e.message, 'err'); }
+      };
+    }
+
+    const copyBtn = qs('#btn-copy-from', c);
+    if (copyBtn) {
+      copyBtn.onclick = () => {
+        const others = people.filter((p) => p.id != u.id && p.active);
+        modal('Copy Access Overrides', `
+          <p class="muted" style="margin-top:0">Copy all section clearance and capability overrides from another person to <b>${esc(u.full_name || u.username)}</b>.</p>
+          <div style="margin-bottom:12px">
+            <label style="font-size:12px;font-weight:600;display:block;margin-bottom:4px">Copy From Person:</label>
+            <select id="source-user-select" style="width:100%">
+              ${others.map((p) => `<option value="${p.id}">${esc(p.full_name || p.username)} (${esc(p.username)}) — ${p.overrides_count} override(s)</option>`).join('')}
+            </select>
+          </div>
+          <div style="text-align:right">
+            <button class="primary" id="btn-do-copy">Copy Overrides</button>
+          </div>`,
+          (body, close) => {
+            qs('#btn-do-copy', body).onclick = async () => {
+              const srcId = qs('#source-user-select', body).value;
+              try {
+                await api('/access/people/' + u.id + '/copy-from', {
+                  method: 'POST',
+                  body: { source_user_id: srcId },
+                });
+                close();
+                toast('Access overrides copied');
+                await renderPeopleAccess(c, u.id);
+              } catch (e) { toast(e.message, 'err'); }
+            };
+          }
+        );
+      };
+    }
+
+    const compareBtn = qs('#btn-compare', c);
+    if (compareBtn) {
+      compareBtn.onclick = () => openCompareModal(u, people);
+    }
+  };
+
+  renderAll();
+}
+
+function openCompareModal(u, people) {
+  modal(`Compare Access: ${esc(u.full_name || u.username)}`, `
+    <div style="display:flex;gap:10px;margin-bottom:12px;align-items:center;flex-wrap:wrap">
+      <label style="margin:0;font-weight:600;font-size:12px">Compare with:</label>
+      <select id="cmp-target-type" style="padding:4px 8px">
+        <option value="user">Another Person</option>
+        <option value="role">A Role Template</option>
+      </select>
+      <select id="cmp-target-val" style="flex:1;min-width:180px;padding:4px 8px"></select>
+      <button class="primary sm" id="btn-run-cmp">Compare</button>
+    </div>
+    <div id="cmp-result"><div class="muted">Select comparison target and click Compare.</div></div>`,
+    async (body) => {
+      const typeSel = qs('#cmp-target-type', body);
+      const valSel = qs('#cmp-target-val', body);
+      const resDiv = qs('#cmp-result', body);
+
+      const updateTargetOptions = async () => {
+        if (typeSel.value === 'user') {
+          valSel.innerHTML = people.filter((p) => p.id != u.id)
+            .map((p) => `<option value="${p.id}">${esc(p.full_name || p.username)} (${esc(p.username)})</option>`).join('');
+        } else {
+          const rData = await api('/access/roles');
+          valSel.innerHTML = rData.roles.map((r) => `<option value="${esc(r.name)}">${esc(r.label || r.name)}</option>`).join('');
+        }
+      };
+
+      typeSel.onchange = updateTargetOptions;
+      await updateTargetOptions();
+
+      qs('#btn-run-cmp', body).onclick = async () => {
+        try {
+          resDiv.innerHTML = '<div class="muted">Comparing…</div>';
+          const query = typeSel.value === 'user' ? `user1=${u.id}&user2=${valSel.value}` : `user1=${u.id}&role=${encodeURIComponent(valSel.value)}`;
+          const res = await api('/access/compare?' + query);
+
+          const targetTitle = res.target.type === 'user' ? (res.target.full_name || res.target.username) : res.target.label;
+
+          const diffSections = res.sections.filter((s) => s.diff);
+
+          const secRows = res.sections.map((s) => `
+            <tr style="${s.diff ? 'background:#fffbeb;' : ''}">
+              <td>${s.icon} <b>${esc(s.label)}</b></td>
+              <td>${lvlChip(s.user1_level)}</td>
+              <td>${lvlChip(s.target_level)}</td>
+              <td>${s.diff ? '<span class="badge amber">Different</span>' : '<span class="muted">Same</span>'}</td>
+            </tr>
+          `).join('');
+
+          const capRows = res.capabilities.map((c) => `
+            <tr>
+              <td><b>${esc(c.label)}</b><br><span class="muted" style="font-size:10px">${esc(c.key)}</span></td>
+              <td>${c.user1_has ? '<span class="badge green">YES</span>' : '<span class="muted">NO</span>'}</td>
+              <td>${c.target_has ? '<span class="badge green">YES</span>' : '<span class="muted">NO</span>'}</td>
+            </tr>
+          `).join('') || '<tr><td colspan="3" class="muted" style="text-align:center">No capability differences</td></tr>';
+
+          resDiv.innerHTML = `
+            <div style="margin-bottom:10px;padding:8px 12px;background:var(--bg-muted, #f8fafc);border-radius:6px;font-size:12px">
+              Comparing <b>${esc(u.full_name || u.username)}</b> vs <b>${esc(targetTitle)}</b>:
+              <b>${diffSections.length}</b> section(s) differ, <b>${res.capabilities.length}</b> special capability difference(s).
+            </div>
+            <h4 style="margin:10px 0 4px">22 Canonical Sections</h4>
+            <div class="table-wrap scroll" style="max-height:220px">
+              <table>
+                <thead><tr><th>Section</th><th>${esc(u.username)}</th><th>${esc(targetTitle)}</th><th>Status</th></tr></thead>
+                <tbody>${secRows}</tbody>
+              </table>
+            </div>
+            <h4 style="margin:14px 0 4px">Capability Differences (${res.capabilities.length})</h4>
+            <div class="table-wrap scroll" style="max-height:180px">
+              <table>
+                <thead><tr><th>Capability</th><th>${esc(u.username)}</th><th>${esc(targetTitle)}</th></tr></thead>
+                <tbody>${capRows}</tbody>
+              </table>
+            </div>
+          `;
+        } catch (e) { resDiv.innerHTML = `<div class="err">${esc(e.message)}</div>`; }
+      };
+    }
+  );
+}
+
+// ---- Tab 2: Sections Audit View ----------------------------------------------
+async function renderSectionsAudit(c, wantedSection) {
+  const [matrixData, wsd] = await Promise.all([api('/access/section-matrix'), workshopsData(true)]);
+  const allSections = matrixData.matrix ? matrixData.matrix.sections : permissions.SECTIONS;
+  const defSec = wantedSection || (allSections[0] ? allSections[0].key : 'dashboard');
+
+  c.innerHTML = `
+    <div class="card" style="margin-bottom:12px">
+      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px">
+        <div>
+          <h3 style="margin:0 0 4px">Section Audit View</h3>
+          <p class="muted" style="margin:0;font-size:12px">Instant answer to: Who has access to each section across all people and roles?</p>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px">
+          <label style="font-weight:600;font-size:12px;margin:0">Choose Section:</label>
+          <select id="sec-audit-select" style="padding:4px 10px;font-size:13px;font-weight:bold">
+            ${allSections.map((s) => `<option value="${s.key}" ${s.key === defSec ? 'selected' : ''}>${s.icon} ${esc(s.label)}</option>`).join('')}
+          </select>
+        </div>
+      </div>
+    </div>
+    <div id="sec-audit-content"><div class="muted">Loading section details…</div></div>
+  `;
+
+  const selBox = qs('#sec-audit-select', c);
+  const contentDiv = qs('#sec-audit-content', c);
+
+  const loadSection = async (secKey) => {
+    try {
+      contentDiv.innerHTML = '<div class="muted">Loading section audit data…</div>';
+      const data = await api('/access/sections/' + encodeURIComponent(secKey));
+      const s = data.section;
+      const people = data.people || [];
+
+      const counts = { full: 0, edit: 0, add: 0, view: 0, none: 0 };
+      people.forEach((p) => { counts[p.effective_level] = (counts[p.effective_level] || 0) + 1; });
+
+      const rows = people.map((p) => {
+        const roleStr = p.roles.map((r) => r.label || r.name).join(', ') || 'None';
+        const isCustom = p.is_override;
+        const capsBadges = (p.granted_caps || []).map((cap) => `<span class="badge" style="font-size:10px">${esc(cap)}</span>`).join(' ') || '<span class="muted">—</span>';
+        return `
+          <tr style="${p.effective_level === 'none' ? 'opacity:.5;' : ''}">
+            <td><b>${esc(p.full_name || p.username)}</b><br><span class="muted" style="font-size:11px">${esc(p.username)}</span></td>
+            <td><span class="muted">${esc(roleStr)}</span></td>
+            <td>${esc(p.workshop || '—')}</td>
+            <td>${lvlChip(p.effective_level)}</td>
+            <td>${isCustom ? '<span class="badge amber">Custom Override</span>' : '<span class="muted">Role Default</span>'}</td>
+            <td>${capsBadges}</td>
+            <td>
+              <button class="btn sm" data-manage-user="${p.id}" title="Go to Person Access">Manage</button>
+            </td>
+          </tr>
+        `;
+      }).join('');
+
+      contentDiv.innerHTML = `
+        <div class="card" style="margin-bottom:12px;border-left:4px solid var(--accent, #2563eb)">
+          <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
+            <div>
+              <h2 style="margin:0;display:flex;align-items:center;gap:6px">
+                <span>${s.icon}</span> <span>${esc(s.label)}</span>
+              </h2>
+              <p class="muted" style="margin:2px 0 0;font-size:12px">${esc(s.description || '')}</p>
+            </div>
+            <div class="pill-row">
+              <span class="badge amber">Full: ${counts.full || 0}</span>
+              <span class="badge green">Edit: ${counts.edit || 0}</span>
+              <span class="badge blue">Add: ${counts.add || 0}</span>
+              <span class="badge">View: ${counts.view || 0}</span>
+              <span class="muted" style="font-size:11px">No access: ${counts.none || 0}</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="table-wrap scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>Person</th>
+                  <th>Roles</th>
+                  <th>Workshop</th>
+                  <th>Effective Level</th>
+                  <th>Origin</th>
+                  <th>Special Capabilities</th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+              <tbody>${rows}</tbody>
+            </table>
+          </div>
+        </div>
+      `;
+
+      qsa('[data-manage-user]', contentDiv).forEach((b) => {
+        b.onclick = () => {
+          location.hash = '#/access?tab=people&user=' + b.dataset.manageUser;
+        };
+      });
+    } catch (e) {
+      contentDiv.innerHTML = `<div class="card err">${esc(e.message)}</div>`;
+    }
+  };
+
+  selBox.onchange = () => loadSection(selBox.value);
+  await loadSection(defSec);
+}
+
+// ---- Tab 4: Audit History View ------------------------------------------------
+async function renderAccessHistory(c) {
+  const data = await api('/access/history?limit=150');
+  const rows = (data.history || []).map((h) => {
+    let detailsStr = '';
+    try {
+      if (h.after_json) {
+        const parsed = JSON.parse(h.after_json);
+        detailsStr = Object.entries(parsed).map(([k, v]) => `${k}: ${typeof v === 'object' ? JSON.stringify(v) : v}`).join(' · ');
+      }
+    } catch (e) { detailsStr = h.after_json || ''; }
+
+    return `
+      <tr>
+        <td style="white-space:nowrap;font-size:11px">${esc(String(h.created_at || '').slice(0, 19).replace('T', ' '))}</td>
+        <td><b>${esc(h.actor_username || 'System')}</b></td>
+        <td><span class="badge blue">${esc(h.entity)}</span></td>
+        <td>${esc(h.action)}</td>
+        <td class="muted" style="font-size:11px">${esc(h.entity_id || '—')}</td>
+        <td style="font-size:11px">${esc(detailsStr)}</td>
+      </tr>
+    `;
+  }).join('') || '<tr><td colspan="6" class="muted" style="text-align:center">No access history recorded yet.</td></tr>';
+
+  c.innerHTML = `
+    <div class="card">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+        <div>
+          <h3 style="margin:0 0 2px">Access Change Audit Log</h3>
+          <p class="muted" style="margin:0;font-size:12px">Immutable record of every permission, role, clearance and personal override modification.</p>
+        </div>
+      </div>
+      <div class="table-wrap scroll" style="max-height:calc(100vh - 250px)">
+        <table>
+          <thead>
+            <tr>
+              <th>Timestamp</th>
+              <th>Actor</th>
+              <th>Entity</th>
+              <th>Action</th>
+              <th>Target ID</th>
+              <th>Details</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    </div>
+  `;
+}
   const cls = lvl === 'full' ? 'amber' : lvl === 'edit' ? 'green' : '';
   const txt = lvl === 'none' ? '—' : lvl.toUpperCase();
   return `<span class="badge ${cls}"${lvl === 'none' ? ' style="opacity:.4"' : ''}>${txt}</span>`;
@@ -9415,8 +9996,8 @@ async function renderRolesManager(c, wanted) {
     { id: 'all', name: 'Permissions', icon: '⚙️', description: 'All module capabilities', modules: sm.modules.map((m) => m.key) }
   ];
 
-  const LVLS = ['none', 'view', 'edit', 'full'];
-  const LV_LABEL = { none: 'None', view: 'View', edit: 'Edit', full: 'Full' };
+  const LVLS = ['none', 'view', 'add', 'edit', 'full'];
+  const LV_LABEL = { none: 'None', view: 'View', add: 'Add', edit: 'Edit', full: 'Full' };
 
   const sectionCards = sections.map((sec) => {
     const secCaps = sm.capabilities.filter((cap) => sec.modules.includes(cap.module));
@@ -9427,7 +10008,7 @@ async function renderRolesManager(c, wanted) {
       const isLocked = sel.locked || !editable;
       const pills = LVLS.map((lvl) => {
         const isCurrent = (sel.locked && lvl === 'full') || (!sel.locked && curLvl === lvl);
-        const cls = isCurrent ? (lvl === 'full' ? 'primary' : (lvl === 'edit' ? 'badge green' : (lvl === 'view' ? 'badge blue' : 'badge amber'))) : 'btn sm';
+        const cls = isCurrent ? (lvl === 'full' ? 'primary' : (lvl === 'edit' ? 'badge green' : (lvl === 'add' ? 'badge teal' : (lvl === 'view' ? 'badge blue' : 'badge amber')))) : 'btn sm';
         const style = isCurrent ? 'font-weight:bold;' : 'opacity:.7;';
         return `<button class="${cls}" style="${style}padding:2px 8px;font-size:11px" data-setlvl="${esc(m)}:${lvl}" ${isLocked ? 'disabled' : ''}>${LV_LABEL[lvl]}</button>`;
       }).join(' ');

@@ -113,14 +113,14 @@ app.use('/api/attendance', require('./routes/attendance'));
 app.use('/api/field', require('./routes/field'));
 // Stage 7: operations — machine moves, the site fleet board, workshops at a glance, handovers.
 app.use('/api/operations', require('./routes/operations'));
-app.use('/api/dashboard', require('./routes/dashboard'));
+app.use('/api/dashboard', requireModule('dashboard'), require('./routes/dashboard'));
 app.use('/api/mechanics', require('./routes/mechanics'));
 app.use('/api/workshops', require('./routes/workshops'));
 app.use('/api/users', require('./routes/users'));
 app.use('/api/reports', require('./routes/reports'));
 // Vehicle lubricant capacities from Fleet_Oil_Lubricant_Capacities.xlsx
-app.use('/api/lubricant-capacities', require('./routes/lubricant_capacities'));
-app.use('/api/tyre-battery', requireModule('reports'), require('./routes/tyre_battery'));
+app.use('/api/lubricant-capacities', requireModule('lubricants'), require('./routes/lubricant_capacities'));
+app.use('/api/tyre-battery', requireModule('tb_reports'), require('./routes/tyre_battery'));
 // Requesting, issuing and accounting for the old unit. Mounted apart from the reporting routes
 // above because those are gated on `reports` — a storekeeper who may not read cost reports still
 // has to be able to issue a tyre. Each endpoint carries its own role check instead, and the

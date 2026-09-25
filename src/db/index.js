@@ -97,12 +97,41 @@ function migrate() {
     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
     PRIMARY KEY (role, capability)
   );`);
+
+  // Person-by-person access overrides (WorkshopOne Plan Part B):
+  // Every person can have their own 5-level clearance per section, and their own capability ticks.
+  db.exec(`CREATE TABLE IF NOT EXISTS user_permissions (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    section    TEXT NOT NULL,
+    level      TEXT NOT NULL DEFAULT 'none',
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_by INTEGER REFERENCES users(id),
+    UNIQUE(user_id, section)
+  );
+  CREATE INDEX IF NOT EXISTS idx_user_perms_user ON user_permissions(user_id);
+  CREATE INDEX IF NOT EXISTS idx_user_perms_sec ON user_permissions(section);
+
+  CREATE TABLE IF NOT EXISTS user_capabilities (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    capability TEXT NOT NULL,
+    granted    INTEGER NOT NULL DEFAULT 1,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_by INTEGER REFERENCES users(id),
+    UNIQUE(user_id, capability)
+  );
+  CREATE INDEX IF NOT EXISTS idx_user_caps_user ON user_capabilities(user_id);
+  CREATE INDEX IF NOT EXISTS idx_user_caps_cap ON user_capabilities(capability);`);
+
   // Roles become data an admin manages: a description, whether it shipped with the system, and
   // whether it is still in use (a retired role grants nothing, and is kept for the history).
   ensureColumn('roles', 'description', 'TEXT');
   ensureColumn('roles', 'is_system', 'INTEGER NOT NULL DEFAULT 0');
   ensureColumn('roles', 'active', 'INTEGER NOT NULL DEFAULT 1');
   ensureColumn('roles', 'created_at', 'TEXT');
+  ensureColumn('users', 'access_until', 'TEXT');
+  ensureColumn('users', 'approval_limit', 'REAL');
   // Two-factor sign-in (src/lib/mfa.js). The keys are stored encrypted (src/lib/secretbox.js).
   ensureColumn('roles', 'require_mfa', 'INTEGER NOT NULL DEFAULT 0');
   ensureColumn('users', 'mfa_enabled', 'INTEGER NOT NULL DEFAULT 0');
