@@ -299,13 +299,15 @@ function rebuild(opts = {}) {
     for (const g of all(
       `SELECT g.id, g.qty, g.unit_price, g.delivery_date, g.description, g.grn_no, g.mrn_line_id, g.store_item_id, g.store_id,
               ml.category AS line_cat, ml.description AS line_desc, si.category AS item_cat, si.name AS item_name,
-              m.mrn_no, m.asset_id, m.job_id
+              m.mrn_no, m.asset_id, m.job_id, ts.kind AS tb_kind, ts.label AS tb_label, ts.spec_key AS tb_key
          FROM grn g
          LEFT JOIN mrn_lines ml ON ml.id = g.mrn_line_id
          LEFT JOIN store_items si ON si.id = g.store_item_id
          LEFT JOIN mrn m ON m.id = g.mrn_id
+         LEFT JOIN tb_request_lines tr ON tr.mrn_line_id = g.mrn_line_id
+         LEFT JOIN tb_specs ts ON ts.id = tr.spec_id
         WHERE COALESCE(g.qty,0) > 0${idsIn('grn', 'g.id')}`)) {
-      const section = sectionOf(g.line_cat || g.item_cat);
+      let section = sectionOf(g.line_cat || g.item_cat);
       const name = g.description || g.line_desc || g.item_name || '';
       // A FILTER IS ITS PART NUMBER, and on 74% of receipts that number is written inside the
       // brackets — "Oil Filter (C-206)". itemKey() drops brackets, so those receipts all piled
@@ -313,7 +315,10 @@ function rebuild(opts = {}) {
       // fitted the filter went out against C206. 149 receipt keys against 1,070 issue keys, and
       // only 10 keys ever carried both, so a filter could be received and fitted and never once
       // meet itself. Here the number is pulled OUT of the bracket instead of thrown away.
-      const key = section === 'filter' ? (filterKey(name) || itemKey(section, name)) : itemKey(section, name);
+      let key = section === 'filter' ? (filterKey(name) || itemKey(section, name)) : itemKey(section, name);
+      // A tyre or battery bought on its own request is its specification — the same shelf its issue
+      // comes off (stores plan, Part 4), whatever the receipt's words say.
+      if (g.tb_key) { section = g.tb_kind === 'battery' ? 'battery' : 'tyre'; key = itemKey(section, g.tb_label, g.tb_key); }
       // Oil bought through stores used to be muted wholesale, because some of it was ALSO
       // booked as a top-up in the oil book's own ledger and would have been counted twice.
       // That blanket rule hid 17 genuine deliveries the ledger never knew about — more than
@@ -440,10 +445,13 @@ function rebuild(opts = {}) {
 
     // 5. TYRE / BATTERY issues from their imported ledger.
     for (const t of all(
-      `SELECT id, kind, issue_date, vehicle, asset_id, qty, category, category_norm, site, store_id
-         FROM tyre_battery_issues WHERE COALESCE(qty,0) > 0${idsIn('tyre_battery_issues', 'id')}`)) {
+      `SELECT t.id, t.kind, t.issue_date, t.vehicle, t.asset_id, t.qty, t.category, t.category_norm, t.site, t.store_id,
+              ts.label AS tb_label, ts.spec_key AS tb_key
+         FROM tyre_battery_issues t LEFT JOIN tb_specs ts ON ts.id = t.spec_id
+        WHERE COALESCE(t.qty,0) > 0${idsIn('tyre_battery_issues', 't.id')}`)) {
       const section = t.kind === 'battery' ? 'battery' : 'tyre';
-      insert({ section, kind: 'out', item_key: itemKey(section, t.category, t.category_norm || t.category),
+      // Issued on a request: its specification, the shelf its receipt went onto (Part 4).
+      insert({ section, kind: 'out', item_key: t.tb_key ? itemKey(section, t.tb_label, t.tb_key) : itemKey(section, t.category, t.category_norm || t.category),
         item_name: t.category, qty: t.qty, txn_date: t.issue_date, asset_id: t.asset_id,
         ref: t.vehicle, note: t.site, source_table: 'tyre_battery_issues', source_id: t.id, store_id: t.store_id });
     }

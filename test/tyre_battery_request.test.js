@@ -190,10 +190,14 @@ test('once certified and approved, the store can issue it', async () => {
   assert.ok(a.status < 300, JSON.stringify(await json(a)));
   assert.strictEqual(get('SELECT approval_status FROM mrn WHERE id = ?', requestId).approval_status, 'approved');
 
-  const r = await as('keeper', 'POST', '/api/tb/issue', { mrn_line_id: lineId, qty: 2, serial_no: 'TY-0001' });
+  // Two tyres go out by their serial numbers, each to its own wheel (stores plan, Part 4).
+  const r = await as('keeper', 'POST', '/api/tb/issue', {
+    mrn_line_id: lineId, qty: 2, units: [{ serial_no: 'TY-0001' }, { serial_no: 'TY-0002', position: 'RL2' }] });
   assert.strictEqual(r.status, 201, JSON.stringify(await json(r)));
-  const issue = get('SELECT * FROM tyre_battery_issues WHERE mrn_line_id = ?', lineId);
-  assert.strictEqual(issue.qty, 2);
+  const rows = all('SELECT * FROM tyre_battery_issues WHERE mrn_line_id = ? ORDER BY id', lineId);
+  assert.deepStrictEqual(rows.map((x) => [x.qty, x.serial_no, x.position]), [[1, 'TY-0001', 'RL1'], [1, 'TY-0002', 'RL2']],
+    'one row a tyre, so each one can be followed');
+  const issue = rows[0];
   assert.strictEqual(issue.min_number, mrnNo, 'the issue carries the request number, as the old register always did');
   assert.strictEqual(issue.spec_id, TYRE, 'and the shelf it came off');
   assert.strictEqual(issue.position, 'RL1');
@@ -263,7 +267,7 @@ test('a new issue reaches the stock ledger through the rebuild, not by a second 
   assert.strictEqual(rows.length, 1, 'exactly one movement — writing one by hand as well would hold it twice');
   assert.strictEqual(rows[0].section, 'tyre');
   assert.strictEqual(rows[0].kind, 'out');
-  assert.strictEqual(rows[0].qty, 2);
+  assert.strictEqual(rows[0].qty, 1);
 });
 
 // ---- naming the job is enough ---------------------------------------------
@@ -368,7 +372,7 @@ test('each line on a multi-item request is approved and issued on its own', asyn
   assert.strictEqual(detail.lines.length, 2);
   // Issue only the tyre; the tube stays outstanding on the same approved request.
   const tyreLine = detail.lines.find((l) => l.kind === 'tyre');
-  const r = await as('keeper', 'POST', '/api/tb/issue', { mrn_line_id: tyreLine.mrn_line_id, qty: 1 });
+  const r = await as('keeper', 'POST', '/api/tb/issue', { mrn_line_id: tyreLine.mrn_line_id, qty: 1, serial_no: 'TY-0003' });
   assert.strictEqual(r.status, 201, JSON.stringify(await json(r)));
   const after = await json(await as('keeper', 'GET', '/api/tb/requests/' + made.id));
   assert.strictEqual(after.lines.find((l) => l.kind === 'tyre').issued, 1);
@@ -435,7 +439,7 @@ test('a role without Issue cannot issue, even on an approved request', async () 
   assert.strictEqual(get('SELECT COUNT(*) c FROM tyre_battery_issues WHERE mrn_line_id = ?', lineId).c, 0);
 
   setLevel('storekeeper', 'tb_issue', 'edit');
-  const ok = await as('keeper', 'POST', '/api/tb/issue', { mrn_line_id: lineId, qty: 1 });
+  const ok = await as('keeper', 'POST', '/api/tb/issue', { mrn_line_id: lineId, qty: 1, serial_no: 'TY-0004', position: 'RR1' });
   assert.strictEqual(ok.status, 201, 'and granting it live lets the same request through');
 });
 

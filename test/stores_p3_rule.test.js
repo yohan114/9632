@@ -226,9 +226,10 @@ test('after the first full count, nothing leaves unless it is on the shelf', asy
   ok(await call('sk', 'POST', '/stores/stock-issue', { job_id: JOB, lines: [{ grn_id: pads2, qty: 1 }] }), 201);
   // The stores item transaction door.
   assert.strictEqual((await call('sk', 'POST', `/stores/items/${G.clamp}/txn`, { txn_type: 'issue', qty: 1 })).status, 409);
-  // Tyres and batteries join with their serial register (Part 4), even after a full count.
+  // Tyres and batteries follow the rule too since Part 4, once counted in full.
   run("INSERT INTO count_sessions (count_no, store_id, kind, scope, status, count_date, decided_at) VALUES ('ST-T1', ?, 'tyre', 'full', 'approved', ?, datetime('now'))", CW, TODAY);
-  assert.strictEqual(require('../src/lib/stock_rule').since(CW, 'tyre'), null);
+  assert.strictEqual(require('../src/lib/stock_rule').since(CW, 'tyre'), TODAY);
+  assert.strictEqual(require('../src/lib/stock_rule').since(CW, 'battery'), null);
   // Oil has not been counted yet: still not blocked.
   assert.strictEqual(require('../src/lib/stock_rule').since(CW, 'oil'), null);
   assert.strictEqual(require('../src/lib/stock_rule').since(CW, 'general'), TODAY);
@@ -329,13 +330,22 @@ test('a shelf already under zero stops nothing that does not take from it', asyn
 });
 
 // ================================================================== the tyre register reaches the shelf
-test('a tyre handed over on its request reaches the shelf at once', async () => {
+test('a tyre handed over on its request reaches the shelf at once, and only from the shelf', async () => {
   const spec = run("INSERT INTO tb_specs (kind, size, label, spec_key, source) VALUES ('tyre', '1000 X 20', 'Tyre 1000 X 20', 'T1000X20', 'test')").lastInsertRowid;
   const m = run("INSERT INTO mrn (mrn_no, req_date, requested_by, approval_status, workshop_id, tb_kind, asset_id) VALUES ('TB-1', ?, 'Kasun', 'approved', ?, 'tyre', ?)", TODAY, CW, ASSET).lastInsertRowid;
   const l = run("INSERT INTO mrn_lines (mrn_id, description, qty, category) VALUES (?, 'Tyre 1000 X 20', 1, 'Tyres')", m).lastInsertRowid;
-  run("INSERT INTO tb_request_lines (mrn_line_id, kind, spec_id, asset_id, reason) VALUES (?, 'tyre', ?, ?, 'worn')", l, spec, ASSET);
+  run("INSERT INTO tb_request_lines (mrn_line_id, kind, spec_id, asset_id, reason, position) VALUES (?, 'tyre', ?, ?, 'worn', 'FL')", l, spec, ASSET);
+  // Tyres were counted in full above, with none of this size: it cannot go out yet.
+  const no = await call('boss', 'POST', '/tb/issue', { mrn_line_id: l, qty: 1, serial_no: 'SN-1' });
+  assert.strictEqual(no.status, 409, no.text);
+  assert.match(no.body.error, /0 in stock/);
+  assert.strictEqual(get("SELECT COUNT(*) n FROM tyres WHERE serial_no = 'SN-1'").n, 0, 'nothing was fitted');
+  // Received on its own request, it is on the shelf under its size, and goes.
+  ok(await call('boss', 'POST', '/stores/grn', { mrn_id: m, mrn_line_id: l, qty: 1, unit_price: 21000 }), 201);
   const r = ok(await call('boss', 'POST', '/tb/issue', { mrn_line_id: l, qty: 1, serial_no: 'SN-1' }), 201);
   assert.strictEqual(get("SELECT COUNT(*) n FROM stock_moves WHERE source_table = 'tyre_battery_issues' AND source_id = ?", r.id).n, 1);
+  const key = get("SELECT item_key FROM stock_moves WHERE source_table = 'tyre_battery_issues' AND source_id = ?", r.id).item_key;
+  assert.strictEqual(bal('tyre', key), 0, 'the receipt and the issue meet on one shelf');
 });
 
 // ================================================================== store by store

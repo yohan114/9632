@@ -1180,3 +1180,80 @@ CREATE TABLE IF NOT EXISTS count_lines (
   UNIQUE (session_id, section, item_key)
 );
 CREATE INDEX IF NOT EXISTS idx_count_lines ON count_lines(session_id);
+
+-- Stores plan, Part 4: every tyre by its serial number, like the batteries (ST-D7). A tyre is fixed
+-- to a vehicle and a wheel position when it is issued, and its story — fitted, taken off, repaired,
+-- retreaded, claimed on warranty, scrapped, sold — is kept as events (src/lib/tb_units.js).
+CREATE TABLE IF NOT EXISTS tyres (
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  serial_no         TEXT NOT NULL UNIQUE,
+  spec_id           INTEGER REFERENCES tb_specs(id),
+  brand             TEXT,
+  state             TEXT NOT NULL DEFAULT 'in_store', -- in_store | installed | removed | repair | retread | warranty | scrap | lost | disposed
+  current_asset_id  INTEGER REFERENCES assets(id),
+  position          TEXT,                              -- FL, FR, RL1, RR1, SPARE … while fitted
+  store_id          INTEGER REFERENCES workshops(id),
+  warranty_date     TEXT,
+  photo_path        TEXT,                              -- the cover: the first of tyre_photos
+  created_at        TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_tyres_asset ON tyres(current_asset_id, position);
+
+CREATE TABLE IF NOT EXISTS tyre_photos (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  tyre_id     INTEGER NOT NULL REFERENCES tyres(id) ON DELETE CASCADE,
+  seq         INTEGER NOT NULL DEFAULT 1,
+  photo       TEXT NOT NULL,              -- data:image/...;base64,...
+  note        TEXT,
+  uploaded_by INTEGER REFERENCES users(id),
+  uploaded_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_tyre_photos ON tyre_photos(tyre_id, seq);
+
+CREATE TABLE IF NOT EXISTS tyre_events (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  tyre_id       INTEGER NOT NULL REFERENCES tyres(id) ON DELETE CASCADE,
+  event_type    TEXT NOT NULL,                 -- add | install | remove | repair | retread | warranty | scrap | lost | return | dispose
+  from_asset_id INTEGER REFERENCES assets(id),
+  to_asset_id   INTEGER REFERENCES assets(id),
+  position      TEXT,
+  km_reading    REAL,
+  reason        TEXT,
+  issue_id      INTEGER REFERENCES tyre_battery_issues(id),
+  user_id       INTEGER REFERENCES users(id),
+  event_date    TEXT NOT NULL DEFAULT (date('now')),
+  created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_tyre_events ON tyre_events(tyre_id);
+
+-- Stores plan, Part 4: a disposal note — scrap tyres, scrap batteries, other scrap parts and waste
+-- oil, sold or taken away. A manager approves it, with the buyer, the amount and the date (ST-D9);
+-- the tyres and batteries on it are then disposed of in their registers.
+CREATE TABLE IF NOT EXISTS disposals (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  disposal_no   TEXT UNIQUE,                   -- DN-2026-0001
+  store_id      INTEGER REFERENCES workshops(id),
+  status        TEXT NOT NULL DEFAULT 'open',  -- open | approved | cancelled
+  buyer         TEXT,
+  amount        REAL,                          -- what the buyer pays (Rs)
+  sale_date     TEXT,                          -- YYYY-MM-DD it leaves the store
+  note          TEXT,
+  created_by    INTEGER REFERENCES users(id),
+  created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  decided_by    INTEGER REFERENCES users(id),
+  decided_at    TEXT,
+  decision_note TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_disposals ON disposals(status, store_id);
+
+CREATE TABLE IF NOT EXISTS disposal_lines (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  disposal_id  INTEGER NOT NULL REFERENCES disposals(id) ON DELETE CASCADE,
+  kind         TEXT NOT NULL CHECK (kind IN ('tyre','battery','part','waste_oil')),
+  tyre_id      INTEGER REFERENCES tyres(id),
+  battery_id   INTEGER REFERENCES batteries(id),
+  description  TEXT,
+  qty          REAL NOT NULL DEFAULT 1,
+  unit         TEXT                            -- nos | L | kg
+);
+CREATE INDEX IF NOT EXISTS idx_disposal_lines ON disposal_lines(disposal_id);
