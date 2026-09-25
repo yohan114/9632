@@ -99,7 +99,7 @@ const CAPABILITIES = [
   C('stores.stock.rebuild', 'stores', 'Rebuild stock balances from the ledgers (maintenance)', ['storekeeper', 'manager'], 'stores', 'stores'),
   C('stores.mtn.edit', 'stores', 'Create, send, receive or cancel Material Transfer Notes (MTN)', ['storekeeper'], 'stores', 'stores'),
   C('stores.issue_return', 'stores', 'Return an issued part to store stock', ['storekeeper'], 'stores', 'stores'),
-  C('stores.stock.count', 'stores', 'Open and record physical stock counts', ['storekeeper'], 'stores', 'stores'),
+  C('stores.stock.count', 'stores', 'Open and record physical stock counts', ['storekeeper', 'manager'], 'stores', 'stores'),
   C('stores.stock.levels', 'stores', 'Set a store\'s reorder levels', ['storekeeper', 'manager'], 'stores', 'stores'),
   C('stores.count.approve', 'stores', 'Approve a stock take and put its corrections into stock (head office)', ['operational_manager', 'manager'], null, 'stores'),
   C('stores.disposal.edit', 'stores', 'Write a disposal note (scrap and waste oil to sell)', ['storekeeper'], 'stores', 'stores'),

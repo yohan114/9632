@@ -935,19 +935,23 @@ async function dashPurchasing(c) {
       ? ` — but ${counts.unassigned} item(s) have not been given to an officer yet.` : '.'}</p></div>`;
 }
 
+const waited = (d) => {
+  const day = String(d || '').slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return '';
+  const days = Math.floor((Date.now() - new Date(day + 'T00:00:00').getTime()) / 86400000);
+  if (!Number.isFinite(days) || days < 0) return `<span class="muted"> · ${esc(day)}</span>`;
+  const age = days >= 14 ? ` <span class="badge red">${days}d overdue</span>` : (days >= 3 ? ` <span class="badge amber">${days}d waiting</span>` : '');
+  return `<span class="muted"> · ${esc(day)}</span>${age}`;
+};
+
+const jobRow = (j, action) => `<div class="cost-line"><a href="#/jobs/${j.id}"><b>${esc(j.job_no)}</b> · <span class="stamp">${esc(j.vehicle || idLabel(j))}</span>${waited(j.requested_at)}</a><div class="spacer"></div><a class="btn sm" href="#/jobs/${j.id}">${esc(action)} →</a></div>`;
+
 // Process-wise approvals queue renderer
 function renderProcessApprovals(ap) {
   if (!ap || !ap.is_approver) return '';
   const total = ap.total_pending || 0;
   
-  const waitedBadge = (d) => {
-    const day = String(d || '').slice(0, 10);
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return '';
-    const days = Math.floor((Date.now() - new Date(day + 'T00:00:00').getTime()) / 86400000);
-    if (!Number.isFinite(days) || days < 0) return `<span class="muted"> · ${esc(day)}</span>`;
-    const age = days >= 14 ? ` <span class="badge red">${days}d overdue</span>` : (days >= 3 ? ` <span class="badge amber">${days}d waiting</span>` : '');
-    return `<span class="muted"> · ${esc(day)}</span>${age}`;
-  };
+  const waitedBadge = waited;
 
   const renderItem = (item) => {
     const worth = item.value != null ? ` · about ${esc(money(item.value))}${item.unpriced ? ` (${item.unpriced} unpriced)` : ''}` : '';
@@ -1002,7 +1006,7 @@ function renderProcessApprovals(ap) {
     </div>`;
 }
 
-// Workflow roads renderer (Job Cards road + Stores road)
+// Workflow roads renderer (Job Cards road + Stores road) - formatted like in jobcard & stores
 function renderWorkflowRoads(wm) {
   if (!wm) return '';
   const jr = wm.jobs_pipeline || {};
@@ -1010,6 +1014,7 @@ function renderWorkflowRoads(wm) {
   const jSteps = jr.steps || [];
   const sSteps = sr.steps || [];
   const jw = jr.workshop || {};
+  const jf = jr.finishing || {};
   const st = sr.today || {};
   const sh = sr.shelf || {};
 
@@ -1040,7 +1045,7 @@ function renderWorkflowRoads(wm) {
   };
 
   const renderSteps = (steps, linkFn) => `
-    <div style="display:flex;align-items:center;gap:6px;overflow-x:auto;padding:6px 0 10px;margin-bottom:6px">
+    <div style="display:flex;align-items:center;gap:6px;overflow-x:auto;padding:4px 0 8px;margin-bottom:6px">
       ${steps.map((s, idx) => `
         <a href="${linkFn(s.key)}" class="card stat" style="text-decoration:none;min-width:115px;padding:8px 12px;margin:0;border:${s.count > 0 ? '1px solid var(--accent)' : '1px solid var(--border)'};border-radius:6px;background:${s.count > 0 ? 'var(--card-bg, #fff)' : 'var(--bg-muted, #f8f9fa)'};">
           <div style="display:flex;align-items:center;justify-content:space-between;gap:4px">
@@ -1052,43 +1057,65 @@ function renderWorkflowRoads(wm) {
       `).join('')}
     </div>`;
 
-  return `
-    <div class="card section" style="margin-bottom:14px">
-      <div class="toolbar" style="margin:0 0 6px">
-        <h3 style="margin:0">🔧 Job Cards Process Road</h3>
-        <div class="spacer"></div>
-        <a class="sm btn" href="#/jobs">Open Job Cards →</a>
+  const miniCard = (n, label, href, tone, note) => `
+    <a class="card stat" href="${href}" style="text-decoration:none;margin:0;padding:10px 12px;background:var(--card-sub-bg, #fafafa);border:1px solid var(--border-light, #eee);border-radius:6px">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:6px">
+        <span class="l" style="margin:0;font-size:12px;font-weight:600">${esc(label)}</span>
+        <span class="n" style="font-size:20px;font-weight:700;margin:0;${tone && n ? `color:var(--${tone})` : ''}">${n}</span>
       </div>
-      ${renderSteps(jSteps, stepLink)}
-      <div class="pill-row" style="margin-top:2px;font-size:12px">
-        <span class="muted" style="align-self:center">Workshop Pulse:</span>
-        <a class="badge green" href="#/jobs?tab=ongoing&show=today" style="text-decoration:none">Worked today: ${jw.worked_today || 0}</a>
-        <a class="badge amber" href="#/jobs?tab=ongoing&show=parts" style="text-decoration:none">Waiting parts: ${jw.waiting_parts || 0}</a>
-        <a class="badge ${jw.idle_3 ? 'red' : ''}" href="#/jobs?tab=ongoing&show=red" style="text-decoration:none">Idle 3+ days: ${jw.idle_3 || 0}</a>
-        ${jw.no_reason ? `<a class="badge red" href="#/jobs?tab=ongoing&show=no_reason" style="text-decoration:none">No reason: ${jw.no_reason}</a>` : ''}
-        ${jw.idle_mechanics != null ? `<a class="badge amber" href="#/dailywork" style="text-decoration:none">Idle mechanics: ${jw.idle_mechanics}</a>` : ''}
-      </div>
-    </div>
+      ${note ? `<div class="muted" style="font-size:11px;margin-top:4px">${esc(note)}</div>` : ''}
+    </a>`;
 
-    <div class="card section" style="margin-bottom:14px">
-      <div class="toolbar" style="margin:0 0 6px">
-        <h3 style="margin:0">📦 Stores Material Pipeline Road</h3>
-        <div class="spacer"></div>
-        <a class="sm btn" href="#/stores">Open Stores Flow →</a>
+  const html = [];
+
+  // 1. Job Cards Monitor & Pipeline (like in jobcard)
+  if (canView('jobs') || canView('jobrequests')) {
+    html.push(`
+      <div class="card section" style="margin-bottom:14px;border-top:3px solid var(--accent, #2563eb)">
+        <div class="toolbar" style="margin:0 0 8px">
+          <h3 style="margin:0">🔧 Job Cards Pipeline &amp; Workshop Monitor</h3>
+          <div class="spacer"></div>
+          <a class="sm btn" href="#/jobs">Open Job Cards →</a>
+        </div>
+        ${renderSteps(jSteps, stepLink)}
+        <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px;margin-top:8px">
+          ${miniCard(jw.worked_today || 0, 'Worked on today', '#/jobs?tab=ongoing&show=today', 'green')}
+          ${miniCard(jw.waiting_parts || 0, 'Waiting for parts', '#/jobs?tab=ongoing&show=parts', 'amber', 'blocked on MRN')}
+          ${miniCard(jw.idle_3 || 0, 'Idle 3+ working days', '#/jobs?tab=ongoing&show=red', jw.idle_3 ? 'red' : '', 'no recent work logged')}
+          ${miniCard(jw.not_started || 0, 'Not started yet', '#/jobs?tab=ongoing&show=not_started', 'blue')}
+          ${miniCard((jf.ready || 0), 'Ready to close', '#/jobs?tab=ready', 'green', 'nothing missing')}
+          ${miniCard((jf.partly_closed || 0), 'Awaiting price', '#/jobs?tab=finishing&show=partly_closed', jf.partly_closed ? 'amber' : '', 'partly closed')}
+        </div>
       </div>
-      ${renderSteps(sSteps, storeStepLink)}
-      <div class="pill-row" style="margin-top:2px;font-size:12px">
-        <span class="muted" style="align-self:center">Shelf &amp; Moving:</span>
-        <a class="badge" href="#/stores?tab=flow&sub=issues" style="text-decoration:none">Issued today: ${st.issued || 0}</a>
-        <a class="badge" href="#/stores?tab=flow&sub=grn" style="text-decoration:none">Received today: ${st.received || 0}</a>
-        <a class="badge ${sh.unpriced_receipts ? 'amber' : ''}" href="#/stores?tab=flow&sub=lines&step=unpriced" style="text-decoration:none">Unpriced receipts: ${sh.unpriced_receipts || 0}</a>
-        <a class="badge ${sh.low_stock ? 'red' : ''}" href="#/stores?tab=stock" style="text-decoration:none">Low stock: ${sh.low_stock || 0}</a>
-        ${(sh.old_units_due && (sh.old_units_due.tyre || sh.old_units_due.battery)) ? `<a class="badge amber" href="#/tbrequests?tab=returns" style="text-decoration:none">Old cores to record: ${(sh.old_units_due.tyre || 0) + (sh.old_units_due.battery || 0)}</a>` : ''}
+    `);
+  }
+
+  // 2. Stores Flow & Pipeline (stores like)
+  if (canView('stores') || canView('oil') || canView('purchasing')) {
+    html.push(`
+      <div class="card section" style="margin-bottom:14px;border-top:3px solid #10b981">
+        <div class="toolbar" style="margin:0 0 8px">
+          <h3 style="margin:0">📦 Stores Material Pipeline &amp; Inventory Flow</h3>
+          <div class="spacer"></div>
+          <a class="sm btn" href="#/stores">Open Stores Flow →</a>
+        </div>
+        ${renderSteps(sSteps, storeStepLink)}
+        <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px;margin-top:8px">
+          ${miniCard(st.received || 0, 'Received today', '#/stores?tab=flow&sub=grn', 'blue')}
+          ${miniCard(st.issued || 0, 'Issued today', '#/stores?tab=flow&sub=issues', 'green')}
+          ${miniCard(sh.unpriced_receipts || 0, 'To price (unpriced)', '#/stores?tab=flow&sub=lines&step=unpriced', sh.unpriced_receipts ? 'amber' : '', 'receipts awaiting cost')}
+          ${miniCard(sh.low_stock || 0, 'Under reorder level', '#/stores?tab=stock', sh.low_stock ? 'red' : '', 'low-stock alerts')}
+          ${miniCard((sh.old_units_due ? ((sh.old_units_due.tyre || 0) + (sh.old_units_due.battery || 0)) : 0), 'Old cores to record', '#/tbrequests?tab=returns', (sh.old_units_due && (sh.old_units_due.tyre || sh.old_units_due.battery)) ? 'amber' : '', 'tyres & batteries')}
+          ${miniCard(st.transfers_week || 0, 'Transfers (7 days)', '#/stores?tab=mtn', 'blue')}
+        </div>
       </div>
-    </div>`;
+    `);
+  }
+
+  return html.join('');
 }
 
-// On-hold & bottleneck center renderer for Admins & Managers
+// On-hold & bottleneck watchboard renderer specifically for Admin & Management
 function renderOnHoldWatchboard(oh) {
   if (!oh) return '';
   const waitingParts = oh.jobs_waiting_parts || [];
@@ -1100,12 +1127,13 @@ function renderOnHoldWatchboard(oh) {
   const totalAlerts = waitingParts.length + unattended.length + dualOpen.length + stuckCount + (oh.unpriced_grns_count || 0) + unreturnedTb;
 
   return `
-    <div class="card section" style="border-left:4px solid ${totalAlerts ? 'var(--red)' : 'var(--green)'};margin-bottom:14px">
+    <div id="admin-onhold-watchboard" class="card section" style="border-left:4px solid ${totalAlerts ? 'var(--red)' : 'var(--green)'};margin-bottom:14px">
       <div class="toolbar" style="margin:0 0 8px">
-        <h3 style="margin:0">🛑 Admin &amp; Supervisor On-Hold Watchboard</h3>
+        <h3 style="margin:0">🛑 Admin On-Hold &amp; Bottleneck Watchboard</h3>
         <div class="spacer"></div>
         <span class="badge ${totalAlerts ? 'red' : 'green'}">${totalAlerts} bottleneck${totalAlerts === 1 ? '' : 's'}</span>
       </div>
+      <p class="muted" style="margin:0 0 10px;font-size:12px">Admin oversight: monitored hold points, stale cards, vehicle conflicts, and uncosted materials across all workshops.</p>
 
       <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(270px,1fr));gap:12px;margin-top:8px">
         <!-- 1. Jobs waiting on parts / hold reasons -->
@@ -1145,12 +1173,13 @@ function renderOnHoldWatchboard(oh) {
             <div class="spacer"></div>
             <span class="badge ${dualOpen.length ? 'red' : ''}">${dualOpen.length}</span>
           </div>
-          ${dualOpen.length ? dualOpen.map((v) => `
+          ${dualOpen.length ? dualOpen.slice(0, 4).map((v) => `
             <div class="cost-line" style="font-size:12px;padding:3px 0">
-              <span class="stamp">${esc(v.asset_code || v.registration || 'Vehicle')}</span>
+              <span class="stamp">${esc(v.asset_code || v.asset_reg || 'Vehicle')}</span>
               <span class="badge red">${v.jobs ? v.jobs.length : 2} open cards</span>
             </div>
           `).join('') : '<span class="muted" style="font-size:12px">No conflicting open jobs</span>'}
+          ${dualOpen.length > 4 ? `<div style="text-align:right;margin-top:4px"><a class="sm" href="#/jobs?tab=all">See all ${dualOpen.length} conflicts →</a></div>` : ''}
         </div>
 
         <!-- 4. Unattended Active Jobs -->
@@ -1167,6 +1196,42 @@ function renderOnHoldWatchboard(oh) {
             </div>
           `).join('') : '<span class="muted" style="font-size:12px">All workshop jobs recently attended</span>'}
           ${unattended.length > 4 ? `<div style="text-align:right;margin-top:4px"><a class="sm" href="#/jobs?tab=ongoing&show=red">See all ${unattended.length} →</a></div>` : ''}
+        </div>
+
+        <!-- 5. Unpriced Receipts (GRN) on Shelf -->
+        <div class="card" style="padding:10px;margin:0;background:var(--bg-muted,#fdfdfd)">
+          <div class="toolbar" style="margin:0 0 6px">
+            <b>Unpriced Receipts (GRN)</b>
+            <div class="spacer"></div>
+            <span class="badge ${(oh.unpriced_grns_count || 0) ? 'amber' : ''}">${oh.unpriced_grns_count || 0}</span>
+          </div>
+          <p class="muted" style="font-size:12px;margin:4px 0 6px">Goods received without invoice price, blocking final job card costing.</p>
+          ${unpriced.length ? unpriced.slice(0, 3).map((u) => `
+            <div class="cost-line" style="font-size:12px;padding:2px 0">
+              <span><b>${esc(u.mrn_no || 'MRN')}</b> · ${esc(u.item || 'Item')}</span>
+              <span class="badge">${u.qty} pcs</span>
+            </div>
+          `).join('') : ''}
+          <div style="margin-top:6px">
+            <a class="btn sm" href="#/stores?tab=flow&sub=lines&step=unpriced">View Unpriced Receipts →</a>
+          </div>
+        </div>
+
+        <!-- 6. Unreturned Cores & Scraps -->
+        <div class="card" style="padding:10px;margin:0;background:var(--bg-muted,#fdfdfd)">
+          <div class="toolbar" style="margin:0 0 6px">
+            <b>Unreturned Scrap Cores</b>
+            <div class="spacer"></div>
+            <span class="badge ${unreturnedTb ? 'amber' : ''}">${unreturnedTb}</span>
+          </div>
+          <p class="muted" style="font-size:12px;margin:4px 0 6px">Replaced tyres &amp; batteries where old replaced unit is not yet logged.</p>
+          <div style="display:flex;gap:6px;margin:6px 0">
+            <span class="badge ${oh.unreturned_cores && oh.unreturned_cores.tyre ? 'amber' : ''}">🛞 Tyres: ${(oh.unreturned_cores && oh.unreturned_cores.tyre) || 0}</span>
+            <span class="badge ${oh.unreturned_cores && oh.unreturned_cores.battery ? 'amber' : ''}">🔋 Batteries: ${(oh.unreturned_cores && oh.unreturned_cores.battery) || 0}</span>
+          </div>
+          <div style="margin-top:6px">
+            <a class="btn sm" href="#/tbrequests?tab=returns">View Returns Queue →</a>
+          </div>
         </div>
       </div>
     </div>`;
@@ -1196,14 +1261,16 @@ async function dashMain(c) {
   ].filter((w) => canEdit(w.m)).map((w) => `<a class="card stat" href="#/${w.route}" style="text-decoration:none;align-items:flex-start;gap:2px"><span class="n" style="font-size:26px">${w.ico}</span><span class="l"><b>${w.title}</b><br>${w.sub}</span></a>`).join('');
 
   // Top Pulse KPI Ribbon
+  const isAdminOrManager = isAdmin() || canFull('jobs') || canDo('users.manage');
   const kp = (wm && wm.kpis) || {};
   const kpiRibbon = `
-    <div class="grid section" style="grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;margin-bottom:14px">
+    <div class="grid section" style="grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;margin-bottom:14px">
       <div class="card stat"><span class="n">${moneyC(mc.this_month.total)}</span><span class="l">This Month Spend</span></div>
       <a class="card stat" href="#/jobs" style="text-decoration:none"><span class="n">${kp.active_jobs ?? d.open_jobs_count}</span><span class="l">Active Job Cards</span></a>
       <a class="card stat" href="#/jobs?tab=ongoing" style="text-decoration:none"><span class="n">${kp.vehicles_in_workshop ?? 0}</span><span class="l">Vehicles in Workshop</span></a>
       <a class="card stat" href="#/dashboard" style="text-decoration:none"><span class="n" style="color:${kp.total_pending ? 'var(--amber)' : 'var(--green)'}">${kp.total_pending ?? 0}</span><span class="l">Pending Approvals</span></a>
       <a class="card stat" href="#/stores?tab=stock" style="text-decoration:none"><span class="n" style="color:${kp.low_stock_total ? 'var(--red)' : 'inherit'}">${kp.low_stock_total ?? 0}</span><span class="l">Low Stock Items</span></a>
+      ${isAdminOrManager ? `<a class="card stat" href="#admin-onhold-watchboard" style="text-decoration:none"><span class="n" style="color:${(kp.on_hold_total || 0) ? 'var(--red)' : 'var(--green)'}">${kp.on_hold_total ?? 0}</span><span class="l">On-Hold Bottlenecks</span></a>` : ''}
       ${kp.field_down != null ? `<a class="card stat" href="#/field" style="text-decoration:none"><span class="n" style="color:${kp.field_down ? 'var(--red)' : 'inherit'}">${kp.field_down}</span><span class="l">Field Breakdowns Down</span></a>` : ''}
     </div>`;
 
@@ -1213,8 +1280,8 @@ async function dashMain(c) {
     kpiRibbon,
     renderProcessApprovals(wm && wm.approvals_process),
     renderWorkflowRoads(wm),
-    renderOnHoldWatchboard(wm && wm.on_hold)
-  ];
+    isAdminOrManager ? renderOnHoldWatchboard(wm && wm.on_hold) : ''
+  ].filter(Boolean);
   if (wsTiles) S.push(`<div class="card section"><h3 style="margin-top:0">Your workspace</h3><div class="grid">${wsTiles}</div></div>`);
   if (canView('reports')) S.push(`
     <h3 style="margin-top:0">This Month · ${monthName(mc.this_month.month)}</h3>
@@ -1238,18 +1305,11 @@ async function dashMain(c) {
           <td class="num">${money(m.service || 0)}</td>
           <td class="num"><b>${money(m.total)}</b></td></tr>`), { scroll: true })}</div>`);
   const opStats = [];
-  if (canView('jobs')) opStats.push(`<a class="card stat" href="#/jobs" style="text-decoration:none"><span class="n">${d.open_jobs_count}</span><span class="l">Open Job Cards</span></a>
-      <a class="card stat" href="#/jobs?status=CLOSED" style="text-decoration:none"><span class="n">${d.closed_this_month_count}</span><span class="l">Closed This Month</span></a>
-      <a class="card stat" href="#/teardown" style="text-decoration:none"><span class="n">${d.awaiting_price.length}</span><span class="l">Awaiting Price (blocked)</span></a>
-      ${(d.partly_closed || []).length ? `<a class="card stat" href="#/jobs?status=PARTIALLY_CLOSED" style="text-decoration:none"><span class="n">${d.partly_closed.length}</span><span class="l">Partly Closed — awaiting prices</span></a>` : ''}
-      ${d.ready_to_close ? `<a class="card stat" href="#/jobs?tab=ready" style="text-decoration:none"><span class="n" style="color:var(--green)">${d.ready_to_close}</span><span class="l">Ready to close — nothing missing</span></a>` : ''}
-      ${d.field_down != null ? `<a class="card stat" href="#/field" style="text-decoration:none"><span class="n" style="color:${d.field_down ? 'var(--red)' : 'inherit'}">${d.field_down}</span><span class="l">Machines down in the field</span></a>` : ''}`);
   // Attendance (W3): today's tally and the days still to sign off — only while attendance is on.
   const at = d.attendance_today;
   if (at && canView('dailywork')) opStats.push(`<a class="card stat" href="#/dailywork" style="text-decoration:none"><span class="n" style="color:${at.red_count ? 'var(--red)' : 'inherit'}">${at.before_start ? '—' : at.red_count}</span><span class="l">Today's tally — ${at.before_start ? 'not started' : (at.red_count ? 'red' : 'nothing red')}</span></a>
       ${at.unsigned_days.length ? `<a class="card stat" href="#/dailywork?att=${esc(at.unsigned_days[0].date)}${at.unsigned_days[0].workshop_id ? '&att_ws=' + at.unsigned_days[0].workshop_id : ''}" style="text-decoration:none"><span class="n">${at.unsigned_days.length}</span><span class="l">Days to sign off</span></a>` : ''}`);
-  if (canView('oil')) opStats.push(`<a class="card stat" href="#/oil?tab=forecast" style="text-decoration:none"><span class="n">${d.low_stock_oil.length}</span><span class="l">Low-stock Lubricants</span></a>`);
-  if (canView('batteries')) opStats.push(`<a class="card stat" href="#/batteries" style="text-decoration:none"><span class="n">${d.batteries_warranty.length}</span><span class="l">Battery Warranty ≤60d</span></a>`);
+  if (canView('batteries') && d.batteries_warranty && d.batteries_warranty.length) opStats.push(`<a class="card stat" href="#/batteries" style="text-decoration:none"><span class="n">${d.batteries_warranty.length}</span><span class="l">Battery Warranty ≤60d</span></a>`);
   if (canView('stores') || canView('oil')) {
     opStats.push(`<div class="card stat" style="text-decoration:none"><div class="toolbar" style="margin:0 0 4px"><span class="l" style="margin:0"><b>To Reorder</b></span><div class="spacer"></div><span class="badge ${d.low_stock_oil.length ? 'amber' : 'green'}">${d.low_stock_oil.length ? 'Action needed' : 'Healthy'}</span></div>
       <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px">

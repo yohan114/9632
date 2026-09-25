@@ -135,7 +135,7 @@ const DEFAULT_MATRIX = {
     tb_reports: 'view', reports: 'view', workshops: 'none', access: 'none', users: 'none'
   },
   purchase_head_office: {
-    dashboard: 'view', jobs: 'none', jobrequests: 'none', field: 'none', operations: 'none',
+    dashboard: 'none', jobs: 'none', jobrequests: 'none', field: 'none', operations: 'none',
     dailywork: 'none', services: 'none', lubricants: 'none', assets: 'none', labour: 'none',
     stores: 'none', oil: 'none', batteries: 'none', filters: 'none', service_plan: 'none',
     projects: 'none', aliases: 'none', attention: 'none', daily_progress: 'none', cost_teardown: 'none',
@@ -143,7 +143,7 @@ const DEFAULT_MATRIX = {
     tb_reports: 'none', reports: 'none', workshops: 'none', access: 'none', users: 'none'
   },
   purchase_local: {
-    dashboard: 'view', jobs: 'none', jobrequests: 'none', field: 'none', operations: 'none',
+    dashboard: 'none', jobs: 'none', jobrequests: 'none', field: 'none', operations: 'none',
     dailywork: 'none', services: 'none', lubricants: 'none', assets: 'none', labour: 'none',
     stores: 'none', oil: 'none', batteries: 'none', filters: 'none', service_plan: 'none',
     projects: 'none', aliases: 'none', attention: 'none', daily_progress: 'none', cost_teardown: 'none',

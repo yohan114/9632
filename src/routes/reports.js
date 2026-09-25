@@ -56,7 +56,7 @@ function unsignedFor(wsList) {
   return out.sort((a, b) => String(b.date).localeCompare(String(a.date)));
 }
 
-router.get('/dashboard', requireModule('dashboard'), asyncHandler((req, res) => {
+router.get('/dashboard', asyncHandler((req, res) => {
   // Stage 3: the job-card figures are your own workshop's (head office and store staff: all).
   const own = require('../lib/scope').filter(req.user, 'j.workshop_id');
   const andOwn = own.sql ? ` AND ${own.sql}` : '';

@@ -409,10 +409,17 @@ router.get('/workflow-monitor', asyncHandler((req, res) => {
     unpriced_grns_count: sm.steps.unpriced_receipts || 0,
     unpriced_grns_sample: storesFlow.lines(user, { step: 'unpriced', limit: 6 }).map((l) => ({
       id: l.unpriced_grn_id, mrn_no: l.mrn_no, item: l.description, supplier: l.bought_from,
-      qty: l.received, link: `#/stores?tab=items&step=unpriced`
+      qty: l.received, link: `#/stores?tab=flow&sub=lines&step=unpriced`
     })),
     unreturned_cores: sm.old_units_due || { tyre: 0, battery: 0 }
   };
+
+  const on_hold_total = (on_hold.jobs_waiting_parts ? on_hold.jobs_waiting_parts.length : 0)
+    + (on_hold.unattended_jobs ? on_hold.unattended_jobs.length : 0)
+    + (on_hold.dual_open_vehicles ? on_hold.dual_open_vehicles.length : 0)
+    + (on_hold.stuck_cards_count || 0)
+    + (on_hold.unpriced_grns_count || 0)
+    + (on_hold.unreturned_cores ? ((on_hold.unreturned_cores.tyre || 0) + (on_hold.unreturned_cores.battery || 0)) : 0);
 
   const userScope = rReach && rReach.length === 1
     ? { id: rReach[0], label: (get('SELECT name FROM workshops WHERE id = ?', rReach[0]) || {}).name || null }
@@ -421,7 +428,7 @@ router.get('/workflow-monitor', asyncHandler((req, res) => {
   res.json({
     kpis: {
       active_jobs, vehicles_in_workshop, total_pending,
-      monthly_cost_total, low_stock_total,
+      monthly_cost_total, low_stock_total, on_hold_total,
       field_down: jm.watch ? jm.watch.breakdowns_down : null
     },
     jobs_pipeline: jobs_road,
