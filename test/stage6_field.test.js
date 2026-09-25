@@ -45,8 +45,10 @@ const U = {
   tm: mkUser('tm', ['transport_manager']), atm: mkUser('atm', ['assistant_transport_manager']), mgr: mkUser('mgr', ['manager']),
 };
 const day = (n) => { const d = new Date(); d.setDate(d.getDate() + n); return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10); };
-const TODAY = day(0);
-const [YEAR, MONTH] = TODAY.slice(0, 7).split('-').map(Number);
+// The field story happens yesterday, so its times (06:30, 08:00, 11:30) are always in the past
+// whatever hour the tests run at; its month is the month the reports are asked for.
+const DAY = day(-1);
+const [YEAR, MONTH] = DAY.slice(0, 7).split('-').map(Number);
 const at = (d, hm) => `${day(d)} ${hm}`;
 let seq = 0;
 const asset = (code) => run('INSERT INTO assets (code, code_norm, registration, status, in_register) VALUES (?, ?, ?, ?, 1)', code, code.replace(/\W/g, ''), code, 'active').lastInsertRowid;
@@ -55,7 +57,7 @@ const SITE = run("INSERT INTO sites (project_id, name) VALUES (?, 'Spillway')", 
 run("INSERT INTO labour_rates (mechanic, rate, effective_from) VALUES ('Anura', 400, '2020-01-01')");
 const V = { a: asset('EX-1'), b: asset('EX-2'), c: asset('EX-3'), busy: asset('EX-9') };
 const BUSY = run(`INSERT INTO job_cards (job_no, asset_id, type, description, status, is_historical, requested_at, workshop_id)
-  VALUES ('2026/9/R/999', ?, 'repair', 'in the workshop', 'IN_PROGRESS', 0, ?, ?)`, V.busy, TODAY, CW).lastInsertRowid;
+  VALUES ('2026/9/R/999', ?, 'repair', 'in the workshop', 'IN_PROGRESS', 0, ?, ?)`, V.busy, DAY, CW).lastInsertRowid;
 
 const app = require('../src/server');
 let server; let port;
@@ -110,14 +112,14 @@ test('a breakdown from the site: a field job card at once — for the site and t
   await bad({ asset_id: V.a, description: 'hydraulic hose burst' }, 400, /site/);
   await bad({ asset_id: V.a, description: 'x', place: `s:${SITE}`, stopped_at: `${day(1)} 08:00` }, 400, /future/);
   await bad({ asset_id: V.busy, description: 'x', place: `s:${SITE}` }, 409, /already has an open job card \(2026\/9\/R\/999\)/);
-  const r = await req('POST', '/api/field/breakdown', { cookie: atm, body: { asset_id: V.a, description: 'hydraulic hose burst', place: `s:${SITE}`, stopped_at: at(0, '06:30') } });
+  const r = await req('POST', '/api/field/breakdown', { cookie: atm, body: { asset_id: V.a, description: 'hydraulic hose burst', place: `s:${SITE}`, stopped_at: at(-1, '06:30') } });
   assert.strictEqual(r.status, 201, r.text);
   B.a = r.body.job.id;
   const j = jobRow(B.a);
   assert.deepStrictEqual([j.status, j.field, j.breakdown, j.field_place, j.field_location, j.project_id, j.reported_at, j.workshop_id],
-    ['REQUESTED', 1, 1, `s:${SITE}`, 'Spillway (Dam Project)', PROJ, at(0, '06:30'), CW]);
+    ['REQUESTED', 1, 1, `s:${SITE}`, 'Spillway (Dam Project)', PROJ, at(-1, '06:30'), CW]);
   // The workshop can report one too; a storekeeper cannot.
-  const w = await req('POST', '/api/field/breakdown', { cookie: await as('wsC'), body: { asset_id: V.b, description: 'will not start', place: `p:${PROJ}` } });
+  const w = await req('POST', '/api/field/breakdown', { cookie: await as('wsC'), body: { asset_id: V.b, description: 'will not start', place: `p:${PROJ}`, stopped_at: at(-1, '09:00') } });
   assert.strictEqual(w.status, 201, w.text);
   B.b = w.body.job.id;
   assert.strictEqual((await req('POST', '/api/field/breakdown', { cookie: await as('sk'), body: { asset_id: V.c, description: 'x', place: `p:${PROJ}` } })).status, 403);
@@ -134,13 +136,13 @@ test('the times: one button each, in order; response and downtime from them', as
   assert.strictEqual(a1.status, 200, a1.text);
   assert.strictEqual((await req('POST', `/api/field/jobs/${B.a}/arrived`, { cookie: wsC })).status, 409, 'recorded once');
   // Correct the times by hand: arrived 08:00, working 11:30 — response 1.5 h, downtime 5 h.
-  const p = await req('PATCH', `/api/field/jobs/${B.a}`, { cookie: wsC, body: { arrived_at: at(0, '08:00'), working_at: at(0, '11:30') } });
+  const p = await req('PATCH', `/api/field/jobs/${B.a}`, { cookie: wsC, body: { arrived_at: at(-1, '08:00'), working_at: at(-1, '11:30') } });
   assert.strictEqual(p.status, 200, p.text);
   assert.deepStrictEqual([p.body.response_hours, p.body.downtime_hours, p.body.down], [1.5, 5, false]);
   for (const [body, re] of [
-    [{ arrived_at: at(0, '06:00') }, /arrive before the breakdown/],
-    [{ working_at: at(0, '07:00') }, /working again before the mechanic arrived/],
-    [{ arrived_at: '', working_at: at(0, '11:30') }, /arrival before/],
+    [{ arrived_at: at(-1, '06:00') }, /arrive before the breakdown/],
+    [{ working_at: at(-1, '07:00') }, /working again before the mechanic arrived/],
+    [{ arrived_at: '', working_at: at(-1, '11:30') }, /arrival before/],
     [{ reported_at: 'yesterday' }, /date and time/],
   ]) {
     const r = await req('PATCH', `/api/field/jobs/${B.a}`, { cookie: wsC, body });
@@ -178,7 +180,7 @@ test('km at the rate then; travel costed like any hour, shown apart; the columns
   assert.deepStrictEqual([v.km_rate, v.transport_cost], [200, 10000], 'new km: the rate now');
   // Travel: 2 h there and back, 3 h of work.
   for (const [hours, travel] of [[2, true], [3, false]]) {
-    const r = await req('POST', `/api/jobs/${B.a}/daily-work`, { cookie: wsC, body: { work_date: TODAY, mechanic: 'Anura', hours, travel, description: travel ? 'to site and back' : 'hose replaced' } });
+    const r = await req('POST', `/api/jobs/${B.a}/daily-work`, { cookie: wsC, body: { work_date: DAY, mechanic: 'Anura', hours, travel, description: travel ? 'to site and back' : 'hose replaced' } });
     assert.strictEqual(r.status, 201, r.text);
   }
   assert.deepStrictEqual(all('SELECT hours, travel FROM job_daily_work WHERE job_id = ? ORDER BY id', B.a), [{ hours: 2, travel: 1 }, { hours: 3, travel: 0 }]);
@@ -188,7 +190,7 @@ test('km at the rate then; travel costed like any hour, shown apart; the columns
   assert.strictEqual(j.labour_cost + j.material_cost + j.oil_cost + j.general_cost + j.other_cost, j.total_cost, 'the stored columns add up');
   assert.strictEqual(fieldLib.view(j).travel_hours, 2);
   // Travel on an external line is not travel.
-  await req('POST', `/api/jobs/${B.a}/daily-work`, { cookie: wsC, body: { work_date: TODAY, hours: 1, travel: true, is_external: true, external_value: 500 } });
+  await req('POST', `/api/jobs/${B.a}/daily-work`, { cookie: wsC, body: { work_date: DAY, hours: 1, travel: true, is_external: true, external_value: 500 } });
   assert.strictEqual(get('SELECT travel FROM job_daily_work WHERE job_id = ? ORDER BY id DESC LIMIT 1', B.a).travel, 0);
 });
 
@@ -220,12 +222,12 @@ test('the field board: still down first; the dashboard counts them; kept apart, 
 // ================================================================== returns
 test('parts brought back unused: back into the store they left, off the job\'s cost', async () => {
   run("INSERT INTO store_items (name, is_general, balance) VALUES ('Hydraulic Hose', 1, 0)");
-  const g = run("INSERT INTO general_item_txns (store_item_id, txn_type, qty, balance_after, txn_date) VALUES ((SELECT id FROM store_items WHERE name = 'Hydraulic Hose'), 'opening', 10, 10, ?)", day(-1)).lastInsertRowid;
+  const g = run("INSERT INTO general_item_txns (store_item_id, txn_type, qty, balance_after, txn_date) VALUES ((SELECT id FROM store_items WHERE name = 'Hydraulic Hose'), 'opening', 10, 10, ?)", day(-2)).lastInsertRowid;
   void g;
   stock.syncItems(); stock.rebuild({ wipe: true });
   const item = get("SELECT id, item_key FROM stock_items WHERE name = 'Hydraulic Hose'");
   const sk = await as('sk');
-  const iss = await req('POST', '/api/stores/stock-issue', { cookie: sk, body: { job_id: B.a, issue_date: TODAY, lines: [{ stock_item_id: item.id, qty: 5, unit_price: 1000 }] } });
+  const iss = await req('POST', '/api/stores/stock-issue', { cookie: sk, body: { job_id: B.a, issue_date: DAY, lines: [{ stock_item_id: item.id, qty: 5, unit_price: 1000 }] } });
   assert.strictEqual(iss.status, 201, iss.text);
   const issue = get('SELECT * FROM issues WHERE job_id = ? ORDER BY id DESC LIMIT 1', B.a);
   const bal = () => stock.balanceOf('general', item.item_key, null);
@@ -258,12 +260,12 @@ test('parts brought back unused: back into the store they left, off the job\'s c
 test('a received part handed over and returned: the receipt has it on the shelf again', async () => {
   const m = run("INSERT INTO mrn (mrn_no, requested_by, approval_status, job_id) VALUES ('R6-1', 'x', 'approved', ?)", B.b).lastInsertRowid;
   const l = run("INSERT INTO mrn_lines (mrn_id, description, qty, category) VALUES (?, 'Starter Motor', 1, 'General Items')", m).lastInsertRowid;
-  const gid = run("INSERT INTO grn (grn_no, mrn_id, mrn_line_id, description, qty, unit_price, delivery_date) VALUES ('G6-1', ?, ?, 'Starter Motor', 1, 45000, ?)", m, l, TODAY).lastInsertRowid;
+  const gid = run("INSERT INTO grn (grn_no, mrn_id, mrn_line_id, description, qty, unit_price, delivery_date) VALUES ('G6-1', ?, ?, 'Starter Motor', 1, 45000, ?)", m, l, DAY).lastInsertRowid;
   run("INSERT INTO job_parts (job_id, source_type, source_id, mrn_line_id, description, qty, unit_price) VALUES (?, 'grn', ?, ?, 'Starter Motor', 1, 45000)", B.b, gid, l);
   costing.refreshJobTotals(B.b);
   stock.rebuild({ wipe: true });
   const sk = await as('sk');
-  assert.strictEqual((await req('POST', '/api/stores/stock-issue', { cookie: sk, body: { job_id: B.b, issue_date: TODAY, lines: [{ grn_id: gid, qty: 1 }] } })).status, 201);
+  assert.strictEqual((await req('POST', '/api/stores/stock-issue', { cookie: sk, body: { job_id: B.b, issue_date: DAY, lines: [{ grn_id: gid, qty: 1 }] } })).status, 201);
   assert.strictEqual(stock.receivedLine(gid).remaining, 0);
   const cost0 = jobRow(B.b).total_cost;
   const issue = get('SELECT id FROM issues WHERE grn_id = ?', gid);
@@ -274,7 +276,7 @@ test('a received part handed over and returned: the receipt has it on the shelf 
 
 // ================================================================== reports
 test('the Job Cost workbook: a Field work sheet with each job and each site; closed field jobs say so', async () => {
-  run("UPDATE job_cards SET status = 'CLOSED', completed_at = ? WHERE id = ?", TODAY, B.a);
+  run("UPDATE job_cards SET status = 'CLOSED', completed_at = ? WHERE id = ?", DAY, B.a);
   const { wb, parts } = await monthly.buildWorkbook(YEAR, MONTH);
   const ws = wb.getWorksheet('Field work');
   assert.ok(ws, 'a month with field work has the sheet');
@@ -285,7 +287,7 @@ test('the Job Cost workbook: a Field work sheet with each job and each site; clo
   let marked = null;
   repair.eachRow((row) => { if (row.getCell(3).value === jobRow(B.a).job_no) marked = row.getCell(15).value; });
   assert.strictEqual(marked, 'Field · 50 km');
-  const month = (await req('GET', `/api/field/month?month=${TODAY.slice(0, 7)}`, { cookie: await as('mgr') })).body;
+  const month = (await req('GET', `/api/field/month?month=${DAY.slice(0, 7)}`, { cookie: await as('mgr') })).body;
   assert.deepStrictEqual(month.sites.map((s) => [s.site, s.jobs]).sort(), [['Dam Project', 1], ['Spillway (Dam Project)', 1]]);
   // A closed card's field details are locked.
   assert.strictEqual((await req('PATCH', `/api/field/jobs/${B.a}`, { cookie: await as('wsC'), body: { km: 1 } })).status, 409);
