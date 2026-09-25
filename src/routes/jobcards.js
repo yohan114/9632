@@ -396,6 +396,8 @@ router.get(
       field: require('../lib/field').view(get('SELECT * FROM job_cards WHERE id = ?', id)),
       // Stage 7: the workshops this card was sent between, and why.
       handovers: require('../lib/operations').jobHandovers(id),
+      // Job cards plan, Part 2: attended or not, and why not (the reasons given, newest first).
+      attended: require('../lib/jobs_flow').attendanceOf(req.user, id),
       approvals,
       dailyWork,
       parts,

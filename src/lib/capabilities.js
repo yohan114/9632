@@ -68,6 +68,8 @@ const CAPABILITIES = [
   C('jobs.reject', 'jobs', 'Reject a job card at an approval step', ['transport_manager', 'operational_manager'], 'jobs'),
   C('jobs.return', 'jobs', 'Send a job card back to "requested"', ['transport_manager', 'operational_manager'], 'jobs'),
   C('jobs.reopen', 'jobs', 'Reopen a CLOSED job card', ['operational_manager', 'manager', 'workshop'], 'jobs'),
+  // Job cards plan, Part 2: say why a card in the workshop is not being worked on.
+  C('jobs.reason', 'jobs', 'Say why a job in the workshop is not being worked on', ['workshop', 'transport_manager', 'operational_manager', 'manager'], 'jobs'),
   C('jobs.dailywork', 'jobs', 'Add or remove daily work on a job card', ['workshop'], 'jobs'),
   C('jobs.parts', 'jobs', 'Add, price or remove parts on a job card', ['workshop', 'storekeeper'], 'jobs'),
   C('jobs.flat_labour', 'jobs', 'Set a service job\'s flat labour charge', ['workshop', 'operational_manager'], 'jobs'),

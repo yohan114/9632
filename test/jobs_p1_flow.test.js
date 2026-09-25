@@ -281,7 +281,8 @@ test('a job request needs Job Requests; a card needs Job Cards; neither, no list
 test('the Monitor counts each step; imported cards and holders are left out', async () => {
   const m = ok(await call('boss', 'GET', '/job-flow/monitor'));
   assert.deepStrictEqual(m.requests, { to_certify: 2, to_approve: 1, transport: 2, operations: 1, reopen: 1, open: 7 });
-  assert.deepStrictEqual(m.workshop, { waiting_to_start: 2, in_progress: 1, worked_today: 1 });
+  assert.deepStrictEqual(m.workshop, { all: 3, not_started: 2, worked_today: 1, idle_1_2: 0, idle_3: 0, waiting_parts: 0, no_reason: 0, idle_mechanics: null },
+    'the Ongoing counts (Part 2): two approved, not started; one worked on today');
   assert.deepStrictEqual(m.finishing, { work_done: 1, partly_closed: 1 });
   assert.deepStrictEqual(m.watch, { breakdowns_down: null, reopen: 1, stuck: 2, two_open: 4 });
   assert.strictEqual(m.scope, null, 'head office: every workshop');
@@ -299,7 +300,7 @@ test('with the workshops kept apart, each sees its own', async () => {
     const mt = await list('wsM');
     assert.deepStrictEqual(mt.rows.map((r) => [r.kind, r.id]), [['card', CM]], 'Muthur only');
     const m = ok(await call('wsM', 'GET', '/job-flow/monitor'));
-    assert.deepStrictEqual([m.scope.label, m.requests.transport, m.workshop.in_progress], ['Muthur Workshop', 1, 0]);
+    assert.deepStrictEqual([m.scope.label, m.requests.transport, m.workshop.all], ['Muthur Workshop', 1, 0]);
     // Head office sees both.
     assert.strictEqual((await list('boss', '?step=transport')).rows.length, 2);
   } finally {

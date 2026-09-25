@@ -18,7 +18,7 @@
 // which is exactly what the review screen is for.
 // ===========================================================================
 
-const { get, all } = require('../db');
+const { get, all, run } = require('../db');
 const scope = require('./scope');
 const jobstate = require('./jobstate');
 const review = require('./job_review');
@@ -269,7 +269,230 @@ function counts(user) {
   return n;
 }
 
+// ---- Ongoing: attended or not attended (job cards plan, Part 2) ------------------------------------
+//
+// Every card in the workshop — approved, in the workshop, or in progress. A card is ATTENDED on a
+// day when it has a daily-work line that day, any mechanic, any hours (JC-D3). Not worked on today,
+// it has gone that many working days without work (Sundays do not count, JC-D4): 1–2 is amber, 3 or
+// more is red. A card with no work yet is "not started", counted from its approval.
+//
+// Why a card is not being worked on: "waiting for parts" is read from the Stores list — any part
+// requested for the card and not yet issued (JC-D6); anything else a supervisor says, with a reason
+// kept in job_hold_reasons (JC-D5). A reason given since the card was last worked on is its reason
+// now; once work is recorded again it is history. Red cards with no reason come first.
+const ONGOING = ['APPROVED_OPERATIONS', 'IN_WORKSHOP', 'IN_PROGRESS'];
+const RED_AFTER = 3;
+const REASONS = {
+  waiting_mechanic: 'Waiting for a mechanic', waiting_parts: 'Waiting for parts (not in Stores)',
+  outside_repair: 'Outside repair', waiting_decision: 'Waiting for a decision', vehicle_away: 'Vehicle not here', other: 'Other',
+};
+const SHOW = ['all', 'today', 'idle', 'red', 'not_started', 'parts', 'no_reason', 'field'];
+
+/** Working days after `from` up to and including `to` (YYYY-MM-DD); Sundays do not count. */
+function workingDays(from, to) {
+  const a = Date.parse(day10(from)); const b = Date.parse(day10(to));
+  if (!(b > a)) return 0;
+  const days = Math.round((b - a) / 86400000);
+  const dow = new Date(a).getUTCDay();
+  let n = Math.floor(days / 7) * 6;
+  for (let i = 1; i <= days % 7; i++) if ((dow + i) % 7 !== 0) n++;
+  return n;
+}
+
+/** A card's attended state today: { state: today | amber | red | not_started, idle }. */
+function attendedState(r, now = today()) {
+  if (!r.last_work) {
+    const idle = workingDays(r.approved_ops_at || r.started_at || r.requested_at, now);
+    return { state: 'not_started', idle };
+  }
+  if (day10(r.last_work) >= now) return { state: 'today', idle: 0 };
+  const idle = Math.max(1, workingDays(r.last_work, now));
+  return { state: idle >= RED_AFTER ? 'red' : 'amber', idle };
+}
+
+/** Parts requested for these cards and not yet issued, by card — the Stores list's own rules. */
+function partsWaiting(jobIds) {
+  const out = new Map();
+  if (!jobIds.length) return out;
+  const sf = require('./stores_flow');
+  const rows = all(
+    `SELECT x.* FROM (${sf.LINE_SQL} WHERE m.job_id IN (${jobIds.map(() => '?').join(',')})) x
+      WHERE x.inflow = 1 AND x.approval_status <> 'rejected' AND x.mrn_status <> 'cancelled'
+        AND x.request_type <> 'general' AND x.issued < x.qty - 0.001
+      ORDER BY x.req_date, x.id`, ...jobIds);
+  for (const x of rows) {
+    if (!out.has(x.job_id)) out.set(x.job_id, []);
+    out.get(x.job_id).push({ id: x.id, mrn_id: x.mrn_id, mrn_no: x.mrn_no, description: x.description, qty: x.qty,
+      received: x.received, issued: x.issued, unit: x.unit, step: sf.stepOf(x), req_date: day10(x.req_date) });
+  }
+  return out;
+}
+
+/** The newest reason given for each card, with who gave it. */
+function latestReasons(jobIds) {
+  if (!jobIds.length) return new Map();
+  return new Map(all(
+    `SELECT r.*, COALESCE(u.full_name, u.username) AS set_by_name FROM job_hold_reasons r LEFT JOIN users u ON u.id = r.set_by
+      WHERE r.id IN (SELECT MAX(id) FROM job_hold_reasons WHERE job_id IN (${jobIds.map(() => '?').join(',')}) GROUP BY job_id)`, ...jobIds)
+    .map((r) => [r.job_id, r]));
+}
+const reasonView = (r) => (r ? { code: r.reason, label: REASONS[r.reason] || r.reason, note: r.note, set_at: r.set_at, set_by: r.set_by_name } : null);
+
+function ongoingRows(user, f = {}, onlyIds = null) {
+  const w = [`j.status IN (${ONGOING.map(() => '?').join(',')})`, 'COALESCE(j.is_historical, 0) = 0', `NOT ${review.CONTAINER_SQL}`];
+  const p = [...ONGOING];
+  // user null: one card read for its own page, which checked who may see it.
+  const own = user ? scope.filter(user, 'j.workshop_id') : { sql: '' };
+  if (own.sql) { w.push(own.sql); p.push(...own.params); }
+  if (onlyIds) { w.push(`j.id IN (${onlyIds.map(() => '?').join(',') || 'NULL'})`); p.push(...onlyIds); }
+  if (f.workshop_id) { w.push('j.workshop_id = ?'); p.push(Number(f.workshop_id)); }
+  if (f.type) { w.push('j.type = ?'); p.push(f.type); }
+  if (f.q) {
+    w.push('(j.job_no LIKE ? OR j.description LIKE ? OR a.code LIKE ? OR a.registration LIKE ? OR a.ec_code LIKE ?)');
+    for (let i = 0; i < 5; i++) p.push(f.q);
+  }
+  const now = today();
+  return all(
+    `SELECT j.id, j.job_no, j.status, j.type, j.description, j.requested_at, j.approved_ops_at, j.started_at,
+            j.field, j.breakdown, j.workshop_id, w.code AS workshop_code, j.asset_id, ${ASSET},
+            (SELECT MAX(d.work_date) FROM job_daily_work d WHERE d.job_id = j.id) AS last_work,
+            (SELECT ROUND(COALESCE(SUM(d.hours), 0), 2) FROM job_daily_work d WHERE d.job_id = j.id) AS hours,
+            (SELECT GROUP_CONCAT(DISTINCT d.mechanic) FROM job_daily_work d WHERE d.job_id = j.id AND d.work_date = ?) AS today_mechanics,
+            (SELECT GROUP_CONCAT(DISTINCT d.mechanic) FROM job_daily_work d WHERE d.job_id = j.id
+                AND d.work_date = (SELECT MAX(d2.work_date) FROM job_daily_work d2 WHERE d2.job_id = j.id)) AS last_mechanics
+       FROM job_cards j LEFT JOIN assets a ON a.id = j.asset_id LEFT JOIN workshops w ON w.id = j.workshop_id
+      WHERE ${w.join(' AND ')}`, now, ...p);
+}
+
+/** Shape the cards: attended state, why not, parts waiting, what the person may do. */
+function shapeOngoing(user, rows) {
+  const now = today();
+  const ids = rows.map((r) => r.id);
+  const parts = partsWaiting(ids);
+  const reasons = latestReasons(ids);
+  const mayReason = !!user && hasCap(user, 'jobs.reason');
+  return rows.map((r) => {
+    const a = attendedState(r, now);
+    const lines = parts.get(r.id) || [];
+    const given = reasons.get(r.id);
+    // A reason given before the card was last worked on is history, not the reason now.
+    const current = given && (!r.last_work || day10(given.set_at) >= day10(r.last_work)) ? reasonView(given) : null;
+    const late = a.state === 'red' || (a.state === 'not_started' && a.idle >= RED_AFTER);
+    return {
+      id: r.id, job_no: r.job_no, status: r.status, type: r.type, description: r.description, field: !!r.field, breakdown: !!r.breakdown,
+      workshop_id: r.workshop_id, workshop_code: r.workshop_code, ...vehicle(r),
+      days_open: daysSince(r.requested_at, now), state: a.state, idle: a.idle, late,
+      last_worked: day10(r.last_work), last_mechanics: r.last_mechanics, today_mechanics: r.today_mechanics, hours: r.hours || 0,
+      parts: { waiting: lines.length, lines: lines.slice(0, 8) },
+      reason: a.state === 'today' ? null : current,
+      needs_reason: late && !lines.length && !current,
+      road: roadOf(r.status), link: '#/jobs/' + r.id,
+      can: { reason: mayReason && a.state !== 'today' },
+    };
+  });
+}
+
+const ORDER = (r) => (r.needs_reason ? 0 : r.state === 'red' ? 1 : (r.late ? 2 : ({ amber: 3, not_started: 4, today: 5 }[r.state])));
+
+/**
+ * The Ongoing list. query: show (see SHOW; default all), q, type, workshop_id, limit.
+ * Returns { rows, counts } — counts over every card in the person's reach, not just the filter.
+ */
+function ongoing(user, query = {}) {
+  const f = {
+    q: String(query.q || '').trim() ? '%' + String(query.q).trim() + '%' : null,
+    type: ['repair', 'service'].includes(query.type) ? query.type : null,
+    workshop_id: query.workshop_id ? Number(query.workshop_id) : null,
+  };
+  const everything = shapeOngoing(user, ongoingRows(user, {}));
+  const counts = ongoingCounts(everything);
+  const show = SHOW.includes(query.show) ? query.show : 'all';
+  const keep = {
+    all: () => true, today: (r) => r.state === 'today', idle: (r) => r.state === 'amber' || r.state === 'red',
+    red: (r) => r.state === 'red', not_started: (r) => r.state === 'not_started', parts: (r) => r.parts.waiting > 0,
+    no_reason: (r) => r.needs_reason, field: (r) => r.field,
+  }[show];
+  const narrowed = f.q || f.type || f.workshop_id ? new Set(ongoingRows(user, f).map((r) => r.id)) : null;
+  const rows = everything.filter((r) => keep(r) && (!narrowed || narrowed.has(r.id)))
+    .sort((a, b) => (ORDER(a) - ORDER(b)) || (b.idle - a.idle) || (a.job_no > b.job_no ? 1 : -1));
+  const limit = Math.min(Math.max(Number(query.limit) || 500, 1), 5000);
+  return { rows: rows.slice(0, limit), counts };
+}
+
+function ongoingCounts(rows) {
+  const n = { all: rows.length, today: 0, idle: 0, amber: 0, red: 0, not_started: 0, parts: 0, no_reason: 0, field: 0 };
+  for (const r of rows) {
+    if (r.state === 'today') n.today++;
+    if (r.state === 'amber') { n.amber++; n.idle++; }
+    if (r.state === 'red') { n.red++; n.idle++; }
+    if (r.state === 'not_started') n.not_started++;
+    if (r.parts.waiting) n.parts++;
+    if (r.needs_reason) n.no_reason++;
+    if (r.field) n.field++;
+  }
+  return n;
+}
+
+/** One card's attended state, its reason now and every reason given (the card's own page). */
+function attendanceOf(user, jobId) {
+  if (!get('SELECT id FROM job_cards WHERE id = ?', jobId)) return null;
+  const history = all(
+    `SELECT r.*, COALESCE(u.full_name, u.username) AS set_by_name FROM job_hold_reasons r LEFT JOIN users u ON u.id = r.set_by
+      WHERE r.job_id = ? ORDER BY r.id DESC`, jobId).map(reasonView);
+  // Read as the list reads it, whatever the list's filters (the page itself checked who may see it);
+  // a card not in the workshop is not found.
+  const row = ongoingRows(null, {}, [jobId])[0];
+  if (!row) return { ongoing: false, history };
+  return { ongoing: true, ...shapeOngoing(user, [row])[0], history };
+}
+
+/** For a report: each ongoing card's attended state and why, in words. Other cards are left out. */
+function labelsFor(jobIds) {
+  const out = new Map();
+  if (!jobIds.length) return out;
+  for (const r of shapeOngoing(null, ongoingRows(null, {}, jobIds))) {
+    const attended = r.state === 'today' ? 'Worked today'
+      : r.state === 'not_started' ? `Not started (${r.idle} day${r.idle === 1 ? '' : 's'})` : `Not attended ${r.idle} day${r.idle === 1 ? '' : 's'}`;
+    const why = [r.parts.waiting ? `Waiting for parts (${r.parts.waiting})` : null,
+      r.reason ? r.reason.label + (r.reason.note ? ': ' + r.reason.note : '') : null].filter(Boolean).join('; ');
+    out.set(r.id, { attended, why: why || (r.needs_reason ? 'No reason given' : '') });
+  }
+  return out;
+}
+
+/** Say why a card in the workshop is not being worked on. */
+function setReason(user, jobId, { reason, note } = {}) {
+  const job = get('SELECT id, job_no, status FROM job_cards WHERE id = ?', jobId);
+  if (!job) { const e = new Error('Job card not found'); e.status = 404; throw e; }
+  if (!ONGOING.includes(job.status)) { const e = new Error(`${job.job_no} is not in the workshop (${job.status.replace(/_/g, ' ').toLowerCase()}).`); e.status = 409; throw e; }
+  if (!REASONS[reason]) { const e = new Error('Choose a reason from the list.'); e.status = 400; throw e; }
+  const text = String(note || '').trim().slice(0, 300) || null;
+  if (reason === 'other' && (!text || text.length < 3)) { const e = new Error('Say what the reason is.'); e.status = 400; throw e; }
+  const id = run('INSERT INTO job_hold_reasons (job_id, reason, note, set_by) VALUES (?, ?, ?, ?)', job.id, reason, text, user.id).lastInsertRowid;
+  require('./audit').record({ userId: user.id, entity: 'job_card', entityId: job.id, action: 'hold_reason', after: { reason, note: text } });
+  return id;
+}
+
 // ---- the Monitor -----------------------------------------------------------------------------------
+/**
+ * Mechanics present today who are booked on no job (JC-D12) — from attendance, when it is recorded,
+ * for whoever may read Daily Work; each workshop's own, head office all. null when not known.
+ */
+function idleMechanics(user) {
+  const att = require('./attendance');
+  if (!att.isEnabled() || !sees(user, 'dailywork')) return null;
+  const home = scope.enabled() ? scope.onlyWorkshop(user, { store: false }) : null;
+  const wsList = !scope.enabled() ? [null] : (home ? [home] : all('SELECT id FROM workshops WHERE active = 1').map((x) => x.id));
+  const t = att.today();
+  let n = 0;
+  for (const ws of wsList) {
+    for (const r of att.day(t, { ws }).rows) {
+      if (r.attendance && ['present', 'half_day'].includes(r.attendance.status) && !(r.booked_hours > 0)) n++;
+    }
+  }
+  return n;
+}
+
 /**
  * What is waiting at each step, in the person's workshops (head office: all). A part is null when
  * the person may not see it: requests without Job Requests, the rest without Job Cards.
@@ -288,15 +511,14 @@ function monitor(user) {
   const own = scope.filter(user, 'j.workshop_id');
   const LIVE = `COALESCE(j.is_historical, 0) = 0 AND NOT ${review.CONTAINER_SQL}${own.sql ? ' AND ' + own.sql : ''}`;
   const c = get(
-    `SELECT SUM(j.status IN ('APPROVED_OPERATIONS','IN_WORKSHOP')) AS waiting_to_start,
-            SUM(j.status = 'IN_PROGRESS') AS in_progress,
-            SUM(j.status = 'WORK_COMPLETE') AS work_done,
-            SUM(j.status = 'PARTIALLY_CLOSED') AS partly_closed,
-            SUM(${jobstate.openSql('j')} AND EXISTS (SELECT 1 FROM job_daily_work d WHERE d.job_id = j.id
-                  AND d.work_date = date('now', 'localtime'))) AS worked_today
+    `SELECT SUM(j.status = 'WORK_COMPLETE') AS work_done,
+            SUM(j.status = 'PARTIALLY_CLOSED') AS partly_closed
        FROM job_cards j WHERE ${LIVE}`, ...own.params);
   for (const k of Object.keys(c)) c[k] = c[k] || 0;
-  out.workshop = { waiting_to_start: c.waiting_to_start, in_progress: c.in_progress, worked_today: c.worked_today };
+  // In the workshop (Part 2): the Ongoing list's own counts.
+  const og = ongoingCounts(shapeOngoing(user, ongoingRows(user, {})));
+  out.workshop = { all: og.all, not_started: og.not_started, worked_today: og.today, idle_1_2: og.amber, idle_3: og.red,
+    waiting_parts: og.parts, no_reason: og.no_reason, idle_mechanics: idleMechanics(user) };
   out.finishing = { work_done: c.work_done, partly_closed: c.partly_closed };
   const fieldInUse = !!get('SELECT 1 x FROM job_cards WHERE field = 1 LIMIT 1');
   out.watch = {
@@ -308,4 +530,5 @@ function monitor(user) {
   return out;
 }
 
-module.exports = { ROAD, STEPS, OPEN_STEPS, roadOf, requests, counts, monitor, sees };
+module.exports = { ROAD, STEPS, OPEN_STEPS, REASONS, SHOW, ONGOING, roadOf, requests, counts, monitor, sees,
+  workingDays, attendedState, ongoing, attendanceOf, setReason, labelsFor };

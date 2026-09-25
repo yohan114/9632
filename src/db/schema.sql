@@ -1257,3 +1257,16 @@ CREATE TABLE IF NOT EXISTS disposal_lines (
   unit         TEXT                            -- nos | L | kg
 );
 CREATE INDEX IF NOT EXISTS idx_disposal_lines ON disposal_lines(disposal_id);
+
+-- Job cards plan, Part 2: why a card in the workshop is not being worked on (JC-D5). The newest row
+-- given since the card was last worked on is its reason now; older ones are its history. "Waiting
+-- for parts" is not stored: it is read from the Stores list (src/lib/jobs_flow.js).
+CREATE TABLE IF NOT EXISTS job_hold_reasons (
+  id        INTEGER PRIMARY KEY AUTOINCREMENT,
+  job_id    INTEGER NOT NULL REFERENCES job_cards(id) ON DELETE CASCADE,
+  reason    TEXT NOT NULL,          -- waiting_mechanic | waiting_parts | outside_repair | waiting_decision | vehicle_away | other
+  note      TEXT,
+  set_by    INTEGER REFERENCES users(id),
+  set_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_job_hold_reasons ON job_hold_reasons(job_id, id);
