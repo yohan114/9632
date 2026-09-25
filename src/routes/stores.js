@@ -1442,7 +1442,7 @@ function tbGrnAllowed(user, mrnLineId) {
   const line = get('SELECT category FROM mrn_lines WHERE id = ?', mrnLineId);
   const cat = String((line && line.category) || '').toLowerCase();
   if (!/tyre|batter/.test(cat)) return true;
-  return permissions.meets(permissions.levelForRoles(user.roles, 'tb_grn'), 'edit');
+  return permissions.meets(permissions.levelFor(user, 'tb_grn'), 'edit');
 }
 
 router.post('/grn', requireCap('stores.grn.receive'), asyncHandler((req, res) => {
@@ -1621,7 +1621,8 @@ router.post('/counts/:id/send-back', requireCap('stores.count.approve'), asyncHa
 }));
 // Head office cancels from stores=view (src/server.js lets the path through); the store's own staff
 // need the stores edit level like any other change.
-const headOfficeOrEdit = (req, res, next) => (stockCount.mayApprove(req.user) ? next() : permissions.requireModule('stores')(req, res, next));
+// Cancelling changes a record: edit (a POST alone asks add).
+const headOfficeOrEdit = (req, res, next) => (stockCount.mayApprove(req.user) ? next() : permissions.requireModule('stores', 'edit')(req, res, next));
 router.post('/counts/:id/cancel', headOfficeOrEdit, asyncHandler((req, res) => {
   res.json(stockCount.cancel(req.user, toInt(req.params.id), (req.body || {}).reason));
 }));
@@ -1659,7 +1660,7 @@ router.put('/disposals/:id', requireCap('stores.disposal.edit'), asyncHandler((r
 router.post('/disposals/:id/approve', requireCap('stores.disposal.approve'), asyncHandler((req, res) => {
   res.json(disposal.approve(req.user, toInt(req.params.id), req.body || {}));
 }));
-const approverOrEdit = (req, res, next) => (disposal.mayApprove(req.user) ? next() : permissions.requireModule('stores')(req, res, next));
+const approverOrEdit = (req, res, next) => (disposal.mayApprove(req.user) ? next() : permissions.requireModule('stores', 'edit')(req, res, next));
 router.post('/disposals/:id/cancel', approverOrEdit, asyncHandler((req, res) => {
   res.json(disposal.cancel(req.user, toInt(req.params.id), (req.body || {}).reason));
 }));

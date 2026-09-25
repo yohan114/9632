@@ -38,7 +38,7 @@ function startSession(req, res, user, { mfaVerified = false, method = 'password'
     username: user.username,
     fullName: user.full_name,
     roles,
-    permissions: permissions.userPermissions(roles),
+    permissions: permissions.userLevels({ id: user.id, roles }),
     caps,
     capNeeds: capabilities.needsFor(caps),
     mustChangePassword: !!user.must_change_password,
@@ -280,12 +280,13 @@ router.get('/me', (req, res) => {
   const u = get('SELECT signature FROM users WHERE id = ?', req.user.id);
   // The session token is the key to this account; it lives in an httpOnly cookie precisely so page
   // script cannot read it. Echoing it back in a JSON body would undo that.
-  const { token: _token, ...me } = req.user;
+  const { token: _token, levels, ...me } = req.user;
   // Home workshop, and whether there is more than one (multi-site Stage 2): the screens show
   // workshop pickers and filters only when there is.
   const ws = require('../lib/workshops');
   const home = ws.byId(ws.homeOf(req.user));
-  res.json({ ...me, permissions: permissions.userPermissions(req.user.roles), hasSignature: !!(u && u.signature),
+  // Each switch's level for this person: their own where set, else their roles' (access plan, Part 2).
+  res.json({ ...me, permissions: levels || permissions.userLevels(req.user), hasSignature: !!(u && u.signature),
     workshop: home ? { id: home.id, code: home.code, name: home.name } : null, workshopsMulti: ws.isMulti(),
     // Stage 3: whether this person sees every workshop's job cards (always, until scoping is on).
     seesAllWorkshops: require('../lib/scope').seesAllJobs(req.user),

@@ -123,6 +123,7 @@ router.post('/:id/roles', requireCap('users.manage'), asyncHandler((req, res) =>
   const current = all('SELECT r.name FROM user_roles ur JOIN roles r ON r.id = ur.role_id WHERE ur.user_id = ?', id).map((r) => r.name);
   rules.assertCanAssignRoles(req.user, roles.filter((r) => !current.includes(r)));
   rules.assertKeepsAnAdmin({ userId: id, newRoles: roles });
+  rules.assertNotOwn(req.user, id);   // your roles are your access: someone else changes them (Part 2)
   tx(() => setRoles(id, roles));
   audit.record({ userId: req.user.id, entity: 'user', entityId: id, action: 'set_roles', before: { roles: current }, after: { roles } });
   res.json(userWithRoles(id));

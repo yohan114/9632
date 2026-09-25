@@ -181,6 +181,9 @@ function authenticate(req, res, next) {
         sessionId: sess.id,
         token,
       };
+      // The person's level on every section switch — their own where one was set for them, else
+      // their roles' (access plan, Part 2). Read fresh on every request, like the permissions.
+      req.user.levels = require('./permissions').userLevels(req.user);
     }
   }
   next();

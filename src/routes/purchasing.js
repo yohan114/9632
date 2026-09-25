@@ -143,7 +143,9 @@ router.post('/seen', requireAuth, asyncHandler((req, res) => {
 
 // ---- moving an item between the two channels -------------------------------
 
-router.post('/lines/:id/source', requireAuth, asyncHandler((req, res) => {
+// Changing where a line is bought, and marking it bought, change the line: edit (a POST alone asks add).
+const editsLine = require('../lib/permissions').requireModule('purchasing', 'edit');
+router.post('/lines/:id/source', requireAuth, editsLine, asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   const line = get('SELECT l.*, m.mrn_no FROM mrn_lines l JOIN mrn m ON m.id = l.mrn_id WHERE l.id = ?', id);
   if (!line) return res.status(404).json({ error: 'Item not found' });
@@ -210,7 +212,7 @@ function imageError(list) {
   return null;
 }
 
-router.post('/lines/:id/purchase', requireAuth, asyncHandler((req, res) => {
+router.post('/lines/:id/purchase', requireAuth, editsLine, asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   const line = get('SELECT l.*, m.mrn_no FROM mrn_lines l JOIN mrn m ON m.id = l.mrn_id WHERE l.id = ?', id);
   if (!line) return res.status(404).json({ error: 'Item not found' });

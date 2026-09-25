@@ -34,7 +34,7 @@ const jobstate = require('../lib/jobstate');
 
 const router = express.Router();
 
-const dailyWorkLevel = (user) => permissions.levelForRoles(user.roles || [], 'dailywork');
+const dailyWorkLevel = (user) => permissions.levelFor(user, 'dailywork');
 router.use((req, res, next) => {
   if (!req.user) return res.status(401).json({ error: 'Authentication required' });
   if (permissions.meets(dailyWorkLevel(req.user), 'view')) return next();

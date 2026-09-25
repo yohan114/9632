@@ -15,8 +15,11 @@
 //   3. There is always an admin. The last active admin cannot be switched off or demoted — by
 //      anyone, including themselves — because recovering from that needs shell access to the
 //      server (scripts/admin.js).
+//   4. Nobody changes their own access (access plan, Part 2): a person's own levels are set by
+//      someone else, admin or not.
 //
-// Admins pass rules 1 and 2 by definition; rule 3 applies to everybody.
+// "What you hold" is your own level on each switch: your roles', or your own where one was set
+// for you. Admins pass rules 1 and 2 by definition; rules 3 and 4 apply to everybody.
 // ===========================================================================
 
 const { get, all } = require('../db');
@@ -44,7 +47,7 @@ function assertCanGrantCaps(actor, caps) {
 /** Rule 1, for section clearance levels. */
 function assertCanSetLevel(actor, moduleKey, level) {
   if (isAdmin(actor)) return;
-  const mine = permissions.levelForRoles(actor.roles || [], moduleKey);
+  const mine = permissions.levelFor(actor, moduleKey);
   if (permissions.rank(level) > permissions.rank(mine)) {
     fail(403, `You can only set ${moduleKey} as high as your own clearance (${mine}).`);
   }
@@ -61,7 +64,7 @@ function assertCanAssignRoles(actor, roleNames) {
     if (missing.length) fail(403, `You cannot give the role "${role}": it has permissions you do not hold (${missing.length}).`);
     for (const m of permissions.MODULE_KEYS) {
       const need = permissions.levelForRoles([role], m);
-      const have = permissions.levelForRoles(actor.roles || [], m);
+      const have = permissions.levelFor(actor, m);
       if (permissions.rank(need) > permissions.rank(have)) {
         fail(403, `You cannot give the role "${role}": it has more ${m} clearance than you (${need}).`);
       }
@@ -88,11 +91,24 @@ function assertCanManageUser(actor, targetUserId) {
   if (userIsAdmin(targetUserId)) fail(403, 'Only an admin can change an admin account.');
   const theirRoles = all(`SELECT r.name FROM user_roles ur JOIN roles r ON r.id = ur.role_id
                            WHERE ur.user_id = ?`, targetUserId).map((r) => r.name);
-  try {
+  const within = () => {
     assertCanAssignRoles(actor, theirRoles);
+    // Their own levels too, where some were set for them above their roles'.
+    const theirs = permissions.userLevels({ id: targetUserId, roles: theirRoles });
+    for (const m of permissions.MODULE_KEYS) {
+      if (permissions.rank(theirs[m]) > permissions.rank(permissions.levelFor(actor, m))) fail(403, 'above yours');
+    }
+  };
+  try {
+    within();
   } catch (e) {
     fail(403, 'You can only change accounts whose access is within your own. Ask an admin.');
   }
+}
+
+/** Rule 4: not your own access. */
+function assertNotOwn(actor, targetUserId) {
+  if (actor && Number(actor.id) === Number(targetUserId)) fail(403, 'You cannot change your own access. Ask another manager or an admin.');
 }
 
 function activeAdminIds() {
@@ -116,6 +132,6 @@ function assertKeepsAnAdmin({ userId, deactivate = false, newRoles = null }) {
 }
 
 module.exports = {
-  isAdmin, assertCanGrantCaps, assertCanSetLevel, assertCanAssignRoles, assertCanManageUser,
+  isAdmin, assertCanGrantCaps, assertCanSetLevel, assertCanAssignRoles, assertCanManageUser, assertNotOwn,
   assertKeepsAnAdmin, activeAdminIds, userIsAdmin,
 };
