@@ -483,11 +483,13 @@ async function mySignatureModal() {
   });
 }
 // RBAC — a module's clearance level for the signed-in user (from the permission matrix).
-const RANKL = { none: 0, view: 1, edit: 2, full: 3 };
+const RANKL = { none: 0, view: 1, add: 2, edit: 3, full: 4 };
 const rankL = (l) => RANKL[l] || 0;
 const isAdmin = () => !!(ME && ME.roles && ME.roles.includes('admin'));
 const canView = (m) => isAdmin() || (ME && ME.permissions ? rankL(ME.permissions[m]) >= 1 : true);
-const canEdit = (m) => isAdmin() || (ME && ME.permissions ? rankL(ME.permissions[m]) >= 2 : true);
+const canAdd = (m) => isAdmin() || (ME && ME.permissions ? rankL(ME.permissions[m]) >= 2 : true);
+const canEdit = (m) => isAdmin() || (ME && ME.permissions ? rankL(ME.permissions[m]) >= 3 : true);
+const canFull = (m) => isAdmin() || (ME && ME.permissions ? rankL(ME.permissions[m]) >= 4 : true);
 // May the signed-in user do this? Asked by CAPABILITY (src/lib/capabilities.js), never by role
 // name, so a role an admin creates works on every screen. Some actions also sit behind a section's
 // router gate on the server, which wants EDIT clearance on that section; the server says which
@@ -933,49 +935,312 @@ async function dashPurchasing(c) {
       ? ` — but ${counts.unassigned} item(s) have not been given to an officer yet.` : '.'}</p></div>`;
 }
 
-// Managers' time is precious: their dashboard leads with what needs their sign-off.
-function renderPendingApprovals(pa) {
-  if (!pa || !pa.is_approver) return '';
-  // An MRN awaiting approval carries its estimated value, and says so when it is above this
-  // person's approval limit (it waits for someone with a higher one).
-  const mrnWorth = (m) => (m.value == null ? '' : ` · about ${esc(money(m.value))}${m.unpriced ? ` <span class="muted">(${m.unpriced} without a price)</span>` : ''}`);
-  const mrnRow = (m, action) => `<div class="cost-line"><a href="#/stores?tab=mrn&id=${m.id}"><b>MRN ${esc(m.mrn_no)}</b> · ${esc(idLabel(m) || 'general')} · ${m.lines} item(s)${mrnWorth(m)}${m.requested_by ? ' · by ' + esc(m.requested_by) : ''}${m.certified_by ? ' · certified ' + esc(m.certified_by) : ''}</a>${m.over_limit
-    ? `<span class="badge amber" title="Needs: ${esc((m.who_can || []).join(', '))}">Above your limit</span>`
-    : `<span class="badge ${action === 'Approve' ? 'blue' : 'amber'}">${action} →</span>`}</div>`;
-  // How long it has been waiting, from the request date. An approver deciding between a card raised
-  // this morning and one raised three weeks ago was previously shown neither — just a number and a
-  // vehicle — so the queue gave no sense of what was overdue.
-  const waited = (d) => {
-    const day = String(d || '').slice(0, 10);
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return '';
-    const days = Math.floor((Date.now() - new Date(day + 'T00:00:00').getTime()) / 86400000);
-    if (!Number.isFinite(days) || days < 0) return `<span class="muted"> · ${esc(day)}</span>`;
-    // Only worth calling out once it has actually sat there; "0 days" is noise on today's request.
-    const age = days >= 3 ? ` <span class="badge ${days >= 14 ? 'red' : 'amber'}">${days} days</span>` : '';
-    return `<span class="muted"> · requested ${esc(day)}</span>${age}`;
+const waited = (d) => {
+  const day = String(d || '').slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return '';
+  const days = Math.floor((Date.now() - new Date(day + 'T00:00:00').getTime()) / 86400000);
+  if (!Number.isFinite(days) || days < 0) return `<span class="muted"> · ${esc(day)}</span>`;
+  const age = days >= 14 ? ` <span class="badge red">${days}d overdue</span>` : (days >= 3 ? ` <span class="badge amber">${days}d waiting</span>` : '');
+  return `<span class="muted"> · ${esc(day)}</span>${age}`;
+};
+
+const jobRow = (j, action) => `<div class="cost-line"><a href="#/jobs/${j.id}"><b>${esc(j.job_no)}</b> · <span class="stamp">${esc(j.vehicle || idLabel(j))}</span>${waited(j.requested_at)}</a><div class="spacer"></div><a class="btn sm" href="#/jobs/${j.id}">${esc(action)} →</a></div>`;
+
+// Process-wise approvals queue renderer
+function renderProcessApprovals(ap) {
+  if (!ap || !ap.is_approver) return '';
+  const total = ap.total_pending || 0;
+  
+  const waitedBadge = waited;
+
+  const renderItem = (item) => {
+    const worth = item.value != null ? ` · about ${esc(money(item.value))}${item.unpriced ? ` (${item.unpriced} unpriced)` : ''}` : '';
+    const limitTag = item.over_limit ? ` <span class="badge amber" title="Needs higher authority">Above limit</span>` : '';
+    const redTag = item.red_count ? ` <span class="badge red">${item.red_count} red</span>` : '';
+    return `<div class="cost-line" style="padding:6px 0;border-bottom:1px solid var(--border-light, #eee);align-items:center">
+      <div style="display:flex;flex-direction:column;gap:2px">
+        <a href="${esc(item.link)}">
+          <b>${esc(item.title)}</b> · <span class="stamp">${esc(item.vehicle || 'General')}</span>${worth}${waitedBadge(item.date)}
+        </a>
+        <span class="muted" style="font-size:12px">
+          ${esc(item.description || '')}${item.requester ? ` · by ${esc(item.requester)}` : ''}${item.certified_by ? ` · certified ${esc(item.certified_by)}` : ''}
+        </span>
+      </div>
+      <div style="display:flex;align-items:center;gap:6px">
+        ${limitTag}${redTag}
+        <a class="btn sm ${item.action.includes('Approve') ? 'primary' : ''}" href="${esc(item.link)}">${esc(item.action)} →</a>
+      </div>
+    </div>`;
   };
-  const jobRow = (j, action) => `<div class="cost-line"><a href="#/jobs/${j.id}"><b>${esc(j.job_no)}</b> · ${esc(idLabel(j) || '—')}${waited(j.requested_at)}</a><span class="badge amber">${action} →</span></div>`;
-  const jrRow = (r, action) => `<div class="cost-line"><a href="#/jobrequests/${r.id}"><b>${esc(r.jr_no)}</b> · ${esc(idLabel(r) || '—')}${r.description ? ' · ' + esc(String(r.description).slice(0, 40)) : ''}${r.requested_by ? ' · by ' + esc(r.requested_by) : ''}</a><span class="badge ${action === 'Approve' ? 'blue' : 'amber'}">${action} →</span></div>`;
-  const section = (title, items, rowFn) => (items && items.length) ? `<div style="margin-top:6px"><div class="muted" style="font-size:12px;margin:6px 0 2px">${title} (${items.length})</div>${items.map(rowFn).join('')}</div>` : '';
-  const body = [
-    section('Job requests awaiting your <b>certification</b>', pa.jr_certify || [], (r) => jrRow(r, 'Certify')),
-    section('Job requests awaiting your <b>approval</b>', pa.jr_approve || [], (r) => jrRow(r, 'Approve')),
-    section('MRNs awaiting your <b>certification</b>', pa.certify || [], (m) => mrnRow(m, 'Certify')),
-    section('MRNs awaiting your <b>approval</b>', pa.approve || [], (m) => mrnRow(m, 'Approve')),
-    section('Job cards awaiting <b>transport approval</b>', pa.transport || [], (j) => jobRow(j, 'Approve')),
-    section('Job cards awaiting <b>operations approval</b>', pa.ops || [], (j) => jobRow(j, 'Approve')),
-    section('Days waiting for <b>sign-off</b>', pa.signoff || [], (d) => `<div class="cost-line"><a href="#/dailywork?att=${esc(d.date)}${d.workshop_id ? '&att_ws=' + d.workshop_id : ''}"><b>${esc(d.date)}</b>${d.workshop_name ? ` · ${esc(d.workshop_name)}` : ''} · attendance &amp; daily work${d.red_count ? ` · <span style="color:var(--red)">${d.red_count} red</span>` : ''}</a><span class="badge ${d.red_count ? 'red' : 'amber'}">Sign off →</span></div>`),
-    section('Job cards asking to be <b>reopened</b>', pa.reopen || [], (r) => `<div class="cost-line"><a href="#/jobs/${r.job_id}"><b>${esc(r.job_no)}</b> · ${esc(idLabel(r) || '—')} · ${esc(String(r.reason || '').slice(0, 60))}${r.requested_by_name ? ' · by ' + esc(r.requested_by_name) : ''}${waited(r.requested_at)}</a><span class="badge amber">Decide →</span></div>`),
-  ].join('');
-  return `<div class="card section" style="border-left:4px solid ${pa.total ? 'var(--red)' : 'var(--green)'}">
-    <div class="toolbar" style="margin:0"><h3 style="margin:0">⚡ Pending Your Approval</h3><div class="spacer"></div><span class="badge ${pa.total ? 'red' : 'green'}">${pa.total} pending</span></div>
-    ${pa.total ? body : '<span class="muted">✓ Nothing awaiting your approval — you\'re all caught up.</span>'}</div>`;
+
+  const renderStage = (title, icon, items) => {
+    if (!items || !items.length) return '';
+    return `
+      <div style="margin-top:10px">
+        <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">
+          <span style="font-size:15px">${icon}</span>
+          <b style="font-size:13px">${title}</b>
+          <span class="badge ${items.length ? 'amber' : ''}">${items.length}</span>
+        </div>
+        <div style="background:var(--card-sub-bg, #fafafa);border-radius:6px;padding:4px 12px">
+          ${items.map(renderItem).join('')}
+        </div>
+      </div>`;
+  };
+
+  const stagesHtml = [
+    renderStage('Stage 1: Inflow & Request Certification', '📋', ap.inflow),
+    renderStage('Stage 2: Operations & Commercial Approvals', '⚡', ap.authorizations),
+    renderStage('Stage 3: Stores & Warehouse Controls', '📦', ap.warehouse),
+    renderStage('Stage 4: Workday Close & Reopens', '📅', ap.compliance)
+  ].filter(Boolean).join('');
+
+  return `
+    <div class="card section" style="border-left:4px solid ${total ? 'var(--amber)' : 'var(--green)'};margin-bottom:14px">
+      <div class="toolbar" style="margin:0 0 6px">
+        <h3 style="margin:0">⚡ Pending Approvals (Process-Wise)</h3>
+        <div class="spacer"></div>
+        <span class="badge ${total ? 'amber' : 'green'}">${total} pending decision</span>
+      </div>
+      ${total ? stagesHtml : '<span class="muted">✓ All caught up — no items awaiting your decision across any process stage.</span>'}
+    </div>`;
+}
+
+// Workflow roads renderer (Job Cards road + Stores road) - formatted like in jobcard & stores
+function renderWorkflowRoads(wm) {
+  if (!wm) return '';
+  const jr = wm.jobs_pipeline || {};
+  const sr = wm.stores_pipeline || {};
+  const jSteps = jr.steps || [];
+  const sSteps = sr.steps || [];
+  const jw = jr.workshop || {};
+  const jf = jr.finishing || {};
+  const st = sr.today || {};
+  const sh = sr.shelf || {};
+
+  const stepLink = (key) => {
+    switch (key) {
+      case 'requested': return '#/jobs?tab=requests';
+      case 'approved': return '#/jobs?tab=requests&step=operations';
+      case 'workshop': return '#/jobs?tab=ongoing';
+      case 'working': return '#/jobs?tab=ongoing&show=today';
+      case 'done': return '#/jobs?tab=finishing';
+      case 'priced': return '#/jobs?tab=ready';
+      case 'closed': return '#/jobs?tab=all&status=CLOSED';
+      default: return '#/jobs';
+    }
+  };
+
+  const storeStepLink = (key) => {
+    switch (key) {
+      case 'requested': return '#/stores?tab=flow&sub=lines&step=requested';
+      case 'certified': return '#/stores?tab=flow&sub=lines&step=certified';
+      case 'to_buy': return '#/purchasing';
+      case 'on_order': return '#/stores?tab=flow&sub=lines&step=on_order';
+      case 'received': return '#/stores?tab=flow&sub=grn';
+      case 'priced': return '#/stores?tab=flow&sub=lines&step=unpriced';
+      case 'issued': return '#/stores?tab=flow&sub=issues';
+      default: return '#/stores';
+    }
+  };
+
+  const renderSteps = (steps, linkFn) => `
+    <div style="display:flex;align-items:center;gap:6px;overflow-x:auto;padding:4px 0 8px;margin-bottom:6px">
+      ${steps.map((s, idx) => `
+        <a href="${linkFn(s.key)}" class="card stat" style="text-decoration:none;min-width:115px;padding:8px 12px;margin:0;border:${s.count > 0 ? '1px solid var(--accent)' : '1px solid var(--border)'};border-radius:6px;background:${s.count > 0 ? 'var(--card-bg, #fff)' : 'var(--bg-muted, #f8f9fa)'};">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:4px">
+            <span style="font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase">${esc(s.label)}</span>
+            <span style="font-size:16px;font-weight:700;color:${s.count > 0 ? 'var(--text)' : 'var(--muted)'}">${s.count}</span>
+          </div>
+        </a>
+        ${idx < steps.length - 1 ? '<span style="color:var(--muted);font-size:14px;font-weight:bold">➔</span>' : ''}
+      `).join('')}
+    </div>`;
+
+  const miniCard = (n, label, href, tone, note) => `
+    <a class="card stat" href="${href}" style="text-decoration:none;margin:0;padding:10px 12px;background:var(--card-sub-bg, #fafafa);border:1px solid var(--border-light, #eee);border-radius:6px">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:6px">
+        <span class="l" style="margin:0;font-size:12px;font-weight:600">${esc(label)}</span>
+        <span class="n" style="font-size:20px;font-weight:700;margin:0;${tone && n ? `color:var(--${tone})` : ''}">${n}</span>
+      </div>
+      ${note ? `<div class="muted" style="font-size:11px;margin-top:4px">${esc(note)}</div>` : ''}
+    </a>`;
+
+  const html = [];
+
+  // 1. Job Cards Monitor & Pipeline (like in jobcard)
+  if (canView('jobs') || canView('jobrequests')) {
+    html.push(`
+      <div class="card section" style="margin-bottom:14px;border-top:3px solid var(--accent, #2563eb)">
+        <div class="toolbar" style="margin:0 0 8px">
+          <h3 style="margin:0">🔧 Job Cards Pipeline &amp; Workshop Monitor</h3>
+          <div class="spacer"></div>
+          <a class="sm btn" href="#/jobs">Open Job Cards →</a>
+        </div>
+        ${renderSteps(jSteps, stepLink)}
+        <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px;margin-top:8px">
+          ${miniCard(jw.worked_today || 0, 'Worked on today', '#/jobs?tab=ongoing&show=today', 'green')}
+          ${miniCard(jw.waiting_parts || 0, 'Waiting for parts', '#/jobs?tab=ongoing&show=parts', 'amber', 'blocked on MRN')}
+          ${miniCard(jw.idle_3 || 0, 'Idle 3+ working days', '#/jobs?tab=ongoing&show=red', jw.idle_3 ? 'red' : '', 'no recent work logged')}
+          ${miniCard(jw.not_started || 0, 'Not started yet', '#/jobs?tab=ongoing&show=not_started', 'blue')}
+          ${miniCard((jf.ready || 0), 'Ready to close', '#/jobs?tab=ready', 'green', 'nothing missing')}
+          ${miniCard((jf.partly_closed || 0), 'Awaiting price', '#/jobs?tab=finishing&show=partly_closed', jf.partly_closed ? 'amber' : '', 'partly closed')}
+        </div>
+      </div>
+    `);
+  }
+
+  // 2. Stores Flow & Pipeline (stores like)
+  if (canView('stores') || canView('oil') || canView('purchasing')) {
+    html.push(`
+      <div class="card section" style="margin-bottom:14px;border-top:3px solid #10b981">
+        <div class="toolbar" style="margin:0 0 8px">
+          <h3 style="margin:0">📦 Stores Material Pipeline &amp; Inventory Flow</h3>
+          <div class="spacer"></div>
+          <a class="sm btn" href="#/stores">Open Stores Flow →</a>
+        </div>
+        ${renderSteps(sSteps, storeStepLink)}
+        <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px;margin-top:8px">
+          ${miniCard(st.received || 0, 'Received today', '#/stores?tab=flow&sub=grn', 'blue')}
+          ${miniCard(st.issued || 0, 'Issued today', '#/stores?tab=flow&sub=issues', 'green')}
+          ${miniCard(sh.unpriced_receipts || 0, 'To price (unpriced)', '#/stores?tab=flow&sub=lines&step=unpriced', sh.unpriced_receipts ? 'amber' : '', 'receipts awaiting cost')}
+          ${miniCard(sh.low_stock || 0, 'Under reorder level', '#/stores?tab=stock', sh.low_stock ? 'red' : '', 'low-stock alerts')}
+          ${miniCard((sh.old_units_due ? ((sh.old_units_due.tyre || 0) + (sh.old_units_due.battery || 0)) : 0), 'Old cores to record', '#/tbrequests?tab=returns', (sh.old_units_due && (sh.old_units_due.tyre || sh.old_units_due.battery)) ? 'amber' : '', 'tyres & batteries')}
+          ${miniCard(st.transfers_week || 0, 'Transfers (7 days)', '#/stores?tab=mtn', 'blue')}
+        </div>
+      </div>
+    `);
+  }
+
+  return html.join('');
+}
+
+// On-hold & bottleneck watchboard renderer specifically for Admin & Management
+function renderOnHoldWatchboard(oh) {
+  if (!oh) return '';
+  const waitingParts = oh.jobs_waiting_parts || [];
+  const unattended = oh.unattended_jobs || [];
+  const dualOpen = oh.dual_open_vehicles || [];
+  const stuckCount = oh.stuck_cards_count || 0;
+  const unpriced = oh.unpriced_grns_sample || [];
+  const unreturnedTb = (oh.unreturned_cores && ((oh.unreturned_cores.tyre || 0) + (oh.unreturned_cores.battery || 0))) || 0;
+  const totalAlerts = waitingParts.length + unattended.length + dualOpen.length + stuckCount + (oh.unpriced_grns_count || 0) + unreturnedTb;
+
+  return `
+    <div id="admin-onhold-watchboard" class="card section" style="border-left:4px solid ${totalAlerts ? 'var(--red)' : 'var(--green)'};margin-bottom:14px">
+      <div class="toolbar" style="margin:0 0 8px">
+        <h3 style="margin:0">🛑 Admin On-Hold &amp; Bottleneck Watchboard</h3>
+        <div class="spacer"></div>
+        <span class="badge ${totalAlerts ? 'red' : 'green'}">${totalAlerts} bottleneck${totalAlerts === 1 ? '' : 's'}</span>
+      </div>
+      <p class="muted" style="margin:0 0 10px;font-size:12px">Admin oversight: monitored hold points, stale cards, vehicle conflicts, and uncosted materials across all workshops.</p>
+
+      <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(270px,1fr));gap:12px;margin-top:8px">
+        <!-- 1. Jobs waiting on parts / hold reasons -->
+        <div class="card" style="padding:10px;margin:0;background:var(--bg-muted,#fdfdfd)">
+          <div class="toolbar" style="margin:0 0 6px">
+            <b>Jobs on Hold / Waiting Parts</b>
+            <div class="spacer"></div>
+            <span class="badge ${waitingParts.length ? 'amber' : ''}">${waitingParts.length}</span>
+          </div>
+          ${waitingParts.length ? waitingParts.slice(0, 4).map((j) => `
+            <div class="cost-line" style="font-size:12px;padding:3px 0">
+              <a href="${esc(j.link)}"><b>${esc(j.job_no)}</b> · ${esc(j.vehicle || '—')}</a>
+              <span class="badge amber">${j.days_idle || 0}d idle</span>
+            </div>
+            ${j.reason_note ? `<div class="muted" style="font-size:11px;margin-bottom:3px">${esc(j.reason_note)}</div>` : ''}
+          `).join('') : '<span class="muted" style="font-size:12px">No jobs marked on hold</span>'}
+          ${waitingParts.length > 4 ? `<div style="text-align:right;margin-top:4px"><a class="sm" href="#/jobs?tab=ongoing&show=parts">See all ${waitingParts.length} →</a></div>` : ''}
+        </div>
+
+        <!-- 2. Stale Requested Cards -->
+        <div class="card" style="padding:10px;margin:0;background:var(--bg-muted,#fdfdfd)">
+          <div class="toolbar" style="margin:0 0 6px">
+            <b>Stale REQUESTED Cards</b>
+            <div class="spacer"></div>
+            <span class="badge ${stuckCount ? 'red' : ''}">${stuckCount}</span>
+          </div>
+          <p class="muted" style="font-size:12px;margin:4px 0 8px">Cards requested long ago without movement. Review and triage or close in bulk.</p>
+          <a class="btn sm ${stuckCount ? 'primary' : ''}" href="${canDo('jobs.triage') ? '#/jobreview' : '#/jobs?tab=requests&step=stuck'}">
+            ${canDo('jobs.triage') ? 'Open Triage Screen →' : 'View Stuck Cards →'}
+          </a>
+        </div>
+
+        <!-- 3. Dual-Open Conflicts -->
+        <div class="card" style="padding:10px;margin:0;background:var(--bg-muted,#fdfdfd)">
+          <div class="toolbar" style="margin:0 0 6px">
+            <b>Dual-Open Conflicts</b>
+            <div class="spacer"></div>
+            <span class="badge ${dualOpen.length ? 'red' : ''}">${dualOpen.length}</span>
+          </div>
+          ${dualOpen.length ? dualOpen.slice(0, 4).map((v) => `
+            <div class="cost-line" style="font-size:12px;padding:3px 0">
+              <span class="stamp">${esc(v.asset_code || v.asset_reg || 'Vehicle')}</span>
+              <span class="badge red">${v.jobs ? v.jobs.length : 2} open cards</span>
+            </div>
+          `).join('') : '<span class="muted" style="font-size:12px">No conflicting open jobs</span>'}
+          ${dualOpen.length > 4 ? `<div style="text-align:right;margin-top:4px"><a class="sm" href="#/jobs?tab=all">See all ${dualOpen.length} conflicts →</a></div>` : ''}
+        </div>
+
+        <!-- 4. Unattended Active Jobs -->
+        <div class="card" style="padding:10px;margin:0;background:var(--bg-muted,#fdfdfd)">
+          <div class="toolbar" style="margin:0 0 6px">
+            <b>Inactive Jobs (3+ Working Days)</b>
+            <div class="spacer"></div>
+            <span class="badge ${unattended.length ? 'red' : ''}">${unattended.length}</span>
+          </div>
+          ${unattended.length ? unattended.slice(0, 4).map((j) => `
+            <div class="cost-line" style="font-size:12px;padding:3px 0">
+              <a href="${esc(j.link)}"><b>${esc(j.job_no)}</b> · ${esc(j.vehicle || '—')}</a>
+              <span class="badge red">${j.days_idle}d unattended</span>
+            </div>
+          `).join('') : '<span class="muted" style="font-size:12px">All workshop jobs recently attended</span>'}
+          ${unattended.length > 4 ? `<div style="text-align:right;margin-top:4px"><a class="sm" href="#/jobs?tab=ongoing&show=red">See all ${unattended.length} →</a></div>` : ''}
+        </div>
+
+        <!-- 5. Unpriced Receipts (GRN) on Shelf -->
+        <div class="card" style="padding:10px;margin:0;background:var(--bg-muted,#fdfdfd)">
+          <div class="toolbar" style="margin:0 0 6px">
+            <b>Unpriced Receipts (GRN)</b>
+            <div class="spacer"></div>
+            <span class="badge ${(oh.unpriced_grns_count || 0) ? 'amber' : ''}">${oh.unpriced_grns_count || 0}</span>
+          </div>
+          <p class="muted" style="font-size:12px;margin:4px 0 6px">Goods received without invoice price, blocking final job card costing.</p>
+          ${unpriced.length ? unpriced.slice(0, 3).map((u) => `
+            <div class="cost-line" style="font-size:12px;padding:2px 0">
+              <span><b>${esc(u.mrn_no || 'MRN')}</b> · ${esc(u.item || 'Item')}</span>
+              <span class="badge">${u.qty} pcs</span>
+            </div>
+          `).join('') : ''}
+          <div style="margin-top:6px">
+            <a class="btn sm" href="#/stores?tab=flow&sub=lines&step=unpriced">View Unpriced Receipts →</a>
+          </div>
+        </div>
+
+        <!-- 6. Unreturned Cores & Scraps -->
+        <div class="card" style="padding:10px;margin:0;background:var(--bg-muted,#fdfdfd)">
+          <div class="toolbar" style="margin:0 0 6px">
+            <b>Unreturned Scrap Cores</b>
+            <div class="spacer"></div>
+            <span class="badge ${unreturnedTb ? 'amber' : ''}">${unreturnedTb}</span>
+          </div>
+          <p class="muted" style="font-size:12px;margin:4px 0 6px">Replaced tyres &amp; batteries where old replaced unit is not yet logged.</p>
+          <div style="display:flex;gap:6px;margin:6px 0">
+            <span class="badge ${oh.unreturned_cores && oh.unreturned_cores.tyre ? 'amber' : ''}">🛞 Tyres: ${(oh.unreturned_cores && oh.unreturned_cores.tyre) || 0}</span>
+            <span class="badge ${oh.unreturned_cores && oh.unreturned_cores.battery ? 'amber' : ''}">🔋 Batteries: ${(oh.unreturned_cores && oh.unreturned_cores.battery) || 0}</span>
+          </div>
+          <div style="margin-top:6px">
+            <a class="btn sm" href="#/tbrequests?tab=returns">View Returns Queue →</a>
+          </div>
+        </div>
+      </div>
+    </div>`;
 }
 
 async function dashMain(c) {
-  const [d, mc, pa] = await Promise.all([
+  const [d, mc, wm] = await Promise.all([
     api('/reports/dashboard'), canView('reports') ? api('/reports/monthly') : null,
-    api('/reports/pending-approvals').catch(() => ({ total: 0, is_approver: false, certify: [], approve: [], transport: [], ops: [], jr_certify: [], jr_approve: [] })),
+    api('/dashboard/workflow-monitor').catch(() => null),
   ]);
   const na = d.needs_attention || {};
   const naTotal = Object.values(na).reduce((a, b) => a + (b || 0), 0);
@@ -994,7 +1259,29 @@ async function dashMain(c) {
     { m: 'batteries', route: 'batteries', ico: '🔋', title: 'Batteries', sub: 'track · swap' },
     { m: 'assets', route: 'assets', ico: '🚜', title: 'Assets', sub: 'fleet registry' },
   ].filter((w) => canEdit(w.m)).map((w) => `<a class="card stat" href="#/${w.route}" style="text-decoration:none;align-items:flex-start;gap:2px"><span class="n" style="font-size:26px">${w.ico}</span><span class="l"><b>${w.title}</b><br>${w.sub}</span></a>`).join('');
-  const S = [pageHeader('Dashboard', `${esc(ME.fullName || ME.username)} · ${esc(ME.roles.join(', '))}`), renderPendingApprovals(pa)];
+
+  // Top Pulse KPI Ribbon
+  const isAdminOrManager = isAdmin() || canFull('jobs') || canDo('users.manage');
+  const kp = (wm && wm.kpis) || {};
+  const kpiRibbon = `
+    <div class="grid section" style="grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;margin-bottom:14px">
+      ${mc ? `<div class="card stat"><span class="n">${moneyC(mc.this_month.total)}</span><span class="l">This Month Spend</span></div>` : ''}
+      <a class="card stat" href="#/jobs" style="text-decoration:none"><span class="n">${kp.active_jobs ?? d.open_jobs_count}</span><span class="l">Active Job Cards</span></a>
+      <a class="card stat" href="#/jobs?tab=ongoing" style="text-decoration:none"><span class="n">${kp.vehicles_in_workshop ?? 0}</span><span class="l">Vehicles in Workshop</span></a>
+      <a class="card stat" href="#/dashboard" style="text-decoration:none"><span class="n" style="color:${kp.total_pending ? 'var(--amber)' : 'var(--green)'}">${kp.total_pending ?? 0}</span><span class="l">Pending Approvals</span></a>
+      <a class="card stat" href="#/stores?tab=stock" style="text-decoration:none"><span class="n" style="color:${kp.low_stock_total ? 'var(--red)' : 'inherit'}">${kp.low_stock_total ?? 0}</span><span class="l">Low Stock Items</span></a>
+      ${isAdminOrManager ? `<a class="card stat" href="#admin-onhold-watchboard" style="text-decoration:none"><span class="n" style="color:${(kp.on_hold_total || 0) ? 'var(--red)' : 'var(--green)'}">${kp.on_hold_total ?? 0}</span><span class="l">On-Hold Bottlenecks</span></a>` : ''}
+      ${kp.field_down != null ? `<a class="card stat" href="#/field" style="text-decoration:none"><span class="n" style="color:${kp.field_down ? 'var(--red)' : 'inherit'}">${kp.field_down}</span><span class="l">Field Breakdowns Down</span></a>` : ''}
+    </div>`;
+
+  const scopeBadge = wm && wm.user_scope && wm.user_scope.label ? ` · <span class="badge blue">${esc(wm.user_scope.label)}</span>` : '';
+  const S = [
+    pageHeader('Dashboard', `${esc(ME.fullName || ME.username)} · ${esc(ME.roles.join(', '))}${scopeBadge}`),
+    kpiRibbon,
+    renderProcessApprovals(wm && wm.approvals_process),
+    renderWorkflowRoads(wm),
+    isAdminOrManager ? renderOnHoldWatchboard(wm && wm.on_hold) : ''
+  ].filter(Boolean);
   if (wsTiles) S.push(`<div class="card section"><h3 style="margin-top:0">Your workspace</h3><div class="grid">${wsTiles}</div></div>`);
   if (canView('reports')) S.push(`
     <h3 style="margin-top:0">This Month · ${monthName(mc.this_month.month)}</h3>
@@ -1018,18 +1305,11 @@ async function dashMain(c) {
           <td class="num">${money(m.service || 0)}</td>
           <td class="num"><b>${money(m.total)}</b></td></tr>`), { scroll: true })}</div>`);
   const opStats = [];
-  if (canView('jobs')) opStats.push(`<a class="card stat" href="#/jobs" style="text-decoration:none"><span class="n">${d.open_jobs_count}</span><span class="l">Open Job Cards</span></a>
-      <a class="card stat" href="#/jobs?status=CLOSED" style="text-decoration:none"><span class="n">${d.closed_this_month_count}</span><span class="l">Closed This Month</span></a>
-      <a class="card stat" href="#/teardown" style="text-decoration:none"><span class="n">${d.awaiting_price.length}</span><span class="l">Awaiting Price (blocked)</span></a>
-      ${(d.partly_closed || []).length ? `<a class="card stat" href="#/jobs?status=PARTIALLY_CLOSED" style="text-decoration:none"><span class="n">${d.partly_closed.length}</span><span class="l">Partly Closed — awaiting prices</span></a>` : ''}
-      ${d.ready_to_close ? `<a class="card stat" href="#/jobs?tab=ready" style="text-decoration:none"><span class="n" style="color:var(--green)">${d.ready_to_close}</span><span class="l">Ready to close — nothing missing</span></a>` : ''}
-      ${d.field_down != null ? `<a class="card stat" href="#/field" style="text-decoration:none"><span class="n" style="color:${d.field_down ? 'var(--red)' : 'inherit'}">${d.field_down}</span><span class="l">Machines down in the field</span></a>` : ''}`);
   // Attendance (W3): today's tally and the days still to sign off — only while attendance is on.
   const at = d.attendance_today;
   if (at && canView('dailywork')) opStats.push(`<a class="card stat" href="#/dailywork" style="text-decoration:none"><span class="n" style="color:${at.red_count ? 'var(--red)' : 'inherit'}">${at.before_start ? '—' : at.red_count}</span><span class="l">Today's tally — ${at.before_start ? 'not started' : (at.red_count ? 'red' : 'nothing red')}</span></a>
       ${at.unsigned_days.length ? `<a class="card stat" href="#/dailywork?att=${esc(at.unsigned_days[0].date)}${at.unsigned_days[0].workshop_id ? '&att_ws=' + at.unsigned_days[0].workshop_id : ''}" style="text-decoration:none"><span class="n">${at.unsigned_days.length}</span><span class="l">Days to sign off</span></a>` : ''}`);
-  if (canView('oil')) opStats.push(`<a class="card stat" href="#/oil?tab=forecast" style="text-decoration:none"><span class="n">${d.low_stock_oil.length}</span><span class="l">Low-stock Lubricants</span></a>`);
-  if (canView('batteries')) opStats.push(`<a class="card stat" href="#/batteries" style="text-decoration:none"><span class="n">${d.batteries_warranty.length}</span><span class="l">Battery Warranty ≤60d</span></a>`);
+  if (canView('batteries') && d.batteries_warranty && d.batteries_warranty.length) opStats.push(`<a class="card stat" href="#/batteries" style="text-decoration:none"><span class="n">${d.batteries_warranty.length}</span><span class="l">Battery Warranty ≤60d</span></a>`);
   if (canView('stores') || canView('oil')) {
     opStats.push(`<div class="card stat" style="text-decoration:none"><div class="toolbar" style="margin:0 0 4px"><span class="l" style="margin:0"><b>To Reorder</b></span><div class="spacer"></div><span class="badge ${d.low_stock_oil.length ? 'amber' : 'green'}">${d.low_stock_oil.length ? 'Action needed' : 'Healthy'}</span></div>
       <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px">
@@ -8474,7 +8754,7 @@ routes.reports = async (c) => {
         <div class="spacer"></div>
         <div><label>Year</label><select id="mcr-year"></select></div>
         <div><label>Month</label><select id="mcr-month"></select></div>
-        ${canDo('reports.monthly_inputs') ? '<button class="sm" id="mcr-edit">✎ Edit monthly inputs</button>' : ''}
+        ${canEdit('reports') || canDo('reports.monthly_cost.edit') ? '<button class="sm" id="mcr-edit">✎ Edit monthly inputs</button>' : ''}
         <button class="sm secondary" id="mcr-reconcile" title="Reconcile Closed, Pending, Other Labour and Spares Supply with live daily work tally">⚖️ Repair Sections Reconciler</button>
         <a class="btn sm" id="mcr-rd" href="#" target="_blank">🖨 Repair Detail</a>
         <a class="btn primary sm" id="mcr-dl" href="#">⬇ Download Excel</a>
@@ -9104,17 +9384,34 @@ routes.workshops = async (c) => {
 routes.access = async (c) => {
   if (!canDo('access.manage', 'users.manage')) { c.innerHTML = '<div class="card err">You do not have access to this page.</div>'; return; }
   const tabs = [];
-  if (canDo('access.manage')) tabs.push(['roles', 'Roles & Permissions'], ['board', 'Clearance Board'], ['limits', 'Approval limits']);
-  if (canDo('users.manage')) tabs.push(['users', 'Users & Roles']);
+  if (canDo('access.manage')) {
+    tabs.push(['people', 'People (Overrides)']);
+    tabs.push(['sections', 'Sections Audit']);
+    tabs.push(['roles', 'Role Templates']);
+    tabs.push(['board', 'Clearance Board']);
+    tabs.push(['limits', 'Approval limits']);
+  }
+  if (canDo('users.manage')) tabs.push(['users', 'User Accounts']);
+  if (canDo('access.manage')) tabs.push(['history', 'Audit Trail']);
+
   const sp = new URLSearchParams(location.hash.split('?')[1] || '');
   const tab = tabs.some((t) => t[0] === sp.get('tab')) ? sp.get('tab') : tabs[0][0];
-  c.innerHTML = `${pageHeader('Access Control', 'Who may do what — roles, the permissions in each role, and who holds them.')}
+  c.innerHTML = `${pageHeader('Access Control', 'Access person-by-person, role starting templates, 22 canonical sections & audit compliance.')}
     <div id="admin-warn"></div>
-    <div class="pill-row" style="margin-bottom:12px">
-      ${tabs.map(([k, label]) => `<button class="btn sm ${tab === k ? 'primary' : ''}" data-atab="${k}">${esc(label)}</button>`).join('')}
+    <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:12px">
+      <div class="pill-row">
+        ${tabs.map(([k, label]) => `<button class="btn sm ${tab === k ? 'primary' : ''}" data-atab="${k}">${esc(label)}</button>`).join('')}
+      </div>
+      <div>
+        <button class="btn sm" id="btn-access-report">📥 Access Report (Excel)</button>
+      </div>
     </div>
     <div id="apane"><div class="muted">Loading…</div></div>`;
   qsa('[data-atab]', c).forEach((b) => { b.onclick = () => { location.hash = '#/access?tab=' + b.dataset.atab; }; });
+  const repBtn = qs('#btn-access-report', c);
+  if (repBtn) {
+    repBtn.onclick = () => { window.open('/api/access/report?format=xlsx', '_blank'); };
+  }
   // One admin is a single point of failure: if that account is lost, only someone with a shell on
   // the server can get the system back (scripts/admin.js).
   api('/access/roles').then((r) => {
@@ -9124,9 +9421,12 @@ routes.access = async (c) => {
     }
   }).catch(() => {});
   const pane = qs('#apane', c);
-  if (tab === 'users') await renderUsersManager(pane);
+  if (tab === 'people') await renderPeopleAccess(pane, sp.get('user'));
+  else if (tab === 'sections') await renderSectionsAudit(pane, sp.get('section'));
+  else if (tab === 'users') await renderUsersManager(pane);
   else if (tab === 'board') await renderClearanceBoard(pane);
   else if (tab === 'limits') await renderApprovalLimits(pane);
+  else if (tab === 'history') await renderAccessHistory(pane);
   else await renderRolesManager(pane, sp.get('role'));
 };
 routes.users = async () => { location.hash = '#/access?tab=users'; };
@@ -9168,54 +9468,664 @@ async function renderApprovalLimits(c) {
 }
 
 const lvlChip = (lvl) => {
-  const cls = lvl === 'full' ? 'amber' : lvl === 'edit' ? 'green' : '';
-  const txt = lvl === 'none' ? '—' : lvl.toUpperCase();
+  const cls = lvl === 'full' ? 'amber' : lvl === 'edit' ? 'green' : lvl === 'add' ? 'blue' : '';
+  const txt = lvl === 'none' ? '—' : String(lvl).toUpperCase();
   return `<span class="badge ${cls}"${lvl === 'none' ? ' style="opacity:.4"' : ''}>${txt}</span>`;
 };
 
+// ---- Tab 1: People & Overrides ------------------------------------------------
+async function renderPeopleAccess(c, wantedUserId) {
+  const [data, wsd] = await Promise.all([api('/access/people'), workshopsData(true)]);
+  const people = data.people || [];
+  if (!people.length) {
+    c.innerHTML = '<div class="card muted">No users found.</div>';
+    return;
+  }
+
+  let sel = people.find((u) => u.id == wantedUserId) || people[0];
+  const details = await api('/access/people/' + sel.id);
+  const u = details.user;
+  const sections = details.sections;
+
+  // Local state for edits
+  const sectionEdits = {};
+  const capEdits = {};
+
+  const canEditTarget = !isAdmin() && u.roles.some((r) => r.name === 'admin') ? false : true;
+  const isSelf = ME && ME.id == u.id;
+
+  const renderAll = () => {
+    const q = (qs('#person-search', c) ? qs('#person-search', c).value : '').toLowerCase().trim();
+    const filtered = people.filter((p) => {
+      if (!q) return true;
+      return (p.full_name || '').toLowerCase().includes(q) ||
+             (p.username || '').toLowerCase().includes(q) ||
+             p.roles.some((r) => (r.label || r.name).toLowerCase().includes(q));
+    });
+
+    const listHtml = filtered.map((p) => {
+      const isSel = p.id == u.id;
+      const roleStr = p.roles.map((r) => r.label || r.name).join(', ') || 'No roles';
+      return `<tr data-pick-user="${p.id}" style="cursor:pointer;${isSel ? 'background:var(--bg-active, #eef2ff);font-weight:600;' : ''}${p.active ? '' : 'opacity:.55;'}">
+        <td>
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:6px">
+            <span>${esc(p.full_name || p.username)}</span>
+            ${p.overrides_count > 0 ? `<span class="badge amber" style="font-size:10px" title="${p.overrides_count} custom overrides">${p.overrides_count} custom</span>` : ''}
+          </div>
+          <div class="muted" style="font-size:11px;font-weight:normal">${esc(p.username)} · ${esc(roleStr)}</div>
+        </td>
+      </tr>`;
+    }).join('') || '<tr><td class="muted" style="text-align:center">No matching people</td></tr>';
+
+    const GROUPS = [
+      { id: 'operations', name: 'Operations & Execution', icon: '🔧' },
+      { id: 'stores', name: 'Stores & Inventory', icon: '📦' },
+      { id: 'fleet', name: 'Fleet & Assets', icon: '🚜' },
+      { id: 'control', name: 'Control & Intelligence', icon: '📊' },
+      { id: 'governance', name: 'Governance & Access', icon: '🛡️' },
+    ];
+
+    const LV_BTN = [
+      { key: 'none', label: 'None' },
+      { key: 'view', label: 'View' },
+      { key: 'add', label: 'Add' },
+      { key: 'edit', label: 'Edit' },
+      { key: 'full', label: 'Full' },
+    ];
+
+    const groupCards = GROUPS.map((grp) => {
+      const grpSections = sections.filter((s) => s.group === grp.id);
+      if (!grpSections.length) return '';
+
+      const secHtml = grpSections.map((sec) => {
+        const curLevel = sectionEdits[sec.key] !== undefined ? sectionEdits[sec.key] : (sec.override_level !== null ? sec.override_level : sec.role_level);
+        const isCustom = sectionEdits[sec.key] !== undefined ? (sectionEdits[sec.key] !== sec.role_level) : (sec.override_level !== null && sec.override_level !== sec.role_level);
+
+        const lvlButtons = LV_BTN.map((b) => {
+          const isSelected = curLevel === b.key;
+          const cls = isSelected
+            ? (b.key === 'full' ? 'primary' : (b.key === 'edit' ? 'badge green' : (b.key === 'add' ? 'badge blue' : (b.key === 'view' ? 'badge' : 'badge amber'))))
+            : 'btn sm';
+          const style = isSelected ? 'font-weight:bold;padding:4px 10px;font-size:12px' : 'opacity:.7;padding:4px 10px;font-size:12px';
+          const disabled = isSelf || !canEditTarget ? 'disabled' : '';
+          return `<button class="${cls}" style="${style}" data-sec-lvl="${esc(sec.key)}:${b.key}" ${disabled}>${b.label}</button>`;
+        }).join(' ');
+
+        let capsHtml = '';
+        if (sec.capabilities && sec.capabilities.length > 0) {
+          const capItems = sec.capabilities.map((c) => {
+            const hasCap = capEdits[c.key] !== undefined ? capEdits[c.key] : c.effective_granted;
+            const isCapOverridden = capEdits[c.key] !== undefined ? (capEdits[c.key] !== c.role_granted) : c.is_override;
+            const disabled = isSelf || !canEditTarget ? 'disabled' : '';
+            return `<label style="display:flex;align-items:flex-start;gap:8px;margin:5px 0;font-weight:normal;font-size:12px">
+              <input type="checkbox" style="width:auto;margin-top:2px" data-pcap="${esc(c.key)}" ${hasCap ? 'checked' : ''} ${disabled}>
+              <div>
+                <span>${esc(c.label)}</span>
+                ${isCapOverridden ? `<span class="badge amber" style="font-size:9px;margin-left:4px">Custom override</span>` : `<span class="muted" style="font-size:10px;margin-left:4px">(${c.role_granted ? 'Granted by role' : 'Not in role'})</span>`}
+                <div class="muted" style="font-size:10px">${esc(c.key)}</div>
+              </div>
+            </label>`;
+          }).join('');
+
+          capsHtml = `<details style="margin-top:8px;border-top:1px dashed var(--border-light, #eee);padding-top:6px">
+            <summary style="cursor:pointer;font-size:11px;font-weight:600;color:var(--text-muted, #666)">
+              Special Capabilities & Approvals (${sec.capabilities.length})
+            </summary>
+            <div style="margin-top:6px;padding-left:4px">
+              ${capItems}
+            </div>
+          </details>`;
+        }
+
+        return `<div class="card" style="margin-bottom:10px;padding:12px;background:var(--card-sub-bg, #fff);border:1px solid var(--border-light, #e2e8f0);border-radius:6px">
+          <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:8px">
+            <div style="display:flex;align-items:center;gap:8px">
+              <span style="font-size:18px">${sec.icon}</span>
+              <div>
+                <b style="font-size:14px">${esc(sec.label)}</b>
+                <div class="muted" style="font-size:11px">${esc(sec.description || '')}</div>
+              </div>
+            </div>
+            <div style="display:flex;align-items:center;gap:6px">
+              ${isCustom
+                ? `<span class="badge amber" style="font-weight:600">⚡ Custom Override</span> <button class="btn sm" style="font-size:10px;padding:2px 6px" data-reset-sec="${esc(sec.key)}" title="Revert this section to role template">Reset</button>`
+                : `<span class="badge blue" style="font-weight:500">Role Default (${sec.role_level.toUpperCase()})</span>`}
+            </div>
+          </div>
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;background:var(--bg-muted, #f8fafc);padding:6px 10px;border-radius:6px">
+            <span class="muted" style="font-size:11px;font-weight:600;text-transform:uppercase">Clearance:</span>
+            <div style="display:flex;gap:4px;flex-wrap:wrap">${lvlButtons}</div>
+          </div>
+          ${capsHtml}
+        </div>`;
+      }).join('');
+
+      return `<div style="margin-bottom:18px">
+        <h3 style="margin:0 0 8px;font-size:14px;color:var(--text-muted, #475569);display:flex;align-items:center;gap:6px">
+          <span>${grp.icon}</span> <span>${esc(grp.name)}</span>
+        </h3>
+        ${secHtml}
+      </div>`;
+    }).join('');
+
+    const wsOptions = [{ value: '', label: '— Default (Any / Head Office) —' }].concat(
+      (wsd.workshops || []).map((w) => ({ value: String(w.id), label: w.name + (w.code ? ` (${w.code})` : '') }))
+    );
+
+    c.innerHTML = `<div style="display:grid;grid-template-columns:minmax(240px,310px) 1fr;gap:14px;align-items:start">
+      <div class="card" style="padding:12px">
+        <div style="margin-bottom:8px">
+          <input type="text" id="person-search" placeholder="Search people..." value="${esc(q)}" style="width:100%;box-sizing:border-box">
+        </div>
+        <div class="table-wrap scroll" style="max-height:calc(100vh - 250px)">
+          <table><tbody>${listHtml}</tbody></table>
+        </div>
+      </div>
+
+      <div>
+        <div class="card" style="margin-bottom:12px;border-top:3px solid var(--accent, #2563eb)">
+          <div style="display:flex;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;gap:12px;margin-bottom:12px">
+            <div>
+              <h2 style="margin:0;display:flex;align-items:center;gap:8px">
+                <span>${esc(u.full_name || u.username)}</span>
+                ${u.active ? '<span class="badge green">Active</span>' : '<span class="badge">Inactive</span>'}
+              </h2>
+              <div class="muted" style="font-size:12px;margin-top:2px">
+                Username: <code>${esc(u.username)}</code> · Roles: ${u.roles.map((r) => `<span class="badge blue">${esc(r.label || r.name)}</span>`).join(' ') || 'None'}
+              </div>
+            </div>
+            <div style="display:flex;gap:6px;flex-wrap:wrap">
+              <button class="btn sm" id="btn-compare" title="Compare this person's access with another person or role">🔍 Compare</button>
+              <button class="btn sm" id="btn-copy-from" ${isSelf || !canEditTarget ? 'disabled' : ''} title="Copy all overrides from another person">📋 Copy From...</button>
+              <button class="btn sm" id="btn-reset-user" ${isSelf || !canEditTarget ? 'disabled' : ''} title="Remove all personal overrides and revert to role template">↺ Reset to Role</button>
+              <button class="primary sm" id="btn-save-access" ${isSelf || !canEditTarget ? 'disabled' : ''}>💾 Save Access</button>
+            </div>
+          </div>
+
+          ${isSelf ? '<div class="card" style="background:#fffbeb;border-left:4px solid #f59e0b;padding:8px 12px;margin-bottom:10px;font-size:12px">⚠️ <b>Safety Rule:</b> You cannot modify your own access permissions. Have another administrator change them if needed.</div>' : ''}
+          ${!canEditTarget ? '<div class="card err" style="padding:8px 12px;margin-bottom:10px;font-size:12px">⛔ Only an administrator can modify an administrator account.</div>' : ''}
+
+          <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(200px, 1fr));gap:10px;background:var(--bg-muted, #f8fafc);padding:10px;border-radius:6px">
+            <div>
+              <label style="font-size:11px;font-weight:600;margin-bottom:4px">Home Workshop:</label>
+              <select id="user-ws" style="width:100%" ${isSelf || !canEditTarget ? 'disabled' : ''}>
+                ${wsOptions.map((o) => `<option value="${o.value}" ${String(u.home_workshop_id || '') === o.value ? 'selected' : ''}>${esc(o.label)}</option>`).join('')}
+              </select>
+            </div>
+            <div>
+              <label style="font-size:11px;font-weight:600;margin-bottom:4px">Personal Approval Limit (Rs):</label>
+              <input type="number" id="user-limit" placeholder="Role template default" value="${u.approval_limit != null ? esc(u.approval_limit) : ''}" style="width:100%" ${isSelf || !canEditTarget ? 'disabled' : ''}>
+            </div>
+            <div>
+              <label style="font-size:11px;font-weight:600;margin-bottom:4px">Temporary Access Until (Date):</label>
+              <input type="date" id="user-until" value="${u.access_until ? esc(u.access_until.slice(0, 10)) : ''}" style="width:100%" ${isSelf || !canEditTarget ? 'disabled' : ''}>
+            </div>
+          </div>
+        </div>
+
+        ${groupCards}
+      </div>
+    </div>`;
+
+    const searchInp = qs('#person-search', c);
+    if (searchInp) {
+      searchInp.oninput = () => renderAll();
+    }
+
+    qsa('[data-pick-user]', c).forEach((tr) => {
+      tr.onclick = async () => {
+        const uid = tr.dataset.pickUser;
+        await renderPeopleAccess(c, uid);
+      };
+    });
+
+    qsa('[data-sec-lvl]', c).forEach((btn) => {
+      btn.onclick = () => {
+        const [secKey, lvl] = btn.dataset.secLvl.split(':');
+        sectionEdits[secKey] = lvl;
+        renderAll();
+      };
+    });
+
+    qsa('[data-reset-sec]', c).forEach((btn) => {
+      btn.onclick = () => {
+        const secKey = btn.dataset.resetSec;
+        sectionEdits[secKey] = null;
+        renderAll();
+      };
+    });
+
+    qsa('[data-pcap]', c).forEach((box) => {
+      box.onchange = () => {
+        capEdits[box.dataset.pcap] = box.checked;
+        renderAll();
+      };
+    });
+
+    const saveBtn = qs('#btn-save-access', c);
+    if (saveBtn) {
+      saveBtn.onclick = async () => {
+        const wsVal = qs('#user-ws', c).value;
+        const limitVal = qs('#user-limit', c).value.trim();
+        const untilVal = qs('#user-until', c).value.trim();
+
+        const payload = {
+          sections: sectionEdits,
+          capabilities: capEdits,
+          home_workshop_id: wsVal || null,
+          approval_limit: limitVal === '' ? null : Number(limitVal),
+          access_until: untilVal || null,
+        };
+
+        try {
+          saveBtn.disabled = true;
+          saveBtn.innerText = 'Saving…';
+          await api('/access/people/' + u.id + '/save', { method: 'POST', body: payload });
+          toast(`Access permissions saved for ${u.full_name || u.username}`);
+          await renderPeopleAccess(c, u.id);
+        } catch (e) {
+          toast(e.message, 'err');
+          saveBtn.disabled = false;
+          saveBtn.innerText = '💾 Save Access';
+        }
+      };
+    }
+
+    const resetBtn = qs('#btn-reset-user', c);
+    if (resetBtn) {
+      resetBtn.onclick = async () => {
+        if (!confirm(`Reset all personal overrides for ${u.full_name || u.username} back to their role template defaults?`)) return;
+        try {
+          await api('/access/people/' + u.id + '/reset', { method: 'POST' });
+          toast(`Reset ${u.username} to role template.`);
+          await renderPeopleAccess(c, u.id);
+        } catch (e) { toast(e.message, 'err'); }
+      };
+    }
+
+    const copyBtn = qs('#btn-copy-from', c);
+    if (copyBtn) {
+      copyBtn.onclick = () => {
+        const others = people.filter((p) => p.id != u.id && p.active);
+        modal('Copy Access Overrides', `
+          <p class="muted" style="margin-top:0">Copy all section clearance and capability overrides from another person to <b>${esc(u.full_name || u.username)}</b>.</p>
+          <div style="margin-bottom:12px">
+            <label style="font-size:12px;font-weight:600;display:block;margin-bottom:4px">Copy From Person:</label>
+            <select id="source-user-select" style="width:100%">
+              ${others.map((p) => `<option value="${p.id}">${esc(p.full_name || p.username)} (${esc(p.username)}) — ${p.overrides_count} override(s)</option>`).join('')}
+            </select>
+          </div>
+          <div style="text-align:right">
+            <button class="primary" id="btn-do-copy">Copy Overrides</button>
+          </div>`,
+          (body, close) => {
+            qs('#btn-do-copy', body).onclick = async () => {
+              const srcId = qs('#source-user-select', body).value;
+              try {
+                await api('/access/people/' + u.id + '/copy-from', {
+                  method: 'POST',
+                  body: { source_user_id: srcId },
+                });
+                close();
+                toast('Access overrides copied');
+                await renderPeopleAccess(c, u.id);
+              } catch (e) { toast(e.message, 'err'); }
+            };
+          }
+        );
+      };
+    }
+
+    const compareBtn = qs('#btn-compare', c);
+    if (compareBtn) {
+      compareBtn.onclick = () => openCompareModal(u, people);
+    }
+  };
+
+  renderAll();
+}
+
+function openCompareModal(u, people) {
+  modal(`Compare Access: ${esc(u.full_name || u.username)}`, `
+    <div style="display:flex;gap:10px;margin-bottom:12px;align-items:center;flex-wrap:wrap">
+      <label style="margin:0;font-weight:600;font-size:12px">Compare with:</label>
+      <select id="cmp-target-type" style="padding:4px 8px">
+        <option value="user">Another Person</option>
+        <option value="role">A Role Template</option>
+      </select>
+      <select id="cmp-target-val" style="flex:1;min-width:180px;padding:4px 8px"></select>
+      <button class="primary sm" id="btn-run-cmp">Compare</button>
+    </div>
+    <div id="cmp-result"><div class="muted">Select comparison target and click Compare.</div></div>`,
+    async (body) => {
+      const typeSel = qs('#cmp-target-type', body);
+      const valSel = qs('#cmp-target-val', body);
+      const resDiv = qs('#cmp-result', body);
+
+      const updateTargetOptions = async () => {
+        if (typeSel.value === 'user') {
+          valSel.innerHTML = people.filter((p) => p.id != u.id)
+            .map((p) => `<option value="${p.id}">${esc(p.full_name || p.username)} (${esc(p.username)})</option>`).join('');
+        } else {
+          const rData = await api('/access/roles');
+          valSel.innerHTML = rData.roles.map((r) => `<option value="${esc(r.name)}">${esc(r.label || r.name)}</option>`).join('');
+        }
+      };
+
+      typeSel.onchange = updateTargetOptions;
+      await updateTargetOptions();
+
+      qs('#btn-run-cmp', body).onclick = async () => {
+        try {
+          resDiv.innerHTML = '<div class="muted">Comparing…</div>';
+          const query = typeSel.value === 'user' ? `user1=${u.id}&user2=${valSel.value}` : `user1=${u.id}&role=${encodeURIComponent(valSel.value)}`;
+          const res = await api('/access/compare?' + query);
+
+          const targetTitle = res.target.type === 'user' ? (res.target.full_name || res.target.username) : res.target.label;
+
+          const diffSections = res.sections.filter((s) => s.diff);
+
+          const secRows = res.sections.map((s) => `
+            <tr style="${s.diff ? 'background:#fffbeb;' : ''}">
+              <td>${s.icon} <b>${esc(s.label)}</b></td>
+              <td>${lvlChip(s.user1_level)}</td>
+              <td>${lvlChip(s.target_level)}</td>
+              <td>${s.diff ? '<span class="badge amber">Different</span>' : '<span class="muted">Same</span>'}</td>
+            </tr>
+          `).join('');
+
+          const capRows = res.capabilities.map((c) => `
+            <tr>
+              <td><b>${esc(c.label)}</b><br><span class="muted" style="font-size:10px">${esc(c.key)}</span></td>
+              <td>${c.user1_has ? '<span class="badge green">YES</span>' : '<span class="muted">NO</span>'}</td>
+              <td>${c.target_has ? '<span class="badge green">YES</span>' : '<span class="muted">NO</span>'}</td>
+            </tr>
+          `).join('') || '<tr><td colspan="3" class="muted" style="text-align:center">No capability differences</td></tr>';
+
+          resDiv.innerHTML = `
+            <div style="margin-bottom:10px;padding:8px 12px;background:var(--bg-muted, #f8fafc);border-radius:6px;font-size:12px">
+              Comparing <b>${esc(u.full_name || u.username)}</b> vs <b>${esc(targetTitle)}</b>:
+              <b>${diffSections.length}</b> section(s) differ, <b>${res.capabilities.length}</b> special capability difference(s).
+            </div>
+            <h4 style="margin:10px 0 4px">22 Canonical Sections</h4>
+            <div class="table-wrap scroll" style="max-height:220px">
+              <table>
+                <thead><tr><th>Section</th><th>${esc(u.username)}</th><th>${esc(targetTitle)}</th><th>Status</th></tr></thead>
+                <tbody>${secRows}</tbody>
+              </table>
+            </div>
+            <h4 style="margin:14px 0 4px">Capability Differences (${res.capabilities.length})</h4>
+            <div class="table-wrap scroll" style="max-height:180px">
+              <table>
+                <thead><tr><th>Capability</th><th>${esc(u.username)}</th><th>${esc(targetTitle)}</th></tr></thead>
+                <tbody>${capRows}</tbody>
+              </table>
+            </div>
+          `;
+        } catch (e) { resDiv.innerHTML = `<div class="err">${esc(e.message)}</div>`; }
+      };
+    }
+  );
+}
+
+// ---- Tab 2: Sections Audit View ----------------------------------------------
+async function renderSectionsAudit(c, wantedSection) {
+  const [matrixData, wsd] = await Promise.all([api('/access/section-matrix'), workshopsData(true)]);
+  const allSections = matrixData.matrix ? matrixData.matrix.sections : permissions.SECTIONS;
+  const defSec = wantedSection || (allSections[0] ? allSections[0].key : 'dashboard');
+
+  c.innerHTML = `
+    <div class="card" style="margin-bottom:12px">
+      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px">
+        <div>
+          <h3 style="margin:0 0 4px">Section Audit View</h3>
+          <p class="muted" style="margin:0;font-size:12px">Instant answer to: Who has access to each section across all people and roles?</p>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px">
+          <label style="font-weight:600;font-size:12px;margin:0">Choose Section:</label>
+          <select id="sec-audit-select" style="padding:4px 10px;font-size:13px;font-weight:bold">
+            ${allSections.map((s) => `<option value="${s.key}" ${s.key === defSec ? 'selected' : ''}>${s.icon} ${esc(s.label)}</option>`).join('')}
+          </select>
+        </div>
+      </div>
+    </div>
+    <div id="sec-audit-content"><div class="muted">Loading section details…</div></div>
+  `;
+
+  const selBox = qs('#sec-audit-select', c);
+  const contentDiv = qs('#sec-audit-content', c);
+
+  const loadSection = async (secKey) => {
+    try {
+      contentDiv.innerHTML = '<div class="muted">Loading section audit data…</div>';
+      const data = await api('/access/sections/' + encodeURIComponent(secKey));
+      const s = data.section;
+      const people = data.people || [];
+
+      const counts = { full: 0, edit: 0, add: 0, view: 0, none: 0 };
+      people.forEach((p) => { counts[p.effective_level] = (counts[p.effective_level] || 0) + 1; });
+
+      const rows = people.map((p) => {
+        const roleStr = p.roles.map((r) => r.label || r.name).join(', ') || 'None';
+        const isCustom = p.is_override;
+        const capsBadges = (p.granted_caps || []).map((cap) => `<span class="badge" style="font-size:10px">${esc(cap)}</span>`).join(' ') || '<span class="muted">—</span>';
+        return `
+          <tr style="${p.effective_level === 'none' ? 'opacity:.5;' : ''}">
+            <td><b>${esc(p.full_name || p.username)}</b><br><span class="muted" style="font-size:11px">${esc(p.username)}</span></td>
+            <td><span class="muted">${esc(roleStr)}</span></td>
+            <td>${esc(p.workshop || '—')}</td>
+            <td>${lvlChip(p.effective_level)}</td>
+            <td>${isCustom ? '<span class="badge amber">Custom Override</span>' : '<span class="muted">Role Default</span>'}</td>
+            <td>${capsBadges}</td>
+            <td>
+              <button class="btn sm" data-manage-user="${p.id}" title="Go to Person Access">Manage</button>
+            </td>
+          </tr>
+        `;
+      }).join('');
+
+      contentDiv.innerHTML = `
+        <div class="card" style="margin-bottom:12px;border-left:4px solid var(--accent, #2563eb)">
+          <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
+            <div>
+              <h2 style="margin:0;display:flex;align-items:center;gap:6px">
+                <span>${s.icon}</span> <span>${esc(s.label)}</span>
+              </h2>
+              <p class="muted" style="margin:2px 0 0;font-size:12px">${esc(s.description || '')}</p>
+            </div>
+            <div class="pill-row">
+              <span class="badge amber">Full: ${counts.full || 0}</span>
+              <span class="badge green">Edit: ${counts.edit || 0}</span>
+              <span class="badge blue">Add: ${counts.add || 0}</span>
+              <span class="badge">View: ${counts.view || 0}</span>
+              <span class="muted" style="font-size:11px">No access: ${counts.none || 0}</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="table-wrap scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>Person</th>
+                  <th>Roles</th>
+                  <th>Workshop</th>
+                  <th>Effective Level</th>
+                  <th>Origin</th>
+                  <th>Special Capabilities</th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+              <tbody>${rows}</tbody>
+            </table>
+          </div>
+        </div>
+      `;
+
+      qsa('[data-manage-user]', contentDiv).forEach((b) => {
+        b.onclick = () => {
+          location.hash = '#/access?tab=people&user=' + b.dataset.manageUser;
+        };
+      });
+    } catch (e) {
+      contentDiv.innerHTML = `<div class="card err">${esc(e.message)}</div>`;
+    }
+  };
+
+  selBox.onchange = () => loadSection(selBox.value);
+  await loadSection(defSec);
+}
+
+// ---- Tab 4: Audit History View ------------------------------------------------
+async function renderAccessHistory(c) {
+  const data = await api('/access/history?limit=150');
+  const rows = (data.history || []).map((h) => {
+    let detailsStr = '';
+    try {
+      if (h.after_json) {
+        const parsed = JSON.parse(h.after_json);
+        detailsStr = Object.entries(parsed).map(([k, v]) => `${k}: ${typeof v === 'object' ? JSON.stringify(v) : v}`).join(' · ');
+      }
+    } catch (e) { detailsStr = h.after_json || ''; }
+
+    return `
+      <tr>
+        <td style="white-space:nowrap;font-size:11px">${esc(String(h.created_at || '').slice(0, 19).replace('T', ' '))}</td>
+        <td><b>${esc(h.actor_username || 'System')}</b></td>
+        <td><span class="badge blue">${esc(h.entity)}</span></td>
+        <td>${esc(h.action)}</td>
+        <td class="muted" style="font-size:11px">${esc(h.entity_id || '—')}</td>
+        <td style="font-size:11px">${esc(detailsStr)}</td>
+      </tr>
+    `;
+  }).join('') || '<tr><td colspan="6" class="muted" style="text-align:center">No access history recorded yet.</td></tr>';
+
+  c.innerHTML = `
+    <div class="card">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+        <div>
+          <h3 style="margin:0 0 2px">Access Change Audit Log</h3>
+          <p class="muted" style="margin:0;font-size:12px">Immutable record of every permission, role, clearance and personal override modification.</p>
+        </div>
+      </div>
+      <div class="table-wrap scroll" style="max-height:calc(100vh - 250px)">
+        <table>
+          <thead>
+            <tr>
+              <th>Timestamp</th>
+              <th>Actor</th>
+              <th>Entity</th>
+              <th>Action</th>
+              <th>Target ID</th>
+              <th>Details</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    </div>
+  `;
+}
+
 async function renderRolesManager(c, wanted) {
-  const [cat, board] = await Promise.all([api('/access/capabilities'), api('/access/matrix')]);
-  const roles = cat.roles;
+  const sm = await api('/access/section-matrix').catch(async () => {
+    const [cat, board] = await Promise.all([api('/access/capabilities'), api('/access/matrix')]);
+    return { sections: [], capabilities: cat.capabilities, modules: cat.modules, roles: cat.roles, matrix: board };
+  });
+  const roles = sm.roles;
   const sel = roles.find((r) => r.name === wanted) || roles.find((r) => r.active && !r.locked) || roles[0];
-  const modLabel = Object.fromEntries(cat.modules.map((m) => [m.key, m.label]));
+  const board = sm.matrix;
+  const modLabel = Object.fromEntries(sm.modules.map((m) => [m.key, m.label]));
   modLabel.users = 'Users & Access';
   const levelOf = (role, m) => (board.grid[role] && board.grid[role][m]) || 'none';
   const held = new Set(sel.caps);
   const mine = new Set(ME.caps || []);
-
-  // Permissions grouped by section, in catalogue order.
-  const groups = [];
-  for (const cap of cat.capabilities) {
-    let g = groups.find((x) => x.module === cap.module);
-    if (!g) groups.push(g = { module: cap.module, caps: [] });
-    g.caps.push(cap);
-  }
   const editable = !sel.locked && sel.active;
-  const capRows = groups.map((g) => {
-    const lvl = levelOf(sel.name, g.module);
-    const rows = g.caps.map((cap) => {
-      const has = sel.locked || held.has(cap.key);
-      // You can take away anything, but only give what you hold yourself (the server says the same).
-      const canTick = editable && (has || isAdmin() || mine.has(cap.key));
-      const short = cap.needs && has && !sel.locked && rankL(levelOf(sel.name, cap.needs)) < 2
-        ? ` <span class="badge amber" title="The ${esc(modLabel[cap.needs] || cap.needs)} section blocks changes for this role until its clearance is EDIT or FULL">needs ${esc(modLabel[cap.needs] || cap.needs)} EDIT</span>` : '';
-      return `<label style="display:flex;flex-direction:row;gap:8px;align-items:flex-start;margin:3px 0;font-weight:normal">
-        <input type="checkbox" style="width:auto;margin-top:3px" data-cap="${esc(cap.key)}" ${has ? 'checked' : ''} ${canTick ? '' : 'disabled'}>
-        <span>${esc(cap.label)}${short}<br><span class="muted" style="font-size:11px">${esc(cap.key)}</span></span></label>`;
-    }).join('');
-    return `<div class="card section" style="margin-bottom:10px"><h3 style="margin:0 0 6px">${esc(modLabel[g.module] || g.module)}
-      <span class="muted" style="font-size:12px;font-weight:normal">— section clearance ${lvlChip(sel.locked ? 'full' : lvl)}</span></h3>${rows}</div>`;
-  }).join('');
 
   const roleList = roles.map((r) => `<tr data-pick="${esc(r.name)}" style="cursor:pointer;${r.name === sel.name ? 'background:#eef2ff;' : ''}${r.active ? '' : 'opacity:.55;'}">
     <td><b>${esc(r.label || r.name)}</b>${r.locked ? ' <span class="badge amber">everything</span>' : ''}${r.is_system ? '' : ' <span class="badge blue">custom</span>'}${r.active ? '' : ' <span class="badge">retired</span>'}
     <br><span class="muted" style="font-size:11px">${r.users} user(s) · ${r.locked ? 'all' : r.caps.length} permission(s)</span></td></tr>`).join('');
 
+  // Fallback if sections not returned: group by module
+  const sections = (sm.sections && sm.sections.length) ? sm.sections : [
+    { id: 'all', name: 'Permissions', icon: '⚙️', description: 'All module capabilities', modules: sm.modules.map((m) => m.key) }
+  ];
+
+  const LVLS = ['none', 'view', 'add', 'edit', 'full'];
+  const LV_LABEL = { none: 'None', view: 'View', add: 'Add', edit: 'Edit', full: 'Full' };
+
+  const sectionCards = sections.map((sec) => {
+    const secCaps = sm.capabilities.filter((cap) => sec.modules.includes(cap.module));
+    
+    // 1. Module Clearance Control for this section
+    const modClearanceHtml = sec.modules.map((m) => {
+      const curLvl = levelOf(sel.name, m);
+      const isLocked = sel.locked || !editable;
+      const pills = LVLS.map((lvl) => {
+        const isCurrent = (sel.locked && lvl === 'full') || (!sel.locked && curLvl === lvl);
+        const cls = isCurrent ? (lvl === 'full' ? 'primary' : (lvl === 'edit' ? 'badge green' : (lvl === 'add' ? 'badge teal' : (lvl === 'view' ? 'badge blue' : 'badge amber')))) : 'btn sm';
+        const style = isCurrent ? 'font-weight:bold;' : 'opacity:.7;';
+        return `<button class="${cls}" style="${style}padding:2px 8px;font-size:11px" data-setlvl="${esc(m)}:${lvl}" ${isLocked ? 'disabled' : ''}>${LV_LABEL[lvl]}</button>`;
+      }).join(' ');
+      return `<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:4px 0">
+        <span style="font-size:12px;font-weight:600">${esc(modLabel[m] || m)}:</span>
+        <div style="display:flex;gap:4px">${pills}</div>
+      </div>`;
+    }).join('');
+
+    // 2. Preset Buttons for this section
+    const presetsHtml = (sec.presets && editable) ? `
+      <div style="display:flex;align-items:center;gap:6px;margin:8px 0 10px;padding:6px 8px;background:var(--bg-muted, #f8f9fa);border-radius:4px;flex-wrap:wrap">
+        <span class="muted" style="font-size:11px;font-weight:600">Quick Presets:</span>
+        <button class="btn sm" data-preset="${esc(sec.id)}:none" title="Remove all access to this section">❌ No Access</button>
+        <button class="btn sm" data-preset="${esc(sec.id)}:view" title="Read-only clearance">👁️ Read-Only</button>
+        <button class="btn sm" data-preset="${esc(sec.id)}:operator" title="Set standard operator clearance & tools">⚙️ Operator</button>
+        <button class="btn sm" data-preset="${esc(sec.id)}:manager" title="Full clearance and manager capabilities">👑 Full Manager</button>
+      </div>` : '';
+
+    // 3. Capabilities checkboxes
+    const capListHtml = secCaps.map((cap) => {
+      const has = sel.locked || held.has(cap.key);
+      const canTick = editable && (has || isAdmin() || mine.has(cap.key));
+      const needsMod = cap.needs;
+      const currentModLvl = needsMod ? levelOf(sel.name, needsMod) : 'full';
+      const short = (needsMod && !sel.locked && rankL(currentModLvl) < 2)
+        ? ` <span class="badge amber" style="font-size:10px" title="Ticking this will auto-elevate ${esc(modLabel[needsMod] || needsMod)} to EDIT">auto-elevates ${esc(modLabel[needsMod] || needsMod)} to EDIT</span>` : '';
+      return `<label style="display:flex;flex-direction:row;gap:8px;align-items:flex-start;margin:4px 0;font-weight:normal">
+        <input type="checkbox" style="width:auto;margin-top:3px" data-cap="${esc(cap.key)}" data-needs="${esc(cap.needs || '')}" ${has ? 'checked' : ''} ${canTick ? '' : 'disabled'}>
+        <span style="font-size:13px">${esc(cap.label)}${short}<br><span class="muted" style="font-size:11px">${esc(cap.key)}</span></span>
+      </label>`;
+    }).join('');
+
+    return `
+      <div class="card section" style="margin-bottom:14px;border-top:3px solid var(--accent)">
+        <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:10px">
+          <div>
+            <h3 style="margin:0;display:flex;align-items:center;gap:6px">
+              <span>${sec.icon || '📁'}</span>
+              <span>${esc(sec.name)}</span>
+            </h3>
+            <p class="muted" style="margin:2px 0 8px;font-size:12px">${esc(sec.description || '')}</p>
+          </div>
+        </div>
+        <div style="background:var(--card-sub-bg, #fafafa);border:1px solid var(--border-light, #eee);border-radius:6px;padding:8px 12px;margin-bottom:10px">
+          <div class="muted" style="font-size:11px;font-weight:600;margin-bottom:4px;text-transform:uppercase">Section Clearance:</div>
+          ${modClearanceHtml}
+        </div>
+        ${presetsHtml}
+        <div style="margin-top:6px">
+          <div class="muted" style="font-size:11px;font-weight:600;margin-bottom:6px;text-transform:uppercase">Granular Capabilities (${secCaps.length}):</div>
+          ${capListHtml || '<span class="muted" style="font-size:12px">No specific granular capabilities for this section</span>'}
+        </div>
+      </div>`;
+  }).join('');
+
   c.innerHTML = `<div style="display:grid;grid-template-columns:minmax(220px,300px) 1fr;gap:14px;align-items:start">
     <div class="card"><div class="toolbar" style="margin:0 0 8px"><h3 style="margin:0">Roles</h3><div class="spacer"></div><button class="primary sm" id="newrole">+ New Role</button></div>
       <div class="table-wrap scroll"><table><tbody>${roleList}</tbody></table></div></div>
     <div>
-      <div class="card" style="margin-bottom:10px">
+      <div class="card" style="margin-bottom:12px">
         <div class="toolbar" style="margin:0"><h2 style="margin:0">${esc(sel.label || sel.name)}</h2><div class="spacer"></div>
           ${sel.locked ? '' : `<button class="sm" id="editrole">✎ Rename / describe</button>
           ${sel.active ? '<button class="sm danger" id="retirerole">Retire</button>' : '<button class="sm" id="reinstaterole">Reinstate</button>'}`}
@@ -9226,27 +10136,88 @@ async function renderRolesManager(c, wanted) {
         <p class="muted" style="margin:6px 0 0">${esc(sel.description || '')}${sel.description ? '<br>' : ''}Key <code>${esc(sel.name)}</code> · held by ${sel.users} active user(s).
           ${sel.locked ? ' Admin always holds every permission and cannot be changed.' : ''}
           ${!sel.active ? ' Retired — it grants nothing until reinstated.' : ''}
-          ${editable ? ' Ticking a box applies from each holder\'s next click. Section clearance is set on the Clearance Board.' : ''}</p>
+          ${editable ? ' Single-point access: configure both base section clearance and all granular capabilities per section directly below.' : ''}</p>
       </div>
-      ${capRows}
+      ${sectionCards}
     </div></div>`;
 
   const reload = (name) => { location.hash = '#/access?tab=roles&role=' + encodeURIComponent(name || sel.name); };
   qsa('[data-pick]', c).forEach((tr) => { tr.onclick = () => reload(tr.dataset.pick); });
+
   qs('#rolemfa', c).onchange = async (e) => {
     const on = e.target.checked;
     if (on && !confirm(`Everyone with "${sel.label || sel.name}" will have to set up two-factor sign-in before they can use the system. Continue?`)) { e.target.checked = false; return; }
     try { await api('/access/roles/' + encodeURIComponent(sel.name), { method: 'PATCH', body: { require_mfa: on } }); toast(on ? 'Two-factor sign-in required for this role' : 'No longer required'); reload(); }
     catch (err) { e.target.checked = !on; toast(err.message, 'err'); }
   };
+
+  // Direct section clearance level buttons
+  qsa('[data-setlvl]', c).forEach((btn) => {
+    btn.onclick = async () => {
+      const [mod, lvl] = btn.dataset.setlvl.split(':');
+      try {
+        await api('/access/section-save', {
+          method: 'POST',
+          body: { role: sel.name, modules: { [mod]: lvl } }
+        });
+        toast(`${modLabel[mod] || mod} clearance set to ${lvl.toUpperCase()}`);
+        await renderRolesManager(c, sel.name);
+      } catch (err) { toast(err.message, 'err'); }
+    };
+  });
+
+  // Section quick presets
+  qsa('[data-preset]', c).forEach((btn) => {
+    btn.onclick = async () => {
+      const [secId, presetKey] = btn.dataset.preset.split(':');
+      const sec = sections.find((s) => s.id === secId);
+      if (!sec || !sec.presets || !sec.presets[presetKey]) return;
+      const p = sec.presets[presetKey];
+      const secCaps = sm.capabilities.filter((cap) => sec.modules.includes(cap.module));
+      const capUpdates = {};
+      for (const cap of secCaps) {
+        capUpdates[cap.key] = p.caps.includes(cap.key);
+      }
+      try {
+        await api('/access/section-save', {
+          method: 'POST',
+          body: { role: sel.name, modules: p.modules, capabilities: capUpdates }
+        });
+        toast(`Applied ${presetKey.toUpperCase()} preset to ${sec.name}`);
+        await renderRolesManager(c, sel.name);
+      } catch (err) { toast(err.message, 'err'); }
+    };
+  });
+
+  // Checkbox toggling with auto-elevation if required
   qsa('[data-cap]', c).forEach((box) => {
     box.onchange = async () => {
+      const capKey = box.dataset.cap;
+      const needs = box.dataset.needs;
+      const willGrant = box.checked;
+      const modUpdates = {};
+      if (willGrant && needs && rankL(levelOf(sel.name, needs)) < 2) {
+        modUpdates[needs] = 'edit';
+      }
       try {
-        await api('/access/capabilities', { method: 'POST', body: { role: sel.name, capability: box.dataset.cap, granted: box.checked } });
+        if (Object.keys(modUpdates).length) {
+          await api('/access/section-save', {
+            method: 'POST',
+            body: { role: sel.name, modules: modUpdates, capabilities: { [capKey]: willGrant } }
+          });
+          toast(`Granted ${capKey} and elevated ${modLabel[needs] || needs} to EDIT`);
+        } else {
+          await api('/access/section-save', {
+            method: 'POST',
+            body: { role: sel.name, capabilities: { [capKey]: willGrant } }
+          });
+          toast(willGrant ? `Granted ${capKey}` : `Revoked ${capKey}`);
+        }
         await renderRolesManager(c, sel.name);
       } catch (e) { box.checked = !box.checked; toast(e.message, 'err'); }
     };
   });
+
   qs('#newrole', c).onclick = () => modal('New role', `
     ${field('Name *', 'label', { placeholder: 'e.g. Site Storekeeper' })}
     ${field('What this role is for', 'description', { type: 'textarea' })}

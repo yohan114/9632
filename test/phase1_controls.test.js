@@ -94,6 +94,9 @@ test('R-04: Unauthenticated access to reporting and data endpoints is blocked wi
 });
 
 test('R-06: Dual sign-off enforcement on material requisitions (self-approval prohibited)', async () => {
+  // Certifying is the workshop's step by default now; an existing database keeps the manager's
+  // grant, and that is the case tested here (the manager certifies, then may not approve).
+  require('../src/lib/capabilities').setCapability('manager', 'stores.mrn.certify', true);
   const skCookie = await loginAs('sk');
   const mgr1Cookie = await loginAs('mgr1');
   const mgr2Cookie = await loginAs('mgr2');

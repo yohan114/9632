@@ -8,9 +8,16 @@ const audit = require('../lib/audit');
 const costing = require('../lib/costing');
 const { sendXlsx } = require('../lib/export');
 
+const { requireModule } = require('../lib/permissions');
 const router = express.Router();
 
-router.get('/', asyncHandler((_req, res) => {
+router.get('/', asyncHandler((req, res) => {
+  const permissions = require('../lib/permissions');
+  const hasAccess = req.user && (req.user.roles.includes('admin') || permissions.meets(permissions.effectiveLevel(req.user, 'projects'), 'view'));
+  if (!hasAccess) {
+    // Unprivileged users only see safe project names and codes for dropdown selectors
+    return res.json(all('SELECT id, code, name FROM projects WHERE active = 1 ORDER BY name'));
+  }
   res.json(all(
     `SELECT p.*,
             (SELECT COUNT(*) FROM assets a WHERE a.current_project_id = p.id) AS asset_count,
@@ -27,7 +34,7 @@ router.post('/', requireCap('projects.manage'), asyncHandler((req, res) => {
   res.status(201).json(get('SELECT * FROM projects WHERE id = ?', info.lastInsertRowid));
 }));
 
-router.get('/:id', asyncHandler((req, res) => {
+router.get('/:id', requireModule('projects'), asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   const project = get('SELECT * FROM projects WHERE id = ?', id);
   if (!project) return res.status(404).json({ error: 'Project not found' });
@@ -52,7 +59,7 @@ router.patch('/:id', requireCap('projects.manage'), asyncHandler((req, res) => {
   res.json(after);
 }));
 
-router.get('/:id/cost', asyncHandler(async (req, res) => {
+router.get('/:id/cost', requireModule('projects'), asyncHandler(async (req, res) => {
   const id = toInt(req.params.id);
   const rows = all(
     `SELECT strftime('%Y-%m', requested_at) AS month,

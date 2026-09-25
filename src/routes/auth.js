@@ -29,16 +29,16 @@ function startSession(req, res, user, { mfaVerified = false, method = 'password'
     secure: req.secure,
     expires: new Date(expires),
   });
-  audit.record({ userId: user.id, entity: 'session', action: 'login', after: method === 'password' ? null : { second_factor: method } });
   const roles = auth.rolesForUser(user.id);
-  const caps = capabilities.capsForRoles(roles);
+  const uObj = { id: user.id, roles, access_until: user.access_until, approval_limit: user.approval_limit, workshop_id: user.workshop_id };
+  const caps = capabilities.effectiveCaps(uObj);
   const st = mfa.status(user.id, roles);
   return res.json({
     id: user.id,
     username: user.username,
     fullName: user.full_name,
     roles,
-    permissions: permissions.userPermissions(roles),
+    permissions: permissions.effectiveUserPermissions(uObj),
     caps,
     capNeeds: capabilities.needsFor(caps),
     mustChangePassword: !!user.must_change_password,

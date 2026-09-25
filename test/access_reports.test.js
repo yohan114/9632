@@ -4,10 +4,13 @@
 //
 //   Every /api/reports address needs the Reports section (view) — except the few read from other
 //   sections: the Dashboard's own figures and your approvals (everyone signed in, the figures trimmed
-//   to the sections the person may see), a job card's report and cost sheet (Job Cards), the day
-//   tally (Daily Work) and a service's outside prices (Service Records edit, or the monthly-inputs
-//   permission). Entering the monthly inputs needs its own permission. The Dashboard's Live Overview
-//   (/api/dashboard) needs Reports too, as the Dashboard screen already asked.
+//   to the sections the person may see), a job card's report (Job Cards), the day tally (Daily Work),
+//   the reports with a section of their own (service plan, attention, daily progress, cost teardown,
+//   a job's cost sheet — each checked by that section), and a service's outside prices (Service
+//   Records edit, or the monthly inputs' rule). Entering the monthly inputs is for managers: Reports
+//   at edit, or the monthly-cost permission (the owner's choice, 2026-09-25). The Dashboard's Live
+//   Overview needs Reports; the rest of the Dashboard follows the Dashboard section. Every level is
+//   the person's own, personal clearances included.
 
 const os = require('os');
 const path = require('path');
@@ -140,33 +143,41 @@ test('with Reports view the reports open, as before', async () => {
 });
 
 // ================================================================== the writes
-test('entering the monthly inputs needs its own permission; the read-only viewer and the buyers do not have it', async () => {
-  const holders = capabilities.CAPABILITIES.find((c) => c.key === 'reports.monthly_inputs').legacy.slice().sort();
-  assert.deepStrictEqual(holders, ['assistant_transport_manager', 'main_storekeeper', 'manager', 'operational_manager', 'storekeeper',
-    'transport_manager', 'workshop'], 'every built-in role that could open the Reports page, except the viewer');
-  for (const user of ['buyer', 'view', 'no', 'jo', 'dw']) assert.strictEqual(await status(user, 'POST', '/reports/monthly-inputs', inputs), 403, user);
-  for (const user of ['ws', 'om', 'boss']) assert.strictEqual(await status(user, 'POST', '/reports/monthly-inputs', inputs), 200, user);
+// The owner's choice (2026-09-25): the monthly inputs are the company's money figures, so managers
+// only — Reports at edit, or the monthly-cost permission. One permission for it, not two.
+test('entering the monthly inputs is for managers: Reports edit, or the monthly-cost permission', async () => {
+  const holders = capabilities.CAPABILITIES.find((c) => c.key === 'reports.monthly_cost.edit').legacy.slice().sort();
+  assert.deepStrictEqual(holders, ['manager', 'operational_manager']);
+  assert.ok(!capabilities.CAPABILITIES.some((c) => c.key === 'reports.monthly_inputs'), 'one permission for it, not two');
+  for (const user of ['buyer', 'view', 'no', 'jo', 'dw', 'ws', 'sk']) assert.strictEqual(await status(user, 'POST', '/reports/monthly-inputs', inputs), 403, user);
+  for (const user of ['om', 'boss']) assert.strictEqual(await status(user, 'POST', '/reports/monthly-inputs', inputs), 200, user);
   assert.strictEqual(get("SELECT COUNT(*) c FROM monthly_report_inputs WHERE sheet = 'fuel'").c, 1);
-  // Taken away from a role on the Access screen, it is gone for its holders at once.
-  capabilities.setCapability('workshop', 'reports.monthly_inputs', false);
-  try { assert.strictEqual(await status('ws', 'POST', '/reports/monthly-inputs', inputs), 403); }
-  finally { capabilities.setCapability('workshop', 'reports.monthly_inputs', true); }
+  // Given to a role on the Access screen, it works for its holders at once.
+  capabilities.setCapability('workshop', 'reports.monthly_cost.edit', true);
+  try { assert.strictEqual(await status('ws', 'POST', '/reports/monthly-inputs', inputs), 200); }
+  finally { capabilities.setCapability('workshop', 'reports.monthly_cost.edit', false); }
 });
 
-test('a service\'s outside price: Service Records edit, or the monthly-inputs permission', async () => {
+test('a service\'s outside price: Service Records edit, or the monthly inputs\' rule', async () => {
   const body = (v) => ({ items: [{ id: SVC, outside: v }] });
   const before = get('SELECT outside_estimate v FROM service_jobs WHERE id = ?', SVC).v;
-  for (const user of ['buyer', 'view', 'no', 'jo']) assert.strictEqual(await status(user, 'POST', '/reports/service-outside', body(1)), 403, user);
+  // The storekeeper has Service Records at view only (Filters & Prices is a different section).
+  for (const user of ['buyer', 'view', 'no', 'jo', 'sk']) assert.strictEqual(await status(user, 'POST', '/reports/service-outside', body(1)), 403, user);
   assert.strictEqual(get('SELECT outside_estimate v FROM service_jobs WHERE id = ?', SVC).v, before, 'nothing was saved');
-  // Service Records edit alone is enough (the storekeeper, with the monthly-inputs permission taken away).
-  capabilities.setCapability('storekeeper', 'reports.monthly_inputs', false);
-  try { assert.strictEqual(await status('sk', 'POST', '/reports/service-outside', body(2500)), 200, 'storekeeper: Service Records full'); }
-  finally { capabilities.setCapability('storekeeper', 'reports.monthly_inputs', true); }
+  // Service Records edit alone is enough: the workshop (Reports only at view).
+  assert.strictEqual(perms.levelForRoles(['workshop'], 'services'), 'edit');
+  assert.strictEqual(await status('ws', 'POST', '/reports/service-outside', body(2500)), 200, 'workshop: Service Records edit');
   assert.strictEqual(get('SELECT outside_estimate v FROM service_jobs WHERE id = ?', SVC).v, 2500);
-  // Service Records at view, but the monthly-inputs permission: allowed (the inputs screen saves it).
-  assert.strictEqual(perms.levelForRoles(['transport_manager'], 'filters'), 'view');
+  // The monthly inputs' rule: Reports edit (the operations manager)...
+  assert.strictEqual(await status('om', 'POST', '/reports/service-outside', body(2800)), 200);
+  // ...or the monthly-cost permission, given on the Access screen.
+  assert.strictEqual(perms.levelForRoles(['transport_manager'], 'services'), 'view');
   mkUser('tm', ['transport_manager']);
-  assert.strictEqual(await status('tm', 'POST', '/reports/service-outside', body(3000)), 200);
+  assert.strictEqual(await status('tm', 'POST', '/reports/service-outside', body(3000)), 403);
+  capabilities.setCapability('transport_manager', 'reports.monthly_cost.edit', true);
+  try { assert.strictEqual(await status('tm', 'POST', '/reports/service-outside', body(3000)), 200); }
+  finally { capabilities.setCapability('transport_manager', 'reports.monthly_cost.edit', false); }
+  assert.strictEqual(get('SELECT outside_estimate v FROM service_jobs WHERE id = ?', SVC).v, 3000);
 });
 
 // ================================================================== read from other sections
@@ -199,4 +210,37 @@ test('the Dashboard\'s figures are trimmed to what the person may see', async ()
   assert.deepStrictEqual([jo.month_cost_by_project, jo.open_jobs_count, jo.partly_closed.map((j) => j.job_no)], [[], 1, ['2026/9/R/2']],
     'Job Cards without Reports: the jobs, not the costs');
   assert.strictEqual(await status('buyer', 'GET', '/reports/pending-approvals'), 200, 'your approvals: everyone');
+});
+
+// ================================================================== with per-person access (merged 2026-09-25)
+// The per-person access work checks some reports by a section of their own (service plan, attention,
+// daily progress, cost teardown, a job's cost sheet), gives the Dashboard its own section, and lets a
+// person hold a clearance of their own. The Reports check above has to agree with all three.
+test('a report with a section of its own opens with that section alone, and nothing else does', async () => {
+  run("INSERT INTO roles (name, label) VALUES ('dponly', 'Daily progress only')");
+  for (const m of perms.MODULE_KEYS) perms.setPermission('dponly', m, m === 'daily_progress' ? 'view' : 'none');
+  mkUser('dp', ['dponly']);
+  assert.strictEqual(await status('dp', 'GET', `/reports/daily-progress?date=${today}`), 200, 'its own section');
+  for (const p of ['/reports/monthly', '/reports/ongoing-jobs.html', '/reports/service-due', `/reports/teardown/asset/${A}`]) {
+    assert.strictEqual(await status('dp', 'GET', p), 403, p);
+  }
+});
+
+test('the workflow roads follow the Dashboard section; only the Live Overview needs Reports', async () => {
+  run("INSERT INTO roles (name, label) VALUES ('dashonly', 'Dashboard only')");
+  for (const m of perms.MODULE_KEYS) perms.setPermission('dashonly', m, m === 'dashboard' ? 'view' : 'none');
+  mkUser('dash', ['dashonly']);
+  assert.strictEqual(await status('dash', 'GET', '/dashboard/workflow-monitor'), 200, 'the roads: Dashboard alone');
+  for (const p of ['/dashboard/overview', '/dashboard/live-stats']) assert.strictEqual(await status('dash', 'GET', p), 403, p);
+  assert.strictEqual(await status('no', 'GET', '/dashboard/workflow-monitor'), 403, 'no Dashboard section');
+  assert.strictEqual(await status('view', 'GET', '/dashboard/overview'), 200, 'Reports: the Live Overview');
+});
+
+test('a clearance given to one person counts in the Reports check, like every other check', async () => {
+  const id = mkUser('pp', ['nothing']);
+  assert.strictEqual(await status('pp', 'GET', '/reports/monthly'), 403, 'their role has nothing');
+  perms.setUserPermission(id, 'reports', 'view');
+  assert.strictEqual(await status('pp', 'GET', '/reports/monthly'), 200, 'Reports given to this one person');
+  perms.removeUserPermission(id, 'reports');
+  assert.strictEqual(await status('pp', 'GET', '/reports/monthly'), 403, 'taken back');
 });

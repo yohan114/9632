@@ -271,14 +271,19 @@ test('monthly inputs: one workshop at a time; saving replaces only that workshop
   assert.deepStrictEqual(all('SELECT label, workshop_id FROM monthly_report_inputs WHERE sheet = ? ORDER BY id', 'other'),
     [{ label: 'Electricity', workshop_id: CW }, { label: 'Generator', workshop_id: MTR }], 'Central\'s line is untouched');
   assert.strictEqual((await monthly.buildWorkbook(YEAR, MONTH, { ws: MTR })).parts.other.sums.total, 4000);
-  // Kept apart, Muthur writes only its own, whatever it asks for.
+  // Kept apart, Muthur writes only its own, whatever it asks for. Saving needs the monthly-cost
+  // permission: without it the workshop user is refused outright.
   scope.setSwitch({ id: U.boss }, true);
+  const refused = await req('POST', '/api/reports/monthly-inputs', { cookie: await as('wsM'), body: { year: YEAR, month: MONTH, sheet: 'other', workshop_id: MTR, lines: [{ label: 'Water', amount1: 900 }] } });
+  assert.strictEqual(refused.status, 403, 'monthly inputs need reports.monthly_cost.edit');
+  require('../src/lib/capabilities').setCapability('workshop', 'reports.monthly_cost.edit', true);
   await req('POST', '/api/reports/monthly-inputs', { cookie: await as('wsM'), body: { year: YEAR, month: MONTH, sheet: 'other', workshop_id: CW, lines: [{ label: 'Water', amount1: 900 }] } });
   assert.deepStrictEqual(all('SELECT label, workshop_id FROM monthly_report_inputs WHERE sheet = ? ORDER BY id', 'other').map((x) => [x.label, x.workshop_id]),
     [['Electricity', CW], ['Water', MTR]]);
   // ...and prices only its own services.
   await req('POST', '/api/reports/service-outside', { cookie: await as('wsM'), body: { items: [{ id: S.c, outside: 99 }, { id: S.m, outside: 88 }] } });
   assert.deepStrictEqual([get('SELECT outside_estimate v FROM service_jobs WHERE id = ?', S.c).v, get('SELECT outside_estimate v FROM service_jobs WHERE id = ?', S.m).v], [0, 88]);
+  require('../src/lib/capabilities').setCapability('workshop', 'reports.monthly_cost.edit', false);
   scope.setSwitch({ id: U.boss }, false);
 });
 

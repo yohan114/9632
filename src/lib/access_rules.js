@@ -31,10 +31,17 @@ function capsOf(user) {
   return Array.isArray(user.caps) ? user.caps : capabilities.capsForRoles(user.roles || []);
 }
 
+/** Safety Rule (Plan §B.4): nobody can change their own access. */
+function assertNotSelf(actor, targetUserId) {
+  if (actor && actor.id && targetUserId && Number(actor.id) === Number(targetUserId)) {
+    fail(403, 'You cannot modify your own access permissions.');
+  }
+}
+
 /** Rule 1, for permissions. */
 function assertCanGrantCaps(actor, caps) {
   if (isAdmin(actor)) return;
-  const mine = new Set(capsOf(actor));
+  const mine = new Set(capabilities.effectiveCaps(actor));
   const missing = caps.filter((c) => !mine.has(c));
   if (missing.length) {
     fail(403, `You can only give permissions you hold yourself. Not yours: ${missing.map((c) => (capabilities.get(c) || { label: c }).label).join('; ')}`);
@@ -44,7 +51,7 @@ function assertCanGrantCaps(actor, caps) {
 /** Rule 1, for section clearance levels. */
 function assertCanSetLevel(actor, moduleKey, level) {
   if (isAdmin(actor)) return;
-  const mine = permissions.levelForRoles(actor.roles || [], moduleKey);
+  const mine = permissions.effectiveLevel(actor, moduleKey);
   if (permissions.rank(level) > permissions.rank(mine)) {
     fail(403, `You can only set ${moduleKey} as high as your own clearance (${mine}).`);
   }
@@ -117,5 +124,5 @@ function assertKeepsAnAdmin({ userId, deactivate = false, newRoles = null }) {
 
 module.exports = {
   isAdmin, assertCanGrantCaps, assertCanSetLevel, assertCanAssignRoles, assertCanManageUser,
-  assertKeepsAnAdmin, activeAdminIds, userIsAdmin,
+  assertKeepsAnAdmin, activeAdminIds, userIsAdmin, assertNotSelf,
 };
