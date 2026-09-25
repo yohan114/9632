@@ -16,20 +16,9 @@ function resolveAsset(text) {
   return r.assetId;
 }
 
-// Battery photos are stored as resized base64 data URLs (same as e-signatures) so
-// they travel with the DB backups. Validate type + cap size (client resizes first).
-const PHOTO_RE = /^data:image\/(png|jpe?g|webp);base64,/;
-function photoError(p) {
-  if (!p) return null;
-  if (!PHOTO_RE.test(String(p))) return { status: 400, error: 'Photo must be a PNG, JPEG or WebP image' };
-  if (String(p).length > 900000) return { status: 413, error: 'Image too large — please choose a smaller photo (max ~700 KB)' };
-  return null;
-}
-
-// A battery holds up to six pictures — enough for the serial plate, the condition on arrival
-// and the damage behind a warranty claim, without a single record carrying megabytes of image
-// into every backup.
-const MAX_PHOTOS = 6;
+// Battery photos: src/lib/unit_photos.js (shared with tyres since the stores plan, Part 4).
+const unitPhotos = require('../lib/unit_photos');
+const { photoError, MAX_PHOTOS } = unitPhotos;
 
 // A vehicle takes at most two batteries. Heavy machines run a pair in series; a third means
 // something was recorded wrong, most often an old battery never returned before the new one
@@ -52,34 +41,9 @@ function vehicleFullError(assetId, exceptId) {
       + 'Return or decommission the one coming off first, then install this one.' };
 }
 
-/** Photos are the record; batteries.photo_path is the cover, rebuilt from them. */
-function syncCoverPhoto(batteryId) {
-  const first = get('SELECT photo FROM battery_photos WHERE battery_id = ? ORDER BY seq, id LIMIT 1', batteryId);
-  run('UPDATE batteries SET photo_path = ? WHERE id = ?', first ? first.photo : null, batteryId);
-}
-
-function addPhotos(batteryId, photos, userId, note) {
-  const have = get('SELECT COUNT(*) c FROM battery_photos WHERE battery_id = ?', batteryId).c;
-  if (have + photos.length > MAX_PHOTOS) {
-    return { status: 409,
-      error: `A battery holds at most ${MAX_PHOTOS} photos — it has ${have}, so ${MAX_PHOTOS - have} more can be added.` };
-  }
-  for (const p of photos) { const e = photoError(p); if (e) return e; }
-  tx(() => {
-    let seq = (get('SELECT MAX(seq) m FROM battery_photos WHERE battery_id = ?', batteryId).m || 0);
-    for (const p of photos) {
-      run('INSERT INTO battery_photos (battery_id, seq, photo, note, uploaded_by) VALUES (?, ?, ?, ?, ?)',
-        batteryId, ++seq, p, note || null, userId || null);
-    }
-    syncCoverPhoto(batteryId);
-  });
-  return null;
-}
-
-const photosOf = (batteryId) => all(
-  `SELECT p.id, p.seq, p.photo, p.note, p.uploaded_at, u.username AS uploaded_by_name
-     FROM battery_photos p LEFT JOIN users u ON u.id = p.uploaded_by
-    WHERE p.battery_id = ? ORDER BY p.seq, p.id`, batteryId);
+const syncCoverPhoto = (batteryId) => unitPhotos.syncCover('battery', batteryId);
+const addPhotos = (batteryId, photos, userId, note) => unitPhotos.add('battery', batteryId, photos, userId, note);
+const photosOf = (batteryId) => unitPhotos.list('battery', batteryId);
 
 router.get('/', asyncHandler((req, res) => {
   const clauses = [];
@@ -185,15 +149,7 @@ router.post('/:id/photos', requireCap('batteries.photos'), asyncHandler((req, re
 
 router.delete('/:id/photos/:photoId', requireCap('batteries.photos'), asyncHandler((req, res) => {
   const id = toInt(req.params.id);
-  const p = get('SELECT * FROM battery_photos WHERE id = ? AND battery_id = ?', toInt(req.params.photoId), id);
-  if (!p) return res.status(404).json({ error: 'Photo not found' });
-  tx(() => {
-    run('DELETE FROM battery_photos WHERE id = ?', p.id);
-    // Close the gap so "photo 3 of 5" keeps meaning what it says.
-    all('SELECT id FROM battery_photos WHERE battery_id = ? ORDER BY seq, id', id)
-      .forEach((row, i) => run('UPDATE battery_photos SET seq = ? WHERE id = ?', i + 1, row.id));
-    syncCoverPhoto(id);
-  });
+  if (!unitPhotos.remove('battery', id, toInt(req.params.photoId))) return res.status(404).json({ error: 'Photo not found' });
   audit.record({ userId: req.user.id, entity: 'battery', entityId: id, action: 'delete_photo' });
   res.json(photosOf(id));
 }));

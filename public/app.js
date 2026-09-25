@@ -656,7 +656,7 @@ function assetPickerHtml(label) {
       <div class="apick-menu" style="position:absolute;z-index:60;left:0;right:0;top:100%;background:var(--surface);border:1px solid var(--border);border-radius:8px;box-shadow:var(--shadow);max-height:220px;overflow:auto;display:none"></div>
     </div>`;
 }
-function wireAssetPicker(root) {
+function wireAssetPicker(root, onPick) {
   qsa('.apick', root).forEach((pick) => {
     const input = qs('.apick-input', pick), hidden = qs('input[type=hidden]', pick), menu = qs('.apick-menu', pick);
     let deb;
@@ -669,7 +669,7 @@ function wireAssetPicker(root) {
       menu.innerHTML = rows.map((r) => `<div class="apick-item" data-id="${r.id}" data-code="${esc(r.code)}" style="padding:7px 10px;cursor:pointer;border-bottom:1px solid var(--border)">${esc(r.registration || r.code)}${(r.registration && r.code && r.registration !== r.code) ? ` <span class="muted">· ${esc(r.code)}</span>` : ''}</div>`).join('');
       menu.style.display = 'block';
       qsa('.apick-item', menu).forEach((it) => {
-        it.onmousedown = (e) => { e.preventDefault(); input.value = it.dataset.code; hidden.value = it.dataset.id; close(); };
+        it.onmousedown = (e) => { e.preventDefault(); input.value = it.dataset.code; hidden.value = it.dataset.id; close(); if (onPick) onPick(it.dataset.id, it.dataset.code); };
       });
     };
     input.oninput = () => { clearTimeout(deb); deb = setTimeout(search, 200); };
@@ -3538,7 +3538,8 @@ routes.stores = async (c) => {
       subs: [['lines', '📋 Items'], ['mrn', 'Requests (MRN)'], ['grn', 'Receipts (GRN)'], ['issues', 'Issues'], ['workspace', '⚡ Receive & price many']] },
   };
   // Part 2: every kind of stock in one view, and the stock take.
-  const PRIMARY = [['monitor', '📊 MONITOR'], ['flow', GROUPS.flow.label], ['mtn', '🔁 TRANSFERS'], ['stock', '📦 STOCK'], ['counts', '🧮 STOCK TAKE']];
+  // Part 4: scrap and waste oil leave on a disposal note.
+  const PRIMARY = [['monitor', '📊 MONITOR'], ['flow', GROUPS.flow.label], ['mtn', '🔁 TRANSFERS'], ['stock', '📦 STOCK'], ['counts', '🧮 STOCK TAKE'], ['disposal', '♻️ DISPOSAL']];
 
   const group = GROUPS[tab] ? tab : null;
   if (group) tab = sp.get('sub') || GROUPS[group].subs[0][0];      // a group renders its sub-view
@@ -3558,6 +3559,8 @@ routes.stores = async (c) => {
     return storesStock(body, sp);
   } else if (tab === 'counts') {
     return sp.get('id') ? countDetail(body, sp.get('id'), sp) : countList(body, sp);
+  } else if (tab === 'disposal') {
+    return sp.get('id') ? disposalDetail(body, sp.get('id')) : disposalList(body, sp);
   } else if (tab === 'lines') {
     return storesLines(body, sp);
   } else if (tab === 'workspace') {
@@ -4053,6 +4056,12 @@ async function storesMonitor(body) {
     <div class="grid">
       ${card(m.stock_takes.counting, 'Being counted', '#/stores?tab=counts&status=counting', 'blue')}
       ${card(m.stock_takes.submitted, 'Waiting for head office', '#/stores?tab=counts&status=submitted', 'amber')}
+    </div>
+    <h3 style="margin:14px 0 6px">Tyres, batteries &amp; scrap</h3>
+    <div class="grid">
+      ${card(m.old_units_due.tyre, 'Old tyres to record', '#/tbrequests?tab=returns&kind=tyre', 'amber', 'what came off the vehicle')}
+      ${card(m.old_units_due.battery, 'Old batteries to record', '#/tbrequests?tab=returns&kind=battery', 'amber', 'what came off the vehicle')}
+      ${card(m.disposals, 'Disposal notes to approve', '#/stores?tab=disposal&status=open', 'amber')}
     </div>`;
 }
 
@@ -7823,23 +7832,84 @@ function tbPurchaseModal(row, done) {
 }
 
 // ---- issuing against it ---------------------------------------------------
-function tbIssueModal(request, line, done) {
+// Stores plan, Part 4: a tyre or a battery goes out by its serial number, one row a unit, and is
+// fixed to the vehicle (ST-D6, D7). A tyre names its wheel, and the one there now comes off. What
+// came off can be said here, or later under "Old units due" (ST-D8). A tube or a flap goes as before.
+const TB_CONDS = { tyre: ['repairable', 'retreadable', 'reusable', 'warranty', 'scrap', 'not_returned'], battery: ['reusable', 'warranty', 'scrap', 'not_returned'] };
+async function tbIssueModal(request, line, done) {
+  const kind = line.kind;
+  const byUnit = kind === 'tyre' || kind === 'battery';
+  const left = Math.max(0, (line.qty || 0) - (line.issued || 0));
+  let onIt = { tyres: [], batteries: [] };
+  if (byUnit && request.asset_id) { try { onIt = await api('/tb/vehicle/' + request.asset_id); } catch (e) { /* shown without it */ } }
+  const today = new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10);
   modal('Issue against ' + request.mrn_no, `
-    <div class="note">${esc(line.spec_label || line.description)} · approved ${num(line.qty)}${line.position ? ' · ' + esc(line.position) : ''}</div>
-    <div class="row">${field('How many are going out', 'qty', { type: 'number', value: Math.max(0, (line.qty || 0) - (line.issued || 0)) })}
-      ${field('Date', 'issue_date', { type: 'date', value: new Date().toISOString().slice(0, 10) })}</div>
-    <div class="row">${field('Serial number (if it has one)', 'serial_no')}${field('Unit price (blank = the list price)', 'unit_price', { type: 'number' })}</div>
-    ${field('Issued by', 'issued_by')}
+    <div class="note">${esc(line.spec_label || line.description)} · approved ${num(line.qty)}${line.issued ? ' · ' + num(line.issued) + ' gone out' : ''}${request.asset_code ? ' · ' + esc(request.asset_code) : ''}</div>
+    <div class="row">${field('How many now', 'qty', { type: 'number', value: byUnit ? Math.min(left, 8) : left })}
+      ${field('Date', 'issue_date', { type: 'date', value: today })}</div>
+    ${byUnit ? `<p class="muted" style="margin:6px 0 2px;font-size:12px">${kind === 'tyre'
+    ? 'Each tyre: its serial number and wheel. The tyre now at that wheel comes off.'
+    : `Each battery: its serial number. ${esc(request.asset_code || 'The vehicle')} has ${onIt.batteries.length} now (2 at most).`}</p><div id="tbu"></div>`
+    : field('Serial number (if it has one)', 'serial_no')}
+    <div class="row">${field('Unit price (blank = list price)', 'unit_price', { type: 'number' })}${field('Issued by', 'issued_by')}</div>
     <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Issue</button></div>`,
     (body, close) => {
+      const units = [];
+      const host = qs('#tbu', body);
+      const conds = TB_CONDS[kind] || [];
+      const atWheel = (pos) => onIt.tyres.find((t) => String(t.position || '').toUpperCase() === String(pos || '').toUpperCase());
+      const draw = () => {
+        if (!host) return;
+        const want = Math.max(0, Math.min(Math.floor(Number(qs('[name=qty]', body).value) || 0), 8));
+        while (units.length < want) units.push({ serial_no: '', position: units.length ? '' : (line.position || ''), old_serial: '', old_condition: '', old_reason: '', photo: null });
+        units.length = want;
+        host.innerHTML = units.map((u, i) => {
+          const here = kind === 'tyre' ? atWheel(u.position) : null;
+          const offOpts = kind === 'tyre'
+            ? [['', here ? `${here.serial_no} (at ${u.position})` : 'None']].concat(onIt.tyres.filter((t) => t !== here).map((t) => [t.serial_no, `${t.serial_no} (at ${t.position || '?'})`]))
+            : [['', 'None']].concat(onIt.batteries.map((b) => [b.serial_no, b.serial_no]));
+          return `<div class="card" style="padding:8px 10px;margin:6px 0">
+            <b style="font-size:12px">${kind === 'tyre' ? '🛞 Tyre' : '🔋 Battery'} ${i + 1}</b>
+            <div class="row">
+              <div><label>Serial number *</label><input data-u="${i}" data-f="serial_no" value="${esc(u.serial_no)}"></div>
+              ${kind === 'tyre' ? `<div><label>Wheel *</label><select data-u="${i}" data-f="position"><option value="">—</option>${TB_POS.map((p) => `<option${p === u.position ? ' selected' : ''}>${p}</option>`).join('')}</select></div>` : ''}
+            </div>
+            <div class="row">
+              <div><label>Coming off</label><select data-u="${i}" data-f="old_serial">${offOpts.map(([v, l]) => `<option value="${esc(v)}"${v === u.old_serial ? ' selected' : ''}>${esc(l)}</option>`).join('')}</select></div>
+              <div><label>What came off</label><select data-u="${i}" data-f="old_condition"><option value="">Say later</option>${conds.map((c) => `<option value="${c}"${c === u.old_condition ? ' selected' : ''}>${esc(TB_COND_LABEL[c])}</option>`).join('')}</select></div>
+            </div>
+            ${u.old_condition === 'not_returned' ? `<label>Why not returned *</label><input data-u="${i}" data-f="old_reason" value="${esc(u.old_reason)}">` : ''}
+            <label class="btn sm" style="cursor:pointer;margin:6px 0 0">📷 ${u.photo ? 'Photo added ✔' : 'Photo of serial (recommended)'}<input type="file" accept="image/png,image/jpeg,image/webp" data-photo="${i}" style="display:none"></label>
+          </div>`;
+        }).join('');
+        qsa('[data-u]', host).forEach((el) => {
+          const set = () => { units[+el.dataset.u][el.dataset.f] = el.value; };
+          el.oninput = set;
+          el.onchange = () => { set(); if (el.tagName === 'SELECT') draw(); };
+        });
+        qsa('[data-photo]', host).forEach((el) => {
+          el.onchange = async (e) => {
+            const f = e.target.files[0]; if (!f) return;
+            try { units[+el.dataset.photo].photo = await resizeToDataUrl(f); draw(); } catch (err) { toast(err.message, 'err'); }
+          };
+        });
+      };
+      if (host) { qs('[name=qty]', body).oninput = draw; draw(); }
       qs('#s', body).onclick = async () => {
+        const f = formData(body);
+        const payload = { mrn_line_id: line.mrn_line_id, qty: f.qty, issue_date: f.issue_date, unit_price: f.unit_price, issued_by: f.issued_by };
+        if (byUnit) {
+          if (units.some((u) => !u.serial_no.trim())) return toast('Give the serial number of each one', 'err');
+          if (kind === 'tyre' && units.some((u) => !u.position)) return toast('Choose the wheel of each tyre', 'err');
+          payload.units = units.map((u) => ({ ...u, photo: u.photo || undefined }));
+        } else payload.serial_no = f.serial_no;
         try {
-          const r = await api('/tb/issue', { method: 'POST', body: { mrn_line_id: line.mrn_line_id, ...formData(body) } });
+          const r = await api('/tb/issue', { method: 'POST', body: payload });
           toast(r.message || 'Issued');
           close(); done && done();
         } catch (e) { toast(e.message, 'err'); }
       };
-    });
+    }, { wide: true });
 }
 
 // ---- what came off --------------------------------------------------------
@@ -9913,7 +9983,8 @@ const STOCK_BOOKS = {
   general: [['stock', 'Rack register'], ['catalogue', 'Catalogue'], ['categories', 'Categories'], ['reorder', 'Re-order watch']],
   oil: [['products', 'Products'], ['names', 'Names'], ['ledger', 'Oil book'], ['forecast', 'Forecast'], ['counts', 'Old counts']],
   filter: [['book', 'Price book'], ['xref', 'Cross-references']],
-  battery: [['register', 'Battery register']],
+  tyre: [['tyres', 'Tyre register'], ['vehicle', 'By vehicle']],
+  battery: [['register', 'Battery register'], ['vehicle', 'By vehicle']],
 };
 const stockBooksHash = (kind, sub) => `#/stores?tab=stock&kind=${kind}&sub=${encodeURIComponent(sub)}`;
 
@@ -9949,6 +10020,8 @@ async function storesStock(body, sp) {
     if (kind === 'general') return renderGeneralStockSection(bk);
     if (kind === 'oil') return renderOilSection(bk);
     if (kind === 'filter') return renderFiltersSection(bk);
+    if (sub === 'vehicle') return unitVehicleView(bk, sp);
+    if (kind === 'tyre') return sp.get('id') ? tyreDetail(bk, sp.get('id')) : tyreRegister(bk, sp);
     return renderBatteriesSection(bk);
   }
   const links = books.map(([k, l]) => `<a class="btn sm" href="${stockBooksHash(kind, k)}">${esc(l)}</a>`)
@@ -9979,12 +10052,290 @@ async function stockOverview(host) {
         <span class="n">${moneyC(k.value)}</span>
         <span class="l">${num(k.items)} items${k.low ? ` · <span class="badge red">${num(k.low)} low</span>` : ''}</span>
         ${store || !d.multi ? `<span class="muted" style="font-size:11px">${!k.full_count ? 'No full count yet'
-    : (['general', 'oil', 'filter'].includes(k.section) ? '✔ Must be in stock since ' : 'First full count: ') + esc(k.full_count)}</span>` : ''}</a>`).join('')}</div>
-    <p class="muted" style="font-size:12px;margin:0 0 8px">Nothing is issued unless it is in stock. This starts for each kind after the store's first full stock take (tyres and batteries: with their serial register).</p>
+    : '✔ Must be in stock since ' + esc(k.full_count)}</span>` : ''}</a>`).join('')}</div>
+    <p class="muted" style="font-size:12px;margin:0 0 8px">Nothing is issued unless it is in stock. This starts for each kind after the store's first full stock take.</p>
     <h3 style="margin:14px 0 6px">Reorder &amp; restock</h3>
     <div id="ov-cockpit"></div>`;
   if (qs('#ov-store', host)) qs('#ov-store', host).onchange = (e) => { STOCK_STORE = e.target.value; stockOverview(host); };
   renderStockCockpitSection(qs('#ov-cockpit', host));
+}
+
+// ---- tyres and batteries by serial number (stores plan, Part 4) ------------------------------
+// src/lib/tb_units.js: every tyre is known by its serial, like the batteries; issuing one fixes it
+// to the vehicle, and what came off moves on in the register.
+const TYRE_STATE = { in_store: ['', 'In store'], installed: ['green', 'On vehicle'], removed: ['amber', 'Taken off'], repair: ['blue', 'At repair'],
+  retread: ['blue', 'At retread'], warranty: ['blue', 'Warranty claim'], scrap: ['red', 'Scrap'], lost: ['red', 'Lost'], disposed: ['', 'Disposed'] };
+const tyreBadge = (st) => `<span class="badge ${(TYRE_STATE[st] || [''])[0]}">${esc((TYRE_STATE[st] || [0, st])[1])}</span>`;
+const UNIT_EVENT = { add: 'Added', install: 'Fitted', remove: 'Taken off', return: 'Back to store', repair: 'Sent for repair', retread: 'Sent for retread',
+  lost: 'Lost', dispose: 'Disposed', transfer: 'Moved', decommission: 'Finished', ...TB_COND_LABEL };
+const tyreHash = (id) => stockBooksHash('tyre', 'tyres') + '&id=' + id;
+
+async function tyreRegister(host, sp) {
+  const cur = { q: sp.get('q') || '', state: sp.get('state') || '' };
+  host.innerHTML = `<div class="toolbar">
+      <input id="ty-q" type="search" placeholder="Serial, size or vehicle…" value="${esc(cur.q)}" style="max-width:240px">
+      <select id="ty-st" style="max-width:170px"><option value="">Every state</option>${Object.entries(TYRE_STATE).map(([k, [, l]]) => `<option value="${k}"${k === cur.state ? ' selected' : ''}>${esc(l)}</option>`).join('')}</select>
+      <div class="spacer"></div><span class="muted" id="ty-n"></span></div>
+    <div id="ty-list" class="muted">Loading…</div>`;
+  const load = async () => {
+    const q = qs('#ty-q', host).value.trim(), st = qs('#ty-st', host).value;
+    const rows = await api('/tb/tyres?limit=1000' + (q ? '&q=' + encodeURIComponent(q) : '') + (st ? '&state=' + st : ''));
+    qs('#ty-n', host).textContent = `${rows.length} tyre${rows.length === 1 ? '' : 's'}`;
+    qs('#ty-list', host).innerHTML = rows.length ? tableWrap([{ label: 'Serial' }, { label: 'Size' }, { label: 'State' }, { label: 'Vehicle' }, { label: 'Wheel' }],
+      rows.map((t) => `<tr><td>${t.photo_count ? '📷 ' : ''}<a href="${tyreHash(t.id)}"><b>${esc(t.serial_no)}</b></a></td><td>${esc(t.spec || '—')}</td>
+        <td>${tyreBadge(t.state)}</td><td>${t.current_asset_id ? `<a href="${stockBooksHash('tyre', 'vehicle')}&asset=${t.current_asset_id}">${esc(t.asset_code || '')}</a>` : '—'}</td><td>${esc(t.position || '—')}</td></tr>`), { scroll: true })
+      : '<div class="card"><p class="muted">No tyres yet. A tyre is added here when it is issued with its serial number.</p></div>';
+  };
+  let deb;
+  qs('#ty-q', host).oninput = () => { clearTimeout(deb); deb = setTimeout(load, 250); };
+  qs('#ty-st', host).onchange = load;
+  load();
+}
+
+async function tyreDetail(host, id) {
+  let d;
+  try { d = await api('/tb/tyres/' + encodeURIComponent(id)); } catch (e) { host.innerHTML = `<div class="card err">${esc(e.message)}</div>`; return; }
+  const t = d.tyre;
+  const editable = canEdit('tb_issue');
+  const reload = () => tyreDetail(host, id);
+  const room = d.max_photos - d.photos.length;
+  host.innerHTML = `
+    <div class="toolbar" style="margin:0 0 8px"><a class="btn sm" href="${stockBooksHash('tyre', 'tyres')}">← Tyre register</a></div>
+    <div class="toolbar"><h3 style="margin:0">🛞 ${esc(t.serial_no)}</h3>${tyreBadge(t.state)}
+      <span class="muted">${esc(t.spec || '')}${t.asset_code ? ` · on <a href="${stockBooksHash('tyre', 'vehicle')}&asset=${t.current_asset_id}">${esc(t.asset_code)}</a> at ${esc(t.position || '?')}` : ''}</span>
+      <div class="spacer"></div>${editable ? `${room > 0 ? '<button class="sm" id="ty-photo">📷 Add photos</button>' : ''}${TYRE_ACTIONS(t).length ? '<button class="sm primary" id="ty-ev">What happened…</button>' : ''}` : ''}</div>
+    <div class="card section"><h3 style="margin-top:0">Photos <span class="muted" style="font-weight:400;font-size:12px">— ${d.photos.length} of ${d.max_photos}</span></h3>
+      <div style="display:flex;flex-wrap:wrap;gap:8px">${d.photos.length ? d.photos.map((p) => `<div style="position:relative">
+          <a href="${p.photo}" target="_blank"><img src="${p.photo}" alt="Tyre ${esc(t.serial_no)}" style="height:110px;width:110px;object-fit:cover;border:1px solid var(--border);border-radius:8px"></a>
+          ${editable ? `<button class="btn sm danger" data-delphoto="${p.id}" title="Remove" style="position:absolute;top:-6px;right:-6px;padding:0 6px;line-height:18px">✕</button>` : ''}</div>`).join('')
+    : '<p class="muted" style="margin:0">No photos yet.</p>'}</div></div>
+    <div class="card"><h3 style="margin-top:0">History</h3>
+      ${tableWrap([{ label: 'Date' }, { label: 'What' }, { label: 'From' }, { label: 'To' }, { label: 'Wheel' }, { label: 'Km' }, { label: 'Note' }, { label: 'By' }],
+      d.events.map((e) => `<tr><td>${esc(e.event_date || '')}</td><td><span class="badge">${esc(UNIT_EVENT[e.event_type] || e.event_type)}</span></td>
+        <td>${esc(e.from_asset_code || '')}</td><td>${esc(e.to_asset_code || '')}</td><td>${esc(e.position || '')}</td><td>${e.km_reading == null ? '' : num(e.km_reading)}</td>
+        <td>${esc(e.reason || '')}</td><td>${esc(e.username || '')}</td></tr>`), { scroll: true })}</div>`;
+  if (qs('#ty-photo', host)) qs('#ty-photo', host).onclick = () => modal('Add photos — ' + t.serial_no, `
+      <label>Tyre photos <span class="muted" style="font-weight:400">— ${room} more can be added</span></label>${multiImageHtml('tyimg', room)}
+      <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Save photos</button></div>`, (b, close) => {
+    const up = wireMultiImage(b, 'tyimg');
+    qs('#s', b).onclick = async () => {
+      const shots = up.dataURLs();
+      if (!shots.length) return toast('Choose at least one photo', 'err');
+      try { await api(`/tb/tyres/${t.id}/photos`, { method: 'POST', body: { photos: shots } }); toast('Photos added'); close(); reload(); }
+      catch (e) { toast(e.message, 'err'); }
+    };
+  });
+  qsa('[data-delphoto]', host).forEach((b) => {
+    b.onclick = async () => {
+      if (!confirm('Remove this photo?')) return;
+      try { await api(`/tb/tyres/${t.id}/photos/${b.dataset.delphoto}`, { method: 'DELETE' }); reload(); } catch (e) { toast(e.message, 'err'); }
+    };
+  });
+  if (qs('#ty-ev', host)) qs('#ty-ev', host).onclick = () => tyreEventModal(t, reload);
+}
+
+// What can happen to a tyre next, by where it is now.
+const TYRE_ACTIONS = (t) => {
+  if (['scrap', 'lost', 'disposed'].includes(t.state)) return [];
+  if (t.state === 'installed') return [['remove', 'Take off'], ['repair', 'Send for repair'], ['retread', 'Send for retread'], ['warranty', 'Warranty claim'], ['scrap', 'Scrap']];
+  if (['in_store', 'removed'].includes(t.state)) return [['install', 'Fit to a vehicle'], ...(t.state === 'removed' ? [['return', 'Back to store']] : []), ['repair', 'Send for repair'], ['retread', 'Send for retread'], ['warranty', 'Warranty claim'], ['scrap', 'Scrap']];
+  return [['return', 'Back to store'], ['scrap', 'Scrap']];
+};
+function tyreEventModal(t, done) {
+  const acts = TYRE_ACTIONS(t);
+  const today = new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+  modal('Tyre ' + t.serial_no, `
+    ${field('What happened', 'event_type', { type: 'select', options: acts.map(([value, label]) => ({ value, label })) })}
+    <div id="ty-fit" style="display:none"><div class="fld">${assetPickerHtml('Vehicle *')}</div>
+      ${field('Wheel *', 'position', { type: 'select', options: [{ value: '', label: '—' }].concat(TB_POS.map((p) => ({ value: p, label: p }))) })}</div>
+    <div class="row">${field('Date', 'event_date', { type: 'date', value: today })}${field('Note', 'reason')}</div>
+    <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Save</button></div>`, (b, close) => {
+    wireAssetPicker(b);
+    const sel = qs('[name=event_type]', b);
+    const show = () => { qs('#ty-fit', b).style.display = sel.value === 'install' ? '' : 'none'; };
+    sel.onchange = show; show();
+    qs('#s', b).onclick = async () => {
+      const f = formData(b);
+      if (f.event_type === 'install' && (!f.asset_id || !f.position)) return toast('Pick the vehicle and the wheel', 'err');
+      try {
+        await api(`/tb/tyres/${t.id}/event`, { method: 'POST', body: { event_type: f.event_type, to_asset_id: f.asset_id, position: f.position, event_date: f.event_date, reason: f.reason } });
+        toast('Saved'); close(); done && done();
+      } catch (e) { toast(e.message, 'err'); }
+    };
+  });
+}
+
+// One vehicle's tyres (by wheel) and batteries now, and every one issued to it.
+const unitLine = (head, u) => `<div style="padding:5px 0;border-bottom:1px solid var(--border)">${head}
+  <div class="muted" style="font-size:11.5px">${esc([u.spec, u.fitted_on ? 'fitted ' + u.fitted_on : ''].filter(Boolean).join(' · ') || '—')}</div></div>`;
+async function unitVehicleView(host, sp) {
+  const kind = sp.get('kind') === 'battery' ? 'battery' : 'tyre';
+  const assetId = sp.get('asset');
+  host.innerHTML = `<div class="toolbar" style="max-width:420px"><div class="fld" style="flex:1">${assetPickerHtml('Vehicle')}</div></div><div id="uv-body"></div>`;
+  wireAssetPicker(host, (id) => { location.hash = stockBooksHash(kind, 'vehicle') + '&asset=' + id; });
+  const out = qs('#uv-body', host);
+  if (!assetId) { out.innerHTML = '<p class="muted">Pick a vehicle to see its tyres and batteries.</p>'; return; }
+  let v;
+  try { v = await api('/tb/vehicle/' + encodeURIComponent(assetId)); } catch (e) { out.innerHTML = `<div class="card err">${esc(e.message)}</div>`; return; }
+  qs('.apick-input', host).value = v.asset.code || '';
+  const mayRecord = canEdit('tb_issue');
+  out.innerHTML = `
+    <h3 style="margin:8px 0 6px">${esc(idLabel(v.asset))}${v.old_due ? ` <span class="badge amber">${v.old_due} old unit${v.old_due === 1 ? '' : 's'} to record</span>` : ''}</h3>
+    <div class="grid section">
+      <div class="card"><h3 style="margin-top:0">🛞 Tyres now (${v.tyres.length})</h3>
+        ${v.tyres.length ? v.tyres.map((t) => unitLine(`<b>${esc(t.position || '?')}</b> · <a href="${tyreHash(t.id)}">${esc(t.serial_no)}</a>`, t)).join('')
+    : '<p class="muted" style="margin:0">None recorded.</p>'}</div>
+      <div class="card"><h3 style="margin-top:0">🔋 Batteries now (${v.batteries.length} of 2)</h3>
+        ${v.batteries.length ? v.batteries.map((b) => unitLine(`<a href="#/batteries/${b.id}">${esc(b.serial_no)}</a>`, b)).join('')
+    : '<p class="muted" style="margin:0">None recorded.</p>'}</div>
+    </div>
+    <div class="card"><h3 style="margin-top:0">Issued to this vehicle</h3>
+      ${v.issues.length ? tableWrap([{ label: 'Date' }, { label: 'Request' }, { label: 'Item' }, { label: 'Serial' }, { label: 'Wheel' }, { label: 'What came off' }],
+      v.issues.map((i) => `<tr><td>${esc(String(i.issue_date || '').slice(0, 10))}</td><td>${esc(i.mrn_no || '—')}</td><td>${esc(i.spec_label || i.kind)}</td>
+        <td>${esc(i.serial_no || '—')}</td><td>${esc(i.position || '—')}</td>
+        <td>${i.old_due ? `<span class="badge amber">Not recorded</span>${mayRecord ? ` <button class="sm" data-ret="${i.id}">Record…</button>` : ''}`
+    : i.old_condition ? esc(TB_COND_LABEL[i.old_condition] || i.old_condition) + (i.old_serial ? ' · ' + esc(i.old_serial) : '') : '—'}</td></tr>`), { scroll: true })
+    : '<p class="muted" style="margin:0">Nothing issued yet.</p>'}</div>`;
+  qsa('[data-ret]', out).forEach((b) => {
+    const i = v.issues.find((x) => String(x.id) === b.dataset.ret);
+    b.onclick = () => tbReturnModal({ issue_id: i.id, kind: i.kind, asset_code: v.asset.code, spec_label: i.spec_label, issue_date: i.issue_date, mrn_no: i.mrn_no },
+      () => unitVehicleView(host, sp));
+  });
+}
+
+// ---- disposal notes (stores plan, Part 4) ------------------------------------------------------
+// src/lib/disposal.js: scrap tyres, batteries, parts and waste oil leave on a note; a manager
+// approves it with the buyer, the amount and the date (ST-D9).
+const DISPOSAL_STATUS = { open: ['amber', 'Waiting for approval'], approved: ['green', 'Approved'], cancelled: ['', 'Cancelled'] };
+const disposalBadge = (st) => `<span class="badge ${(DISPOSAL_STATUS[st] || [''])[0]}">${esc((DISPOSAL_STATUS[st] || [0, st])[1])}</span>`;
+const DISPOSAL_KIND = { tyre: '🛞 Tyre', battery: '🔋 Battery', part: '🔩 Part', waste_oil: '🛢️ Waste oil' };
+
+async function disposalList(body, sp) {
+  const FILTERS = [['open', 'Waiting'], ['approved', 'Approved'], ['cancelled', 'Cancelled'], ['all', 'All']];
+  const status = FILTERS.some(([k]) => k === sp.get('status')) ? sp.get('status') : 'open';
+  const [rows, wd] = await Promise.all([api('/stores/disposals' + (status === 'all' ? '' : '?status=' + status)), workshopsData().catch(() => null)]);
+  const multi = !!(wd && wd.stores_multi);
+  body.innerHTML = `
+    <div class="toolbar">
+      ${FILTERS.map(([k, l]) => `<button class="sm ${k === status ? 'primary' : ''}" data-st="${k}">${l}</button>`).join('')}
+      <div class="spacer"></div>
+      ${canDo('stores.disposal.edit') ? '<button class="primary sm" id="dn-new">+ New disposal note</button>' : ''}
+    </div>
+    <p class="muted" style="margin:0 0 8px">Scrap tyres, batteries, parts and waste oil leave on a note. A manager approves it with the buyer, the amount and the date.</p>
+    ${rows.length ? tableWrap([{ label: 'No' }].concat(multi ? [{ label: 'Store' }] : []).concat([{ label: 'Status' }, { label: 'Items', num: true },
+      { label: 'Waste oil (L)', num: true }, { label: 'Buyer' }, { label: 'Amount', num: true }, { label: 'Date' }, { label: 'Written by' }]),
+    rows.map((r) => `<tr><td><a href="#/stores?tab=disposal&id=${r.id}"><b>${esc(r.disposal_no)}</b></a></td>${multi ? `<td>${esc(r.store_name || '')}</td>` : ''}
+      <td>${disposalBadge(r.status)}</td><td class="num">${r.lines}</td><td class="num">${r.waste_oil_litres ? num(r.waste_oil_litres) : ''}</td>
+      <td>${esc(r.buyer || '—')}</td><td class="num">${r.amount == null ? '—' : money(r.amount)}</td>
+      <td>${esc(r.sale_date || String(r.created_at || '').slice(0, 10))}</td><td>${esc(r.created_by_name || '')}</td></tr>`), { scroll: true })
+    : '<div class="card"><p class="muted">No notes here.</p></div>'}`;
+  qsa('[data-st]', body).forEach((b) => { b.onclick = () => { location.hash = '#/stores?tab=disposal&status=' + b.dataset.st; }; });
+  if (qs('#dn-new', body)) qs('#dn-new', body).onclick = () => disposalNewModal(multi, wd);
+}
+
+function disposalNewModal(multi, wd) {
+  const pickStore = multi && ME && ME.seesAllWorkshops;
+  modal('New disposal note', `
+    ${pickStore ? field('Store', 'store_id', { type: 'select', options: (wd.stores || []).map((x) => ({ value: x.id, label: x.name })) }) : ''}
+    <div id="dn-scrap" class="muted">Loading…</div>
+    <h4 style="margin:12px 0 4px">Other scrap parts</h4>
+    <div id="dn-parts"></div>
+    <button type="button" class="sm" id="dn-addpart">+ Add a part</button>
+    <div class="row" style="margin-top:8px">${field('Waste oil (litres)', 'waste_oil', { type: 'number' })}${field('Buyer (if known)', 'buyer')}</div>
+    ${field('Note', 'note')}
+    <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Save note</button></div>`, (b, close) => {
+    const parts = [];
+    let scrap = { tyres: [], batteries: [] };
+    const loadScrap = async () => {
+      const sid = pickStore ? qs('[name=store_id]', b).value : '';
+      try { scrap = await api('/stores/disposals/scrap' + (sid ? '?store_id=' + sid : '')); } catch (e) { scrap = { tyres: [], batteries: [] }; }
+      const box = (list, kind) => (list.length ? list.map((u) => `<label style="display:flex;gap:8px;align-items:center;flex-direction:row;font-weight:400">
+          <input type="checkbox" data-${kind}="${u.id}" style="width:auto"> ${esc(u.serial_no)} <span class="muted">${esc(u.spec || '')}</span></label>`).join('')
+        : '<p class="muted" style="margin:0">None.</p>');
+      qs('#dn-scrap', b).classList.remove('muted');
+      qs('#dn-scrap', b).innerHTML = `<h4 style="margin:4px 0">Scrap tyres</h4>${box(scrap.tyres, 'tyre')}
+        <h4 style="margin:10px 0 4px">Scrap batteries</h4>${box(scrap.batteries, 'battery')}`;
+    };
+    const drawParts = () => {
+      qs('#dn-parts', b).innerHTML = parts.map((p, i) => `<div class="row" style="align-items:end">
+          <div style="flex:3"><label>Part</label><input data-p="${i}" data-f="description" value="${esc(p.description)}"></div>
+          <div><label>Qty</label><input type="number" data-p="${i}" data-f="qty" value="${esc(p.qty)}"></div>
+          <div><label>Unit</label><input data-p="${i}" data-f="unit" value="${esc(p.unit)}"></div>
+          <div style="flex:0"><button type="button" class="sm" data-rm="${i}">✕</button></div></div>`).join('');
+      qsa('[data-p]', b).forEach((el) => { el.oninput = () => { parts[+el.dataset.p][el.dataset.f] = el.value; }; });
+      qsa('[data-rm]', b).forEach((el) => { el.onclick = () => { parts.splice(+el.dataset.rm, 1); drawParts(); }; });
+    };
+    qs('#dn-addpart', b).onclick = () => { parts.push({ description: '', qty: 1, unit: 'nos' }); drawParts(); };
+    if (pickStore) qs('[name=store_id]', b).onchange = loadScrap;
+    loadScrap();
+    qs('#s', b).onclick = async () => {
+      const f = formData(b);
+      const lines = qsa('[data-tyre]', b).filter((x) => x.checked).map((x) => ({ kind: 'tyre', tyre_id: Number(x.dataset.tyre) }))
+        .concat(qsa('[data-battery]', b).filter((x) => x.checked).map((x) => ({ kind: 'battery', battery_id: Number(x.dataset.battery) })))
+        .concat(parts.filter((p) => String(p.description).trim()).map((p) => ({ kind: 'part', ...p })))
+        .concat(Number(f.waste_oil) > 0 ? [{ kind: 'waste_oil', qty: Number(f.waste_oil) }] : []);
+      if (!lines.length) return toast('Put at least one thing on the note', 'err');
+      try {
+        const r = await api('/stores/disposals', { method: 'POST', body: { store_id: f.store_id, buyer: f.buyer, note: f.note, lines } });
+        toast(r.disposal_no + ' saved. A manager approves it.'); close();
+        location.hash = '#/stores?tab=disposal&id=' + r.id;
+      } catch (e) { toast(e.message, 'err'); }
+    };
+  }, { wide: true });
+}
+
+async function disposalDetail(body, id) {
+  let d;
+  try { d = await api('/stores/disposals/' + encodeURIComponent(id)); } catch (e) { body.innerHTML = `<div class="card err">${esc(e.message)}</div>`; return; }
+  const reload = () => disposalDetail(body, id);
+  const today = new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+  const line = (k, v) => `<div class="cost-line"><span>${k}</span><span>${v}</span></div>`;
+  body.innerHTML = `
+    <div class="toolbar" style="margin:0 0 8px"><a class="btn sm" href="#/stores?tab=disposal">← Disposal notes</a></div>
+    <div class="card section">
+      <div class="toolbar" style="margin:0 0 8px"><h3 style="margin:0">${esc(d.disposal_no)}</h3>${disposalBadge(d.status)}<div class="spacer"></div>
+        ${d.can.edit ? '<button class="sm" id="dn-edit">Change buyer / amount</button>' : ''}
+        ${d.can.cancel ? '<button class="sm danger" id="dn-cancel">Cancel note</button>' : ''}
+        ${d.can.approve ? '<button class="sm primary" id="dn-approve">Approve…</button>' : ''}</div>
+      ${line('Store', esc(d.store_name || '—'))}
+      ${line('Written by', `${esc(d.created_by_name || '—')} · ${esc(String(d.created_at || '').slice(0, 10))}`)}
+      ${line('Buyer', esc(d.buyer || '—'))}
+      ${line('Amount', d.amount == null ? '—' : money(d.amount))}
+      ${line('Date it leaves', esc(d.sale_date || '—'))}
+      ${d.note ? line('Note', esc(d.note)) : ''}
+      ${d.decided_by_name ? line(d.status === 'approved' ? 'Approved by' : 'Cancelled by',
+    `${esc(d.decided_by_name)} · ${esc(String(d.decided_at || '').slice(0, 10))}${d.decision_note ? ' — ' + esc(d.decision_note) : ''}`) : ''}
+    </div>
+    <div class="card"><h3 style="margin-top:0">On this note</h3>
+      ${tableWrap([{ label: 'Kind' }, { label: 'What' }, { label: 'Qty', num: true }, { label: 'Unit' }],
+    d.lines.map((l) => `<tr><td>${DISPOSAL_KIND[l.kind] || esc(l.kind)}</td>
+        <td>${l.tyre_id ? `<a href="${tyreHash(l.tyre_id)}">${esc(l.description)}</a>` : l.battery_id ? `<a href="#/batteries/${l.battery_id}">${esc(l.description)}</a>` : esc(l.description)}</td>
+        <td class="num">${num(l.qty)}</td><td>${esc(l.unit || '')}</td></tr>`))}</div>`;
+  const moneyForm = (label) => `
+    <div class="row">${field('Buyer *', 'buyer', { value: d.buyer || '' })}${field('Amount (Rs) *', 'amount', { type: 'number', value: d.amount ?? '' })}</div>
+    ${field('Date it leaves *', 'sale_date', { type: 'date', value: d.sale_date || today })}
+    <p class="muted" style="font-size:12px;margin:4px 0 0">Amount 0 if it is taken away for nothing.</p>
+    <div style="margin-top:12px;text-align:right"><button class="primary" id="s">${label}</button></div>`;
+  if (qs('#dn-approve', body)) qs('#dn-approve', body).onclick = () => modal('Approve ' + d.disposal_no, moneyForm('Approve'), (b, close) => {
+    qs('#s', b).onclick = async () => {
+      try { await api(`/stores/disposals/${d.id}/approve`, { method: 'POST', body: formData(b) }); toast('Approved'); close(); reload(); }
+      catch (e) { toast(e.message, 'err'); }
+    };
+  });
+  if (qs('#dn-edit', body)) qs('#dn-edit', body).onclick = () => modal(d.disposal_no, moneyForm('Save') + field('Note', 'note', { value: d.note || '' }), (b, close) => {
+    qs('#s', b).onclick = async () => {
+      try { await api(`/stores/disposals/${d.id}`, { method: 'PUT', body: formData(b) }); toast('Saved'); close(); reload(); }
+      catch (e) { toast(e.message, 'err'); }
+    };
+  });
+  if (qs('#dn-cancel', body)) qs('#dn-cancel', body).onclick = () => modal('Cancel ' + d.disposal_no, `
+    ${field('Why is it cancelled? *', 'reason')}
+    <div style="margin-top:12px;text-align:right"><button class="primary danger" id="s">Cancel note</button></div>`, (b, close) => {
+    qs('#s', b).onclick = async () => {
+      try { await api(`/stores/disposals/${d.id}/cancel`, { method: 'POST', body: formData(b) }); toast('Cancelled'); close(); reload(); }
+      catch (e) { toast(e.message, 'err'); }
+    };
+  });
 }
 
 // ---- stock take: count sessions --------------------------------------------------------------

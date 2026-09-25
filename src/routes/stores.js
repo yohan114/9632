@@ -21,6 +21,7 @@ const scope = require('../lib/scope');
 const stores = require('../lib/stores');
 const stockCount = require('../lib/stock_count');
 const stockRule = require('../lib/stock_rule');
+const disposal = require('../lib/disposal');
 const { lineReceiptSql, mrnReceiptSql, receivedLabel, d10 } = require('../lib/received_date');
 const lubricants = require('../lib/lubricants');
 const approvalLimits = require('../lib/approval_limits');
@@ -1641,6 +1642,26 @@ router.get('/counts/:id/export.xlsx', asyncHandler(async (req, res) => {
     { name: 'Differences', columns: cols, rows: rows.filter((l) => l.diff) },
     { name: 'All items', columns: cols, rows },
   ]);
+}));
+
+// ---- Disposal notes (stores plan, Part 4). See src/lib/disposal.js. ---------------------------------
+// Scrap tyres and batteries, other scrap parts and waste oil leave on a note a manager approves.
+router.get('/disposals', asyncHandler((req, res) => res.json(disposal.list(req.user, req.query))));
+router.get('/disposals/scrap', asyncHandler((req, res) => res.json(disposal.scrap(req.user, toInt(req.query.store_id)))));
+router.post('/disposals', requireCap('stores.disposal.edit'), asyncHandler((req, res) => {
+  res.status(201).json(disposal.create(req.user, req.body || {}));
+}));
+router.get('/disposals/:id', asyncHandler((req, res) => res.json(disposal.detail(req.user, toInt(req.params.id)))));
+router.put('/disposals/:id', requireCap('stores.disposal.edit'), asyncHandler((req, res) => {
+  res.json(disposal.update(req.user, toInt(req.params.id), req.body || {}));
+}));
+// A manager approves from stores=view (src/server.js lets the path through), as a stock take.
+router.post('/disposals/:id/approve', requireCap('stores.disposal.approve'), asyncHandler((req, res) => {
+  res.json(disposal.approve(req.user, toInt(req.params.id), req.body || {}));
+}));
+const approverOrEdit = (req, res, next) => (disposal.mayApprove(req.user) ? next() : permissions.requireModule('stores')(req, res, next));
+router.post('/disposals/:id/cancel', approverOrEdit, asyncHandler((req, res) => {
+  res.json(disposal.cancel(req.user, toInt(req.params.id), (req.body || {}).reason));
 }));
 
 // The level one store reorders an item at (blank or 0 removes it).

@@ -229,8 +229,17 @@ function monitor(user) {
   // Stock takes (Part 2): being counted, and waiting for head office.
   const stock_takes = require('./stock_count').waiting(store);
 
+  // Tyres and batteries (Part 4): old units nobody has said what became of (ST-D8), and disposal
+  // notes waiting for a manager.
+  const old_units_due = get(`SELECT COALESCE(SUM(i.kind = 'tyre'), 0) AS tyre, COALESCE(SUM(i.kind = 'battery'), 0) AS battery
+                               FROM tyre_battery_issues i
+                              WHERE i.source = 'request' AND i.kind IN ('tyre','battery')
+                                AND NOT EXISTS (SELECT 1 FROM tb_returns r WHERE r.issue_id = i.id)${store ? ' AND i.store_id = ?' : ''}`, ...sp);
+  const disposals = require('./disposal').waiting(store);
+
   return {
     steps: counts, to_certify, to_approve, issued_today, received_today, transfers_week, low_stock, battery_warranty, stock_takes,
+    old_units_due, disposals,
     store: store ? { id: store, label: stores.label(store) } : null,
   };
 }

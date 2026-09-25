@@ -13,14 +13,14 @@
 //   brings the stock up to date (stock.sync) and asks check(). A shelf the write took stock off
 //   that now stands below zero refuses the whole write. An edit is judged by what it changes
 //   (ST-D17): a record saved again unchanged takes nothing and is never refused.
-// - Tyres and batteries join in Part 4, when each one is known by its serial number: today their
-//   receipts and issues are filed under different names, and the rule would refuse good issues.
+// - Tyres and batteries are in it since Part 4: a receipt and an issue on a request are both filed
+//   under the request's specification (src/lib/stock.js), and each unit goes out by its serial.
 // ===========================================================================
 
 const stock = require('./stock');
 const stores = require('./stores');
 
-const SECTIONS = ['general', 'oil', 'filter'];
+const SECTIONS = ['general', 'oil', 'filter', 'tyre', 'battery'];
 const n2 = (v) => Math.round((Number(v) || 0) * 100) / 100;
 const fail = (status, msg, data) => { const e = new Error(msg); e.status = status; e.data = data; throw e; };
 

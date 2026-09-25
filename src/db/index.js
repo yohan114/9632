@@ -657,6 +657,7 @@ function migrate() {
   operationsStage7();
   storesCountsPart2();
   storesServicesPart3();
+  storesUnitsPart4();
 
   // Seed the RBAC matrix once (safe to require here — db exports are already set).
   try { require('../lib/permissions').seedDefaults(); } catch (e) { /* table may not exist yet on very first pass */ }
@@ -911,6 +912,24 @@ function storesCountsPart2() {
 function storesServicesPart3() {
   ensureColumn('service_filters', 'required_no', 'TEXT');
   ensureColumn('service_filters', 'required_no_norm', 'TEXT');
+}
+
+// Stores plan, Part 4: a tyre or battery issued is a unit with a serial number (src/lib/tb_units.js):
+// the issue names the unit it fitted and the unit that came off; a battery knows its store.
+function storesUnitsPart4() {
+  ensureColumn('tyre_battery_issues', 'unit_id', 'INTEGER');       // tyres.id or batteries.id, by kind
+  ensureColumn('tyre_battery_issues', 'old_unit_id', 'INTEGER');   // the one taken off, when known
+  ensureColumn('batteries', 'store_id', 'INTEGER REFERENCES workshops(id)');
+  ensureColumn('batteries', 'spec_id', 'INTEGER REFERENCES tb_specs(id)');
+  // A tyre or battery received or issued on a request is filed under its specification since
+  // Part 4 (src/lib/stock.js), so its receipt and its issue meet on one shelf. The ones already
+  // on the books are moved there once, here, rather than waiting for someone to rebuild stock.
+  if (!db.prepare("SELECT 1 FROM settings WHERE key = 'stock_tb_by_spec'").get()) {
+    const grn = db.prepare('SELECT g.id FROM grn g JOIN tb_request_lines r ON r.mrn_line_id = g.mrn_line_id WHERE r.spec_id IS NOT NULL').all().map((r) => r.id);
+    const issues = db.prepare('SELECT id FROM tyre_battery_issues WHERE spec_id IS NOT NULL').all().map((r) => r.id);
+    if (grn.length || issues.length) require('../lib/stock').sync({ grn, tyre_battery_issues: issues });
+    db.prepare("INSERT INTO settings (key, value) VALUES ('stock_tb_by_spec', ?)").run(JSON.stringify({ at: new Date().toISOString(), grn: grn.length, issues: issues.length }));
+  }
 }
 
 // Parts brought back unused (Stage 6) come off a job's cost as a 'return' line on job_parts. Its

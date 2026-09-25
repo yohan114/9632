@@ -25,6 +25,12 @@ const { asyncHandler, require_, toInt, toNum } = require('../lib/http');
 const tb = require('../lib/tyre_battery');
 
 const audit = require('../lib/audit');
+const units = require('../lib/tb_units');
+const unitPhotos = require('../lib/unit_photos');
+const stock = require('../lib/stock');
+const stockRule = require('../lib/stock_rule');
+
+const fail = (status, msg) => { const e = new Error(msg); e.status = status; throw e; };
 
 const router = express.Router();
 const KINDS = ['tyre', 'battery'];
@@ -205,8 +211,9 @@ router.get('/requests', requireAuth, asyncHandler((req, res) => {
             a.code AS asset_code, a.registration, j.job_no,
             (SELECT COUNT(*) FROM mrn_lines l WHERE l.mrn_id = m.id) AS lines,
             (SELECT COALESCE(SUM(l.qty),0) FROM mrn_lines l WHERE l.mrn_id = m.id) AS qty,
-            (SELECT COUNT(*) FROM mrn_lines l JOIN tyre_battery_issues i ON i.mrn_line_id = l.id
-              WHERE l.mrn_id = m.id) AS issued_lines
+            -- A line is issued when all of it has gone out (a tyre goes one row a tyre, Part 4).
+            (SELECT COUNT(*) FROM mrn_lines l WHERE l.mrn_id = m.id
+                AND (SELECT COALESCE(SUM(i.qty), 0) FROM tyre_battery_issues i WHERE i.mrn_line_id = l.id) >= l.qty - 0.001) AS issued_lines
        FROM mrn m
        LEFT JOIN assets a ON a.id = m.asset_id
        LEFT JOIN job_cards j ON j.id = m.job_id
@@ -225,7 +232,7 @@ router.get('/requests/:id', requireAuth, asyncHandler((req, res) => {
   const lines = all(
     `SELECT l.id AS mrn_line_id, l.description, l.qty, l.qty_received,
             r.*, s.label AS spec_label, s.unit_price, s.kind AS spec_kind,
-            (SELECT COUNT(*) FROM tyre_battery_issues i WHERE i.mrn_line_id = l.id) AS issued
+            (SELECT COALESCE(SUM(i.qty), 0) FROM tyre_battery_issues i WHERE i.mrn_line_id = l.id) AS issued
        FROM mrn_lines l
        LEFT JOIN tb_request_lines r ON r.mrn_line_id = l.id
        LEFT JOIN tb_specs s ON s.id = r.spec_id
@@ -305,76 +312,244 @@ router.post('/issue', requireModule('tb_issue'), asyncHandler((req, res) => {
   const issueDate = /^\d{4}-\d{2}-\d{2}$/.test(String(b.issue_date || '')) ? b.issue_date : new Date().toISOString().slice(0, 10);
   const price = b.unit_price === '' || b.unit_price == null ? line.unit_price : toNum(b.unit_price);
   const asset = line.asset_id ? get('SELECT code, registration FROM assets WHERE id = ?', line.asset_id) : null;
-  const serial = clean(b.serial_no);
 
-  const issueId = tx(() => {
-    const id = run(
-      `INSERT INTO tyre_battery_issues
-         (kind, issue_date, vehicle, asset_id, site, qty, qty_raw, category, category_norm,
-          min_number, km, unit_price, source, spec_id, mrn_line_id, serial_no, position, issued_by, job_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'request', ?, ?, ?, ?, ?, ?)`,
-      line.kind, issueDate, asset ? asset.code : null, line.asset_id, line.site, qty, String(qty),
-      line.spec_label, tb.parse(line.kind, line.spec_label || '').spec_key,
-      line.mrn_no, line.km_reading == null ? '' : String(line.km_reading),
-      price == null ? null : price, line.spec_id, line.id, serial, line.position,
-      clean(b.issued_by) || req.user.username, line.job_id).lastInsertRowid;
+  // Stores plan, Part 4: a tyre or a battery goes out by its serial number, one unit at a time, and
+  // is fixed to the vehicle at that moment (ST-D6, D7). A tube or a flap goes out as before.
+  const byUnit = units.isUnitKind(line.kind);
+  let wanted = [];
+  if (byUnit) {
+    wanted = Array.isArray(b.units) ? b.units
+      : [{ serial_no: b.serial_no, position: b.position, old_serial: b.old_serial, old_condition: b.old_condition, old_reason: b.old_reason, photo: b.photo }];
+    if (!Number.isInteger(qty) || wanted.length !== qty || wanted.some((u) => !units.cleanSerial(u && u.serial_no))) {
+      return res.status(400).json({ error: `Give the serial number of each ${line.kind} going out (${qty}).` });
+    }
+    const serials = wanted.map((u) => units.cleanSerial(u.serial_no).toUpperCase());
+    if (new Set(serials).size !== serials.length) return res.status(400).json({ error: 'The same serial number is given twice.' });
+    const going = wanted.map((u) => (clean(u.old_serial) || '').toUpperCase()).filter(Boolean);
+    if (going.some((o) => serials.includes(o))) return res.status(400).json({ error: 'A serial is given both going on and coming off.' });
+    if (new Set(going).size !== going.length) return res.status(400).json({ error: 'The same old serial is given twice.' });
+    if (line.kind === 'tyre') {
+      const wheels = wanted.map((u) => String(clean(u.position) || line.position || '').toUpperCase()).filter(Boolean);
+      const twice = wheels.find((w, i) => wheels.indexOf(w) !== i);
+      if (twice) return res.status(400).json({ error: `Two tyres cannot go on at ${twice}. Give each one its own wheel.` });
+    }
+    if (!line.asset_id) return res.status(400).json({ error: 'This request names no vehicle, so nothing can be fitted.' });
+    // ST-D8: what came off this vehicle last time has to be written down before the next one goes on.
+    const due = get(`SELECT i.issue_date, i.category, i.min_number FROM tyre_battery_issues i
+                      WHERE i.asset_id = ? AND i.kind = ? AND i.source = 'request' AND i.issue_date < ?
+                        AND NOT EXISTS (SELECT 1 FROM tb_returns r WHERE r.issue_id = i.id)
+                      ORDER BY i.issue_date, i.id LIMIT 1`, line.asset_id, line.kind, issueDate);
+    if (due) {
+      return res.status(409).json({ error: `Record what came off ${asset ? asset.code : 'this vehicle'} first: the ${due.category || line.kind} issued on ${due.issue_date}${due.min_number ? ' (request ' + due.min_number + ')' : ''}.` });
+    }
+  }
+
+  const write = (q, serial, position) => run(
+    `INSERT INTO tyre_battery_issues
+       (kind, issue_date, vehicle, asset_id, site, qty, qty_raw, category, category_norm,
+        min_number, km, unit_price, source, spec_id, mrn_line_id, serial_no, position, issued_by, job_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'request', ?, ?, ?, ?, ?, ?)`,
+    line.kind, issueDate, asset ? asset.code : null, line.asset_id, line.site, q, String(q),
+    line.spec_label, tb.parse(line.kind, line.spec_label || '').spec_key,
+    line.mrn_no, line.km_reading == null ? '' : String(line.km_reading),
+    price == null ? null : price, line.spec_id, line.id, serial, position,
+    clean(b.issued_by) || req.user.username, line.job_id).lastInsertRowid;
+
+  const ids = tx(() => {
+    const rows = [];
+    if (!byUnit) rows.push(write(qty, clean(b.serial_no), line.position));
+    for (const u of wanted) {
+      const kind = line.kind;
+      const position = kind === 'tyre' ? (clean(u.position) || line.position) : null;
+      const serial = units.cleanSerial(u.serial_no);
+      // The one coming off: named, or — for a tyre — whatever is at that wheel now.
+      let old = null;
+      const oldSerial = clean(u.old_serial);
+      if (oldSerial) {
+        old = units.bySerial(kind, oldSerial);
+        if (!old) fail(404, `There is no ${kind} ${oldSerial} in the register.`);
+      } else if (kind === 'tyre' && position) {
+        old = units.onVehicle('tyre', line.asset_id, position)[0] || null;
+      }
+      const id = write(1, serial, position ? position.toUpperCase() : null);
+      if (old) {
+        units.takeOff(kind, old, { assetId: line.asset_id, issueId: id, userId: req.user.id, date: issueDate, km: line.km_reading });
+        run('UPDATE tyre_battery_issues SET old_unit_id = ? WHERE id = ?', old.id, id);
+      }
+      const storeId = get('SELECT store_id FROM tyre_battery_issues WHERE id = ?', id).store_id;
+      const unitId = units.fit(kind, { serial, specId: line.spec_id, assetId: line.asset_id, position, storeId, issueId: id,
+        userId: req.user.id, date: issueDate, km: line.km_reading, reason: 'Issued on request ' + line.mrn_no });
+      run('UPDATE tyre_battery_issues SET unit_id = ? WHERE id = ?', unitId, id);
+      // The serial plate, photographed (ST-D6: recommended, not required).
+      if (u.photo) {
+        const err = unitPhotos.add(kind, unitId, [u.photo], req.user.id, 'Serial plate, at issue');
+        if (err) fail(err.status, err.error);
+      }
+      // What came off, when the store already knows.
+      if (clean(u.old_condition)) {
+        recordReturn(get('SELECT * FROM tyre_battery_issues WHERE id = ?', id),
+          { condition: u.old_condition, exception_reason: u.old_reason, serial_no: old ? old.serial_no : null, km_reading: line.km_reading }, req.user);
+      }
+      rows.push(id);
+    }
 
     // NO stock_moves ROW IS WRITTEN BY HAND HERE. stock_moves is a projection, and its rebuild
     // already reads tyre_battery_issues for both sections — writing one by hand would key it
     // slightly differently from the rebuild and leave the shelf holding the movement twice. The
-    // register is the source; since the stores plan, Part 3, stock.sync projects this one row at
-    // once by the rebuild's own rule, instead of waiting for the next rebuild.
+    // register is the source; since the stores plan, Part 3, stock.sync projects these rows at
+    // once by the rebuild's own rule — and, since Part 4, only what the store holds goes out.
     run(`UPDATE mrn_lines SET qty_received = COALESCE(qty_received,0) + ? WHERE id = ?`, qty, line.id);
-    require('../lib/stock').sync({ tyre_battery_issues: [id] });
-    return id;
+    stockRule.check(stock.sync({ tyre_battery_issues: rows }));
+    return rows;
   });
 
-  audit.record({ userId: req.user.id, entity: 'tyre_battery_issues', entityId: issueId, action: 'issue',
-    after: { mrn_no: line.mrn_no, kind: line.kind, qty, spec: line.spec_label, asset: asset && asset.code } });
+  audit.record({ userId: req.user.id, entity: 'tyre_battery_issues', entityId: ids[0], action: 'issue',
+    after: { mrn_no: line.mrn_no, kind: line.kind, qty, spec: line.spec_label, asset: asset && asset.code,
+      serials: wanted.map((u) => units.cleanSerial(u.serial_no)) } });
+  const due = byUnit ? get(`SELECT COUNT(*) n FROM tyre_battery_issues i WHERE i.id IN (${ids.join(',')})
+                              AND NOT EXISTS (SELECT 1 FROM tb_returns r WHERE r.issue_id = i.id)`).n : 0;
   res.status(201).json({
-    id: issueId, mrn_no: line.mrn_no, kind: line.kind, qty,
+    id: ids[0], ids, mrn_no: line.mrn_no, kind: line.kind, qty,
     // The storekeeper is told immediately what still has to come back, rather than finding out
     // at month end that nobody recorded the old one.
-    old_unit_due: true,
-    message: `Issued against ${line.mrn_no}. Record what came off before this is finished.`,
+    old_unit_due: due > 0,
+    message: due ? `Issued against ${line.mrn_no}. Record what came off before this is finished.` : `Issued against ${line.mrn_no}.`,
   });
 }));
 
 // ---------------------------------------------------------------------------
 // What came off
 // ---------------------------------------------------------------------------
+
+/**
+ * Record what came off one issue, and move the old unit on in its register (Part 4): repaired,
+ * retreaded, reused, on warranty, scrap, or not returned — which must say why.
+ */
+function recordReturn(issue, b, user) {
+  const condition = String(b.condition || '');
+  if (!CONDITIONS.includes(condition)) fail(400, `Say what became of the old one (${CONDITIONS.join(', ')})`);
+  // "Not returned" is a real answer — a tyre bursts on the road, a supplier takes the old battery
+  // in exchange. It just has to say WHY, or the gap is indistinguishable from forgetting.
+  const reason = clean(b.exception_reason);
+  if (condition === 'not_returned' && !reason) fail(400, 'Say why the old one is not coming back');
+  if (get('SELECT id FROM tb_returns WHERE issue_id = ?', issue.id)) fail(409, 'What came off this issue is already recorded');
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(String(b.return_date || '')) ? b.return_date : new Date().toISOString().slice(0, 10);
+  const serial = clean(b.serial_no);
+  const id = run(
+    `INSERT INTO tb_returns (issue_id, kind, asset_id, serial_no, condition, exception_reason,
+                             km_reading, returned_to, received_by, notes, return_date)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    issue.id, issue.kind === 'battery' ? 'battery' : 'tyre', issue.asset_id, serial, condition, reason,
+    b.km_reading == null || b.km_reading === '' ? null : toNum(b.km_reading),
+    clean(b.returned_to), clean(b.received_by) || user.username, clean(b.notes), date).lastInsertRowid;
+  // The old unit: the one the issue took off, else the one with this serial — or, for a unit the
+  // register never knew, a record of it now, so a scrap tyre can still go on a disposal note.
+  if (units.isUnitKind(issue.kind)) {
+    let unitId = issue.old_unit_id || (serial && (units.bySerial(issue.kind, serial) || {}).id) || null;
+    if (!unitId && serial) {
+      unitId = issue.kind === 'tyre'
+        ? run("INSERT INTO tyres (serial_no, spec_id, state, store_id) VALUES (?, ?, 'removed', ?)", units.cleanSerial(serial), issue.spec_id || null, issue.store_id || null).lastInsertRowid
+        : run("INSERT INTO batteries (serial_no, spec_id, condition, state, store_id) VALUES (?, ?, 'old', 'removed', ?)", units.cleanSerial(serial), issue.spec_id || null, issue.store_id || null).lastInsertRowid;
+      run('UPDATE tyre_battery_issues SET old_unit_id = ? WHERE id = ?', unitId, issue.id);
+    }
+    if (unitId) units.settle(issue.kind, unitId, condition, { userId: user.id, date, reason: reason || clean(b.notes), storeId: issue.store_id });
+  }
+  audit.record({ userId: user.id, entity: 'tb_returns', entityId: id, action: 'create',
+    after: { issue_id: issue.id, condition, kind: issue.kind } });
+  return id;
+}
+
 router.post('/returns', requireModule('tb_issue'), asyncHandler((req, res) => {
   const b = req.body || {};
   require_(b, ['issue_id', 'condition']);
   const issue = get('SELECT * FROM tyre_battery_issues WHERE id = ?', toInt(b.issue_id));
   if (!issue) return res.status(404).json({ error: 'No such issue' });
-  const condition = String(b.condition);
-  if (!CONDITIONS.includes(condition)) {
-    return res.status(400).json({ error: `Say what became of the old one (${CONDITIONS.join(', ')})` });
-  }
-  // "Not returned" is a real answer — a tyre bursts on the road, a supplier takes the old battery
-  // in exchange. It just has to say WHY, or the gap is indistinguishable from forgetting.
-  const reason = clean(b.exception_reason);
-  if (condition === 'not_returned' && !reason) {
-    return res.status(400).json({ error: 'Say why the old one is not coming back' });
-  }
-  if (get('SELECT id FROM tb_returns WHERE issue_id = ?', issue.id)) {
-    return res.status(409).json({ error: 'What came off this issue is already recorded' });
-  }
-
-  const id = run(
-    `INSERT INTO tb_returns (issue_id, kind, asset_id, serial_no, condition, exception_reason,
-                             km_reading, returned_to, received_by, notes, return_date)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    issue.id, issue.kind, issue.asset_id, clean(b.serial_no), condition, reason,
-    b.km_reading == null || b.km_reading === '' ? null : toNum(b.km_reading),
-    clean(b.returned_to), clean(b.received_by) || req.user.username, clean(b.notes),
-    /^\d{4}-\d{2}-\d{2}$/.test(String(b.return_date || '')) ? b.return_date : new Date().toISOString().slice(0, 10)
-  ).lastInsertRowid;
-
-  audit.record({ userId: req.user.id, entity: 'tb_returns', entityId: id, action: 'create',
-    after: { issue_id: issue.id, condition, kind: issue.kind } });
+  const id = tx(() => recordReturn(issue, b, req.user));
   res.status(201).json(get('SELECT * FROM tb_returns WHERE id = ?', id));
+}));
+
+// A vehicle's tyres (by wheel) and batteries, and every one fitted and taken off (Part 4).
+router.get('/vehicle/:assetId', requireAuth, asyncHandler((req, res) => res.json(units.vehicle(toInt(req.params.assetId)))));
+
+// ---------------------------------------------------------------------------
+// The tyre register (stores plan, Part 4): every tyre by its serial number, like the batteries.
+// ---------------------------------------------------------------------------
+const TYRE_STATES = ['in_store', 'installed', 'removed', 'repair', 'retread', 'warranty', 'scrap', 'lost', 'disposed'];
+
+router.get('/tyres', requireAuth, asyncHandler((req, res) => {
+  const w = []; const p = [];
+  if (TYRE_STATES.includes(req.query.state)) { w.push('t.state = ?'); p.push(req.query.state); }
+  if (req.query.q) {
+    const like = '%' + String(req.query.q).trim() + '%';
+    w.push('(t.serial_no LIKE ? OR s.label LIKE ? OR a.code LIKE ? OR a.registration LIKE ?)'); p.push(like, like, like, like);
+  }
+  res.json(all(`SELECT t.id, t.serial_no, t.state, t.position, t.current_asset_id, t.store_id, t.warranty_date,
+                       s.label AS spec, a.code AS asset_code, a.registration AS asset_reg,
+                       (SELECT COUNT(*) FROM tyre_photos f WHERE f.tyre_id = t.id) AS photo_count
+                  FROM tyres t LEFT JOIN tb_specs s ON s.id = t.spec_id LEFT JOIN assets a ON a.id = t.current_asset_id
+                 ${w.length ? 'WHERE ' + w.join(' AND ') : ''} ORDER BY t.serial_no LIMIT ${Math.min(toInt(req.query.limit, 500), 2000)}`, ...p));
+}));
+
+router.get('/tyres/:id', requireAuth, asyncHandler((req, res) => {
+  const id = toInt(req.params.id);
+  const tyre = get(`SELECT t.*, s.label AS spec, a.code AS asset_code, a.registration AS asset_reg
+                      FROM tyres t LEFT JOIN tb_specs s ON s.id = t.spec_id LEFT JOIN assets a ON a.id = t.current_asset_id WHERE t.id = ?`, id);
+  if (!tyre) return res.status(404).json({ error: 'No such tyre' });
+  const events = all(`SELECT e.*, af.code AS from_asset_code, at2.code AS to_asset_code, u.username
+                        FROM tyre_events e LEFT JOIN assets af ON af.id = e.from_asset_id LEFT JOIN assets at2 ON at2.id = e.to_asset_id
+                        LEFT JOIN users u ON u.id = e.user_id WHERE e.tyre_id = ? ORDER BY e.id DESC`, id);
+  res.json({ tyre, events, photos: unitPhotos.list('tyre', id), max_photos: unitPhotos.MAX_PHOTOS });
+}));
+
+router.post('/tyres/:id/photos', requireModule('tb_issue'), asyncHandler((req, res) => {
+  const id = toInt(req.params.id);
+  if (!units.byId('tyre', id)) return res.status(404).json({ error: 'No such tyre' });
+  const photos = (Array.isArray(req.body.photos) ? req.body.photos : [req.body.photo]).filter(Boolean);
+  if (!photos.length) return res.status(400).json({ error: 'No photo given' });
+  const err = unitPhotos.add('tyre', id, photos, req.user.id, req.body.note);
+  if (err) return res.status(err.status).json({ error: err.error });
+  audit.record({ userId: req.user.id, entity: 'tyre', entityId: id, action: 'add_photos', after: { added: photos.length } });
+  res.status(201).json(unitPhotos.list('tyre', id));
+}));
+
+router.delete('/tyres/:id/photos/:photoId', requireModule('tb_issue'), asyncHandler((req, res) => {
+  const id = toInt(req.params.id);
+  if (!unitPhotos.remove('tyre', id, toInt(req.params.photoId))) return res.status(404).json({ error: 'Photo not found' });
+  audit.record({ userId: req.user.id, entity: 'tyre', entityId: id, action: 'delete_photo' });
+  res.json(unitPhotos.list('tyre', id));
+}));
+
+// A tyre's own story after it was fitted: taken off (a rotation), fitted again, sent for repair or
+// retreading, back in the store, claimed on warranty, or scrapped.
+router.post('/tyres/:id/event', requireModule('tb_issue'), asyncHandler((req, res) => {
+  const b = req.body || {};
+  const tyre = units.byId('tyre', toInt(req.params.id));
+  if (!tyre) return res.status(404).json({ error: 'No such tyre' });
+  const type = String(b.event_type || '');
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(String(b.event_date || '')) ? b.event_date : new Date().toISOString().slice(0, 10);
+  const ctx = { userId: req.user.id, date, reason: clean(b.reason) };
+  tx(() => {
+    if (type === 'install') {
+      const assetId = toInt(b.to_asset_id);
+      if (!assetId || !get('SELECT id FROM assets WHERE id = ?', assetId)) fail(400, 'Which vehicle is it going on?');
+      if (!['in_store', 'removed'].includes(tyre.state)) fail(409, `Tyre ${tyre.serial_no} is ${tyre.state}. Only a tyre in the store can be fitted.`);
+      units.fit('tyre', { serial: tyre.serial_no, assetId, position: b.position, ...ctx, reason: ctx.reason || 'Fitted again' });
+    } else if (type === 'remove') {
+      units.takeOff('tyre', tyre, { assetId: tyre.current_asset_id, ...ctx });
+    } else if (type === 'return') {
+      if (units.FINISHED.includes(tyre.state)) fail(409, `Tyre ${tyre.serial_no} is ${tyre.state}.`);
+      if (tyre.current_asset_id) units.takeOff('tyre', tyre, { assetId: tyre.current_asset_id, ...ctx });
+      run("UPDATE tyres SET state = 'in_store' WHERE id = ?", tyre.id);
+      units.event('tyre', tyre.id, { type: 'return', ...ctx });
+    } else if (['repair', 'retread', 'warranty', 'scrap'].includes(type)) {
+      if (units.FINISHED.includes(tyre.state)) fail(409, `Tyre ${tyre.serial_no} is ${tyre.state}.`);
+      if (tyre.current_asset_id) units.takeOff('tyre', tyre, { assetId: tyre.current_asset_id, ...ctx });
+      run('UPDATE tyres SET state = ? WHERE id = ?', type, tyre.id);
+      units.event('tyre', tyre.id, { type, ...ctx });
+    } else fail(400, 'Say what happened to the tyre.');
+  });
+  audit.record({ userId: req.user.id, entity: 'tyre', entityId: tyre.id, action: 'event', after: { event: type } });
+  res.status(201).json(units.byId('tyre', tyre.id));
 }));
 
 /** Issues still waiting for someone to say what came off. This is the list that stops old units
@@ -386,7 +561,7 @@ router.get('/returns/outstanding', requireAuth, asyncHandler((req, res) => {
             i.position, i.min_number AS mrn_no, a.code AS asset_code, a.registration, i.issued_by
        FROM tyre_battery_issues i
        LEFT JOIN assets a ON a.id = i.asset_id
-      WHERE i.source = 'request'
+      WHERE i.source = 'request' AND i.kind IN ('tyre','battery')
         AND NOT EXISTS (SELECT 1 FROM tb_returns r WHERE r.issue_id = i.id)
         ${kind ? 'AND i.kind = ?' : ''}
       ORDER BY i.issue_date, i.id
