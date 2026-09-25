@@ -80,6 +80,14 @@ async function enrol(cookie) {
 // A code the server has not seen yet: the next 30-second step (inside the ±1 window).
 const nextCode = (secret, stepsAhead = 1) => totp.codeAt(secret, Date.now() + stepsAhead * totp.STEP_SECONDS * 1000);
 
+// Changing access needs 2-step sign-in (access plan, Part 4), so whoever does it here enrols first,
+// through the real endpoints, once; that session stays signed in for the rest of the file.
+const changers = {};
+async function changer(username) {
+  if (!changers[username]) { const c = await login(username); await enrol(c); changers[username] = c; }
+  return changers[username];
+}
+
 // socket.io over the polling transport, as in test/socket_auth.test.js.
 async function socketOpens(cookie) {
   const base = `http://127.0.0.1:${port}`;
@@ -222,7 +230,7 @@ test('a session made before enrolling is not honoured afterwards', async () => {
 
 // ---------------------------------------------------------------- when a role requires it
 test('a role that requires it holds back the API and the live feed until the person enrols', async () => {
-  const admin = await login('chief');
+  const admin = await changer('chief');
   const on = await req('PATCH', '/api/access/roles/viewer', { cookie: admin, body: { require_mfa: true } });
   assert.strictEqual(on.status, 200, on.text);
   assert.strictEqual(on.body.require_mfa, true);
@@ -250,11 +258,11 @@ test('only an admin may stop a role requiring it; anyone managing roles may star
   run("INSERT INTO roles (name, label) VALUES ('access_admin', 'Access Admin')");
   capabilities.setCapability('access_admin', 'access.manage', true);
   mkUser('hasini', ['access_admin']);
-  const h = await login('hasini');
+  const h = await changer('hasini');
   assert.strictEqual((await req('PATCH', '/api/access/roles/storekeeper', { cookie: h, body: { require_mfa: true } })).status, 200);
   assert.strictEqual((await req('PATCH', '/api/access/roles/storekeeper', { cookie: h, body: { require_mfa: false } })).status, 403);
   assert.strictEqual((await req('PATCH', '/api/access/roles/admin', { cookie: h, body: { require_mfa: true } })).status, 403);
-  const admin = await login('chief');
+  const admin = await changer('chief');
   assert.strictEqual((await req('PATCH', '/api/access/roles/storekeeper', { cookie: admin, body: { require_mfa: false } })).status, 200);
   assert.strictEqual((await req('PATCH', '/api/access/roles/admin', { cookie: admin, body: { label: 'Boss' } })).status, 400,
     'the admin role still cannot be renamed');
@@ -289,7 +297,7 @@ test('an admin resets someone who lost their phone; a non-admin cannot reset an 
   const id = mkUser('kumari', ['storekeeper']);
   const k = await login('kumari');
   await enrol(k);
-  const admin = await login('chief');
+  const admin = await changer('chief');
   const r = await req('POST', `/api/users/${id}/mfa-reset`, { cookie: admin });
   assert.strictEqual(r.status, 200, r.text);
   assert.strictEqual(get('SELECT mfa_enabled e FROM users WHERE id = ?', id).e, 0);
@@ -299,7 +307,7 @@ test('an admin resets someone who lost their phone; a non-admin cannot reset an 
   run("INSERT INTO roles (name, label) VALUES ('hr_clerk', 'HR Clerk')");
   capabilities.setCapability('hr_clerk', 'users.manage', true);
   mkUser('lakmal', ['hr_clerk']);
-  const l = await login('lakmal');
+  const l = await changer('lakmal');
   assert.strictEqual((await req('POST', `/api/users/${chiefId}/mfa-reset`, { cookie: l })).status, 403);
 });
 

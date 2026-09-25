@@ -271,7 +271,7 @@ router.get('/:id/print.html', asyncHandler((req, res) => {
   @media print { .noprint { display: none; } }
 </style></head>
 <body>
-<button class="noprint" onclick="window.print()">🖨 Print / Save as PDF</button>
+<button class="noprint" id="print">🖨 Print / Save as PDF</button>
 <div class="sheet">
   <div class="hd"><div class="co">Edward and Christie (Pvt) Ltd</div><div class="ti">Job Request</div></div>
   <div class="meta">
@@ -293,7 +293,7 @@ router.get('/:id/print.html', asyncHandler((req, res) => {
   </div>
   <div class="foot"><span>Doc. No.: EC1.TR.FO.01</span><span>WorkshopOne — Job Request</span></div>
 </div>
-</body></html>`;
+<script src="/js/print-page.js"></script></body></html>`;
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
   res.send(html);
 }));

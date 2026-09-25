@@ -884,7 +884,7 @@ router.get('/services/:id/print.html', asyncHandler((req, res) => {
   .foot { padding:5px 8px; border-top:1.5px solid #000; } .rd { min-height:48px; }
   button { padding:8px 14px; font-size:14px; margin:10px 0; cursor:pointer; } @media print { .noprint { display:none; } }
 </style></head><body>
-<button class="noprint" onclick="window.print()">🖨 Print / Save as PDF</button>
+<button class="noprint" id="print">🖨 Print / Save as PDF</button>
 <div class="sheet">
   <div class="hd"><div class="co">Edward and Christie (Pvt) Ltd</div><div class="ti">Vehicle / Machinery Service Details</div></div>
   <div class="meta">
@@ -908,7 +908,7 @@ router.get('/services/:id/print.html', asyncHandler((req, res) => {
   <div class="foot"><b>Up-keeping of Equipment/Vehicle:</b> ${esc(s.upkeeping || '')} &nbsp;&nbsp; (Good - G / Fair - F / Bad - B)
     <div style="margin-top:4px"><b>Vehicle/Machinery Repair Details:</b></div><div class="rd">${esc(s.repair_details || '')}</div></div>
 </div>
-</body></html>`;
+<script src="/js/print-page.js"></script></body></html>`;
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
   res.send(html);
 }));

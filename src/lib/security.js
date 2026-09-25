@@ -12,17 +12,22 @@
 // Behind a public domain the browser is part of the attack surface, and these headers tell it what
 // this site will never do, so it can refuse when someone else's page tries.
 //
-// The Content-Security-Policy is REPORT-ONLY for now. public/app.js still has a few inline event
-// handlers and index.html one inline script, so an enforcing policy of `script-src 'self'` would
-// break them. Report-only changes nothing for the user; it lists every violation in the browser
-// console so they can be removed, and then the header is switched to enforcing.
+// The Content-Security-Policy is ENFORCED (access plan, Part 4). It ran report-only while the
+// screens still had inline event handlers and index.html an inline script; those are gone — clicks
+// are wired by one listener in public/app.js, the service worker is registered from
+// public/js/sw-register.js, and the printable pages load public/js/print-page.js. So a script
+// injected into a page (a name typed with a script tag in it, say) is refused by the browser, not run.
+// test/csp.test.js keeps it that way: it fails on any inline handler or inline script.
 // ---------------------------------------------------------------------------
+// Two things come from outside, and only those: the chart library for the dashboard (this exact
+// file, loaded by public/app.js when a chart is drawn) and the fonts (public/styles.css).
+const CHART_JS = 'https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js';
 const CSP = [
   "default-src 'self'",
-  "script-src 'self'",
-  "style-src 'self' 'unsafe-inline'",
+  `script-src 'self' ${CHART_JS}`,
+  "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
   "img-src 'self' data: blob:",
-  "font-src 'self' data:",
+  "font-src 'self' data: https://fonts.gstatic.com",
   "connect-src 'self'",
   "frame-ancestors 'self'",
   "object-src 'none'",
@@ -40,7 +45,7 @@ function securityHeaders(req, res, next) {
   // The camera stays available to our own pages (battery / evidence photos); nothing else is used.
   res.setHeader('Permissions-Policy', 'camera=(self), microphone=(), geolocation=(), payment=(), usb=()');
   res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
-  res.setHeader('Content-Security-Policy-Report-Only', CSP);
+  res.setHeader('Content-Security-Policy', CSP);
   // HSTS only over https. On the LAN (plain http) it would be ignored anyway, and sending it from a
   // test or dev server teaches a browser nothing useful. No includeSubDomains: other hosts under
   // the company domain are not ours to force onto https.

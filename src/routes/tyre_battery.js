@@ -78,7 +78,7 @@ router.get('/categories/print.html', requireAuth, asyncHandler((req, res) => {
   button { padding:8px 14px; font-size:14px; margin:10px 0; cursor:pointer; }
   @media print { .noprint { display:none; } }
 </style></head><body>
-<button class="noprint" onclick="window.print()">🖨 Print / Save as PDF</button>
+<button class="noprint" id="print">🖨 Print / Save as PDF</button>
 <h1>Edward &amp; Christie (Pvt) Ltd — Badalgama W/S</h1>
 <h2>${esc(title)}</h2>
 <div class="sub">${rows.length} categories · ${priced} priced · printed ${esc(printed)}</div>
@@ -87,7 +87,7 @@ router.get('/categories/print.html', requireAuth, asyncHandler((req, res) => {
   <tbody>${body}</tbody>
   <tfoot><tr class="tot"><td></td><td>Grand total</td><td class="num">${rows.length}</td><td class="num">${money(totQty)}</td><td></td><td class="num">${money(totVal)}</td></tr></tfoot>
 </table>
-</body></html>`;
+<script src="/js/print-page.js"></script></body></html>`;
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
   res.send(html);
 }));

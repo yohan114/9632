@@ -266,8 +266,26 @@ function requireCap(...caps) {
   };
 }
 
+// ---- 2-step sign-in to change access (access plan, Part 4) --------------------------------------
+//
+// Whoever can change access can change it for everybody, so a stolen password for one of those
+// accounts is worth far more than any other. Changing access — roles, levels, permissions, limits,
+// accounts, passwords — therefore needs 2-step sign-in turned on, and this session to have passed
+// it (a session of someone who has it on is only honoured if it did: liveSession above). Reading
+// the Access Control and Users screens does not; nor does anything else in the app. Turning it on
+// is under the Security button, which is not behind this check.
+const SECOND_FACTOR_MSG = 'To change access, turn on 2-step sign-in first. Use the Security button at the top of the page.';
+function secondFactorToChange(req, res, next) {
+  if (req.method === 'GET' || req.method === 'HEAD') return next();
+  if (!req.user) return res.status(401).json({ error: 'Authentication required' });
+  if (req.user.mfaEnabled) return next();
+  return res.status(403).json({ error: SECOND_FACTOR_MSG, secondFactorRequired: true });
+}
+
 module.exports = {
   COOKIE,
+  SECOND_FACTOR_MSG,
+  secondFactorToChange,
   hashPassword,
   verifyPassword,
   rolesForUser,

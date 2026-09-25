@@ -70,10 +70,24 @@ function req(method, p, { body, cookie, headers = {} } = {}) {
   });
 }
 async function login(username, password) {
+  run('UPDATE users SET mfa_enabled = 0 WHERE username = ?', username);   // the password step alone
   const r = await req('POST', '/api/auth/login', { body: { username, password } });
   assert.strictEqual(r.status, 200, `login ${username}: ${r.text}`);
   return r.cookie;
 }
+const accessManager = async (username, password) => secondFactorOn(await login(username, password));
+
+// Changing access needs 2-step sign-in (access plan, Part 4). The people here have it on, set
+// directly (signing in with it is tested in test/mfa.test.js), so every refusal below has only the
+// reason its test names: this person is marked as having it, and this session as having passed it.
+function secondFactorOn(cookie) {
+  const token = decodeURIComponent(cookie.split('=')[1]);
+  const s = get('SELECT user_id FROM sessions WHERE token = ?', token);
+  run('UPDATE users SET mfa_enabled = 1 WHERE id = ?', s.user_id);
+  run('UPDATE sessions SET mfa_verified = 1 WHERE token = ?', token);
+  return cookie;
+}
+
 
 // ---------------------------------------------------------------- headers
 test('every response carries the security headers, and no X-Powered-By', async () => {
@@ -81,7 +95,10 @@ test('every response carries the security headers, and no X-Powered-By', async (
   assert.strictEqual(r.headers['x-content-type-options'], 'nosniff');
   assert.strictEqual(r.headers['x-frame-options'], 'SAMEORIGIN');
   assert.strictEqual(r.headers['referrer-policy'], 'strict-origin-when-cross-origin');
-  assert.ok(r.headers['content-security-policy-report-only'].includes("object-src 'none'"));
+  // Enforced, not report-only (access plan, Part 4): scripts come only from this site's own files.
+  assert.ok(r.headers['content-security-policy'].includes("object-src 'none'"));
+  assert.ok(r.headers['content-security-policy'].includes("script-src 'self'"));
+  assert.strictEqual(r.headers['content-security-policy-report-only'], undefined);
   assert.ok(r.headers['permissions-policy'].includes('microphone=()'));
   assert.strictEqual(r.headers['x-powered-by'], undefined, 'the framework is not advertised');
   assert.strictEqual(r.headers['cache-control'], 'no-store', 'API answers never sit in a shared PC\'s cache');
@@ -184,7 +201,7 @@ test('changing your password signs out your other sessions, but not this one', a
 
 // ---------------------------------------------------------------- admin-set passwords
 test('an account created by an admin must meet the rules and change its password at first sign-in', async () => {
-  const cookie = await login('chief', ADMIN_PW);
+  const cookie = await accessManager('chief', ADMIN_PW);
   const weak = await req('POST', '/api/users', { cookie, body: { username: 'ravi', password: 'ravi1234', roles: ['storekeeper'] } });
   assert.strictEqual(weak.status, 400);
   const ok = await req('POST', '/api/users', { cookie, body: { username: 'ravi', password: 'Kestrel-Timber-5521', roles: ['storekeeper'] } });
@@ -198,7 +215,7 @@ test('an account created by an admin must meet the rules and change its password
 test('an admin password reset forces a change and signs the person out; deactivation does too', async () => {
   const id = mkUser('priya', 'forge-ingot-dynamo', ['storekeeper']);
   const priya = await login('priya', 'forge-ingot-dynamo');
-  const admin = await login('chief', ADMIN_PW);
+  const admin = await accessManager('chief', ADMIN_PW);
   const reset = await req('PATCH', `/api/users/${id}`, { cookie: admin, body: { password: 'Summit-Lantern-7730' } });
   assert.strictEqual(reset.status, 200, reset.text);
   assert.strictEqual(get('SELECT must_change_password m FROM users WHERE id = ?', id).m, 1);

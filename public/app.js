@@ -500,6 +500,20 @@ const canDo = (...caps) => !!ME && caps.some((c) => (ME.caps || []).includes(c)
 const qs = (s, r = document) => r.querySelector(s);
 const qsa = (s, r = document) => [...r.querySelectorAll(s)];
 
+// No inline handlers anywhere: the browser's Content-Security-Policy refuses them (access plan,
+// Part 4). The markup says what a click does, and this one listener does it:
+//   data-go="#/page?x=1"  go to that page        data-back   back one page
+//   data-click="#id"      click that element     data-nop    a link that only runs its own listener
+document.addEventListener('click', (e) => {
+  const t = e.target.closest && e.target.closest('[data-go],[data-back],[data-click],[data-nop],[data-action]');
+  if (!t) return;
+  if (t.tagName === 'A') e.preventDefault();
+  if (t.dataset.go) location.hash = t.dataset.go;
+  else if (t.hasAttribute('data-back')) history.back();
+  else if (t.dataset.click) { const x = document.querySelector(t.dataset.click); if (x) x.click(); }
+  else if (t.dataset.action === 'configure-server' && typeof window.configureServerIp === 'function') window.configureServerIp();
+});
+
 // ---- Real-time: ONE global subscriber auto-refreshes the active view when the data
 // it shows changes. audit.record broadcasts a generic 'data_changed' {entity,action,...}
 // for every mutation, so no view needs to wire its own listeners.
@@ -861,7 +875,7 @@ async function render() {
   } catch (e) {
     // Stage 3: a record of another workshop is not an error, just not yours to open.
     content.innerHTML = e.data && e.data.other_workshop
-      ? `<div class="card"><p><b>${esc(e.message)}</b></p><p class="muted">Each workshop sees its own work. Ask head office if you need it.</p><a class="btn sm" href="javascript:history.back()">← Back</a></div>`
+      ? `<div class="card"><p><b>${esc(e.message)}</b></p><p class="muted">Each workshop sees its own work. Ask head office if you need it.</p><a class="btn sm" href="#" data-back>← Back</a></div>`
       : `<div class="card"><p class="err">Error: ${esc(e.message)}</p></div>`;
   }
 }
@@ -921,7 +935,7 @@ async function dashPurchasing(c) {
       <div class="card"><div class="stat"><div class="l">You buy</div><div>${esc(mine)}</div></div></div>
     </div>
     <div class="toolbar" style="margin:0 0 8px"><h2 style="margin:0">Waiting to be bought</h2><div class="spacer"></div>
-      <button class="sm primary" onclick="location.hash='#/purchasing'">Open the list</button></div>
+      <button class="sm primary" data-go="#/purchasing">Open the list</button></div>
     <div id="dpl"></div>`;
 
   qs('#dpl', c).innerHTML = d.rows.length ? tableWrap(
@@ -1012,7 +1026,7 @@ async function dashMain(c) {
     </div>
     <div class="card section"><div class="toolbar" style="margin:0 0 8px"><h3 style="margin:0">Monthly Cost History</h3><div class="spacer"></div><span class="muted">click a month to drill in →</span></div>
       ${tableWrap([{ label: 'Month' }, { label: 'Jobs', num: true }, { label: 'Labour', num: true }, { label: 'Head Office', num: true }, { label: 'Local', num: true }, { label: 'Oil', num: true }, { label: 'Service', num: true }, { label: 'Total', num: true }],
-    mc.months.map((m) => `<tr style="cursor:pointer" onclick="location.hash='#/dashboard?month=${m.month}'">
+    mc.months.map((m) => `<tr style="cursor:pointer" data-go="#/dashboard?month=${m.month}">
           <td><b>${monthName(m.month)}</b></td>
           <td class="num">${m.jobs}</td>
           <td class="num">${money(m.labour)}</td>
@@ -1130,7 +1144,7 @@ async function dashRenderOverview() {
 // Drill 1: which vehicles cost the most in a given month.
 async function dashMonthAssets(c, month) {
   const data = await api('/reports/monthly/' + month + '/assets');
-  const rows = data.assets.map((a) => `<tr style="cursor:pointer" onclick="location.hash='#/dashboard?month=${month}&asset=${a.asset_id}'">
+  const rows = data.assets.map((a) => `<tr style="cursor:pointer" data-go="#/dashboard?month=${month}&asset=${a.asset_id}">
     <td>${a.asset_code ? `<span class="stamp">${esc(a.asset_code)}</span>` : '—'}</td>
     <td class="num">${money(a.labour)}</td>
     <td class="num">${money(a.material)}</td>
@@ -1333,7 +1347,7 @@ routes.jobs = async (c, params) => {
   let tab = sp.get('tab') || (['q', 'year', 'month', 'status', 'workshop_id'].some((k) => sp.get(k)) ? 'all' : 'monitor');
   if (!tabs.some(([t]) => t === tab)) tab = 'monitor';
   c.innerHTML = `${pageHeader('Job Cards')}<div class="toolbar" style="margin-bottom:10px">${tabs
-    .map(([t, l]) => `<button class="sm ${t === tab ? 'primary' : ''}" onclick="location.hash='#/jobs?tab=${t}'">${l}</button>`).join('')}</div>
+    .map(([t, l]) => `<button class="sm ${t === tab ? 'primary' : ''}" data-go="#/jobs?tab=${t}">${l}</button>`).join('')}</div>
     <div id="jobsbody"><div class="muted">Loading…</div></div>`;
   const body = qs('#jobsbody');
   if (tab === 'requests') return jobsRequests(body, sp);
@@ -3995,9 +4009,9 @@ routes.stores = async (c) => {
 
   const isOn = (t) => (owner ? t === owner : t === tab);
   const primaryBar = `<div class="toolbar" style="margin-bottom:4px">${PRIMARY
-    .map(([t, l]) => `<button class="sm ${isOn(t) ? 'primary' : ''}" onclick="location.hash='#/stores?tab=${t}'">${l}</button>`).join('')}</div>`;
+    .map(([t, l]) => `<button class="sm ${isOn(t) ? 'primary' : ''}" data-go="#/stores?tab=${t}">${l}</button>`).join('')}</div>`;
   const subBar = owner ? `<div class="toolbar" style="margin:0 0 10px 0">${GROUPS[owner].subs
-    .map(([s, l]) => `<button class="sm ${s === tab ? 'primary' : ''}" onclick="location.hash='#/stores?tab=${owner}&sub=${s}'">${l}</button>`).join('')}</div>` : '';
+    .map(([s, l]) => `<button class="sm ${s === tab ? 'primary' : ''}" data-go="#/stores?tab=${owner}&sub=${s}">${l}</button>`).join('')}</div>` : '';
 
   c.innerHTML = pageHeader('Stores') + primaryBar + subBar + '<div id="storebody" class="muted">Loading…</div>';
   const body = qs('#storebody');
@@ -6691,7 +6705,7 @@ async function renderVehicleCapacitiesList(c, isAdmin) {
         const vehLabel = `<b>${esc(it.ec_no || it.registration || 'Vehicle #' + it.id)}</b>${(it.ec_no && it.registration) ? `<br><span class="muted" style="font-size:11px">${esc(it.registration)}</span>` : ''}`;
 
         return `<tr>
-          <td><a href="javascript:void(0)" class="vlc-view-link" data-id="${it.id}" style="text-decoration:none">${vehLabel}</a></td>
+          <td><a href="#" data-nop class="vlc-view-link" data-id="${it.id}" style="text-decoration:none">${vehLabel}</a></td>
           <td><span class="badge" style="font-size:11px">${esc(it.category || '—')}</span></td>
           <td><b>${esc(it.brand || '—')}</b> ${esc(it.model || '')}</td>
           <td>${esc(it.year || '—')}</td>
@@ -7816,7 +7830,7 @@ const tbBadge = (s) => {
 routes.purchasing = async (c) => {
   const sp = new URLSearchParams(location.hash.split('?')[1] || '');
   const tab = ['to_buy', 'unassigned', 'bought'].includes(sp.get('tab')) ? sp.get('tab') : 'to_buy';
-  const go = (t) => `location.hash='#/purchasing?tab=${t}'`;
+  const go = (t) => `#/purchasing?tab=${t}`;
 
   c.innerHTML = pageHeader('Purchasing',
     'What has been approved and still has to be bought. Tick it off with the invoice once it is.') + `
@@ -7832,7 +7846,7 @@ routes.purchasing = async (c) => {
     ['to_buy', 'To buy', counts.to_buy],
     ['unassigned', 'Not yet assigned', counts.unassigned],
     ['bought', 'Bought', counts.bought],
-  ].map(([t, l, n]) => `<button class="sm ${t === tab ? 'primary' : ''}" onclick="${go(t)}">${l}${n ? ` (${n})` : ''}</button>`).join(' ');
+  ].map(([t, l, n]) => `<button class="sm ${t === tab ? 'primary' : ''}" data-go="${go(t)}">${l}${n ? ` (${n})` : ''}</button>`).join(' ');
 
   const load = async () => {
     const q = qs('#pu-q', c).value.trim();
@@ -8011,19 +8025,19 @@ routes.tbrequests = async (c) => {
   const sp = new URLSearchParams(location.hash.split('?')[1] || '');
   const kind = sp.get('kind') === 'battery' ? 'battery' : 'tyre';
   const tab = sp.get('tab') || 'requests';
-  const go = (t, k) => `location.hash='#/tbrequests?tab=${t}&kind=${k || kind}'`;
+  const go = (t, k) => `#/tbrequests?tab=${t}&kind=${k || kind}`;
 
   c.innerHTML = pageHeader('Tyre & Battery Requests',
     'Ask for one, have it approved, issue it against the request, and record what came off.') + `
     <div class="toolbar" style="margin-bottom:4px">
-      <button class="sm ${kind === 'tyre' ? 'primary' : ''}" onclick="${go(tab, 'tyre')}">🛞 Tyre</button>
-      <button class="sm ${kind === 'battery' ? 'primary' : ''}" onclick="${go(tab, 'battery')}">🔋 Battery</button>
+      <button class="sm ${kind === 'tyre' ? 'primary' : ''}" data-go="${go(tab, 'tyre')}">🛞 Tyre</button>
+      <button class="sm ${kind === 'battery' ? 'primary' : ''}" data-go="${go(tab, 'battery')}">🔋 Battery</button>
       <div class="spacer"></div>
       ${canAdd('tb_request') ? '<button class="primary sm" id="tb-new">+ New request</button>' : ''}
     </div>
     <div class="toolbar" style="margin:0 0 10px 0">
       ${[['requests', 'Requests'], ['purchase', 'To purchase'], ['issue', 'Ready to issue'], ['returns', 'Old units due'], ['specs', 'Sizes &amp; prices']]
-      .map(([t, l]) => `<button class="sm ${t === tab ? 'primary' : ''}" onclick="${go(t)}">${l}</button>`).join('')}
+      .map(([t, l]) => `<button class="sm ${t === tab ? 'primary' : ''}" data-go="${go(t)}">${l}</button>`).join('')}
     </div>
     <div id="tb-body" class="muted">Loading…</div>`;
 
@@ -8674,7 +8688,7 @@ routes.reports = async (c) => {
     const line = (label, count, total, warn) => `<tr><td>${esc(label)}</td><td class="num">${count}</td><td class="num">${money(total)}</td><td>${warn ? '<span class="badge amber">enter inputs</span>' : ''}</td></tr>`;
     const rows = [
       line('1. PROFIT OR LOSS', 'Headline', pl ? (isZero ? 0 : (pl.is_profit ? pl.saving_amount : -pl.saving_amount)) : 0),
-      `<tr><td><a href="javascript:void(0)" id="mcr-row-repsec" style="font-weight:600;color:inherit;text-decoration:underline" title="Click to view Repair Cost Sections Reconciler">2. Repair cost (Closed + Pending + Other Labour + Spares)</a> <button class="sm" style="padding:1px 6px;margin-left:6px;font-size:11px" onclick="document.getElementById('mcr-reconcile').click()">Reconcile ⚖️</button></td><td class="num">${(p.repair.closed_count + p.repair.pending_count)} jobs</td><td class="num">${money(p.repair.closed_total + p.repair.pending_total + p.repair.other_labour_total + p.repair.spares_supply_total)}</td><td></td></tr>`,
+      `<tr><td><a href="#" data-nop id="mcr-row-repsec" style="font-weight:600;color:inherit;text-decoration:underline" title="Click to view Repair Cost Sections Reconciler">2. Repair cost (Closed + Pending + Other Labour + Spares)</a> <button class="sm" style="padding:1px 6px;margin-left:6px;font-size:11px" data-click="#mcr-reconcile">Reconcile ⚖️</button></td><td class="num">${(p.repair.closed_count + p.repair.pending_count)} jobs</td><td class="num">${money(p.repair.closed_total + p.repair.pending_total + p.repair.other_labour_total + p.repair.spares_supply_total)}</td><td></td></tr>`,
       line('3. Service cost', p.service.count, p.service.total),
       line('4. Battery cost', p.battery.count, p.battery.total),
       line('5. Tyre work cost', p.tyre.count, p.tyre.total),
@@ -9110,12 +9124,14 @@ routes.workshops = async (c) => {
 routes.access = async (c) => {
   if (!canDo('access.manage', 'users.manage')) { c.innerHTML = '<div class="card err">You do not have access to this page.</div>'; return; }
   const tabs = [];
-  if (canDo('access.manage')) tabs.push(['people', 'People'], ['sections', 'Sections'], ['compare', 'Compare'], ['roles', 'Roles & Permissions'], ['board', 'Clearance Board'], ['limits', 'Approval limits']);
+  if (canDo('access.manage')) tabs.push(['people', 'People'], ['sections', 'Sections'], ['compare', 'Compare'], ['history', 'History'], ['roles', 'Roles & Permissions'], ['board', 'Clearance Board'], ['limits', 'Approval limits']);
   if (canDo('users.manage')) tabs.push(['users', 'Users & Roles']);
   const sp = new URLSearchParams(location.hash.split('?')[1] || '');
   const tab = tabs.some((t) => t[0] === sp.get('tab')) ? sp.get('tab') : tabs[0][0];
   c.innerHTML = `${pageHeader('Access Control', 'Who may do what — roles, the permissions in each role, and who holds them.')}
     <div id="admin-warn"></div>
+    ${ME && !ME.mfaEnabled ? `<div class="card" style="border-left:4px solid var(--amber, #d97706);margin-bottom:12px"><b>Turn on 2-step sign-in to change access.</b>
+      You can look at everything here, but changes need it. <button class="sm primary" data-click="#mymfa">Set it up</button></div>` : ''}
     <div class="pill-row" style="margin-bottom:12px">
       ${tabs.map(([k, label]) => `<button class="btn sm ${tab === k ? 'primary' : ''}" data-atab="${k}">${esc(label)}</button>`).join('')}
     </div>
@@ -9134,6 +9150,7 @@ routes.access = async (c) => {
   else if (tab === 'people') await renderPeople(pane, sp.get('person'));
   else if (tab === 'sections') await renderSections(pane, sp.get('section'));
   else if (tab === 'compare') await renderCompare(pane, sp.get('a'), sp.get('b'));
+  else if (tab === 'history') await renderHistory(pane, sp.get('person'), sp.get('section'));
   else if (tab === 'board') await renderClearanceBoard(pane);
   else if (tab === 'limits') await renderApprovalLimits(pane);
   else await renderRolesManager(pane, sp.get('role'));
@@ -9409,6 +9426,7 @@ async function renderPerson(c, id, people, reload) {
     <div class="toolbar" style="margin:0 0 6px"><h3 style="margin:0">${esc(u.full_name || u.username)}</h3>
       <span class="muted">${esc(u.username)}</span>${u.active ? '' : ' <span class="badge">inactive</span>'}<div class="spacer"></div>
       <a class="btn sm" href="#/access?tab=compare&a=${u.id}">Compare…</a>
+      <a class="btn sm" href="#/access?tab=history&person=${u.id}">History</a>
       ${can ? `<button class="sm" id="pp-copy">Copy from another person…</button>${ownCount ? '<button class="sm" id="pp-reset">↺ Reset all to role</button>' : ''}` : ''}</div>
     <div style="margin-bottom:8px">${u.roles.map((r) => `<span class="badge">${esc(r.label)}</span>`).join(' ') || '<span class="muted">No role</span>'}
       <span class="muted" style="font-size:12px">— the role is the starting point; change anything for this person below.</span></div>
@@ -9524,6 +9542,35 @@ async function renderSections(c, key) {
   qs('#sec-pick', c).onchange = (e) => { location.hash = '#/access?tab=sections&section=' + e.target.value; };
   qs('#sec-all', c).onchange = (e) => { showAll = e.target.checked; paint(); };
   paint();
+}
+
+// ---- History: who changed whose access, when, and what (Part 4) ---------------------------------
+async function renderHistory(c, person, section) {
+  const [people, ov] = await Promise.all([api('/access/people'), api('/access/matrix')]);
+  const secs = ov.sections.filter((s) => !s.always);
+  const secLabel = Object.fromEntries(ov.sections.map((s) => [s.key, s.label]));
+  c.innerHTML = `<div class="card">
+    <div class="toolbar" style="margin:0 0 8px;flex-wrap:wrap;gap:6px">
+      <select id="hi-person" style="width:auto"><option value="">Everyone</option>${people.map((p) => `<option value="${p.id}" ${String(p.id) === String(person) ? 'selected' : ''}>${esc(p.full_name || p.username)} (${esc(p.username)})</option>`).join('')}</select>
+      <select id="hi-section" style="width:auto"><option value="">All sections</option>${secs.map((s) => `<option value="${s.key}" ${s.key === section ? 'selected' : ''}>${esc(s.label)}</option>`).join('')}</select>
+    </div>
+    <p class="muted" style="font-size:12px;margin:0 0 8px">Who changed whose access, and when. Newest first. A person's filter shows changes for them and changes they made.</p>
+    <div id="hi-body"><div class="muted">Loading…</div></div></div>`;
+  const go = () => { location.hash = `#/access?tab=history&person=${qs('#hi-person', c).value}&section=${qs('#hi-section', c).value}`; };
+  qs('#hi-person', c).onchange = go; qs('#hi-section', c).onchange = go;
+  const rows = [];
+  const load = async (before) => {
+    const q = new URLSearchParams({ ...(person ? { person } : {}), ...(section ? { section } : {}), ...(before ? { before } : {}) });
+    const d = await api('/access/history?' + q.toString());
+    rows.push(...d.rows);
+    qs('#hi-body', c).innerHTML = `${tableWrap([{ label: 'When', cls: 'desc-col' }, { label: 'By', cls: 'desc-col' }, { label: 'For', cls: 'desc-col' }, { label: 'What changed', cls: 'desc-col' }],
+      rows.map((r) => `<tr><td class="desc-col" style="white-space:nowrap">${esc(String(r.at).slice(0, 16))}</td><td class="desc-col">${esc(r.by_name)}</td>
+        <td class="desc-col">${r.person ? `<a href="#/access?tab=people&person=${r.person}">${esc(r.person_name)}</a>` : '<span class="muted">—</span>'}</td>
+        <td class="desc-col">${esc(r.what)}${r.sections.length && !section ? ` <span class="muted" style="font-size:11px">— ${esc([...new Set(r.sections)].map((k) => secLabel[k] || k).join(', '))}</span>` : ''}</td></tr>`), { fit: true })}
+      ${d.more ? '<div style="margin-top:8px"><button class="sm" id="hi-more">Show older</button></div>' : `<p class="muted" style="font-size:12px;margin:6px 0 0">${rows.length} change(s).</p>`}`;
+    if (qs('#hi-more', c)) qs('#hi-more', c).onclick = () => load(rows[rows.length - 1].id);
+  };
+  await load(null);
 }
 
 // ---- Compare two people, section by section and permission by permission (Part 3) ---------------
@@ -11457,7 +11504,7 @@ async function renderFilterStock(c) {
       qs('#fs-count', c).textContent = items.length + (items.length === 1 ? ' type' : ' types');
       const headers = [{ label: 'Type' }, { label: 'Brand' }, { label: 'Part No' }, { label: 'Compatible Vehicles' }, { label: 'In Stock', num: true }, { label: 'Reorder', num: true }, { label: 'Unit Cost', num: true }, { label: 'Status' }, { label: 'Actions' }];
       const body = items.map((r) => `<tr${r.status !== 'ok' ? ' style="background:rgba(224,168,0,.06)"' : ''}>
-        <td><a href="javascript:void 0" data-led="${r.id}"><b>${esc(r.filter_type)}</b></a></td>
+        <td><a href="#" data-nop data-led="${r.id}"><b>${esc(r.filter_type)}</b></a></td>
         <td>${esc(r.brand || '—')}</td><td>${esc(r.part_no || '—')}</td><td>${fsPills(r.compatible_assets)}</td>
         <td class="num">${num(r.qty_in_stock)} ${esc(r.unit || '')}</td><td class="num">${num(r.reorder_level)}</td>
         <td class="num">${money(r.unit_cost)}</td><td>${fsStatus(r.status)}</td>
@@ -11789,7 +11836,7 @@ function renderLogin(err) {
       // origin of its own. In a browser this button offered a way to point the app at a machine
       // that is not the one serving it, which is never right and, on the day the system went
       // public, left PCs calling an unreachable LAN address and reporting only "Failed to fetch".
-      ? `<button type="button" class="btn" onclick="window.configureServerIp()" style="width:100%;margin-top:8px;font-size:12px;cursor:pointer">⚙️ Server: ${esc(currentServer)}</button>`
+      ? `<button type="button" class="btn" data-action="configure-server" style="width:100%;margin-top:8px;font-size:12px;cursor:pointer">⚙️ Server: ${esc(currentServer)}</button>`
       : ''}
     <!-- The demo credentials that used to be printed here (admin/admin, store/store, …) are gone.
          They were seed passwords, all since rotated, so the hint was wrong as well as unwise:

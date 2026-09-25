@@ -94,9 +94,22 @@ async function as(user) {
       });
       q.on('error', reject); q.write(data); q.end();
     });
+    if (user !== 'nob') secondFactorOn(cookies[user]);   // nob signs in again below, with a password alone
   }
   return cookies[user];
 }
+
+// Changing access needs 2-step sign-in (access plan, Part 4). The people here have it on, set
+// directly (signing in with it is tested in test/mfa.test.js), so every refusal below has only the
+// reason its test names: this person is marked as having it, and this session as having passed it.
+function secondFactorOn(cookie) {
+  const token = decodeURIComponent(cookie.split('=')[1]);
+  const s = get('SELECT user_id FROM sessions WHERE token = ?', token);
+  run('UPDATE users SET mfa_enabled = 1 WHERE id = ?', s.user_id);
+  run('UPDATE sessions SET mfa_verified = 1 WHERE token = ?', token);
+  return cookie;
+}
+
 const call = async (user, method, p, body) => req(method, '/api' + p, { cookie: await as(user), body });
 const setCap = (actor, who, capability, state, until) => call(actor, 'PUT', `/access/people/${U[who]}/caps`, { capability, state, until });
 const setLimit = (actor, who, kind, max_amount) => call(actor, 'PUT', `/access/people/${U[who]}/limits`, { kind, max_amount });

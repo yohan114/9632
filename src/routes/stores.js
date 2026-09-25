@@ -905,7 +905,7 @@ router.get('/mrn/:id/print.html', asyncHandler((req, res) => {
   @media print { .noprint { display: none; } }
 </style></head>
 <body>
-<button class="noprint" onclick="window.print()">🖨 Print / Save as PDF</button>
+<button class="noprint" id="print">🖨 Print / Save as PDF</button>
 <div class="sheet">
   <div class="hd"><div class="co">Edward and Christie (Pvt) Ltd</div><div class="ti">Material Requisition</div></div>
   <div class="meta">
@@ -931,7 +931,7 @@ router.get('/mrn/:id/print.html', asyncHandler((req, res) => {
   </div>
   <div class="foot"><span>Doc. No.: EC1.ST.FO.01</span><span>Date of Issue: 2018.11.14</span></div>
 </div>
-</body></html>`;
+<script src="/js/print-page.js"></script></body></html>`;
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
   res.send(html);
 }));
@@ -1183,9 +1183,9 @@ h2{font-size:14px;margin:18px 0 6px;border-bottom:2px solid #333;padding-bottom:
 .meta{color:#555;font-size:12px;margin-bottom:8px}table{width:100%;border-collapse:collapse;font-size:12px;margin-bottom:8px}
 th,td{border:1px solid #bbb;padding:4px 7px;text-align:left}th{background:#eee}td.num,th.num{text-align:right}
 button{padding:8px 14px;font-size:14px;cursor:pointer;margin-bottom:10px}@media print{.noprint{display:none}}</style></head>
-<body><button class="noprint" onclick="window.print()">Print / Save PDF</button>
+<body><button class="noprint" id="print">Print / Save PDF</button>
 <h1>${esc(title)}</h1><div class="meta">Edward &amp; Christie (Pvt) Ltd — Badalgama W/S · ${esc(subtitle)} · ${total} item(s)</div>
-${body || '<p>No items.</p>'}</body></html>`;
+${body || '<p>No items.</p>'}<script src="/js/print-page.js"></script></body></html>`;
 }
 
 // Column sets shared by the Excel and print builds of each report.
@@ -1420,11 +1420,11 @@ router.get('/pending/print.html', asyncHandler((req, res) => {
 <style>body{font-family:system-ui,Arial,sans-serif;margin:22px;color:#111}h1{font-size:19px;margin:0 0 2px}h2{font-size:14px;margin:18px 0 6px;border-bottom:2px solid #333;padding-bottom:3px}
 .meta{color:#555;font-size:12px;margin-bottom:8px}table{width:100%;border-collapse:collapse;font-size:12px;margin-bottom:8px}th,td{border:1px solid #bbb;padding:4px 7px;text-align:left}th{background:#eee}td.num,th.num{text-align:right}
 button{padding:8px 14px;font-size:14px;cursor:pointer;margin-bottom:10px}@media print{.noprint{display:none}}</style></head>
-<body><button class="noprint" onclick="window.print()">Print / Save PDF</button>
+<body><button class="noprint" id="print">Print / Save PDF</button>
 <h1>Pending Purchases — ${esc(which)}</h1>
 <div class="meta">Edward &amp; Christie · items requested but not fully received (partial + not received) · ${rows.length} item(s)</div>
 ${req.query.source ? section(which, groups[req.query.source] || []) : section('Head Office', groups.head_office) + section('Local Purchase', groups.local_purchase) + section('Not Sourced Yet', groups.unsourced)}
-</body></html>`;
+<script src="/js/print-page.js"></script></body></html>`;
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
   res.send(html);
 }));
