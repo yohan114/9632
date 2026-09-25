@@ -24,15 +24,19 @@ for (const n of ['admin', 'storekeeper', 'workshop', 'mechanic', 'viewer']) {
 const adminUid = run('INSERT INTO users (username, password_hash, active) VALUES (?, ?, 1)', 'admin_lube', auth.hashPassword('admin123')).lastInsertRowid;
 run('INSERT OR IGNORE INTO user_roles (user_id, role_id) VALUES (?, (SELECT id FROM roles WHERE name = ?))', adminUid, 'admin');
 
-// Non-admin user (viewer / mechanic)
+// Non-admin user: the read-only viewer (Lubricant Capacities at view, from its old Job Cards switch).
 const viewerUid = run('INSERT INTO users (username, password_hash, active) VALUES (?, ?, 1)', 'viewer_lube', auth.hashPassword('view123')).lastInsertRowid;
-run('INSERT OR IGNORE INTO user_roles (user_id, role_id) VALUES (?, (SELECT id FROM roles WHERE name = ?))', viewerUid, 'mechanic');
+run('INSERT OR IGNORE INTO user_roles (user_id, role_id) VALUES (?, (SELECT id FROM roles WHERE name = ?))', viewerUid, 'viewer');
+// And one whose role opens nothing: the server refuses it the section (access plan, Part 1).
+const noneUid = run('INSERT INTO users (username, password_hash, active) VALUES (?, ?, 1)', 'none_lube', auth.hashPassword('none1234')).lastInsertRowid;
+run('INSERT OR IGNORE INTO user_roles (user_id, role_id) VALUES (?, (SELECT id FROM roles WHERE name = ?))', noneUid, 'mechanic');
 
 const app = require('../src/server');
 let server;
 let base;
 let adminCookie;
 let viewerCookie;
+let noneCookie;
 
 test.before(async () => {
   await new Promise((res) => { server = app.listen(0, res); });
@@ -53,6 +57,12 @@ test.before(async () => {
     body: JSON.stringify({ username: 'viewer_lube', password: 'view123' }),
   });
   viewerCookie = (rViewer.headers.get('set-cookie') || '').split(';')[0];
+  const rNone = await fetch(`${base}/api/auth/login`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ username: 'none_lube', password: 'none1234' }),
+  });
+  noneCookie = (rNone.headers.get('set-cookie') || '').split(';')[0];
 });
 
 test.after(() => server && server.close());
@@ -98,6 +108,10 @@ test('GET /api/lubricant-capacities allows access to viewer and returns KPIs & r
   assert.strictEqual(res.body.items[0].ec_no, 'DA-01');
   assert.strictEqual(res.body.summary.total_vehicles, 1);
   assert.strictEqual(res.body.summary.count_engine_oil, 1);
+});
+
+test('a role without Lubricant Capacities is refused the section on the server', async () => {
+  assert.strictEqual((await api('/lubricant-capacities', {}, noneCookie)).status, 403);
 });
 
 test('GET /api/lubricant-capacities/:id returns single vehicle spec', async () => {

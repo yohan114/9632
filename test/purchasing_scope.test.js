@@ -59,10 +59,22 @@ test('every enforced module except purchasing is closed to them', async () => {
     ['/jobs', 'job cards'], ['/stores/mrn', 'stores'], ['/oil/products', 'oil'],
     ['/batteries', 'batteries'], ['/filters/prices', 'filter prices'],
     ['/general-stock/items', 'general stock'], ['/filter-stock', 'filter stock'],
-    ['/assets', 'the fleet'], ['/job-requests', 'job requests'], ['/daily-work', 'daily work'],
+    ['/assets/export.xlsx', 'the fleet register'], ['/job-requests', 'job requests'], ['/daily-work', 'daily work'],
   ];
   for (const [p, what] of shut) {
     assert.strictEqual(await call(p), 403, `${what} (${p}) is open to a purchasing officer`);
+  }
+});
+
+test('the vehicle list that fills pickers gives them numbers only, no history or cost', async () => {
+  // Access plan, Part 1: drop-down lists stay open to anyone signed in — the numbers, nothing more.
+  run("INSERT INTO assets (code, code_norm, status, in_register, brand, type) VALUES ('BUY-1', 'BUY1', 'active', 1, 'CAT', 'Excavator')");
+  const r = await fetch(base + '/api/assets', { headers: { cookie } });
+  assert.strictEqual(r.status, 200);
+  const list = await r.json();
+  assert.ok(list.some((v) => v.code === 'BUY-1'));
+  for (const v of list) {
+    assert.deepStrictEqual(Object.keys(v).filter((k) => !['id', 'code', 'registration', 'ec_code', 'asset_class', 'type', 'brand'].includes(k)), []);
   }
 });
 

@@ -38,7 +38,7 @@ const CAPABILITIES = [
   C('assets.create', 'assets', 'Register a new vehicle or machine', ['storekeeper'], 'assets'),
   C('assets.edit', 'assets', 'Edit a vehicle or machine', ['storekeeper'], 'assets'),
   // Stage 7: moving a machine to another project or site, kept as a dated move (src/lib/operations.js).
-  C('assets.move', 'assets', 'Move a machine to another project or site', ['transport_manager', 'operational_manager', 'manager']),
+  C('assets.move', 'operations', 'Move a machine to another project or site', ['transport_manager', 'operational_manager', 'manager']),
   C('aliases.vehicle.resolve', 'aliases', 'Link or dismiss an unrecognised vehicle name', ['storekeeper']),
   C('aliases.mechanic.resolve', 'aliases', 'Link an unrecognised mechanic name', ['storekeeper', 'manager']),
   C('projects.manage', 'projects', 'Create and edit projects and their sites', ['manager']),
@@ -47,7 +47,7 @@ const CAPABILITIES = [
   // Stage 3; until then nobody sees less than before.
   C('workshops.manage', 'projects', 'Add, rename and retire workshops', []),
   C('workshops.all', 'users', 'Work across all workshops (head office)', ['manager', 'operational_manager', 'purchase_head_office', 'purchase_local']),
-  C('fleet.capacities.edit', 'assets', 'Add, edit or delete vehicle lubricant capacities', []),
+  C('fleet.capacities.edit', 'lubecapacities', 'Add, edit or delete vehicle lubricant capacities', []),
 
   // ---- labour --------------------------------------------------------------------------------
   C('mechanics.create', 'labour', 'Add a mechanic', ['manager']),
@@ -83,8 +83,9 @@ const CAPABILITIES = [
   C('jobs.settings', 'jobs', 'Switch partial close and reopen requests on or off', []),
   // Stage 6: field work (src/lib/field.js). Reporting a breakdown is for whoever the site calls:
   // the transport managers and their assistants, the workshop, and head office.
-  C('jobs.breakdown', 'jobs', 'Report a breakdown in the field (opens a field job card)', ['transport_manager', 'assistant_transport_manager', 'workshop', 'operational_manager', 'manager']),
-  C('jobs.field', 'jobs', 'Record field work on a job card (site, times, km)', ['workshop', 'operational_manager', 'manager'], 'jobs'),
+  C('jobs.breakdown', 'field', 'Report a breakdown in the field (opens a field job card)', ['transport_manager', 'assistant_transport_manager', 'workshop', 'operational_manager', 'manager']),
+  // Field Work has its own section switch (access plan, Part 1); its router asks for view, not edit.
+  C('jobs.field', 'field', 'Record field work on a job card (site, times, km)', ['workshop', 'operational_manager', 'manager']),
 
   // ---- job requests --------------------------------------------------------------------------
   C('jobrequests.create', 'jobrequests', 'Raise a job request', ['assistant_transport_manager'], 'jobrequests'),
@@ -150,7 +151,7 @@ const CAPABILITIES = [
   C('batteries.event', 'batteries', 'Record a battery event (fitted, removed, returned …)', ['storekeeper'], 'batteries'),
 
   // ---- filters & service records -------------------------------------------------------------
-  C('services.attachments', 'filters', 'Upload or delete service record attachments', ['workshop', 'storekeeper', 'operational_manager', 'manager'], 'filters'),
+  C('services.attachments', 'services', 'Upload or delete service record attachments', ['workshop', 'storekeeper', 'operational_manager', 'manager'], 'services'),
   C('filters.stock.edit', 'filters', 'Add a filter stock item', ['storekeeper'], 'filters'),
   C('filters.stock.receive', 'filters', 'Receive filters into stock', ['storekeeper'], 'filters'),
   C('filters.stock.issue', 'filters', 'Issue filters from stock', ['storekeeper'], 'filters'),

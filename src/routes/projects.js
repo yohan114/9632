@@ -7,10 +7,16 @@ const { asyncHandler, require_, toInt } = require('../lib/http');
 const audit = require('../lib/audit');
 const costing = require('../lib/costing');
 const { sendXlsx } = require('../lib/export');
+const { reaches, requireView } = require('../lib/permissions');
 
 const router = express.Router();
 
-router.get('/', asyncHandler((_req, res) => {
+// The project names fill the pickers on the vehicle, job card and job request forms, so the list is
+// open to anyone signed in — the names only. The month's cost and the machines need Projects.
+router.get('/', asyncHandler((req, res) => {
+  if (!reaches(req.user, 'projects')) {
+    return res.json(all('SELECT id, code, name, location, active FROM projects ORDER BY name'));
+  }
   res.json(all(
     `SELECT p.*,
             (SELECT COUNT(*) FROM assets a WHERE a.current_project_id = p.id) AS asset_count,
@@ -27,7 +33,7 @@ router.post('/', requireCap('projects.manage'), asyncHandler((req, res) => {
   res.status(201).json(get('SELECT * FROM projects WHERE id = ?', info.lastInsertRowid));
 }));
 
-router.get('/:id', asyncHandler((req, res) => {
+router.get('/:id', requireView('projects'), asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   const project = get('SELECT * FROM projects WHERE id = ?', id);
   if (!project) return res.status(404).json({ error: 'Project not found' });
@@ -52,7 +58,7 @@ router.patch('/:id', requireCap('projects.manage'), asyncHandler((req, res) => {
   res.json(after);
 }));
 
-router.get('/:id/cost', asyncHandler(async (req, res) => {
+router.get('/:id/cost', requireView('projects'), asyncHandler(async (req, res) => {
   const id = toInt(req.params.id);
   const rows = all(
     `SELECT strftime('%Y-%m', requested_at) AS month,
@@ -76,7 +82,7 @@ router.get('/:id/cost', asyncHandler(async (req, res) => {
   res.json(rows);
 }));
 
-router.get('/:id/sites', asyncHandler((req, res) => res.json(all('SELECT * FROM sites WHERE project_id = ? ORDER BY name', toInt(req.params.id)))));
+router.get('/:id/sites', requireView('projects'), asyncHandler((req, res) => res.json(all('SELECT * FROM sites WHERE project_id = ? ORDER BY name', toInt(req.params.id)))));
 
 router.post('/:id/sites', requireCap('projects.manage'), asyncHandler((req, res) => {
   require_(req.body, ['name']);

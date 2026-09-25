@@ -29,10 +29,14 @@ const emitter = require('../lib/emitter');
 
 const router = express.Router();
 
+// The Field Work page (its board, month and settings) needs Field Work. A card's field details, the
+// place list and reporting a breakdown are also reached from the job card, so Job Cards will do.
+const FIELD_PAGE = new Set(['/board', '/month', '/settings']);
 router.use((req, res, next) => {
   if (!req.user) return res.status(401).json({ error: 'Authentication required' });
-  if (permissions.meets(permissions.levelForRoles(req.user.roles || [], 'jobs'), 'view')) return next();
-  return res.status(403).json({ error: 'Your role has no view access to jobs' });
+  const keys = FIELD_PAGE.has(req.path) ? ['field'] : ['field', 'jobs'];
+  if (permissions.reaches(req.user, keys)) return next();
+  return res.status(403).json({ error: `Your role has no view access to ${keys.join(' or ')}` });
 });
 router.param('id', scope.jobParam);
 

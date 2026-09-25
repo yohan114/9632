@@ -10,7 +10,7 @@ const { Server } = require('socket.io');
 const config = require('./config');
 const { migrate, get } = require('./db');
 const { authenticate, enforcePasswordChange, enforceMfaSetup, requireAuth, hasCap, rolesForUser, liveSession, COOKIE } = require('./lib/auth');
-const { requireModule } = require('./lib/permissions');
+const { requireModule, requireView } = require('./lib/permissions');
 const { errorHandler } = require('./lib/http');
 const { startScheduler } = require('./lib/backup');
 const backupStatus = require('./lib/backup_status');
@@ -71,14 +71,19 @@ app.use('/api', (req, res, next) => {
   next();
 });
 
-// API routers. Each module is a self-contained Express Router. Operational
-// modules are gated by the RBAC matrix (requireModule); reference/analytics
-// routers (aliases, projects, mechanics, reports) stay open to any authenticated
-// user (they feed dropdowns + dashboards) and are hidden at the nav level only.
+// API routers. Each module is a self-contained Express Router, and every section is checked on the
+// server by its own switch (access plan, Part 1): requireModule at the mount, or inside the router
+// where one router serves several sections. Projects and mechanics also fill drop-downs everywhere,
+// so their lists stay open to anyone signed in — names only; costs and rates need the section.
 app.use('/api/auth', require('./routes/auth'));
 app.use('/api/access', require('./routes/access'));
-app.use('/api/assets', requireModule('assets'), require('./routes/assets'));
-app.use('/api/aliases', require('./routes/aliases'));
+// The vehicle list fills the vehicle pickers in other sections (Service Records, Stores …), so it and
+// the typeahead are open to anyone signed in — the numbers only (routes/assets.js). Everything else
+// about a vehicle needs Assets.
+const PICKER_PATH = new Set(['/', '/search']);
+const assetsGate = (req, res, next) => (req.method === 'GET' && PICKER_PATH.has(req.path) ? next() : requireModule('assets')(req, res, next));
+app.use('/api/assets', assetsGate, require('./routes/assets'));
+app.use('/api/aliases', requireView('aliases'), require('./routes/aliases'));
 // Job Cards: the Monitor and the Requests list (job cards plan). Checks its own module access.
 app.use('/api/job-flow', require('./routes/jobflow'));
 app.use('/api/projects', require('./routes/projects'));
@@ -99,9 +104,17 @@ app.use('/api/stores', storesGate, require('./routes/stores'));
 app.use('/api/general-stock', requireModule('stores'), require('./routes/general_stock'));
 app.use('/api/oil', requireModule('oil'), require('./routes/oil'));
 app.use('/api/batteries', requireModule('batteries'), require('./routes/batteries'));
-app.use('/api/filters', requireModule('filters'), require('./routes/filters'));
+// One router, three sections: Service Records, the Service & Filter Plan, and the Stores filter
+// books (price book, cross-references). Each part is checked on its own switch.
+const SERVICE_PATH = /^\/(services|attachments|reference|stock-context|stock-search|prices\/lookup)(\/|$)/;
+const filtersGate = (req, res, next) => {
+  if (req.path === '/service-plan') return requireModule('serviceplan')(req, res, next);
+  if (req.path === '/categories') return requireView('services', 'filters')(req, res, next);
+  return requireModule(SERVICE_PATH.test(req.path) ? 'services' : 'filters')(req, res, next);
+};
+app.use('/api/filters', filtersGate, require('./routes/filters'));
 app.use('/api/filter-stock', requireModule('filters'), require('./routes/filter_stock'));
-app.use('/api/stock-cockpit', require('./routes/stock_cockpit'));
+app.use('/api/stock-cockpit', requireView('stores'), require('./routes/stock_cockpit'));
 app.use('/api/jobs', requireModule('jobs'), require('./routes/jobcards'));
 app.use('/api/job-requests', requireModule('jobrequests'), require('./routes/jobrequests'));
 app.use('/api/daily-work', requireModule('dailywork'), require('./routes/dailywork'));
@@ -119,8 +132,8 @@ app.use('/api/workshops', require('./routes/workshops'));
 app.use('/api/users', require('./routes/users'));
 app.use('/api/reports', require('./routes/reports'));
 // Vehicle lubricant capacities from Fleet_Oil_Lubricant_Capacities.xlsx
-app.use('/api/lubricant-capacities', require('./routes/lubricant_capacities'));
-app.use('/api/tyre-battery', requireModule('reports'), require('./routes/tyre_battery'));
+app.use('/api/lubricant-capacities', requireView('lubecapacities'), require('./routes/lubricant_capacities'));
+app.use('/api/tyre-battery', requireModule('tyrebattery'), require('./routes/tyre_battery'));
 // Requesting, issuing and accounting for the old unit. Mounted apart from the reporting routes
 // above because those are gated on `reports` — a storekeeper who may not read cost reports still
 // has to be able to issue a tyre. Each endpoint carries its own role check instead, and the

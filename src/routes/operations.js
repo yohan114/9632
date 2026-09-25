@@ -26,36 +26,37 @@ const router = express.Router();
 
 router.use((req, res, next) => (req.user ? next() : res.status(401).json({ error: 'Authentication required' })));
 
-const sees = (section) => (req, res, next) => {
-  if (permissions.meets(permissions.levelForRoles(req.user.roles || [], section), 'view')) return next();
-  return res.status(403).json({ error: `Your role has no view access to ${section}` });
+const sees = (...sections) => (req, res, next) => {
+  if (permissions.reaches(req.user, sections)) return next();
+  return res.status(403).json({ error: `Your role has no view access to ${sections.join(' or ')}` });
 };
 const headOffice = (req, res, next) => (scope.headOffice(req.user) ? next()
   : res.status(403).json({ error: 'Only head office sees every workshop at a glance.' }));
 
-router.get('/fleet', sees('assets'), asyncHandler((req, res) => {
+router.get('/fleet', sees('operations'), asyncHandler((req, res) => {
   const ym = String(req.query.month || ops.today().slice(0, 7)).slice(0, 7);
   res.json(ops.fleet(req.user, ym));
 }));
 
-router.get('/places', sees('assets'), asyncHandler((_req, res) => res.json(require('../lib/places').list().filter((p) => p.kind !== 'workshop'))));
+// The place list and a machine's moves are also read from the Assets page ("Move machine").
+router.get('/places', sees('operations', 'assets'), asyncHandler((_req, res) => res.json(require('../lib/places').list().filter((p) => p.kind !== 'workshop'))));
 
-router.get('/machines/:id/moves', sees('assets'), asyncHandler((req, res) => res.json(ops.history(toInt(req.params.id)))));
+router.get('/machines/:id/moves', sees('operations', 'assets'), asyncHandler((req, res) => res.json(ops.history(toInt(req.params.id)))));
 
-router.post('/machines/:id/move', requireCap('assets.move'), asyncHandler((req, res) => {
+router.post('/machines/:id/move', sees('operations', 'assets'), requireCap('assets.move'), asyncHandler((req, res) => {
   const out = ops.moveMachine(req.user, toInt(req.params.id), req.body || {});
   emitter.emit('dashboard_refresh', { reason: 'machine_move' });
   res.status(201).json(out);
 }));
 
-router.get('/glance', headOffice, asyncHandler(async (_req, res) => res.json(await ops.glance())));
+router.get('/glance', sees('operations'), headOffice, asyncHandler(async (_req, res) => res.json(await ops.glance())));
 
-router.get('/glance/:ws/:what', headOffice, asyncHandler((req, res) => {
+router.get('/glance/:ws/:what', sees('operations'), headOffice, asyncHandler((req, res) => {
   const ws = toInt(req.params.ws);
   if (!require('../lib/workshops').byId(ws)) return res.status(404).json({ error: 'Workshop not found' });
   res.json(ops.glanceList(ws, req.params.what));
 }));
 
-router.get('/handovers', sees('jobs'), asyncHandler((req, res) => res.json(ops.handovers(req.user, req.query.days))));
+router.get('/handovers', sees('operations'), asyncHandler((req, res) => res.json(ops.handovers(req.user, req.query.days))));
 
 module.exports = router;

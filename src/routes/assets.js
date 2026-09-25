@@ -55,7 +55,13 @@ function listAssets(query = {}) {
   );
 }
 
-router.get('/', asyncHandler((req, res) => res.json(listAssets(req.query))));
+// Without Assets, the list is for the pickers: which vehicle, not what it has cost.
+const PICKER_FIELDS = ['id', 'code', 'registration', 'ec_code', 'asset_class', 'type', 'brand'];
+router.get('/', asyncHandler((req, res) => {
+  const rows = listAssets(req.query);
+  if (require('../lib/permissions').reaches(req.user, 'assets')) return res.json(rows);
+  res.json(rows.map((r) => Object.fromEntries(PICKER_FIELDS.filter((k) => k in r).map((k) => [k, r[k]]))));
+}));
 
 router.get('/export.xlsx', asyncHandler(async (req, res) => {
   const rows = listAssets({ ...req.query, limit: 100000 });

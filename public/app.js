@@ -767,19 +767,20 @@ const NAV = [
   ['workshops', '🏭', 'Workshops', 'workshops'],
   ['access', '🔐', 'Access Control', 'admin'],
 ];
-// Which permission module governs each nav item's visibility (dashboard always on).
+// Which permission module governs each nav item's visibility (dashboard always on). Each of the 22
+// sections has its own switch (access plan, Part 1) — the server checks the same one.
 const NAV_MODULE = {
-  assets: 'assets', jobs: 'jobs', jobrequests: 'jobrequests', field: 'jobs', operations: 'assets', dailywork: 'dailywork', services: 'filters', lubecapacities: 'jobs',
+  assets: 'assets', jobs: 'jobs', jobrequests: 'jobrequests', field: 'field', operations: 'operations', dailywork: 'dailywork', services: 'services', lubecapacities: 'lubecapacities',
   labour: 'labour', stores: 'stores', stocktake: 'stores', stockcockpit: 'stores', generalstock: 'stores', oil: 'oil', batteries: 'batteries', filters: 'filters', filterstock: 'filters',
-  projects: 'projects', aliases: 'aliases', attention: 'reports', progress: 'reports',
-  teardown: 'reports', reports: 'reports', tyrebattery: 'reports',
+  projects: 'projects', aliases: 'aliases', attention: 'attention', progress: 'progress',
+  teardown: 'teardown', reports: 'reports', tyrebattery: 'tyrebattery',
   // The request screen belongs to whoever may raise one. The ledger above stays on 'reports',
   // because reading what was issued is a different question from being allowed to issue it.
   tbrequests: 'tb_request',
   // Enforced, so the two buying officers see this and nobody else does. Which of the two
   // channels each one sees is decided by the server from their role — the nav only opens the door.
   purchasing: 'purchasing',
-  matreq: 'stores', stockissues: 'stores', serviceplan: 'filters',
+  matreq: 'stores', stockissues: 'stores', serviceplan: 'serviceplan',
 };
 function navVisible(n) {
   if (n[3] === 'admin') return canDo('access.manage', 'users.manage');
@@ -1038,7 +1039,7 @@ async function dashMain(c) {
       </div></div>`);
   }
   if (opStats.length) S.push(`<div class="grid section">${opStats.join('')}</div>`);
-  if (canView('reports')) S.push(`
+  if (canView('attention')) S.push(`
     <div class="card section" style="border-left:4px solid ${naTotal ? 'var(--amber)' : 'var(--green)'}">
       <div class="toolbar" style="margin:0"><h3 style="margin:0">⚠ Needs Attention</h3><div class="spacer"></div><span class="badge ${naTotal ? 'amber' : 'green'}">${naTotal} flag${naTotal === 1 ? '' : 's'}</span> <a class="btn sm" href="#/attention">See all →</a></div>
       <div class="pill-row" style="margin-top:8px">
@@ -1526,7 +1527,7 @@ async function jobsOngoing(body, sp) {
       <select id="og-type" style="max-width:140px"><option value="">Repair &amp; service</option>
         <option value="repair" ${cur.type === 'repair' ? 'selected' : ''}>Repair</option><option value="service" ${cur.type === 'service' ? 'selected' : ''}>Service</option></select>
       <div class="spacer"></div>
-      ${canView('reports') ? '<a class="btn sm" href="/api/reports/ongoing-jobs.xlsx">⬇ Excel</a><a class="btn sm" href="/api/reports/ongoing-jobs.html" target="_blank">🖨 PDF</a>' : ''}
+      ${canView('progress') || canView('reports') ? '<a class="btn sm" href="/api/reports/ongoing-jobs.xlsx">⬇ Excel</a><a class="btn sm" href="/api/reports/ongoing-jobs.html" target="_blank">🖨 PDF</a>' : ''}
     </div>
     <p class="muted" style="margin:0 0 8px;font-size:12.5px">Worked on = a daily-work line that day. Days count working days (not Sundays). 3 days or more is red.</p>
     <div class="pill-row" id="og-show" style="margin:0 0 10px;flex-wrap:wrap;gap:6px"></div>
@@ -3019,7 +3020,7 @@ async function fieldModal(jobId, fld, onSaved) {
 
 // The field board: every field job still open, the machines still down first.
 routes.field = async (c) => {
-  if (!canView('jobs')) { c.innerHTML = '<div class="card err">You do not have access to this page.</div>'; return; }
+  if (!canView('field')) { c.innerHTML = '<div class="card err">You do not have access to this page.</div>'; return; }
   const d = await api('/field/board');
   const canBd = canDo('jobs.breakdown');
   const canRate = canDo('jobs.settings');
@@ -3062,9 +3063,11 @@ const isHeadOffice = () => isAdmin() || !!(ME && (ME.caps || []).includes('works
 routes.operations = async (c) => {
   const sp = new URLSearchParams(location.hash.split('?')[1] || '');
   const tabs = [];
-  if (canView('assets')) tabs.push(['fleet', 'Site fleet']);
-  if (isHeadOffice()) tabs.push(['glance', 'Workshops at a glance']);
-  if (canView('jobs') && wsMulti()) tabs.push(['handovers', 'Job handovers']);
+  if (canView('operations')) {
+    tabs.push(['fleet', 'Site fleet']);
+    if (isHeadOffice()) tabs.push(['glance', 'Workshops at a glance']);
+    if (wsMulti()) tabs.push(['handovers', 'Job handovers']);
+  }
   if (!tabs.length) { c.innerHTML = '<div class="card err">You do not have access to this page.</div>'; return; }
   const tab = tabs.some((t) => t[0] === sp.get('tab')) ? sp.get('tab') : tabs[0][0];
   c.innerHTML = `${pageHeader('Operations', 'Where the machines are, which are down, and how each workshop is doing.')}
@@ -6097,11 +6100,11 @@ async function batteryDetail(c, id) {
 routes.services = async (c, params) => {
   if (params[0] === 'new-service' || params[0] === 'new') return renderNewServiceForm(c);
   if (params[0] === 'service' && params[1] && params[2] === 'edit') {
-    if (!canEdit('filters')) return toast('You do not have permission to edit services', 'err');
+    if (!canEdit('services')) return toast('You do not have permission to edit services', 'err');
     return renderNewServiceForm(c, await api('/filters/services/' + params[1]));
   }
   if (params[0] && params[1] === 'edit') {
-    if (!canEdit('filters')) return toast('You do not have permission to edit services', 'err');
+    if (!canEdit('services')) return toast('You do not have permission to edit services', 'err');
     return renderNewServiceForm(c, await api('/filters/services/' + params[0]));
   }
   if (params[0] === 'service' && params[1]) return serviceDetail(c, params[1]);
@@ -6288,7 +6291,7 @@ async function renderPriceBook(c) {
 }
 
 async function renderServiceRecords(c) {
-  const editable = canEdit('filters');
+  const editable = canEdit('services');
   c.innerHTML = `
     <div class="toolbar" style="gap:8px;flex-wrap:wrap">
       ${editable ? '<button class="primary" id="nsvc">+ New Service</button>' : ''}
@@ -7279,7 +7282,7 @@ async function renderNewServiceForm(c, existing) {
 async function serviceDetail(c, id) {
   const d = await api('/filters/services/' + id);
   const s = d.service;
-  const editable = canEdit('filters');
+  const editable = canEdit('services');
   const cats = await api('/filters/categories').catch(() => []);
   const upk = { Good: 'green', Fair: 'amber', Bad: 'red' }[s.upkeeping] || '';
   c.innerHTML = `${pageHeader('Vehicle / Machinery Service Details', '<a href="#/services">← Service Records</a>')}
@@ -9282,15 +9285,22 @@ async function renderRolesManager(c, wanted) {
 async function renderClearanceBoard(c) {
   const m = await api('/access/matrix');
   const LV = m.levels;
-  const headCols = m.modules.map((mod) => `<th style="text-align:center">${esc(mod.label)}${mod.enforce ? '' : ' <span class="muted" title="Hidden in the sidebar but not API-blocked (reference/analytics)">*</span>'}</th>`).join('');
-  const rows = m.roles.map((r) => `<tr${r.active ? '' : ' style="opacity:.5"'}><td><b>${esc(r.label || r.name)}</b>${r.active ? '' : ' <span class="badge">retired</span>'}<br><span class="muted" style="font-size:11px">${esc(r.name)}</span></td>${m.modules.map((mod) => {
+  // One column per switch, grouped under the sidebar's sections (access plan, Part 1). A section with
+  // parts (Job Cards, Stores, Tyre & Battery Requests) has a column for each part.
+  const byKey = new Map(m.modules.filter((mod) => mod.enforce).map((mod) => [mod.key, mod]));
+  const groups = m.sections.map((s) => ({ label: s.label, mods: (s.modules || []).filter((k) => byKey.has(k)).map((k) => byKey.get(k)) }))
+    .filter((g) => g.mods.length);
+  const cols = groups.flatMap((g) => g.mods);
+  const groupRow = groups.map((g) => `<th colspan="${g.mods.length}" style="text-align:center;border-left:2px solid var(--line, #ddd)">${esc(g.label)}</th>`).join('');
+  const partRow = groups.map((g) => g.mods.map((mod, i) => `<th style="text-align:center;font-weight:400;font-size:11px${i ? '' : ';border-left:2px solid var(--line, #ddd)'}">${g.mods.length > 1 ? esc(mod.label.split(' · ').pop()) : ''}</th>`).join('')).join('');
+  const rows = m.roles.map((r) => `<tr${r.active ? '' : ' style="opacity:.5"'}><td><b>${esc(r.label || r.name)}</b>${r.active ? '' : ' <span class="badge">retired</span>'}<br><span class="muted" style="font-size:11px">${esc(r.name)}</span></td>${cols.map((mod) => {
     const lvl = m.grid[r.name][mod.key];
     const locked = r.name === 'admin';
     return `<td style="text-align:center;cursor:${locked ? 'default' : 'pointer'}"${locked ? '' : ` data-cell="${esc(r.name)}:${mod.key}" data-lvl="${lvl}" title="click to change"`}>${lvlChip(lvl)}</td>`;
   }).join('')}</tr>`).join('');
   c.innerHTML = `<div class="card">
-    <p class="muted" style="margin-top:0">Section clearance opens a whole section; the permissions on the <b>Roles &amp; Permissions</b> tab decide each action inside it. Click a cell to cycle: — → VIEW → EDIT → FULL. <b>Admin</b> is always full. Changes apply immediately; a signed-in user sees sidebar changes after their next login. <span title="nav-level only">*</span> = hidden in the sidebar but not blocked (reference data used by other screens).</p>
-    <div class="table-wrap scroll"><table><thead><tr><th>Role</th>${headCols}</tr></thead><tbody>${rows}</tbody></table></div>
+    <p class="muted" style="margin-top:0">Each section of the sidebar has its own switch, and the server checks it. The permissions on the <b>Roles &amp; Permissions</b> tab decide each action inside a section. Click a cell to cycle: — → VIEW → EDIT → FULL. <b>Admin</b> is always FULL. Dashboard is always on; Workshops and Access Control open with their permissions.</p>
+    <div class="table-wrap scroll"><table><thead><tr><th rowspan="2">Role</th>${groupRow}</tr><tr>${partRow}</tr></thead><tbody>${rows}</tbody></table></div>
     <div class="pill-row" style="margin-top:12px"><span class="muted">Legend:</span> ${lvlChip('full')} manage ${lvlChip('edit')} add / modify ${lvlChip('view')} read-only ${lvlChip('none')} no access</div>
   </div>`;
   qsa('[data-cell]', c).forEach((td) => td.onclick = async () => {
@@ -10435,7 +10445,7 @@ async function storesStock(body, sp) {
     return renderBatteriesSection(bk);
   }
   const links = books.map(([k, l]) => `<a class="btn sm" href="${stockBooksHash(kind, k)}">${esc(l)}</a>`)
-    .concat(kind === 'tyre' && canView('reports') ? ['<a class="btn sm" href="#/tyrebattery">Tyre &amp; battery ledger</a>'] : []);
+    .concat(kind === 'tyre' && canView('tyrebattery') ? ['<a class="btn sm" href="#/tyrebattery">Tyre &amp; battery ledger</a>'] : []);
   host.innerHTML = `${links.length ? `<div class="toolbar" style="margin:0 0 8px"><span class="muted" style="font-size:12px">📚 Books</span>${links.join('')}</div>` : ''}<div id="stk-panel"></div>`;
   return stockPanel(qs('#stk-panel', host), kind);
 }
@@ -10986,7 +10996,7 @@ function countAddModal(d, reload) {
 // as a shortlist to tick through: the underlying prediction is about 70 days out on average,
 // and roughly 150 machines qualify in a month that will really see 26–49 services.
 routes.serviceplan = async (c) => {
-  if (!canView('filters')) { c.innerHTML = `<div class="card"><p class="err">You do not have access to Filters.</p></div>`; return; }
+  if (!canView('serviceplan')) { c.innerHTML = `<div class="card"><p class="err">You do not have access to the Service &amp; Filter Plan.</p></div>`; return; }
   const sp = new URLSearchParams(location.hash.split('?')[1] || '');
   const month = /^\d{4}-\d{2}$/.test(sp.get('month') || '') ? sp.get('month') : new Date().toISOString().slice(0, 7);
 

@@ -660,6 +660,9 @@ function migrate() {
   storesUnitsPart4();
 
   // Seed the RBAC matrix once (safe to require here — db exports are already set).
+  // Sections split off a shared switch start at that switch's level (access plan, Part 1) — before
+  // the defaults, so a level an admin set on the old switch carries over rather than the default.
+  try { require('../lib/permissions').splitSections(); } catch (e) { /* table may not exist yet on very first pass */ }
   try { require('../lib/permissions').seedDefaults(); } catch (e) { /* table may not exist yet on very first pass */ }
   // Seed the built-in roles' capabilities (idempotent) and mark those roles as shipped with the
   // system, so the Access screen can tell them apart from roles an admin created.
