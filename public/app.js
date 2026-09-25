@@ -1022,6 +1022,7 @@ async function dashMain(c) {
       <a class="card stat" href="#/jobs?status=CLOSED" style="text-decoration:none"><span class="n">${d.closed_this_month_count}</span><span class="l">Closed This Month</span></a>
       <a class="card stat" href="#/teardown" style="text-decoration:none"><span class="n">${d.awaiting_price.length}</span><span class="l">Awaiting Price (blocked)</span></a>
       ${(d.partly_closed || []).length ? `<a class="card stat" href="#/jobs?status=PARTIALLY_CLOSED" style="text-decoration:none"><span class="n">${d.partly_closed.length}</span><span class="l">Partly Closed — awaiting prices</span></a>` : ''}
+      ${d.ready_to_close ? `<a class="card stat" href="#/jobs?tab=ready" style="text-decoration:none"><span class="n" style="color:var(--green)">${d.ready_to_close}</span><span class="l">Ready to close — nothing missing</span></a>` : ''}
       ${d.field_down != null ? `<a class="card stat" href="#/field" style="text-decoration:none"><span class="n" style="color:${d.field_down ? 'var(--red)' : 'inherit'}">${d.field_down}</span><span class="l">Machines down in the field</span></a>` : ''}`);
   // Attendance (W3): today's tally and the days still to sign off — only while attendance is on.
   const at = d.attendance_today;
@@ -1314,13 +1315,16 @@ const JOB_STATUSES = ['REQUESTED', 'APPROVED_TRANSPORT', 'APPROVED_OPERATIONS', 
 const MONTHS = [['01', 'Jan'], ['02', 'Feb'], ['03', 'Mar'], ['04', 'Apr'], ['05', 'May'], ['06', 'Jun'], ['07', 'Jul'], ['08', 'Aug'], ['09', 'Sep'], ['10', 'Oct'], ['11', 'Nov'], ['12', 'Dec']];
 
 // ---- Job Cards (job cards plan): one page with tabs, like Stores — the Monitor, every request
-// waiting for a decision, and all the cards (src/lib/jobs_flow.js). The job request list became
-// the Requests tab; its own pages (#/jobrequests/:id) stay.
-const JOB_TABS = [['monitor', '📊 MONITOR'], ['requests', '📨 REQUESTS'], ['ongoing', '🛠️ ONGOING'], ['all', '🗂️ ALL CARDS']];
+// waiting for a decision, the cards in the workshop, the cards being finished, those ready to close,
+// and all the cards (src/lib/jobs_flow.js). The job request list became the Requests tab; its own
+// pages (#/jobrequests/:id) stay.
+const JOB_TABS = [['monitor', '📊 MONITOR'], ['requests', '📨 REQUESTS'], ['ongoing', '🛠️ ONGOING'], ['finishing', '🧾 FINISHING'],
+  ['ready', '✅ READY TO CLOSE'], ['all', '🗂️ ALL CARDS']];
+const CARD_TABS = ['ongoing', 'finishing', 'ready', 'all'];
 routes.jobs = async (c, params) => {
   if (params[0]) return jobDetail(c, params[0]);
   const sp = new URLSearchParams(location.hash.split('?')[1] || '');
-  const tabs = JOB_TABS.filter(([t]) => !['all', 'ongoing'].includes(t) || canView('jobs'));
+  const tabs = JOB_TABS.filter(([t]) => !CARD_TABS.includes(t) || canView('jobs'));
   // Old links to the list (#/jobs?status=…, the dashboard's) still open it.
   let tab = sp.get('tab') || (['q', 'year', 'month', 'status', 'workshop_id'].some((k) => sp.get(k)) ? 'all' : 'monitor');
   if (!tabs.some(([t]) => t === tab)) tab = 'monitor';
@@ -1331,6 +1335,8 @@ routes.jobs = async (c, params) => {
   if (tab === 'requests') return jobsRequests(body, sp);
   if (tab === 'all') return jobsAllCards(body, sp);
   if (tab === 'ongoing') return jobsOngoing(body, sp);
+  if (tab === 'finishing') return jobsFinishing(body, sp);
+  if (tab === 'ready') return jobsReady(body, sp);
   return jobsMonitor(body);
 };
 
@@ -1341,8 +1347,8 @@ async function jobsMonitor(body) {
   const m = await api('/job-flow/monitor');
   const rq = m.requests;
   const R = (step) => `#/jobs?tab=requests&step=${step}`;
-  const L = (status) => `#/jobs?tab=all&status=${status}`;
   const O = (show) => `#/jobs?tab=ongoing&show=${show}`;
+  const F = (show) => `#/jobs?tab=finishing&show=${show}`;
   const req = [
     ...(m.sees.jobrequests ? [monCard(rq.to_certify, 'Job requests to certify', R('to_certify'), 'amber'), monCard(rq.to_approve, 'Job requests to approve', R('to_approve'), 'amber')] : []),
     ...(m.sees.jobs ? [monCard(rq.transport, 'Cards waiting for transport approval', R('transport'), 'amber'), monCard(rq.operations, 'Cards waiting for operations approval', R('operations'), 'amber')] : []),
@@ -1361,8 +1367,9 @@ async function jobsMonitor(body) {
       ${w.idle_mechanics != null ? monCard(w.idle_mechanics, 'Mechanics present, on no job', '#/dailywork', 'amber', 'from today\'s attendance') : ''}
     </div>` : ''}
     ${f ? `<h3 style="margin:14px 0 6px">Finishing</h3><div class="grid">
-      ${monCard(f.work_done, 'Work done, not closed', L('WORK_COMPLETE'), 'amber')}
-      ${monCard(f.partly_closed, 'Partly closed — waiting for prices', L('PARTIALLY_CLOSED'), 'amber')}
+      ${monCard(f.work_done, 'Work done, something missing', F('work_done'), 'amber')}
+      ${monCard(f.partly_closed, 'Partly closed — waiting for prices', F('partly_closed'), 'amber')}
+      ${monCard(f.ready, 'Ready to close', '#/jobs?tab=ready', 'green', 'nothing missing')}
     </div>` : ''}
     ${x ? `<h3 style="margin:14px 0 6px">Watch</h3><div class="grid">
       ${x.breakdowns_down != null ? monCard(x.breakdowns_down, 'Breakdowns still down', '#/field', 'red') : ''}
@@ -1568,6 +1575,153 @@ function attendedPanel(a, job, reload) {
     <div class="muted" style="font-size:12.5px">${a.state === 'today' ? 'Today: ' + esc(a.today_mechanics || '') : (a.last_worked ? `Last worked ${esc(a.last_worked)} · ${esc(a.last_mechanics || '')}` : 'No work recorded yet')}${a.hours ? ` · ${num(a.hours)} h so far` : ''}</div>
     ${a.state === 'today' ? '' : `<div style="margin-top:6px">${whyNot(a)}</div>`}
     ${hist}</div>`;
+}
+
+// ---- Finishing and Ready to close (job cards plan, Part 3) -----------------------------------------
+// A card whose work is done stays in Finishing while the close check finds something missing — the
+// Close button's own check — and moves to Ready to close by itself when the last thing is added.
+// Nothing closes by itself: a person closes it, one card or several together.
+const FIN_SHOW = [['all', 'All'], ['work_done', 'Work done'], ['partly_closed', 'Partly closed']];
+const FIN_MISSING = [['received', 'Parts not received'], ['shelf', 'Parts not handed over'], ['part_price', 'Part prices'],
+  ['oil_price', 'Oil prices'], ['general_price', 'Item prices'], ['service_labour', 'Service charge'], ['labour_rate', 'Labour rates'],
+  ['outside_value', 'Outside repair value'], ['no_work', 'No work recorded']];
+// Where each missing thing is put right: the Stores list for parts, Labour Rates for a rate, else the card.
+function finLink(kind, r) {
+  const q = encodeURIComponent(r.job_no);
+  if (kind === 'received' && canView('stores')) return `#/stores?tab=flow&sub=lines&step=open&q=${q}`;
+  if (kind === 'shelf' && canView('stores')) return `#/stores?tab=flow&sub=lines&step=ready&q=${q}`;
+  if (kind === 'labour_rate' && canView('labour')) return '#/labour';
+  return r.link;
+}
+const finStatus = (r) => (r.status === 'PARTIALLY_CLOSED' ? '<span class="badge amber">Partly closed</span>' : '<span class="badge blue">Work done</span>');
+function finJobCell(r) {
+  return `<a href="${r.link}"><b>${esc(r.job_no)}</b></a> · ${esc(idLabel(r) || '—')}${r.workshop_code && wsMulti() ? ` <span class="badge">${esc(r.workshop_code)}</span>` : ''}
+    <div style="font-size:12.5px">${r.type === 'service' ? '<span class="badge blue">service</span> ' : ''}${esc(String(r.description || '').slice(0, 120))}</div>
+    <div class="muted" style="font-size:12px">${finStatus(r)} ${r.since ? `since ${esc(r.since)} · ${plural(r.days || 0, 'day')}` : ''}${r.partly_by ? ` · by ${esc(r.partly_by)}` : ''}</div>
+    ${r.note ? `<div class="muted" style="font-size:12px">Note: ${esc(r.note)}</div>` : ''}`;
+}
+function finMissingCell(r) {
+  return r.missing.groups.map((g) => `<div style="margin:0 0 4px"><a href="${finLink(g.kind, r)}"><span class="badge ${g.kind === 'received' || g.kind === 'shelf' ? 'amber' : 'red'}">${esc(g.label)} (${g.n})</span></a>
+    <div class="muted" style="font-size:11.5px">${g.items.map(esc).join('<br>')}${g.n > g.items.length ? `<br>… and ${g.n - g.items.length} more` : ''}</div></div>`).join('');
+}
+
+async function jobsFinishing(body, sp) {
+  const cur = { show: sp.get('show') || 'all', q: sp.get('q') || '', type: sp.get('type') || '' };
+  body.innerHTML = `
+    <div class="toolbar">
+      <input id="fin-q" type="search" placeholder="Search job no, vehicle, work…" value="${esc(cur.q)}" style="max-width:260px">
+      <select id="fin-type" style="max-width:140px"><option value="">Repair &amp; service</option>
+        <option value="repair" ${cur.type === 'repair' ? 'selected' : ''}>Repair</option><option value="service" ${cur.type === 'service' ? 'selected' : ''}>Service</option></select>
+      <div class="spacer"></div><a class="btn sm" href="#/jobs?tab=ready">✅ Ready to close <span class="badge" id="fin-ready">…</span></a>
+    </div>
+    <p class="muted" style="margin:0 0 8px;font-size:12.5px">Work is done, but something is still missing. Click a red or amber label to fix it. When nothing is missing, the card moves to Ready to close by itself.</p>
+    <div class="pill-row" id="fin-show" style="margin:0 0 10px;flex-wrap:wrap;gap:6px"></div>
+    <div id="fin-table"><div class="muted">Loading…</div></div>`;
+  const load = async () => {
+    const p = new URLSearchParams({ tab: 'finishing', show: cur.show });
+    if (cur.q) p.set('q', cur.q);
+    if (cur.type) p.set('type', cur.type);
+    history.replaceState(null, '', '#/jobs?' + p.toString());
+    p.delete('tab');
+    let d;
+    try { d = await api('/job-flow/finishing?' + p.toString()); } catch (e) { qs('#fin-table', body).innerHTML = `<div class="card err">${esc(e.message)}</div>`; return; }
+    qs('#fin-ready', body).textContent = d.counts.ready;
+    // The missing kinds show only when some card has them.
+    const pills = FIN_SHOW.concat(FIN_MISSING.filter(([k]) => d.counts[k] || k === cur.show));
+    qs('#fin-show', body).innerHTML = pills.map(([k, l]) => `<button class="sm ${k === cur.show ? 'primary' : ''}" data-show="${k}">${esc(l)} <span class="badge">${d.counts[k] || 0}</span></button>`).join('');
+    qsa('[data-show]', body).forEach((b) => { b.onclick = () => { cur.show = b.dataset.show; load(); }; });
+    const empty = `<div class="card"><p class="muted">${cur.show === 'all' ? 'No card is waiting for anything. ' + (d.counts.ready ? `<a href="#/jobs?tab=ready">${plural(d.counts.ready, 'card')} ready to close →</a>` : '') : 'None here.'}</p></div>`;
+    if (d.rows.length && window.matchMedia('(max-width: 700px)').matches) {
+      qs('#fin-table', body).innerHTML = d.rows.map((r) => `<div class="card" style="padding:10px 12px;margin:0 0 8px">${finJobCell(r)}
+        <div style="margin-top:6px"><b style="font-size:12.5px">Still missing:</b>${finMissingCell(r)}</div></div>`).join('');
+    } else qs('#fin-table', body).innerHTML = d.rows.length ? tableWrap(
+      [{ label: 'Job', cls: 'desc-col' }, { label: 'Still missing', width: '48%' }],
+      d.rows.map((r) => `<tr><td class="desc-col">${finJobCell(r)}</td><td>${finMissingCell(r)}</td></tr>`), { scroll: true, fit: true, noHScroll: true })
+      : empty;
+  };
+  let deb;
+  qs('#fin-q', body).oninput = (e) => { cur.q = e.target.value.trim(); clearTimeout(deb); deb = setTimeout(load, 250); };
+  qs('#fin-type', body).onchange = (e) => { cur.type = e.target.value; load(); };
+  await load();
+}
+
+async function jobsReady(body, sp) {
+  const cur = { q: sp.get('q') || '', type: sp.get('type') || '' };
+  body.innerHTML = `
+    <div class="toolbar">
+      <input id="rdy-q" type="search" placeholder="Search job no, vehicle, work…" value="${esc(cur.q)}" style="max-width:260px">
+      <select id="rdy-type" style="max-width:140px"><option value="">Repair &amp; service</option>
+        <option value="repair" ${cur.type === 'repair' ? 'selected' : ''}>Repair</option><option value="service" ${cur.type === 'service' ? 'selected' : ''}>Service</option></select>
+    </div>
+    <p class="muted" style="margin:0 0 8px;font-size:12.5px">Nothing is missing on these cards. Check the cost, then close one card, or tick several and close them together. Closing fixes the final cost.</p>
+    <div id="rdy-bulk" class="toolbar" style="display:none;margin:0 0 8px"></div>
+    <div id="rdy-table"><div class="muted">Loading…</div></div>`;
+  const load = async () => {
+    const p = new URLSearchParams({ tab: 'ready' });
+    if (cur.q) p.set('q', cur.q);
+    if (cur.type) p.set('type', cur.type);
+    history.replaceState(null, '', '#/jobs?' + p.toString());
+    p.delete('tab');
+    let d;
+    try { d = await api('/job-flow/ready?' + p.toString()); } catch (e) { qs('#rdy-table', body).innerHTML = `<div class="card err">${esc(e.message)}</div>`; return; }
+    const rows = d.rows;
+    const byId = new Map(rows.map((r) => [String(r.id), r]));
+    const anyClose = rows.some((r) => r.can.close);
+    const other = rows.some((r) => r.cost.other);
+    const costCols = [['labour', 'Labour'], ['parts', 'Parts'], ['outside', 'Outside'], ['oil', 'Oil'], ['general', 'General']].concat(other ? [['other', 'Other']] : []);
+    const act = (r) => (r.can.close ? `<button class="sm primary" data-close="${r.id}">🔒 Close</button>`
+      : (r.over_limit ? `<span class="badge amber" title="Your approval limit is ${esc(money(r.over_limit.limit))}">Over your limit</span>` : ''));
+    const costLines = (r) => costCols.filter(([k]) => r.cost[k]).map(([k, l]) => `${l} ${money(r.cost[k])}`).join(' · ');
+    if (rows.length && window.matchMedia('(max-width: 700px)').matches) {
+      qs('#rdy-table', body).innerHTML = rows.map((r) => `<div class="card" style="padding:10px 12px;margin:0 0 8px">${finJobCell(r)}
+        <div style="margin-top:6px"><b>${money(r.cost.total)}</b> <span class="muted" style="font-size:12px">${costLines(r)}</span></div>
+        <div style="margin-top:6px;display:flex;align-items:center;gap:14px">${act(r)}${r.can.close ? `<label style="display:inline-flex;align-items:center;gap:6px;margin:0;text-transform:none;letter-spacing:0;font-size:13px;color:inherit">
+          <input type="checkbox" class="rdy-chk" data-id="${r.id}" style="min-height:0;width:22px;height:22px;margin:0"> Tick to close with others</label>` : ''}</div></div>`).join('')
+        + `<div class="card" style="padding:10px 12px"><b>All ready cards: ${money(d.total)}</b></div>`;
+    } else qs('#rdy-table', body).innerHTML = rows.length ? tableWrap(
+      (anyClose ? [{ label: '<input type="checkbox" id="rdy-all" title="Select all">', html: true, width: '32px' }] : [])
+        .concat([{ label: 'Job', cls: 'desc-col' }], costCols.map(([, l]) => ({ label: l, num: true })), [{ label: 'Total', num: true }, { label: '', width: '120px' }]),
+      rows.map((r) => `<tr>${anyClose ? `<td>${r.can.close ? `<input type="checkbox" class="rdy-chk" data-id="${r.id}">` : ''}</td>` : ''}
+        <td class="desc-col">${finJobCell(r)}</td>
+        ${costCols.map(([k]) => `<td class="num">${r.cost[k] ? money(r.cost[k]) : '<span class="muted">—</span>'}</td>`).join('')}
+        <td class="num"><b>${money(r.cost.total)}</b></td><td>${act(r)}</td></tr>`)
+        .concat([`<tr><td colspan="${(anyClose ? 2 : 1) + costCols.length}"><b>All ready cards</b></td><td class="num"><b>${money(d.total)}</b></td><td></td></tr>`]),
+      { scroll: true, fit: true, noHScroll: true })
+      : `<div class="card"><p class="muted">No card is ready to close. <a href="#/jobs?tab=finishing">See what is still missing →</a></p></div>`;
+    const report = (res) => {
+      const bad = (res.failed || []).map((f) => `${f.job_no || f.id}: ${f.error}`);
+      if (bad.length) alert(`${res.success_count} closed. Not closed:\n${bad.slice(0, 8).join('\n')}`); else toast(`✓ ${plural(res.success_count, 'card')} closed`);
+    };
+    qsa('[data-close]', body).forEach((b) => { b.onclick = async () => {
+      const r = byId.get(b.dataset.close);
+      if (!confirm(`Close ${r.job_no}?\nFinal cost: ${money(r.cost.total)}`)) return;
+      try { await api(`/jobs/${r.id}/transition`, { method: 'POST', body: { to: 'CLOSED' } }); toast(`✓ ${r.job_no} closed`); }
+      catch (e) { toast(e.message, 'err'); }
+      load();
+    }; });
+    // Several cards closed at once; the total is shown before the person confirms (JC-D8).
+    const bulk = qs('#rdy-bulk', body);
+    const picked = () => qsa('.rdy-chk:checked', body).map((x) => byId.get(x.dataset.id));
+    const showBulk = () => {
+      const rs = picked();
+      const sum = rs.reduce((t, r) => t + r.cost.total, 0);
+      bulk.style.display = rs.length ? 'flex' : 'none';
+      bulk.innerHTML = rs.length ? `<span><b>${plural(rs.length, 'card')}</b> chosen · total <b>${money(sum)}</b></span><button class="sm primary" id="rdy-bulk-ok">🔒 Close the chosen cards</button>` : '';
+      if (rs.length) qs('#rdy-bulk-ok', body).onclick = async () => {
+        if (!confirm(`Close ${plural(rs.length, 'card')}?\nTotal: ${money(sum)}\n\n${rs.slice(0, 15).map((r) => `${r.job_no}  ${money(r.cost.total)}`).join('\n')}${rs.length > 15 ? '\n…' : ''}`)) return;
+        try { report(await api('/jobs/bulk-transition', { method: 'POST', body: { ids: rs.map((r) => r.id), to: 'CLOSED' } })); }
+        catch (e) { toast(e.message, 'err'); }
+        load();
+      };
+    };
+    qsa('.rdy-chk', body).forEach((x) => { x.onchange = showBulk; });
+    if (qs('#rdy-all', body)) qs('#rdy-all', body).onchange = (e) => { qsa('.rdy-chk', body).forEach((x) => { x.checked = e.target.checked; }); showBulk(); };
+    showBulk();
+  };
+  let deb;
+  qs('#rdy-q', body).oninput = (e) => { cur.q = e.target.value.trim(); clearTimeout(deb); deb = setTimeout(load, 250); };
+  qs('#rdy-type', body).onchange = (e) => { cur.type = e.target.value; load(); };
+  await load();
 }
 
 // One decision on one row: each goes to the route that already makes it.

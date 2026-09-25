@@ -1,6 +1,7 @@
 'use strict';
 
-// Job Cards: the Monitor and the Requests list (job cards plan, Part 1). See src/lib/jobs_flow.js.
+// Job Cards: the Monitor, the Requests list (job cards plan, Part 1), Ongoing (Part 2), Finishing and
+// Ready to close (Part 3). See src/lib/jobs_flow.js.
 // Open to anyone who may see job cards or job requests; each part of the answer is kept to what the
 // person may see, and every decision still goes through the route that makes it.
 
@@ -30,6 +31,12 @@ router.post('/jobs/:id/reason', cardsOnly, requireCap('jobs.reason'), asyncHandl
   flow.setReason(req.user, id, req.body || {});
   res.status(201).json(flow.attendanceOf(req.user, id));
 }));
+
+// ---- Finishing and Ready to close (Part 3): cards whose work is done, until they close ----------
+// Closing, one card or many, goes through /api/jobs/:id/transition and /api/jobs/bulk-transition,
+// which make the close check and the approval-limit check themselves.
+router.get('/finishing', cardsOnly, asyncHandler((req, res) => res.json(flow.finishing(req.user, req.query))));
+router.get('/ready', cardsOnly, asyncHandler((req, res) => res.json(flow.ready(req.user, req.query))));
 
 const KIND = { jr: 'Job request', card: 'Job card', reopen: 'Reopen request' };
 router.get('/requests/export.xlsx', asyncHandler(async (req, res) => {

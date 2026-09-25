@@ -110,9 +110,13 @@ router.get('/dashboard', asyncHandler((req, res) => {
   const fieldInUse = !!get('SELECT 1 x FROM job_cards WHERE field = 1 LIMIT 1');
   const field_down = fieldInUse ? require('../lib/field').downCount(req.user) : null;
 
+  // Job cards plan, Part 3: cards with nothing missing, waiting only to be closed (the Ready to close tab).
+  const flow = require('../lib/jobs_flow');
+  const ready_to_close = flow.sees(req.user, 'jobs') ? flow.readyCount(req.user) : null;
+
   res.json({
     jobs_by_status, awaiting_price: awaiting, low_stock_oil, batteries_warranty,
-    month_cost_by_project, open_jobs_count, closed_this_month_count, partly_closed, attendance_today, field_down,
+    month_cost_by_project, open_jobs_count, closed_this_month_count, partly_closed, ready_to_close, attendance_today, field_down,
     needs_attention: intelligence.needsAttentionSummary(),
   });
 }));

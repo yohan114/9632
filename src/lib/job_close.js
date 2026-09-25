@@ -39,6 +39,33 @@ function workRecorded(job) {
   return !!get('SELECT 1 x FROM job_daily_work WHERE job_id = ? LIMIT 1', job.id);
 }
 
+// Full close: the closure check has to pass. closeCheck says whether the Close button would let this
+// card through; closeGate turns a "no" into the 409 body. The Ready to close list uses closeCheck, so
+// the list and the button always agree (job cards plan, Part 3).
+// Switched off (the flow before W2): only a card's FIRST close is checked — a card that was closed
+// once already cleared it, or was closed by import / close-on-date, which never checked. Switched
+// on, nothing needs that excuse any more (an unfinished card can be partly closed), so every live
+// card is checked, including "work done is recorded"; only reopened imported history is excused.
+function closeCheck(job) {
+  const readiness = costing.closureReadiness(job.id);
+  if (readiness.ready) return { ok: true, readiness };
+  const wasReopened = !!get('SELECT 1 v FROM job_reopens WHERE job_id = ? LIMIT 1', job.id);
+  return { ok: jobstate.partialCloseEnabled() ? wasReopened && !!job.is_historical : wasReopened, readiness };
+}
+
+/** null (may close) or the 409 body. */
+function closeGate(job) {
+  const { ok, readiness } = closeCheck(job);
+  if (ok) return null;
+  if (!jobstate.partialCloseEnabled()) return { error: 'Job is not fully priced — cannot close', missing: readiness.missing };
+  const n = readiness.missing.length;
+  return {
+    error: `Not ready to close fully — ${n} thing${n === 1 ? '' : 's'} still missing.`
+      + (job.status === jobstate.PARTIAL ? '' : ' Partly close it instead, and close it fully once they are done.'),
+    missing: readiness.missing,
+  };
+}
+
 /** Put the vehicle back in service if no other card holds it. */
 function releaseVehicle(job) {
   if (!job.asset_id) return;
@@ -231,6 +258,6 @@ function requestsFor(jobId) {
 }
 
 module.exports = {
-  setEnabled, workRecorded, releaseVehicle, partialClose, applyReopen, reopenBlocker,
+  setEnabled, workRecorded, closeCheck, closeGate, releaseVehicle, partialClose, applyReopen, reopenBlocker,
   pendingFor, requestReopen, decideReopen, pendingRequests, requestsFor, today,
 };
