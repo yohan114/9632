@@ -656,6 +656,7 @@ function migrate() {
   fieldStage6();
   operationsStage7();
   storesCountsPart2();
+  storesServicesPart3();
 
   // Seed the RBAC matrix once (safe to require here — db exports are already set).
   try { require('../lib/permissions').seedDefaults(); } catch (e) { /* table may not exist yet on very first pass */ }
@@ -903,6 +904,13 @@ function operationsStage7() {
 // Stores plan, Part 2: a correction posted by an approved count session says which one it came from.
 function storesCountsPart2() {
   ensureColumn('store_counts', 'session_id', 'INTEGER REFERENCES count_sessions(id)');
+}
+
+// Stores plan, Part 3: a service that fitted an equivalent filter keeps the vehicle's own number too
+// (ST-D15). filter_no stays what was fitted — that is what comes off the shelf.
+function storesServicesPart3() {
+  ensureColumn('service_filters', 'required_no', 'TEXT');
+  ensureColumn('service_filters', 'required_no_norm', 'TEXT');
 }
 
 // Parts brought back unused (Stage 6) come off a job's cost as a 'return' line on job_parts. Its

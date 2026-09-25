@@ -6496,13 +6496,13 @@ async function renderNewServiceForm(c, existing) {
   const oilTypeOpts = '<option value="">—</option>' + ref.oilTypes.map((t) => `<option value="${esc(t.code)}" data-price="${t.unit_price}">${esc(t.code)}</option>`).join('');
   const oilRows = ref.oils.map((o) => `<tr>
       <td>${esc(o.name)}<input type="hidden" class="o_name" value="${esc(o.name)}"></td>
-      <td><select class="o_type" style="width:100%">${oilTypeOpts}</select></td>
+      <td><select class="o_type" style="width:100%;min-width:78px">${oilTypeOpts}</select></td>
       <td><select class="o_cv" style="width:56px"><option value=""></option><option>C</option><option>V</option></select></td>
-      <td><input type="number" class="o_lit" style="width:64px" step="0.1"></td>
+      <td><input type="number" class="o_lit" style="width:64px" step="0.1"><div class="o_stock muted" style="font-size:11px"></div></td>
       <td><input type="number" class="o_price" style="width:96px"></td></tr>`).join('');
   const filterRows = ref.filterCategories.map((cat) => `<tr>
       <td>${esc(cat)}<input type="hidden" class="f_cat" value="${esc(cat)}"></td>
-      <td style="position:relative"><input type="text" class="f_no" autocomplete="off" placeholder="type to search…" style="width:120px">
+      <td style="position:relative"><input type="text" class="f_no" autocomplete="off" placeholder="type to search…" style="width:120px"><div class="f_note muted" style="font-size:11px"></div>
         <div class="f_menu" style="position:absolute;z-index:80;left:0;top:100%;min-width:300px;background:var(--surface);border:1px solid var(--border);border-radius:6px;box-shadow:var(--shadow);max-height:230px;overflow:auto;display:none"></div></td>
       <td><input type="number" class="f_qty" value="1" style="width:48px"></td>
       <td><select class="f_xe" style="width:52px"><option value=""></option><option>X</option><option>E</option></select></td>
@@ -6544,7 +6544,7 @@ async function renderNewServiceForm(c, existing) {
         </div>
         <div class="table-wrap scroll"><table><thead><tr><th>Oil Name</th><th>Type</th><th>C/V</th><th>Liters</th><th>Price</th></tr></thead>
           <tbody id="oilBody">${oilRows}</tbody></table></div>
-        <p class="muted" style="font-size:11.5px;margin:6px 0 0" id="oilCount"></p></div>
+        <p class="muted" style="font-size:11.5px;margin:6px 0 0" id="oilCount"></p><p class="muted stk-note" style="font-size:11.5px;margin:4px 0 0"></p></div>
       <div class="card"><div class="toolbar" style="margin:0 0 8px">
           <h3 style="margin:0">Filters</h3><div class="spacer"></div>
           <input type="search" id="filFind" placeholder="Find a filter…" style="max-width:150px;font-size:12px">
@@ -6553,7 +6553,7 @@ async function renderNewServiceForm(c, existing) {
         </div>
         <div class="table-wrap scroll"><table><thead><tr><th>Filter</th><th>Filter No.</th><th>Qty</th><th>X/E</th><th>Price</th></tr></thead>
           <tbody id="filterBody">${filterRows}</tbody></table></div>
-        <p class="muted" style="font-size:11.5px;margin:6px 0 0" id="filCount">Type a filter number in the box to search — picking one fills its price.</p></div>
+        <p class="muted" style="font-size:11.5px;margin:6px 0 0" id="filCount">Type a filter number in the box to search — picking one fills its price.</p><p class="muted stk-note" style="font-size:11.5px;margin:4px 0 0"></p></div>
     </div>
     <div class="card"><div class="toolbar" style="margin:0 0 8px"><h3 style="margin:0">Other Costs (parts, consumables)</h3><div class="spacer"></div><button type="button" class="sm" id="addpart">+ line</button></div>
       <div class="table-wrap"><table><thead><tr><th>Description</th><th>Unit</th><th>Rate</th><th>Qty</th><th>Amount</th></tr></thead><tbody id="partBody"></tbody></table></div></div>
@@ -6603,9 +6603,9 @@ async function renderNewServiceForm(c, existing) {
     for (const o of existing.oils) {
       const tr = claim('oilBody', 'o_name', o.oil_name, () => `
         <td>${esc(o.oil_name || '')}<input type="hidden" class="o_name" value="${esc(o.oil_name || '')}"></td>
-        <td><select class="o_type" style="width:100%">${oilTypeOpts}</select></td>
+        <td><select class="o_type" style="width:100%;min-width:78px">${oilTypeOpts}</select></td>
         <td><select class="o_cv" style="width:56px"><option value=""></option><option>C</option><option>V</option></select></td>
-        <td><input type="number" class="o_lit" style="width:64px" step="0.1"></td>
+        <td><input type="number" class="o_lit" style="width:64px" step="0.1"><div class="o_stock muted" style="font-size:11px"></div></td>
         <td><input type="number" class="o_price" style="width:96px"></td>`);
       qs('.o_type', tr).value = o.oil_type || '';
       qs('.o_cv', tr).value = o.action_type || '';
@@ -6615,12 +6615,13 @@ async function renderNewServiceForm(c, existing) {
     for (const f of existing.filters) {
       const tr = claim('filterBody', 'f_cat', f.category, () => `
         <td>${esc(f.category || '—')}<input type="hidden" class="f_cat" value="${esc(f.category || '')}"></td>
-        <td style="position:relative"><input type="text" class="f_no" autocomplete="off" placeholder="type to search…" style="width:120px">
+        <td style="position:relative"><input type="text" class="f_no" autocomplete="off" placeholder="type to search…" style="width:120px"><div class="f_note muted" style="font-size:11px"></div>
           <div class="f_menu" style="position:absolute;z-index:80;left:0;top:100%;min-width:300px;background:var(--surface);border:1px solid var(--border);border-radius:6px;box-shadow:var(--shadow);max-height:230px;overflow:auto;display:none"></div></td>
         <td><input type="number" class="f_qty" value="1" style="width:48px"></td>
         <td><select class="f_xe" style="width:52px"><option value=""></option><option>X</option><option>E</option></select></td>
         <td><input type="number" class="f_price" style="width:96px"></td>`);
       qs('.f_no', tr).value = f.filter_no || '';
+      if (f.required_no) { tr.dataset.required = f.required_no; qs('.f_note', tr).textContent = 'equivalent of ' + f.required_no; }
       qs('.f_qty', tr).value = f.qty == null ? 1 : f.qty;
       qs('.f_xe', tr).value = f.action_type || '';
       // The line's own price is what this service was charged; the book price is the
@@ -6631,6 +6632,50 @@ async function renderNewServiceForm(c, existing) {
   }
 
   wireAssetPicker(c);
+
+  // Stores plan, Part 3: the oil and the filters come off the store's stock (the service's own
+  // store; for a new one, its job card's workshop's, else yours). Show what that store holds, and
+  // whether its "must be in stock" rule has started — the save refuses what is not there.
+  let STK = null;
+  const stkQuery = (extra = {}) => {
+    const p = new URLSearchParams(extra);
+    if (edit) p.set('service_id', edit.id);
+    p.set('job_no', qs('[name=job_no]', c).value.trim());
+    p.set('date', qs('[name=service_date]', c).value);
+    return p.toString();
+  };
+  const oilStock = (tr) => {
+    if (!STK) return null;
+    const type = qs('.o_type', tr).value, name = qs('.o_name', tr).value;
+    return (type && STK.types[type]) || STK.names[name] || null;
+  };
+  const paintOil = (tr) => {
+    const el = qs('.o_stock', tr);
+    if (!el) return;
+    const lit = Number(qs('.o_lit', tr).value) || 0;
+    const p = oilStock(tr);
+    el.style.color = '';
+    if (!STK) { el.textContent = ''; return; }
+    if (!p) {
+      el.textContent = lit > 0 && STK.rule.oil ? 'not in the oil book — choose the type' : '';
+      if (lit > 0 && STK.rule.oil) el.style.color = 'var(--danger,#c4392c)';
+      return;
+    }
+    el.textContent = `${num(p.in_stock)} ${p.unit} in stock`;
+    if (STK.rule.oil && lit > p.in_stock + 0.001) el.style.color = 'var(--danger,#c4392c)';
+  };
+  const loadStock = async () => {
+    try { STK = await api('/filters/stock-context?' + stkQuery()); } catch (e) { STK = null; }
+    qsa('#oilBody tr', c).forEach(paintOil);
+    const notes = qsa('.stk-note', c);
+    const say = (rule) => (!STK || !STK.store ? ''
+      : `From ${STK.store.name} stock. ` + (rule ? `Must be in stock (since ${rule}).` : 'Not blocked yet: this starts after the store\'s first full stock take.'));
+    if (notes[0]) notes[0].textContent = say(STK && STK.rule.oil);
+    if (notes[1]) notes[1].textContent = say(STK && STK.rule.filter);
+  };
+  let stkDeb;
+  for (const n of ['job_no', 'service_date']) qs(`[name=${n}]`, c).addEventListener('change', () => { clearTimeout(stkDeb); stkDeb = setTimeout(loadStock, 200); });
+  loadStock();
 
   // Both lists show every oil and every filter category the workshop stocks, because any of
   // them might be part of this service. That is a lot to read past when you only need two or
@@ -6689,6 +6734,8 @@ async function renderNewServiceForm(c, existing) {
     const typeSel = qs('.o_type', tr), lit = qs('.o_lit', tr), price = qs('.o_price', tr);
     const fill = () => { const up = Number(typeSel.selectedOptions[0] && typeSel.selectedOptions[0].dataset.price) || 0; if (up && lit.value) price.value = Math.round(up * Number(lit.value) * 100) / 100; recalc(); };
     typeSel.onchange = fill; lit.oninput = fill; price.oninput = recalc;
+    typeSel.addEventListener('change', () => paintOil(tr));
+    lit.addEventListener('input', () => paintOil(tr));
   });
   // Filter rows: type a number → suggestions from the price book / catalogue / cross-refs.
   // Picking one fills the number AND its price; ↑/↓ + Enter work, and leaving the box still
@@ -6698,16 +6745,25 @@ async function renderNewServiceForm(c, existing) {
     let items = [], active = -1, deb;
 
     const close = () => { menu.style.display = 'none'; active = -1; };
+    const note = qs('.f_note', tr);
     const choose = (i) => {
       const it = items[i]; if (!it) return;
       noIn.value = it.filter_no;
       if (it.unit_price != null) price.value = it.unit_price;
+      // An equivalent fitted in place of the vehicle's own number keeps both (ST-D15).
+      if (it.equivalent_of) { tr.dataset.required = it.equivalent_of; note.textContent = `equivalent of ${it.equivalent_of} · ${num(it.in_stock)} in stock`; }
+      else { delete tr.dataset.required; note.textContent = it.in_stock != null ? `${num(it.in_stock)} in stock` : ''; }
       close(); recalc(); price.focus();
     };
+    const stockBadge = (it) => (it.in_stock == null ? ''
+      : it.in_stock > 0 ? ` <span class="badge green">${num(it.in_stock)} in stock</span>`
+        : ` <span class="badge ${STK && STK.rule.filter ? 'red' : 'amber'}">none in stock</span>`);
     const paint = () => {
-      menu.innerHTML = items.map((it, i) => `<div class="f_opt" data-i="${i}" style="padding:6px 9px;cursor:pointer;border-bottom:1px solid var(--border);background:${i === active ? 'var(--surface-2)' : 'transparent'}">
+      const firstEq = items.findIndex((it) => it.equivalent_of);
+      menu.innerHTML = items.map((it, i) => `${i === firstEq ? `<div class="muted" style="padding:5px 9px;font-size:11px;background:var(--surface-2)">In stock instead — same filter as ${esc(it.equivalent_of)}:</div>` : ''}
+        <div class="f_opt" data-i="${i}" style="padding:6px 9px;cursor:pointer;border-bottom:1px solid var(--border);background:${i === active ? 'var(--surface-2)' : 'transparent'}">
           <b>${esc(it.filter_no)}</b>${it.unit_price != null ? ` <span style="float:right">${money(it.unit_price)}</span>` : ' <span class="badge amber" style="float:right">no price</span>'}
-          <div class="muted" style="font-size:11px">${esc(it.category || '—')} · ${esc(it.src)}${it.uses ? ' · used ' + it.uses + '×' : ''}</div></div>`).join('');
+          <div class="muted" style="font-size:11px">${esc(it.category || (it.equivalent_of ? 'equivalent' : '—'))}${it.src ? ' · ' + esc(it.src) : ''}${it.uses ? ' · used ' + it.uses + '×' : ''}${stockBadge(it)}</div></div>`).join('');
       qsa('.f_opt', menu).forEach((el) => {
         el.onmousedown = (e) => { e.preventDefault(); choose(+el.dataset.i); };
         el.onmouseenter = () => { active = +el.dataset.i; paint(); };
@@ -6717,16 +6773,21 @@ async function renderNewServiceForm(c, existing) {
     // Search from the first character. With the box empty it lists this row's own filter
     // category (click into "Engine Oil Filter" and you see the engine oil filters we stock).
     const rowCat = (qs('.f_cat', tr) || {}).value || '';
+    // Part 3: with what the service's store holds of each, and — when the number asked for is not
+    // on the shelf — the equivalents that are.
     const search = async () => {
       const q = noIn.value.trim();
       try {
-        items = await api('/filters/search?q=' + encodeURIComponent(q) + '&category=' + encodeURIComponent(rowCat) + '&limit=20');
+        const r = await api('/filters/stock-search?' + stkQuery({ q, category: rowCat, limit: 20 }));
+        items = r.items.concat(r.equivalents.map((e) => ({ ...e, equivalent_of: q })));
+        // An equivalent in stock comes first when the number asked for has none.
+        if (r.equivalents.length) items.sort((a, b) => (b.in_stock > 0) - (a.in_stock > 0));
       } catch (e) { items = []; }
       active = items.length ? 0 : -1;
       paint();
     };
 
-    noIn.oninput = () => { clearTimeout(deb); deb = setTimeout(search, 140); };
+    noIn.oninput = () => { delete tr.dataset.required; note.textContent = ''; clearTimeout(deb); deb = setTimeout(search, 140); };
     noIn.onfocus = () => { if (!noIn.value.trim()) search(); };
     noIn.onkeydown = (e) => {
       if (menu.style.display === 'none' || !items.length) return;
@@ -6766,7 +6827,7 @@ async function renderNewServiceForm(c, existing) {
     const assetInput = qs('.apick-input', c), assetId = qs('input[name=asset_id]', c).value;
     if (!assetInput.value && !assetId) return toast('Pick the vehicle / machine', 'err');
     const oils = qsa('#oilBody tr', c).map((tr) => ({ oil_name: qs('.o_name', tr).value, oil_type: qs('.o_type', tr).value, cv: qs('.o_cv', tr).value, qty: qs('.o_lit', tr).value, price: qs('.o_price', tr).value })).filter((o) => Number(o.qty) > 0 || Number(o.price) > 0);
-    const filters = qsa('#filterBody tr', c).map((tr) => ({ category: qs('.f_cat', tr).value, filter_no: qs('.f_no', tr).value.trim(), qty: qs('.f_qty', tr).value, xe: qs('.f_xe', tr).value, price: qs('.f_price', tr).value })).filter((f) => f.filter_no);
+    const filters = qsa('#filterBody tr', c).map((tr) => ({ category: qs('.f_cat', tr).value, filter_no: qs('.f_no', tr).value.trim(), required_no: tr.dataset.required || '', qty: qs('.f_qty', tr).value, xe: qs('.f_xe', tr).value, price: qs('.f_price', tr).value })).filter((f) => f.filter_no);
     const parts = qsa('#partBody tr', c).map((tr) => ({ description: qs('.p_desc', tr).value.trim(), unit: qs('.p_unit', tr).value, rate: qs('.p_rate', tr).value, qty: qs('.p_qty', tr).value, amount: qs('.p_amount', tr).value })).filter((p) => p.description);
     const payload = {
       asset: assetInput.value, asset_id: assetId, service_date: qs('[name=service_date]', c).value,
@@ -6818,7 +6879,7 @@ async function serviceDetail(c, id) {
       <div class="card"><h3 style="margin-top:0">Filters <span class="muted" style="font-weight:400">(${d.filters.length})</span></h3>
         ${d.filters.length ? tableWrap([{ label: 'Filter No' }, { label: 'Category' }, { label: 'Qty', num: true }, { label: 'X/E' }, { label: 'Price', num: true }].concat(editable ? [{ label: '' }] : []),
       d.filters.map((f) => `<tr${(f.book_price > 0) ? '' : ' style="background:rgba(224,168,0,.06)"'}>
-            <td><b>${esc(f.filter_no || '')}</b></td><td>${esc(f.category || '')}</td><td class="num">${num(f.qty)}</td><td>${esc(f.action_type || '')}</td>
+            <td><b>${esc(f.filter_no || '')}</b>${f.required_no ? `<div class="muted" style="font-size:11px">equivalent of ${esc(f.required_no)}</div>` : ''}</td><td>${esc(f.category || '')}</td><td class="num">${num(f.qty)}</td><td>${esc(f.action_type || '')}</td>
             <td class="num">${f.book_price > 0 ? money(f.book_price) : '<span class="badge amber">no price</span>'}</td>
             ${editable ? `<td class="num"><button class="sm ${f.book_price > 0 ? '' : 'primary'}" data-price="${esc(f.filter_no || '')}" data-cat="${esc(f.category || '')}" data-val="${f.book_price == null ? '' : f.book_price}">${f.book_price > 0 ? 'Edit' : 'Add price'}</button></td>` : ''}
           </tr>`), { scroll: true }) : '<p class="muted">None.</p>'}</div>
@@ -9917,7 +9978,9 @@ async function stockOverview(host) {
         <span class="l" style="font-weight:600;color:inherit">${esc(KIND_LABEL[k.section])}</span>
         <span class="n">${moneyC(k.value)}</span>
         <span class="l">${num(k.items)} items${k.low ? ` · <span class="badge red">${num(k.low)} low</span>` : ''}</span>
-        ${store || !d.multi ? `<span class="muted" style="font-size:11px">${k.full_count ? 'Last full count: ' + esc(k.full_count) : 'No full count yet'}</span>` : ''}</a>`).join('')}</div>
+        ${store || !d.multi ? `<span class="muted" style="font-size:11px">${!k.full_count ? 'No full count yet'
+    : (['general', 'oil', 'filter'].includes(k.section) ? '✔ Must be in stock since ' : 'First full count: ') + esc(k.full_count)}</span>` : ''}</a>`).join('')}</div>
+    <p class="muted" style="font-size:12px;margin:0 0 8px">Nothing is issued unless it is in stock. This starts for each kind after the store's first full stock take (tyres and batteries: with their serial register).</p>
     <h3 style="margin:14px 0 6px">Reorder &amp; restock</h3>
     <div id="ov-cockpit"></div>`;
   if (qs('#ov-store', host)) qs('#ov-store', host).onchange = (e) => { STOCK_STORE = e.target.value; stockOverview(host); };

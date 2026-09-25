@@ -65,7 +65,8 @@ function errorHandler(err, req, res, _next) {
       ref,
     });
   }
-  res.status(status).json({ error: err.message || 'Request failed' });
+  // `err.data` carries what the screen needs to help (e.g. which items are short, Part 3).
+  res.status(status).json({ ...(err.data || {}), error: err.message || 'Request failed' });
 }
 
 module.exports = { asyncHandler, require_, toInt, toNum, errorHandler };

@@ -319,11 +319,13 @@ router.post('/issue', requireModule('tb_issue'), asyncHandler((req, res) => {
       price == null ? null : price, line.spec_id, line.id, serial, line.position,
       clean(b.issued_by) || req.user.username, line.job_id).lastInsertRowid;
 
-    // NO stock_moves ROW IS WRITTEN HERE ON PURPOSE. stock_moves is a projection, and its
-    // rebuild already reads tyre_battery_issues for both sections — writing one by hand would key
-    // it slightly differently from the rebuild and leave the shelf holding the movement twice.
-    // The register is the source; the ledger catches up on the next rebuild.
+    // NO stock_moves ROW IS WRITTEN BY HAND HERE. stock_moves is a projection, and its rebuild
+    // already reads tyre_battery_issues for both sections — writing one by hand would key it
+    // slightly differently from the rebuild and leave the shelf holding the movement twice. The
+    // register is the source; since the stores plan, Part 3, stock.sync projects this one row at
+    // once by the rebuild's own rule, instead of waiting for the next rebuild.
     run(`UPDATE mrn_lines SET qty_received = COALESCE(qty_received,0) + ? WHERE id = ?`, qty, line.id);
+    require('../lib/stock').sync({ tyre_battery_issues: [id] });
     return id;
   });
 

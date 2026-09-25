@@ -229,6 +229,8 @@ router.post('/ledger', requireCap('oil.ledger.post'), asyncHandler((req, res) =>
     // Keep the denormalised balance in lock-step with the ledger (source of truth stays
     // balance_after; stock_qty simply mirrors the latest balance so lookups are cheap).
     run('UPDATE products SET stock_qty = ? WHERE id = ?', balanceAfter, productId);
+    // Stores plan, Part 3: the store's shelf now, not at the next rebuild.
+    require('../lib/stock').sync({ stock_ledger: [info.lastInsertRowid] });
     // Issue to a vehicle → roll the oil cost into that month's bucket (component += Δ,
     // total += Δ; single basis qty × unit_price — see lib vehicle_monthly_costs invariant).
     if (b.kind === 'issue' && assetId && validPeriod && !isService) {
