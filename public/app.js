@@ -746,7 +746,6 @@ function formData(root) {
 const NAV = [
   ['dashboard', '📊', 'Dashboard'],
   ['jobs', '🔧', 'Job Cards'],
-  ['jobrequests', '📋', 'Job Requests'],
   ['field', '📍', 'Field Work'],
   ['operations', '🧭', 'Operations'],
   ['dailywork', '📅', 'Daily Work'],
@@ -786,6 +785,8 @@ function navVisible(n) {
   if (n[3] === 'admin') return canDo('access.manage', 'users.manage');
   if (n[3] === 'workshops') return canDo('workshops.manage', 'mechanics.move');
   if (n[0] === 'dashboard') return true;
+  // Job Cards holds the job requests too (its Requests tab).
+  if (n[0] === 'jobs') return canView('jobs') || canView('jobrequests');
   const m = NAV_MODULE[n[0]];
   return !m || canView(m);
 }
@@ -1312,9 +1313,192 @@ async function editAssetModal(asset) {
 const JOB_STATUSES = ['REQUESTED', 'APPROVED_TRANSPORT', 'APPROVED_OPERATIONS', 'IN_WORKSHOP', 'IN_PROGRESS', 'WORK_COMPLETE', 'PARTIALLY_CLOSED', 'CLOSED', 'REJECTED'];
 const MONTHS = [['01', 'Jan'], ['02', 'Feb'], ['03', 'Mar'], ['04', 'Apr'], ['05', 'May'], ['06', 'Jun'], ['07', 'Jul'], ['08', 'Aug'], ['09', 'Sep'], ['10', 'Oct'], ['11', 'Nov'], ['12', 'Dec']];
 
+// ---- Job Cards (job cards plan): one page with tabs, like Stores — the Monitor, every request
+// waiting for a decision, and all the cards (src/lib/jobs_flow.js). The job request list became
+// the Requests tab; its own pages (#/jobrequests/:id) stay.
+const JOB_TABS = [['monitor', '📊 MONITOR'], ['requests', '📨 REQUESTS'], ['all', '🗂️ ALL CARDS']];
 routes.jobs = async (c, params) => {
   if (params[0]) return jobDetail(c, params[0]);
   const sp = new URLSearchParams(location.hash.split('?')[1] || '');
+  const tabs = JOB_TABS.filter(([t]) => t !== 'all' || canView('jobs'));
+  // Old links to the list (#/jobs?status=…, the dashboard's) still open it.
+  let tab = sp.get('tab') || (['q', 'year', 'month', 'status', 'workshop_id'].some((k) => sp.get(k)) ? 'all' : 'monitor');
+  if (!tabs.some(([t]) => t === tab)) tab = 'monitor';
+  c.innerHTML = `${pageHeader('Job Cards')}<div class="toolbar" style="margin-bottom:10px">${tabs
+    .map(([t, l]) => `<button class="sm ${t === tab ? 'primary' : ''}" onclick="location.hash='#/jobs?tab=${t}'">${l}</button>`).join('')}</div>
+    <div id="jobsbody"><div class="muted">Loading…</div></div>`;
+  const body = qs('#jobsbody');
+  if (tab === 'requests') return jobsRequests(body, sp);
+  if (tab === 'all') return jobsAllCards(body, sp);
+  return jobsMonitor(body);
+};
+
+const monCard = (n, label, href, tone, note) => `<a class="card stat" href="${href}" style="text-decoration:none">
+    <span class="n"${tone && n ? ` style="color:var(--${tone})"` : ''}>${n}</span><span class="l">${esc(label)}</span>${note ? `<span class="muted" style="font-size:11px">${esc(note)}</span>` : ''}</a>`;
+
+async function jobsMonitor(body) {
+  const m = await api('/job-flow/monitor');
+  const rq = m.requests;
+  const R = (step) => `#/jobs?tab=requests&step=${step}`;
+  const L = (status) => `#/jobs?tab=all&status=${status}`;
+  const req = [
+    ...(m.sees.jobrequests ? [monCard(rq.to_certify, 'Job requests to certify', R('to_certify'), 'amber'), monCard(rq.to_approve, 'Job requests to approve', R('to_approve'), 'amber')] : []),
+    ...(m.sees.jobs ? [monCard(rq.transport, 'Cards waiting for transport approval', R('transport'), 'amber'), monCard(rq.operations, 'Cards waiting for operations approval', R('operations'), 'amber')] : []),
+  ];
+  const w = m.workshop; const f = m.finishing; const x = m.watch;
+  body.innerHTML = `
+    <p class="muted" style="margin-top:0">What is waiting at each step${m.scope && m.scope.label ? ` — ${esc(m.scope.label)}` : ''}. Click a number to see the jobs.</p>
+    <h3 style="margin:10px 0 6px">Requests</h3><div class="grid">${req.join('')}</div>
+    ${w ? `<h3 style="margin:14px 0 6px">In the workshop</h3><div class="grid">
+      ${monCard(w.waiting_to_start, 'Approved, not started', L('APPROVED_OPERATIONS,IN_WORKSHOP'), 'blue')}
+      ${monCard(w.in_progress, 'In progress', L('IN_PROGRESS'))}
+      ${monCard(w.worked_today, 'Worked on today', '#/dailywork', 'green', 'a daily-work line today')}
+    </div>` : ''}
+    ${f ? `<h3 style="margin:14px 0 6px">Finishing</h3><div class="grid">
+      ${monCard(f.work_done, 'Work done, not closed', L('WORK_COMPLETE'), 'amber')}
+      ${monCard(f.partly_closed, 'Partly closed — waiting for prices', L('PARTIALLY_CLOSED'), 'amber')}
+    </div>` : ''}
+    ${x ? `<h3 style="margin:14px 0 6px">Watch</h3><div class="grid">
+      ${x.breakdowns_down != null ? monCard(x.breakdowns_down, 'Breakdowns still down', '#/field', 'red') : ''}
+      ${monCard(x.reopen, 'Reopen requests waiting', R('reopen'), 'amber')}
+      ${monCard(x.stuck, 'Requested long ago, never moved', canDo('jobs.triage') ? '#/jobreview' : R('stuck'), 'red')}
+      ${monCard(x.two_open, 'Vehicles with 2 open cards', '#/jobs?tab=all', 'red')}
+    </div>` : ''}`;
+}
+
+const JOB_REQ_STEPS = [['open', 'Waiting for a decision'], ['to_certify', 'To certify'], ['to_approve', 'To approve'],
+  ['transport', 'Transport approval'], ['operations', 'Operations approval'], ['reopen', 'Reopen requests'],
+  ['stuck', 'Never moved'], ['approved', 'Approved'], ['rejected', 'Rejected']];
+const JOB_REQ_KIND = { jr: ['blue', 'Request'], card: ['', 'Card'], reopen: ['amber', 'Reopen'] };
+
+async function jobsRequests(body, sp) {
+  const cur = { step: sp.get('step') || 'open', q: sp.get('q') || '', type: sp.get('type') || '' };
+  if (!JOB_REQ_STEPS.some(([k]) => k === cur.step)) cur.step = 'open';
+  body.innerHTML = `
+    <div class="toolbar">
+      <input id="jrf-q" type="search" placeholder="Search number, vehicle, work, who asked…" value="${esc(cur.q)}" style="max-width:280px">
+      <select id="jrf-type" style="max-width:140px"><option value="">Repair &amp; service</option>
+        <option value="repair" ${cur.type === 'repair' ? 'selected' : ''}>Repair</option><option value="service" ${cur.type === 'service' ? 'selected' : ''}>Service</option></select>
+      <a class="btn sm" id="jrf-xls" href="#">⬇ Excel</a>
+      <div class="spacer"></div>
+      ${canDo('jobrequests.create') ? '<button class="sm" id="jrf-newjr">+ New job request</button>' : ''}
+      ${canDo('jobs.create') ? '<button class="sm" id="jrf-newjob">+ New job card</button>' : ''}
+    </div>
+    <div class="pill-row" id="jrf-steps" style="margin:0 0 10px;flex-wrap:wrap;gap:6px"></div>
+    <div id="jrf-bulk" class="toolbar" style="display:none;margin:0 0 8px"></div>
+    <div id="jrf-table"><div class="muted">Loading…</div></div>`;
+  const qstr = () => {
+    const p = new URLSearchParams({ tab: 'requests', step: cur.step });
+    if (cur.q) p.set('q', cur.q);
+    if (cur.type) p.set('type', cur.type);
+    return p;
+  };
+  const load = async () => {
+    const p = qstr();
+    history.replaceState(null, '', '#/jobs?' + p.toString());
+    p.delete('tab');
+    qs('#jrf-xls', body).href = '/api/job-flow/requests/export.xlsx?' + p.toString();
+    let d;
+    try { d = await api('/job-flow/requests?' + p.toString()); } catch (e) { qs('#jrf-table', body).innerHTML = `<div class="card err">${esc(e.message)}</div>`; return; }
+    qs('#jrf-steps', body).innerHTML = JOB_REQ_STEPS.map(([k, l]) => `<button class="sm ${k === cur.step ? 'primary' : ''}" data-step="${k}">${esc(l)}${d.counts[k] != null ? ` <span class="badge">${d.counts[k]}</span>` : ''}</button>`).join('');
+    qsa('[data-step]', body).forEach((b) => { b.onclick = () => { cur.step = b.dataset.step; load(); }; });
+    const rows = d.rows;
+    const bulkable = (r) => r.can && (r.can.transport || r.can.operations);
+    const anyBulk = rows.some(bulkable);
+    const act = (r) => {
+      const b = [];
+      if (r.can.certify) b.push(`<button class="sm primary" data-act="certify" data-i="${r.kind}:${r.id}">✍ Certify</button>`);
+      if (r.can.approve) b.push(`<button class="sm primary" data-act="approve" data-i="${r.kind}:${r.id}">✅ Approve</button>`);
+      if (r.can.transport) b.push(`<button class="sm primary" data-act="transport" data-i="${r.kind}:${r.id}">✓ Approve (transport)</button>`);
+      if (r.can.operations) b.push(`<button class="sm primary" data-act="operations" data-i="${r.kind}:${r.id}">✓ Approve (operations)</button>`);
+      if (r.can.reopen) b.push(`<button class="sm primary" data-act="reopen" data-i="${r.kind}:${r.id}">↩ Reopen</button><button class="sm" data-act="refuse" data-i="${r.kind}:${r.id}">Refuse</button>`);
+      if (r.can.reject) b.push(`<button class="sm danger" data-act="reject" data-i="${r.kind}:${r.id}">Reject</button>`);
+      if (r.can.review) b.push('<a class="btn sm" href="#/jobreview">🧹 Review…</a>');
+      if (r.step === 'approved' && r.job_id) b.push(`<a class="btn sm" href="#/jobs/${r.job_id}">Card ${esc(r.job_no || '')}</a>`);
+      return b.join(' ');
+    };
+    qs('#jrf-table', body).innerHTML = rows.length ? tableWrap(
+      (anyBulk ? [{ label: '<input type="checkbox" id="jrf-all" title="Select all">', html: true, width: '32px' }] : []).concat([
+        { label: 'No', width: '118px' }, { label: 'Vehicle', cls: 'desc-col', width: '110px' }, { label: 'Work', cls: 'desc-col' },
+        { label: 'Waiting for', width: '400px' }, { label: '', width: '190px' }]),
+      rows.map((r) => `<tr>
+        ${anyBulk ? `<td>${bulkable(r) ? `<input type="checkbox" class="jrf-chk" data-i="${r.kind}:${r.id}">` : ''}</td>` : ''}
+        <td><a href="${r.link}"><b>${esc(r.no)}</b></a><br><span class="badge ${JOB_REQ_KIND[r.kind][0]}">${JOB_REQ_KIND[r.kind][1]}</span>${r.imported ? ' <span class="badge">imported</span>' : ''}<br><span class="muted" style="font-size:12px">${esc(r.date || '')}</span></td>
+        <td class="desc-col">${esc(idLabel(r) || '—')}</td>
+        <td class="desc-col"><span class="badge ${r.type === 'service' ? 'blue' : ''}">${esc(r.type || '')}</span>${r.priority === 'urgent' ? ' <span class="badge red">urgent</span>' : ''} ${esc(String(r.description || '').slice(0, 120))}
+          ${r.reason ? `<br><span class="muted" style="font-size:12px">Why reopen: ${esc(r.reason)}</span>` : ''}
+          <br><span class="muted" style="font-size:12px">Asked by ${esc(r.requested_by || '—')}</span></td>
+        <td>${esc(r.waiting_for)}${r.days != null ? ` <span class="badge ${r.days > 7 ? 'red' : (r.days > 2 ? 'amber' : '')}">${r.days} day${r.days === 1 ? '' : 's'}</span>` : ''}${r.reject_reason && r.step === 'rejected' ? `<br><span class="muted" style="font-size:12px">${esc(r.reject_reason)}</span>` : ''}${r.note ? `<br><span class="muted" style="font-size:12px">${esc(r.note)}</span>` : ''}
+          <div style="margin-top:4px">${roadBar(r)}</div></td>
+        <td>${act(r)}</td></tr>`), { scroll: true, fit: true, noHScroll: true })
+      : `<div class="card"><p class="muted">${cur.step === 'open' ? 'Nothing is waiting for a decision.' : 'Nothing here.'}</p></div>`;
+    const byI = new Map(rows.map((r) => [r.kind + ':' + r.id, r]));
+    qsa('[data-act]', body).forEach((btn) => { btn.onclick = () => jobReqAction(btn.dataset.act, byI.get(btn.dataset.i), load); });
+    // Several cards approved at once (a job request is signed one by one, on its own).
+    const bulk = qs('#jrf-bulk', body);
+    const picked = () => qsa('.jrf-chk:checked', body).map((x) => byI.get(x.dataset.i));
+    const showBulk = () => {
+      const n = picked().length;
+      bulk.style.display = n ? 'flex' : 'none';
+      bulk.innerHTML = n ? `<span><b>${n}</b> card${n === 1 ? '' : 's'} chosen</span><button class="sm primary" id="jrf-bulk-ok">✓ Approve the chosen cards</button>` : '';
+      if (n) qs('#jrf-bulk-ok', body).onclick = async () => {
+        const rs = picked();
+        if (!confirm(`Approve ${rs.length} card${rs.length === 1 ? '' : 's'}?`)) return;
+        let ok = 0; const bad = [];
+        for (const [to, list] of [['APPROVED_TRANSPORT', rs.filter((r) => r.can.transport)], ['APPROVED_OPERATIONS', rs.filter((r) => r.can.operations)]]) {
+          if (!list.length) continue;
+          try {
+            const res = await api('/jobs/bulk-transition', { method: 'POST', body: { ids: list.map((r) => r.id), to } });
+            ok += res.success_count; bad.push(...(res.failed || []).map((f) => `${f.job_no || f.id}: ${f.error}`));
+          } catch (e) { bad.push(e.message); }
+        }
+        if (bad.length) alert(`${ok} approved. Not approved:\n${bad.slice(0, 8).join('\n')}`); else toast(`${ok} approved`);
+        load();
+      };
+    };
+    qsa('.jrf-chk', body).forEach((x) => { x.onchange = showBulk; });
+    if (qs('#jrf-all', body)) qs('#jrf-all', body).onchange = (e) => { qsa('.jrf-chk', body).forEach((x) => { x.checked = e.target.checked; }); showBulk(); };
+    showBulk();
+  };
+  let deb;
+  qs('#jrf-q', body).oninput = (e) => { cur.q = e.target.value.trim(); clearTimeout(deb); deb = setTimeout(load, 250); };
+  qs('#jrf-type', body).onchange = (e) => { cur.type = e.target.value; load(); };
+  if (qs('#jrf-newjr', body)) qs('#jrf-newjr', body).onclick = newJobRequestModal;
+  if (qs('#jrf-newjob', body)) qs('#jrf-newjob', body).onclick = newJobModal;
+  await load();
+}
+
+// One decision on one row: each goes to the route that already makes it.
+function jobReqAction(act, r, done) {
+  if (!r) return;
+  if (r.kind === 'jr') return jobRequestSignModal({ ...r, jr_no: r.no }, act === 'certify' ? 'certify' : (act === 'approve' ? 'approve' : 'reject'), done);
+  if (act === 'transport' || act === 'operations') {
+    if (!confirm(`Approve ${r.no} (${act})?`)) return;
+    return api(`/jobs/${r.id}/transition`, { method: 'POST', body: { to: act === 'transport' ? 'APPROVED_TRANSPORT' : 'APPROVED_OPERATIONS' } })
+      .then(() => { toast(`✓ ${r.no} approved`); done(); }).catch((e) => toast(e.message, 'err'));
+  }
+  if (act === 'reopen') {
+    if (!confirm(`Reopen ${r.no}? It goes back to In progress.`)) return;
+    return api(`/jobs/reopen-requests/${r.id}/approve`, { method: 'POST', body: {} })
+      .then(() => { toast(`✓ ${r.no} reopened`); done(); }).catch((e) => toast(e.message, 'err'));
+  }
+  const refuse = act === 'refuse';
+  modal(`${refuse ? 'Refuse the reopen of' : 'Reject'} ${r.no}`, `
+    ${field(refuse ? 'Why not? *' : 'Reason *', 'reason')}
+    <div style="margin-top:12px;text-align:right"><button class="primary danger" id="s">${refuse ? 'Refuse' : 'Reject'}</button></div>`, (b, close) => {
+    qs('#s', b).onclick = async () => {
+      const why = String(formData(b).reason || '').trim();
+      if (!why) return toast('Give a reason', 'err');
+      try {
+        if (refuse) await api(`/jobs/reopen-requests/${r.id}/refuse`, { method: 'POST', body: { note: why } });
+        else await api(`/jobs/${r.id}/transition`, { method: 'POST', body: { to: 'REJECTED', reason: why } });
+        toast(refuse ? 'Reopen refused' : `${r.no} rejected`); close(); done();
+      } catch (e) { toast(e.message, 'err'); }
+    };
+  });
+}
+
+async function jobsAllCards(c, sp) {
   const cur = { q: sp.get('q') || '', year: sp.get('year') || '', month: sp.get('month') || '', status: sp.get('status') || '',
     workshop: sp.get('workshop_id') || '' };
   // Workshop filter and tag (Stage 2): only once there is more than one workshop. The filter is for
@@ -1329,12 +1513,12 @@ routes.jobs = async (c, params) => {
   const closeCfg = await api('/jobs/close-settings').catch(() => ({ partial_close_enabled: false }));
   const partialOn = !!closeCfg.partial_close_enabled;
 
-  c.innerHTML = `${pageHeader('Job Cards')}
+  c.innerHTML = `
     <div class="toolbar">
       <input id="jq" type="search" placeholder="Search job no or vehicle…" value="${esc(cur.q)}" style="max-width:240px">
       <select id="jyear" style="max-width:120px"><option value="">All years</option>${years.map((y) => `<option ${String(y) === cur.year ? 'selected' : ''}>${y}</option>`).join('')}</select>
       <select id="jmonth" style="max-width:140px"><option value="">All months</option>${MONTHS.map(([v, l]) => `<option value="${v}" ${v === cur.month ? 'selected' : ''}>${l}</option>`).join('')}</select>
-      <select id="jstatus" style="max-width:200px"><option value="">All statuses</option>${JOB_STATUSES.map((s) => `<option ${s === cur.status ? 'selected' : ''}>${s}</option>`).join('')}</select>
+      <select id="jstatus" style="max-width:200px"><option value="">All statuses</option>${JOB_STATUSES.map((s) => `<option ${s === cur.status ? 'selected' : ''}>${s}</option>`).join('')}${cur.status && !JOB_STATUSES.includes(cur.status) ? `<option value="${esc(cur.status)}" selected>${cur.status === 'APPROVED_OPERATIONS,IN_WORKSHOP' ? 'Approved, not started' : esc(cur.status.replace(/,/g, ' or '))}</option>` : ''}</select>
       ${wsFilter ? `<select id="jws" style="max-width:220px"><option value="">All workshops</option>${wsd.workshops.filter((w) => !ME.workshopsSeen || ME.workshopsSeen.includes(w.id)).map((w) => `<option value="${w.id}" ${String(w.id) === cur.workshop ? 'selected' : ''}>${esc(w.name)}</option>`).join('')}</select>` : ''}
       <button class="sm" id="jclear">Clear</button>
       <button class="sm" id="jfilter-backlog" style="background:#fff3cd;color:#856404;border-color:#ffeeba;font-weight:600" title="Filter to backlog cards awaiting triage / approval">⚡ Backlog: Requested</button>
@@ -1387,7 +1571,7 @@ routes.jobs = async (c, params) => {
     const p = buildParams();
     const query = p.toString();
     // Keep the URL shareable/bookmarkable without triggering a full re-render.
-    history.replaceState(null, '', '#/jobs' + (query ? '?' + query : ''));
+    history.replaceState(null, '', '#/jobs?tab=all' + (query ? '&' + query : ''));
     const list = await api('/jobs' + (query ? '?' + query : ''));
     const canCloseDate = canDo('jobs.close_on_date');
     // The same permission jobstate.canReopen checks on the server.
@@ -1518,7 +1702,7 @@ routes.jobs = async (c, params) => {
   if (qs('#newjob')) qs('#newjob').onclick = newJobModal;
   if (qs('#newbd')) qs('#newbd').onclick = breakdownModal;
   await load();
-};
+}
 
 // ---- Daily Work (day-by-day review of job_daily_work)
 routes.dailywork = async (c) => {
@@ -5290,41 +5474,9 @@ const jrBadge = (s) => JR_STATUS[s] || mrnStatusBadge(s);
 
 routes.jobrequests = async (c, params) => {
   if (params[0]) return jobRequestDetail(c, params[0]);
-  return jobRequestList(c);
+  // The list is the Job Cards page's Requests tab now (job cards plan, Part 1).
+  location.replace('#/jobs?tab=requests' + (/[?&]q=/.test(location.hash) ? '&q=' + encodeURIComponent(new URLSearchParams(location.hash.split('?')[1]).get('q')) : ''));
 };
-
-async function jobRequestList(c) {
-  const sp = new URLSearchParams(location.hash.split('?')[1] || '');
-  const cur = { q: sp.get('q') || '' };
-  c.innerHTML = `${pageHeader('Job Requests', 'Transport → Assistant raises · Transport Manager certifies · Operational Manager approves')}
-    <div class="toolbar">
-      ${canDo('jobrequests.create') ? '<button class="primary" id="njr">+ New Job Request</button>' : ''}
-      <input id="jrq" type="search" placeholder="Search JR no / vehicle / description…" value="${esc(cur.q)}" style="max-width:280px">
-      <div class="spacer"></div><span class="muted" id="jrcount"></span>
-    </div>
-    <div id="jrtable"><div class="muted">Loading…</div></div>`;
-  const load = async () => {
-    const q = qs('#jrq').value.trim();
-    history.replaceState(null, '', '#/jobrequests' + (q ? '?q=' + encodeURIComponent(q) : ''));
-    const list = await api('/job-requests?' + (q ? 'q=' + encodeURIComponent(q) + '&' : '') + 'limit=500');
-    qs('#jrcount').textContent = `${list.length}${list.length === 500 ? '+' : ''} request${list.length === 1 ? '' : 's'}`;
-    qs('#jrtable').innerHTML = tableWrap(
-      [{ label: 'JR No' }, { label: 'Date' }, { label: 'Vehicle' }, { label: 'Type' }, { label: 'Work requested' }, { label: 'Requested By' }, { label: 'Job Card' }, { label: 'Status' }],
-      list.map((r) => `<tr data-jr="${r.id}" style="cursor:pointer${r.approval_status === 'rejected' ? ';background:rgba(196,57,44,.06)' : ''}">
-        <td><a href="#/jobrequests/${r.id}">${esc(r.jr_no)}</a></td>
-        <td>${esc((r.req_date || '').slice(0, 10))}</td>
-        <td>${esc(idLabel(r) || '—')}</td>
-        <td>${esc(r.type || '')}${r.severity ? ' · ' + esc(r.severity) : ''}</td>
-        <td>${esc(String(r.description || '').slice(0, 60))}</td>
-        <td>${esc(r.requested_by || '')}</td>
-        <td>${r.job_no ? `<a href="#/jobs/${r.job_id}">${esc(r.job_no)}</a>` : '—'}</td>
-        <td>${jrBadge(r.approval_status)}</td></tr>`), { scroll: true });
-    qsa('[data-jr]').forEach((tr) => tr.onclick = (e) => { if (e.target.tagName !== 'A') location.hash = '#/jobrequests/' + tr.dataset.jr; });
-  };
-  let deb; qs('#jrq').oninput = () => { clearTimeout(deb); deb = setTimeout(load, 250); };
-  if (qs('#njr')) qs('#njr').onclick = newJobRequestModal;
-  await load();
-}
 
 async function jobRequestDetail(c, id) {
   const d = await api('/job-requests/' + id);

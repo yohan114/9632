@@ -79,6 +79,8 @@ app.use('/api/auth', require('./routes/auth'));
 app.use('/api/access', require('./routes/access'));
 app.use('/api/assets', requireModule('assets'), require('./routes/assets'));
 app.use('/api/aliases', require('./routes/aliases'));
+// Job Cards: the Monitor and the Requests list (job cards plan). Checks its own module access.
+app.use('/api/job-flow', require('./routes/jobflow'));
 app.use('/api/projects', require('./routes/projects'));
 // MRN approval transitions (certify/approve/reject) are authorised by ROLE, not by
 // stores-edit level: the Workshop Engineer and Operational Manager who sign off an
