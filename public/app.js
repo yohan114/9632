@@ -9110,7 +9110,7 @@ routes.workshops = async (c) => {
 routes.access = async (c) => {
   if (!canDo('access.manage', 'users.manage')) { c.innerHTML = '<div class="card err">You do not have access to this page.</div>'; return; }
   const tabs = [];
-  if (canDo('access.manage')) tabs.push(['people', 'People'], ['roles', 'Roles & Permissions'], ['board', 'Clearance Board'], ['limits', 'Approval limits']);
+  if (canDo('access.manage')) tabs.push(['people', 'People'], ['sections', 'Sections'], ['compare', 'Compare'], ['roles', 'Roles & Permissions'], ['board', 'Clearance Board'], ['limits', 'Approval limits']);
   if (canDo('users.manage')) tabs.push(['users', 'Users & Roles']);
   const sp = new URLSearchParams(location.hash.split('?')[1] || '');
   const tab = tabs.some((t) => t[0] === sp.get('tab')) ? sp.get('tab') : tabs[0][0];
@@ -9132,6 +9132,8 @@ routes.access = async (c) => {
   const pane = qs('#apane', c);
   if (tab === 'users') await renderUsersManager(pane);
   else if (tab === 'people') await renderPeople(pane, sp.get('person'));
+  else if (tab === 'sections') await renderSections(pane, sp.get('section'));
+  else if (tab === 'compare') await renderCompare(pane, sp.get('a'), sp.get('b'));
   else if (tab === 'board') await renderClearanceBoard(pane);
   else if (tab === 'limits') await renderApprovalLimits(pane);
   else await renderRolesManager(pane, sp.get('role'));
@@ -9294,14 +9296,15 @@ async function renderPeople(c, personId) {
   const roleLabel = Object.fromEntries((await api('/access/roles')).roles.map((r) => [r.name, r.label || r.name]));
   let q = '';
   c.innerHTML = `<div class="grid" style="grid-template-columns:minmax(220px,300px) 1fr;gap:12px;align-items:start" id="ppl-grid">
-    <div class="card" style="padding:10px"><input id="ppl-q" type="search" placeholder="Search a person…" style="width:100%;margin-bottom:8px">
+    <div class="card" style="padding:10px"><div class="pill-row" style="margin:0 0 8px">${accessReportLinks()}</div>
+      <input id="ppl-q" type="search" placeholder="Search a person…" style="width:100%;margin-bottom:8px">
       <div id="ppl-list" style="max-height:70vh;overflow:auto"></div></div>
     <div id="ppl-one"><div class="card"><p class="muted" style="margin:0">Choose a person to see and change their access.</p></div></div></div>`;
   if (window.matchMedia('(max-width: 800px)').matches) qs('#ppl-grid', c).style.gridTemplateColumns = '1fr';
   const paintList = () => {
     const rows = people.filter((p) => !q || `${p.full_name || ''} ${p.username} ${p.roles.map((r) => roleLabel[r] || r).join(' ')}`.toLowerCase().includes(q));
     qs('#ppl-list', c).innerHTML = rows.map((p) => `<a href="#/access?tab=people&person=${p.id}" style="display:block;padding:6px 8px;border-radius:6px;text-decoration:none;color:inherit;${String(p.id) === String(personId) ? 'background:rgba(29,90,115,.13);' : ''}${p.active ? '' : 'opacity:.5;'}">
-        <b>${esc(p.full_name || p.username)}</b>${p.self ? ' <span class="badge">you</span>' : ''}${p.own_levels ? ` <span class="badge amber" title="Levels changed for this person">${p.own_levels} own</span>` : ''}
+        <b>${esc(p.full_name || p.username)}</b>${p.self ? ' <span class="badge">you</span>' : ''}${p.own_levels ? ` <span class="badge amber" title="Changed for this person">${p.own_levels} own</span>` : ''}
         <div class="muted" style="font-size:11.5px">${esc(p.username)} · ${esc(p.roles.map((r) => roleLabel[r] || r).join(', ') || 'no role')}</div></a>`).join('') || '<p class="muted">Nobody found.</p>';
   };
   qs('#ppl-q', c).oninput = (e) => { q = e.target.value.trim().toLowerCase(); paintList(); };
@@ -9309,62 +9312,266 @@ async function renderPeople(c, personId) {
   if (personId) await renderPerson(qs('#ppl-one', c), personId, people, () => renderPeople(c, personId));
 }
 
+// Which sections have their permissions open on the People page, kept while the page reloads.
+const PP_OPEN = new Set();
+const lvlWord = (l) => (l === 'none' ? 'None' : l[0].toUpperCase() + l.slice(1));
+const limitWord = (v) => (v == null ? 'No limit' : 'Rs ' + Math.round(Number(v) || 0).toLocaleString('en-US'));
+
 async function renderPerson(c, id, people, reload) {
   let d;
   try { d = await api('/access/people/' + id); } catch (e) { c.innerHTML = `<div class="card err">${esc(e.message)}</div>`; return; }
   const u = d.user;
   const mods = new Map(d.modules.map((m) => [m.key, m]));
   const can = d.can.edit;
-  const partName = (s, m) => (s.modules.length > 1 ? mods.get(m).label.split(' · ').pop() : '');
+  const mayGive = new Set(d.can.caps);
+  const roleCaps = new Set(u.role_caps);
+  const held = new Set(u.caps);
+  const today = localNowInput().slice(0, 10);
+  const orange = 'var(--amber, #d97706)';
+  const bySection = {};
+  for (const cap of d.capabilities) if (cap.key !== 'workshops.all') (bySection[cap.section] = bySection[cap.section] || []).push(cap);
+  // A part's own name, under its section's (not repeated when it is the section's main part).
+  const partName = (s, m) => { const n = s.modules && s.modules.length > 1 ? mods.get(m).label.split(' · ').pop() : ''; return n === s.label ? '' : n; };
+  // "Until": the last day a change of their own applies. Empty: no end.
+  const untilBox = (kind, key, until) => (can
+    ? ` <span class="muted" style="font-size:11.5px">until</span> <input type="date" data-until="${kind}:${esc(key)}" value="${esc(until || '')}" min="${today}" style="width:auto;padding:2px 4px;font-size:12px" title="Last day. Empty: no end.">`
+    : (until ? ` <span class="muted" style="font-size:11.5px">until ${esc(until)}</span>` : ''));
   const levelBox = (m) => {
     const own = d.personal[m];
     const lvl = d.effective[m];
     const max = rankL(d.can.max[m]);
-    const opts = d.levels.map((l) => `<option value="${l}" ${l === lvl ? 'selected' : ''} ${rankL(l) > max ? 'disabled' : ''}>${l === 'none' ? 'None' : l[0].toUpperCase() + l.slice(1)}</option>`).join('');
-    return `<select data-lvl="${m}" ${can ? '' : 'disabled'} style="width:auto;min-width:96px;border:2px solid ${own ? 'var(--amber, #d97706)' : 'rgba(29,90,115,.45)'}">${opts}</select>
-      ${own ? ` <span class="badge amber" title="Set by ${esc(own.set_by_name || '—')} on ${esc(String(own.set_at || '').slice(0, 10))}">own</span>${can ? ` <button class="sm" data-clear="${m}" title="Back to the role's level">↺ role (${esc(d.role_levels[m])})</button>` : ''}` : ' <span class="muted" style="font-size:11.5px">from role</span>'}`;
+    const opts = d.levels.map((l) => `<option value="${l}" ${l === lvl ? 'selected' : ''} ${rankL(l) > max ? 'disabled' : ''}>${lvlWord(l)}</option>`).join('');
+    return `<select data-lvl="${m}" ${can ? '' : 'disabled'} style="width:auto;min-width:96px;border:2px solid ${own ? orange : 'rgba(29,90,115,.45)'}">${opts}</select>
+      ${own ? ` <span class="badge amber" title="Set by ${esc(own.set_by_name || '—')} on ${esc(String(own.set_at || '').slice(0, 10))}">own</span>${untilBox('level', m, own.until)}${can ? ` <button class="sm" data-clear="${m}" title="Back to the role's level">↺ role (${esc(d.role_levels[m])})</button>` : ''}` : ' <span class="muted" style="font-size:11.5px">from role</span>'}`;
+  };
+  // A section's permissions, shown under it when opened: tick to give, untick to take away.
+  const ticksRow = (s) => {
+    const caps = bySection[s.key] || [];
+    if (!caps.length) return '';
+    const items = caps.map((cap) => {
+      const has = u.is_admin || held.has(cap.key);
+      const own = d.personal_caps[cap.key];
+      // Anyone who may change this person can take a permission away; giving one needs you to hold it.
+      const ok = can && (has || mayGive.has(cap.key));
+      const short = has && cap.needs && !u.is_admin && rankL(d.effective[cap.needs]) < 2
+        ? ` <span class="badge amber" title="Their ${esc((mods.get(cap.needs) || {}).label || cap.needs)} level is too low to use this">needs ${esc((mods.get(cap.needs) || {}).label || cap.needs)} Add</span>` : '';
+      return `<div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:3px 0;padding-left:6px;border-left:3px solid ${own ? orange : 'transparent'}">
+        <label style="display:flex;flex-direction:row;gap:8px;align-items:center;margin:0;font-weight:normal;text-transform:none;letter-spacing:0;font-size:13px">
+          <input type="checkbox" style="width:auto;margin:0;flex:none" data-tick="${esc(cap.key)}" ${has ? 'checked' : ''} ${ok ? '' : 'disabled'}>
+          <span>${esc(cap.label)}${short}</span></label>
+        ${own ? `<span class="badge amber" title="Set by ${esc(own.set_by_name || '—')} on ${esc(String(own.set_at || '').slice(0, 10))}">${own.granted ? 'given' : 'taken away'}</span>${untilBox('cap', cap.key, own.until)}${can ? ` <button class="sm" data-capclear="${esc(cap.key)}" title="Back to the role">↺ role</button>` : ''}` : ''}
+      </div>`;
+    }).join('');
+    return `<tr data-ticks="${s.key}" style="${PP_OPEN.has(s.key) ? '' : 'display:none'}"><td colspan="3" class="desc-col" style="background:rgba(29,90,115,.04)">${items}</td></tr>`;
+  };
+  const ticksBtn = (s) => {
+    const caps = bySection[s.key] || [];
+    if (!caps.length) return '';
+    const n = u.is_admin ? caps.length : caps.filter((cap) => held.has(cap.key)).length;
+    const own = caps.filter((cap) => d.personal_caps[cap.key]).length;
+    return `<button class="sm" data-open="${s.key}" title="Show the permissions in this section">${PP_OPEN.has(s.key) ? '▾' : '▸'} Permissions ${n}/${caps.length}</button>${own ? ` <span class="badge amber">${own} own</span>` : ''}`;
   };
   const rows = d.sections.flatMap((s) => {
-    if (s.always) return [`<tr><td><b>${esc(s.label)}</b></td><td></td><td class="muted">Always on — each part follows its own section</td></tr>`];
+    if (s.always) return [`<tr><td class="desc-col"><b>${esc(s.label)}</b></td><td class="muted desc-col">Always on — each part follows its own section</td><td></td></tr>`];
     if (s.special) {
-      const held = s.special.filter((k) => (u.caps || []).includes(k));
-      return [`<tr><td><b>${esc(s.label)}</b></td><td></td><td>${u.is_admin || held.length ? '<span class="badge green">Yes</span>' : '<span class="badge">No</span>'}
-        <span class="muted" style="font-size:11.5px">opens with a permission — set on the Roles &amp; Permissions tab</span></td></tr>`];
+      const opens = u.is_admin || s.special.some((k) => held.has(k));
+      return [`<tr><td class="desc-col"><b>${esc(s.label)}</b></td><td class="desc-col">${opens ? '<span class="badge green">Yes</span>' : '<span class="badge">No</span>'}
+        <span class="muted" style="font-size:11.5px">opens with a permission</span></td><td>${ticksBtn(s)}</td></tr>`, ticksRow(s)];
     }
-    return s.modules.filter((m) => mods.has(m)).map((m, i) => `<tr><td>${i ? '' : `<b>${esc(s.label)}</b>`}</td><td class="muted" style="font-size:12px">${esc(partName(s, m))}</td><td>${levelBox(m)}</td></tr>`);
+    return s.modules.filter((m) => mods.has(m)).map((m, i) => `<tr><td class="desc-col">${i ? '' : `<b>${esc(s.label)}</b>`}${partName(s, m) ? `<div class="muted" style="font-size:12px">${esc(partName(s, m))}</div>` : ''}</td><td class="desc-col">${levelBox(m)}</td><td class="desc-col">${i ? '' : ticksBtn(s)}</td></tr>`)
+      .concat([ticksRow(s)]);
   });
-  const ownCount = Object.keys(d.personal).length;
+
+  // Workshop: their own workshop only, or all of them (the "All workshops" permission).
+  const w = d.workshop;
+  const wsOwn = d.personal_caps['workshops.all'];
+  const wsLine = `<div style="margin:4px 0"><b>Workshop:</b> ${esc(w.home ? w.home.name : '—')} ·
+    <select id="pp-ws" style="width:auto;display:inline-block;border:2px solid ${wsOwn ? orange : 'rgba(29,90,115,.45)'}" ${can && !u.is_admin ? '' : 'disabled'}>
+      <option value="own" ${w.all ? '' : 'selected'}>Sees own workshop only</option>
+      <option value="all" ${w.all ? 'selected' : ''} ${w.all || mayGive.has('workshops.all') ? '' : 'disabled'}>Sees all workshops</option></select>
+    ${wsOwn ? ` <span class="badge amber">own</span>${untilBox('cap', 'workshops.all', wsOwn.until)}${can ? ' <button class="sm" data-capclear="workshops.all">↺ role</button>' : ''}` : ' <span class="muted" style="font-size:11.5px">from role</span>'}
+    ${w.separate ? '' : '<div class="muted" style="font-size:11.5px">Workshops are not kept apart now, so everyone sees every workshop.</div>'}</div>`;
+
+  // Approval limits: their own replaces the role's. Empty: the role's limit.
+  const lims = d.limits.filter((k) => !u.is_admin && (k.gives || k.own));
+  const limLine = u.is_admin ? '<div style="margin:4px 0"><b>Approval limits:</b> none (admin)</div>'
+    : lims.length ? `<div style="margin:4px 0"><b>Approval limits</b> <span class="muted" style="font-size:11.5px">— empty: the role's limit</span>${lims.map((k) => {
+      const mine = d.can.limits[k.key];
+      const ok = can && mine.gives;
+      return `<div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:3px 0">${esc(k.label)}:
+        <input type="number" min="0" step="1" data-limit="${k.key}" value="${k.own ? esc(k.own.max_amount) : ''}" data-was="${k.own ? esc(k.own.max_amount) : ''}"
+          placeholder="Role: ${esc(limitWord(k.role_limit))}" style="width:170px;border:2px solid ${k.own ? orange : 'rgba(29,90,115,.45)'}" ${ok ? '' : 'disabled'}>
+        <span class="muted" style="font-size:11.5px">now ${esc(limitWord(k.effective))}${k.gives ? '' : ' (does not give this approval)'}${ok && mine.max != null ? ` · yours ${esc(limitWord(mine.max))}` : ''}</span></div>`;
+    }).join('')}</div>` : '<div style="margin:4px 0" class="muted">Gives no approvals with a money limit.</div>';
+
+  const ownCount = Object.keys(d.personal).length + Object.keys(d.personal_caps).length + d.limits.filter((k) => k.own).length;
   c.innerHTML = `<div class="card">
     <div class="toolbar" style="margin:0 0 6px"><h3 style="margin:0">${esc(u.full_name || u.username)}</h3>
       <span class="muted">${esc(u.username)}</span>${u.active ? '' : ' <span class="badge">inactive</span>'}<div class="spacer"></div>
+      <a class="btn sm" href="#/access?tab=compare&a=${u.id}">Compare…</a>
       ${can ? `<button class="sm" id="pp-copy">Copy from another person…</button>${ownCount ? '<button class="sm" id="pp-reset">↺ Reset all to role</button>' : ''}` : ''}</div>
     <div style="margin-bottom:8px">${u.roles.map((r) => `<span class="badge">${esc(r.label)}</span>`).join(' ') || '<span class="muted">No role</span>'}
-      <span class="muted" style="font-size:12px">— the role is the starting point; change any section for this person below.</span></div>
-    ${can ? '' : `<div class="card" style="border-left:4px solid var(--amber, #d97706);margin:0 0 8px;padding:8px 10px">${esc(d.can.reason)}</div>`}
-    <p class="muted" style="font-size:12px;margin:0 0 8px"><span style="border:2px solid rgba(29,90,115,.45);padding:0 6px;border-radius:4px">blue</span> same as their role ·
-      <span style="border:2px solid var(--amber, #d97706);padding:0 6px;border-radius:4px">orange</span> changed for this person ·
-      View = see · Add = also add new · Edit = also change and remove · Full = everything. You can only give up to your own level.</p>
-    ${tableWrap([{ label: 'Section', width: '32%' }, { label: 'Part', width: '18%' }, { label: 'Level' }], rows, { scroll: true })}
+      <span class="muted" style="font-size:12px">— the role is the starting point; change anything for this person below.</span></div>
+    ${can ? '' : `<div class="card" style="border-left:4px solid ${orange};margin:0 0 8px;padding:8px 10px">${esc(d.can.reason)}</div>`}
+    ${wsLine}${limLine}
+    ${d.ended.length ? `<div class="muted" style="font-size:12px;margin:4px 0">Ended (no longer applied): ${d.ended.map((x) => `${esc(x.label)} · ${esc(x.value)} (last day ${esc(x.until)})`).join('; ')}</div>` : ''}
+    <p class="muted" style="font-size:12px;margin:8px 0"><span style="border:2px solid rgba(29,90,115,.45);padding:0 6px;border-radius:4px">blue</span> same as their role ·
+      <span style="border:2px solid ${orange};padding:0 6px;border-radius:4px">orange</span> changed for this person ·
+      View = see · Add = also add new · Edit = also change and remove · Full = everything. You can only give what you have yourself.</p>
+    ${tableWrap([{ label: 'Section', width: '26%', cls: 'desc-col' }, { label: 'Level', cls: 'desc-col' }, { label: '', width: '24%', cls: 'desc-col' }], rows.filter(Boolean), { fit: true })}
   </div>`;
-  const put = async (m, level) => {
-    try { await api(`/access/people/${id}/levels`, { method: 'PUT', body: { module: m, level } }); toast('Saved'); reload(); }
-    catch (e) { toast(e.message, 'err'); reload(); }
+  const done = (msg) => { toast(msg || 'Saved'); reload(); };
+  const fail = (e) => { toast(e.message, 'err'); reload(); };
+  const put = async (m, level, until = null) => {
+    try { await api(`/access/people/${id}/levels`, { method: 'PUT', body: { module: m, level, until } }); done(); } catch (e) { fail(e); }
+  };
+  const putCap = async (capability, state, until = null) => {
+    try { await api(`/access/people/${id}/caps`, { method: 'PUT', body: { capability, state, until } }); done(); } catch (e) { fail(e); }
   };
   qsa('[data-lvl]', c).forEach((sel) => { sel.onchange = () => put(sel.dataset.lvl, sel.value === d.role_levels[sel.dataset.lvl] ? null : sel.value); });
   qsa('[data-clear]', c).forEach((b) => { b.onclick = () => put(b.dataset.clear, null); });
+  qsa('[data-open]', c).forEach((b) => {
+    b.onclick = () => {
+      const k = b.dataset.open;
+      if (PP_OPEN.has(k)) PP_OPEN.delete(k); else PP_OPEN.add(k);
+      qs(`[data-ticks="${k}"]`, c).style.display = PP_OPEN.has(k) ? '' : 'none';
+      b.textContent = b.textContent.replace(/^[▸▾]/, PP_OPEN.has(k) ? '▾' : '▸');
+    };
+  });
+  qsa('[data-tick]', c).forEach((box) => {
+    box.onchange = () => {
+      const k = box.dataset.tick;
+      putCap(k, box.checked === roleCaps.has(k) ? 'role' : (box.checked ? 'give' : 'take'));
+    };
+  });
+  qsa('[data-capclear]', c).forEach((b) => { b.onclick = () => putCap(b.dataset.capclear, 'role'); });
+  qsa('[data-until]', c).forEach((inp) => {
+    inp.onchange = () => {
+      const [kind, key] = inp.dataset.until.split(':');
+      if (kind === 'level') put(key, d.effective[key], inp.value || null);
+      else putCap(key, d.personal_caps[key].granted ? 'give' : 'take', inp.value || null);
+    };
+  });
+  if (qs('#pp-ws', c)) qs('#pp-ws', c).onchange = (e) => {
+    const want = e.target.value === 'all';
+    putCap('workshops.all', want === roleCaps.has('workshops.all') ? 'role' : (want ? 'give' : 'take'));
+  };
+  qsa('[data-limit]', c).forEach((inp) => {
+    inp.onchange = async () => {
+      const val = inp.value.trim();
+      if (val === inp.dataset.was) return;
+      try { await api(`/access/people/${id}/limits`, { method: 'PUT', body: { kind: inp.dataset.limit, max_amount: val === '' ? null : val } }); done(val === '' ? 'Back to the role\'s limit' : `Limit saved: ${money(val)}`); }
+      catch (e) { fail(e); }
+    };
+  });
   if (qs('#pp-reset', c)) qs('#pp-reset', c).onclick = async () => {
-    if (!confirm(`Put all of ${u.full_name || u.username}'s sections back to their role?`)) return;
-    try { await api(`/access/people/${id}/reset`, { method: 'POST', body: {} }); toast('Back to the role'); reload(); } catch (e) { toast(e.message, 'err'); }
+    if (!confirm(`Put everything of ${u.full_name || u.username}'s back to their role? This clears their own levels, permissions and approval limits.`)) return;
+    try { await api(`/access/people/${id}/reset`, { method: 'POST', body: {} }); done('Back to the role'); } catch (e) { toast(e.message, 'err'); }
   };
   if (qs('#pp-copy', c)) qs('#pp-copy', c).onclick = () => modal(`Copy access to ${u.full_name || u.username}`, `
-    ${field('Copy the levels of', 'from', { type: 'select', options: people.filter((p) => String(p.id) !== String(id) && p.active).map((p) => ({ value: p.id, label: `${p.full_name || p.username} (${p.username})` })) })}
-    <p class="muted" style="font-size:12px">Their section levels become the same as this person's. Their roles do not change.</p>
+    ${field('Copy the access of', 'from', { type: 'select', options: people.filter((p) => String(p.id) !== String(id) && p.active && !p.roles.includes('admin')).map((p) => ({ value: p.id, label: `${p.full_name || p.username} (${p.username})` })) })}
+    <p class="muted" style="font-size:12px">Their section levels and permissions become the same as this person's, with the same end dates. Their roles and approval limits do not change.</p>
     <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Copy</button></div>`, (b, close) => {
     qs('#s', b).onclick = async () => {
       try { await api(`/access/people/${id}/copy`, { method: 'POST', body: { from: Number(formData(b).from) } }); toast('Copied'); close(); reload(); }
       catch (e) { toast(e.message, 'err'); }
     };
   });
+}
+
+// The access report, as Excel or a page to print or save as PDF (every person × every section).
+const accessReportLinks = () => `<a class="btn sm" href="/api/access/report.xlsx">⬇ Access report (Excel)</a>
+  <a class="btn sm" href="/api/access/report.html" target="_blank" rel="noopener">🖨 Access report (PDF)</a>`;
+
+// ---- Sections: pick a section, see everyone who reaches it and at what level (Part 3) -----------
+async function renderSections(c, key) {
+  const ov = await api('/access/overview');
+  const secs = ov.sections.filter((s) => !s.always);
+  const sec = secs.find((s) => s.key === key) || secs[0];
+  const mods = new Map(ov.modules.map((m) => [m.key, m]));
+  const parts = sec.special ? [] : sec.modules.filter((m) => mods.has(m));
+  const caps = ov.capabilities.filter((cap) => cap.section === sec.key);
+  const people = ov.people.filter((p) => p.active);
+  let showAll = false;
+  const reach = (p) => (sec.special ? (p.is_admin || sec.special.some((k) => p.caps.includes(k)) ? 1 : 0) : Math.max(...parts.map((m) => rankL(p.levels[m]))));
+  const cell = (p, m) => {
+    const o = p.own[m];
+    return `<td style="text-align:center${o ? ';background:rgba(217,119,6,.12)' : ''}" ${o ? `title="Changed for this person${o.until ? ` until ${esc(o.until)}` : ''}"` : ''}>${lvlChip(p.levels[m])}${o ? ' <span class="badge amber">own</span>' : ''}${o && o.until ? `<div class="muted" style="font-size:10.5px">until ${esc(o.until)}</div>` : ''}</td>`;
+  };
+  const paint = () => {
+    const list = people.filter((p) => showAll || reach(p) > 0).sort((a, b) => reach(b) - reach(a) || a.name.localeCompare(b.name));
+    const head = [{ label: 'Person', cls: 'desc-col' }].concat(sec.special
+      ? [{ label: 'Opens' }]
+      : parts.map((m) => ({ label: parts.length > 1 ? mods.get(m).label.split(' · ').pop() : 'Level', cls: 'desc-col' })));
+    const rows = list.map((p) => `<tr><td class="desc-col"><a href="#/access?tab=people&person=${p.id}"><b>${esc(p.name)}</b></a> <span class="muted" style="font-size:11px">${esc(p.username)}</span>
+      <div class="muted" style="font-size:11.5px">${esc(p.roles.join(', ') || 'no role')}</div></td>
+      ${sec.special ? `<td>${reach(p) ? '<span class="badge green">Yes</span>' : '<span class="badge">No</span>'}</td>` : parts.map((m) => cell(p, m)).join('')}</tr>`);
+    const holders = caps.map((cap) => {
+      const who = people.filter((p) => p.is_admin || p.caps.includes(cap.key));
+      return `<li style="margin:3px 0">${esc(cap.label)} — <span class="muted">${who.length ? who.map((p) => esc(p.name) + (p.own_caps[cap.key] ? ' <span class="badge amber">own</span>' : '')).join(', ') : 'nobody'}</span></li>`;
+    }).join('');
+    qs('#sec-body', c).innerHTML = `${tableWrap(head, rows, { scroll: true, fit: true })}
+      <p class="muted" style="font-size:12px;margin:6px 0 0">${list.length} of ${people.length} active people shown. Orange: changed for this person.</p>
+      ${caps.length ? `<details style="margin-top:10px"><summary><b>Who holds each permission in ${esc(sec.label)}</b> (${caps.length})</summary><ul style="margin:6px 0 0;padding-left:18px">${holders}</ul></details>` : ''}`;
+  };
+  c.innerHTML = `<div class="card">
+    <div class="toolbar" style="margin:0 0 8px;flex-wrap:wrap;gap:6px">
+      <select id="sec-pick" style="width:auto">${secs.map((s) => `<option value="${s.key}" ${s.key === sec.key ? 'selected' : ''}>${esc(s.label)}</option>`).join('')}</select>
+      <label style="display:flex;flex-direction:row;gap:6px;align-items:center;margin:0;font-weight:normal"><input type="checkbox" id="sec-all" style="width:auto"> Show people with no access</label>
+      <div class="spacer"></div>${accessReportLinks()}</div>
+    <p class="muted" style="font-size:12px;margin:0 0 8px">Everyone who can open this section, and at what level. Click a name to change their access.</p>
+    <div id="sec-body"></div></div>`;
+  qs('#sec-pick', c).onchange = (e) => { location.hash = '#/access?tab=sections&section=' + e.target.value; };
+  qs('#sec-all', c).onchange = (e) => { showAll = e.target.checked; paint(); };
+  paint();
+}
+
+// ---- Compare two people, section by section and permission by permission (Part 3) ---------------
+async function renderCompare(c, a, b) {
+  const people = (await api('/access/people')).filter((p) => p.active);
+  const pick = (id, name) => `<select id="${name}" style="width:auto"><option value="">— choose —</option>${people.map((p) => `<option value="${p.id}" ${String(p.id) === String(id) ? 'selected' : ''}>${esc(p.full_name || p.username)} (${esc(p.username)})</option>`).join('')}</select>`;
+  c.innerHTML = `<div class="card"><div class="toolbar" style="margin:0 0 8px;flex-wrap:wrap;gap:6px">${pick(a, 'cmp-a')} <span class="muted">and</span> ${pick(b, 'cmp-b')}
+      <label style="display:flex;flex-direction:row;gap:6px;align-items:center;margin:0 0 0 8px;font-weight:normal"><input type="checkbox" id="cmp-diff" style="width:auto" checked> Only differences</label></div>
+    <div id="cmp-body"><p class="muted" style="margin:0">Choose two people to see what is different.</p></div></div>`;
+  const go = () => { location.hash = `#/access?tab=compare&a=${qs('#cmp-a', c).value}&b=${qs('#cmp-b', c).value}`; };
+  qs('#cmp-a', c).onchange = go; qs('#cmp-b', c).onchange = go;
+  if (!a || !b) return;
+  let A, B;
+  try { [A, B] = await Promise.all([api('/access/people/' + a), api('/access/people/' + b)]); } catch (e) { qs('#cmp-body', c).innerHTML = `<div class="err">${esc(e.message)}</div>`; return; }
+  const nameA = esc(A.user.full_name || A.user.username), nameB = esc(B.user.full_name || B.user.username);
+  const mods = new Map(A.modules.map((m) => [m.key, m]));
+  const opens = (P, s) => P.user.is_admin || s.special.some((k) => P.user.caps.includes(k));
+  const lv = (P, m) => `${lvlChip(P.effective[m])}${P.personal[m] ? ' <span class="badge amber">own</span>' : ''}`;
+  const lines = A.sections.filter((s) => !s.always).flatMap((s) => {
+    if (s.special) return [{ label: s.label, part: '', a: opens(A, s) ? 'Yes' : 'No', b: opens(B, s) ? 'Yes' : 'No', same: opens(A, s) === opens(B, s) }];
+    return s.modules.filter((m) => mods.has(m)).map((m) => ({ label: s.label, part: s.modules.length > 1 ? mods.get(m).label.split(' · ').pop() : '',
+      a: lv(A, m), b: lv(B, m), same: A.effective[m] === B.effective[m] }));
+  });
+  lines.push({ label: 'Workshop', part: '', a: esc(A.workshop.all ? 'All workshops' : 'Own only'), b: esc(B.workshop.all ? 'All workshops' : 'Own only'), same: A.workshop.all === B.workshop.all });
+  const say = (P, k) => (P.user.is_admin ? 'No limit' : k.gives ? limitWord(k.effective) : '—');
+  A.limits.forEach((k, i) => {
+    lines.push({ label: 'Approval limit', part: k.label, a: esc(say(A, k)), b: esc(say(B, B.limits[i])), same: say(A, k) === say(B, B.limits[i]) });
+  });
+  const diffOnly = () => qs('#cmp-diff', c).checked;
+  const secLabel = new Map(A.sections.map((s) => [s.key, s.label]));
+  const only = (X, Y) => A.capabilities.filter((cap) => (X.user.is_admin || X.user.caps.includes(cap.key)) && !(Y.user.is_admin || Y.user.caps.includes(cap.key)));
+  const capList = (list) => (list.length ? `<ul style="margin:4px 0 0;padding-left:18px">${list.map((cap) => `<li>${esc(cap.label)} <span class="muted" style="font-size:11px">— ${esc(secLabel.get(cap.section) || '')}</span></li>`).join('')}</ul>` : '<p class="muted" style="margin:4px 0 0">Nothing.</p>');
+  const paint = () => {
+    // The section's name on the first row shown for it, so a part never sits under the wrong one.
+    let prev = null;
+    const rows = lines.filter((l) => !diffOnly() || !l.same).map((l) => {
+      const head = l.label !== prev ? `<b>${esc(l.label)}</b>` : '';
+      prev = l.label;
+      return `<tr${l.same ? '' : ' style="background:rgba(217,119,6,.10)"'}><td class="desc-col">${head}${l.part ? `<div class="muted" style="font-size:12px">${esc(l.part)}</div>` : ''}</td><td class="desc-col">${l.a}</td><td class="desc-col">${l.b}</td></tr>`;
+    });
+    // Cells wrap, so both people fit side by side on a phone.
+    qs('#cmp-body', c).innerHTML = `${tableWrap([{ label: 'Section', width: '34%', cls: 'desc-col' }, { label: nameA, html: true, cls: 'desc-col' }, { label: nameB, html: true, cls: 'desc-col' }], rows, { fit: true })}
+      ${diffOnly() && !rows.length ? '<p class="muted">Their section levels, workshop and limits are the same.</p>' : ''}
+      <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;margin-top:10px">
+        <div><b>Only ${nameA} can</b>${capList(only(A, B))}</div><div><b>Only ${nameB} can</b>${capList(only(B, A))}</div></div>`;
+  };
+  qs('#cmp-diff', c).onchange = paint;
+  paint();
 }
 
 async function renderClearanceBoard(c) {

@@ -31,7 +31,7 @@ function startSession(req, res, user, { mfaVerified = false, method = 'password'
   });
   audit.record({ userId: user.id, entity: 'session', action: 'login', after: method === 'password' ? null : { second_factor: method } });
   const roles = auth.rolesForUser(user.id);
-  const caps = capabilities.capsForRoles(roles);
+  const caps = capabilities.capsForUser({ id: user.id, roles });
   const st = mfa.status(user.id, roles);
   return res.json({
     id: user.id,

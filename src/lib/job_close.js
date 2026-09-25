@@ -104,7 +104,7 @@ function partialClose(job, { user, note = '', date = null, openNew = false, newJ
   let newType = null;
   if (openNew) {
     if (!job.asset_id) throw bad('This job has no vehicle, so there is no new job to open for it', 400);
-    if (!(user && Array.isArray(user.caps) ? user.caps : require('./capabilities').capsForRoles((user && user.roles) || [])).includes('jobs.create')) {
+    if (!require('./auth').capsOf(user).includes('jobs.create')) {
       throw bad('Opening a new job needs the permission "Open a new job card"', 403);
     }
     const guard = jobstate.checkOneOpenJob(job.asset_id, { excludeJobId: job.id });

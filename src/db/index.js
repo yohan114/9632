@@ -97,6 +97,28 @@ function migrate() {
     set_at  TEXT NOT NULL DEFAULT (datetime('now')),
     PRIMARY KEY (user_id, module)
   );`);
+  // Part 3: a level of one's own can end on a date (the last day it applies).
+  ensureColumn('user_permissions', 'until', 'TEXT');
+  // A person's own permissions (access plan, Part 3): granted 1 gives one their roles do not,
+  // granted 0 takes away one their roles give. Either can end on a date. No row: their roles decide.
+  db.exec(`CREATE TABLE IF NOT EXISTS user_capabilities (
+    user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    capability TEXT NOT NULL,
+    granted    INTEGER NOT NULL,
+    until      TEXT,
+    set_by     INTEGER REFERENCES users(id),
+    set_at     TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (user_id, capability)
+  );`);
+  // A person's own approval limit (src/lib/approval_limits.js): it replaces their roles' limit.
+  db.exec(`CREATE TABLE IF NOT EXISTS user_approval_limits (
+    user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    kind       TEXT NOT NULL,
+    max_amount REAL NOT NULL CHECK (max_amount >= 0),
+    set_by     INTEGER REFERENCES users(id),
+    set_at     TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (user_id, kind)
+  );`);
   // Capabilities — the individual actions a role may take (src/lib/capabilities.js). Keyed by role
   // NAME like role_permissions. Taking a capability away sets granted = 0 instead of deleting the
   // row, so the boot-time seed (INSERT OR IGNORE) can never quietly give it back.

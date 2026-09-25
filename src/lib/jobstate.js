@@ -101,7 +101,7 @@ function capsFor(who) {
   const lib = require('./capabilities');
   if (Array.isArray(who)) return lib.capsForRoles(who);
   if (who && Array.isArray(who.caps)) return who.caps;
-  return lib.capsForRoles((who && who.roles) || []);
+  return lib.capsForUser(who);
 }
 
 /** Is current -> target a reopen (a closed or partly closed card going back to work)? */

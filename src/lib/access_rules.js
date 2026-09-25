@@ -18,8 +18,10 @@
 //   4. Nobody changes their own access (access plan, Part 2): a person's own levels are set by
 //      someone else, admin or not.
 //
-// "What you hold" is your own level on each switch: your roles', or your own where one was set
-// for you. Admins pass rules 1 and 2 by definition; rules 3 and 4 apply to everybody.
+// "What you hold" is your own level on each switch (your roles', or your own where one was set for
+// you), your permissions (your roles', with any given to or taken from you), and your approval
+// limits (access plan, Part 3). Admins pass rules 1 and 2 by definition; rules 3 and 4 apply to
+// everybody.
 // ===========================================================================
 
 const { get, all } = require('../db');
@@ -31,7 +33,7 @@ const fail = (status, msg) => { const e = new Error(msg); e.status = status; thr
 
 function capsOf(user) {
   if (!user) return [];
-  return Array.isArray(user.caps) ? user.caps : capabilities.capsForRoles(user.roles || []);
+  return Array.isArray(user.caps) ? user.caps : capabilities.capsForUser(user);
 }
 
 /** Rule 1, for permissions. */
@@ -93,11 +95,15 @@ function assertCanManageUser(actor, targetUserId) {
                            WHERE ur.user_id = ?`, targetUserId).map((r) => r.name);
   const within = () => {
     assertCanAssignRoles(actor, theirRoles);
+    const target = { id: targetUserId, roles: theirRoles };
     // Their own levels too, where some were set for them above their roles'.
-    const theirs = permissions.userLevels({ id: targetUserId, roles: theirRoles });
+    const theirs = permissions.userLevels(target);
     for (const m of permissions.MODULE_KEYS) {
       if (permissions.rank(theirs[m]) > permissions.rank(permissions.levelFor(actor, m))) fail(403, 'above yours');
     }
+    // And their own permissions and approval limits (Part 3).
+    assertCanGrantCaps(actor, capabilities.capsForUser(target));
+    if (require('./approval_limits').outsideLimits(actor, target)) fail(403, 'above yours');
   };
   try {
     within();
