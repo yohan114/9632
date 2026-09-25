@@ -168,6 +168,154 @@ router.get('/capabilities', requireCap('access.manage'), asyncHandler((_req, res
   });
 }));
 
+// ---- section-wise access control (Single point per section) --------------------------------
+
+const FUNCTIONAL_SECTIONS = [
+  {
+    id: 'operations',
+    name: 'Operations & Workshop',
+    icon: '🔧',
+    description: 'Job cards, job requests, repairs, field service and workshop management',
+    modules: ['jobs', 'jobrequests'],
+    presets: {
+      none: { modules: { jobs: 'none', jobrequests: 'none' }, caps: [] },
+      view: { modules: { jobs: 'view', jobrequests: 'view' }, caps: [] },
+      operator: {
+        modules: { jobs: 'edit', jobrequests: 'edit' },
+        caps: ['jobs.create', 'jobs.start', 'jobs.complete', 'jobs.dailywork', 'jobs.parts', 'jobs.field', 'jobrequests.create']
+      },
+      manager: {
+        modules: { jobs: 'full', jobrequests: 'full' },
+        caps: ['jobs.create', 'jobs.edit', 'jobs.approve_transport', 'jobs.approve_operations', 'jobs.assign_workshop', 'jobs.start', 'jobs.complete', 'jobs.close', 'jobs.close_on_date', 'jobs.reject', 'jobs.return', 'jobs.reopen_request', 'jobs.reopen', 'jobs.reason', 'jobs.dailywork', 'jobs.parts', 'jobs.flat_labour', 'jobs.partial_close', 'jobs.breakdown', 'jobs.field', 'jobs.triage', 'jobrequests.create', 'jobrequests.certify', 'jobrequests.approve', 'jobrequests.reject']
+      }
+    }
+  },
+  {
+    id: 'stores',
+    name: 'Inventory & Stores',
+    icon: '📦',
+    description: 'Store items, MRNs, receipts (GRN), issues, transfer notes (MTN), lubricants and filters',
+    modules: ['stores', 'oil', 'filters'],
+    presets: {
+      none: { modules: { stores: 'none', oil: 'none', filters: 'none' }, caps: [] },
+      view: { modules: { stores: 'view', oil: 'view', filters: 'view' }, caps: [] },
+      operator: {
+        modules: { stores: 'edit', oil: 'edit', filters: 'edit' },
+        caps: ['stores.items.edit', 'stores.mrn.create', 'stores.grn.receive', 'stores.grn.edit', 'stores.issue', 'stores.stock_issue', 'stores.issue_return', 'stores.mtn.edit', 'stores.stock.count', 'oil.ledger.post', 'oil.count', 'filters.stock.receive', 'filters.stock.issue']
+      },
+      manager: {
+        modules: { stores: 'full', oil: 'full', filters: 'full' },
+        caps: ['stores.items.edit', 'stores.items.txn', 'stores.categories.edit', 'stores.mrn.create', 'stores.mrn.edit', 'stores.mrn.certify', 'stores.mrn.approve', 'stores.mrn.reject', 'stores.mrn.amend_settled', 'stores.grn.receive', 'stores.grn.edit', 'stores.issue', 'stores.stock_issue', 'stores.reorder_mrn', 'stores.stock.rebuild', 'stores.mtn.edit', 'stores.issue_return', 'stores.stock.count', 'stores.stock.levels', 'stores.count.approve', 'stores.disposal.edit', 'stores.disposal.approve', 'general.items.edit', 'general.stock.adjust', 'general.items.price', 'oil.identity.resolve', 'oil.products.edit', 'oil.prices.edit', 'oil.ledger.post', 'oil.count', 'services.attachments', 'filters.stock.edit', 'filters.stock.receive', 'filters.stock.issue']
+      }
+    }
+  },
+  {
+    id: 'fleet',
+    name: 'Fleet & Assets',
+    icon: '🚜',
+    description: 'Vehicles, heavy machinery, projects, workshops and mechanics roster',
+    modules: ['assets', 'projects', 'labour', 'aliases'],
+    presets: {
+      none: { modules: { assets: 'none', projects: 'none', labour: 'none', aliases: 'none' }, caps: [] },
+      view: { modules: { assets: 'view', projects: 'view', labour: 'view', aliases: 'view' }, caps: [] },
+      operator: {
+        modules: { assets: 'view', projects: 'view', labour: 'view', aliases: 'view' },
+        caps: ['aliases.vehicle.resolve', 'aliases.mechanic.resolve']
+      },
+      manager: {
+        modules: { assets: 'full', projects: 'full', labour: 'full', aliases: 'full' },
+        caps: ['assets.create', 'assets.edit', 'assets.move', 'fleet.capacities.edit', 'aliases.vehicle.resolve', 'aliases.mechanic.resolve', 'projects.manage', 'workshops.manage', 'workshops.all', 'mechanics.create', 'labour.rates.edit', 'mechanics.move']
+      }
+    }
+  },
+  {
+    id: 'dailywork',
+    name: 'Daily Work & Attendance',
+    icon: '📅',
+    description: 'Mechanics daily labor booking, attendance logs, day-end sign-offs and unlock overrides',
+    modules: ['dailywork'],
+    presets: {
+      none: { modules: { dailywork: 'none' }, caps: [] },
+      view: { modules: { dailywork: 'view' }, caps: [] },
+      operator: {
+        modules: { dailywork: 'edit' },
+        caps: ['dailywork.add', 'attendance.record']
+      },
+      manager: {
+        modules: { dailywork: 'full' },
+        caps: ['dailywork.add', 'dailywork.edit', 'attendance.record', 'attendance.signoff', 'attendance.unlock', 'attendance.settings']
+      }
+    }
+  },
+  {
+    id: 'purchasing',
+    name: 'Procurement & Purchasing',
+    icon: '🛒',
+    description: 'Head office and local purchasing channels, supplier orders and technical specifications',
+    modules: ['purchasing', 'tb_request'],
+    presets: {
+      none: { modules: { purchasing: 'none', tb_request: 'none' }, caps: [] },
+      view: { modules: { purchasing: 'view', tb_request: 'view' }, caps: [] },
+      operator: {
+        modules: { purchasing: 'edit', tb_request: 'edit' },
+        caps: ['purchasing.head_office', 'purchasing.local']
+      },
+      manager: {
+        modules: { purchasing: 'full', tb_request: 'full' },
+        caps: ['purchasing.head_office', 'purchasing.local', 'purchasing.all_channels', 'tb.specs.edit']
+      }
+    }
+  },
+  {
+    id: 'batteries',
+    name: 'Batteries & Tyres Management',
+    icon: '🔋',
+    description: 'Battery registration, warranty tracking, swaps, events and photos',
+    modules: ['batteries'],
+    presets: {
+      none: { modules: { batteries: 'none' }, caps: [] },
+      view: { modules: { batteries: 'view' }, caps: [] },
+      operator: {
+        modules: { batteries: 'edit' },
+        caps: ['batteries.register', 'batteries.photos', 'batteries.event']
+      },
+      manager: {
+        modules: { batteries: 'full' },
+        caps: ['batteries.register', 'batteries.photos', 'batteries.event']
+      }
+    }
+  },
+  {
+    id: 'admin',
+    name: 'System & Administration',
+    icon: '🛡️',
+    description: 'User accounts, role access control, system diagnostics and daily report notes',
+    modules: ['users', 'reports'],
+    presets: {
+      none: { modules: { users: 'none', reports: 'none' }, caps: [] },
+      view: { modules: { users: 'none', reports: 'view' }, caps: [] },
+      operator: {
+        modules: { users: 'none', reports: 'view' },
+        caps: ['reports.daily.notes']
+      },
+      manager: {
+        modules: { users: 'full', reports: 'full' },
+        caps: ['users.manage', 'access.manage', 'system.status', 'jobs.settings', 'reports.daily.notes', 'reports.repair_sections.sync']
+      }
+    }
+  }
+];
+
+router.get('/section-matrix', requireCap('access.manage'), asyncHandler((_req, res) => {
+  res.json({
+    sections: FUNCTIONAL_SECTIONS,
+    capabilities: capabilities.CAPABILITIES.map(({ key, module, label, needs }) => ({ key, module, label, needs })),
+    modules: permissions.MODULES,
+    roles: describeRoles(),
+    matrix: permissions.getMatrix(),
+  });
+}));
+
 router.post('/capabilities', requireCap('access.manage'), asyncHandler((req, res) => {
   require_(req.body, ['role', 'capability']);
   const role = roleRow(req.body.role);
@@ -181,6 +329,53 @@ router.post('/capabilities', requireCap('access.manage'), asyncHandler((req, res
     after: { role: role.name, capability: req.body.capability, granted } });
   res.json(describeRoles().find((r) => r.name === role.name));
 }));
+
+router.post('/section-save', requireCap('access.manage'), asyncHandler((req, res) => {
+  require_(req.body, ['role']);
+  const role = roleRow(req.body.role);
+  if (!role) bad(404, 'Role not found');
+  if (role.name === 'admin') bad(400, 'The admin role holds full access and cannot be changed.');
+
+  const roleName = role.name;
+  const modUpdates = req.body.modules || {};
+  const capUpdates = req.body.capabilities || {};
+
+  // Check permissions before writing
+  for (const [m, lvl] of Object.entries(modUpdates)) {
+    rules.assertCanSetLevel(req.user, m, lvl);
+  }
+  const toGrant = Object.entries(capUpdates).filter(([, v]) => !!v).map(([k]) => k);
+  if (toGrant.length) {
+    rules.assertCanGrantCaps(req.user, toGrant);
+  }
+
+  tx(() => {
+    // 1. Update module clearance levels
+    for (const [m, lvl] of Object.entries(modUpdates)) {
+      const before = permissions.levelForRoles([roleName], m);
+      permissions.setPermission(roleName, m, lvl);
+      audit.record({ userId: req.user.id, entity: 'role_permission', action: 'update',
+        before: { role: roleName, module: m, level: before },
+        after: { role: roleName, module: m, level: lvl } });
+    }
+
+    // 2. Update capabilities
+    for (const [capKey, granted] of Object.entries(capUpdates)) {
+      const before = capabilities.capsForRole(roleName).includes(capKey);
+      capabilities.setCapability(roleName, capKey, !!granted);
+      audit.record({ userId: req.user.id, entity: 'role_capability', entityId: role.id,
+        action: granted ? 'grant' : 'revoke',
+        before: { role: roleName, capability: capKey, granted: before },
+        after: { role: roleName, capability: capKey, granted: !!granted } });
+    }
+  });
+
+  res.json({
+    role: describeRoles().find((r) => r.name === roleName),
+    matrix: permissions.getMatrix(),
+  });
+}));
+
 
 // ---- approval limits (src/lib/approval_limits.js) ------------------------------------------
 

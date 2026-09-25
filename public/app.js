@@ -933,49 +933,247 @@ async function dashPurchasing(c) {
       ? ` — but ${counts.unassigned} item(s) have not been given to an officer yet.` : '.'}</p></div>`;
 }
 
-// Managers' time is precious: their dashboard leads with what needs their sign-off.
-function renderPendingApprovals(pa) {
-  if (!pa || !pa.is_approver) return '';
-  // An MRN awaiting approval carries its estimated value, and says so when it is above this
-  // person's approval limit (it waits for someone with a higher one).
-  const mrnWorth = (m) => (m.value == null ? '' : ` · about ${esc(money(m.value))}${m.unpriced ? ` <span class="muted">(${m.unpriced} without a price)</span>` : ''}`);
-  const mrnRow = (m, action) => `<div class="cost-line"><a href="#/stores?tab=mrn&id=${m.id}"><b>MRN ${esc(m.mrn_no)}</b> · ${esc(idLabel(m) || 'general')} · ${m.lines} item(s)${mrnWorth(m)}${m.requested_by ? ' · by ' + esc(m.requested_by) : ''}${m.certified_by ? ' · certified ' + esc(m.certified_by) : ''}</a>${m.over_limit
-    ? `<span class="badge amber" title="Needs: ${esc((m.who_can || []).join(', '))}">Above your limit</span>`
-    : `<span class="badge ${action === 'Approve' ? 'blue' : 'amber'}">${action} →</span>`}</div>`;
-  // How long it has been waiting, from the request date. An approver deciding between a card raised
-  // this morning and one raised three weeks ago was previously shown neither — just a number and a
-  // vehicle — so the queue gave no sense of what was overdue.
-  const waited = (d) => {
+// Process-wise approvals queue renderer
+function renderProcessApprovals(ap) {
+  if (!ap || !ap.is_approver) return '';
+  const total = ap.total_pending || 0;
+  
+  const waitedBadge = (d) => {
     const day = String(d || '').slice(0, 10);
     if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return '';
     const days = Math.floor((Date.now() - new Date(day + 'T00:00:00').getTime()) / 86400000);
     if (!Number.isFinite(days) || days < 0) return `<span class="muted"> · ${esc(day)}</span>`;
-    // Only worth calling out once it has actually sat there; "0 days" is noise on today's request.
-    const age = days >= 3 ? ` <span class="badge ${days >= 14 ? 'red' : 'amber'}">${days} days</span>` : '';
-    return `<span class="muted"> · requested ${esc(day)}</span>${age}`;
+    const age = days >= 14 ? ` <span class="badge red">${days}d overdue</span>` : (days >= 3 ? ` <span class="badge amber">${days}d waiting</span>` : '');
+    return `<span class="muted"> · ${esc(day)}</span>${age}`;
   };
-  const jobRow = (j, action) => `<div class="cost-line"><a href="#/jobs/${j.id}"><b>${esc(j.job_no)}</b> · ${esc(idLabel(j) || '—')}${waited(j.requested_at)}</a><span class="badge amber">${action} →</span></div>`;
-  const jrRow = (r, action) => `<div class="cost-line"><a href="#/jobrequests/${r.id}"><b>${esc(r.jr_no)}</b> · ${esc(idLabel(r) || '—')}${r.description ? ' · ' + esc(String(r.description).slice(0, 40)) : ''}${r.requested_by ? ' · by ' + esc(r.requested_by) : ''}</a><span class="badge ${action === 'Approve' ? 'blue' : 'amber'}">${action} →</span></div>`;
-  const section = (title, items, rowFn) => (items && items.length) ? `<div style="margin-top:6px"><div class="muted" style="font-size:12px;margin:6px 0 2px">${title} (${items.length})</div>${items.map(rowFn).join('')}</div>` : '';
-  const body = [
-    section('Job requests awaiting your <b>certification</b>', pa.jr_certify || [], (r) => jrRow(r, 'Certify')),
-    section('Job requests awaiting your <b>approval</b>', pa.jr_approve || [], (r) => jrRow(r, 'Approve')),
-    section('MRNs awaiting your <b>certification</b>', pa.certify || [], (m) => mrnRow(m, 'Certify')),
-    section('MRNs awaiting your <b>approval</b>', pa.approve || [], (m) => mrnRow(m, 'Approve')),
-    section('Job cards awaiting <b>transport approval</b>', pa.transport || [], (j) => jobRow(j, 'Approve')),
-    section('Job cards awaiting <b>operations approval</b>', pa.ops || [], (j) => jobRow(j, 'Approve')),
-    section('Days waiting for <b>sign-off</b>', pa.signoff || [], (d) => `<div class="cost-line"><a href="#/dailywork?att=${esc(d.date)}${d.workshop_id ? '&att_ws=' + d.workshop_id : ''}"><b>${esc(d.date)}</b>${d.workshop_name ? ` · ${esc(d.workshop_name)}` : ''} · attendance &amp; daily work${d.red_count ? ` · <span style="color:var(--red)">${d.red_count} red</span>` : ''}</a><span class="badge ${d.red_count ? 'red' : 'amber'}">Sign off →</span></div>`),
-    section('Job cards asking to be <b>reopened</b>', pa.reopen || [], (r) => `<div class="cost-line"><a href="#/jobs/${r.job_id}"><b>${esc(r.job_no)}</b> · ${esc(idLabel(r) || '—')} · ${esc(String(r.reason || '').slice(0, 60))}${r.requested_by_name ? ' · by ' + esc(r.requested_by_name) : ''}${waited(r.requested_at)}</a><span class="badge amber">Decide →</span></div>`),
-  ].join('');
-  return `<div class="card section" style="border-left:4px solid ${pa.total ? 'var(--red)' : 'var(--green)'}">
-    <div class="toolbar" style="margin:0"><h3 style="margin:0">⚡ Pending Your Approval</h3><div class="spacer"></div><span class="badge ${pa.total ? 'red' : 'green'}">${pa.total} pending</span></div>
-    ${pa.total ? body : '<span class="muted">✓ Nothing awaiting your approval — you\'re all caught up.</span>'}</div>`;
+
+  const renderItem = (item) => {
+    const worth = item.value != null ? ` · about ${esc(money(item.value))}${item.unpriced ? ` (${item.unpriced} unpriced)` : ''}` : '';
+    const limitTag = item.over_limit ? ` <span class="badge amber" title="Needs higher authority">Above limit</span>` : '';
+    const redTag = item.red_count ? ` <span class="badge red">${item.red_count} red</span>` : '';
+    return `<div class="cost-line" style="padding:6px 0;border-bottom:1px solid var(--border-light, #eee);align-items:center">
+      <div style="display:flex;flex-direction:column;gap:2px">
+        <a href="${esc(item.link)}">
+          <b>${esc(item.title)}</b> · <span class="stamp">${esc(item.vehicle || 'General')}</span>${worth}${waitedBadge(item.date)}
+        </a>
+        <span class="muted" style="font-size:12px">
+          ${esc(item.description || '')}${item.requester ? ` · by ${esc(item.requester)}` : ''}${item.certified_by ? ` · certified ${esc(item.certified_by)}` : ''}
+        </span>
+      </div>
+      <div style="display:flex;align-items:center;gap:6px">
+        ${limitTag}${redTag}
+        <a class="btn sm ${item.action.includes('Approve') ? 'primary' : ''}" href="${esc(item.link)}">${esc(item.action)} →</a>
+      </div>
+    </div>`;
+  };
+
+  const renderStage = (title, icon, items) => {
+    if (!items || !items.length) return '';
+    return `
+      <div style="margin-top:10px">
+        <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">
+          <span style="font-size:15px">${icon}</span>
+          <b style="font-size:13px">${title}</b>
+          <span class="badge ${items.length ? 'amber' : ''}">${items.length}</span>
+        </div>
+        <div style="background:var(--card-sub-bg, #fafafa);border-radius:6px;padding:4px 12px">
+          ${items.map(renderItem).join('')}
+        </div>
+      </div>`;
+  };
+
+  const stagesHtml = [
+    renderStage('Stage 1: Inflow & Request Certification', '📋', ap.inflow),
+    renderStage('Stage 2: Operations & Commercial Approvals', '⚡', ap.authorizations),
+    renderStage('Stage 3: Stores & Warehouse Controls', '📦', ap.warehouse),
+    renderStage('Stage 4: Workday Close & Reopens', '📅', ap.compliance)
+  ].filter(Boolean).join('');
+
+  return `
+    <div class="card section" style="border-left:4px solid ${total ? 'var(--amber)' : 'var(--green)'};margin-bottom:14px">
+      <div class="toolbar" style="margin:0 0 6px">
+        <h3 style="margin:0">⚡ Pending Approvals (Process-Wise)</h3>
+        <div class="spacer"></div>
+        <span class="badge ${total ? 'amber' : 'green'}">${total} pending decision</span>
+      </div>
+      ${total ? stagesHtml : '<span class="muted">✓ All caught up — no items awaiting your decision across any process stage.</span>'}
+    </div>`;
+}
+
+// Workflow roads renderer (Job Cards road + Stores road)
+function renderWorkflowRoads(wm) {
+  if (!wm) return '';
+  const jr = wm.jobs_pipeline || {};
+  const sr = wm.stores_pipeline || {};
+  const jSteps = jr.steps || [];
+  const sSteps = sr.steps || [];
+  const jw = jr.workshop || {};
+  const st = sr.today || {};
+  const sh = sr.shelf || {};
+
+  const stepLink = (key) => {
+    switch (key) {
+      case 'requested': return '#/jobs?tab=requests';
+      case 'approved': return '#/jobs?tab=requests&step=operations';
+      case 'workshop': return '#/jobs?tab=ongoing';
+      case 'working': return '#/jobs?tab=ongoing&show=today';
+      case 'done': return '#/jobs?tab=finishing';
+      case 'priced': return '#/jobs?tab=ready';
+      case 'closed': return '#/jobs?tab=all&status=CLOSED';
+      default: return '#/jobs';
+    }
+  };
+
+  const storeStepLink = (key) => {
+    switch (key) {
+      case 'requested': return '#/stores?tab=flow&sub=lines&step=requested';
+      case 'certified': return '#/stores?tab=flow&sub=lines&step=certified';
+      case 'to_buy': return '#/purchasing';
+      case 'on_order': return '#/stores?tab=flow&sub=lines&step=on_order';
+      case 'received': return '#/stores?tab=flow&sub=grn';
+      case 'priced': return '#/stores?tab=flow&sub=lines&step=unpriced';
+      case 'issued': return '#/stores?tab=flow&sub=issues';
+      default: return '#/stores';
+    }
+  };
+
+  const renderSteps = (steps, linkFn) => `
+    <div style="display:flex;align-items:center;gap:6px;overflow-x:auto;padding:6px 0 10px;margin-bottom:6px">
+      ${steps.map((s, idx) => `
+        <a href="${linkFn(s.key)}" class="card stat" style="text-decoration:none;min-width:115px;padding:8px 12px;margin:0;border:${s.count > 0 ? '1px solid var(--accent)' : '1px solid var(--border)'};border-radius:6px;background:${s.count > 0 ? 'var(--card-bg, #fff)' : 'var(--bg-muted, #f8f9fa)'};">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:4px">
+            <span style="font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase">${esc(s.label)}</span>
+            <span style="font-size:16px;font-weight:700;color:${s.count > 0 ? 'var(--text)' : 'var(--muted)'}">${s.count}</span>
+          </div>
+        </a>
+        ${idx < steps.length - 1 ? '<span style="color:var(--muted);font-size:14px;font-weight:bold">➔</span>' : ''}
+      `).join('')}
+    </div>`;
+
+  return `
+    <div class="card section" style="margin-bottom:14px">
+      <div class="toolbar" style="margin:0 0 6px">
+        <h3 style="margin:0">🔧 Job Cards Process Road</h3>
+        <div class="spacer"></div>
+        <a class="sm btn" href="#/jobs">Open Job Cards →</a>
+      </div>
+      ${renderSteps(jSteps, stepLink)}
+      <div class="pill-row" style="margin-top:2px;font-size:12px">
+        <span class="muted" style="align-self:center">Workshop Pulse:</span>
+        <a class="badge green" href="#/jobs?tab=ongoing&show=today" style="text-decoration:none">Worked today: ${jw.worked_today || 0}</a>
+        <a class="badge amber" href="#/jobs?tab=ongoing&show=parts" style="text-decoration:none">Waiting parts: ${jw.waiting_parts || 0}</a>
+        <a class="badge ${jw.idle_3 ? 'red' : ''}" href="#/jobs?tab=ongoing&show=red" style="text-decoration:none">Idle 3+ days: ${jw.idle_3 || 0}</a>
+        ${jw.no_reason ? `<a class="badge red" href="#/jobs?tab=ongoing&show=no_reason" style="text-decoration:none">No reason: ${jw.no_reason}</a>` : ''}
+        ${jw.idle_mechanics != null ? `<a class="badge amber" href="#/dailywork" style="text-decoration:none">Idle mechanics: ${jw.idle_mechanics}</a>` : ''}
+      </div>
+    </div>
+
+    <div class="card section" style="margin-bottom:14px">
+      <div class="toolbar" style="margin:0 0 6px">
+        <h3 style="margin:0">📦 Stores Material Pipeline Road</h3>
+        <div class="spacer"></div>
+        <a class="sm btn" href="#/stores">Open Stores Flow →</a>
+      </div>
+      ${renderSteps(sSteps, storeStepLink)}
+      <div class="pill-row" style="margin-top:2px;font-size:12px">
+        <span class="muted" style="align-self:center">Shelf &amp; Moving:</span>
+        <a class="badge" href="#/stores?tab=flow&sub=issues" style="text-decoration:none">Issued today: ${st.issued || 0}</a>
+        <a class="badge" href="#/stores?tab=flow&sub=grn" style="text-decoration:none">Received today: ${st.received || 0}</a>
+        <a class="badge ${sh.unpriced_receipts ? 'amber' : ''}" href="#/stores?tab=flow&sub=lines&step=unpriced" style="text-decoration:none">Unpriced receipts: ${sh.unpriced_receipts || 0}</a>
+        <a class="badge ${sh.low_stock ? 'red' : ''}" href="#/stores?tab=stock" style="text-decoration:none">Low stock: ${sh.low_stock || 0}</a>
+        ${(sh.old_units_due && (sh.old_units_due.tyre || sh.old_units_due.battery)) ? `<a class="badge amber" href="#/tbrequests?tab=returns" style="text-decoration:none">Old cores to record: ${(sh.old_units_due.tyre || 0) + (sh.old_units_due.battery || 0)}</a>` : ''}
+      </div>
+    </div>`;
+}
+
+// On-hold & bottleneck center renderer for Admins & Managers
+function renderOnHoldWatchboard(oh) {
+  if (!oh) return '';
+  const waitingParts = oh.jobs_waiting_parts || [];
+  const unattended = oh.unattended_jobs || [];
+  const dualOpen = oh.dual_open_vehicles || [];
+  const stuckCount = oh.stuck_cards_count || 0;
+  const unpriced = oh.unpriced_grns_sample || [];
+  const unreturnedTb = (oh.unreturned_cores && ((oh.unreturned_cores.tyre || 0) + (oh.unreturned_cores.battery || 0))) || 0;
+  const totalAlerts = waitingParts.length + unattended.length + dualOpen.length + stuckCount + (oh.unpriced_grns_count || 0) + unreturnedTb;
+
+  return `
+    <div class="card section" style="border-left:4px solid ${totalAlerts ? 'var(--red)' : 'var(--green)'};margin-bottom:14px">
+      <div class="toolbar" style="margin:0 0 8px">
+        <h3 style="margin:0">🛑 Admin &amp; Supervisor On-Hold Watchboard</h3>
+        <div class="spacer"></div>
+        <span class="badge ${totalAlerts ? 'red' : 'green'}">${totalAlerts} bottleneck${totalAlerts === 1 ? '' : 's'}</span>
+      </div>
+
+      <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(270px,1fr));gap:12px;margin-top:8px">
+        <!-- 1. Jobs waiting on parts / hold reasons -->
+        <div class="card" style="padding:10px;margin:0;background:var(--bg-muted,#fdfdfd)">
+          <div class="toolbar" style="margin:0 0 6px">
+            <b>Jobs on Hold / Waiting Parts</b>
+            <div class="spacer"></div>
+            <span class="badge ${waitingParts.length ? 'amber' : ''}">${waitingParts.length}</span>
+          </div>
+          ${waitingParts.length ? waitingParts.slice(0, 4).map((j) => `
+            <div class="cost-line" style="font-size:12px;padding:3px 0">
+              <a href="${esc(j.link)}"><b>${esc(j.job_no)}</b> · ${esc(j.vehicle || '—')}</a>
+              <span class="badge amber">${j.days_idle || 0}d idle</span>
+            </div>
+            ${j.reason_note ? `<div class="muted" style="font-size:11px;margin-bottom:3px">${esc(j.reason_note)}</div>` : ''}
+          `).join('') : '<span class="muted" style="font-size:12px">No jobs marked on hold</span>'}
+          ${waitingParts.length > 4 ? `<div style="text-align:right;margin-top:4px"><a class="sm" href="#/jobs?tab=ongoing&show=parts">See all ${waitingParts.length} →</a></div>` : ''}
+        </div>
+
+        <!-- 2. Stale Requested Cards -->
+        <div class="card" style="padding:10px;margin:0;background:var(--bg-muted,#fdfdfd)">
+          <div class="toolbar" style="margin:0 0 6px">
+            <b>Stale REQUESTED Cards</b>
+            <div class="spacer"></div>
+            <span class="badge ${stuckCount ? 'red' : ''}">${stuckCount}</span>
+          </div>
+          <p class="muted" style="font-size:12px;margin:4px 0 8px">Cards requested long ago without movement. Review and triage or close in bulk.</p>
+          <a class="btn sm ${stuckCount ? 'primary' : ''}" href="${canDo('jobs.triage') ? '#/jobreview' : '#/jobs?tab=requests&step=stuck'}">
+            ${canDo('jobs.triage') ? 'Open Triage Screen →' : 'View Stuck Cards →'}
+          </a>
+        </div>
+
+        <!-- 3. Dual-Open Conflicts -->
+        <div class="card" style="padding:10px;margin:0;background:var(--bg-muted,#fdfdfd)">
+          <div class="toolbar" style="margin:0 0 6px">
+            <b>Dual-Open Conflicts</b>
+            <div class="spacer"></div>
+            <span class="badge ${dualOpen.length ? 'red' : ''}">${dualOpen.length}</span>
+          </div>
+          ${dualOpen.length ? dualOpen.map((v) => `
+            <div class="cost-line" style="font-size:12px;padding:3px 0">
+              <span class="stamp">${esc(v.asset_code || v.registration || 'Vehicle')}</span>
+              <span class="badge red">${v.jobs ? v.jobs.length : 2} open cards</span>
+            </div>
+          `).join('') : '<span class="muted" style="font-size:12px">No conflicting open jobs</span>'}
+        </div>
+
+        <!-- 4. Unattended Active Jobs -->
+        <div class="card" style="padding:10px;margin:0;background:var(--bg-muted,#fdfdfd)">
+          <div class="toolbar" style="margin:0 0 6px">
+            <b>Inactive Jobs (3+ Working Days)</b>
+            <div class="spacer"></div>
+            <span class="badge ${unattended.length ? 'red' : ''}">${unattended.length}</span>
+          </div>
+          ${unattended.length ? unattended.slice(0, 4).map((j) => `
+            <div class="cost-line" style="font-size:12px;padding:3px 0">
+              <a href="${esc(j.link)}"><b>${esc(j.job_no)}</b> · ${esc(j.vehicle || '—')}</a>
+              <span class="badge red">${j.days_idle}d unattended</span>
+            </div>
+          `).join('') : '<span class="muted" style="font-size:12px">All workshop jobs recently attended</span>'}
+          ${unattended.length > 4 ? `<div style="text-align:right;margin-top:4px"><a class="sm" href="#/jobs?tab=ongoing&show=red">See all ${unattended.length} →</a></div>` : ''}
+        </div>
+      </div>
+    </div>`;
 }
 
 async function dashMain(c) {
-  const [d, mc, pa] = await Promise.all([
+  const [d, mc, wm] = await Promise.all([
     api('/reports/dashboard'), api('/reports/monthly'),
-    api('/reports/pending-approvals').catch(() => ({ total: 0, is_approver: false, certify: [], approve: [], transport: [], ops: [], jr_certify: [], jr_approve: [] })),
+    api('/dashboard/workflow-monitor').catch(() => null),
   ]);
   const na = d.needs_attention || {};
   const naTotal = Object.values(na).reduce((a, b) => a + (b || 0), 0);
@@ -994,7 +1192,27 @@ async function dashMain(c) {
     { m: 'batteries', route: 'batteries', ico: '🔋', title: 'Batteries', sub: 'track · swap' },
     { m: 'assets', route: 'assets', ico: '🚜', title: 'Assets', sub: 'fleet registry' },
   ].filter((w) => canEdit(w.m)).map((w) => `<a class="card stat" href="#/${w.route}" style="text-decoration:none;align-items:flex-start;gap:2px"><span class="n" style="font-size:26px">${w.ico}</span><span class="l"><b>${w.title}</b><br>${w.sub}</span></a>`).join('');
-  const S = [pageHeader('Dashboard', `${esc(ME.fullName || ME.username)} · ${esc(ME.roles.join(', '))}`), renderPendingApprovals(pa)];
+
+  // Top Pulse KPI Ribbon
+  const kp = (wm && wm.kpis) || {};
+  const kpiRibbon = `
+    <div class="grid section" style="grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;margin-bottom:14px">
+      <div class="card stat"><span class="n">${moneyC(mc.this_month.total)}</span><span class="l">This Month Spend</span></div>
+      <a class="card stat" href="#/jobs" style="text-decoration:none"><span class="n">${kp.active_jobs ?? d.open_jobs_count}</span><span class="l">Active Job Cards</span></a>
+      <a class="card stat" href="#/jobs?tab=ongoing" style="text-decoration:none"><span class="n">${kp.vehicles_in_workshop ?? 0}</span><span class="l">Vehicles in Workshop</span></a>
+      <a class="card stat" href="#/dashboard" style="text-decoration:none"><span class="n" style="color:${kp.total_pending ? 'var(--amber)' : 'var(--green)'}">${kp.total_pending ?? 0}</span><span class="l">Pending Approvals</span></a>
+      <a class="card stat" href="#/stores?tab=stock" style="text-decoration:none"><span class="n" style="color:${kp.low_stock_total ? 'var(--red)' : 'inherit'}">${kp.low_stock_total ?? 0}</span><span class="l">Low Stock Items</span></a>
+      ${kp.field_down != null ? `<a class="card stat" href="#/field" style="text-decoration:none"><span class="n" style="color:${kp.field_down ? 'var(--red)' : 'inherit'}">${kp.field_down}</span><span class="l">Field Breakdowns Down</span></a>` : ''}
+    </div>`;
+
+  const scopeBadge = wm && wm.user_scope && wm.user_scope.label ? ` · <span class="badge blue">${esc(wm.user_scope.label)}</span>` : '';
+  const S = [
+    pageHeader('Dashboard', `${esc(ME.fullName || ME.username)} · ${esc(ME.roles.join(', '))}${scopeBadge}`),
+    kpiRibbon,
+    renderProcessApprovals(wm && wm.approvals_process),
+    renderWorkflowRoads(wm),
+    renderOnHoldWatchboard(wm && wm.on_hold)
+  ];
   if (wsTiles) S.push(`<div class="card section"><h3 style="margin-top:0">Your workspace</h3><div class="grid">${wsTiles}</div></div>`);
   if (canView('reports')) S.push(`
     <h3 style="margin-top:0">This Month · ${monthName(mc.this_month.month)}</h3>
@@ -9174,48 +9392,103 @@ const lvlChip = (lvl) => {
 };
 
 async function renderRolesManager(c, wanted) {
-  const [cat, board] = await Promise.all([api('/access/capabilities'), api('/access/matrix')]);
-  const roles = cat.roles;
+  const sm = await api('/access/section-matrix').catch(async () => {
+    const [cat, board] = await Promise.all([api('/access/capabilities'), api('/access/matrix')]);
+    return { sections: [], capabilities: cat.capabilities, modules: cat.modules, roles: cat.roles, matrix: board };
+  });
+  const roles = sm.roles;
   const sel = roles.find((r) => r.name === wanted) || roles.find((r) => r.active && !r.locked) || roles[0];
-  const modLabel = Object.fromEntries(cat.modules.map((m) => [m.key, m.label]));
+  const board = sm.matrix;
+  const modLabel = Object.fromEntries(sm.modules.map((m) => [m.key, m.label]));
   modLabel.users = 'Users & Access';
   const levelOf = (role, m) => (board.grid[role] && board.grid[role][m]) || 'none';
   const held = new Set(sel.caps);
   const mine = new Set(ME.caps || []);
-
-  // Permissions grouped by section, in catalogue order.
-  const groups = [];
-  for (const cap of cat.capabilities) {
-    let g = groups.find((x) => x.module === cap.module);
-    if (!g) groups.push(g = { module: cap.module, caps: [] });
-    g.caps.push(cap);
-  }
   const editable = !sel.locked && sel.active;
-  const capRows = groups.map((g) => {
-    const lvl = levelOf(sel.name, g.module);
-    const rows = g.caps.map((cap) => {
-      const has = sel.locked || held.has(cap.key);
-      // You can take away anything, but only give what you hold yourself (the server says the same).
-      const canTick = editable && (has || isAdmin() || mine.has(cap.key));
-      const short = cap.needs && has && !sel.locked && rankL(levelOf(sel.name, cap.needs)) < 2
-        ? ` <span class="badge amber" title="The ${esc(modLabel[cap.needs] || cap.needs)} section blocks changes for this role until its clearance is EDIT or FULL">needs ${esc(modLabel[cap.needs] || cap.needs)} EDIT</span>` : '';
-      return `<label style="display:flex;flex-direction:row;gap:8px;align-items:flex-start;margin:3px 0;font-weight:normal">
-        <input type="checkbox" style="width:auto;margin-top:3px" data-cap="${esc(cap.key)}" ${has ? 'checked' : ''} ${canTick ? '' : 'disabled'}>
-        <span>${esc(cap.label)}${short}<br><span class="muted" style="font-size:11px">${esc(cap.key)}</span></span></label>`;
-    }).join('');
-    return `<div class="card section" style="margin-bottom:10px"><h3 style="margin:0 0 6px">${esc(modLabel[g.module] || g.module)}
-      <span class="muted" style="font-size:12px;font-weight:normal">— section clearance ${lvlChip(sel.locked ? 'full' : lvl)}</span></h3>${rows}</div>`;
-  }).join('');
 
   const roleList = roles.map((r) => `<tr data-pick="${esc(r.name)}" style="cursor:pointer;${r.name === sel.name ? 'background:#eef2ff;' : ''}${r.active ? '' : 'opacity:.55;'}">
     <td><b>${esc(r.label || r.name)}</b>${r.locked ? ' <span class="badge amber">everything</span>' : ''}${r.is_system ? '' : ' <span class="badge blue">custom</span>'}${r.active ? '' : ' <span class="badge">retired</span>'}
     <br><span class="muted" style="font-size:11px">${r.users} user(s) · ${r.locked ? 'all' : r.caps.length} permission(s)</span></td></tr>`).join('');
 
+  // Fallback if sections not returned: group by module
+  const sections = (sm.sections && sm.sections.length) ? sm.sections : [
+    { id: 'all', name: 'Permissions', icon: '⚙️', description: 'All module capabilities', modules: sm.modules.map((m) => m.key) }
+  ];
+
+  const LVLS = ['none', 'view', 'edit', 'full'];
+  const LV_LABEL = { none: 'None', view: 'View', edit: 'Edit', full: 'Full' };
+
+  const sectionCards = sections.map((sec) => {
+    const secCaps = sm.capabilities.filter((cap) => sec.modules.includes(cap.module));
+    
+    // 1. Module Clearance Control for this section
+    const modClearanceHtml = sec.modules.map((m) => {
+      const curLvl = levelOf(sel.name, m);
+      const isLocked = sel.locked || !editable;
+      const pills = LVLS.map((lvl) => {
+        const isCurrent = (sel.locked && lvl === 'full') || (!sel.locked && curLvl === lvl);
+        const cls = isCurrent ? (lvl === 'full' ? 'primary' : (lvl === 'edit' ? 'badge green' : (lvl === 'view' ? 'badge blue' : 'badge amber'))) : 'btn sm';
+        const style = isCurrent ? 'font-weight:bold;' : 'opacity:.7;';
+        return `<button class="${cls}" style="${style}padding:2px 8px;font-size:11px" data-setlvl="${esc(m)}:${lvl}" ${isLocked ? 'disabled' : ''}>${LV_LABEL[lvl]}</button>`;
+      }).join(' ');
+      return `<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:4px 0">
+        <span style="font-size:12px;font-weight:600">${esc(modLabel[m] || m)}:</span>
+        <div style="display:flex;gap:4px">${pills}</div>
+      </div>`;
+    }).join('');
+
+    // 2. Preset Buttons for this section
+    const presetsHtml = (sec.presets && editable) ? `
+      <div style="display:flex;align-items:center;gap:6px;margin:8px 0 10px;padding:6px 8px;background:var(--bg-muted, #f8f9fa);border-radius:4px;flex-wrap:wrap">
+        <span class="muted" style="font-size:11px;font-weight:600">Quick Presets:</span>
+        <button class="btn sm" data-preset="${esc(sec.id)}:none" title="Remove all access to this section">❌ No Access</button>
+        <button class="btn sm" data-preset="${esc(sec.id)}:view" title="Read-only clearance">👁️ Read-Only</button>
+        <button class="btn sm" data-preset="${esc(sec.id)}:operator" title="Set standard operator clearance & tools">⚙️ Operator</button>
+        <button class="btn sm" data-preset="${esc(sec.id)}:manager" title="Full clearance and manager capabilities">👑 Full Manager</button>
+      </div>` : '';
+
+    // 3. Capabilities checkboxes
+    const capListHtml = secCaps.map((cap) => {
+      const has = sel.locked || held.has(cap.key);
+      const canTick = editable && (has || isAdmin() || mine.has(cap.key));
+      const needsMod = cap.needs;
+      const currentModLvl = needsMod ? levelOf(sel.name, needsMod) : 'full';
+      const short = (needsMod && !sel.locked && rankL(currentModLvl) < 2)
+        ? ` <span class="badge amber" style="font-size:10px" title="Ticking this will auto-elevate ${esc(modLabel[needsMod] || needsMod)} to EDIT">auto-elevates ${esc(modLabel[needsMod] || needsMod)} to EDIT</span>` : '';
+      return `<label style="display:flex;flex-direction:row;gap:8px;align-items:flex-start;margin:4px 0;font-weight:normal">
+        <input type="checkbox" style="width:auto;margin-top:3px" data-cap="${esc(cap.key)}" data-needs="${esc(cap.needs || '')}" ${has ? 'checked' : ''} ${canTick ? '' : 'disabled'}>
+        <span style="font-size:13px">${esc(cap.label)}${short}<br><span class="muted" style="font-size:11px">${esc(cap.key)}</span></span>
+      </label>`;
+    }).join('');
+
+    return `
+      <div class="card section" style="margin-bottom:14px;border-top:3px solid var(--accent)">
+        <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:10px">
+          <div>
+            <h3 style="margin:0;display:flex;align-items:center;gap:6px">
+              <span>${sec.icon || '📁'}</span>
+              <span>${esc(sec.name)}</span>
+            </h3>
+            <p class="muted" style="margin:2px 0 8px;font-size:12px">${esc(sec.description || '')}</p>
+          </div>
+        </div>
+        <div style="background:var(--card-sub-bg, #fafafa);border:1px solid var(--border-light, #eee);border-radius:6px;padding:8px 12px;margin-bottom:10px">
+          <div class="muted" style="font-size:11px;font-weight:600;margin-bottom:4px;text-transform:uppercase">Section Clearance:</div>
+          ${modClearanceHtml}
+        </div>
+        ${presetsHtml}
+        <div style="margin-top:6px">
+          <div class="muted" style="font-size:11px;font-weight:600;margin-bottom:6px;text-transform:uppercase">Granular Capabilities (${secCaps.length}):</div>
+          ${capListHtml || '<span class="muted" style="font-size:12px">No specific granular capabilities for this section</span>'}
+        </div>
+      </div>`;
+  }).join('');
+
   c.innerHTML = `<div style="display:grid;grid-template-columns:minmax(220px,300px) 1fr;gap:14px;align-items:start">
     <div class="card"><div class="toolbar" style="margin:0 0 8px"><h3 style="margin:0">Roles</h3><div class="spacer"></div><button class="primary sm" id="newrole">+ New Role</button></div>
       <div class="table-wrap scroll"><table><tbody>${roleList}</tbody></table></div></div>
     <div>
-      <div class="card" style="margin-bottom:10px">
+      <div class="card" style="margin-bottom:12px">
         <div class="toolbar" style="margin:0"><h2 style="margin:0">${esc(sel.label || sel.name)}</h2><div class="spacer"></div>
           ${sel.locked ? '' : `<button class="sm" id="editrole">✎ Rename / describe</button>
           ${sel.active ? '<button class="sm danger" id="retirerole">Retire</button>' : '<button class="sm" id="reinstaterole">Reinstate</button>'}`}
@@ -9226,27 +9499,88 @@ async function renderRolesManager(c, wanted) {
         <p class="muted" style="margin:6px 0 0">${esc(sel.description || '')}${sel.description ? '<br>' : ''}Key <code>${esc(sel.name)}</code> · held by ${sel.users} active user(s).
           ${sel.locked ? ' Admin always holds every permission and cannot be changed.' : ''}
           ${!sel.active ? ' Retired — it grants nothing until reinstated.' : ''}
-          ${editable ? ' Ticking a box applies from each holder\'s next click. Section clearance is set on the Clearance Board.' : ''}</p>
+          ${editable ? ' Single-point access: configure both base section clearance and all granular capabilities per section directly below.' : ''}</p>
       </div>
-      ${capRows}
+      ${sectionCards}
     </div></div>`;
 
   const reload = (name) => { location.hash = '#/access?tab=roles&role=' + encodeURIComponent(name || sel.name); };
   qsa('[data-pick]', c).forEach((tr) => { tr.onclick = () => reload(tr.dataset.pick); });
+
   qs('#rolemfa', c).onchange = async (e) => {
     const on = e.target.checked;
     if (on && !confirm(`Everyone with "${sel.label || sel.name}" will have to set up two-factor sign-in before they can use the system. Continue?`)) { e.target.checked = false; return; }
     try { await api('/access/roles/' + encodeURIComponent(sel.name), { method: 'PATCH', body: { require_mfa: on } }); toast(on ? 'Two-factor sign-in required for this role' : 'No longer required'); reload(); }
     catch (err) { e.target.checked = !on; toast(err.message, 'err'); }
   };
+
+  // Direct section clearance level buttons
+  qsa('[data-setlvl]', c).forEach((btn) => {
+    btn.onclick = async () => {
+      const [mod, lvl] = btn.dataset.setlvl.split(':');
+      try {
+        await api('/access/section-save', {
+          method: 'POST',
+          body: { role: sel.name, modules: { [mod]: lvl } }
+        });
+        toast(`${modLabel[mod] || mod} clearance set to ${lvl.toUpperCase()}`);
+        await renderRolesManager(c, sel.name);
+      } catch (err) { toast(err.message, 'err'); }
+    };
+  });
+
+  // Section quick presets
+  qsa('[data-preset]', c).forEach((btn) => {
+    btn.onclick = async () => {
+      const [secId, presetKey] = btn.dataset.preset.split(':');
+      const sec = sections.find((s) => s.id === secId);
+      if (!sec || !sec.presets || !sec.presets[presetKey]) return;
+      const p = sec.presets[presetKey];
+      const secCaps = sm.capabilities.filter((cap) => sec.modules.includes(cap.module));
+      const capUpdates = {};
+      for (const cap of secCaps) {
+        capUpdates[cap.key] = p.caps.includes(cap.key);
+      }
+      try {
+        await api('/access/section-save', {
+          method: 'POST',
+          body: { role: sel.name, modules: p.modules, capabilities: capUpdates }
+        });
+        toast(`Applied ${presetKey.toUpperCase()} preset to ${sec.name}`);
+        await renderRolesManager(c, sel.name);
+      } catch (err) { toast(err.message, 'err'); }
+    };
+  });
+
+  // Checkbox toggling with auto-elevation if required
   qsa('[data-cap]', c).forEach((box) => {
     box.onchange = async () => {
+      const capKey = box.dataset.cap;
+      const needs = box.dataset.needs;
+      const willGrant = box.checked;
+      const modUpdates = {};
+      if (willGrant && needs && rankL(levelOf(sel.name, needs)) < 2) {
+        modUpdates[needs] = 'edit';
+      }
       try {
-        await api('/access/capabilities', { method: 'POST', body: { role: sel.name, capability: box.dataset.cap, granted: box.checked } });
+        if (Object.keys(modUpdates).length) {
+          await api('/access/section-save', {
+            method: 'POST',
+            body: { role: sel.name, modules: modUpdates, capabilities: { [capKey]: willGrant } }
+          });
+          toast(`Granted ${capKey} and elevated ${modLabel[needs] || needs} to EDIT`);
+        } else {
+          await api('/access/section-save', {
+            method: 'POST',
+            body: { role: sel.name, capabilities: { [capKey]: willGrant } }
+          });
+          toast(willGrant ? `Granted ${capKey}` : `Revoked ${capKey}`);
+        }
         await renderRolesManager(c, sel.name);
       } catch (e) { box.checked = !box.checked; toast(e.message, 'err'); }
     };
   });
+
   qs('#newrole', c).onclick = () => modal('New role', `
     ${field('Name *', 'label', { placeholder: 'e.g. Site Storekeeper' })}
     ${field('What this role is for', 'description', { type: 'textarea' })}
