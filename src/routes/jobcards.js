@@ -94,8 +94,10 @@ router.get(
     const params = [];
     for (const f of ['status', 'type', 'severity']) {
       if (req.query[f]) {
-        clauses.push(`j.${f} = ?`);
-        params.push(req.query[f]);
+        // Several at once, comma separated (the Job Cards Monitor links "waiting to start" this way).
+        const v = String(req.query[f]).split(',').map((x) => x.trim()).filter(Boolean);
+        clauses.push(v.length > 1 ? `j.${f} IN (${v.map(() => '?').join(',')})` : `j.${f} = ?`);
+        params.push(...v);
       }
     }
     if (req.query.asset_id) {

@@ -73,13 +73,8 @@ function describe(r, now = today()) {
   };
 }
 
-/** Every stuck REQUESTED card with a suggestion, and the vehicles that carry more than one open card. */
-function listStuck({ now, workshopId = null } = {}) {
-  const inWs = jobstate.workshopIn('j.workshop_id', workshopId);
-  const rows = all(`
-    SELECT j.id, j.job_no, j.is_historical, j.description, j.asset_id, j.requested_at,
-           COALESCE(j.total_cost, 0) total_cost, a.code asset_code, a.registration asset_reg,
-           (SELECT COUNT(*) FROM job_daily_work w WHERE w.job_id = j.id) daily_work,
+// What has happened on a card, and when last: the columns listStuck() and isStuck() read.
+const ACTIVITY_COLS = `(SELECT COUNT(*) FROM job_daily_work w WHERE w.job_id = j.id) daily_work,
            (SELECT COUNT(*) FROM job_parts p WHERE p.job_id = j.id) parts,
            (SELECT COUNT(*) FROM mrn m WHERE m.job_id = j.id) mrns,
            (SELECT COUNT(*) FROM issues i WHERE i.job_id = j.id) issues,
@@ -89,7 +84,15 @@ function listStuck({ now, workshopId = null } = {}) {
            (SELECT MAX(substr(m.req_date, 1, 10)) FROM mrn m WHERE m.job_id = j.id) last_mrn,
            (SELECT MAX(substr(i.issue_date, 1, 10)) FROM issues i WHERE i.job_id = j.id) last_issue,
            (SELECT MAX(substr(l.txn_date, 1, 10)) FROM stock_ledger l WHERE l.job_id = j.id) last_oil,
-           (SELECT MAX(substr(g.txn_date, 1, 10)) FROM general_item_txns g WHERE g.job_id = j.id) last_general
+           (SELECT MAX(substr(g.txn_date, 1, 10)) FROM general_item_txns g WHERE g.job_id = j.id) last_general`;
+
+/** Every stuck REQUESTED card with a suggestion, and the vehicles that carry more than one open card. */
+function listStuck({ now, workshopId = null } = {}) {
+  const inWs = jobstate.workshopIn('j.workshop_id', workshopId);
+  const rows = all(`
+    SELECT j.id, j.job_no, j.is_historical, j.description, j.asset_id, j.requested_at,
+           COALESCE(j.total_cost, 0) total_cost, a.code asset_code, a.registration asset_reg,
+           ${ACTIVITY_COLS}
       FROM job_cards j LEFT JOIN assets a ON a.id = j.asset_id
      WHERE j.status = 'REQUESTED' AND NOT ${CONTAINER_SQL} ${inWs.sql}
      ORDER BY j.job_no`, ...inWs.params);
@@ -98,6 +101,9 @@ function listStuck({ now, workshopId = null } = {}) {
   for (const c of cards) counts[c.suggestion]++;
   return { stale_days: STALE_DAYS, total: cards.length, counts, cards, duplicate_vehicles: jobstate.duplicateOpenJobs({ workshopId }) };
 }
+
+/** Is a REQUESTED card stuck: nothing done on it for longer than STALE_DAYS? `r` carries ACTIVITY_COLS. */
+const isStuck = (r, now) => describe(r, now).suggestion !== 'keep';
 
 const fail = (msg, extra) => { const e = new Error(msg); e.status = 400; if (extra) e.extra = extra; throw e; };
 
@@ -167,4 +173,4 @@ function applyReview(actions, { userId, user = null, reason, approvalRole = 'tra
   return done;
 }
 
-module.exports = { listStuck, applyReview, periodFromJobNo, STALE_DAYS, _describe: describe };
+module.exports = { listStuck, applyReview, periodFromJobNo, isStuck, ACTIVITY_COLS, CONTAINER_SQL, STALE_DAYS, _describe: describe };
