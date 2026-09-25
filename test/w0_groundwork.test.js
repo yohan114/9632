@@ -1,6 +1,6 @@
 'use strict';
 
-// W0 groundwork (docs/WORKSHOPONE_PLAN.md §3.3):
+// W0 groundwork (docs/WORKSHOPONE_PLAN.md §A.3):
 //   1. one meaning of "open" and "not final", used everywhere;
 //   2. one guard, jobstate.checkAdd(), on every path that adds to a job card — including the two
 //      that used to let a request through on a CLOSED card (MRN, tyre/battery);

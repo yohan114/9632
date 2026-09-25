@@ -13,7 +13,18 @@ const monthlyReport = require('../lib/monthly_cost_report');
 const mechanics = require('../lib/mechanics');
 const lubricants = require('../lib/lubricants');
 
+const { requireModule } = require('../lib/permissions');
+
 const router = express.Router();
+router.use(requireAuth);
+
+// Stage 5: whose report this is — one workshop's, or (null) the whole company's. Head office picks;
+// anyone else, with the workshops kept apart, gets their own (src/lib/scope.js reportWorkshop).
+const reportWs = (req) => require('../lib/scope')
+  .reportWorkshop(req.user, (req.query && req.query.workshop_id) || (req.body && req.body.workshop_id)).ws;
+const wsCode = (ws) => { const w = ws ? get('SELECT code FROM workshops WHERE id = ?', ws) : null; return w ? ' ' + w.code : ''; };
+// A cost's workshop in SQL: its job card's, else the store it came from (src/lib/daily_reports.js).
+const wsIs = (...a) => require('../lib/daily_reports').wsIs(...a);
 
 // Coerce any value to a finite number (blank/NaN -> 0); matches the report generator's helper.
 const num = (v) => Number(v) || 0;
@@ -24,12 +35,36 @@ function currentBalance(productId) {
 }
 
 // ---- dashboard ------------------------------------------------------------
+// Stage 4: the workshops whose attendance day this person looks after — the whole company (null)
+// while the workshops are not kept apart; your own when kept to it; head office, every workshop.
+function attendanceWorkshops(user) {
+  const scope = require('../lib/scope');
+  if (!scope.enabled()) return [null];
+  const own = scope.onlyWorkshop(user, { store: false });
+  if (own) return [own];
+  return all('SELECT id FROM workshops WHERE active = 1 ORDER BY is_default DESC, name').map((w) => w.id);
+}
+
+/** Days waiting for sign-off, for each of those workshops, named when there is more than one. */
+function unsignedFor(wsList) {
+  const att = require('../lib/attendance');
+  const out = [];
+  for (const ws of wsList) {
+    const name = ws ? get('SELECT name FROM workshops WHERE id = ?', ws).name : null;
+    for (const d of att.unsignedDays({ ws })) out.push(ws ? { ...d, workshop_id: ws, workshop_name: name } : d);
+  }
+  return out.sort((a, b) => String(b.date).localeCompare(String(a.date)));
+}
+
 router.get('/dashboard', asyncHandler((req, res) => {
-  const jobs_by_status = all(`SELECT status, COUNT(*) count FROM job_cards GROUP BY status`);
+  // Stage 3: the job-card figures are your own workshop's (head office and store staff: all).
+  const own = require('../lib/scope').filter(req.user, 'j.workshop_id');
+  const andOwn = own.sql ? ` AND ${own.sql}` : '';
+  const jobs_by_status = all(`SELECT j.status, COUNT(*) count FROM job_cards j WHERE 1 = 1${andOwn} GROUP BY j.status`, ...own.params);
 
   const awaiting = all(
     `SELECT j.id, j.job_no, a.code AS asset_code FROM job_cards j LEFT JOIN assets a ON a.id = j.asset_id
-      WHERE j.status = 'WORK_COMPLETE' ORDER BY j.id DESC`
+      WHERE j.status = 'WORK_COMPLETE'${andOwn} ORDER BY j.id DESC`, ...own.params
   ).map((j) => ({ ...j, missing_count: costing.closureReadiness(j.id).missing.length }));
 
   const low_stock_oil = lubricants.oilForecast().products
@@ -42,19 +77,19 @@ router.get('/dashboard', asyncHandler((req, res) => {
   const month_cost_by_project = all(
     `SELECT COALESCE(p.name, '(unassigned)') project, COALESCE(SUM(j.total_cost),0) total
        FROM job_cards j LEFT JOIN projects p ON p.id = j.project_id
-      WHERE strftime('%Y-%m', j.requested_at) = strftime('%Y-%m','now')
-      GROUP BY j.project_id ORDER BY total DESC`
+      WHERE strftime('%Y-%m', j.requested_at) = strftime('%Y-%m','now')${andOwn}
+      GROUP BY j.project_id ORDER BY total DESC`, ...own.params
   );
 
-  const open_jobs_count = get(`SELECT COUNT(*) c FROM job_cards WHERE ${jobstate.openSql()}`).c;
+  const open_jobs_count = get(`SELECT COUNT(*) c FROM job_cards j WHERE ${jobstate.openSql('j')}${andOwn}`, ...own.params).c;
   // Partly closed (W2): the vehicle has left, prices or records are still to come.
   const partly_closed = all(
     `SELECT j.id, j.job_no, j.partial_closed_at, a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec
        FROM job_cards j LEFT JOIN assets a ON a.id = j.asset_id
-      WHERE j.status = ? ORDER BY j.partial_closed_at, j.id`, jobstate.PARTIAL
+      WHERE j.status = ?${andOwn} ORDER BY j.partial_closed_at, j.id`, jobstate.PARTIAL, ...own.params
   ).map((j) => ({ ...j, missing_count: costing.closureReadiness(j.id).missing.length }));
   const closed_this_month_count = get(
-    `SELECT COUNT(*) c FROM job_cards WHERE status='CLOSED' AND strftime('%Y-%m', closed_at) = strftime('%Y-%m','now')`
+    `SELECT COUNT(*) c FROM job_cards j WHERE j.status='CLOSED' AND strftime('%Y-%m', j.closed_at) = strftime('%Y-%m','now')${andOwn}`, ...own.params
   ).c;
 
   // Attendance (W3): today's tally and the days still to be signed off — for whoever may read
@@ -62,29 +97,42 @@ router.get('/dashboard', asyncHandler((req, res) => {
   let attendance_today = null;
   const att = require('../lib/attendance');
   const permissions = require('../lib/permissions');
-  if (att.isEnabled() && permissions.meets(permissions.levelForRoles(req.user.roles || [], 'dailywork'), 'view')) {
+  if (att.isEnabled() && permissions.meets(permissions.effectiveLevel(req.user, 'dailywork'), 'view')) {
     const t = att.today();
-    const d = att.day(t);
-    attendance_today = { date: t, red_count: d.red_count, counts: d.counts, locked: d.locked, before_start: d.before_start,
-      unsigned_days: att.unsignedDays() };
+    // Stage 4: your own workshop's day; head office, every workshop's added up.
+    const wsList = attendanceWorkshops(req.user);
+    const days = wsList.map((ws) => att.day(t, { ws }));
+    const counts = {};
+    for (const d of days) for (const [k, n] of Object.entries(d.counts)) counts[k] = (counts[k] || 0) + n;
+    attendance_today = { date: t, red_count: days.reduce((n, d) => n + d.red_count, 0), counts,
+      locked: days.every((d) => d.locked), before_start: days[0].before_start,
+      unsigned_days: unsignedFor(wsList) };
   }
+
+  // Stage 6: machines down in the field (your workshops'), once field work is in use at all.
+  const fieldInUse = !!get('SELECT 1 x FROM job_cards WHERE field = 1 LIMIT 1');
+  const field_down = fieldInUse ? require('../lib/field').downCount(req.user) : null;
+
+  // Job cards plan, Part 3: cards with nothing missing, waiting only to be closed (the Ready to close tab).
+  const flow = require('../lib/jobs_flow');
+  const ready_to_close = flow.sees(req.user, 'jobs') ? flow.readyCount(req.user) : null;
 
   res.json({
     jobs_by_status, awaiting_price: awaiting, low_stock_oil, batteries_warranty,
-    month_cost_by_project, open_jobs_count, closed_this_month_count, partly_closed, attendance_today,
+    month_cost_by_project, open_jobs_count, closed_this_month_count, partly_closed, ready_to_close, attendance_today, field_down,
     needs_attention: intelligence.needsAttentionSummary(),
   });
 }));
 
 // Consolidated project cost rollup across all projects
-router.get('/cost/by-project', asyncHandler((_req, res) => {
+router.get('/cost/by-project', requireModule('reports'), asyncHandler((_req, res) => {
   res.json(costing.projectsCostSummary());
 }));
 
 // ---- advisory intelligence (Phase 5 §1/§4) — read-only, flags only --------
-router.get('/service-due', asyncHandler((_req, res) => res.json(intelligence.serviceDue())));
+router.get('/service-due', requireModule('service_plan'), asyncHandler((_req, res) => res.json(intelligence.serviceDue())));
 
-router.get('/anomalies', asyncHandler((_req, res) => res.json({
+router.get('/anomalies', requireModule('attention'), asyncHandler((_req, res) => res.json({
   unusual_consumption: intelligence.unusualConsumption(),
   duplicate_mrn: intelligence.duplicateMrn(),
   grn_price_spikes: intelligence.grnPriceSpikes(),
@@ -95,7 +143,7 @@ router.get('/anomalies', asyncHandler((_req, res) => res.json({
   },
 })));
 
-router.get('/integrity', asyncHandler((_req, res) => res.json(intelligence.integrityCheck())));
+router.get('/integrity', requireModule('attention'), asyncHandler((_req, res) => res.json(intelligence.integrityCheck())));
 
 // ---- cost reports ---------------------------------------------------------
 const COST_COLS = [
@@ -105,7 +153,7 @@ const COST_COLS = [
   { header: 'Total', key: 'total' },
 ];
 
-router.get('/cost/by-asset', asyncHandler(async (req, res) => {
+router.get('/cost/by-asset', requireModule('reports'), asyncHandler(async (req, res) => {
   const rows = all(
     `SELECT j.asset_id, a.code AS asset_code,
             COALESCE(SUM(j.labour_cost),0) labour, COALESCE(SUM(j.material_cost),0) material,
@@ -122,7 +170,7 @@ router.get('/cost/by-asset', asyncHandler(async (req, res) => {
   res.json(rows);
 }));
 
-router.get('/cost/by-project', asyncHandler(async (req, res) => {
+router.get('/cost/by-project', requireModule('reports'), asyncHandler(async (req, res) => {
   const rows = all(
     `SELECT j.project_id, COALESCE(p.name,'(unassigned)') project,
             COALESCE(SUM(j.labour_cost),0) labour, COALESCE(SUM(j.material_cost),0) material,
@@ -138,7 +186,7 @@ router.get('/cost/by-project', asyncHandler(async (req, res) => {
   res.json(rows);
 }));
 
-router.get('/cost/by-site', asyncHandler(async (req, res) => {
+router.get('/cost/by-site', requireModule('reports'), asyncHandler(async (req, res) => {
   const rows = all(
     `SELECT COALESCE(NULLIF(TRIM(site),''),'(no site)') site,
             COALESCE(SUM(j.labour_cost),0) labour, COALESCE(SUM(j.material_cost),0) material,
@@ -153,7 +201,7 @@ router.get('/cost/by-site', asyncHandler(async (req, res) => {
   res.json(rows);
 }));
 
-router.get('/cost/by-source', asyncHandler(async (req, res) => {
+router.get('/cost/by-source', requireModule('reports'), asyncHandler(async (req, res) => {
   const rows = all(
     `SELECT CASE
               WHEN purchase_source_norm IN ('head_office','direct_purchase','mixed') THEN 'Head Office'
@@ -171,7 +219,7 @@ router.get('/cost/by-source', asyncHandler(async (req, res) => {
 }));
 
 // ---- variance -------------------------------------------------------------
-router.get('/variance', asyncHandler((req, res) => {
+router.get('/variance', requireModule('attention'), asyncHandler((req, res) => {
   const threshold = req.query.threshold ? Number(req.query.threshold) : 0.001;
   res.json(all(
     `SELECT sc.id, pr.name AS product, sc.period, sc.book_qty, sc.counted_qty, sc.variance
@@ -269,12 +317,14 @@ function jobReport(id) {
 }
 
 router.get('/job/:id/report', asyncHandler((req, res) => {
+  { const no = require('../lib/scope').jobRefusal(req.user, toInt(req.params.id)); if (no) return res.status(403).json(no); }
   const r = jobReport(toInt(req.params.id));
   if (!r) return res.status(404).json({ error: 'Job not found' });
   res.json(r);
 }));
 
 router.get('/job/:id/report.html', asyncHandler((req, res) => {
+  { const no = require('../lib/scope').jobRefusal(req.user, toInt(req.params.id)); if (no) return res.status(403).json(no); }
   const s = jobReport(toInt(req.params.id));
   if (!s) return res.status(404).send('Job not found');
   const esc = (v) => String(v == null ? '' : v).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
@@ -473,6 +523,9 @@ function ongoingJobs(months) {
       requestedCount, oldestPending, flag, reason };
   });
 
+  // The Job Cards Ongoing tab's own words (job cards plan, Part 2): attended or not, and why.
+  const said = require('../lib/jobs_flow').labelsFor(out.map((j) => j.id));
+  for (const j of out) Object.assign(j, said.get(j.id) || { attended: '', why: '' });
   const rank = { CRITICAL: 0, WATCH: 1, ACTIVE: 2 };
   out.sort((a, b) => (rank[a.flag] - rank[b.flag]) || (b.idleDays - a.idleDays) || (b.ageDays - a.ageDays));
   return { today, cut, months: Number(months) || 8, jobs: out };
@@ -491,7 +544,8 @@ router.get('/ongoing-jobs.xlsx', asyncHandler(async (req, res) => {
         { header: 'Status', key: 'status', width: 13 }, { header: 'Raised (from job no)', key: 'raised', width: 18 },
         { header: 'Date on card', key: 'opened', width: 13 }, { header: 'Date looks wrong?', key: 'dateFlag', width: 16 },
         { header: 'Days open', key: 'ageDays', width: 10 }, { header: 'Last attended', key: 'last_work', width: 12 },
-        { header: 'Idle days', key: 'idleDays', width: 10 }, { header: 'Hours', key: 'hours', width: 9 },
+        { header: 'Idle days', key: 'idleDays', width: 10 }, { header: 'Attended', key: 'attended', width: 20 },
+        { header: 'Why not', key: 'why', width: 34 }, { header: 'Hours', key: 'hours', width: 9 },
         { header: 'Items requested', key: 'requestedCount', width: 14 }, { header: 'Parts pending', key: 'pendingLines', width: 12 },
         { header: 'Qty pending', key: 'pendingQty', width: 11 }, { header: 'Cost so far (Rs)', key: 'total_cost', width: 15 },
         { header: 'Project', key: 'project_name', width: 20 },
@@ -534,6 +588,7 @@ router.get('/ongoing-jobs.html', asyncHandler((req, res) => {
     <td class="w">${esc(String(j.description || '').slice(0, 80))}</td>
     <td>${esc(j.raised)}${j.dateSuspect ? ` <span class="sus" title="The card's recorded date is ${esc(j.opened)}, which does not match the job number's month — taken from the job number instead">*</span>` : ''}</td><td class="num">${j.ageDays}</td>
     <td>${j.last_work ? esc(j.last_work) : '<i>never</i>'}</td><td class="num"><b>${j.idleDays}</b></td>
+    <td class="w">${esc(j.attended)}${j.why ? `<br><i>${esc(j.why)}</i>` : ''}</td>
     <td class="num">${j.pendingLines || '—'}</td><td class="num">${j.total_cost ? m(j.total_cost) : '—'}</td></tr>`;
 
   const html = `<!doctype html><html><head><meta charset="utf-8"><title>Ongoing Jobs — delay watchlist</title>
@@ -567,8 +622,8 @@ router.get('/ongoing-jobs.html', asyncHandler((req, res) => {
 <h2>Delay watchlist — most critical first</h2>
 <div class="note">“Raised” is taken from the job number (YYYY/M/…), which is the reliable record of when the card was written.
 ${jobs.filter((j) => j.dateSuspect).length} card(s) marked <span class="sus">*</span> carry a stored date that disagrees with their number — an import placeholder — so their age is measured from the job number instead.</div>
-<table><thead><tr><th>Priority</th><th>Delay reason</th><th>Job No</th><th>Vehicle</th><th>Work requested</th><th>Raised</th><th class="num">Days open</th><th>Last attended</th><th class="num">Idle</th><th class="num">Parts pending</th><th class="num">Cost so far</th></tr></thead>
-<tbody>${jobs.map(row).join('') || '<tr><td colspan="11" style="text-align:center;color:#666">No ongoing jobs.</td></tr>'}</tbody></table>
+<table><thead><tr><th>Priority</th><th>Delay reason</th><th>Job No</th><th>Vehicle</th><th>Work requested</th><th>Raised</th><th class="num">Days open</th><th>Last attended</th><th class="num">Idle</th><th>Attended · why not</th><th class="num">Parts pending</th><th class="num">Cost so far</th></tr></thead>
+<tbody>${jobs.map(row).join('') || '<tr><td colspan="12" style="text-align:center;color:#666">No ongoing jobs.</td></tr>'}</tbody></table>
 ${waitingParts.length ? `<h2>What they are waiting for — outstanding spare parts (${waitingParts.reduce((s, j) => s + j.pendingLines, 0)} line(s))</h2>
 <table><thead><tr><th>Job No</th><th>Vehicle</th><th>MRN No</th><th>Requested</th><th class="num">Waiting days</th><th>Item</th><th>Purchase from</th><th class="num">Qty</th><th class="num">Recv</th><th class="num">Pending</th></tr></thead>
 <tbody>${waitingParts.flatMap((j) => j.pending.map((p) => {
@@ -678,13 +733,26 @@ ${withDetail ? '<h2>Job by job — parts requested, parts received, work done</h
   res.send(html);
 }));
 
-router.get('/job/:id/costsheet', asyncHandler((req, res) => {
+const canViewJobCost = (req, res, next) => {
+  if (req.user && req.user.roles && req.user.roles.includes('admin')) return next();
+  const perm = require('../lib/permissions');
+  if (perm.meets(perm.effectiveLevel(req.user, 'jobs'), 'view') ||
+      perm.meets(perm.effectiveLevel(req.user, 'reports'), 'view') ||
+      perm.meets(perm.effectiveLevel(req.user, 'cost_teardown'), 'view')) {
+    return next();
+  }
+  return res.status(403).json({ error: 'Your account does not have view access to job costs' });
+};
+
+router.get('/job/:id/costsheet', canViewJobCost, asyncHandler((req, res) => {
+  { const no = require('../lib/scope').jobRefusal(req.user, toInt(req.params.id)); if (no) return res.status(403).json(no); }
   const sheet = costSheet(toInt(req.params.id));
   if (!sheet) return res.status(404).json({ error: 'Job not found' });
   res.json(sheet);
 }));
 
-router.get('/job/:id/costsheet.html', asyncHandler((req, res) => {
+router.get('/job/:id/costsheet.html', canViewJobCost, asyncHandler((req, res) => {
+  { const no = require('../lib/scope').jobRefusal(req.user, toInt(req.params.id)); if (no) return res.status(403).json(no); }
   const s = costSheet(toInt(req.params.id));
   if (!s) return res.status(404).send('Job not found');
   const money = (n) => (Number(n) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -750,7 +818,7 @@ const OIL_VAL = 'ABS(sl.qty) * COALESCE(sl.unit_price, pr.unit_price, 0)';
 // stock-ledger issue is stock-only — excluded from every oil COST aggregation.
 const OIL_NOT_SERVICE = "COALESCE(sl.consumer_type,'') <> 'service'";
 
-router.get('/monthly', asyncHandler((_req, res) => {
+router.get('/monthly', requireModule('reports'), asyncHandler((_req, res) => {
   const map = new Map();
   const M = (m) => { if (!map.has(m)) map.set(m, { month: m, labour: 0, head_office: 0, local_purchase: 0, oil: 0, jobs: 0, service: 0 }); return map.get(m); };
   for (const r of all(`SELECT substr(work_date,1,7) m, ROUND(SUM(amount),2) v FROM job_labour WHERE work_date IS NOT NULL GROUP BY m`)) if (r.m) M(r.m).labour = r.v || 0;
@@ -781,7 +849,7 @@ router.get('/monthly', asyncHandler((_req, res) => {
   res.json({ this_month: months.find((x) => x.month === tm) || { month: tm, labour: 0, head_office: 0, local_purchase: 0, oil: 0, jobs: 0, service: 0, total: 0 }, months });
 }));
 
-router.get('/monthly/:month/assets', asyncHandler((req, res) => {
+router.get('/monthly/:month/assets', requireModule('reports'), asyncHandler((req, res) => {
   const month = String(req.params.month);
   if (!MONTH_RE.test(month)) return res.status(400).json({ error: 'month must be YYYY-MM' });
   const map = new Map();
@@ -799,7 +867,7 @@ router.get('/monthly/:month/assets', asyncHandler((req, res) => {
   res.json({ month, assets });
 }));
 
-router.get('/monthly/:month/asset/:id', asyncHandler((req, res) => {
+router.get('/monthly/:month/asset/:id', requireModule('reports'), asyncHandler((req, res) => {
   const month = String(req.params.month); const id = toInt(req.params.id);
   if (!MONTH_RE.test(month)) return res.status(400).json({ error: 'month must be YYYY-MM' });
   const asset = get('SELECT code, registration, ec_code FROM assets WHERE id=?', id);
@@ -828,15 +896,28 @@ router.get('/pending-approvals', asyncHandler((req, res) => {
   // endpoint itself requires, so a role an admin creates sees exactly the queues it can clear.
   const may = (cap) => hasCap(req.user, cap);
   const out = { certify: [], approve: [], transport: [], ops: [], jr_certify: [], jr_approve: [], reopen: [], signoff: [] };
+  // Stage 3: each queue holds your own workshop's items (head office: every workshop's).
+  const scope = require('../lib/scope');
+  const mOwn = scope.filter(req.user, 'm.workshop_id');
+  const jOwn = scope.filter(req.user, 'j.workshop_id');
+  const rOwn = scope.filter(req.user, 'r.workshop_id', { store: false });
+  const and = (f) => (f.sql ? ` AND ${f.sql}` : '');
   const INFLOW = "approval_status = 'requested' AND requested_by IS NOT NULL AND TRIM(requested_by) <> ''";
   const lineCount = '(SELECT COUNT(*) FROM mrn_lines ml WHERE ml.mrn_id = m.id) lines';
   if (may('stores.mrn.certify')) {
     out.certify = all(`SELECT m.id, m.mrn_no, m.req_date, m.requested_by, a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec, ${lineCount}
-        FROM mrn m LEFT JOIN assets a ON a.id = m.asset_id WHERE ${INFLOW} ORDER BY m.req_date DESC, m.id DESC LIMIT 50`);
+        FROM mrn m LEFT JOIN assets a ON a.id = m.asset_id WHERE ${INFLOW}${and(mOwn)} ORDER BY m.req_date DESC, m.id DESC LIMIT 50`, ...mOwn.params);
   }
   if (may('stores.mrn.approve')) {
     out.approve = all(`SELECT m.id, m.mrn_no, m.req_date, m.requested_by, m.certified_by, m.certified_at, a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec, ${lineCount}
-        FROM mrn m LEFT JOIN assets a ON a.id = m.asset_id WHERE m.approval_status = 'certified' ORDER BY m.certified_at DESC, m.id DESC LIMIT 50`);
+        FROM mrn m LEFT JOIN assets a ON a.id = m.asset_id WHERE m.approval_status = 'certified'${and(mOwn)} ORDER BY m.certified_at DESC, m.id DESC LIMIT 50`, ...mOwn.params);
+    // Each with its estimated value, and whether it is above this person's approval limit.
+    const limits = require('../lib/approval_limits');
+    for (const m of out.approve) {
+      const worth = limits.mrnValue(m.id);
+      const within = limits.check(req.user, 'mrn_approve', worth.value);
+      Object.assign(m, { value: worth.value, unpriced: worth.unpriced, over_limit: !within.ok, limit: within.limit, who_can: within.who_can });
+    }
   }
   if (may('jobs.approve_transport')) {
     // requested_at is what the approver is actually deciding on: a card raised three weeks ago and
@@ -844,37 +925,37 @@ router.get('/pending-approvals', asyncHandler((req, res) => {
     out.transport = all(`SELECT j.id, j.job_no, j.requested_at, j.description,
              a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec
         FROM job_cards j LEFT JOIN assets a ON a.id = j.asset_id
-        WHERE j.status = 'REQUESTED' AND j.approved_transport_at IS NULL AND j.is_historical = 0 ORDER BY j.id DESC LIMIT 50`);
+        WHERE j.status = 'REQUESTED' AND j.approved_transport_at IS NULL AND j.is_historical = 0${and(jOwn)} ORDER BY j.id DESC LIMIT 50`, ...jOwn.params);
   }
   if (may('jobs.approve_operations')) {
     out.ops = all(`SELECT j.id, j.job_no, j.requested_at, j.description,
              a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec
         FROM job_cards j LEFT JOIN assets a ON a.id = j.asset_id
-        WHERE j.approved_transport_at IS NOT NULL AND j.approved_ops_at IS NULL AND j.is_historical = 0 ORDER BY j.id DESC LIMIT 50`);
+        WHERE j.approved_transport_at IS NOT NULL AND j.approved_ops_at IS NULL AND j.is_historical = 0${and(jOwn)} ORDER BY j.id DESC LIMIT 50`, ...jOwn.params);
   }
   // Job Requests (Transport): Transport Manager certifies → Operational Manager approves.
   if (may('jobrequests.certify')) {
     out.jr_certify = all(`SELECT r.id, r.jr_no, r.req_date, r.requested_by, r.description,
           a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec
         FROM job_requests r LEFT JOIN assets a ON a.id = r.asset_id
-        WHERE r.approval_status = 'requested' ORDER BY r.id DESC LIMIT 50`);
+        WHERE r.approval_status = 'requested'${and(rOwn)} ORDER BY r.id DESC LIMIT 50`, ...rOwn.params);
   }
   if (may('jobrequests.approve')) {
     out.jr_approve = all(`SELECT r.id, r.jr_no, r.req_date, r.requested_by, r.certified_by, r.description,
           a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec
         FROM job_requests r LEFT JOIN assets a ON a.id = r.asset_id
-        WHERE r.approval_status = 'certified' ORDER BY r.id DESC LIMIT 50`);
+        WHERE r.approval_status = 'certified'${and(rOwn)} ORDER BY r.id DESC LIMIT 50`, ...rOwn.params);
   }
   // Reopen requests (W2): for whoever may reopen — except the person who asked, who cannot approve
   // their own (an admin excepted, as for the other approvals).
   const reopenQueue = may('jobs.reopen') && jobstate.partialCloseEnabled();
   if (reopenQueue) {
     const admin = (req.user.roles || []).includes('admin');
-    out.reopen = require('../lib/job_close').pendingRequests({ excludeRequester: admin ? null : req.user.id });
+    out.reopen = require('../lib/job_close').pendingRequests({ excludeRequester: admin ? null : req.user.id, workshopId: scope.reach(req.user) });
   }
   // Days waiting for their sign-off (W3) — for whoever signs days off, while attendance is on.
   const signoffQueue = may('attendance.signoff') && require('../lib/attendance').isEnabled();
-  if (signoffQueue) out.signoff = require('../lib/attendance').unsignedDays();
+  if (signoffQueue) out.signoff = unsignedFor(attendanceWorkshops(req.user));
   out.total = out.certify.length + out.approve.length + out.transport.length + out.ops.length
             + out.jr_certify.length + out.jr_approve.length + out.reopen.length + out.signoff.length;
   out.is_approver = ['stores.mrn.certify', 'stores.mrn.approve', 'jobs.approve_transport', 'jobs.approve_operations',
@@ -885,24 +966,25 @@ router.get('/pending-approvals', asyncHandler((req, res) => {
 // ---- Daily Progress Report -------------------------------------------------
 // One day's workshop output: jobs worked, mechanic hours, costed labour, plus
 // materials + oil issued that day, with a printable sheet.
-function dailyProgress(date) {
+function dailyProgress(date, ws = null) {
   const work = all(
     `SELECT w.job_id, j.job_no, j.type, j.status, a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec,
             p.name AS project_name, w.mechanic, w.description, w.hours, w.is_external, w.external_value
        FROM job_daily_work w JOIN job_cards j ON j.id = w.job_id
        LEFT JOIN assets a ON a.id = j.asset_id LEFT JOIN projects p ON p.id = j.project_id
-      WHERE w.work_date = ? ORDER BY j.job_no, w.id`, date);
-  const lab = all(`SELECT job_id, COALESCE(SUM(amount),0) amount FROM job_labour WHERE work_date = ? GROUP BY job_id`, date);
+      WHERE w.work_date = ?${wsIs('j.workshop_id', ws)} ORDER BY j.job_no, w.id`, date);
+  const lab = all(`SELECT l.job_id, COALESCE(SUM(l.amount),0) amount FROM job_labour l LEFT JOIN job_cards j ON j.id = l.job_id
+                    WHERE l.work_date = ?${wsIs('j.workshop_id', ws)} GROUP BY l.job_id`, date);
   const labByJob = {}; for (const l of lab) labByJob[l.job_id] = l.amount;
   const issues = all(
     `SELECT i.description, i.qty, i.unit_price, j.job_no, a.code AS asset_code
        FROM issues i LEFT JOIN job_cards j ON j.id = i.job_id LEFT JOIN assets a ON a.id = i.asset_id
-      WHERE i.issue_date = ? ORDER BY i.id`, date);
+      WHERE i.issue_date = ?${wsIs('COALESCE(j.workshop_id, i.store_id)', ws)} ORDER BY i.id`, date);
   const oil = all(
     `SELECT pr.name AS product, sl.qty, sl.unit_price, j.job_no, a.code AS asset_code
        FROM stock_ledger sl JOIN products pr ON pr.id = sl.product_id
        LEFT JOIN job_cards j ON j.id = sl.job_id LEFT JOIN assets a ON a.id = sl.asset_id
-      WHERE sl.txn_date = ? AND sl.kind = 'issue' AND ${OIL_NOT_SERVICE} ORDER BY sl.id`, date);
+      WHERE sl.txn_date = ? AND sl.kind = 'issue' AND ${OIL_NOT_SERVICE}${wsIs('COALESCE(j.workshop_id, sl.store_id)', ws)} ORDER BY sl.id`, date);
   const jobsMap = {};
   for (const w of work) {
     const g = jobsMap[w.job_id] || (jobsMap[w.job_id] = {
@@ -922,11 +1004,11 @@ function dailyProgress(date) {
   const opened = all(
     `SELECT j.job_no, j.description, j.status, ${VEH}
        FROM job_cards j LEFT JOIN assets a ON a.id = j.asset_id
-      WHERE substr(COALESCE(j.requested_at, j.created_at),1,10) = ? ORDER BY j.id`, date);
+      WHERE substr(COALESCE(j.requested_at, j.created_at),1,10) = ?${wsIs('j.workshop_id', ws)} ORDER BY j.id`, date);
   const closed = all(
     `SELECT j.job_no, j.description, ${VEH}, COALESCE(j.total_cost,0) total_cost
        FROM job_cards j LEFT JOIN assets a ON a.id = j.asset_id
-      WHERE j.status = 'CLOSED' AND substr(j.completed_at,1,10) = ? ORDER BY j.id`, date);
+      WHERE j.status = 'CLOSED' AND substr(j.completed_at,1,10) = ?${wsIs('j.workshop_id', ws)} ORDER BY j.id`, date);
 
   // Still to do — open cards that are actually live: worked or raised within the last 30 days.
   // (open_total counts every open card so nothing is hidden by that window.)
@@ -936,7 +1018,7 @@ function dailyProgress(date) {
             CAST(julianday(?) - julianday(substr(COALESCE(j.requested_at, j.created_at),1,10)) AS INTEGER) AS age_days,
             (SELECT MAX(w.work_date) FROM job_daily_work w WHERE w.job_id = j.id) AS last_work
        FROM job_cards j LEFT JOIN assets a ON a.id = j.asset_id
-      WHERE ${jobstate.notFinalSql('j')}
+      WHERE ${jobstate.notFinalSql('j')}${wsIs('j.workshop_id', ws)}
         AND substr(COALESCE(j.requested_at, j.created_at),1,10) <= ?
         AND (
           substr(COALESCE(j.requested_at, j.created_at),1,10) >= date(?, '-30 day')
@@ -945,19 +1027,19 @@ function dailyProgress(date) {
       ORDER BY age_days DESC, j.job_no`, date, date, date, date, date);
   const open_total = get(
     `SELECT COUNT(*) c FROM job_cards
-      WHERE ${jobstate.notFinalSql()} AND substr(COALESCE(requested_at, created_at),1,10) <= ?`, date).c;
+      WHERE ${jobstate.notFinalSql()} AND substr(COALESCE(requested_at, created_at),1,10) <= ?${wsIs('workshop_id', ws)}`, date).c;
 
   // Requested today (MRN lines raised) and received today (GRN deliveries).
   const requested = all(
     `SELECT m.mrn_no, ml.description, ml.qty, ml.category, a.code AS asset_code,
             COALESCE(ml.purchase_source, m.purchase_source) AS source
        FROM mrn_lines ml JOIN mrn m ON m.id = ml.mrn_id LEFT JOIN assets a ON a.id = m.asset_id
-      WHERE substr(m.req_date,1,10) = ? ORDER BY m.mrn_no, ml.id`, date);
+      WHERE substr(m.req_date,1,10) = ?${wsIs('m.workshop_id', ws)} ORDER BY m.mrn_no, ml.id`, date);
   const received = all(
     `SELECT g.description, g.qty, g.unit_price, g.supplier, m.mrn_no, a.code AS asset_code,
             COALESCE(g.purchase_source_norm, m.purchase_source) AS source
        FROM grn g LEFT JOIN mrn m ON m.id = g.mrn_id LEFT JOIN assets a ON a.id = m.asset_id
-      WHERE substr(g.delivery_date,1,10) = ? ORDER BY g.id`, date);
+      WHERE substr(g.delivery_date,1,10) = ?${wsIs('COALESCE(m.workshop_id, g.store_id)', ws)} ORDER BY g.id`, date);
 
   const total_labour = lab.reduce((s, l) => s + (Number(l.amount) || 0), 0);
   const total_material = issues.reduce((s, i) => s + (Number(i.qty) || 0) * (Number(i.unit_price) || 0), 0);
@@ -966,7 +1048,7 @@ function dailyProgress(date) {
   const total_hours = jobs.reduce((s, j) => s + j.hours, 0);
   const received_value = received.reduce((s, g) => s + (Number(g.qty) || 0) * (Number(g.unit_price) || 0), 0);
   return {
-    date, jobs, issues, oil, opened, closed, pending, requested, received,
+    date, workshop_id: ws || null, jobs, issues, oil, opened, closed, pending, requested, received,
     totals: {
       jobs: jobs.length, hours: r2(total_hours), labour: r2(total_labour), external: r2(total_external),
       material: r2(total_material), oil: r2(total_oil),
@@ -980,16 +1062,17 @@ function dailyProgress(date) {
 }
 
 const MDATE = /^\d{4}-\d{2}-\d{2}$/;
-router.get('/daily-progress', asyncHandler((req, res) => {
+router.get('/daily-progress', requireModule('daily_progress'), asyncHandler((req, res) => {
   const date = String(req.query.date || '').slice(0, 10);
   if (!MDATE.test(date)) return res.status(400).json({ error: 'A valid ?date=YYYY-MM-DD is required' });
-  res.json(dailyProgress(date));
+  res.json(dailyProgress(date, reportWs(req)));
 }));
 
-router.get('/daily-progress/print.html', asyncHandler((req, res) => {
+router.get('/daily-progress/print.html', requireModule('daily_progress'), asyncHandler((req, res) => {
   const date = String(req.query.date || '').slice(0, 10);
   if (!MDATE.test(date)) return res.status(400).send('A valid ?date=YYYY-MM-DD is required');
-  const rep = dailyProgress(date);
+  const rep = dailyProgress(date, reportWs(req));
+  const wsName = rep.workshop_id ? (get('SELECT name FROM workshops WHERE id = ?', rep.workshop_id) || {}).name : null;
   const esc = (v) => String(v == null ? '' : v).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
   const m = (n) => 'Rs ' + (Number(n) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const veh = (j) => [j.asset_reg, (j.asset_ec && j.asset_ec !== j.asset_reg) ? j.asset_ec : ''].filter(Boolean).join(' · ') || j.asset_code || '';
@@ -1016,7 +1099,7 @@ router.get('/daily-progress/print.html', asyncHandler((req, res) => {
   @media print { .noprint { display:none; } }
 </style></head><body>
 <button class="noprint" onclick="window.print()">🖨 Print / Save as PDF</button>
-<h1>Edward &amp; Christie (Pvt) Ltd — Daily Report</h1>
+<h1>Edward &amp; Christie (Pvt) Ltd — Daily Report${wsName ? ` · ${esc(wsName)}` : ''}</h1>
 <div class="sub">Date: <b>${esc(date)}</b> · ${t.jobs} job(s) worked · ${t.hours} mechanic-hours</div>
 <div class="tot">
   <div>Jobs worked<b>${t.jobs}</b></div>
@@ -1071,7 +1154,8 @@ function assetTeardown(id) {
             COALESCE(SUM(total_cost),0) total, COUNT(*) jobs
        FROM job_cards WHERE asset_id = ?`, id);
   const jobs = all(
-    `SELECT id, job_no, type, status, requested_at, labour_cost, material_cost, oil_cost, external_cost, total_cost
+    `SELECT id, job_no, type, status, requested_at, labour_cost, material_cost, oil_cost, external_cost, total_cost,
+            workshop_id, (SELECT w.name FROM workshops w WHERE w.id = job_cards.workshop_id) AS workshop_name
        FROM job_cards WHERE asset_id = ? ORDER BY total_cost DESC LIMIT 50`, id);
   const parts = all(
     `SELECT jp.description, COUNT(*) lines, COALESCE(SUM(jp.qty * jp.unit_price),0) value
@@ -1086,13 +1170,13 @@ function assetTeardown(id) {
   return { asset, buckets, jobs, parts, mechanics };
 }
 
-router.get('/teardown/asset/:id', asyncHandler((req, res) => {
+router.get('/teardown/asset/:id', requireModule('cost_teardown'), asyncHandler((req, res) => {
   const t = assetTeardown(toInt(req.params.id));
   if (!t) return res.status(404).json({ error: 'Asset not found' });
   res.json(t);
 }));
 
-router.get('/teardown/asset/:id/print.html', asyncHandler((req, res) => {
+router.get('/teardown/asset/:id/print.html', requireModule('cost_teardown'), asyncHandler((req, res) => {
   const t = assetTeardown(toInt(req.params.id));
   if (!t) return res.status(404).send('Asset not found');
   const esc = (v) => String(v == null ? '' : v).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
@@ -1129,7 +1213,7 @@ ${t.parts.length ? `<h3>Top parts by value</h3><table><thead><tr><th>Part</th><t
 // ===========================================================================
 
 // 1) Complete per-vehicle cost from the monthly rollup. month optional (full year).
-router.get('/vehicle-cost-complete', requireAuth, asyncHandler((req, res) => {
+router.get('/vehicle-cost-complete', requireAuth, requireModule('reports'), asyncHandler((req, res) => {
   const assetId = toInt(req.query.asset_id);
   const year = toInt(req.query.year);
   if (!assetId || !year) return res.status(400).json({ error: 'asset_id and year are required' });
@@ -1151,7 +1235,7 @@ router.get('/vehicle-cost-complete', requireAuth, asyncHandler((req, res) => {
 }));
 
 // 2) Inventory valuation across general stock, oil and filters.
-router.get('/stock-valuation', requireAuth, asyncHandler((_req, res) => {
+router.get('/stock-valuation', requireAuth, requireModule('reports'), asyncHandler((_req, res) => {
   const general = get(`SELECT COUNT(*) items, ROUND(COALESCE(SUM(balance * COALESCE(unit_cost,0)),0),2) value
      FROM store_items WHERE is_general = 1`);
   const oil = get(`SELECT COUNT(*) items, ROUND(COALESCE(SUM(COALESCE(stock_qty,0) * COALESCE(unit_price,0)),0),2) value
@@ -1175,7 +1259,7 @@ router.get('/stock-valuation', requireAuth, asyncHandler((_req, res) => {
 }));
 
 // 3) MRN analysis — status mix, avg time to certify, top requested items.
-router.get('/mrn-analysis', requireAuth, asyncHandler((req, res) => {
+router.get('/mrn-analysis', requireAuth, requireModule('reports'), asyncHandler((req, res) => {
   const year = req.query.year ? toInt(req.query.year) : null;
   const month = req.query.month ? toInt(req.query.month) : null;
   const mc = [];
@@ -1199,7 +1283,7 @@ router.get('/mrn-analysis', requireAuth, asyncHandler((req, res) => {
 }));
 
 // 4) Issues for one vehicle — list, category breakdown, date timeline.
-router.get('/issues-by-vehicle', requireAuth, asyncHandler((req, res) => {
+router.get('/issues-by-vehicle', requireAuth, requireModule('reports'), asyncHandler((req, res) => {
   const assetId = toInt(req.query.asset_id);
   if (!assetId) return res.status(400).json({ error: 'asset_id is required' });
   const asset = get('SELECT id, code, registration, ec_code FROM assets WHERE id = ?', assetId);
@@ -1241,12 +1325,41 @@ function validPeriod(year, month) {
   return Number.isInteger(year) && year >= 2000 && year <= 2100 && Number.isInteger(month) && month >= 1 && month <= 12;
 }
 
-// Download the workbook for a period.
-router.get('/monthly-cost.xlsx', requireAuth, asyncHandler(async (req, res) => {
+const canEditMonthlyInputs = (req, res, next) => {
+  if (req.user && req.user.roles && req.user.roles.includes('admin')) return next();
+  const perm = require('../lib/permissions');
+  const have = perm.effectiveLevel(req.user, 'reports');
+  const hasCap = (req.user.caps || []).includes('reports.monthly_cost.edit');
+  if (perm.meets(have, 'edit') || hasCap) return next();
+  return res.status(403).json({ error: 'Your account does not have edit access to reports' });
+};
+
+const canEditServiceOutside = (req, res, next) => {
+  if (req.user && req.user.roles && req.user.roles.includes('admin')) return next();
+  const perm = require('../lib/permissions');
+  if (perm.meets(perm.effectiveLevel(req.user, 'services'), 'edit') || perm.meets(perm.effectiveLevel(req.user, 'reports'), 'edit')) return next();
+  return res.status(403).json({ error: 'Your account does not have edit access to services' });
+};
+
+// Stage 5: the month's figures side by side, one row per workshop — for those who read every
+// workshop's reports (head office; everyone, while the workshops are not kept apart).
+router.get('/workshops-compared', requireAuth, requireModule('reports'), asyncHandler(async (req, res) => {
   const year = toInt(req.query.year), month = toInt(req.query.month);
   if (!validPeriod(year, month)) return res.status(400).json({ error: 'year (YYYY) and month (1-12) are required' });
-  const { wb } = await monthlyReport.buildWorkbook(year, month);
-  const fname = `Job-cost-report-${monthlyReport.MONTHS[month]}-${year}.xlsx`;
+  if (!require('../lib/workshops').isMulti()) return res.json({ year, month, rows: [] });
+  if (require('../lib/scope').reportWorkshop(req.user).choices) {
+    return res.status(403).json({ error: 'Only head office compares the workshops.' });
+  }
+  res.json({ year, month, rows: await monthlyReport.compare(year, month) });
+}));
+
+// Download the workbook for a period.
+router.get('/monthly-cost.xlsx', requireAuth, requireModule('reports'), asyncHandler(async (req, res) => {
+  const year = toInt(req.query.year), month = toInt(req.query.month);
+  if (!validPeriod(year, month)) return res.status(400).json({ error: 'year (YYYY) and month (1-12) are required' });
+  const ws = reportWs(req);
+  const { wb } = await monthlyReport.buildWorkbook(year, month, { ws });
+  const fname = `Job-cost-report-${monthlyReport.MONTHS[month]}-${year}${wsCode(ws).replace(' ', '-')}.xlsx`;
   res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
   res.setHeader('Content-Disposition', `attachment; filename="${fname}"`);
   await wb.xlsx.write(res);
@@ -1254,16 +1367,22 @@ router.get('/monthly-cost.xlsx', requireAuth, asyncHandler(async (req, res) => {
 }));
 
 // Fetch the saved manual inputs for a period, plus a live totals preview (all 8 sheets).
-router.get('/monthly-inputs', requireAuth, asyncHandler(async (req, res) => {
+router.get('/monthly-inputs', requireAuth, requireModule('reports'), asyncHandler(async (req, res) => {
   const year = toInt(req.query.year), month = toInt(req.query.month);
   if (!validPeriod(year, month)) return res.status(400).json({ error: 'year and month are required' });
+  // Stage 5: one workshop's inputs, or every workshop's (each line saying whose). With more than
+  // one workshop they are entered one workshop at a time.
+  const ws = reportWs(req);
+  const multi = require('../lib/workshops').isMulti();
   const inputs = {};
   for (const sheet of MONTHLY_SHEETS) {
     inputs[sheet] = all(
-      `SELECT id, seq, line_date, vehicle, label, project, qty, rate, amount1, amount2, amount3, note
-         FROM monthly_report_inputs WHERE year = ? AND month = ? AND sheet = ? ORDER BY seq, id`, year, month, sheet);
+      `SELECT i.id, i.seq, i.line_date, i.vehicle, i.label, i.project, i.qty, i.rate, i.amount1, i.amount2, i.amount3, i.note,
+              i.workshop_id, w.name AS workshop_name
+         FROM monthly_report_inputs i LEFT JOIN workshops w ON w.id = i.workshop_id
+        WHERE i.year = ? AND i.month = ? AND i.sheet = ?${wsIs('i.workshop_id', ws)} ORDER BY i.workshop_id, i.seq, i.id`, year, month, sheet);
   }
-  const { parts, total } = await monthlyReport.buildWorkbook(year, month);
+  const { parts, total } = await monthlyReport.buildWorkbook(year, month, { ws, compare: false });
   const repCLab = parts.repair.closed_total - (parts.repair.closed_jobs.reduce((a, b) => a + (num(b.material) + num(b.oil) + num(b.general) + num(b.other)), 0));
   const repPLab = parts.repair.pending_jobs.reduce((a, b) => a + num(b.labour), 0);
   const repCOut = parts.repair.closed_jobs.reduce((a, b) => a + num(b.outside_estimate), 0);
@@ -1347,45 +1466,54 @@ router.get('/monthly-inputs', requireAuth, asyncHandler(async (req, res) => {
     id: s.id, job_no: s.job_no, vehicle: s.reg || s.code || s.vehicle_label || '',
     labour: num(s.labour), outside: num(s.outside_estimate),
   }));
-  res.json({ year, month, inputs, preview, daily_work, service_jobs });
+  res.json({ year, month, workshop_id: ws, editable: !multi || !!ws, inputs, preview, daily_work, service_jobs });
 }));
 
 // Replace all saved lines for one (year, month, sheet). Body: { year, month, sheet, lines:[...] }.
-router.post('/monthly-inputs', requireAuth, asyncHandler((req, res) => {
+router.post('/monthly-inputs', requireAuth, canEditMonthlyInputs, asyncHandler((req, res) => {
   const b = req.body || {};
   const year = toInt(b.year), month = toInt(b.month), sheet = String(b.sheet || '');
   if (!validPeriod(year, month)) return res.status(400).json({ error: 'year and month are required' });
   if (!MONTHLY_SHEETS.includes(sheet)) return res.status(400).json({ error: 'sheet must be one of ' + MONTHLY_SHEETS.join(', ') });
+  // Stage 5: the lines of ONE workshop are replaced — yours, or (head office) the one chosen.
+  const workshops = require('../lib/workshops');
+  const ws = reportWs(req);
+  if (workshops.isMulti() && !ws) return res.status(400).json({ error: 'Choose a workshop to enter its monthly inputs.' });
+  const target = ws || workshops.defaultId();
   // Keep only well-formed line objects — a null/primitive element must not crash the insert (→ 500).
   const lines = (Array.isArray(b.lines) ? b.lines : []).filter((ln) => ln && typeof ln === 'object');
   // Coerce every text field to a string or null — a non-string (object/array/boolean) field value
   // would otherwise reach better-sqlite3's bind and throw (→ 500 instead of a clean save).
   const s = (v) => (v == null || typeof v === 'object') ? null : String(v);
   tx(() => {
-    run('DELETE FROM monthly_report_inputs WHERE year = ? AND month = ? AND sheet = ?', year, month, sheet);
+    run(`DELETE FROM monthly_report_inputs WHERE year = ? AND month = ? AND sheet = ?${wsIs('workshop_id', target)}`, year, month, sheet);
     let seq = 0;
     for (const ln of lines) {
       run(
-        `INSERT INTO monthly_report_inputs (year, month, sheet, seq, line_date, vehicle, label, project, qty, rate, amount1, amount2, amount3, note)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        year, month, sheet, seq++,
+        `INSERT INTO monthly_report_inputs (year, month, sheet, workshop_id, seq, line_date, vehicle, label, project, qty, rate, amount1, amount2, amount3, note)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        year, month, sheet, target, seq++,
         s(ln.line_date), s(ln.vehicle), s(ln.label), s(ln.project), s(ln.qty),
         ln.rate == null || ln.rate === '' ? null : toNum(ln.rate),
         toNum(ln.amount1) || 0, toNum(ln.amount2) || 0, toNum(ln.amount3) || 0, s(ln.note));
     }
   });
-  res.json({ ok: true, sheet, saved: lines.length });
+  res.json({ ok: true, sheet, saved: lines.length, workshop_id: target });
 }));
 
 // Save manual outside-labour prices for service jobs (service_jobs.outside_estimate). The daily-work
 // outside prices ride on monthly_report_inputs (sheet 'daily_outside'); service prices live on the
 // service row itself, so they get their own tiny endpoint. Body: { items: [{ id, outside }] }.
-router.post('/service-outside', requireAuth, asyncHandler((req, res) => {
+router.post('/service-outside', requireAuth, canEditServiceOutside, asyncHandler((req, res) => {
   const items = Array.isArray(req.body && req.body.items) ? req.body.items : [];
   let saved = 0;
   tx(() => {
     for (const it of items) {
       const id = toInt(it && it.id); if (!id) continue;
+      // Stage 5: someone kept to their own workshop prices only its services.
+      const sv = get(`SELECT COALESCE((SELECT jx.workshop_id FROM job_cards jx WHERE jx.job_no = s.job_no AND COALESCE(s.job_no,'') <> ''
+                              ORDER BY jx.id DESC LIMIT 1), s.store_id) w FROM service_jobs s WHERE s.id = ?`, id);
+      if (sv && sv.w && !require('../lib/scope').mayReach(req.user, sv.w)) continue;
       const val = (it.outside == null || it.outside === '') ? null : toNum(it.outside);
       run('UPDATE service_jobs SET outside_estimate = ? WHERE id = ?', val, id);
       saved++;
@@ -1398,11 +1526,14 @@ router.post('/service-outside', requireAuth, asyncHandler((req, res) => {
 // Pending set as the report's Repair sheet), each broken into its labour / parts / oil / general
 // line items with a per-job total and a grand total. Outside/external work cost is excluded
 // (owner tracks it as a personal value). Printable / save-as-PDF.
-router.get('/monthly-repair-detail.html', requireAuth, asyncHandler((req, res) => {
+router.get('/monthly-repair-detail.html', requireAuth, requireModule('reports'), asyncHandler((req, res) => {
   const year = toInt(req.query.year), month = toInt(req.query.month);
   if (!validPeriod(year, month)) return res.status(400).send('year (YYYY) and month (1-12) are required');
   const ym = `${year}-${String(month).padStart(2, '0')}`;
   const period = `${monthlyReport.MONTHS[month]} ${year}`;
+  // Stage 5: one workshop's jobs, or every workshop's.
+  const ws = reportWs(req);
+  const wsName = ws ? (get('SELECT name FROM workshops WHERE id = ?', ws) || {}).name : null;
   // Order both sections by JOB NUMBER, lowest to highest. Job numbers are YEAR/MONTH/R/SEQ,
   // so compare each "/"-segment numerically (a plain string sort would place /R/10 before /R/2,
   // and 2026/6 before 2026/10 wrongly). Pure-numeric segments are zero-padded for the compare;
@@ -1420,7 +1551,7 @@ router.get('/monthly-repair-detail.html', requireAuth, asyncHandler((req, res) =
   // partial-close month) — jobstate.reportClosedSql / reportPendingSql.
   const closedJobs = all(`SELECT id, job_no FROM job_cards
       WHERE ${jobstate.reportClosedSql()} AND completed_at IS NOT NULL AND substr(completed_at,1,7) = ?
-        AND (description IS NULL OR (description NOT LIKE 'Stores materials%' AND description NOT LIKE 'auto-created container%'))
+        AND (description IS NULL OR (description NOT LIKE 'Stores materials%' AND description NOT LIKE 'auto-created container%'))${wsIs('workshop_id', ws)}
       ORDER BY completed_at, id`, ym).sort(byJobNo);
   const closedIds = closedJobs.map((r) => r.id);
 
@@ -1428,13 +1559,13 @@ router.get('/monthly-repair-detail.html', requireAuth, asyncHandler((req, res) =
       WHERE ${jobstate.reportPendingSql()}
         AND (description IS NULL OR (description NOT LIKE 'Stores materials%' AND description NOT LIKE 'auto-created container%'))
         AND substr(COALESCE(requested_at, created_at),1,7) <= ?
-        AND EXISTS (SELECT 1 FROM job_daily_work w WHERE w.job_id = job_cards.id AND substr(w.work_date,1,7) = ?)
+        AND EXISTS (SELECT 1 FROM job_daily_work w WHERE w.job_id = job_cards.id AND substr(w.work_date,1,7) = ?)${wsIs('workshop_id', ws)}
       ORDER BY COALESCE(requested_at, created_at) DESC, id DESC`, ym, ym).sort(byJobNo);
   const pendingIds = pendingJobs.map((r) => r.id);
 
   const sparesIds = all(`SELECT id FROM job_cards
       WHERE substr(COALESCE(completed_at, requested_at, created_at),1,7) = ?
-        AND (description LIKE 'Stores materials%' OR description LIKE 'auto-created container%' OR description LIKE 'Spares Supply%')
+        AND (description LIKE 'Stores materials%' OR description LIKE 'auto-created container%' OR description LIKE 'Spares Supply%')${wsIs('workshop_id', ws)}
       ORDER BY completed_at, id`, ym).map((r) => r.id);
 
   const usedIds = [...closedIds, ...pendingIds, ...sparesIds];
@@ -1452,7 +1583,7 @@ router.get('/monthly-repair-detail.html', requireAuth, asyncHandler((req, res) =
       LEFT JOIN assets a ON a.id = j.asset_id
       LEFT JOIN projects p ON p.id = j.project_id
      WHERE substr(l.work_date,1,7) = ?
-       AND (l.job_id IS NULL OR l.job_id NOT IN (${usedIdsStr}))
+       AND (l.job_id IS NULL OR l.job_id NOT IN (${usedIdsStr}))${wsIs('j.workshop_id', ws)}
      GROUP BY COALESCE(a.registration, a.code, l.mechanic)
      HAVING labour > 0
      ORDER BY labour DESC
@@ -1518,7 +1649,7 @@ router.get('/monthly-repair-detail.html', requireAuth, asyncHandler((req, res) =
   @media print { .noprint { display:none; } }
 </style></head><body>
 <button class="noprint" onclick="window.print()">🖨 Print / Save as PDF</button>
-<h1>Edward &amp; Christie (Pvt) Ltd — Badalgama W/S</h1>
+<h1>Edward &amp; Christie (Pvt) Ltd — ${wsName ? esc(wsName) : 'Badalgama W/S'}</h1>
 <div class="sub">Monthly Repair Detail — <b>${esc(period)}</b> · ${g.jobs} job(s)</div>
 ${closedHtml}
 ${pendingHtml}
@@ -1543,20 +1674,21 @@ ${sparesHtml}
 // Section C: Other Labour
 // Section D: Spares Supply
 // Plus the grand totals and the mathematical daily work vs labour tally.
-router.get('/repair-sections', requireAuth, asyncHandler(async (req, res) => {
+router.get('/repair-sections', requireAuth, requireModule('reports'), asyncHandler(async (req, res) => {
   const year = toInt(req.query.year), month = toInt(req.query.month);
   if (!validPeriod(year, month)) return res.status(400).json({ error: 'year (YYYY) and month (1-12) are required' });
   const ym = `${year}-${String(month).padStart(2, '0')}`;
   const period = `${monthlyReport.MONTHS[month]} ${year}`;
 
-  const { parts } = await monthlyReport.buildWorkbook(year, month);
+  const ws = reportWs(req);
+  const { parts } = await monthlyReport.buildWorkbook(year, month, { ws, compare: false });
   const rep = parts.repair;
 
-  // Verify daily work total with effective dated rates
+  // Verify daily work total with effective dated rates (Stage 5: on this workshop's cards).
   const dwRows = all(`
     SELECT w.id, w.job_id, w.work_date, w.mechanic, w.hours, w.is_external
-      FROM job_daily_work w
-     WHERE substr(w.work_date,1,7) = ? AND (w.is_external IS NULL OR w.is_external = 0)
+      FROM job_daily_work w LEFT JOIN job_cards j ON j.id = w.job_id
+     WHERE substr(w.work_date,1,7) = ? AND (w.is_external IS NULL OR w.is_external = 0)${wsIs('j.workshop_id', ws)}
   `, ym);
 
   let totalDailyWorkLabour = 0;
@@ -1581,7 +1713,7 @@ router.get('/repair-sections', requireAuth, asyncHandler(async (req, res) => {
   const diff = Math.round((totalDailyWorkLabour - allocatedLabour) * 100) / 100;
 
   res.json({
-    year, month, ym, period,
+    year, month, ym, period, workshop_id: ws,
     closed_jobs: rep.closed_jobs,
     pending_jobs: rep.pending_jobs,
     other_labour: rep.other_labour,
@@ -1624,10 +1756,11 @@ const KINDS = ['pending_parts', 'job_summary', 'pending_price', 'day_tally'];
 const kindOf = (v) => (KINDS.includes(v) ? v : null);
 // The day tally is attendance: it follows the Daily Work section clearance, like /api/attendance.
 function mayReadKind(req, res, kind) {
+  if (req.user && req.user.roles && req.user.roles.includes('admin')) return true;
   if (kind !== 'day_tally') return true;
   const permissions = require('../lib/permissions');
-  if (permissions.meets(permissions.levelForRoles(req.user.roles || [], 'dailywork'), 'view')) return true;
-  res.status(403).json({ error: 'Your role has no view access to dailywork' });
+  if (permissions.meets(permissions.effectiveLevel(req.user, 'dailywork'), 'view')) return true;
+  res.status(403).json({ error: 'Your account has no view access to dailywork' });
   return false;
 }
 
@@ -1642,12 +1775,13 @@ router.get('/daily/:kind', requireAuth, asyncHandler((req, res) => {
   // that copy back would leave the supervisor looking at a read-only sheet for the day they are
   // actually working on. Earlier days read their frozen copy, which is the point of keeping one.
   const isToday = !date || date === today;
-  const saved = (!isToday && date) ? daily.readSnapshot(kind, date) : null;
+  const ws = reportWs(req);   // Stage 5: one workshop's copy, or the whole company's
+  const saved = (!isToday && date) ? daily.readSnapshot(kind, date, ws) : null;
   if (saved && !req.query.live) {
     return res.json({ ...saved.data, saved: true, generated_at: saved.generated_at, row_count: saved.row_count });
   }
-  const lastSave = get('SELECT generated_at FROM daily_report_snapshots WHERE kind = ? AND report_date = ?', kind, date || today);
-  res.json({ ...daily.build(kind, { asOf: date }), saved: false, last_saved_at: lastSave ? lastSave.generated_at : null });
+  const lastSave = get('SELECT generated_at FROM daily_report_snapshots WHERE kind = ? AND report_date = ? AND workshop_id = ?', kind, date || today, ws || 0);
+  res.json({ ...daily.build(kind, { asOf: date, ws }), saved: false, last_saved_at: lastSave ? lastSave.generated_at : null });
 }));
 
 // Freeze the day. Running it again the same day replaces the copy, so it always holds the latest.
@@ -1655,7 +1789,7 @@ router.post('/daily/:kind/save', requireAuth, asyncHandler((req, res) => {
   const kind = kindOf(req.params.kind);
   if (!kind) return res.status(404).json({ error: 'Unknown report' });
   if (!mayReadKind(req, res, kind)) return;
-  const snap = daily.snapshot(kind, { asOf: req.body && req.body.date, userId: req.user.id });
+  const snap = daily.snapshot(kind, { asOf: req.body && req.body.date, userId: req.user.id, ws: reportWs(req) });
   res.json({ ok: true, ...snap });
 }));
 
@@ -1663,7 +1797,7 @@ router.get('/daily/:kind/history', requireAuth, asyncHandler((req, res) => {
   const kind = kindOf(req.params.kind);
   if (!kind) return res.status(404).json({ error: 'Unknown report' });
   if (!mayReadKind(req, res, kind)) return;
-  res.json(daily.history(kind, toInt(req.query.limit, 60)));
+  res.json(daily.history(kind, toInt(req.query.limit, 60), reportWs(req)));
 }));
 
 // Its own path rather than "/daily/:kind.xlsx": that form is matched by the "/daily/:kind"
@@ -1673,12 +1807,13 @@ router.get('/daily/:kind/export.xlsx', requireAuth, asyncHandler(async (req, res
   if (!kind) return res.status(404).send('Unknown report');
   if (!mayReadKind(req, res, kind)) return;
   const date = String(req.query.date || '').slice(0, 10) || null;
-  const saved = date ? daily.readSnapshot(kind, date) : null;
-  const data = saved && !req.query.live ? saved.data : daily.build(kind, { asOf: date });
+  const ws = reportWs(req);
+  const saved = date ? daily.readSnapshot(kind, date, ws) : null;
+  const data = saved && !req.query.live ? saved.data : daily.build(kind, { asOf: date, ws });
   const wb = daily.workbookFor(kind, data);
   const name = { pending_parts: 'Pending parts', pending_price: 'Pending price', day_tally: 'Day tally' }[kind] || 'Job report';
   res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-  res.setHeader('Content-Disposition', `attachment; filename="${name} ${data.as_of}.xlsx"`);
+  res.setHeader('Content-Disposition', `attachment; filename="${name}${wsCode(ws)} ${data.as_of}.xlsx"`);
   await wb.xlsx.write(res);
   res.end();
 }));

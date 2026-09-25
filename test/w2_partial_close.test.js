@@ -1,6 +1,6 @@
 'use strict';
 
-// W2 — partial close, full close and reopen requests (docs/WORKSHOPONE_PLAN.md §3.2, Stage W2).
+// W2 — partial close, full close and reopen requests (docs/WORKSHOPONE_PLAN.md §A.2, Stage W2).
 //
 //   A partly closed card no longer holds its vehicle, and takes only prices, what was already
 //   requested, general items and daily work up to its partial-close day. Full close needs the

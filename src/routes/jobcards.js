@@ -12,12 +12,19 @@ const aliases = require('../lib/aliases');
 const mechanics = require('../lib/mechanics');
 const jobstate = require('../lib/jobstate');
 const closeLib = require('../lib/job_close');
+const approvalLimits = require('../lib/approval_limits');
 const attendance = require('../lib/attendance');
 const costing = require('../lib/costing');
 const jobno = require('../lib/jobno');
+const workshops = require('../lib/workshops');
+const scope = require('../lib/scope');
 const emitter = require('../lib/emitter');
 
 const router = express.Router();
+
+// Stage 3: a card of another workshop is out of reach for anyone outside head office — every
+// route here whose :id is a job card, reading it or changing it.
+router.param('id', scope.jobParam);
 
 // Order by the job number itself — YYYY/M/(R|S)/seq — newest first: year, then month,
 // then the sequence number (xxx), all compared numerically (so 12 > 6 and 383 > 59).
@@ -41,34 +48,14 @@ function loadJob(id) {
   return get(
     `SELECT j.*, a.code AS asset_code, a.code_norm AS asset_code_norm,
             a.registration AS asset_reg, a.ec_code AS asset_ec,
-            p.name AS project_name
+            p.name AS project_name, w.code AS workshop_code, w.name AS workshop_name
        FROM job_cards j
        LEFT JOIN assets a ON a.id = j.asset_id
        LEFT JOIN projects p ON p.id = j.project_id
+       LEFT JOIN workshops w ON w.id = j.workshop_id
       WHERE j.id = ?`,
     id
   );
-}
-
-// Full close: the closure check has to pass. Returns null (may close) or the 409 body.
-// Switched off (the flow before W2): only a card's FIRST close is checked — a card that was closed
-// once already cleared it, or was closed by import / close-on-date, which never checked. Switched
-// on, nothing needs that excuse any more (an unfinished card can be partly closed), so every live
-// card is checked, including "work done is recorded"; only reopened imported history is excused.
-function closeGate(job) {
-  const readiness = costing.closureReadiness(job.id);
-  if (readiness.ready) return null;
-  const wasReopened = !!get('SELECT 1 v FROM job_reopens WHERE job_id = ? LIMIT 1', job.id);
-  if (!jobstate.partialCloseEnabled()) {
-    return wasReopened ? null : { error: 'Job is not fully priced — cannot close', missing: readiness.missing };
-  }
-  if (wasReopened && job.is_historical) return null;
-  const n = readiness.missing.length;
-  return {
-    error: `Not ready to close fully — ${n} thing${n === 1 ? '' : 's'} still missing.`
-      + (job.status === jobstate.PARTIAL ? '' : ' Partly close it instead, and close it fully once they are done.'),
-    missing: readiness.missing,
-  };
 }
 
 // The only two kinds of card. The letter in the job number (…/R/… or …/S/…) is set from this
@@ -86,8 +73,10 @@ router.get(
     const params = [];
     for (const f of ['status', 'type', 'severity']) {
       if (req.query[f]) {
-        clauses.push(`j.${f} = ?`);
-        params.push(req.query[f]);
+        // Several at once, comma separated (the Job Cards Monitor links "waiting to start" this way).
+        const v = String(req.query[f]).split(',').map((x) => x.trim()).filter(Boolean);
+        clauses.push(v.length > 1 ? `j.${f} IN (${v.map(() => '?').join(',')})` : `j.${f} = ?`);
+        params.push(...v);
       }
     }
     if (req.query.asset_id) {
@@ -97,6 +86,14 @@ router.get(
     if (req.query.project_id) {
       clauses.push('j.project_id = ?');
       params.push(toInt(req.query.project_id));
+    }
+    // Stage 3: your own workshop's cards only (head office and store staff: all).
+    const own = scope.filter(req.user, 'j.workshop_id');
+    if (own.sql) { clauses.push(own.sql); params.push(...own.params); }
+    // Which workshop does the repair (multi-site Stage 2).
+    if (req.query.workshop_id) {
+      clauses.push('j.workshop_id = ?');
+      params.push(toInt(req.query.workshop_id));
     }
     // Only currently-open job cards (for pickers that log against an active job).
     if (req.query.open === '1') clauses.push(jobstate.openSql('j'));
@@ -137,12 +134,13 @@ router.get(
     const where = clauses.length ? 'WHERE ' + clauses.join(' AND ') : '';
     const limit = toInt(req.query.limit, 500);
     const cols = `j.id, j.job_no, j.type, j.severity, j.status, j.description,
-              j.total_cost, j.material_cost, j.labour_cost, j.requested_at, j.closed_at, j.completed_at,
-              j.asset_id,
+              j.total_cost, j.material_cost, j.labour_cost, j.requested_at, j.closed_at, j.completed_at, j.field, j.breakdown, j.working_at,
+              j.asset_id, j.workshop_id, w.code AS workshop_code,
               a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec, p.name AS project_name`;
     const from = `FROM job_cards j
          LEFT JOIN assets a ON a.id = j.asset_id
-         LEFT JOIN projects p ON p.id = j.project_id`;
+         LEFT JOIN projects p ON p.id = j.project_id
+         LEFT JOIN workshops w ON w.id = j.workshop_id`;
 
     // One row per machine, for the pickers. A vehicle can be carrying two, three, even four
     // cards left open years apart, and offering all of them side by side just invites logging
@@ -199,12 +197,14 @@ router.post(
     // One open card per vehicle — the next fault waits until this one closes.
     const guard = jobstate.checkOneOpenJob(assetId);
     if (!guard.ok) return res.status(409).json({ error: guard.error, blocking_job: guard.blocking });
+    // The workshop that does the repair: the one chosen, else the person's home workshop.
+    const workshopId = workshops.forNew(req.user, b.workshop_id);
 
     const no = jobNo(type);
     const info = run(
       `INSERT INTO job_cards (job_no, ref, asset_id, project_id, site, type, severity, description,
-                              status, requested_by, requested_by_user)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'REQUESTED', ?, ?)`,
+                              status, requested_by, requested_by_user, workshop_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'REQUESTED', ?, ?, ?)`,
       no,
       b.ref || null,
       assetId || null,
@@ -214,9 +214,10 @@ router.post(
       b.severity === 'major' || b.severity === 'minor' ? b.severity : null,
       b.description,
       b.requested_by || req.user.fullName || req.user.username,
-      req.user.id
+      req.user.id,
+      workshopId
     );
-    audit.record({ userId: req.user.id, entity: 'job_card', entityId: info.lastInsertRowid, action: 'create', after: { job_no: no } });
+    audit.record({ userId: req.user.id, entity: 'job_card', entityId: info.lastInsertRowid, action: 'create', after: { job_no: no, workshop_id: workshopId } });
     emitter.emit('job_updated', { job_id: info.lastInsertRowid, action: 'create' });
     emitter.emit('dashboard_refresh', { reason: 'job_create' });
     res.status(201).json({ job: loadJob(info.lastInsertRowid), unresolved });
@@ -229,8 +230,8 @@ router.post(
 // before '/:id' so the literal path isn't swallowed by the param route.
 router.get(
   '/duplicates',
-  asyncHandler((_req, res) => {
-    const vehicles = jobstate.duplicateOpenJobs();
+  asyncHandler((req, res) => {
+    const vehicles = jobstate.duplicateOpenJobs({ workshopId: scope.reach(req.user) });
     res.json({
       vehicles,
       vehicle_count: vehicles.length,
@@ -241,15 +242,20 @@ router.get(
 
 // Stuck REQUESTED cards: the list with a suggestion for each, and applying what a person chose
 // (src/lib/job_review.js). Nothing changes on its own. Registered before '/:id'.
-router.get('/review/stuck', requireAuth, requireCap('jobs.triage'), asyncHandler((_req, res) => {
-  res.json(require('../lib/job_review').listStuck());
+router.get('/review/stuck', requireAuth, requireCap('jobs.triage'), asyncHandler((req, res) => {
+  // Stage 3: someone outside head office reviews their own workshop's cards only.
+  res.json(require('../lib/job_review').listStuck({ workshopId: scope.reach(req.user) }));
 }));
 
 router.post('/review/apply', requireAuth, requireCap('jobs.triage'), asyncHandler((req, res) => {
+  for (const a of (Array.isArray(req.body.actions) ? req.body.actions : [])) {
+    const no = scope.jobRefusal(req.user, toInt(a && a.job_id));
+    if (no) return res.status(403).json(no);
+  }
   let done;
   try {
     done = require('../lib/job_review').applyReview(req.body.actions, {
-      userId: req.user.id, reason: req.body.reason,
+      userId: req.user.id, user: req.user, reason: req.body.reason,
       approvalRole: hasCap(req.user, 'jobs.approve_operations') ? 'operational_manager' : 'transport_manager' });
   } catch (e) {
     if (e.status === 400) return res.status(400).json({ error: e.message, problems: (e.extra && e.extra.problems) || [] });
@@ -276,12 +282,15 @@ router.put('/close-settings', requireAuth, requireCap('jobs.settings'), asyncHan
 
 // Reopen requests waiting for a decision (the job card shows its own; this is the queue).
 router.get('/reopen-requests', requireAuth, requireCap('jobs.reopen'), asyncHandler((req, res) => {
-  res.json(closeLib.pendingRequests({ excludeRequester: isAdmin(req.user) ? null : req.user.id }));
+  res.json(closeLib.pendingRequests({ excludeRequester: isAdmin(req.user) ? null : req.user.id, workshopId: scope.reach(req.user) }));
 }));
 
 router.post('/reopen-requests/:rid/:decision', requireAuth, requireCap('jobs.reopen'), asyncHandler((req, res) => {
   const decision = req.params.decision;
   if (decision !== 'approve' && decision !== 'refuse') return res.status(404).json({ error: 'Not found' });
+  const asked = get('SELECT job_id FROM job_reopen_requests WHERE id = ?', toInt(req.params.rid));
+  const no = asked && scope.jobRefusal(req.user, asked.job_id);
+  if (no) return res.status(403).json(no);
   let out;
   try {
     out = closeLib.decideReopen(toInt(req.params.rid), { user: req.user, approve: decision === 'approve', note: (req.body || {}).note, isAdmin: isAdmin(req.user) });
@@ -329,8 +338,8 @@ router.get(
       `SELECT m.id AS mrn_id, m.mrn_no, m.req_date, m.approval_status,
               ml.id AS mrn_line_id, ml.description, ml.category, ml.qty, ml.qty_received,
               g.id AS grn_id, g.grn_no, g.delivery_date, g.unit_price,
-              ROUND(COALESCE((SELECT SUM(i.qty) FROM issues i WHERE i.grn_id = g.id), 0), 2) AS qty_issued,
-              ROUND(MAX(0, COALESCE(g.qty, ml.qty_received, 0) - COALESCE((SELECT SUM(i.qty) FROM issues i WHERE i.grn_id = g.id), 0)), 2) AS remaining_in_store
+              ROUND((COALESCE((SELECT SUM(i.qty) FROM issues i WHERE i.grn_id = g.id), 0) - COALESCE((SELECT SUM(r.qty) FROM issue_returns r JOIN issues ir ON ir.id = r.issue_id WHERE ir.grn_id = g.id), 0)), 2) AS qty_issued,
+              ROUND(MAX(0, COALESCE(g.qty, ml.qty_received, 0) - (COALESCE((SELECT SUM(i.qty) FROM issues i WHERE i.grn_id = g.id), 0) - COALESCE((SELECT SUM(r.qty) FROM issue_returns r JOIN issues ir ON ir.id = r.issue_id WHERE ir.grn_id = g.id), 0))), 2) AS remaining_in_store
          FROM mrn_lines ml
          JOIN mrn m ON m.id = ml.mrn_id
          LEFT JOIN grn g ON g.mrn_line_id = ml.id
@@ -362,6 +371,12 @@ router.get(
 
     res.json({
       job,
+      // Stage 6: the field side — site, times, response and downtime, km and their cost.
+      field: require('../lib/field').view(get('SELECT * FROM job_cards WHERE id = ?', id)),
+      // Stage 7: the workshops this card was sent between, and why.
+      handovers: require('../lib/operations').jobHandovers(id),
+      // Job cards plan, Part 2: attended or not, and why not (the reasons given, newest first).
+      attended: require('../lib/jobs_flow').attendanceOf(req.user, id),
       approvals,
       dailyWork,
       parts,
@@ -383,6 +398,9 @@ router.get(
       continues: job.continues_job_id ? get('SELECT id, job_no, status FROM job_cards WHERE id = ?', job.continues_job_id) : null,
       continuedAs: all('SELECT id, job_no, status FROM job_cards WHERE continues_job_id = ? ORDER BY id', id),
       workRecorded: closeLib.workRecorded(job),
+      // Approval limit for closing it fully: does this person's limit cover the job's cost?
+      closeLimit: job.status !== 'CLOSED' && hasCap(req.user, 'jobs.close', 'jobs.close_on_date')
+        ? approvalLimits.check(req.user, 'job_close', cost.total_cost) : null,
       reopens: all(
         `SELECT r.*, u.username AS reopened_by_name FROM job_reopens r
            LEFT JOIN users u ON u.id = r.reopened_by
@@ -435,8 +453,12 @@ router.post(
     // With partial close switched on nothing is stranded (an unfinished card can be partly
     // closed), so the gate applies to every live card; only reopened imported history is excused.
     if (target === 'CLOSED') {
-      const fail = closeGate(job);
+      const fail = closeLib.closeGate(job);
       if (fail) return res.status(409).json(fail);
+      // Approval limit: a job that costs more than this person may sign off is closed by someone
+      // with a higher limit.
+      const within = approvalLimits.check(req.user, 'job_close', approvalLimits.jobValue(id));
+      if (!within.ok) return res.status(403).json(approvalLimits.refusal(within, 'This job costs'));
     }
 
     if (check.def.action === 'ops_approve') {
@@ -524,6 +546,11 @@ router.post(
           failed.push({ id, error: 'Job not found' });
           continue;
         }
+        const notMine = scope.jobRefusal(req.user, id);
+        if (notMine) {
+          failed.push({ id, job_no: job.job_no, error: notMine.error });
+          continue;
+        }
 
         if (target === jobstate.PARTIAL) {
           failed.push({ id, job_no: job.job_no, error: 'Partly close each card on its own (it asks for a note)' });
@@ -553,9 +580,14 @@ router.post(
         }
 
         if (target === 'CLOSED') {
-          const fail = closeGate(job);
+          const fail = closeLib.closeGate(job);
           if (fail) {
             failed.push({ id, job_no: job.job_no, error: jobstate.partialCloseEnabled() ? fail.error : 'Not fully priced or has unissued store shelf parts', missing: fail.missing });
+            continue;
+          }
+          const within = approvalLimits.check(req.user, 'job_close', approvalLimits.jobValue(id));
+          if (!within.ok) {
+            failed.push({ id, job_no: job.job_no, error: approvalLimits.refusalText(within, 'This job costs'), over_limit: true });
             continue;
           }
         }
@@ -682,6 +714,9 @@ router.post(
         missing: out.missing,
       });
     }
+    // A full close, so the approval limit applies as for any other.
+    const within = approvalLimits.check(req.user, 'job_close', approvalLimits.jobValue(id));
+    if (!within.ok) return res.status(403).json(approvalLimits.refusal(within, 'This job costs'));
     tx(() => {
       // The chosen date is explicit user intent, so it wins over the original-month anchor —
       // but the anchor is dropped at the same time, or a later re-close would silently pull
@@ -784,7 +819,7 @@ router.post(
     { const g = jobstate.checkAdd(job, 'daily_work', { user: req.user, dates: [workDate] }); if (!g.ok) return res.status(g.status).json(g.body); }
     const isExternal = b.is_external ? 1 : 0;
     // A signed-off day is locked (attendance, src/lib/attendance.js).
-    { const g = attendance.checkDaysOpen([workDate]); if (!g.ok) return res.status(g.status).json(g.body); }
+    { const g = attendance.checkDaysOpen([workDate], job.workshop_id); if (!g.ok) return res.status(g.status).json(g.body); }
     const hours = toNum(b.hours, 0);
 
     // A single entry may list several mechanics ("Buddhika, Krishna"). Split into
@@ -819,9 +854,10 @@ router.post(
       const ids = [];
       for (const mech of insertRows) {
         const info = run(
-          `INSERT INTO job_daily_work (job_id, work_date, mechanic, description, hours, is_external, external_value, asset_id)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-          id, workDate, mech, b.description || null, perRowHours, isExternal, isExternal ? toNum(b.external_value, 0) : 0, lineAsset
+          `INSERT INTO job_daily_work (job_id, work_date, mechanic, description, hours, is_external, external_value, asset_id, travel)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          id, workDate, mech, b.description || null, perRowHours, isExternal, isExternal ? toNum(b.external_value, 0) : 0, lineAsset,
+          b.travel && !isExternal ? 1 : 0   // Stage 6: travel to a field job — costed like any hour, shown apart
         );
         ids.push(info.lastInsertRowid);
       }
@@ -869,11 +905,11 @@ router.delete(
     const row = get('SELECT * FROM job_daily_work WHERE id = ? AND job_id = ?', lineId, id);
     { const g = jobstate.checkAdd(job, 'daily_work', { user: req.user, dates: row ? [row.work_date] : [] }); if (!g.ok) return res.status(g.status).json(g.body); }
     if (!row) return res.status(404).json({ error: 'Entry not found on this job' });
-    { const g = attendance.checkDaysOpen([row.work_date]); if (!g.ok) return res.status(g.status).json(g.body); }
+    { const g = attendance.checkDaysOpen([row.work_date], job.workshop_id); if (!g.ok) return res.status(g.status).json(g.body); }
 
     // ensure, not read: on a database that has never had a general entry the card does not exist,
     // and a 0 here would turn "send it back" into "destroy it".
-    const gid = id === catchAllJobId() ? id : ensureCatchAllJobId();
+    const gid = workshops.isGeneralCard(job) ? id : workshops.generalCardId(job.workshop_id, { create: true });
     // On the catch-all there is nowhere further to send it, so removing means removing.
     const unlink = gid !== id;
     const settle = settleAfterDetach(job, unlink ? gid : null);
@@ -899,28 +935,14 @@ router.delete(
 // Both used to be findable only by hunting. Now the job card's own Add buttons offer them,
 // which is the moment someone actually knows where they belong.
 
-const catchAllJobId = () => {
-  const j = get("SELECT id FROM job_cards WHERE legacy_ref = 'general-workshop' LIMIT 1");
-  return j ? j.id : 0;
-};
-
-/**
- * The catch-all, CREATING it if this database has never needed one.
- *
- * Nothing in the schema or the migrations makes this card — it is created lazily, by the first
- * general daily-work entry (routes/dailywork.js) or the first general stores issue
- * (routes/stores.js). So on a fresh install it does not exist, and a reader that returns 0 makes
- * "send this row back to the pool" silently become "delete this row": the unlink guard below reads
- * `gid && gid !== id`, and 0 is falsy. The screen would still promise the entry was kept.
- *
- * Detaching must therefore be able to create it, exactly as the other two writers do. Same job_no,
- * same legacy_ref, so all three converge on one card.
- */
-function ensureCatchAllJobId() {
-  const existing = catchAllJobId();
-  if (existing) return existing;
-  return run(`INSERT INTO job_cards (job_no, type, description, status, requested_by, requested_at, is_historical, synthesized_no, legacy_ref)
-              VALUES ('GENERAL-WS', 'repair', 'General workshop (not vehicle-specific)', 'REQUESTED', 'system', date('now'), 0, 1, 'general-workshop')`).lastInsertRowid;
+// The pool is the workshop's general card (src/lib/workshops.js): one per workshop, so with the
+// workshops kept apart (Stage 3) each sees and claims only its own. The pool a list is read from
+// is the job card's workshop when one is given (the job card's own Add buttons), else your own.
+function poolWorkshop(req) {
+  const jobId = toInt(req.query.job_id);
+  const j = jobId ? get('SELECT workshop_id FROM job_cards WHERE id = ?', jobId) : null;
+  if (j && !scope.jobRefusal(req.user, jobId)) return j.workshop_id;
+  return scope.onlyWorkshop(req.user) || workshops.homeOf(req.user);
 }
 
 /**
@@ -941,7 +963,7 @@ function ensureCatchAllJobId() {
  * years, and it normalises punctuation both ways: AC06, ac-06, AC 06 and AC-06 all find each other.
  */
 router.get('/unassigned/daily-work', requireAuth, asyncHandler((req, res) => {
-  const gid = catchAllJobId();
+  const gid = workshops.generalCardId(poolWorkshop(req));
   if (!gid) return res.json([]);
   const assetId = toInt(req.query.asset_id);
   const clauses = ['d.job_id = ?']; const params = [gid];
@@ -987,7 +1009,7 @@ router.get('/unassigned/daily-work', requireAuth, asyncHandler((req, res) => {
 }));
 
 router.get('/unassigned/parts', requireAuth, asyncHandler((req, res) => {
-  const gid = catchAllJobId();
+  const gid = workshops.generalCardId(poolWorkshop(req));
   const assetId = toInt(req.query.asset_id);
   const q = req.query.q && String(req.query.q).trim()
     ? '%' + String(req.query.q).trim().replace(/[\\%_]/g, (c) => '\\' + c) + '%' : null;
@@ -1043,7 +1065,7 @@ router.post('/:id/daily-work/attach', requireAuth, requireCap('jobs.dailywork'),
   const job = get('SELECT * FROM job_cards WHERE id = ?', id);
   if (!job) return res.status(404).json({ error: 'Job not found' });
   { const g = jobstate.checkAdd(job, 'attach', { user: req.user }); if (!g.ok) return res.status(g.status).json(g.body); }
-  const gid = catchAllJobId();
+  const gid = workshops.generalCardId(job.workshop_id);
   const ids = (Array.isArray(req.body.ids) ? req.body.ids : []).map(toInt).filter(Boolean);
   if (!ids.length) return res.status(400).json({ error: 'Pick at least one entry' });
 
@@ -1055,7 +1077,7 @@ router.post('/:id/daily-work/attach', requireAuth, requireCap('jobs.dailywork'),
     return res.status(409).json({ error: 'Some of those entries are already on a job card — reload and try again' });
   }
   // Moving a line off the pool changes a signed-off day's daily work too.
-  { const g = attendance.checkDaysOpen(rows.map((r) => r.work_date)); if (!g.ok) return res.status(g.status).json(g.body); }
+  { const g = attendance.checkDaysOpen(rows.map((r) => r.work_date), job.workshop_id); if (!g.ok) return res.status(g.status).json(g.body); }
   // Claiming a line for a card also settles which machine it was on — but only when the line does
   // not already say. A line that names a DIFFERENT vehicle from the card is somebody's record, and
   // overwriting it would erase the one signal that the wrong row is being attached.
@@ -1079,7 +1101,7 @@ router.post('/:id/parts/attach', requireAuth, requireCap('jobs.parts'), asyncHan
   const job = get('SELECT * FROM job_cards WHERE id = ?', id);
   if (!job) return res.status(404).json({ error: 'Job not found' });
   { const g = jobstate.checkAdd(job, 'attach', { user: req.user }); if (!g.ok) return res.status(g.status).json(g.body); }
-  const gid = catchAllJobId();
+  const gid = workshops.generalCardId(job.workshop_id);
   const grnIds = (Array.isArray(req.body.receipts) ? req.body.receipts : []).map(toInt).filter(Boolean);
   const partIds = (Array.isArray(req.body.parts) ? req.body.parts : []).map(toInt).filter(Boolean);
   if (!grnIds.length && !partIds.length) return res.status(400).json({ error: 'Pick at least one item' });
@@ -1175,7 +1197,7 @@ router.delete(
     const row = get('SELECT * FROM job_parts WHERE id = ? AND job_id = ?', partId, id);
     if (!row) return res.status(404).json({ error: 'Item not found on this job' });
 
-    const gid = id === catchAllJobId() ? id : ensureCatchAllJobId();
+    const gid = workshops.isGeneralCard(job) ? id : workshops.generalCardId(job.workshop_id, { create: true });
     const unlink = gid !== id;
     const settle = settleAfterDetach(job, unlink ? gid : null);
 
@@ -1214,8 +1236,20 @@ router.patch(
     const b = req.body || {};
     const sets = [];
     const params = [];
-    const before = { asset_id: job.asset_id, description: job.description, type: job.type };
+    const before = { asset_id: job.asset_id, description: job.description, type: job.type, workshop_id: job.workshop_id };
     const warnings = [];
+
+    // -- workshop (who does the repair)
+    let newWorkshopId;
+    let handoverReason = null;
+    if (b.workshop_id !== undefined && Number(b.workshop_id) !== job.workshop_id) {
+      // A finished card stays with the workshop that did the work: its cost is already reported there.
+      if (jobstate.isFinal(job.status)) return res.status(409).json({ error: 'A closed job card stays with the workshop that did the work.' });
+      newWorkshopId = workshops.mustBeActive(b.workshop_id).id;
+      // Stage 7: sending a card to another workshop needs a reason, kept with the card (S7-D6).
+      handoverReason = require('../lib/operations').handoverReason(b);
+      sets.push('workshop_id = ?'); params.push(newWorkshopId);
+    }
 
     // -- description
     if (b.description !== undefined) {
@@ -1280,6 +1314,7 @@ router.patch(
 
     tx(() => {
       run(`UPDATE job_cards SET ${sets.join(', ')}, updated_at = datetime('now') WHERE id = ?`, ...params, id);
+      if (newWorkshopId !== undefined) require('../lib/operations').recordHandover(req.user, id, job.workshop_id, newWorkshopId, handoverReason);
       if (newAssetId !== undefined) {
         // The issues were raised against whatever vehicle the card named, so they follow it.
         run('UPDATE issues SET asset_id = ? WHERE job_id = ?', newAssetId, id);
@@ -1293,8 +1328,9 @@ router.patch(
       for (const b2 of costing.vehicleMonthsForJob(id, newAssetId)) costing.recalcVehicleMonth(b2.assetId, b2.year, b2.month);
     }
 
-    const after = { asset_id: newAssetId !== undefined ? newAssetId : job.asset_id, description: b.description, type: newType };
-    audit.record({ userId: req.user.id, entity: 'job_card', entityId: id, action: 'edit', before, after, reason: req.body.reason || null });
+    const after = { asset_id: newAssetId !== undefined ? newAssetId : job.asset_id, description: b.description, type: newType,
+      workshop_id: newWorkshopId !== undefined ? newWorkshopId : job.workshop_id };
+    audit.record({ userId: req.user.id, entity: 'job_card', entityId: id, action: 'edit', before, after, reason: handoverReason || req.body.reason || null });
     emitter.emit('job_updated', { job_id: id, action: 'edit' });
     emitter.emit('dashboard_refresh', { reason: 'job_edit' });
     res.json({ ...loadJob(id), warnings });

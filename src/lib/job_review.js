@@ -36,6 +36,7 @@ const today = () => new Date().toISOString().slice(0, 10);
 // auto-created holders for stores materials and daily work.
 const CONTAINER_SQL = `(j.asset_id IS NULL
    OR COALESCE(j.legacy_ref, '') IN ('general-workshop')
+   OR COALESCE(j.legacy_ref, '') LIKE 'general-workshop:%'
    OR COALESCE(j.legacy_ref, '') LIKE 'auto-container%'
    OR COALESCE(j.description, '') LIKE 'Stores materials%'
    OR COALESCE(j.description, '') LIKE 'auto-created container%')`;
@@ -72,12 +73,8 @@ function describe(r, now = today()) {
   };
 }
 
-/** Every stuck REQUESTED card with a suggestion, and the vehicles that carry more than one open card. */
-function listStuck({ now } = {}) {
-  const rows = all(`
-    SELECT j.id, j.job_no, j.is_historical, j.description, j.asset_id, j.requested_at,
-           COALESCE(j.total_cost, 0) total_cost, a.code asset_code, a.registration asset_reg,
-           (SELECT COUNT(*) FROM job_daily_work w WHERE w.job_id = j.id) daily_work,
+// What has happened on a card, and when last: the columns listStuck() and isStuck() read.
+const ACTIVITY_COLS = `(SELECT COUNT(*) FROM job_daily_work w WHERE w.job_id = j.id) daily_work,
            (SELECT COUNT(*) FROM job_parts p WHERE p.job_id = j.id) parts,
            (SELECT COUNT(*) FROM mrn m WHERE m.job_id = j.id) mrns,
            (SELECT COUNT(*) FROM issues i WHERE i.job_id = j.id) issues,
@@ -87,15 +84,26 @@ function listStuck({ now } = {}) {
            (SELECT MAX(substr(m.req_date, 1, 10)) FROM mrn m WHERE m.job_id = j.id) last_mrn,
            (SELECT MAX(substr(i.issue_date, 1, 10)) FROM issues i WHERE i.job_id = j.id) last_issue,
            (SELECT MAX(substr(l.txn_date, 1, 10)) FROM stock_ledger l WHERE l.job_id = j.id) last_oil,
-           (SELECT MAX(substr(g.txn_date, 1, 10)) FROM general_item_txns g WHERE g.job_id = j.id) last_general
+           (SELECT MAX(substr(g.txn_date, 1, 10)) FROM general_item_txns g WHERE g.job_id = j.id) last_general`;
+
+/** Every stuck REQUESTED card with a suggestion, and the vehicles that carry more than one open card. */
+function listStuck({ now, workshopId = null } = {}) {
+  const inWs = jobstate.workshopIn('j.workshop_id', workshopId);
+  const rows = all(`
+    SELECT j.id, j.job_no, j.is_historical, j.description, j.asset_id, j.requested_at,
+           COALESCE(j.total_cost, 0) total_cost, a.code asset_code, a.registration asset_reg,
+           ${ACTIVITY_COLS}
       FROM job_cards j LEFT JOIN assets a ON a.id = j.asset_id
-     WHERE j.status = 'REQUESTED' AND NOT ${CONTAINER_SQL}
-     ORDER BY j.job_no`);
+     WHERE j.status = 'REQUESTED' AND NOT ${CONTAINER_SQL} ${inWs.sql}
+     ORDER BY j.job_no`, ...inWs.params);
   const cards = rows.map((r) => describe(r, now));
   const counts = { reject: 0, close: 0, keep: 0 };
   for (const c of cards) counts[c.suggestion]++;
-  return { stale_days: STALE_DAYS, total: cards.length, counts, cards, duplicate_vehicles: jobstate.duplicateOpenJobs() };
+  return { stale_days: STALE_DAYS, total: cards.length, counts, cards, duplicate_vehicles: jobstate.duplicateOpenJobs({ workshopId }) };
 }
+
+/** Is a REQUESTED card stuck: nothing done on it for longer than STALE_DAYS? `r` carries ACTIVITY_COLS. */
+const isStuck = (r, now) => describe(r, now).suggestion !== 'keep';
 
 const fail = (msg, extra) => { const e = new Error(msg); e.status = 400; if (extra) e.extra = extra; throw e; };
 
@@ -104,7 +112,7 @@ const fail = (msg, extra) => { const e = new Error(msg); e.status = 400; if (ext
  * All or nothing: one invalid entry refuses the whole batch, because a half-applied clean-up is
  * worse than none. Returns { rejected, closed, jobs: [...] }.
  */
-function applyReview(actions, { userId, reason, approvalRole = 'transport_manager' }) {
+function applyReview(actions, { userId, user = null, reason, approvalRole = 'transport_manager' }) {
   if (!Array.isArray(actions) || !actions.length) fail('Choose at least one card.');
   const why = String(reason || '').trim();
   if (why.length < 5) fail('Say why (a few words) — it goes on every card changed.');
@@ -123,6 +131,12 @@ function applyReview(actions, { userId, reason, approvalRole = 'transport_manage
       const d = String(a.close_date || '').slice(0, 10);
       if (!/^\d{4}-\d{2}-\d{2}$/.test(d) || Number.isNaN(Date.parse(d))) { problems.push(`${job.job_no}: needs a close date`); continue; }
       if (d > today()) { problems.push(`${job.job_no}: close date is in the future`); continue; }
+      // A close is a close: the person's approval limit applies here as on the job card.
+      if (user) {
+        const limits = require('./approval_limits');
+        const within = limits.check(user, 'job_close', limits.jobValue(job.id));
+        if (!within.ok) { problems.push(`${job.job_no}: costs ${limits.rs(within.value)}, above your limit of ${limits.rs(within.limit)}`); continue; }
+      }
       plan.push({ job, action: 'close', date: d });
       continue;
     }
@@ -159,4 +173,4 @@ function applyReview(actions, { userId, reason, approvalRole = 'transport_manage
   return done;
 }
 
-module.exports = { listStuck, applyReview, periodFromJobNo, STALE_DAYS, _describe: describe };
+module.exports = { listStuck, applyReview, periodFromJobNo, isStuck, ACTIVITY_COLS, CONTAINER_SQL, STALE_DAYS, _describe: describe };

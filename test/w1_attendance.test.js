@@ -1,6 +1,6 @@
 'use strict';
 
-// W1 — mechanic attendance and the daily tally (docs/WORKSHOPONE_PLAN.md §3.1, docs/W1_CLOUD_BRIEF.md).
+// W1 — mechanic attendance and the daily tally (docs/WORKSHOPONE_PLAN.md §A.1, docs/W1_CLOUD_BRIEF.md).
 //
 //   Worked = (Out − In) − Break; out before in is an overnight shift; absent/leave/holiday = 0.
 //   Booked = every daily-work line naming the mechanic, FULL hours each (hours are per person),

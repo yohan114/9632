@@ -1,7 +1,7 @@
 'use strict';
 
 // ===========================================================================
-// Mechanic attendance and the daily tally (docs/WORKSHOPONE_PLAN.md §3.1, Stage W1).
+// Mechanic attendance and the daily tally (docs/WORKSHOPONE_PLAN.md §A.1, Stage W1).
 //
 // Every mechanic's in and out time is recorded each day, and the hours they were at work are
 // checked against the hours booked on jobs in Daily Work:
@@ -26,6 +26,7 @@
 
 const { get, all, run } = require('../db');
 const mechanics = require('./mechanics');
+const workshops = () => require('./workshops');
 
 // ---- settings ----------------------------------------------------------------------------------
 //
@@ -169,7 +170,7 @@ function bookedRange(from, to, { excludeLineId = null } = {}) {
     return byDay.get(d);
   };
   const lines = all(
-    `SELECT w.id, w.job_id, w.work_date, w.mechanic, w.hours, w.description, j.job_no
+    `SELECT w.id, w.job_id, w.work_date, w.mechanic, w.hours, w.description, j.job_no, j.workshop_id
        FROM job_daily_work w JOIN job_cards j ON j.id = w.job_id
       WHERE w.work_date BETWEEN ? AND ? AND COALESCE(w.is_external, 0) = 0
       ORDER BY w.work_date, w.id`, from, to);
@@ -182,7 +183,7 @@ function bookedRange(from, to, { excludeLineId = null } = {}) {
     if (excludeLineId && w.id === excludeLineId) continue;
     const hours = Number(w.hours) || 0;
     const d = dayOf(String(w.work_date).slice(0, 10));
-    const line = { id: w.id, job_id: w.job_id, job_no: w.job_no, hours, crew: w.mechanic || '', description: w.description || '' };
+    const line = { id: w.id, job_id: w.job_id, job_no: w.job_no, workshop_id: w.workshop_id, hours, crew: w.mechanic || '', description: w.description || '' };
     const names = mechanics.splitMechanics(w.mechanic);
     if (!names.length) {
       if (!hours) continue;
@@ -271,32 +272,52 @@ const attRow = (a) => (a ? {
 } : null);
 
 // ---- sign-off and the day lock -----------------------------------------------------------------
+//
+// Stage 4: with the workshops kept apart (src/lib/scope.js), each workshop signs off its own day,
+// and a sign-off locks only that workshop's attendance and daily work. `ws` is the workshop; it is
+// ignored while the workshops are not kept apart, and the day is the whole company's, as before.
+// Rows: workshop_id 0 = the whole company (every sign-off made before the split, or while it is
+// off); a company sign-off still locks every workshop's day.
 
-function signoffFor(date) {
-  const s = get(`SELECT s.*, su.username AS signed_by_name, uu.username AS unlocked_by_name
-                   FROM workday_signoffs s
-                   LEFT JOIN users su ON su.id = s.signed_by
-                   LEFT JOIN users uu ON uu.id = s.unlocked_by
-                  WHERE s.work_date = ?`, date);
-  return s || null;
+/** The workshop a sign-off or lock is about: `ws` while the workshops are kept apart, else none. */
+const lockWs = (ws) => (ws && require('./scope').enabled() ? Number(ws) : null);
+/** The workshop a day or month is filtered to. `split` (a report for one workshop, Stage 5) filters
+ * even while the workshops are not kept apart; the lock and sign-off still follow lockWs. */
+const listWs = (ws, split) => (split ? (ws ? Number(ws) : null) : lockWs(ws));
+
+function signoffFor(date, ws = null) {
+  const w = lockWs(ws);
+  const q = `SELECT s.*, su.username AS signed_by_name, uu.username AS unlocked_by_name
+               FROM workday_signoffs s
+               LEFT JOIN users su ON su.id = s.signed_by
+               LEFT JOIN users uu ON uu.id = s.unlocked_by
+              WHERE s.work_date = ? AND s.workshop_id = ?`;
+  // A workshop's own row; failing that, a whole-company sign-off of that day.
+  return (w ? get(q, date, w) : null) || get(q, date, 0) || null;
 }
 const signedOff = (s) => !!(s && s.signed_at && !s.unlocked_at);
 
 /** Is this day signed off (and attendance switched on)? A signed-off day refuses every change. */
-function isLocked(date, s = settings()) {
+function isLocked(date, s = settings(), ws = null) {
   if (!s.enabled || !isDate(date)) return false;
-  return signedOff(get('SELECT signed_at, unlocked_at FROM workday_signoffs WHERE work_date = ?', date));
+  const w = lockWs(ws);
+  // Whole company: any sign-off of the day locks it. One workshop: its own, or the company's.
+  const rows = w
+    ? all('SELECT signed_at, unlocked_at FROM workday_signoffs WHERE work_date = ? AND workshop_id IN (0, ?)', date, w)
+    : all('SELECT signed_at, unlocked_at FROM workday_signoffs WHERE work_date = ?', date);
+  return rows.some(signedOff);
 }
 
 /**
  * The day lock, for every path that writes daily work or attendance. Returns { ok: true } or
- * { ok: false, status: 423, body } — the same shape as jobstate.checkAdd.
+ * { ok: false, status: 423, body } — the same shape as jobstate.checkAdd. `ws`: the workshop whose
+ * day it is (the job card's, or the mechanic's) — it matters only with the workshops kept apart.
  */
-function checkDaysOpen(dates) {
+function checkDaysOpen(dates, ws = null) {
   const s = settings();
   if (!s.enabled) return { ok: true };
   for (const d of new Set((dates || []).filter(Boolean).map((x) => String(x).slice(0, 10)))) {
-    if (isLocked(d, s)) {
+    if (isLocked(d, s, ws)) {
       return { ok: false, status: 423, body: {
         error: `${d} is signed off, so its attendance and daily work are locked. Ask a manager to unlock the day.`,
         locked_date: d,
@@ -307,8 +328,8 @@ function checkDaysOpen(dates) {
 }
 
 /** checkDaysOpen, throwing — so a batch touching a locked day is refused whole inside its transaction. */
-function assertDaysOpen(dates) {
-  const g = checkDaysOpen(dates);
+function assertDaysOpen(dates, ws = null) {
+  const g = checkDaysOpen(dates, ws);
   if (!g.ok) throw bad(g.body.error, g.status);
 }
 
@@ -318,18 +339,30 @@ function assertDaysOpen(dates) {
  * The attendance grid and tally for one day: one row per ACTIVE mechanic, plus anyone inactive who
  * has attendance or booked work that day (so nothing hides).
  */
-function day(date, { queue = false } = {}) {
+function day(date, { queue = false, ws = null, split = false } = {}) {
   if (!isDate(date)) throw bad('A valid date (YYYY-MM-DD) is required');
   const s = settings();
+  const w = listWs(ws, split);
   const beforeStart = !s.start_date || date < s.start_date;
   const booked = bookedRange(date, date).get(date) || { byMech: new Map(), unmatched: new Map() };
+  // One workshop (Stage 4): names matching no mechanic are that workshop's only when they were
+  // booked on its own cards. A mechanic's booked hours count wherever they were booked (S4-D3).
+  if (w) {
+    for (const [k, u] of booked.unmatched) {
+      u.lines = u.lines.filter((l) => l.workshop_id === w);
+      u.hours = u.lines.reduce((t, l) => t + l.hours, 0);
+      if (!u.lines.length) booked.unmatched.delete(k);
+    }
+  }
   if (queue && s.enabled) queueUnmatched(booked.unmatched);
   const atts = new Map(all('SELECT * FROM mechanic_attendance WHERE work_date = ?', date).map((a) => [a.mechanic_id, a]));
   const extra = [...new Set([...atts.keys(), ...booked.byMech.keys()])];
-  const mechs = all(
+  let mechs = all(
     `SELECT id, name, active FROM mechanics
       WHERE active = 1 ${extra.length ? `OR id IN (${extra.map(() => '?').join(',')})` : ''}
       ORDER BY name COLLATE NOCASE`, ...extra);
+  // One workshop: its mechanics on that day (where each belonged on the date, Stage 2).
+  if (w) mechs = mechs.filter((m) => workshops().mechanicWorkshop(m.id, date) === w);
 
   const opts = { tolerance: s.tolerance_minutes, beforeStart };
   const rows = mechs.map((m) => {
@@ -341,10 +374,10 @@ function day(date, { queue = false } = {}) {
   const counts = {};
   for (const r of rows) counts[r.tally] = (counts[r.tally] || 0) + 1;
   const red = rows.filter((r) => r.red);
-  const so = signoffFor(date);
+  const so = signoffFor(date, w);
   return {
-    date, enabled: s.enabled, settings: s, today: today(), before_start: beforeStart,
-    locked: s.enabled && signedOff(so),
+    date, workshop_id: w, enabled: s.enabled, settings: s, today: today(), before_start: beforeStart,
+    locked: isLocked(date, s, w),
     signoff: so ? { signed_by: so.signed_by_name, signed_at: so.signed_at, unlocked_by: so.unlocked_by_name, unlocked_at: so.unlocked_at, unlock_reason: so.unlock_reason } : null,
     rows, unmatched, counts, red_count: red.length,
     totals: {
@@ -451,35 +484,39 @@ function editRule(date, caps) {
 // ---- sign-off ----------------------------------------------------------------------------------
 
 /** Sign a day off. Refused while anybody is red, and before the start date. */
-function signOff(date, userId) {
+function signOff(date, userId, ws = null) {
   const s = settings();
   if (!s.enabled) throw bad('Attendance is switched off', 409);
   if (!isDate(date)) throw bad('A valid date (YYYY-MM-DD) is required');
   if (date > today()) throw bad('A day can be signed off only once it has come');
   if (!s.start_date || date < s.start_date) throw bad(`Attendance starts on ${s.start_date || '(not set)'} — days before it are not signed off`, 409);
-  const d = day(date);
+  const w = lockWs(ws);
+  const d = day(date, { ws: w });
   if (d.locked) throw bad(`${date} is already signed off`, 409);
   if (d.red_count) {
     const names = d.rows.filter((r) => r.red).map((r) => `${r.name} (${r.tally_label})`);
     throw bad(`Cannot sign off: ${d.red_count} red — ${names.join(', ')}. Fix them first.`, 409);
   }
-  run(`INSERT INTO workday_signoffs (work_date, signed_by, signed_at) VALUES (?, ?, datetime('now'))
-       ON CONFLICT(work_date) DO UPDATE SET signed_by = excluded.signed_by, signed_at = excluded.signed_at,
-         unlocked_by = NULL, unlocked_at = NULL, unlock_reason = NULL`, date, userId || null);
+  run(`INSERT INTO workday_signoffs (work_date, workshop_id, signed_by, signed_at) VALUES (?, ?, ?, datetime('now'))
+       ON CONFLICT(work_date, workshop_id) DO UPDATE SET signed_by = excluded.signed_by, signed_at = excluded.signed_at,
+         unlocked_by = NULL, unlocked_at = NULL, unlock_reason = NULL`, date, w || 0, userId || null);
   return d;
 }
 
 /** Unlock a signed-off day. Needs a reason; the caller checks attendance.unlock. */
-function unlock(date, userId, reason) {
+function unlock(date, userId, reason, ws = null) {
   const why = String(reason == null ? '' : reason).trim();
   if (!why) throw bad('Give a reason for unlocking the day');
   if (why.length > 300) throw bad('The reason is too long (300 characters at most)');
   if (!isEnabled()) throw bad('Attendance is switched off', 409);
-  const so = signoffFor(date);
-  if (!signedOff(so)) throw bad(`${date} is not signed off`, 409);
-  run(`UPDATE workday_signoffs SET unlocked_by = ?, unlocked_at = datetime('now'), unlock_reason = ? WHERE work_date = ?`,
-    userId || null, why, date);
-  return signoffFor(date);
+  const w = lockWs(ws);
+  if (!isLocked(date, settings(), w)) throw bad(`${date} is not signed off`, 409);
+  // The whole company's day: every sign-off of it. One workshop's: its own, and a company sign-off
+  // that also held it.
+  const where = w ? 'work_date = ? AND workshop_id IN (0, ?)' : 'work_date = ?';
+  run(`UPDATE workday_signoffs SET unlocked_by = ?, unlocked_at = datetime('now'), unlock_reason = ?
+        WHERE ${where} AND signed_at IS NOT NULL AND unlocked_at IS NULL`, userId || null, why, date, ...(w ? [w] : []));
+  return signoffFor(date, w);
 }
 
 // ---- hours left, at the point of entry ---------------------------------------------------------
@@ -488,7 +525,7 @@ function unlock(date, userId, reason) {
  * For the entry forms: "attended 8.0 h · booked 6.5 h · 1.5 h left" for each named mechanic.
  * `excludeLineId`: the line being edited, whose own hours are about to be replaced.
  */
-function hoursLeft(date, names, { excludeLineId = null } = {}) {
+function hoursLeft(date, names, { excludeLineId = null, ws = null } = {}) {
   const s = settings();
   if (!s.enabled) return { enabled: false };
   if (!isDate(date)) throw bad('A valid date (YYYY-MM-DD) is required');
@@ -515,7 +552,7 @@ function hoursLeft(date, names, { excludeLineId = null } = {}) {
     byId.set(r.mechanicId, m);
     out.push(m);
   }
-  return { enabled: true, date, before_start: !s.start_date || date < s.start_date, locked: isLocked(date, s),
+  return { enabled: true, date, before_start: !s.start_date || date < s.start_date, locked: isLocked(date, s, ws),
     tolerance_minutes: s.tolerance_minutes, mechanics: out };
 }
 
@@ -525,9 +562,10 @@ function hoursLeft(date, names, { excludeLineId = null } = {}) {
  * Attended, booked and utilisation per mechanic for a month — counted only over the days the
  * tally runs (from the start date, up to today), so booked and attended cover the same days.
  */
-function month(ym) {
+function month(ym, { ws = null, split = false } = {}) {
   if (!/^\d{4}-\d{2}$/.test(String(ym || ''))) throw bad('A valid month (YYYY-MM) is required');
   const s = settings();
+  const w = listWs(ws, split);
   const first = `${ym}-01`;
   const last = addDays(`${nextMonth(ym)}-01`, -1);
   let from = first; let to = last;
@@ -539,8 +577,11 @@ function month(ym) {
   const booked = bookedRange(from, to);
   const atts = all('SELECT * FROM mechanic_attendance WHERE work_date BETWEEN ? AND ?', from, to);
   const attBy = new Map(atts.map((a) => [`${a.work_date}|${a.mechanic_id}`, a]));
-  const signed = new Map(all('SELECT work_date, signed_at, unlocked_at FROM workday_signoffs WHERE work_date BETWEEN ? AND ?', from, to)
-    .map((r) => [r.work_date, signedOff(r)]));
+  const signed = new Map();
+  for (const r of all(`SELECT work_date, signed_at, unlocked_at FROM workday_signoffs
+                        WHERE work_date BETWEEN ? AND ? ${w ? 'AND workshop_id IN (0, ?)' : ''}`, from, to, ...(w ? [w] : []))) {
+    if (signedOff(r)) signed.set(r.work_date, true);
+  }
   const names = new Map(all('SELECT id, name, active FROM mechanics').map((m) => [m.id, m]));
   const per = new Map();
   const acc = (id) => {
@@ -555,6 +596,8 @@ function month(ym) {
     for (const a of atts) if (a.work_date === d) ids.add(a.mechanic_id);
     let red = 0;
     for (const id of ids) {
+      // One workshop: only the days each mechanic belonged to it.
+      if (w && workshops().mechanicWorkshop(id, d) !== w) continue;
       const a = attBy.get(`${d}|${id}`) || null;
       const t = tallyOne(a, b.byMech.has(id) ? b.byMech.get(id).hours : 0, opts);
       const m = acc(id);
@@ -571,7 +614,7 @@ function month(ym) {
     booked_hours: round2(m.booked_hours),
     utilisation: m.attended_hours > 0 ? Math.round((m.booked_hours / m.attended_hours) * 1000) / 10 : null,
   })).sort((a, b) => a.name.localeCompare(b.name));
-  return { month: ym, enabled: s.enabled, from, to, mechanics: mechanicsOut, days };
+  return { month: ym, workshop_id: w, enabled: s.enabled, from, to, mechanics: mechanicsOut, days };
 }
 
 /**
@@ -580,21 +623,24 @@ function month(ym) {
  * Sunday nobody worked is not nagged about. From the start date, up to yesterday: today is still
  * being worked.
  */
-function unsignedDays({ days = 14 } = {}) {
+function unsignedDays({ days = 14, ws = null } = {}) {
   const s = settings();
   if (!s.enabled || !s.start_date) return [];
+  const w = lockWs(ws);
   const to = addDays(today(), -1);
   let from = addDays(today(), -days);
   if (s.start_date > from) from = s.start_date;
   if (from > to) return [];
+  // One workshop: days its own mechanics were recorded, or its own cards were worked on.
+  const mine = (d, mechId) => !w || workshops().mechanicWorkshop(mechId, d) === w;
   const active = new Set([
-    ...all('SELECT DISTINCT work_date d FROM mechanic_attendance WHERE work_date BETWEEN ? AND ?', from, to).map((r) => r.d),
-    ...all('SELECT DISTINCT work_date d FROM job_daily_work WHERE work_date BETWEEN ? AND ?', from, to).map((r) => r.d),
+    ...all('SELECT DISTINCT work_date d, mechanic_id m FROM mechanic_attendance WHERE work_date BETWEEN ? AND ?', from, to)
+      .filter((r) => mine(r.d, r.m)).map((r) => r.d),
+    ...all(`SELECT DISTINCT w.work_date d FROM job_daily_work w JOIN job_cards j ON j.id = w.job_id
+             WHERE w.work_date BETWEEN ? AND ? ${w ? 'AND j.workshop_id = ?' : ''}`, from, to, ...(w ? [w] : [])).map((r) => r.d),
   ]);
-  const signed = new Set(all('SELECT work_date d, signed_at, unlocked_at FROM workday_signoffs WHERE work_date BETWEEN ? AND ?', from, to)
-    .filter(signedOff).map((r) => r.d));
-  return [...active].filter((d) => !signed.has(d)).sort().reverse()
-    .map((d) => ({ date: d, red_count: day(d).red_count }));
+  return [...active].filter((d) => !isLocked(d, s, w)).sort().reverse()
+    .map((d) => ({ date: d, red_count: day(d, { ws: w }).red_count }));
 }
 
 function nextMonth(ym) {
@@ -607,6 +653,6 @@ module.exports = {
   settings, saveSettings, isEnabled,
   today, addDays, isDate, toMinutes, normTime, workedMinutes,
   bookedRange, tallyOne, day, saveRows, editRule,
-  signoffFor, isLocked, checkDaysOpen, assertDaysOpen, signOff, unlock,
+  signoffFor, isLocked, checkDaysOpen, assertDaysOpen, signOff, unlock, lockWs,
   hoursLeft, month, unsignedDays,
 };

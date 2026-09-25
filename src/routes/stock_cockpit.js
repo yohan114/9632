@@ -333,9 +333,9 @@ router.post('/create-reorder-mrn', requireCap('stores.reorder_mrn'), asyncHandle
 
     // Create header
     const info = run(
-      `INSERT INTO mrn (mrn_no, req_date, request_type, purpose, requested_by, requested_sig)
-       VALUES (?, ?, 'general', ?, ?, ?)`,
-      mrnNo, today, purpose, reqBy, u ? u.signature : null
+      `INSERT INTO mrn (mrn_no, req_date, request_type, purpose, requested_by, requested_sig, workshop_id)
+       VALUES (?, ?, 'general', ?, ?, ?, ?)`,
+      mrnNo, today, purpose, reqBy, u ? u.signature : null, require('../lib/workshops').homeOf(req.user)
     );
     const newMrnId = info.lastInsertRowid;
 

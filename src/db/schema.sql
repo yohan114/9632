@@ -202,6 +202,9 @@ CREATE INDEX IF NOT EXISTS idx_grn_mrn ON grn(mrn_id);
 -- table, which made the Stores search take seconds.
 CREATE INDEX IF NOT EXISTS idx_grn_line ON grn(mrn_line_id);
 CREATE INDEX IF NOT EXISTS idx_grn_unpriced ON grn(mrn_line_id) WHERE unit_price IS NULL;
+-- "The last price paid" for an item or a description (approval limits' MRN estimate, item search).
+CREATE INDEX IF NOT EXISTS idx_grn_item ON grn(store_item_id, id);
+CREATE INDEX IF NOT EXISTS idx_grn_desc ON grn(LOWER(TRIM(description)));
 CREATE INDEX IF NOT EXISTS idx_mrn_lines_legacy ON mrn_lines(legacy_item_id);
 CREATE INDEX IF NOT EXISTS idx_mrn_job ON mrn(job_id);
 -- idx_jp_line / idx_dw_date live with job_parts and job_daily_work further down: this file is
@@ -656,7 +659,7 @@ CREATE INDEX IF NOT EXISTS idx_dw_date ON job_daily_work(work_date);
 CREATE TABLE IF NOT EXISTS job_parts (
   id                 INTEGER PRIMARY KEY AUTOINCREMENT,
   job_id             INTEGER NOT NULL REFERENCES job_cards(id) ON DELETE CASCADE,
-  source_type        TEXT NOT NULL CHECK (source_type IN ('grn','issue','oil','general','external')),
+  source_type        TEXT NOT NULL CHECK (source_type IN ('grn','issue','oil','general','external','return')),
   source_id          INTEGER,               -- id in grn / issues / stock_ledger / general_item_txns
   description        TEXT,
   qty                REAL NOT NULL DEFAULT 1,
@@ -722,15 +725,16 @@ CREATE TABLE IF NOT EXISTS pending_part_notes (
 -- though the underlying jobs have moved on, which is exactly what the hand-kept workbook did.
 CREATE TABLE IF NOT EXISTS daily_report_snapshots (
   id           INTEGER PRIMARY KEY AUTOINCREMENT,
-  kind         TEXT NOT NULL,               -- 'pending_parts' | 'job_summary'
+  kind         TEXT NOT NULL,               -- 'pending_parts' | 'job_summary' | 'pending_price' | 'day_tally'
   report_date  TEXT NOT NULL,               -- YYYY-MM-DD
+  workshop_id  INTEGER NOT NULL DEFAULT 0,  -- Stage 5: one workshop's copy; 0 = the whole company
   generated_at TEXT NOT NULL DEFAULT (datetime('now')),
   generated_by INTEGER REFERENCES users(id),
   row_count    INTEGER NOT NULL DEFAULT 0,
   payload      TEXT NOT NULL,               -- the rendered rows, as JSON
-  UNIQUE(kind, report_date)
+  UNIQUE(kind, report_date, workshop_id)
 );
-CREATE INDEX IF NOT EXISTS idx_daily_snap ON daily_report_snapshots(kind, report_date DESC);
+CREATE INDEX IF NOT EXISTS idx_daily_snap ON daily_report_snapshots(kind, workshop_id, report_date DESC);
 
 -- Scanned service sheets attached to a service record.
 --
@@ -809,6 +813,17 @@ CREATE TABLE IF NOT EXISTS job_reopen_requests (
 );
 CREATE INDEX IF NOT EXISTS idx_job_reopen_req_job ON job_reopen_requests(job_id);
 CREATE INDEX IF NOT EXISTS idx_job_reopen_req_status ON job_reopen_requests(status);
+
+-- Approval limits (Stage 1): the most money a role may sign off on its own, per kind of approval
+-- (src/lib/approval_limits.js). No row = no limit, so nothing changes until an amount is set.
+CREATE TABLE IF NOT EXISTS approval_limits (
+  role        TEXT NOT NULL,
+  kind        TEXT NOT NULL,
+  max_amount  REAL NOT NULL CHECK (max_amount >= 0),
+  updated_by  INTEGER REFERENCES users(id),
+  updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (role, kind)
+);
 
 -- Frozen cost snapshot taken on CLOSE (historical costs never shift afterwards).
 CREATE TABLE IF NOT EXISTS job_costs (
@@ -1001,13 +1016,257 @@ CREATE INDEX IF NOT EXISTS idx_attendance_date ON mechanic_attendance(work_date)
 
 -- A supervisor signs off a day once nobody is red. A signed-off day's attendance
 -- AND daily work are locked until someone with attendance.unlock unlocks it with a
--- reason. One row per day; every sign-off and unlock is also in audit_log.
+-- reason. One row per day — per workshop once the workshops are kept apart (Stage 4:
+-- workshop_id; 0 = the whole company, as before). Every sign-off and unlock is also in audit_log.
 CREATE TABLE IF NOT EXISTS workday_signoffs (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
-  work_date     TEXT NOT NULL UNIQUE,
+  work_date     TEXT NOT NULL,
+  workshop_id   INTEGER NOT NULL DEFAULT 0,
   signed_by     INTEGER REFERENCES users(id),
   signed_at     TEXT,
   unlocked_by   INTEGER REFERENCES users(id),
   unlocked_at   TEXT,
-  unlock_reason TEXT
+  unlock_reason TEXT,
+  UNIQUE (work_date, workshop_id)
 );
+
+-- Workshops (multi-site Stage 2): a place that repairs vehicles, with its own mechanics and job
+-- cards. Starts with one, Central Workshop — Badalgama, which every existing record belongs to.
+-- A SITE is where a vehicle works: that is the projects list (and its sites), not this table.
+-- Exactly one workshop is the default: new records with no workshop of their own take it.
+CREATE TABLE IF NOT EXISTS workshops (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  code        TEXT NOT NULL UNIQUE,              -- short, e.g. CW
+  name        TEXT NOT NULL UNIQUE,              -- "Central Workshop — Badalgama"
+  place       TEXT,                              -- town or address
+  is_default  INTEGER NOT NULL DEFAULT 0,
+  active      INTEGER NOT NULL DEFAULT 1,
+  created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Which workshop a mechanic belongs to, from a date. The row in force on a day is the one with
+-- the latest from_date on or before it, so hours worked before a move stay with the old workshop.
+CREATE TABLE IF NOT EXISTS mechanic_workshops (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  mechanic_id  INTEGER NOT NULL REFERENCES mechanics(id),
+  workshop_id  INTEGER NOT NULL REFERENCES workshops(id),
+  from_date    TEXT NOT NULL,                    -- YYYY-MM-DD
+  set_by       INTEGER REFERENCES users(id),
+  set_at       TEXT NOT NULL DEFAULT (datetime('now')),
+  note         TEXT,
+  UNIQUE (mechanic_id, from_date)
+);
+CREATE INDEX IF NOT EXISTS idx_mech_ws ON mechanic_workshops(mechanic_id, from_date);
+
+-- Stage 4: a store per workshop (src/lib/stores.js). A store is known by the workshop that owns it.
+-- A stock take: what was counted on the shelf of one store, against what the book said then. The
+-- difference is the correction (an 'adjust' movement in stock_moves).
+CREATE TABLE IF NOT EXISTS store_counts (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  store_id     INTEGER NOT NULL REFERENCES workshops(id),
+  section      TEXT NOT NULL,
+  item_key     TEXT NOT NULL,
+  item_name    TEXT,
+  count_date   TEXT NOT NULL,                    -- YYYY-MM-DD
+  book_qty     REAL NOT NULL,
+  counted_qty  REAL NOT NULL,
+  delta        REAL NOT NULL,                    -- counted - book
+  note         TEXT,
+  counted_by   INTEGER REFERENCES users(id),
+  created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_store_counts ON store_counts(store_id, section, item_key);
+
+-- The level at which one store reorders an item. No row = no level set.
+CREATE TABLE IF NOT EXISTS store_reorder (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  store_id   INTEGER NOT NULL REFERENCES workshops(id),
+  section    TEXT NOT NULL,
+  item_key   TEXT NOT NULL,
+  level      REAL NOT NULL,
+  set_by     INTEGER REFERENCES users(id),
+  set_at     TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE (store_id, section, item_key)
+);
+
+-- Stage 6: parts handed over to a job and brought back unused (a return note). The stock goes back
+-- into the store it left; the job stops carrying their cost.
+CREATE TABLE IF NOT EXISTS issue_returns (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  issue_id     INTEGER NOT NULL REFERENCES issues(id),
+  qty          REAL NOT NULL,
+  return_date  TEXT NOT NULL,                    -- YYYY-MM-DD
+  note         TEXT,
+  store_id     INTEGER REFERENCES workshops(id),
+  job_part_id  INTEGER REFERENCES job_parts(id), -- the negative line that takes the cost off a job, if any
+  returned_by  INTEGER REFERENCES users(id),
+  created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_issue_returns ON issue_returns(issue_id);
+
+-- Stage 7: every move of a machine from one project or site to another. The machine's current
+-- project (assets.current_project_id / current_site_id) is where the last move took it; the moves
+-- say where it was on any day, so a month's availability is counted at the right site.
+CREATE TABLE IF NOT EXISTS asset_moves (
+  id               INTEGER PRIMARY KEY AUTOINCREMENT,
+  asset_id         INTEGER NOT NULL REFERENCES assets(id),
+  move_date        TEXT NOT NULL,                  -- YYYY-MM-DD: at the new place from this day
+  from_project_id  INTEGER REFERENCES projects(id),
+  from_site_id     INTEGER REFERENCES sites(id),
+  to_project_id    INTEGER REFERENCES projects(id),
+  to_site_id       INTEGER REFERENCES sites(id),
+  note             TEXT,
+  moved_by         INTEGER REFERENCES users(id),
+  created_at       TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_asset_moves ON asset_moves(asset_id, move_date);
+
+-- Stage 7: a job card sent to another workshop — who sent it, from where to where, and why. The
+-- whole card moves (its costs so far go with it, S7-D6); these rows are its history.
+CREATE TABLE IF NOT EXISTS job_workshop_moves (
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  job_id            INTEGER NOT NULL REFERENCES job_cards(id) ON DELETE CASCADE,
+  from_workshop_id  INTEGER REFERENCES workshops(id),
+  to_workshop_id    INTEGER REFERENCES workshops(id),
+  reason            TEXT NOT NULL,
+  moved_by          INTEGER REFERENCES users(id),
+  moved_at          TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_job_ws_moves ON job_workshop_moves(job_id);
+CREATE INDEX IF NOT EXISTS idx_job_ws_moves_at ON job_workshop_moves(moved_at);
+
+-- Stores plan, Part 2: a stock take is a count session in one store (src/lib/stock_count.js). Its
+-- lines keep the book figure from the start (ST-D4) and from the moment each item was counted; the
+-- corrections go into stock only when head office approves (ST-D5), as store_counts rows.
+CREATE TABLE IF NOT EXISTS count_sessions (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  count_no       TEXT UNIQUE,                    -- ST-2026-0001
+  store_id       INTEGER NOT NULL REFERENCES workshops(id),
+  kind           TEXT NOT NULL,                  -- all | general | oil | filter | tyre | battery
+  scope          TEXT NOT NULL DEFAULT 'full',   -- full (every item) | quick (one item, ST-D14)
+  status         TEXT NOT NULL DEFAULT 'counting', -- counting | submitted | approved | cancelled
+  count_date     TEXT NOT NULL,                  -- YYYY-MM-DD the count began
+  note           TEXT,
+  started_by     INTEGER REFERENCES users(id),
+  started_at     TEXT NOT NULL DEFAULT (datetime('now')),
+  submitted_by   INTEGER REFERENCES users(id),
+  submitted_at   TEXT,
+  decided_by     INTEGER REFERENCES users(id),
+  decided_at     TEXT,
+  decision_note  TEXT                            -- why it was sent back or cancelled
+);
+CREATE INDEX IF NOT EXISTS idx_count_sessions ON count_sessions(store_id, status);
+
+CREATE TABLE IF NOT EXISTS count_lines (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id      INTEGER NOT NULL REFERENCES count_sessions(id) ON DELETE CASCADE,
+  section         TEXT NOT NULL,
+  item_key        TEXT NOT NULL,
+  item_name       TEXT,
+  unit            TEXT,
+  unit_price      REAL,                          -- to value the difference
+  book_start      REAL NOT NULL,                 -- the book when the count began
+  book_at_count   REAL,                          -- the book when this item was counted
+  counted_qty     REAL,                          -- NULL = not counted yet
+  containers      REAL,                          -- lubricants (ST-D16): full drums or cans …
+  container_size  REAL,                          -- … of this many litres each …
+  loose_qty       REAL,                          -- … plus the part-used one, by dip reading
+  note            TEXT,
+  added           INTEGER NOT NULL DEFAULT 0,    -- found on the shelf, not on the list
+  counted_by      INTEGER REFERENCES users(id),
+  counted_on      TEXT,                          -- YYYY-MM-DD
+  counted_at      TEXT,
+  seen_count_id   INTEGER,                       -- the item's last correction (store_counts.id) when counted
+  UNIQUE (session_id, section, item_key)
+);
+CREATE INDEX IF NOT EXISTS idx_count_lines ON count_lines(session_id);
+
+-- Stores plan, Part 4: every tyre by its serial number, like the batteries (ST-D7). A tyre is fixed
+-- to a vehicle and a wheel position when it is issued, and its story — fitted, taken off, repaired,
+-- retreaded, claimed on warranty, scrapped, sold — is kept as events (src/lib/tb_units.js).
+CREATE TABLE IF NOT EXISTS tyres (
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  serial_no         TEXT NOT NULL UNIQUE,
+  spec_id           INTEGER REFERENCES tb_specs(id),
+  brand             TEXT,
+  state             TEXT NOT NULL DEFAULT 'in_store', -- in_store | installed | removed | repair | retread | warranty | scrap | lost | disposed
+  current_asset_id  INTEGER REFERENCES assets(id),
+  position          TEXT,                              -- FL, FR, RL1, RR1, SPARE … while fitted
+  store_id          INTEGER REFERENCES workshops(id),
+  warranty_date     TEXT,
+  photo_path        TEXT,                              -- the cover: the first of tyre_photos
+  created_at        TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_tyres_asset ON tyres(current_asset_id, position);
+
+CREATE TABLE IF NOT EXISTS tyre_photos (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  tyre_id     INTEGER NOT NULL REFERENCES tyres(id) ON DELETE CASCADE,
+  seq         INTEGER NOT NULL DEFAULT 1,
+  photo       TEXT NOT NULL,              -- data:image/...;base64,...
+  note        TEXT,
+  uploaded_by INTEGER REFERENCES users(id),
+  uploaded_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_tyre_photos ON tyre_photos(tyre_id, seq);
+
+CREATE TABLE IF NOT EXISTS tyre_events (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  tyre_id       INTEGER NOT NULL REFERENCES tyres(id) ON DELETE CASCADE,
+  event_type    TEXT NOT NULL,                 -- add | install | remove | repair | retread | warranty | scrap | lost | return | dispose
+  from_asset_id INTEGER REFERENCES assets(id),
+  to_asset_id   INTEGER REFERENCES assets(id),
+  position      TEXT,
+  km_reading    REAL,
+  reason        TEXT,
+  issue_id      INTEGER REFERENCES tyre_battery_issues(id),
+  user_id       INTEGER REFERENCES users(id),
+  event_date    TEXT NOT NULL DEFAULT (date('now')),
+  created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_tyre_events ON tyre_events(tyre_id);
+
+-- Stores plan, Part 4: a disposal note — scrap tyres, scrap batteries, other scrap parts and waste
+-- oil, sold or taken away. A manager approves it, with the buyer, the amount and the date (ST-D9);
+-- the tyres and batteries on it are then disposed of in their registers.
+CREATE TABLE IF NOT EXISTS disposals (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  disposal_no   TEXT UNIQUE,                   -- DN-2026-0001
+  store_id      INTEGER REFERENCES workshops(id),
+  status        TEXT NOT NULL DEFAULT 'open',  -- open | approved | cancelled
+  buyer         TEXT,
+  amount        REAL,                          -- what the buyer pays (Rs)
+  sale_date     TEXT,                          -- YYYY-MM-DD it leaves the store
+  note          TEXT,
+  created_by    INTEGER REFERENCES users(id),
+  created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  decided_by    INTEGER REFERENCES users(id),
+  decided_at    TEXT,
+  decision_note TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_disposals ON disposals(status, store_id);
+
+CREATE TABLE IF NOT EXISTS disposal_lines (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  disposal_id  INTEGER NOT NULL REFERENCES disposals(id) ON DELETE CASCADE,
+  kind         TEXT NOT NULL CHECK (kind IN ('tyre','battery','part','waste_oil')),
+  tyre_id      INTEGER REFERENCES tyres(id),
+  battery_id   INTEGER REFERENCES batteries(id),
+  description  TEXT,
+  qty          REAL NOT NULL DEFAULT 1,
+  unit         TEXT                            -- nos | L | kg
+);
+CREATE INDEX IF NOT EXISTS idx_disposal_lines ON disposal_lines(disposal_id);
+
+-- Job cards plan, Part 2: why a card in the workshop is not being worked on (JC-D5). The newest row
+-- given since the card was last worked on is its reason now; older ones are its history. "Waiting
+-- for parts" is not stored: it is read from the Stores list (src/lib/jobs_flow.js).
+CREATE TABLE IF NOT EXISTS job_hold_reasons (
+  id        INTEGER PRIMARY KEY AUTOINCREMENT,
+  job_id    INTEGER NOT NULL REFERENCES job_cards(id) ON DELETE CASCADE,
+  reason    TEXT NOT NULL,          -- waiting_mechanic | waiting_parts | outside_repair | waiting_decision | vehicle_away | other
+  note      TEXT,
+  set_by    INTEGER REFERENCES users(id),
+  set_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_job_hold_reasons ON job_hold_reasons(job_id, id);

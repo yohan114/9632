@@ -97,12 +97,41 @@ function migrate() {
     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
     PRIMARY KEY (role, capability)
   );`);
+
+  // Person-by-person access overrides (WorkshopOne Plan Part B):
+  // Every person can have their own 5-level clearance per section, and their own capability ticks.
+  db.exec(`CREATE TABLE IF NOT EXISTS user_permissions (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    section    TEXT NOT NULL,
+    level      TEXT NOT NULL DEFAULT 'none',
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_by INTEGER REFERENCES users(id),
+    UNIQUE(user_id, section)
+  );
+  CREATE INDEX IF NOT EXISTS idx_user_perms_user ON user_permissions(user_id);
+  CREATE INDEX IF NOT EXISTS idx_user_perms_sec ON user_permissions(section);
+
+  CREATE TABLE IF NOT EXISTS user_capabilities (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    capability TEXT NOT NULL,
+    granted    INTEGER NOT NULL DEFAULT 1,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_by INTEGER REFERENCES users(id),
+    UNIQUE(user_id, capability)
+  );
+  CREATE INDEX IF NOT EXISTS idx_user_caps_user ON user_capabilities(user_id);
+  CREATE INDEX IF NOT EXISTS idx_user_caps_cap ON user_capabilities(capability);`);
+
   // Roles become data an admin manages: a description, whether it shipped with the system, and
   // whether it is still in use (a retired role grants nothing, and is kept for the history).
   ensureColumn('roles', 'description', 'TEXT');
   ensureColumn('roles', 'is_system', 'INTEGER NOT NULL DEFAULT 0');
   ensureColumn('roles', 'active', 'INTEGER NOT NULL DEFAULT 1');
   ensureColumn('roles', 'created_at', 'TEXT');
+  ensureColumn('users', 'access_until', 'TEXT');
+  ensureColumn('users', 'approval_limit', 'REAL');
   // Two-factor sign-in (src/lib/mfa.js). The keys are stored encrypted (src/lib/secretbox.js).
   ensureColumn('roles', 'require_mfa', 'INTEGER NOT NULL DEFAULT 0');
   ensureColumn('users', 'mfa_enabled', 'INTEGER NOT NULL DEFAULT 0');
@@ -440,7 +469,7 @@ function migrate() {
   // card was originally closed in. Re-closing restores completed_at from it, so a cost report
   // the owner has already issued cannot change because someone reopened an old job.
   ensureColumn('job_cards', 'original_completed_at', 'TEXT');
-  // Partial close (docs/WORKSHOPONE_PLAN.md §3.2, W2): the work is finished and the vehicle has
+  // Partial close (docs/WORKSHOPONE_PLAN.md §A.2, W2): the work is finished and the vehicle has
   // left, but prices or records are still missing. The card keeps when and by whom it was partly
   // closed, and a new card for the vehicle points back to it through continues_job_id.
   ensureColumn('job_cards', 'partial_closed_at', 'TEXT');
@@ -649,6 +678,16 @@ function migrate() {
            CREATE INDEX IF NOT EXISTS idx_filter_stock_type ON filter_stock(filter_type);
            CREATE INDEX IF NOT EXISTS idx_filter_stock_part ON filter_stock(part_no);`);
 
+  workshopsStage2();
+  storesStage4();
+  signoffsPerWorkshop();
+  reportsPerWorkshop();
+  fieldStage6();
+  operationsStage7();
+  storesCountsPart2();
+  storesServicesPart3();
+  storesUnitsPart4();
+
   // Seed the RBAC matrix once (safe to require here — db exports are already set).
   try { require('../lib/permissions').seedDefaults(); } catch (e) { /* table may not exist yet on very first pass */ }
   // Seed the built-in roles' capabilities (idempotent) and mark those roles as shipped with the
@@ -699,6 +738,260 @@ function allowPartiallyClosed() {
       if (seq) db.prepare("UPDATE sqlite_sequence SET seq = MAX(seq, ?) WHERE name = 'job_cards'").run(seq.seq);
       if (db.prepare('SELECT COUNT(*) n FROM job_cards').get().n !== count || dangling() !== before) {
         throw new Error('job_cards rebuild did not keep every card and reference — not applied');
+      }
+    })();
+  } finally {
+    db.pragma('foreign_keys = ON');
+  }
+}
+
+// Multi-site Stage 2: every user, job card and request belongs to a workshop. The first start
+// creates Central Workshop — Badalgama as the default and gives it everything that exists. New
+// rows that arrive without a workshop take one from a trigger, so no insert path (imports, the
+// container cards, tests) can leave a gap: a request takes its job card's workshop, anything else
+// the default. A mechanic gets a starting row in mechanic_workshops the same way.
+function workshopsStage2() {
+  if (!db.prepare('SELECT 1 FROM workshops LIMIT 1').get()) {
+    db.prepare("INSERT INTO workshops (code, name, place, is_default) VALUES ('CW', 'Central Workshop — Badalgama', 'Badalgama', 1)").run();
+  }
+  // Transfer notes name their two ends as free text; each end can now also point at a place from
+  // the list ('w:<id>' a workshop, 'p:<id>' a project, 's:<id>' a site). The text stays as written.
+  ensureColumn('users', 'workshop_id', 'INTEGER REFERENCES workshops(id)');
+  ensureColumn('job_cards', 'workshop_id', 'INTEGER REFERENCES workshops(id)');
+  ensureColumn('mrn', 'workshop_id', 'INTEGER REFERENCES workshops(id)');
+  ensureColumn('mtn', 'from_place', 'TEXT');
+  ensureColumn('mtn', 'to_place', 'TEXT');
+  ensureColumn('mtn_lines', 'from_place', 'TEXT');
+  ensureColumn('mtn_lines', 'to_place', 'TEXT');
+  const DEF = "(SELECT id FROM workshops WHERE is_default = 1 ORDER BY id LIMIT 1)";
+  db.exec(`
+    UPDATE users SET workshop_id = ${DEF} WHERE workshop_id IS NULL;
+    UPDATE job_cards SET workshop_id = ${DEF} WHERE workshop_id IS NULL;
+    UPDATE mrn SET workshop_id = COALESCE((SELECT j.workshop_id FROM job_cards j WHERE j.id = mrn.job_id), ${DEF})
+     WHERE workshop_id IS NULL;
+    INSERT INTO mechanic_workshops (mechanic_id, workshop_id, from_date)
+      SELECT m.id, ${DEF}, '2000-01-01' FROM mechanics m
+       WHERE NOT EXISTS (SELECT 1 FROM mechanic_workshops mw WHERE mw.mechanic_id = m.id);
+    CREATE INDEX IF NOT EXISTS idx_jobs_workshop ON job_cards(workshop_id);
+    CREATE INDEX IF NOT EXISTS idx_mrn_workshop ON mrn(workshop_id);
+    CREATE TRIGGER IF NOT EXISTS trg_users_workshop AFTER INSERT ON users WHEN NEW.workshop_id IS NULL
+    BEGIN UPDATE users SET workshop_id = ${DEF} WHERE id = NEW.id; END;
+    CREATE TRIGGER IF NOT EXISTS trg_job_cards_workshop AFTER INSERT ON job_cards WHEN NEW.workshop_id IS NULL
+    BEGIN UPDATE job_cards SET workshop_id = ${DEF} WHERE id = NEW.id; END;
+    CREATE TRIGGER IF NOT EXISTS trg_mrn_workshop AFTER INSERT ON mrn WHEN NEW.workshop_id IS NULL
+    BEGIN UPDATE mrn SET workshop_id = COALESCE((SELECT j.workshop_id FROM job_cards j WHERE j.id = NEW.job_id), ${DEF})
+           WHERE id = NEW.id; END;
+    CREATE TRIGGER IF NOT EXISTS trg_mechanics_workshop AFTER INSERT ON mechanics
+    BEGIN INSERT OR IGNORE INTO mechanic_workshops (mechanic_id, workshop_id, from_date) VALUES (NEW.id, ${DEF}, '2000-01-01'); END;`);
+  // Job requests (Stage 3): the workshop they are for — the card they became, else the raiser's.
+  ensureColumn('job_requests', 'workshop_id', 'INTEGER REFERENCES workshops(id)');
+  db.exec(`
+    UPDATE job_requests SET workshop_id = COALESCE(
+        (SELECT j.workshop_id FROM job_cards j WHERE j.id = job_requests.job_id),
+        (SELECT u.workshop_id FROM users u WHERE u.id = job_requests.requested_by_user), ${DEF})
+     WHERE workshop_id IS NULL;
+    CREATE INDEX IF NOT EXISTS idx_jr_workshop ON job_requests(workshop_id);
+    CREATE TRIGGER IF NOT EXISTS trg_job_requests_workshop AFTER INSERT ON job_requests WHEN NEW.workshop_id IS NULL
+    BEGIN UPDATE job_requests SET workshop_id = COALESCE((SELECT u.workshop_id FROM users u WHERE u.id = NEW.requested_by_user), ${DEF})
+           WHERE id = NEW.id; END;`);
+  // The transfer notes already written: link each end to the place its text clearly names. Once.
+  if (!db.prepare("SELECT 1 FROM settings WHERE key = 'mtn_places_matched'").get()) {
+    const r = require('../lib/places').matchOldTransfers();
+    db.prepare("INSERT INTO settings (key, value) VALUES ('mtn_places_matched', ?)").run(JSON.stringify({ at: new Date().toISOString(), ...r }));
+  }
+}
+
+// Stage 4, part B: a store per workshop (src/lib/stores.js). A workshop has its own store or uses
+// another's; the main one always has its own, and everything recorded until now is in it. Each
+// source of stock movements carries the store it happened in, stamped when the row is written (the
+// triggers below — a route that knows better writes store_id itself), so rebuilding stock_moves
+// keeps it. A transfer note's items carry the two stores they move between (set by the route).
+function storesStage4() {
+  ensureColumn('workshops', 'own_store', 'INTEGER NOT NULL DEFAULT 0');
+  ensureColumn('workshops', 'uses_store', 'INTEGER REFERENCES workshops(id)');
+  ensureColumn('workshops', 'store_opened', 'TEXT');
+  db.exec('UPDATE workshops SET own_store = 1 WHERE is_default = 1 AND own_store = 0');
+  const DEF = "(SELECT id FROM workshops WHERE is_default = 1 ORDER BY id LIMIT 1)";
+  const tables = ['grn', 'issues', 'general_item_txns', 'stock_ledger', 'tyre_battery_issues', 'service_jobs', 'stock_moves'];
+  for (const t of tables) {
+    ensureColumn(t, 'store_id', 'INTEGER REFERENCES workshops(id)');
+    db.exec(`UPDATE ${t} SET store_id = ${DEF} WHERE store_id IS NULL`);
+  }
+  ensureColumn('mtn_lines', 'from_store_id', 'INTEGER REFERENCES workshops(id)');
+  ensureColumn('mtn_lines', 'to_store_id', 'INTEGER REFERENCES workshops(id)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_sm_store ON stock_moves(store_id, section, item_key)');
+
+  const { storeSql } = require('../lib/stores');
+  const jobWs = (jobCol) => `(SELECT j.workshop_id FROM job_cards j WHERE j.id = NEW.${jobCol})`;
+  const day = (col) => `date(COALESCE(NULLIF(NEW.${col}, ''), 'now'))`;
+  const stamp = {
+    // Received goods: the store of the request's workshop.
+    grn: storeSql(`SELECT m.workshop_id FROM mrn m WHERE m.id = COALESCE(NEW.mrn_id,
+                     (SELECT ml.mrn_id FROM mrn_lines ml WHERE ml.id = NEW.mrn_line_id))`, day('delivery_date')),
+    // A received line handed over leaves the store that received it; anything else, the job's.
+    issues: `COALESCE((SELECT g.store_id FROM grn g WHERE g.id = NEW.grn_id), ${storeSql(jobWs('job_id'), day('issue_date'))})`,
+    general_item_txns: storeSql(jobWs('job_id'), day('txn_date')),
+    stock_ledger: storeSql(jobWs('job_id'), day('txn_date')),
+    tyre_battery_issues: storeSql(`COALESCE(${jobWs('job_id')},
+                     (SELECT m.workshop_id FROM mrn_lines ml JOIN mrn m ON m.id = ml.mrn_id WHERE ml.id = NEW.mrn_line_id))`, day('issue_date')),
+    service_jobs: storeSql('SELECT j.workshop_id FROM job_cards j WHERE j.job_no = NEW.job_no ORDER BY j.id DESC LIMIT 1', day('service_date')),
+  };
+  for (const [t, expr] of Object.entries(stamp)) {
+    db.exec(`CREATE TRIGGER IF NOT EXISTS trg_${t}_store AFTER INSERT ON ${t} WHEN NEW.store_id IS NULL
+             BEGIN UPDATE ${t} SET store_id = ${expr} WHERE id = NEW.id; END;`);
+  }
+}
+
+// Stage 4: a day is signed off per workshop once the workshops are kept apart. workday_signoffs was
+// made with work_date UNIQUE, which SQLite cannot change in place — so the table is rebuilt once,
+// every row kept as a whole-company sign-off (workshop_id 0, which is what it was).
+function signoffsPerWorkshop() {
+  const cur = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='workday_signoffs'").get();
+  if (!cur || /workshop_id/.test(cur.sql)) return;
+  db.transaction(() => {
+    db.exec(`
+      CREATE TABLE workday_signoffs_new (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        work_date     TEXT NOT NULL,
+        workshop_id   INTEGER NOT NULL DEFAULT 0,
+        signed_by     INTEGER REFERENCES users(id),
+        signed_at     TEXT,
+        unlocked_by   INTEGER REFERENCES users(id),
+        unlocked_at   TEXT,
+        unlock_reason TEXT,
+        UNIQUE (work_date, workshop_id)
+      );
+      INSERT INTO workday_signoffs_new (id, work_date, workshop_id, signed_by, signed_at, unlocked_by, unlocked_at, unlock_reason)
+        SELECT id, work_date, 0, signed_by, signed_at, unlocked_by, unlocked_at, unlock_reason FROM workday_signoffs;
+      DROP TABLE workday_signoffs;
+      ALTER TABLE workday_signoffs_new RENAME TO workday_signoffs;`);
+  })();
+}
+
+// Stage 5: reports per workshop. The saved daily reports were keyed UNIQUE(kind, report_date) —
+// rebuilt once keyed by (kind, report_date, workshop_id), every saved day kept as the whole
+// company's (workshop 0, which is what it was). The monthly report inputs (fuel, salaries,
+// overheads, the pending list, outside prices) each belong to a workshop; the ones already
+// entered are the main workshop's.
+function reportsPerWorkshop() {
+  const cur = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='daily_report_snapshots'").get();
+  if (cur && !/workshop_id/.test(cur.sql)) {
+    db.transaction(() => {
+      db.exec(`
+        DROP INDEX IF EXISTS idx_daily_snap;
+        CREATE TABLE daily_report_snapshots_new (
+          id           INTEGER PRIMARY KEY AUTOINCREMENT,
+          kind         TEXT NOT NULL,
+          report_date  TEXT NOT NULL,
+          workshop_id  INTEGER NOT NULL DEFAULT 0,
+          generated_at TEXT NOT NULL DEFAULT (datetime('now')),
+          generated_by INTEGER REFERENCES users(id),
+          row_count    INTEGER NOT NULL DEFAULT 0,
+          payload      TEXT NOT NULL,
+          UNIQUE(kind, report_date, workshop_id)
+        );
+        INSERT INTO daily_report_snapshots_new (id, kind, report_date, workshop_id, generated_at, generated_by, row_count, payload)
+          SELECT id, kind, report_date, 0, generated_at, generated_by, row_count, payload FROM daily_report_snapshots;
+        DROP TABLE daily_report_snapshots;
+        ALTER TABLE daily_report_snapshots_new RENAME TO daily_report_snapshots;
+        CREATE INDEX IF NOT EXISTS idx_daily_snap ON daily_report_snapshots(kind, workshop_id, report_date DESC);`);
+    })();
+  }
+  ensureColumn('monthly_report_inputs', 'workshop_id', 'INTEGER REFERENCES workshops(id)');
+  db.exec(`UPDATE monthly_report_inputs SET workshop_id = (SELECT id FROM workshops WHERE is_default = 1 ORDER BY id LIMIT 1)
+            WHERE workshop_id IS NULL;
+           CREATE INDEX IF NOT EXISTS idx_mri_ws ON monthly_report_inputs(year, month, sheet, workshop_id);
+           CREATE TRIGGER IF NOT EXISTS trg_mri_workshop AFTER INSERT ON monthly_report_inputs WHEN NEW.workshop_id IS NULL
+           BEGIN UPDATE monthly_report_inputs SET workshop_id = (SELECT id FROM workshops WHERE is_default = 1 ORDER BY id LIMIT 1)
+                  WHERE id = NEW.id; END;`);
+}
+
+// Stage 6: field work — a repair done at a site, not in the workshop (src/lib/field.js). A job card
+// says whether it is in the field and where, whether it began as a breakdown, and the times that
+// give the response time and the downtime; km driven by the field vehicle are charged at the rate in
+// force when they were entered. A daily-work line can be travel. Nothing existing changes: every
+// card is a workshop card until someone says otherwise.
+function fieldStage6() {
+  ensureColumn('job_cards', 'field', 'INTEGER NOT NULL DEFAULT 0');
+  ensureColumn('job_cards', 'field_place', 'TEXT');          // 'p:<id>' a project or 's:<id>' a site
+  ensureColumn('job_cards', 'field_location', 'TEXT');       // the place as written
+  ensureColumn('job_cards', 'breakdown', 'INTEGER NOT NULL DEFAULT 0');
+  ensureColumn('job_cards', 'reported_at', 'TEXT');          // YYYY-MM-DD HH:MM
+  ensureColumn('job_cards', 'arrived_at', 'TEXT');
+  ensureColumn('job_cards', 'working_at', 'TEXT');
+  ensureColumn('job_cards', 'field_km', 'REAL');
+  ensureColumn('job_cards', 'field_km_rate', 'REAL');
+  ensureColumn('job_daily_work', 'travel', 'INTEGER NOT NULL DEFAULT 0');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_jobs_field ON job_cards(field, status)');
+  allowReturnParts();
+}
+
+// Stage 7: a machine can stand at a site of a project, not only at the project (src/lib/operations.js).
+function operationsStage7() {
+  ensureColumn('assets', 'current_site_id', 'INTEGER REFERENCES sites(id)');
+}
+
+// Stores plan, Part 2: a correction posted by an approved count session says which one it came from.
+function storesCountsPart2() {
+  ensureColumn('store_counts', 'session_id', 'INTEGER REFERENCES count_sessions(id)');
+}
+
+// Stores plan, Part 3: a service that fitted an equivalent filter keeps the vehicle's own number too
+// (ST-D15). filter_no stays what was fitted — that is what comes off the shelf.
+function storesServicesPart3() {
+  ensureColumn('service_filters', 'required_no', 'TEXT');
+  ensureColumn('service_filters', 'required_no_norm', 'TEXT');
+}
+
+// Stores plan, Part 4: a tyre or battery issued is a unit with a serial number (src/lib/tb_units.js):
+// the issue names the unit it fitted and the unit that came off; a battery knows its store.
+function storesUnitsPart4() {
+  ensureColumn('tyre_battery_issues', 'unit_id', 'INTEGER');       // tyres.id or batteries.id, by kind
+  ensureColumn('tyre_battery_issues', 'old_unit_id', 'INTEGER');   // the one taken off, when known
+  ensureColumn('batteries', 'store_id', 'INTEGER REFERENCES workshops(id)');
+  ensureColumn('batteries', 'spec_id', 'INTEGER REFERENCES tb_specs(id)');
+  // A tyre or battery received or issued on a request is filed under its specification since
+  // Part 4 (src/lib/stock.js), so its receipt and its issue meet on one shelf. The ones already
+  // on the books are moved there once, here, rather than waiting for someone to rebuild stock.
+  if (!db.prepare("SELECT 1 FROM settings WHERE key = 'stock_tb_by_spec'").get()) {
+    const grn = db.prepare('SELECT g.id FROM grn g JOIN tb_request_lines r ON r.mrn_line_id = g.mrn_line_id WHERE r.spec_id IS NOT NULL').all().map((r) => r.id);
+    const issues = db.prepare('SELECT id FROM tyre_battery_issues WHERE spec_id IS NOT NULL').all().map((r) => r.id);
+    if (grn.length || issues.length) require('../lib/stock').sync({ grn, tyre_battery_issues: issues });
+    db.prepare("INSERT INTO settings (key, value) VALUES ('stock_tb_by_spec', ?)").run(JSON.stringify({ at: new Date().toISOString(), grn: grn.length, issues: issues.length }));
+  }
+}
+
+// Parts brought back unused (Stage 6) come off a job's cost as a 'return' line on job_parts. Its
+// source_type is a CHECK list SQLite cannot change in place — rebuilt once the same way as job_cards
+// above (allowPartiallyClosed): every row copied with its id, indexes and triggers put back, and the
+// swap undone if a single row or reference would be lost.
+function allowReturnParts() {
+  const cur = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='job_parts'").get();
+  if (!cur || /'return'/.test(cur.sql)) return;
+  const list = /(CHECK\s*\(\s*source_type\s+IN\s*\()/i;
+  if (!list.test(cur.sql)) return;
+  const widened = cur.sql
+    .replace(/^CREATE TABLE (IF NOT EXISTS )?("?)job_parts\2/i, 'CREATE TABLE tmp_job_parts')
+    .replace(list, "$1'return',");
+  if (!/^CREATE TABLE tmp_job_parts/.test(widened)) throw new Error('job_parts: unexpected table definition — source_type not widened');
+  const cols = db.prepare('PRAGMA table_info(job_parts)').all().map((c) => `"${c.name}"`).join(', ');
+  const indexes = db.prepare("SELECT sql FROM sqlite_master WHERE type='index' AND tbl_name='job_parts' AND sql IS NOT NULL").all();
+  const triggers = db.prepare("SELECT sql FROM sqlite_master WHERE type='trigger' AND tbl_name='job_parts'").all();
+  const seq = db.prepare("SELECT seq FROM sqlite_sequence WHERE name='job_parts'").get();
+  const dangling = () => db.prepare('PRAGMA foreign_key_check').all().filter((r) => r.parent === 'job_parts' || r.table === 'job_parts').length;
+  const before = dangling();
+  const count = db.prepare('SELECT COUNT(*) n FROM job_parts').get().n;
+  db.pragma('foreign_keys = OFF');
+  try {
+    db.transaction(() => {
+      db.exec(`${widened};
+               INSERT INTO tmp_job_parts (${cols}) SELECT ${cols} FROM job_parts;
+               DROP TABLE job_parts;
+               ALTER TABLE tmp_job_parts RENAME TO job_parts;`);
+      for (const x of [...indexes, ...triggers]) db.exec(x.sql);
+      if (seq) db.prepare("UPDATE sqlite_sequence SET seq = MAX(seq, ?) WHERE name = 'job_parts'").run(seq.seq);
+      if (db.prepare('SELECT COUNT(*) n FROM job_parts').get().n !== count || dangling() !== before) {
+        throw new Error('job_parts rebuild did not keep every line and reference — not applied');
       }
     })();
   } finally {

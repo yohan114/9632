@@ -79,14 +79,20 @@ app.use('/api/auth', require('./routes/auth'));
 app.use('/api/access', require('./routes/access'));
 app.use('/api/assets', requireModule('assets'), require('./routes/assets'));
 app.use('/api/aliases', require('./routes/aliases'));
+// Job Cards: the Monitor and the Requests list (job cards plan). Checks its own module access.
+app.use('/api/job-flow', require('./routes/jobflow'));
 app.use('/api/projects', require('./routes/projects'));
 // MRN approval transitions (certify/approve/reject) are authorised by ROLE, not by
 // stores-edit level: the Workshop Engineer and Operational Manager who sign off an
 // MRN deliberately hold only stores=view (they must not edit stock). Let those three
 // POST paths past the module-edit gate; each route still enforces its own requireRole.
 const MRN_APPROVAL_PATH = /\/mrn\/\d+\/(certify|approve|reject)$/;
+// Head office approves a stock take (stores plan, Part 2) the same way: by capability, from stores=view.
+const COUNT_APPROVAL_PATH = /^\/counts\/\d+\/(approve|send-back|cancel)$/;
+// And a manager approves a disposal note (Part 4); the route checks the capability.
+const DISPOSAL_APPROVAL_PATH = /^\/disposals\/\d+\/(approve|cancel)$/;
 const storesGate = (req, res, next) =>
-  (req.method === 'POST' && MRN_APPROVAL_PATH.test(req.path))
+  (req.method === 'POST' && (MRN_APPROVAL_PATH.test(req.path) || COUNT_APPROVAL_PATH.test(req.path) || DISPOSAL_APPROVAL_PATH.test(req.path)))
     ? next()
     : requireModule('stores')(req, res, next);
 app.use('/api/stores', storesGate, require('./routes/stores'));
@@ -103,13 +109,18 @@ app.use('/api/daily-work', requireModule('dailywork'), require('./routes/dailywo
 // is decided by its own capability, because the managers who sign off and unlock a day hold Daily
 // Work at view only.
 app.use('/api/attendance', require('./routes/attendance'));
-app.use('/api/dashboard', require('./routes/dashboard'));
+// Field work (Stage 6): reading needs Job Cards view (checked inside); each write its own capability.
+app.use('/api/field', require('./routes/field'));
+// Stage 7: operations — machine moves, the site fleet board, workshops at a glance, handovers.
+app.use('/api/operations', require('./routes/operations'));
+app.use('/api/dashboard', requireModule('dashboard'), require('./routes/dashboard'));
 app.use('/api/mechanics', require('./routes/mechanics'));
+app.use('/api/workshops', require('./routes/workshops'));
 app.use('/api/users', require('./routes/users'));
 app.use('/api/reports', require('./routes/reports'));
 // Vehicle lubricant capacities from Fleet_Oil_Lubricant_Capacities.xlsx
-app.use('/api/lubricant-capacities', require('./routes/lubricant_capacities'));
-app.use('/api/tyre-battery', requireModule('reports'), require('./routes/tyre_battery'));
+app.use('/api/lubricant-capacities', requireModule('lubricants'), require('./routes/lubricant_capacities'));
+app.use('/api/tyre-battery', requireModule('tb_reports'), require('./routes/tyre_battery'));
 // Requesting, issuing and accounting for the old unit. Mounted apart from the reporting routes
 // above because those are gated on `reports` — a storekeeper who may not read cost reports still
 // has to be able to issue a tyre. Each endpoint carries its own role check instead, and the

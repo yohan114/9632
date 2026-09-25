@@ -412,3 +412,11 @@ body.live-connected .live-dot { color: var(--green); }
   border: 1px solid rgba(154, 110, 0, .3);
 }
 
+
+/* Stores: how far a requested item has come (stores plan, Part 1). */
+.road { display: flex; gap: 2px; margin-bottom: 2px; }
+.road .rd { font-size: 10px; line-height: 1; padding: 3px 5px; border-radius: 3px; border: 1px solid var(--border); color: var(--text-muted, #6a7379); background: transparent; white-space: nowrap; }
+.road .rd-done { background: rgba(60,125,90,.15); color: var(--green); border-color: transparent; }
+.road .rd-part { background: rgba(242,169,0,.18); color: var(--amber); border-color: transparent; }
+.road .rd-now { border-color: var(--blue, #1d5a73); color: var(--blue, #1d5a73); font-weight: 700; }
+.road .rd-stop { background: rgba(196,57,44,.12); color: var(--red); border-color: transparent; }

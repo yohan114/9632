@@ -150,7 +150,8 @@ function checkTransition(current, target, who = []) {
 function openJobFor(assetId, opts = {}) {
   if (!assetId) return null; // container cards belong to no vehicle
   const params = [assetId];
-  let sql = `SELECT id, job_no, status, type, description, requested_at
+  let sql = `SELECT id, job_no, status, type, description, requested_at, workshop_id,
+                    (SELECT name FROM workshops w WHERE w.id = job_cards.workshop_id) AS workshop_name
                FROM job_cards WHERE asset_id = ? AND ${OPEN_SQL}`;
   if (opts.excludeJobId) { sql += ' AND id <> ?'; params.push(opts.excludeJobId); }
   return get(sql + ' ORDER BY id LIMIT 1', ...params);
@@ -163,15 +164,29 @@ function openJobFor(assetId, opts = {}) {
 function checkOneOpenJob(assetId, opts = {}) {
   const blocking = openJobFor(assetId, opts);
   if (!blocking) return { ok: true };
+  // One open card per vehicle across ALL workshops (Stage 3): a vehicle is in one workshop at a
+  // time. With more than one workshop, say which one has it.
+  const where = blocking.workshop_name && require('./workshops').isMulti() ? `, at ${blocking.workshop_name}` : '';
   return {
     ok: false,
     blocking,
-    error: `This vehicle already has an open job card (${blocking.job_no} · ${blocking.status}). Close it before opening another.`,
+    error: `This vehicle already has an open job card (${blocking.job_no} · ${blocking.status}${where}). Close it before opening another.`,
   };
 }
 
+/**
+ * A WHERE fragment for "these workshops only" (Stage 3 scoping): workshopId is one id, a list of
+ * ids (store staff see every workshop their store serves), or null for every workshop.
+ */
+function workshopIn(column, workshopId) {
+  if (workshopId == null) return { sql: '', params: [] };
+  const ids = [].concat(workshopId);
+  return { sql: `AND ${column} IN (${ids.map(() => '?').join(',')})`, params: ids };
+}
+
 /** Vehicles carrying more than one open card — the backlog to work off. */
-function duplicateOpenJobs() {
+function duplicateOpenJobs({ workshopId = null } = {}) {
+  const inWs = workshopIn('j.workshop_id', workshopId);
   const rows = all(
     `SELECT j.asset_id, a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec,
             COUNT(*) AS open_count
@@ -185,9 +200,11 @@ function duplicateOpenJobs() {
               CAST(julianday('now') - julianday(j.requested_at) AS INTEGER) AS age_days
          FROM job_cards j
         WHERE j.asset_id = ? AND ${OPEN_SQL.replace(/status/g, 'j.status')}
-        ORDER BY j.requested_at, j.id`, r.asset_id);
+          ${inWs.sql}
+        ORDER BY j.requested_at, j.id`, r.asset_id, ...inWs.params);
   }
-  return rows;
+  // Scoped (Stage 3): only vehicles with an open card of that workshop, and only its cards.
+  return workshopId != null ? rows.filter((r) => r.jobs.length) : rows;
 }
 
 // ---- adding anything to a card ------------------------------------------------------------------
@@ -220,7 +237,7 @@ const ADD_RULES = {
   general: 'confirm',
 };
 
-// What a PARTLY CLOSED card allows (docs/WORKSHOPONE_PLAN.md §3.2). The work is done and the
+// What a PARTLY CLOSED card allows (docs/WORKSHOPONE_PLAN.md §A.2). The work is done and the
 // vehicle has left; what is still coming is prices, the parts already asked for, and the records.
 //
 //   allow         pricing any line; general rack items.
@@ -323,7 +340,7 @@ function canReopen(who = []) {
   return capsFor(who).includes(REOPEN_CAP);
 }
 
-module.exports = {
+module.exports = { workshopIn,
   STATES, TRANSITIONS, OPEN_STATUSES, OPEN_SQL, REOPEN_CAP, PARTIAL, REOPENABLE,
   FINAL_STATUSES, openSql, notFinalSql, isOpen, isFinal, isReopen, ADD_RULES, PARTIAL_RULES, checkAdd,
   successorFor, partialDay, PARTIAL_FLAG, partialCloseEnabled, reportClosedSql, reportPendingSql,

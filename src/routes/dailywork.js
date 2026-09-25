@@ -17,6 +17,8 @@ const { sendXlsx } = require('../lib/export');
 
 const router = express.Router();
 const jobstate = require('../lib/jobstate');
+const workshops = require('../lib/workshops');
+const scope = require('../lib/scope');
 
 // Daily work on a card follows the same rule as the job card's own Daily Work section
 // (jobstate.checkAdd 'daily_work'): a CLOSED card needs "Change items on a CLOSED job card".
@@ -27,8 +29,13 @@ const jobstate = require('../lib/jobstate');
 // signed off (attendance, src/lib/attendance.js) is locked — nothing on it changes until a
 // manager unlocks it. While attendance is switched off there is no lock.
 function assertDailyWorkAllowed(jobId, user, dates = []) {
-  attendance.assertDaysOpen(dates);
+  // The day lock of the card's own workshop (Stage 4; the whole company's while not kept apart).
+  const card = jobId ? get('SELECT workshop_id FROM job_cards WHERE id = ?', jobId) : null;
+  attendance.assertDaysOpen(dates, card && card.workshop_id);
   if (!jobId) return;
+  // Stage 3: only your own workshop's cards (head office and store staff: any).
+  const notMine = scope.jobRefusal(user, jobId);
+  if (notMine) { const e = new Error(notMine.error); e.status = 403; throw e; }
   // The dates also matter on a partly closed card: only work up to its partial-close day.
   const g = jobstate.checkAdd(get('SELECT id, job_no, status, asset_id, partial_closed_at FROM job_cards WHERE id = ?', jobId), 'daily_work', { user, dates });
   if (!g.ok) { const e = new Error(g.body.error); e.status = g.status; throw e; }
@@ -80,12 +87,10 @@ function jobForEntry(assetId, date) {
   return bg <= JOB_MATCH_SLACK_DAYS ? best : null;
 }
 
-// Shared container job for general (non-vehicle) workshop daily work.
-function generalWorkshopJob() {
-  const j = get("SELECT id FROM job_cards WHERE legacy_ref = 'general-workshop' LIMIT 1");
-  if (j) return j.id;
-  return run(`INSERT INTO job_cards (job_no, type, description, status, requested_by, requested_at, is_historical, synthesized_no, legacy_ref)
-              VALUES ('GENERAL-WS', 'repair', 'General workshop daily work (not vehicle-specific)', 'REQUESTED', 'system', date('now'), 0, 1, 'general-workshop')`).lastInsertRowid;
+// Shared container job for general (non-vehicle) workshop daily work — one per workshop
+// (src/lib/workshops.js). No workshop given: the main workshop's, the card that always existed.
+function generalWorkshopJob(workshopId = null) {
+  return workshops.generalCardId(workshopId, { create: true, description: 'General workshop daily work (not vehicle-specific)' });
 }
 
 // Job number for a system-created daily-work card: YYYY/M/R/G<n> for the work month. The "G"
@@ -115,7 +120,7 @@ function assetLabel(assetId, fallback) {
 //   2. this month's existing auto card for the vehicle (one per vehicle per month), with its
 //      date window widened to cover the new day;
 //   3. a new card, CLOSED on the work date, so the cost lands in that month under the vehicle.
-function autoVehicleJob(assetId, date, rawLabel) {
+function autoVehicleJob(assetId, date, rawLabel, user = null) {
   // Reuse the vehicle's open card only if this day's work actually falls in its life. Without
   // the date bound the newest open card claimed everything: one REQUESTED card ended up holding
   // nine months of daily work for its vehicle.
@@ -125,12 +130,15 @@ function autoVehicleJob(assetId, date, rawLabel) {
         AND date(?) <= date('now', '+' || ? || ' day')
       ORDER BY date(COALESCE(requested_at, created_at)) DESC, id DESC LIMIT 1`,
     assetId, date, JOB_MATCH_SLACK_DAYS, date, JOB_MATCH_SLACK_DAYS);
-  if (open) return { id: open.id, created: false };
+  // Stage 3: the vehicle's open card only if this person may work on it; otherwise their own
+  // workshop's auto card for the month (one per vehicle per month per workshop).
+  if (open && !(user && scope.jobRefusal(user, open.id))) return { id: open.id, created: false };
+  const ws = user ? workshops.homeOf(user) : workshops.defaultId();
 
   const mine = get(
     `SELECT id FROM job_cards WHERE asset_id = ? AND legacy_ref = 'auto-container-labour'
-        AND substr(COALESCE(completed_at, requested_at), 1, 7) = ? ORDER BY id DESC LIMIT 1`,
-    assetId, date.slice(0, 7));
+        AND substr(COALESCE(completed_at, requested_at), 1, 7) = ? AND COALESCE(workshop_id, 0) = ? ORDER BY id DESC LIMIT 1`,
+    assetId, date.slice(0, 7), ws || 0);
   if (mine) {
     run(`UPDATE job_cards
             SET requested_at = MIN(COALESCE(requested_at, ?), ?),
@@ -143,10 +151,10 @@ function autoVehicleJob(assetId, date, rawLabel) {
 
   const id = run(
     `INSERT INTO job_cards (job_no, asset_id, type, description, status, requested_by,
-        requested_at, started_at, completed_at, closed_at, synthesized_no, legacy_ref)
-     VALUES (?, ?, 'repair', ?, 'CLOSED', 'system', ?, ?, ?, ?, 1, 'auto-container-labour')`,
+        requested_at, started_at, completed_at, closed_at, synthesized_no, legacy_ref, workshop_id)
+     VALUES (?, ?, 'repair', ?, 'CLOSED', 'system', ?, ?, ?, ?, 1, 'auto-container-labour', ?)`,
     nextAutoJobNo(date), assetId, `Daily work for ${assetLabel(assetId, rawLabel)} (auto container)`,
-    date, date, date, date
+    date, date, date, date, ws
   ).lastInsertRowid;
   return { id, created: true };
 }
@@ -388,9 +396,12 @@ router.get('/month', asyncHandler(async (req, res) => {
     conditions.push('(a.code LIKE ? OR a.registration LIKE ? OR w.mechanic LIKE ? OR w.description LIKE ? OR j.job_no LIKE ?)');
     params.push(like, like, like, like, like);
   }
+  // Stage 3: your own workshop's work only.
+  const own = scope.filter(req.user, 'j.workshop_id');
+  if (own.sql) { conditions.push(own.sql); params.push(...own.params); }
 
   let rows = all(
-    `SELECT w.id, w.work_date, w.mechanic, w.description, w.hours, w.is_external, w.external_value, w.outside_labour,
+    `SELECT w.id, w.work_date, w.mechanic, w.description, w.hours, w.is_external, w.external_value, w.outside_labour, w.travel,
             j.id AS job_id, j.job_no, j.type, j.status,
             a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec, p.name AS project_name
        FROM job_daily_work w
@@ -455,15 +466,17 @@ router.get('/month', asyncHandler(async (req, res) => {
 }));
 
 // Distinct days that have daily work logged, newest first, with per-day totals.
-router.get('/days', asyncHandler((_req, res) => {
+router.get('/days', asyncHandler((req, res) => {
+  const own = scope.filter(req.user, 'j.workshop_id');   // Stage 3: your own workshop's work only
   const days = all(
-    `SELECT work_date AS date,
-            COUNT(*)               AS entries,
-            COUNT(DISTINCT job_id) AS jobs,
-            ROUND(SUM(hours), 2)   AS hours
-       FROM job_daily_work
-      GROUP BY work_date
-      ORDER BY work_date DESC`
+    `SELECT w.work_date AS date,
+            COUNT(*)                 AS entries,
+            COUNT(DISTINCT w.job_id) AS jobs,
+            ROUND(SUM(w.hours), 2)   AS hours
+       FROM job_daily_work w JOIN job_cards j ON j.id = w.job_id
+      ${own.sql ? 'WHERE ' + own.sql : ''}
+      GROUP BY w.work_date
+      ORDER BY w.work_date DESC`, ...own.params
   );
   res.json(days);
 }));
@@ -483,6 +496,9 @@ router.get('/', asyncHandler((req, res) => {
     filter = 'AND (a.code LIKE ? OR a.registration LIKE ? OR w.mechanic LIKE ? OR w.description LIKE ? OR j.job_no LIKE ?)';
     params.push(like, like, like, like, like);
   }
+  // Stage 3: your own workshop's work only.
+  const own = scope.filter(req.user, 'j.workshop_id');
+  if (own.sql) { filter += ` AND ${own.sql}`; params.push(...own.params); }
   const rows = all(
     `SELECT w.id, w.work_date, w.mechanic, w.description, w.hours, w.is_external, w.external_value, w.outside_labour,
             j.id AS job_id, j.job_no, j.type, j.status,
@@ -507,7 +523,7 @@ router.get('/', asyncHandler((req, res) => {
     external_value: Math.round(external_value * 100) / 100,
     entries,
     // Only while attendance is on: a signed-off day's lines cannot be changed.
-    ...(attendance.isEnabled() ? { locked: attendance.isLocked(date) } : {}),
+    ...(attendance.isEnabled() ? { locked: attendance.isLocked(date, attendance.settings(), scope.onlyWorkshop(req.user, { store: false }) || workshops.homeOf(req.user)) } : {}),
   });
 }));
 
@@ -529,10 +545,10 @@ router.post('/', requireCap('dailywork.add'), asyncHandler((req, res) => {
   let autoCreated = false;
   const rawVeh = String(b.asset || '').trim();
   // Before anything is created: a vehicle with no card would otherwise get a new one for a locked day.
-  attendance.assertDaysOpen([date]);
+  attendance.assertDaysOpen([date], workshops.homeOf(req.user));
 
   const forVehicle = (assetId) => {
-    const r = autoVehicleJob(assetId, date, rawVeh || null);
+    const r = autoVehicleJob(assetId, date, rawVeh || null, req.user);
     autoCreated = r.created;
     return r.id;
   };
@@ -549,7 +565,7 @@ router.post('/', requireCap('dailywork.add'), asyncHandler((req, res) => {
     if (assetId) {
       jobId = forVehicle(assetId);
     } else {
-      jobId = generalWorkshopJob();             // no vehicle named (or not recognised yet)
+      jobId = generalWorkshopJob(workshops.homeOf(req.user));   // no vehicle named (or not recognised yet)
       // Keep an unrecognised vehicle name on the line so the work isn't lost to the container.
       if (rawVeh) description = description ? `${rawVeh} — ${description}` : rawVeh;
     }
@@ -575,9 +591,10 @@ router.post('/', requireCap('dailywork.add'), asyncHandler((req, res) => {
   const lineAsset = toInt(b.asset_id) || job.asset_id || null;
 
   const info = run(
-    `INSERT INTO job_daily_work (job_id, work_date, mechanic, description, hours, is_external, external_value, asset_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    jobId, date, mechanic, description, hours, isExternal, isExternal ? toNum(b.external_value, 0) : 0, lineAsset
+    `INSERT INTO job_daily_work (job_id, work_date, mechanic, description, hours, is_external, external_value, asset_id, travel)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    jobId, date, mechanic, description, hours, isExternal, isExternal ? toNum(b.external_value, 0) : 0, lineAsset,
+    b.travel && !isExternal ? 1 : 0   // Stage 6: travel to a field job — costed like any hour, shown apart
   );
   costing.refreshJobTotals(jobId);
   mechanics.syncJobLabourForMonth(date.slice(0, 7));
@@ -594,7 +611,7 @@ router.post('/bulk-log', requireCap('dailywork.edit'), asyncHandler((req, res) =
 
   const rawEntries = Array.isArray(b.entries) ? b.entries : [];
   if (!rawEntries.length) return res.status(400).json({ error: 'entries array required' });
-  attendance.assertDaysOpen([date]);
+  attendance.assertDaysOpen([date], workshops.homeOf(req.user));
 
   const affectedJobs = new Set();
   const createdIds = [];
@@ -621,10 +638,10 @@ router.post('/bulk-log', requireCap('dailywork.edit'), asyncHandler((req, res) =
           assetId = r.assetId;
         }
         if (assetId) {
-          jobId = autoVehicleJob(assetId, date, rawVeh || null).id;
+          jobId = autoVehicleJob(assetId, date, rawVeh || null, req.user).id;
           lineAsset = assetId;
         } else {
-          jobId = generalWorkshopJob();
+          jobId = generalWorkshopJob(workshops.homeOf(req.user));
           if (rawVeh) description = description ? `${rawVeh} — ${description}` : rawVeh;
         }
       } else if (toInt(e.job_id)) {
@@ -637,10 +654,10 @@ router.post('/bulk-log', requireCap('dailywork.edit'), asyncHandler((req, res) =
         }
         if (assetId) {
           const job = jobForEntry(assetId, date);
-          jobId = job ? job.id : autoVehicleJob(assetId, date, rawVeh || null).id;
+          jobId = job ? job.id : autoVehicleJob(assetId, date, rawVeh || null, req.user).id;
           lineAsset = assetId;
         } else {
-          jobId = generalWorkshopJob();
+          jobId = generalWorkshopJob(workshops.homeOf(req.user));
         }
       }
 
@@ -650,9 +667,10 @@ router.post('/bulk-log', requireCap('dailywork.edit'), asyncHandler((req, res) =
 
       assertDailyWorkAllowed(jobId, req.user, [date]);   // a whole batch is refused, not half-applied
       const info = run(
-        `INSERT INTO job_daily_work (job_id, work_date, mechanic, description, hours, is_external, external_value, asset_id)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-        jobId, date, mechanic, description, hours, isExternal, isExternal ? toNum(e.external_value, 0) : 0, lineAsset
+        `INSERT INTO job_daily_work (job_id, work_date, mechanic, description, hours, is_external, external_value, asset_id, travel)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        jobId, date, mechanic, description, hours, isExternal, isExternal ? toNum(e.external_value, 0) : 0, lineAsset,
+        e.travel && !isExternal ? 1 : 0   // Stage 6: a travel line
       );
       createdIds.push(info.lastInsertRowid);
       affectedJobs.add(jobId);
@@ -694,6 +712,8 @@ router.patch('/:id', requireCap('dailywork.edit'), asyncHandler((req, res) => {
   if (req.body.hours !== undefined) put('hours', toNum(req.body.hours, 0));
   if (req.body.mechanic !== undefined) put('mechanic', String(req.body.mechanic).trim() || null);
   if (req.body.description !== undefined) put('description', String(req.body.description).trim() || null);
+  // Stage 6: mark (or unmark) a line as travel to a field job.
+  if (req.body.travel !== undefined) put('travel', req.body.travel && !w.is_external ? 1 : 0);
   // Blank clears the outside labor value; a number sets it.
   if (req.body.outside_labour !== undefined) {
     const v = req.body.outside_labour;

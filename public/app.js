@@ -483,11 +483,13 @@ async function mySignatureModal() {
   });
 }
 // RBAC — a module's clearance level for the signed-in user (from the permission matrix).
-const RANKL = { none: 0, view: 1, edit: 2, full: 3 };
+const RANKL = { none: 0, view: 1, add: 2, edit: 3, full: 4 };
 const rankL = (l) => RANKL[l] || 0;
 const isAdmin = () => !!(ME && ME.roles && ME.roles.includes('admin'));
 const canView = (m) => isAdmin() || (ME && ME.permissions ? rankL(ME.permissions[m]) >= 1 : true);
-const canEdit = (m) => isAdmin() || (ME && ME.permissions ? rankL(ME.permissions[m]) >= 2 : true);
+const canAdd = (m) => isAdmin() || (ME && ME.permissions ? rankL(ME.permissions[m]) >= 2 : true);
+const canEdit = (m) => isAdmin() || (ME && ME.permissions ? rankL(ME.permissions[m]) >= 3 : true);
+const canFull = (m) => isAdmin() || (ME && ME.permissions ? rankL(ME.permissions[m]) >= 4 : true);
 // May the signed-in user do this? Asked by CAPABILITY (src/lib/capabilities.js), never by role
 // name, so a role an admin creates works on every screen. Some actions also sit behind a section's
 // router gate on the server, which wants EDIT clearance on that section; the server says which
@@ -502,14 +504,16 @@ const qsa = (s, r = document) => [...r.querySelectorAll(s)];
 // for every mutation, so no view needs to wire its own listeners.
 const LIVE_ENTITY_ROUTES = {
   store_item: ['generalstock', 'stores', 'stockissues', 'stockcockpit', 'stocktake'], issue: ['stockissues', 'stores', 'stockcockpit', 'stocktake'],
+  count_session: ['stores'], store_count: ['stores'], store_reorder: ['stores'],
   item_category: ['stores', 'generalstock', 'stockissues', 'stocktake'],
-  mrn: ['stores', 'matreq', 'purchasing', 'stockcockpit', 'stocktake'], mrn_lines: ['purchasing', 'stockcockpit', 'stocktake'], grn: ['stores', 'purchasing', 'stockcockpit', 'stocktake'], mtn: ['stores'], stock_count: ['oil', 'stocktake'],
-  product: ['oil', 'stockcockpit', 'stocktake'], product_price: ['oil', 'stocktake'], stock_ledger: ['oil', 'stockissues', 'stockcockpit', 'stocktake'],
-  filter_stock: ['filters', 'filterstock', 'stockcockpit', 'stocktake'], filter_price: ['filters', 'stocktake'], filter_xref: ['filters', 'stocktake'], service_job: ['filters', 'services'],
+  mrn: ['stores', 'matreq', 'purchasing', 'stockcockpit', 'stocktake'], mrn_lines: ['purchasing', 'stockcockpit', 'stocktake'], grn: ['stores', 'purchasing', 'stockcockpit', 'stocktake'], mtn: ['stores'], stock_count: ['oil', 'stocktake', 'stores'],
+  product: ['oil', 'stockcockpit', 'stocktake', 'stores'], product_price: ['oil', 'stocktake', 'stores'], stock_ledger: ['oil', 'stockissues', 'stockcockpit', 'stocktake', 'stores'],
+  filter_stock: ['filters', 'filterstock', 'stockcockpit', 'stocktake', 'stores'], filter_price: ['filters', 'stocktake', 'stores'], filter_xref: ['filters', 'stocktake', 'stores'], service_job: ['filters', 'services'],
   job_card: ['jobs', 'jobrequests'], job_request: ['jobrequests', 'jobs'], job_daily_work: ['dailywork', 'jobs'],
   mechanic_attendance: ['dailywork'], workday_signoff: ['dailywork'], job_reopen_request: ['jobs'],
-  battery: ['batteries', 'stockcockpit', 'stocktake'], asset: ['assets'],
-  mechanic: ['mechanics', 'labour'], labour_rate: ['labour', 'mechanics'], mechanic_alias: ['mechanics'],
+  battery: ['batteries', 'stockcockpit', 'stocktake', 'stores'], asset: ['assets'],
+  mechanic: ['mechanics', 'labour', 'workshops'], labour_rate: ['labour', 'mechanics'], mechanic_alias: ['mechanics'],
+  workshop: ['workshops', 'access', 'jobs'],
 };
 const LIVE_AGG_ROUTES = ['dashboard', 'attention']; // aggregate views refresh on ANY change
 let _liveWired = false;
@@ -654,7 +658,7 @@ function assetPickerHtml(label) {
       <div class="apick-menu" style="position:absolute;z-index:60;left:0;right:0;top:100%;background:var(--surface);border:1px solid var(--border);border-radius:8px;box-shadow:var(--shadow);max-height:220px;overflow:auto;display:none"></div>
     </div>`;
 }
-function wireAssetPicker(root) {
+function wireAssetPicker(root, onPick) {
   qsa('.apick', root).forEach((pick) => {
     const input = qs('.apick-input', pick), hidden = qs('input[type=hidden]', pick), menu = qs('.apick-menu', pick);
     let deb;
@@ -667,7 +671,7 @@ function wireAssetPicker(root) {
       menu.innerHTML = rows.map((r) => `<div class="apick-item" data-id="${r.id}" data-code="${esc(r.code)}" style="padding:7px 10px;cursor:pointer;border-bottom:1px solid var(--border)">${esc(r.registration || r.code)}${(r.registration && r.code && r.registration !== r.code) ? ` <span class="muted">· ${esc(r.code)}</span>` : ''}</div>`).join('');
       menu.style.display = 'block';
       qsa('.apick-item', menu).forEach((it) => {
-        it.onmousedown = (e) => { e.preventDefault(); input.value = it.dataset.code; hidden.value = it.dataset.id; close(); };
+        it.onmousedown = (e) => { e.preventDefault(); input.value = it.dataset.code; hidden.value = it.dataset.id; close(); if (onPick) onPick(it.dataset.id, it.dataset.code); };
       });
     };
     input.oninput = () => { clearTimeout(deb); deb = setTimeout(search, 200); };
@@ -744,14 +748,14 @@ function formData(root) {
 const NAV = [
   ['dashboard', '📊', 'Dashboard'],
   ['jobs', '🔧', 'Job Cards'],
-  ['jobrequests', '📋', 'Job Requests'],
+  ['field', '📍', 'Field Work'],
+  ['operations', '🧭', 'Operations'],
   ['dailywork', '📅', 'Daily Work'],
   ['services', '🛠️', 'Service Records'],
   ['lubecapacities', '🛢️', 'Lubricant Capacities'],
   ['assets', '🚜', 'Assets'],
   ['labour', '💵', 'Labour Rates'],
   ['stores', '📦', 'Stores'],
-  ['stocktake', '📋', 'Stock Take'],
   ['serviceplan', '🗓️', 'Service & Filter Plan'],
   ['projects', '🏗️', 'Projects'],
   ['aliases', '🔗', 'Alias Queue'],
@@ -762,11 +766,12 @@ const NAV = [
   ['tbrequests', '🛞', 'Tyre & Battery Requests'],
   ['tyrebattery', '🛞', 'Tyre & Battery'],
   ['reports', '📈', 'Reports'],
+  ['workshops', '🏭', 'Workshops', 'workshops'],
   ['access', '🔐', 'Access Control', 'admin'],
 ];
 // Which permission module governs each nav item's visibility (dashboard always on).
 const NAV_MODULE = {
-  assets: 'assets', jobs: 'jobs', jobrequests: 'jobrequests', dailywork: 'dailywork', services: 'filters', lubecapacities: 'jobs',
+  assets: 'assets', jobs: 'jobs', jobrequests: 'jobrequests', field: 'jobs', operations: 'assets', dailywork: 'dailywork', services: 'filters', lubecapacities: 'jobs',
   labour: 'labour', stores: 'stores', stocktake: 'stores', stockcockpit: 'stores', generalstock: 'stores', oil: 'oil', batteries: 'batteries', filters: 'filters', filterstock: 'filters',
   projects: 'projects', aliases: 'aliases', attention: 'reports', progress: 'reports',
   teardown: 'reports', reports: 'reports', tyrebattery: 'reports',
@@ -780,7 +785,10 @@ const NAV_MODULE = {
 };
 function navVisible(n) {
   if (n[3] === 'admin') return canDo('access.manage', 'users.manage');
+  if (n[3] === 'workshops') return canDo('workshops.manage', 'mechanics.move');
   if (n[0] === 'dashboard') return true;
+  // Job Cards holds the job requests too (its Requests tab).
+  if (n[0] === 'jobs') return canView('jobs') || canView('jobrequests');
   const m = NAV_MODULE[n[0]];
   return !m || canView(m);
 }
@@ -788,12 +796,12 @@ function navVisible(n) {
 // Sidebar grouping — headings shown above each cluster (a group with no visible item is hidden).
 const NAV_GROUP_ORDER = ['Operations', 'Inventory', 'Procurement', 'Fleet', 'Analysis', 'Admin'];
 const NAV_GROUP = {
-  dashboard: 'Operations', jobs: 'Operations', jobrequests: 'Operations', dailywork: 'Operations', services: 'Operations', lubecapacities: 'Operations',
+  dashboard: 'Operations', jobs: 'Operations', jobrequests: 'Operations', field: 'Operations', operations: 'Operations', dailywork: 'Operations', services: 'Operations', lubecapacities: 'Operations',
   stores: 'Inventory', stocktake: 'Inventory',
   purchasing: 'Procurement', tbrequests: 'Procurement',
   assets: 'Fleet', serviceplan: 'Fleet',
   reports: 'Analysis', attention: 'Analysis', progress: 'Analysis', teardown: 'Analysis', tyrebattery: 'Analysis', aliases: 'Analysis', projects: 'Analysis', labour: 'Analysis',
-  access: 'Admin',
+  workshops: 'Admin', access: 'Admin',
 };
 
 function renderShell() {
@@ -849,7 +857,10 @@ async function render() {
   try {
     await fn(content, parts.slice(1));
   } catch (e) {
-    content.innerHTML = `<div class="card"><p class="err">Error: ${esc(e.message)}</p></div>`;
+    // Stage 3: a record of another workshop is not an error, just not yours to open.
+    content.innerHTML = e.data && e.data.other_workshop
+      ? `<div class="card"><p><b>${esc(e.message)}</b></p><p class="muted">Each workshop sees its own work. Ask head office if you need it.</p><a class="btn sm" href="javascript:history.back()">← Back</a></div>`
+      : `<div class="card"><p class="err">Error: ${esc(e.message)}</p></div>`;
   }
 }
 window.addEventListener('hashchange', render);
@@ -924,44 +935,312 @@ async function dashPurchasing(c) {
       ? ` — but ${counts.unassigned} item(s) have not been given to an officer yet.` : '.'}</p></div>`;
 }
 
-// Managers' time is precious: their dashboard leads with what needs their sign-off.
-function renderPendingApprovals(pa) {
-  if (!pa || !pa.is_approver) return '';
-  const mrnRow = (m, action) => `<div class="cost-line"><a href="#/stores?tab=mrn&id=${m.id}"><b>MRN ${esc(m.mrn_no)}</b> · ${esc(idLabel(m) || 'general')} · ${m.lines} item(s)${m.requested_by ? ' · by ' + esc(m.requested_by) : ''}${m.certified_by ? ' · certified ' + esc(m.certified_by) : ''}</a><span class="badge ${action === 'Approve' ? 'blue' : 'amber'}">${action} →</span></div>`;
-  // How long it has been waiting, from the request date. An approver deciding between a card raised
-  // this morning and one raised three weeks ago was previously shown neither — just a number and a
-  // vehicle — so the queue gave no sense of what was overdue.
-  const waited = (d) => {
-    const day = String(d || '').slice(0, 10);
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return '';
-    const days = Math.floor((Date.now() - new Date(day + 'T00:00:00').getTime()) / 86400000);
-    if (!Number.isFinite(days) || days < 0) return `<span class="muted"> · ${esc(day)}</span>`;
-    // Only worth calling out once it has actually sat there; "0 days" is noise on today's request.
-    const age = days >= 3 ? ` <span class="badge ${days >= 14 ? 'red' : 'amber'}">${days} days</span>` : '';
-    return `<span class="muted"> · requested ${esc(day)}</span>${age}`;
+const waited = (d) => {
+  const day = String(d || '').slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return '';
+  const days = Math.floor((Date.now() - new Date(day + 'T00:00:00').getTime()) / 86400000);
+  if (!Number.isFinite(days) || days < 0) return `<span class="muted"> · ${esc(day)}</span>`;
+  const age = days >= 14 ? ` <span class="badge red">${days}d overdue</span>` : (days >= 3 ? ` <span class="badge amber">${days}d waiting</span>` : '');
+  return `<span class="muted"> · ${esc(day)}</span>${age}`;
+};
+
+const jobRow = (j, action) => `<div class="cost-line"><a href="#/jobs/${j.id}"><b>${esc(j.job_no)}</b> · <span class="stamp">${esc(j.vehicle || idLabel(j))}</span>${waited(j.requested_at)}</a><div class="spacer"></div><a class="btn sm" href="#/jobs/${j.id}">${esc(action)} →</a></div>`;
+
+// Process-wise approvals queue renderer
+function renderProcessApprovals(ap) {
+  if (!ap || !ap.is_approver) return '';
+  const total = ap.total_pending || 0;
+  
+  const waitedBadge = waited;
+
+  const renderItem = (item) => {
+    const worth = item.value != null ? ` · about ${esc(money(item.value))}${item.unpriced ? ` (${item.unpriced} unpriced)` : ''}` : '';
+    const limitTag = item.over_limit ? ` <span class="badge amber" title="Needs higher authority">Above limit</span>` : '';
+    const redTag = item.red_count ? ` <span class="badge red">${item.red_count} red</span>` : '';
+    return `<div class="cost-line" style="padding:6px 0;border-bottom:1px solid var(--border-light, #eee);align-items:center">
+      <div style="display:flex;flex-direction:column;gap:2px">
+        <a href="${esc(item.link)}">
+          <b>${esc(item.title)}</b> · <span class="stamp">${esc(item.vehicle || 'General')}</span>${worth}${waitedBadge(item.date)}
+        </a>
+        <span class="muted" style="font-size:12px">
+          ${esc(item.description || '')}${item.requester ? ` · by ${esc(item.requester)}` : ''}${item.certified_by ? ` · certified ${esc(item.certified_by)}` : ''}
+        </span>
+      </div>
+      <div style="display:flex;align-items:center;gap:6px">
+        ${limitTag}${redTag}
+        <a class="btn sm ${item.action.includes('Approve') ? 'primary' : ''}" href="${esc(item.link)}">${esc(item.action)} →</a>
+      </div>
+    </div>`;
   };
-  const jobRow = (j, action) => `<div class="cost-line"><a href="#/jobs/${j.id}"><b>${esc(j.job_no)}</b> · ${esc(idLabel(j) || '—')}${waited(j.requested_at)}</a><span class="badge amber">${action} →</span></div>`;
-  const jrRow = (r, action) => `<div class="cost-line"><a href="#/jobrequests/${r.id}"><b>${esc(r.jr_no)}</b> · ${esc(idLabel(r) || '—')}${r.description ? ' · ' + esc(String(r.description).slice(0, 40)) : ''}${r.requested_by ? ' · by ' + esc(r.requested_by) : ''}</a><span class="badge ${action === 'Approve' ? 'blue' : 'amber'}">${action} →</span></div>`;
-  const section = (title, items, rowFn) => (items && items.length) ? `<div style="margin-top:6px"><div class="muted" style="font-size:12px;margin:6px 0 2px">${title} (${items.length})</div>${items.map(rowFn).join('')}</div>` : '';
-  const body = [
-    section('Job requests awaiting your <b>certification</b>', pa.jr_certify || [], (r) => jrRow(r, 'Certify')),
-    section('Job requests awaiting your <b>approval</b>', pa.jr_approve || [], (r) => jrRow(r, 'Approve')),
-    section('MRNs awaiting your <b>certification</b>', pa.certify || [], (m) => mrnRow(m, 'Certify')),
-    section('MRNs awaiting your <b>approval</b>', pa.approve || [], (m) => mrnRow(m, 'Approve')),
-    section('Job cards awaiting <b>transport approval</b>', pa.transport || [], (j) => jobRow(j, 'Approve')),
-    section('Job cards awaiting <b>operations approval</b>', pa.ops || [], (j) => jobRow(j, 'Approve')),
-    section('Days waiting for <b>sign-off</b>', pa.signoff || [], (d) => `<div class="cost-line"><a href="#/dailywork?att=${esc(d.date)}"><b>${esc(d.date)}</b> · attendance &amp; daily work${d.red_count ? ` · <span style="color:var(--red)">${d.red_count} red</span>` : ''}</a><span class="badge ${d.red_count ? 'red' : 'amber'}">Sign off →</span></div>`),
-    section('Job cards asking to be <b>reopened</b>', pa.reopen || [], (r) => `<div class="cost-line"><a href="#/jobs/${r.job_id}"><b>${esc(r.job_no)}</b> · ${esc(idLabel(r) || '—')} · ${esc(String(r.reason || '').slice(0, 60))}${r.requested_by_name ? ' · by ' + esc(r.requested_by_name) : ''}${waited(r.requested_at)}</a><span class="badge amber">Decide →</span></div>`),
-  ].join('');
-  return `<div class="card section" style="border-left:4px solid ${pa.total ? 'var(--red)' : 'var(--green)'}">
-    <div class="toolbar" style="margin:0"><h3 style="margin:0">⚡ Pending Your Approval</h3><div class="spacer"></div><span class="badge ${pa.total ? 'red' : 'green'}">${pa.total} pending</span></div>
-    ${pa.total ? body : '<span class="muted">✓ Nothing awaiting your approval — you\'re all caught up.</span>'}</div>`;
+
+  const renderStage = (title, icon, items) => {
+    if (!items || !items.length) return '';
+    return `
+      <div style="margin-top:10px">
+        <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">
+          <span style="font-size:15px">${icon}</span>
+          <b style="font-size:13px">${title}</b>
+          <span class="badge ${items.length ? 'amber' : ''}">${items.length}</span>
+        </div>
+        <div style="background:var(--card-sub-bg, #fafafa);border-radius:6px;padding:4px 12px">
+          ${items.map(renderItem).join('')}
+        </div>
+      </div>`;
+  };
+
+  const stagesHtml = [
+    renderStage('Stage 1: Inflow & Request Certification', '📋', ap.inflow),
+    renderStage('Stage 2: Operations & Commercial Approvals', '⚡', ap.authorizations),
+    renderStage('Stage 3: Stores & Warehouse Controls', '📦', ap.warehouse),
+    renderStage('Stage 4: Workday Close & Reopens', '📅', ap.compliance)
+  ].filter(Boolean).join('');
+
+  return `
+    <div class="card section" style="border-left:4px solid ${total ? 'var(--amber)' : 'var(--green)'};margin-bottom:14px">
+      <div class="toolbar" style="margin:0 0 6px">
+        <h3 style="margin:0">⚡ Pending Approvals (Process-Wise)</h3>
+        <div class="spacer"></div>
+        <span class="badge ${total ? 'amber' : 'green'}">${total} pending decision</span>
+      </div>
+      ${total ? stagesHtml : '<span class="muted">✓ All caught up — no items awaiting your decision across any process stage.</span>'}
+    </div>`;
+}
+
+// Workflow roads renderer (Job Cards road + Stores road) - formatted like in jobcard & stores
+function renderWorkflowRoads(wm) {
+  if (!wm) return '';
+  const jr = wm.jobs_pipeline || {};
+  const sr = wm.stores_pipeline || {};
+  const jSteps = jr.steps || [];
+  const sSteps = sr.steps || [];
+  const jw = jr.workshop || {};
+  const jf = jr.finishing || {};
+  const st = sr.today || {};
+  const sh = sr.shelf || {};
+
+  const stepLink = (key) => {
+    switch (key) {
+      case 'requested': return '#/jobs?tab=requests';
+      case 'approved': return '#/jobs?tab=requests&step=operations';
+      case 'workshop': return '#/jobs?tab=ongoing';
+      case 'working': return '#/jobs?tab=ongoing&show=today';
+      case 'done': return '#/jobs?tab=finishing';
+      case 'priced': return '#/jobs?tab=ready';
+      case 'closed': return '#/jobs?tab=all&status=CLOSED';
+      default: return '#/jobs';
+    }
+  };
+
+  const storeStepLink = (key) => {
+    switch (key) {
+      case 'requested': return '#/stores?tab=flow&sub=lines&step=requested';
+      case 'certified': return '#/stores?tab=flow&sub=lines&step=certified';
+      case 'to_buy': return '#/purchasing';
+      case 'on_order': return '#/stores?tab=flow&sub=lines&step=on_order';
+      case 'received': return '#/stores?tab=flow&sub=grn';
+      case 'priced': return '#/stores?tab=flow&sub=lines&step=unpriced';
+      case 'issued': return '#/stores?tab=flow&sub=issues';
+      default: return '#/stores';
+    }
+  };
+
+  const renderSteps = (steps, linkFn) => `
+    <div style="display:flex;align-items:center;gap:6px;overflow-x:auto;padding:4px 0 8px;margin-bottom:6px">
+      ${steps.map((s, idx) => `
+        <a href="${linkFn(s.key)}" class="card stat" style="text-decoration:none;min-width:115px;padding:8px 12px;margin:0;border:${s.count > 0 ? '1px solid var(--accent)' : '1px solid var(--border)'};border-radius:6px;background:${s.count > 0 ? 'var(--card-bg, #fff)' : 'var(--bg-muted, #f8f9fa)'};">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:4px">
+            <span style="font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase">${esc(s.label)}</span>
+            <span style="font-size:16px;font-weight:700;color:${s.count > 0 ? 'var(--text)' : 'var(--muted)'}">${s.count}</span>
+          </div>
+        </a>
+        ${idx < steps.length - 1 ? '<span style="color:var(--muted);font-size:14px;font-weight:bold">➔</span>' : ''}
+      `).join('')}
+    </div>`;
+
+  const miniCard = (n, label, href, tone, note) => `
+    <a class="card stat" href="${href}" style="text-decoration:none;margin:0;padding:10px 12px;background:var(--card-sub-bg, #fafafa);border:1px solid var(--border-light, #eee);border-radius:6px">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:6px">
+        <span class="l" style="margin:0;font-size:12px;font-weight:600">${esc(label)}</span>
+        <span class="n" style="font-size:20px;font-weight:700;margin:0;${tone && n ? `color:var(--${tone})` : ''}">${n}</span>
+      </div>
+      ${note ? `<div class="muted" style="font-size:11px;margin-top:4px">${esc(note)}</div>` : ''}
+    </a>`;
+
+  const html = [];
+
+  // 1. Job Cards Monitor & Pipeline (like in jobcard)
+  if (canView('jobs') || canView('jobrequests')) {
+    html.push(`
+      <div class="card section" style="margin-bottom:14px;border-top:3px solid var(--accent, #2563eb)">
+        <div class="toolbar" style="margin:0 0 8px">
+          <h3 style="margin:0">🔧 Job Cards Pipeline &amp; Workshop Monitor</h3>
+          <div class="spacer"></div>
+          <a class="sm btn" href="#/jobs">Open Job Cards →</a>
+        </div>
+        ${renderSteps(jSteps, stepLink)}
+        <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px;margin-top:8px">
+          ${miniCard(jw.worked_today || 0, 'Worked on today', '#/jobs?tab=ongoing&show=today', 'green')}
+          ${miniCard(jw.waiting_parts || 0, 'Waiting for parts', '#/jobs?tab=ongoing&show=parts', 'amber', 'blocked on MRN')}
+          ${miniCard(jw.idle_3 || 0, 'Idle 3+ working days', '#/jobs?tab=ongoing&show=red', jw.idle_3 ? 'red' : '', 'no recent work logged')}
+          ${miniCard(jw.not_started || 0, 'Not started yet', '#/jobs?tab=ongoing&show=not_started', 'blue')}
+          ${miniCard((jf.ready || 0), 'Ready to close', '#/jobs?tab=ready', 'green', 'nothing missing')}
+          ${miniCard((jf.partly_closed || 0), 'Awaiting price', '#/jobs?tab=finishing&show=partly_closed', jf.partly_closed ? 'amber' : '', 'partly closed')}
+        </div>
+      </div>
+    `);
+  }
+
+  // 2. Stores Flow & Pipeline (stores like)
+  if (canView('stores') || canView('oil') || canView('purchasing')) {
+    html.push(`
+      <div class="card section" style="margin-bottom:14px;border-top:3px solid #10b981">
+        <div class="toolbar" style="margin:0 0 8px">
+          <h3 style="margin:0">📦 Stores Material Pipeline &amp; Inventory Flow</h3>
+          <div class="spacer"></div>
+          <a class="sm btn" href="#/stores">Open Stores Flow →</a>
+        </div>
+        ${renderSteps(sSteps, storeStepLink)}
+        <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px;margin-top:8px">
+          ${miniCard(st.received || 0, 'Received today', '#/stores?tab=flow&sub=grn', 'blue')}
+          ${miniCard(st.issued || 0, 'Issued today', '#/stores?tab=flow&sub=issues', 'green')}
+          ${miniCard(sh.unpriced_receipts || 0, 'To price (unpriced)', '#/stores?tab=flow&sub=lines&step=unpriced', sh.unpriced_receipts ? 'amber' : '', 'receipts awaiting cost')}
+          ${miniCard(sh.low_stock || 0, 'Under reorder level', '#/stores?tab=stock', sh.low_stock ? 'red' : '', 'low-stock alerts')}
+          ${miniCard((sh.old_units_due ? ((sh.old_units_due.tyre || 0) + (sh.old_units_due.battery || 0)) : 0), 'Old cores to record', '#/tbrequests?tab=returns', (sh.old_units_due && (sh.old_units_due.tyre || sh.old_units_due.battery)) ? 'amber' : '', 'tyres & batteries')}
+          ${miniCard(st.transfers_week || 0, 'Transfers (7 days)', '#/stores?tab=mtn', 'blue')}
+        </div>
+      </div>
+    `);
+  }
+
+  return html.join('');
+}
+
+// On-hold & bottleneck watchboard renderer specifically for Admin & Management
+function renderOnHoldWatchboard(oh) {
+  if (!oh) return '';
+  const waitingParts = oh.jobs_waiting_parts || [];
+  const unattended = oh.unattended_jobs || [];
+  const dualOpen = oh.dual_open_vehicles || [];
+  const stuckCount = oh.stuck_cards_count || 0;
+  const unpriced = oh.unpriced_grns_sample || [];
+  const unreturnedTb = (oh.unreturned_cores && ((oh.unreturned_cores.tyre || 0) + (oh.unreturned_cores.battery || 0))) || 0;
+  const totalAlerts = waitingParts.length + unattended.length + dualOpen.length + stuckCount + (oh.unpriced_grns_count || 0) + unreturnedTb;
+
+  return `
+    <div id="admin-onhold-watchboard" class="card section" style="border-left:4px solid ${totalAlerts ? 'var(--red)' : 'var(--green)'};margin-bottom:14px">
+      <div class="toolbar" style="margin:0 0 8px">
+        <h3 style="margin:0">🛑 Admin On-Hold &amp; Bottleneck Watchboard</h3>
+        <div class="spacer"></div>
+        <span class="badge ${totalAlerts ? 'red' : 'green'}">${totalAlerts} bottleneck${totalAlerts === 1 ? '' : 's'}</span>
+      </div>
+      <p class="muted" style="margin:0 0 10px;font-size:12px">Admin oversight: monitored hold points, stale cards, vehicle conflicts, and uncosted materials across all workshops.</p>
+
+      <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(270px,1fr));gap:12px;margin-top:8px">
+        <!-- 1. Jobs waiting on parts / hold reasons -->
+        <div class="card" style="padding:10px;margin:0;background:var(--bg-muted,#fdfdfd)">
+          <div class="toolbar" style="margin:0 0 6px">
+            <b>Jobs on Hold / Waiting Parts</b>
+            <div class="spacer"></div>
+            <span class="badge ${waitingParts.length ? 'amber' : ''}">${waitingParts.length}</span>
+          </div>
+          ${waitingParts.length ? waitingParts.slice(0, 4).map((j) => `
+            <div class="cost-line" style="font-size:12px;padding:3px 0">
+              <a href="${esc(j.link)}"><b>${esc(j.job_no)}</b> · ${esc(j.vehicle || '—')}</a>
+              <span class="badge amber">${j.days_idle || 0}d idle</span>
+            </div>
+            ${j.reason_note ? `<div class="muted" style="font-size:11px;margin-bottom:3px">${esc(j.reason_note)}</div>` : ''}
+          `).join('') : '<span class="muted" style="font-size:12px">No jobs marked on hold</span>'}
+          ${waitingParts.length > 4 ? `<div style="text-align:right;margin-top:4px"><a class="sm" href="#/jobs?tab=ongoing&show=parts">See all ${waitingParts.length} →</a></div>` : ''}
+        </div>
+
+        <!-- 2. Stale Requested Cards -->
+        <div class="card" style="padding:10px;margin:0;background:var(--bg-muted,#fdfdfd)">
+          <div class="toolbar" style="margin:0 0 6px">
+            <b>Stale REQUESTED Cards</b>
+            <div class="spacer"></div>
+            <span class="badge ${stuckCount ? 'red' : ''}">${stuckCount}</span>
+          </div>
+          <p class="muted" style="font-size:12px;margin:4px 0 8px">Cards requested long ago without movement. Review and triage or close in bulk.</p>
+          <a class="btn sm ${stuckCount ? 'primary' : ''}" href="${canDo('jobs.triage') ? '#/jobreview' : '#/jobs?tab=requests&step=stuck'}">
+            ${canDo('jobs.triage') ? 'Open Triage Screen →' : 'View Stuck Cards →'}
+          </a>
+        </div>
+
+        <!-- 3. Dual-Open Conflicts -->
+        <div class="card" style="padding:10px;margin:0;background:var(--bg-muted,#fdfdfd)">
+          <div class="toolbar" style="margin:0 0 6px">
+            <b>Dual-Open Conflicts</b>
+            <div class="spacer"></div>
+            <span class="badge ${dualOpen.length ? 'red' : ''}">${dualOpen.length}</span>
+          </div>
+          ${dualOpen.length ? dualOpen.slice(0, 4).map((v) => `
+            <div class="cost-line" style="font-size:12px;padding:3px 0">
+              <span class="stamp">${esc(v.asset_code || v.asset_reg || 'Vehicle')}</span>
+              <span class="badge red">${v.jobs ? v.jobs.length : 2} open cards</span>
+            </div>
+          `).join('') : '<span class="muted" style="font-size:12px">No conflicting open jobs</span>'}
+          ${dualOpen.length > 4 ? `<div style="text-align:right;margin-top:4px"><a class="sm" href="#/jobs?tab=all">See all ${dualOpen.length} conflicts →</a></div>` : ''}
+        </div>
+
+        <!-- 4. Unattended Active Jobs -->
+        <div class="card" style="padding:10px;margin:0;background:var(--bg-muted,#fdfdfd)">
+          <div class="toolbar" style="margin:0 0 6px">
+            <b>Inactive Jobs (3+ Working Days)</b>
+            <div class="spacer"></div>
+            <span class="badge ${unattended.length ? 'red' : ''}">${unattended.length}</span>
+          </div>
+          ${unattended.length ? unattended.slice(0, 4).map((j) => `
+            <div class="cost-line" style="font-size:12px;padding:3px 0">
+              <a href="${esc(j.link)}"><b>${esc(j.job_no)}</b> · ${esc(j.vehicle || '—')}</a>
+              <span class="badge red">${j.days_idle}d unattended</span>
+            </div>
+          `).join('') : '<span class="muted" style="font-size:12px">All workshop jobs recently attended</span>'}
+          ${unattended.length > 4 ? `<div style="text-align:right;margin-top:4px"><a class="sm" href="#/jobs?tab=ongoing&show=red">See all ${unattended.length} →</a></div>` : ''}
+        </div>
+
+        <!-- 5. Unpriced Receipts (GRN) on Shelf -->
+        <div class="card" style="padding:10px;margin:0;background:var(--bg-muted,#fdfdfd)">
+          <div class="toolbar" style="margin:0 0 6px">
+            <b>Unpriced Receipts (GRN)</b>
+            <div class="spacer"></div>
+            <span class="badge ${(oh.unpriced_grns_count || 0) ? 'amber' : ''}">${oh.unpriced_grns_count || 0}</span>
+          </div>
+          <p class="muted" style="font-size:12px;margin:4px 0 6px">Goods received without invoice price, blocking final job card costing.</p>
+          ${unpriced.length ? unpriced.slice(0, 3).map((u) => `
+            <div class="cost-line" style="font-size:12px;padding:2px 0">
+              <span><b>${esc(u.mrn_no || 'MRN')}</b> · ${esc(u.item || 'Item')}</span>
+              <span class="badge">${u.qty} pcs</span>
+            </div>
+          `).join('') : ''}
+          <div style="margin-top:6px">
+            <a class="btn sm" href="#/stores?tab=flow&sub=lines&step=unpriced">View Unpriced Receipts →</a>
+          </div>
+        </div>
+
+        <!-- 6. Unreturned Cores & Scraps -->
+        <div class="card" style="padding:10px;margin:0;background:var(--bg-muted,#fdfdfd)">
+          <div class="toolbar" style="margin:0 0 6px">
+            <b>Unreturned Scrap Cores</b>
+            <div class="spacer"></div>
+            <span class="badge ${unreturnedTb ? 'amber' : ''}">${unreturnedTb}</span>
+          </div>
+          <p class="muted" style="font-size:12px;margin:4px 0 6px">Replaced tyres &amp; batteries where old replaced unit is not yet logged.</p>
+          <div style="display:flex;gap:6px;margin:6px 0">
+            <span class="badge ${oh.unreturned_cores && oh.unreturned_cores.tyre ? 'amber' : ''}">🛞 Tyres: ${(oh.unreturned_cores && oh.unreturned_cores.tyre) || 0}</span>
+            <span class="badge ${oh.unreturned_cores && oh.unreturned_cores.battery ? 'amber' : ''}">🔋 Batteries: ${(oh.unreturned_cores && oh.unreturned_cores.battery) || 0}</span>
+          </div>
+          <div style="margin-top:6px">
+            <a class="btn sm" href="#/tbrequests?tab=returns">View Returns Queue →</a>
+          </div>
+        </div>
+      </div>
+    </div>`;
 }
 
 async function dashMain(c) {
-  const [d, mc, pa] = await Promise.all([
+  const [d, mc, wm] = await Promise.all([
     api('/reports/dashboard'), api('/reports/monthly'),
-    api('/reports/pending-approvals').catch(() => ({ total: 0, is_approver: false, certify: [], approve: [], transport: [], ops: [], jr_certify: [], jr_approve: [] })),
+    api('/dashboard/workflow-monitor').catch(() => null),
   ]);
   const na = d.needs_attention || {};
   const naTotal = Object.values(na).reduce((a, b) => a + (b || 0), 0);
@@ -980,7 +1259,29 @@ async function dashMain(c) {
     { m: 'batteries', route: 'batteries', ico: '🔋', title: 'Batteries', sub: 'track · swap' },
     { m: 'assets', route: 'assets', ico: '🚜', title: 'Assets', sub: 'fleet registry' },
   ].filter((w) => canEdit(w.m)).map((w) => `<a class="card stat" href="#/${w.route}" style="text-decoration:none;align-items:flex-start;gap:2px"><span class="n" style="font-size:26px">${w.ico}</span><span class="l"><b>${w.title}</b><br>${w.sub}</span></a>`).join('');
-  const S = [pageHeader('Dashboard', `${esc(ME.fullName || ME.username)} · ${esc(ME.roles.join(', '))}`), renderPendingApprovals(pa)];
+
+  // Top Pulse KPI Ribbon
+  const isAdminOrManager = isAdmin() || canFull('jobs') || canDo('users.manage');
+  const kp = (wm && wm.kpis) || {};
+  const kpiRibbon = `
+    <div class="grid section" style="grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;margin-bottom:14px">
+      <div class="card stat"><span class="n">${moneyC(mc.this_month.total)}</span><span class="l">This Month Spend</span></div>
+      <a class="card stat" href="#/jobs" style="text-decoration:none"><span class="n">${kp.active_jobs ?? d.open_jobs_count}</span><span class="l">Active Job Cards</span></a>
+      <a class="card stat" href="#/jobs?tab=ongoing" style="text-decoration:none"><span class="n">${kp.vehicles_in_workshop ?? 0}</span><span class="l">Vehicles in Workshop</span></a>
+      <a class="card stat" href="#/dashboard" style="text-decoration:none"><span class="n" style="color:${kp.total_pending ? 'var(--amber)' : 'var(--green)'}">${kp.total_pending ?? 0}</span><span class="l">Pending Approvals</span></a>
+      <a class="card stat" href="#/stores?tab=stock" style="text-decoration:none"><span class="n" style="color:${kp.low_stock_total ? 'var(--red)' : 'inherit'}">${kp.low_stock_total ?? 0}</span><span class="l">Low Stock Items</span></a>
+      ${isAdminOrManager ? `<a class="card stat" href="#admin-onhold-watchboard" style="text-decoration:none"><span class="n" style="color:${(kp.on_hold_total || 0) ? 'var(--red)' : 'var(--green)'}">${kp.on_hold_total ?? 0}</span><span class="l">On-Hold Bottlenecks</span></a>` : ''}
+      ${kp.field_down != null ? `<a class="card stat" href="#/field" style="text-decoration:none"><span class="n" style="color:${kp.field_down ? 'var(--red)' : 'inherit'}">${kp.field_down}</span><span class="l">Field Breakdowns Down</span></a>` : ''}
+    </div>`;
+
+  const scopeBadge = wm && wm.user_scope && wm.user_scope.label ? ` · <span class="badge blue">${esc(wm.user_scope.label)}</span>` : '';
+  const S = [
+    pageHeader('Dashboard', `${esc(ME.fullName || ME.username)} · ${esc(ME.roles.join(', '))}${scopeBadge}`),
+    kpiRibbon,
+    renderProcessApprovals(wm && wm.approvals_process),
+    renderWorkflowRoads(wm),
+    isAdminOrManager ? renderOnHoldWatchboard(wm && wm.on_hold) : ''
+  ].filter(Boolean);
   if (wsTiles) S.push(`<div class="card section"><h3 style="margin-top:0">Your workspace</h3><div class="grid">${wsTiles}</div></div>`);
   if (canView('reports')) S.push(`
     <h3 style="margin-top:0">This Month · ${monthName(mc.this_month.month)}</h3>
@@ -1004,16 +1305,11 @@ async function dashMain(c) {
           <td class="num">${money(m.service || 0)}</td>
           <td class="num"><b>${money(m.total)}</b></td></tr>`), { scroll: true })}</div>`);
   const opStats = [];
-  if (canView('jobs')) opStats.push(`<a class="card stat" href="#/jobs" style="text-decoration:none"><span class="n">${d.open_jobs_count}</span><span class="l">Open Job Cards</span></a>
-      <a class="card stat" href="#/jobs?status=CLOSED" style="text-decoration:none"><span class="n">${d.closed_this_month_count}</span><span class="l">Closed This Month</span></a>
-      <a class="card stat" href="#/teardown" style="text-decoration:none"><span class="n">${d.awaiting_price.length}</span><span class="l">Awaiting Price (blocked)</span></a>
-      ${(d.partly_closed || []).length ? `<a class="card stat" href="#/jobs?status=PARTIALLY_CLOSED" style="text-decoration:none"><span class="n">${d.partly_closed.length}</span><span class="l">Partly Closed — awaiting prices</span></a>` : ''}`);
   // Attendance (W3): today's tally and the days still to sign off — only while attendance is on.
   const at = d.attendance_today;
   if (at && canView('dailywork')) opStats.push(`<a class="card stat" href="#/dailywork" style="text-decoration:none"><span class="n" style="color:${at.red_count ? 'var(--red)' : 'inherit'}">${at.before_start ? '—' : at.red_count}</span><span class="l">Today's tally — ${at.before_start ? 'not started' : (at.red_count ? 'red' : 'nothing red')}</span></a>
-      ${at.unsigned_days.length ? `<a class="card stat" href="#/dailywork?att=${esc(at.unsigned_days[0].date)}" style="text-decoration:none"><span class="n">${at.unsigned_days.length}</span><span class="l">Days to sign off</span></a>` : ''}`);
-  if (canView('oil')) opStats.push(`<a class="card stat" href="#/oil?tab=forecast" style="text-decoration:none"><span class="n">${d.low_stock_oil.length}</span><span class="l">Low-stock Lubricants</span></a>`);
-  if (canView('batteries')) opStats.push(`<a class="card stat" href="#/batteries" style="text-decoration:none"><span class="n">${d.batteries_warranty.length}</span><span class="l">Battery Warranty ≤60d</span></a>`);
+      ${at.unsigned_days.length ? `<a class="card stat" href="#/dailywork?att=${esc(at.unsigned_days[0].date)}${at.unsigned_days[0].workshop_id ? '&att_ws=' + at.unsigned_days[0].workshop_id : ''}" style="text-decoration:none"><span class="n">${at.unsigned_days.length}</span><span class="l">Days to sign off</span></a>` : ''}`);
+  if (canView('batteries') && d.batteries_warranty && d.batteries_warranty.length) opStats.push(`<a class="card stat" href="#/batteries" style="text-decoration:none"><span class="n">${d.batteries_warranty.length}</span><span class="l">Battery Warranty ≤60d</span></a>`);
   if (canView('stores') || canView('oil')) {
     opStats.push(`<div class="card stat" style="text-decoration:none"><div class="toolbar" style="margin:0 0 4px"><span class="l" style="margin:0"><b>To Reorder</b></span><div class="spacer"></div><span class="badge ${d.low_stock_oil.length ? 'amber' : 'green'}">${d.low_stock_oil.length ? 'Action needed' : 'Healthy'}</span></div>
       <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px">
@@ -1220,8 +1516,9 @@ async function assetDetail(c, id) {
   c.innerHTML = `${pageHeader(idLabel(a.asset), '<a href="#/assets">← Assets</a>')}
     <div class="toolbar"><span class="badge">${esc(a.asset.asset_class)}</span>
       <span class="badge ${a.asset.status === 'active' ? 'green' : a.asset.status === 'under_repair' ? 'amber' : ''}">${esc(a.asset.status)}</span>
-      <span class="muted">${esc(a.asset.brand || '')} ${esc(a.asset.type || '')} · ${esc(a.current_project ? a.current_project.name : 'no project')}</span>
+      <span class="muted">${esc(a.asset.brand || '')} ${esc(a.asset.type || '')} · 📍 ${esc(a.place && a.place.key ? a.place.label : (a.current_project ? a.current_project.name : 'no project'))}</span>
       <div class="spacer"></div>
+      ${canDo('assets.move') ? '<button class="sm" id="moveasset" title="The machine goes to another project or site">🚚 Move machine…</button>' : ''}
       ${canDo('assets.edit') ? '<button class="sm" id="editasset">Edit</button>' : ''}
     </div>
     <div class="grid section">
@@ -1241,14 +1538,41 @@ async function assetDetail(c, id) {
           <div class="cost-line"><span>Expected cost</span><span>${money(sd.expected_cost)}</span></div>` : '<span class="muted">No service spec</span>'}
       </div>
       <div class="card"><h3>Open Job Cards</h3>
-        ${a.open_jobs.length ? a.open_jobs.map((j) => `<div class="cost-line"><a href="#/jobs/${j.id}">${esc(j.job_no)}</a>${statusBadge(j.status)}</div>`).join('') : '<span class="muted">None open</span>'}
-        ${(a.partly_closed_jobs || []).length ? `<div class="muted" style="font-size:12px;margin:8px 0 2px">Partly closed — prices still to come</div>${a.partly_closed_jobs.map((j) => `<div class="cost-line"><a href="#/jobs/${j.id}">${esc(j.job_no)}</a>${statusBadge(j.status)}</div>`).join('')}` : ''}
+        ${a.open_jobs.length ? a.open_jobs.map(assetJobLine).join('') : '<span class="muted">None open</span>'}
+        ${(a.partly_closed_jobs || []).length ? `<div class="muted" style="font-size:12px;margin:8px 0 2px">Partly closed — prices still to come</div>${a.partly_closed_jobs.map(assetJobLine).join('')}` : ''}
       </div>
+    </div>
+    <div class="card section"><h3>Moves</h3>
+      ${(a.moves || []).length ? `<ul class="timeline">${a.moves.map((m) => `<li><span class="date">${esc(m.move_date)}</span><span>${esc(m.from)} → <b>${esc(m.to)}</b>${m.note ? ` — ${esc(m.note)}` : ''}${m.moved_by ? ` <span class="muted">(${esc(m.moved_by)})</span>` : ''}</span></li>`).join('')}</ul>`
+    : '<span class="muted">No moves recorded yet.</span>'}
     </div>
     <div class="card"><h3>Unified Timeline</h3>
       <ul class="timeline">${a.timeline.map((t) => `<li><span class="date">${esc(t.date || '')}</span><span class="badge ${t.kind === 'job' ? 'blue' : ''}">${esc(t.kind)}</span><span>${esc(t.ref ? t.ref + ' · ' : '')}${esc(t.description || '')}</span></li>`).join('') || '<li class="muted">No activity</li>'}</ul>
     </div>`;
   if (qs('#editasset')) qs('#editasset').onclick = () => editAssetModal(a.asset);
+  if (qs('#moveasset')) qs('#moveasset').onclick = () => moveMachineModal(a.asset, a.place, () => assetDetail(c, id));
+}
+
+// Stage 7: move a machine to another project or site, from a date. Every move is kept.
+async function moveMachineModal(asset, place, onDone) {
+  const places = await api('/operations/places').catch(() => []);
+  modal('Move ' + (asset.registration || asset.code), `
+    <p class="muted" style="margin-top:0">Now at: <b>${esc(place && place.key ? place.label : 'no site set')}</b></p>
+    <datalist id="mvplaces">${places.map((p) => `<option value="${esc(p.label)}">`).join('')}</datalist>
+    <label>Moves to *</label><input name="to" list="mvplaces" placeholder="Project or site" autocomplete="off">
+    ${field('Date of the move', 'move_date', { type: 'date', value: localNowInput().slice(0, 10) })}
+    ${field('Note', 'note', { placeholder: 'e.g. low-bed, for the new contract' })}
+    <div style="margin-top:14px;text-align:right"><button class="primary" id="s">Move machine</button></div>`, (body, close) => {
+    qs('#s', body).onclick = async () => {
+      const f = formData(body);
+      const p = places.find((x) => x.label === String(f.to || '').trim());
+      if (!p) return toast('Choose a project or site from the list.', 'err');
+      try {
+        await api(`/operations/machines/${asset.id}/move`, { method: 'POST', body: { place: p.key, move_date: f.move_date, note: f.note } });
+        close(); toast('Moved to ' + p.label); if (onDone) onDone();
+      } catch (e) { toast(e.message, 'err'); }
+    };
+  });
 }
 
 async function editAssetModal(asset) {
@@ -1270,10 +1594,453 @@ async function editAssetModal(asset) {
 const JOB_STATUSES = ['REQUESTED', 'APPROVED_TRANSPORT', 'APPROVED_OPERATIONS', 'IN_WORKSHOP', 'IN_PROGRESS', 'WORK_COMPLETE', 'PARTIALLY_CLOSED', 'CLOSED', 'REJECTED'];
 const MONTHS = [['01', 'Jan'], ['02', 'Feb'], ['03', 'Mar'], ['04', 'Apr'], ['05', 'May'], ['06', 'Jun'], ['07', 'Jul'], ['08', 'Aug'], ['09', 'Sep'], ['10', 'Oct'], ['11', 'Nov'], ['12', 'Dec']];
 
+// ---- Job Cards (job cards plan): one page with tabs, like Stores — the Monitor, every request
+// waiting for a decision, the cards in the workshop, the cards being finished, those ready to close,
+// and all the cards (src/lib/jobs_flow.js). The job request list became the Requests tab; its own
+// pages (#/jobrequests/:id) stay.
+const JOB_TABS = [['monitor', '📊 MONITOR'], ['requests', '📨 REQUESTS'], ['ongoing', '🛠️ ONGOING'], ['finishing', '🧾 FINISHING'],
+  ['ready', '✅ READY TO CLOSE'], ['all', '🗂️ ALL CARDS']];
+const CARD_TABS = ['ongoing', 'finishing', 'ready', 'all'];
 routes.jobs = async (c, params) => {
   if (params[0]) return jobDetail(c, params[0]);
   const sp = new URLSearchParams(location.hash.split('?')[1] || '');
-  const cur = { q: sp.get('q') || '', year: sp.get('year') || '', month: sp.get('month') || '', status: sp.get('status') || '' };
+  const tabs = JOB_TABS.filter(([t]) => !CARD_TABS.includes(t) || canView('jobs'));
+  // Old links to the list (#/jobs?status=…, the dashboard's) still open it.
+  let tab = sp.get('tab') || (['q', 'year', 'month', 'status', 'workshop_id'].some((k) => sp.get(k)) ? 'all' : 'monitor');
+  if (!tabs.some(([t]) => t === tab)) tab = 'monitor';
+  c.innerHTML = `${pageHeader('Job Cards')}<div class="toolbar" style="margin-bottom:10px">${tabs
+    .map(([t, l]) => `<button class="sm ${t === tab ? 'primary' : ''}" onclick="location.hash='#/jobs?tab=${t}'">${l}</button>`).join('')}</div>
+    <div id="jobsbody"><div class="muted">Loading…</div></div>`;
+  const body = qs('#jobsbody');
+  if (tab === 'requests') return jobsRequests(body, sp);
+  if (tab === 'all') return jobsAllCards(body, sp);
+  if (tab === 'ongoing') return jobsOngoing(body, sp);
+  if (tab === 'finishing') return jobsFinishing(body, sp);
+  if (tab === 'ready') return jobsReady(body, sp);
+  return jobsMonitor(body);
+};
+
+const monCard = (n, label, href, tone, note) => `<a class="card stat" href="${href}" style="text-decoration:none">
+    <span class="n"${tone && n ? ` style="color:var(--${tone})"` : ''}>${n}</span><span class="l">${esc(label)}</span>${note ? `<span class="muted" style="font-size:11px">${esc(note)}</span>` : ''}</a>`;
+
+async function jobsMonitor(body) {
+  const m = await api('/job-flow/monitor');
+  const rq = m.requests;
+  const R = (step) => `#/jobs?tab=requests&step=${step}`;
+  const O = (show) => `#/jobs?tab=ongoing&show=${show}`;
+  const F = (show) => `#/jobs?tab=finishing&show=${show}`;
+  const req = [
+    ...(m.sees.jobrequests ? [monCard(rq.to_certify, 'Job requests to certify', R('to_certify'), 'amber'), monCard(rq.to_approve, 'Job requests to approve', R('to_approve'), 'amber')] : []),
+    ...(m.sees.jobs ? [monCard(rq.transport, 'Cards waiting for transport approval', R('transport'), 'amber'), monCard(rq.operations, 'Cards waiting for operations approval', R('operations'), 'amber')] : []),
+  ];
+  const w = m.workshop; const f = m.finishing; const x = m.watch;
+  body.innerHTML = `
+    <p class="muted" style="margin-top:0">What is waiting at each step${m.scope && m.scope.label ? ` — ${esc(m.scope.label)}` : ''}. Click a number to see the jobs.</p>
+    <h3 style="margin:10px 0 6px">Requests</h3><div class="grid">${req.join('')}</div>
+    ${w ? `<h3 style="margin:14px 0 6px">In the workshop <span class="muted" style="font-weight:400;font-size:12px">— ${w.all} card${w.all === 1 ? '' : 's'}</span></h3><div class="grid">
+      ${monCard(w.worked_today, 'Worked on today', O('today'), 'green')}
+      ${monCard(w.idle_1_2, 'Not attended 1–2 days', O('idle'), 'amber')}
+      ${monCard(w.idle_3, 'Not attended 3+ days', O('red'), 'red')}
+      ${monCard(w.not_started, 'Not started', O('not_started'), 'blue')}
+      ${monCard(w.waiting_parts, 'Waiting for parts', O('parts'), 'amber', 'from the Stores list')}
+      ${monCard(w.no_reason, 'No reason given', O('no_reason'), 'red', '3+ days, nobody said why')}
+      ${w.idle_mechanics != null ? monCard(w.idle_mechanics, 'Mechanics present, on no job', '#/dailywork', 'amber', 'from today\'s attendance') : ''}
+    </div>` : ''}
+    ${f ? `<h3 style="margin:14px 0 6px">Finishing</h3><div class="grid">
+      ${monCard(f.work_done, 'Work done, something missing', F('work_done'), 'amber')}
+      ${monCard(f.partly_closed, 'Partly closed — waiting for prices', F('partly_closed'), 'amber')}
+      ${monCard(f.ready, 'Ready to close', '#/jobs?tab=ready', 'green', 'nothing missing')}
+    </div>` : ''}
+    ${x ? `<h3 style="margin:14px 0 6px">Watch</h3><div class="grid">
+      ${x.breakdowns_down != null ? monCard(x.breakdowns_down, 'Breakdowns still down', '#/field', 'red') : ''}
+      ${monCard(x.reopen, 'Reopen requests waiting', R('reopen'), 'amber')}
+      ${monCard(x.stuck, 'Requested long ago, never moved', canDo('jobs.triage') ? '#/jobreview' : R('stuck'), 'red')}
+      ${monCard(x.two_open, 'Vehicles with 2 open cards', '#/jobs?tab=all', 'red')}
+    </div>` : ''}`;
+}
+
+const JOB_REQ_STEPS = [['open', 'Waiting for a decision'], ['to_certify', 'To certify'], ['to_approve', 'To approve'],
+  ['transport', 'Transport approval'], ['operations', 'Operations approval'], ['reopen', 'Reopen requests'],
+  ['stuck', 'Never moved'], ['approved', 'Approved'], ['rejected', 'Rejected']];
+const JOB_REQ_KIND = { jr: ['blue', 'Request'], card: ['', 'Card'], reopen: ['amber', 'Reopen'] };
+
+async function jobsRequests(body, sp) {
+  const cur = { step: sp.get('step') || 'open', q: sp.get('q') || '', type: sp.get('type') || '' };
+  if (!JOB_REQ_STEPS.some(([k]) => k === cur.step)) cur.step = 'open';
+  body.innerHTML = `
+    <div class="toolbar">
+      <input id="jrf-q" type="search" placeholder="Search number, vehicle, work, who asked…" value="${esc(cur.q)}" style="max-width:280px">
+      <select id="jrf-type" style="max-width:140px"><option value="">Repair &amp; service</option>
+        <option value="repair" ${cur.type === 'repair' ? 'selected' : ''}>Repair</option><option value="service" ${cur.type === 'service' ? 'selected' : ''}>Service</option></select>
+      <a class="btn sm" id="jrf-xls" href="#">⬇ Excel</a>
+      <div class="spacer"></div>
+      ${canDo('jobrequests.create') ? '<button class="sm" id="jrf-newjr">+ New job request</button>' : ''}
+      ${canDo('jobs.create') ? '<button class="sm" id="jrf-newjob">+ New job card</button>' : ''}
+    </div>
+    <div class="pill-row" id="jrf-steps" style="margin:0 0 10px;flex-wrap:wrap;gap:6px"></div>
+    <div id="jrf-bulk" class="toolbar" style="display:none;margin:0 0 8px"></div>
+    <div id="jrf-table"><div class="muted">Loading…</div></div>`;
+  const qstr = () => {
+    const p = new URLSearchParams({ tab: 'requests', step: cur.step });
+    if (cur.q) p.set('q', cur.q);
+    if (cur.type) p.set('type', cur.type);
+    return p;
+  };
+  const load = async () => {
+    const p = qstr();
+    history.replaceState(null, '', '#/jobs?' + p.toString());
+    p.delete('tab');
+    qs('#jrf-xls', body).href = '/api/job-flow/requests/export.xlsx?' + p.toString();
+    let d;
+    try { d = await api('/job-flow/requests?' + p.toString()); } catch (e) { qs('#jrf-table', body).innerHTML = `<div class="card err">${esc(e.message)}</div>`; return; }
+    qs('#jrf-steps', body).innerHTML = JOB_REQ_STEPS.map(([k, l]) => `<button class="sm ${k === cur.step ? 'primary' : ''}" data-step="${k}">${esc(l)}${d.counts[k] != null ? ` <span class="badge">${d.counts[k]}</span>` : ''}</button>`).join('');
+    qsa('[data-step]', body).forEach((b) => { b.onclick = () => { cur.step = b.dataset.step; load(); }; });
+    const rows = d.rows;
+    const bulkable = (r) => r.can && (r.can.transport || r.can.operations);
+    const anyBulk = rows.some(bulkable);
+    const act = (r) => {
+      const b = [];
+      if (r.can.certify) b.push(`<button class="sm primary" data-act="certify" data-i="${r.kind}:${r.id}">✍ Certify</button>`);
+      if (r.can.approve) b.push(`<button class="sm primary" data-act="approve" data-i="${r.kind}:${r.id}">✅ Approve</button>`);
+      if (r.can.transport) b.push(`<button class="sm primary" data-act="transport" data-i="${r.kind}:${r.id}">✓ Approve (transport)</button>`);
+      if (r.can.operations) b.push(`<button class="sm primary" data-act="operations" data-i="${r.kind}:${r.id}">✓ Approve (operations)</button>`);
+      if (r.can.reopen) b.push(`<button class="sm primary" data-act="reopen" data-i="${r.kind}:${r.id}">↩ Reopen</button><button class="sm" data-act="refuse" data-i="${r.kind}:${r.id}">Refuse</button>`);
+      if (r.can.reject) b.push(`<button class="sm danger" data-act="reject" data-i="${r.kind}:${r.id}">Reject</button>`);
+      if (r.can.review) b.push('<a class="btn sm" href="#/jobreview">🧹 Review…</a>');
+      if (r.step === 'approved' && r.job_id) b.push(`<a class="btn sm" href="#/jobs/${r.job_id}">Card ${esc(r.job_no || '')}</a>`);
+      return b.join(' ');
+    };
+    qs('#jrf-table', body).innerHTML = rows.length ? tableWrap(
+      (anyBulk ? [{ label: '<input type="checkbox" id="jrf-all" title="Select all">', html: true, width: '32px' }] : []).concat([
+        { label: 'No', width: '118px' }, { label: 'Vehicle', cls: 'desc-col', width: '110px' }, { label: 'Work', cls: 'desc-col' },
+        { label: 'Waiting for', width: '400px' }, { label: '', width: '190px' }]),
+      rows.map((r) => `<tr>
+        ${anyBulk ? `<td>${bulkable(r) ? `<input type="checkbox" class="jrf-chk" data-i="${r.kind}:${r.id}">` : ''}</td>` : ''}
+        <td><a href="${r.link}"><b>${esc(r.no)}</b></a><br><span class="badge ${JOB_REQ_KIND[r.kind][0]}">${JOB_REQ_KIND[r.kind][1]}</span>${r.imported ? ' <span class="badge">imported</span>' : ''}<br><span class="muted" style="font-size:12px">${esc(r.date || '')}</span></td>
+        <td class="desc-col">${esc(idLabel(r) || '—')}</td>
+        <td class="desc-col"><span class="badge ${r.type === 'service' ? 'blue' : ''}">${esc(r.type || '')}</span>${r.priority === 'urgent' ? ' <span class="badge red">urgent</span>' : ''} ${esc(String(r.description || '').slice(0, 120))}
+          ${r.reason ? `<br><span class="muted" style="font-size:12px">Why reopen: ${esc(r.reason)}</span>` : ''}
+          <br><span class="muted" style="font-size:12px">Asked by ${esc(r.requested_by || '—')}</span></td>
+        <td>${esc(r.waiting_for)}${r.days != null ? ` <span class="badge ${r.days > 7 ? 'red' : (r.days > 2 ? 'amber' : '')}">${r.days} day${r.days === 1 ? '' : 's'}</span>` : ''}${r.reject_reason && r.step === 'rejected' ? `<br><span class="muted" style="font-size:12px">${esc(r.reject_reason)}</span>` : ''}${r.note ? `<br><span class="muted" style="font-size:12px">${esc(r.note)}</span>` : ''}
+          <div style="margin-top:4px">${roadBar(r)}</div></td>
+        <td>${act(r)}</td></tr>`), { scroll: true, fit: true, noHScroll: true })
+      : `<div class="card"><p class="muted">${cur.step === 'open' ? 'Nothing is waiting for a decision.' : 'Nothing here.'}</p></div>`;
+    const byI = new Map(rows.map((r) => [r.kind + ':' + r.id, r]));
+    qsa('[data-act]', body).forEach((btn) => { btn.onclick = () => jobReqAction(btn.dataset.act, byI.get(btn.dataset.i), load); });
+    // Several cards approved at once (a job request is signed one by one, on its own).
+    const bulk = qs('#jrf-bulk', body);
+    const picked = () => qsa('.jrf-chk:checked', body).map((x) => byI.get(x.dataset.i));
+    const showBulk = () => {
+      const n = picked().length;
+      bulk.style.display = n ? 'flex' : 'none';
+      bulk.innerHTML = n ? `<span><b>${n}</b> card${n === 1 ? '' : 's'} chosen</span><button class="sm primary" id="jrf-bulk-ok">✓ Approve the chosen cards</button>` : '';
+      if (n) qs('#jrf-bulk-ok', body).onclick = async () => {
+        const rs = picked();
+        if (!confirm(`Approve ${rs.length} card${rs.length === 1 ? '' : 's'}?`)) return;
+        let ok = 0; const bad = [];
+        for (const [to, list] of [['APPROVED_TRANSPORT', rs.filter((r) => r.can.transport)], ['APPROVED_OPERATIONS', rs.filter((r) => r.can.operations)]]) {
+          if (!list.length) continue;
+          try {
+            const res = await api('/jobs/bulk-transition', { method: 'POST', body: { ids: list.map((r) => r.id), to } });
+            ok += res.success_count; bad.push(...(res.failed || []).map((f) => `${f.job_no || f.id}: ${f.error}`));
+          } catch (e) { bad.push(e.message); }
+        }
+        if (bad.length) alert(`${ok} approved. Not approved:\n${bad.slice(0, 8).join('\n')}`); else toast(`${ok} approved`);
+        load();
+      };
+    };
+    qsa('.jrf-chk', body).forEach((x) => { x.onchange = showBulk; });
+    if (qs('#jrf-all', body)) qs('#jrf-all', body).onchange = (e) => { qsa('.jrf-chk', body).forEach((x) => { x.checked = e.target.checked; }); showBulk(); };
+    showBulk();
+  };
+  let deb;
+  qs('#jrf-q', body).oninput = (e) => { cur.q = e.target.value.trim(); clearTimeout(deb); deb = setTimeout(load, 250); };
+  qs('#jrf-type', body).onchange = (e) => { cur.type = e.target.value; load(); };
+  if (qs('#jrf-newjr', body)) qs('#jrf-newjr', body).onclick = newJobRequestModal;
+  if (qs('#jrf-newjob', body)) qs('#jrf-newjob', body).onclick = newJobModal;
+  await load();
+}
+
+// ---- Ongoing (job cards plan, Part 2): every card in the workshop, attended or not ----------------
+// A card is attended on a day with a daily-work line; idle days are working days (Sundays skipped).
+// "Waiting for parts" comes from the Stores list; any other reason a supervisor gives.
+const JOB_REASONS = [['waiting_mechanic', 'Waiting for a mechanic'], ['waiting_parts', 'Waiting for parts (not in Stores)'],
+  ['outside_repair', 'Outside repair'], ['waiting_decision', 'Waiting for a decision'], ['vehicle_away', 'Vehicle not here'], ['other', 'Other']];
+const ONGOING_SHOW = [['all', 'All in the workshop'], ['today', 'Worked today'], ['idle', 'Not attended'], ['red', '3+ days'],
+  ['not_started', 'Not started'], ['parts', 'Waiting for parts'], ['no_reason', 'No reason given'], ['field', 'Field jobs']];
+const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
+function attendedChip(r) {
+  if (r.state === 'today') return `<span class="badge green">🟢 Worked today</span>`;
+  if (r.state === 'not_started') return `<span class="badge ${r.idle >= 3 ? 'red' : ''}">⚪ Not started${r.idle ? ' · ' + plural(r.idle, 'day') : ''}</span>`;
+  return `<span class="badge ${r.state === 'red' ? 'red' : 'amber'}">${r.state === 'red' ? '🔴' : '🟡'} Not attended ${plural(r.idle, 'day')}</span>`;
+}
+function whyNot(r) {
+  const out = [];
+  if (r.parts && r.parts.waiting) {
+    out.push(`<div><a href="#/stores?tab=flow&sub=lines&step=open&q=${encodeURIComponent(r.job_no)}"><span class="badge amber">🔧 Waiting for parts (${r.parts.waiting})</span></a>
+      <div class="muted" style="font-size:11.5px">${r.parts.lines.map((l) => `${esc(l.description)} — ${esc(FLOW_STEP_LABEL[l.step] || l.step)}`).join('<br>')}</div></div>`);
+  }
+  if (r.reason) out.push(`<div><b>${esc(r.reason.label)}</b>${r.reason.note ? ': ' + esc(r.reason.note) : ''}<div class="muted" style="font-size:11.5px">${esc(r.reason.set_by || '')} · ${esc(String(r.reason.set_at || '').slice(0, 10))}</div></div>`);
+  if (r.needs_reason) out.push('<span class="badge red">No reason given</span>');
+  return out.join('') || '<span class="muted">—</span>';
+}
+function reasonModal(job, done) {
+  modal('Why is ' + job.job_no + ' not being worked on?', `
+    ${field('Reason', 'reason', { type: 'select', options: JOB_REASONS.map(([value, label]) => ({ value, label })) })}
+    ${field('Note (needed for "Other")', 'note')}
+    <p class="muted" style="font-size:12px;margin:4px 0 0">Parts waiting in Stores show by themselves. A reason stays until work is recorded again.</p>
+    <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Save</button></div>`, (b, close) => {
+    qs('#s', b).onclick = async () => {
+      try { await api(`/job-flow/jobs/${job.id}/reason`, { method: 'POST', body: formData(b) }); toast('Saved'); close(); done && done(); }
+      catch (e) { toast(e.message, 'err'); }
+    };
+  });
+}
+
+async function jobsOngoing(body, sp) {
+  const cur = { show: sp.get('show') || 'all', q: sp.get('q') || '', type: sp.get('type') || '' };
+  if (!ONGOING_SHOW.some(([k]) => k === cur.show)) cur.show = 'all';
+  body.innerHTML = `
+    <div class="toolbar">
+      <input id="og-q" type="search" placeholder="Search job no, vehicle, work…" value="${esc(cur.q)}" style="max-width:260px">
+      <select id="og-type" style="max-width:140px"><option value="">Repair &amp; service</option>
+        <option value="repair" ${cur.type === 'repair' ? 'selected' : ''}>Repair</option><option value="service" ${cur.type === 'service' ? 'selected' : ''}>Service</option></select>
+      <div class="spacer"></div>
+      ${canView('reports') ? '<a class="btn sm" href="/api/reports/ongoing-jobs.xlsx">⬇ Excel</a><a class="btn sm" href="/api/reports/ongoing-jobs.html" target="_blank">🖨 PDF</a>' : ''}
+    </div>
+    <p class="muted" style="margin:0 0 8px;font-size:12.5px">Worked on = a daily-work line that day. Days count working days (not Sundays). 3 days or more is red.</p>
+    <div class="pill-row" id="og-show" style="margin:0 0 10px;flex-wrap:wrap;gap:6px"></div>
+    <div id="og-table"><div class="muted">Loading…</div></div>`;
+  const load = async () => {
+    const p = new URLSearchParams({ tab: 'ongoing', show: cur.show });
+    if (cur.q) p.set('q', cur.q);
+    if (cur.type) p.set('type', cur.type);
+    history.replaceState(null, '', '#/jobs?' + p.toString());
+    p.delete('tab');
+    let d;
+    try { d = await api('/job-flow/ongoing?' + p.toString()); } catch (e) { qs('#og-table', body).innerHTML = `<div class="card err">${esc(e.message)}</div>`; return; }
+    qs('#og-show', body).innerHTML = ONGOING_SHOW.map(([k, l]) => `<button class="sm ${k === cur.show ? 'primary' : ''}" data-show="${k}">${esc(l)} <span class="badge ${k === 'no_reason' && d.counts[k] ? 'red' : ''}">${d.counts[k]}</span></button>`).join('');
+    qsa('[data-show]', body).forEach((b) => { b.onclick = () => { cur.show = b.dataset.show; load(); }; });
+    const jobCell = (r) => `<a href="${r.link}"><b>${esc(r.job_no)}</b></a> · ${esc(idLabel(r) || '—')}${r.field ? ` <span class="badge ${r.breakdown ? 'red' : 'amber'}">${r.breakdown ? 'Breakdown' : 'Field'}</span>` : ''}${r.workshop_code && wsMulti() ? ` <span class="badge">${esc(r.workshop_code)}</span>` : ''}
+          <div style="font-size:12.5px">${r.type === 'service' ? '<span class="badge blue">service</span> ' : ''}${esc(String(r.description || '').slice(0, 120))}</div>
+          <div class="muted" style="font-size:12px">open ${plural(r.days_open || 0, 'day')}</div>`;
+    const workedCell = (r) => `${attendedChip(r)}
+          <div class="muted" style="font-size:12px">${r.state === 'today' ? esc(r.today_mechanics || '') : (r.last_worked ? `Last: ${esc(r.last_worked)} · ${esc(r.last_mechanics || '')}` : 'No work yet')}${r.hours ? ` · ${num(r.hours)} h so far` : ''}</div>`;
+    const whyCell = (r) => `${whyNot(r)}${r.can.reason ? `<div style="margin-top:4px"><button class="sm" data-why="${r.id}">Say why…</button></div>` : ''}`;
+    // On a phone, one box a card: what matters (worked on, why not) is never off the screen.
+    if (d.rows.length && window.matchMedia('(max-width: 700px)').matches) {
+      qs('#og-table', body).innerHTML = d.rows.map((r) => `<div class="card" style="padding:10px 12px;margin:0 0 8px">${jobCell(r)}
+        <div style="margin-top:6px">${workedCell(r)}</div><div style="margin-top:6px">${whyCell(r)}</div></div>`).join('');
+    } else qs('#og-table', body).innerHTML = d.rows.length ? tableWrap(
+      [{ label: 'Job', cls: 'desc-col' }, { label: 'Worked on', width: '34%' }, { label: 'Why not', width: '33%' }],
+      d.rows.map((r) => `<tr><td class="desc-col">${jobCell(r)}</td><td>${workedCell(r)}</td><td>${whyCell(r)}</td></tr>`), { scroll: true, fit: true, noHScroll: true })
+      : `<div class="card"><p class="muted">${cur.show === 'all' ? 'No cards in the workshop.' : 'None here.'}</p></div>`;
+    qsa('[data-why]', body).forEach((b) => { b.onclick = () => reasonModal(d.rows.find((r) => String(r.id) === b.dataset.why), load); });
+  };
+  let deb;
+  qs('#og-q', body).oninput = (e) => { cur.q = e.target.value.trim(); clearTimeout(deb); deb = setTimeout(load, 250); };
+  qs('#og-type', body).onchange = (e) => { cur.type = e.target.value; load(); };
+  await load();
+}
+
+// On the card's own page: is it being worked on, why not, and every reason given.
+function attendedPanel(a, job, reload) {
+  if (!a || (!a.ongoing && !(a.history || []).length)) return '';
+  const hist = (a.history || []).length ? `<details style="margin-top:6px"><summary class="muted" style="cursor:pointer;font-size:12px">Reasons given (${a.history.length})</summary>
+      ${a.history.map((h) => `<div class="cost-line"><span><b>${esc(h.label)}</b>${h.note ? ': ' + esc(h.note) : ''}</span><span class="muted">${esc(h.set_by || '')} · ${esc(String(h.set_at || '').slice(0, 16))}</span></div>`).join('')}</details>` : '';
+  if (!a.ongoing) return `<div class="card section">${hist}</div>`;
+  const tone = a.state === 'today' ? 'var(--green)' : (a.state === 'red' || a.late ? 'var(--red)' : 'var(--amber)');
+  return `<div class="card section" style="border-left:4px solid ${tone}">
+    <div class="toolbar" style="margin:0 0 6px"><b>🛠 Worked on?</b> ${attendedChip(a)}<div class="spacer"></div>${a.can.reason ? '<button class="sm" id="jwhy">Say why…</button>' : ''}</div>
+    <div class="muted" style="font-size:12.5px">${a.state === 'today' ? 'Today: ' + esc(a.today_mechanics || '') : (a.last_worked ? `Last worked ${esc(a.last_worked)} · ${esc(a.last_mechanics || '')}` : 'No work recorded yet')}${a.hours ? ` · ${num(a.hours)} h so far` : ''}</div>
+    ${a.state === 'today' ? '' : `<div style="margin-top:6px">${whyNot(a)}</div>`}
+    ${hist}</div>`;
+}
+
+// ---- Finishing and Ready to close (job cards plan, Part 3) -----------------------------------------
+// A card whose work is done stays in Finishing while the close check finds something missing — the
+// Close button's own check — and moves to Ready to close by itself when the last thing is added.
+// Nothing closes by itself: a person closes it, one card or several together.
+const FIN_SHOW = [['all', 'All'], ['work_done', 'Work done'], ['partly_closed', 'Partly closed']];
+const FIN_MISSING = [['received', 'Parts not received'], ['shelf', 'Parts not handed over'], ['part_price', 'Part prices'],
+  ['oil_price', 'Oil prices'], ['general_price', 'Item prices'], ['service_labour', 'Service charge'], ['labour_rate', 'Labour rates'],
+  ['outside_value', 'Outside repair value'], ['no_work', 'No work recorded']];
+// Where each missing thing is put right: the Stores list for parts, Labour Rates for a rate, else the card.
+function finLink(kind, r) {
+  const q = encodeURIComponent(r.job_no);
+  if (kind === 'received' && canView('stores')) return `#/stores?tab=flow&sub=lines&step=open&q=${q}`;
+  if (kind === 'shelf' && canView('stores')) return `#/stores?tab=flow&sub=lines&step=ready&q=${q}`;
+  if (kind === 'labour_rate' && canView('labour')) return '#/labour';
+  return r.link;
+}
+const finStatus = (r) => (r.status === 'PARTIALLY_CLOSED' ? '<span class="badge amber">Partly closed</span>' : '<span class="badge blue">Work done</span>');
+function finJobCell(r) {
+  return `<a href="${r.link}"><b>${esc(r.job_no)}</b></a> · ${esc(idLabel(r) || '—')}${r.workshop_code && wsMulti() ? ` <span class="badge">${esc(r.workshop_code)}</span>` : ''}
+    <div style="font-size:12.5px">${r.type === 'service' ? '<span class="badge blue">service</span> ' : ''}${esc(String(r.description || '').slice(0, 120))}</div>
+    <div class="muted" style="font-size:12px">${finStatus(r)} ${r.since ? `since ${esc(r.since)} · ${plural(r.days || 0, 'day')}` : ''}${r.partly_by ? ` · by ${esc(r.partly_by)}` : ''}</div>
+    ${r.note ? `<div class="muted" style="font-size:12px">Note: ${esc(r.note)}</div>` : ''}`;
+}
+function finMissingCell(r) {
+  return r.missing.groups.map((g) => `<div style="margin:0 0 4px"><a href="${finLink(g.kind, r)}"><span class="badge ${g.kind === 'received' || g.kind === 'shelf' ? 'amber' : 'red'}">${esc(g.label)} (${g.n})</span></a>
+    <div class="muted" style="font-size:11.5px">${g.items.map(esc).join('<br>')}${g.n > g.items.length ? `<br>… and ${g.n - g.items.length} more` : ''}</div></div>`).join('');
+}
+
+async function jobsFinishing(body, sp) {
+  const cur = { show: sp.get('show') || 'all', q: sp.get('q') || '', type: sp.get('type') || '' };
+  body.innerHTML = `
+    <div class="toolbar">
+      <input id="fin-q" type="search" placeholder="Search job no, vehicle, work…" value="${esc(cur.q)}" style="max-width:260px">
+      <select id="fin-type" style="max-width:140px"><option value="">Repair &amp; service</option>
+        <option value="repair" ${cur.type === 'repair' ? 'selected' : ''}>Repair</option><option value="service" ${cur.type === 'service' ? 'selected' : ''}>Service</option></select>
+      <div class="spacer"></div><a class="btn sm" href="#/jobs?tab=ready">✅ Ready to close <span class="badge" id="fin-ready">…</span></a>
+    </div>
+    <p class="muted" style="margin:0 0 8px;font-size:12.5px">Work is done, but something is still missing. Click a red or amber label to fix it. When nothing is missing, the card moves to Ready to close by itself.</p>
+    <div class="pill-row" id="fin-show" style="margin:0 0 10px;flex-wrap:wrap;gap:6px"></div>
+    <div id="fin-table"><div class="muted">Loading…</div></div>`;
+  const load = async () => {
+    const p = new URLSearchParams({ tab: 'finishing', show: cur.show });
+    if (cur.q) p.set('q', cur.q);
+    if (cur.type) p.set('type', cur.type);
+    history.replaceState(null, '', '#/jobs?' + p.toString());
+    p.delete('tab');
+    let d;
+    try { d = await api('/job-flow/finishing?' + p.toString()); } catch (e) { qs('#fin-table', body).innerHTML = `<div class="card err">${esc(e.message)}</div>`; return; }
+    qs('#fin-ready', body).textContent = d.counts.ready;
+    // The missing kinds show only when some card has them.
+    const pills = FIN_SHOW.concat(FIN_MISSING.filter(([k]) => d.counts[k] || k === cur.show));
+    qs('#fin-show', body).innerHTML = pills.map(([k, l]) => `<button class="sm ${k === cur.show ? 'primary' : ''}" data-show="${k}">${esc(l)} <span class="badge">${d.counts[k] || 0}</span></button>`).join('');
+    qsa('[data-show]', body).forEach((b) => { b.onclick = () => { cur.show = b.dataset.show; load(); }; });
+    const empty = `<div class="card"><p class="muted">${cur.show === 'all' ? 'No card is waiting for anything. ' + (d.counts.ready ? `<a href="#/jobs?tab=ready">${plural(d.counts.ready, 'card')} ready to close →</a>` : '') : 'None here.'}</p></div>`;
+    if (d.rows.length && window.matchMedia('(max-width: 700px)').matches) {
+      qs('#fin-table', body).innerHTML = d.rows.map((r) => `<div class="card" style="padding:10px 12px;margin:0 0 8px">${finJobCell(r)}
+        <div style="margin-top:6px"><b style="font-size:12.5px">Still missing:</b>${finMissingCell(r)}</div></div>`).join('');
+    } else qs('#fin-table', body).innerHTML = d.rows.length ? tableWrap(
+      [{ label: 'Job', cls: 'desc-col' }, { label: 'Still missing', width: '48%' }],
+      d.rows.map((r) => `<tr><td class="desc-col">${finJobCell(r)}</td><td>${finMissingCell(r)}</td></tr>`), { scroll: true, fit: true, noHScroll: true })
+      : empty;
+  };
+  let deb;
+  qs('#fin-q', body).oninput = (e) => { cur.q = e.target.value.trim(); clearTimeout(deb); deb = setTimeout(load, 250); };
+  qs('#fin-type', body).onchange = (e) => { cur.type = e.target.value; load(); };
+  await load();
+}
+
+async function jobsReady(body, sp) {
+  const cur = { q: sp.get('q') || '', type: sp.get('type') || '' };
+  body.innerHTML = `
+    <div class="toolbar">
+      <input id="rdy-q" type="search" placeholder="Search job no, vehicle, work…" value="${esc(cur.q)}" style="max-width:260px">
+      <select id="rdy-type" style="max-width:140px"><option value="">Repair &amp; service</option>
+        <option value="repair" ${cur.type === 'repair' ? 'selected' : ''}>Repair</option><option value="service" ${cur.type === 'service' ? 'selected' : ''}>Service</option></select>
+    </div>
+    <p class="muted" style="margin:0 0 8px;font-size:12.5px">Nothing is missing on these cards. Check the cost, then close one card, or tick several and close them together. Closing fixes the final cost.</p>
+    <div id="rdy-bulk" class="toolbar" style="display:none;margin:0 0 8px"></div>
+    <div id="rdy-table"><div class="muted">Loading…</div></div>`;
+  const load = async () => {
+    const p = new URLSearchParams({ tab: 'ready' });
+    if (cur.q) p.set('q', cur.q);
+    if (cur.type) p.set('type', cur.type);
+    history.replaceState(null, '', '#/jobs?' + p.toString());
+    p.delete('tab');
+    let d;
+    try { d = await api('/job-flow/ready?' + p.toString()); } catch (e) { qs('#rdy-table', body).innerHTML = `<div class="card err">${esc(e.message)}</div>`; return; }
+    const rows = d.rows;
+    const byId = new Map(rows.map((r) => [String(r.id), r]));
+    const anyClose = rows.some((r) => r.can.close);
+    const other = rows.some((r) => r.cost.other);
+    const costCols = [['labour', 'Labour'], ['parts', 'Parts'], ['outside', 'Outside'], ['oil', 'Oil'], ['general', 'General']].concat(other ? [['other', 'Other']] : []);
+    const act = (r) => (r.can.close ? `<button class="sm primary" data-close="${r.id}">🔒 Close</button>`
+      : (r.over_limit ? `<span class="badge amber" title="Your approval limit is ${esc(money(r.over_limit.limit))}">Over your limit</span>` : ''));
+    const costLines = (r) => costCols.filter(([k]) => r.cost[k]).map(([k, l]) => `${l} ${money(r.cost[k])}`).join(' · ');
+    if (rows.length && window.matchMedia('(max-width: 700px)').matches) {
+      qs('#rdy-table', body).innerHTML = rows.map((r) => `<div class="card" style="padding:10px 12px;margin:0 0 8px">${finJobCell(r)}
+        <div style="margin-top:6px"><b>${money(r.cost.total)}</b> <span class="muted" style="font-size:12px">${costLines(r)}</span></div>
+        <div style="margin-top:6px;display:flex;align-items:center;gap:14px">${act(r)}${r.can.close ? `<label style="display:inline-flex;align-items:center;gap:6px;margin:0;text-transform:none;letter-spacing:0;font-size:13px;color:inherit">
+          <input type="checkbox" class="rdy-chk" data-id="${r.id}" style="min-height:0;width:22px;height:22px;margin:0"> Tick to close with others</label>` : ''}</div></div>`).join('')
+        + `<div class="card" style="padding:10px 12px"><b>All ready cards: ${money(d.total)}</b></div>`;
+    } else qs('#rdy-table', body).innerHTML = rows.length ? tableWrap(
+      (anyClose ? [{ label: '<input type="checkbox" id="rdy-all" title="Select all">', html: true, width: '32px' }] : [])
+        .concat([{ label: 'Job', cls: 'desc-col' }], costCols.map(([, l]) => ({ label: l, num: true })), [{ label: 'Total', num: true }, { label: '', width: '120px' }]),
+      rows.map((r) => `<tr>${anyClose ? `<td>${r.can.close ? `<input type="checkbox" class="rdy-chk" data-id="${r.id}">` : ''}</td>` : ''}
+        <td class="desc-col">${finJobCell(r)}</td>
+        ${costCols.map(([k]) => `<td class="num">${r.cost[k] ? money(r.cost[k]) : '<span class="muted">—</span>'}</td>`).join('')}
+        <td class="num"><b>${money(r.cost.total)}</b></td><td>${act(r)}</td></tr>`)
+        .concat([`<tr><td colspan="${(anyClose ? 2 : 1) + costCols.length}"><b>All ready cards</b></td><td class="num"><b>${money(d.total)}</b></td><td></td></tr>`]),
+      { scroll: true, fit: true, noHScroll: true })
+      : `<div class="card"><p class="muted">No card is ready to close. <a href="#/jobs?tab=finishing">See what is still missing →</a></p></div>`;
+    const report = (res) => {
+      const bad = (res.failed || []).map((f) => `${f.job_no || f.id}: ${f.error}`);
+      if (bad.length) alert(`${res.success_count} closed. Not closed:\n${bad.slice(0, 8).join('\n')}`); else toast(`✓ ${plural(res.success_count, 'card')} closed`);
+    };
+    qsa('[data-close]', body).forEach((b) => { b.onclick = async () => {
+      const r = byId.get(b.dataset.close);
+      if (!confirm(`Close ${r.job_no}?\nFinal cost: ${money(r.cost.total)}`)) return;
+      try { await api(`/jobs/${r.id}/transition`, { method: 'POST', body: { to: 'CLOSED' } }); toast(`✓ ${r.job_no} closed`); }
+      catch (e) { toast(e.message, 'err'); }
+      load();
+    }; });
+    // Several cards closed at once; the total is shown before the person confirms (JC-D8).
+    const bulk = qs('#rdy-bulk', body);
+    const picked = () => qsa('.rdy-chk:checked', body).map((x) => byId.get(x.dataset.id));
+    const showBulk = () => {
+      const rs = picked();
+      const sum = rs.reduce((t, r) => t + r.cost.total, 0);
+      bulk.style.display = rs.length ? 'flex' : 'none';
+      bulk.innerHTML = rs.length ? `<span><b>${plural(rs.length, 'card')}</b> chosen · total <b>${money(sum)}</b></span><button class="sm primary" id="rdy-bulk-ok">🔒 Close the chosen cards</button>` : '';
+      if (rs.length) qs('#rdy-bulk-ok', body).onclick = async () => {
+        if (!confirm(`Close ${plural(rs.length, 'card')}?\nTotal: ${money(sum)}\n\n${rs.slice(0, 15).map((r) => `${r.job_no}  ${money(r.cost.total)}`).join('\n')}${rs.length > 15 ? '\n…' : ''}`)) return;
+        try { report(await api('/jobs/bulk-transition', { method: 'POST', body: { ids: rs.map((r) => r.id), to: 'CLOSED' } })); }
+        catch (e) { toast(e.message, 'err'); }
+        load();
+      };
+    };
+    qsa('.rdy-chk', body).forEach((x) => { x.onchange = showBulk; });
+    if (qs('#rdy-all', body)) qs('#rdy-all', body).onchange = (e) => { qsa('.rdy-chk', body).forEach((x) => { x.checked = e.target.checked; }); showBulk(); };
+    showBulk();
+  };
+  let deb;
+  qs('#rdy-q', body).oninput = (e) => { cur.q = e.target.value.trim(); clearTimeout(deb); deb = setTimeout(load, 250); };
+  qs('#rdy-type', body).onchange = (e) => { cur.type = e.target.value; load(); };
+  await load();
+}
+
+// One decision on one row: each goes to the route that already makes it.
+function jobReqAction(act, r, done) {
+  if (!r) return;
+  if (r.kind === 'jr') return jobRequestSignModal({ ...r, jr_no: r.no }, act === 'certify' ? 'certify' : (act === 'approve' ? 'approve' : 'reject'), done);
+  if (act === 'transport' || act === 'operations') {
+    if (!confirm(`Approve ${r.no} (${act})?`)) return;
+    return api(`/jobs/${r.id}/transition`, { method: 'POST', body: { to: act === 'transport' ? 'APPROVED_TRANSPORT' : 'APPROVED_OPERATIONS' } })
+      .then(() => { toast(`✓ ${r.no} approved`); done(); }).catch((e) => toast(e.message, 'err'));
+  }
+  if (act === 'reopen') {
+    if (!confirm(`Reopen ${r.no}? It goes back to In progress.`)) return;
+    return api(`/jobs/reopen-requests/${r.id}/approve`, { method: 'POST', body: {} })
+      .then(() => { toast(`✓ ${r.no} reopened`); done(); }).catch((e) => toast(e.message, 'err'));
+  }
+  const refuse = act === 'refuse';
+  modal(`${refuse ? 'Refuse the reopen of' : 'Reject'} ${r.no}`, `
+    ${field(refuse ? 'Why not? *' : 'Reason *', 'reason')}
+    <div style="margin-top:12px;text-align:right"><button class="primary danger" id="s">${refuse ? 'Refuse' : 'Reject'}</button></div>`, (b, close) => {
+    qs('#s', b).onclick = async () => {
+      const why = String(formData(b).reason || '').trim();
+      if (!why) return toast('Give a reason', 'err');
+      try {
+        if (refuse) await api(`/jobs/reopen-requests/${r.id}/refuse`, { method: 'POST', body: { note: why } });
+        else await api(`/jobs/${r.id}/transition`, { method: 'POST', body: { to: 'REJECTED', reason: why } });
+        toast(refuse ? 'Reopen refused' : `${r.no} rejected`); close(); done();
+      } catch (e) { toast(e.message, 'err'); }
+    };
+  });
+}
+
+async function jobsAllCards(c, sp) {
+  const cur = { q: sp.get('q') || '', year: sp.get('year') || '', month: sp.get('month') || '', status: sp.get('status') || '',
+    workshop: sp.get('workshop_id') || '' };
+  // Workshop filter and tag (Stage 2): only once there is more than one workshop. The filter is for
+  // those who see every workshop; someone kept to their own (Stage 3) has nothing to choose.
+  const wsd = wsMulti() ? await workshopsData() : null;
+  const wsFilter = wsd && (ME.seesAllWorkshops !== false || (ME.workshopsSeen || []).length > 1);
 
   const nowY = new Date().getFullYear();
   const years = [];
@@ -1282,17 +2049,19 @@ routes.jobs = async (c, params) => {
   const closeCfg = await api('/jobs/close-settings').catch(() => ({ partial_close_enabled: false }));
   const partialOn = !!closeCfg.partial_close_enabled;
 
-  c.innerHTML = `${pageHeader('Job Cards')}
+  c.innerHTML = `
     <div class="toolbar">
       <input id="jq" type="search" placeholder="Search job no or vehicle…" value="${esc(cur.q)}" style="max-width:240px">
       <select id="jyear" style="max-width:120px"><option value="">All years</option>${years.map((y) => `<option ${String(y) === cur.year ? 'selected' : ''}>${y}</option>`).join('')}</select>
       <select id="jmonth" style="max-width:140px"><option value="">All months</option>${MONTHS.map(([v, l]) => `<option value="${v}" ${v === cur.month ? 'selected' : ''}>${l}</option>`).join('')}</select>
-      <select id="jstatus" style="max-width:200px"><option value="">All statuses</option>${JOB_STATUSES.map((s) => `<option ${s === cur.status ? 'selected' : ''}>${s}</option>`).join('')}</select>
+      <select id="jstatus" style="max-width:200px"><option value="">All statuses</option>${JOB_STATUSES.map((s) => `<option ${s === cur.status ? 'selected' : ''}>${s}</option>`).join('')}${cur.status && !JOB_STATUSES.includes(cur.status) ? `<option value="${esc(cur.status)}" selected>${cur.status === 'APPROVED_OPERATIONS,IN_WORKSHOP' ? 'Approved, not started' : esc(cur.status.replace(/,/g, ' or '))}</option>` : ''}</select>
+      ${wsFilter ? `<select id="jws" style="max-width:220px"><option value="">All workshops</option>${wsd.workshops.filter((w) => !ME.workshopsSeen || ME.workshopsSeen.includes(w.id)).map((w) => `<option value="${w.id}" ${String(w.id) === cur.workshop ? 'selected' : ''}>${esc(w.name)}</option>`).join('')}</select>` : ''}
       <button class="sm" id="jclear">Clear</button>
       <button class="sm" id="jfilter-backlog" style="background:#fff3cd;color:#856404;border-color:#ffeeba;font-weight:600" title="Filter to backlog cards awaiting triage / approval">⚡ Backlog: Requested</button>
       <span class="muted" id="jcount"></span>
       <div class="spacer"></div>
       ${canDo('jobs.create') ? '<button class="primary" id="newjob">+ New Job Card</button>' : ''}
+      ${canDo('jobs.breakdown') ? '<button class="danger" id="newbd" title="A machine stopped at a site: open a field job card now">🚨 Report a breakdown</button>' : ''}
       ${canDo('jobs.triage') ? '<a class="btn sm" href="#/jobreview" title="REQUESTED cards that hold their vehicle but never moved">🧹 Review stuck cards</a>' : ''}
       ${canDo('jobs.settings') ? `<button class="sm" id="jpartial" title="Partial close, full close check and reopen requests">⚙ Partial close: ${partialOn ? 'on' : 'off'}</button>` : ''}
     </div>
@@ -1317,6 +2086,7 @@ routes.jobs = async (c, params) => {
     if (qs('#jyear').value) p.set('year', qs('#jyear').value);
     if (qs('#jmonth').value) p.set('month', qs('#jmonth').value);
     if (qs('#jstatus').value) p.set('status', qs('#jstatus').value);
+    if (qs('#jws') && qs('#jws').value) p.set('workshop_id', qs('#jws').value);
     return p;
   };
 
@@ -1337,17 +2107,17 @@ routes.jobs = async (c, params) => {
     const p = buildParams();
     const query = p.toString();
     // Keep the URL shareable/bookmarkable without triggering a full re-render.
-    history.replaceState(null, '', '#/jobs' + (query ? '?' + query : ''));
+    history.replaceState(null, '', '#/jobs?tab=all' + (query ? '&' + query : ''));
     const list = await api('/jobs' + (query ? '?' + query : ''));
     const canCloseDate = canDo('jobs.close_on_date');
     // The same permission jobstate.canReopen checks on the server.
     const canReopenJob = canDo('jobs.reopen');
     const rows = list.map((j) => `<tr>
       <td style="text-align:center;width:36px"><input type="checkbox" class="jrow-chk" data-id="${j.id}" data-status="${j.status}" data-jobno="${esc(j.job_no)}"></td>
-      <td><a href="#/jobs/${j.id}">${esc(j.job_no)}</a></td>
+      <td><a href="#/jobs/${j.id}">${esc(j.job_no)}</a>${wsd && j.workshop_code ? `<br><span class="badge" title="${esc(wsName(wsd, j.workshop_id))}">${esc(j.workshop_code)}</span>` : ''}</td>
       <td class="desc-col">${vehText(j) ? `<span class="stamp">${esc(vehText(j))}</span>` : '—'}</td>
       <td class="desc-col" title="${esc(j.description || '')}">${esc(j.description || '')}</td>
-      <td><span class="badge ${j.type === 'service' ? 'blue' : ''}">${esc(j.type)}</span></td>
+      <td><span class="badge ${j.type === 'service' ? 'blue' : ''}">${esc(j.type)}</span>${j.field ? ` <span class="badge ${j.breakdown ? 'red' : 'amber'}" title="Repaired at the site">${j.breakdown ? 'Breakdown' : 'Field'}</span>` : ''}</td>
       <td>${statusBadge(j.status)}</td>
       <td class="desc-col">${esc(j.project_name || '')}</td>
       <td class="num">${j.labour_cost ? money(j.labour_cost) : '—'}</td>
@@ -1454,7 +2224,8 @@ routes.jobs = async (c, params) => {
   qs('#jyear').onchange = load;
   qs('#jmonth').onchange = load;
   qs('#jstatus').onchange = load;
-  qs('#jclear').onclick = () => { qs('#jq').value = ''; qs('#jyear').value = ''; qs('#jmonth').value = ''; qs('#jstatus').value = ''; load(); };
+  if (qs('#jws')) qs('#jws').onchange = load;
+  qs('#jclear').onclick = () => { qs('#jq').value = ''; qs('#jyear').value = ''; qs('#jmonth').value = ''; qs('#jstatus').value = ''; if (qs('#jws')) qs('#jws').value = ''; load(); };
   if (qs('#jfilter-backlog')) {
     qs('#jfilter-backlog').onclick = () => {
       qs('#jstatus').value = 'REQUESTED';
@@ -1465,8 +2236,9 @@ routes.jobs = async (c, params) => {
     };
   }
   if (qs('#newjob')) qs('#newjob').onclick = newJobModal;
+  if (qs('#newbd')) qs('#newbd').onclick = breakdownModal;
   await load();
-};
+}
 
 // ---- Daily Work (day-by-day review of job_daily_work)
 routes.dailywork = async (c) => {
@@ -1848,7 +2620,7 @@ routes.dailywork = async (c) => {
   await Promise.all([loadMonthly(initialMonth), load(date), attDone]);
 };
 
-// ---- Attendance & day tally (src/lib/attendance.js; docs/WORKSHOPONE_PLAN.md §3.1)
+// ---- Attendance & day tally (src/lib/attendance.js; docs/WORKSHOPONE_PLAN.md §A.1)
 //
 // In, out and break for every mechanic, checked against the hours booked on jobs that day. The
 // server does the counting; this card only shows it and sends what was typed. Nothing here
@@ -1877,14 +2649,25 @@ function attWorked(a) {
 // Typed but not saved yet. Kept outside the page so a live refresh (somebody else saving) does
 // not throw away what is being typed.
 let ATT_DRAFT = { date: null, rows: new Map() };
+// Stage 4: with the workshops kept apart, the day is one workshop's. Head office picks which;
+// everyone else always gets their own (the server decides). null = the server's default.
+let ATT_WS = null;
+const attWsQ = () => (ATT_WS ? '&workshop_id=' + ATT_WS : '');
+const attWsB = () => (ATT_WS ? { workshop_id: ATT_WS } : {});
 
 async function attendanceCard(el, { onChanged, onDayView } = {}) {
   // #/dailywork?att=YYYY-MM-DD (from "Days waiting for sign-off") opens that day.
-  const asked = new URLSearchParams(location.hash.split('?')[1] || '').get('att');
+  const hashQ = new URLSearchParams(location.hash.split('?')[1] || '');
+  const asked = hashQ.get('att');
+  // …and, for head office, whose day (Stage 4): #/dailywork?att=…&att_ws=<workshop>.
+  if (/^\d+$/.test(hashQ.get('att_ws') || '')) ATT_WS = Number(hashQ.get('att_ws'));
   let date = (asked && /^\d{4}-\d{2}-\d{2}$/.test(asked) ? asked : null) || ATT_DRAFT.date || localDay();
   let d = null;
   const load = async () => {
-    try { d = await api('/attendance/day?date=' + encodeURIComponent(date)); } catch (e) {
+    try {
+      d = await api('/attendance/day?date=' + encodeURIComponent(date) + attWsQ());
+      if (d.workshop_id && ME.seesAllWorkshops && !WS_CACHE) await workshopsData();
+    } catch (e) {
       el.innerHTML = `<div class="card section"><p class="err">${esc(e.message)}</p></div>`; return;
     }
     paint();
@@ -1965,13 +2748,16 @@ async function attendanceCard(el, { onChanged, onDayView } = {}) {
     el.innerHTML = `<div class="card section">
       <div class="toolbar" style="margin-top:0">
         <h3 style="margin:0">Attendance &amp; day tally</h3>
+        ${d.workshop_id && ME.seesAllWorkshops && WS_CACHE
+          ? `<select id="att-ws" style="max-width:220px" title="Whose day">${WS_CACHE.workshops.filter((w) => w.active).map((w) => `<option value="${w.id}" ${w.id === d.workshop_id ? 'selected' : ''}>${esc(w.name)}</option>`).join('')}</select>`
+          : (d.workshop_id && WS_CACHE ? `<span class="badge">🏭 ${esc(wsName(WS_CACHE, d.workshop_id))}</span>` : '')}
         <div class="spacer"></div>
         <button class="sm" id="att-prev">←</button>
         <input id="att-date" type="date" value="${esc(date)}" max="${esc(d.today)}" style="max-width:160px">
         <button class="sm" id="att-next" ${date >= d.today ? 'disabled' : ''}>→</button>
         ${onDayView ? '<button class="sm" id="att-dayview" title="Show this day\'s work in the day view below">Day view ↓</button>' : ''}
         <a class="btn sm" href="/api/reports/daily/day_tally/export.xlsx?date=${esc(date)}" title="This day's tally as a spreadsheet">⬇ Day</a>
-        <a class="btn sm" href="/api/attendance/month.xlsx?month=${esc(date.slice(0, 7))}" title="The month: attended, booked and utilisation per mechanic">⬇ Month</a>
+        <a class="btn sm" href="/api/attendance/month.xlsx?month=${esc(date.slice(0, 7))}${attWsQ()}" title="The month: attended, booked and utilisation per mechanic">⬇ Month</a>
         ${d.can.settings ? '<button class="sm" id="att-set" title="Attendance settings">⚙</button>' : ''}
       </div>
       <div class="toolbar" style="margin:0 0 8px">
@@ -2002,6 +2788,10 @@ async function attendanceCard(el, { onChanged, onDayView } = {}) {
 
   const wire = () => {
     qs('#att-prev', el).onclick = () => goTo(shiftDay(date, -1));
+    if (qs('#att-ws', el)) qs('#att-ws', el).onchange = (e) => {
+      if (dirty() && !confirm('Changes not saved will be lost. Continue?')) { e.target.value = String(d.workshop_id); return; }
+      ATT_WS = Number(e.target.value); ATT_DRAFT = { date: null, rows: new Map() }; load();
+    };
     qs('#att-next', el).onclick = () => goTo(shiftDay(date, 1));
     qs('#att-date', el).onchange = (e) => goTo(e.target.value);
     if (qs('#att-dayview', el)) qs('#att-dayview', el).onclick = () => onDayView(date);
@@ -2049,7 +2839,7 @@ async function attendanceCard(el, { onChanged, onDayView } = {}) {
       // The last day with any attendance: yesterday, or Saturday when today is Monday.
       let from = null;
       for (let i = 1; i <= 7 && !from; i++) {
-        const prev = await api('/attendance/day?date=' + shiftDay(date, -i));
+        const prev = await api('/attendance/day?date=' + shiftDay(date, -i) + attWsQ());
         if (prev.rows.some((r) => r.attendance)) from = prev;
       }
       if (!from) return toast('No attendance in the last 7 days to copy', 'err');
@@ -2067,7 +2857,7 @@ async function attendanceCard(el, { onChanged, onDayView } = {}) {
         ? { mechanic_id: mid, status: v.status, time_in: v.time_in || null, time_out: v.time_out || null, break_minutes: v.break_minutes || 0, note: v.note || '' }
         : { mechanic_id: mid, clear: true }));
       try {
-        const r = await api('/attendance/day', { method: 'POST', body: { date, rows } });
+        const r = await api('/attendance/day', { method: 'POST', body: { date, rows, ...attWsB() } });
         ATT_DRAFT = { date, rows: new Map() };
         toast(`Saved (${r.saved})`);
         repaintWith(r.day);
@@ -2076,7 +2866,7 @@ async function attendanceCard(el, { onChanged, onDayView } = {}) {
     qsa('[data-book]', el).forEach((b) => {
       b.onclick = async () => {
         try {
-          const r = await api('/attendance/day/book-rest', { method: 'POST', body: { date, mechanic_id: Number(b.dataset.book) } });
+          const r = await api('/attendance/day/book-rest', { method: 'POST', body: { date, mechanic_id: Number(b.dataset.book), ...attWsB() } });
           toast(`${fmtH(r.hours)} booked to ${r.job_no}`);
           repaintWith(r.day);
         } catch (e) { toast(e.message, 'err'); }
@@ -2087,20 +2877,20 @@ async function attendanceCard(el, { onChanged, onDayView } = {}) {
         const reason = prompt('Why are these hours not on a job? (e.g. cleaning the bay, waiting for parts)');
         if (reason == null || !reason.trim()) return;
         try {
-          const r = await api('/attendance/day', { method: 'POST', body: { date, rows: [{ mechanic_id: Number(b.dataset.why), unbooked_reason: reason.trim() }] } });
+          const r = await api('/attendance/day', { method: 'POST', body: { date, rows: [{ mechanic_id: Number(b.dataset.why), unbooked_reason: reason.trim() }], ...attWsB() } });
           repaintWith(r.day);
         } catch (e) { toast(e.message, 'err'); }
       };
     });
     if (qs('#att-sign', el)) qs('#att-sign', el).onclick = async () => {
       if (!confirm(`Sign off ${date}?\n\nThe day's attendance and daily work will be locked. A manager can unlock it with a reason.`)) return;
-      try { repaintWith(await api('/attendance/day/signoff', { method: 'POST', body: { date } })); toast('Day signed off'); } catch (e) { toast(e.message, 'err'); }
+      try { repaintWith(await api('/attendance/day/signoff', { method: 'POST', body: { date, ...attWsB() } })); toast('Day signed off'); } catch (e) { toast(e.message, 'err'); }
     };
     if (qs('#att-unlock', el)) qs('#att-unlock', el).onclick = async () => {
       const reason = prompt(`Unlock ${date}? Give the reason:`);
       if (reason == null) return;
       if (!reason.trim()) return toast('A reason is needed to unlock a day', 'err');
-      try { repaintWith(await api('/attendance/day/unlock', { method: 'POST', body: { date, reason: reason.trim() } })); toast('Day unlocked'); } catch (e) { toast(e.message, 'err'); }
+      try { repaintWith(await api('/attendance/day/unlock', { method: 'POST', body: { date, reason: reason.trim(), ...attWsB() } })); toast('Day unlocked'); } catch (e) { toast(e.message, 'err'); }
     };
   };
 
@@ -2182,7 +2972,7 @@ async function addWorkDoneModal(defaultDate, onDone) {
     ${field('Hours', 'hours', { type: 'number' })}
     <div id="dw-hint" style="font-size:12px;margin-top:4px"></div>
     <p class="muted" style="font-size:12px;margin:2px 0 0">Pick each mechanic who worked — each is charged the full hours at their own rate.</p>
-    <div class="row">${field('External repair (outside work)', 'is_external', { type: 'checkbox' })}${field('External value (Rs, if external)', 'external_value', { type: 'number' })}</div>
+    <div class="row">${field('Travel (to or from a field job)', 'travel', { type: 'checkbox' })}${field('External repair (outside work)', 'is_external', { type: 'checkbox' })}${field('External value (Rs, if external)', 'external_value', { type: 'number' })}</div>
     <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Add</button></div>`, (body, close) => {
     const getTarget = wireTargetPicker(body, 'dwt');
     const crew = [];
@@ -2437,15 +3227,236 @@ async function loadVehicleConflicts(el) {
       </div>`).join('')}</div></details>`;
 }
 
+// ---- Field work (Stage 6) ------------------------------------------------------------------
+// A repair done at the site. The times are typed as 'YYYY-MM-DDTHH:MM' in the form and kept as
+// 'YYYY-MM-DD HH:MM'.
+const fldTime = (s) => (s ? esc(String(s).replace('T', ' ').slice(0, 16)) : '—');
+const fldInput = (s) => (s ? String(s).replace(' ', 'T').slice(0, 16) : '');
+// Under an hour in minutes ("25 min"), else hours ("3.5 h").
+const fldHours = (h) => (h == null ? '—' : (Math.abs(h) < 1 ? `${Math.round(h * 60)} min` : `${num(h)} h`));
+const localNowInput = () => new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+
+// A breakdown reported from a site: a field job card, open at once, so a mechanic can go now.
+async function breakdownModal() {
+  const places = await api('/field/places').catch(() => []);
+  const wsd = wsMulti() ? await workshopsData().catch(() => null) : null;
+  modal('Report a breakdown', `
+    <p class="muted" style="margin-top:0">This opens a field job card now, so a mechanic can go. The approvals follow as usual.</p>
+    <datalist id="bdplaces">${places.map((p) => `<option value="${esc(p.label)}">`).join('')}</datalist>
+    ${assetPickerHtml('Machine *')}
+    <label>Site *</label><input name="location" list="bdplaces" placeholder="Project or site" autocomplete="off">
+    ${field('What is wrong? *', 'description', { type: 'textarea' })}
+    <label>Stopped at</label><input type="datetime-local" name="stopped_at" value="${localNowInput()}">
+    ${wsd ? field('Workshop that sends the mechanic', 'workshop_id', { type: 'select', options: wsOptions(wsd), value: wsd.mine }) : ''}
+    <div style="margin-top:14px;text-align:right"><button class="primary" id="save">Report breakdown</button></div>`, (body, close) => {
+    wireAssetPicker(body);
+    qs('#save', body).onclick = async () => {
+      const f = formData(body);
+      const p = places.find((x) => x.label === String(f.location || '').trim());
+      try {
+        const r = await api('/field/breakdown', { method: 'POST', body: { ...f, place: p ? p.key : undefined } });
+        close(); toast('Breakdown reported — job card ' + r.job.job_no); location.hash = '#/jobs/' + r.job.id;
+      } catch (e) { toast(e.message, 'err'); }
+    };
+  });
+}
+
+// The field details of one card: in the field or not, the site, the times, the km.
+async function fieldModal(jobId, fld, onSaved) {
+  const places = await api('/field/places').catch(() => []);
+  modal('Field details', `
+    <datalist id="fdplaces">${places.map((p) => `<option value="${esc(p.label)}">`).join('')}</datalist>
+    <label style="display:flex;gap:8px;align-items:center;flex-direction:row;width:auto;margin-bottom:8px">
+      <input type="checkbox" name="field" style="width:auto" checked> In the field (repaired at the site)</label>
+    <div id="fdmore">
+      <label>Site</label><input name="location" list="fdplaces" value="${esc(fld.location || '')}" autocomplete="off">
+      <div class="row">
+        <div><label>Reported / stopped</label><input type="datetime-local" name="reported_at" value="${fldInput(fld.reported_at)}"></div>
+        <div><label>Mechanic arrived</label><input type="datetime-local" name="arrived_at" value="${fldInput(fld.arrived_at)}"></div>
+        <div><label>Working again</label><input type="datetime-local" name="working_at" value="${fldInput(fld.working_at)}"></div>
+      </div>
+      ${field('Km driven by the field vehicle', 'km', { type: 'number', value: fld.km == null ? '' : fld.km })}
+      <p class="muted" style="font-size:12px;margin:4px 0 0">Travel time goes in Daily Work as a line marked "Travel".</p>
+    </div>
+    <div style="margin-top:14px;text-align:right"><button class="primary" id="save">Save</button></div>`, (body, close) => {
+    const box = qs('input[name=field]', body);
+    box.onchange = () => { qs('#fdmore', body).style.display = box.checked ? '' : 'none'; };
+    qs('#save', body).onclick = async () => {
+      const f = formData(body);
+      let payload;
+      if (!box.checked) {
+        if (fld.field && !confirm('Take this job out of the field? Its site, times and km are cleared.')) return;
+        payload = { field: false };
+      } else {
+        const p = places.find((x) => x.label === String(f.location || '').trim());
+        payload = { field: true, location: f.location, place: p ? p.key : '', reported_at: f.reported_at, arrived_at: f.arrived_at, working_at: f.working_at, km: f.km };
+      }
+      try { await api('/field/jobs/' + jobId, { method: 'PATCH', body: payload }); close(); toast('Saved'); if (onSaved) onSaved(); }
+      catch (e) { toast(e.message, 'err'); }
+    };
+  });
+}
+
+// The field board: every field job still open, the machines still down first.
+routes.field = async (c) => {
+  if (!canView('jobs')) { c.innerHTML = '<div class="card err">You do not have access to this page.</div>'; return; }
+  const d = await api('/field/board');
+  const canBd = canDo('jobs.breakdown');
+  const canRate = canDo('jobs.settings');
+  const rows = d.rows.map((r) => `<tr>
+      <td><a href="#/jobs/${r.id}"><b>${esc(r.job_no)}</b></a>${r.breakdown ? ' <span class="badge red">Breakdown</span>' : ''}${wsMulti() && r.workshop_name ? `<br><span class="muted" style="font-size:11px">${esc(r.workshop_name)}</span>` : ''}</td>
+      <td>${esc(r.asset_reg || r.asset_code || '—')}<br><span class="muted" style="font-size:11px">${esc(r.asset_type || '')}</span></td>
+      <td class="desc-col">${esc(r.field_location || '—')}</td>
+      <td>${fldTime(r.reported_at)}</td>
+      <td>${r.arrived_at ? fldTime(r.arrived_at) : '<span class="badge amber">not yet</span>'}</td>
+      <td>${r.down ? `<span class="badge red">down${r.down_hours != null ? ' ' + fldHours(r.down_hours) : ''}</span>` : `<span class="badge green">working · ${fldHours(r.downtime_hours)}</span>`}</td>
+      <td class="desc-col">${esc(r.mechanics || '—')}</td>
+      <td>${statusBadge(r.status)}</td></tr>`);
+  c.innerHTML = `${pageHeader('Field work', 'Repairs done at the site: the machines still down first.')}
+    <div class="toolbar">
+      <span class="badge ${d.down ? 'red' : 'green'}">${d.down} machine${d.down === 1 ? '' : 's'} down</span>
+      <div class="spacer"></div>
+      ${canRate ? `<span class="muted" style="font-size:12px">Field vehicle: ${d.settings.km_rate != null ? money(d.settings.km_rate) + ' per km' : 'no rate per km set'}</span> <button class="sm" id="fdrate">Set rate…</button>` : ''}
+      ${canBd ? '<button class="primary" id="fdbd">🚨 Report a breakdown</button>' : ''}
+    </div>
+    ${rows.length ? tableWrap([{ label: 'Job' }, { label: 'Machine' }, { label: 'Site' }, { label: 'Reported' }, { label: 'Arrived' },
+    { label: 'Now' }, { label: 'Mechanics (3 days)' }, { label: 'Status' }], rows, { scroll: true })
+    : '<div class="card"><p class="muted">No open field jobs.</p></div>'}`;
+  if (qs('#fdbd', c)) qs('#fdbd', c).onclick = breakdownModal;
+  if (qs('#fdrate', c)) qs('#fdrate', c).onclick = () => modal('Field vehicle rate', `
+    ${field('Rate per km (Rs)', 'km_rate', { type: 'number', value: d.settings.km_rate == null ? '' : d.settings.km_rate })}
+    <p class="muted" style="font-size:12px">Used for km entered from now on. Km already entered keep the rate they were entered at.</p>
+    <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Save</button></div>`, (b, close) => {
+    qs('#s', b).onclick = async () => {
+      try { await api('/field/settings', { method: 'PUT', body: formData(b) }); close(); toast('Saved'); routes.field(c); }
+      catch (e) { toast(e.message, 'err'); }
+    };
+  });
+};
+
+// ---- Operations (Stage 7): the site fleet, workshops at a glance, job handovers.
+const OPS_STATE = { working: ['Working', 'green'], down_workshop: ['Down · workshop', 'red'], down_field: ['Down · field', 'red'],
+  idle: ['Idle', 'amber'], out_of_use: ['Out of use', ''] };
+const isHeadOffice = () => isAdmin() || !!(ME && (ME.caps || []).includes('workshops.all'));
+
+routes.operations = async (c) => {
+  const sp = new URLSearchParams(location.hash.split('?')[1] || '');
+  const tabs = [];
+  if (canView('assets')) tabs.push(['fleet', 'Site fleet']);
+  if (isHeadOffice()) tabs.push(['glance', 'Workshops at a glance']);
+  if (canView('jobs') && wsMulti()) tabs.push(['handovers', 'Job handovers']);
+  if (!tabs.length) { c.innerHTML = '<div class="card err">You do not have access to this page.</div>'; return; }
+  const tab = tabs.some((t) => t[0] === sp.get('tab')) ? sp.get('tab') : tabs[0][0];
+  c.innerHTML = `${pageHeader('Operations', 'Where the machines are, which are down, and how each workshop is doing.')}
+    <div class="toolbar">${tabs.map(([k, l]) => `<a class="btn sm ${k === tab ? 'primary' : ''}" href="#/operations?tab=${k}">${esc(l)}</a>`).join('')}</div>
+    <div id="opsbody"><div class="muted">Loading…</div></div>`;
+  const body = qs('#opsbody', c);
+  if (tab === 'fleet') return opsFleet(body, sp.get('month'));
+  if (tab === 'glance') return opsGlance(body);
+  return opsHandovers(body);
+};
+
+async function opsFleet(body, month) {
+  const d = await api('/operations/fleet' + (month ? '?month=' + encodeURIComponent(month) : ''));
+  const pct = (v) => (v == null ? '—' : `<b style="color:${v >= 90 ? 'var(--green)' : v >= 75 ? 'var(--amber)' : 'var(--red)'}">${num(v)}%</b>`);
+  const n = (v, tone) => (v ? `<span class="badge ${tone}">${v}</span>` : '<span class="muted">0</span>');
+  const machineRows = (r) => r.list.map((m) => `<tr>
+      <td><a href="#/assets/${m.id}">${esc(m.registration || m.code)}</a>${m.registration && m.code !== m.registration ? ` <span class="muted" style="font-size:11px">${esc(m.code)}</span>` : ''}</td>
+      <td>${esc(m.type || '')}</td>
+      <td><span class="badge ${OPS_STATE[m.state][1]}">${OPS_STATE[m.state][0]}</span></td>
+      <td>${m.job ? (m.job.reachable ? `<a href="#/jobs/${m.job.id}">${esc(m.job.job_no)}</a>` : esc(m.job.job_no)) + (wsMulti() && m.job.workshop_name ? ` <span class="muted" style="font-size:11px">${esc(m.job.workshop_name)}</span>` : '') : '—'}</td>
+      <td class="num">${m.down_days == null ? '—' : m.down_days}</td></tr>`).join('');
+  const rows = d.rows.map((r, i) => `<tr class="opsrow" data-i="${i}" style="cursor:pointer" title="Show the machines">
+      <td><b>${esc(r.label)}</b></td><td class="num">${r.machines}</td>
+      <td class="num">${n(r.working, 'green')}</td><td class="num">${n(r.down_workshop, 'red')}</td><td class="num">${n(r.down_field, 'red')}</td>
+      <td class="num">${n(r.idle, 'amber')}</td><td class="num">${n(r.out_of_use, '')}</td>
+      <td class="num">${pct(r.availability)}</td><td class="num muted">${r.down_days} / ${r.machine_days}</td></tr>
+    <tr class="opsdetail" data-i="${i}" style="display:none"><td colspan="9" style="background:var(--surface-2, #f6f6f3)">
+      ${r.list.length ? tableWrap([{ label: 'Machine' }, { label: 'Type' }, { label: 'Now' }, { label: 'Job card' }, { label: 'Down days this month', num: true }], [machineRows(r)])
+    : '<span class="muted">No machine here now; the days counted are from machines that were here earlier in the month.</span>'}
+    </td></tr>`);
+  const t = d.total;
+  body.innerHTML = `
+    <div class="toolbar">
+      <label style="width:auto">Month <input type="month" id="opsmonth" value="${esc(d.month)}" style="max-width:170px"></label>
+      <span class="muted">${esc(d.from)} to ${esc(d.to)} · ${d.days} day${d.days === 1 ? '' : 's'}</span>
+      <div class="spacer"></div>
+      <span>Availability: ${pct(t.availability)}</span>
+    </div>
+    <div class="grid section">
+      <div class="card stat"><span class="n">${t.machines}</span><span class="l">Machines</span></div>
+      <div class="card stat"><span class="n" style="color:var(--green)">${t.working}</span><span class="l">Working now</span></div>
+      <div class="card stat"><span class="n" style="color:${t.down_workshop + t.down_field ? 'var(--red)' : 'inherit'}">${t.down_workshop + t.down_field}</span><span class="l">Down now (workshop + field)</span></div>
+      <div class="card stat"><span class="n">${t.idle}</span><span class="l">Idle</span></div>
+    </div>
+    ${tableWrap([{ label: 'Project / site' }, { label: 'Machines', num: true }, { label: 'Working', num: true }, { label: 'Down · workshop', num: true },
+    { label: 'Down · field', num: true }, { label: 'Idle', num: true }, { label: 'Out of use', num: true }, { label: 'Availability', num: true }, { label: 'Down days / machine-days', num: true }], rows, { scroll: true })}
+    <p class="muted" style="font-size:12px">Availability = machine-days with no open repair ÷ all machine-days in the month. A machine counts where it stood each day. A machine is down from the day its repair card is opened (or the breakdown is reported) until the work is complete. Services and machines out of use are not counted. Click a row to see its machines.</p>`;
+  qs('#opsmonth', body).onchange = (e) => { location.hash = '#/operations?tab=fleet&month=' + e.target.value; };
+  qsa('.opsrow', body).forEach((tr) => {
+    tr.onclick = () => { const det = qs(`.opsdetail[data-i="${tr.dataset.i}"]`, body); det.style.display = det.style.display === 'none' ? '' : 'none'; };
+  });
+}
+
+async function opsGlance(body) {
+  const d = await api('/operations/glance');
+  const cell = (w, what, v, tone) => `<td class="num">${v == null ? '<span class="muted">—</span>'
+    : v ? `<button class="sm opsn" data-ws="${w.workshop_id}" data-what="${what}" data-name="${esc(w.name)}">${tone ? `<span style="color:var(--${tone})">${v}</span>` : v}</button>` : '<span class="muted">0</span>'}</td>`;
+  const rows = d.rows.map((w) => `<tr>
+      <td><b>${esc(w.name)}</b> <span class="muted" style="font-size:11px">${esc(w.code || '')}</span></td>
+      ${cell(w, 'open', w.open_jobs)}${cell(w, 'down', w.machines_down, 'red')}${cell(w, 'parts', w.waiting_parts, 'amber')}
+      ${cell(w, 'approvals', w.approvals)}${cell(w, 'present', w.present)}${cell(w, 'signoff', w.unsigned_days, 'red')}
+      <td class="num">${w.cost_month == null ? '—' : money(w.cost_month)}</td></tr>`);
+  body.innerHTML = `
+    <p class="muted" style="margin-top:0">Today, ${esc(d.date)}. Click a number to see the list behind it.</p>
+    ${tableWrap([{ label: 'Workshop' }, { label: 'Open jobs', num: true }, { label: 'Machines down', num: true }, { label: 'Waiting for parts', num: true },
+    { label: 'Requests to approve', num: true }, { label: d.attendance ? 'Mechanics present' : 'Mechanics with work today', num: true },
+    { label: 'Days to sign off', num: true }, { label: 'Cost this month', num: true }], rows, { scroll: true })}
+    <p class="muted" style="font-size:12px">Cost this month is the workshop's total in the Job Cost report for ${esc(d.month)}.${d.attendance ? '' : ' Attendance is off, so "mechanics" counts those with daily work booked today.'}</p>`;
+  const TITLES = { open: 'Open jobs', down: 'Machines down', parts: 'Waiting for parts', approvals: 'Requests to approve', present: 'Mechanics today', signoff: 'Days to sign off' };
+  qsa('.opsn', body).forEach((b) => {
+    b.onclick = async () => {
+      const list = await api(`/operations/glance/${b.dataset.ws}/${b.dataset.what}`);
+      const what = b.dataset.what;
+      let html;
+      if (['open', 'down', 'parts'].includes(what)) {
+        html = tableWrap([{ label: 'Job' }, { label: 'Machine' }, { label: 'Since' }, { label: 'Status' }],
+          list.map((j) => `<tr><td><a href="#/jobs/${j.id}">${esc(j.job_no)}</a></td><td>${esc(j.asset_reg || j.asset_code || '—')}</td><td>${esc(j.since || '')}</td><td>${statusBadge(j.status)}</td></tr>`));
+      } else if (what === 'approvals') {
+        html = tableWrap([{ label: 'Request' }, { label: 'Kind' }, { label: 'Machine' }, { label: 'Date' }, { label: 'Waiting for' }],
+          list.map((r) => `<tr><td>${esc(r.ref || '')}</td><td>${esc(r.kind)}</td><td>${esc(r.asset_code || '—')}</td><td>${esc(String(r.since || '').slice(0, 10))}</td><td>${r.status === 'certified' ? 'approval' : 'certification'}</td></tr>`));
+      } else if (what === 'present') {
+        html = tableWrap([{ label: 'Mechanic' }, { label: '' }], list.map((m) => `<tr><td>${esc(m.name)}</td><td class="muted">${esc(m.detail || '')}</td></tr>`));
+      } else {
+        html = tableWrap([{ label: 'Day' }], list.map((x) => `<tr><td>${esc(x.date)}</td></tr>`));
+      }
+      modal(`${TITLES[what] || ''} · ${b.dataset.name}`, html, (mb, close) => { qsa('a', mb).forEach((a) => { a.addEventListener('click', () => close()); }); }, { wide: true });
+    };
+  });
+}
+
+async function opsHandovers(body) {
+  const list = await api('/operations/handovers?days=90');
+  body.innerHTML = `
+    <p class="muted" style="margin-top:0">Job cards sent from one workshop to another in the last 90 days${isHeadOffice() ? '' : ', to or from your workshop'}.</p>
+    ${tableWrap([{ label: 'Date' }, { label: 'Job' }, { label: 'Machine' }, { label: 'From' }, { label: 'To' }, { label: 'Why' }, { label: 'By' }],
+    list.map((h) => `<tr><td>${esc(String(h.moved_at || '').slice(0, 10))}</td>
+      <td>${h.reachable ? `<a href="#/jobs/${h.job_id}">${esc(h.job_no)}</a>` : esc(h.job_no)}</td><td>${esc(h.asset_code || '—')}</td>
+      <td>${esc(h.from_name || '—')}</td><td><b>${esc(h.to_name || '—')}</b></td><td class="desc-col">${esc(h.reason)}</td><td>${esc(h.moved_by || '')}</td></tr>`), { scroll: true })}`;
+}
+
 async function newJobModal() {
   const projects = await api('/projects');
   const popts = [{ value: '', label: '—' }, ...projects.map((p) => ({ value: p.id, label: p.name }))];
+  // Which workshop does the repair (Stage 2): your home workshop unless you choose another.
+  const wsd = wsMulti() ? await workshopsData() : null;
   modal('New Job Card', `
     <p class="muted">One open job card per vehicle — if this vehicle already has one, close it first or add the work to it.</p>
     ${assetPickerHtml('Vehicle / machine *')}
     <div id="njblock" style="margin:4px 0"></div>
     <div class="row">${field('Type', 'type', { type: 'select', options: [{ value: 'repair', label: 'repair' }, { value: 'service', label: 'service' }] })}${field('Severity', 'severity', { type: 'select', options: [{ value: '', label: '—' }, { value: 'major', label: 'major' }, { value: 'minor', label: 'minor' }] })}</div>
     ${field('Project', 'project_id', { type: 'select', options: popts })}
+    ${wsd ? field('Workshop (who repairs it)', 'workshop_id', { type: 'select', options: wsOptions(wsd), value: wsd.mine }) : ''}
     ${field('Description *', 'description', { type: 'textarea' })}
     <div style="margin-top:14px;text-align:right"><button class="primary" id="save">Raise Job Card</button></div>`, (body, close) => {
     wireAssetPicker(body);
@@ -2506,8 +3517,10 @@ async function jobDetail(c, id) {
   // Reopen gets its own labelled button and confirm dialog — the raw CLOSED → IN_PROGRESS
   // state button read as "IN PROGRESS" and offered itself to users the server would refuse.
   // Partly close has its own button too (it asks for a note).
+  // Approval limit: a job that costs more than this person may sign off is closed by someone else.
+  const overCloseLimit = !!(j.closeLimit && !j.closeLimit.ok);
   const transitions = j.nextStates
-    .filter((s) => !((isClosed || isPartial) && s === 'IN_PROGRESS') && s !== 'PARTIALLY_CLOSED')
+    .filter((s) => !((isClosed || isPartial) && s === 'IN_PROGRESS') && s !== 'PARTIALLY_CLOSED' && !(overCloseLimit && s === 'CLOSED'))
     .map((s) => `<button class="sm ${s === 'CLOSED' ? 'primary' : ''}" data-to="${s}">${s === 'CLOSED' && partialOn ? '✓ Close fully' : s.replace(/_/g, ' ')}</button>`).join(' ');
   const partialBtn = partialOn && canDo('jobs.partial_close') && ['IN_PROGRESS', 'WORK_COMPLETE'].includes(job.status)
     ? '<button class="sm" id="partialclose" title="The work is done and the vehicle has left, but prices or records are missing">◐ Partly close…</button>' : '';
@@ -2521,21 +3534,43 @@ async function jobDetail(c, id) {
   const mayDecide = pendingReq && canDo('jobs.reopen') && (pendingReq.requested_by !== ME.id || isAdmin());
   const linkJob = (x) => `<a href="#/jobs/${x.id}"><b>${esc(x.job_no)}</b></a> ${statusBadge(x.status)}`;
   const successor = (j.continuedAs || []).slice(-1)[0];
+  // Stage 6: field work — the site, the times (one button each, for the phone), response and downtime.
+  const fld = j.field || {};
+  const canField = canDo('jobs.field') && !isClosed && job.status !== 'REJECTED';
+  const fieldPanel = fld.field ? `<div class="card section" style="border-left:4px solid ${fld.down ? 'var(--red)' : 'var(--green)'}">
+      <div class="toolbar" style="margin:0 0 6px"><h3 style="margin:0">📍 In the field</h3>
+        ${fld.breakdown ? '<span class="badge red">Breakdown</span>' : ''}${fld.down ? '<span class="badge amber">Machine down</span>' : '<span class="badge green">Working again</span>'}
+        <div class="spacer"></div>${canField ? '<button class="sm" id="fldedit">✎ Field details</button>' : ''}</div>
+      <p style="margin:0 0 8px"><b>${esc(fld.location || 'Site not given')}</b></p>
+      <div class="grid">
+        <div class="card stat"><span class="n" style="font-size:16px">${fldTime(fld.reported_at)}</span><span class="l">Reported</span></div>
+        <div class="card stat"><span class="n" style="font-size:16px">${fld.arrived_at ? fldTime(fld.arrived_at) : (canField ? '<button class="primary" id="fldarr">Mechanic arrived</button>' : '—')}</span><span class="l">Mechanic arrived</span></div>
+        <div class="card stat"><span class="n" style="font-size:16px">${fld.working_at ? fldTime(fld.working_at) : (canField && fld.arrived_at ? '<button class="primary" id="fldwork">Machine working again</button>' : '—')}</span><span class="l">Working again</span></div>
+        <div class="card stat"><span class="n" style="font-size:16px">${fldHours(fld.response_hours)} · ${fld.downtime_hours != null ? fldHours(fld.downtime_hours) : (fld.down_hours != null ? 'down ' + fldHours(fld.down_hours) : '—')}</span><span class="l">Response · downtime</span></div>
+      </div>
+      <p class="muted" style="font-size:12px;margin:6px 0 0">Travel: ${num(fld.travel_hours || 0)} h · Field vehicle: ${fld.km != null
+    ? `${num(fld.km)} km × ${fld.km_rate != null ? money(fld.km_rate) : '(no rate set)'} = ${money(fld.transport_cost)}` : 'no km entered'}</p>
+    </div>` : '';
   c.innerHTML = `${pageHeader(job.job_no, '<a href="#/jobs">← Job Cards</a>')}
     <div class="toolbar">${statusBadge(job.status)}<span class="badge ${job.type === 'service' ? 'blue' : ''}">${esc(job.type)}</span>
       ${job.severity ? `<span class="badge">${esc(job.severity)}</span>` : ''}
       <a href="#/assets/${job.asset_id}">${esc(idLabel(job) || '—')}</a>
       <span class="muted">${esc(job.project_name || '')}</span>
+      ${wsMulti() && job.workshop_name ? `<span class="badge" title="The workshop doing this repair">🏭 ${esc(job.workshop_name)}</span>` : ''}
       <div class="spacer"></div>
       ${!isClosed && !isPartial && canDo('stores.mrn.create') ? '<button class="sm" id="jobreqmrn" title="Create a Material Request Note (MRN) for this job">+ Request Parts (MRN)</button>' : ''}
       ${!isClosed && !isPartial && canDo('stores.stock_issue') ? '<button class="sm primary" id="jobissue" title="Issue stock from store to this job card">⚡ Issue to Job</button>' : ''}
       ${canDo('jobs.edit') && !isPartial ? '<button class="sm" id="editjob" title="Change the vehicle, description or type">✎ Edit</button>' : ''}
+      ${!fld.field && canField && !isPartial ? '<button class="sm" id="fldmark" title="The repair is done at the site, not in the workshop">📍 In the field…</button>' : ''}
       ${job.type === 'service' && canDo('jobs.flat_labour') && job.status !== 'CLOSED' ? `<button class="sm" id="flatlabour">Service labour${job.flat_labour != null ? ': ' + money(job.flat_labour) : ' (flat)'}</button>` : ''}
       <a class="btn primary sm" href="/api/reports/job/${job.id}/report.html" target="_blank" title="Full job report — parts requested & received, daily work done, and costs">📋 Job Report</a>
       <a class="btn sm" href="/api/reports/job/${job.id}/costsheet.html" target="_blank">🖨 Cost Sheet</a>
     </div>
     ${job.type === 'service' ? `<p class="muted" style="font-size:12px">Service job — labour is a flat charge${job.flat_labour == null ? ' (not set yet)' : ''}, not hours×rate.</p>` : ''}
     <p>${esc(job.description || '')}</p>
+    ${(j.handovers || []).map((h) => `<p class="muted" style="font-size:13px;margin:4px 0">🔀 Sent from <b>${esc(h.from_name || '—')}</b> to <b>${esc(h.to_name || '—')}</b> on ${esc(String(h.moved_at || '').slice(0, 10))}${h.moved_by ? ` by ${esc(h.moved_by)}` : ''} — ${esc(h.reason)}</p>`).join('')}
+    ${fieldPanel}
+    ${attendedPanel(j.attended, job)}
     ${j.continues ? `<p class="muted" style="font-size:13px">↪ Continues ${linkJob(j.continues)} — the vehicle's earlier job, partly closed.</p>` : ''}
     ${isPartial ? `<div class="card section" style="border-left:4px solid var(--violet)">
       <b>◐ Partly closed ${esc(String(job.partial_closed_at || '').slice(0, 10))}</b>${job.partial_note ? ` — ${esc(job.partial_note)}` : ''}
@@ -2551,6 +3586,7 @@ async function jobDetail(c, id) {
       ${isClosed
         ? `<p class="muted" style="margin-top:10px">Closed ${esc(String(job.completed_at || job.closed_at || '').slice(0, 10))} — locked for editing. ${partialOn ? 'Request a reopen to add more work or costs.' : (j.canReopen ? 'Reopen it to add more work or costs.' : 'Ask a manager or the admin to reopen it.')}</p>`
         : !r.ready ? `<p class="err" style="margin-top:10px">⚠ ${isPartial ? 'Still missing before it can close fully' : 'Closure gate'} — ${r.missing.length} line(s):</p><ul>${r.missing.map((m) => `<li class="muted">${esc(m)}</li>`).join('')}</ul>` : `<p class="ok" style="margin-top:10px">✓ Fully priced — ready to close${partialOn ? ' fully' : ''}</p>`}
+      ${overCloseLimit && j.nextStates.includes('CLOSED') ? `<p style="margin-top:8px"><span class="badge amber">Above your limit</span> This job costs ${esc(money(j.closeLimit.value))}. Your limit for closing a job is ${esc(money(j.closeLimit.limit))}. Needs: ${esc(j.closeLimit.who_can.join(', '))}.</p>` : ''}
       ${reopens.length ? `<p class="muted" style="margin-top:10px;font-size:12px"><b>Reopen history</b></p><ul style="margin:4px 0 0">${reopens.map((x) => `<li class="muted" style="font-size:12px">${esc(String(x.reopened_at || '').slice(0, 10))} by ${esc(x.reopened_by_name || '—')} — ${esc(x.reason)}${x.prev_completed_at ? ` <span class="note">(was closed ${esc(String(x.prev_completed_at).slice(0, 10))})</span>` : ''}</li>`).join('')}</ul>` : ''}
       ${job.original_completed_at && !isClosed ? `<p class="muted" style="margin-top:8px;font-size:12px">↩ Reopened. When you close it again it goes back into <b>${esc(String(job.original_completed_at).slice(0, 7))}</b>'s cost report, so that month's figures do not change.</p>` : ''}
     </div>` : ''}
@@ -2584,11 +3620,13 @@ async function jobDetail(c, id) {
     <div class="grid section">
       <div class="card"><h3>Cost Breakdown ${job.status === 'CLOSED' ? '(frozen snapshot)' : '(live)'}</h3>
         <div class="cost-line"><span>Labour</span><span>${money(j.cost.labour_cost)}</span></div>
+        ${j.cost.travel_hours ? `<div class="muted" style="font-size:12px;margin:-2px 0 4px">incl. travel ${fldHours(j.cost.travel_hours)} · ${money(j.cost.travel_cost)}</div>` : ''}
         <div class="cost-line"><span>Material</span><span>${money(j.cost.material_cost)}</span></div>
         <div class="cost-line"><span>Oil</span><span>${money(j.cost.oil_cost)}</span></div>
         <div class="cost-line"><span>General</span><span>${money(j.cost.general_cost)}</span></div>
         <div class="cost-line"><span>External</span><span>${money(j.cost.external_cost)}</span></div>
-        ${j.cost.other_cost ? `<div class="cost-line"><span>Other / Recorded</span><span>${money(j.cost.other_cost)}</span></div>` : ''}
+        ${j.cost.field_cost ? `<div class="cost-line"><span>Field transport</span><span>${money(j.cost.field_cost)}</span></div>` : ''}
+        ${Math.abs((j.cost.other_cost || 0) - (j.cost.field_cost || 0)) >= 0.005 ? `<div class="cost-line"><span>Other / Recorded</span><span>${money((j.cost.other_cost || 0) - (j.cost.field_cost || 0))}</span></div>` : ''}
         <div class="cost-line total"><span>Total</span><span>${money(j.cost.total_cost)}</span></div>
       </div>
       <div class="card"><h3>Approvals</h3>
@@ -2618,7 +3656,7 @@ async function jobDetail(c, id) {
           rows.push(`<tr>
               <td>${i === 0 ? date : ''}</td>
               <td>${esc(nm)}</td>
-              <td>${i === 0 ? esc(w.description || '') : ''}</td>
+              <td>${i === 0 ? `${w.travel ? '<span class="badge blue">Travel</span> ' : ''}${esc(w.description || '')}` : ''}</td>
               <td class="num">${num(hrs)}</td>
               <td class="num">${rate == null ? '<span class="badge amber">no rate</span>' : money(rate)}</td>
               <td class="num">${money(amount)}</td>
@@ -2678,6 +3716,7 @@ async function jobDetail(c, id) {
   if (qs('#reopen')) qs('#reopen').onclick = () => reopenJobModal(job, render);
   if (qs('#reopenreq')) qs('#reopenreq').onclick = () => reopenRequestModal(job, render);
   if (qs('#partialclose')) qs('#partialclose').onclick = () => partialCloseModal(job, j, render);
+  if (qs('#jwhy')) qs('#jwhy').onclick = () => reasonModal(job, () => jobDetail(c, id));
   if (qs('#reqapprove')) qs('#reqapprove').onclick = async () => {
     if (!confirm(`Reopen ${job.job_no}?\n\nIt goes back to IN PROGRESS and becomes the vehicle's open job.`)) return;
     try { await api(`/jobs/reopen-requests/${pendingReq.id}/approve`, { method: 'POST', body: {} }); toast(`✓ ${job.job_no} reopened`); render(); }
@@ -2691,6 +3730,15 @@ async function jobDetail(c, id) {
     catch (e) { toast(e.message, 'err'); }
   };
   if (qs('#editjob')) qs('#editjob').onclick = () => editJobModal(job, render);
+  // Stage 6: field work.
+  if (qs('#fldmark')) qs('#fldmark').onclick = () => fieldModal(job.id, { field: false }, render);
+  if (qs('#fldedit')) qs('#fldedit').onclick = () => fieldModal(job.id, fld, render);
+  const fieldStep = (step, label) => async () => {
+    try { await api(`/field/jobs/${job.id}/${step}`, { method: 'POST' }); toast(label); render(); }
+    catch (e) { toast(e.message, 'err'); }
+  };
+  if (qs('#fldarr')) qs('#fldarr').onclick = fieldStep('arrived', 'Arrival recorded');
+  if (qs('#fldwork')) qs('#fldwork').onclick = fieldStep('working', 'Machine working again — recorded');
   if (qs('#jobreqmrn')) qs('#jobreqmrn').onclick = () => newMrnModal({
     job_id: job.id,
     job_no: job.job_no,
@@ -2757,10 +3805,13 @@ async function doTransition(jobId, to, current) {
 // Edit the card itself — vehicle, description, type. The vehicle box is pre-filled with the
 // current one and left alone unless the user actually picks a different vehicle, so simply
 // correcting the description can never move a job to another machine by accident.
-function editJobModal(job, onDone) {
+async function editJobModal(job, onDone) {
   const fld = (...args) => `<div class="fld">${field(...args)}</div>`;
+  const wsd = wsMulti() ? await workshopsData() : null;
   modal(`Edit ${job.job_no}`, `
     ${fld('Description *', 'description', { value: job.description || '' })}
+    ${wsd ? fld('Workshop (who repairs it)', 'workshop_id', { type: 'select', options: wsOptions(wsd), value: job.workshop_id }) : ''}
+    ${wsd ? `<div id="wsreason" style="display:none">${fld('Why does it go to another workshop? *', 'workshop_reason', { placeholder: 'e.g. no crane here, Central has the parts' })}</div>` : ''}
     <div class="row" style="margin-top:8px">
       ${fld('Type', 'type', { type: 'select', value: job.type, options: [{ value: 'repair', label: 'Repair' }, { value: 'service', label: 'Service' }] })}
       <div class="fld">${assetPickerHtml('Vehicle')}</div>
@@ -2770,9 +3821,16 @@ function editJobModal(job, onDone) {
     wireAssetPicker(body);
     const cur = qs('.apick-input', body);
     if (cur) cur.value = job.asset_code || job.asset_reg || '';
+    // Stage 7: sending the card to another workshop asks why.
+    const wsSel = qs('select[name=workshop_id]', body);
+    if (wsSel) wsSel.onchange = () => { qs('#wsreason', body).style.display = Number(wsSel.value) !== Number(job.workshop_id) ? '' : 'none'; };
     qs('#s', body).onclick = async () => {
       const d = formData(body);
       const payload = { description: d.description, type: d.type };
+      if (d.workshop_id && Number(d.workshop_id) !== Number(job.workshop_id)) {
+        payload.workshop_id = Number(d.workshop_id);
+        payload.workshop_reason = d.workshop_reason;
+      }
       // Only send a vehicle when one was actually re-picked; a hidden id appears on selection.
       if (d.asset_id && Number(d.asset_id) !== Number(job.asset_id)) payload.asset_id = Number(d.asset_id);
       const send = async (p) => {
@@ -2787,6 +3845,12 @@ function editJobModal(job, onDone) {
         const r = await send(payload);
         if (!r) return;
         close();
+        // Sent to a workshop out of your reach (Stage 3): the card is theirs now — back to your list.
+        if (payload.workshop_id && ME.workshopsSeen && !ME.workshopsSeen.includes(payload.workshop_id)) {
+          toast(`✓ ${job.job_no} sent to ${wsName(wsd, payload.workshop_id)}`);
+          location.hash = '#/jobs';
+          return;
+        }
         toast('✓ ' + job.job_no + ' updated');
         (r.warnings || []).forEach((w) => toast(w, 'err'));
         if (onDone) onDone();
@@ -2845,7 +3909,7 @@ function closeOnDateModal(jobId, jobNo, onDone) {
   });
 }
 
-// ---- partial close and reopen requests (src/lib/job_close.js; docs/WORKSHOPONE_PLAN.md §3.2)
+// ---- partial close and reopen requests (src/lib/job_close.js; docs/WORKSHOPONE_PLAN.md §A.2)
 
 // Partly close: the work is finished and the vehicle has left, but prices or records are missing.
 function partialCloseModal(job, detail, onDone) {
@@ -2971,6 +4035,7 @@ async function addDailyModal(jobId, assetId) {
       ${field('Hours', 'hours', { type: 'number' })}
       <div id="jd-hint" style="font-size:12px;margin-top:4px"></div>
       ${assetPickerHtml('Vehicle / machine' + (assetId ? ' (defaults to this card)' : ' — this card has none, so name it here'))}
+      ${field('Travel (to or from a field job)', 'travel', { type: 'checkbox' })}
       ${field('External repair (outside work)', 'is_external', { type: 'checkbox' })}
       ${field('External value (if external)', 'external_value', { type: 'number' })}
       <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Add</button></div>
@@ -3003,7 +4068,8 @@ async function addDailyModal(jobId, assetId) {
       let rows = [];
       // asset_id sorts this job's own machine to the top, as the parts picker does.
       try {
-        rows = await api('/jobs/unassigned/daily-work?limit=200'
+        // job_id: the pool of this card's workshop (one per workshop, Stage 3).
+        rows = await api('/jobs/unassigned/daily-work?limit=200&job_id=' + jobId
           + (assetId ? '&asset_id=' + assetId : '')
           + (q ? '&q=' + encodeURIComponent(q) : ''));
       }
@@ -3075,7 +4141,7 @@ async function addPartModal(jobId, assetId) {
       const q = qs('#ptq', body).value.trim();
       let d = { receipts: [], parts: [] };
       try {
-        d = await api('/jobs/unassigned/parts?limit=200'
+        d = await api('/jobs/unassigned/parts?limit=200&job_id=' + jobId
           + (assetId ? '&asset_id=' + assetId : '') + (q ? '&q=' + encodeURIComponent(q) : ''));
       } catch (e) { qs('#ptlist', body).innerHTML = `<div class="card err">${esc(e.message)}</div>`; return; }
       const rows = [...(d.receipts || []), ...(d.parts || [])];
@@ -3174,7 +4240,7 @@ async function storeCatalogueTab(body) {
 // ---- Stores
 routes.stores = async (c) => {
   const sp = new URLSearchParams(location.hash.split('?')[1] || '');
-  let tab = sp.get('tab') || 'pipeline';
+  let tab = sp.get('tab') || 'monitor';
 
   // If someone lands on legacy catalogue/categories/reorder/general/items tab, redirect to generalstock
   if (['catalogue', 'categories', 'reorder', 'general', 'items'].includes(tab)) {
@@ -3183,19 +4249,19 @@ routes.stores = async (c) => {
     return;
   }
 
-  // Four everyday areas up front. Movements is a group: it shows a
-  // sub-bar and then reuses the existing view underneath, so nothing had to be rewritten.
+  // One Stores page (stores plan, Part 1): the Monitor, one road from request to issue, and the
+  // transfers. The old tabs still answer: the pipeline hub and the item search became the list of
+  // requested items; "requests & receipts" and "issues & transfers" are its views and Transfers.
+  if (tab === 'pipeline' || tab === 'search') tab = 'lines';
+  if (tab === 'paperwork') tab = sp.get('sub') || 'mrn';
+  if (tab === 'movements') tab = sp.get('sub') || 'issues';
   const GROUPS = {
-    paperwork: { label: '📄 REQUESTS & RECEIPTS', subs: [['mrn', 'Requests (MRN)'], ['grn', 'Receipts (GRN)']] },
-    movements: { label: '🔁 ISSUES & TRANSFERS', subs: [['issues', 'Issues'], ['mtn', 'Transfers (MTN)']] },
+    flow: { label: '🔄 REQUESTS → ISSUE',
+      subs: [['lines', '📋 Items'], ['mrn', 'Requests (MRN)'], ['grn', 'Receipts (GRN)'], ['issues', 'Issues'], ['workspace', '⚡ Receive & price many']] },
   };
-  const PRIMARY = [
-    ['pipeline', '🔄 PIPELINE HUB'],
-    ['search', '🔎 SEARCH'],
-    ['workspace', '⚡ RECEIVE & PRICE'],
-    ['paperwork', GROUPS.paperwork.label],
-    ['movements', GROUPS.movements.label],
-  ];
+  // Part 2: every kind of stock in one view, and the stock take.
+  // Part 4: scrap and waste oil leave on a disposal note.
+  const PRIMARY = [['monitor', '📊 MONITOR'], ['flow', GROUPS.flow.label], ['mtn', '🔁 TRANSFERS'], ['stock', '📦 STOCK'], ['counts', '🧮 STOCK TAKE'], ['disposal', '♻️ DISPOSAL']];
 
   const group = GROUPS[tab] ? tab : null;
   if (group) tab = sp.get('sub') || GROUPS[group].subs[0][0];      // a group renders its sub-view
@@ -3209,82 +4275,18 @@ routes.stores = async (c) => {
 
   c.innerHTML = pageHeader('Stores') + primaryBar + subBar + '<div id="storebody" class="muted">Loading…</div>';
   const body = qs('#storebody');
-  if (tab === 'pipeline') {
-    return pipelineTab(body, sp);
+  if (tab === 'monitor') {
+    return storesMonitor(body);
+  } else if (tab === 'stock') {
+    return storesStock(body, sp);
+  } else if (tab === 'counts') {
+    return sp.get('id') ? countDetail(body, sp.get('id'), sp) : countList(body, sp);
+  } else if (tab === 'disposal') {
+    return sp.get('id') ? disposalDetail(body, sp.get('id')) : disposalList(body, sp);
+  } else if (tab === 'lines') {
+    return storesLines(body, sp);
   } else if (tab === 'workspace') {
     return receivePriceTab(body);
-  } else if (tab === 'search') {
-    // One row per requested item — search by vehicle, MRN no, item, job, supplier or invoice,
-    // and sort by any column. Clicking a header toggles asc/desc.
-    const sp0 = new URLSearchParams(location.hash.split('?')[1] || '');
-    let sort = sp0.get('sort') || 'date_desc';
-    body.innerHTML = `
-      <div class="toolbar">
-        <input id="sxq" type="search" placeholder="Search vehicle / MRN no / item / job / supplier…" value="${esc(sp0.get('q') || '')}" style="max-width:320px">
-        <select id="sxsrc" style="max-width:150px"><option value="">All sources</option><option value="head_office">Head Office</option><option value="local_purchase">Local Purchase</option></select>
-        <select id="sxstatus" style="max-width:170px"><option value="">All statuses</option><option value="pending">Pending (not full)</option><option value="received">Fully received</option><option value="unpriced">Has unpriced GRN</option></select>
-        <button class="sm" id="sxclear">Clear</button>
-        <a class="btn sm" id="sxxls" href="#">⬇ Excel</a>
-        <div class="spacer"></div><span class="muted" id="sxcount"></span>
-      </div>
-      <div id="sxtable"><div class="muted">Type to search, or browse the latest requests below…</div></div>`;
-
-    const qstr = () => {
-      const q = qs('#sxq').value.trim(), src = qs('#sxsrc').value, st = qs('#sxstatus').value;
-      return (q ? '&q=' + encodeURIComponent(q) : '') + (src ? '&source=' + src : '') + (st ? '&status=' + st : '') + '&sort=' + sort;
-    };
-    // Header definitions: [label, sort key base, numeric?, sort tooltip]
-    // The received date rides UNDER the Recv quantity rather than taking a column of its own:
-    // this table is fit + no-hscroll (table-layout:fixed, no sideways scroll) and already runs
-    // 111px over its 992px box at eleven columns, so a twelfth takes ~9px off every other one
-    // and doubles the number of clipped cells. The header still sorts by the date.
-    const COLS = [
-      ['MRN No', 'mrn'], ['Req Date', 'date'], ['Vehicle', 'vehicle'], ['Item', 'item'],
-      ['Category', null], ['Qty', 'qty', true], ['Recv', 'received', true, 'Quantity received, and the date it arrived — sorts by that date'],
-      ['Pending', 'pending', true],
-      ['Status', 'status'], ['Source', null], ['Value (Rs)', 'value', true],
-    ];
-    const load = async () => {
-      qs('#sxxls').href = '/api/stores/search/export.xlsx?x=1' + qstr();
-      let list;
-      try { list = await api('/stores/search?limit=500' + qstr()); }
-      catch (e) { qs('#sxtable').innerHTML = `<div class="card err">${esc(e.message)}</div>`; return; }
-      qs('#sxcount').textContent = `${list.length}${list.length === 500 ? '+' : ''} item line(s)`;
-      const head = COLS.map(([label, key, num, hint]) => {
-        if (!key) return { label, num };
-        const active = sort === key + '_asc' || sort === key + '_desc';
-        const arrow = active ? (sort.endsWith('_asc') ? ' ▲' : ' ▼') : '';
-        return { label: `<span class="sxsort" data-k="${key}"${hint ? ` title="${esc(hint)}"` : ''} style="cursor:pointer;text-decoration:underline dotted">${esc(label)}${arrow}</span>`, num, html: true };
-      });
-      qs('#sxtable').innerHTML = list.length ? tableWrap(
-        head.map((h) => ({ label: h.label, num: h.num, html: h.html })),
-        list.map((r) => `<tr>
-          <td><a href="#/stores?tab=mrn&id=${r.mrn_id}">${esc(r.mrn_no || '')}</a></td>
-          <td>${esc(String(r.req_date || '').slice(0, 10))}</td>
-          <td>${r.asset_reg || r.asset_code ? `<span class="stamp">${esc(r.asset_reg || r.asset_code)}</span>` : '—'}</td>
-          <td class="desc-col">${esc(r.description || '')}${r.job_no ? ` <span class="muted" style="font-size:11px">· ${esc(r.job_no)}</span>` : ''}</td>
-          <td>${esc(r.category || '')}</td>
-          <td class="num">${num(r.qty)}</td>
-          <td class="num">${num(r.qty_received)}${receivedUnder(r)}</td>
-          <td class="num">${r.pending > 0 ? `<span class="badge amber">${num(r.pending)}</span>` : '—'}</td>
-          <td><span class="badge ${r.status === 'received' ? 'green' : (r.status === 'partial' ? 'blue' : '')}">${esc(r.status)}</span></td>
-          <td>${esc(sourceLabel(r.source))}</td>
-          <td class="num">${r.value ? money(r.value) : '—'}${r.unpriced ? ` <span class="badge amber" title="${r.unpriced} receipt(s) awaiting a price">${r.unpriced} unpriced</span>` : ''}</td></tr>`),
-        { scroll: true, fit: true, noHScroll: true })
-        : '<div class="card"><p class="muted">Nothing matches that search.</p></div>';
-      // Header sorting — same key toggles direction, a new key starts descending.
-      qsa('.sxsort', qs('#sxtable')).forEach((el) => {
-        el.onclick = () => {
-          const k = el.dataset.k;
-          sort = (sort === k + '_desc') ? k + '_asc' : k + '_desc';
-          load();
-        };
-      });
-    };
-    let sxdeb; qs('#sxq').oninput = () => { clearTimeout(sxdeb); sxdeb = setTimeout(load, 250); };
-    qs('#sxsrc').onchange = load; qs('#sxstatus').onchange = load;
-    qs('#sxclear').onclick = () => { qs('#sxq').value = ''; qs('#sxsrc').value = ''; qs('#sxstatus').value = ''; sort = 'date_desc'; load(); };
-    return load();
   } else if (tab === 'categories') {
     return categoriesTab(body);
   } else if (tab === 'general' || tab === 'catalogue') {
@@ -3478,17 +4480,32 @@ routes.stores = async (c) => {
       const list = await api('/stores/issues?limit=500' + (q ? '&q=' + encodeURIComponent(q) : ''));
       qs('#icount').textContent = `${list.length}${list.length === 500 ? '+' : ''} issue${list.length === 1 ? '' : 's'}`;
       qs('#itable').innerHTML = tableWrap(
-        [{ label: 'Date' }, { label: 'Vehicle' }, { label: 'Job Card' }, { label: 'Item / description' }, { label: 'Category' }, { label: 'Qty', num: true }, { label: 'Unit Price', num: true }, { label: 'Issued by' }],
+        [{ label: 'Date' }, { label: 'Vehicle' }, { label: 'Job Card' }, { label: 'Item / description' }, { label: 'Category' }, { label: 'Qty', num: true }, { label: 'Unit Price', num: true }, { label: 'Issued by' }]
+          .concat(canReturn ? [{ label: '' }] : []),
         list.map((i) => `<tr>
           <td>${esc((i.issue_date || '').slice(0, 10))}</td>
           <td>${esc(i.asset_code || '—')}</td>
           <td>${i.job_no ? `<a href="#/jobs/${i.job_id}">${esc(i.job_no)}</a>` : '<span class="muted">—</span>'}</td>
           <td>${esc(i.description)}</td>
           <td>${esc(i.category || '')}${i.sub_category ? ` <span class="muted" style="font-size:11px">› ${esc(i.sub_category)}</span>` : ''}</td>
-          <td class="num">${num(i.qty)}</td>
+          <td class="num">${num(i.qty)}${i.returned > 0 ? `<br><span class="badge blue" title="Brought back unused">${num(i.returned)} returned</span>` : ''}</td>
           <td class="num">${i.unit_price == null ? '—' : money(i.unit_price)}</td>
-          <td>${esc(i.issued_by || '')}</td></tr>`), { scroll: true });
+          <td>${esc(i.issued_by || '')}</td>
+          ${canReturn ? `<td>${!i.voided && i.qty - (i.returned || 0) > 0.001 ? `<button class="sm" data-ret="${i.id}" data-left="${i.qty - (i.returned || 0)}" data-desc="${esc(i.description)}" title="Parts brought back unused go back into the store">↩ Return</button>` : ''}</td>` : ''}</tr>`), { scroll: true });
+      // Stage 6: parts brought back unused — back into the store, off the job's cost.
+      qsa('[data-ret]', qs('#itable')).forEach((b) => { b.onclick = () => modal(`Return to store · ${b.dataset.desc}`, `
+        ${field('Quantity brought back', 'qty', { type: 'number', value: b.dataset.left })}
+        ${field('Date', 'return_date', { type: 'date', value: new Date().toISOString().slice(0, 10) })}
+        ${field('Note (optional)', 'note')}
+        <p class="muted" style="font-size:12px">It goes back into the store it left, and comes off the job's cost.</p>
+        <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Return to store</button></div>`, (mb, close) => {
+        qs('#s', mb).onclick = async () => {
+          try { const r = await api(`/stores/issues/${b.dataset.ret}/return`, { method: 'POST', body: formData(mb) }); close(); toast(`Returned ${num(r.qty)}`); load(); }
+          catch (e) { toast(e.message, 'err'); }
+        };
+      }); });
     };
+    const canReturn = canDo('stores.issue_return');
     let ideb; qs('#iq').oninput = () => { clearTimeout(ideb); ideb = setTimeout(load, 250); };
     if (qs('#nis')) qs('#nis').onclick = () => newIssueModal(load);
     await load();
@@ -3527,7 +4544,7 @@ routes.stores = async (c) => {
         list.map((t) => `<tr>
           <td>${(t.item_count || 1) > 1 ? `<button class="sm" data-exp="${t.id}" title="Show the items on this transfer" style="padding:0 6px;margin-right:4px">▸</button>` : ''}<b>${esc(t.mtn_no)}</b></td>
           <td>${esc(String(t.txn_date || '').slice(0, 10))}</td>
-          <td class="desc-col">${esc(t.description || '')}</td>
+          <td class="desc-col">${esc(t.description || '')}${t.moves_stock ? ' <span class="badge green" title="Moves stock from one store to another">moves stock</span>' : ''}</td>
           <td class="num">${(t.item_count || 1) > 1 ? `<span class="badge blue">${t.item_count}</span>` : '1'}</td>
           <td class="num">${num(t.qty)}</td>
           <td>${esc(t.from_location || t.from_asset_code || '')}</td><td>${esc(t.to_location || t.to_asset_code || '')}</td>
@@ -3552,7 +4569,7 @@ routes.stores = async (c) => {
             holder.firstChild.innerHTML = tableWrap(
               [{ label: '#', num: true, width: '38px' }, { label: 'Item' }, { label: 'Qty', num: true, width: '70px' },
               { label: 'Unit', width: '64px' }, { label: 'Category' }, { label: 'From' }, { label: 'To' }, { label: 'Reason' }],
-              d.lines.map((l, i) => `<tr><td class="num">${i + 1}</td><td>${esc(l.description || '')}</td>
+              d.lines.map((l, i) => `<tr><td class="num">${i + 1}</td><td>${esc(l.description || '')}${l.from_store ? `<br><span class="muted" style="font-size:12px">stock: ${esc(l.from_store)} → ${esc(l.to_store)}</span>` : ''}</td>
               <td class="num">${num(l.qty)}</td><td>${esc(l.unit || '')}</td><td>${esc(l.category || '')}</td>
               <td>${esc(l.from_location || l.from_asset_code || '')}</td>
               <td>${esc(l.to_location || l.to_asset_code || '')}</td>
@@ -3714,273 +4731,165 @@ async function categoriesTab(body) {
 }
 
 // ---- Material Pipeline Cockpit Hub (ReQuest ➔ Received ➔ Issue) ------------
-async function pipelineTab(body, sp) {
-  let activeStage = sp.get('stage') || 'ready';
-  let searchTerm = sp.get('q') || '';
+// ---- Stores plan, Part 1: the Monitor and the list of requested items -------------------------
+// src/lib/stores_flow.js. Every requested item walks one road — requested, approved, bought,
+// received, priced, issued — and each screen here reads where it has got to.
+const FLOW_STEPS = [
+  ['open', 'All to do'], ['requested', 'To certify'], ['certified', 'To approve'], ['to_buy', 'To buy'],
+  ['on_order', 'On order'], ['unpriced', 'To price'], ['ready', 'Ready to issue'], ['done', 'Done'],
+  ['rejected', 'Rejected'], ['all', 'All (with imported history)'],
+];
+const FLOW_STEP_LABEL = Object.fromEntries(FLOW_STEPS.concat([['imported', 'Imported history']]));
+const FLOW_KINDS = [['', 'All kinds'], ['general', 'Parts & general'], ['oil', 'Lubricants'], ['filter', 'Filters'], ['tyre', 'Tyres'], ['battery', 'Batteries']];
+const FLOW_KIND_LABEL = Object.fromEntries(FLOW_KINDS);
+const ROAD_WORD = { done: 'done', part: 'part done', now: 'waiting here', todo: 'not yet', stop: 'stopped' };
+const roadBar = (r) => `<div class="road">${r.road.map((x) => `<span class="rd rd-${x.state}" title="${esc(x.label)}: ${ROAD_WORD[x.state] || x.state}">${esc(x.label)}</span>`).join('')}</div>`;
 
+async function storesMonitor(body) {
+  const m = await api('/stores/flow/monitor');
+  const s = m.steps;
+  const card = (n, label, href, tone, note) => `<a class="card stat" href="${href}" style="text-decoration:none">
+      <span class="n"${tone && n ? ` style="color:var(--${tone})"` : ''}>${n}</span><span class="l">${esc(label)}</span>${note ? `<span class="muted" style="font-size:11px">${esc(note)}</span>` : ''}</a>`;
+  const at = (step) => `#/stores?tab=flow&sub=lines&step=${step}`;
   body.innerHTML = `
-    <div style="margin-bottom:12px">
-      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
-        <div>
-          <h2 style="margin:0;font-size:18px">🔄 Material Pipeline Hub</h2>
-          <span class="muted" style="font-size:12px">End-to-end trace: Material Requisitions (MRN) ➔ Goods Received (GRN) ➔ Material Issues (Job Cards)</span>
-        </div>
-        <div style="display:flex;gap:6px">
-          ${canDo('stores.mrn.create') ? '<button class="sm" id="pipenewmrn">+ New Request (MRN)</button>' : ''}
-          ${canDo('stores.grn.receive') ? '<a class="btn sm" href="#/stores?tab=workspace&mode=receive">📥 Fast Receive</a>' : ''}
-          ${canDo('stores.stock_issue') ? '<button class="sm primary" id="pipenewissue">⚡ Direct Issue</button>' : ''}
-        </div>
-      </div>
+    <p class="muted" style="margin-top:0">What is waiting at each step${m.store ? ` — ${esc(m.store.label)}` : ''}. Click a number to see the items.</p>
+    <h3 style="margin:10px 0 6px">Requests</h3>
+    <div class="grid">
+      ${card(s.requested, 'To certify', at('requested'), 'amber', `${m.to_certify} request${m.to_certify === 1 ? '' : 's'}`)}
+      ${card(s.certified, 'To approve', at('certified'), 'amber', `${m.to_approve} request${m.to_approve === 1 ? '' : 's'}`)}
+      ${card(s.to_buy, 'To buy', at('to_buy'), 'amber')}
+      ${card(s.on_order, 'On order', at('on_order'))}
     </div>
-
-    <!-- 4 Pipeline Stage KPI Cards -->
-    <div class="grid" id="pipe-kpis" style="grid-template-columns:repeat(auto-fit, minmax(200px, 1fr));gap:12px;margin-bottom:14px">
-      <div class="card muted" style="padding:12px">Loading pipeline metrics…</div>
+    <h3 style="margin:14px 0 6px">In the store</h3>
+    <div class="grid">
+      ${card(m.received_today, 'Received today', '#/stores?tab=flow&sub=grn')}
+      ${card(s.unpriced, 'To price', at('unpriced'), 'amber', `${s.unpriced_receipts} receipt${s.unpriced_receipts === 1 ? '' : 's'} without a price`)}
+      ${card(s.ready, 'Ready to issue', at('ready'), 'blue', 'received for a job, not handed over')}
+      ${card(m.issued_today, 'Issued today', '#/stores?tab=flow&sub=issues')}
     </div>
+    <h3 style="margin:14px 0 6px">Watch</h3>
+    <div class="grid">
+      ${card(m.transfers_week, 'Transfers (7 days)', '#/stores?tab=mtn')}
+      ${card(m.low_stock, 'At or under reorder level', '#/stores?tab=stock', 'red')}
+      ${card(m.battery_warranty, 'Battery warranties ending (60 days)', '#/stores?tab=stock&kind=battery&sub=register', 'amber')}
+      ${card(s.open, 'All items still to do', at('open'))}
+    </div>
+    <h3 style="margin:14px 0 6px">Stock take</h3>
+    <div class="grid">
+      ${card(m.stock_takes.counting, 'Being counted', '#/stores?tab=counts&status=counting', 'blue')}
+      ${card(m.stock_takes.submitted, 'Waiting for head office', '#/stores?tab=counts&status=submitted', 'amber')}
+    </div>
+    <h3 style="margin:14px 0 6px">Tyres, batteries &amp; scrap</h3>
+    <div class="grid">
+      ${card(m.old_units_due.tyre, 'Old tyres to record', '#/tbrequests?tab=returns&kind=tyre', 'amber', 'what came off the vehicle')}
+      ${card(m.old_units_due.battery, 'Old batteries to record', '#/tbrequests?tab=returns&kind=battery', 'amber', 'what came off the vehicle')}
+      ${card(m.disposals, 'Disposal notes to approve', '#/stores?tab=disposal&status=open', 'amber')}
+    </div>`;
+}
 
-    <!-- Toolbar: Search & Actions -->
-    <div class="toolbar" style="margin-bottom:10px">
-      <input id="pipeq" type="search" placeholder="Search vehicle / item / MRN / GRN…" value="${esc(searchTerm)}" style="max-width:320px">
-      <button class="sm" id="pipeclear">Clear</button>
-      <button class="sm" id="piperefresh">🔄 Refresh</button>
+async function storesLines(body, sp) {
+  const cur = { step: sp.get('step') || 'open', kind: sp.get('kind') || '', q: sp.get('q') || '', source: sp.get('source') || '' };
+  if (!FLOW_STEPS.some(([k]) => k === cur.step)) cur.step = 'open';
+  const counts = await api('/stores/flow/monitor').then((m) => m.steps).catch(() => ({}));
+  body.innerHTML = `
+    <div class="toolbar">
+      <input id="flq" type="search" placeholder="Search request no / vehicle / item / job / supplier…" value="${esc(cur.q)}" style="max-width:300px">
+      <select id="flkind" style="max-width:160px">${FLOW_KINDS.map(([v, l]) => `<option value="${v}" ${v === cur.kind ? 'selected' : ''}>${l}</option>`).join('')}</select>
+      <select id="flsrc" style="max-width:160px"><option value="">All sources</option><option value="head_office" ${cur.source === 'head_office' ? 'selected' : ''}>Head Office</option><option value="local_purchase" ${cur.source === 'local_purchase' ? 'selected' : ''}>Local Purchase</option></select>
+      <a class="btn sm" id="flxls" href="#">⬇ Excel</a>
       <div class="spacer"></div>
-      <span class="muted" id="pipecount"></span>
+      ${canDo('stores.mrn.create') ? '<button class="sm" id="flnew">+ New request (MRN)</button>' : ''}
+      ${canDo('stores.stock_issue') ? '<button class="sm primary" id="flissue">⚡ Direct issue</button>' : ''}
     </div>
-
-    <!-- Stage Table Content -->
-    <div id="pipetable"><div class="muted">Loading stage data…</div></div>
-  `;
-
-  // Wire top action buttons
-  const btnNewMrn = qs('#pipenewmrn', body);
-  if (btnNewMrn) btnNewMrn.onclick = () => newMrnModal();
-  const btnNewIssue = qs('#pipenewissue', body);
-  if (btnNewIssue) btnNewIssue.onclick = () => newIssueModal(() => loadData(activeStage));
-
-  const inputQ = qs('#pipeq', body);
-  const btnClear = qs('#pipeclear', body);
-  const btnRefresh = qs('#piperefresh', body);
-
-  if (btnClear) btnClear.onclick = () => { inputQ.value = ''; searchTerm = ''; loadData(activeStage); };
-  if (btnRefresh) btnRefresh.onclick = () => loadData(activeStage);
-
-  let searchTimer = null;
-  inputQ.oninput = () => {
-    clearTimeout(searchTimer);
-    searchTimer = setTimeout(() => {
-      searchTerm = inputQ.value.trim();
-      loadStageTable(activeStage);
-    }, 250);
+    <div class="pill-row" style="margin:0 0 10px;flex-wrap:wrap;gap:6px">${FLOW_STEPS.map(([k, l]) => `<button class="sm ${k === cur.step ? 'primary' : ''}" data-step="${k}">${esc(l)}${counts[k] != null ? ` <span class="badge">${counts[k]}</span>` : ''}</button>`).join('')}</div>
+    <div id="fltable"><div class="muted">Loading…</div></div>`;
+  const qstr = () => {
+    const p = new URLSearchParams({ step: cur.step });
+    if (cur.kind) p.set('kind', cur.kind);
+    if (cur.q) p.set('q', cur.q);
+    if (cur.source) p.set('source', cur.source);
+    return p.toString();
   };
-
-  let summary = null;
-  async function loadSummary() {
-    try {
-      summary = await api('/stores/pipeline/summary');
-    } catch (e) {
-      summary = { requests_pending: 0, awaiting_delivery: 0, ready_in_store: 0, issued_today: 0 };
-    }
-    renderKpis();
-  }
-
-  function renderKpis() {
-    const kpisEl = qs('#pipe-kpis', body);
-    if (!kpisEl || !summary) return;
-    const stages = [
-      { id: 'requests', num: '1', title: 'ReQuests (MRN)', count: summary.requests_pending, note: 'Pending approvals', icon: '📝' },
-      { id: 'delivery', num: '2', title: 'Awaiting Delivery', count: summary.awaiting_delivery, note: 'Ordered items', icon: '🚚' },
-      { id: 'ready', num: '3', title: 'Ready in Store', count: summary.ready_in_store, note: 'On shelf waiting to issue', icon: '📦' },
-      { id: 'issued', num: '4', title: 'Issued to Jobs', count: summary.issued_today, note: 'Issued today', icon: '⚡' },
-    ];
-
-    kpisEl.innerHTML = stages.map((s) => `
-      <div class="card ${s.id === activeStage ? 'pipe-card-active' : ''}" data-pipe-stage="${s.id}" style="cursor:pointer;padding:12px;transition:all 0.15s ease">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
-          <span style="font-size:12px;font-weight:600;color:var(--text-muted)">STAGE ${s.num}</span>
-          <span style="font-size:18px">${s.icon}</span>
-        </div>
-        <div style="font-size:22px;font-weight:700;margin-bottom:2px">
-          ${num(s.count)}
-        </div>
-        <div style="font-size:13px;font-weight:600">${esc(s.title)}</div>
-        <div class="muted" style="font-size:11px">${esc(s.note)}</div>
-      </div>
-    `).join('');
-
-    qsa('[data-pipe-stage]', kpisEl).forEach((card) => {
-      card.onclick = () => {
-        const stage = card.dataset.pipeStage;
-        if (stage === activeStage) return;
-        activeStage = stage;
-        qsa('[data-pipe-stage]', kpisEl).forEach((c) => c.classList.toggle('pipe-card-active', c.dataset.pipeStage === activeStage));
-        loadStageTable(activeStage);
+  const canRx = canDo('stores.grn.receive');
+  const canPrice = canDo('stores.grn.edit');
+  const canIssue = canDo('stores.stock_issue');
+  const load = async () => {
+    history.replaceState(null, '', '#/stores?tab=flow&sub=lines&' + qstr());
+    qs('#flxls', body).href = '/api/stores/flow/export.xlsx?' + qstr();
+    let rows;
+    try { rows = await api('/stores/flow?limit=300&' + qstr()); } catch (e) { qs('#fltable', body).innerHTML = `<div class="card err">${esc(e.message)}</div>`; return; }
+    const tb = (r) => r.kind === 'tyre' || r.kind === 'battery';
+    const actions = (r) => {
+      const b = [];
+      const live = !['rejected', 'imported'].includes(r.step);
+      const approved = r.road[1].state === 'done';
+      if (live && canRx && approved && r.received < r.qty - 0.001) b.push(`<button class="sm" data-rx="${r.id}">📥 Receive</button>`);
+      if (canPrice && r.price_grn) b.push(`<button class="sm" data-price="${r.id}">💲 Price</button>`);
+      if (live && r.on_shelf > 0) {
+        if (tb(r)) b.push('<a class="btn sm" href="#/tbrequests" title="Tyres and batteries are fitted from the Tyre &amp; Battery page">⚡ Issue</a>');
+        else if (canIssue && r.shelf) b.push(`<button class="sm primary" data-iss="${r.id}">⚡ Issue</button>`);
+      }
+      b.push(`<a class="btn sm" href="#/stores?tab=mrn&id=${r.mrn_id}">Open</a>`);
+      return b.join(' ');
+    };
+    const byId = new Map(rows.map((r) => [String(r.id), r]));
+    qs('#fltable', body).innerHTML = rows.length ? tableWrap(
+      [{ label: 'Request' }, { label: 'Item', cls: 'desc-col' }, { label: 'Progress' }, { label: '' }],
+      rows.map((r) => `<tr>
+        <td><a href="#/stores?tab=mrn&id=${r.mrn_id}"><b>${esc(r.mrn_no || '')}</b></a> <span class="muted" style="font-size:11px">${esc(String(r.req_date || '').slice(0, 10))}${wsMulti() && r.workshop_code ? ' · ' + esc(r.workshop_code) : ''}</span>
+          <br>${r.asset_reg || r.asset_code ? `<span class="stamp">${esc(r.asset_reg || r.asset_code)}</span>` : (r.request_type === 'general' ? '<span class="muted" style="font-size:12px">Store stock</span>' : '')}${r.job_no ? ` <a href="#/jobs/${r.job_id}" style="font-size:11px">${esc(r.job_no)}</a>` : ''}</td>
+        <td class="desc-col">${esc(r.description || '')} <span class="badge">${esc(FLOW_KIND_LABEL[r.kind] || r.kind)}</span>
+          <br><span class="muted" style="font-size:12px">received ${num(r.received)} of ${num(r.qty)}${r.issued > 0 ? ` · issued ${num(r.issued)}` : ''}</span>${r.unpriced ? ` <span class="badge amber">${r.unpriced} unpriced</span>` : ''}</td>
+        <td>${roadBar(r)}<span class="muted" style="font-size:11px">${esc(FLOW_STEP_LABEL[r.step] || r.step)}</span></td>
+        <td><div style="display:flex;flex-wrap:wrap;gap:4px;justify-content:flex-end">${actions(r)}</div></td></tr>`),
+      { scroll: true })
+      + (rows.length === 300 ? '<p class="muted" style="font-size:12px">Showing the newest 300. Search or choose a step to narrow the list.</p>' : '')
+      : '<div class="card"><p class="muted">Nothing here.</p></div>';
+    qsa('[data-rx]', body).forEach((b) => { b.onclick = () => flowReceiveModal(byId.get(b.dataset.rx), load); });
+    qsa('[data-price]', body).forEach((b) => { b.onclick = () => grnPriceModal(byId.get(b.dataset.price).price_grn, load); });
+    qsa('[data-iss]', body).forEach((b) => {
+      b.onclick = () => {
+        const r = byId.get(b.dataset.iss);
+        newIssueModal(load, { grn_id: r.shelf.grn_id, grn_no: r.shelf.grn_no, mrn_no: r.mrn_no, description: r.description, section: r.shelf.section,
+          unit: r.shelf.unit, unit_price: r.shelf.unit_price, remaining: r.shelf.remaining, job_id: r.job_id, job_no: r.job_no,
+          asset_id: r.asset_id, asset_code: r.asset_reg || r.asset_code });
       };
     });
-  }
+  };
+  qsa('[data-step]', body).forEach((b) => { b.onclick = () => { cur.step = b.dataset.step; qsa('[data-step]', body).forEach((x) => x.classList.toggle('primary', x === b)); load(); }; });
+  qs('#flkind', body).onchange = (e) => { cur.kind = e.target.value; load(); };
+  qs('#flsrc', body).onchange = (e) => { cur.source = e.target.value; load(); };
+  let deb; qs('#flq', body).oninput = (e) => { clearTimeout(deb); deb = setTimeout(() => { cur.q = e.target.value.trim(); load(); }, 250); };
+  if (qs('#flnew', body)) qs('#flnew', body).onclick = () => newMrnModal();
+  if (qs('#flissue', body)) qs('#flissue', body).onclick = () => newIssueModal(load);
+  await load();
+}
 
-  async function loadStageTable(stage) {
-    const tableBox = qs('#pipetable', body);
-    const countEl = qs('#pipecount', body);
-    tableBox.innerHTML = '<div class="muted" style="padding:16px 0">Loading…</div>';
-    countEl.textContent = '';
-
-    const q = searchTerm ? '&q=' + encodeURIComponent(searchTerm) : '';
-
-    if (stage === 'ready') {
+// Mark an item received: how many came, when, and — if known — from whom and at what price. The
+// price can follow later. The server refuses more than was asked for.
+function flowReceiveModal(r, onDone) {
+  const left = Math.round((r.qty - r.received) * 100) / 100;
+  modal('Mark received · ' + r.description, `
+    <p class="muted" style="margin-top:0">Request ${esc(r.mrn_no)} · asked ${num(r.qty)} · received so far ${num(r.received)}</p>
+    ${field('Quantity received now *', 'qty', { type: 'number', value: left })}
+    ${field('Date received', 'delivery_date', { type: 'date', value: localNowInput().slice(0, 10) })}
+    <div class="row"><div>${field('Supplier', 'supplier', { value: r.bought_from || '' })}</div><div>${field('Invoice no', 'invoice_no')}</div></div>
+    ${field('Unit price (Rs) — can be added later', 'unit_price', { type: 'number' })}
+    ${r.kind === 'filter' ? field('Part number on the box, if different', 'received_part_no') : ''}
+    <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Mark received</button></div>`, (mb, close) => {
+    qs('#s', mb).onclick = async () => {
+      const f = formData(mb);
+      if (!(Number(f.qty) > 0)) return toast('How many arrived?', 'err');
       try {
-        const list = await api('/stores/received?allow_empty=1&limit=300' + q);
-        countEl.textContent = `${list.length} shelf item(s)`;
-        if (!list.length) {
-          tableBox.innerHTML = '<div class="card muted" style="padding:20px;text-align:center">No received items currently waiting in store. Everything is fully issued!</div>';
-          return;
-        }
-        const rows = list.map((r) => {
-          const jobOrVeh = r.job_no
-            ? `<a href="#/jobs/${r.job_id}">Job ${esc(r.job_no)}</a>${r.asset_reg || r.asset_code ? ` <span class="stamp">${esc(r.asset_reg || r.asset_code)}</span>` : ''}`
-            : (r.asset_reg || r.asset_code ? `<span class="stamp">${esc(r.asset_reg || r.asset_code)}</span>` : '<span class="muted">General</span>');
-
-          const issueData = {
-            job_id: r.job_id,
-            job_no: r.job_no,
-            asset_id: r.asset_id,
-            grn_id: r.grn_id,
-            mrn_no: r.mrn_no,
-            grn_no: r.grn_no,
-            description: r.description,
-            remaining: r.remaining,
-            unit_price: r.unit_price,
-          };
-
-          const actBtn = canDo('stores.stock_issue')
-            ? `<button class="sm primary pipe-issue-btn" data-shelf-item='${esc(JSON.stringify(issueData))}'>⚡ Issue to Job</button>`
-            : '—';
-
-          return `<tr>
-            <td>${r.mrn_id ? `<a href="#/stores?tab=mrn&id=${r.mrn_id}">${esc(r.mrn_no || 'MRN')}</a>` : '—'}</td>
-            <td>${esc(String(r.received_date || '').slice(0, 10))}</td>
-            <td>${jobOrVeh}</td>
-            <td class="desc-col"><b>${esc(r.description || '')}</b></td>
-            <td>${esc(r.category || 'general')}</td>
-            <td class="num">${num(r.qty)}</td>
-            <td class="num">${num(r.qty - r.remaining)}</td>
-            <td class="num"><span class="pipe-badge avail">● ${num(r.remaining)}</span></td>
-            <td class="num">${r.unit_price != null ? money(r.unit_price) : '<span class="badge amber">unpriced</span>'}</td>
-            <td class="num">${r.unit_price != null ? money(r.remaining * r.unit_price) : '—'}</td>
-            <td>${actBtn}</td>
-          </tr>`;
-        });
-
-        tableBox.innerHTML = tableWrap([
-          { label: 'MRN' }, { label: 'Date Recd' }, { label: 'Target / Vehicle' },
-          { label: 'Item Description' }, { label: 'Category' },
-          { label: 'Qty Recd', num: true }, { label: 'Issued', num: true },
-          { label: 'Ready on Shelf', num: true }, { label: 'Unit Price', num: true },
-          { label: 'Value', num: true }, { label: 'Action' }
-        ], rows);
-
-        qsa('.pipe-issue-btn', tableBox).forEach((b) => {
-          b.onclick = () => {
-            try {
-              const item = JSON.parse(b.dataset.shelfItem);
-              newIssueModal(() => { loadSummary(); loadStageTable('ready'); }, item);
-            } catch (err) { console.error(err); }
-          };
-        });
-      } catch (e) {
-        tableBox.innerHTML = `<div class="card err">${esc(e.message)}</div>`;
-      }
-    } else if (stage === 'requests') {
-      try {
-        let list = await api('/stores/mrn?approval=pending&limit=100' + q);
-        countEl.textContent = `${list.length} pending request(s)`;
-        if (!list.length) {
-          tableBox.innerHTML = '<div class="card muted" style="padding:20px;text-align:center">No active material requests pending approval. All caught up!</div>';
-          return;
-        }
-        const rows = list.map((m) => `<tr>
-          <td><a href="#/stores?tab=mrn&id=${m.id}"><b>${esc(m.mrn_no)}</b></a></td>
-          <td>${esc(String(m.req_date || '').slice(0, 10))}</td>
-          <td>${m.asset_reg || m.asset_code ? `<span class="stamp">${esc(m.asset_reg || m.asset_code)}</span>` : esc(m.purpose || 'General')}</td>
-          <td>${esc(m.requested_by || '—')}</td>
-          <td class="num">${num(m.line_count)}</td>
-          <td><span class="badge amber">${esc(m.approval_status || m.status)}</span></td>
-          <td><a class="btn sm" href="#/stores?tab=mrn&id=${m.id}">Open MRN →</a></td>
-        </tr>`);
-
-        tableBox.innerHTML = tableWrap([
-          { label: 'MRN No' }, { label: 'Req Date' }, { label: 'Target / Vehicle' },
-          { label: 'Requested By' }, { label: 'Lines', num: true },
-          { label: 'Status' }, { label: 'Action' }
-        ], rows);
-      } catch (e) {
-        tableBox.innerHTML = `<div class="card err">${esc(e.message)}</div>`;
-      }
-    } else if (stage === 'delivery') {
-      try {
-        const list = await api('/stores/awaiting-grn?limit=200' + q);
-        countEl.textContent = `${list.length} item line(s) awaiting delivery`;
-        if (!list.length) {
-          tableBox.innerHTML = '<div class="card muted" style="padding:20px;text-align:center">No items awaiting delivery.</div>';
-          return;
-        }
-        const rows = list.map((r) => `<tr>
-          <td><a href="#/stores?tab=mrn&id=${r.mrn_id}">${esc(r.mrn_no)}</a></td>
-          <td>${esc(String(r.req_date || '').slice(0, 10))}</td>
-          <td>${r.asset_code ? `<span class="stamp">${esc(r.asset_code)}</span>` : '<span class="muted">General</span>'}</td>
-          <td class="desc-col"><b>${esc(r.description || '')}</b></td>
-          <td>${esc(r.category || '—')}</td>
-          <td class="num">${num(r.qty)}</td>
-          <td class="num">${num(r.qty_received || 0)}</td>
-          <td class="num"><span class="pipe-badge pend">${num(r.qty - (r.qty_received || 0))}</span></td>
-          <td>${esc(r.purchase_source || '—')}</td>
-          <td><a class="btn sm primary" href="#/stores?tab=workspace&mode=receive">📥 Receive →</a></td>
-        </tr>`);
-
-        tableBox.innerHTML = tableWrap([
-          { label: 'MRN No' }, { label: 'Req Date' }, { label: 'Vehicle' },
-          { label: 'Item Description' }, { label: 'Category' },
-          { label: 'Qty Req', num: true }, { label: 'Qty Recd', num: true },
-          { label: 'Pending Qty', num: true }, { label: 'Source' }, { label: 'Action' }
-        ], rows);
-      } catch (e) {
-        tableBox.innerHTML = `<div class="card err">${esc(e.message)}</div>`;
-      }
-    } else if (stage === 'issued') {
-      try {
-        const list = await api('/stores/issues?limit=100' + q);
-        countEl.textContent = `${list.length} recent issue(s)`;
-        if (!list.length) {
-          tableBox.innerHTML = '<div class="card muted" style="padding:20px;text-align:center">No issues found.</div>';
-          return;
-        }
-        const rows = list.map((i) => `<tr>
-          <td>${esc(String(i.issue_date || '').slice(0, 10))}</td>
-          <td>${i.job_no ? `<a href="#/jobs/${i.job_id}">Job ${esc(i.job_no)}</a>` : (i.asset_reg || i.asset_code ? `<span class="stamp">${esc(i.asset_reg || i.asset_code)}</span>` : '<span class="muted">General</span>')}</td>
-          <td class="desc-col">${esc(i.description || '')}</td>
-          <td class="num">${num(i.qty)}</td>
-          <td>${esc(i.category || '—')}</td>
-          <td>${esc(i.issued_by || '—')}</td>
-          <td class="num">${i.unit_price != null ? money(i.unit_price) : '—'}</td>
-          <td class="num">${i.unit_price != null ? money(i.qty * i.unit_price) : '—'}</td>
-        </tr>`);
-
-        tableBox.innerHTML = tableWrap([
-          { label: 'Date' }, { label: 'Job / Vehicle' }, { label: 'Item' },
-          { label: 'Qty', num: true }, { label: 'Category' }, { label: 'Issued By' },
-          { label: 'Unit Price', num: true }, { label: 'Total Value', num: true }
-        ], rows);
-      } catch (e) {
-        tableBox.innerHTML = `<div class="card err">${esc(e.message)}</div>`;
-      }
-    }
-  }
-
-  async function loadData(stage) {
-    await loadSummary();
-    await loadStageTable(stage);
-  }
-
-  await loadData(activeStage);
+        const res = await api('/stores/grn/bulk-receive', { method: 'POST', body: { rows: [{
+          mrn_line_id: r.id, qty: f.qty, delivery_date: f.delivery_date || undefined, supplier: f.supplier || undefined,
+          invoice_no: f.invoice_no || undefined, unit_price: f.unit_price === '' ? undefined : f.unit_price, received_part_no: f.received_part_no || undefined,
+        }] } });
+        if (!res.received) return toast('Not received: ' + (((res.skipped || [])[0] || {}).reason || 'nothing to receive'), 'err');
+        close(); toast('Received ' + num(f.qty)); if (onDone) onDone();
+      } catch (e) { toast(e.message, 'err'); }
+    };
+  });
 }
 
 // ---- Receive & Price workspace ---------------------------------------------
@@ -4297,8 +5206,14 @@ async function mrnDetail(body, id) {
   // imported. The approval is not disturbed; the item itself is marked, with the reason.
   const adminAmend = canDo('stores.mrn.amend_settled') && (astatus === 'approved' || isImported);
   const canCertify = !isImported && canDo('stores.mrn.certify') && astatus === 'requested';
-  const canApprove = canDo('stores.mrn.approve') && astatus === 'certified';
+  // Approval limit: above it, the Approve button gives way to who can approve instead.
+  const worth = d.worth;
+  const overLimit = !!(worth && worth.limit && !worth.limit.ok);
+  const canApprove = canDo('stores.mrn.approve') && astatus === 'certified' && !overLimit;
   const canReject = !isImported && canDo('stores.mrn.reject') && astatus !== 'approved' && astatus !== 'rejected';
+  const worthLine = worth ? `<p style="margin:8px 0 0;font-size:13px">Estimated value: <b>${esc(money(worth.value))}</b>
+      <span class="muted">— quantity × last price paid${worth.unpriced ? `; ${worth.unpriced} item(s) have no price yet, so the real cost may be higher` : ''}</span>
+      ${overLimit ? `<br><span class="badge amber">Above your approval limit (${esc(money(worth.limit.limit))})</span> Needs: ${esc(worth.limit.who_can.join(', '))}.` : ''}</p>` : '';
   body.innerHTML = `
     <div class="toolbar"><a class="btn sm" href="#/stores?tab=mrn">← MRN list</a><div class="spacer"></div><button class="btn sm primary" id="mrntrace">🔍 Trace Lifecycle</button> <a class="btn sm" href="/api/stores/mrn/${m.id}/print.html" target="_blank">🖨 Print MRN</a></div>
     <div class="card">
@@ -4307,6 +5222,7 @@ async function mrnDetail(body, id) {
         ${canApprove ? '<button class="sm primary" id="mapprove">✅ Approve</button>' : ''}
         ${canReject ? '<button class="sm danger" id="mreject">Reject</button>' : ''}
       </div>
+      ${worthLine}
       ${isImported ? `<p class="muted" style="margin:8px 0 0">Imported record — predates the approval workflow, so it is treated as already approved. No certification/approval is required.${adminAmend ? ' As an admin you may still add a forgotten item to it: the item is marked as added later, with your reason.' : ''}</p>` : `
       <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-top:8px;font-size:13px">
         <div><b>1 · Requested</b>${m.requested_sig ? `<div style="height:30px"><img src="${m.requested_sig}" style="max-height:30px;max-width:130px"></div>` : ''}<br>${sig(m.requested_by, m.req_date)}<br><span class="muted">Storekeeper</span></div>
@@ -4322,7 +5238,7 @@ async function mrnDetail(body, id) {
         ${canEditReq ? '<button class="sm" id="medit">✎ Edit request</button> <button class="sm" id="maddline">+ Add item</button>' : ''}
         ${adminAmend ? '<button class="sm danger" id="maddline" title="Admin only — the approval stands, and the item is marked as added after it">+ Add item (after approval)</button>' : ''}
       </div>
-      <p class="muted">Date ${esc((m.req_date || '').slice(0, 10))} · Vehicle ${esc(idLabel(m) || '—')} · Job ${m.job_no ? `<a href="#/jobs/${m.job_id}">${esc(m.job_no)}</a> <span class="badge ${STATUS_CLASS[m.job_status] || ''}">${esc(m.job_status || '')}</span>` : 'not linked'} · Source ${esc(sourceLabel(m.purchase_source))}${m.purpose ? ' · ' + esc(m.purpose) : ''}${m.requested_by ? ' · by ' + esc(m.requested_by) : ''}</p>
+      <p class="muted">Date ${esc((m.req_date || '').slice(0, 10))}${wsMulti() && m.workshop_name ? ` · Workshop ${esc(m.workshop_name)}` : ''} · Vehicle ${esc(idLabel(m) || '—')} · Job ${m.job_no ? `<a href="#/jobs/${m.job_id}">${esc(m.job_no)}</a> <span class="badge ${STATUS_CLASS[m.job_status] || ''}">${esc(m.job_status || '')}</span>` : 'not linked'} · Source ${esc(sourceLabel(m.purchase_source))}${m.purpose ? ' · ' + esc(m.purpose) : ''}${m.requested_by ? ' · by ' + esc(m.requested_by) : ''}</p>
       ${canEditReq && astatus === 'certified' ? '<p class="muted" style="font-size:12px;margin:0 0 6px">This request is certified. Changing what was asked for withdraws that certification and sends it back to the Workshop Engineer.</p>' : ''}
       ${astatus === 'approved' ? `<p class="muted" style="font-size:12px;margin:0 0 6px">Approved — the request is now the authority to spend, so it can no longer be changed.${
       // Telling an admin it cannot be changed, next to a button that changes it, would be a lie.
@@ -5005,7 +5921,9 @@ function newIssueModal(onDone, prefill) {
         res.innerHTML = '<div class="muted" style="padding:8px 2px">Searching…</div>';
         const looksLikeMrn = /^[0-9][0-9/\-]{2,}$/.test(term);
         const [items, received] = await Promise.all([
-          api('/stores/stock-items/search?limit=25&section=' + encodeURIComponent(section) + '&q=' + encodeURIComponent(term)).catch(() => []),
+          // Stage 4: with a job card chosen, the balance is its workshop's store's.
+          api('/stores/stock-items/search?limit=25&section=' + encodeURIComponent(section) + '&q=' + encodeURIComponent(term)
+            + (mode === 'job' && getJob().job_id ? '&job_id=' + encodeURIComponent(getJob().job_id) : '')).catch(() => []),
           looksLikeMrn ? api('/stores/received?limit=40&mrn=' + encodeURIComponent(term)).catch(() => []) : Promise.resolve([]),
         ]);
         const recv = section ? received.filter((r) => r.section === section) : received;
@@ -5094,41 +6012,9 @@ const jrBadge = (s) => JR_STATUS[s] || mrnStatusBadge(s);
 
 routes.jobrequests = async (c, params) => {
   if (params[0]) return jobRequestDetail(c, params[0]);
-  return jobRequestList(c);
+  // The list is the Job Cards page's Requests tab now (job cards plan, Part 1).
+  location.replace('#/jobs?tab=requests' + (/[?&]q=/.test(location.hash) ? '&q=' + encodeURIComponent(new URLSearchParams(location.hash.split('?')[1]).get('q')) : ''));
 };
-
-async function jobRequestList(c) {
-  const sp = new URLSearchParams(location.hash.split('?')[1] || '');
-  const cur = { q: sp.get('q') || '' };
-  c.innerHTML = `${pageHeader('Job Requests', 'Transport → Assistant raises · Transport Manager certifies · Operational Manager approves')}
-    <div class="toolbar">
-      ${canDo('jobrequests.create') ? '<button class="primary" id="njr">+ New Job Request</button>' : ''}
-      <input id="jrq" type="search" placeholder="Search JR no / vehicle / description…" value="${esc(cur.q)}" style="max-width:280px">
-      <div class="spacer"></div><span class="muted" id="jrcount"></span>
-    </div>
-    <div id="jrtable"><div class="muted">Loading…</div></div>`;
-  const load = async () => {
-    const q = qs('#jrq').value.trim();
-    history.replaceState(null, '', '#/jobrequests' + (q ? '?q=' + encodeURIComponent(q) : ''));
-    const list = await api('/job-requests?' + (q ? 'q=' + encodeURIComponent(q) + '&' : '') + 'limit=500');
-    qs('#jrcount').textContent = `${list.length}${list.length === 500 ? '+' : ''} request${list.length === 1 ? '' : 's'}`;
-    qs('#jrtable').innerHTML = tableWrap(
-      [{ label: 'JR No' }, { label: 'Date' }, { label: 'Vehicle' }, { label: 'Type' }, { label: 'Work requested' }, { label: 'Requested By' }, { label: 'Job Card' }, { label: 'Status' }],
-      list.map((r) => `<tr data-jr="${r.id}" style="cursor:pointer${r.approval_status === 'rejected' ? ';background:rgba(196,57,44,.06)' : ''}">
-        <td><a href="#/jobrequests/${r.id}">${esc(r.jr_no)}</a></td>
-        <td>${esc((r.req_date || '').slice(0, 10))}</td>
-        <td>${esc(idLabel(r) || '—')}</td>
-        <td>${esc(r.type || '')}${r.severity ? ' · ' + esc(r.severity) : ''}</td>
-        <td>${esc(String(r.description || '').slice(0, 60))}</td>
-        <td>${esc(r.requested_by || '')}</td>
-        <td>${r.job_no ? `<a href="#/jobs/${r.job_id}">${esc(r.job_no)}</a>` : '—'}</td>
-        <td>${jrBadge(r.approval_status)}</td></tr>`), { scroll: true });
-    qsa('[data-jr]').forEach((tr) => tr.onclick = (e) => { if (e.target.tagName !== 'A') location.hash = '#/jobrequests/' + tr.dataset.jr; });
-  };
-  let deb; qs('#jrq').oninput = () => { clearTimeout(deb); deb = setTimeout(load, 250); };
-  if (qs('#njr')) qs('#njr').onclick = newJobRequestModal;
-  await load();
-}
 
 async function jobRequestDetail(c, id) {
   const d = await api('/job-requests/' + id);
@@ -5239,7 +6125,7 @@ async function renderOilSection(c) {
   const tab = ['products', 'names', 'ledger', 'stock', 'forecast', 'counts'].includes(sp.get('sub') || sp.get('tab')) ? (sp.get('sub') || sp.get('tab')) : 'products';
   const tabs = ['products', 'names', 'ledger', 'stock', 'forecast', 'counts'];
   const setTab = (t) => {
-    if (location.hash.startsWith('#/stocktake')) location.hash = '#/stocktake?tab=oil&sub=' + t;
+    if (location.hash.startsWith('#/stocktake') || location.hash.startsWith('#/stores')) location.hash = stockBooksHash('oil', t);
     else location.hash = '#/oil?tab=' + t;
   };
   c.innerHTML = `<div class="toolbar" style="margin-bottom:12px">${tabs.map((t) => `<button class="sm ${t === tab ? 'primary' : ''}" id="oil-tb-${t}">${t.toUpperCase()}</button>`).join('')}<div class="spacer"></div><a class="btn sm" href="/api/oil/export/ledger.xlsx">⬇ Ledger Excel</a></div><div id="oilbody" class="muted">Loading…</div>`;
@@ -5509,7 +6395,7 @@ async function renderFiltersSection(c) {
   const sp = new URLSearchParams(location.hash.split('?')[1] || '');
   const tab = ['book', 'xref'].includes(sp.get('sub') || sp.get('tab')) ? (sp.get('sub') || sp.get('tab')) : 'book';
   const setTab = (t) => {
-    if (location.hash.startsWith('#/stocktake')) location.hash = '#/stocktake?tab=filters&sub=' + t;
+    if (location.hash.startsWith('#/stocktake') || location.hash.startsWith('#/stores')) location.hash = stockBooksHash('filter', t);
     else location.hash = '#/filters?tab=' + t;
   };
   c.innerHTML = `
@@ -6309,13 +7195,13 @@ async function renderNewServiceForm(c, existing) {
   const oilTypeOpts = '<option value="">—</option>' + ref.oilTypes.map((t) => `<option value="${esc(t.code)}" data-price="${t.unit_price}">${esc(t.code)}</option>`).join('');
   const oilRows = ref.oils.map((o) => `<tr>
       <td>${esc(o.name)}<input type="hidden" class="o_name" value="${esc(o.name)}"></td>
-      <td><select class="o_type" style="width:100%">${oilTypeOpts}</select></td>
+      <td><select class="o_type" style="width:100%;min-width:78px">${oilTypeOpts}</select></td>
       <td><select class="o_cv" style="width:56px"><option value=""></option><option>C</option><option>V</option></select></td>
-      <td><input type="number" class="o_lit" style="width:64px" step="0.1"></td>
+      <td><input type="number" class="o_lit" style="width:64px" step="0.1"><div class="o_stock muted" style="font-size:11px"></div></td>
       <td><input type="number" class="o_price" style="width:96px"></td></tr>`).join('');
   const filterRows = ref.filterCategories.map((cat) => `<tr>
       <td>${esc(cat)}<input type="hidden" class="f_cat" value="${esc(cat)}"></td>
-      <td style="position:relative"><input type="text" class="f_no" autocomplete="off" placeholder="type to search…" style="width:120px">
+      <td style="position:relative"><input type="text" class="f_no" autocomplete="off" placeholder="type to search…" style="width:120px"><div class="f_note muted" style="font-size:11px"></div>
         <div class="f_menu" style="position:absolute;z-index:80;left:0;top:100%;min-width:300px;background:var(--surface);border:1px solid var(--border);border-radius:6px;box-shadow:var(--shadow);max-height:230px;overflow:auto;display:none"></div></td>
       <td><input type="number" class="f_qty" value="1" style="width:48px"></td>
       <td><select class="f_xe" style="width:52px"><option value=""></option><option>X</option><option>E</option></select></td>
@@ -6357,7 +7243,7 @@ async function renderNewServiceForm(c, existing) {
         </div>
         <div class="table-wrap scroll"><table><thead><tr><th>Oil Name</th><th>Type</th><th>C/V</th><th>Liters</th><th>Price</th></tr></thead>
           <tbody id="oilBody">${oilRows}</tbody></table></div>
-        <p class="muted" style="font-size:11.5px;margin:6px 0 0" id="oilCount"></p></div>
+        <p class="muted" style="font-size:11.5px;margin:6px 0 0" id="oilCount"></p><p class="muted stk-note" style="font-size:11.5px;margin:4px 0 0"></p></div>
       <div class="card"><div class="toolbar" style="margin:0 0 8px">
           <h3 style="margin:0">Filters</h3><div class="spacer"></div>
           <input type="search" id="filFind" placeholder="Find a filter…" style="max-width:150px;font-size:12px">
@@ -6366,7 +7252,7 @@ async function renderNewServiceForm(c, existing) {
         </div>
         <div class="table-wrap scroll"><table><thead><tr><th>Filter</th><th>Filter No.</th><th>Qty</th><th>X/E</th><th>Price</th></tr></thead>
           <tbody id="filterBody">${filterRows}</tbody></table></div>
-        <p class="muted" style="font-size:11.5px;margin:6px 0 0" id="filCount">Type a filter number in the box to search — picking one fills its price.</p></div>
+        <p class="muted" style="font-size:11.5px;margin:6px 0 0" id="filCount">Type a filter number in the box to search — picking one fills its price.</p><p class="muted stk-note" style="font-size:11.5px;margin:4px 0 0"></p></div>
     </div>
     <div class="card"><div class="toolbar" style="margin:0 0 8px"><h3 style="margin:0">Other Costs (parts, consumables)</h3><div class="spacer"></div><button type="button" class="sm" id="addpart">+ line</button></div>
       <div class="table-wrap"><table><thead><tr><th>Description</th><th>Unit</th><th>Rate</th><th>Qty</th><th>Amount</th></tr></thead><tbody id="partBody"></tbody></table></div></div>
@@ -6416,9 +7302,9 @@ async function renderNewServiceForm(c, existing) {
     for (const o of existing.oils) {
       const tr = claim('oilBody', 'o_name', o.oil_name, () => `
         <td>${esc(o.oil_name || '')}<input type="hidden" class="o_name" value="${esc(o.oil_name || '')}"></td>
-        <td><select class="o_type" style="width:100%">${oilTypeOpts}</select></td>
+        <td><select class="o_type" style="width:100%;min-width:78px">${oilTypeOpts}</select></td>
         <td><select class="o_cv" style="width:56px"><option value=""></option><option>C</option><option>V</option></select></td>
-        <td><input type="number" class="o_lit" style="width:64px" step="0.1"></td>
+        <td><input type="number" class="o_lit" style="width:64px" step="0.1"><div class="o_stock muted" style="font-size:11px"></div></td>
         <td><input type="number" class="o_price" style="width:96px"></td>`);
       qs('.o_type', tr).value = o.oil_type || '';
       qs('.o_cv', tr).value = o.action_type || '';
@@ -6428,12 +7314,13 @@ async function renderNewServiceForm(c, existing) {
     for (const f of existing.filters) {
       const tr = claim('filterBody', 'f_cat', f.category, () => `
         <td>${esc(f.category || '—')}<input type="hidden" class="f_cat" value="${esc(f.category || '')}"></td>
-        <td style="position:relative"><input type="text" class="f_no" autocomplete="off" placeholder="type to search…" style="width:120px">
+        <td style="position:relative"><input type="text" class="f_no" autocomplete="off" placeholder="type to search…" style="width:120px"><div class="f_note muted" style="font-size:11px"></div>
           <div class="f_menu" style="position:absolute;z-index:80;left:0;top:100%;min-width:300px;background:var(--surface);border:1px solid var(--border);border-radius:6px;box-shadow:var(--shadow);max-height:230px;overflow:auto;display:none"></div></td>
         <td><input type="number" class="f_qty" value="1" style="width:48px"></td>
         <td><select class="f_xe" style="width:52px"><option value=""></option><option>X</option><option>E</option></select></td>
         <td><input type="number" class="f_price" style="width:96px"></td>`);
       qs('.f_no', tr).value = f.filter_no || '';
+      if (f.required_no) { tr.dataset.required = f.required_no; qs('.f_note', tr).textContent = 'equivalent of ' + f.required_no; }
       qs('.f_qty', tr).value = f.qty == null ? 1 : f.qty;
       qs('.f_xe', tr).value = f.action_type || '';
       // The line's own price is what this service was charged; the book price is the
@@ -6444,6 +7331,50 @@ async function renderNewServiceForm(c, existing) {
   }
 
   wireAssetPicker(c);
+
+  // Stores plan, Part 3: the oil and the filters come off the store's stock (the service's own
+  // store; for a new one, its job card's workshop's, else yours). Show what that store holds, and
+  // whether its "must be in stock" rule has started — the save refuses what is not there.
+  let STK = null;
+  const stkQuery = (extra = {}) => {
+    const p = new URLSearchParams(extra);
+    if (edit) p.set('service_id', edit.id);
+    p.set('job_no', qs('[name=job_no]', c).value.trim());
+    p.set('date', qs('[name=service_date]', c).value);
+    return p.toString();
+  };
+  const oilStock = (tr) => {
+    if (!STK) return null;
+    const type = qs('.o_type', tr).value, name = qs('.o_name', tr).value;
+    return (type && STK.types[type]) || STK.names[name] || null;
+  };
+  const paintOil = (tr) => {
+    const el = qs('.o_stock', tr);
+    if (!el) return;
+    const lit = Number(qs('.o_lit', tr).value) || 0;
+    const p = oilStock(tr);
+    el.style.color = '';
+    if (!STK) { el.textContent = ''; return; }
+    if (!p) {
+      el.textContent = lit > 0 && STK.rule.oil ? 'not in the oil book — choose the type' : '';
+      if (lit > 0 && STK.rule.oil) el.style.color = 'var(--danger,#c4392c)';
+      return;
+    }
+    el.textContent = `${num(p.in_stock)} ${p.unit} in stock`;
+    if (STK.rule.oil && lit > p.in_stock + 0.001) el.style.color = 'var(--danger,#c4392c)';
+  };
+  const loadStock = async () => {
+    try { STK = await api('/filters/stock-context?' + stkQuery()); } catch (e) { STK = null; }
+    qsa('#oilBody tr', c).forEach(paintOil);
+    const notes = qsa('.stk-note', c);
+    const say = (rule) => (!STK || !STK.store ? ''
+      : `From ${STK.store.name} stock. ` + (rule ? `Must be in stock (since ${rule}).` : 'Not blocked yet: this starts after the store\'s first full stock take.'));
+    if (notes[0]) notes[0].textContent = say(STK && STK.rule.oil);
+    if (notes[1]) notes[1].textContent = say(STK && STK.rule.filter);
+  };
+  let stkDeb;
+  for (const n of ['job_no', 'service_date']) qs(`[name=${n}]`, c).addEventListener('change', () => { clearTimeout(stkDeb); stkDeb = setTimeout(loadStock, 200); });
+  loadStock();
 
   // Both lists show every oil and every filter category the workshop stocks, because any of
   // them might be part of this service. That is a lot to read past when you only need two or
@@ -6502,6 +7433,8 @@ async function renderNewServiceForm(c, existing) {
     const typeSel = qs('.o_type', tr), lit = qs('.o_lit', tr), price = qs('.o_price', tr);
     const fill = () => { const up = Number(typeSel.selectedOptions[0] && typeSel.selectedOptions[0].dataset.price) || 0; if (up && lit.value) price.value = Math.round(up * Number(lit.value) * 100) / 100; recalc(); };
     typeSel.onchange = fill; lit.oninput = fill; price.oninput = recalc;
+    typeSel.addEventListener('change', () => paintOil(tr));
+    lit.addEventListener('input', () => paintOil(tr));
   });
   // Filter rows: type a number → suggestions from the price book / catalogue / cross-refs.
   // Picking one fills the number AND its price; ↑/↓ + Enter work, and leaving the box still
@@ -6511,16 +7444,25 @@ async function renderNewServiceForm(c, existing) {
     let items = [], active = -1, deb;
 
     const close = () => { menu.style.display = 'none'; active = -1; };
+    const note = qs('.f_note', tr);
     const choose = (i) => {
       const it = items[i]; if (!it) return;
       noIn.value = it.filter_no;
       if (it.unit_price != null) price.value = it.unit_price;
+      // An equivalent fitted in place of the vehicle's own number keeps both (ST-D15).
+      if (it.equivalent_of) { tr.dataset.required = it.equivalent_of; note.textContent = `equivalent of ${it.equivalent_of} · ${num(it.in_stock)} in stock`; }
+      else { delete tr.dataset.required; note.textContent = it.in_stock != null ? `${num(it.in_stock)} in stock` : ''; }
       close(); recalc(); price.focus();
     };
+    const stockBadge = (it) => (it.in_stock == null ? ''
+      : it.in_stock > 0 ? ` <span class="badge green">${num(it.in_stock)} in stock</span>`
+        : ` <span class="badge ${STK && STK.rule.filter ? 'red' : 'amber'}">none in stock</span>`);
     const paint = () => {
-      menu.innerHTML = items.map((it, i) => `<div class="f_opt" data-i="${i}" style="padding:6px 9px;cursor:pointer;border-bottom:1px solid var(--border);background:${i === active ? 'var(--surface-2)' : 'transparent'}">
+      const firstEq = items.findIndex((it) => it.equivalent_of);
+      menu.innerHTML = items.map((it, i) => `${i === firstEq ? `<div class="muted" style="padding:5px 9px;font-size:11px;background:var(--surface-2)">In stock instead — same filter as ${esc(it.equivalent_of)}:</div>` : ''}
+        <div class="f_opt" data-i="${i}" style="padding:6px 9px;cursor:pointer;border-bottom:1px solid var(--border);background:${i === active ? 'var(--surface-2)' : 'transparent'}">
           <b>${esc(it.filter_no)}</b>${it.unit_price != null ? ` <span style="float:right">${money(it.unit_price)}</span>` : ' <span class="badge amber" style="float:right">no price</span>'}
-          <div class="muted" style="font-size:11px">${esc(it.category || '—')} · ${esc(it.src)}${it.uses ? ' · used ' + it.uses + '×' : ''}</div></div>`).join('');
+          <div class="muted" style="font-size:11px">${esc(it.category || (it.equivalent_of ? 'equivalent' : '—'))}${it.src ? ' · ' + esc(it.src) : ''}${it.uses ? ' · used ' + it.uses + '×' : ''}${stockBadge(it)}</div></div>`).join('');
       qsa('.f_opt', menu).forEach((el) => {
         el.onmousedown = (e) => { e.preventDefault(); choose(+el.dataset.i); };
         el.onmouseenter = () => { active = +el.dataset.i; paint(); };
@@ -6530,16 +7472,21 @@ async function renderNewServiceForm(c, existing) {
     // Search from the first character. With the box empty it lists this row's own filter
     // category (click into "Engine Oil Filter" and you see the engine oil filters we stock).
     const rowCat = (qs('.f_cat', tr) || {}).value || '';
+    // Part 3: with what the service's store holds of each, and — when the number asked for is not
+    // on the shelf — the equivalents that are.
     const search = async () => {
       const q = noIn.value.trim();
       try {
-        items = await api('/filters/search?q=' + encodeURIComponent(q) + '&category=' + encodeURIComponent(rowCat) + '&limit=20');
+        const r = await api('/filters/stock-search?' + stkQuery({ q, category: rowCat, limit: 20 }));
+        items = r.items.concat(r.equivalents.map((e) => ({ ...e, equivalent_of: q })));
+        // An equivalent in stock comes first when the number asked for has none.
+        if (r.equivalents.length) items.sort((a, b) => (b.in_stock > 0) - (a.in_stock > 0));
       } catch (e) { items = []; }
       active = items.length ? 0 : -1;
       paint();
     };
 
-    noIn.oninput = () => { clearTimeout(deb); deb = setTimeout(search, 140); };
+    noIn.oninput = () => { delete tr.dataset.required; note.textContent = ''; clearTimeout(deb); deb = setTimeout(search, 140); };
     noIn.onfocus = () => { if (!noIn.value.trim()) search(); };
     noIn.onkeydown = (e) => {
       if (menu.style.display === 'none' || !items.length) return;
@@ -6579,7 +7526,7 @@ async function renderNewServiceForm(c, existing) {
     const assetInput = qs('.apick-input', c), assetId = qs('input[name=asset_id]', c).value;
     if (!assetInput.value && !assetId) return toast('Pick the vehicle / machine', 'err');
     const oils = qsa('#oilBody tr', c).map((tr) => ({ oil_name: qs('.o_name', tr).value, oil_type: qs('.o_type', tr).value, cv: qs('.o_cv', tr).value, qty: qs('.o_lit', tr).value, price: qs('.o_price', tr).value })).filter((o) => Number(o.qty) > 0 || Number(o.price) > 0);
-    const filters = qsa('#filterBody tr', c).map((tr) => ({ category: qs('.f_cat', tr).value, filter_no: qs('.f_no', tr).value.trim(), qty: qs('.f_qty', tr).value, xe: qs('.f_xe', tr).value, price: qs('.f_price', tr).value })).filter((f) => f.filter_no);
+    const filters = qsa('#filterBody tr', c).map((tr) => ({ category: qs('.f_cat', tr).value, filter_no: qs('.f_no', tr).value.trim(), required_no: tr.dataset.required || '', qty: qs('.f_qty', tr).value, xe: qs('.f_xe', tr).value, price: qs('.f_price', tr).value })).filter((f) => f.filter_no);
     const parts = qsa('#partBody tr', c).map((tr) => ({ description: qs('.p_desc', tr).value.trim(), unit: qs('.p_unit', tr).value, rate: qs('.p_rate', tr).value, qty: qs('.p_qty', tr).value, amount: qs('.p_amount', tr).value })).filter((p) => p.description);
     const payload = {
       asset: assetInput.value, asset_id: assetId, service_date: qs('[name=service_date]', c).value,
@@ -6631,7 +7578,7 @@ async function serviceDetail(c, id) {
       <div class="card"><h3 style="margin-top:0">Filters <span class="muted" style="font-weight:400">(${d.filters.length})</span></h3>
         ${d.filters.length ? tableWrap([{ label: 'Filter No' }, { label: 'Category' }, { label: 'Qty', num: true }, { label: 'X/E' }, { label: 'Price', num: true }].concat(editable ? [{ label: '' }] : []),
       d.filters.map((f) => `<tr${(f.book_price > 0) ? '' : ' style="background:rgba(224,168,0,.06)"'}>
-            <td><b>${esc(f.filter_no || '')}</b></td><td>${esc(f.category || '')}</td><td class="num">${num(f.qty)}</td><td>${esc(f.action_type || '')}</td>
+            <td><b>${esc(f.filter_no || '')}</b>${f.required_no ? `<div class="muted" style="font-size:11px">equivalent of ${esc(f.required_no)}</div>` : ''}</td><td>${esc(f.category || '')}</td><td class="num">${num(f.qty)}</td><td>${esc(f.action_type || '')}</td>
             <td class="num">${f.book_price > 0 ? money(f.book_price) : '<span class="badge amber">no price</span>'}</td>
             ${editable ? `<td class="num"><button class="sm ${f.book_price > 0 ? '' : 'primary'}" data-price="${esc(f.filter_no || '')}" data-cat="${esc(f.category || '')}" data-val="${f.book_price == null ? '' : f.book_price}">${f.book_price > 0 ? 'Edit' : 'Add price'}</button></td>` : ''}
           </tr>`), { scroll: true }) : '<p class="muted">None.</p>'}</div>
@@ -6790,10 +7737,18 @@ const MRI_COLS = {
 };
 // The two "outside price" sheets are seeded from live lists (not free-form) and save differently.
 const MRI_SEEDED = new Set(['daily_outside', 'service_outside']);
+// Stage 5: the workshop the Reports page is showing ('' = all workshops, or the only one). Kept
+// while the app is open; the server decides what each person may actually read.
+let REP_WS = '';
+const repWsQ = () => (REP_WS ? '&workshop_id=' + encodeURIComponent(REP_WS) : '');
+
 async function openMonthlyInputs(year, month, onSaved) {
   let data;
-  try { data = await api(`/reports/monthly-inputs?year=${year}&month=${month}`); }
+  try { data = await api(`/reports/monthly-inputs?year=${year}&month=${month}${repWsQ()}`); }
   catch (e) { return toast(e.message, 'err'); }
+  // Stage 5: with more than one workshop, inputs are entered one workshop at a time.
+  if (data.editable === false) return toast('Choose a workshop at the top of the page to enter its monthly inputs.', 'err');
+  const wsLabel = data.workshop_id && WS_CACHE ? ' — ' + wsName(WS_CACHE, data.workshop_id) : '';
   const state = {};
   for (const [k] of MRI_SHEETS) state[k] = (data.inputs[k] || []).map((r) => ({ ...r }));
   // Seed the outside-price editors from the month's live daily-work vehicles and service jobs, with
@@ -6801,7 +7756,7 @@ async function openMonthlyInputs(year, month, onSaved) {
   state.daily_outside = (data.daily_work || []).map((d) => ({ vehicle: d.vehicle, labour: d.labour, amount1: (d.outside ? d.outside : '') }));
   state.service_outside = (data.service_jobs || []).map((s) => ({ id: s.id, job_no: s.job_no, vehicle: s.vehicle, labour: s.labour, amount1: (s.outside ? s.outside : '') }));
   let active = 'fuel';
-  const bg = modal(`Monthly inputs — ${MONTH_NAMES[month]} ${year}`, `
+  const bg = modal(`Monthly inputs — ${MONTH_NAMES[month]} ${year}${wsLabel}`, `
     <p class="muted" style="margin-top:0;font-size:12px">Fuel, Other &amp; Salaries are entered by hand. <b>Daily Work Outside</b> &amp; <b>Service Outside</b> let you type what each job would cost sent outside — those roll into the make-or-buy Profit/Loss. Repair, Service &amp; mechanic hours are pulled from live data.</p>
     <div class="toolbar" id="mri-tabs" style="margin-top:0">${MRI_SHEETS.map(([k, l]) => `<button class="sm" data-k="${k}">${l}</button>`).join('')}</div>
     <div id="mri-grid"></div>
@@ -6838,9 +7793,9 @@ async function openMonthlyInputs(year, month, onSaved) {
             await api('/reports/service-outside', { method: 'POST', body: { items: state[k].map((r) => ({ id: r.id, outside: r.amount1 })) } });
           } else if (k === 'daily_outside') {
             const lines = state[k].filter((r) => r.amount1 !== '' && r.amount1 != null).map((r) => ({ vehicle: r.vehicle, amount1: r.amount1 }));
-            await api('/reports/monthly-inputs', { method: 'POST', body: { year, month, sheet: k, lines } });
+            await api('/reports/monthly-inputs', { method: 'POST', body: { year, month, sheet: k, lines, workshop_id: data.workshop_id } });
           } else {
-            await api('/reports/monthly-inputs', { method: 'POST', body: { year, month, sheet: k, lines: state[k] } });
+            await api('/reports/monthly-inputs', { method: 'POST', body: { year, month, sheet: k, lines: state[k], workshop_id: data.workshop_id } });
           }
         }
         toast('Monthly inputs saved'); close(); if (onSaved) onSaved();
@@ -6856,7 +7811,7 @@ async function openRepairSectionsReconciler(year, month, onSync) {
   let repData;
   const loadData = async () => {
     try {
-      repData = await api(`/reports/repair-sections?year=${year}&month=${month}`);
+      repData = await api(`/reports/repair-sections?year=${year}&month=${month}${repWsQ()}`);
     } catch (e) {
       toast(e.message, 'err');
       throw e;
@@ -7567,23 +8522,84 @@ function tbPurchaseModal(row, done) {
 }
 
 // ---- issuing against it ---------------------------------------------------
-function tbIssueModal(request, line, done) {
+// Stores plan, Part 4: a tyre or a battery goes out by its serial number, one row a unit, and is
+// fixed to the vehicle (ST-D6, D7). A tyre names its wheel, and the one there now comes off. What
+// came off can be said here, or later under "Old units due" (ST-D8). A tube or a flap goes as before.
+const TB_CONDS = { tyre: ['repairable', 'retreadable', 'reusable', 'warranty', 'scrap', 'not_returned'], battery: ['reusable', 'warranty', 'scrap', 'not_returned'] };
+async function tbIssueModal(request, line, done) {
+  const kind = line.kind;
+  const byUnit = kind === 'tyre' || kind === 'battery';
+  const left = Math.max(0, (line.qty || 0) - (line.issued || 0));
+  let onIt = { tyres: [], batteries: [] };
+  if (byUnit && request.asset_id) { try { onIt = await api('/tb/vehicle/' + request.asset_id); } catch (e) { /* shown without it */ } }
+  const today = new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10);
   modal('Issue against ' + request.mrn_no, `
-    <div class="note">${esc(line.spec_label || line.description)} · approved ${num(line.qty)}${line.position ? ' · ' + esc(line.position) : ''}</div>
-    <div class="row">${field('How many are going out', 'qty', { type: 'number', value: Math.max(0, (line.qty || 0) - (line.issued || 0)) })}
-      ${field('Date', 'issue_date', { type: 'date', value: new Date().toISOString().slice(0, 10) })}</div>
-    <div class="row">${field('Serial number (if it has one)', 'serial_no')}${field('Unit price (blank = the list price)', 'unit_price', { type: 'number' })}</div>
-    ${field('Issued by', 'issued_by')}
+    <div class="note">${esc(line.spec_label || line.description)} · approved ${num(line.qty)}${line.issued ? ' · ' + num(line.issued) + ' gone out' : ''}${request.asset_code ? ' · ' + esc(request.asset_code) : ''}</div>
+    <div class="row">${field('How many now', 'qty', { type: 'number', value: byUnit ? Math.min(left, 8) : left })}
+      ${field('Date', 'issue_date', { type: 'date', value: today })}</div>
+    ${byUnit ? `<p class="muted" style="margin:6px 0 2px;font-size:12px">${kind === 'tyre'
+    ? 'Each tyre: its serial number and wheel. The tyre now at that wheel comes off.'
+    : `Each battery: its serial number. ${esc(request.asset_code || 'The vehicle')} has ${onIt.batteries.length} now (2 at most).`}</p><div id="tbu"></div>`
+    : field('Serial number (if it has one)', 'serial_no')}
+    <div class="row">${field('Unit price (blank = list price)', 'unit_price', { type: 'number' })}${field('Issued by', 'issued_by')}</div>
     <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Issue</button></div>`,
     (body, close) => {
+      const units = [];
+      const host = qs('#tbu', body);
+      const conds = TB_CONDS[kind] || [];
+      const atWheel = (pos) => onIt.tyres.find((t) => String(t.position || '').toUpperCase() === String(pos || '').toUpperCase());
+      const draw = () => {
+        if (!host) return;
+        const want = Math.max(0, Math.min(Math.floor(Number(qs('[name=qty]', body).value) || 0), 8));
+        while (units.length < want) units.push({ serial_no: '', position: units.length ? '' : (line.position || ''), old_serial: '', old_condition: '', old_reason: '', photo: null });
+        units.length = want;
+        host.innerHTML = units.map((u, i) => {
+          const here = kind === 'tyre' ? atWheel(u.position) : null;
+          const offOpts = kind === 'tyre'
+            ? [['', here ? `${here.serial_no} (at ${u.position})` : 'None']].concat(onIt.tyres.filter((t) => t !== here).map((t) => [t.serial_no, `${t.serial_no} (at ${t.position || '?'})`]))
+            : [['', 'None']].concat(onIt.batteries.map((b) => [b.serial_no, b.serial_no]));
+          return `<div class="card" style="padding:8px 10px;margin:6px 0">
+            <b style="font-size:12px">${kind === 'tyre' ? '🛞 Tyre' : '🔋 Battery'} ${i + 1}</b>
+            <div class="row">
+              <div><label>Serial number *</label><input data-u="${i}" data-f="serial_no" value="${esc(u.serial_no)}"></div>
+              ${kind === 'tyre' ? `<div><label>Wheel *</label><select data-u="${i}" data-f="position"><option value="">—</option>${TB_POS.map((p) => `<option${p === u.position ? ' selected' : ''}>${p}</option>`).join('')}</select></div>` : ''}
+            </div>
+            <div class="row">
+              <div><label>Coming off</label><select data-u="${i}" data-f="old_serial">${offOpts.map(([v, l]) => `<option value="${esc(v)}"${v === u.old_serial ? ' selected' : ''}>${esc(l)}</option>`).join('')}</select></div>
+              <div><label>What came off</label><select data-u="${i}" data-f="old_condition"><option value="">Say later</option>${conds.map((c) => `<option value="${c}"${c === u.old_condition ? ' selected' : ''}>${esc(TB_COND_LABEL[c])}</option>`).join('')}</select></div>
+            </div>
+            ${u.old_condition === 'not_returned' ? `<label>Why not returned *</label><input data-u="${i}" data-f="old_reason" value="${esc(u.old_reason)}">` : ''}
+            <label class="btn sm" style="cursor:pointer;margin:6px 0 0">📷 ${u.photo ? 'Photo added ✔' : 'Photo of serial (recommended)'}<input type="file" accept="image/png,image/jpeg,image/webp" data-photo="${i}" style="display:none"></label>
+          </div>`;
+        }).join('');
+        qsa('[data-u]', host).forEach((el) => {
+          const set = () => { units[+el.dataset.u][el.dataset.f] = el.value; };
+          el.oninput = set;
+          el.onchange = () => { set(); if (el.tagName === 'SELECT') draw(); };
+        });
+        qsa('[data-photo]', host).forEach((el) => {
+          el.onchange = async (e) => {
+            const f = e.target.files[0]; if (!f) return;
+            try { units[+el.dataset.photo].photo = await resizeToDataUrl(f); draw(); } catch (err) { toast(err.message, 'err'); }
+          };
+        });
+      };
+      if (host) { qs('[name=qty]', body).oninput = draw; draw(); }
       qs('#s', body).onclick = async () => {
+        const f = formData(body);
+        const payload = { mrn_line_id: line.mrn_line_id, qty: f.qty, issue_date: f.issue_date, unit_price: f.unit_price, issued_by: f.issued_by };
+        if (byUnit) {
+          if (units.some((u) => !u.serial_no.trim())) return toast('Give the serial number of each one', 'err');
+          if (kind === 'tyre' && units.some((u) => !u.position)) return toast('Choose the wheel of each tyre', 'err');
+          payload.units = units.map((u) => ({ ...u, photo: u.photo || undefined }));
+        } else payload.serial_no = f.serial_no;
         try {
-          const r = await api('/tb/issue', { method: 'POST', body: { mrn_line_id: line.mrn_line_id, ...formData(body) } });
+          const r = await api('/tb/issue', { method: 'POST', body: payload });
           toast(r.message || 'Issued');
           close(); done && done();
         } catch (e) { toast(e.message, 'err'); }
       };
-    });
+    }, { wide: true });
 }
 
 // ---- what came off --------------------------------------------------------
@@ -7694,7 +8710,22 @@ routes.tyrebattery = async (c) => {
 };
 
 routes.reports = async (c) => {
-  c.innerHTML = `${pageHeader('Reports', 'Edward and Christie (Pvt) Ltd — Badalgama Central Workshop')}
+  // Stage 5: a workshop picker once there is more than one workshop. Head office: "All workshops"
+  // or any one; someone kept to their own sees only theirs (store staff: the ones their store serves).
+  const wsd = wsMulti() ? await workshopsData().catch(() => null) : null;
+  const seen = ME && ME.workshopsSeen;
+  const wsChoices = wsd ? wsd.workshops.filter((w) => w.active && (!seen || seen.includes(w.id))) : [];
+  if (wsd && seen && !seen.includes(Number(REP_WS))) REP_WS = String((ME.workshop && seen.includes(ME.workshop.id)) ? ME.workshop.id : seen[0]);
+  if (wsd && !seen && REP_WS && !wsChoices.some((w) => String(w.id) === String(REP_WS))) REP_WS = '';
+  if (!wsd) REP_WS = '';
+  const repTitle = REP_WS && wsd ? `Edward and Christie (Pvt) Ltd — ${wsName(wsd, Number(REP_WS))}` : 'Edward and Christie (Pvt) Ltd — Badalgama Central Workshop';
+  c.innerHTML = `${pageHeader('Reports', repTitle)}
+    ${wsd ? `<div class="toolbar" style="margin:0 0 10px">
+      <label class="muted" style="font-size:12px">Workshop</label>
+      ${wsChoices.length === 1 && seen ? `<span class="badge blue">${esc(wsChoices[0].name)}</span>`
+    : `<select id="rep-ws" style="max-width:280px">${seen ? '' : `<option value="" ${REP_WS ? '' : 'selected'}>All workshops</option>`}
+          ${wsChoices.map((w) => `<option value="${w.id}" ${String(w.id) === String(REP_WS) ? 'selected' : ''}>${esc(w.name)}</option>`).join('')}</select>`}
+    </div>` : ''}
     <div class="card section">
       <div class="toolbar" style="margin-top:0">
         <h3 style="margin:0">Daily Reports</h3>
@@ -7728,7 +8759,10 @@ routes.reports = async (c) => {
         <a class="btn sm" id="mcr-rd" href="#" target="_blank">🖨 Repair Detail</a>
         <a class="btn primary sm" id="mcr-dl" href="#">⬇ Download Excel</a>
       </div>
-      <div id="mcr-preview" class="muted">Loading…</div></div>`;
+      <div id="mcr-preview" class="muted">Loading…</div></div>
+    ${wsd && !seen && !REP_WS ? `<div class="card section"><h3 style="margin-top:0">Workshops compared <span class="muted" style="font-weight:400;font-size:12px">— the month chosen above, one row per workshop</span></h3>
+      <div id="rep-cmp" class="muted">Loading…</div></div>` : ''}`;
+  if (qs('#rep-ws', c)) qs('#rep-ws', c).onchange = (e) => { REP_WS = e.target.value; routes.reports(c); };
 
   // ---- Daily Reports: the two sheets the office used to type by hand.
   // Today reads live so it is always current; an earlier day reads its frozen copy, so a sheet
@@ -7830,21 +8864,21 @@ routes.reports = async (c) => {
 
   const drLoad = async () => {
     const date = drDate.value;
-    qs('#dr-dl', c).href = `/api/reports/daily/${drKind}/export.xlsx?date=${date}`;
+    qs('#dr-dl', c).href = `/api/reports/daily/${drKind}/export.xlsx?date=${date}${repWsQ()}`;
     qs('#dr-t-pending', c).classList.toggle('primary', drKind === 'pending_parts');
     qs('#dr-t-price', c).classList.toggle('primary', drKind === 'pending_price');
     qs('#dr-t-jobs', c).classList.toggle('primary', drKind === 'job_summary');
     qs('#dr-t-tally', c).classList.toggle('primary', drKind === 'day_tally');
     drBody.innerHTML = '<div class="muted">Loading…</div>';
-    try { drRender(await api(`/reports/daily/${drKind}?date=${date}`)); }
+    try { drRender(await api(`/reports/daily/${drKind}?date=${date}${repWsQ()}`)); }
     catch (e) { drBody.innerHTML = `<p class="err">${esc(e.message)}</p>`; }
     try {
-      const h = await api(`/reports/daily/${drKind}/history?limit=30`);
+      const h = await api(`/reports/daily/${drKind}/history?limit=30${repWsQ()}`);
       qs('#dr-hist', c).innerHTML = h.length ? tableWrap(
         [{ label: 'Day' }, { label: 'Rows', num: true }, { label: 'Saved at' }, { label: 'By' }, { label: '' }],
         h.map((x) => `<tr><td>${esc(x.report_date)}</td><td class="num">${x.row_count}</td>
           <td class="muted">${esc(String(x.generated_at).slice(0, 16))}</td><td class="muted">${esc(x.generated_by_name || 'auto')}</td>
-          <td><a class="btn sm" href="/api/reports/daily/${drKind}/export.xlsx?date=${x.report_date}">⬇</a></td></tr>`))
+          <td><a class="btn sm" href="/api/reports/daily/${drKind}/export.xlsx?date=${x.report_date}${repWsQ()}">⬇</a></td></tr>`))
         : '<p class="muted" style="margin:0">No saved days yet.</p>';
     } catch (e) { /* history is a nicety */ }
   };
@@ -7859,7 +8893,7 @@ routes.reports = async (c) => {
   drDate.onchange = drLoad;
   qs('#dr-save', c).onclick = async () => {
     try {
-      const r = await api(`/reports/daily/${drKind}/save`, { method: 'POST', body: { date: drDate.value } });
+      const r = await api(`/reports/daily/${drKind}/save`, { method: 'POST', body: { date: drDate.value, workshop_id: REP_WS || undefined } });
       toast(`Saved ${r.report_date} — ${r.row_count} row(s)`); drLoad();
     }
     catch (e) { toast(e.message, 'err'); }
@@ -7874,11 +8908,25 @@ routes.reports = async (c) => {
   const mcrDl = qs('#mcr-dl', c), mcrPrev = qs('#mcr-preview', c);
   const loadMcr = async () => {
     const y = mcrYear.value, mo = mcrMonth.value;
-    mcrDl.href = `/api/reports/monthly-cost.xlsx?year=${y}&month=${mo}`;
-    qs('#mcr-rd', c).href = `/api/reports/monthly-repair-detail.html?year=${y}&month=${mo}`;
+    mcrDl.href = `/api/reports/monthly-cost.xlsx?year=${y}&month=${mo}${repWsQ()}`;
+    qs('#mcr-rd', c).href = `/api/reports/monthly-repair-detail.html?year=${y}&month=${mo}${repWsQ()}`;
     mcrPrev.innerHTML = '<span class="muted">Loading…</span>';
+    // Stage 5: one row per workshop, for head office looking at all of them.
+    if (qs('#rep-cmp', c)) {
+      api(`/reports/workshops-compared?year=${y}&month=${mo}`).then((d) => {
+        const rows = d.rows || [];
+        const sum = (k) => rows.reduce((t, r) => t + (Number(r[k]) || 0), 0);
+        const K = [['repair_jobs', 'Repair jobs', 0], ['jobs_closed', 'Closed', 0], ['services', 'Services', 0], ['labour', 'Labour', 1],
+          ['spare_parts', 'Spare parts', 1], ['lubricants', 'Lubricants', 1], ['other_material', 'Other material', 1],
+          ['overheads', 'Overheads', 1], ['total', 'Total cost', 1], ['hours_booked', 'Hours booked', 0]];
+        qs('#rep-cmp', c).innerHTML = tableWrap([{ label: 'Workshop' }].concat(K.map(([, l]) => ({ label: l, num: true }))),
+          rows.map((r) => `<tr><td>${esc(r.name)}</td>${K.map(([k, , m]) => `<td class="num">${m ? money(r[k]) : num(r[k])}</td>`).join('')}</tr>`)
+            .concat([`<tr><td><b>All workshops</b></td>${K.map(([k, , m]) => `<td class="num"><b>${m ? money(sum(k)) : num(sum(k))}</b></td>`).join('')}</tr>`]),
+          { scroll: true });
+      }).catch((e) => { qs('#rep-cmp', c).innerHTML = `<span class="err">${esc(e.message)}</span>`; });
+    }
     let p;
-    try { p = (await api(`/reports/monthly-inputs?year=${y}&month=${mo}`)).preview; }
+    try { p = (await api(`/reports/monthly-inputs?year=${y}&month=${mo}${repWsQ()}`)).preview; }
     catch (e) { mcrPrev.innerHTML = `<span class="err">${esc(e.message)}</span>`; return; }
 
     const pl = p.profit_loss;
@@ -7888,13 +8936,13 @@ routes.reports = async (c) => {
         <div style="font-weight:700;font-size:15px;color:#5f6368">ZERO VALUE · NO ACTIVITY: Rs 0.00</div>
         <div style="font-size:12px;color:#3c4043">In-house absorbed cost: <b>Rs 0.00</b> vs Outside estimate: <b>Rs 0.00</b> (No transactions or inputs recorded for this month)</div>
       </div>
-      <a class="btn primary sm" href="/api/reports/monthly-cost.xlsx?year=${y}&month=${mo}">⬇ Download 14-Sheet Bill</a>
+      <a class="btn primary sm" href="/api/reports/monthly-cost.xlsx?year=${y}&month=${mo}${repWsQ()}">⬇ Download 14-Sheet Bill</a>
     </div>` : `<div style="background:${pl.is_profit ? '#e6f4ea' : '#fce8e6'};border:1px solid ${pl.is_profit ? '#a8dab5' : '#f5c6cb'};padding:12px;border-radius:6px;margin-bottom:12px;display:flex;align-items:center;justify-content:space-between">
       <div>
         <div style="font-weight:700;font-size:15px;color:${pl.is_profit ? '#137333' : '#c5221f'}">${pl.is_profit ? 'PROFIT' : 'LOSS'}: Rs ${money(pl.saving_amount)}</div>
         <div style="font-size:12px;color:#3c4043">In-house absorbed cost: <b>Rs ${money(pl.in_house_cost)}</b> vs Outside estimate: <b>Rs ${money(pl.outside_cost)}</b> (${(pl.saving_pct * 100).toFixed(1)}% ${pl.is_profit ? 'cheaper than outside' : 'more expensive than outside'})</div>
       </div>
-      <a class="btn primary sm" href="/api/reports/monthly-cost.xlsx?year=${y}&month=${mo}">⬇ Download 14-Sheet Bill</a>
+      <a class="btn primary sm" href="/api/reports/monthly-cost.xlsx?year=${y}&month=${mo}${repWsQ()}">⬇ Download 14-Sheet Bill</a>
     </div>`) : '';
 
     const line = (label, count, total, warn) => `<tr><td>${esc(label)}</td><td class="num">${count}</td><td class="num">${money(total)}</td><td>${warn ? '<span class="badge amber">enter inputs</span>' : ''}</td></tr>`;
@@ -7964,11 +9012,19 @@ routes.progress = async (c) => {
   const sp = new URLSearchParams(location.hash.split('?')[1] || '');
   const today = new Date().toISOString().slice(0, 10);
   const date0 = sp.get('date') || today;
+  // Stage 5: the same workshop choice as the Reports page.
+  const wsd = wsMulti() ? await workshopsData().catch(() => null) : null;
+  const seen = ME && ME.workshopsSeen;
+  const wsChoices = wsd ? wsd.workshops.filter((w) => w.active && (!seen || seen.includes(w.id))) : [];
+  if (wsd && seen && !seen.includes(Number(REP_WS))) REP_WS = String((ME.workshop && seen.includes(ME.workshop.id)) ? ME.workshop.id : seen[0]);
+  if (!wsd) REP_WS = '';
   c.innerHTML = `${pageHeader('Daily Report', 'One day at a glance — work done, jobs opened & closed, what’s still to do, items requested & received.')}
     <div class="toolbar">
       <label style="display:flex;gap:6px;align-items:center;flex-direction:row;width:auto">Date <input type="date" id="pgdate" value="${esc(date0)}" style="width:auto"></label>
       <button class="sm" id="pgprev">← Previous day</button>
       <button class="sm" id="pgnext">Next day →</button>
+      ${wsd && !(seen && wsChoices.length === 1) ? `<select id="pgws" style="max-width:240px">${seen ? '' : `<option value="" ${REP_WS ? '' : 'selected'}>All workshops</option>`}
+        ${wsChoices.map((w) => `<option value="${w.id}" ${String(w.id) === String(REP_WS) ? 'selected' : ''}>${esc(w.name)}</option>`).join('')}</select>` : ''}
       <div class="spacer"></div>
       <a class="btn sm" id="pgongx" href="/api/reports/ongoing-jobs.xlsx" title="Excel: every open job from the last 8 months, ranked by delay, plus the parts they are waiting for">⬇ Ongoing Jobs (Excel)</a>
       <a class="btn sm" id="pgong" href="/api/reports/ongoing-jobs.html" target="_blank" title="PDF: every open job from the last 8 months, ranked by delay, plus the parts they are waiting for">⚠ Ongoing Jobs / Delays (PDF)</a>
@@ -7979,10 +9035,10 @@ routes.progress = async (c) => {
   const load = async () => {
     const dt = qs('#pgdate').value || today;
     history.replaceState(null, '', '#/progress?date=' + dt);
-    qs('#pgprint').href = '/api/reports/daily-progress/print.html?date=' + encodeURIComponent(dt);
+    qs('#pgprint').href = '/api/reports/daily-progress/print.html?date=' + encodeURIComponent(dt) + repWsQ();
     qs('#pgjobs').href = '/api/reports/jobs-summary.html?from=' + encodeURIComponent(dt);
     let rep;
-    try { rep = await api('/reports/daily-progress?date=' + encodeURIComponent(dt)); }
+    try { rep = await api('/reports/daily-progress?date=' + encodeURIComponent(dt) + repWsQ()); }
     catch (e) { qs('#pgbody').innerHTML = `<div class="card err">${esc(e.message)}</div>`; return; }
     const t = rep.totals;
     const jobRows = rep.jobs.map((j) => `<tr>
@@ -8036,6 +9092,7 @@ routes.progress = async (c) => {
   qs('#pgprev').onclick = () => shiftDay(-1);
   qs('#pgnext').onclick = () => shiftDay(1);
   qs('#pgdate').onchange = load;
+  if (qs('#pgws')) qs('#pgws').onchange = (e) => { REP_WS = e.target.value; load(); };
   await load();
 };
 
@@ -8059,7 +9116,7 @@ routes.teardown = async (c) => {
       <div class="cost-line"><span>${label}</span><span>${money(v)} · ${pct(v).toFixed(1)}%</span></div>
       <div class="bar-track"><div class="bar" style="width:${pct(v)}%"></div></div>`).join('') || '<span class="muted">No recorded cost for this vehicle.</span>';
     const jobRows = t.jobs.map((j) => `<tr>
-        <td><a href="#/jobs/${j.id}">${esc(j.job_no)}</a></td><td>${esc(j.type)}</td>
+        <td><a href="#/jobs/${j.id}">${esc(j.job_no)}</a>${wsMulti() && j.workshop_name ? `<br><span class="muted" style="font-size:11px">${esc(j.workshop_name)}</span>` : ''}</td><td>${esc(j.type)}</td>
         <td class="num">${money(j.labour_cost)}</td><td class="num">${money(j.material_cost)}</td>
         <td class="num">${money(j.oil_cost)}</td><td class="num">${money(j.external_cost)}</td>
         <td class="num"><b>${money(j.total_cost)}</b></td></tr>`);
@@ -8183,6 +9240,141 @@ routes.jobreview = async (c) => {
   draw();
 };
 
+// A vehicle's card on its page. Another workshop's card (Stage 3, workshops kept apart) shows only
+// its number, status and workshop, and does not open.
+const assetJobLine = (j) => (j.reachable === false
+  ? `<div class="cost-line"><span>${esc(j.job_no)} <span class="muted">· at ${esc(j.workshop_name || 'another workshop')}</span></span>${statusBadge(j.status)}</div>`
+  : `<div class="cost-line"><a href="#/jobs/${j.id}">${esc(j.job_no)}</a>${statusBadge(j.status)}</div>`);
+
+// ---- Workshops (multi-site Stage 2) ---------------------------------------------------------
+//
+// A workshop repairs vehicles and has its own mechanics and job cards; a SITE is where a vehicle
+// works (the Projects list). Until a second workshop is added (ME.workshopsMulti), no workshop
+// picker, column or filter appears anywhere else — the screens look as they always did.
+let WS_CACHE = null;
+async function workshopsData(fresh) {
+  if (!WS_CACHE || fresh) WS_CACHE = await api('/workshops');
+  if (ME) ME.workshopsMulti = WS_CACHE.multi;
+  return WS_CACHE;
+}
+const wsMulti = () => !!(ME && ME.workshopsMulti);
+const wsOptions = (d) => d.workshops.filter((w) => w.active).map((w) => ({ value: w.id, label: w.name }));
+const wsName = (d, id) => { const w = d && d.workshops.find((x) => x.id === id); return w ? w.name : '—'; };
+
+routes.workshops = async (c) => {
+  if (!canDo('workshops.manage', 'mechanics.move')) { c.innerHTML = '<div class="card err">You do not have access to this page.</div>'; return; }
+  const [d, mechs] = await Promise.all([workshopsData(true), api('/workshops/mechanics')]);
+  const manage = canDo('workshops.manage');
+  const move = canDo('mechanics.move');
+  // Stage 4: each workshop has its own store or uses another's. Shown once there are two workshops.
+  const storeCell = (w) => {
+    if (w.own_store) return `<span class="badge green">Own store</span>${w.store_opened ? `<br><span class="muted" style="font-size:12px">since ${esc(w.store_opened)}</span>` : ''}`;
+    return `<span class="muted">Uses</span> ${esc(wsName(d, d.store_of[w.id]))}`;
+  };
+  const rows = d.workshops.map((w) => `<tr${w.active ? '' : ' style="opacity:.55"'}>
+    <td><b>${esc(w.name)}</b>${w.is_default ? ' <span class="badge blue">main</span>' : ''}${w.active ? '' : ' <span class="badge">retired</span>'}<br><span class="muted" style="font-size:12px">${esc(w.code)}${w.place ? ' · ' + esc(w.place) : ''}</span></td>
+    <td class="num">${w.users}</td><td class="num">${w.mechanics}</td><td class="num">${w.open_jobs}</td>
+    ${d.multi ? `<td>${storeCell(w)}</td>` : ''}
+    ${manage ? `<td class="num" style="white-space:nowrap"><button class="sm" data-wedit="${w.id}">✎ Edit</button>
+      ${d.multi && w.active && !w.is_default ? `<button class="sm" data-wstore="${w.id}">Store…</button>` : ''}
+      ${w.is_default ? '' : (w.active ? `<button class="sm danger" data-wretire="${w.id}">Retire</button>` : `<button class="sm" data-wback="${w.id}">Reinstate</button>`)}</td>` : ''}</tr>`);
+  const mrows = mechs.filter((m) => m.active).map((m) => `<tr><td>${esc(m.name)}</td><td>${esc(wsName(d, m.workshop_id))}</td>
+    <td class="muted">${m.last_move ? 'since ' + esc(m.last_move) : ''}</td>
+    ${move ? `<td class="num"><button class="sm" data-mmove="${m.id}" data-name="${esc(m.name)}" data-ws="${m.workshop_id}">Move…</button></td>` : ''}</tr>`);
+  c.innerHTML = `${pageHeader('Workshops', 'Where vehicles are repaired. Sites — where vehicles work — are on the Projects page.')}
+    <div class="card">
+      <div class="toolbar" style="margin:0 0 8px"><h3 style="margin:0">Workshops</h3><div class="spacer"></div>${manage ? '<button class="primary sm" id="wnew">+ Add workshop</button>' : ''}</div>
+      ${tableWrap([{ label: 'Workshop' }, { label: 'People', num: true }, { label: 'Mechanics', num: true }, { label: 'Open job cards', num: true }]
+    .concat(d.multi ? [{ label: 'Store' }] : []).concat(manage ? [{ label: '', num: true }] : []), rows)}
+      <p class="muted" style="font-size:12px;margin:8px 0 0">${d.multi
+        ? 'Each person has a home workshop (Access Control → Users). New job cards go to the home workshop of whoever raises them.'
+        : 'With one workshop, nothing else changes on any screen. When you add a second, job cards, requests and people show their workshop.'}</p>
+      ${d.multi ? `<p class="muted" style="font-size:12px;margin:4px 0 0">${d.stores_multi
+    ? 'Each store has its own stock. Goods received go into the store of the request\'s workshop; issues come out of the store of the job\'s workshop.'
+    : 'All stock is in one store. Give a workshop its own store with Store…'}</p>` : ''}
+    </div>
+    <div class="card">
+      <div class="toolbar" style="margin:0 0 6px"><h3 style="margin:0">Separate workshops</h3><div class="spacer"></div>
+        ${manage ? `<button class="sm ${d.separate ? 'danger' : 'primary'}" id="wsep">${d.separate ? 'Turn off' : 'Turn on'}</button>` : ''}</div>
+      <p style="margin:0">${d.separate
+        ? (d.separate_in_force ? '<span class="badge green">On</span> Each workshop sees only its own job cards, job requests, requests (MRN), daily work and approvals.'
+          : '<span class="badge amber">On, waiting</span> It takes effect when there is a second workshop.')
+        : '<span class="badge">Off</span> Everyone sees every workshop\'s work, as before.'}</p>
+      <p class="muted" style="font-size:12px;margin:6px 0 0">Head office (Admin, Manager, Operational Manager, Purchasing) always sees every workshop.
+        Store staff see the requests and job cards of every workshop their store serves. Vehicles and reports stay shared.</p>
+    </div>
+    <div class="card">
+      <h3 style="margin:0 0 8px">Mechanics</h3>
+      ${tableWrap([{ label: 'Mechanic' }, { label: 'Workshop' }, { label: '' }].concat(move ? [{ label: '', num: true }] : []), mrows, { scroll: true })}
+      <p class="muted" style="font-size:12px;margin:8px 0 0">A move keeps its date, so hours worked before it stay with the old workshop.</p>
+    </div>`;
+  const edit = (w) => modal(w ? `Edit ${w.name}` : 'Add a workshop', `
+    ${field('Name', 'name', { value: w ? w.name : '', placeholder: 'e.g. Muthur Site Workshop' })}
+    ${field('Short code', 'code', { value: w ? w.code : '', placeholder: 'e.g. MTR' })}
+    ${field('Place', 'place', { value: w ? (w.place || '') : '', placeholder: 'Town' })}
+    <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Save</button></div>`, (body, close) => {
+    qs('#s', body).onclick = async () => {
+      try {
+        await api(w ? `/workshops/${w.id}` : '/workshops', { method: w ? 'PATCH' : 'POST', body: formData(body) });
+        close(); toast('Saved'); routes.workshops(c);
+      } catch (e) { toast(e.message, 'err'); }
+    };
+  });
+  if (qs('#wnew', c)) qs('#wnew', c).onclick = () => edit(null);
+  if (qs('#wsep', c)) qs('#wsep', c).onclick = async () => {
+    const on = !d.separate;
+    if (on && !confirm('Turn on "Separate workshops"? People outside head office will then see only their own workshop\'s job cards, requests and daily work.')) return;
+    try { await api('/workshops/separate', { method: 'PUT', body: { on } }); toast(on ? 'Separate workshops: on' : 'Separate workshops: off'); routes.workshops(c); }
+    catch (e) { toast(e.message, 'err'); }
+  };
+  qsa('[data-wedit]', c).forEach((b) => { b.onclick = () => edit(d.workshops.find((w) => String(w.id) === b.dataset.wedit)); });
+  // Stage 4: its own store (from a date), or the store it uses.
+  qsa('[data-wstore]', c).forEach((b) => {
+    const w = d.workshops.find((x) => String(x.id) === b.dataset.wstore);
+    const others = d.stores.filter((st) => st.id !== w.id).map((st) => ({ value: st.id, label: st.name }));
+    const today = new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+    b.onclick = () => modal(`Store of ${w.name}`, `
+      <label style="display:block;margin:4px 0"><input type="radio" name="kind" value="own" ${w.own_store ? 'checked' : ''}> Own store</label>
+      <div id="st-own" style="margin-left:22px">${w.own_store
+    ? `<p class="muted" style="margin:0">Open${w.store_opened ? ' since ' + esc(w.store_opened) : ''}.</p>`
+    : field('Opens on', 'opened', { type: 'date', value: today })}</div>
+      <label style="display:block;margin:8px 0 4px"><input type="radio" name="kind" value="uses" ${w.own_store ? '' : 'checked'}> Uses another workshop's store</label>
+      <div id="st-uses" style="margin-left:22px">${field('Store', 'uses', { type: 'select', options: others, value: d.store_of[w.id] })}</div>
+      <p class="muted" style="font-size:12px">A new store starts empty. Send stock to it with a transfer note (MTN). What was received before it opened stays where it was.</p>
+      <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Save</button></div>`, (body, close) => {
+      qs('#s', body).onclick = async () => {
+        const own = qs('input[name="kind"]:checked', body).value === 'own';
+        if (own && !w.own_store && !confirm(`Open a store at ${w.name}? From then on its goods received and issues are in its own store.`)) return;
+        try {
+          const f = formData(body);
+          await api(`/workshops/${w.id}/store`, { method: 'PUT', body: own ? { own: true, opened: f.opened } : { own: false, uses: f.uses } });
+          close(); toast('Saved'); routes.workshops(c);
+        } catch (e) { toast(e.message, 'err'); }
+      };
+    });
+  });
+  const setActive = async (id, active) => {
+    try { await api(`/workshops/${id}`, { method: 'PATCH', body: { active } }); toast(active ? 'Reinstated' : 'Retired'); routes.workshops(c); }
+    catch (e) { toast(e.message, 'err'); }
+  };
+  qsa('[data-wretire]', c).forEach((b) => { b.onclick = () => { if (confirm('Retire this workshop? Nothing can be added to it until it is reinstated.')) setActive(b.dataset.wretire, false); }; });
+  qsa('[data-wback]', c).forEach((b) => { b.onclick = () => setActive(b.dataset.wback, true); });
+  qsa('[data-mmove]', c).forEach((b) => {
+    b.onclick = () => modal(`Move ${b.dataset.name}`, `
+      ${field('To workshop', 'workshop_id', { type: 'select', options: wsOptions(d), value: Number(b.dataset.ws) })}
+      ${field('From date', 'from_date', { type: 'date', value: new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10) })}
+      ${field('Note (optional)', 'note')}
+      <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Move</button></div>`, (body, close) => {
+      qs('#s', body).onclick = async () => {
+        try {
+          const r = await api(`/workshops/mechanics/${b.dataset.mmove}/move`, { method: 'POST', body: formData(body) });
+          close(); toast(`${r.mechanic} → ${r.workshop} from ${r.from_date}`); routes.workshops(c);
+        } catch (e) { toast(e.message, 'err'); }
+      };
+    });
+  });
+};
+
 // ---- Access Control — roles & permissions, clearance board, users --------------------------
 //
 // Three tabs, each shown to whoever may use it: Roles & Permissions and the Clearance Board need
@@ -8192,17 +9384,34 @@ routes.jobreview = async (c) => {
 routes.access = async (c) => {
   if (!canDo('access.manage', 'users.manage')) { c.innerHTML = '<div class="card err">You do not have access to this page.</div>'; return; }
   const tabs = [];
-  if (canDo('access.manage')) tabs.push(['roles', 'Roles & Permissions'], ['board', 'Clearance Board']);
-  if (canDo('users.manage')) tabs.push(['users', 'Users & Roles']);
+  if (canDo('access.manage')) {
+    tabs.push(['people', 'People (Overrides)']);
+    tabs.push(['sections', 'Sections Audit']);
+    tabs.push(['roles', 'Role Templates']);
+    tabs.push(['board', 'Clearance Board']);
+    tabs.push(['limits', 'Approval limits']);
+  }
+  if (canDo('users.manage')) tabs.push(['users', 'User Accounts']);
+  if (canDo('access.manage')) tabs.push(['history', 'Audit Trail']);
+
   const sp = new URLSearchParams(location.hash.split('?')[1] || '');
   const tab = tabs.some((t) => t[0] === sp.get('tab')) ? sp.get('tab') : tabs[0][0];
-  c.innerHTML = `${pageHeader('Access Control', 'Who may do what — roles, the permissions in each role, and who holds them.')}
+  c.innerHTML = `${pageHeader('Access Control', 'Access person-by-person, role starting templates, 22 canonical sections & audit compliance.')}
     <div id="admin-warn"></div>
-    <div class="pill-row" style="margin-bottom:12px">
-      ${tabs.map(([k, label]) => `<button class="btn sm ${tab === k ? 'primary' : ''}" data-atab="${k}">${esc(label)}</button>`).join('')}
+    <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:12px">
+      <div class="pill-row">
+        ${tabs.map(([k, label]) => `<button class="btn sm ${tab === k ? 'primary' : ''}" data-atab="${k}">${esc(label)}</button>`).join('')}
+      </div>
+      <div>
+        <button class="btn sm" id="btn-access-report">📥 Access Report (Excel)</button>
+      </div>
     </div>
     <div id="apane"><div class="muted">Loading…</div></div>`;
   qsa('[data-atab]', c).forEach((b) => { b.onclick = () => { location.hash = '#/access?tab=' + b.dataset.atab; }; });
+  const repBtn = qs('#btn-access-report', c);
+  if (repBtn) {
+    repBtn.onclick = () => { window.open('/api/access/report?format=xlsx', '_blank'); };
+  }
   // One admin is a single point of failure: if that account is lost, only someone with a shell on
   // the server can get the system back (scripts/admin.js).
   api('/access/roles').then((r) => {
@@ -8212,61 +9421,711 @@ routes.access = async (c) => {
     }
   }).catch(() => {});
   const pane = qs('#apane', c);
-  if (tab === 'users') await renderUsersManager(pane);
+  if (tab === 'people') await renderPeopleAccess(pane, sp.get('user'));
+  else if (tab === 'sections') await renderSectionsAudit(pane, sp.get('section'));
+  else if (tab === 'users') await renderUsersManager(pane);
   else if (tab === 'board') await renderClearanceBoard(pane);
+  else if (tab === 'limits') await renderApprovalLimits(pane);
+  else if (tab === 'history') await renderAccessHistory(pane);
   else await renderRolesManager(pane, sp.get('role'));
 };
 routes.users = async () => { location.hash = '#/access?tab=users'; };
 
+// Approval limits: the most money each role may sign off on its own. Empty = no limit, which is
+// how every role starts, so nothing changes until an amount is typed in. Saved on leaving the box.
+async function renderApprovalLimits(c) {
+  const d = await api('/access/approval-limits');
+  const mine = new Set(ME.roles || []);
+  const cell = (r, k) => {
+    if (!r.gives[k.key] && r.limits[k.key] == null) return '<td class="muted">—</td>';
+    const v = r.limits[k.key];
+    const locked = !isAdmin() && mine.has(r.name);
+    return `<td><input type="number" min="0" step="1" style="max-width:160px" placeholder="No limit" data-lrole="${esc(r.name)}" data-lkind="${esc(k.key)}"
+      value="${v == null ? '' : esc(v)}" data-was="${v == null ? '' : esc(v)}" ${locked ? 'disabled title="Your own role — ask an admin"' : ''}></td>`;
+  };
+  c.innerHTML = `<div class="card">
+    <h3 style="margin:0 0 6px">Approval limits</h3>
+    <p class="muted" style="margin:0 0 10px">The most money (Rs) a role may sign off on its own. Leave a box empty for <b>no limit</b>.
+      Above the limit, the approval waits for someone with a higher limit. Admin never has a limit.
+      A person with two roles gets the higher limit.</p>
+    ${d.roles.length ? tableWrap([{ label: 'Role' }].concat(d.kinds.map((k) => ({ label: k.label }))),
+      d.roles.map((r) => `<tr><td><b>${esc(r.label)}</b>${r.active ? '' : ' <span class="badge">retired</span>'}</td>${d.kinds.map((k) => cell(r, k)).join('')}</tr>`))
+      : '<p class="muted">No role gives these approvals yet.</p>'}
+    <ul class="muted" style="font-size:12px;margin:10px 0 0">${d.kinds.map((k) => `<li><b>${esc(k.label)}</b> — ${esc(k.measure)}.</li>`).join('')}
+      <li>Job cards and job requests have no amount when they are approved, so the limit for a job is checked when it is closed fully.</li></ul>
+  </div>`;
+  qsa('[data-lrole]', c).forEach((inp) => {
+    inp.onchange = async () => {
+      const val = inp.value.trim();
+      if (val === inp.dataset.was) return;
+      try {
+        await api('/access/approval-limits', { method: 'PUT', body: { role: inp.dataset.lrole, kind: inp.dataset.lkind, max_amount: val === '' ? null : val } });
+        inp.dataset.was = val;
+        toast(val === '' ? 'No limit' : `Limit saved: ${money(val)}`);
+      } catch (e) { inp.value = inp.dataset.was; toast(e.message, 'err'); }
+    };
+  });
+}
+
 const lvlChip = (lvl) => {
-  const cls = lvl === 'full' ? 'amber' : lvl === 'edit' ? 'green' : '';
-  const txt = lvl === 'none' ? '—' : lvl.toUpperCase();
+  const cls = lvl === 'full' ? 'amber' : lvl === 'edit' ? 'green' : lvl === 'add' ? 'blue' : '';
+  const txt = lvl === 'none' ? '—' : String(lvl).toUpperCase();
   return `<span class="badge ${cls}"${lvl === 'none' ? ' style="opacity:.4"' : ''}>${txt}</span>`;
 };
 
+// ---- Tab 1: People & Overrides ------------------------------------------------
+async function renderPeopleAccess(c, wantedUserId) {
+  const [data, wsd] = await Promise.all([api('/access/people'), workshopsData(true)]);
+  const people = data.people || [];
+  if (!people.length) {
+    c.innerHTML = '<div class="card muted">No users found.</div>';
+    return;
+  }
+
+  let sel = people.find((u) => u.id == wantedUserId) || people[0];
+  const details = await api('/access/people/' + sel.id);
+  const u = details.user;
+  const sections = details.sections;
+
+  // Local state for edits
+  const sectionEdits = {};
+  const capEdits = {};
+
+  const canEditTarget = !isAdmin() && u.roles.some((r) => r.name === 'admin') ? false : true;
+  const isSelf = ME && ME.id == u.id;
+
+  const renderAll = () => {
+    const q = (qs('#person-search', c) ? qs('#person-search', c).value : '').toLowerCase().trim();
+    const filtered = people.filter((p) => {
+      if (!q) return true;
+      return (p.full_name || '').toLowerCase().includes(q) ||
+             (p.username || '').toLowerCase().includes(q) ||
+             p.roles.some((r) => (r.label || r.name).toLowerCase().includes(q));
+    });
+
+    const listHtml = filtered.map((p) => {
+      const isSel = p.id == u.id;
+      const roleStr = p.roles.map((r) => r.label || r.name).join(', ') || 'No roles';
+      return `<tr data-pick-user="${p.id}" style="cursor:pointer;${isSel ? 'background:var(--bg-active, #eef2ff);font-weight:600;' : ''}${p.active ? '' : 'opacity:.55;'}">
+        <td>
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:6px">
+            <span>${esc(p.full_name || p.username)}</span>
+            ${p.overrides_count > 0 ? `<span class="badge amber" style="font-size:10px" title="${p.overrides_count} custom overrides">${p.overrides_count} custom</span>` : ''}
+          </div>
+          <div class="muted" style="font-size:11px;font-weight:normal">${esc(p.username)} · ${esc(roleStr)}</div>
+        </td>
+      </tr>`;
+    }).join('') || '<tr><td class="muted" style="text-align:center">No matching people</td></tr>';
+
+    const GROUPS = [
+      { id: 'operations', name: 'Operations & Execution', icon: '🔧' },
+      { id: 'stores', name: 'Stores & Inventory', icon: '📦' },
+      { id: 'fleet', name: 'Fleet & Assets', icon: '🚜' },
+      { id: 'control', name: 'Control & Intelligence', icon: '📊' },
+      { id: 'governance', name: 'Governance & Access', icon: '🛡️' },
+    ];
+
+    const LV_BTN = [
+      { key: 'none', label: 'None' },
+      { key: 'view', label: 'View' },
+      { key: 'add', label: 'Add' },
+      { key: 'edit', label: 'Edit' },
+      { key: 'full', label: 'Full' },
+    ];
+
+    const groupCards = GROUPS.map((grp) => {
+      const grpSections = sections.filter((s) => s.group === grp.id);
+      if (!grpSections.length) return '';
+
+      const secHtml = grpSections.map((sec) => {
+        const curLevel = sectionEdits[sec.key] !== undefined ? sectionEdits[sec.key] : (sec.override_level !== null ? sec.override_level : sec.role_level);
+        const isCustom = sectionEdits[sec.key] !== undefined ? (sectionEdits[sec.key] !== sec.role_level) : (sec.override_level !== null && sec.override_level !== sec.role_level);
+
+        const lvlButtons = LV_BTN.map((b) => {
+          const isSelected = curLevel === b.key;
+          const cls = isSelected
+            ? (b.key === 'full' ? 'primary' : (b.key === 'edit' ? 'badge green' : (b.key === 'add' ? 'badge blue' : (b.key === 'view' ? 'badge' : 'badge amber'))))
+            : 'btn sm';
+          const style = isSelected ? 'font-weight:bold;padding:4px 10px;font-size:12px' : 'opacity:.7;padding:4px 10px;font-size:12px';
+          const disabled = isSelf || !canEditTarget ? 'disabled' : '';
+          return `<button class="${cls}" style="${style}" data-sec-lvl="${esc(sec.key)}:${b.key}" ${disabled}>${b.label}</button>`;
+        }).join(' ');
+
+        let capsHtml = '';
+        if (sec.capabilities && sec.capabilities.length > 0) {
+          const capItems = sec.capabilities.map((c) => {
+            const hasCap = capEdits[c.key] !== undefined ? capEdits[c.key] : c.effective_granted;
+            const isCapOverridden = capEdits[c.key] !== undefined ? (capEdits[c.key] !== c.role_granted) : c.is_override;
+            const disabled = isSelf || !canEditTarget ? 'disabled' : '';
+            return `<label style="display:flex;align-items:flex-start;gap:8px;margin:5px 0;font-weight:normal;font-size:12px">
+              <input type="checkbox" style="width:auto;margin-top:2px" data-pcap="${esc(c.key)}" ${hasCap ? 'checked' : ''} ${disabled}>
+              <div>
+                <span>${esc(c.label)}</span>
+                ${isCapOverridden ? `<span class="badge amber" style="font-size:9px;margin-left:4px">Custom override</span>` : `<span class="muted" style="font-size:10px;margin-left:4px">(${c.role_granted ? 'Granted by role' : 'Not in role'})</span>`}
+                <div class="muted" style="font-size:10px">${esc(c.key)}</div>
+              </div>
+            </label>`;
+          }).join('');
+
+          capsHtml = `<details style="margin-top:8px;border-top:1px dashed var(--border-light, #eee);padding-top:6px">
+            <summary style="cursor:pointer;font-size:11px;font-weight:600;color:var(--text-muted, #666)">
+              Special Capabilities & Approvals (${sec.capabilities.length})
+            </summary>
+            <div style="margin-top:6px;padding-left:4px">
+              ${capItems}
+            </div>
+          </details>`;
+        }
+
+        return `<div class="card" style="margin-bottom:10px;padding:12px;background:var(--card-sub-bg, #fff);border:1px solid var(--border-light, #e2e8f0);border-radius:6px">
+          <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:8px">
+            <div style="display:flex;align-items:center;gap:8px">
+              <span style="font-size:18px">${sec.icon}</span>
+              <div>
+                <b style="font-size:14px">${esc(sec.label)}</b>
+                <div class="muted" style="font-size:11px">${esc(sec.description || '')}</div>
+              </div>
+            </div>
+            <div style="display:flex;align-items:center;gap:6px">
+              ${isCustom
+                ? `<span class="badge amber" style="font-weight:600">⚡ Custom Override</span> <button class="btn sm" style="font-size:10px;padding:2px 6px" data-reset-sec="${esc(sec.key)}" title="Revert this section to role template">Reset</button>`
+                : `<span class="badge blue" style="font-weight:500">Role Default (${sec.role_level.toUpperCase()})</span>`}
+            </div>
+          </div>
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;background:var(--bg-muted, #f8fafc);padding:6px 10px;border-radius:6px">
+            <span class="muted" style="font-size:11px;font-weight:600;text-transform:uppercase">Clearance:</span>
+            <div style="display:flex;gap:4px;flex-wrap:wrap">${lvlButtons}</div>
+          </div>
+          ${capsHtml}
+        </div>`;
+      }).join('');
+
+      return `<div style="margin-bottom:18px">
+        <h3 style="margin:0 0 8px;font-size:14px;color:var(--text-muted, #475569);display:flex;align-items:center;gap:6px">
+          <span>${grp.icon}</span> <span>${esc(grp.name)}</span>
+        </h3>
+        ${secHtml}
+      </div>`;
+    }).join('');
+
+    const wsOptions = [{ value: '', label: '— Default (Any / Head Office) —' }].concat(
+      (wsd.workshops || []).map((w) => ({ value: String(w.id), label: w.name + (w.code ? ` (${w.code})` : '') }))
+    );
+
+    c.innerHTML = `<div style="display:grid;grid-template-columns:minmax(240px,310px) 1fr;gap:14px;align-items:start">
+      <div class="card" style="padding:12px">
+        <div style="margin-bottom:8px">
+          <input type="text" id="person-search" placeholder="Search people..." value="${esc(q)}" style="width:100%;box-sizing:border-box">
+        </div>
+        <div class="table-wrap scroll" style="max-height:calc(100vh - 250px)">
+          <table><tbody>${listHtml}</tbody></table>
+        </div>
+      </div>
+
+      <div>
+        <div class="card" style="margin-bottom:12px;border-top:3px solid var(--accent, #2563eb)">
+          <div style="display:flex;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;gap:12px;margin-bottom:12px">
+            <div>
+              <h2 style="margin:0;display:flex;align-items:center;gap:8px">
+                <span>${esc(u.full_name || u.username)}</span>
+                ${u.active ? '<span class="badge green">Active</span>' : '<span class="badge">Inactive</span>'}
+              </h2>
+              <div class="muted" style="font-size:12px;margin-top:2px">
+                Username: <code>${esc(u.username)}</code> · Roles: ${u.roles.map((r) => `<span class="badge blue">${esc(r.label || r.name)}</span>`).join(' ') || 'None'}
+              </div>
+            </div>
+            <div style="display:flex;gap:6px;flex-wrap:wrap">
+              <button class="btn sm" id="btn-compare" title="Compare this person's access with another person or role">🔍 Compare</button>
+              <button class="btn sm" id="btn-copy-from" ${isSelf || !canEditTarget ? 'disabled' : ''} title="Copy all overrides from another person">📋 Copy From...</button>
+              <button class="btn sm" id="btn-reset-user" ${isSelf || !canEditTarget ? 'disabled' : ''} title="Remove all personal overrides and revert to role template">↺ Reset to Role</button>
+              <button class="primary sm" id="btn-save-access" ${isSelf || !canEditTarget ? 'disabled' : ''}>💾 Save Access</button>
+            </div>
+          </div>
+
+          ${isSelf ? '<div class="card" style="background:#fffbeb;border-left:4px solid #f59e0b;padding:8px 12px;margin-bottom:10px;font-size:12px">⚠️ <b>Safety Rule:</b> You cannot modify your own access permissions. Have another administrator change them if needed.</div>' : ''}
+          ${!canEditTarget ? '<div class="card err" style="padding:8px 12px;margin-bottom:10px;font-size:12px">⛔ Only an administrator can modify an administrator account.</div>' : ''}
+
+          <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(200px, 1fr));gap:10px;background:var(--bg-muted, #f8fafc);padding:10px;border-radius:6px">
+            <div>
+              <label style="font-size:11px;font-weight:600;margin-bottom:4px">Home Workshop:</label>
+              <select id="user-ws" style="width:100%" ${isSelf || !canEditTarget ? 'disabled' : ''}>
+                ${wsOptions.map((o) => `<option value="${o.value}" ${String(u.home_workshop_id || '') === o.value ? 'selected' : ''}>${esc(o.label)}</option>`).join('')}
+              </select>
+            </div>
+            <div>
+              <label style="font-size:11px;font-weight:600;margin-bottom:4px">Personal Approval Limit (Rs):</label>
+              <input type="number" id="user-limit" placeholder="Role template default" value="${u.approval_limit != null ? esc(u.approval_limit) : ''}" style="width:100%" ${isSelf || !canEditTarget ? 'disabled' : ''}>
+            </div>
+            <div>
+              <label style="font-size:11px;font-weight:600;margin-bottom:4px">Temporary Access Until (Date):</label>
+              <input type="date" id="user-until" value="${u.access_until ? esc(u.access_until.slice(0, 10)) : ''}" style="width:100%" ${isSelf || !canEditTarget ? 'disabled' : ''}>
+            </div>
+          </div>
+        </div>
+
+        ${groupCards}
+      </div>
+    </div>`;
+
+    const searchInp = qs('#person-search', c);
+    if (searchInp) {
+      searchInp.oninput = () => renderAll();
+    }
+
+    qsa('[data-pick-user]', c).forEach((tr) => {
+      tr.onclick = async () => {
+        const uid = tr.dataset.pickUser;
+        await renderPeopleAccess(c, uid);
+      };
+    });
+
+    qsa('[data-sec-lvl]', c).forEach((btn) => {
+      btn.onclick = () => {
+        const [secKey, lvl] = btn.dataset.secLvl.split(':');
+        sectionEdits[secKey] = lvl;
+        renderAll();
+      };
+    });
+
+    qsa('[data-reset-sec]', c).forEach((btn) => {
+      btn.onclick = () => {
+        const secKey = btn.dataset.resetSec;
+        sectionEdits[secKey] = null;
+        renderAll();
+      };
+    });
+
+    qsa('[data-pcap]', c).forEach((box) => {
+      box.onchange = () => {
+        capEdits[box.dataset.pcap] = box.checked;
+        renderAll();
+      };
+    });
+
+    const saveBtn = qs('#btn-save-access', c);
+    if (saveBtn) {
+      saveBtn.onclick = async () => {
+        const wsVal = qs('#user-ws', c).value;
+        const limitVal = qs('#user-limit', c).value.trim();
+        const untilVal = qs('#user-until', c).value.trim();
+
+        const payload = {
+          sections: sectionEdits,
+          capabilities: capEdits,
+          home_workshop_id: wsVal || null,
+          approval_limit: limitVal === '' ? null : Number(limitVal),
+          access_until: untilVal || null,
+        };
+
+        try {
+          saveBtn.disabled = true;
+          saveBtn.innerText = 'Saving…';
+          await api('/access/people/' + u.id + '/save', { method: 'POST', body: payload });
+          toast(`Access permissions saved for ${u.full_name || u.username}`);
+          await renderPeopleAccess(c, u.id);
+        } catch (e) {
+          toast(e.message, 'err');
+          saveBtn.disabled = false;
+          saveBtn.innerText = '💾 Save Access';
+        }
+      };
+    }
+
+    const resetBtn = qs('#btn-reset-user', c);
+    if (resetBtn) {
+      resetBtn.onclick = async () => {
+        if (!confirm(`Reset all personal overrides for ${u.full_name || u.username} back to their role template defaults?`)) return;
+        try {
+          await api('/access/people/' + u.id + '/reset', { method: 'POST' });
+          toast(`Reset ${u.username} to role template.`);
+          await renderPeopleAccess(c, u.id);
+        } catch (e) { toast(e.message, 'err'); }
+      };
+    }
+
+    const copyBtn = qs('#btn-copy-from', c);
+    if (copyBtn) {
+      copyBtn.onclick = () => {
+        const others = people.filter((p) => p.id != u.id && p.active);
+        modal('Copy Access Overrides', `
+          <p class="muted" style="margin-top:0">Copy all section clearance and capability overrides from another person to <b>${esc(u.full_name || u.username)}</b>.</p>
+          <div style="margin-bottom:12px">
+            <label style="font-size:12px;font-weight:600;display:block;margin-bottom:4px">Copy From Person:</label>
+            <select id="source-user-select" style="width:100%">
+              ${others.map((p) => `<option value="${p.id}">${esc(p.full_name || p.username)} (${esc(p.username)}) — ${p.overrides_count} override(s)</option>`).join('')}
+            </select>
+          </div>
+          <div style="text-align:right">
+            <button class="primary" id="btn-do-copy">Copy Overrides</button>
+          </div>`,
+          (body, close) => {
+            qs('#btn-do-copy', body).onclick = async () => {
+              const srcId = qs('#source-user-select', body).value;
+              try {
+                await api('/access/people/' + u.id + '/copy-from', {
+                  method: 'POST',
+                  body: { source_user_id: srcId },
+                });
+                close();
+                toast('Access overrides copied');
+                await renderPeopleAccess(c, u.id);
+              } catch (e) { toast(e.message, 'err'); }
+            };
+          }
+        );
+      };
+    }
+
+    const compareBtn = qs('#btn-compare', c);
+    if (compareBtn) {
+      compareBtn.onclick = () => openCompareModal(u, people);
+    }
+  };
+
+  renderAll();
+}
+
+function openCompareModal(u, people) {
+  modal(`Compare Access: ${esc(u.full_name || u.username)}`, `
+    <div style="display:flex;gap:10px;margin-bottom:12px;align-items:center;flex-wrap:wrap">
+      <label style="margin:0;font-weight:600;font-size:12px">Compare with:</label>
+      <select id="cmp-target-type" style="padding:4px 8px">
+        <option value="user">Another Person</option>
+        <option value="role">A Role Template</option>
+      </select>
+      <select id="cmp-target-val" style="flex:1;min-width:180px;padding:4px 8px"></select>
+      <button class="primary sm" id="btn-run-cmp">Compare</button>
+    </div>
+    <div id="cmp-result"><div class="muted">Select comparison target and click Compare.</div></div>`,
+    async (body) => {
+      const typeSel = qs('#cmp-target-type', body);
+      const valSel = qs('#cmp-target-val', body);
+      const resDiv = qs('#cmp-result', body);
+
+      const updateTargetOptions = async () => {
+        if (typeSel.value === 'user') {
+          valSel.innerHTML = people.filter((p) => p.id != u.id)
+            .map((p) => `<option value="${p.id}">${esc(p.full_name || p.username)} (${esc(p.username)})</option>`).join('');
+        } else {
+          const rData = await api('/access/roles');
+          valSel.innerHTML = rData.roles.map((r) => `<option value="${esc(r.name)}">${esc(r.label || r.name)}</option>`).join('');
+        }
+      };
+
+      typeSel.onchange = updateTargetOptions;
+      await updateTargetOptions();
+
+      qs('#btn-run-cmp', body).onclick = async () => {
+        try {
+          resDiv.innerHTML = '<div class="muted">Comparing…</div>';
+          const query = typeSel.value === 'user' ? `user1=${u.id}&user2=${valSel.value}` : `user1=${u.id}&role=${encodeURIComponent(valSel.value)}`;
+          const res = await api('/access/compare?' + query);
+
+          const targetTitle = res.target.type === 'user' ? (res.target.full_name || res.target.username) : res.target.label;
+
+          const diffSections = res.sections.filter((s) => s.diff);
+
+          const secRows = res.sections.map((s) => `
+            <tr style="${s.diff ? 'background:#fffbeb;' : ''}">
+              <td>${s.icon} <b>${esc(s.label)}</b></td>
+              <td>${lvlChip(s.user1_level)}</td>
+              <td>${lvlChip(s.target_level)}</td>
+              <td>${s.diff ? '<span class="badge amber">Different</span>' : '<span class="muted">Same</span>'}</td>
+            </tr>
+          `).join('');
+
+          const capRows = res.capabilities.map((c) => `
+            <tr>
+              <td><b>${esc(c.label)}</b><br><span class="muted" style="font-size:10px">${esc(c.key)}</span></td>
+              <td>${c.user1_has ? '<span class="badge green">YES</span>' : '<span class="muted">NO</span>'}</td>
+              <td>${c.target_has ? '<span class="badge green">YES</span>' : '<span class="muted">NO</span>'}</td>
+            </tr>
+          `).join('') || '<tr><td colspan="3" class="muted" style="text-align:center">No capability differences</td></tr>';
+
+          resDiv.innerHTML = `
+            <div style="margin-bottom:10px;padding:8px 12px;background:var(--bg-muted, #f8fafc);border-radius:6px;font-size:12px">
+              Comparing <b>${esc(u.full_name || u.username)}</b> vs <b>${esc(targetTitle)}</b>:
+              <b>${diffSections.length}</b> section(s) differ, <b>${res.capabilities.length}</b> special capability difference(s).
+            </div>
+            <h4 style="margin:10px 0 4px">22 Canonical Sections</h4>
+            <div class="table-wrap scroll" style="max-height:220px">
+              <table>
+                <thead><tr><th>Section</th><th>${esc(u.username)}</th><th>${esc(targetTitle)}</th><th>Status</th></tr></thead>
+                <tbody>${secRows}</tbody>
+              </table>
+            </div>
+            <h4 style="margin:14px 0 4px">Capability Differences (${res.capabilities.length})</h4>
+            <div class="table-wrap scroll" style="max-height:180px">
+              <table>
+                <thead><tr><th>Capability</th><th>${esc(u.username)}</th><th>${esc(targetTitle)}</th></tr></thead>
+                <tbody>${capRows}</tbody>
+              </table>
+            </div>
+          `;
+        } catch (e) { resDiv.innerHTML = `<div class="err">${esc(e.message)}</div>`; }
+      };
+    }
+  );
+}
+
+// ---- Tab 2: Sections Audit View ----------------------------------------------
+async function renderSectionsAudit(c, wantedSection) {
+  const [matrixData, wsd] = await Promise.all([api('/access/section-matrix'), workshopsData(true)]);
+  const allSections = matrixData.matrix ? matrixData.matrix.sections : permissions.SECTIONS;
+  const defSec = wantedSection || (allSections[0] ? allSections[0].key : 'dashboard');
+
+  c.innerHTML = `
+    <div class="card" style="margin-bottom:12px">
+      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px">
+        <div>
+          <h3 style="margin:0 0 4px">Section Audit View</h3>
+          <p class="muted" style="margin:0;font-size:12px">Instant answer to: Who has access to each section across all people and roles?</p>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px">
+          <label style="font-weight:600;font-size:12px;margin:0">Choose Section:</label>
+          <select id="sec-audit-select" style="padding:4px 10px;font-size:13px;font-weight:bold">
+            ${allSections.map((s) => `<option value="${s.key}" ${s.key === defSec ? 'selected' : ''}>${s.icon} ${esc(s.label)}</option>`).join('')}
+          </select>
+        </div>
+      </div>
+    </div>
+    <div id="sec-audit-content"><div class="muted">Loading section details…</div></div>
+  `;
+
+  const selBox = qs('#sec-audit-select', c);
+  const contentDiv = qs('#sec-audit-content', c);
+
+  const loadSection = async (secKey) => {
+    try {
+      contentDiv.innerHTML = '<div class="muted">Loading section audit data…</div>';
+      const data = await api('/access/sections/' + encodeURIComponent(secKey));
+      const s = data.section;
+      const people = data.people || [];
+
+      const counts = { full: 0, edit: 0, add: 0, view: 0, none: 0 };
+      people.forEach((p) => { counts[p.effective_level] = (counts[p.effective_level] || 0) + 1; });
+
+      const rows = people.map((p) => {
+        const roleStr = p.roles.map((r) => r.label || r.name).join(', ') || 'None';
+        const isCustom = p.is_override;
+        const capsBadges = (p.granted_caps || []).map((cap) => `<span class="badge" style="font-size:10px">${esc(cap)}</span>`).join(' ') || '<span class="muted">—</span>';
+        return `
+          <tr style="${p.effective_level === 'none' ? 'opacity:.5;' : ''}">
+            <td><b>${esc(p.full_name || p.username)}</b><br><span class="muted" style="font-size:11px">${esc(p.username)}</span></td>
+            <td><span class="muted">${esc(roleStr)}</span></td>
+            <td>${esc(p.workshop || '—')}</td>
+            <td>${lvlChip(p.effective_level)}</td>
+            <td>${isCustom ? '<span class="badge amber">Custom Override</span>' : '<span class="muted">Role Default</span>'}</td>
+            <td>${capsBadges}</td>
+            <td>
+              <button class="btn sm" data-manage-user="${p.id}" title="Go to Person Access">Manage</button>
+            </td>
+          </tr>
+        `;
+      }).join('');
+
+      contentDiv.innerHTML = `
+        <div class="card" style="margin-bottom:12px;border-left:4px solid var(--accent, #2563eb)">
+          <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
+            <div>
+              <h2 style="margin:0;display:flex;align-items:center;gap:6px">
+                <span>${s.icon}</span> <span>${esc(s.label)}</span>
+              </h2>
+              <p class="muted" style="margin:2px 0 0;font-size:12px">${esc(s.description || '')}</p>
+            </div>
+            <div class="pill-row">
+              <span class="badge amber">Full: ${counts.full || 0}</span>
+              <span class="badge green">Edit: ${counts.edit || 0}</span>
+              <span class="badge blue">Add: ${counts.add || 0}</span>
+              <span class="badge">View: ${counts.view || 0}</span>
+              <span class="muted" style="font-size:11px">No access: ${counts.none || 0}</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="table-wrap scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>Person</th>
+                  <th>Roles</th>
+                  <th>Workshop</th>
+                  <th>Effective Level</th>
+                  <th>Origin</th>
+                  <th>Special Capabilities</th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+              <tbody>${rows}</tbody>
+            </table>
+          </div>
+        </div>
+      `;
+
+      qsa('[data-manage-user]', contentDiv).forEach((b) => {
+        b.onclick = () => {
+          location.hash = '#/access?tab=people&user=' + b.dataset.manageUser;
+        };
+      });
+    } catch (e) {
+      contentDiv.innerHTML = `<div class="card err">${esc(e.message)}</div>`;
+    }
+  };
+
+  selBox.onchange = () => loadSection(selBox.value);
+  await loadSection(defSec);
+}
+
+// ---- Tab 4: Audit History View ------------------------------------------------
+async function renderAccessHistory(c) {
+  const data = await api('/access/history?limit=150');
+  const rows = (data.history || []).map((h) => {
+    let detailsStr = '';
+    try {
+      if (h.after_json) {
+        const parsed = JSON.parse(h.after_json);
+        detailsStr = Object.entries(parsed).map(([k, v]) => `${k}: ${typeof v === 'object' ? JSON.stringify(v) : v}`).join(' · ');
+      }
+    } catch (e) { detailsStr = h.after_json || ''; }
+
+    return `
+      <tr>
+        <td style="white-space:nowrap;font-size:11px">${esc(String(h.created_at || '').slice(0, 19).replace('T', ' '))}</td>
+        <td><b>${esc(h.actor_username || 'System')}</b></td>
+        <td><span class="badge blue">${esc(h.entity)}</span></td>
+        <td>${esc(h.action)}</td>
+        <td class="muted" style="font-size:11px">${esc(h.entity_id || '—')}</td>
+        <td style="font-size:11px">${esc(detailsStr)}</td>
+      </tr>
+    `;
+  }).join('') || '<tr><td colspan="6" class="muted" style="text-align:center">No access history recorded yet.</td></tr>';
+
+  c.innerHTML = `
+    <div class="card">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+        <div>
+          <h3 style="margin:0 0 2px">Access Change Audit Log</h3>
+          <p class="muted" style="margin:0;font-size:12px">Immutable record of every permission, role, clearance and personal override modification.</p>
+        </div>
+      </div>
+      <div class="table-wrap scroll" style="max-height:calc(100vh - 250px)">
+        <table>
+          <thead>
+            <tr>
+              <th>Timestamp</th>
+              <th>Actor</th>
+              <th>Entity</th>
+              <th>Action</th>
+              <th>Target ID</th>
+              <th>Details</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    </div>
+  `;
+}
+
 async function renderRolesManager(c, wanted) {
-  const [cat, board] = await Promise.all([api('/access/capabilities'), api('/access/matrix')]);
-  const roles = cat.roles;
+  const sm = await api('/access/section-matrix').catch(async () => {
+    const [cat, board] = await Promise.all([api('/access/capabilities'), api('/access/matrix')]);
+    return { sections: [], capabilities: cat.capabilities, modules: cat.modules, roles: cat.roles, matrix: board };
+  });
+  const roles = sm.roles;
   const sel = roles.find((r) => r.name === wanted) || roles.find((r) => r.active && !r.locked) || roles[0];
-  const modLabel = Object.fromEntries(cat.modules.map((m) => [m.key, m.label]));
+  const board = sm.matrix;
+  const modLabel = Object.fromEntries(sm.modules.map((m) => [m.key, m.label]));
   modLabel.users = 'Users & Access';
   const levelOf = (role, m) => (board.grid[role] && board.grid[role][m]) || 'none';
   const held = new Set(sel.caps);
   const mine = new Set(ME.caps || []);
-
-  // Permissions grouped by section, in catalogue order.
-  const groups = [];
-  for (const cap of cat.capabilities) {
-    let g = groups.find((x) => x.module === cap.module);
-    if (!g) groups.push(g = { module: cap.module, caps: [] });
-    g.caps.push(cap);
-  }
   const editable = !sel.locked && sel.active;
-  const capRows = groups.map((g) => {
-    const lvl = levelOf(sel.name, g.module);
-    const rows = g.caps.map((cap) => {
-      const has = sel.locked || held.has(cap.key);
-      // You can take away anything, but only give what you hold yourself (the server says the same).
-      const canTick = editable && (has || isAdmin() || mine.has(cap.key));
-      const short = cap.needs && has && !sel.locked && rankL(levelOf(sel.name, cap.needs)) < 2
-        ? ` <span class="badge amber" title="The ${esc(modLabel[cap.needs] || cap.needs)} section blocks changes for this role until its clearance is EDIT or FULL">needs ${esc(modLabel[cap.needs] || cap.needs)} EDIT</span>` : '';
-      return `<label style="display:flex;flex-direction:row;gap:8px;align-items:flex-start;margin:3px 0;font-weight:normal">
-        <input type="checkbox" style="width:auto;margin-top:3px" data-cap="${esc(cap.key)}" ${has ? 'checked' : ''} ${canTick ? '' : 'disabled'}>
-        <span>${esc(cap.label)}${short}<br><span class="muted" style="font-size:11px">${esc(cap.key)}</span></span></label>`;
-    }).join('');
-    return `<div class="card section" style="margin-bottom:10px"><h3 style="margin:0 0 6px">${esc(modLabel[g.module] || g.module)}
-      <span class="muted" style="font-size:12px;font-weight:normal">— section clearance ${lvlChip(sel.locked ? 'full' : lvl)}</span></h3>${rows}</div>`;
-  }).join('');
 
   const roleList = roles.map((r) => `<tr data-pick="${esc(r.name)}" style="cursor:pointer;${r.name === sel.name ? 'background:#eef2ff;' : ''}${r.active ? '' : 'opacity:.55;'}">
     <td><b>${esc(r.label || r.name)}</b>${r.locked ? ' <span class="badge amber">everything</span>' : ''}${r.is_system ? '' : ' <span class="badge blue">custom</span>'}${r.active ? '' : ' <span class="badge">retired</span>'}
     <br><span class="muted" style="font-size:11px">${r.users} user(s) · ${r.locked ? 'all' : r.caps.length} permission(s)</span></td></tr>`).join('');
 
+  // Fallback if sections not returned: group by module
+  const sections = (sm.sections && sm.sections.length) ? sm.sections : [
+    { id: 'all', name: 'Permissions', icon: '⚙️', description: 'All module capabilities', modules: sm.modules.map((m) => m.key) }
+  ];
+
+  const LVLS = ['none', 'view', 'add', 'edit', 'full'];
+  const LV_LABEL = { none: 'None', view: 'View', add: 'Add', edit: 'Edit', full: 'Full' };
+
+  const sectionCards = sections.map((sec) => {
+    const secCaps = sm.capabilities.filter((cap) => sec.modules.includes(cap.module));
+    
+    // 1. Module Clearance Control for this section
+    const modClearanceHtml = sec.modules.map((m) => {
+      const curLvl = levelOf(sel.name, m);
+      const isLocked = sel.locked || !editable;
+      const pills = LVLS.map((lvl) => {
+        const isCurrent = (sel.locked && lvl === 'full') || (!sel.locked && curLvl === lvl);
+        const cls = isCurrent ? (lvl === 'full' ? 'primary' : (lvl === 'edit' ? 'badge green' : (lvl === 'add' ? 'badge teal' : (lvl === 'view' ? 'badge blue' : 'badge amber')))) : 'btn sm';
+        const style = isCurrent ? 'font-weight:bold;' : 'opacity:.7;';
+        return `<button class="${cls}" style="${style}padding:2px 8px;font-size:11px" data-setlvl="${esc(m)}:${lvl}" ${isLocked ? 'disabled' : ''}>${LV_LABEL[lvl]}</button>`;
+      }).join(' ');
+      return `<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:4px 0">
+        <span style="font-size:12px;font-weight:600">${esc(modLabel[m] || m)}:</span>
+        <div style="display:flex;gap:4px">${pills}</div>
+      </div>`;
+    }).join('');
+
+    // 2. Preset Buttons for this section
+    const presetsHtml = (sec.presets && editable) ? `
+      <div style="display:flex;align-items:center;gap:6px;margin:8px 0 10px;padding:6px 8px;background:var(--bg-muted, #f8f9fa);border-radius:4px;flex-wrap:wrap">
+        <span class="muted" style="font-size:11px;font-weight:600">Quick Presets:</span>
+        <button class="btn sm" data-preset="${esc(sec.id)}:none" title="Remove all access to this section">❌ No Access</button>
+        <button class="btn sm" data-preset="${esc(sec.id)}:view" title="Read-only clearance">👁️ Read-Only</button>
+        <button class="btn sm" data-preset="${esc(sec.id)}:operator" title="Set standard operator clearance & tools">⚙️ Operator</button>
+        <button class="btn sm" data-preset="${esc(sec.id)}:manager" title="Full clearance and manager capabilities">👑 Full Manager</button>
+      </div>` : '';
+
+    // 3. Capabilities checkboxes
+    const capListHtml = secCaps.map((cap) => {
+      const has = sel.locked || held.has(cap.key);
+      const canTick = editable && (has || isAdmin() || mine.has(cap.key));
+      const needsMod = cap.needs;
+      const currentModLvl = needsMod ? levelOf(sel.name, needsMod) : 'full';
+      const short = (needsMod && !sel.locked && rankL(currentModLvl) < 2)
+        ? ` <span class="badge amber" style="font-size:10px" title="Ticking this will auto-elevate ${esc(modLabel[needsMod] || needsMod)} to EDIT">auto-elevates ${esc(modLabel[needsMod] || needsMod)} to EDIT</span>` : '';
+      return `<label style="display:flex;flex-direction:row;gap:8px;align-items:flex-start;margin:4px 0;font-weight:normal">
+        <input type="checkbox" style="width:auto;margin-top:3px" data-cap="${esc(cap.key)}" data-needs="${esc(cap.needs || '')}" ${has ? 'checked' : ''} ${canTick ? '' : 'disabled'}>
+        <span style="font-size:13px">${esc(cap.label)}${short}<br><span class="muted" style="font-size:11px">${esc(cap.key)}</span></span>
+      </label>`;
+    }).join('');
+
+    return `
+      <div class="card section" style="margin-bottom:14px;border-top:3px solid var(--accent)">
+        <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:10px">
+          <div>
+            <h3 style="margin:0;display:flex;align-items:center;gap:6px">
+              <span>${sec.icon || '📁'}</span>
+              <span>${esc(sec.name)}</span>
+            </h3>
+            <p class="muted" style="margin:2px 0 8px;font-size:12px">${esc(sec.description || '')}</p>
+          </div>
+        </div>
+        <div style="background:var(--card-sub-bg, #fafafa);border:1px solid var(--border-light, #eee);border-radius:6px;padding:8px 12px;margin-bottom:10px">
+          <div class="muted" style="font-size:11px;font-weight:600;margin-bottom:4px;text-transform:uppercase">Section Clearance:</div>
+          ${modClearanceHtml}
+        </div>
+        ${presetsHtml}
+        <div style="margin-top:6px">
+          <div class="muted" style="font-size:11px;font-weight:600;margin-bottom:6px;text-transform:uppercase">Granular Capabilities (${secCaps.length}):</div>
+          ${capListHtml || '<span class="muted" style="font-size:12px">No specific granular capabilities for this section</span>'}
+        </div>
+      </div>`;
+  }).join('');
+
   c.innerHTML = `<div style="display:grid;grid-template-columns:minmax(220px,300px) 1fr;gap:14px;align-items:start">
     <div class="card"><div class="toolbar" style="margin:0 0 8px"><h3 style="margin:0">Roles</h3><div class="spacer"></div><button class="primary sm" id="newrole">+ New Role</button></div>
       <div class="table-wrap scroll"><table><tbody>${roleList}</tbody></table></div></div>
     <div>
-      <div class="card" style="margin-bottom:10px">
+      <div class="card" style="margin-bottom:12px">
         <div class="toolbar" style="margin:0"><h2 style="margin:0">${esc(sel.label || sel.name)}</h2><div class="spacer"></div>
           ${sel.locked ? '' : `<button class="sm" id="editrole">✎ Rename / describe</button>
           ${sel.active ? '<button class="sm danger" id="retirerole">Retire</button>' : '<button class="sm" id="reinstaterole">Reinstate</button>'}`}
@@ -8277,27 +10136,88 @@ async function renderRolesManager(c, wanted) {
         <p class="muted" style="margin:6px 0 0">${esc(sel.description || '')}${sel.description ? '<br>' : ''}Key <code>${esc(sel.name)}</code> · held by ${sel.users} active user(s).
           ${sel.locked ? ' Admin always holds every permission and cannot be changed.' : ''}
           ${!sel.active ? ' Retired — it grants nothing until reinstated.' : ''}
-          ${editable ? ' Ticking a box applies from each holder\'s next click. Section clearance is set on the Clearance Board.' : ''}</p>
+          ${editable ? ' Single-point access: configure both base section clearance and all granular capabilities per section directly below.' : ''}</p>
       </div>
-      ${capRows}
+      ${sectionCards}
     </div></div>`;
 
   const reload = (name) => { location.hash = '#/access?tab=roles&role=' + encodeURIComponent(name || sel.name); };
   qsa('[data-pick]', c).forEach((tr) => { tr.onclick = () => reload(tr.dataset.pick); });
+
   qs('#rolemfa', c).onchange = async (e) => {
     const on = e.target.checked;
     if (on && !confirm(`Everyone with "${sel.label || sel.name}" will have to set up two-factor sign-in before they can use the system. Continue?`)) { e.target.checked = false; return; }
     try { await api('/access/roles/' + encodeURIComponent(sel.name), { method: 'PATCH', body: { require_mfa: on } }); toast(on ? 'Two-factor sign-in required for this role' : 'No longer required'); reload(); }
     catch (err) { e.target.checked = !on; toast(err.message, 'err'); }
   };
+
+  // Direct section clearance level buttons
+  qsa('[data-setlvl]', c).forEach((btn) => {
+    btn.onclick = async () => {
+      const [mod, lvl] = btn.dataset.setlvl.split(':');
+      try {
+        await api('/access/section-save', {
+          method: 'POST',
+          body: { role: sel.name, modules: { [mod]: lvl } }
+        });
+        toast(`${modLabel[mod] || mod} clearance set to ${lvl.toUpperCase()}`);
+        await renderRolesManager(c, sel.name);
+      } catch (err) { toast(err.message, 'err'); }
+    };
+  });
+
+  // Section quick presets
+  qsa('[data-preset]', c).forEach((btn) => {
+    btn.onclick = async () => {
+      const [secId, presetKey] = btn.dataset.preset.split(':');
+      const sec = sections.find((s) => s.id === secId);
+      if (!sec || !sec.presets || !sec.presets[presetKey]) return;
+      const p = sec.presets[presetKey];
+      const secCaps = sm.capabilities.filter((cap) => sec.modules.includes(cap.module));
+      const capUpdates = {};
+      for (const cap of secCaps) {
+        capUpdates[cap.key] = p.caps.includes(cap.key);
+      }
+      try {
+        await api('/access/section-save', {
+          method: 'POST',
+          body: { role: sel.name, modules: p.modules, capabilities: capUpdates }
+        });
+        toast(`Applied ${presetKey.toUpperCase()} preset to ${sec.name}`);
+        await renderRolesManager(c, sel.name);
+      } catch (err) { toast(err.message, 'err'); }
+    };
+  });
+
+  // Checkbox toggling with auto-elevation if required
   qsa('[data-cap]', c).forEach((box) => {
     box.onchange = async () => {
+      const capKey = box.dataset.cap;
+      const needs = box.dataset.needs;
+      const willGrant = box.checked;
+      const modUpdates = {};
+      if (willGrant && needs && rankL(levelOf(sel.name, needs)) < 2) {
+        modUpdates[needs] = 'edit';
+      }
       try {
-        await api('/access/capabilities', { method: 'POST', body: { role: sel.name, capability: box.dataset.cap, granted: box.checked } });
+        if (Object.keys(modUpdates).length) {
+          await api('/access/section-save', {
+            method: 'POST',
+            body: { role: sel.name, modules: modUpdates, capabilities: { [capKey]: willGrant } }
+          });
+          toast(`Granted ${capKey} and elevated ${modLabel[needs] || needs} to EDIT`);
+        } else {
+          await api('/access/section-save', {
+            method: 'POST',
+            body: { role: sel.name, capabilities: { [capKey]: willGrant } }
+          });
+          toast(willGrant ? `Granted ${capKey}` : `Revoked ${capKey}`);
+        }
         await renderRolesManager(c, sel.name);
       } catch (e) { box.checked = !box.checked; toast(e.message, 'err'); }
     };
   });
+
   qs('#newrole', c).onclick = () => modal('New role', `
     ${field('Name *', 'label', { placeholder: 'e.g. Site Storekeeper' })}
     ${field('What this role is for', 'description', { type: 'textarea' })}
@@ -8353,7 +10273,9 @@ async function renderClearanceBoard(c) {
 }
 
 async function renderUsersManager(c) {
-  const [users, roles] = await Promise.all([api('/users'), api('/users/roles')]);
+  const [users, roles, wsd] = await Promise.all([api('/users'), api('/users/roles'), workshopsData(true)]);
+  // Home workshop (Stage 2): shown once there is more than one workshop.
+  const multi = wsd.multi;
   const labelOf = Object.fromEntries(roles.map((r) => [r.name, r.label || r.name]));
   const roleBoxes = (checked = []) => roles.map((r) => `<label style="flex-direction:row;display:flex;gap:6px;align-items:flex-start;font-weight:normal">
       <input type="checkbox" style="width:auto;margin-top:3px" data-role="${esc(r.name)}" ${checked.includes(r.name) ? 'checked' : ''}>
@@ -8361,8 +10283,9 @@ async function renderUsersManager(c) {
   const picked = (body) => qsa('[data-role]', body).filter((x) => x.checked).map((x) => x.dataset.role);
 
   c.innerHTML = `<div class="toolbar"><button class="primary" id="nu">+ New User</button><div class="spacer"></div><span class="muted">${users.length} user(s)</span></div>
-    ${tableWrap([{ label: 'Username' }, { label: 'Name' }, { label: 'Roles' }, { label: '2FA' }, { label: 'Active' }, { label: '' }],
+    ${tableWrap([{ label: 'Username' }, { label: 'Name' }].concat(multi ? [{ label: 'Workshop' }] : []).concat([{ label: 'Roles' }, { label: '2FA' }, { label: 'Active' }, { label: '' }]),
     users.map((u) => `<tr${u.active ? '' : ' style="opacity:.55"'}><td>${esc(u.username)}</td><td>${esc(u.full_name || '')}</td>
+      ${multi ? `<td>${esc(wsName(wsd, u.workshop_id))} <button class="sm" data-uws="${u.id}" title="Change home workshop">✎</button></td>` : ''}
       <td>${u.roles.map((r) => `<span class="badge">${esc(labelOf[r] || r)}</span>`).join(' ')}</td>
       <td>${u.mfa_enabled ? '<span class="badge green">on</span>' : '<span class="muted">off</span>'}</td><td>${u.active ? '✓' : '✕'}</td>
       <td style="white-space:nowrap"><button class="sm" data-roles="${u.id}">Roles</button> <button class="sm" data-reset="${u.id}">Reset password</button>
@@ -8377,7 +10300,8 @@ async function renderUsersManager(c) {
   });
 
   qs('#nu', c).onclick = () => modal('New User', `${field('Username *', 'username')}${field('Temporary password *', 'password', { type: 'password' })}
-    <p class="muted">${esc(passwordHint())} They must choose their own at first sign-in.</p>${field('Full name', 'full_name')}<label>Roles</label>${roleBoxes()}
+    <p class="muted">${esc(passwordHint())} They must choose their own at first sign-in.</p>${field('Full name', 'full_name')}
+    ${multi ? field('Home workshop', 'workshop_id', { type: 'select', options: wsOptions(wsd), value: wsd.default_id }) : ''}<label>Roles</label>${roleBoxes()}
     <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Create</button></div>`,
     (body, close) => {
       qs('#s', body).onclick = async () => {
@@ -8385,6 +10309,17 @@ async function renderUsersManager(c) {
         try { await api('/users', { method: 'POST', body: d }); close(); toast('User created'); renderUsersManager(c); } catch (e) { toast(e.message, 'err'); }
       };
     });
+  qsa('[data-uws]', c).forEach((b) => b.onclick = () => {
+    const u = users.find((x) => x.id == b.dataset.uws);
+    modal('Home workshop — ' + u.username, `${field('Workshop', 'workshop_id', { type: 'select', options: wsOptions(wsd), value: u.workshop_id })}
+      <p class="muted">New job cards and requests they raise go to this workshop.</p>
+      <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Save</button></div>`, (body, close) => {
+      qs('#s', body).onclick = async () => {
+        try { await api(`/users/${u.id}`, { method: 'PATCH', body: { workshop_id: formData(body).workshop_id } }); close(); toast('Saved'); renderUsersManager(c); }
+        catch (e) { toast(e.message, 'err'); }
+      };
+    });
+  });
   qsa('[data-roles]', c).forEach((b) => b.onclick = () => {
     const u = users.find((x) => x.id == b.dataset.roles);
     modal('Roles for ' + u.username, roleBoxes(u.roles) + '<div style="margin-top:12px;text-align:right"><button class="primary" id="s">Save</button></div>',
@@ -8495,8 +10430,14 @@ async function mtnModal(existing, onDone) {
   } else {
     try { suggested = (await api('/stores/numbers')).next_mtn || ''; } catch (e) { /* type it in */ }
   }
+  // Places (Stage 2): workshops, projects and sites, offered as you type "From" and "To". Picking
+  // one links the note to that place; anything else typed (a machine, "Head Office") stays text.
+  const placeList = await api('/stores/places').catch(() => []);
+  const placeOf = (text) => { const p = placeList.find((x) => x.label === String(text || '').trim()); return p ? p.key : undefined; };
+  const wsd = wsMulti() ? await workshopsData().catch(() => null) : null;
   const fld = (...args) => `<div class="fld">${field(...args)}</div>`;
   const bg = modal(existing ? 'Edit MTN ' + esc(v.mtn_no) : 'New MTN (transfer)', `
+    <datalist id="mtnplaces">${placeList.map((p) => `<option value="${esc(p.label)}">${esc(p.kind)}</option>`).join('')}</datalist>
     <div class="mrnsec">
       <div class="mrnsec-h">1 · The transfer note</div>
       <div class="fgrid">
@@ -8509,6 +10450,7 @@ async function mtnModal(existing, onDone) {
       </div>
       ${existing ? '' : fld('To asset (code/text)', 'to_asset')}
       ${field('Reason', 'reason', { value: v.reason || '' })}
+      <p id="tstock" class="muted" style="font-size:12px;margin:6px 0 0;display:none"></p>
       ${existing ? '' : `<p class="muted" style="font-size:11.5px;margin:6px 0 0">${suggested ? `Next in the sequence is ${esc(suggested)} — change it to match the book.` : 'Type the number from the transfer book.'} Everything here applies to the whole note; an item that came from somewhere else can say so on its own row.</p>`}
     </div>
     <div class="mrnsec">
@@ -8531,12 +10473,16 @@ async function mtnModal(existing, onDone) {
         const c = qs('#tlcount', root); if (c) c.textContent = `— ${rows.length} item(s)`;
       };
       const removed = [];                       // ids of existing items the user took off the note
+      const offerPlaces = (el) => qsa('input[name=from_location],input[name=to_location],input[name=tfrom],input[name=tto]', el)
+        .forEach((i) => i.setAttribute('list', 'mtnplaces'));
+      offerPlaces(root);
       const addLine = (line) => {
         const holder = document.createElement('div');
         holder.innerHTML = mtnLineHtml(line);
         const row = holder.firstElementChild;
         lines.appendChild(row);
         wireMtnLine(row);
+        offerPlaces(row);
         const x = qs('.mrnline-x', row);
         if (x) x.onclick = () => {
           if (row.dataset.lineId) removed.push(row.dataset.lineId);
@@ -8547,6 +10493,26 @@ async function mtnModal(existing, onDone) {
       };
       if (lines0.length) lines0.forEach(addLine); else addLine();
       qs('#taddline', root).onclick = () => addLine();
+      // Stage 4: say when the note moves stock — from one workshop's store to another's, on its date.
+      if (wsd && wsd.stores_multi) {
+        const storeOn = (wsId, date) => {
+          const w = wsd.workshops.find((x) => x.id === wsId);
+          if (!w) return null;
+          return w.own_store && (!w.store_opened || w.store_opened <= date) ? w.id : (w.uses_store || wsd.default_id);
+        };
+        const wsAt = (text) => { const k = placeOf(text); return k && /^w:\d+$/.test(k) ? Number(k.slice(2)) : null; };
+        const hint = () => {
+          const date = qs('input[name=txn_date]', root).value;
+          const f = wsAt(qs('input[name=from_location]', root).value);
+          const t = wsAt(qs('input[name=to_location]', root).value);
+          const a = f && storeOn(f, date); const b = t && storeOn(t, date);
+          const el = qs('#tstock', root);
+          el.style.display = a && b && a !== b ? '' : 'none';
+          el.innerHTML = a && b && a !== b ? `<span class="badge green">moves stock</span> Out of ${esc(wsName(wsd, a))}'s store, into ${esc(wsName(wsd, b))}'s store, on ${esc(date)}.` : '';
+        };
+        qsa('input[name=from_location],input[name=to_location],input[name=txn_date]', root).forEach((i) => { i.addEventListener('input', hint); i.addEventListener('change', hint); });
+        hint();
+      }
       qs('#tcancel', root).onclick = close;
 
       const readLines = () => qsa('.mrnline', lines).map((row) => ({
@@ -8558,6 +10524,8 @@ async function mtnModal(existing, onDone) {
         category_id: qs('input[name=tcat]', row) ? qs('input[name=tcat]', row).value || undefined : undefined,
         from_location: qs('input[name=tfrom]', row).value.trim() || undefined,
         to_location: qs('input[name=tto]', row).value.trim() || undefined,
+        from_place: placeOf(qs('input[name=tfrom]', row).value),
+        to_place: placeOf(qs('input[name=tto]', row).value),
         reason: qs('input[name=treason]', row).value.trim() || undefined,
       })).filter((l) => l.description);
 
@@ -8573,7 +10541,7 @@ async function mtnModal(existing, onDone) {
         const head = {
           mtn_no: d.mtn_no, txn_date: d.txn_date, from_location: d.from_location,
           to_location: d.to_location, transferred_by: d.transferred_by, received_by: d.received_by,
-          reason: d.reason, to_asset: d.to_asset
+          reason: d.reason, to_asset: d.to_asset, from_place: placeOf(d.from_location), to_place: placeOf(d.to_location)
         };
         try {
           if (!existing) {
@@ -9010,7 +10978,7 @@ async function renderStockCockpitSection(c) {
 }
 
 routes.stockcockpit = async () => {
-  location.replace('#/stocktake?tab=overview');
+  location.replace('#/stores?tab=stock');
 };
 
 // ===== General Stock — Master Consumables & Spare Parts Inventory =====
@@ -9020,7 +10988,7 @@ async function renderGeneralStockSection(c) {
   const sp = new URLSearchParams(location.hash.split('?')[1] || '');
   const tab = ['stock', 'catalogue', 'categories', 'reorder'].includes(sp.get('sub') || sp.get('tab')) ? (sp.get('sub') || sp.get('tab')) : 'stock';
   const setTab = (t) => {
-    if (location.hash.startsWith('#/stocktake')) location.hash = '#/stocktake?tab=general&sub=' + t;
+    if (location.hash.startsWith('#/stocktake') || location.hash.startsWith('#/stores')) location.hash = stockBooksHash('general', t);
     else location.hash = '#/generalstock?tab=' + t;
   };
 
@@ -9060,43 +11028,16 @@ routes.generalstock = async () => {
   location.replace('#/stocktake?tab=general' + (sub !== 'stock' ? '&sub=' + sub : ''));
 };
 
-// Unified Stock Take Hub — single entry point for all stock-taking & balances
-routes.stocktake = async (c, params) => {
-  if (!canView('stores')) {
-    c.innerHTML = `<div class="card"><p class="err">You do not have access to Stores / Stock Take.</p></div>`;
-    return;
-  }
+// The old Stock Take page is the Stores page's Stock tab now (stores plan, Part 2). Its links still
+// open the same place: the kind of stock, and the older book of it when one was asked for.
+routes.stocktake = async () => {
   const sp = new URLSearchParams(location.hash.split('?')[1] || '');
-  const tab = ['overview', 'general', 'oil', 'filters', 'batteries'].includes(sp.get('tab')) ? sp.get('tab') : 'overview';
-
-  c.innerHTML = `${pageHeader('Stock Take', 'Master stock balances, counts, categories & inventory valuation across all stores')}
-    <div class="pill-row" style="margin-bottom:16px;gap:8px;flex-wrap:wrap">
-      <button class="btn sm ${tab === 'overview' ? 'primary' : ''}" id="stk-tb-overview">📊 Master Overview</button>
-      <button class="btn sm ${tab === 'general' ? 'primary' : ''}" id="stk-tb-general">📦 General Stock</button>
-      <button class="btn sm ${tab === 'oil' ? 'primary' : ''}" id="stk-tb-oil">🛢️ Oil &amp; Lubricants</button>
-      <button class="btn sm ${tab === 'filters' ? 'primary' : ''}" id="stk-tb-filters">🧰 Filters</button>
-      <button class="btn sm ${tab === 'batteries' ? 'primary' : ''}" id="stk-tb-batteries">🔋 Batteries</button>
-    </div>
-    <div id="stk-pane"><div class="muted">Loading…</div></div>`;
-
-  qs('#stk-tb-overview', c).onclick = () => { location.hash = '#/stocktake?tab=overview'; };
-  qs('#stk-tb-general', c).onclick = () => { location.hash = '#/stocktake?tab=general'; };
-  qs('#stk-tb-oil', c).onclick = () => { location.hash = '#/stocktake?tab=oil'; };
-  qs('#stk-tb-filters', c).onclick = () => { location.hash = '#/stocktake?tab=filters'; };
-  qs('#stk-tb-batteries', c).onclick = () => { location.hash = '#/stocktake?tab=batteries'; };
-
-  const pane = qs('#stk-pane', c);
-  if (tab === 'general') {
-    await renderGeneralStockSection(pane);
-  } else if (tab === 'oil') {
-    await renderOilSection(pane);
-  } else if (tab === 'filters') {
-    await renderFiltersSection(pane);
-  } else if (tab === 'batteries') {
-    await renderBatteriesSection(pane, params);
-  } else {
-    await renderStockCockpitSection(pane);
-  }
+  const KIND = { general: 'general', oil: 'oil', filters: 'filter', batteries: 'battery' };
+  const kind = KIND[sp.get('tab')];
+  let sub = sp.get('sub');
+  if (kind === 'battery') sub = 'register';
+  if (kind === 'oil' && sub === 'stock') sub = null;
+  location.replace('#/stores?tab=stock' + (kind ? '&kind=' + kind : '') + (kind && sub ? '&sub=' + encodeURIComponent(sub) : ''));
 };
 
 async function renderGeneralStockLive(c) {
@@ -9104,6 +11045,7 @@ async function renderGeneralStockLive(c) {
   c.innerHTML = `
     <div class="card section"><h3 style="margin-top:0">Stock position <span class="muted" style="font-weight:400;font-size:12px">— requested, received, issued and what's left, from the shared stock ledger</span></h3>
       <div id="gs-stock"></div></div>
+    <p class="muted" id="gs-whole" style="font-size:12px;margin:0 0 8px;display:none"></p>
     <div class="grid section" id="gs-stats"></div>
     <div class="toolbar">
       <input type="search" id="gs-q" placeholder="Search name / item no / category…" style="max-width:240px">
@@ -9118,6 +11060,7 @@ async function renderGeneralStockLive(c) {
     <div id="gs-table" class="muted">Loading…</div>`;
 
   stockPanel(qs('#gs-stock', c), 'general');
+  wholeCompanyNote(qs('#gs-whole', c));
   try { (await api('/general-stock/categories')).forEach((cat) => { const o = document.createElement('option'); o.value = cat; o.textContent = cat; qs('#gs-cat', c).appendChild(o); }); } catch (e) { /* dropdown optional */ }
 
   // The register carries ~700 zero-balance names left behind by the old warehouse import —
@@ -9252,44 +11195,75 @@ const fsPills = (v) => (v ? String(v).split(/[,;\n]/).map((x) => x.trim()).filte
 // One component, mounted in Oil & Lube / Batteries / General Stock / Filter Stock.
 // Every section answers the same four questions — on order, received, issued, balance —
 // and each item opens its full movement trail: what went where, when and to which vehicle.
+// Stage 4: under the stock panel, the older book of a section counts the whole company — every store
+// together. Say so once there is more than one store.
+async function wholeCompanyNote(el) {
+  if (!el || !wsMulti()) return;
+  const d = await workshopsData().catch(() => null);
+  if (!d || !d.stores_multi) return;
+  el.textContent = 'The list below is for the whole company (all stores together). For one store, use Stock position above. Counts are made there, store by store.';
+  el.style.display = '';
+}
+
+// Stage 4: with more than one store, the panel is one store's shelf — or, for head office, all of
+// them. The choice is kept while the page is open. Someone kept to their own store has no choice.
+let STOCK_STORE = '';
 async function stockPanel(host, section, opts = {}) {
   host.innerHTML = '<div class="muted">Loading stock…</div>';
+  const storeQ = () => (STOCK_STORE ? '&store_id=' + encodeURIComponent(STOCK_STORE) : '');
   let data;
-  try { data = await api(`/stores/stock/${section}?limit=400`); }
+  try { data = await api(`/stores/stock/${section}?limit=400${storeQ()}`); }
   catch (e) { host.innerHTML = `<div class="card err">${esc(e.message)}</div>`; return; }
   const s = data.summary;
   const cut = s.opening && s.opening.mode === 'cutover' ? s.opening.cutover : null;
+  const store = data.store;              // null = every store (or the only one)
+  const multi = !!data.multi;
+  const can = data.can || {};
+  const countStore = store || data.home || null;   // with one store, a count goes in it
 
   host.innerHTML = `
+    ${multi ? `<div class="toolbar" style="margin:0 0 8px">
+      ${data.fixed ? `<span class="badge blue">${esc(store ? store.name : '')}</span><span class="muted" style="font-size:12px">your store</span>`
+    : `<label class="muted" style="font-size:12px">Store</label><select id="sk-store" style="max-width:260px">
+          <option value="all" ${store ? '' : 'selected'}>All stores</option>
+          ${(data.stores || []).map((x) => `<option value="${x.id}" ${store && store.id === x.id ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select>`}
+    </div>` : ''}
     <div class="grid section">
       <div class="card stat"><span class="n">${num(s.received)}</span><span class="l">Received in</span></div>
       <div class="card stat"><span class="n">${num(s.issued)}</span><span class="l">Issued out</span></div>
       <div class="card stat"><span class="n" style="color:${s.balance < 0 ? 'var(--danger,#c4392c)' : 'inherit'}">${num(s.balance)}</span><span class="l">Balance in stock</span></div>
       <div class="card stat"><span class="n">${num(s.items)}</span><span class="l">Items</span></div>
+      <div class="card stat"><span class="n">${moneyC(s.value || 0)}</span><span class="l">Value</span>${s.unpriced ? `<span class="muted" style="font-size:11px">${num(s.unpriced)} item(s) without a price</span>` : ''}</div>
     </div>
     ${cut ? `<p class="muted" style="font-size:12px;margin:0 0 8px">Stock for this section counts from <b>${esc(cut)}</b> — earlier movements (${num(s.history_moves)}, ${num(s.history_issued)} issued) are kept as history below but don't affect the balance, because those purchases were never recorded in stores.</p>` : ''}
+    ${multi && !store ? '<p class="muted" style="font-size:12px;margin:0 0 8px">All stores together. Stock sent from one store to another is not counted as received or issued here.</p>' : ''}
     <div class="toolbar">
       <input id="sk-q" type="search" placeholder="Search item…" style="max-width:260px">
       <button class="sm primary" id="sk-items">By item</button>
       <button class="sm" id="sk-moves">All movements</button>
+      ${store ? '<button class="sm" id="sk-low" title="At or under the reorder level">Low only</button>' : ''}
       <div class="spacer"></div><span class="muted" id="sk-count"></span>
     </div>
     <div id="sk-body"><div class="muted">Loading…</div></div>`;
 
   let mode = 'items';
+  let lowOnly = false;
   const bodyEl = qs('#sk-body', host);
+  if (qs('#sk-store', host)) qs('#sk-store', host).onchange = (e) => { STOCK_STORE = e.target.value === 'all' ? 'all' : e.target.value; stockPanel(host, section, opts); };
 
   const showMoves = (rows, title) => {
     qs('#sk-count', host).textContent = `${rows.length} movement(s)`;
     bodyEl.innerHTML = (title ? `<h3 style="margin:0 0 6px">${esc(title)}</h3>` : '')
       + (rows.length ? tableWrap(
-        [{ label: 'Date' }, { label: 'In / Out' }, { label: 'Item', cls: 'desc-col' }, { label: 'Qty', num: true },
-        { label: 'Vehicle' }, { label: 'Job / Ref' }, { label: 'Counts?' }],
+        [{ label: 'Date' }, { label: 'In / Out' }, { label: 'Item', cls: 'desc-col' }, { label: 'Qty', num: true }]
+          .concat(multi ? [{ label: 'Store' }] : [])
+          .concat([{ label: 'Vehicle' }, { label: 'Job / Ref' }, { label: 'Counts?' }]),
         rows.map((m) => `<tr>
           <td>${esc(m.txn_date || '—')}</td>
           <td>${m.kind === 'out' ? '<span class="badge amber">issued</span>' : `<span class="badge green">${esc(m.kind)}</span>`}</td>
-          <td class="desc-col">${esc(m.item_name || '')}</td>
+          <td class="desc-col">${esc(m.item_name || '')}${m.source_table === 'mtn_lines' ? ` <span class="muted" style="font-size:12px">(${esc(m.note || 'transfer')})</span>` : ''}</td>
           <td class="num">${num(m.qty)}</td>
+          ${multi ? `<td>${esc(m.store_code || '')}</td>` : ''}
           <td>${m.asset_reg || m.asset_code ? `<span class="stamp">${esc(m.asset_reg || m.asset_code)}</span>` : '—'}</td>
           <td>${esc(m.job_no || m.ref || '')}</td>
           <td>${m.counts ? '<span class="badge green">yes</span>' : `<span class="badge" title="${esc(m.note || 'before the stock cut-over')}">history</span>`}</td></tr>`),
@@ -9297,43 +11271,684 @@ async function stockPanel(host, section, opts = {}) {
         : '<div class="card"><p class="muted">No movements.</p></div>');
   };
 
+  // A quick count of one item in this store (stores plan, Part 2): head office approves the correction.
+  const countItem = (key, name, balance) => modal(`Count ${name}`, `
+    <p class="muted" style="margin:0 0 8px">${esc(countStore.name)} · the book says <b>${num(balance)}</b>. Head office approves the change.</p>
+    ${section === 'oil' ? lubeCountFields() : field('Counted on the shelf', 'counted', { type: 'number', value: '' })}
+    ${field('Date', 'count_date', { type: 'date', value: new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10) })}
+    ${field('Note (optional)', 'note')}
+    <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Save count</button></div>`, (b, close) => {
+    wireLubeCount(b);
+    qs('#s', b).onclick = async () => {
+      try {
+        const r = await api(`/stores/stock/${section}/count`, { method: 'POST', body: { ...formData(b), store_id: countStore.id, item_key: key } });
+        close();
+        if (r.status !== 'approved') toast(`Counted ${num(r.counted)} · sent to head office (${r.count_no})`);
+        else toast(r.delta ? `Counted ${num(r.counted)} · corrected by ${r.delta > 0 ? '+' : ''}${num(r.delta)}` : 'Counted · the book was right');
+        load();
+      } catch (e) { toast(e.message, 'err'); }
+    };
+  });
+  const setLevel = (key, name, level) => modal(`Reorder level · ${name}`, `
+    <p class="muted" style="margin:0 0 8px">${esc(store.name)}. Leave empty for no level.</p>
+    ${field('Reorder at', 'level', { type: 'number', value: level == null ? '' : level })}
+    <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Save</button></div>`, (b, close) => {
+    qs('#s', b).onclick = async () => {
+      try { await api(`/stores/stock/${section}/level`, { method: 'PUT', body: { ...formData(b), store_id: store.id, item_key: key } }); close(); toast('Saved'); load(); }
+      catch (e) { toast(e.message, 'err'); }
+    };
+  });
+
   const load = async () => {
     const q = qs('#sk-q', host).value.trim();
     qs('#sk-items', host).classList.toggle('primary', mode === 'items');
     qs('#sk-moves', host).classList.toggle('primary', mode === 'moves');
+    if (qs('#sk-low', host)) qs('#sk-low', host).classList.toggle('primary', lowOnly);
     bodyEl.innerHTML = '<div class="muted">Loading…</div>';
     if (mode === 'moves') {
-      showMoves(await api(`/stores/stock/${section}/moves?limit=400${q ? '&q=' + encodeURIComponent(q) : ''}`));
+      showMoves(await api(`/stores/stock/${section}/moves?limit=400${storeQ()}${q ? '&q=' + encodeURIComponent(q) : ''}`));
       return;
     }
-    const d = await api(`/stores/stock/${section}?limit=400${q ? '&q=' + encodeURIComponent(q) : ''}`);
+    const d = await api(`/stores/stock/${section}?limit=400${storeQ()}${lowOnly ? '&low=1' : ''}${q ? '&q=' + encodeURIComponent(q) : ''}`);
     qs('#sk-count', host).textContent = `${d.items.length} item(s)`;
+    const byStore = (i) => (i.by_store || []).map((b) => `${esc(b.store_code || '?')} ${num(b.balance)}`).join(' · ');
     bodyEl.innerHTML = d.items.length ? tableWrap(
       [{ label: 'Item', cls: 'desc-col' }, { label: 'Received', num: true }, { label: 'Issued', num: true },
-      { label: 'Balance', num: true }, { label: 'Issued (all time)', num: true }, { label: 'Last movement' }, { label: '' }],
-      d.items.map((i) => `<tr>
+      { label: 'Balance', num: true }, { label: 'Value', num: true }]
+        .concat(multi && !store ? [{ label: 'By store' }] : [])
+        .concat(store ? [{ label: 'Reorder at', num: true }] : [])
+        .concat([{ label: 'Issued (all time)', num: true }, { label: 'Last movement' }, { label: 'Last count' }, { label: '' }]),
+      d.items.map((i) => {
+        const low = store && i.reorder_level > 0 && i.balance <= i.reorder_level;
+        return `<tr>
         <td class="desc-col">${esc(i.item_name || i.item_key)}</td>
         <td class="num">${num(i.received)}</td>
         <td class="num">${num(i.issued)}</td>
-        <td class="num"><b style="color:${i.balance < 0 ? 'var(--danger,#c4392c)' : 'inherit'}">${num(i.balance)}</b></td>
+        <td class="num"><b style="color:${i.balance < 0 ? 'var(--danger,#c4392c)' : 'inherit'}">${num(i.balance)}</b>${low ? ' <span class="badge amber">low</span>' : ''}</td>
+        <td class="num">${i.unit_price == null ? (i.balance > 0 ? '<span class="muted" title="No price yet">—</span>' : '') : money(i.value)}</td>
+        ${multi && !store ? `<td class="muted" style="font-size:12px">${byStore(i)}</td>` : ''}
+        ${store ? `<td class="num">${i.reorder_level ? num(i.reorder_level) : '<span class="muted">—</span>'}${can.levels ? ` <button class="sm" data-lvl="${esc(i.item_key)}" data-name="${esc(i.item_name || i.item_key)}" data-v="${i.reorder_level == null ? '' : i.reorder_level}" title="Set the reorder level">✎</button>` : ''}</td>` : ''}
         <td class="num muted">${num(i.issued_all_time)}</td>
         <td>${esc(i.last_move || '—')}</td>
-        <td><button class="sm" data-hist="${esc(i.item_key)}" data-name="${esc(i.item_name || i.item_key)}">history →</button></td></tr>`),
+        <td>${esc(i.last_count || '—')}</td>
+        <td style="white-space:nowrap">${can.count ? `<button class="sm" data-cnt="${esc(i.item_key)}" data-name="${esc(i.item_name || i.item_key)}" data-bal="${i.balance}">Count</button> ` : ''}<button class="sm" data-hist="${esc(i.item_key)}" data-name="${esc(i.item_name || i.item_key)}">history →</button></td></tr>`;
+      }),
       { scroll: true, fit: true, noHScroll: true })
-      : '<div class="card"><p class="muted">Nothing recorded for this section yet.</p></div>';
+      : `<div class="card"><p class="muted">${lowOnly ? 'Nothing is at or under its reorder level.' : 'Nothing recorded for this section yet.'}</p></div>`;
     // Drill into one item: every movement, which vehicle, when, how much.
     qsa('[data-hist]', bodyEl).forEach((b) => b.onclick = async () => {
       bodyEl.innerHTML = '<div class="muted">Loading history…</div>';
-      const rows = await api(`/stores/stock/${section}/moves?item_key=${encodeURIComponent(b.dataset.hist)}&limit=400`);
+      const rows = await api(`/stores/stock/${section}/moves?item_key=${encodeURIComponent(b.dataset.hist)}&limit=400${storeQ()}`);
       showMoves(rows, b.dataset.name);
       bodyEl.insertAdjacentHTML('afterbegin', '<button class="sm" id="sk-back" style="margin-bottom:8px">← back to items</button>');
       qs('#sk-back', bodyEl).onclick = load;
     });
+    qsa('[data-cnt]', bodyEl).forEach((b) => { b.onclick = () => countItem(b.dataset.cnt, b.dataset.name, Number(b.dataset.bal)); });
+    qsa('[data-lvl]', bodyEl).forEach((b) => { b.onclick = () => setLevel(b.dataset.lvl, b.dataset.name, b.dataset.v === '' ? null : Number(b.dataset.v)); });
   };
   qs('#sk-items', host).onclick = () => { mode = 'items'; load(); };
   qs('#sk-moves', host).onclick = () => { mode = 'moves'; load(); };
+  if (qs('#sk-low', host)) qs('#sk-low', host).onclick = () => { lowOnly = !lowOnly; mode = 'items'; load(); };
   let skdeb; qs('#sk-q', host).oninput = () => { clearTimeout(skdeb); skdeb = setTimeout(load, 250); };
   await load();
+}
+
+// ---- Stores: the Stock view and the stock take (stores plan, Part 2) --------------------------
+// Every kind of stock in one view — Parts & general, Lubricants, Filters, Tyres, Batteries — each
+// with its value, reorder level, last count and history (the shared stock panel above). Each kind
+// keeps its older book (catalogue, oil book, filter price book, battery register) one click away.
+const STOCK_KINDS = [['overview', '📊 Overview'], ['general', '🔩 Parts & general'], ['oil', '🛢️ Lubricants'],
+  ['filter', '🧰 Filters'], ['tyre', '🛞 Tyres'], ['battery', '🔋 Batteries']];
+const KIND_LABEL = { all: 'All kinds', general: 'Parts & general', oil: 'Lubricants', filter: 'Filters', tyre: 'Tyres', battery: 'Batteries' };
+const STOCK_BOOKS = {
+  general: [['stock', 'Rack register'], ['catalogue', 'Catalogue'], ['categories', 'Categories'], ['reorder', 'Re-order watch']],
+  oil: [['products', 'Products'], ['names', 'Names'], ['ledger', 'Oil book'], ['forecast', 'Forecast'], ['counts', 'Old counts']],
+  filter: [['book', 'Price book'], ['xref', 'Cross-references']],
+  tyre: [['tyres', 'Tyre register'], ['vehicle', 'By vehicle']],
+  battery: [['register', 'Battery register'], ['vehicle', 'By vehicle']],
+};
+const stockBooksHash = (kind, sub) => `#/stores?tab=stock&kind=${kind}&sub=${encodeURIComponent(sub)}`;
+
+// Lubricants are counted in litres: full drums or cans × their size, plus the part-used one by dip.
+const lubeCountFields = (v = {}) => `
+  <div class="row">${field('Full drums / cans', 'containers', { type: 'number', value: v.containers ?? '' })}${field('Size of one (L)', 'container_size', { type: 'number', value: v.container_size ?? '', placeholder: 'e.g. 210' })}</div>
+  ${field('Part-used drum (L, dip reading)', 'loose_qty', { type: 'number', value: v.loose_qty ?? '' })}
+  <p class="muted" style="margin:4px 0 0" data-lube-total></p>`;
+function wireLubeCount(root) {
+  const out = qs('[data-lube-total]', root);
+  if (!out) return;
+  const show = () => {
+    const d = formData(root);
+    const total = (Number(d.containers) || 0) * (Number(d.container_size) || 0) + (Number(d.loose_qty) || 0);
+    out.textContent = d.containers || d.loose_qty ? `Total: ${num(total)} L` : '';
+  };
+  qsa('input', root).forEach((i) => { i.addEventListener('input', show); });
+  show();
+}
+
+async function storesStock(body, sp) {
+  const kind = STOCK_KINDS.some(([k]) => k === sp.get('kind')) ? sp.get('kind') : 'overview';
+  const sub = sp.get('sub');
+  const books = STOCK_BOOKS[kind] || [];
+  body.innerHTML = `<div class="toolbar" style="margin:0 0 10px">${STOCK_KINDS
+    .map(([k, l]) => `<button class="sm ${k === kind ? 'primary' : ''}" data-kind="${k}">${l}</button>`).join('')}</div><div id="stk-main"></div>`;
+  qsa('[data-kind]', body).forEach((b) => { b.onclick = () => { location.hash = '#/stores?tab=stock' + (b.dataset.kind === 'overview' ? '' : '&kind=' + b.dataset.kind); }; });
+  const host = qs('#stk-main', body);
+  if (kind === 'overview') return stockOverview(host);
+  if (sub && books.some(([k]) => k === sub)) {
+    host.innerHTML = `<div class="toolbar" style="margin:0 0 8px"><a class="btn sm" href="#/stores?tab=stock&kind=${kind}">← ${esc(KIND_LABEL[kind])}: stock</a></div><div id="stk-book"></div>`;
+    const bk = qs('#stk-book', host);
+    if (kind === 'general') return renderGeneralStockSection(bk);
+    if (kind === 'oil') return renderOilSection(bk);
+    if (kind === 'filter') return renderFiltersSection(bk);
+    if (sub === 'vehicle') return unitVehicleView(bk, sp);
+    if (kind === 'tyre') return sp.get('id') ? tyreDetail(bk, sp.get('id')) : tyreRegister(bk, sp);
+    return renderBatteriesSection(bk);
+  }
+  const links = books.map(([k, l]) => `<a class="btn sm" href="${stockBooksHash(kind, k)}">${esc(l)}</a>`)
+    .concat(kind === 'tyre' && canView('reports') ? ['<a class="btn sm" href="#/tyrebattery">Tyre &amp; battery ledger</a>'] : []);
+  host.innerHTML = `${links.length ? `<div class="toolbar" style="margin:0 0 8px"><span class="muted" style="font-size:12px">📚 Books</span>${links.join('')}</div>` : ''}<div id="stk-panel"></div>`;
+  return stockPanel(qs('#stk-panel', host), kind);
+}
+
+// The front page: every kind of stock in one store (or all) — value, what is low, and when the store
+// last counted it in full; then the reorder and restock list.
+async function stockOverview(host) {
+  let d;
+  try { d = await api('/stores/stock/overview' + (STOCK_STORE ? '?store_id=' + encodeURIComponent(STOCK_STORE) : '')); }
+  catch (e) { host.innerHTML = `<div class="card err">${esc(e.message)}</div>`; return; }
+  const store = d.store;
+  const total = d.kinds.reduce((t, k) => t + (k.value || 0), 0);
+  const waiting = d.counts.counting + d.counts.submitted;
+  host.innerHTML = `
+    ${d.multi ? `<div class="toolbar" style="margin:0 0 8px">
+      ${d.fixed ? `<span class="badge blue">${esc(store ? store.name : '')}</span><span class="muted" style="font-size:12px">your store</span>`
+    : `<label class="muted" style="font-size:12px">Store</label><select id="ov-store" style="max-width:260px">
+          <option value="all" ${store ? '' : 'selected'}>All stores</option>
+          ${(d.stores || []).map((x) => `<option value="${x.id}" ${store && store.id === x.id ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select>`}
+    </div>` : ''}
+    <p class="muted" style="margin:0 0 8px">All stock: <b>${money(total)}</b>${waiting ? ` · <a href="#/stores?tab=counts&status=open">${d.counts.counting} stock take(s) being counted, ${d.counts.submitted} waiting for head office</a>` : ''}</p>
+    <div class="grid section">${STOCK_KINDS.map(([s]) => d.kinds.find((k) => k.section === s)).filter(Boolean).map((k) => `<a class="card stat" href="#/stores?tab=stock&kind=${k.section}" style="text-decoration:none">
+        <span class="l" style="font-weight:600;color:inherit">${esc(KIND_LABEL[k.section])}</span>
+        <span class="n">${moneyC(k.value)}</span>
+        <span class="l">${num(k.items)} items${k.low ? ` · <span class="badge red">${num(k.low)} low</span>` : ''}</span>
+        ${store || !d.multi ? `<span class="muted" style="font-size:11px">${!k.full_count ? 'No full count yet'
+    : '✔ Must be in stock since ' + esc(k.full_count)}</span>` : ''}</a>`).join('')}</div>
+    <p class="muted" style="font-size:12px;margin:0 0 8px">Nothing is issued unless it is in stock. This starts for each kind after the store's first full stock take.</p>
+    <h3 style="margin:14px 0 6px">Reorder &amp; restock</h3>
+    <div id="ov-cockpit"></div>`;
+  if (qs('#ov-store', host)) qs('#ov-store', host).onchange = (e) => { STOCK_STORE = e.target.value; stockOverview(host); };
+  renderStockCockpitSection(qs('#ov-cockpit', host));
+}
+
+// ---- tyres and batteries by serial number (stores plan, Part 4) ------------------------------
+// src/lib/tb_units.js: every tyre is known by its serial, like the batteries; issuing one fixes it
+// to the vehicle, and what came off moves on in the register.
+const TYRE_STATE = { in_store: ['', 'In store'], installed: ['green', 'On vehicle'], removed: ['amber', 'Taken off'], repair: ['blue', 'At repair'],
+  retread: ['blue', 'At retread'], warranty: ['blue', 'Warranty claim'], scrap: ['red', 'Scrap'], lost: ['red', 'Lost'], disposed: ['', 'Disposed'] };
+const tyreBadge = (st) => `<span class="badge ${(TYRE_STATE[st] || [''])[0]}">${esc((TYRE_STATE[st] || [0, st])[1])}</span>`;
+const UNIT_EVENT = { add: 'Added', install: 'Fitted', remove: 'Taken off', return: 'Back to store', repair: 'Sent for repair', retread: 'Sent for retread',
+  lost: 'Lost', dispose: 'Disposed', transfer: 'Moved', decommission: 'Finished', ...TB_COND_LABEL };
+const tyreHash = (id) => stockBooksHash('tyre', 'tyres') + '&id=' + id;
+
+async function tyreRegister(host, sp) {
+  const cur = { q: sp.get('q') || '', state: sp.get('state') || '' };
+  host.innerHTML = `<div class="toolbar">
+      <input id="ty-q" type="search" placeholder="Serial, size or vehicle…" value="${esc(cur.q)}" style="max-width:240px">
+      <select id="ty-st" style="max-width:170px"><option value="">Every state</option>${Object.entries(TYRE_STATE).map(([k, [, l]]) => `<option value="${k}"${k === cur.state ? ' selected' : ''}>${esc(l)}</option>`).join('')}</select>
+      <div class="spacer"></div><span class="muted" id="ty-n"></span></div>
+    <div id="ty-list" class="muted">Loading…</div>`;
+  const load = async () => {
+    const q = qs('#ty-q', host).value.trim(), st = qs('#ty-st', host).value;
+    const rows = await api('/tb/tyres?limit=1000' + (q ? '&q=' + encodeURIComponent(q) : '') + (st ? '&state=' + st : ''));
+    qs('#ty-n', host).textContent = `${rows.length} tyre${rows.length === 1 ? '' : 's'}`;
+    qs('#ty-list', host).innerHTML = rows.length ? tableWrap([{ label: 'Serial' }, { label: 'Size' }, { label: 'State' }, { label: 'Vehicle' }, { label: 'Wheel' }],
+      rows.map((t) => `<tr><td>${t.photo_count ? '📷 ' : ''}<a href="${tyreHash(t.id)}"><b>${esc(t.serial_no)}</b></a></td><td>${esc(t.spec || '—')}</td>
+        <td>${tyreBadge(t.state)}</td><td>${t.current_asset_id ? `<a href="${stockBooksHash('tyre', 'vehicle')}&asset=${t.current_asset_id}">${esc(t.asset_code || '')}</a>` : '—'}</td><td>${esc(t.position || '—')}</td></tr>`), { scroll: true })
+      : '<div class="card"><p class="muted">No tyres yet. A tyre is added here when it is issued with its serial number.</p></div>';
+  };
+  let deb;
+  qs('#ty-q', host).oninput = () => { clearTimeout(deb); deb = setTimeout(load, 250); };
+  qs('#ty-st', host).onchange = load;
+  load();
+}
+
+async function tyreDetail(host, id) {
+  let d;
+  try { d = await api('/tb/tyres/' + encodeURIComponent(id)); } catch (e) { host.innerHTML = `<div class="card err">${esc(e.message)}</div>`; return; }
+  const t = d.tyre;
+  const editable = canEdit('tb_issue');
+  const reload = () => tyreDetail(host, id);
+  const room = d.max_photos - d.photos.length;
+  host.innerHTML = `
+    <div class="toolbar" style="margin:0 0 8px"><a class="btn sm" href="${stockBooksHash('tyre', 'tyres')}">← Tyre register</a></div>
+    <div class="toolbar"><h3 style="margin:0">🛞 ${esc(t.serial_no)}</h3>${tyreBadge(t.state)}
+      <span class="muted">${esc(t.spec || '')}${t.asset_code ? ` · on <a href="${stockBooksHash('tyre', 'vehicle')}&asset=${t.current_asset_id}">${esc(t.asset_code)}</a> at ${esc(t.position || '?')}` : ''}</span>
+      <div class="spacer"></div>${editable ? `${room > 0 ? '<button class="sm" id="ty-photo">📷 Add photos</button>' : ''}${TYRE_ACTIONS(t).length ? '<button class="sm primary" id="ty-ev">What happened…</button>' : ''}` : ''}</div>
+    <div class="card section"><h3 style="margin-top:0">Photos <span class="muted" style="font-weight:400;font-size:12px">— ${d.photos.length} of ${d.max_photos}</span></h3>
+      <div style="display:flex;flex-wrap:wrap;gap:8px">${d.photos.length ? d.photos.map((p) => `<div style="position:relative">
+          <a href="${p.photo}" target="_blank"><img src="${p.photo}" alt="Tyre ${esc(t.serial_no)}" style="height:110px;width:110px;object-fit:cover;border:1px solid var(--border);border-radius:8px"></a>
+          ${editable ? `<button class="btn sm danger" data-delphoto="${p.id}" title="Remove" style="position:absolute;top:-6px;right:-6px;padding:0 6px;line-height:18px">✕</button>` : ''}</div>`).join('')
+    : '<p class="muted" style="margin:0">No photos yet.</p>'}</div></div>
+    <div class="card"><h3 style="margin-top:0">History</h3>
+      ${tableWrap([{ label: 'Date' }, { label: 'What' }, { label: 'From' }, { label: 'To' }, { label: 'Wheel' }, { label: 'Km' }, { label: 'Note' }, { label: 'By' }],
+      d.events.map((e) => `<tr><td>${esc(e.event_date || '')}</td><td><span class="badge">${esc(UNIT_EVENT[e.event_type] || e.event_type)}</span></td>
+        <td>${esc(e.from_asset_code || '')}</td><td>${esc(e.to_asset_code || '')}</td><td>${esc(e.position || '')}</td><td>${e.km_reading == null ? '' : num(e.km_reading)}</td>
+        <td>${esc(e.reason || '')}</td><td>${esc(e.username || '')}</td></tr>`), { scroll: true })}</div>`;
+  if (qs('#ty-photo', host)) qs('#ty-photo', host).onclick = () => modal('Add photos — ' + t.serial_no, `
+      <label>Tyre photos <span class="muted" style="font-weight:400">— ${room} more can be added</span></label>${multiImageHtml('tyimg', room)}
+      <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Save photos</button></div>`, (b, close) => {
+    const up = wireMultiImage(b, 'tyimg');
+    qs('#s', b).onclick = async () => {
+      const shots = up.dataURLs();
+      if (!shots.length) return toast('Choose at least one photo', 'err');
+      try { await api(`/tb/tyres/${t.id}/photos`, { method: 'POST', body: { photos: shots } }); toast('Photos added'); close(); reload(); }
+      catch (e) { toast(e.message, 'err'); }
+    };
+  });
+  qsa('[data-delphoto]', host).forEach((b) => {
+    b.onclick = async () => {
+      if (!confirm('Remove this photo?')) return;
+      try { await api(`/tb/tyres/${t.id}/photos/${b.dataset.delphoto}`, { method: 'DELETE' }); reload(); } catch (e) { toast(e.message, 'err'); }
+    };
+  });
+  if (qs('#ty-ev', host)) qs('#ty-ev', host).onclick = () => tyreEventModal(t, reload);
+}
+
+// What can happen to a tyre next, by where it is now.
+const TYRE_ACTIONS = (t) => {
+  if (['scrap', 'lost', 'disposed'].includes(t.state)) return [];
+  if (t.state === 'installed') return [['remove', 'Take off'], ['repair', 'Send for repair'], ['retread', 'Send for retread'], ['warranty', 'Warranty claim'], ['scrap', 'Scrap']];
+  if (['in_store', 'removed'].includes(t.state)) return [['install', 'Fit to a vehicle'], ...(t.state === 'removed' ? [['return', 'Back to store']] : []), ['repair', 'Send for repair'], ['retread', 'Send for retread'], ['warranty', 'Warranty claim'], ['scrap', 'Scrap']];
+  return [['return', 'Back to store'], ['scrap', 'Scrap']];
+};
+function tyreEventModal(t, done) {
+  const acts = TYRE_ACTIONS(t);
+  const today = new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+  modal('Tyre ' + t.serial_no, `
+    ${field('What happened', 'event_type', { type: 'select', options: acts.map(([value, label]) => ({ value, label })) })}
+    <div id="ty-fit" style="display:none"><div class="fld">${assetPickerHtml('Vehicle *')}</div>
+      ${field('Wheel *', 'position', { type: 'select', options: [{ value: '', label: '—' }].concat(TB_POS.map((p) => ({ value: p, label: p }))) })}</div>
+    <div class="row">${field('Date', 'event_date', { type: 'date', value: today })}${field('Note', 'reason')}</div>
+    <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Save</button></div>`, (b, close) => {
+    wireAssetPicker(b);
+    const sel = qs('[name=event_type]', b);
+    const show = () => { qs('#ty-fit', b).style.display = sel.value === 'install' ? '' : 'none'; };
+    sel.onchange = show; show();
+    qs('#s', b).onclick = async () => {
+      const f = formData(b);
+      if (f.event_type === 'install' && (!f.asset_id || !f.position)) return toast('Pick the vehicle and the wheel', 'err');
+      try {
+        await api(`/tb/tyres/${t.id}/event`, { method: 'POST', body: { event_type: f.event_type, to_asset_id: f.asset_id, position: f.position, event_date: f.event_date, reason: f.reason } });
+        toast('Saved'); close(); done && done();
+      } catch (e) { toast(e.message, 'err'); }
+    };
+  });
+}
+
+// One vehicle's tyres (by wheel) and batteries now, and every one issued to it.
+const unitLine = (head, u) => `<div style="padding:5px 0;border-bottom:1px solid var(--border)">${head}
+  <div class="muted" style="font-size:11.5px">${esc([u.spec, u.fitted_on ? 'fitted ' + u.fitted_on : ''].filter(Boolean).join(' · ') || '—')}</div></div>`;
+async function unitVehicleView(host, sp) {
+  const kind = sp.get('kind') === 'battery' ? 'battery' : 'tyre';
+  const assetId = sp.get('asset');
+  host.innerHTML = `<div class="toolbar" style="max-width:420px"><div class="fld" style="flex:1">${assetPickerHtml('Vehicle')}</div></div><div id="uv-body"></div>`;
+  wireAssetPicker(host, (id) => { location.hash = stockBooksHash(kind, 'vehicle') + '&asset=' + id; });
+  const out = qs('#uv-body', host);
+  if (!assetId) { out.innerHTML = '<p class="muted">Pick a vehicle to see its tyres and batteries.</p>'; return; }
+  let v;
+  try { v = await api('/tb/vehicle/' + encodeURIComponent(assetId)); } catch (e) { out.innerHTML = `<div class="card err">${esc(e.message)}</div>`; return; }
+  qs('.apick-input', host).value = v.asset.code || '';
+  const mayRecord = canEdit('tb_issue');
+  out.innerHTML = `
+    <h3 style="margin:8px 0 6px">${esc(idLabel(v.asset))}${v.old_due ? ` <span class="badge amber">${v.old_due} old unit${v.old_due === 1 ? '' : 's'} to record</span>` : ''}</h3>
+    <div class="grid section">
+      <div class="card"><h3 style="margin-top:0">🛞 Tyres now (${v.tyres.length})</h3>
+        ${v.tyres.length ? v.tyres.map((t) => unitLine(`<b>${esc(t.position || '?')}</b> · <a href="${tyreHash(t.id)}">${esc(t.serial_no)}</a>`, t)).join('')
+    : '<p class="muted" style="margin:0">None recorded.</p>'}</div>
+      <div class="card"><h3 style="margin-top:0">🔋 Batteries now (${v.batteries.length} of 2)</h3>
+        ${v.batteries.length ? v.batteries.map((b) => unitLine(`<a href="#/batteries/${b.id}">${esc(b.serial_no)}</a>`, b)).join('')
+    : '<p class="muted" style="margin:0">None recorded.</p>'}</div>
+    </div>
+    <div class="card"><h3 style="margin-top:0">Issued to this vehicle</h3>
+      ${v.issues.length ? tableWrap([{ label: 'Date' }, { label: 'Request' }, { label: 'Item' }, { label: 'Serial' }, { label: 'Wheel' }, { label: 'What came off' }],
+      v.issues.map((i) => `<tr><td>${esc(String(i.issue_date || '').slice(0, 10))}</td><td>${esc(i.mrn_no || '—')}</td><td>${esc(i.spec_label || i.kind)}</td>
+        <td>${esc(i.serial_no || '—')}</td><td>${esc(i.position || '—')}</td>
+        <td>${i.old_due ? `<span class="badge amber">Not recorded</span>${mayRecord ? ` <button class="sm" data-ret="${i.id}">Record…</button>` : ''}`
+    : i.old_condition ? esc(TB_COND_LABEL[i.old_condition] || i.old_condition) + (i.old_serial ? ' · ' + esc(i.old_serial) : '') : '—'}</td></tr>`), { scroll: true })
+    : '<p class="muted" style="margin:0">Nothing issued yet.</p>'}</div>`;
+  qsa('[data-ret]', out).forEach((b) => {
+    const i = v.issues.find((x) => String(x.id) === b.dataset.ret);
+    b.onclick = () => tbReturnModal({ issue_id: i.id, kind: i.kind, asset_code: v.asset.code, spec_label: i.spec_label, issue_date: i.issue_date, mrn_no: i.mrn_no },
+      () => unitVehicleView(host, sp));
+  });
+}
+
+// ---- disposal notes (stores plan, Part 4) ------------------------------------------------------
+// src/lib/disposal.js: scrap tyres, batteries, parts and waste oil leave on a note; a manager
+// approves it with the buyer, the amount and the date (ST-D9).
+const DISPOSAL_STATUS = { open: ['amber', 'Waiting for approval'], approved: ['green', 'Approved'], cancelled: ['', 'Cancelled'] };
+const disposalBadge = (st) => `<span class="badge ${(DISPOSAL_STATUS[st] || [''])[0]}">${esc((DISPOSAL_STATUS[st] || [0, st])[1])}</span>`;
+const DISPOSAL_KIND = { tyre: '🛞 Tyre', battery: '🔋 Battery', part: '🔩 Part', waste_oil: '🛢️ Waste oil' };
+
+async function disposalList(body, sp) {
+  const FILTERS = [['open', 'Waiting'], ['approved', 'Approved'], ['cancelled', 'Cancelled'], ['all', 'All']];
+  const status = FILTERS.some(([k]) => k === sp.get('status')) ? sp.get('status') : 'open';
+  const [rows, wd] = await Promise.all([api('/stores/disposals' + (status === 'all' ? '' : '?status=' + status)), workshopsData().catch(() => null)]);
+  const multi = !!(wd && wd.stores_multi);
+  body.innerHTML = `
+    <div class="toolbar">
+      ${FILTERS.map(([k, l]) => `<button class="sm ${k === status ? 'primary' : ''}" data-st="${k}">${l}</button>`).join('')}
+      <div class="spacer"></div>
+      ${canDo('stores.disposal.edit') ? '<button class="primary sm" id="dn-new">+ New disposal note</button>' : ''}
+    </div>
+    <p class="muted" style="margin:0 0 8px">Scrap tyres, batteries, parts and waste oil leave on a note. A manager approves it with the buyer, the amount and the date.</p>
+    ${rows.length ? tableWrap([{ label: 'No' }].concat(multi ? [{ label: 'Store' }] : []).concat([{ label: 'Status' }, { label: 'Items', num: true },
+      { label: 'Waste oil (L)', num: true }, { label: 'Buyer' }, { label: 'Amount', num: true }, { label: 'Date' }, { label: 'Written by' }]),
+    rows.map((r) => `<tr><td><a href="#/stores?tab=disposal&id=${r.id}"><b>${esc(r.disposal_no)}</b></a></td>${multi ? `<td>${esc(r.store_name || '')}</td>` : ''}
+      <td>${disposalBadge(r.status)}</td><td class="num">${r.lines}</td><td class="num">${r.waste_oil_litres ? num(r.waste_oil_litres) : ''}</td>
+      <td>${esc(r.buyer || '—')}</td><td class="num">${r.amount == null ? '—' : money(r.amount)}</td>
+      <td>${esc(r.sale_date || String(r.created_at || '').slice(0, 10))}</td><td>${esc(r.created_by_name || '')}</td></tr>`), { scroll: true })
+    : '<div class="card"><p class="muted">No notes here.</p></div>'}`;
+  qsa('[data-st]', body).forEach((b) => { b.onclick = () => { location.hash = '#/stores?tab=disposal&status=' + b.dataset.st; }; });
+  if (qs('#dn-new', body)) qs('#dn-new', body).onclick = () => disposalNewModal(multi, wd);
+}
+
+function disposalNewModal(multi, wd) {
+  const pickStore = multi && ME && ME.seesAllWorkshops;
+  modal('New disposal note', `
+    ${pickStore ? field('Store', 'store_id', { type: 'select', options: (wd.stores || []).map((x) => ({ value: x.id, label: x.name })) }) : ''}
+    <div id="dn-scrap" class="muted">Loading…</div>
+    <h4 style="margin:12px 0 4px">Other scrap parts</h4>
+    <div id="dn-parts"></div>
+    <button type="button" class="sm" id="dn-addpart">+ Add a part</button>
+    <div class="row" style="margin-top:8px">${field('Waste oil (litres)', 'waste_oil', { type: 'number' })}${field('Buyer (if known)', 'buyer')}</div>
+    ${field('Note', 'note')}
+    <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Save note</button></div>`, (b, close) => {
+    const parts = [];
+    let scrap = { tyres: [], batteries: [] };
+    const loadScrap = async () => {
+      const sid = pickStore ? qs('[name=store_id]', b).value : '';
+      try { scrap = await api('/stores/disposals/scrap' + (sid ? '?store_id=' + sid : '')); } catch (e) { scrap = { tyres: [], batteries: [] }; }
+      const box = (list, kind) => (list.length ? list.map((u) => `<label style="display:flex;gap:8px;align-items:center;flex-direction:row;font-weight:400">
+          <input type="checkbox" data-${kind}="${u.id}" style="width:auto"> ${esc(u.serial_no)} <span class="muted">${esc(u.spec || '')}</span></label>`).join('')
+        : '<p class="muted" style="margin:0">None.</p>');
+      qs('#dn-scrap', b).classList.remove('muted');
+      qs('#dn-scrap', b).innerHTML = `<h4 style="margin:4px 0">Scrap tyres</h4>${box(scrap.tyres, 'tyre')}
+        <h4 style="margin:10px 0 4px">Scrap batteries</h4>${box(scrap.batteries, 'battery')}`;
+    };
+    const drawParts = () => {
+      qs('#dn-parts', b).innerHTML = parts.map((p, i) => `<div class="row" style="align-items:end">
+          <div style="flex:3"><label>Part</label><input data-p="${i}" data-f="description" value="${esc(p.description)}"></div>
+          <div><label>Qty</label><input type="number" data-p="${i}" data-f="qty" value="${esc(p.qty)}"></div>
+          <div><label>Unit</label><input data-p="${i}" data-f="unit" value="${esc(p.unit)}"></div>
+          <div style="flex:0"><button type="button" class="sm" data-rm="${i}">✕</button></div></div>`).join('');
+      qsa('[data-p]', b).forEach((el) => { el.oninput = () => { parts[+el.dataset.p][el.dataset.f] = el.value; }; });
+      qsa('[data-rm]', b).forEach((el) => { el.onclick = () => { parts.splice(+el.dataset.rm, 1); drawParts(); }; });
+    };
+    qs('#dn-addpart', b).onclick = () => { parts.push({ description: '', qty: 1, unit: 'nos' }); drawParts(); };
+    if (pickStore) qs('[name=store_id]', b).onchange = loadScrap;
+    loadScrap();
+    qs('#s', b).onclick = async () => {
+      const f = formData(b);
+      const lines = qsa('[data-tyre]', b).filter((x) => x.checked).map((x) => ({ kind: 'tyre', tyre_id: Number(x.dataset.tyre) }))
+        .concat(qsa('[data-battery]', b).filter((x) => x.checked).map((x) => ({ kind: 'battery', battery_id: Number(x.dataset.battery) })))
+        .concat(parts.filter((p) => String(p.description).trim()).map((p) => ({ kind: 'part', ...p })))
+        .concat(Number(f.waste_oil) > 0 ? [{ kind: 'waste_oil', qty: Number(f.waste_oil) }] : []);
+      if (!lines.length) return toast('Put at least one thing on the note', 'err');
+      try {
+        const r = await api('/stores/disposals', { method: 'POST', body: { store_id: f.store_id, buyer: f.buyer, note: f.note, lines } });
+        toast(r.disposal_no + ' saved. A manager approves it.'); close();
+        location.hash = '#/stores?tab=disposal&id=' + r.id;
+      } catch (e) { toast(e.message, 'err'); }
+    };
+  }, { wide: true });
+}
+
+async function disposalDetail(body, id) {
+  let d;
+  try { d = await api('/stores/disposals/' + encodeURIComponent(id)); } catch (e) { body.innerHTML = `<div class="card err">${esc(e.message)}</div>`; return; }
+  const reload = () => disposalDetail(body, id);
+  const today = new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+  const line = (k, v) => `<div class="cost-line"><span>${k}</span><span>${v}</span></div>`;
+  body.innerHTML = `
+    <div class="toolbar" style="margin:0 0 8px"><a class="btn sm" href="#/stores?tab=disposal">← Disposal notes</a></div>
+    <div class="card section">
+      <div class="toolbar" style="margin:0 0 8px"><h3 style="margin:0">${esc(d.disposal_no)}</h3>${disposalBadge(d.status)}<div class="spacer"></div>
+        ${d.can.edit ? '<button class="sm" id="dn-edit">Change buyer / amount</button>' : ''}
+        ${d.can.cancel ? '<button class="sm danger" id="dn-cancel">Cancel note</button>' : ''}
+        ${d.can.approve ? '<button class="sm primary" id="dn-approve">Approve…</button>' : ''}</div>
+      ${line('Store', esc(d.store_name || '—'))}
+      ${line('Written by', `${esc(d.created_by_name || '—')} · ${esc(String(d.created_at || '').slice(0, 10))}`)}
+      ${line('Buyer', esc(d.buyer || '—'))}
+      ${line('Amount', d.amount == null ? '—' : money(d.amount))}
+      ${line('Date it leaves', esc(d.sale_date || '—'))}
+      ${d.note ? line('Note', esc(d.note)) : ''}
+      ${d.decided_by_name ? line(d.status === 'approved' ? 'Approved by' : 'Cancelled by',
+    `${esc(d.decided_by_name)} · ${esc(String(d.decided_at || '').slice(0, 10))}${d.decision_note ? ' — ' + esc(d.decision_note) : ''}`) : ''}
+    </div>
+    <div class="card"><h3 style="margin-top:0">On this note</h3>
+      ${tableWrap([{ label: 'Kind' }, { label: 'What' }, { label: 'Qty', num: true }, { label: 'Unit' }],
+    d.lines.map((l) => `<tr><td>${DISPOSAL_KIND[l.kind] || esc(l.kind)}</td>
+        <td>${l.tyre_id ? `<a href="${tyreHash(l.tyre_id)}">${esc(l.description)}</a>` : l.battery_id ? `<a href="#/batteries/${l.battery_id}">${esc(l.description)}</a>` : esc(l.description)}</td>
+        <td class="num">${num(l.qty)}</td><td>${esc(l.unit || '')}</td></tr>`))}</div>`;
+  const moneyForm = (label) => `
+    <div class="row">${field('Buyer *', 'buyer', { value: d.buyer || '' })}${field('Amount (Rs) *', 'amount', { type: 'number', value: d.amount ?? '' })}</div>
+    ${field('Date it leaves *', 'sale_date', { type: 'date', value: d.sale_date || today })}
+    <p class="muted" style="font-size:12px;margin:4px 0 0">Amount 0 if it is taken away for nothing.</p>
+    <div style="margin-top:12px;text-align:right"><button class="primary" id="s">${label}</button></div>`;
+  if (qs('#dn-approve', body)) qs('#dn-approve', body).onclick = () => modal('Approve ' + d.disposal_no, moneyForm('Approve'), (b, close) => {
+    qs('#s', b).onclick = async () => {
+      try { await api(`/stores/disposals/${d.id}/approve`, { method: 'POST', body: formData(b) }); toast('Approved'); close(); reload(); }
+      catch (e) { toast(e.message, 'err'); }
+    };
+  });
+  if (qs('#dn-edit', body)) qs('#dn-edit', body).onclick = () => modal(d.disposal_no, moneyForm('Save') + field('Note', 'note', { value: d.note || '' }), (b, close) => {
+    qs('#s', b).onclick = async () => {
+      try { await api(`/stores/disposals/${d.id}`, { method: 'PUT', body: formData(b) }); toast('Saved'); close(); reload(); }
+      catch (e) { toast(e.message, 'err'); }
+    };
+  });
+  if (qs('#dn-cancel', body)) qs('#dn-cancel', body).onclick = () => modal('Cancel ' + d.disposal_no, `
+    ${field('Why is it cancelled? *', 'reason')}
+    <div style="margin-top:12px;text-align:right"><button class="primary danger" id="s">Cancel note</button></div>`, (b, close) => {
+    qs('#s', b).onclick = async () => {
+      try { await api(`/stores/disposals/${d.id}/cancel`, { method: 'POST', body: formData(b) }); toast('Cancelled'); close(); reload(); }
+      catch (e) { toast(e.message, 'err'); }
+    };
+  });
+}
+
+// ---- stock take: count sessions --------------------------------------------------------------
+const COUNT_STATUS = { counting: ['blue', 'Counting'], submitted: ['amber', 'Waiting for head office'], approved: ['green', 'Approved'], cancelled: ['', 'Cancelled'] };
+const countBadge = (st) => `<span class="badge ${(COUNT_STATUS[st] || [''])[0]}">${esc((COUNT_STATUS[st] || [0, st])[1])}</span>`;
+const countWhat = (r) => (r.scope === 'quick' ? `Quick count · ${r.item_name || ''}` : `${KIND_LABEL[r.kind] || r.kind} · full count`);
+const signed = (n) => `<span style="color:${n < 0 ? 'var(--danger,#c4392c)' : n > 0 ? 'var(--success,#2e7d32)' : 'inherit'}">${n > 0 ? '+' : ''}${num(n)}</span>`;
+const signedMoney = (n) => `<span style="color:${n < 0 ? 'var(--danger,#c4392c)' : n > 0 ? 'var(--success,#2e7d32)' : 'inherit'}">${n > 0 ? '+' : ''}${money(n)}</span>`;
+
+async function countList(body, sp) {
+  const FILTERS = [['open', 'Open'], ['submitted', 'Waiting for head office'], ['approved', 'Approved'], ['cancelled', 'Cancelled'], ['all', 'All']];
+  const status = FILTERS.some(([k]) => k === sp.get('status')) || sp.get('status') === 'counting' ? sp.get('status') : 'open';
+  const [rows, wd] = await Promise.all([api('/stores/counts?status=' + status), workshopsData().catch(() => null)]);
+  const multi = !!(wd && wd.stores_multi);
+  body.innerHTML = `
+    <div class="toolbar">
+      ${FILTERS.map(([k, l]) => `<button class="sm ${k === status ? 'primary' : ''}" data-st="${k}">${l}</button>`).join('')}
+      <div class="spacer"></div>
+      ${canDo('stores.stock.count') ? '<button class="primary sm" id="cnt-new">+ Start a stock take</button>' : ''}
+    </div>
+    <p class="muted" style="margin:0 0 8px">Count what is on the shelf. Head office approves, then the differences go into stock.</p>
+    ${rows.length ? tableWrap(
+    [{ label: 'No' }].concat(multi ? [{ label: 'Store' }] : []).concat([{ label: 'What' }, { label: 'Status' }, { label: 'Date' },
+      { label: 'Counted', num: true }, { label: 'Differences', num: true }, { label: 'Value of differences', num: true }, { label: '' }]),
+    rows.map((r) => `<tr>
+        <td><a href="#/stores?tab=counts&id=${r.id}">${esc(r.count_no)}</a></td>
+        ${multi ? `<td>${esc(r.store_name || '')}</td>` : ''}
+        <td>${esc(countWhat(r))}</td>
+        <td>${countBadge(r.status)}</td>
+        <td>${esc(r.count_date)}</td>
+        <td class="num">${num(r.totals.counted)} of ${num(r.totals.lines)}</td>
+        <td class="num">${num(r.totals.differ)}</td>
+        <td class="num">${r.totals.differ ? signedMoney(r.totals.net_value) : '—'}</td>
+        <td><a class="btn sm" href="#/stores?tab=counts&id=${r.id}">Open</a></td></tr>`), { scroll: true })
+    : '<div class="card"><p class="muted">No stock takes here.</p></div>'}`;
+  qsa('[data-st]', body).forEach((b) => { b.onclick = () => { location.hash = '#/stores?tab=counts&status=' + b.dataset.st; }; });
+  if (qs('#cnt-new', body)) qs('#cnt-new', body).onclick = () => countStartModal(multi, wd);
+}
+
+function countStartModal(multi, wd) {
+  const today = new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+  const pickStore = multi && ME && ME.seesAllWorkshops;
+  modal('Start a stock take', `
+    ${pickStore ? field('Store', 'store_id', { type: 'select', options: (wd.stores || []).map((x) => ({ value: x.id, label: x.name })) }) : ''}
+    ${field('What to count', 'kind', { type: 'select', options: [['all', 'All kinds'], ...STOCK_KINDS.filter(([k]) => k !== 'overview').map(([k]) => [k, KIND_LABEL[k]])].map(([value, label]) => ({ value, label })) })}
+    ${field('Date', 'count_date', { type: 'date', value: today })}
+    ${field('Note (optional)', 'note')}
+    <p class="muted" style="font-size:12px">The list holds every item the store's book knows. The book figure is kept from now; anything issued or received while you count is shown apart.</p>
+    <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Start</button></div>`, (b, close) => {
+    qs('#s', b).onclick = async () => {
+      try {
+        const r = await api('/stores/counts', { method: 'POST', body: formData(b) });
+        close(); toast(`${r.count_no} started · ${r.lines.length} items to count`);
+        location.hash = '#/stores?tab=counts&id=' + r.id;
+      } catch (e) { toast(e.message, 'err'); }
+    };
+  });
+}
+
+async function countDetail(body, id, sp) {
+  let d;
+  try { d = await api('/stores/counts/' + encodeURIComponent(id)); }
+  catch (e) { body.innerHTML = `<div class="card err">${esc(e.message)}</div>`; return; }
+  const VIEWS = [['sheet', '✏️ Count sheet'], ['diff', '⚖️ Differences'], ['all', 'All items']];
+  const view = VIEWS.some(([k]) => k === sp.get('view')) ? sp.get('view') : (d.can.count ? 'sheet' : 'diff');
+  const go = (v) => { location.hash = `#/stores?tab=counts&id=${d.id}&view=${v}`; };
+  const reload = () => countDetail(body, id, sp);
+  const t = d.totals;
+  const who = (name, at) => (name ? ` by ${esc(name)}${at ? ' on ' + esc(String(at).slice(0, 10)) : ''}` : '');
+  body.innerHTML = `
+    <div class="toolbar" style="margin:0 0 8px"><a class="btn sm" href="#/stores?tab=counts">← Stock takes</a></div>
+    <div class="card section">
+      <h3 style="margin:0 0 4px">${esc(d.count_no)} · ${esc(countWhat({ ...d, item_name: d.lines[0] && d.lines[0].item_name }))} ${countBadge(d.status)}</h3>
+      <p class="muted" style="margin:0">${esc(d.store_name || '')} · began ${esc(d.count_date)}${who(d.started_by_name)}${d.note ? ' · ' + esc(d.note) : ''}
+        ${d.submitted_at ? ` · sent${who(d.submitted_by_name, d.submitted_at)}` : ''}${d.decided_at ? ` · ${esc(d.status)}${who(d.decided_by_name, d.decided_at)}` : ''}</p>
+      ${d.decision_note && d.status === 'counting' ? `<p class="err" style="margin:6px 0 0">Sent back: ${esc(d.decision_note)}</p>` : ''}
+      ${d.decision_note && d.status === 'cancelled' ? `<p class="muted" style="margin:6px 0 0">Why: ${esc(d.decision_note)}</p>` : ''}
+      <div style="display:flex;gap:6px 18px;flex-wrap:wrap;margin-top:10px;font-size:15px">
+        <span><b id="cnt-counted">${num(t.counted)} / ${num(t.lines)}</b> <span class="muted">counted</span></span>
+        <span><b>${num(t.differ)}</b> <span class="muted">differences${t.unpriced ? ` (${t.unpriced} without a price)` : ''}</span></span>
+        <span>${signedMoney(t.over_value)} <span class="muted">more than the book</span></span>
+        <span>${signedMoney(t.short_value)} <span class="muted">less than the book</span></span>
+        <span><b>${signedMoney(t.net_value)}</b> <span class="muted">net</span></span>
+      </div>
+    </div>
+    <div class="toolbar">
+      ${VIEWS.map(([k, l]) => `<button class="sm ${k === view ? 'primary' : ''}" data-view="${k}">${l}</button>`).join('')}
+      <div class="spacer"></div>
+      ${d.can.submit ? '<button class="primary sm" id="c-submit">📨 Send to head office</button>' : ''}
+      ${d.can.approve ? '<button class="primary sm" id="c-approve">✔ Approve</button>' : ''}
+      ${d.can.send_back ? '<button class="sm" id="c-back">↩ Send back</button>' : ''}
+      ${d.can.cancel ? '<button class="sm" id="c-cancel">✖ Cancel</button>' : ''}
+      <a class="btn sm" href="/api/stores/counts/${d.id}/export.xlsx">⬇ Excel</a>
+    </div>
+    <div id="cnt-body"></div>`;
+  qsa('[data-view]', body).forEach((b) => { b.onclick = () => go(b.dataset.view); });
+  const host = qs('#cnt-body', body);
+  const act = async (path, payload, msg) => {
+    try { await api(`/stores/counts/${d.id}/${path}`, { method: 'POST', body: payload || {} }); toast(msg); reload(); }
+    catch (e) { toast(e.message, 'err'); }
+  };
+  const withReason = (title, label, path, msg) => modal(title, `${field(label, 'reason')}
+    <div style="margin-top:12px;text-align:right"><button class="primary" id="s">${esc(title)}</button></div>`, (b, close) => {
+    qs('#s', b).onclick = async () => { close(); await act(path, formData(b), msg); };
+  });
+  if (qs('#c-submit', body)) qs('#c-submit', body).onclick = () => act('submit', null, 'Sent to head office');
+  if (qs('#c-approve', body)) {
+    qs('#c-approve', body).onclick = () => modal('Approve this stock take?', `
+      <p>${num(t.differ)} difference(s), net ${money(t.net_value)}. They go into ${esc(d.store_name || 'the store')}'s stock now.</p>
+      <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Approve</button></div>`, (b, close) => {
+      qs('#s', b).onclick = async () => { close(); await act('approve', null, 'Approved · stock corrected'); };
+    });
+  }
+  if (qs('#c-back', body)) qs('#c-back', body).onclick = () => withReason('Send back', 'What to count again', 'send-back', 'Sent back to count again');
+  if (qs('#c-cancel', body)) qs('#c-cancel', body).onclick = () => withReason('Cancel', 'Why cancel this count', 'cancel', 'Cancelled');
+
+  if (view === 'sheet') return countSheet(host, d, reload);
+  const rows = view === 'diff'
+    ? d.lines.filter((l) => l.diff).sort((a, b) => Math.abs(b.diff_value ?? b.diff) - Math.abs(a.diff_value ?? a.diff))
+    : d.lines;
+  const kindCol = d.kind === 'all';
+  host.innerHTML = rows.length ? tableWrap(
+    [{ label: 'Item', cls: 'desc-col' }].concat(kindCol ? [{ label: 'Kind' }] : []).concat([{ label: 'Unit' },
+      { label: 'Book at start', num: true }, { label: 'Moved while counting', num: true }, { label: 'Book when counted', num: true },
+      { label: 'Counted', num: true }, { label: 'Difference', num: true }, { label: 'Value', num: true }, { label: 'Note' }]),
+    rows.map((l) => `<tr>
+      <td class="desc-col">${esc(l.item_name)}${l.added ? ' <span class="badge blue" title="Found on the shelf, not on the list">added</span>' : ''}</td>
+      ${kindCol ? `<td>${esc(KIND_LABEL[l.section])}</td>` : ''}
+      <td>${esc(l.unit || '')}</td>
+      <td class="num">${num(l.book_start)}</td>
+      <td class="num">${l.counted && l.moved_during ? signed(l.moved_during) : ''}</td>
+      <td class="num">${l.counted ? num(l.book_at_count) : ''}</td>
+      <td class="num">${l.counted ? `<b>${num(l.counted_qty)}</b>${l.containers ? `<div class="muted" style="font-size:11px">${num(l.containers)} × ${num(l.container_size)} L + ${num(l.loose_qty)} L</div>` : ''}` : '<span class="muted">not counted</span>'}</td>
+      <td class="num">${l.counted ? signed(l.diff) : ''}</td>
+      <td class="num">${l.diff_value != null && l.diff ? signedMoney(l.diff_value) : (l.diff ? '<span class="muted" title="No price yet">—</span>' : '')}</td>
+      <td class="muted" style="font-size:12px">${esc(l.note || '')}</td></tr>`), { scroll: true })
+    : `<div class="card"><p class="muted">${view === 'diff' ? (t.counted ? 'No differences: the shelf matches the book.' : 'Nothing counted yet.') : 'No items.'}</p></div>`;
+}
+
+// The count sheet: the items and what is on the shelf — not the book figure, so the count is what
+// was seen. Works on a phone; each count saves as soon as it is typed.
+function countSheet(host, d, reload) {
+  const editable = d.can.count;
+  let onlyLeft = editable;
+  const kindCol = d.kind === 'all';
+  host.innerHTML = `
+    <div class="toolbar">
+      <input id="cs-q" type="search" placeholder="Find an item…" style="max-width:240px">
+      <button class="sm" id="cs-left"></button><button class="sm" id="cs-all">All items</button>
+      <div class="spacer"></div>
+      ${editable ? '<button class="sm" id="cs-add">+ Item not on the list</button>' : ''}
+    </div>
+    ${editable ? '' : '<p class="muted" style="margin:0 0 8px">This count cannot be changed now.</p>'}
+    <div id="cs-rows"></div>`;
+  const left = () => d.lines.filter((l) => !l.counted).length;
+  const input = (l, name, value, ph, w = 90) => `<input type="number" min="0" step="any" data-f="${name}" value="${value ?? ''}" placeholder="${ph}" style="width:${w}px;text-align:right" ${editable ? '' : 'disabled'}>`;
+  const cell = (l) => (l.section === 'oil'
+    ? `<div style="display:flex;gap:4px;align-items:center;flex-wrap:wrap;justify-content:flex-end">${input(l, 'containers', l.containers, 'drums', 78)}<span>×</span>${input(l, 'container_size', l.container_size, 'size L', 78)}<span>+</span>${input(l, 'loose_qty', l.loose_qty, 'dip L', 78)}
+        <span class="muted" style="font-size:12px">or</span>${input(l, 'counted', l.containers ? '' : l.counted_qty, 'total L', 84)}</div>`
+    : input(l, 'counted', l.counted_qty, l.unit || 'qty'));
+  const mark = (l) => (l.counted ? `<span class="badge green" title="${esc(l.counted_by_name || '')}">✓ ${num(l.counted_qty)}</span>` : '<span class="muted">—</span>');
+  const draw = () => {
+    const q = qs('#cs-q', host).value.trim().toLowerCase();
+    qs('#cs-left', host).textContent = `Not counted (${left()})`;
+    qs('#cs-left', host).classList.toggle('primary', onlyLeft);
+    qs('#cs-all', host).classList.toggle('primary', !onlyLeft);
+    const rows = d.lines.filter((l) => (!onlyLeft || !l.counted) && (!q || String(l.item_name || '').toLowerCase().includes(q)));
+    qs('#cs-rows', host).innerHTML = rows.length ? tableWrap(
+      [{ label: 'Item', cls: 'desc-col' }].concat(kindCol ? [{ label: 'Kind' }] : []).concat([{ label: 'Unit' }, { label: 'On the shelf', num: true }, { label: '' }]),
+      rows.map((l) => `<tr data-line="${l.id}">
+        <td class="desc-col">${esc(l.item_name)}${l.added ? ' <span class="badge blue">added</span>' : ''}</td>
+        ${kindCol ? `<td>${esc(KIND_LABEL[l.section])}</td>` : ''}
+        <td>${esc(l.unit || '')}</td>
+        <td class="num">${cell(l)}</td>
+        <td data-mark>${mark(l)}</td></tr>`), { scroll: true, fit: true, noHScroll: true })
+      : `<div class="card"><p class="muted">${onlyLeft && !q ? 'Everything is counted. Check the differences, then send it to head office.' : 'Nothing matches.'}</p></div>`;
+    if (!editable) return;
+    qsa('tr[data-line]', host).forEach((tr) => {
+      const l = d.lines.find((x) => String(x.id) === tr.dataset.line);
+      const save = async (ev) => {
+        const vals = {};
+        qsa('[data-f]', tr).forEach((i) => { vals[i.dataset.f] = i.value; });
+        // For a lubricant, typing the drums clears a total typed before, and the other way round.
+        if (l.section === 'oil' && ev && ev.target.dataset.f !== 'counted' && (vals.containers || vals.loose_qty)) vals.counted = '';
+        if (l.section === 'oil' && ev && ev.target.dataset.f === 'counted') { vals.containers = ''; vals.container_size = ''; vals.loose_qty = ''; }
+        const body = l.section === 'oil' && (vals.containers || vals.loose_qty) ? vals : { counted: vals.counted };
+        if (l.section === 'oil' && body.containers && !body.container_size) { qs('[data-mark]', tr).innerHTML = '<span class="badge amber">size?</span>'; return; }
+        try {
+          const r = await api(`/stores/counts/${d.id}/lines/${l.id}`, { method: 'PUT', body });
+          Object.assign(l, r);
+          qs('[data-mark]', tr).innerHTML = mark(l);
+          qs('#cs-left', host).textContent = `Not counted (${left()})`;
+          const top = qs('#cnt-counted');
+          if (top) top.textContent = `${num(d.lines.length - left())} / ${num(d.lines.length)}`;
+        } catch (e) { toast(e.message, 'err'); }
+      };
+      qsa('[data-f]', tr).forEach((i) => { i.onchange = save; });
+    });
+  };
+  let deb;
+  qs('#cs-q', host).oninput = () => { clearTimeout(deb); deb = setTimeout(draw, 200); };
+  qs('#cs-left', host).onclick = () => { onlyLeft = true; draw(); };
+  qs('#cs-all', host).onclick = () => { onlyLeft = false; draw(); };
+  if (qs('#cs-add', host)) qs('#cs-add', host).onclick = () => countAddModal(d, reload);
+  draw();
+}
+
+// An item found on the shelf that the list did not name: find it in the catalogue and add it.
+function countAddModal(d, reload) {
+  modal('Item not on the list', `
+    <input id="ca-q" type="search" placeholder="Name, code or part number…">
+    <div id="ca-res" style="margin-top:8px"><p class="muted">Type at least 2 letters.</p></div>`, (b, close) => {
+    let deb;
+    const find = async () => {
+      const q = qs('#ca-q', b).value.trim();
+      const res = qs('#ca-res', b);
+      if (q.length < 2) { res.innerHTML = '<p class="muted">Type at least 2 letters.</p>'; return; }
+      const items = await api(`/stores/counts/${d.id}/find?q=${encodeURIComponent(q)}`);
+      res.innerHTML = items.length ? items.map((i) => `<div class="cost-line"><span>${esc(i.name)} <span class="muted" style="font-size:11px">${esc(i.code || '')} · ${esc(KIND_LABEL[i.section])}</span></span>
+          ${i.on_list ? '<span class="muted">on the list</span>' : `<button class="sm primary" data-add="${esc(i.section)}|${esc(i.item_key)}">Add</button>`}</div>`).join('')
+        : '<p class="muted">Nothing found.</p>';
+      qsa('[data-add]', res).forEach((x) => {
+        x.onclick = async () => {
+          const [section, key] = x.dataset.add.split('|');
+          try { await api(`/stores/counts/${d.id}/lines`, { method: 'POST', body: { section, item_key: key } }); close(); toast('Added · count it on the sheet'); reload(); }
+          catch (e) { toast(e.message, 'err'); }
+        };
+      });
+    };
+    qs('#ca-q', b).oninput = () => { clearTimeout(deb); deb = setTimeout(find, 250); };
+    qs('#ca-q', b).focus();
+  });
 }
 
 // ---- Service & Filter Plan -------------------------------------------------
@@ -9486,6 +12101,7 @@ async function renderFilterStock(c) {
   c.innerHTML = `
     <div class="card section"><h3 style="margin-top:0">Stock position <span class="muted" style="font-weight:400;font-size:12px">— requested, received, issued and what's left, from the shared stock ledger</span></h3>
       <div id="fs-stock"></div></div>
+    <p class="muted" id="fs-whole" style="font-size:12px;margin:0 0 8px;display:none"></p>
     <div class="grid section" id="fs-stats"></div>
     <div class="toolbar">
       <input type="search" id="fs-q" placeholder="Search type / brand / part no / vehicle…" style="max-width:280px">
@@ -9496,6 +12112,7 @@ async function renderFilterStock(c) {
     </div>
     <div id="fs-table" class="muted">Loading…</div>`;
   stockPanel(qs('#fs-stock', c), 'filter');
+  wholeCompanyNote(qs('#fs-whole', c));
   let lowOnly = false, rows = [];
   const load = async () => {
     const q = qs('#fs-q', c).value.trim();

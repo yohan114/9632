@@ -141,8 +141,40 @@ function filterParts(text) {
   return out;
 }
 
+/** Write one movement (once: the source, kind and item are its key). True when it was new. */
+function writeMove(m, counts, mainStore) {
+  return run(
+    `INSERT OR IGNORE INTO stock_moves
+      (section, kind, item_key, item_name, qty, unit_price, txn_date, asset_id, job_id,
+       mrn_line_id, grn_id, store_item_id, ref, note, source_table, source_id, counts, store_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    m.section, m.kind, m.item_key, m.item_name || null, n2(m.qty), m.unit_price == null ? null : n2(m.unit_price),
+    d10(m.txn_date), m.asset_id || null, m.job_id || null, m.mrn_line_id || null, m.grn_id || null,
+    m.store_item_id || null, m.ref || null, m.note || null, m.source_table, m.source_id, counts,
+    m.store_id || mainStore).changes > 0;
+}
+
+/** A store's stock-take correction as a movement: the difference the count found. */
+const countMove = (c) => ({
+  section: c.section, kind: 'adjust', item_key: c.item_key, item_name: c.item_name, qty: c.delta,
+  txn_date: c.count_date, ref: 'Stock take', note: `counted ${c.counted_qty}, book ${c.book_qty}`,
+  source_table: 'store_counts', source_id: c.id, store_id: c.store_id, keep_key: true, counts: 1,
+});
+
+/** Record a count just made (the rebuild writes the same row from store_counts). */
+function recordCount(c) {
+  const m = countMove(c);
+  writeMove(m, 1, null);
+}
+
 function rebuild(opts = {}) {
   const rep = { in: 0, out: 0, history_only: 0, by_section: {} };
+  // opts.only = { table: [ids] }: project just these source rows (see sync() below). Every other
+  // source is left alone; each step's query is narrowed to the rows asked for, or to none.
+  const only = opts.only || null;
+  const want = (table) => !only || !!only[table];
+  const idsIn = (table, col) => (!only ? '' : (only[table] && only[table].length
+    ? ` AND ${col} IN (${only[table].map((v) => Number(v) || 0).join(',')})` : ' AND 0'));
   const rules = openingRules();
   const bump = (section, kind) => {
     rep.by_section[section] = rep.by_section[section] || { in: 0, out: 0 };
@@ -175,7 +207,15 @@ function rebuild(opts = {}) {
     return lubeKeyCache.get(productId);
   };
 
+  // Stage 4: every movement is in a store — the one stamped on its source row, else the main one.
+  const mainStore = (get('SELECT id FROM workshops WHERE is_default = 1 ORDER BY id LIMIT 1') || {}).id || null;
+
   const insert = (m) => {
+    // A stock-take correction is already keyed to the shelf it counted: the name is not re-read.
+    if (m.keep_key) {
+      if (writeMove(m, m.counts == null ? 1 : m.counts, mainStore)) bump(m.section, m.kind);
+      return;
+    }
     // The section rule runs BOTH ways. A drum of kerosene bought on a request someone
     // categorised "General Items" is still kerosene, and leaving it in the general section put
     // its receipts in one book and its issues in another — which is how five lubricants came
@@ -210,31 +250,64 @@ function rebuild(opts = {}) {
       counts = 0;
     }
     if (!counts) rep.history_only++;
-    const info = run(
-      `INSERT OR IGNORE INTO stock_moves
-        (section, kind, item_key, item_name, qty, unit_price, txn_date, asset_id, job_id,
-         mrn_line_id, grn_id, store_item_id, ref, note, source_table, source_id, counts)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      m.section, m.kind, m.item_key, m.item_name || null, n2(m.qty), m.unit_price == null ? null : n2(m.unit_price),
-      d10(m.txn_date), m.asset_id || null, m.job_id || null, m.mrn_line_id || null, m.grn_id || null,
-      m.store_item_id || null, m.ref || null, m.note || null, m.source_table, m.source_id, counts);
-    if (info.changes) bump(m.section, m.kind);
+    if (writeMove(m, counts, mainStore)) bump(m.section, m.kind);
+  };
+
+  // TRANSFERS BETWEEN TWO STORES (Stage 4). A transfer note's item that went from one store to
+  // another (src/lib/stores.js stampTransfer) comes out of the first and goes into the second, on
+  // the transfer date. Keyed like a receipt of the same words, so it meets the shelf it came from.
+  // Anything else on a transfer note — to a site, to a machine — stays the paper record it was.
+  const transfers = (mtnId) => {
+    const storeName = new Map(all('SELECT id, code FROM workshops').map((w) => [w.id, w.code]));
+    for (const l of all(
+      `SELECT l.id, l.description, l.qty, l.category, l.store_item_id, l.from_store_id, l.to_store_id,
+              t.mtn_no, t.txn_date, si.name AS item_name, si.category AS item_cat
+         FROM mtn_lines l JOIN mtn t ON t.id = l.mtn_id
+         LEFT JOIN store_items si ON si.id = l.store_item_id
+        WHERE l.from_store_id IS NOT NULL AND l.to_store_id IS NOT NULL AND l.from_store_id <> l.to_store_id
+          AND COALESCE(l.qty,0) > 0 ${mtnId ? 'AND l.mtn_id = ?' : ''}`, ...(mtnId ? [mtnId] : []))) {
+      const section = sectionOf(l.category || l.item_cat || l.description);
+      const name = l.description || l.item_name || '';
+      const key = section === 'filter' ? (filterKey(name) || itemKey(section, name)) : itemKey(section, name);
+      const base = { section, item_key: key, item_name: name, qty: l.qty, txn_date: l.txn_date,
+        store_item_id: l.store_item_id, ref: 'MTN ' + l.mtn_no, source_table: 'mtn_lines', source_id: l.id };
+      insert({ ...base, kind: 'out', store_id: l.from_store_id, note: 'to ' + (storeName.get(l.to_store_id) || 'another store') });
+      insert({ ...base, kind: 'in', store_id: l.to_store_id, note: 'from ' + (storeName.get(l.from_store_id) || 'another store') });
+    }
   };
 
   tx(() => {
+    // One transfer note just written: its movements again, and nothing else (opts.transfersOf).
+    if (opts.transfersOf) {
+      run(`DELETE FROM stock_moves WHERE source_table = 'mtn_lines'
+             AND (source_id IN (SELECT id FROM mtn_lines WHERE mtn_id = ?) OR source_id NOT IN (SELECT id FROM mtn_lines))`, opts.transfersOf);
+      transfers(opts.transfersOf);
+      return;
+    }
     if (opts.wipe) run('DELETE FROM stock_moves');
+    // Just some rows: their old movements go, and so do any whose source row is gone (a service
+    // edit writes its filter lines again under new ids).
+    if (only) {
+      for (const [table, ids] of Object.entries(only)) {
+        if (!SOURCES.includes(table)) throw new Error('stock: unknown source ' + table);
+        run(`DELETE FROM stock_moves WHERE source_table = ?
+               AND (source_id IN (${[...ids, -1].map((v) => Number(v) || 0).join(',')}) OR source_id NOT IN (SELECT id FROM ${table}))`, table);
+      }
+    }
 
     // 1. RECEIPTS (all sections) — the link that was missing entirely.
     for (const g of all(
-      `SELECT g.id, g.qty, g.unit_price, g.delivery_date, g.description, g.grn_no, g.mrn_line_id, g.store_item_id,
+      `SELECT g.id, g.qty, g.unit_price, g.delivery_date, g.description, g.grn_no, g.mrn_line_id, g.store_item_id, g.store_id,
               ml.category AS line_cat, ml.description AS line_desc, si.category AS item_cat, si.name AS item_name,
-              m.mrn_no, m.asset_id, m.job_id
+              m.mrn_no, m.asset_id, m.job_id, ts.kind AS tb_kind, ts.label AS tb_label, ts.spec_key AS tb_key
          FROM grn g
          LEFT JOIN mrn_lines ml ON ml.id = g.mrn_line_id
          LEFT JOIN store_items si ON si.id = g.store_item_id
          LEFT JOIN mrn m ON m.id = g.mrn_id
-        WHERE COALESCE(g.qty,0) > 0`)) {
-      const section = sectionOf(g.line_cat || g.item_cat);
+         LEFT JOIN tb_request_lines tr ON tr.mrn_line_id = g.mrn_line_id
+         LEFT JOIN tb_specs ts ON ts.id = tr.spec_id
+        WHERE COALESCE(g.qty,0) > 0${idsIn('grn', 'g.id')}`)) {
+      let section = sectionOf(g.line_cat || g.item_cat);
       const name = g.description || g.line_desc || g.item_name || '';
       // A FILTER IS ITS PART NUMBER, and on 74% of receipts that number is written inside the
       // brackets — "Oil Filter (C-206)". itemKey() drops brackets, so those receipts all piled
@@ -242,7 +315,10 @@ function rebuild(opts = {}) {
       // fitted the filter went out against C206. 149 receipt keys against 1,070 issue keys, and
       // only 10 keys ever carried both, so a filter could be received and fitted and never once
       // meet itself. Here the number is pulled OUT of the bracket instead of thrown away.
-      const key = section === 'filter' ? (filterKey(name) || itemKey(section, name)) : itemKey(section, name);
+      let key = section === 'filter' ? (filterKey(name) || itemKey(section, name)) : itemKey(section, name);
+      // A tyre or battery bought on its own request is its specification — the same shelf its issue
+      // comes off (stores plan, Part 4), whatever the receipt's words say.
+      if (g.tb_key) { section = g.tb_kind === 'battery' ? 'battery' : 'tyre'; key = itemKey(section, g.tb_label, g.tb_key); }
       // Oil bought through stores used to be muted wholesale, because some of it was ALSO
       // booked as a top-up in the oil book's own ledger and would have been counted twice.
       // That blanket rule hid 17 genuine deliveries the ledger never knew about — more than
@@ -252,14 +328,14 @@ function rebuild(opts = {}) {
       insert({ section, kind: 'in', item_key: key, item_name: name,
         qty: g.qty, unit_price: g.unit_price, txn_date: g.delivery_date, asset_id: g.asset_id, job_id: g.job_id,
         mrn_line_id: g.mrn_line_id, store_item_id: g.store_item_id,
-        ref: g.grn_no || g.mrn_no || null, source_table: 'grn', source_id: g.id });
+        ref: g.grn_no || g.mrn_no || null, source_table: 'grn', source_id: g.id, store_id: g.store_id });
     }
 
     // 2. GENERAL issues / receipts / openings — its own running ledger.
     for (const t of all(
-      `SELECT t.id, t.txn_type, t.qty, t.unit_price, t.txn_date, t.asset_id, t.job_id, t.ref, t.store_item_id,
+      `SELECT t.id, t.txn_type, t.qty, t.unit_price, t.txn_date, t.asset_id, t.job_id, t.ref, t.store_item_id, t.store_id,
               si.name, si.category
-         FROM general_item_txns t JOIN store_items si ON si.id = t.store_item_id`)) {
+         FROM general_item_txns t JOIN store_items si ON si.id = t.store_item_id WHERE 1${idsIn('general_item_txns', 't.id')}`)) {
       const section = sectionOf(t.category);
       const kind = t.txn_type === 'issue' ? 'out' : (t.txn_type === 'opening' ? 'opening' : 'in');
       // Its 'receipt' rows are the same deliveries the GRN already records (23 of 32 match a
@@ -268,7 +344,7 @@ function rebuild(opts = {}) {
       const dup = kind === 'in';
       insert({ section, kind, item_key: itemKey(section, si_name(t)), item_name: t.name,
         qty: Math.abs(t.qty), unit_price: t.unit_price, txn_date: t.txn_date, asset_id: t.asset_id, job_id: t.job_id,
-        store_item_id: t.store_item_id, ref: t.ref, source_table: 'general_item_txns', source_id: t.id,
+        store_item_id: t.store_item_id, ref: t.ref, source_table: 'general_item_txns', source_id: t.id, store_id: t.store_id,
         force_history: dup, note: dup ? 'same delivery as the GRN receipt — counted there' : null });
     }
 
@@ -287,7 +363,7 @@ function rebuild(opts = {}) {
     {
       let prev = null; let prevProduct = null;
       for (const r of all(`SELECT id, product_id, kind, balance_after FROM stock_ledger
-                            WHERE COALESCE(voided,0) = 0 ORDER BY product_id, txn_date, id`)) {
+                            WHERE COALESCE(voided,0) = 0 AND ${want('stock_ledger') ? 1 : 0} ORDER BY product_id, txn_date, id`)) {
         if (r.product_id !== prevProduct) { prevProduct = r.product_id; prev = null; }
         if (r.kind === 'adjustment' && r.balance_after != null && prev != null) {
           adjustDelta.set(r.id, n2(r.balance_after - prev));
@@ -298,25 +374,25 @@ function rebuild(opts = {}) {
 
     // 3. OIL — its own ledger already carries receipts and issues.
     for (const s of all(
-      `SELECT s.id, s.kind, s.qty, s.unit_price, s.txn_date, s.asset_id, s.job_id, s.mr_no, s.consumer,
+      `SELECT s.id, s.kind, s.qty, s.unit_price, s.txn_date, s.asset_id, s.job_id, s.mr_no, s.consumer, s.store_id,
               p.name, p.code
          FROM stock_ledger s JOIN products p ON p.id = s.product_id
-        WHERE COALESCE(s.voided,0) = 0`)) {
+        WHERE COALESCE(s.voided,0) = 0${idsIn('stock_ledger', 's.id')}`)) {
       const kind = s.kind === 'issue' ? 'out' : (s.kind === 'opening' ? 'opening' : (s.kind === 'adjustment' ? 'adjust' : 'in'));
       // `adjust` is the one kind that carries a sign: every balance reads it as `THEN qty`, so a
       // negative delta subtracts with no change to a single balance query.
       const qty = kind === 'adjust' && adjustDelta.has(s.id) ? adjustDelta.get(s.id) : Math.abs(s.qty);
       insert({ section: 'oil', kind, item_key: itemKey('oil', s.name, s.code || s.name), item_name: s.name,
         qty, unit_price: s.unit_price, txn_date: s.txn_date, asset_id: s.asset_id, job_id: s.job_id,
-        ref: s.mr_no, note: s.consumer, source_table: 'stock_ledger', source_id: s.id });
+        ref: s.mr_no, note: s.consumer, source_table: 'stock_ledger', source_id: s.id, store_id: s.store_id });
     }
 
     // 4. FILTERS consumed on a service — the only record of filters actually used.
     for (const f of all(
       `SELECT f.id, f.filter_no, f.filter_no_norm, f.category, f.qty, f.price,
-              s.service_date, s.asset_id, s.job_no
+              s.service_date, s.asset_id, s.job_no, s.store_id
          FROM service_filters f JOIN service_jobs s ON s.id = f.service_id
-        WHERE COALESCE(f.qty,0) > 0`)) {
+        WHERE COALESCE(f.qty,0) > 0${idsIn('service_filters', 'f.id')}`)) {
       // The issue side needs the number dug out of the writing just as much as the receipt side.
       // 105 service lines name TWO filters at once — "JS-1030 & 278 607 989 916" — and joined up
       // they made a key no receipt could ever carry, so a filter was fitted and never once met
@@ -336,7 +412,7 @@ function rebuild(opts = {}) {
           asset_id: f.asset_id, ref: f.job_no,
           // The line as the fitter wrote it, so a split movement can always be read back to it.
           note: lines.length > 1 ? `${f.category || 'filter'} · fitted with ${f.filter_no}` : f.category,
-          source_table: 'service_filters', source_id: f.id });
+          source_table: 'service_filters', source_id: f.id, store_id: f.store_id });
       }
     }
 
@@ -356,7 +432,7 @@ function rebuild(opts = {}) {
     const filterCutover = (rules.filter && rules.filter.mode === 'cutover' && rules.filter.cutover) || null;
     if (filterCutover) {
       for (const f of all(`SELECT id, part_no, filter_type, qty_in_stock, unit_cost FROM filter_stock
-                            WHERE COALESCE(qty_in_stock,0) > 0 AND NULLIF(part_no,'') IS NOT NULL`)) {
+                            WHERE COALESCE(qty_in_stock,0) > 0 AND NULLIF(part_no,'') IS NOT NULL${idsIn('filter_stock', 'id')}`)) {
         const key = filterKey(f.part_no) || normF(f.part_no);
         if (!key) continue;
         insert({ section: 'filter', kind: 'opening', item_key: key,
@@ -369,12 +445,15 @@ function rebuild(opts = {}) {
 
     // 5. TYRE / BATTERY issues from their imported ledger.
     for (const t of all(
-      `SELECT id, kind, issue_date, vehicle, asset_id, qty, category, category_norm, site
-         FROM tyre_battery_issues WHERE COALESCE(qty,0) > 0`)) {
+      `SELECT t.id, t.kind, t.issue_date, t.vehicle, t.asset_id, t.qty, t.category, t.category_norm, t.site, t.store_id,
+              ts.label AS tb_label, ts.spec_key AS tb_key
+         FROM tyre_battery_issues t LEFT JOIN tb_specs ts ON ts.id = t.spec_id
+        WHERE COALESCE(t.qty,0) > 0${idsIn('tyre_battery_issues', 't.id')}`)) {
       const section = t.kind === 'battery' ? 'battery' : 'tyre';
-      insert({ section, kind: 'out', item_key: itemKey(section, t.category, t.category_norm || t.category),
+      // Issued on a request: its specification, the shelf its receipt went onto (Part 4).
+      insert({ section, kind: 'out', item_key: t.tb_key ? itemKey(section, t.tb_label, t.tb_key) : itemKey(section, t.category, t.category_norm || t.category),
         item_name: t.category, qty: t.qty, txn_date: t.issue_date, asset_id: t.asset_id,
-        ref: t.vehicle, note: t.site, source_table: 'tyre_battery_issues', source_id: t.id });
+        ref: t.vehicle, note: t.site, source_table: 'tyre_battery_issues', source_id: t.id, store_id: t.store_id });
     }
 
     // A HANDOVER FROM THE TRACKER STILL KNOWS WHICH RECEIPT IT CAME OUT OF — through the MR
@@ -388,7 +467,7 @@ function rebuild(opts = {}) {
     for (const l of all(`SELECT m.mrn_no, ml.id, ml.description, ml.category,
                                 (SELECT g.id FROM grn g WHERE g.mrn_line_id = ml.id LIMIT 1) AS grn_id
                            FROM mrn_lines ml JOIN mrn m ON m.id = ml.mrn_id
-                          WHERE NULLIF(m.mrn_no,'') IS NOT NULL`)) {
+                          WHERE NULLIF(m.mrn_no,'') IS NOT NULL AND ${want('issues') ? 1 : 0}`)) {
       if (!mrnLinesByNo.has(l.mrn_no)) mrnLinesByNo.set(l.mrn_no, []);
       mrnLinesByNo.get(l.mrn_no).push(l);
     }
@@ -398,15 +477,17 @@ function rebuild(opts = {}) {
     // 6. Stores issues booked straight to a vehicle.
     for (const i of all(
       `SELECT i.id, i.description, i.qty, i.unit_price, i.issue_date, i.asset_id, i.job_id, i.store_item_id,
-              i.grn_id, i.mrn_no, COALESCE(i.voided,0) AS voided, si.category, si.name,
+              i.grn_id, i.mrn_no, COALESCE(i.voided,0) AS voided, si.category, si.name, i.store_id,
               g.description AS grn_desc, gml.category AS grn_category, gml.id AS grn_mrn_line_id,
               (SELECT sm.counts FROM stock_moves sm
-                WHERE sm.source_table = 'grn' AND sm.source_id = i.grn_id LIMIT 1) AS grn_counts
+                WHERE sm.source_table = 'grn' AND sm.source_id = i.grn_id LIMIT 1) AS grn_counts,
+              (SELECT sm.section || '|' || sm.item_key FROM stock_moves sm
+                WHERE sm.source_table = 'grn' AND sm.source_id = i.grn_id LIMIT 1) AS grn_shelf
          FROM issues i
          LEFT JOIN store_items si ON si.id = i.store_item_id
          LEFT JOIN grn g          ON g.id = i.grn_id
          LEFT JOIN mrn_lines gml  ON gml.id = g.mrn_line_id
-        WHERE COALESCE(i.qty,0) > 0`)) {
+        WHERE COALESCE(i.qty,0) > 0${idsIn('issues', 'i.id')}`)) {
       // An issue raised against a specific receipt mirrors that receipt: same section, same
       // key, and the same counts flag — a cut-over receipt was never added to the balance, so
       // taking it out must not subtract from one either.
@@ -414,6 +495,9 @@ function rebuild(opts = {}) {
       let name = (fromReceipt ? (i.grn_desc || i.description) : (i.name || i.description)) || '';
       let section = sectionOf(fromReceipt ? (i.grn_category || name) : (i.category || i.description));
       let key = itemKey(section, name);
+      // The very shelf the receipt went onto (stores plan, Part 3): a filter received as
+      // "Oil Filter (C-206)" is filed under C206, and handing it over must take it from there.
+      if (fromReceipt && i.grn_shelf) [section, key] = i.grn_shelf.split('|');
       // No GRN on the row, but an MR number that names one: file it under the line it came from.
       // Matched on the item alone, and only when exactly ONE line on that request is that item —
       // a request listing the same thing twice is not something to guess between.
@@ -431,7 +515,7 @@ function rebuild(opts = {}) {
       insert({ section, kind: 'out', item_key: key, item_name: name,
         qty: i.qty, unit_price: i.unit_price, txn_date: i.issue_date, asset_id: i.asset_id, job_id: i.job_id,
         store_item_id: i.store_item_id, grn_id: i.grn_id || null, mrn_line_id: i.grn_mrn_line_id || null,
-        source_table: 'issues', source_id: i.id,
+        source_table: 'issues', source_id: i.id, store_id: i.store_id,
         // A handover written down twice stays visible and stops counting the second time — the
         // free-hand row is the only place the recipient's name survives, so it is muted, never
         // deleted.
@@ -441,9 +525,61 @@ function rebuild(opts = {}) {
         // balance they were never counted into.
         counts: fromReceipt && i.grn_counts != null ? i.grn_counts : undefined });
     }
+
+    // 6b. RETURNS (Stage 6): parts brought back unused go back onto the shelf they left — the
+    // mirror of the issue's own movement written just above: same item, same store, same count.
+    for (const r of all(`SELECT r.id, r.qty, r.return_date, r.note, r.issue_id FROM issue_returns r WHERE 1${idsIn('issue_returns', 'r.id')}`)) {
+      const om = get("SELECT * FROM stock_moves WHERE source_table = 'issues' AND source_id = ? AND kind = 'out' LIMIT 1", r.issue_id);
+      if (!om) continue;
+      if (writeMove({ section: om.section, kind: 'in', item_key: om.item_key, item_name: om.item_name, qty: r.qty,
+        unit_price: om.unit_price, txn_date: r.return_date, asset_id: om.asset_id, job_id: om.job_id, mrn_line_id: om.mrn_line_id,
+        grn_id: om.grn_id, store_item_id: om.store_item_id, ref: 'Return', note: r.note, source_table: 'issue_returns',
+        source_id: r.id, store_id: om.store_id }, om.counts, mainStore)) bump(om.section, 'in');
+    }
+
+    // 7. TRANSFERS BETWEEN TWO STORES (Stage 4) — see transfers() above.
+    if (!only) transfers(null);
+
+    // 8. STOCK TAKES, store by store (Stage 4): the difference each count found.
+    for (const c of all(`SELECT * FROM store_counts WHERE delta <> 0${idsIn('store_counts', 'id')}`)) insert(countMove(c));
   });
 
   return rep;
+}
+
+// The source tables stock_moves is projected from, as sync() may name them.
+const SOURCES = ['grn', 'general_item_txns', 'stock_ledger', 'service_filters', 'filter_stock', 'tyre_battery_issues',
+  'issues', 'issue_returns', 'store_counts'];
+
+/**
+ * Bring the stock up to date with just-written source rows (stores plan, Part 3), in the same
+ * transaction as the write. `only` names the rows: { grn: [ids], service_filters: [ids], … }; a
+ * table named with no ids still drops movements whose source row has gone. Returns what changed
+ * on each shelf: [{ section, item_key, store_id, delta }] — the counted quantity, + in, − out.
+ * The stock rule (src/lib/stock_rule.js) reads that to refuse taking out what is not there.
+ */
+function sync(only) {
+  const tables = Object.keys(only || {});
+  if (!tables.length) return [];
+  for (const t of tables) if (!SOURCES.includes(t)) throw new Error('stock: unknown source ' + t);
+  const where = tables.map((t) => `(source_table = '${t}' AND (source_id IN (${[...only[t], -1].map((v) => Number(v) || 0).join(',')})
+                                     OR source_id NOT IN (SELECT id FROM ${t})))`).join(' OR ');
+  const sums = () => all(`SELECT section, item_key, store_id,
+                                 SUM(CASE WHEN counts = 0 THEN 0 WHEN kind IN ('in','opening','adjust') THEN qty ELSE -qty END) AS v
+                            FROM stock_moves WHERE ${where} GROUP BY section, item_key, store_id`);
+  return tx(() => {
+    const before = sums();
+    rebuild({ only });
+    const out = new Map();
+    const at = (r) => `${r.section}|${r.item_key}|${r.store_id}`;
+    for (const r of before) out.set(at(r), { section: r.section, item_key: r.item_key, store_id: r.store_id, delta: -r.v });
+    for (const r of sums()) {
+      const k = at(r);
+      if (out.has(k)) out.get(k).delta += r.v;
+      else out.set(k, { section: r.section, item_key: r.item_key, store_id: r.store_id, delta: r.v });
+    }
+    return [...out.values()].map((r) => ({ ...r, delta: n2(r.delta) })).filter((r) => r.delta);
+  });
 }
 
 // general_item_txns rows carry the store item's name in `name`.
@@ -453,38 +589,66 @@ function si_name(t) { return t.name || ''; }
 // Read side
 // ---------------------------------------------------------------------------
 
-/** Headline figures for a section: on order, received, issued, balance. */
-function summary(section) {
-  const onOrder = get(
-    `SELECT ROUND(COALESCE(SUM(ml.qty - COALESCE(ml.qty_received,0)),0),2) v, COUNT(*) c
-       FROM mrn_lines ml JOIN mrn m ON m.id = ml.mrn_id
-      WHERE COALESCE(ml.qty_received,0) < ml.qty AND COALESCE(m.approval_status,'') <> 'rejected'`);
+// Stage 4: every read takes a store. `store` = one store's shelf (transfers in and out of it
+// included); none = every store together, where a transfer between two stores is left out of the
+// received and issued figures (it is one store's issue and another's receipt, and cancels out).
+const storeWhere = (alias, store) => (store
+  ? { sql: ` AND ${alias}store_id = ?`, params: [store] }
+  : { sql: ` AND ${alias}source_table <> 'mtn_lines'`, params: [] });
+
+/** Headline figures for a section: received, issued, balance — in one store, or in all. */
+function summary(section, opts = {}) {
+  const st = storeWhere('', opts.store);
   const rows = all(
     `SELECT kind, ROUND(COALESCE(SUM(qty),0),2) v, COUNT(*) c
-       FROM stock_moves WHERE section = ? AND counts = 1 GROUP BY kind`, section);
+       FROM stock_moves WHERE section = ? AND counts = 1${st.sql} GROUP BY kind`, section, ...st.params);
   // History that predates the cut-over — shown, but deliberately outside the balance.
   const hist = get(
     `SELECT COUNT(*) c, ROUND(COALESCE(SUM(CASE WHEN kind='out' THEN qty ELSE 0 END),0),2) issued
-       FROM stock_moves WHERE section = ? AND counts = 0`, section);
+       FROM stock_moves WHERE section = ? AND counts = 0${st.sql}`, section, ...st.params);
   const by = {};
   for (const r of rows) by[r.kind] = r;
   const inQty = (by.in ? by.in.v : 0) + (by.opening ? by.opening.v : 0) + (by.adjust ? by.adjust.v : 0);
   const outQty = by.out ? by.out.v : 0;
   return {
     section,
+    store_id: opts.store || null,
     opening: openingRules()[section] || null,
     received: n2(inQty), received_lines: (by.in ? by.in.c : 0),
     issued: n2(outQty), issued_lines: (by.out ? by.out.c : 0),
     balance: n2(inQty - outQty),
-    items: get('SELECT COUNT(DISTINCT item_key) c FROM stock_moves WHERE section = ?', section).c,
+    items: get(`SELECT COUNT(DISTINCT item_key) c FROM stock_moves WHERE section = ?${opts.store ? ' AND store_id = ?' : ''}`,
+      section, ...(opts.store ? [opts.store] : [])).c,
     history_moves: hist.c, history_issued: hist.issued,
   };
 }
 
-/** Per-item position within a section. */
-function items(section, q, limit = 500) {
+/** What one item holds on the shelf: in one store, or in all. */
+function balanceOf(section, itemKey, store) {
+  return get(
+    `SELECT ROUND(COALESCE(SUM(CASE WHEN counts = 0 THEN 0 WHEN kind IN ('in','opening','adjust') THEN qty ELSE -qty END),0),2) v
+       FROM stock_moves WHERE section = ? AND item_key = ?${store ? ' AND store_id = ?' : ''}`,
+    section, itemKey, ...(store ? [store] : [])).v;
+}
+
+/**
+ * Per-item position within a section. opts.store: one store's shelf, with its reorder level
+ * (reorder_level) — and opts.low keeps only what is at or under it. With no store and opts.byStore,
+ * each item also says what every store holds (by_store).
+ */
+function items(section, q, limit = 500, opts = {}) {
   const like = q ? '%' + String(q).trim() + '%' : null;
-  return all(
+  const store = opts.store || null;
+  const st = storeWhere('sm.', store);
+  const match = (col) => (like ? `AND ${col} IN (
+              -- Pick which ITEMS match, then total ALL of each one's movements. Filtering the
+              -- movements instead would show a partial balance: several spellings share one row
+              -- now, so searching "HD-68" would total only the rows spelt that way (600 of 427).
+              SELECT item_key FROM stock_moves WHERE section = ? AND (item_name LIKE ? OR item_key LIKE ?)
+              UNION
+              SELECT item_key FROM stock_items WHERE section = ? AND (name LIKE ? OR code LIKE ?))` : '');
+  const matchParams = like ? [section, like, like, section, like, like] : [];
+  const rows = all(
     // Several spellings now share one row (a lubricant is keyed by its product), so MAX(item_name)
     // would label the shelf with whichever spelling sorted last — "Grease (to RA-3051)" for the
     // grease. Where the catalogue knows the item, its name is the one the workshop agreed on.
@@ -498,35 +662,90 @@ function items(section, q, limit = 500) {
             ROUND(COALESCE(SUM(CASE WHEN kind = 'out' THEN qty ELSE 0 END),0),2) AS issued_all_time,
             MAX(txn_date) AS last_move,
             SUM(CASE WHEN kind = 'out' THEN 1 ELSE 0 END) AS issue_count
+            ${store ? ', (SELECT r.level FROM store_reorder r WHERE r.store_id = ? AND r.section = sm.section AND r.item_key = sm.item_key) AS reorder_level' : ''}
        FROM stock_moves sm
        LEFT JOIN stock_items ci ON ci.section = sm.section AND ci.item_key = sm.item_key
-      WHERE sm.section = ? ${like ? `AND sm.item_key IN (
-              -- Pick which ITEMS match, then total ALL of each one's movements. Filtering the
-              -- movements instead would show a partial balance: several spellings share one row
-              -- now, so searching "HD-68" would total only the rows spelt that way (600 of 427).
-              SELECT item_key FROM stock_moves WHERE section = ? AND (item_name LIKE ? OR item_key LIKE ?)
-              UNION
-              SELECT item_key FROM stock_items WHERE section = ? AND (name LIKE ? OR code LIKE ?))` : ''}
+      WHERE sm.section = ?${st.sql} ${match('sm.item_key')}
       GROUP BY sm.item_key
+      ${store && opts.low ? 'HAVING reorder_level > 0 AND balance <= reorder_level' : ''}
       -- Stock on hand first; then, for a section that has just cut over (every balance 0),
       -- the items that actually move — most used, most recent — rather than an arbitrary order.
       ORDER BY balance DESC, issued_all_time DESC, last_move DESC
       LIMIT ${Number(limit) || 500}`,
-    ...(like ? [section, section, like, like, section, like, like] : [section]));
+    ...(store ? [store] : []), section, ...st.params, ...matchParams);
+
+  if (store) {
+    // An item the store keeps a level for but has never moved there: nothing on its shelf, so it
+    // is due for reorder.
+    const extra = all(
+      `SELECT r.item_key, COALESCE(ci.name, (SELECT sm.item_name FROM stock_moves sm WHERE sm.section = r.section AND sm.item_key = r.item_key LIMIT 1)) AS item_name,
+              0 AS received, 0 AS issued, 0 AS balance, 0 AS issued_all_time, NULL AS last_move, 0 AS issue_count, r.level AS reorder_level
+         FROM store_reorder r LEFT JOIN stock_items ci ON ci.section = r.section AND ci.item_key = r.item_key
+        WHERE r.store_id = ? AND r.section = ? ${match('r.item_key')}
+          AND NOT EXISTS (SELECT 1 FROM stock_moves sm WHERE sm.store_id = r.store_id AND sm.section = r.section AND sm.item_key = r.item_key)`,
+      store, section, ...matchParams);
+    rows.push(...extra);
+  }
+  if (rows.length) {
+    // When each item was last counted (in this store, or in any), and what it is worth (stores plan, Part 2).
+    const last = new Map(all(`SELECT item_key, MAX(count_date) d FROM store_counts WHERE section = ?${store ? ' AND store_id = ?' : ''} GROUP BY item_key`,
+      section, ...(store ? [store] : [])).map((r) => [r.item_key, r.d]));
+    for (const r of rows) r.last_count = last.get(r.item_key) || null;
+  }
+  priceRows(section, rows);
+  if (!store && opts.byStore && rows.length) {
+    const keys = rows.map((r) => r.item_key);
+    const per = new Map();
+    for (const b of all(
+      `SELECT sm.item_key, sm.store_id, w.code AS store_code,
+              ROUND(COALESCE(SUM(CASE WHEN counts = 0 THEN 0 WHEN kind IN ('in','opening','adjust') THEN qty ELSE -qty END),0),2) AS balance
+         FROM stock_moves sm LEFT JOIN workshops w ON w.id = sm.store_id
+        WHERE sm.section = ? AND sm.item_key IN (${keys.map(() => '?').join(',')})
+        GROUP BY sm.item_key, sm.store_id ORDER BY w.is_default DESC, w.code`, section, ...keys)) {
+      if (!per.has(b.item_key)) per.set(b.item_key, []);
+      per.get(b.item_key).push({ store_id: b.store_id, store_code: b.store_code, balance: b.balance });
+    }
+    for (const r of rows) r.by_store = per.get(r.item_key) || [];
+  }
+  return rows;
 }
 
-/** Every movement, newest first — the audit trail behind a section or one item. */
+/**
+ * What each item is worth: its last price paid (any store), else its catalogue price; the value of
+ * the stock is that price × what is on the shelf (nothing for a shelf at or under 0).
+ */
+function priceRows(section, rows) {
+  if (!rows.length) return;
+  const price = new Map();
+  for (const r of all("SELECT item_key, unit_price FROM stock_items WHERE section = ? AND unit_price > 0", section)) price.set(r.item_key, r.unit_price);
+  for (const r of all(`SELECT item_key, unit_price FROM stock_moves WHERE section = ? AND unit_price > 0 AND kind IN ('in','opening')
+                        ORDER BY txn_date, id`, section)) price.set(r.item_key, r.unit_price);
+  for (const r of rows) {
+    r.unit_price = price.has(r.item_key) ? n2(price.get(r.item_key)) : null;
+    r.value = r.unit_price != null && r.balance > 0 ? n2(r.balance * r.unit_price) : 0;
+  }
+}
+
+/** The value of what a section holds — in one store, or in all. */
+function valueOf(section, store) {
+  const rows = items(section, null, 100000, { store });
+  return { value: n2(rows.reduce((t, r) => t + r.value, 0)), unpriced: rows.filter((r) => r.balance > 0 && r.unit_price == null).length };
+}
+
+/** Every movement, newest first — the audit trail behind a section or one item (in one store, or all). */
 function moves(section, opts = {}) {
   const w = ['sm.section = ?'];
   const p = [section];
+  if (opts.store) { w.push('sm.store_id = ?'); p.push(opts.store); }
   if (opts.item_key) { w.push('sm.item_key = ?'); p.push(opts.item_key); }
   if (opts.kind) { w.push('sm.kind = ?'); p.push(opts.kind); }
   if (opts.q) { const l = '%' + String(opts.q).trim() + '%'; w.push('(sm.item_name LIKE ? OR sm.ref LIKE ? OR a.code LIKE ? OR a.registration LIKE ?)'); p.push(l, l, l, l); }
   return all(
-    `SELECT sm.*, a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec, j.job_no
+    `SELECT sm.*, a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec, j.job_no, sw.code AS store_code
        FROM stock_moves sm
        LEFT JOIN assets a ON a.id = sm.asset_id
        LEFT JOIN job_cards j ON j.id = sm.job_id
+       LEFT JOIN workshops sw ON sw.id = sm.store_id
       WHERE ${w.join(' AND ')}
       ORDER BY sm.txn_date DESC, sm.id DESC
       LIMIT ${Number(opts.limit) || 500}`, ...p);
@@ -594,24 +813,26 @@ function syncItems() {
 }
 
 /** Search issuable items — by code, name or supplier part number. */
-function searchItems(q, section, limit = 25) {
+function searchItems(q, section, limit = 25, store = null) {
   const t = String(q || '').trim();
   const like = '%' + t + '%';
   const where = ['si.active = 1'];
   const p = [];
   if (section && SECTIONS.includes(section)) { where.push('si.section = ?'); p.push(section); }
   if (t) { where.push('(si.code LIKE ? OR si.name LIKE ? OR si.part_no LIKE ?)'); p.push(like, like, like); }
+  // Stage 4: the balance is the one on the shelf the issue comes out of, when that is known.
+  const inStore = store ? ' AND sm.store_id = ?' : '';
   return all(
     `SELECT si.*,
             ROUND(COALESCE((SELECT SUM(CASE WHEN sm.counts = 0 THEN 0
                                             WHEN sm.kind IN ('in','opening','adjust') THEN sm.qty ELSE -sm.qty END)
                               FROM stock_moves sm
-                             WHERE sm.section = si.section AND sm.item_key = si.item_key), 0), 2) AS balance,
-            (SELECT MAX(sm.txn_date) FROM stock_moves sm WHERE sm.section = si.section AND sm.item_key = si.item_key) AS last_move
+                             WHERE sm.section = si.section AND sm.item_key = si.item_key${inStore}), 0), 2) AS balance,
+            (SELECT MAX(sm.txn_date) FROM stock_moves sm WHERE sm.section = si.section AND sm.item_key = si.item_key${inStore}) AS last_move
        FROM stock_items si
       WHERE ${where.join(' AND ')}
       ORDER BY (si.code = ?) DESC, balance DESC, si.name
-      LIMIT ${Number(limit) || 25}`, ...p, t.toUpperCase());
+      LIMIT ${Number(limit) || 25}`, ...(store ? [store, store] : []), ...p, t.toUpperCase());
 }
 
 /**
@@ -629,7 +850,7 @@ function searchItems(q, section, limit = 25) {
  * hiding stock that is physically on the shelf. It reads from `issues` rather than the ledger
  * so that rebuilding stock_moves cannot resurrect stock that has already been handed out.
  */
-function receivedLines({ assetId, jobId, mrn, q, limit = 200, includeDone = false, allowEmpty = false } = {}) {
+function receivedLines({ assetId, jobId, mrn, q, limit = 200, includeDone = false, allowEmpty = false, store = null } = {}) {
   const where = [];
   const p = [];
   if (assetId) { where.push('(m.asset_id = ? OR j.asset_id = ?)'); p.push(assetId, assetId); }
@@ -641,10 +862,12 @@ function receivedLines({ assetId, jobId, mrn, q, limit = 200, includeDone = fals
     p.push(like, like, like, like, like);
   }
   if (!where.length && !allowEmpty) return [];
+  // Stage 4: only what is on this store's shelf (the store that received it).
+  if (store) { where.push('g.store_id = ?'); p.push(store); }
 
   const rows = all(
     `SELECT g.id                                   AS grn_id,
-            g.grn_no, g.qty, g.unit_price, g.supplier, g.invoice_no,
+            g.grn_no, g.qty, g.unit_price, g.supplier, g.invoice_no, g.store_id,
             -- delivery_date alone. created_at is when the ROW was written, which for 3270 of
             -- these receipts is the import run — a fallback onto it would tell the storekeeper
             -- the part arrived on the day the system was loaded. See src/lib/received_date.js.
@@ -660,7 +883,8 @@ function receivedLines({ assetId, jobId, mrn, q, limit = 200, includeDone = fals
             a.code AS asset_code, a.registration AS asset_reg,
             COALESCE(jc.id, m.job_id, jp.job_id)    AS job_id,
             jc.job_no,
-            ROUND(COALESCE((SELECT SUM(i.qty) FROM issues i WHERE i.grn_id = g.id), 0), 2) AS issued
+            -- Stage 6: what came back unused (return notes) is on the shelf again.
+            ROUND((COALESCE((SELECT SUM(i.qty) FROM issues i WHERE i.grn_id = g.id), 0) - COALESCE((SELECT SUM(r.qty) FROM issue_returns r JOIN issues ir ON ir.id = r.issue_id WHERE ir.grn_id = g.id), 0)), 2) AS issued
        FROM grn g
        JOIN mrn_lines ml ON ml.id = g.mrn_line_id
        JOIN mrn m        ON m.id  = ml.mrn_id
@@ -670,7 +894,7 @@ function receivedLines({ assetId, jobId, mrn, q, limit = 200, includeDone = fals
        LEFT JOIN assets a     ON a.id = COALESCE(m.asset_id, j.asset_id)
       ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
       GROUP BY g.id
-      ${includeDone ? '' : 'HAVING COALESCE(g.qty,0) - COALESCE((SELECT SUM(i2.qty) FROM issues i2 WHERE i2.grn_id = g.id), 0) > 0.001'}
+      ${includeDone ? '' : 'HAVING COALESCE(g.qty,0) - (COALESCE((SELECT SUM(i2.qty) FROM issues i2 WHERE i2.grn_id = g.id), 0) - COALESCE((SELECT SUM(r2.qty) FROM issue_returns r2 JOIN issues ir2 ON ir2.id = r2.issue_id WHERE ir2.grn_id = g.id), 0)) > 0.001'}
       ORDER BY date(NULLIF(g.delivery_date, '')) IS NULL, date(NULLIF(g.delivery_date, '')) DESC, g.id DESC
       LIMIT ${Number(limit) || 200}`, ...p);
 
@@ -689,7 +913,7 @@ function receivedLines({ assetId, jobId, mrn, q, limit = 200, includeDone = fals
 /** One received line by its GRN id, with the same derived fields. */
 function receivedLine(grnId) {
   const r = get(
-    `SELECT g.id AS grn_id, g.grn_no, g.qty, g.unit_price,
+    `SELECT g.id AS grn_id, g.grn_no, g.qty, g.unit_price, g.store_id,
             COALESCE(g.description, ml.description) AS description,
             -- What is actually on the box, when a cross-referenced part was supplied.
             g.received_part_no,
@@ -703,7 +927,9 @@ function receivedLine(grnId) {
   if (!r) return null;
   r.section = sectionOf(r.category);
   r.item_key = itemKey(r.section, r.description);
-  r.issued = get('SELECT ROUND(COALESCE(SUM(qty),0),2) v FROM issues WHERE grn_id = ?', grnId).v;
+  r.issued = get(`SELECT ROUND(COALESCE(SUM(qty),0) - COALESCE((SELECT SUM(r.qty) FROM issue_returns r JOIN issues ir ON ir.id = r.issue_id
+                                                          WHERE ir.grn_id = ?), 0), 2) v
+                    FROM issues WHERE grn_id = ?`, grnId, grnId).v;
   r.remaining = Math.round((Number(r.qty || 0) - Number(r.issued || 0)) * 100) / 100;
   // Whether the receipt itself counts toward the section balance. Filters, batteries, tyres and
   // oil open from a cut-over, so their older receipts are history (counts = 0) and were never
@@ -716,4 +942,4 @@ function receivedLine(grnId) {
 }
 
 module.exports = { filterParts, filterKey, SECTIONS, PREFIX, sectionOf, itemKey, rebuild, summary, items, moves, openingRules,
-  nextCode, syncItems, searchItems, receivedLines, receivedLine };
+  nextCode, syncItems, searchItems, receivedLines, receivedLine, balanceOf, recordCount, valueOf, sync, SOURCES };

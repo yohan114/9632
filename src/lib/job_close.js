@@ -1,7 +1,7 @@
 'use strict';
 
 // ===========================================================================
-// Partial close, full close and reopen requests (docs/WORKSHOPONE_PLAN.md §3.2, Stage W2).
+// Partial close, full close and reopen requests (docs/WORKSHOPONE_PLAN.md §A.2, Stage W2).
 //
 //   IN_PROGRESS / WORK_COMPLETE ──"Partly close"──► PARTIALLY_CLOSED ──"Close fully"──► CLOSED
 //                                                         │
@@ -37,6 +37,33 @@ function setEnabled(on) {
 function workRecorded(job) {
   if (job.type === 'service') return job.flat_labour != null;
   return !!get('SELECT 1 x FROM job_daily_work WHERE job_id = ? LIMIT 1', job.id);
+}
+
+// Full close: the closure check has to pass. closeCheck says whether the Close button would let this
+// card through; closeGate turns a "no" into the 409 body. The Ready to close list uses closeCheck, so
+// the list and the button always agree (job cards plan, Part 3).
+// Switched off (the flow before W2): only a card's FIRST close is checked — a card that was closed
+// once already cleared it, or was closed by import / close-on-date, which never checked. Switched
+// on, nothing needs that excuse any more (an unfinished card can be partly closed), so every live
+// card is checked, including "work done is recorded"; only reopened imported history is excused.
+function closeCheck(job) {
+  const readiness = costing.closureReadiness(job.id);
+  if (readiness.ready) return { ok: true, readiness };
+  const wasReopened = !!get('SELECT 1 v FROM job_reopens WHERE job_id = ? LIMIT 1', job.id);
+  return { ok: jobstate.partialCloseEnabled() ? wasReopened && !!job.is_historical : wasReopened, readiness };
+}
+
+/** null (may close) or the 409 body. */
+function closeGate(job) {
+  const { ok, readiness } = closeCheck(job);
+  if (ok) return null;
+  if (!jobstate.partialCloseEnabled()) return { error: 'Job is not fully priced — cannot close', missing: readiness.missing };
+  const n = readiness.missing.length;
+  return {
+    error: `Not ready to close fully — ${n} thing${n === 1 ? '' : 's'} still missing.`
+      + (job.status === jobstate.PARTIAL ? '' : ' Partly close it instead, and close it fully once they are done.'),
+    missing: readiness.missing,
+  };
 }
 
 /** Put the vehicle back in service if no other card holds it. */
@@ -108,10 +135,11 @@ function partialClose(job, { user, note = '', date = null, openNew = false, newJ
     if (openNew) {
       const desc = String(newJob.description || '').trim() || `Continued from ${job.job_no}${job.description ? ': ' + job.description : ''}`;
       newJobId = run(
-        `INSERT INTO job_cards (job_no, asset_id, project_id, site, type, description, status, requested_by, requested_by_user, continues_job_id)
-         VALUES (?, ?, ?, ?, ?, ?, 'REQUESTED', ?, ?, ?)`,
+        // Same workshop as the card it continues (Stage 2).
+        `INSERT INTO job_cards (job_no, asset_id, project_id, site, type, description, status, requested_by, requested_by_user, continues_job_id, workshop_id)
+         VALUES (?, ?, ?, ?, ?, ?, 'REQUESTED', ?, ?, ?, ?)`,
         jobno.nextJobNo(newType), job.asset_id, job.project_id || null, job.site || null, newType, desc.slice(0, 500),
-        (user && (user.fullName || user.username)) || null, user ? user.id : null, job.id).lastInsertRowid;
+        (user && (user.fullName || user.username)) || null, user ? user.id : null, job.id, job.workshop_id || null).lastInsertRowid;
     }
   });
   return { job: get('SELECT * FROM job_cards WHERE id = ?', job.id), newJobId, missing: readiness.missing };
@@ -201,17 +229,23 @@ function decideReopen(requestId, { user, approve, note, isAdmin = false }) {
 }
 
 /** Requests waiting for a decision — for "Pending your approval". */
-function pendingRequests({ excludeRequester = null } = {}) {
+function pendingRequests({ excludeRequester = null, workshopId = null } = {}) {
+  // workshopId: only that workshop's cards (Stage 3 scoping), else every workshop.
+  const params = [];
+  const inWs = require('./jobstate').workshopIn('j.workshop_id', workshopId);
+  if (excludeRequester) params.push(excludeRequester);
+  params.push(...inWs.params);
   return all(
     `SELECT r.id, r.job_id, r.reason, r.requested_at, r.requested_by, u.username AS requested_by_name,
-            j.job_no, j.status AS job_status, j.description,
+            j.job_no, j.status AS job_status, j.description, j.workshop_id,
             a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec
        FROM job_reopen_requests r
        JOIN job_cards j ON j.id = r.job_id
        LEFT JOIN users u ON u.id = r.requested_by
        LEFT JOIN assets a ON a.id = j.asset_id
       WHERE r.status = 'pending' ${excludeRequester ? 'AND COALESCE(r.requested_by, 0) <> ?' : ''}
-      ORDER BY r.id DESC LIMIT 50`, ...(excludeRequester ? [excludeRequester] : []));
+        ${inWs.sql}
+      ORDER BY r.id DESC LIMIT 50`, ...params);
 }
 
 function requestsFor(jobId) {
@@ -224,6 +258,6 @@ function requestsFor(jobId) {
 }
 
 module.exports = {
-  setEnabled, workRecorded, releaseVehicle, partialClose, applyReopen, reopenBlocker,
+  setEnabled, workRecorded, closeCheck, closeGate, releaseVehicle, partialClose, applyReopen, reopenBlocker,
   pendingFor, requestReopen, decideReopen, pendingRequests, requestsFor, today,
 };
