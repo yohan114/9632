@@ -52,6 +52,7 @@ const LINE_SQL = `
          ROUND(COALESCE(ml.qty_received, 0), 2) AS received,
          COALESCE(ml.purchase_source, m.purchase_source) AS source,
          ml.purchased_at, ml.supplier AS bought_from,
+         ml.buying_priority, ml.priority_note, ml.priority_updated_at, ml.priority_updated_by,
          a.id AS asset_id, a.code AS asset_code, a.registration AS asset_reg,
          j.id AS job_id, j.job_no,
          ${KIND_SQL} AS kind,

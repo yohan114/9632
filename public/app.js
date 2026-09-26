@@ -3676,7 +3676,7 @@ async function jobDetail(c, id) {
           <td>${canDo('jobs.parts') ? `<button class="sm" data-price="${p.id}">Price</button>${isPartial ? '' : ` <button class="sm" data-del-part="${p.id}" title="Take off this job — the item goes back to unassigned parts, it is not deleted">✕</button>`}` : ''}</td></tr>`))}
     </div>
     ${j.mrnItems && j.mrnItems.length ? `<div class="card section"><h3>MRN Items <span class="muted">— requested materials (${j.mrnItems.length})</span></h3>
-      ${tableWrap([{ label: 'MRN No' }, { label: 'Date' }, { label: 'Item' }, { label: 'Category' }, { label: 'Qty Req', num: true }, { label: 'Qty Recd', num: true }, { label: 'Shelf Status' }, { label: 'Action' }],
+      ${tableWrap([{ label: 'Priority' }, { label: 'MRN No' }, { label: 'Date' }, { label: 'Item & Urgency Note' }, { label: 'Category' }, { label: 'Qty Req', num: true }, { label: 'Qty Recd', num: true }, { label: 'Shelf Status' }, { label: 'Action' }],
         j.mrnItems.map((m) => {
           const avail = Number(m.remaining_in_store) || 0;
           const recd = Number(m.qty_received) || 0;
@@ -3687,23 +3687,28 @@ async function jobDetail(c, id) {
           else if (recd > 0) statusBadgeHtml = `<span class="badge blue">Partial (${num(recd)}/${num(req)})</span>`;
           else statusBadgeHtml = `<span class="pipe-badge pend">Awaiting delivery</span>`;
 
-          const actBtn = (avail > 0 && !isClosed && canDo('stores.stock_issue'))
-            ? `<button class="sm primary issue-mrn-btn" data-mrn-item='${esc(JSON.stringify({
+          const btns = [];
+          if (avail > 0 && !isClosed && canDo('stores.stock_issue')) {
+            btns.push(`<button class="sm primary issue-mrn-btn" data-mrn-item='${esc(JSON.stringify({
               job_id: job.id, job_no: job.job_no, asset_id: job.asset_id,
               grn_id: m.grn_id, mrn_no: m.mrn_no, grn_no: m.grn_no,
               description: m.description, remaining: avail, unit_price: m.unit_price
-            }))}'>⚡ Issue</button>`
-            : '—';
+            }))}'>⚡ Issue</button>`);
+          }
+          if (!isClosed && recd < req) {
+            btns.push(`<button class="sm" data-jc-prio="${m.mrn_line_id}" data-prio-val="${esc(m.buying_priority || 'P3_ROUTINE')}" data-prio-note="${esc(m.priority_note || '')}" title="Adjust daily workshop priority">⚡ Urgency</button>`);
+          }
 
           return `<tr>
+            <td><span style="cursor:pointer" data-jc-prio="${m.mrn_line_id}" data-prio-val="${esc(m.buying_priority || 'P3_ROUTINE')}" data-prio-note="${esc(m.priority_note || '')}">${puPrioBadge(m.buying_priority, m.priority_note)}</span></td>
             <td><a href="#/stores?tab=mrn&id=${m.mrn_id}">${esc(m.mrn_no)}</a></td>
             <td>${esc((m.req_date || '').slice(0, 10))}</td>
-            <td>${esc(m.description || '')}</td>
+            <td><b>${esc(m.description || '')}</b>${m.priority_note ? `<div style="font-size:11px;color:var(--amber);margin-top:2px"><b>Urgency Note:</b> ${esc(m.priority_note)}</div>` : ''}</td>
             <td>${esc(m.category || '')}</td>
             <td class="num">${num(m.qty)}</td>
             <td class="num">${num(m.qty_received)}</td>
             <td>${statusBadgeHtml}</td>
-            <td>${actBtn}</td></tr>`;
+            <td><div style="display:flex;gap:4px;flex-wrap:wrap">${btns.length ? btns.join(' ') : '—'}</div></td></tr>`;
         }), { scroll: true })}</div>` : ''}
     ${j.oilIssues.length ? `<div class="card section"><h3>Oil / Lubricant Issued</h3>${tableWrap([{ label: 'Product' }, { label: 'Qty', num: true }, { label: 'Unit Price', num: true }], j.oilIssues.map((o) => `<tr><td>${esc(o.product_name)}</td><td class="num">${num(Math.abs(o.qty))} ${esc(o.unit)}</td><td class="num">${money(o.unit_price)}</td></tr>`))}</div>` : ''}
     ${j.generalIssues && j.generalIssues.length ? `<div class="card section"><h3>General Items Issued <span class="muted">(${j.generalIssues.length})</span></h3>
@@ -3730,6 +3735,9 @@ async function jobDetail(c, id) {
     catch (e) { toast(e.message, 'err'); }
   };
   if (qs('#editjob')) qs('#editjob').onclick = () => editJobModal(job, render);
+  qsa('[data-jc-prio]', c).forEach((b) => {
+    b.onclick = () => adjustPriorityModal(b.dataset.jcPrio, b.dataset.prioVal, b.dataset.prioNote, render);
+  });
   // Stage 6: field work.
   if (qs('#fldmark')) qs('#fldmark').onclick = () => fieldModal(job.id, { field: false }, render);
   if (qs('#fldedit')) qs('#fldedit').onclick = () => fieldModal(job.id, fld, render);
@@ -4825,6 +4833,9 @@ async function storesLines(body, sp) {
       const approved = r.road[1].state === 'done';
       if (live && canRx && approved && r.received < r.qty - 0.001) b.push(`<button class="sm" data-rx="${r.id}">📥 Receive</button>`);
       if (canPrice && r.price_grn) b.push(`<button class="sm" data-price="${r.id}">💲 Price</button>`);
+      if (live && approved && r.received < r.qty - 0.001) {
+        b.push(`<button class="sm" data-fl-prio="${r.id}" data-prio-val="${esc(r.buying_priority || 'P3_ROUTINE')}" data-prio-note="${esc(r.priority_note || '')}" title="Adjust daily workshop priority">⚡ Urgency</button>`);
+      }
       if (live && r.on_shelf > 0) {
         if (tb(r)) b.push('<a class="btn sm" href="#/tbrequests" title="Tyres and batteries are fitted from the Tyre &amp; Battery page">⚡ Issue</a>');
         else if (canIssue && r.shelf) b.push(`<button class="sm primary" data-iss="${r.id}">⚡ Issue</button>`);
@@ -4834,11 +4845,13 @@ async function storesLines(body, sp) {
     };
     const byId = new Map(rows.map((r) => [String(r.id), r]));
     qs('#fltable', body).innerHTML = rows.length ? tableWrap(
-      [{ label: 'Request' }, { label: 'Item', cls: 'desc-col' }, { label: 'Progress' }, { label: '' }],
+      [{ label: 'Request' }, { label: 'Item & Urgency', cls: 'desc-col' }, { label: 'Progress' }, { label: '' }],
       rows.map((r) => `<tr>
         <td><a href="#/stores?tab=mrn&id=${r.mrn_id}"><b>${esc(r.mrn_no || '')}</b></a> <span class="muted" style="font-size:11px">${esc(String(r.req_date || '').slice(0, 10))}${wsMulti() && r.workshop_code ? ' · ' + esc(r.workshop_code) : ''}</span>
           <br>${r.asset_reg || r.asset_code ? `<span class="stamp">${esc(r.asset_reg || r.asset_code)}</span>` : (r.request_type === 'general' ? '<span class="muted" style="font-size:12px">Store stock</span>' : '')}${r.job_no ? ` <a href="#/jobs/${r.job_id}" style="font-size:11px">${esc(r.job_no)}</a>` : ''}</td>
         <td class="desc-col">${esc(r.description || '')} <span class="badge">${esc(FLOW_KIND_LABEL[r.kind] || r.kind)}</span>
+          ${r.buying_priority ? ` <span class="badge sm ${r.buying_priority === 'P1_CRITICAL' ? 'red' : (r.buying_priority === 'P2_URGENT' ? 'amber' : '')}" style="cursor:pointer" data-fl-prio="${r.id}" data-prio-val="${esc(r.buying_priority)}" data-prio-note="${esc(r.priority_note || '')}" title="${esc(r.priority_note || 'Click to adjust priority')}">${esc(r.buying_priority === 'P1_CRITICAL' ? '🚨 P1 Breakdown' : (r.buying_priority === 'P2_URGENT' ? '⚡ P2 Urgent' : (r.buying_priority === 'P4_LOW' ? 'P4 Stock' : 'P3 Routine')))}</span>` : ''}
+          ${r.priority_note ? `<div style="font-size:11px;color:var(--amber);margin-top:2px"><b>Urgency Note:</b> ${esc(r.priority_note)}</div>` : ''}
           <br><span class="muted" style="font-size:12px">received ${num(r.received)} of ${num(r.qty)}${r.issued > 0 ? ` · issued ${num(r.issued)}` : ''}</span>${r.unpriced ? ` <span class="badge amber">${r.unpriced} unpriced</span>` : ''}</td>
         <td>${roadBar(r)}<span class="muted" style="font-size:11px">${esc(FLOW_STEP_LABEL[r.step] || r.step)}</span></td>
         <td><div style="display:flex;flex-wrap:wrap;gap:4px;justify-content:flex-end">${actions(r)}</div></td></tr>`),
@@ -4847,6 +4860,9 @@ async function storesLines(body, sp) {
       : '<div class="card"><p class="muted">Nothing here.</p></div>';
     qsa('[data-rx]', body).forEach((b) => { b.onclick = () => flowReceiveModal(byId.get(b.dataset.rx), load); });
     qsa('[data-price]', body).forEach((b) => { b.onclick = () => grnPriceModal(byId.get(b.dataset.price).price_grn, load); });
+    qsa('[data-fl-prio]', body).forEach((b) => {
+      b.onclick = () => adjustPriorityModal(b.dataset.flPrio, b.dataset.prioVal, b.dataset.prioNote, load);
+    });
     qsa('[data-iss]', body).forEach((b) => {
       b.onclick = () => {
         const r = byId.get(b.dataset.iss);
@@ -5156,7 +5172,8 @@ async function mrnDetail(body, id) {
   const canMrnEdit = canDo('stores.mrn.edit');
   const canGrnPrice = canDo('stores.grn.edit');
   const canGrnIssue = canDo('stores.stock_issue');
-  const lineCol = canRx || canMrnEdit;          // the action column on the item lines
+  const canPrio = canDo('purchasing.priority_edit') || canDo('stores.mrn.edit') || (ME && ME.roles && (ME.roles.includes('workshop') || ME.roles.includes('manager') || ME.roles.includes('operational_manager')));
+  const lineCol = canRx || canMrnEdit || canPrio; // the action column on the item lines
   const grnCol = canGrnPrice || canGrnIssue;    // the action column on the received records
   const astatus0 = m.approval_status || 'requested';
   const canEditLines = canMrnEdit && astatus0 !== 'approved' && astatus0 !== 'rejected'
@@ -5169,17 +5186,20 @@ async function mrnDetail(body, id) {
         : '<span class="badge green">✓ Received</span>';
     return `<tr>
       <td>${esc(l.description || '')}${l.added_after_approval
-        ? ` <span class="badge red" title="${esc('Added after this request was approved, by ' + (l.added_by || 'an admin') + (l.added_at ? ' on ' + l.added_at : '') + (l.added_reason ? ' — ' + l.added_reason : ''))}">added after approval</span>` : ''}</td>
+        ? ` <span class="badge red" title="${esc('Added after this request was approved, by ' + (l.added_by || 'an admin') + (l.added_at ? ' on ' + l.added_at : '') + (l.added_reason ? ' — ' + l.added_reason : ''))}">added after approval</span>` : ''}
+        ${l.buying_priority ? `<br><span class="badge sm ${l.buying_priority === 'P1_CRITICAL' ? 'red' : (l.buying_priority === 'P2_URGENT' ? 'amber' : '')}" style="cursor:pointer" data-ws-prio="${l.id}" data-prio-val="${esc(l.buying_priority)}" data-prio-note="${esc(l.priority_note || '')}" title="${esc(l.priority_note || 'Click to adjust priority')}">${esc(l.buying_priority === 'P1_CRITICAL' ? '🚨 P1 Breakdown' : (l.buying_priority === 'P2_URGENT' ? '⚡ P2 Urgent' : (l.buying_priority === 'P4_LOW' ? 'P4 Stock' : 'P3 Routine')))}</span>` : ''}
+        ${l.priority_note ? `<div style="font-size:11px;color:var(--amber);margin-top:2px"><b>Urgency Note:</b> ${esc(l.priority_note)}</div>` : ''}</td>
       <td>${esc(l.category || '')}</td>
       <td class="num">${num(l.qty)} ${esc(l.unit || '')}</td>
       <td class="num">${num(l.qty_received)}</td>
       <td style="white-space:nowrap">${receivedDate(l)}</td>
       <td class="num">${remaining > 0 ? `<span class="badge amber">${num(remaining)}</span>` : '<span class="badge green">0</span>'}</td>
       <td>${status}</td>
-      ${lineCol ? `<td class="num" style="white-space:nowrap">${remaining > 0 ? (canRx ? `<button class="sm primary" data-rx="${l.id}" data-desc="${esc(l.description || '')}" data-rem="${remaining}">Receive</button>` : '') : '✓'}${
+      ${lineCol ? `<td class="num" style="white-space:nowrap">${remaining > 0 ? (canRx ? `<button class="sm primary" data-rx="${l.id}" data-desc="${esc(l.description || '')}" data-rem="${remaining}">Receive</button> ` : '') : '✓ '}${
+        canPrio && remaining > 0 ? `<button class="sm" data-ws-prio="${l.id}" data-prio-val="${esc(l.buying_priority || 'P3_ROUTINE')}" data-prio-note="${esc(l.priority_note || '')}" title="Adjust Workshop Buying Urgency">⚡ Urgency</button> ` : ''}${
         // An item can be corrected until approval; one already part-received can only have its
         // quantity raised, and cannot be removed at all.
-        canEditLines ? ` <button class="sm" data-ledit="${l.id}">✎</button>${rec > 0 ? '' : ` <button class="sm danger" data-ldel="${l.id}" data-desc="${esc(l.description || '')}">✕</button>`}` : ''}</td>` : ''}</tr>`;
+        canEditLines ? `<button class="sm" data-ledit="${l.id}">✎</button>${rec > 0 ? '' : ` <button class="sm danger" data-ldel="${l.id}" data-desc="${esc(l.description || '')}">✕</button>`}` : ''}</td>` : ''}</tr>`;
   });
   const grnRows = d.grns.map((g) => `<tr>
     <td>${esc(g.grn_no || '—')}</td>
@@ -5284,6 +5304,9 @@ async function mrnDetail(body, id) {
       try { told(await api('/stores/mrn/line/' + b.dataset.ldel, { method: 'DELETE' })); reload(); }
       catch (e) { toast(e.message, 'err'); }
     };
+  });
+  qsa('[data-ws-prio]', body).forEach((b) => {
+    b.onclick = () => adjustPriorityModal(b.dataset.wsPrio, b.dataset.prioVal, b.dataset.prioNote, reload);
   });
 
   if (qs('#mrntrace')) qs('#mrntrace').onclick = () => pipelineTraceModal({ mrn_id: m.id });
@@ -8083,108 +8106,318 @@ const tbBadge = (s) => {
   return '<span class="badge ' + (m[s] || '') + '">' + esc(s || 'requested') + '</span>';
 };
 
-// ---- Purchasing -----------------------------------------------------------
-// Two officers buy what the workshop asked for: one on the Head Office account, one locally. Each
-// sees their own channel only — the server decides which from their role, so this screen never has
-// to know, and cannot be talked into showing the other list.
+// ---- Purchasing & Procurement Flow -----------------------------------------
+// Follows the Stores and Job Cards flow pattern (Monitor, Queues, Road).
+// Workshop supervisors modify priority day-to-day (P1 Breakdown, P2 Urgent, P3 Routine, P4 Stock).
+// Both Head Office and Local Purchase officers can reassign items bilaterally.
+
+var PU_PRIO_OPTS = [
+  ['P1_CRITICAL', '🚨 P1 - Critical / Vehicle Down (Immediate dispatch)'],
+  ['P2_URGENT', '⚡ P2 - Urgent / Operational (< 48h deadline)'],
+  ['P3_ROUTINE', '🔧 P3 - Routine Maintenance (In workshop)'],
+  ['P4_LOW', '📦 P4 - Low Priority / Shelf Stock Buffer'],
+];
+
+function puPrioBadge(p, note) {
+  if (p === 'P1_CRITICAL') return `<span class="badge red" style="font-weight:700" title="${esc(note || 'P1 Critical / Vehicle Down')}">🚨 P1 Breakdown</span>`;
+  if (p === 'P2_URGENT') return `<span class="badge amber" style="font-weight:600" title="${esc(note || 'P2 Urgent / <48h')}">⚡ P2 Urgent</span>`;
+  if (p === 'P4_LOW') return `<span class="badge muted" title="${esc(note || 'P4 Stock Buffer')}">P4 Stock</span>`;
+  return `<span class="badge" title="${esc(note || 'P3 Routine Repair')}">P3 Routine</span>`;
+}
+
 routes.purchasing = async (c) => {
   const sp = new URLSearchParams(location.hash.split('?')[1] || '');
-  const tab = ['to_buy', 'unassigned', 'bought'].includes(sp.get('tab')) ? sp.get('tab') : 'to_buy';
-  const go = (t) => `location.hash='#/purchasing?tab=${t}'`;
+  const tab = sp.get('tab') || 'monitor';
 
-  c.innerHTML = pageHeader('Purchasing',
-    'What has been approved and still has to be bought. Tick it off with the invoice once it is.') + `
-    <div class="toolbar" style="margin:0 0 10px 0">
-      <span id="pu-tabs"></span>
-      <div class="spacer"></div>
-      <input id="pu-q" type="search" placeholder="Item, request no, vehicle, invoice…" style="max-width:260px">
+  c.innerHTML = pageHeader('Procurement &amp; Purchasing',
+    'What has been approved and needs to be bought. Workshop urgency ranks priority; both Head Office and Local buyers can reassign channels.') + `
+    <div class="tabs" style="margin:0 0 12px 0">
+      <button class="${tab === 'monitor' ? 'active' : ''}" onclick="location.hash='#/purchasing?tab=monitor'">📊 Monitor Cockpit</button>
+      <button class="${tab !== 'monitor' ? 'active' : ''}" onclick="location.hash='#/purchasing?tab=to_buy'">📋 Work Queues</button>
     </div>
-    <div id="pu-body" class="muted">Loading…</div>`;
+    <div id="pu-content"></div>`;
 
-  const counts = await api('/purchasing/counts').catch(() => ({ to_buy: 0, unassigned: 0, bought: 0 }));
-  qs('#pu-tabs', c).innerHTML = [
-    ['to_buy', 'To buy', counts.to_buy],
-    ['unassigned', 'Not yet assigned', counts.unassigned],
-    ['bought', 'Bought', counts.bought],
-  ].map(([t, l, n]) => `<button class="sm ${t === tab ? 'primary' : ''}" onclick="${go(t)}">${l}${n ? ` (${n})` : ''}</button>`).join(' ');
+  const body = qs('#pu-content', c);
+  if (tab === 'monitor') return purchasingMonitor(body);
+  return purchasingQueue(body, sp);
+};
+
+async function purchasingMonitor(body) {
+  let m;
+  try { m = await api('/purchasing/flow/monitor'); }
+  catch (e) { body.innerHTML = `<div class="card err">${esc(e.message)}</div>`; return; }
+
+  const p = m.pipeline;
+  const u = m.urgency;
+  const w = m.watch;
+  const card = (n, label, href, tone, note) => `<a class="card stat" href="${href}" style="text-decoration:none">
+    <span class="n"${tone && n ? ` style="color:var(--${tone})"` : ''}>${n}</span><span class="l">${esc(label)}</span>${note ? `<span class="muted" style="font-size:11px">${esc(note)}</span>` : ''}</a>`;
+
+  const at = (tab, extra = '') => `#/purchasing?tab=${tab}${extra}`;
+
+  body.innerHTML = `
+    <p class="muted" style="margin-top:0">Procurement &amp; Purchasing Pipeline Cockpit. Click a card to view filtered work items.</p>
+    
+    <h3 style="margin:10px 0 6px">🚨 Workshop Urgency Watch</h3>
+    <div class="grid">
+      ${card(u.p1_critical, 'P1 Breakdown (Vehicle Down)', at('urgent', '&priority=P1_CRITICAL'), 'red', 'Immediate sourcing required')}
+      ${card(u.p2_urgent, 'P2 Urgent (< 48h)', at('urgent', '&priority=P2_URGENT'), 'amber', 'Operational deadline')}
+      ${card(u.p3_routine, 'P3 Routine Repair', at('to_buy', '&priority=P3_ROUTINE'), '', 'Normal workshop repair backlog')}
+      ${card(u.p4_low, 'P4 Stock Buffer', at('to_buy', '&priority=P4_LOW'), 'muted', 'Non-critical / replenish')}
+    </div>
+
+    <h3 style="margin:14px 0 6px">📦 Purchasing Pipeline Road</h3>
+    <div class="grid">
+      ${card(p.unassigned, 'Not Yet Assigned', at('unassigned'), 'amber', 'Requires HO or Local channel')}
+      ${card(p.to_buy_ho, 'To Buy — Head Office', at('to_buy', '&channel=head_office'), 'blue', 'Central purchasing queue')}
+      ${card(p.to_buy_local, 'To Buy — Local Purchase', at('to_buy', '&channel=local_purchase'), 'green', 'Local workshop buying queue')}
+      ${card(p.ordered, 'On Order / In Transit', at('ordered'), '', 'Awaiting store delivery & GRN')}
+    </div>
+
+    <h3 style="margin:14px 0 6px">🔍 Delivery &amp; Price Quality Watch</h3>
+    <div class="grid">
+      ${card(w.overdue_needed, 'Overdue Needed Date', at('to_buy'), 'red', 'Needed date has passed')}
+      ${card(w.unpriced, 'Unpriced Deliveries', '#/stores?tab=flow&step=unpriced', 'amber', 'GRN received without price')}
+      ${card(w.price_discrepancies, 'Price Discrepancies', at('bought'), 'red', 'Invoice vs GRN variance')}
+      ${card(p.bought_total, 'Total Purchases Recorded', at('bought'), '', 'Invoice photos & history')}
+    </div>`;
+}
+
+async function purchasingQueue(body, sp) {
+  const cur = {
+    tab: ['to_buy', 'urgent', 'unassigned', 'ordered', 'bought'].includes(sp.get('tab')) ? sp.get('tab') : 'to_buy',
+    q: sp.get('q') || '',
+    channel: sp.get('channel') || '',
+    priority: sp.get('priority') || '',
+  };
+
+  const counts = await api('/purchasing/counts').catch(() => ({
+    to_buy: 0, urgent: 0, unassigned: 0, ordered: 0, bought: 0
+  }));
+
+  const tabs = [
+    ['to_buy', 'To Buy', counts.to_buy],
+    ['urgent', '⚡ Workshop Urgency', counts.urgent],
+    ['unassigned', 'Not Assigned', counts.unassigned],
+    ['ordered', 'On Order / In Transit', counts.ordered],
+    ['bought', 'Bought History', counts.bought],
+  ];
+
+  const qstr = (overrides = {}) => {
+    const p = new URLSearchParams({ ...cur, ...overrides });
+    if (!p.get('channel')) p.delete('channel');
+    if (!p.get('priority')) p.delete('priority');
+    if (!p.get('q')) p.delete('q');
+    return p.toString();
+  };
+
+  body.innerHTML = `
+    <div class="toolbar" style="margin:0 0 10px 0;flex-wrap:wrap;gap:8px">
+      <input id="pu-q" type="search" placeholder="Item, request no, vehicle, supplier, note…" value="${esc(cur.q)}" style="max-width:260px">
+      <select id="pu-chan" style="max-width:160px">
+        <option value="">All Channels</option>
+        <option value="head_office" ${cur.channel === 'head_office' ? 'selected' : ''}>Head Office</option>
+        <option value="local_purchase" ${cur.channel === 'local_purchase' ? 'selected' : ''}>Local Purchase</option>
+      </select>
+      <select id="pu-prio" style="max-width:170px">
+        <option value="">All Priorities</option>
+        <option value="P1_CRITICAL" ${cur.priority === 'P1_CRITICAL' ? 'selected' : ''}>🚨 P1 Breakdown</option>
+        <option value="P2_URGENT" ${cur.priority === 'P2_URGENT' ? 'selected' : ''}>⚡ P2 Urgent</option>
+        <option value="P3_ROUTINE" ${cur.priority === 'P3_ROUTINE' ? 'selected' : ''}>🔧 P3 Routine</option>
+        <option value="P4_LOW" ${cur.priority === 'P4_LOW' ? 'selected' : ''}>📦 P4 Stock</option>
+      </select>
+      <a class="btn sm" id="pu-xls" href="/api/purchasing/export.xlsx?${qstr()}">⬇ Excel</a>
+      <div class="spacer"></div>
+    </div>
+    <div class="pill-row" id="pu-tabs" style="margin:0 0 10px;flex-wrap:wrap;gap:6px">
+      ${tabs.map(([t, l, n]) => `<button class="sm ${t === cur.tab ? 'primary' : ''}" data-tab="${t}">${esc(l)}${n ? ` <span class="badge">${n}</span>` : ''}</button>`).join('')}
+    </div>
+    <div id="pu-table"><div class="muted">Loading…</div></div>`;
+
+  qsa('#pu-tabs button', body).forEach((btn) => {
+    btn.onclick = () => {
+      cur.tab = btn.dataset.tab;
+      location.hash = `#/purchasing?${qstr()}`;
+    };
+  });
+
+  qs('#pu-chan', body).onchange = () => {
+    cur.channel = qs('#pu-chan', body).value;
+    location.hash = `#/purchasing?${qstr()}`;
+  };
+
+  qs('#pu-prio', body).onchange = () => {
+    cur.priority = qs('#pu-prio', body).value;
+    location.hash = `#/purchasing?${qstr()}`;
+  };
 
   const load = async () => {
-    const q = qs('#pu-q', c).value.trim();
+    history.replaceState(null, '', `#/purchasing?${qstr()}`);
+    qs('#pu-xls', body).href = `/api/purchasing/export.xlsx?${qstr()}`;
+
     let d;
-    try { d = await api(`/purchasing/queue?tab=${tab}` + (q ? '&q=' + encodeURIComponent(q) : '')); }
-    catch (e) { qs('#pu-body', c).innerHTML = `<div class="card err">${esc(e.message)}</div>`; return; }
+    try {
+      d = await api(`/purchasing/queue?${qstr()}`);
+    } catch (e) {
+      qs('#pu-table', body).innerHTML = `<div class="card err">${esc(e.message)}</div>`;
+      return;
+    }
 
     if (!d.rows.length) {
-      qs('#pu-body', c).innerHTML = `<div class="card"><p class="muted">${tab === 'bought' ? 'Nothing bought yet.'
-          : tab === 'unassigned' ? 'Every approved item has been given to an officer.'
-            : d.channels.length ? 'Nothing waiting to be bought.'
-              : 'You are not set up as a purchasing officer, so there is no list of your own to show.'}</p></div>`;
+      qs('#pu-table', body).innerHTML = `<div class="card"><p class="muted">${
+        cur.tab === 'bought' ? 'Nothing bought yet.'
+        : cur.tab === 'unassigned' ? 'Every approved item has been given to a purchasing channel.'
+        : cur.tab === 'urgent' ? 'No items marked P1 Breakdown or P2 Urgent.'
+        : 'Nothing waiting in this queue.'
+      }</p></div>`;
       return;
     }
 
     const chan = (s) => (s === 'head_office' ? '<span class="badge">Head Office</span>'
       : s === 'local_purchase' ? '<span class="badge green">Local</span>'
-        : '<span class="muted">—</span>');
+        : '<span class="badge amber">Unassigned</span>');
 
     const headers = [
-      { label: 'Needed', width: '96px' }, { label: 'Request', width: '104px' },
-      { label: 'Vehicle', width: '120px' }, { label: 'Item', cls: 'desc-col' },
+      { label: 'Priority', width: '130px' },
+      { label: 'Needed', width: '96px' },
+      { label: 'Request / Job', width: '140px' },
+      { label: 'Vehicle', width: '110px' },
+      { label: 'Item & Urgency Note', cls: 'desc-col' },
       { label: 'Qty', num: true, width: '68px' },
+      { label: 'Channel', width: '110px' },
+      { label: 'Road', width: '170px' },
     ];
-    if (d.sees_both || tab === 'unassigned') headers.push({ label: 'Channel', width: '104px' });
-    if (tab === 'bought') headers.push({ label: 'Supplier' }, { label: 'Invoice', width: '120px' }, { label: 'Amount', num: true, width: '110px' });
-    headers.push({ label: '', width: tab === 'bought' ? '90px' : '190px' });
+    if (cur.tab === 'bought') {
+      headers.push({ label: 'Supplier' }, { label: 'Invoice', width: '120px' }, { label: 'Amount', num: true, width: '110px' });
+    }
+    headers.push({ label: '', width: cur.tab === 'bought' ? '90px' : '230px' });
 
-    qs('#pu-body', c).innerHTML = tableWrap(headers, d.rows.map((r) => {
+    qs('#pu-table', body).innerHTML = tableWrap(headers, d.rows.map((r) => {
+      const isOverdue = r.required_date && String(r.required_date).slice(0, 10) < today() && !r.purchased_at;
       const cells = [
-        `<td>${r.required_date ? esc(String(r.required_date).slice(0, 10)) : '<span class="muted">—</span>'}</td>`,
-        `<td class="mono">${esc(r.mrn_no || '')}${r.is_new && tab !== 'bought' ? ' <span class="badge amber">new</span>' : ''}</td>`,
+        `<td><span style="cursor:pointer" data-prio="${r.id}" data-cur="${esc(r.buying_priority || 'P3_ROUTINE')}" data-note="${esc(r.priority_note || '')}">${puPrioBadge(r.buying_priority, r.priority_note)}</span></td>`,
+        `<td>${r.required_date ? `<span class="${isOverdue ? 'badge red' : ''}">${esc(String(r.required_date).slice(0, 10))}</span>` : '<span class="muted">—</span>'}</td>`,
+        `<td class="mono"><a href="#/stores?tab=mrn&id=${r.mrn_id}">${esc(r.mrn_no || '')}</a>${r.is_new && cur.tab !== 'bought' ? ' <span class="badge amber">new</span>' : ''}${r.job_no ? `<br><a href="#/jobs/${r.job_id}" style="font-size:11px" class="muted">${esc(r.job_no)}</a>` : ''}</td>`,
         `<td>${r.asset_code ? `<span class="stamp">${esc(r.asset_code)}</span>` : '<span class="muted">—</span>'}</td>`,
-        `<td class="desc-col">${esc(r.description || '')}${r.source_changed_reason
-          // Why it was handed over is worth reading before buying it — usually it is the reason the
-          // last person could not.
-          ? `<div class="muted" style="font-size:11px">↔ from ${esc(r.source_changed_from || '?')}: ${esc(r.source_changed_reason)}</div>` : ''}</td>`,
+        `<td class="desc-col">
+          <b>${esc(r.description || '')}</b>
+          ${r.priority_note ? `<div style="font-size:11px;color:var(--amber);margin-top:2px"><b>Urgency Note:</b> ${esc(r.priority_note)}</div>` : ''}
+          ${r.source_changed_reason ? `<div class="muted" style="font-size:11px;margin-top:2px">↔ from ${esc(r.source_changed_from || '?')}: ${esc(r.source_changed_reason)}</div>` : ''}
+        </td>`,
         `<td class="num">${num(r.qty)}${r.unit ? ' ' + esc(r.unit) : ''}</td>`,
+        `<td>${chan(r.purchase_source)}</td>`,
+        `<td>${roadBar(r)}</td>`,
       ];
-      if (d.sees_both || tab === 'unassigned') cells.push(`<td>${chan(r.purchase_source)}</td>`);
-      if (tab === 'bought') {
-        cells.push(`<td>${esc(r.supplier || '')}</td>`,
+      if (cur.tab === 'bought') {
+        cells.push(
+          `<td>${esc(r.supplier || '')}</td>`,
           `<td class="mono">${esc(r.invoice_no || '')}</td>`,
-          `<td class="num">${r.purchase_amount == null ? '<span class="muted">—</span>' : money(r.purchase_amount)}</td>`);
+          `<td class="num">${r.purchase_amount == null ? '<span class="muted">—</span>' : money(r.purchase_amount)}</td>`
+        );
       }
-      cells.push(`<td>${tab === 'bought'
-        ? `<button class="sm" data-view="${r.id}">View</button>`
-        : `<button class="sm primary" data-buy="${r.id}">✓ Bought</button> <button class="sm" data-move="${r.id}" data-src="${esc(r.purchase_source || '')}" title="Cannot buy this on your account — send it to the other officer">↔</button>`}</td>`);
+      cells.push(`<td><div style="display:flex;gap:4px;flex-wrap:wrap;justify-content:flex-end">${
+        cur.tab === 'bought'
+          ? `<button class="sm" data-view="${r.id}">View</button>`
+          : `<button class="sm primary" data-buy="${r.id}">✓ Bought</button>
+             <button class="sm" data-move="${r.id}" data-src="${esc(r.purchase_source || '')}" title="Reassign channel (Head Office ↔ Local Purchase)">↔</button>
+             <button class="sm" data-prio="${r.id}" data-cur="${esc(r.buying_priority || 'P3_ROUTINE')}" data-note="${esc(r.priority_note || '')}" title="Adjust daily workshop priority">⚡</button>
+             <button class="sm" data-view="${r.id}">View</button>`
+      }</div></td>`);
       return `<tr>${cells.join('')}</tr>`;
     }), { scroll: true });
 
-    qsa('[data-buy]', c).forEach((b) => { b.onclick = () => markBought(b.dataset.buy, load); });
-    qsa('[data-move]', c).forEach((b) => { b.onclick = () => moveChannel(b.dataset.move, b.dataset.src, load); });
-    qsa('[data-view]', c).forEach((b) => { b.onclick = () => viewPurchase(b.dataset.view, load); });
+    qsa('[data-buy]', body).forEach((b) => { b.onclick = () => markBought(b.dataset.buy, load); });
+    qsa('[data-move]', body).forEach((b) => { b.onclick = () => moveChannel(b.dataset.move, b.dataset.src, load); });
+    qsa('[data-prio]', body).forEach((b) => { b.onclick = () => adjustPriorityModal(b.dataset.prio, b.dataset.cur, b.dataset.note, load); });
+    qsa('[data-view]', body).forEach((b) => { b.onclick = () => viewPurchase(b.dataset.view, load); });
 
-    // Looking at the list IS having seen it. Recorded per person, so two officers never clear each
-    // other badge.
-    if (tab === 'to_buy') api('/purchasing/seen', { method: 'POST' }).catch(() => { });
+    if (cur.tab === 'to_buy' || cur.tab === 'urgent') api('/purchasing/seen', { method: 'POST' }).catch(() => {});
   };
 
-  let deb; qs('#pu-q', c).oninput = () => { clearTimeout(deb); deb = setTimeout(load, 250); };
+  let deb;
+  qs('#pu-q', body).oninput = () => {
+    clearTimeout(deb);
+    deb = setTimeout(() => { cur.q = qs('#pu-q', body).value.trim(); load(); }, 250);
+  };
   load();
-};
+}
 
 // Hand an item to the other officer, with the reason that makes the record worth keeping.
+// Both Head Office and Local Purchase officers can reassign items bilaterally!
 function moveChannel(lineId, current, onDone) {
-  const to = current === 'head_office' ? 'local_purchase' : 'head_office';
-  const label = to === 'head_office' ? 'Head Office' : 'Local Purchase';
-  modal(`Send to ${label}`, `
-    <p class="muted" style="font-size:12px;margin:0 0 10px">Why can this not be bought on the current account? A few months of these is the case for opening one.</p>
-    ${field('Reason', 'reason', { placeholder: 'e.g. No head office account with this supplier' })}
-    <div style="margin-top:12px;text-align:right"><button class="primary" id="mv">Send to ${label}</button></div>`,
+  const defaultTo = current === 'head_office' ? 'local_purchase' : 'head_office';
+  modal('Assign / Switch Purchasing Channel', `
+    <p class="muted" style="font-size:12px;margin:0 0 10px">Reassign between Head Office and Local Purchase, or claim an item. Enter the reason for tracking.</p>
+    <div style="margin-bottom:10px">
+      <label>Target Channel *</label>
+      <select id="mv-chan">
+        <option value="head_office" ${defaultTo === 'head_office' ? 'selected' : ''}>Head Office</option>
+        <option value="local_purchase" ${defaultTo === 'local_purchase' ? 'selected' : ''}>Local Purchase</option>
+      </select>
+    </div>
+    ${field('Reason / Justification *', 'reason', { placeholder: 'e.g. Local vendor out of stock; or local sourcing faster than HQ shipment' })}
+    <div style="margin-top:12px;text-align:right"><button class="primary" id="mv">Confirm Channel Assignment</button></div>`,
     (body, close) => {
       qs('#mv', body).onclick = async () => {
+        const to = qs('#mv-chan', body).value;
+        const reason = qs('[name=reason]', body).value;
+        if (!reason || reason.trim().length < 3) {
+          toast('Please state a reason (at least 3 characters)', 'err');
+          return;
+        }
         try {
           const r = await api(`/purchasing/lines/${lineId}/source`, {
             method: 'POST',
-            body: { purchase_source: to, reason: qs('[name=reason]', body).value }
+            body: { purchase_source: to, reason }
+          });
+          toast(r.message); close(); onDone();
+        } catch (e) { toast(e.message, 'err'); }
+      };
+    });
+}
+
+// Dynamic workshop priority modal
+async function adjustPriorityModal(lineId, currentPriority, currentNote, onDone) {
+  let hist = [];
+  try {
+    const h = await api(`/purchasing/lines/${lineId}/priority-history`);
+    hist = h.rows || [];
+  } catch (e) {}
+
+  modal('⚡ Adjust Workshop Buying Priority', `
+    <p class="muted" style="font-size:12px;margin:0 0 10px">Workshops can adjust priority day-to-day as operational vehicle urgency changes. Buyers see P1/P2 at the top of their queue.</p>
+    <div style="margin-bottom:12px">
+      <label>Urgency Tier *</label>
+      <select id="prio-val">
+        ${PU_PRIO_OPTS.map(([v, l]) => `<option value="${v}" ${v === (currentPriority || 'P3_ROUTINE') ? 'selected' : ''}>${l}</option>`).join('')}
+      </select>
+    </div>
+    ${field('Operational Urgency Note (Why is it urgent?)', 'priority_note', {
+      value: currentNote || '',
+      placeholder: 'e.g. Breakdown in field, vehicle needed tomorrow 6 AM for project transfer'
+    })}
+    <div style="margin-top:14px;text-align:right">
+      <button class="primary" id="save-prio">Save Priority</button>
+    </div>
+    ${hist.length ? `
+      <div style="margin-top:16px;border-top:1px solid var(--border);padding-top:10px">
+        <h4 style="margin:0 0 6px;font-size:12px">Priority Change History</h4>
+        <div style="font-size:11px;max-height:140px;overflow-y:auto">
+          ${hist.map((h) => `<div style="padding:4px 0;border-bottom:1px dashed var(--border)">
+            <b>${esc(h.changed_by || '')}</b> on ${esc(String(h.changed_at || '').slice(0, 16))}:
+            <span class="badge sm">${esc(h.old_priority || '—')}</span> ➔ <span class="badge sm ${h.new_priority === 'P1_CRITICAL' ? 'red' : (h.new_priority === 'P2_URGENT' ? 'amber' : '')}">${esc(h.new_priority)}</span>
+            ${h.note ? `<div class="muted" style="margin-top:2px">Note: ${esc(h.note)}</div>` : ''}
+          </div>`).join('')}
+        </div>
+      </div>` : ''}`,
+    (body, close) => {
+      qs('#save-prio', body).onclick = async () => {
+        const val = qs('#prio-val', body).value;
+        const note = qs('[name=priority_note]', body).value;
+        try {
+          const r = await api(`/purchasing/lines/${lineId}/priority`, {
+            method: 'POST',
+            body: { buying_priority: val, note }
           });
           toast(r.message); close(); onDone();
         } catch (e) { toast(e.message, 'err'); }
@@ -8227,16 +8460,27 @@ async function viewPurchase(lineId, onDone) {
   try { d = await api(`/purchasing/lines/${lineId}`); } catch (e) { toast(e.message, 'err'); return; }
   modal(`${d.description || 'Item'} — ${d.mrn_no || ''}`, `
     <div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(160px,1fr))">
-      ${[['Supplier', d.supplier], ['Invoice', d.invoice_no], ['Invoice date', String(d.invoice_date || '').slice(0, 10)],
-    ['Amount', d.purchase_amount == null ? '—' : money(d.purchase_amount)], ['Bought by', d.purchased_by],
-    ['Bought on', String(d.purchased_at || '').slice(0, 10)]]
-      .map(([l, v]) => `<div class="card"><div class="stat"><div class="l">${l}</div><div>${esc(v || '—')}</div></div></div>`).join('')}
+      ${[['Priority', d.buying_priority ? `${puPrioBadge(d.buying_priority, d.priority_note)}` : 'P3 Routine'],
+         ['Channel', d.purchase_source ? (d.purchase_source === 'head_office' ? 'Head Office' : 'Local Purchase') : 'Unassigned'],
+         ['Supplier', d.supplier], ['Invoice', d.invoice_no], ['Invoice date', String(d.invoice_date || '').slice(0, 10)],
+         ['Amount', d.purchase_amount == null ? '—' : money(d.purchase_amount)], ['Bought by', d.purchased_by],
+         ['Bought on', String(d.purchased_at || '').slice(0, 10)]]
+        .map(([l, v]) => `<div class="card"><div class="stat"><div class="l">${l}</div><div>${typeof v === 'string' && v.startsWith('<') ? v : esc(v || '—')}</div></div></div>`).join('')}
     </div>
+    ${d.priority_note ? `<div class="card" style="margin-top:10px"><b>Workshop Urgency Note:</b> ${esc(d.priority_note)}</div>` : ''}
     ${d.price_check ? `<div class="card err" style="margin-top:10px">
       <b>The invoice and the receipt disagree.</b><br>
       Invoice ${money(d.price_check.invoice)} · received ${money(d.price_check.received)} ·
       difference ${money(d.price_check.difference)}.<br>
       <span class="muted">Neither is overwritten — someone should say which is right.</span></div>` : ''}
+    ${d.priority_history && d.priority_history.length ? `
+      <h3 style="margin:12px 0 6px">Priority Change History</h3>
+      <div style="font-size:12px;border:1px solid var(--border);border-radius:4px;padding:8px">
+        ${d.priority_history.map((h) => `<div class="cost-line" style="padding:4px 0">
+          <span><b>${esc(h.changed_by)}</b>: <span class="badge sm">${esc(h.old_priority || 'P3_ROUTINE')}</span> ➔ <span class="badge sm ${h.new_priority === 'P1_CRITICAL' ? 'red' : (h.new_priority === 'P2_URGENT' ? 'amber' : '')}">${esc(h.new_priority)}</span> ${h.note ? `— <i>${esc(h.note)}</i>` : ''}</span>
+          <span class="muted">${esc(String(h.changed_at || '').slice(0, 16))}</span>
+        </div>`).join('')}
+      </div>` : ''}
     ${d.invoices.length ? `<h3>Invoice</h3><div style="display:flex;gap:8px;flex-wrap:wrap">${d.invoices.map((i) => `<a href="${i.image}" target="_blank" rel="noopener"><img src="${i.image}" style="height:150px;border-radius:4px;border:1px solid var(--border)" alt="invoice"></a>`).join('')}</div>` : ''}
     ${d.receipts.length ? `<h3>Received</h3>${tableWrap(
         [{ label: 'GRN' }, { label: 'Qty', num: true }, { label: 'Unit', num: true }, { label: 'Value', num: true }, { label: 'Delivered' }],
@@ -10027,6 +10271,8 @@ async function renderAccessHistory(c) {
     </div>
   `;
 }
+
+const levelBadge = (lvl) => {
   const cls = lvl === 'full' ? 'amber' : lvl === 'edit' ? 'green' : '';
   const txt = lvl === 'none' ? '—' : lvl.toUpperCase();
   return `<span class="badge ${cls}"${lvl === 'none' ? ' style="opacity:.4"' : ''}>${txt}</span>`;

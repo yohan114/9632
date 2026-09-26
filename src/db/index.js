@@ -378,6 +378,24 @@ function migrate() {
   ensureColumn('mrn_lines', 'source_changed_reason', 'TEXT');
   ensureColumn('mrn_lines', 'source_changed_from', 'TEXT');
 
+  // Dynamic workshop buying priority (P1_CRITICAL, P2_URGENT, P3_ROUTINE, P4_LOW) and daily notes
+  ensureColumn('mrn_lines', 'buying_priority', "TEXT DEFAULT 'P3_ROUTINE'");
+  ensureColumn('mrn_lines', 'priority_note', 'TEXT');
+  ensureColumn('mrn_lines', 'priority_updated_at', 'TEXT');
+  ensureColumn('mrn_lines', 'priority_updated_by', 'TEXT');
+
+  db.exec(`CREATE TABLE IF NOT EXISTS mrn_line_priority_history (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    mrn_line_id   INTEGER NOT NULL REFERENCES mrn_lines(id) ON DELETE CASCADE,
+    old_priority  TEXT,
+    new_priority  TEXT NOT NULL,
+    note          TEXT,
+    changed_by    TEXT NOT NULL,
+    changed_at    TEXT NOT NULL DEFAULT (datetime('now'))
+  )`);
+  db.exec('CREATE INDEX IF NOT EXISTS idx_mrn_line_pri_hist ON mrn_line_priority_history(mrn_line_id)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_mrn_lines_priority ON mrn_lines(buying_priority, purchased_at)');
+
   db.exec(`CREATE TABLE IF NOT EXISTS mrn_line_invoices (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     mrn_line_id INTEGER NOT NULL REFERENCES mrn_lines(id) ON DELETE CASCADE,

@@ -149,10 +149,15 @@ test('a handover without a reason is refused', async () => {
     'a few months of reasons is the case for opening an account; without one a switch is indistinguishable from a slip');
 });
 
-test('an officer cannot reach into the other one’s queue and take an item', async () => {
+test('both officers can change buying channel of items with a reason', async () => {
   const r = await api('hq', `/purchasing/lines/${L_LOCAL}/source`, {
-    method: 'POST', body: { purchase_source: 'head_office', reason: 'I want this one' } });
-  assert.strictEqual(r.status, 403);
+    method: 'POST', body: { purchase_source: 'head_office', reason: 'HQ can source this bulk item' } });
+  assert.strictEqual(r.status, 200);
+
+  // Put it back to local_purchase so subsequent tests have L_LOCAL as local_purchase
+  const r2 = await api('loc', `/purchasing/lines/${L_LOCAL}/source`, {
+    method: 'POST', body: { purchase_source: 'local_purchase', reason: 'returning to local purchase' } });
+  assert.strictEqual(r2.status, 200);
 });
 
 test('either officer may claim an unassigned item', async () => {

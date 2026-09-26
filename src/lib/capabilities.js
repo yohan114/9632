@@ -133,6 +133,7 @@ const CAPABILITIES = [
   C('purchasing.head_office', 'purchasing', 'Work the Head Office purchasing channel', ['purchase_head_office'], 'purchasing', 'purchasing'),
   C('purchasing.local', 'purchasing', 'Work the Local purchasing channel', ['purchase_local'], 'purchasing', 'purchasing'),
   C('purchasing.all_channels', 'purchasing', 'Work both purchasing channels (managers)', ['manager', 'operational_manager'], 'purchasing', 'purchasing'),
+  C('purchasing.priority_edit', 'purchasing', 'Adjust buying priorities and urgency notes', ['workshop', 'operational_manager', 'manager', 'purchase_head_office', 'purchase_local'], 'purchasing', 'purchasing'),
 
   // ---- reports -------------------------------------------------------------------------------
   C('reports.daily.notes', 'reports', 'Write notes on the daily reports', ['workshop', 'operational_manager', 'manager', 'storekeeper'], null, 'daily_progress'),

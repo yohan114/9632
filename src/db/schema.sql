@@ -174,9 +174,24 @@ CREATE TABLE IF NOT EXISTS mrn_lines (
   qty           REAL NOT NULL DEFAULT 0,
   unit          TEXT DEFAULT 'nos',
   qty_received  REAL NOT NULL DEFAULT 0,
-  legacy_item_id INTEGER                     -- source items.id (bridges receipts.itemId -> GRN)
+  legacy_item_id INTEGER,                    -- source items.id (bridges receipts.itemId -> GRN)
+  buying_priority TEXT DEFAULT 'P3_ROUTINE', -- P1_CRITICAL | P2_URGENT | P3_ROUTINE | P4_LOW
+  priority_note   TEXT,
+  priority_updated_at TEXT,
+  priority_updated_by TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_mrn_lines_mrn ON mrn_lines(mrn_id);
+
+CREATE TABLE IF NOT EXISTS mrn_line_priority_history (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  mrn_line_id   INTEGER NOT NULL REFERENCES mrn_lines(id) ON DELETE CASCADE,
+  old_priority  TEXT,
+  new_priority  TEXT NOT NULL,
+  note          TEXT,
+  changed_by    TEXT NOT NULL,
+  changed_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_mrn_line_pri_hist ON mrn_line_priority_history(mrn_line_id);
 
 -- Goods Received Note — priced delivery against an MRN line.
 CREATE TABLE IF NOT EXISTS grn (
