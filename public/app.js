@@ -126,6 +126,7 @@ setInterval(() => {
 const esc = (v) => String(v == null ? '' : v).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const money = (n) => 'Rs ' + (Number(n) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const num = (n) => (Number(n) || 0).toLocaleString('en-US');
+const today = () => new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10);
 const moneyC = (n) => { n = Number(n) || 0; const a = Math.abs(n); return a >= 1e6 ? 'Rs ' + (n / 1e6).toFixed(2) + 'M' : a >= 1e3 ? 'Rs ' + Math.round(n / 1e3) + 'K' : 'Rs ' + Math.round(n); };
 const MONTH_NAMES = ['', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const monthName = (m) => { const [y, mo] = String(m).split('-'); return (MONTH_NAMES[+mo] || mo) + ' ' + y; };
@@ -1239,7 +1240,7 @@ function renderOnHoldWatchboard(oh) {
 
 async function dashMain(c) {
   const [d, mc, wm] = await Promise.all([
-    api('/reports/dashboard'), api('/reports/monthly'),
+    api('/reports/dashboard'), canView('reports') ? api('/reports/monthly') : null,
     api('/dashboard/workflow-monitor').catch(() => null),
   ]);
   const na = d.needs_attention || {};
@@ -1265,7 +1266,7 @@ async function dashMain(c) {
   const kp = (wm && wm.kpis) || {};
   const kpiRibbon = `
     <div class="grid section" style="grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;margin-bottom:14px">
-      <div class="card stat"><span class="n">${moneyC(mc.this_month.total)}</span><span class="l">This Month Spend</span></div>
+      ${mc ? `<div class="card stat"><span class="n">${moneyC(mc.this_month.total)}</span><span class="l">This Month Spend</span></div>` : ''}
       <a class="card stat" href="#/jobs" style="text-decoration:none"><span class="n">${kp.active_jobs ?? d.open_jobs_count}</span><span class="l">Active Job Cards</span></a>
       <a class="card stat" href="#/jobs?tab=ongoing" style="text-decoration:none"><span class="n">${kp.vehicles_in_workshop ?? 0}</span><span class="l">Vehicles in Workshop</span></a>
       <a class="card stat" href="#/dashboard" style="text-decoration:none"><span class="n" style="color:${kp.total_pending ? 'var(--amber)' : 'var(--green)'}">${kp.total_pending ?? 0}</span><span class="l">Pending Approvals</span></a>
@@ -1352,7 +1353,7 @@ async function dashMain(c) {
     </div><div id="dc-charts-msg" class="muted" style="display:none;padding:8px"></div></div>`);
   S.push(`<div class="card section"><h3 style="margin-top:0">Recent Activity</h3><div id="dc-feed" class="muted">Loading…</div></div>`);
   c.innerHTML = S.join('\n');
-  dashRenderOverview();
+  if (canView('reports')) dashRenderOverview();
 }
 
 // Charts + activity feed for the dashboard (additive; isolated so a failure never
@@ -8129,7 +8130,7 @@ routes.purchasing = async (c) => {
   const sp = new URLSearchParams(location.hash.split('?')[1] || '');
   const tab = sp.get('tab') || 'monitor';
 
-  c.innerHTML = pageHeader('Procurement &amp; Purchasing',
+  c.innerHTML = pageHeader('Procurement & Purchasing',
     'What has been approved and needs to be bought. Workshop urgency ranks priority; both Head Office and Local buyers can reassign channels.') + `
     <div class="tabs" style="margin:0 0 12px 0">
       <button class="${tab === 'monitor' ? 'active' : ''}" onclick="location.hash='#/purchasing?tab=monitor'">📊 Monitor Cockpit</button>
@@ -8292,44 +8293,50 @@ async function purchasingQueue(body, sp) {
     }
     headers.push({ label: '', width: cur.tab === 'bought' ? '90px' : '230px' });
 
-    qs('#pu-table', body).innerHTML = tableWrap(headers, d.rows.map((r) => {
-      const isOverdue = r.required_date && String(r.required_date).slice(0, 10) < today() && !r.purchased_at;
-      const cells = [
-        `<td><span style="cursor:pointer" data-prio="${r.id}" data-cur="${esc(r.buying_priority || 'P3_ROUTINE')}" data-note="${esc(r.priority_note || '')}">${puPrioBadge(r.buying_priority, r.priority_note)}</span></td>`,
-        `<td>${r.required_date ? `<span class="${isOverdue ? 'badge red' : ''}">${esc(String(r.required_date).slice(0, 10))}</span>` : '<span class="muted">—</span>'}</td>`,
-        `<td class="mono"><a href="#/stores?tab=mrn&id=${r.mrn_id}">${esc(r.mrn_no || '')}</a>${r.is_new && cur.tab !== 'bought' ? ' <span class="badge amber">new</span>' : ''}${r.job_no ? `<br><a href="#/jobs/${r.job_id}" style="font-size:11px" class="muted">${esc(r.job_no)}</a>` : ''}</td>`,
-        `<td>${r.asset_code ? `<span class="stamp">${esc(r.asset_code)}</span>` : '<span class="muted">—</span>'}</td>`,
-        `<td class="desc-col">
-          <b>${esc(r.description || '')}</b>
-          ${r.priority_note ? `<div style="font-size:11px;color:var(--amber);margin-top:2px"><b>Urgency Note:</b> ${esc(r.priority_note)}</div>` : ''}
-          ${r.source_changed_reason ? `<div class="muted" style="font-size:11px;margin-top:2px">↔ from ${esc(r.source_changed_from || '?')}: ${esc(r.source_changed_reason)}</div>` : ''}
-        </td>`,
-        `<td class="num">${num(r.qty)}${r.unit ? ' ' + esc(r.unit) : ''}</td>`,
-        `<td>${chan(r.purchase_source)}</td>`,
-        `<td>${roadBar(r)}</td>`,
-      ];
-      if (cur.tab === 'bought') {
-        cells.push(
-          `<td>${esc(r.supplier || '')}</td>`,
-          `<td class="mono">${esc(r.invoice_no || '')}</td>`,
-          `<td class="num">${r.purchase_amount == null ? '<span class="muted">—</span>' : money(r.purchase_amount)}</td>`
-        );
-      }
-      cells.push(`<td><div style="display:flex;gap:4px;flex-wrap:wrap;justify-content:flex-end">${
-        cur.tab === 'bought'
-          ? `<button class="sm" data-view="${r.id}">View</button>`
-          : `<button class="sm primary" data-buy="${r.id}">✓ Bought</button>
-             <button class="sm" data-move="${r.id}" data-src="${esc(r.purchase_source || '')}" title="Reassign channel (Head Office ↔ Local Purchase)">↔</button>
-             <button class="sm" data-prio="${r.id}" data-cur="${esc(r.buying_priority || 'P3_ROUTINE')}" data-note="${esc(r.priority_note || '')}" title="Adjust daily workshop priority">⚡</button>
-             <button class="sm" data-view="${r.id}">View</button>`
-      }</div></td>`);
-      return `<tr>${cells.join('')}</tr>`;
-    }), { scroll: true });
+    try {
+      qs('#pu-table', body).innerHTML = tableWrap(headers, d.rows.map((r) => {
+        const isOverdue = r.required_date && String(r.required_date).slice(0, 10) < today() && !r.purchased_at;
+        const cells = [
+          `<td><span style="cursor:pointer" data-prio="${r.id}" data-cur="${esc(r.buying_priority || 'P3_ROUTINE')}" data-note="${esc(r.priority_note || '')}">${puPrioBadge(r.buying_priority, r.priority_note)}</span></td>`,
+          `<td>${r.required_date ? `<span class="${isOverdue ? 'badge red' : ''}">${esc(String(r.required_date).slice(0, 10))}</span>` : '<span class="muted">—</span>'}</td>`,
+          `<td class="mono"><a href="#/stores?tab=mrn&id=${r.mrn_id}">${esc(r.mrn_no || '')}</a>${r.is_new && cur.tab !== 'bought' ? ' <span class="badge amber">new</span>' : ''}${r.job_no ? `<br><a href="#/jobs/${r.job_id}" style="font-size:11px" class="muted">${esc(r.job_no)}</a>` : ''}</td>`,
+          `<td>${r.asset_code ? `<span class="stamp">${esc(r.asset_code)}</span>` : '<span class="muted">—</span>'}</td>`,
+          `<td class="desc-col">
+            <b>${esc(r.description || '')}</b>
+            ${r.priority_note ? `<div style="font-size:11px;color:var(--amber);margin-top:2px"><b>Urgency Note:</b> ${esc(r.priority_note)}</div>` : ''}
+            ${r.source_changed_reason ? `<div class="muted" style="font-size:11px;margin-top:2px">↔ from ${esc(r.source_changed_from || '?')}: ${esc(r.source_changed_reason)}</div>` : ''}
+          </td>`,
+          `<td class="num">${num(r.qty)}${r.unit ? ' ' + esc(r.unit) : ''}</td>`,
+          `<td>${chan(r.purchase_source)}</td>`,
+          `<td>${roadBar(r)}</td>`,
+        ];
+        if (cur.tab === 'bought') {
+          cells.push(
+            `<td>${esc(r.supplier || '')}</td>`,
+            `<td class="mono">${esc(r.invoice_no || '')}</td>`,
+            `<td class="num">${r.purchase_amount == null ? '<span class="muted">—</span>' : money(r.purchase_amount)}</td>`
+          );
+        }
+        cells.push(`<td><div style="display:flex;gap:4px;flex-wrap:wrap;justify-content:flex-end">${
+          cur.tab === 'bought'
+            ? `<button class="sm" data-view="${r.id}">View</button>`
+            : `<button class="sm primary" data-buy="${r.id}">✓ Bought</button>
+               <button class="sm" data-move="${r.id}" data-src="${esc(r.purchase_source || '')}" title="Reassign channel (Head Office ↔ Local Purchase)">↔</button>
+               <button class="sm" data-prio="${r.id}" data-cur="${esc(r.buying_priority || 'P3_ROUTINE')}" data-note="${esc(r.priority_note || '')}" title="Adjust daily workshop priority">⚡</button>
+               <button class="sm" data-view="${r.id}">View</button>`
+        }</div></td>`);
+        return `<tr>${cells.join('')}</tr>`;
+      }), { scroll: true });
 
-    qsa('[data-buy]', body).forEach((b) => { b.onclick = () => markBought(b.dataset.buy, load); });
-    qsa('[data-move]', body).forEach((b) => { b.onclick = () => moveChannel(b.dataset.move, b.dataset.src, load); });
-    qsa('[data-prio]', body).forEach((b) => { b.onclick = () => adjustPriorityModal(b.dataset.prio, b.dataset.cur, b.dataset.note, load); });
-    qsa('[data-view]', body).forEach((b) => { b.onclick = () => viewPurchase(b.dataset.view, load); });
+      qsa('[data-buy]', body).forEach((b) => { b.onclick = () => markBought(b.dataset.buy, load); });
+      qsa('[data-move]', body).forEach((b) => { b.onclick = () => moveChannel(b.dataset.move, b.dataset.src, load); });
+      qsa('[data-prio]', body).forEach((b) => { b.onclick = () => adjustPriorityModal(b.dataset.prio, b.dataset.cur, b.dataset.note, load); });
+      qsa('[data-view]', body).forEach((b) => { b.onclick = () => viewPurchase(b.dataset.view, load); });
+    } catch (renderErr) {
+      console.error('Render error:', renderErr);
+      qs('#pu-table', body).innerHTML = `<div class="card err">${esc(renderErr.message)}</div>`;
+      return;
+    }
 
     if (cur.tab === 'to_buy' || cur.tab === 'urgent') api('/purchasing/seen', { method: 'POST' }).catch(() => {});
   };
@@ -8998,7 +9005,7 @@ routes.reports = async (c) => {
         <div class="spacer"></div>
         <div><label>Year</label><select id="mcr-year"></select></div>
         <div><label>Month</label><select id="mcr-month"></select></div>
-        <button class="sm" id="mcr-edit">✎ Edit monthly inputs</button>
+        ${canEdit('reports') || canDo('reports.monthly_cost.edit') ? '<button class="sm" id="mcr-edit">✎ Edit monthly inputs</button>' : ''}
         <button class="sm secondary" id="mcr-reconcile" title="Reconcile Closed, Pending, Other Labour and Spares Supply with live daily work tally">⚖️ Repair Sections Reconciler</button>
         <a class="btn sm" id="mcr-rd" href="#" target="_blank">🖨 Repair Detail</a>
         <a class="btn primary sm" id="mcr-dl" href="#">⬇ Download Excel</a>
@@ -9215,7 +9222,7 @@ routes.reports = async (c) => {
     if (qs('#mcr-row-repsec', c)) qs('#mcr-row-repsec', c).onclick = () => openRepairSectionsReconciler(+mcrYear.value, +mcrMonth.value, loadMcr);
   };
   mcrYear.onchange = loadMcr; mcrMonth.onchange = loadMcr;
-  qs('#mcr-edit', c).onclick = () => openMonthlyInputs(+mcrYear.value, +mcrMonth.value, loadMcr);
+  if (qs('#mcr-edit', c)) qs('#mcr-edit', c).onclick = () => openMonthlyInputs(+mcrYear.value, +mcrMonth.value, loadMcr);
   qs('#mcr-reconcile', c).onclick = () => openRepairSectionsReconciler(+mcrYear.value, +mcrMonth.value, loadMcr);
   loadMcr();
 };
@@ -10271,7 +10278,6 @@ async function renderAccessHistory(c) {
     </div>
   `;
 }
-
 const levelBadge = (lvl) => {
   const cls = lvl === 'full' ? 'amber' : lvl === 'edit' ? 'green' : '';
   const txt = lvl === 'none' ? '—' : lvl.toUpperCase();
