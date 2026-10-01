@@ -126,9 +126,19 @@ setInterval(() => {
 const esc = (v) => String(v == null ? '' : v).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const money = (n) => 'Rs ' + (Number(n) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const num = (n) => (Number(n) || 0).toLocaleString('en-US');
+const today = () => new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10);
 const moneyC = (n) => { n = Number(n) || 0; const a = Math.abs(n); return a >= 1e6 ? 'Rs ' + (n / 1e6).toFixed(2) + 'M' : a >= 1e3 ? 'Rs ' + Math.round(n / 1e3) + 'K' : 'Rs ' + Math.round(n); };
 const MONTH_NAMES = ['', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const monthName = (m) => { const [y, mo] = String(m).split('-'); return (MONTH_NAMES[+mo] || mo) + ' ' + y; };
+
+const ROAD_WORD = { done: 'done', part: 'part done', now: 'waiting here', todo: 'not yet', wait: 'not yet', stop: 'stopped' };
+function roadBar(r) {
+  if (!r) return '';
+  const road = Array.isArray(r) ? r : (r.road || []);
+  if (!road.length) return '';
+  return `<div class="road">${road.map((x) => `<span class="rd rd-${x.state}" title="${esc(x.label)}: ${esc(ROAD_WORD[x.state] || x.state)}">${esc(x.label)}</span>`).join('')}</div>`;
+}
+const docRoadBar = roadBar;
 
 // Lazy-load Chart.js (dashboard charts). Resolves cb(true/false) — degrades gracefully offline.
 let _chartLoading;
@@ -482,21 +492,20 @@ async function mySignatureModal() {
     qs('#rm', body).onclick = async () => { try { await api('/auth/signature', { method: 'POST', body: { signature: null } }); toast('Signature removed'); if (window.ME) ME.hasSignature = false; close(); } catch (e) { toast(e.message, 'err'); } };
   });
 }
-// RBAC — a section switch's level for the signed-in person: their own where one was set for them
-// on the People screen, else their roles' (access plan, Part 2). View reads, Add also adds new
-// records, Edit also changes and removes them, Full is everything.
+// RBAC — a module's clearance level for the signed-in user (from the permission matrix).
 const RANKL = { none: 0, view: 1, add: 2, edit: 3, full: 4 };
 const rankL = (l) => RANKL[l] || 0;
 const isAdmin = () => !!(ME && ME.roles && ME.roles.includes('admin'));
 const canView = (m) => isAdmin() || (ME && ME.permissions ? rankL(ME.permissions[m]) >= 1 : true);
 const canAdd = (m) => isAdmin() || (ME && ME.permissions ? rankL(ME.permissions[m]) >= 2 : true);
 const canEdit = (m) => isAdmin() || (ME && ME.permissions ? rankL(ME.permissions[m]) >= 3 : true);
+const canFull = (m) => isAdmin() || (ME && ME.permissions ? rankL(ME.permissions[m]) >= 4 : true);
 // May the signed-in user do this? Asked by CAPABILITY (src/lib/capabilities.js), never by role
 // name, so a role an admin creates works on every screen. Some actions also sit behind a section's
-// router gate on the server, which wants at least ADD on that section; the server says which
+// router gate on the server, which wants EDIT clearance on that section; the server says which
 // (capNeeds), and a button whose request the server would refuse is not shown.
 const canDo = (...caps) => !!ME && caps.some((c) => (ME.caps || []).includes(c)
-  && (!(ME.capNeeds && ME.capNeeds[c]) || canAdd(ME.capNeeds[c])));
+  && (!(ME.capNeeds && ME.capNeeds[c]) || canEdit(ME.capNeeds[c])));
 const qs = (s, r = document) => r.querySelector(s);
 const qsa = (s, r = document) => [...r.querySelectorAll(s)];
 
@@ -515,6 +524,7 @@ const LIVE_ENTITY_ROUTES = {
   battery: ['batteries', 'stockcockpit', 'stocktake', 'stores'], asset: ['assets'],
   mechanic: ['mechanics', 'labour', 'workshops'], labour_rate: ['labour', 'mechanics'], mechanic_alias: ['mechanics'],
   workshop: ['workshops', 'access', 'jobs'],
+  workshop_tool: ['tools', 'stores'], tool_issue_log: ['tools', 'stores'], tool_scrap_request: ['tools'],
 };
 const LIVE_AGG_ROUTES = ['dashboard', 'attention']; // aggregate views refresh on ANY change
 let _liveWired = false;
@@ -755,8 +765,9 @@ const NAV = [
   ['services', '🛠️', 'Service Records'],
   ['lubecapacities', '🛢️', 'Lubricant Capacities'],
   ['assets', '🚜', 'Assets'],
-  ['labour', '💵', 'Labour Rates'],
+  ['labour', '👷', 'Labour & Mechanics'],
   ['stores', '📦', 'Stores'],
+  ['tools', '🧰', 'Tools & Toolboxes'],
   ['serviceplan', '🗓️', 'Service & Filter Plan'],
   ['projects', '🏗️', 'Projects'],
   ['aliases', '🔗', 'Alias Queue'],
@@ -770,20 +781,19 @@ const NAV = [
   ['workshops', '🏭', 'Workshops', 'workshops'],
   ['access', '🔐', 'Access Control', 'admin'],
 ];
-// Which permission module governs each nav item's visibility (dashboard always on). Each of the 22
-// sections has its own switch (access plan, Part 1) — the server checks the same one.
+// Which permission module governs each nav item's visibility (dashboard always on).
 const NAV_MODULE = {
-  assets: 'assets', jobs: 'jobs', jobrequests: 'jobrequests', field: 'field', operations: 'operations', dailywork: 'dailywork', services: 'services', lubecapacities: 'lubecapacities',
-  labour: 'labour', stores: 'stores', stocktake: 'stores', stockcockpit: 'stores', generalstock: 'stores', oil: 'oil', batteries: 'batteries', filters: 'filters', filterstock: 'filters',
-  projects: 'projects', aliases: 'aliases', attention: 'attention', progress: 'progress',
-  teardown: 'teardown', reports: 'reports', tyrebattery: 'tyrebattery',
+  assets: 'assets', jobs: 'jobs', jobrequests: 'jobrequests', field: 'jobs', operations: 'assets', dailywork: 'dailywork', services: 'filters', lubecapacities: 'jobs',
+  labour: 'labour', stores: 'stores', tools: 'tools', stocktake: 'stores', stockcockpit: 'stores', generalstock: 'stores', oil: 'oil', batteries: 'batteries', filters: 'filters', filterstock: 'filters',
+  projects: 'projects', aliases: 'aliases', attention: 'reports', progress: 'reports',
+  teardown: 'reports', reports: 'reports', tyrebattery: 'reports',
   // The request screen belongs to whoever may raise one. The ledger above stays on 'reports',
   // because reading what was issued is a different question from being allowed to issue it.
   tbrequests: 'tb_request',
   // Enforced, so the two buying officers see this and nobody else does. Which of the two
   // channels each one sees is decided by the server from their role — the nav only opens the door.
   purchasing: 'purchasing',
-  matreq: 'stores', stockissues: 'stores', serviceplan: 'serviceplan',
+  matreq: 'stores', stockissues: 'stores', serviceplan: 'filters',
 };
 function navVisible(n) {
   if (n[3] === 'admin') return canDo('access.manage', 'users.manage');
@@ -799,7 +809,7 @@ function navVisible(n) {
 const NAV_GROUP_ORDER = ['Operations', 'Inventory', 'Procurement', 'Fleet', 'Analysis', 'Admin'];
 const NAV_GROUP = {
   dashboard: 'Operations', jobs: 'Operations', jobrequests: 'Operations', field: 'Operations', operations: 'Operations', dailywork: 'Operations', services: 'Operations', lubecapacities: 'Operations',
-  stores: 'Inventory', stocktake: 'Inventory',
+  stores: 'Inventory', tools: 'Inventory', stocktake: 'Inventory',
   purchasing: 'Procurement', tbrequests: 'Procurement',
   assets: 'Fleet', serviceplan: 'Fleet',
   reports: 'Analysis', attention: 'Analysis', progress: 'Analysis', teardown: 'Analysis', tyrebattery: 'Analysis', aliases: 'Analysis', projects: 'Analysis', labour: 'Analysis',
@@ -937,49 +947,312 @@ async function dashPurchasing(c) {
       ? ` — but ${counts.unassigned} item(s) have not been given to an officer yet.` : '.'}</p></div>`;
 }
 
-// Managers' time is precious: their dashboard leads with what needs their sign-off.
-function renderPendingApprovals(pa) {
-  if (!pa || !pa.is_approver) return '';
-  // An MRN awaiting approval carries its estimated value, and says so when it is above this
-  // person's approval limit (it waits for someone with a higher one).
-  const mrnWorth = (m) => (m.value == null ? '' : ` · about ${esc(money(m.value))}${m.unpriced ? ` <span class="muted">(${m.unpriced} without a price)</span>` : ''}`);
-  const mrnRow = (m, action) => `<div class="cost-line"><a href="#/stores?tab=mrn&id=${m.id}"><b>MRN ${esc(m.mrn_no)}</b> · ${esc(idLabel(m) || 'general')} · ${m.lines} item(s)${mrnWorth(m)}${m.requested_by ? ' · by ' + esc(m.requested_by) : ''}${m.certified_by ? ' · certified ' + esc(m.certified_by) : ''}</a>${m.over_limit
-    ? `<span class="badge amber" title="Needs: ${esc((m.who_can || []).join(', '))}">Above your limit</span>`
-    : `<span class="badge ${action === 'Approve' ? 'blue' : 'amber'}">${action} →</span>`}</div>`;
-  // How long it has been waiting, from the request date. An approver deciding between a card raised
-  // this morning and one raised three weeks ago was previously shown neither — just a number and a
-  // vehicle — so the queue gave no sense of what was overdue.
-  const waited = (d) => {
-    const day = String(d || '').slice(0, 10);
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return '';
-    const days = Math.floor((Date.now() - new Date(day + 'T00:00:00').getTime()) / 86400000);
-    if (!Number.isFinite(days) || days < 0) return `<span class="muted"> · ${esc(day)}</span>`;
-    // Only worth calling out once it has actually sat there; "0 days" is noise on today's request.
-    const age = days >= 3 ? ` <span class="badge ${days >= 14 ? 'red' : 'amber'}">${days} days</span>` : '';
-    return `<span class="muted"> · requested ${esc(day)}</span>${age}`;
+const waited = (d) => {
+  const day = String(d || '').slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return '';
+  const days = Math.floor((Date.now() - new Date(day + 'T00:00:00').getTime()) / 86400000);
+  if (!Number.isFinite(days) || days < 0) return `<span class="muted"> · ${esc(day)}</span>`;
+  const age = days >= 14 ? ` <span class="badge red">${days}d overdue</span>` : (days >= 3 ? ` <span class="badge amber">${days}d waiting</span>` : '');
+  return `<span class="muted"> · ${esc(day)}</span>${age}`;
+};
+
+const jobRow = (j, action) => `<div class="cost-line"><a href="#/jobs/${j.id}"><b>${esc(j.job_no)}</b> · <span class="stamp">${esc(j.vehicle || idLabel(j))}</span>${waited(j.requested_at)}</a><div class="spacer"></div><a class="btn sm" href="#/jobs/${j.id}">${esc(action)} →</a></div>`;
+
+// Process-wise approvals queue renderer
+function renderProcessApprovals(ap) {
+  if (!ap || !ap.is_approver) return '';
+  const total = ap.total_pending || 0;
+  
+  const waitedBadge = waited;
+
+  const renderItem = (item) => {
+    const worth = item.value != null ? ` · about ${esc(money(item.value))}${item.unpriced ? ` (${item.unpriced} unpriced)` : ''}` : '';
+    const limitTag = item.over_limit ? ` <span class="badge amber" title="Needs higher authority">Above limit</span>` : '';
+    const redTag = item.red_count ? ` <span class="badge red">${item.red_count} red</span>` : '';
+    return `<div class="cost-line" style="padding:6px 0;border-bottom:1px solid var(--border-light, #eee);align-items:center">
+      <div style="display:flex;flex-direction:column;gap:2px">
+        <a href="${esc(item.link)}">
+          <b>${esc(item.title)}</b> · <span class="stamp">${esc(item.vehicle || 'General')}</span>${worth}${waitedBadge(item.date)}
+        </a>
+        <span class="muted" style="font-size:12px">
+          ${esc(item.description || '')}${item.requester ? ` · by ${esc(item.requester)}` : ''}${item.certified_by ? ` · certified ${esc(item.certified_by)}` : ''}
+        </span>
+      </div>
+      <div style="display:flex;align-items:center;gap:6px">
+        ${limitTag}${redTag}
+        <a class="btn sm ${item.action.includes('Approve') ? 'primary' : ''}" href="${esc(item.link)}">${esc(item.action)} →</a>
+      </div>
+    </div>`;
   };
-  const jobRow = (j, action) => `<div class="cost-line"><a href="#/jobs/${j.id}"><b>${esc(j.job_no)}</b> · ${esc(idLabel(j) || '—')}${waited(j.requested_at)}</a><span class="badge amber">${action} →</span></div>`;
-  const jrRow = (r, action) => `<div class="cost-line"><a href="#/jobrequests/${r.id}"><b>${esc(r.jr_no)}</b> · ${esc(idLabel(r) || '—')}${r.description ? ' · ' + esc(String(r.description).slice(0, 40)) : ''}${r.requested_by ? ' · by ' + esc(r.requested_by) : ''}</a><span class="badge ${action === 'Approve' ? 'blue' : 'amber'}">${action} →</span></div>`;
-  const section = (title, items, rowFn) => (items && items.length) ? `<div style="margin-top:6px"><div class="muted" style="font-size:12px;margin:6px 0 2px">${title} (${items.length})</div>${items.map(rowFn).join('')}</div>` : '';
-  const body = [
-    section('Job requests awaiting your <b>certification</b>', pa.jr_certify || [], (r) => jrRow(r, 'Certify')),
-    section('Job requests awaiting your <b>approval</b>', pa.jr_approve || [], (r) => jrRow(r, 'Approve')),
-    section('MRNs awaiting your <b>certification</b>', pa.certify || [], (m) => mrnRow(m, 'Certify')),
-    section('MRNs awaiting your <b>approval</b>', pa.approve || [], (m) => mrnRow(m, 'Approve')),
-    section('Job cards awaiting <b>transport approval</b>', pa.transport || [], (j) => jobRow(j, 'Approve')),
-    section('Job cards awaiting <b>operations approval</b>', pa.ops || [], (j) => jobRow(j, 'Approve')),
-    section('Days waiting for <b>sign-off</b>', pa.signoff || [], (d) => `<div class="cost-line"><a href="#/dailywork?att=${esc(d.date)}${d.workshop_id ? '&att_ws=' + d.workshop_id : ''}"><b>${esc(d.date)}</b>${d.workshop_name ? ` · ${esc(d.workshop_name)}` : ''} · attendance &amp; daily work${d.red_count ? ` · <span style="color:var(--red)">${d.red_count} red</span>` : ''}</a><span class="badge ${d.red_count ? 'red' : 'amber'}">Sign off →</span></div>`),
-    section('Job cards asking to be <b>reopened</b>', pa.reopen || [], (r) => `<div class="cost-line"><a href="#/jobs/${r.job_id}"><b>${esc(r.job_no)}</b> · ${esc(idLabel(r) || '—')} · ${esc(String(r.reason || '').slice(0, 60))}${r.requested_by_name ? ' · by ' + esc(r.requested_by_name) : ''}${waited(r.requested_at)}</a><span class="badge amber">Decide →</span></div>`),
-  ].join('');
-  return `<div class="card section" style="border-left:4px solid ${pa.total ? 'var(--red)' : 'var(--green)'}">
-    <div class="toolbar" style="margin:0"><h3 style="margin:0">⚡ Pending Your Approval</h3><div class="spacer"></div><span class="badge ${pa.total ? 'red' : 'green'}">${pa.total} pending</span></div>
-    ${pa.total ? body : '<span class="muted">✓ Nothing awaiting your approval — you\'re all caught up.</span>'}</div>`;
+
+  const renderStage = (title, icon, items) => {
+    if (!items || !items.length) return '';
+    return `
+      <div style="margin-top:10px">
+        <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">
+          <span style="font-size:15px">${icon}</span>
+          <b style="font-size:13px">${title}</b>
+          <span class="badge ${items.length ? 'amber' : ''}">${items.length}</span>
+        </div>
+        <div style="background:var(--card-sub-bg, #fafafa);border-radius:6px;padding:4px 12px">
+          ${items.map(renderItem).join('')}
+        </div>
+      </div>`;
+  };
+
+  const stagesHtml = [
+    renderStage('Stage 1: Inflow & Request Certification', '📋', ap.inflow),
+    renderStage('Stage 2: Operations & Commercial Approvals', '⚡', ap.authorizations),
+    renderStage('Stage 3: Stores & Warehouse Controls', '📦', ap.warehouse),
+    renderStage('Stage 4: Workday Close & Reopens', '📅', ap.compliance)
+  ].filter(Boolean).join('');
+
+  return `
+    <div class="card section" style="border-left:4px solid ${total ? 'var(--amber)' : 'var(--green)'};margin-bottom:14px">
+      <div class="toolbar" style="margin:0 0 6px">
+        <h3 style="margin:0">⚡ Pending Approvals (Process-Wise)</h3>
+        <div class="spacer"></div>
+        <span class="badge ${total ? 'amber' : 'green'}">${total} pending decision</span>
+      </div>
+      ${total ? stagesHtml : '<span class="muted">✓ All caught up — no items awaiting your decision across any process stage.</span>'}
+    </div>`;
+}
+
+// Workflow roads renderer (Job Cards road + Stores road) - formatted like in jobcard & stores
+function renderWorkflowRoads(wm) {
+  if (!wm) return '';
+  const jr = wm.jobs_pipeline || {};
+  const sr = wm.stores_pipeline || {};
+  const jSteps = jr.steps || [];
+  const sSteps = sr.steps || [];
+  const jw = jr.workshop || {};
+  const jf = jr.finishing || {};
+  const st = sr.today || {};
+  const sh = sr.shelf || {};
+
+  const stepLink = (key) => {
+    switch (key) {
+      case 'requested': return '#/jobs?tab=requests';
+      case 'approved': return '#/jobs?tab=requests&step=operations';
+      case 'workshop': return '#/jobs?tab=ongoing';
+      case 'working': return '#/jobs?tab=ongoing&show=today';
+      case 'done': return '#/jobs?tab=finishing';
+      case 'priced': return '#/jobs?tab=ready';
+      case 'closed': return '#/jobs?tab=all&status=CLOSED';
+      default: return '#/jobs';
+    }
+  };
+
+  const storeStepLink = (key) => {
+    switch (key) {
+      case 'requested': return '#/stores?tab=flow&sub=lines&step=requested';
+      case 'certified': return '#/stores?tab=flow&sub=lines&step=certified';
+      case 'to_buy': return '#/purchasing';
+      case 'on_order': return '#/stores?tab=flow&sub=lines&step=on_order';
+      case 'received': return '#/stores?tab=flow&sub=grn';
+      case 'priced': return '#/stores?tab=flow&sub=lines&step=unpriced';
+      case 'issued': return '#/stores?tab=flow&sub=issues';
+      default: return '#/stores';
+    }
+  };
+
+  const renderSteps = (steps, linkFn) => `
+    <div style="display:flex;align-items:center;gap:6px;overflow-x:auto;padding:4px 0 8px;margin-bottom:6px">
+      ${steps.map((s, idx) => `
+        <a href="${linkFn(s.key)}" class="card stat" style="text-decoration:none;min-width:115px;padding:8px 12px;margin:0;border:${s.count > 0 ? '1px solid var(--accent)' : '1px solid var(--border)'};border-radius:6px;background:${s.count > 0 ? 'var(--card-bg, #fff)' : 'var(--bg-muted, #f8f9fa)'};">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:4px">
+            <span style="font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase">${esc(s.label)}</span>
+            <span style="font-size:16px;font-weight:700;color:${s.count > 0 ? 'var(--text)' : 'var(--muted)'}">${s.count}</span>
+          </div>
+        </a>
+        ${idx < steps.length - 1 ? '<span style="color:var(--muted);font-size:14px;font-weight:bold">➔</span>' : ''}
+      `).join('')}
+    </div>`;
+
+  const miniCard = (n, label, href, tone, note) => `
+    <a class="card stat" href="${href}" style="text-decoration:none;margin:0;padding:10px 12px;background:var(--card-sub-bg, #fafafa);border:1px solid var(--border-light, #eee);border-radius:6px">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:6px">
+        <span class="l" style="margin:0;font-size:12px;font-weight:600">${esc(label)}</span>
+        <span class="n" style="font-size:20px;font-weight:700;margin:0;${tone && n ? `color:var(--${tone})` : ''}">${n}</span>
+      </div>
+      ${note ? `<div class="muted" style="font-size:11px;margin-top:4px">${esc(note)}</div>` : ''}
+    </a>`;
+
+  const html = [];
+
+  // 1. Job Cards Monitor & Pipeline (like in jobcard)
+  if (canView('jobs') || canView('jobrequests')) {
+    html.push(`
+      <div class="card section" style="margin-bottom:14px;border-top:3px solid var(--accent, #2563eb)">
+        <div class="toolbar" style="margin:0 0 8px">
+          <h3 style="margin:0">🔧 Job Cards Pipeline &amp; Workshop Monitor</h3>
+          <div class="spacer"></div>
+          <a class="sm btn" href="#/jobs">Open Job Cards →</a>
+        </div>
+        ${renderSteps(jSteps, stepLink)}
+        <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px;margin-top:8px">
+          ${miniCard(jw.worked_today || 0, 'Worked on today', '#/jobs?tab=ongoing&show=today', 'green')}
+          ${miniCard(jw.waiting_parts || 0, 'Waiting for parts', '#/jobs?tab=ongoing&show=parts', 'amber', 'blocked on MRN')}
+          ${miniCard(jw.idle_3 || 0, 'Idle 3+ working days', '#/jobs?tab=ongoing&show=red', jw.idle_3 ? 'red' : '', 'no recent work logged')}
+          ${miniCard(jw.not_started || 0, 'Not started yet', '#/jobs?tab=ongoing&show=not_started', 'blue')}
+          ${miniCard((jf.ready || 0), 'Ready to close', '#/jobs?tab=ready', 'green', 'nothing missing')}
+          ${miniCard((jf.partly_closed || 0), 'Awaiting price', '#/jobs?tab=finishing&show=partly_closed', jf.partly_closed ? 'amber' : '', 'partly closed')}
+        </div>
+      </div>
+    `);
+  }
+
+  // 2. Stores Flow & Pipeline (stores like)
+  if (canView('stores') || canView('oil') || canView('purchasing')) {
+    html.push(`
+      <div class="card section" style="margin-bottom:14px;border-top:3px solid #10b981">
+        <div class="toolbar" style="margin:0 0 8px">
+          <h3 style="margin:0">📦 Stores Material Pipeline &amp; Inventory Flow</h3>
+          <div class="spacer"></div>
+          <a class="sm btn" href="#/stores">Open Stores Flow →</a>
+        </div>
+        ${renderSteps(sSteps, storeStepLink)}
+        <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px;margin-top:8px">
+          ${miniCard(st.received || 0, 'Received today', '#/stores?tab=flow&sub=grn', 'blue')}
+          ${miniCard(st.issued || 0, 'Issued today', '#/stores?tab=flow&sub=issues', 'green')}
+          ${miniCard(sh.unpriced_receipts || 0, 'To price (unpriced)', '#/stores?tab=flow&sub=lines&step=unpriced', sh.unpriced_receipts ? 'amber' : '', 'receipts awaiting cost')}
+          ${miniCard(sh.low_stock || 0, 'Under reorder level', '#/stores?tab=stock', sh.low_stock ? 'red' : '', 'low-stock alerts')}
+          ${miniCard((sh.old_units_due ? ((sh.old_units_due.tyre || 0) + (sh.old_units_due.battery || 0)) : 0), 'Old cores to record', '#/tbrequests?tab=returns', (sh.old_units_due && (sh.old_units_due.tyre || sh.old_units_due.battery)) ? 'amber' : '', 'tyres & batteries')}
+          ${miniCard(st.transfers_week || 0, 'Transfers (7 days)', '#/stores?tab=mtn', 'blue')}
+        </div>
+      </div>
+    `);
+  }
+
+  return html.join('');
+}
+
+// On-hold & bottleneck watchboard renderer specifically for Admin & Management
+function renderOnHoldWatchboard(oh) {
+  if (!oh) return '';
+  const waitingParts = oh.jobs_waiting_parts || [];
+  const unattended = oh.unattended_jobs || [];
+  const dualOpen = oh.dual_open_vehicles || [];
+  const stuckCount = oh.stuck_cards_count || 0;
+  const unpriced = oh.unpriced_grns_sample || [];
+  const unreturnedTb = (oh.unreturned_cores && ((oh.unreturned_cores.tyre || 0) + (oh.unreturned_cores.battery || 0))) || 0;
+  const totalAlerts = waitingParts.length + unattended.length + dualOpen.length + stuckCount + (oh.unpriced_grns_count || 0) + unreturnedTb;
+
+  return `
+    <div id="admin-onhold-watchboard" class="card section" style="border-left:4px solid ${totalAlerts ? 'var(--red)' : 'var(--green)'};margin-bottom:14px">
+      <div class="toolbar" style="margin:0 0 8px">
+        <h3 style="margin:0">🛑 Admin On-Hold &amp; Bottleneck Watchboard</h3>
+        <div class="spacer"></div>
+        <span class="badge ${totalAlerts ? 'red' : 'green'}">${totalAlerts} bottleneck${totalAlerts === 1 ? '' : 's'}</span>
+      </div>
+      <p class="muted" style="margin:0 0 10px;font-size:12px">Admin oversight: monitored hold points, stale cards, vehicle conflicts, and uncosted materials across all workshops.</p>
+
+      <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(270px,1fr));gap:12px;margin-top:8px">
+        <!-- 1. Jobs waiting on parts / hold reasons -->
+        <div class="card" style="padding:10px;margin:0;background:var(--bg-muted,#fdfdfd)">
+          <div class="toolbar" style="margin:0 0 6px">
+            <b>Jobs on Hold / Waiting Parts</b>
+            <div class="spacer"></div>
+            <span class="badge ${waitingParts.length ? 'amber' : ''}">${waitingParts.length}</span>
+          </div>
+          ${waitingParts.length ? waitingParts.slice(0, 4).map((j) => `
+            <div class="cost-line" style="font-size:12px;padding:3px 0">
+              <a href="${esc(j.link)}"><b>${esc(j.job_no)}</b> · ${esc(j.vehicle || '—')}</a>
+              <span class="badge amber">${j.days_idle || 0}d idle</span>
+            </div>
+            ${j.reason_note ? `<div class="muted" style="font-size:11px;margin-bottom:3px">${esc(j.reason_note)}</div>` : ''}
+          `).join('') : '<span class="muted" style="font-size:12px">No jobs marked on hold</span>'}
+          ${waitingParts.length > 4 ? `<div style="text-align:right;margin-top:4px"><a class="sm" href="#/jobs?tab=ongoing&show=parts">See all ${waitingParts.length} →</a></div>` : ''}
+        </div>
+
+        <!-- 2. Stale Requested Cards -->
+        <div class="card" style="padding:10px;margin:0;background:var(--bg-muted,#fdfdfd)">
+          <div class="toolbar" style="margin:0 0 6px">
+            <b>Stale REQUESTED Cards</b>
+            <div class="spacer"></div>
+            <span class="badge ${stuckCount ? 'red' : ''}">${stuckCount}</span>
+          </div>
+          <p class="muted" style="font-size:12px;margin:4px 0 8px">Cards requested long ago without movement. Review and triage or close in bulk.</p>
+          <a class="btn sm ${stuckCount ? 'primary' : ''}" href="${canDo('jobs.triage') ? '#/jobreview' : '#/jobs?tab=requests&step=stuck'}">
+            ${canDo('jobs.triage') ? 'Open Triage Screen →' : 'View Stuck Cards →'}
+          </a>
+        </div>
+
+        <!-- 3. Dual-Open Conflicts -->
+        <div class="card" style="padding:10px;margin:0;background:var(--bg-muted,#fdfdfd)">
+          <div class="toolbar" style="margin:0 0 6px">
+            <b>Dual-Open Conflicts</b>
+            <div class="spacer"></div>
+            <span class="badge ${dualOpen.length ? 'red' : ''}">${dualOpen.length}</span>
+          </div>
+          ${dualOpen.length ? dualOpen.slice(0, 4).map((v) => `
+            <div class="cost-line" style="font-size:12px;padding:3px 0">
+              <span class="stamp">${esc(v.asset_code || v.asset_reg || 'Vehicle')}</span>
+              <span class="badge red">${v.jobs ? v.jobs.length : 2} open cards</span>
+            </div>
+          `).join('') : '<span class="muted" style="font-size:12px">No conflicting open jobs</span>'}
+          ${dualOpen.length > 4 ? `<div style="text-align:right;margin-top:4px"><a class="sm" href="#/jobs?tab=all">See all ${dualOpen.length} conflicts →</a></div>` : ''}
+        </div>
+
+        <!-- 4. Unattended Active Jobs -->
+        <div class="card" style="padding:10px;margin:0;background:var(--bg-muted,#fdfdfd)">
+          <div class="toolbar" style="margin:0 0 6px">
+            <b>Inactive Jobs (3+ Working Days)</b>
+            <div class="spacer"></div>
+            <span class="badge ${unattended.length ? 'red' : ''}">${unattended.length}</span>
+          </div>
+          ${unattended.length ? unattended.slice(0, 4).map((j) => `
+            <div class="cost-line" style="font-size:12px;padding:3px 0">
+              <a href="${esc(j.link)}"><b>${esc(j.job_no)}</b> · ${esc(j.vehicle || '—')}</a>
+              <span class="badge red">${j.days_idle}d unattended</span>
+            </div>
+          `).join('') : '<span class="muted" style="font-size:12px">All workshop jobs recently attended</span>'}
+          ${unattended.length > 4 ? `<div style="text-align:right;margin-top:4px"><a class="sm" href="#/jobs?tab=ongoing&show=red">See all ${unattended.length} →</a></div>` : ''}
+        </div>
+
+        <!-- 5. Unpriced Receipts (GRN) on Shelf -->
+        <div class="card" style="padding:10px;margin:0;background:var(--bg-muted,#fdfdfd)">
+          <div class="toolbar" style="margin:0 0 6px">
+            <b>Unpriced Receipts (GRN)</b>
+            <div class="spacer"></div>
+            <span class="badge ${(oh.unpriced_grns_count || 0) ? 'amber' : ''}">${oh.unpriced_grns_count || 0}</span>
+          </div>
+          <p class="muted" style="font-size:12px;margin:4px 0 6px">Goods received without invoice price, blocking final job card costing.</p>
+          ${unpriced.length ? unpriced.slice(0, 3).map((u) => `
+            <div class="cost-line" style="font-size:12px;padding:2px 0">
+              <span><b>${esc(u.mrn_no || 'MRN')}</b> · ${esc(u.item || 'Item')}</span>
+              <span class="badge">${u.qty} pcs</span>
+            </div>
+          `).join('') : ''}
+          <div style="margin-top:6px">
+            <a class="btn sm" href="#/stores?tab=flow&sub=lines&step=unpriced">View Unpriced Receipts →</a>
+          </div>
+        </div>
+
+        <!-- 6. Unreturned Cores & Scraps -->
+        <div class="card" style="padding:10px;margin:0;background:var(--bg-muted,#fdfdfd)">
+          <div class="toolbar" style="margin:0 0 6px">
+            <b>Unreturned Scrap Cores</b>
+            <div class="spacer"></div>
+            <span class="badge ${unreturnedTb ? 'amber' : ''}">${unreturnedTb}</span>
+          </div>
+          <p class="muted" style="font-size:12px;margin:4px 0 6px">Replaced tyres &amp; batteries where old replaced unit is not yet logged.</p>
+          <div style="display:flex;gap:6px;margin:6px 0">
+            <span class="badge ${oh.unreturned_cores && oh.unreturned_cores.tyre ? 'amber' : ''}">🛞 Tyres: ${(oh.unreturned_cores && oh.unreturned_cores.tyre) || 0}</span>
+            <span class="badge ${oh.unreturned_cores && oh.unreturned_cores.battery ? 'amber' : ''}">🔋 Batteries: ${(oh.unreturned_cores && oh.unreturned_cores.battery) || 0}</span>
+          </div>
+          <div style="margin-top:6px">
+            <a class="btn sm" href="#/tbrequests?tab=returns">View Returns Queue →</a>
+          </div>
+        </div>
+      </div>
+    </div>`;
 }
 
 async function dashMain(c) {
-  const [d, mc, pa] = await Promise.all([
+  const [d, mc, wm] = await Promise.all([
     api('/reports/dashboard'), canView('reports') ? api('/reports/monthly') : null,
-    api('/reports/pending-approvals').catch(() => ({ total: 0, is_approver: false, certify: [], approve: [], transport: [], ops: [], jr_certify: [], jr_approve: [] })),
+    api('/dashboard/workflow-monitor').catch(() => null),
   ]);
   const na = d.needs_attention || {};
   const naTotal = Object.values(na).reduce((a, b) => a + (b || 0), 0);
@@ -998,7 +1271,29 @@ async function dashMain(c) {
     { m: 'batteries', route: 'batteries', ico: '🔋', title: 'Batteries', sub: 'track · swap' },
     { m: 'assets', route: 'assets', ico: '🚜', title: 'Assets', sub: 'fleet registry' },
   ].filter((w) => canEdit(w.m)).map((w) => `<a class="card stat" href="#/${w.route}" style="text-decoration:none;align-items:flex-start;gap:2px"><span class="n" style="font-size:26px">${w.ico}</span><span class="l"><b>${w.title}</b><br>${w.sub}</span></a>`).join('');
-  const S = [pageHeader('Dashboard', `${esc(ME.fullName || ME.username)} · ${esc(ME.roles.join(', '))}`), renderPendingApprovals(pa)];
+
+  // Top Pulse KPI Ribbon
+  const isAdminOrManager = isAdmin() || canFull('jobs') || canDo('users.manage');
+  const kp = (wm && wm.kpis) || {};
+  const kpiRibbon = `
+    <div class="grid section" style="grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;margin-bottom:14px">
+      ${mc ? `<div class="card stat"><span class="n">${moneyC(mc.this_month.total)}</span><span class="l">This Month Spend</span></div>` : ''}
+      <a class="card stat" href="#/jobs" style="text-decoration:none"><span class="n">${kp.active_jobs ?? d.open_jobs_count}</span><span class="l">Active Job Cards</span></a>
+      <a class="card stat" href="#/jobs?tab=ongoing" style="text-decoration:none"><span class="n">${kp.vehicles_in_workshop ?? 0}</span><span class="l">Vehicles in Workshop</span></a>
+      <a class="card stat" href="#/dashboard" style="text-decoration:none"><span class="n" style="color:${kp.total_pending ? 'var(--amber)' : 'var(--green)'}">${kp.total_pending ?? 0}</span><span class="l">Pending Approvals</span></a>
+      <a class="card stat" href="#/stores?tab=stock" style="text-decoration:none"><span class="n" style="color:${kp.low_stock_total ? 'var(--red)' : 'inherit'}">${kp.low_stock_total ?? 0}</span><span class="l">Low Stock Items</span></a>
+      ${isAdminOrManager ? `<a class="card stat" href="#admin-onhold-watchboard" style="text-decoration:none"><span class="n" style="color:${(kp.on_hold_total || 0) ? 'var(--red)' : 'var(--green)'}">${kp.on_hold_total ?? 0}</span><span class="l">On-Hold Bottlenecks</span></a>` : ''}
+      ${kp.field_down != null ? `<a class="card stat" href="#/field" style="text-decoration:none"><span class="n" style="color:${kp.field_down ? 'var(--red)' : 'inherit'}">${kp.field_down}</span><span class="l">Field Breakdowns Down</span></a>` : ''}
+    </div>`;
+
+  const scopeBadge = wm && wm.user_scope && wm.user_scope.label ? ` · <span class="badge blue">${esc(wm.user_scope.label)}</span>` : '';
+  const S = [
+    pageHeader('Dashboard', `${esc(ME.fullName || ME.username)} · ${esc(ME.roles.join(', '))}${scopeBadge}`),
+    kpiRibbon,
+    renderProcessApprovals(wm && wm.approvals_process),
+    renderWorkflowRoads(wm),
+    isAdminOrManager ? renderOnHoldWatchboard(wm && wm.on_hold) : ''
+  ].filter(Boolean);
   if (wsTiles) S.push(`<div class="card section"><h3 style="margin-top:0">Your workspace</h3><div class="grid">${wsTiles}</div></div>`);
   if (canView('reports')) S.push(`
     <h3 style="margin-top:0">This Month · ${monthName(mc.this_month.month)}</h3>
@@ -1022,18 +1317,11 @@ async function dashMain(c) {
           <td class="num">${money(m.service || 0)}</td>
           <td class="num"><b>${money(m.total)}</b></td></tr>`), { scroll: true })}</div>`);
   const opStats = [];
-  if (canView('jobs')) opStats.push(`<a class="card stat" href="#/jobs" style="text-decoration:none"><span class="n">${d.open_jobs_count}</span><span class="l">Open Job Cards</span></a>
-      <a class="card stat" href="#/jobs?status=CLOSED" style="text-decoration:none"><span class="n">${d.closed_this_month_count}</span><span class="l">Closed This Month</span></a>
-      <a class="card stat" href="#/teardown" style="text-decoration:none"><span class="n">${d.awaiting_price.length}</span><span class="l">Awaiting Price (blocked)</span></a>
-      ${(d.partly_closed || []).length ? `<a class="card stat" href="#/jobs?status=PARTIALLY_CLOSED" style="text-decoration:none"><span class="n">${d.partly_closed.length}</span><span class="l">Partly Closed — awaiting prices</span></a>` : ''}
-      ${d.ready_to_close ? `<a class="card stat" href="#/jobs?tab=ready" style="text-decoration:none"><span class="n" style="color:var(--green)">${d.ready_to_close}</span><span class="l">Ready to close — nothing missing</span></a>` : ''}
-      ${d.field_down != null ? `<a class="card stat" href="#/field" style="text-decoration:none"><span class="n" style="color:${d.field_down ? 'var(--red)' : 'inherit'}">${d.field_down}</span><span class="l">Machines down in the field</span></a>` : ''}`);
   // Attendance (W3): today's tally and the days still to sign off — only while attendance is on.
   const at = d.attendance_today;
   if (at && canView('dailywork')) opStats.push(`<a class="card stat" href="#/dailywork" style="text-decoration:none"><span class="n" style="color:${at.red_count ? 'var(--red)' : 'inherit'}">${at.before_start ? '—' : at.red_count}</span><span class="l">Today's tally — ${at.before_start ? 'not started' : (at.red_count ? 'red' : 'nothing red')}</span></a>
       ${at.unsigned_days.length ? `<a class="card stat" href="#/dailywork?att=${esc(at.unsigned_days[0].date)}${at.unsigned_days[0].workshop_id ? '&att_ws=' + at.unsigned_days[0].workshop_id : ''}" style="text-decoration:none"><span class="n">${at.unsigned_days.length}</span><span class="l">Days to sign off</span></a>` : ''}`);
-  if (canView('oil')) opStats.push(`<a class="card stat" href="#/oil?tab=forecast" style="text-decoration:none"><span class="n">${d.low_stock_oil.length}</span><span class="l">Low-stock Lubricants</span></a>`);
-  if (canView('batteries')) opStats.push(`<a class="card stat" href="#/batteries" style="text-decoration:none"><span class="n">${d.batteries_warranty.length}</span><span class="l">Battery Warranty ≤60d</span></a>`);
+  if (canView('batteries') && d.batteries_warranty && d.batteries_warranty.length) opStats.push(`<a class="card stat" href="#/batteries" style="text-decoration:none"><span class="n">${d.batteries_warranty.length}</span><span class="l">Battery Warranty ≤60d</span></a>`);
   if (canView('stores') || canView('oil')) {
     opStats.push(`<div class="card stat" style="text-decoration:none"><div class="toolbar" style="margin:0 0 4px"><span class="l" style="margin:0"><b>To Reorder</b></span><div class="spacer"></div><span class="badge ${d.low_stock_oil.length ? 'amber' : 'green'}">${d.low_stock_oil.length ? 'Action needed' : 'Healthy'}</span></div>
       <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px">
@@ -1042,7 +1330,7 @@ async function dashMain(c) {
       </div></div>`);
   }
   if (opStats.length) S.push(`<div class="grid section">${opStats.join('')}</div>`);
-  if (canView('attention')) S.push(`
+  if (canView('reports')) S.push(`
     <div class="card section" style="border-left:4px solid ${naTotal ? 'var(--amber)' : 'var(--green)'}">
       <div class="toolbar" style="margin:0"><h3 style="margin:0">⚠ Needs Attention</h3><div class="spacer"></div><span class="badge ${naTotal ? 'amber' : 'green'}">${naTotal} flag${naTotal === 1 ? '' : 's'}</span> <a class="btn sm" href="#/attention">See all →</a></div>
       <div class="pill-row" style="margin-top:8px">
@@ -1530,7 +1818,7 @@ async function jobsOngoing(body, sp) {
       <select id="og-type" style="max-width:140px"><option value="">Repair &amp; service</option>
         <option value="repair" ${cur.type === 'repair' ? 'selected' : ''}>Repair</option><option value="service" ${cur.type === 'service' ? 'selected' : ''}>Service</option></select>
       <div class="spacer"></div>
-      ${canView('progress') || canView('reports') ? '<a class="btn sm" href="/api/reports/ongoing-jobs.xlsx">⬇ Excel</a><a class="btn sm" href="/api/reports/ongoing-jobs.html" target="_blank">🖨 PDF</a>' : ''}
+      ${canView('reports') ? '<a class="btn sm" href="/api/reports/ongoing-jobs.xlsx">⬇ Excel</a><a class="btn sm" href="/api/reports/ongoing-jobs.html" target="_blank">🖨 PDF</a>' : ''}
     </div>
     <p class="muted" style="margin:0 0 8px;font-size:12.5px">Worked on = a daily-work line that day. Days count working days (not Sundays). 3 days or more is red.</p>
     <div class="pill-row" id="og-show" style="margin:0 0 10px;flex-wrap:wrap;gap:6px"></div>
@@ -2052,8 +2340,13 @@ routes.dailywork = async (c) => {
     qs('#dwm-count').textContent = `${list.length} laborer${list.length === 1 ? '' : 's'}`;
     // Attendance on: hours at work, hours booked and utilisation, over the days the tally runs.
     const att = currentMonthlyData.attendance;
-    const rows = list.map((l) => `<tr>
-      <td><b>${esc(l.mechanic)}</b></td>
+    const rows = list.map((l) => {
+      const isResigned = l.status === 'resigned' || l.active === 0;
+      const statusBadge = isResigned
+        ? ` <span class="badge red" style="font-size:10.5px;padding:2px 6px;margin-left:5px" title="Resigned/Left on ${esc(l.left_date || '')}${l.left_reason ? ' (' + esc(l.left_reason) + ')' : ''}">Resigned${l.left_date ? ' · ' + esc(l.left_date.slice(5)) : ''}</span>`
+        : '';
+      return `<tr>
+      <td><b>${esc(l.mechanic)}</b>${statusBadge}</td>
       <td class="num"><b>${num(l.total_hours)} hrs</b></td>
       <td class="num">${l.rate === 0 ? '<span class="badge blue">Staff / Foreman (Rs 0/h)</span>' : (l.rate != null ? money(l.rate) + '/h' : '<span class="badge amber">no rate</span>')}</td>
       <td class="num">${money(l.total_cost)}</td>
@@ -2061,7 +2354,8 @@ routes.dailywork = async (c) => {
       ${att ? `<td class="num">${l.attended_hours ? fmtH(l.attended_hours) : '—'}</td>
       <td class="num">${l.booked_hours ? fmtH(l.booked_hours) : '—'}</td>
       <td class="num">${l.utilisation == null ? '—' : `<span class="badge ${l.utilisation > 100 ? 'red' : l.utilisation >= 85 ? 'green' : 'amber'}">${l.utilisation}%</span>`}</td>` : ''}
-    </tr>`);
+    </tr>`;
+    });
     const heads = [{ label: 'Laborer / Mechanic' }, { label: 'Monthly Working Hours', num: true }, { label: 'Hourly Rate', num: true }, { label: 'Monthly Labour Cost', num: true }, { label: 'Work Entries', num: true }];
     if (att) heads.push({ label: 'Attended', num: true }, { label: 'Booked', num: true }, { label: 'Utilisation', num: true });
     qs('#dwm-table').innerHTML = list.length
@@ -2076,7 +2370,24 @@ routes.dailywork = async (c) => {
     const sel = qs('#dw-mech-select');
     if (!sel) return;
     const curVal = sel.value;
-    sel.innerHTML = '<option value="">All Laborers</option>' + (mechanicsList || []).map((l) => `<option value="${esc(l.mechanic)}">${esc(l.mechanic)} (${l.total_hours}h)</option>`).join('');
+    const active = [];
+    const resigned = [];
+    (mechanicsList || []).forEach((l) => {
+      if (l.status === 'resigned' || l.active === 0) resigned.push(l);
+      else active.push(l);
+    });
+    let html = '<option value="">All Laborers</option>';
+    if (active.length) {
+      html += `<optgroup label="Active Laborers (${active.length})">` +
+        active.map((l) => `<option value="${esc(l.mechanic)}">${esc(l.mechanic)} (${l.total_hours}h)</option>`).join('') +
+        `</optgroup>`;
+    }
+    if (resigned.length) {
+      html += `<optgroup label="Resigned / Left (${resigned.length})">` +
+        resigned.map((l) => `<option value="${esc(l.mechanic)}">${esc(l.mechanic)} (${l.total_hours}h · Resigned)</option>`).join('') +
+        `</optgroup>`;
+    }
+    sel.innerHTML = html;
     if (curVal && sel.querySelector(`option[value="${CSS.escape ? CSS.escape(curVal) : curVal}"]`)) {
       sel.value = curVal;
     }
@@ -2682,15 +2993,19 @@ async function hoursLeftHint(box, { date, rows, excludeLine = null }) {
 
 // Log a single daily-work entry from the Daily Work section (day by day).
 async function addWorkDoneModal(defaultDate, onDone) {
-  let mechs = [];
-  try { mechs = await api('/mechanics'); } catch (e) { /* falls back to an empty list */ }
-  const mechOpts = mechs.map((m) => `<option value="${esc(m.name)}">${esc(m.name)}${m.rate != null ? ' · Rs ' + m.rate + '/h' : ' · no rate'}</option>`).join('');
+  const curDate = defaultDate || today();
+  const fetchMechs = async (dt) => {
+    try { return await api('/mechanics?active=1&date=' + encodeURIComponent(dt || today())); } catch (e) { return []; }
+  };
+  let mechs = await fetchMechs(curDate);
+  const renderMechOpts = (list) => list.map((m) => `<option value="${esc(m.name)}">${esc(m.name)}${m.rate != null ? ' · Rs ' + m.rate + '/h' : ' · no rate'}${m.workshop_code ? ' [' + esc(m.workshop_code) + ']' : ''}</option>`).join('');
+
   modal('Add Work Done', `
-    ${field('Date', 'work_date', { type: 'date', value: defaultDate })}
+    ${field('Date', 'work_date', { type: 'date', value: curDate })}
     ${targetPickerHtml('dwt', { label: 'Work for', generalLabel: 'General workshop', generalVehicle: true })}
     ${field('Description of work', 'description')}
     <label>Mechanic(s)</label>
-    <select id="dwmech"><option value="">— add a mechanic —</option>${mechOpts}</select>
+    <select id="dwmech"><option value="">— add a mechanic —</option>${renderMechOpts(mechs)}</select>
     <div id="dwcrew" class="pill-row" style="margin:6px 0;min-height:6px"></div>
     <input type="hidden" name="mechanic">
     ${field('Hours', 'hours', { type: 'number' })}
@@ -2713,7 +3028,16 @@ async function addWorkDoneModal(defaultDate, onDone) {
       qsa('[data-rm]', chips).forEach((el) => { el.onclick = () => { const i = crew.indexOf(el.dataset.rm); if (i >= 0) crew.splice(i, 1); paint(); }; });
       hint();
     };
-    for (const n of ['work_date', 'hours', 'is_external']) qs(`input[name=${n}]`, body).addEventListener(n === 'hours' ? 'input' : 'change', hint);
+    qs('input[name=work_date]', body).addEventListener('change', async (e) => {
+      hint();
+      const dt = e.target.value;
+      if (dt) {
+        const fresh = await fetchMechs(dt);
+        const sel = qs('#dwmech', body);
+        if (sel) sel.innerHTML = '<option value="">— add a mechanic —</option>' + renderMechOpts(fresh);
+      }
+    });
+    for (const n of ['hours', 'is_external']) qs(`input[name=${n}]`, body).addEventListener(n === 'hours' ? 'input' : 'change', hint);
     qs('#dwmech', body).onchange = (e) => { const v = e.target.value; if (v && !crew.includes(v)) { crew.push(v); paint(); } e.target.value = ''; };
     qs('#s', body).onclick = async () => {
       const f = formData(body);
@@ -2731,16 +3055,19 @@ async function addWorkDoneModal(defaultDate, onDone) {
 
 // Rapid multi-row timesheet logging grid for mechanics across jobs
 async function quickTimesheetGridModal(defaultDate, onDone) {
-  let mechs = [];
-  try { mechs = await api('/mechanics'); } catch (e) { }
-  const mechListOptions = mechs.map((m) => `<option value="${esc(m.name)}">${esc(m.name)}${m.rate != null ? ' (Rs ' + m.rate + '/h)' : ''}</option>`).join('');
+  const curDate = defaultDate || today();
+  const fetchMechs = async (dt) => {
+    try { return await api('/mechanics?active=1&date=' + encodeURIComponent(dt || today())); } catch (e) { return []; }
+  };
+  let mechs = await fetchMechs(curDate);
+  const renderMechDl = (list) => list.map((m) => `<option value="${esc(m.name)}">${esc(m.name)}${m.rate != null ? ' (Rs ' + m.rate + '/h)' : ''}${m.workshop_code ? ' [' + esc(m.workshop_code) + ']' : ''}</option>`).join('');
 
   modal('Quick Timesheet Grid', `
     <p class="muted" style="margin-top:0">Log daily mechanic hours across vehicles/job cards rapidly in a single grid. Blank rows will be ignored.</p>
     <div class="row" style="margin-bottom:12px;align-items:center">
       <div style="max-width:200px">
         <label>Date</label>
-        <input type="date" id="tg-date" value="${esc(defaultDate || new Date().toISOString().slice(0, 10))}">
+        <input type="date" id="tg-date" value="${esc(curDate)}">
       </div>
       <div class="spacer"></div>
       <button class="sm" id="tg-add-rows">+ Add 5 Rows</button>
@@ -2759,7 +3086,7 @@ async function quickTimesheetGridModal(defaultDate, onDone) {
         <tbody id="tg-tbody"></tbody>
       </table>
     </div>
-    <datalist id="tg-mech-dl">${mechListOptions}</datalist>
+    <datalist id="tg-mech-dl">${renderMechDl(mechs)}</datalist>
     <div id="tg-hint" style="font-size:12px;margin-top:8px"></div>
     <div style="margin-top:14px;display:flex;align-items:center">
       <button class="sm" id="tg-add-1">+ Add Row</button>
@@ -2838,9 +3165,16 @@ async function quickTimesheetGridModal(defaultDate, onDone) {
 // deleting the line and logging it again against the right card.
 async function editWorkDoneModal(entry, onDone) {
   if (!entry) return toast('Entry not found — refresh the day', 'err');
+  const curDate = String(entry.work_date || '').slice(0, 10) || today();
   let mechs = [];
-  try { mechs = await api('/mechanics'); } catch (e) { /* falls back to typing names */ }
-  const mechOpts = mechs.map((m) => `<option value="${esc(m.name)}">${esc(m.name)}${m.rate != null ? ' · Rs ' + m.rate + '/h' : ' · no rate'}</option>`).join('');
+  try { mechs = await api('/mechanics?active=1&date=' + encodeURIComponent(curDate)); } catch (e) { /* falls back to typing names */ }
+  const existingCrew = String(entry.mechanic || '').split(/\s*(?:,|&|\+|\band\b)\s*/i).map((s) => s.trim()).filter(Boolean);
+  for (const n of existingCrew) {
+    if (!mechs.some((m) => m.name.toLowerCase() === n.toLowerCase())) {
+      mechs.push({ name: n, rate: null, active: 0, status: 'resigned' });
+    }
+  }
+  const mechOpts = mechs.map((m) => `<option value="${esc(m.name)}">${esc(m.name)}${m.rate != null ? ' · Rs ' + m.rate + '/h' : ' · no rate'}${m.status === 'resigned' || !m.active ? ' (Resigned)' : (m.workshop_code ? ' [' + esc(m.workshop_code) + ']' : '')}</option>`).join('');
   modal('Edit Work Done', `
     <p class="muted" style="margin-top:0;font-size:12px">Job <b>${esc(entry.job_no || '—')}</b> · ${esc(idLabel(entry) || 'no vehicle')}</p>
     ${field('Date', 'work_date', { type: 'date', value: String(entry.work_date || '').slice(0, 10) })}
@@ -2887,50 +3221,464 @@ async function editWorkDoneModal(entry, onDone) {
   });
 }
 
-// ---- Labour Rates (hourly rates + unassigned labour used in daily work)
+// ---- Labour & Mechanics Hub (workforce roster, site transfers, resignations & billing rates)
 routes.labour = async (c) => {
-  const [mechs, unassigned] = await Promise.all([api('/mechanics'), api('/mechanics/unassigned')]);
-  const canEdit = canDo('labour.rates.edit');
-  const rateRows = mechs.map((m) => `<tr>
-    <td>${esc(m.name)}</td>
-    <td class="num">${m.rate === 0 ? '<span class="badge blue">Staff / Foreman (Rs 0/h)</span>' : (m.rate != null ? money(m.rate) + '/hr' : '<span class="badge amber">no rate</span>')}</td>
-    ${canEdit ? `<td class="num"><button class="sm" data-setrate="${esc(m.name)}" data-rate="${m.rate != null ? m.rate : ''}">Edit</button></td>` : ''}</tr>`);
-  const unRows = unassigned.map((u) => `<tr>
-    <td>${esc(u.name)}${u.resolved && u.resolvedName && u.resolvedName !== u.name ? ` <span class="muted">(→ ${esc(u.resolvedName)})</span>` : ''}</td>
-    <td class="num">${u.entries}</td>
-    ${canEdit ? `<td class="num"><button class="sm primary" data-setrate="${esc(u.resolvedName || u.name)}" data-rate="">Set rate</button></td>` : ''}</tr>`);
+  const [mechsData, unassignedData, wsData] = await Promise.all([
+    api('/mechanics?include_inactive=1'),
+    api('/mechanics/unassigned').catch(() => []),
+    api('/workshops').catch(() => ({ workshops: [] })),
+  ]);
+  const mechs = mechsData || [];
+  const unassigned = unassignedData || [];
+  const workshops = (wsData && wsData.workshops) || [];
 
-  c.innerHTML = `${pageHeader('Labour Rates')}
-    <div class="toolbar">
-      ${canEdit ? '<button class="primary" id="addrate">+ Add / update rate</button>' : ''}
-      <div class="spacer"></div>
-    </div>
-    <div class="card">
-      <h3>Hourly rates <span class="muted">(${mechs.length})</span></h3>
-      ${tableWrap([{ label: 'Labour' }, { label: 'Rate', num: true }].concat(canEdit ? [{ label: '', num: true }] : []), rateRows, { scroll: true })}
-    </div>
-    <div class="card">
-      <h3>Unassigned labour <span class="muted">— appear in daily work, no rate (${unassigned.length})</span></h3>
-      ${unassigned.length
-      ? tableWrap([{ label: 'Labour name' }, { label: 'Daily-work entries', num: true }].concat(canEdit ? [{ label: '', num: true }] : []), unRows, { scroll: true })
-      : '<p class="muted">Every labour name in the daily-work log has a rate. 🎉</p>'}
-    </div>`;
+  const canEditRates = canDo('labour.rates.edit');
+  const canEditMechanics = canDo('mechanics.edit') || canDo('mechanics.create') || canEditRates;
+  const canMoveMechanics = canDo('mechanics.move') || canDo('workshops.manage');
+  const canCreate = canDo('mechanics.create');
 
-  const setRate = (name, rate) => modal('Set hourly rate', `
-    ${field('Labour name', 'mechanic', { value: name })}
-    ${field('Hourly rate (Rs)', 'rate', { type: 'number', value: rate })}
-    <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Save rate</button></div>`,
+  let activeTab = 'active'; // 'active' | 'resigned' | 'transfers' | 'unassigned' | 'all'
+  let searchQuery = '';
+  let wsFilter = '';
+
+  const getFilteredList = () => {
+    const q = searchQuery.trim().toLowerCase();
+    const ws = wsFilter ? Number(wsFilter) : null;
+
+    if (activeTab === 'unassigned') {
+      return unassigned.filter((u) => !q || u.name.toLowerCase().includes(q) || (u.resolvedName && u.resolvedName.toLowerCase().includes(q)));
+    }
+
+    return mechs.filter((m) => {
+      // Tab filtering
+      if (activeTab === 'active' && (!m.active || m.status === 'resigned')) return false;
+      if (activeTab === 'resigned' && (m.active && m.status !== 'resigned')) return false;
+      if (activeTab === 'transfers' && !m.last_move) return false;
+
+      // Workshop filtering
+      if (ws && m.workshop_id !== ws) return false;
+
+      // Search query filtering
+      if (q) {
+        const nameMatch = (m.name || '').toLowerCase().includes(q);
+        const wsMatch = (m.workshop_name || '').toLowerCase().includes(q) || (m.workshop_code || '').toLowerCase().includes(q);
+        const reasonMatch = (m.left_reason || '').toLowerCase().includes(q);
+        const notesMatch = (m.notes || '').toLowerCase().includes(q);
+        if (!nameMatch && !wsMatch && !reasonMatch && !notesMatch) return false;
+      }
+      return true;
+    });
+  };
+
+  const counts = {
+    active: mechs.filter((m) => m.active && m.status !== 'resigned').length,
+    resigned: mechs.filter((m) => !m.active || m.status === 'resigned').length,
+    transfers: mechs.filter((m) => m.last_move != null).length,
+    unassigned: unassigned.length,
+    total: mechs.length,
+  };
+
+  const renderContent = () => {
+    const list = getFilteredList();
+
+    // Tab Bar
+    const tabsHtml = `
+      <div style="display:flex;gap:4px;flex-wrap:wrap">
+        <button class="sm ${activeTab === 'active' ? 'primary' : ''}" data-tab="active">Active (${counts.active})</button>
+        <button class="sm ${activeTab === 'resigned' ? 'primary' : ''}" data-tab="resigned">Resigned / Left (${counts.resigned})</button>
+        <button class="sm ${activeTab === 'transfers' ? 'primary' : ''}" data-tab="transfers">Site Transfers (${counts.transfers})</button>
+        <button class="sm ${activeTab === 'unassigned' ? 'primary' : ''}" data-tab="unassigned">Unassigned Names (${counts.unassigned})</button>
+        <button class="sm ${activeTab === 'all' ? 'primary' : ''}" data-tab="all">All (${counts.total})</button>
+      </div>
+    `;
+    if (qs('#labour-tabs', c)) qs('#labour-tabs', c).innerHTML = tabsHtml;
+
+    const container = qs('#labour-tab-content', c);
+    if (!container) return;
+
+    if (activeTab === 'unassigned') {
+      const rows = list.map((u) => `<tr>
+        <td><b>${esc(u.name)}</b>${u.resolved && u.resolvedName && u.resolvedName !== u.name ? ` <span class="muted">(→ ${esc(u.resolvedName)})</span>` : ''}</td>
+        <td class="num">${u.entries}</td>
+        ${canEditRates ? `<td class="num"><button class="sm primary" data-act="setrate" data-name="${esc(u.resolvedName || u.name)}" data-rate="">Set Rate / Register</button></td>` : ''}
+      </tr>`);
+      container.innerHTML = list.length
+        ? tableWrap([{ label: 'Labour name in daily log' }, { label: 'Daily-work entries', num: true }].concat(canEditRates ? [{ label: 'Action', num: true }] : []), rows, { scroll: true })
+        : '<p class="muted">No unassigned labour names found in daily work logs. 🎉</p>';
+      bindRowActions();
+      return;
+    }
+
+    if (activeTab === 'resigned') {
+      const rows = list.map((m) => `<tr>
+        <td><b>${esc(m.name)}</b></td>
+        <td><b style="color:var(--red)">${esc(m.left_date || '—')}</b></td>
+        <td><span class="badge red">${esc(m.left_reason || 'Resigned')}</span></td>
+        <td>${esc(m.notes || '—')}</td>
+        <td>${m.workshop_name ? `<span class="badge blue">${esc(m.workshop_name)}</span>` : '<span class="muted">—</span>'}</td>
+        <td class="num">${m.rate === 0 ? '<span class="badge blue">Rs 0/h</span>' : (m.rate != null ? money(m.rate) + '/hr' : '<span class="muted">—</span>')}</td>
+        <td><span class="badge red">Departed</span></td>
+        <td class="num" style="white-space:nowrap">
+          ${canEditMechanics ? `<button class="sm primary" data-act="reinstate" data-id="${m.id}" title="Reactivate this worker back into active workforce">↩ Reinstate</button> ` : ''}
+          <button class="sm" data-act="history" data-id="${m.id}" title="View transfer and rate history">📜 History</button>
+        </td>
+      </tr>`);
+      container.innerHTML = list.length
+        ? tableWrap([
+            { label: 'Labourer / Mechanic' }, { label: 'Left Date' }, { label: 'Departure Reason' },
+            { label: 'Handover / Notes' }, { label: 'Last Workshop' }, { label: 'Last Rate', num: true },
+            { label: 'Status' }, { label: 'Actions', num: true }
+          ], rows, { scroll: true })
+        : '<p class="muted">No departed or resigned labourers match criteria.</p>';
+      bindRowActions();
+      return;
+    }
+
+    if (activeTab === 'transfers') {
+      const rows = list.map((m) => `<tr>
+        <td><b>${esc(m.name)}</b></td>
+        <td>${m.workshop_name ? `<span class="badge blue">${esc(m.workshop_name)}</span>` : '<span class="muted">Unassigned</span>'}</td>
+        <td><b>${esc(m.last_move || '—')}</b></td>
+        <td class="num">${m.rate === 0 ? '<span class="badge blue">Staff (Rs 0/h)</span>' : (m.rate != null ? money(m.rate) + '/hr' : '<span class="badge amber">no rate</span>')}</td>
+        <td>${m.active && m.status !== 'resigned' ? '<span class="badge green">Active</span>' : '<span class="badge red">Resigned</span>'}</td>
+        <td class="num" style="white-space:nowrap">
+          ${canMoveMechanics ? `<button class="sm" data-act="transfer" data-id="${m.id}">🏢 Transfer Site</button> ` : ''}
+          <button class="sm" data-act="history" data-id="${m.id}">📜 Transfer History</button>
+        </td>
+      </tr>`);
+      container.innerHTML = list.length
+        ? tableWrap([
+            { label: 'Labourer / Mechanic' }, { label: 'Current Site / Workshop' }, { label: 'Last Move Date' },
+            { label: 'Hourly Rate', num: true }, { label: 'Status' }, { label: 'Actions', num: true }
+          ], rows, { scroll: true })
+        : '<p class="muted">No site transfers match criteria.</p>';
+      bindRowActions();
+      return;
+    }
+
+    // Default / Active / All tab
+    const rows = list.map((m) => {
+      const isActive = m.active && m.status !== 'resigned';
+      const statusBadge = isActive
+        ? '<span class="badge green">Active</span>'
+        : `<span class="badge red" title="Left on ${esc(m.left_date || '')}">Resigned${m.left_date ? ' · ' + esc(m.left_date.slice(5)) : ''}</span>`;
+      return `<tr>
+        <td><b>${esc(m.name)}</b></td>
+        <td>${m.workshop_name ? `<span class="badge blue">${esc(m.workshop_name)}</span>` : '<span class="muted">Unassigned Site</span>'}</td>
+        <td class="num">${m.rate === 0 ? '<span class="badge blue">Staff / Foreman (Rs 0/h)</span>' : (m.rate != null ? money(m.rate) + '/hr' : '<span class="badge amber">no rate</span>')}</td>
+        <td>${m.last_move ? esc(m.last_move) : '—'}</td>
+        <td>${statusBadge}</td>
+        <td class="num" style="white-space:nowrap">
+          ${isActive && canMoveMechanics ? `<button class="sm" data-act="transfer" data-id="${m.id}" title="Transfer to another site workshop">🏢 Transfer</button> ` : ''}
+          ${isActive && canEditMechanics ? `<button class="sm danger" data-act="resign" data-id="${m.id}" title="Mark as resigned / departed">🚪 Resign</button> ` : ''}
+          ${!isActive && canEditMechanics ? `<button class="sm primary" data-act="reinstate" data-id="${m.id}" title="Reinstate worker">↩ Reinstate</button> ` : ''}
+          ${canEditRates ? `<button class="sm" data-act="setrate" data-name="${esc(m.name)}" data-rate="${m.rate != null ? m.rate : ''}" title="Update hourly rate">Rs Rate</button> ` : ''}
+          <button class="sm" data-act="history" data-id="${m.id}" title="View transfers & rate history">📜</button>
+        </td>
+      </tr>`;
+    });
+
+    const heads = [
+      { label: 'Labourer / Mechanic' }, { label: 'Workshop / Site' }, { label: 'Hourly Rate', num: true },
+      { label: 'Last Move' }, { label: 'Status' }, { label: 'Actions', num: true }
+    ];
+    container.innerHTML = list.length
+      ? tableWrap(heads, rows, { scroll: true })
+      : `<p class="muted">No labourers match "${esc(searchQuery || 'selected criteria')}".</p>`;
+    bindRowActions();
+  };
+
+  const bindRowActions = () => {
+    qsa('[data-act]', c).forEach((btn) => {
+      btn.onclick = () => {
+        const act = btn.dataset.act;
+        const id = Number(btn.dataset.id);
+        const m = mechs.find((x) => x.id === id);
+
+        if (act === 'resign' && m) resignModal(m);
+        else if (act === 'transfer' && m) transferModal(m);
+        else if (act === 'reinstate' && m) reinstateModal(m);
+        else if (act === 'history' && m) historyModal(m);
+        else if (act === 'setrate') setRateModal(btn.dataset.name, btn.dataset.rate);
+      };
+    });
+  };
+
+  const setRateModal = (name, rate) => modal('Set Hourly Rate', `
+    ${field('Labourer name', 'mechanic', { value: name })}
+    ${field('Hourly rate (Rs)', 'rate', { type: 'number', value: rate, placeholder: 'e.g. 450' })}
+    <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Save Rate</button></div>`,
     (body, close) => {
       qs('#s', body).onclick = async () => {
         const d = formData(body);
-        if (!d.mechanic || !d.rate) return toast('Name and rate are required', 'err');
-        try { await api('/mechanics/rates', { method: 'POST', body: { mechanic: d.mechanic, rate: d.rate } }); toast('Rate saved'); close(); render(); }
-        catch (e) { toast(e.message, 'err'); }
+        if (!d.mechanic || d.rate === '') return toast('Name and rate are required', 'err');
+        try {
+          await api('/mechanics/rates', { method: 'POST', body: { mechanic: d.mechanic, rate: d.rate } });
+          toast('Rate saved successfully');
+          close();
+          render();
+        } catch (e) { toast(e.message, 'err'); }
       };
     });
 
-  if (qs('#addrate')) qs('#addrate').onclick = () => setRate('', '');
-  qsa('[data-setrate]').forEach((b) => b.onclick = () => setRate(b.dataset.setrate, b.dataset.rate));
+  const addMechanicModal = () => {
+    const wsOptions = workshops.map((w) => `<option value="${w.id}">${esc(w.name)} (${esc(w.code)})</option>`).join('');
+    modal('Register New Labourer / Mechanic', `
+      ${field('Full Name *', 'name', { placeholder: 'e.g. Sunil Perera' })}
+      <label>Assigned Site / Workshop</label>
+      <select name="workshop_id">
+        <option value="">— Select Site Workshop (Optional) —</option>
+        ${wsOptions}
+      </select>
+      ${field('Hourly Labour Rate (Rs)', 'rate', { type: 'number', placeholder: 'e.g. 450' })}
+      ${field('Notes / Remarks', 'notes', { type: 'textarea', placeholder: 'e.g. Senior diesel mechanic, appointed Sept 2026' })}
+      <div style="margin-top:14px;text-align:right"><button class="primary" id="s">Save &amp; Register Labourer</button></div>`,
+      (body, close) => {
+        qs('#s', body).onclick = async () => {
+          const d = formData(body);
+          if (!d.name || !d.name.trim()) return toast('Name is required', 'err');
+          try {
+            const res = await api('/mechanics', { method: 'POST', body: { name: d.name.trim() } });
+            const mechId = res.id;
+            if (d.workshop_id && mechId) {
+              await api(`/mechanics/${mechId}/transfer`, {
+                method: 'POST',
+                body: { workshop_id: d.workshop_id, from_date: today(), note: 'Initial workshop placement' }
+              });
+            }
+            if (d.rate !== '' && d.rate != null) {
+              await api('/mechanics/rates', { method: 'POST', body: { mechanic: d.name.trim(), rate: Number(d.rate) } });
+            }
+            if (d.notes && mechId) {
+              await api(`/mechanics/${mechId}`, { method: 'PATCH', body: { notes: d.notes } });
+            }
+            toast('Labourer registered successfully');
+            close();
+            render();
+          } catch (e) { toast(e.message, 'err'); }
+        };
+      });
+  };
+
+  const resignModal = (m) => {
+    const curDate = today();
+    modal(`Mark Departed / Resigned — ${esc(m.name)}`, `
+      <div style="font-size:12.5px;color:var(--muted);margin-bottom:12px;padding:8px 12px;background:var(--bg-subtle, #fef2f2);border-left:4px solid #ef4444;border-radius:4px">
+        <b>Departure Policy:</b> Resigned labourers are hidden from future daily workdone pickers, quick timesheets, and attendance rosters on or after the departure date. Past job cards, historic attendance, and monthly work summaries are completely preserved.
+      </div>
+      <div style="margin-bottom:10px;font-size:13px">
+        <b>Labourer:</b> ${esc(m.name)}<br>
+        <b>Current Site:</b> <span class="badge blue">${esc(m.workshop_name || 'Unassigned / Default')}</span>
+      </div>
+      ${field('Departure / Resignation Date *', 'left_date', { type: 'date', value: curDate })}
+      <label>Reason for Leaving *</label>
+      <select name="left_reason">
+        <option value="Resigned (Voluntary)">Resigned (Voluntary)</option>
+        <option value="Site Demobilization / Project End">Site Demobilization / Project End</option>
+        <option value="Contract Expired / Completed">Contract Expired / Completed</option>
+        <option value="Transferred to Another Company">Transferred to Another Company</option>
+        <option value="Personal / Family Reasons">Personal / Family Reasons</option>
+        <option value="Disciplinary / Terminated">Disciplinary / Terminated</option>
+        <option value="Medical / Health">Medical / Health</option>
+        <option value="Other">Other</option>
+      </select>
+      ${field('Notes & Handover Remarks', 'notes', { type: 'textarea', value: m.notes || '', placeholder: 'Add any handover notes or remarks…' })}
+      <div style="margin-top:14px;text-align:right">
+        <button class="danger" id="s">🚪 Confirm Departure &amp; Hide</button>
+      </div>`,
+      (body, close) => {
+        qs('#s', body).onclick = async () => {
+          const d = formData(body);
+          if (!d.left_date) return toast('Departure date is required', 'err');
+          try {
+            await api(`/mechanics/${m.id}/resign`, {
+              method: 'POST',
+              body: { left_date: d.left_date, left_reason: d.left_reason || 'Resigned', notes: d.notes || null }
+            });
+            toast(`${m.name} marked as departed · hidden from future work rosters`);
+            close();
+            render();
+          } catch (e) { toast(e.message, 'err'); }
+        };
+      });
+  };
+
+  const transferModal = (m) => {
+    const wsOptions = workshops
+      .filter((w) => w.id !== m.workshop_id)
+      .map((w) => `<option value="${w.id}">${esc(w.name)} (${esc(w.code)})</option>`)
+      .join('');
+    const curDate = today();
+    modal(`Transfer Site Workshop — ${esc(m.name)}`, `
+      <div style="font-size:12.5px;color:var(--muted);margin-bottom:12px;padding:8px 12px;background:var(--bg-subtle, #f0f9ff);border-left:4px solid #0284c7;border-radius:4px">
+        <b>Site Scoping:</b> Transferring a labourer moves their home workshop to the destination site from the effective date. Their daily work done will be attributed to the new workshop from that day forward, keeping site rosters clean.
+      </div>
+      <div style="margin-bottom:10px;font-size:13px">
+        <b>Labourer:</b> ${esc(m.name)}<br>
+        <b>Current Workshop:</b> <span class="badge blue">${esc(m.workshop_name || 'Unassigned / Default')}</span>
+      </div>
+      <label>Destination Site / Workshop *</label>
+      <select name="workshop_id">
+        <option value="">— Select Target Workshop —</option>
+        ${wsOptions}
+      </select>
+      ${field('Effective From Date *', 'from_date', { type: 'date', value: curDate })}
+      ${field('Transfer Note / Reason', 'note', { placeholder: 'e.g. Transferred to Matara highway site project' })}
+      <div style="margin-top:14px;text-align:right">
+        <button class="primary" id="s">🏢 Confirm Site Transfer</button>
+      </div>`,
+      (body, close) => {
+        qs('#s', body).onclick = async () => {
+          const d = formData(body);
+          if (!d.workshop_id) return toast('Please select destination workshop', 'err');
+          if (!d.from_date) return toast('Effective transfer date is required', 'err');
+          try {
+            await api(`/mechanics/${m.id}/transfer`, {
+              method: 'POST',
+              body: { workshop_id: d.workshop_id, from_date: d.from_date, note: d.note || 'Transferred to site workshop' }
+            });
+            toast(`${m.name} transferred to new site workshop`);
+            close();
+            render();
+          } catch (e) { toast(e.message, 'err'); }
+        };
+      });
+  };
+
+  const reinstateModal = (m) => {
+    modal(`Reinstate Labourer — ${esc(m.name)}`, `
+      <div style="font-size:12.5px;color:var(--muted);margin-bottom:12px;padding:8px 12px;background:var(--bg-subtle, #f0fdf4);border-left:4px solid #16a34a;border-radius:4px">
+        <b>Reinstatement:</b> This will reactivate <b>${esc(m.name)}</b> so they appear in daily workdone pickers, timesheet grids, and attendance rosters again.
+      </div>
+      <p style="font-size:13px">Departed on: <b>${esc(m.left_date || '—')}</b><br>Reason: <i>${esc(m.left_reason || '—')}</i></p>
+      <div style="margin-top:14px;text-align:right">
+        <button class="primary" id="s">↩ Confirm Reinstatement</button>
+      </div>`,
+      (body, close) => {
+        qs('#s', body).onclick = async () => {
+          try {
+            await api(`/mechanics/${m.id}/reinstate`, { method: 'POST' });
+            toast(`${m.name} reinstated to active workforce`);
+            close();
+            render();
+          } catch (e) { toast(e.message, 'err'); }
+        };
+      });
+  };
+
+  const historyModal = async (m) => {
+    let d;
+    try { d = await api('/mechanics/' + m.id); } catch (e) { return toast(e.message, 'err'); }
+    const transfers = d.transfers || [];
+    const rates = d.rates || [];
+    const mech = d.mechanic || m;
+
+    const transferRows = transfers.map((t) => `<tr>
+      <td><b>${esc(t.from_date)}</b></td>
+      <td><span class="badge blue">${esc(t.workshop_name)}</span></td>
+      <td>${esc(t.note || '—')}</td>
+      <td>${esc(t.set_by_name || 'System')}</td>
+    </tr>`);
+
+    const rateRows = rates.map((r) => `<tr>
+      <td><b>${esc(r.effective_from || 'Initial')}</b></td>
+      <td class="num"><b>${money(r.rate)}/hr</b></td>
+    </tr>`);
+
+    modal(`Workforce History — ${esc(mech.name)}`, `
+      <div class="card" style="margin-bottom:12px">
+        <div style="display:flex;align-items:center;gap:10px">
+          <h3 style="margin:0">${esc(mech.name)}</h3>
+          ${mech.active ? '<span class="badge green">Active</span>' : `<span class="badge red">Resigned on ${esc(mech.left_date || '')}</span>`}
+          ${mech.workshop_name ? `<span class="badge blue">Site: ${esc(mech.workshop_name)}</span>` : '<span class="muted">No site assigned</span>'}
+        </div>
+        ${mech.left_reason ? `<div style="margin-top:6px;font-size:12.5px;color:var(--muted)">Reason: <b>${esc(mech.left_reason)}</b>${mech.notes ? ' · Note: ' + esc(mech.notes) : ''}</div>` : ''}
+      </div>
+      <div class="card section" style="margin-bottom:12px">
+        <h4 style="margin:0 0 6px">Site Workshop Transfers (${transfers.length})</h4>
+        ${transfers.length
+          ? tableWrap([{ label: 'Effective Date' }, { label: 'Workshop / Site' }, { label: 'Reason / Note' }, { label: 'Assigned By' }], transferRows, { scroll: true })
+          : '<p class="muted">No workshop transfers recorded. Assigned to default workshop.</p>'}
+      </div>
+      <div class="card section">
+        <h4 style="margin:0 0 6px">Hourly Labour Rates (${rates.length})</h4>
+        ${rates.length
+          ? tableWrap([{ label: 'Effective From' }, { label: 'Rate', num: true }], rateRows, { scroll: true })
+          : '<p class="muted">No rate history recorded.</p>'}
+      </div>`,
+      () => {});
+  };
+
+  // Render Base Layout
+  c.innerHTML = `${pageHeader('Labour & Mechanics Hub')}
+    <div class="grid section" style="margin-bottom:12px">
+      <div class="card stat" style="cursor:pointer" id="stat-active">
+        <span class="n" style="color:var(--green)">${counts.active}</span>
+        <span class="l">Active Workforce</span>
+      </div>
+      <div class="card stat" style="cursor:pointer" id="stat-resigned">
+        <span class="n" style="color:var(--red)">${counts.resigned}</span>
+        <span class="l">Resigned / Departed</span>
+      </div>
+      <div class="card stat" style="cursor:pointer" id="stat-transfers">
+        <span class="n" style="color:#2563eb">${counts.transfers}</span>
+        <span class="l">Site Transfers</span>
+      </div>
+      <div class="card stat" style="cursor:pointer" id="stat-unassigned">
+        <span class="n" style="color:var(--amber)">${counts.unassigned}</span>
+        <span class="l">Unassigned in Work Log</span>
+      </div>
+    </div>
+
+    <div class="card section">
+      <div class="toolbar" style="margin:0 0 10px;gap:8px;flex-wrap:wrap">
+        <div id="labour-tabs"></div>
+        <div class="spacer"></div>
+        <input type="search" id="l-search" placeholder="Search name, site, reason…" style="max-width:210px" value="${esc(searchQuery)}">
+        <select id="l-ws-filter" style="max-width:180px">
+          <option value="">All Sites / Workshops</option>
+          ${workshops.map((w) => `<option value="${w.id}">${esc(w.name)} (${esc(w.code)})</option>`).join('')}
+        </select>
+        ${canCreate ? '<button class="primary sm" id="btn-add-mech">+ Register Labourer</button>' : ''}
+        ${canEditRates ? '<button class="sm" id="btn-add-rate">+ Set Hourly Rate</button>' : ''}
+      </div>
+      <div id="labour-tab-content"><div class="muted">Loading labour roster…</div></div>
+    </div>`;
+
+  // Bind top stat card clicks
+  if (qs('#stat-active', c)) qs('#stat-active', c).onclick = () => { activeTab = 'active'; renderContent(); };
+  if (qs('#stat-resigned', c)) qs('#stat-resigned', c).onclick = () => { activeTab = 'resigned'; renderContent(); };
+  if (qs('#stat-transfers', c)) qs('#stat-transfers', c).onclick = () => { activeTab = 'transfers'; renderContent(); };
+  if (qs('#stat-unassigned', c)) qs('#stat-unassigned', c).onclick = () => { activeTab = 'unassigned'; renderContent(); };
+
+  // Bind top actions
+  if (qs('#btn-add-mech', c)) qs('#btn-add-mech', c).onclick = addMechanicModal;
+  if (qs('#btn-add-rate', c)) qs('#btn-add-rate', c).onclick = () => setRateModal('', '');
+
+  // Bind search and filter
+  if (qs('#l-search', c)) {
+    qs('#l-search', c).oninput = (e) => {
+      searchQuery = e.target.value;
+      renderContent();
+    };
+  }
+  if (qs('#l-ws-filter', c)) {
+    qs('#l-ws-filter', c).onchange = (e) => {
+      wsFilter = e.target.value;
+      renderContent();
+    };
+  }
+
+  // Bind tab switching
+  c.addEventListener('click', (e) => {
+    const tabBtn = e.target.closest('[data-tab]');
+    if (tabBtn && tabBtn.dataset.tab) {
+      activeTab = tabBtn.dataset.tab;
+      renderContent();
+    }
+  });
+
+  renderContent();
 };
 
 // ---- vehicle conflicts: more than one open card on the same vehicle --------
@@ -3023,7 +3771,7 @@ async function fieldModal(jobId, fld, onSaved) {
 
 // The field board: every field job still open, the machines still down first.
 routes.field = async (c) => {
-  if (!canView('field')) { c.innerHTML = '<div class="card err">You do not have access to this page.</div>'; return; }
+  if (!canView('jobs')) { c.innerHTML = '<div class="card err">You do not have access to this page.</div>'; return; }
   const d = await api('/field/board');
   const canBd = canDo('jobs.breakdown');
   const canRate = canDo('jobs.settings');
@@ -3066,11 +3814,9 @@ const isHeadOffice = () => isAdmin() || !!(ME && (ME.caps || []).includes('works
 routes.operations = async (c) => {
   const sp = new URLSearchParams(location.hash.split('?')[1] || '');
   const tabs = [];
-  if (canView('operations')) {
-    tabs.push(['fleet', 'Site fleet']);
-    if (isHeadOffice()) tabs.push(['glance', 'Workshops at a glance']);
-    if (wsMulti()) tabs.push(['handovers', 'Job handovers']);
-  }
+  if (canView('assets')) tabs.push(['fleet', 'Site fleet']);
+  if (isHeadOffice()) tabs.push(['glance', 'Workshops at a glance']);
+  if (canView('jobs') && wsMulti()) tabs.push(['handovers', 'Job handovers']);
   if (!tabs.length) { c.innerHTML = '<div class="card err">You do not have access to this page.</div>'; return; }
   const tab = tabs.some((t) => t[0] === sp.get('tab')) ? sp.get('tab') : tabs[0][0];
   c.innerHTML = `${pageHeader('Operations', 'Where the machines are, which are down, and how each workshop is doing.')}
@@ -3402,7 +4148,7 @@ async function jobDetail(c, id) {
           <td>${canDo('jobs.parts') ? `<button class="sm" data-price="${p.id}">Price</button>${isPartial ? '' : ` <button class="sm" data-del-part="${p.id}" title="Take off this job — the item goes back to unassigned parts, it is not deleted">✕</button>`}` : ''}</td></tr>`))}
     </div>
     ${j.mrnItems && j.mrnItems.length ? `<div class="card section"><h3>MRN Items <span class="muted">— requested materials (${j.mrnItems.length})</span></h3>
-      ${tableWrap([{ label: 'MRN No' }, { label: 'Date' }, { label: 'Item' }, { label: 'Category' }, { label: 'Qty Req', num: true }, { label: 'Qty Recd', num: true }, { label: 'Shelf Status' }, { label: 'Action' }],
+      ${tableWrap([{ label: 'Priority' }, { label: 'MRN No' }, { label: 'Date' }, { label: 'Item & Urgency Note' }, { label: 'Category' }, { label: 'Qty Req', num: true }, { label: 'Qty Recd', num: true }, { label: 'Shelf Status' }, { label: 'Action' }],
         j.mrnItems.map((m) => {
           const avail = Number(m.remaining_in_store) || 0;
           const recd = Number(m.qty_received) || 0;
@@ -3413,23 +4159,28 @@ async function jobDetail(c, id) {
           else if (recd > 0) statusBadgeHtml = `<span class="badge blue">Partial (${num(recd)}/${num(req)})</span>`;
           else statusBadgeHtml = `<span class="pipe-badge pend">Awaiting delivery</span>`;
 
-          const actBtn = (avail > 0 && !isClosed && canDo('stores.stock_issue'))
-            ? `<button class="sm primary issue-mrn-btn" data-mrn-item='${esc(JSON.stringify({
+          const btns = [];
+          if (avail > 0 && !isClosed && canDo('stores.stock_issue')) {
+            btns.push(`<button class="sm primary issue-mrn-btn" data-mrn-item='${esc(JSON.stringify({
               job_id: job.id, job_no: job.job_no, asset_id: job.asset_id,
               grn_id: m.grn_id, mrn_no: m.mrn_no, grn_no: m.grn_no,
               description: m.description, remaining: avail, unit_price: m.unit_price
-            }))}'>⚡ Issue</button>`
-            : '—';
+            }))}'>⚡ Issue</button>`);
+          }
+          if (!isClosed && recd < req) {
+            btns.push(`<button class="sm" data-jc-prio="${m.mrn_line_id}" data-prio-val="${esc(m.buying_priority || 'P3_ROUTINE')}" data-prio-note="${esc(m.priority_note || '')}" title="Adjust daily workshop priority">⚡ Urgency</button>`);
+          }
 
           return `<tr>
+            <td><span style="cursor:pointer" data-jc-prio="${m.mrn_line_id}" data-prio-val="${esc(m.buying_priority || 'P3_ROUTINE')}" data-prio-note="${esc(m.priority_note || '')}">${puPrioBadge(m.buying_priority, m.priority_note)}</span></td>
             <td><a href="#/stores?tab=mrn&id=${m.mrn_id}">${esc(m.mrn_no)}</a></td>
             <td>${esc((m.req_date || '').slice(0, 10))}</td>
-            <td>${esc(m.description || '')}</td>
+            <td><b>${esc(m.description || '')}</b>${m.priority_note ? `<div style="font-size:11px;color:var(--amber);margin-top:2px"><b>Urgency Note:</b> ${esc(m.priority_note)}</div>` : ''}</td>
             <td>${esc(m.category || '')}</td>
             <td class="num">${num(m.qty)}</td>
             <td class="num">${num(m.qty_received)}</td>
             <td>${statusBadgeHtml}</td>
-            <td>${actBtn}</td></tr>`;
+            <td><div style="display:flex;gap:4px;flex-wrap:wrap">${btns.length ? btns.join(' ') : '—'}</div></td></tr>`;
         }), { scroll: true })}</div>` : ''}
     ${j.oilIssues.length ? `<div class="card section"><h3>Oil / Lubricant Issued</h3>${tableWrap([{ label: 'Product' }, { label: 'Qty', num: true }, { label: 'Unit Price', num: true }], j.oilIssues.map((o) => `<tr><td>${esc(o.product_name)}</td><td class="num">${num(Math.abs(o.qty))} ${esc(o.unit)}</td><td class="num">${money(o.unit_price)}</td></tr>`))}</div>` : ''}
     ${j.generalIssues && j.generalIssues.length ? `<div class="card section"><h3>General Items Issued <span class="muted">(${j.generalIssues.length})</span></h3>
@@ -3456,6 +4207,9 @@ async function jobDetail(c, id) {
     catch (e) { toast(e.message, 'err'); }
   };
   if (qs('#editjob')) qs('#editjob').onclick = () => editJobModal(job, render);
+  qsa('[data-jc-prio]', c).forEach((b) => {
+    b.onclick = () => adjustPriorityModal(b.dataset.jcPrio, b.dataset.prioVal, b.dataset.prioNote, render);
+  });
   // Stage 6: field work.
   if (qs('#fldmark')) qs('#fldmark').onclick = () => fieldModal(job.id, { field: false }, render);
   if (qs('#fldedit')) qs('#fldedit').onclick = () => fieldModal(job.id, fld, render);
@@ -3963,6 +4717,466 @@ async function storeCatalogueTab(body) {
   await load();
 }
 
+// ---- Document Lifecycle Roads & Helpers (MRN, GRN, MIN, MTN) ---------------
+function grnRoad(g) {
+  const st = g.grn_status || g.status || 'pending_approval';
+  const isRejected = st === 'rejected';
+  const isApproved = st === 'approved';
+  const isPriced = g.unit_price != null && Number(g.unit_price) >= 0;
+
+  if (isRejected) {
+    return {
+      road: [
+        { label: 'Received', state: 'done' },
+        { label: 'Priced', state: isPriced ? 'done' : 'todo' },
+        { label: 'Approved', state: 'stop' },
+        { label: 'In Stock', state: 'todo' },
+      ],
+      step: 'rejected',
+      label: 'Rejected'
+    };
+  }
+  if (!isPriced) {
+    return {
+      road: [
+        { label: 'Received', state: 'done' },
+        { label: 'Priced', state: 'now' },
+        { label: 'Approved', state: 'todo' },
+        { label: 'In Stock', state: 'todo' },
+      ],
+      step: 'to_price',
+      label: 'To price'
+    };
+  }
+  if (!isApproved) {
+    return {
+      road: [
+        { label: 'Received', state: 'done' },
+        { label: 'Priced', state: 'done' },
+        { label: 'Approved', state: 'now' },
+        { label: 'In Stock', state: 'todo' },
+      ],
+      step: 'to_approve',
+      label: 'To approve'
+    };
+  }
+  return {
+    road: [
+      { label: 'Received', state: 'done' },
+      { label: 'Priced', state: 'done' },
+      { label: 'Approved', state: 'done' },
+      { label: 'In Stock', state: 'done' },
+    ],
+    step: 'approved',
+    label: 'Approved · In stock'
+  };
+}
+
+function mrnRoad(m) {
+  const isRejected = m.approval_status === 'rejected';
+  const astatus = m.approval_status || 'requested';
+  const isImported = astatus === 'requested' && !(m.requested_by && String(m.requested_by).trim());
+  const req = Number(m.qty_requested) || 0;
+  const rec = Number(m.qty_received) || 0;
+
+  if (isRejected) {
+    return {
+      road: [
+        { label: 'Requested', state: 'done' },
+        { label: 'Certified', state: 'stop' },
+        { label: 'Approved', state: 'stop' },
+        { label: 'Received', state: 'todo' },
+        { label: 'Done', state: 'todo' },
+      ],
+      step: 'rejected',
+      label: 'Rejected'
+    };
+  }
+  if (!isImported && astatus === 'requested') {
+    return {
+      road: [
+        { label: 'Requested', state: 'done' },
+        { label: 'Certified', state: 'now' },
+        { label: 'Approved', state: 'todo' },
+        { label: 'Received', state: 'todo' },
+        { label: 'Done', state: 'todo' },
+      ],
+      step: 'to_certify',
+      label: 'To certify'
+    };
+  }
+  if (!isImported && astatus === 'certified') {
+    return {
+      road: [
+        { label: 'Requested', state: 'done' },
+        { label: 'Certified', state: 'done' },
+        { label: 'Approved', state: 'now' },
+        { label: 'Received', state: 'todo' },
+        { label: 'Done', state: 'todo' },
+      ],
+      step: 'to_approve',
+      label: 'To approve'
+    };
+  }
+  if (rec <= 0) {
+    return {
+      road: [
+        { label: 'Requested', state: 'done' },
+        { label: 'Certified', state: 'done' },
+        { label: 'Approved', state: 'done' },
+        { label: 'Received', state: 'now' },
+        { label: 'Done', state: 'todo' },
+      ],
+      step: 'to_receive',
+      label: 'To buy / receive'
+    };
+  }
+  if (rec < req - 0.001) {
+    return {
+      road: [
+        { label: 'Requested', state: 'done' },
+        { label: 'Certified', state: 'done' },
+        { label: 'Approved', state: 'done' },
+        { label: 'Received', state: 'part' },
+        { label: 'Done', state: 'todo' },
+      ],
+      step: 'partial',
+      label: `Part received (${num(rec)}/${num(req)})`
+    };
+  }
+  return {
+    road: [
+      { label: 'Requested', state: 'done' },
+      { label: 'Certified', state: 'done' },
+      { label: 'Approved', state: 'done' },
+      { label: 'Received', state: 'done' },
+      { label: 'Done', state: 'done' },
+    ],
+    step: 'done',
+    label: 'Done'
+  };
+}
+
+function minRoad(i) {
+  const isRejected = (i.min_status || i.status) === 'rejected';
+  const st = i.min_status || i.status || 'issued';
+
+  if (isRejected) {
+    return {
+      road: [
+        { label: 'Requested', state: 'done' },
+        { label: 'Approved', state: 'stop' },
+        { label: 'Issued', state: 'todo' },
+      ],
+      step: 'rejected',
+      label: 'Rejected'
+    };
+  }
+  if (st === 'pending_approval' || st === 'requested') {
+    return {
+      road: [
+        { label: 'Requested', state: 'done' },
+        { label: 'Approved', state: 'now' },
+        { label: 'Issued', state: 'todo' },
+      ],
+      step: 'to_approve',
+      label: 'To approve'
+    };
+  }
+  if (st === 'approved') {
+    return {
+      road: [
+        { label: 'Requested', state: 'done' },
+        { label: 'Approved', state: 'done' },
+        { label: 'Issued', state: 'now' },
+      ],
+      step: 'to_issue',
+      label: 'Ready to hand over'
+    };
+  }
+  return {
+    road: [
+      { label: 'Requested', state: 'done' },
+      { label: 'Approved', state: 'done' },
+      { label: 'Issued', state: 'done' },
+    ],
+    step: 'issued',
+    label: 'Issued & Handed over'
+  };
+}
+
+function mtnRoad(t) {
+  const isRejected = (t.status || '') === 'rejected';
+  const st = t.status || (t.accepted_at ? 'accepted' : (t.received_at ? 'received' : (t.approved_at ? 'dispatched' : 'draft')));
+
+  if (isRejected) {
+    return {
+      road: [
+        { label: 'Draft', state: 'done' },
+        { label: 'Approved', state: 'stop' },
+        { label: 'In Transit', state: 'todo' },
+        { label: 'Received', state: 'todo' },
+        { label: 'Accepted', state: 'todo' },
+      ],
+      step: 'rejected',
+      label: 'Rejected'
+    };
+  }
+  if (st === 'draft' || st === 'pending_approval') {
+    return {
+      road: [
+        { label: 'Draft', state: 'done' },
+        { label: 'Approved', state: 'now' },
+        { label: 'In Transit', state: 'todo' },
+        { label: 'Received', state: 'todo' },
+        { label: 'Accepted', state: 'todo' },
+      ],
+      step: 'to_approve',
+      label: 'To approve'
+    };
+  }
+  if (st === 'approved') {
+    return {
+      road: [
+        { label: 'Draft', state: 'done' },
+        { label: 'Approved', state: 'done' },
+        { label: 'In Transit', state: 'now' },
+        { label: 'Received', state: 'todo' },
+        { label: 'Accepted', state: 'todo' },
+      ],
+      step: 'to_dispatch',
+      label: 'To dispatch'
+    };
+  }
+  if (st === 'dispatched') {
+    return {
+      road: [
+        { label: 'Draft', state: 'done' },
+        { label: 'Approved', state: 'done' },
+        { label: 'In Transit', state: 'part' },
+        { label: 'Received', state: 'now' },
+        { label: 'Accepted', state: 'todo' },
+      ],
+      step: 'in_transit',
+      label: 'In transit (to receive)'
+    };
+  }
+  if (st === 'received') {
+    return {
+      road: [
+        { label: 'Draft', state: 'done' },
+        { label: 'Approved', state: 'done' },
+        { label: 'In Transit', state: 'done' },
+        { label: 'Received', state: 'done' },
+        { label: 'Accepted', state: 'now' },
+      ],
+      step: 'to_accept',
+      label: 'To accept into stock'
+    };
+  }
+  return {
+    road: [
+      { label: 'Draft', state: 'done' },
+      { label: 'Approved', state: 'done' },
+      { label: 'In Transit', state: 'done' },
+      { label: 'Received', state: 'done' },
+      { label: 'Accepted', state: 'done' },
+    ],
+    step: 'accepted',
+    label: 'Accepted into stock'
+  };
+}
+
+async function newGrnModal(onDone) {
+  let nextNo = '';
+  try {
+    const list = await api('/stores/grn?limit=1');
+    const lastId = list.length && list[0].id ? list[0].id + 1 : 1;
+    const yr = new Date().getFullYear();
+    nextNo = `GRN-${yr}-${String(lastId).padStart(4, '0')}`;
+  } catch (e) {
+    nextNo = `GRN-${new Date().getFullYear()}-0001`;
+  }
+
+  let pendingMrnLines = [];
+  try {
+    pendingMrnLines = await api('/stores/awaiting-grn?limit=100');
+  } catch (e) {}
+
+  const fld = (...args) => `<div class="fld">${field(...args)}</div>`;
+  const bg = modal('New Goods Received Note (GRN)', `
+    <div style="font-size:12px;color:var(--muted);margin-bottom:8px">Document Ref: <b>EC1.ST.FO.2:5:21.12</b> · Goods Received Note</div>
+    <div class="card" style="margin-bottom:12px">
+      <h4 style="margin:0 0 8px">1 · Delivery &amp; Commercial Information</h4>
+      <div class="fgrid">
+        ${fld('GRN Number *', 'grn_no', { value: nextNo })}
+        ${fld('Received Date *', 'received_date', { type: 'date', value: new Date().toISOString().slice(0, 10) })}
+        ${fld('Supplier *', 'supplier', { placeholder: 'Supplier company name' })}
+        ${fld('Delivery Note / Challan No', 'delivery_note_no', { placeholder: 'e.g. DN-12345' })}
+        ${fld('Purchase Order (PO) No', 'po_no', { placeholder: 'e.g. PO-8921' })}
+        ${fld('Invoice No', 'invoice_no', { placeholder: 'e.g. INV-9901' })}
+        ${fld('Invoice Date', 'invoice_date', { type: 'date' })}
+        ${fld('Purchase Source', 'purchase_source', { type: 'select', options: SOURCE_OPTS, value: 'local_purchase' })}
+        ${fld('Project / Workshop Site', 'project_site', { value: 'Central Workshop — Badalgama' })}
+      </div>
+    </div>
+    <div class="card">
+      <div class="toolbar" style="margin:0 0 8px">
+        <h4 style="margin:0">2 · Received Items</h4>
+        <div class="spacer"></div>
+        ${pendingMrnLines.length ? '<button class="sm" id="gpickmrn" type="button">📋 Pick from Pending MRN</button>' : ''}
+        <button class="sm primary" id="gaddline" type="button">+ Add Custom Item</button>
+      </div>
+      <div id="mrnpicker" style="display:none;background:var(--surface-2);padding:10px;border-radius:6px;margin-bottom:10px;border:1px solid var(--border)">
+        <div style="font-weight:600;font-size:12.5px;margin-bottom:6px">Select pending requested items to receive on this GRN:</div>
+        <div style="max-height:180px;overflow-y:auto">
+          ${tableWrap(
+            [{ label: 'Pick' }, { label: 'MRN' }, { label: 'Item' }, { label: 'Vehicle' }, { label: 'Qty Due', num: true }],
+            pendingMrnLines.map((p, idx) => `<tr>
+              <td><button class="sm primary" data-pick-idx="${idx}" type="button">+ Select</button></td>
+              <td><b>${esc(p.mrn_no || '')}</b></td>
+              <td>${esc(p.description || '')}</td>
+              <td>${esc(p.asset_code || 'Store stock')}</td>
+              <td class="num"><b>${num((Number(p.qty) || 0) - (Number(p.qty_received) || 0))}</b></td>
+            </tr>`))}
+        </div>
+      </div>
+      <div style="overflow-x:auto">
+        <table class="data-table" style="width:100%;font-size:12.5px" id="grnitemstable">
+          <thead>
+            <tr>
+              <th style="width:36%">Item Description *</th>
+              <th style="width:14%">Qty *</th>
+              <th style="width:12%">Unit</th>
+              <th style="width:16%">Unit Price (Rs)</th>
+              <th style="width:16%">MRN Ref</th>
+              <th style="width:6%"></th>
+            </tr>
+          </thead>
+          <tbody id="grnitemsbody">
+          </tbody>
+        </table>
+      </div>
+      <p class="muted" style="font-size:11.5px;margin:8px 0 0">Leave Unit Price blank if awaiting invoice pricing. Items will show under "To price" and proceed to approval.</p>
+    </div>
+    <div style="margin-top:14px;display:flex;justify-content:space-between;align-items:center">
+      <span class="muted" style="font-size:12px">Recorded by <b>${esc(ME ? (ME.fullName || ME.username) : 'Storekeeper')}</b></span>
+      <button class="primary" id="gsave" style="padding:8px 20px;font-size:14px">📥 Record Goods Receipt (GRN)</button>
+    </div>`,
+    (mbody, close) => {
+      const tbody = qs('#grnitemsbody', mbody);
+      const addRow = (item = {}) => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td><input type="text" class="g-desc" value="${esc(item.description || '')}" placeholder="Item description" style="width:100%"></td>
+          <td><input type="number" step="any" min="0.01" class="g-qty" value="${item.qty || 1}" style="width:100%"></td>
+          <td><input type="text" class="g-unit" value="${esc(item.unit || 'nos')}" placeholder="nos" style="width:100%"></td>
+          <td><input type="number" step="any" min="0" class="g-price" value="${item.unit_price != null ? item.unit_price : ''}" placeholder="Awaiting" style="width:100%"></td>
+          <td><input type="text" class="g-mrn" value="${esc(item.mrn_no || '')}" readonly style="width:100%;background:var(--surface-2)" data-mrn-id="${item.mrn_id || ''}" data-line-id="${item.mrn_line_id || ''}"></td>
+          <td><button class="sm danger g-del" type="button">✕</button></td>`;
+        tr.querySelector('.g-del').onclick = () => tr.remove();
+        tbody.appendChild(tr);
+      };
+
+      addRow();
+
+      if (qs('#gaddline', mbody)) qs('#gaddline', mbody).onclick = () => addRow();
+
+      const picker = qs('#mrnpicker', mbody);
+      if (qs('#gpickmrn', mbody)) {
+        qs('#gpickmrn', mbody).onclick = () => {
+          picker.style.display = picker.style.display === 'none' ? 'block' : 'none';
+        };
+      }
+
+      qsa('[data-pick-idx]', picker).forEach((btn) => {
+        btn.onclick = () => {
+          const item = pendingMrnLines[Number(btn.dataset.pickIdx)];
+          if (!item) return;
+          const remaining = Math.max(0, (Number(item.qty) || 0) - (Number(item.qty_received) || 0));
+          addRow({
+            description: item.description,
+            qty: remaining || 1,
+            unit: item.unit || 'nos',
+            mrn_no: item.mrn_no,
+            mrn_id: item.mrn_id,
+            mrn_line_id: item.id || item.mrn_line_id,
+          });
+          btn.textContent = '✓ Added';
+          btn.disabled = true;
+          toast(`Added ${item.description}`);
+        };
+      });
+
+      qs('#gsave', mbody).onclick = async () => {
+        const grnNo = qs('[name="grn_no"]', mbody).value.trim();
+        const receivedDate = qs('[name="received_date"]', mbody).value;
+        const supplier = qs('[name="supplier"]', mbody).value.trim();
+        const deliveryNoteNo = qs('[name="delivery_note_no"]', mbody).value.trim();
+        const poNo = qs('[name="po_no"]', mbody).value.trim();
+        const invoiceNo = qs('[name="invoice_no"]', mbody).value.trim();
+        const invoiceDate = qs('[name="invoice_date"]', mbody).value;
+        const purchaseSource = qs('[name="purchase_source"]', mbody).value;
+        const projectSite = qs('[name="project_site"]', mbody).value.trim();
+
+        if (!grnNo) return toast('GRN number is required', 'err');
+        if (!receivedDate) return toast('Received date is required', 'err');
+        if (!supplier) return toast('Supplier is required', 'err');
+
+        const rows = qsa('tr', tbody);
+        const lines = [];
+        for (const tr of rows) {
+          const desc = tr.querySelector('.g-desc').value.trim();
+          const qty = Number(tr.querySelector('.g-qty').value);
+          const unit = tr.querySelector('.g-unit').value.trim() || 'nos';
+          const pVal = tr.querySelector('.g-price').value.trim();
+          const price = pVal === '' ? null : Number(pVal);
+          const mrnInp = tr.querySelector('.g-mrn');
+          const mrnId = mrnInp ? mrnInp.dataset.mrnId : null;
+          const mrnLineId = mrnInp ? mrnInp.dataset.lineId : null;
+
+          if (desc && qty > 0) {
+            lines.push({
+              description: desc,
+              qty,
+              unit,
+              unit_price: price,
+              mrn_id: mrnId || null,
+              mrn_line_id: mrnLineId || null,
+            });
+          }
+        }
+
+        if (!lines.length) return toast('Add at least one received item line', 'err');
+
+        try {
+          const res = await api('/stores/grn-vouchers', {
+            method: 'POST',
+            body: {
+              grn_no: grnNo,
+              received_date: receivedDate,
+              supplier,
+              delivery_note_no: deliveryNoteNo,
+              po_no: poNo,
+              invoice_no: invoiceNo,
+              invoice_date: invoiceDate || null,
+              purchase_source: purchaseSource,
+              project_site: projectSite,
+              lines,
+            }
+          });
+          toast(`Goods Received Note ${res.grn_no} recorded · Pending approval`);
+          close();
+          if (onDone) onDone();
+        } catch (e) {
+          toast(e.message, 'err');
+        }
+      };
+    });
+  const box = qs('.modal', bg);
+  if (box) { box.style.width = 'min(920px, 96vw)'; box.style.maxWidth = 'none'; }
+}
+
 // ---- Stores
 routes.stores = async (c) => {
   const sp = new URLSearchParams(location.hash.split('?')[1] || '');
@@ -4032,53 +5246,117 @@ routes.stores = async (c) => {
     return mrnList(body, params);
   } else if (tab === 'grn') {
     const canRx = canDo('stores.grn.edit');     // price / correct a receipt
+    const canApp = canDo('stores.grn.approve') || canDo('stores.grn.reject');
+    const canCreate = canDo('stores.grn.receive');
     const fmtD = (d) => (d ? String(d).slice(0, 10) : '—');
+    const cur = { step: sp.get('step') || 'all_todo', q: sp.get('q') || '', src: sp.get('source') || '' };
+    const GRN_STEPS = [
+      ['all_todo', 'All to do'],
+      ['to_price', 'To price'],
+      ['to_approve', 'To approve'],
+      ['approved', 'Approved'],
+      ['rejected', 'Rejected'],
+      ['all', 'All'],
+    ];
+    if (!GRN_STEPS.some(([k]) => k === cur.step)) cur.step = 'all_todo';
+    const counts = await api('/stores/grn/counts').catch(() => ({}));
     body.innerHTML = `
       <div class="toolbar">
-        <input id="gq" type="search" placeholder="Search GRN / item / supplier / MRN…" style="max-width:240px">
-        <select id="gsrc" style="max-width:160px"><option value="">All sources</option><option value="head_office">Head Office</option><option value="local_purchase">Local Purchase</option></select>
-        <label style="display:flex;gap:6px;align-items:center;flex-direction:row;width:auto"><input type="checkbox" id="gawait" style="width:auto"> Awaiting price only</label>
+        ${canCreate ? '<button class="primary" id="gnew">+ New GRN</button>' : ''}
+        <input id="gq" type="search" placeholder="Search GRN / item / supplier / MRN…" value="${esc(cur.q)}" style="max-width:240px">
+        <select id="gsrc" style="max-width:150px"><option value="">All sources</option><option value="head_office" ${cur.src === 'head_office' ? 'selected' : ''}>Head Office</option><option value="local_purchase" ${cur.src === 'local_purchase' ? 'selected' : ''}>Local Purchase</option></select>
         <a class="btn sm" id="gaxls" href="#" title="Excel list of items received without a price (one sheet per source)">⬇ Excel — awaiting price</a>
         <a class="btn sm" id="gaprint" href="#" target="_blank" title="Printable / Save-as-PDF list of items awaiting a price">🖨 PDF — awaiting price</a>
         <div class="spacer"></div><span class="muted" id="gcount"></span>
       </div>
+      <div class="pill-row" style="margin:0 0 10px;flex-wrap:wrap;gap:6px">
+        ${GRN_STEPS.map(([k, l]) => `<button class="sm ${k === cur.step ? 'primary' : ''}" data-gstep="${k}">${esc(l)}${counts[k] != null ? ` <span class="badge">${counts[k]}</span>` : ''}</button>`).join('')}
+      </div>
       <p class="muted" id="gawaitsum" style="margin:0 0 8px"></p>
       <div id="gtable"><div class="muted">Loading…</div></div>`;
     const load = async () => {
-      const q = qs('#gq').value.trim(), awaiting = qs('#gawait').checked, src = qs('#gsrc').value;
-      // The two report buttons always cover the awaiting-price list, narrowed by the same
-      // source / search filters shown on screen.
-      const rq = (src ? '&source=' + src : '') + (q ? '&q=' + encodeURIComponent(q) : '');
-      qs('#gaxls').href = '/api/stores/awaiting-price/export.xlsx?x=1' + rq;
-      qs('#gaprint').href = '/api/stores/awaiting-price/print.html?x=1' + rq;
-      // Spell out which list the buttons will produce — they follow the source dropdown.
+      const q = qs('#gq', body).value.trim(), src = qs('#gsrc', body).value;
+      const sp_ = new URLSearchParams({ tab: 'flow', sub: 'grn', step: cur.step });
+      if (q) sp_.set('q', q);
+      if (src) sp_.set('source', src);
+      history.replaceState(null, '', '#/stores?' + sp_.toString());
+
+      const rq = (src ? '&source=' + src : '') + (q ? '&q=' + encodeURIComponent(q) : '') + (cur.step ? '&step=' + cur.step : '');
+      qs('#gaxls', body).href = '/api/stores/awaiting-price/export.xlsx?x=1' + (src ? '&source=' + src : '') + (q ? '&q=' + encodeURIComponent(q) : '');
+      qs('#gaprint', body).href = '/api/stores/awaiting-price/print.html?x=1' + (src ? '&source=' + src : '') + (q ? '&q=' + encodeURIComponent(q) : '');
       const whichSrc = src ? sourceLabel(src) : 'all sources';
-      qs('#gaxls').textContent = `⬇ Excel — awaiting price (${whichSrc})`;
-      qs('#gaprint').textContent = `🖨 PDF — awaiting price (${whichSrc})`;
-      const list = await api('/stores/grn?limit=500' + (q ? '&q=' + encodeURIComponent(q) : '') + (awaiting ? '&awaiting=1' : '') + (src ? '&source=' + src : ''));
-      qs('#gcount').textContent = `${list.length}${list.length === 500 ? '+' : ''} record${list.length === 1 ? '' : 's'}`;
-      qs('#gtable').innerHTML = tableWrap(
-        [{ label: 'GRN' }, { label: 'MRN' }, { label: 'Req Date' }, { label: 'Received' }, { label: 'Description' }, { label: 'Qty', num: true }, { label: 'Unit Price', num: true }, { label: 'Value', num: true }, { label: 'Supplier' }, { label: 'Source' }].concat(canRx ? [{ label: '', num: true }] : []),
-        list.map((g) => `<tr>
-          <td>${esc(g.grn_no || '')}</td>
-          <td>${g.mrn_id ? `<a href="#/stores?tab=mrn&id=${g.mrn_id}">${esc(g.mrn_no || '')}</a>` : ''}</td>
-          <td>${fmtD(g.mrn_req_date)}</td>
-          <td>${fmtD(g.delivery_date)}</td>
-          <td>${esc(g.description || '')}</td>
-          <td class="num">${num(g.qty)}</td>
-          <td class="num">${g.unit_price == null ? '<span class="badge amber">awaiting</span>' : money(g.unit_price) + (g.priced_at ? `<div class="muted" style="font-size:10px">priced ${fmtD(g.priced_at)}</div>` : '')}</td>
-          <td class="num">${g.unit_price == null ? '—' : money((Number(g.qty) || 0) * g.unit_price)}</td>
-          <td>${esc(g.supplier || '')}</td>
-          <td>${esc(sourceLabel(g.purchase_source))}</td>
-          ${canRx ? `<td class="num"><button class="sm ${g.unit_price == null ? 'primary' : ''}" data-price="${g.id}">${g.unit_price == null ? 'Add price' : 'Edit'}</button></td>` : ''}</tr>`), { scroll: true });
-      if (canRx) qsa('[data-price]', qs('#gtable')).forEach((btn) => btn.onclick = () => grnPriceModal(list.find((x) => String(x.id) === btn.dataset.price), load));
+      qs('#gaxls', body).textContent = `⬇ Excel — awaiting price (${whichSrc})`;
+      qs('#gaprint', body).textContent = `🖨 PDF — awaiting price (${whichSrc})`;
+      const list = await api('/stores/grn?limit=500' + rq);
+      qs('#gcount', body).textContent = `${list.length}${list.length === 500 ? '+' : ''} record${list.length === 1 ? '' : 's'}`;
+      qs('#gtable', body).innerHTML = list.length ? tableWrap(
+        [{ label: 'GRN No' }, { label: 'Delivery & Item', cls: 'desc-col' }, { label: 'Qty & Price' }, { label: 'Progress' }, { label: 'Status' }, { label: 'Document' }].concat(canRx || canApp ? [{ label: 'Actions', num: true }] : []),
+        list.map((g) => {
+          const st = g.grn_status || g.status || 'pending_approval';
+          const stBadge = {
+            pending_approval: '<span class="badge amber">Pending Approval</span>',
+            approved: '<span class="badge green">✓ Approved</span>',
+            rejected: '<span class="badge red">✕ Rejected</span>',
+          }[st] || `<span class="badge">${esc(st)}</span>`;
+          const rd = grnRoad(g);
+          let actBtns = '';
+          if (st === 'pending_approval') {
+            if (canDo('stores.grn.approve')) actBtns += `<button class="sm primary" data-grn-app="${g.id}" title="Sign & Approve GRN">✍ Approve</button> `;
+            if (canDo('stores.grn.reject')) actBtns += `<button class="sm danger" data-grn-rej="${g.id}" title="Reject GRN">✕</button> `;
+          }
+          if (g.unit_price == null) {
+            if (canRx) actBtns += `<button class="sm primary" data-price="${g.id}">💲 Add price</button> `;
+          } else {
+            if (canRx) actBtns += `<button class="sm" data-price="${g.id}">✎ Price</button> `;
+          }
+          if (st === 'approved' && canDo('stores.stock_issue')) {
+            actBtns += `<button class="sm" data-grn-issue="${g.id}" title="Issue to vehicle or job card">⚡ Issue</button> `;
+          }
+          return `<tr>
+          <td><button class="sm" data-grn-detail="${g.id}" title="View Note & Signoff Details" style="font-weight:bold;cursor:pointer;background:none;border:none;color:var(--primary);padding:0;text-decoration:underline">${esc(g.grn_no || ('GRN-' + g.id))}</button>
+            <div class="muted" style="font-size:11px">${fmtD(g.delivery_date)}</div></td>
+          <td class="desc-col"><b>${esc(g.description || '')}</b>
+            ${g.supplier ? `<div class="muted" style="font-size:11px">Supplier: ${esc(g.supplier)}</div>` : ''}
+            ${g.mrn_no ? `<div style="font-size:11px">MRN: <a href="#/stores?tab=mrn&id=${g.mrn_id}">${esc(g.mrn_no)}</a>${g.asset_code ? ` · <span class="stamp">${esc(g.asset_code)}</span>` : ''}</div>` : ''}</td>
+          <td><b>${num(g.qty)} ${esc(g.unit || 'nos')}</b>
+            <div style="font-size:11px">${g.unit_price == null ? '<span class="badge amber">awaiting price</span>' : money(g.unit_price) + ` · Total: <b>${money((Number(g.qty) || 0) * g.unit_price)}</b>`}</div></td>
+          <td>
+            ${docRoadBar(rd)}
+            <span class="muted" style="font-size:11px">${esc(rd.label)}</span>
+          </td>
+          <td>${stBadge}</td>
+          <td style="white-space:nowrap">
+            <a class="btn sm" href="/api/stores/grn/${g.id}/print.html" target="_blank" title="Print GRN Document (EC1.ST.FO.2:5:21.12)">🖨</a>
+            <a class="btn sm" href="/api/stores/grn/${g.id}/download.pdf" download title="Download GRN PDF">⬇ PDF</a>
+          </td>
+          ${canRx || canApp ? `<td class="num" style="white-space:nowrap">${actBtns}</td>` : ''}</tr>`;
+        }), { scroll: true })
+        : '<div class="card"><p class="muted">No Goods Received Notes match this view.</p></div>';
+      if (canRx) qsa('[data-price]', qs('#gtable', body)).forEach((btn) => btn.onclick = () => grnPriceModal(list.find((x) => String(x.id) === btn.dataset.price), load));
+      qsa('[data-grn-detail]', qs('#gtable', body)).forEach((btn) => btn.onclick = () => grnApprovalModal(list.find((x) => String(x.id) === btn.dataset.grnDetail), load));
+      qsa('[data-grn-app]', qs('#gtable', body)).forEach((btn) => btn.onclick = () => grnSignModal(list.find((x) => String(x.id) === btn.dataset.grnApp), 'approve', load));
+      qsa('[data-grn-rej]', qs('#gtable', body)).forEach((btn) => btn.onclick = () => grnSignModal(list.find((x) => String(x.id) === btn.dataset.grnRej), 'reject', load));
+      qsa('[data-grn-issue]', qs('#gtable', body)).forEach((btn) => {
+        btn.onclick = () => {
+          const g = list.find((x) => String(x.id) === btn.dataset.grnIssue);
+          if (g) newIssueModal(load, { grn_id: g.id, grn_no: g.grn_no, mrn_no: g.mrn_no, description: g.description, unit_price: g.unit_price, qty: g.qty });
+        };
+      });
     };
     api('/stores/grn/awaiting-count').then((c) => {
       const bits = (c.by_source || []).filter((s) => s.source !== '(unset)').map((s) => `${sourceLabel(s.source)}: ${num(s.awaiting)}`).join('  ·  ');
-      const el = qs('#gawaitsum'); if (el) el.innerHTML = bits ? `⏳ Awaiting price — ${bits}  ·  ${num(c.awaiting_grn)} item(s) awaiting receipt` : '';
+      const el = qs('#gawaitsum', body); if (el) el.innerHTML = bits ? `⏳ Awaiting price — ${bits}  ·  ${num(c.awaiting_grn)} item(s) awaiting receipt` : '';
     }).catch(() => { });
-    let gdeb; qs('#gq').oninput = () => { clearTimeout(gdeb); gdeb = setTimeout(load, 250); };
-    qs('#gawait').onchange = load; qs('#gsrc').onchange = load;
+    let gdeb; qs('#gq', body).oninput = () => { clearTimeout(gdeb); gdeb = setTimeout(load, 250); };
+    qs('#gsrc', body).onchange = load;
+    qsa('[data-gstep]', body).forEach((b) => {
+      b.onclick = () => {
+        cur.step = b.dataset.gstep;
+        qsa('[data-gstep]', body).forEach((x) => x.classList.toggle('primary', x === b));
+        load();
+      };
+    });
+    if (qs('#gnew', body)) qs('#gnew', body).onclick = () => newGrnModal(load);
     await load();
   } else if (tab === 'awaiting') {
     const fmtD = (d) => (d ? String(d).slice(0, 10) : '—');
@@ -4162,11 +5440,25 @@ routes.stores = async (c) => {
     loadSummary();
     await load();
   } else if (tab === 'issues') {
+    const cur = { step: sp.get('step') || 'all_todo', q: sp.get('q') || '' };
+    const MIN_STEPS = [
+      ['all_todo', 'All to do'],
+      ['to_approve', 'To approve'],
+      ['to_issue', 'Ready to issue'],
+      ['issued', 'Issued'],
+      ['rejected', 'Rejected'],
+      ['all', 'All'],
+    ];
+    if (!MIN_STEPS.some(([k]) => k === cur.step)) cur.step = 'all_todo';
+    const counts = await api('/stores/issues/counts').catch(() => ({}));
     body.innerHTML = `
       <div class="toolbar">
         ${canDo('stores.stock_issue') ? '<button class="primary" id="nis">+ New Issue</button>' : ''}
-        <input id="iq" type="search" placeholder="Search vehicle / item / issued by…" style="max-width:260px">
+        <input id="iq" type="search" placeholder="Search vehicle / item / issued by…" value="${esc(cur.q)}" style="max-width:260px">
         <div class="spacer"></div><span class="muted" id="icount"></span>
+      </div>
+      <div class="pill-row" style="margin:0 0 10px;flex-wrap:wrap;gap:6px">
+        ${MIN_STEPS.map(([k, l]) => `<button class="sm ${k === cur.step ? 'primary' : ''}" data-istep="${k}">${esc(l)}${counts[k] != null ? ` <span class="badge">${counts[k]}</span>` : ''}</button>`).join('')}
       </div>
       <div id="itable"><div class="muted">Loading…</div></div>
       <div class="card section"><div class="toolbar" style="margin:0 0 8px">
@@ -4201,25 +5493,61 @@ routes.stores = async (c) => {
     qs('#afsec').onchange = loadFeed;
     let afdeb; qs('#afq').oninput = () => { clearTimeout(afdeb); afdeb = setTimeout(loadFeed, 250); };
     loadFeed();
+    const canReturn = canDo('stores.issue_return');
     const load = async () => {
-      const q = qs('#iq').value.trim();
-      const list = await api('/stores/issues?limit=500' + (q ? '&q=' + encodeURIComponent(q) : ''));
-      qs('#icount').textContent = `${list.length}${list.length === 500 ? '+' : ''} issue${list.length === 1 ? '' : 's'}`;
-      qs('#itable').innerHTML = tableWrap(
-        [{ label: 'Date' }, { label: 'Vehicle' }, { label: 'Job Card' }, { label: 'Item / description' }, { label: 'Category' }, { label: 'Qty', num: true }, { label: 'Unit Price', num: true }, { label: 'Issued by' }]
-          .concat(canReturn ? [{ label: '' }] : []),
-        list.map((i) => `<tr>
+      const q = qs('#iq', body).value.trim();
+      const sp_ = new URLSearchParams({ tab: 'flow', sub: 'issues', step: cur.step });
+      if (q) sp_.set('q', q);
+      history.replaceState(null, '', '#/stores?' + sp_.toString());
+
+      const list = await api('/stores/issues?limit=500' + (q ? '&q=' + encodeURIComponent(q) : '') + (cur.step ? '&step=' + cur.step : ''));
+      qs('#icount', body).textContent = `${list.length}${list.length === 500 ? '+' : ''} issue${list.length === 1 ? '' : 's'}`;
+      qs('#itable', body).innerHTML = list.length ? tableWrap(
+        [{ label: 'MIN No' }, { label: 'Date' }, { label: 'Vehicle / Job' }, { label: 'Item description', cls: 'desc-col' }, { label: 'Qty & Price' }, { label: 'Progress' }, { label: 'Status' }, { label: 'Document' }, { label: 'Actions', num: true }],
+        list.map((i) => {
+          const minSt = i.min_status || 'issued';
+          const minBadge = {
+            pending_approval: '<span class="badge amber">Pending Approval</span>',
+            requested: '<span class="badge amber">Pending Approval</span>',
+            approved: '<span class="badge blue">Approved</span>',
+            issued: '<span class="badge green">✓ Issued</span>',
+            rejected: '<span class="badge red">✕ Rejected</span>',
+          }[minSt] || `<span class="badge">${esc(minSt)}</span>`;
+          const rd = minRoad(i);
+          let minBtns = '';
+          if (rd.step === 'to_approve') {
+            if (canDo('stores.min.approve')) minBtns += `<button class="sm primary" data-min-app="${i.min_id || i.id}" title="Sign & Approve MIN">✍ Approve</button> `;
+            if (canDo('stores.min.reject')) minBtns += `<button class="sm danger" data-min-rej="${i.min_id || i.id}" title="Reject MIN">✕</button> `;
+          } else if (rd.step === 'to_issue') {
+            if (canDo('stores.issue') || canDo('stores.stock_issue')) minBtns += `<button class="sm primary" data-min-rec="${i.min_id || i.id}" title="Hand Over and Sign Receipt">🤝 Hand Over</button> `;
+          }
+          if (canReturn && !i.voided && i.qty - (i.returned || 0) > 0.001) {
+            minBtns += `<button class="sm" data-ret="${i.id}" data-left="${i.qty - (i.returned || 0)}" data-desc="${esc(i.description)}" title="Parts brought back unused go back into the store">↩ Return</button> `;
+          }
+          minBtns += `<button class="sm" data-min-detail="${i.min_id || i.id}">Details</button>`;
+
+          return `<tr>
+          <td><button class="sm" data-min-detail="${i.min_id || i.id}" title="View Note & Signoff Details" style="font-weight:bold;cursor:pointer;background:none;border:none;color:var(--primary);padding:0;text-decoration:underline">${esc(i.min_no || ('MIN-' + String(i.id).padStart(4, '0')))}</button></td>
           <td>${esc((i.issue_date || '').slice(0, 10))}</td>
-          <td>${esc(i.asset_code || '—')}</td>
-          <td>${i.job_no ? `<a href="#/jobs/${i.job_id}">${esc(i.job_no)}</a>` : '<span class="muted">—</span>'}</td>
-          <td>${esc(i.description)}</td>
-          <td>${esc(i.category || '')}${i.sub_category ? ` <span class="muted" style="font-size:11px">› ${esc(i.sub_category)}</span>` : ''}</td>
-          <td class="num">${num(i.qty)}${i.returned > 0 ? `<br><span class="badge blue" title="Brought back unused">${num(i.returned)} returned</span>` : ''}</td>
-          <td class="num">${i.unit_price == null ? '—' : money(i.unit_price)}</td>
-          <td>${esc(i.issued_by || '')}</td>
-          ${canReturn ? `<td>${!i.voided && i.qty - (i.returned || 0) > 0.001 ? `<button class="sm" data-ret="${i.id}" data-left="${i.qty - (i.returned || 0)}" data-desc="${esc(i.description)}" title="Parts brought back unused go back into the store">↩ Return</button>` : ''}</td>` : ''}</tr>`), { scroll: true });
-      // Stage 6: parts brought back unused — back into the store, off the job's cost.
-      qsa('[data-ret]', qs('#itable')).forEach((b) => { b.onclick = () => modal(`Return to store · ${b.dataset.desc}`, `
+          <td>${esc(i.asset_code || '—')}${i.job_no ? `<br><a href="#/jobs/${i.job_id}" style="font-size:11px">${esc(i.job_no)}</a>` : ''}</td>
+          <td class="desc-col"><b>${esc(i.description)}</b>
+            <div class="muted" style="font-size:11px">${esc(i.category || '')}${i.sub_category ? ` › ${esc(i.sub_category)}` : ''} · by ${esc(i.issued_by || '')}</div></td>
+          <td><b>${num(i.qty)}</b>${i.returned > 0 ? ` <span class="badge blue" title="Brought back unused">${num(i.returned)} ret.</span>` : ''}
+            <div style="font-size:11px">${i.unit_price == null ? '—' : money(i.unit_price)}</div></td>
+          <td>
+            ${docRoadBar(rd)}
+            <span class="muted" style="font-size:11px">${esc(rd.label)}</span>
+          </td>
+          <td>${minBadge}</td>
+          <td style="white-space:nowrap">
+            <a class="btn sm" href="/api/stores/min/${i.min_id || i.id}/print.html" target="_blank" title="Print Material Issue Note (EC1.ST.FO.04)">🖨 MIN</a>
+            <a class="btn sm" href="/api/stores/min/${i.min_id || i.id}/download.pdf" download title="Download MIN PDF">⬇ PDF</a>
+          </td>
+          <td class="num" style="white-space:nowrap">${minBtns}</td></tr>`;
+        }), { scroll: true })
+        : '<div class="card"><p class="muted">No Material Issue Notes match this view.</p></div>';
+
+      qsa('[data-ret]', qs('#itable', body)).forEach((b) => { b.onclick = () => modal(`Return to store · ${b.dataset.desc}`, `
         ${field('Quantity brought back', 'qty', { type: 'number', value: b.dataset.left })}
         ${field('Date', 'return_date', { type: 'date', value: new Date().toISOString().slice(0, 10) })}
         ${field('Note (optional)', 'note')}
@@ -4230,53 +5558,129 @@ routes.stores = async (c) => {
           catch (e) { toast(e.message, 'err'); }
         };
       }); });
+      qsa('[data-min-detail]', qs('#itable', body)).forEach((btn) => btn.onclick = () => minApprovalModal(list.find((x) => String(x.min_id || x.id) === btn.dataset.minDetail), load));
+      qsa('[data-min-app]', qs('#itable', body)).forEach((btn) => btn.onclick = () => minSignModal(list.find((x) => String(x.min_id || x.id) === btn.dataset.minApp), 'approve', load));
+      qsa('[data-min-rej]', qs('#itable', body)).forEach((btn) => btn.onclick = () => minSignModal(list.find((x) => String(x.min_id || x.id) === btn.dataset.minRej), 'reject', load));
+      qsa('[data-min-rec]', qs('#itable', body)).forEach((btn) => btn.onclick = () => minSignModal(list.find((x) => String(x.min_id || x.id) === btn.dataset.minRec), 'receive', load));
     };
-    const canReturn = canDo('stores.issue_return');
-    let ideb; qs('#iq').oninput = () => { clearTimeout(ideb); ideb = setTimeout(load, 250); };
-    if (qs('#nis')) qs('#nis').onclick = () => newIssueModal(load);
+    let ideb; qs('#iq', body).oninput = () => { clearTimeout(ideb); ideb = setTimeout(load, 250); };
+    qsa('[data-istep]', body).forEach((b) => {
+      b.onclick = () => {
+        cur.step = b.dataset.istep;
+        qsa('[data-istep]', body).forEach((x) => x.classList.toggle('primary', x === b));
+        load();
+      };
+    });
+    if (qs('#nis', body)) qs('#nis', body).onclick = () => newIssueModal(load);
     await load();
   } else if (tab === 'mtn') {
     const canT = canDo('stores.mtn.edit');
     const CAP = 300;
+    const cur = { step: sp.get('step') || 'all_flight', q: sp.get('q') || '' };
+    const MTN_STEPS = [
+      ['all_flight', 'All in flight'],
+      ['to_approve', 'To approve'],
+      ['to_dispatch', 'To dispatch'],
+      ['in_transit', 'In transit'],
+      ['to_accept', 'To accept'],
+      ['accepted', 'Accepted'],
+      ['rejected', 'Rejected'],
+      ['all', 'All'],
+    ];
+    if (!MTN_STEPS.some(([k]) => k === cur.step)) cur.step = 'all_flight';
+    const counts = await api('/stores/mtn/counts').catch(() => ({}));
     body.innerHTML = `
       <div class="toolbar">
         ${canT ? '<button class="primary" id="nt">+ New MTN</button>' : ''}
-        <input id="tq" type="search" placeholder="Search MTN no / item / location / person…" style="max-width:280px">
-        <label style="width:auto">From <input id="tfrom" type="date" style="max-width:150px"></label>
-        <label style="width:auto">To <input id="tto" type="date" style="max-width:150px"></label>
+        <input id="tq" type="search" placeholder="Search MTN no / item / location / person…" value="${esc(cur.q)}" style="max-width:260px">
+        <label style="width:auto">From <input id="tfrom" type="date" style="max-width:140px"></label>
+        <label style="width:auto">To <input id="tto" type="date" style="max-width:140px"></label>
         <button class="sm" id="tclear">Clear</button>
         <div class="spacer"></div><span class="muted" id="tcount"></span>
+      </div>
+      <div class="pill-row" style="margin:0 0 10px;flex-wrap:wrap;gap:6px">
+        ${MTN_STEPS.map(([k, l]) => `<button class="sm ${k === cur.step ? 'primary' : ''}" data-tstep="${k}">${esc(l)}${counts[k] != null ? ` <span class="badge">${counts[k]}</span>` : ''}</button>`).join('')}
       </div>
       <div id="ttable" class="muted">Loading…</div>`;
 
     const loadMtn = async () => {
       const q = qs('#tq', body).value.trim();
       const from = qs('#tfrom', body).value, to = qs('#tto', body).value;
+      const sp_ = new URLSearchParams({ tab: 'mtn', step: cur.step });
+      if (q) sp_.set('q', q);
+      if (from) sp_.set('from', from);
+      if (to) sp_.set('to', to);
+      history.replaceState(null, '', '#/stores?' + sp_.toString());
+
       const qs_ = new URLSearchParams({ limit: String(CAP) });
       if (q) qs_.set('q', q);
+      if (cur.step) qs_.set('step', cur.step);
       if (from) qs_.set('from', from);
       if (to) qs_.set('to', to);
       let list = [];
       try { list = await api('/stores/mtn?' + qs_); }
       catch (e) { qs('#ttable', body).innerHTML = `<div class="card err">${esc(e.message)}</div>`; return; }
-      // Say when the list is cut off rather than letting it read as "that is all of them".
+
       qs('#tcount', body).textContent = `${list.length} transfer${list.length === 1 ? '' : 's'}`
-        + (list.length >= CAP ? ` — showing the newest ${CAP}, narrow the search` : '');
-      const COLS = 7 + (canT ? 1 : 0);
+        + (list.length >= CAP ? ` — showing newest ${CAP}` : '');
+      const COLS = 9;
       qs('#ttable', body).innerHTML = list.length ? tableWrap(
-        [{ label: 'MTN No', width: '124px' }, { label: 'Date', width: '104px' }, { label: 'Items', cls: 'desc-col' },
-        { label: 'No.', num: true, width: '54px' }, { label: 'Qty', num: true, width: '72px' },
-        { label: 'From' }, { label: 'To' }].concat(canT ? [{ label: '', width: '64px' }] : []),
-        list.map((t) => `<tr>
-          <td>${(t.item_count || 1) > 1 ? `<button class="sm" data-exp="${t.id}" title="Show the items on this transfer" style="padding:0 6px;margin-right:4px">▸</button>` : ''}<b>${esc(t.mtn_no)}</b></td>
+        [{ label: 'MTN No' }, { label: 'Date' }, { label: 'Items', cls: 'desc-col' },
+        { label: 'From → To' }, { label: 'Qty', num: true }, { label: 'Progress' }, { label: 'Status' }, { label: 'Document' }, { label: 'Actions', num: true }],
+        list.map((t) => {
+          const mtnStatus = t.status || (t.accepted_at ? 'accepted' : (t.received_at ? 'received' : (t.approved_at ? 'dispatched' : 'draft')));
+          const mtnBadge = {
+            draft: '<span class="badge amber">Draft · Awaiting Approval</span>',
+            pending_approval: '<span class="badge amber">Draft · Awaiting Approval</span>',
+            approved: '<span class="badge blue">Approved · Ready for Dispatch</span>',
+            dispatched: '<span class="badge purple">In Transit</span>',
+            received: '<span class="badge teal">Received at Dest.</span>',
+            accepted: '<span class="badge green">✓ Accepted</span>',
+            rejected: '<span class="badge red">✕ Rejected</span>',
+          }[mtnStatus] || `<span class="badge">${esc(mtnStatus)}</span>`;
+          const rd = mtnRoad(t);
+          let flowBtn = '';
+          if (rd.step === 'to_approve') {
+            if (canDo('stores.mtn.approve')) flowBtn += `<button class="sm primary" data-mtn-app="${t.id}" title="Sign & Approve Transfer">✍ Approve</button> `;
+            if (canDo('stores.mtn.reject')) flowBtn += `<button class="sm danger" data-mtn-rej="${t.id}" title="Reject Transfer">✕</button> `;
+          } else if (rd.step === 'to_dispatch') {
+            if (canT) flowBtn += `<button class="sm primary" data-dispatch="${t.id}" title="Dispatch transfer">🚀 Dispatch</button> `;
+          } else if (rd.step === 'in_transit') {
+            if (canT) flowBtn += `<button class="sm primary" data-receive="${t.id}" title="Confirm in-transit arrival">📥 Receive</button> `;
+          } else if (rd.step === 'to_accept') {
+            if (canT) flowBtn += `<button class="sm primary" data-accept="${t.id}" title="Accept & Bin Stock">✅ Accept</button> `;
+          }
+          flowBtn += `<button class="sm" data-mtn-detail="${t.id}">Details</button> `;
+          if (canT) flowBtn += `<button class="sm" data-mtn="${t.id}">✎</button>`;
+
+          return `<tr>
+          <td>${(t.item_count || 1) > 1 ? `<button class="sm" data-exp="${t.id}" title="Show the items on this transfer" style="padding:0 6px;margin-right:4px">▸</button>` : ''}<button class="sm" data-mtn-detail="${t.id}" title="View Transfer Note & Signoffs" style="font-weight:bold;cursor:pointer;background:none;border:none;color:var(--primary);padding:0;text-decoration:underline">${esc(t.mtn_no)}</button></td>
           <td>${esc(String(t.txn_date || '').slice(0, 10))}</td>
-          <td class="desc-col">${esc(t.description || '')}${t.moves_stock ? ' <span class="badge green" title="Moves stock from one store to another">moves stock</span>' : ''}</td>
-          <td class="num">${(t.item_count || 1) > 1 ? `<span class="badge blue">${t.item_count}</span>` : '1'}</td>
-          <td class="num">${num(t.qty)}</td>
-          <td>${esc(t.from_location || t.from_asset_code || '')}</td><td>${esc(t.to_location || t.to_asset_code || '')}</td>
-          ${canT ? `<td><button class="sm" data-mtn="${t.id}">✎ Edit</button></td>` : ''}</tr>`), { scroll: true })
-        : `<div class="card"><p class="muted">${q || from || to ? 'No transfer matches that.' : 'No transfers recorded yet.'}</p></div>`;
+          <td class="desc-col"><b>${esc(t.description || '')}</b>${t.moves_stock ? ' <span class="badge green" title="Moves stock from one store to another">moves stock</span>' : ''}
+            ${(t.item_count || 1) > 1 ? `<span class="badge blue" style="margin-left:4px">${t.item_count} items</span>` : ''}</td>
+          <td>${esc(t.from_location || t.from_asset_code || '—')} → ${esc(t.to_location || t.to_asset_code || '—')}</td>
+          <td class="num"><b>${num(t.qty)}</b></td>
+          <td>
+            ${docRoadBar(rd)}
+            <span class="muted" style="font-size:11px">${esc(rd.label)}</span>
+          </td>
+          <td>${mtnBadge}</td>
+          <td style="white-space:nowrap">
+            <a class="btn sm" href="/api/stores/mtn/${t.id}/print.html" target="_blank" title="Print MTN (EC1.ST.FO.05)">🖨</a>
+            <a class="btn sm" href="/api/stores/mtn/${t.id}/download.pdf" download title="Download MTN PDF">⬇ PDF</a>
+          </td>
+          <td class="num" style="white-space:nowrap">${flowBtn}</td></tr>`;
+        }), { scroll: true })
+        : `<div class="card"><p class="muted">${q || from || to ? 'No transfer matches that filter.' : 'No transfers recorded in this step.'}</p></div>`;
+
       qsa('[data-mtn]', body).forEach((b) => { b.onclick = () => mtnModal(list.find((x) => String(x.id) === b.dataset.mtn), loadMtn); });
+      qsa('[data-mtn-detail]', body).forEach((b) => { b.onclick = () => mtnApprovalModal(list.find((x) => String(x.id) === b.dataset.mtnDetail), loadMtn); });
+      qsa('[data-mtn-app]', body).forEach((b) => { b.onclick = () => mtnSignModal(list.find((x) => String(x.id) === b.dataset.mtnApp), 'approve', loadMtn); });
+      qsa('[data-mtn-rej]', body).forEach((b) => { b.onclick = () => mtnSignModal(list.find((x) => String(x.id) === b.dataset.mtnRej), 'reject', loadMtn); });
+      qsa('[data-dispatch]', body).forEach((b) => { b.onclick = () => mtnSignModal(list.find((x) => String(x.id) === b.dataset.dispatch), 'dispatch', loadMtn); });
+      qsa('[data-receive]', body).forEach((b) => { b.onclick = () => mtnSignModal(list.find((x) => String(x.id) === b.dataset.receive), 'receive', loadMtn); });
+      qsa('[data-accept]', body).forEach((b) => { b.onclick = () => mtnSignModal(list.find((x) => String(x.id) === b.dataset.accept), 'accept', loadMtn); });
+
       // ▸ opens the note's items underneath, so a multi-item transfer can be read without
       // leaving the list.
       qsa('[data-exp]', body).forEach((b) => {
@@ -4299,7 +5703,11 @@ routes.stores = async (c) => {
               <td class="num">${num(l.qty)}</td><td>${esc(l.unit || '')}</td><td>${esc(l.category || '')}</td>
               <td>${esc(l.from_location || l.from_asset_code || '')}</td>
               <td>${esc(l.to_location || l.to_asset_code || '')}</td>
-              <td>${esc(l.reason || '')}</td></tr>`));
+              <td>${esc(l.reason || '')}</td></tr>`))
+              + `<div style="margin-top:8px;display:flex;gap:6px">
+                   <a class="btn sm" href="/api/stores/mtn/${b.dataset.exp}/print.html" target="_blank">🖨 Print MTN (EC1.ST.FO.05)</a>
+                   <a class="btn sm primary" href="/api/stores/mtn/${b.dataset.exp}/download.pdf" download>⬇ Download PDF</a>
+                 </div>`;
           } catch (e) { holder.firstChild.innerHTML = `<span class="err">${esc(e.message)}</span>`; }
         };
       });
@@ -4313,7 +5721,14 @@ routes.stores = async (c) => {
       qs('#tq', body).value = ''; qs('#tfrom', body).value = ''; qs('#tto', body).value = '';
       loadMtn();
     };
-    if (qs('#nt')) qs('#nt').onclick = () => mtnModal(null, loadMtn);
+    qsa('[data-tstep]', body).forEach((b) => {
+      b.onclick = () => {
+        cur.step = b.dataset.tstep;
+        qsa('[data-tstep]', body).forEach((x) => x.classList.toggle('primary', x === b));
+        loadMtn();
+      };
+    });
+    if (qs('#nt', body)) qs('#nt', body).onclick = () => mtnModal(null, loadMtn);
     await loadMtn();
   }
 };
@@ -4468,8 +5883,6 @@ const FLOW_STEPS = [
 const FLOW_STEP_LABEL = Object.fromEntries(FLOW_STEPS.concat([['imported', 'Imported history']]));
 const FLOW_KINDS = [['', 'All kinds'], ['general', 'Parts & general'], ['oil', 'Lubricants'], ['filter', 'Filters'], ['tyre', 'Tyres'], ['battery', 'Batteries']];
 const FLOW_KIND_LABEL = Object.fromEntries(FLOW_KINDS);
-const ROAD_WORD = { done: 'done', part: 'part done', now: 'waiting here', todo: 'not yet', stop: 'stopped' };
-const roadBar = (r) => `<div class="road">${r.road.map((x) => `<span class="rd rd-${x.state}" title="${esc(x.label)}: ${ROAD_WORD[x.state] || x.state}">${esc(x.label)}</span>`).join('')}</div>`;
 
 async function storesMonitor(body) {
   const m = await api('/stores/flow/monitor');
@@ -4551,6 +5964,9 @@ async function storesLines(body, sp) {
       const approved = r.road[1].state === 'done';
       if (live && canRx && approved && r.received < r.qty - 0.001) b.push(`<button class="sm" data-rx="${r.id}">📥 Receive</button>`);
       if (canPrice && r.price_grn) b.push(`<button class="sm" data-price="${r.id}">💲 Price</button>`);
+      if (live && approved && r.received < r.qty - 0.001) {
+        b.push(`<button class="sm" data-fl-prio="${r.id}" data-prio-val="${esc(r.buying_priority || 'P3_ROUTINE')}" data-prio-note="${esc(r.priority_note || '')}" title="Adjust daily workshop priority">⚡ Urgency</button>`);
+      }
       if (live && r.on_shelf > 0) {
         if (tb(r)) b.push('<a class="btn sm" href="#/tbrequests" title="Tyres and batteries are fitted from the Tyre &amp; Battery page">⚡ Issue</a>');
         else if (canIssue && r.shelf) b.push(`<button class="sm primary" data-iss="${r.id}">⚡ Issue</button>`);
@@ -4560,11 +5976,13 @@ async function storesLines(body, sp) {
     };
     const byId = new Map(rows.map((r) => [String(r.id), r]));
     qs('#fltable', body).innerHTML = rows.length ? tableWrap(
-      [{ label: 'Request' }, { label: 'Item', cls: 'desc-col' }, { label: 'Progress' }, { label: '' }],
+      [{ label: 'Request' }, { label: 'Item & Urgency', cls: 'desc-col' }, { label: 'Progress' }, { label: '' }],
       rows.map((r) => `<tr>
         <td><a href="#/stores?tab=mrn&id=${r.mrn_id}"><b>${esc(r.mrn_no || '')}</b></a> <span class="muted" style="font-size:11px">${esc(String(r.req_date || '').slice(0, 10))}${wsMulti() && r.workshop_code ? ' · ' + esc(r.workshop_code) : ''}</span>
           <br>${r.asset_reg || r.asset_code ? `<span class="stamp">${esc(r.asset_reg || r.asset_code)}</span>` : (r.request_type === 'general' ? '<span class="muted" style="font-size:12px">Store stock</span>' : '')}${r.job_no ? ` <a href="#/jobs/${r.job_id}" style="font-size:11px">${esc(r.job_no)}</a>` : ''}</td>
         <td class="desc-col">${esc(r.description || '')} <span class="badge">${esc(FLOW_KIND_LABEL[r.kind] || r.kind)}</span>
+          ${r.buying_priority ? ` <span class="badge sm ${r.buying_priority === 'P1_CRITICAL' ? 'red' : (r.buying_priority === 'P2_URGENT' ? 'amber' : '')}" style="cursor:pointer" data-fl-prio="${r.id}" data-prio-val="${esc(r.buying_priority)}" data-prio-note="${esc(r.priority_note || '')}" title="${esc(r.priority_note || 'Click to adjust priority')}">${esc(r.buying_priority === 'P1_CRITICAL' ? '🚨 P1 Breakdown' : (r.buying_priority === 'P2_URGENT' ? '⚡ P2 Urgent' : (r.buying_priority === 'P4_LOW' ? 'P4 Stock' : 'P3 Routine')))}</span>` : ''}
+          ${r.priority_note ? `<div style="font-size:11px;color:var(--amber);margin-top:2px"><b>Urgency Note:</b> ${esc(r.priority_note)}</div>` : ''}
           <br><span class="muted" style="font-size:12px">received ${num(r.received)} of ${num(r.qty)}${r.issued > 0 ? ` · issued ${num(r.issued)}` : ''}</span>${r.unpriced ? ` <span class="badge amber">${r.unpriced} unpriced</span>` : ''}</td>
         <td>${roadBar(r)}<span class="muted" style="font-size:11px">${esc(FLOW_STEP_LABEL[r.step] || r.step)}</span></td>
         <td><div style="display:flex;flex-wrap:wrap;gap:4px;justify-content:flex-end">${actions(r)}</div></td></tr>`),
@@ -4573,6 +5991,9 @@ async function storesLines(body, sp) {
       : '<div class="card"><p class="muted">Nothing here.</p></div>';
     qsa('[data-rx]', body).forEach((b) => { b.onclick = () => flowReceiveModal(byId.get(b.dataset.rx), load); });
     qsa('[data-price]', body).forEach((b) => { b.onclick = () => grnPriceModal(byId.get(b.dataset.price).price_grn, load); });
+    qsa('[data-fl-prio]', body).forEach((b) => {
+      b.onclick = () => adjustPriorityModal(b.dataset.flPrio, b.dataset.prioVal, b.dataset.prioNote, load);
+    });
     qsa('[data-iss]', body).forEach((b) => {
       b.onclick = () => {
         const r = byId.get(b.dataset.iss);
@@ -4800,7 +6221,19 @@ async function receivePriceTab(body) {
 }
 
 async function mrnList(body, params) {
-  const cur = { q: params.get('q') || '', sort: params.get('sort') || 'date_desc' };
+  const cur = { step: params.get('step') || 'all_todo', q: params.get('q') || '', sort: params.get('sort') || 'date_desc' };
+  const MRN_STEPS = [
+    ['all_todo', 'All to do'],
+    ['to_certify', 'To certify'],
+    ['to_approve', 'To approve'],
+    ['to_receive', 'To buy / receive'],
+    ['partial', 'Part received'],
+    ['done', 'Done'],
+    ['rejected', 'Rejected'],
+    ['all', 'All'],
+  ];
+  if (!MRN_STEPS.some(([k]) => k === cur.step)) cur.step = 'all_todo';
+  const counts = await api('/stores/mrn/counts').catch(() => ({}));
   body.innerHTML = `
     <div class="toolbar">
       ${canDo('stores.mrn.create') ? '<button class="primary" id="nm">+ New MRN</button>' : ''}
@@ -4813,35 +6246,78 @@ async function mrnList(body, params) {
       </select>
       <div class="spacer"></div><span class="muted" id="mcount"></span>
     </div>
+    <div class="pill-row" style="margin:0 0 10px;flex-wrap:wrap;gap:6px">
+      ${MRN_STEPS.map(([k, l]) => `<button class="sm ${k === cur.step ? 'primary' : ''}" data-mstep="${k}">${esc(l)}${counts[k] != null ? ` <span class="badge">${counts[k]}</span>` : ''}</button>`).join('')}
+    </div>
     <div id="mtable"><div class="muted">Loading…</div></div>`;
-  qs('#msort').value = cur.sort;
+  qs('#msort', body).value = cur.sort;
   const load = async () => {
-    const q = qs('#mq').value.trim(), sort = qs('#msort').value;
-    const sp = new URLSearchParams({ tab: 'mrn' });
+    const q = qs('#mq', body).value.trim(), sort = qs('#msort', body).value;
+    const sp = new URLSearchParams({ tab: 'mrn', step: cur.step });
     if (q) sp.set('q', q);
     if (sort) sp.set('sort', sort);
     history.replaceState(null, '', '#/stores?' + sp.toString());
-    const list = await api('/stores/mrn?' + (q ? 'q=' + encodeURIComponent(q) + '&' : '') + 'sort=' + sort + '&limit=500');
-    qs('#mcount').textContent = `${list.length}${list.length === 500 ? '+' : ''} MRN${list.length === 1 ? '' : 's'}`;
-    qs('#mtable').innerHTML = tableWrap(
-      [{ label: 'MRN No' }, { label: 'Date' }, { label: 'Vehicle' }, { label: 'Job Card' }, { label: 'Source' }, { label: 'Lines', num: true }, { label: 'Qty Req', num: true }, { label: 'Qty Recd', num: true }, { label: 'Received date' }, { label: 'Status' }],
-      list.map((m) => `<tr data-mrn="${m.id}" style="cursor:pointer${m.approval_status === 'rejected' ? ';background:rgba(196,57,44,.06)' : ''}">
-        <td><button class="sm" data-exp="${m.id}" title="Show the items on this MRN here" style="padding:0 6px;margin-right:4px">▸</button><a href="#/stores?tab=mrn&id=${m.id}">${esc(m.mrn_no)}</a></td>
+    const list = await api('/stores/mrn?' + (q ? 'q=' + encodeURIComponent(q) + '&' : '') + (cur.step ? 'step=' + cur.step + '&' : '') + 'sort=' + sort + '&limit=500');
+    qs('#mcount', body).textContent = `${list.length}${list.length === 500 ? '+' : ''} MRN${list.length === 1 ? '' : 's'}`;
+    qs('#mtable', body).innerHTML = list.length ? tableWrap(
+      [{ label: 'MRN No' }, { label: 'Date' }, { label: 'Vehicle' }, { label: 'Job Card' }, { label: 'Items & Qty' }, { label: 'Progress' }, { label: 'Status' }, { label: 'Document' }, { label: 'Actions', num: true }],
+      list.map((m) => {
+        const rd = mrnRoad(m);
+        let actBtns = '';
+        if (rd.step === 'to_certify' && canDo('stores.mrn.certify')) {
+          actBtns += `<button class="sm primary" data-m-cert="${m.id}" title="Sign & Certify MRN">✍ Certify</button> `;
+        }
+        if (rd.step === 'to_approve' && canDo('stores.mrn.approve')) {
+          actBtns += `<button class="sm primary" data-m-app="${m.id}" title="Sign & Approve MRN">✅ Approve</button> `;
+        }
+        if ((rd.step === 'to_receive' || rd.step === 'partial') && canDo('stores.grn.receive')) {
+          actBtns += `<a class="btn sm" href="#/stores?tab=mrn&id=${m.id}" title="Receive goods against this MRN">📥 Receive</a> `;
+        }
+        actBtns += `<a class="btn sm" href="#/stores?tab=mrn&id=${m.id}">Open</a>`;
+
+        return `<tr data-mrn="${m.id}" style="cursor:pointer${m.approval_status === 'rejected' ? ';background:rgba(196,57,44,.06)' : ''}">
+        <td><button class="sm" data-exp="${m.id}" title="Show the items on this MRN here" style="padding:0 6px;margin-right:4px">▸</button><a href="#/stores?tab=mrn&id=${m.id}"><b>${esc(m.mrn_no)}</b></a></td>
         <td>${esc((m.req_date || '').slice(0, 10))}</td>
         <td>${esc(idLabel(m) || '—')}</td>
         <td>${m.job_no ? `<a href="#/jobs/${m.job_id}">${esc(m.job_no)}</a>` : '<span class="muted">—</span>'}</td>
-        <td>${esc(sourceLabel(m.purchase_source))}</td>
-        <td class="num">${m.line_count}</td>
-        <td class="num">${num(m.qty_requested)}</td>
-        <td class="num">${num(m.qty_received)}</td>
-        <td style="white-space:nowrap">${receivedDate(m)}</td>
-        <td>${m.approval_status === 'rejected' ? '<span class="badge red">✕ Cancelled (rejected)</span>' : receiptBadge(m.qty_requested, m.qty_received)}</td></tr>`), { scroll: true });
-    qsa('[data-mrn]').forEach((tr) => tr.onclick = (e) => {
-      if (e.target.tagName === 'A' || e.target.dataset.exp) return;      // link / expander handle themselves
+        <td><b>${m.line_count} line${m.line_count === 1 ? '' : 's'}</b>
+          <div class="muted" style="font-size:11px">rec. ${num(m.qty_received)} of ${num(m.qty_requested)}</div></td>
+        <td>
+          ${docRoadBar(rd)}
+          <span class="muted" style="font-size:11px">${esc(rd.label)}</span>
+        </td>
+        <td>${m.approval_status === 'rejected' ? '<span class="badge red">✕ Cancelled (rejected)</span>' : receiptBadge(m.qty_requested, m.qty_received)}</td>
+        <td style="white-space:nowrap">
+          <a class="btn sm" href="/api/stores/mrn/${m.id}/print.html" target="_blank" title="Print MRN (EC1.ST.FO.01)">🖨</a>
+          <a class="btn sm" href="/api/stores/mrn/${m.id}/download.pdf" download title="Download MRN PDF">⬇ PDF</a>
+        </td>
+        <td class="num" style="white-space:nowrap">${actBtns}</td></tr>`;
+      }), { scroll: true })
+      : '<div class="card"><p class="muted">No Material Requisition Notes match this view.</p></div>';
+
+    qsa('[data-mrn]', body).forEach((tr) => tr.onclick = (e) => {
+      if (e.target.tagName === 'A' || e.target.tagName === 'BUTTON' || e.target.dataset.exp) return;
       location.hash = '#/stores?tab=mrn&id=' + tr.dataset.mrn;
     });
+
+    qsa('[data-m-cert]', body).forEach((btn) => {
+      btn.onclick = (e) => {
+        e.stopPropagation();
+        const m = list.find((x) => String(x.id) === btn.dataset.mCert);
+        if (m) mrnSignModal(m, 'certify', load);
+      };
+    });
+
+    qsa('[data-m-app]', body).forEach((btn) => {
+      btn.onclick = (e) => {
+        e.stopPropagation();
+        const m = list.find((x) => String(x.id) === btn.dataset.mApp);
+        if (m) mrnSignModal(m, 'approve', load);
+      };
+    });
+
     // ▸ opens the MRN's items in a row underneath — no page change, list keeps its place.
-    qsa('[data-exp]').forEach((b) => b.onclick = async (e) => {
+    qsa('[data-exp]', body).forEach((b) => b.onclick = async (e) => {
       e.stopPropagation();
       const tr = b.closest('tr');
       const open = tr.nextElementSibling && tr.nextElementSibling.classList.contains('mrn-lines');
@@ -4849,7 +6325,7 @@ async function mrnList(body, params) {
       b.textContent = '▾';
       const holder = document.createElement('tr');
       holder.className = 'mrn-lines';
-      holder.innerHTML = `<td colspan="10" style="background:var(--surface-2);padding:8px 12px"><span class="muted">Loading items…</span></td>`;
+      holder.innerHTML = `<td colspan="9" style="background:var(--surface-2);padding:8px 12px"><span class="muted">Loading items…</span></td>`;
       tr.after(holder);
       try {
         const d = await api('/stores/mrn/' + b.dataset.exp);
@@ -4864,14 +6340,25 @@ async function mrnList(body, params) {
         }).join('');
         holder.firstChild.innerHTML = `<div style="font-weight:600;margin-bottom:4px">${d.lines.length} item(s) on ${esc(d.mrn.mrn_no)}${d.mrn.purpose ? ' — ' + esc(d.mrn.purpose) : ''}</div>`
           + tableWrap([{ label: 'Item' }, { label: 'Category' }, { label: 'Qty', num: true }, { label: 'Received', num: true }, { label: 'Received date' }, { label: 'Pending', num: true }, { label: 'Status' }], [rows])
-          + `<div style="margin-top:6px"><a class="btn sm" href="#/stores?tab=mrn&id=${b.dataset.exp}">Open full MRN →</a>
-             <a class="btn sm" href="#/stores?tab=workspace&mode=receive">Receive items →</a></div>`;
+          + `<div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap">
+             <a class="btn sm" href="#/stores?tab=mrn&id=${b.dataset.exp}">Open full MRN →</a>
+             <a class="btn sm" href="#/stores?tab=workspace&mode=receive">Receive items →</a>
+             <a class="btn sm" href="/api/stores/mrn/${b.dataset.exp}/print.html" target="_blank">🖨 Print MRN</a>
+             <a class="btn sm primary" href="/api/stores/mrn/${b.dataset.exp}/download.pdf" download>⬇ Download PDF</a>
+             </div>`;
       } catch (err) { holder.firstChild.innerHTML = `<span class="err">${esc(err.message)}</span>`; }
     });
   };
-  let deb; qs('#mq').oninput = () => { clearTimeout(deb); deb = setTimeout(load, 250); };
-  qs('#msort').onchange = load;
-  if (qs('#nm')) qs('#nm').onclick = newMrnModal;
+  let deb; qs('#mq', body).oninput = () => { clearTimeout(deb); deb = setTimeout(load, 250); };
+  qs('#msort', body).onchange = load;
+  qsa('[data-mstep]', body).forEach((b) => {
+    b.onclick = () => {
+      cur.step = b.dataset.mstep;
+      qsa('[data-mstep]', body).forEach((x) => x.classList.toggle('primary', x === b));
+      load();
+    };
+  });
+  if (qs('#nm', body)) qs('#nm', body).onclick = newMrnModal;
   await load();
 }
 
@@ -4882,7 +6369,12 @@ async function mrnDetail(body, id) {
   const canMrnEdit = canDo('stores.mrn.edit');
   const canGrnPrice = canDo('stores.grn.edit');
   const canGrnIssue = canDo('stores.stock_issue');
-  const lineCol = canRx || canMrnEdit;          // the action column on the item lines
+  // No role-name fallback here. workshop, manager and operational_manager are all seeded with
+  // purchasing.priority_edit already, so naming them added nothing -- except a way back in for a
+  // person an admin had deliberately revoked the capability from, since a role name cannot be
+  // revoked per person the way a capability can.
+  const canPrio = canDo('purchasing.priority_edit') || canDo('stores.mrn.edit');
+  const lineCol = canRx || canMrnEdit || canPrio; // the action column on the item lines
   const grnCol = canGrnPrice || canGrnIssue;    // the action column on the received records
   const astatus0 = m.approval_status || 'requested';
   const canEditLines = canMrnEdit && astatus0 !== 'approved' && astatus0 !== 'rejected'
@@ -4895,17 +6387,20 @@ async function mrnDetail(body, id) {
         : '<span class="badge green">✓ Received</span>';
     return `<tr>
       <td>${esc(l.description || '')}${l.added_after_approval
-        ? ` <span class="badge red" title="${esc('Added after this request was approved, by ' + (l.added_by || 'an admin') + (l.added_at ? ' on ' + l.added_at : '') + (l.added_reason ? ' — ' + l.added_reason : ''))}">added after approval</span>` : ''}</td>
+        ? ` <span class="badge red" title="${esc('Added after this request was approved, by ' + (l.added_by || 'an admin') + (l.added_at ? ' on ' + l.added_at : '') + (l.added_reason ? ' — ' + l.added_reason : ''))}">added after approval</span>` : ''}
+        ${l.buying_priority ? `<br><span class="badge sm ${l.buying_priority === 'P1_CRITICAL' ? 'red' : (l.buying_priority === 'P2_URGENT' ? 'amber' : '')}" style="cursor:pointer" data-ws-prio="${l.id}" data-prio-val="${esc(l.buying_priority)}" data-prio-note="${esc(l.priority_note || '')}" title="${esc(l.priority_note || 'Click to adjust priority')}">${esc(l.buying_priority === 'P1_CRITICAL' ? '🚨 P1 Breakdown' : (l.buying_priority === 'P2_URGENT' ? '⚡ P2 Urgent' : (l.buying_priority === 'P4_LOW' ? 'P4 Stock' : 'P3 Routine')))}</span>` : ''}
+        ${l.priority_note ? `<div style="font-size:11px;color:var(--amber);margin-top:2px"><b>Urgency Note:</b> ${esc(l.priority_note)}</div>` : ''}</td>
       <td>${esc(l.category || '')}</td>
       <td class="num">${num(l.qty)} ${esc(l.unit || '')}</td>
       <td class="num">${num(l.qty_received)}</td>
       <td style="white-space:nowrap">${receivedDate(l)}</td>
       <td class="num">${remaining > 0 ? `<span class="badge amber">${num(remaining)}</span>` : '<span class="badge green">0</span>'}</td>
       <td>${status}</td>
-      ${lineCol ? `<td class="num" style="white-space:nowrap">${remaining > 0 ? (canRx ? `<button class="sm primary" data-rx="${l.id}" data-desc="${esc(l.description || '')}" data-rem="${remaining}">Receive</button>` : '') : '✓'}${
+      ${lineCol ? `<td class="num" style="white-space:nowrap">${remaining > 0 ? (canRx ? `<button class="sm primary" data-rx="${l.id}" data-desc="${esc(l.description || '')}" data-rem="${remaining}">Receive</button> ` : '') : '✓ '}${
+        canPrio && remaining > 0 ? `<button class="sm" data-ws-prio="${l.id}" data-prio-val="${esc(l.buying_priority || 'P3_ROUTINE')}" data-prio-note="${esc(l.priority_note || '')}" title="Adjust Workshop Buying Urgency">⚡ Urgency</button> ` : ''}${
         // An item can be corrected until approval; one already part-received can only have its
         // quantity raised, and cannot be removed at all.
-        canEditLines ? ` <button class="sm" data-ledit="${l.id}">✎</button>${rec > 0 ? '' : ` <button class="sm danger" data-ldel="${l.id}" data-desc="${esc(l.description || '')}">✕</button>`}` : ''}</td>` : ''}</tr>`;
+        canEditLines ? `<button class="sm" data-ledit="${l.id}">✎</button>${rec > 0 ? '' : ` <button class="sm danger" data-ldel="${l.id}" data-desc="${esc(l.description || '')}">✕</button>`}` : ''}</td>` : ''}</tr>`;
   });
   const grnRows = d.grns.map((g) => `<tr>
     <td>${esc(g.grn_no || '—')}</td>
@@ -4916,6 +6411,10 @@ async function mrnDetail(body, id) {
     <td class="num">${g.unit_price == null ? '—' : money((Number(g.qty) || 0) * g.unit_price)}</td>
     <td>${esc(g.supplier || '')}</td>
     <td>${esc(sourceLabel(g.purchase_source))}</td>
+    <td style="white-space:nowrap">
+      <a class="btn sm" href="/api/stores/grn/${g.id}/print.html" target="_blank" title="Print GRN (EC1.ST.FO.2:5:21.12)">🖨</a>
+      <a class="btn sm" href="/api/stores/grn/${g.id}/download.pdf" download title="Download GRN PDF">⬇ PDF</a>
+    </td>
     ${grnCol ? `<td class="num" style="white-space:nowrap">${canGrnIssue ? `<button class="sm primary" data-issue-grn="${g.id}" title="Issue this received item to vehicle or job card">⚡ Issue</button>` : ''} ${canGrnPrice ? `<button class="sm ${g.unit_price == null ? 'primary' : ''}" data-price="${g.id}">${g.unit_price == null ? 'Add price' : 'Edit'}</button>` : ''}</td>` : ''}</tr>`);
   const astatus = m.approval_status || 'requested';
   // Imported/historical MRNs (no live requester) predate the approval workflow → treat as approved.
@@ -4941,7 +6440,7 @@ async function mrnDetail(body, id) {
       <span class="muted">— quantity × last price paid${worth.unpriced ? `; ${worth.unpriced} item(s) have no price yet, so the real cost may be higher` : ''}</span>
       ${overLimit ? `<br><span class="badge amber">Above your approval limit (${esc(money(worth.limit.limit))})</span> Needs: ${esc(worth.limit.who_can.join(', '))}.` : ''}</p>` : '';
   body.innerHTML = `
-    <div class="toolbar"><a class="btn sm" href="#/stores?tab=mrn">← MRN list</a><div class="spacer"></div><button class="btn sm primary" id="mrntrace">🔍 Trace Lifecycle</button> <a class="btn sm" href="/api/stores/mrn/${m.id}/print.html" target="_blank">🖨 Print MRN</a></div>
+    <div class="toolbar"><a class="btn sm" href="#/stores?tab=mrn">← MRN list</a><div class="spacer"></div><button class="btn sm primary" id="mrntrace">🔍 Trace Lifecycle</button> <a class="btn sm" href="/api/stores/mrn/${m.id}/print.html" target="_blank">🖨 Print MRN</a> <a class="btn sm primary" href="/api/stores/mrn/${m.id}/download.pdf" download>⬇ Download PDF</a></div>
     <div class="card">
       <div class="toolbar" style="margin:0"><h3 style="margin:0">Approval flow</h3><div class="spacer"></div>${aBadge}
         ${canCertify ? '<button class="sm primary" id="mcertify">✍ Certify</button>' : ''}
@@ -4974,7 +6473,7 @@ async function mrnDetail(body, id) {
     <div class="card">
       <h3>Received records — GRN <span class="muted">(${d.grns.length})</span></h3>
       ${d.grns.length
-      ? tableWrap([{ label: 'GRN No' }, { label: 'Received' }, { label: 'Description' }, { label: 'Qty', num: true }, { label: 'Unit Price', num: true }, { label: 'Value', num: true }, { label: 'Supplier' }, { label: 'Source' }].concat(grnCol ? [{ label: '', num: true }] : []), grnRows, { scroll: true })
+      ? tableWrap([{ label: 'GRN No' }, { label: 'Received' }, { label: 'Description' }, { label: 'Qty', num: true }, { label: 'Unit Price', num: true }, { label: 'Value', num: true }, { label: 'Supplier' }, { label: 'Source' }, { label: 'Document' }].concat(grnCol ? [{ label: '', num: true }] : []), grnRows, { scroll: true })
       : '<p class="muted">Nothing received against this MRN yet.</p>'}
     </div>`;
   if (lineCol || grnCol) {
@@ -5010,6 +6509,9 @@ async function mrnDetail(body, id) {
       try { told(await api('/stores/mrn/line/' + b.dataset.ldel, { method: 'DELETE' })); reload(); }
       catch (e) { toast(e.message, 'err'); }
     };
+  });
+  qsa('[data-ws-prio]', body).forEach((b) => {
+    b.onclick = () => adjustPriorityModal(b.dataset.wsPrio, b.dataset.prioVal, b.dataset.prioNote, reload);
   });
 
   if (qs('#mrntrace')) qs('#mrntrace').onclick = () => pipelineTraceModal({ mrn_id: m.id });
@@ -5171,6 +6673,393 @@ function grnPriceModal(g, onDone) {
         } catch (e) { toast(e.message, 'err'); }
       };
     });
+}
+
+// ===== GRN Approval & Sign Modals (EC1.ST.FO.2:5:21.12) ====================
+function grnSignModal(g, action, onDone) {
+  const meta = {
+    approve: { title: 'Approve GRN', verb: 'approve', btn: 'Sign & Approve', role: 'Store Manager / In-Charge' },
+    reject: { title: 'Reject GRN', verb: 'reject', btn: 'Reject', role: 'Store Manager / In-Charge' },
+  }[action];
+  const who = esc(ME.fullName || ME.username);
+  const withSig = action !== 'reject';
+  const grnNo = esc(g.grn_no || ('GRN-' + g.id));
+  const id = g.id || g.voucher_id;
+  const endpoint = g.voucher_id ? `/stores/grn-vouchers/${g.voucher_id}/${action}` : `/stores/grn/${id}/${action}`;
+
+  modal(meta.title + ' — ' + grnNo, `
+    <p class="muted">Signing as <b>${who}</b> <span class="badge blue">${esc(ME.roles.join(', '))}</span> · Role: <b>${esc(meta.role)}</b></p>
+    ${action === 'reject'
+      ? field('Reason for rejection (required) *', 'reason')
+      : `<label style="display:flex;gap:8px;align-items:flex-start;font-weight:400"><input type="checkbox" id="confirm" style="width:auto;margin-top:3px"> I, ${who}, ${meta.verb} this Goods Received Note. This certifies delivery verification and records my electronic signature.</label>
+         <label>Electronic Signature</label>${signaturePadHtml('signpad')}
+         ${field('Remark (optional)', 'reason')}`}
+    <div style="margin-top:12px;text-align:right"><button class="primary" id="s">${meta.btn}</button></div>`, (body, close) => {
+    let pad = null;
+    if (withSig) {
+      pad = wireSignaturePad(body, 'signpad', null);
+      (async () => { try { const s = (await api('/auth/signature')).signature; if (s) pad.load(s); } catch (e) {} })();
+    }
+    qs('#s', body).onclick = async () => {
+      const f = formData(body);
+      if (action !== 'reject' && !qs('#confirm', body).checked) return toast('Tick the confirmation to e-sign', 'err');
+      if (action === 'reject' && !String(f.reason || '').trim()) return toast('A reason is required to reject', 'err');
+      const signature = (withSig && pad && !pad.isEmpty()) ? pad.dataURL() : undefined;
+      try {
+        await api(endpoint, { method: 'POST', body: { reason: f.reason, signature } });
+        toast('GRN ' + (action === 'reject' ? 'rejected' : 'approved · e-signed'));
+        close(); if (onDone) onDone();
+      } catch (e) { toast(e.message, 'err'); }
+    };
+  });
+}
+
+async function grnApprovalModal(g, onDone) {
+  let d;
+  try {
+    d = await api('/stores/grn/' + (g.id || g.voucher_id));
+  } catch (e) {
+    return toast(e.message, 'err');
+  }
+  const v = d.voucher || g;
+  const lines = d.lines || [d.grn || g];
+  const approvals = d.approvals || [];
+  const status = v.status || g.grn_status || g.status || 'pending_approval';
+
+  const badge = {
+    pending_approval: '<span class="badge amber">Pending Approval</span>',
+    approved: '<span class="badge green">✓ Approved</span>',
+    rejected: '<span class="badge red">✕ Rejected</span>',
+  }[status] || `<span class="badge">${esc(status)}</span>`;
+
+  const canApprove = canDo('stores.grn.approve') && status === 'pending_approval';
+  const canReject = canDo('stores.grn.reject') && status === 'pending_approval';
+  const sig = (name, at) => name ? `${esc(name)} <span class="muted">· ${esc((at || '').slice(0, 16).replace('T', ' '))}</span>` : '<span class="muted">pending</span>';
+
+  const rows = lines.map((l, i) => `<tr>
+    <td class="num">${i + 1}</td>
+    <td>${esc(l.description || '')}</td>
+    <td class="num">${num(l.qty)} ${esc(l.unit || 'nos')}</td>
+    <td class="num">${l.unit_price == null ? '<span class="badge amber">awaiting</span>' : money(l.unit_price)}</td>
+    <td class="num">${l.unit_price == null ? '—' : money((Number(l.qty) || 0) * l.unit_price)}</td>
+    <td>${l.mrn_no ? `<a href="#/stores?tab=mrn&id=${l.mrn_id}">${esc(l.mrn_no)}</a>` : '—'}</td>
+  </tr>`);
+
+  const bg = modal(`Goods Received Note — ${esc(v.grn_no || ('GRN-' + v.id))}`, `
+    <div style="font-size:12px;color:var(--muted);margin-bottom:8px">Doc. No.: <b>EC1.ST.FO.2:5:21.12</b> · Goods Received Note</div>
+    <div class="card" style="margin-bottom:12px">
+      <div class="toolbar" style="margin:0 0 8px"><h3 style="margin:0">Signoff & Approval Flow</h3><div class="spacer"></div>${badge}
+        ${canApprove ? '<button class="sm primary" id="gappbtn">✍ Sign & Approve</button>' : ''}
+        ${canReject ? '<button class="sm danger" id="grejbtn">✕ Reject</button>' : ''}
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:8px;font-size:13px">
+        <div style="border:1px solid var(--border);padding:8px;border-radius:4px">
+          <b>1 · Prepared By</b>${v.prepared_sig ? `<div style="height:30px"><img src="${v.prepared_sig}" style="max-height:30px;max-width:130px"></div>` : ''}<br>
+          ${sig(v.prepared_by || 'Storekeeper', v.received_date || v.created_at)}<br>
+          <span class="muted">${esc(v.prepared_designation || 'Storekeeper')}</span>
+        </div>
+        <div style="border:1px solid var(--border);padding:8px;border-radius:4px">
+          <b>2 · Approved By</b>${v.approved_sig ? `<div style="height:30px"><img src="${v.approved_sig}" style="max-height:30px;max-width:130px"></div>` : ''}<br>
+          ${sig(v.approved_by, v.approved_at)}<br>
+          <span class="muted">${esc(v.approved_designation || 'Store Manager / In-Charge')}</span>
+        </div>
+      </div>
+      ${v.rejection_reason ? `<p class="err" style="margin:8px 0 0;font-size:12.5px"><b>Rejection Reason:</b> ${esc(v.rejection_reason)}</p>` : ''}
+      ${approvals.length ? `<div style="margin-top:10px;border-top:1px solid var(--border);padding-top:6px">${approvals.map((a) => `<div class="cost-line" style="font-size:12px"><span>${a.decision === 'rejected' ? '✕' : '✓'} ${esc(a.stage)} — <b>${esc(a.signed_name || '')}</b> <span class="muted">(${esc(a.role || '')})</span>${a.reason ? ' · ' + esc(a.reason) : ''}</span><span class="muted">${esc((a.created_at || '').slice(0, 16).replace('T', ' '))}</span></div>`).join('')}</div>` : ''}
+    </div>
+    <div class="card">
+      <div class="toolbar" style="margin:0 0 6px">
+        <h3 style="margin:0">Delivery & Line Items (${lines.length})</h3>
+        <div class="spacer"></div>
+        <a class="btn sm" href="/api/stores/grn/${g.id || v.id}/print.html" target="_blank">🖨 Print Note</a>
+        <a class="btn sm primary" href="/api/stores/grn/${g.id || v.id}/download.pdf" download>⬇ Download PDF</a>
+      </div>
+      <p class="muted" style="margin:0 0 8px;font-size:12.5px">Supplier: <b>${esc(v.supplier || '—')}</b> · Delivery Date: <b>${esc(String(v.received_date || v.delivery_date || '').slice(0, 10))}</b> · Invoice: <b>${esc(v.invoice_no || '—')}</b>${v.po_no ? ` · PO: <b>${esc(v.po_no)}</b>` : ''}</p>
+      ${tableWrap([{ label: '#', num: true }, { label: 'Item description' }, { label: 'Qty', num: true }, { label: 'Unit price (Rs)', num: true }, { label: 'Total value', num: true }, { label: 'MRN' }], [rows.join('')], { scroll: true })}
+    </div>`, (mbody, close) => {
+    if (qs('#gappbtn', mbody)) qs('#gappbtn', mbody).onclick = () => { close(); grnSignModal(g, 'approve', () => { if (onDone) onDone(); grnApprovalModal(g, onDone); }); };
+    if (qs('#grejbtn', mbody)) qs('#grejbtn', mbody).onclick = () => { close(); grnSignModal(g, 'reject', () => { if (onDone) onDone(); grnApprovalModal(g, onDone); }); };
+  });
+  const box = qs('.modal', bg);
+  if (box) { box.style.width = 'min(900px, 96vw)'; box.style.maxWidth = 'none'; }
+}
+
+// ===== MIN Approval & Sign Modals (EC1.ST.FO.04) ============================
+function minSignModal(m, action, onDone) {
+  const meta = {
+    approve: { title: 'Approve Material Issue Note', verb: 'approve', btn: 'Sign & Approve', role: 'Workshop Engineer / Foreman' },
+    receive: { title: 'Confirm Hand Over / Receipt', verb: 'acknowledge receipt of', btn: 'Sign Receipt & Issue', role: 'Mechanic / Fitter / Recipient' },
+    reject: { title: 'Reject Material Issue Note', verb: 'reject', btn: 'Reject', role: 'Workshop Engineer / Foreman' },
+  }[action];
+  const who = esc(ME.fullName || ME.username);
+  const withSig = action !== 'reject';
+  const minNo = esc(m.min_no || ('MIN-' + m.id));
+  const id = m.min_id || m.id;
+
+  modal(meta.title + ' — ' + minNo, `
+    <p class="muted">Signing as <b>${who}</b> <span class="badge blue">${esc(ME.roles.join(', '))}</span> · Role: <b>${esc(meta.role)}</b></p>
+    ${action === 'reject'
+      ? field('Reason for rejection (required) *', 'reason')
+      : (action === 'receive'
+        ? `${field('Recipient Mechanic Name *', 'received_by', { value: m.recipient_name || who })}
+           <label style="display:flex;gap:8px;align-items:flex-start;font-weight:400"><input type="checkbox" id="confirm" style="width:auto;margin-top:3px"> I confirm that the listed parts and materials have been physically received and verified for this work.</label>
+           <label>Recipient Signature</label>${signaturePadHtml('signpad')}
+           ${field('Remark (optional)', 'reason')}`
+        : `<label style="display:flex;gap:8px;align-items:flex-start;font-weight:400"><input type="checkbox" id="confirm" style="width:auto;margin-top:3px"> I, ${who}, ${meta.verb} the issue of these materials for vehicle / job maintenance.</label>
+           <label>Electronic Signature</label>${signaturePadHtml('signpad')}
+           ${field('Remark (optional)', 'reason')}`)}
+    <div style="margin-top:12px;text-align:right"><button class="primary" id="s">${meta.btn}</button></div>`, (body, close) => {
+    let pad = null;
+    if (withSig) {
+      pad = wireSignaturePad(body, 'signpad', null);
+      (async () => { try { const s = (await api('/auth/signature')).signature; if (s) pad.load(s); } catch (e) {} })();
+    }
+    qs('#s', body).onclick = async () => {
+      const f = formData(body);
+      if (action !== 'reject' && !qs('#confirm', body).checked) return toast('Tick the confirmation to e-sign', 'err');
+      if (action === 'reject' && !String(f.reason || '').trim()) return toast('A reason is required to reject', 'err');
+      const signature = (withSig && pad && !pad.isEmpty()) ? pad.dataURL() : undefined;
+      const endpoint = action === 'receive' ? `/stores/min/${id}/receive` : `/stores/min/${id}/${action}`;
+      try {
+        await api(endpoint, { method: 'POST', body: { reason: f.reason, signature, received_by: f.received_by } });
+        toast('MIN ' + (action === 'reject' ? 'rejected' : (action === 'receive' ? 'issued & receipt signed' : 'approved · e-signed')));
+        close(); if (onDone) onDone();
+      } catch (e) { toast(e.message, 'err'); }
+    };
+  });
+}
+
+async function minApprovalModal(m, onDone) {
+  let d;
+  try {
+    d = await api('/stores/min/' + (m.min_id || m.id));
+  } catch (e) {
+    return toast(e.message, 'err');
+  }
+  const note = d.note || m;
+  const lines = d.lines || [];
+  const approvals = d.approvals || [];
+  const status = note.status || 'issued';
+
+  const badge = {
+    pending_approval: '<span class="badge amber">Pending Approval</span>',
+    requested: '<span class="badge amber">Pending Approval</span>',
+    approved: '<span class="badge blue">Approved · Ready to Issue</span>',
+    issued: '<span class="badge green">✓ Issued</span>',
+    rejected: '<span class="badge red">✕ Rejected</span>',
+  }[status] || `<span class="badge">${esc(status)}</span>`;
+
+  const canApprove = canDo('stores.min.approve') && (status === 'pending_approval' || status === 'requested');
+  const canReject = canDo('stores.min.reject') && (status === 'pending_approval' || status === 'requested');
+  const canReceive = (canDo('stores.issue') || canDo('stores.stock_issue')) && status === 'approved';
+  const sig = (name, at) => name ? `${esc(name)} <span class="muted">· ${esc((at || '').slice(0, 16).replace('T', ' '))}</span>` : '<span class="muted">pending</span>';
+
+  const rows = lines.map((l, i) => `<tr>
+    <td class="num">${i + 1}</td>
+    <td>${esc(l.description || '')}</td>
+    <td>${esc(l.category || '')}</td>
+    <td class="num">${num(l.qty)} ${esc(l.unit || 'nos')}</td>
+    <td class="num">${l.unit_price == null ? '—' : money(l.unit_price)}</td>
+    <td class="num">${l.unit_price == null ? '—' : money((Number(l.qty) || 0) * l.unit_price)}</td>
+  </tr>`);
+
+  const bg = modal(`Material Issue Note — ${esc(note.min_no || ('MIN-' + note.id))}`, `
+    <div style="font-size:12px;color:var(--muted);margin-bottom:8px">Doc. No.: <b>EC1.ST.FO.04</b> · Material Issue Note</div>
+    <div class="card" style="margin-bottom:12px">
+      <div class="toolbar" style="margin:0 0 8px"><h3 style="margin:0">3-Tier Signoff & Approval Flow</h3><div class="spacer"></div>${badge}
+        ${canApprove ? '<button class="sm primary" id="minappbtn">✍ Sign & Approve</button>' : ''}
+        ${canReject ? '<button class="sm danger" id="minrejbtn">✕ Reject</button>' : ''}
+        ${canReceive ? '<button class="sm primary" id="minrecbtn">🤝 Hand Over / Sign Receipt</button>' : ''}
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-top:8px;font-size:13px">
+        <div style="border:1px solid var(--border);padding:8px;border-radius:4px">
+          <b>1 · Requested By</b>${note.requested_sig ? `<div style="height:30px"><img src="${note.requested_sig}" style="max-height:30px;max-width:130px"></div>` : ''}<br>
+          ${sig(note.requested_by, note.issue_date || note.created_at)}<br>
+          <span class="muted">${esc(note.requested_designation || 'Store Clerk / Requester')}</span>
+        </div>
+        <div style="border:1px solid var(--border);padding:8px;border-radius:4px">
+          <b>2 · Approved By</b>${note.approved_sig ? `<div style="height:30px"><img src="${note.approved_sig}" style="max-height:30px;max-width:130px"></div>` : ''}<br>
+          ${sig(note.approved_by, note.approved_at)}<br>
+          <span class="muted">${esc(note.approved_designation || 'Workshop Engineer / Foreman')}</span>
+        </div>
+        <div style="border:1px solid var(--border);padding:8px;border-radius:4px">
+          <b>3 · Received By</b>${note.received_sig ? `<div style="height:30px"><img src="${note.received_sig}" style="max-height:30px;max-width:130px"></div>` : ''}<br>
+          ${sig(note.received_by, note.received_at)}<br>
+          <span class="muted">${esc(note.received_designation || 'Mechanic / Fitter')}</span>
+        </div>
+      </div>
+      ${note.rejection_reason ? `<p class="err" style="margin:8px 0 0;font-size:12.5px"><b>Rejection Reason:</b> ${esc(note.rejection_reason)}</p>` : ''}
+      ${approvals.length ? `<div style="margin-top:10px;border-top:1px solid var(--border);padding-top:6px">${approvals.map((a) => `<div class="cost-line" style="font-size:12px"><span>${a.decision === 'rejected' ? '✕' : '✓'} ${esc(a.stage)} — <b>${esc(a.signed_name || '')}</b> <span class="muted">(${esc(a.role || '')})</span>${a.reason ? ' · ' + esc(a.reason) : ''}</span><span class="muted">${esc((a.created_at || '').slice(0, 16).replace('T', ' '))}</span></div>`).join('')}</div>` : ''}
+    </div>
+    <div class="card">
+      <div class="toolbar" style="margin:0 0 6px">
+        <h3 style="margin:0">Materials Issued (${lines.length})</h3>
+        <div class="spacer"></div>
+        <a class="btn sm" href="/api/stores/min/${note.id}/print.html" target="_blank">🖨 Print Note</a>
+        <a class="btn sm primary" href="/api/stores/min/${note.id}/download.pdf" download>⬇ Download PDF</a>
+      </div>
+      <p class="muted" style="margin:0 0 8px;font-size:12.5px">Date: <b>${esc(String(note.issue_date || '').slice(0, 10))}</b> · Vehicle: <b>${esc(note.asset_code || note.asset_reg || '—')}</b> · Job Card: <b>${note.job_no ? `<a href="#/jobs/${note.job_id}">${esc(note.job_no)}</a>` : '—'}</b>${note.purpose ? ` · Purpose: ${esc(note.purpose)}` : ''}</p>
+      ${tableWrap([{ label: '#', num: true }, { label: 'Item description' }, { label: 'Category' }, { label: 'Qty', num: true }, { label: 'Unit price', num: true }, { label: 'Value', num: true }], [rows.join('')], { scroll: true })}
+    </div>`, (mbody, close) => {
+    if (qs('#minappbtn', mbody)) qs('#minappbtn', mbody).onclick = () => { close(); minSignModal(note, 'approve', () => { if (onDone) onDone(); minApprovalModal(note, onDone); }); };
+    if (qs('#minrejbtn', mbody)) qs('#minrejbtn', mbody).onclick = () => { close(); minSignModal(note, 'reject', () => { if (onDone) onDone(); minApprovalModal(note, onDone); }); };
+    if (qs('#minrecbtn', mbody)) qs('#minrecbtn', mbody).onclick = () => { close(); minSignModal(note, 'receive', () => { if (onDone) onDone(); minApprovalModal(note, onDone); }); };
+  });
+  const box = qs('.modal', bg);
+  if (box) { box.style.width = 'min(900px, 96vw)'; box.style.maxWidth = 'none'; }
+}
+
+// ===== MTN Approval & Sign Modals (EC1.ST.FO.05) ============================
+function mtnSignModal(t, action, onDone) {
+  const meta = {
+    approve: { title: 'Approve Material Transfer Note', verb: 'approve', btn: 'Sign & Approve', role: 'Store In-Charge' },
+    dispatch: { title: 'Dispatch Transfer (In Transit)', verb: 'dispatch', btn: 'Sign & Dispatch', role: 'Transport Driver / Dispatcher' },
+    receive: { title: 'Confirm Arrival at Destination', verb: 'confirm receipt of', btn: 'Sign Arrival', role: 'Receiving Store Clerk' },
+    accept: { title: 'Accept & Bin into Destination Stock', verb: 'accept and bin', btn: 'Sign & Accept Stock', role: 'Destination Storekeeper' },
+    reject: { title: 'Reject Material Transfer Note', verb: 'reject', btn: 'Reject', role: 'Store In-Charge' },
+  }[action];
+  const who = esc(ME.fullName || ME.username);
+  const withSig = action !== 'reject';
+  const mtnNo = esc(t.mtn_no);
+  const id = t.id;
+
+  modal(meta.title + ' — ' + mtnNo, `
+    <p class="muted">Signing as <b>${who}</b> <span class="badge blue">${esc(ME.roles.join(', '))}</span> · Role: <b>${esc(meta.role)}</b></p>
+    ${action === 'reject'
+      ? field('Reason for rejection (required) *', 'reason')
+      : (action === 'dispatch'
+        ? `${field('Driver / Dispatcher Name *', 'driver_name', { value: who })}
+           <label style="display:flex;gap:8px;align-items:flex-start;font-weight:400"><input type="checkbox" id="confirm" style="width:auto;margin-top:3px"> I acknowledge receiving the listed items for transport to ${esc(t.to_location || 'destination')}.</label>
+           <label>Driver Signature</label>${signaturePadHtml('signpad')}
+           ${field('Remark / Transit Note (optional)', 'reason')}`
+        : (action === 'receive'
+          ? `${field('Received By (Receiving Clerk) *', 'received_by', { value: who })}
+             <label style="display:flex;gap:8px;align-items:flex-start;font-weight:400"><input type="checkbox" id="confirm" style="width:auto;margin-top:3px"> I confirm the arrival of this shipment at ${esc(t.to_location || 'destination')}.</label>
+             <label>Signature</label>${signaturePadHtml('signpad')}
+             ${field('Arrival Remark (optional)', 'reason')}`
+          : (action === 'accept'
+            ? `${field('Accepted & Binned By (Storekeeper) *', 'accepted_by', { value: who })}
+               <label style="display:flex;gap:8px;align-items:flex-start;font-weight:400"><input type="checkbox" id="confirm" style="width:auto;margin-top:3px"> I have inspected the received items and accepted them into destination stock.</label>
+               <label>Storekeeper Signature</label>${signaturePadHtml('signpad')}
+               ${field('Bin Location / Remark (optional)', 'reason')}`
+            : `<label style="display:flex;gap:8px;align-items:flex-start;font-weight:400"><input type="checkbox" id="confirm" style="width:auto;margin-top:3px"> I, ${who}, approve the transfer of materials from ${esc(t.from_location || 'origin')} to ${esc(t.to_location || 'destination')}.</label>
+               <label>Electronic Signature</label>${signaturePadHtml('signpad')}
+               ${field('Remark (optional)', 'reason')}`)))}
+    <div style="margin-top:12px;text-align:right"><button class="primary" id="s">${meta.btn}</button></div>`, (body, close) => {
+    let pad = null;
+    if (withSig) {
+      pad = wireSignaturePad(body, 'signpad', null);
+      (async () => { try { const s = (await api('/auth/signature')).signature; if (s) pad.load(s); } catch (e) {} })();
+    }
+    qs('#s', body).onclick = async () => {
+      const f = formData(body);
+      if (action !== 'reject' && !qs('#confirm', body).checked) return toast('Tick the confirmation to e-sign', 'err');
+      if (action === 'reject' && !String(f.reason || '').trim()) return toast('A reason is required to reject', 'err');
+      const signature = (withSig && pad && !pad.isEmpty()) ? pad.dataURL() : undefined;
+      const payload = { reason: f.reason, signature };
+      if (action === 'dispatch') payload.driver_name = f.driver_name;
+      if (action === 'receive') payload.received_by = f.received_by;
+      if (action === 'accept') payload.accepted_by = f.accepted_by;
+      try {
+        await api(`/stores/mtn/${id}/${action}`, { method: 'POST', body: payload });
+        toast('MTN ' + (action === 'reject' ? 'rejected' : action + ' confirmed · e-signed'));
+        close(); if (onDone) onDone();
+      } catch (e) { toast(e.message, 'err'); }
+    };
+  });
+}
+
+async function mtnApprovalModal(t, onDone) {
+  let d;
+  try {
+    d = await api('/stores/mtn/' + t.id);
+  } catch (e) {
+    return toast(e.message, 'err');
+  }
+  const m = d.mtn || t;
+  const lines = d.lines || [];
+  const approvals = d.approvals || [];
+  const status = m.status || (m.accepted_at ? 'accepted' : (m.received_at ? 'received' : (m.approved_at ? 'dispatched' : 'draft')));
+
+  const badge = {
+    draft: '<span class="badge amber">Draft · Awaiting Approval</span>',
+    pending_approval: '<span class="badge amber">Draft · Awaiting Approval</span>',
+    approved: '<span class="badge blue">Approved · Ready for Dispatch</span>',
+    dispatched: '<span class="badge purple">In Transit</span>',
+    received: '<span class="badge teal">Received at Dest.</span>',
+    accepted: '<span class="badge green">✓ Accepted into Stock</span>',
+    rejected: '<span class="badge red">✕ Rejected</span>',
+  }[status] || `<span class="badge">${esc(status)}</span>`;
+
+  const canApprove = canDo('stores.mtn.approve') && (status === 'draft' || status === 'pending_approval');
+  const canReject = canDo('stores.mtn.reject') && (status === 'draft' || status === 'pending_approval');
+  const canDispatch = canDo('stores.mtn.edit') && status === 'approved';
+  const canReceive = canDo('stores.mtn.edit') && status === 'dispatched';
+  const canAccept = canDo('stores.mtn.edit') && status === 'received';
+  const sig = (name, at) => name ? `${esc(name)} <span class="muted">· ${esc((at || '').slice(0, 16).replace('T', ' '))}</span>` : '<span class="muted">pending</span>';
+
+  const rows = lines.map((l, i) => `<tr>
+    <td class="num">${i + 1}</td>
+    <td>${esc(l.description || '')}${l.from_store ? `<br><span class="muted" style="font-size:11px">Store: ${esc(l.from_store)} → ${esc(l.to_store)}</span>` : ''}</td>
+    <td class="num">${num(l.qty)} ${esc(l.unit || 'nos')}</td>
+    <td>${esc(l.category || '—')}</td>
+    <td>${esc(l.from_location || l.from_asset_code || '—')}</td>
+    <td>${esc(l.to_location || l.to_asset_code || '—')}</td>
+    <td>${esc(l.reason || '—')}</td>
+  </tr>`);
+
+  const bg = modal(`Materials Transfer Note — ${esc(m.mtn_no)}`, `
+    <div style="font-size:12px;color:var(--muted);margin-bottom:8px">Doc. No.: <b>EC1.ST.FO.05</b> · Materials Transfer Note</div>
+    <div class="card" style="margin-bottom:12px">
+      <div class="toolbar" style="margin:0 0 8px"><h3 style="margin:0">4-Stage Custody Chain & Approvals</h3><div class="spacer"></div>${badge}
+        ${canApprove ? '<button class="sm primary" id="tappbtn">✍ Sign & Approve</button>' : ''}
+        ${canReject ? '<button class="sm danger" id="trejbtn">✕ Reject</button>' : ''}
+        ${canDispatch ? '<button class="sm primary" id="tdspbtn">🚀 Dispatch (In Transit)</button>' : ''}
+        ${canReceive ? '<button class="sm primary" id="trecbtn">📥 Confirm Arrival</button>' : ''}
+        ${canAccept ? '<button class="sm primary" id="taccbtn">✅ Accept & Bin Stock</button>' : ''}
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px;margin-top:8px;font-size:12px">
+        <div style="border:1px solid var(--border);padding:6px 8px;border-radius:4px">
+          <b>1 · Prepared By</b><br>${sig(m.transferred_by || 'Storekeeper', m.txn_date)}<br>
+          <span class="muted">${esc(m.prepared_designation || 'Origin Storekeeper')}</span>
+        </div>
+        <div style="border:1px solid var(--border);padding:6px 8px;border-radius:4px">
+          <b>2 · Approved By</b>${m.approved_sig ? `<div style="height:24px"><img src="${m.approved_sig}" style="max-height:24px;max-width:110px"></div>` : ''}<br>
+          ${sig(m.approved_by, m.approved_at)}<br>
+          <span class="muted">${esc(m.approved_designation || 'Store In-Charge')}</span>
+        </div>
+        <div style="border:1px solid var(--border);padding:6px 8px;border-radius:4px">
+          <b>3 · In Transit / Driver</b>${m.received_sig ? `<div style="height:24px"><img src="${m.received_sig}" style="max-height:24px;max-width:110px"></div>` : ''}<br>
+          ${sig(m.received_by, m.received_at)}<br>
+          <span class="muted">${esc(m.received_designation || 'Transport Driver')}</span>
+        </div>
+        <div style="border:1px solid var(--border);padding:6px 8px;border-radius:4px">
+          <b>4 · Accepted & Binned</b>${m.accepted_sig ? `<div style="height:24px"><img src="${m.accepted_sig}" style="max-height:24px;max-width:110px"></div>` : ''}<br>
+          ${sig(m.accepted_by, m.accepted_at)}<br>
+          <span class="muted">${esc(m.accepted_designation || 'Dest. Storekeeper')}</span>
+        </div>
+      </div>
+      ${m.rejection_reason ? `<p class="err" style="margin:8px 0 0;font-size:12.5px"><b>Rejection Reason:</b> ${esc(m.rejection_reason)}</p>` : ''}
+      ${approvals.length ? `<div style="margin-top:10px;border-top:1px solid var(--border);padding-top:6px">${approvals.map((a) => `<div class="cost-line" style="font-size:12px"><span>${a.decision === 'rejected' ? '✕' : '✓'} ${esc(a.stage)} — <b>${esc(a.signed_name || '')}</b> <span class="muted">(${esc(a.role || '')})</span>${a.reason ? ' · ' + esc(a.reason) : ''}</span><span class="muted">${esc((a.created_at || '').slice(0, 16).replace('T', ' '))}</span></div>`).join('')}</div>` : ''}
+    </div>
+    <div class="card">
+      <div class="toolbar" style="margin:0 0 6px">
+        <h3 style="margin:0">Transferred Items (${lines.length})</h3>
+        <div class="spacer"></div>
+        <a class="btn sm" href="/api/stores/mtn/${m.id}/print.html" target="_blank">🖨 Print Note</a>
+        <a class="btn sm primary" href="/api/stores/mtn/${m.id}/download.pdf" download>⬇ Download PDF</a>
+      </div>
+      <p class="muted" style="margin:0 0 8px;font-size:12.5px">Date: <b>${esc(String(m.txn_date || '').slice(0, 10))}</b> · From: <b>${esc(m.from_location || '—')}</b> · To: <b>${esc(m.to_location || '—')}</b>${m.reason ? ` · Reason: ${esc(m.reason)}` : ''}</p>
+      ${tableWrap([{ label: '#', num: true }, { label: 'Item description' }, { label: 'Qty', num: true }, { label: 'Category' }, { label: 'From' }, { label: 'To' }, { label: 'Line reason' }], [rows.join('')], { scroll: true })}
+    </div>`, (mbody, close) => {
+    if (qs('#tappbtn', mbody)) qs('#tappbtn', mbody).onclick = () => { close(); mtnSignModal(m, 'approve', () => { if (onDone) onDone(); mtnApprovalModal(m, onDone); }); };
+    if (qs('#trejbtn', mbody)) qs('#trejbtn', mbody).onclick = () => { close(); mtnSignModal(m, 'reject', () => { if (onDone) onDone(); mtnApprovalModal(m, onDone); }); };
+    if (qs('#tdspbtn', mbody)) qs('#tdspbtn', mbody).onclick = () => { close(); mtnSignModal(m, 'dispatch', () => { if (onDone) onDone(); mtnApprovalModal(m, onDone); }); };
+    if (qs('#trecbtn', mbody)) qs('#trecbtn', mbody).onclick = () => { close(); mtnSignModal(m, 'receive', () => { if (onDone) onDone(); mtnApprovalModal(m, onDone); }); };
+    if (qs('#taccbtn', mbody)) qs('#taccbtn', mbody).onclick = () => { close(); mtnSignModal(m, 'accept', () => { if (onDone) onDone(); mtnApprovalModal(m, onDone); }); };
+  });
+  const box = qs('.modal', bg);
+  if (box) { box.style.width = 'min(940px, 96vw)'; box.style.maxWidth = 'none'; }
 }
 
 // ---- MRN request target: ANY vehicle, job card optional --------------------
@@ -5726,6 +7615,1532 @@ function newIssueModal(onDone, prefill) {
     }, { wide: true });
 }
 
+// ---- Tools & Toolboxes (Workshop Common Tools, Mechanic Boxes, Daily Stores Issue Register & Engineer Scrap Approval) ----
+const TOOL_CONDITIONS = [
+  ['excellent', 'Excellent (Like New)'],
+  ['good', 'Good (Normal Use)'],
+  ['fair', 'Fair (Minor Wear)'],
+  ['damaged', 'Damaged / Needs Inspection'],
+  ['broken', 'Broken / Inoperable'],
+  ['scrapped', 'Condemned / Scrapped'],
+];
+
+const TOOL_CATEGORIES = [
+  'Hand Tool',
+  'Power Tool',
+  'Pneumatic',
+  'Hydraulic',
+  'Measurement',
+  'Lifting & Rigging',
+  'Welding & Cutting',
+  'Electrical & Diagnostic',
+  'Specialty / Workshop Tool',
+  'General Workshop Equipment',
+];
+
+const DAMAGE_REASONS = [
+  ['worn_out', 'Excessive Wear & Tear / End of Life'],
+  ['cracked', 'Cracked / Fractured Casing or Frame'],
+  ['burnt', 'Motor Burnout / Electrical Short'],
+  ['bent', 'Bent / Deformed Beyond Safe Tolerance'],
+  ['stripped', 'Stripped Gears / Damaged Drive / Thread'],
+  ['lost_parts', 'Critical Components Missing or Broken'],
+  ['hydraulic_leak', 'Internal Seal / Hydraulic Cylinder Blown'],
+  ['calibration_fail', 'Permanent Sensor / Calibration Failure'],
+  ['other', 'Other Technical Damage (See Notes)'],
+];
+
+function toolCondBadge(c) {
+  switch (c) {
+    case 'excellent': return '<span class="badge green">Excellent</span>';
+    case 'good': return '<span class="badge blue">Good</span>';
+    case 'fair': return '<span class="badge amber">Fair</span>';
+    case 'damaged': return '<span class="badge red">Damaged</span>';
+    case 'broken': return '<span class="badge red">Broken</span>';
+    case 'scrapped': return '<span class="badge grey">Scrapped</span>';
+    default: return `<span class="badge">${esc(c || '—')}</span>`;
+  }
+}
+
+function toolStatBadge(s) {
+  switch (s) {
+    case 'in_store': return '<span class="badge green">In Store</span>';
+    case 'issued':
+    case 'in_use': return '<span class="badge blue">In Use</span>';
+    case 'damaged': return '<span class="badge red">Damaged</span>';
+    case 'pending_scrap': return '<span class="badge amber">⏳ Awaiting Scrap Approval</span>';
+    case 'scrapped': return '<span class="badge grey">🗑️ Scrapped</span>';
+    case 'missing': return '<span class="badge red">Missing</span>';
+    default: return `<span class="badge">${esc(s || '—')}</span>`;
+  }
+}
+
+function toolScrapBadge(s) {
+  switch (s) {
+    case 'pending_approval': return '<span class="badge amber">⏳ Pending Approval</span>';
+    case 'approved': return '<span class="badge green">✓ Approved (Scrapped)</span>';
+    case 'under_repair': return '<span class="badge blue">🔧 Workshop Repair</span>';
+    case 'rejected': return '<span class="badge red">✕ Rejected</span>';
+    default: return `<span class="badge">${esc(s || '—')}</span>`;
+  }
+}
+
+routes.tools = async (c) => {
+  const sp = new URLSearchParams(location.hash.split('?')[1] || '');
+  const tab = sp.get('tab') || 'common';
+
+  let stats = {};
+  try {
+    stats = await api('/tools/stats');
+  } catch (e) {
+    /* ignore stats fetch error */
+  }
+
+  const TABS = [
+    ['common', '🛠️ Common Tools'],
+    ['mechanic', '🧰 Mechanic Toolboxes'],
+    ['logs', '📋 Daily Store Issue Log'],
+    ['scrap', `🗑️ Scrap & Damage Requests${stats.pending_scrap_count ? ` <span class="badge amber">${stats.pending_scrap_count}</span>` : ''}`],
+    ['archive', '📜 Scrapped Archive'],
+  ];
+
+  const statCards = `
+    <div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px;margin-bottom:14px">
+      <div class="card"><div class="stat"><div class="n">${stats.total_tools || 0}</div><div class="l">Total Registered Tools</div></div></div>
+      <div class="card"><div class="stat"><div class="n" style="color:var(--green,#2e7d32)">${stats.in_store || 0}</div><div class="l">In Store (Available)</div></div></div>
+      <div class="card"><div class="stat"><div class="n" style="color:var(--blue,#1976d2)">${stats.in_use || 0}</div><div class="l">In Use / Issued</div></div></div>
+      <div class="card"><div class="stat"><div class="n" style="color:var(--red,#d32f2f)">${stats.damaged || 0}</div><div class="l">Damaged / Broken</div></div></div>
+      <div class="card"><div class="stat"><div class="n" style="color:var(--amber,#f57c00)">${stats.pending_scrap_count || 0}</div><div class="l">Awaiting Scrap Approval</div></div></div>
+      <div class="card"><div class="stat"><div class="n" style="color:#757575">${stats.scrapped || 0}</div><div class="l">Scrapped Archive</div></div></div>
+    </div>
+  `;
+
+  const tabsBar = `
+    <div class="toolbar" style="margin-bottom:12px;gap:6px;flex-wrap:wrap">
+      ${TABS.map(([t, l]) => `<button class="sm ${t === tab ? 'primary' : ''}" onclick="location.hash='#/tools?tab=${t}'">${l}</button>`).join('')}
+    </div>
+  `;
+
+  c.innerHTML = pageHeader('Tools & Toolboxes', 'Workshop Common Tools, Mechanic Personal Toolboxes, Daily Stores Issue Register & Scrap Condemnation')
+    + statCards
+    + tabsBar
+    + '<div id="tools_body" class="muted">Loading…</div>';
+
+  const body = qs('#tools_body', c);
+  if (tab === 'common') return toolsCommonTab(body, sp);
+  if (tab === 'mechanic') return toolsMechanicTab(body, sp);
+  if (tab === 'logs') return toolsLogsTab(body, sp);
+  if (tab === 'scrap') return toolsScrapTab(body, sp);
+  if (tab === 'archive') return toolsArchiveTab(body, sp);
+};
+
+async function toolsCommonTab(body, sp) {
+  const canManage = canDo('tools.manage') || isAdmin();
+  const canIssue = canDo('tools.issue') || canManage;
+  const canReport = canDo('tools.damage.report') || canIssue || canView('tools');
+
+  body.innerHTML = `
+    <div class="toolbar" style="margin-bottom:10px;gap:8px;flex-wrap:wrap">
+      ${canManage ? '<button class="primary" id="btn_add_common">+ Register Common Tool</button>' : ''}
+      ${canIssue ? '<button class="btn sm" id="btn_quick_issue">📤 Issue Tool From Store</button>' : ''}
+      <input id="tc_q" type="search" placeholder="Search tool code, name, brand, model…" value="${esc(sp.get('q') || '')}" style="max-width:240px">
+      <select id="tc_cat" style="max-width:180px">
+        <option value="">All Categories</option>
+        ${TOOL_CATEGORIES.map((c) => `<option value="${esc(c)}" ${sp.get('cat') === c ? 'selected' : ''}>${esc(c)}</option>`).join('')}
+      </select>
+      <select id="tc_st" style="max-width:160px">
+        <option value="">All Statuses</option>
+        <option value="in_store" ${sp.get('status') === 'in_store' ? 'selected' : ''}>In Store (Available)</option>
+        <option value="in_use" ${sp.get('status') === 'in_use' ? 'selected' : ''}>In Use / Issued</option>
+        <option value="damaged" ${sp.get('status') === 'damaged' ? 'selected' : ''}>Damaged / Broken</option>
+      </select>
+      <div class="spacer"></div>
+      <span class="muted" id="tc_count"></span>
+    </div>
+    <div id="tc_table"><div class="muted">Loading tools…</div></div>
+  `;
+
+  let deb;
+  const reload = async () => {
+    const q = qs('#tc_q', body).value.trim();
+    const cat = qs('#tc_cat', body).value;
+    const st = qs('#tc_st', body).value;
+
+    const sp_ = new URLSearchParams({ tab: 'common' });
+    if (q) sp_.set('q', q);
+    if (cat) sp_.set('cat', cat);
+    if (st) sp_.set('status', st);
+    history.replaceState(null, '', '#/tools?' + sp_.toString());
+
+    let url = '/tools?type=common&limit=250';
+    if (q) url += '&q=' + encodeURIComponent(q);
+    if (cat) url += '&category=' + encodeURIComponent(cat);
+    if (st) url += '&status=' + encodeURIComponent(st);
+
+    let data;
+    try {
+      data = await api(url);
+    } catch (e) {
+      qs('#tc_table', body).innerHTML = `<div class="card err">${esc(e.message)}</div>`;
+      return;
+    }
+
+    const tools = Array.isArray(data) ? data : (data.tools || []);
+    qs('#tc_count', body).textContent = `${tools.length} common tool${tools.length === 1 ? '' : 's'}`;
+
+    if (!tools.length) {
+      qs('#tc_table', body).innerHTML = '<div class="card"><p class="muted">No common workshop tools match the search filters.</p></div>';
+      return;
+    }
+
+    const rows = tools.map((t) => {
+      const isOut = t.status === 'in_use' || t.status === 'issued';
+      const borrowerInfo = isOut
+        ? `<b>${esc(t.current_borrower || 'Issued')}</b><br><span class="muted">${t.current_borrow_date ? String(t.current_borrow_date).slice(0, 10) : ''}</span>`
+        : '<span class="muted">—</span>';
+
+      let actBtns = [];
+      if (t.status === 'in_store' && canIssue) {
+        actBtns.push(`<button class="sm primary" data-issue="${t.id}" title="Issue tool from store">📤 Issue</button>`);
+      } else if (isOut && canIssue) {
+        actBtns.push(`<button class="sm" data-return="${t.id}" data-logid="${t.current_log_id || ''}" title="Receive tool return">📥 Return</button>`);
+      }
+      if (t.status !== 'scrapped' && t.status !== 'pending_scrap' && canReport) {
+        actBtns.push(`<button class="sm danger" data-damage="${t.id}" title="Report damage and request scrap">⚠️ Report Broken</button>`);
+      }
+      if (canManage) {
+        actBtns.push(`<button class="sm" data-edit="${t.id}" title="Edit tool details">✏️</button>`);
+      }
+
+      return `<tr>
+        <td class="mono"><b>${esc(t.tool_code)}</b></td>
+        <td><b>${esc(t.name)}</b><br><span class="muted">${esc(t.category || '')}</span></td>
+        <td>${esc(t.brand || '')} ${esc(t.model_no || '')}<br><span class="muted mono">${esc(t.serial_no || '')}</span></td>
+        <td>${esc(t.location || 'Stores')}</td>
+        <td>${toolCondBadge(t.condition)}</td>
+        <td>${toolStatBadge(t.status)}</td>
+        <td>${borrowerInfo}</td>
+        <td style="white-space:nowrap;text-align:right">${actBtns.join(' ')}</td>
+      </tr>`;
+    });
+
+    qs('#tc_table', body).innerHTML = tableWrap([
+      { label: 'Code', width: '130px' },
+      { label: 'Tool Name & Category' },
+      { label: 'Brand & Model' },
+      { label: 'Location' },
+      { label: 'Condition' },
+      { label: 'Status' },
+      { label: 'In Use By' },
+      { label: 'Actions', num: true },
+    ], rows, { scroll: true });
+
+    // Wire action buttons
+    qsa('[data-issue]', body).forEach((b) => {
+      b.onclick = () => {
+        const t = tools.find((x) => x.id === Number(b.dataset.issue));
+        if (t) openToolIssueModal(t, reload);
+      };
+    });
+    qsa('[data-return]', body).forEach((b) => {
+      b.onclick = () => {
+        const t = tools.find((x) => x.id === Number(b.dataset.return));
+        if (t) openToolReturnModal({ tool_id: t.id, log_id: b.dataset.logid, tool_code: t.tool_code, tool_name: t.name, issued_to_name: t.current_borrower }, reload);
+      };
+    });
+    qsa('[data-damage]', body).forEach((b) => {
+      b.onclick = () => {
+        const t = tools.find((x) => x.id === Number(b.dataset.damage));
+        if (t) openToolDamageReportModal(t, reload);
+      };
+    });
+    qsa('[data-edit]', body).forEach((b) => {
+      b.onclick = () => {
+        const t = tools.find((x) => x.id === Number(b.dataset.edit));
+        if (t) openToolEditModal(t, reload);
+      };
+    });
+  };
+
+  qs('#tc_q', body).oninput = () => { clearTimeout(deb); deb = setTimeout(reload, 250); };
+  qs('#tc_cat', body).onchange = reload;
+  qs('#tc_st', body).onchange = reload;
+
+  if (qs('#btn_add_common', body)) {
+    qs('#btn_add_common', body).onclick = () => openToolCreateModal(reload, 'common');
+  }
+  if (qs('#btn_quick_issue', body)) {
+    qs('#btn_quick_issue', body).onclick = () => openToolIssueModal(null, reload);
+  }
+
+  await reload();
+}
+
+async function toolsMechanicTab(body, sp) {
+  const canManage = canDo('tools.manage') || isAdmin();
+  const canReport = canDo('tools.damage.report') || canDo('tools.issue') || canManage || canView('tools');
+
+  let mechBoxes = [];
+  try {
+    mechBoxes = await api('/tools/mechanic-boxes');
+  } catch (e) {
+    body.innerHTML = `<div class="card err">${esc(e.message)}</div>`;
+    return;
+  }
+
+  let selectedMechId = sp.get('mechanic_id') ? Number(sp.get('mechanic_id')) : null;
+  let activeFilter = 'responsible'; // 'responsible' | 'all' | 'general'
+
+  const responsibleMechs = mechBoxes.filter((m) => (m.assigned_tools_count > 0) || [1, 11, 13, 17, 19].includes(m.id));
+  const generalMechs = mechBoxes.filter((m) => !((m.assigned_tools_count > 0) || [1, 11, 13, 17, 19].includes(m.id)));
+
+  body.innerHTML = `
+    <div class="toolbar" style="margin-bottom:12px;gap:8px;flex-wrap:wrap">
+      <div style="display:flex;gap:4px">
+        <button class="sm primary" id="btn_flt_resp">★ Dedicated Toolboxes (${responsibleMechs.length})</button>
+        <button class="sm" id="btn_flt_all">All Mechanics (${mechBoxes.length})</button>
+        <button class="sm" id="btn_flt_gen">Store Borrowers (${generalMechs.length})</button>
+      </div>
+      <div class="spacer"></div>
+      <label class="muted" style="align-self:center">Jump to Mechanic:</label>
+      <select id="tm_mech_sel" style="min-width:280px">
+        <option value="">-- All Mechanics (${mechBoxes.length}) --</option>
+        <optgroup label="★ Responsible Mechanics (5 Dedicated Toolboxes)">
+          ${responsibleMechs.map((m) => `<option value="${m.id}" ${selectedMechId === m.id ? 'selected' : ''}>★ ${esc(m.name)} - ${esc(m.toolbox_name || 'Toolbox')} (${m.assigned_tools_count || 0} tools)</option>`).join('')}
+        </optgroup>
+        <optgroup label="General Workshop Mechanics (Uses Common Stores)">
+          ${generalMechs.map((m) => `<option value="${m.id}" ${selectedMechId === m.id ? 'selected' : ''}>${esc(m.name)} (No Toolbox - Store User)</option>`).join('')}
+        </optgroup>
+      </select>
+      ${canManage ? '<button class="primary" id="btn_add_mech_tool">+ Assign Tool to Mechanic</button>' : ''}
+      <input id="tm_q" type="search" placeholder="Filter tools / mechanic…" value="${esc(sp.get('q') || '')}" style="max-width:200px">
+    </div>
+    <div id="tm_view"><div class="muted">Loading mechanic toolboxes…</div></div>
+  `;
+
+  let deb;
+  const renderView = async () => {
+    const q = qs('#tm_q', body).value.trim().toLowerCase();
+    selectedMechId = qs('#tm_mech_sel', body).value ? Number(qs('#tm_mech_sel', body).value) : null;
+
+    // Update filter buttons appearance
+    if (qs('#btn_flt_resp', body)) qs('#btn_flt_resp', body).className = `sm ${activeFilter === 'responsible' ? 'primary' : ''}`;
+    if (qs('#btn_flt_all', body)) qs('#btn_flt_all', body).className = `sm ${activeFilter === 'all' ? 'primary' : ''}`;
+    if (qs('#btn_flt_gen', body)) qs('#btn_flt_gen', body).className = `sm ${activeFilter === 'general' ? 'primary' : ''}`;
+
+    const sp_ = new URLSearchParams({ tab: 'mechanic' });
+    if (selectedMechId) sp_.set('mechanic_id', selectedMechId);
+    if (q) sp_.set('q', q);
+    history.replaceState(null, '', '#/tools?' + sp_.toString());
+
+    if (!selectedMechId) {
+      // Summary table of mechanics and their toolboxes
+      let list = mechBoxes;
+      if (activeFilter === 'responsible') {
+        list = responsibleMechs;
+      } else if (activeFilter === 'general') {
+        list = generalMechs;
+      }
+
+      const filteredMechs = list.filter((m) => !q || m.name.toLowerCase().includes(q) || (m.trade && m.trade.toLowerCase().includes(q)) || (m.site && m.site.toLowerCase().includes(q)) || (m.toolbox_name && m.toolbox_name.toLowerCase().includes(q)));
+
+      if (!filteredMechs.length) {
+        qs('#tm_view', body).innerHTML = '<div class="card"><p class="muted">No mechanics found matching current filter/search.</p></div>';
+        return;
+      }
+
+      const rows = filteredMechs.map((m) => {
+        const isResp = (m.assigned_tools_count > 0) || [1, 11, 13, 17, 19].includes(m.id);
+        const nameCell = isResp
+          ? `<b>${esc(m.name)}</b><br><span class="badge blue">🧰 ${esc(m.toolbox_name || 'Dedicated Toolbox')}</span>`
+          : `<b>${esc(m.name)}</b><br><span class="badge" style="background:#f1f5f9;color:#64748b">No Dedicated Box</span>`;
+
+        const toolCountCell = isResp
+          ? `<span class="badge green"><b>${m.assigned_tools_count || 0}</b> tools</span>`
+          : `<span class="muted">0 (Uses Stores)</span>`;
+
+        const goodCell = isResp ? `<span class="badge green">${m.good_tools_count || 0}</span>` : `<span class="muted">—</span>`;
+        const damagedCell = isResp && m.damaged_tools_count > 0 ? `<span class="badge red">${m.damaged_tools_count}</span>` : (isResp ? '0' : `<span class="muted">—</span>`);
+        const valCell = isResp && m.total_box_value ? 'LKR ' + num(m.total_box_value) : `<span class="muted">—</span>`;
+
+        const actBtn = isResp
+          ? `<button class="sm primary" data-openmech="${m.id}">Inspect Box (${m.assigned_tools_count || 0}) ➔</button>`
+          : `<button class="sm" data-openmech="${m.id}">View Status</button>`;
+
+        return `<tr>
+          <td>${nameCell}</td>
+          <td>${esc(m.trade || 'Mechanic')}</td>
+          <td>${esc(m.site || 'Central Workshop')}</td>
+          <td class="num">${toolCountCell}</td>
+          <td class="num">${goodCell}</td>
+          <td class="num">${damagedCell}</td>
+          <td class="num">${valCell}</td>
+          <td style="text-align:right">${actBtn}</td>
+        </tr>`;
+      });
+
+      qs('#tm_view', body).innerHTML = `
+        <div class="card" style="margin-bottom:12px;background:var(--bg-subtle,#f8fafc);border-left:4px solid var(--accent,#2563eb)">
+          <p style="margin:0 0 4px"><b>Workshop Tool Allocation Policy:</b> Dedicated toolboxes are issued and assigned only to appointed responsible mechanics (<b>Anura, Seethananda, Theminda, Nimesh, Nawathilaka</b>).</p>
+          <p style="margin:0;font-size:12px;color:var(--text-muted,#64748b)">All other workshop mechanics borrow common workshop tools on daily job cards from Stores, recorded under the <b>Daily Store Issue Log</b>.</p>
+        </div>
+        ${tableWrap([
+          { label: 'Mechanic / Toolbox' },
+          { label: 'Trade / Role' },
+          { label: 'Site / Location' },
+          { label: 'Assigned Tools', num: true },
+          { label: 'Good', num: true },
+          { label: 'Damaged / Broken', num: true },
+          { label: 'Box Value', num: true },
+          { label: 'Action', num: true },
+        ], rows, { scroll: true })}
+      `;
+
+      qsa('[data-openmech]', body).forEach((b) => {
+        b.onclick = () => {
+          qs('#tm_mech_sel', body).value = b.dataset.openmech;
+          renderView();
+        };
+      });
+      return;
+    }
+
+    // A specific mechanic is selected
+    const m = mechBoxes.find((x) => x.id === selectedMechId) || { name: 'Mechanic #' + selectedMechId };
+    let toolsData;
+    try {
+      toolsData = await api(`/tools?type=mechanic&mechanic_id=${selectedMechId}${q ? '&q=' + encodeURIComponent(q) : ''}`);
+    } catch (e) {
+      qs('#tm_view', body).innerHTML = `<div class="card err">${esc(e.message)}</div>`;
+      return;
+    }
+
+    const tools = Array.isArray(toolsData) ? toolsData : (toolsData.tools || []);
+    const isResp = tools.length > 0 || [1, 11, 13, 17, 19].includes(m.id);
+
+    if (!tools.length) {
+      // Mechanic has no dedicated toolbox
+      qs('#tm_view', body).innerHTML = `
+        <div class="card" style="margin-bottom:12px;background:var(--bg-subtle,#f8fafc);border-left:4px solid var(--accent,#2563eb);padding:16px">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px">
+            <div>
+              <h3 style="margin:0 0 6px">ℹ️ General Workshop Mechanic: <b>${esc(m.name)}</b></h3>
+              <p style="margin:0 0 8px;color:var(--text-muted,#475569)">
+                <b>${esc(m.name)}</b> does not hold an issued dedicated toolbox. In our workshop, dedicated toolboxes are maintained and issued only to appointed responsible mechanics (<b>Anura, Seethananda, Theminda, Nimesh, Nawathilaka</b>).
+              </p>
+              <p style="margin:0;font-size:12.5px;color:var(--text-muted,#64748b)">
+                Tools required for daily maintenance and repairs are checked out from the central store and recorded on the <b>Daily Store Issue Log</b>.
+              </p>
+            </div>
+            <span class="badge" style="background:#e2e8f0;color:#334155;font-weight:600">Store Tool User</span>
+          </div>
+          <div style="display:flex;gap:8px;margin-top:14px;flex-wrap:wrap">
+            ${canIssue ? `<button class="sm primary" id="btn_issue_store_tool">📤 Issue Common Tool from Store</button>` : ''}
+            <button class="sm" id="btn_view_mech_logs">📋 View ${esc(m.name)}'s Checkout History</button>
+            ${canManage ? `<button class="sm" id="btn_add_to_box">+ Assign Dedicated Tool to Box</button>` : ''}
+            <button class="sm" id="btn_back_to_mechs">⬅ Back to All Mechanics</button>
+          </div>
+        </div>
+      `;
+
+      if (qs('#btn_issue_store_tool', body)) {
+        qs('#btn_issue_store_tool', body).onclick = () => openToolIssueModal(null, renderView, m.id);
+      }
+      if (qs('#btn_view_mech_logs', body)) {
+        qs('#btn_view_mech_logs', body).onclick = () => { location.hash = '#/tools?tab=logs&q=' + encodeURIComponent(m.name); };
+      }
+      if (qs('#btn_add_to_box', body)) {
+        qs('#btn_add_to_box', body).onclick = () => openToolCreateModal(renderView, 'mechanic', m.id, m.name);
+      }
+      if (qs('#btn_back_to_mechs', body)) {
+        qs('#btn_back_to_mechs', body).onclick = () => { qs('#tm_mech_sel', body).value = ''; renderView(); };
+      }
+      return;
+    }
+
+    const banner = `
+      <div class="card" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:12px;background:var(--bg-subtle,#f8fafc);border-left:4px solid var(--accent,#2563eb)">
+        <div>
+          <h3 style="margin:0 0 4px">🧰 Dedicated Workshop Toolbox: <b>${esc(m.toolbox_name || m.name + "'s Tool Box")}</b></h3>
+          <div class="muted">
+            Responsible Mechanic: <b>${esc(m.name)}</b> · Role: ${esc(m.trade || 'Mechanic')} · Location: <b>${esc((tools[0] && tools[0].location) || m.site || 'Workshop')}</b>
+          </div>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <span class="badge blue"><b>${tools.length}</b> Tools in Box</span>
+          ${canManage ? `<button class="sm primary" id="btn_add_to_box">+ Add Tool to This Box</button>` : ''}
+          <button class="sm" id="btn_back_to_mechs">⬅ All Mechanics</button>
+        </div>
+      </div>
+    `;
+
+    const rows = tools.map((t) => {
+      let actBtns = [];
+      if (t.status !== 'scrapped' && t.status !== 'pending_scrap' && canReport) {
+        actBtns.push(`<button class="sm danger" data-damage="${t.id}" title="Report this specific tool broken and request Engineer scrap condemnation">⚠️ Report Broken / Request Scrap</button>`);
+      }
+      if (canManage) {
+        actBtns.push(`<button class="sm" data-transfer="${t.id}" title="Transfer tool back to common store or reassign">🔄 Transfer</button>`);
+        actBtns.push(`<button class="sm" data-edit="${t.id}" title="Edit tool details">✏️</button>`);
+      }
+
+      return `<tr>
+        <td class="mono"><b>${esc(t.tool_code)}</b></td>
+        <td><b>${esc(t.name)}</b><br><span class="muted">${esc(t.category || '')}</span></td>
+        <td>${esc(t.specifications || t.brand || 'Workshop Standard')}<br><span class="muted mono">${esc(t.serial_no || '')}</span></td>
+        <td>${esc(t.toolbox_name || 'Main Toolbox')}</td>
+        <td>${toolCondBadge(t.condition)}</td>
+        <td>${toolStatBadge(t.status)}</td>
+        <td>${t.purchase_cost ? 'LKR ' + num(t.purchase_cost) : '<span class="muted">—</span>'}</td>
+        <td style="white-space:nowrap;text-align:right">${actBtns.join(' ')}</td>
+      </tr>`;
+    });
+
+    qs('#tm_view', body).innerHTML = banner + tableWrap([
+      { label: 'Tool Code', width: '130px' },
+      { label: 'Tool Name & Category' },
+      { label: 'Specification / Size' },
+      { label: 'Toolbox Section' },
+      { label: 'Condition' },
+      { label: 'Status' },
+      { label: 'Cost', num: true },
+      { label: 'Actions', num: true },
+    ], rows, { scroll: true });
+
+    if (qs('#btn_add_to_box', body)) {
+      qs('#btn_add_to_box', body).onclick = () => openToolCreateModal(renderView, 'mechanic', m.id, m.name);
+    }
+    if (qs('#btn_back_to_mechs', body)) {
+      qs('#btn_back_to_mechs', body).onclick = () => { qs('#tm_mech_sel', body).value = ''; renderView(); };
+    }
+
+    qsa('[data-damage]', body).forEach((b) => {
+      b.onclick = () => {
+        const t = tools.find((x) => x.id === Number(b.dataset.damage));
+        if (t) openToolDamageReportModal(t, renderView);
+      };
+    });
+    qsa('[data-transfer]', body).forEach((b) => {
+      b.onclick = () => {
+        const t = tools.find((x) => x.id === Number(b.dataset.transfer));
+        if (t) openToolTransferModal(t, renderView);
+      };
+    });
+    qsa('[data-edit]', body).forEach((b) => {
+      b.onclick = () => {
+        const t = tools.find((x) => x.id === Number(b.dataset.edit));
+        if (t) openToolEditModal(t, renderView);
+      };
+    });
+  };
+
+  if (qs('#btn_flt_resp', body)) {
+    qs('#btn_flt_resp', body).onclick = () => { activeFilter = 'responsible'; qs('#tm_mech_sel', body).value = ''; renderView(); };
+  }
+  if (qs('#btn_flt_all', body)) {
+    qs('#btn_flt_all', body).onclick = () => { activeFilter = 'all'; qs('#tm_mech_sel', body).value = ''; renderView(); };
+  }
+  if (qs('#btn_flt_gen', body)) {
+    qs('#btn_flt_gen', body).onclick = () => { activeFilter = 'general'; qs('#tm_mech_sel', body).value = ''; renderView(); };
+  }
+
+  qs('#tm_mech_sel', body).onchange = renderView;
+  qs('#tm_q', body).oninput = () => { clearTimeout(deb); deb = setTimeout(renderView, 250); };
+
+  if (qs('#btn_add_mech_tool', body)) {
+    qs('#btn_add_mech_tool', body).onclick = () => openToolCreateModal(renderView, 'mechanic', selectedMechId);
+  }
+
+  await renderView();
+}
+
+async function toolsLogsTab(body, sp) {
+  const canIssue = canDo('tools.issue') || canDo('tools.manage') || isAdmin() || canEdit('stores');
+
+  body.innerHTML = `
+    <div class="toolbar" style="margin-bottom:10px;gap:8px;flex-wrap:wrap">
+      ${canIssue ? '<button class="primary" id="btn_new_checkout">📤 New Tool Checkout</button>' : ''}
+      <input id="log_q" type="search" placeholder="Search log no, tool, mechanic, job card…" value="${esc(sp.get('q') || '')}" style="max-width:240px">
+      <select id="log_st" style="max-width:180px">
+        <option value="">All Logs</option>
+        <option value="issued" ${sp.get('status') === 'issued' ? 'selected' : ''}>Active Checkouts (Not Returned)</option>
+        <option value="returned" ${sp.get('status') === 'returned' ? 'selected' : ''}>Returned OK</option>
+        <option value="returned_damaged" ${sp.get('status') === 'returned_damaged' ? 'selected' : ''}>Returned Damaged</option>
+      </select>
+      <div class="spacer"></div>
+      <span class="muted" id="log_count"></span>
+    </div>
+    <div id="log_table"><div class="muted">Loading store daily logs…</div></div>
+  `;
+
+  let deb;
+  const reload = async () => {
+    const q = qs('#log_q', body).value.trim();
+    const st = qs('#log_st', body).value;
+
+    const sp_ = new URLSearchParams({ tab: 'logs' });
+    if (q) sp_.set('q', q);
+    if (st) sp_.set('status', st);
+    history.replaceState(null, '', '#/tools?' + sp_.toString());
+
+    let url = '/tools/logs?limit=250';
+    if (q) url += '&q=' + encodeURIComponent(q);
+    if (st) url += '&status=' + encodeURIComponent(st);
+
+    let data;
+    try {
+      data = await api(url);
+    } catch (e) {
+      qs('#log_table', body).innerHTML = `<div class="card err">${esc(e.message)}</div>`;
+      return;
+    }
+
+    const logs = data.logs || [];
+    qs('#log_count', body).textContent = `${logs.length} log entry${logs.length === 1 ? '' : 'ies'}`;
+
+    if (!logs.length) {
+      qs('#log_table', body).innerHTML = '<div class="card"><p class="muted">No tool issue logs recorded.</p></div>';
+      return;
+    }
+
+    const rows = logs.map((l) => {
+      const isIssued = l.status === 'issued';
+      let stBadge = '<span class="badge blue">Issued / Out</span>';
+      if (l.status === 'returned') stBadge = '<span class="badge green">Returned OK</span>';
+      if (l.status === 'returned_damaged') stBadge = '<span class="badge red">Returned Damaged</span>';
+
+      let actBtns = '';
+      if (isIssued && canIssue) {
+        actBtns = `<button class="sm primary" data-returnlog="${l.id}">📥 Receive Return</button>`;
+      }
+
+      return `<tr>
+        <td class="mono"><b>${esc(l.log_no || '')}</b></td>
+        <td>${esc(l.issue_date || '')}<br><span class="muted">${esc(l.issue_time || '')}</span></td>
+        <td>
+          <b>${esc(l.tool_code || '')}</b> - ${esc(l.tool_name || '')}
+          <br><span class="muted">${l.tool_type === 'mechanic' ? '🧰 Mechanic Tool' : '🛠️ Common Tool'}</span>
+        </td>
+        <td><b>${esc(l.issued_to_name || '')}</b>${l.job_id ? `<br><span class="muted">Job: #${l.job_id}</span>` : ''}</td>
+        <td>${toolCondBadge(l.condition_out)}</td>
+        <td>${esc(l.issued_by || '')}</td>
+        <td>${l.return_date ? esc(l.return_date) + (l.return_time ? `<br><span class="muted">${esc(l.return_time)}</span>` : '') : '<span class="muted">Still out</span>'}</td>
+        <td>${l.return_date ? toolCondBadge(l.condition_in) : '<span class="muted">—</span>'}</td>
+        <td>${esc(l.received_by || '—')}</td>
+        <td>${stBadge}</td>
+        <td style="white-space:nowrap;text-align:right">${actBtns}</td>
+      </tr>`;
+    });
+
+    qs('#log_table', body).innerHTML = tableWrap([
+      { label: 'Log No', width: '120px' },
+      { label: 'Issued At' },
+      { label: 'Tool' },
+      { label: 'Issued To' },
+      { label: 'Cond. Out' },
+      { label: 'Issued By' },
+      { label: 'Returned At' },
+      { label: 'Cond. In' },
+      { label: 'Received By' },
+      { label: 'Status' },
+      { label: 'Action', num: true },
+    ], rows, { scroll: true });
+
+    qsa('[data-returnlog]', body).forEach((b) => {
+      b.onclick = () => {
+        const l = logs.find((x) => x.id === Number(b.dataset.returnlog));
+        if (l) openToolReturnModal(l, reload);
+      };
+    });
+  };
+
+  qs('#log_q', body).oninput = () => { clearTimeout(deb); deb = setTimeout(reload, 250); };
+  qs('#log_st', body).onchange = reload;
+
+  if (qs('#btn_new_checkout', body)) {
+    qs('#btn_new_checkout', body).onclick = () => openToolIssueModal(null, reload);
+  }
+
+  await reload();
+}
+
+async function toolsScrapTab(body, sp) {
+  const isEng = !!ME && (ME.role === 'engineer' || ME.role === 'assistant_engineer' || ME.role === 'operational_manager' || isAdmin() || canDo('tools.scrap.approve'));
+  const canReport = canDo('tools.damage.report') || canDo('tools.issue') || canDo('tools.manage') || canView('tools');
+
+  body.innerHTML = `
+    <div class="card" style="margin-bottom:12px;background:#fff8e1;border-color:#ffe082">
+      <div style="display:flex;align-items:flex-start;gap:12px">
+        <div style="font-size:24px;line-height:1">🛡️</div>
+        <div>
+          <b style="color:#b78103">Tool Damage & Scrap Condemnation Workflow:</b>
+          <div style="font-size:12.5px;color:#5d4037;margin-top:2px">
+            When tools in personal mechanic toolboxes or the workshop common store become broken or damaged, they are registered here. 
+            <b>Removing and condemning any tool into scrap strictly requires approval by the Mechanical Engineer or Assistant Engineer.</b>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="toolbar" style="margin-bottom:10px;gap:8px;flex-wrap:wrap">
+      ${canReport ? '<button class="btn sm danger" id="btn_report_broken">+ Report Broken Tool</button>' : ''}
+      <select id="ts_st" style="max-width:200px">
+        <option value="">All Requests</option>
+        <option value="pending_approval" ${sp.get('status') === 'pending_approval' || !sp.get('status') ? 'selected' : ''}>⏳ Awaiting Engineer Approval</option>
+        <option value="approved" ${sp.get('status') === 'approved' ? 'selected' : ''}>✓ Approved (Scrapped)</option>
+        <option value="under_repair" ${sp.get('status') === 'under_repair' ? 'selected' : ''}>🔧 Workshop Repair</option>
+        <option value="rejected" ${sp.get('status') === 'rejected' ? 'selected' : ''}>✕ Rejected</option>
+      </select>
+      <div class="spacer"></div>
+      <span class="muted" id="ts_count"></span>
+    </div>
+    <div id="ts_table"><div class="muted">Loading scrap requests…</div></div>
+  `;
+
+  const reload = async () => {
+    const st = qs('#ts_st', body).value;
+    const sp_ = new URLSearchParams({ tab: 'scrap' });
+    if (st) sp_.set('status', st);
+    history.replaceState(null, '', '#/tools?' + sp_.toString());
+
+    let url = '/tools/scrap-requests?limit=250';
+    if (st) url += '&status=' + encodeURIComponent(st);
+
+    let data;
+    try {
+      data = await api(url);
+    } catch (e) {
+      qs('#ts_table', body).innerHTML = `<div class="card err">${esc(e.message)}</div>`;
+      return;
+    }
+
+    const reqs = data.requests || [];
+    qs('#ts_count', body).textContent = `${reqs.length} scrap request${reqs.length === 1 ? '' : 's'}`;
+
+    if (!reqs.length) {
+      qs('#ts_table', body).innerHTML = '<div class="card"><p class="muted">No scrap requests match this status filter.</p></div>';
+      return;
+    }
+
+    const rows = reqs.map((r) => {
+      const isPending = r.status === 'pending_approval';
+      const isApproved = r.status === 'approved';
+
+      let actBtns = [];
+      if (isPending && isEng) {
+        actBtns.push(`<button class="sm primary" data-review="${r.id}">⚖️ Engineer Review</button>`);
+      }
+      if (isApproved) {
+        actBtns.push(`<a class="btn sm" href="/api/tools/scrap-requests/${r.id}/print.html" target="_blank" title="Official Tool Condemnation Certificate">📄 Print Note</a>`);
+      }
+
+      const mechanicCol = r.mechanic_name
+        ? `<b>${esc(r.mechanic_name)}</b><br><span class="muted">🧰 Personal Box</span>`
+        : '<span class="muted">🛠️ Common Workshop</span>';
+
+      const decisionInfo = r.engineer_name
+        ? `<b>${esc(r.engineer_name)}</b><br><span class="muted">${esc(r.engineer_role || 'Engineer')} · ${esc(String(r.scrap_date || r.created_at).slice(0, 10))}</span>`
+        : '<span class="muted">Awaiting decision</span>';
+
+      return `<tr>
+        <td class="mono"><b>${esc(r.request_no)}</b></td>
+        <td>${esc(String(r.damage_date || r.created_at).slice(0, 10))}</td>
+        <td><b>${esc(r.tool_code)}</b><br>${esc(r.tool_name)}</td>
+        <td>${mechanicCol}</td>
+        <td>
+          <b>${esc(r.damage_reason || '')}</b>
+          ${r.incident_description ? `<br><span class="muted">${esc(r.incident_description)}</span>` : ''}
+          ${r.replacement_requested ? '<br><span class="badge amber">Replacement Needed</span>' : ''}
+        </td>
+        <td>${esc(r.reported_by || '—')}</td>
+        <td>${toolScrapBadge(r.status)}</td>
+        <td>${decisionInfo}</td>
+        <td style="white-space:nowrap;text-align:right">${actBtns.join(' ')}</td>
+      </tr>`;
+    });
+
+    qs('#ts_table', body).innerHTML = tableWrap([
+      { label: 'Request No', width: '130px' },
+      { label: 'Date' },
+      { label: 'Tool' },
+      { label: 'Mechanic / Source' },
+      { label: 'Damage & Reason' },
+      { label: 'Reported By' },
+      { label: 'Status' },
+      { label: 'Engineer Approval' },
+      { label: 'Actions', num: true },
+    ], rows, { scroll: true });
+
+    qsa('[data-review]', body).forEach((b) => {
+      b.onclick = () => {
+        const r = reqs.find((x) => x.id === Number(b.dataset.review));
+        if (r) openEngineerApprovalModal(r, reload);
+      };
+    });
+  };
+
+  qs('#ts_st', body).onchange = reload;
+
+  if (qs('#btn_report_broken', body)) {
+    qs('#btn_report_broken', body).onclick = () => openToolDamageReportModal(null, reload);
+  }
+
+  await reload();
+}
+
+async function toolsArchiveTab(body, sp) {
+  let data;
+  try {
+    data = await api('/tools?status=scrapped&limit=250');
+  } catch (e) {
+    body.innerHTML = `<div class="card err">${esc(e.message)}</div>`;
+    return;
+  }
+
+  const tools = Array.isArray(data) ? data : (data.tools || []);
+  if (!tools.length) {
+    body.innerHTML = '<div class="card"><p class="muted">No scrapped tools in archive.</p></div>';
+    return;
+  }
+
+  const rows = tools.map((t) => `<tr>
+    <td class="mono"><b>${esc(t.tool_code)}</b></td>
+    <td><b>${esc(t.name)}</b><br><span class="muted">${esc(t.category || '')}</span></td>
+    <td>${t.type === 'mechanic' ? `🧰 ${esc(t.mechanic_name || 'Mechanic')}` : '🛠️ Common Workshop'}</td>
+    <td>${esc(t.brand || '')} ${esc(t.model_no || '')}</td>
+    <td><span class="badge grey">Condemned & Scrapped</span></td>
+    <td>${esc(t.notes || '—')}</td>
+  </tr>`);
+
+  body.innerHTML = `
+    <div class="card" style="margin-bottom:12px;background:var(--bg-subtle,#f8fafc)">
+      <p style="margin:0">📜 <b>Condemned Tools Archive:</b> Historical record of tools that suffered irreparable damage, were formally inspected by the Mechanical / Assistant Engineer, and decommissioned into scrap.</p>
+    </div>
+    ${tableWrap([
+      { label: 'Tool Code', width: '130px' },
+      { label: 'Tool Name & Category' },
+      { label: 'Original Source / Owner' },
+      { label: 'Brand & Model' },
+      { label: 'Status' },
+      { label: 'Decommission Notes' },
+    ], rows, { scroll: true })}
+  `;
+}
+
+async function openToolCreateModal(reload, initialType = 'common', initialMechanicId = null, initialMechanicName = '') {
+  let mechs = [];
+  try {
+    mechs = await api('/tools/mechanic-boxes');
+  } catch (e) { /* ignore */ }
+
+  const html = `
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+      <div>
+        <label>Tool Code</label>
+        <input id="tc_code" placeholder="Auto-generated if empty (e.g. CT-TORQUE-01)">
+      </div>
+      <div>
+        <label>Tool Name *</label>
+        <input id="tc_name" placeholder="e.g. 1/2-Inch Drive Digital Torque Wrench" required>
+      </div>
+      <div>
+        <label>Category</label>
+        <select id="tc_category">
+          ${TOOL_CATEGORIES.map((c) => `<option value="${esc(c)}">${esc(c)}</option>`).join('')}
+        </select>
+      </div>
+      <div>
+        <label>Tool Ownership / Type *</label>
+        <select id="tc_type">
+          <option value="common" ${initialType === 'common' ? 'selected' : ''}>🛠️ Common Workshop Tool (Store)</option>
+          <option value="mechanic" ${initialType === 'mechanic' ? 'selected' : ''}>🧰 Mechanic Personal Toolbox</option>
+        </select>
+      </div>
+      <div id="tc_mech_box" style="grid-column:1/-1;display:${initialType === 'mechanic' ? 'grid' : 'none'};grid-template-columns:1fr 1fr;gap:12px;background:var(--bg-subtle,#f8fafc);padding:10px;border-radius:6px;border:1px solid var(--border)">
+        <div>
+          <label>Assign to Mechanic *</label>
+          <select id="tc_mechanic_id">
+            <option value="">-- Select Mechanic --</option>
+            ${mechs.map((m) => `<option value="${m.id}" ${initialMechanicId === m.id ? 'selected' : ''}>${esc(m.name)} (${esc(m.trade || 'Mechanic')})</option>`).join('')}
+          </select>
+        </div>
+        <div>
+          <label>Toolbox Name / Section</label>
+          <input id="tc_toolbox_name" placeholder="e.g. Main Toolbox, Drawer 2" value="Main Toolbox">
+        </div>
+      </div>
+      <div>
+        <label>Brand / Manufacturer</label>
+        <input id="tc_brand" placeholder="e.g. Makita, Snap-on, Bosch">
+      </div>
+      <div>
+        <label>Model Number</label>
+        <input id="tc_model_no" placeholder="e.g. DTW-300">
+      </div>
+      <div>
+        <label>Serial Number</label>
+        <input id="tc_serial_no" placeholder="e.g. SN-883921">
+      </div>
+      <div>
+        <label>Store Location</label>
+        <input id="tc_location" placeholder="e.g. Store Rack B-04">
+      </div>
+      <div>
+        <label>Purchase Cost (LKR)</label>
+        <input id="tc_purchase_cost" type="number" step="0.01" placeholder="0.00">
+      </div>
+      <div>
+        <label>Initial Condition</label>
+        <select id="tc_condition">
+          <option value="good">Good</option>
+          <option value="excellent">Excellent (New)</option>
+          <option value="fair">Fair</option>
+        </select>
+      </div>
+      <div style="grid-column:1/-1">
+        <label>Specifications / Notes</label>
+        <textarea id="tc_notes" rows="2" placeholder="Technical specifications, capacity, or store remarks"></textarea>
+      </div>
+    </div>
+    <div style="margin-top:14px;text-align:right">
+      <button class="sm" id="tc_cancel">Cancel</button>
+      <button class="primary" id="tc_save">✓ Save Tool</button>
+    </div>
+  `;
+
+  modal('Register Workshop / Mechanic Tool', html, (mBody, close) => {
+    const typeSel = qs('#tc_type', mBody);
+    const mechBox = qs('#tc_mech_box', mBody);
+    typeSel.onchange = () => {
+      mechBox.style.display = typeSel.value === 'mechanic' ? 'grid' : 'none';
+    };
+
+    qs('#tc_cancel', mBody).onclick = close;
+    qs('#tc_save', mBody).onclick = async () => {
+      const name = qs('#tc_name', mBody).value.trim();
+      if (!name) return toast('Tool name is required', 'err');
+
+      const type = typeSel.value;
+      const mechanic_id = type === 'mechanic' ? Number(qs('#tc_mechanic_id', mBody).value) || null : null;
+      if (type === 'mechanic' && !mechanic_id) return toast('Please select a mechanic for this toolbox', 'err');
+
+      const payload = {
+        tool_code: qs('#tc_code', mBody).value.trim() || undefined,
+        name,
+        category: qs('#tc_category', mBody).value,
+        type,
+        mechanic_id,
+        toolbox_name: qs('#tc_toolbox_name', mBody).value.trim() || 'Main Toolbox',
+        brand: qs('#tc_brand', mBody).value.trim() || undefined,
+        model_no: qs('#tc_model_no', mBody).value.trim() || undefined,
+        serial_no: qs('#tc_serial_no', mBody).value.trim() || undefined,
+        location: qs('#tc_location', mBody).value.trim() || (type === 'common' ? 'Stores' : 'Mechanic Toolbox'),
+        purchase_cost: Number(qs('#tc_purchase_cost', mBody).value) || undefined,
+        condition: qs('#tc_condition', mBody).value,
+        notes: qs('#tc_notes', mBody).value.trim() || undefined,
+      };
+
+      try {
+        const res = await api('/tools', { method: 'POST', body: payload });
+        toast(`Tool ${res.tool.tool_code} registered successfully`);
+        close();
+        reload();
+      } catch (e) {
+        toast(e.message, 'err');
+      }
+    };
+  }, { wide: true });
+}
+
+async function openToolEditModal(tool, reload) {
+  let mechs = [];
+  try {
+    mechs = await api('/tools/mechanic-boxes');
+  } catch (e) { /* ignore */ }
+
+  const html = `
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+      <div>
+        <label>Tool Code</label>
+        <input id="te_code" value="${esc(tool.tool_code || '')}" readonly style="background:var(--bg-subtle,#eee)">
+      </div>
+      <div>
+        <label>Tool Name *</label>
+        <input id="te_name" value="${esc(tool.name || '')}" required>
+      </div>
+      <div>
+        <label>Category</label>
+        <select id="te_category">
+          ${TOOL_CATEGORIES.map((c) => `<option value="${esc(c)}" ${tool.category === c ? 'selected' : ''}>${esc(c)}</option>`).join('')}
+        </select>
+      </div>
+      <div>
+        <label>Ownership / Type</label>
+        <select id="te_type">
+          <option value="common" ${tool.type === 'common' ? 'selected' : ''}>🛠️ Common Workshop Tool</option>
+          <option value="mechanic" ${tool.type === 'mechanic' ? 'selected' : ''}>🧰 Mechanic Personal Toolbox</option>
+        </select>
+      </div>
+      <div id="te_mech_box" style="grid-column:1/-1;display:${tool.type === 'mechanic' ? 'grid' : 'none'};grid-template-columns:1fr 1fr;gap:12px;background:var(--bg-subtle,#f8fafc);padding:10px;border-radius:6px;border:1px solid var(--border)">
+        <div>
+          <label>Assign to Mechanic</label>
+          <select id="te_mechanic_id">
+            <option value="">-- Select Mechanic --</option>
+            ${mechs.map((m) => `<option value="${m.id}" ${tool.mechanic_id === m.id ? 'selected' : ''}>${esc(m.name)} (${esc(m.trade || 'Mechanic')})</option>`).join('')}
+          </select>
+        </div>
+        <div>
+          <label>Toolbox Name / Section</label>
+          <input id="te_toolbox_name" value="${esc(tool.toolbox_name || 'Main Toolbox')}">
+        </div>
+      </div>
+      <div>
+        <label>Brand</label>
+        <input id="te_brand" value="${esc(tool.brand || '')}">
+      </div>
+      <div>
+        <label>Model Number</label>
+        <input id="te_model_no" value="${esc(tool.model_no || '')}">
+      </div>
+      <div>
+        <label>Serial Number</label>
+        <input id="te_serial_no" value="${esc(tool.serial_no || '')}">
+      </div>
+      <div>
+        <label>Location</label>
+        <input id="te_location" value="${esc(tool.location || '')}">
+      </div>
+      <div>
+        <label>Condition</label>
+        <select id="te_condition">
+          ${TOOL_CONDITIONS.map(([k, l]) => `<option value="${k}" ${tool.condition === k ? 'selected' : ''}>${l}</option>`).join('')}
+        </select>
+      </div>
+      <div>
+        <label>Purchase Cost (LKR)</label>
+        <input id="te_cost" type="number" step="0.01" value="${tool.purchase_cost || ''}">
+      </div>
+      <div style="grid-column:1/-1">
+        <label>Notes</label>
+        <textarea id="te_notes" rows="2">${esc(tool.notes || '')}</textarea>
+      </div>
+    </div>
+    <div style="margin-top:14px;text-align:right">
+      <button class="sm" id="te_cancel">Cancel</button>
+      <button class="primary" id="te_save">✓ Update Tool</button>
+    </div>
+  `;
+
+  modal(`Edit Tool: ${tool.tool_code}`, html, (mBody, close) => {
+    const typeSel = qs('#te_type', mBody);
+    const mechBox = qs('#te_mech_box', mBody);
+    typeSel.onchange = () => {
+      mechBox.style.display = typeSel.value === 'mechanic' ? 'grid' : 'none';
+    };
+
+    qs('#te_cancel', mBody).onclick = close;
+    qs('#te_save', mBody).onclick = async () => {
+      const name = qs('#te_name', mBody).value.trim();
+      if (!name) return toast('Tool name is required', 'err');
+
+      const type = typeSel.value;
+      const mechanic_id = type === 'mechanic' ? Number(qs('#te_mechanic_id', mBody).value) || null : null;
+
+      const payload = {
+        name,
+        category: qs('#te_category', mBody).value,
+        type,
+        mechanic_id,
+        toolbox_name: qs('#te_toolbox_name', mBody).value.trim() || 'Main Toolbox',
+        brand: qs('#te_brand', mBody).value.trim(),
+        model_no: qs('#te_model_no', mBody).value.trim(),
+        serial_no: qs('#te_serial_no', mBody).value.trim(),
+        location: qs('#te_location', mBody).value.trim(),
+        condition: qs('#te_condition', mBody).value,
+        purchase_cost: Number(qs('#te_cost', mBody).value) || null,
+        notes: qs('#te_notes', mBody).value.trim(),
+      };
+
+      try {
+        await api('/tools/' + tool.id, { method: 'PATCH', body: payload });
+        toast('Tool updated successfully');
+        close();
+        reload();
+      } catch (e) {
+        toast(e.message, 'err');
+      }
+    };
+  }, { wide: true });
+}
+
+async function openToolTransferModal(tool, reload) {
+  let mechs = [];
+  try {
+    mechs = await api('/tools/mechanic-boxes');
+  } catch (e) { /* ignore */ }
+
+  const html = `
+    <p>Transfer <b>${esc(tool.tool_code)} - ${esc(tool.name)}</b> currently assigned to <b>${esc(tool.mechanic_name || 'Common Store')}</b>.</p>
+    <div>
+      <label>Destination</label>
+      <select id="tt_dest">
+        <option value="common">🛠️ Return to Workshop Common Store</option>
+        <option value="mechanic" selected>🧰 Reassign to Another Mechanic</option>
+      </select>
+    </div>
+    <div id="tt_mech_sel" style="margin-top:10px">
+      <label>New Mechanic Owner</label>
+      <select id="tt_new_mech">
+        ${mechs.filter((m) => m.id !== tool.mechanic_id).map((m) => `<option value="${m.id}">${esc(m.name)} (${esc(m.trade || 'Mechanic')})</option>`).join('')}
+      </select>
+    </div>
+    <div style="margin-top:14px;text-align:right">
+      <button class="sm" id="tt_cancel">Cancel</button>
+      <button class="primary" id="tt_save">Transfer Tool</button>
+    </div>
+  `;
+
+  modal(`Transfer Tool: ${tool.tool_code}`, html, (mBody, close) => {
+    const dest = qs('#tt_dest', mBody);
+    const mechBox = qs('#tt_mech_sel', mBody);
+    dest.onchange = () => { mechBox.style.display = dest.value === 'mechanic' ? 'block' : 'none'; };
+
+    qs('#tt_cancel', mBody).onclick = close;
+    qs('#tt_save', mBody).onclick = async () => {
+      const type = dest.value;
+      const mechanic_id = type === 'mechanic' ? Number(qs('#tt_new_mech', mBody).value) : null;
+      try {
+        await api('/tools/' + tool.id, {
+          method: 'PATCH',
+          body: {
+            type,
+            mechanic_id,
+            location: type === 'common' ? 'Stores' : 'Mechanic Toolbox',
+          },
+        });
+        toast('Tool transferred successfully');
+        close();
+        reload();
+      } catch (e) {
+        toast(e.message, 'err');
+      }
+    };
+  });
+}
+
+async function openToolIssueModal(preselectedTool, reload, preselectedMechId = null) {
+  let tools = [];
+  let mechs = [];
+  try {
+    if (!preselectedTool) {
+      const td = await api('/tools?status=in_store&limit=200');
+      tools = Array.isArray(td) ? td : (td.tools || []);
+    }
+    mechs = await api('/tools/mechanic-boxes');
+  } catch (e) { /* ignore */ }
+
+  const today = new Date().toISOString().slice(0, 10);
+  const nowTime = new Date().toTimeString().slice(0, 5);
+
+  const toolPicker = preselectedTool
+    ? `<div class="card" style="margin-bottom:12px;background:var(--bg-subtle,#f8fafc)">
+        <b>${esc(preselectedTool.tool_code)} - ${esc(preselectedTool.name)}</b>
+        <div class="muted">${esc(preselectedTool.category || '')} · Condition: ${esc(preselectedTool.condition || 'good')}</div>
+       </div>`
+    : `<div>
+        <label>Select Tool to Check Out *</label>
+        <select id="ti_tool_id">
+          <option value="">-- Choose Tool from Store (${tools.length} available) --</option>
+          ${tools.map((t) => `<option value="${t.id}">${esc(t.tool_code)} - ${esc(t.name)} (${esc(t.location || 'Store')})</option>`).join('')}
+        </select>
+       </div>`;
+
+  const html = `
+    ${toolPicker}
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:10px">
+      <div>
+        <label>Issued To (Mechanic / Staff) *</label>
+        <select id="ti_mech_id">
+          <option value="">-- Select Mechanic or specify name --</option>
+          ${mechs.map((m) => `<option value="${m.id}" data-name="${esc(m.name)}" ${preselectedMechId === m.id ? 'selected' : ''}>${esc(m.name)} (${esc(m.trade || 'Mechanic')})${m.assigned_tools_count > 0 ? ' [🧰 Has Box]' : ' [Store Borrower]'}</option>`).join('')}
+        </select>
+      </div>
+      <div>
+        <label>Or Free-text Name (if outside contractor)</label>
+        <input id="ti_custom_name" placeholder="Leave empty if mechanic selected">
+      </div>
+      <div>
+        <label>Job Card ID / Vehicle Reg (Optional)</label>
+        <input id="ti_job" placeholder="e.g. 1042 or CP-EX-04">
+      </div>
+      <div>
+        <label>Condition at Checkout</label>
+        <select id="ti_cond">
+          <option value="good" selected>Good</option>
+          <option value="excellent">Excellent</option>
+          <option value="fair">Fair</option>
+        </select>
+      </div>
+      <div>
+        <label>Issue Date</label>
+        <input id="ti_date" type="date" value="${today}">
+      </div>
+      <div>
+        <label>Issue Time</label>
+        <input id="ti_time" type="time" value="${nowTime}">
+      </div>
+      <div style="grid-column:1/-1">
+        <label>Issued By (Storekeeper)</label>
+        <input id="ti_by" value="${esc((window.ME && ME.name) || 'Storekeeper')}">
+      </div>
+    </div>
+    <div style="margin-top:14px;text-align:right">
+      <button class="sm" id="ti_cancel">Cancel</button>
+      <button class="primary" id="ti_submit">📤 Confirm Issue</button>
+    </div>
+  `;
+
+  modal('Store Tool Checkout / Daily Issue Log', html, (mBody, close) => {
+    qs('#ti_cancel', mBody).onclick = close;
+    qs('#ti_submit', mBody).onclick = async () => {
+      const toolId = preselectedTool ? preselectedTool.id : Number(qs('#ti_tool_id', mBody).value);
+      if (!toolId) return toast('Please select a tool', 'err');
+
+      const mechSel = qs('#ti_mech_id', mBody);
+      const customName = qs('#ti_custom_name', mBody).value.trim();
+      const mechId = mechSel.value ? Number(mechSel.value) : null;
+      let issuedToName = customName;
+      if (!issuedToName && mechId) {
+        const opt = mechSel.options[mechSel.selectedIndex];
+        issuedToName = opt ? opt.dataset.name : '';
+      }
+      if (!issuedToName) return toast('Please select or specify who the tool is issued to', 'err');
+
+      const payload = {
+        tool_id: toolId,
+        mechanic_id: mechId,
+        issued_to_name: issuedToName,
+        job_id: Number(qs('#ti_job', mBody).value) || undefined,
+        condition_out: qs('#ti_cond', mBody).value,
+        issue_date: qs('#ti_date', mBody).value,
+        issue_time: qs('#ti_time', mBody).value,
+        issued_by: qs('#ti_by', mBody).value.trim() || undefined,
+      };
+
+      try {
+        await api('/tools/logs/issue', { method: 'POST', body: payload });
+        toast(`Tool checked out to ${issuedToName}`);
+        close();
+        reload();
+      } catch (e) {
+        toast(e.message, 'err');
+      }
+    };
+  }, { wide: true });
+}
+
+async function openToolReturnModal(logOrTool, reload) {
+  let log = logOrTool;
+  if (!log.id && log.log_id) {
+    try {
+      const res = await api('/tools/logs?id=' + log.log_id);
+      if (res.logs && res.logs[0]) log = res.logs[0];
+    } catch (e) { /* ignore */ }
+  }
+
+  const today = new Date().toISOString().slice(0, 10);
+  const nowTime = new Date().toTimeString().slice(0, 5);
+
+  const html = `
+    <div class="card" style="margin-bottom:12px;background:var(--bg-subtle,#f8fafc)">
+      <b>${esc(log.tool_code || '')} - ${esc(log.tool_name || '')}</b>
+      <div class="muted">Issued to: <b>${esc(log.issued_to_name || '')}</b> · Issued on: ${esc(log.issue_date || '')}</div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+      <div>
+        <label>Return Date</label>
+        <input id="tr_date" type="date" value="${today}">
+      </div>
+      <div>
+        <label>Return Time</label>
+        <input id="tr_time" type="time" value="${nowTime}">
+      </div>
+      <div style="grid-column:1/-1">
+        <label>Returned Condition *</label>
+        <select id="tr_cond">
+          <option value="good">Good (Normal Return)</option>
+          <option value="fair">Fair (Minor Wear)</option>
+          <option value="damaged" style="color:red;font-weight:bold">⚠️ Damaged / Broken (Requires Engineer Review)</option>
+        </select>
+      </div>
+      <div style="grid-column:1/-1">
+        <label>Received By (Storekeeper)</label>
+        <input id="tr_by" value="${esc((window.ME && ME.name) || 'Storekeeper')}">
+      </div>
+      <div style="grid-column:1/-1">
+        <label>Return Inspection Notes</label>
+        <textarea id="tr_notes" rows="2" placeholder="Inspection notes, wear, or damage description"></textarea>
+      </div>
+      <div id="tr_damage_alert" style="grid-column:1/-1;display:none;background:#ffebee;padding:10px;border-radius:6px;border:1px solid #ffcdd2">
+        <b style="color:#c62828">⚠️ Damaged / Broken Tool Return Notice:</b>
+        <div style="font-size:12px;color:#b71c1c;margin-top:2px">
+          Marking this tool as damaged will flag the tool as damaged and permit raising an official Scrap Condemnation Request for the Engineer.
+        </div>
+      </div>
+    </div>
+    <div style="margin-top:14px;text-align:right">
+      <button class="sm" id="tr_cancel">Cancel</button>
+      <button class="primary" id="tr_submit">📥 Confirm Return</button>
+    </div>
+  `;
+
+  modal(`Return Tool: ${log.tool_code || ''}`, html, (mBody, close) => {
+    const condSel = qs('#tr_cond', mBody);
+    const alertBox = qs('#tr_damage_alert', mBody);
+    condSel.onchange = () => {
+      alertBox.style.display = (condSel.value === 'damaged' || condSel.value === 'broken') ? 'block' : 'none';
+    };
+
+    qs('#tr_cancel', mBody).onclick = close;
+    qs('#tr_submit', mBody).onclick = async () => {
+      const logId = log.id || log.log_id;
+      if (!logId) return toast('Missing log identifier', 'err');
+
+      const condIn = condSel.value;
+      const payload = {
+        return_date: qs('#tr_date', mBody).value,
+        return_time: qs('#tr_time', mBody).value,
+        condition_in: condIn,
+        received_by: qs('#tr_by', mBody).value.trim() || undefined,
+        return_notes: qs('#tr_notes', mBody).value.trim() || undefined,
+      };
+
+      try {
+        await api(`/tools/logs/${logId}/return`, { method: 'POST', body: payload });
+        toast('Tool return registered');
+        close();
+        if (condIn === 'damaged' || condIn === 'broken') {
+          if (confirm('Tool was returned broken/damaged. Would you like to raise a Scrap Condemnation Request for Engineer approval now?')) {
+            openToolDamageReportModal({ id: log.tool_id, tool_code: log.tool_code, name: log.tool_name, type: log.tool_type, mechanic_id: log.mechanic_id, mechanic_name: log.issued_to_name }, reload);
+            return;
+          }
+        }
+        reload();
+      } catch (e) {
+        toast(e.message, 'err');
+      }
+    };
+  });
+}
+
+async function openToolDamageReportModal(tool, reload) {
+  let toolList = [];
+  if (!tool) {
+    try {
+      const td = await api('/tools?limit=250');
+      toolList = (Array.isArray(td) ? td : (td.tools || [])).filter((x) => x.status !== 'scrapped' && x.status !== 'pending_scrap');
+    } catch (e) { /* ignore */ }
+  }
+
+  const today = new Date().toISOString().slice(0, 10);
+  const toolHeader = tool
+    ? `<div class="card" style="margin-bottom:12px;background:var(--bg-subtle,#f8fafc)">
+        <div style="font-size:15px"><b>${esc(tool.tool_code)} - ${esc(tool.name)}</b></div>
+        <div class="muted" style="margin-top:2px">
+          ${tool.type === 'mechanic' ? `🧰 Personal Toolbox: <b>${esc(tool.mechanic_name || 'Mechanic')}</b>` : '🛠️ Workshop Common Store Tool'}
+        </div>
+      </div>`
+    : `<div>
+        <label>Select Broken Tool *</label>
+        <select id="td_tool_id">
+          <option value="">-- Choose Broken Tool (${toolList.length} tools) --</option>
+          ${toolList.map((t) => `<option value="${t.id}">${esc(t.tool_code)} - ${esc(t.name)} (${t.type === 'mechanic' ? 'Mechanic: ' + esc(t.mechanic_name) : 'Common Workshop'})</option>`).join('')}
+        </select>
+      </div>`;
+
+  const html = `
+    ${toolHeader}
+    <div class="card" style="background:#fff8e1;border-color:#ffe082;margin:10px 0">
+      <div style="font-size:12.5px;color:#795548">
+        ℹ️ <b>Scrap Request Protocol:</b> Submitting this form reports the tool as damaged and requests its removal into scrap. 
+        <b>It will be routed to the Mechanical Engineer or Assistant Engineer for technical inspection and approval.</b>
+      </div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:10px">
+      <div>
+        <label>Damage Date *</label>
+        <input id="td_date" type="date" value="${today}" required>
+      </div>
+      <div>
+        <label>Damage Reason / Failure Mode *</label>
+        <select id="td_reason">
+          ${DAMAGE_REASONS.map(([k, l]) => `<option value="${k}">${l}</option>`).join('')}
+        </select>
+      </div>
+      <div style="grid-column:1/-1">
+        <label>Incident & Technical Damage Description *</label>
+        <textarea id="td_desc" rows="3" placeholder="Explain what happened during operation, which part fractured/burnt, and why the tool cannot safely function" required></textarea>
+      </div>
+      <div>
+        <label>Reported By</label>
+        <input id="td_reported_by" value="${esc((window.ME && ME.name) || 'Workshop Storekeeper')}">
+      </div>
+      <div style="display:flex;align-items:center;margin-top:20px">
+        <label style="cursor:pointer;display:flex;align-items:center;gap:6px">
+          <input type="checkbox" id="td_replacement" checked style="width:auto">
+          <span>Request replacement tool for this mechanic / store</span>
+        </label>
+      </div>
+    </div>
+    <div style="margin-top:16px;text-align:right">
+      <button class="sm" id="td_cancel">Cancel</button>
+      <button class="primary danger" id="td_submit">⚠️ Submit Scrap Request</button>
+    </div>
+  `;
+
+  modal(tool ? `Report Broken Tool: ${tool.tool_code}` : 'Report Broken Tool for Scrap Condemnation', html, (mBody, close) => {
+    qs('#td_cancel', mBody).onclick = close;
+    qs('#td_submit', mBody).onclick = async () => {
+      const toolId = tool ? tool.id : Number(qs('#td_tool_id', mBody).value);
+      if (!toolId) return toast('Please select a tool', 'err');
+
+      const damageReason = qs('#td_reason', mBody).value;
+      const incidentDesc = qs('#td_desc', mBody).value.trim();
+      if (!incidentDesc) return toast('Please enter an incident / damage description', 'err');
+
+      const payload = {
+        tool_id: toolId,
+        damage_date: qs('#td_date', mBody).value,
+        damage_reason: damageReason,
+        incident_description: incidentDesc,
+        reported_by: qs('#td_reported_by', mBody).value.trim(),
+        replacement_requested: qs('#td_replacement', mBody).checked,
+      };
+
+      try {
+        const res = await api('/tools/scrap-requests', { method: 'POST', body: payload });
+        toast(`Scrap Request ${res.request.request_no} submitted for Engineer approval`);
+        close();
+        reload();
+      } catch (e) {
+        toast(e.message, 'err');
+      }
+    };
+  }, { wide: true });
+}
+
+async function openEngineerApprovalModal(req, reload) {
+  let mySig = null;
+  try {
+    const s = await api('/auth/signature');
+    mySig = s.signature || null;
+  } catch (e) { /* ignore */ }
+
+  const html = `
+    <div class="card" style="margin-bottom:12px;background:var(--bg-subtle,#f8fafc)">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start">
+        <div>
+          <div style="font-size:16px"><b>Request ${esc(req.request_no)}</b>: ${esc(req.tool_code)} - ${esc(req.tool_name)}</div>
+          <div class="muted" style="margin-top:2px">
+            Source: <b>${req.tool_type === 'mechanic' ? `🧰 Personal Toolbox: ${esc(req.mechanic_name || 'Mechanic')}` : '🛠️ Workshop Common Store'}</b>
+          </div>
+        </div>
+        <span class="badge amber">⏳ Pending Approval</span>
+      </div>
+      <div style="margin-top:8px;font-size:13px;border-top:1px solid var(--border);padding-top:8px">
+        <b>Damage Reason:</b> ${esc(req.damage_reason)}<br>
+        <b>Incident Details:</b> ${esc(req.incident_description || '—')}<br>
+        <span class="muted">Reported on ${esc(String(req.damage_date || req.created_at).slice(0, 10))} by ${esc(req.reported_by || 'Store')}</span>
+      </div>
+    </div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+      <div>
+        <label>Engineer Technical Decision *</label>
+        <select id="ea_decision">
+          <option value="approved" selected>✓ Condemn & Decommission into Scrap (Approved)</option>
+          <option value="send_for_repair">🔧 Send for Workshop Repair (Do Not Scrap)</option>
+        </select>
+      </div>
+      <div id="ea_bin_box">
+        <label>Scrap Bin / Scrap Yard Reference</label>
+        <input id="ea_bin" placeholder="e.g. SCRAP-YARD-A1, BIN-04" value="${esc(req.scrap_bin_ref || 'SCRAP-YARD-01')}">
+      </div>
+      <div style="grid-column:1/-1">
+        <label>Engineer Technical Assessment & Condemnation Remarks *</label>
+        <textarea id="ea_remarks" rows="2" placeholder="e.g. Inspected tool physically. Crack in casing beyond economical repair. Condemned for safety."></textarea>
+      </div>
+      <div style="grid-column:1/-1">
+        <label>Approving Authority</label>
+        <div style="font-size:13px;font-weight:bold;margin-bottom:6px">
+          ${esc((window.ME && ME.name) || 'Engineer')} · ${esc((window.ME && ME.role_label) || (window.ME && ME.role) || 'Mechanical / Workshop Engineer')}
+        </div>
+        ${signaturePadHtml('ea_sigpad')}
+      </div>
+    </div>
+
+    <div style="margin-top:16px;display:flex;justify-content:space-between;align-items:center">
+      <button class="sm danger" id="ea_btn_reject">✕ Reject Request</button>
+      <div style="display:flex;gap:8px">
+        <button class="sm" id="ea_cancel">Cancel</button>
+        <button class="primary" id="ea_submit">✓ Sign & Submit Decision</button>
+      </div>
+    </div>
+  `;
+
+  modal(`Engineer Review — ${req.request_no}`, html, (mBody, close) => {
+    const pad = wireSignaturePad(mBody, 'ea_sigpad', mySig);
+    const decSel = qs('#ea_decision', mBody);
+    const binBox = qs('#ea_bin_box', mBody);
+    decSel.onchange = () => {
+      binBox.style.display = decSel.value === 'approved' ? 'block' : 'none';
+    };
+
+    qs('#ea_cancel', mBody).onclick = close;
+
+    // Reject handler
+    qs('#ea_btn_reject', mBody).onclick = async () => {
+      const remarks = qs('#ea_remarks', mBody).value.trim();
+      if (!remarks) return toast('Please enter technical remarks for rejection', 'err');
+      if (!confirm('Reject this scrap request and return tool to active service?')) return;
+      try {
+        await api(`/tools/scrap-requests/${req.id}/reject`, { method: 'POST', body: { remarks } });
+        toast('Scrap request rejected');
+        close();
+        reload();
+      } catch (e) {
+        toast(e.message, 'err');
+      }
+    };
+
+    // Approve / Send for repair handler
+    qs('#ea_submit', mBody).onclick = async () => {
+      const decision = decSel.value;
+      const remarks = qs('#ea_remarks', mBody).value.trim();
+      const binRef = qs('#ea_bin', mBody).value.trim();
+      const sigData = pad.isEmpty() ? null : pad.dataURL();
+
+      const payload = {
+        decision,
+        remarks,
+        scrap_bin_ref: binRef,
+        signature: sigData,
+      };
+
+      try {
+        await api(`/tools/scrap-requests/${req.id}/approve`, { method: 'POST', body: payload });
+        toast(decision === 'approved' ? 'Tool condemned and moved to scrap archive' : 'Tool assigned for workshop repair');
+        close();
+        reload();
+        if (decision === 'approved') {
+          window.open(`/api/tools/scrap-requests/${req.id}/print.html`, '_blank');
+        }
+      } catch (e) {
+        toast(e.message, 'err');
+      }
+    };
+  }, { wide: true });
+}
+
 // ---- Job Requests (Transport) — Assistant Transport raises → Transport Manager
 // certifies → Operational Manager approves (auto-creates a job card).
 const JR_STATUS = {
@@ -5978,7 +9393,7 @@ async function renderBatteriesSection(c, params) {
       <div id="bt-stock"></div></div>
     <div class="toolbar">
       <input id="bwhere" placeholder="Where is serial…?" style="max-width:220px"><button class="sm" id="bwbtn">Find</button>
-      <div class="spacer"></div>${canAdd('batteries') ? '<button class="primary" id="nb">+ Add Battery</button>' : ''}
+      <div class="spacer"></div>${canEdit('batteries') ? '<button class="primary" id="nb">+ Add Battery</button>' : ''}
     </div>
     ${radar.expiring.length ? `<div class="card section"><h3>Warranty expiring ≤60 days</h3>${radar.expiring.map((b) => `<div class="cost-line"><a href="#/batteries/${b.id}">${esc(b.serial_no)}</a><span class="badge amber">${esc(b.warranty_date)} · ${esc(b.current_asset_code || 'store')}</span></div>`).join('')}</div>` : ''}
     ${tableWrap([{ label: 'Serial' }, { label: 'Brand' }, { label: 'Ah', num: true }, { label: 'State' }, { label: 'Current Asset' }, { label: 'Warranty' }],
@@ -6103,11 +9518,11 @@ async function batteryDetail(c, id) {
 routes.services = async (c, params) => {
   if (params[0] === 'new-service' || params[0] === 'new') return renderNewServiceForm(c);
   if (params[0] === 'service' && params[1] && params[2] === 'edit') {
-    if (!canEdit('services')) return toast('You do not have permission to edit services', 'err');
+    if (!canEdit('filters')) return toast('You do not have permission to edit services', 'err');
     return renderNewServiceForm(c, await api('/filters/services/' + params[1]));
   }
   if (params[0] && params[1] === 'edit') {
-    if (!canEdit('services')) return toast('You do not have permission to edit services', 'err');
+    if (!canEdit('filters')) return toast('You do not have permission to edit services', 'err');
     return renderNewServiceForm(c, await api('/filters/services/' + params[0]));
   }
   if (params[0] === 'service' && params[1]) return serviceDetail(c, params[1]);
@@ -6294,10 +9709,10 @@ async function renderPriceBook(c) {
 }
 
 async function renderServiceRecords(c) {
-  const editable = canEdit('services');
+  const editable = canEdit('filters');
   c.innerHTML = `
     <div class="toolbar" style="gap:8px;flex-wrap:wrap">
-      ${canAdd('services') ? '<button class="primary" id="nsvc">+ New Service</button>' : ''}
+      ${editable ? '<button class="primary" id="nsvc">+ New Service</button>' : ''}
       <input id="sq" type="search" placeholder="Search vehicle / site / type…" style="max-width:240px">
       <select id="vselect" style="max-width:220px;background:#fff;border:1px solid var(--border);border-radius:4px;padding:4px 8px;font-size:13px">
         <option value="">— Quick Vehicle History —</option>
@@ -7285,7 +10700,7 @@ async function renderNewServiceForm(c, existing) {
 async function serviceDetail(c, id) {
   const d = await api('/filters/services/' + id);
   const s = d.service;
-  const editable = canEdit('services');
+  const editable = canEdit('filters');
   const cats = await api('/filters/categories').catch(() => []);
   const upk = { Good: 'green', Fair: 'amber', Bad: 'red' }[s.upkeeping] || '';
   c.innerHTML = `${pageHeader('Vehicle / Machinery Service Details', '<a href="#/services">← Service Records</a>')}
@@ -7809,108 +11224,324 @@ const tbBadge = (s) => {
   return '<span class="badge ' + (m[s] || '') + '">' + esc(s || 'requested') + '</span>';
 };
 
-// ---- Purchasing -----------------------------------------------------------
-// Two officers buy what the workshop asked for: one on the Head Office account, one locally. Each
-// sees their own channel only — the server decides which from their role, so this screen never has
-// to know, and cannot be talked into showing the other list.
+// ---- Purchasing & Procurement Flow -----------------------------------------
+// Follows the Stores and Job Cards flow pattern (Monitor, Queues, Road).
+// Workshop supervisors modify priority day-to-day (P1 Breakdown, P2 Urgent, P3 Routine, P4 Stock).
+// Both Head Office and Local Purchase officers can reassign items bilaterally.
+
+var PU_PRIO_OPTS = [
+  ['P1_CRITICAL', '🚨 P1 - Critical / Vehicle Down (Immediate dispatch)'],
+  ['P2_URGENT', '⚡ P2 - Urgent / Operational (< 48h deadline)'],
+  ['P3_ROUTINE', '🔧 P3 - Routine Maintenance (In workshop)'],
+  ['P4_LOW', '📦 P4 - Low Priority / Shelf Stock Buffer'],
+];
+
+function puPrioBadge(p, note) {
+  if (p === 'P1_CRITICAL') return `<span class="badge red" style="font-weight:700" title="${esc(note || 'P1 Critical / Vehicle Down')}">🚨 P1 Breakdown</span>`;
+  if (p === 'P2_URGENT') return `<span class="badge amber" style="font-weight:600" title="${esc(note || 'P2 Urgent / <48h')}">⚡ P2 Urgent</span>`;
+  if (p === 'P4_LOW') return `<span class="badge muted" title="${esc(note || 'P4 Stock Buffer')}">P4 Stock</span>`;
+  return `<span class="badge" title="${esc(note || 'P3 Routine Repair')}">P3 Routine</span>`;
+}
+
 routes.purchasing = async (c) => {
   const sp = new URLSearchParams(location.hash.split('?')[1] || '');
-  const tab = ['to_buy', 'unassigned', 'bought'].includes(sp.get('tab')) ? sp.get('tab') : 'to_buy';
-  const go = (t) => `location.hash='#/purchasing?tab=${t}'`;
+  const tab = sp.get('tab') || 'monitor';
 
-  c.innerHTML = pageHeader('Purchasing',
-    'What has been approved and still has to be bought. Tick it off with the invoice once it is.') + `
-    <div class="toolbar" style="margin:0 0 10px 0">
-      <span id="pu-tabs"></span>
-      <div class="spacer"></div>
-      <input id="pu-q" type="search" placeholder="Item, request no, vehicle, invoice…" style="max-width:260px">
+  c.innerHTML = pageHeader('Procurement & Purchasing',
+    'What has been approved and needs to be bought. Workshop urgency ranks priority; both Head Office and Local buyers can reassign channels.') + `
+    <div class="tabs" style="margin:0 0 12px 0">
+      <button class="${tab === 'monitor' ? 'active' : ''}" onclick="location.hash='#/purchasing?tab=monitor'">📊 Monitor Cockpit</button>
+      <button class="${tab !== 'monitor' ? 'active' : ''}" onclick="location.hash='#/purchasing?tab=to_buy'">📋 Work Queues</button>
     </div>
-    <div id="pu-body" class="muted">Loading…</div>`;
+    <div id="pu-content"></div>`;
 
-  const counts = await api('/purchasing/counts').catch(() => ({ to_buy: 0, unassigned: 0, bought: 0 }));
-  qs('#pu-tabs', c).innerHTML = [
-    ['to_buy', 'To buy', counts.to_buy],
-    ['unassigned', 'Not yet assigned', counts.unassigned],
-    ['bought', 'Bought', counts.bought],
-  ].map(([t, l, n]) => `<button class="sm ${t === tab ? 'primary' : ''}" onclick="${go(t)}">${l}${n ? ` (${n})` : ''}</button>`).join(' ');
+  const body = qs('#pu-content', c);
+  if (tab === 'monitor') return purchasingMonitor(body);
+  return purchasingQueue(body, sp);
+};
+
+async function purchasingMonitor(body) {
+  let m;
+  try { m = await api('/purchasing/flow/monitor'); }
+  catch (e) { body.innerHTML = `<div class="card err">${esc(e.message)}</div>`; return; }
+
+  const p = m.pipeline;
+  const u = m.urgency;
+  const w = m.watch;
+  const card = (n, label, href, tone, note) => `<a class="card stat" href="${href}" style="text-decoration:none">
+    <span class="n"${tone && n ? ` style="color:var(--${tone})"` : ''}>${n}</span><span class="l">${esc(label)}</span>${note ? `<span class="muted" style="font-size:11px">${esc(note)}</span>` : ''}</a>`;
+
+  const at = (tab, extra = '') => `#/purchasing?tab=${tab}${extra}`;
+
+  body.innerHTML = `
+    <p class="muted" style="margin-top:0">Procurement &amp; Purchasing Pipeline Cockpit. Click a card to view filtered work items.</p>
+    
+    <h3 style="margin:10px 0 6px">🚨 Workshop Urgency Watch</h3>
+    <div class="grid">
+      ${card(u.p1_critical, 'P1 Breakdown (Vehicle Down)', at('urgent', '&priority=P1_CRITICAL'), 'red', 'Immediate sourcing required')}
+      ${card(u.p2_urgent, 'P2 Urgent (< 48h)', at('urgent', '&priority=P2_URGENT'), 'amber', 'Operational deadline')}
+      ${card(u.p3_routine, 'P3 Routine Repair', at('to_buy', '&priority=P3_ROUTINE'), '', 'Normal workshop repair backlog')}
+      ${card(u.p4_low, 'P4 Stock Buffer', at('to_buy', '&priority=P4_LOW'), 'muted', 'Non-critical / replenish')}
+    </div>
+
+    <h3 style="margin:14px 0 6px">📦 Purchasing Pipeline Road</h3>
+    <div class="grid">
+      ${card(p.unassigned, 'Not Yet Assigned', at('unassigned'), 'amber', 'Requires HO or Local channel')}
+      ${card(p.to_buy_ho, 'To Buy — Head Office', at('to_buy', '&channel=head_office'), 'blue', 'Central purchasing queue')}
+      ${card(p.to_buy_local, 'To Buy — Local Purchase', at('to_buy', '&channel=local_purchase'), 'green', 'Local workshop buying queue')}
+      ${card(p.ordered, 'On Order / In Transit', at('ordered'), '', 'Awaiting store delivery & GRN')}
+    </div>
+
+    <h3 style="margin:14px 0 6px">🔍 Delivery &amp; Price Quality Watch</h3>
+    <div class="grid">
+      ${card(w.overdue_needed, 'Overdue Needed Date', at('to_buy'), 'red', 'Needed date has passed')}
+      ${card(w.unpriced, 'Unpriced Deliveries', '#/stores?tab=flow&step=unpriced', 'amber', 'GRN received without price')}
+      ${card(w.price_discrepancies, 'Price Discrepancies', at('bought'), 'red', 'Invoice vs GRN variance')}
+      ${card(p.bought_total, 'Total Purchases Recorded', at('bought'), '', 'Invoice photos & history')}
+    </div>`;
+}
+
+async function purchasingQueue(body, sp) {
+  const cur = {
+    tab: ['to_buy', 'urgent', 'unassigned', 'ordered', 'bought'].includes(sp.get('tab')) ? sp.get('tab') : 'to_buy',
+    q: sp.get('q') || '',
+    channel: sp.get('channel') || '',
+    priority: sp.get('priority') || '',
+  };
+
+  const counts = await api('/purchasing/counts').catch(() => ({
+    to_buy: 0, urgent: 0, unassigned: 0, ordered: 0, bought: 0
+  }));
+
+  const tabs = [
+    ['to_buy', 'To Buy', counts.to_buy],
+    ['urgent', '⚡ Workshop Urgency', counts.urgent],
+    ['unassigned', 'Not Assigned', counts.unassigned],
+    ['ordered', 'On Order / In Transit', counts.ordered],
+    ['bought', 'Bought History', counts.bought],
+  ];
+
+  const qstr = (overrides = {}) => {
+    const p = new URLSearchParams({ ...cur, ...overrides });
+    if (!p.get('channel')) p.delete('channel');
+    if (!p.get('priority')) p.delete('priority');
+    if (!p.get('q')) p.delete('q');
+    return p.toString();
+  };
+
+  body.innerHTML = `
+    <div class="toolbar" style="margin:0 0 10px 0;flex-wrap:wrap;gap:8px">
+      <input id="pu-q" type="search" placeholder="Item, request no, vehicle, supplier, note…" value="${esc(cur.q)}" style="max-width:260px">
+      <select id="pu-chan" style="max-width:160px">
+        <option value="">All Channels</option>
+        <option value="head_office" ${cur.channel === 'head_office' ? 'selected' : ''}>Head Office</option>
+        <option value="local_purchase" ${cur.channel === 'local_purchase' ? 'selected' : ''}>Local Purchase</option>
+      </select>
+      <select id="pu-prio" style="max-width:170px">
+        <option value="">All Priorities</option>
+        <option value="P1_CRITICAL" ${cur.priority === 'P1_CRITICAL' ? 'selected' : ''}>🚨 P1 Breakdown</option>
+        <option value="P2_URGENT" ${cur.priority === 'P2_URGENT' ? 'selected' : ''}>⚡ P2 Urgent</option>
+        <option value="P3_ROUTINE" ${cur.priority === 'P3_ROUTINE' ? 'selected' : ''}>🔧 P3 Routine</option>
+        <option value="P4_LOW" ${cur.priority === 'P4_LOW' ? 'selected' : ''}>📦 P4 Stock</option>
+      </select>
+      <a class="btn sm" id="pu-xls" href="/api/purchasing/export.xlsx?${qstr()}">⬇ Excel</a>
+      <div class="spacer"></div>
+    </div>
+    <div class="pill-row" id="pu-tabs" style="margin:0 0 10px;flex-wrap:wrap;gap:6px">
+      ${tabs.map(([t, l, n]) => `<button class="sm ${t === cur.tab ? 'primary' : ''}" data-tab="${t}">${esc(l)}${n ? ` <span class="badge">${n}</span>` : ''}</button>`).join('')}
+    </div>
+    <div id="pu-table"><div class="muted">Loading…</div></div>`;
+
+  qsa('#pu-tabs button', body).forEach((btn) => {
+    btn.onclick = () => {
+      cur.tab = btn.dataset.tab;
+      location.hash = `#/purchasing?${qstr()}`;
+    };
+  });
+
+  qs('#pu-chan', body).onchange = () => {
+    cur.channel = qs('#pu-chan', body).value;
+    location.hash = `#/purchasing?${qstr()}`;
+  };
+
+  qs('#pu-prio', body).onchange = () => {
+    cur.priority = qs('#pu-prio', body).value;
+    location.hash = `#/purchasing?${qstr()}`;
+  };
 
   const load = async () => {
-    const q = qs('#pu-q', c).value.trim();
+    history.replaceState(null, '', `#/purchasing?${qstr()}`);
+    qs('#pu-xls', body).href = `/api/purchasing/export.xlsx?${qstr()}`;
+
     let d;
-    try { d = await api(`/purchasing/queue?tab=${tab}` + (q ? '&q=' + encodeURIComponent(q) : '')); }
-    catch (e) { qs('#pu-body', c).innerHTML = `<div class="card err">${esc(e.message)}</div>`; return; }
+    try {
+      d = await api(`/purchasing/queue?${qstr()}`);
+    } catch (e) {
+      qs('#pu-table', body).innerHTML = `<div class="card err">${esc(e.message)}</div>`;
+      return;
+    }
 
     if (!d.rows.length) {
-      qs('#pu-body', c).innerHTML = `<div class="card"><p class="muted">${tab === 'bought' ? 'Nothing bought yet.'
-          : tab === 'unassigned' ? 'Every approved item has been given to an officer.'
-            : d.channels.length ? 'Nothing waiting to be bought.'
-              : 'You are not set up as a purchasing officer, so there is no list of your own to show.'}</p></div>`;
+      qs('#pu-table', body).innerHTML = `<div class="card"><p class="muted">${
+        cur.tab === 'bought' ? 'Nothing bought yet.'
+        : cur.tab === 'unassigned' ? 'Every approved item has been given to a purchasing channel.'
+        : cur.tab === 'urgent' ? 'No items marked P1 Breakdown or P2 Urgent.'
+        : 'Nothing waiting in this queue.'
+      }</p></div>`;
       return;
     }
 
     const chan = (s) => (s === 'head_office' ? '<span class="badge">Head Office</span>'
       : s === 'local_purchase' ? '<span class="badge green">Local</span>'
-        : '<span class="muted">—</span>');
+        : '<span class="badge amber">Unassigned</span>');
 
     const headers = [
-      { label: 'Needed', width: '96px' }, { label: 'Request', width: '104px' },
-      { label: 'Vehicle', width: '120px' }, { label: 'Item', cls: 'desc-col' },
+      { label: 'Priority', width: '130px' },
+      { label: 'Needed', width: '96px' },
+      { label: 'Request / Job', width: '140px' },
+      { label: 'Vehicle', width: '110px' },
+      { label: 'Item & Urgency Note', cls: 'desc-col' },
       { label: 'Qty', num: true, width: '68px' },
+      { label: 'Channel', width: '110px' },
+      { label: 'Road', width: '170px' },
     ];
-    if (d.sees_both || tab === 'unassigned') headers.push({ label: 'Channel', width: '104px' });
-    if (tab === 'bought') headers.push({ label: 'Supplier' }, { label: 'Invoice', width: '120px' }, { label: 'Amount', num: true, width: '110px' });
-    headers.push({ label: '', width: tab === 'bought' ? '90px' : '190px' });
+    if (cur.tab === 'bought') {
+      headers.push({ label: 'Supplier' }, { label: 'Invoice', width: '120px' }, { label: 'Amount', num: true, width: '110px' });
+    }
+    headers.push({ label: '', width: cur.tab === 'bought' ? '90px' : '230px' });
 
-    qs('#pu-body', c).innerHTML = tableWrap(headers, d.rows.map((r) => {
-      const cells = [
-        `<td>${r.required_date ? esc(String(r.required_date).slice(0, 10)) : '<span class="muted">—</span>'}</td>`,
-        `<td class="mono">${esc(r.mrn_no || '')}${r.is_new && tab !== 'bought' ? ' <span class="badge amber">new</span>' : ''}</td>`,
-        `<td>${r.asset_code ? `<span class="stamp">${esc(r.asset_code)}</span>` : '<span class="muted">—</span>'}</td>`,
-        `<td class="desc-col">${esc(r.description || '')}${r.source_changed_reason
-          // Why it was handed over is worth reading before buying it — usually it is the reason the
-          // last person could not.
-          ? `<div class="muted" style="font-size:11px">↔ from ${esc(r.source_changed_from || '?')}: ${esc(r.source_changed_reason)}</div>` : ''}</td>`,
-        `<td class="num">${num(r.qty)}${r.unit ? ' ' + esc(r.unit) : ''}</td>`,
-      ];
-      if (d.sees_both || tab === 'unassigned') cells.push(`<td>${chan(r.purchase_source)}</td>`);
-      if (tab === 'bought') {
-        cells.push(`<td>${esc(r.supplier || '')}</td>`,
-          `<td class="mono">${esc(r.invoice_no || '')}</td>`,
-          `<td class="num">${r.purchase_amount == null ? '<span class="muted">—</span>' : money(r.purchase_amount)}</td>`);
-      }
-      cells.push(`<td>${tab === 'bought'
-        ? `<button class="sm" data-view="${r.id}">View</button>`
-        : `<button class="sm primary" data-buy="${r.id}">✓ Bought</button> <button class="sm" data-move="${r.id}" data-src="${esc(r.purchase_source || '')}" title="Cannot buy this on your account — send it to the other officer">↔</button>`}</td>`);
-      return `<tr>${cells.join('')}</tr>`;
-    }), { scroll: true });
+    try {
+      qs('#pu-table', body).innerHTML = tableWrap(headers, d.rows.map((r) => {
+        const isOverdue = r.required_date && String(r.required_date).slice(0, 10) < today() && !r.purchased_at;
+        const cells = [
+          `<td><span style="cursor:pointer" data-prio="${r.id}" data-cur="${esc(r.buying_priority || 'P3_ROUTINE')}" data-note="${esc(r.priority_note || '')}">${puPrioBadge(r.buying_priority, r.priority_note)}</span></td>`,
+          `<td>${r.required_date ? `<span class="${isOverdue ? 'badge red' : ''}">${esc(String(r.required_date).slice(0, 10))}</span>` : '<span class="muted">—</span>'}</td>`,
+          `<td class="mono"><a href="#/stores?tab=mrn&id=${r.mrn_id}">${esc(r.mrn_no || '')}</a>${r.is_new && cur.tab !== 'bought' ? ' <span class="badge amber">new</span>' : ''}${r.job_no ? `<br><a href="#/jobs/${r.job_id}" style="font-size:11px" class="muted">${esc(r.job_no)}</a>` : ''}</td>`,
+          `<td>${r.asset_code ? `<span class="stamp">${esc(r.asset_code)}</span>` : '<span class="muted">—</span>'}</td>`,
+          `<td class="desc-col">
+            <b>${esc(r.description || '')}</b>
+            ${r.priority_note ? `<div style="font-size:11px;color:var(--amber);margin-top:2px"><b>Urgency Note:</b> ${esc(r.priority_note)}</div>` : ''}
+            ${r.source_changed_reason ? `<div class="muted" style="font-size:11px;margin-top:2px">↔ from ${esc(r.source_changed_from || '?')}: ${esc(r.source_changed_reason)}</div>` : ''}
+          </td>`,
+          `<td class="num">${num(r.qty)}${r.unit ? ' ' + esc(r.unit) : ''}</td>`,
+          `<td>${chan(r.purchase_source)}</td>`,
+          `<td>${roadBar(r)}</td>`,
+        ];
+        if (cur.tab === 'bought') {
+          cells.push(
+            `<td>${esc(r.supplier || '')}</td>`,
+            `<td class="mono">${esc(r.invoice_no || '')}</td>`,
+            `<td class="num">${r.purchase_amount == null ? '<span class="muted">—</span>' : money(r.purchase_amount)}</td>`
+          );
+        }
+        cells.push(`<td><div style="display:flex;gap:4px;flex-wrap:wrap;justify-content:flex-end">${
+          cur.tab === 'bought'
+            ? `<button class="sm" data-view="${r.id}">View</button>`
+            : `<button class="sm primary" data-buy="${r.id}">✓ Bought</button>
+               <button class="sm" data-move="${r.id}" data-src="${esc(r.purchase_source || '')}" title="Reassign channel (Head Office ↔ Local Purchase)">↔</button>
+               <button class="sm" data-prio="${r.id}" data-cur="${esc(r.buying_priority || 'P3_ROUTINE')}" data-note="${esc(r.priority_note || '')}" title="Adjust daily workshop priority">⚡</button>
+               <button class="sm" data-view="${r.id}">View</button>`
+        }</div></td>`);
+        return `<tr>${cells.join('')}</tr>`;
+      }), { scroll: true });
 
-    qsa('[data-buy]', c).forEach((b) => { b.onclick = () => markBought(b.dataset.buy, load); });
-    qsa('[data-move]', c).forEach((b) => { b.onclick = () => moveChannel(b.dataset.move, b.dataset.src, load); });
-    qsa('[data-view]', c).forEach((b) => { b.onclick = () => viewPurchase(b.dataset.view, load); });
+      qsa('[data-buy]', body).forEach((b) => { b.onclick = () => markBought(b.dataset.buy, load); });
+      qsa('[data-move]', body).forEach((b) => { b.onclick = () => moveChannel(b.dataset.move, b.dataset.src, load); });
+      qsa('[data-prio]', body).forEach((b) => { b.onclick = () => adjustPriorityModal(b.dataset.prio, b.dataset.cur, b.dataset.note, load); });
+      qsa('[data-view]', body).forEach((b) => { b.onclick = () => viewPurchase(b.dataset.view, load); });
+    } catch (renderErr) {
+      console.error('Render error:', renderErr);
+      qs('#pu-table', body).innerHTML = `<div class="card err">${esc(renderErr.message)}</div>`;
+      return;
+    }
 
-    // Looking at the list IS having seen it. Recorded per person, so two officers never clear each
-    // other badge.
-    if (tab === 'to_buy') api('/purchasing/seen', { method: 'POST' }).catch(() => { });
+    if (cur.tab === 'to_buy' || cur.tab === 'urgent') api('/purchasing/seen', { method: 'POST' }).catch(() => {});
   };
 
-  let deb; qs('#pu-q', c).oninput = () => { clearTimeout(deb); deb = setTimeout(load, 250); };
+  let deb;
+  qs('#pu-q', body).oninput = () => {
+    clearTimeout(deb);
+    deb = setTimeout(() => { cur.q = qs('#pu-q', body).value.trim(); load(); }, 250);
+  };
   load();
-};
+}
 
 // Hand an item to the other officer, with the reason that makes the record worth keeping.
+// Both Head Office and Local Purchase officers can reassign items bilaterally!
 function moveChannel(lineId, current, onDone) {
-  const to = current === 'head_office' ? 'local_purchase' : 'head_office';
-  const label = to === 'head_office' ? 'Head Office' : 'Local Purchase';
-  modal(`Send to ${label}`, `
-    <p class="muted" style="font-size:12px;margin:0 0 10px">Why can this not be bought on the current account? A few months of these is the case for opening one.</p>
-    ${field('Reason', 'reason', { placeholder: 'e.g. No head office account with this supplier' })}
-    <div style="margin-top:12px;text-align:right"><button class="primary" id="mv">Send to ${label}</button></div>`,
+  const defaultTo = current === 'head_office' ? 'local_purchase' : 'head_office';
+  modal('Assign / Switch Purchasing Channel', `
+    <p class="muted" style="font-size:12px;margin:0 0 10px">Reassign between Head Office and Local Purchase, or claim an item. Enter the reason for tracking.</p>
+    <div style="margin-bottom:10px">
+      <label>Target Channel *</label>
+      <select id="mv-chan">
+        <option value="head_office" ${defaultTo === 'head_office' ? 'selected' : ''}>Head Office</option>
+        <option value="local_purchase" ${defaultTo === 'local_purchase' ? 'selected' : ''}>Local Purchase</option>
+      </select>
+    </div>
+    ${field('Reason / Justification *', 'reason', { placeholder: 'e.g. Local vendor out of stock; or local sourcing faster than HQ shipment' })}
+    <div style="margin-top:12px;text-align:right"><button class="primary" id="mv">Confirm Channel Assignment</button></div>`,
     (body, close) => {
       qs('#mv', body).onclick = async () => {
+        const to = qs('#mv-chan', body).value;
+        const reason = qs('[name=reason]', body).value;
+        if (!reason || reason.trim().length < 3) {
+          toast('Please state a reason (at least 3 characters)', 'err');
+          return;
+        }
         try {
           const r = await api(`/purchasing/lines/${lineId}/source`, {
             method: 'POST',
-            body: { purchase_source: to, reason: qs('[name=reason]', body).value }
+            body: { purchase_source: to, reason }
+          });
+          toast(r.message); close(); onDone();
+        } catch (e) { toast(e.message, 'err'); }
+      };
+    });
+}
+
+// Dynamic workshop priority modal
+async function adjustPriorityModal(lineId, currentPriority, currentNote, onDone) {
+  let hist = [];
+  try {
+    const h = await api(`/purchasing/lines/${lineId}/priority-history`);
+    hist = h.rows || [];
+  } catch (e) {}
+
+  modal('⚡ Adjust Workshop Buying Priority', `
+    <p class="muted" style="font-size:12px;margin:0 0 10px">Workshops can adjust priority day-to-day as operational vehicle urgency changes. Buyers see P1/P2 at the top of their queue.</p>
+    <div style="margin-bottom:12px">
+      <label>Urgency Tier *</label>
+      <select id="prio-val">
+        ${PU_PRIO_OPTS.map(([v, l]) => `<option value="${v}" ${v === (currentPriority || 'P3_ROUTINE') ? 'selected' : ''}>${l}</option>`).join('')}
+      </select>
+    </div>
+    ${field('Operational Urgency Note (Why is it urgent?)', 'priority_note', {
+      value: currentNote || '',
+      placeholder: 'e.g. Breakdown in field, vehicle needed tomorrow 6 AM for project transfer'
+    })}
+    <div style="margin-top:14px;text-align:right">
+      <button class="primary" id="save-prio">Save Priority</button>
+    </div>
+    ${hist.length ? `
+      <div style="margin-top:16px;border-top:1px solid var(--border);padding-top:10px">
+        <h4 style="margin:0 0 6px;font-size:12px">Priority Change History</h4>
+        <div style="font-size:11px;max-height:140px;overflow-y:auto">
+          ${hist.map((h) => `<div style="padding:4px 0;border-bottom:1px dashed var(--border)">
+            <b>${esc(h.changed_by || '')}</b> on ${esc(String(h.changed_at || '').slice(0, 16))}:
+            <span class="badge sm">${esc(h.old_priority || '—')}</span> ➔ <span class="badge sm ${h.new_priority === 'P1_CRITICAL' ? 'red' : (h.new_priority === 'P2_URGENT' ? 'amber' : '')}">${esc(h.new_priority)}</span>
+            ${h.note ? `<div class="muted" style="margin-top:2px">Note: ${esc(h.note)}</div>` : ''}
+          </div>`).join('')}
+        </div>
+      </div>` : ''}`,
+    (body, close) => {
+      qs('#save-prio', body).onclick = async () => {
+        const val = qs('#prio-val', body).value;
+        const note = qs('[name=priority_note]', body).value;
+        try {
+          const r = await api(`/purchasing/lines/${lineId}/priority`, {
+            method: 'POST',
+            body: { buying_priority: val, note }
           });
           toast(r.message); close(); onDone();
         } catch (e) { toast(e.message, 'err'); }
@@ -7953,16 +11584,27 @@ async function viewPurchase(lineId, onDone) {
   try { d = await api(`/purchasing/lines/${lineId}`); } catch (e) { toast(e.message, 'err'); return; }
   modal(`${d.description || 'Item'} — ${d.mrn_no || ''}`, `
     <div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(160px,1fr))">
-      ${[['Supplier', d.supplier], ['Invoice', d.invoice_no], ['Invoice date', String(d.invoice_date || '').slice(0, 10)],
-    ['Amount', d.purchase_amount == null ? '—' : money(d.purchase_amount)], ['Bought by', d.purchased_by],
-    ['Bought on', String(d.purchased_at || '').slice(0, 10)]]
-      .map(([l, v]) => `<div class="card"><div class="stat"><div class="l">${l}</div><div>${esc(v || '—')}</div></div></div>`).join('')}
+      ${[['Priority', d.buying_priority ? `${puPrioBadge(d.buying_priority, d.priority_note)}` : 'P3 Routine'],
+         ['Channel', d.purchase_source ? (d.purchase_source === 'head_office' ? 'Head Office' : 'Local Purchase') : 'Unassigned'],
+         ['Supplier', d.supplier], ['Invoice', d.invoice_no], ['Invoice date', String(d.invoice_date || '').slice(0, 10)],
+         ['Amount', d.purchase_amount == null ? '—' : money(d.purchase_amount)], ['Bought by', d.purchased_by],
+         ['Bought on', String(d.purchased_at || '').slice(0, 10)]]
+        .map(([l, v]) => `<div class="card"><div class="stat"><div class="l">${l}</div><div>${typeof v === 'string' && v.startsWith('<') ? v : esc(v || '—')}</div></div></div>`).join('')}
     </div>
+    ${d.priority_note ? `<div class="card" style="margin-top:10px"><b>Workshop Urgency Note:</b> ${esc(d.priority_note)}</div>` : ''}
     ${d.price_check ? `<div class="card err" style="margin-top:10px">
       <b>The invoice and the receipt disagree.</b><br>
       Invoice ${money(d.price_check.invoice)} · received ${money(d.price_check.received)} ·
       difference ${money(d.price_check.difference)}.<br>
       <span class="muted">Neither is overwritten — someone should say which is right.</span></div>` : ''}
+    ${d.priority_history && d.priority_history.length ? `
+      <h3 style="margin:12px 0 6px">Priority Change History</h3>
+      <div style="font-size:12px;border:1px solid var(--border);border-radius:4px;padding:8px">
+        ${d.priority_history.map((h) => `<div class="cost-line" style="padding:4px 0">
+          <span><b>${esc(h.changed_by)}</b>: <span class="badge sm">${esc(h.old_priority || 'P3_ROUTINE')}</span> ➔ <span class="badge sm ${h.new_priority === 'P1_CRITICAL' ? 'red' : (h.new_priority === 'P2_URGENT' ? 'amber' : '')}">${esc(h.new_priority)}</span> ${h.note ? `— <i>${esc(h.note)}</i>` : ''}</span>
+          <span class="muted">${esc(String(h.changed_at || '').slice(0, 16))}</span>
+        </div>`).join('')}
+      </div>` : ''}
     ${d.invoices.length ? `<h3>Invoice</h3><div style="display:flex;gap:8px;flex-wrap:wrap">${d.invoices.map((i) => `<a href="${i.image}" target="_blank" rel="noopener"><img src="${i.image}" style="height:150px;border-radius:4px;border:1px solid var(--border)" alt="invoice"></a>`).join('')}</div>` : ''}
     ${d.receipts.length ? `<h3>Received</h3>${tableWrap(
         [{ label: 'GRN' }, { label: 'Qty', num: true }, { label: 'Unit', num: true }, { label: 'Value', num: true }, { label: 'Delivered' }],
@@ -8019,7 +11661,7 @@ routes.tbrequests = async (c) => {
       <button class="sm ${kind === 'tyre' ? 'primary' : ''}" onclick="${go(tab, 'tyre')}">🛞 Tyre</button>
       <button class="sm ${kind === 'battery' ? 'primary' : ''}" onclick="${go(tab, 'battery')}">🔋 Battery</button>
       <div class="spacer"></div>
-      ${canAdd('tb_request') ? '<button class="primary sm" id="tb-new">+ New request</button>' : ''}
+      ${canEdit('tb_request') ? '<button class="primary sm" id="tb-new">+ New request</button>' : ''}
     </div>
     <div class="toolbar" style="margin:0 0 10px 0">
       ${[['requests', 'Requests'], ['purchase', 'To purchase'], ['issue', 'Ready to issue'], ['returns', 'Old units due'], ['specs', 'Sizes &amp; prices']]
@@ -8066,7 +11708,7 @@ routes.tbrequests = async (c) => {
             <td>${esc(TB_REASON_LABEL[l.reason] || l.reason || '—')}</td>
             <td>${l.km_reading != null ? num(l.km_reading) : esc(l.km_remark || '—')}</td>
             <td class="num">${l.issued || 0}</td>
-            <td>${d.approval_status === 'approved' && (l.issued || 0) < l.qty && canAdd('tb_issue')
+            <td>${d.approval_status === 'approved' && (l.issued || 0) < l.qty && canEdit('tb_issue')
           ? '<button class="sm primary" data-issue="' + l.mrn_line_id + '">Issue…</button>' : ''}</td></tr>`))}
       </div>`;
     qsa('[data-issue]', body).forEach((b) => {
@@ -8087,7 +11729,7 @@ routes.tbrequests = async (c) => {
         { label: 'Qty', num: true }, { label: '' }],
         rows.map((r) => `<tr><td><b>${esc(r.mrn_no)}</b></td><td>${esc(String(r.req_date || '').slice(0, 10))}</td>
           <td>${esc(r.asset_code || '—')}</td><td class="num">${r.lines}</td><td class="num">${num(r.qty)}</td>
-          <td>${canAdd('tb_purchase') ? '<button class="sm primary" data-buy="' + r.id + '">Send to purchase…</button>' : ''}</td></tr>`), { scroll: true })
+          <td>${canEdit('tb_purchase') ? '<button class="sm primary" data-buy="' + r.id + '">Send to purchase…</button>' : ''}</td></tr>`), { scroll: true })
         : '<div class="card"><p class="muted">Nothing approved is waiting to be bought.</p></div>');
     qsa('[data-buy]', body).forEach((b) => {
       b.onclick = () => tbPurchaseModal(rows.find((r) => String(r.id) === b.dataset.buy), () => render());
@@ -8116,7 +11758,7 @@ routes.tbrequests = async (c) => {
         rows.map((r) => `<tr><td>${esc(String(r.issue_date || '').slice(0, 10))}</td><td>${esc(r.mrn_no || '—')}</td>
         <td>${esc(r.asset_code || '—')}</td><td>${esc(r.spec_label || '—')}</td><td class="num">${num(r.qty)}</td>
         <td>${esc(r.position || '—')}</td>
-        <td>${canAdd('tb_issue') ? '<button class="sm primary" data-ret="' + r.issue_id + '">Record…</button>' : ''}</td></tr>`), { scroll: true })
+        <td>${canEdit('tb_issue') ? '<button class="sm primary" data-ret="' + r.issue_id + '">Record…</button>' : ''}</td></tr>`), { scroll: true })
         : '<div class="card"><p class="muted">Every old unit has been accounted for.</p></div>');
     qsa('[data-ret]', body).forEach((b) => {
       b.onclick = () => tbReturnModal(rows.find((r) => String(r.issue_id) === b.dataset.ret), () => render());
@@ -8480,7 +12122,7 @@ routes.reports = async (c) => {
         <div class="spacer"></div>
         <div><label>Year</label><select id="mcr-year"></select></div>
         <div><label>Month</label><select id="mcr-month"></select></div>
-        ${canDo('reports.monthly_inputs') ? '<button class="sm" id="mcr-edit">✎ Edit monthly inputs</button>' : ''}
+        ${canEdit('reports') || canDo('reports.monthly_cost.edit') ? '<button class="sm" id="mcr-edit">✎ Edit monthly inputs</button>' : ''}
         <button class="sm secondary" id="mcr-reconcile" title="Reconcile Closed, Pending, Other Labour and Spares Supply with live daily work tally">⚖️ Repair Sections Reconciler</button>
         <a class="btn sm" id="mcr-rd" href="#" target="_blank">🖨 Repair Detail</a>
         <a class="btn primary sm" id="mcr-dl" href="#">⬇ Download Excel</a>
@@ -9110,17 +12752,34 @@ routes.workshops = async (c) => {
 routes.access = async (c) => {
   if (!canDo('access.manage', 'users.manage')) { c.innerHTML = '<div class="card err">You do not have access to this page.</div>'; return; }
   const tabs = [];
-  if (canDo('access.manage')) tabs.push(['people', 'People'], ['roles', 'Roles & Permissions'], ['board', 'Clearance Board'], ['limits', 'Approval limits']);
-  if (canDo('users.manage')) tabs.push(['users', 'Users & Roles']);
+  if (canDo('access.manage')) {
+    tabs.push(['people', 'People (Overrides)']);
+    tabs.push(['sections', 'Sections Audit']);
+    tabs.push(['roles', 'Role Templates']);
+    tabs.push(['board', 'Clearance Board']);
+    tabs.push(['limits', 'Approval limits']);
+  }
+  if (canDo('users.manage')) tabs.push(['users', 'User Accounts']);
+  if (canDo('access.manage')) tabs.push(['history', 'Audit Trail']);
+
   const sp = new URLSearchParams(location.hash.split('?')[1] || '');
   const tab = tabs.some((t) => t[0] === sp.get('tab')) ? sp.get('tab') : tabs[0][0];
-  c.innerHTML = `${pageHeader('Access Control', 'Who may do what — roles, the permissions in each role, and who holds them.')}
+  c.innerHTML = `${pageHeader('Access Control', 'Access person-by-person, role starting templates, 22 canonical sections & audit compliance.')}
     <div id="admin-warn"></div>
-    <div class="pill-row" style="margin-bottom:12px">
-      ${tabs.map(([k, label]) => `<button class="btn sm ${tab === k ? 'primary' : ''}" data-atab="${k}">${esc(label)}</button>`).join('')}
+    <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:12px">
+      <div class="pill-row">
+        ${tabs.map(([k, label]) => `<button class="btn sm ${tab === k ? 'primary' : ''}" data-atab="${k}">${esc(label)}</button>`).join('')}
+      </div>
+      <div>
+        <button class="btn sm" id="btn-access-report">📥 Access Report (Excel)</button>
+      </div>
     </div>
     <div id="apane"><div class="muted">Loading…</div></div>`;
   qsa('[data-atab]', c).forEach((b) => { b.onclick = () => { location.hash = '#/access?tab=' + b.dataset.atab; }; });
+  const repBtn = qs('#btn-access-report', c);
+  if (repBtn) {
+    repBtn.onclick = () => { window.open('/api/access/report?format=xlsx', '_blank'); };
+  }
   // One admin is a single point of failure: if that account is lost, only someone with a shell on
   // the server can get the system back (scripts/admin.js).
   api('/access/roles').then((r) => {
@@ -9130,10 +12789,12 @@ routes.access = async (c) => {
     }
   }).catch(() => {});
   const pane = qs('#apane', c);
-  if (tab === 'users') await renderUsersManager(pane);
-  else if (tab === 'people') await renderPeople(pane, sp.get('person'));
+  if (tab === 'people') await renderPeopleAccess(pane, sp.get('user'));
+  else if (tab === 'sections') await renderSectionsAudit(pane, sp.get('section'));
+  else if (tab === 'users') await renderUsersManager(pane);
   else if (tab === 'board') await renderClearanceBoard(pane);
   else if (tab === 'limits') await renderApprovalLimits(pane);
+  else if (tab === 'history') await renderAccessHistory(pane);
   else await renderRolesManager(pane, sp.get('role'));
 };
 routes.users = async () => { location.hash = '#/access?tab=users'; };
@@ -9176,53 +12837,664 @@ async function renderApprovalLimits(c) {
 
 const lvlChip = (lvl) => {
   const cls = lvl === 'full' ? 'amber' : lvl === 'edit' ? 'green' : lvl === 'add' ? 'blue' : '';
-  const txt = lvl === 'none' ? '—' : lvl.toUpperCase();
+  const txt = lvl === 'none' ? '—' : String(lvl).toUpperCase();
   return `<span class="badge ${cls}"${lvl === 'none' ? ' style="opacity:.4"' : ''}>${txt}</span>`;
 };
 
+// ---- Tab 1: People & Overrides ------------------------------------------------
+async function renderPeopleAccess(c, wantedUserId) {
+  const [data, wsd] = await Promise.all([api('/access/people'), workshopsData(true)]);
+  const people = data.people || [];
+  if (!people.length) {
+    c.innerHTML = '<div class="card muted">No users found.</div>';
+    return;
+  }
+
+  let sel = people.find((u) => u.id == wantedUserId) || people[0];
+  const details = await api('/access/people/' + sel.id);
+  const u = details.user;
+  const sections = details.sections;
+
+  // Local state for edits
+  const sectionEdits = {};
+  const capEdits = {};
+
+  const canEditTarget = !isAdmin() && u.roles.some((r) => r.name === 'admin') ? false : true;
+  const isSelf = ME && ME.id == u.id;
+
+  const renderAll = () => {
+    const q = (qs('#person-search', c) ? qs('#person-search', c).value : '').toLowerCase().trim();
+    const filtered = people.filter((p) => {
+      if (!q) return true;
+      return (p.full_name || '').toLowerCase().includes(q) ||
+             (p.username || '').toLowerCase().includes(q) ||
+             p.roles.some((r) => (r.label || r.name).toLowerCase().includes(q));
+    });
+
+    const listHtml = filtered.map((p) => {
+      const isSel = p.id == u.id;
+      const roleStr = p.roles.map((r) => r.label || r.name).join(', ') || 'No roles';
+      return `<tr data-pick-user="${p.id}" style="cursor:pointer;${isSel ? 'background:var(--bg-active, #eef2ff);font-weight:600;' : ''}${p.active ? '' : 'opacity:.55;'}">
+        <td>
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:6px">
+            <span>${esc(p.full_name || p.username)}</span>
+            ${p.overrides_count > 0 ? `<span class="badge amber" style="font-size:10px" title="${p.overrides_count} custom overrides">${p.overrides_count} custom</span>` : ''}
+          </div>
+          <div class="muted" style="font-size:11px;font-weight:normal">${esc(p.username)} · ${esc(roleStr)}</div>
+        </td>
+      </tr>`;
+    }).join('') || '<tr><td class="muted" style="text-align:center">No matching people</td></tr>';
+
+    const GROUPS = [
+      { id: 'operations', name: 'Operations & Execution', icon: '🔧' },
+      { id: 'stores', name: 'Stores & Inventory', icon: '📦' },
+      { id: 'fleet', name: 'Fleet & Assets', icon: '🚜' },
+      { id: 'control', name: 'Control & Intelligence', icon: '📊' },
+      { id: 'governance', name: 'Governance & Access', icon: '🛡️' },
+    ];
+
+    const LV_BTN = [
+      { key: 'none', label: 'None' },
+      { key: 'view', label: 'View' },
+      { key: 'add', label: 'Add' },
+      { key: 'edit', label: 'Edit' },
+      { key: 'full', label: 'Full' },
+    ];
+
+    const groupCards = GROUPS.map((grp) => {
+      const grpSections = sections.filter((s) => s.group === grp.id);
+      if (!grpSections.length) return '';
+
+      const secHtml = grpSections.map((sec) => {
+        const curLevel = sectionEdits[sec.key] !== undefined ? sectionEdits[sec.key] : (sec.override_level !== null ? sec.override_level : sec.role_level);
+        const isCustom = sectionEdits[sec.key] !== undefined ? (sectionEdits[sec.key] !== sec.role_level) : (sec.override_level !== null && sec.override_level !== sec.role_level);
+
+        const lvlButtons = LV_BTN.map((b) => {
+          const isSelected = curLevel === b.key;
+          const cls = isSelected
+            ? (b.key === 'full' ? 'primary' : (b.key === 'edit' ? 'badge green' : (b.key === 'add' ? 'badge blue' : (b.key === 'view' ? 'badge' : 'badge amber'))))
+            : 'btn sm';
+          const style = isSelected ? 'font-weight:bold;padding:4px 10px;font-size:12px' : 'opacity:.7;padding:4px 10px;font-size:12px';
+          const disabled = isSelf || !canEditTarget ? 'disabled' : '';
+          return `<button class="${cls}" style="${style}" data-sec-lvl="${esc(sec.key)}:${b.key}" ${disabled}>${b.label}</button>`;
+        }).join(' ');
+
+        let capsHtml = '';
+        if (sec.capabilities && sec.capabilities.length > 0) {
+          const capItems = sec.capabilities.map((c) => {
+            const hasCap = capEdits[c.key] !== undefined ? capEdits[c.key] : c.effective_granted;
+            const isCapOverridden = capEdits[c.key] !== undefined ? (capEdits[c.key] !== c.role_granted) : c.is_override;
+            const disabled = isSelf || !canEditTarget ? 'disabled' : '';
+            return `<label style="display:flex;align-items:flex-start;gap:8px;margin:5px 0;font-weight:normal;font-size:12px">
+              <input type="checkbox" style="width:auto;margin-top:2px" data-pcap="${esc(c.key)}" ${hasCap ? 'checked' : ''} ${disabled}>
+              <div>
+                <span>${esc(c.label)}</span>
+                ${isCapOverridden ? `<span class="badge amber" style="font-size:9px;margin-left:4px">Custom override</span>` : `<span class="muted" style="font-size:10px;margin-left:4px">(${c.role_granted ? 'Granted by role' : 'Not in role'})</span>`}
+                <div class="muted" style="font-size:10px">${esc(c.key)}</div>
+              </div>
+            </label>`;
+          }).join('');
+
+          capsHtml = `<details style="margin-top:8px;border-top:1px dashed var(--border-light, #eee);padding-top:6px">
+            <summary style="cursor:pointer;font-size:11px;font-weight:600;color:var(--text-muted, #666)">
+              Special Capabilities & Approvals (${sec.capabilities.length})
+            </summary>
+            <div style="margin-top:6px;padding-left:4px">
+              ${capItems}
+            </div>
+          </details>`;
+        }
+
+        return `<div class="card" style="margin-bottom:10px;padding:12px;background:var(--card-sub-bg, #fff);border:1px solid var(--border-light, #e2e8f0);border-radius:6px">
+          <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:8px">
+            <div style="display:flex;align-items:center;gap:8px">
+              <span style="font-size:18px">${sec.icon}</span>
+              <div>
+                <b style="font-size:14px">${esc(sec.label)}</b>
+                <div class="muted" style="font-size:11px">${esc(sec.description || '')}</div>
+              </div>
+            </div>
+            <div style="display:flex;align-items:center;gap:6px">
+              ${isCustom
+                ? `<span class="badge amber" style="font-weight:600">⚡ Custom Override</span> <button class="btn sm" style="font-size:10px;padding:2px 6px" data-reset-sec="${esc(sec.key)}" title="Revert this section to role template">Reset</button>`
+                : `<span class="badge blue" style="font-weight:500">Role Default (${sec.role_level.toUpperCase()})</span>`}
+            </div>
+          </div>
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;background:var(--bg-muted, #f8fafc);padding:6px 10px;border-radius:6px">
+            <span class="muted" style="font-size:11px;font-weight:600;text-transform:uppercase">Clearance:</span>
+            <div style="display:flex;gap:4px;flex-wrap:wrap">${lvlButtons}</div>
+          </div>
+          ${capsHtml}
+        </div>`;
+      }).join('');
+
+      return `<div style="margin-bottom:18px">
+        <h3 style="margin:0 0 8px;font-size:14px;color:var(--text-muted, #475569);display:flex;align-items:center;gap:6px">
+          <span>${grp.icon}</span> <span>${esc(grp.name)}</span>
+        </h3>
+        ${secHtml}
+      </div>`;
+    }).join('');
+
+    const wsOptions = [{ value: '', label: '— Default (Any / Head Office) —' }].concat(
+      (wsd.workshops || []).map((w) => ({ value: String(w.id), label: w.name + (w.code ? ` (${w.code})` : '') }))
+    );
+
+    c.innerHTML = `<div style="display:grid;grid-template-columns:minmax(240px,310px) 1fr;gap:14px;align-items:start">
+      <div class="card" style="padding:12px">
+        <div style="margin-bottom:8px">
+          <input type="text" id="person-search" placeholder="Search people..." value="${esc(q)}" style="width:100%;box-sizing:border-box">
+        </div>
+        <div class="table-wrap scroll" style="max-height:calc(100vh - 250px)">
+          <table><tbody>${listHtml}</tbody></table>
+        </div>
+      </div>
+
+      <div>
+        <div class="card" style="margin-bottom:12px;border-top:3px solid var(--accent, #2563eb)">
+          <div style="display:flex;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;gap:12px;margin-bottom:12px">
+            <div>
+              <h2 style="margin:0;display:flex;align-items:center;gap:8px">
+                <span>${esc(u.full_name || u.username)}</span>
+                ${u.active ? '<span class="badge green">Active</span>' : '<span class="badge">Inactive</span>'}
+              </h2>
+              <div class="muted" style="font-size:12px;margin-top:2px">
+                Username: <code>${esc(u.username)}</code> · Roles: ${u.roles.map((r) => `<span class="badge blue">${esc(r.label || r.name)}</span>`).join(' ') || 'None'}
+              </div>
+            </div>
+            <div style="display:flex;gap:6px;flex-wrap:wrap">
+              <button class="btn sm" id="btn-compare" title="Compare this person's access with another person or role">🔍 Compare</button>
+              <button class="btn sm" id="btn-copy-from" ${isSelf || !canEditTarget ? 'disabled' : ''} title="Copy all overrides from another person">📋 Copy From...</button>
+              <button class="btn sm" id="btn-reset-user" ${isSelf || !canEditTarget ? 'disabled' : ''} title="Remove all personal overrides and revert to role template">↺ Reset to Role</button>
+              <button class="primary sm" id="btn-save-access" ${isSelf || !canEditTarget ? 'disabled' : ''}>💾 Save Access</button>
+            </div>
+          </div>
+
+          ${isSelf ? '<div class="card" style="background:#fffbeb;border-left:4px solid #f59e0b;padding:8px 12px;margin-bottom:10px;font-size:12px">⚠️ <b>Safety Rule:</b> You cannot modify your own access permissions. Have another administrator change them if needed.</div>' : ''}
+          ${!canEditTarget ? '<div class="card err" style="padding:8px 12px;margin-bottom:10px;font-size:12px">⛔ Only an administrator can modify an administrator account.</div>' : ''}
+
+          <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(200px, 1fr));gap:10px;background:var(--bg-muted, #f8fafc);padding:10px;border-radius:6px">
+            <div>
+              <label style="font-size:11px;font-weight:600;margin-bottom:4px">Home Workshop:</label>
+              <select id="user-ws" style="width:100%" ${isSelf || !canEditTarget ? 'disabled' : ''}>
+                ${wsOptions.map((o) => `<option value="${o.value}" ${String(u.home_workshop_id || '') === o.value ? 'selected' : ''}>${esc(o.label)}</option>`).join('')}
+              </select>
+            </div>
+            <div>
+              <label style="font-size:11px;font-weight:600;margin-bottom:4px">Personal Approval Limit (Rs):</label>
+              <input type="number" id="user-limit" placeholder="Role template default" value="${u.approval_limit != null ? esc(u.approval_limit) : ''}" style="width:100%" ${isSelf || !canEditTarget ? 'disabled' : ''}>
+            </div>
+            <div>
+              <label style="font-size:11px;font-weight:600;margin-bottom:4px">Temporary Access Until (Date):</label>
+              <input type="date" id="user-until" value="${u.access_until ? esc(u.access_until.slice(0, 10)) : ''}" style="width:100%" ${isSelf || !canEditTarget ? 'disabled' : ''}>
+            </div>
+          </div>
+        </div>
+
+        ${groupCards}
+      </div>
+    </div>`;
+
+    const searchInp = qs('#person-search', c);
+    if (searchInp) {
+      searchInp.oninput = () => renderAll();
+    }
+
+    qsa('[data-pick-user]', c).forEach((tr) => {
+      tr.onclick = async () => {
+        const uid = tr.dataset.pickUser;
+        await renderPeopleAccess(c, uid);
+      };
+    });
+
+    qsa('[data-sec-lvl]', c).forEach((btn) => {
+      btn.onclick = () => {
+        const [secKey, lvl] = btn.dataset.secLvl.split(':');
+        sectionEdits[secKey] = lvl;
+        renderAll();
+      };
+    });
+
+    qsa('[data-reset-sec]', c).forEach((btn) => {
+      btn.onclick = () => {
+        const secKey = btn.dataset.resetSec;
+        sectionEdits[secKey] = null;
+        renderAll();
+      };
+    });
+
+    qsa('[data-pcap]', c).forEach((box) => {
+      box.onchange = () => {
+        capEdits[box.dataset.pcap] = box.checked;
+        renderAll();
+      };
+    });
+
+    const saveBtn = qs('#btn-save-access', c);
+    if (saveBtn) {
+      saveBtn.onclick = async () => {
+        const wsVal = qs('#user-ws', c).value;
+        const limitVal = qs('#user-limit', c).value.trim();
+        const untilVal = qs('#user-until', c).value.trim();
+
+        const payload = {
+          sections: sectionEdits,
+          capabilities: capEdits,
+          home_workshop_id: wsVal || null,
+          approval_limit: limitVal === '' ? null : Number(limitVal),
+          access_until: untilVal || null,
+        };
+
+        try {
+          saveBtn.disabled = true;
+          saveBtn.innerText = 'Saving…';
+          await api('/access/people/' + u.id + '/save', { method: 'POST', body: payload });
+          toast(`Access permissions saved for ${u.full_name || u.username}`);
+          await renderPeopleAccess(c, u.id);
+        } catch (e) {
+          toast(e.message, 'err');
+          saveBtn.disabled = false;
+          saveBtn.innerText = '💾 Save Access';
+        }
+      };
+    }
+
+    const resetBtn = qs('#btn-reset-user', c);
+    if (resetBtn) {
+      resetBtn.onclick = async () => {
+        if (!confirm(`Reset all personal overrides for ${u.full_name || u.username} back to their role template defaults?`)) return;
+        try {
+          await api('/access/people/' + u.id + '/reset', { method: 'POST' });
+          toast(`Reset ${u.username} to role template.`);
+          await renderPeopleAccess(c, u.id);
+        } catch (e) { toast(e.message, 'err'); }
+      };
+    }
+
+    const copyBtn = qs('#btn-copy-from', c);
+    if (copyBtn) {
+      copyBtn.onclick = () => {
+        const others = people.filter((p) => p.id != u.id && p.active);
+        modal('Copy Access Overrides', `
+          <p class="muted" style="margin-top:0">Copy all section clearance and capability overrides from another person to <b>${esc(u.full_name || u.username)}</b>.</p>
+          <div style="margin-bottom:12px">
+            <label style="font-size:12px;font-weight:600;display:block;margin-bottom:4px">Copy From Person:</label>
+            <select id="source-user-select" style="width:100%">
+              ${others.map((p) => `<option value="${p.id}">${esc(p.full_name || p.username)} (${esc(p.username)}) — ${p.overrides_count} override(s)</option>`).join('')}
+            </select>
+          </div>
+          <div style="text-align:right">
+            <button class="primary" id="btn-do-copy">Copy Overrides</button>
+          </div>`,
+          (body, close) => {
+            qs('#btn-do-copy', body).onclick = async () => {
+              const srcId = qs('#source-user-select', body).value;
+              try {
+                await api('/access/people/' + u.id + '/copy-from', {
+                  method: 'POST',
+                  body: { source_user_id: srcId },
+                });
+                close();
+                toast('Access overrides copied');
+                await renderPeopleAccess(c, u.id);
+              } catch (e) { toast(e.message, 'err'); }
+            };
+          }
+        );
+      };
+    }
+
+    const compareBtn = qs('#btn-compare', c);
+    if (compareBtn) {
+      compareBtn.onclick = () => openCompareModal(u, people);
+    }
+  };
+
+  renderAll();
+}
+
+function openCompareModal(u, people) {
+  modal(`Compare Access: ${esc(u.full_name || u.username)}`, `
+    <div style="display:flex;gap:10px;margin-bottom:12px;align-items:center;flex-wrap:wrap">
+      <label style="margin:0;font-weight:600;font-size:12px">Compare with:</label>
+      <select id="cmp-target-type" style="padding:4px 8px">
+        <option value="user">Another Person</option>
+        <option value="role">A Role Template</option>
+      </select>
+      <select id="cmp-target-val" style="flex:1;min-width:180px;padding:4px 8px"></select>
+      <button class="primary sm" id="btn-run-cmp">Compare</button>
+    </div>
+    <div id="cmp-result"><div class="muted">Select comparison target and click Compare.</div></div>`,
+    async (body) => {
+      const typeSel = qs('#cmp-target-type', body);
+      const valSel = qs('#cmp-target-val', body);
+      const resDiv = qs('#cmp-result', body);
+
+      const updateTargetOptions = async () => {
+        if (typeSel.value === 'user') {
+          valSel.innerHTML = people.filter((p) => p.id != u.id)
+            .map((p) => `<option value="${p.id}">${esc(p.full_name || p.username)} (${esc(p.username)})</option>`).join('');
+        } else {
+          const rData = await api('/access/roles');
+          valSel.innerHTML = rData.roles.map((r) => `<option value="${esc(r.name)}">${esc(r.label || r.name)}</option>`).join('');
+        }
+      };
+
+      typeSel.onchange = updateTargetOptions;
+      await updateTargetOptions();
+
+      qs('#btn-run-cmp', body).onclick = async () => {
+        try {
+          resDiv.innerHTML = '<div class="muted">Comparing…</div>';
+          const query = typeSel.value === 'user' ? `user1=${u.id}&user2=${valSel.value}` : `user1=${u.id}&role=${encodeURIComponent(valSel.value)}`;
+          const res = await api('/access/compare?' + query);
+
+          const targetTitle = res.target.type === 'user' ? (res.target.full_name || res.target.username) : res.target.label;
+
+          const diffSections = res.sections.filter((s) => s.diff);
+
+          const secRows = res.sections.map((s) => `
+            <tr style="${s.diff ? 'background:#fffbeb;' : ''}">
+              <td>${s.icon} <b>${esc(s.label)}</b></td>
+              <td>${lvlChip(s.user1_level)}</td>
+              <td>${lvlChip(s.target_level)}</td>
+              <td>${s.diff ? '<span class="badge amber">Different</span>' : '<span class="muted">Same</span>'}</td>
+            </tr>
+          `).join('');
+
+          const capRows = res.capabilities.map((c) => `
+            <tr>
+              <td><b>${esc(c.label)}</b><br><span class="muted" style="font-size:10px">${esc(c.key)}</span></td>
+              <td>${c.user1_has ? '<span class="badge green">YES</span>' : '<span class="muted">NO</span>'}</td>
+              <td>${c.target_has ? '<span class="badge green">YES</span>' : '<span class="muted">NO</span>'}</td>
+            </tr>
+          `).join('') || '<tr><td colspan="3" class="muted" style="text-align:center">No capability differences</td></tr>';
+
+          resDiv.innerHTML = `
+            <div style="margin-bottom:10px;padding:8px 12px;background:var(--bg-muted, #f8fafc);border-radius:6px;font-size:12px">
+              Comparing <b>${esc(u.full_name || u.username)}</b> vs <b>${esc(targetTitle)}</b>:
+              <b>${diffSections.length}</b> section(s) differ, <b>${res.capabilities.length}</b> special capability difference(s).
+            </div>
+            <h4 style="margin:10px 0 4px">22 Canonical Sections</h4>
+            <div class="table-wrap scroll" style="max-height:220px">
+              <table>
+                <thead><tr><th>Section</th><th>${esc(u.username)}</th><th>${esc(targetTitle)}</th><th>Status</th></tr></thead>
+                <tbody>${secRows}</tbody>
+              </table>
+            </div>
+            <h4 style="margin:14px 0 4px">Capability Differences (${res.capabilities.length})</h4>
+            <div class="table-wrap scroll" style="max-height:180px">
+              <table>
+                <thead><tr><th>Capability</th><th>${esc(u.username)}</th><th>${esc(targetTitle)}</th></tr></thead>
+                <tbody>${capRows}</tbody>
+              </table>
+            </div>
+          `;
+        } catch (e) { resDiv.innerHTML = `<div class="err">${esc(e.message)}</div>`; }
+      };
+    }
+  );
+}
+
+// ---- Tab 2: Sections Audit View ----------------------------------------------
+async function renderSectionsAudit(c, wantedSection) {
+  const [matrixData, wsd] = await Promise.all([api('/access/section-matrix'), workshopsData(true)]);
+  const allSections = matrixData.matrix ? matrixData.matrix.sections : permissions.SECTIONS;
+  const defSec = wantedSection || (allSections[0] ? allSections[0].key : 'dashboard');
+
+  c.innerHTML = `
+    <div class="card" style="margin-bottom:12px">
+      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px">
+        <div>
+          <h3 style="margin:0 0 4px">Section Audit View</h3>
+          <p class="muted" style="margin:0;font-size:12px">Instant answer to: Who has access to each section across all people and roles?</p>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px">
+          <label style="font-weight:600;font-size:12px;margin:0">Choose Section:</label>
+          <select id="sec-audit-select" style="padding:4px 10px;font-size:13px;font-weight:bold">
+            ${allSections.map((s) => `<option value="${s.key}" ${s.key === defSec ? 'selected' : ''}>${s.icon} ${esc(s.label)}</option>`).join('')}
+          </select>
+        </div>
+      </div>
+    </div>
+    <div id="sec-audit-content"><div class="muted">Loading section details…</div></div>
+  `;
+
+  const selBox = qs('#sec-audit-select', c);
+  const contentDiv = qs('#sec-audit-content', c);
+
+  const loadSection = async (secKey) => {
+    try {
+      contentDiv.innerHTML = '<div class="muted">Loading section audit data…</div>';
+      const data = await api('/access/sections/' + encodeURIComponent(secKey));
+      const s = data.section;
+      const people = data.people || [];
+
+      const counts = { full: 0, edit: 0, add: 0, view: 0, none: 0 };
+      people.forEach((p) => { counts[p.effective_level] = (counts[p.effective_level] || 0) + 1; });
+
+      const rows = people.map((p) => {
+        const roleStr = p.roles.map((r) => r.label || r.name).join(', ') || 'None';
+        const isCustom = p.is_override;
+        const capsBadges = (p.granted_caps || []).map((cap) => `<span class="badge" style="font-size:10px">${esc(cap)}</span>`).join(' ') || '<span class="muted">—</span>';
+        return `
+          <tr style="${p.effective_level === 'none' ? 'opacity:.5;' : ''}">
+            <td><b>${esc(p.full_name || p.username)}</b><br><span class="muted" style="font-size:11px">${esc(p.username)}</span></td>
+            <td><span class="muted">${esc(roleStr)}</span></td>
+            <td>${esc(p.workshop || '—')}</td>
+            <td>${lvlChip(p.effective_level)}</td>
+            <td>${isCustom ? '<span class="badge amber">Custom Override</span>' : '<span class="muted">Role Default</span>'}</td>
+            <td>${capsBadges}</td>
+            <td>
+              <button class="btn sm" data-manage-user="${p.id}" title="Go to Person Access">Manage</button>
+            </td>
+          </tr>
+        `;
+      }).join('');
+
+      contentDiv.innerHTML = `
+        <div class="card" style="margin-bottom:12px;border-left:4px solid var(--accent, #2563eb)">
+          <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
+            <div>
+              <h2 style="margin:0;display:flex;align-items:center;gap:6px">
+                <span>${s.icon}</span> <span>${esc(s.label)}</span>
+              </h2>
+              <p class="muted" style="margin:2px 0 0;font-size:12px">${esc(s.description || '')}</p>
+            </div>
+            <div class="pill-row">
+              <span class="badge amber">Full: ${counts.full || 0}</span>
+              <span class="badge green">Edit: ${counts.edit || 0}</span>
+              <span class="badge blue">Add: ${counts.add || 0}</span>
+              <span class="badge">View: ${counts.view || 0}</span>
+              <span class="muted" style="font-size:11px">No access: ${counts.none || 0}</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="table-wrap scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>Person</th>
+                  <th>Roles</th>
+                  <th>Workshop</th>
+                  <th>Effective Level</th>
+                  <th>Origin</th>
+                  <th>Special Capabilities</th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+              <tbody>${rows}</tbody>
+            </table>
+          </div>
+        </div>
+      `;
+
+      qsa('[data-manage-user]', contentDiv).forEach((b) => {
+        b.onclick = () => {
+          location.hash = '#/access?tab=people&user=' + b.dataset.manageUser;
+        };
+      });
+    } catch (e) {
+      contentDiv.innerHTML = `<div class="card err">${esc(e.message)}</div>`;
+    }
+  };
+
+  selBox.onchange = () => loadSection(selBox.value);
+  await loadSection(defSec);
+}
+
+// ---- Tab 4: Audit History View ------------------------------------------------
+async function renderAccessHistory(c) {
+  const data = await api('/access/history?limit=150');
+  const rows = (data.history || []).map((h) => {
+    let detailsStr = '';
+    try {
+      if (h.after_json) {
+        const parsed = JSON.parse(h.after_json);
+        detailsStr = Object.entries(parsed).map(([k, v]) => `${k}: ${typeof v === 'object' ? JSON.stringify(v) : v}`).join(' · ');
+      }
+    } catch (e) { detailsStr = h.after_json || ''; }
+
+    return `
+      <tr>
+        <td style="white-space:nowrap;font-size:11px">${esc(String(h.created_at || '').slice(0, 19).replace('T', ' '))}</td>
+        <td><b>${esc(h.actor_username || 'System')}</b></td>
+        <td><span class="badge blue">${esc(h.entity)}</span></td>
+        <td>${esc(h.action)}</td>
+        <td class="muted" style="font-size:11px">${esc(h.entity_id || '—')}</td>
+        <td style="font-size:11px">${esc(detailsStr)}</td>
+      </tr>
+    `;
+  }).join('') || '<tr><td colspan="6" class="muted" style="text-align:center">No access history recorded yet.</td></tr>';
+
+  c.innerHTML = `
+    <div class="card">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+        <div>
+          <h3 style="margin:0 0 2px">Access Change Audit Log</h3>
+          <p class="muted" style="margin:0;font-size:12px">Immutable record of every permission, role, clearance and personal override modification.</p>
+        </div>
+      </div>
+      <div class="table-wrap scroll" style="max-height:calc(100vh - 250px)">
+        <table>
+          <thead>
+            <tr>
+              <th>Timestamp</th>
+              <th>Actor</th>
+              <th>Entity</th>
+              <th>Action</th>
+              <th>Target ID</th>
+              <th>Details</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    </div>
+  `;
+}
+
+
 async function renderRolesManager(c, wanted) {
-  const [cat, board] = await Promise.all([api('/access/capabilities'), api('/access/matrix')]);
-  const roles = cat.roles;
+  const sm = await api('/access/section-matrix').catch(async () => {
+    const [cat, board] = await Promise.all([api('/access/capabilities'), api('/access/matrix')]);
+    return { sections: [], capabilities: cat.capabilities, modules: cat.modules, roles: cat.roles, matrix: board };
+  });
+  const roles = sm.roles;
   const sel = roles.find((r) => r.name === wanted) || roles.find((r) => r.active && !r.locked) || roles[0];
-  const modLabel = Object.fromEntries(cat.modules.map((m) => [m.key, m.label]));
+  const board = sm.matrix;
+  const modLabel = Object.fromEntries(sm.modules.map((m) => [m.key, m.label]));
   modLabel.users = 'Users & Access';
   const levelOf = (role, m) => (board.grid[role] && board.grid[role][m]) || 'none';
   const held = new Set(sel.caps);
   const mine = new Set(ME.caps || []);
-
-  // Permissions grouped by section, in catalogue order.
-  const groups = [];
-  for (const cap of cat.capabilities) {
-    let g = groups.find((x) => x.module === cap.module);
-    if (!g) groups.push(g = { module: cap.module, caps: [] });
-    g.caps.push(cap);
-  }
   const editable = !sel.locked && sel.active;
-  const capRows = groups.map((g) => {
-    const lvl = levelOf(sel.name, g.module);
-    const rows = g.caps.map((cap) => {
-      const has = sel.locked || held.has(cap.key);
-      // You can take away anything, but only give what you hold yourself (the server says the same).
-      const canTick = editable && (has || isAdmin() || mine.has(cap.key));
-      const short = cap.needs && has && !sel.locked && rankL(levelOf(sel.name, cap.needs)) < 2
-        ? ` <span class="badge amber" title="The ${esc(modLabel[cap.needs] || cap.needs)} section blocks changes for this role until its clearance is EDIT or FULL">needs ${esc(modLabel[cap.needs] || cap.needs)} EDIT</span>` : '';
-      return `<label style="display:flex;flex-direction:row;gap:8px;align-items:flex-start;margin:3px 0;font-weight:normal">
-        <input type="checkbox" style="width:auto;margin-top:3px" data-cap="${esc(cap.key)}" ${has ? 'checked' : ''} ${canTick ? '' : 'disabled'}>
-        <span>${esc(cap.label)}${short}<br><span class="muted" style="font-size:11px">${esc(cap.key)}</span></span></label>`;
-    }).join('');
-    return `<div class="card section" style="margin-bottom:10px"><h3 style="margin:0 0 6px">${esc(modLabel[g.module] || g.module)}
-      <span class="muted" style="font-size:12px;font-weight:normal">— section clearance ${lvlChip(sel.locked ? 'full' : lvl)}</span></h3>${rows}</div>`;
-  }).join('');
 
   const roleList = roles.map((r) => `<tr data-pick="${esc(r.name)}" style="cursor:pointer;${r.name === sel.name ? 'background:#eef2ff;' : ''}${r.active ? '' : 'opacity:.55;'}">
     <td><b>${esc(r.label || r.name)}</b>${r.locked ? ' <span class="badge amber">everything</span>' : ''}${r.is_system ? '' : ' <span class="badge blue">custom</span>'}${r.active ? '' : ' <span class="badge">retired</span>'}
     <br><span class="muted" style="font-size:11px">${r.users} user(s) · ${r.locked ? 'all' : r.caps.length} permission(s)</span></td></tr>`).join('');
 
+  // Fallback if sections not returned: group by module
+  const sections = (sm.sections && sm.sections.length) ? sm.sections : [
+    { id: 'all', name: 'Permissions', icon: '⚙️', description: 'All module capabilities', modules: sm.modules.map((m) => m.key) }
+  ];
+
+  const LVLS = ['none', 'view', 'add', 'edit', 'full'];
+  const LV_LABEL = { none: 'None', view: 'View', add: 'Add', edit: 'Edit', full: 'Full' };
+
+  const sectionCards = sections.map((sec) => {
+    const secCaps = sm.capabilities.filter((cap) => sec.modules.includes(cap.module));
+    
+    // 1. Module Clearance Control for this section
+    const modClearanceHtml = sec.modules.map((m) => {
+      const curLvl = levelOf(sel.name, m);
+      const isLocked = sel.locked || !editable;
+      const pills = LVLS.map((lvl) => {
+        const isCurrent = (sel.locked && lvl === 'full') || (!sel.locked && curLvl === lvl);
+        const cls = isCurrent ? (lvl === 'full' ? 'primary' : (lvl === 'edit' ? 'badge green' : (lvl === 'add' ? 'badge teal' : (lvl === 'view' ? 'badge blue' : 'badge amber')))) : 'btn sm';
+        const style = isCurrent ? 'font-weight:bold;' : 'opacity:.7;';
+        return `<button class="${cls}" style="${style}padding:2px 8px;font-size:11px" data-setlvl="${esc(m)}:${lvl}" ${isLocked ? 'disabled' : ''}>${LV_LABEL[lvl]}</button>`;
+      }).join(' ');
+      return `<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:4px 0">
+        <span style="font-size:12px;font-weight:600">${esc(modLabel[m] || m)}:</span>
+        <div style="display:flex;gap:4px">${pills}</div>
+      </div>`;
+    }).join('');
+
+    // 2. Preset Buttons for this section
+    const presetsHtml = (sec.presets && editable) ? `
+      <div style="display:flex;align-items:center;gap:6px;margin:8px 0 10px;padding:6px 8px;background:var(--bg-muted, #f8f9fa);border-radius:4px;flex-wrap:wrap">
+        <span class="muted" style="font-size:11px;font-weight:600">Quick Presets:</span>
+        <button class="btn sm" data-preset="${esc(sec.id)}:none" title="Remove all access to this section">❌ No Access</button>
+        <button class="btn sm" data-preset="${esc(sec.id)}:view" title="Read-only clearance">👁️ Read-Only</button>
+        <button class="btn sm" data-preset="${esc(sec.id)}:operator" title="Set standard operator clearance & tools">⚙️ Operator</button>
+        <button class="btn sm" data-preset="${esc(sec.id)}:manager" title="Full clearance and manager capabilities">👑 Full Manager</button>
+      </div>` : '';
+
+    // 3. Capabilities checkboxes
+    const capListHtml = secCaps.map((cap) => {
+      const has = sel.locked || held.has(cap.key);
+      const canTick = editable && (has || isAdmin() || mine.has(cap.key));
+      const needsMod = cap.needs;
+      const currentModLvl = needsMod ? levelOf(sel.name, needsMod) : 'full';
+      const short = (needsMod && !sel.locked && rankL(currentModLvl) < 2)
+        ? ` <span class="badge amber" style="font-size:10px" title="Ticking this will auto-elevate ${esc(modLabel[needsMod] || needsMod)} to EDIT">auto-elevates ${esc(modLabel[needsMod] || needsMod)} to EDIT</span>` : '';
+      return `<label style="display:flex;flex-direction:row;gap:8px;align-items:flex-start;margin:4px 0;font-weight:normal">
+        <input type="checkbox" style="width:auto;margin-top:3px" data-cap="${esc(cap.key)}" data-needs="${esc(cap.needs || '')}" ${has ? 'checked' : ''} ${canTick ? '' : 'disabled'}>
+        <span style="font-size:13px">${esc(cap.label)}${short}<br><span class="muted" style="font-size:11px">${esc(cap.key)}</span></span>
+      </label>`;
+    }).join('');
+
+    return `
+      <div class="card section" style="margin-bottom:14px;border-top:3px solid var(--accent)">
+        <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:10px">
+          <div>
+            <h3 style="margin:0;display:flex;align-items:center;gap:6px">
+              <span>${sec.icon || '📁'}</span>
+              <span>${esc(sec.name)}</span>
+            </h3>
+            <p class="muted" style="margin:2px 0 8px;font-size:12px">${esc(sec.description || '')}</p>
+          </div>
+        </div>
+        <div style="background:var(--card-sub-bg, #fafafa);border:1px solid var(--border-light, #eee);border-radius:6px;padding:8px 12px;margin-bottom:10px">
+          <div class="muted" style="font-size:11px;font-weight:600;margin-bottom:4px;text-transform:uppercase">Section Clearance:</div>
+          ${modClearanceHtml}
+        </div>
+        ${presetsHtml}
+        <div style="margin-top:6px">
+          <div class="muted" style="font-size:11px;font-weight:600;margin-bottom:6px;text-transform:uppercase">Granular Capabilities (${secCaps.length}):</div>
+          ${capListHtml || '<span class="muted" style="font-size:12px">No specific granular capabilities for this section</span>'}
+        </div>
+      </div>`;
+  }).join('');
+
   c.innerHTML = `<div style="display:grid;grid-template-columns:minmax(220px,300px) 1fr;gap:14px;align-items:start">
     <div class="card"><div class="toolbar" style="margin:0 0 8px"><h3 style="margin:0">Roles</h3><div class="spacer"></div><button class="primary sm" id="newrole">+ New Role</button></div>
       <div class="table-wrap scroll"><table><tbody>${roleList}</tbody></table></div></div>
     <div>
-      <div class="card" style="margin-bottom:10px">
+      <div class="card" style="margin-bottom:12px">
         <div class="toolbar" style="margin:0"><h2 style="margin:0">${esc(sel.label || sel.name)}</h2><div class="spacer"></div>
           ${sel.locked ? '' : `<button class="sm" id="editrole">✎ Rename / describe</button>
           ${sel.active ? '<button class="sm danger" id="retirerole">Retire</button>' : '<button class="sm" id="reinstaterole">Reinstate</button>'}`}
@@ -9233,27 +13505,88 @@ async function renderRolesManager(c, wanted) {
         <p class="muted" style="margin:6px 0 0">${esc(sel.description || '')}${sel.description ? '<br>' : ''}Key <code>${esc(sel.name)}</code> · held by ${sel.users} active user(s).
           ${sel.locked ? ' Admin always holds every permission and cannot be changed.' : ''}
           ${!sel.active ? ' Retired — it grants nothing until reinstated.' : ''}
-          ${editable ? ' Ticking a box applies from each holder\'s next click. Section clearance is set on the Clearance Board.' : ''}</p>
+          ${editable ? ' Single-point access: configure both base section clearance and all granular capabilities per section directly below.' : ''}</p>
       </div>
-      ${capRows}
+      ${sectionCards}
     </div></div>`;
 
   const reload = (name) => { location.hash = '#/access?tab=roles&role=' + encodeURIComponent(name || sel.name); };
   qsa('[data-pick]', c).forEach((tr) => { tr.onclick = () => reload(tr.dataset.pick); });
+
   qs('#rolemfa', c).onchange = async (e) => {
     const on = e.target.checked;
     if (on && !confirm(`Everyone with "${sel.label || sel.name}" will have to set up two-factor sign-in before they can use the system. Continue?`)) { e.target.checked = false; return; }
     try { await api('/access/roles/' + encodeURIComponent(sel.name), { method: 'PATCH', body: { require_mfa: on } }); toast(on ? 'Two-factor sign-in required for this role' : 'No longer required'); reload(); }
     catch (err) { e.target.checked = !on; toast(err.message, 'err'); }
   };
+
+  // Direct section clearance level buttons
+  qsa('[data-setlvl]', c).forEach((btn) => {
+    btn.onclick = async () => {
+      const [mod, lvl] = btn.dataset.setlvl.split(':');
+      try {
+        await api('/access/section-save', {
+          method: 'POST',
+          body: { role: sel.name, modules: { [mod]: lvl } }
+        });
+        toast(`${modLabel[mod] || mod} clearance set to ${lvl.toUpperCase()}`);
+        await renderRolesManager(c, sel.name);
+      } catch (err) { toast(err.message, 'err'); }
+    };
+  });
+
+  // Section quick presets
+  qsa('[data-preset]', c).forEach((btn) => {
+    btn.onclick = async () => {
+      const [secId, presetKey] = btn.dataset.preset.split(':');
+      const sec = sections.find((s) => s.id === secId);
+      if (!sec || !sec.presets || !sec.presets[presetKey]) return;
+      const p = sec.presets[presetKey];
+      const secCaps = sm.capabilities.filter((cap) => sec.modules.includes(cap.module));
+      const capUpdates = {};
+      for (const cap of secCaps) {
+        capUpdates[cap.key] = p.caps.includes(cap.key);
+      }
+      try {
+        await api('/access/section-save', {
+          method: 'POST',
+          body: { role: sel.name, modules: p.modules, capabilities: capUpdates }
+        });
+        toast(`Applied ${presetKey.toUpperCase()} preset to ${sec.name}`);
+        await renderRolesManager(c, sel.name);
+      } catch (err) { toast(err.message, 'err'); }
+    };
+  });
+
+  // Checkbox toggling with auto-elevation if required
   qsa('[data-cap]', c).forEach((box) => {
     box.onchange = async () => {
+      const capKey = box.dataset.cap;
+      const needs = box.dataset.needs;
+      const willGrant = box.checked;
+      const modUpdates = {};
+      if (willGrant && needs && rankL(levelOf(sel.name, needs)) < 2) {
+        modUpdates[needs] = 'edit';
+      }
       try {
-        await api('/access/capabilities', { method: 'POST', body: { role: sel.name, capability: box.dataset.cap, granted: box.checked } });
+        if (Object.keys(modUpdates).length) {
+          await api('/access/section-save', {
+            method: 'POST',
+            body: { role: sel.name, modules: modUpdates, capabilities: { [capKey]: willGrant } }
+          });
+          toast(`Granted ${capKey} and elevated ${modLabel[needs] || needs} to EDIT`);
+        } else {
+          await api('/access/section-save', {
+            method: 'POST',
+            body: { role: sel.name, capabilities: { [capKey]: willGrant } }
+          });
+          toast(willGrant ? `Granted ${capKey}` : `Revoked ${capKey}`);
+        }
         await renderRolesManager(c, sel.name);
       } catch (e) { box.checked = !box.checked; toast(e.message, 'err'); }
     };
   });
+
   qs('#newrole', c).onclick = () => modal('New role', `
     ${field('Name *', 'label', { placeholder: 'e.g. Site Storekeeper' })}
     ${field('What this role is for', 'description', { type: 'textarea' })}
@@ -9286,107 +13619,19 @@ async function renderRolesManager(c, wanted) {
   if (qs('#reinstaterole', c)) qs('#reinstaterole', c).onclick = () => setActive(true);
 }
 
-// ---- People: access person by person (access plan, Part 2) --------------------------------------
-// A role is the starting template; on any section switch a person can be given a level of their
-// own, more or less than their roles give. Blue: from the role. Orange: changed for this person.
-async function renderPeople(c, personId) {
-  const people = await api('/access/people');
-  const roleLabel = Object.fromEntries((await api('/access/roles')).roles.map((r) => [r.name, r.label || r.name]));
-  let q = '';
-  c.innerHTML = `<div class="grid" style="grid-template-columns:minmax(220px,300px) 1fr;gap:12px;align-items:start" id="ppl-grid">
-    <div class="card" style="padding:10px"><input id="ppl-q" type="search" placeholder="Search a person…" style="width:100%;margin-bottom:8px">
-      <div id="ppl-list" style="max-height:70vh;overflow:auto"></div></div>
-    <div id="ppl-one"><div class="card"><p class="muted" style="margin:0">Choose a person to see and change their access.</p></div></div></div>`;
-  if (window.matchMedia('(max-width: 800px)').matches) qs('#ppl-grid', c).style.gridTemplateColumns = '1fr';
-  const paintList = () => {
-    const rows = people.filter((p) => !q || `${p.full_name || ''} ${p.username} ${p.roles.map((r) => roleLabel[r] || r).join(' ')}`.toLowerCase().includes(q));
-    qs('#ppl-list', c).innerHTML = rows.map((p) => `<a href="#/access?tab=people&person=${p.id}" style="display:block;padding:6px 8px;border-radius:6px;text-decoration:none;color:inherit;${String(p.id) === String(personId) ? 'background:rgba(29,90,115,.13);' : ''}${p.active ? '' : 'opacity:.5;'}">
-        <b>${esc(p.full_name || p.username)}</b>${p.self ? ' <span class="badge">you</span>' : ''}${p.own_levels ? ` <span class="badge amber" title="Levels changed for this person">${p.own_levels} own</span>` : ''}
-        <div class="muted" style="font-size:11.5px">${esc(p.username)} · ${esc(p.roles.map((r) => roleLabel[r] || r).join(', ') || 'no role')}</div></a>`).join('') || '<p class="muted">Nobody found.</p>';
-  };
-  qs('#ppl-q', c).oninput = (e) => { q = e.target.value.trim().toLowerCase(); paintList(); };
-  paintList();
-  if (personId) await renderPerson(qs('#ppl-one', c), personId, people, () => renderPeople(c, personId));
-}
-
-async function renderPerson(c, id, people, reload) {
-  let d;
-  try { d = await api('/access/people/' + id); } catch (e) { c.innerHTML = `<div class="card err">${esc(e.message)}</div>`; return; }
-  const u = d.user;
-  const mods = new Map(d.modules.map((m) => [m.key, m]));
-  const can = d.can.edit;
-  const partName = (s, m) => (s.modules.length > 1 ? mods.get(m).label.split(' · ').pop() : '');
-  const levelBox = (m) => {
-    const own = d.personal[m];
-    const lvl = d.effective[m];
-    const max = rankL(d.can.max[m]);
-    const opts = d.levels.map((l) => `<option value="${l}" ${l === lvl ? 'selected' : ''} ${rankL(l) > max ? 'disabled' : ''}>${l === 'none' ? 'None' : l[0].toUpperCase() + l.slice(1)}</option>`).join('');
-    return `<select data-lvl="${m}" ${can ? '' : 'disabled'} style="width:auto;min-width:96px;border:2px solid ${own ? 'var(--amber, #d97706)' : 'rgba(29,90,115,.45)'}">${opts}</select>
-      ${own ? ` <span class="badge amber" title="Set by ${esc(own.set_by_name || '—')} on ${esc(String(own.set_at || '').slice(0, 10))}">own</span>${can ? ` <button class="sm" data-clear="${m}" title="Back to the role's level">↺ role (${esc(d.role_levels[m])})</button>` : ''}` : ' <span class="muted" style="font-size:11.5px">from role</span>'}`;
-  };
-  const rows = d.sections.flatMap((s) => {
-    if (s.always) return [`<tr><td><b>${esc(s.label)}</b></td><td></td><td class="muted">Always on — each part follows its own section</td></tr>`];
-    if (s.special) {
-      const held = s.special.filter((k) => (u.caps || []).includes(k));
-      return [`<tr><td><b>${esc(s.label)}</b></td><td></td><td>${u.is_admin || held.length ? '<span class="badge green">Yes</span>' : '<span class="badge">No</span>'}
-        <span class="muted" style="font-size:11.5px">opens with a permission — set on the Roles &amp; Permissions tab</span></td></tr>`];
-    }
-    return s.modules.filter((m) => mods.has(m)).map((m, i) => `<tr><td>${i ? '' : `<b>${esc(s.label)}</b>`}</td><td class="muted" style="font-size:12px">${esc(partName(s, m))}</td><td>${levelBox(m)}</td></tr>`);
-  });
-  const ownCount = Object.keys(d.personal).length;
-  c.innerHTML = `<div class="card">
-    <div class="toolbar" style="margin:0 0 6px"><h3 style="margin:0">${esc(u.full_name || u.username)}</h3>
-      <span class="muted">${esc(u.username)}</span>${u.active ? '' : ' <span class="badge">inactive</span>'}<div class="spacer"></div>
-      ${can ? `<button class="sm" id="pp-copy">Copy from another person…</button>${ownCount ? '<button class="sm" id="pp-reset">↺ Reset all to role</button>' : ''}` : ''}</div>
-    <div style="margin-bottom:8px">${u.roles.map((r) => `<span class="badge">${esc(r.label)}</span>`).join(' ') || '<span class="muted">No role</span>'}
-      <span class="muted" style="font-size:12px">— the role is the starting point; change any section for this person below.</span></div>
-    ${can ? '' : `<div class="card" style="border-left:4px solid var(--amber, #d97706);margin:0 0 8px;padding:8px 10px">${esc(d.can.reason)}</div>`}
-    <p class="muted" style="font-size:12px;margin:0 0 8px"><span style="border:2px solid rgba(29,90,115,.45);padding:0 6px;border-radius:4px">blue</span> same as their role ·
-      <span style="border:2px solid var(--amber, #d97706);padding:0 6px;border-radius:4px">orange</span> changed for this person ·
-      View = see · Add = also add new · Edit = also change and remove · Full = everything. You can only give up to your own level.</p>
-    ${tableWrap([{ label: 'Section', width: '32%' }, { label: 'Part', width: '18%' }, { label: 'Level' }], rows, { scroll: true })}
-  </div>`;
-  const put = async (m, level) => {
-    try { await api(`/access/people/${id}/levels`, { method: 'PUT', body: { module: m, level } }); toast('Saved'); reload(); }
-    catch (e) { toast(e.message, 'err'); reload(); }
-  };
-  qsa('[data-lvl]', c).forEach((sel) => { sel.onchange = () => put(sel.dataset.lvl, sel.value === d.role_levels[sel.dataset.lvl] ? null : sel.value); });
-  qsa('[data-clear]', c).forEach((b) => { b.onclick = () => put(b.dataset.clear, null); });
-  if (qs('#pp-reset', c)) qs('#pp-reset', c).onclick = async () => {
-    if (!confirm(`Put all of ${u.full_name || u.username}'s sections back to their role?`)) return;
-    try { await api(`/access/people/${id}/reset`, { method: 'POST', body: {} }); toast('Back to the role'); reload(); } catch (e) { toast(e.message, 'err'); }
-  };
-  if (qs('#pp-copy', c)) qs('#pp-copy', c).onclick = () => modal(`Copy access to ${u.full_name || u.username}`, `
-    ${field('Copy the levels of', 'from', { type: 'select', options: people.filter((p) => String(p.id) !== String(id) && p.active).map((p) => ({ value: p.id, label: `${p.full_name || p.username} (${p.username})` })) })}
-    <p class="muted" style="font-size:12px">Their section levels become the same as this person's. Their roles do not change.</p>
-    <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Copy</button></div>`, (b, close) => {
-    qs('#s', b).onclick = async () => {
-      try { await api(`/access/people/${id}/copy`, { method: 'POST', body: { from: Number(formData(b).from) } }); toast('Copied'); close(); reload(); }
-      catch (e) { toast(e.message, 'err'); }
-    };
-  });
-}
-
 async function renderClearanceBoard(c) {
   const m = await api('/access/matrix');
   const LV = m.levels;
-  // One column per switch, grouped under the sidebar's sections (access plan, Part 1). A section with
-  // parts (Job Cards, Stores, Tyre & Battery Requests) has a column for each part.
-  const byKey = new Map(m.modules.filter((mod) => mod.enforce).map((mod) => [mod.key, mod]));
-  const groups = m.sections.map((s) => ({ label: s.label, mods: (s.modules || []).filter((k) => byKey.has(k)).map((k) => byKey.get(k)) }))
-    .filter((g) => g.mods.length);
-  const cols = groups.flatMap((g) => g.mods);
-  const groupRow = groups.map((g) => `<th colspan="${g.mods.length}" style="text-align:center;border-left:2px solid var(--line, #ddd)">${esc(g.label)}</th>`).join('');
-  const partRow = groups.map((g) => g.mods.map((mod, i) => `<th style="text-align:center;font-weight:400;font-size:11px${i ? '' : ';border-left:2px solid var(--line, #ddd)'}">${g.mods.length > 1 ? esc(mod.label.split(' · ').pop()) : ''}</th>`).join('')).join('');
-  const rows = m.roles.map((r) => `<tr${r.active ? '' : ' style="opacity:.5"'}><td><b>${esc(r.label || r.name)}</b>${r.active ? '' : ' <span class="badge">retired</span>'}<br><span class="muted" style="font-size:11px">${esc(r.name)}</span></td>${cols.map((mod) => {
+  const headCols = m.modules.map((mod) => `<th style="text-align:center">${esc(mod.label)}${mod.enforce ? '' : ' <span class="muted" title="Hidden in the sidebar but not API-blocked (reference/analytics)">*</span>'}</th>`).join('');
+  const rows = m.roles.map((r) => `<tr${r.active ? '' : ' style="opacity:.5"'}><td><b>${esc(r.label || r.name)}</b>${r.active ? '' : ' <span class="badge">retired</span>'}<br><span class="muted" style="font-size:11px">${esc(r.name)}</span></td>${m.modules.map((mod) => {
     const lvl = m.grid[r.name][mod.key];
     const locked = r.name === 'admin';
     return `<td style="text-align:center;cursor:${locked ? 'default' : 'pointer'}"${locked ? '' : ` data-cell="${esc(r.name)}:${mod.key}" data-lvl="${lvl}" title="click to change"`}>${lvlChip(lvl)}</td>`;
   }).join('')}</tr>`).join('');
   c.innerHTML = `<div class="card">
-    <p class="muted" style="margin-top:0">Each section of the sidebar has its own switch, and the server checks it. The permissions on the <b>Roles &amp; Permissions</b> tab decide each action inside a section. Click a cell to cycle: — → VIEW → ADD → EDIT → FULL. <b>Admin</b> is always FULL. Dashboard is always on; Workshops and Access Control open with their permissions.</p>
-    <div class="table-wrap scroll"><table><thead><tr><th rowspan="2">Role</th>${groupRow}</tr><tr>${partRow}</tr></thead><tbody>${rows}</tbody></table></div>
-    <div class="pill-row" style="margin-top:12px"><span class="muted">Legend:</span> ${lvlChip('full')} everything ${lvlChip('edit')} add, change and remove ${lvlChip('add')} add new ${lvlChip('view')} read only ${lvlChip('none')} no access</div>
+    <p class="muted" style="margin-top:0">Section clearance opens a whole section; the permissions on the <b>Roles &amp; Permissions</b> tab decide each action inside it. Click a cell to cycle: — → VIEW → EDIT → FULL. <b>Admin</b> is always full. Changes apply immediately; a signed-in user sees sidebar changes after their next login. <span title="nav-level only">*</span> = hidden in the sidebar but not blocked (reference data used by other screens).</p>
+    <div class="table-wrap scroll"><table><thead><tr><th>Role</th>${headCols}</tr></thead><tbody>${rows}</tbody></table></div>
+    <div class="pill-row" style="margin-top:12px"><span class="muted">Legend:</span> ${lvlChip('full')} manage ${lvlChip('edit')} add / modify ${lvlChip('view')} read-only ${lvlChip('none')} no access</div>
   </div>`;
   qsa('[data-cell]', c).forEach((td) => td.onclick = async () => {
     const [role, mod] = td.dataset.cell.split(':');
@@ -10530,7 +14775,7 @@ async function storesStock(body, sp) {
     return renderBatteriesSection(bk);
   }
   const links = books.map(([k, l]) => `<a class="btn sm" href="${stockBooksHash(kind, k)}">${esc(l)}</a>`)
-    .concat(kind === 'tyre' && canView('tyrebattery') ? ['<a class="btn sm" href="#/tyrebattery">Tyre &amp; battery ledger</a>'] : []);
+    .concat(kind === 'tyre' && canView('reports') ? ['<a class="btn sm" href="#/tyrebattery">Tyre &amp; battery ledger</a>'] : []);
   host.innerHTML = `${links.length ? `<div class="toolbar" style="margin:0 0 8px"><span class="muted" style="font-size:12px">📚 Books</span>${links.join('')}</div>` : ''}<div id="stk-panel"></div>`;
   return stockPanel(qs('#stk-panel', host), kind);
 }
@@ -11081,7 +15326,7 @@ function countAddModal(d, reload) {
 // as a shortlist to tick through: the underlying prediction is about 70 days out on average,
 // and roughly 150 machines qualify in a month that will really see 26–49 services.
 routes.serviceplan = async (c) => {
-  if (!canView('serviceplan')) { c.innerHTML = `<div class="card"><p class="err">You do not have access to the Service &amp; Filter Plan.</p></div>`; return; }
+  if (!canView('filters')) { c.innerHTML = `<div class="card"><p class="err">You do not have access to Filters.</p></div>`; return; }
   const sp = new URLSearchParams(location.hash.split('?')[1] || '');
   const month = /^\d{4}-\d{2}$/.test(sp.get('month') || '') ? sp.get('month') : new Date().toISOString().slice(0, 7);
 

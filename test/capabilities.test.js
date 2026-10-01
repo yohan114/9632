@@ -29,8 +29,12 @@ const permissions = require('../src/lib/permissions');
 const jobstate = require('../src/lib/jobstate');
 
 migrate();
-const BUILT_IN = ['admin', 'storekeeper', 'main_storekeeper', 'transport_manager', 'assistant_transport_manager',
-  'operational_manager', 'manager', 'workshop', 'purchase_head_office', 'purchase_local', 'viewer'];
+// The built-in roles, read from the permission matrix rather than copied into a second list here.
+// A role added in src cannot then leave this one behind -- which is what happened when the tools
+// work added engineer and assistant_engineer, and tools.view named a role this file had never
+// heard of. admin is deliberately absent from the matrix: it holds every capability by rule
+// (capsForRoles short-circuits on it), not by a row, so it is added back by hand.
+const BUILT_IN = ['admin', ...Object.keys(permissions.DEFAULT_MATRIX)];
 for (const n of BUILT_IN) run('INSERT OR IGNORE INTO roles (name, label) VALUES (?, ?)', n, 'Built-in ' + n);
 
 const PW = 'lantern-quarry-summit';

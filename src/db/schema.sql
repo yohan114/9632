@@ -174,24 +174,91 @@ CREATE TABLE IF NOT EXISTS mrn_lines (
   qty           REAL NOT NULL DEFAULT 0,
   unit          TEXT DEFAULT 'nos',
   qty_received  REAL NOT NULL DEFAULT 0,
-  legacy_item_id INTEGER                     -- source items.id (bridges receipts.itemId -> GRN)
+  legacy_item_id INTEGER,                    -- source items.id (bridges receipts.itemId -> GRN)
+  buying_priority TEXT DEFAULT 'P3_ROUTINE', -- P1_CRITICAL | P2_URGENT | P3_ROUTINE | P4_LOW
+  priority_note   TEXT,
+  priority_updated_at TEXT,
+  priority_updated_by TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_mrn_lines_mrn ON mrn_lines(mrn_id);
+
+CREATE TABLE IF NOT EXISTS mrn_line_priority_history (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  mrn_line_id   INTEGER NOT NULL REFERENCES mrn_lines(id) ON DELETE CASCADE,
+  old_priority  TEXT,
+  new_priority  TEXT NOT NULL,
+  note          TEXT,
+  changed_by    TEXT NOT NULL,
+  changed_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_mrn_line_pri_hist ON mrn_line_priority_history(mrn_line_id);
+
+-- Goods Received Note Vouchers (Doc. No. EC1.ST.FO.2:5:21.12)
+CREATE TABLE IF NOT EXISTS grn_vouchers (
+  id               INTEGER PRIMARY KEY AUTOINCREMENT,
+  grn_no           TEXT NOT NULL UNIQUE,
+  received_date    TEXT NOT NULL DEFAULT (date('now')),
+  supplier         TEXT,
+  project_site     TEXT,
+  po_no            TEXT,
+  invoice_no       TEXT,
+  delivery_note_no TEXT,
+  bin_card_page    TEXT,
+  prepared_by      TEXT,
+  prepared_sig     TEXT,
+  prepared_at      TEXT,
+  prepared_designation TEXT,
+  approved_by      TEXT,
+  approved_sig     TEXT,
+  approved_at      TEXT,
+  approved_designation TEXT,
+  status           TEXT NOT NULL DEFAULT 'pending_approval',
+  rejection_reason TEXT,
+  created_at       TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_grn_vouchers_no ON grn_vouchers(grn_no);
+
+CREATE TABLE IF NOT EXISTS grn_approvals (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  voucher_id  INTEGER NOT NULL,
+  stage       TEXT NOT NULL,          -- 'prepare' | 'approve'
+  role        TEXT,
+  approver_id INTEGER REFERENCES users(id),
+  signed_name TEXT,
+  signature   TEXT,
+  decision    TEXT NOT NULL,          -- 'approved' | 'rejected'
+  reason      TEXT,
+  created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_grn_approvals_voucher ON grn_approvals(voucher_id);
 
 -- Goods Received Note — priced delivery against an MRN line.
 CREATE TABLE IF NOT EXISTS grn (
   id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  voucher_id     INTEGER REFERENCES grn_vouchers(id),
   grn_no         TEXT,
   mrn_id         INTEGER REFERENCES mrn(id),
   mrn_line_id    INTEGER REFERENCES mrn_lines(id),
   store_item_id  INTEGER REFERENCES store_items(id),
   description    TEXT,
   qty            REAL NOT NULL DEFAULT 0,
+  unit           TEXT DEFAULT 'nos',
   unit_price     REAL,                        -- NULL = awaiting price (blocks job closure)
   supplier       TEXT,
   invoice_no     TEXT,
   invoice_date   TEXT,
   delivery_date  TEXT,
+  po_no          TEXT,
+  delivery_note_no TEXT,
+  bin_card_page  TEXT,
+  prepared_by    TEXT,
+  prepared_sig   TEXT,
+  prepared_at    TEXT,
+  approved_by    TEXT,
+  approved_sig   TEXT,
+  approved_at    TEXT,
+  status         TEXT DEFAULT 'received',
+  project_site   TEXT,
   purchase_source TEXT,                       -- raw value (real data has 4 clean values + combos)
   purchase_source_norm TEXT,                  -- normalised bucket for cost-by-source reporting
   created_at     TEXT NOT NULL DEFAULT (datetime('now'))
@@ -292,26 +359,77 @@ CREATE TABLE IF NOT EXISTS stock_opening (
 );
 CREATE INDEX IF NOT EXISTS idx_grn_no ON grn(grn_no);
 
--- Item / repair charge issued directly to an asset.
+-- Material Issue Notes (Doc. No. EC1.ST.FO.04)
+CREATE TABLE IF NOT EXISTS min_notes (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  min_no        TEXT NOT NULL UNIQUE,
+  issue_date    TEXT NOT NULL DEFAULT (date('now')),
+  project_id    INTEGER REFERENCES projects(id),
+  asset_id      INTEGER REFERENCES assets(id),
+  job_id        INTEGER REFERENCES job_cards(id),
+  workshop_id   INTEGER REFERENCES workshops(id),
+  purpose       TEXT,
+  requested_by  TEXT,
+  requested_sig TEXT,
+  requested_at  TEXT,
+  requested_designation TEXT,
+  approved_by   TEXT,
+  approved_sig  TEXT,
+  approved_at   TEXT,
+  approved_designation TEXT,
+  received_by   TEXT,
+  received_sig  TEXT,
+  received_at   TEXT,
+  received_designation TEXT,
+  status        TEXT NOT NULL DEFAULT 'requested',
+  rejection_reason TEXT,
+  created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_min_notes_no ON min_notes(min_no);
+CREATE INDEX IF NOT EXISTS idx_min_notes_job ON min_notes(job_id);
+CREATE INDEX IF NOT EXISTS idx_min_notes_asset ON min_notes(asset_id);
+
+CREATE TABLE IF NOT EXISTS min_approvals (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  min_id      INTEGER NOT NULL,
+  stage       TEXT NOT NULL,          -- 'request' | 'approve' | 'receive'
+  role        TEXT,
+  approver_id INTEGER REFERENCES users(id),
+  signed_name TEXT,
+  signature   TEXT,
+  decision    TEXT NOT NULL,          -- 'approved' | 'rejected'
+  reason      TEXT,
+  created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_min_approvals_min ON min_approvals(min_id);
+
+-- Item / repair charge issued directly to an asset (Material Issue line).
 CREATE TABLE IF NOT EXISTS issues (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  min_id        INTEGER REFERENCES min_notes(id),
+  min_no        TEXT,
   asset_id      INTEGER REFERENCES assets(id),
   job_id        INTEGER REFERENCES job_cards(id),
   store_item_id INTEGER REFERENCES store_items(id),
   description   TEXT NOT NULL,
   qty           REAL NOT NULL DEFAULT 1,
+  unit          TEXT DEFAULT 'nos',
   unit_price    REAL,                         -- NULL = awaiting price
   issue_date    TEXT NOT NULL DEFAULT (date('now')),
   issued_by     TEXT,
+  purpose       TEXT,
   created_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_issues_asset ON issues(asset_id);
 CREATE INDEX IF NOT EXISTS idx_issues_job ON issues(job_id);
+CREATE INDEX IF NOT EXISTS idx_issues_min_id ON issues(min_id);
+CREATE INDEX IF NOT EXISTS idx_issues_min_no ON issues(min_no);
 
--- Material Transfer Note between locations / vehicles.
+-- Material Transfer Note between locations / vehicles (Doc. No. EC1.ST.FO.05).
 CREATE TABLE IF NOT EXISTS mtn (
   id             INTEGER PRIMARY KEY AUTOINCREMENT,
   mtn_no         TEXT NOT NULL UNIQUE,        -- continues existing seq (~57xxx)
+  mr_no          TEXT,                        -- Material Requisition reference
   txn_date       TEXT NOT NULL DEFAULT (date('now')),
   store_item_id  INTEGER REFERENCES store_items(id),
   description    TEXT,
@@ -323,9 +441,40 @@ CREATE TABLE IF NOT EXISTS mtn (
   transferred_by TEXT,
   received_by    TEXT,
   reason         TEXT,
+  prepared_by    TEXT,
+  prepared_sig   TEXT,
+  prepared_at    TEXT,
+  prepared_designation TEXT,
+  approved_by    TEXT,
+  approved_sig   TEXT,
+  approved_at    TEXT,
+  approved_designation TEXT,
+  received_sig   TEXT,
+  received_at    TEXT,
+  received_designation TEXT,
+  accepted_by    TEXT,
+  accepted_sig   TEXT,
+  accepted_at    TEXT,
+  accepted_designation TEXT,
+  status         TEXT DEFAULT 'draft',
+  rejection_reason TEXT,
   created_at     TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_mtn_no ON mtn(mtn_no);
+
+CREATE TABLE IF NOT EXISTS mtn_approvals (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  mtn_id      INTEGER NOT NULL REFERENCES mtn(id) ON DELETE CASCADE,
+  stage       TEXT NOT NULL,          -- 'prepare' | 'approve' | 'dispatch' | 'accept'
+  role        TEXT,
+  approver_id INTEGER REFERENCES users(id),
+  signed_name TEXT,
+  signature   TEXT,
+  decision    TEXT NOT NULL,          -- 'approved' | 'rejected'
+  reason      TEXT,
+  created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_mtn_approvals_mtn ON mtn_approvals(mtn_id);
 
 -- The items on a transfer note. One note carries as many as the paper does; before this
 -- existed the store faked it by suffixing the number (58631, 58631-2 … 58631-5 is ONE note
@@ -352,6 +501,9 @@ CREATE TABLE IF NOT EXISTS mtn_lines (
   from_asset_id  INTEGER REFERENCES assets(id),
   to_asset_id    INTEGER REFERENCES assets(id),
   reason         TEXT,
+  value          REAL DEFAULT 0,
+  mr_no          TEXT,
+  remarks        TEXT,
   created_at     TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_mtn_lines_mtn ON mtn_lines(mtn_id);
@@ -547,11 +699,15 @@ CREATE INDEX IF NOT EXISTS idx_labour_mech ON labour_rates(mechanic, effective_f
 -- ("seetha" vs "Seethananda/seetha", "Vinod" vs "Vinod M") — the resolver maps
 -- any raw spelling to one canonical mechanic so labour rates cost correctly.
 CREATE TABLE IF NOT EXISTS mechanics (
-  id         INTEGER PRIMARY KEY AUTOINCREMENT,
-  name       TEXT NOT NULL,               -- canonical display name (matches labour_rates.mechanic)
-  name_norm  TEXT NOT NULL UNIQUE,        -- uppercase, symbols stripped
-  active     INTEGER NOT NULL DEFAULT 1,
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  name        TEXT NOT NULL,               -- canonical display name (matches labour_rates.mechanic)
+  name_norm   TEXT NOT NULL UNIQUE,        -- uppercase, symbols stripped
+  active      INTEGER NOT NULL DEFAULT 1,
+  status      TEXT NOT NULL DEFAULT 'active', -- 'active' | 'resigned' | 'transferred'
+  left_date   TEXT,                        -- YYYY-MM-DD
+  left_reason TEXT,
+  notes       TEXT,
+  created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 CREATE TABLE IF NOT EXISTS mechanic_aliases (
@@ -1270,3 +1426,96 @@ CREATE TABLE IF NOT EXISTS job_hold_reasons (
   set_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_job_hold_reasons ON job_hold_reasons(job_id, id);
+
+-- ===========================================================================
+-- Workshop Tools, Mechanic Toolboxes, Daily Store Issues & Scrap Workflow
+-- ===========================================================================
+
+CREATE TABLE IF NOT EXISTS workshop_tools (
+  id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+  tool_code           TEXT UNIQUE NOT NULL,             -- e.g. TL-MECH-001, TL-COM-014
+  name                TEXT NOT NULL,                    -- Tool title / description
+  category            TEXT NOT NULL DEFAULT 'hand_tool',-- hand_tool, power_tool, pneumatic, measuring, lifting, welding, special
+  type                TEXT NOT NULL DEFAULT 'common',   -- 'common' (shared workshop tool) | 'mechanic' (assigned toolbox)
+  mechanic_id         INTEGER REFERENCES mechanics(id) ON DELETE SET NULL,
+  mechanic_name       TEXT,                             -- Denormalized for display & history
+  toolbox_name        TEXT,                             -- e.g. "Sunil's Heavy Tool Chest"
+  brand               TEXT,                             -- e.g. Koken, Makita, Snap-on, Stanley
+  model_no            TEXT,
+  serial_no           TEXT,
+  specifications      TEXT,
+  workshop_id         INTEGER REFERENCES workshops(id) ON DELETE SET NULL,
+  store_id            INTEGER,
+  location            TEXT,                             -- Tool Crib / Locker / Bay
+  purchase_date       TEXT,                             -- YYYY-MM-DD
+  purchase_cost       REAL DEFAULT 0,
+  replacement_cost    REAL DEFAULT 0,
+  condition           TEXT NOT NULL DEFAULT 'good',     -- 'good', 'fair', 'worn', 'damaged', 'broken', 'scrapped'
+  status              TEXT NOT NULL DEFAULT 'in_store', -- 'in_store', 'issued', 'in_use', 'damaged', 'pending_scrap', 'scrapped', 'missing'
+  active              INTEGER NOT NULL DEFAULT 1,       -- 0 when scrapped
+  notes               TEXT,
+  created_at          TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at          TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_tools_type ON workshop_tools(type, active);
+CREATE INDEX IF NOT EXISTS idx_tools_mech ON workshop_tools(mechanic_id);
+CREATE INDEX IF NOT EXISTS idx_tools_status ON workshop_tools(status);
+
+CREATE TABLE IF NOT EXISTS tool_issue_logs (
+  id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+  log_no              TEXT UNIQUE NOT NULL,             -- e.g. TIL-2026-0001
+  tool_id             INTEGER NOT NULL REFERENCES workshop_tools(id),
+  mechanic_id         INTEGER REFERENCES mechanics(id),
+  issued_to_name      TEXT NOT NULL,                    -- Borrower name
+  job_id              INTEGER REFERENCES job_cards(id), -- Optional job card link
+  job_no              TEXT,
+  issue_date          TEXT NOT NULL,                    -- YYYY-MM-DD
+  issue_time          TEXT,                             -- HH:MM
+  condition_out       TEXT NOT NULL DEFAULT 'good',
+  issued_by           INTEGER NOT NULL REFERENCES users(id),
+  issued_by_name      TEXT,
+  purpose             TEXT,                             -- Task / purpose
+  expected_return_date TEXT,
+  return_date         TEXT,                             -- YYYY-MM-DD (NULL while out)
+  return_time         TEXT,                             -- HH:MM
+  condition_in        TEXT,                             -- 'good', 'fair', 'damaged', 'broken', 'missing'
+  received_by         INTEGER REFERENCES users(id),
+  received_by_name    TEXT,
+  return_notes        TEXT,
+  status              TEXT NOT NULL DEFAULT 'issued',   -- 'issued', 'returned', 'damaged_on_return', 'scrapped', 'lost'
+  created_at          TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_tool_logs_date ON tool_issue_logs(issue_date);
+CREATE INDEX IF NOT EXISTS idx_tool_logs_status ON tool_issue_logs(status);
+
+CREATE TABLE IF NOT EXISTS tool_scrap_requests (
+  id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+  request_no          TEXT UNIQUE NOT NULL,             -- e.g. TSR-2026-0001
+  tool_id             INTEGER NOT NULL REFERENCES workshop_tools(id),
+  tool_code           TEXT NOT NULL,
+  tool_name           TEXT NOT NULL,
+  type                TEXT NOT NULL DEFAULT 'common',   -- 'common' | 'mechanic'
+  mechanic_id         INTEGER REFERENCES mechanics(id),
+  mechanic_name       TEXT,                             -- Specific mechanic whose tool broke
+  damage_date         TEXT NOT NULL,                    -- YYYY-MM-DD
+  damage_reason       TEXT NOT NULL,                    -- Cause of damage / breakage
+  incident_description TEXT,
+  reported_by         INTEGER NOT NULL REFERENCES users(id),
+  reported_by_name    TEXT,
+  reported_at         TEXT NOT NULL DEFAULT (datetime('now')),
+  status              TEXT NOT NULL DEFAULT 'pending_approval', -- 'pending_approval', 'approved', 'rejected', 'under_repair'
+  engineer_id         INTEGER REFERENCES users(id),     -- Engineer who reviewed
+  engineer_name       TEXT,
+  engineer_role       TEXT,                             -- "Mechanical Engineer" / "Assistant Engineer"
+  engineer_decision   TEXT,                             -- 'approved', 'rejected', 'repair'
+  engineer_remarks    TEXT,                             -- Technical assessment notes
+  engineer_signature  TEXT,                             -- e-signature image or data URI
+  decided_at          TEXT,
+  scrap_date          TEXT,
+  scrap_bin_ref       TEXT,                             -- e.g. "Scrap Yard Bin A"
+  replacement_requested INTEGER NOT NULL DEFAULT 0,
+  replacement_mrn_id  INTEGER,
+  created_at          TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at          TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_tool_scrap_status ON tool_scrap_requests(status);

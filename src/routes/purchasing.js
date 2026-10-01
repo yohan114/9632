@@ -19,26 +19,14 @@ const { requireAuth, hasCap } = require('../lib/auth');
 const { asyncHandler, require_, toInt, toNum } = require('../lib/http');
 const audit = require('../lib/audit');
 const emitter = require('../lib/emitter');
+const flow = require('../lib/purchasing_flow');
 
 const router = express.Router();
 
-const CHANNELS = ['head_office', 'local_purchase'];
-const CHANNEL_LABEL = { head_office: 'Head Office', local_purchase: 'Local Purchase' };
-
-/**
- * Which channels this person may act on.
- *
- * By ROLE, not by permission level. A level can say "may use this screen"; it cannot say "may use
- * the local half of it", and that distinction is the whole reason there are two officers.
- */
-function channelsFor(user) {
-  if (hasCap(user, 'purchasing.all_channels')) return CHANNELS.slice();
-  const mine = [];
-  if (hasCap(user, 'purchasing.head_office')) mine.push('head_office');
-  if (hasCap(user, 'purchasing.local')) mine.push('local_purchase');
-  return mine;
-}
-const seesBoth = (user) => channelsFor(user).length === CHANNELS.length;
+const CHANNELS = flow.CHANNELS;
+const CHANNEL_LABEL = flow.CHANNEL_LABEL;
+const channelsFor = flow.channelsFor;
+const seesBoth = flow.seesBoth;
 
 /**
  * What has reached the buying stage: approved, or explicitly sent to be bought — and not yet fully
@@ -54,6 +42,7 @@ const LINE_COLS = `
   l.purchase_source, l.purchased_at, l.purchased_by, l.supplier, l.invoice_no,
   l.invoice_date, l.purchase_amount,
   l.source_changed_at, l.source_changed_by, l.source_changed_reason, l.source_changed_from,
+  l.buying_priority, l.priority_note, l.priority_updated_at, l.priority_updated_by,
   m.mrn_no, m.req_date, m.required_date, m.requested_by, m.purpose, m.approval_status,
   m.purchase_requested_at, m.job_id,
   a.code AS asset_code, a.registration AS asset_reg,
@@ -73,65 +62,38 @@ function claimChannel(user, value) {
 
 // ---- the queue -------------------------------------------------------------
 
-router.get('/queue', requireAuth, asyncHandler((req, res) => {
-  const mine = channelsFor(req.user);
-  const tab = ['to_buy', 'unassigned', 'bought'].includes(req.query.tab) ? req.query.tab : 'to_buy';
-  const limit = toInt(req.query.limit, 300);
+// ---- the monitor & queue ---------------------------------------------------
 
-  const where = [AT_BUYING_STAGE];
-  const params = [];
-
-  if (tab === 'unassigned') {
-    // Nobody has said whose job this is. Both officers see it and either may claim it — 1,714 of
-    // 1,738 requests carry no channel, so without this tray the queue would simply be empty.
-    where.push('l.purchase_source IS NULL', NOT_FULLY_RECEIVED, 'l.purchased_at IS NULL');
-  } else if (!mine.length) {
-    // Signed in, may open the screen (a viewer or a storekeeper), but owns no channel.
-    return res.json({ rows: [], channels: mine, tab, sees_both: false });
-  } else {
-    where.push(`l.purchase_source IN (${mine.map(() => '?').join(',')})`);
-    params.push(...mine);
-    if (tab === 'bought') where.push('l.purchased_at IS NOT NULL');
-    else where.push('l.purchased_at IS NULL', NOT_FULLY_RECEIVED);
-  }
-
-  if (req.query.q && String(req.query.q).trim()) {
-    const like = '%' + String(req.query.q).trim().replace(/[\\%_]/g, (c) => '\\' + c) + '%';
-    where.push(`(l.description LIKE ? ESCAPE '\\' OR m.mrn_no LIKE ? ESCAPE '\\'
-                 OR a.code LIKE ? ESCAPE '\\' OR a.registration LIKE ? ESCAPE '\\'
-                 OR l.supplier LIKE ? ESCAPE '\\' OR l.invoice_no LIKE ? ESCAPE '\\')`);
-    params.push(like, like, like, like, like, like);
-  }
-
-  const order = tab === 'bought'
-    ? 'datetime(l.purchased_at) DESC, l.id DESC'
-    // Oldest request first: the thing somebody has been waiting longest for is the thing to buy.
-    : 'date(m.required_date) IS NULL, date(m.required_date) ASC, date(m.req_date) ASC, l.id ASC';
-
-  const rows = all(
-    `SELECT ${LINE_COLS} ${LINE_FROM} WHERE ${where.join(' AND ')} ORDER BY ${order} LIMIT ${limit}`,
-    ...params
-  );
-
-  // What arrived since this person last looked. Per user, because two officers sharing one flag
-  // would clear each other's badge, and "what is new" is a different answer for each of them.
-  const mark = get('SELECT seen_at FROM user_seen_marks WHERE user_id = ? AND key = ?', req.user.id, 'purchasing');
-  const since = mark ? mark.seen_at : null;
-  for (const r of rows) r.is_new = since ? String(r.req_date || '') > String(since).slice(0, 10) : true;
-
-  res.json({ rows, channels: mine, tab, sees_both: seesBoth(req.user), seen_at: since });
+router.get('/flow/monitor', requireAuth, asyncHandler((req, res) => {
+  res.json(flow.monitor(req.user));
 }));
 
-/** Counts for the tab badges, in one call so the screen does not fetch three lists to count them. */
+router.get('/queue', requireAuth, asyncHandler((req, res) => {
+  const result = flow.lines(req.user, req.query);
+  res.json(result);
+}));
+
+/** Counts for the tab badges and monitor deck */
 router.get('/counts', requireAuth, asyncHandler((req, res) => {
-  const mine = channelsFor(req.user);
-  const inMine = mine.length ? `l.purchase_source IN (${mine.map(() => '?').join(',')})` : '0';
-  const c = (extra, ...p) => get(
-    `SELECT COUNT(*) n ${LINE_FROM} WHERE ${AT_BUYING_STAGE} AND ${extra}`, ...p).n;
+  const m = flow.monitor(req.user);
+  const mine = flow.channelsFor(req.user);
+  const to_buy = !mine.length ? 0
+    : (mine.length === flow.CHANNELS.length ? m.pipeline.to_buy_total
+      : (mine.includes('head_office') ? m.pipeline.to_buy_ho : m.pipeline.to_buy_local));
+
   res.json({
-    to_buy: mine.length ? c(`${inMine} AND l.purchased_at IS NULL AND ${NOT_FULLY_RECEIVED}`, ...mine) : 0,
-    unassigned: c(`l.purchase_source IS NULL AND l.purchased_at IS NULL AND ${NOT_FULLY_RECEIVED}`),
-    bought: mine.length ? c(`${inMine} AND l.purchased_at IS NOT NULL`, ...mine) : 0,
+    to_buy,
+    to_buy_ho: m.pipeline.to_buy_ho,
+    to_buy_local: m.pipeline.to_buy_local,
+    urgent: m.urgency.urgent_total,
+    p1_critical: m.urgency.p1_critical,
+    p2_urgent: m.urgency.p2_urgent,
+    p3_routine: m.urgency.p3_routine,
+    p4_low: m.urgency.p4_low,
+    unassigned: m.pipeline.unassigned,
+    ordered: m.pipeline.ordered,
+    bought: m.pipeline.bought_total,
+    unpriced: m.watch.unpriced,
   });
 }));
 
@@ -157,12 +119,11 @@ router.post('/lines/:id/source', requireAuth, editsLine, asyncHandler((req, res)
   if (!CHANNELS.includes(to)) return res.status(400).json({ error: 'Choose Head Office or Local Purchase' });
   if (to === line.purchase_source) return res.status(400).json({ error: `Already ${CHANNEL_LABEL[to]}` });
 
-  // You may hand away what is yours, or claim what belongs to nobody. You may not reach into the
-  // other officer's queue and take an item off them.
+  // Both Head Office and Local Purchase officers (and managers) may change an item's buying channel
+  // between Head Office and Local Purchase, or claim an unassigned item.
   const mine = channelsFor(req.user);
-  const ownsIt = line.purchase_source === null || mine.includes(line.purchase_source);
-  if (!ownsIt) return res.status(403).json({ error: `That item is on the ${CHANNEL_LABEL[line.purchase_source]} list` });
-  if (!mine.length) return res.status(403).json({ error: 'You are not a purchasing officer' });
+  const canReassign = mine.length > 0 || hasCap(req.user, 'purchasing.all_channels');
+  if (!canReassign) return res.status(403).json({ error: 'You do not have permission to assign purchasing channels' });
 
   // The reason is the point. A few months of "Head Office has no account with this supplier" is
   // the case for opening one — and without it a channel switch is indistinguishable from a slip.
@@ -180,6 +141,67 @@ router.post('/lines/:id/source', requireAuth, editsLine, asyncHandler((req, res)
     before: { purchase_source: line.purchase_source }, after: { purchase_source: to, reason } });
   emitter.emit('data_changed', { what: 'purchasing' });
   res.json({ ok: true, purchase_source: to, message: `Moved to ${CHANNEL_LABEL[to]}` });
+}));
+
+// ---- workshop day-to-day priority adjustment -------------------------------
+
+router.post('/lines/:id/priority', requireAuth, asyncHandler((req, res) => {
+  const id = toInt(req.params.id);
+  const line = get('SELECT l.*, m.mrn_no FROM mrn_lines l JOIN mrn m ON m.id = l.mrn_id WHERE l.id = ?', id);
+  if (!line) return res.status(404).json({ error: 'Item not found' });
+  if (line.purchased_at) {
+    return res.status(409).json({ error: 'Already bought — priority cannot be changed afterwards' });
+  }
+
+  const canEdit = hasCap(req.user, 'purchasing.priority_edit')
+    || hasCap(req.user, 'purchasing.all_channels')
+    || hasCap(req.user, 'stores.mrn.edit')
+    || (req.user.roles && (
+      req.user.roles.includes('workshop')
+      || req.user.roles.includes('operational_manager')
+      || req.user.roles.includes('manager')
+      || req.user.roles.includes('purchase_head_office')
+      || req.user.roles.includes('purchase_local')
+    ));
+  if (!canEdit) return res.status(403).json({ error: 'Permission denied to adjust buying priority' });
+
+  const priority = String(req.body.buying_priority || '').trim();
+  if (!flow.PRIORITIES.includes(priority)) {
+    return res.status(400).json({ error: 'Invalid priority. Choose P1_CRITICAL, P2_URGENT, P3_ROUTINE, or P4_LOW' });
+  }
+
+  const note = req.body.note != null ? String(req.body.note).trim() : (line.priority_note || '');
+  const oldPriority = line.buying_priority || 'P3_ROUTINE';
+
+  tx(() => {
+    run(`UPDATE mrn_lines
+            SET buying_priority = ?, priority_note = ?, priority_updated_at = datetime('now'),
+                priority_updated_by = ?
+          WHERE id = ?`,
+      priority, note || null, req.user.username, id);
+
+    run(`INSERT INTO mrn_line_priority_history (mrn_line_id, old_priority, new_priority, note, changed_by)
+         VALUES (?, ?, ?, ?, ?)`,
+      id, oldPriority, priority, note || null, req.user.username);
+  });
+
+  audit.record({
+    userId: req.user.id,
+    entity: 'mrn_lines',
+    entityId: id,
+    action: 'buying_priority',
+    before: { buying_priority: oldPriority },
+    after: { buying_priority: priority, note }
+  });
+
+  emitter.emit('data_changed', { what: 'purchasing' });
+  res.json({ ok: true, buying_priority: priority, message: `Priority set to ${flow.PRIORITY_LABELS[priority]}` });
+}));
+
+router.get('/lines/:id/priority-history', requireAuth, asyncHandler((req, res) => {
+  const id = toInt(req.params.id);
+  const rows = all('SELECT * FROM mrn_line_priority_history WHERE mrn_line_id = ? ORDER BY id DESC', id);
+  res.json({ rows });
 }));
 
 /**
@@ -295,6 +317,7 @@ router.get('/lines/:id', requireAuth, asyncHandler((req, res) => {
   if (!line) return res.status(404).json({ error: 'Item not found' });
 
   line.invoices = all('SELECT id, seq, image, note, uploaded_at FROM mrn_line_invoices WHERE mrn_line_id = ? ORDER BY seq, id', id);
+  line.priority_history = all('SELECT * FROM mrn_line_priority_history WHERE mrn_line_id = ? ORDER BY id DESC', id);
 
   // What the storekeeper actually received against this line, and what it cost when it arrived.
   line.receipts = all(
@@ -311,6 +334,52 @@ router.get('/lines/:id', requireAuth, asyncHandler((req, res) => {
     : null;
 
   res.json(line);
+}));
+
+const { sendXlsx } = require('../lib/export');
+
+router.get('/export.xlsx', requireAuth, asyncHandler(async (req, res) => {
+  const result = flow.lines(req.user, { ...req.query, limit: 5000 });
+  const rows = result.rows.map((r) => ({
+    priority: flow.PRIORITY_LABELS[r.buying_priority] || 'P3 Routine',
+    priority_note: r.priority_note || '',
+    priority_updated_by: r.priority_updated_by || '',
+    mrn_no: r.mrn_no || '',
+    asset: r.asset_code || r.asset_reg || '',
+    item: r.description || '',
+    qty: r.qty,
+    unit: r.unit || '',
+    channel: flow.CHANNEL_LABEL[r.purchase_source] || (r.purchase_source ? r.purchase_source : 'Unassigned'),
+    req_date: r.req_date ? String(r.req_date).slice(0, 10) : '',
+    required_date: r.required_date ? String(r.required_date).slice(0, 10) : '',
+    supplier: r.supplier || '',
+    invoice_no: r.invoice_no || '',
+    purchase_amount: r.purchase_amount != null ? r.purchase_amount : '',
+    purchased_at: r.purchased_at ? String(r.purchased_at).slice(0, 10) : '',
+    purchased_by: r.purchased_by || '',
+  }));
+
+  await sendXlsx(res, `procurement-${req.query.tab || 'queue'}.xlsx`, [{
+    name: 'Procurement Backlog',
+    columns: [
+      { header: 'Priority', key: 'priority', width: 14 },
+      { header: 'Priority Note', key: 'priority_note', width: 28 },
+      { header: 'MRN No', key: 'mrn_no', width: 14 },
+      { header: 'Vehicle', key: 'asset', width: 14 },
+      { header: 'Item Description', key: 'item', width: 36 },
+      { header: 'Qty', key: 'qty', width: 8 },
+      { header: 'Unit', key: 'unit', width: 8 },
+      { header: 'Channel', key: 'channel', width: 16 },
+      { header: 'Required Date', key: 'required_date', width: 14 },
+      { header: 'Req Date', key: 'req_date', width: 12 },
+      { header: 'Supplier', key: 'supplier', width: 20 },
+      { header: 'Invoice No', key: 'invoice_no', width: 14 },
+      { header: 'Amount', key: 'purchase_amount', width: 12 },
+      { header: 'Bought Date', key: 'purchased_at', width: 12 },
+      { header: 'Bought By', key: 'purchased_by', width: 14 },
+    ],
+    rows,
+  }]);
 }));
 
 module.exports = router;

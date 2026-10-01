@@ -140,33 +140,47 @@ test('with Reports view the reports open, as before', async () => {
 });
 
 // ================================================================== the writes
-test('entering the monthly inputs needs its own permission; the read-only viewer and the buyers do not have it', async () => {
-  const holders = capabilities.CAPABILITIES.find((c) => c.key === 'reports.monthly_inputs').legacy.slice().sort();
-  assert.deepStrictEqual(holders, ['assistant_transport_manager', 'main_storekeeper', 'manager', 'operational_manager', 'storekeeper',
-    'transport_manager', 'workshop'], 'every built-in role that could open the Reports page, except the viewer');
-  for (const user of ['buyer', 'view', 'no', 'jo', 'dw']) assert.strictEqual(await status(user, 'POST', '/reports/monthly-inputs', inputs), 403, user);
-  for (const user of ['ws', 'om', 'boss']) assert.strictEqual(await status(user, 'POST', '/reports/monthly-inputs', inputs), 200, user);
+test('entering the monthly inputs needs Reports at edit, or the monthly-cost permission', async () => {
+  // This tree gates the inputs on reports >= edit OR the reports.monthly_cost.edit capability. The
+  // lineage these tests came from had a capability of its own, reports.monthly_inputs, held by
+  // seven built-in roles. This policy is the narrower of the two: the workshop, the storekeeper and
+  // the transport manager could enter them there and cannot here, holding reports at view only.
+  const holders = capabilities.CAPABILITIES.find((c) => c.key === 'reports.monthly_cost.edit').legacy.slice().sort();
+  assert.deepStrictEqual(holders, ['manager', 'operational_manager']);
+  for (const user of ['buyer', 'view', 'no', 'jo', 'dw', 'ws', 'sk']) {
+    assert.strictEqual(await status(user, 'POST', '/reports/monthly-inputs', inputs), 403, user);
+  }
+  for (const user of ['om', 'boss']) {
+    assert.strictEqual(await status(user, 'POST', '/reports/monthly-inputs', inputs), 200, user);
+  }
   assert.strictEqual(get("SELECT COUNT(*) c FROM monthly_report_inputs WHERE sheet = 'fuel'").c, 1);
-  // Taken away from a role on the Access screen, it is gone for its holders at once.
-  capabilities.setCapability('workshop', 'reports.monthly_inputs', false);
-  try { assert.strictEqual(await status('ws', 'POST', '/reports/monthly-inputs', inputs), 403); }
-  finally { capabilities.setCapability('workshop', 'reports.monthly_inputs', true); }
+  // The capability is the other arm of that OR, and it stands on its own: a role with no Reports at
+  // all can enter them once it is ticked, and cannot the moment it is taken away again.
+  capabilities.setCapability('jobsonly', 'reports.monthly_cost.edit', true);
+  try { assert.strictEqual(await status('jo', 'POST', '/reports/monthly-inputs', inputs), 200, 'the permission alone'); }
+  finally { capabilities.setCapability('jobsonly', 'reports.monthly_cost.edit', false); }
+  assert.strictEqual(await status('jo', 'POST', '/reports/monthly-inputs', inputs), 403, 'and gone again');
 });
 
-test('a service\'s outside price: Service Records edit, or the monthly-inputs permission', async () => {
+test('a service\'s outside price: Service Records edit, or Reports edit', async () => {
+  // Here the gate is services >= edit OR reports >= edit. The other lineage asked for its
+  // monthly-inputs capability or filters >= edit -- the same two doors, named for the sections this
+  // tree uses.
   const body = (v) => ({ items: [{ id: SVC, outside: v }] });
   const before = get('SELECT outside_estimate v FROM service_jobs WHERE id = ?', SVC).v;
-  for (const user of ['buyer', 'view', 'no', 'jo']) assert.strictEqual(await status(user, 'POST', '/reports/service-outside', body(1)), 403, user);
+  for (const user of ['buyer', 'view', 'no', 'jo', 'dw']) {
+    assert.strictEqual(await status(user, 'POST', '/reports/service-outside', body(1)), 403, user);
+  }
   assert.strictEqual(get('SELECT outside_estimate v FROM service_jobs WHERE id = ?', SVC).v, before, 'nothing was saved');
-  // Service Records edit alone is enough (the storekeeper, with the monthly-inputs permission taken away).
-  capabilities.setCapability('storekeeper', 'reports.monthly_inputs', false);
-  try { assert.strictEqual(await status('sk', 'POST', '/reports/service-outside', body(2500)), 200, 'storekeeper: Service Records full'); }
-  finally { capabilities.setCapability('storekeeper', 'reports.monthly_inputs', true); }
+  // Reports at edit is enough on its own: the operational manager holds it at full.
+  assert.strictEqual(await status('om', 'POST', '/reports/service-outside', body(2500)), 200, 'reports edit');
   assert.strictEqual(get('SELECT outside_estimate v FROM service_jobs WHERE id = ?', SVC).v, 2500);
-  // Service Records at view, but the monthly-inputs permission: allowed (the inputs screen saves it).
-  assert.strictEqual(perms.levelForRoles(['transport_manager'], 'filters'), 'view');
-  mkUser('tm', ['transport_manager']);
-  assert.strictEqual(await status('tm', 'POST', '/reports/service-outside', body(3000)), 200);
+  // And Service Records at edit is enough with no Reports at all.
+  perms.setPermission('jobsonly', 'services', 'edit');
+  try {
+    assert.strictEqual(await status('jo', 'POST', '/reports/service-outside', body(3000)), 200, 'services edit, no reports');
+    assert.strictEqual(get('SELECT outside_estimate v FROM service_jobs WHERE id = ?', SVC).v, 3000);
+  } finally { perms.setPermission('jobsonly', 'services', 'none'); }
 });
 
 // ================================================================== read from other sections

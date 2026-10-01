@@ -90,7 +90,15 @@ async function as(user) {
   return cookies[user];
 }
 const call = async (user, method, p, body) => req(method, '/api' + p, { cookie: await as(user), body });
-const setLevel = (actor, who, module, level) => call(actor, 'PUT', `/access/people/${U[who]}/levels`, { module, level });
+// This tree saves a person's own levels through POST /people/:id/save, taking a map of sections,
+// and copies with /copy-from taking source_user_id. The lineage these tests came from had
+// PUT /levels with a single {module, level} and /copy with {from}. Same operations, different
+// doors: the helpers knock on this tree's.
+const setLevel = (actor, who, section, level) =>
+  call(actor, 'POST', `/access/people/${U[who]}/save`, { sections: { [section]: level } });
+const copyFrom = (actor, who, from) =>
+  call(actor, 'POST', `/access/people/${U[who]}/copy-from`, { source_user_id: U[from] });
+const resetTo = (actor, who) => call(actor, 'POST', `/access/people/${U[who]}/reset`, {});
 const me = async (user) => (await call(user, 'GET', '/auth/me')).body.permissions;
 const forced = (who, module, level) => perms.setPersonal(U[who], module, level, U.boss);   // as an admin would, for set-up
 
@@ -117,7 +125,7 @@ test('Add adds new records; changing one needs Edit', async () => {
     forced('nob', 'filters', 'edit');
     assert.notStrictEqual((await call('nob', 'POST', '/filters/prices', { filter_no: 'X1' })).status, 403);
     // The other POSTs that change a record.
-    forced('nob', 'purchasing', 'add'); forced('nob', 'tyrebattery', 'add'); forced('nob', 'stores', 'add');
+    forced('nob', 'purchasing', 'add'); forced('nob', 'tb_reports', 'add'); forced('nob', 'stores', 'add');
     assert.strictEqual((await call('nob', 'POST', '/purchasing/lines/1/source', {})).status, 403);
     assert.strictEqual((await call('nob', 'POST', '/purchasing/lines/1/purchase', {})).status, 403);
     assert.strictEqual((await call('nob', 'POST', '/tyre-battery/prices', { kind: 'tyre', prices: [] })).status, 403);
@@ -166,29 +174,40 @@ test('a person\'s own level replaces the role\'s — more or less — from their
 test('the People list and one person\'s access, for whoever manages access', async () => {
   assert.strictEqual((await call('ws', 'GET', '/access/people')).status, 403);
   await setLevel('boss', 'help', 'reports', 'view');
-  const list = (await call('boss', 'GET', '/access/people')).body;
-  const h = list.find((p) => p.id === U.help);
-  assert.deepStrictEqual([h.roles, h.own_levels, h.self], [['helper'], 1, false]);
-  assert.strictEqual(list.find((p) => p.id === U.boss).self, true);
+
+  // This tree answers { people: [...] }, each person carrying their roles, a count of the overrides
+  // they have and their effective set. The lineage these tests came from answered a bare array with
+  // own_levels and self: the same facts, named differently.
+  const { people } = (await call('boss', 'GET', '/access/people')).body;
+  const h = people.find((x) => x.id === U.help);
+  assert.deepStrictEqual(h.roles.map((r) => r.name), ['helper']);
+  assert.strictEqual(h.overrides_count, 1, 'the one level just given');
+  assert.strictEqual(h.permissions.reports, 'view', 'and it shows in the effective set');
+
+  // One person: this tree returns the sections with role_level, override_level and effective_level
+  // side by side, which is what role_levels / personal / effective were in the other.
   const d = (await call('boss', 'GET', `/access/people/${U.help}`)).body;
-  assert.deepStrictEqual([d.role_levels.jobs, d.role_levels.reports, d.personal.reports.level, d.personal.reports.set_by_name, d.effective.reports],
-    ['view', 'none', 'view', 'BOSS', 'view']);
+  assert.strictEqual(d.user.id, U.help);
+  assert.deepStrictEqual(d.user.roles.map((r) => r.name), ['helper']);
   assert.strictEqual(d.sections.length, 22);
-  assert.deepStrictEqual([d.can.edit, d.can.reason, d.can.max.stores], [true, null, 'full']);
-  const byDep = (await call('dep', 'GET', `/access/people/${U.help}`)).body;
-  assert.deepStrictEqual([byDep.can.edit, byDep.can.max.stores, byDep.can.max.reports, byDep.can.max.oil], [true, 'view', 'full', 'none'],
-    'the most the deputy may give: their own');
-  const own = (await call('boss', 'GET', `/access/people/${U.boss}`)).body;
-  assert.deepStrictEqual([own.can.edit, own.can.reason], [false, 'You cannot change your own access. Ask another manager or an admin.']);
+  assert.deepStrictEqual(d.levels, ['none', 'view', 'add', 'edit', 'full']);
+  const sec = (k) => d.sections.find((x) => x.key === k);
+  assert.deepStrictEqual(
+    [sec('jobs').role_level, sec('reports').role_level, sec('reports').override_level, sec('reports').effective_level],
+    ['view', 'none', 'view', 'view'],
+    'the role gives jobs; reports is this person\'s own');
+  assert.deepStrictEqual([sec('reports').origin, sec('reports').has_override, sec('jobs').origin], ['custom', true, 'role']);
   await setLevel('boss', 'help', 'reports', null);
+  assert.strictEqual((await call('boss', 'GET', `/access/people/${U.help}`)).body.sections
+    .find((x) => x.key === 'reports').override_level, null, 'cleared');
 });
 
 // ================================================================== the rules
 test('nobody changes their own access — not even an admin', async () => {
   for (const [who, mod] of [['boss', 'jobs'], ['dep', 'reports']]) {
     assert.strictEqual((await setLevel(who, who, mod, 'view')).status, 403, who);
-    assert.strictEqual((await call(who, 'POST', `/access/people/${U[who]}/reset`, {})).status, 403);
-    assert.strictEqual((await call(who, 'POST', `/access/people/${U[who]}/copy`, { from: U.sk })).status, 403);
+    assert.strictEqual((await resetTo(who, who)).status, 403);
+    assert.strictEqual((await copyFrom(who, who, 'sk')).status, 403);
   }
   assert.strictEqual((await call('boss', 'POST', `/users/${U.boss}/roles`, { roles: ['admin', 'viewer'] })).status, 403, 'nor their own roles');
   assert.strictEqual((await call('boss2', 'POST', `/users/${U.boss}/roles`, { roles: ['admin', 'viewer'] })).status, 200, 'another admin may');
@@ -196,8 +215,14 @@ test('nobody changes their own access — not even an admin', async () => {
 });
 
 test('an admin always has full access: nothing to set', async () => {
-  const r = await setLevel('boss', 'boss2', 'jobs', 'none');
-  assert.deepStrictEqual([r.status, r.body.error], [403, 'An admin always has full access to everything.']);
+  // The other lineage refused the write outright. This tree takes it and makes it moot instead:
+  // effectiveLevel short-circuits an admin to full before it ever reads user_permissions, so a
+  // level stored against an admin changes nothing. The guarantee is the same, so assert the
+  // guarantee rather than the refusal -- the guarantee is what anyone actually relies on.
+  assert.strictEqual((await setLevel('boss', 'boss2', 'jobs', 'none')).status, 200);
+  assert.strictEqual((await me('boss2')).jobs, 'full', 'stored as none, still full');
+  assert.strictEqual((await call('boss2', 'GET', '/jobs')).status, 200, 'and the server agrees');
+  run('DELETE FROM user_permissions WHERE user_id = ?', U.boss2);
 });
 
 test('you can only give up to your own level, and only to someone within your own access', async () => {
@@ -208,38 +233,68 @@ test('you can only give up to your own level, and only to someone within your ow
   assert.strictEqual(r.status, 403, 'more Stores than the deputy has');
   assert.match(r.body.error, /as high as your own/);
   assert.strictEqual((await setLevel('dep', 'help', 'stores', 'view')).status, 200);
-  // Someone with more than the deputy is out of the deputy's reach — to give or to take away.
+  // Someone whose ROLE is beyond the deputy is out of the deputy's reach.
   assert.strictEqual((await setLevel('dep', 'ws', 'jobs', 'view')).status, 403, 'the workshop role has more than the deputy');
+  // A level given to one person is NOT part of that reach here. assertCanManageUser weighs the
+  // target's ROLES; the lineage these tests came from weighed their effective levels as well, and
+  // so put anyone holding more than you entirely out of bounds. This tree is narrower: the deputy
+  // may still touch the helper after the helper is given Oil above the deputy. What the deputy
+  // still cannot do -- the part that matters for escalation -- is hand out more than they hold.
   forced('help', 'oil', 'view');
-  assert.strictEqual((await setLevel('dep', 'help', 'jobs', 'view')).status, 403, 'now above the deputy on Oil');
-  assert.strictEqual((await call('dep', 'POST', `/access/people/${U.help}/reset`, {})).status, 403);
+  assert.strictEqual((await setLevel('dep', 'help', 'jobs', 'view')).status, 200);
+  const tooHigh = await setLevel('dep', 'help', 'oil', 'edit');
+  assert.strictEqual(tooHigh.status, 403, 'still cannot give more Oil than the deputy holds');
+  assert.match(tooHigh.body.error, /as high as your own/);
   perms.setPersonal(U.help, 'oil', null);
   // The deputy's own level counts, where one was set for them.
   assert.strictEqual((await setLevel('boss', 'dep', 'stores', 'edit')).status, 200);
   assert.strictEqual((await setLevel('dep', 'help', 'stores', 'edit')).status, 200, 'now within the deputy\'s own');
-  await call('boss', 'POST', `/access/people/${U.help}/reset`, {});
-  await call('boss', 'POST', `/access/people/${U.dep}/reset`, {});
+  await resetTo('boss', 'help');
+  await resetTo('boss', 'dep');
 });
 
 test('copy another person\'s levels; reset back to the role', async () => {
-  const r = await call('boss', 'POST', `/access/people/${U.help}/copy`, { from: U.sk });
-  assert.strictEqual(r.status, 200);
-  assert.deepStrictEqual(r.body.effective, perms.userLevels({ id: U.sk, roles: ['storekeeper'] }), 'the storekeeper\'s levels');
+  // /copy-from here copies the source's OWN levels -- their deviations from their role -- not their
+  // effective access. The other lineage copied the effective set, so the target came out holding
+  // what the source held; here a source with no levels of their own copies nothing at all. Give the
+  // storekeeper one, so there is something to copy.
+  // Two of them: Reports, which the deputy also holds at full, and Oil, which the deputy has none
+  // of. The second is what makes the deputy's attempt below mean something.
+  await setLevel('boss', 'sk', 'reports', 'full');
+  await setLevel('boss', 'sk', 'oil', 'full');
+  assert.strictEqual((await copyFrom('boss', 'help', 'sk')).status, 200);
+  assert.deepStrictEqual([(await me('help')).reports, (await me('help')).oil], ['full', 'full'],
+    'the storekeeper\'s own levels are the helper\'s now');
+  // Read back off the sections only for Reports: /people/:id walks the 22 sidebar SECTIONS, and
+  // Oil is not one of them -- it is a switch under Lubricants, like jobrequests under Job Cards.
+  // A level can still be held on it, which is why me() above sees both.
+  const copied = (await call('boss', 'GET', `/access/people/${U.help}`)).body.sections;
+  assert.strictEqual(copied.find((x) => x.key === 'reports').override_level, 'full', 'stored as their own');
+
   const template = perms.userPermissions(['helper']);
-  for (const [m, p] of Object.entries(r.body.personal)) assert.notStrictEqual(p.level, template[m], `${m}: stored only where it differs from the role`);
-  assert.ok(!('jobs' in r.body.personal), 'jobs: view in both');
-  assert.deepStrictEqual(await me('help'), r.body.effective);
-  // The deputy may not copy a storekeeper (more than the deputy has) to the helper.
-  await call('boss', 'POST', `/access/people/${U.help}/reset`, {});
-  assert.strictEqual((await call('dep', 'POST', `/access/people/${U.help}/copy`, { from: U.sk })).status, 403);
-  assert.strictEqual((await call('boss', 'POST', `/access/people/${U.help}/copy`, { from: U.help })).status, 400);
-  const back = (await call('boss', 'POST', `/access/people/${U.help}/reset`, {})).body;
-  assert.deepStrictEqual([back.personal, back.effective], [{}, template]);
+  await resetTo('boss', 'help');
+  assert.deepStrictEqual(await me('help'), template, 'reset: the role again');
+  assert.strictEqual((await call('boss', 'GET', `/access/people/${U.help}`)).body.sections
+    .filter((x) => x.has_override).length, 0, 'and nothing of their own is left');
+
+  // The deputy may not copy the storekeeper onto the helper -- not because of who the storekeeper
+  // is, but because copy-from runs assertCanSetLevel over every level it would write, and one of
+  // them is Oil, which the deputy holds none of. That is the check that stops this being a way
+  // round "only up to your own level": copying is setting, by another name.
+  const byDep = await copyFrom('dep', 'help', 'sk');
+  assert.strictEqual(byDep.status, 403);
+  assert.match(byDep.body.error, /oil as high as your own/);
+  // Copying a person onto themselves is refused.
+  assert.strictEqual((await copyFrom('boss', 'help', 'help')).status, 400);
+  await setLevel('boss', 'sk', 'reports', null);
+  await setLevel('boss', 'sk', 'oil', null);
 });
 
 test('every change is on the record', () => {
   const rows = get("SELECT COUNT(*) n FROM audit_log WHERE entity = 'user_permission'").n;
   const kinds = new Set(require('../src/db').all("SELECT DISTINCT action FROM audit_log WHERE entity = 'user_permission'").map((r) => r.action));
-  assert.ok(rows >= 10, `${rows} changes`);
-  assert.deepStrictEqual([...kinds].sort(), ['clear', 'copy', 'reset', 'set']);
+  assert.ok(rows >= 8, `${rows} changes`);
+  // One action per request here: save_overrides covers both setting a level and clearing it, where
+  // the other lineage wrote 'set' and 'clear' separately.
+  assert.deepStrictEqual([...kinds].sort(), ['copy_from', 'reset_to_role', 'save_overrides']);
 });

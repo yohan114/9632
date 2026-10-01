@@ -10,7 +10,7 @@ const { Server } = require('socket.io');
 const config = require('./config');
 const { migrate, get } = require('./db');
 const { authenticate, enforcePasswordChange, enforceMfaSetup, requireAuth, hasCap, rolesForUser, liveSession, COOKIE } = require('./lib/auth');
-const { requireModule, requireView } = require('./lib/permissions');
+const { requireModule } = require('./lib/permissions');
 const { errorHandler } = require('./lib/http');
 const { startScheduler } = require('./lib/backup');
 const backupStatus = require('./lib/backup_status');
@@ -71,22 +71,38 @@ app.use('/api', (req, res, next) => {
   next();
 });
 
-// API routers. Each module is a self-contained Express Router, and every section is checked on the
-// server by its own switch (access plan, Part 1): requireModule at the mount, or inside the router
-// where one router serves several sections. Projects and mechanics also fill drop-downs everywhere,
-// so their lists stay open to anyone signed in — names only; costs and rates need the section.
+// API routers. Each module is a self-contained Express Router. Operational
+// modules are gated by the RBAC matrix (requireModule); reference/analytics
+// routers (aliases, projects, mechanics, reports) stay open to any authenticated
+// user (they feed dropdowns + dashboards) and are hidden at the nav level only.
 app.use('/api/auth', require('./routes/auth'));
 app.use('/api/access', require('./routes/access'));
-// The vehicle list fills the vehicle pickers in other sections (Service Records, Stores …), so it and
-// the typeahead are open to anyone signed in — the numbers only (routes/assets.js). Everything else
-// about a vehicle needs Assets.
+// The picker lists stay open to anyone signed in; anything else about a vehicle needs Assets.
+// This only relaxes the MODULE check -- the global /api gate above still demands a session -- and
+// routes/assets.js trims those two responses to PICKER_FIELDS, so no cost or history goes with
+// them. Without this the hard gate 403s the pickers before the route can trim them, which is the
+// shape this merge first produced: a hard gate from one lineage over a trimming route from the other.
 const PICKER_PATH = new Set(['/', '/search']);
 const assetsGate = (req, res, next) => (req.method === 'GET' && PICKER_PATH.has(req.path) ? next() : requireModule('assets')(req, res, next));
 app.use('/api/assets', assetsGate, require('./routes/assets'));
-app.use('/api/aliases', requireView('aliases'), require('./routes/aliases'));
+// The alias queue is a section of its own: it was reachable by any signed-in account, including a
+// role given nothing, because this lineage gated the reference routers in the nav only.
+app.use('/api/aliases', requireModule('aliases', 'view'), require('./routes/aliases'));
 // Job Cards: the Monitor and the Requests list (job cards plan). Checks its own module access.
 app.use('/api/job-flow', require('./routes/jobflow'));
-app.use('/api/projects', require('./routes/projects'));
+// The project list fills the pickers on the vehicle, job card and job request forms, so GET / stays
+// open to anyone signed in and routes/projects.js returns names only without Projects clearance.
+// A single project, its cost and its sites are the section proper, and need it.
+//
+// READS only. Every write in routes/projects.js carries its own requireCap('projects.manage'), and
+// gating them here as well would answer "no view access to projects" from the mount before the
+// route could name the permission the person is actually missing -- which is the more useful
+// refusal, and what test/capabilities.test.js asks for. Contrast /api/aliases just above, gated on
+// every method: its POST /resolve has no capability of its own and hands back a whole asset row,
+// so leaving writes open there would be a way round the trimming that /api/assets does.
+const projectsGate = (req, res, next) => (
+  req.method !== 'GET' || req.path === '/' ? next() : requireModule('projects', 'view')(req, res, next));
+app.use('/api/projects', projectsGate, require('./routes/projects'));
 // MRN approval transitions (certify/approve/reject) are authorised by ROLE, not by
 // stores-edit level: the Workshop Engineer and Operational Manager who sign off an
 // MRN deliberately hold only stores=view (they must not edit stock). Let those three
@@ -104,17 +120,14 @@ app.use('/api/stores', storesGate, require('./routes/stores'));
 app.use('/api/general-stock', requireModule('stores'), require('./routes/general_stock'));
 app.use('/api/oil', requireModule('oil'), require('./routes/oil'));
 app.use('/api/batteries', requireModule('batteries'), require('./routes/batteries'));
-// One router, three sections: Service Records, the Service & Filter Plan, and the Stores filter
-// books (price book, cross-references). Each part is checked on its own switch.
-const SERVICE_PATH = /^\/(services|attachments|reference|stock-context|stock-search|prices\/lookup)(\/|$)/;
-const filtersGate = (req, res, next) => {
-  if (req.path === '/service-plan') return requireModule('serviceplan')(req, res, next);
-  if (req.path === '/categories') return requireView('services', 'filters')(req, res, next);
-  return requireModule(SERVICE_PATH.test(req.path) ? 'services' : 'filters')(req, res, next);
-};
-app.use('/api/filters', filtersGate, require('./routes/filters'));
+app.use('/api/filters', requireModule('filters'), require('./routes/filters'));
 app.use('/api/filter-stock', requireModule('filters'), require('./routes/filter_stock'));
-app.use('/api/stock-cockpit', requireView('stores'), require('./routes/stock_cockpit'));
+app.use('/api/tools', require('./routes/tools'));
+// The stock cockpit reads the whole stores position, so it needs Stores clearance. This branch
+// mounted it bare and its own routes ask only for requireAuth, which left every signed-in account
+// -- including a role deliberately given nothing -- able to read it. main gated the mount; that
+// gate is kept, in this branch's vocabulary.
+app.use('/api/stock-cockpit', requireModule('stores'), require('./routes/stock_cockpit'));
 app.use('/api/jobs', requireModule('jobs'), require('./routes/jobcards'));
 app.use('/api/job-requests', requireModule('jobrequests'), require('./routes/jobrequests'));
 app.use('/api/daily-work', requireModule('dailywork'), require('./routes/dailywork'));
@@ -126,14 +139,14 @@ app.use('/api/attendance', require('./routes/attendance'));
 app.use('/api/field', require('./routes/field'));
 // Stage 7: operations — machine moves, the site fleet board, workshops at a glance, handovers.
 app.use('/api/operations', require('./routes/operations'));
-app.use('/api/dashboard', require('./routes/dashboard'));
+app.use('/api/dashboard', requireModule('dashboard'), require('./routes/dashboard'));
 app.use('/api/mechanics', require('./routes/mechanics'));
 app.use('/api/workshops', require('./routes/workshops'));
 app.use('/api/users', require('./routes/users'));
 app.use('/api/reports', require('./routes/reports'));
 // Vehicle lubricant capacities from Fleet_Oil_Lubricant_Capacities.xlsx
-app.use('/api/lubricant-capacities', requireView('lubecapacities'), require('./routes/lubricant_capacities'));
-app.use('/api/tyre-battery', requireModule('tyrebattery'), require('./routes/tyre_battery'));
+app.use('/api/lubricant-capacities', requireModule('lubricants'), require('./routes/lubricant_capacities'));
+app.use('/api/tyre-battery', requireModule('tb_reports'), require('./routes/tyre_battery'));
 // Requesting, issuing and accounting for the old unit. Mounted apart from the reporting routes
 // above because those are gated on `reports` — a storekeeper who may not read cost reports still
 // has to be able to issue a tyre. Each endpoint carries its own role check instead, and the
@@ -142,7 +155,14 @@ app.use('/api/tb', require('./routes/tyre_battery_requests'));
 // Buying what the workshop asked for. Gated on its own module so the two purchasing officers see
 // the queue and nobody else does; WHICH of the two channels each sees is decided inside the router
 // by role, because a permission level can say "may use this screen" but not "may use half of it".
-app.use('/api/purchasing', requireModule('purchasing'), require('./routes/purchasing'));
+// Priority changes happen from the workshop and stores screens day-to-day, so those two endpoints
+// are open to anyone who holds the capability or workshop/stores role (checked inside the router).
+const PURCHASING_PRIORITY_PATH = /^\/lines\/\d+\/(priority|priority-history)$/;
+const purchasingGate = (req, res, next) =>
+  PURCHASING_PRIORITY_PATH.test(req.path)
+    ? next()
+    : requireModule('purchasing')(req, res, next);
+app.use('/api/purchasing', purchasingGate, require('./routes/purchasing'));
 
 // Static frontend (SPA). index.html is served with a per-boot cache-bust token on
 // app.js / styles.css so a normal reload always picks up the latest build.

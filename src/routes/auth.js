@@ -29,16 +29,16 @@ function startSession(req, res, user, { mfaVerified = false, method = 'password'
     secure: req.secure,
     expires: new Date(expires),
   });
-  audit.record({ userId: user.id, entity: 'session', action: 'login', after: method === 'password' ? null : { second_factor: method } });
   const roles = auth.rolesForUser(user.id);
-  const caps = capabilities.capsForRoles(roles);
+  const uObj = { id: user.id, roles, access_until: user.access_until, approval_limit: user.approval_limit, workshop_id: user.workshop_id };
+  const caps = capabilities.effectiveCaps(uObj);
   const st = mfa.status(user.id, roles);
   return res.json({
     id: user.id,
     username: user.username,
     fullName: user.full_name,
     roles,
-    permissions: permissions.userLevels({ id: user.id, roles }),
+    permissions: permissions.effectiveUserPermissions(uObj),
     caps,
     capNeeds: capabilities.needsFor(caps),
     mustChangePassword: !!user.must_change_password,
@@ -280,13 +280,18 @@ router.get('/me', (req, res) => {
   const u = get('SELECT signature FROM users WHERE id = ?', req.user.id);
   // The session token is the key to this account; it lives in an httpOnly cookie precisely so page
   // script cannot read it. Echoing it back in a JSON body would undo that.
-  const { token: _token, levels, ...me } = req.user;
+  const { token: _token, ...me } = req.user;
   // Home workshop, and whether there is more than one (multi-site Stage 2): the screens show
   // workshop pickers and filters only when there is.
   const ws = require('../lib/workshops');
   const home = ws.byId(ws.homeOf(req.user));
-  // Each switch's level for this person: their own where set, else their roles' (access plan, Part 2).
-  res.json({ ...me, permissions: levels || permissions.userLevels(req.user), hasSignature: !!(u && u.signature),
+  // effectiveUserPermissions, not userPermissions: the first reads the person's OWN levels where
+  // they have any and falls back to their roles', the second only ever answers the roles' template.
+  // The sign-in reply already answers the effective set, so a level given or taken from one person
+  // applied until the page next asked /auth/me and was handed the role template back -- a level
+  // taken away reappeared, one granted vanished, and the per-person screen looked like it had done
+  // nothing. The whole point of that screen is that a person can differ from their role.
+  res.json({ ...me, permissions: permissions.effectiveUserPermissions(req.user), hasSignature: !!(u && u.signature),
     workshop: home ? { id: home.id, code: home.code, name: home.name } : null, workshopsMulti: ws.isMulti(),
     // Stage 3: whether this person sees every workshop's job cards (always, until scoping is on).
     seesAllWorkshops: require('../lib/scope').seesAllJobs(req.user),

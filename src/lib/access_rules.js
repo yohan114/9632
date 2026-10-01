@@ -15,11 +15,8 @@
 //   3. There is always an admin. The last active admin cannot be switched off or demoted — by
 //      anyone, including themselves — because recovering from that needs shell access to the
 //      server (scripts/admin.js).
-//   4. Nobody changes their own access (access plan, Part 2): a person's own levels are set by
-//      someone else, admin or not.
 //
-// "What you hold" is your own level on each switch: your roles', or your own where one was set
-// for you. Admins pass rules 1 and 2 by definition; rules 3 and 4 apply to everybody.
+// Admins pass rules 1 and 2 by definition; rule 3 applies to everybody.
 // ===========================================================================
 
 const { get, all } = require('../db');
@@ -34,10 +31,17 @@ function capsOf(user) {
   return Array.isArray(user.caps) ? user.caps : capabilities.capsForRoles(user.roles || []);
 }
 
+/** Safety Rule (Plan §B.4): nobody can change their own access. */
+function assertNotSelf(actor, targetUserId) {
+  if (actor && actor.id && targetUserId && Number(actor.id) === Number(targetUserId)) {
+    fail(403, 'You cannot modify your own access permissions.');
+  }
+}
+
 /** Rule 1, for permissions. */
 function assertCanGrantCaps(actor, caps) {
   if (isAdmin(actor)) return;
-  const mine = new Set(capsOf(actor));
+  const mine = new Set(capabilities.effectiveCaps(actor));
   const missing = caps.filter((c) => !mine.has(c));
   if (missing.length) {
     fail(403, `You can only give permissions you hold yourself. Not yours: ${missing.map((c) => (capabilities.get(c) || { label: c }).label).join('; ')}`);
@@ -47,7 +51,7 @@ function assertCanGrantCaps(actor, caps) {
 /** Rule 1, for section clearance levels. */
 function assertCanSetLevel(actor, moduleKey, level) {
   if (isAdmin(actor)) return;
-  const mine = permissions.levelFor(actor, moduleKey);
+  const mine = permissions.effectiveLevel(actor, moduleKey);
   if (permissions.rank(level) > permissions.rank(mine)) {
     fail(403, `You can only set ${moduleKey} as high as your own clearance (${mine}).`);
   }
@@ -64,7 +68,7 @@ function assertCanAssignRoles(actor, roleNames) {
     if (missing.length) fail(403, `You cannot give the role "${role}": it has permissions you do not hold (${missing.length}).`);
     for (const m of permissions.MODULE_KEYS) {
       const need = permissions.levelForRoles([role], m);
-      const have = permissions.levelFor(actor, m);
+      const have = permissions.levelForRoles(actor.roles || [], m);
       if (permissions.rank(need) > permissions.rank(have)) {
         fail(403, `You cannot give the role "${role}": it has more ${m} clearance than you (${need}).`);
       }
@@ -91,24 +95,11 @@ function assertCanManageUser(actor, targetUserId) {
   if (userIsAdmin(targetUserId)) fail(403, 'Only an admin can change an admin account.');
   const theirRoles = all(`SELECT r.name FROM user_roles ur JOIN roles r ON r.id = ur.role_id
                            WHERE ur.user_id = ?`, targetUserId).map((r) => r.name);
-  const within = () => {
-    assertCanAssignRoles(actor, theirRoles);
-    // Their own levels too, where some were set for them above their roles'.
-    const theirs = permissions.userLevels({ id: targetUserId, roles: theirRoles });
-    for (const m of permissions.MODULE_KEYS) {
-      if (permissions.rank(theirs[m]) > permissions.rank(permissions.levelFor(actor, m))) fail(403, 'above yours');
-    }
-  };
   try {
-    within();
+    assertCanAssignRoles(actor, theirRoles);
   } catch (e) {
     fail(403, 'You can only change accounts whose access is within your own. Ask an admin.');
   }
-}
-
-/** Rule 4: not your own access. */
-function assertNotOwn(actor, targetUserId) {
-  if (actor && Number(actor.id) === Number(targetUserId)) fail(403, 'You cannot change your own access. Ask another manager or an admin.');
 }
 
 function activeAdminIds() {
@@ -131,7 +122,10 @@ function assertKeepsAnAdmin({ userId, deactivate = false, newRoles = null }) {
   }
 }
 
+// main's routes call this rule assertNotOwn; it is the same rule, under the name this branch uses.
+const assertNotOwn = assertNotSelf;
+
 module.exports = {
-  isAdmin, assertCanGrantCaps, assertCanSetLevel, assertCanAssignRoles, assertCanManageUser, assertNotOwn,
-  assertKeepsAnAdmin, activeAdminIds, userIsAdmin,
+  isAdmin, assertCanGrantCaps, assertCanSetLevel, assertCanAssignRoles, assertCanManageUser,
+  assertKeepsAnAdmin, activeAdminIds, userIsAdmin, assertNotSelf, assertNotOwn,
 };

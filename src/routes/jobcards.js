@@ -337,6 +337,8 @@ router.get(
     const mrnItems = all(
       `SELECT m.id AS mrn_id, m.mrn_no, m.req_date, m.approval_status,
               ml.id AS mrn_line_id, ml.description, ml.category, ml.qty, ml.qty_received,
+              ml.buying_priority, ml.priority_note, ml.priority_updated_at, ml.priority_updated_by,
+              ml.purchase_source, ml.purchased_at,
               g.id AS grn_id, g.grn_no, g.delivery_date, g.unit_price,
               ROUND((COALESCE((SELECT SUM(i.qty) FROM issues i WHERE i.grn_id = g.id), 0) - COALESCE((SELECT SUM(r.qty) FROM issue_returns r JOIN issues ir ON ir.id = r.issue_id WHERE ir.grn_id = g.id), 0)), 2) AS qty_issued,
               ROUND(MAX(0, COALESCE(g.qty, ml.qty_received, 0) - (COALESCE((SELECT SUM(i.qty) FROM issues i WHERE i.grn_id = g.id), 0) - COALESCE((SELECT SUM(r.qty) FROM issue_returns r JOIN issues ir ON ir.id = r.issue_id WHERE ir.grn_id = g.id), 0))), 2) AS remaining_in_store
