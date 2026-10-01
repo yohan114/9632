@@ -3297,14 +3297,13 @@ router.get('/mtn/:id', asyncHandler((req, res) => {
                      LEFT JOIN assets ta ON ta.id = m.to_asset_id
                     WHERE m.id = ? OR m.mtn_no = ?`, id, req.params.id);
   if (!mtn) return res.status(404).json({ error: 'MTN not found' });
-  const lines = all(`SELECT l.*, fa.code AS line_from_asset, ta.code AS line_to_asset,
-                            fs.name AS from_store, ts.name AS to_store
-                       FROM mtn_lines l
-                       LEFT JOIN assets fa ON fa.id = l.from_asset_id
-                       LEFT JOIN assets ta ON ta.id = l.to_asset_id
-                       LEFT JOIN workshops fs ON fs.id = l.from_store_id
-                       LEFT JOIN workshops ts ON ts.id = l.to_store_id
-                      WHERE l.mtn_id = ? ORDER BY l.line_no, l.id`, mtn.id);
+  // mtnLines() rather than a second copy of the same joins: it is what POST /mtn and
+  // PATCH /mtn/:id already answer with, and it names the per-line asset from_asset_code /
+  // to_asset_code. The copy that stood here called them line_from_asset / line_to_asset, so this
+  // one endpoint answered in different words from the other two, and the transfer screens in
+  // public/app.js -- which read l.from_asset_code -- showed a blank where the source machine
+  // should be. Nothing reads the line_* spelling.
+  const lines = mtnLines(mtn.id);
   const approvals = all(
     `SELECT a.*, u.username FROM mtn_approvals a
      LEFT JOIN users u ON u.id = a.approver_id

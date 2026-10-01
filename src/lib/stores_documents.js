@@ -494,8 +494,12 @@ function renderMrnDocumentHtml(mrnId, { forPdf = false } = {}) {
 
   for (let i = 0; i < Math.max(MIN_ROWS, lines.length); i++) {
     const l = lines[i];
+    // The mark names who added the line and when, not just that someone did. A reader holding the
+    // paper is being told this item was never approved, so the next question is always "added by
+    // whom?" -- and the answer has to be on the form, because the audit log is not in the room.
     const addedMark = (l && l.added_after_approval)
-      ? ` <span style="font-size:9px;border:1px solid #333;padding:0 2px">ADDED AFTER APPROVAL</span>` : '';
+      ? ` <span style="font-size:9px;border:1px solid #333;padding:0 3px">ADDED AFTER APPROVAL${
+        l.added_by ? ' — ' + esc(l.added_by) : ''}${l.added_at ? ', ' + esc(String(l.added_at).slice(0, 10)) : ''}</span>` : '';
 
     rows.push(`
       <tr>
