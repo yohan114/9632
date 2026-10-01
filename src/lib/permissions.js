@@ -39,7 +39,7 @@ const SECTIONS = [
   { id: 7, key: 'lubricants', label: 'Lubricant Capacities', icon: '🛢️', group: 'Fleet', enforce: true },
   { id: 8, key: 'assets', label: 'Assets', icon: '🚛', group: 'Fleet', enforce: true },
   { id: 9, key: 'labour', label: 'Labour Rates', icon: '💼', group: 'Fleet', enforce: true },
-  { id: 10, key: 'stores', label: 'Stores', icon: '📦', group: 'Inventory', enforce: true, parts: [{ key: 'oil', label: 'Oil & Lube' }, { key: 'batteries', label: 'Batteries' }, { key: 'filters', label: 'Filters & Prices' }] },
+  { id: 10, key: 'stores', label: 'Stores', icon: '📦', group: 'Inventory', enforce: true, parts: [{ key: 'oil', label: 'Oil & Lube' }, { key: 'batteries', label: 'Batteries' }, { key: 'filters', label: 'Filters & Prices' }, { key: 'tools', label: 'Tools & Toolboxes' }] },
   { id: 11, key: 'service_plan', label: 'Service & Filter Plan', icon: '📈', group: 'Operations', enforce: true },
   { id: 12, key: 'projects', label: 'Projects', icon: '🏗️', group: 'Fleet', enforce: true },
   { id: 13, key: 'aliases', label: 'Alias Queue', icon: '🏷️', group: 'Fleet', enforce: true },
@@ -62,6 +62,7 @@ const PART_MODULES = [
   { key: 'oil', label: 'Oil & Lube', enforce: true, parent: 'stores' },
   { key: 'batteries', label: 'Batteries', enforce: true, parent: 'stores' },
   { key: 'filters', label: 'Filters & Prices', enforce: true, parent: 'stores' },
+  { key: 'tools', label: 'Tools & Toolboxes', enforce: true, parent: 'stores' },
   { key: 'tb_request', label: 'T&B · Request', enforce: false, parent: 'tb_requests' },
   { key: 'tb_purchase', label: 'T&B · Send to purchase', enforce: false, parent: 'tb_requests' },
   { key: 'tb_grn', label: 'T&B · Receive (GRN)', enforce: false, parent: 'tb_requests' },
@@ -157,6 +158,22 @@ const DEFAULT_MATRIX = {
     projects: 'view', aliases: 'view', attention: 'view', daily_progress: 'view', cost_teardown: 'view',
     purchasing: 'view', tb_requests: 'view', tb_request: 'view', tb_purchase: 'view', tb_grn: 'view', tb_issue: 'view',
     tb_reports: 'view', reports: 'view', workshops: 'view', access: 'none', users: 'none'
+  },
+  engineer: {
+    dashboard: 'view', jobs: 'edit', jobrequests: 'edit', field: 'edit', operations: 'edit',
+    dailywork: 'view', services: 'edit', lubricants: 'view', assets: 'view', labour: 'view',
+    stores: 'view', oil: 'view', batteries: 'view', filters: 'view', service_plan: 'edit',
+    projects: 'view', aliases: 'view', attention: 'view', daily_progress: 'view', cost_teardown: 'view',
+    purchasing: 'view', tb_requests: 'view', tb_request: 'view', tb_purchase: 'none', tb_grn: 'none', tb_issue: 'none',
+    tb_reports: 'view', reports: 'view', workshops: 'view', access: 'none', users: 'none'
+  },
+  assistant_engineer: {
+    dashboard: 'view', jobs: 'edit', jobrequests: 'edit', field: 'edit', operations: 'view',
+    dailywork: 'view', services: 'view', lubricants: 'view', assets: 'view', labour: 'none',
+    stores: 'view', oil: 'view', batteries: 'view', filters: 'view', service_plan: 'view',
+    projects: 'view', aliases: 'none', attention: 'view', daily_progress: 'view', cost_teardown: 'view',
+    purchasing: 'none', tb_requests: 'view', tb_request: 'view', tb_purchase: 'none', tb_grn: 'none', tb_issue: 'none',
+    tb_reports: 'view', reports: 'view', workshops: 'none', access: 'none', users: 'none'
   }
 };
 

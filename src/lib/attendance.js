@@ -359,8 +359,10 @@ function day(date, { queue = false, ws = null, split = false } = {}) {
   const extra = [...new Set([...atts.keys(), ...booked.byMech.keys()])];
   let mechs = all(
     `SELECT id, name, active FROM mechanics
-      WHERE active = 1 ${extra.length ? `OR id IN (${extra.map(() => '?').join(',')})` : ''}
-      ORDER BY name COLLATE NOCASE`, ...extra);
+      WHERE ((active = 1 AND (left_date IS NULL OR left_date > ?))
+             OR (left_date IS NOT NULL AND left_date > ?))
+            ${extra.length ? `OR id IN (${extra.map(() => '?').join(',')})` : ''}
+      ORDER BY name COLLATE NOCASE`, date, date, ...extra);
   // One workshop: its mechanics on that day (where each belonged on the date, Stage 2).
   if (w) mechs = mechs.filter((m) => workshops().mechanicWorkshop(m.id, date) === w);
 

@@ -101,6 +101,7 @@ app.use('/api/oil', requireModule('oil'), require('./routes/oil'));
 app.use('/api/batteries', requireModule('batteries'), require('./routes/batteries'));
 app.use('/api/filters', requireModule('filters'), require('./routes/filters'));
 app.use('/api/filter-stock', requireModule('filters'), require('./routes/filter_stock'));
+app.use('/api/tools', require('./routes/tools'));
 app.use('/api/stock-cockpit', require('./routes/stock_cockpit'));
 app.use('/api/jobs', requireModule('jobs'), require('./routes/jobcards'));
 app.use('/api/job-requests', requireModule('jobrequests'), require('./routes/jobrequests'));
@@ -129,7 +130,14 @@ app.use('/api/tb', require('./routes/tyre_battery_requests'));
 // Buying what the workshop asked for. Gated on its own module so the two purchasing officers see
 // the queue and nobody else does; WHICH of the two channels each sees is decided inside the router
 // by role, because a permission level can say "may use this screen" but not "may use half of it".
-app.use('/api/purchasing', requireModule('purchasing'), require('./routes/purchasing'));
+// Priority changes happen from the workshop and stores screens day-to-day, so those two endpoints
+// are open to anyone who holds the capability or workshop/stores role (checked inside the router).
+const PURCHASING_PRIORITY_PATH = /^\/lines\/\d+\/(priority|priority-history)$/;
+const purchasingGate = (req, res, next) =>
+  PURCHASING_PRIORITY_PATH.test(req.path)
+    ? next()
+    : requireModule('purchasing')(req, res, next);
+app.use('/api/purchasing', purchasingGate, require('./routes/purchasing'));
 
 // Static frontend (SPA). index.html is served with a per-boot cache-bust token on
 // app.js / styles.css so a normal reload always picks up the latest build.

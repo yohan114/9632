@@ -282,13 +282,21 @@ router.get('/monthly-summary', asyncHandler(async (req, res) => {
   }
 
   const totalLabourCost = [...mechMap.values()].reduce((s, m) => s + (m.total_cost || 0), 0);
+  const mechStatusMap = new Map(all('SELECT name, status, active, left_date, left_reason FROM mechanics').map((m) => [m.name, m]));
 
   const laborSummary = [...mechMap.values()]
-    .map((m) => ({
-      ...m,
-      total_hours: Math.round(m.total_hours * 100) / 100,
-      total_cost: Math.round(m.total_cost * 100) / 100,
-    }))
+    .map((m) => {
+      const st = mechStatusMap.get(m.mechanic) || {};
+      return {
+        ...m,
+        status: st.status || 'active',
+        active: st.active !== undefined ? st.active : 1,
+        left_date: st.left_date || null,
+        left_reason: st.left_reason || null,
+        total_hours: Math.round(m.total_hours * 100) / 100,
+        total_cost: Math.round(m.total_cost * 100) / 100,
+      };
+    })
     .sort((a, b) => b.total_cost - a.total_cost);
   const mechanicsCount = laborSummary.length;
 

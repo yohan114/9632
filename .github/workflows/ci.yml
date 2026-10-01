@@ -1,0 +1,54 @@
+# Runs the test suite on every push to main and on every pull request.
+#
+# The suite is the whole check: there is no linter or type checker in package.json, and `npm test`
+# is `node --test`, which picks up every test/*.test.js on its own. A test file is expected to build
+# its own database under a temp DB_PATH (see test/monthly_report_labour.test.js), because the runner
+# here is a clean checkout — no data/, no .env, nothing seeded. A test that reads the committed tree
+# instead will fail here, which is the point: that is the bug this workflow was added to catch.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Least privilege: the suite only reads the checkout.
+permissions:
+  contents: read
+
+# A new push to a branch makes the run already in flight on it pointless.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Tests (Node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      # One version failing is worth knowing about on the other, so don't cancel its sibling.
+      fail-fast: false
+      matrix:
+        # 20 is the floor package.json declares; 22 is current. Both are kept green so the floor
+        # stays a real promise rather than one nobody checks.
+        node: ['20', '22']
+
+    steps:
+      - name: Check out the branch
+        uses: actions/checkout@v4
+
+      - name: Install Node ${{ matrix.node }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      # npm ci, not npm install: it installs exactly what package-lock.json pins, and fails rather
+      # than quietly rewriting the lockfile. better-sqlite3 is native, and ships prebuilds for these
+      # versions on linux-x64, so nothing is compiled here in the normal case.
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run the test suite
+        run: npm test

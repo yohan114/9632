@@ -37,6 +37,7 @@ const CAPABILITIES = [
 
   // ---- labour --------------------------------------------------------------------------------
   C('mechanics.create', 'labour', 'Add a mechanic', ['manager'], null, 'labour'),
+  C('mechanics.edit', 'labour', 'Edit labourer status, resignation or profile', ['manager'], null, 'labour'),
   C('labour.rates.edit', 'labour', 'Set a mechanic\'s labour rate', ['manager'], null, 'labour'),
   C('mechanics.move', 'labour', 'Move a mechanic to another workshop', ['manager'], null, 'labour'),
 
@@ -93,11 +94,17 @@ const CAPABILITIES = [
   C('stores.mrn.amend_settled', 'stores', 'Amend a settled MRN after issues have posted', ['operational_manager', 'manager'], 'stores', 'stores'),
   C('stores.grn.receive', 'stores', 'Receive goods into the workshop store (GRN)', ['storekeeper'], 'stores', 'stores'),
   C('stores.grn.edit', 'stores', 'Price or edit a goods receipt (GRN)', ['storekeeper'], 'stores', 'stores'),
+  C('stores.grn.approve', 'stores', 'Approve a Goods Received Note (GRN)', ['operational_manager', 'manager', 'workshop'], null, 'stores'),
+  C('stores.grn.reject', 'stores', 'Reject a Goods Received Note (GRN)', ['operational_manager', 'manager', 'workshop'], null, 'stores'),
   C('stores.issue', 'stores', 'Hand over parts against an approved MRN', ['storekeeper'], 'stores', 'stores'),
   C('stores.stock_issue', 'stores', 'Issue catalogue parts from the shelf onto a job card', ['storekeeper'], 'stores', 'stores'),
+  C('stores.min.approve', 'stores', 'Approve a Material Issue Note (MIN)', ['workshop', 'operational_manager', 'manager'], null, 'stores'),
+  C('stores.min.reject', 'stores', 'Reject a Material Issue Note (MIN)', ['workshop', 'operational_manager', 'manager'], null, 'stores'),
   C('stores.reorder_mrn', 'stores', 'Generate restock MRNs from stock cockpit reorder lines', ['storekeeper', 'manager'], 'stores', 'stores'),
   C('stores.stock.rebuild', 'stores', 'Rebuild stock balances from the ledgers (maintenance)', ['storekeeper', 'manager'], 'stores', 'stores'),
   C('stores.mtn.edit', 'stores', 'Create, send, receive or cancel Material Transfer Notes (MTN)', ['storekeeper'], 'stores', 'stores'),
+  C('stores.mtn.approve', 'stores', 'Approve a Material Transfer Note (MTN)', ['workshop', 'operational_manager', 'manager'], null, 'stores'),
+  C('stores.mtn.reject', 'stores', 'Reject a Material Transfer Note (MTN)', ['workshop', 'operational_manager', 'manager'], null, 'stores'),
   C('stores.issue_return', 'stores', 'Return an issued part to store stock', ['storekeeper'], 'stores', 'stores'),
   C('stores.stock.count', 'stores', 'Open and record physical stock counts', ['storekeeper', 'manager'], 'stores', 'stores'),
   C('stores.stock.levels', 'stores', 'Set a store\'s reorder levels', ['storekeeper', 'manager'], 'stores', 'stores'),
@@ -107,6 +114,13 @@ const CAPABILITIES = [
   C('general.items.edit', 'stores', 'Add a general rack item', ['storekeeper'], 'stores', 'stores'),
   C('general.stock.adjust', 'stores', 'Adjust a general rack item\'s stock', ['storekeeper'], 'stores', 'stores'),
   C('general.items.price', 'stores', 'Set a general rack item\'s price', ['storekeeper'], 'stores', 'stores'),
+
+  // ---- tools & toolboxes (workshop tooling, daily stores issue, engineer scrap approval) ------
+  C('tools.view', 'stores', 'View tools inventory, mechanic toolboxes, daily logs and scrap records', ['storekeeper', 'workshop', 'engineer', 'assistant_engineer', 'operational_manager', 'manager'], 'stores', 'stores'),
+  C('tools.manage', 'stores', 'Register, edit and reassign workshop tools and mechanic toolboxes', ['storekeeper', 'manager'], 'stores', 'stores'),
+  C('tools.issue', 'stores', 'Check out and check in tools on the daily stores log', ['storekeeper'], 'stores', 'stores'),
+  C('tools.damage.report', 'stores', 'Report a broken or damaged tool and raise a scrap request', ['storekeeper', 'workshop', 'manager'], 'stores', 'stores'),
+  C('tools.scrap.approve', 'stores', 'Inspect broken tools and approve or reject removal to scrap', ['engineer', 'assistant_engineer', 'operational_manager', 'manager'], null, 'stores'),
 
   // ---- oil & lubricants ----------------------------------------------------------------------
   C('oil.identity.resolve', 'oil', 'Decide which oil-book product a lubricant name is', ['storekeeper'], 'oil', 'stores'),
@@ -133,6 +147,7 @@ const CAPABILITIES = [
   C('purchasing.head_office', 'purchasing', 'Work the Head Office purchasing channel', ['purchase_head_office'], 'purchasing', 'purchasing'),
   C('purchasing.local', 'purchasing', 'Work the Local purchasing channel', ['purchase_local'], 'purchasing', 'purchasing'),
   C('purchasing.all_channels', 'purchasing', 'Work both purchasing channels (managers)', ['manager', 'operational_manager'], 'purchasing', 'purchasing'),
+  C('purchasing.priority_edit', 'purchasing', 'Adjust buying priorities and urgency notes', ['workshop', 'operational_manager', 'manager', 'purchase_head_office', 'purchase_local'], 'purchasing', 'purchasing'),
 
   // ---- reports -------------------------------------------------------------------------------
   C('reports.daily.notes', 'reports', 'Write notes on the daily reports', ['workshop', 'operational_manager', 'manager', 'storekeeper'], null, 'daily_progress'),
