@@ -1366,8 +1366,6 @@ function toolsAndToolboxesProcess() {
         if (first) nameToId.set(first, m.id);
       }
 
-      const insMech = db.prepare('INSERT INTO mechanics (name, name_norm, active) VALUES (?, ?, 1)');
-
       for (const t of seedTools) {
         const mKey = (t.mechanic_name || '').toLowerCase();
         const first = mKey.split(/[\s/]/)[0];
@@ -1375,18 +1373,16 @@ function toolsAndToolboxesProcess() {
         if (!resolvedId && validIds.has(t.mechanic_id)) {
           resolvedId = t.mechanic_id;
         }
-        // If the mechanic does not exist yet (e.g. fresh test DB), create the mechanic record
-        if (!resolvedId && t.mechanic_name) {
-          try {
-            const info = insMech.run(t.mechanic_name, t.mechanic_name.toLowerCase());
-            resolvedId = info.lastInsertRowid;
-            validIds.add(resolvedId);
-            nameToId.set(mKey, resolvedId);
-            if (first) nameToId.set(first, resolvedId);
-          } catch (_e) {
-            resolvedId = null;
-          }
-        }
+        // A mechanic this database has never heard of is NOT invented here. mechanics is master
+        // data owned by the labour migration and the alias resolver, and this is schema setup: a
+        // toolbox arriving with a name nobody employs yet must not add that person to the payroll.
+        // It did, and because migrate() runs for every test, every database in the suite gained
+        // Nimesh, Nawathilaka, Seethananda/seetha and Theminda -- so each test that reads back
+        // "the mechanics on this day" or "this workshop's mechanics" saw four people it never
+        // created. The toolbox is not lost: mechanic_name below keeps the label the sheet came
+        // with, and the row links itself the moment that mechanic does exist. On the real database
+        // these five are present already (the labour migration imports them from sources/), so
+        // there they resolve above and nothing here changes.
 
         ins.run(
           t.tool_code, t.name, t.category, t.type, resolvedId || null, t.mechanic_name,
@@ -1395,6 +1391,34 @@ function toolsAndToolboxesProcess() {
           t.condition || 'good', t.status || 'in_use'
         );
       }
+    }
+  }
+
+  // Link any toolbox still waiting for its mechanic. The tools above are seeded while the schema is
+  // being built, which is before the labour migration or the demo seed has created anybody, and the
+  // seed block is gated on the table being empty so it never comes round again -- so on a fresh
+  // database every toolbox would otherwise stay unlinked for good. This pass runs on every migrate
+  // and fills in mechanic_id once that person exists, matching the way the seed does: the whole
+  // name, or its first word, since the sheets write "Seethananda" for "Seethananda/seetha". It
+  // touches only rows that have no mechanic yet, so it is safe to re-run every boot and will not
+  // overwrite a link someone has since corrected by hand.
+  const waiting = db.prepare(
+    `SELECT id, mechanic_name FROM workshop_tools
+      WHERE mechanic_id IS NULL AND mechanic_name IS NOT NULL AND TRIM(mechanic_name) <> ''`
+  ).all();
+  if (waiting.length) {
+    const byName = new Map();
+    for (const m of db.prepare('SELECT id, name FROM mechanics').all()) {
+      const n = String(m.name || '').toLowerCase();
+      if (n && !byName.has(n)) byName.set(n, m.id);
+      const first = n.split(/[\s/]/)[0];
+      if (first && !byName.has(first)) byName.set(first, m.id);
+    }
+    const link = db.prepare('UPDATE workshop_tools SET mechanic_id = ? WHERE id = ?');
+    for (const t of waiting) {
+      const n = String(t.mechanic_name).toLowerCase();
+      const id = byName.get(n) || byName.get(n.split(/[\s/]/)[0]);
+      if (id) link.run(id, t.id);
     }
   }
 }
