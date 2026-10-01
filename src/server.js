@@ -109,7 +109,11 @@ app.use('/api/batteries', requireModule('batteries'), require('./routes/batterie
 app.use('/api/filters', requireModule('filters'), require('./routes/filters'));
 app.use('/api/filter-stock', requireModule('filters'), require('./routes/filter_stock'));
 app.use('/api/tools', require('./routes/tools'));
-app.use('/api/stock-cockpit', require('./routes/stock_cockpit'));
+// The stock cockpit reads the whole stores position, so it needs Stores clearance. This branch
+// mounted it bare and its own routes ask only for requireAuth, which left every signed-in account
+// -- including a role deliberately given nothing -- able to read it. main gated the mount; that
+// gate is kept, in this branch's vocabulary.
+app.use('/api/stock-cockpit', requireModule('stores'), require('./routes/stock_cockpit'));
 app.use('/api/jobs', requireModule('jobs'), require('./routes/jobcards'));
 app.use('/api/job-requests', requireModule('jobrequests'), require('./routes/jobrequests'));
 app.use('/api/daily-work', requireModule('dailywork'), require('./routes/dailywork'));
