@@ -6369,7 +6369,11 @@ async function mrnDetail(body, id) {
   const canMrnEdit = canDo('stores.mrn.edit');
   const canGrnPrice = canDo('stores.grn.edit');
   const canGrnIssue = canDo('stores.stock_issue');
-  const canPrio = canDo('purchasing.priority_edit') || canDo('stores.mrn.edit') || (ME && ME.roles && (ME.roles.includes('workshop') || ME.roles.includes('manager') || ME.roles.includes('operational_manager')));
+  // No role-name fallback here. workshop, manager and operational_manager are all seeded with
+  // purchasing.priority_edit already, so naming them added nothing -- except a way back in for a
+  // person an admin had deliberately revoked the capability from, since a role name cannot be
+  // revoked per person the way a capability can.
+  const canPrio = canDo('purchasing.priority_edit') || canDo('stores.mrn.edit');
   const lineCol = canRx || canMrnEdit || canPrio; // the action column on the item lines
   const grnCol = canGrnPrice || canGrnIssue;    // the action column on the received records
   const astatus0 = m.approval_status || 'requested';
