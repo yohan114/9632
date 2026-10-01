@@ -23,12 +23,12 @@ const { get, all, run } = require('../db');
 const scope = require('./scope');
 const jobstate = require('./jobstate');
 const review = require('./job_review');
-const { meets, levelForRoles } = require('./permissions');
+const { reaches } = require('./permissions');
 
 const isAdmin = (user) => require('./access_rules').isAdmin(user);
 const hasCap = (user, cap) => require('./auth').hasCap(user, cap);
 /** May this person see a module's records at all (the same test as requireModule's GET; admin: always)? */
-const sees = (user, module) => meets(levelForRoles((user && user.roles) || [], module), 'view');
+const sees = (user, module) => reaches(user, module);
 const today = () => { const d = new Date(); return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10); };
 const day10 = (v) => (v ? String(v).slice(0, 10) : null);
 const daysSince = (d, now = today()) => (d ? Math.max(0, Math.round((Date.parse(now) - Date.parse(day10(d))) / 86400000)) : null);
@@ -651,7 +651,7 @@ function monitor(user) {
   out.finishing = { work_done: fc.work_done, partly_closed: fc.partly_closed, ready: fc.ready };
   const fieldInUse = !!get('SELECT 1 x FROM job_cards WHERE field = 1 LIMIT 1');
   out.watch = {
-    breakdowns_down: fieldInUse ? require('./field').downCount(user) : null,
+    breakdowns_down: fieldInUse && sees(user, 'field') ? require('./field').downCount(user) : null,
     reopen: n.reopen,
     stuck: n.stuck,
     two_open: jobstate.duplicateOpenJobs({ workshopId: r }).length,

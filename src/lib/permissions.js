@@ -306,8 +306,66 @@ function clearUserPermissions(userId) {
   run('DELETE FROM user_permissions WHERE user_id = ?', userId);
 }
 
+// ---------------------------------------------------------------------------
+// The access helpers main's Part 1/2 built, over this branch's primitives.
+//
+// Both lineages implemented the same design -- five levels, a role template with a per-person
+// override -- and this branch's version is the base here. What main had that this did not is a
+// finer-grained guard vocabulary: requireView and reaches take SEVERAL switches and pass if any
+// one of them opens, which requireModule cannot say. Nine files main wrote use it. Rewriting
+// those call sites into requireModule would quietly coarsen them (a route opened by "field OR
+// jobs" would become one or the other), so the helpers are provided here instead and the routes
+// keep their meaning.
+// ---------------------------------------------------------------------------
+
+/** The level a request implies: reading needs view, creating needs add, anything else edit. */
+const needFor = (method) => (method === 'GET' || method === 'HEAD' ? 'view' : (method === 'POST' ? 'add' : 'edit'));
+
+/** One person's level on one switch. */
+const levelFor = (user, sectionKey) => effectiveLevel(user, sectionKey);
+
+/** Every switch's level for one person. */
+const userLevels = (user) => effectiveUserPermissions(user);
+
+/** Does this person reach ANY of these switches at this level? An admin always does. */
+function reaches(user, keys, need = 'view') {
+  if (!user) return false;
+  if (user.roles && user.roles.includes('admin')) return true;
+  return (Array.isArray(keys) ? keys : [keys]).some((k) => meets(effectiveLevel(user, k), need));
+}
+
+/** Router guard for a section that any one of several switches opens. */
+function requireView(...keys) {
+  return (req, res, next) => {
+    if (!req.user) return res.status(401).json({ error: 'Authentication required' });
+    if (reaches(req.user, keys)) return next();
+    return res.status(403).json({ error: `Your account has no view access to ${keys.join(' or ')}` });
+  };
+}
+
+/** A person's own level on a switch; null or '' drops them back to what their roles give. */
+function setPersonal(userId, sectionKey, level) {
+  if (level === null || level === undefined || level === '') return removeUserPermission(userId, sectionKey);
+  return setUserPermission(userId, sectionKey, level);
+}
+
+// A section split off an older shared switch starts at that switch's level. The sections here were
+// written as their own from the start and carry no `from`, so SPLIT is empty and this does
+// nothing -- it stays because src/db/index.js calls it on every migrate.
+const SPLIT = MODULES.filter((m) => m.from).map((m) => [m.key, m.from]);
+function splitSections() {
+  let copied = 0;
+  for (const [key, from] of SPLIT) {
+    copied += run(`INSERT OR IGNORE INTO role_permissions (role, module, level)
+                   SELECT role, ?, level FROM role_permissions WHERE module = ?`, key, from).changes;
+  }
+  return { copied };
+}
+
 module.exports = {
   LEVELS, SECTIONS, SECTION_KEYS, MODULES, MODULE_KEYS, DEFAULT_MATRIX, rank, meets,
   seedDefaults, levelForRoles, effectiveLevel, effectiveUserPermissions, userPermissions,
   isAccessExpired, requireModule, getMatrix, setPermission, setUserPermission, removeUserPermission, clearUserPermissions,
+  // main's helpers, implemented above over the same primitives
+  needFor, levelFor, userLevels, reaches, requireView, setPersonal, SPLIT, splitSections,
 };

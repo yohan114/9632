@@ -122,7 +122,10 @@ function assertKeepsAnAdmin({ userId, deactivate = false, newRoles = null }) {
   }
 }
 
+// main's routes call this rule assertNotOwn; it is the same rule, under the name this branch uses.
+const assertNotOwn = assertNotSelf;
+
 module.exports = {
   isAdmin, assertCanGrantCaps, assertCanSetLevel, assertCanAssignRoles, assertCanManageUser,
-  assertKeepsAnAdmin, activeAdminIds, userIsAdmin, assertNotSelf,
+  assertKeepsAnAdmin, activeAdminIds, userIsAdmin, assertNotSelf, assertNotOwn,
 };

@@ -77,7 +77,14 @@ app.use('/api', (req, res, next) => {
 // user (they feed dropdowns + dashboards) and are hidden at the nav level only.
 app.use('/api/auth', require('./routes/auth'));
 app.use('/api/access', require('./routes/access'));
-app.use('/api/assets', requireModule('assets'), require('./routes/assets'));
+// The picker lists stay open to anyone signed in; anything else about a vehicle needs Assets.
+// This only relaxes the MODULE check -- the global /api gate above still demands a session -- and
+// routes/assets.js trims those two responses to PICKER_FIELDS, so no cost or history goes with
+// them. Without this the hard gate 403s the pickers before the route can trim them, which is the
+// shape this merge first produced: a hard gate from one lineage over a trimming route from the other.
+const PICKER_PATH = new Set(['/', '/search']);
+const assetsGate = (req, res, next) => (req.method === 'GET' && PICKER_PATH.has(req.path) ? next() : requireModule('assets')(req, res, next));
+app.use('/api/assets', assetsGate, require('./routes/assets'));
 app.use('/api/aliases', require('./routes/aliases'));
 // Job Cards: the Monitor and the Requests list (job cards plan). Checks its own module access.
 app.use('/api/job-flow', require('./routes/jobflow'));

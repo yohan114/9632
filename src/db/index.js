@@ -87,6 +87,12 @@ function migrate() {
     level  TEXT NOT NULL DEFAULT 'none',
     PRIMARY KEY (role, module)
   );`);
+  // A person's own level on a section switch, set on the People screen (access plan, Part 2). It
+  // replaces their roles' level on that switch — more or less. No row: their roles decide.
+  // user_permissions is defined below, keyed by `section`. main's lineage declared the same table
+  // here keyed by `module`; both arrived in this merge and CREATE TABLE IF NOT EXISTS meant the
+  // first one won silently, leaving the index on `section` to fail at boot. This branch keeps the
+  // `section` spelling, so main's copy is gone rather than duplicated.
   // Capabilities — the individual actions a role may take (src/lib/capabilities.js). Keyed by role
   // NAME like role_permissions. Taking a capability away sets granted = 0 instead of deleting the
   // row, so the boot-time seed (INSERT OR IGNORE) can never quietly give it back.
@@ -710,6 +716,9 @@ function migrate() {
   toolsAndToolboxesProcess();
 
   // Seed the RBAC matrix once (safe to require here — db exports are already set).
+  // Sections split off a shared switch start at that switch's level (access plan, Part 1) — before
+  // the defaults, so a level an admin set on the old switch carries over rather than the default.
+  try { require('../lib/permissions').splitSections(); } catch (e) { /* table may not exist yet on very first pass */ }
   try { require('../lib/permissions').seedDefaults(); } catch (e) { /* table may not exist yet on very first pass */ }
   // Seed the built-in roles' capabilities (idempotent) and mark those roles as shipped with the
   // system, so the Access screen can tell them apart from roles an admin created.
