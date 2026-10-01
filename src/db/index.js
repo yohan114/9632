@@ -705,6 +705,9 @@ function migrate() {
   storesCountsPart2();
   storesServicesPart3();
   storesUnitsPart4();
+  storesDocumentsProcess();
+  labourLifecycleProcess();
+  toolsAndToolboxesProcess();
 
   // Seed the RBAC matrix once (safe to require here — db exports are already set).
   try { require('../lib/permissions').seedDefaults(); } catch (e) { /* table may not exist yet on very first pass */ }
@@ -976,6 +979,423 @@ function storesUnitsPart4() {
     const issues = db.prepare('SELECT id FROM tyre_battery_issues WHERE spec_id IS NOT NULL').all().map((r) => r.id);
     if (grn.length || issues.length) require('../lib/stock').sync({ grn, tyre_battery_issues: issues });
     db.prepare("INSERT INTO settings (key, value) VALUES ('stock_tb_by_spec', ?)").run(JSON.stringify({ at: new Date().toISOString(), grn: grn.length, issues: issues.length }));
+  }
+}
+
+// 4-Document Store Lifecycle (MRN, GRN, MIN, MTN) with multi-stage signoffs and PDF support.
+function storesDocumentsProcess() {
+  // Safe migration of grn_vouchers and min_notes status constraints
+  db.pragma('foreign_keys = OFF');
+  try {
+    const gCur = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='grn_vouchers'").get();
+    if (gCur && !/'pending_approval'/.test(gCur.sql)) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS grn_vouchers_new (
+          id               INTEGER PRIMARY KEY AUTOINCREMENT,
+          grn_no           TEXT NOT NULL UNIQUE,
+          received_date    TEXT NOT NULL DEFAULT (date('now')),
+          supplier         TEXT,
+          project_site     TEXT,
+          po_no            TEXT,
+          invoice_no       TEXT,
+          delivery_note_no TEXT,
+          bin_card_page    TEXT,
+          prepared_by      TEXT,
+          prepared_sig     TEXT,
+          prepared_at      TEXT,
+          prepared_designation TEXT,
+          approved_by      TEXT,
+          approved_sig     TEXT,
+          approved_at      TEXT,
+          approved_designation TEXT,
+          status           TEXT NOT NULL DEFAULT 'pending_approval',
+          rejection_reason TEXT,
+          created_at       TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        INSERT OR IGNORE INTO grn_vouchers_new (id, grn_no, received_date, supplier, project_site, po_no, invoice_no, delivery_note_no, bin_card_page, prepared_by, prepared_sig, prepared_at, approved_by, approved_sig, approved_at, status, created_at)
+          SELECT id, grn_no, received_date, supplier, project_site, po_no, invoice_no, delivery_note_no, bin_card_page, prepared_by, prepared_sig, prepared_at, approved_by, approved_sig, approved_at, status, created_at FROM grn_vouchers;
+        DROP TABLE grn_vouchers;
+        ALTER TABLE grn_vouchers_new RENAME TO grn_vouchers;
+        CREATE INDEX IF NOT EXISTS idx_grn_vouchers_no ON grn_vouchers(grn_no);
+      `);
+    }
+
+    const mCur = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='min_notes'").get();
+    if (mCur && !/'pending_approval'/.test(mCur.sql)) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS min_notes_new (
+          id            INTEGER PRIMARY KEY AUTOINCREMENT,
+          min_no        TEXT NOT NULL UNIQUE,
+          issue_date    TEXT NOT NULL DEFAULT (date('now')),
+          project_id    INTEGER REFERENCES projects(id),
+          asset_id      INTEGER REFERENCES assets(id),
+          job_id        INTEGER REFERENCES job_cards(id),
+          workshop_id   INTEGER REFERENCES workshops(id),
+          purpose       TEXT,
+          requested_by  TEXT,
+          requested_sig TEXT,
+          requested_at  TEXT,
+          requested_designation TEXT,
+          approved_by   TEXT,
+          approved_sig  TEXT,
+          approved_at   TEXT,
+          approved_designation TEXT,
+          received_by   TEXT,
+          received_sig  TEXT,
+          received_at   TEXT,
+          received_designation TEXT,
+          status        TEXT NOT NULL DEFAULT 'requested',
+          rejection_reason TEXT,
+          created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        INSERT OR IGNORE INTO min_notes_new (id, min_no, issue_date, project_id, asset_id, job_id, workshop_id, purpose, requested_by, requested_sig, requested_at, approved_by, approved_sig, approved_at, received_by, received_sig, received_at, status, created_at)
+          SELECT id, min_no, issue_date, project_id, asset_id, job_id, workshop_id, purpose, requested_by, requested_sig, requested_at, approved_by, approved_sig, approved_at, received_by, received_sig, received_at, status, created_at FROM min_notes;
+        DROP TABLE min_notes;
+        ALTER TABLE min_notes_new RENAME TO min_notes;
+        CREATE INDEX IF NOT EXISTS idx_min_notes_no ON min_notes(min_no);
+        CREATE INDEX IF NOT EXISTS idx_min_notes_job ON min_notes(job_id);
+        CREATE INDEX IF NOT EXISTS idx_min_notes_asset ON min_notes(asset_id);
+      `);
+    }
+  } finally {
+    db.pragma('foreign_keys = ON');
+  }
+
+  // 1. Material Issue Notes (MIN) — Doc. No. EC1.ST.FO.04
+  db.exec(`CREATE TABLE IF NOT EXISTS min_notes (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    min_no        TEXT NOT NULL UNIQUE,
+    issue_date    TEXT NOT NULL DEFAULT (date('now')),
+    project_id    INTEGER REFERENCES projects(id),
+    asset_id      INTEGER REFERENCES assets(id),
+    job_id        INTEGER REFERENCES job_cards(id),
+    workshop_id   INTEGER REFERENCES workshops(id),
+    purpose       TEXT,
+    requested_by  TEXT,
+    requested_sig TEXT,
+    requested_at  TEXT,
+    requested_designation TEXT,
+    approved_by   TEXT,
+    approved_sig  TEXT,
+    approved_at   TEXT,
+    approved_designation TEXT,
+    received_by   TEXT,
+    received_sig  TEXT,
+    received_at   TEXT,
+    received_designation TEXT,
+    status        TEXT NOT NULL DEFAULT 'requested',
+    rejection_reason TEXT,
+    created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_min_notes_no ON min_notes(min_no);
+  CREATE INDEX IF NOT EXISTS idx_min_notes_job ON min_notes(job_id);
+  CREATE INDEX IF NOT EXISTS idx_min_notes_asset ON min_notes(asset_id);`);
+
+  ensureColumn('issues', 'min_id', 'INTEGER REFERENCES min_notes(id)');
+  ensureColumn('issues', 'min_no', 'TEXT');
+  ensureColumn('issues', 'purpose', 'TEXT');
+  ensureColumn('issues', 'unit', "TEXT DEFAULT 'nos'");
+  db.exec('CREATE INDEX IF NOT EXISTS idx_issues_min_id ON issues(min_id)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_issues_min_no ON issues(min_no)');
+
+  // 2. Goods Received Notes (GRN) — Doc. No. EC1.ST.FO.2:5:21.12
+  db.exec(`CREATE TABLE IF NOT EXISTS grn_vouchers (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    grn_no           TEXT NOT NULL UNIQUE,
+    received_date    TEXT NOT NULL DEFAULT (date('now')),
+    supplier         TEXT,
+    project_site     TEXT,
+    po_no            TEXT,
+    invoice_no       TEXT,
+    delivery_note_no TEXT,
+    bin_card_page    TEXT,
+    prepared_by      TEXT,
+    prepared_sig     TEXT,
+    prepared_at      TEXT,
+    prepared_designation TEXT,
+    approved_by      TEXT,
+    approved_sig     TEXT,
+    approved_at      TEXT,
+    approved_designation TEXT,
+    status           TEXT NOT NULL DEFAULT 'pending_approval',
+    rejection_reason TEXT,
+    created_at       TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_grn_vouchers_no ON grn_vouchers(grn_no);`);
+
+  ensureColumn('grn', 'voucher_id', 'INTEGER REFERENCES grn_vouchers(id)');
+  ensureColumn('grn', 'po_no', 'TEXT');
+  ensureColumn('grn', 'delivery_note_no', 'TEXT');
+  ensureColumn('grn', 'bin_card_page', 'TEXT');
+  ensureColumn('grn', 'prepared_by', 'TEXT');
+  ensureColumn('grn', 'prepared_sig', 'TEXT');
+  ensureColumn('grn', 'prepared_at', 'TEXT');
+  ensureColumn('grn', 'approved_by', 'TEXT');
+  ensureColumn('grn', 'approved_sig', 'TEXT');
+  ensureColumn('grn', 'approved_at', 'TEXT');
+  ensureColumn('grn', 'unit', "TEXT DEFAULT 'nos'");
+  ensureColumn('grn', 'status', "TEXT DEFAULT 'received'");
+  ensureColumn('grn', 'rejection_reason', 'TEXT');
+  ensureColumn('grn', 'project_site', 'TEXT');
+
+  // 3. Materials / Goods Transfer Notes (MTN) — Doc. No. EC1.ST.FO.05
+  ensureColumn('mtn', 'mr_no', 'TEXT');
+  ensureColumn('mtn', 'prepared_by', 'TEXT');
+  ensureColumn('mtn', 'prepared_sig', 'TEXT');
+  ensureColumn('mtn', 'prepared_at', 'TEXT');
+  ensureColumn('mtn', 'prepared_designation', 'TEXT');
+  ensureColumn('mtn', 'approved_by', 'TEXT');
+  ensureColumn('mtn', 'approved_sig', 'TEXT');
+  ensureColumn('mtn', 'approved_at', 'TEXT');
+  ensureColumn('mtn', 'approved_designation', 'TEXT');
+  ensureColumn('mtn', 'received_by', 'TEXT');
+  ensureColumn('mtn', 'received_sig', 'TEXT');
+  ensureColumn('mtn', 'received_at', 'TEXT');
+  ensureColumn('mtn', 'received_designation', 'TEXT');
+  ensureColumn('mtn', 'accepted_by', 'TEXT');
+  ensureColumn('mtn', 'accepted_sig', 'TEXT');
+  ensureColumn('mtn', 'accepted_at', 'TEXT');
+  ensureColumn('mtn', 'accepted_designation', 'TEXT');
+  ensureColumn('mtn', 'status', "TEXT DEFAULT 'draft'");
+  ensureColumn('mtn', 'rejection_reason', 'TEXT');
+  ensureColumn('mtn_lines', 'value', 'REAL DEFAULT 0');
+  ensureColumn('mtn_lines', 'mr_no', 'TEXT');
+  ensureColumn('mtn_lines', 'remarks', 'TEXT');
+
+  // 4. MRN signatures (requested, certified, approved)
+  ensureColumn('mrn', 'requested_sig', 'TEXT');
+  ensureColumn('mrn', 'certified_sig', 'TEXT');
+  ensureColumn('mrn', 'approved_sig', 'TEXT');
+
+  // 5. Approval Trails for GRN, MIN, and MTN (parity with mrn_approvals)
+  db.exec(`CREATE TABLE IF NOT EXISTS grn_approvals (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    voucher_id  INTEGER NOT NULL,
+    stage       TEXT NOT NULL,          -- 'prepare' | 'approve'
+    role        TEXT,
+    approver_id INTEGER REFERENCES users(id),
+    signed_name TEXT,
+    signature   TEXT,
+    decision    TEXT NOT NULL,          -- 'approved' | 'rejected'
+    reason      TEXT,
+    created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_grn_approvals_voucher ON grn_approvals(voucher_id);`);
+
+  db.exec(`CREATE TABLE IF NOT EXISTS min_approvals (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    min_id      INTEGER NOT NULL,
+    stage       TEXT NOT NULL,          -- 'request' | 'approve' | 'receive'
+    role        TEXT,
+    approver_id INTEGER REFERENCES users(id),
+    signed_name TEXT,
+    signature   TEXT,
+    decision    TEXT NOT NULL,          -- 'approved' | 'rejected'
+    reason      TEXT,
+    created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_min_approvals_min ON min_approvals(min_id);`);
+
+  db.exec(`CREATE TABLE IF NOT EXISTS mtn_approvals (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    mtn_id      INTEGER NOT NULL REFERENCES mtn(id) ON DELETE CASCADE,
+    stage       TEXT NOT NULL,          -- 'prepare' | 'approve' | 'dispatch' | 'accept'
+    role        TEXT,
+    approver_id INTEGER REFERENCES users(id),
+    signed_name TEXT,
+    signature   TEXT,
+    decision    TEXT NOT NULL,          -- 'approved' | 'rejected'
+    reason      TEXT,
+    created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_mtn_approvals_mtn ON mtn_approvals(mtn_id);`);
+}
+
+// Labour Lifecycle: track active, resigned, and transferred statuses with departure dates.
+function labourLifecycleProcess() {
+  ensureColumn('mechanics', 'status', "TEXT NOT NULL DEFAULT 'active'");
+  ensureColumn('mechanics', 'left_date', 'TEXT');
+  ensureColumn('mechanics', 'left_reason', 'TEXT');
+  ensureColumn('mechanics', 'notes', 'TEXT');
+
+  db.exec("UPDATE mechanics SET status = 'resigned' WHERE active = 0 AND status = 'active';");
+}
+
+// Workshop Tools, Mechanic Toolboxes, Daily Store Issues & Scrap Workflow
+function toolsAndToolboxesProcess() {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS workshop_tools (
+      id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+      tool_code           TEXT UNIQUE NOT NULL,
+      name                TEXT NOT NULL,
+      category            TEXT NOT NULL DEFAULT 'hand_tool',
+      type                TEXT NOT NULL DEFAULT 'common',
+      mechanic_id         INTEGER REFERENCES mechanics(id) ON DELETE SET NULL,
+      mechanic_name       TEXT,
+      toolbox_name        TEXT,
+      brand               TEXT,
+      model_no            TEXT,
+      serial_no           TEXT,
+      specifications      TEXT,
+      workshop_id         INTEGER REFERENCES workshops(id) ON DELETE SET NULL,
+      store_id            INTEGER,
+      location            TEXT,
+      purchase_date       TEXT,
+      purchase_cost       REAL DEFAULT 0,
+      replacement_cost    REAL DEFAULT 0,
+      condition           TEXT NOT NULL DEFAULT 'good',
+      status              TEXT NOT NULL DEFAULT 'in_store',
+      active              INTEGER NOT NULL DEFAULT 1,
+      notes               TEXT,
+      created_at          TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at          TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_tools_type ON workshop_tools(type, active);
+    CREATE INDEX IF NOT EXISTS idx_tools_mech ON workshop_tools(mechanic_id);
+    CREATE INDEX IF NOT EXISTS idx_tools_status ON workshop_tools(status);
+
+    CREATE TABLE IF NOT EXISTS tool_issue_logs (
+      id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+      log_no              TEXT UNIQUE NOT NULL,
+      tool_id             INTEGER NOT NULL REFERENCES workshop_tools(id),
+      mechanic_id         INTEGER REFERENCES mechanics(id),
+      issued_to_name      TEXT NOT NULL,
+      job_id              INTEGER REFERENCES job_cards(id),
+      job_no              TEXT,
+      issue_date          TEXT NOT NULL,
+      issue_time          TEXT,
+      condition_out       TEXT NOT NULL DEFAULT 'good',
+      issued_by           INTEGER NOT NULL REFERENCES users(id),
+      issued_by_name      TEXT,
+      purpose             TEXT,
+      expected_return_date TEXT,
+      return_date         TEXT,
+      return_time         TEXT,
+      condition_in        TEXT,
+      received_by         INTEGER REFERENCES users(id),
+      received_by_name    TEXT,
+      return_notes        TEXT,
+      status              TEXT NOT NULL DEFAULT 'issued',
+      created_at          TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_tool_logs_date ON tool_issue_logs(issue_date);
+    CREATE INDEX IF NOT EXISTS idx_tool_logs_status ON tool_issue_logs(status);
+
+    CREATE TABLE IF NOT EXISTS tool_scrap_requests (
+      id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+      request_no          TEXT UNIQUE NOT NULL,
+      tool_id             INTEGER NOT NULL REFERENCES workshop_tools(id),
+      tool_code           TEXT NOT NULL,
+      tool_name           TEXT NOT NULL,
+      type                TEXT NOT NULL DEFAULT 'common',
+      mechanic_id         INTEGER REFERENCES mechanics(id),
+      mechanic_name       TEXT,
+      damage_date         TEXT NOT NULL,
+      damage_reason       TEXT NOT NULL,
+      incident_description TEXT,
+      reported_by         INTEGER NOT NULL REFERENCES users(id),
+      reported_by_name    TEXT,
+      reported_at         TEXT NOT NULL DEFAULT (datetime('now')),
+      status              TEXT NOT NULL DEFAULT 'pending_approval',
+      engineer_id         INTEGER REFERENCES users(id),
+      engineer_name       TEXT,
+      engineer_role       TEXT,
+      engineer_decision   TEXT,
+      engineer_remarks    TEXT,
+      engineer_signature  TEXT,
+      decided_at          TEXT,
+      scrap_date          TEXT,
+      scrap_bin_ref       TEXT,
+      replacement_requested INTEGER NOT NULL DEFAULT 0,
+      replacement_mrn_id  INTEGER,
+      created_at          TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at          TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_tool_scrap_status ON tool_scrap_requests(status);
+
+    INSERT OR IGNORE INTO roles (name, label, is_system, active) VALUES ('engineer', 'Mechanical / Workshop Engineer', 1, 1);
+    INSERT OR IGNORE INTO roles (name, label, is_system, active) VALUES ('assistant_engineer', 'Assistant Engineer', 1, 1);
+  `);
+
+  // Seed default tool items if empty
+  const countRow = db.prepare('SELECT COUNT(*) AS c FROM workshop_tools').get();
+  if (countRow && countRow.c === 0) {
+    const mechs = db.prepare('SELECT id, name FROM mechanics WHERE active = 1 ORDER BY id LIMIT 3').all();
+    const commonTools = [
+      ['TL-COM-001', '1/2-Inch Digital Torque Wrench (40-200 Nm)', 'measuring', 'common', null, null, 'Main Tool Crib Bay A', 'Koken', 'TW-200D', 'Calibrated high precision digital torque wrench', 48500, 52000, 'good', 'in_store'],
+      ['TL-COM-002', '1-Inch Heavy Duty Air Impact Wrench', 'pneumatic', 'common', null, null, 'Pneumatic Tool Rack', 'Ingersoll Rand', 'IR-2175', 'Max torque 2700 Nm for heavy truck wheel nuts', 125000, 135000, 'good', 'in_store'],
+      ['TL-COM-003', '20-Ton Heavy Hydraulic Bottle Jack', 'lifting', 'common', null, null, 'Bay 1 Heavy Equipment Rack', 'Omega', 'HJ-20T', 'Welded steel base, overload protection', 38000, 42000, 'good', 'in_store'],
+      ['TL-COM-004', 'Universal Hydraulic Bearing & Gear Puller Set (10-Ton)', 'special', 'common', null, null, 'Special Tools Shelf C', 'Koken', 'BP-10T', '2 & 3 jaw arms, separator attachments', 64000, 70000, 'good', 'in_store'],
+      ['TL-COM-005', 'Automotive Diagnostic Multimeter & Insulation Tester', 'measuring', 'common', null, null, 'Diagnostic Station Locker', 'Fluke', 'Fluke-88V', 'CAT IV 600V with RPM inductive pickup', 95000, 105000, 'good', 'in_store'],
+      ['TL-COM-006', 'Angle Grinder 4-Inch 850W with Safety Guard', 'power_tool', 'common', null, null, 'Fabrication Bench 2', 'Makita', '9557HNG', '11000 RPM slide switch grinder', 24500, 26500, 'good', 'in_store'],
+      ['TL-COM-007', 'Portable Inverter Arc Welding Plant 200A (IGBT)', 'welding', 'common', null, null, 'Welding Bay Bay W', 'Jasic', 'ARC-200', 'Duty cycle 60%, hot start & anti-stick', 78000, 85000, 'good', 'in_store'],
+      ['TL-COM-008', 'Heavy Duty Cooling System Pressure Tester & Vacuum Purge Kit', 'measuring', 'common', null, null, 'Radiator Service Station', 'Stant', 'ST-270', 'Adapters for commercial trucks and heavy machines', 32000, 36000, 'good', 'in_store'],
+      ['TL-COM-009', 'Heavy Duty Hydraulic Transmission Floor Jack 1.5-Ton', 'lifting', 'common', null, null, 'Service Pit Bay 3', 'Torin', 'TEL-150', '360-degree rotating handle, safety tie chain', 88000, 95000, 'good', 'in_store'],
+      ['TL-COM-010', 'Universal Heavy Diesel Engine Compression Tester Kit', 'measuring', 'common', null, null, 'Engine Clean Room', 'OTC', 'OTC-5020', 'Includes glow plug and injector adapters', 42000, 46000, 'good', 'in_store']
+    ];
+
+    const ins = db.prepare(`
+      INSERT INTO workshop_tools (tool_code, name, category, type, mechanic_id, mechanic_name, toolbox_name, location, brand, model_no, specifications, purchase_cost, replacement_cost, condition, status)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    for (const t of commonTools) {
+      ins.run(t[0], t[1], t[2], t[3], t[4], t[5], null, t[6], t[7], t[8], t[9], t[10], t[11], t[12], t[13]);
+    }
+
+    // Seed authentic mechanic toolboxes (Nimesh, Nawathilaka, Anura, Seethananda, Theminda)
+    let seedTools = [];
+    try {
+      const seedFile = path.join(__dirname, '..', 'data', 'mechanics_tools_seed.json');
+      if (fs.existsSync(seedFile)) {
+        seedTools = JSON.parse(fs.readFileSync(seedFile, 'utf8'));
+      }
+    } catch (_err) {
+      /* ignore */
+    }
+
+    if (seedTools.length > 0) {
+      // Dynamically map mechanic names to actual IDs in current database
+      const existingMechs = db.prepare('SELECT id, name FROM mechanics').all();
+      const nameToId = new Map();
+      const validIds = new Set();
+      for (const m of existingMechs) {
+        validIds.add(m.id);
+        nameToId.set(m.name.toLowerCase(), m.id);
+        const first = m.name.toLowerCase().split(/[\s/]/)[0];
+        if (first) nameToId.set(first, m.id);
+      }
+
+      const insMech = db.prepare('INSERT INTO mechanics (name, name_norm, active) VALUES (?, ?, 1)');
+
+      for (const t of seedTools) {
+        const mKey = (t.mechanic_name || '').toLowerCase();
+        const first = mKey.split(/[\s/]/)[0];
+        let resolvedId = nameToId.get(mKey) || nameToId.get(first);
+        if (!resolvedId && validIds.has(t.mechanic_id)) {
+          resolvedId = t.mechanic_id;
+        }
+        // If the mechanic does not exist yet (e.g. fresh test DB), create the mechanic record
+        if (!resolvedId && t.mechanic_name) {
+          try {
+            const info = insMech.run(t.mechanic_name, t.mechanic_name.toLowerCase());
+            resolvedId = info.lastInsertRowid;
+            validIds.add(resolvedId);
+            nameToId.set(mKey, resolvedId);
+            if (first) nameToId.set(first, resolvedId);
+          } catch (_e) {
+            resolvedId = null;
+          }
+        }
+
+        ins.run(
+          t.tool_code, t.name, t.category, t.type, resolvedId || null, t.mechanic_name,
+          t.toolbox_name, t.location, t.brand || 'Workshop Standard', t.model_no || '',
+          t.specifications || '', t.purchase_cost || 0, t.replacement_cost || 0,
+          t.condition || 'good', t.status || 'in_use'
+        );
+      }
+    }
   }
 }
 

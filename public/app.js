@@ -131,6 +131,15 @@ const moneyC = (n) => { n = Number(n) || 0; const a = Math.abs(n); return a >= 1
 const MONTH_NAMES = ['', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const monthName = (m) => { const [y, mo] = String(m).split('-'); return (MONTH_NAMES[+mo] || mo) + ' ' + y; };
 
+const ROAD_WORD = { done: 'done', part: 'part done', now: 'waiting here', todo: 'not yet', wait: 'not yet', stop: 'stopped' };
+function roadBar(r) {
+  if (!r) return '';
+  const road = Array.isArray(r) ? r : (r.road || []);
+  if (!road.length) return '';
+  return `<div class="road">${road.map((x) => `<span class="rd rd-${x.state}" title="${esc(x.label)}: ${esc(ROAD_WORD[x.state] || x.state)}">${esc(x.label)}</span>`).join('')}</div>`;
+}
+const docRoadBar = roadBar;
+
 // Lazy-load Chart.js (dashboard charts). Resolves cb(true/false) — degrades gracefully offline.
 let _chartLoading;
 function loadChartJs(cb) {
@@ -515,6 +524,7 @@ const LIVE_ENTITY_ROUTES = {
   battery: ['batteries', 'stockcockpit', 'stocktake', 'stores'], asset: ['assets'],
   mechanic: ['mechanics', 'labour', 'workshops'], labour_rate: ['labour', 'mechanics'], mechanic_alias: ['mechanics'],
   workshop: ['workshops', 'access', 'jobs'],
+  workshop_tool: ['tools', 'stores'], tool_issue_log: ['tools', 'stores'], tool_scrap_request: ['tools'],
 };
 const LIVE_AGG_ROUTES = ['dashboard', 'attention']; // aggregate views refresh on ANY change
 let _liveWired = false;
@@ -755,8 +765,9 @@ const NAV = [
   ['services', '🛠️', 'Service Records'],
   ['lubecapacities', '🛢️', 'Lubricant Capacities'],
   ['assets', '🚜', 'Assets'],
-  ['labour', '💵', 'Labour Rates'],
+  ['labour', '👷', 'Labour & Mechanics'],
   ['stores', '📦', 'Stores'],
+  ['tools', '🧰', 'Tools & Toolboxes'],
   ['serviceplan', '🗓️', 'Service & Filter Plan'],
   ['projects', '🏗️', 'Projects'],
   ['aliases', '🔗', 'Alias Queue'],
@@ -773,7 +784,7 @@ const NAV = [
 // Which permission module governs each nav item's visibility (dashboard always on).
 const NAV_MODULE = {
   assets: 'assets', jobs: 'jobs', jobrequests: 'jobrequests', field: 'jobs', operations: 'assets', dailywork: 'dailywork', services: 'filters', lubecapacities: 'jobs',
-  labour: 'labour', stores: 'stores', stocktake: 'stores', stockcockpit: 'stores', generalstock: 'stores', oil: 'oil', batteries: 'batteries', filters: 'filters', filterstock: 'filters',
+  labour: 'labour', stores: 'stores', tools: 'tools', stocktake: 'stores', stockcockpit: 'stores', generalstock: 'stores', oil: 'oil', batteries: 'batteries', filters: 'filters', filterstock: 'filters',
   projects: 'projects', aliases: 'aliases', attention: 'reports', progress: 'reports',
   teardown: 'reports', reports: 'reports', tyrebattery: 'reports',
   // The request screen belongs to whoever may raise one. The ledger above stays on 'reports',
@@ -798,7 +809,7 @@ function navVisible(n) {
 const NAV_GROUP_ORDER = ['Operations', 'Inventory', 'Procurement', 'Fleet', 'Analysis', 'Admin'];
 const NAV_GROUP = {
   dashboard: 'Operations', jobs: 'Operations', jobrequests: 'Operations', field: 'Operations', operations: 'Operations', dailywork: 'Operations', services: 'Operations', lubecapacities: 'Operations',
-  stores: 'Inventory', stocktake: 'Inventory',
+  stores: 'Inventory', tools: 'Inventory', stocktake: 'Inventory',
   purchasing: 'Procurement', tbrequests: 'Procurement',
   assets: 'Fleet', serviceplan: 'Fleet',
   reports: 'Analysis', attention: 'Analysis', progress: 'Analysis', teardown: 'Analysis', tyrebattery: 'Analysis', aliases: 'Analysis', projects: 'Analysis', labour: 'Analysis',
@@ -2329,8 +2340,13 @@ routes.dailywork = async (c) => {
     qs('#dwm-count').textContent = `${list.length} laborer${list.length === 1 ? '' : 's'}`;
     // Attendance on: hours at work, hours booked and utilisation, over the days the tally runs.
     const att = currentMonthlyData.attendance;
-    const rows = list.map((l) => `<tr>
-      <td><b>${esc(l.mechanic)}</b></td>
+    const rows = list.map((l) => {
+      const isResigned = l.status === 'resigned' || l.active === 0;
+      const statusBadge = isResigned
+        ? ` <span class="badge red" style="font-size:10.5px;padding:2px 6px;margin-left:5px" title="Resigned/Left on ${esc(l.left_date || '')}${l.left_reason ? ' (' + esc(l.left_reason) + ')' : ''}">Resigned${l.left_date ? ' · ' + esc(l.left_date.slice(5)) : ''}</span>`
+        : '';
+      return `<tr>
+      <td><b>${esc(l.mechanic)}</b>${statusBadge}</td>
       <td class="num"><b>${num(l.total_hours)} hrs</b></td>
       <td class="num">${l.rate === 0 ? '<span class="badge blue">Staff / Foreman (Rs 0/h)</span>' : (l.rate != null ? money(l.rate) + '/h' : '<span class="badge amber">no rate</span>')}</td>
       <td class="num">${money(l.total_cost)}</td>
@@ -2338,7 +2354,8 @@ routes.dailywork = async (c) => {
       ${att ? `<td class="num">${l.attended_hours ? fmtH(l.attended_hours) : '—'}</td>
       <td class="num">${l.booked_hours ? fmtH(l.booked_hours) : '—'}</td>
       <td class="num">${l.utilisation == null ? '—' : `<span class="badge ${l.utilisation > 100 ? 'red' : l.utilisation >= 85 ? 'green' : 'amber'}">${l.utilisation}%</span>`}</td>` : ''}
-    </tr>`);
+    </tr>`;
+    });
     const heads = [{ label: 'Laborer / Mechanic' }, { label: 'Monthly Working Hours', num: true }, { label: 'Hourly Rate', num: true }, { label: 'Monthly Labour Cost', num: true }, { label: 'Work Entries', num: true }];
     if (att) heads.push({ label: 'Attended', num: true }, { label: 'Booked', num: true }, { label: 'Utilisation', num: true });
     qs('#dwm-table').innerHTML = list.length
@@ -2353,7 +2370,24 @@ routes.dailywork = async (c) => {
     const sel = qs('#dw-mech-select');
     if (!sel) return;
     const curVal = sel.value;
-    sel.innerHTML = '<option value="">All Laborers</option>' + (mechanicsList || []).map((l) => `<option value="${esc(l.mechanic)}">${esc(l.mechanic)} (${l.total_hours}h)</option>`).join('');
+    const active = [];
+    const resigned = [];
+    (mechanicsList || []).forEach((l) => {
+      if (l.status === 'resigned' || l.active === 0) resigned.push(l);
+      else active.push(l);
+    });
+    let html = '<option value="">All Laborers</option>';
+    if (active.length) {
+      html += `<optgroup label="Active Laborers (${active.length})">` +
+        active.map((l) => `<option value="${esc(l.mechanic)}">${esc(l.mechanic)} (${l.total_hours}h)</option>`).join('') +
+        `</optgroup>`;
+    }
+    if (resigned.length) {
+      html += `<optgroup label="Resigned / Left (${resigned.length})">` +
+        resigned.map((l) => `<option value="${esc(l.mechanic)}">${esc(l.mechanic)} (${l.total_hours}h · Resigned)</option>`).join('') +
+        `</optgroup>`;
+    }
+    sel.innerHTML = html;
     if (curVal && sel.querySelector(`option[value="${CSS.escape ? CSS.escape(curVal) : curVal}"]`)) {
       sel.value = curVal;
     }
@@ -2959,15 +2993,19 @@ async function hoursLeftHint(box, { date, rows, excludeLine = null }) {
 
 // Log a single daily-work entry from the Daily Work section (day by day).
 async function addWorkDoneModal(defaultDate, onDone) {
-  let mechs = [];
-  try { mechs = await api('/mechanics'); } catch (e) { /* falls back to an empty list */ }
-  const mechOpts = mechs.map((m) => `<option value="${esc(m.name)}">${esc(m.name)}${m.rate != null ? ' · Rs ' + m.rate + '/h' : ' · no rate'}</option>`).join('');
+  const curDate = defaultDate || today();
+  const fetchMechs = async (dt) => {
+    try { return await api('/mechanics?active=1&date=' + encodeURIComponent(dt || today())); } catch (e) { return []; }
+  };
+  let mechs = await fetchMechs(curDate);
+  const renderMechOpts = (list) => list.map((m) => `<option value="${esc(m.name)}">${esc(m.name)}${m.rate != null ? ' · Rs ' + m.rate + '/h' : ' · no rate'}${m.workshop_code ? ' [' + esc(m.workshop_code) + ']' : ''}</option>`).join('');
+
   modal('Add Work Done', `
-    ${field('Date', 'work_date', { type: 'date', value: defaultDate })}
+    ${field('Date', 'work_date', { type: 'date', value: curDate })}
     ${targetPickerHtml('dwt', { label: 'Work for', generalLabel: 'General workshop', generalVehicle: true })}
     ${field('Description of work', 'description')}
     <label>Mechanic(s)</label>
-    <select id="dwmech"><option value="">— add a mechanic —</option>${mechOpts}</select>
+    <select id="dwmech"><option value="">— add a mechanic —</option>${renderMechOpts(mechs)}</select>
     <div id="dwcrew" class="pill-row" style="margin:6px 0;min-height:6px"></div>
     <input type="hidden" name="mechanic">
     ${field('Hours', 'hours', { type: 'number' })}
@@ -2990,7 +3028,16 @@ async function addWorkDoneModal(defaultDate, onDone) {
       qsa('[data-rm]', chips).forEach((el) => { el.onclick = () => { const i = crew.indexOf(el.dataset.rm); if (i >= 0) crew.splice(i, 1); paint(); }; });
       hint();
     };
-    for (const n of ['work_date', 'hours', 'is_external']) qs(`input[name=${n}]`, body).addEventListener(n === 'hours' ? 'input' : 'change', hint);
+    qs('input[name=work_date]', body).addEventListener('change', async (e) => {
+      hint();
+      const dt = e.target.value;
+      if (dt) {
+        const fresh = await fetchMechs(dt);
+        const sel = qs('#dwmech', body);
+        if (sel) sel.innerHTML = '<option value="">— add a mechanic —</option>' + renderMechOpts(fresh);
+      }
+    });
+    for (const n of ['hours', 'is_external']) qs(`input[name=${n}]`, body).addEventListener(n === 'hours' ? 'input' : 'change', hint);
     qs('#dwmech', body).onchange = (e) => { const v = e.target.value; if (v && !crew.includes(v)) { crew.push(v); paint(); } e.target.value = ''; };
     qs('#s', body).onclick = async () => {
       const f = formData(body);
@@ -3008,16 +3055,19 @@ async function addWorkDoneModal(defaultDate, onDone) {
 
 // Rapid multi-row timesheet logging grid for mechanics across jobs
 async function quickTimesheetGridModal(defaultDate, onDone) {
-  let mechs = [];
-  try { mechs = await api('/mechanics'); } catch (e) { }
-  const mechListOptions = mechs.map((m) => `<option value="${esc(m.name)}">${esc(m.name)}${m.rate != null ? ' (Rs ' + m.rate + '/h)' : ''}</option>`).join('');
+  const curDate = defaultDate || today();
+  const fetchMechs = async (dt) => {
+    try { return await api('/mechanics?active=1&date=' + encodeURIComponent(dt || today())); } catch (e) { return []; }
+  };
+  let mechs = await fetchMechs(curDate);
+  const renderMechDl = (list) => list.map((m) => `<option value="${esc(m.name)}">${esc(m.name)}${m.rate != null ? ' (Rs ' + m.rate + '/h)' : ''}${m.workshop_code ? ' [' + esc(m.workshop_code) + ']' : ''}</option>`).join('');
 
   modal('Quick Timesheet Grid', `
     <p class="muted" style="margin-top:0">Log daily mechanic hours across vehicles/job cards rapidly in a single grid. Blank rows will be ignored.</p>
     <div class="row" style="margin-bottom:12px;align-items:center">
       <div style="max-width:200px">
         <label>Date</label>
-        <input type="date" id="tg-date" value="${esc(defaultDate || new Date().toISOString().slice(0, 10))}">
+        <input type="date" id="tg-date" value="${esc(curDate)}">
       </div>
       <div class="spacer"></div>
       <button class="sm" id="tg-add-rows">+ Add 5 Rows</button>
@@ -3036,7 +3086,7 @@ async function quickTimesheetGridModal(defaultDate, onDone) {
         <tbody id="tg-tbody"></tbody>
       </table>
     </div>
-    <datalist id="tg-mech-dl">${mechListOptions}</datalist>
+    <datalist id="tg-mech-dl">${renderMechDl(mechs)}</datalist>
     <div id="tg-hint" style="font-size:12px;margin-top:8px"></div>
     <div style="margin-top:14px;display:flex;align-items:center">
       <button class="sm" id="tg-add-1">+ Add Row</button>
@@ -3115,9 +3165,16 @@ async function quickTimesheetGridModal(defaultDate, onDone) {
 // deleting the line and logging it again against the right card.
 async function editWorkDoneModal(entry, onDone) {
   if (!entry) return toast('Entry not found — refresh the day', 'err');
+  const curDate = String(entry.work_date || '').slice(0, 10) || today();
   let mechs = [];
-  try { mechs = await api('/mechanics'); } catch (e) { /* falls back to typing names */ }
-  const mechOpts = mechs.map((m) => `<option value="${esc(m.name)}">${esc(m.name)}${m.rate != null ? ' · Rs ' + m.rate + '/h' : ' · no rate'}</option>`).join('');
+  try { mechs = await api('/mechanics?active=1&date=' + encodeURIComponent(curDate)); } catch (e) { /* falls back to typing names */ }
+  const existingCrew = String(entry.mechanic || '').split(/\s*(?:,|&|\+|\band\b)\s*/i).map((s) => s.trim()).filter(Boolean);
+  for (const n of existingCrew) {
+    if (!mechs.some((m) => m.name.toLowerCase() === n.toLowerCase())) {
+      mechs.push({ name: n, rate: null, active: 0, status: 'resigned' });
+    }
+  }
+  const mechOpts = mechs.map((m) => `<option value="${esc(m.name)}">${esc(m.name)}${m.rate != null ? ' · Rs ' + m.rate + '/h' : ' · no rate'}${m.status === 'resigned' || !m.active ? ' (Resigned)' : (m.workshop_code ? ' [' + esc(m.workshop_code) + ']' : '')}</option>`).join('');
   modal('Edit Work Done', `
     <p class="muted" style="margin-top:0;font-size:12px">Job <b>${esc(entry.job_no || '—')}</b> · ${esc(idLabel(entry) || 'no vehicle')}</p>
     ${field('Date', 'work_date', { type: 'date', value: String(entry.work_date || '').slice(0, 10) })}
@@ -3164,50 +3221,464 @@ async function editWorkDoneModal(entry, onDone) {
   });
 }
 
-// ---- Labour Rates (hourly rates + unassigned labour used in daily work)
+// ---- Labour & Mechanics Hub (workforce roster, site transfers, resignations & billing rates)
 routes.labour = async (c) => {
-  const [mechs, unassigned] = await Promise.all([api('/mechanics'), api('/mechanics/unassigned')]);
-  const canEdit = canDo('labour.rates.edit');
-  const rateRows = mechs.map((m) => `<tr>
-    <td>${esc(m.name)}</td>
-    <td class="num">${m.rate === 0 ? '<span class="badge blue">Staff / Foreman (Rs 0/h)</span>' : (m.rate != null ? money(m.rate) + '/hr' : '<span class="badge amber">no rate</span>')}</td>
-    ${canEdit ? `<td class="num"><button class="sm" data-setrate="${esc(m.name)}" data-rate="${m.rate != null ? m.rate : ''}">Edit</button></td>` : ''}</tr>`);
-  const unRows = unassigned.map((u) => `<tr>
-    <td>${esc(u.name)}${u.resolved && u.resolvedName && u.resolvedName !== u.name ? ` <span class="muted">(→ ${esc(u.resolvedName)})</span>` : ''}</td>
-    <td class="num">${u.entries}</td>
-    ${canEdit ? `<td class="num"><button class="sm primary" data-setrate="${esc(u.resolvedName || u.name)}" data-rate="">Set rate</button></td>` : ''}</tr>`);
+  const [mechsData, unassignedData, wsData] = await Promise.all([
+    api('/mechanics?include_inactive=1'),
+    api('/mechanics/unassigned').catch(() => []),
+    api('/workshops').catch(() => ({ workshops: [] })),
+  ]);
+  const mechs = mechsData || [];
+  const unassigned = unassignedData || [];
+  const workshops = (wsData && wsData.workshops) || [];
 
-  c.innerHTML = `${pageHeader('Labour Rates')}
-    <div class="toolbar">
-      ${canEdit ? '<button class="primary" id="addrate">+ Add / update rate</button>' : ''}
-      <div class="spacer"></div>
-    </div>
-    <div class="card">
-      <h3>Hourly rates <span class="muted">(${mechs.length})</span></h3>
-      ${tableWrap([{ label: 'Labour' }, { label: 'Rate', num: true }].concat(canEdit ? [{ label: '', num: true }] : []), rateRows, { scroll: true })}
-    </div>
-    <div class="card">
-      <h3>Unassigned labour <span class="muted">— appear in daily work, no rate (${unassigned.length})</span></h3>
-      ${unassigned.length
-      ? tableWrap([{ label: 'Labour name' }, { label: 'Daily-work entries', num: true }].concat(canEdit ? [{ label: '', num: true }] : []), unRows, { scroll: true })
-      : '<p class="muted">Every labour name in the daily-work log has a rate. 🎉</p>'}
-    </div>`;
+  const canEditRates = canDo('labour.rates.edit');
+  const canEditMechanics = canDo('mechanics.edit') || canDo('mechanics.create') || canEditRates;
+  const canMoveMechanics = canDo('mechanics.move') || canDo('workshops.manage');
+  const canCreate = canDo('mechanics.create');
 
-  const setRate = (name, rate) => modal('Set hourly rate', `
-    ${field('Labour name', 'mechanic', { value: name })}
-    ${field('Hourly rate (Rs)', 'rate', { type: 'number', value: rate })}
-    <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Save rate</button></div>`,
+  let activeTab = 'active'; // 'active' | 'resigned' | 'transfers' | 'unassigned' | 'all'
+  let searchQuery = '';
+  let wsFilter = '';
+
+  const getFilteredList = () => {
+    const q = searchQuery.trim().toLowerCase();
+    const ws = wsFilter ? Number(wsFilter) : null;
+
+    if (activeTab === 'unassigned') {
+      return unassigned.filter((u) => !q || u.name.toLowerCase().includes(q) || (u.resolvedName && u.resolvedName.toLowerCase().includes(q)));
+    }
+
+    return mechs.filter((m) => {
+      // Tab filtering
+      if (activeTab === 'active' && (!m.active || m.status === 'resigned')) return false;
+      if (activeTab === 'resigned' && (m.active && m.status !== 'resigned')) return false;
+      if (activeTab === 'transfers' && !m.last_move) return false;
+
+      // Workshop filtering
+      if (ws && m.workshop_id !== ws) return false;
+
+      // Search query filtering
+      if (q) {
+        const nameMatch = (m.name || '').toLowerCase().includes(q);
+        const wsMatch = (m.workshop_name || '').toLowerCase().includes(q) || (m.workshop_code || '').toLowerCase().includes(q);
+        const reasonMatch = (m.left_reason || '').toLowerCase().includes(q);
+        const notesMatch = (m.notes || '').toLowerCase().includes(q);
+        if (!nameMatch && !wsMatch && !reasonMatch && !notesMatch) return false;
+      }
+      return true;
+    });
+  };
+
+  const counts = {
+    active: mechs.filter((m) => m.active && m.status !== 'resigned').length,
+    resigned: mechs.filter((m) => !m.active || m.status === 'resigned').length,
+    transfers: mechs.filter((m) => m.last_move != null).length,
+    unassigned: unassigned.length,
+    total: mechs.length,
+  };
+
+  const renderContent = () => {
+    const list = getFilteredList();
+
+    // Tab Bar
+    const tabsHtml = `
+      <div style="display:flex;gap:4px;flex-wrap:wrap">
+        <button class="sm ${activeTab === 'active' ? 'primary' : ''}" data-tab="active">Active (${counts.active})</button>
+        <button class="sm ${activeTab === 'resigned' ? 'primary' : ''}" data-tab="resigned">Resigned / Left (${counts.resigned})</button>
+        <button class="sm ${activeTab === 'transfers' ? 'primary' : ''}" data-tab="transfers">Site Transfers (${counts.transfers})</button>
+        <button class="sm ${activeTab === 'unassigned' ? 'primary' : ''}" data-tab="unassigned">Unassigned Names (${counts.unassigned})</button>
+        <button class="sm ${activeTab === 'all' ? 'primary' : ''}" data-tab="all">All (${counts.total})</button>
+      </div>
+    `;
+    if (qs('#labour-tabs', c)) qs('#labour-tabs', c).innerHTML = tabsHtml;
+
+    const container = qs('#labour-tab-content', c);
+    if (!container) return;
+
+    if (activeTab === 'unassigned') {
+      const rows = list.map((u) => `<tr>
+        <td><b>${esc(u.name)}</b>${u.resolved && u.resolvedName && u.resolvedName !== u.name ? ` <span class="muted">(→ ${esc(u.resolvedName)})</span>` : ''}</td>
+        <td class="num">${u.entries}</td>
+        ${canEditRates ? `<td class="num"><button class="sm primary" data-act="setrate" data-name="${esc(u.resolvedName || u.name)}" data-rate="">Set Rate / Register</button></td>` : ''}
+      </tr>`);
+      container.innerHTML = list.length
+        ? tableWrap([{ label: 'Labour name in daily log' }, { label: 'Daily-work entries', num: true }].concat(canEditRates ? [{ label: 'Action', num: true }] : []), rows, { scroll: true })
+        : '<p class="muted">No unassigned labour names found in daily work logs. 🎉</p>';
+      bindRowActions();
+      return;
+    }
+
+    if (activeTab === 'resigned') {
+      const rows = list.map((m) => `<tr>
+        <td><b>${esc(m.name)}</b></td>
+        <td><b style="color:var(--red)">${esc(m.left_date || '—')}</b></td>
+        <td><span class="badge red">${esc(m.left_reason || 'Resigned')}</span></td>
+        <td>${esc(m.notes || '—')}</td>
+        <td>${m.workshop_name ? `<span class="badge blue">${esc(m.workshop_name)}</span>` : '<span class="muted">—</span>'}</td>
+        <td class="num">${m.rate === 0 ? '<span class="badge blue">Rs 0/h</span>' : (m.rate != null ? money(m.rate) + '/hr' : '<span class="muted">—</span>')}</td>
+        <td><span class="badge red">Departed</span></td>
+        <td class="num" style="white-space:nowrap">
+          ${canEditMechanics ? `<button class="sm primary" data-act="reinstate" data-id="${m.id}" title="Reactivate this worker back into active workforce">↩ Reinstate</button> ` : ''}
+          <button class="sm" data-act="history" data-id="${m.id}" title="View transfer and rate history">📜 History</button>
+        </td>
+      </tr>`);
+      container.innerHTML = list.length
+        ? tableWrap([
+            { label: 'Labourer / Mechanic' }, { label: 'Left Date' }, { label: 'Departure Reason' },
+            { label: 'Handover / Notes' }, { label: 'Last Workshop' }, { label: 'Last Rate', num: true },
+            { label: 'Status' }, { label: 'Actions', num: true }
+          ], rows, { scroll: true })
+        : '<p class="muted">No departed or resigned labourers match criteria.</p>';
+      bindRowActions();
+      return;
+    }
+
+    if (activeTab === 'transfers') {
+      const rows = list.map((m) => `<tr>
+        <td><b>${esc(m.name)}</b></td>
+        <td>${m.workshop_name ? `<span class="badge blue">${esc(m.workshop_name)}</span>` : '<span class="muted">Unassigned</span>'}</td>
+        <td><b>${esc(m.last_move || '—')}</b></td>
+        <td class="num">${m.rate === 0 ? '<span class="badge blue">Staff (Rs 0/h)</span>' : (m.rate != null ? money(m.rate) + '/hr' : '<span class="badge amber">no rate</span>')}</td>
+        <td>${m.active && m.status !== 'resigned' ? '<span class="badge green">Active</span>' : '<span class="badge red">Resigned</span>'}</td>
+        <td class="num" style="white-space:nowrap">
+          ${canMoveMechanics ? `<button class="sm" data-act="transfer" data-id="${m.id}">🏢 Transfer Site</button> ` : ''}
+          <button class="sm" data-act="history" data-id="${m.id}">📜 Transfer History</button>
+        </td>
+      </tr>`);
+      container.innerHTML = list.length
+        ? tableWrap([
+            { label: 'Labourer / Mechanic' }, { label: 'Current Site / Workshop' }, { label: 'Last Move Date' },
+            { label: 'Hourly Rate', num: true }, { label: 'Status' }, { label: 'Actions', num: true }
+          ], rows, { scroll: true })
+        : '<p class="muted">No site transfers match criteria.</p>';
+      bindRowActions();
+      return;
+    }
+
+    // Default / Active / All tab
+    const rows = list.map((m) => {
+      const isActive = m.active && m.status !== 'resigned';
+      const statusBadge = isActive
+        ? '<span class="badge green">Active</span>'
+        : `<span class="badge red" title="Left on ${esc(m.left_date || '')}">Resigned${m.left_date ? ' · ' + esc(m.left_date.slice(5)) : ''}</span>`;
+      return `<tr>
+        <td><b>${esc(m.name)}</b></td>
+        <td>${m.workshop_name ? `<span class="badge blue">${esc(m.workshop_name)}</span>` : '<span class="muted">Unassigned Site</span>'}</td>
+        <td class="num">${m.rate === 0 ? '<span class="badge blue">Staff / Foreman (Rs 0/h)</span>' : (m.rate != null ? money(m.rate) + '/hr' : '<span class="badge amber">no rate</span>')}</td>
+        <td>${m.last_move ? esc(m.last_move) : '—'}</td>
+        <td>${statusBadge}</td>
+        <td class="num" style="white-space:nowrap">
+          ${isActive && canMoveMechanics ? `<button class="sm" data-act="transfer" data-id="${m.id}" title="Transfer to another site workshop">🏢 Transfer</button> ` : ''}
+          ${isActive && canEditMechanics ? `<button class="sm danger" data-act="resign" data-id="${m.id}" title="Mark as resigned / departed">🚪 Resign</button> ` : ''}
+          ${!isActive && canEditMechanics ? `<button class="sm primary" data-act="reinstate" data-id="${m.id}" title="Reinstate worker">↩ Reinstate</button> ` : ''}
+          ${canEditRates ? `<button class="sm" data-act="setrate" data-name="${esc(m.name)}" data-rate="${m.rate != null ? m.rate : ''}" title="Update hourly rate">Rs Rate</button> ` : ''}
+          <button class="sm" data-act="history" data-id="${m.id}" title="View transfers & rate history">📜</button>
+        </td>
+      </tr>`;
+    });
+
+    const heads = [
+      { label: 'Labourer / Mechanic' }, { label: 'Workshop / Site' }, { label: 'Hourly Rate', num: true },
+      { label: 'Last Move' }, { label: 'Status' }, { label: 'Actions', num: true }
+    ];
+    container.innerHTML = list.length
+      ? tableWrap(heads, rows, { scroll: true })
+      : `<p class="muted">No labourers match "${esc(searchQuery || 'selected criteria')}".</p>`;
+    bindRowActions();
+  };
+
+  const bindRowActions = () => {
+    qsa('[data-act]', c).forEach((btn) => {
+      btn.onclick = () => {
+        const act = btn.dataset.act;
+        const id = Number(btn.dataset.id);
+        const m = mechs.find((x) => x.id === id);
+
+        if (act === 'resign' && m) resignModal(m);
+        else if (act === 'transfer' && m) transferModal(m);
+        else if (act === 'reinstate' && m) reinstateModal(m);
+        else if (act === 'history' && m) historyModal(m);
+        else if (act === 'setrate') setRateModal(btn.dataset.name, btn.dataset.rate);
+      };
+    });
+  };
+
+  const setRateModal = (name, rate) => modal('Set Hourly Rate', `
+    ${field('Labourer name', 'mechanic', { value: name })}
+    ${field('Hourly rate (Rs)', 'rate', { type: 'number', value: rate, placeholder: 'e.g. 450' })}
+    <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Save Rate</button></div>`,
     (body, close) => {
       qs('#s', body).onclick = async () => {
         const d = formData(body);
-        if (!d.mechanic || !d.rate) return toast('Name and rate are required', 'err');
-        try { await api('/mechanics/rates', { method: 'POST', body: { mechanic: d.mechanic, rate: d.rate } }); toast('Rate saved'); close(); render(); }
-        catch (e) { toast(e.message, 'err'); }
+        if (!d.mechanic || d.rate === '') return toast('Name and rate are required', 'err');
+        try {
+          await api('/mechanics/rates', { method: 'POST', body: { mechanic: d.mechanic, rate: d.rate } });
+          toast('Rate saved successfully');
+          close();
+          render();
+        } catch (e) { toast(e.message, 'err'); }
       };
     });
 
-  if (qs('#addrate')) qs('#addrate').onclick = () => setRate('', '');
-  qsa('[data-setrate]').forEach((b) => b.onclick = () => setRate(b.dataset.setrate, b.dataset.rate));
+  const addMechanicModal = () => {
+    const wsOptions = workshops.map((w) => `<option value="${w.id}">${esc(w.name)} (${esc(w.code)})</option>`).join('');
+    modal('Register New Labourer / Mechanic', `
+      ${field('Full Name *', 'name', { placeholder: 'e.g. Sunil Perera' })}
+      <label>Assigned Site / Workshop</label>
+      <select name="workshop_id">
+        <option value="">— Select Site Workshop (Optional) —</option>
+        ${wsOptions}
+      </select>
+      ${field('Hourly Labour Rate (Rs)', 'rate', { type: 'number', placeholder: 'e.g. 450' })}
+      ${field('Notes / Remarks', 'notes', { type: 'textarea', placeholder: 'e.g. Senior diesel mechanic, appointed Sept 2026' })}
+      <div style="margin-top:14px;text-align:right"><button class="primary" id="s">Save &amp; Register Labourer</button></div>`,
+      (body, close) => {
+        qs('#s', body).onclick = async () => {
+          const d = formData(body);
+          if (!d.name || !d.name.trim()) return toast('Name is required', 'err');
+          try {
+            const res = await api('/mechanics', { method: 'POST', body: { name: d.name.trim() } });
+            const mechId = res.id;
+            if (d.workshop_id && mechId) {
+              await api(`/mechanics/${mechId}/transfer`, {
+                method: 'POST',
+                body: { workshop_id: d.workshop_id, from_date: today(), note: 'Initial workshop placement' }
+              });
+            }
+            if (d.rate !== '' && d.rate != null) {
+              await api('/mechanics/rates', { method: 'POST', body: { mechanic: d.name.trim(), rate: Number(d.rate) } });
+            }
+            if (d.notes && mechId) {
+              await api(`/mechanics/${mechId}`, { method: 'PATCH', body: { notes: d.notes } });
+            }
+            toast('Labourer registered successfully');
+            close();
+            render();
+          } catch (e) { toast(e.message, 'err'); }
+        };
+      });
+  };
+
+  const resignModal = (m) => {
+    const curDate = today();
+    modal(`Mark Departed / Resigned — ${esc(m.name)}`, `
+      <div style="font-size:12.5px;color:var(--muted);margin-bottom:12px;padding:8px 12px;background:var(--bg-subtle, #fef2f2);border-left:4px solid #ef4444;border-radius:4px">
+        <b>Departure Policy:</b> Resigned labourers are hidden from future daily workdone pickers, quick timesheets, and attendance rosters on or after the departure date. Past job cards, historic attendance, and monthly work summaries are completely preserved.
+      </div>
+      <div style="margin-bottom:10px;font-size:13px">
+        <b>Labourer:</b> ${esc(m.name)}<br>
+        <b>Current Site:</b> <span class="badge blue">${esc(m.workshop_name || 'Unassigned / Default')}</span>
+      </div>
+      ${field('Departure / Resignation Date *', 'left_date', { type: 'date', value: curDate })}
+      <label>Reason for Leaving *</label>
+      <select name="left_reason">
+        <option value="Resigned (Voluntary)">Resigned (Voluntary)</option>
+        <option value="Site Demobilization / Project End">Site Demobilization / Project End</option>
+        <option value="Contract Expired / Completed">Contract Expired / Completed</option>
+        <option value="Transferred to Another Company">Transferred to Another Company</option>
+        <option value="Personal / Family Reasons">Personal / Family Reasons</option>
+        <option value="Disciplinary / Terminated">Disciplinary / Terminated</option>
+        <option value="Medical / Health">Medical / Health</option>
+        <option value="Other">Other</option>
+      </select>
+      ${field('Notes & Handover Remarks', 'notes', { type: 'textarea', value: m.notes || '', placeholder: 'Add any handover notes or remarks…' })}
+      <div style="margin-top:14px;text-align:right">
+        <button class="danger" id="s">🚪 Confirm Departure &amp; Hide</button>
+      </div>`,
+      (body, close) => {
+        qs('#s', body).onclick = async () => {
+          const d = formData(body);
+          if (!d.left_date) return toast('Departure date is required', 'err');
+          try {
+            await api(`/mechanics/${m.id}/resign`, {
+              method: 'POST',
+              body: { left_date: d.left_date, left_reason: d.left_reason || 'Resigned', notes: d.notes || null }
+            });
+            toast(`${m.name} marked as departed · hidden from future work rosters`);
+            close();
+            render();
+          } catch (e) { toast(e.message, 'err'); }
+        };
+      });
+  };
+
+  const transferModal = (m) => {
+    const wsOptions = workshops
+      .filter((w) => w.id !== m.workshop_id)
+      .map((w) => `<option value="${w.id}">${esc(w.name)} (${esc(w.code)})</option>`)
+      .join('');
+    const curDate = today();
+    modal(`Transfer Site Workshop — ${esc(m.name)}`, `
+      <div style="font-size:12.5px;color:var(--muted);margin-bottom:12px;padding:8px 12px;background:var(--bg-subtle, #f0f9ff);border-left:4px solid #0284c7;border-radius:4px">
+        <b>Site Scoping:</b> Transferring a labourer moves their home workshop to the destination site from the effective date. Their daily work done will be attributed to the new workshop from that day forward, keeping site rosters clean.
+      </div>
+      <div style="margin-bottom:10px;font-size:13px">
+        <b>Labourer:</b> ${esc(m.name)}<br>
+        <b>Current Workshop:</b> <span class="badge blue">${esc(m.workshop_name || 'Unassigned / Default')}</span>
+      </div>
+      <label>Destination Site / Workshop *</label>
+      <select name="workshop_id">
+        <option value="">— Select Target Workshop —</option>
+        ${wsOptions}
+      </select>
+      ${field('Effective From Date *', 'from_date', { type: 'date', value: curDate })}
+      ${field('Transfer Note / Reason', 'note', { placeholder: 'e.g. Transferred to Matara highway site project' })}
+      <div style="margin-top:14px;text-align:right">
+        <button class="primary" id="s">🏢 Confirm Site Transfer</button>
+      </div>`,
+      (body, close) => {
+        qs('#s', body).onclick = async () => {
+          const d = formData(body);
+          if (!d.workshop_id) return toast('Please select destination workshop', 'err');
+          if (!d.from_date) return toast('Effective transfer date is required', 'err');
+          try {
+            await api(`/mechanics/${m.id}/transfer`, {
+              method: 'POST',
+              body: { workshop_id: d.workshop_id, from_date: d.from_date, note: d.note || 'Transferred to site workshop' }
+            });
+            toast(`${m.name} transferred to new site workshop`);
+            close();
+            render();
+          } catch (e) { toast(e.message, 'err'); }
+        };
+      });
+  };
+
+  const reinstateModal = (m) => {
+    modal(`Reinstate Labourer — ${esc(m.name)}`, `
+      <div style="font-size:12.5px;color:var(--muted);margin-bottom:12px;padding:8px 12px;background:var(--bg-subtle, #f0fdf4);border-left:4px solid #16a34a;border-radius:4px">
+        <b>Reinstatement:</b> This will reactivate <b>${esc(m.name)}</b> so they appear in daily workdone pickers, timesheet grids, and attendance rosters again.
+      </div>
+      <p style="font-size:13px">Departed on: <b>${esc(m.left_date || '—')}</b><br>Reason: <i>${esc(m.left_reason || '—')}</i></p>
+      <div style="margin-top:14px;text-align:right">
+        <button class="primary" id="s">↩ Confirm Reinstatement</button>
+      </div>`,
+      (body, close) => {
+        qs('#s', body).onclick = async () => {
+          try {
+            await api(`/mechanics/${m.id}/reinstate`, { method: 'POST' });
+            toast(`${m.name} reinstated to active workforce`);
+            close();
+            render();
+          } catch (e) { toast(e.message, 'err'); }
+        };
+      });
+  };
+
+  const historyModal = async (m) => {
+    let d;
+    try { d = await api('/mechanics/' + m.id); } catch (e) { return toast(e.message, 'err'); }
+    const transfers = d.transfers || [];
+    const rates = d.rates || [];
+    const mech = d.mechanic || m;
+
+    const transferRows = transfers.map((t) => `<tr>
+      <td><b>${esc(t.from_date)}</b></td>
+      <td><span class="badge blue">${esc(t.workshop_name)}</span></td>
+      <td>${esc(t.note || '—')}</td>
+      <td>${esc(t.set_by_name || 'System')}</td>
+    </tr>`);
+
+    const rateRows = rates.map((r) => `<tr>
+      <td><b>${esc(r.effective_from || 'Initial')}</b></td>
+      <td class="num"><b>${money(r.rate)}/hr</b></td>
+    </tr>`);
+
+    modal(`Workforce History — ${esc(mech.name)}`, `
+      <div class="card" style="margin-bottom:12px">
+        <div style="display:flex;align-items:center;gap:10px">
+          <h3 style="margin:0">${esc(mech.name)}</h3>
+          ${mech.active ? '<span class="badge green">Active</span>' : `<span class="badge red">Resigned on ${esc(mech.left_date || '')}</span>`}
+          ${mech.workshop_name ? `<span class="badge blue">Site: ${esc(mech.workshop_name)}</span>` : '<span class="muted">No site assigned</span>'}
+        </div>
+        ${mech.left_reason ? `<div style="margin-top:6px;font-size:12.5px;color:var(--muted)">Reason: <b>${esc(mech.left_reason)}</b>${mech.notes ? ' · Note: ' + esc(mech.notes) : ''}</div>` : ''}
+      </div>
+      <div class="card section" style="margin-bottom:12px">
+        <h4 style="margin:0 0 6px">Site Workshop Transfers (${transfers.length})</h4>
+        ${transfers.length
+          ? tableWrap([{ label: 'Effective Date' }, { label: 'Workshop / Site' }, { label: 'Reason / Note' }, { label: 'Assigned By' }], transferRows, { scroll: true })
+          : '<p class="muted">No workshop transfers recorded. Assigned to default workshop.</p>'}
+      </div>
+      <div class="card section">
+        <h4 style="margin:0 0 6px">Hourly Labour Rates (${rates.length})</h4>
+        ${rates.length
+          ? tableWrap([{ label: 'Effective From' }, { label: 'Rate', num: true }], rateRows, { scroll: true })
+          : '<p class="muted">No rate history recorded.</p>'}
+      </div>`,
+      () => {});
+  };
+
+  // Render Base Layout
+  c.innerHTML = `${pageHeader('Labour & Mechanics Hub')}
+    <div class="grid section" style="margin-bottom:12px">
+      <div class="card stat" style="cursor:pointer" id="stat-active">
+        <span class="n" style="color:var(--green)">${counts.active}</span>
+        <span class="l">Active Workforce</span>
+      </div>
+      <div class="card stat" style="cursor:pointer" id="stat-resigned">
+        <span class="n" style="color:var(--red)">${counts.resigned}</span>
+        <span class="l">Resigned / Departed</span>
+      </div>
+      <div class="card stat" style="cursor:pointer" id="stat-transfers">
+        <span class="n" style="color:#2563eb">${counts.transfers}</span>
+        <span class="l">Site Transfers</span>
+      </div>
+      <div class="card stat" style="cursor:pointer" id="stat-unassigned">
+        <span class="n" style="color:var(--amber)">${counts.unassigned}</span>
+        <span class="l">Unassigned in Work Log</span>
+      </div>
+    </div>
+
+    <div class="card section">
+      <div class="toolbar" style="margin:0 0 10px;gap:8px;flex-wrap:wrap">
+        <div id="labour-tabs"></div>
+        <div class="spacer"></div>
+        <input type="search" id="l-search" placeholder="Search name, site, reason…" style="max-width:210px" value="${esc(searchQuery)}">
+        <select id="l-ws-filter" style="max-width:180px">
+          <option value="">All Sites / Workshops</option>
+          ${workshops.map((w) => `<option value="${w.id}">${esc(w.name)} (${esc(w.code)})</option>`).join('')}
+        </select>
+        ${canCreate ? '<button class="primary sm" id="btn-add-mech">+ Register Labourer</button>' : ''}
+        ${canEditRates ? '<button class="sm" id="btn-add-rate">+ Set Hourly Rate</button>' : ''}
+      </div>
+      <div id="labour-tab-content"><div class="muted">Loading labour roster…</div></div>
+    </div>`;
+
+  // Bind top stat card clicks
+  if (qs('#stat-active', c)) qs('#stat-active', c).onclick = () => { activeTab = 'active'; renderContent(); };
+  if (qs('#stat-resigned', c)) qs('#stat-resigned', c).onclick = () => { activeTab = 'resigned'; renderContent(); };
+  if (qs('#stat-transfers', c)) qs('#stat-transfers', c).onclick = () => { activeTab = 'transfers'; renderContent(); };
+  if (qs('#stat-unassigned', c)) qs('#stat-unassigned', c).onclick = () => { activeTab = 'unassigned'; renderContent(); };
+
+  // Bind top actions
+  if (qs('#btn-add-mech', c)) qs('#btn-add-mech', c).onclick = addMechanicModal;
+  if (qs('#btn-add-rate', c)) qs('#btn-add-rate', c).onclick = () => setRateModal('', '');
+
+  // Bind search and filter
+  if (qs('#l-search', c)) {
+    qs('#l-search', c).oninput = (e) => {
+      searchQuery = e.target.value;
+      renderContent();
+    };
+  }
+  if (qs('#l-ws-filter', c)) {
+    qs('#l-ws-filter', c).onchange = (e) => {
+      wsFilter = e.target.value;
+      renderContent();
+    };
+  }
+
+  // Bind tab switching
+  c.addEventListener('click', (e) => {
+    const tabBtn = e.target.closest('[data-tab]');
+    if (tabBtn && tabBtn.dataset.tab) {
+      activeTab = tabBtn.dataset.tab;
+      renderContent();
+    }
+  });
+
+  renderContent();
 };
 
 // ---- vehicle conflicts: more than one open card on the same vehicle --------
@@ -4246,6 +4717,466 @@ async function storeCatalogueTab(body) {
   await load();
 }
 
+// ---- Document Lifecycle Roads & Helpers (MRN, GRN, MIN, MTN) ---------------
+function grnRoad(g) {
+  const st = g.grn_status || g.status || 'pending_approval';
+  const isRejected = st === 'rejected';
+  const isApproved = st === 'approved';
+  const isPriced = g.unit_price != null && Number(g.unit_price) >= 0;
+
+  if (isRejected) {
+    return {
+      road: [
+        { label: 'Received', state: 'done' },
+        { label: 'Priced', state: isPriced ? 'done' : 'todo' },
+        { label: 'Approved', state: 'stop' },
+        { label: 'In Stock', state: 'todo' },
+      ],
+      step: 'rejected',
+      label: 'Rejected'
+    };
+  }
+  if (!isPriced) {
+    return {
+      road: [
+        { label: 'Received', state: 'done' },
+        { label: 'Priced', state: 'now' },
+        { label: 'Approved', state: 'todo' },
+        { label: 'In Stock', state: 'todo' },
+      ],
+      step: 'to_price',
+      label: 'To price'
+    };
+  }
+  if (!isApproved) {
+    return {
+      road: [
+        { label: 'Received', state: 'done' },
+        { label: 'Priced', state: 'done' },
+        { label: 'Approved', state: 'now' },
+        { label: 'In Stock', state: 'todo' },
+      ],
+      step: 'to_approve',
+      label: 'To approve'
+    };
+  }
+  return {
+    road: [
+      { label: 'Received', state: 'done' },
+      { label: 'Priced', state: 'done' },
+      { label: 'Approved', state: 'done' },
+      { label: 'In Stock', state: 'done' },
+    ],
+    step: 'approved',
+    label: 'Approved · In stock'
+  };
+}
+
+function mrnRoad(m) {
+  const isRejected = m.approval_status === 'rejected';
+  const astatus = m.approval_status || 'requested';
+  const isImported = astatus === 'requested' && !(m.requested_by && String(m.requested_by).trim());
+  const req = Number(m.qty_requested) || 0;
+  const rec = Number(m.qty_received) || 0;
+
+  if (isRejected) {
+    return {
+      road: [
+        { label: 'Requested', state: 'done' },
+        { label: 'Certified', state: 'stop' },
+        { label: 'Approved', state: 'stop' },
+        { label: 'Received', state: 'todo' },
+        { label: 'Done', state: 'todo' },
+      ],
+      step: 'rejected',
+      label: 'Rejected'
+    };
+  }
+  if (!isImported && astatus === 'requested') {
+    return {
+      road: [
+        { label: 'Requested', state: 'done' },
+        { label: 'Certified', state: 'now' },
+        { label: 'Approved', state: 'todo' },
+        { label: 'Received', state: 'todo' },
+        { label: 'Done', state: 'todo' },
+      ],
+      step: 'to_certify',
+      label: 'To certify'
+    };
+  }
+  if (!isImported && astatus === 'certified') {
+    return {
+      road: [
+        { label: 'Requested', state: 'done' },
+        { label: 'Certified', state: 'done' },
+        { label: 'Approved', state: 'now' },
+        { label: 'Received', state: 'todo' },
+        { label: 'Done', state: 'todo' },
+      ],
+      step: 'to_approve',
+      label: 'To approve'
+    };
+  }
+  if (rec <= 0) {
+    return {
+      road: [
+        { label: 'Requested', state: 'done' },
+        { label: 'Certified', state: 'done' },
+        { label: 'Approved', state: 'done' },
+        { label: 'Received', state: 'now' },
+        { label: 'Done', state: 'todo' },
+      ],
+      step: 'to_receive',
+      label: 'To buy / receive'
+    };
+  }
+  if (rec < req - 0.001) {
+    return {
+      road: [
+        { label: 'Requested', state: 'done' },
+        { label: 'Certified', state: 'done' },
+        { label: 'Approved', state: 'done' },
+        { label: 'Received', state: 'part' },
+        { label: 'Done', state: 'todo' },
+      ],
+      step: 'partial',
+      label: `Part received (${num(rec)}/${num(req)})`
+    };
+  }
+  return {
+    road: [
+      { label: 'Requested', state: 'done' },
+      { label: 'Certified', state: 'done' },
+      { label: 'Approved', state: 'done' },
+      { label: 'Received', state: 'done' },
+      { label: 'Done', state: 'done' },
+    ],
+    step: 'done',
+    label: 'Done'
+  };
+}
+
+function minRoad(i) {
+  const isRejected = (i.min_status || i.status) === 'rejected';
+  const st = i.min_status || i.status || 'issued';
+
+  if (isRejected) {
+    return {
+      road: [
+        { label: 'Requested', state: 'done' },
+        { label: 'Approved', state: 'stop' },
+        { label: 'Issued', state: 'todo' },
+      ],
+      step: 'rejected',
+      label: 'Rejected'
+    };
+  }
+  if (st === 'pending_approval' || st === 'requested') {
+    return {
+      road: [
+        { label: 'Requested', state: 'done' },
+        { label: 'Approved', state: 'now' },
+        { label: 'Issued', state: 'todo' },
+      ],
+      step: 'to_approve',
+      label: 'To approve'
+    };
+  }
+  if (st === 'approved') {
+    return {
+      road: [
+        { label: 'Requested', state: 'done' },
+        { label: 'Approved', state: 'done' },
+        { label: 'Issued', state: 'now' },
+      ],
+      step: 'to_issue',
+      label: 'Ready to hand over'
+    };
+  }
+  return {
+    road: [
+      { label: 'Requested', state: 'done' },
+      { label: 'Approved', state: 'done' },
+      { label: 'Issued', state: 'done' },
+    ],
+    step: 'issued',
+    label: 'Issued & Handed over'
+  };
+}
+
+function mtnRoad(t) {
+  const isRejected = (t.status || '') === 'rejected';
+  const st = t.status || (t.accepted_at ? 'accepted' : (t.received_at ? 'received' : (t.approved_at ? 'dispatched' : 'draft')));
+
+  if (isRejected) {
+    return {
+      road: [
+        { label: 'Draft', state: 'done' },
+        { label: 'Approved', state: 'stop' },
+        { label: 'In Transit', state: 'todo' },
+        { label: 'Received', state: 'todo' },
+        { label: 'Accepted', state: 'todo' },
+      ],
+      step: 'rejected',
+      label: 'Rejected'
+    };
+  }
+  if (st === 'draft' || st === 'pending_approval') {
+    return {
+      road: [
+        { label: 'Draft', state: 'done' },
+        { label: 'Approved', state: 'now' },
+        { label: 'In Transit', state: 'todo' },
+        { label: 'Received', state: 'todo' },
+        { label: 'Accepted', state: 'todo' },
+      ],
+      step: 'to_approve',
+      label: 'To approve'
+    };
+  }
+  if (st === 'approved') {
+    return {
+      road: [
+        { label: 'Draft', state: 'done' },
+        { label: 'Approved', state: 'done' },
+        { label: 'In Transit', state: 'now' },
+        { label: 'Received', state: 'todo' },
+        { label: 'Accepted', state: 'todo' },
+      ],
+      step: 'to_dispatch',
+      label: 'To dispatch'
+    };
+  }
+  if (st === 'dispatched') {
+    return {
+      road: [
+        { label: 'Draft', state: 'done' },
+        { label: 'Approved', state: 'done' },
+        { label: 'In Transit', state: 'part' },
+        { label: 'Received', state: 'now' },
+        { label: 'Accepted', state: 'todo' },
+      ],
+      step: 'in_transit',
+      label: 'In transit (to receive)'
+    };
+  }
+  if (st === 'received') {
+    return {
+      road: [
+        { label: 'Draft', state: 'done' },
+        { label: 'Approved', state: 'done' },
+        { label: 'In Transit', state: 'done' },
+        { label: 'Received', state: 'done' },
+        { label: 'Accepted', state: 'now' },
+      ],
+      step: 'to_accept',
+      label: 'To accept into stock'
+    };
+  }
+  return {
+    road: [
+      { label: 'Draft', state: 'done' },
+      { label: 'Approved', state: 'done' },
+      { label: 'In Transit', state: 'done' },
+      { label: 'Received', state: 'done' },
+      { label: 'Accepted', state: 'done' },
+    ],
+    step: 'accepted',
+    label: 'Accepted into stock'
+  };
+}
+
+async function newGrnModal(onDone) {
+  let nextNo = '';
+  try {
+    const list = await api('/stores/grn?limit=1');
+    const lastId = list.length && list[0].id ? list[0].id + 1 : 1;
+    const yr = new Date().getFullYear();
+    nextNo = `GRN-${yr}-${String(lastId).padStart(4, '0')}`;
+  } catch (e) {
+    nextNo = `GRN-${new Date().getFullYear()}-0001`;
+  }
+
+  let pendingMrnLines = [];
+  try {
+    pendingMrnLines = await api('/stores/awaiting-grn?limit=100');
+  } catch (e) {}
+
+  const fld = (...args) => `<div class="fld">${field(...args)}</div>`;
+  const bg = modal('New Goods Received Note (GRN)', `
+    <div style="font-size:12px;color:var(--muted);margin-bottom:8px">Document Ref: <b>EC1.ST.FO.2:5:21.12</b> · Goods Received Note</div>
+    <div class="card" style="margin-bottom:12px">
+      <h4 style="margin:0 0 8px">1 · Delivery &amp; Commercial Information</h4>
+      <div class="fgrid">
+        ${fld('GRN Number *', 'grn_no', { value: nextNo })}
+        ${fld('Received Date *', 'received_date', { type: 'date', value: new Date().toISOString().slice(0, 10) })}
+        ${fld('Supplier *', 'supplier', { placeholder: 'Supplier company name' })}
+        ${fld('Delivery Note / Challan No', 'delivery_note_no', { placeholder: 'e.g. DN-12345' })}
+        ${fld('Purchase Order (PO) No', 'po_no', { placeholder: 'e.g. PO-8921' })}
+        ${fld('Invoice No', 'invoice_no', { placeholder: 'e.g. INV-9901' })}
+        ${fld('Invoice Date', 'invoice_date', { type: 'date' })}
+        ${fld('Purchase Source', 'purchase_source', { type: 'select', options: SOURCE_OPTS, value: 'local_purchase' })}
+        ${fld('Project / Workshop Site', 'project_site', { value: 'Central Workshop — Badalgama' })}
+      </div>
+    </div>
+    <div class="card">
+      <div class="toolbar" style="margin:0 0 8px">
+        <h4 style="margin:0">2 · Received Items</h4>
+        <div class="spacer"></div>
+        ${pendingMrnLines.length ? '<button class="sm" id="gpickmrn" type="button">📋 Pick from Pending MRN</button>' : ''}
+        <button class="sm primary" id="gaddline" type="button">+ Add Custom Item</button>
+      </div>
+      <div id="mrnpicker" style="display:none;background:var(--surface-2);padding:10px;border-radius:6px;margin-bottom:10px;border:1px solid var(--border)">
+        <div style="font-weight:600;font-size:12.5px;margin-bottom:6px">Select pending requested items to receive on this GRN:</div>
+        <div style="max-height:180px;overflow-y:auto">
+          ${tableWrap(
+            [{ label: 'Pick' }, { label: 'MRN' }, { label: 'Item' }, { label: 'Vehicle' }, { label: 'Qty Due', num: true }],
+            pendingMrnLines.map((p, idx) => `<tr>
+              <td><button class="sm primary" data-pick-idx="${idx}" type="button">+ Select</button></td>
+              <td><b>${esc(p.mrn_no || '')}</b></td>
+              <td>${esc(p.description || '')}</td>
+              <td>${esc(p.asset_code || 'Store stock')}</td>
+              <td class="num"><b>${num((Number(p.qty) || 0) - (Number(p.qty_received) || 0))}</b></td>
+            </tr>`))}
+        </div>
+      </div>
+      <div style="overflow-x:auto">
+        <table class="data-table" style="width:100%;font-size:12.5px" id="grnitemstable">
+          <thead>
+            <tr>
+              <th style="width:36%">Item Description *</th>
+              <th style="width:14%">Qty *</th>
+              <th style="width:12%">Unit</th>
+              <th style="width:16%">Unit Price (Rs)</th>
+              <th style="width:16%">MRN Ref</th>
+              <th style="width:6%"></th>
+            </tr>
+          </thead>
+          <tbody id="grnitemsbody">
+          </tbody>
+        </table>
+      </div>
+      <p class="muted" style="font-size:11.5px;margin:8px 0 0">Leave Unit Price blank if awaiting invoice pricing. Items will show under "To price" and proceed to approval.</p>
+    </div>
+    <div style="margin-top:14px;display:flex;justify-content:space-between;align-items:center">
+      <span class="muted" style="font-size:12px">Recorded by <b>${esc(ME ? (ME.fullName || ME.username) : 'Storekeeper')}</b></span>
+      <button class="primary" id="gsave" style="padding:8px 20px;font-size:14px">📥 Record Goods Receipt (GRN)</button>
+    </div>`,
+    (mbody, close) => {
+      const tbody = qs('#grnitemsbody', mbody);
+      const addRow = (item = {}) => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td><input type="text" class="g-desc" value="${esc(item.description || '')}" placeholder="Item description" style="width:100%"></td>
+          <td><input type="number" step="any" min="0.01" class="g-qty" value="${item.qty || 1}" style="width:100%"></td>
+          <td><input type="text" class="g-unit" value="${esc(item.unit || 'nos')}" placeholder="nos" style="width:100%"></td>
+          <td><input type="number" step="any" min="0" class="g-price" value="${item.unit_price != null ? item.unit_price : ''}" placeholder="Awaiting" style="width:100%"></td>
+          <td><input type="text" class="g-mrn" value="${esc(item.mrn_no || '')}" readonly style="width:100%;background:var(--surface-2)" data-mrn-id="${item.mrn_id || ''}" data-line-id="${item.mrn_line_id || ''}"></td>
+          <td><button class="sm danger g-del" type="button">✕</button></td>`;
+        tr.querySelector('.g-del').onclick = () => tr.remove();
+        tbody.appendChild(tr);
+      };
+
+      addRow();
+
+      if (qs('#gaddline', mbody)) qs('#gaddline', mbody).onclick = () => addRow();
+
+      const picker = qs('#mrnpicker', mbody);
+      if (qs('#gpickmrn', mbody)) {
+        qs('#gpickmrn', mbody).onclick = () => {
+          picker.style.display = picker.style.display === 'none' ? 'block' : 'none';
+        };
+      }
+
+      qsa('[data-pick-idx]', picker).forEach((btn) => {
+        btn.onclick = () => {
+          const item = pendingMrnLines[Number(btn.dataset.pickIdx)];
+          if (!item) return;
+          const remaining = Math.max(0, (Number(item.qty) || 0) - (Number(item.qty_received) || 0));
+          addRow({
+            description: item.description,
+            qty: remaining || 1,
+            unit: item.unit || 'nos',
+            mrn_no: item.mrn_no,
+            mrn_id: item.mrn_id,
+            mrn_line_id: item.id || item.mrn_line_id,
+          });
+          btn.textContent = '✓ Added';
+          btn.disabled = true;
+          toast(`Added ${item.description}`);
+        };
+      });
+
+      qs('#gsave', mbody).onclick = async () => {
+        const grnNo = qs('[name="grn_no"]', mbody).value.trim();
+        const receivedDate = qs('[name="received_date"]', mbody).value;
+        const supplier = qs('[name="supplier"]', mbody).value.trim();
+        const deliveryNoteNo = qs('[name="delivery_note_no"]', mbody).value.trim();
+        const poNo = qs('[name="po_no"]', mbody).value.trim();
+        const invoiceNo = qs('[name="invoice_no"]', mbody).value.trim();
+        const invoiceDate = qs('[name="invoice_date"]', mbody).value;
+        const purchaseSource = qs('[name="purchase_source"]', mbody).value;
+        const projectSite = qs('[name="project_site"]', mbody).value.trim();
+
+        if (!grnNo) return toast('GRN number is required', 'err');
+        if (!receivedDate) return toast('Received date is required', 'err');
+        if (!supplier) return toast('Supplier is required', 'err');
+
+        const rows = qsa('tr', tbody);
+        const lines = [];
+        for (const tr of rows) {
+          const desc = tr.querySelector('.g-desc').value.trim();
+          const qty = Number(tr.querySelector('.g-qty').value);
+          const unit = tr.querySelector('.g-unit').value.trim() || 'nos';
+          const pVal = tr.querySelector('.g-price').value.trim();
+          const price = pVal === '' ? null : Number(pVal);
+          const mrnInp = tr.querySelector('.g-mrn');
+          const mrnId = mrnInp ? mrnInp.dataset.mrnId : null;
+          const mrnLineId = mrnInp ? mrnInp.dataset.lineId : null;
+
+          if (desc && qty > 0) {
+            lines.push({
+              description: desc,
+              qty,
+              unit,
+              unit_price: price,
+              mrn_id: mrnId || null,
+              mrn_line_id: mrnLineId || null,
+            });
+          }
+        }
+
+        if (!lines.length) return toast('Add at least one received item line', 'err');
+
+        try {
+          const res = await api('/stores/grn-vouchers', {
+            method: 'POST',
+            body: {
+              grn_no: grnNo,
+              received_date: receivedDate,
+              supplier,
+              delivery_note_no: deliveryNoteNo,
+              po_no: poNo,
+              invoice_no: invoiceNo,
+              invoice_date: invoiceDate || null,
+              purchase_source: purchaseSource,
+              project_site: projectSite,
+              lines,
+            }
+          });
+          toast(`Goods Received Note ${res.grn_no} recorded · Pending approval`);
+          close();
+          if (onDone) onDone();
+        } catch (e) {
+          toast(e.message, 'err');
+        }
+      };
+    });
+  const box = qs('.modal', bg);
+  if (box) { box.style.width = 'min(920px, 96vw)'; box.style.maxWidth = 'none'; }
+}
+
 // ---- Stores
 routes.stores = async (c) => {
   const sp = new URLSearchParams(location.hash.split('?')[1] || '');
@@ -4315,53 +5246,117 @@ routes.stores = async (c) => {
     return mrnList(body, params);
   } else if (tab === 'grn') {
     const canRx = canDo('stores.grn.edit');     // price / correct a receipt
+    const canApp = canDo('stores.grn.approve') || canDo('stores.grn.reject');
+    const canCreate = canDo('stores.grn.receive');
     const fmtD = (d) => (d ? String(d).slice(0, 10) : '—');
+    const cur = { step: sp.get('step') || 'all_todo', q: sp.get('q') || '', src: sp.get('source') || '' };
+    const GRN_STEPS = [
+      ['all_todo', 'All to do'],
+      ['to_price', 'To price'],
+      ['to_approve', 'To approve'],
+      ['approved', 'Approved'],
+      ['rejected', 'Rejected'],
+      ['all', 'All'],
+    ];
+    if (!GRN_STEPS.some(([k]) => k === cur.step)) cur.step = 'all_todo';
+    const counts = await api('/stores/grn/counts').catch(() => ({}));
     body.innerHTML = `
       <div class="toolbar">
-        <input id="gq" type="search" placeholder="Search GRN / item / supplier / MRN…" style="max-width:240px">
-        <select id="gsrc" style="max-width:160px"><option value="">All sources</option><option value="head_office">Head Office</option><option value="local_purchase">Local Purchase</option></select>
-        <label style="display:flex;gap:6px;align-items:center;flex-direction:row;width:auto"><input type="checkbox" id="gawait" style="width:auto"> Awaiting price only</label>
+        ${canCreate ? '<button class="primary" id="gnew">+ New GRN</button>' : ''}
+        <input id="gq" type="search" placeholder="Search GRN / item / supplier / MRN…" value="${esc(cur.q)}" style="max-width:240px">
+        <select id="gsrc" style="max-width:150px"><option value="">All sources</option><option value="head_office" ${cur.src === 'head_office' ? 'selected' : ''}>Head Office</option><option value="local_purchase" ${cur.src === 'local_purchase' ? 'selected' : ''}>Local Purchase</option></select>
         <a class="btn sm" id="gaxls" href="#" title="Excel list of items received without a price (one sheet per source)">⬇ Excel — awaiting price</a>
         <a class="btn sm" id="gaprint" href="#" target="_blank" title="Printable / Save-as-PDF list of items awaiting a price">🖨 PDF — awaiting price</a>
         <div class="spacer"></div><span class="muted" id="gcount"></span>
       </div>
+      <div class="pill-row" style="margin:0 0 10px;flex-wrap:wrap;gap:6px">
+        ${GRN_STEPS.map(([k, l]) => `<button class="sm ${k === cur.step ? 'primary' : ''}" data-gstep="${k}">${esc(l)}${counts[k] != null ? ` <span class="badge">${counts[k]}</span>` : ''}</button>`).join('')}
+      </div>
       <p class="muted" id="gawaitsum" style="margin:0 0 8px"></p>
       <div id="gtable"><div class="muted">Loading…</div></div>`;
     const load = async () => {
-      const q = qs('#gq').value.trim(), awaiting = qs('#gawait').checked, src = qs('#gsrc').value;
-      // The two report buttons always cover the awaiting-price list, narrowed by the same
-      // source / search filters shown on screen.
-      const rq = (src ? '&source=' + src : '') + (q ? '&q=' + encodeURIComponent(q) : '');
-      qs('#gaxls').href = '/api/stores/awaiting-price/export.xlsx?x=1' + rq;
-      qs('#gaprint').href = '/api/stores/awaiting-price/print.html?x=1' + rq;
-      // Spell out which list the buttons will produce — they follow the source dropdown.
+      const q = qs('#gq', body).value.trim(), src = qs('#gsrc', body).value;
+      const sp_ = new URLSearchParams({ tab: 'flow', sub: 'grn', step: cur.step });
+      if (q) sp_.set('q', q);
+      if (src) sp_.set('source', src);
+      history.replaceState(null, '', '#/stores?' + sp_.toString());
+
+      const rq = (src ? '&source=' + src : '') + (q ? '&q=' + encodeURIComponent(q) : '') + (cur.step ? '&step=' + cur.step : '');
+      qs('#gaxls', body).href = '/api/stores/awaiting-price/export.xlsx?x=1' + (src ? '&source=' + src : '') + (q ? '&q=' + encodeURIComponent(q) : '');
+      qs('#gaprint', body).href = '/api/stores/awaiting-price/print.html?x=1' + (src ? '&source=' + src : '') + (q ? '&q=' + encodeURIComponent(q) : '');
       const whichSrc = src ? sourceLabel(src) : 'all sources';
-      qs('#gaxls').textContent = `⬇ Excel — awaiting price (${whichSrc})`;
-      qs('#gaprint').textContent = `🖨 PDF — awaiting price (${whichSrc})`;
-      const list = await api('/stores/grn?limit=500' + (q ? '&q=' + encodeURIComponent(q) : '') + (awaiting ? '&awaiting=1' : '') + (src ? '&source=' + src : ''));
-      qs('#gcount').textContent = `${list.length}${list.length === 500 ? '+' : ''} record${list.length === 1 ? '' : 's'}`;
-      qs('#gtable').innerHTML = tableWrap(
-        [{ label: 'GRN' }, { label: 'MRN' }, { label: 'Req Date' }, { label: 'Received' }, { label: 'Description' }, { label: 'Qty', num: true }, { label: 'Unit Price', num: true }, { label: 'Value', num: true }, { label: 'Supplier' }, { label: 'Source' }].concat(canRx ? [{ label: '', num: true }] : []),
-        list.map((g) => `<tr>
-          <td>${esc(g.grn_no || '')}</td>
-          <td>${g.mrn_id ? `<a href="#/stores?tab=mrn&id=${g.mrn_id}">${esc(g.mrn_no || '')}</a>` : ''}</td>
-          <td>${fmtD(g.mrn_req_date)}</td>
-          <td>${fmtD(g.delivery_date)}</td>
-          <td>${esc(g.description || '')}</td>
-          <td class="num">${num(g.qty)}</td>
-          <td class="num">${g.unit_price == null ? '<span class="badge amber">awaiting</span>' : money(g.unit_price) + (g.priced_at ? `<div class="muted" style="font-size:10px">priced ${fmtD(g.priced_at)}</div>` : '')}</td>
-          <td class="num">${g.unit_price == null ? '—' : money((Number(g.qty) || 0) * g.unit_price)}</td>
-          <td>${esc(g.supplier || '')}</td>
-          <td>${esc(sourceLabel(g.purchase_source))}</td>
-          ${canRx ? `<td class="num"><button class="sm ${g.unit_price == null ? 'primary' : ''}" data-price="${g.id}">${g.unit_price == null ? 'Add price' : 'Edit'}</button></td>` : ''}</tr>`), { scroll: true });
-      if (canRx) qsa('[data-price]', qs('#gtable')).forEach((btn) => btn.onclick = () => grnPriceModal(list.find((x) => String(x.id) === btn.dataset.price), load));
+      qs('#gaxls', body).textContent = `⬇ Excel — awaiting price (${whichSrc})`;
+      qs('#gaprint', body).textContent = `🖨 PDF — awaiting price (${whichSrc})`;
+      const list = await api('/stores/grn?limit=500' + rq);
+      qs('#gcount', body).textContent = `${list.length}${list.length === 500 ? '+' : ''} record${list.length === 1 ? '' : 's'}`;
+      qs('#gtable', body).innerHTML = list.length ? tableWrap(
+        [{ label: 'GRN No' }, { label: 'Delivery & Item', cls: 'desc-col' }, { label: 'Qty & Price' }, { label: 'Progress' }, { label: 'Status' }, { label: 'Document' }].concat(canRx || canApp ? [{ label: 'Actions', num: true }] : []),
+        list.map((g) => {
+          const st = g.grn_status || g.status || 'pending_approval';
+          const stBadge = {
+            pending_approval: '<span class="badge amber">Pending Approval</span>',
+            approved: '<span class="badge green">✓ Approved</span>',
+            rejected: '<span class="badge red">✕ Rejected</span>',
+          }[st] || `<span class="badge">${esc(st)}</span>`;
+          const rd = grnRoad(g);
+          let actBtns = '';
+          if (st === 'pending_approval') {
+            if (canDo('stores.grn.approve')) actBtns += `<button class="sm primary" data-grn-app="${g.id}" title="Sign & Approve GRN">✍ Approve</button> `;
+            if (canDo('stores.grn.reject')) actBtns += `<button class="sm danger" data-grn-rej="${g.id}" title="Reject GRN">✕</button> `;
+          }
+          if (g.unit_price == null) {
+            if (canRx) actBtns += `<button class="sm primary" data-price="${g.id}">💲 Add price</button> `;
+          } else {
+            if (canRx) actBtns += `<button class="sm" data-price="${g.id}">✎ Price</button> `;
+          }
+          if (st === 'approved' && canDo('stores.stock_issue')) {
+            actBtns += `<button class="sm" data-grn-issue="${g.id}" title="Issue to vehicle or job card">⚡ Issue</button> `;
+          }
+          return `<tr>
+          <td><button class="sm" data-grn-detail="${g.id}" title="View Note & Signoff Details" style="font-weight:bold;cursor:pointer;background:none;border:none;color:var(--primary);padding:0;text-decoration:underline">${esc(g.grn_no || ('GRN-' + g.id))}</button>
+            <div class="muted" style="font-size:11px">${fmtD(g.delivery_date)}</div></td>
+          <td class="desc-col"><b>${esc(g.description || '')}</b>
+            ${g.supplier ? `<div class="muted" style="font-size:11px">Supplier: ${esc(g.supplier)}</div>` : ''}
+            ${g.mrn_no ? `<div style="font-size:11px">MRN: <a href="#/stores?tab=mrn&id=${g.mrn_id}">${esc(g.mrn_no)}</a>${g.asset_code ? ` · <span class="stamp">${esc(g.asset_code)}</span>` : ''}</div>` : ''}</td>
+          <td><b>${num(g.qty)} ${esc(g.unit || 'nos')}</b>
+            <div style="font-size:11px">${g.unit_price == null ? '<span class="badge amber">awaiting price</span>' : money(g.unit_price) + ` · Total: <b>${money((Number(g.qty) || 0) * g.unit_price)}</b>`}</div></td>
+          <td>
+            ${docRoadBar(rd)}
+            <span class="muted" style="font-size:11px">${esc(rd.label)}</span>
+          </td>
+          <td>${stBadge}</td>
+          <td style="white-space:nowrap">
+            <a class="btn sm" href="/api/stores/grn/${g.id}/print.html" target="_blank" title="Print GRN Document (EC1.ST.FO.2:5:21.12)">🖨</a>
+            <a class="btn sm" href="/api/stores/grn/${g.id}/download.pdf" download title="Download GRN PDF">⬇ PDF</a>
+          </td>
+          ${canRx || canApp ? `<td class="num" style="white-space:nowrap">${actBtns}</td>` : ''}</tr>`;
+        }), { scroll: true })
+        : '<div class="card"><p class="muted">No Goods Received Notes match this view.</p></div>';
+      if (canRx) qsa('[data-price]', qs('#gtable', body)).forEach((btn) => btn.onclick = () => grnPriceModal(list.find((x) => String(x.id) === btn.dataset.price), load));
+      qsa('[data-grn-detail]', qs('#gtable', body)).forEach((btn) => btn.onclick = () => grnApprovalModal(list.find((x) => String(x.id) === btn.dataset.grnDetail), load));
+      qsa('[data-grn-app]', qs('#gtable', body)).forEach((btn) => btn.onclick = () => grnSignModal(list.find((x) => String(x.id) === btn.dataset.grnApp), 'approve', load));
+      qsa('[data-grn-rej]', qs('#gtable', body)).forEach((btn) => btn.onclick = () => grnSignModal(list.find((x) => String(x.id) === btn.dataset.grnRej), 'reject', load));
+      qsa('[data-grn-issue]', qs('#gtable', body)).forEach((btn) => {
+        btn.onclick = () => {
+          const g = list.find((x) => String(x.id) === btn.dataset.grnIssue);
+          if (g) newIssueModal(load, { grn_id: g.id, grn_no: g.grn_no, mrn_no: g.mrn_no, description: g.description, unit_price: g.unit_price, qty: g.qty });
+        };
+      });
     };
     api('/stores/grn/awaiting-count').then((c) => {
       const bits = (c.by_source || []).filter((s) => s.source !== '(unset)').map((s) => `${sourceLabel(s.source)}: ${num(s.awaiting)}`).join('  ·  ');
-      const el = qs('#gawaitsum'); if (el) el.innerHTML = bits ? `⏳ Awaiting price — ${bits}  ·  ${num(c.awaiting_grn)} item(s) awaiting receipt` : '';
+      const el = qs('#gawaitsum', body); if (el) el.innerHTML = bits ? `⏳ Awaiting price — ${bits}  ·  ${num(c.awaiting_grn)} item(s) awaiting receipt` : '';
     }).catch(() => { });
-    let gdeb; qs('#gq').oninput = () => { clearTimeout(gdeb); gdeb = setTimeout(load, 250); };
-    qs('#gawait').onchange = load; qs('#gsrc').onchange = load;
+    let gdeb; qs('#gq', body).oninput = () => { clearTimeout(gdeb); gdeb = setTimeout(load, 250); };
+    qs('#gsrc', body).onchange = load;
+    qsa('[data-gstep]', body).forEach((b) => {
+      b.onclick = () => {
+        cur.step = b.dataset.gstep;
+        qsa('[data-gstep]', body).forEach((x) => x.classList.toggle('primary', x === b));
+        load();
+      };
+    });
+    if (qs('#gnew', body)) qs('#gnew', body).onclick = () => newGrnModal(load);
     await load();
   } else if (tab === 'awaiting') {
     const fmtD = (d) => (d ? String(d).slice(0, 10) : '—');
@@ -4445,11 +5440,25 @@ routes.stores = async (c) => {
     loadSummary();
     await load();
   } else if (tab === 'issues') {
+    const cur = { step: sp.get('step') || 'all_todo', q: sp.get('q') || '' };
+    const MIN_STEPS = [
+      ['all_todo', 'All to do'],
+      ['to_approve', 'To approve'],
+      ['to_issue', 'Ready to issue'],
+      ['issued', 'Issued'],
+      ['rejected', 'Rejected'],
+      ['all', 'All'],
+    ];
+    if (!MIN_STEPS.some(([k]) => k === cur.step)) cur.step = 'all_todo';
+    const counts = await api('/stores/issues/counts').catch(() => ({}));
     body.innerHTML = `
       <div class="toolbar">
         ${canDo('stores.stock_issue') ? '<button class="primary" id="nis">+ New Issue</button>' : ''}
-        <input id="iq" type="search" placeholder="Search vehicle / item / issued by…" style="max-width:260px">
+        <input id="iq" type="search" placeholder="Search vehicle / item / issued by…" value="${esc(cur.q)}" style="max-width:260px">
         <div class="spacer"></div><span class="muted" id="icount"></span>
+      </div>
+      <div class="pill-row" style="margin:0 0 10px;flex-wrap:wrap;gap:6px">
+        ${MIN_STEPS.map(([k, l]) => `<button class="sm ${k === cur.step ? 'primary' : ''}" data-istep="${k}">${esc(l)}${counts[k] != null ? ` <span class="badge">${counts[k]}</span>` : ''}</button>`).join('')}
       </div>
       <div id="itable"><div class="muted">Loading…</div></div>
       <div class="card section"><div class="toolbar" style="margin:0 0 8px">
@@ -4484,25 +5493,61 @@ routes.stores = async (c) => {
     qs('#afsec').onchange = loadFeed;
     let afdeb; qs('#afq').oninput = () => { clearTimeout(afdeb); afdeb = setTimeout(loadFeed, 250); };
     loadFeed();
+    const canReturn = canDo('stores.issue_return');
     const load = async () => {
-      const q = qs('#iq').value.trim();
-      const list = await api('/stores/issues?limit=500' + (q ? '&q=' + encodeURIComponent(q) : ''));
-      qs('#icount').textContent = `${list.length}${list.length === 500 ? '+' : ''} issue${list.length === 1 ? '' : 's'}`;
-      qs('#itable').innerHTML = tableWrap(
-        [{ label: 'Date' }, { label: 'Vehicle' }, { label: 'Job Card' }, { label: 'Item / description' }, { label: 'Category' }, { label: 'Qty', num: true }, { label: 'Unit Price', num: true }, { label: 'Issued by' }]
-          .concat(canReturn ? [{ label: '' }] : []),
-        list.map((i) => `<tr>
+      const q = qs('#iq', body).value.trim();
+      const sp_ = new URLSearchParams({ tab: 'flow', sub: 'issues', step: cur.step });
+      if (q) sp_.set('q', q);
+      history.replaceState(null, '', '#/stores?' + sp_.toString());
+
+      const list = await api('/stores/issues?limit=500' + (q ? '&q=' + encodeURIComponent(q) : '') + (cur.step ? '&step=' + cur.step : ''));
+      qs('#icount', body).textContent = `${list.length}${list.length === 500 ? '+' : ''} issue${list.length === 1 ? '' : 's'}`;
+      qs('#itable', body).innerHTML = list.length ? tableWrap(
+        [{ label: 'MIN No' }, { label: 'Date' }, { label: 'Vehicle / Job' }, { label: 'Item description', cls: 'desc-col' }, { label: 'Qty & Price' }, { label: 'Progress' }, { label: 'Status' }, { label: 'Document' }, { label: 'Actions', num: true }],
+        list.map((i) => {
+          const minSt = i.min_status || 'issued';
+          const minBadge = {
+            pending_approval: '<span class="badge amber">Pending Approval</span>',
+            requested: '<span class="badge amber">Pending Approval</span>',
+            approved: '<span class="badge blue">Approved</span>',
+            issued: '<span class="badge green">✓ Issued</span>',
+            rejected: '<span class="badge red">✕ Rejected</span>',
+          }[minSt] || `<span class="badge">${esc(minSt)}</span>`;
+          const rd = minRoad(i);
+          let minBtns = '';
+          if (rd.step === 'to_approve') {
+            if (canDo('stores.min.approve')) minBtns += `<button class="sm primary" data-min-app="${i.min_id || i.id}" title="Sign & Approve MIN">✍ Approve</button> `;
+            if (canDo('stores.min.reject')) minBtns += `<button class="sm danger" data-min-rej="${i.min_id || i.id}" title="Reject MIN">✕</button> `;
+          } else if (rd.step === 'to_issue') {
+            if (canDo('stores.issue') || canDo('stores.stock_issue')) minBtns += `<button class="sm primary" data-min-rec="${i.min_id || i.id}" title="Hand Over and Sign Receipt">🤝 Hand Over</button> `;
+          }
+          if (canReturn && !i.voided && i.qty - (i.returned || 0) > 0.001) {
+            minBtns += `<button class="sm" data-ret="${i.id}" data-left="${i.qty - (i.returned || 0)}" data-desc="${esc(i.description)}" title="Parts brought back unused go back into the store">↩ Return</button> `;
+          }
+          minBtns += `<button class="sm" data-min-detail="${i.min_id || i.id}">Details</button>`;
+
+          return `<tr>
+          <td><button class="sm" data-min-detail="${i.min_id || i.id}" title="View Note & Signoff Details" style="font-weight:bold;cursor:pointer;background:none;border:none;color:var(--primary);padding:0;text-decoration:underline">${esc(i.min_no || ('MIN-' + String(i.id).padStart(4, '0')))}</button></td>
           <td>${esc((i.issue_date || '').slice(0, 10))}</td>
-          <td>${esc(i.asset_code || '—')}</td>
-          <td>${i.job_no ? `<a href="#/jobs/${i.job_id}">${esc(i.job_no)}</a>` : '<span class="muted">—</span>'}</td>
-          <td>${esc(i.description)}</td>
-          <td>${esc(i.category || '')}${i.sub_category ? ` <span class="muted" style="font-size:11px">› ${esc(i.sub_category)}</span>` : ''}</td>
-          <td class="num">${num(i.qty)}${i.returned > 0 ? `<br><span class="badge blue" title="Brought back unused">${num(i.returned)} returned</span>` : ''}</td>
-          <td class="num">${i.unit_price == null ? '—' : money(i.unit_price)}</td>
-          <td>${esc(i.issued_by || '')}</td>
-          ${canReturn ? `<td>${!i.voided && i.qty - (i.returned || 0) > 0.001 ? `<button class="sm" data-ret="${i.id}" data-left="${i.qty - (i.returned || 0)}" data-desc="${esc(i.description)}" title="Parts brought back unused go back into the store">↩ Return</button>` : ''}</td>` : ''}</tr>`), { scroll: true });
-      // Stage 6: parts brought back unused — back into the store, off the job's cost.
-      qsa('[data-ret]', qs('#itable')).forEach((b) => { b.onclick = () => modal(`Return to store · ${b.dataset.desc}`, `
+          <td>${esc(i.asset_code || '—')}${i.job_no ? `<br><a href="#/jobs/${i.job_id}" style="font-size:11px">${esc(i.job_no)}</a>` : ''}</td>
+          <td class="desc-col"><b>${esc(i.description)}</b>
+            <div class="muted" style="font-size:11px">${esc(i.category || '')}${i.sub_category ? ` › ${esc(i.sub_category)}` : ''} · by ${esc(i.issued_by || '')}</div></td>
+          <td><b>${num(i.qty)}</b>${i.returned > 0 ? ` <span class="badge blue" title="Brought back unused">${num(i.returned)} ret.</span>` : ''}
+            <div style="font-size:11px">${i.unit_price == null ? '—' : money(i.unit_price)}</div></td>
+          <td>
+            ${docRoadBar(rd)}
+            <span class="muted" style="font-size:11px">${esc(rd.label)}</span>
+          </td>
+          <td>${minBadge}</td>
+          <td style="white-space:nowrap">
+            <a class="btn sm" href="/api/stores/min/${i.min_id || i.id}/print.html" target="_blank" title="Print Material Issue Note (EC1.ST.FO.04)">🖨 MIN</a>
+            <a class="btn sm" href="/api/stores/min/${i.min_id || i.id}/download.pdf" download title="Download MIN PDF">⬇ PDF</a>
+          </td>
+          <td class="num" style="white-space:nowrap">${minBtns}</td></tr>`;
+        }), { scroll: true })
+        : '<div class="card"><p class="muted">No Material Issue Notes match this view.</p></div>';
+
+      qsa('[data-ret]', qs('#itable', body)).forEach((b) => { b.onclick = () => modal(`Return to store · ${b.dataset.desc}`, `
         ${field('Quantity brought back', 'qty', { type: 'number', value: b.dataset.left })}
         ${field('Date', 'return_date', { type: 'date', value: new Date().toISOString().slice(0, 10) })}
         ${field('Note (optional)', 'note')}
@@ -4513,53 +5558,129 @@ routes.stores = async (c) => {
           catch (e) { toast(e.message, 'err'); }
         };
       }); });
+      qsa('[data-min-detail]', qs('#itable', body)).forEach((btn) => btn.onclick = () => minApprovalModal(list.find((x) => String(x.min_id || x.id) === btn.dataset.minDetail), load));
+      qsa('[data-min-app]', qs('#itable', body)).forEach((btn) => btn.onclick = () => minSignModal(list.find((x) => String(x.min_id || x.id) === btn.dataset.minApp), 'approve', load));
+      qsa('[data-min-rej]', qs('#itable', body)).forEach((btn) => btn.onclick = () => minSignModal(list.find((x) => String(x.min_id || x.id) === btn.dataset.minRej), 'reject', load));
+      qsa('[data-min-rec]', qs('#itable', body)).forEach((btn) => btn.onclick = () => minSignModal(list.find((x) => String(x.min_id || x.id) === btn.dataset.minRec), 'receive', load));
     };
-    const canReturn = canDo('stores.issue_return');
-    let ideb; qs('#iq').oninput = () => { clearTimeout(ideb); ideb = setTimeout(load, 250); };
-    if (qs('#nis')) qs('#nis').onclick = () => newIssueModal(load);
+    let ideb; qs('#iq', body).oninput = () => { clearTimeout(ideb); ideb = setTimeout(load, 250); };
+    qsa('[data-istep]', body).forEach((b) => {
+      b.onclick = () => {
+        cur.step = b.dataset.istep;
+        qsa('[data-istep]', body).forEach((x) => x.classList.toggle('primary', x === b));
+        load();
+      };
+    });
+    if (qs('#nis', body)) qs('#nis', body).onclick = () => newIssueModal(load);
     await load();
   } else if (tab === 'mtn') {
     const canT = canDo('stores.mtn.edit');
     const CAP = 300;
+    const cur = { step: sp.get('step') || 'all_flight', q: sp.get('q') || '' };
+    const MTN_STEPS = [
+      ['all_flight', 'All in flight'],
+      ['to_approve', 'To approve'],
+      ['to_dispatch', 'To dispatch'],
+      ['in_transit', 'In transit'],
+      ['to_accept', 'To accept'],
+      ['accepted', 'Accepted'],
+      ['rejected', 'Rejected'],
+      ['all', 'All'],
+    ];
+    if (!MTN_STEPS.some(([k]) => k === cur.step)) cur.step = 'all_flight';
+    const counts = await api('/stores/mtn/counts').catch(() => ({}));
     body.innerHTML = `
       <div class="toolbar">
         ${canT ? '<button class="primary" id="nt">+ New MTN</button>' : ''}
-        <input id="tq" type="search" placeholder="Search MTN no / item / location / person…" style="max-width:280px">
-        <label style="width:auto">From <input id="tfrom" type="date" style="max-width:150px"></label>
-        <label style="width:auto">To <input id="tto" type="date" style="max-width:150px"></label>
+        <input id="tq" type="search" placeholder="Search MTN no / item / location / person…" value="${esc(cur.q)}" style="max-width:260px">
+        <label style="width:auto">From <input id="tfrom" type="date" style="max-width:140px"></label>
+        <label style="width:auto">To <input id="tto" type="date" style="max-width:140px"></label>
         <button class="sm" id="tclear">Clear</button>
         <div class="spacer"></div><span class="muted" id="tcount"></span>
+      </div>
+      <div class="pill-row" style="margin:0 0 10px;flex-wrap:wrap;gap:6px">
+        ${MTN_STEPS.map(([k, l]) => `<button class="sm ${k === cur.step ? 'primary' : ''}" data-tstep="${k}">${esc(l)}${counts[k] != null ? ` <span class="badge">${counts[k]}</span>` : ''}</button>`).join('')}
       </div>
       <div id="ttable" class="muted">Loading…</div>`;
 
     const loadMtn = async () => {
       const q = qs('#tq', body).value.trim();
       const from = qs('#tfrom', body).value, to = qs('#tto', body).value;
+      const sp_ = new URLSearchParams({ tab: 'mtn', step: cur.step });
+      if (q) sp_.set('q', q);
+      if (from) sp_.set('from', from);
+      if (to) sp_.set('to', to);
+      history.replaceState(null, '', '#/stores?' + sp_.toString());
+
       const qs_ = new URLSearchParams({ limit: String(CAP) });
       if (q) qs_.set('q', q);
+      if (cur.step) qs_.set('step', cur.step);
       if (from) qs_.set('from', from);
       if (to) qs_.set('to', to);
       let list = [];
       try { list = await api('/stores/mtn?' + qs_); }
       catch (e) { qs('#ttable', body).innerHTML = `<div class="card err">${esc(e.message)}</div>`; return; }
-      // Say when the list is cut off rather than letting it read as "that is all of them".
+
       qs('#tcount', body).textContent = `${list.length} transfer${list.length === 1 ? '' : 's'}`
-        + (list.length >= CAP ? ` — showing the newest ${CAP}, narrow the search` : '');
-      const COLS = 7 + (canT ? 1 : 0);
+        + (list.length >= CAP ? ` — showing newest ${CAP}` : '');
+      const COLS = 9;
       qs('#ttable', body).innerHTML = list.length ? tableWrap(
-        [{ label: 'MTN No', width: '124px' }, { label: 'Date', width: '104px' }, { label: 'Items', cls: 'desc-col' },
-        { label: 'No.', num: true, width: '54px' }, { label: 'Qty', num: true, width: '72px' },
-        { label: 'From' }, { label: 'To' }].concat(canT ? [{ label: '', width: '64px' }] : []),
-        list.map((t) => `<tr>
-          <td>${(t.item_count || 1) > 1 ? `<button class="sm" data-exp="${t.id}" title="Show the items on this transfer" style="padding:0 6px;margin-right:4px">▸</button>` : ''}<b>${esc(t.mtn_no)}</b></td>
+        [{ label: 'MTN No' }, { label: 'Date' }, { label: 'Items', cls: 'desc-col' },
+        { label: 'From → To' }, { label: 'Qty', num: true }, { label: 'Progress' }, { label: 'Status' }, { label: 'Document' }, { label: 'Actions', num: true }],
+        list.map((t) => {
+          const mtnStatus = t.status || (t.accepted_at ? 'accepted' : (t.received_at ? 'received' : (t.approved_at ? 'dispatched' : 'draft')));
+          const mtnBadge = {
+            draft: '<span class="badge amber">Draft · Awaiting Approval</span>',
+            pending_approval: '<span class="badge amber">Draft · Awaiting Approval</span>',
+            approved: '<span class="badge blue">Approved · Ready for Dispatch</span>',
+            dispatched: '<span class="badge purple">In Transit</span>',
+            received: '<span class="badge teal">Received at Dest.</span>',
+            accepted: '<span class="badge green">✓ Accepted</span>',
+            rejected: '<span class="badge red">✕ Rejected</span>',
+          }[mtnStatus] || `<span class="badge">${esc(mtnStatus)}</span>`;
+          const rd = mtnRoad(t);
+          let flowBtn = '';
+          if (rd.step === 'to_approve') {
+            if (canDo('stores.mtn.approve')) flowBtn += `<button class="sm primary" data-mtn-app="${t.id}" title="Sign & Approve Transfer">✍ Approve</button> `;
+            if (canDo('stores.mtn.reject')) flowBtn += `<button class="sm danger" data-mtn-rej="${t.id}" title="Reject Transfer">✕</button> `;
+          } else if (rd.step === 'to_dispatch') {
+            if (canT) flowBtn += `<button class="sm primary" data-dispatch="${t.id}" title="Dispatch transfer">🚀 Dispatch</button> `;
+          } else if (rd.step === 'in_transit') {
+            if (canT) flowBtn += `<button class="sm primary" data-receive="${t.id}" title="Confirm in-transit arrival">📥 Receive</button> `;
+          } else if (rd.step === 'to_accept') {
+            if (canT) flowBtn += `<button class="sm primary" data-accept="${t.id}" title="Accept & Bin Stock">✅ Accept</button> `;
+          }
+          flowBtn += `<button class="sm" data-mtn-detail="${t.id}">Details</button> `;
+          if (canT) flowBtn += `<button class="sm" data-mtn="${t.id}">✎</button>`;
+
+          return `<tr>
+          <td>${(t.item_count || 1) > 1 ? `<button class="sm" data-exp="${t.id}" title="Show the items on this transfer" style="padding:0 6px;margin-right:4px">▸</button>` : ''}<button class="sm" data-mtn-detail="${t.id}" title="View Transfer Note & Signoffs" style="font-weight:bold;cursor:pointer;background:none;border:none;color:var(--primary);padding:0;text-decoration:underline">${esc(t.mtn_no)}</button></td>
           <td>${esc(String(t.txn_date || '').slice(0, 10))}</td>
-          <td class="desc-col">${esc(t.description || '')}${t.moves_stock ? ' <span class="badge green" title="Moves stock from one store to another">moves stock</span>' : ''}</td>
-          <td class="num">${(t.item_count || 1) > 1 ? `<span class="badge blue">${t.item_count}</span>` : '1'}</td>
-          <td class="num">${num(t.qty)}</td>
-          <td>${esc(t.from_location || t.from_asset_code || '')}</td><td>${esc(t.to_location || t.to_asset_code || '')}</td>
-          ${canT ? `<td><button class="sm" data-mtn="${t.id}">✎ Edit</button></td>` : ''}</tr>`), { scroll: true })
-        : `<div class="card"><p class="muted">${q || from || to ? 'No transfer matches that.' : 'No transfers recorded yet.'}</p></div>`;
+          <td class="desc-col"><b>${esc(t.description || '')}</b>${t.moves_stock ? ' <span class="badge green" title="Moves stock from one store to another">moves stock</span>' : ''}
+            ${(t.item_count || 1) > 1 ? `<span class="badge blue" style="margin-left:4px">${t.item_count} items</span>` : ''}</td>
+          <td>${esc(t.from_location || t.from_asset_code || '—')} → ${esc(t.to_location || t.to_asset_code || '—')}</td>
+          <td class="num"><b>${num(t.qty)}</b></td>
+          <td>
+            ${docRoadBar(rd)}
+            <span class="muted" style="font-size:11px">${esc(rd.label)}</span>
+          </td>
+          <td>${mtnBadge}</td>
+          <td style="white-space:nowrap">
+            <a class="btn sm" href="/api/stores/mtn/${t.id}/print.html" target="_blank" title="Print MTN (EC1.ST.FO.05)">🖨</a>
+            <a class="btn sm" href="/api/stores/mtn/${t.id}/download.pdf" download title="Download MTN PDF">⬇ PDF</a>
+          </td>
+          <td class="num" style="white-space:nowrap">${flowBtn}</td></tr>`;
+        }), { scroll: true })
+        : `<div class="card"><p class="muted">${q || from || to ? 'No transfer matches that filter.' : 'No transfers recorded in this step.'}</p></div>`;
+
       qsa('[data-mtn]', body).forEach((b) => { b.onclick = () => mtnModal(list.find((x) => String(x.id) === b.dataset.mtn), loadMtn); });
+      qsa('[data-mtn-detail]', body).forEach((b) => { b.onclick = () => mtnApprovalModal(list.find((x) => String(x.id) === b.dataset.mtnDetail), loadMtn); });
+      qsa('[data-mtn-app]', body).forEach((b) => { b.onclick = () => mtnSignModal(list.find((x) => String(x.id) === b.dataset.mtnApp), 'approve', loadMtn); });
+      qsa('[data-mtn-rej]', body).forEach((b) => { b.onclick = () => mtnSignModal(list.find((x) => String(x.id) === b.dataset.mtnRej), 'reject', loadMtn); });
+      qsa('[data-dispatch]', body).forEach((b) => { b.onclick = () => mtnSignModal(list.find((x) => String(x.id) === b.dataset.dispatch), 'dispatch', loadMtn); });
+      qsa('[data-receive]', body).forEach((b) => { b.onclick = () => mtnSignModal(list.find((x) => String(x.id) === b.dataset.receive), 'receive', loadMtn); });
+      qsa('[data-accept]', body).forEach((b) => { b.onclick = () => mtnSignModal(list.find((x) => String(x.id) === b.dataset.accept), 'accept', loadMtn); });
+
       // ▸ opens the note's items underneath, so a multi-item transfer can be read without
       // leaving the list.
       qsa('[data-exp]', body).forEach((b) => {
@@ -4582,7 +5703,11 @@ routes.stores = async (c) => {
               <td class="num">${num(l.qty)}</td><td>${esc(l.unit || '')}</td><td>${esc(l.category || '')}</td>
               <td>${esc(l.from_location || l.from_asset_code || '')}</td>
               <td>${esc(l.to_location || l.to_asset_code || '')}</td>
-              <td>${esc(l.reason || '')}</td></tr>`));
+              <td>${esc(l.reason || '')}</td></tr>`))
+              + `<div style="margin-top:8px;display:flex;gap:6px">
+                   <a class="btn sm" href="/api/stores/mtn/${b.dataset.exp}/print.html" target="_blank">🖨 Print MTN (EC1.ST.FO.05)</a>
+                   <a class="btn sm primary" href="/api/stores/mtn/${b.dataset.exp}/download.pdf" download>⬇ Download PDF</a>
+                 </div>`;
           } catch (e) { holder.firstChild.innerHTML = `<span class="err">${esc(e.message)}</span>`; }
         };
       });
@@ -4596,7 +5721,14 @@ routes.stores = async (c) => {
       qs('#tq', body).value = ''; qs('#tfrom', body).value = ''; qs('#tto', body).value = '';
       loadMtn();
     };
-    if (qs('#nt')) qs('#nt').onclick = () => mtnModal(null, loadMtn);
+    qsa('[data-tstep]', body).forEach((b) => {
+      b.onclick = () => {
+        cur.step = b.dataset.tstep;
+        qsa('[data-tstep]', body).forEach((x) => x.classList.toggle('primary', x === b));
+        loadMtn();
+      };
+    });
+    if (qs('#nt', body)) qs('#nt', body).onclick = () => mtnModal(null, loadMtn);
     await loadMtn();
   }
 };
@@ -4751,8 +5883,6 @@ const FLOW_STEPS = [
 const FLOW_STEP_LABEL = Object.fromEntries(FLOW_STEPS.concat([['imported', 'Imported history']]));
 const FLOW_KINDS = [['', 'All kinds'], ['general', 'Parts & general'], ['oil', 'Lubricants'], ['filter', 'Filters'], ['tyre', 'Tyres'], ['battery', 'Batteries']];
 const FLOW_KIND_LABEL = Object.fromEntries(FLOW_KINDS);
-const ROAD_WORD = { done: 'done', part: 'part done', now: 'waiting here', todo: 'not yet', stop: 'stopped' };
-const roadBar = (r) => `<div class="road">${r.road.map((x) => `<span class="rd rd-${x.state}" title="${esc(x.label)}: ${ROAD_WORD[x.state] || x.state}">${esc(x.label)}</span>`).join('')}</div>`;
 
 async function storesMonitor(body) {
   const m = await api('/stores/flow/monitor');
@@ -5091,7 +6221,19 @@ async function receivePriceTab(body) {
 }
 
 async function mrnList(body, params) {
-  const cur = { q: params.get('q') || '', sort: params.get('sort') || 'date_desc' };
+  const cur = { step: params.get('step') || 'all_todo', q: params.get('q') || '', sort: params.get('sort') || 'date_desc' };
+  const MRN_STEPS = [
+    ['all_todo', 'All to do'],
+    ['to_certify', 'To certify'],
+    ['to_approve', 'To approve'],
+    ['to_receive', 'To buy / receive'],
+    ['partial', 'Part received'],
+    ['done', 'Done'],
+    ['rejected', 'Rejected'],
+    ['all', 'All'],
+  ];
+  if (!MRN_STEPS.some(([k]) => k === cur.step)) cur.step = 'all_todo';
+  const counts = await api('/stores/mrn/counts').catch(() => ({}));
   body.innerHTML = `
     <div class="toolbar">
       ${canDo('stores.mrn.create') ? '<button class="primary" id="nm">+ New MRN</button>' : ''}
@@ -5104,35 +6246,78 @@ async function mrnList(body, params) {
       </select>
       <div class="spacer"></div><span class="muted" id="mcount"></span>
     </div>
+    <div class="pill-row" style="margin:0 0 10px;flex-wrap:wrap;gap:6px">
+      ${MRN_STEPS.map(([k, l]) => `<button class="sm ${k === cur.step ? 'primary' : ''}" data-mstep="${k}">${esc(l)}${counts[k] != null ? ` <span class="badge">${counts[k]}</span>` : ''}</button>`).join('')}
+    </div>
     <div id="mtable"><div class="muted">Loading…</div></div>`;
-  qs('#msort').value = cur.sort;
+  qs('#msort', body).value = cur.sort;
   const load = async () => {
-    const q = qs('#mq').value.trim(), sort = qs('#msort').value;
-    const sp = new URLSearchParams({ tab: 'mrn' });
+    const q = qs('#mq', body).value.trim(), sort = qs('#msort', body).value;
+    const sp = new URLSearchParams({ tab: 'mrn', step: cur.step });
     if (q) sp.set('q', q);
     if (sort) sp.set('sort', sort);
     history.replaceState(null, '', '#/stores?' + sp.toString());
-    const list = await api('/stores/mrn?' + (q ? 'q=' + encodeURIComponent(q) + '&' : '') + 'sort=' + sort + '&limit=500');
-    qs('#mcount').textContent = `${list.length}${list.length === 500 ? '+' : ''} MRN${list.length === 1 ? '' : 's'}`;
-    qs('#mtable').innerHTML = tableWrap(
-      [{ label: 'MRN No' }, { label: 'Date' }, { label: 'Vehicle' }, { label: 'Job Card' }, { label: 'Source' }, { label: 'Lines', num: true }, { label: 'Qty Req', num: true }, { label: 'Qty Recd', num: true }, { label: 'Received date' }, { label: 'Status' }],
-      list.map((m) => `<tr data-mrn="${m.id}" style="cursor:pointer${m.approval_status === 'rejected' ? ';background:rgba(196,57,44,.06)' : ''}">
-        <td><button class="sm" data-exp="${m.id}" title="Show the items on this MRN here" style="padding:0 6px;margin-right:4px">▸</button><a href="#/stores?tab=mrn&id=${m.id}">${esc(m.mrn_no)}</a></td>
+    const list = await api('/stores/mrn?' + (q ? 'q=' + encodeURIComponent(q) + '&' : '') + (cur.step ? 'step=' + cur.step + '&' : '') + 'sort=' + sort + '&limit=500');
+    qs('#mcount', body).textContent = `${list.length}${list.length === 500 ? '+' : ''} MRN${list.length === 1 ? '' : 's'}`;
+    qs('#mtable', body).innerHTML = list.length ? tableWrap(
+      [{ label: 'MRN No' }, { label: 'Date' }, { label: 'Vehicle' }, { label: 'Job Card' }, { label: 'Items & Qty' }, { label: 'Progress' }, { label: 'Status' }, { label: 'Document' }, { label: 'Actions', num: true }],
+      list.map((m) => {
+        const rd = mrnRoad(m);
+        let actBtns = '';
+        if (rd.step === 'to_certify' && canDo('stores.mrn.certify')) {
+          actBtns += `<button class="sm primary" data-m-cert="${m.id}" title="Sign & Certify MRN">✍ Certify</button> `;
+        }
+        if (rd.step === 'to_approve' && canDo('stores.mrn.approve')) {
+          actBtns += `<button class="sm primary" data-m-app="${m.id}" title="Sign & Approve MRN">✅ Approve</button> `;
+        }
+        if ((rd.step === 'to_receive' || rd.step === 'partial') && canDo('stores.grn.receive')) {
+          actBtns += `<a class="btn sm" href="#/stores?tab=mrn&id=${m.id}" title="Receive goods against this MRN">📥 Receive</a> `;
+        }
+        actBtns += `<a class="btn sm" href="#/stores?tab=mrn&id=${m.id}">Open</a>`;
+
+        return `<tr data-mrn="${m.id}" style="cursor:pointer${m.approval_status === 'rejected' ? ';background:rgba(196,57,44,.06)' : ''}">
+        <td><button class="sm" data-exp="${m.id}" title="Show the items on this MRN here" style="padding:0 6px;margin-right:4px">▸</button><a href="#/stores?tab=mrn&id=${m.id}"><b>${esc(m.mrn_no)}</b></a></td>
         <td>${esc((m.req_date || '').slice(0, 10))}</td>
         <td>${esc(idLabel(m) || '—')}</td>
         <td>${m.job_no ? `<a href="#/jobs/${m.job_id}">${esc(m.job_no)}</a>` : '<span class="muted">—</span>'}</td>
-        <td>${esc(sourceLabel(m.purchase_source))}</td>
-        <td class="num">${m.line_count}</td>
-        <td class="num">${num(m.qty_requested)}</td>
-        <td class="num">${num(m.qty_received)}</td>
-        <td style="white-space:nowrap">${receivedDate(m)}</td>
-        <td>${m.approval_status === 'rejected' ? '<span class="badge red">✕ Cancelled (rejected)</span>' : receiptBadge(m.qty_requested, m.qty_received)}</td></tr>`), { scroll: true });
-    qsa('[data-mrn]').forEach((tr) => tr.onclick = (e) => {
-      if (e.target.tagName === 'A' || e.target.dataset.exp) return;      // link / expander handle themselves
+        <td><b>${m.line_count} line${m.line_count === 1 ? '' : 's'}</b>
+          <div class="muted" style="font-size:11px">rec. ${num(m.qty_received)} of ${num(m.qty_requested)}</div></td>
+        <td>
+          ${docRoadBar(rd)}
+          <span class="muted" style="font-size:11px">${esc(rd.label)}</span>
+        </td>
+        <td>${m.approval_status === 'rejected' ? '<span class="badge red">✕ Cancelled (rejected)</span>' : receiptBadge(m.qty_requested, m.qty_received)}</td>
+        <td style="white-space:nowrap">
+          <a class="btn sm" href="/api/stores/mrn/${m.id}/print.html" target="_blank" title="Print MRN (EC1.ST.FO.01)">🖨</a>
+          <a class="btn sm" href="/api/stores/mrn/${m.id}/download.pdf" download title="Download MRN PDF">⬇ PDF</a>
+        </td>
+        <td class="num" style="white-space:nowrap">${actBtns}</td></tr>`;
+      }), { scroll: true })
+      : '<div class="card"><p class="muted">No Material Requisition Notes match this view.</p></div>';
+
+    qsa('[data-mrn]', body).forEach((tr) => tr.onclick = (e) => {
+      if (e.target.tagName === 'A' || e.target.tagName === 'BUTTON' || e.target.dataset.exp) return;
       location.hash = '#/stores?tab=mrn&id=' + tr.dataset.mrn;
     });
+
+    qsa('[data-m-cert]', body).forEach((btn) => {
+      btn.onclick = (e) => {
+        e.stopPropagation();
+        const m = list.find((x) => String(x.id) === btn.dataset.mCert);
+        if (m) mrnSignModal(m, 'certify', load);
+      };
+    });
+
+    qsa('[data-m-app]', body).forEach((btn) => {
+      btn.onclick = (e) => {
+        e.stopPropagation();
+        const m = list.find((x) => String(x.id) === btn.dataset.mApp);
+        if (m) mrnSignModal(m, 'approve', load);
+      };
+    });
+
     // ▸ opens the MRN's items in a row underneath — no page change, list keeps its place.
-    qsa('[data-exp]').forEach((b) => b.onclick = async (e) => {
+    qsa('[data-exp]', body).forEach((b) => b.onclick = async (e) => {
       e.stopPropagation();
       const tr = b.closest('tr');
       const open = tr.nextElementSibling && tr.nextElementSibling.classList.contains('mrn-lines');
@@ -5140,7 +6325,7 @@ async function mrnList(body, params) {
       b.textContent = '▾';
       const holder = document.createElement('tr');
       holder.className = 'mrn-lines';
-      holder.innerHTML = `<td colspan="10" style="background:var(--surface-2);padding:8px 12px"><span class="muted">Loading items…</span></td>`;
+      holder.innerHTML = `<td colspan="9" style="background:var(--surface-2);padding:8px 12px"><span class="muted">Loading items…</span></td>`;
       tr.after(holder);
       try {
         const d = await api('/stores/mrn/' + b.dataset.exp);
@@ -5155,14 +6340,25 @@ async function mrnList(body, params) {
         }).join('');
         holder.firstChild.innerHTML = `<div style="font-weight:600;margin-bottom:4px">${d.lines.length} item(s) on ${esc(d.mrn.mrn_no)}${d.mrn.purpose ? ' — ' + esc(d.mrn.purpose) : ''}</div>`
           + tableWrap([{ label: 'Item' }, { label: 'Category' }, { label: 'Qty', num: true }, { label: 'Received', num: true }, { label: 'Received date' }, { label: 'Pending', num: true }, { label: 'Status' }], [rows])
-          + `<div style="margin-top:6px"><a class="btn sm" href="#/stores?tab=mrn&id=${b.dataset.exp}">Open full MRN →</a>
-             <a class="btn sm" href="#/stores?tab=workspace&mode=receive">Receive items →</a></div>`;
+          + `<div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap">
+             <a class="btn sm" href="#/stores?tab=mrn&id=${b.dataset.exp}">Open full MRN →</a>
+             <a class="btn sm" href="#/stores?tab=workspace&mode=receive">Receive items →</a>
+             <a class="btn sm" href="/api/stores/mrn/${b.dataset.exp}/print.html" target="_blank">🖨 Print MRN</a>
+             <a class="btn sm primary" href="/api/stores/mrn/${b.dataset.exp}/download.pdf" download>⬇ Download PDF</a>
+             </div>`;
       } catch (err) { holder.firstChild.innerHTML = `<span class="err">${esc(err.message)}</span>`; }
     });
   };
-  let deb; qs('#mq').oninput = () => { clearTimeout(deb); deb = setTimeout(load, 250); };
-  qs('#msort').onchange = load;
-  if (qs('#nm')) qs('#nm').onclick = newMrnModal;
+  let deb; qs('#mq', body).oninput = () => { clearTimeout(deb); deb = setTimeout(load, 250); };
+  qs('#msort', body).onchange = load;
+  qsa('[data-mstep]', body).forEach((b) => {
+    b.onclick = () => {
+      cur.step = b.dataset.mstep;
+      qsa('[data-mstep]', body).forEach((x) => x.classList.toggle('primary', x === b));
+      load();
+    };
+  });
+  if (qs('#nm', body)) qs('#nm', body).onclick = newMrnModal;
   await load();
 }
 
@@ -5211,6 +6407,10 @@ async function mrnDetail(body, id) {
     <td class="num">${g.unit_price == null ? '—' : money((Number(g.qty) || 0) * g.unit_price)}</td>
     <td>${esc(g.supplier || '')}</td>
     <td>${esc(sourceLabel(g.purchase_source))}</td>
+    <td style="white-space:nowrap">
+      <a class="btn sm" href="/api/stores/grn/${g.id}/print.html" target="_blank" title="Print GRN (EC1.ST.FO.2:5:21.12)">🖨</a>
+      <a class="btn sm" href="/api/stores/grn/${g.id}/download.pdf" download title="Download GRN PDF">⬇ PDF</a>
+    </td>
     ${grnCol ? `<td class="num" style="white-space:nowrap">${canGrnIssue ? `<button class="sm primary" data-issue-grn="${g.id}" title="Issue this received item to vehicle or job card">⚡ Issue</button>` : ''} ${canGrnPrice ? `<button class="sm ${g.unit_price == null ? 'primary' : ''}" data-price="${g.id}">${g.unit_price == null ? 'Add price' : 'Edit'}</button>` : ''}</td>` : ''}</tr>`);
   const astatus = m.approval_status || 'requested';
   // Imported/historical MRNs (no live requester) predate the approval workflow → treat as approved.
@@ -5236,7 +6436,7 @@ async function mrnDetail(body, id) {
       <span class="muted">— quantity × last price paid${worth.unpriced ? `; ${worth.unpriced} item(s) have no price yet, so the real cost may be higher` : ''}</span>
       ${overLimit ? `<br><span class="badge amber">Above your approval limit (${esc(money(worth.limit.limit))})</span> Needs: ${esc(worth.limit.who_can.join(', '))}.` : ''}</p>` : '';
   body.innerHTML = `
-    <div class="toolbar"><a class="btn sm" href="#/stores?tab=mrn">← MRN list</a><div class="spacer"></div><button class="btn sm primary" id="mrntrace">🔍 Trace Lifecycle</button> <a class="btn sm" href="/api/stores/mrn/${m.id}/print.html" target="_blank">🖨 Print MRN</a></div>
+    <div class="toolbar"><a class="btn sm" href="#/stores?tab=mrn">← MRN list</a><div class="spacer"></div><button class="btn sm primary" id="mrntrace">🔍 Trace Lifecycle</button> <a class="btn sm" href="/api/stores/mrn/${m.id}/print.html" target="_blank">🖨 Print MRN</a> <a class="btn sm primary" href="/api/stores/mrn/${m.id}/download.pdf" download>⬇ Download PDF</a></div>
     <div class="card">
       <div class="toolbar" style="margin:0"><h3 style="margin:0">Approval flow</h3><div class="spacer"></div>${aBadge}
         ${canCertify ? '<button class="sm primary" id="mcertify">✍ Certify</button>' : ''}
@@ -5269,7 +6469,7 @@ async function mrnDetail(body, id) {
     <div class="card">
       <h3>Received records — GRN <span class="muted">(${d.grns.length})</span></h3>
       ${d.grns.length
-      ? tableWrap([{ label: 'GRN No' }, { label: 'Received' }, { label: 'Description' }, { label: 'Qty', num: true }, { label: 'Unit Price', num: true }, { label: 'Value', num: true }, { label: 'Supplier' }, { label: 'Source' }].concat(grnCol ? [{ label: '', num: true }] : []), grnRows, { scroll: true })
+      ? tableWrap([{ label: 'GRN No' }, { label: 'Received' }, { label: 'Description' }, { label: 'Qty', num: true }, { label: 'Unit Price', num: true }, { label: 'Value', num: true }, { label: 'Supplier' }, { label: 'Source' }, { label: 'Document' }].concat(grnCol ? [{ label: '', num: true }] : []), grnRows, { scroll: true })
       : '<p class="muted">Nothing received against this MRN yet.</p>'}
     </div>`;
   if (lineCol || grnCol) {
@@ -5469,6 +6669,393 @@ function grnPriceModal(g, onDone) {
         } catch (e) { toast(e.message, 'err'); }
       };
     });
+}
+
+// ===== GRN Approval & Sign Modals (EC1.ST.FO.2:5:21.12) ====================
+function grnSignModal(g, action, onDone) {
+  const meta = {
+    approve: { title: 'Approve GRN', verb: 'approve', btn: 'Sign & Approve', role: 'Store Manager / In-Charge' },
+    reject: { title: 'Reject GRN', verb: 'reject', btn: 'Reject', role: 'Store Manager / In-Charge' },
+  }[action];
+  const who = esc(ME.fullName || ME.username);
+  const withSig = action !== 'reject';
+  const grnNo = esc(g.grn_no || ('GRN-' + g.id));
+  const id = g.id || g.voucher_id;
+  const endpoint = g.voucher_id ? `/stores/grn-vouchers/${g.voucher_id}/${action}` : `/stores/grn/${id}/${action}`;
+
+  modal(meta.title + ' — ' + grnNo, `
+    <p class="muted">Signing as <b>${who}</b> <span class="badge blue">${esc(ME.roles.join(', '))}</span> · Role: <b>${esc(meta.role)}</b></p>
+    ${action === 'reject'
+      ? field('Reason for rejection (required) *', 'reason')
+      : `<label style="display:flex;gap:8px;align-items:flex-start;font-weight:400"><input type="checkbox" id="confirm" style="width:auto;margin-top:3px"> I, ${who}, ${meta.verb} this Goods Received Note. This certifies delivery verification and records my electronic signature.</label>
+         <label>Electronic Signature</label>${signaturePadHtml('signpad')}
+         ${field('Remark (optional)', 'reason')}`}
+    <div style="margin-top:12px;text-align:right"><button class="primary" id="s">${meta.btn}</button></div>`, (body, close) => {
+    let pad = null;
+    if (withSig) {
+      pad = wireSignaturePad(body, 'signpad', null);
+      (async () => { try { const s = (await api('/auth/signature')).signature; if (s) pad.load(s); } catch (e) {} })();
+    }
+    qs('#s', body).onclick = async () => {
+      const f = formData(body);
+      if (action !== 'reject' && !qs('#confirm', body).checked) return toast('Tick the confirmation to e-sign', 'err');
+      if (action === 'reject' && !String(f.reason || '').trim()) return toast('A reason is required to reject', 'err');
+      const signature = (withSig && pad && !pad.isEmpty()) ? pad.dataURL() : undefined;
+      try {
+        await api(endpoint, { method: 'POST', body: { reason: f.reason, signature } });
+        toast('GRN ' + (action === 'reject' ? 'rejected' : 'approved · e-signed'));
+        close(); if (onDone) onDone();
+      } catch (e) { toast(e.message, 'err'); }
+    };
+  });
+}
+
+async function grnApprovalModal(g, onDone) {
+  let d;
+  try {
+    d = await api('/stores/grn/' + (g.id || g.voucher_id));
+  } catch (e) {
+    return toast(e.message, 'err');
+  }
+  const v = d.voucher || g;
+  const lines = d.lines || [d.grn || g];
+  const approvals = d.approvals || [];
+  const status = v.status || g.grn_status || g.status || 'pending_approval';
+
+  const badge = {
+    pending_approval: '<span class="badge amber">Pending Approval</span>',
+    approved: '<span class="badge green">✓ Approved</span>',
+    rejected: '<span class="badge red">✕ Rejected</span>',
+  }[status] || `<span class="badge">${esc(status)}</span>`;
+
+  const canApprove = canDo('stores.grn.approve') && status === 'pending_approval';
+  const canReject = canDo('stores.grn.reject') && status === 'pending_approval';
+  const sig = (name, at) => name ? `${esc(name)} <span class="muted">· ${esc((at || '').slice(0, 16).replace('T', ' '))}</span>` : '<span class="muted">pending</span>';
+
+  const rows = lines.map((l, i) => `<tr>
+    <td class="num">${i + 1}</td>
+    <td>${esc(l.description || '')}</td>
+    <td class="num">${num(l.qty)} ${esc(l.unit || 'nos')}</td>
+    <td class="num">${l.unit_price == null ? '<span class="badge amber">awaiting</span>' : money(l.unit_price)}</td>
+    <td class="num">${l.unit_price == null ? '—' : money((Number(l.qty) || 0) * l.unit_price)}</td>
+    <td>${l.mrn_no ? `<a href="#/stores?tab=mrn&id=${l.mrn_id}">${esc(l.mrn_no)}</a>` : '—'}</td>
+  </tr>`);
+
+  const bg = modal(`Goods Received Note — ${esc(v.grn_no || ('GRN-' + v.id))}`, `
+    <div style="font-size:12px;color:var(--muted);margin-bottom:8px">Doc. No.: <b>EC1.ST.FO.2:5:21.12</b> · Goods Received Note</div>
+    <div class="card" style="margin-bottom:12px">
+      <div class="toolbar" style="margin:0 0 8px"><h3 style="margin:0">Signoff & Approval Flow</h3><div class="spacer"></div>${badge}
+        ${canApprove ? '<button class="sm primary" id="gappbtn">✍ Sign & Approve</button>' : ''}
+        ${canReject ? '<button class="sm danger" id="grejbtn">✕ Reject</button>' : ''}
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:8px;font-size:13px">
+        <div style="border:1px solid var(--border);padding:8px;border-radius:4px">
+          <b>1 · Prepared By</b>${v.prepared_sig ? `<div style="height:30px"><img src="${v.prepared_sig}" style="max-height:30px;max-width:130px"></div>` : ''}<br>
+          ${sig(v.prepared_by || 'Storekeeper', v.received_date || v.created_at)}<br>
+          <span class="muted">${esc(v.prepared_designation || 'Storekeeper')}</span>
+        </div>
+        <div style="border:1px solid var(--border);padding:8px;border-radius:4px">
+          <b>2 · Approved By</b>${v.approved_sig ? `<div style="height:30px"><img src="${v.approved_sig}" style="max-height:30px;max-width:130px"></div>` : ''}<br>
+          ${sig(v.approved_by, v.approved_at)}<br>
+          <span class="muted">${esc(v.approved_designation || 'Store Manager / In-Charge')}</span>
+        </div>
+      </div>
+      ${v.rejection_reason ? `<p class="err" style="margin:8px 0 0;font-size:12.5px"><b>Rejection Reason:</b> ${esc(v.rejection_reason)}</p>` : ''}
+      ${approvals.length ? `<div style="margin-top:10px;border-top:1px solid var(--border);padding-top:6px">${approvals.map((a) => `<div class="cost-line" style="font-size:12px"><span>${a.decision === 'rejected' ? '✕' : '✓'} ${esc(a.stage)} — <b>${esc(a.signed_name || '')}</b> <span class="muted">(${esc(a.role || '')})</span>${a.reason ? ' · ' + esc(a.reason) : ''}</span><span class="muted">${esc((a.created_at || '').slice(0, 16).replace('T', ' '))}</span></div>`).join('')}</div>` : ''}
+    </div>
+    <div class="card">
+      <div class="toolbar" style="margin:0 0 6px">
+        <h3 style="margin:0">Delivery & Line Items (${lines.length})</h3>
+        <div class="spacer"></div>
+        <a class="btn sm" href="/api/stores/grn/${g.id || v.id}/print.html" target="_blank">🖨 Print Note</a>
+        <a class="btn sm primary" href="/api/stores/grn/${g.id || v.id}/download.pdf" download>⬇ Download PDF</a>
+      </div>
+      <p class="muted" style="margin:0 0 8px;font-size:12.5px">Supplier: <b>${esc(v.supplier || '—')}</b> · Delivery Date: <b>${esc(String(v.received_date || v.delivery_date || '').slice(0, 10))}</b> · Invoice: <b>${esc(v.invoice_no || '—')}</b>${v.po_no ? ` · PO: <b>${esc(v.po_no)}</b>` : ''}</p>
+      ${tableWrap([{ label: '#', num: true }, { label: 'Item description' }, { label: 'Qty', num: true }, { label: 'Unit price (Rs)', num: true }, { label: 'Total value', num: true }, { label: 'MRN' }], [rows.join('')], { scroll: true })}
+    </div>`, (mbody, close) => {
+    if (qs('#gappbtn', mbody)) qs('#gappbtn', mbody).onclick = () => { close(); grnSignModal(g, 'approve', () => { if (onDone) onDone(); grnApprovalModal(g, onDone); }); };
+    if (qs('#grejbtn', mbody)) qs('#grejbtn', mbody).onclick = () => { close(); grnSignModal(g, 'reject', () => { if (onDone) onDone(); grnApprovalModal(g, onDone); }); };
+  });
+  const box = qs('.modal', bg);
+  if (box) { box.style.width = 'min(900px, 96vw)'; box.style.maxWidth = 'none'; }
+}
+
+// ===== MIN Approval & Sign Modals (EC1.ST.FO.04) ============================
+function minSignModal(m, action, onDone) {
+  const meta = {
+    approve: { title: 'Approve Material Issue Note', verb: 'approve', btn: 'Sign & Approve', role: 'Workshop Engineer / Foreman' },
+    receive: { title: 'Confirm Hand Over / Receipt', verb: 'acknowledge receipt of', btn: 'Sign Receipt & Issue', role: 'Mechanic / Fitter / Recipient' },
+    reject: { title: 'Reject Material Issue Note', verb: 'reject', btn: 'Reject', role: 'Workshop Engineer / Foreman' },
+  }[action];
+  const who = esc(ME.fullName || ME.username);
+  const withSig = action !== 'reject';
+  const minNo = esc(m.min_no || ('MIN-' + m.id));
+  const id = m.min_id || m.id;
+
+  modal(meta.title + ' — ' + minNo, `
+    <p class="muted">Signing as <b>${who}</b> <span class="badge blue">${esc(ME.roles.join(', '))}</span> · Role: <b>${esc(meta.role)}</b></p>
+    ${action === 'reject'
+      ? field('Reason for rejection (required) *', 'reason')
+      : (action === 'receive'
+        ? `${field('Recipient Mechanic Name *', 'received_by', { value: m.recipient_name || who })}
+           <label style="display:flex;gap:8px;align-items:flex-start;font-weight:400"><input type="checkbox" id="confirm" style="width:auto;margin-top:3px"> I confirm that the listed parts and materials have been physically received and verified for this work.</label>
+           <label>Recipient Signature</label>${signaturePadHtml('signpad')}
+           ${field('Remark (optional)', 'reason')}`
+        : `<label style="display:flex;gap:8px;align-items:flex-start;font-weight:400"><input type="checkbox" id="confirm" style="width:auto;margin-top:3px"> I, ${who}, ${meta.verb} the issue of these materials for vehicle / job maintenance.</label>
+           <label>Electronic Signature</label>${signaturePadHtml('signpad')}
+           ${field('Remark (optional)', 'reason')}`)}
+    <div style="margin-top:12px;text-align:right"><button class="primary" id="s">${meta.btn}</button></div>`, (body, close) => {
+    let pad = null;
+    if (withSig) {
+      pad = wireSignaturePad(body, 'signpad', null);
+      (async () => { try { const s = (await api('/auth/signature')).signature; if (s) pad.load(s); } catch (e) {} })();
+    }
+    qs('#s', body).onclick = async () => {
+      const f = formData(body);
+      if (action !== 'reject' && !qs('#confirm', body).checked) return toast('Tick the confirmation to e-sign', 'err');
+      if (action === 'reject' && !String(f.reason || '').trim()) return toast('A reason is required to reject', 'err');
+      const signature = (withSig && pad && !pad.isEmpty()) ? pad.dataURL() : undefined;
+      const endpoint = action === 'receive' ? `/stores/min/${id}/receive` : `/stores/min/${id}/${action}`;
+      try {
+        await api(endpoint, { method: 'POST', body: { reason: f.reason, signature, received_by: f.received_by } });
+        toast('MIN ' + (action === 'reject' ? 'rejected' : (action === 'receive' ? 'issued & receipt signed' : 'approved · e-signed')));
+        close(); if (onDone) onDone();
+      } catch (e) { toast(e.message, 'err'); }
+    };
+  });
+}
+
+async function minApprovalModal(m, onDone) {
+  let d;
+  try {
+    d = await api('/stores/min/' + (m.min_id || m.id));
+  } catch (e) {
+    return toast(e.message, 'err');
+  }
+  const note = d.note || m;
+  const lines = d.lines || [];
+  const approvals = d.approvals || [];
+  const status = note.status || 'issued';
+
+  const badge = {
+    pending_approval: '<span class="badge amber">Pending Approval</span>',
+    requested: '<span class="badge amber">Pending Approval</span>',
+    approved: '<span class="badge blue">Approved · Ready to Issue</span>',
+    issued: '<span class="badge green">✓ Issued</span>',
+    rejected: '<span class="badge red">✕ Rejected</span>',
+  }[status] || `<span class="badge">${esc(status)}</span>`;
+
+  const canApprove = canDo('stores.min.approve') && (status === 'pending_approval' || status === 'requested');
+  const canReject = canDo('stores.min.reject') && (status === 'pending_approval' || status === 'requested');
+  const canReceive = (canDo('stores.issue') || canDo('stores.stock_issue')) && status === 'approved';
+  const sig = (name, at) => name ? `${esc(name)} <span class="muted">· ${esc((at || '').slice(0, 16).replace('T', ' '))}</span>` : '<span class="muted">pending</span>';
+
+  const rows = lines.map((l, i) => `<tr>
+    <td class="num">${i + 1}</td>
+    <td>${esc(l.description || '')}</td>
+    <td>${esc(l.category || '')}</td>
+    <td class="num">${num(l.qty)} ${esc(l.unit || 'nos')}</td>
+    <td class="num">${l.unit_price == null ? '—' : money(l.unit_price)}</td>
+    <td class="num">${l.unit_price == null ? '—' : money((Number(l.qty) || 0) * l.unit_price)}</td>
+  </tr>`);
+
+  const bg = modal(`Material Issue Note — ${esc(note.min_no || ('MIN-' + note.id))}`, `
+    <div style="font-size:12px;color:var(--muted);margin-bottom:8px">Doc. No.: <b>EC1.ST.FO.04</b> · Material Issue Note</div>
+    <div class="card" style="margin-bottom:12px">
+      <div class="toolbar" style="margin:0 0 8px"><h3 style="margin:0">3-Tier Signoff & Approval Flow</h3><div class="spacer"></div>${badge}
+        ${canApprove ? '<button class="sm primary" id="minappbtn">✍ Sign & Approve</button>' : ''}
+        ${canReject ? '<button class="sm danger" id="minrejbtn">✕ Reject</button>' : ''}
+        ${canReceive ? '<button class="sm primary" id="minrecbtn">🤝 Hand Over / Sign Receipt</button>' : ''}
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-top:8px;font-size:13px">
+        <div style="border:1px solid var(--border);padding:8px;border-radius:4px">
+          <b>1 · Requested By</b>${note.requested_sig ? `<div style="height:30px"><img src="${note.requested_sig}" style="max-height:30px;max-width:130px"></div>` : ''}<br>
+          ${sig(note.requested_by, note.issue_date || note.created_at)}<br>
+          <span class="muted">${esc(note.requested_designation || 'Store Clerk / Requester')}</span>
+        </div>
+        <div style="border:1px solid var(--border);padding:8px;border-radius:4px">
+          <b>2 · Approved By</b>${note.approved_sig ? `<div style="height:30px"><img src="${note.approved_sig}" style="max-height:30px;max-width:130px"></div>` : ''}<br>
+          ${sig(note.approved_by, note.approved_at)}<br>
+          <span class="muted">${esc(note.approved_designation || 'Workshop Engineer / Foreman')}</span>
+        </div>
+        <div style="border:1px solid var(--border);padding:8px;border-radius:4px">
+          <b>3 · Received By</b>${note.received_sig ? `<div style="height:30px"><img src="${note.received_sig}" style="max-height:30px;max-width:130px"></div>` : ''}<br>
+          ${sig(note.received_by, note.received_at)}<br>
+          <span class="muted">${esc(note.received_designation || 'Mechanic / Fitter')}</span>
+        </div>
+      </div>
+      ${note.rejection_reason ? `<p class="err" style="margin:8px 0 0;font-size:12.5px"><b>Rejection Reason:</b> ${esc(note.rejection_reason)}</p>` : ''}
+      ${approvals.length ? `<div style="margin-top:10px;border-top:1px solid var(--border);padding-top:6px">${approvals.map((a) => `<div class="cost-line" style="font-size:12px"><span>${a.decision === 'rejected' ? '✕' : '✓'} ${esc(a.stage)} — <b>${esc(a.signed_name || '')}</b> <span class="muted">(${esc(a.role || '')})</span>${a.reason ? ' · ' + esc(a.reason) : ''}</span><span class="muted">${esc((a.created_at || '').slice(0, 16).replace('T', ' '))}</span></div>`).join('')}</div>` : ''}
+    </div>
+    <div class="card">
+      <div class="toolbar" style="margin:0 0 6px">
+        <h3 style="margin:0">Materials Issued (${lines.length})</h3>
+        <div class="spacer"></div>
+        <a class="btn sm" href="/api/stores/min/${note.id}/print.html" target="_blank">🖨 Print Note</a>
+        <a class="btn sm primary" href="/api/stores/min/${note.id}/download.pdf" download>⬇ Download PDF</a>
+      </div>
+      <p class="muted" style="margin:0 0 8px;font-size:12.5px">Date: <b>${esc(String(note.issue_date || '').slice(0, 10))}</b> · Vehicle: <b>${esc(note.asset_code || note.asset_reg || '—')}</b> · Job Card: <b>${note.job_no ? `<a href="#/jobs/${note.job_id}">${esc(note.job_no)}</a>` : '—'}</b>${note.purpose ? ` · Purpose: ${esc(note.purpose)}` : ''}</p>
+      ${tableWrap([{ label: '#', num: true }, { label: 'Item description' }, { label: 'Category' }, { label: 'Qty', num: true }, { label: 'Unit price', num: true }, { label: 'Value', num: true }], [rows.join('')], { scroll: true })}
+    </div>`, (mbody, close) => {
+    if (qs('#minappbtn', mbody)) qs('#minappbtn', mbody).onclick = () => { close(); minSignModal(note, 'approve', () => { if (onDone) onDone(); minApprovalModal(note, onDone); }); };
+    if (qs('#minrejbtn', mbody)) qs('#minrejbtn', mbody).onclick = () => { close(); minSignModal(note, 'reject', () => { if (onDone) onDone(); minApprovalModal(note, onDone); }); };
+    if (qs('#minrecbtn', mbody)) qs('#minrecbtn', mbody).onclick = () => { close(); minSignModal(note, 'receive', () => { if (onDone) onDone(); minApprovalModal(note, onDone); }); };
+  });
+  const box = qs('.modal', bg);
+  if (box) { box.style.width = 'min(900px, 96vw)'; box.style.maxWidth = 'none'; }
+}
+
+// ===== MTN Approval & Sign Modals (EC1.ST.FO.05) ============================
+function mtnSignModal(t, action, onDone) {
+  const meta = {
+    approve: { title: 'Approve Material Transfer Note', verb: 'approve', btn: 'Sign & Approve', role: 'Store In-Charge' },
+    dispatch: { title: 'Dispatch Transfer (In Transit)', verb: 'dispatch', btn: 'Sign & Dispatch', role: 'Transport Driver / Dispatcher' },
+    receive: { title: 'Confirm Arrival at Destination', verb: 'confirm receipt of', btn: 'Sign Arrival', role: 'Receiving Store Clerk' },
+    accept: { title: 'Accept & Bin into Destination Stock', verb: 'accept and bin', btn: 'Sign & Accept Stock', role: 'Destination Storekeeper' },
+    reject: { title: 'Reject Material Transfer Note', verb: 'reject', btn: 'Reject', role: 'Store In-Charge' },
+  }[action];
+  const who = esc(ME.fullName || ME.username);
+  const withSig = action !== 'reject';
+  const mtnNo = esc(t.mtn_no);
+  const id = t.id;
+
+  modal(meta.title + ' — ' + mtnNo, `
+    <p class="muted">Signing as <b>${who}</b> <span class="badge blue">${esc(ME.roles.join(', '))}</span> · Role: <b>${esc(meta.role)}</b></p>
+    ${action === 'reject'
+      ? field('Reason for rejection (required) *', 'reason')
+      : (action === 'dispatch'
+        ? `${field('Driver / Dispatcher Name *', 'driver_name', { value: who })}
+           <label style="display:flex;gap:8px;align-items:flex-start;font-weight:400"><input type="checkbox" id="confirm" style="width:auto;margin-top:3px"> I acknowledge receiving the listed items for transport to ${esc(t.to_location || 'destination')}.</label>
+           <label>Driver Signature</label>${signaturePadHtml('signpad')}
+           ${field('Remark / Transit Note (optional)', 'reason')}`
+        : (action === 'receive'
+          ? `${field('Received By (Receiving Clerk) *', 'received_by', { value: who })}
+             <label style="display:flex;gap:8px;align-items:flex-start;font-weight:400"><input type="checkbox" id="confirm" style="width:auto;margin-top:3px"> I confirm the arrival of this shipment at ${esc(t.to_location || 'destination')}.</label>
+             <label>Signature</label>${signaturePadHtml('signpad')}
+             ${field('Arrival Remark (optional)', 'reason')}`
+          : (action === 'accept'
+            ? `${field('Accepted & Binned By (Storekeeper) *', 'accepted_by', { value: who })}
+               <label style="display:flex;gap:8px;align-items:flex-start;font-weight:400"><input type="checkbox" id="confirm" style="width:auto;margin-top:3px"> I have inspected the received items and accepted them into destination stock.</label>
+               <label>Storekeeper Signature</label>${signaturePadHtml('signpad')}
+               ${field('Bin Location / Remark (optional)', 'reason')}`
+            : `<label style="display:flex;gap:8px;align-items:flex-start;font-weight:400"><input type="checkbox" id="confirm" style="width:auto;margin-top:3px"> I, ${who}, approve the transfer of materials from ${esc(t.from_location || 'origin')} to ${esc(t.to_location || 'destination')}.</label>
+               <label>Electronic Signature</label>${signaturePadHtml('signpad')}
+               ${field('Remark (optional)', 'reason')}`)))}
+    <div style="margin-top:12px;text-align:right"><button class="primary" id="s">${meta.btn}</button></div>`, (body, close) => {
+    let pad = null;
+    if (withSig) {
+      pad = wireSignaturePad(body, 'signpad', null);
+      (async () => { try { const s = (await api('/auth/signature')).signature; if (s) pad.load(s); } catch (e) {} })();
+    }
+    qs('#s', body).onclick = async () => {
+      const f = formData(body);
+      if (action !== 'reject' && !qs('#confirm', body).checked) return toast('Tick the confirmation to e-sign', 'err');
+      if (action === 'reject' && !String(f.reason || '').trim()) return toast('A reason is required to reject', 'err');
+      const signature = (withSig && pad && !pad.isEmpty()) ? pad.dataURL() : undefined;
+      const payload = { reason: f.reason, signature };
+      if (action === 'dispatch') payload.driver_name = f.driver_name;
+      if (action === 'receive') payload.received_by = f.received_by;
+      if (action === 'accept') payload.accepted_by = f.accepted_by;
+      try {
+        await api(`/stores/mtn/${id}/${action}`, { method: 'POST', body: payload });
+        toast('MTN ' + (action === 'reject' ? 'rejected' : action + ' confirmed · e-signed'));
+        close(); if (onDone) onDone();
+      } catch (e) { toast(e.message, 'err'); }
+    };
+  });
+}
+
+async function mtnApprovalModal(t, onDone) {
+  let d;
+  try {
+    d = await api('/stores/mtn/' + t.id);
+  } catch (e) {
+    return toast(e.message, 'err');
+  }
+  const m = d.mtn || t;
+  const lines = d.lines || [];
+  const approvals = d.approvals || [];
+  const status = m.status || (m.accepted_at ? 'accepted' : (m.received_at ? 'received' : (m.approved_at ? 'dispatched' : 'draft')));
+
+  const badge = {
+    draft: '<span class="badge amber">Draft · Awaiting Approval</span>',
+    pending_approval: '<span class="badge amber">Draft · Awaiting Approval</span>',
+    approved: '<span class="badge blue">Approved · Ready for Dispatch</span>',
+    dispatched: '<span class="badge purple">In Transit</span>',
+    received: '<span class="badge teal">Received at Dest.</span>',
+    accepted: '<span class="badge green">✓ Accepted into Stock</span>',
+    rejected: '<span class="badge red">✕ Rejected</span>',
+  }[status] || `<span class="badge">${esc(status)}</span>`;
+
+  const canApprove = canDo('stores.mtn.approve') && (status === 'draft' || status === 'pending_approval');
+  const canReject = canDo('stores.mtn.reject') && (status === 'draft' || status === 'pending_approval');
+  const canDispatch = canDo('stores.mtn.edit') && status === 'approved';
+  const canReceive = canDo('stores.mtn.edit') && status === 'dispatched';
+  const canAccept = canDo('stores.mtn.edit') && status === 'received';
+  const sig = (name, at) => name ? `${esc(name)} <span class="muted">· ${esc((at || '').slice(0, 16).replace('T', ' '))}</span>` : '<span class="muted">pending</span>';
+
+  const rows = lines.map((l, i) => `<tr>
+    <td class="num">${i + 1}</td>
+    <td>${esc(l.description || '')}${l.from_store ? `<br><span class="muted" style="font-size:11px">Store: ${esc(l.from_store)} → ${esc(l.to_store)}</span>` : ''}</td>
+    <td class="num">${num(l.qty)} ${esc(l.unit || 'nos')}</td>
+    <td>${esc(l.category || '—')}</td>
+    <td>${esc(l.from_location || l.from_asset_code || '—')}</td>
+    <td>${esc(l.to_location || l.to_asset_code || '—')}</td>
+    <td>${esc(l.reason || '—')}</td>
+  </tr>`);
+
+  const bg = modal(`Materials Transfer Note — ${esc(m.mtn_no)}`, `
+    <div style="font-size:12px;color:var(--muted);margin-bottom:8px">Doc. No.: <b>EC1.ST.FO.05</b> · Materials Transfer Note</div>
+    <div class="card" style="margin-bottom:12px">
+      <div class="toolbar" style="margin:0 0 8px"><h3 style="margin:0">4-Stage Custody Chain & Approvals</h3><div class="spacer"></div>${badge}
+        ${canApprove ? '<button class="sm primary" id="tappbtn">✍ Sign & Approve</button>' : ''}
+        ${canReject ? '<button class="sm danger" id="trejbtn">✕ Reject</button>' : ''}
+        ${canDispatch ? '<button class="sm primary" id="tdspbtn">🚀 Dispatch (In Transit)</button>' : ''}
+        ${canReceive ? '<button class="sm primary" id="trecbtn">📥 Confirm Arrival</button>' : ''}
+        ${canAccept ? '<button class="sm primary" id="taccbtn">✅ Accept & Bin Stock</button>' : ''}
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px;margin-top:8px;font-size:12px">
+        <div style="border:1px solid var(--border);padding:6px 8px;border-radius:4px">
+          <b>1 · Prepared By</b><br>${sig(m.transferred_by || 'Storekeeper', m.txn_date)}<br>
+          <span class="muted">${esc(m.prepared_designation || 'Origin Storekeeper')}</span>
+        </div>
+        <div style="border:1px solid var(--border);padding:6px 8px;border-radius:4px">
+          <b>2 · Approved By</b>${m.approved_sig ? `<div style="height:24px"><img src="${m.approved_sig}" style="max-height:24px;max-width:110px"></div>` : ''}<br>
+          ${sig(m.approved_by, m.approved_at)}<br>
+          <span class="muted">${esc(m.approved_designation || 'Store In-Charge')}</span>
+        </div>
+        <div style="border:1px solid var(--border);padding:6px 8px;border-radius:4px">
+          <b>3 · In Transit / Driver</b>${m.received_sig ? `<div style="height:24px"><img src="${m.received_sig}" style="max-height:24px;max-width:110px"></div>` : ''}<br>
+          ${sig(m.received_by, m.received_at)}<br>
+          <span class="muted">${esc(m.received_designation || 'Transport Driver')}</span>
+        </div>
+        <div style="border:1px solid var(--border);padding:6px 8px;border-radius:4px">
+          <b>4 · Accepted & Binned</b>${m.accepted_sig ? `<div style="height:24px"><img src="${m.accepted_sig}" style="max-height:24px;max-width:110px"></div>` : ''}<br>
+          ${sig(m.accepted_by, m.accepted_at)}<br>
+          <span class="muted">${esc(m.accepted_designation || 'Dest. Storekeeper')}</span>
+        </div>
+      </div>
+      ${m.rejection_reason ? `<p class="err" style="margin:8px 0 0;font-size:12.5px"><b>Rejection Reason:</b> ${esc(m.rejection_reason)}</p>` : ''}
+      ${approvals.length ? `<div style="margin-top:10px;border-top:1px solid var(--border);padding-top:6px">${approvals.map((a) => `<div class="cost-line" style="font-size:12px"><span>${a.decision === 'rejected' ? '✕' : '✓'} ${esc(a.stage)} — <b>${esc(a.signed_name || '')}</b> <span class="muted">(${esc(a.role || '')})</span>${a.reason ? ' · ' + esc(a.reason) : ''}</span><span class="muted">${esc((a.created_at || '').slice(0, 16).replace('T', ' '))}</span></div>`).join('')}</div>` : ''}
+    </div>
+    <div class="card">
+      <div class="toolbar" style="margin:0 0 6px">
+        <h3 style="margin:0">Transferred Items (${lines.length})</h3>
+        <div class="spacer"></div>
+        <a class="btn sm" href="/api/stores/mtn/${m.id}/print.html" target="_blank">🖨 Print Note</a>
+        <a class="btn sm primary" href="/api/stores/mtn/${m.id}/download.pdf" download>⬇ Download PDF</a>
+      </div>
+      <p class="muted" style="margin:0 0 8px;font-size:12.5px">Date: <b>${esc(String(m.txn_date || '').slice(0, 10))}</b> · From: <b>${esc(m.from_location || '—')}</b> · To: <b>${esc(m.to_location || '—')}</b>${m.reason ? ` · Reason: ${esc(m.reason)}` : ''}</p>
+      ${tableWrap([{ label: '#', num: true }, { label: 'Item description' }, { label: 'Qty', num: true }, { label: 'Category' }, { label: 'From' }, { label: 'To' }, { label: 'Line reason' }], [rows.join('')], { scroll: true })}
+    </div>`, (mbody, close) => {
+    if (qs('#tappbtn', mbody)) qs('#tappbtn', mbody).onclick = () => { close(); mtnSignModal(m, 'approve', () => { if (onDone) onDone(); mtnApprovalModal(m, onDone); }); };
+    if (qs('#trejbtn', mbody)) qs('#trejbtn', mbody).onclick = () => { close(); mtnSignModal(m, 'reject', () => { if (onDone) onDone(); mtnApprovalModal(m, onDone); }); };
+    if (qs('#tdspbtn', mbody)) qs('#tdspbtn', mbody).onclick = () => { close(); mtnSignModal(m, 'dispatch', () => { if (onDone) onDone(); mtnApprovalModal(m, onDone); }); };
+    if (qs('#trecbtn', mbody)) qs('#trecbtn', mbody).onclick = () => { close(); mtnSignModal(m, 'receive', () => { if (onDone) onDone(); mtnApprovalModal(m, onDone); }); };
+    if (qs('#taccbtn', mbody)) qs('#taccbtn', mbody).onclick = () => { close(); mtnSignModal(m, 'accept', () => { if (onDone) onDone(); mtnApprovalModal(m, onDone); }); };
+  });
+  const box = qs('.modal', bg);
+  if (box) { box.style.width = 'min(940px, 96vw)'; box.style.maxWidth = 'none'; }
 }
 
 // ---- MRN request target: ANY vehicle, job card optional --------------------
@@ -6022,6 +7609,1532 @@ function newIssueModal(onDone, prefill) {
         } catch (e) { btn.disabled = false; toast(e.message, 'err'); }
       };
     }, { wide: true });
+}
+
+// ---- Tools & Toolboxes (Workshop Common Tools, Mechanic Boxes, Daily Stores Issue Register & Engineer Scrap Approval) ----
+const TOOL_CONDITIONS = [
+  ['excellent', 'Excellent (Like New)'],
+  ['good', 'Good (Normal Use)'],
+  ['fair', 'Fair (Minor Wear)'],
+  ['damaged', 'Damaged / Needs Inspection'],
+  ['broken', 'Broken / Inoperable'],
+  ['scrapped', 'Condemned / Scrapped'],
+];
+
+const TOOL_CATEGORIES = [
+  'Hand Tool',
+  'Power Tool',
+  'Pneumatic',
+  'Hydraulic',
+  'Measurement',
+  'Lifting & Rigging',
+  'Welding & Cutting',
+  'Electrical & Diagnostic',
+  'Specialty / Workshop Tool',
+  'General Workshop Equipment',
+];
+
+const DAMAGE_REASONS = [
+  ['worn_out', 'Excessive Wear & Tear / End of Life'],
+  ['cracked', 'Cracked / Fractured Casing or Frame'],
+  ['burnt', 'Motor Burnout / Electrical Short'],
+  ['bent', 'Bent / Deformed Beyond Safe Tolerance'],
+  ['stripped', 'Stripped Gears / Damaged Drive / Thread'],
+  ['lost_parts', 'Critical Components Missing or Broken'],
+  ['hydraulic_leak', 'Internal Seal / Hydraulic Cylinder Blown'],
+  ['calibration_fail', 'Permanent Sensor / Calibration Failure'],
+  ['other', 'Other Technical Damage (See Notes)'],
+];
+
+function toolCondBadge(c) {
+  switch (c) {
+    case 'excellent': return '<span class="badge green">Excellent</span>';
+    case 'good': return '<span class="badge blue">Good</span>';
+    case 'fair': return '<span class="badge amber">Fair</span>';
+    case 'damaged': return '<span class="badge red">Damaged</span>';
+    case 'broken': return '<span class="badge red">Broken</span>';
+    case 'scrapped': return '<span class="badge grey">Scrapped</span>';
+    default: return `<span class="badge">${esc(c || '—')}</span>`;
+  }
+}
+
+function toolStatBadge(s) {
+  switch (s) {
+    case 'in_store': return '<span class="badge green">In Store</span>';
+    case 'issued':
+    case 'in_use': return '<span class="badge blue">In Use</span>';
+    case 'damaged': return '<span class="badge red">Damaged</span>';
+    case 'pending_scrap': return '<span class="badge amber">⏳ Awaiting Scrap Approval</span>';
+    case 'scrapped': return '<span class="badge grey">🗑️ Scrapped</span>';
+    case 'missing': return '<span class="badge red">Missing</span>';
+    default: return `<span class="badge">${esc(s || '—')}</span>`;
+  }
+}
+
+function toolScrapBadge(s) {
+  switch (s) {
+    case 'pending_approval': return '<span class="badge amber">⏳ Pending Approval</span>';
+    case 'approved': return '<span class="badge green">✓ Approved (Scrapped)</span>';
+    case 'under_repair': return '<span class="badge blue">🔧 Workshop Repair</span>';
+    case 'rejected': return '<span class="badge red">✕ Rejected</span>';
+    default: return `<span class="badge">${esc(s || '—')}</span>`;
+  }
+}
+
+routes.tools = async (c) => {
+  const sp = new URLSearchParams(location.hash.split('?')[1] || '');
+  const tab = sp.get('tab') || 'common';
+
+  let stats = {};
+  try {
+    stats = await api('/tools/stats');
+  } catch (e) {
+    /* ignore stats fetch error */
+  }
+
+  const TABS = [
+    ['common', '🛠️ Common Tools'],
+    ['mechanic', '🧰 Mechanic Toolboxes'],
+    ['logs', '📋 Daily Store Issue Log'],
+    ['scrap', `🗑️ Scrap & Damage Requests${stats.pending_scrap_count ? ` <span class="badge amber">${stats.pending_scrap_count}</span>` : ''}`],
+    ['archive', '📜 Scrapped Archive'],
+  ];
+
+  const statCards = `
+    <div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px;margin-bottom:14px">
+      <div class="card"><div class="stat"><div class="n">${stats.total_tools || 0}</div><div class="l">Total Registered Tools</div></div></div>
+      <div class="card"><div class="stat"><div class="n" style="color:var(--green,#2e7d32)">${stats.in_store || 0}</div><div class="l">In Store (Available)</div></div></div>
+      <div class="card"><div class="stat"><div class="n" style="color:var(--blue,#1976d2)">${stats.in_use || 0}</div><div class="l">In Use / Issued</div></div></div>
+      <div class="card"><div class="stat"><div class="n" style="color:var(--red,#d32f2f)">${stats.damaged || 0}</div><div class="l">Damaged / Broken</div></div></div>
+      <div class="card"><div class="stat"><div class="n" style="color:var(--amber,#f57c00)">${stats.pending_scrap_count || 0}</div><div class="l">Awaiting Scrap Approval</div></div></div>
+      <div class="card"><div class="stat"><div class="n" style="color:#757575">${stats.scrapped || 0}</div><div class="l">Scrapped Archive</div></div></div>
+    </div>
+  `;
+
+  const tabsBar = `
+    <div class="toolbar" style="margin-bottom:12px;gap:6px;flex-wrap:wrap">
+      ${TABS.map(([t, l]) => `<button class="sm ${t === tab ? 'primary' : ''}" onclick="location.hash='#/tools?tab=${t}'">${l}</button>`).join('')}
+    </div>
+  `;
+
+  c.innerHTML = pageHeader('Tools & Toolboxes', 'Workshop Common Tools, Mechanic Personal Toolboxes, Daily Stores Issue Register & Scrap Condemnation')
+    + statCards
+    + tabsBar
+    + '<div id="tools_body" class="muted">Loading…</div>';
+
+  const body = qs('#tools_body', c);
+  if (tab === 'common') return toolsCommonTab(body, sp);
+  if (tab === 'mechanic') return toolsMechanicTab(body, sp);
+  if (tab === 'logs') return toolsLogsTab(body, sp);
+  if (tab === 'scrap') return toolsScrapTab(body, sp);
+  if (tab === 'archive') return toolsArchiveTab(body, sp);
+};
+
+async function toolsCommonTab(body, sp) {
+  const canManage = canDo('tools.manage') || isAdmin();
+  const canIssue = canDo('tools.issue') || canManage;
+  const canReport = canDo('tools.damage.report') || canIssue || canView('tools');
+
+  body.innerHTML = `
+    <div class="toolbar" style="margin-bottom:10px;gap:8px;flex-wrap:wrap">
+      ${canManage ? '<button class="primary" id="btn_add_common">+ Register Common Tool</button>' : ''}
+      ${canIssue ? '<button class="btn sm" id="btn_quick_issue">📤 Issue Tool From Store</button>' : ''}
+      <input id="tc_q" type="search" placeholder="Search tool code, name, brand, model…" value="${esc(sp.get('q') || '')}" style="max-width:240px">
+      <select id="tc_cat" style="max-width:180px">
+        <option value="">All Categories</option>
+        ${TOOL_CATEGORIES.map((c) => `<option value="${esc(c)}" ${sp.get('cat') === c ? 'selected' : ''}>${esc(c)}</option>`).join('')}
+      </select>
+      <select id="tc_st" style="max-width:160px">
+        <option value="">All Statuses</option>
+        <option value="in_store" ${sp.get('status') === 'in_store' ? 'selected' : ''}>In Store (Available)</option>
+        <option value="in_use" ${sp.get('status') === 'in_use' ? 'selected' : ''}>In Use / Issued</option>
+        <option value="damaged" ${sp.get('status') === 'damaged' ? 'selected' : ''}>Damaged / Broken</option>
+      </select>
+      <div class="spacer"></div>
+      <span class="muted" id="tc_count"></span>
+    </div>
+    <div id="tc_table"><div class="muted">Loading tools…</div></div>
+  `;
+
+  let deb;
+  const reload = async () => {
+    const q = qs('#tc_q', body).value.trim();
+    const cat = qs('#tc_cat', body).value;
+    const st = qs('#tc_st', body).value;
+
+    const sp_ = new URLSearchParams({ tab: 'common' });
+    if (q) sp_.set('q', q);
+    if (cat) sp_.set('cat', cat);
+    if (st) sp_.set('status', st);
+    history.replaceState(null, '', '#/tools?' + sp_.toString());
+
+    let url = '/tools?type=common&limit=250';
+    if (q) url += '&q=' + encodeURIComponent(q);
+    if (cat) url += '&category=' + encodeURIComponent(cat);
+    if (st) url += '&status=' + encodeURIComponent(st);
+
+    let data;
+    try {
+      data = await api(url);
+    } catch (e) {
+      qs('#tc_table', body).innerHTML = `<div class="card err">${esc(e.message)}</div>`;
+      return;
+    }
+
+    const tools = Array.isArray(data) ? data : (data.tools || []);
+    qs('#tc_count', body).textContent = `${tools.length} common tool${tools.length === 1 ? '' : 's'}`;
+
+    if (!tools.length) {
+      qs('#tc_table', body).innerHTML = '<div class="card"><p class="muted">No common workshop tools match the search filters.</p></div>';
+      return;
+    }
+
+    const rows = tools.map((t) => {
+      const isOut = t.status === 'in_use' || t.status === 'issued';
+      const borrowerInfo = isOut
+        ? `<b>${esc(t.current_borrower || 'Issued')}</b><br><span class="muted">${t.current_borrow_date ? String(t.current_borrow_date).slice(0, 10) : ''}</span>`
+        : '<span class="muted">—</span>';
+
+      let actBtns = [];
+      if (t.status === 'in_store' && canIssue) {
+        actBtns.push(`<button class="sm primary" data-issue="${t.id}" title="Issue tool from store">📤 Issue</button>`);
+      } else if (isOut && canIssue) {
+        actBtns.push(`<button class="sm" data-return="${t.id}" data-logid="${t.current_log_id || ''}" title="Receive tool return">📥 Return</button>`);
+      }
+      if (t.status !== 'scrapped' && t.status !== 'pending_scrap' && canReport) {
+        actBtns.push(`<button class="sm danger" data-damage="${t.id}" title="Report damage and request scrap">⚠️ Report Broken</button>`);
+      }
+      if (canManage) {
+        actBtns.push(`<button class="sm" data-edit="${t.id}" title="Edit tool details">✏️</button>`);
+      }
+
+      return `<tr>
+        <td class="mono"><b>${esc(t.tool_code)}</b></td>
+        <td><b>${esc(t.name)}</b><br><span class="muted">${esc(t.category || '')}</span></td>
+        <td>${esc(t.brand || '')} ${esc(t.model_no || '')}<br><span class="muted mono">${esc(t.serial_no || '')}</span></td>
+        <td>${esc(t.location || 'Stores')}</td>
+        <td>${toolCondBadge(t.condition)}</td>
+        <td>${toolStatBadge(t.status)}</td>
+        <td>${borrowerInfo}</td>
+        <td style="white-space:nowrap;text-align:right">${actBtns.join(' ')}</td>
+      </tr>`;
+    });
+
+    qs('#tc_table', body).innerHTML = tableWrap([
+      { label: 'Code', width: '130px' },
+      { label: 'Tool Name & Category' },
+      { label: 'Brand & Model' },
+      { label: 'Location' },
+      { label: 'Condition' },
+      { label: 'Status' },
+      { label: 'In Use By' },
+      { label: 'Actions', num: true },
+    ], rows, { scroll: true });
+
+    // Wire action buttons
+    qsa('[data-issue]', body).forEach((b) => {
+      b.onclick = () => {
+        const t = tools.find((x) => x.id === Number(b.dataset.issue));
+        if (t) openToolIssueModal(t, reload);
+      };
+    });
+    qsa('[data-return]', body).forEach((b) => {
+      b.onclick = () => {
+        const t = tools.find((x) => x.id === Number(b.dataset.return));
+        if (t) openToolReturnModal({ tool_id: t.id, log_id: b.dataset.logid, tool_code: t.tool_code, tool_name: t.name, issued_to_name: t.current_borrower }, reload);
+      };
+    });
+    qsa('[data-damage]', body).forEach((b) => {
+      b.onclick = () => {
+        const t = tools.find((x) => x.id === Number(b.dataset.damage));
+        if (t) openToolDamageReportModal(t, reload);
+      };
+    });
+    qsa('[data-edit]', body).forEach((b) => {
+      b.onclick = () => {
+        const t = tools.find((x) => x.id === Number(b.dataset.edit));
+        if (t) openToolEditModal(t, reload);
+      };
+    });
+  };
+
+  qs('#tc_q', body).oninput = () => { clearTimeout(deb); deb = setTimeout(reload, 250); };
+  qs('#tc_cat', body).onchange = reload;
+  qs('#tc_st', body).onchange = reload;
+
+  if (qs('#btn_add_common', body)) {
+    qs('#btn_add_common', body).onclick = () => openToolCreateModal(reload, 'common');
+  }
+  if (qs('#btn_quick_issue', body)) {
+    qs('#btn_quick_issue', body).onclick = () => openToolIssueModal(null, reload);
+  }
+
+  await reload();
+}
+
+async function toolsMechanicTab(body, sp) {
+  const canManage = canDo('tools.manage') || isAdmin();
+  const canReport = canDo('tools.damage.report') || canDo('tools.issue') || canManage || canView('tools');
+
+  let mechBoxes = [];
+  try {
+    mechBoxes = await api('/tools/mechanic-boxes');
+  } catch (e) {
+    body.innerHTML = `<div class="card err">${esc(e.message)}</div>`;
+    return;
+  }
+
+  let selectedMechId = sp.get('mechanic_id') ? Number(sp.get('mechanic_id')) : null;
+  let activeFilter = 'responsible'; // 'responsible' | 'all' | 'general'
+
+  const responsibleMechs = mechBoxes.filter((m) => (m.assigned_tools_count > 0) || [1, 11, 13, 17, 19].includes(m.id));
+  const generalMechs = mechBoxes.filter((m) => !((m.assigned_tools_count > 0) || [1, 11, 13, 17, 19].includes(m.id)));
+
+  body.innerHTML = `
+    <div class="toolbar" style="margin-bottom:12px;gap:8px;flex-wrap:wrap">
+      <div style="display:flex;gap:4px">
+        <button class="sm primary" id="btn_flt_resp">★ Dedicated Toolboxes (${responsibleMechs.length})</button>
+        <button class="sm" id="btn_flt_all">All Mechanics (${mechBoxes.length})</button>
+        <button class="sm" id="btn_flt_gen">Store Borrowers (${generalMechs.length})</button>
+      </div>
+      <div class="spacer"></div>
+      <label class="muted" style="align-self:center">Jump to Mechanic:</label>
+      <select id="tm_mech_sel" style="min-width:280px">
+        <option value="">-- All Mechanics (${mechBoxes.length}) --</option>
+        <optgroup label="★ Responsible Mechanics (5 Dedicated Toolboxes)">
+          ${responsibleMechs.map((m) => `<option value="${m.id}" ${selectedMechId === m.id ? 'selected' : ''}>★ ${esc(m.name)} - ${esc(m.toolbox_name || 'Toolbox')} (${m.assigned_tools_count || 0} tools)</option>`).join('')}
+        </optgroup>
+        <optgroup label="General Workshop Mechanics (Uses Common Stores)">
+          ${generalMechs.map((m) => `<option value="${m.id}" ${selectedMechId === m.id ? 'selected' : ''}>${esc(m.name)} (No Toolbox - Store User)</option>`).join('')}
+        </optgroup>
+      </select>
+      ${canManage ? '<button class="primary" id="btn_add_mech_tool">+ Assign Tool to Mechanic</button>' : ''}
+      <input id="tm_q" type="search" placeholder="Filter tools / mechanic…" value="${esc(sp.get('q') || '')}" style="max-width:200px">
+    </div>
+    <div id="tm_view"><div class="muted">Loading mechanic toolboxes…</div></div>
+  `;
+
+  let deb;
+  const renderView = async () => {
+    const q = qs('#tm_q', body).value.trim().toLowerCase();
+    selectedMechId = qs('#tm_mech_sel', body).value ? Number(qs('#tm_mech_sel', body).value) : null;
+
+    // Update filter buttons appearance
+    if (qs('#btn_flt_resp', body)) qs('#btn_flt_resp', body).className = `sm ${activeFilter === 'responsible' ? 'primary' : ''}`;
+    if (qs('#btn_flt_all', body)) qs('#btn_flt_all', body).className = `sm ${activeFilter === 'all' ? 'primary' : ''}`;
+    if (qs('#btn_flt_gen', body)) qs('#btn_flt_gen', body).className = `sm ${activeFilter === 'general' ? 'primary' : ''}`;
+
+    const sp_ = new URLSearchParams({ tab: 'mechanic' });
+    if (selectedMechId) sp_.set('mechanic_id', selectedMechId);
+    if (q) sp_.set('q', q);
+    history.replaceState(null, '', '#/tools?' + sp_.toString());
+
+    if (!selectedMechId) {
+      // Summary table of mechanics and their toolboxes
+      let list = mechBoxes;
+      if (activeFilter === 'responsible') {
+        list = responsibleMechs;
+      } else if (activeFilter === 'general') {
+        list = generalMechs;
+      }
+
+      const filteredMechs = list.filter((m) => !q || m.name.toLowerCase().includes(q) || (m.trade && m.trade.toLowerCase().includes(q)) || (m.site && m.site.toLowerCase().includes(q)) || (m.toolbox_name && m.toolbox_name.toLowerCase().includes(q)));
+
+      if (!filteredMechs.length) {
+        qs('#tm_view', body).innerHTML = '<div class="card"><p class="muted">No mechanics found matching current filter/search.</p></div>';
+        return;
+      }
+
+      const rows = filteredMechs.map((m) => {
+        const isResp = (m.assigned_tools_count > 0) || [1, 11, 13, 17, 19].includes(m.id);
+        const nameCell = isResp
+          ? `<b>${esc(m.name)}</b><br><span class="badge blue">🧰 ${esc(m.toolbox_name || 'Dedicated Toolbox')}</span>`
+          : `<b>${esc(m.name)}</b><br><span class="badge" style="background:#f1f5f9;color:#64748b">No Dedicated Box</span>`;
+
+        const toolCountCell = isResp
+          ? `<span class="badge green"><b>${m.assigned_tools_count || 0}</b> tools</span>`
+          : `<span class="muted">0 (Uses Stores)</span>`;
+
+        const goodCell = isResp ? `<span class="badge green">${m.good_tools_count || 0}</span>` : `<span class="muted">—</span>`;
+        const damagedCell = isResp && m.damaged_tools_count > 0 ? `<span class="badge red">${m.damaged_tools_count}</span>` : (isResp ? '0' : `<span class="muted">—</span>`);
+        const valCell = isResp && m.total_box_value ? 'LKR ' + num(m.total_box_value) : `<span class="muted">—</span>`;
+
+        const actBtn = isResp
+          ? `<button class="sm primary" data-openmech="${m.id}">Inspect Box (${m.assigned_tools_count || 0}) ➔</button>`
+          : `<button class="sm" data-openmech="${m.id}">View Status</button>`;
+
+        return `<tr>
+          <td>${nameCell}</td>
+          <td>${esc(m.trade || 'Mechanic')}</td>
+          <td>${esc(m.site || 'Central Workshop')}</td>
+          <td class="num">${toolCountCell}</td>
+          <td class="num">${goodCell}</td>
+          <td class="num">${damagedCell}</td>
+          <td class="num">${valCell}</td>
+          <td style="text-align:right">${actBtn}</td>
+        </tr>`;
+      });
+
+      qs('#tm_view', body).innerHTML = `
+        <div class="card" style="margin-bottom:12px;background:var(--bg-subtle,#f8fafc);border-left:4px solid var(--accent,#2563eb)">
+          <p style="margin:0 0 4px"><b>Workshop Tool Allocation Policy:</b> Dedicated toolboxes are issued and assigned only to appointed responsible mechanics (<b>Anura, Seethananda, Theminda, Nimesh, Nawathilaka</b>).</p>
+          <p style="margin:0;font-size:12px;color:var(--text-muted,#64748b)">All other workshop mechanics borrow common workshop tools on daily job cards from Stores, recorded under the <b>Daily Store Issue Log</b>.</p>
+        </div>
+        ${tableWrap([
+          { label: 'Mechanic / Toolbox' },
+          { label: 'Trade / Role' },
+          { label: 'Site / Location' },
+          { label: 'Assigned Tools', num: true },
+          { label: 'Good', num: true },
+          { label: 'Damaged / Broken', num: true },
+          { label: 'Box Value', num: true },
+          { label: 'Action', num: true },
+        ], rows, { scroll: true })}
+      `;
+
+      qsa('[data-openmech]', body).forEach((b) => {
+        b.onclick = () => {
+          qs('#tm_mech_sel', body).value = b.dataset.openmech;
+          renderView();
+        };
+      });
+      return;
+    }
+
+    // A specific mechanic is selected
+    const m = mechBoxes.find((x) => x.id === selectedMechId) || { name: 'Mechanic #' + selectedMechId };
+    let toolsData;
+    try {
+      toolsData = await api(`/tools?type=mechanic&mechanic_id=${selectedMechId}${q ? '&q=' + encodeURIComponent(q) : ''}`);
+    } catch (e) {
+      qs('#tm_view', body).innerHTML = `<div class="card err">${esc(e.message)}</div>`;
+      return;
+    }
+
+    const tools = Array.isArray(toolsData) ? toolsData : (toolsData.tools || []);
+    const isResp = tools.length > 0 || [1, 11, 13, 17, 19].includes(m.id);
+
+    if (!tools.length) {
+      // Mechanic has no dedicated toolbox
+      qs('#tm_view', body).innerHTML = `
+        <div class="card" style="margin-bottom:12px;background:var(--bg-subtle,#f8fafc);border-left:4px solid var(--accent,#2563eb);padding:16px">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px">
+            <div>
+              <h3 style="margin:0 0 6px">ℹ️ General Workshop Mechanic: <b>${esc(m.name)}</b></h3>
+              <p style="margin:0 0 8px;color:var(--text-muted,#475569)">
+                <b>${esc(m.name)}</b> does not hold an issued dedicated toolbox. In our workshop, dedicated toolboxes are maintained and issued only to appointed responsible mechanics (<b>Anura, Seethananda, Theminda, Nimesh, Nawathilaka</b>).
+              </p>
+              <p style="margin:0;font-size:12.5px;color:var(--text-muted,#64748b)">
+                Tools required for daily maintenance and repairs are checked out from the central store and recorded on the <b>Daily Store Issue Log</b>.
+              </p>
+            </div>
+            <span class="badge" style="background:#e2e8f0;color:#334155;font-weight:600">Store Tool User</span>
+          </div>
+          <div style="display:flex;gap:8px;margin-top:14px;flex-wrap:wrap">
+            ${canIssue ? `<button class="sm primary" id="btn_issue_store_tool">📤 Issue Common Tool from Store</button>` : ''}
+            <button class="sm" id="btn_view_mech_logs">📋 View ${esc(m.name)}'s Checkout History</button>
+            ${canManage ? `<button class="sm" id="btn_add_to_box">+ Assign Dedicated Tool to Box</button>` : ''}
+            <button class="sm" id="btn_back_to_mechs">⬅ Back to All Mechanics</button>
+          </div>
+        </div>
+      `;
+
+      if (qs('#btn_issue_store_tool', body)) {
+        qs('#btn_issue_store_tool', body).onclick = () => openToolIssueModal(null, renderView, m.id);
+      }
+      if (qs('#btn_view_mech_logs', body)) {
+        qs('#btn_view_mech_logs', body).onclick = () => { location.hash = '#/tools?tab=logs&q=' + encodeURIComponent(m.name); };
+      }
+      if (qs('#btn_add_to_box', body)) {
+        qs('#btn_add_to_box', body).onclick = () => openToolCreateModal(renderView, 'mechanic', m.id, m.name);
+      }
+      if (qs('#btn_back_to_mechs', body)) {
+        qs('#btn_back_to_mechs', body).onclick = () => { qs('#tm_mech_sel', body).value = ''; renderView(); };
+      }
+      return;
+    }
+
+    const banner = `
+      <div class="card" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:12px;background:var(--bg-subtle,#f8fafc);border-left:4px solid var(--accent,#2563eb)">
+        <div>
+          <h3 style="margin:0 0 4px">🧰 Dedicated Workshop Toolbox: <b>${esc(m.toolbox_name || m.name + "'s Tool Box")}</b></h3>
+          <div class="muted">
+            Responsible Mechanic: <b>${esc(m.name)}</b> · Role: ${esc(m.trade || 'Mechanic')} · Location: <b>${esc((tools[0] && tools[0].location) || m.site || 'Workshop')}</b>
+          </div>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <span class="badge blue"><b>${tools.length}</b> Tools in Box</span>
+          ${canManage ? `<button class="sm primary" id="btn_add_to_box">+ Add Tool to This Box</button>` : ''}
+          <button class="sm" id="btn_back_to_mechs">⬅ All Mechanics</button>
+        </div>
+      </div>
+    `;
+
+    const rows = tools.map((t) => {
+      let actBtns = [];
+      if (t.status !== 'scrapped' && t.status !== 'pending_scrap' && canReport) {
+        actBtns.push(`<button class="sm danger" data-damage="${t.id}" title="Report this specific tool broken and request Engineer scrap condemnation">⚠️ Report Broken / Request Scrap</button>`);
+      }
+      if (canManage) {
+        actBtns.push(`<button class="sm" data-transfer="${t.id}" title="Transfer tool back to common store or reassign">🔄 Transfer</button>`);
+        actBtns.push(`<button class="sm" data-edit="${t.id}" title="Edit tool details">✏️</button>`);
+      }
+
+      return `<tr>
+        <td class="mono"><b>${esc(t.tool_code)}</b></td>
+        <td><b>${esc(t.name)}</b><br><span class="muted">${esc(t.category || '')}</span></td>
+        <td>${esc(t.specifications || t.brand || 'Workshop Standard')}<br><span class="muted mono">${esc(t.serial_no || '')}</span></td>
+        <td>${esc(t.toolbox_name || 'Main Toolbox')}</td>
+        <td>${toolCondBadge(t.condition)}</td>
+        <td>${toolStatBadge(t.status)}</td>
+        <td>${t.purchase_cost ? 'LKR ' + num(t.purchase_cost) : '<span class="muted">—</span>'}</td>
+        <td style="white-space:nowrap;text-align:right">${actBtns.join(' ')}</td>
+      </tr>`;
+    });
+
+    qs('#tm_view', body).innerHTML = banner + tableWrap([
+      { label: 'Tool Code', width: '130px' },
+      { label: 'Tool Name & Category' },
+      { label: 'Specification / Size' },
+      { label: 'Toolbox Section' },
+      { label: 'Condition' },
+      { label: 'Status' },
+      { label: 'Cost', num: true },
+      { label: 'Actions', num: true },
+    ], rows, { scroll: true });
+
+    if (qs('#btn_add_to_box', body)) {
+      qs('#btn_add_to_box', body).onclick = () => openToolCreateModal(renderView, 'mechanic', m.id, m.name);
+    }
+    if (qs('#btn_back_to_mechs', body)) {
+      qs('#btn_back_to_mechs', body).onclick = () => { qs('#tm_mech_sel', body).value = ''; renderView(); };
+    }
+
+    qsa('[data-damage]', body).forEach((b) => {
+      b.onclick = () => {
+        const t = tools.find((x) => x.id === Number(b.dataset.damage));
+        if (t) openToolDamageReportModal(t, renderView);
+      };
+    });
+    qsa('[data-transfer]', body).forEach((b) => {
+      b.onclick = () => {
+        const t = tools.find((x) => x.id === Number(b.dataset.transfer));
+        if (t) openToolTransferModal(t, renderView);
+      };
+    });
+    qsa('[data-edit]', body).forEach((b) => {
+      b.onclick = () => {
+        const t = tools.find((x) => x.id === Number(b.dataset.edit));
+        if (t) openToolEditModal(t, renderView);
+      };
+    });
+  };
+
+  if (qs('#btn_flt_resp', body)) {
+    qs('#btn_flt_resp', body).onclick = () => { activeFilter = 'responsible'; qs('#tm_mech_sel', body).value = ''; renderView(); };
+  }
+  if (qs('#btn_flt_all', body)) {
+    qs('#btn_flt_all', body).onclick = () => { activeFilter = 'all'; qs('#tm_mech_sel', body).value = ''; renderView(); };
+  }
+  if (qs('#btn_flt_gen', body)) {
+    qs('#btn_flt_gen', body).onclick = () => { activeFilter = 'general'; qs('#tm_mech_sel', body).value = ''; renderView(); };
+  }
+
+  qs('#tm_mech_sel', body).onchange = renderView;
+  qs('#tm_q', body).oninput = () => { clearTimeout(deb); deb = setTimeout(renderView, 250); };
+
+  if (qs('#btn_add_mech_tool', body)) {
+    qs('#btn_add_mech_tool', body).onclick = () => openToolCreateModal(renderView, 'mechanic', selectedMechId);
+  }
+
+  await renderView();
+}
+
+async function toolsLogsTab(body, sp) {
+  const canIssue = canDo('tools.issue') || canDo('tools.manage') || isAdmin() || canEdit('stores');
+
+  body.innerHTML = `
+    <div class="toolbar" style="margin-bottom:10px;gap:8px;flex-wrap:wrap">
+      ${canIssue ? '<button class="primary" id="btn_new_checkout">📤 New Tool Checkout</button>' : ''}
+      <input id="log_q" type="search" placeholder="Search log no, tool, mechanic, job card…" value="${esc(sp.get('q') || '')}" style="max-width:240px">
+      <select id="log_st" style="max-width:180px">
+        <option value="">All Logs</option>
+        <option value="issued" ${sp.get('status') === 'issued' ? 'selected' : ''}>Active Checkouts (Not Returned)</option>
+        <option value="returned" ${sp.get('status') === 'returned' ? 'selected' : ''}>Returned OK</option>
+        <option value="returned_damaged" ${sp.get('status') === 'returned_damaged' ? 'selected' : ''}>Returned Damaged</option>
+      </select>
+      <div class="spacer"></div>
+      <span class="muted" id="log_count"></span>
+    </div>
+    <div id="log_table"><div class="muted">Loading store daily logs…</div></div>
+  `;
+
+  let deb;
+  const reload = async () => {
+    const q = qs('#log_q', body).value.trim();
+    const st = qs('#log_st', body).value;
+
+    const sp_ = new URLSearchParams({ tab: 'logs' });
+    if (q) sp_.set('q', q);
+    if (st) sp_.set('status', st);
+    history.replaceState(null, '', '#/tools?' + sp_.toString());
+
+    let url = '/tools/logs?limit=250';
+    if (q) url += '&q=' + encodeURIComponent(q);
+    if (st) url += '&status=' + encodeURIComponent(st);
+
+    let data;
+    try {
+      data = await api(url);
+    } catch (e) {
+      qs('#log_table', body).innerHTML = `<div class="card err">${esc(e.message)}</div>`;
+      return;
+    }
+
+    const logs = data.logs || [];
+    qs('#log_count', body).textContent = `${logs.length} log entry${logs.length === 1 ? '' : 'ies'}`;
+
+    if (!logs.length) {
+      qs('#log_table', body).innerHTML = '<div class="card"><p class="muted">No tool issue logs recorded.</p></div>';
+      return;
+    }
+
+    const rows = logs.map((l) => {
+      const isIssued = l.status === 'issued';
+      let stBadge = '<span class="badge blue">Issued / Out</span>';
+      if (l.status === 'returned') stBadge = '<span class="badge green">Returned OK</span>';
+      if (l.status === 'returned_damaged') stBadge = '<span class="badge red">Returned Damaged</span>';
+
+      let actBtns = '';
+      if (isIssued && canIssue) {
+        actBtns = `<button class="sm primary" data-returnlog="${l.id}">📥 Receive Return</button>`;
+      }
+
+      return `<tr>
+        <td class="mono"><b>${esc(l.log_no || '')}</b></td>
+        <td>${esc(l.issue_date || '')}<br><span class="muted">${esc(l.issue_time || '')}</span></td>
+        <td>
+          <b>${esc(l.tool_code || '')}</b> - ${esc(l.tool_name || '')}
+          <br><span class="muted">${l.tool_type === 'mechanic' ? '🧰 Mechanic Tool' : '🛠️ Common Tool'}</span>
+        </td>
+        <td><b>${esc(l.issued_to_name || '')}</b>${l.job_id ? `<br><span class="muted">Job: #${l.job_id}</span>` : ''}</td>
+        <td>${toolCondBadge(l.condition_out)}</td>
+        <td>${esc(l.issued_by || '')}</td>
+        <td>${l.return_date ? esc(l.return_date) + (l.return_time ? `<br><span class="muted">${esc(l.return_time)}</span>` : '') : '<span class="muted">Still out</span>'}</td>
+        <td>${l.return_date ? toolCondBadge(l.condition_in) : '<span class="muted">—</span>'}</td>
+        <td>${esc(l.received_by || '—')}</td>
+        <td>${stBadge}</td>
+        <td style="white-space:nowrap;text-align:right">${actBtns}</td>
+      </tr>`;
+    });
+
+    qs('#log_table', body).innerHTML = tableWrap([
+      { label: 'Log No', width: '120px' },
+      { label: 'Issued At' },
+      { label: 'Tool' },
+      { label: 'Issued To' },
+      { label: 'Cond. Out' },
+      { label: 'Issued By' },
+      { label: 'Returned At' },
+      { label: 'Cond. In' },
+      { label: 'Received By' },
+      { label: 'Status' },
+      { label: 'Action', num: true },
+    ], rows, { scroll: true });
+
+    qsa('[data-returnlog]', body).forEach((b) => {
+      b.onclick = () => {
+        const l = logs.find((x) => x.id === Number(b.dataset.returnlog));
+        if (l) openToolReturnModal(l, reload);
+      };
+    });
+  };
+
+  qs('#log_q', body).oninput = () => { clearTimeout(deb); deb = setTimeout(reload, 250); };
+  qs('#log_st', body).onchange = reload;
+
+  if (qs('#btn_new_checkout', body)) {
+    qs('#btn_new_checkout', body).onclick = () => openToolIssueModal(null, reload);
+  }
+
+  await reload();
+}
+
+async function toolsScrapTab(body, sp) {
+  const isEng = !!ME && (ME.role === 'engineer' || ME.role === 'assistant_engineer' || ME.role === 'operational_manager' || isAdmin() || canDo('tools.scrap.approve'));
+  const canReport = canDo('tools.damage.report') || canDo('tools.issue') || canDo('tools.manage') || canView('tools');
+
+  body.innerHTML = `
+    <div class="card" style="margin-bottom:12px;background:#fff8e1;border-color:#ffe082">
+      <div style="display:flex;align-items:flex-start;gap:12px">
+        <div style="font-size:24px;line-height:1">🛡️</div>
+        <div>
+          <b style="color:#b78103">Tool Damage & Scrap Condemnation Workflow:</b>
+          <div style="font-size:12.5px;color:#5d4037;margin-top:2px">
+            When tools in personal mechanic toolboxes or the workshop common store become broken or damaged, they are registered here. 
+            <b>Removing and condemning any tool into scrap strictly requires approval by the Mechanical Engineer or Assistant Engineer.</b>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="toolbar" style="margin-bottom:10px;gap:8px;flex-wrap:wrap">
+      ${canReport ? '<button class="btn sm danger" id="btn_report_broken">+ Report Broken Tool</button>' : ''}
+      <select id="ts_st" style="max-width:200px">
+        <option value="">All Requests</option>
+        <option value="pending_approval" ${sp.get('status') === 'pending_approval' || !sp.get('status') ? 'selected' : ''}>⏳ Awaiting Engineer Approval</option>
+        <option value="approved" ${sp.get('status') === 'approved' ? 'selected' : ''}>✓ Approved (Scrapped)</option>
+        <option value="under_repair" ${sp.get('status') === 'under_repair' ? 'selected' : ''}>🔧 Workshop Repair</option>
+        <option value="rejected" ${sp.get('status') === 'rejected' ? 'selected' : ''}>✕ Rejected</option>
+      </select>
+      <div class="spacer"></div>
+      <span class="muted" id="ts_count"></span>
+    </div>
+    <div id="ts_table"><div class="muted">Loading scrap requests…</div></div>
+  `;
+
+  const reload = async () => {
+    const st = qs('#ts_st', body).value;
+    const sp_ = new URLSearchParams({ tab: 'scrap' });
+    if (st) sp_.set('status', st);
+    history.replaceState(null, '', '#/tools?' + sp_.toString());
+
+    let url = '/tools/scrap-requests?limit=250';
+    if (st) url += '&status=' + encodeURIComponent(st);
+
+    let data;
+    try {
+      data = await api(url);
+    } catch (e) {
+      qs('#ts_table', body).innerHTML = `<div class="card err">${esc(e.message)}</div>`;
+      return;
+    }
+
+    const reqs = data.requests || [];
+    qs('#ts_count', body).textContent = `${reqs.length} scrap request${reqs.length === 1 ? '' : 's'}`;
+
+    if (!reqs.length) {
+      qs('#ts_table', body).innerHTML = '<div class="card"><p class="muted">No scrap requests match this status filter.</p></div>';
+      return;
+    }
+
+    const rows = reqs.map((r) => {
+      const isPending = r.status === 'pending_approval';
+      const isApproved = r.status === 'approved';
+
+      let actBtns = [];
+      if (isPending && isEng) {
+        actBtns.push(`<button class="sm primary" data-review="${r.id}">⚖️ Engineer Review</button>`);
+      }
+      if (isApproved) {
+        actBtns.push(`<a class="btn sm" href="/api/tools/scrap-requests/${r.id}/print.html" target="_blank" title="Official Tool Condemnation Certificate">📄 Print Note</a>`);
+      }
+
+      const mechanicCol = r.mechanic_name
+        ? `<b>${esc(r.mechanic_name)}</b><br><span class="muted">🧰 Personal Box</span>`
+        : '<span class="muted">🛠️ Common Workshop</span>';
+
+      const decisionInfo = r.engineer_name
+        ? `<b>${esc(r.engineer_name)}</b><br><span class="muted">${esc(r.engineer_role || 'Engineer')} · ${esc(String(r.scrap_date || r.created_at).slice(0, 10))}</span>`
+        : '<span class="muted">Awaiting decision</span>';
+
+      return `<tr>
+        <td class="mono"><b>${esc(r.request_no)}</b></td>
+        <td>${esc(String(r.damage_date || r.created_at).slice(0, 10))}</td>
+        <td><b>${esc(r.tool_code)}</b><br>${esc(r.tool_name)}</td>
+        <td>${mechanicCol}</td>
+        <td>
+          <b>${esc(r.damage_reason || '')}</b>
+          ${r.incident_description ? `<br><span class="muted">${esc(r.incident_description)}</span>` : ''}
+          ${r.replacement_requested ? '<br><span class="badge amber">Replacement Needed</span>' : ''}
+        </td>
+        <td>${esc(r.reported_by || '—')}</td>
+        <td>${toolScrapBadge(r.status)}</td>
+        <td>${decisionInfo}</td>
+        <td style="white-space:nowrap;text-align:right">${actBtns.join(' ')}</td>
+      </tr>`;
+    });
+
+    qs('#ts_table', body).innerHTML = tableWrap([
+      { label: 'Request No', width: '130px' },
+      { label: 'Date' },
+      { label: 'Tool' },
+      { label: 'Mechanic / Source' },
+      { label: 'Damage & Reason' },
+      { label: 'Reported By' },
+      { label: 'Status' },
+      { label: 'Engineer Approval' },
+      { label: 'Actions', num: true },
+    ], rows, { scroll: true });
+
+    qsa('[data-review]', body).forEach((b) => {
+      b.onclick = () => {
+        const r = reqs.find((x) => x.id === Number(b.dataset.review));
+        if (r) openEngineerApprovalModal(r, reload);
+      };
+    });
+  };
+
+  qs('#ts_st', body).onchange = reload;
+
+  if (qs('#btn_report_broken', body)) {
+    qs('#btn_report_broken', body).onclick = () => openToolDamageReportModal(null, reload);
+  }
+
+  await reload();
+}
+
+async function toolsArchiveTab(body, sp) {
+  let data;
+  try {
+    data = await api('/tools?status=scrapped&limit=250');
+  } catch (e) {
+    body.innerHTML = `<div class="card err">${esc(e.message)}</div>`;
+    return;
+  }
+
+  const tools = Array.isArray(data) ? data : (data.tools || []);
+  if (!tools.length) {
+    body.innerHTML = '<div class="card"><p class="muted">No scrapped tools in archive.</p></div>';
+    return;
+  }
+
+  const rows = tools.map((t) => `<tr>
+    <td class="mono"><b>${esc(t.tool_code)}</b></td>
+    <td><b>${esc(t.name)}</b><br><span class="muted">${esc(t.category || '')}</span></td>
+    <td>${t.type === 'mechanic' ? `🧰 ${esc(t.mechanic_name || 'Mechanic')}` : '🛠️ Common Workshop'}</td>
+    <td>${esc(t.brand || '')} ${esc(t.model_no || '')}</td>
+    <td><span class="badge grey">Condemned & Scrapped</span></td>
+    <td>${esc(t.notes || '—')}</td>
+  </tr>`);
+
+  body.innerHTML = `
+    <div class="card" style="margin-bottom:12px;background:var(--bg-subtle,#f8fafc)">
+      <p style="margin:0">📜 <b>Condemned Tools Archive:</b> Historical record of tools that suffered irreparable damage, were formally inspected by the Mechanical / Assistant Engineer, and decommissioned into scrap.</p>
+    </div>
+    ${tableWrap([
+      { label: 'Tool Code', width: '130px' },
+      { label: 'Tool Name & Category' },
+      { label: 'Original Source / Owner' },
+      { label: 'Brand & Model' },
+      { label: 'Status' },
+      { label: 'Decommission Notes' },
+    ], rows, { scroll: true })}
+  `;
+}
+
+async function openToolCreateModal(reload, initialType = 'common', initialMechanicId = null, initialMechanicName = '') {
+  let mechs = [];
+  try {
+    mechs = await api('/tools/mechanic-boxes');
+  } catch (e) { /* ignore */ }
+
+  const html = `
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+      <div>
+        <label>Tool Code</label>
+        <input id="tc_code" placeholder="Auto-generated if empty (e.g. CT-TORQUE-01)">
+      </div>
+      <div>
+        <label>Tool Name *</label>
+        <input id="tc_name" placeholder="e.g. 1/2-Inch Drive Digital Torque Wrench" required>
+      </div>
+      <div>
+        <label>Category</label>
+        <select id="tc_category">
+          ${TOOL_CATEGORIES.map((c) => `<option value="${esc(c)}">${esc(c)}</option>`).join('')}
+        </select>
+      </div>
+      <div>
+        <label>Tool Ownership / Type *</label>
+        <select id="tc_type">
+          <option value="common" ${initialType === 'common' ? 'selected' : ''}>🛠️ Common Workshop Tool (Store)</option>
+          <option value="mechanic" ${initialType === 'mechanic' ? 'selected' : ''}>🧰 Mechanic Personal Toolbox</option>
+        </select>
+      </div>
+      <div id="tc_mech_box" style="grid-column:1/-1;display:${initialType === 'mechanic' ? 'grid' : 'none'};grid-template-columns:1fr 1fr;gap:12px;background:var(--bg-subtle,#f8fafc);padding:10px;border-radius:6px;border:1px solid var(--border)">
+        <div>
+          <label>Assign to Mechanic *</label>
+          <select id="tc_mechanic_id">
+            <option value="">-- Select Mechanic --</option>
+            ${mechs.map((m) => `<option value="${m.id}" ${initialMechanicId === m.id ? 'selected' : ''}>${esc(m.name)} (${esc(m.trade || 'Mechanic')})</option>`).join('')}
+          </select>
+        </div>
+        <div>
+          <label>Toolbox Name / Section</label>
+          <input id="tc_toolbox_name" placeholder="e.g. Main Toolbox, Drawer 2" value="Main Toolbox">
+        </div>
+      </div>
+      <div>
+        <label>Brand / Manufacturer</label>
+        <input id="tc_brand" placeholder="e.g. Makita, Snap-on, Bosch">
+      </div>
+      <div>
+        <label>Model Number</label>
+        <input id="tc_model_no" placeholder="e.g. DTW-300">
+      </div>
+      <div>
+        <label>Serial Number</label>
+        <input id="tc_serial_no" placeholder="e.g. SN-883921">
+      </div>
+      <div>
+        <label>Store Location</label>
+        <input id="tc_location" placeholder="e.g. Store Rack B-04">
+      </div>
+      <div>
+        <label>Purchase Cost (LKR)</label>
+        <input id="tc_purchase_cost" type="number" step="0.01" placeholder="0.00">
+      </div>
+      <div>
+        <label>Initial Condition</label>
+        <select id="tc_condition">
+          <option value="good">Good</option>
+          <option value="excellent">Excellent (New)</option>
+          <option value="fair">Fair</option>
+        </select>
+      </div>
+      <div style="grid-column:1/-1">
+        <label>Specifications / Notes</label>
+        <textarea id="tc_notes" rows="2" placeholder="Technical specifications, capacity, or store remarks"></textarea>
+      </div>
+    </div>
+    <div style="margin-top:14px;text-align:right">
+      <button class="sm" id="tc_cancel">Cancel</button>
+      <button class="primary" id="tc_save">✓ Save Tool</button>
+    </div>
+  `;
+
+  modal('Register Workshop / Mechanic Tool', html, (mBody, close) => {
+    const typeSel = qs('#tc_type', mBody);
+    const mechBox = qs('#tc_mech_box', mBody);
+    typeSel.onchange = () => {
+      mechBox.style.display = typeSel.value === 'mechanic' ? 'grid' : 'none';
+    };
+
+    qs('#tc_cancel', mBody).onclick = close;
+    qs('#tc_save', mBody).onclick = async () => {
+      const name = qs('#tc_name', mBody).value.trim();
+      if (!name) return toast('Tool name is required', 'err');
+
+      const type = typeSel.value;
+      const mechanic_id = type === 'mechanic' ? Number(qs('#tc_mechanic_id', mBody).value) || null : null;
+      if (type === 'mechanic' && !mechanic_id) return toast('Please select a mechanic for this toolbox', 'err');
+
+      const payload = {
+        tool_code: qs('#tc_code', mBody).value.trim() || undefined,
+        name,
+        category: qs('#tc_category', mBody).value,
+        type,
+        mechanic_id,
+        toolbox_name: qs('#tc_toolbox_name', mBody).value.trim() || 'Main Toolbox',
+        brand: qs('#tc_brand', mBody).value.trim() || undefined,
+        model_no: qs('#tc_model_no', mBody).value.trim() || undefined,
+        serial_no: qs('#tc_serial_no', mBody).value.trim() || undefined,
+        location: qs('#tc_location', mBody).value.trim() || (type === 'common' ? 'Stores' : 'Mechanic Toolbox'),
+        purchase_cost: Number(qs('#tc_purchase_cost', mBody).value) || undefined,
+        condition: qs('#tc_condition', mBody).value,
+        notes: qs('#tc_notes', mBody).value.trim() || undefined,
+      };
+
+      try {
+        const res = await api('/tools', { method: 'POST', body: payload });
+        toast(`Tool ${res.tool.tool_code} registered successfully`);
+        close();
+        reload();
+      } catch (e) {
+        toast(e.message, 'err');
+      }
+    };
+  }, { wide: true });
+}
+
+async function openToolEditModal(tool, reload) {
+  let mechs = [];
+  try {
+    mechs = await api('/tools/mechanic-boxes');
+  } catch (e) { /* ignore */ }
+
+  const html = `
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+      <div>
+        <label>Tool Code</label>
+        <input id="te_code" value="${esc(tool.tool_code || '')}" readonly style="background:var(--bg-subtle,#eee)">
+      </div>
+      <div>
+        <label>Tool Name *</label>
+        <input id="te_name" value="${esc(tool.name || '')}" required>
+      </div>
+      <div>
+        <label>Category</label>
+        <select id="te_category">
+          ${TOOL_CATEGORIES.map((c) => `<option value="${esc(c)}" ${tool.category === c ? 'selected' : ''}>${esc(c)}</option>`).join('')}
+        </select>
+      </div>
+      <div>
+        <label>Ownership / Type</label>
+        <select id="te_type">
+          <option value="common" ${tool.type === 'common' ? 'selected' : ''}>🛠️ Common Workshop Tool</option>
+          <option value="mechanic" ${tool.type === 'mechanic' ? 'selected' : ''}>🧰 Mechanic Personal Toolbox</option>
+        </select>
+      </div>
+      <div id="te_mech_box" style="grid-column:1/-1;display:${tool.type === 'mechanic' ? 'grid' : 'none'};grid-template-columns:1fr 1fr;gap:12px;background:var(--bg-subtle,#f8fafc);padding:10px;border-radius:6px;border:1px solid var(--border)">
+        <div>
+          <label>Assign to Mechanic</label>
+          <select id="te_mechanic_id">
+            <option value="">-- Select Mechanic --</option>
+            ${mechs.map((m) => `<option value="${m.id}" ${tool.mechanic_id === m.id ? 'selected' : ''}>${esc(m.name)} (${esc(m.trade || 'Mechanic')})</option>`).join('')}
+          </select>
+        </div>
+        <div>
+          <label>Toolbox Name / Section</label>
+          <input id="te_toolbox_name" value="${esc(tool.toolbox_name || 'Main Toolbox')}">
+        </div>
+      </div>
+      <div>
+        <label>Brand</label>
+        <input id="te_brand" value="${esc(tool.brand || '')}">
+      </div>
+      <div>
+        <label>Model Number</label>
+        <input id="te_model_no" value="${esc(tool.model_no || '')}">
+      </div>
+      <div>
+        <label>Serial Number</label>
+        <input id="te_serial_no" value="${esc(tool.serial_no || '')}">
+      </div>
+      <div>
+        <label>Location</label>
+        <input id="te_location" value="${esc(tool.location || '')}">
+      </div>
+      <div>
+        <label>Condition</label>
+        <select id="te_condition">
+          ${TOOL_CONDITIONS.map(([k, l]) => `<option value="${k}" ${tool.condition === k ? 'selected' : ''}>${l}</option>`).join('')}
+        </select>
+      </div>
+      <div>
+        <label>Purchase Cost (LKR)</label>
+        <input id="te_cost" type="number" step="0.01" value="${tool.purchase_cost || ''}">
+      </div>
+      <div style="grid-column:1/-1">
+        <label>Notes</label>
+        <textarea id="te_notes" rows="2">${esc(tool.notes || '')}</textarea>
+      </div>
+    </div>
+    <div style="margin-top:14px;text-align:right">
+      <button class="sm" id="te_cancel">Cancel</button>
+      <button class="primary" id="te_save">✓ Update Tool</button>
+    </div>
+  `;
+
+  modal(`Edit Tool: ${tool.tool_code}`, html, (mBody, close) => {
+    const typeSel = qs('#te_type', mBody);
+    const mechBox = qs('#te_mech_box', mBody);
+    typeSel.onchange = () => {
+      mechBox.style.display = typeSel.value === 'mechanic' ? 'grid' : 'none';
+    };
+
+    qs('#te_cancel', mBody).onclick = close;
+    qs('#te_save', mBody).onclick = async () => {
+      const name = qs('#te_name', mBody).value.trim();
+      if (!name) return toast('Tool name is required', 'err');
+
+      const type = typeSel.value;
+      const mechanic_id = type === 'mechanic' ? Number(qs('#te_mechanic_id', mBody).value) || null : null;
+
+      const payload = {
+        name,
+        category: qs('#te_category', mBody).value,
+        type,
+        mechanic_id,
+        toolbox_name: qs('#te_toolbox_name', mBody).value.trim() || 'Main Toolbox',
+        brand: qs('#te_brand', mBody).value.trim(),
+        model_no: qs('#te_model_no', mBody).value.trim(),
+        serial_no: qs('#te_serial_no', mBody).value.trim(),
+        location: qs('#te_location', mBody).value.trim(),
+        condition: qs('#te_condition', mBody).value,
+        purchase_cost: Number(qs('#te_cost', mBody).value) || null,
+        notes: qs('#te_notes', mBody).value.trim(),
+      };
+
+      try {
+        await api('/tools/' + tool.id, { method: 'PATCH', body: payload });
+        toast('Tool updated successfully');
+        close();
+        reload();
+      } catch (e) {
+        toast(e.message, 'err');
+      }
+    };
+  }, { wide: true });
+}
+
+async function openToolTransferModal(tool, reload) {
+  let mechs = [];
+  try {
+    mechs = await api('/tools/mechanic-boxes');
+  } catch (e) { /* ignore */ }
+
+  const html = `
+    <p>Transfer <b>${esc(tool.tool_code)} - ${esc(tool.name)}</b> currently assigned to <b>${esc(tool.mechanic_name || 'Common Store')}</b>.</p>
+    <div>
+      <label>Destination</label>
+      <select id="tt_dest">
+        <option value="common">🛠️ Return to Workshop Common Store</option>
+        <option value="mechanic" selected>🧰 Reassign to Another Mechanic</option>
+      </select>
+    </div>
+    <div id="tt_mech_sel" style="margin-top:10px">
+      <label>New Mechanic Owner</label>
+      <select id="tt_new_mech">
+        ${mechs.filter((m) => m.id !== tool.mechanic_id).map((m) => `<option value="${m.id}">${esc(m.name)} (${esc(m.trade || 'Mechanic')})</option>`).join('')}
+      </select>
+    </div>
+    <div style="margin-top:14px;text-align:right">
+      <button class="sm" id="tt_cancel">Cancel</button>
+      <button class="primary" id="tt_save">Transfer Tool</button>
+    </div>
+  `;
+
+  modal(`Transfer Tool: ${tool.tool_code}`, html, (mBody, close) => {
+    const dest = qs('#tt_dest', mBody);
+    const mechBox = qs('#tt_mech_sel', mBody);
+    dest.onchange = () => { mechBox.style.display = dest.value === 'mechanic' ? 'block' : 'none'; };
+
+    qs('#tt_cancel', mBody).onclick = close;
+    qs('#tt_save', mBody).onclick = async () => {
+      const type = dest.value;
+      const mechanic_id = type === 'mechanic' ? Number(qs('#tt_new_mech', mBody).value) : null;
+      try {
+        await api('/tools/' + tool.id, {
+          method: 'PATCH',
+          body: {
+            type,
+            mechanic_id,
+            location: type === 'common' ? 'Stores' : 'Mechanic Toolbox',
+          },
+        });
+        toast('Tool transferred successfully');
+        close();
+        reload();
+      } catch (e) {
+        toast(e.message, 'err');
+      }
+    };
+  });
+}
+
+async function openToolIssueModal(preselectedTool, reload, preselectedMechId = null) {
+  let tools = [];
+  let mechs = [];
+  try {
+    if (!preselectedTool) {
+      const td = await api('/tools?status=in_store&limit=200');
+      tools = Array.isArray(td) ? td : (td.tools || []);
+    }
+    mechs = await api('/tools/mechanic-boxes');
+  } catch (e) { /* ignore */ }
+
+  const today = new Date().toISOString().slice(0, 10);
+  const nowTime = new Date().toTimeString().slice(0, 5);
+
+  const toolPicker = preselectedTool
+    ? `<div class="card" style="margin-bottom:12px;background:var(--bg-subtle,#f8fafc)">
+        <b>${esc(preselectedTool.tool_code)} - ${esc(preselectedTool.name)}</b>
+        <div class="muted">${esc(preselectedTool.category || '')} · Condition: ${esc(preselectedTool.condition || 'good')}</div>
+       </div>`
+    : `<div>
+        <label>Select Tool to Check Out *</label>
+        <select id="ti_tool_id">
+          <option value="">-- Choose Tool from Store (${tools.length} available) --</option>
+          ${tools.map((t) => `<option value="${t.id}">${esc(t.tool_code)} - ${esc(t.name)} (${esc(t.location || 'Store')})</option>`).join('')}
+        </select>
+       </div>`;
+
+  const html = `
+    ${toolPicker}
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:10px">
+      <div>
+        <label>Issued To (Mechanic / Staff) *</label>
+        <select id="ti_mech_id">
+          <option value="">-- Select Mechanic or specify name --</option>
+          ${mechs.map((m) => `<option value="${m.id}" data-name="${esc(m.name)}" ${preselectedMechId === m.id ? 'selected' : ''}>${esc(m.name)} (${esc(m.trade || 'Mechanic')})${m.assigned_tools_count > 0 ? ' [🧰 Has Box]' : ' [Store Borrower]'}</option>`).join('')}
+        </select>
+      </div>
+      <div>
+        <label>Or Free-text Name (if outside contractor)</label>
+        <input id="ti_custom_name" placeholder="Leave empty if mechanic selected">
+      </div>
+      <div>
+        <label>Job Card ID / Vehicle Reg (Optional)</label>
+        <input id="ti_job" placeholder="e.g. 1042 or CP-EX-04">
+      </div>
+      <div>
+        <label>Condition at Checkout</label>
+        <select id="ti_cond">
+          <option value="good" selected>Good</option>
+          <option value="excellent">Excellent</option>
+          <option value="fair">Fair</option>
+        </select>
+      </div>
+      <div>
+        <label>Issue Date</label>
+        <input id="ti_date" type="date" value="${today}">
+      </div>
+      <div>
+        <label>Issue Time</label>
+        <input id="ti_time" type="time" value="${nowTime}">
+      </div>
+      <div style="grid-column:1/-1">
+        <label>Issued By (Storekeeper)</label>
+        <input id="ti_by" value="${esc((window.ME && ME.name) || 'Storekeeper')}">
+      </div>
+    </div>
+    <div style="margin-top:14px;text-align:right">
+      <button class="sm" id="ti_cancel">Cancel</button>
+      <button class="primary" id="ti_submit">📤 Confirm Issue</button>
+    </div>
+  `;
+
+  modal('Store Tool Checkout / Daily Issue Log', html, (mBody, close) => {
+    qs('#ti_cancel', mBody).onclick = close;
+    qs('#ti_submit', mBody).onclick = async () => {
+      const toolId = preselectedTool ? preselectedTool.id : Number(qs('#ti_tool_id', mBody).value);
+      if (!toolId) return toast('Please select a tool', 'err');
+
+      const mechSel = qs('#ti_mech_id', mBody);
+      const customName = qs('#ti_custom_name', mBody).value.trim();
+      const mechId = mechSel.value ? Number(mechSel.value) : null;
+      let issuedToName = customName;
+      if (!issuedToName && mechId) {
+        const opt = mechSel.options[mechSel.selectedIndex];
+        issuedToName = opt ? opt.dataset.name : '';
+      }
+      if (!issuedToName) return toast('Please select or specify who the tool is issued to', 'err');
+
+      const payload = {
+        tool_id: toolId,
+        mechanic_id: mechId,
+        issued_to_name: issuedToName,
+        job_id: Number(qs('#ti_job', mBody).value) || undefined,
+        condition_out: qs('#ti_cond', mBody).value,
+        issue_date: qs('#ti_date', mBody).value,
+        issue_time: qs('#ti_time', mBody).value,
+        issued_by: qs('#ti_by', mBody).value.trim() || undefined,
+      };
+
+      try {
+        await api('/tools/logs/issue', { method: 'POST', body: payload });
+        toast(`Tool checked out to ${issuedToName}`);
+        close();
+        reload();
+      } catch (e) {
+        toast(e.message, 'err');
+      }
+    };
+  }, { wide: true });
+}
+
+async function openToolReturnModal(logOrTool, reload) {
+  let log = logOrTool;
+  if (!log.id && log.log_id) {
+    try {
+      const res = await api('/tools/logs?id=' + log.log_id);
+      if (res.logs && res.logs[0]) log = res.logs[0];
+    } catch (e) { /* ignore */ }
+  }
+
+  const today = new Date().toISOString().slice(0, 10);
+  const nowTime = new Date().toTimeString().slice(0, 5);
+
+  const html = `
+    <div class="card" style="margin-bottom:12px;background:var(--bg-subtle,#f8fafc)">
+      <b>${esc(log.tool_code || '')} - ${esc(log.tool_name || '')}</b>
+      <div class="muted">Issued to: <b>${esc(log.issued_to_name || '')}</b> · Issued on: ${esc(log.issue_date || '')}</div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+      <div>
+        <label>Return Date</label>
+        <input id="tr_date" type="date" value="${today}">
+      </div>
+      <div>
+        <label>Return Time</label>
+        <input id="tr_time" type="time" value="${nowTime}">
+      </div>
+      <div style="grid-column:1/-1">
+        <label>Returned Condition *</label>
+        <select id="tr_cond">
+          <option value="good">Good (Normal Return)</option>
+          <option value="fair">Fair (Minor Wear)</option>
+          <option value="damaged" style="color:red;font-weight:bold">⚠️ Damaged / Broken (Requires Engineer Review)</option>
+        </select>
+      </div>
+      <div style="grid-column:1/-1">
+        <label>Received By (Storekeeper)</label>
+        <input id="tr_by" value="${esc((window.ME && ME.name) || 'Storekeeper')}">
+      </div>
+      <div style="grid-column:1/-1">
+        <label>Return Inspection Notes</label>
+        <textarea id="tr_notes" rows="2" placeholder="Inspection notes, wear, or damage description"></textarea>
+      </div>
+      <div id="tr_damage_alert" style="grid-column:1/-1;display:none;background:#ffebee;padding:10px;border-radius:6px;border:1px solid #ffcdd2">
+        <b style="color:#c62828">⚠️ Damaged / Broken Tool Return Notice:</b>
+        <div style="font-size:12px;color:#b71c1c;margin-top:2px">
+          Marking this tool as damaged will flag the tool as damaged and permit raising an official Scrap Condemnation Request for the Engineer.
+        </div>
+      </div>
+    </div>
+    <div style="margin-top:14px;text-align:right">
+      <button class="sm" id="tr_cancel">Cancel</button>
+      <button class="primary" id="tr_submit">📥 Confirm Return</button>
+    </div>
+  `;
+
+  modal(`Return Tool: ${log.tool_code || ''}`, html, (mBody, close) => {
+    const condSel = qs('#tr_cond', mBody);
+    const alertBox = qs('#tr_damage_alert', mBody);
+    condSel.onchange = () => {
+      alertBox.style.display = (condSel.value === 'damaged' || condSel.value === 'broken') ? 'block' : 'none';
+    };
+
+    qs('#tr_cancel', mBody).onclick = close;
+    qs('#tr_submit', mBody).onclick = async () => {
+      const logId = log.id || log.log_id;
+      if (!logId) return toast('Missing log identifier', 'err');
+
+      const condIn = condSel.value;
+      const payload = {
+        return_date: qs('#tr_date', mBody).value,
+        return_time: qs('#tr_time', mBody).value,
+        condition_in: condIn,
+        received_by: qs('#tr_by', mBody).value.trim() || undefined,
+        return_notes: qs('#tr_notes', mBody).value.trim() || undefined,
+      };
+
+      try {
+        await api(`/tools/logs/${logId}/return`, { method: 'POST', body: payload });
+        toast('Tool return registered');
+        close();
+        if (condIn === 'damaged' || condIn === 'broken') {
+          if (confirm('Tool was returned broken/damaged. Would you like to raise a Scrap Condemnation Request for Engineer approval now?')) {
+            openToolDamageReportModal({ id: log.tool_id, tool_code: log.tool_code, name: log.tool_name, type: log.tool_type, mechanic_id: log.mechanic_id, mechanic_name: log.issued_to_name }, reload);
+            return;
+          }
+        }
+        reload();
+      } catch (e) {
+        toast(e.message, 'err');
+      }
+    };
+  });
+}
+
+async function openToolDamageReportModal(tool, reload) {
+  let toolList = [];
+  if (!tool) {
+    try {
+      const td = await api('/tools?limit=250');
+      toolList = (Array.isArray(td) ? td : (td.tools || [])).filter((x) => x.status !== 'scrapped' && x.status !== 'pending_scrap');
+    } catch (e) { /* ignore */ }
+  }
+
+  const today = new Date().toISOString().slice(0, 10);
+  const toolHeader = tool
+    ? `<div class="card" style="margin-bottom:12px;background:var(--bg-subtle,#f8fafc)">
+        <div style="font-size:15px"><b>${esc(tool.tool_code)} - ${esc(tool.name)}</b></div>
+        <div class="muted" style="margin-top:2px">
+          ${tool.type === 'mechanic' ? `🧰 Personal Toolbox: <b>${esc(tool.mechanic_name || 'Mechanic')}</b>` : '🛠️ Workshop Common Store Tool'}
+        </div>
+      </div>`
+    : `<div>
+        <label>Select Broken Tool *</label>
+        <select id="td_tool_id">
+          <option value="">-- Choose Broken Tool (${toolList.length} tools) --</option>
+          ${toolList.map((t) => `<option value="${t.id}">${esc(t.tool_code)} - ${esc(t.name)} (${t.type === 'mechanic' ? 'Mechanic: ' + esc(t.mechanic_name) : 'Common Workshop'})</option>`).join('')}
+        </select>
+      </div>`;
+
+  const html = `
+    ${toolHeader}
+    <div class="card" style="background:#fff8e1;border-color:#ffe082;margin:10px 0">
+      <div style="font-size:12.5px;color:#795548">
+        ℹ️ <b>Scrap Request Protocol:</b> Submitting this form reports the tool as damaged and requests its removal into scrap. 
+        <b>It will be routed to the Mechanical Engineer or Assistant Engineer for technical inspection and approval.</b>
+      </div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:10px">
+      <div>
+        <label>Damage Date *</label>
+        <input id="td_date" type="date" value="${today}" required>
+      </div>
+      <div>
+        <label>Damage Reason / Failure Mode *</label>
+        <select id="td_reason">
+          ${DAMAGE_REASONS.map(([k, l]) => `<option value="${k}">${l}</option>`).join('')}
+        </select>
+      </div>
+      <div style="grid-column:1/-1">
+        <label>Incident & Technical Damage Description *</label>
+        <textarea id="td_desc" rows="3" placeholder="Explain what happened during operation, which part fractured/burnt, and why the tool cannot safely function" required></textarea>
+      </div>
+      <div>
+        <label>Reported By</label>
+        <input id="td_reported_by" value="${esc((window.ME && ME.name) || 'Workshop Storekeeper')}">
+      </div>
+      <div style="display:flex;align-items:center;margin-top:20px">
+        <label style="cursor:pointer;display:flex;align-items:center;gap:6px">
+          <input type="checkbox" id="td_replacement" checked style="width:auto">
+          <span>Request replacement tool for this mechanic / store</span>
+        </label>
+      </div>
+    </div>
+    <div style="margin-top:16px;text-align:right">
+      <button class="sm" id="td_cancel">Cancel</button>
+      <button class="primary danger" id="td_submit">⚠️ Submit Scrap Request</button>
+    </div>
+  `;
+
+  modal(tool ? `Report Broken Tool: ${tool.tool_code}` : 'Report Broken Tool for Scrap Condemnation', html, (mBody, close) => {
+    qs('#td_cancel', mBody).onclick = close;
+    qs('#td_submit', mBody).onclick = async () => {
+      const toolId = tool ? tool.id : Number(qs('#td_tool_id', mBody).value);
+      if (!toolId) return toast('Please select a tool', 'err');
+
+      const damageReason = qs('#td_reason', mBody).value;
+      const incidentDesc = qs('#td_desc', mBody).value.trim();
+      if (!incidentDesc) return toast('Please enter an incident / damage description', 'err');
+
+      const payload = {
+        tool_id: toolId,
+        damage_date: qs('#td_date', mBody).value,
+        damage_reason: damageReason,
+        incident_description: incidentDesc,
+        reported_by: qs('#td_reported_by', mBody).value.trim(),
+        replacement_requested: qs('#td_replacement', mBody).checked,
+      };
+
+      try {
+        const res = await api('/tools/scrap-requests', { method: 'POST', body: payload });
+        toast(`Scrap Request ${res.request.request_no} submitted for Engineer approval`);
+        close();
+        reload();
+      } catch (e) {
+        toast(e.message, 'err');
+      }
+    };
+  }, { wide: true });
+}
+
+async function openEngineerApprovalModal(req, reload) {
+  let mySig = null;
+  try {
+    const s = await api('/auth/signature');
+    mySig = s.signature || null;
+  } catch (e) { /* ignore */ }
+
+  const html = `
+    <div class="card" style="margin-bottom:12px;background:var(--bg-subtle,#f8fafc)">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start">
+        <div>
+          <div style="font-size:16px"><b>Request ${esc(req.request_no)}</b>: ${esc(req.tool_code)} - ${esc(req.tool_name)}</div>
+          <div class="muted" style="margin-top:2px">
+            Source: <b>${req.tool_type === 'mechanic' ? `🧰 Personal Toolbox: ${esc(req.mechanic_name || 'Mechanic')}` : '🛠️ Workshop Common Store'}</b>
+          </div>
+        </div>
+        <span class="badge amber">⏳ Pending Approval</span>
+      </div>
+      <div style="margin-top:8px;font-size:13px;border-top:1px solid var(--border);padding-top:8px">
+        <b>Damage Reason:</b> ${esc(req.damage_reason)}<br>
+        <b>Incident Details:</b> ${esc(req.incident_description || '—')}<br>
+        <span class="muted">Reported on ${esc(String(req.damage_date || req.created_at).slice(0, 10))} by ${esc(req.reported_by || 'Store')}</span>
+      </div>
+    </div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+      <div>
+        <label>Engineer Technical Decision *</label>
+        <select id="ea_decision">
+          <option value="approved" selected>✓ Condemn & Decommission into Scrap (Approved)</option>
+          <option value="send_for_repair">🔧 Send for Workshop Repair (Do Not Scrap)</option>
+        </select>
+      </div>
+      <div id="ea_bin_box">
+        <label>Scrap Bin / Scrap Yard Reference</label>
+        <input id="ea_bin" placeholder="e.g. SCRAP-YARD-A1, BIN-04" value="${esc(req.scrap_bin_ref || 'SCRAP-YARD-01')}">
+      </div>
+      <div style="grid-column:1/-1">
+        <label>Engineer Technical Assessment & Condemnation Remarks *</label>
+        <textarea id="ea_remarks" rows="2" placeholder="e.g. Inspected tool physically. Crack in casing beyond economical repair. Condemned for safety."></textarea>
+      </div>
+      <div style="grid-column:1/-1">
+        <label>Approving Authority</label>
+        <div style="font-size:13px;font-weight:bold;margin-bottom:6px">
+          ${esc((window.ME && ME.name) || 'Engineer')} · ${esc((window.ME && ME.role_label) || (window.ME && ME.role) || 'Mechanical / Workshop Engineer')}
+        </div>
+        ${signaturePadHtml('ea_sigpad')}
+      </div>
+    </div>
+
+    <div style="margin-top:16px;display:flex;justify-content:space-between;align-items:center">
+      <button class="sm danger" id="ea_btn_reject">✕ Reject Request</button>
+      <div style="display:flex;gap:8px">
+        <button class="sm" id="ea_cancel">Cancel</button>
+        <button class="primary" id="ea_submit">✓ Sign & Submit Decision</button>
+      </div>
+    </div>
+  `;
+
+  modal(`Engineer Review — ${req.request_no}`, html, (mBody, close) => {
+    const pad = wireSignaturePad(mBody, 'ea_sigpad', mySig);
+    const decSel = qs('#ea_decision', mBody);
+    const binBox = qs('#ea_bin_box', mBody);
+    decSel.onchange = () => {
+      binBox.style.display = decSel.value === 'approved' ? 'block' : 'none';
+    };
+
+    qs('#ea_cancel', mBody).onclick = close;
+
+    // Reject handler
+    qs('#ea_btn_reject', mBody).onclick = async () => {
+      const remarks = qs('#ea_remarks', mBody).value.trim();
+      if (!remarks) return toast('Please enter technical remarks for rejection', 'err');
+      if (!confirm('Reject this scrap request and return tool to active service?')) return;
+      try {
+        await api(`/tools/scrap-requests/${req.id}/reject`, { method: 'POST', body: { remarks } });
+        toast('Scrap request rejected');
+        close();
+        reload();
+      } catch (e) {
+        toast(e.message, 'err');
+      }
+    };
+
+    // Approve / Send for repair handler
+    qs('#ea_submit', mBody).onclick = async () => {
+      const decision = decSel.value;
+      const remarks = qs('#ea_remarks', mBody).value.trim();
+      const binRef = qs('#ea_bin', mBody).value.trim();
+      const sigData = pad.isEmpty() ? null : pad.dataURL();
+
+      const payload = {
+        decision,
+        remarks,
+        scrap_bin_ref: binRef,
+        signature: sigData,
+      };
+
+      try {
+        await api(`/tools/scrap-requests/${req.id}/approve`, { method: 'POST', body: payload });
+        toast(decision === 'approved' ? 'Tool condemned and moved to scrap archive' : 'Tool assigned for workshop repair');
+        close();
+        reload();
+        if (decision === 'approved') {
+          window.open(`/api/tools/scrap-requests/${req.id}/print.html`, '_blank');
+        }
+      } catch (e) {
+        toast(e.message, 'err');
+      }
+    };
+  }, { wide: true });
 }
 
 // ---- Job Requests (Transport) — Assistant Transport raises → Transport Manager
