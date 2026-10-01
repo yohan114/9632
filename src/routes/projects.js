@@ -16,7 +16,9 @@ router.get('/', asyncHandler((req, res) => {
   const hasAccess = req.user && (req.user.roles.includes('admin') || permissions.meets(permissions.effectiveLevel(req.user, 'projects'), 'view'));
   if (!hasAccess) {
     // Unprivileged users only see safe project names and codes for dropdown selectors
-    return res.json(all('SELECT id, code, name FROM projects WHERE active = 1 ORDER BY name'));
+    // location and active travel with the name: the pickers group by site and hide retired
+    // projects. Still no month_cost or asset_count -- that is what Projects clearance buys.
+    return res.json(all('SELECT id, code, name, location, active FROM projects ORDER BY name'));
   }
   res.json(all(
     `SELECT p.*,

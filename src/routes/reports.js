@@ -316,14 +316,14 @@ function jobReport(id) {
   return { job, requested, received, dailyWork, parts, oil, general, totals };
 }
 
-router.get('/job/:id/report', asyncHandler((req, res) => {
+router.get('/job/:id/report', requireModule('jobs'), asyncHandler((req, res) => {
   { const no = require('../lib/scope').jobRefusal(req.user, toInt(req.params.id)); if (no) return res.status(403).json(no); }
   const r = jobReport(toInt(req.params.id));
   if (!r) return res.status(404).json({ error: 'Job not found' });
   res.json(r);
 }));
 
-router.get('/job/:id/report.html', asyncHandler((req, res) => {
+router.get('/job/:id/report.html', requireModule('jobs'), asyncHandler((req, res) => {
   { const no = require('../lib/scope').jobRefusal(req.user, toInt(req.params.id)); if (no) return res.status(403).json(no); }
   const s = jobReport(toInt(req.params.id));
   if (!s) return res.status(404).send('Job not found');
@@ -531,7 +531,7 @@ function ongoingJobs(months) {
   return { today, cut, months: Number(months) || 8, jobs: out };
 }
 
-router.get('/ongoing-jobs.xlsx', asyncHandler(async (req, res) => {
+router.get('/ongoing-jobs.xlsx', requireModule('jobs'), asyncHandler(async (req, res) => {
   const { jobs, cut, months } = ongoingJobs(req.query.months);
   const SRC = { head_office: 'Head Office', local_purchase: 'Local Purchase' };
   await sendXlsx(res, `ongoing-jobs-${cut}.xlsx`, [
@@ -572,7 +572,7 @@ router.get('/ongoing-jobs.xlsx', asyncHandler(async (req, res) => {
   ]);
 }));
 
-router.get('/ongoing-jobs.html', asyncHandler((req, res) => {
+router.get('/ongoing-jobs.html', requireModule('jobs'), asyncHandler((req, res) => {
   const { jobs, today, cut, months } = ongoingJobs(req.query.months);
   const esc = (v) => String(v == null ? '' : v).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
   const m = (n) => 'Rs ' + (Number(n) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -635,7 +635,7 @@ ${waitingParts.length ? `<h2>What they are waiting for — outstanding spare par
   res.send(html);
 }));
 
-router.get('/jobs-summary.html', asyncHandler((req, res) => {
+router.get('/jobs-summary.html', requireModule('jobs'), asyncHandler((req, res) => {
   // No ?from= means every current-era job; a date narrows it to jobs touched since then.
   const from = MDATE.test(String(req.query.from || '')) ? req.query.from : null;
   const to = MDATE.test(String(req.query.to || '')) ? req.query.to : null;
@@ -1756,9 +1756,16 @@ const KINDS = ['pending_parts', 'job_summary', 'pending_price', 'day_tally'];
 const kindOf = (v) => (KINDS.includes(v) ? v : null);
 // The day tally is attendance: it follows the Daily Work section clearance, like /api/attendance.
 function mayReadKind(req, res, kind) {
-  if (req.user && req.user.roles && req.user.roles.includes('admin')) return true;
-  if (kind !== 'day_tally') return true;
   const permissions = require('../lib/permissions');
+  if (req.user && req.user.roles && req.user.roles.includes('admin')) return true;
+  // Every kind needs a section, not just the day tally. This returned true for all the others, so
+  // a role holding nothing could read them through /reports/daily/<kind>: they are reports, so they
+  // ask for Reports; the day tally is Daily Work's, and keeps its own check below.
+  if (kind !== 'day_tally') {
+    if (permissions.meets(permissions.effectiveLevel(req.user, 'reports'), 'view')) return true;
+    res.status(403).json({ error: 'Your account has no view access to reports' });
+    return false;
+  }
   if (permissions.meets(permissions.effectiveLevel(req.user, 'dailywork'), 'view')) return true;
   res.status(403).json({ error: 'Your account has no view access to dailywork' });
   return false;

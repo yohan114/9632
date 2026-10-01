@@ -56,7 +56,7 @@ router.get('/', asyncHandler((req, res) => {
 
   const whereSql = whereClauses.length ? `WHERE ${whereClauses.join(' AND ')}` : '';
 
-  res.json(all(
+  const rows = all(
     `SELECT x.*,
             (SELECT w.name FROM workshops w WHERE w.id = x.workshop_id) AS workshop_name,
             (SELECT w.code FROM workshops w WHERE w.id = x.workshop_id) AS workshop_code
@@ -66,11 +66,16 @@ router.get('/', asyncHandler((req, res) => {
                     (SELECT MAX(mw.from_date) FROM mechanic_workshops mw WHERE mw.mechanic_id = m.id AND mw.from_date > '2000-01-01') AS last_move
                FROM mechanics m) x ${whereSql} ORDER BY x.active DESC, x.name`,
     ...params
-  ));
+  );
+  // Without Labour the rate comes back null rather than being dropped: this tree's own
+  // "sanitize financial and rate data" test pins that shape, and the lineage that wanted the key
+  // absent entirely is not the one being kept. The list stays open either way, because the names
+  // fill the daily-work and crew pickers.
+  res.json(rows);
 }));
 
 // Single mechanic details with transfer history and labour rate history
-router.get('/:id', asyncHandler((req, res) => {
+router.get('/:id', requireModule('labour'), asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   const m = get('SELECT * FROM mechanics WHERE id = ?', id);
   if (!m) return res.status(404).json({ error: 'Mechanic not found' });

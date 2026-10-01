@@ -85,10 +85,24 @@ app.use('/api/access', require('./routes/access'));
 const PICKER_PATH = new Set(['/', '/search']);
 const assetsGate = (req, res, next) => (req.method === 'GET' && PICKER_PATH.has(req.path) ? next() : requireModule('assets')(req, res, next));
 app.use('/api/assets', assetsGate, require('./routes/assets'));
-app.use('/api/aliases', require('./routes/aliases'));
+// The alias queue is a section of its own: it was reachable by any signed-in account, including a
+// role given nothing, because this lineage gated the reference routers in the nav only.
+app.use('/api/aliases', requireModule('aliases', 'view'), require('./routes/aliases'));
 // Job Cards: the Monitor and the Requests list (job cards plan). Checks its own module access.
 app.use('/api/job-flow', require('./routes/jobflow'));
-app.use('/api/projects', require('./routes/projects'));
+// The project list fills the pickers on the vehicle, job card and job request forms, so GET / stays
+// open to anyone signed in and routes/projects.js returns names only without Projects clearance.
+// A single project, its cost and its sites are the section proper, and need it.
+//
+// READS only. Every write in routes/projects.js carries its own requireCap('projects.manage'), and
+// gating them here as well would answer "no view access to projects" from the mount before the
+// route could name the permission the person is actually missing -- which is the more useful
+// refusal, and what test/capabilities.test.js asks for. Contrast /api/aliases just above, gated on
+// every method: its POST /resolve has no capability of its own and hands back a whole asset row,
+// so leaving writes open there would be a way round the trimming that /api/assets does.
+const projectsGate = (req, res, next) => (
+  req.method !== 'GET' || req.path === '/' ? next() : requireModule('projects', 'view')(req, res, next));
+app.use('/api/projects', projectsGate, require('./routes/projects'));
 // MRN approval transitions (certify/approve/reject) are authorised by ROLE, not by
 // stores-edit level: the Workshop Engineer and Operational Manager who sign off an
 // MRN deliberately hold only stores=view (they must not edit stock). Let those three
