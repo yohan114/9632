@@ -287,9 +287,25 @@ function lanUrls(port) {
 if (require.main === module) {
   // Why did it stop? Starts, stops and crashes go to logs/workshopone-crash.log; a crash exits with
   // code 1 instead of carrying on half-broken (src/lib/lifecycle.js).
-  require('./lib/lifecycle').install({
+  const lifecycle = require('./lib/lifecycle').install({
     file: config.crashLog,
     onStop: () => require('./db').db.close(),
+  });
+
+  // A PORT SOMETHING ELSE ALREADY HOLDS is the startup failure an office PC actually hits, and as
+  // an uncaught exception it reads as a stack trace about a socket. On the office PC another
+  // server has port 3000, so the app died on startup the moment start_server.bat was
+  // double-clicked — and with no server there, the symptom reported was "nobody can sign in".
+  // Name the port and say where to change it; the crash log gets the same line.
+  httpServer.on('error', (err) => {
+    if (err && err.code === 'EADDRINUSE') {
+      console.error(lifecycle.write(`CRASHED — port ${config.port} is already in use, so the server could not start`));
+      console.error(`  ** Another program is already listening on port ${config.port}. **`);
+      console.error('  ** Set PORT in .env to a free port (the office copy uses 1929), or stop that program. **');
+      console.error(`  ** To see what is holding it:  netstat -ano | findstr :${config.port}  **`);
+      process.exit(1);
+    }
+    throw err; // anything else is a real fault: let it crash and be logged in full
   });
   startScheduler();
   // Freeze the day's Pending Parts and Maintenance Summery, hourly, so the record keeps itself.

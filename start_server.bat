@@ -32,29 +32,45 @@ if not exist "node_modules\" (
     )
 )
 
-:: 3. Check if server is already listening on port 3000
-::    3000 is the port the server actually binds: the default in src/config.js and .env.example, the
-::    one deploy/DEPLOY.md opens on the firewall, and the one deploy/RUNBOOK.md gives the team.
-::    This script used to check, announce and open the throwaway port deploy/VPS.md sets aside for
-::    the office DEVELOPMENT copy -- "a port nobody has bookmarked" -- so it opened a browser there
-::    while starting the live server on 3000, and the page never loaded. If a machine must use a
-::    different port, set PORT in its .env and change the three URLs below to match.
-netstat -ano | findstr /C:":3000 " | findstr "LISTENING" >nul 2>&1
+:: 3. Which port this PC uses
+::    THIS SCRIPT AND THE SERVER MUST AGREE ON IT, and they did not. The script checked, announced
+::    and opened 1929 while `node src/server.js` bound 3000 -- the default in src/config.js --
+::    because nothing here ever passed the port on to node. That is two failures at once: the
+::    browser opened a dead address, and on this PC, where another server already holds 3000, the
+::    app could not bind at all and stopped on startup. "Nobody can sign in" was the whole of the
+::    symptom, because there was no server to sign in to.
+::
+::    1929 is this machine's port, not a stray number: deploy/VPS.md keeps the office copy on "a
+::    port nobody has bookmarked" and starts it with PORT=1929. The live VPS sets its own PORT in
+::    .env and is untouched by anything below.
+::
+::    scripts/resolved-port.js answers with the port the app WILL bind whenever one is configured
+::    (PORT in the environment, or PORT in .env) and stays silent when none is. Only then does the
+::    default below apply -- and it is handed to node, so the port this script opens is the port
+::    the server binds. To change the port, set PORT in .env (it wins over this) or edit one line.
+set "PORT_DEFAULT=1929"
+set "APP_PORT="
+for /f "delims=" %%P in ('node scripts\resolved-port.js') do set "APP_PORT=%%P"
+if not defined APP_PORT set "APP_PORT=%PORT_DEFAULT%"
+if not defined PORT set "PORT=%APP_PORT%"
+
+:: 4. Check if the server is already listening on that port
+netstat -ano | findstr /C:":%APP_PORT% " | findstr "LISTENING" >nul 2>&1
 if %ERRORLEVEL% equ 0 (
-    echo [NOTE] WorkshopOne server is already running on port 3000.
-    echo [INFO] Opening browser at http://localhost:3000 ...
-    start "" "http://localhost:3000"
+    echo [NOTE] WorkshopOne server is already running on port %APP_PORT%.
+    echo [INFO] Opening browser at http://localhost:%APP_PORT% ...
+    start "" "http://localhost:%APP_PORT%"
     goto end
 )
 
-:: 4. Start the server
+:: 5. Start the server
 echo [INFO] Starting WorkshopOne Server...
-echo [INFO] Local Address:  http://localhost:3000
+echo [INFO] Local Address:  http://localhost:%APP_PORT%
 echo [INFO] Press Ctrl+C in this window at any time to stop the server.
 echo.
 
 :: Open browser
-start "" "http://localhost:3000"
+start "" "http://localhost:%APP_PORT%"
 
 :: Run Node server
 node src/server.js
