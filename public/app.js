@@ -13391,11 +13391,7 @@ async function renderAccessHistory(c) {
     </div>
   `;
 }
-const levelBadge = (lvl) => {
-  const cls = lvl === 'full' ? 'amber' : lvl === 'edit' ? 'green' : '';
-  const txt = lvl === 'none' ? '—' : lvl.toUpperCase();
-  return `<span class="badge ${cls}"${lvl === 'none' ? ' style="opacity:.4"' : ''}>${txt}</span>`;
-};
+
 
 async function renderRolesManager(c, wanted) {
   const sm = await api('/access/section-matrix').catch(async () => {
