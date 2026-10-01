@@ -13,7 +13,7 @@ const monthlyReport = require('../lib/monthly_cost_report');
 const mechanics = require('../lib/mechanics');
 const lubricants = require('../lib/lubricants');
 
-const { requireModule } = require('../lib/permissions');
+const { requireModule, requireView } = require('../lib/permissions');
 
 const router = express.Router();
 router.use(requireAuth);
@@ -117,10 +117,26 @@ router.get('/dashboard', asyncHandler((req, res) => {
   const flow = require('../lib/jobs_flow');
   const ready_to_close = flow.sees(req.user, 'jobs') ? flow.readyCount(req.user) : null;
 
+  // The dashboard stays open to anyone signed in -- it is their own landing page -- so each block is
+  // trimmed to the section it belongs to instead of the page being gated whole. attendance_today
+  // and ready_to_close above already work that way; the rest did not, so an account with none of
+  // the workshop sections (a buyer, or a role deliberately given nothing) was handed the month's
+  // cost by project, the stock and warranty warnings and the whole attention summary.
+  const sees = (section) => permissions.meets(permissions.effectiveLevel(req.user, section), 'view');
+  const seesJobs = sees('jobs');
   res.json({
-    jobs_by_status, awaiting_price: awaiting, low_stock_oil, batteries_warranty,
-    month_cost_by_project, open_jobs_count, closed_this_month_count, partly_closed, ready_to_close, attendance_today, field_down,
-    needs_attention: intelligence.needsAttentionSummary(),
+    jobs_by_status: seesJobs ? jobs_by_status : [],
+    awaiting_price: seesJobs ? awaiting : [],
+    low_stock_oil: sees('oil') ? low_stock_oil : [],
+    batteries_warranty: sees('batteries') ? batteries_warranty : [],
+    month_cost_by_project: sees('reports') ? month_cost_by_project : [],
+    open_jobs_count: seesJobs ? open_jobs_count : null,
+    closed_this_month_count: seesJobs ? closed_this_month_count : null,
+    partly_closed: seesJobs ? partly_closed : [],
+    ready_to_close,
+    attendance_today,
+    field_down,
+    needs_attention: sees('attention') ? intelligence.needsAttentionSummary() : {},
   });
 }));
 
@@ -316,14 +332,14 @@ function jobReport(id) {
   return { job, requested, received, dailyWork, parts, oil, general, totals };
 }
 
-router.get('/job/:id/report', requireModule('jobs'), asyncHandler((req, res) => {
+router.get('/job/:id/report', requireView('jobs', 'reports'), asyncHandler((req, res) => {
   { const no = require('../lib/scope').jobRefusal(req.user, toInt(req.params.id)); if (no) return res.status(403).json(no); }
   const r = jobReport(toInt(req.params.id));
   if (!r) return res.status(404).json({ error: 'Job not found' });
   res.json(r);
 }));
 
-router.get('/job/:id/report.html', requireModule('jobs'), asyncHandler((req, res) => {
+router.get('/job/:id/report.html', requireView('jobs', 'reports'), asyncHandler((req, res) => {
   { const no = require('../lib/scope').jobRefusal(req.user, toInt(req.params.id)); if (no) return res.status(403).json(no); }
   const s = jobReport(toInt(req.params.id));
   if (!s) return res.status(404).send('Job not found');
@@ -531,7 +547,7 @@ function ongoingJobs(months) {
   return { today, cut, months: Number(months) || 8, jobs: out };
 }
 
-router.get('/ongoing-jobs.xlsx', requireModule('jobs'), asyncHandler(async (req, res) => {
+router.get('/ongoing-jobs.xlsx', requireModule('reports', 'view'), asyncHandler(async (req, res) => {
   const { jobs, cut, months } = ongoingJobs(req.query.months);
   const SRC = { head_office: 'Head Office', local_purchase: 'Local Purchase' };
   await sendXlsx(res, `ongoing-jobs-${cut}.xlsx`, [
@@ -572,7 +588,7 @@ router.get('/ongoing-jobs.xlsx', requireModule('jobs'), asyncHandler(async (req,
   ]);
 }));
 
-router.get('/ongoing-jobs.html', requireModule('jobs'), asyncHandler((req, res) => {
+router.get('/ongoing-jobs.html', requireModule('reports', 'view'), asyncHandler((req, res) => {
   const { jobs, today, cut, months } = ongoingJobs(req.query.months);
   const esc = (v) => String(v == null ? '' : v).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
   const m = (n) => 'Rs ' + (Number(n) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -635,7 +651,7 @@ ${waitingParts.length ? `<h2>What they are waiting for — outstanding spare par
   res.send(html);
 }));
 
-router.get('/jobs-summary.html', requireModule('jobs'), asyncHandler((req, res) => {
+router.get('/jobs-summary.html', requireModule('reports', 'view'), asyncHandler((req, res) => {
   // No ?from= means every current-era job; a date narrows it to jobs touched since then.
   const from = MDATE.test(String(req.query.from || '')) ? req.query.from : null;
   const to = MDATE.test(String(req.query.to || '')) ? req.query.to : null;

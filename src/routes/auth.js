@@ -285,7 +285,13 @@ router.get('/me', (req, res) => {
   // workshop pickers and filters only when there is.
   const ws = require('../lib/workshops');
   const home = ws.byId(ws.homeOf(req.user));
-  res.json({ ...me, permissions: permissions.userPermissions(req.user.roles), hasSignature: !!(u && u.signature),
+  // effectiveUserPermissions, not userPermissions: the first reads the person's OWN levels where
+  // they have any and falls back to their roles', the second only ever answers the roles' template.
+  // The sign-in reply already answers the effective set, so a level given or taken from one person
+  // applied until the page next asked /auth/me and was handed the role template back -- a level
+  // taken away reappeared, one granted vanished, and the per-person screen looked like it had done
+  // nothing. The whole point of that screen is that a person can differ from their role.
+  res.json({ ...me, permissions: permissions.effectiveUserPermissions(req.user), hasSignature: !!(u && u.signature),
     workshop: home ? { id: home.id, code: home.code, name: home.name } : null, workshopsMulti: ws.isMulti(),
     // Stage 3: whether this person sees every workshop's job cards (always, until scoping is on).
     seesAllWorkshops: require('../lib/scope').seesAllJobs(req.user),

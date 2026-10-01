@@ -37,10 +37,14 @@ function role(name, open) {
   run('INSERT INTO roles (name, label) VALUES (?, ?)', name, name);
   for (const m of perms.MODULE_KEYS) perms.setPermission(name, m, open.includes(m) ? 'view' : 'none');
 }
+// NOTE on the section keys below. This tree and the lineage these tests came from named six
+// sections differently: service_plan, lubricants, daily_progress, cost_teardown and tb_reports here
+// against serviceplan, lubecapacities, progress, teardown and tyrebattery there. The fixtures grant
+// levels BY KEY, so under the old spellings they opened nothing and every address answered 403.
 const ROLES = {
   jobsonly: ['jobs'], fieldonly: ['field'], opsonly: ['operations'], assetsonly: ['assets'],
-  svconly: ['services'], filtonly: ['filters'], planonly: ['serviceplan'], lubeonly: ['lubecapacities'],
-  attnonly: ['attention'], progonly: ['progress'], tearonly: ['teardown'], ledgeronly: ['tyrebattery'], reportsonly: ['reports'],
+  svconly: ['services'], filtonly: ['filters'], planonly: ['service_plan'], lubeonly: ['lubricants'],
+  attnonly: ['attention'], progonly: ['daily_progress'], tearonly: ['cost_teardown'], ledgeronly: ['tb_reports'], reportsonly: ['reports'],
   storesonly: ['stores'], aliasonly: ['aliases'], labouronly: ['labour'], projonly: ['projects'], tbonly: ['tb_request'], nothing: [],
 };
 for (const [n, open] of Object.entries(ROLES)) role(n, open);
@@ -117,9 +121,9 @@ test('the 22 sections are the sidebar\'s, and every switch belongs to exactly on
   const moved = Object.fromEntries(['jobs.breakdown', 'jobs.field', 'assets.move', 'fleet.capacities.edit', 'services.attachments']
     .map((k) => [k, capabilities.get(k).module]));
   assert.deepStrictEqual(moved, { 'jobs.breakdown': 'field', 'jobs.field': 'field', 'assets.move': 'operations',
-    'fleet.capacities.edit': 'lubecapacities', 'services.attachments': 'services' });
-  for (const [item, key] of Object.entries({ field: 'field', operations: 'operations', services: 'services', lubecapacities: 'lubecapacities',
-    serviceplan: 'serviceplan', attention: 'attention', progress: 'progress', teardown: 'teardown', tyrebattery: 'tyrebattery' })) {
+    'fleet.capacities.edit': 'lubricants', 'services.attachments': 'services' });
+  for (const [item, key] of Object.entries({ field: 'field', operations: 'operations', services: 'services', lubecapacities: 'lubricants',
+    serviceplan: 'service_plan', attention: 'attention', progress: 'daily_progress', teardown: 'cost_teardown', tyrebattery: 'tb_reports' })) {
     assert.strictEqual(navModule[item], key, `${item} opens by its own switch`);
   }
 });
@@ -149,7 +153,7 @@ test('day one: a role made before the split, and a level changed on the Access s
     assert.strictEqual(perms.levelForRoles(['site_keeper'], key), perms.levelForRoles(['site_keeper'], from), `site keeper: ${key}`);
     assert.strictEqual(perms.levelForRoles(['workshop'], key), perms.levelForRoles(['workshop'], from), `workshop: ${key}`);
   }
-  assert.deepStrictEqual(['attention', 'progress', 'teardown', 'tyrebattery'].map((k) => perms.levelForRoles(['workshop'], k)),
+  assert.deepStrictEqual(['attention', 'daily_progress', 'cost_teardown', 'tb_reports'].map((k) => perms.levelForRoles(['workshop'], k)),
     ['none', 'none', 'none', 'none'], 'the admin\'s change, not the default');
   // Once set, a new switch is its own: the copy never overwrites it.
   perms.setPermission('workshop', 'field', 'none');
@@ -159,7 +163,7 @@ test('day one: a role made before the split, and a level changed on the Access s
   assert.strictEqual(perms.levelForRoles(['workshop'], 'jobs'), 'edit');
   // Put the workshop back for the tests below.
   perms.setPermission('workshop', 'field', 'edit');
-  for (const k of ['reports', 'attention', 'progress', 'teardown', 'tyrebattery']) perms.setPermission('workshop', k, 'view');
+  for (const k of ['reports', 'attention', 'daily_progress', 'cost_teardown', 'tb_reports']) perms.setPermission('workshop', k, 'view');
 });
 
 // ================================================================== each section, its own switch
@@ -279,7 +283,9 @@ test('the project and mechanic lists stay open for the pickers — names only wi
   await refused('nothing', `/projects/${P}/sites`);
   await letThrough('projonly', `/projects/${P}`);
   const m = (await call('nothing', 'GET', '/mechanics')).body.find((x) => x.name === 'Anura');
-  assert.ok(m && !('rate' in m), 'a mechanic\'s name, not the rate');
+  // The rate comes back null here rather than being absent: this tree's own "sanitize financial and
+  // rate data" test pins that shape, so it is the one that stands. Withheld either way.
+  assert.ok(m && m.rate === null, 'a mechanic\'s name, not the rate');
   assert.strictEqual((await call('labouronly', 'GET', '/mechanics')).body.find((x) => x.name === 'Anura').rate, 450);
   // The vehicle list fills the vehicle pickers in other sections: the numbers, not what it has cost.
   const v = (await call('nothing', 'GET', '/assets')).body.find((x) => x.id === A);

@@ -75,26 +75,6 @@ router.get('/', asyncHandler((req, res) => {
 }));
 
 // Single mechanic details with transfer history and labour rate history
-router.get('/:id', requireModule('labour'), asyncHandler((req, res) => {
-  const id = toInt(req.params.id);
-  const m = get('SELECT * FROM mechanics WHERE id = ?', id);
-  if (!m) return res.status(404).json({ error: 'Mechanic not found' });
-  const ws = require('../lib/workshops');
-  const currentWsId = ws.mechanicWorkshop(id);
-  const currentWs = currentWsId ? ws.byId(currentWsId) : null;
-  const history = ws.mechanicHistory(id);
-  const rates = all('SELECT * FROM labour_rates WHERE mechanic = ? ORDER BY effective_from DESC, id DESC', m.name);
-  res.json({
-    mechanic: {
-      ...m,
-      workshop_id: currentWsId,
-      workshop_name: currentWs ? currentWs.name : null,
-      workshop_code: currentWs ? currentWs.code : null,
-    },
-    transfers: history,
-    rates,
-  });
-}));
 
 router.post('/', requireCap('mechanics.create'), asyncHandler((req, res) => {
   require_(req.body, ['name']);
@@ -227,6 +207,32 @@ router.get('/aliases', requireModule('aliases'), asyncHandler((req, res) => {
     q: req.query.q,
     limit: req.query.limit,
   }));
+}));
+
+// One mechanic's record. LAST among the GETs on purpose: '/:id' matches a single segment, so while
+// it sat above them it swallowed /rates, /unassigned and /aliases -- Express takes the first route
+// that matches, and those three never ran at all. Their handlers were dead code and the screens
+// that call them got a 404 for a mechanic named "rates". Anything added below this line will be
+// swallowed the same way, so add it above.
+router.get('/:id', requireModule('labour'), asyncHandler((req, res) => {
+  const id = toInt(req.params.id);
+  const m = get('SELECT * FROM mechanics WHERE id = ?', id);
+  if (!m) return res.status(404).json({ error: 'Mechanic not found' });
+  const ws = require('../lib/workshops');
+  const currentWsId = ws.mechanicWorkshop(id);
+  const currentWs = currentWsId ? ws.byId(currentWsId) : null;
+  const history = ws.mechanicHistory(id);
+  const rates = all('SELECT * FROM labour_rates WHERE mechanic = ? ORDER BY effective_from DESC, id DESC', m.name);
+  res.json({
+    mechanic: {
+      ...m,
+      workshop_id: currentWsId,
+      workshop_name: currentWs ? currentWs.name : null,
+      workshop_code: currentWs ? currentWs.code : null,
+    },
+    transfers: history,
+    rates,
+  });
 }));
 
 router.post('/aliases/:id/link', requireCap('aliases.mechanic.resolve'), asyncHandler((req, res) => {
