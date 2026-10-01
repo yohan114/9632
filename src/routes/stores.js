@@ -25,6 +25,13 @@ const disposal = require('../lib/disposal');
 const { lineReceiptSql, mrnReceiptSql, receivedLabel, d10 } = require('../lib/received_date');
 const lubricants = require('../lib/lubricants');
 const approvalLimits = require('../lib/approval_limits');
+const {
+  renderMinDocumentHtml,
+  renderGrnDocumentHtml,
+  renderMtnDocumentHtml,
+  renderMrnDocumentHtml,
+} = require('../lib/stores_documents');
+const { sendPdf } = require('../lib/pdf_generator');
 
 // One cell's worth of "when did this arrive", for a sheet or a printout. A spreadsheet has no
 // tooltip, so whatever the hover would have said has to be in the cell itself.
@@ -60,6 +67,18 @@ function nextMtnNo() {
   const r = get(`SELECT MAX(CAST(mtn_no AS INTEGER)) m FROM mtn WHERE mtn_no GLOB '[0-9]*'`);
   return String((r && r.m ? r.m : 57814) + 1);
 }
+function nextMinNo() {
+  const r = get(`SELECT MAX(CAST(REPLACE(min_no, 'MIN-', '') AS INTEGER)) m FROM min_notes WHERE min_no GLOB '*[0-9]*'`);
+  const r2 = get(`SELECT MAX(CAST(REPLACE(min_no, 'MIN-', '') AS INTEGER)) m FROM issues WHERE min_no GLOB '*[0-9]*'`);
+  const maxM = Math.max(r && r.m ? r.m : 0, r2 && r2.m ? r2.m : 0);
+  return String(maxM >= 2799 ? maxM + 1 : 2800);
+}
+function nextGrnVoucherNo() {
+  const r = get(`SELECT MAX(CAST(REPLACE(grn_no, 'GRN-', '') AS INTEGER)) m FROM grn_vouchers WHERE grn_no GLOB '*[0-9]*'`);
+  const r2 = get(`SELECT MAX(CAST(REPLACE(grn_no, 'GRN-', '') AS INTEGER)) m FROM grn WHERE grn_no GLOB '*[0-9]*'`);
+  const maxM = Math.max(r && r.m ? r.m : 0, r2 && r2.m ? r2.m : 0);
+  return String(maxM >= 1451 ? maxM + 1 : 1452);
+}
 function resolveAssetId(body, prefix) {
   const idKey = prefix ? `${prefix}_asset_id` : 'asset_id';
   const textKey = prefix ? `${prefix}_asset` : 'asset';
@@ -81,7 +100,12 @@ function generalWorkshopJobId() {
               VALUES ('GENERAL-WS', 'repair', 'General workshop stores issues (not vehicle-specific)', 'REQUESTED', 'system', date('now'), 0, 1, 'general-workshop')`).lastInsertRowid;
 }
 
-router.get('/numbers', asyncHandler((_req, res) => res.json({ next_mrn: nextMrnNo(), next_mtn: nextMtnNo() })));
+router.get('/numbers', asyncHandler((_req, res) => res.json({
+  next_mrn: nextMrnNo(),
+  next_mtn: nextMtnNo(),
+  next_min: nextMinNo(),
+  next_grn: nextGrnVoucherNo(),
+})));
 
 // ---- store items ----------------------------------------------------------
 router.get('/items', asyncHandler((req, res) => {
@@ -639,6 +663,24 @@ router.get('/mrn', asyncHandler((req, res) => {
     else { clauses.push('m.approval_status = ?'); params.push(req.query.approval); }
   }
   // Free-text search: MRN number, vehicle, purpose, or any item description on the MRN.
+  if (req.query.step) {
+    const st = req.query.step;
+    if (st === 'to_certify') {
+      clauses.push("m.approval_status = 'requested' AND m.requested_by IS NOT NULL AND TRIM(m.requested_by) <> ''");
+    } else if (st === 'to_approve') {
+      clauses.push("m.approval_status = 'certified'");
+    } else if (st === 'to_receive') {
+      clauses.push("(m.approval_status = 'approved' OR (m.approval_status = 'requested' AND (m.requested_by IS NULL OR TRIM(m.requested_by) = ''))) AND (SELECT COALESCE(SUM(qty_received),0) FROM mrn_lines ml WHERE ml.mrn_id = m.id) = 0");
+    } else if (st === 'partial') {
+      clauses.push("(m.approval_status = 'approved' OR (m.approval_status = 'requested' AND (m.requested_by IS NULL OR TRIM(m.requested_by) = ''))) AND (SELECT COALESCE(SUM(qty_received),0) FROM mrn_lines ml WHERE ml.mrn_id = m.id) > 0 AND (SELECT COALESCE(SUM(qty_received),0) FROM mrn_lines ml WHERE ml.mrn_id = m.id) < (SELECT COALESCE(SUM(qty),0) FROM mrn_lines ml WHERE ml.mrn_id = m.id)");
+    } else if (st === 'done') {
+      clauses.push("(SELECT COALESCE(SUM(qty_received),0) FROM mrn_lines ml WHERE ml.mrn_id = m.id) >= (SELECT COALESCE(SUM(qty),0) FROM mrn_lines ml WHERE ml.mrn_id = m.id) AND (SELECT COUNT(*) FROM mrn_lines ml WHERE ml.mrn_id = m.id) > 0 AND m.approval_status != 'rejected'");
+    } else if (st === 'rejected') {
+      clauses.push("m.approval_status = 'rejected'");
+    } else if (st === 'all_todo' || st === 'open') {
+      clauses.push("m.approval_status != 'rejected' AND ((SELECT COALESCE(SUM(qty_received),0) FROM mrn_lines ml WHERE ml.mrn_id = m.id) < (SELECT COALESCE(SUM(qty),0) FROM mrn_lines ml WHERE ml.mrn_id = m.id) OR m.approval_status IN ('requested', 'certified'))");
+    }
+  }
   if (req.query.q && String(req.query.q).trim()) {
     const like = '%' + String(req.query.q).trim() + '%';
     clauses.push(`(m.mrn_no LIKE ? OR a.code LIKE ? OR m.purpose LIKE ?
@@ -658,6 +700,20 @@ router.get('/mrn', asyncHandler((req, res) => {
        ${where} ORDER BY ${order} LIMIT ${toInt(req.query.limit, 300)}`,
     ...params
   ));
+}));
+
+router.get('/mrn/counts', asyncHandler((req, res) => {
+  const own = scope.filter(req.user, 'm.workshop_id');
+  const wClause = own.sql ? ` AND ${own.sql}` : '';
+  const toCertify = get(`SELECT COUNT(*) c FROM mrn m WHERE m.approval_status = 'requested' AND m.requested_by IS NOT NULL AND TRIM(m.requested_by) <> ''${wClause}`, ...own.params).c;
+  const toApprove = get(`SELECT COUNT(*) c FROM mrn m WHERE m.approval_status = 'certified'${wClause}`, ...own.params).c;
+  const toReceive = get(`SELECT COUNT(*) c FROM mrn m WHERE (m.approval_status = 'approved' OR (m.approval_status = 'requested' AND (m.requested_by IS NULL OR TRIM(m.requested_by) = ''))) AND (SELECT COALESCE(SUM(qty_received),0) FROM mrn_lines ml WHERE ml.mrn_id = m.id) = 0${wClause}`, ...own.params).c;
+  const partial = get(`SELECT COUNT(*) c FROM mrn m WHERE (m.approval_status = 'approved' OR (m.approval_status = 'requested' AND (m.requested_by IS NULL OR TRIM(m.requested_by) = ''))) AND (SELECT COALESCE(SUM(qty_received),0) FROM mrn_lines ml WHERE ml.mrn_id = m.id) > 0 AND (SELECT COALESCE(SUM(qty_received),0) FROM mrn_lines ml WHERE ml.mrn_id = m.id) < (SELECT COALESCE(SUM(qty),0) FROM mrn_lines ml WHERE ml.mrn_id = m.id)${wClause}`, ...own.params).c;
+  const done = get(`SELECT COUNT(*) c FROM mrn m WHERE (SELECT COALESCE(SUM(qty_received),0) FROM mrn_lines ml WHERE ml.mrn_id = m.id) >= (SELECT COALESCE(SUM(qty),0) FROM mrn_lines ml WHERE ml.mrn_id = m.id) AND (SELECT COUNT(*) FROM mrn_lines ml WHERE ml.mrn_id = m.id) > 0 AND m.approval_status != 'rejected'${wClause}`, ...own.params).c;
+  const rejected = get(`SELECT COUNT(*) c FROM mrn m WHERE m.approval_status = 'rejected'${wClause}`, ...own.params).c;
+  const allTodo = toCertify + toApprove + toReceive + partial;
+  const total = get(`SELECT COUNT(*) c FROM mrn m WHERE 1=1${wClause}`, ...own.params).c;
+  res.json({ all_todo: allTodo, to_certify: toCertify, to_approve: toApprove, to_receive: toReceive, partial, done, rejected, all: total });
 }));
 
 router.post('/mrn', requireCap('stores.mrn.create'), asyncHandler((req, res) => {
@@ -837,103 +893,19 @@ router.post('/mrn/:id/reject', requireCap('stores.mrn.reject'), asyncHandler((re
 router.get('/mrn/:id/print.html', asyncHandler((req, res) => {
   { const no = scope.mrnRefusal(req.user, toInt(req.params.id)); if (no) return res.status(403).json(no); }
   const id = toInt(req.params.id);
-  const mrn = get('SELECT m.*, a.code AS asset_code, p.name AS project_name FROM mrn m LEFT JOIN assets a ON a.id = m.asset_id LEFT JOIN projects p ON p.id = m.project_id WHERE m.id = ?', id);
-  if (!mrn) return res.status(404).send('MRN not found');
-  const lines = all('SELECT * FROM mrn_lines WHERE mrn_id = ? ORDER BY id', id);
-  const esc = (v) => String(v == null ? '' : v).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
-  const d = (v) => (v ? String(v).slice(0, 10) : '');
-  const srcLbl = (s) => (s === 'head_office' ? 'H/O' : s === 'local_purchase' ? 'Local' : '');
-  const lineSrcs = [...new Set(lines.map((l) => l.purchase_source).filter(Boolean))];
-  const srcTag = lineSrcs.length === 1 ? srcLbl(lineSrcs[0]) : lineSrcs.length > 1 ? 'Mixed' : srcLbl(mrn.purchase_source);
-  const MIN_ROWS = 12;
-  // The mark goes inside the description cell, not in a ninth column — this reproduces the
-  // signed paper form EC1.ST.FO.01 and its column widths are fixed. But it must appear: whoever
-  // reads the form has to see that this line was not part of what was approved.
-  const addedMark = (l) => (l && l.added_after_approval
-    ? ` <span style="font-size:9px;border:1px solid #333;padding:0 3px">ADDED AFTER APPROVAL${
-      l.added_by ? ' — ' + esc(l.added_by) : ''}${l.added_at ? ', ' + esc(String(l.added_at).slice(0, 10)) : ''}</span>` : '');
-  const rowHtml = (l, i) => `<tr>
-    <td class="c">${i + 1}</td>
-    <td>${esc(l ? l.description : '')}${addedMark(l)}</td>
-    <td class="c">${esc(l ? (l.unit || 'nos') : '')}</td>
-    <td class="c">${l ? srcLbl(l.purchase_source || mrn.purchase_source) : ''}</td>
-    <td class="num">${l && l.qty_received ? l.qty_received : ''}</td>
-    <td></td>
-    <td class="num">${l && l.qty ? l.qty : ''}</td>
-    <td></td></tr>`;
-  const rows = [];
-  for (let i = 0; i < Math.max(MIN_ROWS, lines.length); i++) rows.push(rowHtml(lines[i], i));
-  // Render a signature image ONLY when it is a genuine base64 image data-URL. esc() here
-  // does not escape double-quotes, so interpolating an arbitrary stored signature would
-  // allow an attribute-breakout XSS (e.g. `x" onerror=...`); the allowlist forecloses it.
-  const sigSrc = (v) => (/^data:image\/(png|jpe?g|gif|webp);base64,[A-Za-z0-9+/=]+$/.test(String(v || '')) ? String(v) : '');
-  const sigBlock = (title, name, dateVal, designation, sigImg, isLast) => {
-    const safe = sigSrc(sigImg);
-    return `
-    <div class="${isLast ? '' : 'l'}"><b>${title}</b>
-      ${safe ? `<div style="height:36px;margin:2px 0"><img src="${safe}" style="max-height:36px;max-width:160px"></div>`
-        : '<div class="sig-line" style="margin-top:22px">Signature</div>'}
-      <div class="rowline"><span class="k">Name:</span> ${name ? esc(name) + (safe ? '' : ' <span style="color:#0a7a0a;font-size:9px">&#10003; e-signed</span>') : ''}</div>
-      <div class="rowline"><span class="k">Designation:</span> ${esc(designation)}</div>
-      <div class="rowline"><span class="k">Date:</span> ${dateVal ? esc(d(dateVal)) : ''}</div></div>`;
-  };
-  const html = `<!doctype html><html><head><meta charset="utf-8"><title>MRN ${esc(mrn.mrn_no)}</title>
-<style>
-  @page { size: A4; margin: 12mm; }
-  body { font-family: Arial, sans-serif; color: #000; margin: 0; font-size: 12px; }
-  .sheet { border: 1.5px solid #000; }
-  .hd { display: flex; align-items: stretch; border-bottom: 1.5px solid #000; }
-  .hd .co { flex: 1; padding: 6px 10px; font-weight: bold; font-size: 15px; border-right: 1.5px solid #000; display:flex; align-items:center; }
-  .hd .ti { width: 210px; padding: 6px 10px; font-weight: bold; font-size: 15px; display:flex; align-items:center; justify-content:center; }
-  .meta { display: grid; grid-template-columns: 1fr 1fr 1fr; border-bottom: 1.5px solid #000; }
-  .meta div { padding: 4px 10px; border-right: 1px solid #000; }
-  .meta div:last-child { border-right: none; }
-  .meta b { display:inline-block; min-width: 64px; }
-  table { width: 100%; border-collapse: collapse; }
-  th, td { border: 1px solid #000; padding: 4px 6px; vertical-align: top; }
-  th { background: #f0f0f0; font-size: 11px; text-align: center; }
-  td.c { text-align: center; } td.num { text-align: right; }
-  td:nth-child(2) { min-width: 260px; }
-  tbody td { height: 22px; }
-  .sign { display: grid; grid-template-columns: 1fr 1fr 1fr; border-top: 1.5px solid #000; }
-  .sign > div { padding: 8px 10px; }
-  .sign .l { border-right: 1.5px solid #000; }
-  .sig-line { margin-top: 26px; border-top: 1px solid #000; padding-top: 2px; font-size: 11px; }
-  .foot { display:flex; justify-content: space-between; padding: 4px 10px; border-top: 1.5px solid #000; font-size: 10px; color:#222; }
-  .rowline { display:flex; gap:6px; margin: 6px 0; font-size: 11px; } .rowline .k { min-width: 78px; }
-  button { padding: 8px 14px; font-size: 14px; margin: 10px; cursor: pointer; }
-  @media print { .noprint { display: none; } }
-</style></head>
-<body>
-<button class="noprint" onclick="window.print()">🖨 Print / Save as PDF</button>
-<div class="sheet">
-  <div class="hd"><div class="co">Edward and Christie (Pvt) Ltd</div><div class="ti">Material Requisition</div></div>
-  <div class="meta">
-    <div><b>Project:</b> ${esc(mrn.project_name || mrn.purpose || '')}</div>
-    <div><b>Date:</b> ${esc(d(mrn.req_date))}</div>
-    <div><b>MR No.:</b> ${esc(mrn.mrn_no)} ${srcTag ? '&nbsp; <b>' + srcTag + '</b>' : ''}</div>
-    <div><b>Vehicle:</b> ${esc(mrn.asset_code || '')}</div>
-    <div><b>Required Date:</b> ${esc(d(mrn.required_date))}</div>
-    <div><b>Requested by:</b> ${esc(mrn.requested_by || '')}</div>
-  </div>
-  <table>
-    <thead><tr>
-      <th style="width:34px">Item No.</th><th>Description</th><th style="width:40px">Unit</th><th style="width:44px">Source</th>
-      <th style="width:66px">Received Qty (Cumulative)</th><th style="width:56px">Available Qty</th>
-      <th style="width:56px">Required Qty</th><th style="width:66px">Required Date</th>
-    </tr></thead>
-    <tbody>${rows.join('')}</tbody>
-  </table>
-  <div class="sign">
-    ${sigBlock('Requested By', mrn.requested_by, mrn.req_date, 'Storekeeper', mrn.requested_sig, false)}
-    ${sigBlock('Certified By', mrn.certified_by, mrn.certified_at, 'Workshop Engineer', mrn.certified_sig, false)}
-    ${sigBlock('Approved By', mrn.approved_by, mrn.approved_at, 'Operational Manager', mrn.approved_sig, true)}
-  </div>
-  <div class="foot"><span>Doc. No.: EC1.ST.FO.01</span><span>Date of Issue: 2018.11.14</span></div>
-</div>
-</body></html>`;
+  const html = renderMrnDocumentHtml(id, { forPdf: false });
+  if (!html) return res.status(404).send('MRN not found');
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
   res.send(html);
+}));
+
+router.get('/mrn/:id/download.pdf', asyncHandler(async (req, res) => {
+  { const no = scope.mrnRefusal(req.user, toInt(req.params.id)); if (no) return res.status(403).json(no); }
+  const id = toInt(req.params.id);
+  const mrn = get('SELECT id, mrn_no FROM mrn WHERE id = ? OR mrn_no = ?', id, req.params.id);
+  if (!mrn) return res.status(404).send('MRN not found');
+  const html = renderMrnDocumentHtml(mrn.id, { forPdf: true });
+  await sendPdf(res, `MRN-${mrn.mrn_no || mrn.id}.pdf`, html);
 }));
 
 router.post('/mrn/:id/lines', requireCap('stores.mrn.edit'), asyncHandler((req, res) => {
@@ -1018,6 +990,24 @@ router.get('/grn', asyncHandler((req, res) => {
   if (req.query.mrn_id) { clauses.push('g.mrn_id = ?'); params.push(toInt(req.query.mrn_id)); }
   if (req.query.awaiting === '1') clauses.push('g.unit_price IS NULL');
   if (req.query.source && PURCHASE_SOURCES.includes(req.query.source)) { clauses.push('g.purchase_source_norm = ?'); params.push(req.query.source); }
+  if (req.query.status) {
+    clauses.push("COALESCE(g.status, gv.status, 'pending_approval') = ?");
+    params.push(req.query.status);
+  }
+  if (req.query.step) {
+    const st = req.query.step;
+    if (st === 'open' || st === 'all_todo') {
+      clauses.push("(COALESCE(g.status, gv.status, 'pending_approval') = 'pending_approval' OR g.unit_price IS NULL) AND COALESCE(g.status, gv.status, 'pending_approval') != 'rejected'");
+    } else if (st === 'to_price' || st === 'unpriced') {
+      clauses.push("g.unit_price IS NULL AND COALESCE(g.status, gv.status, 'pending_approval') != 'rejected'");
+    } else if (st === 'to_approve') {
+      clauses.push("g.unit_price IS NOT NULL AND COALESCE(g.status, gv.status, 'pending_approval') = 'pending_approval'");
+    } else if (st === 'approved') {
+      clauses.push("COALESCE(g.status, gv.status, 'pending_approval') = 'approved'");
+    } else if (st === 'rejected') {
+      clauses.push("COALESCE(g.status, gv.status, 'pending_approval') = 'rejected'");
+    }
+  }
   if (req.query.q && String(req.query.q).trim()) {
     const like = '%' + String(req.query.q).trim() + '%';
     clauses.push('(g.grn_no LIKE ? OR g.description LIKE ? OR g.supplier LIKE ? OR m.mrn_no LIKE ? OR a.code LIKE ?)');
@@ -1025,9 +1015,28 @@ router.get('/grn', asyncHandler((req, res) => {
   }
   const where = clauses.length ? 'WHERE ' + clauses.join(' AND ') : '';
   res.json(all(
-    `SELECT g.*, m.mrn_no, m.req_date AS mrn_req_date, a.code AS asset_code FROM grn g
-       LEFT JOIN mrn m ON m.id = g.mrn_id LEFT JOIN assets a ON a.id = m.asset_id
+    `SELECT g.*, m.mrn_no, m.req_date AS mrn_req_date, a.code AS asset_code,
+            COALESCE(g.status, gv.status, 'pending_approval') AS grn_status
+       FROM grn g
+       LEFT JOIN grn_vouchers gv ON gv.id = g.voucher_id
+       LEFT JOIN mrn m ON m.id = g.mrn_id
+       LEFT JOIN assets a ON a.id = m.asset_id
        ${where} ORDER BY g.id DESC LIMIT ${toInt(req.query.limit, 500)}`, ...params));
+}));
+
+router.get('/grn/counts', asyncHandler((_req, res) => {
+  const allTodo = get(`SELECT COUNT(*) c FROM grn g LEFT JOIN grn_vouchers gv ON gv.id = g.voucher_id 
+    WHERE (COALESCE(g.status, gv.status, 'pending_approval') = 'pending_approval' OR g.unit_price IS NULL) AND COALESCE(g.status, gv.status, 'pending_approval') != 'rejected'`).c;
+  const toPrice = get(`SELECT COUNT(*) c FROM grn g LEFT JOIN grn_vouchers gv ON gv.id = g.voucher_id 
+    WHERE g.unit_price IS NULL AND COALESCE(g.status, gv.status, 'pending_approval') != 'rejected'`).c;
+  const toApprove = get(`SELECT COUNT(*) c FROM grn g LEFT JOIN grn_vouchers gv ON gv.id = g.voucher_id 
+    WHERE g.unit_price IS NOT NULL AND COALESCE(g.status, gv.status, 'pending_approval') = 'pending_approval'`).c;
+  const approved = get(`SELECT COUNT(*) c FROM grn g LEFT JOIN grn_vouchers gv ON gv.id = g.voucher_id 
+    WHERE COALESCE(g.status, gv.status, 'pending_approval') = 'approved'`).c;
+  const rejected = get(`SELECT COUNT(*) c FROM grn g LEFT JOIN grn_vouchers gv ON gv.id = g.voucher_id 
+    WHERE COALESCE(g.status, gv.status, 'pending_approval') = 'rejected'`).c;
+  const total = get('SELECT COUNT(*) c FROM grn').c;
+  res.json({ all_todo: allTodo, to_price: toPrice, to_approve: toApprove, approved, rejected, all: total });
 }));
 
 // Count of GRN records still awaiting a price (for the badge / progress), split by source.
@@ -1463,8 +1472,8 @@ router.post('/grn', requireCap('stores.grn.receive'), asyncHandler((req, res) =>
   }
   const result = tx(() => {
     const info = run(
-      `INSERT INTO grn (grn_no, grn_date, mrn_id, mrn_line_id, store_item_id, description, qty, unit_price, supplier, invoice_no, invoice_date, delivery_date, purchase_source, purchase_source_norm)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO grn (status, grn_no, grn_date, mrn_id, mrn_line_id, store_item_id, description, qty, unit_price, supplier, invoice_no, invoice_date, delivery_date, purchase_source, purchase_source_norm)
+       VALUES ('pending_approval', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       b.grn_no || null, b.grn_date || null, toInt(b.mrn_id), toInt(b.mrn_line_id), toInt(b.store_item_id), b.description || null,
       toNum(b.qty, 0), b.unit_price === undefined || b.unit_price === '' ? null : toNum(b.unit_price),
       b.supplier || null, b.invoice_no || null, b.invoice_date || null,
@@ -1486,6 +1495,298 @@ router.post('/grn', requireCap('stores.grn.receive'), asyncHandler((req, res) =>
   });
   audit.record({ userId: req.user.id, entity: 'grn', entityId: result, action: 'create' });
   res.status(201).json(get('SELECT * FROM grn WHERE id = ?', result));
+}));
+
+// Printable Goods Received Note (Doc. No. EC1.ST.FO.2:5:21.12 layout).
+router.get('/grn/:id/print.html', asyncHandler((req, res) => {
+  const html = renderGrnDocumentHtml(req.params.id, { forPdf: false });
+  if (!html) return res.status(404).send('GRN not found');
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  res.send(html);
+}));
+
+router.get('/grn/:id/download.pdf', asyncHandler(async (req, res) => {
+  const html = renderGrnDocumentHtml(req.params.id, { forPdf: true });
+  if (!html) return res.status(404).send('GRN not found');
+  await sendPdf(res, `GRN-${req.params.id}.pdf`, html);
+}));
+
+router.get('/grn/:id', asyncHandler((req, res, next) => {
+  const id = toInt(req.params.id);
+  if (!id) return next();
+  const g = get(`SELECT g.*, m.mrn_no, m.req_date AS mrn_req_date, a.code AS asset_code,
+                        COALESCE(g.status, gv.status, 'pending_approval') AS grn_status
+                 FROM grn g
+                 LEFT JOIN grn_vouchers gv ON gv.id = g.voucher_id
+                 LEFT JOIN mrn m ON m.id = g.mrn_id
+                 LEFT JOIN assets a ON a.id = m.asset_id
+                 WHERE g.id = ?`, id);
+  if (!g) return res.status(404).json({ error: 'GRN record not found' });
+  let voucher = null;
+  let lines = [g];
+  let approvals = [];
+  if (g.voucher_id) {
+    voucher = get('SELECT * FROM grn_vouchers WHERE id = ?', g.voucher_id);
+    if (voucher) {
+      lines = all('SELECT g.*, m.mrn_no FROM grn g LEFT JOIN mrn m ON m.id = g.mrn_id WHERE g.voucher_id = ? OR g.grn_no = ? ORDER BY g.id', voucher.id, voucher.grn_no);
+      approvals = all(`SELECT a.*, u.username FROM grn_approvals a LEFT JOIN users u ON u.id = a.approver_id WHERE a.voucher_id = ? ORDER BY a.id`, voucher.id);
+    }
+  }
+  if (!voucher) {
+    voucher = {
+      id: g.voucher_id || g.id,
+      grn_no: g.grn_no,
+      received_date: g.delivery_date || g.grn_date,
+      supplier: g.supplier,
+      invoice_no: g.invoice_no,
+      status: g.grn_status || 'pending_approval',
+      prepared_by: g.supplier || 'Storekeeper',
+      approved_by: g.approved_by,
+      approved_sig: g.approved_sig,
+      approved_at: g.approved_at,
+      rejection_reason: g.rejection_reason
+    };
+  }
+  res.json({ grn: g, voucher, lines, approvals });
+}));
+
+// ---- GRN Vouchers (Grouping Delivery Items) ------------------------------
+router.get('/grn-vouchers', asyncHandler((req, res) => {
+  const clauses = [];
+  const params = [];
+  if (req.query.q && String(req.query.q).trim()) {
+    const like = '%' + String(req.query.q).trim() + '%';
+    clauses.push('(v.grn_no LIKE ? OR v.supplier LIKE ? OR v.po_no LIKE ? OR v.invoice_no LIKE ? OR v.delivery_note_no LIKE ?)');
+    params.push(like, like, like, like, like);
+  }
+  const where = clauses.length ? 'WHERE ' + clauses.join(' AND ') : '';
+  res.json(all(
+    `SELECT v.*,
+            (SELECT COUNT(*) FROM grn g WHERE g.voucher_id = v.id OR g.grn_no = v.grn_no) AS item_count,
+            (SELECT SUM(g.qty * COALESCE(g.unit_price, 0)) FROM grn g WHERE g.voucher_id = v.id OR g.grn_no = v.grn_no) AS total_value
+       FROM grn_vouchers v
+       ${where}
+      ORDER BY v.id DESC LIMIT ${toInt(req.query.limit, 200)}`, ...params));
+}));
+
+router.get('/grn-vouchers/:id', asyncHandler((req, res) => {
+  const id = toInt(req.params.id);
+  const voucher = get('SELECT * FROM grn_vouchers WHERE id = ? OR grn_no = ?', id, req.params.id);
+  if (!voucher) return res.status(404).json({ error: 'GRN Voucher not found' });
+  const lines = all('SELECT g.*, m.mrn_no FROM grn g LEFT JOIN mrn m ON m.id = g.mrn_id WHERE g.voucher_id = ? OR g.grn_no = ? ORDER BY g.id', voucher.id, voucher.grn_no);
+  const approvals = all(
+    `SELECT a.*, u.username FROM grn_approvals a
+     LEFT JOIN users u ON u.id = a.approver_id
+     WHERE a.voucher_id = ? ORDER BY a.id`, voucher.id);
+  res.json({ voucher, lines, approvals });
+}));
+
+router.post('/grn-vouchers', requireCap('stores.grn.receive'), asyncHandler((req, res) => {
+  const b = req.body || {};
+  let grnNo = clean(b.grn_no);
+  if (!grnNo) grnNo = 'GRN-' + nextGrnVoucherNo();
+  const receivedDate = /^\d{4}-\d{2}-\d{2}$/.test(String(b.received_date || ''))
+    ? b.received_date
+    : new Date().toISOString().slice(0, 10);
+
+  const supplier = clean(b.supplier);
+  const projectSite = clean(b.project_site) || 'Central Workshop — Badalgama';
+  const poNo = clean(b.po_no);
+  const invoiceNo = clean(b.invoice_no);
+  const deliveryNoteNo = clean(b.delivery_note_no);
+  const binCardPage = clean(b.bin_card_page);
+  const s = signer(req.user.id);
+  const preparedBy = clean(b.prepared_by) || s.name;
+  const preparedSig = clean(b.prepared_sig) || s.sig || null;
+  const preparedDesig = clean(b.prepared_designation) || 'Receiving Storekeeper';
+
+  const grnIds = Array.isArray(b.grn_ids) ? b.grn_ids.map(toInt).filter(Boolean) : [];
+  const lines = Array.isArray(b.lines) ? b.lines : [];
+
+  const { voucherId, createdIds } = tx(() => {
+    const info = run(
+      `INSERT INTO grn_vouchers (grn_no, received_date, supplier, project_site, po_no, invoice_no, delivery_note_no, bin_card_page,
+                                 prepared_by, prepared_sig, prepared_at, prepared_designation, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?, 'pending_approval')`,
+      grnNo, receivedDate, supplier, projectSite, poNo, invoiceNo, deliveryNoteNo, binCardPage,
+      preparedBy, preparedSig, preparedDesig
+    );
+    const vid = info.lastInsertRowid;
+
+    run(
+      `INSERT INTO grn_approvals (voucher_id, stage, role, approver_id, signed_name, signature, decision, reason)
+       VALUES (?, 'prepare', 'storekeeper', ?, ?, ?, 'approved', ?)`,
+      vid, req.user.id, preparedBy, preparedSig, 'Goods received, counted and inspected'
+    );
+
+    const newIds = [];
+    if (lines.length) {
+      for (const line of lines) {
+        const desc = clean(line.description);
+        const qty = toNum(line.qty, 0);
+        if (!desc || qty <= 0) continue;
+        const price = line.unit_price === undefined || line.unit_price === '' || line.unit_price === null ? null : toNum(line.unit_price);
+        const source = line.purchase_source || b.purchase_source;
+        const mrnLineId = toInt(line.mrn_line_id);
+        const mrnId = toInt(line.mrn_id);
+        const storeItemId = toInt(line.store_item_id);
+        const unit = clean(line.unit) || 'nos';
+
+        const res = run(
+          `INSERT INTO grn (voucher_id, status, grn_no, grn_date, mrn_id, mrn_line_id, store_item_id, description,
+                            qty, unit, unit_price, supplier, invoice_no, invoice_date, delivery_date,
+                            po_no, delivery_note_no, bin_card_page, prepared_by, prepared_sig, prepared_at,
+                            purchase_source, purchase_source_norm, project_site)
+           VALUES (?, 'pending_approval', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?, ?, ?)`,
+          vid, grnNo, receivedDate, mrnId || null, mrnLineId || null, storeItemId || null, desc,
+          qty, unit, price, supplier, invoiceNo, b.invoice_date || null, receivedDate,
+          poNo, deliveryNoteNo, binCardPage, preparedBy, preparedSig,
+          source || null, purchaseSourceNorm(source), projectSite
+        );
+        newIds.push(res.lastInsertRowid);
+
+        if (mrnLineId) {
+          run('UPDATE mrn_lines SET qty_received = qty_received + ? WHERE id = ?', qty, mrnLineId);
+          const lrec = get('SELECT mrn_id FROM mrn_lines WHERE id = ?', mrnLineId);
+          if (lrec) {
+            const open = get('SELECT COUNT(*) c FROM mrn_lines WHERE mrn_id = ? AND qty_received < qty', lrec.mrn_id);
+            const any = get('SELECT COUNT(*) c FROM mrn_lines WHERE mrn_id = ? AND qty_received > 0', lrec.mrn_id);
+            const status = open.c === 0 ? 'received' : (any.c > 0 ? 'partially_received' : 'open');
+            run('UPDATE mrn SET status = ? WHERE id = ?', status, lrec.mrn_id);
+          }
+        }
+      }
+    }
+
+    if (grnIds.length) {
+      run(
+        `UPDATE grn SET voucher_id = ?, grn_no = ?, bin_card_page = COALESCE(?, bin_card_page),
+                        supplier = COALESCE(?, supplier), po_no = COALESCE(?, po_no),
+                        delivery_note_no = COALESCE(?, delivery_note_no),
+                        prepared_by = COALESCE(?, prepared_by), status = 'pending_approval'
+         WHERE id IN (${grnIds.map(() => '?').join(',')})`,
+        vid, grnNo, binCardPage, supplier, poNo, deliveryNoteNo, preparedBy, ...grnIds
+      );
+    }
+
+    const allAffected = newIds.concat(grnIds);
+    if (allAffected.length) {
+      stock.sync({ grn: allAffected });
+    }
+    return { voucherId: vid, createdIds: newIds };
+  });
+
+  audit.record({ userId: req.user.id, entity: 'grn_vouchers', entityId: voucherId, action: 'create', after: { grn_no: grnNo, grn_ids: grnIds, lines_created: createdIds.length, status: 'pending_approval' } });
+  emitter.emit('stock_updated', { grn_no: grnNo, action: 'create', status: 'pending_approval' });
+  res.status(201).json({ id: voucherId, grn_no: grnNo, linked_items: grnIds.length + createdIds.length, status: 'pending_approval' });
+}));
+
+// GRN Approval Endpoint
+router.post('/grn-vouchers/:id/approve', requireCap('stores.grn.approve'), asyncHandler((req, res) => {
+  const id = toInt(req.params.id);
+  const v = get('SELECT * FROM grn_vouchers WHERE id = ? OR grn_no = ?', id, req.params.id);
+  if (!v) return res.status(404).json({ error: 'GRN voucher not found' });
+  if (v.status === 'approved') return res.status(409).json({ error: 'Already approved' });
+  const s = signer(req.user.id);
+  const sig = req.body.signature || s.sig || null;
+  const now = new Date().toISOString();
+  const role = (isAdmin(req.user) || req.user.roles.includes('operational_manager')) ? 'operational_manager' : 'manager';
+  const desig = clean(req.body.approved_designation) || 'Store In-Charge';
+
+  tx(() => {
+    run(`UPDATE grn_vouchers SET status = 'approved', approved_by = ?, approved_sig = ?, approved_at = ?, approved_designation = ? WHERE id = ?`,
+      s.name, sig, now, desig, v.id);
+    run(`UPDATE grn SET status = 'approved', approved_by = ?, approved_sig = ?, approved_at = ? WHERE voucher_id = ? OR grn_no = ?`,
+      s.name, sig, now, v.id, v.grn_no);
+    run(`INSERT INTO grn_approvals (voucher_id, stage, role, approver_id, signed_name, signature, decision, reason)
+         VALUES (?, 'approve', ?, ?, ?, ?, 'approved', ?)`,
+      v.id, role, req.user.id, s.name, sig, req.body.reason || null);
+  });
+
+  audit.record({ userId: req.user.id, entity: 'grn_vouchers', entityId: v.id, action: 'approve', after: { approved_by: s.name, status: 'approved' }, reason: req.body.reason });
+  emitter.emit('stock_updated', { grn_no: v.grn_no, action: 'approve' });
+  res.json(get('SELECT * FROM grn_vouchers WHERE id = ?', v.id));
+}));
+
+// GRN Rejection Endpoint
+router.post('/grn-vouchers/:id/reject', requireCap('stores.grn.reject'), asyncHandler((req, res) => {
+  const id = toInt(req.params.id);
+  const v = get('SELECT * FROM grn_vouchers WHERE id = ? OR grn_no = ?', id, req.params.id);
+  if (!v) return res.status(404).json({ error: 'GRN voucher not found' });
+  if (!String(req.body.reason || '').trim()) return res.status(400).json({ error: 'A reason is required to reject' });
+  const s = signer(req.user.id);
+  const role = (isAdmin(req.user) || req.user.roles.includes('operational_manager')) ? 'operational_manager' : 'manager';
+
+  tx(() => {
+    run(`UPDATE grn_vouchers SET status = 'rejected', rejection_reason = ? WHERE id = ?`, req.body.reason, v.id);
+    run(`UPDATE grn SET status = 'rejected', rejection_reason = ? WHERE voucher_id = ? OR grn_no = ?`, req.body.reason, v.id, v.grn_no);
+    run(`INSERT INTO grn_approvals (voucher_id, stage, role, approver_id, signed_name, signature, decision, reason)
+         VALUES (?, 'approve', ?, ?, ?, ?, 'rejected', ?)`,
+      v.id, role, req.user.id, s.name, req.body.signature || s.sig || null, req.body.reason);
+  });
+
+  audit.record({ userId: req.user.id, entity: 'grn_vouchers', entityId: v.id, action: 'reject', after: { status: 'rejected' }, reason: req.body.reason });
+  emitter.emit('stock_updated', { grn_no: v.grn_no, action: 'reject' });
+  res.json(get('SELECT * FROM grn_vouchers WHERE id = ?', v.id));
+}));
+
+router.post('/grn/:id/approve', requireCap('stores.grn.approve'), asyncHandler((req, res) => {
+  const id = toInt(req.params.id);
+  const g = get('SELECT * FROM grn WHERE id = ?', id);
+  if (!g) return res.status(404).json({ error: 'GRN record not found' });
+  const s = signer(req.user.id);
+  const sig = req.body.signature || s.sig || null;
+  const now = new Date().toISOString();
+  run(`UPDATE grn SET status = 'approved', approved_by = ?, approved_sig = ?, approved_at = ? WHERE id = ?`, s.name, sig, now, id);
+  if (g.voucher_id) {
+    run(`UPDATE grn_vouchers SET status = 'approved', approved_by = ?, approved_sig = ?, approved_at = ? WHERE id = ?`, s.name, sig, now, g.voucher_id);
+    run(`INSERT INTO grn_approvals (voucher_id, stage, role, approver_id, signed_name, signature, decision, reason) VALUES (?, 'approve', 'manager', ?, ?, ?, 'approved', ?)`, g.voucher_id, req.user.id, s.name, sig, req.body.reason || null);
+  }
+  audit.record({ userId: req.user.id, entity: 'grn', entityId: id, action: 'approve', after: { approved_by: s.name } });
+  res.json(get('SELECT * FROM grn WHERE id = ?', id));
+}));
+
+router.post('/grn/:id/reject', requireCap('stores.grn.reject'), asyncHandler((req, res) => {
+  const id = toInt(req.params.id);
+  const g = get('SELECT * FROM grn WHERE id = ?', id);
+  if (!g) return res.status(404).json({ error: 'GRN record not found' });
+  if (!String(req.body.reason || '').trim()) return res.status(400).json({ error: 'A reason is required to reject' });
+  run(`UPDATE grn SET status = 'rejected', rejection_reason = ? WHERE id = ?`, req.body.reason, id);
+  if (g.voucher_id) {
+    run(`UPDATE grn_vouchers SET status = 'rejected', rejection_reason = ? WHERE id = ?`, req.body.reason, g.voucher_id);
+    run(`INSERT INTO grn_approvals (voucher_id, stage, role, approver_id, signed_name, signature, decision, reason) VALUES (?, 'approve', 'manager', ?, ?, ?, 'rejected', ?)`, g.voucher_id, req.user.id, 'User', null, req.body.reason);
+  }
+  audit.record({ userId: req.user.id, entity: 'grn', entityId: id, action: 'reject', reason: req.body.reason });
+  res.json(get('SELECT * FROM grn WHERE id = ?', id));
+}));
+
+router.post('/grn-vouchers/:id/sign', requireCap('stores.grn.receive'), asyncHandler((req, res) => {
+  const id = toInt(req.params.id);
+  const v = get('SELECT * FROM grn_vouchers WHERE id = ?', id);
+  if (!v) return res.status(404).json({ error: 'GRN voucher not found' });
+  const sets = [];
+  const params = [];
+  if (req.body.prepared_by !== undefined) { sets.push('prepared_by = ?'); params.push(clean(req.body.prepared_by)); }
+  if (req.body.prepared_sig !== undefined) { sets.push('prepared_sig = ?', 'prepared_at = datetime("now")'); params.push(clean(req.body.prepared_sig)); }
+  if (req.body.approved_by !== undefined) { sets.push('approved_by = ?'); params.push(clean(req.body.approved_by)); }
+  if (req.body.approved_sig !== undefined) { sets.push('approved_sig = ?', 'approved_at = datetime("now")'); params.push(clean(req.body.approved_sig)); }
+  if (sets.length) {
+    run(`UPDATE grn_vouchers SET ${sets.join(', ')} WHERE id = ?`, ...params, id);
+  }
+  res.json(get('SELECT * FROM grn_vouchers WHERE id = ?', id));
+}));
+
+router.get('/grn-vouchers/:id/print.html', asyncHandler((req, res) => {
+  const html = renderGrnDocumentHtml(req.params.id, { forPdf: false });
+  if (!html) return res.status(404).send('GRN Voucher not found');
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  res.send(html);
+}));
+
+router.get('/grn-vouchers/:id/download.pdf', asyncHandler(async (req, res) => {
+  const html = renderGrnDocumentHtml(req.params.id, { forPdf: true });
+  if (!html) return res.status(404).send('GRN Voucher not found');
+  await sendPdf(res, `GRN-Voucher-${req.params.id}.pdf`, html);
 }));
 
 // ---- Unified stock: one position per inventory section ---------------------
@@ -2059,6 +2360,17 @@ router.post('/stock-issue', requireCap('stores.stock_issue'), asyncHandler((req,
   const [yr, mo] = issueDate.split('-').map((n) => parseInt(n, 10)); // rollup period
   const validPeriod = yr >= 1900 && mo >= 1 && mo <= 12;
 
+  let minNo = clean(b.min_no);
+  if (!minNo) minNo = 'MIN-' + nextMinNo();
+  const purposeText = clean(b.purpose) || landedOn || (jobId ? `Job Card ${jobId}` : 'Store Issue');
+  const minInfo = run(
+    `INSERT INTO min_notes (min_no, issue_date, asset_id, job_id, purpose, requested_by, approved_by, received_by, status)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    minNo, issueDate, assetId, jobId, purposeText,
+    issuedBy || req.user.fullName || req.user.username, 'Store Supervisor', clean(b.received_by) || issuedBy || req.user.fullName || 'Recipient', 'issued'
+  );
+  const minId = minInfo.lastInsertRowid;
+
   const done = [];
   const warnings = [];
   const skipped = [];
@@ -2093,10 +2405,10 @@ router.post('/stock-issue', requireCap('stores.stock_issue'), asyncHandler((req,
     const cat = categories.resolve({ category: rec.category || SECTION_CATEGORY[rec.section] });
 
     const info = run(
-      `INSERT INTO issues (asset_id, job_id, grn_id, store_item_id, description, qty, unit_price, issue_date, issued_by, category, category_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO issues (asset_id, job_id, grn_id, store_item_id, description, qty, unit_price, issue_date, issued_by, category, category_id, min_id, min_no, purpose)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       assetId, jobId, rec.grn_id, rec.store_item_id || null, rec.description, qty, linePrice, issueDate, issuedBy,
-      cat.category, cat.category_id);
+      cat.category, cat.category_id, minId, minNo, purposeText);
 
     // Was the cost already booked AT RECEIPT? That is specifically a source_type='grn' part —
     // matching any job_part would also match the 'issue' part this very handler writes, so the
@@ -2170,10 +2482,10 @@ router.post('/stock-issue', requireCap('stores.stock_issue'), asyncHandler((req,
 
       // The issue document.
       const info = run(
-        `INSERT INTO issues (asset_id, job_id, store_item_id, description, qty, unit_price, issue_date, issued_by, category, category_id)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO issues (asset_id, job_id, store_item_id, description, qty, unit_price, issue_date, issued_by, category, category_id, min_id, min_no, purpose)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         assetId, jobId, item.source_table === 'store_items' ? item.source_id : null,
-        item.name, qty, linePrice, issueDate, issuedBy, cat.category, cat.category_id);
+        item.name, qty, linePrice, issueDate, issuedBy, cat.category, cat.category_id, minId, minNo, clean(ln.note) || purposeText);
 
       // Same three writes POST /issues makes, for the same reasons: the job_part is what
       // makes the line count EXACTLY ONCE in computeJobCost, and the rollup upsert moves a
@@ -2223,9 +2535,9 @@ router.post('/stock-issue', requireCap('stores.stock_issue'), asyncHandler((req,
   // Stored job totals feed the job-based reports; computeJobCost is live but the reports
   // read the snapshot columns.
   try { costing.refreshJobTotals(jobId); } catch (e) { /* non-fatal */ }
-  audit.record({ userId: req.user.id, entity: 'issues', action: 'issue', after: { job_id: jobId, asset_id: assetId, lines: done.length } });
+  audit.record({ userId: req.user.id, entity: 'issues', action: 'issue', after: { job_id: jobId, asset_id: assetId, lines: done.length, min_no: minNo } });
   emitter.emit('dashboard_refresh', { reason: 'stock_issue' });
-  res.status(201).json({ ok: true, issued: done, warnings, landed_on: landedOn });
+  res.status(201).json({ ok: true, min_id: minId, min_no: minNo, issued: done, warnings, landed_on: landedOn });
 }));
 
 // ---- Bulk save for the Receiving & Prices workspace ------------------------
@@ -2407,22 +2719,53 @@ router.get('/issues', asyncHandler((req, res) => {
   if (req.query.category) { clauses.push('i.category = ?'); params.push(req.query.category); }
   if (req.query.date_from) { clauses.push('i.issue_date >= ?'); params.push(req.query.date_from); }
   if (req.query.date_to) { clauses.push('i.issue_date <= ?'); params.push(req.query.date_to); }
+  if (req.query.status) {
+    clauses.push("COALESCE(n.status, 'issued') = ?");
+    params.push(req.query.status);
+  }
+  if (req.query.step) {
+    const st = req.query.step;
+    if (st === 'to_approve') {
+      clauses.push("COALESCE(n.status, 'issued') IN ('pending_approval', 'requested')");
+    } else if (st === 'to_issue') {
+      clauses.push("COALESCE(n.status, 'issued') = 'approved'");
+    } else if (st === 'issued') {
+      clauses.push("COALESCE(n.status, 'issued') = 'issued'");
+    } else if (st === 'rejected') {
+      clauses.push("COALESCE(n.status, 'issued') = 'rejected'");
+    } else if (st === 'all_todo' || st === 'open') {
+      clauses.push("COALESCE(n.status, 'issued') IN ('pending_approval', 'requested', 'approved')");
+    }
+  }
   if (req.query.q && String(req.query.q).trim()) {
     const like = '%' + String(req.query.q).trim() + '%';
-    clauses.push('(a.code LIKE ? OR a.registration LIKE ? OR a.ec_code LIKE ? OR i.description LIKE ? OR i.issued_by LIKE ? OR i.category LIKE ?)');
-    params.push(like, like, like, like, like, like);
+    clauses.push('(a.code LIKE ? OR a.registration LIKE ? OR a.ec_code LIKE ? OR i.description LIKE ? OR i.issued_by LIKE ? OR i.category LIKE ? OR n.min_no LIKE ?)');
+    params.push(like, like, like, like, like, like, like);
   }
   const where = clauses.length ? 'WHERE ' + clauses.join(' AND ') : '';
   res.json(all(
     `SELECT i.*, a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec, j.job_no,
             sub.name AS sub_category,
+            COALESCE(n.status, 'issued') AS min_status,
+            n.id AS min_note_id,
             -- Stage 6: how much of it came back unused (return notes).
             ROUND(COALESCE((SELECT SUM(r.qty) FROM issue_returns r WHERE r.issue_id = i.id), 0), 2) AS returned
        FROM issues i
+       LEFT JOIN min_notes n ON n.id = i.min_id
        LEFT JOIN assets a ON a.id = i.asset_id
        LEFT JOIN job_cards j ON j.id = i.job_id
        LEFT JOIN item_categories sub ON sub.id = i.category_id
        ${where} ORDER BY i.issue_date DESC, i.id DESC LIMIT ${toInt(req.query.limit, 500)}`, ...params));
+}));
+
+router.get('/issues/counts', asyncHandler((_req, res) => {
+  const toApprove = get(`SELECT COUNT(*) c FROM issues i LEFT JOIN min_notes n ON n.id = i.min_id WHERE COALESCE(n.status, 'issued') IN ('pending_approval', 'requested')`).c;
+  const toIssue = get(`SELECT COUNT(*) c FROM issues i LEFT JOIN min_notes n ON n.id = i.min_id WHERE COALESCE(n.status, 'issued') = 'approved'`).c;
+  const issued = get(`SELECT COUNT(*) c FROM issues i LEFT JOIN min_notes n ON n.id = i.min_id WHERE COALESCE(n.status, 'issued') = 'issued'`).c;
+  const rejected = get(`SELECT COUNT(*) c FROM issues i LEFT JOIN min_notes n ON n.id = i.min_id WHERE COALESCE(n.status, 'issued') = 'rejected'`).c;
+  const allTodo = toApprove + toIssue;
+  const total = get('SELECT COUNT(*) c FROM issues').c;
+  res.json({ all_todo: allTodo, to_approve: toApprove, to_issue: toIssue, issued, rejected, all: total });
 }));
 
 // ---- Return unused parts (Stage 6) -----------------------------------------
@@ -2562,6 +2905,304 @@ router.post('/issues', requireCap('stores.issue'), asyncHandler((req, res) => {
   res.status(201).json({ issue: get('SELECT * FROM issues WHERE id = ?', issueId) });
 }));
 
+// ---- Material Issue Notes (MIN) — Doc. No. EC1.ST.FO.04 ---------------------
+router.get('/min', asyncHandler((req, res) => {
+  const clauses = [];
+  const params = [];
+  if (req.query.q && String(req.query.q).trim()) {
+    const like = '%' + String(req.query.q).trim() + '%';
+    clauses.push('(n.min_no LIKE ? OR n.purpose LIKE ? OR a.code LIKE ? OR a.registration LIKE ? OR j.job_no LIKE ? OR p.name LIKE ?)');
+    params.push(like, like, like, like, like, like);
+  }
+  if (req.query.date_from) { clauses.push('n.issue_date >= ?'); params.push(req.query.date_from); }
+  if (req.query.date_to) { clauses.push('n.issue_date <= ?'); params.push(req.query.date_to); }
+  const where = clauses.length ? 'WHERE ' + clauses.join(' AND ') : '';
+  res.json(all(
+    `SELECT n.*, a.code AS asset_code, a.registration AS asset_reg, j.job_no, p.name AS project_name,
+            (SELECT COUNT(*) FROM issues i WHERE i.min_id = n.id OR i.min_no = n.min_no) AS item_count,
+            (SELECT SUM(i.qty * COALESCE(i.unit_price, 0)) FROM issues i WHERE i.min_id = n.id OR i.min_no = n.min_no) AS total_value
+       FROM min_notes n
+       LEFT JOIN assets a ON a.id = n.asset_id
+       LEFT JOIN job_cards j ON j.id = n.job_id
+       LEFT JOIN projects p ON p.id = n.project_id
+       ${where}
+      ORDER BY n.id DESC LIMIT ${toInt(req.query.limit, 200)}`, ...params));
+}));
+
+router.get('/min/:id', asyncHandler((req, res) => {
+  const id = toInt(req.params.id);
+  let note = get(
+    `SELECT n.*, a.code AS asset_code, a.registration AS asset_reg, j.job_no, p.name AS project_name
+       FROM min_notes n
+       LEFT JOIN assets a ON a.id = n.asset_id
+       LEFT JOIN job_cards j ON j.id = n.job_id
+       LEFT JOIN projects p ON p.id = n.project_id
+      WHERE n.id = ? OR n.min_no = ?`, id, req.params.id);
+  let lines = [];
+  let approvals = [];
+  if (note) {
+    lines = all("SELECT i.*, COALESCE(i.unit, 'nos') AS unit_label FROM issues i WHERE i.min_id = ? OR i.min_no = ? ORDER BY i.id", note.id, note.min_no);
+    approvals = all(
+      `SELECT a.*, u.username FROM min_approvals a
+       LEFT JOIN users u ON u.id = a.approver_id
+       WHERE a.min_id = ? ORDER BY a.id`, note.id);
+  } else {
+    const issue = get(
+      `SELECT i.*, a.code AS asset_code, a.registration AS asset_reg, j.job_no
+         FROM issues i
+         LEFT JOIN assets a ON a.id = i.asset_id
+         LEFT JOIN job_cards j ON j.id = i.job_id
+        WHERE i.id = ? OR i.min_no = ?`, id, req.params.id);
+    if (!issue) return res.status(404).json({ error: 'Material Issue Note not found' });
+    note = {
+      id: issue.id,
+      min_no: issue.min_no || ('MIN-' + String(issue.id).padStart(4, '0')),
+      issue_date: issue.issue_date,
+      asset_id: issue.asset_id,
+      job_id: issue.job_id,
+      asset_code: issue.asset_code,
+      asset_reg: issue.asset_reg,
+      job_no: issue.job_no,
+      purpose: issue.purpose,
+      requested_by: issue.issued_by || 'Store Clerk',
+      approved_by: 'Workshop Engineer',
+      received_by: 'Mechanic',
+      status: 'issued'
+    };
+    lines = [{ ...issue, unit_label: issue.unit || 'nos' }];
+  }
+  res.json({ note, lines, approvals });
+}));
+
+router.post('/min', requireCap('stores.issue'), asyncHandler((req, res) => {
+  const b = req.body || {};
+  const items = Array.isArray(b.items) ? b.items : [];
+  if (!items.length) return res.status(400).json({ error: 'A Material Issue Note requires at least one item' });
+
+  for (let idx = 0; idx < items.length; idx++) {
+    const it = items[idx];
+    if (!(Number(it.qty) > 0)) return res.status(400).json({ error: `Item ${idx + 1}: quantity must be greater than 0` });
+    if (!it.description && !it.store_item_id) return res.status(400).json({ error: `Item ${idx + 1}: description required` });
+  }
+
+  let jobId = toInt(b.job_id) || null;
+  let job = null;
+  let assetId = toInt(b.asset_id) || null;
+  if (jobId) {
+    job = get('SELECT id, job_no, status, asset_id FROM job_cards WHERE id = ?', jobId);
+    if (!job) return res.status(400).json({ error: 'Unknown job card' });
+    if (!assetId && job.asset_id) assetId = job.asset_id;
+  }
+  const projectId = toInt(b.project_id) || null;
+  const issueDate = /^\d{4}-\d{2}-\d{2}$/.test(String(b.issue_date || '')) ? b.issue_date : new Date().toISOString().slice(0, 10);
+  let minNo = clean(b.min_no);
+  if (!minNo) minNo = 'MIN-' + nextMinNo();
+
+  const purpose = clean(b.purpose) || (job ? `Job Card ${job.job_no}` : 'General Issue');
+  const s = signer(req.user.id);
+  const reqBy = clean(b.requested_by) || s.name;
+  const reqSig = clean(b.requested_sig) || s.sig || null;
+  const reqDesig = clean(b.requested_designation) || 'Store Clerk / Requester';
+  const initialStatus = clean(b.status) || 'requested';
+
+  const [yr, mo] = issueDate.split('-').map((n) => parseInt(n, 10));
+  const validPeriod = yr >= 1900 && mo >= 1 && mo <= 12;
+
+  const result = tx(() => {
+    const info = run(
+      `INSERT INTO min_notes (min_no, issue_date, project_id, asset_id, job_id, purpose,
+                              requested_by, requested_sig, requested_at, requested_designation, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?, ?)`,
+      minNo, issueDate, projectId, assetId, jobId, purpose,
+      reqBy, reqSig, reqDesig, initialStatus
+    );
+    const minId = info.lastInsertRowid;
+
+    run(
+      `INSERT INTO min_approvals (min_id, stage, role, approver_id, signed_name, signature, decision, reason)
+       VALUES (?, 'request', 'storekeeper', ?, ?, ?, 'approved', ?)`,
+      minId, req.user.id, reqBy, reqSig, 'Material Issue requested for vehicle / job'
+    );
+
+    const createdIds = [];
+    let sumCost = 0;
+
+    for (const it of items) {
+      const sId = toInt(it.store_item_id) || null;
+      let desc = clean(it.description);
+      let unit = clean(it.unit) || 'nos';
+      let unitPrice = it.unit_price != null && it.unit_price !== '' ? toNum(it.unit_price) : null;
+      let catId = toInt(it.category_id) || null;
+      let catName = clean(it.category) || null;
+
+      if (sId) {
+        const si = get('SELECT id, name, unit, unit_price, category_id FROM store_items WHERE id = ?', sId);
+        if (si) {
+          if (!desc) desc = si.name;
+          if (!unit && si.unit) unit = si.unit;
+          if (unitPrice == null && si.unit_price != null) unitPrice = si.unit_price;
+          if (!catId && si.category_id) catId = si.category_id;
+        }
+      }
+
+      const q = toNum(it.qty, 1);
+      const cost = q * (unitPrice || 0);
+      sumCost += cost;
+
+      const ins = run(
+        `INSERT INTO issues (asset_id, job_id, store_item_id, description, qty, unit, unit_price,
+                             issue_date, issued_by, category, category_id, min_id, min_no, purpose)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        assetId, jobId, sId, desc, q, unit, unitPrice,
+        issueDate, reqBy, catName, catId, minId, minNo, clean(it.purpose) || purpose
+      );
+      const isId = ins.lastInsertRowid;
+      createdIds.push(isId);
+
+      if (jobId) {
+        run(`INSERT INTO job_parts (job_id, source_type, source_id, description, qty, unit_price, is_external_repair)
+             VALUES (?, 'issue', ?, ?, ?, ?, 0)`,
+          jobId, isId, desc, q, unitPrice);
+      }
+
+      if (assetId && validPeriod && cost > 0) {
+        run(`INSERT INTO vehicle_monthly_costs (asset_id, year, month, parts_cost, total_cost)
+             VALUES (?, ?, ?, ?, ?)
+             ON CONFLICT(asset_id, year, month) DO UPDATE SET
+               parts_cost = parts_cost + excluded.parts_cost,
+               total_cost = total_cost + excluded.parts_cost,
+               updated_at = datetime('now')`,
+          assetId, yr, mo, cost, cost);
+      }
+    }
+
+    if (createdIds.length) {
+      stockRule.check(stock.sync({ issues: createdIds }));
+    }
+
+    if (jobId) { try { costing.refreshJobTotals(jobId); } catch (e) { /* non-fatal */ } }
+
+    return { minId, minNo, createdIds, sumCost };
+  });
+
+  audit.record({ userId: req.user.id, entity: 'min_notes', entityId: result.minId, action: 'create',
+    after: { min_no: result.minNo, items: items.length, total: result.sumCost, status: initialStatus } });
+
+  res.status(201).json({ ok: true, id: result.minId, min_no: result.minNo, items_count: items.length, total_cost: result.sumCost, status: initialStatus });
+}));
+
+// MIN Approval Endpoint
+router.post('/min/:id/approve', requireCap('stores.min.approve'), asyncHandler((req, res) => {
+  const id = toInt(req.params.id);
+  const n = get('SELECT * FROM min_notes WHERE id = ? OR min_no = ?', id, req.params.id);
+  if (!n) return res.status(404).json({ error: 'Material Issue Note not found' });
+  const s = signer(req.user.id);
+  const sig = req.body.signature || s.sig || null;
+  const now = new Date().toISOString();
+  const role = (isAdmin(req.user) || req.user.roles.includes('workshop')) ? 'workshop' : 'manager';
+  const desig = clean(req.body.approved_designation) || 'Workshop Foreman';
+
+  tx(() => {
+    run(`UPDATE min_notes SET status = 'approved', approved_by = ?, approved_sig = ?, approved_at = ?, approved_designation = ? WHERE id = ?`,
+      s.name, sig, now, desig, n.id);
+    run(`INSERT INTO min_approvals (min_id, stage, role, approver_id, signed_name, signature, decision, reason)
+         VALUES (?, 'approve', ?, ?, ?, ?, 'approved', ?)`,
+      n.id, role, req.user.id, s.name, sig, req.body.reason || null);
+  });
+
+  audit.record({ userId: req.user.id, entity: 'min_notes', entityId: n.id, action: 'approve', after: { approved_by: s.name, status: 'approved' }, reason: req.body.reason });
+  emitter.emit('stock_updated', { min_id: n.id, action: 'approve' });
+  res.json(get('SELECT * FROM min_notes WHERE id = ?', n.id));
+}));
+
+// MIN Handover / Receive Endpoint (Recipient Mechanic signs)
+router.post('/min/:id/receive', asyncHandler((req, res) => {
+  const id = toInt(req.params.id);
+  const n = get('SELECT * FROM min_notes WHERE id = ? OR min_no = ?', id, req.params.id);
+  if (!n) return res.status(404).json({ error: 'Material Issue Note not found' });
+  const recName = clean(req.body.received_by) || (req.user ? (req.user.fullName || req.user.username) : 'Recipient Mechanic');
+  const sig = req.body.signature || (req.user ? signer(req.user.id).sig : null);
+  const now = new Date().toISOString();
+  const desig = clean(req.body.received_designation) || 'Mechanic / Fitter';
+
+  tx(() => {
+    run(`UPDATE min_notes SET status = 'issued', received_by = ?, received_sig = ?, received_at = ?, received_designation = ? WHERE id = ?`,
+      recName, sig, now, desig, n.id);
+    run(`INSERT INTO min_approvals (min_id, stage, role, approver_id, signed_name, signature, decision, reason)
+         VALUES (?, 'receive', 'mechanic', ?, ?, ?, 'approved', ?)`,
+      n.id, req.user ? req.user.id : null, recName, sig, req.body.reason || null);
+  });
+
+  audit.record({ userId: req.user ? req.user.id : null, entity: 'min_notes', entityId: n.id, action: 'receive', after: { received_by: recName, status: 'issued' } });
+  emitter.emit('stock_updated', { min_id: n.id, action: 'receive' });
+  res.json(get('SELECT * FROM min_notes WHERE id = ?', n.id));
+}));
+
+// MIN Rejection Endpoint
+router.post('/min/:id/reject', requireCap('stores.min.reject'), asyncHandler((req, res) => {
+  const id = toInt(req.params.id);
+  const n = get('SELECT * FROM min_notes WHERE id = ? OR min_no = ?', id, req.params.id);
+  if (!n) return res.status(404).json({ error: 'Material Issue Note not found' });
+  if (!String(req.body.reason || '').trim()) return res.status(400).json({ error: 'A reason is required to reject' });
+  const s = signer(req.user.id);
+  const role = (isAdmin(req.user) || req.user.roles.includes('workshop')) ? 'workshop' : 'manager';
+
+  tx(() => {
+    run(`UPDATE min_notes SET status = 'rejected', rejection_reason = ? WHERE id = ?`, req.body.reason, n.id);
+    run(`INSERT INTO min_approvals (min_id, stage, role, approver_id, signed_name, signature, decision, reason)
+         VALUES (?, 'approve', ?, ?, ?, ?, 'rejected', ?)`,
+      n.id, role, req.user.id, s.name, req.body.signature || s.sig || null, req.body.reason);
+  });
+
+  audit.record({ userId: req.user.id, entity: 'min_notes', entityId: n.id, action: 'reject', after: { status: 'rejected' }, reason: req.body.reason });
+  emitter.emit('stock_updated', { min_id: n.id, action: 'reject' });
+  res.json(get('SELECT * FROM min_notes WHERE id = ?', n.id));
+}));
+
+router.post('/min/:id/sign', requireCap('stores.issue'), asyncHandler((req, res) => {
+  const id = toInt(req.params.id);
+  const note = get('SELECT * FROM min_notes WHERE id = ?', id);
+  if (!note) return res.status(404).json({ error: 'MIN note not found' });
+  const sets = [];
+  const params = [];
+  if (req.body.requested_by !== undefined) { sets.push('requested_by = ?'); params.push(clean(req.body.requested_by)); }
+  if (req.body.requested_sig !== undefined) { sets.push('requested_sig = ?', 'requested_at = datetime("now")'); params.push(clean(req.body.requested_sig)); }
+  if (req.body.approved_by !== undefined) { sets.push('approved_by = ?'); params.push(clean(req.body.approved_by)); }
+  if (req.body.approved_sig !== undefined) { sets.push('approved_sig = ?', 'approved_at = datetime("now")'); params.push(clean(req.body.approved_sig)); }
+  if (req.body.received_by !== undefined) { sets.push('received_by = ?'); params.push(clean(req.body.received_by)); }
+  if (req.body.received_sig !== undefined) { sets.push('received_sig = ?', 'received_at = datetime("now")'); params.push(clean(req.body.received_sig)); }
+  if (sets.length) {
+    run(`UPDATE min_notes SET ${sets.join(', ')} WHERE id = ?`, ...params, id);
+  }
+  res.json(get('SELECT * FROM min_notes WHERE id = ?', id));
+}));
+
+router.get('/min/:id/print.html', asyncHandler((req, res) => {
+  const html = renderMinDocumentHtml(req.params.id, { forPdf: false });
+  if (!html) return res.status(404).send('Material Issue Note not found');
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  res.send(html);
+}));
+
+router.get('/min/:id/download.pdf', asyncHandler(async (req, res) => {
+  const html = renderMinDocumentHtml(req.params.id, { forPdf: true });
+  if (!html) return res.status(404).send('Material Issue Note not found');
+  await sendPdf(res, `MIN-${req.params.id}.pdf`, html);
+}));
+
+router.get('/issues/:id/print.html', asyncHandler((req, res) => {
+  const html = renderMinDocumentHtml(req.params.id, { forPdf: false });
+  if (!html) return res.status(404).send('Material Issue Note not found');
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  res.send(html);
+}));
+
+router.get('/issues/:id/download.pdf', asyncHandler(async (req, res) => {
+  const html = renderMinDocumentHtml(req.params.id, { forPdf: true });
+  if (!html) return res.status(404).send('Material Issue Note not found');
+  await sendPdf(res, `MIN-${req.params.id}.pdf`, html);
+}));
+
 // ---- MTN ------------------------------------------------------------------
 // The places a transfer can go to or come from (Stage 2): workshops, projects, sites.
 router.get('/places', asyncHandler((_req, res) => res.json(places.list())));
@@ -2597,6 +3238,32 @@ router.get('/mtn', asyncHandler((req, res) => {
   }
   if (req.query.from && String(req.query.from).trim()) { clauses.push('date(t.txn_date) >= date(?)'); params.push(String(req.query.from).trim()); }
   if (req.query.to && String(req.query.to).trim()) { clauses.push('date(t.txn_date) <= date(?)'); params.push(String(req.query.to).trim()); }
+  if (req.query.status) {
+    if (req.query.status === 'pending_approval') {
+      clauses.push("(t.status = 'draft' OR t.status = 'pending_approval')");
+    } else {
+      clauses.push('t.status = ?');
+      params.push(req.query.status);
+    }
+  }
+  if (req.query.step) {
+    const st = req.query.step;
+    if (st === 'to_approve') {
+      clauses.push("t.status IN ('draft', 'pending_approval')");
+    } else if (st === 'to_dispatch') {
+      clauses.push("t.status = 'approved'");
+    } else if (st === 'in_transit') {
+      clauses.push("t.status = 'dispatched'");
+    } else if (st === 'to_accept') {
+      clauses.push("t.status = 'received'");
+    } else if (st === 'accepted') {
+      clauses.push("t.status = 'accepted'");
+    } else if (st === 'rejected') {
+      clauses.push("t.status = 'rejected'");
+    } else if (st === 'all_flight' || st === 'open') {
+      clauses.push("t.status NOT IN ('accepted', 'rejected')");
+    }
+  }
   const where = clauses.length ? 'WHERE ' + clauses.join(' AND ') : '';
   res.json(all(
     `SELECT t.*, af.code AS from_asset_code, at2.code AS to_asset_code,
@@ -2607,6 +3274,42 @@ router.get('/mtn', asyncHandler((req, res) => {
        LEFT JOIN assets af ON af.id = t.from_asset_id LEFT JOIN assets at2 ON at2.id = t.to_asset_id
        ${where}
       ORDER BY t.id DESC LIMIT ${toInt(req.query.limit, 300)}`, ...params));
+}));
+
+router.get('/mtn/counts', asyncHandler((_req, res) => {
+  const toApprove = get(`SELECT COUNT(*) c FROM mtn WHERE status IN ('draft', 'pending_approval')`).c;
+  const toDispatch = get(`SELECT COUNT(*) c FROM mtn WHERE status = 'approved'`).c;
+  const inTransit = get(`SELECT COUNT(*) c FROM mtn WHERE status = 'dispatched'`).c;
+  const toAccept = get(`SELECT COUNT(*) c FROM mtn WHERE status = 'received'`).c;
+  const accepted = get(`SELECT COUNT(*) c FROM mtn WHERE status = 'accepted'`).c;
+  const rejected = get(`SELECT COUNT(*) c FROM mtn WHERE status = 'rejected'`).c;
+  const allFlight = toApprove + toDispatch + inTransit + toAccept;
+  const total = get('SELECT COUNT(*) c FROM mtn').c;
+  res.json({ all_flight: allFlight, to_approve: toApprove, to_dispatch: toDispatch, in_transit: inTransit, to_accept: toAccept, accepted, rejected, all: total });
+}));
+
+router.get('/mtn/:id', asyncHandler((req, res) => {
+  const id = toInt(req.params.id);
+  const mtn = get(`SELECT m.*, fa.code AS from_asset_code, fa.registration AS from_asset_reg,
+                          ta.code AS to_asset_code, ta.registration AS to_asset_reg
+                     FROM mtn m
+                     LEFT JOIN assets fa ON fa.id = m.from_asset_id
+                     LEFT JOIN assets ta ON ta.id = m.to_asset_id
+                    WHERE m.id = ? OR m.mtn_no = ?`, id, req.params.id);
+  if (!mtn) return res.status(404).json({ error: 'MTN not found' });
+  const lines = all(`SELECT l.*, fa.code AS line_from_asset, ta.code AS line_to_asset,
+                            fs.name AS from_store, ts.name AS to_store
+                       FROM mtn_lines l
+                       LEFT JOIN assets fa ON fa.id = l.from_asset_id
+                       LEFT JOIN assets ta ON ta.id = l.to_asset_id
+                       LEFT JOIN workshops fs ON fs.id = l.from_store_id
+                       LEFT JOIN workshops ts ON ts.id = l.to_store_id
+                      WHERE l.mtn_id = ? ORDER BY l.line_no, l.id`, mtn.id);
+  const approvals = all(
+    `SELECT a.*, u.username FROM mtn_approvals a
+     LEFT JOIN users u ON u.id = a.approver_id
+     WHERE a.mtn_id = ? ORDER BY a.id`, mtn.id);
+  res.json({ mtn, lines, approvals });
 }));
 
 // The transfer note number. It continues a paper sequence, so the storekeeper has to be able
@@ -2754,15 +3457,6 @@ const mtnLines = (mtnId) => all(
      LEFT JOIN workshops fs ON fs.id = l.from_store_id
      LEFT JOIN workshops ts ON ts.id = l.to_store_id
     WHERE l.mtn_id = ? ORDER BY l.line_no, l.id`, mtnId);
-
-router.get('/mtn/:id', asyncHandler((req, res) => {
-  const id = toInt(req.params.id);
-  const mtn = get(`SELECT t.*, af.code AS from_asset_code, at2.code AS to_asset_code FROM mtn t
-                     LEFT JOIN assets af ON af.id = t.from_asset_id
-                     LEFT JOIN assets at2 ON at2.id = t.to_asset_id WHERE t.id = ?`, id);
-  if (!mtn) return res.status(404).json({ error: 'MTN not found' });
-  res.json({ mtn, lines: mtnLines(id) });
-}));
 
 // Add an item to an existing note.
 router.post('/mtn/:id/lines', requireCap('stores.mtn.edit'), asyncHandler((req, res) => {
@@ -2918,6 +3612,162 @@ router.patch('/mtn/:id', requireCap('stores.mtn.edit'), asyncHandler((req, res) 
   audit.record({ userId: req.user.id, entity: 'mtn', entityId: id, action: 'update',
     before: Object.fromEntries(Object.keys(after).map((k) => [k, before[k]])), after });
   res.json({ ...get('SELECT * FROM mtn WHERE id = ?', id), lines: mtnLines(id) });
+}));
+
+// ---- MTN Document & 4-Stage Lifecycle Endpoints -----------------------------
+router.get('/mtn/:id/print.html', asyncHandler((req, res) => {
+  const html = renderMtnDocumentHtml(req.params.id, { forPdf: false });
+  if (!html) return res.status(404).send('Materials Transfer Note not found');
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  res.send(html);
+}));
+
+router.get('/mtn/:id/download.pdf', asyncHandler(async (req, res) => {
+  const html = renderMtnDocumentHtml(req.params.id, { forPdf: true });
+  if (!html) return res.status(404).send('Materials Transfer Note not found');
+  await sendPdf(res, `MTN-${req.params.id}.pdf`, html);
+}));
+
+// Stage 1: Approve Transfer Out (Store In-Charge / Workshop Engineer)
+router.post('/mtn/:id/approve', requireCap('stores.mtn.approve'), asyncHandler((req, res) => {
+  const id = toInt(req.params.id);
+  const m = get('SELECT * FROM mtn WHERE id = ? OR mtn_no = ?', id, req.params.id);
+  if (!m) return res.status(404).json({ error: 'MTN not found' });
+  const s = signer(req.user.id);
+  const sig = req.body.signature || s.sig || null;
+  const now = new Date().toISOString();
+  const role = (isAdmin(req.user) || req.user.roles.includes('workshop')) ? 'workshop' : 'manager';
+  const desig = clean(req.body.approved_designation) || 'Store In-Charge';
+
+  tx(() => {
+    run(`UPDATE mtn SET status = 'approved', approved_by = ?, approved_sig = ?, approved_at = ?, approved_designation = ? WHERE id = ?`,
+      s.name, sig, now, desig, m.id);
+    run(`INSERT INTO mtn_approvals (mtn_id, stage, role, approver_id, signed_name, signature, decision, reason)
+         VALUES (?, 'approve', ?, ?, ?, ?, 'approved', ?)`,
+      m.id, role, req.user.id, s.name, sig, req.body.reason || null);
+  });
+
+  audit.record({ userId: req.user.id, entity: 'mtn', entityId: m.id, action: 'approve', after: { approved_by: s.name, status: 'approved' }, reason: req.body.reason });
+  emitter.emit('stock_updated', { mtn_id: m.id, action: 'approve' });
+  res.json(get('SELECT * FROM mtn WHERE id = ?', m.id));
+}));
+
+// MTN Rejection Endpoint
+router.post('/mtn/:id/reject', requireCap('stores.mtn.reject'), asyncHandler((req, res) => {
+  const id = toInt(req.params.id);
+  const m = get('SELECT * FROM mtn WHERE id = ? OR mtn_no = ?', id, req.params.id);
+  if (!m) return res.status(404).json({ error: 'MTN not found' });
+  if (!String(req.body.reason || '').trim()) return res.status(400).json({ error: 'A reason is required to reject' });
+  const s = signer(req.user.id);
+  const role = (isAdmin(req.user) || req.user.roles.includes('workshop')) ? 'workshop' : 'manager';
+
+  tx(() => {
+    run(`UPDATE mtn SET status = 'rejected', rejection_reason = ? WHERE id = ?`, req.body.reason, m.id);
+    run(`INSERT INTO mtn_approvals (mtn_id, stage, role, approver_id, signed_name, signature, decision, reason)
+         VALUES (?, 'approve', ?, ?, ?, ?, 'rejected', ?)`,
+      m.id, role, req.user.id, s.name, req.body.signature || s.sig || null, req.body.reason);
+  });
+
+  audit.record({ userId: req.user.id, entity: 'mtn', entityId: m.id, action: 'reject', after: { status: 'rejected' }, reason: req.body.reason });
+  emitter.emit('stock_updated', { mtn_id: m.id, action: 'reject' });
+  res.json(get('SELECT * FROM mtn WHERE id = ?', m.id));
+}));
+
+// Stage 2: Dispatch / In Transit (Driver or Dispatching Clerk signs)
+router.post('/mtn/:id/dispatch', requireCap('stores.mtn.edit'), asyncHandler((req, res) => {
+  const id = toInt(req.params.id);
+  const m = get('SELECT * FROM mtn WHERE id = ?', id);
+  if (!m) return res.status(404).json({ error: 'MTN not found' });
+  const s = signer(req.user.id);
+  const appBy = clean(req.body.approved_by) || s.name;
+  const appSig = clean(req.body.approved_sig) || s.sig || null;
+  const desig = clean(req.body.approved_designation) || 'Store In-Charge';
+  const recBy = clean(req.body.received_by) || clean(req.body.driver_name) || s.name;
+  const recSig = clean(req.body.received_sig) || null;
+  const recDesig = clean(req.body.received_designation) || 'Transport Driver';
+  const now = new Date().toISOString();
+
+  tx(() => {
+    run(`UPDATE mtn SET status = 'dispatched',
+                        approved_by = COALESCE(?, approved_by), approved_sig = COALESCE(?, approved_sig), approved_at = COALESCE(?, approved_at), approved_designation = COALESCE(?, approved_designation),
+                        received_by = ?, received_sig = ?, received_at = ?, received_designation = ? WHERE id = ?`,
+      appBy, appSig, now, desig, recBy, recSig, now, recDesig, id);
+    run(`INSERT INTO mtn_approvals (mtn_id, stage, role, approver_id, signed_name, signature, decision, reason)
+         VALUES (?, 'dispatch', 'driver', ?, ?, ?, 'approved', ?)`,
+      id, req.user.id, recBy, recSig, req.body.reason || 'Handed over for transit');
+  });
+
+  audit.record({ userId: req.user.id, entity: 'mtn', entityId: id, action: 'dispatch', after: { status: 'dispatched', received_by: recBy } });
+  emitter.emit('stock_updated', { mtn_id: id, action: 'dispatch' });
+  res.json({ ok: true, status: 'dispatched', received_by: recBy, received_at: now });
+}));
+
+// Stage 3: In Transit / Received By (Driver or Receiving Store Clerk)
+router.post('/mtn/:id/receive', requireCap('stores.mtn.edit'), asyncHandler((req, res) => {
+  const id = toInt(req.params.id);
+  const m = get('SELECT * FROM mtn WHERE id = ?', id);
+  if (!m) return res.status(404).json({ error: 'MTN not found' });
+  const recBy = clean(req.body.received_by) || req.user.fullName || req.user.username;
+  const recSig = clean(req.body.received_sig) || null;
+  const desig = clean(req.body.received_designation) || 'Transport Driver';
+  const now = new Date().toISOString();
+
+  tx(() => {
+    run(`UPDATE mtn SET status = 'received', received_by = ?, received_sig = ?, received_at = ?, received_designation = ? WHERE id = ?`,
+      recBy, recSig, now, desig, id);
+    run(`INSERT INTO mtn_approvals (mtn_id, stage, role, approver_id, signed_name, signature, decision, reason)
+         VALUES (?, 'receive', 'driver', ?, ?, ?, 'approved', ?)`,
+      id, req.user.id, recBy, recSig, req.body.reason || 'Transit confirmed');
+  });
+
+  audit.record({ userId: req.user.id, entity: 'mtn', entityId: id, action: 'receive', after: { status: 'received', received_by: recBy } });
+  emitter.emit('stock_updated', { mtn_id: id, action: 'receive' });
+  res.json({ ok: true, status: 'received', received_by: recBy, received_at: now });
+}));
+
+// Stage 4: Destination Accepted By (Destination Store Manager / In-Charge)
+router.post('/mtn/:id/accept', requireCap('stores.mtn.edit'), asyncHandler((req, res) => {
+  const id = toInt(req.params.id);
+  const m = get('SELECT * FROM mtn WHERE id = ?', id);
+  if (!m) return res.status(404).json({ error: 'MTN not found' });
+  const s = signer(req.user.id);
+  const accBy = clean(req.body.accepted_by) || s.name;
+  const accSig = clean(req.body.accepted_sig) || s.sig || null;
+  const desig = clean(req.body.accepted_designation) || 'Receiving Storekeeper';
+  const now = new Date().toISOString();
+
+  tx(() => {
+    run(`UPDATE mtn SET status = 'accepted', accepted_by = ?, accepted_sig = ?, accepted_at = ?, accepted_designation = ? WHERE id = ?`,
+      accBy, accSig, now, desig, id);
+    run(`INSERT INTO mtn_approvals (mtn_id, stage, role, approver_id, signed_name, signature, decision, reason)
+         VALUES (?, 'accept', 'storekeeper', ?, ?, ?, 'approved', ?)`,
+      id, req.user.id, accBy, accSig, req.body.reason || 'Goods received, inspected and accepted into destination stock');
+  });
+
+  audit.record({ userId: req.user.id, entity: 'mtn', entityId: id, action: 'accept', after: { status: 'accepted', accepted_by: accBy } });
+  emitter.emit('stock_updated', { mtn_id: id, action: 'accept' });
+  res.json({ ok: true, status: 'accepted', accepted_by: accBy, accepted_at: now });
+}));
+
+// MTN Multi-Party Signatures Update
+router.post('/mtn/:id/sign', requireCap('stores.mtn.edit'), asyncHandler((req, res) => {
+  const id = toInt(req.params.id);
+  const m = get('SELECT * FROM mtn WHERE id = ?', id);
+  if (!m) return res.status(404).json({ error: 'MTN not found' });
+  const sets = [];
+  const params = [];
+  if (req.body.prepared_by !== undefined) { sets.push('prepared_by = ?'); params.push(clean(req.body.prepared_by)); }
+  if (req.body.prepared_sig !== undefined) { sets.push('prepared_sig = ?', 'prepared_at = datetime("now")'); params.push(clean(req.body.prepared_sig)); }
+  if (req.body.approved_by !== undefined) { sets.push('approved_by = ?'); params.push(clean(req.body.approved_by)); }
+  if (req.body.approved_sig !== undefined) { sets.push('approved_sig = ?', 'approved_at = datetime("now")'); params.push(clean(req.body.approved_sig)); }
+  if (req.body.received_by !== undefined) { sets.push('received_by = ?'); params.push(clean(req.body.received_by)); }
+  if (req.body.received_sig !== undefined) { sets.push('received_sig = ?', 'received_at = datetime("now")'); params.push(clean(req.body.received_sig)); }
+  if (req.body.accepted_by !== undefined) { sets.push('accepted_by = ?'); params.push(clean(req.body.accepted_by)); }
+  if (req.body.accepted_sig !== undefined) { sets.push('accepted_sig = ?', 'accepted_at = datetime("now")'); params.push(clean(req.body.accepted_sig)); }
+  if (sets.length) {
+    run(`UPDATE mtn SET ${sets.join(', ')} WHERE id = ?`, ...params, id);
+  }
+  res.json(get('SELECT * FROM mtn WHERE id = ?', id));
 }));
 
 // ---- exports --------------------------------------------------------------
