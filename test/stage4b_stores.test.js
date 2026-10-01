@@ -226,32 +226,60 @@ test('balances: one store, or all together with each store\'s share; the movemen
 });
 
 // ================================================================== transfers
-test('a transfer note between two stores moves stock on its date; to a site, or within one store, it stays paper', async () => {
+test('a transfer moves the shelf when the goods move: out when dispatched, in when accepted — a draft moves nothing', async () => {
   const skC = await as('skC');
+  const boss = await as('boss');
   const r = await req('POST', '/api/stores/mtn', { cookie: skC, body: {
     txn_date: TODAY, from_place: `w:${CW}`, to_place: `w:${MTR}`, lines: [{ description: 'Brake Pad Set', qty: 2, category: 'General Items' }] } });
   assert.strictEqual(r.status, 201, r.text);
   const line = r.body.lines[0];
+  const T = r.body.id;
   assert.strictEqual(line.from_store_id, CW);
   assert.strictEqual(line.to_store_id, MTR);
-  assert.strictEqual(bal(CW), 4, 'out of Central at once — no rebuild needed');
-  assert.strictEqual(bal(MTR), 9);
+  // Typed is not moved. The note used to empty the shelf the moment it was saved, before anyone
+  // had approved it — which is what this whole test is about.
+  assert.deepStrictEqual([bal(CW), bal(MTR)], [6, 7], 'a draft moves nothing');
+  assert.strictEqual((await req('GET', '/api/stores/mtn', { cookie: skC })).body.find((t) => t.id === T).moves_stock, 1,
+    'the note still says it is a stock move');
+  // Approval is paperwork, not a lorry.
+  assert.strictEqual((await req('POST', `/api/stores/mtn/${T}/approve`, { cookie: boss })).status, 200);
+  assert.deepStrictEqual([bal(CW), bal(MTR)], [6, 7], 'approved, still on Central\'s shelf');
+  // Dispatched: gone from Central, and in transit — so not Muthur's either.
+  assert.strictEqual((await req('POST', `/api/stores/mtn/${T}/dispatch`, { cookie: skC })).status, 200);
+  assert.deepStrictEqual([bal(CW), bal(MTR)], [4, 7], 'out of Central when it goes on the lorry');
+  assert.strictEqual((await req('POST', `/api/stores/mtn/${T}/receive`, { cookie: skC })).status, 200);
+  assert.deepStrictEqual([bal(CW), bal(MTR)], [4, 7], 'the driver confirming transit is not an arrival');
+  assert.strictEqual(bal(null), 13, 'in transit or not, the company holds what it held');
+  // Accepted: on Muthur's shelf.
+  assert.strictEqual((await req('POST', `/api/stores/mtn/${T}/accept`, { cookie: await as('skM') })).status, 200);
+  assert.deepStrictEqual([bal(CW), bal(MTR)], [4, 9], 'into Muthur when its storekeeper takes it in');
   assert.strictEqual(bal(null), 13, 'the company holds what it held');
   const tot = stock.summary('general');
   assert.strictEqual(tot.received, 16, 'all stores: a transfer is not a receipt');
   assert.strictEqual(stock.summary('general', { store: MTR }).received, 12, 'in Muthur\'s store it is');
-  assert.strictEqual((await req('GET', '/api/stores/mtn', { cookie: skC })).body.find((t) => t.id === r.body.id).moves_stock, 1);
 
-  // Edit the quantity: the movements follow. Delete an item: they go.
+  // Edit the quantity of a transfer that has happened: the movements follow. Delete an item: they go.
   assert.strictEqual((await req('PATCH', `/api/stores/mtn/line/${line.id}`, { cookie: skC, body: { qty: 3 } })).status, 200);
   assert.strictEqual(bal(CW), 3);
   assert.strictEqual(bal(MTR), 10);
-  const l2 = (await req('POST', `/api/stores/mtn/${r.body.id}/lines`, { cookie: skC, body: { description: 'Brake Pad Set', qty: 1, category: 'General Items' } })).body;
+  const l2 = (await req('POST', `/api/stores/mtn/${T}/lines`, { cookie: skC, body: { description: 'Brake Pad Set', qty: 1, category: 'General Items' } })).body;
   assert.strictEqual(bal(CW), 2);
   assert.strictEqual((await req('DELETE', `/api/stores/mtn/line/${l2.id}`, { cookie: skC })).status, 200);
   assert.strictEqual(bal(CW), 3);
   stock.rebuild({ wipe: true });
   assert.deepStrictEqual([bal(CW), bal(MTR), bal(null)], [3, 10, 13], 'a full rebuild gives the same');
+
+  // Rejected after it has gone: the goods come back. The old code left the movements standing,
+  // so a rejected transfer kept the stock off the shelf for good.
+  const rj = await req('POST', '/api/stores/mtn', { cookie: skC, body: {
+    txn_date: TODAY, from_place: `w:${CW}`, to_place: `w:${MTR}`, lines: [{ description: 'Brake Pad Set', qty: 2, category: 'General Items' }] } });
+  assert.strictEqual(rj.status, 201, rj.text);
+  assert.strictEqual((await req('POST', `/api/stores/mtn/${rj.body.id}/dispatch`, { cookie: skC })).status, 200);
+  assert.strictEqual(bal(CW), 1, 'gone from Central');
+  assert.strictEqual((await req('POST', `/api/stores/mtn/${rj.body.id}/reject`, { cookie: boss, body: { reason: 'sent to the wrong store' } })).status, 200);
+  assert.strictEqual(bal(CW), 3, 'rejected — back on the shelf it never should have left');
+  assert.strictEqual(get(`SELECT COUNT(*) n FROM stock_moves WHERE source_table = 'mtn_lines'
+                            AND source_id IN (SELECT id FROM mtn_lines WHERE mtn_id = ?)`, rj.body.id).n, 0);
 
   // Paper only: to a site; between Muthur and Kandy (one store); dated before Muthur's store opened.
   const proj = run("INSERT INTO projects (name) VALUES ('Dam Site')").lastInsertRowid;
@@ -266,9 +294,14 @@ test('a transfer note between two stores moves stock on its date; to a site, or 
     assert.strictEqual(p.body.lines[0].from_store_id, null, JSON.stringify(body));
   }
   assert.deepStrictEqual([bal(CW), bal(MTR)], [3, 10]);
-  // Moving the date of the old note into the store's time makes it move stock.
+  // Moving the date of the old note into the store's time makes it a stock move — and it still
+  // waits for the goods.
   const old = get("SELECT t.id FROM mtn t WHERE t.txn_date = ? ORDER BY t.id DESC LIMIT 1", day(-2)).id;
-  assert.strictEqual((await req('PATCH', `/api/stores/mtn/${old}`, { cookie: await as('boss'), body: { txn_date: TODAY } })).status, 200);
+  assert.strictEqual((await req('PATCH', `/api/stores/mtn/${old}`, { cookie: boss, body: { txn_date: TODAY } })).status, 200);
+  assert.deepStrictEqual([bal(CW), bal(MTR)], [3, 10], 'stamped as a stock move, still only a draft');
+  for (const stage of ['dispatch', 'accept']) {
+    assert.strictEqual((await req('POST', `/api/stores/mtn/${old}/${stage}`, { cookie: boss })).status, 200);
+  }
   assert.deepStrictEqual([bal(CW), bal(MTR)], [2, 11]);
 });
 
@@ -387,4 +420,45 @@ test('workshops kept apart: store staff see the workshops their store serves, an
   assert.strictEqual(h.store.id, CW);
   assert.strictEqual(h.fixed, false);
   assert.deepStrictEqual([h.can.count, h.can.levels], [true, true]);
+});
+
+// ====================================================== the upgrade, on an existing database
+// The old code wrote a transfer's movements the moment the note was typed, whatever stage it was
+// at, and never looked at them again. So an existing database holds movements the rule above
+// would not have written, and they have to be squared with it on the first start after the
+// update (src/db/index.js transferStockByStage).
+test('the upgrade squares the old movements with the rule: a transfer already counted is accepted, one not yet sent goes back', async () => {
+  const T = get(`SELECT t.id FROM mtn t JOIN mtn_lines l ON l.mtn_id = t.id
+                   JOIN stock_moves sm ON sm.source_table = 'mtn_lines' AND sm.source_id = l.id
+                  WHERE t.status = 'accepted' ORDER BY t.id LIMIT 1`).id;
+  const moves = () => get(`SELECT COUNT(*) n FROM stock_moves WHERE source_table = 'mtn_lines'
+                             AND source_id IN (SELECT id FROM mtn_lines WHERE mtn_id = ?)`, T).n;
+  const before = [bal(CW), bal(MTR)];
+  assert.ok(moves() > 0, 'this note is counted on the shelves');
+
+  // The old world: its goods are on the shelves, and its status never moved off the default.
+  // Every imported transfer reads exactly like this — the importers never set a status.
+  run("UPDATE mtn SET status = 'draft' WHERE id = ?", T);
+  run("DELETE FROM settings WHERE key = 'mtn_stock_at_dispatch'");
+  migrate();
+  assert.strictEqual(get('SELECT status FROM mtn WHERE id = ?', T).status, 'accepted',
+    'already counted on the shelves means it happened');
+  assert.deepStrictEqual([bal(CW), bal(MTR)], before, 'the shelves come out of the upgrade as they went in');
+
+  // The other half: a note waiting to be dispatched was never entitled to hold the goods off
+  // the shelf. Its movements go, and the stock is back where it never left.
+  run("UPDATE mtn SET status = 'approved' WHERE id = ?", T);
+  run("DELETE FROM settings WHERE key = 'mtn_stock_at_dispatch'");
+  migrate();
+  assert.strictEqual(moves(), 0, 'approved but not dispatched: nothing on either shelf');
+  assert.strictEqual(bal(CW) > before[0], true, 'back on the sending store\'s shelf');
+
+  // And it runs once. A draft written after the update has no movements to square, and the
+  // marker means it is never looked at again — otherwise every new draft would be marked
+  // accepted on the next restart.
+  const fresh = await req('POST', '/api/stores/mtn', { cookie: await as('boss'), body: {
+    txn_date: TODAY, from_place: `w:${CW}`, to_place: `w:${MTR}`, lines: [{ description: 'Brake Pad Set', qty: 1, category: 'General Items' }] } });
+  assert.strictEqual(fresh.status, 201, fresh.text);
+  migrate();
+  assert.strictEqual(get('SELECT status FROM mtn WHERE id = ?', fresh.body.id).status, 'draft', 'a new draft is left as it is');
 });

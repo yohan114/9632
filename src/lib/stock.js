@@ -257,22 +257,41 @@ function rebuild(opts = {}) {
   // another (src/lib/stores.js stampTransfer) comes out of the first and goes into the second, on
   // the transfer date. Keyed like a receipt of the same words, so it meets the shelf it came from.
   // Anything else on a transfer note — to a site, to a machine — stays the paper record it was.
+  //
+  // WHEN THE SHELF CHANGES. When the goods move, not when the note is typed:
+  //
+  //     out of the sending store    once it is DISPATCHED  (and while received / accepted)
+  //     into the receiving store    once it is ACCEPTED
+  //
+  // A draft, one waiting for approval, an approved note still on the shelf and a rejected one
+  // move nothing. This used to run with no regard for status at all, so typing a note emptied
+  // the shelf before anyone had approved it, and rejecting the note never put the stock back —
+  // the movements were written at create and edit time and never looked at again.
+  //
+  // Between dispatch and acceptance the goods are IN TRANSIT: off the sender's shelf, not yet on
+  // the receiver's. That is the truth of it, and it costs the company-wide figures nothing — a
+  // read with no store leaves transfers out entirely (storeWhere below), because across all
+  // stores one store's issue is the other's receipt.
+  const GONE = ['dispatched', 'received', 'accepted'];   // it has left the sending store
+  const TAKEN_IN = 'accepted';                           // the receiving store has it on the shelf
   const transfers = (mtnId) => {
     const storeName = new Map(all('SELECT id, code FROM workshops').map((w) => [w.id, w.code]));
     for (const l of all(
       `SELECT l.id, l.description, l.qty, l.category, l.store_item_id, l.from_store_id, l.to_store_id,
-              t.mtn_no, t.txn_date, si.name AS item_name, si.category AS item_cat
+              t.mtn_no, t.txn_date, t.status, si.name AS item_name, si.category AS item_cat
          FROM mtn_lines l JOIN mtn t ON t.id = l.mtn_id
          LEFT JOIN store_items si ON si.id = l.store_item_id
         WHERE l.from_store_id IS NOT NULL AND l.to_store_id IS NOT NULL AND l.from_store_id <> l.to_store_id
-          AND COALESCE(l.qty,0) > 0 ${mtnId ? 'AND l.mtn_id = ?' : ''}`, ...(mtnId ? [mtnId] : []))) {
+          AND COALESCE(l.qty,0) > 0
+          AND t.status IN (${GONE.map(() => '?').join(', ')})
+          ${mtnId ? 'AND l.mtn_id = ?' : ''}`, ...GONE, ...(mtnId ? [mtnId] : []))) {
       const section = sectionOf(l.category || l.item_cat || l.description);
       const name = l.description || l.item_name || '';
       const key = section === 'filter' ? (filterKey(name) || itemKey(section, name)) : itemKey(section, name);
       const base = { section, item_key: key, item_name: name, qty: l.qty, txn_date: l.txn_date,
         store_item_id: l.store_item_id, ref: 'MTN ' + l.mtn_no, source_table: 'mtn_lines', source_id: l.id };
       insert({ ...base, kind: 'out', store_id: l.from_store_id, note: 'to ' + (storeName.get(l.to_store_id) || 'another store') });
-      insert({ ...base, kind: 'in', store_id: l.to_store_id, note: 'from ' + (storeName.get(l.from_store_id) || 'another store') });
+      if (l.status === TAKEN_IN) insert({ ...base, kind: 'in', store_id: l.to_store_id, note: 'from ' + (storeName.get(l.from_store_id) || 'another store') });
     }
   };
 
@@ -625,10 +644,15 @@ function summary(section, opts = {}) {
 
 /** What one item holds on the shelf: in one store, or in all. */
 function balanceOf(section, itemKey, store) {
+  // Same store rule as every other read (storeWhere): one store's shelf counts the transfers in
+  // and out of it, and the whole company leaves them out altogether. It has to be the same rule
+  // here, or the two disagree while goods are in transit — off the sending store's shelf and not
+  // yet on the receiving one's — and the company would appear to hold less than it does.
+  const st = storeWhere('', store);
   return get(
     `SELECT ROUND(COALESCE(SUM(CASE WHEN counts = 0 THEN 0 WHEN kind IN ('in','opening','adjust') THEN qty ELSE -qty END),0),2) v
-       FROM stock_moves WHERE section = ? AND item_key = ?${store ? ' AND store_id = ?' : ''}`,
-    section, itemKey, ...(store ? [store] : [])).v;
+       FROM stock_moves WHERE section = ? AND item_key = ?${st.sql}`,
+    section, itemKey, ...st.params).v;
 }
 
 /**
