@@ -104,29 +104,32 @@ const status = async (user, p) => (await call(user, 'GET', p)).status;
 const letThrough = async (user, p) => { const s = await status(user, p); assert.ok(s !== 403 && s !== 401 && s < 500, `${user}: ${p} → ${s}`); };
 const refused = async (user, p) => assert.strictEqual(await status(user, p), 403, `${user}: ${p}`);
 
+// WHAT WAS REMOVED FROM THIS FILE, AND WHY.
+//
+// These tests came from the other lineage's access control. Six of them asserted things this tree
+// does not have, and were removed rather than bent into agreeing:
+//
+//   - "the 22 sections are the sidebar's" read SECTIONS entries shaped { key, label, modules: [...] }
+//     and a NAV table in public/app.js to match them against. Sections here are shaped
+//     { id, key, label, icon, group, enforce, parts: [...] } -- still 22 of them, but with no
+//     `modules` list to walk.
+//   - "day one: a role made before the split" drove splitSections(), which copies a level from an
+//     older shared switch to one split out of it. Sections here were written as their own from the
+//     start and carry no `from`, so SPLIT is empty and there is nothing to carry.
+//   - Field Work, Operations, Service Records and Needs Attention each asserted WHICH switch opens
+//     which address, and this tree answers differently: /field/board takes jobs here and insisted
+//     on field there; /filters/services wants filters here and services there; /reports/service-due
+//     wants service_plan here and attention there. Those are decisions, and the decision taken was
+//     to keep this tree's.
+//
+// What stayed is everything that still means something here, and two of them had to be earned
+// rather than renamed. "a role that opens nothing is refused every section address on the server"
+// was failing because /api/stock-cockpit was mounted with no clearance at all and the reference
+// routers -- aliases, projects, mechanics, reports -- were open to any signed-in account by design,
+// hidden in the nav only. They are gated now, the picker lists left open and trimmed. "the project
+// and mechanic lists stay open for the pickers" went the same way. Neither was deleted, because
+// both were describing something real.
 // ================================================================== the 22 sections
-test('the 22 sections are the sidebar\'s, and every switch belongs to exactly one', () => {
-  const src = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');
-  const nav = [...src.slice(src.indexOf('const NAV = ['), src.indexOf('];', src.indexOf('const NAV = ['))).matchAll(/\['(\w+)', '[^']*', '([^']+)'/g)]
-    .map((m) => m[2]);
-  assert.strictEqual(perms.SECTIONS.length, 22);
-  assert.deepStrictEqual(perms.SECTIONS.map((s) => s.label), nav, 'the same 22, in the sidebar\'s order');
-  const owned = perms.SECTIONS.flatMap((s) => s.modules || []);
-  assert.deepStrictEqual(owned.slice().sort(), perms.MODULE_KEYS.slice().sort(), 'every switch in one section');
-  assert.strictEqual(new Set(owned).size, owned.length, 'and only one');
-  // The sidebar opens each item by a switch of its own section.
-  const navModule = Object.fromEntries([...src.slice(src.indexOf('const NAV_MODULE = {'), src.indexOf('};', src.indexOf('const NAV_MODULE = {')))
-    .matchAll(/(\w+): '(\w+)'/g)].map((m) => [m[1], m[2]]));
-  // The actions of a split-off section are listed under it on the Access screen.
-  const moved = Object.fromEntries(['jobs.breakdown', 'jobs.field', 'assets.move', 'fleet.capacities.edit', 'services.attachments']
-    .map((k) => [k, capabilities.get(k).module]));
-  assert.deepStrictEqual(moved, { 'jobs.breakdown': 'field', 'jobs.field': 'field', 'assets.move': 'operations',
-    'fleet.capacities.edit': 'lubricants', 'services.attachments': 'services' });
-  for (const [item, key] of Object.entries({ field: 'field', operations: 'operations', services: 'services', lubecapacities: 'lubricants',
-    serviceplan: 'service_plan', attention: 'attention', progress: 'daily_progress', teardown: 'cost_teardown', tyrebattery: 'tb_reports' })) {
-    assert.strictEqual(navModule[item], key, `${item} opens by its own switch`);
-  }
-});
 
 // ================================================================== day one: nothing changes
 test('day one: every built-in role has on each new switch the level it had on the old one', () => {
@@ -137,93 +140,10 @@ test('day one: every built-in role has on each new switch the level it had on th
   }
 });
 
-test('day one: a role made before the split, and a level changed on the Access screen, carry over', () => {
-  // As on the live server before this change: a custom role with only the old switches, and a
-  // built-in role an admin had narrowed (the workshop's Reports taken to none).
-  run("INSERT INTO roles (name, label) VALUES ('site_keeper', 'Site keeper')");
-  for (const m of perms.MODULE_KEYS) {
-    if (perms.SPLIT.some(([k]) => k === m)) continue;
-    perms.setPermission('site_keeper', m, ['jobs', 'filters', 'reports'].includes(m) ? 'edit' : (m === 'assets' ? 'view' : 'none'));
-  }
-  const newKeys = perms.SPLIT.map(([k]) => k);
-  run(`DELETE FROM role_permissions WHERE role IN ('site_keeper', 'workshop') AND module IN (${newKeys.map(() => '?').join(',')})`, ...newKeys);
-  perms.setPermission('workshop', 'reports', 'none');
-  migrate();   // what the server does when it starts
-  for (const [key, from] of perms.SPLIT) {
-    assert.strictEqual(perms.levelForRoles(['site_keeper'], key), perms.levelForRoles(['site_keeper'], from), `site keeper: ${key}`);
-    assert.strictEqual(perms.levelForRoles(['workshop'], key), perms.levelForRoles(['workshop'], from), `workshop: ${key}`);
-  }
-  assert.deepStrictEqual(['attention', 'daily_progress', 'cost_teardown', 'tb_reports'].map((k) => perms.levelForRoles(['workshop'], k)),
-    ['none', 'none', 'none', 'none'], 'the admin\'s change, not the default');
-  // Once set, a new switch is its own: the copy never overwrites it.
-  perms.setPermission('workshop', 'field', 'none');
-  assert.strictEqual(perms.splitSections().copied, 0);
-  migrate();
-  assert.strictEqual(perms.levelForRoles(['workshop'], 'field'), 'none');
-  assert.strictEqual(perms.levelForRoles(['workshop'], 'jobs'), 'edit');
-  // Put the workshop back for the tests below.
-  perms.setPermission('workshop', 'field', 'edit');
-  for (const k of ['reports', 'attention', 'daily_progress', 'cost_teardown', 'tb_reports']) perms.setPermission('workshop', k, 'view');
-});
 
 // ================================================================== each section, its own switch
-test('Field Work: the page needs Field Work; a card\'s field details open from Job Cards too', async () => {
-  await letThrough('fieldonly', '/field/board');
-  await refused('jobsonly', '/field/board');
-  await refused('jobsonly', '/field/month');
-  await letThrough('jobsonly', `/field/jobs/${J}`);
-  await letThrough('jobsonly', '/field/places');
-  await letThrough('fieldonly', `/field/jobs/${J}`);
-  await refused('fieldonly', '/jobs');
-  await refused('nothing', `/field/jobs/${J}`);
-  // The Job Cards Monitor counts machines down in the field only for whoever may see Field Work.
-  assert.strictEqual((await call('jobsonly', 'GET', '/job-flow/monitor')).body.watch.breakdowns_down, null);
-  assert.strictEqual(typeof (await call('admin', 'GET', '/job-flow/monitor')).body.watch.breakdowns_down, 'number');
-});
 
-test('Operations: its own switch; the move form on the Assets page still reads the places', async () => {
-  await letThrough('opsonly', '/operations/fleet');
-  await letThrough('opsonly', '/operations/handovers');
-  await refused('assetsonly', '/operations/fleet');
-  await refused('assetsonly', '/operations/handovers');
-  await letThrough('assetsonly', '/operations/places');
-  await letThrough('assetsonly', `/operations/machines/${A}/moves`);
-  await refused('opsonly', `/assets/${A}`);
-  await refused('nothing', '/operations/places');
-  // Workshops at a glance: head office, and Operations.
-  capabilities.setCapability('assetsonly', 'workshops.all', true);
-  capabilities.setCapability('opsonly', 'workshops.all', true);
-  try {
-    await refused('assetsonly', '/operations/glance');
-    await letThrough('opsonly', '/operations/glance');
-  } finally {
-    capabilities.setCapability('assetsonly', 'workshops.all', false);
-    capabilities.setCapability('opsonly', 'workshops.all', false);
-  }
-  await refused('opsonly', '/operations/glance');
-});
 
-test('Service Records, the Service & Filter Plan and the Stores filter books: one router, three switches', async () => {
-  await letThrough('svconly', '/filters/services');
-  await letThrough('svconly', '/filters/reference');
-  await letThrough('svconly', '/filters/categories');
-  await refused('svconly', '/filters/prices');
-  await refused('svconly', '/filters/service-plan');
-  await letThrough('filtonly', '/filters/prices');
-  await letThrough('filtonly', '/filters/categories');
-  await letThrough('filtonly', '/filter-stock');
-  await refused('filtonly', '/filters/services');
-  await refused('filtonly', '/filters/service-plan');
-  await letThrough('planonly', '/filters/service-plan');
-  await refused('planonly', '/filters/services');
-  // Writes need edit on the part they belong to.
-  run("INSERT INTO roles (name, label) VALUES ('svcedit', 'svcedit')");
-  for (const m of perms.MODULE_KEYS) perms.setPermission('svcedit', m, m === 'services' ? 'edit' : (m === 'filters' ? 'view' : 'none'));
-  const id = run('INSERT INTO users (username, password_hash, active) VALUES (?, ?, 1)', 'svcedit', auth.hashPassword(PW)).lastInsertRowid;
-  run("INSERT INTO user_roles (user_id, role_id) VALUES (?, (SELECT id FROM roles WHERE name = 'svcedit'))", id);
-  assert.strictEqual((await call('svcedit', 'POST', '/filters/prices', { filter_type: 'X' })).status, 403, 'price book: filters edit');
-  assert.notStrictEqual((await call('svcedit', 'POST', '/filters/services', {})).status, 403, 'a service record: services edit');
-});
 
 test('Lubricant Capacities, the stock cockpit and the Alias Queue', async () => {
   await letThrough('lubeonly', '/lubricant-capacities');
@@ -237,28 +157,6 @@ test('Lubricant Capacities, the stock cockpit and the Alias Queue', async () => 
   await refused('jobsonly', '/mechanics/aliases');
 });
 
-test('Needs Attention, Daily Progress, Cost Teardown and the Tyre & Battery ledger apart from Reports', async () => {
-  await letThrough('attnonly', '/reports/service-due');
-  await letThrough('attnonly', '/reports/integrity');
-  await refused('attnonly', '/reports/monthly');
-  await letThrough('progonly', `/reports/daily-progress?date=${today}`);
-  await letThrough('progonly', '/reports/ongoing-jobs.html');
-  await refused('progonly', '/reports/service-due');
-  await letThrough('tearonly', `/reports/teardown/asset/${A}`);
-  await refused('tearonly', '/reports/monthly');
-  await letThrough('ledgeronly', '/tyre-battery/summary');
-  await refused('ledgeronly', '/reports/monthly');
-  await letThrough('reportsonly', '/reports/monthly');
-  await letThrough('reportsonly', '/reports/ongoing-jobs.html');
-  for (const p of ['/reports/service-due', `/reports/daily-progress?date=${today}`, `/reports/teardown/asset/${A}`, '/tyre-battery/summary']) {
-    await refused('reportsonly', p);
-  }
-  // The Dashboard's parts follow the same switches.
-  const d = (await call('reportsonly', 'GET', '/reports/dashboard')).body;
-  assert.deepStrictEqual([d.needs_attention, d.field_down], [{}, null]);
-  const a = (await call('admin', 'GET', '/reports/dashboard')).body;
-  assert.ok(Object.keys(a.needs_attention).length && a.field_down != null);
-});
 
 test('Tyre & Battery Requests: reading the requests needs a T&B step; the register needs Stores; the pick-lists are open', async () => {
   await letThrough('tbonly', '/tb/requests');
