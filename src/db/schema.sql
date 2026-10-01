@@ -422,8 +422,13 @@ CREATE TABLE IF NOT EXISTS issues (
 );
 CREATE INDEX IF NOT EXISTS idx_issues_asset ON issues(asset_id);
 CREATE INDEX IF NOT EXISTS idx_issues_job ON issues(job_id);
-CREATE INDEX IF NOT EXISTS idx_issues_min_id ON issues(min_id);
-CREATE INDEX IF NOT EXISTS idx_issues_min_no ON issues(min_no);
+-- idx_issues_min_id and idx_issues_min_no are NOT created here. min_id and min_no are columns the
+-- MIN work added to `issues`, a table that already exists on any database built before it: the
+-- CREATE TABLE above is then a no-op, the columns never appear, and indexing them here throws
+-- "no such column: min_id" out of db.exec(schema) -- which is the very first thing migrate() does,
+-- so the server will not start on an existing database at all. src/db/index.js adds the columns
+-- with ensureColumn() and creates both indexes immediately after, which is the right order.
+-- Anything indexing a column added to a pre-existing table belongs there, not here.
 
 -- Material Transfer Note between locations / vehicles (Doc. No. EC1.ST.FO.05).
 CREATE TABLE IF NOT EXISTS mtn (

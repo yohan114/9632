@@ -104,6 +104,57 @@ function migrate() {
     PRIMARY KEY (role, capability)
   );`);
 
+  // MIGRATION, and it has to run before the table below is touched. Two lineages built this table:
+  // one keyed by `module` with set_by/set_at, this one by `section` with updated_by/updated_at. On a
+  // database the other one created, CREATE TABLE IF NOT EXISTS below does nothing (the table is
+  // already there, with `module`), and then the index on `section` throws "no such column: section"
+  // out of migrate() -- so the server does not start at all, and nobody can sign in. A fresh
+  // database never shows it, which is every test, so it has to be caught here by looking at what is
+  // actually on disk. The rows are a person's own access levels and are carried across, not dropped.
+  const upExists = db.prepare(
+    "SELECT 1 x FROM sqlite_master WHERE type = 'table' AND name = 'user_permissions'").get();
+  if (upExists) {
+    const cols = db.prepare('PRAGMA table_info(user_permissions)').all().map((c) => c.name);
+    if (cols.includes('module') && !cols.includes('section')) {
+      const hadSetBy = cols.includes('set_by');
+      const hadSetAt = cols.includes('set_at');
+      db.exec('BEGIN');
+      try {
+        db.exec(`CREATE TABLE user_permissions__new (
+          id         INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          section    TEXT NOT NULL,
+          level      TEXT NOT NULL DEFAULT 'none',
+          updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_by INTEGER REFERENCES users(id),
+          UNIQUE(user_id, section)
+        );`);
+        // Only rows whose person still exists. The old table put no foreign key on user_id and the
+        // new one does, so a level left behind by a deleted account would fail the insert and roll
+        // the whole migration back -- which would leave the server unable to start over a row that
+        // means nothing anyway. Orphans are counted and reported rather than silently lost.
+        const total = db.prepare('SELECT COUNT(*) c FROM user_permissions').get().c;
+        db.exec(`INSERT OR IGNORE INTO user_permissions__new (user_id, section, level, updated_at, updated_by)
+                 SELECT p.user_id, p.module, p.level,
+                        ${hadSetAt ? 'p.set_at' : "datetime('now')"},
+                        ${hadSetBy ? '(SELECT u.id FROM users u WHERE u.id = p.set_by)' : 'NULL'}
+                   FROM user_permissions p
+                  WHERE EXISTS (SELECT 1 FROM users u WHERE u.id = p.user_id);`);
+        const moved = db.prepare('SELECT COUNT(*) c FROM user_permissions__new').get().c;
+        if (moved < total) {
+          console.log(`user_permissions: ${total - moved} level(s) belonged to accounts that no longer exist; not carried over.`);
+        }
+        db.exec('DROP TABLE user_permissions;');
+        db.exec('ALTER TABLE user_permissions__new RENAME TO user_permissions;');
+        db.exec('COMMIT');
+        console.log(`user_permissions: re-keyed from module to section, ${moved} personal level(s) carried over.`);
+      } catch (e) {
+        db.exec('ROLLBACK');
+        throw e;
+      }
+    }
+  }
+
   // Person-by-person access overrides (WorkshopOne Plan Part B):
   // Every person can have their own 5-level clearance per section, and their own capability ticks.
   db.exec(`CREATE TABLE IF NOT EXISTS user_permissions (
