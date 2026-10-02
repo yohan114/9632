@@ -19,7 +19,7 @@ const assert = require('node:assert');
 
 {
   const schema = fs.readFileSync(path.join(__dirname, '..', 'src', 'db', 'schema.sql'), 'utf8')
-    .replace(/CREATE TABLE IF NOT EXISTS daily_report_snapshots \([\s\S]*?\n\);\nCREATE INDEX IF NOT EXISTS idx_daily_snap[^\n]*\n/, `CREATE TABLE IF NOT EXISTS daily_report_snapshots (
+    .replace(/CREATE TABLE IF NOT EXISTS daily_report_snapshots \([\s\S]*?\r?\n\);\r?\nCREATE INDEX IF NOT EXISTS idx_daily_snap[^\r\n]*\r?\n/, `CREATE TABLE IF NOT EXISTS daily_report_snapshots (
   id           INTEGER PRIMARY KEY AUTOINCREMENT,
   kind         TEXT NOT NULL,
   report_date  TEXT NOT NULL,
