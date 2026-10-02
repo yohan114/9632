@@ -5,7 +5,8 @@
 // migrate() (idempotent). This step seeds the NEW role + demo user into an
 // already-populated database so the request → certify → approve flow can run:
 //   Transport Assistant Manager (asst/asst) raises → Transport Manager certifies
-//   → Operational Manager approves (auto-creates a job card).
+//   → Operational Manager approves. The approval clears the request; the WORKSHOP
+//   then opens the job card against it (routes/jobcards.js).
 // Idempotent: INSERT OR IGNORE on the role, create the user only if missing.
 
 const { get, run } = require('../db');

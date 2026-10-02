@@ -104,7 +104,9 @@ const GENERAL_REF = 'general-workshop';
 const generalRef = (workshopId) => (!workshopId || workshopId === defaultId() ? GENERAL_REF : `${GENERAL_REF}:${workshopId}`);
 const isGeneralCard = (job) => !!job && (job.legacy_ref === GENERAL_REF || String(job.legacy_ref || '').startsWith(`${GENERAL_REF}:`));
 
-/** The workshop's general card id (0 when it has none yet), creating it if asked. */
+/** The workshop's general card id (0 when it has none yet), creating it if asked.
+ *  Exempt from "a card needs an approved job request" (routes/jobcards.js): this is a cost
+ *  container for work that belongs to no vehicle, not a repair anyone requested. */
 function generalCardId(workshopId, { create = false, description = 'General workshop (not vehicle-specific)' } = {}) {
   const ref = generalRef(workshopId);
   const j = get('SELECT id FROM job_cards WHERE legacy_ref = ? LIMIT 1', ref);

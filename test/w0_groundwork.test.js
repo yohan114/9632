@@ -267,6 +267,9 @@ test('reject and close do what they say — and the vehicle is free for a new ca
   assert.ok(get("SELECT 1 x FROM audit_log WHERE action = 'review_reject' AND entity_id = ?", rReject));
   assert.ok(get("SELECT 1 x FROM audit_log WHERE action = 'review_close' AND entity_id = ?", rClose));
 
-  const fresh = await req('POST', '/api/jobs', { cookie: c, body: { asset_id: vA, type: 'repair', description: 'New fault after the clean-up' } });
+  // A card is opened against an approved job request now, so the four steps are walked in one go.
+  const { openJobCard } = require('./helpers/open_job');
+  const fresh = await openJobCard((path_, body) => req('POST', path_, { cookie: c, body }),
+    { asset_id: vA, type: 'repair', description: 'New fault after the clean-up' });
   assert.strictEqual(fresh.status, 201, `the vehicle is free: ${fresh.text}`);
 });

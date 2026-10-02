@@ -201,7 +201,11 @@ test('a vehicle whose only card is partly closed can get a new card straight awa
   await req('POST', `/api/jobs/${j}/partial-close`, { cookie: await as('ws'), body: {} });
   assert.strictEqual(J(j).status, 'PARTIALLY_CLOSED');
   assert.ok(jobstate.checkOneOpenJob(v).ok, 'job requests and new cards see a free vehicle');
-  const fresh = await req('POST', '/api/jobs', { cookie: await as('ws'), body: { asset_id: v, type: 'repair', description: 'Next fault' } });
+  // Raised and approved by the admin, opened by the workshop: the four steps a card now takes.
+  const { openJobCard } = require('./helpers/open_job');
+  const fresh = await openJobCard(async (path_, body) => req('POST', path_, { cookie: await as('boss'), body }),
+    { asset_id: v, type: 'repair', description: 'Next fault' }, {},
+    async (path_, body) => req('POST', path_, { cookie: await as('ws'), body }));
   assert.strictEqual(fresh.status, 201, fresh.text);
   assert.strictEqual(get('SELECT status s FROM assets WHERE id = ?', v).s, 'active', 'nothing held it after the partial close');
 });

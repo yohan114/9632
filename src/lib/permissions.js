@@ -128,7 +128,7 @@ const DEFAULT_MATRIX = {
     tb_reports: 'full', reports: 'full', workshops: 'edit', access: 'none', users: 'none'
   },
   workshop: {
-    dashboard: 'view', jobs: 'edit', jobrequests: 'none', field: 'edit', operations: 'view',
+    dashboard: 'view', jobs: 'edit', jobrequests: 'view', field: 'edit', operations: 'view',
     dailywork: 'edit', services: 'edit', lubricants: 'edit', assets: 'view', labour: 'edit',
     stores: 'view', oil: 'edit', batteries: 'edit', filters: 'full', service_plan: 'view',
     projects: 'view', aliases: 'edit', attention: 'view', daily_progress: 'view', cost_teardown: 'view',

@@ -48,11 +48,13 @@ function loadJob(id) {
   return get(
     `SELECT j.*, a.code AS asset_code, a.code_norm AS asset_code_norm,
             a.registration AS asset_reg, a.ec_code AS asset_ec,
-            p.name AS project_name, w.code AS workshop_code, w.name AS workshop_name
+            p.name AS project_name, w.code AS workshop_code, w.name AS workshop_name,
+            r.jr_no AS jr_no
        FROM job_cards j
        LEFT JOIN assets a ON a.id = j.asset_id
        LEFT JOIN projects p ON p.id = j.project_id
        LEFT JOIN workshops w ON w.id = j.workshop_id
+       LEFT JOIN job_requests r ON r.id = j.job_request_id
       WHERE j.id = ?`,
     id
   );
@@ -176,51 +178,128 @@ router.get(
   })
 );
 
+// A job card is OPENED BY THE WORKSHOP, against a job request that has been through all three
+// signatures: raised by the Transport Assistant Manager, certified by the Transport Manager,
+// approved by the Operational Manager. There is no other way to raise one — the request IS the
+// authority to spend, and a card without one has nothing behind it.
+//
+// The card's vehicle, work, type, severity and project are taken from the REQUEST, never from the
+// body, so what the workshop opens cannot drift from what three people signed. The workshop chooses
+// only what is its own to choose: which workshop does the repair, the site, a reference, and a note
+// of its own underneath the requested work.
+//
+// It starts at APPROVED_OPERATIONS — both approval gates were passed on the request, and are
+// mirrored onto the card's own trail — carrying the dates that were SIGNED rather than today's, so
+// the card tells the truth about when it was cleared. `take_in` does the workshop's own next step
+// (IN_WORKSHOP) in the same breath, for whoever holds that permission.
+//
+// The four insert paths that legitimately have no request are listed in db/index.js
+// (jobCardNeedsRequest): breakdowns, the continuation card at partial close, the container cards
+// and imported history. The rule lives here, in the route, so those keep working.
 router.post(
   '/',
   requireAuth,
   requireCap('jobs.create'),
   asyncHandler((req, res) => {
     const b = req.body;
-    require_(b, ['description']);
-    const type = b.type === 'service' ? 'service' : 'repair';
-
-    // Resolve the asset through the master resolver.
-    let assetId = toInt(b.asset_id);
-    let unresolved = null;
-    if (!assetId && b.asset) {
-      const r = aliases.resolveAsset(b.asset, { source: 'job_card' });
-      assetId = r.assetId;
-      if (!r.resolved) unresolved = { aliasId: r.aliasId, raw: b.asset };
+    const jrId = toInt(b.job_request_id);
+    if (!jrId) {
+      return res.status(400).json({
+        error: 'A job card is opened from an approved job request. Pick the request it is for.',
+        needs_job_request: true,
+      });
     }
+    // Stage 3: another workshop's request is out of reach, the same test the job request routes make.
+    const outOfReach = scope.jobRequestRefusal(req.user, jrId);
+    if (outOfReach) return res.status(403).json(outOfReach);
 
-    // One open card per vehicle — the next fault waits until this one closes.
-    const guard = jobstate.checkOneOpenJob(assetId);
+    const jr = get('SELECT * FROM job_requests WHERE id = ?', jrId);
+    if (!jr) return res.status(404).json({ error: 'Job request not found' });
+    if (jr.approval_status !== 'approved') {
+      const waiting = {
+        requested: 'it is still waiting for the Transport Manager to certify it',
+        certified: 'it is still waiting for the Operational Manager to approve it',
+        rejected: 'it was rejected',
+      }[jr.approval_status] || `its approval status is "${jr.approval_status}"`;
+      return res.status(409).json({
+        error: `Job request ${jr.jr_no} cannot be opened as a job card yet — ${waiting}.`,
+        approval_status: jr.approval_status,
+      });
+    }
+    // Already opened: say which card, so the answer is a link rather than a second card.
+    const already = jr.job_id ? get('SELECT id, job_no, status FROM job_cards WHERE id = ?', jr.job_id) : null;
+    if (already) {
+      return res.status(409).json({
+        error: `Job request ${jr.jr_no} already has job card ${already.job_no}.`,
+        job: already,
+      });
+    }
+    // The vehicle is the master key — a card that points at nothing cannot roll a cost up to an
+    // asset. An unresolved request names its vehicle only as text, waiting in the Alias Queue.
+    if (!jr.asset_id) {
+      return res.status(409).json({
+        error: `Job request ${jr.jr_no} has no vehicle linked yet — link its vehicle in the Alias Queue first.`,
+        unlinked_asset: true,
+      });
+    }
+    // One open card per vehicle. This is where the rule bites now: approving a request no longer
+    // makes a card, so there is nothing to block until the workshop opens one.
+    const guard = jobstate.checkOneOpenJob(jr.asset_id);
     if (!guard.ok) return res.status(409).json({ error: guard.error, blocking_job: guard.blocking });
-    // The workshop that does the repair: the one chosen, else the person's home workshop.
-    const workshopId = workshops.forNew(req.user, b.workshop_id);
+
+    // The workshop that does the repair: the one chosen, else the request's own, else the opener's.
+    const workshopId = b.workshop_id ? workshops.forNew(req.user, b.workshop_id)
+      : (jr.workshop_id || workshops.forNew(req.user, null));
+    // The workshop's own note goes UNDER the requested work, never over it.
+    const note = String(b.note || '').trim();
+    const description = note ? `${String(jr.description || '').trim()}\n\nWorkshop note: ${note}`.trim() : jr.description;
+    const type = jr.type === 'service' ? 'service' : 'repair';
+    const takeIn = (b.take_in === true || b.take_in === 1 || b.take_in === '1') && hasCap(req.user, 'jobs.assign_workshop');
 
     const no = jobNo(type);
-    const info = run(
-      `INSERT INTO job_cards (job_no, ref, asset_id, project_id, site, type, severity, description,
-                              status, requested_by, requested_by_user, workshop_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'REQUESTED', ?, ?, ?)`,
-      no,
-      b.ref || null,
-      assetId || null,
-      toInt(b.project_id),
-      b.site || null,
-      type,
-      b.severity === 'major' || b.severity === 'minor' ? b.severity : null,
-      b.description,
-      b.requested_by || req.user.fullName || req.user.username,
-      req.user.id,
-      workshopId
-    );
-    audit.record({ userId: req.user.id, entity: 'job_card', entityId: info.lastInsertRowid, action: 'create', after: { job_no: no, workshop_id: workshopId } });
-    emitter.emit('job_updated', { job_id: info.lastInsertRowid, action: 'create' });
+    const jobId = tx(() => {
+      const info = run(
+        `INSERT INTO job_cards (job_no, ref, asset_id, project_id, site, type, severity, description,
+                                status, requested_by, requested_by_user, requested_at,
+                                approved_transport_at, approved_ops_at, workshop_id, job_request_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        no,
+        b.ref || null,
+        jr.asset_id,
+        jr.project_id,
+        b.site || null,
+        type,
+        jr.severity === 'major' || jr.severity === 'minor' ? jr.severity : null,
+        description,
+        takeIn ? 'IN_WORKSHOP' : 'APPROVED_OPERATIONS',
+        jr.requested_by,
+        jr.requested_by_user,
+        jr.req_date || new Date().toISOString().slice(0, 10),
+        jr.certified_at,
+        jr.approved_at,
+        workshopId,
+        jr.id
+      );
+      const id = info.lastInsertRowid;
+      // Both approvals mirrored onto the card's own trail — they were given on the request, and
+      // this is where anyone reading the card looks for them.
+      const certRow = get(`SELECT approver_id FROM job_request_approvals WHERE job_request_id = ? AND stage = 'certify' AND decision = 'approved' ORDER BY id DESC LIMIT 1`, jr.id);
+      const appRow = get(`SELECT approver_id FROM job_request_approvals WHERE job_request_id = ? AND stage = 'approve' AND decision = 'approved' ORDER BY id DESC LIMIT 1`, jr.id);
+      run(`INSERT INTO job_approvals (job_id, role, approver_id, decision, reason) VALUES (?, 'transport_manager', ?, 'approved', ?)`,
+        id, certRow ? certRow.approver_id : null, `Certified via Job Request ${jr.jr_no}${jr.certified_by ? ' by ' + jr.certified_by : ''}`);
+      run(`INSERT INTO job_approvals (job_id, role, approver_id, decision, reason) VALUES (?, 'operational_manager', ?, 'approved', ?)`,
+        id, appRow ? appRow.approver_id : null, `Approved via Job Request ${jr.jr_no}${jr.approved_by ? ' by ' + jr.approved_by : ''}`);
+      // The reverse pointer the rest of the system reads (jobs_flow, the dashboard, the reports and
+      // the printable request). Both are written here, together, so they cannot disagree.
+      run('UPDATE job_requests SET job_id = ? WHERE id = ?', id, jr.id);
+      return id;
+    });
+    costing.refreshJobTotals(jobId);
+    audit.record({ userId: req.user.id, entity: 'job_card', entityId: jobId, action: 'create',
+      after: { job_no: no, workshop_id: workshopId, job_request_id: jr.id, jr_no: jr.jr_no, status: takeIn ? 'IN_WORKSHOP' : 'APPROVED_OPERATIONS' } });
+    emitter.emit('job_updated', { job_id: jobId, action: 'create' });
     emitter.emit('dashboard_refresh', { reason: 'job_create' });
-    res.status(201).json({ job: loadJob(info.lastInsertRowid), unresolved });
+    res.status(201).json({ job: loadJob(jobId), request: get('SELECT id, jr_no FROM job_requests WHERE id = ?', jr.id) });
   })
 );
 

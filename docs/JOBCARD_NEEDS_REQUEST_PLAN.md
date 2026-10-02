@@ -1,6 +1,8 @@
 # Plan — a job card is opened by the workshop, and only from an approved job request
 
-_Status: plan only. Nothing is built yet._
+_Status: **built, tested and on `main`.** The plan below is kept as written, with the
+decisions in §3 recorded as they were confirmed and §8 added at the end for what the work
+actually came to._
 
 ---
 
@@ -48,7 +50,9 @@ permanent link back to the request it came from.
 These change the amount of work, so they are called out rather than assumed. The
 recommendation is what the plan below is written against.
 
-| # | Question | Recommendation |
+All five were confirmed as recommended.
+
+| # | Question | Confirmed |
 |---|---|---|
 | **D1** | **Field breakdowns.** A machine stops at a site and `src/lib/field.js:212` opens a card on the spot, with no request. Must it now wait for a 3-stage approval? | **Exempt.** A breakdown cannot wait for three signatures. The card is already flagged `breakdown = 1`, and the plan keeps that one door open. (If you want the paperwork to catch up, we can later let a request be *attached* to an existing breakdown card.) |
 | **D2** | **Cards already in the live database** at `REQUESTED` or `APPROVED_TRANSPORT`, raised the old way. | **Let them finish the old way.** `jobs.approve_transport` / `jobs.approve_operations` and those two statuses stay, so the backlog drains. Only *new* cards need a request. |
@@ -245,3 +249,60 @@ Steps 2 and 3 land together: between them, either no card can be made at all, or
   the card, pre-filled from the signed request, already past both approval gates.
 - Every new job card names the job request it came from, and every approved request names
   the card it became.
+
+
+---
+
+## 8. What was built
+
+All of §4 is built and on `main`. Three things the plan did not foresee, found while building:
+
+1. **The workshop could not see job requests at all.** `permissions.js` had the `workshop`
+   role at `jobrequests: 'none'`, so the queue it is now meant to work from was invisible
+   to it. Lifted to `'view'` — it reads requests, and signs none of them. This needed the
+   same one-off migration as the capability, for the same reason (`seedDefaults()` is also
+   `INSERT OR IGNORE`), and the same guard, so an admin's later change is not overruled.
+2. **A request whose vehicle is still in the Alias Queue** cannot be opened as a card. The
+   job request route lets an unrecognised vehicle through and queues it; a card pointing at
+   no asset could never roll its cost up to one, so this is a 409 naming the Alias Queue
+   rather than a card with a hole in it.
+3. **The card carries the dates that were signed**, not today's. The old auto-create stamped
+   `approved_transport_at`/`approved_ops_at` with `datetime('now')`, which was the same
+   moment; now that the card is opened later, the signed dates are copied from the request.
+
+Also added beyond the plan: a `take_in` tick that does the workshop's own next step
+(`IN_WORKSHOP`) in the same call, for whoever holds `jobs.assign_workshop`; and a workshop
+note that is appended under the requested work rather than replacing it.
+
+### Tests
+
+`npm test` — **998 pass, 1 fail**. The one failure is
+`Stores 4-Document Lifecycle: Headless Print-to-PDF Conversion`, which fails the same way
+on `main` before this change (it needs a browser this environment does not give it).
+
+New: `test/jobcard_from_request.test.js` (16 tests) and `test/helpers/open_job.js`, the
+shared four-step helper the other suites use. Rewritten: `http`, `jobno`, `one_open_job`,
+`phase1_controls`, `jobs_p1_flow`, `stage2_workshops`, `stage3_scoping`, `w0_groundwork`,
+`w2_partial_close`.
+
+### Checked in a browser
+
+Signed in as `mech`, on a seeded database: the dashboard prompts the workshop that a
+request is waiting, the "To open as a job card" pill carries its count, the picker shows
+what the request says read-only (no vehicle picker, no type or severity to re-type), and
+opening it lands on a card at `APPROVED_OPERATIONS` naming its request. No JS errors.
+
+### On the live server
+
+The update is self-applying: the column, the backfill, the capability move and the
+workshop's view level all run on the first start. Watch the log for the two lines it
+prints —
+
+```
+jobs: opening a job card is the workshop's now — taken off the Transport Manager.
+jobs: the workshop can now see job requests (it needs to, to open cards from them).
+```
+
+— and, if any role an admin created also held "Open a new job card", a third line naming
+those roles. They are left exactly as they are, and now need an approved job request like
+everyone else; change them in Access Control → Roles if that is not what you want.

@@ -248,6 +248,23 @@ router.get('/workflow-monitor', asyncHandler((req, res) => {
       });
     }
   }
+  // The workshop's own step: a job request with all three signatures, waiting for its job card.
+  // Without this the workshop has no prompt that work has been cleared for it.
+  if (may('jobs.create')) {
+    const waiting = all(`SELECT r.id, r.jr_no, r.req_date, r.approved_at, r.requested_by, r.certified_by, r.approved_by, r.description,
+          a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec
+        FROM job_requests r LEFT JOIN assets a ON a.id = r.asset_id
+        WHERE r.approval_status = 'approved' AND r.job_id IS NULL${and(rOwn)} ORDER BY r.approved_at, r.id LIMIT 30`, ...rOwn.params);
+    for (const r of waiting) {
+      inflow.push({
+        id: r.id, kind: 'jr_open_card', ref: r.jr_no, title: `Job Request ${r.jr_no}`,
+        vehicle: [r.asset_reg, r.asset_ec, r.asset_code].filter(Boolean).join(' · '),
+        description: r.description, requester: r.requested_by, certified_by: r.certified_by,
+        approved_by: r.approved_by, date: (r.approved_at || r.req_date || '').slice(0, 10),
+        link: `#/jobrequests/${r.id}`, action: 'Open job card'
+      });
+    }
+  }
   if (may('stores.mrn.certify')) {
     const mrns = all(`SELECT m.id, m.mrn_no, m.req_date, m.requested_by, a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec, ${lineCount}
         FROM mrn m LEFT JOIN assets a ON a.id = m.asset_id WHERE ${INFLOW_MRN}${and(mOwn)} ORDER BY m.req_date DESC, m.id DESC LIMIT 30`, ...mOwn.params);
@@ -390,7 +407,7 @@ router.get('/workflow-monitor', asyncHandler((req, res) => {
   }
 
   const total_pending = inflow.length + authorizations.length + warehouse.length + compliance.length;
-  const is_approver = total_pending > 0 || ['stores.mrn.certify', 'stores.mrn.approve', 'jobs.approve_transport', 'jobs.approve_operations', 'jobrequests.certify', 'jobrequests.approve', 'attendance.signoff', 'jobs.reopen', 'stores.count.approve', 'stores.disposal.approve'].some(may);
+  const is_approver = total_pending > 0 || ['stores.mrn.certify', 'stores.mrn.approve', 'jobs.approve_transport', 'jobs.approve_operations', 'jobrequests.certify', 'jobrequests.approve', 'jobs.create', 'attendance.signoff', 'jobs.reopen', 'stores.count.approve', 'stores.disposal.approve'].some(may);
 
   // 5. Admin / Manager On-Hold & Bottleneck Center
   const on_hold = {

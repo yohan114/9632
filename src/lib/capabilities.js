@@ -42,7 +42,7 @@ const CAPABILITIES = [
   C('mechanics.move', 'labour', 'Move a mechanic to another workshop', ['manager'], null, 'labour'),
 
   // ---- job cards -----------------------------------------------------------------------------
-  C('jobs.create', 'jobs', 'Open a new job card', ['transport_manager', 'workshop'], 'jobs', 'jobs'),
+  C('jobs.create', 'jobs', 'Open a job card from an approved job request', ['workshop'], 'jobs', 'jobs'),
   C('jobs.edit', 'jobs', 'Change a job card\'s vehicle, description or type', ['workshop', 'operational_manager', 'manager'], 'jobs', 'jobs'),
   C('jobs.edit_closed', 'jobs', 'Change items on a CLOSED job card', ['workshop', 'storekeeper', 'manager'], 'jobs', 'jobs'),
   C('jobs.approve_transport', 'jobs', 'Approve a job card — transport step', ['transport_manager'], 'jobs', 'jobs'),
