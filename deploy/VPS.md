@@ -233,6 +233,65 @@ Must read `127.0.0.1:3000`. If it says `0.0.0.0:3000` the app is on the public i
 nginx and only the firewall is keeping it off the internet — look for a `HOST=` line in the unit
 file and delete it, then `sudo systemctl daemon-reload && sudo systemctl restart workshopone`.
 
+### 7a. Already running as root under pm2?
+
+The live server was set up this way, and three things follow from it. **It runs as root**, so a
+headless browser refuses to start (Chrome will not use its sandbox as root) and every PDF download
+falls back to browser print. **pm2 reads `ecosystem.config.js`**, which used to set
+`HOST: '0.0.0.0'` and so overrode the `HOST=127.0.0.1` above — the app was on the public
+interface. And **`deploy/update.sh` cannot work**: it runs every step as `workshopone` and restarts
+a systemd unit, neither of which exists.
+
+Moving to the shape this document describes fixes all three. The database is not touched, the
+process is down for about a minute, and `fuelsystem` stays where it is under root's pm2.
+
+```bash
+# 1. The account, and a snapshot to go back to
+sudo adduser --system --group --home /opt/workshopone workshopone
+sudo -u root bash -c 'cd /opt/workshopone/app && node scripts/backup.js'
+
+# 2. Stop the root copy and forget it (fuelsystem is untouched)
+sudo pm2 stop workshopone && sudo pm2 delete workshopone && sudo pm2 save
+
+# 3. Hand everything over — code, database, backups, logs. mfa.key included: it is what
+#    decrypts everyone's two-factor secret, and the app must be able to read it.
+sudo chown -R workshopone:workshopone /opt/workshopone
+sudo chmod 600 /opt/workshopone/data/mfa.key
+
+# 4. Run it as a service, the way step 7 does
+sudo cp /opt/workshopone/app/deploy/workshopone.service /etc/systemd/system/workshopone.service && sudo sed -i 's|REPLACE_WITH_SERVICE_USER|workshopone|; s|REPLACE_WITH_APP_DIR|/opt/workshopone/app|' /etc/systemd/system/workshopone.service
+sudo systemctl daemon-reload && sudo systemctl enable --now workshopone && systemctl status workshopone --no-pager
+
+# 5. The checks that matter
+journalctl -u workshopone -n 20 --no-pager      # the database path, and the account count in it
+sudo ss -ltnp | grep 3000                       # must now read 127.0.0.1:3000
+curl -fsS http://127.0.0.1:3000/api/health && echo
+```
+
+The account count in the journal must match what it was before the move. `0` means the wrong
+`DB_PATH` — stop and read step 5 rather than letting people try to sign in.
+
+Then the browser, which is now worth installing because the app is no longer root:
+
+Chrome's own .deb, **not** `apt install chromium-browser`: on Ubuntu that is a transitional
+package for the snap, and a snap gets a private `/tmp`. The PDF would be written inside the snap's
+own `/tmp` where the app cannot see it, and the error — "completed without generating an output
+file" — says nothing about why.
+
+```bash
+curl -fsSLo /tmp/chrome.deb https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb && sudo apt install -y /tmp/chrome.deb && rm -f /tmp/chrome.deb
+sudo -u workshopone bash -c 'cd /opt/workshopone/app && node -e "require(\"./src/lib/pdf_generator\").generatePdfBuffer(\"<h1>ok</h1>\").then(b => console.log(b.length, b.slice(0,4).toString()))"'
+```
+
+That must print a byte count and `%PDF`. If it reports *No supported browser*, the install put the
+binary somewhere not in `findBrowserPath()`'s list — `which google-chrome chromium
+chromium-browser` and set `CHROME_BIN` in `.env` to what it finds. Chrome needs about 400 MB with
+its dependencies, so `df -h /` first.
+
+**To go back**, at any point: `sudo systemctl disable --now workshopone` and
+`sudo pm2 start /opt/workshopone/app/ecosystem.config.js && sudo pm2 save`. The ownership change
+does not need undoing — root can read and write files it does not own.
+
 ## 8. nginx
 
 The visitor's real address has to survive the trip, or the login rate limiter will treat the whole
