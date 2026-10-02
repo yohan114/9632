@@ -13,8 +13,8 @@ they were built and the decisions chosen._
   Stage 1), the groundwork W0, attendance W1, partial close W2, reports W3, approval limits, and the
   multi-site Stages 2–7. So is a good deal of work that came after this plan was written — the Stores
   parts 1–4, the Job Cards parts 1–3, access section by section and person by person, purchasing,
-  tools and toolboxes, the 4-document stores lifecycle, and the job request gate on opening a job
-  card. §2 lists all of it.
+  tools and toolboxes, the labour lifecycle, the 4-document stores lifecycle, and the job request
+  gate on opening a job card. §2 lists all of it.
 - **None of it is on the live server yet.** That is the next step, and it is your action (§3).
 - **After the update, almost nothing changes on its own.** Each new feature is off, empty or unused
   until you switch it on (§3.4). With one workshop, every screen looks as before, plus the new Field
@@ -64,7 +64,10 @@ they were built and the decisions chosen._
 | Access Part 2 — access person by person, and the Add level | ✅ merged | #36 |
 | The monthly cost report test builds its own month (it needed the office database before) | ✅ merged | #39 |
 | CI — the test suite runs on every push and pull request | ✅ merged | #40 |
-| Purchasing (priority-basis buying, channels, pipeline cockpit), workshop tools and mechanic toolboxes, the labour lifecycle (resignation, transfer), and the 4-document stores lifecycle (GRN, MIN, MTN, SVR) with its printable forms | ✅ merged | #41 |
+| Purchasing — priority-basis buying for the workshop, the two channels and reassignment between them, the pipeline monitor cockpit | ✅ merged | #41 · `46482da` |
+| Stores — the 4-document lifecycle (GRN, MIN, MTN, SVR): official forms, PDF export, approvals in tiers | ✅ merged | #41 · `4a2871f` |
+| Labour lifecycle — resignation and site transfer; inactive mechanics drop out of the pickers, their history stays | ✅ merged | #41 · `7ebac70` |
+| Workshop tools and mechanic toolboxes — daily checkout at the store, and the scrap approval road | ✅ merged | #41 · `9bc3ef1` |
 | The two lineages joined on `main`, keeping this one's access control | ✅ merged | #42 |
 | An existing database can be upgraded again; the launcher opens the port the server listens on | ✅ merged | #43 |
 | A transfer moves the shelf when the goods move, not when the note is typed | ✅ merged | #44 |
