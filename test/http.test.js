@@ -63,14 +63,19 @@ test('bad login is rejected, good login sets a session', async () => {
   assert.ok(r.body.roles.includes('admin'));
 });
 
-test('full job lifecycle + closure gate over HTTP', async () => {
-  // raise
-  const create = await req('/api/jobs', { method: 'POST', body: { asset: '28-4314', type: 'repair', description: 'brake job' } });
-  assert.strictEqual(create.status, 201);
-  const id = create.body.job.id;
+const { openJobCard, jobCard } = require('./helpers/open_job');
+const post = (path_, body) => req(path_, { method: 'POST', body });
 
-  // walk approvals + workshop (boss holds every role)
-  for (const to of ['APPROVED_TRANSPORT', 'APPROVED_OPERATIONS', 'IN_WORKSHOP', 'IN_PROGRESS']) {
+test('full job lifecycle + closure gate over HTTP', async () => {
+  // A card is opened against a job request that has all three signatures, so it starts at
+  // APPROVED_OPERATIONS: both approval gates were passed on the request.
+  const create = await openJobCard(post, { asset: '28-4314', type: 'repair', description: 'brake job' });
+  assert.strictEqual(create.status, 201, JSON.stringify(create.body));
+  const id = create.body.job.id;
+  assert.strictEqual(create.body.job.status, 'APPROVED_OPERATIONS');
+
+  // walk the workshop's own steps from there (boss holds every role)
+  for (const to of ['IN_WORKSHOP', 'IN_PROGRESS']) {
     const r = await req(`/api/jobs/${id}/transition`, { method: 'POST', body: { to } });
     assert.strictEqual(r.status, 200, `transition to ${to}`);
     assert.strictEqual(r.body.status, to);
@@ -93,8 +98,8 @@ test('full job lifecycle + closure gate over HTTP', async () => {
 });
 
 test('a multi-mechanic daily-work entry splits into one costed row per mechanic', async () => {
-  const create = await req('/api/jobs', { method: 'POST', body: { asset: '28-4314', type: 'repair', description: 'multi mech' } });
-  const id = create.body.job.id;
+  const job = await jobCard(post, { asset: '28-4314', type: 'repair', description: 'multi mech' });
+  const id = job.id;
   const r = await req(`/api/jobs/${id}/daily-work`, { method: 'POST', body: { mechanic: 'Anura, Buddhika', hours: 4 } });
   assert.strictEqual(r.status, 201);
   assert.strictEqual(r.body.length, 2, 'two mechanics => two rows');
@@ -104,11 +109,21 @@ test('a multi-mechanic daily-work entry splits into one costed row per mechanic'
   assert.strictEqual(detail.body.cost.labour_cost, 2800);
 });
 
-test('unresolved asset text is queued as a pending alias', async () => {
-  const r = await req('/api/jobs', { method: 'POST', body: { asset: 'mystery machine 9000', description: 'x' } });
+test('unresolved asset text is queued as a pending alias — and holds the card back', async () => {
+  // The vehicle is resolved where it is now typed: on the job request.
+  const r = await req('/api/job-requests', { method: 'POST', body: { asset: 'mystery machine 9000', description: 'x' } });
   assert.strictEqual(r.status, 201);
   assert.ok(r.body.unresolved, 'should report an unresolved alias');
   assert.ok(aliases.pendingAliases().some((a) => a.raw_text === 'mystery machine 9000'));
+  // Approved or not, a request pointing at no vehicle cannot become a card: the asset is the master
+  // key, and a card that points at nothing cannot roll its cost up to one.
+  const id = r.body.request.id;
+  await post(`/api/job-requests/${id}/certify`, {});
+  await post(`/api/job-requests/${id}/approve`, {});
+  const card = await post('/api/jobs', { job_request_id: id });
+  assert.strictEqual(card.status, 409);
+  assert.strictEqual(card.body.unlinked_asset, true);
+  assert.match(card.body.error, /no vehicle linked/i);
 });
 
 // The New Asset form posts every field it renders, so an untouched "Home Project" dropdown

@@ -182,7 +182,7 @@ const FUNCTIONAL_SECTIONS = [
       view: { modules: { jobs: 'view', jobrequests: 'view' }, caps: [] },
       operator: {
         modules: { jobs: 'edit', jobrequests: 'edit' },
-        caps: ['jobs.create', 'jobs.start', 'jobs.complete', 'jobs.dailywork', 'jobs.parts', 'jobs.field', 'jobrequests.create']
+        caps: ['jobs.start', 'jobs.complete', 'jobs.dailywork', 'jobs.parts', 'jobs.field', 'jobrequests.create']
       },
       manager: {
         modules: { jobs: 'full', jobrequests: 'full' },

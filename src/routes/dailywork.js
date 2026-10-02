@@ -120,6 +120,8 @@ function assetLabel(assetId, fallback) {
 //   2. this month's existing auto card for the vehicle (one per vehicle per month), with its
 //      date window widened to cover the new day;
 //   3. a new card, CLOSED on the work date, so the cost lands in that month under the vehicle.
+// Exempt from "a card needs an approved job request" (routes/jobcards.js): the monthly container
+// is created already CLOSED, to carry a cost to a vehicle and a month. Nobody requests it.
 function autoVehicleJob(assetId, date, rawLabel, user = null) {
   // Reuse the vehicle's open card only if this day's work actually falls in its life. Without
   // the date bound the newest open card claimed everything: one REQUESTED card ended up holding

@@ -28,9 +28,10 @@ Then open http://localhost:3000 and sign in. Demo accounts (username = password)
 |---|---|
 | `admin` / `admin` | Administrator (everything) |
 | `store` / `store` | Storekeeper |
-| `transport` / `transport` | Transport Manager (raise + first approval) |
-| `ops` / `ops` | Operational Manager (second approval) + Manager |
-| `mech` / `mech` | Workshop / Mechanic Supervisor |
+| `asst` / `asst` | Transport Assistant Manager (raises the job request) |
+| `transport` / `transport` | Transport Manager (certifies the job request) |
+| `ops` / `ops` | Operational Manager (approves the job request) + Manager |
+| `mech` / `mech` | Workshop / Mechanic Supervisor (opens the job card) |
 | `viewer` / `viewer` | Read-only |
 
 ```bash
@@ -92,8 +93,9 @@ login (enforced server-side).
    └───────────┴────────────┼────────────┘
                             ▼
                  ┌────────────────────┐
-                 │  JOB CARD (the hub)│  request → approve×2 → workshop →
-                 │  + state machine   │  daily work → parts → CLOSE (gated)
+                 │  JOB CARD (the hub)│  job request (raise → certify → approve)
+                 │  + state machine   │  → workshop OPENS the card → daily work
+                 │                    │  → parts → CLOSE (gated)
                  └─────────┬──────────┘
                            ▼
                  ┌────────────────────┐
@@ -190,14 +192,40 @@ Local Store) and by **project**.
 |---|---|
 | Admin | Everything; reopen closed jobs (audited); manage users, prices, aliases |
 | Storekeeper | MRN/GRN/Issue/MTN, oil ledger, counts, batteries, general items, link aliases |
-| Transport Manager | Raise job cards; first approval |
-| Operational Manager | Second approval; view all costs |
-| Workshop / Mechanic supervisor | Assign jobs, log daily work, request parts, mark complete |
+| Transport Assistant Manager | Raise job requests |
+| Transport Manager | Certify job requests |
+| Operational Manager | Approve job requests; view all costs |
+| Workshop / Mechanic supervisor | Open job cards from approved requests, log daily work, request parts, mark complete |
 | Viewer | Read-only dashboards & reports |
 
 A user can hold several roles; every state transition records the acting user.
 The server enforces roles on every mutation; the UI hides controls the user
 can't use.
+
+### How a job starts
+
+A job card is **opened by the workshop, against a job request that has been
+through all three signatures** — the request is the authority for the work, and
+a card without one has nothing behind it:
+
+```
+Transport Assistant Manager   raises the request      (JR-####)
+Transport Manager             certifies it
+Operational Manager           approves it             -> cleared, waiting for the workshop
+Workshop                      OPENS the job card      (2026/10/R/7, already past both gates)
+```
+
+The approval does not make the card. An approved request sits in the workshop's
+**"To open as a job card"** list until the workshop opens it; the card is then
+created from what the request says — vehicle, work, type, severity, project —
+so it cannot drift from what three people signed. The card names its request,
+and the request names its card.
+
+Four kinds of card are deliberately exempt, because no request could reasonably
+come first: a **breakdown** reported at a site (it cannot wait for three
+signatures), the **continuation card** at a partial close (it inherits the
+parent's request), the **container cards** that hold non-vehicle costs, and
+**imported history**.
 
 ---
 

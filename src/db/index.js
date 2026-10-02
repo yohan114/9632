@@ -43,7 +43,8 @@ function migrate() {
   );
   CREATE INDEX IF NOT EXISTS idx_mrn_approvals ON mrn_approvals(mrn_id);`);
   // Job Request (Transport) — Assistant Transport raises → Transport Manager certifies
-  // → Operational Manager approves; on final approval a job card is auto-created.
+  // → Operational Manager approves. The workshop then opens the job card against the approved
+  // request; job_id is that card, set when the workshop opens it (it used to be set by the approval).
   db.exec(`CREATE TABLE IF NOT EXISTS job_requests (
     id                INTEGER PRIMARY KEY AUTOINCREMENT,
     jr_no             TEXT NOT NULL UNIQUE,      -- editable, continues from the last number
@@ -760,6 +761,7 @@ function migrate() {
   fieldStage6();
   operationsStage7();
   storesCountsPart2();
+  jobCardNeedsRequest();
   storesServicesPart3();
   storesUnitsPart4();
   storesDocumentsProcess();
@@ -789,6 +791,9 @@ function migrate() {
     // Matching on the old label makes this run once and never again, and leaves alone a label
     // somebody has since set themselves.
     db.prepare("UPDATE roles SET label = 'Transport Assistant Manager' WHERE name = 'assistant_transport_manager' AND label = 'Assistant Transport Manager'").run();
+    // Opening a job card belongs to the workshop now (see jobCardNeedsRequest). Has to be here,
+    // after seedCapabilities(): it is INSERT OR IGNORE, so revoking before it runs is undone.
+    jobCardCreateToWorkshop();
   }
   return db;
 }
@@ -1054,6 +1059,55 @@ function fieldStage6() {
   ensureColumn('job_daily_work', 'travel', 'INTEGER NOT NULL DEFAULT 0');
   db.exec('CREATE INDEX IF NOT EXISTS idx_jobs_field ON job_cards(field, status)');
   allowReturnParts();
+}
+
+// A job card is opened by the workshop, against an approved job request, and carries a pointer back
+// to it. The approval used to make the card itself, so every card made that way is already linked —
+// the other way round, through job_requests.job_id. Both pointers are kept from here on (the routes
+// write them in one transaction); this backfills the new one from the old.
+//
+// There is deliberately NO NOT NULL and no trigger. The rule that a card needs a request is a CHECK
+// THE ROUTE MAKES, because four insert paths legitimately have no request and must keep working:
+// a breakdown reported at a site (src/lib/field.js), the continuation card at partial close
+// (src/lib/job_close.js — it inherits the parent's request), the GENERAL-WS and monthly labour
+// container cards, and imported history.
+function jobCardNeedsRequest() {
+  ensureColumn('job_cards', 'job_request_id', 'INTEGER REFERENCES job_requests(id)');
+  db.exec(`
+    UPDATE job_cards SET job_request_id = (SELECT r.id FROM job_requests r WHERE r.job_id = job_cards.id)
+     WHERE job_request_id IS NULL
+       AND EXISTS (SELECT 1 FROM job_requests r WHERE r.job_id = job_cards.id);
+    CREATE INDEX IF NOT EXISTS idx_jobs_job_request ON job_cards(job_request_id);`);
+}
+
+// jobs.create changes hands: the Transport Manager raised cards directly, and no longer does — the
+// workshop opens them from an approved request. Taking it out of the capability TEMPLATE
+// (src/lib/capabilities.js) does not move it on a database that has already been seeded: the row
+// (transport_manager, jobs.create, 1) is there, and seedCapabilities() only ever INSERTs OR IGNOREs.
+// So it is revoked here, by hand, ONCE — guarded by a settings key, so an admin who decides to give
+// it back is not overruled on the next start.
+//
+// Any OTHER role holding it is left exactly as it is and reported instead: a role an admin made and
+// granted this to is their decision, not this migration's.
+function jobCardCreateToWorkshop() {
+  if (db.prepare("SELECT 1 FROM settings WHERE key = 'jobs_create_to_workshop'").get()) return;
+  const held = db.prepare("SELECT role FROM role_capabilities WHERE capability = 'jobs.create' AND granted = 1").all()
+    .map((r) => r.role);
+  const moved = db.prepare("UPDATE role_capabilities SET granted = 0, updated_at = datetime('now') WHERE role = 'transport_manager' AND capability = 'jobs.create' AND granted = 1").run().changes;
+  // The other half of the same move: the workshop opens cards from approved requests, so it must be
+  // able to READ job requests — it was 'none'. seedDefaults() is INSERT OR IGNORE too, so the level
+  // on an already-seeded database is lifted here. Only from 'none': a level an admin has already
+  // raised is theirs, and is not pushed back down.
+  const seen = db.prepare("UPDATE role_permissions SET level = 'view' WHERE role = 'workshop' AND module = 'jobrequests' AND level = 'none'").run().changes;
+  const others = held.filter((r) => r !== 'transport_manager' && r !== 'workshop');
+  db.prepare("INSERT INTO settings (key, value) VALUES ('jobs_create_to_workshop', ?)")
+    .run(JSON.stringify({ at: new Date().toISOString(), revoked_from_transport_manager: moved, workshop_sees_requests: seen, left_alone: others }));
+  if (moved) console.log('jobs: opening a job card is the workshop\'s now — taken off the Transport Manager.');
+  if (seen) console.log('jobs: the workshop can now see job requests (it needs to, to open cards from them).');
+  if (others.length) {
+    console.log(`jobs: these roles also open job cards and were left as they are: ${others.join(', ')}. `
+      + 'They now need an approved job request like everyone else (Access Control -> Roles to change it).');
+  }
 }
 
 // Stage 7: a machine can stand at a site of a project, not only at the project (src/lib/operations.js).

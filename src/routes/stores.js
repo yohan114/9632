@@ -93,6 +93,8 @@ function resolveAssetId(body, prefix) {
 // The shared container job for stores issues that aren't tied to a specific vehicle job
 // (general consumables). Same 'general-workshop' card daily-work uses — every issue keeps
 // a cost object. Created once, reused thereafter.
+// Exempt from "a card needs an approved job request" (routes/jobcards.js): a cost container, not
+// a repair — synthesized_no = 1 is what marks it as one.
 function generalWorkshopJobId() {
   const j = get("SELECT id FROM job_cards WHERE legacy_ref = 'general-workshop' LIMIT 1");
   if (j) return j.id;

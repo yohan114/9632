@@ -1672,8 +1672,8 @@ async function jobsMonitor(body) {
 }
 
 const JOB_REQ_STEPS = [['open', 'Waiting for a decision'], ['to_certify', 'To certify'], ['to_approve', 'To approve'],
-  ['transport', 'Transport approval'], ['operations', 'Operations approval'], ['reopen', 'Reopen requests'],
-  ['stuck', 'Never moved'], ['approved', 'Approved'], ['rejected', 'Rejected']];
+  ['to_open', 'To open as a job card'], ['transport', 'Transport approval'], ['operations', 'Operations approval'],
+  ['reopen', 'Reopen requests'], ['stuck', 'Never moved'], ['approved', 'Approved'], ['rejected', 'Rejected']];
 const JOB_REQ_KIND = { jr: ['blue', 'Request'], card: ['', 'Card'], reopen: ['amber', 'Reopen'] };
 
 async function jobsRequests(body, sp) {
@@ -1687,7 +1687,7 @@ async function jobsRequests(body, sp) {
       <a class="btn sm" id="jrf-xls" href="#">⬇ Excel</a>
       <div class="spacer"></div>
       ${canDo('jobrequests.create') ? '<button class="sm" id="jrf-newjr">+ New job request</button>' : ''}
-      ${canDo('jobs.create') ? '<button class="sm" id="jrf-newjob">+ New job card</button>' : ''}
+      ${canDo('jobs.create') ? '<button class="sm" id="jrf-newjob" title="A job card is opened against a job request that has been certified and approved">🔧 Open job card from a request</button>' : ''}
     </div>
     <div class="pill-row" id="jrf-steps" style="margin:0 0 10px;flex-wrap:wrap;gap:6px"></div>
     <div id="jrf-bulk" class="toolbar" style="display:none;margin:0 0 8px"></div>
@@ -1719,6 +1719,7 @@ async function jobsRequests(body, sp) {
       if (r.can.reopen) b.push(`<button class="sm primary" data-act="reopen" data-i="${r.kind}:${r.id}">↩ Reopen</button><button class="sm" data-act="refuse" data-i="${r.kind}:${r.id}">Refuse</button>`);
       if (r.can.reject) b.push(`<button class="sm danger" data-act="reject" data-i="${r.kind}:${r.id}">Reject</button>`);
       if (r.can.review) b.push('<a class="btn sm" href="#/jobreview">🧹 Review…</a>');
+      if (r.can.open_card) b.push(`<button class="sm primary" data-act="open_card" data-i="${r.kind}:${r.id}">🔧 Open job card</button>`);
       if (r.step === 'approved' && r.job_id) b.push(`<a class="btn sm" href="#/jobs/${r.job_id}">Card ${esc(r.job_no || '')}</a>`);
       return b.join(' ');
     };
@@ -1769,7 +1770,7 @@ async function jobsRequests(body, sp) {
   qs('#jrf-q', body).oninput = (e) => { cur.q = e.target.value.trim(); clearTimeout(deb); deb = setTimeout(load, 250); };
   qs('#jrf-type', body).onchange = (e) => { cur.type = e.target.value; load(); };
   if (qs('#jrf-newjr', body)) qs('#jrf-newjr', body).onclick = newJobRequestModal;
-  if (qs('#jrf-newjob', body)) qs('#jrf-newjob', body).onclick = newJobModal;
+  if (qs('#jrf-newjob', body)) qs('#jrf-newjob', body).onclick = () => newJobModal(load);
   await load();
 }
 
@@ -2019,6 +2020,8 @@ async function jobsReady(body, sp) {
 // One decision on one row: each goes to the route that already makes it.
 function jobReqAction(act, r, done) {
   if (!r) return;
+  // The workshop's step: open the card against this approved request.
+  if (act === 'open_card') return openJobCardModal(r, done);
   if (r.kind === 'jr') return jobRequestSignModal({ ...r, jr_no: r.no }, act === 'certify' ? 'certify' : (act === 'approve' ? 'approve' : 'reject'), done);
   if (act === 'transport' || act === 'operations') {
     if (!confirm(`Approve ${r.no} (${act})?`)) return;
@@ -2072,7 +2075,7 @@ async function jobsAllCards(c, sp) {
       <button class="sm" id="jfilter-backlog" style="background:#fff3cd;color:#856404;border-color:#ffeeba;font-weight:600" title="Filter to backlog cards awaiting triage / approval">⚡ Backlog: Requested</button>
       <span class="muted" id="jcount"></span>
       <div class="spacer"></div>
-      ${canDo('jobs.create') ? '<button class="primary" id="newjob">+ New Job Card</button>' : ''}
+      ${canDo('jobs.create') ? '<button class="primary" id="newjob" title="A job card is opened against a job request that has been certified and approved">🔧 Open Job Card from a Request</button>' : ''}
       ${canDo('jobs.breakdown') ? '<button class="danger" id="newbd" title="A machine stopped at a site: open a field job card now">🚨 Report a breakdown</button>' : ''}
       ${canDo('jobs.triage') ? '<a class="btn sm" href="#/jobreview" title="REQUESTED cards that hold their vehicle but never moved">🧹 Review stuck cards</a>' : ''}
       ${canDo('jobs.settings') ? `<button class="sm" id="jpartial" title="Partial close, full close check and reopen requests">⚙ Partial close: ${partialOn ? 'on' : 'off'}</button>` : ''}
@@ -2247,7 +2250,7 @@ async function jobsAllCards(c, sp) {
       load();
     };
   }
-  if (qs('#newjob')) qs('#newjob').onclick = newJobModal;
+  if (qs('#newjob')) qs('#newjob').onclick = () => newJobModal();
   if (qs('#newbd')) qs('#newbd').onclick = breakdownModal;
   await load();
 }
@@ -3917,61 +3920,139 @@ async function opsHandovers(body) {
       <td>${esc(h.from_name || '—')}</td><td><b>${esc(h.to_name || '—')}</b></td><td class="desc-col">${esc(h.reason)}</td><td>${esc(h.moved_by || '')}</td></tr>`), { scroll: true })}`;
 }
 
-async function newJobModal() {
-  const projects = await api('/projects');
-  const popts = [{ value: '', label: '—' }, ...projects.map((p) => ({ value: p.id, label: p.name }))];
-  // Which workshop does the repair (Stage 2): your home workshop unless you choose another.
+// A job card is opened against a job request that has been raised, certified and approved — the
+// request is the authority for the work, and the card is not a form to fill in again. So this picks
+// one of the approved requests still waiting for a card and SHOWS what it says; the only things the
+// workshop decides are its own: which workshop does the repair, the site, a reference, a note of
+// its own, and whether the card goes straight into the bay.
+async function newJobModal(onDone) {
+  let waiting = [];
+  try { waiting = (await api('/job-flow/requests?step=to_open&limit=200')).rows || []; } catch (e) { /* shown below */ }
+  if (!waiting.length) {
+    return modal('Open a job card', `
+      <p>There is no approved job request waiting for a job card.</p>
+      <p class="muted">A job card is opened against a job request that has been through all three steps:
+        raised by the Transport Assistant Manager, certified by the Transport Manager, then approved by the
+        Operational Manager. Once a request is approved it appears here.</p>
+      <div style="margin-top:12px;text-align:right">
+        <a class="btn" href="#/jobs?tab=requests&step=open">See what is waiting for a decision</a></div>`, () => {});
+  }
   const wsd = wsMulti() ? await workshopsData() : null;
-  modal('New Job Card', `
-    <p class="muted">One open job card per vehicle — if this vehicle already has one, close it first or add the work to it.</p>
-    ${assetPickerHtml('Vehicle / machine *')}
-    <div id="njblock" style="margin:4px 0"></div>
-    <div class="row">${field('Type', 'type', { type: 'select', options: [{ value: 'repair', label: 'repair' }, { value: 'service', label: 'service' }] })}${field('Severity', 'severity', { type: 'select', options: [{ value: '', label: '—' }, { value: 'major', label: 'major' }, { value: 'minor', label: 'minor' }] })}</div>
-    ${field('Project', 'project_id', { type: 'select', options: popts })}
+  const label = (r) => `${r.no} · ${idLabel(r) || 'no vehicle'} · ${String(r.description || '').slice(0, 50)}`;
+  modal('Open a job card from an approved job request', `
+    <p class="muted" style="margin-top:0">One open job card per vehicle — if the request's vehicle already has one,
+      close it first or add the work to it.</p>
+    ${field('Approved job request *', 'job_request_id', { type: 'select',
+    options: [{ value: '', label: '— pick the request —' }].concat(waiting.map((r) => ({ value: r.id, label: label(r) }))) })}
+    <div id="njr-detail"></div>
     ${wsd ? field('Workshop (who repairs it)', 'workshop_id', { type: 'select', options: wsOptions(wsd), value: wsd.mine }) : ''}
-    ${field('Description *', 'description', { type: 'textarea' })}
-    <div style="margin-top:14px;text-align:right"><button class="primary" id="save">Raise Job Card</button></div>`, (body, close) => {
-    wireAssetPicker(body);
-    const blockEl = qs('#njblock', body), saveBtn = qs('#save', body);
-    const hidden = qs('input[name=asset_id]', body), input = qs('.apick-input', body);
+    ${field('Site (optional)', 'site')}
+    ${field('Your reference (optional)', 'ref')}
+    ${field('Workshop note (optional — added under the requested work)', 'note', { type: 'textarea' })}
+    <label style="display:flex;gap:8px;align-items:center;font-weight:400;margin-top:6px">
+      <input type="checkbox" id="njr-takein" style="width:auto"> Take it into the workshop now</label>
+    <div id="njblock" style="margin:6px 0"></div>
+    <div style="margin-top:14px;text-align:right"><button class="primary" id="save" disabled>Open Job Card</button></div>`, (body, close) => {
+    const sel = qs('select[name=job_request_id]', body);
+    const detail = qs('#njr-detail', body);
+    const blockEl = qs('#njblock', body);
+    const saveBtn = qs('#save', body);
+    const byId = new Map(waiting.map((r) => [String(r.id), r]));
 
-    // Check the moment a vehicle is picked, so the block shows before the form is filled.
-    const check = async () => {
+    // What the request says, shown rather than asked again.
+    const show = () => {
+      const r = byId.get(sel.value);
       blockEl.innerHTML = '';
+      if (!r) { detail.innerHTML = ''; saveBtn.disabled = true; return; }
       saveBtn.disabled = false;
-      if (!hidden.value) return;
-      let r;
-      try { r = await api('/jobs/open-for/' + encodeURIComponent(hidden.value)); } catch (e) { return; }
-      if (!r.blocked) return;
-      const b = r.blocking_job;
-      blockEl.innerHTML = `<div class="card" style="border-left:4px solid var(--red);padding:8px 10px;margin:0">
-        <b class="err">Already has an open job card</b><br>
-        <a href="#/jobs/${b.id}">${esc(b.job_no)}</a> ${statusBadge(b.status)}
-        <span class="muted">${esc(String(b.description || '').slice(0, 60))}</span></div>`;
-      saveBtn.disabled = true;
+      detail.innerHTML = `<div class="card" style="margin:6px 0;padding:8px 10px;background:var(--surface)">
+        <div><b>${esc(r.no)}</b> <span class="badge ${r.type === 'service' ? 'blue' : ''}">${esc(r.type || '')}</span>${r.severity ? ` <span class="badge">${esc(r.severity)}</span>` : ''}${r.priority === 'urgent' ? ' <span class="badge red">urgent</span>' : ''}</div>
+        <div style="margin-top:4px">Vehicle: <b>${esc(idLabel(r) || '—')}</b></div>
+        <div style="margin-top:4px;white-space:pre-wrap">${esc(r.description || '')}</div>
+        <div class="muted" style="font-size:12px;margin-top:4px">Asked by ${esc(r.requested_by || '—')} · approved ${esc(r.since || '')}${r.days != null ? ` · waiting ${r.days} day${r.days === 1 ? '' : 's'}` : ''}</div>
+        <div class="muted" style="font-size:12px">The vehicle, work, type and severity come from the request and are not changed here.</div>
+      </div>`;
+      // Say so before the form is filled in, not after it is sent.
+      if (r.asset_id) {
+        api('/jobs/open-for/' + r.asset_id).then((o) => {
+          if (!o.blocked || sel.value !== String(r.id)) return;
+          const b = o.blocking_job;
+          blockEl.innerHTML = `<div class="card" style="border-left:4px solid var(--red);padding:8px 10px;margin:0">
+            <b class="err">That vehicle already has an open job card</b><br>
+            <a href="#/jobs/${b.id}">${esc(b.job_no)}</a> ${statusBadge(b.status)}
+            <span class="muted">${esc(String(b.description || '').slice(0, 60))}</span></div>`;
+          saveBtn.disabled = true;
+        }).catch(() => {});
+      }
     };
-    body.addEventListener('mousedown', (e) => {
-      if (e.target.closest && e.target.closest('.apick-item')) setTimeout(check, 0);
-    }, true);
-    if (input) input.addEventListener('input', () => { blockEl.innerHTML = ''; saveBtn.disabled = false; });
+    sel.onchange = show;
 
     saveBtn.onclick = async () => {
+      const f = formData(body);
+      if (!f.job_request_id) return toast('Pick the approved job request this card is for', 'err');
       try {
-        const r = await api('/jobs', { method: 'POST', body: formData(body) });
+        const r = await api('/jobs', { method: 'POST', body: { ...f, take_in: qs('#njr-takein', body).checked } });
         close();
-        if (r.unresolved) toast('Job raised — asset "' + r.unresolved.raw + '" queued in Alias Queue for linking', 'err');
-        else toast('Job card ' + r.job.job_no + ' raised');
+        toast(`Job card ${r.job.job_no} opened against ${r.request ? r.request.jr_no : 'the request'}`);
+        if (typeof onDone === 'function') onDone();
         location.hash = '#/jobs/' + r.job.id;
       } catch (e) {
-        // Lost the race, or the vehicle was typed rather than picked.
         if (e.data && e.data.blocking_job) {
           const b = e.data.blocking_job;
           blockEl.innerHTML = `<div class="card" style="border-left:4px solid var(--red);padding:8px 10px;margin:0">
-            <b class="err">Already has an open job card</b><br>
+            <b class="err">That vehicle already has an open job card</b><br>
             <a href="#/jobs/${b.id}">${esc(b.job_no)}</a> ${statusBadge(b.status)}</div>`;
           saveBtn.disabled = true;
-          toast(e.message, 'err');
-        } else toast(e.message, 'err');
+        } else if (e.data && e.data.job) {
+          blockEl.innerHTML = `<div class="card" style="border-left:4px solid var(--red);padding:8px 10px;margin:0">
+            <b class="err">That request already has a job card</b><br>
+            <a href="#/jobs/${e.data.job.id}">${esc(e.data.job.job_no)}</a> ${statusBadge(e.data.job.status)}</div>`;
+          saveBtn.disabled = true;
+        }
+        toast(e.message, 'err');
+      }
+    };
+    show();
+  });
+}
+
+// Opening the card for ONE request already chosen — from its row in the list, or from the request's
+// own page. The picker (newJobModal) is the same thing with the choosing still to do.
+async function openJobCardModal(r, onDone) {
+  const wsd = wsMulti() ? await workshopsData() : null;
+  modal(`Open a job card for ${esc(r.no || r.jr_no || '')}`, `
+    <div class="card" style="margin:0 0 8px;padding:8px 10px;background:var(--surface)">
+      <div><b>${esc(r.no || r.jr_no || '')}</b> <span class="badge ${r.type === 'service' ? 'blue' : ''}">${esc(r.type || '')}</span>${r.severity ? ` <span class="badge">${esc(r.severity)}</span>` : ''}</div>
+      <div style="margin-top:4px">Vehicle: <b>${esc(idLabel(r) || '—')}</b></div>
+      <div style="margin-top:4px;white-space:pre-wrap">${esc(r.description || '')}</div>
+      <div class="muted" style="font-size:12px;margin-top:4px">The vehicle, work, type and severity come from the request and are not changed here.</div>
+    </div>
+    <p class="muted" style="font-size:12px;margin:0 0 6px">One open job card per vehicle — if this vehicle already has one, close it first or add the work to it.</p>
+    ${wsd ? field('Workshop (who repairs it)', 'workshop_id', { type: 'select', options: wsOptions(wsd), value: wsd.mine }) : ''}
+    ${field('Site (optional)', 'site')}
+    ${field('Your reference (optional)', 'ref')}
+    ${field('Workshop note (optional — added under the requested work)', 'note', { type: 'textarea' })}
+    <label style="display:flex;gap:8px;align-items:center;font-weight:400;margin-top:6px">
+      <input type="checkbox" id="ojc-takein" style="width:auto"> Take it into the workshop now</label>
+    <div id="ojc-block" style="margin:6px 0"></div>
+    <div style="margin-top:14px;text-align:right"><button class="primary" id="s">Open Job Card</button></div>`, (body, close) => {
+    qs('#s', body).onclick = async () => {
+      const f = formData(body);
+      try {
+        const made = await api('/jobs', { method: 'POST', body: { ...f, job_request_id: r.id, take_in: qs('#ojc-takein', body).checked } });
+        toast(`Job card ${made.job.job_no} opened`);
+        close();
+        if (typeof onDone === 'function') onDone();
+        location.hash = '#/jobs/' + made.job.id;
+      } catch (e) {
+        const b = e.data && (e.data.blocking_job || e.data.job);
+        if (b) {
+          qs('#ojc-block', body).innerHTML = `<div class="card" style="border-left:4px solid var(--red);padding:8px 10px;margin:0">
+            <b class="err">${e.data.blocking_job ? 'That vehicle already has an open job card' : 'This request already has a job card'}</b><br>
+            <a href="#/jobs/${b.id}">${esc(b.job_no)}</a> ${statusBadge(b.status)}</div>`;
+          qs('#s', body).disabled = true;
+        }
+        toast(e.message, 'err');
       }
     };
   });
@@ -4029,6 +4110,7 @@ async function jobDetail(c, id) {
       <a href="#/assets/${job.asset_id}">${esc(idLabel(job) || '—')}</a>
       <span class="muted">${esc(job.project_name || '')}</span>
       ${wsMulti() && job.workshop_name ? `<span class="badge" title="The workshop doing this repair">🏭 ${esc(job.workshop_name)}</span>` : ''}
+      ${job.jr_no ? `<a class="btn sm" href="#/jobrequests/${job.job_request_id}" title="The job request this card was opened against — its authority for the work">📋 ${esc(job.jr_no)}</a>` : ''}
       <div class="spacer"></div>
       ${!isClosed && !isPartial && canDo('stores.mrn.create') ? '<button class="sm" id="jobreqmrn" title="Create a Material Request Note (MRN) for this job">+ Request Parts (MRN)</button>' : ''}
       ${!isClosed && !isPartial && canDo('stores.stock_issue') ? '<button class="sm primary" id="jobissue" title="Issue stock from store to this job card">⚡ Issue to Job</button>' : ''}
@@ -9141,15 +9223,19 @@ async function openEngineerApprovalModal(req, reload) {
   }, { wide: true });
 }
 
-// ---- Job Requests (Transport) — Assistant Transport raises → Transport Manager
-// certifies → Operational Manager approves (auto-creates a job card).
+// ---- Job Requests (Transport) — Assistant Transport raises → Transport Manager certifies →
+// Operational Manager approves. The approval clears the request; the WORKSHOP then opens the job
+// card against it (openJobCardModal), which is also what links the two.
 const JR_STATUS = {
   requested: '<span class="badge amber">Awaiting certification</span>',
   certified: '<span class="badge blue">Certified · awaiting approval</span>',
   approved: '<span class="badge green">✓ Approved</span>',
   rejected: '<span class="badge red">✕ Rejected</span>',
 };
-const jrBadge = (s) => JR_STATUS[s] || mrnStatusBadge(s);
+// Approved splits in two: the card is either still to be opened by the workshop, or already open.
+const jrBadge = (s, hasCard) => (s === 'approved' && hasCard === false
+  ? '<span class="badge amber">✓ Approved · workshop to open the job card</span>'
+  : (JR_STATUS[s] || mrnStatusBadge(s)));
 
 routes.jobrequests = async (c, params) => {
   if (params[0]) return jobRequestDetail(c, params[0]);
@@ -9165,12 +9251,17 @@ async function jobRequestDetail(c, id) {
   const canCertify = canDo('jobrequests.certify') && st === 'requested';
   const canApprove = canDo('jobrequests.approve') && st === 'certified';
   const canReject = canDo('jobrequests.reject') && st !== 'approved' && st !== 'rejected';
+  // Approved and no card yet: the workshop's step.
+  const awaitingCard = st === 'approved' && !r.job_id;
+  const canOpenCard = awaitingCard && canDo('jobs.create');
+  const badge = jrBadge(st, st === 'approved' ? !!r.job_id : undefined);
   c.innerHTML = `
     <div class="toolbar"><a class="btn sm" href="#/jobrequests">← Job Requests</a><div class="spacer"></div><a class="btn sm" href="/api/job-requests/${r.id}/print.html" target="_blank">🖨 Print Job Request</a></div>
     <div class="card">
-      <div class="toolbar" style="margin:0"><h3 style="margin:0">Approval flow</h3><div class="spacer"></div>${jrBadge(st)}
+      <div class="toolbar" style="margin:0"><h3 style="margin:0">Approval flow</h3><div class="spacer"></div>${badge}
         ${canCertify ? '<button class="sm primary" id="jrcertify">✍ Certify</button>' : ''}
         ${canApprove ? '<button class="sm primary" id="jrapprove">✅ Approve</button>' : ''}
+        ${canOpenCard ? '<button class="sm primary" id="jropen">🔧 Open job card</button>' : ''}
         ${canReject ? '<button class="sm danger" id="jrreject">Reject</button>' : ''}
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-top:8px;font-size:13px">
@@ -9181,14 +9272,18 @@ async function jobRequestDetail(c, id) {
       ${(d.approvals && d.approvals.length) ? `<div style="margin-top:10px;border-top:1px solid var(--border);padding-top:6px">${d.approvals.map((a) => `<div class="cost-line"><span>${a.decision === 'rejected' ? '✕' : '✓'} ${esc(a.stage)} — <b>${esc(a.signed_name || '')}</b> <span class="muted">(${esc(a.role || '')})</span>${a.reason ? ' · ' + esc(a.reason) : ''}</span><span class="muted">${esc((a.created_at || '').slice(0, 16).replace('T', ' '))}</span></div>`).join('')}</div>` : ''}
     </div>
     <div class="card">
-      <h3>Job Request ${esc(r.jr_no)} ${jrBadge(st)}</h3>
+      <h3>Job Request ${esc(r.jr_no)} ${badge}</h3>
       <p class="muted">Date ${esc((r.req_date || '').slice(0, 10))} · Vehicle ${esc(idLabel(r) || '—')} · ${esc((r.type || '').toUpperCase())}${r.severity ? ' / ' + esc(r.severity) : ''} · Priority ${esc(r.priority || 'normal')}${r.project_name ? ' · ' + esc(r.project_name) : ''}${r.required_date ? ' · required ' + esc((r.required_date || '').slice(0, 10)) : ''}</p>
       <div style="white-space:pre-wrap;border:1px solid var(--border);border-radius:6px;padding:10px;background:var(--surface)">${esc(r.description || '')}</div>
-      ${r.job_no ? `<p style="margin-top:10px">✅ Approved — job card created: <a href="#/jobs/${r.job_id}"><b>${esc(r.job_no)}</b></a>${r.job_status ? ' <span class="badge">' + esc(r.job_status) + '</span>' : ''}</p>` : ''}
+      ${r.job_no ? `<p style="margin-top:10px">✅ Approved — job card opened: <a href="#/jobs/${r.job_id}"><b>${esc(r.job_no)}</b></a>${r.job_status ? ' <span class="badge">' + esc(r.job_status) + '</span>' : ''}</p>` : ''}
+      ${awaitingCard ? `<p style="margin-top:10px">✅ Approved — waiting for the workshop to open the job card.${canOpenCard ? '' : '<br><span class="muted" style="font-size:12px">The workshop opens it; this request is its authority for the work.</span>'}</p>` : ''}
     </div>`;
   if (qs('#jrcertify')) qs('#jrcertify').onclick = () => jobRequestSignModal(r, 'certify', () => jobRequestDetail(c, id));
   if (qs('#jrapprove')) qs('#jrapprove').onclick = () => jobRequestSignModal(r, 'approve', () => jobRequestDetail(c, id));
   if (qs('#jrreject')) qs('#jrreject').onclick = () => jobRequestSignModal(r, 'reject', () => jobRequestDetail(c, id));
+  if (qs('#jropen')) {
+    qs('#jropen').onclick = () => openJobCardModal({ ...r, no: r.jr_no, asset_id: r.asset_id }, () => jobRequestDetail(c, id));
+  }
 }
 
 // E-signature modal for Job Request certify / approve / reject.
@@ -9202,7 +9297,7 @@ function jobRequestSignModal(jr, action, onDone) {
   const withSig = action !== 'reject';
   modal(meta.title + ' — ' + esc(jr.jr_no), `
     <p class="muted">Signing as <b>${who}</b> <span class="badge blue">${esc(ME.roles.join(', '))}</span></p>
-    ${action === 'approve' ? '<p class="muted">Approving will create the job card and route it to the workshop.</p>' : ''}
+    ${action === 'approve' ? '<p class="muted">Approving clears this request — the workshop then opens the job card against it.</p>' : ''}
     ${action === 'reject'
       ? field('Reason (required)', 'reason')
       : `<label style="display:flex;gap:8px;align-items:flex-start;font-weight:400"><input type="checkbox" id="confirm" style="width:auto;margin-top:3px"> I, ${who}, ${meta.verb} this job request. This records my e-signature and time.</label>
@@ -9219,7 +9314,11 @@ function jobRequestSignModal(jr, action, onDone) {
       const past = { certify: 'certified', approve: 'approved', reject: 'rejected' }[action];
       try {
         const r = await api('/job-requests/' + jr.id + '/' + action, { method: 'POST', body: { reason: f.reason, signature } });
-        toast('Job request ' + past + (action === 'approve' && r.job ? ' · job card ' + r.job.job_no + ' created' : (action !== 'reject' ? ' · e-signed' : '')));
+        if (action === 'approve') {
+          toast('Job request ' + past + ' · the workshop can now open the job card');
+          // The one-open-card rule bites when the card is opened, so say it now rather than then.
+          if (r.open_job) toast(`Note: ${r.open_job.job_no} is still open for this vehicle`, 'err');
+        } else toast('Job request ' + past + (action !== 'reject' ? ' · e-signed' : ''));
         close(); onDone();
       } catch (e) { toast(e.message, 'err'); }
     };

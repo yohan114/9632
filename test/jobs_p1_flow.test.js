@@ -3,11 +3,14 @@
 // Job cards plan, Part 1 — the Job Cards Monitor and one list of everything waiting for a decision
 // (src/lib/jobs_flow.js, src/routes/jobflow.js).
 //
-//   A job starts as a job request (certified, then approved: that makes the card) or as a card raised
-//   directly (transport approval, then operations). The Requests list shows both, with the reopen
-//   requests and the requested cards that never moved. Each row says what it waits for, since when,
-//   and which buttons the person may press — the same rules the routes behind the buttons enforce.
-//   Imported history is no to-do (JC-D10); each person sees their own workshop (JC-D2).
+//   A job starts as a job request: certified, approved, and then the WORKSHOP opens the card
+//   against it (the approval used to make the card itself and no longer does, so "approved, no card
+//   yet" is a step of its own — to_open, the workshop's inbox). Cards raised directly are the legacy
+//   road: no new ones are made, and the two steps stay for the cards already in the database. The
+//   Requests list shows all of it, with the reopen requests and the requested cards that never
+//   moved. Each row says what it waits for, since when, and which buttons the person may press —
+//   the same rules the routes behind the buttons enforce. Imported history is no to-do (JC-D10);
+//   each person sees their own workshop (JC-D2).
 
 const os = require('os');
 const path = require('path');
@@ -60,7 +63,7 @@ const TODAY = day(0);
 
 let seq = 0;
 const asset = (code) => run('INSERT INTO assets (code, code_norm, status, in_register) VALUES (?, ?, ?, 1)', code, code.replace(/\W/g, ''), 'active').lastInsertRowid;
-const V = { a: asset('EX-101'), b: asset('EX-102'), c: asset('EX-103'), d: asset('EX-104'), e: asset('EX-105'), f: asset('EX-106'), g: asset('EX-107'), h: asset('EX-108') };
+const V = { a: asset('EX-101'), b: asset('EX-102'), c: asset('EX-103'), d: asset('EX-104'), e: asset('EX-105'), f: asset('EX-106'), g: asset('EX-107'), h: asset('EX-108'), i: asset('EX-109') };
 function jobRequest(assetId, desc, { status = 'requested', date = TODAY, ws = CW, type = 'repair', priority = 'normal' } = {}) {
   return run(`INSERT INTO job_requests (jr_no, req_date, asset_id, type, priority, description, approval_status, requested_by, requested_by_user, workshop_id)
               VALUES (?, ?, ?, ?, ?, ?, ?, 'Nimal ATM', ?, ?)`, `JR-${String(++seq).padStart(4, '0')}`, date, assetId, type, priority, desc, status, U.asst, ws).lastInsertRowid;
@@ -100,6 +103,12 @@ const CDONE = card(V.e, 'Work done card', { status: 'WORK_COMPLETE', date: day(-
 run("INSERT INTO job_daily_work (job_id, work_date, mechanic, hours) VALUES (?, ?, 'Sunil', 3)", CDONE, day(-3));
 card(V.c, 'Imported in progress', { status: 'IN_PROGRESS', date: day(-30), historical: 1 });
 card(null, 'General workshop holder', { status: 'IN_PROGRESS', date: day(-30), legacy: 'general-workshop' });
+// All three signatures given, and no card: the workshop's own step. Added last so the JR numbers
+// the tests above name do not shift; its number is read back rather than guessed.
+const JR5 = jobRequest(V.i, 'Radiator recore', { status: 'approved', date: day(-8) });
+run("UPDATE job_requests SET certified_by = 'Tharindu TM', certified_at = ?, approved_by = 'Oshadi OM', approved_at = ? WHERE id = ?",
+  day(-7) + ' 09:00:00', day(-7) + ' 15:00:00', JR5);
+const JR5NO = get('SELECT jr_no FROM job_requests WHERE id = ?', JR5).jr_no;
 
 // ---- the server -----------------------------------------------------------------------------------
 const app = require('../src/server');
@@ -163,6 +172,7 @@ test('everything waiting for a decision, the longest waiting first; nothing impo
   const d = await list('boss');
   const no = (id) => get('SELECT job_no FROM job_cards WHERE id = ?', id).job_no;
   assert.deepStrictEqual(d.rows.map((r) => [r.kind, r.no, r.step]), [
+    ['jr', JR5NO, 'to_open'],             // approved on day -7: waiting on the workshop the longest
     ['card', no(C2), 'operations'],       // waiting since day -4 (transport approval)
     ['jr', 'JR-0002', 'to_approve'],      // since day -4 (certified)
     ['jr', 'JR-0001', 'to_certify'],      // day -3
@@ -173,10 +183,15 @@ test('everything waiting for a decision, the longest waiting first; nothing impo
   ]);
   const steps = d.rows.map((r) => r.step);
   assert.ok(!d.rows.some((r) => [CIMP, CIMPOLD, CBOX, CSTUCK, CREJ].includes(r.id) && r.kind === 'card'), 'no imported, holder, stuck or rejected card');
-  assert.deepStrictEqual([...new Set(steps)].sort(), ['operations', 'reopen', 'to_approve', 'to_certify', 'transport']);
+  assert.deepStrictEqual([...new Set(steps)].sort(), ['operations', 'reopen', 'to_approve', 'to_certify', 'to_open', 'transport']);
   const since = d.rows.map((r) => r.since);
   assert.deepStrictEqual(since, [...since].sort(), 'oldest first');
-  assert.deepStrictEqual(d.counts, { open: 7, to_certify: 2, to_approve: 1, transport: 2, operations: 1, reopen: 1, stuck: 2, approved: 0, rejected: 2 });
+  assert.deepStrictEqual(d.counts, { open: 8, to_certify: 2, to_approve: 1, to_open: 1, transport: 2, operations: 1, reopen: 1, stuck: 2, approved: 0, rejected: 2 });
+  // Approved and waiting on the workshop: it has PASSED the approval milestone, which is what tells
+  // it apart on the road from a request still waiting for one.
+  const j5 = find(d.rows, 'jr', JR5);
+  assert.deepStrictEqual([j5.waiting_for, j5.days, j5.job_id], ['Workshop to open the job card', 7, null]);
+  assert.deepStrictEqual(j5.road.map((m) => m.state).slice(0, 3), ['done', 'done', 'now']);
   const j1 = find(d.rows, 'jr', JR1);
   assert.deepStrictEqual([j1.waiting_for, j1.days, j1.priority, j1.link, j1.asset_code], ['Transport Manager to certify', 3, 'urgent', '#/jobrequests/' + JR1, 'EX-101']);
   assert.deepStrictEqual(j1.road.map((m) => m.state).slice(0, 2), ['done', 'now']);
@@ -188,6 +203,8 @@ test('everything waiting for a decision, the longest waiting first; nothing impo
 test('each step alone; the stuck ones are the review screen\'s, imported ones too', async () => {
   assert.deepStrictEqual(nos((await list('boss', '?step=to_certify')).rows), ['JR-0001', 'JR-0004']);
   assert.deepStrictEqual(nos((await list('boss', '?step=to_approve')).rows), ['JR-0002']);
+  assert.deepStrictEqual(nos((await list('boss', '?step=to_open')).rows), [JR5NO]);
+  assert.deepStrictEqual(nos((await list('boss', '?step=approved')).rows), [], 'approved means approved AND opened');
   assert.deepStrictEqual((await list('boss', '?step=transport')).rows.map((r) => r.id).sort(), [C1, CM].sort());
   assert.deepStrictEqual((await list('boss', '?step=operations')).rows.map((r) => r.id), [C2]);
   const stuck = (await list('boss', '?step=stuck')).rows;
@@ -196,7 +213,7 @@ test('each step alone; the stuck ones are the review screen\'s, imported ones to
   const rej = (await list('boss', '?step=rejected')).rows;
   assert.deepStrictEqual(rej.map((r) => [r.kind, r.reject_reason]), [['jr', 'On the service plan already'], ['card', 'Not our machine']], 'newest decision first');
   assert.deepStrictEqual(rej.map((r) => r.days), [null, null]);
-  assert.deepStrictEqual((await list('boss', '?step=nonsense')).rows.length, 7, 'an unknown step is the to-do list');
+  assert.deepStrictEqual((await list('boss', '?step=nonsense')).rows.length, 8, 'an unknown step is the to-do list');
 });
 
 test('search and the kind of work narrow the list', async () => {
@@ -210,16 +227,23 @@ test('search and the kind of work narrow the list', async () => {
 // ================================================================== who may press what
 test('the buttons follow the permissions, and nobody approves their own step twice', async () => {
   const tm = (await list('tm')).rows;
-  assert.deepStrictEqual(find(tm, 'jr', JR1).can, { certify: true, approve: false, reject: true });
+  assert.deepStrictEqual(find(tm, 'jr', JR1).can, { certify: true, approve: false, reject: true, open_card: false });
   assert.deepStrictEqual(find(tm, 'card', C1).can, { transport: true, operations: false, reject: true, review: false });
   assert.strictEqual(find(tm, 'card', C2).can.operations, false, 'the Transport Manager does not give the operations approval');
   const asst = (await list('asst')).rows;
-  assert.deepStrictEqual(find(asst, 'jr', JR1).can, { certify: false, approve: false, reject: false }, 'who raises does not decide');
-  assert.deepStrictEqual(find(asst, 'jr', JR2).can, { certify: false, approve: false, reject: false });
+  assert.deepStrictEqual(find(asst, 'jr', JR1).can, { certify: false, approve: false, reject: false, open_card: false }, 'who raises does not decide');
+  assert.deepStrictEqual(find(asst, 'jr', JR2).can, { certify: false, approve: false, reject: false, open_card: false });
   assert.deepStrictEqual(find(asst, 'card', C2).can, { transport: false, operations: false, reject: false, review: false });
   assert.strictEqual(find(tm, 'reopen', REOPEN).can.reopen, false, 'the Transport Manager does not reopen'); 
   const om = (await list('om')).rows;
-  assert.deepStrictEqual(find(om, 'jr', JR2).can, { certify: false, approve: true, reject: true });
+  assert.deepStrictEqual(find(om, 'jr', JR2).can, { certify: false, approve: true, reject: true, open_card: false });
+  // Opening the card is the workshop's, and only once the request is approved.
+  assert.strictEqual(find(om, 'jr', JR5).can.open_card, false, 'the Operational Manager approves; it does not open the card');
+  const wsRows = (await list('ws')).rows;
+  assert.strictEqual(find(wsRows, 'jr', JR5).can.open_card, true, 'the workshop opens it');
+  assert.deepStrictEqual(find(wsRows, 'jr', JR5).can, { certify: false, approve: false, reject: false, open_card: true },
+    'and that is the only button it has on a job request');
+  assert.strictEqual(find(tm, 'jr', JR5).can.open_card, false, 'the Transport Manager no longer opens cards');
   assert.deepStrictEqual(find(om, 'card', C2).can, { transport: false, operations: true, reject: true, review: false });
   assert.strictEqual(find(om, 'card', C1).can.transport, false);
   assert.strictEqual(find(om, 'reopen', REOPEN).can.reopen, true);
@@ -266,8 +290,11 @@ test('the buttons follow the permissions, and nobody approves their own step twi
 
 test('a job request needs Job Requests; a card needs Job Cards; neither, no list', async () => {
   const ws = await list('ws');
-  assert.ok(ws.rows.every((r) => r.kind !== 'jr'), 'the workshop sees no job requests (as the page was)');
-  assert.deepStrictEqual([ws.counts.to_certify, ws.counts.to_approve], [0, 0]);
+  // The workshop READS job requests now — it cannot open a card without one — where it used to see
+  // none at all. Reading is all it gets: no certify, no approve, no reject (see the buttons test).
+  assert.ok(ws.rows.some((r) => r.kind === 'jr'), 'the workshop sees job requests: it opens cards from them');
+  assert.deepStrictEqual([ws.counts.to_certify, ws.counts.to_approve, ws.counts.to_open], [2, 1, 1],
+    'it sees what is coming, and what is waiting on it');
   const jr = await list('jr');
   assert.ok(jr.rows.length && jr.rows.every((r) => r.kind === 'jr'), 'requests only, no cards');
   assert.strictEqual((await call('none', 'GET', '/job-flow/requests')).status, 403);
@@ -280,7 +307,7 @@ test('a job request needs Job Requests; a card needs Job Cards; neither, no list
 // ================================================================== the Monitor
 test('the Monitor counts each step; imported cards and holders are left out', async () => {
   const m = ok(await call('boss', 'GET', '/job-flow/monitor'));
-  assert.deepStrictEqual(m.requests, { to_certify: 2, to_approve: 1, transport: 2, operations: 1, reopen: 1, open: 7 });
+  assert.deepStrictEqual(m.requests, { to_certify: 2, to_approve: 1, to_open: 1, transport: 2, operations: 1, reopen: 1, open: 8 });
   assert.deepStrictEqual(m.workshop, { all: 3, not_started: 2, worked_today: 1, idle_1_2: 0, idle_3: 0, waiting_parts: 0, no_reason: 0, idle_mechanics: null },
     'the Ongoing counts (Part 2): two approved, not started; one worked on today');
   assert.deepStrictEqual(m.finishing, { work_done: 1, partly_closed: 0, ready: 1 },
@@ -299,7 +326,7 @@ test('with the workshops kept apart, each sees its own', async () => {
     assert.ok(cw.rows.every((r) => r.workshop_id === CW), 'Central only');
     assert.ok(!cw.rows.some((r) => r.id === CM && r.kind === 'card'));
     const mt = await list('wsM');
-    assert.deepStrictEqual(mt.rows.map((r) => [r.kind, r.id]), [['card', CM]], 'Muthur only');
+    assert.deepStrictEqual(mt.rows.map((r) => [r.kind, r.id]), [['card', CM], ['jr', JRM]], 'Muthur only');
     const m = ok(await call('wsM', 'GET', '/job-flow/monitor'));
     assert.deepStrictEqual([m.scope.label, m.requests.transport, m.workshop.all], ['Muthur Workshop', 1, 0]);
     // Head office sees both.
@@ -320,13 +347,26 @@ test('the Excel of the list, and the job list taking several statuses', async ()
 });
 
 test('approving from the list goes through the same routes: the row moves on', async () => {
+  // Approving hands the request to the workshop; it does not make the card, so the row lands at
+  // to_open and stays in the to-do list until the workshop opens it.
   const r = await call('om', 'POST', `/job-requests/${JR2}/approve`, {});
   assert.strictEqual(r.status, 200, r.text);
+  assert.strictEqual(r.body.job, undefined, 'the approval makes no card');
+  const waiting = (await list('om', '?step=to_open')).rows;
+  assert.deepStrictEqual(waiting.map((x) => [x.no, x.job_no, x.step]).sort(),
+    [[JR5NO, null, 'to_open'], ['JR-0002', null, 'to_open']].sort());
+
+  // The workshop opens it, and only then does the row move to 'approved' with its card.
+  const made = await call('ws', 'POST', '/jobs', { job_request_id: JR2 });
+  assert.strictEqual(made.status, 201, made.text);
   const approved = (await list('om', '?step=approved')).rows;
-  assert.deepStrictEqual(approved.map((x) => [x.no, x.job_no, x.step]), [['JR-0002', r.body.job.job_no, 'approved']]);
+  assert.deepStrictEqual(approved.map((x) => [x.no, x.job_no, x.step]), [['JR-0002', made.body.job.job_no, 'approved']]);
   assert.strictEqual(approved[0].road[2].state, 'now', 'its card: into the workshop next');
+  assert.strictEqual(made.body.job.status, 'APPROVED_OPERATIONS', 'past both gates, as the request was');
+
   ok(await call('om', 'POST', `/jobs/${C2}/transition`, { to: 'APPROVED_OPERATIONS' }));
   const open = await list('om');
   assert.ok(!open.rows.some((x) => (x.kind === 'jr' && x.id === JR2) || (x.kind === 'card' && x.id === C2)));
-  assert.deepStrictEqual([open.counts.open, open.counts.approved], [5, 1]);
+  // Five as before, plus JR5 still waiting on the workshop.
+  assert.deepStrictEqual([open.counts.open, open.counts.approved, open.counts.to_open], [6, 1, 1]);
 });

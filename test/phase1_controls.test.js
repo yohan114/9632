@@ -160,12 +160,15 @@ mkUser('ops2', ['operational_manager']);
 mkUser('atm', ['assistant_transport_manager']);
 mkUser('boss', ['admin']);
 
+// A card's OWN two approvals are the legacy road: a card is opened from an approved job request
+// now, already past both gates, so no new card starts at REQUESTED. The road stays for the cards
+// already in the database — and so must this rule, which is why the card here is written straight
+// into the table: the route that used to make one at REQUESTED no longer does.
 test('R-06: a job card\'s operations approval cannot come from whoever gave the transport approval', async () => {
   const both = await loginAs('both');
-  aliases.findOrCreateAsset('TEST-02', {});
-  const job = await makeRequest('/api/jobs', { method: 'POST', body: { asset: 'TEST-02', type: 'repair', description: 'gearbox noise' } }, both);
-  assert.strictEqual(job.status, 201, JSON.stringify(job.body));
-  const id = job.body.job.id;
+  const asset = aliases.findOrCreateAsset('TEST-02', {});
+  const id = run(`INSERT INTO job_cards (job_no, asset_id, type, description, status)
+                  VALUES ('2026/1/R/901', ?, 'repair', 'gearbox noise', 'REQUESTED')`, asset.id).lastInsertRowid;
   const t = await makeRequest(`/api/jobs/${id}/transition`, { method: 'POST', body: { to: 'APPROVED_TRANSPORT' } }, both);
   assert.strictEqual(t.status, 200, JSON.stringify(t.body));
 
@@ -193,9 +196,9 @@ test('R-06: a job request cannot be approved by whoever certified it', async () 
 
 test('R-06: the admin is exempt (a one-person emergency is still possible)', async () => {
   const boss = await loginAs('boss');
-  aliases.findOrCreateAsset('TEST-04', {});
-  const job = await makeRequest('/api/jobs', { method: 'POST', body: { asset: 'TEST-04', type: 'repair', description: 'no start' } }, boss);
-  const id = job.body.job.id;
+  const asset = aliases.findOrCreateAsset('TEST-04', {});
+  const id = run(`INSERT INTO job_cards (job_no, asset_id, type, description, status)
+                  VALUES ('2026/1/R/902', ?, 'repair', 'no start', 'REQUESTED')`, asset.id).lastInsertRowid;
   assert.strictEqual((await makeRequest(`/api/jobs/${id}/transition`, { method: 'POST', body: { to: 'APPROVED_TRANSPORT' } }, boss)).status, 200);
   assert.strictEqual((await makeRequest(`/api/jobs/${id}/transition`, { method: 'POST', body: { to: 'APPROVED_OPERATIONS' } }, boss)).status, 200);
 });

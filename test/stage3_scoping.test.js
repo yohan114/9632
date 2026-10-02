@@ -150,7 +150,13 @@ test('job cards: your own workshop only; another\'s is refused by name; head off
 });
 
 test('one open card per vehicle holds across every workshop, and says where', async () => {
-  const r = await req('POST', '/api/jobs', { cookie: await as('wsM'), body: { asset_id: V.c, description: 'x' } });
+  // A request for a Central vehicle, raised and approved at Muthur — the rule bites when Muthur
+  // tries to OPEN the card, and names the workshop holding the vehicle even though it cannot be
+  // reached from here.
+  const { approvedRequest } = require('./helpers/open_job');
+  const jr = await approvedRequest(async (path_, body) => req('POST', path_, { cookie: await as('boss'), body }),
+    { asset_id: V.c, description: 'x', workshop_id: MTR });
+  const r = await req('POST', '/api/jobs', { cookie: await as('wsM'), body: { job_request_id: jr.id } });
   assert.strictEqual(r.status, 409);
   assert.match(r.body.error, /at Central Workshop — Badalgama\)/);
 });
@@ -189,13 +195,22 @@ test('job requests: raised for your own workshop, seen and signed by your own; t
   assert.strictEqual(scope.jobRefusal(skUser, J.m), null, '…but does reach its job cards, while there is one store');
   const ok = await req('POST', `/api/job-requests/${jr}/approve`, { cookie: await as('om'), body: {} });
   assert.strictEqual(ok.status, 200, ok.text);
-  assert.strictEqual(get('SELECT workshop_id w FROM job_cards WHERE id = ?', ok.body.job.id).w, MTR);
-  // Raised for another workshop on purpose: the card goes where the request says, not the raiser's.
+  assert.strictEqual(ok.body.job, undefined, 'the approval clears the request; the workshop opens the card');
+  // Muthur's own workshop opens it, and the card is Muthur's.
+  const made = await req('POST', '/api/jobs', { cookie: await as('wsM'), body: { job_request_id: jr } });
+  assert.strictEqual(made.status, 201, made.text);
+  assert.strictEqual(get('SELECT workshop_id w FROM job_cards WHERE id = ?', made.body.job.id).w, MTR);
+  // A request raised for another workshop is out of reach of the workshop it was NOT raised for —
+  // which is the same test the certify and print routes make.
   const forC = await req('POST', '/api/job-requests', { cookie: atM, body: { asset_id: asset('JR-3'), description: 'x', workshop_id: CW } });
   assert.strictEqual(forC.body.request.workshop_id, CW);
-  run("UPDATE job_requests SET approval_status = 'certified' WHERE id = ?", forC.body.request.id);
+  run("UPDATE job_requests SET approval_status = 'approved', approved_at = datetime('now') WHERE id = ?", forC.body.request.id);
   run("INSERT INTO job_request_approvals (job_request_id, stage, role, approver_id, decision) VALUES (?, 'certify', 'transport_manager', ?, 'approved')", forC.body.request.id, U.tmC);
-  const okC = await req('POST', `/api/job-requests/${forC.body.request.id}/approve`, { cookie: await as('om'), body: {} });
+  assert.strictEqual((await req('POST', '/api/jobs', { cookie: await as('wsM'), body: { job_request_id: forC.body.request.id } })).status, 403,
+    "Muthur cannot open a card against Central's request");
+  // Raised for another workshop on purpose: the card goes where the request says.
+  const okC = await req('POST', '/api/jobs', { cookie: await as('wsC'), body: { job_request_id: forC.body.request.id } });
+  assert.strictEqual(okC.status, 201, okC.text);
   assert.strictEqual(get('SELECT workshop_id w FROM job_cards WHERE id = ?', okC.body.job.id).w, CW);
 });
 
