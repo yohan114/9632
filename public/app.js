@@ -9174,7 +9174,7 @@ async function jobRequestDetail(c, id) {
         ${canReject ? '<button class="sm danger" id="jrreject">Reject</button>' : ''}
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-top:8px;font-size:13px">
-        <div><b>1 · Requested</b>${r.requested_sig ? `<div style="height:30px"><img src="${r.requested_sig}" style="max-height:30px;max-width:130px"></div>` : ''}<br>${sig(r.requested_by, r.req_date)}<br><span class="muted">Assistant Transport Manager</span></div>
+        <div><b>1 · Requested</b>${r.requested_sig ? `<div style="height:30px"><img src="${r.requested_sig}" style="max-height:30px;max-width:130px"></div>` : ''}<br>${sig(r.requested_by, r.req_date)}<br><span class="muted">Transport Assistant Manager</span></div>
         <div><b>2 · Certified</b>${r.certified_sig ? `<div style="height:30px"><img src="${r.certified_sig}" style="max-height:30px;max-width:130px"></div>` : ''}<br>${sig(r.certified_by, r.certified_at)}<br><span class="muted">Transport Manager</span></div>
         <div><b>3 · Approved</b>${r.approved_sig ? `<div style="height:30px"><img src="${r.approved_sig}" style="max-height:30px;max-width:130px"></div>` : ''}<br>${sig(r.approved_by, r.approved_at)}<br><span class="muted">Operational Manager</span></div>
       </div>

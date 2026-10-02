@@ -4,7 +4,7 @@
 // The job_requests / job_request_approvals tables are created in db/index.js
 // migrate() (idempotent). This step seeds the NEW role + demo user into an
 // already-populated database so the request → certify → approve flow can run:
-//   Assistant Transport Manager (asst/asst) raises → Transport Manager certifies
+//   Transport Assistant Manager (asst/asst) raises → Transport Manager certifies
 //   → Operational Manager approves (auto-creates a job card).
 // Idempotent: INSERT OR IGNORE on the role, create the user only if missing.
 
@@ -14,7 +14,7 @@ const auth = require('../lib/auth');
 function runStep() {
   const rep = { role_added: 0, user_created: 0, role_linked: 0, already: false };
 
-  run('INSERT OR IGNORE INTO roles (name, label) VALUES (?, ?)', 'assistant_transport_manager', 'Assistant Transport Manager');
+  run('INSERT OR IGNORE INTO roles (name, label) VALUES (?, ?)', 'assistant_transport_manager', 'Transport Assistant Manager');
   const role = get('SELECT id FROM roles WHERE name = ?', 'assistant_transport_manager');
   if (!role) return rep; // should never happen
   rep.role_added = 1;
@@ -22,7 +22,7 @@ function runStep() {
   let user = get('SELECT id FROM users WHERE username = ?', 'asst');
   if (!user) {
     const info = run('INSERT INTO users (username, password_hash, full_name, active) VALUES (?, ?, ?, 1)',
-      'asst', auth.hashPassword('asst'), 'Assistant Transport Manager');
+      'asst', auth.hashPassword('asst'), 'Transport Assistant Manager');
     user = { id: info.lastInsertRowid };
     rep.user_created = 1;
   } else {

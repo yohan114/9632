@@ -1,7 +1,7 @@
 'use strict';
 
 // Job Request (Transport) — a formal 3-stage e-signed request that a job be done
-// on a vehicle/machine. Assistant Transport Manager raises it → Transport Manager
+// on a vehicle/machine. Transport Assistant Manager raises it → Transport Manager
 // certifies → Operational Manager approves. On final approval a Job Card is created
 // (already past both approval gates) and linked back to the request.
 
@@ -96,7 +96,7 @@ router.get('/:id', asyncHandler((req, res) => {
   });
 }));
 
-// ---- create (Assistant Transport Manager) ---------------------------------
+// ---- create (Transport Assistant Manager) ---------------------------------
 router.post('/', requireCap('jobrequests.create'), asyncHandler((req, res) => {
   const b = req.body;
   require_(b, ['description']);
@@ -287,7 +287,7 @@ router.get('/:id/print.html', asyncHandler((req, res) => {
   </div>
   <div class="desc"><span class="k">Work requested</span>${esc(jr.description || '')}</div>
   <div class="sign">
-    ${sigBlock('Requested By', jr.requested_by, jr.req_date, 'Assistant Transport Manager', jr.requested_sig, false)}
+    ${sigBlock('Requested By', jr.requested_by, jr.req_date, 'Transport Assistant Manager', jr.requested_sig, false)}
     ${sigBlock('Certified By', jr.certified_by, jr.certified_at, 'Transport Manager', jr.certified_sig, false)}
     ${sigBlock('Approved By', jr.approved_by, jr.approved_at, 'Operational Manager', jr.approved_sig, true)}
   </div>

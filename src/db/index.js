@@ -782,6 +782,13 @@ function migrate() {
     caps.seedCapabilities();
     const names = [...caps.RESERVED_ROLE_NAMES];
     db.prepare(`UPDATE roles SET is_system = 1 WHERE is_system = 0 AND name IN (${names.map(() => '?').join(',')})`).run(...names);
+    // The job title as the workshop says it: Transport Assistant Manager, not Assistant Transport
+    // Manager. The role's KEY never changes — capabilities, the access matrix and every user_roles
+    // row are keyed on assistant_transport_manager — only the words people read. A database the
+    // old wording was seeded into keeps it otherwise, because the seed is INSERT OR IGNORE.
+    // Matching on the old label makes this run once and never again, and leaves alone a label
+    // somebody has since set themselves.
+    db.prepare("UPDATE roles SET label = 'Transport Assistant Manager' WHERE name = 'assistant_transport_manager' AND label = 'Assistant Transport Manager'").run();
   }
   return db;
 }
