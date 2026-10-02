@@ -43,10 +43,32 @@ chosen._
 | Stage 5 — reports per workshop | ✅ merged | #19 |
 | Stage 6 — field work (breakdowns, repairs at the site) | ✅ merged | #20 |
 | Stage 7 — operations (machine moves, site fleet, workshops at a glance, handovers) | ✅ merged | #21 |
+| A job card is opened by the workshop, against an approved job request | ✅ merged; **moves who may open a card — read the note below** | `64745fb` |
 | **Deploy all of the above to the live server** | ❌ **not done** | §3 |
 
-Test suite on `main`: all tests pass except the 2 in `monthly_cost_zero_value`, which need the office
-database and fail the same way without it.
+Rows between #21 and `64745fb` are missing from this table — stores parts 1–4, job cards parts 1–3,
+access parts 1–2, the CI workflow and the fixes after them all merged without being recorded here.
+The work is on `main`; only this list is behind.
+
+**The job request gate (`64745fb`) changes who may do what, by itself, on the first start.** The
+Transport Manager raised job cards directly and no longer does; the workshop opens them instead,
+against a job request that has been raised, certified and approved. There is nothing to switch on —
+it applies itself, and the log says what it did:
+
+```
+jobs: opening a job card is the workshop's now — taken off the Transport Manager.
+jobs: the workshop can now see job requests (it needs to, to open cards from them).
+```
+
+A third line, if it appears, names any role you created that also held "Open a new job card". Those
+are left exactly as they are and now need an approved request like everyone else; change them in
+Access Control → Roles if that is not what you want. The whole change, and the four kinds of card
+deliberately exempt from the rule, are in `docs/JOBCARD_NEEDS_REQUEST_PLAN.md`.
+
+Test suite on `main`: 998 pass, 1 fails — `Stores 4-Document Lifecycle: Headless Print-to-PDF
+Conversion`, which needs a browser the build container does not have and should pass on a PC with
+Chrome. The `monthly_cost_zero_value` note that stood here is out of date: those tests were fixed
+(#39) and pass.
 
 ---
 
