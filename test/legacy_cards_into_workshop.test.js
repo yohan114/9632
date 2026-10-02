@@ -1,12 +1,12 @@
 'use strict';
 
-// scripts/legacy_cards_into_workshop.js — the one-off that puts the cards raised BEFORE job
-// requests existed into the workshop, instead of leaving them queued for an approval that was
-// given on paper weeks ago.
+// scripts/legacy_cards_into_workshop.js — the one-off that puts the cards approved ON PAPER into
+// the workshop, instead of leaving them queued for a signature that already exists.
 //
-// What matters here is what it does NOT touch, because it runs against the live book: a card that
-// came through a job request, a breakdown, a container, imported history, and a stuck card all have
-// to come out the other side exactly as they went in.
+// The cut-off date is the whole rule, so the two tests that matter most are that a card raised
+// before it moves and a card raised on or after it does not. The rest is what it must never touch,
+// because it runs against the live book: a card that came through a job request, a breakdown, a
+// container and imported history all have to come out exactly as they went in.
 
 const os = require('os');
 const path = require('path');
@@ -38,12 +38,20 @@ function card(description, o = {}) {
     o.legacy || null, o.jr || null).lastInsertRowid;
 }
 
-// The live backlog: no request, waiting at an approval step.
-const WAITING_A = card('Back side sheet bush repair');
+const CUTOFF = '2026-10-01';
+const BEFORE = '2026-08-11';   // approvals given on paper
+const ON = '2026-10-01';       // the cut-off day itself belongs to the new process
+const AFTER = '2026-10-05';    // plainly after
+
+// Approved on paper: no request, waiting at an approval step, raised before the cut-off.
+const WAITING_A = card('Back side sheet bush repair', { date: BEFORE });
 run("INSERT INTO job_daily_work (job_id, work_date, mechanic, hours) VALUES (?, ?, 'Anura', 4)", WAITING_A, day(-10));
-const WAITING_B = card('Silencer repair');
-const WAITING_C = card('Jack repair', { status: 'APPROVED_TRANSPORT' });
-// Everything that must be left exactly as it is.
+const WAITING_B = card('Silencer repair', { date: BEFORE });
+const WAITING_C = card('Jack repair', { status: 'APPROVED_TRANSPORT', date: BEFORE });
+// From the cut-off the approvals belong in the app, so these go through the process.
+const ON_CUTOFF = card('Raised on the cut-off day', { date: ON });
+const AFTER_CUTOFF = card('Raised after the cut-off', { date: AFTER });
+// Everything that must be left exactly as it is, whatever its date.
 const STUCK = card('Abandoned long ago', { date: day(-200) });
 const BREAKDOWN = card('Breakdown at a site', { bd: 1, field: 1 });
 const IMPORTED = card('Imported history', { hist: 1, date: day(-200) });
@@ -55,24 +63,35 @@ const FROM_REQUEST = card('Opened from a request', { jr: JR });
 const SCRIPT = path.join(__dirname, '..', 'scripts', 'legacy_cards_into_workshop.js');
 const sh = (...args) => execFileSync(process.execPath, [SCRIPT, ...args], { env: { ...process.env, DB_PATH: DB }, encoding: 'utf8' });
 const statusOf = (id) => get('SELECT status FROM job_cards WHERE id = ?', id).status;
-const UNTOUCHED = [['stuck', STUCK], ['breakdown', BREAKDOWN], ['imported', IMPORTED], ['container', CONTAINER], ['from a request', FROM_REQUEST]];
+// Never moved, whatever the cut-off says.
+const UNTOUCHED = [['breakdown', BREAKDOWN], ['imported', IMPORTED], ['container', CONTAINER],
+  ['from a request', FROM_REQUEST], ['on the cut-off', ON_CUTOFF], ['after the cut-off', AFTER_CUTOFF]];
 
 test('a dry run says what it would do and changes nothing', () => {
   const out = sh();
-  assert.match(out, /Moving 3 card\(s\) to IN_WORKSHOP/);
-  assert.match(out, /REQUESTED 2, APPROVED_TRANSPORT 1/);
-  assert.match(out, /1 stuck/);
+  assert.match(out, new RegExp(`Cut-off: ${CUTOFF}`));
+  // The three before it, plus the stuck one — which the cut-off covers like the rest.
+  assert.match(out, /Moving 4 card\(s\) to IN_WORKSHOP/);
+  assert.match(out, /REQUESTED 3, APPROVED_TRANSPORT 1/);
+  assert.match(out, /2 raised ON OR AFTER 2026-10-01/);
+  assert.match(out, /of these, 1 are stuck/);
   assert.match(out, /DRY RUN/);
-  for (const [, id] of [['a', WAITING_A], ['b', WAITING_B], ...UNTOUCHED]) {
+  for (const [, id] of [['a', WAITING_A], ['b', WAITING_B], ['stuck', STUCK], ...UNTOUCHED]) {
     assert.notStrictEqual(statusOf(id), 'IN_WORKSHOP', 'a dry run writes nothing at all');
   }
   assert.strictEqual(get('SELECT COUNT(*) c FROM job_approvals').c, 0);
 });
 
-test('--apply moves the backlog, and only the backlog', () => {
+test('the cut-off is the rule: before it moves, on or after it does not', () => {
   sh('--apply');
   for (const id of [WAITING_A, WAITING_B, WAITING_C]) assert.strictEqual(statusOf(id), 'IN_WORKSHOP');
+  assert.strictEqual(statusOf(ON_CUTOFF), 'REQUESTED', 'the cut-off day itself belongs to the new process');
+  assert.strictEqual(statusOf(AFTER_CUTOFF), 'REQUESTED');
   for (const [what, id] of UNTOUCHED) assert.strictEqual(statusOf(id), 'REQUESTED', `${what} must be left alone`);
+});
+
+test('a stuck card before the cut-off moves too — its approval was on paper like the rest', () => {
+  assert.strictEqual(statusOf(STUCK), 'IN_WORKSHOP');
 });
 
 test('the card keeps its own dates, so a long wait still reads as a long wait', () => {
@@ -86,24 +105,36 @@ test('the approvals say nobody signed them in the app', () => {
   const trail = all('SELECT role, approver_id, reason FROM job_approvals WHERE job_id = ? ORDER BY id', WAITING_A);
   assert.deepStrictEqual(trail.map((t) => t.role), ['transport_manager', 'operational_manager']);
   assert.deepStrictEqual(trail.map((t) => t.approver_id), [null, null], 'no name is invented for a signature nobody gave');
-  assert.match(trail[0].reason, /approved outside the app/i);
+  assert.match(trail[0].reason, /given on paper rather than in the app/i);
+  assert.match(trail[0].reason, new RegExp(`Raised before ${CUTOFF}`), 'and names the cut-off it was judged by');
   // And the move is on the card's own audit trail.
   const a = get("SELECT action, after_json FROM audit_log WHERE entity = 'job_card' AND entity_id = ? ORDER BY id DESC LIMIT 1", WAITING_A);
   assert.deepStrictEqual([a.action, JSON.parse(a.after_json).status], ['transition', 'IN_WORKSHOP']);
 });
 
 test('running it twice is safe: the second pass finds nothing to move', () => {
-  const before = get("SELECT COUNT(*) c FROM job_approvals").c;
+  const before = get('SELECT COUNT(*) c FROM job_approvals').c;
   const out = sh('--apply');
   assert.match(out, /Nothing to move/);
-  assert.strictEqual(get("SELECT COUNT(*) c FROM job_approvals").c, before, 'no second set of approval rows');
-  assert.strictEqual(statusOf(STUCK), 'REQUESTED');
+  assert.strictEqual(get('SELECT COUNT(*) c FROM job_approvals').c, before, 'no second set of approval rows');
 });
 
-test('--include-stuck takes the abandoned ones too, when that is what is wanted', () => {
-  assert.match(sh(), /1 stuck/);
-  sh('--apply', '--include-stuck');
-  assert.strictEqual(statusOf(STUCK), 'IN_WORKSHOP');
-  // Still never the breakdown, the container, the imported card or one with a request.
-  for (const [what, id] of UNTOUCHED.slice(1)) assert.strictEqual(statusOf(id), 'REQUESTED', `${what} is never included`);
+test('--skip-stuck leaves the abandoned ones for the Review screen', () => {
+  const left = card('Abandoned, and to be reviewed', { date: day(-250) });
+  const live = card('Waiting, worked on recently', { date: BEFORE });
+  run("INSERT INTO job_daily_work (job_id, work_date, mechanic, hours) VALUES (?, ?, 'Sunil', 2)", live, day(-5));
+  const out = sh('--skip-stuck');
+  assert.match(out, /Moving 1 card\(s\)/);
+  assert.match(out, /1 stuck card\(s\) LEFT OUT/);
+  sh('--apply', '--skip-stuck');
+  assert.strictEqual(statusOf(live), 'IN_WORKSHOP');
+  assert.strictEqual(statusOf(left), 'REQUESTED', 'left for Review stuck cards');
+});
+
+test('--before moves the cut-off, and a bad date is refused rather than guessed', () => {
+  // With the cut-off pulled back, the card raised after it is now "before" and moves.
+  sh('--apply', `--before=2026-10-10`);
+  assert.strictEqual(statusOf(ON_CUTOFF), 'IN_WORKSHOP');
+  assert.strictEqual(statusOf(AFTER_CUTOFF), 'IN_WORKSHOP');
+  assert.throws(() => sh('--before=last-october'), /status 1|Command failed/);
 });
