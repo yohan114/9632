@@ -900,7 +900,7 @@ function receivedLines({ assetId, jobId, mrn, q, limit = 200, includeDone = fals
             -- What is actually on the box, when a cross-referenced part was supplied.
             g.received_part_no,
             ml.id                                   AS mrn_line_id,
-            ml.category, ml.unit,
+            ml.category, ml.unit, ml.store_item_id,
             m.mrn_no, m.req_date, m.asset_id        AS mrn_asset_id,
             COALESCE(m.asset_id, j.asset_id)        AS asset_id,
             COALESCE(m.purchase_source, g.purchase_source_norm) AS source,

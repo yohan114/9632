@@ -322,3 +322,54 @@ test('a category chosen in the picker beats the words the receipt came with', as
   assert.strictEqual(r.body.lines[0].category_id, leaf);
   assert.strictEqual(r.body.lines[0].category, 'Lubricants & Fluids');
 });
+
+// ---- finding the goods by their MRN number ---------------------------------
+// The form opened with the vehicle's shelf and nothing else, so the only way onto a note was to
+// know which machine the goods were bought for. A storekeeper writing a transfer has the MRN
+// paperwork in hand instead, so the form now searches the shelf the way the issue form does
+// (public/app.js mtnModal step 3, GET /api/stores/received?q=). These cover what that leans on.
+
+test('the shelf can be searched by MRN number, by description and by vehicle', async () => {
+  const mrn = run(`INSERT INTO mrn (mrn_no, req_date, asset_id, approval_status, requested_by, purpose)
+                   VALUES ('141636', '2026-07-10', ?, 'approved', 'Store', 'Service parts')`, LO4925).lastInsertRowid;
+  const line = run('INSERT INTO mrn_lines (mrn_id, description, qty, unit, category) VALUES (?, ?, ?, ?, ?)',
+    mrn, 'Oil Filter (C-519)', 4, 'nos', 'Filters').lastInsertRowid;
+  run("INSERT INTO grn (mrn_line_id, qty, unit_price, description, delivery_date) VALUES (?, 4, 2500, 'Oil Filter (C-519)', '2026-07-12')", line);
+
+  const byNo = await api('/stores/received?q=141636');
+  assert.strictEqual(byNo.status, 200);
+  assert.deepStrictEqual(byNo.body.map((r) => [r.mrn_no, r.description, r.remaining]), [['141636', 'Oil Filter (C-519)', 4]]);
+  // The same box finds it by what it is called, and by the machine it was bought for — one search
+  // for all three, which is why the form needs only one box.
+  assert.strictEqual((await api('/stores/received?q=Oil Filter')).body.length, 1);
+  assert.strictEqual((await api('/stores/received?q=LO-4925')).body.length, 1);
+  // And the section is derived, so the form's section pills can narrow the hits.
+  assert.strictEqual(byNo.body[0].section, 'filter');
+});
+
+test('a shelf line carries the catalogue item it was requested as, so the note can keep it', async () => {
+  const categories = require('../src/lib/categories');
+  const leaf = categories.ensureGeneral(categories.create({ name: 'Filters & Elements' }).id);
+  const item = run(`INSERT INTO store_items (name, category, category_id, unit, catalogue_kind, req_count, is_general, balance)
+                    VALUES ('Fuel Filter (FF-5052)', 'Filters & Elements', ?, 'nos', 'part', 0, 0, 0)`, leaf).lastInsertRowid;
+  const mrn = run(`INSERT INTO mrn (mrn_no, req_date, asset_id, approval_status, requested_by, purpose)
+                   VALUES ('141700', '2026-07-10', ?, 'approved', 'Store', 'Service')`, LO4925).lastInsertRowid;
+  const line = run('INSERT INTO mrn_lines (mrn_id, store_item_id, description, qty, unit, category) VALUES (?, ?, ?, 3, ?, ?)',
+    mrn, item, 'Fuel Filter (FF-5052)', 'nos', 'Filters & Elements').lastInsertRowid;
+  run("INSERT INTO grn (mrn_line_id, qty, unit_price, description, delivery_date) VALUES (?, 3, 1800, 'Fuel Filter (FF-5052)', '2026-07-12')", line);
+
+  // Without this the form could only send the words, and the note lost the link the MRN had.
+  const shelf = (await api('/stores/received?q=141700')).body[0];
+  assert.strictEqual(shelf.store_item_id, item, 'the received line names its catalogue item');
+
+  // Which is what a note built from that line sends — the same shape mtnModal posts.
+  const r = await api('/stores/mtn', { method: 'POST', body: {
+    mtn_no: 'M-SHELF-1', txn_date: '2026-07-19', from_location: 'Work Shop Stores',
+    lines: [{ description: shelf.description, qty: shelf.remaining, unit: shelf.unit,
+      category: shelf.category, store_item_id: shelf.store_item_id }],
+  } });
+  assert.strictEqual(r.status, 201, JSON.stringify(r.body));
+  assert.deepStrictEqual(
+    [r.body.lines[0].store_item_id, r.body.lines[0].description, r.body.lines[0].qty, r.body.lines[0].category],
+    [item, 'Fuel Filter (FF-5052)', 3, 'Filters & Elements']);
+});

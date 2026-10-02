@@ -13936,7 +13936,16 @@ async function mtnModal(existing, onDone) {
       <div id="trecv" class="ni-recv"></div>
     </div>
     <div class="mrnsec">
-      <div class="mrnsec-h">3 · Items on this note <span id="tlcount" class="muted" style="font-weight:400"></span></div>
+      <div class="mrnsec-h">3 · Or find it by MRN number, or by name</div>
+      <div class="pill-row" id="tfindsecs">
+        ${ISSUE_SECTIONS.map((x) => `<button type="button" class="sm${x.key === '' ? ' primary' : ''}" data-sec="${x.key}">${esc(x.label)}</button>`).join('')}
+      </div>
+      <input type="search" id="tfind" autocomplete="off" placeholder="MRN number, item name, part number or vehicle — e.g. 141636, oil filter…">
+      <div id="tfindres" class="ni-res"></div>
+      <p class="muted" style="font-size:11.5px;margin:6px 0 0">This searches what has been RECEIVED and is still on the shelf — a transfer moves goods that exist. To put something on the note by name instead, type it into an item row below.</p>
+    </div>
+    <div class="mrnsec">
+      <div class="mrnsec-h">4 · Items on this note <span id="tlcount" class="muted" style="font-weight:400"></span></div>
       <div id="tlines"></div>
       <button class="sm" id="taddline" style="margin-top:4px">+ add another item</button>
     </div>
@@ -14018,19 +14027,67 @@ async function mtnModal(existing, onDone) {
           el.onclick = () => {
             const r = rows[+el.dataset.i];
             if (r.remaining <= 0 && !qs('#trecv-all', root).checked) return;
-            // The whole of what is left, not one: a transfer moves the delivery, and a
-            // quantity is easier to reduce than to look up again.
-            addLine({ description: r.description, qty: r.remaining > 0 ? r.remaining : 1, unit: r.unit || 'nos', category: r.category });
-            // The blank row every new note opens with has nothing on it; it would otherwise sit
-            // above the picked items and be dropped on save for having no description.
-            qsa('.mrnline', lines).forEach((row) => {
-              const d = qs('input[name=tdesc]', row);
-              if (d && !d.value.trim() && !row.dataset.lineId && qsa('.mrnline', lines).length > 1) { row.remove(); renumber(); }
-            });
-            toast(r.description + ' added');
+            addFromShelf(r);
           };
         });
       };
+      // Putting a delivery on the note, from either the vehicle's shelf panel or the search below.
+      // The WHOLE of what is left, not one: a transfer moves the delivery, and a quantity is
+      // easier to reduce than to look up again. store_item_id keeps the catalogue link the
+      // requisition line had, so the note names the same item the MRN did.
+      const addFromShelf = (r) => {
+        addLine({ description: r.description, qty: r.remaining > 0 ? r.remaining : 1,
+          unit: r.unit || 'nos', category: r.category, store_item_id: r.store_item_id });
+        // The blank row every new note opens with has nothing on it; it would otherwise sit above
+        // the picked items and be dropped on save for having no description.
+        qsa('.mrnline', lines).forEach((row) => {
+          const d = qs('input[name=tdesc]', row);
+          if (d && !d.value.trim() && !row.dataset.lineId && qsa('.mrnline', lines).length > 1) { row.remove(); renumber(); }
+        });
+        toast(r.description + ' added');
+      };
+
+      // -- SEARCH THE SHELF, the way the issue form does (newIssueModal step 3). A storekeeper
+      // writing a transfer has the MRN paperwork in hand, not the catalogue spelling — and until
+      // now the only way in was to pick the vehicle and read its list, which is no use when the
+      // goods are not against a vehicle, or when the vehicle is not the one being searched for.
+      // GET /api/stores/received?q= already matches on the MRN number, the GRN number, the
+      // description and the vehicle, so one box covers all four.
+      const tres = qs('#tfindres', root), tq = qs('#tfind', root);
+      let tsection = '';
+      let tdeb; let tkey = '';
+      const searchShelf = async () => {
+        const term = tq.value.trim();
+        if (term.length < 2) { tres.innerHTML = ''; tkey = ''; return; }
+        const key = tsection + '|' + term;
+        tkey = key;
+        tres.innerHTML = '<div class="muted" style="padding:8px 2px">Searching the shelf…</div>';
+        let rows = [];
+        try { rows = await api('/stores/received?limit=40&q=' + encodeURIComponent(term)); }
+        catch (e) { if (key === tkey) tres.innerHTML = `<div class="muted" style="padding:8px 2px">${esc(e.message)}</div>`; return; }
+        if (key !== tkey) return;                                   // a newer search already won
+        const hits = tsection ? rows.filter((r) => r.section === tsection) : rows;
+        if (!hits.length) {
+          tres.innerHTML = `<div class="muted" style="padding:8px 2px">Nothing on the shelf matches that${tsection ? ' in this section' : ''} — try the MRN number, or widen the section.</div>`;
+          return;
+        }
+        tres.innerHTML = hits.map((r, i) => `<div class="ni-hit" data-i="${i}">
+            <span class="ni-mrn">${esc(r.mrn_no || '')}</span>
+            ${esc(r.description)}${r.vehicle ? ` <span class="muted">· ${esc(r.vehicle)}</span>` : ''}
+            <span class="muted"> · ${esc(SECTION_LABEL[r.section] || r.section)}${r.received_date ? ' · received ' + esc(String(r.received_date).slice(0, 10)) : ''}</span>
+            <span class="ni-bal ok">${num(r.remaining)} of ${num(r.qty)} left</span>
+          </div>`).join('');
+        qsa('.ni-hit', tres).forEach((el) => { el.onclick = () => addFromShelf(hits[+el.dataset.i]); });
+      };
+      tq.oninput = () => { clearTimeout(tdeb); tdeb = setTimeout(searchShelf, 200); };
+      qsa('#tfindsecs button', root).forEach((b) => {
+        b.onclick = () => {
+          tsection = b.dataset.sec;
+          qsa('#tfindsecs button', root).forEach((o) => o.classList.toggle('primary', o === b));
+          searchShelf();
+        };
+      });
+
       if (qs('#tveh', root)) wireAssetPicker(qs('#tveh', root), () => loadReceived(true));
       qs('#trecv-all', root).onchange = () => loadReceived(true);
       // The picker commits its choice internally with no change event to listen for, so watch
