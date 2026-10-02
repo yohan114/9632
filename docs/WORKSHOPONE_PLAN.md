@@ -1,9 +1,9 @@
 # WorkshopOne — Plan (v3)
 
-_Date: 2026-09-24 · status after every stage was built. It replaces v2 (same file), which set the order
-of work. The first plan, `SECURITY_ACCESS_MULTISITE_PLAN.md` (v1), is not in this repository because
-the repository is public; §4 and §5 record the multi-site stages as they were built and the decisions
-chosen._
+_Date: 2026-09-24, §2 brought up to date 2026-10-02 · status after every stage was built. It replaces
+v2 (same file), which set the order of work. The first plan, `SECURITY_ACCESS_MULTISITE_PLAN.md` (v1),
+is not in this repository because the repository is public; §4 and §5 record the multi-site stages as
+they were built and the decisions chosen._
 
 ---
 
@@ -11,11 +11,17 @@ chosen._
 
 - **Everything in the plan is built, tested and merged into `main`:** the security work (Stage 0 and
   Stage 1), the groundwork W0, attendance W1, partial close W2, reports W3, approval limits, and the
-  multi-site Stages 2–7.
+  multi-site Stages 2–7. So is a good deal of work that came after this plan was written — the Stores
+  parts 1–4, the Job Cards parts 1–3, access section by section and person by person, purchasing,
+  tools and toolboxes, the 4-document stores lifecycle, and the job request gate on opening a job
+  card. §2 lists all of it.
 - **None of it is on the live server yet.** That is the next step, and it is your action (§3).
-- **After the update, nothing changes on its own.** Each new feature is off, empty or unused until you
-  switch it on (§3.4). With one workshop, every screen looks as before, plus the new Field Work and
-  Operations pages.
+- **After the update, almost nothing changes on its own.** Each new feature is off, empty or unused
+  until you switch it on (§3.4). With one workshop, every screen looks as before, plus the new Field
+  Work and Operations pages. **The one exception is the job request gate** (`64745fb`): it applies
+  itself on the first start, and from then on a job card is opened by the workshop against an
+  approved job request — the Transport Manager no longer raises cards directly. There is no switch
+  for it. See the note under §2.
 - A few extras were put off on purpose (§6). Build them only if you want them.
 
 ---
@@ -43,12 +49,34 @@ chosen._
 | Stage 5 — reports per workshop | ✅ merged | #19 |
 | Stage 6 — field work (breakdowns, repairs at the site) | ✅ merged | #20 |
 | Stage 7 — operations (machine moves, site fleet, workshops at a glance, handovers) | ✅ merged | #21 |
+| This plan, v3 — status after every stage, deploy and switch-on checklist | ✅ merged | #22 |
+| Stores Part 1 — one Stores page, the Monitor, requests through to issue | ✅ merged | #23 |
+| Stores Part 2 — one Stock view for all five kinds, stock take sessions | ✅ merged | #24 |
+| Stores Part 3 — nothing is issued unless it is in stock | ✅ merged | #25 |
+| Stores Part 4 — tyres and batteries by serial, disposal notes | ✅ merged | #26 |
+| Field work tests no longer depend on the time of day they run at | ✅ merged | #27 |
+| Job cards Part 1 — the Job Cards page: the Monitor, and one list of everything waiting for a decision | ✅ merged | #28 |
+| Job cards Part 2 — Ongoing: every card in the workshop, attended or not | ✅ merged | #29 |
+| Job cards Part 3 — Finishing, and Ready to close | ✅ merged | #30 |
+| Reports clearance checked on the server, section by section | ✅ merged | #31 |
+| Dashboard — process-wise approvals, the job card and stores pipelines, the on-hold watchboard | ✅ merged | #32 |
+| Access Part 1 — 22 sections, each with its own switch on the server | ✅ merged | #35 |
+| Access Part 2 — access person by person, and the Add level | ✅ merged | #36 |
+| The monthly cost report test builds its own month (it needed the office database before) | ✅ merged | #39 |
+| CI — the test suite runs on every push and pull request | ✅ merged | #40 |
+| Purchasing (priority-basis buying, channels, pipeline cockpit), workshop tools and mechanic toolboxes, the labour lifecycle (resignation, transfer), and the 4-document stores lifecycle (GRN, MIN, MTN, SVR) with its printable forms | ✅ merged | #41 |
+| The two lineages joined on `main`, keeping this one's access control | ✅ merged | #42 |
+| An existing database can be upgraded again; the launcher opens the port the server listens on | ✅ merged | #43 |
+| A transfer moves the shelf when the goods move, not when the note is typed | ✅ merged | #44 |
+| A transfer note offers what is in store for the vehicle | ✅ merged | #45 |
+| The server runs as its own account, and can find a browser for the PDF forms | ✅ merged | #46 |
+| The job request form reads "Transport Assistant Manager" | ✅ merged | #47 |
 | A job card is opened by the workshop, against an approved job request | ✅ merged; **moves who may open a card — read the note below** | `64745fb` |
 | **Deploy all of the above to the live server** | ❌ **not done** | §3 |
 
-Rows between #21 and `64745fb` are missing from this table — stores parts 1–4, job cards parts 1–3,
-access parts 1–2, the CI workflow and the fixes after them all merged without being recorded here.
-The work is on `main`; only this list is behind.
+Everything from #22 down was merged after this document was last written, and is on `main` with the
+rest. Pull requests #33, #34, #37 and #38 are not missing from the list: nothing from them reached
+`main`.
 
 **The job request gate (`64745fb`) changes who may do what, by itself, on the first start.** The
 Transport Manager raised job cards directly and no longer does; the workshop opens them instead,
@@ -102,6 +130,7 @@ Chrome. The `monthly_cost_zero_value` note that stood here is out of date: those
 | Stage 5 | `daily_report_snapshots` is **rebuilt** per workshop; saved days are kept as whole-company copies. `monthly_report_inputs.workshop_id`: all inputs entered so far are Central's. |
 | Stage 6 | Field columns on `job_cards`, a `travel` column on `job_daily_work`. `job_parts` is **rebuilt** so a returned part can be recorded: every line, id and index kept. New table `issue_returns`. |
 | Stage 7 | `assets.current_site_id` (empty). New tables `asset_moves` and `job_workshop_moves`. No past moves are made up. |
+| Job request gate | `job_cards.job_request_id`, filled in from the link history already had, so every card an approval made before this still names its request. **Two permission changes, each made once and then never again:** "Open a new job card" is taken off the Transport Manager, and the workshop is given read access to Job Requests (it cannot open a card without one). A role you created that also held "Open a new job card" keeps it, and is named in the log. |
 
 3. Finish the rest of the old Step 0:
    - back up `/opt/workshopone/data/mfa.key` (again, now on the new version);
@@ -114,6 +143,10 @@ Chrome. The `monthly_cost_zero_value` note that stood here is out of date: those
 - The **June 2026 Job Cost report** is the same as the one you downloaded before.
 - Open the job card list, one job card, Stores and the dashboard. They look as before.
 - The new pages are there: **Field Work** and **Operations**.
+- The log says the job request gate moved (`jobs: opening a job card is the workshop's now…`). Sign in
+  as the workshop: Job Cards shows **🔧 Open Job Card from a Request**, and the Requests tab has a
+  **To open as a job card** pill. Sign in as the Transport Manager: that button is gone, and
+  certifying a job request still works.
 
 ### 3.4 Switch on, one at a time
 
