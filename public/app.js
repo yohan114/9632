@@ -5656,7 +5656,7 @@ routes.stores = async (c) => {
           return `<tr>
           <td>${(t.item_count || 1) > 1 ? `<button class="sm" data-exp="${t.id}" title="Show the items on this transfer" style="padding:0 6px;margin-right:4px">▸</button>` : ''}<button class="sm" data-mtn-detail="${t.id}" title="View Transfer Note & Signoffs" style="font-weight:bold;cursor:pointer;background:none;border:none;color:var(--primary);padding:0;text-decoration:underline">${esc(t.mtn_no)}</button></td>
           <td>${esc(String(t.txn_date || '').slice(0, 10))}</td>
-          <td class="desc-col"><b>${esc(t.description || '')}</b>${t.moves_stock ? ' <span class="badge green" title="Moves stock from one store to another">moves stock</span>' : ''}
+          <td class="desc-col"><b>${esc(t.description || '')}</b>${t.moves_stock ? ' <span class="badge green" title="Moves stock from one store to another: out of the sending store when it is dispatched, into the receiving store when it is accepted">moves stock</span>' : ''}
             ${(t.item_count || 1) > 1 ? `<span class="badge blue" style="margin-left:4px">${t.item_count} items</span>` : ''}</td>
           <td>${esc(t.from_location || t.from_asset_code || '—')} → ${esc(t.to_location || t.to_asset_code || '—')}</td>
           <td class="num"><b>${num(t.qty)}</b></td>
@@ -13877,7 +13877,9 @@ async function mtnModal(existing, onDone) {
           const a = f && storeOn(f, date); const b = t && storeOn(t, date);
           const el = qs('#tstock', root);
           el.style.display = a && b && a !== b ? '' : 'none';
-          el.innerHTML = a && b && a !== b ? `<span class="badge green">moves stock</span> Out of ${esc(wsName(wsd, a))}'s store, into ${esc(wsName(wsd, b))}'s store, on ${esc(date)}.` : '';
+          // WHEN, not just whether: the shelf changes as the goods do (src/lib/stock.js
+          // transfers), so saying "moves stock" on its own reads as "the moment you save this".
+          el.innerHTML = a && b && a !== b ? `<span class="badge green">moves stock</span> Out of ${esc(wsName(wsd, a))}'s store when this note is dispatched, into ${esc(wsName(wsd, b))}'s store when it is accepted — dated ${esc(date)}. Nothing leaves the shelf before that.` : '';
         };
         qsa('input[name=from_location],input[name=to_location],input[name=txn_date]', root).forEach((i) => { i.addEventListener('input', hint); i.addEventListener('change', hint); });
         hint();

@@ -763,6 +763,10 @@ function migrate() {
   storesServicesPart3();
   storesUnitsPart4();
   storesDocumentsProcess();
+  // After storesDocumentsProcess(), which is what adds mtn.status: on a database from before the
+  // 4-document lifecycle the column does not exist yet, and reading it here stopped migrate()
+  // dead — no column, no server, nobody can sign in.
+  transferStockByStage();
   labourLifecycleProcess();
   toolsAndToolboxesProcess();
 
@@ -920,6 +924,44 @@ function storesStage4() {
   for (const [t, expr] of Object.entries(stamp)) {
     db.exec(`CREATE TRIGGER IF NOT EXISTS trg_${t}_store AFTER INSERT ON ${t} WHEN NEW.store_id IS NULL
              BEGIN UPDATE ${t} SET store_id = ${expr} WHERE id = NEW.id; END;`);
+  }
+}
+
+// A TRANSFER MOVES THE SHELF WHEN THE GOODS MOVE: out of the sending store once the note is
+// dispatched, into the receiving store once it is accepted (src/lib/stock.js transfers). It used
+// to happen the moment the note was typed, whatever its status, and rejecting a note never put
+// the stock back — so the movements on an existing database have to be squared with the rule.
+//
+// THE SHELVES DO NOT CHANGE ON UPGRADE. A note that is already counted on the shelves and never
+// got past the typing stage is marked accepted, which is what it is: every transfer in the book
+// happened, and every imported one reads as 'draft' only because the importers never set a
+// status and the column defaults to it. The figures therefore come out of the update as they
+// went in. What does change is the two cases the old code had wrong — a note still waiting to
+// be dispatched, and a rejected one — whose goods go back on the shelf they never left.
+//
+// Runs once, on the first start after the update, and never again (the settings key).
+function transferStockByStage() {
+  if (db.prepare("SELECT 1 x FROM settings WHERE key = 'mtn_stock_at_dispatch'").get()) return;
+  const counted = `SELECT l.id FROM mtn_lines l JOIN mtn t ON t.id = l.mtn_id`;
+  const rep = db.transaction(() => ({
+    // Already on the shelves, never dispatched on paper: that is a completed transfer.
+    accepted: db.prepare(`UPDATE mtn SET status = 'accepted'
+       WHERE COALESCE(status, 'draft') IN ('draft', 'pending_approval')
+         AND id IN (SELECT l.mtn_id FROM mtn_lines l
+                     JOIN stock_moves sm ON sm.source_table = 'mtn_lines' AND sm.source_id = l.id)`).run().changes,
+    // Movements the rule would never have written: the note is not dispatched, or was rejected.
+    returned: db.prepare(`DELETE FROM stock_moves WHERE source_table = 'mtn_lines'
+         AND source_id IN (${counted} WHERE COALESCE(t.status, '') NOT IN ('dispatched', 'received', 'accepted'))`).run().changes,
+    // In transit: gone from the sending store, not yet taken in by the receiving one.
+    in_transit: db.prepare(`DELETE FROM stock_moves WHERE source_table = 'mtn_lines' AND kind = 'in'
+         AND source_id IN (${counted} WHERE t.status IN ('dispatched', 'received'))`).run().changes,
+  }))();
+  db.prepare("INSERT INTO settings (key, value) VALUES ('mtn_stock_at_dispatch', ?)")
+    .run(JSON.stringify({ at: new Date().toISOString(), ...rep }));
+  if (rep.accepted || rep.returned || rep.in_transit) {
+    console.log(`mtn: stock now follows the stage — ${rep.accepted} completed transfer(s) marked accepted `
+      + `(the shelves keep what they hold), ${rep.returned} movement(s) of notes not yet dispatched or rejected `
+      + `put back, ${rep.in_transit} arrival(s) held until the goods are accepted.`);
   }
 }
 

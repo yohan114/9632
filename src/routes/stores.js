@@ -3629,6 +3629,12 @@ router.get('/mtn/:id/download.pdf', asyncHandler(async (req, res) => {
 }));
 
 // Stage 1: Approve Transfer Out (Store In-Charge / Workshop Engineer)
+// THE SHELF FOLLOWS THE STAGE. A transfer leaves the sending store when it is dispatched and
+// lands in the receiving store when it is accepted; a draft, one waiting for approval, an
+// approved note not yet on the lorry and a rejected one move nothing (src/lib/stock.js
+// transfers). So every stage below writes the note's movements again. Without that the stock
+// stays as whatever the previous stage left behind — which is how a rejected transfer used to
+// keep the goods off the shelf for good.
 router.post('/mtn/:id/approve', requireCap('stores.mtn.approve'), asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   const m = get('SELECT * FROM mtn WHERE id = ? OR mtn_no = ?', id, req.params.id);
@@ -3645,6 +3651,7 @@ router.post('/mtn/:id/approve', requireCap('stores.mtn.approve'), asyncHandler((
     run(`INSERT INTO mtn_approvals (mtn_id, stage, role, approver_id, signed_name, signature, decision, reason)
          VALUES (?, 'approve', ?, ?, ?, ?, 'approved', ?)`,
       m.id, role, req.user.id, s.name, sig, req.body.reason || null);
+    stock.rebuild({ transfersOf: m.id });
   });
 
   audit.record({ userId: req.user.id, entity: 'mtn', entityId: m.id, action: 'approve', after: { approved_by: s.name, status: 'approved' }, reason: req.body.reason });
@@ -3666,6 +3673,7 @@ router.post('/mtn/:id/reject', requireCap('stores.mtn.reject'), asyncHandler((re
     run(`INSERT INTO mtn_approvals (mtn_id, stage, role, approver_id, signed_name, signature, decision, reason)
          VALUES (?, 'approve', ?, ?, ?, ?, 'rejected', ?)`,
       m.id, role, req.user.id, s.name, req.body.signature || s.sig || null, req.body.reason);
+    stock.rebuild({ transfersOf: m.id });   // rejected: the goods go back on the shelf
   });
 
   audit.record({ userId: req.user.id, entity: 'mtn', entityId: m.id, action: 'reject', after: { status: 'rejected' }, reason: req.body.reason });
@@ -3695,6 +3703,7 @@ router.post('/mtn/:id/dispatch', requireCap('stores.mtn.edit'), asyncHandler((re
     run(`INSERT INTO mtn_approvals (mtn_id, stage, role, approver_id, signed_name, signature, decision, reason)
          VALUES (?, 'dispatch', 'driver', ?, ?, ?, 'approved', ?)`,
       id, req.user.id, recBy, recSig, req.body.reason || 'Handed over for transit');
+    stock.rebuild({ transfersOf: id });     // out of the sending store: it is on the lorry
   });
 
   audit.record({ userId: req.user.id, entity: 'mtn', entityId: id, action: 'dispatch', after: { status: 'dispatched', received_by: recBy } });
@@ -3718,6 +3727,7 @@ router.post('/mtn/:id/receive', requireCap('stores.mtn.edit'), asyncHandler((req
     run(`INSERT INTO mtn_approvals (mtn_id, stage, role, approver_id, signed_name, signature, decision, reason)
          VALUES (?, 'receive', 'driver', ?, ?, ?, 'approved', ?)`,
       id, req.user.id, recBy, recSig, req.body.reason || 'Transit confirmed');
+    stock.rebuild({ transfersOf: id });     // still in transit — off one shelf, not yet on the other
   });
 
   audit.record({ userId: req.user.id, entity: 'mtn', entityId: id, action: 'receive', after: { status: 'received', received_by: recBy } });
@@ -3742,6 +3752,7 @@ router.post('/mtn/:id/accept', requireCap('stores.mtn.edit'), asyncHandler((req,
     run(`INSERT INTO mtn_approvals (mtn_id, stage, role, approver_id, signed_name, signature, decision, reason)
          VALUES (?, 'accept', 'storekeeper', ?, ?, ?, 'approved', ?)`,
       id, req.user.id, accBy, accSig, req.body.reason || 'Goods received, inspected and accepted into destination stock');
+    stock.rebuild({ transfersOf: id });     // into the receiving store
   });
 
   audit.record({ userId: req.user.id, entity: 'mtn', entityId: id, action: 'accept', after: { status: 'accepted', accepted_by: accBy } });
