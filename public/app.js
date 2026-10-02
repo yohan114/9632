@@ -13739,6 +13739,11 @@ function mtnLineHtml(line) {
       <label>Item</label>
       <input type="text" name="tdesc" id="${lid}_q" autocomplete="off" value="${esc(l.description || '')}" placeholder="Search the item catalogue, or type what is being moved…">
       <input type="hidden" name="titem" value="${l.store_item_id || ''}">
+      <!-- The category as words, for a line taken off the shelf panel: the catalogue picker below
+           is empty for it, and the stock section is decided by the category (src/lib/stock.js
+           sectionOf), so losing it would file a filter transfer under general items. The picker
+           still wins when it is set (src/lib/categories.js resolve). -->
+      <input type="hidden" name="tcattext" value="${esc(l.category || '')}">
       <div id="${lid}_menu" style="position:absolute;z-index:60;left:0;right:0;top:100%;background:var(--surface);border:1px solid var(--border);border-radius:8px;box-shadow:var(--shadow);max-height:220px;overflow:auto;display:none"></div>
     </div>
     <div class="fgrid" style="margin-top:6px">
@@ -13817,13 +13822,22 @@ async function mtnModal(existing, onDone) {
         ${fld('Transferred by', 'transferred_by', { value: v.transferred_by || '' })}
         ${fld('Received by', 'received_by', { value: v.received_by || '' })}
       </div>
-      ${existing ? '' : fld('To asset (code/text)', 'to_asset')}
+      ${existing ? '' : `<div class="fld" id="tveh">${assetPickerHtml('To asset (the vehicle it goes to)')}</div>`}
       ${field('Reason', 'reason', { value: v.reason || '' })}
       <p id="tstock" class="muted" style="font-size:12px;margin:6px 0 0;display:none"></p>
       ${existing ? '' : `<p class="muted" style="font-size:11.5px;margin:6px 0 0">${suggested ? `Next in the sequence is ${esc(suggested)} — change it to match the book.` : 'Type the number from the transfer book.'} Everything here applies to the whole note; an item that came from somewhere else can say so on its own row.</p>`}
     </div>
+    <div class="mrnsec" id="trecv-wrap" style="display:none">
+      <div class="mrnsec-h">2 · In store for this vehicle
+        <span class="muted" style="font-weight:400;font-size:12px" id="trecv-count"></span>
+        <span class="spacer"></span>
+        <label class="muted" style="font-weight:400;font-size:11.5px;display:flex;align-items:center;gap:4px">
+          <input type="checkbox" id="trecv-all" style="width:auto;margin:0"> show fully issued too</label>
+      </div>
+      <div id="trecv" class="ni-recv"></div>
+    </div>
     <div class="mrnsec">
-      <div class="mrnsec-h">2 · Items on this note <span id="tlcount" class="muted" style="font-weight:400"></span></div>
+      <div class="mrnsec-h">3 · Items on this note <span id="tlcount" class="muted" style="font-weight:400"></span></div>
       <div id="tlines"></div>
       <button class="sm" id="taddline" style="margin-top:4px">+ add another item</button>
     </div>
@@ -13862,6 +13876,71 @@ async function mtnModal(existing, onDone) {
       };
       if (lines0.length) lines0.forEach(addLine); else addLine();
       qs('#taddline', root).onclick = () => addLine();
+
+      // -- WHAT IS IN STORE FOR THIS VEHICLE, the same panel the issue form opens with
+      // (newIssueModal step 2, GET /api/stores/received). A transfer was typed from memory: the
+      // storekeeper had to know the item's catalogue spelling to find it, while the thing in
+      // front of them was a delivery sitting on the shelf against a machine. This lists exactly
+      // that — what was bought for the vehicle and has not been handed over — and a click puts
+      // it on the note with its words, its unit, its category and what is left.
+      const recvWrap = qs('#trecv-wrap', root), recvBox = qs('#trecv', root), recvCount = qs('#trecv-count', root);
+      const hVeh = qs('#tveh input[type=hidden]', root);          // the picker, on a new note
+      const noteAsset = v.to_asset_id || v.from_asset_id || null; // the note's own, when editing
+      let recvKey = '';
+      const loadReceived = async (force) => {
+        const assetId = (hVeh && hVeh.value) || noteAsset;
+        if (!assetId) { recvWrap.style.display = 'none'; recvKey = ''; return; }
+        const p = new URLSearchParams({ asset_id: String(assetId) });
+        if (qs('#trecv-all', root).checked) p.set('include_done', '1');
+        const key = p.toString();
+        if (key === recvKey && !force) return;
+        recvKey = key;
+        recvWrap.style.display = '';
+        recvBox.innerHTML = '<div class="muted" style="padding:8px 2px">Loading what is in store…</div>';
+        const CAP = 300;
+        let rows = [];
+        try { rows = await api(`/stores/received?limit=${CAP}&` + key); }
+        catch (e) { recvBox.innerHTML = `<div class="muted" style="padding:8px 2px">${esc(e.message)}</div>`; return; }
+        if (key !== recvKey) return;                              // a newer vehicle already won
+        recvCount.textContent = rows.length
+          ? ` · ${rows.length}${rows.length >= CAP ? '+ (newest ' + CAP + ')' : ''} item${rows.length === 1 ? '' : 's'}`
+          : '';
+        if (!rows.length) {
+          recvBox.innerHTML = '<div class="muted" style="padding:8px 2px">Nothing received for this vehicle is still waiting in store.</div>';
+          return;
+        }
+        recvBox.innerHTML = rows.map((r, i) => `<div class="ni-hit${r.remaining <= 0 ? ' done' : ''}" data-i="${i}">
+            <span class="ni-mrn">${esc(r.mrn_no || '')}</span>
+            ${esc(r.description)}
+            <span class="muted"> · ${esc(String(r.received_date || '').slice(0, 10))}${r.source ? ' · ' + esc(r.source) : ''}</span>
+            <span class="ni-bal${r.remaining > 0 ? ' ok' : ''}">${r.remaining <= 0 ? 'all issued' : num(r.remaining) + ' of ' + num(r.qty) + ' left'}</span>
+          </div>`).join('');
+        qsa('.ni-hit', recvBox).forEach((el) => {
+          el.onclick = () => {
+            const r = rows[+el.dataset.i];
+            if (r.remaining <= 0 && !qs('#trecv-all', root).checked) return;
+            // The whole of what is left, not one: a transfer moves the delivery, and a
+            // quantity is easier to reduce than to look up again.
+            addLine({ description: r.description, qty: r.remaining > 0 ? r.remaining : 1, unit: r.unit || 'nos', category: r.category });
+            // The blank row every new note opens with has nothing on it; it would otherwise sit
+            // above the picked items and be dropped on save for having no description.
+            qsa('.mrnline', lines).forEach((row) => {
+              const d = qs('input[name=tdesc]', row);
+              if (d && !d.value.trim() && !row.dataset.lineId && qsa('.mrnline', lines).length > 1) { row.remove(); renumber(); }
+            });
+            toast(r.description + ' added');
+          };
+        });
+      };
+      if (qs('#tveh', root)) wireAssetPicker(qs('#tveh', root), () => loadReceived(true));
+      qs('#trecv-all', root).onchange = () => loadReceived(true);
+      // The picker commits its choice internally with no change event to listen for, so watch
+      // for a settled selection the way the issue form does. Stops itself with the dialog.
+      const recvWatch = setInterval(() => {
+        if (!root.isConnected) return clearInterval(recvWatch);
+        loadReceived(false);
+      }, 600);
+      loadReceived(false);
       // Stage 4: say when the note moves stock — from one workshop's store to another's, on its date.
       if (wsd && wsd.stores_multi) {
         const storeOn = (wsId, date) => {
@@ -13893,6 +13972,8 @@ async function mtnModal(existing, onDone) {
         qty: qs('input[name=tqty]', row).value,
         unit: qs('input[name=tunit]', row).value.trim() || 'nos',
         category_id: qs('input[name=tcat]', row) ? qs('input[name=tcat]', row).value || undefined : undefined,
+        // Only read when the picker is empty: src/lib/categories.js resolve() prefers the id.
+        category: qs('input[name=tcattext]', row) ? qs('input[name=tcattext]', row).value || undefined : undefined,
         from_location: qs('input[name=tfrom]', row).value.trim() || undefined,
         to_location: qs('input[name=tto]', row).value.trim() || undefined,
         from_place: placeOf(qs('input[name=tfrom]', row).value),
@@ -13912,7 +13993,9 @@ async function mtnModal(existing, onDone) {
         const head = {
           mtn_no: d.mtn_no, txn_date: d.txn_date, from_location: d.from_location,
           to_location: d.to_location, transferred_by: d.transferred_by, received_by: d.received_by,
-          reason: d.reason, to_asset: d.to_asset, from_place: placeOf(d.from_location), to_place: placeOf(d.to_location)
+          // The picker writes `asset`/`asset_id`; the note calls that end its "to asset".
+          reason: d.reason, to_asset: d.asset || d.to_asset, to_asset_id: d.asset_id || undefined,
+          from_place: placeOf(d.from_location), to_place: placeOf(d.to_location)
         };
         try {
           if (!existing) {

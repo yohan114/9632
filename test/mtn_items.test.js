@@ -282,3 +282,43 @@ test('the categories rollup counts items, not notes', async () => {
   assert.strictEqual(total, get('SELECT COUNT(*) c FROM mtn_lines').c,
     'a note carrying a filter and a battery belongs to both categories');
 });
+
+// ---- what the form sends when an item is picked off the shelf ---------------
+// The transfer form now opens the same "in store for this vehicle" panel as the issue form
+// (public/app.js mtnModal, GET /api/stores/received). Two things it puts in the body are new:
+// the vehicle as an id rather than typed text, and the receipt's category as words.
+
+test('the vehicle picked on the note links by id, not by spelling', async () => {
+  const r = await api('/stores/mtn', { method: 'POST', body: {
+    mtn_no: 'M-PICK-1', txn_date: '2026-07-19', from_location: 'Work Shop Stores',
+    to_asset_id: HEX23, to_asset: 'hex 23 (typed differently)',
+    lines: [{ description: 'Brake Pad Set', qty: 1 }],
+  } });
+  assert.strictEqual(r.status, 201, JSON.stringify(r.body));
+  // The id wins over the text, so a code the alias table has never seen cannot unlink the note.
+  assert.strictEqual((await api('/stores/mtn/' + r.body.id)).body.mtn.to_asset_id, HEX23);
+});
+
+test('an item taken off the shelf keeps the category it was received under', async () => {
+  // The catalogue picker is empty for such a line, and the stock section is decided by the
+  // category (src/lib/stock.js sectionOf) — so without this a filter transfer would be filed
+  // under general items.
+  const r = await api('/stores/mtn', { method: 'POST', body: {
+    mtn_no: 'M-PICK-2', txn_date: '2026-07-19', from_location: 'Work Shop Stores',
+    lines: [{ description: 'Oil Filter (C-5614)', qty: 2, unit: 'nos', category: 'Filters' }],
+  } });
+  assert.strictEqual(r.status, 201, JSON.stringify(r.body));
+  assert.strictEqual(r.body.lines[0].category, 'Filters');
+});
+
+test('a category chosen in the picker beats the words the receipt came with', async () => {
+  const categories = require('../src/lib/categories');
+  const leaf = categories.ensureGeneral(categories.create({ name: 'Lubricants & Fluids' }).id);
+  const r = await api('/stores/mtn', { method: 'POST', body: {
+    mtn_no: 'M-PICK-3', txn_date: '2026-07-19', from_location: 'Work Shop Stores',
+    lines: [{ description: 'HD-68 drum', qty: 1, category: 'Filters', category_id: leaf }],
+  } });
+  assert.strictEqual(r.status, 201, JSON.stringify(r.body));
+  assert.strictEqual(r.body.lines[0].category_id, leaf);
+  assert.strictEqual(r.body.lines[0].category, 'Lubricants & Fluids');
+});
