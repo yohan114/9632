@@ -19,6 +19,27 @@ const sessionPolicy = () => ({ idleMinutes: config.sessionIdleMinutes || 0, ttlH
 
 const clientIp = (req) => req.ip || (req.connection && req.connection.remoteAddress) || 'unknown';
 
+// Where a person works, as the screens need it — in the sign-in reply and in /auth/me alike. The
+// sign-in reply used to leave these out, so until the page was next reloaded the screens took a
+// person who had just signed in for one with a single workshop: no workshop column, the whole
+// company's wording on stock screens.
+function workshopFields(user) {
+  const ws = require('../lib/workshops');
+  const scope = require('../lib/scope');
+  // Home workshop, and whether there is more than one (multi-site Stage 2): the screens show
+  // workshop pickers and filters only when there is.
+  const home = ws.byId(ws.homeOf(user));
+  return {
+    workshop: home ? { id: home.id, code: home.code, name: home.name } : null, workshopsMulti: ws.isMulti(),
+    // Stage 3: whether this person sees every workshop's job cards (always, until scoping is on).
+    seesAllWorkshops: scope.seesAllJobs(user),
+    // Stage 4: the workshops seen (null = all) — store staff see every workshop their store serves.
+    workshopsSeen: scope.reach(user),
+    // Step 2: the store whose stock this person's screens show, or null for every store.
+    ownStore: scope.ownStore(user),
+  };
+}
+
 // A session, its cookie, and the signed-in user as the screens need them. The one way into the
 // system: after a password (no second factor on the account), or after a code (/mfa/verify).
 function startSession(req, res, user, { mfaVerified = false, method = 'password', extra = {} } = {}) {
@@ -46,6 +67,7 @@ function startSession(req, res, user, { mfaVerified = false, method = 'password'
     mfaEnabled: st.enabled,
     mfaSetupRequired: st.setupRequired,
     sessionPolicy: sessionPolicy(),
+    ...workshopFields({ ...uObj, caps }),
     ...extra,
   });
 }
@@ -281,10 +303,6 @@ router.get('/me', (req, res) => {
   // The session token is the key to this account; it lives in an httpOnly cookie precisely so page
   // script cannot read it. Echoing it back in a JSON body would undo that.
   const { token: _token, ...me } = req.user;
-  // Home workshop, and whether there is more than one (multi-site Stage 2): the screens show
-  // workshop pickers and filters only when there is.
-  const ws = require('../lib/workshops');
-  const home = ws.byId(ws.homeOf(req.user));
   // effectiveUserPermissions, not userPermissions: the first reads the person's OWN levels where
   // they have any and falls back to their roles', the second only ever answers the roles' template.
   // The sign-in reply already answers the effective set, so a level given or taken from one person
@@ -292,11 +310,7 @@ router.get('/me', (req, res) => {
   // taken away reappeared, one granted vanished, and the per-person screen looked like it had done
   // nothing. The whole point of that screen is that a person can differ from their role.
   res.json({ ...me, permissions: permissions.effectiveUserPermissions(req.user), hasSignature: !!(u && u.signature),
-    workshop: home ? { id: home.id, code: home.code, name: home.name } : null, workshopsMulti: ws.isMulti(),
-    // Stage 3: whether this person sees every workshop's job cards (always, until scoping is on).
-    seesAllWorkshops: require('../lib/scope').seesAllJobs(req.user),
-    // Stage 4: the workshops seen (null = all) — store staff see every workshop their store serves.
-    workshopsSeen: require('../lib/scope').reach(req.user),
+    ...workshopFields(req.user),
     capNeeds: require('../lib/capabilities').needsFor(req.user.caps || []),
     sessionPolicy: sessionPolicy(),
     passwordPolicy: passwordPolicy.describe() });

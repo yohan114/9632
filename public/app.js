@@ -10008,6 +10008,8 @@ async function renderServiceRecords(c) {
     const CAP = 500;
     const list = await api('/filters/services?' + (q ? 'q=' + encodeURIComponent(q) + '&' : '') + 'limit=' + CAP);
     window._lastServicesList = list;
+    // Step 2: whose service each one is, once there is more than one workshop.
+    const multi = wsMulti();
     qs('#scount', c).textContent = `${list.length} service${list.length === 1 ? '' : 's'}`
       + (list.length >= CAP ? ` — showing the newest ${CAP}, search a vehicle to narrow it` : '');
 
@@ -10015,6 +10017,7 @@ async function renderServiceRecords(c) {
       [
         { label: '▾', width: '38px' },
         { label: 'Date', width: '92px' },
+      ].concat(multi ? [{ label: 'Workshop', width: '72px' }] : [], [
         { label: 'Vehicle', cls: 'desc-col' },
         { label: 'Type', cls: 'desc-col', width: '90px' },
         { label: 'Site', cls: 'desc-col' },
@@ -10023,10 +10026,11 @@ async function renderServiceRecords(c) {
         { label: 'Labor', num: true, width: '100px' },
         { label: 'Cost', num: true, width: '112px' },
         { label: 'Outside Labor Value', num: true, width: '118px' },
-      ].concat(editable ? [{ label: '', width: '52px' }] : []),
+      ]).concat(editable ? [{ label: '', width: '52px' }] : []),
       list.map((s) => `<tr data-svc="${s.id}" style="cursor:pointer" title="Click row to view simple history">
         <td style="text-align:center"><button type="button" class="btn sm ghost svc-expand-toggle" data-id="${s.id}" title="View simple history" style="padding:1px 6px;font-size:11px;font-weight:700">▶</button></td>
         <td>${esc((s.service_date || '').slice(0, 10))}</td>
+        ${multi ? `<td>${esc(s.workshop_code || '')}</td>` : ''}
         <td class="desc-col"><b>${esc(idLabel(s) || s.vehicle_label || '—')}</b></td>
         <td class="desc-col">${esc(s.service_type || '')}</td>
         <td class="desc-col">${esc(s.site_location || '')}</td>
@@ -14197,7 +14201,7 @@ async function renderStockCockpitSection(c) {
   c.innerHTML = `
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:10px">
       <div>
-        <p class="muted" style="margin:0;font-size:13px">Unified live inventory valuation, automated reorder shortfalls &amp; 1-click restock procurement across all stores.</p>
+        <p class="muted" style="margin:0;font-size:13px">${ME && ME.ownStore ? 'Stock value, items to reorder and restock requests for your store.' : 'Unified live inventory valuation, automated reorder shortfalls &amp; 1-click restock procurement across all stores.'}</p>
       </div>
       <div class="pill-row">
         <button class="sm" id="sc-refresh">🔄 Refresh</button>
@@ -14811,7 +14815,10 @@ async function wholeCompanyNote(el) {
   if (!el || !wsMulti()) return;
   const d = await workshopsData().catch(() => null);
   if (!d || !d.stores_multi) return;
-  el.textContent = 'The list below is for the whole company (all stores together). For one store, use Stock position above. Counts are made there, store by store.';
+  // Step 2: someone kept to their own store sees that store's shelf in the list too.
+  el.textContent = ME && ME.ownStore
+    ? 'The list below is for your store. Counts are made in Stock position above.'
+    : 'The list below is for the whole company (all stores together). For one store, use Stock position above. Counts are made there, store by store.';
   el.style.display = '';
 }
 

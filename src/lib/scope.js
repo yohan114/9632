@@ -139,7 +139,57 @@ function jobParam(req, res, next, id) {
   return no ? res.status(403).json(no) : next();
 }
 
+// ---- The rest of a workshop's own records (improvement plan, Step 2) --------------------------
+// Service records and tools belong to a workshop, like job cards. Stock and the things kept on a
+// store's shelf — oil, general items, tyres, batteries — belong to a store (Stage 4), and someone
+// kept to their own workshop sees their own store's.
+
+/** A service record by id: null when the person may reach it (or it does not exist), else the 403 body. */
+function serviceRefusal(user, serviceId) {
+  if (!enabled()) return null;
+  const s = get('SELECT workshop_id FROM service_jobs WHERE id = ?', serviceId);
+  if (!s || mayReach(user, s.workshop_id)) return null;
+  return refusal('service record', s.workshop_id);
+}
+
+/** A tool by id: as serviceRefusal. */
+function toolRefusal(user, toolId) {
+  if (!enabled()) return null;
+  const t = get('SELECT workshop_id FROM workshop_tools WHERE id = ?', toolId);
+  if (!t || mayReach(user, t.workshop_id)) return null;
+  return refusal('tool', t.workshop_id);
+}
+
+/**
+ * The store a person's stock screens are kept to, or null when they see every store: with the
+ * workshops kept apart and more than one store, someone outside head office sees their own.
+ */
+function ownStore(user) {
+  const stores = require('./stores');
+  if (!enabled() || headOffice(user) || !stores.isMulti()) return null;
+  return stores.homeStore(user);
+}
+
+/** A row filed with no store is the main store's — everything recorded before Stage 4 is. */
+const storeOfRow = (column) => `COALESCE(${column}, (SELECT id FROM workshops WHERE is_default = 1 ORDER BY id LIMIT 1))`;
+
+/** A WHERE fragment keeping store-filed rows to the person's store: { sql, params }, '' for all. */
+function storeFilter(user, column) {
+  const s = ownStore(user);
+  return s == null ? { sql: '', params: [] } : { sql: `${storeOfRow(column)} = ?`, params: [s] };
+}
+
+/** Something filed in `storeId`, by id: null when the person may reach it, else the 403 body. */
+function storeRefusal(user, what, storeId) {
+  const s = ownStore(user);
+  const at = storeId || workshops.defaultId();
+  if (s == null || at === s) return null;
+  const w = workshops.byId(at);
+  return { error: `This ${what} is in ${w ? w.name : 'another workshop'}'s store.`, other_workshop: w ? { id: w.id, name: w.name } : null };
+}
+
 module.exports = {
   FLAG, switchedOn, setSwitch, enabled, headOffice, storeStaff, seesAll, seesAllJobs, reach, onlyWorkshop,
   filter, mayReach, reportWorkshop, refusal, jobRefusal, mrnRefusal, jobRequestRefusal, jobParam,
+  serviceRefusal, toolRefusal, ownStore, storeOfRow, storeFilter, storeRefusal,
 };

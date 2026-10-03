@@ -67,11 +67,13 @@ router.get('/dashboard', asyncHandler((req, res) => {
       WHERE j.status = 'WORK_COMPLETE'${andOwn} ORDER BY j.id DESC`, ...own.params
   ).map((j) => ({ ...j, missing_count: costing.closureReadiness(j.id).missing.length }));
 
-  const low_stock_oil = lubricants.oilForecast().products
+  // Step 2: the oil and the batteries of your own store, when you are kept to it.
+  const ownStore = require('../lib/scope').ownStore(req.user);
+  const low_stock_oil = lubricants.oilForecast({ store: ownStore }).products
     .filter((p) => p.low)
     .map((p) => ({ id: p.id, name: p.name, unit: p.unit, balance: p.balance, reorder_level: p.reorder_level }));
 
-  const batteries_warranty = intelligence.warrantyRadar().expiring
+  const batteries_warranty = intelligence.warrantyRadar(60, { store: ownStore }).expiring
     .map((b) => ({ serial_no: b.serial_no, warranty_date: b.warranty_date, asset_code: b.asset_code }));
 
   const month_cost_by_project = all(
@@ -1527,7 +1529,7 @@ router.post('/service-outside', requireAuth, canEditServiceOutside, asyncHandler
     for (const it of items) {
       const id = toInt(it && it.id); if (!id) continue;
       // Stage 5: someone kept to their own workshop prices only its services.
-      const sv = get(`SELECT COALESCE((SELECT jx.workshop_id FROM job_cards jx WHERE jx.job_no = s.job_no AND COALESCE(s.job_no,'') <> ''
+      const sv = get(`SELECT COALESCE(s.workshop_id, (SELECT jx.workshop_id FROM job_cards jx WHERE jx.job_no = s.job_no AND COALESCE(s.job_no,'') <> ''
                               ORDER BY jx.id DESC LIMIT 1), s.store_id) w FROM service_jobs s WHERE s.id = ?`, id);
       if (sv && sv.w && !require('../lib/scope').mayReach(req.user, sv.w)) continue;
       const val = (it.outside == null || it.outside === '') ? null : toNum(it.outside);

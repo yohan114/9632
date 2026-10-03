@@ -7,8 +7,18 @@ const { asyncHandler, require_, toInt, toNum } = require('../lib/http');
 const audit = require('../lib/audit');
 const aliases = require('../lib/aliases');
 const intelligence = require('../lib/intelligence');
+const scope = require('../lib/scope');
 
 const router = express.Router();
+
+// Improvement plan, Step 2: a battery is on its store's register (batteries.store_id; none = the
+// main store's). With the workshops kept apart and more than one store, someone outside head office
+// sees and works on their own store's batteries only (src/lib/scope.js).
+router.param('id', (req, res, next, id) => {
+  const b = get('SELECT store_id FROM batteries WHERE id = ?', toInt(id));
+  const no = b && scope.storeRefusal(req.user, 'battery', b.store_id);
+  return no ? res.status(403).json(no) : next();
+});
 
 function resolveAsset(text) {
   if (!text) return null;
@@ -50,6 +60,7 @@ router.get('/', asyncHandler((req, res) => {
   const params = [];
   if (req.query.state) { clauses.push('b.state = ?'); params.push(req.query.state); }
   if (req.query.q) { clauses.push('(b.serial_no LIKE ? OR b.brand LIKE ?)'); params.push('%' + req.query.q + '%', '%' + req.query.q + '%'); }
+  { const own = scope.storeFilter(req.user, 'b.store_id'); if (own.sql) { clauses.push(own.sql); params.push(...own.params); } }
   const where = clauses.length ? 'WHERE ' + clauses.join(' AND ') : '';
   // The list omits the photo blob (only a has_photo flag) to keep the payload light;
   // the full image is returned by GET /:id.
@@ -75,10 +86,11 @@ router.post('/', requireCap('batteries.register'), asyncHandler((req, res) => {
   const state = b.state || (assetId ? 'installed' : 'in_store');
   const result = tx(() => {
     const info = run(
-      `INSERT INTO batteries (serial_no, brand, capacity_ah, condition, purchase_date, warranty_date, current_asset_id, state, photo_path)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO batteries (serial_no, brand, capacity_ah, condition, purchase_date, warranty_date, current_asset_id, state, photo_path, store_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       b.serial_no, b.brand || null, toNum(b.capacity_ah), b.condition === 'old' ? 'old' : 'new',
-      b.purchase_date || null, b.warranty_date || null, assetId || null, state, photos[0] || null
+      b.purchase_date || null, b.warranty_date || null, assetId || null, state, photos[0] || null,
+      require('../lib/stores').homeStore(req.user)
     );
     const batId = info.lastInsertRowid;
     let seq = 0;
@@ -99,13 +111,14 @@ router.post('/', requireCap('batteries.register'), asyncHandler((req, res) => {
   res.status(201).json(get('SELECT * FROM batteries WHERE id = ?', result));
 }));
 
-router.get('/warranty-radar', asyncHandler((_req, res) => {
-  res.json(intelligence.warrantyRadar());
+router.get('/warranty-radar', asyncHandler((req, res) => {
+  res.json(intelligence.warrantyRadar(60, { store: scope.ownStore(req.user) }));
 }));
 
 router.get('/whereis/:serial', asyncHandler((req, res) => {
   const battery = get('SELECT * FROM batteries WHERE serial_no = ?', req.params.serial);
   if (!battery) return res.status(404).json({ error: 'Serial not found' });
+  { const no = scope.storeRefusal(req.user, 'battery', battery.store_id); if (no) return res.status(403).json(no); }
   const current_asset = battery.current_asset_id ? get('SELECT * FROM assets WHERE id = ?', battery.current_asset_id) : null;
   res.json({ serial: req.params.serial, battery, current_asset });
 }));

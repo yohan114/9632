@@ -23,7 +23,9 @@ const wsIs = (col, ws) => (ws ? ` AND COALESCE(${col}, ${MAIN_WS}) = ${Number(ws
 // A service is its job card's (found by the number written on it), else its store's.
 // A tyre or battery: its job card's workshop, else its store's.
 const TB_WS = 'COALESCE((SELECT jt.workshop_id FROM job_cards jt WHERE jt.id = i.job_id), i.store_id)';
-const SERVICE_WS = (s) => `COALESCE((SELECT jx.workshop_id FROM job_cards jx WHERE jx.job_no = ${s}.job_no AND COALESCE(${s}.job_no,'') <> '' ORDER BY jx.id DESC LIMIT 1), ${s}.store_id)`;
+// A service's workshop: its own (Step 2, src/db/index.js — set by the same rule as below), else its
+// job card's, else the store it drew from.
+const SERVICE_WS = (s) => `COALESCE(${s}.workshop_id, (SELECT jx.workshop_id FROM job_cards jx WHERE jx.job_no = ${s}.job_no AND COALESCE(${s}.job_no,'') <> '' ORDER BY jx.id DESC LIMIT 1), ${s}.store_id)`;
 const MONEY = '#,##0.00';
 const MONTHS = ['', 'January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 const SIG_TITLES = [

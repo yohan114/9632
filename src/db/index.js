@@ -771,6 +771,7 @@ function migrate() {
   transferStockByStage();
   labourLifecycleProcess();
   toolsAndToolboxesProcess();
+  ownRecordsStep2();
 
   // Seed the RBAC matrix once (safe to require here — db exports are already set).
   // Sections split off a shared switch start at that switch's level (access plan, Part 1) — before
@@ -1143,6 +1144,31 @@ function storesUnitsPart4() {
     if (grn.length || issues.length) require('../lib/stock').sync({ grn, tyre_battery_issues: issues });
     db.prepare("INSERT INTO settings (key, value) VALUES ('stock_tb_by_spec', ?)").run(JSON.stringify({ at: new Date().toISOString(), grn: grn.length, issues: issues.length }));
   }
+}
+
+// Improvement plan, Step 2: a service record and a tool belong to a workshop, like a job card, so a
+// workshop kept apart sees only its own (src/lib/scope.js).
+//   - a service record: its job card's workshop; with no card, the store it drew from (a store is
+//     known by the workshop that owns it) — the rule the Stage 5 reports already used — else the
+//     main workshop. The route writes it on every new record; the trigger covers anything else.
+//   - a tool: the workshop it was entered for; a mechanic's toolbox without one, the mechanic's
+//     workshop; else the main workshop.
+// Nothing moves for anyone while the workshops are not kept apart.
+function ownRecordsStep2() {
+  const DEF = '(SELECT id FROM workshops WHERE is_default = 1 ORDER BY id LIMIT 1)';
+  const jobWs = (s) => `(SELECT j.workshop_id FROM job_cards j WHERE j.job_no = ${s}.job_no AND COALESCE(${s}.job_no, '') <> '' ORDER BY j.id DESC LIMIT 1)`;
+  ensureColumn('service_jobs', 'workshop_id', 'INTEGER REFERENCES workshops(id)');
+  db.exec(`UPDATE service_jobs SET workshop_id = COALESCE(${jobWs('service_jobs')}, store_id, ${DEF}) WHERE workshop_id IS NULL;
+           CREATE INDEX IF NOT EXISTS idx_service_jobs_ws ON service_jobs(workshop_id);
+           CREATE TRIGGER IF NOT EXISTS trg_service_jobs_ws AFTER INSERT ON service_jobs WHEN NEW.workshop_id IS NULL
+           BEGIN UPDATE service_jobs SET workshop_id = COALESCE(${jobWs('NEW')}, NEW.store_id, ${DEF}) WHERE id = NEW.id; END;`);
+
+  const mechWs = require('../lib/workshops').mechanicWorkshopSql('m');
+  const toolWs = (t) => `COALESCE((SELECT ${mechWs} FROM mechanics m WHERE m.id = ${t}.mechanic_id), ${DEF})`;
+  db.exec(`UPDATE workshop_tools SET workshop_id = ${toolWs('workshop_tools')} WHERE workshop_id IS NULL;
+           CREATE INDEX IF NOT EXISTS idx_tools_ws ON workshop_tools(workshop_id);
+           CREATE TRIGGER IF NOT EXISTS trg_tools_ws AFTER INSERT ON workshop_tools WHEN NEW.workshop_id IS NULL
+           BEGIN UPDATE workshop_tools SET workshop_id = ${toolWs('NEW')} WHERE id = NEW.id; END;`);
 }
 
 // 4-Document Store Lifecycle (MRN, GRN, MIN, MTN) with multi-stage signoffs and PDF support.

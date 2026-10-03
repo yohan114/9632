@@ -135,17 +135,20 @@ function needsAttentionSummary() {
 }
 
 // ---- battery warranty radar (≤60 days or configurable window) ------------
-function warrantyRadar(daysAhead = 60) {
+/** opts.store: one store's batteries only (a battery with no store is the main store's). */
+function warrantyRadar(daysAhead = 60, opts = {}) {
   const today = new Date().toISOString().slice(0, 10);
   const targetDate = new Date(Date.now() + daysAhead * 86400 * 1000).toISOString().slice(0, 10);
+  const inStore = opts.store ? ` AND ${require('./scope').storeOfRow('b.store_id')} = ?` : '';
+  const sp = opts.store ? [opts.store] : [];
   const expiring = all(
     `SELECT b.*, a.code AS current_asset_code, a.code AS asset_code
        FROM batteries b LEFT JOIN assets a ON a.id = b.current_asset_id
       WHERE b.warranty_date IS NOT NULL AND b.warranty_date >= ? AND b.warranty_date <= ?
-        AND b.state <> 'decommissioned'
-      ORDER BY b.warranty_date`, today, targetDate
+        AND b.state <> 'decommissioned'${inStore}
+      ORDER BY b.warranty_date`, today, targetDate, ...sp
   );
-  const idle_in_store = all(`SELECT * FROM batteries WHERE state = 'in_store' ORDER BY serial_no`);
+  const idle_in_store = all(`SELECT b.* FROM batteries b WHERE b.state = 'in_store'${inStore} ORDER BY b.serial_no`, ...sp);
   return { expiring, idle_in_store };
 }
 

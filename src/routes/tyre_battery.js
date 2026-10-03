@@ -11,19 +11,24 @@ const { requireAuth } = require('../lib/auth');
 const { asyncHandler, toInt, toNum } = require('../lib/http');
 
 const router = express.Router();
+const scope = require('../lib/scope');
+// Improvement plan, Step 2: an issue is its store's. Someone kept to their own workshop reads the
+// ledger of their own store; the price book is the company's and stays shared.
+const ownIssues = (user) => { const f = scope.storeFilter(user, 'i.store_id'); return { sql: f.sql ? ` AND ${f.sql}` : '', params: f.params }; };
 const KINDS = ['tyre', 'battery'];
 const MONTH_RE = /^\d{4}-\d{2}$/;
 const reqKind = (v) => (KINDS.includes(String(v)) ? String(v) : null);
 
 // Landing summary: totals + how much of the ledger is priced (by category or per-issue).
-router.get('/summary', requireAuth, asyncHandler((_req, res) => {
+router.get('/summary', requireAuth, asyncHandler((req, res) => {
+  const own = ownIssues(req.user);
   const out = {};
   for (const kind of KINDS) {
-    const base = get('SELECT COUNT(*) issues, COALESCE(SUM(qty),0) qty, COUNT(DISTINCT category_norm) categories FROM tyre_battery_issues WHERE kind = ?', kind);
+    const base = get(`SELECT COUNT(*) issues, COALESCE(SUM(qty),0) qty, COUNT(DISTINCT category_norm) categories FROM tyre_battery_issues i WHERE kind = ?${own.sql}`, kind, ...own.params);
     const priced = get(
       `SELECT COUNT(*) n FROM tyre_battery_issues i
          LEFT JOIN tyre_battery_prices p ON p.kind = i.kind AND p.category_norm = i.category_norm
-        WHERE i.kind = ? AND COALESCE(i.unit_price, p.unit_price, 0) > 0`, kind);
+        WHERE i.kind = ? AND COALESCE(i.unit_price, p.unit_price, 0) > 0${own.sql}`, kind, ...own.params);
     const pricedCats = get('SELECT COUNT(*) n FROM tyre_battery_prices WHERE kind = ? AND COALESCE(unit_price,0) > 0', kind);
     out[kind] = { issues: base.issues, qty: base.qty, categories: base.categories, priced_issues: priced.n, priced_categories: pricedCats.n };
   }
@@ -34,13 +39,14 @@ router.get('/summary', requireAuth, asyncHandler((_req, res) => {
 router.get('/categories', requireAuth, asyncHandler((req, res) => {
   const kind = reqKind(req.query.kind);
   if (!kind) return res.status(400).json({ error: 'kind must be tyre or battery' });
+  const own = ownIssues(req.user);
   const rows = all(
     `SELECT i.category_norm, MAX(i.category) category, COUNT(*) issues, ROUND(COALESCE(SUM(i.qty),0),2) qty,
             MAX(p.unit_price) unit_price
        FROM tyre_battery_issues i
        LEFT JOIN tyre_battery_prices p ON p.kind = i.kind AND p.category_norm = i.category_norm
-      WHERE i.kind = ? AND COALESCE(i.category_norm,'') <> ''
-      GROUP BY i.category_norm ORDER BY issues DESC, i.category_norm`, kind);
+      WHERE i.kind = ? AND COALESCE(i.category_norm,'') <> ''${own.sql}
+      GROUP BY i.category_norm ORDER BY issues DESC, i.category_norm`, kind, ...own.params);
   res.json({ kind, categories: rows });
 }));
 
@@ -48,13 +54,14 @@ router.get('/categories', requireAuth, asyncHandler((req, res) => {
 router.get('/categories/print.html', requireAuth, asyncHandler((req, res) => {
   const kind = reqKind(req.query.kind);
   if (!kind) return res.status(400).send('kind must be tyre or battery');
+  const own = ownIssues(req.user);
   const rows = all(
     `SELECT i.category_norm, MAX(i.category) category, COUNT(*) issues, ROUND(COALESCE(SUM(i.qty),0),2) qty,
             MAX(p.unit_price) unit_price
        FROM tyre_battery_issues i
        LEFT JOIN tyre_battery_prices p ON p.kind = i.kind AND p.category_norm = i.category_norm
-      WHERE i.kind = ? AND COALESCE(i.category_norm,'') <> ''
-      GROUP BY i.category_norm ORDER BY issues DESC, i.category_norm`, kind);
+      WHERE i.kind = ? AND COALESCE(i.category_norm,'') <> ''${own.sql}
+      GROUP BY i.category_norm ORDER BY issues DESC, i.category_norm`, kind, ...own.params);
   const esc = (v) => String(v == null ? '' : v).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
   const money = (n) => (Number(n) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const title = kind === 'tyre' ? 'Tyre Category Prices' : 'Battery Category Prices';
@@ -98,6 +105,7 @@ router.get('/issues', requireAuth, asyncHandler((req, res) => {
   if (!kind) return res.status(400).json({ error: 'kind must be tyre or battery' });
   const clauses = ['i.kind = ?'];
   const params = [kind];
+  { const f = scope.storeFilter(req.user, 'i.store_id'); if (f.sql) { clauses.push(f.sql); params.push(...f.params); } }
   if (req.query.month) {
     if (!MONTH_RE.test(String(req.query.month))) return res.status(400).json({ error: 'month must be YYYY-MM' });
     clauses.push("substr(i.issue_date,1,7) = ?"); params.push(req.query.month);
@@ -154,8 +162,9 @@ router.post('/prices', requireAuth, require('../lib/permissions').requireModule(
 // Per-issue price override. Body: { unit_price } — null/'' clears it (falls back to category price).
 router.patch('/issues/:id', requireAuth, asyncHandler((req, res) => {
   const id = toInt(req.params.id);
-  const row = get('SELECT id FROM tyre_battery_issues WHERE id = ?', id);
+  const row = get('SELECT id, store_id FROM tyre_battery_issues WHERE id = ?', id);
   if (!row) return res.status(404).json({ error: 'Issue not found' });
+  { const no = scope.storeRefusal(req.user, 'issue', row.store_id); if (no) return res.status(403).json(no); }
   const raw = (req.body || {}).unit_price;
   const n = toNum(raw);
   const price = (raw == null || raw === '' || !(n >= 0)) ? null : n; // negatives are invalid → clear the override
