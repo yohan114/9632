@@ -413,13 +413,14 @@ function round2(n) {
 /**
  * Standard project cost rollup across all job cards belonging to a project.
  * Locks the row schema across single project view and consolidated reports.
+ * opts.ws: only one workshop's cards (or a list of workshops' — src/lib/scope.js wsSql).
  */
-function projectCost(projectId) {
+function projectCost(projectId, opts = {}) {
   const cost = get(
     `SELECT COALESCE(SUM(labour_cost),0) labour, COALESCE(SUM(material_cost),0) material,
             COALESCE(SUM(oil_cost),0) oil, COALESCE(SUM(general_cost),0) general,
             COALESCE(SUM(external_cost),0) external, COALESCE(SUM(total_cost),0) total
-       FROM job_cards WHERE project_id = ?`, projectId
+       FROM job_cards WHERE project_id = ?${require('./scope').wsSql('workshop_id', opts.ws)}`, projectId
   ) || { labour: 0, material: 0, oil: 0, general: 0, external: 0, total: 0 };
   return {
     labour: round2(cost.labour),
@@ -434,10 +435,10 @@ function projectCost(projectId) {
 /**
  * Consolidated project cost summary across all registered projects.
  */
-function projectsCostSummary() {
+function projectsCostSummary(opts = {}) {
   const projects = all('SELECT id, code, name FROM projects ORDER BY name');
   return projects.map((p) => {
-    const c = projectCost(p.id);
+    const c = projectCost(p.id, opts);
     return {
       project_id: p.id,
       project_code: p.code || '',

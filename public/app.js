@@ -1357,6 +1357,7 @@ async function dashMain(c) {
   if (G.length) S.push(`<div class="grid">${G.join('')}</div>`);
   // Live overview (charts + activity) — additive, powered by /api/dashboard/overview.
   if (canView('reports')) S.push(`<div class="card section"><h3 style="margin-top:0">📊 Live Overview</h3>
+    ${ME && ME.workshopsSeen ? `<p class="muted" style="margin:-4px 0 8px;font-size:12.5px">For your workshop${ME.workshopsSeen.length > 1 ? 's' : ''} only.</p>` : ''}
     <div class="grid" style="grid-template-columns:1.5fr 1fr 1fr;gap:12px">
       <div><div class="muted" style="font-size:12px">Monthly cost trend</div><div style="position:relative;height:220px"><canvas id="dc-trend"></canvas></div></div>
       <div><div class="muted" style="font-size:12px">Job status (90 days)</div><div style="position:relative;height:220px"><canvas id="dc-jobs"></canvas></div></div>
@@ -1391,7 +1392,11 @@ async function dashRenderOverview() {
     if (qs('#dc-trend') && tr.length) {
       _dcCharts.trend = new Chart(qs('#dc-trend').getContext('2d'), {
         type: 'bar',
-        data: { labels: tr.map((t) => t.month), datasets: [['Parts', 'parts_cost', '#1d5a73'], ['Oil', 'oil_cost', '#f2a900'], ['Filters', 'filter_cost', '#3c7d5a'], ['Labour', 'labour_cost', '#6a7379']].map((d) => ({ label: d[0], backgroundColor: d[2], data: tr.map((t) => Number(t[d[1]]) || 0) })) },
+        // Step 2b: one workshop's own figures carry its services (filters are in them) as a bar of their own.
+        data: { labels: tr.map((t) => t.month), datasets: [['Parts', 'parts_cost', '#1d5a73'], ['Oil', 'oil_cost', '#f2a900'], ['Filters', 'filter_cost', '#3c7d5a'], ['Labour', 'labour_cost', '#6a7379']]
+          .concat(tr.some((t) => t.service_cost != null) ? [['Services', 'service_cost', '#8a5a9e']] : [])
+          .filter((d) => !(d[1] === 'filter_cost' && tr.some((t) => t.service_cost != null)))
+          .map((d) => ({ label: d[0], backgroundColor: d[2], data: tr.map((t) => Number(t[d[1]]) || 0) })) },
         options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom', labels: { boxWidth: 12, font: { size: 10 } } } }, scales: { x: { stacked: true }, y: { stacked: true, beginAtZero: true, ticks: { callback: (v) => moneyC(v) } } } },
       });
     }
@@ -12507,7 +12512,9 @@ routes.progress = async (c) => {
     const dt = qs('#pgdate').value || today;
     history.replaceState(null, '', '#/progress?date=' + dt);
     qs('#pgprint').href = '/api/reports/daily-progress/print.html?date=' + encodeURIComponent(dt) + repWsQ();
-    qs('#pgjobs').href = '/api/reports/jobs-summary.html?from=' + encodeURIComponent(dt);
+    qs('#pgjobs').href = '/api/reports/jobs-summary.html?from=' + encodeURIComponent(dt) + repWsQ();
+    // Step 2b: the ongoing-jobs list is the workshop picked above, like the day's report.
+    for (const id of ['#pgongx', '#pgong']) qs(id).href = qs(id).getAttribute('href').split('?')[0] + (REP_WS ? '?workshop_id=' + encodeURIComponent(REP_WS) : '');
     let rep;
     try { rep = await api('/reports/daily-progress?date=' + encodeURIComponent(dt) + repWsQ()); }
     catch (e) { qs('#pgbody').innerHTML = `<div class="card err">${esc(e.message)}</div>`; return; }
