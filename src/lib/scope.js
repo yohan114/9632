@@ -188,8 +188,26 @@ function storeRefusal(user, what, storeId) {
   return { error: `This ${what} is in ${w ? w.name : 'another workshop'}'s store.`, other_workshop: w ? { id: w.id, name: w.name } : null };
 }
 
+// ---- Reports (improvement plan, Step 2b) ------------------------------------------------------
+
+/** Whose report this is: one workshop's id, or null for the whole company (reportWorkshop). */
+const reportWs = (user, asked) => reportWorkshop(user, asked).ws;
+
+/**
+ * SQL keeping a report's rows to `ws`: null (every workshop), one workshop id, or a list of them
+ * (scope.reach). '' when it is every workshop, else ' AND …'. A row with no workshop is the main
+ * one's, as everything recorded before there were several is. Ids are numbers, so they are written
+ * into the SQL as they are.
+ */
+function wsSql(column, ws) {
+  if (ws == null) return '';
+  const ids = [].concat(ws).map(Number).filter(Number.isInteger);
+  if (!ids.length) return ' AND 0';
+  return ` AND ${storeOfRow(column)} ${ids.length === 1 ? `= ${ids[0]}` : `IN (${ids.join(',')})`}`;
+}
+
 module.exports = {
   FLAG, switchedOn, setSwitch, enabled, headOffice, storeStaff, seesAll, seesAllJobs, reach, onlyWorkshop,
   filter, mayReach, reportWorkshop, refusal, jobRefusal, mrnRefusal, jobRequestRefusal, jobParam,
-  serviceRefusal, toolRefusal, ownStore, storeOfRow, storeFilter, storeRefusal,
+  serviceRefusal, toolRefusal, ownStore, storeOfRow, storeFilter, storeRefusal, reportWs, wsSql,
 };
