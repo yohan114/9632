@@ -656,6 +656,21 @@ function balanceOf(section, itemKey, store) {
 }
 
 /**
+ * What every item of a section holds in one store, by item key — balanceOf for a whole section at
+ * once (improvement plan, Step 2: the older books show one store's shelf to someone kept to it).
+ */
+function storeBalances(section, store) {
+  const st = storeWhere('', store);
+  return new Map(all(
+    `SELECT item_key, ROUND(COALESCE(SUM(CASE WHEN counts = 0 THEN 0 WHEN kind IN ('in','opening','adjust') THEN qty ELSE -qty END),0),2) v
+       FROM stock_moves WHERE section = ?${st.sql} GROUP BY item_key`, section, ...st.params).map((r) => [r.item_key, r.v]));
+}
+
+/** A store's reorder levels for a section, by item key (Stage 4: each store sets its own). */
+const storeLevels = (section, store) => new Map(all(
+  'SELECT item_key, level FROM store_reorder WHERE store_id = ? AND section = ?', store, section).map((r) => [r.item_key, r.level]));
+
+/**
  * Per-item position within a section. opts.store: one store's shelf, with its reorder level
  * (reorder_level) — and opts.low keeps only what is at or under it. With no store and opts.byStore,
  * each item also says what every store holds (by_store).
@@ -966,4 +981,4 @@ function receivedLine(grnId) {
 }
 
 module.exports = { filterParts, filterKey, SECTIONS, PREFIX, sectionOf, itemKey, rebuild, summary, items, moves, openingRules,
-  nextCode, syncItems, searchItems, receivedLines, receivedLine, balanceOf, recordCount, valueOf, sync, SOURCES };
+  nextCode, syncItems, searchItems, receivedLines, receivedLine, balanceOf, storeBalances, storeLevels, recordCount, valueOf, sync, SOURCES };

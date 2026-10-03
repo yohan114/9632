@@ -32,6 +32,12 @@ const stock = require('../lib/stock');
 const stockRule = require('../lib/stock_rule');
 
 const fail = (status, msg) => { const e = new Error(msg); e.status = status; throw e; };
+const scope = require('../lib/scope');
+// Improvement plan, Step 2: requests already keep to their workshop (Stage 3). The tyre register and
+// the old units are a store's — a tyre with no store is the main store's — so someone kept to their
+// own workshop sees and works on their own store's (src/lib/scope.js).
+const refuse = (no) => { const e = new Error(no.error); e.status = 403; e.data = no; throw e; };
+const mustReachTyre = (user, tyre) => { const no = tyre && scope.storeRefusal(user, 'tyre', tyre.store_id); if (no) refuse(no); };
 
 const router = express.Router();
 const KINDS = ['tyre', 'battery'];
@@ -258,6 +264,7 @@ router.get('/requests/:id', requireAuth, readsTB, asyncHandler((req, res) => {
 router.post('/requests/:id/purchase', requireModule('tb_purchase'), asyncHandler((req, res) => {
   const m = get('SELECT * FROM mrn WHERE id = ? AND tb_kind IS NOT NULL', toInt(req.params.id));
   if (!m) return res.status(404).json({ error: 'That is not a tyre or battery request' });
+  { const no = scope.mrnRefusal(req.user, m.id); if (no) return res.status(403).json(no); }
   if (m.approval_status !== 'approved') {
     return res.status(409).json({
       error: `Request ${m.mrn_no} is ${m.approval_status || 'not approved'} — nothing is sent to be bought before it is approved`,
@@ -299,6 +306,7 @@ router.post('/issue', requireModule('tb_issue'), asyncHandler((req, res) => {
        LEFT JOIN tb_specs s ON s.id = r.spec_id
       WHERE l.id = ?`, toInt(b.mrn_line_id));
   if (!line) return res.status(404).json({ error: 'That is not a tyre or battery request line' });
+  { const no = scope.mrnRefusal(req.user, line.mrn_id); if (no) return res.status(403).json(no); }
 
   // NOTHING LEAVES THE STORE ON A REQUEST NOBODY HAS APPROVED. This is the whole point of the
   // module: the old register recorded issues with no request behind them at all.
@@ -470,6 +478,7 @@ router.post('/returns', requireModule('tb_issue'), asyncHandler((req, res) => {
   require_(b, ['issue_id', 'condition']);
   const issue = get('SELECT * FROM tyre_battery_issues WHERE id = ?', toInt(b.issue_id));
   if (!issue) return res.status(404).json({ error: 'No such issue' });
+  { const no = scope.storeRefusal(req.user, 'issue', issue.store_id); if (no) return res.status(403).json(no); }
   const id = tx(() => recordReturn(issue, b, req.user));
   res.status(201).json(get('SELECT * FROM tb_returns WHERE id = ?', id));
 }));
@@ -489,6 +498,7 @@ router.get('/tyres', requireAuth, permissions.requireView('stores'), asyncHandle
     const like = '%' + String(req.query.q).trim() + '%';
     w.push('(t.serial_no LIKE ? OR s.label LIKE ? OR a.code LIKE ? OR a.registration LIKE ?)'); p.push(like, like, like, like);
   }
+  { const own = scope.storeFilter(req.user, 't.store_id'); if (own.sql) { w.push(own.sql); p.push(...own.params); } }
   res.json(all(`SELECT t.id, t.serial_no, t.state, t.position, t.current_asset_id, t.store_id, t.warranty_date,
                        s.label AS spec, a.code AS asset_code, a.registration AS asset_reg,
                        (SELECT COUNT(*) FROM tyre_photos f WHERE f.tyre_id = t.id) AS photo_count
@@ -501,6 +511,7 @@ router.get('/tyres/:id', requireAuth, permissions.requireView('stores', 'tb_issu
   const tyre = get(`SELECT t.*, s.label AS spec, a.code AS asset_code, a.registration AS asset_reg
                       FROM tyres t LEFT JOIN tb_specs s ON s.id = t.spec_id LEFT JOIN assets a ON a.id = t.current_asset_id WHERE t.id = ?`, id);
   if (!tyre) return res.status(404).json({ error: 'No such tyre' });
+  mustReachTyre(req.user, tyre);
   const events = all(`SELECT e.*, af.code AS from_asset_code, at2.code AS to_asset_code, u.username
                         FROM tyre_events e LEFT JOIN assets af ON af.id = e.from_asset_id LEFT JOIN assets at2 ON at2.id = e.to_asset_id
                         LEFT JOIN users u ON u.id = e.user_id WHERE e.tyre_id = ? ORDER BY e.id DESC`, id);
@@ -510,6 +521,7 @@ router.get('/tyres/:id', requireAuth, permissions.requireView('stores', 'tb_issu
 router.post('/tyres/:id/photos', requireModule('tb_issue'), asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   if (!units.byId('tyre', id)) return res.status(404).json({ error: 'No such tyre' });
+  mustReachTyre(req.user, units.byId('tyre', id));
   const photos = (Array.isArray(req.body.photos) ? req.body.photos : [req.body.photo]).filter(Boolean);
   if (!photos.length) return res.status(400).json({ error: 'No photo given' });
   const err = unitPhotos.add('tyre', id, photos, req.user.id, req.body.note);
@@ -520,6 +532,7 @@ router.post('/tyres/:id/photos', requireModule('tb_issue'), asyncHandler((req, r
 
 router.delete('/tyres/:id/photos/:photoId', requireModule('tb_issue'), asyncHandler((req, res) => {
   const id = toInt(req.params.id);
+  mustReachTyre(req.user, units.byId('tyre', id));
   if (!unitPhotos.remove('tyre', id, toInt(req.params.photoId))) return res.status(404).json({ error: 'Photo not found' });
   audit.record({ userId: req.user.id, entity: 'tyre', entityId: id, action: 'delete_photo' });
   res.json(unitPhotos.list('tyre', id));
@@ -531,6 +544,7 @@ router.post('/tyres/:id/event', requireModule('tb_issue'), asyncHandler((req, re
   const b = req.body || {};
   const tyre = units.byId('tyre', toInt(req.params.id));
   if (!tyre) return res.status(404).json({ error: 'No such tyre' });
+  mustReachTyre(req.user, tyre);
   const type = String(b.event_type || '');
   const date = /^\d{4}-\d{2}-\d{2}$/.test(String(b.event_date || '')) ? b.event_date : new Date().toISOString().slice(0, 10);
   const ctx = { userId: req.user.id, date, reason: clean(b.reason) };
@@ -562,6 +576,7 @@ router.post('/tyres/:id/event', requireModule('tb_issue'), asyncHandler((req, re
  *  quietly disappearing — an old battery is worth money and an old tyre may be retreadable. */
 router.get('/returns/outstanding', requireAuth, readsTB, asyncHandler((req, res) => {
   const kind = kindOf(req.query.kind);
+  const own = scope.storeFilter(req.user, 'i.store_id');
   res.json(all(
     `SELECT i.id AS issue_id, i.kind, i.issue_date, i.qty, i.category AS spec_label, i.serial_no,
             i.position, i.min_number AS mrn_no, a.code AS asset_code, a.registration, i.issued_by
@@ -569,16 +584,19 @@ router.get('/returns/outstanding', requireAuth, readsTB, asyncHandler((req, res)
        LEFT JOIN assets a ON a.id = i.asset_id
       WHERE i.source = 'request' AND i.kind IN ('tyre','battery')
         AND NOT EXISTS (SELECT 1 FROM tb_returns r WHERE r.issue_id = i.id)
-        ${kind ? 'AND i.kind = ?' : ''}
+        ${kind ? 'AND i.kind = ?' : ''}${own.sql ? ` AND ${own.sql}` : ''}
       ORDER BY i.issue_date, i.id
-      LIMIT ${toInt(req.query.limit, 200)}`, ...(kind ? [kind] : [])));
+      LIMIT ${toInt(req.query.limit, 200)}`, ...(kind ? [kind] : []), ...own.params));
 }));
 
 /** What the store is holding in old units, by what it decided about them. */
-router.get('/returns/summary', requireAuth, readsTB, asyncHandler((_req, res) => {
+router.get('/returns/summary', requireAuth, readsTB, asyncHandler((req, res) => {
+  const own = scope.storeFilter(req.user, 'i.store_id');
   res.json(all(
-    `SELECT kind, condition, COUNT(*) n
-       FROM tb_returns GROUP BY kind, condition ORDER BY kind, n DESC`));
+    `SELECT r.kind, r.condition, COUNT(*) n
+       FROM tb_returns r LEFT JOIN tyre_battery_issues i ON i.id = r.issue_id
+      ${own.sql ? `WHERE ${own.sql}` : ''}
+      GROUP BY r.kind, r.condition ORDER BY r.kind, n DESC`, ...own.params));
 }));
 
 module.exports = router;

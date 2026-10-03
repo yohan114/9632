@@ -13,11 +13,33 @@ const audit = require('../lib/audit');
 const emitter = require('../lib/emitter');
 const categories = require('../lib/categories');
 const stores = require('../lib/stores');
+const scope = require('../lib/scope');
+const stock = require('../lib/stock');
 
 const router = express.Router();
 
 // green OK / orange Low / red Critical
 const statusOf = (balance, min) => (balance <= 0 ? 'critical' : (balance <= (Number(min) || 0) ? 'low' : 'ok'));
+
+// Improvement plan, Step 2: the balance and minimum on store_items are the company's. Someone kept
+// to their own store (src/lib/scope.js) is shown that store's shelf (src/lib/stock.js) and the
+// level it reorders at; the catalogue itself — names, numbers, prices — stays the company's.
+function onOwnShelf(user, rows) {
+  const store = scope.ownStore(user);
+  if (!store) return rows;
+  const shelves = {};
+  const shelf = (sec) => shelves[sec] || (shelves[sec] = { bal: stock.storeBalances(sec, store), lvl: stock.storeLevels(sec, store) });
+  for (const r of rows) {
+    const sec = stock.sectionOf(r.category);
+    const key = stock.itemKey(sec, r.name);
+    r.balance = shelf(sec).bal.get(key) || 0;
+    r.min_stock = shelf(sec).lvl.get(key) || 0;
+    r.total_value = Math.round(r.balance * (Number(r.unit_cost) || 0) * 100) / 100;
+    r.status = statusOf(r.balance, r.min_stock);
+  }
+  return rows;
+}
+const isLow = (r) => r.balance <= (Number(r.min_stock) || 0);
 
 // total_value is a generated column (absent from PRAGMA table_info) — compute it
 // explicitly so the SELECT is unambiguous regardless of the SQLite build.
@@ -27,9 +49,9 @@ const ITEM_COLS = `id, item_no, name, category, category_id, unit, balance, min_
   (SELECT sub.name FROM item_categories sub WHERE sub.id = store_items.category_id) AS sub_category`;
 
 // One item with its computed status attached.
-const oneItem = (id) => {
+const oneItem = (id, user) => {
   const r = get(`SELECT ${ITEM_COLS} FROM store_items WHERE id = ?`, id);
-  if (r) r.status = statusOf(r.balance, r.min_stock);
+  if (r) { r.status = statusOf(r.balance, r.min_stock); onOwnShelf(user, [r]); }
   return r;
 };
 
@@ -43,13 +65,15 @@ router.get('/items', asyncHandler((req, res) => {
     params.push(like, like, like, like);
   }
   if (req.query.category) { clauses.push('category = ?'); params.push(req.query.category); }
-  if (req.query.low_stock === '1') clauses.push('balance <= COALESCE(min_stock, 0)');
+  const own = !!scope.ownStore(req.user);
+  if (req.query.low_stock === '1' && !own) clauses.push('balance <= COALESCE(min_stock, 0)');
   const rows = all(
     `SELECT ${ITEM_COLS} FROM store_items WHERE ${clauses.join(' AND ')} ORDER BY name LIMIT ${toInt(req.query.limit, 1000)}`,
     ...params
   );
   for (const r of rows) r.status = statusOf(r.balance, r.min_stock);
-  res.json(rows);
+  onOwnShelf(req.user, rows);
+  res.json(own && req.query.low_stock === '1' ? rows.filter(isLow) : rows);
 }));
 
 // Distinct categories (for the filter dropdown).
@@ -62,6 +86,8 @@ router.get('/items/:id', asyncHandler((req, res) => {
   const item = get(`SELECT ${ITEM_COLS} FROM store_items WHERE id = ? AND is_general = 1`, id);
   if (!item) return res.status(404).json({ error: 'Item not found' });
   item.status = statusOf(item.balance, item.min_stock);
+  onOwnShelf(req.user, [item]);
+  const own = scope.storeFilter(req.user, 't.store_id');
   // Newest movement first, BY DATE. Ordering on the row id instead put imported history in
   // whatever order it happened to be loaded, so the running balance beside it read as though
   // it jumped about — an item's ledger has rows from several imports interleaved.
@@ -72,8 +98,8 @@ router.get('/items/:id', asyncHandler((req, res) => {
        FROM general_item_txns t
        LEFT JOIN assets a ON a.id = t.asset_id
        LEFT JOIN job_cards j ON j.id = t.job_id
-      WHERE t.store_item_id = ?
-      ORDER BY date(t.txn_date) DESC, t.id DESC LIMIT 500`, id);
+      WHERE t.store_item_id = ?${own.sql ? ` AND ${own.sql}` : ''}
+      ORDER BY date(t.txn_date) DESC, t.id DESC LIMIT 500`, id, ...own.params);
   res.json({ item, ledger });
 }));
 
@@ -107,7 +133,7 @@ router.post('/items', requireCap('general.items.edit'), asyncHandler((req, res) 
   });
   audit.record({ userId: req.user.id, entity: 'store_item', entityId: result, action: 'create', after: { name: b.name, is_general: 1 } });
   emitter.emit('stock_updated', { item_id: result, action: 'create' });
-  res.status(201).json(oneItem(result));
+  res.status(201).json(oneItem(result, req.user));
 }));
 
 // ---- adjust stock ---------------------------------------------------------
@@ -147,11 +173,20 @@ router.post('/items/:id/adjust', requireCap('general.stock.adjust'), asyncHandle
   });
   audit.record({ userId: req.user.id, entity: 'store_item', entityId: id, action: 'stock_adjust', after: { kind, qty: signed, balance: out }, reason: b.reason });
   emitter.emit('stock_updated', { item_id: id, action: 'adjust', kind, balance: out });
-  res.status(201).json(oneItem(id));
+  res.status(201).json(oneItem(id, req.user));
 }));
 
 // ---- summary (KPI cards) --------------------------------------------------
-router.get('/summary', asyncHandler((_req, res) => {
+router.get('/summary', asyncHandler((req, res) => {
+  if (scope.ownStore(req.user)) {
+    const rows = onOwnShelf(req.user, all(`SELECT ${ITEM_COLS} FROM store_items WHERE is_general = 1`));
+    return res.json({
+      total_items: rows.length,
+      total_value: Math.round(rows.reduce((t, r) => t + r.total_value, 0) * 100) / 100,
+      low_stock_count: rows.filter(isLow).length,
+      categories: new Set(rows.map((r) => r.category).filter((c) => c && String(c).trim())).size,
+    });
+  }
   const s = get(`SELECT
       COUNT(*) AS total_items,
       ROUND(COALESCE(SUM(balance * COALESCE(unit_cost, 0)), 0), 2) AS total_value,
@@ -162,7 +197,11 @@ router.get('/summary', asyncHandler((_req, res) => {
 }));
 
 // ---- low stock ------------------------------------------------------------
-router.get('/low-stock', asyncHandler((_req, res) => {
+router.get('/low-stock', asyncHandler((req, res) => {
+  if (scope.ownStore(req.user)) {
+    return res.json(onOwnShelf(req.user, all(`SELECT ${ITEM_COLS} FROM store_items WHERE is_general = 1`)).filter(isLow)
+      .sort((a, b) => (a.balance - a.min_stock) - (b.balance - b.min_stock) || String(a.name).localeCompare(String(b.name))));
+  }
   const rows = all(`SELECT ${ITEM_COLS} FROM store_items
      WHERE is_general = 1 AND balance <= COALESCE(min_stock, 0)
      ORDER BY (balance - COALESCE(min_stock, 0)) ASC, name`);

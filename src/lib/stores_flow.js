@@ -211,7 +211,7 @@ function monitor(user) {
   const st = store ? ' AND store_id = ?' : '';
   const sp = store ? [store] : [];
   const issued_today = get(`SELECT COUNT(*) n FROM issues WHERE date(issue_date) = date('now', 'localtime')${st}`, ...sp).n
-    + get("SELECT COUNT(*) n FROM tyre_battery_issues WHERE date(issue_date) = date('now', 'localtime')").n;
+    + get(`SELECT COUNT(*) n FROM tyre_battery_issues WHERE date(issue_date) = date('now', 'localtime')${st}`, ...sp).n;
   const received_today = get(`SELECT COUNT(*) n FROM grn WHERE date(NULLIF(delivery_date, '')) = date('now', 'localtime')${st}`, ...sp).n;
   const transfers_week = store
     ? get(`SELECT COUNT(DISTINCT t.id) n FROM mtn t JOIN mtn_lines l ON l.mtn_id = t.id
@@ -225,7 +225,7 @@ function monitor(user) {
   let low_stock = 0;
   for (const sid of storeIds) for (const section of stock.SECTIONS) low_stock += stock.items(section, null, 5000, { store: sid, low: true }).length;
 
-  const battery_warranty = require('./intelligence').warrantyRadar(60).expiring.length;
+  const battery_warranty = require('./intelligence').warrantyRadar(60, { store }).expiring.length;
 
   // Stock takes (Part 2): being counted, and waiting for head office.
   const stock_takes = require('./stock_count').waiting(store);
