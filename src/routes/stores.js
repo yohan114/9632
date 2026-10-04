@@ -58,6 +58,84 @@ const clean = (v) => (v == null ? null : (String(v).trim() || null));
 
 const router = express.Router();
 
+// ---- Improvement plan, Step 2c: the Stores lists are your own workshops' ----------------------
+// With the workshops kept apart, someone outside head office sees the receipts, issues, transfers
+// and pending request lines of the workshops they reach (scope.reach — a store keeper: every
+// workshop their store serves). A receipt is its request's workshop's, else the store it came into;
+// an issue its job card's, else the store it left; a request line its request's. Head office, and
+// everyone while the workshops are not kept apart, sees everything, as before.
+const GRN_WS = 'COALESCE(m.workshop_id, g.store_id)';     // over grn g LEFT JOIN mrn m
+const ISSUE_WS = 'COALESCE(j.workshop_id, i.store_id)';   // over issues i LEFT JOIN job_cards j
+/** ' AND …' keeping rows to the person's workshops ('' when they see them all). */
+const ownWs = (user, expr) => scope.wsSql(expr, scope.reach(user));
+/** The same condition on its own, for a clauses array (null when there is none). */
+const ownWsCond = (user, expr) => { const s = ownWs(user, expr); return s ? s.slice(' AND '.length) : null; };
+/** Guard a record whose workshop `sql` finds by id: null when the person may reach it, else the 403 body. */
+function reachRefusal(user, what, sql, id) {
+  if (!scope.enabled()) return null;
+  const r = get(sql, id);
+  if (!r) return null;
+  const ws = r.ws || require('../lib/workshops').defaultId();
+  return scope.mayReach(user, ws) ? null : scope.refusal(what, ws);
+}
+const receiptRefusal = (user, id) => reachRefusal(user, 'receipt',
+  `SELECT ${GRN_WS} AS ws FROM grn g LEFT JOIN mrn m ON m.id = g.mrn_id WHERE g.id = ?`, id);
+const issueRefusal = (user, id) => reachRefusal(user, 'issue',
+  `SELECT ${ISSUE_WS} AS ws FROM issues i LEFT JOIN job_cards j ON j.id = i.job_id WHERE i.id = ?`, id);
+const lineRefusal = (user, id) => reachRefusal(user, 'request',
+  'SELECT m.workshop_id AS ws FROM mrn_lines ml JOIN mrn m ON m.id = ml.mrn_id WHERE ml.id = ?', id);
+// A receipt voucher is the workshops' whose receipts are on it: yours when any of them is.
+const VOUCHER_LINES = 'FROM grn g LEFT JOIN mrn m ON m.id = g.mrn_id WHERE (g.voucher_id = v.id OR g.grn_no = v.grn_no)';
+function voucherRefusal(user, idOrNo) {
+  if (!scope.enabled() || scope.reach(user) == null) return null;
+  const v = get('SELECT id, grn_no FROM grn_vouchers WHERE id = ? OR grn_no = ?', toInt(idOrNo), String(idOrNo));
+  if (!v) return null;
+  const mine = get(`SELECT 1 x FROM grn g LEFT JOIN mrn m ON m.id = g.mrn_id WHERE (g.voucher_id = ? OR g.grn_no = ?)${ownWs(user, GRN_WS)} LIMIT 1`, v.id, v.grn_no);
+  if (mine) return null;
+  const first = get(`SELECT ${GRN_WS} AS ws FROM grn g LEFT JOIN mrn m ON m.id = g.mrn_id WHERE g.voucher_id = ? OR g.grn_no = ? ORDER BY g.id LIMIT 1`, v.id, v.grn_no);
+  const ws = (first && first.ws) || require('../lib/workshops').defaultId();
+  return scope.refusal('receipt voucher', ws);
+}
+// An issue note is its own workshop's, else its job card's. An old single issue shown as a note
+// (GET /min/:id falls back to it) is that issue's.
+const MIN_WS = 'COALESCE(n.workshop_id, j.workshop_id)';   // over min_notes n LEFT JOIN job_cards j
+function minRefusal(user, idOrNo) {
+  if (!scope.enabled()) return null;
+  const n = get(`SELECT ${MIN_WS} AS ws FROM min_notes n LEFT JOIN job_cards j ON j.id = n.job_id WHERE n.id = ? OR n.min_no = ?`, toInt(idOrNo), String(idOrNo));
+  if (!n) return issueRefusal(user, toInt(idOrNo));
+  const ws = n.ws || require('../lib/workshops').defaultId();
+  return scope.mayReach(user, ws) ? null : scope.refusal('issue note', ws);
+}
+const guardMin = (req, res, next) => { const no = minRefusal(req.user, req.params.id); return no ? res.status(403).json(no) : next(); };
+// A transfer note is its own workshop's (the one that wrote it: mtn.workshop_id) and each workshop
+// at either end, on the note or on any of its items — the place keys of a workshop are 'w:<id>'.
+function mtnOwnCond(user) {
+  const r = scope.enabled() ? scope.reach(user) : null;
+  if (r == null) return null;
+  const ids = r.map(Number).filter(Number.isInteger);
+  if (!ids.length) return '0';
+  const places = ids.map((i) => `'w:${i}'`).join(',');
+  return `(${scope.storeOfRow('t.workshop_id')} IN (${ids.join(',')}) OR t.from_place IN (${places}) OR t.to_place IN (${places})
+           OR EXISTS (SELECT 1 FROM mtn_lines mx WHERE mx.mtn_id = t.id AND (mx.from_place IN (${places}) OR mx.to_place IN (${places}))))`;
+}
+function mtnRefusal(user, idOrNo) {
+  const cond = mtnOwnCond(user);
+  if (!cond) return null;
+  const t = get('SELECT id, workshop_id FROM mtn t WHERE t.id = ? OR t.mtn_no = ?', toInt(idOrNo), String(idOrNo));
+  if (!t || get(`SELECT 1 x FROM mtn t WHERE t.id = ? AND ${cond}`, t.id)) return null;
+  return scope.refusal('transfer note', t.workshop_id || require('../lib/workshops').defaultId());
+}
+const guardMtn = (req, res, next) => { const no = mtnRefusal(req.user, req.params.id); return no ? res.status(403).json(no) : next(); };
+const guardMtnLine = (req, res, next) => {
+  const l = get('SELECT mtn_id FROM mtn_lines WHERE id = ?', toInt(req.params.id));
+  const no = l && mtnRefusal(req.user, l.mtn_id);
+  return no ? res.status(403).json(no) : next();
+};
+/** Express guard: `check(user, id)` on the route's :id. */
+const guardId = (check) => (req, res, next) => { const no = check(req.user, toInt(req.params.id)); return no ? res.status(403).json(no) : next(); };
+const guardReceipt = guardId(receiptRefusal);
+const guardVoucher = (req, res, next) => { const no = voucherRefusal(req.user, req.params.id); return no ? res.status(403).json(no) : next(); };
+
 // ---- numbering (continues existing sequences) -----------------------------
 function nextMrnNo() {
   const r = get(`SELECT MAX(CAST(mrn_no AS INTEGER)) m FROM mrn WHERE mrn_no GLOB '[0-9]*'`);
@@ -95,11 +173,12 @@ function resolveAssetId(body, prefix) {
 // a cost object. Created once, reused thereafter.
 // Exempt from "a card needs an approved job request" (routes/jobcards.js): a cost container, not
 // a repair — synthesized_no = 1 is what marks it as one.
-function generalWorkshopJobId() {
-  const j = get("SELECT id FROM job_cards WHERE legacy_ref = 'general-workshop' LIMIT 1");
-  if (j) return j.id;
-  return run(`INSERT INTO job_cards (job_no, type, description, status, requested_by, requested_at, is_historical, synthesized_no, legacy_ref)
-              VALUES ('GENERAL-WS', 'repair', 'General workshop stores issues (not vehicle-specific)', 'REQUESTED', 'system', date('now'), 0, 1, 'general-workshop')`).lastInsertRowid;
+// Step 2c: the person's own workshop's card — one per workshop (src/lib/workshops.js), as Daily
+// Work has. It always took the main workshop's, so with the workshops kept apart a site could not
+// issue to it at all (its own card check refused), and before that its issues went to Central.
+function generalWorkshopJobId(user) {
+  const workshops = require('../lib/workshops');
+  return workshops.generalCardId(workshops.homeOf(user), { create: true, description: 'General workshop stores issues (not vehicle-specific)' });
 }
 
 router.get('/numbers', asyncHandler((_req, res) => res.json({
@@ -120,12 +199,13 @@ router.get('/items', asyncHandler((req, res) => {
     params.push(toInt(req.query.category_id), toInt(req.query.category_id));
   }
   const where = clauses.length ? 'WHERE ' + clauses.join(' AND ') : '';
-  res.json(all(
+  // Step 2c: the balance and level of your own store, when you are kept to it.
+  res.json(require('../lib/store_shelf').ownStoreRows(req.user, all(
     `SELECT s.*, sub.name AS sub_category, p.name AS parent_category
        FROM store_items s
        LEFT JOIN item_categories sub ON sub.id = s.category_id
        LEFT JOIN item_categories p ON p.id = sub.parent_id
-       ${where} ORDER BY s.name LIMIT ${toInt(req.query.limit, 500)}`, ...params));
+       ${where} ORDER BY s.name LIMIT ${toInt(req.query.limit, 500)}`, ...params)));
 }));
 
 router.post('/items', requireCap('stores.items.edit'), asyncHandler((req, res) => {
@@ -159,8 +239,12 @@ router.patch('/items/:id', requireCap('stores.items.edit'), asyncHandler((req, r
   res.json(get('SELECT * FROM store_items WHERE id = ?', id));
 }));
 
-router.get('/items/:id/ledger', asyncHandler((req, res) =>
-  res.json(all('SELECT * FROM general_item_txns WHERE store_item_id = ? ORDER BY id DESC', toInt(req.params.id)))));
+// Step 2c: an item's movements in your own store.
+router.get('/items/:id/ledger', asyncHandler((req, res) => {
+  const own = scope.storeFilter(req.user, 'store_id');
+  res.json(all(`SELECT * FROM general_item_txns WHERE store_item_id = ?${own.sql ? ' AND ' + own.sql : ''} ORDER BY id DESC`,
+    toInt(req.params.id), ...own.params));
+}));
 
 router.post('/items/:id/txn', requireCap('stores.items.txn'), asyncHandler((req, res) => {
   const itemId = toInt(req.params.id);
@@ -189,6 +273,7 @@ router.post('/items/:id/txn', requireCap('stores.items.txn'), asyncHandler((req,
   if (toInt(b.job_id)) {
     const job = get('SELECT id, job_no, status FROM job_cards WHERE id = ?', toInt(b.job_id));
     if (!job) return res.status(400).json({ error: 'Unknown job card' });
+    { const no = scope.jobRefusal(req.user, job.id); if (no) return res.status(403).json(no); }   // Step 2c
     const g = jobstate.checkAdd(job, 'general', { user: req.user, allowClosed: !!b.allow_closed });
     if (!g.ok) return res.status(g.status).json(g.body);
   }
@@ -210,8 +295,14 @@ router.post('/items/:id/txn', requireCap('stores.items.txn'), asyncHandler((req,
   res.status(201).json(result);
 }));
 
-router.get('/reorder', asyncHandler((_req, res) =>
-  res.json(all('SELECT * FROM store_items WHERE is_general = 1 AND min_stock > 0 AND balance <= min_stock ORDER BY name'))));
+// Step 2c: what your own store must reorder, at its own levels.
+router.get('/reorder', asyncHandler((req, res) => {
+  if (!scope.ownStore(req.user)) {
+    return res.json(all('SELECT * FROM store_items WHERE is_general = 1 AND min_stock > 0 AND balance <= min_stock ORDER BY name'));
+  }
+  const rows = require('../lib/store_shelf').ownStoreRows(req.user, all('SELECT * FROM store_items WHERE is_general = 1 ORDER BY name'));
+  res.json(rows.filter((r) => r.min_stock > 0 && r.balance <= r.min_stock));
+}));
 
 // ---- item picker + on-the-fly catalogue entries ---------------------------
 // One search across the whole catalogue for the "which item?" pickers: item number,
@@ -290,7 +381,7 @@ router.get('/items/search', asyncHandler((req, res) => {
       balance: null,
     }));
 
-  res.json(lubes.concat(rows));
+  res.json(lubes.concat(require('../lib/store_shelf').ownStoreRows(req.user, rows)));   // Step 2c: your own store's balance
 }));
 
 // Next catalogue number for a category, e.g. FIL-0037. The 3-letter prefix comes from
@@ -450,7 +541,7 @@ router.get('/catalogue', asyncHandler((req, res) => {
     clauses.push('s.category_id IN (SELECT id FROM item_categories WHERE id = ? OR parent_id = ?)');
     params.push(toInt(req.query.category_id), toInt(req.query.category_id));
   }
-  res.json(all(
+  res.json(require('../lib/store_shelf').ownStoreRows(req.user, all(   // Step 2c: your own store's balance
     `SELECT s.id, s.item_no, s.name, s.category, s.category_id, s.catalogue_kind, s.req_count,
             s.part_numbers, s.part_number, s.unit, s.is_general, s.balance,
             sub.name AS sub_category, p.name AS parent_category
@@ -458,7 +549,7 @@ router.get('/catalogue', asyncHandler((req, res) => {
        LEFT JOIN item_categories sub ON sub.id = s.category_id
        LEFT JOIN item_categories p ON p.id = sub.parent_id
       WHERE ${clauses.join(' AND ')}
-      ORDER BY s.item_no LIMIT ${toInt(req.query.limit, 2000)}`, ...params));
+      ORDER BY s.item_no LIMIT ${toInt(req.query.limit, 2000)}`, ...params)));
 }));
 
 router.get('/export/catalogue.xlsx', asyncHandler(async (_req, res) => {
@@ -551,9 +642,10 @@ const LINE_SORTS = {
   received_asc: 'last_received IS NULL, last_received ASC, m.req_date DESC',
 };
 
-function lineSearchRows(query) {
+function lineSearchRows(query, user) {
   const clauses = [];
   const params = [];
+  { const own = ownWsCond(user, 'm.workshop_id'); if (own) clauses.push(own); }   // Step 2c
   const q = String(query.q || '').trim();
   if (q) {
     const like = '%' + q + '%';
@@ -594,7 +686,7 @@ function lineSearchRows(query) {
        ${where} ORDER BY ${order} LIMIT ${toInt(query.limit, 500)}`, ...params);
 }
 
-router.get('/search', asyncHandler((req, res) => res.json(lineSearchRows(req.query))));
+router.get('/search', asyncHandler((req, res) => res.json(lineSearchRows(req.query, req.user))));
 
 // ---- Stores plan, Part 1: one list of every requested item, and the Monitor -------------------
 // Every line of every request with how far it has come (requested → approved → bought → received →
@@ -623,7 +715,7 @@ router.get('/flow/export.xlsx', asyncHandler(async (req, res) => {
 }));
 
 router.get('/search/export.xlsx', asyncHandler(async (req, res) => {
-  const rows = lineSearchRows({ ...req.query, limit: 10000 });
+  const rows = lineSearchRows({ ...req.query, limit: 10000 }, req.user);
   await sendXlsx(res, 'stores-search.xlsx', [{
     name: 'Stores items',
     columns: [
@@ -734,6 +826,7 @@ router.post('/mrn', requireCap('stores.mrn.create'), asyncHandler((req, res) => 
     if (jobId) {
       const job = get('SELECT id, job_no, status, asset_id FROM job_cards WHERE id = ?', jobId);
       if (!job) return res.status(400).json({ error: 'Unknown job card' });
+      { const no = scope.jobRefusal(req.user, jobId); if (no) return res.status(403).json(no); }   // Step 2c
       // A finished card takes no new requests (jobstate.checkAdd).
       { const g = jobstate.checkAdd(job, 'mrn', { user: req.user }); if (!g.ok) return res.status(g.status).json(g.body); }
       if (assetId && job.asset_id && job.asset_id !== assetId) {
@@ -1015,6 +1108,7 @@ router.get('/grn', asyncHandler((req, res) => {
     clauses.push('(g.grn_no LIKE ? OR g.description LIKE ? OR g.supplier LIKE ? OR m.mrn_no LIKE ? OR a.code LIKE ?)');
     params.push(like, like, like, like, like);
   }
+  { const own = ownWsCond(req.user, GRN_WS); if (own) clauses.push(own); }   // Step 2c
   const where = clauses.length ? 'WHERE ' + clauses.join(' AND ') : '';
   res.json(all(
     `SELECT g.*, m.mrn_no, m.req_date AS mrn_req_date, a.code AS asset_code,
@@ -1026,35 +1120,42 @@ router.get('/grn', asyncHandler((req, res) => {
        ${where} ORDER BY g.id DESC LIMIT ${toInt(req.query.limit, 500)}`, ...params));
 }));
 
-router.get('/grn/counts', asyncHandler((_req, res) => {
-  const allTodo = get(`SELECT COUNT(*) c FROM grn g LEFT JOIN grn_vouchers gv ON gv.id = g.voucher_id 
-    WHERE (COALESCE(g.status, gv.status, 'pending_approval') = 'pending_approval' OR g.unit_price IS NULL) AND COALESCE(g.status, gv.status, 'pending_approval') != 'rejected'`).c;
-  const toPrice = get(`SELECT COUNT(*) c FROM grn g LEFT JOIN grn_vouchers gv ON gv.id = g.voucher_id 
-    WHERE g.unit_price IS NULL AND COALESCE(g.status, gv.status, 'pending_approval') != 'rejected'`).c;
-  const toApprove = get(`SELECT COUNT(*) c FROM grn g LEFT JOIN grn_vouchers gv ON gv.id = g.voucher_id 
-    WHERE g.unit_price IS NOT NULL AND COALESCE(g.status, gv.status, 'pending_approval') = 'pending_approval'`).c;
-  const approved = get(`SELECT COUNT(*) c FROM grn g LEFT JOIN grn_vouchers gv ON gv.id = g.voucher_id 
-    WHERE COALESCE(g.status, gv.status, 'pending_approval') = 'approved'`).c;
-  const rejected = get(`SELECT COUNT(*) c FROM grn g LEFT JOIN grn_vouchers gv ON gv.id = g.voucher_id 
-    WHERE COALESCE(g.status, gv.status, 'pending_approval') = 'rejected'`).c;
-  const total = get('SELECT COUNT(*) c FROM grn').c;
+router.get('/grn/counts', asyncHandler((req, res) => {
+  const FROM = 'FROM grn g LEFT JOIN grn_vouchers gv ON gv.id = g.voucher_id LEFT JOIN mrn m ON m.id = g.mrn_id';
+  const own = ownWs(req.user, GRN_WS);   // Step 2c
+  const allTodo = get(`SELECT COUNT(*) c ${FROM}
+    WHERE (COALESCE(g.status, gv.status, 'pending_approval') = 'pending_approval' OR g.unit_price IS NULL) AND COALESCE(g.status, gv.status, 'pending_approval') != 'rejected'${own}`).c;
+  const toPrice = get(`SELECT COUNT(*) c ${FROM}
+    WHERE g.unit_price IS NULL AND COALESCE(g.status, gv.status, 'pending_approval') != 'rejected'${own}`).c;
+  const toApprove = get(`SELECT COUNT(*) c ${FROM}
+    WHERE g.unit_price IS NOT NULL AND COALESCE(g.status, gv.status, 'pending_approval') = 'pending_approval'${own}`).c;
+  const approved = get(`SELECT COUNT(*) c ${FROM}
+    WHERE COALESCE(g.status, gv.status, 'pending_approval') = 'approved'${own}`).c;
+  const rejected = get(`SELECT COUNT(*) c ${FROM}
+    WHERE COALESCE(g.status, gv.status, 'pending_approval') = 'rejected'${own}`).c;
+  const total = get(`SELECT COUNT(*) c ${FROM} WHERE 1 = 1${own}`).c;
   res.json({ all_todo: allTodo, to_price: toPrice, to_approve: toApprove, approved, rejected, all: total });
 }));
 
 // Count of GRN records still awaiting a price (for the badge / progress), split by source.
-router.get('/grn/awaiting-count', asyncHandler((_req, res) =>
+router.get('/grn/awaiting-count', asyncHandler((req, res) => {
+  const FROM = 'FROM grn g LEFT JOIN mrn m ON m.id = g.mrn_id';
+  const own = ownWs(req.user, GRN_WS);   // Step 2c
   res.json({
-    awaiting: get('SELECT COUNT(*) c FROM grn WHERE unit_price IS NULL').c,
-    total: get('SELECT COUNT(*) c FROM grn').c,
-    by_source: all(`SELECT COALESCE(purchase_source_norm,'(unset)') source, COUNT(*) awaiting
-                      FROM grn WHERE unit_price IS NULL GROUP BY 1 ORDER BY awaiting DESC`),
-    awaiting_grn: get('SELECT COUNT(*) c FROM mrn_lines WHERE COALESCE(qty_received,0) < qty').c,
-  })));
+    awaiting: get(`SELECT COUNT(*) c ${FROM} WHERE g.unit_price IS NULL${own}`).c,
+    total: get(`SELECT COUNT(*) c ${FROM} WHERE 1 = 1${own}`).c,
+    by_source: all(`SELECT COALESCE(g.purchase_source_norm,'(unset)') source, COUNT(*) awaiting
+                      ${FROM} WHERE g.unit_price IS NULL${own} GROUP BY 1 ORDER BY awaiting DESC`),
+    awaiting_grn: get(`SELECT COUNT(*) c FROM mrn_lines ml JOIN mrn m ON m.id = ml.mrn_id
+                        WHERE COALESCE(ml.qty_received,0) < ml.qty${ownWs(req.user, 'm.workshop_id')}`).c,
+  });
+}));
 
 // Items requested but not yet received (awaiting a GRN), with the request date.
 router.get('/awaiting-grn', asyncHandler((req, res) => {
   const clauses = ['COALESCE(ml.qty_received,0) < ml.qty', "COALESCE(m.approval_status,'') <> 'rejected'"];
   const params = [];
+  { const own = ownWsCond(req.user, 'm.workshop_id'); if (own) clauses.push(own); }   // Step 2c
   if (req.query.source && PURCHASE_SOURCES.includes(req.query.source)) { clauses.push('COALESCE(ml.purchase_source, m.purchase_source) = ?'); params.push(req.query.source); }
   if (req.query.q && String(req.query.q).trim()) {
     const like = '%' + String(req.query.q).trim() + '%';
@@ -1073,7 +1174,7 @@ router.get('/awaiting-grn', asyncHandler((req, res) => {
 // ---- Pending purchases (partial + not received), split by purchase source ----
 // Source of a pending line = the source of any GRN it already has (partial receipts),
 // else the MRN header's intended purchase_source, else unsourced (chosen on receipt).
-function pendingRows(query) {
+function pendingRows(query, user) {
   const outer = [];
   const params = [];
   const src = query.source;
@@ -1096,12 +1197,12 @@ function pendingRows(query) {
               (SELECT g.supplier FROM grn g WHERE g.mrn_line_id = ml.id AND g.supplier IS NOT NULL LIMIT 1) AS supplier,
               ${lineReceiptSql('ml.id')}
          FROM mrn_lines ml JOIN mrn m ON m.id = ml.mrn_id LEFT JOIN assets a ON a.id = m.asset_id
-        WHERE COALESCE(ml.qty_received,0) < ml.qty AND COALESCE(m.approval_status,'') <> 'rejected'
+        WHERE COALESCE(ml.qty_received,0) < ml.qty AND COALESCE(m.approval_status,'') <> 'rejected'${ownWs(user, 'm.workshop_id')}
      ) ${where} ORDER BY source, req_date DESC, mrn_no LIMIT ${toInt(query.limit, 2000)}`, ...params);
 }
 
 router.get('/pending', asyncHandler((req, res) => {
-  const rows = pendingRows(req.query);
+  const rows = pendingRows(req.query, req.user);
   // For a filter line, hand the grid the numbers already known to be equivalent — the genuine
   // number, the HIFI one, every cross-reference on record, and anything previously accepted
   // against it. The storekeeper picks what is on the box instead of typing it.
@@ -1129,9 +1230,10 @@ router.get('/pending', asyncHandler((req, res) => {
 // ---- Items received but still awaiting a price, split by purchase source ----
 // A GRN with no unit_price is stock that landed without its cost, so it is missing from every
 // job/vehicle total until the invoice price is keyed in.
-function awaitingPriceRows(query) {
+function awaitingPriceRows(query, user) {
   const clauses = ['g.unit_price IS NULL'];
   const params = [];
+  { const own = ownWsCond(user, GRN_WS); if (own) clauses.push(own); }   // Step 2c
   const src = query.source;
   if (src === 'unsourced') clauses.push('COALESCE(g.purchase_source_norm, ml.purchase_source, m.purchase_source) IS NULL');
   else if (src && PURCHASE_SOURCES.includes(src)) {
@@ -1158,13 +1260,13 @@ function awaitingPriceRows(query) {
       LIMIT ${toInt(query.limit, 2000)}`, ...params);
 }
 
-router.get('/awaiting-price', asyncHandler((req, res) => res.json(awaitingPriceRows(req.query))));
+router.get('/awaiting-price', asyncHandler((req, res) => res.json(awaitingPriceRows(req.query, req.user))));
 
-router.get('/awaiting-price/summary', asyncHandler((_req, res) => {
+router.get('/awaiting-price/summary', asyncHandler((req, res) => {
   res.json(all(
     `SELECT COALESCE(g.purchase_source_norm, ml.purchase_source, m.purchase_source) AS source, COUNT(*) count, ROUND(SUM(g.qty),2) qty
        FROM grn g LEFT JOIN mrn m ON m.id = g.mrn_id LEFT JOIN mrn_lines ml ON ml.id = g.mrn_line_id
-      WHERE g.unit_price IS NULL GROUP BY source`));
+      WHERE g.unit_price IS NULL${ownWs(req.user, GRN_WS)} GROUP BY source`));
 }));
 
 // ---- shared report plumbing for the two stores lists (pending purchase / awaiting price) ----
@@ -1241,7 +1343,7 @@ const xlsxSheets = (sections, cols) => sections.filter(([, l]) => l.length).map(
 
 // Pending purchases → Excel (one sheet per purchase source).
 router.get('/pending/export.xlsx', asyncHandler(async (req, res) => {
-  const rows = pendingRows({ ...req.query, limit: 5000 });
+  const rows = pendingRows({ ...req.query, limit: 5000 }, req.user);
   const sections = bySource(rows, req.query.source);
   const sheets = xlsxSheets(sections, PENDING_COLS);
   await sendXlsx(res, `pending-purchases-${req.query.source || 'all'}.xlsx`,
@@ -1250,7 +1352,7 @@ router.get('/pending/export.xlsx', asyncHandler(async (req, res) => {
 
 // Items awaiting a price → Excel (one sheet per purchase source; blank Unit Price column to fill in).
 router.get('/awaiting-price/export.xlsx', asyncHandler(async (req, res) => {
-  const rows = awaitingPriceRows({ ...req.query, limit: 5000 });
+  const rows = awaitingPriceRows({ ...req.query, limit: 5000 }, req.user);
   const sections = bySource(rows, req.query.source);
   const sheets = xlsxSheets(sections, AWAITING_PRICE_COLS);
   await sendXlsx(res, `awaiting-price-${req.query.source || 'all'}.xlsx`,
@@ -1259,7 +1361,7 @@ router.get('/awaiting-price/export.xlsx', asyncHandler(async (req, res) => {
 
 // Items awaiting a price → printable (Save as PDF from the browser).
 router.get('/awaiting-price/print.html', asyncHandler((req, res) => {
-  const rows = awaitingPriceRows({ ...req.query, limit: 5000 });
+  const rows = awaitingPriceRows({ ...req.query, limit: 5000 }, req.user);
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
   res.send(reportHtml(
     `Items Awaiting Price — ${srcTitle(req.query.source)}`,
@@ -1267,13 +1369,13 @@ router.get('/awaiting-price/print.html', asyncHandler((req, res) => {
     bySource(rows, req.query.source), AWAITING_PRICE_COLS));
 }));
 
-router.get('/pending/summary', asyncHandler((_req, res) => {
+router.get('/pending/summary', asyncHandler((req, res) => {
   res.json(all(
     `SELECT source, status, COUNT(*) count FROM (
        SELECT CASE WHEN COALESCE(ml.qty_received,0) > 0 THEN 'partial' ELSE 'not_received' END AS status,
               COALESCE((SELECT g.purchase_source_norm FROM grn g WHERE g.mrn_line_id = ml.id AND g.purchase_source_norm IS NOT NULL LIMIT 1), ml.purchase_source, m.purchase_source) AS source
          FROM mrn_lines ml JOIN mrn m ON m.id = ml.mrn_id
-        WHERE COALESCE(ml.qty_received,0) < ml.qty AND COALESCE(m.approval_status,'') <> 'rejected'
+        WHERE COALESCE(ml.qty_received,0) < ml.qty AND COALESCE(m.approval_status,'') <> 'rejected'${ownWs(req.user, 'm.workshop_id')}
      ) GROUP BY source, status`));
 }));
 
@@ -1416,7 +1518,7 @@ router.delete('/mrn/line/:id', requireCap('stores.mrn.edit'), asyncHandler((req,
 
 // Printable pending-purchases list, grouped by source.
 router.get('/pending/print.html', asyncHandler((req, res) => {
-  const rows = pendingRows({ ...req.query, limit: 5000 });
+  const rows = pendingRows({ ...req.query, limit: 5000 }, req.user);
   const esc = (v) => String(v == null ? '' : v).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
   const d = (v) => (v ? String(v).slice(0, 10) : '');
   const label = { head_office: 'Head Office', local_purchase: 'Local Purchase' };
@@ -1472,6 +1574,10 @@ router.post('/grn', requireCap('stores.grn.receive'), asyncHandler((req, res) =>
       error: 'Your role may not take tyres or batteries into stores — ask an admin for "T&B · Receive (GRN)"',
     });
   }
+  { // Step 2c: goods are received against your own workshops' requests.
+    const no = (toInt(b.mrn_line_id) && lineRefusal(req.user, toInt(b.mrn_line_id))) || (toInt(b.mrn_id) && scope.mrnRefusal(req.user, toInt(b.mrn_id)));
+    if (no) return res.status(403).json(no);
+  }
   const result = tx(() => {
     const info = run(
       `INSERT INTO grn (status, grn_no, grn_date, mrn_id, mrn_line_id, store_item_id, description, qty, unit_price, supplier, invoice_no, invoice_date, delivery_date, purchase_source, purchase_source_norm)
@@ -1500,20 +1606,20 @@ router.post('/grn', requireCap('stores.grn.receive'), asyncHandler((req, res) =>
 }));
 
 // Printable Goods Received Note (Doc. No. EC1.ST.FO.2:5:21.12 layout).
-router.get('/grn/:id/print.html', asyncHandler((req, res) => {
+router.get('/grn/:id/print.html', guardReceipt, asyncHandler((req, res) => {
   const html = renderGrnDocumentHtml(req.params.id, { forPdf: false });
   if (!html) return res.status(404).send('GRN not found');
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
   res.send(html);
 }));
 
-router.get('/grn/:id/download.pdf', asyncHandler(async (req, res) => {
+router.get('/grn/:id/download.pdf', guardReceipt, asyncHandler(async (req, res) => {
   const html = renderGrnDocumentHtml(req.params.id, { forPdf: true });
   if (!html) return res.status(404).send('GRN not found');
   await sendPdf(res, `GRN-${req.params.id}.pdf`, html);
 }));
 
-router.get('/grn/:id', asyncHandler((req, res, next) => {
+router.get('/grn/:id', guardReceipt, asyncHandler((req, res, next) => {
   const id = toInt(req.params.id);
   if (!id) return next();
   const g = get(`SELECT g.*, m.mrn_no, m.req_date AS mrn_req_date, a.code AS asset_code,
@@ -1561,6 +1667,8 @@ router.get('/grn-vouchers', asyncHandler((req, res) => {
     clauses.push('(v.grn_no LIKE ? OR v.supplier LIKE ? OR v.po_no LIKE ? OR v.invoice_no LIKE ? OR v.delivery_note_no LIKE ?)');
     params.push(like, like, like, like, like);
   }
+  // Step 2c: a voucher with at least one of your own workshops' receipts on it.
+  { const own = ownWs(req.user, GRN_WS); if (own) clauses.push(`EXISTS (SELECT 1 ${VOUCHER_LINES}${own})`); }
   const where = clauses.length ? 'WHERE ' + clauses.join(' AND ') : '';
   res.json(all(
     `SELECT v.*,
@@ -1571,7 +1679,7 @@ router.get('/grn-vouchers', asyncHandler((req, res) => {
       ORDER BY v.id DESC LIMIT ${toInt(req.query.limit, 200)}`, ...params));
 }));
 
-router.get('/grn-vouchers/:id', asyncHandler((req, res) => {
+router.get('/grn-vouchers/:id', guardVoucher, asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   const voucher = get('SELECT * FROM grn_vouchers WHERE id = ? OR grn_no = ?', id, req.params.id);
   if (!voucher) return res.status(404).json({ error: 'GRN Voucher not found' });
@@ -1604,6 +1712,12 @@ router.post('/grn-vouchers', requireCap('stores.grn.receive'), asyncHandler((req
 
   const grnIds = Array.isArray(b.grn_ids) ? b.grn_ids.map(toInt).filter(Boolean) : [];
   const lines = Array.isArray(b.lines) ? b.lines : [];
+  // Step 2c: only your own workshops' request lines and receipts go on your voucher.
+  for (const l of lines) {
+    const no = (toInt(l && l.mrn_line_id) && lineRefusal(req.user, toInt(l.mrn_line_id))) || (toInt(l && l.mrn_id) && scope.mrnRefusal(req.user, toInt(l.mrn_id)));
+    if (no) return res.status(403).json(no);
+  }
+  for (const gid of grnIds) { const no = receiptRefusal(req.user, gid); if (no) return res.status(403).json(no); }
 
   const { voucherId, createdIds } = tx(() => {
     const info = run(
@@ -1684,7 +1798,7 @@ router.post('/grn-vouchers', requireCap('stores.grn.receive'), asyncHandler((req
 }));
 
 // GRN Approval Endpoint
-router.post('/grn-vouchers/:id/approve', requireCap('stores.grn.approve'), asyncHandler((req, res) => {
+router.post('/grn-vouchers/:id/approve', requireCap('stores.grn.approve'), guardVoucher, asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   const v = get('SELECT * FROM grn_vouchers WHERE id = ? OR grn_no = ?', id, req.params.id);
   if (!v) return res.status(404).json({ error: 'GRN voucher not found' });
@@ -1711,7 +1825,7 @@ router.post('/grn-vouchers/:id/approve', requireCap('stores.grn.approve'), async
 }));
 
 // GRN Rejection Endpoint
-router.post('/grn-vouchers/:id/reject', requireCap('stores.grn.reject'), asyncHandler((req, res) => {
+router.post('/grn-vouchers/:id/reject', requireCap('stores.grn.reject'), guardVoucher, asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   const v = get('SELECT * FROM grn_vouchers WHERE id = ? OR grn_no = ?', id, req.params.id);
   if (!v) return res.status(404).json({ error: 'GRN voucher not found' });
@@ -1732,7 +1846,7 @@ router.post('/grn-vouchers/:id/reject', requireCap('stores.grn.reject'), asyncHa
   res.json(get('SELECT * FROM grn_vouchers WHERE id = ?', v.id));
 }));
 
-router.post('/grn/:id/approve', requireCap('stores.grn.approve'), asyncHandler((req, res) => {
+router.post('/grn/:id/approve', requireCap('stores.grn.approve'), guardReceipt, asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   const g = get('SELECT * FROM grn WHERE id = ?', id);
   if (!g) return res.status(404).json({ error: 'GRN record not found' });
@@ -1748,7 +1862,7 @@ router.post('/grn/:id/approve', requireCap('stores.grn.approve'), asyncHandler((
   res.json(get('SELECT * FROM grn WHERE id = ?', id));
 }));
 
-router.post('/grn/:id/reject', requireCap('stores.grn.reject'), asyncHandler((req, res) => {
+router.post('/grn/:id/reject', requireCap('stores.grn.reject'), guardReceipt, asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   const g = get('SELECT * FROM grn WHERE id = ?', id);
   if (!g) return res.status(404).json({ error: 'GRN record not found' });
@@ -1762,7 +1876,7 @@ router.post('/grn/:id/reject', requireCap('stores.grn.reject'), asyncHandler((re
   res.json(get('SELECT * FROM grn WHERE id = ?', id));
 }));
 
-router.post('/grn-vouchers/:id/sign', requireCap('stores.grn.receive'), asyncHandler((req, res) => {
+router.post('/grn-vouchers/:id/sign', requireCap('stores.grn.receive'), guardVoucher, asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   const v = get('SELECT * FROM grn_vouchers WHERE id = ?', id);
   if (!v) return res.status(404).json({ error: 'GRN voucher not found' });
@@ -1778,14 +1892,14 @@ router.post('/grn-vouchers/:id/sign', requireCap('stores.grn.receive'), asyncHan
   res.json(get('SELECT * FROM grn_vouchers WHERE id = ?', id));
 }));
 
-router.get('/grn-vouchers/:id/print.html', asyncHandler((req, res) => {
+router.get('/grn-vouchers/:id/print.html', guardVoucher, asyncHandler((req, res) => {
   const html = renderGrnDocumentHtml(req.params.id, { forPdf: false });
   if (!html) return res.status(404).send('GRN Voucher not found');
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
   res.send(html);
 }));
 
-router.get('/grn-vouchers/:id/download.pdf', asyncHandler(async (req, res) => {
+router.get('/grn-vouchers/:id/download.pdf', guardVoucher, asyncHandler(async (req, res) => {
   const html = renderGrnDocumentHtml(req.params.id, { forPdf: true });
   if (!html) return res.status(404).send('GRN Voucher not found');
   await sendPdf(res, `GRN-Voucher-${req.params.id}.pdf`, html);
@@ -2016,22 +2130,24 @@ router.get('/received', asyncHandler((req, res) => {
 }));
 
 // Quick stage counts across the material pipeline (ReQuest -> On Order -> Ready in Store -> Issued).
-router.get('/pipeline/summary', asyncHandler((_req, res) => {
-  const requests_pending = get(`SELECT COUNT(*) c FROM mrn WHERE approval_status IN ('requested', 'certified') AND TRIM(COALESCE(requested_by, '')) != ''`).c;
+router.get('/pipeline/summary', asyncHandler((req, res) => {
+  // Step 2c: your own workshops' requests, receipts and issues.
+  const mOwn = ownWs(req.user, 'm.workshop_id');
+  const requests_pending = get(`SELECT COUNT(*) c FROM mrn m WHERE m.approval_status IN ('requested', 'certified') AND TRIM(COALESCE(m.requested_by, '')) != ''${mOwn}`).c;
   const awaiting_delivery = get(`
     SELECT COUNT(*) c
       FROM mrn_lines ml
       JOIN mrn m ON m.id = ml.mrn_id
      WHERE (m.approval_status = 'approved' OR (m.approval_status = 'requested' AND TRIM(COALESCE(m.requested_by, '')) = ''))
-       AND COALESCE(ml.qty_received, 0) < ml.qty
+       AND COALESCE(ml.qty_received, 0) < ml.qty${mOwn}
   `).c;
   const ready_in_store = get(`
     SELECT COUNT(*) c
-      FROM grn g
+      FROM grn g LEFT JOIN mrn m ON m.id = g.mrn_id
      WHERE g.qty > 0
-       AND (COALESCE(g.qty, 0) - (COALESCE((SELECT SUM(i.qty) FROM issues i WHERE i.grn_id = g.id), 0) - COALESCE((SELECT SUM(r.qty) FROM issue_returns r JOIN issues ir ON ir.id = r.issue_id WHERE ir.grn_id = g.id), 0))) > 0.001
+       AND (COALESCE(g.qty, 0) - (COALESCE((SELECT SUM(i.qty) FROM issues i WHERE i.grn_id = g.id), 0) - COALESCE((SELECT SUM(r.qty) FROM issue_returns r JOIN issues ir ON ir.id = r.issue_id WHERE ir.grn_id = g.id), 0))) > 0.001${ownWs(req.user, GRN_WS)}
   `).c;
-  const issued_today = get(`SELECT COUNT(*) c FROM issues WHERE date(issue_date) = date('now')`).c;
+  const issued_today = get(`SELECT COUNT(*) c FROM issues i LEFT JOIN job_cards j ON j.id = i.job_id WHERE date(i.issue_date) = date('now')${ownWs(req.user, ISSUE_WS)}`).c;
 
   res.json({ requests_pending, awaiting_delivery, ready_in_store, issued_today });
 }));
@@ -2061,6 +2177,11 @@ router.get('/pipeline/trace', requireAuth, asyncHandler((req, res) => {
 
   if (!jobId && !mrnId && !grnId && !issueId) {
     return res.status(400).json({ error: 'Please specify a job_id, mrn_id, grn_id, or issue_id to trace' });
+  }
+  { // Step 2c: a trace starts from one of your own workshops' records.
+    const no = (issueId && issueRefusal(req.user, issueId)) || (grnId && receiptRefusal(req.user, grnId))
+      || (mrnId && scope.mrnRefusal(req.user, mrnId)) || (jobId && scope.jobRefusal(req.user, jobId));
+    if (no) return res.status(403).json(no);
   }
 
   let rootType = null;
@@ -2353,7 +2474,7 @@ router.post('/stock-issue', requireCap('stores.stock_issue'), asyncHandler((req,
     if (!assetId) assetId = j.asset_id;
   } else {
     const open = jobstate.openJobFor(assetId);
-    jobId = open ? open.id : generalWorkshopJobId();
+    jobId = open ? open.id : generalWorkshopJobId(req.user);
     landedOn = open ? open.job_no : 'General Workshop';
   }
   // Stage 3: someone outside head office and the store issues only to their own workshop's cards.
@@ -2560,6 +2681,7 @@ router.post('/grn/bulk-price', requireCap('stores.grn.edit'), asyncHandler((req,
       if (!id) continue;
       const before = get('SELECT id, unit_price, priced_at FROM grn WHERE id = ?', id);
       if (!before) continue;
+      if (receiptRefusal(req.user, id)) continue;   // Step 2c: another workshop's receipt is left alone
       const sets = [], params = [];
       if (r.unit_price !== undefined) {
         sets.push('unit_price = ?');
@@ -2603,6 +2725,8 @@ router.post('/grn/bulk-receive', requireCap('stores.grn.receive'), asyncHandler(
       if (!lineId || !(qty > 0)) continue;
       const line = get('SELECT id, mrn_id, description, qty, COALESCE(qty_received,0) qty_received FROM mrn_lines WHERE id = ?', lineId);
       if (!line) continue;
+      // Step 2c: goods are received against your own workshops' requests.
+      { const no = lineRefusal(req.user, lineId); if (no) { skipped.push({ mrn_line_id: lineId, reason: no.error }); continue; } }
       // Tyres and batteries are taken in under their own permission, here as on a single receipt.
       if (!tbGrnAllowed(req.user, lineId)) {
         skipped.push({ mrn_line_id: lineId, reason: 'your role may not take tyres or batteries into stores' });
@@ -2645,7 +2769,7 @@ router.post('/grn/bulk-receive', requireCap('stores.grn.receive'), asyncHandler(
   res.json({ ok: true, received: created.length, mrns: mrnIds.size, skipped });
 }));
 
-router.patch('/grn/:id', requireCap('stores.grn.edit'), asyncHandler((req, res) => {
+router.patch('/grn/:id', requireCap('stores.grn.edit'), guardReceipt, asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   const before = get('SELECT * FROM grn WHERE id = ?', id);
   if (!before) return res.status(404).json({ error: 'GRN not found' });
@@ -2678,11 +2802,13 @@ router.patch('/grn/:id', requireCap('stores.grn.edit'), asyncHandler((req, res) 
 // ---- Issues ---------------------------------------------------------------
 // KPI headline numbers for the Stock Issues page. Cost is qty × unit_price summed
 // (computed inline so it works whether or not the generated total_cost column exists).
-router.get('/issues/kpis', asyncHandler((_req, res) => {
+router.get('/issues/kpis', asyncHandler((req, res) => {
   const today = new Date().toISOString().slice(0, 10);
   const ym = today.slice(0, 7); // 'YYYY-MM'
-  const d = get(`SELECT COUNT(*) c, COALESCE(SUM(qty * COALESCE(unit_price, 0)), 0) cost FROM issues WHERE issue_date = ?`, today);
-  const m = get(`SELECT COUNT(*) c, COALESCE(SUM(qty * COALESCE(unit_price, 0)), 0) cost FROM issues WHERE substr(issue_date, 1, 7) = ?`, ym);
+  const FROM = 'FROM issues i LEFT JOIN job_cards j ON j.id = i.job_id';
+  const own = ownWs(req.user, ISSUE_WS);   // Step 2c
+  const d = get(`SELECT COUNT(*) c, COALESCE(SUM(i.qty * COALESCE(i.unit_price, 0)), 0) cost ${FROM} WHERE i.issue_date = ?${own}`, today);
+  const m = get(`SELECT COUNT(*) c, COALESCE(SUM(i.qty * COALESCE(i.unit_price, 0)), 0) cost ${FROM} WHERE substr(i.issue_date, 1, 7) = ?${own}`, ym);
   res.json({ issues_today: d.c, cost_today: d.cost, issues_month: m.c, cost_month: m.cost });
 }));
 
@@ -2693,14 +2819,17 @@ router.get('/vehicle-costs', asyncHandler((req, res) => {
   const assetId = toInt(req.query.asset_id);
   if (!assetId) return res.status(400).json({ error: 'asset_id is required' });
   const months = Math.min(Math.max(toInt(req.query.months, 6) || 6, 1), 24);
-  const monthly = all(
+  // Step 2c: the monthly rollup keeps no workshop, so it is head office's once the workshops are
+  // kept apart; the categories are worked out from your own workshops' issues.
+  const own = ownWs(req.user, ISSUE_WS);
+  const monthly = own ? [] : all(
     `SELECT year, month, parts_cost, fuel_cost, oil_cost, filter_cost, battery_cost, labour_cost, total_cost
        FROM vehicle_monthly_costs WHERE asset_id = ?
        ORDER BY year DESC, month DESC LIMIT ?`, assetId, months).reverse();
   const categories = all(
-    `SELECT COALESCE(NULLIF(TRIM(category), ''), 'Uncategorised') AS category,
-            ROUND(SUM(qty * COALESCE(unit_price, 0)), 2) AS total, COUNT(*) AS n
-       FROM issues WHERE asset_id = ?
+    `SELECT COALESCE(NULLIF(TRIM(i.category), ''), 'Uncategorised') AS category,
+            ROUND(SUM(i.qty * COALESCE(i.unit_price, 0)), 2) AS total, COUNT(*) AS n
+       FROM issues i LEFT JOIN job_cards j ON j.id = i.job_id WHERE i.asset_id = ?${own}
        GROUP BY 1 HAVING total > 0 ORDER BY total DESC`, assetId);
   const asset = get(`SELECT id, code, registration, ec_code FROM assets WHERE id = ?`, assetId);
   res.json({ asset, monthly, categories });
@@ -2709,8 +2838,8 @@ router.get('/vehicle-costs', asyncHandler((req, res) => {
 // The General Workshop job card — where stores consumption that isn't tied to one
 // vehicle lands. Created on first use, then reused; the issue picker offers it as a
 // one-click choice so "no vehicle" still means "a real cost object".
-router.get('/general-job', asyncHandler((_req, res) => {
-  const id = generalWorkshopJobId();
+router.get('/general-job', asyncHandler((req, res) => {
+  const id = generalWorkshopJobId(req.user);
   res.json(get('SELECT id, job_no, status, description FROM job_cards WHERE id = ?', id));
 }));
 
@@ -2745,6 +2874,7 @@ router.get('/issues', asyncHandler((req, res) => {
     clauses.push('(a.code LIKE ? OR a.registration LIKE ? OR a.ec_code LIKE ? OR i.description LIKE ? OR i.issued_by LIKE ? OR i.category LIKE ? OR n.min_no LIKE ?)');
     params.push(like, like, like, like, like, like, like);
   }
+  { const own = ownWsCond(req.user, ISSUE_WS); if (own) clauses.push(own); }   // Step 2c
   const where = clauses.length ? 'WHERE ' + clauses.join(' AND ') : '';
   res.json(all(
     `SELECT i.*, a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec, j.job_no,
@@ -2761,13 +2891,15 @@ router.get('/issues', asyncHandler((req, res) => {
        ${where} ORDER BY i.issue_date DESC, i.id DESC LIMIT ${toInt(req.query.limit, 500)}`, ...params));
 }));
 
-router.get('/issues/counts', asyncHandler((_req, res) => {
-  const toApprove = get(`SELECT COUNT(*) c FROM issues i LEFT JOIN min_notes n ON n.id = i.min_id WHERE COALESCE(n.status, 'issued') IN ('pending_approval', 'requested')`).c;
-  const toIssue = get(`SELECT COUNT(*) c FROM issues i LEFT JOIN min_notes n ON n.id = i.min_id WHERE COALESCE(n.status, 'issued') = 'approved'`).c;
-  const issued = get(`SELECT COUNT(*) c FROM issues i LEFT JOIN min_notes n ON n.id = i.min_id WHERE COALESCE(n.status, 'issued') = 'issued'`).c;
-  const rejected = get(`SELECT COUNT(*) c FROM issues i LEFT JOIN min_notes n ON n.id = i.min_id WHERE COALESCE(n.status, 'issued') = 'rejected'`).c;
+router.get('/issues/counts', asyncHandler((req, res) => {
+  const FROM = 'FROM issues i LEFT JOIN min_notes n ON n.id = i.min_id LEFT JOIN job_cards j ON j.id = i.job_id';
+  const own = ownWs(req.user, ISSUE_WS);   // Step 2c
+  const toApprove = get(`SELECT COUNT(*) c ${FROM} WHERE COALESCE(n.status, 'issued') IN ('pending_approval', 'requested')${own}`).c;
+  const toIssue = get(`SELECT COUNT(*) c ${FROM} WHERE COALESCE(n.status, 'issued') = 'approved'${own}`).c;
+  const issued = get(`SELECT COUNT(*) c ${FROM} WHERE COALESCE(n.status, 'issued') = 'issued'${own}`).c;
+  const rejected = get(`SELECT COUNT(*) c ${FROM} WHERE COALESCE(n.status, 'issued') = 'rejected'${own}`).c;
   const allTodo = toApprove + toIssue;
-  const total = get('SELECT COUNT(*) c FROM issues').c;
+  const total = get(`SELECT COUNT(*) c ${FROM} WHERE 1 = 1${own}`).c;
   res.json({ all_todo: allTodo, to_approve: toApprove, to_issue: toIssue, issued, rejected, all: total });
 }));
 
@@ -2781,7 +2913,7 @@ router.post('/issues/:id/return', requireCap('stores.issue_return'), asyncHandle
   const i = get('SELECT * FROM issues WHERE id = ?', issueId);
   if (!i) return res.status(404).json({ error: 'Issue not found' });
   if (i.voided) return res.status(409).json({ error: 'This issue was cancelled — there is nothing to return.' });
-  { const no = scope.jobRefusal(req.user, i.job_id); if (no) return res.status(403).json(no); }
+  { const no = issueRefusal(req.user, issueId); if (no) return res.status(403).json(no); }   // Step 2c: its card's, else its store's
   const qty = toNum(b.qty, 0);
   if (!(qty > 0)) return res.status(400).json({ error: 'How many came back?' });
   const back = get('SELECT COALESCE(SUM(qty),0) v FROM issue_returns WHERE issue_id = ?', issueId).v;
@@ -2846,6 +2978,7 @@ router.post('/issues', requireCap('stores.issue'), asyncHandler((req, res) => {
   if (!jobId) return res.status(400).json({ error: 'Select the job card this issue belongs to' });
   const job = get('SELECT id, job_no, status, asset_id FROM job_cards WHERE id = ?', jobId);
   if (!job) return res.status(400).json({ error: 'Unknown job card' });
+  { const no = scope.jobRefusal(req.user, jobId); if (no) return res.status(403).json(no); }   // Step 2c
   // A closed / rejected card can still take a late issue, but only deliberately: the
   // client has to come back with allow_closed so a mis-picked card can't slip through.
   const isClosed = jobstate.isFinal(job.status);   // also marks the audit entry as a late issue
@@ -2919,6 +3052,7 @@ router.get('/min', asyncHandler((req, res) => {
   }
   if (req.query.date_from) { clauses.push('n.issue_date >= ?'); params.push(req.query.date_from); }
   if (req.query.date_to) { clauses.push('n.issue_date <= ?'); params.push(req.query.date_to); }
+  { const own = ownWsCond(req.user, MIN_WS); if (own) clauses.push(own); }   // Step 2c
   const where = clauses.length ? 'WHERE ' + clauses.join(' AND ') : '';
   res.json(all(
     `SELECT n.*, a.code AS asset_code, a.registration AS asset_reg, j.job_no, p.name AS project_name,
@@ -2932,7 +3066,7 @@ router.get('/min', asyncHandler((req, res) => {
       ORDER BY n.id DESC LIMIT ${toInt(req.query.limit, 200)}`, ...params));
 }));
 
-router.get('/min/:id', asyncHandler((req, res) => {
+router.get('/min/:id', guardMin, asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   let note = get(
     `SELECT n.*, a.code AS asset_code, a.registration AS asset_reg, j.job_no, p.name AS project_name
@@ -2992,10 +3126,13 @@ router.post('/min', requireCap('stores.issue'), asyncHandler((req, res) => {
   let job = null;
   let assetId = toInt(b.asset_id) || null;
   if (jobId) {
-    job = get('SELECT id, job_no, status, asset_id FROM job_cards WHERE id = ?', jobId);
+    job = get('SELECT id, job_no, status, asset_id, workshop_id FROM job_cards WHERE id = ?', jobId);
     if (!job) return res.status(400).json({ error: 'Unknown job card' });
+    { const no = scope.jobRefusal(req.user, jobId); if (no) return res.status(403).json(no); }   // Step 2c
     if (!assetId && job.asset_id) assetId = job.asset_id;
   }
+  // Step 2c: the note is its card's workshop's, else the workshop of whoever writes it.
+  const noteWs = (job && job.workshop_id) || require('../lib/workshops').homeOf(req.user);
   const projectId = toInt(b.project_id) || null;
   const issueDate = /^\d{4}-\d{2}-\d{2}$/.test(String(b.issue_date || '')) ? b.issue_date : new Date().toISOString().slice(0, 10);
   let minNo = clean(b.min_no);
@@ -3013,10 +3150,10 @@ router.post('/min', requireCap('stores.issue'), asyncHandler((req, res) => {
 
   const result = tx(() => {
     const info = run(
-      `INSERT INTO min_notes (min_no, issue_date, project_id, asset_id, job_id, purpose,
+      `INSERT INTO min_notes (min_no, issue_date, project_id, asset_id, job_id, workshop_id, purpose,
                               requested_by, requested_sig, requested_at, requested_designation, status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?, ?)`,
-      minNo, issueDate, projectId, assetId, jobId, purpose,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?, ?)`,
+      minNo, issueDate, projectId, assetId, jobId, noteWs, purpose,
       reqBy, reqSig, reqDesig, initialStatus
     );
     const minId = info.lastInsertRowid;
@@ -3095,7 +3232,7 @@ router.post('/min', requireCap('stores.issue'), asyncHandler((req, res) => {
 }));
 
 // MIN Approval Endpoint
-router.post('/min/:id/approve', requireCap('stores.min.approve'), asyncHandler((req, res) => {
+router.post('/min/:id/approve', requireCap('stores.min.approve'), guardMin, asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   const n = get('SELECT * FROM min_notes WHERE id = ? OR min_no = ?', id, req.params.id);
   if (!n) return res.status(404).json({ error: 'Material Issue Note not found' });
@@ -3119,7 +3256,7 @@ router.post('/min/:id/approve', requireCap('stores.min.approve'), asyncHandler((
 }));
 
 // MIN Handover / Receive Endpoint (Recipient Mechanic signs)
-router.post('/min/:id/receive', asyncHandler((req, res) => {
+router.post('/min/:id/receive', guardMin, asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   const n = get('SELECT * FROM min_notes WHERE id = ? OR min_no = ?', id, req.params.id);
   if (!n) return res.status(404).json({ error: 'Material Issue Note not found' });
@@ -3142,7 +3279,7 @@ router.post('/min/:id/receive', asyncHandler((req, res) => {
 }));
 
 // MIN Rejection Endpoint
-router.post('/min/:id/reject', requireCap('stores.min.reject'), asyncHandler((req, res) => {
+router.post('/min/:id/reject', requireCap('stores.min.reject'), guardMin, asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   const n = get('SELECT * FROM min_notes WHERE id = ? OR min_no = ?', id, req.params.id);
   if (!n) return res.status(404).json({ error: 'Material Issue Note not found' });
@@ -3162,7 +3299,7 @@ router.post('/min/:id/reject', requireCap('stores.min.reject'), asyncHandler((re
   res.json(get('SELECT * FROM min_notes WHERE id = ?', n.id));
 }));
 
-router.post('/min/:id/sign', requireCap('stores.issue'), asyncHandler((req, res) => {
+router.post('/min/:id/sign', requireCap('stores.issue'), guardMin, asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   const note = get('SELECT * FROM min_notes WHERE id = ?', id);
   if (!note) return res.status(404).json({ error: 'MIN note not found' });
@@ -3180,27 +3317,27 @@ router.post('/min/:id/sign', requireCap('stores.issue'), asyncHandler((req, res)
   res.json(get('SELECT * FROM min_notes WHERE id = ?', id));
 }));
 
-router.get('/min/:id/print.html', asyncHandler((req, res) => {
+router.get('/min/:id/print.html', guardMin, asyncHandler((req, res) => {
   const html = renderMinDocumentHtml(req.params.id, { forPdf: false });
   if (!html) return res.status(404).send('Material Issue Note not found');
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
   res.send(html);
 }));
 
-router.get('/min/:id/download.pdf', asyncHandler(async (req, res) => {
+router.get('/min/:id/download.pdf', guardMin, asyncHandler(async (req, res) => {
   const html = renderMinDocumentHtml(req.params.id, { forPdf: true });
   if (!html) return res.status(404).send('Material Issue Note not found');
   await sendPdf(res, `MIN-${req.params.id}.pdf`, html);
 }));
 
-router.get('/issues/:id/print.html', asyncHandler((req, res) => {
+router.get('/issues/:id/print.html', guardMin, asyncHandler((req, res) => {
   const html = renderMinDocumentHtml(req.params.id, { forPdf: false });
   if (!html) return res.status(404).send('Material Issue Note not found');
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
   res.send(html);
 }));
 
-router.get('/issues/:id/download.pdf', asyncHandler(async (req, res) => {
+router.get('/issues/:id/download.pdf', guardMin, asyncHandler(async (req, res) => {
   const html = renderMinDocumentHtml(req.params.id, { forPdf: true });
   if (!html) return res.status(404).send('Material Issue Note not found');
   await sendPdf(res, `MIN-${req.params.id}.pdf`, html);
@@ -3267,6 +3404,7 @@ router.get('/mtn', asyncHandler((req, res) => {
       clauses.push("t.status NOT IN ('accepted', 'rejected')");
     }
   }
+  { const own = mtnOwnCond(req.user); if (own) clauses.push(own); }   // Step 2c
   const where = clauses.length ? 'WHERE ' + clauses.join(' AND ') : '';
   res.json(all(
     `SELECT t.*, af.code AS from_asset_code, at2.code AS to_asset_code,
@@ -3279,19 +3417,22 @@ router.get('/mtn', asyncHandler((req, res) => {
       ORDER BY t.id DESC LIMIT ${toInt(req.query.limit, 300)}`, ...params));
 }));
 
-router.get('/mtn/counts', asyncHandler((_req, res) => {
-  const toApprove = get(`SELECT COUNT(*) c FROM mtn WHERE status IN ('draft', 'pending_approval')`).c;
-  const toDispatch = get(`SELECT COUNT(*) c FROM mtn WHERE status = 'approved'`).c;
-  const inTransit = get(`SELECT COUNT(*) c FROM mtn WHERE status = 'dispatched'`).c;
-  const toAccept = get(`SELECT COUNT(*) c FROM mtn WHERE status = 'received'`).c;
-  const accepted = get(`SELECT COUNT(*) c FROM mtn WHERE status = 'accepted'`).c;
-  const rejected = get(`SELECT COUNT(*) c FROM mtn WHERE status = 'rejected'`).c;
+router.get('/mtn/counts', asyncHandler((req, res) => {
+  const cond = mtnOwnCond(req.user);   // Step 2c
+  const own = cond ? ` AND ${cond}` : '';
+  const n = (where) => get(`SELECT COUNT(*) c FROM mtn t WHERE ${where}${own}`).c;
+  const toApprove = n("t.status IN ('draft', 'pending_approval')");
+  const toDispatch = n("t.status = 'approved'");
+  const inTransit = n("t.status = 'dispatched'");
+  const toAccept = n("t.status = 'received'");
+  const accepted = n("t.status = 'accepted'");
+  const rejected = n("t.status = 'rejected'");
   const allFlight = toApprove + toDispatch + inTransit + toAccept;
-  const total = get('SELECT COUNT(*) c FROM mtn').c;
+  const total = n('1 = 1');
   res.json({ all_flight: allFlight, to_approve: toApprove, to_dispatch: toDispatch, in_transit: inTransit, to_accept: toAccept, accepted, rejected, all: total });
 }));
 
-router.get('/mtn/:id', asyncHandler((req, res) => {
+router.get('/mtn/:id', guardMtn, asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   const mtn = get(`SELECT m.*, fa.code AS from_asset_code, fa.registration AS from_asset_reg,
                           ta.code AS to_asset_code, ta.registration AS to_asset_reg
@@ -3433,11 +3574,12 @@ router.post('/mtn', requireCap('stores.mtn.edit'), asyncHandler((req, res) => {
   const id = tx(() => {
     const info = run(
       `INSERT INTO mtn (mtn_no, txn_date, from_location, to_location, from_asset_id, to_asset_id, transferred_by, received_by, reason,
-                        from_place, to_place)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                        from_place, to_place, workshop_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       mtnNo, b.txn_date || new Date().toISOString().slice(0, 10),
       ends.from_location, ends.to_location, from.assetId || null, to.assetId || null,
-      b.transferred_by || null, b.received_by || null, b.reason || null, ends.from_place, ends.to_place
+      b.transferred_by || null, b.received_by || null, b.reason || null, ends.from_place, ends.to_place,
+      require('../lib/workshops').homeOf(req.user)   // Step 2c: the workshop that writes it
     );
     items.forEach((l, i) => insertMtnLine(info.lastInsertRowid, l, i + 1));
     syncMtnHeader(info.lastInsertRowid);
@@ -3461,7 +3603,7 @@ const mtnLines = (mtnId) => all(
     WHERE l.mtn_id = ? ORDER BY l.line_no, l.id`, mtnId);
 
 // Add an item to an existing note.
-router.post('/mtn/:id/lines', requireCap('stores.mtn.edit'), asyncHandler((req, res) => {
+router.post('/mtn/:id/lines', requireCap('stores.mtn.edit'), guardMtn, asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   if (!get('SELECT id FROM mtn WHERE id = ?', id)) return res.status(404).json({ error: 'MTN not found' });
   if (!(toNum(req.body.qty, 0) > 0)) return res.status(400).json({ error: 'Quantity must be more than 0' });
@@ -3483,7 +3625,7 @@ router.post('/mtn/:id/lines', requireCap('stores.mtn.edit'), asyncHandler((req, 
 
 const MTN_LINE_EDITABLE = ['description', 'unit', 'from_location', 'to_location', 'reason'];
 
-router.patch('/mtn/line/:id', requireCap('stores.mtn.edit'), asyncHandler((req, res) => {
+router.patch('/mtn/line/:id', requireCap('stores.mtn.edit'), guardMtnLine, asyncHandler((req, res) => {
   const lineId = toInt(req.params.id);
   const before = get('SELECT * FROM mtn_lines WHERE id = ?', lineId);
   if (!before) return res.status(404).json({ error: 'Item not found' });
@@ -3532,7 +3674,7 @@ router.patch('/mtn/line/:id', requireCap('stores.mtn.edit'), asyncHandler((req, 
   res.json(get('SELECT * FROM mtn_lines WHERE id = ?', lineId));
 }));
 
-router.delete('/mtn/line/:id', requireCap('stores.mtn.edit'), asyncHandler((req, res) => {
+router.delete('/mtn/line/:id', requireCap('stores.mtn.edit'), guardMtnLine, asyncHandler((req, res) => {
   const lineId = toInt(req.params.id);
   const line = get('SELECT * FROM mtn_lines WHERE id = ?', lineId);
   if (!line) return res.status(404).json({ error: 'Item not found' });
@@ -3558,7 +3700,7 @@ router.delete('/mtn/line/:id', requireCap('stores.mtn.edit'), asyncHandler((req,
 const MTN_EDITABLE = ['txn_date', 'description', 'from_location', 'to_location',
   'transferred_by', 'received_by', 'reason'];
 
-router.patch('/mtn/:id', requireCap('stores.mtn.edit'), asyncHandler((req, res) => {
+router.patch('/mtn/:id', requireCap('stores.mtn.edit'), guardMtn, asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   const before = get('SELECT * FROM mtn WHERE id = ?', id);
   if (!before) return res.status(404).json({ error: 'MTN not found' });
@@ -3617,14 +3759,14 @@ router.patch('/mtn/:id', requireCap('stores.mtn.edit'), asyncHandler((req, res) 
 }));
 
 // ---- MTN Document & 4-Stage Lifecycle Endpoints -----------------------------
-router.get('/mtn/:id/print.html', asyncHandler((req, res) => {
+router.get('/mtn/:id/print.html', guardMtn, asyncHandler((req, res) => {
   const html = renderMtnDocumentHtml(req.params.id, { forPdf: false });
   if (!html) return res.status(404).send('Materials Transfer Note not found');
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
   res.send(html);
 }));
 
-router.get('/mtn/:id/download.pdf', asyncHandler(async (req, res) => {
+router.get('/mtn/:id/download.pdf', guardMtn, asyncHandler(async (req, res) => {
   const html = renderMtnDocumentHtml(req.params.id, { forPdf: true });
   if (!html) return res.status(404).send('Materials Transfer Note not found');
   await sendPdf(res, `MTN-${req.params.id}.pdf`, html);
@@ -3637,7 +3779,7 @@ router.get('/mtn/:id/download.pdf', asyncHandler(async (req, res) => {
 // transfers). So every stage below writes the note's movements again. Without that the stock
 // stays as whatever the previous stage left behind — which is how a rejected transfer used to
 // keep the goods off the shelf for good.
-router.post('/mtn/:id/approve', requireCap('stores.mtn.approve'), asyncHandler((req, res) => {
+router.post('/mtn/:id/approve', requireCap('stores.mtn.approve'), guardMtn, asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   const m = get('SELECT * FROM mtn WHERE id = ? OR mtn_no = ?', id, req.params.id);
   if (!m) return res.status(404).json({ error: 'MTN not found' });
@@ -3662,7 +3804,7 @@ router.post('/mtn/:id/approve', requireCap('stores.mtn.approve'), asyncHandler((
 }));
 
 // MTN Rejection Endpoint
-router.post('/mtn/:id/reject', requireCap('stores.mtn.reject'), asyncHandler((req, res) => {
+router.post('/mtn/:id/reject', requireCap('stores.mtn.reject'), guardMtn, asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   const m = get('SELECT * FROM mtn WHERE id = ? OR mtn_no = ?', id, req.params.id);
   if (!m) return res.status(404).json({ error: 'MTN not found' });
@@ -3684,7 +3826,7 @@ router.post('/mtn/:id/reject', requireCap('stores.mtn.reject'), asyncHandler((re
 }));
 
 // Stage 2: Dispatch / In Transit (Driver or Dispatching Clerk signs)
-router.post('/mtn/:id/dispatch', requireCap('stores.mtn.edit'), asyncHandler((req, res) => {
+router.post('/mtn/:id/dispatch', requireCap('stores.mtn.edit'), guardMtn, asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   const m = get('SELECT * FROM mtn WHERE id = ?', id);
   if (!m) return res.status(404).json({ error: 'MTN not found' });
@@ -3714,7 +3856,7 @@ router.post('/mtn/:id/dispatch', requireCap('stores.mtn.edit'), asyncHandler((re
 }));
 
 // Stage 3: In Transit / Received By (Driver or Receiving Store Clerk)
-router.post('/mtn/:id/receive', requireCap('stores.mtn.edit'), asyncHandler((req, res) => {
+router.post('/mtn/:id/receive', requireCap('stores.mtn.edit'), guardMtn, asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   const m = get('SELECT * FROM mtn WHERE id = ?', id);
   if (!m) return res.status(404).json({ error: 'MTN not found' });
@@ -3738,7 +3880,7 @@ router.post('/mtn/:id/receive', requireCap('stores.mtn.edit'), asyncHandler((req
 }));
 
 // Stage 4: Destination Accepted By (Destination Store Manager / In-Charge)
-router.post('/mtn/:id/accept', requireCap('stores.mtn.edit'), asyncHandler((req, res) => {
+router.post('/mtn/:id/accept', requireCap('stores.mtn.edit'), guardMtn, asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   const m = get('SELECT * FROM mtn WHERE id = ?', id);
   if (!m) return res.status(404).json({ error: 'MTN not found' });
@@ -3763,7 +3905,7 @@ router.post('/mtn/:id/accept', requireCap('stores.mtn.edit'), asyncHandler((req,
 }));
 
 // MTN Multi-Party Signatures Update
-router.post('/mtn/:id/sign', requireCap('stores.mtn.edit'), asyncHandler((req, res) => {
+router.post('/mtn/:id/sign', requireCap('stores.mtn.edit'), guardMtn, asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   const m = get('SELECT * FROM mtn WHERE id = ?', id);
   if (!m) return res.status(404).json({ error: 'MTN not found' });
@@ -3784,10 +3926,11 @@ router.post('/mtn/:id/sign', requireCap('stores.mtn.edit'), asyncHandler((req, r
 }));
 
 // ---- exports --------------------------------------------------------------
-router.get('/export/mrn.xlsx', asyncHandler(async (_req, res) => {
+router.get('/export/mrn.xlsx', asyncHandler(async (req, res) => {
   const rows = all(`SELECT m.mrn_no, m.req_date, a.code AS asset_code, m.purpose, m.status,
                            ${mrnReceiptSql('m.id')}
-                      FROM mrn m LEFT JOIN assets a ON a.id = m.asset_id ORDER BY m.id DESC`);
+                      FROM mrn m LEFT JOIN assets a ON a.id = m.asset_id
+                     WHERE 1 = 1${ownWs(req.user, 'm.workshop_id')} ORDER BY m.id DESC`);   // Step 2c
   await sendXlsx(res, 'mrn.xlsx', [{
     name: 'MRN',
     columns: [

@@ -182,28 +182,37 @@ function currentBalance(productId) {
  * Unified oil forecast and reorder threshold evaluator.
  * Centralizes consumption rates, days of cover, and low stock flags.
  */
+/**
+ * opts.store: one store's forecast (improvement plan, Step 2) — what that store issued, what is on
+ * its shelf and the level it reorders at; without it, the company's, as always.
+ */
 function oilForecast(opts = {}) {
   const windowDays = opts.windowDays || config.forecastWindowDays;
   const lowStockDays = opts.lowStockDays || config.lowStockDays;
   const since = new Date(Date.now() - windowDays * 86400 * 1000).toISOString().slice(0, 10);
   const products = all('SELECT * FROM products ORDER BY name');
+  const stock = require('./stock');
+  const shelf = opts.store ? { bal: stock.storeBalances('oil', opts.store), lvl: stock.storeLevels('oil', opts.store) } : null;
+  const inStore = opts.store ? ` AND ${require('./scope').storeOfRow('store_id')} = ?` : '';
   const out = products.map((p) => {
     const consRow = get(
-      `SELECT COALESCE(SUM(ABS(qty)),0) c FROM stock_ledger WHERE product_id = ? AND kind = 'issue' AND txn_date >= ?`,
-      p.id, since
+      `SELECT COALESCE(SUM(ABS(qty)),0) c FROM stock_ledger WHERE product_id = ? AND kind = 'issue' AND txn_date >= ?${inStore}`,
+      p.id, since, ...(opts.store ? [opts.store] : [])
     );
     const consumption = consRow.c || 0;
     const dailyRate = consumption / windowDays;
-    const balance = currentBalance(p.id);
+    const key = shelf && stock.itemKey('oil', p.name, p.code || p.name);
+    const balance = shelf ? (shelf.bal.get(key) || 0) : currentBalance(p.id);
+    const reorder = shelf ? (shelf.lvl.get(key) || 0) : p.reorder_level;
     const daysOfCover = dailyRate > 0 ? balance / dailyRate : null;
-    const low = (daysOfCover != null && daysOfCover <= lowStockDays) || (p.reorder_level > 0 && balance <= p.reorder_level);
+    const low = (daysOfCover != null && daysOfCover <= lowStockDays) || (reorder > 0 && balance <= reorder);
     return {
       product_id: p.id,
       id: p.id,
       name: p.name,
       unit: p.unit,
       balance,
-      reorder_level: p.reorder_level,
+      reorder_level: reorder,
       consumption_window: consumption,
       daily_rate: Math.round(dailyRate * 100) / 100,
       days_of_cover: daysOfCover == null ? null : Math.round(daysOfCover),

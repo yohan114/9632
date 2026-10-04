@@ -24,7 +24,6 @@ router.use((req, res, next) => {
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
-const OPEN_JOBS = require('../lib/jobstate').openSql();   // cards that hold their vehicle
 const jobsFlow = require('../lib/jobs_flow');
 const storesFlow = require('../lib/stores_flow');
 const jobstate = require('../lib/jobstate');
@@ -78,69 +77,131 @@ function stockAlerts(limit = 30) {
   return rows.slice(0, limit);
 }
 
-// ---- overview -------------------------------------------------------------
-router.get('/overview', asyncHandler((_req, res) => {
+// ---- improvement plan, Step 2b: your own workshops' figures --------------------------------------
+// With the workshops kept apart, someone outside head office sees their own workshops' jobs,
+// requests, issues and cost here (scope.reach) and their own store's stock (scope.ownStore). Head
+// office — and everyone, until the workshops are kept apart — sees the company's, as before.
+const wsSql = (...a) => scope.wsSql(...a);
+const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+
+/** Low stock in each kind, and the list behind it: the company's, or one store's. */
+function lowStock(user, limit = 30) {
+  const store = scope.ownStore(user);
+  if (store == null) {
+    return {
+      general: get(`SELECT COUNT(*) c FROM store_items WHERE ${LOW_GENERAL}`).c,
+      oil: get(`SELECT COUNT(*) c FROM products WHERE active = 1 AND ${LOW_OIL}`).c,
+      filter: get(`SELECT COUNT(*) c FROM filter_stock WHERE ${LOW_FILTER}`).c,
+      list: () => stockAlerts(limit),
+    };
+  }
+  const alerts = require('../lib/store_shelf').reorderAlerts(store);
+  const n = (sec) => alerts.filter((a) => a.section === sec).length;
+  return {
+    general: n('general'), oil: n('oil'), filter: n('filter'),
+    list: () => alerts.slice(0, limit).map((a) => ({ name: a.name, category: a.category, current: a.current_stock,
+      reorder: a.reorder_level, kind: a.section, status: statusOf(a.current_stock, a.reorder_level) })),
+  };
+}
+
+/** Open cards, vehicles in, live requests and today's issues — of the workshops in `ws` (null: all). */
+function counts(ws) {
+  return {
+    active_jobs: get(`SELECT COUNT(*) c FROM job_cards j WHERE ${jobstate.openSql('j')}${wsSql('j.workshop_id', ws)}`).c,
+    vehicles_in_workshop: get(`SELECT COUNT(DISTINCT j.asset_id) c FROM job_cards j WHERE ${jobstate.openSql('j')} AND j.asset_id IS NOT NULL${wsSql('j.workshop_id', ws)}`).c,
+    pending_requests: get(`SELECT COUNT(*) c FROM mrn WHERE (${LIVE_PENDING_MRN})${wsSql('workshop_id', ws)}`).c,
+    // An issue is its job card's workshop's, else the store it left.
+    todays_issue_cost: get(`SELECT COALESCE(SUM(i.qty * COALESCE(i.unit_price, 0)), 0) v FROM issues i
+                             LEFT JOIN job_cards j ON j.id = i.job_id WHERE i.issue_date = ?${wsSql('COALESCE(j.workshop_id, i.store_id)', ws)}`, today()).v,
+  };
+}
+
+/**
+ * This month's cost, the six-month trend and the five costliest vehicles. The company's come from the
+ * vehicle cost rollup, which keeps no workshop; one workshop's are worked out from its own labour,
+ * receipts, oil and services (src/lib/month_costs.js), the figures Reports → Monthly shows it.
+ */
+function costFigures(ws) {
   const { year, month } = nowYM();
+  if (ws == null) {
+    const top_5_cost_vehicles = all(
+      `SELECT v.asset_id, a.code, a.registration, a.ec_code,
+              ROUND(v.total_cost,2) AS total_cost, ROUND(v.parts_cost,2) AS parts_cost,
+              ROUND(v.oil_cost,2) AS oil_cost, ROUND(v.filter_cost,2) AS filter_cost, ROUND(v.labour_cost,2) AS labour_cost
+         FROM vehicle_monthly_costs v LEFT JOIN assets a ON a.id = v.asset_id
+        WHERE v.year = ? AND v.month = ? AND v.total_cost > 0
+        ORDER BY v.total_cost DESC LIMIT 5`, year, month);
 
-  const active_jobs = get(`SELECT COUNT(*) c FROM job_cards WHERE ${OPEN_JOBS}`).c;
-  const vehicles_in_workshop = get(`SELECT COUNT(DISTINCT asset_id) c FROM job_cards WHERE ${OPEN_JOBS} AND asset_id IS NOT NULL`).c;
-  const pending_requests = get(`SELECT COUNT(*) c FROM mrn WHERE ${LIVE_PENDING_MRN}`).c;
+    // Monthly cost trend — last 6 months, zero-filled.
+    const periods = lastNMonths(6);
+    const minIdx = periods[0].year * 12 + periods[0].month;
+    const trendRows = all(
+      `SELECT year, month,
+              ROUND(SUM(parts_cost),2) AS parts_cost, ROUND(SUM(oil_cost),2) AS oil_cost,
+              ROUND(SUM(filter_cost),2) AS filter_cost, ROUND(SUM(labour_cost),2) AS labour_cost,
+              ROUND(SUM(total_cost),2) AS total_cost
+         FROM vehicle_monthly_costs WHERE (year * 12 + month) >= ? GROUP BY year, month`, minIdx);
+    const byKey = {};
+    for (const r of trendRows) byKey[r.year + '-' + r.month] = r;
+    const monthly_cost_trend = periods.map((p) => {
+      const r = byKey[p.year + '-' + p.month] || {};
+      return {
+        month: p.label, year: p.year, month_num: p.month,
+        parts_cost: r.parts_cost || 0, oil_cost: r.oil_cost || 0,
+        filter_cost: r.filter_cost || 0, labour_cost: r.labour_cost || 0, total_cost: r.total_cost || 0,
+      };
+    });
+    const monthly_cost_total = get(
+      `SELECT COALESCE(SUM(total_cost), 0) v FROM vehicle_monthly_costs WHERE year = ? AND month = ?`, year, month).v;
+    return { monthly_cost_total, monthly_cost_trend, top_5_cost_vehicles };
+  }
 
-  const low_stock_items = get(`SELECT COUNT(*) c FROM store_items WHERE ${LOW_GENERAL}`).c;
-  const low_oil_stock = get(`SELECT COUNT(*) c FROM products WHERE active = 1 AND ${LOW_OIL}`).c;
-  const low_filter_stock = get(`SELECT COUNT(*) c FROM filter_stock WHERE ${LOW_FILTER}`).c;
+  const mc = require('../lib/month_costs');
+  const key = (y, m) => `${y}-${String(m).padStart(2, '0')}`;
+  const byMonth = new Map(mc.monthlyRollup(ws).map((m) => [m.month, m]));
+  const monthly_cost_trend = lastNMonths(6).map((p) => {
+    const r = byMonth.get(key(p.year, p.month)) || {};
+    // A workshop's own figures have no filter line of their own: a filter is in a service, or a part.
+    return {
+      month: p.label, year: p.year, month_num: p.month,
+      parts_cost: r2((r.head_office || 0) + (r.local_purchase || 0)), oil_cost: r.oil || 0, filter_cost: 0,
+      labour_cost: r.labour || 0, service_cost: r.service || 0, total_cost: r.total || 0,
+    };
+  });
+  const top_5_cost_vehicles = mc.monthAssets(key(year, month), ws).filter((a) => a.total > 0).slice(0, 5)
+    .map((a) => ({ asset_id: a.asset_id, code: a.asset_code, registration: a.registration, ec_code: a.ec_code,
+      total_cost: a.total, parts_cost: a.material, oil_cost: a.oil, filter_cost: 0, labour_cost: a.labour }));
+  const now = byMonth.get(key(year, month));
+  return { monthly_cost_total: now ? now.total : 0, monthly_cost_trend, top_5_cost_vehicles };
+}
 
-  const todays_issue_cost = get(
-    `SELECT COALESCE(SUM(qty * COALESCE(unit_price, 0)), 0) v FROM issues WHERE issue_date = ?`, today()).v;
-  const monthly_cost_total = get(
-    `SELECT COALESCE(SUM(total_cost), 0) v FROM vehicle_monthly_costs WHERE year = ? AND month = ?`, year, month).v;
+// ---- overview -------------------------------------------------------------
+router.get('/overview', asyncHandler((req, res) => {
+  const ws = scope.reach(req.user);   // Step 2b: null = every workshop
+  const { active_jobs, vehicles_in_workshop, pending_requests, todays_issue_cost } = counts(ws);
+  const low = lowStock(req.user);
+  const { monthly_cost_total, monthly_cost_trend, top_5_cost_vehicles } = costFigures(ws);
 
   // Job status mix over the last 90 days (by the real job date, falling back to created_at).
   const job_status_breakdown = all(
     `SELECT status, COUNT(*) AS count FROM job_cards
-      WHERE date(COALESCE(requested_at, created_at)) >= date('now', '-90 days')
+      WHERE date(COALESCE(requested_at, created_at)) >= date('now', '-90 days')${wsSql('workshop_id', ws)}
       GROUP BY status ORDER BY count DESC`);
 
-  const top_5_cost_vehicles = all(
-    `SELECT v.asset_id, a.code, a.registration, a.ec_code,
-            ROUND(v.total_cost,2) AS total_cost, ROUND(v.parts_cost,2) AS parts_cost,
-            ROUND(v.oil_cost,2) AS oil_cost, ROUND(v.filter_cost,2) AS filter_cost, ROUND(v.labour_cost,2) AS labour_cost
-       FROM vehicle_monthly_costs v LEFT JOIN assets a ON a.id = v.asset_id
-      WHERE v.year = ? AND v.month = ? AND v.total_cost > 0
-      ORDER BY v.total_cost DESC LIMIT 5`, year, month);
-
-  // Monthly cost trend — last 6 months, zero-filled.
-  const periods = lastNMonths(6);
-  const minIdx = periods[0].year * 12 + periods[0].month;
-  const trendRows = all(
-    `SELECT year, month,
-            ROUND(SUM(parts_cost),2) AS parts_cost, ROUND(SUM(oil_cost),2) AS oil_cost,
-            ROUND(SUM(filter_cost),2) AS filter_cost, ROUND(SUM(labour_cost),2) AS labour_cost,
-            ROUND(SUM(total_cost),2) AS total_cost
-       FROM vehicle_monthly_costs WHERE (year * 12 + month) >= ? GROUP BY year, month`, minIdx);
-  const byKey = {};
-  for (const r of trendRows) byKey[r.year + '-' + r.month] = r;
-  const monthly_cost_trend = periods.map((p) => {
-    const r = byKey[p.year + '-' + p.month] || {};
-    return {
-      month: p.label, year: p.year, month_num: p.month,
-      parts_cost: r.parts_cost || 0, oil_cost: r.oil_cost || 0,
-      filter_cost: r.filter_cost || 0, labour_cost: r.labour_cost || 0, total_cost: r.total_cost || 0,
-    };
-  });
-
+  // Step 2b: kept to your own workshops, the actions of their people (each person's home workshop).
   const recent_activity = all(
     `SELECT al.id, al.entity, al.entity_id, al.action, al.reason, al.created_at,
             u.username, u.full_name
        FROM audit_log al LEFT JOIN users u ON u.id = al.user_id
+      ${ws == null ? '' : `WHERE al.user_id IS NOT NULL${wsSql('u.workshop_id', ws)}`}
       ORDER BY al.id DESC LIMIT 15`);
 
   res.json({
     active_jobs, pending_requests, vehicles_in_workshop,
-    low_stock_items, low_oil_stock, low_filter_stock,
+    low_stock_items: low.general, low_oil_stock: low.oil, low_filter_stock: low.filter,
     todays_issue_cost, monthly_cost_total,
     job_status_breakdown, top_5_cost_vehicles, monthly_cost_trend,
-    recent_activity, stock_alerts: stockAlerts(),
+    recent_activity, stock_alerts: low.list(),
     generated_at: new Date().toISOString(),
   });
 }));
@@ -168,18 +229,16 @@ router.get('/workflow-monitor', asyncHandler((req, res) => {
   const jm = jobsFlow.monitor(user);
   const sm = storesFlow.monitor(user);
   const rReach = scope.reach(user);
-  const { year, month } = nowYM();
 
   // 1. Core KPIs
   const jOwn = scope.filter(user, 'j.workshop_id');
   const andJ = jOwn.sql ? ` AND ${jOwn.sql}` : '';
   const active_jobs = get(`SELECT COUNT(*) c FROM job_cards j WHERE ${jobstate.openSql('j')}${andJ}`, ...jOwn.params).c;
   const vehicles_in_workshop = get(`SELECT COUNT(DISTINCT j.asset_id) c FROM job_cards j WHERE ${jobstate.openSql('j')} AND j.asset_id IS NOT NULL${andJ}`, ...jOwn.params).c;
-  const monthly_cost_total = get(`SELECT COALESCE(SUM(total_cost), 0) v FROM vehicle_monthly_costs WHERE year = ? AND month = ?`, year, month).v;
-  const low_stock_items = get(`SELECT COUNT(*) c FROM store_items WHERE ${LOW_GENERAL}`).c;
-  const low_oil_stock = get(`SELECT COUNT(*) c FROM products WHERE active = 1 AND ${LOW_OIL}`).c;
-  const low_filter_stock = get(`SELECT COUNT(*) c FROM filter_stock WHERE ${LOW_FILTER}`).c;
-  const low_stock_total = low_stock_items + low_oil_stock + low_filter_stock;
+  // Step 2b: your own workshops' cost this month, your own store's low stock.
+  const { monthly_cost_total } = costFigures(rReach);
+  const low = lowStock(user);
+  const low_stock_total = low.general + low.oil + low.filter;
 
   // 2. Jobs Road & Pipeline
   const closed_this_month = get(`SELECT COUNT(*) c FROM job_cards j WHERE j.status = 'CLOSED' AND strftime('%Y-%m', j.completed_at) = strftime('%Y-%m', 'now')${andJ}`, ...jOwn.params).c;
@@ -469,17 +528,15 @@ router.get('/workflow-monitor', asyncHandler((req, res) => {
 }));
 
 // ---- lightweight poll -----------------------------------------------------
-router.get('/live-stats', asyncHandler((_req, res) => {
-  const { year, month } = nowYM();
-  const active_jobs = get(`SELECT COUNT(*) c FROM job_cards WHERE ${OPEN_JOBS}`).c;
-  const pending_requests = get(`SELECT COUNT(*) c FROM mrn WHERE ${LIVE_PENDING_MRN}`).c;
-  const low_stock_alerts =
-    get(`SELECT COUNT(*) c FROM store_items WHERE ${LOW_GENERAL}`).c +
-    get(`SELECT COUNT(*) c FROM products WHERE active = 1 AND ${LOW_OIL}`).c +
-    get(`SELECT COUNT(*) c FROM filter_stock WHERE ${LOW_FILTER}`).c;
-  const todays_cost = get(`SELECT COALESCE(SUM(qty * COALESCE(unit_price,0)),0) v FROM issues WHERE issue_date = ?`, today()).v;
-  const monthly_cost = get(`SELECT COALESCE(SUM(total_cost),0) v FROM vehicle_monthly_costs WHERE year = ? AND month = ?`, year, month).v;
-  res.json({ active_jobs, pending_requests, low_stock_alerts, todays_cost, monthly_cost });
+router.get('/live-stats', asyncHandler((req, res) => {
+  const ws = scope.reach(req.user);   // Step 2b: as the overview
+  const c = counts(ws);
+  const low = lowStock(req.user);
+  res.json({
+    active_jobs: c.active_jobs, pending_requests: c.pending_requests,
+    low_stock_alerts: low.general + low.oil + low.filter,
+    todays_cost: c.todays_issue_cost, monthly_cost: costFigures(ws).monthly_cost_total,
+  });
 }));
 
 module.exports = router;

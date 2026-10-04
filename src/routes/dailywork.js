@@ -197,12 +197,15 @@ function labourFor(entry) {
 // Supports ?month=YYYY-MM (defaults to latest month) and optional ?format=xlsx for Excel export.
 router.get('/monthly-summary', asyncHandler(async (req, res) => {
   rateCache.clear();
+  // Step 2b: your own workshops' month, like the rest of this page.
+  const own = scope.filter(req.user, 'j.workshop_id');
+  const andOwn = own.sql ? ` AND ${own.sql}` : '';
 
   const months = all(
-    `SELECT DISTINCT strftime('%Y-%m', work_date) AS month
-       FROM job_daily_work
-      WHERE work_date IS NOT NULL
-      ORDER BY month DESC`
+    `SELECT DISTINCT strftime('%Y-%m', w.work_date) AS month
+       FROM job_daily_work w LEFT JOIN job_cards j ON j.id = w.job_id
+      WHERE w.work_date IS NOT NULL${andOwn}
+      ORDER BY month DESC`, ...own.params
   ).map((r) => r.month).filter(Boolean);
 
   let month = String(req.query.month || '').slice(0, 7);
@@ -215,17 +218,17 @@ router.get('/monthly-summary', asyncHandler(async (req, res) => {
        FROM job_daily_work w
        JOIN job_cards j ON j.id = w.job_id
        LEFT JOIN assets a ON a.id = j.asset_id
-      WHERE strftime('%Y-%m', w.work_date) = ?
+      WHERE strftime('%Y-%m', w.work_date) = ?${andOwn}
       ORDER BY w.work_date, w.id`,
-    month
+    month, ...own.params
   );
 
   const jlRows = all(
-    `SELECT mechanic, SUM(amount) AS total_cost, COUNT(*) AS entries
-       FROM job_labour
-      WHERE substr(work_date,1,7) = ?
-      GROUP BY mechanic`,
-    month
+    `SELECT jl.mechanic, SUM(jl.amount) AS total_cost, COUNT(*) AS entries
+       FROM job_labour jl LEFT JOIN job_cards j ON j.id = jl.job_id
+      WHERE substr(jl.work_date,1,7) = ?${andOwn}
+      GROUP BY jl.mechanic`,
+    month, ...own.params
   );
   const jlMap = new Map();
   for (const r of jlRows) {
@@ -307,7 +310,8 @@ router.get('/monthly-summary', asyncHandler(async (req, res) => {
   // exactly the case worth seeing. Labour cost is untouched: it stays booked hours × rate.
   let att = null;
   if (attendance.isEnabled()) {
-    att = attendance.month(month);
+    // Step 2b: your own workshop's attendance when you are kept to it (head office: everyone's).
+    att = attendance.month(month, { ws: scope.enabled() ? scope.onlyWorkshop(req.user, { store: false }) : null });
     const byNorm = new Map(att.mechanics.map((m) => [mechanics.normalizeMechanic(m.name), m]));
     for (const l of laborSummary) {
       const a = byNorm.get(mechanics.normalizeMechanic(l.mechanic));

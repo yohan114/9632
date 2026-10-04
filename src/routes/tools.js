@@ -5,9 +5,33 @@ const { get, all, run, tx } = require('../db');
 const { requireAuth, requireCap } = require('../lib/auth');
 const { asyncHandler, require_, toInt, toNum } = require('../lib/http');
 const audit = require('../lib/audit');
+const scope = require('../lib/scope');
+const workshops = require('../lib/workshops');
 
 const router = express.Router();
 router.use(requireAuth);
+
+// Improvement plan, Step 2: a tool is its workshop's (workshop_tools.workshop_id, src/db/index.js),
+// and so are its issue log and its scrap requests. With the workshops kept apart, someone outside
+// head office sees and works on their own workshop's tools only — store staff, those of every
+// workshop their store serves, as with job cards (src/lib/scope.js).
+const ownTools = (user, col = 't.workshop_id') => scope.filter(user, col);
+/** Route guard: refuse a tool of another workshop, found from the :id the route takes. */
+const reach = (toolOf) => (req, res, next) => {
+  const toolId = toolOf(toInt(req.params.id));
+  const no = toolId && scope.toolRefusal(req.user, toolId);
+  return no ? res.status(403).json(no) : next();
+};
+const reachTool = reach((id) => id);
+const reachLog = reach((id) => (get('SELECT tool_id FROM tool_issue_logs WHERE id = ?', id) || {}).tool_id);
+const reachScrap = reach((id) => (get('SELECT tool_id FROM tool_scrap_requests WHERE id = ?', id) || {}).tool_id);
+const forbid = (body) => { const e = new Error(body.error); e.status = 403; e.data = body; throw e; };
+/** A mechanic named on a tool must be one of the workshops you may reach. */
+function mustReachMechanic(user, mechanicId) {
+  if (!mechanicId || !scope.enabled()) return;
+  const w = workshops.mechanicWorkshop(mechanicId);
+  if (w && !scope.mayReach(user, w)) forbid(scope.refusal('mechanic', w));
+}
 
 const clean = (v, max = 255) => (v == null ? '' : String(v).trim().slice(0, max));
 const esc = (v) => String(v == null ? '' : v).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
@@ -76,6 +100,7 @@ router.get('/', asyncHandler((req, res) => {
     where.push('t.workshop_id = ?');
     params.push(workshopId);
   }
+  { const own = ownTools(req.user); if (own.sql) { where.push(own.sql); params.push(...own.params); } }
 
   if (q) {
     where.push(`(
@@ -110,16 +135,20 @@ router.get('/', asyncHandler((req, res) => {
 }));
 
 // KPI stats
-router.get('/stats', asyncHandler((_req, res) => {
-  const total = get('SELECT COUNT(*) AS c FROM workshop_tools WHERE active = 1').c;
-  const common = get("SELECT COUNT(*) AS c FROM workshop_tools WHERE active = 1 AND type = 'common'").c;
-  const mechanic = get("SELECT COUNT(*) AS c FROM workshop_tools WHERE active = 1 AND type = 'mechanic'").c;
-  const inStore = get("SELECT COUNT(*) AS c FROM workshop_tools WHERE active = 1 AND status = 'in_store'").c;
-  const issued = get("SELECT COUNT(*) AS c FROM workshop_tools WHERE active = 1 AND (status = 'issued' OR status = 'in_use')").c;
-  const damaged = get("SELECT COUNT(*) AS c FROM workshop_tools WHERE active = 1 AND (status = 'damaged' OR condition IN ('damaged', 'broken'))").c;
-  const pendingScrap = get("SELECT COUNT(*) AS c FROM tool_scrap_requests WHERE status = 'pending_approval'").c;
-  const scrapped = get("SELECT COUNT(*) AS c FROM workshop_tools WHERE status = 'scrapped' OR active = 0").c;
-  const mechsWithTools = get("SELECT COUNT(DISTINCT mechanic_id) AS c FROM workshop_tools WHERE active = 1 AND mechanic_id IS NOT NULL").c;
+router.get('/stats', asyncHandler((req, res) => {
+  const own = ownTools(req.user, 'workshop_id');
+  const mine = own.sql ? ` AND ${own.sql}` : '';
+  const n = (where) => get(`SELECT COUNT(*) AS c FROM workshop_tools WHERE (${where})${mine}`, ...own.params).c;
+  const total = n('active = 1');
+  const common = n("active = 1 AND type = 'common'");
+  const mechanic = n("active = 1 AND type = 'mechanic'");
+  const inStore = n("active = 1 AND status = 'in_store'");
+  const issued = n("active = 1 AND (status = 'issued' OR status = 'in_use')");
+  const damaged = n("active = 1 AND (status = 'damaged' OR condition IN ('damaged', 'broken'))");
+  const pendingScrap = get(`SELECT COUNT(*) AS c FROM tool_scrap_requests WHERE status = 'pending_approval'
+                              AND tool_id IN (SELECT id FROM workshop_tools WHERE 1 = 1${mine})`, ...own.params).c;
+  const scrapped = n("status = 'scrapped' OR active = 0");
+  const mechsWithTools = get(`SELECT COUNT(DISTINCT mechanic_id) AS c FROM workshop_tools WHERE active = 1 AND mechanic_id IS NOT NULL${mine}`, ...own.params).c;
 
   res.json({
     total_active: total,
@@ -140,7 +169,9 @@ router.get('/stats', asyncHandler((_req, res) => {
 }));
 
 // List mechanics with personal toolbox counts & summary
-router.get('/mechanic-boxes', asyncHandler((_req, res) => {
+router.get('/mechanic-boxes', asyncHandler((req, res) => {
+  const ownT = ownTools(req.user);
+  const ownM = ownTools(req.user, workshops.mechanicWorkshopSql('m'));
   const mechs = all(`
     SELECT m.id, m.name, m.status, m.active,
            COUNT(t.id) AS tool_count,
@@ -155,15 +186,18 @@ router.get('/mechanic-boxes', asyncHandler((_req, res) => {
            SUM(t.replacement_cost) AS total_value,
            SUM(t.replacement_cost) AS total_box_value
       FROM mechanics m
-      LEFT JOIN workshop_tools t ON t.mechanic_id = m.id AND t.active = 1
+      LEFT JOIN workshop_tools t ON t.mechanic_id = m.id AND t.active = 1${ownT.sql ? ` AND ${ownT.sql}` : ''}
+     ${ownM.sql ? `WHERE ${ownM.sql}` : ''}
      GROUP BY m.id
      ORDER BY has_toolbox DESC, m.active DESC, tool_count DESC, m.name ASC
-  `);
+  `, ...ownT.params, ...ownM.params);
   res.json(mechs);
 }));
 
 // Tool detail
-router.get('/:id', asyncHandler((req, res) => {
+// Only a number is a tool: as `/:id` this route stood in front of /logs and /scrap-requests below
+// and answered both with "Tool not found".
+router.get('/:id(\\d+)', reachTool, asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   const tool = get('SELECT * FROM workshop_tools WHERE id = ?', id);
   if (!tool) return res.status(404).json({ error: 'Tool not found' });
@@ -195,6 +229,9 @@ router.post('/', requireCap('tools.manage', 'stores.items.edit'), asyncHandler((
   const mechanicId = toInt(b.mechanic_id);
   let mechanicName = null;
   let toolboxName = clean(b.toolbox_name, 100);
+  mustReachMechanic(req.user, mechanicId);
+  const workshopId = toInt(b.workshop_id) || (mechanicId && workshops.mechanicWorkshop(mechanicId)) || workshops.homeOf(req.user);
+  if (scope.enabled() && !scope.mayReach(req.user, workshopId)) forbid(scope.refusal('workshop', workshopId));
 
   if (mechanicId) {
     type = 'mechanic';
@@ -228,7 +265,7 @@ router.post('/', requireCap('tools.manage', 'stores.items.edit'), asyncHandler((
     toolCode, name, category, type, mechanicId || null, mechanicName, toolboxName || null,
     clean(b.location, 80) || (type === 'mechanic' ? `Mechanic Locker #${mechanicId || ''}` : 'Tool Crib'),
     clean(b.brand, 60) || null, clean(b.model_no, 60) || null, clean(b.serial_no, 60) || null, clean(b.specifications, 255) || null,
-    toInt(b.workshop_id) || null, toInt(b.store_id) || null,
+    workshopId, toInt(b.store_id) || null,
     clean(b.purchase_date, 10) || new Date().toISOString().slice(0, 10),
     toNum(b.purchase_cost, 0), toNum(b.replacement_cost, 0),
     clean(b.condition, 20) || 'good',
@@ -248,12 +285,13 @@ router.post('/', requireCap('tools.manage', 'stores.items.edit'), asyncHandler((
 }));
 
 // Update tool profile / location / assignment
-router.patch('/:id', requireCap('tools.manage', 'stores.items.edit'), asyncHandler((req, res) => {
+router.patch('/:id', requireCap('tools.manage', 'stores.items.edit'), reachTool, asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   const tool = get('SELECT * FROM workshop_tools WHERE id = ?', id);
   if (!tool) return res.status(404).json({ error: 'Tool not found' });
 
   const b = req.body || {};
+  if (b.mechanic_id !== undefined) mustReachMechanic(req.user, toInt(b.mechanic_id));
   const updates = [];
   const params = [];
 
@@ -293,7 +331,7 @@ router.patch('/:id', requireCap('tools.manage', 'stores.items.edit'), asyncHandl
 }));
 
 // Delete tool (if no logs or scrap history)
-router.delete('/:id', requireCap('tools.manage'), asyncHandler((req, res) => {
+router.delete('/:id', requireCap('tools.manage'), reachTool, asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   const tool = get('SELECT * FROM workshop_tools WHERE id = ?', id);
   if (!tool) return res.status(404).json({ error: 'Tool not found' });
@@ -349,6 +387,7 @@ router.get('/logs', asyncHandler((req, res) => {
     const lk = `%${q}%`;
     params.push(lk, lk, lk, lk, lk);
   }
+  { const own = ownTools(req.user); if (own.sql) { where.push(own.sql); params.push(...own.params); } }
 
   const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
 
@@ -373,6 +412,7 @@ router.post('/logs/issue', requireCap('tools.issue', 'stores.issue', 'tools.mana
   const toolId = toInt(b.tool_id);
   const tool = get('SELECT * FROM workshop_tools WHERE id = ?', toolId);
   if (!tool) return res.status(404).json({ error: 'Tool not found' });
+  { const no = scope.toolRefusal(req.user, toolId) || (toInt(b.job_id) && scope.jobRefusal(req.user, toInt(b.job_id))); if (no) return res.status(403).json(no); }
   if (!tool.active || tool.status === 'scrapped') return res.status(409).json({ error: 'Cannot issue a scrapped or inactive tool' });
 
   // Check if already borrowed
@@ -420,7 +460,7 @@ router.post('/logs/issue', requireCap('tools.issue', 'stores.issue', 'tools.mana
 }));
 
 // Return a borrowed tool to stores (Check in & inspect condition)
-router.post('/logs/:id/return', requireCap('tools.issue', 'stores.issue', 'tools.manage'), asyncHandler((req, res) => {
+router.post('/logs/:id/return', requireCap('tools.issue', 'stores.issue', 'tools.manage'), reachLog, asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   const log = get('SELECT * FROM tool_issue_logs WHERE id = ?', id);
   if (!log) return res.status(404).json({ error: 'Issue log entry not found' });
@@ -497,6 +537,7 @@ router.get('/scrap-requests', asyncHandler((req, res) => {
     const lk = `%${q}%`;
     params.push(lk, lk, lk, lk, lk);
   }
+  { const own = ownTools(req.user); if (own.sql) { where.push(own.sql); params.push(...own.params); } }
 
   const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
 
@@ -513,7 +554,7 @@ router.get('/scrap-requests', asyncHandler((req, res) => {
 }));
 
 // Single scrap request details
-router.get('/scrap-requests/:id', asyncHandler((req, res) => {
+router.get('/scrap-requests/:id', reachScrap, asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   const sr = get(`
     SELECT sr.*,
@@ -535,6 +576,7 @@ router.post('/scrap-requests', requireCap('tools.damage.report', 'stores.items.e
   const toolId = toInt(b.tool_id);
   const tool = get('SELECT * FROM workshop_tools WHERE id = ?', toolId);
   if (!tool) return res.status(404).json({ error: 'Tool not found' });
+  { const no = scope.toolRefusal(req.user, toolId); if (no) return res.status(403).json(no); }
 
   // Generate request number
   const requestNo = nextSeq('TSR', 'tool_scrap_requests', 'request_no');
@@ -571,7 +613,7 @@ router.post('/scrap-requests', requireCap('tools.damage.report', 'stores.items.e
 }));
 
 // Engineer / Assistant Engineer Approval to remove tool to Scrap
-router.post('/scrap-requests/:id/approve', requireCap('tools.scrap.approve'), asyncHandler((req, res) => {
+router.post('/scrap-requests/:id/approve', requireCap('tools.scrap.approve'), reachScrap, asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   const sr = get('SELECT * FROM tool_scrap_requests WHERE id = ?', id);
   if (!sr) return res.status(404).json({ error: 'Scrap request not found' });
@@ -655,7 +697,7 @@ router.post('/scrap-requests/:id/approve', requireCap('tools.scrap.approve'), as
 }));
 
 // Engineer / Assistant Engineer Rejection or Send for Repair
-router.post('/scrap-requests/:id/reject', requireCap('tools.scrap.approve'), asyncHandler((req, res) => {
+router.post('/scrap-requests/:id/reject', requireCap('tools.scrap.approve'), reachScrap, asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   const sr = get('SELECT * FROM tool_scrap_requests WHERE id = ?', id);
   if (!sr) return res.status(404).json({ error: 'Scrap request not found' });
@@ -699,7 +741,7 @@ router.post('/scrap-requests/:id/reject', requireCap('tools.scrap.approve'), asy
 
 // ---- OFFICIAL TOOL SCRAP CERTIFICATE (EC1.ST.FO.06) -----------------------
 
-router.get('/scrap-requests/:id/print.html', asyncHandler((req, res) => {
+router.get('/scrap-requests/:id/print.html', reachScrap, asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   const sr = get(`
     SELECT sr.*,
@@ -716,7 +758,7 @@ router.get('/scrap-requests/:id/print.html', asyncHandler((req, res) => {
   res.send(html);
 }));
 
-router.get('/scrap-requests/:id/download.pdf', asyncHandler(async (req, res) => {
+router.get('/scrap-requests/:id/download.pdf', reachScrap, asyncHandler(async (req, res) => {
   const id = toInt(req.params.id);
   const sr = get(`
     SELECT sr.*,

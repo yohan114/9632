@@ -11,6 +11,11 @@ const { sendXlsx } = require('../lib/export');
 const { requireModule } = require('../lib/permissions');
 const router = express.Router();
 
+// Improvement plan, Step 2b: a project's cost is the cost of the job cards on it — one workshop's
+// cards for someone kept to their own (head office: every workshop's, or the one picked).
+const scope = require('../lib/scope');
+const reportWs = (req) => scope.reportWs(req.user, req.query && req.query.workshop_id);
+
 router.get('/', asyncHandler((req, res) => {
   const permissions = require('../lib/permissions');
   const hasAccess = req.user && (req.user.roles.includes('admin') || permissions.meets(permissions.effectiveLevel(req.user, 'projects'), 'view'));
@@ -24,7 +29,7 @@ router.get('/', asyncHandler((req, res) => {
     `SELECT p.*,
             (SELECT COUNT(*) FROM assets a WHERE a.current_project_id = p.id) AS asset_count,
             (SELECT COALESCE(SUM(j.total_cost),0) FROM job_cards j
-              WHERE j.project_id = p.id AND strftime('%Y-%m', j.requested_at) = strftime('%Y-%m','now')) AS month_cost
+              WHERE j.project_id = p.id AND strftime('%Y-%m', j.requested_at) = strftime('%Y-%m','now')${scope.wsSql('j.workshop_id', reportWs(req))}) AS month_cost
        FROM projects p ORDER BY p.name`
   ));
 }));
@@ -42,7 +47,7 @@ router.get('/:id', requireModule('projects'), asyncHandler((req, res) => {
   if (!project) return res.status(404).json({ error: 'Project not found' });
   const sites = all('SELECT * FROM sites WHERE project_id = ? ORDER BY name', id);
   const assets = all('SELECT id, code, brand, type, status FROM assets WHERE current_project_id = ? ORDER BY code', id);
-  const cost = costing.projectCost(id);
+  const cost = costing.projectCost(id, { ws: reportWs(req) });
   res.json({ project, sites, assets, cost });
 }));
 
@@ -68,7 +73,7 @@ router.get('/:id/cost', requireModule('projects'), asyncHandler(async (req, res)
             COALESCE(SUM(labour_cost),0) labour, COALESCE(SUM(material_cost),0) material,
             COALESCE(SUM(oil_cost),0) oil, COALESCE(SUM(general_cost),0) general,
             COALESCE(SUM(external_cost),0) external, COALESCE(SUM(total_cost),0) total
-       FROM job_cards WHERE project_id = ?
+       FROM job_cards WHERE project_id = ?${scope.wsSql('workshop_id', reportWs(req))}
       GROUP BY month ORDER BY month`, id
   );
   if (req.query.format === 'xlsx') {

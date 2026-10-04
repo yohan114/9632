@@ -1099,6 +1099,8 @@ router.get('/unassigned/parts', requireAuth, asyncHandler((req, res) => {
   // Goods received against a request with no job, and never booked to one.
   const recParams = [];
   let recWhere = `m.job_id IS NULL AND NOT EXISTS (SELECT 1 FROM job_parts jp WHERE jp.mrn_line_id = ml.id)`;
+  // Step 2c: your own workshops' receipts (a receipt is its request's workshop's, else its store's).
+  recWhere += scope.wsSql('COALESCE(m.workshop_id, g.store_id)', scope.reach(req.user));
   if (q) { recWhere += ` AND (COALESCE(g.description, ml.description) LIKE ? ESCAPE '\\' OR m.mrn_no LIKE ? ESCAPE '\\' OR g.grn_no LIKE ? ESCAPE '\\')`; recParams.push(q, q, q); }
   const receipts = all(
     `SELECT 'receipt' AS kind, g.id AS id, g.grn_no, m.mrn_no, m.asset_id,

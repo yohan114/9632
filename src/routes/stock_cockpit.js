@@ -8,6 +8,10 @@ const audit = require('../lib/audit');
 const emitter = require('../lib/emitter');
 
 const router = express.Router();
+const scope = require('../lib/scope');
+
+// Improvement plan, Step 2: one store's board, for someone kept to their own store.
+const { storeOverview, storeSearch } = require('../lib/store_shelf');
 
 function currentOilBalance(productId) {
   const r = get('SELECT balance_after FROM stock_ledger WHERE product_id = ? ORDER BY id DESC LIMIT 1', productId);
@@ -15,7 +19,8 @@ function currentOilBalance(productId) {
 }
 
 // ---- Overview & KPI Metrics ----------------------------------------------
-router.get('/overview', requireAuth, asyncHandler((_req, res) => {
+router.get('/overview', requireAuth, asyncHandler((req, res) => {
+  { const store = scope.ownStore(req.user); if (store) return res.json(storeOverview(store)); }
   // 1. General Stock Valuation & Metrics
   const genRow = get(`SELECT
       COUNT(*) AS total_items,
@@ -176,10 +181,11 @@ router.get('/search', requireAuth, asyncHandler((req, res) => {
   const statusFilter = String(req.query.status || 'all').toLowerCase();
   const limit = Math.min(500, toInt(req.query.limit, 250));
 
-  const results = [];
+  const store = scope.ownStore(req.user);
+  const results = store ? storeSearch(store, sectionFilter) : [];
 
   // 1. General Items
-  if (sectionFilter === 'all' || sectionFilter === 'general') {
+  if (!store && (sectionFilter === 'all' || sectionFilter === 'general')) {
     const genRows = all(`SELECT id, item_no, name, category, unit, balance, min_stock, COALESCE(unit_cost, 0) AS unit_cost, rack
       FROM store_items WHERE is_general = 1`);
     for (const g of genRows) {
@@ -208,7 +214,7 @@ router.get('/search', requireAuth, asyncHandler((req, res) => {
   }
 
   // 2. Oil Products
-  if (sectionFilter === 'all' || sectionFilter === 'oil') {
+  if (!store && (sectionFilter === 'all' || sectionFilter === 'oil')) {
     const oilRows = all(`SELECT id, code, name, unit, category, reorder_level, unit_price FROM products`);
     for (const p of oilRows) {
       const bal = currentOilBalance(p.id);
@@ -236,7 +242,7 @@ router.get('/search', requireAuth, asyncHandler((req, res) => {
   }
 
   // 3. Filter Stock
-  if (sectionFilter === 'all' || sectionFilter === 'filter') {
+  if (!store && (sectionFilter === 'all' || sectionFilter === 'filter')) {
     const filRows = all(`SELECT id, filter_type, brand, part_no, unit, qty_in_stock, reorder_level, COALESCE(unit_cost, 0) AS unit_cost
       FROM filter_stock`);
     for (const f of filRows) {
@@ -265,7 +271,7 @@ router.get('/search', requireAuth, asyncHandler((req, res) => {
   }
 
   // 4. Batteries
-  if (sectionFilter === 'all' || sectionFilter === 'battery') {
+  if (!store && (sectionFilter === 'all' || sectionFilter === 'battery')) {
     const batRows = all(`SELECT b.id, b.serial_no, b.brand, b.capacity_ah, b.condition, b.state,
       a.code AS asset_code FROM batteries b LEFT JOIN assets a ON a.id = b.current_asset_id`);
     for (const b of batRows) {

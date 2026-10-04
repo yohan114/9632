@@ -25,6 +25,13 @@ const reportWs = (req) => require('../lib/scope')
 const wsCode = (ws) => { const w = ws ? get('SELECT code FROM workshops WHERE id = ?', ws) : null; return w ? ' ' + w.code : ''; };
 // A cost's workshop in SQL: its job card's, else the store it came from (src/lib/daily_reports.js).
 const wsIs = (...a) => require('../lib/daily_reports').wsIs(...a);
+// Step 2b: the same, for one workshop or a list of them (src/lib/scope.js wsSql).
+const wsSql = (...a) => require('../lib/scope').wsSql(...a);
+// A receipt's workshop: its request's, else its store's. Oil drawn: its job card's, else its store's.
+const { GRN_WS, OIL_WS } = require('../lib/month_costs');
+/** " — Muthur Workshop" after a printed report's heading, when it is one workshop's. */
+const wsTitle = (ws) => { const w = ws ? get('SELECT name FROM workshops WHERE id = ?', ws) : null; return w ? ' — ' + w.name : ''; };
+const wsFile = (ws) => wsCode(ws).replace(' ', '-');
 
 // Coerce any value to a finite number (blank/NaN -> 0); matches the report generator's helper.
 const num = (v) => Number(v) || 0;
@@ -67,11 +74,13 @@ router.get('/dashboard', asyncHandler((req, res) => {
       WHERE j.status = 'WORK_COMPLETE'${andOwn} ORDER BY j.id DESC`, ...own.params
   ).map((j) => ({ ...j, missing_count: costing.closureReadiness(j.id).missing.length }));
 
-  const low_stock_oil = lubricants.oilForecast().products
+  // Step 2: the oil and the batteries of your own store, when you are kept to it.
+  const ownStore = require('../lib/scope').ownStore(req.user);
+  const low_stock_oil = lubricants.oilForecast({ store: ownStore }).products
     .filter((p) => p.low)
     .map((p) => ({ id: p.id, name: p.name, unit: p.unit, balance: p.balance, reorder_level: p.reorder_level }));
 
-  const batteries_warranty = intelligence.warrantyRadar().expiring
+  const batteries_warranty = intelligence.warrantyRadar(60, { store: ownStore }).expiring
     .map((b) => ({ serial_no: b.serial_no, warranty_date: b.warranty_date, asset_code: b.asset_code }));
 
   const month_cost_by_project = all(
@@ -136,22 +145,25 @@ router.get('/dashboard', asyncHandler((req, res) => {
     ready_to_close,
     attendance_today,
     field_down,
-    needs_attention: sees('attention') ? intelligence.needsAttentionSummary() : {},
+    // Step 2b: your own workshops' counts, like the job figures above.
+    needs_attention: sees('attention') ? intelligence.needsAttentionSummary({ ws: require('../lib/scope').reach(req.user) }) : {},
   });
 }));
 
 // Consolidated project cost rollup across all projects
-router.get('/cost/by-project', requireModule('reports'), asyncHandler((_req, res) => {
-  res.json(costing.projectsCostSummary());
+router.get('/cost/by-project', requireModule('reports'), asyncHandler((req, res) => {
+  res.json(costing.projectsCostSummary({ ws: reportWs(req) }));
 }));
 
 // ---- advisory intelligence (Phase 5 §1/§4) — read-only, flags only --------
 router.get('/service-due', requireModule('service_plan'), asyncHandler((_req, res) => res.json(intelligence.serviceDue())));
 
-router.get('/anomalies', requireModule('attention'), asyncHandler((_req, res) => res.json({
-  unusual_consumption: intelligence.unusualConsumption(),
-  duplicate_mrn: intelligence.duplicateMrn(),
-  grn_price_spikes: intelligence.grnPriceSpikes(),
+// Step 2b: the anomalies and checks are each workshop's own (head office: all, or the one picked).
+// The service plan above stays the fleet's — the vehicles move between workshops.
+router.get('/anomalies', requireModule('attention'), asyncHandler((req, res) => res.json({
+  unusual_consumption: intelligence.unusualConsumption(undefined, { ws: reportWs(req) }),
+  duplicate_mrn: intelligence.duplicateMrn({ ws: reportWs(req) }),
+  grn_price_spikes: intelligence.grnPriceSpikes(undefined, { ws: reportWs(req) }),
   thresholds: {
     consumption_factor: config.anomalyConsumptionFactor,
     price_spike_factor: config.anomalyPriceSpikeFactor,
@@ -159,7 +171,7 @@ router.get('/anomalies', requireModule('attention'), asyncHandler((_req, res) =>
   },
 })));
 
-router.get('/integrity', requireModule('attention'), asyncHandler((_req, res) => res.json(intelligence.integrityCheck())));
+router.get('/integrity', requireModule('attention'), asyncHandler((req, res) => res.json(intelligence.integrityCheck({ ws: reportWs(req) }))));
 
 // ---- cost reports ---------------------------------------------------------
 const COST_COLS = [
@@ -170,6 +182,7 @@ const COST_COLS = [
 ];
 
 router.get('/cost/by-asset', requireModule('reports'), asyncHandler(async (req, res) => {
+  const ws = reportWs(req);
   const rows = all(
     `SELECT j.asset_id, a.code AS asset_code,
             COALESCE(SUM(j.labour_cost),0) labour, COALESCE(SUM(j.material_cost),0) material,
@@ -178,15 +191,17 @@ router.get('/cost/by-asset', requireModule('reports'), asyncHandler(async (req, 
             COALESCE(SUM(j.total_cost),0) total,
             COUNT(*) job_count
        FROM job_cards j LEFT JOIN assets a ON a.id = j.asset_id
+      WHERE 1 = 1${wsSql('j.workshop_id', ws)}
       GROUP BY j.asset_id ORDER BY total DESC`
   );
   if (req.query.format === 'xlsx') {
-    return sendXlsx(res, 'cost-by-asset.xlsx', [{ name: 'By Asset', columns: [{ header: 'Asset', key: 'asset_code' }, ...COST_COLS, { header: 'Jobs', key: 'job_count' }], rows }]);
+    return sendXlsx(res, `cost-by-asset${wsFile(ws)}.xlsx`, [{ name: 'By Asset', columns: [{ header: 'Asset', key: 'asset_code' }, ...COST_COLS, { header: 'Jobs', key: 'job_count' }], rows }]);
   }
   res.json(rows);
 }));
 
 router.get('/cost/by-project', requireModule('reports'), asyncHandler(async (req, res) => {
+  const ws = reportWs(req);
   const rows = all(
     `SELECT j.project_id, COALESCE(p.name,'(unassigned)') project,
             COALESCE(SUM(j.labour_cost),0) labour, COALESCE(SUM(j.material_cost),0) material,
@@ -194,48 +209,54 @@ router.get('/cost/by-project', requireModule('reports'), asyncHandler(async (req
             COALESCE(SUM(j.external_cost),0) external, COALESCE(SUM(j.other_cost),0) other,
             COALESCE(SUM(j.total_cost),0) total
        FROM job_cards j LEFT JOIN projects p ON p.id = j.project_id
+      WHERE 1 = 1${wsSql('j.workshop_id', ws)}
       GROUP BY j.project_id ORDER BY total DESC`
   );
   if (req.query.format === 'xlsx') {
-    return sendXlsx(res, 'cost-by-project.xlsx', [{ name: 'By Project', columns: [{ header: 'Project', key: 'project' }, ...COST_COLS], rows }]);
+    return sendXlsx(res, `cost-by-project${wsFile(ws)}.xlsx`, [{ name: 'By Project', columns: [{ header: 'Project', key: 'project' }, ...COST_COLS], rows }]);
   }
   res.json(rows);
 }));
 
 router.get('/cost/by-site', requireModule('reports'), asyncHandler(async (req, res) => {
+  const ws = reportWs(req);
   const rows = all(
     `SELECT COALESCE(NULLIF(TRIM(site),''),'(no site)') site,
             COALESCE(SUM(j.labour_cost),0) labour, COALESCE(SUM(j.material_cost),0) material,
             COALESCE(SUM(j.oil_cost),0) oil, COALESCE(SUM(j.general_cost),0) general,
             COALESCE(SUM(j.external_cost),0) external, COALESCE(SUM(j.other_cost),0) other,
             COALESCE(SUM(j.total_cost),0) total, COUNT(*) jobs
-       FROM job_cards j GROUP BY 1 ORDER BY total DESC`
+       FROM job_cards j WHERE 1 = 1${wsSql('j.workshop_id', ws)} GROUP BY 1 ORDER BY total DESC`
   );
   if (req.query.format === 'xlsx') {
-    return sendXlsx(res, 'cost-by-site.xlsx', [{ name: 'By Site', columns: [{ header: 'Site', key: 'site' }, ...COST_COLS, { header: 'Jobs', key: 'jobs' }], rows }]);
+    return sendXlsx(res, `cost-by-site${wsFile(ws)}.xlsx`, [{ name: 'By Site', columns: [{ header: 'Site', key: 'site' }, ...COST_COLS, { header: 'Jobs', key: 'jobs' }], rows }]);
   }
   res.json(rows);
 }));
 
 router.get('/cost/by-source', requireModule('reports'), asyncHandler(async (req, res) => {
+  const ws = reportWs(req);
   const rows = all(
     `SELECT CASE
-              WHEN purchase_source_norm IN ('head_office','direct_purchase','mixed') THEN 'Head Office'
-              WHEN purchase_source_norm IN ('local_purchase','local_store') THEN 'Local Purchase'
+              WHEN g.purchase_source_norm IN ('head_office','direct_purchase','mixed') THEN 'Head Office'
+              WHEN g.purchase_source_norm IN ('local_purchase','local_store') THEN 'Local Purchase'
               ELSE '(unspecified)'
             END purchase_source,
-            COALESCE(SUM(qty*unit_price),0) total, COUNT(*) lines
-       FROM grn WHERE unit_price IS NOT NULL
+            COALESCE(SUM(g.qty*g.unit_price),0) total, COUNT(*) lines
+       FROM grn g LEFT JOIN mrn m ON m.id = g.mrn_id
+      WHERE g.unit_price IS NOT NULL${wsSql(GRN_WS, ws)}
       GROUP BY 1 ORDER BY total DESC`
   );
   if (req.query.format === 'xlsx') {
-    return sendXlsx(res, 'cost-by-source.xlsx', [{ name: 'By Source', columns: [{ header: 'Purchase Source', key: 'purchase_source' }, { header: 'Total', key: 'total' }, { header: 'Lines', key: 'lines' }], rows }]);
+    return sendXlsx(res, `cost-by-source${wsFile(ws)}.xlsx`, [{ name: 'By Source', columns: [{ header: 'Purchase Source', key: 'purchase_source' }, { header: 'Total', key: 'total' }, { header: 'Lines', key: 'lines' }], rows }]);
   }
   res.json(rows);
 }));
 
 // ---- variance -------------------------------------------------------------
 router.get('/variance', requireModule('attention'), asyncHandler((req, res) => {
+  // These are the company's oil counts, all stores together (Step 2: counts are made store by store).
+  { const no = require('../lib/scope').ownStore(req.user) && require('../lib/stores').wholeCountRefusal(); if (no) return res.status(409).json({ error: no }); }
   const threshold = req.query.threshold ? Number(req.query.threshold) : 0.001;
   res.json(all(
     `SELECT sc.id, pr.name AS product, sc.period, sc.book_qty, sc.counted_qty, sc.variance
@@ -434,7 +455,7 @@ ${s.general.length ? sect(5, 'General / store items issued',
 // received, and the work done. ?detail=0 gives the one-line-per-job summary only.
 // Current-era jobs (2026 onward — the older imported history is excluded), newest attended
 // first. `from` is optional: give one to show only jobs touched on/after that date.
-function jobsAttended(from, to) {
+function jobsAttended(from, to, ws = null) {
   const params = [];
   let window = '';
   if (from) {
@@ -454,7 +475,7 @@ function jobsAttended(from, to) {
        FROM job_cards j LEFT JOIN assets a ON a.id = j.asset_id LEFT JOIN projects p ON p.id = j.project_id
       WHERE j.status <> 'REJECTED'
         AND CAST(substr(j.job_no, 1, instr(j.job_no, '/') - 1) AS INTEGER) >= 2026
-        ${window}
+        ${window}${wsSql('j.workshop_id', ws)}
       ORDER BY (last_work IS NULL),                                   -- worked-on jobs first…
                last_work DESC,                                        -- …newest attended at the top
                substr(COALESCE(j.completed_at, j.requested_at, j.created_at),1,10) DESC,
@@ -466,7 +487,7 @@ function jobsAttended(from, to) {
 // Every job still open that was raised within the last N months (default 8) — older
 // never-closed history is deliberately left out. Ranked by how stalled it is, with the
 // reason it is stuck: nothing started, waiting on parts, or simply idle.
-function ongoingJobs(months) {
+function ongoingJobs(months, ws = null) {
   const today = new Date().toISOString().slice(0, 10);
   const cutDate = new Date(today + 'T00:00:00Z');
   cutDate.setUTCMonth(cutDate.getUTCMonth() - (Number(months) || 8));
@@ -496,7 +517,7 @@ function ongoingJobs(months) {
         AND (CAST(substr(j.job_no, 1, instr(j.job_no,'/') - 1) AS INTEGER) * 12
              + CAST(substr(substr(j.job_no, instr(j.job_no,'/') + 1), 1,
                            instr(substr(j.job_no, instr(j.job_no,'/') + 1), '/') - 1) AS INTEGER))
-            >= (CAST(substr(?,1,4) AS INTEGER) * 12 + CAST(substr(?,6,2) AS INTEGER))`, cut, cut);
+            >= (CAST(substr(?,1,4) AS INTEGER) * 12 + CAST(substr(?,6,2) AS INTEGER))${wsSql('j.workshop_id', ws)}`, cut, cut);
 
   const out = rows.map((j) => {
     // Outstanding materials — the usual reason a job sits. Same dual linkage as the job report.
@@ -548,9 +569,10 @@ function ongoingJobs(months) {
 }
 
 router.get('/ongoing-jobs.xlsx', requireModule('reports', 'view'), asyncHandler(async (req, res) => {
-  const { jobs, cut, months } = ongoingJobs(req.query.months);
+  const ws = reportWs(req);
+  const { jobs, cut, months } = ongoingJobs(req.query.months, ws);
   const SRC = { head_office: 'Head Office', local_purchase: 'Local Purchase' };
-  await sendXlsx(res, `ongoing-jobs-${cut}.xlsx`, [
+  await sendXlsx(res, `ongoing-jobs-${cut}${wsFile(ws)}.xlsx`, [
     {
       name: 'Ongoing jobs',
       columns: [
@@ -589,7 +611,8 @@ router.get('/ongoing-jobs.xlsx', requireModule('reports', 'view'), asyncHandler(
 }));
 
 router.get('/ongoing-jobs.html', requireModule('reports', 'view'), asyncHandler((req, res) => {
-  const { jobs, today, cut, months } = ongoingJobs(req.query.months);
+  const ws = reportWs(req);
+  const { jobs, today, cut, months } = ongoingJobs(req.query.months, ws);
   const esc = (v) => String(v == null ? '' : v).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
   const m = (n) => 'Rs ' + (Number(n) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const d = (v) => (v ? String(v).slice(0, 10) : '');
@@ -624,7 +647,7 @@ router.get('/ongoing-jobs.html', requireModule('reports', 'view'), asyncHandler(
   @media print{.noprint{display:none}}
 </style></head><body>
 <button class="noprint" onclick="window.print()">🖨 Print / Save as PDF</button>
-<h1>Edward &amp; Christie (Pvt) Ltd — Ongoing Jobs &amp; Delay Points</h1>
+<h1>Edward &amp; Christie (Pvt) Ltd — Ongoing Jobs &amp; Delay Points${esc(wsTitle(ws))}</h1>
 <div class="sub">All jobs still open, raised since <b>${esc(cut)}</b> (last ${months} months) · as at ${esc(today)} · ${jobs.length} job(s) · older never-closed jobs excluded</div>
 <div class="tot">
   <div><span>Ongoing jobs</span><b>${jobs.length}</b></div>
@@ -656,7 +679,8 @@ router.get('/jobs-summary.html', requireModule('reports', 'view'), asyncHandler(
   const from = MDATE.test(String(req.query.from || '')) ? req.query.from : null;
   const to = MDATE.test(String(req.query.to || '')) ? req.query.to : null;
   const withDetail = String(req.query.detail || '1') !== '0';
-  const jobs = jobsAttended(from, to);
+  const ws = reportWs(req);
+  const jobs = jobsAttended(from, to, ws);
 
   const esc = (v) => String(v == null ? '' : v).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
   const m = (n) => 'Rs ' + (Number(n) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -726,7 +750,7 @@ router.get('/jobs-summary.html', requireModule('reports', 'view'), asyncHandler(
   @media print{.noprint{display:none}}
 </style></head><body>
 <button class="noprint" onclick="window.print()">🖨 Print / Save as PDF</button>
-<h1>Edward &amp; Christie (Pvt) Ltd — Jobs Attended</h1>
+<h1>Edward &amp; Christie (Pvt) Ltd — Jobs Attended${esc(wsTitle(ws))}</h1>
 <div class="sub">${from ? 'From <b>' + esc(from) + '</b>' + (to ? ' to <b>' + esc(to) + '</b>' : ' onward') : 'All current jobs (2026 onward)'} · ${jobs.length} job(s) · most recently attended first</div>
 <div class="tot">
   <div><span>Jobs</span><b>${jobs.length}</b></div>
@@ -829,73 +853,35 @@ router.get('/job/:id/costsheet.html', canViewJobCost, asyncHandler((req, res) =>
 // the work was done / the goods were received / the oil was issued.
 const MONTH_RE = /^\d{4}-\d{2}$/;
 const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
-const OIL_VAL = 'ABS(sl.qty) * COALESCE(sl.unit_price, pr.unit_price, 0)';
-// Oil issued for a service is costed inside the service (Service column), so its
-// stock-ledger issue is stock-only — excluded from every oil COST aggregation.
-const OIL_NOT_SERVICE = "COALESCE(sl.consumer_type,'') <> 'service'";
+// The month's figures themselves: src/lib/month_costs.js (also the dashboard's, Step 2b).
+const { monthlyRollup, monthAssets, OIL_VAL, OIL_NOT_SERVICE } = require('../lib/month_costs');
 
-router.get('/monthly', requireModule('reports'), asyncHandler((_req, res) => {
-  const map = new Map();
-  const M = (m) => { if (!map.has(m)) map.set(m, { month: m, labour: 0, head_office: 0, local_purchase: 0, oil: 0, jobs: 0, service: 0 }); return map.get(m); };
-  for (const r of all(`SELECT substr(work_date,1,7) m, ROUND(SUM(amount),2) v FROM job_labour WHERE work_date IS NOT NULL GROUP BY m`)) if (r.m) M(r.m).labour = r.v || 0;
-  for (const r of all(`SELECT substr(delivery_date,1,7) m, purchase_source_norm src, ROUND(SUM(qty*unit_price),2) v
-                         FROM grn WHERE unit_price IS NOT NULL AND delivery_date IS NOT NULL GROUP BY m, src`)) {
-    if (!r.m) continue; const o = M(r.m);
-    if (r.src === 'head_office') o.head_office += r.v || 0; else if (r.src === 'local_purchase') o.local_purchase += r.v || 0;
-  }
-  for (const r of all(`SELECT substr(sl.txn_date,1,7) m, ROUND(SUM(${OIL_VAL}),2) v FROM stock_ledger sl
-                         JOIN products pr ON pr.id = sl.product_id
-                        WHERE sl.kind='issue' AND sl.txn_date IS NOT NULL AND ${OIL_NOT_SERVICE} GROUP BY m`)) if (r.m) M(r.m).oil = r.v || 0;
-  for (const r of all(`SELECT substr(requested_at,1,7) m, COUNT(*) c FROM job_cards WHERE requested_at IS NOT NULL GROUP BY m`)) if (r.m) M(r.m).jobs = r.c || 0;
-  // Service records — cost computed live: priced filters (book × qty) + oils + labour + sundry, by service month.
-  for (const r of all(`SELECT substr(j.service_date,1,7) m, ROUND(SUM(COALESCE(p.unit_price,0) * COALESCE(f.qty,1)),2) v
-                         FROM service_filters f JOIN service_jobs j ON j.id = f.service_id
-                         LEFT JOIN filter_prices p ON p.filter_no_norm = f.filter_no_norm
-                        WHERE j.service_date IS NOT NULL GROUP BY m`)) if (r.m) M(r.m).service += (r.v || 0);
-  for (const r of all(`SELECT substr(j.service_date,1,7) m, ROUND(SUM(COALESCE(o.price,0)),2) v
-                         FROM service_oils o JOIN service_jobs j ON j.id = o.service_id
-                        WHERE j.service_date IS NOT NULL GROUP BY m`)) if (r.m) M(r.m).service += (r.v || 0);
-  for (const r of all(`SELECT substr(service_date,1,7) m, ROUND(SUM(COALESCE(labour_charge,0)) + SUM(COALESCE(sundry_amount,0)),2) v
-                         FROM service_jobs WHERE service_date IS NOT NULL GROUP BY m`)) if (r.m) M(r.m).service += (r.v || 0);
+router.get('/monthly', requireModule('reports'), asyncHandler((req, res) => {
+  const months = monthlyRollup(reportWs(req));
   const tm = new Date().toISOString().slice(0, 7);
-  const months = [...map.values()]
-    .map((o) => ({ ...o, service: r2(o.service), total: r2(o.labour + o.head_office + o.local_purchase + o.oil + o.service) }))
-    .filter((o) => o.month <= tm) // drop spurious future-dated (data-error) months
-    .sort((a, b) => b.month.localeCompare(a.month));
   res.json({ this_month: months.find((x) => x.month === tm) || { month: tm, labour: 0, head_office: 0, local_purchase: 0, oil: 0, jobs: 0, service: 0, total: 0 }, months });
 }));
 
 router.get('/monthly/:month/assets', requireModule('reports'), asyncHandler((req, res) => {
   const month = String(req.params.month);
   if (!MONTH_RE.test(month)) return res.status(400).json({ error: 'month must be YYYY-MM' });
-  const map = new Map();
-  const A = (id) => { if (!map.has(id)) map.set(id, { asset_id: id, labour: 0, material: 0, oil: 0 }); return map.get(id); };
-  for (const r of all(`SELECT j.asset_id id, ROUND(SUM(jl.amount),2) v FROM job_labour jl JOIN job_cards j ON j.id=jl.job_id
-                        WHERE j.asset_id IS NOT NULL AND substr(jl.work_date,1,7)=? GROUP BY j.asset_id`, month)) A(r.id).labour = r.v || 0;
-  for (const r of all(`SELECT m.asset_id id, ROUND(SUM(g.qty*g.unit_price),2) v FROM grn g JOIN mrn m ON m.id=g.mrn_id
-                        WHERE m.asset_id IS NOT NULL AND g.unit_price IS NOT NULL AND substr(g.delivery_date,1,7)=? GROUP BY m.asset_id`, month)) A(r.id).material = r.v || 0;
-  for (const r of all(`SELECT sl.asset_id id, ROUND(SUM(${OIL_VAL}),2) v FROM stock_ledger sl JOIN products pr ON pr.id=sl.product_id
-                        WHERE sl.asset_id IS NOT NULL AND sl.kind='issue' AND ${OIL_NOT_SERVICE} AND substr(sl.txn_date,1,7)=? GROUP BY sl.asset_id`, month)) A(r.id).oil = r.v || 0;
-  const assets = [...map.values()].map((o) => {
-    const a = get('SELECT code FROM assets WHERE id=?', o.asset_id);
-    return { ...o, asset_code: a ? a.code : '(unlinked)', total: r2(o.labour + o.material + o.oil) };
-  }).sort((a, b) => b.total - a.total);
-  res.json({ month, assets });
+  res.json({ month, assets: monthAssets(month, reportWs(req)) });
 }));
 
 router.get('/monthly/:month/asset/:id', requireModule('reports'), asyncHandler((req, res) => {
   const month = String(req.params.month); const id = toInt(req.params.id);
   if (!MONTH_RE.test(month)) return res.status(400).json({ error: 'month must be YYYY-MM' });
   const asset = get('SELECT code, registration, ec_code FROM assets WHERE id=?', id);
+  const ws = reportWs(req);   // Step 2b: one workshop's lines on the vehicle
   const labour_lines = all(`SELECT jl.work_date, jl.mechanic, jl.hours, jl.rate, jl.amount, j.job_no
                               FROM job_labour jl JOIN job_cards j ON j.id=jl.job_id
-                             WHERE j.asset_id=? AND substr(jl.work_date,1,7)=? ORDER BY jl.work_date, jl.id`, id, month);
+                             WHERE j.asset_id=? AND substr(jl.work_date,1,7)=?${wsSql('j.workshop_id', ws)} ORDER BY jl.work_date, jl.id`, id, month);
   const material_lines = all(`SELECT g.delivery_date, g.description, g.qty, g.unit_price, g.supplier, g.purchase_source_norm source, m.mrn_no
                                 FROM grn g JOIN mrn m ON m.id=g.mrn_id
-                               WHERE m.asset_id=? AND g.unit_price IS NOT NULL AND substr(g.delivery_date,1,7)=? ORDER BY g.delivery_date, g.id`, id, month);
+                               WHERE m.asset_id=? AND g.unit_price IS NOT NULL AND substr(g.delivery_date,1,7)=?${wsSql(GRN_WS, ws)} ORDER BY g.delivery_date, g.id`, id, month);
   const oil_lines = all(`SELECT sl.txn_date, pr.name product, pr.unit, ABS(sl.qty) qty, COALESCE(sl.unit_price, pr.unit_price) unit_price
-                           FROM stock_ledger sl JOIN products pr ON pr.id=sl.product_id
-                          WHERE sl.asset_id=? AND sl.kind='issue' AND ${OIL_NOT_SERVICE} AND substr(sl.txn_date,1,7)=? ORDER BY sl.txn_date, sl.id`, id, month);
+                           FROM stock_ledger sl JOIN products pr ON pr.id=sl.product_id LEFT JOIN job_cards j ON j.id = sl.job_id
+                          WHERE sl.asset_id=? AND sl.kind='issue' AND ${OIL_NOT_SERVICE} AND substr(sl.txn_date,1,7)=?${wsSql(OIL_WS, ws)} ORDER BY sl.txn_date, sl.id`, id, month);
   const labour = labour_lines.reduce((s, l) => s + (l.amount || 0), 0);
   const material = material_lines.reduce((s, l) => s + (l.qty || 0) * (l.unit_price || 0), 0);
   const oil = oil_lines.reduce((s, l) => s + (l.qty || 0) * (l.unit_price || 0), 0);
@@ -1160,40 +1146,43 @@ ${rep.oil.length ? `<h3>8. Oil &amp; lubricants issued (${rep.oil.length})</h3><
 // ---- Reverse Costing — per-vehicle cost teardown ---------------------------
 // Where did an asset's spend go? Decompose lifetime cost into buckets, rank the
 // jobs, parts and mechanics that drove it. A "should-cost" style breakdown.
-function assetTeardown(id) {
+// Step 2b: a vehicle moves between workshops, so its teardown is one workshop's spend on it (head
+// office: every workshop's, or the one picked).
+function assetTeardown(id, ws = null) {
   const asset = get('SELECT id, code, registration, ec_code, brand, type, asset_class FROM assets WHERE id = ?', id);
   if (!asset) return null;
+  const inWs = wsSql('j.workshop_id', ws);
   const buckets = get(
     `SELECT COALESCE(SUM(labour_cost),0) labour, COALESCE(SUM(material_cost),0) material,
             COALESCE(SUM(oil_cost),0) oil, COALESCE(SUM(general_cost),0) general,
             COALESCE(SUM(external_cost),0) external, COALESCE(SUM(other_cost),0) other,
             COALESCE(SUM(total_cost),0) total, COUNT(*) jobs
-       FROM job_cards WHERE asset_id = ?`, id);
+       FROM job_cards j WHERE j.asset_id = ?${inWs}`, id);
   const jobs = all(
-    `SELECT id, job_no, type, status, requested_at, labour_cost, material_cost, oil_cost, external_cost, total_cost,
-            workshop_id, (SELECT w.name FROM workshops w WHERE w.id = job_cards.workshop_id) AS workshop_name
-       FROM job_cards WHERE asset_id = ? ORDER BY total_cost DESC LIMIT 50`, id);
+    `SELECT j.id, j.job_no, j.type, j.status, j.requested_at, j.labour_cost, j.material_cost, j.oil_cost, j.external_cost, j.total_cost,
+            j.workshop_id, (SELECT w.name FROM workshops w WHERE w.id = j.workshop_id) AS workshop_name
+       FROM job_cards j WHERE j.asset_id = ?${inWs} ORDER BY j.total_cost DESC LIMIT 50`, id);
   const parts = all(
     `SELECT jp.description, COUNT(*) lines, COALESCE(SUM(jp.qty * jp.unit_price),0) value
        FROM job_parts jp JOIN job_cards j ON j.id = jp.job_id
-      WHERE j.asset_id = ? AND jp.unit_price IS NOT NULL AND jp.description IS NOT NULL
+      WHERE j.asset_id = ? AND jp.unit_price IS NOT NULL AND jp.description IS NOT NULL${inWs}
       GROUP BY LOWER(jp.description) ORDER BY value DESC LIMIT 10`, id);
   const mechanics = all(
     `SELECT jl.mechanic, COALESCE(SUM(jl.hours),0) hours, COALESCE(SUM(jl.amount),0) amount
        FROM job_labour jl JOIN job_cards j ON j.id = jl.job_id
-      WHERE j.asset_id = ? AND jl.mechanic IS NOT NULL
+      WHERE j.asset_id = ? AND jl.mechanic IS NOT NULL${inWs}
       GROUP BY jl.mechanic ORDER BY amount DESC LIMIT 10`, id);
-  return { asset, buckets, jobs, parts, mechanics };
+  return { asset, buckets, jobs, parts, mechanics, workshop_id: ws };
 }
 
 router.get('/teardown/asset/:id', requireModule('cost_teardown'), asyncHandler((req, res) => {
-  const t = assetTeardown(toInt(req.params.id));
+  const t = assetTeardown(toInt(req.params.id), reportWs(req));
   if (!t) return res.status(404).json({ error: 'Asset not found' });
   res.json(t);
 }));
 
 router.get('/teardown/asset/:id/print.html', requireModule('cost_teardown'), asyncHandler((req, res) => {
-  const t = assetTeardown(toInt(req.params.id));
+  const t = assetTeardown(toInt(req.params.id), reportWs(req));
   if (!t) return res.status(404).send('Asset not found');
   const esc = (v) => String(v == null ? '' : v).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
   const m = (n) => 'Rs ' + (Number(n) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -1210,7 +1199,7 @@ router.get('/teardown/asset/:id/print.html', requireModule('cost_teardown'), asy
   @media print { .noprint { display:none; } }
 </style></head><body>
 <button class="noprint" onclick="window.print()">🖨 Print / Save as PDF</button>
-<h1>Edward &amp; Christie (Pvt) Ltd — Cost Teardown</h1>
+<h1>Edward &amp; Christie (Pvt) Ltd — Cost Teardown${esc(wsTitle(t.workshop_id))}</h1>
 <div class="sub">Vehicle: <b>${esc(veh)}</b> · ${esc([t.asset.brand, t.asset.type].filter(Boolean).join(' '))} · ${b.jobs} job(s) · lifetime <b>${m(b.total)}</b></div>
 <table><thead><tr><th>Cost bucket</th><th class="num">Amount</th><th class="num">Share</th></tr></thead><tbody>
   ${bucketRow('Labour', b.labour)}${bucketRow('Material', b.material)}${bucketRow('Oil &amp; Lube', b.oil)}${bucketRow('General', b.general)}${bucketRow('External repair', b.external)}${bucketRow('Other', b.other)}
@@ -1230,6 +1219,11 @@ ${t.parts.length ? `<h3>Top parts by value</h3><table><thead><tr><th>Part</th><t
 
 // 1) Complete per-vehicle cost from the monthly rollup. month optional (full year).
 router.get('/vehicle-cost-complete', requireAuth, requireModule('reports'), asyncHandler((req, res) => {
+  // Step 2b: this rollup keeps no workshop (fuel and the rest arrive as one figure per vehicle), so
+  // it cannot be split — it is head office's, once the workshops are kept apart.
+  if (require('../lib/scope').reportWorkshop(req.user).choices) {
+    return res.status(403).json({ error: 'This report is for the whole company. Head office sees it.' });
+  }
   const assetId = toInt(req.query.asset_id);
   const year = toInt(req.query.year);
   if (!assetId || !year) return res.status(400).json({ error: 'asset_id and year are required' });
@@ -1251,7 +1245,9 @@ router.get('/vehicle-cost-complete', requireAuth, requireModule('reports'), asyn
 }));
 
 // 2) Inventory valuation across general stock, oil and filters.
-router.get('/stock-valuation', requireAuth, requireModule('reports'), asyncHandler((_req, res) => {
+router.get('/stock-valuation', requireAuth, requireModule('reports'), asyncHandler((req, res) => {
+  // Step 2: someone kept to their own store values that store's shelf.
+  { const store = require('../lib/scope').ownStore(req.user); if (store) return res.json(require('../lib/store_shelf').valuation(store)); }
   const general = get(`SELECT COUNT(*) items, ROUND(COALESCE(SUM(balance * COALESCE(unit_cost,0)),0),2) value
      FROM store_items WHERE is_general = 1`);
   const oil = get(`SELECT COUNT(*) items, ROUND(COALESCE(SUM(COALESCE(stock_qty,0) * COALESCE(unit_price,0)),0),2) value
@@ -1282,10 +1278,11 @@ router.get('/mrn-analysis', requireAuth, requireModule('reports'), asyncHandler(
   const mp = [];
   if (year) { mc.push("CAST(strftime('%Y', m.req_date) AS INTEGER) = ?"); mp.push(year); }
   if (month) { mc.push("CAST(strftime('%m', m.req_date) AS INTEGER) = ?"); mp.push(month); }
-  const andClause = mc.length ? ' AND ' + mc.join(' AND ') : '';
+  // Step 2b: one workshop's requests (head office: all, or the one picked).
+  const andClause = (mc.length ? ' AND ' + mc.join(' AND ') : '') + wsSql('m.workshop_id', reportWs(req));
 
   const by_status = all(
-    `SELECT m.approval_status, COUNT(*) count FROM mrn m ${mc.length ? 'WHERE ' + mc.join(' AND ') : ''}
+    `SELECT m.approval_status, COUNT(*) count FROM mrn m WHERE 1 = 1${andClause}
       GROUP BY m.approval_status ORDER BY count DESC`, ...mp);
   const timing = get(
     `SELECT COUNT(*) n, ROUND(AVG(julianday(m.certified_at) - julianday(m.req_date)),2) avg_days_to_certify
@@ -1308,21 +1305,23 @@ router.get('/issues-by-vehicle', requireAuth, requireModule('reports'), asyncHan
   const params = [assetId];
   if (req.query.from_date) { clauses.push('i.issue_date >= ?'); params.push(req.query.from_date); }
   if (req.query.to_date) { clauses.push('i.issue_date <= ?'); params.push(req.query.to_date); }
-  const where = 'WHERE ' + clauses.join(' AND ');
+  // Step 2b: what one workshop issued to the vehicle — by its job card, else the store it left.
+  const where = 'WHERE ' + clauses.join(' AND ') + wsSql('COALESCE(j.workshop_id, i.store_id)', reportWs(req));
+  const FROM = 'FROM issues i LEFT JOIN job_cards j ON j.id = i.job_id';
   const COST = 'i.qty * COALESCE(i.unit_price, 0)';
 
-  const summary = get(`SELECT COUNT(*) count, ROUND(COALESCE(SUM(i.qty),0),2) total_qty, ROUND(COALESCE(SUM(${COST}),0),2) total_cost FROM issues i ${where}`, ...params);
+  const summary = get(`SELECT COUNT(*) count, ROUND(COALESCE(SUM(i.qty),0),2) total_qty, ROUND(COALESCE(SUM(${COST}),0),2) total_cost ${FROM} ${where}`, ...params);
   const issues = all(
     `SELECT i.id, i.issue_date, i.description, i.category, i.qty, i.unit_price, ROUND(${COST},2) total_cost, j.job_no
-       FROM issues i LEFT JOIN job_cards j ON j.id = i.job_id ${where}
+       ${FROM} ${where}
       ORDER BY i.issue_date DESC, i.id DESC LIMIT 1000`, ...params);
   const by_category = all(
     `SELECT COALESCE(NULLIF(TRIM(i.category),''),'Uncategorised') category, COUNT(*) count,
             ROUND(SUM(i.qty),2) qty, ROUND(SUM(${COST}),2) total_cost
-       FROM issues i ${where} GROUP BY 1 ORDER BY total_cost DESC`, ...params);
+       ${FROM} ${where} GROUP BY 1 ORDER BY total_cost DESC`, ...params);
   const timeline = all(
     `SELECT i.issue_date date, COUNT(*) count, ROUND(SUM(${COST}),2) total_cost
-       FROM issues i ${where} GROUP BY i.issue_date ORDER BY i.issue_date`, ...params);
+       ${FROM} ${where} GROUP BY i.issue_date ORDER BY i.issue_date`, ...params);
   res.json({ asset, summary, issues, by_category, timeline });
 }));
 
@@ -1527,7 +1526,7 @@ router.post('/service-outside', requireAuth, canEditServiceOutside, asyncHandler
     for (const it of items) {
       const id = toInt(it && it.id); if (!id) continue;
       // Stage 5: someone kept to their own workshop prices only its services.
-      const sv = get(`SELECT COALESCE((SELECT jx.workshop_id FROM job_cards jx WHERE jx.job_no = s.job_no AND COALESCE(s.job_no,'') <> ''
+      const sv = get(`SELECT COALESCE(s.workshop_id, (SELECT jx.workshop_id FROM job_cards jx WHERE jx.job_no = s.job_no AND COALESCE(s.job_no,'') <> ''
                               ORDER BY jx.id DESC LIMIT 1), s.store_id) w FROM service_jobs s WHERE s.id = ?`, id);
       if (sv && sv.w && !require('../lib/scope').mayReach(req.user, sv.w)) continue;
       const val = (it.outside == null || it.outside === '') ? null : toNum(it.outside);
@@ -1847,6 +1846,7 @@ router.put('/daily/job-summary/notes/:jobId', requireAuth,
   asyncHandler((req, res) => {
     const id = toInt(req.params.jobId);
     if (!get('SELECT 1 v FROM job_cards WHERE id = ?', id)) return res.status(404).json({ error: 'Job not found' });
+    { const no = require('../lib/scope').jobRefusal(req.user, id); if (no) return res.status(403).json(no); }
     const b = req.body || {};
     const clean = (v) => (v == null ? null : String(v).trim().slice(0, 2000) || null);
     run(`INSERT INTO job_summary_notes (job_id, completed_repairs, pending_repairs, job_status, spare_parts, updated_by)
@@ -1863,7 +1863,9 @@ router.put('/daily/pending-parts/notes/:lineId', requireAuth,
   require('../lib/auth').requireCap('reports.daily.notes'),
   asyncHandler((req, res) => {
     const id = toInt(req.params.lineId);
-    if (!get('SELECT 1 v FROM mrn_lines WHERE id = ?', id)) return res.status(404).json({ error: 'Request line not found' });
+    const line = get('SELECT mrn_id FROM mrn_lines WHERE id = ?', id);
+    if (!line) return res.status(404).json({ error: 'Request line not found' });
+    { const no = require('../lib/scope').mrnRefusal(req.user, line.mrn_id); if (no) return res.status(403).json(no); }
     const remarks = req.body && req.body.remarks != null ? String(req.body.remarks).trim().slice(0, 500) || null : null;
     run(`INSERT INTO pending_part_notes (mrn_line_id, remarks, updated_by) VALUES (?, ?, ?)
          ON CONFLICT(mrn_line_id) DO UPDATE SET remarks = excluded.remarks,
@@ -1876,7 +1878,13 @@ router.put('/daily/pending-price/notes/:grnId', requireAuth,
   require('../lib/auth').requireCap('reports.daily.notes'),
   asyncHandler((req, res) => {
     const id = toInt(req.params.grnId);
-    if (!get('SELECT 1 v FROM grn WHERE id = ?', id)) return res.status(404).json({ error: 'Receipt not found' });
+    const g = get(`SELECT ${GRN_WS} AS ws FROM grn g LEFT JOIN mrn m ON m.id = g.mrn_id WHERE g.id = ?`, id);
+    if (!g) return res.status(404).json({ error: 'Receipt not found' });
+    { // Step 2b: a receipt is its request's workshop's, else its store's.
+      const scope = require('../lib/scope');
+      const ws = g.ws || require('../lib/workshops').defaultId();
+      if (scope.enabled() && !scope.mayReach(req.user, ws)) return res.status(403).json(scope.refusal('receipt', ws));
+    }
     const remarks = req.body && req.body.remarks != null ? String(req.body.remarks).trim().slice(0, 500) || null : null;
     run(`INSERT INTO receipt_price_notes (grn_id, remarks, updated_by) VALUES (?, ?, ?)
          ON CONFLICT(grn_id) DO UPDATE SET remarks = excluded.remarks,
