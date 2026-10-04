@@ -47,10 +47,16 @@ const changedSinceCertified = (kind, row) => !!(row && row.certified_seal && row
 const raiserOf = (kind, row) => (row ? (kind === 'mrn' ? row.raised_by_user : row.requested_by_user) : null) || null;
 
 /** May this person certify or approve (act) a request they raised? null when they may, else the 403 body. */
-function selfRefusal(user, kind, row, act) {
+function selfRefusal(user, kind, row, act, actingFor = null) {
   const raiser = raiserOf(kind, row);
-  if (raiser == null || !user || raiser !== user.id || isAdmin(user)) return null;
-  return { error: `You raised this request. Someone else must ${act} it.`, own_request: true };
+  if (raiser == null || !user || isAdmin(user)) return null;
+  if (raiser === user.id) {
+    return { error: `You raised this request. Someone else must ${act} it.`, own_request: true };
+  }
+  if (actingFor && raiser === actingFor.id) {
+    return { error: `You are acting for the person who raised this request. Someone else must ${act} it.`, own_request: true };
+  }
+  return null;
 }
 
 /** Is this the person's own request, for the screens (false for the admin, who is exempt)? */

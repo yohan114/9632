@@ -209,6 +209,17 @@ function effectiveCaps(user) {
         else set.delete(uc.capability);
       }
     }
+
+    // Step 3b: stand-in delegated approval capabilities (plan §4.2)
+    if (!user.skipDelegations) {
+      try {
+        const standIn = require('./stand_in');
+        const dCaps = standIn.delegatedCapsFor(user.id);
+        for (const dc of dCaps) set.add(dc);
+      } catch {
+        // Safe fallback before stand_in table is initialized
+      }
+    }
   }
 
   return Array.from(set).sort();

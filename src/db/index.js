@@ -515,6 +515,7 @@ function migrate() {
   ensureColumn('users', 'signature', 'TEXT');       // each user's saved signature image
   ensureColumn('mrn', 'requested_sig', 'TEXT'); ensureColumn('mrn', 'certified_sig', 'TEXT'); ensureColumn('mrn', 'approved_sig', 'TEXT');
   ensureColumn('mrn_approvals', 'signature', 'TEXT'); // signature snapshot applied at signing
+  ensureColumn('job_approvals', 'signed_name', 'TEXT'); // e-signature snapshot / stand-in label
   ensureColumn('general_item_txns', 'source', 'TEXT'); // import source tag (idempotent re-import)
   // Consolidated MRN item catalogue (deduped from mrn_lines descriptions).
   ensureColumn('store_items', 'unit_cost', 'REAL DEFAULT 0');

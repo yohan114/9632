@@ -893,4 +893,46 @@ router.put('/approval-limits', requireCap('access.manage'), asyncHandler((req, r
   res.json({ saved, ...limits.listForScreen() });
 }));
 
+// ---- stand-in approvals delegation (Step 3b, Decision D9) -------------------
+const standIn = require('../lib/stand_in');
+standIn.initTable();
+
+// List delegations (admin sees all, user sees delegations they give or hold)
+router.get('/stand-ins', asyncHandler((req, res) => {
+  const rows = standIn.listDelegations(req.user, { limit: req.query.limit });
+  res.json({ delegations: rows });
+}));
+
+// Active delegations right now for the logged-in user (as stand-in or granter)
+router.get('/stand-ins/active', asyncHandler((req, res) => {
+  const asStandIn = standIn.getActiveDelegationsFor(req.user.id);
+  const asGranter = standIn.getActiveDelegationsBy(req.user.id);
+  res.json({
+    as_stand_in: asStandIn,
+    as_granter: asGranter,
+    active_now: asStandIn.length > 0 || asGranter.length > 0
+  });
+}));
+
+// Create a new delegation (user for themselves, or admin for anyone)
+router.post('/stand-ins', asyncHandler((req, res) => {
+  require_(req.body, ['granter_id', 'stand_in_id', 'start_date', 'end_date', 'reason']);
+  try {
+    const created = standIn.createDelegation(req.user, req.body);
+    res.status(201).json(created);
+  } catch (err) {
+    res.status(err.status || 400).json({ error: err.message });
+  }
+}));
+
+// Revoke an active delegation early (granter, stand-in, or admin)
+router.post('/stand-ins/:id/revoke', asyncHandler((req, res) => {
+  try {
+    const updated = standIn.revokeDelegation(req.user, req.params.id, req.body.reason);
+    res.json(updated);
+  } catch (err) {
+    res.status(err.status || 400).json({ error: err.message });
+  }
+}));
+
 module.exports = router;

@@ -922,7 +922,15 @@ router.get('/mrn/:id', asyncHandler((req, res) => {
 
 // ---- MRN approval flow (e-signatures + logging) ----------------------------
 // SK requests (create) → Workshop certifies → Operational Manager approves.
-const signer = (userId) => { const u = get('SELECT full_name, username, signature FROM users WHERE id = ?', userId); return { name: u ? (u.full_name || u.username) : 'user', sig: u ? u.signature : null }; };
+const standIn = require('../lib/stand_in');
+const signer = (userId, actingFor = null) => {
+  const u = get('SELECT full_name, username, signature FROM users WHERE id = ?', userId);
+  return {
+    name: standIn.formatSignerName(u, actingFor),
+    sig: u ? u.signature : null,
+    baseName: u ? (u.full_name || u.username) : 'user',
+  };
+};
 
 router.post('/mrn/:id/certify', requireCap('stores.mrn.certify'), asyncHandler((req, res) => {
   const id = toInt(req.params.id);
@@ -930,16 +938,17 @@ router.post('/mrn/:id/certify', requireCap('stores.mrn.certify'), asyncHandler((
   const mrn = get('SELECT * FROM mrn WHERE id = ?', id);
   if (!mrn) return res.status(404).json({ error: 'MRN not found' });
   if (mrn.approval_status === 'approved') return res.status(409).json({ error: 'Already approved — cannot re-certify' });
-  { const no = requestRules.selfRefusal(req.user, 'mrn', mrn, 'certify'); if (no) return res.status(403).json(no); }   // Step 3a
-  const s = signer(req.user.id); const sig = req.body.signature || s.sig || null;
-  const certRole = (isAdmin(req.user) || req.user.roles.includes('workshop')) ? 'workshop' : 'manager';
+  const actingFor = standIn.resolveActingFor(req.user, 'stores.mrn.certify', req.body.stand_in_for);
+  { const no = requestRules.selfRefusal(req.user, 'mrn', mrn, 'certify', actingFor); if (no) return res.status(403).json(no); }   // Step 3a & 3b
+  const s = signer(req.user.id, actingFor); const sig = req.body.signature || s.sig || null;
+  const certRole = actingFor ? 'stand_in' : ((isAdmin(req.user) || req.user.roles.includes('workshop')) ? 'workshop' : 'manager');
   tx(() => {
     // Step 3a: sealed as certified — approval checks nothing has changed since.
     run(`UPDATE mrn SET approval_status = 'certified', certified_by = ?, certified_at = datetime('now'), certified_sig = ?, certified_seal = ? WHERE id = ?`,
       s.name, sig, requestRules.seal('mrn', id), id);
     run(`INSERT INTO mrn_approvals (mrn_id, stage, role, approver_id, signed_name, signature, decision, reason) VALUES (?, 'certify', ?, ?, ?, ?, 'approved', ?)`, id, certRole, req.user.id, s.name, sig, req.body.reason || null);
   });
-  audit.record({ userId: req.user.id, entity: 'mrn', entityId: id, action: 'certify', after: { certified_by: s.name }, reason: req.body.reason });
+  audit.record({ userId: req.user.id, entity: 'mrn', entityId: id, action: 'certify', after: { certified_by: s.name, stand_in_for: actingFor ? actingFor.id : null }, reason: req.body.reason });
   emitter.emit('request_updated', { mrn_id: id, action: 'certify', approval_status: 'certified' });
   res.json(get('SELECT * FROM mrn WHERE id = ?', id));
 }));
@@ -950,9 +959,10 @@ router.post('/mrn/:id/approve', requireCap('stores.mrn.approve'), asyncHandler((
   const mrn = get('SELECT * FROM mrn WHERE id = ?', id);
   if (!mrn) return res.status(404).json({ error: 'MRN not found' });
   if (mrn.approval_status !== 'certified') return res.status(409).json({ error: 'MRN must be certified (Workshop Engineer) before Operational Manager approval' });
-  { const no = requestRules.selfRefusal(req.user, 'mrn', mrn, 'approve'); if (no) return res.status(403).json(no); }   // Step 3a
+  const actingFor = standIn.resolveActingFor(req.user, 'stores.mrn.approve', req.body.stand_in_for);
+  { const no = requestRules.selfRefusal(req.user, 'mrn', mrn, 'approve', actingFor); if (no) return res.status(403).json(no); }   // Step 3a & 3b
   const certRow = get(`SELECT approver_id FROM mrn_approvals WHERE mrn_id = ? AND stage = 'certify' AND decision = 'approved' ORDER BY id DESC LIMIT 1`, id);
-  if (certRow && certRow.approver_id === req.user.id && !isAdmin(req.user)) {
+  if (certRow && (certRow.approver_id === req.user.id || (actingFor && certRow.approver_id === actingFor.id)) && !isAdmin(req.user)) {
     return res.status(403).json({ error: 'Segregation of duties violation: approver cannot be the same person who certified the requisition.' });
   }
   // Approval limit: an MRN worth more than this person may sign off stays certified, for someone
@@ -966,13 +976,13 @@ router.post('/mrn/:id/approve', requireCap('stores.mrn.approve'), asyncHandler((
     audit.record({ userId: req.user.id, entity: 'mrn', entityId: id, action: 'update', reason: 'certification withdrawn — the request changed after signing' });
     return res.status(409).json({ error: requestRules.CHANGED, recertification_required: true });
   }
-  const s = signer(req.user.id); const sig = req.body.signature || s.sig || null;
-  const appRole = (isAdmin(req.user) || req.user.roles.includes('operational_manager')) ? 'operational_manager' : 'manager';
+  const s = signer(req.user.id, actingFor); const sig = req.body.signature || s.sig || null;
+  const appRole = actingFor ? 'stand_in' : ((isAdmin(req.user) || req.user.roles.includes('operational_manager')) ? 'operational_manager' : 'manager');
   tx(() => {
     run(`UPDATE mrn SET approval_status = 'approved', approved_by = ?, approved_at = datetime('now'), approved_sig = ? WHERE id = ?`, s.name, sig, id);
     run(`INSERT INTO mrn_approvals (mrn_id, stage, role, approver_id, signed_name, signature, decision, reason) VALUES (?, 'approve', ?, ?, ?, ?, 'approved', ?)`, id, appRole, req.user.id, s.name, sig, req.body.reason || null);
   });
-  audit.record({ userId: req.user.id, entity: 'mrn', entityId: id, action: 'approve', after: { approved_by: s.name }, reason: req.body.reason });
+  audit.record({ userId: req.user.id, entity: 'mrn', entityId: id, action: 'approve', after: { approved_by: s.name, stand_in_for: actingFor ? actingFor.id : null }, reason: req.body.reason });
   emitter.emit('request_updated', { mrn_id: id, action: 'approve', approval_status: 'approved' });
   res.json(get('SELECT * FROM mrn WHERE id = ?', id));
 }));
@@ -983,15 +993,16 @@ router.post('/mrn/:id/reject', requireCap('stores.mrn.reject'), asyncHandler((re
   const mrn = get('SELECT * FROM mrn WHERE id = ?', id);
   if (!mrn) return res.status(404).json({ error: 'MRN not found' });
   if (!String(req.body.reason || '').trim()) return res.status(400).json({ error: 'A reason is required to reject' });
-  const s = signer(req.user.id);
+  const actingFor = standIn.resolveActingFor(req.user, 'stores.mrn.reject', req.body.stand_in_for);
+  const s = signer(req.user.id, actingFor);
   const asApprover = hasCap(req.user, 'stores.mrn.approve');
   const stage = asApprover ? 'approve' : 'certify';
   tx(() => {
     run(`UPDATE mrn SET approval_status = 'rejected' WHERE id = ?`, id);
     run(`INSERT INTO mrn_approvals (mrn_id, stage, role, approver_id, signed_name, signature, decision, reason) VALUES (?, ?, ?, ?, ?, ?, 'rejected', ?)`,
-      id, stage, asApprover ? 'operational_manager' : 'workshop', req.user.id, s.name, req.body.signature || s.sig || null, req.body.reason);
+      id, stage, actingFor ? 'stand_in' : (asApprover ? 'operational_manager' : 'workshop'), req.user.id, s.name, req.body.signature || s.sig || null, req.body.reason);
   });
-  audit.record({ userId: req.user.id, entity: 'mrn', entityId: id, action: 'reject', after: { by: s.name }, reason: req.body.reason });
+  audit.record({ userId: req.user.id, entity: 'mrn', entityId: id, action: 'reject', after: { by: s.name, stand_in_for: actingFor ? actingFor.id : null }, reason: req.body.reason });
   emitter.emit('request_updated', { mrn_id: id, action: 'reject', approval_status: 'rejected' });
   res.json(get('SELECT * FROM mrn WHERE id = ?', id));
 }));

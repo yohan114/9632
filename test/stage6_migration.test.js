@@ -21,7 +21,7 @@ const assert = require('node:assert');
 // A database as it was before Stage 6: the same schema, without 'return' and the return notes.
 const oldSchema = fs.readFileSync(path.join(__dirname, '..', 'src', 'db', 'schema.sql'), 'utf8')
   .replace("'external','return')", "'external')")
-  .replace(/CREATE TABLE IF NOT EXISTS issue_returns \([\s\S]*?\n\);\nCREATE INDEX IF NOT EXISTS idx_issue_returns[^\n]*\n/, '');
+  .replace(/CREATE TABLE IF NOT EXISTS issue_returns \([\s\S]*?\r?\n\);\r?\nCREATE INDEX IF NOT EXISTS idx_issue_returns[^\n]*\r?\n/, '');
 assert.ok(!/'return'|issue_returns/.test(oldSchema), 'the old schema has neither');
 {
   const raw = new Database(process.env.DB_PATH);
