@@ -496,6 +496,8 @@ async function mySignatureModal() {
 const RANKL = { none: 0, view: 1, add: 2, edit: 3, full: 4 };
 const rankL = (l) => RANKL[l] || 0;
 const isAdmin = () => !!(ME && ME.roles && ME.roles.includes('admin'));
+// Step 3a: a request this person raised. Someone else certifies and approves it (the admin is exempt).
+const raisedByMe = (row, col = 'raised_by_user') => !!(ME && row && row[col] != null && row[col] === ME.id && !isAdmin());
 const canView = (m) => isAdmin() || (ME && ME.permissions ? rankL(ME.permissions[m]) >= 1 : true);
 const canAdd = (m) => isAdmin() || (ME && ME.permissions ? rankL(ME.permissions[m]) >= 2 : true);
 const canEdit = (m) => isAdmin() || (ME && ME.permissions ? rankL(ME.permissions[m]) >= 3 : true);
@@ -6346,10 +6348,10 @@ async function mrnList(body, params) {
       list.map((m) => {
         const rd = mrnRoad(m);
         let actBtns = '';
-        if (rd.step === 'to_certify' && canDo('stores.mrn.certify')) {
+        if (rd.step === 'to_certify' && canDo('stores.mrn.certify') && !raisedByMe(m)) {
           actBtns += `<button class="sm primary" data-m-cert="${m.id}" title="Sign & Certify MRN">✍ Certify</button> `;
         }
-        if (rd.step === 'to_approve' && canDo('stores.mrn.approve')) {
+        if (rd.step === 'to_approve' && canDo('stores.mrn.approve') && !raisedByMe(m)) {
           actBtns += `<button class="sm primary" data-m-app="${m.id}" title="Sign & Approve MRN">✅ Approve</button> `;
         }
         if ((rd.step === 'to_receive' || rd.step === 'partial') && canDo('stores.grn.receive')) {
@@ -6512,11 +6514,17 @@ async function mrnDetail(body, id) {
   // a second request for one line. That covers almost the whole book: 25 approved and 1,651
   // imported. The approval is not disturbed; the item itself is marked, with the reason.
   const adminAmend = canDo('stores.mrn.amend_settled') && (astatus === 'approved' || isImported);
-  const canCertify = !isImported && canDo('stores.mrn.certify') && astatus === 'requested';
+  // Step 3a: whoever raised it does not certify or approve it; whoever certified it does not approve it.
+  const mineRaised = raisedByMe(m);
+  const certRow = (d.approvals || []).filter((a) => a.stage === 'certify' && a.decision === 'approved').pop();
+  const mineCertified = !!(certRow && certRow.approver_id === ME.id && !isAdmin());
+  const canCertify = !isImported && canDo('stores.mrn.certify') && astatus === 'requested' && !mineRaised;
   // Approval limit: above it, the Approve button gives way to who can approve instead.
   const worth = d.worth;
   const overLimit = !!(worth && worth.limit && !worth.limit.ok);
-  const canApprove = canDo('stores.mrn.approve') && astatus === 'certified' && !overLimit;
+  const canApprove = canDo('stores.mrn.approve') && astatus === 'certified' && !overLimit && !mineRaised && !mineCertified;
+  const selfNote = (astatus === 'requested' || astatus === 'certified') && (mineRaised || (astatus === 'certified' && mineCertified))
+    ? `<p class="muted" style="margin:8px 0 0">${mineRaised ? 'You raised this request. Someone else certifies and approves it.' : 'You certified this request. Another manager approves it.'}</p>` : '';
   const canReject = !isImported && canDo('stores.mrn.reject') && astatus !== 'approved' && astatus !== 'rejected';
   const worthLine = worth ? `<p style="margin:8px 0 0;font-size:13px">Estimated value: <b>${esc(money(worth.value))}</b>
       <span class="muted">— quantity × last price paid${worth.unpriced ? `; ${worth.unpriced} item(s) have no price yet, so the real cost may be higher` : ''}</span>
@@ -6529,7 +6537,7 @@ async function mrnDetail(body, id) {
         ${canApprove ? '<button class="sm primary" id="mapprove">✅ Approve</button>' : ''}
         ${canReject ? '<button class="sm danger" id="mreject">Reject</button>' : ''}
       </div>
-      ${worthLine}
+      ${worthLine}${selfNote}
       ${isImported ? `<p class="muted" style="margin:8px 0 0">Imported record — predates the approval workflow, so it is treated as already approved. No certification/approval is required.${adminAmend ? ' As an admin you may still add a forgotten item to it: the item is marked as added later, with your reason.' : ''}</p>` : `
       <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-top:8px;font-size:13px">
         <div><b>1 · Requested</b>${m.requested_sig ? `<div style="height:30px"><img src="${m.requested_sig}" style="max-height:30px;max-width:130px"></div>` : ''}<br>${sig(m.requested_by, m.req_date)}<br><span class="muted">Storekeeper</span></div>
@@ -6696,7 +6704,11 @@ function mrnSignModal(mrn, action, onDone) {
       if (action === 'reject' && !String(f.reason || '').trim()) return toast('A reason is required to reject', 'err');
       const signature = (withSig && pad && !pad.isEmpty()) ? pad.dataURL() : undefined;
       const past = { certify: 'certified', approve: 'approved', reject: 'rejected' }[action];
-      try { await api('/stores/mrn/' + mrn.id + '/' + action, { method: 'POST', body: { reason: f.reason, signature } }); toast('MRN ' + past + (action !== 'reject' ? ' · e-signed' : '')); close(); onDone(); } catch (e) { toast(e.message, 'err'); }
+      try { await api('/stores/mrn/' + mrn.id + '/' + action, { method: 'POST', body: { reason: f.reason, signature } }); toast('MRN ' + past + (action !== 'reject' ? ' · e-signed' : '')); close(); onDone(); } catch (e) {
+        toast(e.message, 'err');
+        // Step 3a: changed after it was certified — it went back to be certified, so show it as it is now.
+        if (e.data && e.data.recertification_required) { close(); onDone(); }
+      }
     };
   });
 }
@@ -9248,8 +9260,14 @@ async function jobRequestDetail(c, id) {
   const r = d.request;
   const st = r.approval_status || 'requested';
   const sig = (name, at) => name ? `${esc(name)} <span class="muted">· ${esc((at || '').slice(0, 16).replace('T', ' '))}</span>` : '<span class="muted">pending</span>';
-  const canCertify = canDo('jobrequests.certify') && st === 'requested';
-  const canApprove = canDo('jobrequests.approve') && st === 'certified';
+  // Step 3a: whoever raised it does not certify or approve it; whoever certified it does not approve it.
+  const mineRaised = raisedByMe(r, 'requested_by_user');
+  const certRow = (d.approvals || []).filter((a) => a.stage === 'certify' && a.decision === 'approved').pop();
+  const mineCertified = !!(certRow && certRow.approver_id === ME.id && !isAdmin());
+  const canCertify = canDo('jobrequests.certify') && st === 'requested' && !mineRaised;
+  const canApprove = canDo('jobrequests.approve') && st === 'certified' && !mineRaised && !mineCertified;
+  const selfNote = (st === 'requested' || st === 'certified') && (mineRaised || (st === 'certified' && mineCertified))
+    ? `<p class="muted" style="margin:8px 0 0">${mineRaised ? 'You raised this request. Someone else certifies and approves it.' : 'You certified this request. Another manager approves it.'}</p>` : '';
   const canReject = canDo('jobrequests.reject') && st !== 'approved' && st !== 'rejected';
   // Approved and no card yet: the workshop's step.
   const awaitingCard = st === 'approved' && !r.job_id;
@@ -9263,7 +9281,7 @@ async function jobRequestDetail(c, id) {
         ${canApprove ? '<button class="sm primary" id="jrapprove">✅ Approve</button>' : ''}
         ${canOpenCard ? '<button class="sm primary" id="jropen">🔧 Open job card</button>' : ''}
         ${canReject ? '<button class="sm danger" id="jrreject">Reject</button>' : ''}
-      </div>
+      </div>${selfNote}
       <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-top:8px;font-size:13px">
         <div><b>1 · Requested</b>${r.requested_sig ? `<div style="height:30px"><img src="${r.requested_sig}" style="max-height:30px;max-width:130px"></div>` : ''}<br>${sig(r.requested_by, r.req_date)}<br><span class="muted">Transport Assistant Manager</span></div>
         <div><b>2 · Certified</b>${r.certified_sig ? `<div style="height:30px"><img src="${r.certified_sig}" style="max-height:30px;max-width:130px"></div>` : ''}<br>${sig(r.certified_by, r.certified_at)}<br><span class="muted">Transport Manager</span></div>
@@ -9320,7 +9338,11 @@ function jobRequestSignModal(jr, action, onDone) {
           if (r.open_job) toast(`Note: ${r.open_job.job_no} is still open for this vehicle`, 'err');
         } else toast('Job request ' + past + (action !== 'reject' ? ' · e-signed' : ''));
         close(); onDone();
-      } catch (e) { toast(e.message, 'err'); }
+      } catch (e) {
+        toast(e.message, 'err');
+        // Step 3a: changed after it was certified — it went back to be certified, so show it as it is now.
+        if (e.data && e.data.recertification_required) { close(); onDone(); }
+      }
     };
   });
 }
