@@ -42,7 +42,8 @@ function storeFor(user, storeId) {
 /** Scrap tyres and batteries not yet on a note — what a new note can list. */
 function scrap(user, storeId) {
   const store = own(user) || Number(storeId) || null;
-  const st = store ? ' AND (u.store_id = ? OR u.store_id IS NULL)' : '';
+  // A unit with no store is the main store's (as everywhere since Stage 4), not every store's.
+  const st = store ? ` AND ${scope.storeOfRow('u.store_id')} = ?` : '';
   const free = (kind) => `NOT EXISTS (SELECT 1 FROM disposal_lines l JOIN disposals d ON d.id = l.disposal_id
                                         WHERE l.${kind}_id = u.id AND ${OPEN_OR_DONE})`;
   const q = (kind) => all(`SELECT u.id, u.serial_no, u.state, s.label AS spec, '${kind}' AS kind

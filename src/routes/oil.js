@@ -113,9 +113,11 @@ function currentBalance(productId) {
 }
 
 // ---- products -------------------------------------------------------------
-router.get('/products', asyncHandler((_req, res) => {
+router.get('/products', asyncHandler((req, res) => {
   const rows = all('SELECT * FROM products ORDER BY name');
   for (const p of rows) p.current_balance = currentBalance(p.id);
+  // Step 2c: kept to your own store, its quantity — not the company's one figure.
+  if (scope.ownStore(req.user)) for (const p of onOwnShelf(req.user, rows)) p.current_balance = p.stock_qty;
   res.json(rows);
 }));
 

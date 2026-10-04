@@ -772,6 +772,7 @@ function migrate() {
   labourLifecycleProcess();
   toolsAndToolboxesProcess();
   ownRecordsStep2();
+  ownRecordsStep2c();
 
   // Seed the RBAC matrix once (safe to require here — db exports are already set).
   // Sections split off a shared switch start at that switch's level (access plan, Part 1) — before
@@ -1154,6 +1155,25 @@ function storesUnitsPart4() {
 //   - a tool: the workshop it was entered for; a mechanic's toolbox without one, the mechanic's
 //     workshop; else the main workshop.
 // Nothing moves for anyone while the workshops are not kept apart.
+// Improvement plan, Step 2c: an issue note and a transfer note belong to a workshop too. The routes
+// write it (the card's workshop, else the writer's); what has none takes it by the same rule.
+function ownRecordsStep2c() {
+  const DEF = '(SELECT id FROM workshops WHERE is_default = 1 ORDER BY id LIMIT 1)';
+  // An issue note: its job card's workshop, else the main one's.
+  const minWs = (n) => `COALESCE((SELECT j.workshop_id FROM job_cards j WHERE j.id = ${n}.job_id), ${DEF})`;
+  db.exec(`UPDATE min_notes SET workshop_id = ${minWs('min_notes')} WHERE workshop_id IS NULL;
+           CREATE TRIGGER IF NOT EXISTS trg_min_notes_ws AFTER INSERT ON min_notes WHEN NEW.workshop_id IS NULL
+           BEGIN UPDATE min_notes SET workshop_id = ${minWs('NEW')} WHERE id = NEW.id; END;`);
+  // A transfer note: the workshop it is sent from, else the one it goes to, else the main one's.
+  ensureColumn('mtn', 'workshop_id', 'INTEGER REFERENCES workshops(id)');
+  const placeWs = (col) => `(SELECT w.id FROM workshops w WHERE ${col} = 'w:' || w.id)`;
+  const mtnWs = (t) => `COALESCE(${placeWs(`${t}.from_place`)}, ${placeWs(`${t}.to_place`)}, ${DEF})`;
+  db.exec(`UPDATE mtn SET workshop_id = ${mtnWs('mtn')} WHERE workshop_id IS NULL;
+           CREATE INDEX IF NOT EXISTS idx_mtn_ws ON mtn(workshop_id);
+           CREATE TRIGGER IF NOT EXISTS trg_mtn_ws AFTER INSERT ON mtn WHEN NEW.workshop_id IS NULL
+           BEGIN UPDATE mtn SET workshop_id = ${mtnWs('NEW')} WHERE id = NEW.id; END;`);
+}
+
 function ownRecordsStep2() {
   const DEF = '(SELECT id FROM workshops WHERE is_default = 1 ORDER BY id LIMIT 1)';
   const jobWs = (s) => `(SELECT j.workshop_id FROM job_cards j WHERE j.job_no = ${s}.job_no AND COALESCE(${s}.job_no, '') <> '' ORDER BY j.id DESC LIMIT 1)`;
