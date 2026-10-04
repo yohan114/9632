@@ -169,14 +169,16 @@ router.post('/rates', requireCap('labour.rates.edit'), asyncHandler((req, res) =
 }));
 
 // Labour names that appear in the daily-work log but have NO hourly rate yet. Gated on labour clearance.
-router.get('/unassigned', requireModule('labour'), asyncHandler((_req, res) => {
+router.get('/unassigned', requireModule('labour'), asyncHandler((req, res) => {
   const rated = new Set(
     all('SELECT DISTINCT mechanic FROM labour_rates').map((r) => mechanics.normalizeMechanic(r.mechanic))
   );
   const acc = new Map(); // canonicalNorm -> { name, norm, entries, resolved, resolvedName }
+  // Step 2c: names from your own workshops' daily work.
+  const scope = require('../lib/scope');
   for (const row of all(
-    `SELECT mechanic, COUNT(*) c FROM job_daily_work
-      WHERE mechanic IS NOT NULL AND mechanic <> '' GROUP BY mechanic`
+    `SELECT w.mechanic, COUNT(*) c FROM job_daily_work w LEFT JOIN job_cards j ON j.id = w.job_id
+      WHERE w.mechanic IS NOT NULL AND w.mechanic <> ''${scope.wsSql('j.workshop_id', scope.reach(req.user))} GROUP BY w.mechanic`
   )) {
     for (const raw of mechanics.splitMechanics(row.mechanic)) {
       const norm = mechanics.normalizeMechanic(raw);

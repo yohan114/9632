@@ -23,6 +23,15 @@ const flow = require('../lib/purchasing_flow');
 
 const router = express.Router();
 
+// Improvement plan, Step 2c: every :id here is a request line. With the workshops kept apart, another
+// workshop's line is not yours to open, prioritise or buy — the lists (src/lib/purchasing_flow.js)
+// already show your own workshops' only. Head office buys for every workshop, as before.
+router.param('id', (req, res, next, id) => {
+  const l = get('SELECT mrn_id FROM mrn_lines WHERE id = ?', Number(id) || 0);
+  const no = l && require('../lib/scope').mrnRefusal(req.user, l.mrn_id);
+  return no ? res.status(403).json(no) : next();
+});
+
 const CHANNELS = flow.CHANNELS;
 const CHANNEL_LABEL = flow.CHANNEL_LABEL;
 const channelsFor = flow.channelsFor;

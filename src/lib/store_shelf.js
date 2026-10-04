@@ -113,4 +113,26 @@ function valuation(store) {
   };
 }
 
-module.exports = { STORE_SECTIONS, storeShelf, storeBatteries, reorderAlerts, storeOverview, storeSearch, valuation };
+/**
+ * Catalogue rows (store_items: name, category, balance, min_stock) with the balance and reorder level
+ * of the person's own store in place of the company's one figure, when they are kept to their own
+ * store (Step 2c). Rows with no shelf balance of their own (a lubricant from the oil book) stay as
+ * they are.
+ */
+function ownStoreRows(user, rows) {
+  const store = scope.ownStore(user);
+  if (!store) return rows;
+  const stock = require('./stock');
+  const cache = {};
+  const shelf = (sec) => cache[sec] || (cache[sec] = { bal: stock.storeBalances(sec, store), lvl: stock.storeLevels(sec, store) });
+  for (const r of rows) {
+    if (r.balance == null || !r.name) continue;
+    const sec = stock.sectionOf(r.category);
+    const key = stock.itemKey(sec, r.name);
+    r.balance = shelf(sec).bal.get(key) || 0;
+    if ('min_stock' in r) r.min_stock = shelf(sec).lvl.get(key) || 0;
+  }
+  return rows;
+}
+
+module.exports = { STORE_SECTIONS, storeShelf, storeBatteries, reorderAlerts, storeOverview, storeSearch, valuation, ownStoreRows };
