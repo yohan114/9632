@@ -797,6 +797,8 @@ function migrate() {
     // after seedCapabilities(): it is INSERT OR IGNORE, so revoking before it runs is undone.
     jobCardCreateToWorkshop();
   }
+  // Improvement plan, Step 3a: who raised each request, and the seal of what was certified.
+  requestRulesStep3a();
   return db;
 }
 
@@ -1668,6 +1670,24 @@ function allowReturnParts() {
   } finally {
     db.pragma('foreign_keys = ON');
   }
+}
+
+// Improvement plan, Step 3a (src/lib/request_rules.js): whoever raised a request does not certify
+// or approve it, and what was certified is what gets approved.
+//   - mrn.raised_by_user: the user who raised it. A job request has had requested_by_user from
+//     the start; an MRN kept only the typed name. Requests raised in the app take it from their
+//     'create' line in the audit log; imported ones have none, and the rule passes them by.
+//   - certified_seal: the fingerprint of what was certified. Requests already certified are sealed
+//     as they stand now.
+function requestRulesStep3a() {
+  ensureColumn('mrn', 'raised_by_user', 'INTEGER REFERENCES users(id)');
+  ensureColumn('mrn', 'certified_seal', 'TEXT');
+  ensureColumn('job_requests', 'certified_seal', 'TEXT');
+  db.exec(`UPDATE mrn SET raised_by_user = (SELECT a.user_id FROM audit_log a
+                                             WHERE a.entity = 'mrn' AND a.action = 'create' AND a.entity_id = mrn.id
+                                             ORDER BY a.id LIMIT 1)
+            WHERE raised_by_user IS NULL`);
+  require('../lib/request_rules').sealMissing();
 }
 
 function ensureColumn(table, col, def) {

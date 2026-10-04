@@ -19,6 +19,7 @@ const { asyncHandler, require_, toInt } = require('../lib/http');
 const audit = require('../lib/audit');
 const aliases = require('../lib/aliases');
 const jobstate = require('../lib/jobstate');
+const requestRules = require('../lib/request_rules');   // Step 3a: no self sign-off; what was certified is approved
 
 const router = express.Router();
 const scope = require('../lib/scope');
@@ -142,9 +143,12 @@ router.post('/:id/certify', requireCap('jobrequests.certify'), asyncHandler((req
   if (!jr) return res.status(404).json({ error: 'Job request not found' });
   if (jr.approval_status === 'approved') return res.status(409).json({ error: 'Already approved — cannot re-certify' });
   if (jr.approval_status === 'rejected') return res.status(409).json({ error: 'This request was rejected' });
+  { const no = requestRules.selfRefusal(req.user, 'jr', jr, 'certify'); if (no) return res.status(403).json(no); }   // Step 3a
   const s = signer(req.user.id); const sig = req.body.signature || s.sig || null;
   tx(() => {
-    run(`UPDATE job_requests SET approval_status = 'certified', certified_by = ?, certified_at = datetime('now'), certified_sig = ? WHERE id = ?`, s.name, sig, id);
+    // Step 3a: sealed as certified — approval checks nothing has changed since.
+    run(`UPDATE job_requests SET approval_status = 'certified', certified_by = ?, certified_at = datetime('now'), certified_sig = ?, certified_seal = ? WHERE id = ?`,
+      s.name, sig, requestRules.seal('jr', id), id);
     run(`INSERT INTO job_request_approvals (job_request_id, stage, role, approver_id, signed_name, signature, decision, reason) VALUES (?, 'certify', 'transport_manager', ?, ?, ?, 'approved', ?)`, id, req.user.id, s.name, sig, req.body.reason || null);
   });
   audit.record({ userId: req.user.id, entity: 'job_request', entityId: id, action: 'certify', after: { certified_by: s.name }, reason: req.body.reason });
@@ -164,9 +168,16 @@ router.post('/:id/approve', requireCap('jobrequests.approve'), asyncHandler((req
   if (jr.approval_status === 'rejected') return res.status(409).json({ error: 'This request was rejected' });
   if (jr.approval_status === 'approved') return res.status(409).json({ error: 'Already approved' });
   if (jr.approval_status !== 'certified') return res.status(409).json({ error: 'Request must be certified (Transport Manager) before Operational Manager approval' });
+  { const no = requestRules.selfRefusal(req.user, 'jr', jr, 'approve'); if (no) return res.status(403).json(no); }   // Step 3a
   const certRow = get(`SELECT approver_id FROM job_request_approvals WHERE job_request_id = ? AND stage = 'certify' AND decision = 'approved' ORDER BY id DESC LIMIT 1`, id);
   if (certRow && certRow.approver_id === req.user.id && !isAdmin(req.user)) {
     return res.status(403).json({ error: 'Segregation of duties violation: approver cannot be the same person who certified the job request.' });
+  }
+  // Step 3a: what was certified is what gets approved. Changed since: it goes back to be certified.
+  if (requestRules.changedSinceCertified('jr', jr)) {
+    tx(() => requestRules.withdrawJobRequest(jr, req.user.id));
+    audit.record({ userId: req.user.id, entity: 'job_request', entityId: id, action: 'update', reason: 'certification withdrawn — the request changed after signing' });
+    return res.status(409).json({ error: requestRules.CHANGED, recertification_required: true });
   }
   const s = signer(req.user.id); const sig = req.body.signature || s.sig || null;
   tx(() => {

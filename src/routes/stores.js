@@ -25,6 +25,7 @@ const disposal = require('../lib/disposal');
 const { lineReceiptSql, mrnReceiptSql, receivedLabel, d10 } = require('../lib/received_date');
 const lubricants = require('../lib/lubricants');
 const approvalLimits = require('../lib/approval_limits');
+const requestRules = require('../lib/request_rules');   // Step 3a: no self sign-off; what was certified is approved
 const {
   renderMinDocumentHtml,
   renderGrnDocumentHtml,
@@ -849,11 +850,12 @@ router.post('/mrn', requireCap('stores.mrn.create'), asyncHandler((req, res) => 
   const reqBy = String(b.requested_by || '').trim() || (ru ? (ru.full_name || ru.username) : null);
   const result = tx(() => {
     const info = run(
-      `INSERT INTO mrn (mrn_no, req_date, asset_id, project_id, job_id, purpose, requested_by, purchase_source, required_date, request_type, workshop_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO mrn (mrn_no, req_date, asset_id, project_id, job_id, purpose, requested_by, purchase_source, required_date, request_type, workshop_id, raised_by_user)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       mrnNo, b.req_date || new Date().toISOString().slice(0, 10), assetId || null,
       toInt(b.project_id), jobId, b.purpose || null, reqBy, source, b.required_date || null, requestType,
-      require('../lib/workshops').forRequest(req.user, jobId)
+      require('../lib/workshops').forRequest(req.user, jobId),
+      req.user.id   // Step 3a: who raised it — they do not certify or approve it
     );
     const mrnId = info.lastInsertRowid;
     const lines = Array.isArray(b.lines) ? b.lines : [];
@@ -928,10 +930,13 @@ router.post('/mrn/:id/certify', requireCap('stores.mrn.certify'), asyncHandler((
   const mrn = get('SELECT * FROM mrn WHERE id = ?', id);
   if (!mrn) return res.status(404).json({ error: 'MRN not found' });
   if (mrn.approval_status === 'approved') return res.status(409).json({ error: 'Already approved — cannot re-certify' });
+  { const no = requestRules.selfRefusal(req.user, 'mrn', mrn, 'certify'); if (no) return res.status(403).json(no); }   // Step 3a
   const s = signer(req.user.id); const sig = req.body.signature || s.sig || null;
   const certRole = (isAdmin(req.user) || req.user.roles.includes('workshop')) ? 'workshop' : 'manager';
   tx(() => {
-    run(`UPDATE mrn SET approval_status = 'certified', certified_by = ?, certified_at = datetime('now'), certified_sig = ? WHERE id = ?`, s.name, sig, id);
+    // Step 3a: sealed as certified — approval checks nothing has changed since.
+    run(`UPDATE mrn SET approval_status = 'certified', certified_by = ?, certified_at = datetime('now'), certified_sig = ?, certified_seal = ? WHERE id = ?`,
+      s.name, sig, requestRules.seal('mrn', id), id);
     run(`INSERT INTO mrn_approvals (mrn_id, stage, role, approver_id, signed_name, signature, decision, reason) VALUES (?, 'certify', ?, ?, ?, ?, 'approved', ?)`, id, certRole, req.user.id, s.name, sig, req.body.reason || null);
   });
   audit.record({ userId: req.user.id, entity: 'mrn', entityId: id, action: 'certify', after: { certified_by: s.name }, reason: req.body.reason });
@@ -945,6 +950,7 @@ router.post('/mrn/:id/approve', requireCap('stores.mrn.approve'), asyncHandler((
   const mrn = get('SELECT * FROM mrn WHERE id = ?', id);
   if (!mrn) return res.status(404).json({ error: 'MRN not found' });
   if (mrn.approval_status !== 'certified') return res.status(409).json({ error: 'MRN must be certified (Workshop Engineer) before Operational Manager approval' });
+  { const no = requestRules.selfRefusal(req.user, 'mrn', mrn, 'approve'); if (no) return res.status(403).json(no); }   // Step 3a
   const certRow = get(`SELECT approver_id FROM mrn_approvals WHERE mrn_id = ? AND stage = 'certify' AND decision = 'approved' ORDER BY id DESC LIMIT 1`, id);
   if (certRow && certRow.approver_id === req.user.id && !isAdmin(req.user)) {
     return res.status(403).json({ error: 'Segregation of duties violation: approver cannot be the same person who certified the requisition.' });
@@ -954,6 +960,12 @@ router.post('/mrn/:id/approve', requireCap('stores.mrn.approve'), asyncHandler((
   const worth = approvalLimits.mrnValue(id);
   const within = approvalLimits.check(req.user, 'mrn_approve', worth.value);
   if (!within.ok) return res.status(403).json({ ...approvalLimits.refusal(within, 'This MRN is worth about'), unpriced: worth.unpriced });
+  // Step 3a: what was certified is what gets approved. Changed since, by any route: it goes back.
+  if (requestRules.changedSinceCertified('mrn', mrn)) {
+    tx(() => resetCertification(mrn, req.user.id, 'the request'));
+    audit.record({ userId: req.user.id, entity: 'mrn', entityId: id, action: 'update', reason: 'certification withdrawn — the request changed after signing' });
+    return res.status(409).json({ error: requestRules.CHANGED, recertification_required: true });
+  }
   const s = signer(req.user.id); const sig = req.body.signature || s.sig || null;
   const appRole = (isAdmin(req.user) || req.user.roles.includes('operational_manager')) ? 'operational_manager' : 'manager';
   tx(() => {
@@ -1399,7 +1411,7 @@ function guardEditable(id) {
 /** Undo a certification because the request has changed under it. */
 function resetCertification(mrn, userId, what) {
   if (mrn.approval_status !== 'certified') return false;
-  run(`UPDATE mrn SET approval_status = 'requested', certified_by = NULL, certified_at = NULL, certified_sig = NULL WHERE id = ?`, mrn.id);
+  run(`UPDATE mrn SET approval_status = 'requested', certified_by = NULL, certified_at = NULL, certified_sig = NULL, certified_seal = NULL WHERE id = ?`, mrn.id);
   run(`INSERT INTO mrn_approvals (mrn_id, stage, role, approver_id, signed_name, decision, reason)
        VALUES (?, 'certify', 'workshop', ?, ?, 'rejected', ?)`,
     mrn.id, userId, mrn.certified_by || null, `certification withdrawn — ${what} changed after signing`);
