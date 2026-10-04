@@ -98,7 +98,9 @@ test('the card keeps its own dates, so a long wait still reads as a long wait', 
   const j = get('SELECT requested_at, approved_transport_at, approved_ops_at FROM job_cards WHERE id = ?', WAITING_A);
   assert.strictEqual(j.approved_transport_at, j.requested_at, 'not today — the day it was raised');
   assert.strictEqual(j.approved_ops_at, j.requested_at);
-  assert.strictEqual(j.requested_at, day(-52));
+  // BEFORE is a fixed date (the rule is the cut-off, not the card's age): day(-52) matched it on one
+  // day only, 2026-10-02, and failed on every day after.
+  assert.strictEqual(j.requested_at, BEFORE);
 });
 
 test('the approvals say nobody signed them in the app', () => {
