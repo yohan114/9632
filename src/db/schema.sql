@@ -131,6 +131,23 @@ CREATE TABLE IF NOT EXISTS audit_log (
 );
 CREATE INDEX IF NOT EXISTS idx_audit_entity ON audit_log(entity, entity_id);
 
+CREATE TABLE IF NOT EXISTS stand_in_delegations (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  granter_id      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  stand_in_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  start_date      TEXT NOT NULL,          -- YYYY-MM-DD
+  end_date        TEXT NOT NULL,          -- YYYY-MM-DD
+  reason          TEXT NOT NULL,
+  active          INTEGER NOT NULL DEFAULT 1,
+  created_by      INTEGER NOT NULL REFERENCES users(id),
+  created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+  revoked_at      TEXT,
+  revoked_by      INTEGER REFERENCES users(id),
+  revoked_reason  TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_delegations_stand_in ON stand_in_delegations(stand_in_id, active, start_date, end_date);
+CREATE INDEX IF NOT EXISTS idx_delegations_granter ON stand_in_delegations(granter_id, active);
+
 -- ---------------------------------------------------------------------------
 -- STORES & INVENTORY  (MRN -> GRN -> Issue -> MTN + general items)
 -- ---------------------------------------------------------------------------
@@ -794,6 +811,7 @@ CREATE TABLE IF NOT EXISTS job_approvals (
   job_id      INTEGER NOT NULL REFERENCES job_cards(id) ON DELETE CASCADE,
   role        TEXT NOT NULL CHECK (role IN ('transport_manager','operational_manager')),
   approver_id INTEGER REFERENCES users(id),
+  signed_name TEXT,
   decision    TEXT NOT NULL CHECK (decision IN ('approved','rejected')),
   reason      TEXT,
   created_at  TEXT NOT NULL DEFAULT (datetime('now'))

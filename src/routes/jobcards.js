@@ -19,6 +19,7 @@ const jobno = require('../lib/jobno');
 const workshops = require('../lib/workshops');
 const scope = require('../lib/scope');
 const emitter = require('../lib/emitter');
+const standIn = require('../lib/stand_in');
 
 const router = express.Router();
 
@@ -542,11 +543,24 @@ router.post(
       if (!within.ok) return res.status(403).json(approvalLimits.refusal(within, 'This job costs'));
     }
 
-    if (check.def.action === 'ops_approve') {
+    let actingFor = null;
+    let signedName = null;
+    const actorUser = get('SELECT full_name, username FROM users WHERE id = ?', req.user.id);
+
+    if (check.def.action === 'transport_approve') {
+      actingFor = standIn.resolveActingFor(req.user, 'jobs.approve_transport', req.body.stand_in_for);
+      signedName = standIn.formatSignerName(actorUser, actingFor);
+    } else if (check.def.action === 'ops_approve') {
+      actingFor = standIn.resolveActingFor(req.user, 'jobs.approve_operations', req.body.stand_in_for);
+      signedName = standIn.formatSignerName(actorUser, actingFor);
       const transRow = get(`SELECT approver_id FROM job_approvals WHERE job_id = ? AND role = 'transport_manager' AND decision = 'approved' ORDER BY id DESC LIMIT 1`, id);
-      if (transRow && transRow.approver_id === req.user.id && !isAdmin(req.user)) {
+      if (transRow && (transRow.approver_id === req.user.id || (actingFor && transRow.approver_id === actingFor.id)) && !isAdmin(req.user)) {
         return res.status(403).json({ error: 'Segregation of duties violation: Operational approval cannot be given by the same person who gave Transport approval.' });
       }
+    } else if (check.def.action === 'reject' || check.def.action === 'return') {
+      const cap = hasCap(req.user, 'jobs.approve_operations') ? 'jobs.approve_operations' : 'jobs.approve_transport';
+      actingFor = standIn.resolveActingFor(req.user, cap, req.body.stand_in_for);
+      signedName = standIn.formatSignerName(actorUser, actingFor);
     }
 
     tx(() => {
@@ -557,16 +571,16 @@ router.post(
       switch (check.def.action) {
         case 'transport_approve':
           sets.push('approved_transport_at = ' + now);
-          run(`INSERT INTO job_approvals (job_id, role, approver_id, decision, reason) VALUES (?, 'transport_manager', ?, 'approved', ?)`, id, req.user.id, reason);
+          run(`INSERT INTO job_approvals (job_id, role, approver_id, signed_name, decision, reason) VALUES (?, 'transport_manager', ?, ?, 'approved', ?)`, id, req.user.id, signedName, reason);
           break;
         case 'ops_approve':
           sets.push('approved_ops_at = ' + now);
-          run(`INSERT INTO job_approvals (job_id, role, approver_id, decision, reason) VALUES (?, 'operational_manager', ?, 'approved', ?)`, id, req.user.id, reason);
+          run(`INSERT INTO job_approvals (job_id, role, approver_id, signed_name, decision, reason) VALUES (?, 'operational_manager', ?, ?, 'approved', ?)`, id, req.user.id, signedName, reason);
           break;
         case 'reject':
         case 'return': {
           const role = hasCap(req.user, 'jobs.approve_operations') ? 'operational_manager' : 'transport_manager';
-          run(`INSERT INTO job_approvals (job_id, role, approver_id, decision, reason) VALUES (?, ?, ?, 'rejected', ?)`, id, role, req.user.id, reason);
+          run(`INSERT INTO job_approvals (job_id, role, approver_id, signed_name, decision, reason) VALUES (?, ?, ?, ?, 'rejected', ?)`, id, role, req.user.id, signedName, reason);
           break;
         }
         case 'assign':
@@ -673,12 +687,25 @@ router.post(
           }
         }
 
-        if (check.def.action === 'ops_approve') {
+        let actingFor = null;
+        let signedName = null;
+        const actorUser = get('SELECT full_name, username FROM users WHERE id = ?', req.user.id);
+
+        if (check.def.action === 'transport_approve') {
+          actingFor = standIn.resolveActingFor(req.user, 'jobs.approve_transport', req.body.stand_in_for);
+          signedName = standIn.formatSignerName(actorUser, actingFor);
+        } else if (check.def.action === 'ops_approve') {
+          actingFor = standIn.resolveActingFor(req.user, 'jobs.approve_operations', req.body.stand_in_for);
+          signedName = standIn.formatSignerName(actorUser, actingFor);
           const transRow = get(`SELECT approver_id FROM job_approvals WHERE job_id = ? AND role = 'transport_manager' AND decision = 'approved' ORDER BY id DESC LIMIT 1`, id);
-          if (transRow && transRow.approver_id === req.user.id && !isAdmin(req.user)) {
+          if (transRow && (transRow.approver_id === req.user.id || (actingFor && transRow.approver_id === actingFor.id)) && !isAdmin(req.user)) {
             failed.push({ id, job_no: job.job_no, error: 'Segregation of duties violation: Operational approval cannot be given by the same person who gave Transport approval.' });
             continue;
           }
+        } else if (check.def.action === 'reject' || check.def.action === 'return') {
+          const cap = hasCap(req.user, 'jobs.approve_operations') ? 'jobs.approve_operations' : 'jobs.approve_transport';
+          actingFor = standIn.resolveActingFor(req.user, cap, req.body.stand_in_for);
+          signedName = standIn.formatSignerName(actorUser, actingFor);
         }
 
         const now = "datetime('now')";
@@ -688,16 +715,16 @@ router.post(
         switch (check.def.action) {
           case 'transport_approve':
             sets.push('approved_transport_at = ' + now);
-            run(`INSERT INTO job_approvals (job_id, role, approver_id, decision, reason) VALUES (?, 'transport_manager', ?, 'approved', ?)`, id, req.user.id, reason);
+            run(`INSERT INTO job_approvals (job_id, role, approver_id, signed_name, decision, reason) VALUES (?, 'transport_manager', ?, ?, 'approved', ?)`, id, req.user.id, signedName, reason);
             break;
           case 'ops_approve':
             sets.push('approved_ops_at = ' + now);
-            run(`INSERT INTO job_approvals (job_id, role, approver_id, decision, reason) VALUES (?, 'operational_manager', ?, 'approved', ?)`, id, req.user.id, reason);
+            run(`INSERT INTO job_approvals (job_id, role, approver_id, signed_name, decision, reason) VALUES (?, 'operational_manager', ?, ?, 'approved', ?)`, id, req.user.id, signedName, reason);
             break;
           case 'reject':
           case 'return': {
             const role = hasCap(req.user, 'jobs.approve_operations') ? 'operational_manager' : 'transport_manager';
-            run(`INSERT INTO job_approvals (job_id, role, approver_id, decision, reason) VALUES (?, ?, ?, 'rejected', ?)`, id, role, req.user.id, reason);
+            run(`INSERT INTO job_approvals (job_id, role, approver_id, signed_name, decision, reason) VALUES (?, ?, ?, ?, 'rejected', ?)`, id, role, req.user.id, signedName, reason);
             break;
           }
           case 'assign':

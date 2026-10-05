@@ -228,7 +228,27 @@ function effectiveLevel(user, sectionKey) {
   }
 
   // 2. Fall back to role template (highest level among user's roles)
-  return levelForRoles(roles, sectionKey);
+  let level = levelForRoles(roles, sectionKey);
+
+  // 3. Step 3b: Stand-in delegated approval clearance
+  // If the user holds delegated capabilities in this section, ensure at least 'add' clearance
+  // so the module guard allows approval/certification POST requests.
+  if (user.id && !user.skipDelegations) {
+    try {
+      const standIn = require('./stand_in');
+      const dCaps = standIn.delegatedCapsFor(user.id);
+      const capabilities = require('./capabilities');
+      const hasCapInSection = dCaps.some(cap => {
+        const c = capabilities.get(cap);
+        return c && (c.section === sectionKey || c.module === sectionKey || c.needs === sectionKey);
+      });
+      if (hasCapInSection && LEVELS.indexOf(level) < LEVELS.indexOf('add')) {
+        level = 'add';
+      }
+    } catch {}
+  }
+
+  return level;
 }
 
 // Full effective {section: level} map for a specific user

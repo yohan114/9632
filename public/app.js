@@ -818,6 +818,33 @@ const NAV_GROUP = {
   workshops: 'Admin', access: 'Admin',
 };
 
+async function renderStandInBanner() {
+  const el = qs('#standin-banner');
+  if (!el || !ME) return;
+  try {
+    const act = await api('/access/stand-ins/active');
+    if (!act) return;
+    const items = [];
+    if (act.as_stand_in && act.as_stand_in.length) {
+      for (const d of act.as_stand_in) {
+        items.push(`<div style="background:#eff6ff;border-bottom:1px solid #bfdbfe;border-left:4px solid #3b82f6;color:#1e3a8a;padding:8px 16px;font-size:13px;display:flex;align-items:center;justify-content:space-between;gap:8px">
+          <div>🛡️ <b>Acting as stand-in:</b> You are acting for <b>${esc(d.granter_full_name || d.granter_username)}</b> (${esc(d.start_date)} to ${esc(d.end_date)}). Reason: <i>${esc(d.reason)}</i>. Certifying & approval authority is active.</div>
+          <a href="#/access?tab=stand_ins" class="btn sm" style="white-space:nowrap;padding:2px 8px;font-size:11px">View hand-overs</a>
+        </div>`);
+      }
+    }
+    if (act.as_granter && act.as_granter.length) {
+      for (const d of act.as_granter) {
+        items.push(`<div style="background:#fefce8;border-bottom:1px solid #fef08a;border-left:4px solid #eab308;color:#713f12;padding:8px 16px;font-size:13px;display:flex;align-items:center;justify-content:space-between;gap:8px">
+          <div>ℹ️ <b>Approvals Handed Over:</b> Your approvals are currently delegated to <b>${esc(d.stand_in_full_name || d.stand_in_username)}</b> until ${esc(d.end_date)}. (You retain your own signing rights).</div>
+          <a href="#/access?tab=stand_ins" class="btn sm" style="white-space:nowrap;padding:2px 8px;font-size:11px">Manage hand-overs</a>
+        </div>`);
+      }
+    }
+    el.innerHTML = items.join('');
+  } catch {}
+}
+
 function renderShell() {
   const route = (location.hash.replace('#/', '').split('?')[0].split('/')[0]) || 'dashboard';
   const link = (n, i) => `<a href="${n[4] || '#/' + n[0]}" class="${!n[4] && route === n[0] ? 'active' : ''}"><span class="ix">${String(i + 1).padStart(2, '0')}</span><span class="ico">${n[1]}</span>${n[2]}</a>`;
@@ -840,8 +867,12 @@ function renderShell() {
     </div>
     <div class="layout">
       <nav class="nav" id="nav">${nav}</nav>
-      <main class="content" id="content"><div class="muted">Loading…</div></main>
+      <div style="flex:1;display:flex;flex-direction:column;min-width:0;min-height:0;overflow:hidden">
+        <div id="standin-banner"></div>
+        <main class="content" id="content"><div class="muted">Loading…</div></main>
+      </div>
     </div>`;
+  renderStandInBanner();
   qs('#logout').onclick = async () => {
     await api('/auth/logout', { method: 'POST' });
     live('disconnect');   // the socket holds the session of whoever just left
@@ -12891,6 +12922,7 @@ routes.access = async (c) => {
     tabs.push(['board', 'Clearance Board']);
     tabs.push(['limits', 'Approval limits']);
   }
+  tabs.push(['stand_ins', 'Stand-in Approvals']);
   if (canDo('users.manage')) tabs.push(['users', 'User Accounts']);
   if (canDo('access.manage')) tabs.push(['history', 'Audit Trail']);
 
@@ -12926,6 +12958,7 @@ routes.access = async (c) => {
   else if (tab === 'users') await renderUsersManager(pane);
   else if (tab === 'board') await renderClearanceBoard(pane);
   else if (tab === 'limits') await renderApprovalLimits(pane);
+  else if (tab === 'stand_ins') await renderStandIns(pane);
   else if (tab === 'history') await renderAccessHistory(pane);
   else await renderRolesManager(pane, sp.get('role'));
 };
@@ -12965,6 +12998,144 @@ async function renderApprovalLimits(c) {
       } catch (e) { inp.value = inp.dataset.was; toast(e.message, 'err'); }
     };
   });
+}
+
+// Stand-in Approvals (Step 3b, Decision D9)
+async function renderStandIns(c) {
+  const [data, usersResp] = await Promise.all([
+    api('/access/stand-ins'),
+    api('/access/report').catch(() => ({ users: [] }))
+  ]);
+  const delegations = (data && data.delegations) || [];
+  const activeUsers = (usersResp && (usersResp.users || usersResp.people)) || [];
+  const today = new Date().toISOString().slice(0, 10);
+
+  c.innerHTML = `<div class="card">
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:10px;flex-wrap:wrap">
+      <div>
+        <h3 style="margin:0 0 4px">Stand-in Approvals (Hand-overs)</h3>
+        <p class="muted" style="margin:0">When away or on leave, delegate approval authority to a stand-in for up to 30 days (Decision D9). Only certify and approve capabilities pass.</p>
+      </div>
+      <button class="btn sm primary" id="btn-new-standin">+ Hand over approvals</button>
+    </div>
+
+    <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:6px;padding:12px;margin-bottom:14px;font-size:12px;line-height:1.5" class="muted">
+      <b>Delegation rules (Decision D9):</b>
+      • The manager keeps their own signing rights during the hand-over.
+      • The manager's approval limit applies to the stand-in.
+      • Maximum duration is strictly 30 days. No delegation chains (a stand-in cannot re-delegate).
+      • Normal segregation of duties applies: a stand-in cannot approve their own requests or both certify and approve.
+      • All records, approvals and printed forms show both names (e.g. <i>"Ruwan for Nimal"</i>).
+    </div>
+
+    ${tableWrap([
+      { label: 'Granter (Manager)' },
+      { label: 'Stand-in' },
+      { label: 'Period' },
+      { label: 'Reason' },
+      { label: 'Status' },
+      { label: 'Set up by' },
+      { label: 'Actions' }
+    ], delegations.map(d => {
+      const isPast = d.end_date < today;
+      const isFuture = d.start_date > today;
+      const isRevoked = !d.active || !!d.revoked_at;
+      let badge = '<span class="badge" style="background:#dcfce7;color:#166534">Active</span>';
+      if (isRevoked) badge = '<span class="badge" style="background:#fee2e2;color:#991b1b">Revoked</span>';
+      else if (isPast) badge = '<span class="badge" style="background:#f1f5f9;color:#475569">Expired</span>';
+      else if (isFuture) badge = '<span class="badge" style="background:#e0f2fe;color:#075985">Upcoming</span>';
+
+      const canRevoke = !isRevoked && !isPast && (isAdmin() || d.granter_id === ME.id || d.stand_in_id === ME.id);
+      const revokeBtn = canRevoke
+        ? `<button class="btn sm danger" data-revoke="${d.id}" style="padding:2px 6px;font-size:11px">End early</button>`
+        : '<span class="muted">—</span>';
+
+      return `<tr>
+        <td><b>${esc(d.granter_full_name || d.granter_username)}</b></td>
+        <td><b>${esc(d.stand_in_full_name || d.stand_in_username)}</b></td>
+        <td><code>${esc(d.start_date)}</code> to <code>${esc(d.end_date)}</code></td>
+        <td>${esc(d.reason || '')}</td>
+        <td>${badge}</td>
+        <td class="muted" style="font-size:11px">${esc(d.created_by_full_name || d.created_by_username || '')}</td>
+        <td>${revokeBtn}</td>
+      </tr>`;
+    }))}
+  </div>`;
+
+  // Bind revoke buttons
+  qsa('[data-revoke]', c).forEach(btn => {
+    btn.onclick = () => {
+      const id = btn.dataset.revoke;
+      modal('End Hand-over Early', `
+        <p>Are you sure you want to revoke this delegation early?</p>
+        ${field('Reason for ending early', 'revoke_reason', { placeholder: 'e.g. Returned from leave early' })}
+        <div style="margin-top:12px;text-align:right"><button class="btn danger" id="btn-confirm-revoke">End delegation</button></div>
+      `, (body, close) => {
+        qs('#btn-confirm-revoke', body).onclick = async () => {
+          try {
+            const reason = qs('[name="revoke_reason"]', body).value.trim();
+            await api('/access/stand-ins/' + id + '/revoke', { method: 'POST', body: { reason } });
+            toast('Delegation ended');
+            close();
+            renderStandIns(c);
+            renderStandInBanner();
+          } catch (e) {
+            toast(e.message, 'err');
+          }
+        };
+      });
+    };
+  });
+
+  // Bind new delegation button
+  const newBtn = qs('#btn-new-standin', c);
+  if (newBtn) {
+    newBtn.onclick = () => {
+      const isAdm = isAdmin();
+      const granterOpts = activeUsers.map(u =>
+        `<option value="${u.id}" ${u.id === ME.id ? 'selected' : ''}>${esc(u.full_name || u.username)} (${esc(u.roles || '')})</option>`
+      ).join('');
+
+      const standInOpts = activeUsers.filter(u => u.id !== ME.id).map(u =>
+        `<option value="${u.id}">${esc(u.full_name || u.username)} (${esc(u.roles || '')})</option>`
+      ).join('');
+
+      const defaultEnd = new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10);
+
+      modal('Hand Over Approvals to Stand-in', `
+        <p class="muted" style="font-size:12px">Delegate your certifying and approving authority while away (maximum 30 days).</p>
+        ${isAdm ? `<div class="field"><label>Manager (Granter)</label><select name="granter_id" class="input">${granterOpts}</select></div>` : `<input type="hidden" name="granter_id" value="${ME.id}">`}
+        <div class="field"><label>Stand-in Person</label><select name="stand_in_id" class="input">${standInOpts}</select></div>
+        <div class="row" style="display:flex;gap:10px">
+          <div style="flex:1">${field('Start Date', 'start_date', { type: 'date', value: today })}</div>
+          <div style="flex:1">${field('End Date', 'end_date', { type: 'date', value: defaultEnd })}</div>
+        </div>
+        ${field('Reason', 'reason', { placeholder: 'e.g. Annual leave, Medical leave, Site visit' })}
+        <div style="margin-top:14px;text-align:right"><button class="btn primary" id="btn-save-standin">Create Hand-over</button></div>
+      `, (body, close) => {
+        qs('#btn-save-standin', body).onclick = async () => {
+          try {
+            const granter_id = isAdm ? qs('[name="granter_id"]', body).value : ME.id;
+            const stand_in_id = qs('[name="stand_in_id"]', body).value;
+            const start_date = qs('[name="start_date"]', body).value;
+            const end_date = qs('[name="end_date"]', body).value;
+            const reason = qs('[name="reason"]', body).value.trim();
+
+            await api('/access/stand-ins', {
+              method: 'POST',
+              body: { granter_id, stand_in_id, start_date, end_date, reason }
+            });
+            toast('Approvals handed over successfully');
+            close();
+            renderStandIns(c);
+            renderStandInBanner();
+          } catch (e) {
+            toast(e.message, 'err');
+          }
+        };
+      });
+    };
+  }
 }
 
 const lvlChip = (lvl) => {
