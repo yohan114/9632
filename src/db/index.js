@@ -1842,7 +1842,7 @@ function allowClosedMrn() {
   if (!/^CREATE TABLE tmp_mrn/.test(widened)) throw new Error('mrn: unexpected table definition - status not widened');
   const cols = db.prepare('PRAGMA table_info(mrn)').all().map((c) => `"${c.name}"`).join(', ');
   const indexes = db.prepare("SELECT sql FROM sqlite_master WHERE type='index' AND tbl_name='mrn' AND sql IS NOT NULL").all();
-  const triggers = db.prepare("SELECT sql FROM sqlite_master WHERE type='trigger' AND tbl_name='mrn'").all();
+  const triggers = db.prepare("SELECT name, sql FROM sqlite_master WHERE type='trigger' AND (tbl_name='mrn' OR sql LIKE '% mrn %' OR sql LIKE '%(mrn %' OR sql LIKE '%,mrn %' OR sql LIKE '%\nmrn %')").all();
   const seq = db.prepare("SELECT seq FROM sqlite_sequence WHERE name='mrn'").get();
   const dangling = () => db.prepare('PRAGMA foreign_key_check').all().filter((r) => r.parent === 'mrn' || r.table === 'mrn').length;
   const before = dangling();
@@ -1850,11 +1850,13 @@ function allowClosedMrn() {
   db.pragma('foreign_keys = OFF');
   try {
     db.transaction(() => {
+      for (const t of triggers) db.exec(`DROP TRIGGER IF EXISTS "${t.name}"`);
       db.exec(`${widened};
                INSERT INTO tmp_mrn (${cols}) SELECT ${cols} FROM mrn;
                DROP TABLE mrn;
                ALTER TABLE tmp_mrn RENAME TO mrn;`);
-      for (const x of [...indexes, ...triggers]) db.exec(x.sql);
+      for (const x of indexes) db.exec(x.sql);
+      for (const t of triggers) db.exec(t.sql);
       if (seq) db.prepare("UPDATE sqlite_sequence SET seq = MAX(seq, ?) WHERE name = 'mrn'").run(seq.seq);
       if (db.prepare('SELECT COUNT(*) n FROM mrn').get().n !== count || dangling() !== before) {
         throw new Error('mrn rebuild did not keep every record and reference - not applied');
