@@ -775,6 +775,7 @@ function migrate() {
   ownRecordsStep2();
   ownRecordsStep2c();
   supplyRoutesAndPipeline();
+  chainNumberAndShortDelivery();
 
   // Seed the RBAC matrix once (safe to require here — db exports are already set).
   // Sections split off a shared switch start at that switch's level (access plan, Part 1) — before
@@ -1728,6 +1729,105 @@ function supplyRoutesAndPipeline() {
   db.exec('CREATE INDEX IF NOT EXISTS idx_mtn_mrn ON mtn(mrn_id);');
   db.exec('CREATE INDEX IF NOT EXISTS idx_mtn_lines_mrn_line ON mtn_lines(mrn_line_id);');
   db.exec('CREATE INDEX IF NOT EXISTS idx_issues_mrn_line ON issues(mrn_line_id);');
+}
+
+function chainNumberAndShortDelivery() {
+  // Step 4b: Universal Chain Number columns across document lifecycle
+  ensureColumn('mrn', 'chain_no', 'TEXT');
+  ensureColumn('mtn', 'chain_no', 'TEXT');
+  ensureColumn('grn', 'chain_no', 'TEXT');
+  ensureColumn('grn_vouchers', 'chain_no', 'TEXT');
+  ensureColumn('min_notes', 'chain_no', 'TEXT');
+  ensureColumn('issues', 'chain_no', 'TEXT');
+
+  // Step 4b: Short delivery columns
+  ensureColumn('mrn_lines', 'qty_short', 'REAL DEFAULT 0');
+  ensureColumn('mrn_lines', 'discrepancy_reason', 'TEXT');
+  ensureColumn('mtn_lines', 'qty_received', 'REAL');
+  ensureColumn('mtn_lines', 'qty_short', 'REAL DEFAULT 0');
+  ensureColumn('mtn_lines', 'discrepancy_reason', 'TEXT');
+
+  // Step 4b: Delivery discrepancies table
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS delivery_discrepancies (
+      id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+      chain_no            TEXT,
+      mrn_id              INTEGER REFERENCES mrn(id),
+      mrn_line_id         INTEGER REFERENCES mrn_lines(id),
+      mtn_id              INTEGER REFERENCES mtn(id),
+      mtn_line_id         INTEGER REFERENCES mtn_lines(id),
+      grn_id              INTEGER REFERENCES grn(id),
+      item_description    TEXT,
+      qty_expected        REAL NOT NULL DEFAULT 0,
+      qty_received        REAL NOT NULL DEFAULT 0,
+      qty_short           REAL NOT NULL DEFAULT 0,
+      reason              TEXT NOT NULL,
+      status              TEXT NOT NULL DEFAULT 'open',
+      reported_by         TEXT,
+      reported_by_user    INTEGER REFERENCES users(id),
+      reported_at         TEXT DEFAULT (datetime('now')),
+      resolution_notes    TEXT,
+      resolved_by         TEXT,
+      resolved_at         TEXT,
+      created_at          TEXT DEFAULT CURRENT_TIMESTAMP,
+      updated_at          TEXT DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+
+  // Step 4b: Idempotency keys table
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS idempotency_keys (
+      id             INTEGER PRIMARY KEY AUTOINCREMENT,
+      key            TEXT NOT NULL UNIQUE,
+      user_id        INTEGER,
+      action         TEXT,
+      status         TEXT DEFAULT 'pending',
+      response_code  INTEGER,
+      response_body  TEXT,
+      created_at     TEXT DEFAULT CURRENT_TIMESTAMP,
+      updated_at     TEXT DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+
+  // Indexes on chain_no and foreign keys
+  db.exec('CREATE INDEX IF NOT EXISTS idx_mrn_chain_no ON mrn(chain_no);');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_mtn_chain_no ON mtn(chain_no);');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_grn_chain_no ON grn(chain_no);');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_grn_vouchers_chain_no ON grn_vouchers(chain_no);');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_min_notes_chain_no ON min_notes(chain_no);');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_issues_chain_no ON issues(chain_no);');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_discrepancies_chain_no ON delivery_discrepancies(chain_no);');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_discrepancies_status ON delivery_discrepancies(status);');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_discrepancies_mrn ON delivery_discrepancies(mrn_id);');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_idempotency_key ON idempotency_keys(key);');
+
+  // Backfill chain_no for existing MRNs if any have NULL
+  try {
+    const unchained = db.prepare(`SELECT id, req_date FROM mrn WHERE chain_no IS NULL ORDER BY id ASC`).all();
+    if (unchained.length > 0) {
+      const existing = db.prepare(`SELECT MAX(CAST(SUBSTR(chain_no, 10) AS INTEGER)) as max_seq FROM mrn WHERE chain_no LIKE 'CHN-%'`).get();
+      let maxSeq = (existing && existing.max_seq) ? Number(existing.max_seq) : 0;
+
+      const updMrn = db.prepare(`UPDATE mrn SET chain_no = ? WHERE id = ?`);
+      const updMtn = db.prepare(`UPDATE mtn SET chain_no = ? WHERE mrn_id = ? AND (chain_no IS NULL OR chain_no = '')`);
+      const updGrn = db.prepare(`UPDATE grn SET chain_no = ? WHERE mrn_id = ? AND (chain_no IS NULL OR chain_no = '')`);
+      const updGrnVoucher = db.prepare(`UPDATE grn_vouchers SET chain_no = ? WHERE id IN (SELECT voucher_id FROM grn WHERE mrn_id = ? AND voucher_id IS NOT NULL) AND (chain_no IS NULL OR chain_no = '')`);
+      const updIssues = db.prepare(`UPDATE issues SET chain_no = ? WHERE (mrn_line_id IN (SELECT id FROM mrn_lines WHERE mrn_id = ?) OR grn_id IN (SELECT id FROM grn WHERE mrn_id = ?)) AND (chain_no IS NULL OR chain_no = '')`);
+
+      for (const m of unchained) {
+        maxSeq++;
+        const y = (m.req_date && String(m.req_date).slice(0, 4)) || new Date().getFullYear();
+        const chainNo = `CHN-${y}-${String(maxSeq).padStart(5, '0')}`;
+        updMrn.run(chainNo, m.id);
+        updMtn.run(chainNo, m.id);
+        updGrn.run(chainNo, m.id);
+        updGrnVoucher.run(chainNo, m.id);
+        updIssues.run(chainNo, m.id);
+      }
+    }
+  } catch (e) {
+    // Graceful fallback if tables are empty or newly initialized
+  }
 }
 
 function ensureColumn(table, col, def) {

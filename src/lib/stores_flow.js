@@ -237,10 +237,11 @@ function monitor(user) {
                               WHERE i.source = 'request' AND i.kind IN ('tyre','battery')
                                 AND NOT EXISTS (SELECT 1 FROM tb_returns r WHERE r.issue_id = i.id)${store ? ' AND i.store_id = ?' : ''}`, ...sp);
   const disposals = require('./disposal').waiting(store);
+  const open_discrepancies = (get("SELECT COUNT(*) n FROM delivery_discrepancies WHERE status IN ('open', 'investigating')") || {}).n || 0;
 
   return {
     steps: counts, to_certify, to_approve, issued_today, received_today, transfers_week, low_stock, battery_warranty, stock_takes,
-    old_units_due, disposals,
+    old_units_due, disposals, open_discrepancies,
     store: store ? { id: store, label: stores.label(store) } : null,
   };
 }

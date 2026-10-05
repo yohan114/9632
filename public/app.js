@@ -36,11 +36,13 @@ async function api(path, opts = {}) {
   }
   const baseUrl = (window.WORKSHOPONE_API_BASE || '').replace(/\/+$/, '');
   const url = (baseUrl ? baseUrl : '') + '/api' + path;
+  const headers = { ...(opts.body ? { 'Content-Type': 'application/json' } : {}), 'X-WO-Idle-Ms': String(idleMs()), ...(opts.headers || {}) };
+  if (opts.idempotencyKey) {
+    headers['Idempotency-Key'] = opts.idempotencyKey;
+  }
   const res = await fetch(url, {
     method: opts.method || 'GET',
-    // How long since the last mouse / keyboard / touch input: the server counts only REAL use
-    // towards the idle timeout, not the refreshes this page makes on its own (src/lib/auth.js).
-    headers: { ...(opts.body ? { 'Content-Type': 'application/json' } : {}), 'X-WO-Idle-Ms': String(idleMs()) },
+    headers,
     body: opts.body ? JSON.stringify(opts.body) : undefined,
     credentials: 'include',
   });
@@ -5343,7 +5345,7 @@ routes.stores = async (c) => {
   if (tab === 'movements') tab = sp.get('sub') || 'issues';
   const GROUPS = {
     flow: { label: '🔄 REQUESTS → ISSUE',
-      subs: [['lines', '📋 Items'], ['mrn', 'Requests (MRN)'], ['grn', 'Receipts (GRN)'], ['issues', 'Issues'], ['workspace', '⚡ Receive & price many']] },
+      subs: [['lines', '📋 Items'], ['mrn', 'Requests (MRN)'], ['grn', 'Receipts (GRN)'], ['issues', 'Issues'], ['workspace', '⚡ Receive & price many'], ['discrepancies', '⚠️ Short Deliveries']] },
   };
   // Part 2: every kind of stock in one view, and the stock take.
   // Part 4: scrap and waste oil leave on a disposal note.
@@ -5460,6 +5462,7 @@ routes.stores = async (c) => {
           }
           return `<tr>
           <td><button class="sm" data-grn-detail="${g.id}" title="View Note & Signoff Details" style="font-weight:bold;cursor:pointer;background:none;border:none;color:var(--primary);padding:0;text-decoration:underline">${esc(g.grn_no || ('GRN-' + g.id))}</button>
+            ${g.chain_no ? `<br><span class="badge purple" style="font-size:10px">${esc(g.chain_no)}</span>` : ''}
             <div class="muted" style="font-size:11px">${fmtD(g.delivery_date)}</div></td>
           <td class="desc-col"><b>${esc(g.description || '')}</b>
             ${g.supplier ? `<div class="muted" style="font-size:11px">Supplier: ${esc(g.supplier)}</div>` : ''}
@@ -5719,6 +5722,8 @@ routes.stores = async (c) => {
     });
     if (qs('#nis', body)) qs('#nis', body).onclick = () => newIssueModal(load);
     await load();
+  } else if (tab === 'discrepancies') {
+    return storesDiscrepancies(body, sp);
   } else if (tab === 'mtn') {
     const canT = canDo('stores.mtn.edit');
     const CAP = 300;
@@ -5800,7 +5805,7 @@ routes.stores = async (c) => {
           if (canT) flowBtn += `<button class="sm" data-mtn="${t.id}">✎</button>`;
 
           return `<tr>
-          <td>${(t.item_count || 1) > 1 ? `<button class="sm" data-exp="${t.id}" title="Show the items on this transfer" style="padding:0 6px;margin-right:4px">▸</button>` : ''}<button class="sm" data-mtn-detail="${t.id}" title="View Transfer Note & Signoffs" style="font-weight:bold;cursor:pointer;background:none;border:none;color:var(--primary);padding:0;text-decoration:underline">${esc(t.mtn_no)}</button></td>
+          <td>${(t.item_count || 1) > 1 ? `<button class="sm" data-exp="${t.id}" title="Show the items on this transfer" style="padding:0 6px;margin-right:4px">▸</button>` : ''}<button class="sm" data-mtn-detail="${t.id}" title="View Transfer Note & Signoffs" style="font-weight:bold;cursor:pointer;background:none;border:none;color:var(--primary);padding:0;text-decoration:underline">${esc(t.mtn_no)}</button>${t.chain_no ? `<br><span class="badge purple" style="font-size:10px">${esc(t.chain_no)}</span>` : ''}</td>
           <td>${esc(String(t.txn_date || '').slice(0, 10))}</td>
           <td class="desc-col"><b>${esc(t.description || '')}</b>${t.moves_stock ? ' <span class="badge green" title="Moves stock from one store to another: out of the sending store when it is dispatched, into the receiving store when it is accepted">moves stock</span>' : ''}
             ${(t.item_count || 1) > 1 ? `<span class="badge blue" style="margin-left:4px">${t.item_count} items</span>` : ''}</td>
@@ -6054,6 +6059,7 @@ async function storesMonitor(body) {
     </div>
     <h3 style="margin:14px 0 6px">Watch</h3>
     <div class="grid">
+      ${card(m.open_discrepancies || 0, 'Short deliveries', '#/stores?tab=flow&sub=discrepancies', 'red', 'deficits remaining open')}
       ${card(m.transfers_week, 'Transfers (7 days)', '#/stores?tab=mtn')}
       ${card(m.low_stock, 'At or under reorder level', '#/stores?tab=stock', 'red')}
       ${card(m.battery_warranty, 'Battery warranties ending (60 days)', '#/stores?tab=stock&kind=battery&sub=register', 'amber')}
@@ -6366,6 +6372,149 @@ async function receivePriceTab(body) {
   await load();
 }
 
+async function storesDiscrepancies(body, sp) {
+  const cur = { status: sp.get('status') || 'open', q: sp.get('q') || '' };
+  const DISC_STATUSES = [
+    ['all', 'All'],
+    ['open', 'Open Shortages'],
+    ['investigating', 'Investigating'],
+    ['resolved', 'Resolved'],
+    ['written_off', 'Written Off'],
+  ];
+  if (!DISC_STATUSES.some(([k]) => k === cur.status)) cur.status = 'open';
+
+  body.innerHTML = `
+    <div class="toolbar">
+      <input id="dq" type="search" placeholder="Search chain / item / reason / user…" value="${esc(cur.q)}" style="max-width:320px">
+      <div class="spacer"></div>
+      <span class="muted" id="dcount"></span>
+    </div>
+    <div class="pill-row" style="margin:0 0 10px;flex-wrap:wrap;gap:6px">
+      ${DISC_STATUSES.map(([k, l]) => `<button class="sm ${k === cur.status ? 'primary' : ''}" data-dstatus="${k}">${esc(l)}</button>`).join('')}
+    </div>
+    <div id="dtable"><div class="muted">Loading shortages & discrepancies…</div></div>`;
+
+  const load = async () => {
+    const q = qs('#dq', body).value.trim();
+    const p = new URLSearchParams({ tab: 'flow', sub: 'discrepancies', status: cur.status });
+    if (q) p.set('q', q);
+    history.replaceState(null, '', '#/stores?' + p.toString());
+
+    let list = [];
+    try {
+      const qParam = (cur.status !== 'all' ? '&status=' + cur.status : '') + (q ? '&q=' + encodeURIComponent(q) : '');
+      list = await api('/stores/discrepancies?' + qParam);
+    } catch (e) {
+      qs('#dtable', body).innerHTML = `<div class="card err">${esc(e.message)}</div>`;
+      return;
+    }
+
+    qs('#dcount', body).textContent = `${list.length} record${list.length === 1 ? '' : 's'}`;
+
+    if (!list.length) {
+      qs('#dtable', body).innerHTML = '<div class="card"><p class="muted">No short delivery discrepancies found matching criteria.</p></div>';
+      return;
+    }
+
+    const rows = list.map((d) => {
+      const stBadge = {
+        open: '<span class="badge red">Open</span>',
+        investigating: '<span class="badge amber">Investigating</span>',
+        resolved: '<span class="badge green">✓ Resolved</span>',
+        written_off: '<span class="badge gray">Written Off</span>',
+      }[d.status] || `<span class="badge">${esc(d.status)}</span>`;
+
+      let docLink = '—';
+      if (d.mrn_id) docLink = `<a href="#/stores?tab=mrn&id=${d.mrn_id}">MRN #${d.mrn_id}</a>`;
+      else if (d.mtn_id) docLink = `<a href="#/stores?tab=mtn&id=${d.mtn_id}">MTN #${d.mtn_id}</a>`;
+      else if (d.grn_id) docLink = `GRN #${d.grn_id}`;
+
+      return `<tr>
+        <td><b>#${d.id}</b></td>
+        <td>${d.chain_no ? `<button class="badge purple" data-dtrace="${esc(d.chain_no)}" title="Click to trace full chain" style="cursor:pointer;border:none">${esc(d.chain_no)}</button>` : '<span class="muted">—</span>'}</td>
+        <td>${docLink}</td>
+        <td><b>${esc(d.item_description || 'Item')}</b></td>
+        <td class="num">${num(d.qty_expected)}</td>
+        <td class="num">${num(d.qty_received)}</td>
+        <td class="num" style="color:var(--red, #dc2626);font-weight:bold">-${num(d.qty_short)}</td>
+        <td>${esc(d.reason || '—')}</td>
+        <td>${esc(d.reported_by || '—')}<br><span class="muted" style="font-size:11px">${esc(String(d.reported_at || '').slice(0, 10))}</span></td>
+        <td>${stBadge}</td>
+        <td class="num" style="white-space:nowrap">
+          <button class="sm primary" data-dres="${d.id}">Status / Notes</button>
+          ${d.chain_no ? `<button class="sm" data-dtrace="${esc(d.chain_no)}" title="Trace">🔍</button>` : ''}
+        </td>
+      </tr>`;
+    });
+
+    qs('#dtable', body).innerHTML = tableWrap([
+      { label: '#' }, { label: 'Chain No' }, { label: 'Doc' }, { label: 'Item' },
+      { label: 'Expected', num: true }, { label: 'Received', num: true },
+      { label: 'Short', num: true }, { label: 'Reason' }, { label: 'Reported By' },
+      { label: 'Status' }, { label: 'Actions', num: true }
+    ], rows, { scroll: true });
+
+    qsa('[data-dtrace]', body).forEach((b) => {
+      b.onclick = () => pipelineTraceModal({ chain_no: b.dataset.dtrace });
+    });
+
+    qsa('[data-dres]', body).forEach((b) => {
+      const item = list.find((x) => String(x.id) === b.dataset.dres);
+      if (item) b.onclick = () => resolveDiscrepancyModal(item, load);
+    });
+  };
+
+  qsa('[data-dstatus]', body).forEach((b) => {
+    b.onclick = () => {
+      cur.status = b.dataset.dstatus;
+      qsa('[data-dstatus]', body).forEach((x) => x.classList.toggle('primary', x === b));
+      load();
+    };
+  });
+
+  let deb;
+  qs('#dq', body).oninput = () => { clearTimeout(deb); deb = setTimeout(load, 250); };
+  await load();
+}
+
+function resolveDiscrepancyModal(d, onDone) {
+  modal('Manage Delivery Discrepancy #' + d.id, `
+    <p class="muted">Item: <b>${esc(d.item_description || 'Item')}</b> · Short: <b style="color:var(--red, #dc2626)">${num(d.qty_short)}</b> units · Chain: <b>${esc(d.chain_no || '—')}</b></p>
+    ${field('Status *', 'status', {
+      type: 'select',
+      value: d.status || 'open',
+      options: [
+        ['open', 'Open (Awaiting stock / delivery)'],
+        ['investigating', 'Investigating (Under inquiry with driver/supplier)'],
+        ['resolved', 'Resolved (Remaining deficit delivered)'],
+        ['written_off', 'Written off (Deficit will not arrive)'],
+      ],
+    })}
+    ${field('Resolution Notes / Findings', 'resolution_notes', {
+      value: d.resolution_notes || '',
+      placeholder: 'Details on why shortage occurred and action taken...',
+    })}
+    <div style="margin-top:14px;text-align:right">
+      <button class="primary" id="dsub">Update Status</button>
+    </div>
+  `, (mbody, close) => {
+    qs('#dsub', mbody).onclick = async () => {
+      const f = formData(mbody);
+      try {
+        await api('/stores/discrepancies/' + d.id, {
+          method: 'PATCH',
+          body: { status: f.status, resolution_notes: f.resolution_notes },
+        });
+        toast('Discrepancy updated');
+        close();
+        onDone();
+      } catch (e) {
+        toast(e.message, 'err');
+      }
+    };
+  });
+}
+
 async function mrnList(body, params) {
   const cur = { step: params.get('step') || 'all_todo', q: params.get('q') || '', sort: params.get('sort') || 'date_desc' };
   const MRN_STEPS = [
@@ -6422,7 +6571,7 @@ async function mrnList(body, params) {
         actBtns += `<a class="btn sm" href="#/stores?tab=mrn&id=${m.id}">Open</a>`;
 
         return `<tr data-mrn="${m.id}" style="cursor:pointer${m.approval_status === 'rejected' ? ';background:rgba(196,57,44,.06)' : ''}">
-        <td><button class="sm" data-exp="${m.id}" title="Show the items on this MRN here" style="padding:0 6px;margin-right:4px">▸</button><a href="#/stores?tab=mrn&id=${m.id}"><b>${esc(m.mrn_no)}</b></a></td>
+        <td><button class="sm" data-exp="${m.id}" title="Show the items on this MRN here" style="padding:0 6px;margin-right:4px">▸</button><a href="#/stores?tab=mrn&id=${m.id}"><b>${esc(m.mrn_no)}</b></a>${m.chain_no ? `<br><span class="badge purple" style="font-size:10px">${esc(m.chain_no)}</span>` : ''}</td>
         <td>${esc((m.req_date || '').slice(0, 10))}</td>
         <td>${esc(idLabel(m) || '—')}</td>
         <td>${m.job_no ? `<a href="#/jobs/${m.job_id}">${esc(m.job_no)}</a>` : '<span class="muted">—</span>'}</td>
@@ -6626,7 +6775,7 @@ async function mrnDetail(body, id) {
     </div>
     <div class="card">
       <div class="toolbar" style="margin:0 0 6px">
-        <h3 style="margin:0">MRN ${esc(m.mrn_no)} ${receiptBadge(d.lines.reduce((s, l) => s + (Number(l.qty) || 0), 0), d.lines.reduce((s, l) => s + (Number(l.qty_received) || 0), 0))} ${aBadge}</h3>
+        <h3 style="margin:0">MRN ${esc(m.mrn_no)} ${m.chain_no ? `<span class="badge purple" style="font-size:12px;margin-left:6px" title="Universal Trace Chain">Chain: ${esc(m.chain_no)}</span>` : ''} ${receiptBadge(d.lines.reduce((s, l) => s + (Number(l.qty) || 0), 0), d.lines.reduce((s, l) => s + (Number(l.qty_received) || 0), 0))} ${aBadge}</h3>
         <div class="spacer"></div>
         ${canEditReq ? '<button class="sm" id="medit">✎ Edit request</button> <button class="sm" id="maddline">+ Add item</button>' : ''}
         ${adminAmend ? '<button class="sm danger" id="maddline" title="Admin only — the approval stands, and the item is marked as added after it">+ Add item (after approval)</button>' : ''}
@@ -6724,12 +6873,13 @@ function changeRouteModal(lineId, currentRoute, onDone) {
   });
 }
 
-// Full quantity pipeline progression modal for an MRN (Step 4a)
+// Full quantity pipeline progression modal for an MRN (Step 4a & 4b)
 async function mrnPipelineModal(mrnId) {
   try {
     const data = await api('/stores/mrn/' + mrnId + '/pipeline');
     const lines = data.pipeline || [];
-    modal('Material Pipeline — ' + esc(data.mrn.mrn_no), `
+    const chainBadge = data.mrn.chain_no ? ` · <span class="badge purple" style="font-size:12px">Chain: ${esc(data.mrn.chain_no)}</span>` : '';
+    modal('Material Pipeline — ' + esc(data.mrn.mrn_no) + chainBadge, `
       <p class="muted">Stage-by-stage quantity progression for <b>${esc(data.mrn.mrn_no)}</b> across all supply channels:</p>
       <div style="margin-top:12px;overflow-x:auto">
         <table style="width:100%;font-size:12.5px">
@@ -6741,6 +6891,7 @@ async function mrnPipelineModal(mrnId) {
               <th class="num">Approved</th>
               <th class="num">Sent (MTN)</th>
               <th class="num">Received</th>
+              <th class="num">Shortage</th>
               <th class="num">Issued</th>
               <th>Pipeline Stage</th>
             </tr>
@@ -6754,6 +6905,7 @@ async function mrnPipelineModal(mrnId) {
                 <td class="num">${num(l.qty_approved)}</td>
                 <td class="num">${num(l.qty_sent)}</td>
                 <td class="num">${num(l.qty_received)}</td>
+                <td class="num" style="${l.qty_short > 0 ? 'color:var(--red, #dc2626);font-weight:bold' : ''}">${l.qty_short > 0 ? `-${num(l.qty_short)}` : '0'}${l.discrepancy_reason ? `<br><small class="muted">${esc(l.discrepancy_reason)}</small>` : ''}</td>
                 <td class="num">${num(l.qty_issued)}</td>
                 <td><span class="badge ${l.route_badge || 'blue'}">${esc((l.pipeline_stage || '').replace(/_/g, ' '))}</span></td>
               </tr>
@@ -6767,6 +6919,175 @@ async function mrnPipelineModal(mrnId) {
     `, (b, close) => {
       qs('#pclose', b).onclick = close;
     });
+  } catch (e) {
+    toast(e.message, 'err');
+  }
+}
+
+// Universal Lifecycle Trace Modal (Step 4b)
+async function pipelineTraceModal(filter = {}) {
+  let qStr = '';
+  if (filter.mrn_id) qStr = 'mrn_id=' + encodeURIComponent(filter.mrn_id);
+  else if (filter.chain_no) qStr = 'chain_no=' + encodeURIComponent(filter.chain_no);
+  else if (filter.mtn_id) qStr = 'mtn_id=' + encodeURIComponent(filter.mtn_id);
+  else if (filter.grn_id) qStr = 'grn_id=' + encodeURIComponent(filter.grn_id);
+  else if (filter.job_id) qStr = 'job_id=' + encodeURIComponent(filter.job_id);
+
+  try {
+    const data = await api('/stores/pipeline/trace?' + qStr);
+    const chainNo = data.chain_no || '—';
+    const mrns = data.mrns || [];
+    const mtns = data.mtns || [];
+    const grns = data.grns || [];
+    const issues = data.issues || [];
+    const discrepancies = data.discrepancies || [];
+    const items = data.items || [];
+    const summary = data.summary || {};
+    const integrity = data.integrity || {};
+
+    const openDisc = discrepancies.filter((d) => d.status === 'open' || d.status === 'investigating');
+
+    const html = `
+      <div style="font-size:13px;margin-bottom:12px">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
+          <span style="font-size:16px;font-weight:600">Universal Trace Chain:</span>
+          <span class="badge purple" style="font-size:14px;padding:4px 10px">${esc(chainNo)}</span>
+          <div class="spacer"></div>
+          ${integrity.is_safe_to_close
+            ? '<span class="badge green">✓ Integrity Verified · Safe to Close</span>'
+            : '<span class="badge amber">⚠️ Open Items / Discrepancies Pending</span>'}
+        </div>
+        <p class="muted" style="margin:0 0 10px">End-to-end audit correlation from Site Request (MRN) → Workshop Transfer (MTN) → Site Receipt (GRN) → Vehicle Issue (MIN / Job Card).</p>
+      </div>
+
+      <!-- KPI Summary Cards -->
+      <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(130px, 1fr));gap:8px;margin-bottom:14px">
+        <div class="card" style="padding:8px 10px;text-align:center">
+          <div class="muted" style="font-size:11px">Requested Qty</div>
+          <div style="font-size:18px;font-weight:bold">${num(summary.total_qty_requested || 0)}</div>
+        </div>
+        <div class="card" style="padding:8px 10px;text-align:center">
+          <div class="muted" style="font-size:11px">Received Qty</div>
+          <div style="font-size:18px;font-weight:bold;color:var(--teal)">${num(summary.total_qty_received || 0)}</div>
+        </div>
+        <div class="card" style="padding:8px 10px;text-align:center">
+          <div class="muted" style="font-size:11px">Short Qty</div>
+          <div style="font-size:18px;font-weight:bold;color:${(summary.total_qty_short || 0) > 0 ? 'var(--red, #dc2626)' : 'inherit'}">${num(summary.total_qty_short || 0)}</div>
+        </div>
+        <div class="card" style="padding:8px 10px;text-align:center">
+          <div class="muted" style="font-size:11px">Issued Qty</div>
+          <div style="font-size:18px;font-weight:bold;color:var(--green)">${num(summary.total_qty_issued || 0)}</div>
+        </div>
+        <div class="card" style="padding:8px 10px;text-align:center">
+          <div class="muted" style="font-size:11px">On Shelf Qty</div>
+          <div style="font-size:18px;font-weight:bold;color:var(--amber)">${num(summary.total_qty_on_shelf || 0)}</div>
+        </div>
+      </div>
+
+      ${openDisc.length ? `
+        <div class="card" style="border-left:4px solid var(--red, #dc2626);margin-bottom:12px;background:rgba(220,38,38,0.04)">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+            <span style="font-size:15px;font-weight:600;color:var(--red, #dc2626)">⚠️ Delivery Shortages & Discrepancies (${openDisc.length} Open)</span>
+          </div>
+          <p class="muted" style="font-size:12px;margin:0 0 8px">Discrepancy records keep the line deficit open until investigated and resolved:</p>
+          <div style="overflow-x:auto">
+            <table style="width:100%;font-size:12px">
+              <thead>
+                <tr>
+                  <th>Item</th>
+                  <th class="num">Expected</th>
+                  <th class="num">Received</th>
+                  <th class="num">Shortage</th>
+                  <th>Reason</th>
+                  <th>Status</th>
+                  <th>Reported By</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${discrepancies.map((d) => `
+                  <tr>
+                    <td><b>${esc(d.item_description || 'Item')}</b></td>
+                    <td class="num">${num(d.qty_expected)}</td>
+                    <td class="num">${num(d.qty_received)}</td>
+                    <td class="num" style="color:var(--red, #dc2626);font-weight:bold">-${num(d.qty_short)}</td>
+                    <td>${esc(d.reason || '—')}</td>
+                    <td><span class="badge ${d.status === 'resolved' ? 'green' : (d.status === 'written_off' ? 'gray' : 'red')}">${esc(d.status)}</span></td>
+                    <td>${esc(d.reported_by || '—')} <span class="muted">(${esc(String(d.reported_at || '').slice(0, 10))})</span></td>
+                  </tr>
+                `).join('')}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ` : ''}
+
+      <!-- Linked Documents Flow -->
+      <div class="card" style="margin-bottom:12px">
+        <h4 style="margin:0 0 8px">Linked Chain Documents</h4>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(200px, 1fr));gap:8px;font-size:12px">
+          <div style="border:1px solid var(--border);padding:8px;border-radius:4px">
+            <b>1 · Requests (MRN)</b><br>
+            ${mrns.length ? mrns.map((m) => `<a href="#/stores?tab=mrn&id=${m.id}">#${esc(m.mrn_no)}</a> (${esc(m.status || 'open')})`).join(', ') : '<span class="muted">None</span>'}
+          </div>
+          <div style="border:1px solid var(--border);padding:8px;border-radius:4px">
+            <b>2 · Transfers (MTN)</b><br>
+            ${mtns.length ? mtns.map((t) => `<a href="#/stores?tab=mtn&id=${t.id}">#${esc(t.mtn_no)}</a> (${esc(t.status || 'draft')})`).join(', ') : '<span class="muted">None</span>'}
+          </div>
+          <div style="border:1px solid var(--border);padding:8px;border-radius:4px">
+            <b>3 · Receipts (GRN)</b><br>
+            ${grns.length ? grns.map((g) => `#${esc(g.grn_no || 'GRN-' + g.id)} (${num(g.qty_received)} nos)`).join(', ') : '<span class="muted">None</span>'}
+          </div>
+          <div style="border:1px solid var(--border);padding:8px;border-radius:4px">
+            <b>4 · Issues (MIN)</b><br>
+            ${issues.length ? issues.map((i) => `#${esc(i.id)} (${num(i.qty_issued)} nos)`).join(', ') : '<span class="muted">None</span>'}
+          </div>
+        </div>
+      </div>
+
+      <!-- Item Lifecycle Progression -->
+      <div class="card">
+        <h4 style="margin:0 0 8px">Consolidated Line Progression</h4>
+        <div style="overflow-x:auto">
+          <table style="width:100%;font-size:12px">
+            <thead>
+              <tr>
+                <th>Item</th>
+                <th>Source</th>
+                <th class="num">Requested</th>
+                <th class="num">Received</th>
+                <th class="num">Shortage</th>
+                <th class="num">Issued</th>
+                <th class="num">On Shelf</th>
+                <th>Stage</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${items.map((it) => `
+                <tr>
+                  <td><b>${esc(it.description)}</b></td>
+                  <td>${esc(it.purchase_source || 'Head Office')}</td>
+                  <td class="num">${num(it.qty_requested)}</td>
+                  <td class="num">${num(it.qty_received)}</td>
+                  <td class="num" style="${it.has_shortage ? 'color:var(--red, #dc2626);font-weight:bold' : ''}">${it.has_shortage ? `-${num(it.qty_short)}` : '0'}</td>
+                  <td class="num">${num(it.qty_issued)}</td>
+                  <td class="num">${num(it.qty_on_shelf)}</td>
+                  <td><span class="badge ${it.stage === 'FULLY_ISSUED' ? 'green' : (it.stage === 'READY_ON_SHELF' ? 'teal' : (it.has_shortage ? 'red' : 'blue'))}">${esc(it.stage.replace(/_/g, ' '))}</span></td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div style="margin-top:14px;text-align:right">
+        <button class="primary" id="tclose">Close</button>
+      </div>
+    `;
+
+    const bg = modal('Universal Trace — ' + esc(chainNo), html, (b, close) => {
+      qs('#tclose', b).onclick = close;
+    });
+    const box = qs('.modal', bg);
+    if (box) { box.style.width = 'min(980px, 96vw)'; box.style.maxWidth = 'none'; }
   } catch (e) {
     toast(e.message, 'err');
   }
@@ -6883,8 +7204,12 @@ function mrnSignModal(mrn, action, onDone) {
 
 function receiveModal(mrn, lineId, desc, remaining, onDone) {
   modal('Receive against MRN ' + mrn.mrn_no, `
-    <p class="muted">${esc(desc)} — remaining ${esc(remaining)}</p>
+    <p class="muted">${esc(desc)} — remaining <b>${esc(remaining)}</b>${mrn.chain_no ? ` · <span class="badge purple">Chain: ${esc(mrn.chain_no)}</span>` : ''}</p>
     ${field('Qty received *', 'qty', { type: 'number', value: remaining })}
+    <div id="short_reason_box" style="display:none;margin:8px 0;background:rgba(220,38,38,0.06);padding:10px;border-radius:4px;border:1px solid var(--border)">
+      <div style="font-size:12px;color:var(--red, #dc2626);font-weight:600;margin-bottom:6px">⚠️ Short delivery detected — deficit remains open in the pipeline:</div>
+      ${field('Reason for short delivery *', 'discrepancy_reason', { placeholder: 'e.g. Supplier out of stock / damaged in transit / partial consignment' })}
+    </div>
     ${field('Unit price (Rs)', 'unit_price', { type: 'number' })}
     ${field('Purchase source', 'purchase_source', { type: 'select', options: SOURCE_OPTS, value: mrn.purchase_source || '' })}
     ${field('Supplier', 'supplier')}
@@ -6893,18 +7218,45 @@ function receiveModal(mrn, lineId, desc, remaining, onDone) {
     ${field('Delivery date', 'delivery_date', { type: 'date' })}
     <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Record receipt</button></div>`,
     (mbody, close) => {
+      const qtyInp = qs('input[name="qty"]', mbody);
+      const shortBox = qs('#short_reason_box', mbody);
+      const remNum = Number(remaining) || 0;
+
+      const checkShort = () => {
+        const val = Number(qtyInp ? qtyInp.value : 0);
+        if (val < remNum && val >= 0) {
+          shortBox.style.display = 'block';
+        } else {
+          shortBox.style.display = 'none';
+        }
+      };
+      if (qtyInp) qtyInp.oninput = checkShort;
+      checkShort();
+
       qs('#s', mbody).onclick = async () => {
         const f = formData(mbody);
-        if (!f.qty || Number(f.qty) <= 0) return toast('Enter a quantity received', 'err');
+        const recQty = Number(f.qty);
+        if (!f.qty || recQty <= 0) return toast('Enter a quantity received', 'err');
+        const shortQty = Math.max(0, remNum - recQty);
+        if (shortQty > 0 && !String(f.discrepancy_reason || '').trim()) {
+          return toast('Please enter a reason for the short delivery', 'err');
+        }
+
         try {
           await api('/stores/grn', {
-            method: 'POST', body: {
+            method: 'POST',
+            body: {
               mrn_id: mrn.id, mrn_line_id: lineId, description: desc, qty: f.qty,
+              qty_expected: remNum, qty_short: shortQty,
+              discrepancy_reason: shortQty > 0 ? f.discrepancy_reason : undefined,
+              chain_no: mrn.chain_no || undefined,
               unit_price: f.unit_price, purchase_source: f.purchase_source || undefined,
               supplier: f.supplier, grn_no: f.grn_no, invoice_no: f.invoice_no, delivery_date: f.delivery_date,
-            }
+            },
+            idempotencyKey: 'grn_rec_' + mrn.id + '_' + lineId + '_' + Date.now(),
           });
-          toast('Receipt recorded'); close(); onDone();
+          toast(shortQty > 0 ? `Receipt recorded · ${shortQty} deficit remains open in pipeline` : 'Receipt recorded');
+          close(); onDone();
         } catch (e) { toast(e.message, 'err'); }
       };
     });
@@ -7201,6 +7553,7 @@ function mtnSignModal(t, action, onDone) {
              ${field('Arrival Remark (optional)', 'reason')}`
           : (action === 'accept'
             ? `${field('Accepted & Binned By (Storekeeper) *', 'accepted_by', { value: who })}
+               <div id="mtn_accept_lines" style="margin:10px 0"><div class="muted">Loading transfer line items…</div></div>
                <label style="display:flex;gap:8px;align-items:flex-start;font-weight:400"><input type="checkbox" id="confirm" style="width:auto;margin-top:3px"> I have inspected the received items and accepted them into destination stock.</label>
                <label>Storekeeper Signature</label>${signaturePadHtml('signpad')}
                ${field('Bin Location / Remark (optional)', 'reason')}`
@@ -7213,6 +7566,66 @@ function mtnSignModal(t, action, onDone) {
       pad = wireSignaturePad(body, 'signpad', null);
       (async () => { try { const s = (await api('/auth/signature')).signature; if (s) pad.load(s); } catch (e) {} })();
     }
+
+    if (action === 'accept') {
+      (async () => {
+        try {
+          const detail = await api('/stores/mtn/' + id);
+          const lines = detail.lines || [];
+          const container = qs('#mtn_accept_lines', body);
+          if (!container) return;
+          if (!lines.length) {
+            container.innerHTML = '<p class="muted">No individual lines listed on this transfer.</p>';
+            return;
+          }
+          container.innerHTML = `
+            <div style="font-weight:600;font-size:12.5px;margin-bottom:6px">Verify Quantities Received & Short Deliveries:</div>
+            <div style="overflow-x:auto;max-height:220px">
+              <table style="width:100%;font-size:12px;border:1px solid var(--border)">
+                <thead>
+                  <tr>
+                    <th>Item</th>
+                    <th class="num" style="width:70px">Sent</th>
+                    <th class="num" style="width:85px">Received</th>
+                    <th class="num" style="width:65px">Short</th>
+                    <th>Reason if Short</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${lines.map((l) => `
+                    <tr>
+                      <td><b>${esc(l.description)}</b></td>
+                      <td class="num">${num(l.qty)} ${esc(l.unit || '')}</td>
+                      <td class="num"><input type="number" step="any" min="0" max="${l.qty}" class="sm rec-input" data-line="${l.id}" data-max="${l.qty}" value="${l.qty}" style="width:70px;padding:3px 6px"></td>
+                      <td class="num"><span class="short-badge badge green" data-short-badge="${l.id}">0</span></td>
+                      <td><input type="text" class="sm reason-input" data-reason-line="${l.id}" placeholder="Reason if short delivery" style="width:100%;padding:3px 6px"></td>
+                    </tr>
+                  `).join('')}
+                </tbody>
+              </table>
+            </div>
+          `;
+          qsa('.rec-input', container).forEach((inp) => {
+            const updateShort = () => {
+              const max = parseFloat(inp.dataset.max) || 0;
+              const val = parseFloat(inp.value) || 0;
+              const diff = Math.max(0, Math.round((max - val) * 100) / 100);
+              const badge = qs(`[data-short-badge="${inp.dataset.line}"]`, container);
+              if (badge) {
+                badge.textContent = diff > 0 ? `-${num(diff)}` : '0';
+                badge.className = 'short-badge badge ' + (diff > 0 ? 'red' : 'green');
+              }
+            };
+            inp.oninput = updateShort;
+            updateShort();
+          });
+        } catch (e) {
+          const container = qs('#mtn_accept_lines', body);
+          if (container) container.innerHTML = `<p class="err">${esc(e.message)}</p>`;
+        }
+      })();
+    }
+
     qs('#s', body).onclick = async () => {
       const f = formData(body);
       if (action !== 'reject' && !qs('#confirm', body).checked) return toast('Tick the confirmation to e-sign', 'err');
@@ -7221,10 +7634,30 @@ function mtnSignModal(t, action, onDone) {
       const payload = { reason: f.reason, signature };
       if (action === 'dispatch') payload.driver_name = f.driver_name;
       if (action === 'receive') payload.received_by = f.received_by;
-      if (action === 'accept') payload.accepted_by = f.accepted_by;
+      if (action === 'accept') {
+        payload.accepted_by = f.accepted_by;
+        const recInputs = qsa('.rec-input', body);
+        if (recInputs.length) {
+          payload.receipts = Array.from(recInputs).map((inp) => {
+            const lid = inp.dataset.line;
+            const q = parseFloat(inp.value);
+            const rInp = qs(`[data-reason-line="${lid}"]`, body);
+            return {
+              mtn_line_id: Number(lid),
+              qty_received: isNaN(q) ? Number(inp.dataset.max) : q,
+              discrepancy_reason: rInp ? rInp.value.trim() : '',
+            };
+          });
+        }
+      }
       try {
-        await api(`/stores/mtn/${id}/${action}`, { method: 'POST', body: payload });
-        toast('MTN ' + (action === 'reject' ? 'rejected' : action + ' confirmed · e-signed'));
+        const idempKey = 'mtn_' + action + '_' + id + '_' + Date.now();
+        const res = await api(`/stores/mtn/${id}/${action}`, { method: 'POST', body: payload, idempotencyKey: idempKey });
+        if (action === 'accept' && res && res.discrepancies && res.discrepancies.length) {
+          toast(`MTN accepted · ${res.discrepancies.length} short delivery discrepancy logged`);
+        } else {
+          toast('MTN ' + (action === 'reject' ? 'rejected' : action + ' confirmed · e-signed'));
+        }
         close(); if (onDone) onDone();
       } catch (e) { toast(e.message, 'err'); }
     };
@@ -7549,7 +7982,8 @@ async function newMrnModal(opts = {}) {
       };
       if (!payload.lines.length) return toast('Add at least one item', 'err');
       try {
-        const r = await api('/stores/mrn', { method: 'POST', body: payload });
+        const idempKey = 'mrn_create_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7);
+        const r = await api('/stores/mrn', { method: 'POST', body: payload, idempotencyKey: idempKey });
         close();
         if (r.unresolved) toast('MRN ' + r.mrn.mrn_no + ' created — vehicle "' + r.unresolved.raw + '" queued in the Alias Queue', 'err');
         else toast('MRN ' + r.mrn.mrn_no + ' created');
@@ -14499,7 +14933,8 @@ async function mtnModal(existing, onDone) {
         };
         try {
           if (!existing) {
-            await api('/stores/mtn', { method: 'POST', body: { ...head, lines: items } });
+            const idempKey = 'mtn_create_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7);
+            await api('/stores/mtn', { method: 'POST', body: { ...head, lines: items }, idempotencyKey: idempKey });
           } else {
             await api('/stores/mtn/' + existing.id, { method: 'PATCH', body: head });
             // Additions before removals. The server refuses to empty a note, so swapping the only

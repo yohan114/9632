@@ -176,6 +176,7 @@ CREATE TABLE IF NOT EXISTS mrn (
   job_id        INTEGER REFERENCES job_cards(id),
   purpose       TEXT,
   requested_by  TEXT,
+  chain_no      TEXT,
   status        TEXT NOT NULL DEFAULT 'open'
                   CHECK (status IN ('open','partially_received','received','cancelled')),
   created_at    TEXT NOT NULL DEFAULT (datetime('now'))
@@ -194,6 +195,8 @@ CREATE TABLE IF NOT EXISTS mrn_lines (
   qty_approved  REAL NOT NULL DEFAULT 0,
   qty_sent      REAL NOT NULL DEFAULT 0,
   qty_issued    REAL NOT NULL DEFAULT 0,
+  qty_short     REAL NOT NULL DEFAULT 0,
+  discrepancy_reason TEXT,
   supply_route  TEXT DEFAULT 'main_store',   -- main_store | head_office | local_purchase | direct_delivery
   auto_mtn_id   INTEGER REFERENCES mtn(id),
   route_assigned_by TEXT,
@@ -222,6 +225,7 @@ CREATE INDEX IF NOT EXISTS idx_mrn_line_pri_hist ON mrn_line_priority_history(mr
 CREATE TABLE IF NOT EXISTS grn_vouchers (
   id               INTEGER PRIMARY KEY AUTOINCREMENT,
   grn_no           TEXT NOT NULL UNIQUE,
+  chain_no         TEXT,
   received_date    TEXT NOT NULL DEFAULT (date('now')),
   supplier         TEXT,
   project_site     TEXT,
@@ -262,6 +266,7 @@ CREATE TABLE IF NOT EXISTS grn (
   id             INTEGER PRIMARY KEY AUTOINCREMENT,
   voucher_id     INTEGER REFERENCES grn_vouchers(id),
   grn_no         TEXT,
+  chain_no       TEXT,
   mrn_id         INTEGER REFERENCES mrn(id),
   mrn_line_id    INTEGER REFERENCES mrn_lines(id),
   store_item_id  INTEGER REFERENCES store_items(id),
@@ -388,6 +393,7 @@ CREATE INDEX IF NOT EXISTS idx_grn_no ON grn(grn_no);
 CREATE TABLE IF NOT EXISTS min_notes (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
   min_no        TEXT NOT NULL UNIQUE,
+  chain_no      TEXT,
   issue_date    TEXT NOT NULL DEFAULT (date('now')),
   project_id    INTEGER REFERENCES projects(id),
   asset_id      INTEGER REFERENCES assets(id),
@@ -433,6 +439,7 @@ CREATE TABLE IF NOT EXISTS issues (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
   min_id        INTEGER REFERENCES min_notes(id),
   min_no        TEXT,
+  chain_no      TEXT,
   asset_id      INTEGER REFERENCES assets(id),
   job_id        INTEGER REFERENCES job_cards(id),
   store_item_id INTEGER REFERENCES store_items(id),
@@ -460,6 +467,7 @@ CREATE INDEX IF NOT EXISTS idx_issues_job ON issues(job_id);
 CREATE TABLE IF NOT EXISTS mtn (
   id             INTEGER PRIMARY KEY AUTOINCREMENT,
   mtn_no         TEXT NOT NULL UNIQUE,        -- continues existing seq (~57xxx)
+  chain_no       TEXT,
   mr_no          TEXT,                        -- Material Requisition reference
   txn_date       TEXT NOT NULL DEFAULT (date('now')),
   store_item_id  INTEGER REFERENCES store_items(id),
@@ -526,6 +534,9 @@ CREATE TABLE IF NOT EXISTS mtn_lines (
   store_item_id  INTEGER REFERENCES store_items(id),
   description    TEXT,
   qty            REAL NOT NULL DEFAULT 0,
+  qty_received   REAL,
+  qty_short      REAL NOT NULL DEFAULT 0,
+  discrepancy_reason TEXT,
   unit           TEXT,
   category       TEXT,
   category_id    INTEGER REFERENCES item_categories(id),
@@ -542,6 +553,47 @@ CREATE TABLE IF NOT EXISTS mtn_lines (
   created_at     TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_mtn_lines_mtn ON mtn_lines(mtn_id);
+
+-- Step 4b: Delivery Discrepancies and Short Deliveries
+CREATE TABLE IF NOT EXISTS delivery_discrepancies (
+  id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+  chain_no            TEXT,
+  mrn_id              INTEGER REFERENCES mrn(id),
+  mrn_line_id         INTEGER REFERENCES mrn_lines(id),
+  mtn_id              INTEGER REFERENCES mtn(id),
+  mtn_line_id         INTEGER REFERENCES mtn_lines(id),
+  grn_id              INTEGER REFERENCES grn(id),
+  item_description    TEXT,
+  qty_expected        REAL NOT NULL DEFAULT 0,
+  qty_received        REAL NOT NULL DEFAULT 0,
+  qty_short           REAL NOT NULL DEFAULT 0,
+  reason              TEXT NOT NULL,
+  status              TEXT NOT NULL DEFAULT 'open',
+  reported_by         TEXT,
+  reported_by_user    INTEGER REFERENCES users(id),
+  reported_at         TEXT DEFAULT (datetime('now')),
+  resolution_notes    TEXT,
+  resolved_by         TEXT,
+  resolved_at         TEXT,
+  created_at          TEXT DEFAULT CURRENT_TIMESTAMP,
+  updated_at          TEXT DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_discrepancies_status ON delivery_discrepancies(status);
+CREATE INDEX IF NOT EXISTS idx_discrepancies_mrn ON delivery_discrepancies(mrn_id);
+
+-- Step 4b: Idempotency keys to prevent duplicate operations across stores workflows
+CREATE TABLE IF NOT EXISTS idempotency_keys (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  key            TEXT NOT NULL UNIQUE,
+  user_id        INTEGER,
+  action         TEXT,
+  status         TEXT DEFAULT 'pending',
+  response_code  INTEGER,
+  response_body  TEXT,
+  created_at     TEXT DEFAULT CURRENT_TIMESTAMP,
+  updated_at     TEXT DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_idempotency_key ON idempotency_keys(key);
 
 -- Running-balance ledger for general consumables.
 CREATE TABLE IF NOT EXISTS general_item_txns (

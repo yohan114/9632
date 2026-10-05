@@ -34,6 +34,7 @@ const {
 } = require('../lib/stores_documents');
 const { sendPdf } = require('../lib/pdf_generator');
 const supplyRoutes = require('../lib/supply_routes');
+const chainPipeline = require('../lib/chain_pipeline');
 
 // One cell's worth of "when did this arrive", for a sheet or a printout. A spreadsheet has no
 // tooltip, so whatever the hover would have said has to be in the cell itself.
@@ -188,6 +189,7 @@ router.get('/numbers', asyncHandler((_req, res) => res.json({
   next_mtn: nextMtnNo(),
   next_min: nextMinNo(),
   next_grn: nextGrnVoucherNo(),
+  next_chain: chainPipeline.nextChainNo(),
 })));
 
 // ---- store items ----------------------------------------------------------
@@ -812,7 +814,7 @@ router.get('/mrn/counts', asyncHandler((req, res) => {
   res.json({ all_todo: allTodo, to_certify: toCertify, to_approve: toApprove, to_receive: toReceive, partial, done, rejected, all: total });
 }));
 
-router.post('/mrn', requireCap('stores.mrn.create'), asyncHandler((req, res) => {
+router.post('/mrn', requireCap('stores.mrn.create'), chainPipeline.idempotencyGuard('mrn_create'), asyncHandler((req, res) => {
   const b = req.body;
   // Request target: 'general' (store stock) or 'vehicle'. The VEHICLE is authoritative —
   // any vehicle can be requested for, whether or not it has a job card open. A job card
@@ -846,17 +848,22 @@ router.post('/mrn', requireCap('stores.mrn.create'), asyncHandler((req, res) => 
   }
   const source = b.purchase_source || null;
   if (source && !PURCHASE_SOURCES.includes(source)) return res.status(400).json({ error: 'Invalid purchase_source' });
+  // Universal Chain Number (CHN-YYYY-XXXXX) stamped on request origin
+  const reqDate = b.req_date || new Date().toISOString().slice(0, 10);
+  const chainNo = String(b.chain_no || '').trim() || chainPipeline.nextChainNo(reqDate.slice(0, 4));
+
   // Record the requesting storekeeper (also marks this as a live, in-flow MRN vs imported history).
   const ru = get('SELECT full_name, username FROM users WHERE id = ?', req.user.id);
   const reqBy = String(b.requested_by || '').trim() || (ru ? (ru.full_name || ru.username) : null);
   const result = tx(() => {
     const info = run(
-      `INSERT INTO mrn (mrn_no, req_date, asset_id, project_id, job_id, purpose, requested_by, purchase_source, required_date, request_type, workshop_id, raised_by_user)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      mrnNo, b.req_date || new Date().toISOString().slice(0, 10), assetId || null,
+      `INSERT INTO mrn (mrn_no, req_date, asset_id, project_id, job_id, purpose, requested_by, purchase_source, required_date, request_type, workshop_id, raised_by_user, chain_no)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      mrnNo, reqDate, assetId || null,
       toInt(b.project_id), jobId, b.purpose || null, reqBy, source, b.required_date || null, requestType,
       require('../lib/workshops').forRequest(req.user, jobId),
-      req.user.id   // Step 3a: who raised it — they do not certify or approve it
+      req.user.id,   // Step 3a: who raised it — they do not certify or approve it
+      chainNo
     );
     const mrnId = info.lastInsertRowid;
     const lines = Array.isArray(b.lines) ? b.lines : [];
@@ -881,11 +888,12 @@ router.post('/mrn', requireCap('stores.mrn.create'), asyncHandler((req, res) => 
     if (uSig && uSig.signature) run('UPDATE mrn SET requested_sig = ? WHERE id = ?', uSig.signature, mrnId);
     return mrnId;
   });
-  audit.record({ userId: req.user.id, entity: 'mrn', entityId: result, action: 'create', after: { mrn_no: mrnNo } });
-  emitter.emit('request_updated', { mrn_id: result, mrn_no: mrnNo, action: 'create', approval_status: 'requested' });
+  audit.record({ userId: req.user.id, entity: 'mrn', entityId: result, action: 'create', after: { mrn_no: mrnNo, chain_no: chainNo } });
+  emitter.emit('request_updated', { mrn_id: result, mrn_no: mrnNo, chain_no: chainNo, action: 'create', approval_status: 'requested' });
   res.status(201).json({
     mrn: get('SELECT * FROM mrn WHERE id = ?', result),
     lines: all('SELECT * FROM mrn_lines WHERE mrn_id = ?', result),
+    chain_no: chainNo,
     unresolved,
   });
 }));
@@ -1628,7 +1636,7 @@ function tbGrnAllowed(user, mrnLineId) {
   return permissions.meets(permissions.levelFor(user, 'tb_grn'), 'edit');
 }
 
-router.post('/grn', requireCap('stores.grn.receive'), asyncHandler((req, res) => {
+router.post('/grn', requireCap('stores.grn.receive'), chainPipeline.idempotencyGuard('grn_receive'), asyncHandler((req, res) => {
   const b = req.body;
   require_(b, ['qty']);
   const source = b.purchase_source;
@@ -1648,30 +1656,61 @@ router.post('/grn', requireCap('stores.grn.receive'), asyncHandler((req, res) =>
     const no = (toInt(b.mrn_line_id) && lineRefusal(req.user, toInt(b.mrn_line_id))) || (toInt(b.mrn_id) && scope.mrnRefusal(req.user, toInt(b.mrn_id)));
     if (no) return res.status(403).json(no);
   }
+
+  let chainNo = b.chain_no ? String(b.chain_no).trim() : null;
+  const mrnId = toInt(b.mrn_id);
+  const mrnLineId = toInt(b.mrn_line_id);
+  if (!chainNo && mrnId) {
+    const mrn = get('SELECT chain_no FROM mrn WHERE id = ?', mrnId);
+    if (mrn && mrn.chain_no) chainNo = mrn.chain_no;
+  }
+  if (!chainNo && mrnLineId) {
+    const ml = get('SELECT m.chain_no FROM mrn_lines ml JOIN mrn m ON m.id = ml.mrn_id WHERE ml.id = ?', mrnLineId);
+    if (ml && ml.chain_no) chainNo = ml.chain_no;
+  }
+
   const result = tx(() => {
     const info = run(
-      `INSERT INTO grn (status, grn_no, grn_date, mrn_id, mrn_line_id, store_item_id, description, qty, unit_price, supplier, invoice_no, invoice_date, delivery_date, purchase_source, purchase_source_norm)
-       VALUES ('pending_approval', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      b.grn_no || null, b.grn_date || null, toInt(b.mrn_id), toInt(b.mrn_line_id), toInt(b.store_item_id), b.description || null,
+      `INSERT INTO grn (status, grn_no, grn_date, mrn_id, mrn_line_id, store_item_id, description, qty, unit_price, supplier, invoice_no, invoice_date, delivery_date, purchase_source, purchase_source_norm, chain_no)
+       VALUES ('pending_approval', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      b.grn_no || null, b.grn_date || null, mrnId, mrnLineId, toInt(b.store_item_id), b.description || null,
       toNum(b.qty, 0), b.unit_price === undefined || b.unit_price === '' ? null : toNum(b.unit_price),
       b.supplier || null, b.invoice_no || null, b.invoice_date || null,
-      b.delivery_date || new Date().toISOString().slice(0, 10), source || null, purchaseSourceNorm(source)
+      b.delivery_date || new Date().toISOString().slice(0, 10), source || null, purchaseSourceNorm(source),
+      chainNo
     );
-    if (b.mrn_line_id) {
-      run('UPDATE mrn_lines SET qty_received = qty_received + ? WHERE id = ?', toNum(b.qty, 0), toInt(b.mrn_line_id));
-      const line = get('SELECT mrn_id FROM mrn_lines WHERE id = ?', toInt(b.mrn_line_id));
+    if (mrnLineId) {
+      run('UPDATE mrn_lines SET qty_received = qty_received + ? WHERE id = ?', toNum(b.qty, 0), mrnLineId);
+      const line = get('SELECT mrn_id FROM mrn_lines WHERE id = ?', mrnLineId);
       if (line) {
         const open = get('SELECT COUNT(*) c FROM mrn_lines WHERE mrn_id = ? AND qty_received < qty', line.mrn_id);
         const any = get('SELECT COUNT(*) c FROM mrn_lines WHERE mrn_id = ? AND qty_received > 0', line.mrn_id);
         const status = open.c === 0 ? 'received' : (any.c > 0 ? 'partially_received' : 'open');
         run('UPDATE mrn SET status = ? WHERE id = ?', status, line.mrn_id);
       }
+
+      // Check for short delivery on receipt
+      const recQty = toNum(b.qty, 0);
+      const expQty = b.qty_expected ? toNum(b.qty_expected, 0) : 0;
+      const shortQty = b.qty_short ? toNum(b.qty_short, 0) : (expQty > recQty ? expQty - recQty : 0);
+      if (shortQty > 0) {
+        chainPipeline.recordDeliveryDiscrepancy({
+          chain_no: chainNo,
+          mrn_id: mrnId,
+          mrn_line_id: mrnLineId,
+          grn_id: info.lastInsertRowid,
+          item_description: b.description,
+          qty_expected: expQty || (recQty + shortQty),
+          qty_received: recQty,
+          reason: b.discrepancy_reason || b.reason || 'Short delivery on receipt',
+        }, req.user);
+      }
     }
     // Stores plan, Part 3: on the shelf now, not at the next rebuild.
     stock.sync({ grn: [info.lastInsertRowid] });
     return info.lastInsertRowid;
   });
-  audit.record({ userId: req.user.id, entity: 'grn', entityId: result, action: 'create' });
+  audit.record({ userId: req.user.id, entity: 'grn', entityId: result, action: 'create', after: { chain_no: chainNo } });
   res.status(201).json(get('SELECT * FROM grn WHERE id = ?', result));
 }));
 
@@ -1761,7 +1800,7 @@ router.get('/grn-vouchers/:id', guardVoucher, asyncHandler((req, res) => {
   res.json({ voucher, lines, approvals });
 }));
 
-router.post('/grn-vouchers', requireCap('stores.grn.receive'), asyncHandler((req, res) => {
+router.post('/grn-vouchers', requireCap('stores.grn.receive'), chainPipeline.idempotencyGuard('grn_voucher_create'), asyncHandler((req, res) => {
   const b = req.body || {};
   let grnNo = clean(b.grn_no);
   if (!grnNo) grnNo = 'GRN-' + nextGrnVoucherNo();
@@ -1789,13 +1828,28 @@ router.post('/grn-vouchers', requireCap('stores.grn.receive'), asyncHandler((req
   }
   for (const gid of grnIds) { const no = receiptRefusal(req.user, gid); if (no) return res.status(403).json(no); }
 
+  // Inherit or resolve chain_no
+  let chainNo = clean(b.chain_no);
+  if (!chainNo) {
+    for (const l of lines) {
+      if (l.mrn_id) {
+        const m = get('SELECT chain_no FROM mrn WHERE id = ?', toInt(l.mrn_id));
+        if (m && m.chain_no) { chainNo = m.chain_no; break; }
+      }
+      if (l.mrn_line_id) {
+        const ml = get('SELECT m.chain_no FROM mrn_lines ml JOIN mrn m ON m.id = ml.mrn_id WHERE ml.id = ?', toInt(l.mrn_line_id));
+        if (ml && ml.chain_no) { chainNo = ml.chain_no; break; }
+      }
+    }
+  }
+
   const { voucherId, createdIds } = tx(() => {
     const info = run(
       `INSERT INTO grn_vouchers (grn_no, received_date, supplier, project_site, po_no, invoice_no, delivery_note_no, bin_card_page,
-                                 prepared_by, prepared_sig, prepared_at, prepared_designation, status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?, 'pending_approval')`,
+                                 prepared_by, prepared_sig, prepared_at, prepared_designation, status, chain_no)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?, 'pending_approval', ?)`,
       grnNo, receivedDate, supplier, projectSite, poNo, invoiceNo, deliveryNoteNo, binCardPage,
-      preparedBy, preparedSig, preparedDesig
+      preparedBy, preparedSig, preparedDesig, chainNo
     );
     const vid = info.lastInsertRowid;
 
@@ -1822,12 +1876,12 @@ router.post('/grn-vouchers', requireCap('stores.grn.receive'), asyncHandler((req
           `INSERT INTO grn (voucher_id, status, grn_no, grn_date, mrn_id, mrn_line_id, store_item_id, description,
                             qty, unit, unit_price, supplier, invoice_no, invoice_date, delivery_date,
                             po_no, delivery_note_no, bin_card_page, prepared_by, prepared_sig, prepared_at,
-                            purchase_source, purchase_source_norm, project_site)
-           VALUES (?, 'pending_approval', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?, ?, ?)`,
+                            purchase_source, purchase_source_norm, project_site, chain_no)
+           VALUES (?, 'pending_approval', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?, ?, ?, ?)`,
           vid, grnNo, receivedDate, mrnId || null, mrnLineId || null, storeItemId || null, desc,
           qty, unit, price, supplier, invoiceNo, b.invoice_date || null, receivedDate,
           poNo, deliveryNoteNo, binCardPage, preparedBy, preparedSig,
-          source || null, purchaseSourceNorm(source), projectSite
+          source || null, purchaseSourceNorm(source), projectSite, chainNo
         );
         newIds.push(res.lastInsertRowid);
 
@@ -1839,6 +1893,22 @@ router.post('/grn-vouchers', requireCap('stores.grn.receive'), asyncHandler((req
             const any = get('SELECT COUNT(*) c FROM mrn_lines WHERE mrn_id = ? AND qty_received > 0', lrec.mrn_id);
             const status = open.c === 0 ? 'received' : (any.c > 0 ? 'partially_received' : 'open');
             run('UPDATE mrn SET status = ? WHERE id = ?', status, lrec.mrn_id);
+          }
+
+          // Discrepancy / shortage check
+          const expQty = line.qty_expected ? toNum(line.qty_expected, 0) : 0;
+          const shortQty = line.qty_short ? toNum(line.qty_short, 0) : (expQty > qty ? expQty - qty : 0);
+          if (shortQty > 0) {
+            chainPipeline.recordDeliveryDiscrepancy({
+              chain_no: chainNo,
+              mrn_id: mrnId,
+              mrn_line_id: mrnLineId,
+              grn_id: res.lastInsertRowid,
+              item_description: desc,
+              qty_expected: expQty || (qty + shortQty),
+              qty_received: qty,
+              reason: line.discrepancy_reason || line.reason || 'Short delivery on voucher receipt',
+            }, req.user);
           }
         }
       }
@@ -1853,6 +1923,9 @@ router.post('/grn-vouchers', requireCap('stores.grn.receive'), asyncHandler((req
          WHERE id IN (${grnIds.map(() => '?').join(',')})`,
         vid, grnNo, binCardPage, supplier, poNo, deliveryNoteNo, preparedBy, ...grnIds
       );
+      if (chainNo) {
+        run(`UPDATE grn SET chain_no = ? WHERE id IN (${grnIds.map(() => '?').join(',')}) AND (chain_no IS NULL OR chain_no = '')`, chainNo, ...grnIds);
+      }
     }
 
     const allAffected = newIds.concat(grnIds);
@@ -1862,9 +1935,9 @@ router.post('/grn-vouchers', requireCap('stores.grn.receive'), asyncHandler((req
     return { voucherId: vid, createdIds: newIds };
   });
 
-  audit.record({ userId: req.user.id, entity: 'grn_vouchers', entityId: voucherId, action: 'create', after: { grn_no: grnNo, grn_ids: grnIds, lines_created: createdIds.length, status: 'pending_approval' } });
-  emitter.emit('stock_updated', { grn_no: grnNo, action: 'create', status: 'pending_approval' });
-  res.status(201).json({ id: voucherId, grn_no: grnNo, linked_items: grnIds.length + createdIds.length, status: 'pending_approval' });
+  audit.record({ userId: req.user.id, entity: 'grn_vouchers', entityId: voucherId, action: 'create', after: { grn_no: grnNo, chain_no: chainNo, grn_ids: grnIds, lines_created: createdIds.length, status: 'pending_approval' } });
+  emitter.emit('stock_updated', { grn_no: grnNo, chain_no: chainNo, action: 'create', status: 'pending_approval' });
+  res.status(201).json({ id: voucherId, grn_no: grnNo, chain_no: chainNo, linked_items: grnIds.length + createdIds.length, status: 'pending_approval' });
 }));
 
 // GRN Approval Endpoint
@@ -2241,15 +2314,60 @@ router.get('/mrn/:id/pipeline', requireAuth, asyncHandler((req, res) => {
   res.json({ mrn, pipeline: supplyRoutes.getMrnPipeline(id) });
 }));
 
+// ---- Delivery Discrepancies & Short Deliveries Endpoints (Step 4b) ---------
+router.get('/discrepancies', requireAuth, asyncHandler((req, res) => {
+  res.json(chainPipeline.listDiscrepancies(req.query));
+}));
+
+router.get('/discrepancies/:id', requireAuth, asyncHandler((req, res) => {
+  const d = get(`
+    SELECT d.*, m.mrn_no, m.req_date, t.mtn_no
+      FROM delivery_discrepancies d
+      LEFT JOIN mrn m ON m.id = d.mrn_id
+      LEFT JOIN mtn t ON t.id = d.mtn_id
+     WHERE d.id = ?
+  `, toInt(req.params.id));
+  if (!d) return res.status(404).json({ error: 'Delivery discrepancy not found' });
+  res.json(d);
+}));
+
+router.patch('/discrepancies/:id', requireCap('stores.grn.receive'), asyncHandler((req, res) => {
+  const updated = chainPipeline.resolveDiscrepancy(req.params.id, req.body, req.user);
+  res.json(updated);
+}));
+
 // ---- Material Pipeline Full Lifecycle Traceability -------------------------
-// Reconstructs the complete lifecycle across Job Card ➔ MRN ➔ GRN ➔ Shelf ➔ Issue ➔ Costing.
-// Can start from job_id, job_no, mrn_id, mrn_no, grn_id, grn_no, or issue_id.
+// Reconstructs the complete lifecycle across Job Card ➔ MRN ➔ MTN ➔ GRN ➔ Shelf ➔ Issue ➔ Costing.
+// Can start from chain_no, job_id, job_no, mrn_id, mrn_no, mtn_id, mtn_no, grn_id, grn_no, or issue_id.
 router.get('/pipeline/trace', requireAuth, asyncHandler((req, res) => {
   const p = req.query || {};
   let jobId = toInt(p.job_id) || null;
   let mrnId = toInt(p.mrn_id) || null;
+  let mtnId = toInt(p.mtn_id) || null;
   let grnId = toInt(p.grn_id) || null;
   let issueId = toInt(p.issue_id) || null;
+  let chainNo = p.chain_no ? String(p.chain_no).trim() : null;
+
+  if (!chainNo && p.q && String(p.q).trim().startsWith('CHN-')) {
+    chainNo = String(p.q).trim();
+  }
+
+  if (chainNo) {
+    const m = get('SELECT id FROM mrn WHERE chain_no = ?', chainNo);
+    if (m) mrnId = m.id;
+    else {
+      const t = get('SELECT id, mrn_id FROM mtn WHERE chain_no = ?', chainNo);
+      if (t) { mtnId = t.id; if (t.mrn_id) mrnId = t.mrn_id; }
+      else {
+        const g = get('SELECT id, mrn_id FROM grn WHERE chain_no = ?', chainNo);
+        if (g) { grnId = g.id; if (g.mrn_id) mrnId = g.mrn_id; }
+        else {
+          const i = get('SELECT id, grn_id FROM issues WHERE chain_no = ?', chainNo);
+          if (i) { issueId = i.id; if (i.grn_id) grnId = i.grn_id; }
+        }
+      }
+    }
+  }
 
   if (!jobId && p.job_no) {
     const j = get('SELECT id FROM job_cards WHERE job_no = ?', String(p.job_no).trim());
@@ -2259,13 +2377,21 @@ router.get('/pipeline/trace', requireAuth, asyncHandler((req, res) => {
     const m = get('SELECT id FROM mrn WHERE mrn_no = ?', String(p.mrn_no).trim());
     if (m) mrnId = m.id;
   }
+  if (!mtnId && p.mtn_no) {
+    const t = get('SELECT id, mrn_id FROM mtn WHERE mtn_no = ?', String(p.mtn_no).trim());
+    if (t) { mtnId = t.id; if (t.mrn_id) mrnId = t.mrn_id; }
+  }
+  if (mtnId && !mrnId) {
+    const t = get('SELECT mrn_id FROM mtn WHERE id = ?', mtnId);
+    if (t && t.mrn_id) mrnId = t.mrn_id;
+  }
   if (!grnId && p.grn_no) {
     const g = get('SELECT id FROM grn WHERE grn_no = ?', String(p.grn_no).trim());
     if (g) grnId = g.id;
   }
 
-  if (!jobId && !mrnId && !grnId && !issueId) {
-    return res.status(400).json({ error: 'Please specify a job_id, mrn_id, grn_id, or issue_id to trace' });
+  if (!jobId && !mrnId && !mtnId && !grnId && !issueId && !chainNo) {
+    return res.status(400).json({ error: 'Please specify a chain_no, job_id, mrn_id, mtn_id, grn_id, or issue_id to trace' });
   }
   { // Step 2c: a trace starts from one of your own workshops' records.
     const no = (issueId && issueRefusal(req.user, issueId)) || (grnId && receiptRefusal(req.user, grnId))
@@ -2346,7 +2472,7 @@ router.get('/pipeline/trace', requireAuth, asyncHandler((req, res) => {
   let mrns = [];
   if (jobId) {
     mrns = all(`
-      SELECT DISTINCT m.id, m.mrn_no, m.req_date, m.purpose, m.requested_by, m.certified_by, m.approved_by,
+      SELECT DISTINCT m.id, m.mrn_no, m.chain_no, m.req_date, m.purpose, m.requested_by, m.certified_by, m.approved_by,
              m.approval_status, m.status, m.purchase_source, m.job_id, m.asset_id
         FROM mrn m
        WHERE m.job_id = ?
@@ -2359,7 +2485,7 @@ router.get('/pipeline/trace', requireAuth, asyncHandler((req, res) => {
     `, jobId, jobId);
   } else if (mrnId) {
     const single = get(`
-      SELECT m.id, m.mrn_no, m.req_date, m.purpose, m.requested_by, m.certified_by, m.approved_by,
+      SELECT m.id, m.mrn_no, m.chain_no, m.req_date, m.purpose, m.requested_by, m.certified_by, m.approved_by,
              m.approval_status, m.status, m.purchase_source, m.job_id, m.asset_id
         FROM mrn m WHERE m.id = ?
     `, mrnId);
@@ -2373,7 +2499,7 @@ router.get('/pipeline/trace', requireAuth, asyncHandler((req, res) => {
   if (mrnIds.length) {
     mrnLines = all(`
       SELECT ml.id, ml.mrn_id, ml.store_item_id, ml.description, ml.category, ml.unit,
-             ml.qty AS qty_requested, ml.qty_received, ml.purchase_source
+             ml.qty AS qty_requested, ml.qty_received, ml.qty_short, ml.discrepancy_reason, ml.purchase_source
         FROM mrn_lines ml
        WHERE ml.mrn_id IN (${mrnIds.map(() => '?').join(',')})
        ORDER BY ml.id
@@ -2385,7 +2511,7 @@ router.get('/pipeline/trace', requireAuth, asyncHandler((req, res) => {
   const ph = mrnIds.length ? mrnIds.map(() => '?').join(',') : '0';
   if (mrnIds.length || jobId) {
     grns = all(`
-      SELECT g.id, g.grn_no, g.delivery_date, g.supplier, g.invoice_no, g.mrn_id, g.mrn_line_id,
+      SELECT g.id, g.grn_no, g.chain_no, g.delivery_date, g.supplier, g.invoice_no, g.mrn_id, g.mrn_line_id,
              g.description, g.qty AS qty_received, g.unit_price,
              ROUND(COALESCE(g.qty * g.unit_price, 0), 2) AS total_cost
         FROM grn g
@@ -2395,7 +2521,7 @@ router.get('/pipeline/trace', requireAuth, asyncHandler((req, res) => {
     `, ...(mrnIds.length ? mrnIds : []), ...(jobId ? [jobId] : []));
   } else if (grnId) {
     const single = get(`
-      SELECT g.id, g.grn_no, g.delivery_date, g.supplier, g.invoice_no, g.mrn_id, g.mrn_line_id,
+      SELECT g.id, g.grn_no, g.chain_no, g.delivery_date, g.supplier, g.invoice_no, g.mrn_id, g.mrn_line_id,
              g.description, g.qty AS qty_received, g.unit_price,
              ROUND(COALESCE(g.qty * g.unit_price, 0), 2) AS total_cost
         FROM grn g WHERE g.id = ?
@@ -2410,7 +2536,7 @@ router.get('/pipeline/trace', requireAuth, asyncHandler((req, res) => {
   const grnPh = grnIds.length ? grnIds.map(() => '?').join(',') : '0';
   if (jobId || grnIds.length) {
     issues = all(`
-      SELECT i.id, i.issue_date, i.job_id, i.grn_id, i.store_item_id, i.description,
+      SELECT i.id, i.chain_no, i.issue_date, i.job_id, i.grn_id, i.store_item_id, i.description,
              i.qty AS qty_issued, i.unit_price,
              ROUND(COALESCE(i.qty * i.unit_price, 0), 2) AS total_cost,
              i.issued_by
@@ -2420,7 +2546,57 @@ router.get('/pipeline/trace', requireAuth, asyncHandler((req, res) => {
     `, ...(jobId ? [jobId] : []), ...(grnIds.length ? grnIds : []));
   }
 
-  // 6. Build Consolidated Lifecycle Items
+  // 6. Discover MTNs & Discrepancies
+  let mtns = [];
+  if (mrnIds.length) {
+    mtns = all(`
+      SELECT t.id, t.mtn_no, t.chain_no, t.mrn_id, t.from_location, t.to_location,
+             t.status, t.txn_date, t.approved_at, t.received_at, t.accepted_at, t.created_at
+        FROM mtn t
+       WHERE t.mrn_id IN (${mrnIds.map(() => '?').join(',')})
+       ORDER BY t.id DESC
+    `, ...mrnIds);
+  } else if (mtnId) {
+    const single = get(`
+      SELECT t.id, t.mtn_no, t.chain_no, t.mrn_id, t.from_location, t.to_location,
+             t.status, t.txn_date, t.approved_at, t.received_at, t.accepted_at, t.created_at
+        FROM mtn t WHERE t.id = ?
+    `, mtnId);
+    if (single) mtns = [single];
+  } else if (chainNo) {
+    mtns = all(`
+      SELECT t.id, t.mtn_no, t.chain_no, t.mrn_id, t.from_location, t.to_location,
+             t.status, t.txn_date, t.approved_at, t.received_at, t.accepted_at, t.created_at
+        FROM mtn t WHERE t.chain_no = ?
+       ORDER BY t.id DESC
+    `, chainNo);
+  }
+
+  let discrepancies = [];
+  if (mrnIds.length) {
+    discrepancies = all(`
+      SELECT d.*
+        FROM delivery_discrepancies d
+       WHERE d.mrn_id IN (${mrnIds.map(() => '?').join(',')})
+       ORDER BY d.id DESC
+    `, ...mrnIds);
+  } else if (chainNo) {
+    discrepancies = all(`
+      SELECT d.*
+        FROM delivery_discrepancies d
+       WHERE d.chain_no = ?
+       ORDER BY d.id DESC
+    `, chainNo);
+  } else if (mtnId) {
+    discrepancies = all(`
+      SELECT d.*
+        FROM delivery_discrepancies d
+       WHERE d.mtn_id = ?
+       ORDER BY d.id DESC
+    `, mtnId);
+  }
+
+  // 7. Build Consolidated Lifecycle Items
   const items = [];
   for (const line of mrnLines) {
     const m = mrns.find((x) => x.id === line.mrn_id) || {};
@@ -2431,6 +2607,7 @@ router.get('/pipeline/trace', requireAuth, asyncHandler((req, res) => {
     const qtyReq = Number(line.qty_requested || 0);
     const qtyRec = lineGrns.reduce((s, g) => s + (Number(g.qty_received) || 0), 0);
     const qtyIss = lineIssues.reduce((s, i) => s + (Number(i.qty_issued) || 0), 0);
+    const qtyShort = Number(line.qty_short || 0);
     const qtyShelf = Math.max(0, Math.round((qtyRec - qtyIss) * 100) / 100);
 
     let stage = 'REQUESTED';
@@ -2443,6 +2620,7 @@ router.get('/pipeline/trace', requireAuth, asyncHandler((req, res) => {
       mrn_line_id: line.id,
       mrn_id: line.mrn_id,
       mrn_no: m.mrn_no || '—',
+      chain_no: m.chain_no || null,
       req_date: m.req_date || null,
       description: line.description,
       category: line.category || 'general',
@@ -2450,6 +2628,9 @@ router.get('/pipeline/trace', requireAuth, asyncHandler((req, res) => {
       purchase_source: line.purchase_source || m.purchase_source || 'Head Office',
       qty_requested: qtyReq,
       qty_received: qtyRec,
+      qty_short: qtyShort,
+      discrepancy_reason: line.discrepancy_reason || null,
+      has_shortage: qtyShort > 0,
       qty_issued: qtyIss,
       qty_on_shelf: qtyShelf,
       stage,
@@ -2470,6 +2651,7 @@ router.get('/pipeline/trace', requireAuth, asyncHandler((req, res) => {
       mrn_line_id: null,
       mrn_id: g.mrn_id || null,
       mrn_no: g.mrn_id ? (mrns.find((m) => m.id === g.mrn_id)?.mrn_no || 'MRN') : 'Direct Receipt',
+      chain_no: g.chain_no || null,
       req_date: null,
       description: g.description,
       category: 'General',
@@ -2477,6 +2659,9 @@ router.get('/pipeline/trace', requireAuth, asyncHandler((req, res) => {
       purchase_source: 'Head Office',
       qty_requested: qtyRec,
       qty_received: qtyRec,
+      qty_short: 0,
+      discrepancy_reason: null,
+      has_shortage: false,
       qty_issued: qtyIss,
       qty_on_shelf: qtyShelf,
       stage: qtyShelf > 0 ? 'READY_ON_SHELF' : 'FULLY_ISSUED',
@@ -2490,27 +2675,35 @@ router.get('/pipeline/trace', requireAuth, asyncHandler((req, res) => {
     total_lines: items.length,
     total_qty_requested: items.reduce((s, it) => s + it.qty_requested, 0),
     total_qty_received: items.reduce((s, it) => s + it.qty_received, 0),
+    total_qty_short: items.reduce((s, it) => s + (it.qty_short || 0), 0),
     total_qty_issued: items.reduce((s, it) => s + it.qty_issued, 0),
     total_qty_on_shelf: items.reduce((s, it) => s + it.qty_on_shelf, 0),
     total_received_cost: Math.round(grns.reduce((s, g) => s + (g.total_cost || 0), 0) * 100) / 100,
     total_issued_cost: Math.round(issues.reduce((s, i) => s + (i.total_cost || 0), 0) * 100) / 100,
   };
 
+  const openDiscrepancies = discrepancies.filter((d) => d.status === 'open' || d.status === 'investigating');
   const uncollected = items.filter((it) => it.qty_on_shelf > 0.001);
-  const pendingDel = items.filter((it) => it.qty_received < it.qty_requested);
+  const pendingDel = items.filter((it) => it.qty_received < it.qty_requested && (!it.has_shortage || (it.qty_received + it.qty_short < it.qty_requested)));
   const unpriced = items.filter((it) => it.grns.some((g) => g.unit_price == null) || it.issues.some((i) => i.unit_price == null));
 
   const integrity = {
-    is_safe_to_close: uncollected.length === 0 && pendingDel.length === 0,
+    is_safe_to_close: uncollected.length === 0 && pendingDel.length === 0 && openDiscrepancies.length === 0,
     uncollected_shelf_parts_count: uncollected.length,
     pending_delivery_count: pendingDel.length,
     unpriced_count: unpriced.length,
+    open_discrepancies_count: openDiscrepancies.length,
   };
+
+  const activeChainNo = chainNo || mrns.find((m) => m.chain_no)?.chain_no || mtns.find((t) => t.chain_no)?.chain_no || grns.find((g) => g.chain_no)?.chain_no || null;
 
   res.json({
     root: { type: rootType, id: rootId },
+    chain_no: activeChainNo,
     job,
     mrns,
+    mtns,
+    discrepancies,
     items,
     grns,
     issues,
@@ -3058,7 +3251,7 @@ router.post('/issues/:id/return', requireCap('stores.issue_return'), asyncHandle
 router.get('/issue-categories', asyncHandler((_req, res) =>
   res.json(all(`SELECT DISTINCT category FROM issues WHERE category IS NOT NULL AND TRIM(category) <> '' ORDER BY category`).map((r) => r.category))));
 
-router.post('/issues', requireCap('stores.issue'), asyncHandler((req, res) => {
+router.post('/issues', requireCap('stores.issue'), chainPipeline.idempotencyGuard('issue_create'), asyncHandler((req, res) => {
   const b = req.body;
   require_(b, ['description']);
   // Cost object: every issue lands on a JOB CARD — no exceptions — and the vehicle is
@@ -3090,12 +3283,27 @@ router.post('/issues', requireCap('stores.issue'), asyncHandler((req, res) => {
   const grnId = toInt(b.grn_id) || null;
   const mrnLineId = toInt(b.mrn_line_id) || (grnId ? get('SELECT mrn_line_id FROM grn WHERE id = ?', grnId)?.mrn_line_id : null);
 
+  // Inherit or resolve chain_no
+  let chainNo = b.chain_no ? String(b.chain_no).trim() : null;
+  if (!chainNo && mrnLineId) {
+    const ml = get('SELECT m.chain_no FROM mrn_lines ml JOIN mrn m ON m.id = ml.mrn_id WHERE ml.id = ?', mrnLineId);
+    if (ml && ml.chain_no) chainNo = ml.chain_no;
+  }
+  if (!chainNo && grnId) {
+    const g = get('SELECT chain_no FROM grn WHERE id = ?', grnId);
+    if (g && g.chain_no) chainNo = g.chain_no;
+  }
+  if (!chainNo && b.min_id) {
+    const mn = get('SELECT chain_no FROM min_notes WHERE id = ?', toInt(b.min_id));
+    if (mn && mn.chain_no) chainNo = mn.chain_no;
+  }
+
   const issueId = tx(() => {
     const info = run(
-      `INSERT INTO issues (asset_id, job_id, service_id, store_item_id, description, qty, unit_price, issue_date, issued_by, category, category_id, grn_id, mrn_line_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO issues (asset_id, job_id, service_id, store_item_id, description, qty, unit_price, issue_date, issued_by, category, category_id, grn_id, mrn_line_id, chain_no)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       assetId || null, jobId, serviceId, toInt(b.store_item_id), b.description, qty,
-      unitPrice, issueDate, b.issued_by || null, cat.category, cat.category_id, grnId, mrnLineId
+      unitPrice, issueDate, b.issued_by || null, cat.category, cat.category_id, grnId, mrnLineId, chainNo
     );
     if (mrnLineId) supplyRoutes.onIssueCreated(mrnLineId, qty);
     // Materialise the issue as a source_type='issue' job_part (mirrors migrate/09) so it
@@ -3206,7 +3414,7 @@ router.get('/min/:id', guardMin, asyncHandler((req, res) => {
   res.json({ note, lines, approvals });
 }));
 
-router.post('/min', requireCap('stores.issue'), asyncHandler((req, res) => {
+router.post('/min', requireCap('stores.issue'), chainPipeline.idempotencyGuard('min_create'), asyncHandler((req, res) => {
   const b = req.body || {};
   const items = Array.isArray(b.items) ? b.items : [];
   if (!items.length) return res.status(400).json({ error: 'A Material Issue Note requires at least one item' });
@@ -3243,13 +3451,28 @@ router.post('/min', requireCap('stores.issue'), asyncHandler((req, res) => {
   const [yr, mo] = issueDate.split('-').map((n) => parseInt(n, 10));
   const validPeriod = yr >= 1900 && mo >= 1 && mo <= 12;
 
+  // Inherit or resolve chain_no
+  let chainNo = clean(b.chain_no);
+  if (!chainNo) {
+    for (const it of items) {
+      if (it.mrn_line_id) {
+        const ml = get('SELECT m.chain_no FROM mrn_lines ml JOIN mrn m ON m.id = ml.mrn_id WHERE ml.id = ?', toInt(it.mrn_line_id));
+        if (ml && ml.chain_no) { chainNo = ml.chain_no; break; }
+      }
+      if (it.grn_id) {
+        const g = get('SELECT chain_no FROM grn WHERE id = ?', toInt(it.grn_id));
+        if (g && g.chain_no) { chainNo = g.chain_no; break; }
+      }
+    }
+  }
+
   const result = tx(() => {
     const info = run(
       `INSERT INTO min_notes (min_no, issue_date, project_id, asset_id, job_id, workshop_id, purpose,
-                              requested_by, requested_sig, requested_at, requested_designation, status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?, ?)`,
+                              requested_by, requested_sig, requested_at, requested_designation, status, chain_no)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?, ?, ?)`,
       minNo, issueDate, projectId, assetId, jobId, noteWs, purpose,
-      reqBy, reqSig, reqDesig, initialStatus
+      reqBy, reqSig, reqDesig, initialStatus, chainNo
     );
     const minId = info.lastInsertRowid;
 
@@ -3286,10 +3509,10 @@ router.post('/min', requireCap('stores.issue'), asyncHandler((req, res) => {
 
       const ins = run(
         `INSERT INTO issues (asset_id, job_id, store_item_id, description, qty, unit, unit_price,
-                             issue_date, issued_by, category, category_id, min_id, min_no, purpose)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                             issue_date, issued_by, category, category_id, min_id, min_no, purpose, chain_no)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         assetId, jobId, sId, desc, q, unit, unitPrice,
-        issueDate, reqBy, catName, catId, minId, minNo, clean(it.purpose) || purpose
+        issueDate, reqBy, catName, catId, minId, minNo, clean(it.purpose) || purpose, chainNo
       );
       const isId = ins.lastInsertRowid;
       createdIds.push(isId);
@@ -3317,13 +3540,13 @@ router.post('/min', requireCap('stores.issue'), asyncHandler((req, res) => {
 
     if (jobId) { try { costing.refreshJobTotals(jobId); } catch (e) { /* non-fatal */ } }
 
-    return { minId, minNo, createdIds, sumCost };
+    return { minId, minNo, createdIds, sumCost, chainNo };
   });
 
   audit.record({ userId: req.user.id, entity: 'min_notes', entityId: result.minId, action: 'create',
-    after: { min_no: result.minNo, items: items.length, total: result.sumCost, status: initialStatus } });
+    after: { min_no: result.minNo, chain_no: result.chainNo, items: items.length, total: result.sumCost, status: initialStatus } });
 
-  res.status(201).json({ ok: true, id: result.minId, min_no: result.minNo, items_count: items.length, total_cost: result.sumCost, status: initialStatus });
+  res.status(201).json({ ok: true, id: result.minId, min_no: result.minNo, chain_no: result.chainNo, items_count: items.length, total_cost: result.sumCost, status: initialStatus });
 }));
 
 // MIN Approval Endpoint
@@ -3653,7 +3876,7 @@ function endsOf(b) {
   return out;
 }
 
-router.post('/mtn', requireCap('stores.mtn.edit'), asyncHandler((req, res) => {
+router.post('/mtn', requireCap('stores.mtn.edit'), chainPipeline.idempotencyGuard('mtn_create'), asyncHandler((req, res) => {
   const b = req.body;
   const items = incomingMtnLines(b);
   if (!items.length) return res.status(400).json({ error: 'A transfer needs at least one item' });
@@ -3666,15 +3889,24 @@ router.post('/mtn', requireCap('stores.mtn.edit'), asyncHandler((req, res) => {
   if (n.error) return res.status(409).json({ error: n.error });
   const mtnNo = n.no;
   const ends = endsOf(b);
+
+  let chainNo = clean(b.chain_no);
+  const mrnId = toInt(b.mrn_id) || null;
+  if (!chainNo && mrnId) {
+    const mrn = get('SELECT chain_no FROM mrn WHERE id = ?', mrnId);
+    if (mrn && mrn.chain_no) chainNo = mrn.chain_no;
+  }
+
   const id = tx(() => {
     const info = run(
       `INSERT INTO mtn (mtn_no, txn_date, from_location, to_location, from_asset_id, to_asset_id, transferred_by, received_by, reason,
-                        from_place, to_place, workshop_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                        from_place, to_place, workshop_id, mrn_id, chain_no)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       mtnNo, b.txn_date || new Date().toISOString().slice(0, 10),
       ends.from_location, ends.to_location, from.assetId || null, to.assetId || null,
       b.transferred_by || null, b.received_by || null, b.reason || null, ends.from_place, ends.to_place,
-      require('../lib/workshops').homeOf(req.user)   // Step 2c: the workshop that writes it
+      require('../lib/workshops').homeOf(req.user),   // Step 2c: the workshop that writes it
+      mrnId, chainNo
     );
     items.forEach((l, i) => insertMtnLine(info.lastInsertRowid, l, i + 1));
     syncMtnHeader(info.lastInsertRowid);
@@ -3684,8 +3916,8 @@ router.post('/mtn', requireCap('stores.mtn.edit'), asyncHandler((req, res) => {
     return info.lastInsertRowid;
   });
   audit.record({ userId: req.user.id, entity: 'mtn', entityId: id, action: 'create',
-    after: { mtn_no: mtnNo, items: items.length } });
-  res.status(201).json({ ...get('SELECT * FROM mtn WHERE id = ?', id), lines: mtnLines(id) });
+    after: { mtn_no: mtnNo, chain_no: chainNo, items: items.length } });
+  res.status(201).json({ ...get('SELECT * FROM mtn WHERE id = ?', id), lines: mtnLines(id), chain_no: chainNo });
 }));
 
 const mtnLines = (mtnId) => all(
@@ -3921,7 +4153,7 @@ router.post('/mtn/:id/reject', requireCap('stores.mtn.reject'), guardMtn, asyncH
 }));
 
 // Stage 2: Dispatch / In Transit (Driver or Dispatching Clerk signs)
-router.post('/mtn/:id/dispatch', requireCap('stores.mtn.edit'), guardMtn, asyncHandler((req, res) => {
+router.post('/mtn/:id/dispatch', requireCap('stores.mtn.edit'), guardMtn, chainPipeline.idempotencyGuard('mtn_dispatch'), asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   const m = get('SELECT * FROM mtn WHERE id = ?', id);
   if (!m) return res.status(404).json({ error: 'MTN not found' });
@@ -3976,7 +4208,7 @@ router.post('/mtn/:id/receive', requireCap('stores.mtn.edit'), guardMtn, asyncHa
 }));
 
 // Stage 4: Destination Accepted By (Destination Store Manager / In-Charge)
-router.post('/mtn/:id/accept', requireCap('stores.mtn.edit'), guardMtn, asyncHandler((req, res) => {
+router.post('/mtn/:id/accept', requireCap('stores.mtn.edit'), guardMtn, chainPipeline.idempotencyGuard('mtn_accept'), asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   const m = get('SELECT * FROM mtn WHERE id = ?', id);
   if (!m) return res.status(404).json({ error: 'MTN not found' });
@@ -3993,12 +4225,13 @@ router.post('/mtn/:id/accept', requireCap('stores.mtn.edit'), guardMtn, asyncHan
          VALUES (?, 'accept', 'storekeeper', ?, ?, ?, 'approved', ?)`,
       id, req.user.id, accBy, accSig, req.body.reason || 'Goods received, inspected and accepted into destination stock');
     stock.rebuild({ transfersOf: id });     // into the receiving store
-    supplyRoutes.onMtnAccepted(id);
+    supplyRoutes.onMtnAccepted(id, req.body.receipts || req.body.items, req.user);
   });
 
-  audit.record({ userId: req.user.id, entity: 'mtn', entityId: id, action: 'accept', after: { status: 'accepted', accepted_by: accBy } });
+  const discrepancies = all('SELECT * FROM delivery_discrepancies WHERE mtn_id = ? ORDER BY id DESC', id);
+  audit.record({ userId: req.user.id, entity: 'mtn', entityId: id, action: 'accept', after: { status: 'accepted', accepted_by: accBy, discrepancies_count: discrepancies.length } });
   emitter.emit('stock_updated', { mtn_id: id, action: 'accept' });
-  res.json({ ok: true, status: 'accepted', accepted_by: accBy, accepted_at: now });
+  res.json({ ok: true, status: 'accepted', accepted_by: accBy, accepted_at: now, discrepancies });
 }));
 
 // MTN Multi-Party Signatures Update

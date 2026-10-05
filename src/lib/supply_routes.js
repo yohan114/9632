@@ -18,6 +18,7 @@
 const { get, all, run, tx } = require('../db');
 const audit = require('./audit');
 const emitter = require('./emitter');
+const chainPipeline = require('./chain_pipeline');
 
 const ROUTES = ['main_store', 'head_office', 'local_purchase', 'direct_delivery'];
 
@@ -201,6 +202,7 @@ function onMrnApproved(mrnId, user) {
   // Determine next MTN number sequence (~58xxx)
   const lastMtn = get("SELECT mtn_no FROM mtn WHERE mtn_no GLOB '[0-9]*' ORDER BY CAST(mtn_no AS INTEGER) DESC LIMIT 1");
   const nextNo = lastMtn && Number(lastMtn.mtn_no) ? String(Number(lastMtn.mtn_no) + 1) : String(58000 + id);
+  const chainNo = mrn.chain_no || chainPipeline.assignChainNo(id);
 
   tx(() => {
     // Check if an auto-MTN already exists for this MRN
@@ -208,20 +210,21 @@ function onMrnApproved(mrnId, user) {
     let mtnId;
     if (existing) {
       mtnId = existing.id;
+      if (chainNo) run('UPDATE mtn SET chain_no = ? WHERE id = ? AND (chain_no IS NULL OR chain_no = \'\')', chainNo, mtnId);
     } else {
       const info = run(`
         INSERT INTO mtn (
           mtn_no, mr_no, mrn_id, auto_generated, txn_date,
           from_location, to_location, reason, prepared_by,
-          prepared_at, prepared_designation, status
+          prepared_at, prepared_designation, status, chain_no
         ) VALUES (
           ?, ?, ?, 1, date('now'),
           ?, ?, ?, ?,
-          ?, 'Store In-Charge', 'draft'
+          ?, 'Store In-Charge', 'draft', ?
         )
       `, nextNo, mrn.mrn_no, id, centralWs.name, destName,
          `Auto-transfer for approved request ${mrn.mrn_no}: ${mrn.purpose || ''}`.trim(),
-         prepName, now);
+         prepName, now, chainNo);
       mtnId = info.lastInsertRowid;
     }
 
@@ -269,15 +272,66 @@ function onMtnDispatched(mtnId) {
 /**
  * Called when an MTN is accepted at destination workshop.
  * Updates qty_received on linked MRN lines.
+ * Supports line-by-line actual receipts and short delivery discrepancy logging.
+ * receipts: Array of { mtn_line_id, mrn_line_id, qty_received, reason }
  */
-function onMtnAccepted(mtnId) {
+function onMtnAccepted(mtnId, receipts, user) {
   const mid = Number(mtnId) || 0;
   if (!mid) return;
 
-  const lines = all('SELECT mrn_line_id, qty FROM mtn_lines WHERE mtn_id = ? AND mrn_line_id IS NOT NULL', mid);
+  const lines = all('SELECT * FROM mtn_lines WHERE mtn_id = ? AND mrn_line_id IS NOT NULL', mid);
+  const receiptMap = new Map();
+  if (Array.isArray(receipts)) {
+    for (const r of receipts) {
+      if (r.mtn_line_id) receiptMap.set(Number(r.mtn_line_id), r);
+      else if (r.mrn_line_id) receiptMap.set(`mrn_${r.mrn_line_id}`, r);
+      else if (r.line_id) receiptMap.set(Number(r.line_id), r);
+    }
+  }
+
   tx(() => {
     for (const l of lines) {
-      run('UPDATE mrn_lines SET qty_received = COALESCE(qty_received, 0) + ? WHERE id = ?', Number(l.qty) || 0, l.mrn_line_id);
+      const sentQty = Number(l.qty) || 0;
+      const rEntry = receiptMap.get(l.id) || receiptMap.get(`mrn_${l.mrn_line_id}`);
+      let recQty = sentQty;
+      let reason = null;
+
+      if (rEntry && rEntry.qty_received !== undefined) {
+        recQty = Math.max(0, Number(rEntry.qty_received) || 0);
+        reason = rEntry.reason || rEntry.discrepancy_reason || null;
+      }
+
+      const shortQty = Math.max(0, sentQty - recQty);
+
+      // Advance qty_received on MRN line
+      run(`
+        UPDATE mrn_lines
+           SET qty_received = COALESCE(qty_received, 0) + ?,
+               discrepancy_reason = COALESCE(?, discrepancy_reason)
+         WHERE id = ?
+      `, recQty, reason, l.mrn_line_id);
+
+      // Record on MTN line
+      run(`
+        UPDATE mtn_lines
+           SET qty_received = ?,
+               discrepancy_reason = ?
+         WHERE id = ?
+      `, recQty, reason, l.id);
+
+      // If short delivery detected, log to delivery_discrepancies
+      if (shortQty > 0) {
+        chainPipeline.recordDeliveryDiscrepancy({
+          mrn_id: l.mrn_id,
+          mrn_line_id: l.mrn_line_id,
+          mtn_id: mid,
+          mtn_line_id: l.id,
+          item_description: l.description,
+          qty_expected: sentQty,
+          qty_received: recQty,
+          reason: reason || 'Short delivery at destination site',
+        }, user);
+      }
     }
   });
 }
@@ -320,12 +374,14 @@ function getMrnPipeline(mrnId) {
            COALESCE(ml.qty_sent, 0) AS qty_sent,
            COALESCE(ml.qty_received, 0) AS qty_received,
            COALESCE(ml.qty_issued, 0) AS qty_issued,
+           COALESCE(ml.qty_short, 0) AS qty_short,
+           ml.discrepancy_reason,
            COALESCE(ml.supply_route, 'main_store') AS supply_route,
            ml.auto_mtn_id,
            ml.route_assigned_by,
            ml.route_assigned_at,
            ml.route_assigned_reason,
-           m.mrn_no, m.approval_status,
+           m.mrn_no, m.chain_no, m.approval_status,
            (SELECT mtn_no FROM mtn WHERE mtn.id = ml.auto_mtn_id) AS auto_mtn_no
       FROM mrn_lines ml
       JOIN mrn m ON m.id = ml.mrn_id
@@ -339,6 +395,7 @@ function getMrnPipeline(mrnId) {
     const sent = Number(r.qty_sent) || 0;
     const recv = Number(r.qty_received) || 0;
     const iss = Number(r.qty_issued) || 0;
+    const short = Number(r.qty_short) || 0;
 
     let stage = 'requested';
     if (r.approval_status === 'approved') {
@@ -354,11 +411,16 @@ function getMrnPipeline(mrnId) {
       stage = 'rejected';
     }
 
+    const hasShortage = short > 0;
+    const isDeficitOpen = hasShortage && (recv < req);
+
     return {
       ...r,
       route_label: ROUTE_LABELS[r.supply_route] || r.supply_route,
       route_badge: ROUTE_BADGES[r.supply_route] || '',
       pipeline_stage: stage,
+      has_shortage: hasShortage,
+      is_deficit_open: isDeficitOpen,
     };
   });
 }
