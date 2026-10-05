@@ -1904,4 +1904,9 @@ function tx(fn) {
   return db.transaction(fn)();
 }
 
-module.exports = { db, migrate, get, all, run, tx };
+const multidb = require('./multidb');
+try {
+  multidb.init(db);
+} catch {}
+
+module.exports = { db, migrate, get, all, run, tx, multidb };

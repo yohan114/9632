@@ -73,4 +73,62 @@ router.post('/mechanics/:id/move', requireCap('mechanics.move'), asyncHandler((r
   res.json(workshops.moveMechanic(req.user, toInt(req.params.id), req.body.workshop_id, req.body.from_date, req.body.note));
 }));
 
+// Multi-database management and Main Store Access (§5, §6, §8)
+router.get('/databases', requireCap('workshops.manage'), asyncHandler((_req, res) => {
+  const { multidb } = require('../db');
+  res.json({
+    multidb_enabled: multidb && typeof multidb.isMultiDb === 'function' ? multidb.isMultiDb() : false,
+    databases: (multidb && typeof multidb.isMultiDb === 'function' && multidb.isMultiDb()) ? multidb.listWorkshopDatabases() : []
+  });
+}));
+
+router.post('/verify', requireCap('workshops.manage'), asyncHandler((_req, res) => {
+  const { multidb } = require('../db');
+  if (!multidb || typeof multidb.isMultiDb !== 'function' || !multidb.isMultiDb()) return res.json({ ok: true, message: 'Single database mode' });
+  const results = multidb.runIntegrityVerification();
+  res.json({ ok: true, results });
+}));
+
+router.get('/grants', requireCap('workshops.manage', 'workshops.all'), asyncHandler((req, res) => {
+  const { multidb } = require('../db');
+  res.json((multidb && typeof multidb.isMultiDb === 'function' && multidb.isMultiDb()) ? multidb.listStoreGrants() : []);
+}));
+
+router.get('/:id/grants', requireCap('workshops.manage', 'workshops.all'), asyncHandler((req, res) => {
+  const { multidb } = require('../db');
+  res.json((multidb && typeof multidb.isMultiDb === 'function' && multidb.isMultiDb()) ? multidb.listStoreGrants(toInt(req.params.id)) : []);
+}));
+
+router.post('/:id/grants', requireCap('workshops.manage'), asyncHandler((req, res) => {
+  const { multidb } = require('../db');
+  if (!multidb || typeof multidb.isMultiDb !== 'function' || !multidb.isMultiDb()) return res.status(400).json({ error: 'Multi-database not enabled' });
+  const grant = multidb.createStoreGrant(req.user, { ...req.body, workshop_id: toInt(req.params.id) });
+  res.status(201).json(grant);
+}));
+
+router.put('/grants/:gid/approve', requireCap('workshops.manage'), asyncHandler((req, res) => {
+  const { multidb } = require('../db');
+  if (!multidb || typeof multidb.isMultiDb !== 'function' || !multidb.isMultiDb()) return res.status(400).json({ error: 'Multi-database not enabled' });
+  try {
+    const approved = multidb.approveStoreGrant(req.user, toInt(req.params.gid));
+    res.json(approved);
+  } catch (e) {
+    res.status(e.status || 400).json({ error: e.message });
+  }
+}));
+
+router.put('/grants/:gid/suspend', requireCap('workshops.manage'), asyncHandler((req, res) => {
+  const { multidb } = require('../db');
+  if (!multidb || typeof multidb.isMultiDb !== 'function' || !multidb.isMultiDb()) return res.status(400).json({ error: 'Multi-database not enabled' });
+  const suspended = multidb.updateStoreGrantState(req.user, toInt(req.params.gid), 'suspended', req.body && req.body.reason);
+  res.json(suspended);
+}));
+
+router.put('/grants/:gid/revoke', requireCap('workshops.manage'), asyncHandler((req, res) => {
+  const { multidb } = require('../db');
+  if (!multidb || typeof multidb.isMultiDb !== 'function' || !multidb.isMultiDb()) return res.status(400).json({ error: 'Multi-database not enabled' });
+  const revoked = multidb.updateStoreGrantState(req.user, toInt(req.params.gid), 'revoked', req.body && req.body.reason);
+  res.json(revoked);
+}));
+
 module.exports = router;

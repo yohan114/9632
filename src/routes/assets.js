@@ -103,8 +103,15 @@ router.get('/:id', asyncHandler((req, res) => {
   // another workshop shows only its number, status and workshop: no description, no cost, no link.
   const scope = require('../lib/scope');
   const WS = '(SELECT name FROM workshops w WHERE w.id = job_cards.workshop_id) AS workshop_name, workshop_id';
-  const veil = (j) => (scope.mayReach(req.user, j.workshop_id) ? { ...j, reachable: true }
-    : { id: j.id, job_no: j.job_no, status: j.status, type: j.type, workshop_name: j.workshop_name, workshop_id: j.workshop_id, reachable: false });
+  const veil = (j) => {
+    if (scope.mayReach(req.user, j.workshop_id)) {
+      return { ...j, reachable: true, read_only: scope.isReadOnly(req.user, j.workshop_id) };
+    }
+    if (scope.mayRead(req.user, j.workshop_id, 'job')) {
+      return { ...j, reachable: true, read_only: true };
+    }
+    return { id: j.id, job_no: j.job_no, status: j.status, type: j.type, workshop_name: j.workshop_name, workshop_id: j.workshop_id, reachable: false };
+  };
   const open_jobs = all(`SELECT id, job_no, type, status, description, total_cost, ${WS} FROM job_cards WHERE asset_id = ? AND ${jobstate.openSql()} ORDER BY id DESC`, id).map(veil);
   // Partly closed (W2): the vehicle has left them, but prices or records are still to come.
   const partly_closed_jobs = all(`SELECT id, job_no, type, status, description, total_cost, partial_closed_at, ${WS} FROM job_cards WHERE asset_id = ? AND status = ? ORDER BY id DESC`, id, jobstate.PARTIAL).map(veil);

@@ -23,9 +23,15 @@ const standIn = require('../lib/stand_in');
 
 const router = express.Router();
 
-// Stage 3: a card of another workshop is out of reach for anyone outside head office — every
-// route here whose :id is a job card, reading it or changing it.
-router.param('id', scope.jobParam);
+// Stage 3 & Site Workshops: reading across workshops is permitted with jobs.view_other_workshops;
+// writing to another workshop's card is always refused.
+router.param('id', scope.jobReadParam);
+
+const mustOwn = (req, res, next) => {
+  const no = scope.jobRefusal(req.user, toInt(req.params.id));
+  if (no) return res.status(403).json(no);
+  if (typeof next === 'function') return next();
+};
 
 // Order by the job number itself — YYYY/M/(R|S)/seq — newest first: year, then month,
 // then the sequence number (xxx), all compared numerically (so 12 > 6 and 383 > 59).
@@ -90,8 +96,11 @@ router.get(
       clauses.push('j.project_id = ?');
       params.push(toInt(req.query.project_id));
     }
-    // Stage 3: your own workshop's cards only (head office and store staff: all).
-    const own = scope.filter(req.user, 'j.workshop_id');
+    // Stage 3 & Site Workshops: readFilter permits viewing across workshops if capability held;
+    // req.query.mine=1 or req.query.mine_only=1 restricts to user's own workshop.
+    const own = (req.query.mine === '1' || req.query.mine_only === '1')
+      ? scope.filter(req.user, 'j.workshop_id')
+      : scope.readFilter(req.user, 'j.workshop_id', 'job');
     if (own.sql) { clauses.push(own.sql); params.push(...own.params); }
     // Which workshop does the repair (multi-site Stage 2).
     if (req.query.workshop_id) {
@@ -175,6 +184,9 @@ router.get(
         `SELECT ${cols} ${from} ${where} ORDER BY ${JOB_NO_ORDER} LIMIT ${limit}`,
         ...params
       );
+    for (const r of rows) {
+      r.read_only = scope.isReadOnly(req.user, r.workshop_id);
+    }
     res.json(rows);
   })
 );
@@ -408,6 +420,7 @@ router.get(
     const id = toInt(req.params.id);
     const job = loadJob(id);
     if (!job) return res.status(404).json({ error: 'Job not found' });
+    job.read_only = scope.isReadOnly(req.user, job.workshop_id);
 
     const approvals = all('SELECT * FROM job_approvals WHERE job_id = ? ORDER BY id', id);
     const dailyWork = all('SELECT * FROM job_daily_work WHERE job_id = ? ORDER BY work_date, id', id);
@@ -496,6 +509,7 @@ router.get(
 router.post(
   '/:id/transition',
   requireAuth,
+  mustOwn,
   asyncHandler((req, res) => {
     const id = toInt(req.params.id);
     const job = loadJob(id);
@@ -785,6 +799,7 @@ router.post(
   '/:id/close-on-date',
   requireAuth,
   requireCap('jobs.close_on_date'),
+  mustOwn,
   asyncHandler((req, res) => {
     const id = toInt(req.params.id);
     const job = loadJob(id);
@@ -863,6 +878,7 @@ router.post(
   '/:id/partial-close',
   requireAuth,
   requireCap('jobs.partial_close'),
+  mustOwn,
   asyncHandler((req, res) => {
     if (!jobstate.partialCloseEnabled()) return res.status(409).json({ error: 'Partial close is switched off' });
     const id = toInt(req.params.id);
@@ -898,6 +914,7 @@ router.post(
   '/:id/reopen-request',
   requireAuth,
   requireCap('jobs.reopen_request'),
+  mustOwn,
   asyncHandler((req, res) => {
     if (!jobstate.partialCloseEnabled()) return res.status(409).json({ error: 'Reopen requests are switched off — a manager reopens the job directly.' });
     const id = toInt(req.params.id);
@@ -917,6 +934,7 @@ router.post(
   '/:id/daily-work',
   requireAuth,
   requireCap('jobs.dailywork'),
+  mustOwn,
   asyncHandler((req, res) => {
     const id = toInt(req.params.id);
     const job = get('SELECT * FROM job_cards WHERE id = ?', id);
@@ -1005,6 +1023,7 @@ router.delete(
   '/:id/daily-work/:lineId',
   requireAuth,
   requireCap('jobs.dailywork'),
+  mustOwn,
   asyncHandler((req, res) => {
     const id = toInt(req.params.id);
     const lineId = toInt(req.params.lineId);
@@ -1170,7 +1189,7 @@ function settleAfterMove(fromJobId, toJobId, toAssetId) {
   }
 }
 
-router.post('/:id/daily-work/attach', requireAuth, requireCap('jobs.dailywork'), asyncHandler((req, res) => {
+router.post('/:id/daily-work/attach', requireAuth, requireCap('jobs.dailywork'), mustOwn, asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   const job = get('SELECT * FROM job_cards WHERE id = ?', id);
   if (!job) return res.status(404).json({ error: 'Job not found' });
@@ -1206,7 +1225,7 @@ router.post('/:id/daily-work/attach', requireAuth, requireCap('jobs.dailywork'),
   res.json({ attached: rows.length, hours: rows.reduce((s, r) => s + (Number(r.hours) || 0), 0) });
 }));
 
-router.post('/:id/parts/attach', requireAuth, requireCap('jobs.parts'), asyncHandler((req, res) => {
+router.post('/:id/parts/attach', requireAuth, requireCap('jobs.parts'), mustOwn, asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   const job = get('SELECT * FROM job_cards WHERE id = ?', id);
   if (!job) return res.status(404).json({ error: 'Job not found' });
@@ -1252,6 +1271,7 @@ router.post(
   '/:id/parts',
   requireAuth,
   requireCap('jobs.parts'),
+  mustOwn,
   asyncHandler((req, res) => {
     const id = toInt(req.params.id);
     const job = get('SELECT * FROM job_cards WHERE id = ?', id);
@@ -1280,6 +1300,7 @@ router.patch(
   '/:id/parts/:partId',
   requireAuth,
   requireCap('jobs.parts'),
+  mustOwn,
   asyncHandler((req, res) => {
     const id = toInt(req.params.id);
     const partId = toInt(req.params.partId);
@@ -1298,6 +1319,7 @@ router.delete(
   '/:id/parts/:partId',
   requireAuth,
   requireCap('jobs.parts'),
+  mustOwn,
   asyncHandler((req, res) => {
     const id = toInt(req.params.id);
     const partId = toInt(req.params.partId);
@@ -1337,6 +1359,7 @@ router.patch(
   '/:id',
   requireAuth,
   requireCap('jobs.edit'),
+  mustOwn,
   asyncHandler((req, res) => {
     const id = toInt(req.params.id);
     const job = loadJob(id);
@@ -1453,6 +1476,7 @@ router.patch(
   '/:id/flat-labour',
   requireAuth,
   requireCap('jobs.flat_labour'),
+  mustOwn,
   asyncHandler((req, res) => {
     const id = toInt(req.params.id);
     const job = get('SELECT * FROM job_cards WHERE id = ?', id);

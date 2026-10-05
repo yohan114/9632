@@ -47,6 +47,8 @@ const U = {
   skC: mkUser('skC', ['storekeeper']), skM: mkUser('skM', ['storekeeper'], MTR), wsM: mkUser('wsM', ['workshop'], MTR),
   wsK: mkUser('wsK', ['workshop'], KDY), clkM: mkUser('clkM', ['site_clerk'], MTR),
 };
+run("INSERT INTO user_capabilities (user_id, capability, granted) VALUES (?, 'jobs.view_other_workshops', 0)", U.wsM);
+run("INSERT INTO user_capabilities (user_id, capability, granted) VALUES (?, 'jobs.view_other_workshops', 0)", U.wsK);
 const actor = { id: U.boss, roles: ['admin'] };
 const day = (n) => { const d = new Date(); d.setDate(d.getDate() + n); return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10); };
 const TODAY = day(0);

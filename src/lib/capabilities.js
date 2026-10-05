@@ -65,6 +65,7 @@ const CAPABILITIES = [
   C('jobs.settings', 'jobs', 'Switch partial close and reopen requests on or off', [], null, 'jobs'),
   C('jobs.breakdown', 'jobs', 'Report a breakdown in the field (opens a field job card)', ['transport_manager', 'assistant_transport_manager', 'workshop', 'operational_manager', 'manager'], null, 'field'),
   C('jobs.field', 'jobs', 'Record field work on a job card (site, times, km)', ['workshop', 'operational_manager', 'manager'], 'jobs', 'field'),
+  C('jobs.view_other_workshops', 'jobs', 'View job cards and service records of other workshops (read-only)', ['workshop', 'operational_manager', 'manager', 'transport_manager'], 'jobs', 'jobs'),
 
   // ---- job requests --------------------------------------------------------------------------
   C('jobrequests.create', 'jobrequests', 'Raise a job request', ['assistant_transport_manager'], 'jobrequests', 'jobs'),

@@ -24,8 +24,8 @@ const workshops = require('../lib/workshops');
 const forbid = (body) => { const e = new Error(body.error); e.status = 403; e.data = body; throw e; };
 // Improvement plan, Step 2: a service record is its workshop's, like a job card. Someone kept to
 // their own workshop reads, edits and prints only their own, and files a new one only against a
-// job card they may reach.
 const mustReachService = (user, id) => { const no = scope.serviceRefusal(user, id); if (no) forbid(no); };
+const mustReadService = (user, id) => { const no = scope.serviceReadRefusal(user, id); if (no) forbid(no); };
 /** The job card a service names by its number — the newest card with it — refused if out of reach. */
 function serviceCard(user, jobNo) {
   const j = jobNo ? get('SELECT id, workshop_id FROM job_cards WHERE job_no = ? ORDER BY id DESC LIMIT 1', jobNo) : null;
@@ -488,11 +488,14 @@ router.get('/services', asyncHandler((req, res) => {
     }
     clauses.push('(' + ors.join(' OR ') + ')');
   }
-  // Step 2: your own workshop's services (head office, and while the workshops are not kept apart: all).
-  const own = scope.filter(req.user, 's.workshop_id');
+  // Step 2 & Site Workshops: readFilter permits viewing across workshops if capability held;
+  // req.query.mine=1 or req.query.mine_only=1 restricts to user's own workshop.
+  const own = (req.query.mine === '1' || req.query.mine_only === '1')
+    ? scope.filter(req.user, 's.workshop_id')
+    : scope.readFilter(req.user, 's.workshop_id', 'service');
   if (own.sql) { clauses.push(own.sql); params.push(...own.params); }
   const where = clauses.length ? 'WHERE ' + clauses.join(' AND ') : '';
-  res.json(all(
+  const rows = all(
     `SELECT s.id, s.vehicle_label, s.service_date, s.service_type, s.site_location, s.grand_total,
             s.labour_charge, s.outside_estimate, s.meter_reading, s.next_service_meter, s.job_no,
             s.repair_details, s.upkeeping, s.workshop_id,
@@ -508,7 +511,11 @@ router.get('/services', asyncHandler((req, res) => {
        FROM service_jobs s LEFT JOIN assets a ON a.id = s.asset_id
        ${where} ORDER BY s.service_date DESC, s.id DESC LIMIT ${toInt(req.query.limit, 300)}`,
     ...params
-  ));
+  );
+  for (const r of rows) {
+    r.read_only = scope.isReadOnly(req.user, r.workshop_id);
+  }
+  res.json(rows);
 }));
 
 // Read a service payload the same way whichever verb sent it, so a record cannot come out
@@ -586,7 +593,7 @@ router.post('/services', asyncHandler((req, res) => {
       partsSubtotal, labourCharge, sundryAmount, grandTotal,
       // Stage 4: the store its filters and oil come out of — its job card's workshop's, else yours.
       stores.forEntry(req.user, card ? card.id : null, date),
-      card ? card.workshop_id : workshops.homeOf(req.user)
+      b.workshop_id ? toInt(b.workshop_id) : (card ? card.workshop_id : workshops.homeOf(req.user))
     );
     const sid = info.lastInsertRowid;
     const store = serviceStore(sid);
@@ -794,11 +801,12 @@ router.get('/service-plan', asyncHandler(async (req, res) => {
 
 router.get('/services/:id', asyncHandler((req, res) => {
   const id = toInt(req.params.id);
-  mustReachService(req.user, id);
+  mustReadService(req.user, id);
   const job = get(
     `SELECT s.*, a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec, ${COST_SQL} AS computed_cost
        FROM service_jobs s LEFT JOIN assets a ON a.id = s.asset_id WHERE s.id = ?`, id);
   if (!job) return res.status(404).json({ error: 'Service not found' });
+  job.read_only = scope.isReadOnly(req.user, job.workshop_id);
   // Each filter line carries the book price so missing ones surface here too.
   const filters = all(
     `SELECT f.id, f.filter_no, f.filter_no_norm, f.category, f.action_type, f.qty, f.price, f.required_no,
@@ -821,14 +829,14 @@ const MAX_ATTACHMENT = 15 * 1024 * 1024;   // a scanned sheet; well under SQLite
 const PDF_MAGIC = Buffer.from('%PDF-');
 
 router.get('/services/:id/attachments', asyncHandler((req, res) => {
-  mustReachService(req.user, toInt(req.params.id));
+  mustReadService(req.user, toInt(req.params.id));
   res.json(attachmentList(toInt(req.params.id)));
 }));
 
 /** An attachment's service, refused when it is another workshop's. */
 function attachmentOf(user, aid, cols) {
   const a = get(`SELECT ${cols} FROM service_attachments WHERE id = ?`, aid);
-  if (a) mustReachService(user, a.service_id);
+  if (a) mustReadService(user, a.service_id);
   return a;
 }
 
@@ -882,6 +890,7 @@ router.delete(
     const aid = toInt(req.params.aid);
     const a = attachmentOf(req.user, aid, 'id, service_id, filename, size_bytes');
     if (!a) return res.status(404).json({ error: 'Attachment not found' });
+    mustReachService(req.user, a.service_id);
     run('DELETE FROM service_attachments WHERE id = ?', aid);
     audit.record({ userId: req.user.id, entity: 'service_attachment', entityId: aid, action: 'delete', before: a });
     res.json({ ok: true });
@@ -891,7 +900,7 @@ router.delete(
 // Printable service form — matches the paper "Vehicle/Machinery Service Details".
 router.get('/services/:id/print.html', asyncHandler((req, res) => {
   const id = toInt(req.params.id);
-  mustReachService(req.user, id);
+  mustReadService(req.user, id);
   const s = get(`SELECT s.*, a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec FROM service_jobs s LEFT JOIN assets a ON a.id = s.asset_id WHERE s.id = ?`, id);
   if (!s) return res.status(404).send('Service not found');
   const oils = all('SELECT oil_name, oil_type, action_type, qty, price FROM service_oils WHERE service_id = ? ORDER BY id', id);

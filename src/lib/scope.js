@@ -87,6 +87,37 @@ function mayReach(user, workshopId, opts) {
 }
 
 /**
+ * Three states: mine (mayReach), visible (mayRead), or out of reach.
+ * Cross-workshop viewing applies to 'job' and 'service' records for users holding jobs.view_other_workshops.
+ */
+function mayRead(user, workshopId, kind) {
+  if (mayReach(user, workshopId)) return true;
+  if ((kind === 'job' || kind === 'service') && require('./auth').hasCap(user, 'jobs.view_other_workshops')) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Filter for readable records: shows all workshops when the person holds cross-workshop read capability.
+ */
+function readFilter(user, column, kind) {
+  if (seesAll(user)) return { sql: '', params: [] };
+  if ((kind === 'job' || kind === 'service') && require('./auth').hasCap(user, 'jobs.view_other_workshops')) {
+    return { sql: '', params: [] };
+  }
+  return filter(user, column);
+}
+
+/**
+ * True when a record is visible but cannot be edited by this person.
+ */
+function isReadOnly(user, workshopId) {
+  if (!enabled() || headOffice(user)) return false;
+  return !mayReach(user, workshopId);
+}
+
+/**
  * Whose reports a person reads (Stage 5). { ws, fixed, choices }: `ws` null = every workshop;
  * `choices` null = any workshop or all of them.
  *   - one workshop: the whole company, as always;
@@ -119,6 +150,13 @@ function jobRefusal(user, jobId) {
   return refusal('job card', j.workshop_id);
 }
 
+function jobReadRefusal(user, jobId) {
+  if (!enabled()) return null;
+  const j = get('SELECT workshop_id FROM job_cards WHERE id = ?', jobId);
+  if (!j || mayRead(user, j.workshop_id, 'job')) return null;
+  return refusal('job card', j.workshop_id);
+}
+
 function mrnRefusal(user, mrnId) {
   if (!enabled()) return null;
   const m = get('SELECT workshop_id FROM mrn WHERE id = ?', mrnId);
@@ -139,6 +177,11 @@ function jobParam(req, res, next, id) {
   return no ? res.status(403).json(no) : next();
 }
 
+function jobReadParam(req, res, next, id) {
+  const no = jobReadRefusal(req.user, Number(id));
+  return no ? res.status(403).json(no) : next();
+}
+
 // ---- The rest of a workshop's own records (improvement plan, Step 2) --------------------------
 // Service records and tools belong to a workshop, like job cards. Stock and the things kept on a
 // store's shelf — oil, general items, tyres, batteries — belong to a store (Stage 4), and someone
@@ -149,6 +192,13 @@ function serviceRefusal(user, serviceId) {
   if (!enabled()) return null;
   const s = get('SELECT workshop_id FROM service_jobs WHERE id = ?', serviceId);
   if (!s || mayReach(user, s.workshop_id)) return null;
+  return refusal('service record', s.workshop_id);
+}
+
+function serviceReadRefusal(user, serviceId) {
+  if (!enabled()) return null;
+  const s = get('SELECT workshop_id FROM service_jobs WHERE id = ?', serviceId);
+  if (!s || mayRead(user, s.workshop_id, 'service')) return null;
   return refusal('service record', s.workshop_id);
 }
 
@@ -208,6 +258,6 @@ function wsSql(column, ws) {
 
 module.exports = {
   FLAG, switchedOn, setSwitch, enabled, headOffice, storeStaff, seesAll, seesAllJobs, reach, onlyWorkshop,
-  filter, mayReach, reportWorkshop, refusal, jobRefusal, mrnRefusal, jobRequestRefusal, jobParam,
-  serviceRefusal, toolRefusal, ownStore, storeOfRow, storeFilter, storeRefusal, reportWs, wsSql,
+  filter, mayReach, mayRead, readFilter, isReadOnly, reportWorkshop, refusal, jobRefusal, jobReadRefusal, mrnRefusal, jobRequestRefusal, jobParam,
+  jobReadParam, serviceRefusal, serviceReadRefusal, toolRefusal, ownStore, storeOfRow, storeFilter, storeRefusal, reportWs, wsSql,
 };

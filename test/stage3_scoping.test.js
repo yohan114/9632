@@ -45,6 +45,7 @@ const U = {
   tmC: mkUser('tmC', ['transport_manager']), tmM: mkUser('tmM', ['transport_manager'], MTR),
   atM: mkUser('atM', ['assistant_transport_manager'], MTR),
 };
+run("INSERT INTO user_capabilities (user_id, capability, granted) VALUES (?, 'jobs.view_other_workshops', 0)", U.wsM);
 const day = (n) => { const d = new Date(); d.setDate(d.getDate() + n); return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10); };
 const TODAY = day(0);
 let seq = 0;
