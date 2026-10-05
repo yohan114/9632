@@ -178,7 +178,10 @@ CREATE TABLE IF NOT EXISTS mrn (
   requested_by  TEXT,
   chain_no      TEXT,
   status        TEXT NOT NULL DEFAULT 'open'
-                  CHECK (status IN ('open','partially_received','received','cancelled')),
+                  CHECK (status IN ('open','partially_received','received','cancelled','closed')),
+  closed_by     TEXT,
+  closed_at     TEXT,
+  closure_notes TEXT,
   created_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_mrn_asset ON mrn(asset_id);
@@ -197,6 +200,10 @@ CREATE TABLE IF NOT EXISTS mrn_lines (
   qty_issued    REAL NOT NULL DEFAULT 0,
   qty_short     REAL NOT NULL DEFAULT 0,
   discrepancy_reason TEXT,
+  is_cancelled  INTEGER DEFAULT 0,
+  cancellation_reason TEXT,
+  cancelled_by  TEXT,
+  cancelled_at  TEXT,
   supply_route  TEXT DEFAULT 'main_store',   -- main_store | head_office | local_purchase | direct_delivery
   auto_mtn_id   INTEGER REFERENCES mtn(id),
   route_assigned_by TEXT,

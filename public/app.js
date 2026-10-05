@@ -4921,6 +4921,19 @@ function grnRoad(g) {
 }
 
 function mrnRoad(m) {
+  if (m.status === 'closed') {
+    return {
+      road: [
+        { label: 'Requested', state: 'done' },
+        { label: 'Certified', state: 'done' },
+        { label: 'Approved', state: 'done' },
+        { label: 'Received', state: 'done' },
+        { label: 'Closed', state: 'done' },
+      ],
+      step: 'closed',
+      label: 'Closed'
+    };
+  }
   const isRejected = m.approval_status === 'rejected';
   const astatus = m.approval_status || 'requested';
   const isImported = astatus === 'requested' && !(m.requested_by && String(m.requested_by).trim());
@@ -5326,9 +5339,11 @@ async function newGrnModal(onDone) {
 }
 
 // ---- Stores
-routes.stores = async (c) => {
+routes.stores = async (c, parts = []) => {
   const sp = new URLSearchParams(location.hash.split('?')[1] || '');
-  let tab = sp.get('tab') || 'monitor';
+  const pathPart = location.hash.replace('#/', '').split('?')[0].split('/')[1];
+  let tab = sp.get('tab') || (pathPart === 'trace' ? 'trace' : (parts && parts[0] === 'trace' ? 'trace' : 'monitor'));
+  if (sp.get('sub') === 'trace') tab = 'trace';
 
   // If someone lands on legacy catalogue/categories/reorder/general/items tab, redirect to generalstock
   if (['catalogue', 'categories', 'reorder', 'general', 'items'].includes(tab)) {
@@ -5345,7 +5360,7 @@ routes.stores = async (c) => {
   if (tab === 'movements') tab = sp.get('sub') || 'issues';
   const GROUPS = {
     flow: { label: '🔄 REQUESTS → ISSUE',
-      subs: [['lines', '📋 Items'], ['mrn', 'Requests (MRN)'], ['grn', 'Receipts (GRN)'], ['issues', 'Issues'], ['workspace', '⚡ Receive & price many'], ['discrepancies', '⚠️ Short Deliveries']] },
+      subs: [['lines', '📋 Items'], ['mrn', 'Requests (MRN)'], ['grn', 'Receipts (GRN)'], ['issues', 'Issues'], ['workspace', '⚡ Receive & price many'], ['discrepancies', '⚠️ Short Deliveries'], ['trace', '🔍 Universal Trace']] },
   };
   // Part 2: every kind of stock in one view, and the stock take.
   // Part 4: scrap and waste oil leave on a disposal note.
@@ -5724,6 +5739,8 @@ routes.stores = async (c) => {
     await load();
   } else if (tab === 'discrepancies') {
     return storesDiscrepancies(body, sp);
+  } else if (tab === 'trace') {
+    return storesUniversalTrace(body, sp);
   } else if (tab === 'mtn') {
     const canT = canDo('stores.mtn.edit');
     const CAP = 300;
@@ -6515,6 +6532,547 @@ function resolveDiscrepancyModal(d, onDone) {
   });
 }
 
+// ---- Formal Closure, Reopen, and Line Cancellation Modals (Step 4c) -----
+async function mrnCloseModal(mrnId, onDone) {
+  try {
+    const check = await api('/stores/mrn/' + mrnId + '/closure-check');
+    if (!check.can_close) {
+      modal('Cannot Close Request — MRN ' + (check.mrn?.mrn_no || mrnId), `
+        <div class="card" style="border-left:4px solid var(--red, #dc2626);background:rgba(220,38,38,0.05);margin-bottom:12px">
+          <div style="font-weight:600;color:var(--red, #dc2626);margin-bottom:4px">⚠️ Request Closure Guard Active</div>
+          <p class="muted" style="font-size:12px;margin:0">Before an MRN can be formally closed, all line items must be received or cancelled, zero uncollected parts must remain on the store shelf, and all delivery shortages must be settled.</p>
+        </div>
+        <div style="font-size:13px;font-weight:600;margin-bottom:6px">Integrity check failed with ${check.reasons.length} open item(s):</div>
+        <ul style="font-size:12.5px;color:var(--red, #dc2626);line-height:1.6;margin:0 0 14px 20px">
+          ${check.reasons.map((r) => `<li>${esc(r)}</li>`).join('')}
+        </ul>
+        <div style="font-size:12px;background:var(--card-bg, #f9fafb);padding:8px 12px;border-radius:4px;border:1px solid var(--border)" class="muted">
+          💡 <b>Action to resolve:</b> In the trace view or MRN detail, issue staged items to the vehicle or use the <b>✕ Cancel Line</b> action on any unfulfilled lines that will not be supplied.
+        </div>
+        <div style="margin-top:14px;text-align:right">
+          <button class="primary" id="guard-close">Understood</button>
+        </div>
+      `, (b, close) => {
+        qs('#guard-close', b).onclick = close;
+      });
+      return;
+    }
+
+    modal('Formally Close Request — MRN ' + (check.mrn?.mrn_no || mrnId), `
+      <div class="card" style="border-left:4px solid var(--green, #16a34a);background:rgba(22,163,74,0.05);margin-bottom:12px">
+        <div style="font-weight:600;color:var(--green, #16a34a);margin-bottom:4px">✓ Integrity Verification Passed</div>
+        <p class="muted" style="font-size:12px;margin:0">All items are received or cancelled, store shelves are clear, and delivery shortages are resolved. Formally closing this request locks it from further accidental receipts and marks it ready for final costing.</p>
+      </div>
+      ${field('Closure Notes / Handover Sign-off', 'closure_notes', {
+        placeholder: 'e.g. All requested components installed and verified on vehicle...',
+      })}
+      <div style="margin-top:14px;text-align:right">
+        <button class="primary" id="btn-do-close">Confirm & Close Request</button>
+      </div>
+    `, (b, close) => {
+      qs('#btn-do-close', b).onclick = async () => {
+        const f = formData(b);
+        try {
+          await api('/stores/mrn/' + mrnId + '/close', {
+            method: 'POST',
+            body: { notes: f.closure_notes || '' },
+          });
+          toast('MRN formally closed');
+          close();
+          if (onDone) onDone();
+        } catch (e) {
+          toast(e.message, 'err');
+        }
+      };
+    });
+  } catch (e) {
+    toast(e.message, 'err');
+  }
+}
+
+function mrnReopenModal(mrnId, onDone) {
+  modal('Reopen Request — MRN #' + mrnId, `
+    <p class="muted">Reopening this request allows subsequent receipts, line adjustments, or issues against it.</p>
+    ${field('Reason for Reopening *', 'reopen_reason', {
+      placeholder: 'e.g. Subsequent replacement batch required, closure made in error...',
+      required: true,
+    })}
+    <div style="margin-top:14px;text-align:right">
+      <button class="primary" id="btn-do-reopen">Reopen Request</button>
+    </div>
+  `, (b, close) => {
+    qs('#btn-do-reopen', b).onclick = async () => {
+      const f = formData(b);
+      const reason = (f.reopen_reason || '').trim();
+      if (!reason) {
+        toast('Reason for reopening is mandatory', 'err');
+        return;
+      }
+      try {
+        await api('/stores/mrn/' + mrnId + '/reopen', {
+          method: 'POST',
+          body: { reason },
+        });
+        toast('MRN reopened');
+        close();
+        if (onDone) onDone();
+      } catch (e) {
+        toast(e.message, 'err');
+      }
+    };
+  });
+}
+
+function mrnCancelLineModal(lineId, lineDesc, onDone) {
+  modal('Cancel Unfulfilled Line', `
+    <p class="muted">Item: <b>${esc(lineDesc || 'Line item')}</b></p>
+    <p style="font-size:12px;margin:0 0 10px">Cancelling this line voids remaining unreceived quantities, allowing the request and job card to close cleanly without leaving phantom deficits.</p>
+    ${field('Reason for Cancellation *', 'cancel_reason', {
+      placeholder: 'e.g. Part obsolete, not required by mechanic, locally fabricated...',
+      required: true,
+    })}
+    <div style="margin-top:14px;text-align:right">
+      <button class="danger" id="btn-do-cancel-line">Confirm Cancellation</button>
+    </div>
+  `, (b, close) => {
+    qs('#btn-do-cancel-line', b).onclick = async () => {
+      const f = formData(b);
+      const reason = (f.cancel_reason || '').trim();
+      if (!reason) {
+        toast('Cancellation reason is mandatory', 'err');
+        return;
+      }
+      try {
+        await api('/stores/mrn-lines/' + lineId + '/cancel', {
+          method: 'POST',
+          body: { reason },
+        });
+        toast('Line item cancelled');
+        close();
+        if (onDone) onDone();
+      } catch (e) {
+        toast(e.message, 'err');
+      }
+    };
+  });
+}
+
+// ---- Universal Trace View & Dedicated Full-Page View (Step 4c) -----------
+function renderTraceView(container, data, { onRefresh, isFullPage = false } = {}) {
+  const chainNo = data.chain_no || '—';
+  const mrns = data.mrns || [];
+  const mtns = data.mtns || [];
+  const grns = data.grns || [];
+  const issues = data.issues || [];
+  const discrepancies = data.discrepancies || [];
+  const items = data.items || [];
+  const summary = data.summary || {};
+  const integrity = data.integrity || {};
+  const job = data.job || null;
+  const primaryMrn = mrns[0] || null;
+
+  const openDisc = discrepancies.filter((d) => d.status === 'open' || d.status === 'investigating');
+
+  // 6-stage custody stepper states
+  const st1Done = mrns.length > 0 && mrns.every((m) => m.approval_status === 'approved' || m.status === 'closed' || (!m.requested_by && m.approval_status === 'requested'));
+  const st1State = st1Done ? 'done' : (mrns.length ? 'active' : 'pending');
+
+  const hasDirect = mrns.some((m) => m.purchase_source === 'direct_purchase' || m.purchase_source === 'local');
+  const st2Done = mtns.length > 0 && mtns.every((t) => ['accepted', 'completed'].includes(t.status));
+  const st2Active = mtns.some((t) => ['in_transit', 'dispatched', 'to_accept'].includes(t.status));
+  const st2State = (hasDirect && !mtns.length) ? 'skipped' : (st2Done ? 'done' : (st2Active ? 'active' : (mtns.length ? 'active' : 'pending')));
+
+  const st3Done = summary.total_qty_received >= summary.total_qty_requested && summary.total_qty_requested > 0;
+  const st3State = st3Done ? 'done' : (summary.total_qty_received > 0 ? 'active' : 'pending');
+
+  const st4Done = summary.total_qty_received > 0 && (summary.total_qty_on_shelf || 0) === 0 && summary.total_qty_issued >= summary.total_qty_received;
+  const st4Active = (summary.total_qty_on_shelf || 0) > 0;
+  const st4State = st4Done ? 'done' : (st4Active ? 'active' : 'pending');
+
+  const st5Done = summary.total_qty_issued >= summary.total_qty_requested && summary.total_qty_requested > 0;
+  const st5State = st5Done ? 'done' : (summary.total_qty_issued > 0 ? 'active' : 'pending');
+
+  const st6Done = !!(job && job.status === 'closed');
+  const st6Active = !!(job && job.status !== 'closed');
+  const st6State = job ? (st6Done ? 'done' : 'active') : 'skipped';
+
+  const STEP_CONF = [
+    { num: 1, title: 'MRN Requisition', desc: st1Done ? 'Requisition Approved' : (mrns.length ? 'Approval in Flight' : 'No MRN'), state: st1State },
+    { num: 2, title: 'MTN Transfer', desc: st2State === 'skipped' ? 'Direct / Local Purchase' : (st2Done ? 'Transfer Complete' : (st2Active ? 'Dispatched / In-Transit' : 'No Transfer')), state: st2State },
+    { num: 3, title: 'GRN Receipt', desc: st3Done ? 'Fully Received' : (summary.total_qty_received > 0 ? `${num(summary.total_qty_received)}/${num(summary.total_qty_requested)} Received` : 'Awaiting Receipt'), state: st3State },
+    { num: 4, title: 'Store Shelf', desc: st4Done ? 'Cleared to Vehicle' : (st4Active ? `${num(summary.total_qty_on_shelf)} on Shelf` : 'Not Staged'), state: st4State },
+    { num: 5, title: 'Vehicle Issue', desc: st5Done ? 'Fully Issued (MIN)' : (summary.total_qty_issued > 0 ? `${num(summary.total_qty_issued)} Issued` : 'Not Issued'), state: st5State },
+    { num: 6, title: 'Job Closure', desc: st6State === 'skipped' ? 'General Stock / No Job' : (st6Done ? 'Job Card Closed & Costed' : 'Job Card Open'), state: st6State },
+  ];
+
+  const stateStyle = (st) => {
+    if (st === 'done') return { color: 'var(--green, #16a34a)', bg: 'rgba(22,163,74,0.06)', icon: '✓', text: 'Completed' };
+    if (st === 'active') return { color: 'var(--blue, #2563eb)', bg: 'rgba(37,99,235,0.06)', icon: '⚡', text: 'In Progress' };
+    if (st === 'skipped') return { color: 'var(--muted, #6b7280)', bg: 'rgba(107,114,128,0.04)', icon: '—', text: 'N/A' };
+    return { color: 'var(--muted, #9ca3af)', bg: 'transparent', icon: '○', text: 'Pending' };
+  };
+
+  container.innerHTML = `
+    <!-- Chain Header & Metadata -->
+    <div style="font-size:13px;margin-bottom:12px">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;flex-wrap:wrap">
+        <span style="font-size:16px;font-weight:600">Universal Trace Chain:</span>
+        <span class="badge purple" style="font-size:14px;padding:4px 10px">${esc(chainNo)}</span>
+        ${job ? `<span class="badge blue" style="font-size:12px">Job: <a href="#/jobs/${job.id}" style="color:inherit;text-decoration:underline">#${esc(job.job_no)}</a> (${esc(job.status || 'open')})</span>` : ''}
+        ${job && (job.asset_reg || job.asset_code) ? `<span class="badge" style="font-size:12px">Vehicle: ${esc(job.asset_reg || job.asset_code)}</span>` : ''}
+        <div class="spacer"></div>
+        ${onRefresh ? '<button class="sm" id="trace-btn-refresh">↻ Refresh</button>' : ''}
+      </div>
+      <p class="muted" style="margin:0 0 10px">End-to-end custody and material accounting correlation: Requisition (MRN) ➔ Transfer (MTN) ➔ Receipt (GRN) ➔ Shelf ➔ Vehicle Issue (MIN / Job Card).</p>
+    </div>
+
+    <!-- 6-Stage Custody Stepper -->
+    <div class="card" style="margin-bottom:12px;padding:12px 14px">
+      <div style="font-weight:600;font-size:12px;margin-bottom:10px;text-transform:uppercase;letter-spacing:0.5px" class="muted">6-Stage Chain Custody Stepper</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(140px, 1fr));gap:8px">
+        ${STEP_CONF.map((s) => {
+          const st = stateStyle(s.state);
+          return `
+            <div style="border:1px solid var(--border);border-radius:6px;padding:8px 10px;background:${st.bg};border-top:3px solid ${st.color}">
+              <div style="font-size:10.5px;font-weight:bold;color:${st.color};display:flex;align-items:center;gap:4px">
+                <span>${st.icon}</span> STAGE ${s.num} · ${st.text}
+              </div>
+              <div style="font-size:12.5px;font-weight:600;margin:3px 0 2px">${esc(s.title)}</div>
+              <div style="font-size:11px" class="muted">${esc(s.desc)}</div>
+            </div>
+          `;
+        }).join('')}
+      </div>
+    </div>
+
+    <!-- Integrity Status Banner -->
+    <div class="card" style="border-left:4px solid ${integrity.is_safe_to_close ? 'var(--green, #16a34a)' : 'var(--amber, #f59e0b)'};background:${integrity.is_safe_to_close ? 'rgba(22,163,74,0.06)' : 'rgba(245,158,11,0.06)'};margin-bottom:12px">
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <div style="font-size:15px;font-weight:bold;color:${integrity.is_safe_to_close ? 'var(--green, #16a34a)' : 'var(--amber, #d97706)'}">
+          ${integrity.is_safe_to_close ? '✓ Integrity Verified · Safe to Formally Close' : '⚠️ Trace Integrity Pending'}
+        </div>
+        <div class="spacer"></div>
+        ${primaryMrn ? (
+          primaryMrn.status === 'closed'
+            ? `<span class="badge gray">🔒 MRN #${esc(primaryMrn.mrn_no)} Closed</span> <button class="sm" id="trace-btn-reopen" data-mrn-id="${primaryMrn.id}">🔓 Reopen Request</button>`
+            : `<button class="sm primary" id="trace-btn-close" data-mrn-id="${primaryMrn.id}" title="Formally close MRN after verifying receipts">🔒 Close Request</button>`
+        ) : ''}
+      </div>
+      ${integrity.is_safe_to_close ? `
+        <p class="muted" style="margin:4px 0 0;font-size:12px">All requested lines have reached their destination, store shelf staging is balanced (zero parts uncollected), and delivery shortages are resolved.</p>
+      ` : `
+        <p style="margin:4px 0 6px;font-size:12px;font-weight:500;color:var(--amber, #d97706)">Integrity rule checks must pass before this request or its linked job card can formally close:</p>
+        <ul style="margin:0 0 4px 18px;font-size:12px;color:var(--text, #333);line-height:1.5">
+          ${(integrity.reasons || []).map((r) => `<li>${esc(r)}</li>`).join('')}
+        </ul>
+      `}
+    </div>
+
+    <!-- KPI Summary Cards -->
+    <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(130px, 1fr));gap:8px;margin-bottom:12px">
+      <div class="card" style="padding:8px 10px;text-align:center">
+        <div class="muted" style="font-size:11px">Requested Qty</div>
+        <div style="font-size:18px;font-weight:bold">${num(summary.total_qty_requested || 0)}</div>
+      </div>
+      <div class="card" style="padding:8px 10px;text-align:center">
+        <div class="muted" style="font-size:11px">Received Qty</div>
+        <div style="font-size:18px;font-weight:bold;color:var(--teal)">${num(summary.total_qty_received || 0)}</div>
+      </div>
+      <div class="card" style="padding:8px 10px;text-align:center">
+        <div class="muted" style="font-size:11px">Short Qty</div>
+        <div style="font-size:18px;font-weight:bold;color:${(summary.total_qty_short || 0) > 0 ? 'var(--red, #dc2626)' : 'inherit'}">${num(summary.total_qty_short || 0)}</div>
+      </div>
+      <div class="card" style="padding:8px 10px;text-align:center">
+        <div class="muted" style="font-size:11px">Issued Qty</div>
+        <div style="font-size:18px;font-weight:bold;color:var(--green)">${num(summary.total_qty_issued || 0)}</div>
+      </div>
+      <div class="card" style="padding:8px 10px;text-align:center">
+        <div class="muted" style="font-size:11px">On Shelf Qty</div>
+        <div style="font-size:18px;font-weight:bold;color:${(summary.total_qty_on_shelf || 0) > 0 ? 'var(--amber, #f59e0b)' : 'inherit'}">${num(summary.total_qty_on_shelf || 0)}</div>
+      </div>
+    </div>
+
+    <!-- Shortages & Discrepancies Table -->
+    ${discrepancies.length ? `
+      <div class="card" style="border-left:4px solid var(--red, #dc2626);margin-bottom:12px;background:rgba(220,38,38,0.03)">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+          <span style="font-size:14px;font-weight:600;color:var(--red, #dc2626)">⚠️ Delivery Shortages & Discrepancies (${openDisc.length} Open)</span>
+        </div>
+        <div style="overflow-x:auto">
+          <table style="width:100%;font-size:12px">
+            <thead>
+              <tr>
+                <th>Item</th>
+                <th class="num">Expected</th>
+                <th class="num">Received</th>
+                <th class="num">Shortage</th>
+                <th>Reason</th>
+                <th>Status</th>
+                <th>Reported By</th>
+                <th class="num">Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${discrepancies.map((d) => `
+                <tr>
+                  <td><b>${esc(d.item_description || 'Item')}</b></td>
+                  <td class="num">${num(d.qty_expected)}</td>
+                  <td class="num">${num(d.qty_received)}</td>
+                  <td class="num" style="color:var(--red, #dc2626);font-weight:bold">-${num(d.qty_short)}</td>
+                  <td>${esc(d.reason || '—')}</td>
+                  <td><span class="badge ${d.status === 'resolved' ? 'green' : (d.status === 'written_off' ? 'gray' : 'red')}">${esc(d.status)}</span></td>
+                  <td>${esc(d.reported_by || '—')} <span class="muted">(${esc(String(d.reported_at || '').slice(0, 10))})</span></td>
+                  <td class="num"><button class="sm" data-trace-resolve-disc="${d.id}">Manage</button></td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    ` : ''}
+
+    <!-- Linked Documents Flow -->
+    <div class="card" style="margin-bottom:12px">
+      <h4 style="margin:0 0 8px">Linked Chain Documents</h4>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(200px, 1fr));gap:8px;font-size:12px">
+        <div style="border:1px solid var(--border);padding:8px;border-radius:4px">
+          <b>1 · Requests (MRN)</b><br>
+          ${mrns.length ? mrns.map((m) => `<a href="#/stores?tab=mrn&id=${m.id}">#${esc(m.mrn_no)}</a> (${esc(m.status === 'closed' ? 'closed' : (m.status || 'open'))})`).join(', ') : '<span class="muted">None</span>'}
+        </div>
+        <div style="border:1px solid var(--border);padding:8px;border-radius:4px">
+          <b>2 · Transfers (MTN)</b><br>
+          ${mtns.length ? mtns.map((t) => `<a href="#/stores?tab=mtn&id=${t.id}">#${esc(t.mtn_no)}</a> (${esc(t.status || 'draft')})`).join(', ') : '<span class="muted">None</span>'}
+        </div>
+        <div style="border:1px solid var(--border);padding:8px;border-radius:4px">
+          <b>3 · Receipts (GRN)</b><br>
+          ${grns.length ? grns.map((g) => `#${esc(g.grn_no || 'GRN-' + g.id)} (${num(g.qty)} nos)`).join(', ') : '<span class="muted">None</span>'}
+        </div>
+        <div style="border:1px solid var(--border);padding:8px;border-radius:4px">
+          <b>4 · Issues (MIN)</b><br>
+          ${issues.length ? issues.map((i) => `#${esc(i.id)} (${num(i.qty)} nos)`).join(', ') : '<span class="muted">None</span>'}
+        </div>
+      </div>
+    </div>
+
+    <!-- Consolidated Line Progression -->
+    <div class="card">
+      <h4 style="margin:0 0 8px">Consolidated Line Progression</h4>
+      <div style="overflow-x:auto">
+        <table style="width:100%;font-size:12px">
+          <thead>
+            <tr>
+              <th>Item</th>
+              <th>Source / Route</th>
+              <th class="num">Requested</th>
+              <th class="num">Received</th>
+              <th class="num">Shortage</th>
+              <th class="num">Issued</th>
+              <th class="num">On Shelf</th>
+              <th>Stage</th>
+              <th class="num">Action</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${items.map((it) => {
+              const isCanc = !!it.is_cancelled;
+              const unfulfilled = (it.qty_received < it.qty_requested) && !isCanc;
+              let actionHtml = '<span class="muted">—</span>';
+              if (isCanc) {
+                actionHtml = `<span class="badge gray" title="${esc(it.cancellation_reason || 'Line item cancelled')}">Cancelled</span>`;
+              } else if (unfulfilled && it.mrn_line_id && (!primaryMrn || primaryMrn.status !== 'closed')) {
+                actionHtml = `<button class="sm danger" data-trace-cancel-line="${it.mrn_line_id}" data-desc="${esc(it.description)}">✕ Cancel</button>`;
+              }
+
+              let stageClass = 'blue';
+              let stageText = it.stage ? it.stage.replace(/_/g, ' ') : 'PENDING';
+              if (isCanc) { stageClass = 'gray'; stageText = 'CANCELLED'; }
+              else if (it.stage === 'FULLY_ISSUED') { stageClass = 'green'; }
+              else if (it.stage === 'READY_ON_SHELF') { stageClass = 'teal'; }
+              else if (it.has_shortage) { stageClass = 'red'; }
+
+              return `
+                <tr>
+                  <td><b>${esc(it.description)}</b>${isCanc ? `<br><small class="muted" style="color:var(--red, #dc2626)">Cancelled: ${esc(it.cancellation_reason || '')}</small>` : ''}</td>
+                  <td>${esc(it.purchase_source || 'Head Office')}${it.supply_route ? ' · ' + supplyRouteBadge(it.supply_route) : ''}</td>
+                  <td class="num">${num(it.qty_requested)}</td>
+                  <td class="num">${num(it.qty_received)}</td>
+                  <td class="num" style="${it.has_shortage ? 'color:var(--red, #dc2626);font-weight:bold' : ''}">${it.has_shortage ? `-${num(it.qty_short)}` : '0'}</td>
+                  <td class="num">${num(it.qty_issued)}</td>
+                  <td class="num" style="${it.qty_on_shelf > 0 ? 'color:var(--amber, #f59e0b);font-weight:bold' : ''}">${num(it.qty_on_shelf)}</td>
+                  <td><span class="badge ${stageClass}">${esc(stageText)}</span></td>
+                  <td class="num">${actionHtml}</td>
+                </tr>
+              `;
+            }).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+
+  // Wire up event listeners
+  if (qs('#trace-btn-refresh', container) && onRefresh) {
+    qs('#trace-btn-refresh', container).onclick = onRefresh;
+  }
+  if (qs('#trace-btn-close', container)) {
+    const mId = qs('#trace-btn-close', container).dataset.mrnId;
+    qs('#trace-btn-close', container).onclick = () => mrnCloseModal(mId, onRefresh);
+  }
+  if (qs('#trace-btn-reopen', container)) {
+    const mId = qs('#trace-btn-reopen', container).dataset.mrnId;
+    qs('#trace-btn-reopen', container).onclick = () => mrnReopenModal(mId, onRefresh);
+  }
+  qsa('[data-trace-cancel-line]', container).forEach((b) => {
+    b.onclick = () => mrnCancelLineModal(b.dataset.traceCancelLine, b.dataset.desc, onRefresh);
+  });
+  qsa('[data-trace-resolve-disc]', container).forEach((b) => {
+    const dId = b.dataset.traceResolveDisc;
+    const item = discrepancies.find((x) => String(x.id) === String(dId));
+    if (item) b.onclick = () => resolveDiscrepancyModal(item, onRefresh);
+  });
+}
+
+async function storesUniversalTrace(body, sp) {
+  const initialChain = sp.get('chain_no') || '';
+  const initialQ = sp.get('q') || '';
+  const initialMrn = sp.get('mrn_id') || '';
+  const initialMtn = sp.get('mtn_id') || '';
+  const initialGrn = sp.get('grn_id') || '';
+  const initialJob = sp.get('job_id') || '';
+
+  body.innerHTML = `
+    <div class="card" style="margin-bottom:12px">
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <div style="font-weight:600;font-size:15px;white-space:nowrap">🔍 Universal Trace Omnibox:</div>
+        <div style="position:relative;flex:1;min-width:280px">
+          <input id="omni-input" type="search" placeholder="Search Chain No (CHN-...), MRN, MTN, GRN, Job Card, Vehicle plate..." value="${esc(initialChain || initialQ)}" style="width:100%;font-size:13px;padding:8px 12px">
+          <div id="omni-dropdown" style="display:none;position:absolute;top:100%;left:0;right:0;background:var(--card-bg, #fff);border:1px solid var(--border);border-radius:4px;box-shadow:0 4px 12px rgba(0,0,0,0.15);z-index:50;max-height:300px;overflow-y:auto;margin-top:2px"></div>
+        </div>
+        <button class="primary sm" id="omni-btn-search">Search</button>
+      </div>
+    </div>
+    <div id="trace-content"><div class="muted">Loading lifecycle trace...</div></div>
+  `;
+
+  const content = qs('#trace-content', body);
+  const input = qs('#omni-input', body);
+  const dropdown = qs('#omni-dropdown', body);
+
+  async function loadTrace(params = {}) {
+    content.innerHTML = '<div class="muted" style="padding:20px;text-align:center">Loading supply chain telemetry...</div>';
+    let qStr = '';
+    if (params.chain_no) qStr = 'chain_no=' + encodeURIComponent(params.chain_no);
+    else if (params.mrn_id) qStr = 'mrn_id=' + encodeURIComponent(params.mrn_id);
+    else if (params.mtn_id) qStr = 'mtn_id=' + encodeURIComponent(params.mtn_id);
+    else if (params.grn_id) qStr = 'grn_id=' + encodeURIComponent(params.grn_id);
+    else if (params.job_id) qStr = 'job_id=' + encodeURIComponent(params.job_id);
+    else if (params.q) qStr = 'q=' + encodeURIComponent(params.q);
+
+    try {
+      const data = await api('/stores/pipeline/trace?' + qStr);
+      renderTraceView(content, data, {
+        onRefresh: () => loadTrace(params),
+        isFullPage: true,
+      });
+      if (data.chain_no && data.chain_no !== '—') {
+        history.replaceState(null, '', '#/stores?tab=flow&sub=trace&chain_no=' + encodeURIComponent(data.chain_no));
+      }
+    } catch (e) {
+      content.innerHTML = `<div class="card"><p class="err">Could not load trace: ${esc(e.message)}</p></div>`;
+    }
+  }
+
+  // Handle Omnibox search suggestions
+  let deb;
+  async function searchOmni(val) {
+    if (!val || val.length < 2) {
+      dropdown.style.display = 'none';
+      return;
+    }
+    try {
+      const list = await api('/stores/trace/search?q=' + encodeURIComponent(val));
+      if (!list.length) {
+        dropdown.innerHTML = '<div style="padding:8px 12px;font-size:12px" class="muted">No matching chain documents or assets</div>';
+        dropdown.style.display = 'block';
+        return;
+      }
+      dropdown.innerHTML = list.map((item) => `
+        <div class="omni-item" data-omni-type="${esc(item.type)}" data-omni-id="${esc(item.id)}" data-omni-chain="${esc(item.chain_no || '')}" style="padding:8px 12px;border-bottom:1px solid var(--border);cursor:pointer;display:flex;align-items:center;gap:8px">
+          <span class="badge ${item.color || 'blue'}" style="font-size:11px">${esc(item.badge)}</span>
+          <div style="flex:1">
+            <div style="font-weight:600;font-size:13px">${esc(item.title)}</div>
+            <div style="font-size:11px" class="muted">${esc(item.subtitle)}</div>
+          </div>
+        </div>
+      `).join('');
+      dropdown.style.display = 'block';
+
+      qsa('.omni-item', dropdown).forEach((el) => {
+        el.onclick = () => {
+          dropdown.style.display = 'none';
+          const type = el.dataset.omniType;
+          const id = el.dataset.omniId;
+          const chain = el.dataset.omniChain;
+          if (type === 'chain') {
+            input.value = id;
+            loadTrace({ chain_no: id });
+          } else if (type === 'mrn') {
+            input.value = 'MRN ' + id;
+            loadTrace({ mrn_id: id });
+          } else if (type === 'mtn') {
+            input.value = 'MTN ' + id;
+            loadTrace({ mtn_id: id });
+          } else if (type === 'grn') {
+            input.value = 'GRN ' + id;
+            loadTrace({ grn_id: id });
+          } else if (type === 'job') {
+            input.value = 'Job ' + id;
+            loadTrace({ job_id: id });
+          } else if (chain) {
+            input.value = chain;
+            loadTrace({ chain_no: chain });
+          } else {
+            loadTrace({ q: id });
+          }
+        };
+      });
+    } catch {
+      dropdown.style.display = 'none';
+    }
+  }
+
+  input.oninput = () => {
+    clearTimeout(deb);
+    deb = setTimeout(() => searchOmni(input.value.trim()), 200);
+  };
+  input.onkeydown = (e) => {
+    if (e.key === 'Enter') {
+      dropdown.style.display = 'none';
+      const val = input.value.trim();
+      if (val) loadTrace({ q: val });
+    }
+  };
+  qs('#omni-btn-search', body).onclick = () => {
+    dropdown.style.display = 'none';
+    const val = input.value.trim();
+    if (val) loadTrace({ q: val });
+  };
+
+  document.addEventListener('click', (e) => {
+    if (!input.contains(e.target) && !dropdown.contains(e.target)) {
+      dropdown.style.display = 'none';
+    }
+  });
+
+  if (initialChain) loadTrace({ chain_no: initialChain });
+  else if (initialMrn) loadTrace({ mrn_id: initialMrn });
+  else if (initialMtn) loadTrace({ mtn_id: initialMtn });
+  else if (initialGrn) loadTrace({ grn_id: initialGrn });
+  else if (initialJob) loadTrace({ job_id: initialJob });
+  else if (initialQ) loadTrace({ q: initialQ });
+  else loadTrace();
+}
+
 async function mrnList(body, params) {
   const cur = { step: params.get('step') || 'all_todo', q: params.get('q') || '', sort: params.get('sort') || 'date_desc' };
   const MRN_STEPS = [
@@ -6524,6 +7082,7 @@ async function mrnList(body, params) {
     ['to_receive', 'To buy / receive'],
     ['partial', 'Part received'],
     ['done', 'Done'],
+    ['closed', 'Closed'],
     ['rejected', 'Rejected'],
     ['all', 'All'],
   ];
@@ -6581,7 +7140,7 @@ async function mrnList(body, params) {
           ${docRoadBar(rd)}
           <span class="muted" style="font-size:11px">${esc(rd.label)}</span>
         </td>
-        <td>${m.approval_status === 'rejected' ? '<span class="badge red">✕ Cancelled (rejected)</span>' : receiptBadge(m.qty_requested, m.qty_received)}</td>
+        <td>${m.status === 'closed' ? '<span class="badge gray">🔒 Closed</span>' : (m.approval_status === 'rejected' ? '<span class="badge red">✕ Cancelled (rejected)</span>' : receiptBadge(m.qty_requested, m.qty_received))}</td>
         <td style="white-space:nowrap">
           <a class="btn sm" href="/api/stores/mrn/${m.id}/print.html" target="_blank" title="Print MRN (EC1.ST.FO.01)">🖨</a>
           <a class="btn sm" href="/api/stores/mrn/${m.id}/download.pdf" download title="Download MRN PDF">⬇ PDF</a>
@@ -6682,7 +7241,8 @@ async function mrnDetail(body, id) {
     const remaining = Math.max(0, req - rec);
 
     let stageBadge = '<span class="badge amber">Pending</span>';
-    if (iss >= req && req > 0) stageBadge = '<span class="badge green">✓ Issued</span>';
+    if (l.is_cancelled) stageBadge = '<span class="badge gray" title="' + esc(l.cancellation_reason || 'Cancelled') + '">✕ Cancelled</span>';
+    else if (iss >= req && req > 0) stageBadge = '<span class="badge green">✓ Issued</span>';
     else if (rec >= req && req > 0) stageBadge = '<span class="badge green">✓ Received</span>';
     else if (rec > 0) stageBadge = '<span class="badge blue">Partial received</span>';
     else if (sent >= req && req > 0) stageBadge = '<span class="badge violet">In Transit</span>';
@@ -6695,6 +7255,7 @@ async function mrnDetail(body, id) {
     return `<tr>
       <td>${esc(l.description || '')}${l.added_after_approval
         ? ` <span class="badge red" title="${esc('Added after this request was approved, by ' + (l.added_by || 'an admin') + (l.added_at ? ' on ' + l.added_at : '') + (l.added_reason ? ' — ' + l.added_reason : ''))}">added after approval</span>` : ''}
+        ${l.is_cancelled ? `<br><small class="muted" style="color:var(--red, #dc2626)">✕ Cancelled: ${esc(l.cancellation_reason || 'Line cancelled')}</small>` : ''}
         ${l.auto_mtn_id ? `<br><a href="#/stores?tab=mtn&id=${l.auto_mtn_id}" class="badge violet" title="Material Transfer Note created for this item">Auto-MTN #${esc(l.auto_mtn_no || l.auto_mtn_id)}</a>` : ''}
         ${l.buying_priority ? `<br><span class="badge sm ${l.buying_priority === 'P1_CRITICAL' ? 'red' : (l.buying_priority === 'P2_URGENT' ? 'amber' : '')}" style="cursor:pointer" data-ws-prio="${l.id}" data-prio-val="${esc(l.buying_priority)}" data-prio-note="${esc(l.priority_note || '')}" title="${esc(l.priority_note || 'Click to adjust priority')}">${esc(l.buying_priority === 'P1_CRITICAL' ? '🚨 P1 Breakdown' : (l.buying_priority === 'P2_URGENT' ? '⚡ P2 Urgent' : (l.buying_priority === 'P4_LOW' ? 'P4 Stock' : 'P3 Routine')))}</span>` : ''}
         ${l.priority_note ? `<div style="font-size:11px;color:var(--amber);margin-top:2px"><b>Urgency Note:</b> ${esc(l.priority_note)}</div>` : ''}</td>
@@ -6707,11 +7268,14 @@ async function mrnDetail(body, id) {
       <td class="num">${num(l.qty_issued)}</td>
       <td class="num">${remaining > 0 ? `<span class="badge amber">${num(remaining)}</span>` : '<span class="badge green">0</span>'}</td>
       <td>${stageBadge}</td>
-      ${lineCol ? `<td class="num" style="white-space:nowrap">${remaining > 0 ? (canRx ? `<button class="sm primary" data-rx="${l.id}" data-desc="${esc(l.description || '')}" data-rem="${remaining}">Receive</button> ` : '') : '✓ '}${
-        canPrio && remaining > 0 ? `<button class="sm" data-ws-prio="${l.id}" data-prio-val="${esc(l.buying_priority || 'P3_ROUTINE')}" data-prio-note="${esc(l.priority_note || '')}" title="Adjust Workshop Buying Urgency">⚡ Urgency</button> ` : ''}${
-        // An item can be corrected until approval; one already part-received can only have its
-        // quantity raised, and cannot be removed at all.
-        canEditLines ? `<button class="sm" data-ledit="${l.id}">✎</button>${rec > 0 ? '' : ` <button class="sm danger" data-ldel="${l.id}" data-desc="${esc(l.description || '')}">✕</button>`}` : ''}</td>` : ''}</tr>`;
+      ${lineCol ? `<td class="num" style="white-space:nowrap">${
+        l.is_cancelled ? '<span class="muted">Cancelled</span>' : (
+          (remaining > 0 ? (canRx ? `<button class="sm primary" data-rx="${l.id}" data-desc="${esc(l.description || '')}" data-rem="${remaining}">Receive</button> ` : '') : '✓ ') +
+          (canPrio && remaining > 0 ? `<button class="sm" data-ws-prio="${l.id}" data-prio-val="${esc(l.buying_priority || 'P3_ROUTINE')}" data-prio-note="${esc(l.priority_note || '')}" title="Adjust Workshop Buying Urgency">⚡ Urgency</button> ` : '') +
+          (canEditLines ? `<button class="sm" data-ledit="${l.id}">✎</button>${rec > 0 ? '' : ` <button class="sm danger" data-ldel="${l.id}" data-desc="${esc(l.description || '')}">✕</button>`}` : '') +
+          (remaining > 0 && m.status !== 'closed' ? ` <button class="sm danger" data-lcancel="${l.id}" data-desc="${esc(l.description || '')}" title="Cancel unfulfilled line item">✕ Cancel</button>` : '')
+        )
+      }</td>` : ''}</tr>`;
   });
   const grnRows = d.grns.map((g) => `<tr>
     <td>${esc(g.grn_no || '—')}</td>
@@ -6757,7 +7321,7 @@ async function mrnDetail(body, id) {
       <span class="muted">— quantity × last price paid${worth.unpriced ? `; ${worth.unpriced} item(s) have no price yet, so the real cost may be higher` : ''}</span>
       ${overLimit ? `<br><span class="badge amber">Above your approval limit (${esc(money(worth.limit.limit))})</span> Needs: ${esc(worth.limit.who_can.join(', '))}.` : ''}</p>` : '';
   body.innerHTML = `
-    <div class="toolbar"><a class="btn sm" href="#/stores?tab=mrn">← MRN list</a><div class="spacer"></div><button class="btn sm" id="mrnpipeline">📊 Pipeline</button> <button class="btn sm primary" id="mrntrace">🔍 Trace Lifecycle</button> <a class="btn sm" href="/api/stores/mrn/${m.id}/print.html" target="_blank">🖨 Print MRN</a> <a class="btn sm primary" href="/api/stores/mrn/${m.id}/download.pdf" download>⬇ Download PDF</a></div>
+    <div class="toolbar"><a class="btn sm" href="#/stores?tab=mrn">← MRN list</a><div class="spacer"></div>${m.status === 'closed' ? '<button class="btn sm" id="mreopen">🔓 Reopen Request</button>' : '<button class="btn sm primary" id="mclose" title="Formally close MRN after checking line fulfillment">🔒 Close Request</button>'} <button class="btn sm" id="mrnpipeline">📊 Pipeline</button> <button class="btn sm primary" id="mrntrace">🔍 Trace Lifecycle</button> <a class="btn sm" href="/api/stores/mrn/${m.id}/print.html" target="_blank">🖨 Print MRN</a> <a class="btn sm primary" href="/api/stores/mrn/${m.id}/download.pdf" download>⬇ Download PDF</a></div>
     <div class="card">
       <div class="toolbar" style="margin:0"><h3 style="margin:0">Approval flow</h3><div class="spacer"></div>${aBadge}
         ${canCertify ? '<button class="sm primary" id="mcertify">✍ Certify</button>' : ''}
@@ -6775,12 +7339,18 @@ async function mrnDetail(body, id) {
     </div>
     <div class="card">
       <div class="toolbar" style="margin:0 0 6px">
-        <h3 style="margin:0">MRN ${esc(m.mrn_no)} ${m.chain_no ? `<span class="badge purple" style="font-size:12px;margin-left:6px" title="Universal Trace Chain">Chain: ${esc(m.chain_no)}</span>` : ''} ${receiptBadge(d.lines.reduce((s, l) => s + (Number(l.qty) || 0), 0), d.lines.reduce((s, l) => s + (Number(l.qty_received) || 0), 0))} ${aBadge}</h3>
+        <h3 style="margin:0">MRN ${esc(m.mrn_no)} ${m.chain_no ? `<span class="badge purple" style="font-size:12px;margin-left:6px" title="Universal Trace Chain">Chain: ${esc(m.chain_no)}</span>` : ''} ${m.status === 'closed' ? '<span class="badge gray" style="font-size:12px;margin-left:6px">🔒 Closed</span>' : receiptBadge(d.lines.reduce((s, l) => s + (Number(l.qty) || 0), 0), d.lines.reduce((s, l) => s + (Number(l.qty_received) || 0), 0))} ${aBadge}</h3>
         <div class="spacer"></div>
         ${canEditReq ? '<button class="sm" id="medit">✎ Edit request</button> <button class="sm" id="maddline">+ Add item</button>' : ''}
         ${adminAmend ? '<button class="sm danger" id="maddline" title="Admin only — the approval stands, and the item is marked as added after it">+ Add item (after approval)</button>' : ''}
       </div>
       <p class="muted">Date ${esc((m.req_date || '').slice(0, 10))}${wsMulti() && m.workshop_name ? ` · Workshop ${esc(m.workshop_name)}` : ''} · Vehicle ${esc(idLabel(m) || '—')} · Job ${m.job_no ? `<a href="#/jobs/${m.job_id}">${esc(m.job_no)}</a> <span class="badge ${STATUS_CLASS[m.job_status] || ''}">${esc(m.job_status || '')}</span>` : 'not linked'} · Source ${esc(sourceLabel(m.purchase_source))}${m.purpose ? ' · ' + esc(m.purpose) : ''}${m.requested_by ? ' · by ' + esc(m.requested_by) : ''}</p>
+      ${m.status === 'closed' ? `
+        <div class="card" style="border-left:4px solid #6b7280;background:rgba(107,114,128,0.06);margin:8px 0 10px;padding:8px 12px">
+          <b>🔒 Formally Closed</b> by <b>${esc(m.closed_by || 'Store Manager')}</b> on ${esc((m.closed_at || '').slice(0, 16).replace('T', ' '))}
+          ${m.closure_notes ? `<br><span class="muted">Notes: ${esc(m.closure_notes)}</span>` : ''}
+        </div>
+      ` : ''}
       ${canEditReq && astatus === 'certified' ? '<p class="muted" style="font-size:12px;margin:0 0 6px">This request is certified. Changing what was asked for withdraws that certification and sends it back to the Workshop Engineer.</p>' : ''}
       ${astatus === 'approved' ? `<p class="muted" style="font-size:12px;margin:0 0 6px">Approved — the request is now the authority to spend, so it can no longer be changed.${
       // Telling an admin it cannot be changed, next to a button that changes it, would be a lie.
@@ -6836,6 +7406,11 @@ async function mrnDetail(body, id) {
 
   if (qs('#mrnpipeline')) qs('#mrnpipeline').onclick = () => mrnPipelineModal(id);
   if (qs('#mrntrace')) qs('#mrntrace').onclick = () => pipelineTraceModal({ mrn_id: m.id });
+  if (qs('#mclose')) qs('#mclose').onclick = () => mrnCloseModal(m.id, reload);
+  if (qs('#mreopen')) qs('#mreopen').onclick = () => mrnReopenModal(m.id, reload);
+  qsa('[data-lcancel]', body).forEach((b) => {
+    b.onclick = () => mrnCancelLineModal(b.dataset.lcancel, b.dataset.desc, reload);
+  });
   if (qs('#mcertify')) qs('#mcertify').onclick = () => mrnSignModal(m, 'certify', () => mrnDetail(body, id));
   if (qs('#mapprove')) qs('#mapprove').onclick = () => mrnSignModal(m, 'approve', () => mrnDetail(body, id));
   if (qs('#mreject')) qs('#mreject').onclick = () => mrnSignModal(m, 'reject', () => mrnDetail(body, id));
@@ -6924,7 +7499,7 @@ async function mrnPipelineModal(mrnId) {
   }
 }
 
-// Universal Lifecycle Trace Modal (Step 4b)
+// Universal Lifecycle Trace Modal (Step 4b & 4c)
 async function pipelineTraceModal(filter = {}) {
   let qStr = '';
   if (filter.mrn_id) qStr = 'mrn_id=' + encodeURIComponent(filter.mrn_id);
@@ -6936,155 +7511,23 @@ async function pipelineTraceModal(filter = {}) {
   try {
     const data = await api('/stores/pipeline/trace?' + qStr);
     const chainNo = data.chain_no || '—';
-    const mrns = data.mrns || [];
-    const mtns = data.mtns || [];
-    const grns = data.grns || [];
-    const issues = data.issues || [];
-    const discrepancies = data.discrepancies || [];
-    const items = data.items || [];
-    const summary = data.summary || {};
-    const integrity = data.integrity || {};
 
-    const openDisc = discrepancies.filter((d) => d.status === 'open' || d.status === 'investigating');
-
-    const html = `
-      <div style="font-size:13px;margin-bottom:12px">
-        <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
-          <span style="font-size:16px;font-weight:600">Universal Trace Chain:</span>
-          <span class="badge purple" style="font-size:14px;padding:4px 10px">${esc(chainNo)}</span>
-          <div class="spacer"></div>
-          ${integrity.is_safe_to_close
-            ? '<span class="badge green">✓ Integrity Verified · Safe to Close</span>'
-            : '<span class="badge amber">⚠️ Open Items / Discrepancies Pending</span>'}
-        </div>
-        <p class="muted" style="margin:0 0 10px">End-to-end audit correlation from Site Request (MRN) → Workshop Transfer (MTN) → Site Receipt (GRN) → Vehicle Issue (MIN / Job Card).</p>
-      </div>
-
-      <!-- KPI Summary Cards -->
-      <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(130px, 1fr));gap:8px;margin-bottom:14px">
-        <div class="card" style="padding:8px 10px;text-align:center">
-          <div class="muted" style="font-size:11px">Requested Qty</div>
-          <div style="font-size:18px;font-weight:bold">${num(summary.total_qty_requested || 0)}</div>
-        </div>
-        <div class="card" style="padding:8px 10px;text-align:center">
-          <div class="muted" style="font-size:11px">Received Qty</div>
-          <div style="font-size:18px;font-weight:bold;color:var(--teal)">${num(summary.total_qty_received || 0)}</div>
-        </div>
-        <div class="card" style="padding:8px 10px;text-align:center">
-          <div class="muted" style="font-size:11px">Short Qty</div>
-          <div style="font-size:18px;font-weight:bold;color:${(summary.total_qty_short || 0) > 0 ? 'var(--red, #dc2626)' : 'inherit'}">${num(summary.total_qty_short || 0)}</div>
-        </div>
-        <div class="card" style="padding:8px 10px;text-align:center">
-          <div class="muted" style="font-size:11px">Issued Qty</div>
-          <div style="font-size:18px;font-weight:bold;color:var(--green)">${num(summary.total_qty_issued || 0)}</div>
-        </div>
-        <div class="card" style="padding:8px 10px;text-align:center">
-          <div class="muted" style="font-size:11px">On Shelf Qty</div>
-          <div style="font-size:18px;font-weight:bold;color:var(--amber)">${num(summary.total_qty_on_shelf || 0)}</div>
-        </div>
-      </div>
-
-      ${openDisc.length ? `
-        <div class="card" style="border-left:4px solid var(--red, #dc2626);margin-bottom:12px;background:rgba(220,38,38,0.04)">
-          <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
-            <span style="font-size:15px;font-weight:600;color:var(--red, #dc2626)">⚠️ Delivery Shortages & Discrepancies (${openDisc.length} Open)</span>
-          </div>
-          <p class="muted" style="font-size:12px;margin:0 0 8px">Discrepancy records keep the line deficit open until investigated and resolved:</p>
-          <div style="overflow-x:auto">
-            <table style="width:100%;font-size:12px">
-              <thead>
-                <tr>
-                  <th>Item</th>
-                  <th class="num">Expected</th>
-                  <th class="num">Received</th>
-                  <th class="num">Shortage</th>
-                  <th>Reason</th>
-                  <th>Status</th>
-                  <th>Reported By</th>
-                </tr>
-              </thead>
-              <tbody>
-                ${discrepancies.map((d) => `
-                  <tr>
-                    <td><b>${esc(d.item_description || 'Item')}</b></td>
-                    <td class="num">${num(d.qty_expected)}</td>
-                    <td class="num">${num(d.qty_received)}</td>
-                    <td class="num" style="color:var(--red, #dc2626);font-weight:bold">-${num(d.qty_short)}</td>
-                    <td>${esc(d.reason || '—')}</td>
-                    <td><span class="badge ${d.status === 'resolved' ? 'green' : (d.status === 'written_off' ? 'gray' : 'red')}">${esc(d.status)}</span></td>
-                    <td>${esc(d.reported_by || '—')} <span class="muted">(${esc(String(d.reported_at || '').slice(0, 10))})</span></td>
-                  </tr>
-                `).join('')}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      ` : ''}
-
-      <!-- Linked Documents Flow -->
-      <div class="card" style="margin-bottom:12px">
-        <h4 style="margin:0 0 8px">Linked Chain Documents</h4>
-        <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(200px, 1fr));gap:8px;font-size:12px">
-          <div style="border:1px solid var(--border);padding:8px;border-radius:4px">
-            <b>1 · Requests (MRN)</b><br>
-            ${mrns.length ? mrns.map((m) => `<a href="#/stores?tab=mrn&id=${m.id}">#${esc(m.mrn_no)}</a> (${esc(m.status || 'open')})`).join(', ') : '<span class="muted">None</span>'}
-          </div>
-          <div style="border:1px solid var(--border);padding:8px;border-radius:4px">
-            <b>2 · Transfers (MTN)</b><br>
-            ${mtns.length ? mtns.map((t) => `<a href="#/stores?tab=mtn&id=${t.id}">#${esc(t.mtn_no)}</a> (${esc(t.status || 'draft')})`).join(', ') : '<span class="muted">None</span>'}
-          </div>
-          <div style="border:1px solid var(--border);padding:8px;border-radius:4px">
-            <b>3 · Receipts (GRN)</b><br>
-            ${grns.length ? grns.map((g) => `#${esc(g.grn_no || 'GRN-' + g.id)} (${num(g.qty_received)} nos)`).join(', ') : '<span class="muted">None</span>'}
-          </div>
-          <div style="border:1px solid var(--border);padding:8px;border-radius:4px">
-            <b>4 · Issues (MIN)</b><br>
-            ${issues.length ? issues.map((i) => `#${esc(i.id)} (${num(i.qty_issued)} nos)`).join(', ') : '<span class="muted">None</span>'}
-          </div>
-        </div>
-      </div>
-
-      <!-- Item Lifecycle Progression -->
-      <div class="card">
-        <h4 style="margin:0 0 8px">Consolidated Line Progression</h4>
-        <div style="overflow-x:auto">
-          <table style="width:100%;font-size:12px">
-            <thead>
-              <tr>
-                <th>Item</th>
-                <th>Source</th>
-                <th class="num">Requested</th>
-                <th class="num">Received</th>
-                <th class="num">Shortage</th>
-                <th class="num">Issued</th>
-                <th class="num">On Shelf</th>
-                <th>Stage</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${items.map((it) => `
-                <tr>
-                  <td><b>${esc(it.description)}</b></td>
-                  <td>${esc(it.purchase_source || 'Head Office')}</td>
-                  <td class="num">${num(it.qty_requested)}</td>
-                  <td class="num">${num(it.qty_received)}</td>
-                  <td class="num" style="${it.has_shortage ? 'color:var(--red, #dc2626);font-weight:bold' : ''}">${it.has_shortage ? `-${num(it.qty_short)}` : '0'}</td>
-                  <td class="num">${num(it.qty_issued)}</td>
-                  <td class="num">${num(it.qty_on_shelf)}</td>
-                  <td><span class="badge ${it.stage === 'FULLY_ISSUED' ? 'green' : (it.stage === 'READY_ON_SHELF' ? 'teal' : (it.has_shortage ? 'red' : 'blue'))}">${esc(it.stage.replace(/_/g, ' '))}</span></td>
-                </tr>
-              `).join('')}
-            </tbody>
-          </table>
-        </div>
-      </div>
+    const bg = modal('Universal Trace — ' + esc(chainNo), `
+      <div id="modal-trace-content"></div>
       <div style="margin-top:14px;text-align:right">
         <button class="primary" id="tclose">Close</button>
       </div>
-    `;
-
-    const bg = modal('Universal Trace — ' + esc(chainNo), html, (b, close) => {
+    `, (b, close) => {
       qs('#tclose', b).onclick = close;
+      const reloadModal = async () => {
+        try {
+          const fresh = await api('/stores/pipeline/trace?' + qStr);
+          renderTraceView(qs('#modal-trace-content', b), fresh, { onRefresh: reloadModal, isFullPage: false });
+        } catch (e) {
+          toast(e.message, 'err');
+        }
+      };
+      renderTraceView(qs('#modal-trace-content', b), data, { onRefresh: reloadModal, isFullPage: false });
     });
     const box = qs('.modal', bg);
     if (box) { box.style.width = 'min(980px, 96vw)'; box.style.maxWidth = 'none'; }

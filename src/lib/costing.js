@@ -205,14 +205,42 @@ function closureReadiness(jobId) {
   const add = (text, kind) => items.push({ kind, text });
   const job = get('SELECT type, flat_labour, is_historical FROM job_cards WHERE id = ?', jobId);
 
-  // every requested part has a GRN (MRN lines fully received)
+  // every requested part has a GRN (MRN lines fully received, or cancelled / shortage settled)
   for (const l of all(
     `SELECT ml.*, m.mrn_no FROM mrn_lines ml JOIN mrn m ON m.id = ml.mrn_id WHERE m.job_id = ?`,
     jobId
   )) {
-    if ((l.qty_received || 0) < (l.qty || 0)) {
+    if (l.is_cancelled) continue;
+
+    let shortageSettled = false;
+    try {
+      const disc = get('SELECT status FROM delivery_discrepancies WHERE mrn_line_id = ? ORDER BY id DESC LIMIT 1', l.id);
+      if (disc && ['resolved', 'written_off'].includes(disc.status)) shortageSettled = true;
+    } catch {
+      // table may not exist in lightweight mocks
+    }
+
+    const fulfilled = (l.qty_received || 0) >= (l.qty || 0) ||
+      (shortageSettled && ((l.qty_received || 0) + (l.qty_short || 0)) >= (l.qty || 0));
+
+    if (!fulfilled) {
       add(`MRN ${l.mrn_no}: "${l.description}" received ${l.qty_received || 0}/${l.qty} — awaiting GRN`, 'received');
     }
+  }
+
+  // open delivery shortages on linked MRNs
+  try {
+    const openDiscs = all(`
+      SELECT d.id, d.item_description, d.qty_short, d.status, m.mrn_no
+        FROM delivery_discrepancies d
+        JOIN mrn m ON m.id = d.mrn_id
+       WHERE m.job_id = ? AND d.status IN ('open', 'investigating')
+    `, jobId);
+    for (const d of openDiscs) {
+      add(`Delivery shortage on MRN ${d.mrn_no || '—'}: "${d.item_description}" (${d.qty_short} short, status: ${d.status})`, 'received');
+    }
+  } catch {
+    // graceful fallback
   }
 
   // every delivered shelf part must be issued to the job (or accounted for)

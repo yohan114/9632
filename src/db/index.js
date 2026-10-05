@@ -776,6 +776,7 @@ function migrate() {
   ownRecordsStep2c();
   supplyRoutesAndPipeline();
   chainNumberAndShortDelivery();
+  closureRulesAndUniversalTrace();
 
   // Seed the RBAC matrix once (safe to require here — db exports are already set).
   // Sections split off a shared switch start at that switch's level (access plan, Part 1) — before
@@ -1828,6 +1829,60 @@ function chainNumberAndShortDelivery() {
   } catch (e) {
     // Graceful fallback if tables are empty or newly initialized
   }
+}
+
+function allowClosedMrn() {
+  const cur = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='mrn'").get();
+  if (!cur || /'closed'/.test(cur.sql)) return;
+  const list = /(CHECK\s*\(\s*status\s+IN\s*\()/i;
+  if (!list.test(cur.sql)) return;
+  const widened = cur.sql
+    .replace(/^CREATE TABLE (IF NOT EXISTS )?("?)mrn\2/i, 'CREATE TABLE tmp_mrn')
+    .replace(list, "$1'closed',");
+  if (!/^CREATE TABLE tmp_mrn/.test(widened)) throw new Error('mrn: unexpected table definition - status not widened');
+  const cols = db.prepare('PRAGMA table_info(mrn)').all().map((c) => `"${c.name}"`).join(', ');
+  const indexes = db.prepare("SELECT sql FROM sqlite_master WHERE type='index' AND tbl_name='mrn' AND sql IS NOT NULL").all();
+  const triggers = db.prepare("SELECT sql FROM sqlite_master WHERE type='trigger' AND tbl_name='mrn'").all();
+  const seq = db.prepare("SELECT seq FROM sqlite_sequence WHERE name='mrn'").get();
+  const dangling = () => db.prepare('PRAGMA foreign_key_check').all().filter((r) => r.parent === 'mrn' || r.table === 'mrn').length;
+  const before = dangling();
+  const count = db.prepare('SELECT COUNT(*) n FROM mrn').get().n;
+  db.pragma('foreign_keys = OFF');
+  try {
+    db.transaction(() => {
+      db.exec(`${widened};
+               INSERT INTO tmp_mrn (${cols}) SELECT ${cols} FROM mrn;
+               DROP TABLE mrn;
+               ALTER TABLE tmp_mrn RENAME TO mrn;`);
+      for (const x of [...indexes, ...triggers]) db.exec(x.sql);
+      if (seq) db.prepare("UPDATE sqlite_sequence SET seq = MAX(seq, ?) WHERE name = 'mrn'").run(seq.seq);
+      if (db.prepare('SELECT COUNT(*) n FROM mrn').get().n !== count || dangling() !== before) {
+        throw new Error('mrn rebuild did not keep every record and reference - not applied');
+      }
+    })();
+  } finally {
+    db.pragma('foreign_keys = ON');
+  }
+}
+
+function closureRulesAndUniversalTrace() {
+  // Allow 'closed' status on mrn
+  allowClosedMrn();
+
+  // Step 4c: MRN formal closure tracking
+  ensureColumn('mrn', 'closed_by', 'TEXT');
+  ensureColumn('mrn', 'closed_at', 'TEXT');
+  ensureColumn('mrn', 'closure_notes', 'TEXT');
+
+  // Step 4c: Line-item cancellation
+  ensureColumn('mrn_lines', 'is_cancelled', 'INTEGER DEFAULT 0');
+  ensureColumn('mrn_lines', 'cancellation_reason', 'TEXT');
+  ensureColumn('mrn_lines', 'cancelled_by', 'TEXT');
+  ensureColumn('mrn_lines', 'cancelled_at', 'TEXT');
+
+  // Indexes
+  db.exec('CREATE INDEX IF NOT EXISTS idx_mrn_status ON mrn(status);');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_mrn_lines_cancelled ON mrn_lines(is_cancelled);');
 }
 
 function ensureColumn(table, col, def) {

@@ -772,11 +772,13 @@ router.get('/mrn', asyncHandler((req, res) => {
     } else if (st === 'partial') {
       clauses.push("(m.approval_status = 'approved' OR (m.approval_status = 'requested' AND (m.requested_by IS NULL OR TRIM(m.requested_by) = ''))) AND (SELECT COALESCE(SUM(qty_received),0) FROM mrn_lines ml WHERE ml.mrn_id = m.id) > 0 AND (SELECT COALESCE(SUM(qty_received),0) FROM mrn_lines ml WHERE ml.mrn_id = m.id) < (SELECT COALESCE(SUM(qty),0) FROM mrn_lines ml WHERE ml.mrn_id = m.id)");
     } else if (st === 'done') {
-      clauses.push("(SELECT COALESCE(SUM(qty_received),0) FROM mrn_lines ml WHERE ml.mrn_id = m.id) >= (SELECT COALESCE(SUM(qty),0) FROM mrn_lines ml WHERE ml.mrn_id = m.id) AND (SELECT COUNT(*) FROM mrn_lines ml WHERE ml.mrn_id = m.id) > 0 AND m.approval_status != 'rejected'");
+      clauses.push("m.status != 'closed' AND (SELECT COALESCE(SUM(qty_received),0) FROM mrn_lines ml WHERE ml.mrn_id = m.id) >= (SELECT COALESCE(SUM(qty),0) FROM mrn_lines ml WHERE ml.mrn_id = m.id) AND (SELECT COUNT(*) FROM mrn_lines ml WHERE ml.mrn_id = m.id) > 0 AND m.approval_status != 'rejected'");
+    } else if (st === 'closed') {
+      clauses.push("m.status = 'closed'");
     } else if (st === 'rejected') {
       clauses.push("m.approval_status = 'rejected'");
     } else if (st === 'all_todo' || st === 'open') {
-      clauses.push("m.approval_status != 'rejected' AND ((SELECT COALESCE(SUM(qty_received),0) FROM mrn_lines ml WHERE ml.mrn_id = m.id) < (SELECT COALESCE(SUM(qty),0) FROM mrn_lines ml WHERE ml.mrn_id = m.id) OR m.approval_status IN ('requested', 'certified'))");
+      clauses.push("m.status != 'closed' AND m.approval_status != 'rejected' AND ((SELECT COALESCE(SUM(qty_received),0) FROM mrn_lines ml WHERE ml.mrn_id = m.id) < (SELECT COALESCE(SUM(qty),0) FROM mrn_lines ml WHERE ml.mrn_id = m.id) OR m.approval_status IN ('requested', 'certified'))");
     }
   }
   if (req.query.q && String(req.query.q).trim()) {
@@ -805,13 +807,14 @@ router.get('/mrn/counts', asyncHandler((req, res) => {
   const wClause = own.sql ? ` AND ${own.sql}` : '';
   const toCertify = get(`SELECT COUNT(*) c FROM mrn m WHERE m.approval_status = 'requested' AND m.requested_by IS NOT NULL AND TRIM(m.requested_by) <> ''${wClause}`, ...own.params).c;
   const toApprove = get(`SELECT COUNT(*) c FROM mrn m WHERE m.approval_status = 'certified'${wClause}`, ...own.params).c;
-  const toReceive = get(`SELECT COUNT(*) c FROM mrn m WHERE (m.approval_status = 'approved' OR (m.approval_status = 'requested' AND (m.requested_by IS NULL OR TRIM(m.requested_by) = ''))) AND (SELECT COALESCE(SUM(qty_received),0) FROM mrn_lines ml WHERE ml.mrn_id = m.id) = 0${wClause}`, ...own.params).c;
-  const partial = get(`SELECT COUNT(*) c FROM mrn m WHERE (m.approval_status = 'approved' OR (m.approval_status = 'requested' AND (m.requested_by IS NULL OR TRIM(m.requested_by) = ''))) AND (SELECT COALESCE(SUM(qty_received),0) FROM mrn_lines ml WHERE ml.mrn_id = m.id) > 0 AND (SELECT COALESCE(SUM(qty_received),0) FROM mrn_lines ml WHERE ml.mrn_id = m.id) < (SELECT COALESCE(SUM(qty),0) FROM mrn_lines ml WHERE ml.mrn_id = m.id)${wClause}`, ...own.params).c;
-  const done = get(`SELECT COUNT(*) c FROM mrn m WHERE (SELECT COALESCE(SUM(qty_received),0) FROM mrn_lines ml WHERE ml.mrn_id = m.id) >= (SELECT COALESCE(SUM(qty),0) FROM mrn_lines ml WHERE ml.mrn_id = m.id) AND (SELECT COUNT(*) FROM mrn_lines ml WHERE ml.mrn_id = m.id) > 0 AND m.approval_status != 'rejected'${wClause}`, ...own.params).c;
+  const toReceive = get(`SELECT COUNT(*) c FROM mrn m WHERE m.status != 'closed' AND (m.approval_status = 'approved' OR (m.approval_status = 'requested' AND (m.requested_by IS NULL OR TRIM(m.requested_by) = ''))) AND (SELECT COALESCE(SUM(qty_received),0) FROM mrn_lines ml WHERE ml.mrn_id = m.id) = 0${wClause}`, ...own.params).c;
+  const partial = get(`SELECT COUNT(*) c FROM mrn m WHERE m.status != 'closed' AND (m.approval_status = 'approved' OR (m.approval_status = 'requested' AND (m.requested_by IS NULL OR TRIM(m.requested_by) = ''))) AND (SELECT COALESCE(SUM(qty_received),0) FROM mrn_lines ml WHERE ml.mrn_id = m.id) > 0 AND (SELECT COALESCE(SUM(qty_received),0) FROM mrn_lines ml WHERE ml.mrn_id = m.id) < (SELECT COALESCE(SUM(qty),0) FROM mrn_lines ml WHERE ml.mrn_id = m.id)${wClause}`, ...own.params).c;
+  const done = get(`SELECT COUNT(*) c FROM mrn m WHERE m.status != 'closed' AND (SELECT COALESCE(SUM(qty_received),0) FROM mrn_lines ml WHERE ml.mrn_id = m.id) >= (SELECT COALESCE(SUM(qty),0) FROM mrn_lines ml WHERE ml.mrn_id = m.id) AND (SELECT COUNT(*) FROM mrn_lines ml WHERE ml.mrn_id = m.id) > 0 AND m.approval_status != 'rejected'${wClause}`, ...own.params).c;
+  const closed = get(`SELECT COUNT(*) c FROM mrn m WHERE m.status = 'closed'${wClause}`, ...own.params).c;
   const rejected = get(`SELECT COUNT(*) c FROM mrn m WHERE m.approval_status = 'rejected'${wClause}`, ...own.params).c;
   const allTodo = toCertify + toApprove + toReceive + partial;
   const total = get(`SELECT COUNT(*) c FROM mrn m WHERE 1=1${wClause}`, ...own.params).c;
-  res.json({ all_todo: allTodo, to_certify: toCertify, to_approve: toApprove, to_receive: toReceive, partial, done, rejected, all: total });
+  res.json({ all_todo: allTodo, to_certify: toCertify, to_approve: toApprove, to_receive: toReceive, partial, done, closed, rejected, all: total });
 }));
 
 router.post('/mrn', requireCap('stores.mrn.create'), chainPipeline.idempotencyGuard('mrn_create'), asyncHandler((req, res) => {
@@ -1021,6 +1024,42 @@ router.post('/mrn/:id/reject', requireCap('stores.mrn.reject'), asyncHandler((re
   audit.record({ userId: req.user.id, entity: 'mrn', entityId: id, action: 'reject', after: { by: s.name, stand_in_for: actingFor ? actingFor.id : null }, reason: req.body.reason });
   emitter.emit('request_updated', { mrn_id: id, action: 'reject', approval_status: 'rejected' });
   res.json(get('SELECT * FROM mrn WHERE id = ?', id));
+}));
+
+// ---- MRN Formal Closure & Reopen (Step 4c) ----------------------------------
+router.get('/mrn/:id/closure-check', requireAuth, asyncHandler((req, res) => {
+  const id = toInt(req.params.id);
+  { const no = scope.mrnRefusal(req.user, id); if (no) return res.status(403).json(no); }
+  const check = chainPipeline.canCloseMrn(id);
+  res.json(check);
+}));
+
+router.post('/mrn/:id/close', requireAuth, chainPipeline.idempotencyGuard('mrn_close'), asyncHandler((req, res) => {
+  const id = toInt(req.params.id);
+  { const no = scope.mrnRefusal(req.user, id); if (no) return res.status(403).json(no); }
+  if (!hasCap(req.user, 'stores.mrn.approve') && !req.user.is_admin) {
+    return res.status(403).json({ error: 'Permission denied: only authorized managers or admins can close a request' });
+  }
+  try {
+    const result = chainPipeline.closeMrn(id, { notes: req.body.notes }, req.user);
+    res.json(result);
+  } catch (err) {
+    res.status(err.status || 400).json({ error: err.message, reasons: err.reasons || [] });
+  }
+}));
+
+router.post('/mrn/:id/reopen', requireAuth, chainPipeline.idempotencyGuard('mrn_reopen'), asyncHandler((req, res) => {
+  const id = toInt(req.params.id);
+  { const no = scope.mrnRefusal(req.user, id); if (no) return res.status(403).json(no); }
+  if (!hasCap(req.user, 'stores.mrn.approve') && !req.user.is_admin) {
+    return res.status(403).json({ error: 'Permission denied: only authorized managers or admins can reopen a closed request' });
+  }
+  try {
+    const result = chainPipeline.reopenMrn(id, { reason: req.body.reason }, req.user);
+    res.json(result);
+  } catch (err) {
+    res.status(err.status || 400).json({ error: err.message });
+  }
 }));
 
 // Printable Material Requisition form (matches the paper EC1.ST.FO.01 layout).
@@ -1594,6 +1633,39 @@ router.delete('/mrn/line/:id', requireCap('stores.mrn.edit'), asyncHandler((req,
   res.json({ ok: true, recertification_required: recert });
 }));
 
+// Formally cancel an unfulfilled line item (Step 4c)
+router.post('/mrn-lines/:id/cancel', requireAuth, chainPipeline.idempotencyGuard('mrn_line_cancel'), asyncHandler((req, res) => {
+  const id = toInt(req.params.id);
+  const line = get('SELECT mrn_id FROM mrn_lines WHERE id = ?', id);
+  if (!line) return res.status(404).json({ error: 'MRN line not found' });
+  { const no = scope.mrnRefusal(req.user, line.mrn_id); if (no) return res.status(403).json(no); }
+  if (!hasCap(req.user, 'stores.mrn.edit', 'stores.mrn.approve') && !req.user.is_admin) {
+    return res.status(403).json({ error: 'Permission denied: only users who can edit or approve MRNs may cancel line items' });
+  }
+  try {
+    const result = chainPipeline.cancelMrnLine(id, { reason: req.body.reason }, req.user);
+    res.json(result);
+  } catch (err) {
+    res.status(err.status || 400).json({ error: err.message });
+  }
+}));
+
+router.post('/mrn/line/:id/cancel', requireAuth, chainPipeline.idempotencyGuard('mrn_line_cancel'), asyncHandler((req, res) => {
+  const id = toInt(req.params.id);
+  const line = get('SELECT mrn_id FROM mrn_lines WHERE id = ?', id);
+  if (!line) return res.status(404).json({ error: 'MRN line not found' });
+  { const no = scope.mrnRefusal(req.user, line.mrn_id); if (no) return res.status(403).json(no); }
+  if (!hasCap(req.user, 'stores.mrn.edit', 'stores.mrn.approve') && !req.user.is_admin) {
+    return res.status(403).json({ error: 'Permission denied: only users who can edit or approve MRNs may cancel line items' });
+  }
+  try {
+    const result = chainPipeline.cancelMrnLine(id, { reason: req.body.reason }, req.user);
+    res.json(result);
+  } catch (err) {
+    res.status(err.status || 400).json({ error: err.message });
+  }
+}));
+
 // Printable pending-purchases list, grouped by source.
 router.get('/pending/print.html', asyncHandler((req, res) => {
   const rows = pendingRows({ ...req.query, limit: 5000 }, req.user);
@@ -1683,10 +1755,13 @@ router.post('/grn', requireCap('stores.grn.receive'), chainPipeline.idempotencyG
       run('UPDATE mrn_lines SET qty_received = qty_received + ? WHERE id = ?', toNum(b.qty, 0), mrnLineId);
       const line = get('SELECT mrn_id FROM mrn_lines WHERE id = ?', mrnLineId);
       if (line) {
-        const open = get('SELECT COUNT(*) c FROM mrn_lines WHERE mrn_id = ? AND qty_received < qty', line.mrn_id);
-        const any = get('SELECT COUNT(*) c FROM mrn_lines WHERE mrn_id = ? AND qty_received > 0', line.mrn_id);
-        const status = open.c === 0 ? 'received' : (any.c > 0 ? 'partially_received' : 'open');
-        run('UPDATE mrn SET status = ? WHERE id = ?', status, line.mrn_id);
+        const mrnCur = get('SELECT status FROM mrn WHERE id = ?', line.mrn_id);
+        if (mrnCur && mrnCur.status !== 'closed') {
+          const open = get('SELECT COUNT(*) c FROM mrn_lines WHERE mrn_id = ? AND qty_received < qty AND COALESCE(is_cancelled, 0) = 0', line.mrn_id);
+          const any = get('SELECT COUNT(*) c FROM mrn_lines WHERE mrn_id = ? AND qty_received > 0', line.mrn_id);
+          const status = open.c === 0 ? 'received' : (any.c > 0 ? 'partially_received' : 'open');
+          run('UPDATE mrn SET status = ? WHERE id = ?', status, line.mrn_id);
+        }
       }
 
       // Check for short delivery on receipt
@@ -1889,10 +1964,13 @@ router.post('/grn-vouchers', requireCap('stores.grn.receive'), chainPipeline.ide
           run('UPDATE mrn_lines SET qty_received = qty_received + ? WHERE id = ?', qty, mrnLineId);
           const lrec = get('SELECT mrn_id FROM mrn_lines WHERE id = ?', mrnLineId);
           if (lrec) {
-            const open = get('SELECT COUNT(*) c FROM mrn_lines WHERE mrn_id = ? AND qty_received < qty', lrec.mrn_id);
-            const any = get('SELECT COUNT(*) c FROM mrn_lines WHERE mrn_id = ? AND qty_received > 0', lrec.mrn_id);
-            const status = open.c === 0 ? 'received' : (any.c > 0 ? 'partially_received' : 'open');
-            run('UPDATE mrn SET status = ? WHERE id = ?', status, lrec.mrn_id);
+            const mrnCur = get('SELECT status FROM mrn WHERE id = ?', lrec.mrn_id);
+            if (mrnCur && mrnCur.status !== 'closed') {
+              const open = get('SELECT COUNT(*) c FROM mrn_lines WHERE mrn_id = ? AND qty_received < qty AND COALESCE(is_cancelled, 0) = 0', lrec.mrn_id);
+              const any = get('SELECT COUNT(*) c FROM mrn_lines WHERE mrn_id = ? AND qty_received > 0', lrec.mrn_id);
+              const status = open.c === 0 ? 'received' : (any.c > 0 ? 'partially_received' : 'open');
+              run('UPDATE mrn SET status = ? WHERE id = ?', status, lrec.mrn_id);
+            }
           }
 
           // Discrepancy / shortage check
@@ -2336,6 +2414,12 @@ router.patch('/discrepancies/:id', requireCap('stores.grn.receive'), asyncHandle
   res.json(updated);
 }));
 
+// ---- Universal Trace Omnibox Search (Step 4c) -------------------------------
+router.get('/trace/search', requireAuth, asyncHandler((req, res) => {
+  const q = req.query.q || '';
+  res.json(chainPipeline.universalSearch(q, req.user));
+}));
+
 // ---- Material Pipeline Full Lifecycle Traceability -------------------------
 // Reconstructs the complete lifecycle across Job Card ➔ MRN ➔ MTN ➔ GRN ➔ Shelf ➔ Issue ➔ Costing.
 // Can start from chain_no, job_id, job_no, mrn_id, mrn_no, mtn_id, mtn_no, grn_id, grn_no, or issue_id.
@@ -2350,6 +2434,40 @@ router.get('/pipeline/trace', requireAuth, asyncHandler((req, res) => {
 
   if (!chainNo && p.q && String(p.q).trim().startsWith('CHN-')) {
     chainNo = String(p.q).trim();
+  }
+
+  // Universal omni-search parameter 'q'
+  if (!jobId && !mrnId && !mtnId && !grnId && !issueId && !chainNo && p.q) {
+    const rawQ = String(p.q).trim();
+    if (rawQ.startsWith('CHN-')) {
+      chainNo = rawQ;
+    } else {
+      const m = get('SELECT id FROM mrn WHERE mrn_no = ?', rawQ);
+      if (m) mrnId = m.id;
+      else {
+        const t = get('SELECT id, mrn_id FROM mtn WHERE mtn_no = ?', rawQ);
+        if (t) { mtnId = t.id; if (t.mrn_id) mrnId = t.mrn_id; }
+        else {
+          const g = get('SELECT id, mrn_id FROM grn WHERE grn_no = ?', rawQ);
+          if (g) { grnId = g.id; if (g.mrn_id) mrnId = g.mrn_id; }
+          else {
+            const j = get('SELECT id FROM job_cards WHERE job_no = ?', rawQ);
+            if (j) jobId = j.id;
+            else {
+              const a = get('SELECT id FROM assets WHERE code = ? OR registration = ?', rawQ, rawQ);
+              if (a) {
+                const nearJob = get('SELECT id FROM job_cards WHERE asset_id = ? ORDER BY id DESC LIMIT 1', a.id);
+                if (nearJob) jobId = nearJob.id;
+                else {
+                  const nearMrn = get('SELECT id FROM mrn WHERE asset_id = ? ORDER BY id DESC LIMIT 1', a.id);
+                  if (nearMrn) mrnId = nearMrn.id;
+                }
+              }
+            }
+          }
+        }
+      }
+    }
   }
 
   if (chainNo) {
@@ -2473,7 +2591,8 @@ router.get('/pipeline/trace', requireAuth, asyncHandler((req, res) => {
   if (jobId) {
     mrns = all(`
       SELECT DISTINCT m.id, m.mrn_no, m.chain_no, m.req_date, m.purpose, m.requested_by, m.certified_by, m.approved_by,
-             m.approval_status, m.status, m.purchase_source, m.job_id, m.asset_id
+             m.approval_status, m.status, m.purchase_source, m.job_id, m.asset_id,
+             m.closed_by, m.closed_at, m.closure_notes
         FROM mrn m
        WHERE m.job_id = ?
           OR EXISTS (
@@ -2486,7 +2605,8 @@ router.get('/pipeline/trace', requireAuth, asyncHandler((req, res) => {
   } else if (mrnId) {
     const single = get(`
       SELECT m.id, m.mrn_no, m.chain_no, m.req_date, m.purpose, m.requested_by, m.certified_by, m.approved_by,
-             m.approval_status, m.status, m.purchase_source, m.job_id, m.asset_id
+             m.approval_status, m.status, m.purchase_source, m.job_id, m.asset_id,
+             m.closed_by, m.closed_at, m.closure_notes
         FROM mrn m WHERE m.id = ?
     `, mrnId);
     if (single) mrns = [single];
@@ -2499,7 +2619,8 @@ router.get('/pipeline/trace', requireAuth, asyncHandler((req, res) => {
   if (mrnIds.length) {
     mrnLines = all(`
       SELECT ml.id, ml.mrn_id, ml.store_item_id, ml.description, ml.category, ml.unit,
-             ml.qty AS qty_requested, ml.qty_received, ml.qty_short, ml.discrepancy_reason, ml.purchase_source
+             ml.qty AS qty_requested, ml.qty_received, ml.qty_short, ml.discrepancy_reason, ml.purchase_source,
+             ml.is_cancelled, ml.cancellation_reason, ml.cancelled_by, ml.cancelled_at
         FROM mrn_lines ml
        WHERE ml.mrn_id IN (${mrnIds.map(() => '?').join(',')})
        ORDER BY ml.id
@@ -2611,7 +2732,8 @@ router.get('/pipeline/trace', requireAuth, asyncHandler((req, res) => {
     const qtyShelf = Math.max(0, Math.round((qtyRec - qtyIss) * 100) / 100);
 
     let stage = 'REQUESTED';
-    if (qtyShelf > 0) stage = 'READY_ON_SHELF';
+    if (line.is_cancelled) stage = 'CANCELLED';
+    else if (qtyShelf > 0) stage = 'READY_ON_SHELF';
     else if (qtyRec > 0 && qtyIss >= qtyRec) stage = 'FULLY_ISSUED';
     else if (qtyRec > 0) stage = 'PARTIALLY_RECEIVED';
     else if (m.approval_status === 'approved') stage = 'AWAITING_DELIVERY';
@@ -2631,6 +2753,10 @@ router.get('/pipeline/trace', requireAuth, asyncHandler((req, res) => {
       qty_short: qtyShort,
       discrepancy_reason: line.discrepancy_reason || null,
       has_shortage: qtyShort > 0,
+      is_cancelled: !!line.is_cancelled,
+      cancellation_reason: line.cancellation_reason || null,
+      cancelled_by: line.cancelled_by || null,
+      cancelled_at: line.cancelled_at || null,
       qty_issued: qtyIss,
       qty_on_shelf: qtyShelf,
       stage,
@@ -2662,6 +2788,10 @@ router.get('/pipeline/trace', requireAuth, asyncHandler((req, res) => {
       qty_short: 0,
       discrepancy_reason: null,
       has_shortage: false,
+      is_cancelled: false,
+      cancellation_reason: null,
+      cancelled_by: null,
+      cancelled_at: null,
       qty_issued: qtyIss,
       qty_on_shelf: qtyShelf,
       stage: qtyShelf > 0 ? 'READY_ON_SHELF' : 'FULLY_ISSUED',
@@ -2673,6 +2803,8 @@ router.get('/pipeline/trace', requireAuth, asyncHandler((req, res) => {
   // Summary Metrics
   const summary = {
     total_lines: items.length,
+    active_lines: items.filter((it) => !it.is_cancelled).length,
+    cancelled_lines: items.filter((it) => !!it.is_cancelled).length,
     total_qty_requested: items.reduce((s, it) => s + it.qty_requested, 0),
     total_qty_received: items.reduce((s, it) => s + it.qty_received, 0),
     total_qty_short: items.reduce((s, it) => s + (it.qty_short || 0), 0),
@@ -2684,11 +2816,24 @@ router.get('/pipeline/trace', requireAuth, asyncHandler((req, res) => {
 
   const openDiscrepancies = discrepancies.filter((d) => d.status === 'open' || d.status === 'investigating');
   const uncollected = items.filter((it) => it.qty_on_shelf > 0.001);
-  const pendingDel = items.filter((it) => it.qty_received < it.qty_requested && (!it.has_shortage || (it.qty_received + it.qty_short < it.qty_requested)));
+  const pendingDel = items.filter((it) => !it.is_cancelled && it.qty_received < it.qty_requested && (!it.has_shortage || (it.qty_received + it.qty_short < it.qty_requested)));
   const unpriced = items.filter((it) => it.grns.some((g) => g.unit_price == null) || it.issues.some((i) => i.unit_price == null));
 
+  const closureReasons = [];
+  if (openDiscrepancies.length > 0) {
+    closureReasons.push(`${openDiscrepancies.length} delivery discrepancy${openDiscrepancies.length === 1 ? '' : 'ies'} open/investigating`);
+  }
+  if (uncollected.length > 0) {
+    closureReasons.push(`${uncollected.length} item(s) remain on store shelf unissued to vehicle`);
+  }
+  if (pendingDel.length > 0) {
+    closureReasons.push(`${pendingDel.length} line(s) have unfulfilled delivery without logged shortage or cancellation`);
+  }
+
   const integrity = {
-    is_safe_to_close: uncollected.length === 0 && pendingDel.length === 0 && openDiscrepancies.length === 0,
+    is_safe_to_close: closureReasons.length === 0,
+    can_close_mrn: closureReasons.length === 0,
+    closure_reasons: closureReasons,
     uncollected_shelf_parts_count: uncollected.length,
     pending_delivery_count: pendingDel.length,
     unpriced_count: unpriced.length,
@@ -3041,9 +3186,12 @@ router.post('/grn/bulk-receive', requireCap('stores.grn.receive'), asyncHandler(
     }
     // Re-derive each affected MRN's header status from its lines.
     for (const mid of mrnIds) {
-      const open = get('SELECT COUNT(*) c FROM mrn_lines WHERE mrn_id = ? AND COALESCE(qty_received,0) < qty', mid).c;
-      const any = get('SELECT COUNT(*) c FROM mrn_lines WHERE mrn_id = ? AND COALESCE(qty_received,0) > 0', mid).c;
-      run('UPDATE mrn SET status = ? WHERE id = ?', open === 0 ? 'received' : (any > 0 ? 'partially_received' : 'open'), mid);
+      const mrnCur = get('SELECT status FROM mrn WHERE id = ?', mid);
+      if (mrnCur && mrnCur.status !== 'closed') {
+        const open = get('SELECT COUNT(*) c FROM mrn_lines WHERE mrn_id = ? AND COALESCE(qty_received,0) < qty AND COALESCE(is_cancelled, 0) = 0', mid).c;
+        const any = get('SELECT COUNT(*) c FROM mrn_lines WHERE mrn_id = ? AND COALESCE(qty_received,0) > 0', mid).c;
+        run('UPDATE mrn SET status = ? WHERE id = ?', open === 0 ? 'received' : (any > 0 ? 'partially_received' : 'open'), mid);
+      }
     }
     if (created.length) stock.sync({ grn: created });      // Part 3: on the shelf now
   });
