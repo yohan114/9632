@@ -566,6 +566,32 @@ const receiptBadge = (requested, received) => {
   return '<span class="badge green">✓ Received</span>';
 };
 
+// Step 4a: Supply Routes Across 4 Channels
+const SUPPLY_ROUTE_OPTS = [
+  { value: 'main_store', label: 'Main Store Transfer (Auto-MTN)' },
+  { value: 'head_office', label: 'Head Office Buy' },
+  { value: 'local_purchase', label: 'Local Purchase (Max Rs 25,000)' },
+  { value: 'direct_delivery', label: 'Direct Delivery to Site' },
+];
+const SUPPLY_ROUTE_LABELS = {
+  main_store: 'Main Store',
+  head_office: 'Head Office',
+  local_purchase: 'Local Buy',
+  direct_delivery: 'Direct Delivery',
+};
+const SUPPLY_ROUTE_BADGES = {
+  main_store: 'violet',
+  head_office: 'blue',
+  local_purchase: 'amber',
+  direct_delivery: 'green',
+};
+const supplyRouteBadge = (r) => {
+  const route = r || 'main_store';
+  const cls = SUPPLY_ROUTE_BADGES[route] || 'blue';
+  const lbl = SUPPLY_ROUTE_LABELS[route] || route;
+  return `<span class="badge ${cls}">${esc(lbl)}</span>`;
+};
+
 // When an item arrived. This is the browser copy of receivedLabel() in
 // src/lib/received_date.js — the same three answers, so a screen and the Excel of that screen
 // never disagree. Keep them in step: the date comes from the goods-received notes
@@ -5530,7 +5556,7 @@ routes.stores = async (c) => {
       qs('#pprint').href = '/api/stores/pending/print.html?x=1' + qstr();
       qs('#pxls').href = '/api/stores/pending/export.xlsx?x=1' + qstr();
       qs('#ptable').innerHTML = list.length ? tableWrap(
-        [{ label: 'MRN' }, { label: 'Req Date' }, { label: 'Vehicle' }, { label: 'Item' }, { label: 'Ordered', num: true }, { label: 'Received', num: true }, { label: 'Received date' }, { label: 'Pending', num: true }, { label: 'Status' }, { label: 'Source' }].concat(canRx ? [{ label: '' }] : []),
+        [{ label: 'MRN' }, { label: 'Req Date' }, { label: 'Vehicle' }, { label: 'Item' }, { label: 'Ordered', num: true }, { label: 'Received', num: true }, { label: 'Received date' }, { label: 'Pending', num: true }, { label: 'Status' }, { label: 'Route / Source' }].concat(canRx ? [{ label: '' }] : []),
         list.map((r) => `<tr>
           <td><a href="#/stores?tab=mrn&id=${r.mrn_id}">${esc(r.mrn_no || '')}</a></td>
           <td>${esc((r.req_date || '').slice(0, 10))}</td>
@@ -5541,10 +5567,10 @@ routes.stores = async (c) => {
           <td style="white-space:nowrap">${receivedDate(r)}</td>
           <td class="num"><span class="badge amber">${num(r.pending)}</span></td>
           <td><span class="badge ${r.status === 'partial' ? 'blue' : ''}">${r.status === 'partial' ? 'Partial' : 'Not received'}</span></td>
-          <td>${r.source ? esc(sourceLabel(r.source)) : '<span class="muted">—</span>'}</td>
-          ${canRx ? `<td><select data-setsrc="${r.id}" style="width:auto;font-size:12px"><option value="">set source…</option><option value="head_office">→ Head Office</option><option value="local_purchase">→ Local Purchase</option></select></td>` : ''}</tr>`), { scroll: true })
+          <td>${r.supply_route ? supplyRouteBadge(r.supply_route) : (r.source ? esc(sourceLabel(r.source)) : '<span class="muted">—</span>')}</td>
+          ${canRx ? `<td><select data-setsrc="${r.id}" style="width:auto;font-size:12px"><option value="">set route…</option><option value="main_store">→ Main Store</option><option value="head_office">→ Head Office</option><option value="local_purchase">→ Local Buy</option><option value="direct_delivery">→ Direct Delivery</option></select></td>` : ''}</tr>`), { scroll: true })
         : '<div class="card"><p class="muted">Nothing pending — every requested item is fully received.</p></div>';
-      if (canRx) qsa('[data-setsrc]', qs('#ptable')).forEach((sel) => { sel.onchange = async () => { if (!sel.value) return; try { await api('/stores/mrn/line/' + sel.dataset.setsrc, { method: 'PATCH', body: { purchase_source: sel.value } }); toast('Source set'); load(); loadSummary(); } catch (e) { toast(e.message, 'err'); sel.value = ''; } }; });
+      if (canRx) qsa('[data-setsrc]', qs('#ptable')).forEach((sel) => { sel.onchange = async () => { if (!sel.value) return; try { await api('/stores/mrn/line/' + sel.dataset.setsrc + '/route', { method: 'PATCH', body: { supply_route: sel.value } }); toast('Route set'); load(); loadSummary(); } catch (e) { toast(e.message, 'err'); sel.value = ''; } }; });
     };
     const loadSummary = async () => {
       try {
@@ -6501,21 +6527,37 @@ async function mrnDetail(body, id) {
     && !(astatus0 === 'requested' && !(m.requested_by && String(m.requested_by).trim()));
   const lineRows = d.lines.map((l) => {
     const req = Number(l.qty) || 0, rec = Number(l.qty_received) || 0;
+    const appr = l.qty_approved != null ? Number(l.qty_approved) : null;
+    const sent = Number(l.qty_sent) || 0;
+    const iss = Number(l.qty_issued) || 0;
     const remaining = Math.max(0, req - rec);
-    const status = rec <= 0 ? '<span class="badge amber">Pending received</span>'
-      : rec < req ? '<span class="badge blue">Partial received</span>'
-        : '<span class="badge green">✓ Received</span>';
+
+    let stageBadge = '<span class="badge amber">Pending</span>';
+    if (iss >= req && req > 0) stageBadge = '<span class="badge green">✓ Issued</span>';
+    else if (rec >= req && req > 0) stageBadge = '<span class="badge green">✓ Received</span>';
+    else if (rec > 0) stageBadge = '<span class="badge blue">Partial received</span>';
+    else if (sent >= req && req > 0) stageBadge = '<span class="badge violet">In Transit</span>';
+    else if (sent > 0) stageBadge = '<span class="badge violet">Partial Sent</span>';
+    else if (appr != null && appr > 0) stageBadge = '<span class="badge blue">Approved</span>';
+
+    const rRoute = l.supply_route || 'main_store';
+    const routeHtml = `${supplyRouteBadge(rRoute)}${canMrnEdit ? ` <button class="sm" data-change-route="${l.id}" data-cur-route="${esc(rRoute)}" title="Change supply route">🛣</button>` : ''}`;
+
     return `<tr>
       <td>${esc(l.description || '')}${l.added_after_approval
         ? ` <span class="badge red" title="${esc('Added after this request was approved, by ' + (l.added_by || 'an admin') + (l.added_at ? ' on ' + l.added_at : '') + (l.added_reason ? ' — ' + l.added_reason : ''))}">added after approval</span>` : ''}
+        ${l.auto_mtn_id ? `<br><a href="#/stores?tab=mtn&id=${l.auto_mtn_id}" class="badge violet" title="Material Transfer Note created for this item">Auto-MTN #${esc(l.auto_mtn_no || l.auto_mtn_id)}</a>` : ''}
         ${l.buying_priority ? `<br><span class="badge sm ${l.buying_priority === 'P1_CRITICAL' ? 'red' : (l.buying_priority === 'P2_URGENT' ? 'amber' : '')}" style="cursor:pointer" data-ws-prio="${l.id}" data-prio-val="${esc(l.buying_priority)}" data-prio-note="${esc(l.priority_note || '')}" title="${esc(l.priority_note || 'Click to adjust priority')}">${esc(l.buying_priority === 'P1_CRITICAL' ? '🚨 P1 Breakdown' : (l.buying_priority === 'P2_URGENT' ? '⚡ P2 Urgent' : (l.buying_priority === 'P4_LOW' ? 'P4 Stock' : 'P3 Routine')))}</span>` : ''}
         ${l.priority_note ? `<div style="font-size:11px;color:var(--amber);margin-top:2px"><b>Urgency Note:</b> ${esc(l.priority_note)}</div>` : ''}</td>
       <td>${esc(l.category || '')}</td>
+      <td style="white-space:nowrap">${routeHtml}</td>
       <td class="num">${num(l.qty)} ${esc(l.unit || '')}</td>
+      <td class="num">${appr != null ? num(appr) : '<span class="muted">—</span>'}</td>
+      <td class="num">${num(l.qty_sent)}</td>
       <td class="num">${num(l.qty_received)}</td>
-      <td style="white-space:nowrap">${receivedDate(l)}</td>
+      <td class="num">${num(l.qty_issued)}</td>
       <td class="num">${remaining > 0 ? `<span class="badge amber">${num(remaining)}</span>` : '<span class="badge green">0</span>'}</td>
-      <td>${status}</td>
+      <td>${stageBadge}</td>
       ${lineCol ? `<td class="num" style="white-space:nowrap">${remaining > 0 ? (canRx ? `<button class="sm primary" data-rx="${l.id}" data-desc="${esc(l.description || '')}" data-rem="${remaining}">Receive</button> ` : '') : '✓ '}${
         canPrio && remaining > 0 ? `<button class="sm" data-ws-prio="${l.id}" data-prio-val="${esc(l.buying_priority || 'P3_ROUTINE')}" data-prio-note="${esc(l.priority_note || '')}" title="Adjust Workshop Buying Urgency">⚡ Urgency</button> ` : ''}${
         // An item can be corrected until approval; one already part-received can only have its
@@ -6566,7 +6608,7 @@ async function mrnDetail(body, id) {
       <span class="muted">— quantity × last price paid${worth.unpriced ? `; ${worth.unpriced} item(s) have no price yet, so the real cost may be higher` : ''}</span>
       ${overLimit ? `<br><span class="badge amber">Above your approval limit (${esc(money(worth.limit.limit))})</span> Needs: ${esc(worth.limit.who_can.join(', '))}.` : ''}</p>` : '';
   body.innerHTML = `
-    <div class="toolbar"><a class="btn sm" href="#/stores?tab=mrn">← MRN list</a><div class="spacer"></div><button class="btn sm primary" id="mrntrace">🔍 Trace Lifecycle</button> <a class="btn sm" href="/api/stores/mrn/${m.id}/print.html" target="_blank">🖨 Print MRN</a> <a class="btn sm primary" href="/api/stores/mrn/${m.id}/download.pdf" download>⬇ Download PDF</a></div>
+    <div class="toolbar"><a class="btn sm" href="#/stores?tab=mrn">← MRN list</a><div class="spacer"></div><button class="btn sm" id="mrnpipeline">📊 Pipeline</button> <button class="btn sm primary" id="mrntrace">🔍 Trace Lifecycle</button> <a class="btn sm" href="/api/stores/mrn/${m.id}/print.html" target="_blank">🖨 Print MRN</a> <a class="btn sm primary" href="/api/stores/mrn/${m.id}/download.pdf" download>⬇ Download PDF</a></div>
     <div class="card">
       <div class="toolbar" style="margin:0"><h3 style="margin:0">Approval flow</h3><div class="spacer"></div>${aBadge}
         ${canCertify ? '<button class="sm primary" id="mcertify">✍ Certify</button>' : ''}
@@ -6594,7 +6636,7 @@ async function mrnDetail(body, id) {
       ${astatus === 'approved' ? `<p class="muted" style="font-size:12px;margin:0 0 6px">Approved — the request is now the authority to spend, so it can no longer be changed.${
       // Telling an admin it cannot be changed, next to a button that changes it, would be a lie.
       adminAmend ? ' As an admin you may still add a forgotten item: the approval stands, and the item is marked as added after it.' : ''}</p>` : ''}
-      ${tableWrap([{ label: 'Item description' }, { label: 'Category' }, { label: 'Qty requested', num: true }, { label: 'Qty received', num: true }, { label: 'Received date' }, { label: 'Remaining', num: true }, { label: 'Status' }].concat(lineCol ? [{ label: '', num: true }] : []), lineRows, { scroll: true })}
+      ${tableWrap([{ label: 'Item description' }, { label: 'Category' }, { label: 'Route' }, { label: 'Req', num: true }, { label: 'Appr', num: true }, { label: 'Sent', num: true }, { label: 'Recv', num: true }, { label: 'Issued', num: true }, { label: 'Remaining', num: true }, { label: 'Stage' }].concat(lineCol ? [{ label: '', num: true }] : []), lineRows, { scroll: true })}
     </div>
     <div class="card">
       <h3>Received records — GRN <span class="muted">(${d.grns.length})</span></h3>
@@ -6639,12 +6681,97 @@ async function mrnDetail(body, id) {
   qsa('[data-ws-prio]', body).forEach((b) => {
     b.onclick = () => adjustPriorityModal(b.dataset.wsPrio, b.dataset.prioVal, b.dataset.prioNote, reload);
   });
+  qsa('[data-change-route]', body).forEach((b) => {
+    b.onclick = () => changeRouteModal(b.dataset.changeRoute, b.dataset.curRoute, reload);
+  });
 
+  if (qs('#mrnpipeline')) qs('#mrnpipeline').onclick = () => mrnPipelineModal(id);
   if (qs('#mrntrace')) qs('#mrntrace').onclick = () => pipelineTraceModal({ mrn_id: m.id });
   if (qs('#mcertify')) qs('#mcertify').onclick = () => mrnSignModal(m, 'certify', () => mrnDetail(body, id));
   if (qs('#mapprove')) qs('#mapprove').onclick = () => mrnSignModal(m, 'approve', () => mrnDetail(body, id));
   if (qs('#mreject')) qs('#mreject').onclick = () => mrnSignModal(m, 'reject', () => mrnDetail(body, id));
 }
+
+// Change supply route for an MRN item (Step 4a)
+function changeRouteModal(lineId, currentRoute, onDone) {
+  modal('Change Supply Route', `
+    <p class="muted">Re-route item across the 4 supply channels:</p>
+    ${field('Supply Route *', 'supply_route', {
+      type: 'select',
+      value: currentRoute || 'main_store',
+      options: SUPPLY_ROUTE_OPTS,
+    })}
+    ${field('Reason for route change', 'reason', { placeholder: 'e.g. Stock unavailable at Central Store, route to Head Office' })}
+    <p class="muted" style="font-size:12px;margin-top:8px"><b>Policy Rule (Decision D4):</b> Site Local Purchase is strictly capped at Rs. 25,000 per request.</p>
+    <div style="margin-top:14px;text-align:right">
+      <button class="primary" id="rsave">Save Route</button>
+    </div>
+  `, (b, close) => {
+    qs('#rsave', b).onclick = async () => {
+      const f = formData(b);
+      try {
+        await api('/stores/mrn/line/' + lineId + '/route', {
+          method: 'PATCH',
+          body: { supply_route: f.supply_route, reason: f.reason },
+        });
+        toast('Supply route updated');
+        close();
+        onDone();
+      } catch (e) {
+        toast(e.message, 'err');
+      }
+    };
+  });
+}
+
+// Full quantity pipeline progression modal for an MRN (Step 4a)
+async function mrnPipelineModal(mrnId) {
+  try {
+    const data = await api('/stores/mrn/' + mrnId + '/pipeline');
+    const lines = data.pipeline || [];
+    modal('Material Pipeline — ' + esc(data.mrn.mrn_no), `
+      <p class="muted">Stage-by-stage quantity progression for <b>${esc(data.mrn.mrn_no)}</b> across all supply channels:</p>
+      <div style="margin-top:12px;overflow-x:auto">
+        <table style="width:100%;font-size:12.5px">
+          <thead>
+            <tr>
+              <th>Item</th>
+              <th>Route</th>
+              <th class="num">Requested</th>
+              <th class="num">Approved</th>
+              <th class="num">Sent (MTN)</th>
+              <th class="num">Received</th>
+              <th class="num">Issued</th>
+              <th>Pipeline Stage</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${lines.map((l) => `
+              <tr>
+                <td><b>${esc(l.description)}</b>${l.auto_mtn_no ? `<br><a href="#/stores?tab=mtn&id=${l.auto_mtn_id}" class="badge violet">MTN #${esc(l.auto_mtn_no)}</a>` : ''}</td>
+                <td>${supplyRouteBadge(l.supply_route)}</td>
+                <td class="num">${num(l.qty_requested)} ${esc(l.unit || '')}</td>
+                <td class="num">${num(l.qty_approved)}</td>
+                <td class="num">${num(l.qty_sent)}</td>
+                <td class="num">${num(l.qty_received)}</td>
+                <td class="num">${num(l.qty_issued)}</td>
+                <td><span class="badge ${l.route_badge || 'blue'}">${esc((l.pipeline_stage || '').replace(/_/g, ' '))}</span></td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
+      <div style="margin-top:14px;text-align:right">
+        <button class="primary" id="pclose">Close</button>
+      </div>
+    `, (b, close) => {
+      qs('#pclose', b).onclick = close;
+    });
+  } catch (e) {
+    toast(e.message, 'err');
+  }
+}
+
 
 // Correct the request itself — who asked, what for, when it is needed, which machine.
 function mrnEditModal(m, onDone, told) {
@@ -6698,6 +6825,11 @@ function mrnLineModal(line, m, onDone, told) {
       ${field('Unit', 'unit', { value: line ? line.unit || '' : 'nos' })}
     </div>
     ${field('Category', 'category', { value: line ? line.category || '' : '' })}
+    ${field('Supply Route', 'supply_route', {
+      type: 'select',
+      value: line ? (line.supply_route || 'main_store') : (m.purchase_source === 'local_purchase' ? 'local_purchase' : (m.purchase_source === 'head_office' ? 'head_office' : 'main_store')),
+      options: SUPPLY_ROUTE_OPTS,
+    })}
     ${afterApproval ? field('Why is it being added? *', 'reason', { placeholder: 'e.g. missed off the original request — same job, same delivery' }) : ''}
     <div style="margin-top:12px;text-align:right"><button class="primary" id="s">${line ? 'Save changes' : 'Add item'}</button></div>`, (b, close) => {
     qs('#s', b).onclick = async () => {
@@ -6707,8 +6839,8 @@ function mrnLineModal(line, m, onDone, told) {
       if (afterApproval && !String(f.reason || '').trim()) return toast('Say why it is being added to an approved request', 'err');
       try {
         told(line
-          ? await api('/stores/mrn/line/' + line.id, { method: 'PATCH', body: { description: f.description, qty: f.qty, unit: f.unit, category: f.category } })
-          : await api('/stores/mrn/' + m.id + '/lines', { method: 'POST', body: { description: f.description, qty: f.qty, unit: f.unit, category: f.category, reason: f.reason } }));
+          ? await api('/stores/mrn/line/' + line.id, { method: 'PATCH', body: { description: f.description, qty: f.qty, unit: f.unit, category: f.category, supply_route: f.supply_route } })
+          : await api('/stores/mrn/' + m.id + '/lines', { method: 'POST', body: { description: f.description, qty: f.qty, unit: f.unit, category: f.category, supply_route: f.supply_route, reason: f.reason } }));
         close(); onDone();
       } catch (e) { toast(e.message, 'err'); }
     };
@@ -7259,9 +7391,10 @@ function wireMrnTarget(root, idp, opts) {
 
 // ---- one requested item: catalogue search, or a brand-new item -------------
 let _mrnLineSeq = 0;
-function mrnLineHtml(defSrc) {
+function mrnLineHtml(defSrc, defRoute) {
   const lid = 'mrnl' + (++_mrnLineSeq);
   const fld = (...args) => `<div class="fld">${field(...args)}</div>`;
+  const routeVal = defRoute || (defSrc === 'local_purchase' ? 'local_purchase' : (defSrc === 'head_office' ? 'head_office' : 'main_store'));
   return `<div class="mrnline" data-lid="${lid}">
     <div class="mrnline-h"><span class="mrnline-n"></span><button type="button" class="sm danger mrnline-x" title="Remove this item">✕</button></div>
     <div style="position:relative">
@@ -7274,7 +7407,7 @@ function mrnLineHtml(defSrc) {
     <div class="fgrid" style="margin-top:6px">
       ${fld('Qty', 'lqty', { type: 'number', value: 1 })}
       ${fld('Unit', 'lunit', { value: 'nos' })}
-      ${fld('Head Office / Local', 'lsrc', { type: 'select', options: SOURCE_OPTS, value: defSrc })}
+      ${fld('Supply Route', 'lroute', { type: 'select', options: SUPPLY_ROUTE_OPTS, value: routeVal })}
       <div class="fld">${categoryPickerHtml({ label: 'Category', name: 'lcat' })}</div>
     </div>
     <label style="display:flex;gap:8px;align-items:center;flex-direction:row;font-weight:400;margin-top:6px"><input type="checkbox" name="lnew" style="width:auto"> Add this as a new catalogue item</label>
@@ -7339,9 +7472,9 @@ async function newMrnModal(opts = {}) {
         ${fld('Required date', 'required_date', { type: 'date' })}
         ${fld('Project / Workshop', 'purpose', { placeholder: 'e.g. Badalgama W/Shop', value: opts.purpose || '' })}
         ${fld('Requested by', 'requested_by', { placeholder: 'name', value: opts.requested_by || (ME ? (ME.fullName || ME.username) : '') })}
-        ${fld('Default source', 'purchase_source', { type: 'select', options: SOURCE_OPTS })}
+        ${fld('Default Supply Route', 'supply_route', { type: 'select', options: SUPPLY_ROUTE_OPTS, value: 'main_store' })}
       </div>
-      <p class="muted" style="font-size:11.5px;margin:6px 0 0">Number continues from <b>${esc(nextNo || 'auto')}</b> — change it to force a specific one. “Default source” pre-fills each item below; you can still set Head Office / Local per item.</p>
+      <p class="muted" style="font-size:11.5px;margin:6px 0 0">Number continues from <b>${esc(nextNo || 'auto')}</b> — change it to force a specific one. “Default Supply Route” pre-fills each item below; you can still adjust routes per item.</p>
     </div>
     <div class="mrnsec">
       <div class="mrnsec-h">2 · What is it for?</div>
@@ -7369,9 +7502,9 @@ async function newMrnModal(opts = {}) {
       const c = qs('#lcount', body); if (c) c.textContent = `— ${rows.length} item(s)`;
     };
     const addLine = () => {
-      const defSrc = qs('[name=purchase_source]', body) ? qs('[name=purchase_source]', body).value : '';
+      const defRoute = qs('[name=supply_route]', body) ? qs('[name=supply_route]', body).value : 'main_store';
       const holder = document.createElement('div');
-      holder.innerHTML = mrnLineHtml(defSrc);
+      holder.innerHTML = mrnLineHtml('', defRoute);
       const row = holder.firstElementChild;
       lines.appendChild(row);
       wireMrnLine(row);
@@ -7383,16 +7516,16 @@ async function newMrnModal(opts = {}) {
     addLine();
     qs('#addline', body).onclick = addLine;
     if (qs('#cancel', body)) qs('#cancel', body).onclick = close;
-    // Changing the default source updates any item row still left on "—".
-    const defSel = qs('[name=purchase_source]', body);
-    if (defSel) defSel.onchange = () => {
-      qsa('select[name=lsrc]', lines).forEach((s) => { if (!s.value) s.value = defSel.value; });
+    // Changing the default supply route updates any item row still on the previous value.
+    const defRouteSel = qs('[name=supply_route]', body);
+    if (defRouteSel) defRouteSel.onchange = () => {
+      qsa('select[name=lroute]', lines).forEach((s) => { s.value = defRouteSel.value; });
     };
     qs('#s', body).onclick = async () => {
       const d = formData(body);
       const val = (n) => qsa('[name=' + n + ']', body).map((e) => (e.type === 'checkbox' ? e.checked : e.value));
       const descs = val('ldesc'), items = val('litem'), units = val('lunit');
-      const qtys = val('lqty'), srcs = val('lsrc'), cats = val('lcat'), news = val('lnew');
+      const qtys = val('lqty'), routes = val('lroute'), cats = val('lcat'), news = val('lnew');
       const t = getTarget();
       if (t.type === 'vehicle' && !t.asset_id && !t.asset) return toast('Pick the vehicle / machine this request is for', 'err');
       const payload = {
@@ -7400,12 +7533,19 @@ async function newMrnModal(opts = {}) {
         asset_id: t.type === 'vehicle' ? (t.asset_id || undefined) : undefined,
         asset: t.type === 'vehicle' && !t.asset_id ? t.asset : undefined,
         job_id: t.type === 'vehicle' ? (t.job_id || undefined) : undefined,
-        purchase_source: d.purchase_source || undefined, purpose: d.purpose, required_date: d.required_date, requested_by: d.requested_by,
-        lines: descs.map((desc, i) => ({
-          description: desc, unit: units[i] || 'nos', qty: qtys[i],
-          store_item_id: items[i] || undefined, create_item: news[i] || undefined,
-          purchase_source: srcs[i] || undefined, category_id: cats[i] || undefined,
-        })).filter((l) => l.description),
+        purchase_source: d.supply_route === 'head_office' ? 'head_office' : (d.supply_route === 'local_purchase' ? 'local_purchase' : undefined),
+        supply_route: d.supply_route || 'main_store',
+        purpose: d.purpose, required_date: d.required_date, requested_by: d.requested_by,
+        lines: descs.map((desc, i) => {
+          const r = routes[i] || 'main_store';
+          return {
+            description: desc, unit: units[i] || 'nos', qty: qtys[i],
+            store_item_id: items[i] || undefined, create_item: news[i] || undefined,
+            supply_route: r,
+            purchase_source: r === 'head_office' ? 'head_office' : (r === 'local_purchase' ? 'local_purchase' : undefined),
+            category_id: cats[i] || undefined,
+          };
+        }).filter((l) => l.description),
       };
       if (!payload.lines.length) return toast('Add at least one item', 'err');
       try {

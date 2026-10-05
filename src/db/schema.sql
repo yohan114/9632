@@ -191,6 +191,14 @@ CREATE TABLE IF NOT EXISTS mrn_lines (
   qty           REAL NOT NULL DEFAULT 0,
   unit          TEXT DEFAULT 'nos',
   qty_received  REAL NOT NULL DEFAULT 0,
+  qty_approved  REAL NOT NULL DEFAULT 0,
+  qty_sent      REAL NOT NULL DEFAULT 0,
+  qty_issued    REAL NOT NULL DEFAULT 0,
+  supply_route  TEXT DEFAULT 'main_store',   -- main_store | head_office | local_purchase | direct_delivery
+  auto_mtn_id   INTEGER REFERENCES mtn(id),
+  route_assigned_by TEXT,
+  route_assigned_at TEXT,
+  route_assigned_reason TEXT,
   legacy_item_id INTEGER,                    -- source items.id (bridges receipts.itemId -> GRN)
   buying_priority TEXT DEFAULT 'P3_ROUTINE', -- P1_CRITICAL | P2_URGENT | P3_ROUTINE | P4_LOW
   priority_note   TEXT,
@@ -198,6 +206,7 @@ CREATE TABLE IF NOT EXISTS mrn_lines (
   priority_updated_by TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_mrn_lines_mrn ON mrn_lines(mrn_id);
+CREATE INDEX IF NOT EXISTS idx_mrn_lines_route ON mrn_lines(supply_route);
 
 CREATE TABLE IF NOT EXISTS mrn_line_priority_history (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -435,6 +444,7 @@ CREATE TABLE IF NOT EXISTS issues (
   issue_date    TEXT NOT NULL DEFAULT (date('now')),
   issued_by     TEXT,
   purpose       TEXT,
+  mrn_line_id   INTEGER REFERENCES mrn_lines(id),
   created_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_issues_asset ON issues(asset_id);
@@ -480,9 +490,12 @@ CREATE TABLE IF NOT EXISTS mtn (
   accepted_designation TEXT,
   status         TEXT DEFAULT 'draft',
   rejection_reason TEXT,
+  mrn_id         INTEGER REFERENCES mrn(id),
+  auto_generated INTEGER DEFAULT 0,
   created_at     TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_mtn_no ON mtn(mtn_no);
+CREATE INDEX IF NOT EXISTS idx_mtn_mrn ON mtn(mrn_id);
 
 CREATE TABLE IF NOT EXISTS mtn_approvals (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -525,10 +538,13 @@ CREATE TABLE IF NOT EXISTS mtn_lines (
   reason         TEXT,
   value          REAL DEFAULT 0,
   mr_no          TEXT,
+  mrn_id         INTEGER REFERENCES mrn(id),
+  mrn_line_id    INTEGER REFERENCES mrn_lines(id),
   remarks        TEXT,
   created_at     TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_mtn_lines_mtn ON mtn_lines(mtn_id);
+CREATE INDEX IF NOT EXISTS idx_mtn_lines_mrn_line ON mtn_lines(mrn_line_id);
 
 -- Running-balance ledger for general consumables.
 CREATE TABLE IF NOT EXISTS general_item_txns (

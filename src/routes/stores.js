@@ -33,6 +33,7 @@ const {
   renderMrnDocumentHtml,
 } = require('../lib/stores_documents');
 const { sendPdf } = require('../lib/pdf_generator');
+const supplyRoutes = require('../lib/supply_routes');
 
 // One cell's worth of "when did this arrive", for a sheet or a printout. A spreadsheet has no
 // tooltip, so whatever the hover would have said has to be in the cell itself.
@@ -861,11 +862,17 @@ router.post('/mrn', requireCap('stores.mrn.create'), asyncHandler((req, res) => 
     const lines = Array.isArray(b.lines) ? b.lines : [];
     const lineSrcs = new Set();
     for (const l of lines) {
-      const ls = PURCHASE_SOURCES.includes(l.purchase_source) ? l.purchase_source : (source || null);
+      let route = supplyRoutes.validateRoute(l.supply_route) ? l.supply_route : null;
+      if (!route) {
+        if (l.purchase_source === 'head_office') route = 'head_office';
+        else if (l.purchase_source === 'local_purchase') route = 'local_purchase';
+        else route = 'main_store';
+      }
+      const ls = (route === 'head_office' || route === 'local_purchase') ? route : (PURCHASE_SOURCES.includes(l.purchase_source) ? l.purchase_source : (source || null));
       if (ls) lineSrcs.add(ls);
       const line = itemLine(l);
-      run('INSERT INTO mrn_lines (mrn_id, store_item_id, description, qty, unit, category, category_id, purchase_source) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-        mrnId, line.store_item_id, line.description, toNum(l.qty, 0), line.unit, line.category, line.category_id, ls);
+      run('INSERT INTO mrn_lines (mrn_id, store_item_id, description, qty, unit, category, category_id, purchase_source, supply_route) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        mrnId, line.store_item_id, line.description, toNum(l.qty, 0), line.unit, line.category, line.category_id, ls, route);
     }
     // Header source = the single source if every line agrees, else leave the given/default.
     if (lineSrcs.size === 1) run('UPDATE mrn SET purchase_source = ? WHERE id = ?', [...lineSrcs][0], mrnId);
@@ -914,7 +921,7 @@ router.get('/mrn/:id', asyncHandler((req, res) => {
   res.json({
     mrn,
     worth,
-    lines: all(`SELECT ml.*, ${lineReceiptSql('ml.id')} FROM mrn_lines ml WHERE ml.mrn_id = ? ORDER BY ml.id`, id),
+    lines: all(`SELECT ml.*, ${lineReceiptSql('ml.id')}, (SELECT mtn_no FROM mtn WHERE mtn.id = ml.auto_mtn_id) AS auto_mtn_no FROM mrn_lines ml WHERE ml.mrn_id = ? ORDER BY ml.id`, id),
     grns: all('SELECT * FROM grn WHERE mrn_id = ? ORDER BY id', id),
     approvals: all('SELECT a.*, u.username FROM mrn_approvals a LEFT JOIN users u ON u.id = a.approver_id WHERE a.mrn_id = ? ORDER BY a.id', id),
   });
@@ -981,6 +988,7 @@ router.post('/mrn/:id/approve', requireCap('stores.mrn.approve'), asyncHandler((
   tx(() => {
     run(`UPDATE mrn SET approval_status = 'approved', approved_by = ?, approved_at = datetime('now'), approved_sig = ? WHERE id = ?`, s.name, sig, id);
     run(`INSERT INTO mrn_approvals (mrn_id, stage, role, approver_id, signed_name, signature, decision, reason) VALUES (?, 'approve', ?, ?, ?, ?, 'approved', ?)`, id, appRole, req.user.id, s.name, sig, req.body.reason || null);
+    supplyRoutes.onMrnApproved(id, req.user);
   });
   audit.record({ userId: req.user.id, entity: 'mrn', entityId: id, action: 'approve', after: { approved_by: s.name, stand_in_for: actingFor ? actingFor.id : null }, reason: req.body.reason });
   emitter.emit('request_updated', { mrn_id: id, action: 'approve', approval_status: 'approved' });
@@ -1069,15 +1077,24 @@ router.post('/mrn/:id/lines', requireCap('stores.mrn.edit'), asyncHandler((req, 
 
   const line = itemLine(req.body);
   const qty = toNum(req.body.qty, 0);
+  let route = supplyRoutes.validateRoute(req.body.supply_route) ? req.body.supply_route : 'main_store';
+  if (route === 'local_purchase') {
+    const estP = line.unit_price || get('SELECT last_price FROM store_items WHERE id = ?', line.store_item_id || 0)?.last_price || 0;
+    const chk = supplyRoutes.checkLocalPurchaseLimit(id, null, qty * estP);
+    if (!chk.ok) return res.status(403).json({ error: chk.error });
+  }
+  const purchaseSrc = (route === 'head_office' || route === 'local_purchase') ? route : null;
   let recert = false;
   const info = tx(() => {
     const r = run(
       `INSERT INTO mrn_lines (mrn_id, store_item_id, description, qty, unit, category, category_id,
-                              added_after_approval, added_by, added_at, added_reason)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                              added_after_approval, added_by, added_at, added_reason,
+                              supply_route, qty_approved, purchase_source)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       id, line.store_item_id, line.description, qty, line.unit, line.category, line.category_id,
       approved ? 1 : 0, approved ? (req.user.username || null) : null,
-      approved ? new Date().toISOString().slice(0, 16).replace('T', ' ') : null, approved ? reason : null);
+      approved ? new Date().toISOString().slice(0, 16).replace('T', ' ') : null, approved ? reason : null,
+      route, approved ? qty : 0, purchaseSrc);
     if (approved) {
       // On the approval record itself, so it is read alongside the signatures rather than
       // only in the audit log.
@@ -1215,6 +1232,7 @@ function pendingRows(query, user) {
     `SELECT * FROM (
        SELECT ml.id, m.id AS mrn_id, m.mrn_no, m.req_date, a.code AS asset_code, ml.description, ml.category,
               ml.qty AS ordered, COALESCE(ml.qty_received,0) AS received, (ml.qty - COALESCE(ml.qty_received,0)) AS pending,
+              ml.supply_route,
               CASE WHEN COALESCE(ml.qty_received,0) > 0 THEN 'partial' ELSE 'not_received' END AS status,
               COALESCE((SELECT g.purchase_source_norm FROM grn g WHERE g.mrn_line_id = ml.id AND g.purchase_source_norm IS NOT NULL LIMIT 1), ml.purchase_source, m.purchase_source) AS source,
               (SELECT g.supplier FROM grn g WHERE g.mrn_line_id = ml.id AND g.supplier IS NOT NULL LIMIT 1) AS supplier,
@@ -1486,6 +1504,22 @@ router.patch('/mrn/line/:id', requireCap('stores.mrn.edit'), asyncHandler((req, 
     sets.push('purchase_source = ?'); params.push(s);
     before.purchase_source = line.purchase_source; after.purchase_source = s;
   }
+  if (req.body.supply_route !== undefined) {
+    const sr = String(req.body.supply_route || '').trim();
+    if (!supplyRoutes.validateRoute(sr)) return res.status(400).json({ error: `Invalid supply_route. Choose: ${supplyRoutes.ROUTES.join(', ')}` });
+    if (sr === 'local_purchase') {
+      const q = req.body.qty !== undefined ? toNum(req.body.qty, 0) : line.qty;
+      const estP = get('SELECT last_price FROM store_items WHERE id = ?', line.store_item_id || 0)?.last_price || 0;
+      const chk = supplyRoutes.checkLocalPurchaseLimit(line.mrn_id, id, q * estP);
+      if (!chk.ok) return res.status(403).json({ error: chk.error });
+    }
+    sets.push('supply_route = ?'); params.push(sr);
+    before.supply_route = line.supply_route; after.supply_route = sr;
+    if (sr === 'head_office' || sr === 'local_purchase') {
+      sets.push('purchase_source = ?'); params.push(sr);
+      before.purchase_source = line.purchase_source; after.purchase_source = sr;
+    }
+  }
   if (req.body.qty !== undefined) {
     const q = toNum(req.body.qty, 0);
     if (!(q > 0)) return res.status(400).json({ error: 'Quantity must be more than 0' });
@@ -1511,6 +1545,19 @@ router.patch('/mrn/line/:id', requireCap('stores.mrn.edit'), asyncHandler((req, 
   audit.record({ userId: req.user.id, entity: 'mrn_line', entityId: id, action: 'update', before, after,
     reason: recert ? 'edited before approval — certification withdrawn' : 'edited before approval' });
   res.json({ ...get('SELECT * FROM mrn_lines WHERE id = ?', id), recertification_required: recert });
+}));
+
+router.patch('/mrn/line/:id/route', requireCap('stores.mrn.edit'), asyncHandler((req, res) => {
+  const id = toInt(req.params.id);
+  const ln = get('SELECT mrn_id FROM mrn_lines WHERE id = ?', id);
+  if (!ln) return res.status(404).json({ error: 'MRN line not found' });
+  { const no = scope.mrnRefusal(req.user, ln.mrn_id); if (no) return res.status(403).json(no); }
+  try {
+    const updated = supplyRoutes.setLineRoute(id, req.body.supply_route, req.user, req.body.reason);
+    res.json({ ok: true, line: updated });
+  } catch (e) {
+    res.status(e.statusCode || 400).json({ error: e.message });
+  }
 }));
 
 // Remove a line from a request that has not been approved. Anything already received stays —
@@ -2173,6 +2220,25 @@ router.get('/pipeline/summary', asyncHandler((req, res) => {
   const issued_today = get(`SELECT COUNT(*) c FROM issues i LEFT JOIN job_cards j ON j.id = i.job_id WHERE date(i.issue_date) = date('now')${ownWs(req.user, ISSUE_WS)}`).c;
 
   res.json({ requests_pending, awaiting_delivery, ready_in_store, issued_today });
+}));
+
+// Step 4a: Available supply routes and business constraints
+router.get('/supply-routes', asyncHandler((_req, res) => {
+  res.json({
+    routes: supplyRoutes.ROUTES,
+    labels: supplyRoutes.ROUTE_LABELS,
+    badges: supplyRoutes.ROUTE_BADGES,
+    ceiling: supplyRoutes.LOCAL_PURCHASE_CEILING,
+  });
+}));
+
+// Step 4a: Line-by-line pipeline status & quantities for an MRN
+router.get('/mrn/:id/pipeline', requireAuth, asyncHandler((req, res) => {
+  const id = toInt(req.params.id);
+  { const no = scope.mrnRefusal(req.user, id); if (no) return res.status(403).json(no); }
+  const mrn = get('SELECT id, mrn_no, approval_status, workshop_id FROM mrn WHERE id = ?', id);
+  if (!mrn) return res.status(404).json({ error: 'MRN not found' });
+  res.json({ mrn, pipeline: supplyRoutes.getMrnPipeline(id) });
 }));
 
 // ---- Material Pipeline Full Lifecycle Traceability -------------------------
@@ -2970,6 +3036,8 @@ router.post('/issues/:id/return', requireCap('stores.issue_return'), asyncHandle
       om.section, om.item_key, om.item_name, qty, om.unit_price, date, om.asset_id, om.job_id,
       om.mrn_line_id, om.grn_id, om.store_item_id, clean(b.note) || null, rid, om.counts, om.store_id);
     }
+    const rLineId = i.mrn_line_id || (i.grn_id ? get('SELECT mrn_line_id FROM grn WHERE id = ?', i.grn_id)?.mrn_line_id : null);
+    if (rLineId) supplyRoutes.onIssueReturned(rLineId, qty);
     // The vehicle's month carried the issue's value; take the returned part off it.
     const value = qty * (Number(i.unit_price) || 0);
     const [yr, mo] = String(i.issue_date).slice(0, 7).split('-').map(Number);
@@ -3019,13 +3087,17 @@ router.post('/issues', requireCap('stores.issue'), asyncHandler((req, res) => {
   const [yr, mo] = issueDate.split('-').map((n) => parseInt(n, 10)); // rollup period
   const validPeriod = yr >= 1900 && mo >= 1 && mo <= 12;
 
+  const grnId = toInt(b.grn_id) || null;
+  const mrnLineId = toInt(b.mrn_line_id) || (grnId ? get('SELECT mrn_line_id FROM grn WHERE id = ?', grnId)?.mrn_line_id : null);
+
   const issueId = tx(() => {
     const info = run(
-      `INSERT INTO issues (asset_id, job_id, service_id, store_item_id, description, qty, unit_price, issue_date, issued_by, category, category_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO issues (asset_id, job_id, service_id, store_item_id, description, qty, unit_price, issue_date, issued_by, category, category_id, grn_id, mrn_line_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       assetId || null, jobId, serviceId, toInt(b.store_item_id), b.description, qty,
-      unitPrice, issueDate, b.issued_by || null, cat.category, cat.category_id
+      unitPrice, issueDate, b.issued_by || null, cat.category, cat.category_id, grnId, mrnLineId
     );
+    if (mrnLineId) supplyRoutes.onIssueCreated(mrnLineId, qty);
     // Materialise the issue as a source_type='issue' job_part (mirrors migrate/09) so it
     // counts EXACTLY ONCE in the job's cost via computeJobCost's existing parts sum.
     if (jobId) run(
@@ -3871,6 +3943,7 @@ router.post('/mtn/:id/dispatch', requireCap('stores.mtn.edit'), guardMtn, asyncH
          VALUES (?, 'dispatch', 'driver', ?, ?, ?, 'approved', ?)`,
       id, req.user.id, recBy, recSig, req.body.reason || 'Handed over for transit');
     stock.rebuild({ transfersOf: id });     // out of the sending store: it is on the lorry
+    supplyRoutes.onMtnDispatched(id);
   });
 
   audit.record({ userId: req.user.id, entity: 'mtn', entityId: id, action: 'dispatch', after: { status: 'dispatched', received_by: recBy } });
@@ -3920,6 +3993,7 @@ router.post('/mtn/:id/accept', requireCap('stores.mtn.edit'), guardMtn, asyncHan
          VALUES (?, 'accept', 'storekeeper', ?, ?, ?, 'approved', ?)`,
       id, req.user.id, accBy, accSig, req.body.reason || 'Goods received, inspected and accepted into destination stock');
     stock.rebuild({ transfersOf: id });     // into the receiving store
+    supplyRoutes.onMtnAccepted(id);
   });
 
   audit.record({ userId: req.user.id, entity: 'mtn', entityId: id, action: 'accept', after: { status: 'accepted', accepted_by: accBy } });

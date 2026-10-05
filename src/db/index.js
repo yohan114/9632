@@ -774,6 +774,7 @@ function migrate() {
   toolsAndToolboxesProcess();
   ownRecordsStep2();
   ownRecordsStep2c();
+  supplyRoutesAndPipeline();
 
   // Seed the RBAC matrix once (safe to require here — db exports are already set).
   // Sections split off a shared switch start at that switch's level (access plan, Part 1) — before
@@ -1689,6 +1690,44 @@ function requestRulesStep3a() {
                                              ORDER BY a.id LIMIT 1)
             WHERE raised_by_user IS NULL`);
   require('../lib/request_rules').sealMissing();
+}
+
+function supplyRoutesAndPipeline() {
+  ensureColumn('mrn_lines', 'supply_route', "TEXT DEFAULT 'main_store'");
+  ensureColumn('mrn_lines', 'qty_approved', 'REAL DEFAULT 0');
+  ensureColumn('mrn_lines', 'qty_sent', 'REAL DEFAULT 0');
+  ensureColumn('mrn_lines', 'qty_issued', 'REAL DEFAULT 0');
+  ensureColumn('mrn_lines', 'auto_mtn_id', 'INTEGER REFERENCES mtn(id)');
+  ensureColumn('mrn_lines', 'route_assigned_by', 'TEXT');
+  ensureColumn('mrn_lines', 'route_assigned_at', 'TEXT');
+  ensureColumn('mrn_lines', 'route_assigned_reason', 'TEXT');
+
+  db.exec(`UPDATE mrn_lines SET supply_route = CASE
+    WHEN purchase_source = 'head_office' THEN 'head_office'
+    WHEN purchase_source = 'local_purchase' THEN 'local_purchase'
+    ELSE COALESCE(supply_route, 'main_store')
+  END WHERE supply_route IS NULL OR supply_route = '';`);
+
+  db.exec(`UPDATE mrn_lines SET qty_approved = qty
+   WHERE (qty_approved IS NULL OR qty_approved = 0)
+     AND mrn_id IN (SELECT id FROM mrn WHERE approval_status = 'approved');`);
+
+  db.exec(`UPDATE mrn_lines SET qty_issued = COALESCE((
+    SELECT SUM(i.qty) FROM issues i
+    JOIN grn g ON g.id = i.grn_id
+    WHERE g.mrn_line_id = mrn_lines.id
+  ), 0) WHERE qty_issued IS NULL OR qty_issued = 0;`);
+
+  ensureColumn('mtn', 'mrn_id', 'INTEGER REFERENCES mrn(id)');
+  ensureColumn('mtn', 'auto_generated', 'INTEGER DEFAULT 0');
+  ensureColumn('mtn_lines', 'mrn_id', 'INTEGER REFERENCES mrn(id)');
+  ensureColumn('mtn_lines', 'mrn_line_id', 'INTEGER REFERENCES mrn_lines(id)');
+  ensureColumn('issues', 'mrn_line_id', 'INTEGER REFERENCES mrn_lines(id)');
+
+  db.exec('CREATE INDEX IF NOT EXISTS idx_mrn_lines_route ON mrn_lines(supply_route);');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_mtn_mrn ON mtn(mrn_id);');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_mtn_lines_mrn_line ON mtn_lines(mrn_line_id);');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_issues_mrn_line ON issues(mrn_line_id);');
 }
 
 function ensureColumn(table, col, def) {
