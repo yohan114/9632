@@ -206,7 +206,6 @@ CREATE TABLE IF NOT EXISTS mrn_lines (
   priority_updated_by TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_mrn_lines_mrn ON mrn_lines(mrn_id);
-CREATE INDEX IF NOT EXISTS idx_mrn_lines_route ON mrn_lines(supply_route);
 
 CREATE TABLE IF NOT EXISTS mrn_line_priority_history (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -495,7 +494,6 @@ CREATE TABLE IF NOT EXISTS mtn (
   created_at     TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_mtn_no ON mtn(mtn_no);
-CREATE INDEX IF NOT EXISTS idx_mtn_mrn ON mtn(mrn_id);
 
 CREATE TABLE IF NOT EXISTS mtn_approvals (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -544,7 +542,6 @@ CREATE TABLE IF NOT EXISTS mtn_lines (
   created_at     TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_mtn_lines_mtn ON mtn_lines(mtn_id);
-CREATE INDEX IF NOT EXISTS idx_mtn_lines_mrn_line ON mtn_lines(mrn_line_id);
 
 -- Running-balance ledger for general consumables.
 CREATE TABLE IF NOT EXISTS general_item_txns (
