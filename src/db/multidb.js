@@ -3,7 +3,9 @@
 const fs = require('fs');
 const path = require('path');
 const { AsyncLocalStorage } = require('node:async_hooks');
-const Database = require('better-sqlite3-multiple-ciphers');
+// Plain better-sqlite3 (already a dependency). No encryption is applied to any database here;
+// per-workshop encryption keys are NOT implemented yet.
+const Database = require('better-sqlite3');
 const config = require('../config');
 
 const storage = new AsyncLocalStorage();
@@ -30,7 +32,14 @@ function init(customBaseDb = null, customTargetDir = null) {
   }
 
   const corePath = getCoreDbPath();
-  isMultiDbEnabled = fs.existsSync(corePath);
+  // Opt-in only. A core.db lying beside the live database (e.g. left by a trial split) must never
+  // switch the running app over by itself: only MULTIDB=1, or a caller naming the target directory
+  // explicitly (the split tests), turns multi-database mode on — and only if core.db is there.
+  const optedIn = Boolean(customTargetDir) || process.env.MULTIDB === '1';
+  isMultiDbEnabled = optedIn && fs.existsSync(corePath);
+  if (process.env.MULTIDB === '1' && !isMultiDbEnabled) {
+    console.warn(`MULTIDB=1 but ${corePath} does not exist — staying in single-database mode.`);
+  }
 
   if (coreDb) {
     try { coreDb.close(); } catch {}
@@ -199,9 +208,9 @@ function createWorkshopDatabase(actor, body) {
 
     // 4. Set ws_meta
     wsDb.prepare(`
-      INSERT OR REPLACE INTO ws_meta (workshop_id, code, name)
-      VALUES (?, ?, ?)
-    `).run(wsId, code, name);
+      INSERT OR REPLACE INTO ws_meta (workshop_id, code, name, store_id)
+      VALUES (?, ?, ?, ?)
+    `).run(wsId, code, name, ownStore ? wsId : 1);
 
     // 5. Attach core.db
     wsDb.exec(`ATTACH DATABASE '${getCoreDbPath().replace(/\\/g, '/')}' AS core`);

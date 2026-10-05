@@ -4,7 +4,7 @@ const Database = require('better-sqlite3');
 const fs = require('fs');
 const path = require('path');
 const config = require('../src/config');
-const { CORE_TABLES, WS_TABLES, stripCoreForeignKeys } = require('./split_database');
+const { CORE_TABLES, WS_TABLES, stripCoreForeignKeys, WS_REWRITTEN_TRIGGERS } = require('./split_database');
 
 const db = new Database(config.dbPath);
 const tableSchemas = db.prepare("SELECT name, sql FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").all();
@@ -103,6 +103,9 @@ CREATE TABLE IF NOT EXISTS integrity_runs (
 for (const idx of indexSchemas) {
   if (coreSet.has(idx.tbl_name)) coreSql += idx.sql + ';\n';
 }
+for (const trg of triggerSchemas) {
+  if (coreSet.has(trg.tbl_name)) coreSql += trg.sql + ';\n';
+}
 
 let wsSql = '-- WorkshopOne Per-Workshop Schema (70 Workshop Tables + Meta)\n\n';
 for (const t of tableSchemas) {
@@ -116,6 +119,7 @@ CREATE TABLE IF NOT EXISTS ws_meta (
   workshop_id INTEGER PRIMARY KEY,
   code        TEXT NOT NULL UNIQUE,
   name        TEXT NOT NULL,
+  store_id    INTEGER,
   created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
 `;
@@ -124,7 +128,10 @@ for (const idx of indexSchemas) {
   if (wsSet.has(idx.tbl_name)) wsSql += idx.sql + ';\n';
 }
 for (const trg of triggerSchemas) {
-  if (wsSet.has(trg.tbl_name)) wsSql += trg.sql + ';\n';
+  if (wsSet.has(trg.tbl_name)) {
+    const rewritten = WS_REWRITTEN_TRIGGERS[trg.name] || trg.sql;
+    wsSql += rewritten + ';\n';
+  }
 }
 
 fs.writeFileSync(path.join(__dirname, '../src/db/core_schema.sql'), coreSql);

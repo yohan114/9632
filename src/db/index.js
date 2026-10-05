@@ -12,10 +12,16 @@ const db = new Database(config.dbPath);
 db.pragma('journal_mode = WAL');
 db.pragma('foreign_keys = ON');
 
+const multidb = require('./multidb');
+try {
+  multidb.init(db);
+} catch {}
+
 /**
  * Apply the schema. Idempotent — every statement is CREATE ... IF NOT EXISTS.
  */
 function migrate() {
+  if (multidb.isMultiDb()) return;
   // stock_moves' unique key gained item_key, so one service line can record BOTH of the filters
   // it fits. CREATE TABLE IF NOT EXISTS cannot change a constraint, and SQLite cannot alter one
   // in place — but stock_moves is a PROJECTION, regenerated from the source tables by
@@ -1892,21 +1898,31 @@ function ensureColumn(table, col, def) {
   if (!exists) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${def}`);
 }
 
+// Dynamic routing: when multidb is active, route through multidb.activeDb(); otherwise monolithic db.
+const currentDb = () => (multidb.isMultiDb() ? multidb.activeDb() : db);
+
 // Thin helpers so route code reads the same everywhere.
-const get = (sql, ...params) => db.prepare(sql).get(...params);
-const all = (sql, ...params) => db.prepare(sql).all(...params);
-const run = (sql, ...params) => db.prepare(sql).run(...params);
+const get = (sql, ...params) => currentDb().prepare(sql).get(...params);
+const all = (sql, ...params) => currentDb().prepare(sql).all(...params);
+const run = (sql, ...params) => currentDb().prepare(sql).run(...params);
 
 /**
  * Run fn() inside a transaction. better-sqlite3 transactions are synchronous.
  */
 function tx(fn) {
-  return db.transaction(fn)();
+  return currentDb().transaction(fn)();
 }
 
-const multidb = require('./multidb');
-try {
-  multidb.init(db);
-} catch {}
+// Proxy db so direct access like db.prepare, db.exec, db.transaction route to activeDb() when multidb is active
+const dbProxy = new Proxy(db, {
+  get(target, prop, receiver) {
+    const active = multidb.isMultiDb() ? multidb.activeDb() : target;
+    const value = Reflect.get(active, prop, active);
+    if (typeof value === 'function') {
+      return value.bind(active);
+    }
+    return value;
+  }
+});
 
-module.exports = { db, migrate, get, all, run, tx, multidb };
+module.exports = { db: dbProxy, rawDb: db, migrate, get, all, run, tx, multidb };

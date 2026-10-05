@@ -8,7 +8,7 @@ const cookieParser = require('cookie-parser');
 const { Server } = require('socket.io');
 
 const config = require('./config');
-const { migrate, get } = require('./db');
+const { migrate, get, multidb } = require('./db');
 const { authenticate, enforcePasswordChange, enforceMfaSetup, requireAuth, hasCap, rolesForUser, liveSession, COOKIE } = require('./lib/auth');
 const { requireModule } = require('./lib/permissions');
 const { errorHandler } = require('./lib/http');
@@ -43,6 +43,7 @@ app.use(express.json({ limit: '5mb' }));
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 app.use(authenticate);
+app.use(multidb.multidbMiddleware);
 app.use(enforcePasswordChange);
 // Someone whose role requires two-factor sign-in, and who has not set it up, reaches only the
 // enrolment screens until they have (src/lib/auth.js).

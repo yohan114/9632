@@ -538,3 +538,5 @@ CREATE INDEX idx_user_caps_cap ON user_capabilities(capability);
 CREATE INDEX idx_delegations_stand_in ON stand_in_delegations(stand_in_id, active, start_date, end_date);
 CREATE INDEX idx_delegations_granter ON stand_in_delegations(granter_id, active);
 CREATE INDEX idx_idempotency_key ON idempotency_keys(key);
+CREATE TRIGGER trg_users_workshop AFTER INSERT ON users WHEN NEW.workshop_id IS NULL
+    BEGIN UPDATE users SET workshop_id = (SELECT id FROM workshops WHERE is_default = 1 ORDER BY id LIMIT 1) WHERE id = NEW.id; END;

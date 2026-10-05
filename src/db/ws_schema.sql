@@ -9,7 +9,7 @@ CREATE TABLE mrn_lines (
   unit          TEXT DEFAULT 'nos',
   qty_received  REAL NOT NULL DEFAULT 0,
   legacy_item_id INTEGER                     -- source items.id (bridges receipts.itemId -> GRN)
-, category TEXT, purchase_source TEXT, category_id INTEGER, added_after_approval INTEGER NOT NULL DEFAULT 0, added_by TEXT, added_at TEXT, added_reason TEXT, purchased_at TEXT, purchased_by TEXT, supplier TEXT, invoice_no TEXT, invoice_date TEXT, purchase_amount REAL, source_changed_at TEXT, source_changed_by TEXT, source_changed_reason TEXT, source_changed_from TEXT, buying_priority TEXT DEFAULT 'P3_ROUTINE', priority_note TEXT, priority_updated_at TEXT, priority_updated_by TEXT, supply_route TEXT DEFAULT 'main_store', qty_approved REAL DEFAULT 0, qty_sent REAL DEFAULT 0, qty_issued REAL DEFAULT 0, auto_mtn_id INTEGER REFERENCES mtn(id), route_assigned_by TEXT, route_assigned_at TEXT, route_assigned_reason TEXT, qty_short REAL DEFAULT 0, discrepancy_reason TEXT);
+, category TEXT, purchase_source TEXT, category_id INTEGER, added_after_approval INTEGER NOT NULL DEFAULT 0, added_by TEXT, added_at TEXT, added_reason TEXT, purchased_at TEXT, purchased_by TEXT, supplier TEXT, invoice_no TEXT, invoice_date TEXT, purchase_amount REAL, source_changed_at TEXT, source_changed_by TEXT, source_changed_reason TEXT, source_changed_from TEXT, buying_priority TEXT DEFAULT 'P3_ROUTINE', priority_note TEXT, priority_updated_at TEXT, priority_updated_by TEXT, supply_route TEXT DEFAULT 'main_store', qty_approved REAL DEFAULT 0, qty_sent REAL DEFAULT 0, qty_issued REAL DEFAULT 0, auto_mtn_id INTEGER REFERENCES mtn(id), route_assigned_by TEXT, route_assigned_at TEXT, route_assigned_reason TEXT, qty_short REAL DEFAULT 0, discrepancy_reason TEXT, is_cancelled INTEGER DEFAULT 0, cancellation_reason TEXT, cancelled_by TEXT, cancelled_at TEXT);
 
 CREATE TABLE grn (
   id             INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1018,6 +1018,20 @@ CREATE TABLE delivery_discrepancies (
   updated_at          TEXT DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE "mrn" (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  mrn_no        TEXT NOT NULL UNIQUE,         -- continues existing seq (~167xxx)
+  req_date      TEXT NOT NULL DEFAULT (date('now')),
+  asset_id      INTEGER,
+  project_id    INTEGER,
+  job_id        INTEGER REFERENCES job_cards(id),
+  purpose       TEXT,
+  requested_by  TEXT,
+  status        TEXT NOT NULL DEFAULT 'open'
+                  CHECK (status IN ('closed','open','partially_received','received','cancelled')),
+  created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+, purchase_source TEXT, required_date TEXT, approval_status TEXT NOT NULL DEFAULT 'requested', certified_by TEXT, certified_at TEXT, approved_by TEXT, approved_at TEXT, requested_sig TEXT, certified_sig TEXT, approved_sig TEXT, request_type TEXT NOT NULL DEFAULT 'vehicle', tb_kind TEXT, purchase_requested_at TEXT, purchase_requested_by TEXT, purchase_ref TEXT, workshop_id INTEGER, raised_by_user INTEGER, certified_seal TEXT, chain_no TEXT, closed_by TEXT, closed_at TEXT, closure_notes TEXT);
+
 CREATE TABLE "min_notes" (
           id            INTEGER PRIMARY KEY AUTOINCREMENT,
           min_no        TEXT NOT NULL UNIQUE,
@@ -1044,25 +1058,12 @@ CREATE TABLE "min_notes" (
           created_at    TEXT NOT NULL DEFAULT (datetime('now'))
         , chain_no TEXT);
 
-CREATE TABLE "mrn" (
-  id            INTEGER PRIMARY KEY AUTOINCREMENT,
-  mrn_no        TEXT NOT NULL UNIQUE,         -- continues existing seq (~167xxx)
-  req_date      TEXT NOT NULL DEFAULT (date('now')),
-  asset_id      INTEGER,
-  project_id    INTEGER,
-  job_id        INTEGER REFERENCES job_cards(id),
-  purpose       TEXT,
-  requested_by  TEXT,
-  status        TEXT NOT NULL DEFAULT 'open'
-                  CHECK (status IN ('closed','open','partially_received','received','cancelled')),
-  created_at    TEXT NOT NULL DEFAULT (datetime('now'))
-, purchase_source TEXT, required_date TEXT, approval_status TEXT NOT NULL DEFAULT 'requested', certified_by TEXT, certified_at TEXT, approved_by TEXT, approved_at TEXT, requested_sig TEXT, certified_sig TEXT, approved_sig TEXT, request_type TEXT NOT NULL DEFAULT 'vehicle', tb_kind TEXT, purchase_requested_at TEXT, purchase_requested_by TEXT, purchase_ref TEXT, workshop_id INTEGER, raised_by_user INTEGER, certified_seal TEXT, chain_no TEXT);
-
 
 CREATE TABLE IF NOT EXISTS ws_meta (
   workshop_id INTEGER PRIMARY KEY,
   code        TEXT NOT NULL UNIQUE,
   name        TEXT NOT NULL,
+  store_id    INTEGER,
   created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX idx_mrn_lines_mrn ON mrn_lines(mrn_id);
@@ -1187,70 +1188,29 @@ CREATE INDEX idx_grn_chain_no ON grn(chain_no);
 CREATE INDEX idx_grn_vouchers_chain_no ON grn_vouchers(chain_no);
 CREATE INDEX idx_issues_chain_no ON issues(chain_no);
 CREATE INDEX idx_discrepancies_chain_no ON delivery_discrepancies(chain_no);
-CREATE INDEX idx_min_notes_no ON min_notes(min_no);
-CREATE INDEX idx_min_notes_job ON min_notes(job_id);
-CREATE INDEX idx_min_notes_asset ON min_notes(asset_id);
-CREATE INDEX idx_min_notes_chain_no ON min_notes(chain_no);
 CREATE INDEX idx_mrn_asset ON mrn(asset_id);
 CREATE INDEX idx_mrn_job ON mrn(job_id);
 CREATE INDEX idx_mrn_workshop ON mrn(workshop_id);
 CREATE INDEX idx_mrn_chain_no ON mrn(chain_no);
-CREATE TRIGGER trg_job_cards_workshop AFTER INSERT ON job_cards WHEN NEW.workshop_id IS NULL
-    BEGIN UPDATE job_cards SET workshop_id = (SELECT id FROM workshops WHERE is_default = 1 ORDER BY id LIMIT 1) WHERE id = NEW.id; END;
-CREATE TRIGGER trg_mechanics_workshop AFTER INSERT ON mechanics
-    BEGIN INSERT OR IGNORE INTO mechanic_workshops (mechanic_id, workshop_id, from_date) VALUES (NEW.id, (SELECT id FROM workshops WHERE is_default = 1 ORDER BY id LIMIT 1), '2000-01-01'); END;
-CREATE TRIGGER trg_job_requests_workshop AFTER INSERT ON job_requests WHEN NEW.workshop_id IS NULL
-    BEGIN UPDATE job_requests SET workshop_id = COALESCE((SELECT u.workshop_id FROM users u WHERE u.id = NEW.requested_by_user), (SELECT id FROM workshops WHERE is_default = 1 ORDER BY id LIMIT 1))
-           WHERE id = NEW.id; END;
-CREATE TRIGGER trg_issues_store AFTER INSERT ON issues WHEN NEW.store_id IS NULL
-             BEGIN UPDATE issues SET store_id = COALESCE((SELECT g.store_id FROM grn g WHERE g.id = NEW.grn_id), COALESCE((SELECT CASE WHEN sw.own_store = 1 AND (sw.store_opened IS NULL OR sw.store_opened <= date(COALESCE(NULLIF(NEW.issue_date, ''), 'now')))
-                                THEN sw.id ELSE COALESCE(sw.uses_store, (SELECT id FROM workshops WHERE is_default = 1 ORDER BY id LIMIT 1)) END
-                      FROM workshops sw WHERE sw.id = ((SELECT j.workshop_id FROM job_cards j WHERE j.id = NEW.job_id))), (SELECT id FROM workshops WHERE is_default = 1 ORDER BY id LIMIT 1))) WHERE id = NEW.id; END;
-CREATE TRIGGER trg_general_item_txns_store AFTER INSERT ON general_item_txns WHEN NEW.store_id IS NULL
-             BEGIN UPDATE general_item_txns SET store_id = COALESCE((SELECT CASE WHEN sw.own_store = 1 AND (sw.store_opened IS NULL OR sw.store_opened <= date(COALESCE(NULLIF(NEW.txn_date, ''), 'now')))
-                                THEN sw.id ELSE COALESCE(sw.uses_store, (SELECT id FROM workshops WHERE is_default = 1 ORDER BY id LIMIT 1)) END
-                      FROM workshops sw WHERE sw.id = ((SELECT j.workshop_id FROM job_cards j WHERE j.id = NEW.job_id))), (SELECT id FROM workshops WHERE is_default = 1 ORDER BY id LIMIT 1)) WHERE id = NEW.id; END;
-CREATE TRIGGER trg_stock_ledger_store AFTER INSERT ON stock_ledger WHEN NEW.store_id IS NULL
-             BEGIN UPDATE stock_ledger SET store_id = COALESCE((SELECT CASE WHEN sw.own_store = 1 AND (sw.store_opened IS NULL OR sw.store_opened <= date(COALESCE(NULLIF(NEW.txn_date, ''), 'now')))
-                                THEN sw.id ELSE COALESCE(sw.uses_store, (SELECT id FROM workshops WHERE is_default = 1 ORDER BY id LIMIT 1)) END
-                      FROM workshops sw WHERE sw.id = ((SELECT j.workshop_id FROM job_cards j WHERE j.id = NEW.job_id))), (SELECT id FROM workshops WHERE is_default = 1 ORDER BY id LIMIT 1)) WHERE id = NEW.id; END;
-CREATE TRIGGER trg_service_jobs_store AFTER INSERT ON service_jobs WHEN NEW.store_id IS NULL
-             BEGIN UPDATE service_jobs SET store_id = COALESCE((SELECT CASE WHEN sw.own_store = 1 AND (sw.store_opened IS NULL OR sw.store_opened <= date(COALESCE(NULLIF(NEW.service_date, ''), 'now')))
-                                THEN sw.id ELSE COALESCE(sw.uses_store, (SELECT id FROM workshops WHERE is_default = 1 ORDER BY id LIMIT 1)) END
-                      FROM workshops sw WHERE sw.id = (SELECT j.workshop_id FROM job_cards j WHERE j.job_no = NEW.job_no ORDER BY j.id DESC LIMIT 1)), (SELECT id FROM workshops WHERE is_default = 1 ORDER BY id LIMIT 1)) WHERE id = NEW.id; END;
-CREATE TRIGGER trg_mri_workshop AFTER INSERT ON monthly_report_inputs WHEN NEW.workshop_id IS NULL
-           BEGIN UPDATE monthly_report_inputs SET workshop_id = (SELECT id FROM workshops WHERE is_default = 1 ORDER BY id LIMIT 1)
-                  WHERE id = NEW.id; END;
-CREATE TRIGGER trg_service_jobs_workshop AFTER INSERT ON service_jobs WHEN NEW.workshop_id IS NULL
-  BEGIN
-    UPDATE service_jobs SET workshop_id = COALESCE(
-      (SELECT j.workshop_id FROM job_cards j WHERE j.job_no = NEW.job_no ORDER BY j.id DESC LIMIT 1),
-      (SELECT w.id FROM workshops w WHERE w.own_store = 1 AND w.id = NEW.store_id),
-      (SELECT id FROM workshops WHERE is_default = 1 ORDER BY id LIMIT 1)
-    ) WHERE id = NEW.id;
-  END;
-CREATE TRIGGER trg_service_jobs_ws AFTER INSERT ON service_jobs WHEN NEW.workshop_id IS NULL
-           BEGIN UPDATE service_jobs SET workshop_id = COALESCE((SELECT j.workshop_id FROM job_cards j WHERE j.job_no = NEW.job_no AND COALESCE(NEW.job_no, '') <> '' ORDER BY j.id DESC LIMIT 1), NEW.store_id, (SELECT id FROM workshops WHERE is_default = 1 ORDER BY id LIMIT 1)) WHERE id = NEW.id; END;
-CREATE TRIGGER trg_tools_ws AFTER INSERT ON workshop_tools WHEN NEW.workshop_id IS NULL
-           BEGIN UPDATE workshop_tools SET workshop_id = COALESCE((SELECT COALESCE(
-    (SELECT mw.workshop_id FROM mechanic_workshops mw WHERE mw.mechanic_id = m.id AND mw.from_date <= date('now')
-      ORDER BY mw.from_date DESC, mw.id DESC LIMIT 1),
-    (SELECT mw.workshop_id FROM mechanic_workshops mw WHERE mw.mechanic_id = m.id ORDER BY mw.from_date, mw.id LIMIT 1),
-    (SELECT id FROM workshops WHERE is_default = 1 ORDER BY id LIMIT 1)) FROM mechanics m WHERE m.id = NEW.mechanic_id), (SELECT id FROM workshops WHERE is_default = 1 ORDER BY id LIMIT 1)) WHERE id = NEW.id; END;
-CREATE TRIGGER trg_mtn_ws AFTER INSERT ON mtn WHEN NEW.workshop_id IS NULL
-           BEGIN UPDATE mtn SET workshop_id = COALESCE((SELECT w.id FROM workshops w WHERE NEW.from_place = 'w:' || w.id), (SELECT w.id FROM workshops w WHERE NEW.to_place = 'w:' || w.id), (SELECT id FROM workshops WHERE is_default = 1 ORDER BY id LIMIT 1)) WHERE id = NEW.id; END;
-CREATE TRIGGER trg_min_notes_ws AFTER INSERT ON min_notes WHEN NEW.workshop_id IS NULL
-           BEGIN UPDATE min_notes SET workshop_id = COALESCE((SELECT j.workshop_id FROM job_cards j WHERE j.id = NEW.job_id), (SELECT id FROM workshops WHERE is_default = 1 ORDER BY id LIMIT 1)) WHERE id = NEW.id; END;
-CREATE TRIGGER trg_mrn_workshop AFTER INSERT ON mrn WHEN NEW.workshop_id IS NULL
-    BEGIN UPDATE mrn SET workshop_id = COALESCE((SELECT j.workshop_id FROM job_cards j WHERE j.id = NEW.job_id), (SELECT id FROM workshops WHERE is_default = 1 ORDER BY id LIMIT 1))
-           WHERE id = NEW.id; END;
-CREATE TRIGGER trg_grn_store AFTER INSERT ON grn WHEN NEW.store_id IS NULL
-             BEGIN UPDATE grn SET store_id = COALESCE((SELECT CASE WHEN sw.own_store = 1 AND (sw.store_opened IS NULL OR sw.store_opened <= date(COALESCE(NULLIF(NEW.delivery_date, ''), 'now')))
-                                THEN sw.id ELSE COALESCE(sw.uses_store, (SELECT id FROM workshops WHERE is_default = 1 ORDER BY id LIMIT 1)) END
-                      FROM workshops sw WHERE sw.id = (SELECT m.workshop_id FROM mrn m WHERE m.id = COALESCE(NEW.mrn_id,
-                     (SELECT ml.mrn_id FROM mrn_lines ml WHERE ml.id = NEW.mrn_line_id)))), (SELECT id FROM workshops WHERE is_default = 1 ORDER BY id LIMIT 1)) WHERE id = NEW.id; END;
-CREATE TRIGGER trg_tyre_battery_issues_store AFTER INSERT ON tyre_battery_issues WHEN NEW.store_id IS NULL
-             BEGIN UPDATE tyre_battery_issues SET store_id = COALESCE((SELECT CASE WHEN sw.own_store = 1 AND (sw.store_opened IS NULL OR sw.store_opened <= date(COALESCE(NULLIF(NEW.issue_date, ''), 'now')))
-                                THEN sw.id ELSE COALESCE(sw.uses_store, (SELECT id FROM workshops WHERE is_default = 1 ORDER BY id LIMIT 1)) END
-                      FROM workshops sw WHERE sw.id = (COALESCE((SELECT j.workshop_id FROM job_cards j WHERE j.id = NEW.job_id),
-                     (SELECT m.workshop_id FROM mrn_lines ml JOIN mrn m ON m.id = ml.mrn_id WHERE ml.id = NEW.mrn_line_id)))), (SELECT id FROM workshops WHERE is_default = 1 ORDER BY id LIMIT 1)) WHERE id = NEW.id; END;
+CREATE INDEX idx_mrn_status ON mrn(status);
+CREATE INDEX idx_mrn_lines_cancelled ON mrn_lines(is_cancelled);
+CREATE INDEX idx_min_notes_no ON min_notes(min_no);
+CREATE INDEX idx_min_notes_job ON min_notes(job_id);
+CREATE INDEX idx_min_notes_asset ON min_notes(asset_id);
+CREATE INDEX idx_min_notes_chain_no ON min_notes(chain_no);
+CREATE TRIGGER trg_job_cards_workshop AFTER INSERT ON job_cards WHEN NEW.workshop_id IS NULL BEGIN UPDATE job_cards SET workshop_id = (SELECT workshop_id FROM ws_meta LIMIT 1) WHERE id = NEW.id; END;;
+CREATE TRIGGER trg_mechanics_workshop AFTER INSERT ON mechanics BEGIN INSERT OR IGNORE INTO mechanic_workshops (mechanic_id, workshop_id, from_date) VALUES (NEW.id, (SELECT workshop_id FROM ws_meta LIMIT 1), '2000-01-01'); END;;
+CREATE TRIGGER trg_job_requests_workshop AFTER INSERT ON job_requests WHEN NEW.workshop_id IS NULL BEGIN UPDATE job_requests SET workshop_id = (SELECT workshop_id FROM ws_meta LIMIT 1) WHERE id = NEW.id; END;;
+CREATE TRIGGER trg_issues_store AFTER INSERT ON issues WHEN NEW.store_id IS NULL BEGIN UPDATE issues SET store_id = COALESCE((SELECT g.store_id FROM grn g WHERE g.id = NEW.grn_id), (SELECT store_id FROM ws_meta LIMIT 1), (SELECT workshop_id FROM ws_meta LIMIT 1)) WHERE id = NEW.id; END;;
+CREATE TRIGGER trg_general_item_txns_store AFTER INSERT ON general_item_txns WHEN NEW.store_id IS NULL BEGIN UPDATE general_item_txns SET store_id = COALESCE((SELECT store_id FROM ws_meta LIMIT 1), (SELECT workshop_id FROM ws_meta LIMIT 1)) WHERE id = NEW.id; END;;
+CREATE TRIGGER trg_stock_ledger_store AFTER INSERT ON stock_ledger WHEN NEW.store_id IS NULL BEGIN UPDATE stock_ledger SET store_id = COALESCE((SELECT store_id FROM ws_meta LIMIT 1), (SELECT workshop_id FROM ws_meta LIMIT 1)) WHERE id = NEW.id; END;;
+CREATE TRIGGER trg_service_jobs_store AFTER INSERT ON service_jobs WHEN NEW.store_id IS NULL BEGIN UPDATE service_jobs SET store_id = COALESCE((SELECT store_id FROM ws_meta LIMIT 1), (SELECT workshop_id FROM ws_meta LIMIT 1)) WHERE id = NEW.id; END;;
+CREATE TRIGGER trg_mri_workshop AFTER INSERT ON monthly_report_inputs WHEN NEW.workshop_id IS NULL BEGIN UPDATE monthly_report_inputs SET workshop_id = (SELECT workshop_id FROM ws_meta LIMIT 1) WHERE id = NEW.id; END;;
+CREATE TRIGGER trg_service_jobs_workshop AFTER INSERT ON service_jobs WHEN NEW.workshop_id IS NULL BEGIN UPDATE service_jobs SET workshop_id = (SELECT workshop_id FROM ws_meta LIMIT 1) WHERE id = NEW.id; END;;
+CREATE TRIGGER trg_service_jobs_ws AFTER INSERT ON service_jobs WHEN NEW.workshop_id IS NULL BEGIN UPDATE service_jobs SET workshop_id = (SELECT workshop_id FROM ws_meta LIMIT 1) WHERE id = NEW.id; END;;
+CREATE TRIGGER trg_tools_ws AFTER INSERT ON workshop_tools WHEN NEW.workshop_id IS NULL BEGIN UPDATE workshop_tools SET workshop_id = COALESCE((SELECT mw.workshop_id FROM mechanic_workshops mw WHERE mw.mechanic_id = NEW.mechanic_id ORDER BY mw.from_date DESC, mw.id DESC LIMIT 1), (SELECT workshop_id FROM ws_meta LIMIT 1)) WHERE id = NEW.id; END;;
+CREATE TRIGGER trg_mtn_ws AFTER INSERT ON mtn WHEN NEW.workshop_id IS NULL BEGIN UPDATE mtn SET workshop_id = (SELECT workshop_id FROM ws_meta LIMIT 1) WHERE id = NEW.id; END;;
+CREATE TRIGGER trg_mrn_workshop AFTER INSERT ON mrn WHEN NEW.workshop_id IS NULL BEGIN UPDATE mrn SET workshop_id = COALESCE((SELECT j.workshop_id FROM job_cards j WHERE j.id = NEW.job_id), (SELECT workshop_id FROM ws_meta LIMIT 1)) WHERE id = NEW.id; END;;
+CREATE TRIGGER trg_grn_store AFTER INSERT ON grn WHEN NEW.store_id IS NULL BEGIN UPDATE grn SET store_id = COALESCE((SELECT store_id FROM ws_meta LIMIT 1), (SELECT workshop_id FROM ws_meta LIMIT 1)) WHERE id = NEW.id; END;;
+CREATE TRIGGER trg_tyre_battery_issues_store AFTER INSERT ON tyre_battery_issues WHEN NEW.store_id IS NULL BEGIN UPDATE tyre_battery_issues SET store_id = COALESCE((SELECT store_id FROM ws_meta LIMIT 1), (SELECT workshop_id FROM ws_meta LIMIT 1)) WHERE id = NEW.id; END;;
+CREATE TRIGGER trg_min_notes_ws AFTER INSERT ON min_notes WHEN NEW.workshop_id IS NULL BEGIN UPDATE min_notes SET workshop_id = COALESCE((SELECT j.workshop_id FROM job_cards j WHERE j.id = NEW.job_id), (SELECT workshop_id FROM ws_meta LIMIT 1)) WHERE id = NEW.id; END;;

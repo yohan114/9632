@@ -2,7 +2,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const Database = require('better-sqlite3-multiple-ciphers');
+const Database = require('better-sqlite3');
 
 const CORE_TABLES = [
   'users', 'roles', 'user_roles', 'role_capabilities', 'role_permissions',
@@ -39,6 +39,27 @@ const WS_TABLES = [
   'workshop_tools', 'tool_issue_logs', 'tool_scrap_requests',
   'daily_report_snapshots', 'monthly_report_inputs', 'vehicle_monthly_costs'
 ];
+
+// SQLite strictly forbids triggers from referencing attached databases (e.g. core.workshops).
+// In a per-workshop database, defaulting triggers must query ws_meta locally instead of workshops/users.
+const WS_REWRITTEN_TRIGGERS = {
+  trg_job_cards_workshop: `CREATE TRIGGER trg_job_cards_workshop AFTER INSERT ON job_cards WHEN NEW.workshop_id IS NULL BEGIN UPDATE job_cards SET workshop_id = (SELECT workshop_id FROM ws_meta LIMIT 1) WHERE id = NEW.id; END;`,
+  trg_mechanics_workshop: `CREATE TRIGGER trg_mechanics_workshop AFTER INSERT ON mechanics BEGIN INSERT OR IGNORE INTO mechanic_workshops (mechanic_id, workshop_id, from_date) VALUES (NEW.id, (SELECT workshop_id FROM ws_meta LIMIT 1), '2000-01-01'); END;`,
+  trg_job_requests_workshop: `CREATE TRIGGER trg_job_requests_workshop AFTER INSERT ON job_requests WHEN NEW.workshop_id IS NULL BEGIN UPDATE job_requests SET workshop_id = (SELECT workshop_id FROM ws_meta LIMIT 1) WHERE id = NEW.id; END;`,
+  trg_issues_store: `CREATE TRIGGER trg_issues_store AFTER INSERT ON issues WHEN NEW.store_id IS NULL BEGIN UPDATE issues SET store_id = COALESCE((SELECT g.store_id FROM grn g WHERE g.id = NEW.grn_id), (SELECT store_id FROM ws_meta LIMIT 1), (SELECT workshop_id FROM ws_meta LIMIT 1)) WHERE id = NEW.id; END;`,
+  trg_general_item_txns_store: `CREATE TRIGGER trg_general_item_txns_store AFTER INSERT ON general_item_txns WHEN NEW.store_id IS NULL BEGIN UPDATE general_item_txns SET store_id = COALESCE((SELECT store_id FROM ws_meta LIMIT 1), (SELECT workshop_id FROM ws_meta LIMIT 1)) WHERE id = NEW.id; END;`,
+  trg_stock_ledger_store: `CREATE TRIGGER trg_stock_ledger_store AFTER INSERT ON stock_ledger WHEN NEW.store_id IS NULL BEGIN UPDATE stock_ledger SET store_id = COALESCE((SELECT store_id FROM ws_meta LIMIT 1), (SELECT workshop_id FROM ws_meta LIMIT 1)) WHERE id = NEW.id; END;`,
+  trg_service_jobs_store: `CREATE TRIGGER trg_service_jobs_store AFTER INSERT ON service_jobs WHEN NEW.store_id IS NULL BEGIN UPDATE service_jobs SET store_id = COALESCE((SELECT store_id FROM ws_meta LIMIT 1), (SELECT workshop_id FROM ws_meta LIMIT 1)) WHERE id = NEW.id; END;`,
+  trg_mri_workshop: `CREATE TRIGGER trg_mri_workshop AFTER INSERT ON monthly_report_inputs WHEN NEW.workshop_id IS NULL BEGIN UPDATE monthly_report_inputs SET workshop_id = (SELECT workshop_id FROM ws_meta LIMIT 1) WHERE id = NEW.id; END;`,
+  trg_service_jobs_workshop: `CREATE TRIGGER trg_service_jobs_workshop AFTER INSERT ON service_jobs WHEN NEW.workshop_id IS NULL BEGIN UPDATE service_jobs SET workshop_id = (SELECT workshop_id FROM ws_meta LIMIT 1) WHERE id = NEW.id; END;`,
+  trg_service_jobs_ws: `CREATE TRIGGER trg_service_jobs_ws AFTER INSERT ON service_jobs WHEN NEW.workshop_id IS NULL BEGIN UPDATE service_jobs SET workshop_id = (SELECT workshop_id FROM ws_meta LIMIT 1) WHERE id = NEW.id; END;`,
+  trg_tools_ws: `CREATE TRIGGER trg_tools_ws AFTER INSERT ON workshop_tools WHEN NEW.workshop_id IS NULL BEGIN UPDATE workshop_tools SET workshop_id = COALESCE((SELECT mw.workshop_id FROM mechanic_workshops mw WHERE mw.mechanic_id = NEW.mechanic_id ORDER BY mw.from_date DESC, mw.id DESC LIMIT 1), (SELECT workshop_id FROM ws_meta LIMIT 1)) WHERE id = NEW.id; END;`,
+  trg_mtn_ws: `CREATE TRIGGER trg_mtn_ws AFTER INSERT ON mtn WHEN NEW.workshop_id IS NULL BEGIN UPDATE mtn SET workshop_id = (SELECT workshop_id FROM ws_meta LIMIT 1) WHERE id = NEW.id; END;`,
+  trg_mrn_workshop: `CREATE TRIGGER trg_mrn_workshop AFTER INSERT ON mrn WHEN NEW.workshop_id IS NULL BEGIN UPDATE mrn SET workshop_id = COALESCE((SELECT j.workshop_id FROM job_cards j WHERE j.id = NEW.job_id), (SELECT workshop_id FROM ws_meta LIMIT 1)) WHERE id = NEW.id; END;`,
+  trg_grn_store: `CREATE TRIGGER trg_grn_store AFTER INSERT ON grn WHEN NEW.store_id IS NULL BEGIN UPDATE grn SET store_id = COALESCE((SELECT store_id FROM ws_meta LIMIT 1), (SELECT workshop_id FROM ws_meta LIMIT 1)) WHERE id = NEW.id; END;`,
+  trg_tyre_battery_issues_store: `CREATE TRIGGER trg_tyre_battery_issues_store AFTER INSERT ON tyre_battery_issues WHEN NEW.store_id IS NULL BEGIN UPDATE tyre_battery_issues SET store_id = COALESCE((SELECT store_id FROM ws_meta LIMIT 1), (SELECT workshop_id FROM ws_meta LIMIT 1)) WHERE id = NEW.id; END;`,
+  trg_min_notes_ws: `CREATE TRIGGER trg_min_notes_ws AFTER INSERT ON min_notes WHEN NEW.workshop_id IS NULL BEGIN UPDATE min_notes SET workshop_id = COALESCE((SELECT j.workshop_id FROM job_cards j WHERE j.id = NEW.job_id), (SELECT workshop_id FROM ws_meta LIMIT 1)) WHERE id = NEW.id; END;`
+};
 
 function stripCoreForeignKeys(sql, coreSet) {
   let cleaned = sql;
@@ -192,6 +213,13 @@ function splitDatabase(sourceDbPath, targetDir, { dryRun = false } = {}) {
     }
   }
 
+  // Core triggers
+  for (const trg of triggerSchemas) {
+    if (coreTableSet.has(trg.tbl_name)) {
+      try { coreDb.exec(trg.sql); } catch (e) { /* ignore duplicate trigger */ }
+    }
+  }
+
   // 2. Workshop tables in CW.db
   console.log('\n--- Creating Workshop Schema (CW.db) ---');
   for (const t of tableSchemas) {
@@ -205,6 +233,7 @@ function splitDatabase(sourceDbPath, targetDir, { dryRun = false } = {}) {
       workshop_id INTEGER PRIMARY KEY,
       code        TEXT NOT NULL UNIQUE,
       name        TEXT NOT NULL,
+      store_id    INTEGER,
       created_at  TEXT NOT NULL DEFAULT (datetime('now'))
     );
   `);
@@ -263,7 +292,7 @@ function splitDatabase(sourceDbPath, targetDir, { dryRun = false } = {}) {
   console.log(`Populated ${openJobs.length} active vehicle holds in core.db`);
 
   console.log('\n--- Copying Data to CW.db ---');
-  cwDb.prepare(`INSERT INTO ws_meta (workshop_id, code, name) VALUES (1, 'CW', 'Central Workshop - Badalgama')`).run();
+  cwDb.prepare(`INSERT INTO ws_meta (workshop_id, code, name, store_id) VALUES (1, 'CW', 'Central Workshop - Badalgama', 1)`).run();
 
   for (const name of WS_TABLES) {
     const cols = getInsertableColumns(srcDb, name);
@@ -283,7 +312,8 @@ function splitDatabase(sourceDbPath, targetDir, { dryRun = false } = {}) {
 
   for (const trg of triggerSchemas) {
     if (wsTableSet.has(trg.tbl_name)) {
-      try { cwDb.exec(trg.sql); } catch (e) { /* ignore */ }
+      const sql = WS_REWRITTEN_TRIGGERS[trg.name] || trg.sql;
+      try { cwDb.exec(sql); } catch (e) { /* ignore */ }
     }
   }
 
@@ -339,4 +369,4 @@ if (require.main === module) {
   splitDatabase(sourceDb, targetDir);
 }
 
-module.exports = { splitDatabase, stripCoreForeignKeys, CORE_TABLES, WS_TABLES };
+module.exports = { splitDatabase, stripCoreForeignKeys, CORE_TABLES, WS_TABLES, WS_REWRITTEN_TRIGGERS };

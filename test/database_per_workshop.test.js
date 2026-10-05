@@ -5,13 +5,17 @@ const assert = require('node:assert');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const Database = require('better-sqlite3-multiple-ciphers');
+const Database = require('better-sqlite3');
 
 const { splitDatabase, CORE_TABLES, WS_TABLES } = require('../scripts/split_database');
 
-test('Multi-database architecture suite', async (t) => {
+// The split is checked against a real database. Point SPLIT_SOURCE_DB at a snapshot (never the live
+// file of a running server); without one it falls back to data/workshopone.db, and skips if neither exists.
+const SOURCE_DB = process.env.SPLIT_SOURCE_DB || path.join(__dirname, '../data/workshopone.db');
+
+test('Multi-database architecture suite', { skip: !fs.existsSync(SOURCE_DB) && `no source database at ${SOURCE_DB}` }, async (t) => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'multidb-suite-'));
-  const originalDb = path.join(__dirname, '../data/workshopone.db');
+  const originalDb = SOURCE_DB;
 
   await t.test('Phase 2 split: creates core.db and workshops/CW.db with 100% row match', () => {
     splitDatabase(originalDb, tmpDir);
