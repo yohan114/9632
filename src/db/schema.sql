@@ -1346,13 +1346,19 @@ CREATE INDEX IF NOT EXISTS idx_store_counts ON store_counts(store_id, section, i
 
 -- The level at which one store reorders an item. No row = no level set.
 CREATE TABLE IF NOT EXISTS store_reorder (
-  id         INTEGER PRIMARY KEY AUTOINCREMENT,
-  store_id   INTEGER NOT NULL REFERENCES workshops(id),
-  section    TEXT NOT NULL,
-  item_key   TEXT NOT NULL,
-  level      REAL NOT NULL,
-  set_by     INTEGER REFERENCES users(id),
-  set_at     TEXT NOT NULL DEFAULT (datetime('now')),
+  id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+  store_id            INTEGER NOT NULL REFERENCES workshops(id),
+  section             TEXT NOT NULL,
+  item_key            TEXT NOT NULL,
+  level               REAL NOT NULL,
+  safety_stock        REAL DEFAULT 0,
+  reorder_qty         REAL DEFAULT 0,
+  avg_daily_demand    REAL DEFAULT 0,
+  lead_time_days      INTEGER DEFAULT 7,
+  auto_calc           INTEGER DEFAULT 1,
+  last_calculated_at  TEXT,
+  set_by              INTEGER REFERENCES users(id),
+  set_at              TEXT NOT NULL DEFAULT (datetime('now')),
   UNIQUE (store_id, section, item_key)
 );
 

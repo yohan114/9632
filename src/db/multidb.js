@@ -462,11 +462,40 @@ function migrate() {
           );
           CREATE INDEX IF NOT EXISTS idx_evidence_photos_lookup ON line_evidence_photos(entity_type, entity_id);
         `);
+
+        // Step 7: Ensure store_reorder columns in workshop DB
+        const srExists = wdb.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'store_reorder'").get();
+        if (srExists) {
+          const cols = wdb.prepare('PRAGMA table_info(store_reorder)').all().map((c) => c.name);
+          if (!cols.includes('safety_stock')) wdb.exec('ALTER TABLE store_reorder ADD COLUMN safety_stock REAL DEFAULT 0');
+          if (!cols.includes('reorder_qty')) wdb.exec('ALTER TABLE store_reorder ADD COLUMN reorder_qty REAL DEFAULT 0');
+          if (!cols.includes('avg_daily_demand')) wdb.exec('ALTER TABLE store_reorder ADD COLUMN avg_daily_demand REAL DEFAULT 0');
+          if (!cols.includes('lead_time_days')) wdb.exec('ALTER TABLE store_reorder ADD COLUMN lead_time_days INTEGER DEFAULT 7');
+          if (!cols.includes('auto_calc')) wdb.exec('ALTER TABLE store_reorder ADD COLUMN auto_calc INTEGER DEFAULT 1');
+          if (!cols.includes('last_calculated_at')) wdb.exec('ALTER TABLE store_reorder ADD COLUMN last_calculated_at TEXT');
+        }
+
         wdb.close();
       } catch (err) {
         // ignore
       }
     }
+  }
+
+  // Ensure store_reorder columns in core.db if table exists
+  if (coreDb) {
+    try {
+      const srCore = coreDb.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'store_reorder'").get();
+      if (srCore) {
+        const ccols = coreDb.prepare('PRAGMA table_info(store_reorder)').all().map((c) => c.name);
+        if (!ccols.includes('safety_stock')) coreDb.exec('ALTER TABLE store_reorder ADD COLUMN safety_stock REAL DEFAULT 0');
+        if (!ccols.includes('reorder_qty')) coreDb.exec('ALTER TABLE store_reorder ADD COLUMN reorder_qty REAL DEFAULT 0');
+        if (!ccols.includes('avg_daily_demand')) coreDb.exec('ALTER TABLE store_reorder ADD COLUMN avg_daily_demand REAL DEFAULT 0');
+        if (!ccols.includes('lead_time_days')) coreDb.exec('ALTER TABLE store_reorder ADD COLUMN lead_time_days INTEGER DEFAULT 7');
+        if (!ccols.includes('auto_calc')) coreDb.exec('ALTER TABLE store_reorder ADD COLUMN auto_calc INTEGER DEFAULT 1');
+        if (!ccols.includes('last_calculated_at')) coreDb.exec('ALTER TABLE store_reorder ADD COLUMN last_calculated_at TEXT');
+      }
+    } catch {}
   }
 }
 

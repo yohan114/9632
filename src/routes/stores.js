@@ -37,6 +37,7 @@ const supplyRoutes = require('../lib/supply_routes');
 const chainPipeline = require('../lib/chain_pipeline');
 const fs = require('fs');
 const evidencePhotos = require('../lib/evidence_photos');
+const reorderRebalance = require('../lib/reorder_rebalance');
 
 // One cell's worth of "when did this arrive", for a sheet or a printout. A spreadsheet has no
 // tooltip, so whatever the hover would have said has to be in the cell itself.
@@ -4621,6 +4622,93 @@ router.get('/export/mrn.xlsx', asyncHandler(async (req, res) => {
     // A request has no single qty_received, so judge it by whether anything is dated against it.
     rows: rows.map((r) => ({ ...r, received_date: exportReceived({ ...r, qty_received: r.last_received ? 1 : 0 }) })),
   }]);
+}));
+
+// ===========================================================================
+// Step 7: Automated Reorder Point (ROP) & Inter-Workshop Stock Rebalancing
+// ===========================================================================
+
+// Comprehensive store reorder analysis, stock health, and inter-workshop opportunities
+router.get('/rebalance/analysis', permissions.requireModule('stores', 'view'), asyncHandler((req, res) => {
+  const userStore = stores.homeStore(req.user) || 1;
+  const storeId = req.query.store_id ? toInt(req.query.store_id) : userStore;
+  const section = req.query.section ? String(req.query.section).toLowerCase() : null;
+  const days = req.query.days ? toInt(req.query.days) : 90;
+
+  const storeData = reorderRebalance.calculateStoreRop(storeId, { demandDays: days });
+  const opportunities = reorderRebalance.findRebalanceOpportunities({ storeId, section });
+
+  // Also find all surplus items in THIS store that can be donated to other stores
+  const mySurplus = storeData.items.filter((it) => it.available_surplus > 0);
+
+  res.json({
+    ok: true,
+    store_id: storeId,
+    store_name: storeData.store_name,
+    kpis: storeData.kpis,
+    items: section ? storeData.items.filter((it) => it.section === section) : storeData.items,
+    opportunities,
+    surplus_available: mySurplus
+  });
+}));
+
+// Apply computed ROP, Safety Stock, and ROQ levels
+router.post('/rebalance/apply-rop', permissions.requireModule('stores', 'edit'), asyncHandler((req, res) => {
+  const b = req.body || {};
+  const storeId = toInt(b.store_id) || stores.homeStore(req.user) || 1;
+  if (!stores.mayManage(req.user, storeId)) {
+    return res.status(403).json({ error: `You set levels only for your own store (${stores.label(stores.homeStore(req.user))}).` });
+  }
+  const items = Array.isArray(b.items) ? b.items : [];
+  if (items.length === 0) {
+    return res.status(400).json({ error: 'No items provided for ROP application.' });
+  }
+
+  const result = reorderRebalance.applyRopLevels(storeId, items, req.user);
+  res.json(result);
+}));
+
+// 1-Click Inter-Workshop Material Transfer Note (MTN) Creation
+router.post('/rebalance/create-mtn', permissions.requireModule('stores', 'edit'), asyncHandler((req, res) => {
+  const b = req.body || {};
+  const fromStoreId = toInt(b.from_store_id);
+  const toStoreId = toInt(b.to_store_id);
+  const items = Array.isArray(b.items) ? b.items : [];
+
+  if (!fromStoreId || !toStoreId) {
+    return res.status(400).json({ error: 'Source and destination store IDs are required.' });
+  }
+  if (items.length === 0) {
+    return res.status(400).json({ error: 'At least one item must be provided for transfer.' });
+  }
+
+  const result = reorderRebalance.createRebalanceMtn({
+    fromStoreId,
+    toStoreId,
+    items,
+    reason: b.reason,
+    user: req.user
+  });
+  res.json(result);
+}));
+
+// Item-level consumption history and demand curve
+router.get('/rebalance/item-history', permissions.requireModule('stores', 'view'), asyncHandler((req, res) => {
+  const section = String(req.query.section || 'general').toLowerCase();
+  const itemKey = String(req.query.item_key || '').trim();
+  if (!itemKey) return res.status(400).json({ error: 'item_key is required.' });
+
+  const storeId = req.query.store_id ? toInt(req.query.store_id) : null;
+  const days = req.query.days ? toInt(req.query.days) : 90;
+
+  const history = reorderRebalance.getItemDemandHistory(section, itemKey, storeId, { days });
+  const rop = reorderRebalance.calculateItemRop(section, itemKey, storeId || stores.homeStore(req.user) || 1, { demandDays: days });
+
+  res.json({
+    ok: true,
+    history,
+    rop
+  });
 }));
 
 module.exports = router;

@@ -1891,6 +1891,14 @@ function closureRulesAndUniversalTrace() {
   ensureColumn('mrn_lines', 'cancelled_by', 'TEXT');
   ensureColumn('mrn_lines', 'cancelled_at', 'TEXT');
 
+  // Step 7: Automated Reorder Point (ROP) & Rebalancing
+  ensureColumn('store_reorder', 'safety_stock', 'REAL DEFAULT 0');
+  ensureColumn('store_reorder', 'reorder_qty', 'REAL DEFAULT 0');
+  ensureColumn('store_reorder', 'avg_daily_demand', 'REAL DEFAULT 0');
+  ensureColumn('store_reorder', 'lead_time_days', 'INTEGER DEFAULT 7');
+  ensureColumn('store_reorder', 'auto_calc', 'INTEGER DEFAULT 1');
+  ensureColumn('store_reorder', 'last_calculated_at', 'TEXT');
+
   // Indexes
   db.exec('CREATE INDEX IF NOT EXISTS idx_mrn_status ON mrn(status);');
   db.exec('CREATE INDEX IF NOT EXISTS idx_mrn_lines_cancelled ON mrn_lines(is_cancelled);');

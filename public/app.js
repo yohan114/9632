@@ -5360,7 +5360,7 @@ routes.stores = async (c, parts = []) => {
   if (tab === 'movements') tab = sp.get('sub') || 'issues';
   const GROUPS = {
     flow: { label: '🔄 REQUESTS → ISSUE',
-      subs: [['lines', '📋 Items'], ['mrn', 'Requests (MRN)'], ['grn', 'Receipts (GRN)'], ['issues', 'Issues'], ['workspace', '⚡ Receive & price many'], ['discrepancies', '⚠️ Short Deliveries'], ['trace', '🔍 Universal Trace']] },
+      subs: [['lines', '📋 Items'], ['mrn', 'Requests (MRN)'], ['grn', 'Receipts (GRN)'], ['issues', 'Issues'], ['workspace', '⚡ Receive & price many'], ['discrepancies', '⚠️ Short Deliveries'], ['trace', '🔍 Universal Trace'], ['rebalance', '⚖️ Rebalance & ROP']] },
   };
   // Part 2: every kind of stock in one view, and the stock take.
   // Part 4: scrap and waste oil leave on a disposal note.
@@ -5741,6 +5741,8 @@ routes.stores = async (c, parts = []) => {
     return storesDiscrepancies(body, sp);
   } else if (tab === 'trace') {
     return storesUniversalTrace(body, sp);
+  } else if (tab === 'rebalance') {
+    return storesRebalanceView(body, sp);
   } else if (tab === 'mtn') {
     const canT = canDo('stores.mtn.edit');
     const CAP = 300;
@@ -7432,6 +7434,489 @@ async function storesUniversalTrace(body, sp) {
   else if (initialJob) loadTrace({ job_id: initialJob });
   else if (initialQ) loadTrace({ q: initialQ });
   else loadTrace();
+}
+
+// ===========================================================================
+// Step 7: Automated Reorder Point (ROP) & Inter-Workshop Stock Rebalancing
+// ===========================================================================
+async function storesRebalanceView(body, sp) {
+  let curStore = sp.get('store_id') || (ME && ME.workshop_id) || 1;
+  let curSec = sp.get('section') || 'all';
+  let curDays = sp.get('days') || '90';
+  let activeTab = sp.get('view') || 'transfers'; // 'transfers' | 'recalibrate' | 'surplus'
+
+  // Fetch list of workshops for the dropdown
+  let workshops = [];
+  try {
+    workshops = await api('/workshops');
+  } catch {}
+  if (!workshops.length) {
+    workshops = [{ id: 1, name: 'Central Workshop', code: 'CW' }];
+  }
+
+  body.innerHTML = `
+    <div class="toolbar" style="margin-bottom:12px;flex-wrap:wrap;gap:8px">
+      <div style="display:flex;align-items:center;gap:6px">
+        <label style="font-weight:600;font-size:13px">🏪 Workshop Store:</label>
+        <select id="reb-store-sel" style="min-width:200px">
+          ${workshops.map((w) => `<option value="${w.id}" ${String(w.id) === String(curStore) ? 'selected' : ''}>${esc(w.name || w.code)}</option>`).join('')}
+        </select>
+      </div>
+
+      <div style="display:flex;align-items:center;gap:6px">
+        <label style="font-weight:600;font-size:13px">📦 Section:</label>
+        <select id="reb-sec-sel" style="min-width:140px">
+          <option value="all" ${curSec === 'all' ? 'selected' : ''}>All Sections</option>
+          <option value="general" ${curSec === 'general' ? 'selected' : ''}>🧰 General</option>
+          <option value="oil" ${curSec === 'oil' ? 'selected' : ''}>🛢️ Lubricants</option>
+          <option value="filter" ${curSec === 'filter' ? 'selected' : ''}>🛞 Filters</option>
+          <option value="battery" ${curSec === 'battery' ? 'selected' : ''}>🔋 Batteries</option>
+        </select>
+      </div>
+
+      <div style="display:flex;align-items:center;gap:6px">
+        <label style="font-weight:600;font-size:13px">⏱️ Demand Horizon:</label>
+        <select id="reb-days-sel" style="min-width:120px">
+          <option value="30" ${curDays === '30' ? 'selected' : ''}>30 Days</option>
+          <option value="60" ${curDays === '60' ? 'selected' : ''}>60 Days</option>
+          <option value="90" ${curDays === '90' ? 'selected' : ''}>90 Days</option>
+          <option value="180" ${curDays === '180' ? 'selected' : ''}>180 Days</option>
+        </select>
+      </div>
+
+      <div class="spacer"></div>
+      <button class="sm" id="reb-btn-refresh">🔄 Refresh</button>
+      ${canDo('stores.stock.levels') || canDo('stores.admin') ? '<button class="sm primary" id="reb-btn-apply-all">⚡ Recalibrate All ROPs</button>' : ''}
+    </div>
+
+    <div id="reb-kpis" style="margin-bottom:12px"></div>
+
+    <div class="pill-row" style="margin-bottom:12px;gap:6px">
+      <button class="sm ${activeTab === 'transfers' ? 'primary' : ''}" id="reb-tab-transfers">⚖️ Inter-Workshop Transfers <span id="reb-cnt-opps" class="badge">0</span></button>
+      <button class="sm ${activeTab === 'recalibrate' ? 'primary' : ''}" id="reb-tab-recal">🎯 Dynamic ROP Recalibration <span id="reb-cnt-items" class="badge">0</span></button>
+      <button class="sm ${activeTab === 'surplus' ? 'primary' : ''}" id="reb-tab-surplus">📦 My Store Surplus <span id="reb-cnt-surplus" class="badge">0</span></button>
+    </div>
+
+    <div id="reb-content"><div class="muted">Loading rebalancing data...</div></div>
+  `;
+
+  const kpisHost = qs('#reb-kpis', body);
+  const contentHost = qs('#reb-content', body);
+
+  let cachedAnalysis = null;
+
+  async function loadData() {
+    contentHost.innerHTML = '<div class="muted" style="padding:20px;text-align:center">Computing rolling consumption & finding cross-workshop surpluses...</div>';
+    try {
+      const q = new URLSearchParams({ store_id: curStore, days: curDays });
+      if (curSec !== 'all') q.set('section', curSec);
+
+      cachedAnalysis = await api('/stores/rebalance/analysis?' + q.toString());
+      renderView();
+    } catch (e) {
+      contentHost.innerHTML = `<div class="card"><p class="err">${esc(e.message)}</p></div>`;
+    }
+  }
+
+  function renderView() {
+    if (!cachedAnalysis) return;
+    const { kpis, opportunities, items, surplus_available } = cachedAnalysis;
+
+    // Update KPI cards
+    kpisHost.innerHTML = `
+      <div class="grid section" style="grid-template-columns:repeat(auto-fit, minmax(210px, 1fr));gap:10px">
+        <div class="card stat">
+          <span class="n" style="color:${(kpis.stockouts + kpis.critical) > 0 ? 'var(--danger,#c4392c)' : 'inherit'}">${num(kpis.stockouts + kpis.critical)}</span>
+          <span class="l">Critical Deficits</span>
+          <div class="muted" style="font-size:11px;margin-top:4px">
+            <span class="badge red">${num(kpis.stockouts)} Stockouts</span> · <span class="badge amber">${num(kpis.critical)} Critical</span>
+          </div>
+        </div>
+        <div class="card stat">
+          <span class="n" style="color:#2f855a">${num(opportunities.length)}</span>
+          <span class="l">Transfer Opportunities</span>
+          <div class="muted" style="font-size:11px;margin-top:4px">
+            Cross-workshop rebalance matches
+          </div>
+        </div>
+        <div class="card stat">
+          <span class="n">${num(kpis.total_surplus_available)} units</span>
+          <span class="l">Surplus Above Safety</span>
+          <div class="muted" style="font-size:11px;margin-top:4px">
+            Safe to transfer to remote stores
+          </div>
+        </div>
+        <div class="card stat">
+          <span class="n">${num(kpis.total_items)} SKUs</span>
+          <span class="l">Demand Modeled</span>
+          <div class="muted" style="font-size:11px;margin-top:4px">
+            ${num(curDays)}-day active consumption analysis
+          </div>
+        </div>
+      </div>
+    `;
+
+    // Badges on pills
+    qs('#reb-cnt-opps', body).textContent = num(opportunities.length);
+    qs('#reb-cnt-items', body).textContent = num(items.length);
+    qs('#reb-cnt-surplus', body).textContent = num(surplus_available.length);
+
+    if (activeTab === 'transfers') {
+      renderTransfersTab(opportunities);
+    } else if (activeTab === 'recalibrate') {
+      renderRecalibrateTab(items);
+    } else if (activeTab === 'surplus') {
+      renderSurplusTab(surplus_available);
+    }
+  }
+
+  function renderTransfersTab(opportunities) {
+    if (!opportunities.length) {
+      contentHost.innerHTML = `
+        <div class="card section" style="text-align:center;padding:30px">
+          <div style="font-size:32px;margin-bottom:8px">⚖️</div>
+          <h3 style="margin:0 0 6px">No Cross-Workshop Transfers Required</h3>
+          <p class="muted" style="margin:0">All items at this workshop are either above reorder thresholds or no other company workshop currently holds excess surplus.</p>
+        </div>
+      `;
+      return;
+    }
+
+    const headers = [
+      { label: 'Priority', width: '90px' },
+      { label: 'Part / SKU & Category', cls: 'desc-col' },
+      { label: 'Receiving Workshop (Deficit)', width: '220px' },
+      { label: 'Donating Workshop (Surplus)', width: '220px' },
+      { label: 'Rec. Transfer', num: true, width: '110px' },
+      { label: 'Action', width: '160px', num: true }
+    ];
+
+    const bodyRows = opportunities.map((o) => `
+      <tr>
+        <td>${o.urgency === 'HIGH' ? '<span class="badge red">CRITICAL</span>' : '<span class="badge amber">LOW</span>'}</td>
+        <td>
+          <b>${esc(o.item_name)}</b>
+          <div class="muted" style="font-size:11px"><code>${esc(o.item_key)}</code> · ${esc(o.section)}</div>
+        </td>
+        <td>
+          <b>${esc(o.to_store_name)}</b>
+          <div class="muted" style="font-size:11px">Bal: <b style="color:var(--danger,#c4392c)">${num(o.to_balance)}</b> (ROP: ${num(o.to_rop)}) · Shortfall: <b>${num(o.shortfall)}</b></div>
+        </td>
+        <td>
+          <b>${esc(o.from_store_name)}</b>
+          <div class="muted" style="font-size:11px">Bal: <b>${num(o.from_balance)}</b> · Safe Surplus: <b style="color:#2f855a">${num(o.from_available_surplus)}</b></div>
+        </td>
+        <td class="num">
+          <b style="font-size:14px;color:#2f855a">${num(o.suggested_transfer_qty)}</b> <span class="muted">${esc(o.unit)}</span>
+        </td>
+        <td class="num">
+          <button class="sm primary reb-btn-transfer" data-opp="${esc(encodeURIComponent(JSON.stringify(o)))}">⚡ Create MTN</button>
+        </td>
+      </tr>
+    `);
+
+    contentHost.innerHTML = `
+      <div class="card section">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+          <div>
+            <h3 style="margin:0">Inter-Workshop Rebalance Recommendations</h3>
+            <p class="muted" style="margin:2px 0 0;font-size:12px">Transfers surplus inventory from well-stocked workshops to depleted sites. Donating stores always retain their full safety buffer.</p>
+          </div>
+        </div>
+        ${tableWrap(headers, bodyRows, { scroll: true })}
+      </div>
+    `;
+
+    qsa('.reb-btn-transfer', contentHost).forEach((btn) => {
+      btn.onclick = () => {
+        const opp = JSON.parse(decodeURIComponent(btn.dataset.opp));
+        openTransferModal(opp);
+      };
+    });
+  }
+
+  function openTransferModal(opp) {
+    modal('⚡ Create Rebalance Transfer MTN', `
+      <div style="margin-bottom:12px">
+        <p class="muted" style="margin:0 0 10px">Initiates an official Material Transfer Note (MTN) linking source and destination workshop stores with universal chain tracking.</p>
+        <div class="row">
+          <div class="field"><label>Source (Donating Store):</label><input type="text" value="${esc(opp.from_store_name)}" readonly disabled></div>
+          <div class="field"><label>Destination (Receiving Store):</label><input type="text" value="${esc(opp.to_store_name)}" readonly disabled></div>
+        </div>
+        <div class="row">
+          <div class="field"><label>Item Description:</label><input type="text" value="${esc(opp.item_name)}" readonly disabled></div>
+          ${field('Transfer Quantity (' + esc(opp.unit) + ')', 'transfer_qty', { type: 'number', value: opp.suggested_transfer_qty, min: 1, max: opp.from_available_surplus })}
+        </div>
+        ${field('Transfer Reason / Justification', 'transfer_reason', { value: `Inter-workshop rebalance: surplus transfer to resolve shortfall at ${opp.to_store_name}` })}
+      </div>
+      <div style="display:flex;justify-content:flex-end;gap:8px">
+        <button class="primary" id="modal-submit-mtn">⚡ Create Draft MTN</button>
+      </div>
+    `, (box, close) => {
+      qs('#modal-submit-mtn', box).onclick = async () => {
+        const qtyVal = Number(qs('input[name="transfer_qty"]', box).value) || 0;
+        const reasonVal = qs('input[name="transfer_reason"]', box).value.trim();
+        if (qtyVal <= 0) return toast('Transfer quantity must be greater than 0', 'err');
+
+        try {
+          const res = await api('/stores/rebalance/create-mtn', {
+            method: 'POST',
+            body: {
+              from_store_id: opp.from_store_id,
+              to_store_id: opp.to_store_id,
+              reason: reasonVal,
+              items: [{
+                section: opp.section,
+                item_key: opp.item_key,
+                item_name: opp.item_name,
+                qty: qtyVal,
+                unit: opp.unit
+              }]
+            }
+          });
+
+          close();
+          toast(`Transfer Note #${res.mtn_no} created with Chain ${res.chain_no}!`, 'ok');
+          location.hash = `#/stores?tab=mtn&id=${res.mtn_id}`;
+        } catch (e) {
+          toast(e.message, 'err');
+        }
+      };
+    });
+  }
+
+  function renderRecalibrateTab(items) {
+    if (!items.length) {
+      contentHost.innerHTML = '<div class="card"><p class="muted">No inventory records found for ROP analysis in this section.</p></div>';
+      return;
+    }
+
+    const headers = [
+      { label: 'Status', width: '90px' },
+      { label: 'Item Name & SKU', cls: 'desc-col' },
+      { label: 'Balance', num: true, width: '90px' },
+      { label: 'ADD (Daily)', num: true, width: '90px' },
+      { label: 'Lead Time', num: true, width: '80px' },
+      { label: 'Safety Stock', num: true, width: '95px' },
+      { label: 'Current ROP', num: true, width: '90px' },
+      { label: 'Rec. ROP', num: true, width: '90px' },
+      { label: 'Rec. ROQ', num: true, width: '90px' },
+      { label: 'Actions', width: '130px', num: true }
+    ];
+
+    const statBadges = {
+      STOCKOUT: '<span class="badge red">STOCKOUT</span>',
+      CRITICAL: '<span class="badge red">CRITICAL</span>',
+      LOW: '<span class="badge amber">LOW</span>',
+      SURPLUS: '<span class="badge green">SURPLUS</span>',
+      HEALTHY: '<span class="badge gray">HEALTHY</span>'
+    };
+
+    const bodyRows = items.map((i) => `
+      <tr>
+        <td>${statBadges[i.status] || i.status}</td>
+        <td>
+          <b>${esc(i.item_name)}</b>
+          <div class="muted" style="font-size:11px"><code>${esc(i.item_key)}</code> · ${esc(i.section)}</div>
+        </td>
+        <td class="num"><b style="color:${i.balance <= 0 ? 'var(--danger,#c4392c)' : 'inherit'}">${num(i.balance)}</b></td>
+        <td class="num">${num(i.avg_daily_demand)}/d</td>
+        <td class="num">${num(i.lead_time_days)}d</td>
+        <td class="num">${num(i.safety_stock)}</td>
+        <td class="num muted">${i.current_level > 0 ? num(i.current_level) : '—'}</td>
+        <td class="num"><b style="color:#2f855a">${num(i.rop)}</b></td>
+        <td class="num">${num(i.roq)}</td>
+        <td class="num" style="white-space:nowrap">
+          <button class="sm primary reb-btn-apply-one" data-item="${esc(encodeURIComponent(JSON.stringify(i)))}">Apply</button>
+          <button class="sm reb-btn-hist" data-sec="${esc(i.section)}" data-key="${esc(i.item_key)}" data-name="${esc(i.item_name)}">📈</button>
+        </td>
+      </tr>
+    `);
+
+    contentHost.innerHTML = `
+      <div class="card section">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px">
+          <div>
+            <h3 style="margin:0">Dynamic Reorder Point (ROP) Recalibration</h3>
+            <p class="muted" style="margin:2px 0 0;font-size:12px">Formula: <code>ROP = ⌈(ADD × Lead Time) + Safety Stock⌉</code> based on ${num(curDays)}-day physical issue velocity.</p>
+          </div>
+          ${canDo('stores.stock.levels') || canDo('stores.admin') ? '<button class="sm primary" id="reb-btn-apply-bulk">⚡ Apply All Recommendations</button>' : ''}
+        </div>
+        ${tableWrap(headers, bodyRows, { scroll: true })}
+      </div>
+    `;
+
+    if (qs('#reb-btn-apply-bulk', contentHost)) {
+      qs('#reb-btn-apply-bulk', contentHost).onclick = async () => {
+        if (!confirm(`Apply calculated ROPs to all ${items.length} items for this store?`)) return;
+        try {
+          await api('/stores/rebalance/apply-rop', {
+            method: 'POST',
+            body: { store_id: curStore, items }
+          });
+          toast(`Updated reorder thresholds for ${items.length} items!`, 'ok');
+          loadData();
+        } catch (e) {
+          toast(e.message, 'err');
+        }
+      };
+    }
+
+    qsa('.reb-btn-apply-one', contentHost).forEach((btn) => {
+      btn.onclick = async () => {
+        const it = JSON.parse(decodeURIComponent(btn.dataset.item));
+        try {
+          await api('/stores/rebalance/apply-rop', {
+            method: 'POST',
+            body: { store_id: curStore, items: [it] }
+          });
+          toast(`Updated ROP for ${it.item_name} to ${it.rop}`, 'ok');
+          loadData();
+        } catch (e) {
+          toast(e.message, 'err');
+        }
+      };
+    });
+
+    qsa('.reb-btn-hist', contentHost).forEach((btn) => {
+      btn.onclick = () => openHistoryModal(btn.dataset.sec, btn.dataset.key, btn.dataset.name);
+    });
+  }
+
+  function renderSurplusTab(surplus) {
+    if (!surplus.length) {
+      contentHost.innerHTML = `
+        <div class="card section" style="text-align:center;padding:30px">
+          <div style="font-size:32px;margin-bottom:8px">📦</div>
+          <h3 style="margin:0 0 6px">No Surplus Stock Available to Donate</h3>
+          <p class="muted" style="margin:0">All inventory in this workshop is currently at or below the safety threshold (ROP + Safety Stock).</p>
+        </div>
+      `;
+      return;
+    }
+
+    const headers = [
+      { label: 'Item Name & SKU', cls: 'desc-col' },
+      { label: 'On Hand Balance', num: true, width: '120px' },
+      { label: 'Reorder Point (ROP)', num: true, width: '130px' },
+      { label: 'Safety Buffer', num: true, width: '110px' },
+      { label: 'Safe Surplus to Share', num: true, width: '150px' }
+    ];
+
+    const bodyRows = surplus.map((s) => `
+      <tr>
+        <td>
+          <b>${esc(s.item_name)}</b>
+          <div class="muted" style="font-size:11px"><code>${esc(s.item_key)}</code> · ${esc(s.section)}</div>
+        </td>
+        <td class="num"><b>${num(s.balance)}</b> ${esc(s.unit)}</td>
+        <td class="num">${num(s.rop)}</td>
+        <td class="num">${num(s.safety_stock)}</td>
+        <td class="num"><b style="font-size:14px;color:#2f855a">${num(s.available_surplus)}</b> ${esc(s.unit)}</td>
+      </tr>
+    `);
+
+    contentHost.innerHTML = `
+      <div class="card section">
+        <h3 style="margin:0 0 4px">Surplus Inventory in Selected Store</h3>
+        <p class="muted" style="margin:0 0 10px;font-size:12px">These parts exceed local demand and safety stock requirements, making them ideal to support remote sites experiencing stockouts.</p>
+        ${tableWrap(headers, bodyRows, { scroll: true })}
+      </div>
+    `;
+  }
+
+  async function openHistoryModal(section, itemKey, itemName) {
+    modal(`📈 Demand History: ${itemName}`, `
+      <div id="reb-modal-hist-body"><div class="muted">Loading demand curve...</div></div>
+    `, async (box) => {
+      const modalHost = qs('#reb-modal-hist-body', box);
+      try {
+        const histData = await api(`/stores/rebalance/item-history?section=${encodeURIComponent(section)}&item_key=${encodeURIComponent(itemKey)}&store_id=${curStore}&days=${curDays}`);
+        const h = histData.history;
+        const r = histData.rop;
+
+        modalHost.innerHTML = `
+          <div class="grid section" style="grid-template-columns:repeat(auto-fit, minmax(130px, 1fr));gap:8px;margin-bottom:12px">
+            <div class="card stat"><span class="n">${num(h.total_issued)}</span><span class="l">Total Issued</span></div>
+            <div class="card stat"><span class="n">${num(h.avg_daily_demand)}</span><span class="l">Avg Daily Demand</span></div>
+            <div class="card stat"><span class="n">${num(h.monthly_demand)}</span><span class="l">Monthly Demand</span></div>
+            <div class="card stat"><span class="n">${num(r.rop)}</span><span class="l">Computed ROP</span></div>
+          </div>
+          <h4 style="margin:8px 0 4px">Daily Consumption Events (Last ${num(h.days_analyzed)} Days)</h4>
+          ${h.daily_history && h.daily_history.length ? tableWrap([
+            { label: 'Date' }, { label: 'Qty Issued', num: true }, { label: 'Issue Transactions', num: true }
+          ], h.daily_history.map((d) => `<tr><td>${esc(d.txn_date)}</td><td class="num"><b>${num(d.qty)}</b></td><td class="num">${num(d.moves_count)}</td></tr>`), { scroll: true })
+          : '<p class="muted">No issue movements recorded during this period.</p>'}
+        `;
+      } catch (e) {
+        modalHost.innerHTML = `<p class="err">${esc(e.message)}</p>`;
+      }
+    });
+  }
+
+  // Event Listeners
+  qs('#reb-store-sel', body).onchange = (e) => {
+    curStore = e.target.value;
+    history.replaceState(null, '', `#/stores?tab=flow&sub=rebalance&store_id=${curStore}&section=${curSec}&days=${curDays}&view=${activeTab}`);
+    loadData();
+  };
+
+  qs('#reb-sec-sel', body).onchange = (e) => {
+    curSec = e.target.value;
+    history.replaceState(null, '', `#/stores?tab=flow&sub=rebalance&store_id=${curStore}&section=${curSec}&days=${curDays}&view=${activeTab}`);
+    loadData();
+  };
+
+  qs('#reb-days-sel', body).onchange = (e) => {
+    curDays = e.target.value;
+    history.replaceState(null, '', `#/stores?tab=flow&sub=rebalance&store_id=${curStore}&section=${curSec}&days=${curDays}&view=${activeTab}`);
+    loadData();
+  };
+
+  qs('#reb-btn-refresh', body).onclick = () => loadData();
+
+  if (qs('#reb-btn-apply-all', body)) {
+    qs('#reb-btn-apply-all', body).onclick = async () => {
+      if (!cachedAnalysis || !cachedAnalysis.items.length) return;
+      if (!confirm(`Apply calculated ROPs to all ${cachedAnalysis.items.length} items?`)) return;
+      try {
+        await api('/stores/rebalance/apply-rop', {
+          method: 'POST',
+          body: { store_id: curStore, items: cachedAnalysis.items }
+        });
+        toast('Recalibrated all items successfully!', 'ok');
+        loadData();
+      } catch (e) {
+        toast(e.message, 'err');
+      }
+    };
+  }
+
+  qs('#reb-tab-transfers', body).onclick = () => {
+    activeTab = 'transfers';
+    updatePills();
+    renderView();
+  };
+
+  qs('#reb-tab-recal', body).onclick = () => {
+    activeTab = 'recalibrate';
+    updatePills();
+    renderView();
+  };
+
+  qs('#reb-tab-surplus', body).onclick = () => {
+    activeTab = 'surplus';
+    updatePills();
+    renderView();
+  };
+
+  function updatePills() {
+    qs('#reb-tab-transfers', body).className = 'sm ' + (activeTab === 'transfers' ? 'primary' : '');
+    qs('#reb-tab-recal', body).className = 'sm ' + (activeTab === 'recalibrate' ? 'primary' : '');
+    qs('#reb-tab-surplus', body).className = 'sm ' + (activeTab === 'surplus' ? 'primary' : '');
+  }
+
+  loadData();
 }
 
 async function mrnList(body, params) {
@@ -16051,11 +16536,12 @@ async function renderStockCockpitSection(c) {
             ${num(k.sku_counts.general)} Gen · ${num(k.sku_counts.filters)} Filters · ${num(k.sku_counts.oil)} Oil · ${num(k.sku_counts.in_store_batteries)} Bat
           </div>
         </div>
-        <div class="card stat">
+        <div class="card stat" style="cursor:pointer" onclick="location.hash='#/stores?tab=flow&sub=rebalance'">
           <span class="n" style="color:${k.reorder_summary.critical_count > 0 ? 'var(--danger,#c4392c)' : 'inherit'}">${num(k.reorder_summary.total_alerts)} Items</span>
           <span class="l">Reorder Shortfalls</span>
           <div class="muted" style="font-size:11px;margin-top:4px">
-            <span class="badge red">${num(k.reorder_summary.critical_count)} Critical (0 bal)</span> <span class="badge amber">${num(k.reorder_summary.low_count)} Low</span>
+            <span class="badge red">${num(k.reorder_summary.critical_count)} Critical</span> <span class="badge amber">${num(k.reorder_summary.low_count)} Low</span>
+            <div style="margin-top:4px"><span style="text-decoration:underline;color:var(--primary,#1b5e20);font-weight:600">⚖️ Inter-Workshop Rebalance →</span></div>
           </div>
         </div>
         <div class="card stat">

@@ -655,13 +655,19 @@ CREATE TABLE store_counts (
 , session_id INTEGER REFERENCES count_sessions(id));
 
 CREATE TABLE store_reorder (
-  id         INTEGER PRIMARY KEY AUTOINCREMENT,
-  store_id   INTEGER NOT NULL,
-  section    TEXT NOT NULL,
-  item_key   TEXT NOT NULL,
-  level      REAL NOT NULL,
-  set_by     INTEGER,
-  set_at     TEXT NOT NULL DEFAULT (datetime('now')),
+  id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+  store_id            INTEGER NOT NULL,
+  section             TEXT NOT NULL,
+  item_key            TEXT NOT NULL,
+  level               REAL NOT NULL,
+  safety_stock        REAL DEFAULT 0,
+  reorder_qty         REAL DEFAULT 0,
+  avg_daily_demand    REAL DEFAULT 0,
+  lead_time_days      INTEGER DEFAULT 7,
+  auto_calc           INTEGER DEFAULT 1,
+  last_calculated_at  TEXT,
+  set_by              INTEGER,
+  set_at              TEXT NOT NULL DEFAULT (datetime('now')),
   UNIQUE (store_id, section, item_key)
 );
 
