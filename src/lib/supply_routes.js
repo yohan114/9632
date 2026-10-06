@@ -19,6 +19,8 @@ const { get, all, run, tx } = require('../db');
 const audit = require('./audit');
 const emitter = require('./emitter');
 const chainPipeline = require('./chain_pipeline');
+const stock = require('./stock');
+const multidb = require('../db/multidb');
 
 const ROUTES = ['main_store', 'head_office', 'local_purchase', 'direct_delivery'];
 
@@ -267,6 +269,40 @@ function onMtnDispatched(mtnId) {
       run('UPDATE mrn_lines SET qty_sent = COALESCE(qty_sent, 0) + ? WHERE id = ?', Number(l.qty) || 0, l.mrn_line_id);
     }
   });
+
+  // Cross-workshop synchronization for MULTIDB mode:
+  // Propagate dispatch status to destination workshop database
+  if (multidb.isMultiDb()) {
+    try {
+      const mtn = get('SELECT * FROM mtn WHERE id = ?', mid);
+      if (mtn) {
+        const anyLine = get('SELECT to_store_id FROM mtn_lines WHERE mtn_id = ? AND to_store_id IS NOT NULL LIMIT 1', mid);
+        const toWsId = anyLine ? anyLine.to_store_id : null;
+        if (toWsId && toWsId !== multidb.activeWorkshopId()) {
+          multidb.withWorkshop(toWsId, () => {
+            const destMtn = get('SELECT id FROM mtn WHERE chain_no = ? OR mtn_no = ?', mtn.chain_no, mtn.mtn_no);
+            if (destMtn) {
+              run(`UPDATE mtn SET status = 'dispatched',
+                                  approved_by = COALESCE(?, approved_by),
+                                  approved_sig = COALESCE(?, approved_sig),
+                                  approved_at = COALESCE(?, approved_at),
+                                  approved_designation = COALESCE(?, approved_designation),
+                                  received_by = COALESCE(?, received_by),
+                                  received_sig = COALESCE(?, received_sig),
+                                  received_at = COALESCE(?, received_at),
+                                  received_designation = COALESCE(?, received_designation)
+                    WHERE id = ?`,
+                mtn.approved_by, mtn.approved_sig, mtn.approved_at, mtn.approved_designation,
+                mtn.received_by, mtn.received_sig, mtn.received_at, mtn.received_designation,
+                destMtn.id);
+            }
+          });
+        }
+      }
+    } catch (e) {
+      console.warn('[supply_routes] Failed to sync dispatched MTN across workshops:', e.message);
+    }
+  }
 }
 
 /**
@@ -334,6 +370,36 @@ function onMtnAccepted(mtnId, receipts, user) {
       }
     }
   });
+
+  // Cross-workshop synchronization for MULTIDB mode:
+  // Propagate accept status to origin workshop database and rebuild its stock
+  if (multidb.isMultiDb()) {
+    try {
+      const mtn = get('SELECT * FROM mtn WHERE id = ?', mid);
+      if (mtn) {
+        const anyLine = get('SELECT from_store_id FROM mtn_lines WHERE mtn_id = ? AND from_store_id IS NOT NULL LIMIT 1', mid);
+        const fromWsId = anyLine ? anyLine.from_store_id : null;
+        if (fromWsId && fromWsId !== multidb.activeWorkshopId()) {
+          multidb.withWorkshop(fromWsId, () => {
+            const origMtn = get('SELECT id FROM mtn WHERE chain_no = ? OR mtn_no = ?', mtn.chain_no, mtn.mtn_no);
+            if (origMtn) {
+              run(`UPDATE mtn SET status = 'accepted',
+                                  accepted_by = COALESCE(?, accepted_by),
+                                  accepted_sig = COALESCE(?, accepted_sig),
+                                  accepted_at = COALESCE(?, accepted_at),
+                                  accepted_designation = COALESCE(?, accepted_designation)
+                    WHERE id = ?`,
+                mtn.accepted_by, mtn.accepted_sig, mtn.accepted_at, mtn.accepted_designation,
+                origMtn.id);
+              stock.rebuild({ transfersOf: origMtn.id });
+            }
+          });
+        }
+      }
+    } catch (e) {
+      console.warn('[supply_routes] Failed to sync accepted MTN across workshops:', e.message);
+    }
+  }
 }
 
 /**

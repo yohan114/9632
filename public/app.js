@@ -7486,7 +7486,7 @@ async function storesRebalanceView(body, sp) {
 
       <div class="spacer"></div>
       <button class="sm" id="reb-btn-refresh">🔄 Refresh</button>
-      ${canDo('stores.stock.levels') || canDo('stores.admin') ? '<button class="sm primary" id="reb-btn-apply-all">⚡ Recalibrate All ROPs</button>' : ''}
+      ${canDo('stores.stock.levels') ? '<button class="sm primary" id="reb-btn-apply-all">⚡ Recalibrate All ROPs</button>' : ''}
     </div>
 
     <div id="reb-kpis" style="margin-bottom:12px"></div>
@@ -7740,7 +7740,7 @@ async function storesRebalanceView(body, sp) {
             <h3 style="margin:0">Dynamic Reorder Point (ROP) Recalibration</h3>
             <p class="muted" style="margin:2px 0 0;font-size:12px">Formula: <code>ROP = ⌈(ADD × Lead Time) + Safety Stock⌉</code> based on ${num(curDays)}-day physical issue velocity.</p>
           </div>
-          ${canDo('stores.stock.levels') || canDo('stores.admin') ? '<button class="sm primary" id="reb-btn-apply-bulk">⚡ Apply All Recommendations</button>' : ''}
+          ${canDo('stores.stock.levels') ? '<button class="sm primary" id="reb-btn-apply-bulk">⚡ Apply All Recommendations</button>' : ''}
         </div>
         ${tableWrap(headers, bodyRows, { scroll: true })}
       </div>

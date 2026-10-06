@@ -11,7 +11,7 @@ const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'wo-multidb-optin-'));
 process.env.DB_PATH = path.join(TMP, 'workshopone.db');
 process.env.BACKUP_DIR = path.join(TMP, 'backups');
 process.env.BACKUP_INTERVAL_MINUTES = '0';
-delete process.env.MULTIDB;
+process.env.MULTIDB = '';
 
 const test = require('node:test');
 const assert = require('node:assert');
@@ -36,7 +36,7 @@ test('MULTIDB=1 with no core.db stays single-database', () => {
     multidb.init(null, dir);
     assert.strictEqual(multidb.isMultiDb(), false, 'no core.db there');
   } finally {
-    delete process.env.MULTIDB;
+    process.env.MULTIDB = '';
   }
 });
 
@@ -46,7 +46,7 @@ test('MULTIDB=1 with a core.db present does turn it on', () => {
     multidb.init(null, null);
     assert.strictEqual(multidb.isMultiDb(), true);
   } finally {
-    delete process.env.MULTIDB;
+    process.env.MULTIDB = '';
     multidb.init(null, null);
   }
   assert.strictEqual(multidb.isMultiDb(), false, 'and off again without it');

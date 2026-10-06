@@ -258,6 +258,7 @@ function splitDatabase(sourceDbPath, targetDir, { dryRun = false } = {}) {
   console.log('\n--- Copying Data to core.db ---');
   for (const name of CORE_TABLES) {
     const cols = getInsertableColumns(srcDb, name);
+    if (!cols.length) continue;
     const colList = cols.map(c => `"${c}"`).join(', ');
     const rows = srcDb.prepare(`SELECT ${colList} FROM ${name}`).all();
     if (rows.length > 0) {
@@ -297,6 +298,7 @@ function splitDatabase(sourceDbPath, targetDir, { dryRun = false } = {}) {
 
   for (const name of WS_TABLES) {
     const cols = getInsertableColumns(srcDb, name);
+    if (!cols.length) continue;
     const colList = cols.map(c => `"${c}"`).join(', ');
     const rows = srcDb.prepare(`SELECT ${colList} FROM ${name}`).all();
     if (rows.length > 0) {
@@ -325,6 +327,8 @@ function splitDatabase(sourceDbPath, targetDir, { dryRun = false } = {}) {
   console.log('\n--- Verifying Row Counts ---');
   let mismatchCount = 0;
   for (const name of CORE_TABLES) {
+    const srcHas = srcDb.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?").get(name);
+    if (!srcHas) continue;
     const srcC = srcDb.prepare(`SELECT COUNT(*) c FROM ${name}`).get().c;
     const tgtC = coreDb.prepare(`SELECT COUNT(*) c FROM ${name}`).get().c;
     if (srcC !== tgtC) {
@@ -333,6 +337,8 @@ function splitDatabase(sourceDbPath, targetDir, { dryRun = false } = {}) {
     }
   }
   for (const name of WS_TABLES) {
+    const srcHas = srcDb.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?").get(name);
+    if (!srcHas) continue;
     const srcC = srcDb.prepare(`SELECT COUNT(*) c FROM ${name}`).get().c;
     const tgtC = cwDb.prepare(`SELECT COUNT(*) c FROM ${name}`).get().c;
     if (srcC !== tgtC) {
