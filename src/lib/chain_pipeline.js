@@ -26,6 +26,7 @@
 const { get, all, run, tx } = require('../db');
 const audit = require('./audit');
 const emitter = require('./emitter');
+const evidencePhotos = require('./evidence_photos');
 
 /**
  * Generate the next sequential Chain Number for the specified year.
@@ -528,6 +529,18 @@ function getChainPipeline(chainNo) {
     uncollected_shelf_parts_count: totalShelf > 0.001 ? 1 : 0,
     has_shortage: totalShort > 0,
   };
+
+  const lineIds = lines.map((l) => l.id);
+  const grnIds = grns.map((g) => g.id);
+  const linePhotoMap = evidencePhotos.getBatchPhotos('mrn_line', lineIds);
+  const grnPhotoMap = evidencePhotos.getBatchPhotos('grn', grnIds);
+
+  for (const l of lines) {
+    l.photos = linePhotoMap.get(l.id) || [];
+  }
+  for (const g of grns) {
+    g.photos = grnPhotoMap.get(g.id) || [];
+  }
 
   return {
     chain_no: cNo,

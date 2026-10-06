@@ -588,6 +588,22 @@ CREATE TABLE IF NOT EXISTS delivery_discrepancies (
 CREATE INDEX IF NOT EXISTS idx_discrepancies_status ON delivery_discrepancies(status);
 CREATE INDEX IF NOT EXISTS idx_discrepancies_mrn ON delivery_discrepancies(mrn_id);
 
+-- Step 5: Evidence Photos for Request Lines and Receipts (Off-DB File Storage)
+CREATE TABLE IF NOT EXISTS line_evidence_photos (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  entity_type   TEXT NOT NULL,        -- 'mrn_line' | 'grn'
+  entity_id     INTEGER NOT NULL,     -- mrn_lines.id or grn.id
+  kind          TEXT NOT NULL DEFAULT 'general', -- 'worn_part' | 'nameplate' | 'delivery_goods' | 'damage_in_transit' | 'general'
+  file_path     TEXT NOT NULL,        -- relative to uploads dir, e.g. 'evidence/mrn_line/...'
+  file_name     TEXT NOT NULL,        -- original filename
+  mime_type     TEXT NOT NULL,        -- 'image/jpeg', 'image/png', 'image/webp'
+  file_size     INTEGER NOT NULL,     -- byte size on disk
+  caption       TEXT,                 -- optional note/caption
+  uploaded_by   INTEGER REFERENCES users(id),
+  uploaded_at   TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_evidence_photos_lookup ON line_evidence_photos(entity_type, entity_id);
+
 -- Step 4b: Idempotency keys to prevent duplicate operations across stores workflows
 CREATE TABLE IF NOT EXISTS idempotency_keys (
   id             INTEGER PRIMARY KEY AUTOINCREMENT,

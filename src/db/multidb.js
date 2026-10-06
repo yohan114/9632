@@ -437,8 +437,42 @@ function runIntegrityVerification() {
   return results;
 }
 
+function migrate() {
+  if (!isMultiDbEnabled) return;
+  const wsDir = getWorkshopsDir();
+  if (fs.existsSync(wsDir)) {
+    const wsFiles = fs.readdirSync(wsDir).filter((f) => f.endsWith('.db'));
+    for (const f of wsFiles) {
+      try {
+        const dbPath = path.join(wsDir, f);
+        const wdb = new Database(dbPath);
+        wdb.exec(`
+          CREATE TABLE IF NOT EXISTS line_evidence_photos (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            entity_type   TEXT NOT NULL,
+            entity_id     INTEGER NOT NULL,
+            kind          TEXT NOT NULL,
+            file_path     TEXT NOT NULL,
+            file_name     TEXT NOT NULL,
+            mime_type     TEXT NOT NULL,
+            file_size     INTEGER NOT NULL,
+            caption       TEXT,
+            uploaded_by   INTEGER,
+            uploaded_at   TEXT NOT NULL DEFAULT (datetime('now'))
+          );
+          CREATE INDEX IF NOT EXISTS idx_evidence_photos_lookup ON line_evidence_photos(entity_type, entity_id);
+        `);
+        wdb.close();
+      } catch (err) {
+        // ignore
+      }
+    }
+  }
+}
+
 module.exports = {
   init,
+  migrate,
   isMultiDb,
   getCoreDb,
   getWorkshopDb,

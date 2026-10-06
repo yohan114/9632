@@ -21,7 +21,10 @@ try {
  * Apply the schema. Idempotent — every statement is CREATE ... IF NOT EXISTS.
  */
 function migrate() {
-  if (multidb.isMultiDb()) return;
+  if (multidb.isMultiDb()) {
+    multidb.migrate();
+    return;
+  }
   // stock_moves' unique key gained item_key, so one service line can record BOTH of the filters
   // it fits. CREATE TABLE IF NOT EXISTS cannot change a constraint, and SQLite cannot alter one
   // in place — but stock_moves is a PROJECTION, regenerated from the source tables by

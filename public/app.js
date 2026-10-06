@@ -6657,6 +6657,343 @@ function mrnCancelLineModal(lineId, lineDesc, onDone) {
   });
 }
 
+// ---- Evidence Photos & Side-by-Side Inspection (Step 5) --------------------
+async function compressImageFile(file, maxWidth = 1600, quality = 0.82) {
+  return new Promise((resolve, reject) => {
+    if (!file || !file.type.startsWith('image/')) {
+      return reject(new Error('Please select an image file (JPEG, PNG, WebP)'));
+    }
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const img = new Image();
+      img.onload = () => {
+        let width = img.width;
+        let height = img.height;
+        if (width > maxWidth || height > maxWidth) {
+          if (width > height) {
+            height = Math.round((height * maxWidth) / width);
+            width = maxWidth;
+          } else {
+            width = Math.round((width * maxWidth) / height);
+            height = maxWidth;
+          }
+        }
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, width, height);
+        const dataUrl = canvas.toDataURL('image/jpeg', quality);
+        resolve({
+          dataUrl,
+          filename: file.name,
+          mimeType: 'image/jpeg',
+          width,
+          height,
+          originalSize: file.size,
+          compressedSize: Math.round((dataUrl.length * 3) / 4)
+        });
+      };
+      img.onerror = () => reject(new Error('Failed to parse image file'));
+      img.src = e.target.result;
+    };
+    reader.onerror = () => reject(new Error('Failed to read image file'));
+    reader.readAsDataURL(file);
+  });
+}
+
+function openPhotoLightbox(photoUrl, title = 'Photo Evidence') {
+  const bg = document.createElement('div');
+  bg.className = 'modal-bg';
+  bg.style.zIndex = '9999';
+  bg.style.display = 'flex';
+  bg.style.alignItems = 'center';
+  bg.style.justifyContent = 'center';
+  bg.style.padding = '20px';
+  bg.innerHTML = `
+    <div style="background:var(--card-bg, #fff);border-radius:8px;padding:14px;max-width:92vw;max-height:92vh;display:flex;flex-direction:column;align-items:center;position:relative;box-shadow:0 12px 36px rgba(0,0,0,0.45)">
+      <div style="width:100%;display:flex;align-items:center;margin-bottom:8px">
+        <span style="font-weight:600;font-size:14px">${esc(title)}</span>
+        <div style="flex:1"></div>
+        <button class="sm" id="lightbox-close" style="font-weight:bold;cursor:pointer">✕ Close</button>
+      </div>
+      <div style="overflow:auto;max-height:80vh;max-width:88vw;display:flex;align-items:center;justify-content:center">
+        <img src="${esc(photoUrl)}" style="max-width:100%;max-height:78vh;object-fit:contain;border-radius:4px" />
+      </div>
+    </div>
+  `;
+  bg.onclick = (e) => { if (e.target === bg || e.target.id === 'lightbox-close') bg.remove(); };
+  document.body.appendChild(bg);
+}
+
+function openSideBySidePhotoModal({ mrnLineId = null, grnId = null, description = '', onDone = null } = {}) {
+  const mLineId = mrnLineId ? Number(mrnLineId) : null;
+  const gId = grnId ? Number(grnId) : null;
+
+  modal(`📷 Photographic Evidence: ${description || 'Line Item'}`, `
+    <div style="font-size:12.5px;color:var(--muted);margin-bottom:12px">
+      Compare original breakdown/worn part evidence with delivered receipt evidence side-by-side to verify matching specifications before issue.
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(320px, 1fr));gap:16px" id="sbs-container">
+      <!-- Left Column: Request Evidence -->
+      <div class="card" style="margin:0;padding:12px;border-top:3px solid var(--blue, #2563eb)">
+        <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">
+          <span style="font-size:14px">🔧</span>
+          <b style="font-size:13px">1. Site Breakdown / Request Evidence</b>
+          ${mLineId ? `<span class="badge blue sm">Line #${mLineId}</span>` : '<span class="badge gray sm">No MRN Line</span>'}
+        </div>
+        <div class="muted" style="font-size:11.5px;margin-bottom:10px">Worn part wear patterns, serial/nameplates, and broken components.</div>
+        
+        ${mLineId ? `
+          <div style="background:var(--table-hover, rgba(0,0,0,0.02));padding:8px 10px;border-radius:6px;margin-bottom:12px;border:1px dashed var(--border)">
+            <div style="font-weight:600;font-size:11.5px;margin-bottom:6px">+ Upload Request Evidence Photo</div>
+            <div style="display:flex;gap:6px;margin-bottom:6px;flex-wrap:wrap">
+              <select id="req-kind" style="font-size:11.5px;padding:3px 6px">
+                <option value="worn_part">Worn / Broken Part</option>
+                <option value="nameplate">Nameplate / Serial Stamp</option>
+                <option value="general">General Evidence</option>
+              </select>
+              <input type="text" id="req-caption" placeholder="Optional notes / caption..." style="font-size:11.5px;flex:1;min-width:120px;padding:3px 6px" />
+            </div>
+            <div style="display:flex;gap:6px;align-items:center">
+              <input type="file" id="req-file" accept="image/*" style="font-size:11.5px;flex:1" />
+              <button class="sm primary" id="req-upload-btn" style="white-space:nowrap">Upload</button>
+            </div>
+            <div id="req-upload-msg" style="font-size:11px;margin-top:4px"></div>
+          </div>
+          <div id="req-photos-list" style="max-height:340px;overflow-y:auto;display:flex;flex-direction:column;gap:8px">
+            <div class="muted" style="font-size:11.5px">Loading request photos...</div>
+          </div>
+        ` : `
+          <div class="muted" style="font-size:12px;padding:20px;text-align:center;border:1px dashed var(--border);border-radius:6px">
+            No MRN request line linked to this receipt item.
+          </div>
+        `}
+      </div>
+
+      <!-- Right Column: Receipt Evidence -->
+      <div class="card" style="margin:0;padding:12px;border-top:3px solid var(--teal, #0d9488)">
+        <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">
+          <span style="font-size:14px">📦</span>
+          <b style="font-size:13px">2. Store Delivery / Receipt Evidence</b>
+          ${gId ? `<span class="badge teal sm">GRN #${gId}</span>` : '<span class="badge gray sm">No GRN Receipt</span>'}
+        </div>
+        <div class="muted" style="font-size:11.5px;margin-bottom:10px">Delivered goods, packaging labels, and condition on arrival.</div>
+        
+        ${gId ? `
+          <div style="background:var(--table-hover, rgba(0,0,0,0.02));padding:8px 10px;border-radius:6px;margin-bottom:12px;border:1px dashed var(--border)">
+            <div style="font-weight:600;font-size:11.5px;margin-bottom:6px">+ Upload Receipt Evidence Photo</div>
+            <div style="display:flex;gap:6px;margin-bottom:6px;flex-wrap:wrap">
+              <select id="rec-kind" style="font-size:11.5px;padding:3px 6px">
+                <option value="delivery_goods">Delivered Goods Condition</option>
+                <option value="damage_in_transit">Transit Damage / Defect</option>
+                <option value="nameplate">Packaging Label / Specs</option>
+                <option value="general">General Evidence</option>
+              </select>
+              <input type="text" id="rec-caption" placeholder="Optional notes / caption..." style="font-size:11.5px;flex:1;min-width:120px;padding:3px 6px" />
+            </div>
+            <div style="display:flex;gap:6px;align-items:center">
+              <input type="file" id="rec-file" accept="image/*" style="font-size:11.5px;flex:1" />
+              <button class="sm primary" id="rec-upload-btn" style="white-space:nowrap">Upload</button>
+            </div>
+            <div id="rec-upload-msg" style="font-size:11px;margin-top:4px"></div>
+          </div>
+          <div id="rec-photos-list" style="max-height:340px;overflow-y:auto;display:flex;flex-direction:column;gap:8px">
+            <div class="muted" style="font-size:11.5px">Loading receipt photos...</div>
+          </div>
+        ` : `
+          <div class="muted" style="font-size:12px;padding:20px;text-align:center;border:1px dashed var(--border);border-radius:6px">
+            No GRN delivery receipt logged yet for this requested line.
+          </div>
+        `}
+      </div>
+    </div>
+    <div style="display:flex;justify-content:flex-end;margin-top:14px">
+      <button class="primary" id="sbs-close-btn">Done</button>
+    </div>
+  `, (body, close) => {
+    qs('#sbs-close-btn', body).onclick = () => {
+      close();
+      if (onDone) onDone();
+    };
+
+    const kindLabels = {
+      worn_part: 'Worn / Broken Part',
+      nameplate: 'Nameplate / Serial',
+      delivery_goods: 'Delivered Goods',
+      damage_in_transit: 'Transit Damage',
+      general: 'General',
+    };
+
+    function renderPhotoCard(p, isReq) {
+      return `
+        <div style="display:flex;gap:10px;padding:8px;border:1px solid var(--border);border-radius:6px;background:var(--card-bg, #fff);align-items:flex-start">
+          <div style="cursor:pointer;flex-shrink:0" class="photo-thumb-wrap" data-img-url="${esc(p.url)}" title="Click to inspect full image">
+            <img src="${esc(p.url)}" style="width:72px;height:72px;object-fit:cover;border-radius:4px;border:1px solid var(--border)" />
+          </div>
+          <div style="flex:1;min-width:0;font-size:11.5px">
+            <div style="display:flex;align-items:center;gap:6px;margin-bottom:2px">
+              <span class="badge ${p.kind === 'damage_in_transit' ? 'red' : 'blue'} sm">${esc(kindLabels[p.kind] || p.kind)}</span>
+              <span class="muted" style="font-size:10.5px">${Math.round((p.file_size || 0) / 1024)} KB</span>
+            </div>
+            ${p.caption ? `<div style="font-weight:600;margin-bottom:2px;overflow:hidden;text-overflow:ellipsis">${esc(p.caption)}</div>` : ''}
+            <div class="muted" style="font-size:10.5px">
+              By ${esc(p.uploaded_by_name || 'User')} · ${esc(String(p.uploaded_at || '').slice(0, 16).replace('T', ' '))}
+            </div>
+            <div style="margin-top:4px;display:flex;gap:6px">
+              <a href="javascript:void(0)" class="photo-thumb-wrap" data-img-url="${esc(p.url)}" style="font-size:11px;color:var(--blue)">🔍 Inspect</a>
+              ${(ME && (ME.is_admin || ME.id === p.uploaded_by || canDo('stores.mrn.edit', 'stores.grn.edit'))) ? `
+                <a href="javascript:void(0)" class="photo-del-btn" data-del-id="${p.id}" data-is-req="${isReq ? '1' : '0'}" style="font-size:11px;color:var(--red, #dc2626)">✕ Delete</a>
+              ` : ''}
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    async function loadReqPhotos() {
+      if (!mLineId) return;
+      const listEl = qs('#req-photos-list', body);
+      try {
+        const photos = await api('/stores/mrn-lines/' + mLineId + '/photos');
+        if (!photos.length) {
+          listEl.innerHTML = '<div class="muted" style="font-size:11.5px;padding:8px">No photos attached to this request line yet.</div>';
+          return;
+        }
+        listEl.innerHTML = photos.map((p) => renderPhotoCard(p, true)).join('');
+        bindPhotoEvents();
+      } catch (e) {
+        listEl.innerHTML = `<div class="err" style="font-size:11.5px">Error: ${esc(e.message)}</div>`;
+      }
+    }
+
+    async function loadRecPhotos() {
+      if (!gId) return;
+      const listEl = qs('#rec-photos-list', body);
+      try {
+        const photos = await api('/stores/grn/' + gId + '/photos');
+        if (!photos.length) {
+          listEl.innerHTML = '<div class="muted" style="font-size:11.5px;padding:8px">No photos attached to this receipt yet.</div>';
+          return;
+        }
+        listEl.innerHTML = photos.map((p) => renderPhotoCard(p, false)).join('');
+        bindPhotoEvents();
+      } catch (e) {
+        listEl.innerHTML = `<div class="err" style="font-size:11.5px">Error: ${esc(e.message)}</div>`;
+      }
+    }
+
+    function bindPhotoEvents() {
+      qsa('.photo-thumb-wrap', body).forEach((el) => {
+        el.onclick = () => openPhotoLightbox(el.dataset.imgUrl, description);
+      });
+      qsa('.photo-del-btn', body).forEach((btn) => {
+        btn.onclick = async () => {
+          if (!confirm('Delete this photographic evidence?')) return;
+          const pId = btn.dataset.delId;
+          const isReq = btn.dataset.isReq === '1';
+          try {
+            if (isReq) {
+              await api('/stores/mrn-lines/' + mLineId + '/photos/' + pId, { method: 'DELETE' });
+              toast('Request photo deleted');
+              loadReqPhotos();
+            } else {
+              await api('/stores/grn/' + gId + '/photos/' + pId, { method: 'DELETE' });
+              toast('Receipt photo deleted');
+              loadRecPhotos();
+            }
+          } catch (e) {
+            toast(e.message, 'err');
+          }
+        };
+      });
+    }
+
+    // Wire Request Photo Upload
+    if (mLineId && qs('#req-upload-btn', body)) {
+      qs('#req-upload-btn', body).onclick = async () => {
+        const fileInput = qs('#req-file', body);
+        const msg = qs('#req-upload-msg', body);
+        const file = fileInput.files && fileInput.files[0];
+        if (!file) {
+          toast('Please select an image file first', 'err');
+          return;
+        }
+        const kind = qs('#req-kind', body).value;
+        const caption = (qs('#req-caption', body).value || '').trim();
+
+        try {
+          msg.textContent = 'Compressing image...';
+          const compressed = await compressImageFile(file);
+          msg.textContent = 'Uploading (~' + Math.round(compressed.compressedSize / 1024) + ' KB)...';
+
+          await api('/stores/mrn-lines/' + mLineId + '/photos', {
+            method: 'POST',
+            body: {
+              dataUrl: compressed.dataUrl,
+              filename: compressed.filename,
+              kind,
+              caption
+            }
+          });
+
+          toast('Request photo attached');
+          msg.textContent = '';
+          fileInput.value = '';
+          qs('#req-caption', body).value = '';
+          loadReqPhotos();
+        } catch (e) {
+          msg.textContent = '';
+          toast(e.message, 'err');
+        }
+      };
+    }
+
+    // Wire Receipt Photo Upload
+    if (gId && qs('#rec-upload-btn', body)) {
+      qs('#rec-upload-btn', body).onclick = async () => {
+        const fileInput = qs('#rec-file', body);
+        const msg = qs('#rec-upload-msg', body);
+        const file = fileInput.files && fileInput.files[0];
+        if (!file) {
+          toast('Please select an image file first', 'err');
+          return;
+        }
+        const kind = qs('#rec-kind', body).value;
+        const caption = (qs('#rec-caption', body).value || '').trim();
+
+        try {
+          msg.textContent = 'Compressing image...';
+          const compressed = await compressImageFile(file);
+          msg.textContent = 'Uploading (~' + Math.round(compressed.compressedSize / 1024) + ' KB)...';
+
+          await api('/stores/grn/' + gId + '/photos', {
+            method: 'POST',
+            body: {
+              dataUrl: compressed.dataUrl,
+              filename: compressed.filename,
+              kind,
+              caption
+            }
+          });
+
+          toast('Receipt photo attached');
+          msg.textContent = '';
+          fileInput.value = '';
+          qs('#rec-caption', body).value = '';
+          loadRecPhotos();
+        } catch (e) {
+          msg.textContent = '';
+          toast(e.message, 'err');
+        }
+      };
+    }
+
+    loadReqPhotos();
+    loadRecPhotos();
+  }, { wide: true });
+}
+
 // ---- Universal Trace View & Dedicated Full-Page View (Step 4c) -----------
 function renderTraceView(container, data, { onRefresh, isFullPage = false } = {}) {
   const chainNo = data.chain_no || '—';
@@ -6868,6 +7205,7 @@ function renderTraceView(container, data, { onRefresh, isFullPage = false } = {}
               <th class="num">Shortage</th>
               <th class="num">Issued</th>
               <th class="num">On Shelf</th>
+              <th>Evidence</th>
               <th>Stage</th>
               <th class="num">Action</th>
             </tr>
@@ -6881,6 +7219,18 @@ function renderTraceView(container, data, { onRefresh, isFullPage = false } = {}
                 actionHtml = `<span class="badge gray" title="${esc(it.cancellation_reason || 'Line item cancelled')}">Cancelled</span>`;
               } else if (unfulfilled && it.mrn_line_id && (!primaryMrn || primaryMrn.status !== 'closed')) {
                 actionHtml = `<button class="sm danger" data-trace-cancel-line="${it.mrn_line_id}" data-desc="${esc(it.description)}">✕ Cancel</button>`;
+              }
+
+              const reqPhotosCount = (it.request_photos && it.request_photos.length) || 0;
+              const recPhotosCount = (it.receipt_photos && it.receipt_photos.length) || 0;
+              const totalPhotosCount = reqPhotosCount + recPhotosCount;
+              const grnIdForPhoto = (it.grns && it.grns[0] && it.grns[0].id) || '';
+
+              let photoBtnHtml = '';
+              if (totalPhotosCount > 0) {
+                photoBtnHtml = `<button class="sm primary" data-trace-photo-inspect="${it.mrn_line_id || ''}" data-grn-id="${grnIdForPhoto}" data-desc="${esc(it.description)}" title="Inspect request and receipt photos side-by-side">📷 ${reqPhotosCount} req · ${recPhotosCount} rec</button>`;
+              } else {
+                photoBtnHtml = `<button class="sm" data-trace-photo-inspect="${it.mrn_line_id || ''}" data-grn-id="${grnIdForPhoto}" data-desc="${esc(it.description)}" title="Attach or inspect evidence photos">📷 + Photo</button>`;
               }
 
               let stageClass = 'blue';
@@ -6899,6 +7249,7 @@ function renderTraceView(container, data, { onRefresh, isFullPage = false } = {}
                   <td class="num" style="${it.has_shortage ? 'color:var(--red, #dc2626);font-weight:bold' : ''}">${it.has_shortage ? `-${num(it.qty_short)}` : '0'}</td>
                   <td class="num">${num(it.qty_issued)}</td>
                   <td class="num" style="${it.qty_on_shelf > 0 ? 'color:var(--amber, #f59e0b);font-weight:bold' : ''}">${num(it.qty_on_shelf)}</td>
+                  <td>${photoBtnHtml}</td>
                   <td><span class="badge ${stageClass}">${esc(stageText)}</span></td>
                   <td class="num">${actionHtml}</td>
                 </tr>
@@ -6922,6 +7273,16 @@ function renderTraceView(container, data, { onRefresh, isFullPage = false } = {}
     const mId = qs('#trace-btn-reopen', container).dataset.mrnId;
     qs('#trace-btn-reopen', container).onclick = () => mrnReopenModal(mId, onRefresh);
   }
+  qsa('[data-trace-photo-inspect]', container).forEach((btn) => {
+    btn.onclick = () => {
+      openSideBySidePhotoModal({
+        mrnLineId: btn.dataset.tracePhotoInspect,
+        grnId: btn.dataset.grnId,
+        description: btn.dataset.desc,
+        onDone: onRefresh
+      });
+    };
+  });
   qsa('[data-trace-cancel-line]', container).forEach((b) => {
     b.onclick = () => mrnCancelLineModal(b.dataset.traceCancelLine, b.dataset.desc, onRefresh);
   });
@@ -7228,8 +7589,8 @@ async function mrnDetail(body, id) {
   // person an admin had deliberately revoked the capability from, since a role name cannot be
   // revoked per person the way a capability can.
   const canPrio = canDo('purchasing.priority_edit') || canDo('stores.mrn.edit');
-  const lineCol = canRx || canMrnEdit || canPrio; // the action column on the item lines
-  const grnCol = canGrnPrice || canGrnIssue;    // the action column on the received records
+  const lineCol = true; // always show action column including photo inspection
+  const grnCol = true;  // always show action column including photo inspection
   const astatus0 = m.approval_status || 'requested';
   const canEditLines = canMrnEdit && astatus0 !== 'approved' && astatus0 !== 'rejected'
     && !(astatus0 === 'requested' && !(m.requested_by && String(m.requested_by).trim()));
@@ -7252,6 +7613,9 @@ async function mrnDetail(body, id) {
     const rRoute = l.supply_route || 'main_store';
     const routeHtml = `${supplyRouteBadge(rRoute)}${canMrnEdit ? ` <button class="sm" data-change-route="${l.id}" data-cur-route="${esc(rRoute)}" title="Change supply route">🛣</button>` : ''}`;
 
+    const photoCount = (l.photos && l.photos.length) || 0;
+    const photoBtn = `<button class="sm" data-line-photo="${l.id}" data-desc="${esc(l.description || '')}" title="Photographic evidence (worn part / nameplate)">📷 ${photoCount > 0 ? photoCount : '+ Photo'}</button> `;
+
     return `<tr>
       <td>${esc(l.description || '')}${l.added_after_approval
         ? ` <span class="badge red" title="${esc('Added after this request was approved, by ' + (l.added_by || 'an admin') + (l.added_at ? ' on ' + l.added_at : '') + (l.added_reason ? ' — ' + l.added_reason : ''))}">added after approval</span>` : ''}
@@ -7269,15 +7633,19 @@ async function mrnDetail(body, id) {
       <td class="num">${remaining > 0 ? `<span class="badge amber">${num(remaining)}</span>` : '<span class="badge green">0</span>'}</td>
       <td>${stageBadge}</td>
       ${lineCol ? `<td class="num" style="white-space:nowrap">${
-        l.is_cancelled ? '<span class="muted">Cancelled</span>' : (
+        photoBtn +
+        (l.is_cancelled ? '<span class="muted">Cancelled</span>' : (
           (remaining > 0 ? (canRx ? `<button class="sm primary" data-rx="${l.id}" data-desc="${esc(l.description || '')}" data-rem="${remaining}">Receive</button> ` : '') : '✓ ') +
           (canPrio && remaining > 0 ? `<button class="sm" data-ws-prio="${l.id}" data-prio-val="${esc(l.buying_priority || 'P3_ROUTINE')}" data-prio-note="${esc(l.priority_note || '')}" title="Adjust Workshop Buying Urgency">⚡ Urgency</button> ` : '') +
           (canEditLines ? `<button class="sm" data-ledit="${l.id}">✎</button>${rec > 0 ? '' : ` <button class="sm danger" data-ldel="${l.id}" data-desc="${esc(l.description || '')}">✕</button>`}` : '') +
           (remaining > 0 && m.status !== 'closed' ? ` <button class="sm danger" data-lcancel="${l.id}" data-desc="${esc(l.description || '')}" title="Cancel unfulfilled line item">✕ Cancel</button>` : '')
-        )
+        ))
       }</td>` : ''}</tr>`;
   });
-  const grnRows = d.grns.map((g) => `<tr>
+  const grnRows = d.grns.map((g) => {
+    const photoCount = (g.photos && g.photos.length) || 0;
+    const photoBtn = `<button class="sm" data-grn-photo="${g.id}" data-desc="${esc(g.description || '')}" title="Photographic evidence (delivered goods)">📷 ${photoCount > 0 ? photoCount : '+ Photo'}</button> `;
+    return `<tr>
     <td>${esc(g.grn_no || '—')}</td>
     <td style="white-space:nowrap">${g.delivery_date ? esc(String(g.delivery_date).slice(0, 10)) : '<span class="muted">—</span>'}</td>
     <td>${esc(g.description || '')}</td>
@@ -7290,7 +7658,8 @@ async function mrnDetail(body, id) {
       <a class="btn sm" href="/api/stores/grn/${g.id}/print.html" target="_blank" title="Print GRN (EC1.ST.FO.2:5:21.12)">🖨</a>
       <a class="btn sm" href="/api/stores/grn/${g.id}/download.pdf" download title="Download GRN PDF">⬇ PDF</a>
     </td>
-    ${grnCol ? `<td class="num" style="white-space:nowrap">${canGrnIssue ? `<button class="sm primary" data-issue-grn="${g.id}" title="Issue this received item to vehicle or job card">⚡ Issue</button>` : ''} ${canGrnPrice ? `<button class="sm ${g.unit_price == null ? 'primary' : ''}" data-price="${g.id}">${g.unit_price == null ? 'Add price' : 'Edit'}</button>` : ''}</td>` : ''}</tr>`);
+    ${grnCol ? `<td class="num" style="white-space:nowrap">${photoBtn}${canGrnIssue ? `<button class="sm primary" data-issue-grn="${g.id}" title="Issue this received item to vehicle or job card">⚡ Issue</button>` : ''} ${canGrnPrice ? `<button class="sm ${g.unit_price == null ? 'primary' : ''}" data-price="${g.id}">${g.unit_price == null ? 'Add price' : 'Edit'}</button>` : ''}</td>` : ''}</tr>`;
+  });
   const astatus = m.approval_status || 'requested';
   // Imported/historical MRNs (no live requester) predate the approval workflow → treat as approved.
   const isImported = astatus === 'requested' && !(m.requested_by && String(m.requested_by).trim());
@@ -7366,6 +7735,22 @@ async function mrnDetail(body, id) {
   if (lineCol || grnCol) {
     qsa('[data-rx]').forEach((btn) => btn.onclick = () => receiveModal(m, btn.dataset.rx, btn.dataset.desc, btn.dataset.rem, () => mrnDetail(body, id)));
     qsa('[data-price]').forEach((btn) => btn.onclick = () => grnPriceModal(d.grns.find((x) => String(x.id) === btn.dataset.price), () => mrnDetail(body, id)));
+    qsa('[data-line-photo]').forEach((b) => {
+      b.onclick = () => openSideBySidePhotoModal({
+        mrnLineId: b.dataset.linePhoto,
+        grnId: null,
+        description: b.dataset.desc,
+        onDone: () => mrnDetail(body, id)
+      });
+    });
+    qsa('[data-grn-photo]').forEach((b) => {
+      b.onclick = () => openSideBySidePhotoModal({
+        mrnLineId: null,
+        grnId: b.dataset.grnPhoto,
+        description: b.dataset.desc,
+        onDone: () => mrnDetail(body, id)
+      });
+    });
     qsa('[data-issue-grn]').forEach((btn) => btn.onclick = () => {
       const g = d.grns.find((x) => String(x.id) === btn.dataset.issueGrn);
       if (!g) return;

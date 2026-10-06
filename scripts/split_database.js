@@ -37,7 +37,8 @@ const WS_TABLES = [
   'service_jobs', 'service_attachments', 'service_filters', 'service_oils',
   'service_parts',
   'workshop_tools', 'tool_issue_logs', 'tool_scrap_requests',
-  'daily_report_snapshots', 'monthly_report_inputs', 'vehicle_monthly_costs'
+  'daily_report_snapshots', 'monthly_report_inputs', 'vehicle_monthly_costs',
+  'line_evidence_photos'
 ];
 
 // SQLite strictly forbids triggers from referencing attached databases (e.g. core.workshops).

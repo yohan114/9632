@@ -1018,6 +1018,21 @@ CREATE TABLE delivery_discrepancies (
   updated_at          TEXT DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE line_evidence_photos (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  entity_type   TEXT NOT NULL,        -- 'mrn_line' | 'grn'
+  entity_id     INTEGER NOT NULL,     -- mrn_lines.id or grn.id
+  kind          TEXT NOT NULL DEFAULT 'general', -- 'worn_part' | 'nameplate' | 'delivery_goods' | 'damage_in_transit' | 'general'
+  file_path     TEXT NOT NULL,        -- relative to uploads dir, e.g. 'evidence/requests/...'
+  file_name     TEXT NOT NULL,        -- original filename
+  mime_type     TEXT NOT NULL,        -- 'image/jpeg', 'image/png', 'image/webp'
+  file_size     INTEGER NOT NULL,     -- byte size on disk
+  caption       TEXT,                 -- optional note/caption
+  uploaded_by   INTEGER,
+  uploaded_at   TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX idx_evidence_photos_lookup ON line_evidence_photos(entity_type, entity_id);
+
 CREATE TABLE "mrn" (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
   mrn_no        TEXT NOT NULL UNIQUE,         -- continues existing seq (~167xxx)

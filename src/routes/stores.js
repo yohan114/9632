@@ -35,6 +35,8 @@ const {
 const { sendPdf } = require('../lib/pdf_generator');
 const supplyRoutes = require('../lib/supply_routes');
 const chainPipeline = require('../lib/chain_pipeline');
+const fs = require('fs');
+const evidencePhotos = require('../lib/evidence_photos');
 
 // One cell's worth of "when did this arrive", for a sheet or a printout. A spreadsheet has no
 // tooltip, so whatever the hover would have said has to be in the cell itself.
@@ -929,11 +931,23 @@ router.get('/mrn/:id', asyncHandler((req, res) => {
     const v = approvalLimits.mrnValue(id);
     worth = { value: v.value, unpriced: v.unpriced, limit: approvalLimits.check(req.user, 'mrn_approve', v.value) };
   }
+  const lines = all(`SELECT ml.*, ${lineReceiptSql('ml.id')}, (SELECT mtn_no FROM mtn WHERE mtn.id = ml.auto_mtn_id) AS auto_mtn_no FROM mrn_lines ml WHERE ml.mrn_id = ? ORDER BY ml.id`, id);
+  const grns = all('SELECT * FROM grn WHERE mrn_id = ? ORDER BY id', id);
+  const lineIds = lines.map((l) => l.id);
+  const grnIds = grns.map((g) => g.id);
+  const linePhotoMap = evidencePhotos.getBatchPhotos('mrn_line', lineIds);
+  const grnPhotoMap = evidencePhotos.getBatchPhotos('grn', grnIds);
+  for (const l of lines) {
+    l.photos = linePhotoMap.get(l.id) || [];
+  }
+  for (const g of grns) {
+    g.photos = grnPhotoMap.get(g.id) || [];
+  }
   res.json({
     mrn,
     worth,
-    lines: all(`SELECT ml.*, ${lineReceiptSql('ml.id')}, (SELECT mtn_no FROM mtn WHERE mtn.id = ml.auto_mtn_id) AS auto_mtn_no FROM mrn_lines ml WHERE ml.mrn_id = ? ORDER BY ml.id`, id),
-    grns: all('SELECT * FROM grn WHERE mrn_id = ? ORDER BY id', id),
+    lines,
+    grns,
     approvals: all('SELECT a.*, u.username FROM mrn_approvals a LEFT JOIN users u ON u.id = a.approver_id WHERE a.mrn_id = ? ORDER BY a.id', id),
   });
 }));
@@ -1666,6 +1680,76 @@ router.post('/mrn/line/:id/cancel', requireAuth, chainPipeline.idempotencyGuard(
   }
 }));
 
+// ---- MRN Line Evidence Photos (Step 5) -------------------------------------
+router.get(['/mrn-lines/:id/photos', '/mrn/line/:id/photos'], requireAuth, asyncHandler((req, res) => {
+  const lineId = toInt(req.params.id);
+  const line = get('SELECT id, mrn_id FROM mrn_lines WHERE id = ?', lineId);
+  if (!line) return res.status(404).json({ error: 'MRN line not found' });
+  const no = lineRefusal(req.user, line.id);
+  if (no) return res.status(403).json(no);
+  const photos = evidencePhotos.listPhotos('mrn_line', line.id);
+  res.json(photos);
+}));
+
+router.post(['/mrn-lines/:id/photos', '/mrn/line/:id/photos'], requireAuth, asyncHandler((req, res) => {
+  const lineId = toInt(req.params.id);
+  const line = get('SELECT id, mrn_id FROM mrn_lines WHERE id = ?', lineId);
+  if (!line) return res.status(404).json({ error: 'MRN line not found' });
+  const no = lineRefusal(req.user, line.id);
+  if (no) return res.status(403).json(no);
+
+  const b = req.body || {};
+  const photo = evidencePhotos.savePhoto({
+    entityType: 'mrn_line',
+    entityId: line.id,
+    dataUrl: b.dataUrl || b.photo || b.image,
+    filename: b.filename || b.file_name,
+    kind: b.kind || 'worn_part',
+    caption: b.caption,
+    userId: req.user ? req.user.id : null,
+  });
+
+  audit.record({
+    userId: req.user.id,
+    entity: 'mrn_line',
+    entityId: line.id,
+    action: 'add_evidence_photo',
+    after: { photo_id: photo.id, kind: photo.kind, file_name: photo.file_name },
+  });
+
+  res.status(201).json(photo);
+}));
+
+router.delete(['/mrn-lines/:id/photos/:photoId', '/mrn/line/:id/photos/:photoId'], requireAuth, asyncHandler((req, res) => {
+  const lineId = toInt(req.params.id);
+  const photoId = toInt(req.params.photoId);
+  const line = get('SELECT id, mrn_id FROM mrn_lines WHERE id = ?', lineId);
+  if (!line) return res.status(404).json({ error: 'MRN line not found' });
+  const no = lineRefusal(req.user, line.id);
+  if (no) return res.status(403).json(no);
+
+  const photo = evidencePhotos.getPhoto(photoId);
+  if (!photo || photo.entity_type !== 'mrn_line' || photo.entity_id !== lineId) {
+    return res.status(404).json({ error: 'Evidence photo not found on this line' });
+  }
+
+  const canDelete = req.user.is_admin || photo.uploaded_by === req.user.id || hasCap(req.user, 'stores.mrn.edit', 'stores.mrn.approve');
+  if (!canDelete) {
+    return res.status(403).json({ error: 'Permission denied: cannot delete another user’s evidence photo' });
+  }
+
+  evidencePhotos.deletePhoto(photo.id, req.user.id);
+  audit.record({
+    userId: req.user.id,
+    entity: 'mrn_line',
+    entityId: line.id,
+    action: 'delete_evidence_photo',
+    before: { photo_id: photo.id, file_name: photo.file_name },
+  });
+
+  res.json({ ok: true, id: photo.id });
+}));
+
 // Printable pending-purchases list, grouped by source.
 router.get('/pending/print.html', asyncHandler((req, res) => {
   const rows = pendingRows({ ...req.query, limit: 5000 }, req.user);
@@ -1839,7 +1923,110 @@ router.get('/grn/:id', guardReceipt, asyncHandler((req, res, next) => {
       rejection_reason: g.rejection_reason
     };
   }
-  res.json({ grn: g, voucher, lines, approvals });
+  const grnIds = lines.map((l) => l.id);
+  const grnPhotoMap = evidencePhotos.getBatchPhotos('grn', grnIds);
+  for (const l of lines) {
+    l.photos = grnPhotoMap.get(l.id) || [];
+  }
+  const photos = grnPhotoMap.get(g.id) || [];
+  g.photos = photos;
+  res.json({ grn: g, voucher, lines, approvals, photos });
+}));
+
+// ---- GRN Receipt Evidence Photos (Step 5) ----------------------------------
+router.get('/grn/:id/photos', requireAuth, asyncHandler((req, res) => {
+  const grnId = toInt(req.params.id);
+  const grn = get('SELECT id FROM grn WHERE id = ?', grnId);
+  if (!grn) return res.status(404).json({ error: 'GRN record not found' });
+  const no = receiptRefusal(req.user, grn.id);
+  if (no) return res.status(403).json(no);
+  const photos = evidencePhotos.listPhotos('grn', grn.id);
+  res.json(photos);
+}));
+
+router.post('/grn/:id/photos', requireAuth, asyncHandler((req, res) => {
+  const grnId = toInt(req.params.id);
+  const grn = get('SELECT id FROM grn WHERE id = ?', grnId);
+  if (!grn) return res.status(404).json({ error: 'GRN record not found' });
+  const no = receiptRefusal(req.user, grn.id);
+  if (no) return res.status(403).json(no);
+
+  const b = req.body || {};
+  const photo = evidencePhotos.savePhoto({
+    entityType: 'grn',
+    entityId: grn.id,
+    dataUrl: b.dataUrl || b.photo || b.image,
+    filename: b.filename || b.file_name,
+    kind: b.kind || 'delivery_goods',
+    caption: b.caption,
+    userId: req.user ? req.user.id : null,
+  });
+
+  audit.record({
+    userId: req.user.id,
+    entity: 'grn',
+    entityId: grn.id,
+    action: 'add_evidence_photo',
+    after: { photo_id: photo.id, kind: photo.kind, file_name: photo.file_name },
+  });
+
+  res.status(201).json(photo);
+}));
+
+router.delete('/grn/:id/photos/:photoId', requireAuth, asyncHandler((req, res) => {
+  const grnId = toInt(req.params.id);
+  const photoId = toInt(req.params.photoId);
+  const grn = get('SELECT id FROM grn WHERE id = ?', grnId);
+  if (!grn) return res.status(404).json({ error: 'GRN record not found' });
+  const no = receiptRefusal(req.user, grn.id);
+  if (no) return res.status(403).json(no);
+
+  const photo = evidencePhotos.getPhoto(photoId);
+  if (!photo || photo.entity_type !== 'grn' || photo.entity_id !== grnId) {
+    return res.status(404).json({ error: 'Evidence photo not found on this receipt' });
+  }
+
+  const canDelete = req.user.is_admin || photo.uploaded_by === req.user.id || hasCap(req.user, 'stores.grn.receive', 'stores.grn.edit');
+  if (!canDelete) {
+    return res.status(403).json({ error: 'Permission denied: cannot delete another user’s evidence photo' });
+  }
+
+  evidencePhotos.deletePhoto(photo.id, req.user.id);
+  audit.record({
+    userId: req.user.id,
+    entity: 'grn',
+    entityId: grn.id,
+    action: 'delete_evidence_photo',
+    before: { photo_id: photo.id, file_name: photo.file_name },
+  });
+
+  res.json({ ok: true, id: photo.id });
+}));
+
+// ---- Raw Evidence Photo Binary Stream (Step 5) ------------------------------
+router.get('/evidence-photos/:photoId/raw', requireAuth, asyncHandler((req, res) => {
+  const photoId = toInt(req.params.photoId);
+  const photo = evidencePhotos.getPhoto(photoId);
+  if (!photo) return res.status(404).json({ error: 'Evidence photo not found' });
+
+  // Workshop scoping authorization
+  if (photo.entity_type === 'mrn_line') {
+    const no = lineRefusal(req.user, photo.entity_id);
+    if (no) return res.status(403).json(no);
+  } else if (photo.entity_type === 'grn') {
+    const no = receiptRefusal(req.user, photo.entity_id);
+    if (no) return res.status(403).json(no);
+  }
+
+  if (!photo.absPath || !fs.existsSync(photo.absPath)) {
+    return res.status(404).json({ error: 'Evidence photo file is missing on storage' });
+  }
+
+  const stat = fs.statSync(photo.absPath);
+  res.setHeader('Content-Type', photo.mime_type || 'image/jpeg');
+  res.setHeader('Content-Length', stat.size);
+  res.setHeader('Cache-Control', 'private, max-age=86400');
+  fs.createReadStream(photo.absPath).pipe(res);
 }));
 
 // ---- GRN Vouchers (Grouping Delivery Items) ------------------------------
@@ -2841,6 +3028,20 @@ router.get('/pipeline/trace', requireAuth, asyncHandler((req, res) => {
   };
 
   const activeChainNo = chainNo || mrns.find((m) => m.chain_no)?.chain_no || mtns.find((t) => t.chain_no)?.chain_no || grns.find((g) => g.chain_no)?.chain_no || null;
+
+  const allMrnLineIds = items.map((it) => it.mrn_line_id).filter(Boolean);
+  const allGrnIds = grns.map((g) => g.id);
+  const linePhotoMap = evidencePhotos.getBatchPhotos('mrn_line', allMrnLineIds);
+  const grnPhotoMap = evidencePhotos.getBatchPhotos('grn', allGrnIds);
+
+  for (const it of items) {
+    it.request_photos = it.mrn_line_id ? (linePhotoMap.get(it.mrn_line_id) || []) : [];
+    it.receipt_photos = (it.grns || []).flatMap((g) => grnPhotoMap.get(g.id) || []);
+  }
+
+  for (const g of grns) {
+    g.photos = grnPhotoMap.get(g.id) || [];
+  }
 
   res.json({
     root: { type: rootType, id: rootId },
