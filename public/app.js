@@ -13270,6 +13270,27 @@ async function jobRequestDetail(c, id) {
   const awaitingCard = st === 'approved' && !r.job_id;
   const canOpenCard = awaitingCard && canDo('jobs.create');
   const badge = jrBadge(st, st === 'approved' ? !!r.job_id : undefined);
+
+  let vehAllocHtml = '';
+  if (!r.asset_id && (canDo('aliases.vehicle.resolve') || canDo('jobrequests.create') || isAdmin())) {
+    try {
+      const assets = await api('/assets?limit=10000');
+      const aopts = assets.map((a) => {
+        const regPart = (a.registration && a.registration !== a.code) ? ` (${a.registration})` : '';
+        const descPart = [a.brand, a.type].filter(Boolean).join(' ');
+        return `<option value="${a.id}">${esc(a.code)}${esc(regPart)}${descPart ? ' — ' + esc(descPart) : ''}</option>`;
+      }).join('');
+      if (aopts) {
+        vehAllocHtml = `<span style="display:inline-flex;align-items:center;gap:6px;margin-left:6px;vertical-align:middle">
+          <select id="jr_alloc_sel" style="width:190px;max-width:210px;font-size:12px;padding:2px 4px;margin:0">
+            <option value="">— allocate vehicle —</option>${aopts}
+          </select>
+          <button class="sm primary" id="jr_alloc_btn" style="padding:2px 8px;font-size:12px">Allocate</button>
+        </span>`;
+      }
+    } catch {}
+  }
+
   c.innerHTML = `
     <div class="toolbar"><a class="btn sm" href="#/jobrequests">← Job Requests</a><div class="spacer"></div><a class="btn sm" href="/api/job-requests/${r.id}/print.html" target="_blank">🖨 Print Job Request</a></div>
     <div class="card">
@@ -13288,7 +13309,7 @@ async function jobRequestDetail(c, id) {
     </div>
     <div class="card">
       <h3>Job Request ${esc(r.jr_no)} ${badge}</h3>
-      <p class="muted">Date ${esc((r.req_date || '').slice(0, 10))} · Vehicle ${esc(idLabel(r) || '—')} · ${esc((r.type || '').toUpperCase())}${r.severity ? ' / ' + esc(r.severity) : ''} · Priority ${esc(r.priority || 'normal')}${r.project_name ? ' · ' + esc(r.project_name) : ''}${r.required_date ? ' · required ' + esc((r.required_date || '').slice(0, 10)) : ''}</p>
+      <p class="muted">Date ${esc((r.req_date || '').slice(0, 10))} · Vehicle ${r.asset_id ? esc(idLabel(r)) : `<span class="badge amber">Not allocated</span>`}${vehAllocHtml} · ${esc((r.type || '').toUpperCase())}${r.severity ? ' / ' + esc(r.severity) : ''} · Priority ${esc(r.priority || 'normal')}${r.project_name ? ' · ' + esc(r.project_name) : ''}${r.required_date ? ' · required ' + esc((r.required_date || '').slice(0, 10)) : ''}</p>
       <div style="white-space:pre-wrap;border:1px solid var(--border);border-radius:6px;padding:10px;background:var(--surface)">${esc(r.description || '')}</div>
       ${r.job_no ? `<p style="margin-top:10px">✅ Approved — job card opened: <a href="#/jobs/${r.job_id}"><b>${esc(r.job_no)}</b></a>${r.job_status ? ' <span class="badge">' + esc(r.job_status) + '</span>' : ''}</p>` : ''}
       ${awaitingCard ? `<p style="margin-top:10px">✅ Approved — waiting for the workshop to open the job card.${canOpenCard ? '' : '<br><span class="muted" style="font-size:12px">The workshop opens it; this request is its authority for the work.</span>'}</p>` : ''}
@@ -13298,6 +13319,17 @@ async function jobRequestDetail(c, id) {
   if (qs('#jrreject')) qs('#jrreject').onclick = () => jobRequestSignModal(r, 'reject', () => jobRequestDetail(c, id));
   if (qs('#jropen')) {
     qs('#jropen').onclick = () => openJobCardModal({ ...r, no: r.jr_no, asset_id: r.asset_id }, () => jobRequestDetail(c, id));
+  }
+  if (qs('#jr_alloc_btn')) {
+    qs('#jr_alloc_btn').onclick = async () => {
+      const sel = qs('#jr_alloc_sel');
+      if (!sel || !sel.value) return toast('Pick an asset first', 'err');
+      try {
+        await api('/aliases/allocate-job-request', { method: 'POST', body: { job_request_id: r.id, asset_id: sel.value } });
+        toast('Vehicle allocated to Job Request', 'ok');
+        jobRequestDetail(c, id);
+      } catch (e) { toast(e.message, 'err'); }
+    };
   }
 }
 
@@ -14959,7 +14991,7 @@ routes.aliases = async (c) => {
     api('/assets?limit=10000'),
     api('/mechanics/aliases?resolved=0'),
     api('/mechanics'),
-    api('/aliases/sections-audit').catch(() => ({ missingJobs: [], missingServices: [], missingIssues: [], missingMrn: [], counts: { jobs: 0, services: 0, issues: 0, mrn: 0, totalMissing: 0 } })),
+    api('/aliases/sections-audit').catch(() => ({ missingJobs: [], missingJobRequests: [], missingServices: [], missingIssues: [], missingMrn: [], counts: { jobs: 0, jobRequests: 0, services: 0, issues: 0, mrn: 0, totalMissing: 0 } })),
   ]);
 
   const aopts = assets.map((a) => {
@@ -14972,6 +15004,7 @@ routes.aliases = async (c) => {
   // Local state
   let pendingList = [...pending];
   let missingJobs = [...(audit.missingJobs || [])];
+  let missingJobRequests = [...(audit.missingJobRequests || [])];
   let missingServices = [...(audit.missingServices || [])];
   let missingIssues = [...(audit.missingIssues || [])];
   let missingMrn = [...(audit.missingMrn || [])];
@@ -15006,7 +15039,7 @@ routes.aliases = async (c) => {
     }
     return counts;
   };
-  const getTotalMissing = () => missingJobs.length + missingServices.length + missingIssues.length + missingMrn.length;
+  const getTotalMissing = () => missingJobs.length + missingJobRequests.length + missingServices.length + missingIssues.length + missingMrn.length;
 
   const updateHeaderCounters = () => {
     const sc = getSecCounts();
@@ -15014,6 +15047,7 @@ routes.aliases = async (c) => {
     const valAliases = qs('#kpi-val-aliases', c); if (valAliases) valAliases.textContent = pendingList.length;
     const subAliases = qs('#kpi-sub-aliases', c); if (subAliases) subAliases.textContent = `Oil ${sc.oilbook} · Stores ${sc.stores} · Tyre ${sc.battery} · Daily ${sc.daily_work}`;
     const valJobs = qs('#kpi-val-jobs', c); if (valJobs) valJobs.textContent = missingJobs.length;
+    const valJR = qs('#kpi-val-jobrequests', c); if (valJR) valJR.textContent = missingJobRequests.length;
     const valSvc = qs('#kpi-val-services', c); if (valSvc) valSvc.textContent = missingServices.length;
     const valIss = qs('#kpi-val-issues', c); if (valIss) valIss.textContent = missingIssues.length;
     const valMrn = qs('#kpi-val-mrn', c); if (valMrn) valMrn.textContent = missingMrn.length;
@@ -15029,6 +15063,7 @@ routes.aliases = async (c) => {
     const cntSecOth = qs('#cnt-sec-other', c); if (cntSecOth) cntSecOth.textContent = sc.other;
 
     const cntAlJobs = qs('#cnt-alloc-jobs', c); if (cntAlJobs) cntAlJobs.textContent = missingJobs.length;
+    const cntAlJR = qs('#cnt-alloc-jobrequests', c); if (cntAlJR) cntAlJR.textContent = missingJobRequests.length;
     const cntAlSvc = qs('#cnt-alloc-services', c); if (cntAlSvc) cntAlSvc.textContent = missingServices.length;
     const cntAlIss = qs('#cnt-alloc-issues', c); if (cntAlIss) cntAlIss.textContent = missingIssues.length;
     const cntAlMrn = qs('#cnt-alloc-mrn', c); if (cntAlMrn) cntAlMrn.textContent = missingMrn.length;
@@ -15037,7 +15072,7 @@ routes.aliases = async (c) => {
   const sc = getSecCounts();
   const totMis = getTotalMissing();
 
-  c.innerHTML = `${pageHeader('Resolver Queues & Vehicle Allocation', 'Divided by section: unrecognised vehicle & mechanic text, plus missing vehicle allocations across jobs, services, issues, and stores.')}
+  c.innerHTML = `${pageHeader('Resolver Queues & Vehicle Allocation', 'Divided by section: unrecognised vehicle & mechanic text, plus missing vehicle allocations across jobs, job requests, services, issues, and stores.')}
     <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(180px, 1fr));gap:10px;margin-bottom:14px">
       <div class="card" id="kpi-aliases" style="cursor:pointer;padding:12px;border-left:4px solid var(--primary);transition:transform .15s">
         <div class="muted" style="font-size:11px;text-transform:uppercase;font-weight:600">Pending Vehicle Aliases</div>
@@ -15048,6 +15083,11 @@ routes.aliases = async (c) => {
         <div class="muted" style="font-size:11px;text-transform:uppercase;font-weight:600">Job Cards Missing Vehicle</div>
         <div style="font-size:22px;font-weight:700;margin:4px 0;color:${missingJobs.length ? 'var(--amber,#d9822b)' : 'inherit'}" id="kpi-val-jobs">${missingJobs.length}</div>
         <div class="muted" style="font-size:11px">${missingJobs.length ? 'Needs vehicle allocation' : 'All jobs allocated'}</div>
+      </div>
+      <div class="card" id="kpi-jobrequests" style="cursor:pointer;padding:12px;border-left:4px solid ${missingJobRequests.length ? 'var(--amber,#f2a900)' : 'var(--green,#3c7d5a)'}">
+        <div class="muted" style="font-size:11px;text-transform:uppercase;font-weight:600">Job Requests Missing Vehicle</div>
+        <div style="font-size:22px;font-weight:700;margin:4px 0;color:${missingJobRequests.length ? 'var(--amber,#d9822b)' : 'inherit'}" id="kpi-val-jobrequests">${missingJobRequests.length}</div>
+        <div class="muted" style="font-size:11px">${missingJobRequests.length ? 'Needs vehicle allocation' : 'All requests allocated'}</div>
       </div>
       <div class="card" id="kpi-services" style="cursor:pointer;padding:12px;border-left:4px solid ${missingServices.length ? 'var(--amber,#f2a900)' : 'var(--green,#3c7d5a)'}">
         <div class="muted" style="font-size:11px;text-transform:uppercase;font-weight:600">Services Missing Vehicle</div>
@@ -15097,9 +15137,10 @@ routes.aliases = async (c) => {
       <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:10px">
         <div class="pill-row" id="alloc_sub_tabs" style="margin:0">
           <button class="sm primary" data-alloc="jobs">🔧 Job Cards (<span id="cnt-alloc-jobs">${missingJobs.length}</span>)</button>
+          <button class="sm" data-alloc="jobrequests">📋 Job Requests (<span id="cnt-alloc-jobrequests">${missingJobRequests.length}</span>)</button>
           <button class="sm" data-alloc="services">⚙️ Service Records (<span id="cnt-alloc-services">${missingServices.length}</span>)</button>
           <button class="sm" data-alloc="issues">📦 Store Issues (<span id="cnt-alloc-issues">${missingIssues.length}</span>)</button>
-          <button class="sm" data-alloc="mrn">📋 Material Requisitions (<span id="cnt-alloc-mrn">${missingMrn.length}</span>)</button>
+          <button class="sm" data-alloc="mrn">📄 Material Requisitions (<span id="cnt-alloc-mrn">${missingMrn.length}</span>)</button>
         </div>
         <input id="alloc_filter" type="search" placeholder="Search records…" style="max-width:240px;margin:0;font-size:12px;padding:4px 8px">
       </div>
@@ -15259,6 +15300,63 @@ routes.aliases = async (c) => {
             await api('/aliases/allocate-job', { method: 'POST', body: { job_id: id, asset_id: sel.value } });
             toast('Vehicle allocated to Job Card', 'ok');
             missingJobs = missingJobs.filter((x) => String(x.id) !== String(id));
+            updateHeaderCounters();
+            renderAllocTable();
+          } catch (e) { toast(e.message, 'err'); }
+        };
+      });
+
+    } else if (currentAllocTab === 'jobrequests') {
+      let list = missingJobRequests;
+      if (allocSearchQuery) {
+        list = list.filter((r) =>
+          (r.jr_no && r.jr_no.toLowerCase().includes(allocSearchQuery)) ||
+          (r.description && r.description.toLowerCase().includes(allocSearchQuery)) ||
+          (r.requested_by && r.requested_by.toLowerCase().includes(allocSearchQuery)) ||
+          (r.workshop_name && r.workshop_name.toLowerCase().includes(allocSearchQuery))
+        );
+      }
+      if (!list.length) {
+        wrap.innerHTML = '<div class="muted" style="text-align:center;padding:24px">All job requests have vehicles allocated! No unassigned job requests found.</div>';
+        return;
+      }
+      wrap.innerHTML = tableWrap([
+        { label: 'Job Request', width: '130px' },
+        { label: 'Allocate Vehicle', width: '280px' },
+        { label: 'Date', width: '95px' },
+        { label: 'Workshop', width: '150px' },
+        { label: 'Status', width: '90px' },
+        { label: 'Requested By', width: '120px' },
+        { label: 'Work Description', cls: 'desc-col' }
+      ],
+      list.map((r) => `<tr data-jr-row="${r.id}">
+        <td><a href="#/jobrequests/${r.id}"><b>${esc(r.jr_no)}</b></a></td>
+        <td style="white-space:nowrap">
+          ${canResolve ? `
+            <div style="display:flex;align-items:center;gap:6px">
+              <select data-jr-sel="${r.id}" style="width:190px;max-width:210px;font-size:12px;padding:3px 6px;margin:0">
+                <option value="">— pick vehicle —</option>${aopts}
+              </select>
+              <button class="sm primary" data-jr-btn="${r.id}" style="padding:3px 10px;font-size:12px;flex-shrink:0">Allocate</button>
+            </div>
+          ` : '<span class="muted">read-only</span>'}
+        </td>
+        <td>${esc(r.req_date ? r.req_date.slice(0, 10) : '-')}</td>
+        <td style="font-size:12px;white-space:normal;max-width:150px;line-height:1.3">${esc(r.workshop_name)}</td>
+        <td><span class="badge ${r.approval_status === 'approved' ? 'green' : (r.approval_status === 'rejected' ? 'red' : 'amber')}">${esc(r.approval_status || 'requested')}</span></td>
+        <td>${esc(r.requested_by || '-')}</td>
+        <td class="desc-col">${esc(r.description || '-')}</td>
+      </tr>`), { fit: true, scroll: true });
+
+      qsa('[data-jr-btn]', wrap).forEach((btn) => {
+        btn.onclick = async () => {
+          const id = btn.dataset.jrBtn;
+          const sel = qs(`[data-jr-sel="${id}"]`, wrap);
+          if (!sel || !sel.value) return toast('Pick an asset first', 'err');
+          try {
+            await api('/aliases/allocate-job-request', { method: 'POST', body: { job_request_id: id, asset_id: sel.value } });
+            toast('Vehicle allocated to Job Request', 'ok');
+            missingJobRequests = missingJobRequests.filter((x) => String(x.id) !== String(id));
             updateHeaderCounters();
             renderAllocTable();
           } catch (e) { toast(e.message, 'err'); }
@@ -15455,6 +15553,13 @@ routes.aliases = async (c) => {
     switchMainTab('missing');
     currentAllocTab = 'jobs';
     qsa('#alloc_sub_tabs button', c).forEach((b) => b.classList.toggle('primary', b.dataset.alloc === 'jobs'));
+    renderAllocTable();
+  };
+  const kpiJR = qs('#kpi-jobrequests', c);
+  if (kpiJR) kpiJR.onclick = () => {
+    switchMainTab('missing');
+    currentAllocTab = 'jobrequests';
+    qsa('#alloc_sub_tabs button', c).forEach((b) => b.classList.toggle('primary', b.dataset.alloc === 'jobrequests'));
     renderAllocTable();
   };
   const kpiSvc = qs('#kpi-services', c);

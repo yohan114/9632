@@ -106,6 +106,23 @@ router.post('/allocate-mrn', requireCap('aliases.vehicle.resolve'), asyncHandler
   res.json({ ok: true, mrn_id: mrnId, asset_id: asset.id });
 }));
 
+router.post('/allocate-job-request', requireCap('aliases.vehicle.resolve'), asyncHandler((req, res) => {
+  require_(req.body, ['job_request_id', 'asset_id']);
+  const jrId = toInt(req.body.job_request_id);
+  const assetId = toInt(req.body.asset_id);
+  const jr = get('SELECT * FROM job_requests WHERE id = ?', jrId);
+  if (!jr) return res.status(404).json({ error: 'Job request not found' });
+  const asset = get('SELECT * FROM assets WHERE id = ?', assetId);
+  if (!asset) return res.status(404).json({ error: 'Asset not found' });
+
+  run('UPDATE job_requests SET asset_id = ? WHERE id = ?', asset.id, jrId);
+  if (jr.job_id) {
+    run('UPDATE job_cards SET asset_id = ? WHERE id = ? AND asset_id IS NULL', asset.id, jr.job_id);
+  }
+  audit.record({ userId: req.user.id, entity: 'job_request', entityId: jrId, action: 'allocate_vehicle', before: { asset_id: jr.asset_id }, after: { asset_id: asset.id } });
+  res.json({ ok: true, job_request_id: jrId, asset_id: asset.id });
+}));
+
 router.delete('/:id', requireCap('aliases.vehicle.resolve'), asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   run('DELETE FROM asset_aliases WHERE id = ?', id);

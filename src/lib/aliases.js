@@ -114,6 +114,8 @@ function linkAlias(aliasId, assetId) {
       run('UPDATE job_daily_work SET asset_id = ? WHERE asset_id IS NULL AND (vehicle = ? OR vehicle = ?)', assetId, raw, norm);
       // 3. issues with matching description/purpose
       run('UPDATE issues SET asset_id = ? WHERE asset_id IS NULL AND (purpose = ? OR purpose LIKE ?)', assetId, raw, '%' + raw + '%');
+      // 4. job_requests where asset is missing and description matches
+      run('UPDATE job_requests SET asset_id = ? WHERE asset_id IS NULL AND (description LIKE ? OR description LIKE ?)', assetId, '%' + raw + '%', '%' + norm + '%');
     } catch (e) {
       // Best effort cascade
     }
@@ -192,7 +194,7 @@ function queryAliasQueue(opts = {}) {
 }
 
 /**
- * Comprehensive audit of missing vehicle allocations across jobs, services, issues, and MRN.
+ * Comprehensive audit of missing vehicle allocations across jobs, job requests, services, issues, and MRN.
  */
 function getMissingAllocations() {
   const missingJobs = all(`
@@ -202,6 +204,16 @@ function getMissingAllocations() {
       LEFT JOIN workshops w ON w.id = j.workshop_id
      WHERE j.asset_id IS NULL
      ORDER BY j.id DESC
+     LIMIT 200
+  `);
+
+  const missingJobRequests = all(`
+    SELECT r.id, r.jr_no, r.req_date, r.type, r.description, r.approval_status, r.requested_by, r.workshop_id,
+           COALESCE(w.name, 'Central Workshop') AS workshop_name
+      FROM job_requests r
+      LEFT JOIN workshops w ON w.id = r.workshop_id
+     WHERE r.asset_id IS NULL
+     ORDER BY r.id DESC
      LIMIT 200
   `);
 
@@ -246,16 +258,18 @@ function getMissingAllocations() {
 
   return {
     missingJobs,
+    missingJobRequests,
     missingServices,
     missingIssues,
     missingMrn,
     aliasSections,
     counts: {
       jobs: missingJobs.length,
+      jobRequests: missingJobRequests.length,
       services: missingServices.length,
       issues: missingIssues.length,
       mrn: missingMrn.length,
-      totalMissing: missingJobs.length + missingServices.length + missingIssues.length + missingMrn.length
+      totalMissing: missingJobs.length + missingJobRequests.length + missingServices.length + missingIssues.length + missingMrn.length
     }
   };
 }
