@@ -7956,6 +7956,7 @@ async function storeLocationsTab(body) {
                   <td style="padding:10px 12px">${s.active ? '<span class="badge green sm">Active</span>' : '<span class="badge red sm">Inactive</span>'}</td>
                   <td style="padding:10px 12px;text-align:right;white-space:nowrap;position:sticky;right:0;background:var(--card-bg, #fff);z-index:1;box-shadow:-2px 0 4px rgba(0,0,0,0.06)">
                     <button class="sm" onclick="showStoreLocationStockModal(${s.id})">📦 Stock</button>
+                    ${canManage ? `<button class="sm" onclick="showStoreLocationAccessModal(${s.id})" style="margin-left:4px" title="Manage user access and permissions for this store">🔑 Permissions</button>` : ''}
                     ${canManage ? `<button class="sm primary" onclick="showStoreLocationModal(${s.id})" style="margin-left:4px">✏️ Edit</button>` : ''}
                   </td>
                 </tr>
@@ -8235,8 +8236,252 @@ async function showStoreLocationModal(storeId = null) {
   }, { wide: true });
 }
 
+async function showStoreLocationAccessModal(storeId) {
+  modal('Loading Store Permissions…', '<div class="muted" style="padding:20px">Fetching store access and user directory…</div>', async (mBody, close) => {
+    try {
+      const [store, accessListRes, allUsersRes] = await Promise.all([
+        api(`/store-locations/${storeId}`),
+        api(`/store-locations/${storeId}/access`),
+        api('/users').catch(() => [])
+      ]);
+
+      const accessList = Array.isArray(accessListRes) ? accessListRes : [];
+      const modalTitle = mBody.closest('.modal') ? mBody.closest('.modal').querySelector('h2') : null;
+      if (modalTitle) {
+        modalTitle.innerHTML = `🔑 Store Permissions: <span style="color:var(--primary, #2563eb)">${esc(store.name)}</span> <span class="code" style="font-size:12px">${esc(store.code)}</span>`;
+      }
+
+      const allUsers = Array.isArray(allUsersRes) ? allUsersRes : (allUsersRes && allUsersRes.users) || [];
+      const assignedUserIds = new Set((accessList || []).map(a => Number(a.user_id)));
+      const unassignedUsers = allUsers.filter(u => u.active && !assignedUserIds.has(Number(u.id)));
+
+      const isMainStore = store.store_type === 'MAIN_STORE' || store.store_type === 'MAIN_WORKSHOP_STORE';
+
+      const renderContent = () => {
+        mBody.innerHTML = `
+          <div style="font-size:13px">
+            <div style="background:var(--subtle, #f8fafc);border:1px solid var(--border, #e2e8f0);border-radius:8px;padding:12px 14px;margin-bottom:16px">
+              <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+                <div>
+                  <span style="font-weight:700;font-size:14px">${esc(store.name)}</span>
+                  <span class="badge sm" style="margin-left:6px">${esc(store.store_type)}</span>
+                </div>
+                <div class="muted" style="font-size:11.5px">
+                  ${isMainStore ? '🏛️ Central authority: Controls bulk receiving & site replenishments.' : '🏗️ Site Store: Controlled container/project store for direct machine issues.'}
+                </div>
+              </div>
+            </div>
+
+            <div style="font-weight:700;font-size:14px;margin-bottom:8px;display:flex;justify-content:space-between;align-items:center">
+              <span>Assigned Personnel (${(accessList || []).length})</span>
+              <span class="muted" style="font-size:11.5px;font-weight:normal">Grant or restrict specific actions for this store</span>
+            </div>
+
+            ${(!accessList || accessList.length === 0) ? `
+              <div class="card alert" style="background:#fef3c7;border-color:#f59e0b;color:#92400e;padding:12px;margin-bottom:16px;font-size:12.5px">
+                ℹ️ <b>No store-specific restrictions assigned yet.</b> By default, storekeepers with general permissions or home workshop alignment can view stock. Add specific users below to enforce strict, granular action security.
+              </div>
+            ` : `
+              <div style="overflow-x:auto;margin-bottom:16px;border:1px solid var(--border, #e5e7eb);border-radius:6px">
+                <table class="table" style="width:100%;margin:0;font-size:12px">
+                  <thead>
+                    <tr style="background:var(--subtle, #f9fafb);border-bottom:1px solid var(--border, #e5e7eb);text-align:left">
+                      <th style="padding:8px 10px">User</th>
+                      <th style="padding:8px 10px;text-align:center" title="Can view on-hand stock and bin cards">View</th>
+                      <th style="padding:8px 10px;text-align:center" title="Can receive goods (GRN / inbound MTN)">Receive</th>
+                      <th style="padding:8px 10px;text-align:center" title="Can issue parts to Job Cards / Vehicles (MIN)">Issue</th>
+                      <th style="padding:8px 10px;text-align:center" title="Can dispatch outbound MTNs to other stores">Dispatch</th>
+                      <th style="padding:8px 10px;text-align:center" title="Can perform physical stock counts">Count</th>
+                      <th style="padding:8px 10px;text-align:center" title="Can raise MRN replenishment requests">Request</th>
+                      <th style="padding:8px 10px;text-align:right">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    ${accessList.map(a => `
+                      <tr style="border-bottom:1px solid var(--border, #f1f5f9)">
+                        <td style="padding:8px 10px">
+                          <b>${esc(a.full_name || a.username)}</b> <span class="muted" style="font-size:11px">(@${esc(a.username)})</span>
+                        </td>
+                        <td style="padding:8px 10px;text-align:center">
+                          <input type="checkbox" data-uid="${a.user_id}" data-perm="can_view" ${a.can_view ? 'checked' : ''} />
+                        </td>
+                        <td style="padding:8px 10px;text-align:center">
+                          <input type="checkbox" data-uid="${a.user_id}" data-perm="can_receive" ${a.can_receive ? 'checked' : ''} />
+                        </td>
+                        <td style="padding:8px 10px;text-align:center">
+                          <input type="checkbox" data-uid="${a.user_id}" data-perm="can_issue" ${a.can_issue ? 'checked' : ''} />
+                        </td>
+                        <td style="padding:8px 10px;text-align:center">
+                          <input type="checkbox" data-uid="${a.user_id}" data-perm="can_dispatch" ${a.can_dispatch ? 'checked' : ''} />
+                        </td>
+                        <td style="padding:8px 10px;text-align:center">
+                          <input type="checkbox" data-uid="${a.user_id}" data-perm="can_count" ${a.can_count ? 'checked' : ''} />
+                        </td>
+                        <td style="padding:8px 10px;text-align:center">
+                          <input type="checkbox" data-uid="${a.user_id}" data-perm="can_request" ${a.can_request ? 'checked' : ''} />
+                        </td>
+                        <td style="padding:8px 10px;text-align:right;white-space:nowrap">
+                          <button class="sm primary" data-save-uid="${a.user_id}">Save</button>
+                          <button class="sm danger" data-revoke-uid="${a.user_id}" style="margin-left:4px">Revoke</button>
+                        </td>
+                      </tr>
+                    `).join('')}
+                  </tbody>
+                </table>
+              </div>
+            `}
+
+            <!-- Add new user grant -->
+            <div style="background:var(--card, #fff);border:1px solid var(--border, #e5e7eb);border-radius:8px;padding:12px;margin-bottom:16px">
+              <div style="font-weight:700;font-size:13px;margin-bottom:8px">➕ Grant Store Access to Another User</div>
+              <div style="display:grid;grid-template-columns:1fr auto;gap:12px;align-items:center;margin-bottom:10px">
+                <div>
+                  <label style="display:block;font-size:11.5px;font-weight:600;margin-bottom:4px">Select User</label>
+                  <select id="new_grant_user" class="select" style="width:100%">
+                    <option value="">— Select an active user —</option>
+                    ${unassignedUsers.map(u => `
+                      <option value="${u.id}">${esc(u.full_name || u.username)} (@${esc(u.username)})</option>
+                    `).join('')}
+                  </select>
+                </div>
+                <div style="margin-top:16px">
+                  <button class="btn primary sm" id="btn_add_grant">+ Grant Access</button>
+                </div>
+              </div>
+
+              <div style="display:flex;gap:12px;flex-wrap:wrap;font-size:12px;background:var(--subtle, #f9fafb);padding:8px 10px;border-radius:6px">
+                <label style="display:flex;align-items:center;gap:4px;cursor:pointer">
+                  <input type="checkbox" id="ng_view" checked /> <span>View Stock</span>
+                </label>
+                <label style="display:flex;align-items:center;gap:4px;cursor:pointer">
+                  <input type="checkbox" id="ng_receive" checked /> <span>Receive (GRN/MTN)</span>
+                </label>
+                <label style="display:flex;align-items:center;gap:4px;cursor:pointer">
+                  <input type="checkbox" id="ng_issue" checked /> <span>Issue (Job Cards)</span>
+                </label>
+                <label style="display:flex;align-items:center;gap:4px;cursor:pointer">
+                  <input type="checkbox" id="ng_dispatch" ${isMainStore ? 'checked' : ''} /> <span>Dispatch (MTN)</span>
+                </label>
+                <label style="display:flex;align-items:center;gap:4px;cursor:pointer">
+                  <input type="checkbox" id="ng_count" checked /> <span>Stock Count</span>
+                </label>
+                <label style="display:flex;align-items:center;gap:4px;cursor:pointer">
+                  <input type="checkbox" id="ng_request" checked /> <span>Request (MRN)</span>
+                </label>
+              </div>
+            </div>
+
+            <div style="display:flex;justify-content:flex-end">
+              <button class="btn" id="btn_close_loc_access">Close</button>
+            </div>
+          </div>
+        `;
+
+        qs('#btn_close_loc_access', mBody).onclick = close;
+
+        // Wire per-row Save button
+        qsa('[data-save-uid]', mBody).forEach(btn => {
+          btn.onclick = async () => {
+            const uid = Number(btn.dataset.saveUid);
+            const getCheck = (perm) => {
+              const el = qs(`input[data-uid="${uid}"][data-perm="${perm}"]`, mBody);
+              return el ? (el.checked ? 1 : 0) : 0;
+            };
+            const payload = {
+              user_id: uid,
+              can_view: getCheck('can_view'),
+              can_receive: getCheck('can_receive'),
+              can_issue: getCheck('can_issue'),
+              can_dispatch: getCheck('can_dispatch'),
+              can_count: getCheck('can_count'),
+              can_request: getCheck('can_request')
+            };
+
+            try {
+              await api(`/store-locations/${storeId}/access`, {
+                method: 'POST',
+                body: payload
+              });
+              toast('Permissions updated successfully', 'ok');
+              const refreshed = await api(`/store-locations/${storeId}/access`);
+              accessList.length = 0;
+              accessList.push(...(Array.isArray(refreshed) ? refreshed : []));
+              renderContent();
+            } catch (err) {
+              toast(err.message, 'err');
+            }
+          };
+        });
+
+        // Wire Revoke button
+        qsa('[data-revoke-uid]', mBody).forEach(btn => {
+          btn.onclick = async () => {
+            const uid = Number(btn.dataset.revokeUid);
+            if (!confirm('Revoke all store-specific permissions for this user?')) return;
+            try {
+              await api(`/store-locations/${storeId}/access/${uid}`, { method: 'DELETE' });
+              toast('User access revoked from this store', 'ok');
+              const refreshed = await api(`/store-locations/${storeId}/access`);
+              accessList.length = 0;
+              accessList.push(...(Array.isArray(refreshed) ? refreshed : []));
+              const newAssigned = new Set(accessList.map(a => Number(a.user_id)));
+              unassignedUsers.length = 0;
+              unassignedUsers.push(...allUsers.filter(u => u.active && !newAssigned.has(Number(u.id))));
+              renderContent();
+            } catch (err) {
+              toast(err.message, 'err');
+            }
+          };
+        });
+
+        // Wire Add Grant button
+        const addBtn = qs('#btn_add_grant', mBody);
+        if (addBtn) {
+          addBtn.onclick = async () => {
+            const userSelect = qs('#new_grant_user', mBody);
+            const uid = Number(userSelect.value);
+            if (!uid) return toast('Please select a user to grant permissions to', 'err');
+
+            const payload = {
+              user_id: uid,
+              can_view: qs('#ng_view', mBody).checked ? 1 : 0,
+              can_receive: qs('#ng_receive', mBody).checked ? 1 : 0,
+              can_issue: qs('#ng_issue', mBody).checked ? 1 : 0,
+              can_dispatch: qs('#ng_dispatch', mBody).checked ? 1 : 0,
+              can_count: qs('#ng_count', mBody).checked ? 1 : 0,
+              can_request: qs('#ng_request', mBody).checked ? 1 : 0
+            };
+
+            try {
+              await api(`/store-locations/${storeId}/access`, {
+                method: 'POST',
+                body: payload
+              });
+              toast('Store access granted to user', 'ok');
+              const refreshed = await api(`/store-locations/${storeId}/access`);
+              accessList.length = 0;
+              accessList.push(...(Array.isArray(refreshed) ? refreshed : []));
+              const newAssigned = new Set(accessList.map(a => Number(a.user_id)));
+              unassignedUsers.length = 0;
+              unassignedUsers.push(...allUsers.filter(u => u.active && !newAssigned.has(Number(u.id))));
+              renderContent();
+            } catch (err) {
+              toast(err.message, 'err');
+            }
+          };
+        }
+      };
+
+      renderContent();
+    } catch (err) {
+      mBody.innerHTML = `<div class="card alert red">Error loading store permissions: ${esc(err.message)}</div>`;
+    }
+  }, { wide: true });
+}
+
 window.showStoreLocationModal = showStoreLocationModal;
 window.showStoreLocationStockModal = showStoreLocationStockModal;
+window.showStoreLocationAccessModal = showStoreLocationAccessModal;
 window.storeLocationsTab = storeLocationsTab;
 
 async function storesMonitor(body) {

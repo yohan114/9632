@@ -184,4 +184,33 @@ router.post('/:id/access', requireCap('stores.locations.access'), asyncHandler((
   }
 }));
 
+/**
+ * DELETE /:id/access/:userId
+ * Revoke user access grants for this store location.
+ */
+router.delete('/:id/access/:userId', requireCap('stores.locations.access'), asyncHandler((req, res) => {
+  const id = toInt(req.params.id);
+  const userId = toInt(req.params.userId);
+  if (!userId) {
+    return res.status(400).json({ error: 'userId is required.' });
+  }
+
+  try {
+    const result = storeLocs.revokeUserStoreLocationAccess(userId, id, req.user);
+    res.json(result);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+}));
+
+/**
+ * GET /user/:userId
+ * List all store locations assigned to a user.
+ */
+router.get('/user/:userId', requireCap('stores.locations.access'), asyncHandler((req, res) => {
+  const userId = toInt(req.params.userId);
+  const access = storeLocs.getUserStoreLocations(userId);
+  res.json(access);
+}));
+
 module.exports = router;

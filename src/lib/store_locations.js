@@ -529,6 +529,50 @@ function setUserStoreLocationAccess(userId, storeLocationId, perms = {}, user = 
 }
 
 /**
+ * Revoke user access grants for a store location.
+ */
+function revokeUserStoreLocationAccess(userId, storeLocationId, user = null) {
+  tx(() => {
+    run('DELETE FROM store_location_access WHERE user_id = ? AND store_location_id = ?', userId, storeLocationId);
+  });
+
+  if (audit && user) {
+    try {
+      audit.record({
+        userId: user.id || null,
+        entity: 'store_location_access',
+        entityId: storeLocationId,
+        action: 'revoke_access',
+        after: { userId, storeLocationId }
+      });
+    } catch (_) {}
+  }
+
+  return { success: true, user_id: userId, store_location_id: storeLocationId };
+}
+
+/**
+ * Get all physical store locations a user is permitted to access.
+ */
+function getUserStoreLocations(userId) {
+  return all(`
+    SELECT sla.*, sl.name AS store_name, sl.code AS store_code, sl.store_type, sl.active AS store_active
+      FROM store_location_access sla
+      JOIN store_locations sl ON sl.id = sla.store_location_id
+     WHERE sla.user_id = ?
+     ORDER BY
+       CASE sl.store_type
+         WHEN 'MAIN_STORE' THEN 1
+         WHEN 'MAIN_WORKSHOP_STORE' THEN 2
+         WHEN 'SITE_STORE' THEN 3
+         WHEN 'SITE_WORKSHOP_STORE' THEN 4
+         ELSE 5
+       END,
+       sl.name ASC
+  `, userId);
+}
+
+/**
  * Idempotent baseline seed for physical store locations.
  * Preserves existing workshop stock balances by mapping Workshop 1 to Main Workshop Stores.
  */
@@ -854,6 +898,8 @@ module.exports = {
   resolveLegacyStoreId,
   getStoreLocationAccess,
   setUserStoreLocationAccess,
+  revokeUserStoreLocationAccess,
+  getUserStoreLocations,
   seedStoreLocations,
   migrateStoreLocationsStage2
 };
