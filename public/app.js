@@ -988,6 +988,161 @@ async function renderStandInBanner() {
   } catch {}
 }
 
+function canViewPrices() {
+  return canView('reports') || canView('purchasing') || isAdmin() || canDo('jobs.parts') || canDo('stores.items.price');
+}
+function moneyMasked(val) {
+  if (!canViewPrices()) return '••••••';
+  return money(val);
+}
+
+async function openDualAuthModal() {
+  let pending = [];
+  try {
+    const res = await api('/dual-auth/pending');
+    pending = (res && res.requests) || [];
+  } catch (e) {
+    pending = [];
+  }
+
+  const content = pending.length ? `
+    <p class="muted" style="margin-top:0">The following sensitive operations require mandatory 4-Eyes Dual Authorization before executing.</p>
+    <div style="display:grid;gap:10px">
+      ${pending.map((req) => `
+        <div class="card" style="padding:12px;border-left:4px solid ${req.can_approve ? 'var(--primary,#0066ff)' : 'var(--muted)'}">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+            <span class="badge blue" style="font-weight:bold">${esc(req.operation_type.replace(/_/g, ' ').toUpperCase())}</span>
+            <span class="muted" style="font-size:11px">${esc(String(req.requested_at || '').slice(0, 16).replace('T', ' '))}</span>
+          </div>
+          <div style="font-size:13px;font-weight:600;margin-bottom:4px">
+            Entity: <code>${esc(req.entity_type)} #${req.entity_id}</code>
+            ${req.financial_delta ? `<span class="badge amber" style="margin-left:6px">${money(req.financial_delta)}</span>` : ''}
+          </div>
+          <p style="margin:4px 0 8px;font-size:12.5px;color:var(--text)"><b>Justification:</b> ${esc(req.reason)}</p>
+          <div class="muted" style="font-size:11.5px;margin-bottom:8px">Requested by: <b>${esc(req.requester_name || req.requester_username)}</b></div>
+          ${req.can_approve ? `
+            <div style="display:flex;gap:6px;justify-content:flex-end">
+              <button class="sm danger btn-reject-dual" data-id="${req.id}">✕ Reject</button>
+              <button class="sm primary btn-approve-dual" data-id="${req.id}">✓ Independently Authorize</button>
+            </div>
+          ` : `
+            <div class="muted" style="font-size:11px;font-style:italic">You submitted this request. A second manager must authorize it.</div>
+          `}
+        </div>
+      `).join('')}
+    </div>
+  ` : `
+    <div style="text-align:center;padding:24px 12px">
+      <span style="font-size:32px">🛡️</span>
+      <h3 style="margin:8px 0 4px">All Clear</h3>
+      <p class="muted" style="margin:0">No operations are currently awaiting dual-authorization sign-off.</p>
+    </div>
+  `;
+
+  modal('⚡ 4-Eyes Dual-Authorization Queue', content, (body, close) => {
+    qsa('.btn-approve-dual', body).forEach((btn) => {
+      btn.onclick = async () => {
+        const id = btn.dataset.id;
+        const note = prompt('Optional approval note for audit log:');
+        if (note === null) return;
+        try {
+          await api(`/dual-auth/${id}/approve`, { method: 'POST', body: { note } });
+          toast('Dual-authorization approved and executed');
+          close();
+          render();
+        } catch (e) {
+          toast(e.message, 'err');
+        }
+      };
+    });
+
+    qsa('.btn-reject-dual', body).forEach((btn) => {
+      btn.onclick = async () => {
+        const id = btn.dataset.id;
+        const note = prompt('Enter rejection reason:');
+        if (!note) return toast('Rejection reason required', 'err');
+        try {
+          await api(`/dual-auth/${id}/reject`, { method: 'POST', body: { note } });
+          toast('Operation rejected');
+          close();
+          render();
+        } catch (e) {
+          toast(e.message, 'err');
+        }
+      };
+    });
+  });
+}
+
+let lastUserActivity = Date.now();
+const IDLE_LOCK_MS = 15 * 60 * 1000;
+let isScreenLocked = false;
+let idleLockBound = false;
+
+function setupIdleLock() {
+  if (idleLockBound) return;
+  idleLockBound = true;
+  ['mousemove', 'keydown', 'mousedown', 'touchstart', 'scroll'].forEach((evt) => {
+    window.addEventListener(evt, () => {
+      if (!isScreenLocked) lastUserActivity = Date.now();
+    }, { passive: true });
+  });
+
+  setInterval(() => {
+    if (!ME || isScreenLocked) return;
+    if (Date.now() - lastUserActivity > IDLE_LOCK_MS) {
+      showIdleLockScreen();
+    }
+  }, 10000);
+}
+
+function showIdleLockScreen() {
+  isScreenLocked = true;
+  const lockEl = document.createElement('div');
+  lockEl.id = 'idle-lock-overlay';
+  lockEl.style.cssText = 'position:fixed;inset:0;background:rgba(11,20,36,0.96);z-index:99999;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(8px);color:#fff';
+  lockEl.innerHTML = `
+    <div style="background:#0f172a;border:1px solid #334155;border-radius:12px;padding:28px;max-width:380px;width:90%;text-align:center;box-shadow:0 25px 50px -12px rgba(0,0,0,0.5)">
+      <span style="font-size:40px">🔒</span>
+      <h3 style="margin:12px 0 4px;color:#fff">Session Locked</h3>
+      <p class="muted" style="margin:0 0 16px;font-size:12px;color:#94a3b8">Locked due to 15 minutes of inactivity for ${esc(ME.fullName || ME.username)}.</p>
+      <input type="password" id="unlock-pass" placeholder="Enter your password to unlock" style="background:#1e293b;border-color:#334155;color:#fff;margin-bottom:12px">
+      <button class="primary" id="btn-unlock-session" style="width:100%;margin-bottom:8px">Unlock Session</button>
+      <button class="btn" id="btn-lock-logout" style="width:100%;font-size:12px">Sign in as different user</button>
+    </div>
+  `;
+
+  document.body.appendChild(lockEl);
+
+  const inp = qs('#unlock-pass', lockEl);
+  if (inp) inp.focus();
+
+  const doUnlock = async () => {
+    const pw = (inp && inp.value) || '';
+    if (!pw) return toast('Password required', 'err');
+    try {
+      await api('/auth/login', { method: 'POST', body: { username: ME.username, password: pw } });
+      isScreenLocked = false;
+      lastUserActivity = Date.now();
+      if (lockEl.parentNode) document.body.removeChild(lockEl);
+      toast('Session unlocked');
+    } catch (e) {
+      toast('Incorrect password', 'err');
+    }
+  };
+
+  if (inp) {
+    inp.onkeydown = (e) => { if (e.key === 'Enter') doUnlock(); };
+  }
+  qs('#btn-unlock-session', lockEl).onclick = doUnlock;
+  qs('#btn-lock-logout', lockEl).onclick = async () => {
+    await api('/auth/logout', { method: 'POST' });
+    isScreenLocked = false;
+    if (lockEl.parentNode) document.body.removeChild(lockEl);
+    ME = null; location.hash = ''; boot();
+  };
+}
+
 function renderShell() {
   const route = (location.hash.replace('#/', '').split('?')[0].split('/')[0]) || 'dashboard';
   const link = (n, i) => `<a href="${n[4] || '#/' + n[0]}" class="${!n[4] && route === n[0] ? 'active' : ''}"><span class="ico">${n[1]}</span>${n[2]}</a>`;
@@ -1103,6 +1258,19 @@ function renderShell() {
   if (btnSig) btnSig.onclick = () => { if (pop) pop.style.display = 'none'; mySignatureModal(); };
   const btnMfa = qs('#pop_mfa');
   if (btnMfa) btnMfa.onclick = () => { if (pop) pop.style.display = 'none'; securityModal(); };
+
+  const btnBell = qs('#topbar-bell');
+  if (btnBell) {
+    btnBell.onclick = openDualAuthModal;
+    api('/dual-auth/pending').then((res) => {
+      const cnt = (res && res.total) || 0;
+      const bEl = qs('.topbar-badge-count', btnBell);
+      if (bEl) {
+        bEl.innerText = cnt;
+        bEl.style.display = cnt > 0 ? 'inline-block' : 'none';
+      }
+    }).catch(() => {});
+  }
 
   qs('#ham').onclick = () => qs('#nav').classList.toggle('open');
   qsa('#nav a').forEach((a) => a.addEventListener('click', () => qs('#nav').classList.remove('open')));
@@ -21597,6 +21765,7 @@ async function boot() {
   try {
     ME = await api('/auth/me');
     live('connect');   // an existing session — open the live socket
+    setupIdleLock();
     if (!location.hash) location.hash = '#/dashboard';
     render();
     if (ME.mustChangePassword) forceChangePassword();

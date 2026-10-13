@@ -126,6 +126,7 @@ app.use('/api', (req, res, next) => {
 // user (they feed dropdowns + dashboards) and are hidden at the nav level only.
 app.use('/api/auth', require('./routes/auth'));
 app.use('/api/access', require('./routes/access'));
+app.use('/api/dual-auth', require('./routes/dual_auth'));
 // The picker lists stay open to anyone signed in; anything else about a vehicle needs Assets.
 // This only relaxes the MODULE check -- the global /api gate above still demands a session -- and
 // routes/assets.js trims those two responses to PICKER_FIELDS, so no cost or history goes with

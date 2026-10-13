@@ -177,6 +177,7 @@ function authenticate(req, res, next) {
       };
       req.user = {
         ...uBase,
+        workshop_ids: require('./dual_auth').workshopsForUser(sess.user_id).map((w) => w.id),
         caps: require('./capabilities').effectiveCaps(uBase),
         permissions: require('./permissions').effectiveUserPermissions(uBase),
         mustChangePassword: !!sess.must_change_password,
@@ -269,6 +270,21 @@ function requireCap(...caps) {
   };
 }
 
+function requireWorkshopMatch(getWorkshopIdFn) {
+  return (req, res, next) => {
+    if (!req.user) return res.status(401).json({ error: 'Authentication required' });
+    if (req.user.roles && req.user.roles.includes('admin')) return next();
+    if (req.user.caps && req.user.caps.includes('workshops.all')) return next();
+    const wsId = typeof getWorkshopIdFn === 'function' ? getWorkshopIdFn(req) : (req.body && req.body[getWorkshopIdFn]) || (req.params && req.params[getWorkshopIdFn]);
+    if (!wsId) return next();
+    const allowed = req.user.workshop_ids || [];
+    if (!allowed.includes(Number(wsId))) {
+      return res.status(403).json({ error: 'Tenancy access denied: you are not assigned to this workshop location.' });
+    }
+    next();
+  };
+}
+
 module.exports = {
   COOKIE,
   hashPassword,
@@ -289,4 +305,5 @@ module.exports = {
   requireCap,
   hasCap,
   capsOf,
+  requireWorkshopMatch,
 };
