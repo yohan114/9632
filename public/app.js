@@ -81,7 +81,11 @@ async function api(path, opts = {}) {
 const ACTIVITY_KEY = 'wo_last_activity';
 const SCREEN_LOCKED_KEY = 'wo_screen_locked';
 let isScreenLocked = false;
-let _lastInput = Date.now();
+try {
+  isScreenLocked = localStorage.getItem(SCREEN_LOCKED_KEY) === '1';
+} catch (e) {}
+
+let _lastInput = 0;
 let _lastStored = 0;
 let _idleWarned = false;
 function noteActivity() {
@@ -98,7 +102,8 @@ function noteActivity() {
 function lastActivity() {
   let stored = 0;
   try { stored = Number(localStorage.getItem(ACTIVITY_KEY)) || 0; } catch (e) { /* private mode */ }
-  return Math.max(_lastInput, stored);
+  if (_lastInput && stored) return Math.max(_lastInput, stored);
+  return _lastInput || stored || Date.now();
 }
 function idleMs() { return Math.max(0, Date.now() - lastActivity()); }
 
@@ -1127,6 +1132,7 @@ function setupIdleLock() {
         isScreenLocked = false;
         const el = document.getElementById('idle-lock-overlay');
         if (el && el.parentNode) el.parentNode.removeChild(el);
+        render();
       }
     }
   });
@@ -1138,14 +1144,17 @@ function showIdleLockScreen() {
 
   // Avoid creating multiple overlay elements in DOM
   let lockEl = document.getElementById('idle-lock-overlay');
-  if (lockEl) return;
+  if (lockEl) {
+    lockEl.style.display = 'flex';
+    return;
+  }
 
   const userName = (ME && (ME.fullName || ME.username))
     || (() => { try { return localStorage.getItem('wo_last_user') || 'System Admin'; } catch { return 'System Admin'; } })();
 
   lockEl = document.createElement('div');
   lockEl.id = 'idle-lock-overlay';
-  lockEl.style.cssText = 'position:fixed;inset:0;background:rgba(11,20,36,0.96);z-index:99999;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(8px);color:#fff';
+  lockEl.style.cssText = 'position:fixed;inset:0;background:rgba(11,20,36,0.96);z-index:999999;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(8px);color:#fff';
   lockEl.innerHTML = `
     <div style="background:#0f172a;border:1px solid #334155;border-radius:12px;padding:28px;max-width:380px;width:90%;text-align:center;box-shadow:0 25px 50px -12px rgba(0,0,0,0.5)">
       <span style="font-size:40px">🔒</span>
@@ -1175,6 +1184,7 @@ function showIdleLockScreen() {
       noteActivity();
       if (lockEl.parentNode) document.body.removeChild(lockEl);
       toast('Session unlocked');
+      render();
     } catch (e) {
       toast('Incorrect password', 'err');
     }
@@ -1340,6 +1350,10 @@ function renderShell() {
 const routes = {};
 async function render() {
   if (!ME) return;
+  if (isScreenLocked) {
+    showIdleLockScreen();
+    return;
+  }
   renderShell();
   const parts = location.hash.replace('#/', '').split('?')[0].split('/');
   const page = parts[0] || 'dashboard';
@@ -22911,7 +22925,7 @@ async function boot() {
   try {
     // Check if session was locked before reload to enforce lock immediately with zero flash
     try {
-      if (localStorage.getItem(SCREEN_LOCKED_KEY) === '1') {
+      if (isScreenLocked || localStorage.getItem(SCREEN_LOCKED_KEY) === '1' || idleMs() >= IDLE_LOCK_MS) {
         showIdleLockScreen();
       }
     } catch {}

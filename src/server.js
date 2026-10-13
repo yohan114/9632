@@ -227,6 +227,14 @@ app.use('/api/sap/v1', require('./routes/sap'));
 // app.js / styles.css so a normal reload always picks up the latest build.
 const publicDir = path.join(__dirname, '..', 'public');
 const BUILD = Date.now();
+const getBuildToken = () => {
+  try {
+    const stat = fs.statSync(path.join(publicDir, 'app.js'));
+    return Math.floor(stat.mtimeMs);
+  } catch {
+    return BUILD;
+  }
+};
 // EVERY script and stylesheet gets the token, not just app.js and styles.css.
 //
 // It used to cover only those two, and the files under /js/ were left to the browser's own
@@ -239,9 +247,10 @@ const BUILD = Date.now();
 // retried once a second forever, against a server that had just started refusing anonymous ones.
 // Every open tab became a permanent stream of failing connections, and the site felt slow.
 const sendIndex = (res) => {
+  const token = getBuildToken();
   const html = fs.readFileSync(path.join(publicDir, 'index.html'), 'utf8')
-    .replace(/(\/(?:app\.js|styles\.css|js\/[\w.-]+\.(?:js|css)))(\?v=[^"']*)?/g, `$1?v=${BUILD}`);
-  res.type('html').set('Cache-Control', 'no-cache').send(html);
+    .replace(/(\/(?:app\.js|styles\.css|js\/[\w.-]+\.(?:js|css)))(\?v=[^"']*)?/g, `$1?v=${token}`);
+  res.type('html').set('Cache-Control', 'no-cache, no-store, must-revalidate').set('Pragma', 'no-cache').send(html);
 };
 app.get('/', (_req, res) => sendIndex(res));
 app.use(express.static(publicDir, { index: false }));
