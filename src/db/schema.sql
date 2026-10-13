@@ -194,8 +194,6 @@ CREATE TABLE IF NOT EXISTS mrn (
 );
 CREATE INDEX IF NOT EXISTS idx_mrn_asset ON mrn(asset_id);
 CREATE INDEX IF NOT EXISTS idx_mrn_job ON mrn(job_id);
-CREATE INDEX IF NOT EXISTS idx_mrn_site_auth ON mrn(site_authority_status);
-CREATE INDEX IF NOT EXISTS idx_mrn_parent ON mrn(parent_mrn_id);
 
 CREATE TABLE IF NOT EXISTS mrn_lines (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -232,9 +230,6 @@ CREATE TABLE IF NOT EXISTS mrn_lines (
   priority_updated_by TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_mrn_lines_mrn ON mrn_lines(mrn_id);
-CREATE INDEX IF NOT EXISTS idx_mrnl_parent ON mrn_lines(parent_mrn_line_id);
-CREATE INDEX IF NOT EXISTS idx_mrnl_child ON mrn_lines(child_mrn_id);
-CREATE INDEX IF NOT EXISTS idx_mrnl_src_store ON mrn_lines(source_store_location_id);
 
 CREATE TABLE IF NOT EXISTS mrn_line_priority_history (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -381,8 +376,6 @@ CREATE INDEX IF NOT EXISTS idx_sm_kind ON stock_moves(section, kind);
 -- "How much of this delivery has already gone out" — asked once per row by the received-stock
 -- panel in the issue form, so without this it re-scans the whole ledger per line.
 CREATE INDEX IF NOT EXISTS idx_sm_mrn_line ON stock_moves(mrn_line_id);
-CREATE INDEX IF NOT EXISTS idx_sm_store ON stock_moves(store_id, section, item_key);
-CREATE INDEX IF NOT EXISTS idx_sm_physical_store ON stock_moves(physical_store_id, section, item_key);
 
 -- Where each section's balance starts counting. Sections whose purchase history was
 -- never captured in stores (filters, batteries) open from a cut-over date instead of
@@ -538,8 +531,6 @@ CREATE TABLE IF NOT EXISTS mtn (
   created_at     TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_mtn_no ON mtn(mtn_no);
-CREATE INDEX IF NOT EXISTS idx_mtn_from_loc ON mtn(from_store_location_id);
-CREATE INDEX IF NOT EXISTS idx_mtn_to_loc ON mtn(to_store_location_id);
 
 CREATE TABLE IF NOT EXISTS mtn_approvals (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -595,8 +586,6 @@ CREATE TABLE IF NOT EXISTS mtn_lines (
   created_at     TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_mtn_lines_mtn ON mtn_lines(mtn_id);
-CREATE INDEX IF NOT EXISTS idx_mtnl_from_loc ON mtn_lines(from_store_location_id);
-CREATE INDEX IF NOT EXISTS idx_mtnl_to_loc ON mtn_lines(to_store_location_id);
 
 -- Step 4b: Delivery Discrepancies and Short Deliveries
 CREATE TABLE IF NOT EXISTS delivery_discrepancies (
@@ -1459,7 +1448,6 @@ CREATE TABLE IF NOT EXISTS store_reorder (
   set_at              TEXT NOT NULL DEFAULT (datetime('now')),
   UNIQUE (store_id, section, item_key)
 );
-CREATE INDEX IF NOT EXISTS idx_store_reorder_phys ON store_reorder(physical_store_id, section, item_key);
 
 -- Stage 6: parts handed over to a job and brought back unused (a return note). The stock goes back
 -- into the store it left; the job stops carrying their cost.

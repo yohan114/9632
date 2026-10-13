@@ -1960,6 +1960,8 @@ function closureRulesAndUniversalTrace() {
 }
 
 function ensureColumn(table, col, def) {
+  const tbl = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table);
+  if (!tbl) return;
   const exists = db.prepare(`PRAGMA table_info(${table})`).all().some((c) => c.name === col);
   if (!exists) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${def}`);
 }

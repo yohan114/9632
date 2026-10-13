@@ -28,29 +28,14 @@ die()  { printf '\n  **  %s\n\n' "$*" >&2; exit 1; }
 [ -d "$APP/.git" ]   || die "No git checkout at $APP"
 
 # ---------------------------------------------------------------------------
-if [ "${1:-}" != "--now" ] && [ "${1:-}" != "--skip-notice" ]; then
-  say "0. Broadcasting 2-minute maintenance alert to active users"
-  sudo -u "$USER" bash -c "cd $APP && PORT=$PORT node scripts/broadcast_maintenance.js 120 'The system will update in 2 minutes. Please save all files, complete tasks, and log out now.'" || true
-else
-  ok "Immediate update requested (--now): skipping 2-minute notice"
-fi
-
-# ---------------------------------------------------------------------------
-say "1. Backing up first"
-# Not optional. Migrations are additive and have never dropped anything, but "never so far" is not
-# a reason to skip the thirty seconds this takes when the alternative is the workshop's history.
-sudo -u "$USER" bash -c "cd $APP && node scripts/backup.js" | sed 's/^/  /'
-BEFORE=$(sudo -u "$USER" git -C "$APP" rev-parse HEAD)
-ok "current version $(echo "$BEFORE" | cut -c1-8) — this is what a rollback returns to"
-
-# ---------------------------------------------------------------------------
-say "2. Fetching"
+say "1. Fetching"
 sudo -u "$USER" git -C "$APP" fetch --quiet origin
 BRANCH=$(sudo -u "$USER" git -C "$APP" rev-parse --abbrev-ref HEAD)
+BEFORE=$(sudo -u "$USER" git -C "$APP" rev-parse HEAD)
 AFTER=$(sudo -u "$USER" git -C "$APP" rev-parse "origin/$BRANCH")
 
 if [ "$BEFORE" = "$AFTER" ]; then
-  ok "already up to date — nothing to do"
+  ok "already up to date ($(echo "$BEFORE" | cut -c1-8)) — nothing to do"
   exit 0
 fi
 
@@ -65,15 +50,35 @@ echo "  changes coming in:"
 sudo -u "$USER" git -C "$APP" log --oneline "$BEFORE..$AFTER" | sed 's/^/    /'
 
 # ---------------------------------------------------------------------------
-say "3. Installing"
+if [ "${1:-}" != "--now" ] && [ "${1:-}" != "--skip-notice" ]; then
+  say "2. Broadcasting 2-minute maintenance alert to active users"
+  if sudo -u "$USER" git -C "$APP" rev-parse "origin/$BRANCH:scripts/broadcast_maintenance.js" >/dev/null 2>&1; then
+    sudo -u "$USER" git -C "$APP" show "origin/$BRANCH:scripts/broadcast_maintenance.js" > "/tmp/broadcast_maintenance.js"
+    sudo -u "$USER" bash -c "cd $APP && PORT=$PORT node /tmp/broadcast_maintenance.js 120 'The system will update in 2 minutes. Please save all files, complete tasks, and log out now.'" || true
+    rm -f "/tmp/broadcast_maintenance.js"
+  elif [ -f "$APP/scripts/broadcast_maintenance.js" ]; then
+    sudo -u "$USER" bash -c "cd $APP && PORT=$PORT node scripts/broadcast_maintenance.js 120 'The system will update in 2 minutes. Please save all files, complete tasks, and log out now.'" || true
+  fi
+else
+  ok "Immediate update requested (--now): skipping 2-minute notice"
+fi
+
+# ---------------------------------------------------------------------------
+say "3. Backing up first"
+# Not optional. Migrations are additive and have never dropped anything, but "never so far" is not
+# a reason to skip the thirty seconds this takes when the alternative is the workshop's history.
+sudo -u "$USER" bash -c "cd $APP && node scripts/backup.js" | sed 's/^/  /'
+ok "current version $(echo "$BEFORE" | cut -c1-8) — this is what a rollback returns to"
+
+# ---------------------------------------------------------------------------
+say "4. Installing"
 sudo -u "$USER" git -C "$APP" merge --ff-only "origin/$BRANCH" --quiet
 sudo -u "$USER" bash -c "cd $APP && npm ci --omit=dev" 2>&1 | tail -3 | sed 's/^/  /'
 ok "now at $(echo "$AFTER" | cut -c1-8)"
 
 # ---------------------------------------------------------------------------
-say "4. Restarting"
+say "5. Restarting"
 systemctl restart "$SVC"
-sleep 4
 
 rollback() {
   printf '\n  **  %s\n' "$1" >&2
@@ -91,10 +96,21 @@ rollback() {
 }
 
 # ---------------------------------------------------------------------------
-say "5. Checking it actually works"
+say "6. Checking it actually works"
 
-curl -fsS --max-time 10 "http://127.0.0.1:$PORT/api/health" >/dev/null 2>&1 \
-  || rollback "The app is not answering on 127.0.0.1:$PORT after the restart."
+HEALTHY=0
+for i in $(seq 1 15); do
+  if curl -fsS --max-time 3 "http://127.0.0.1:$PORT/api/health" >/dev/null 2>&1; then
+    HEALTHY=1
+    break
+  fi
+  sleep 1
+done
+
+if [ "$HEALTHY" -ne 1 ]; then
+  journalctl -u "$SVC" -n 30 --no-pager || true
+  rollback "The app is not answering on 127.0.0.1:$PORT after the restart."
+fi
 ok "answering on 127.0.0.1:$PORT"
 
 # The database is the check that matters. A wrong DB_PATH starts perfectly on an empty database and
