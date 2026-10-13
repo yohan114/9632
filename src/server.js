@@ -64,6 +64,22 @@ app.get('/api/health', (req, res) => {
   res.json(out);
 });
 
+let activeMaintenance = null;
+
+// Maintenance status query: returns current active update notice if any
+app.get('/api/system/maintenance-status', (_req, res) => {
+  if (!activeMaintenance || Date.now() >= activeMaintenance.expiresAt) {
+    activeMaintenance = null;
+    return res.json({ active: false });
+  }
+  const remainingSeconds = Math.max(0, Math.round((activeMaintenance.expiresAt - Date.now()) / 1000));
+  res.json({
+    active: true,
+    ...activeMaintenance,
+    remainingSeconds
+  });
+});
+
 // Maintenance broadcast endpoint: callable with system secret (from CLI) or admin session
 app.post('/api/system/maintenance-broadcast', (req, res) => {
   const secret = req.headers['x-system-secret'];
@@ -85,6 +101,8 @@ app.post('/api/system/maintenance-broadcast', (req, res) => {
     timestamp: new Date().toISOString()
   };
 
+  activeMaintenance = payload;
+
   emitter.emit('maintenance_alert', payload);
   if (io) io.emit('maintenance_alert', payload);
 
@@ -93,9 +111,10 @@ app.post('/api/system/maintenance-broadcast', (req, res) => {
 
 // Global API authentication gate (R-04):
 // Every /api route requires an authenticated session, except /api/auth/login, /api/health,
-// /api/auth/mfa/verify, and /api/system/maintenance-broadcast (which validates secret internally).
+// /api/auth/mfa/verify, /api/system/maintenance-broadcast and /api/system/maintenance-status.
 app.use('/api', (req, res, next) => {
-  if (req.path === '/auth/login' || req.path === '/health' || req.path === '/auth/mfa/verify' || req.path === '/system/maintenance-broadcast') return next();
+  if (req.path === '/auth/login' || req.path === '/health' || req.path === '/auth/mfa/verify' ||
+      req.path === '/system/maintenance-broadcast' || req.path === '/system/maintenance-status') return next();
   if (!req.user) return res.status(401).json({ error: 'Authentication required' });
   next();
 });
@@ -237,7 +256,10 @@ const httpServer = http.createServer(app);
 // open socket accepts a connection from any page on the internet, so in production it is pinned to
 // the site's own origin. PUBLIC_ORIGIN is the https:// address the workshop actually types.
 const io = new Server(httpServer, {
-  cors: { origin: process.env.PUBLIC_ORIGIN || (process.env.NODE_ENV === 'production' ? false : '*') },
+  cors: {
+    origin: (origin, callback) => callback(null, true),
+    credentials: true
+  },
 });
 app.set('io', io); // available to routes via req.app.get('io') if ever needed directly
 
@@ -304,6 +326,12 @@ for (const event of LIVE_EVENTS) {
 }
 io.on('connection', (socket) => {
   socket.emit('live_hello', { ok: true, at: new Date().toISOString() });
+  if (activeMaintenance && Date.now() < activeMaintenance.expiresAt) {
+    socket.emit('maintenance_alert', {
+      ...activeMaintenance,
+      seconds: Math.max(0, Math.round((activeMaintenance.expiresAt - Date.now()) / 1000))
+    });
+  }
 });
 
 function lanUrls(port) {

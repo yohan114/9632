@@ -636,6 +636,26 @@ function showMaintenanceBanner(d) {
 // live-client.js self-loads the socket client asynchronously; wire up as soon as it exists.
 (function tryWireLive() { if (window.LiveERP) return void wireLiveUpdates(); setTimeout(tryWireLive, 800); })();
 
+// Continuous maintenance polling fallback (guarantees alert reaches browsers even if WebSockets are offline)
+function checkMaintenanceStatus() {
+  fetch('/api/system/maintenance-status')
+    .then(r => r.json())
+    .then(d => {
+      if (d && d.active) {
+        showMaintenanceBanner(d);
+      } else {
+        const b = document.getElementById('maintenance-alert-banner');
+        if (b && !b.dataset.manual) {
+          clearInterval(b._timer);
+          b.remove();
+        }
+      }
+    })
+    .catch(() => {});
+}
+setTimeout(checkMaintenanceStatus, 600);
+setInterval(checkMaintenanceStatus, 5000);
+
 const STATUS_CLASS = {
   REQUESTED: '', APPROVED_TRANSPORT: 'blue', APPROVED_OPERATIONS: 'blue',
   IN_WORKSHOP: 'amber', IN_PROGRESS: 'amber', WORK_COMPLETE: 'amber',
