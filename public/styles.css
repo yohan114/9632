@@ -420,3 +420,60 @@ body.live-connected .live-dot { color: var(--green); }
 .road .rd-part { background: rgba(242,169,0,.18); color: var(--amber); border-color: transparent; }
 .road .rd-now { border-color: var(--blue, #1d5a73); color: var(--blue, #1d5a73); font-weight: 700; }
 .road .rd-stop { background: rgba(196,57,44,.12); color: var(--red); border-color: transparent; }
+
+/* ---- SAP Fiori Horizon Enterprise Design System (sapui5 & sap-fiori-tools) ---- */
+:root {
+  --sapBrandColor: #0070f2;
+  --sapHighlightColor: #0070f2;
+  --sapNeutralColor: #6a7379;
+  --sapPositiveColor: #2b7c2b;
+  --sapCriticalColor: #e9730c;
+  --sapNegativeColor: #bb0000;
+  --sapInformationColor: #0070f2;
+  --sapTableRowHeightCompact: 32px;
+}
+
+.sap-object-header {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px 20px;
+  margin-bottom: 16px;
+  box-shadow: var(--shadow);
+}
+.sap-object-header-title {
+  font-size: 20px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+.sap-kpi-badge {
+  display: inline-flex;
+  flex-direction: column;
+  padding: 8px 12px;
+  background: var(--surface-2);
+  border-radius: var(--radius);
+  min-width: 90px;
+}
+.sap-kpi-badge .kpi-label {
+  font-size: 11px;
+  color: var(--muted);
+  text-transform: uppercase;
+  font-weight: 600;
+}
+.sap-kpi-badge .kpi-val {
+  font-size: 18px;
+  font-weight: 700;
+  margin-top: 2px;
+}
+.sap-table-compact table td, .sap-table-compact table th {
+  padding: 6px 10px;
+  font-size: 12.5px;
+}
+.sap-status-positive { color: var(--sapPositiveColor); font-weight: 600; }
+.sap-status-critical { color: var(--sapCriticalColor); font-weight: 600; }
+.sap-status-negative { color: var(--sapNegativeColor); font-weight: 600; }
+.sap-status-info { color: var(--sapInformationColor); font-weight: 600; }
+

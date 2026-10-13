@@ -114,7 +114,8 @@ app.post('/api/system/maintenance-broadcast', (req, res) => {
 // /api/auth/mfa/verify, /api/system/maintenance-broadcast and /api/system/maintenance-status.
 app.use('/api', (req, res, next) => {
   if (req.path === '/auth/login' || req.path === '/health' || req.path === '/auth/mfa/verify' ||
-      req.path === '/system/maintenance-broadcast' || req.path === '/system/maintenance-status') return next();
+      req.path === '/system/maintenance-broadcast' || req.path === '/system/maintenance-status' ||
+      req.path.startsWith('/sap/')) return next();
   if (!req.user) return res.status(401).json({ error: 'Authentication required' });
   next();
 });
@@ -216,6 +217,9 @@ const purchasingGate = (req, res, next) =>
     ? next()
     : requireModule('purchasing')(req, res, next);
 app.use('/api/purchasing', purchasingGate, require('./routes/purchasing'));
+
+// Enterprise SAP Integration Gateway (OData v4 & REST compliant with SAP API Style Guide)
+app.use('/api/sap/v1', require('./routes/sap'));
 
 // Static frontend (SPA). index.html is served with a per-boot cache-bust token on
 // app.js / styles.css so a normal reload always picks up the latest build.

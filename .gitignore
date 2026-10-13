@@ -57,3 +57,7 @@ mfa.key
 # env backups carry the same secrets as .env
 .env.bak-*
 .env.*.bak
+
+# Local agent skills cache (skills installed globally in ~/.gemini/config/skills)
+.agents/
+skills-lock.json
