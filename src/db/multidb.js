@@ -467,6 +467,7 @@ function migrate() {
         const srExists = wdb.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'store_reorder'").get();
         if (srExists) {
           const cols = wdb.prepare('PRAGMA table_info(store_reorder)').all().map((c) => c.name);
+          if (!cols.includes('physical_store_id')) wdb.exec('ALTER TABLE store_reorder ADD COLUMN physical_store_id INTEGER');
           if (!cols.includes('safety_stock')) wdb.exec('ALTER TABLE store_reorder ADD COLUMN safety_stock REAL DEFAULT 0');
           if (!cols.includes('reorder_qty')) wdb.exec('ALTER TABLE store_reorder ADD COLUMN reorder_qty REAL DEFAULT 0');
           if (!cols.includes('avg_daily_demand')) wdb.exec('ALTER TABLE store_reorder ADD COLUMN avg_daily_demand REAL DEFAULT 0');
@@ -475,6 +476,46 @@ function migrate() {
           if (!cols.includes('last_calculated_at')) wdb.exec('ALTER TABLE store_reorder ADD COLUMN last_calculated_at TEXT');
         }
 
+        // Phase A, B, C columns on mrn in workshop DB
+        const mrnExists = wdb.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'mrn'").get();
+        if (mrnExists) {
+          const mCols = wdb.prepare('PRAGMA table_info(mrn)').all().map((c) => c.name);
+          if (!mCols.includes('site_authority_status')) wdb.exec("ALTER TABLE mrn ADD COLUMN site_authority_status TEXT NOT NULL DEFAULT 'approved'");
+          if (!mCols.includes('site_authority_user_id')) wdb.exec('ALTER TABLE mrn ADD COLUMN site_authority_user_id INTEGER');
+          if (!mCols.includes('site_authority_at')) wdb.exec('ALTER TABLE mrn ADD COLUMN site_authority_at TEXT');
+          if (!mCols.includes('site_authority_notes')) wdb.exec('ALTER TABLE mrn ADD COLUMN site_authority_notes TEXT');
+          if (!mCols.includes('parent_mrn_id')) wdb.exec('ALTER TABLE mrn ADD COLUMN parent_mrn_id INTEGER');
+          if (!mCols.includes('replenishment_type')) wdb.exec('ALTER TABLE mrn ADD COLUMN replenishment_type TEXT');
+          if (!mCols.includes('from_store_location_id')) wdb.exec('ALTER TABLE mrn ADD COLUMN from_store_location_id INTEGER');
+        }
+
+        // Phase A, B, C columns on mrn_lines in workshop DB
+        const mlExists = wdb.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'mrn_lines'").get();
+        if (mlExists) {
+          const mlCols = wdb.prepare('PRAGMA table_info(mrn_lines)').all().map((c) => c.name);
+          if (!mlCols.includes('parent_mrn_line_id')) wdb.exec('ALTER TABLE mrn_lines ADD COLUMN parent_mrn_line_id INTEGER');
+          if (!mlCols.includes('child_mrn_id')) wdb.exec('ALTER TABLE mrn_lines ADD COLUMN child_mrn_id INTEGER');
+          if (!mlCols.includes('child_mrn_line_id')) wdb.exec('ALTER TABLE mrn_lines ADD COLUMN child_mrn_line_id INTEGER');
+          if (!mlCols.includes('source_store_location_id')) wdb.exec('ALTER TABLE mrn_lines ADD COLUMN source_store_location_id INTEGER');
+          if (!mlCols.includes('qty_outstanding')) wdb.exec('ALTER TABLE mrn_lines ADD COLUMN qty_outstanding REAL DEFAULT 0');
+          if (!mlCols.includes('local_issue_qty')) wdb.exec('ALTER TABLE mrn_lines ADD COLUMN local_issue_qty REAL DEFAULT 0');
+          if (!mlCols.includes('is_cancelled')) wdb.exec('ALTER TABLE mrn_lines ADD COLUMN is_cancelled INTEGER DEFAULT 0');
+          if (!mlCols.includes('cancellation_reason')) wdb.exec('ALTER TABLE mrn_lines ADD COLUMN cancellation_reason TEXT');
+        }
+
+        // Phase A, B, C columns on mtn in workshop DB
+        const mtnExists = wdb.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'mtn'").get();
+        if (mtnExists) {
+          const mtnCols = wdb.prepare('PRAGMA table_info(mtn)').all().map((c) => c.name);
+          if (!mtnCols.includes('from_store_id')) wdb.exec('ALTER TABLE mtn ADD COLUMN from_store_id INTEGER');
+          if (!mtnCols.includes('to_store_id')) wdb.exec('ALTER TABLE mtn ADD COLUMN to_store_id INTEGER');
+          if (!mtnCols.includes('workshop_id')) wdb.exec('ALTER TABLE mtn ADD COLUMN workshop_id INTEGER');
+        }
+
+        try {
+          require('../lib/store_locations').migrateStoreLocationsStage2(wdb);
+        } catch {}
+
         wdb.close();
       } catch (err) {
         // ignore
@@ -482,22 +523,229 @@ function migrate() {
     }
   }
 
-  // Ensure store_reorder columns in core.db if table exists
+  // Ensure vehicle document tables in core.db
   if (coreDb) {
     try {
-      const srCore = coreDb.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'store_reorder'").get();
-      if (srCore) {
-        const ccols = coreDb.prepare('PRAGMA table_info(store_reorder)').all().map((c) => c.name);
-        if (!ccols.includes('safety_stock')) coreDb.exec('ALTER TABLE store_reorder ADD COLUMN safety_stock REAL DEFAULT 0');
-        if (!ccols.includes('reorder_qty')) coreDb.exec('ALTER TABLE store_reorder ADD COLUMN reorder_qty REAL DEFAULT 0');
-        if (!ccols.includes('avg_daily_demand')) coreDb.exec('ALTER TABLE store_reorder ADD COLUMN avg_daily_demand REAL DEFAULT 0');
-        if (!ccols.includes('lead_time_days')) coreDb.exec('ALTER TABLE store_reorder ADD COLUMN lead_time_days INTEGER DEFAULT 7');
-        if (!ccols.includes('auto_calc')) coreDb.exec('ALTER TABLE store_reorder ADD COLUMN auto_calc INTEGER DEFAULT 1');
-        if (!ccols.includes('last_calculated_at')) coreDb.exec('ALTER TABLE store_reorder ADD COLUMN last_calculated_at TEXT');
-      }
+      coreDb.exec(VEHICLE_DOCS_CORE_SCHEMA);
+      seedVehicleDocTypes(coreDb);
+    } catch (err) {
+      console.warn('Failed to ensure vehicle document tables in coreDb:', err.message);
+    }
+
+    try {
+      coreDb.exec(STORE_LOCATIONS_CORE_SCHEMA);
+      require('../lib/store_locations').seedStoreLocations(coreDb);
+      require('../lib/store_locations').migrateStoreLocationsStage2(coreDb);
+    } catch (err) {
+      console.warn('Failed to ensure physical store location tables in coreDb:', err.message);
+    }
+  }
+
+  // Ensure vehicle document tables in baseDb (if present)
+  if (baseDb) {
+    try {
+      baseDb.exec(VEHICLE_DOCS_CORE_SCHEMA);
+      seedVehicleDocTypes(baseDb);
+    } catch {}
+
+    try {
+      baseDb.exec(STORE_LOCATIONS_CORE_SCHEMA);
+      require('../lib/store_locations').seedStoreLocations(baseDb);
+      require('../lib/store_locations').migrateStoreLocationsStage2(baseDb);
     } catch {}
   }
+
+  // Ensure uploads/vehicle_documents directory exists
+  try {
+    const vdocDir = path.resolve(config.uploadDir || path.join(__dirname, '..', '..', 'uploads'), 'vehicle_documents');
+    fs.mkdirSync(vdocDir, { recursive: true });
+  } catch {}
 }
+
+const VEHICLE_DOCS_CORE_SCHEMA = `
+CREATE TABLE IF NOT EXISTS vehicle_doc_types (
+  id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+  code                TEXT NOT NULL UNIQUE,
+  name                TEXT NOT NULL,
+  category            TEXT NOT NULL DEFAULT 'statutory',
+  is_renewable        INTEGER NOT NULL DEFAULT 1,
+  is_master           INTEGER NOT NULL DEFAULT 0,
+  default_remind_days INTEGER NOT NULL DEFAULT 30,
+  applies_to_classes  TEXT,
+  requires_fitness    INTEGER NOT NULL DEFAULT 0,
+  sort_order          INTEGER NOT NULL DEFAULT 0,
+  active              INTEGER NOT NULL DEFAULT 1,
+  created_at          TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_vdoc_types_code ON vehicle_doc_types(code);
+
+CREATE TABLE IF NOT EXISTS vehicle_documents (
+  id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+  asset_id            INTEGER NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+  doc_type_id         INTEGER NOT NULL REFERENCES vehicle_doc_types(id),
+  is_required         INTEGER NOT NULL DEFAULT 1,
+  is_exempt           INTEGER NOT NULL DEFAULT 0,
+  exemption_reason    TEXT,
+  exemption_date      TEXT,
+  exemption_by        INTEGER REFERENCES users(id),
+  current_version_id  INTEGER,
+  created_at          TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at          TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(asset_id, doc_type_id)
+);
+CREATE INDEX IF NOT EXISTS idx_vdocs_asset ON vehicle_documents(asset_id);
+CREATE INDEX IF NOT EXISTS idx_vdocs_type ON vehicle_documents(doc_type_id);
+
+CREATE TABLE IF NOT EXISTS vehicle_doc_versions (
+  id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+  document_id         INTEGER NOT NULL REFERENCES vehicle_documents(id) ON DELETE CASCADE,
+  version_no          INTEGER NOT NULL DEFAULT 1,
+  doc_number          TEXT NOT NULL,
+  issuer_name         TEXT,
+  issue_date          TEXT NOT NULL,
+  valid_from          TEXT NOT NULL,
+  valid_until         TEXT NOT NULL,
+  valid_until_time    TEXT,
+  cost_amount         REAL DEFAULT 0,
+  policy_type         TEXT,
+  responsible_user_id INTEGER REFERENCES users(id),
+  notes               TEXT,
+  status              TEXT NOT NULL DEFAULT 'draft',
+  verified_by         INTEGER REFERENCES users(id),
+  verified_at         TEXT,
+  verification_notes  TEXT,
+  created_by          INTEGER REFERENCES users(id),
+  created_at          TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_vdoc_versions_doc ON vehicle_doc_versions(document_id);
+CREATE INDEX IF NOT EXISTS idx_vdoc_versions_valid ON vehicle_doc_versions(valid_until);
+CREATE INDEX IF NOT EXISTS idx_vdoc_versions_status ON vehicle_doc_versions(status);
+
+CREATE TABLE IF NOT EXISTS vehicle_doc_attachments (
+  id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+  version_id          INTEGER NOT NULL REFERENCES vehicle_doc_versions(id) ON DELETE CASCADE,
+  kind                TEXT NOT NULL,
+  original_filename   TEXT NOT NULL,
+  stored_filename     TEXT NOT NULL,
+  file_path           TEXT NOT NULL,
+  mime_type           TEXT NOT NULL,
+  file_size           INTEGER NOT NULL,
+  sha256              TEXT NOT NULL,
+  uploaded_by         INTEGER REFERENCES users(id),
+  uploaded_at         TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_vdoc_attachments_ver ON vehicle_doc_attachments(version_id);
+
+CREATE TABLE IF NOT EXISTS vehicle_renewal_tasks (
+  id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+  document_id         INTEGER NOT NULL REFERENCES vehicle_documents(id) ON DELETE CASCADE,
+  target_version_id   INTEGER REFERENCES vehicle_doc_versions(id),
+  stage               TEXT NOT NULL DEFAULT 'not_started',
+  assigned_to         INTEGER REFERENCES users(id),
+  target_date         TEXT,
+  checklist_json      TEXT,
+  estimated_cost      REAL DEFAULT 0,
+  actual_cost         REAL DEFAULT 0,
+  temporary_receipt_no TEXT,
+  completed_at        TEXT,
+  created_at          TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at          TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_vrenewal_tasks_doc ON vehicle_renewal_tasks(document_id);
+CREATE INDEX IF NOT EXISTS idx_vrenewal_tasks_stage ON vehicle_renewal_tasks(stage);
+CREATE INDEX IF NOT EXISTS idx_vrenewal_tasks_assign ON vehicle_renewal_tasks(assigned_to);
+
+CREATE TABLE IF NOT EXISTS vehicle_doc_reminders (
+  id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+  version_id          INTEGER NOT NULL REFERENCES vehicle_doc_versions(id) ON DELETE CASCADE,
+  stage               TEXT NOT NULL,
+  recipient_id        INTEGER NOT NULL REFERENCES users(id),
+  channel             TEXT NOT NULL DEFAULT 'in_app',
+  sent_at             TEXT NOT NULL DEFAULT (datetime('now')),
+  acknowledged_at     TEXT,
+  UNIQUE(version_id, stage, recipient_id)
+);
+CREATE INDEX IF NOT EXISTS idx_vdoc_reminders_ver ON vehicle_doc_reminders(version_id);
+CREATE INDEX IF NOT EXISTS idx_vdoc_reminders_stage ON vehicle_doc_reminders(stage);
+`;
+
+const DEFAULT_DOC_TYPES = [
+  { code: 'cr', name: 'Certificate of Registration', category: 'master', is_renewable: 0, is_master: 1, default_remind_days: 0, applies_to_classes: null, requires_fitness: 0, sort_order: 1 },
+  { code: 'revenue_licence', name: 'Revenue Licence', category: 'statutory', is_renewable: 1, is_master: 0, default_remind_days: 30, applies_to_classes: null, requires_fitness: 0, sort_order: 2 },
+  { code: 'insurance', name: 'Vehicle Insurance', category: 'statutory', is_renewable: 1, is_master: 0, default_remind_days: 30, applies_to_classes: null, requires_fitness: 0, sort_order: 3 },
+  { code: 'emission', name: 'Vehicle Emission Test', category: 'statutory', is_renewable: 1, is_master: 0, default_remind_days: 30, applies_to_classes: null, requires_fitness: 0, sort_order: 4 },
+  { code: 'fitness', name: 'Vehicle Fitness Certificate', category: 'statutory', is_renewable: 1, is_master: 0, default_remind_days: 30, applies_to_classes: JSON.stringify(['heavy_commercial', 'bus', 'lorry', 'truck', 'dual_purpose', 'commercial']), requires_fitness: 1, sort_order: 5 },
+  { code: 'permit', name: 'Passenger / Service Permit', category: 'permit', is_renewable: 1, is_master: 0, default_remind_days: 30, applies_to_classes: null, requires_fitness: 0, sort_order: 6 },
+  { code: 'company_doc', name: 'Company / Operational Document', category: 'company', is_renewable: 1, is_master: 0, default_remind_days: 30, applies_to_classes: null, requires_fitness: 0, sort_order: 7 }
+];
+
+function seedVehicleDocTypes(targetDb) {
+  if (!targetDb) return;
+  const insert = targetDb.prepare(`
+    INSERT OR IGNORE INTO vehicle_doc_types
+    (code, name, category, is_renewable, is_master, default_remind_days, applies_to_classes, requires_fitness, sort_order, active)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+  `);
+  for (const t of DEFAULT_DOC_TYPES) {
+    insert.run(t.code, t.name, t.category, t.is_renewable, t.is_master, t.default_remind_days, t.applies_to_classes, t.requires_fitness, t.sort_order);
+  }
+}
+
+const STORE_LOCATIONS_CORE_SCHEMA = `
+CREATE TABLE IF NOT EXISTS store_locations (
+  id               INTEGER PRIMARY KEY AUTOINCREMENT,
+  code             TEXT NOT NULL UNIQUE,
+  name             TEXT NOT NULL,
+  store_type       TEXT NOT NULL CHECK (store_type IN (
+                     'MAIN_STORE',
+                     'SITE_STORE',
+                     'MAIN_WORKSHOP_STORE',
+                     'SITE_WORKSHOP_STORE'
+                   )),
+  parent_store_id  INTEGER REFERENCES store_locations(id),
+  site_id          INTEGER REFERENCES sites(id),
+  workshop_id      INTEGER REFERENCES workshops(id),
+  active           INTEGER NOT NULL DEFAULT 1,
+  is_default       INTEGER NOT NULL DEFAULT 0,
+  opened_at        TEXT,
+  closed_at        TEXT,
+  notes            TEXT,
+  created_at       TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at       TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_store_locations_type ON store_locations(store_type);
+CREATE INDEX IF NOT EXISTS idx_store_locations_parent ON store_locations(parent_store_id);
+CREATE INDEX IF NOT EXISTS idx_store_locations_workshop ON store_locations(workshop_id);
+CREATE INDEX IF NOT EXISTS idx_store_locations_site ON store_locations(site_id);
+
+CREATE TABLE IF NOT EXISTS store_location_access (
+  id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id            INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  store_location_id  INTEGER NOT NULL REFERENCES store_locations(id) ON DELETE CASCADE,
+  can_view           INTEGER NOT NULL DEFAULT 1,
+  can_request        INTEGER NOT NULL DEFAULT 0,
+  can_issue          INTEGER NOT NULL DEFAULT 0,
+  can_receive        INTEGER NOT NULL DEFAULT 0,
+  can_dispatch       INTEGER NOT NULL DEFAULT 0,
+  can_count          INTEGER NOT NULL DEFAULT 0,
+  created_at         TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(user_id, store_location_id)
+);
+CREATE INDEX IF NOT EXISTS idx_store_loc_access_user ON store_location_access(user_id);
+CREATE INDEX IF NOT EXISTS idx_store_loc_access_store ON store_location_access(store_location_id);
+
+CREATE TABLE IF NOT EXISTS store_location_mappings (
+  id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+  legacy_store_id    INTEGER NOT NULL UNIQUE,
+  workshop_id        INTEGER REFERENCES workshops(id),
+  store_location_id  INTEGER NOT NULL REFERENCES store_locations(id),
+  is_primary         INTEGER NOT NULL DEFAULT 1,
+  notes              TEXT,
+  created_at         TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_store_loc_map_legacy ON store_location_mappings(legacy_store_id);
+CREATE INDEX IF NOT EXISTS idx_store_loc_map_loc ON store_location_mappings(store_location_id);
+`;
 
 module.exports = {
   init,
@@ -524,5 +772,8 @@ module.exports = {
   runIntegrityVerification,
   getCoreDbPath,
   getWorkshopsDir,
-  getTargetDir
+  getTargetDir,
+  seedVehicleDocTypes,
+  VEHICLE_DOCS_CORE_SCHEMA,
+  STORE_LOCATIONS_CORE_SCHEMA
 };

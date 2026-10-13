@@ -154,7 +154,7 @@ function queryAliasQueue(opts = {}) {
   const sql = `SELECT al.*, tgt.${targetNameCol} AS ${targetAlias} FROM ${table} al
      LEFT JOIN ${targetTable} tgt ON tgt.id = al.${targetIdCol}
      ${where}
-    ORDER BY al.resolved ASC, al.hit_count DESC, al.updated_at DESC
+    ORDER BY al.resolved ASC, al.updated_at DESC, al.hit_count DESC
     LIMIT ${Number(limit) || 500}`;
   return all(sql, ...params);
 }
@@ -163,6 +163,7 @@ module.exports = {
   normalize,
   extractCode,
   resolveAsset,
+  bumpAlias,
   linkAlias,
   pendingAliases,
   findOrCreateAsset,

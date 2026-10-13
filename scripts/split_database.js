@@ -14,6 +14,9 @@ const CORE_TABLES = [
   'store_items', 'item_categories', 'stock_items', 'products', 'product_prices',
   'oil_list', 'oil_type_prices', 'lubricant_aliases', 'filter_catalogue',
   'filter_category_list', 'filter_xrefs', 'filter_prices', 'tyre_battery_prices',
+  'vehicle_doc_types', 'vehicle_documents', 'vehicle_doc_versions',
+  'vehicle_doc_attachments', 'vehicle_renewal_tasks', 'vehicle_doc_reminders',
+  'store_locations', 'store_location_access', 'store_location_mappings',
   'audit_log', 'stand_in_delegations', 'idempotency_keys'
 ];
 
@@ -59,7 +62,23 @@ const WS_REWRITTEN_TRIGGERS = {
   trg_mrn_workshop: `CREATE TRIGGER trg_mrn_workshop AFTER INSERT ON mrn WHEN NEW.workshop_id IS NULL BEGIN UPDATE mrn SET workshop_id = COALESCE((SELECT j.workshop_id FROM job_cards j WHERE j.id = NEW.job_id), (SELECT workshop_id FROM ws_meta LIMIT 1)) WHERE id = NEW.id; END;`,
   trg_grn_store: `CREATE TRIGGER trg_grn_store AFTER INSERT ON grn WHEN NEW.store_id IS NULL BEGIN UPDATE grn SET store_id = COALESCE((SELECT store_id FROM ws_meta LIMIT 1), (SELECT workshop_id FROM ws_meta LIMIT 1)) WHERE id = NEW.id; END;`,
   trg_tyre_battery_issues_store: `CREATE TRIGGER trg_tyre_battery_issues_store AFTER INSERT ON tyre_battery_issues WHEN NEW.store_id IS NULL BEGIN UPDATE tyre_battery_issues SET store_id = COALESCE((SELECT store_id FROM ws_meta LIMIT 1), (SELECT workshop_id FROM ws_meta LIMIT 1)) WHERE id = NEW.id; END;`,
-  trg_min_notes_ws: `CREATE TRIGGER trg_min_notes_ws AFTER INSERT ON min_notes WHEN NEW.workshop_id IS NULL BEGIN UPDATE min_notes SET workshop_id = COALESCE((SELECT j.workshop_id FROM job_cards j WHERE j.id = NEW.job_id), (SELECT workshop_id FROM ws_meta LIMIT 1)) WHERE id = NEW.id; END;`
+  trg_min_notes_ws: `CREATE TRIGGER trg_min_notes_ws AFTER INSERT ON min_notes WHEN NEW.workshop_id IS NULL BEGIN UPDATE min_notes SET workshop_id = COALESCE((SELECT j.workshop_id FROM job_cards j WHERE j.id = NEW.job_id), (SELECT workshop_id FROM ws_meta LIMIT 1)) WHERE id = NEW.id; END;`,
+  trg_issues_phys_store: `CREATE TRIGGER trg_issues_phys_store AFTER INSERT ON issues WHEN NEW.physical_store_id IS NULL BEGIN UPDATE issues SET physical_store_id = (SELECT physical_store_id FROM ws_meta LIMIT 1) WHERE id = NEW.id; END;`,
+  trg_issues_leg_store: `CREATE TRIGGER trg_issues_leg_store AFTER INSERT ON issues WHEN NEW.store_id IS NULL BEGIN UPDATE issues SET store_id = COALESCE((SELECT store_id FROM ws_meta LIMIT 1), (SELECT workshop_id FROM ws_meta LIMIT 1), 1) WHERE id = NEW.id; END;`,
+  trg_general_item_txns_phys_store: `CREATE TRIGGER trg_general_item_txns_phys_store AFTER INSERT ON general_item_txns WHEN NEW.physical_store_id IS NULL BEGIN UPDATE general_item_txns SET physical_store_id = (SELECT physical_store_id FROM ws_meta LIMIT 1) WHERE id = NEW.id; END;`,
+  trg_general_item_txns_leg_store: `CREATE TRIGGER trg_general_item_txns_leg_store AFTER INSERT ON general_item_txns WHEN NEW.store_id IS NULL BEGIN UPDATE general_item_txns SET store_id = COALESCE((SELECT store_id FROM ws_meta LIMIT 1), (SELECT workshop_id FROM ws_meta LIMIT 1), 1) WHERE id = NEW.id; END;`,
+  trg_stock_ledger_phys_store: `CREATE TRIGGER trg_stock_ledger_phys_store AFTER INSERT ON stock_ledger WHEN NEW.physical_store_id IS NULL BEGIN UPDATE stock_ledger SET physical_store_id = (SELECT physical_store_id FROM ws_meta LIMIT 1) WHERE id = NEW.id; END;`,
+  trg_stock_ledger_leg_store: `CREATE TRIGGER trg_stock_ledger_leg_store AFTER INSERT ON stock_ledger WHEN NEW.store_id IS NULL BEGIN UPDATE stock_ledger SET store_id = COALESCE((SELECT store_id FROM ws_meta LIMIT 1), (SELECT workshop_id FROM ws_meta LIMIT 1), 1) WHERE id = NEW.id; END;`,
+  trg_grn_phys_store: `CREATE TRIGGER trg_grn_phys_store AFTER INSERT ON grn WHEN NEW.physical_store_id IS NULL BEGIN UPDATE grn SET physical_store_id = (SELECT physical_store_id FROM ws_meta LIMIT 1) WHERE id = NEW.id; END;`,
+  trg_grn_leg_store: `CREATE TRIGGER trg_grn_leg_store AFTER INSERT ON grn WHEN NEW.store_id IS NULL BEGIN UPDATE grn SET store_id = COALESCE((SELECT store_id FROM ws_meta LIMIT 1), (SELECT workshop_id FROM ws_meta LIMIT 1), 1) WHERE id = NEW.id; END;`,
+  trg_tyre_battery_issues_phys_store: `CREATE TRIGGER trg_tyre_battery_issues_phys_store AFTER INSERT ON tyre_battery_issues WHEN NEW.physical_store_id IS NULL BEGIN UPDATE tyre_battery_issues SET physical_store_id = (SELECT physical_store_id FROM ws_meta LIMIT 1) WHERE id = NEW.id; END;`,
+  trg_tyre_battery_issues_leg_store: `CREATE TRIGGER trg_tyre_battery_issues_leg_store AFTER INSERT ON tyre_battery_issues WHEN NEW.store_id IS NULL BEGIN UPDATE tyre_battery_issues SET store_id = COALESCE((SELECT store_id FROM ws_meta LIMIT 1), (SELECT workshop_id FROM ws_meta LIMIT 1), 1) WHERE id = NEW.id; END;`,
+  trg_service_jobs_phys_store: `CREATE TRIGGER trg_service_jobs_phys_store AFTER INSERT ON service_jobs WHEN NEW.physical_store_id IS NULL BEGIN UPDATE service_jobs SET physical_store_id = (SELECT physical_store_id FROM ws_meta LIMIT 1) WHERE id = NEW.id; END;`,
+  trg_service_jobs_leg_store: `CREATE TRIGGER trg_service_jobs_leg_store AFTER INSERT ON service_jobs WHEN NEW.store_id IS NULL BEGIN UPDATE service_jobs SET store_id = COALESCE((SELECT store_id FROM ws_meta LIMIT 1), (SELECT workshop_id FROM ws_meta LIMIT 1), 1) WHERE id = NEW.id; END;`,
+  trg_store_counts_phys_store: `CREATE TRIGGER trg_store_counts_phys_store AFTER INSERT ON store_counts WHEN NEW.physical_store_id IS NULL BEGIN UPDATE store_counts SET physical_store_id = (SELECT physical_store_id FROM ws_meta LIMIT 1) WHERE id = NEW.id; END;`,
+  trg_store_counts_leg_store: `CREATE TRIGGER trg_store_counts_leg_store AFTER INSERT ON store_counts WHEN NEW.store_id IS NULL BEGIN UPDATE store_counts SET store_id = COALESCE((SELECT store_id FROM ws_meta LIMIT 1), (SELECT workshop_id FROM ws_meta LIMIT 1), 1) WHERE id = NEW.id; END;`,
+  trg_stock_moves_phys_store: `CREATE TRIGGER trg_stock_moves_phys_store AFTER INSERT ON stock_moves WHEN NEW.physical_store_id IS NULL BEGIN UPDATE stock_moves SET physical_store_id = (SELECT physical_store_id FROM ws_meta LIMIT 1) WHERE id = NEW.id; END;`,
+  trg_stock_moves_leg_store: `CREATE TRIGGER trg_stock_moves_leg_store AFTER INSERT ON stock_moves WHEN NEW.store_id IS NULL BEGIN UPDATE stock_moves SET store_id = COALESCE((SELECT store_id FROM ws_meta LIMIT 1), (SELECT workshop_id FROM ws_meta LIMIT 1), 1) WHERE id = NEW.id; END;`
 };
 
 function stripCoreForeignKeys(sql, coreSet) {
@@ -235,6 +254,7 @@ function splitDatabase(sourceDbPath, targetDir, { dryRun = false } = {}) {
       code        TEXT NOT NULL UNIQUE,
       name        TEXT NOT NULL,
       store_id    INTEGER,
+      physical_store_id INTEGER,
       created_at  TEXT NOT NULL DEFAULT (datetime('now'))
     );
   `);
@@ -294,7 +314,7 @@ function splitDatabase(sourceDbPath, targetDir, { dryRun = false } = {}) {
   console.log(`Populated ${openJobs.length} active vehicle holds in core.db`);
 
   console.log('\n--- Copying Data to CW.db ---');
-  cwDb.prepare(`INSERT INTO ws_meta (workshop_id, code, name, store_id) VALUES (1, 'CW', 'Central Workshop - Badalgama', 1)`).run();
+  cwDb.prepare(`INSERT INTO ws_meta (workshop_id, code, name, store_id, physical_store_id) VALUES (1, 'CW', 'Central Workshop - Badalgama', 1, 2)`).run();
 
   for (const name of WS_TABLES) {
     const cols = getInsertableColumns(srcDb, name);

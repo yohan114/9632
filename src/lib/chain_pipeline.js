@@ -256,7 +256,7 @@ function recordDeliveryDiscrepancy(params, user) {
   });
 
   audit.record({
-    userId: reportedUserId || 1,
+    userId: reportedUserId || null,
     entity: 'delivery_discrepancy',
     entityId: discId,
     action: 'log_short_delivery',

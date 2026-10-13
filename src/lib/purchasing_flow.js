@@ -54,9 +54,11 @@ const LINE_COLS = `
   l.invoice_date, l.purchase_amount,
   l.source_changed_at, l.source_changed_by, l.source_changed_reason, l.source_changed_from,
   l.buying_priority, l.priority_note, l.priority_updated_at, l.priority_updated_by,
+  l.target_store_location_id,
   m.mrn_no, m.req_date, m.required_date, m.requested_by, m.purpose, m.approval_status,
-  m.purchase_requested_at, m.job_id, m.workshop_id,
+  m.purchase_requested_at, m.job_id, m.workshop_id, m.target_store_location_id AS mrn_target_store_location_id,
   w.code AS workshop_code, w.name AS workshop_name,
+  tsl.code AS target_store_code, tsl.name AS target_store_name, tsl.store_type AS target_store_type,
   a.id AS asset_id, a.code AS asset_code, a.registration AS asset_reg,
   j.job_no,
   (SELECT COUNT(*) FROM mrn_line_invoices i WHERE i.mrn_line_id = l.id) AS invoice_images,
@@ -66,12 +68,13 @@ const LINE_FROM = `
   FROM mrn_lines l
   JOIN mrn m ON m.id = l.mrn_id
   LEFT JOIN workshops w ON w.id = m.workshop_id
+  LEFT JOIN store_locations tsl ON tsl.id = COALESCE(l.target_store_location_id, m.target_store_location_id)
   LEFT JOIN assets a ON a.id = m.asset_id
   LEFT JOIN job_cards j ON j.id = m.job_id`;
 
 /**
  * Road milestone representation:
- *   Approved -> Assigned -> Prioritized -> Ordered -> Received -> Priced
+ *   Approved -> Assigned -> Destination -> Prioritized -> Ordered -> Received -> Priced
  */
 function roadOf(x) {
   const isApproved = x.approval_status === 'approved' || x.purchase_requested_at != null;
@@ -85,9 +88,12 @@ function roadOf(x) {
   if (isBought) orderState = 'done';
   else if (isApproved && isAssigned) orderState = 'now';
 
+  const destName = x.target_store_name || (x.purchase_source === 'head_office' ? 'Central Main Store' : (x.workshop_name ? x.workshop_name + ' Store' : 'Main Workshop Store'));
+
   return [
     { key: 'approved', label: 'Approved', state: isApproved ? 'done' : 'now' },
     { key: 'assigned', label: isAssigned ? (CHANNEL_LABEL[x.purchase_source] || 'Assigned') : 'Assign Channel', state: isAssigned ? 'done' : 'now' },
+    { key: 'destination', label: destName, state: x.target_store_name ? 'done' : 'part' },
     { key: 'priority', label: PRIORITY_LABELS[x.buying_priority] || 'Routine', state: isPrioritized ? 'done' : 'part' },
     { key: 'ordered', label: 'Ordered', state: orderState },
     { key: 'received', label: 'Received', state: isReceived },

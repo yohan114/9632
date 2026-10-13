@@ -14,7 +14,7 @@ const router = express.Router();
 const MUTABLE = [
   'registration', 'ec_code', 'brand', 'type', 'model_no', 'capacity', 'yom',
   'serial_no', 'chassis_no', 'engine_no', 'asset_class', 'home_project_id',
-  'current_project_id', 'status', 'running_hours', 'notes',
+  'current_project_id', 'status', 'running_hours', 'notes', 'in_register',
 ];
 
 // Columns that must hold a number or nothing. An HTML <select>/<input> that the user left
@@ -182,12 +182,32 @@ router.post('/', requireCap('assets.create'), asyncHandler((req, res) => {
   require_(b, ['code']);
   const norm = aliases.normalize(b.code);
   if (get('SELECT id FROM assets WHERE code_norm = ?', norm)) return res.status(409).json({ error: 'Asset code already exists' });
-  const given = MUTABLE.filter((c) => b[c] !== undefined);
-  const cols = ['code', 'code_norm', ...given];
-  const vals = [b.code, norm, ...given.map((c) => cleanValue(c, b[c]))];
+
+  // Default in_register to 1 when adding an asset manually from UI/API unless explicitly set to 0
+  const inRegister = b.in_register !== undefined ? (Number(b.in_register) ? 1 : 0) : 1;
+  const given = MUTABLE.filter((c) => c !== 'in_register' && b[c] !== undefined);
+  const cols = ['code', 'code_norm', 'in_register', ...given];
+  const vals = [b.code, norm, inRegister, ...given.map((c) => cleanValue(c, b[c]))];
   const info = run(`INSERT INTO assets (${cols.join(',')}) VALUES (${cols.map(() => '?').join(',')})`, ...vals);
-  audit.record({ userId: req.user.id, entity: 'asset', entityId: info.lastInsertRowid, action: 'create', after: { code: b.code } });
-  res.status(201).json(get('SELECT * FROM assets WHERE id = ?', info.lastInsertRowid));
+  const newAssetId = info.lastInsertRowid;
+
+  // Auto-resolve any pending aliases that match the new asset's code or registration
+  const regNorm = b.registration ? aliases.normalize(b.registration) : null;
+  const pending = all(
+    'SELECT id FROM asset_aliases WHERE (raw_norm = ? OR (raw_norm = ? AND ? IS NOT NULL)) AND resolved = 0',
+    norm, regNorm, regNorm
+  );
+  for (const p of pending) {
+    aliases.linkAlias(p.id, newAssetId);
+  }
+  // Record canonical code and registration aliases as resolved
+  aliases.bumpAlias(norm, b.code, newAssetId, true, 'manual');
+  if (regNorm && regNorm !== norm) {
+    aliases.bumpAlias(regNorm, b.registration, newAssetId, true, 'manual');
+  }
+
+  audit.record({ userId: req.user.id, entity: 'asset', entityId: newAssetId, action: 'create', after: { code: b.code, in_register: inRegister } });
+  res.status(201).json(get('SELECT * FROM assets WHERE id = ?', newAssetId));
 }));
 
 router.patch('/:id', requireCap('assets.edit'), asyncHandler((req, res) => {
@@ -212,6 +232,25 @@ router.patch('/:id', requireCap('assets.edit'), asyncHandler((req, res) => {
   const after = get('SELECT * FROM assets WHERE id = ?', id);
   audit.record({ userId: req.user.id, entity: 'asset', entityId: id, action: 'update', before, after });
   res.json(after);
+}));
+
+// Vehicle documents & statutory renewal compliance (Phase 3)
+router.get('/:id/documents', requireCap('vehicle_docs.view'), asyncHandler((req, res) => {
+  const id = toInt(req.params.id);
+  const asset = get('SELECT id FROM assets WHERE id = ?', id);
+  if (!asset) return res.status(404).json({ error: 'Asset not found' });
+  const today = req.query.today ? String(req.query.today).trim() : undefined;
+  const docs = require('../lib/vehicle_documents').getVehicleDocuments(id, { today });
+  res.json(docs);
+}));
+
+router.get('/:id/erl-checklist', requireCap('vehicle_docs.view'), asyncHandler((req, res) => {
+  const id = toInt(req.params.id);
+  const asset = get('SELECT id FROM assets WHERE id = ?', id);
+  if (!asset) return res.status(404).json({ error: 'Asset not found' });
+  const targetDate = req.query.targetDate || req.query.target_date;
+  const evaluation = require('../lib/vehicle_documents').evaluateErlChecklist(id, { targetDate });
+  res.json(evaluation);
 }));
 
 module.exports = router;

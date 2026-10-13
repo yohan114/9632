@@ -28,6 +28,14 @@ die()  { printf '\n  **  %s\n\n' "$*" >&2; exit 1; }
 [ -d "$APP/.git" ]   || die "No git checkout at $APP"
 
 # ---------------------------------------------------------------------------
+if [ "${1:-}" != "--now" ] && [ "${1:-}" != "--skip-notice" ]; then
+  say "0. Broadcasting 2-minute maintenance alert to active users"
+  sudo -u "$USER" bash -c "cd $APP && PORT=$PORT node scripts/broadcast_maintenance.js 120 'The system will update in 2 minutes. Please save all files, complete tasks, and log out now.'" || true
+else
+  ok "Immediate update requested (--now): skipping 2-minute notice"
+fi
+
+# ---------------------------------------------------------------------------
 say "1. Backing up first"
 # Not optional. Migrations are additive and have never dropped anything, but "never so far" is not
 # a reason to skip the thirty seconds this takes when the alternative is the workshop's history.

@@ -133,21 +133,82 @@ function storeAtPlace(placeKey, date) {
   return storeOf(Number(m[1]), date);
 }
 
+/** The physical store location at one end of a transfer: 'loc:<id>' / 'sl:<id>' or workshop 'w:<id>'. */
+function physicalLocationAtPlace(placeKey) {
+  const s = String(placeKey || '').trim();
+  const mLoc = /^(?:loc|sl):(\d+)$/i.exec(s);
+  if (mLoc) return Number(mLoc[1]);
+  const mWs = /^w:(\d+)$/i.exec(s);
+  if (mWs) {
+    try {
+      const storeLocations = require('./store_locations');
+      const p = storeLocations.resolvePhysicalStore(Number(mWs[1]));
+      return p ? p.id : null;
+    } catch {}
+  }
+  return null;
+}
+
 /**
  * Stamp each item of a transfer note with the two stores it moves between. A line's own ends win
  * over the note's. Only a move between two DIFFERENT stores moves stock; anything else — to a
  * site, to a machine, between two workshops sharing one store — stays a paper record, as before.
  */
 function stampTransfer(mtnId) {
-  const t = get('SELECT id, txn_date, from_place, to_place FROM mtn WHERE id = ?', mtnId);
+  const t = get('SELECT id, txn_date, from_place, to_place, from_store_location_id, to_store_location_id FROM mtn WHERE id = ?', mtnId);
   if (!t) return;
   const date = String(t.txn_date || '').slice(0, 10);
-  for (const l of all('SELECT id, from_place, to_place FROM mtn_lines WHERE mtn_id = ?', mtnId)) {
-    const from = storeAtPlace(l.from_place || t.from_place, date);
-    const to = storeAtPlace(l.to_place || t.to_place, date);
+  let storeLocations;
+  try { storeLocations = require('./store_locations'); } catch {}
+
+  const headerFromLoc = t.from_store_location_id || physicalLocationAtPlace(t.from_place);
+  const headerToLoc = t.to_store_location_id || physicalLocationAtPlace(t.to_place);
+
+  for (const l of all('SELECT id, from_place, to_place, from_store_location_id, to_store_location_id FROM mtn_lines WHERE mtn_id = ?', mtnId)) {
+    let from = storeAtPlace(l.from_place || t.from_place, date);
+    let to = storeAtPlace(l.to_place || t.to_place, date);
+
+    let fromLoc = l.from_store_location_id || physicalLocationAtPlace(l.from_place) || headerFromLoc;
+    let toLoc = l.to_store_location_id || physicalLocationAtPlace(l.to_place) || headerToLoc;
+
+    if (storeLocations) {
+      if (fromLoc && !from) {
+        from = storeLocations.resolveLegacyStoreId(fromLoc);
+      }
+      if (toLoc && !to) {
+        to = storeLocations.resolveLegacyStoreId(toLoc);
+      }
+      if (from && !fromLoc) {
+        const p = storeLocations.resolvePhysicalStore(from);
+        if (p) fromLoc = p.id;
+      }
+      if (to && !toLoc) {
+        const p = storeLocations.resolvePhysicalStore(to);
+        if (p) toLoc = p.id;
+      }
+    }
+
     const moves = from && to && from !== to;
-    run('UPDATE mtn_lines SET from_store_id = ?, to_store_id = ? WHERE id = ?', moves ? from : null, moves ? to : null, l.id);
+    const movesLoc = fromLoc && toLoc && fromLoc !== toLoc;
+
+    run(
+      'UPDATE mtn_lines SET from_store_id = ?, to_store_id = ?, from_store_location_id = ?, to_store_location_id = ? WHERE id = ?',
+      moves ? from : null,
+      moves ? to : null,
+      movesLoc ? fromLoc : null,
+      movesLoc ? toLoc : null,
+      l.id
+    );
   }
+
+  try {
+    run(`
+      UPDATE mtn
+         SET from_store_location_id = COALESCE(from_store_location_id, (SELECT from_store_location_id FROM mtn_lines WHERE mtn_id = mtn.id AND from_store_location_id IS NOT NULL LIMIT 1)),
+             to_store_location_id = COALESCE(to_store_location_id, (SELECT to_store_location_id FROM mtn_lines WHERE mtn_id = mtn.id AND to_store_location_id IS NOT NULL LIMIT 1))
+       WHERE id = ?
+    `, mtnId);
+  } catch {}
 }
 
 /**

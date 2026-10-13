@@ -6,13 +6,13 @@ const os = require('os');
 const path = require('path');
 const fs = require('fs');
 
-const TEST_DB = path.join(os.tmpdir(), `workshopone-evidence-photos-${Date.now()}.db`);
-for (const s of ['', '-shm', '-wal']) { try { fs.unlinkSync(TEST_DB + s); } catch {} }
+const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'wo-photos-'));
+const TEST_DB = path.join(TMP, 'workshopone-evidence-photos.db');
 process.env.DB_PATH = TEST_DB;
 process.env.BACKUP_INTERVAL_MINUTES = '0';
 
 // Configure test upload directory
-const TEST_UPLOAD_DIR = path.join(os.tmpdir(), `workshopone-uploads-${Date.now()}`);
+const TEST_UPLOAD_DIR = path.join(TMP, 'uploads');
 fs.mkdirSync(TEST_UPLOAD_DIR, { recursive: true });
 process.env.UPLOAD_DIR = TEST_UPLOAD_DIR;
 

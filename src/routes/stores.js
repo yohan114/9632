@@ -38,6 +38,98 @@ const chainPipeline = require('../lib/chain_pipeline');
 const fs = require('fs');
 const evidencePhotos = require('../lib/evidence_photos');
 const reorderRebalance = require('../lib/reorder_rebalance');
+const storeLocations = require('../lib/store_locations');
+
+/**
+ * Resolve the receiving physical store ID for any GRN receipt (Step 3: Purchasing & GRN Routing).
+ * Rules:
+ * 1. Explicit physical_store_id or store_location_id provided -> validate and use.
+ * 2. mrn_line or mrn target_store_location_id -> validate and use.
+ * 3. purchase_source:
+ *    - 'head_office' without direct_delivery -> Central Main Store (MAIN-STORES, id = 1).
+ *    - 'local_purchase' or direct_delivery -> Requesting workshop store (MAIN-WORKSHOP, id = 2, or site workshop store).
+ * 4. Fallback -> Central Main Workshop Store (MAIN-WORKSHOP, id = 2).
+ */
+function resolveGrnPhysicalStoreId(opts = {}) {
+  const { physicalStoreId, storeLocationId, mrnId, mrnLineId, purchaseSource, directDelivery } = opts;
+  let pId = physicalStoreId != null && physicalStoreId !== '' ? toInt(physicalStoreId) : null;
+  if (!pId && storeLocationId != null && storeLocationId !== '') {
+    pId = toInt(storeLocationId);
+  }
+
+  // If explicit ID was provided, verify it exists and is active
+  if (pId) {
+    try {
+      const loc = storeLocations.getStoreLocationById(pId);
+      if (loc && loc.active) return pId;
+    } catch {}
+  }
+
+  // 1. Check mrn_line target destination
+  if (mrnLineId) {
+    try {
+      const ml = get('SELECT target_store_location_id FROM mrn_lines WHERE id = ?', toInt(mrnLineId));
+      if (ml && ml.target_store_location_id) {
+        const loc = storeLocations.getStoreLocationById(ml.target_store_location_id);
+        if (loc && loc.active) return loc.id;
+      }
+    } catch {}
+  }
+
+  // 2. Check mrn target destination
+  if (mrnId) {
+    try {
+      const m = get('SELECT target_store_location_id, workshop_id FROM mrn WHERE id = ?', toInt(mrnId));
+      if (m && m.target_store_location_id) {
+        const loc = storeLocations.getStoreLocationById(m.target_store_location_id);
+        if (loc && loc.active) return loc.id;
+      }
+    } catch {}
+  }
+
+  // 3. Purchase source / supply route routing:
+  const isDirect = Boolean(directDelivery);
+  const src = purchaseSource || null;
+
+  if (src === 'head_office' && !isDirect) {
+    // Central purchases go to Central Main Store (1 / MAIN-STORES)
+    try {
+      const ms = storeLocations.getStoreLocationByCode('MAIN-STORES');
+      if (ms && ms.active) return ms.id;
+    } catch {}
+    return 1;
+  }
+
+  if (src === 'local_purchase' || isDirect) {
+    // Local workshop purchases or direct deliveries route to requesting workshop store
+    let wsId = null;
+    try {
+      if (mrnId) {
+        const m = get('SELECT workshop_id FROM mrn WHERE id = ?', toInt(mrnId));
+        if (m) wsId = m.workshop_id;
+      } else if (mrnLineId) {
+        const ml = get('SELECT m.workshop_id FROM mrn_lines l JOIN mrn m ON m.id = l.mrn_id WHERE l.id = ?', toInt(mrnLineId));
+        if (ml) wsId = ml.workshop_id;
+      }
+      if (wsId) {
+        const wsStore = storeLocations.resolvePhysicalStore(wsId);
+        if (wsStore && wsStore.active) return wsStore.id;
+      }
+    } catch {}
+    try {
+      const mws = storeLocations.getStoreLocationByCode('MAIN-WORKSHOP');
+      if (mws && mws.active) return mws.id;
+    } catch {}
+    return 2;
+  }
+
+  // 4. Fallback default: Main Workshop Stores (2 / MAIN-WORKSHOP) for legacy compatibility
+  try {
+    const mws = storeLocations.getStoreLocationByCode('MAIN-WORKSHOP');
+    if (mws && mws.active) return mws.id;
+  } catch {}
+  return 2;
+}
 
 // One cell's worth of "when did this arrive", for a sheet or a printout. A spreadsheet has no
 // tooltip, so whatever the hover would have said has to be in the cell itself.
@@ -861,15 +953,23 @@ router.post('/mrn', requireCap('stores.mrn.create'), chainPipeline.idempotencyGu
   // Record the requesting storekeeper (also marks this as a live, in-flow MRN vs imported history).
   const ru = get('SELECT full_name, username FROM users WHERE id = ?', req.user.id);
   const reqBy = String(b.requested_by || '').trim() || (ru ? (ru.full_name || ru.username) : null);
+  const targetStoreLocationId = b.target_store_location_id != null && b.target_store_location_id !== ''
+    ? toInt(b.target_store_location_id)
+    : null;
+  const reqWsId = require('../lib/workshops').forRequest(req.user, jobId);
+  const targetLoc = targetStoreLocationId ? storeLocations.getStoreLocation(targetStoreLocationId) : null;
+  const isSiteReq = (targetLoc && targetLoc.store_type === 'SITE_STORE') || (reqWsId && reqWsId !== 1);
+  const initialSiteAuth = b.site_authority_status || (isSiteReq ? 'pending' : 'approved');
+
   const result = tx(() => {
     const info = run(
-      `INSERT INTO mrn (mrn_no, req_date, asset_id, project_id, job_id, purpose, requested_by, purchase_source, required_date, request_type, workshop_id, raised_by_user, chain_no)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO mrn (mrn_no, req_date, asset_id, project_id, job_id, purpose, requested_by, purchase_source, required_date, request_type, workshop_id, raised_by_user, chain_no, target_store_location_id, site_authority_status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       mrnNo, reqDate, assetId || null,
       toInt(b.project_id), jobId, b.purpose || null, reqBy, source, b.required_date || null, requestType,
-      require('../lib/workshops').forRequest(req.user, jobId),
+      reqWsId,
       req.user.id,   // Step 3a: who raised it — they do not certify or approve it
-      chainNo
+      chainNo, targetStoreLocationId, initialSiteAuth
     );
     const mrnId = info.lastInsertRowid;
     const lines = Array.isArray(b.lines) ? b.lines : [];
@@ -884,8 +984,11 @@ router.post('/mrn', requireCap('stores.mrn.create'), chainPipeline.idempotencyGu
       const ls = (route === 'head_office' || route === 'local_purchase') ? route : (PURCHASE_SOURCES.includes(l.purchase_source) ? l.purchase_source : (source || null));
       if (ls) lineSrcs.add(ls);
       const line = itemLine(l);
-      run('INSERT INTO mrn_lines (mrn_id, store_item_id, description, qty, unit, category, category_id, purchase_source, supply_route) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-        mrnId, line.store_item_id, line.description, toNum(l.qty, 0), line.unit, line.category, line.category_id, ls, route);
+      const lineTargetLoc = l.target_store_location_id != null && l.target_store_location_id !== ''
+        ? toInt(l.target_store_location_id)
+        : targetStoreLocationId;
+      run('INSERT INTO mrn_lines (mrn_id, store_item_id, description, qty, unit, category, category_id, purchase_source, supply_route, target_store_location_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        mrnId, line.store_item_id, line.description, toNum(l.qty, 0), line.unit, line.category, line.category_id, ls, route, lineTargetLoc);
     }
     // Header source = the single source if every line agrees, else leave the given/default.
     if (lineSrcs.size === 1) run('UPDATE mrn SET purchase_source = ? WHERE id = ?', [...lineSrcs][0], mrnId);
@@ -921,10 +1024,13 @@ router.get('/mrn/:id', asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   { const no = scope.mrnRefusal(req.user, id); if (no) return res.status(403).json(no); }
   const mrn = get(`SELECT m.*, a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec,
-                          j.job_no, j.status AS job_status, w.name AS workshop_name
+                          j.job_no, j.status AS job_status, w.name AS workshop_name,
+                          sl.name AS target_store_name, sl.code AS target_store_code
                      FROM mrn m LEFT JOIN assets a ON a.id = m.asset_id
                      LEFT JOIN job_cards j ON j.id = m.job_id
-                     LEFT JOIN workshops w ON w.id = m.workshop_id WHERE m.id = ?`, id);
+                     LEFT JOIN workshops w ON w.id = m.workshop_id
+                     LEFT JOIN store_locations sl ON sl.id = m.target_store_location_id
+                    WHERE m.id = ?`, id);
   if (!mrn) return res.status(404).json({ error: 'MRN not found' });
   // Its estimated value, and whether the viewer's approval limit covers it — for whoever approves.
   let worth = null;
@@ -932,8 +1038,21 @@ router.get('/mrn/:id', asyncHandler((req, res) => {
     const v = approvalLimits.mrnValue(id);
     worth = { value: v.value, unpriced: v.unpriced, limit: approvalLimits.check(req.user, 'mrn_approve', v.value) };
   }
-  const lines = all(`SELECT ml.*, ${lineReceiptSql('ml.id')}, (SELECT mtn_no FROM mtn WHERE mtn.id = ml.auto_mtn_id) AS auto_mtn_no FROM mrn_lines ml WHERE ml.mrn_id = ? ORDER BY ml.id`, id);
+  const lines = all(`
+    SELECT ml.*, sl.name AS target_store_name, sl.code AS target_store_code,
+           src_loc.name AS source_store_name, src_loc.code AS source_store_code,
+           ${lineReceiptSql('ml.id')},
+           (SELECT mtn_no FROM mtn WHERE mtn.id = ml.auto_mtn_id) AS auto_mtn_no,
+           (SELECT mrn_no FROM mrn WHERE mrn.id = ml.child_mrn_id) AS child_mrn_no,
+           (SELECT mrn_no FROM mrn WHERE mrn.id = (SELECT mrn_id FROM mrn_lines WHERE id = ml.parent_mrn_line_id)) AS parent_mrn_no
+      FROM mrn_lines ml
+      LEFT JOIN store_locations sl ON sl.id = ml.target_store_location_id
+      LEFT JOIN store_locations src_loc ON src_loc.id = ml.source_store_location_id
+     WHERE ml.mrn_id = ?
+     ORDER BY ml.id
+  `, id);
   const grns = all('SELECT * FROM grn WHERE mrn_id = ? ORDER BY id', id);
+  const mtns = all('SELECT id, mtn_no, from_store_location_id, to_store_location_id, from_location, to_location, status, txn_date, chain_no FROM mtn WHERE mrn_id = ? ORDER BY id', id);
   const lineIds = lines.map((l) => l.id);
   const grnIds = grns.map((g) => g.id);
   const linePhotoMap = evidencePhotos.getBatchPhotos('mrn_line', lineIds);
@@ -944,11 +1063,18 @@ router.get('/mrn/:id', asyncHandler((req, res) => {
   for (const g of grns) {
     g.photos = grnPhotoMap.get(g.id) || [];
   }
+
+  const parentMrn = mrn.parent_mrn_id ? get('SELECT id, mrn_no, purpose, status, approval_status FROM mrn WHERE id = ?', mrn.parent_mrn_id) : null;
+  const childMrns = all('SELECT id, mrn_no, purpose, status, approval_status, replenishment_type FROM mrn WHERE parent_mrn_id = ? ORDER BY id', id);
+
   res.json({
     mrn,
     worth,
     lines,
+    mtns,
     grns,
+    parent_mrn: parentMrn,
+    child_mrns: childMrns,
     approvals: all('SELECT a.*, u.username FROM mrn_approvals a LEFT JOIN users u ON u.id = a.approver_id WHERE a.mrn_id = ? ORDER BY a.id', id),
   });
 }));
@@ -1011,14 +1137,38 @@ router.post('/mrn/:id/approve', requireCap('stores.mrn.approve'), asyncHandler((
   }
   const s = signer(req.user.id, actingFor); const sig = req.body.signature || s.sig || null;
   const appRole = actingFor ? 'stand_in' : ((isAdmin(req.user) || req.user.roles.includes('operational_manager')) ? 'operational_manager' : 'manager');
+  const lineApprovals = Array.isArray(req.body.lines) ? req.body.lines : null;
   tx(() => {
     run(`UPDATE mrn SET approval_status = 'approved', approved_by = ?, approved_at = datetime('now'), approved_sig = ? WHERE id = ?`, s.name, sig, id);
     run(`INSERT INTO mrn_approvals (mrn_id, stage, role, approver_id, signed_name, signature, decision, reason) VALUES (?, 'approve', ?, ?, ?, ?, 'approved', ?)`, id, appRole, req.user.id, s.name, sig, req.body.reason || null);
+    if (lineApprovals) {
+      for (const la of lineApprovals) {
+        const lid = toInt(la.id || la.line_id);
+        if (lid) {
+          const qApp = la.qty_approved !== undefined ? Math.max(0, Number(la.qty_approved) || 0) : null;
+          if (qApp !== null) {
+            const lRow = get('SELECT qty FROM mrn_lines WHERE id = ? AND mrn_id = ?', lid, id);
+            const reqQ = lRow ? (Number(lRow.qty) || 0) : qApp;
+            const outQ = Math.max(0, reqQ - qApp);
+            run('UPDATE mrn_lines SET qty_approved = ?, qty_outstanding = ? WHERE id = ?', qApp, outQ, lid);
+          }
+        }
+      }
+    }
     supplyRoutes.onMrnApproved(id, req.user);
   });
   audit.record({ userId: req.user.id, entity: 'mrn', entityId: id, action: 'approve', after: { approved_by: s.name, stand_in_for: actingFor ? actingFor.id : null }, reason: req.body.reason });
   emitter.emit('request_updated', { mrn_id: id, action: 'approve', approval_status: 'approved' });
   res.json(get('SELECT * FROM mrn WHERE id = ?', id));
+}));
+
+router.get('/mrn/:id/availability', requireAuth, asyncHandler((req, res) => {
+  const id = toInt(req.params.id);
+  { const no = scope.mrnRefusal(req.user, id); if (no) return res.status(403).json(no); }
+  const mrn = get('SELECT * FROM mrn WHERE id = ?', id);
+  if (!mrn) return res.status(404).json({ error: 'MRN not found' });
+  const avail = supplyRoutes.checkMainWorkshopAvailability(id);
+  res.json(avail || { mrn_id: id, overall_status: 'unavailable', lines: [] });
 }));
 
 router.post('/mrn/:id/reject', requireCap('stores.mrn.reject'), asyncHandler((req, res) => {
@@ -1039,6 +1189,46 @@ router.post('/mrn/:id/reject', requireCap('stores.mrn.reject'), asyncHandler((re
   audit.record({ userId: req.user.id, entity: 'mrn', entityId: id, action: 'reject', after: { by: s.name, stand_in_for: actingFor ? actingFor.id : null }, reason: req.body.reason });
   emitter.emit('request_updated', { mrn_id: id, action: 'reject', approval_status: 'rejected' });
   res.json(get('SELECT * FROM mrn WHERE id = ?', id));
+}));
+
+// ---- Phase A: Site Authority Demand Review Gate ------------------------------
+router.post('/mrn/:id/site-authority-review', requireAuth, asyncHandler((req, res) => {
+  const id = toInt(req.params.id);
+  { const no = scope.mrnRefusal(req.user, id); if (no) return res.status(403).json(no); }
+  const mrn = get('SELECT * FROM mrn WHERE id = ?', id);
+  if (!mrn) return res.status(404).json({ error: 'MRN not found' });
+
+  // Capability check: User must have stores.mrn.site_authority or be an authorized manager/engineer/admin
+  const canActAsSiteAuth = hasCap(req.user, 'stores.mrn.site_authority') ||
+    (req.user.roles && req.user.roles.some((r) => ['manager', 'operational_manager', 'workshop', 'engineer', 'transport_manager', 'admin'].includes(r)));
+  if (!canActAsSiteAuth) {
+    return res.status(403).json({ error: 'Only authorized Site Authority may review this site demand' });
+  }
+
+  // Segregation of duties: requester cannot approve their own site request (unless admin)
+  if (mrn.raised_by_user && Number(mrn.raised_by_user) === Number(req.user.id) && !isAdmin(req.user)) {
+    return res.status(403).json({ error: 'Segregation of duties: requester cannot act as Site Authority on their own demand' });
+  }
+
+  const decision = String(req.body.decision || '').toLowerCase().trim();
+  const notes = String(req.body.notes || req.body.reason || '').trim();
+
+  if (decision === 'rejected') {
+    if (!notes) return res.status(400).json({ error: 'A reason is required to reject site demand' });
+    const updated = supplyRoutes.onSiteAuthorityRejected(id, req.user, notes);
+    audit.record({ userId: req.user.id, entity: 'mrn', entityId: id, action: 'site_authority_reject', reason: notes });
+    emitter.emit('request_updated', { mrn_id: id, action: 'site_authority_reject', site_authority_status: 'rejected' });
+    return res.json(updated);
+  }
+
+  if (decision === 'approved') {
+    const updated = supplyRoutes.onSiteAuthorityApproved(id, req.user, { notes });
+    audit.record({ userId: req.user.id, entity: 'mrn', entityId: id, action: 'site_authority_approve', after: { notes } });
+    emitter.emit('request_updated', { mrn_id: id, action: 'site_authority_approve', site_authority_status: 'approved' });
+    return res.json(updated);
+  }
+
+  return res.status(400).json({ error: "decision must be either 'approved' or 'rejected'" });
 }));
 
 // ---- MRN Formal Closure & Reopen (Step 4c) ----------------------------------
@@ -1146,17 +1336,20 @@ router.post('/mrn/:id/lines', requireCap('stores.mrn.edit'), asyncHandler((req, 
     if (!chk.ok) return res.status(403).json({ error: chk.error });
   }
   const purchaseSrc = (route === 'head_office' || route === 'local_purchase') ? route : null;
+  const lineTargetLoc = req.body.target_store_location_id != null && req.body.target_store_location_id !== ''
+    ? toInt(req.body.target_store_location_id)
+    : (mrn.target_store_location_id || null);
   let recert = false;
   const info = tx(() => {
     const r = run(
       `INSERT INTO mrn_lines (mrn_id, store_item_id, description, qty, unit, category, category_id,
                               added_after_approval, added_by, added_at, added_reason,
-                              supply_route, qty_approved, purchase_source)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                              supply_route, qty_approved, purchase_source, target_store_location_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       id, line.store_item_id, line.description, qty, line.unit, line.category, line.category_id,
       approved ? 1 : 0, approved ? (req.user.username || null) : null,
       approved ? new Date().toISOString().slice(0, 16).replace('T', ' ') : null, approved ? reason : null,
-      route, approved ? qty : 0, purchaseSrc);
+      route, approved ? qty : 0, purchaseSrc, lineTargetLoc);
     if (approved) {
       // On the approval record itself, so it is read alongside the signatures rather than
       // only in the audit log.
@@ -1205,6 +1398,13 @@ router.get('/grn', asyncHandler((req, res) => {
       clauses.push("COALESCE(g.status, gv.status, 'pending_approval') = 'rejected'");
     }
   }
+  if (req.query.physical_store_id) {
+    clauses.push('g.physical_store_id = ?');
+    params.push(toInt(req.query.physical_store_id));
+  } else if (req.query.store_location_id) {
+    clauses.push('g.physical_store_id = ?');
+    params.push(toInt(req.query.store_location_id));
+  }
   if (req.query.q && String(req.query.q).trim()) {
     const like = '%' + String(req.query.q).trim() + '%';
     clauses.push('(g.grn_no LIKE ? OR g.description LIKE ? OR g.supplier LIKE ? OR m.mrn_no LIKE ? OR a.code LIKE ?)');
@@ -1214,11 +1414,13 @@ router.get('/grn', asyncHandler((req, res) => {
   const where = clauses.length ? 'WHERE ' + clauses.join(' AND ') : '';
   res.json(all(
     `SELECT g.*, m.mrn_no, m.req_date AS mrn_req_date, a.code AS asset_code,
-            COALESCE(g.status, gv.status, 'pending_approval') AS grn_status
+            COALESCE(g.status, gv.status, 'pending_approval') AS grn_status,
+            sl.name AS physical_store_name, sl.code AS physical_store_code, sl.store_type AS physical_store_type
        FROM grn g
        LEFT JOIN grn_vouchers gv ON gv.id = g.voucher_id
        LEFT JOIN mrn m ON m.id = g.mrn_id
        LEFT JOIN assets a ON a.id = m.asset_id
+       LEFT JOIN store_locations sl ON sl.id = g.physical_store_id
        ${where} ORDER BY g.id DESC LIMIT ${toInt(req.query.limit, 500)}`, ...params));
 }));
 
@@ -1826,15 +2028,25 @@ router.post('/grn', requireCap('stores.grn.receive'), chainPipeline.idempotencyG
     if (ml && ml.chain_no) chainNo = ml.chain_no;
   }
 
+  const physStoreId = resolveGrnPhysicalStoreId({
+    physicalStoreId: b.physical_store_id,
+    storeLocationId: b.store_location_id,
+    mrnId,
+    mrnLineId,
+    purchaseSource: source,
+    directDelivery: b.direct_delivery
+  });
+  const legStoreId = storeLocations.resolveLegacyStoreId(physStoreId) || 1;
+
   const result = tx(() => {
     const info = run(
-      `INSERT INTO grn (status, grn_no, grn_date, mrn_id, mrn_line_id, store_item_id, description, qty, unit_price, supplier, invoice_no, invoice_date, delivery_date, purchase_source, purchase_source_norm, chain_no)
-       VALUES ('pending_approval', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO grn (status, grn_no, grn_date, mrn_id, mrn_line_id, store_item_id, description, qty, unit_price, supplier, invoice_no, invoice_date, delivery_date, purchase_source, purchase_source_norm, chain_no, store_id, physical_store_id)
+       VALUES ('pending_approval', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       b.grn_no || null, b.grn_date || null, mrnId, mrnLineId, toInt(b.store_item_id), b.description || null,
       toNum(b.qty, 0), b.unit_price === undefined || b.unit_price === '' ? null : toNum(b.unit_price),
       b.supplier || null, b.invoice_no || null, b.invoice_date || null,
       b.delivery_date || new Date().toISOString().slice(0, 10), source || null, purchaseSourceNorm(source),
-      chainNo
+      chainNo, legStoreId, physStoreId
     );
     if (mrnLineId) {
       run('UPDATE mrn_lines SET qty_received = qty_received + ? WHERE id = ?', toNum(b.qty, 0), mrnLineId);
@@ -1870,7 +2082,7 @@ router.post('/grn', requireCap('stores.grn.receive'), chainPipeline.idempotencyG
     stock.sync({ grn: [info.lastInsertRowid] });
     return info.lastInsertRowid;
   });
-  audit.record({ userId: req.user.id, entity: 'grn', entityId: result, action: 'create', after: { chain_no: chainNo } });
+  audit.record({ userId: req.user.id, entity: 'grn', entityId: result, action: 'create', after: { chain_no: chainNo, physical_store_id: physStoreId, store_id: legStoreId } });
   res.status(201).json(get('SELECT * FROM grn WHERE id = ?', result));
 }));
 
@@ -2039,23 +2251,41 @@ router.get('/grn-vouchers', asyncHandler((req, res) => {
     clauses.push('(v.grn_no LIKE ? OR v.supplier LIKE ? OR v.po_no LIKE ? OR v.invoice_no LIKE ? OR v.delivery_note_no LIKE ?)');
     params.push(like, like, like, like, like);
   }
+  if (req.query.physical_store_id) {
+    clauses.push('(v.physical_store_id = ? OR EXISTS (SELECT 1 FROM grn g WHERE (g.voucher_id = v.id OR g.grn_no = v.grn_no) AND g.physical_store_id = ?))');
+    params.push(toInt(req.query.physical_store_id), toInt(req.query.physical_store_id));
+  }
   // Step 2c: a voucher with at least one of your own workshops' receipts on it.
   { const own = ownWs(req.user, GRN_WS); if (own) clauses.push(`EXISTS (SELECT 1 ${VOUCHER_LINES}${own})`); }
   const where = clauses.length ? 'WHERE ' + clauses.join(' AND ') : '';
   res.json(all(
     `SELECT v.*,
+            sl.name AS physical_store_name, sl.code AS physical_store_code,
             (SELECT COUNT(*) FROM grn g WHERE g.voucher_id = v.id OR g.grn_no = v.grn_no) AS item_count,
             (SELECT SUM(g.qty * COALESCE(g.unit_price, 0)) FROM grn g WHERE g.voucher_id = v.id OR g.grn_no = v.grn_no) AS total_value
        FROM grn_vouchers v
+       LEFT JOIN store_locations sl ON sl.id = v.physical_store_id
        ${where}
       ORDER BY v.id DESC LIMIT ${toInt(req.query.limit, 200)}`, ...params));
 }));
 
 router.get('/grn-vouchers/:id', guardVoucher, asyncHandler((req, res) => {
   const id = toInt(req.params.id);
-  const voucher = get('SELECT * FROM grn_vouchers WHERE id = ? OR grn_no = ?', id, req.params.id);
+  const voucher = get(`
+    SELECT v.*, sl.name AS physical_store_name, sl.code AS physical_store_code
+      FROM grn_vouchers v
+      LEFT JOIN store_locations sl ON sl.id = v.physical_store_id
+     WHERE v.id = ? OR v.grn_no = ?
+  `, id, req.params.id);
   if (!voucher) return res.status(404).json({ error: 'GRN Voucher not found' });
-  const lines = all('SELECT g.*, m.mrn_no FROM grn g LEFT JOIN mrn m ON m.id = g.mrn_id WHERE g.voucher_id = ? OR g.grn_no = ? ORDER BY g.id', voucher.id, voucher.grn_no);
+  const lines = all(`
+    SELECT g.*, m.mrn_no, sl.name AS physical_store_name, sl.code AS physical_store_code
+      FROM grn g
+      LEFT JOIN mrn m ON m.id = g.mrn_id
+      LEFT JOIN store_locations sl ON sl.id = g.physical_store_id
+     WHERE g.voucher_id = ? OR g.grn_no = ?
+     ORDER BY g.id
+  `, voucher.id, voucher.grn_no);
   const approvals = all(
     `SELECT a.*, u.username FROM grn_approvals a
      LEFT JOIN users u ON u.id = a.approver_id
@@ -2106,13 +2336,35 @@ router.post('/grn-vouchers', requireCap('stores.grn.receive'), chainPipeline.ide
     }
   }
 
+  const voucherPhysStoreId = b.physical_store_id != null && b.physical_store_id !== ''
+    ? toInt(b.physical_store_id)
+    : (b.store_location_id != null && b.store_location_id !== '' ? toInt(b.store_location_id) : null);
+
   const { voucherId, createdIds } = tx(() => {
+    let determinedVoucherStore = voucherPhysStoreId;
+    if (!determinedVoucherStore && lines.length) {
+      determinedVoucherStore = resolveGrnPhysicalStoreId({
+        physicalStoreId: lines[0].physical_store_id,
+        storeLocationId: lines[0].store_location_id,
+        mrnId: toInt(lines[0].mrn_id),
+        mrnLineId: toInt(lines[0].mrn_line_id),
+        purchaseSource: lines[0].purchase_source || b.purchase_source,
+        directDelivery: lines[0].direct_delivery || b.direct_delivery
+      });
+    }
+    if (!determinedVoucherStore) {
+      determinedVoucherStore = resolveGrnPhysicalStoreId({
+        purchaseSource: b.purchase_source,
+        directDelivery: b.direct_delivery
+      });
+    }
+
     const info = run(
       `INSERT INTO grn_vouchers (grn_no, received_date, supplier, project_site, po_no, invoice_no, delivery_note_no, bin_card_page,
-                                 prepared_by, prepared_sig, prepared_at, prepared_designation, status, chain_no)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?, 'pending_approval', ?)`,
+                                 prepared_by, prepared_sig, prepared_at, prepared_designation, status, chain_no, physical_store_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?, 'pending_approval', ?, ?)`,
       grnNo, receivedDate, supplier, projectSite, poNo, invoiceNo, deliveryNoteNo, binCardPage,
-      preparedBy, preparedSig, preparedDesig, chainNo
+      preparedBy, preparedSig, preparedDesig, chainNo, determinedVoucherStore
     );
     const vid = info.lastInsertRowid;
 
@@ -2135,16 +2387,27 @@ router.post('/grn-vouchers', requireCap('stores.grn.receive'), chainPipeline.ide
         const storeItemId = toInt(line.store_item_id);
         const unit = clean(line.unit) || 'nos';
 
+        const linePhysStoreId = resolveGrnPhysicalStoreId({
+          physicalStoreId: line.physical_store_id || determinedVoucherStore,
+          storeLocationId: line.store_location_id,
+          mrnId,
+          mrnLineId,
+          purchaseSource: source,
+          directDelivery: line.direct_delivery || b.direct_delivery
+        });
+        const lineStoreId = storeLocations.resolveLegacyStoreId(linePhysStoreId) || 1;
+
         const res = run(
           `INSERT INTO grn (voucher_id, status, grn_no, grn_date, mrn_id, mrn_line_id, store_item_id, description,
                             qty, unit, unit_price, supplier, invoice_no, invoice_date, delivery_date,
                             po_no, delivery_note_no, bin_card_page, prepared_by, prepared_sig, prepared_at,
-                            purchase_source, purchase_source_norm, project_site, chain_no)
-           VALUES (?, 'pending_approval', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?, ?, ?, ?)`,
+                            purchase_source, purchase_source_norm, project_site, chain_no, store_id, physical_store_id)
+           VALUES (?, 'pending_approval', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?, ?, ?, ?, ?, ?)`,
           vid, grnNo, receivedDate, mrnId || null, mrnLineId || null, storeItemId || null, desc,
           qty, unit, price, supplier, invoiceNo, b.invoice_date || null, receivedDate,
           poNo, deliveryNoteNo, binCardPage, preparedBy, preparedSig,
-          source || null, purchaseSourceNorm(source), projectSite, chainNo
+          source || null, purchaseSourceNorm(source), projectSite, chainNo,
+          lineStoreId, linePhysStoreId
         );
         newIds.push(res.lastInsertRowid);
 
@@ -3344,6 +3607,9 @@ router.post('/grn/bulk-price', requireCap('stores.grn.edit'), asyncHandler((req,
 router.post('/grn/bulk-receive', requireCap('stores.grn.receive'), asyncHandler((req, res) => {
   const rows = Array.isArray(req.body && req.body.rows) ? req.body.rows : [];
   if (!rows.length) return res.status(400).json({ error: 'Nothing to receive' });
+  const bulkPhysStoreId = req.body.physical_store_id != null && req.body.physical_store_id !== ''
+    ? toInt(req.body.physical_store_id)
+    : (req.body.store_location_id != null && req.body.store_location_id !== '' ? toInt(req.body.store_location_id) : null);
   const created = [];
   const mrnIds = new Set();
   const skipped = [];
@@ -3371,17 +3637,29 @@ router.post('/grn/bulk-receive', requireCap('stores.grn.receive'), asyncHandler(
       // the box; the requested text stays in `description` so the two can always be compared.
       const receivedPart = clean(r.received_part_no);
       if (receivedPart) learnCrossRef(line.description, receivedPart, req.user && req.user.id);
+
+      const rowPhysStoreId = resolveGrnPhysicalStoreId({
+        physicalStoreId: r.physical_store_id || bulkPhysStoreId,
+        storeLocationId: r.store_location_id,
+        mrnId: line.mrn_id,
+        mrnLineId: lineId,
+        purchaseSource: src,
+        directDelivery: r.direct_delivery || req.body.direct_delivery
+      });
+      const rowStoreId = storeLocations.resolveLegacyStoreId(rowPhysStoreId) || 1;
+
       const info = run(
         `INSERT INTO grn (grn_no, grn_date, mrn_id, mrn_line_id, description, received_part_no, qty, unit_price, supplier,
-                          invoice_no, invoice_date, delivery_date, purchase_source, purchase_source_norm)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                          invoice_no, invoice_date, delivery_date, purchase_source, purchase_source_norm, store_id, physical_store_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         r.grn_no || null, r.grn_date || null, line.mrn_id, lineId, line.description || null, receivedPart, qty,
         r.unit_price === undefined || r.unit_price === '' || r.unit_price === null ? null : toNum(r.unit_price),
         // The grid pre-fills the received date with today and only sends a field the user
         // actually changed, so an untouched date must not land as NULL — that is the date the
         // whole receiving history is read by.
         r.supplier || null, r.invoice_no || null, r.invoice_date || null,
-        r.delivery_date || new Date().toISOString().slice(0, 10), src, purchaseSourceNorm(src));
+        r.delivery_date || new Date().toISOString().slice(0, 10), src, purchaseSourceNorm(src),
+        rowStoreId, rowPhysStoreId);
       run('UPDATE mrn_lines SET qty_received = COALESCE(qty_received,0) + ? WHERE id = ?', qty, lineId);
       created.push(info.lastInsertRowid);
       mrnIds.add(line.mrn_id);
@@ -3414,6 +3692,15 @@ router.patch('/grn/:id', requireCap('stores.grn.edit'), guardReceipt, asyncHandl
     if (req.body[c] !== undefined) {
       sets.push(`${c} = ?`);
       params.push(c === 'unit_price' ? (req.body[c] === '' || req.body[c] === null ? null : toNum(req.body[c])) : req.body[c]);
+    }
+  }
+  if (req.body.physical_store_id !== undefined) {
+    const pId = req.body.physical_store_id ? toInt(req.body.physical_store_id) : null;
+    sets.push('physical_store_id = ?');
+    params.push(pId);
+    if (pId) {
+      sets.push('store_id = ?');
+      params.push(storeLocations.resolveLegacyStoreId(pId) || 1);
     }
   }
   // Keep the normalised bucket in step when the source changes.
@@ -4072,15 +4359,25 @@ router.get('/mtn', asyncHandler((req, res) => {
       clauses.push("t.status NOT IN ('accepted', 'rejected')");
     }
   }
+  if (req.query.physical_store_id || req.query.location_id) {
+    const locId = toInt(req.query.physical_store_id || req.query.location_id);
+    clauses.push(`(t.from_store_location_id = ? OR t.to_store_location_id = ?
+                   OR EXISTS (SELECT 1 FROM mtn_lines ml WHERE ml.mtn_id = t.id AND (ml.from_store_location_id = ? OR ml.to_store_location_id = ?)))`);
+    params.push(locId, locId, locId, locId);
+  }
   { const own = mtnOwnCond(req.user); if (own) clauses.push(own); }   // Step 2c
   const where = clauses.length ? 'WHERE ' + clauses.join(' AND ') : '';
   res.json(all(
     `SELECT t.*, af.code AS from_asset_code, at2.code AS to_asset_code,
+            fl.code AS from_store_location_code, fl.name AS from_store_location_name,
+            tl.code AS to_store_location_code, tl.name AS to_store_location_name,
             (SELECT COUNT(*) FROM mtn_lines ml WHERE ml.mtn_id = t.id) AS item_count,
             -- Stage 4: items that move stock from one store to another (the rest are paper only).
-            (SELECT COUNT(*) FROM mtn_lines ml WHERE ml.mtn_id = t.id AND ml.from_store_id IS NOT NULL) AS moves_stock
+            (SELECT COUNT(*) FROM mtn_lines ml WHERE ml.mtn_id = t.id AND (ml.from_store_id IS NOT NULL OR (ml.from_store_location_id IS NOT NULL AND ml.to_store_location_id IS NOT NULL AND ml.from_store_location_id <> ml.to_store_location_id))) AS moves_stock
        FROM mtn t
        LEFT JOIN assets af ON af.id = t.from_asset_id LEFT JOIN assets at2 ON at2.id = t.to_asset_id
+       LEFT JOIN store_locations fl ON fl.id = t.from_store_location_id
+       LEFT JOIN store_locations tl ON tl.id = t.to_store_location_id
        ${where}
       ORDER BY t.id DESC LIMIT ${toInt(req.query.limit, 300)}`, ...params));
 }));
@@ -4103,10 +4400,14 @@ router.get('/mtn/counts', asyncHandler((req, res) => {
 router.get('/mtn/:id', guardMtn, asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   const mtn = get(`SELECT m.*, fa.code AS from_asset_code, fa.registration AS from_asset_reg,
-                          ta.code AS to_asset_code, ta.registration AS to_asset_reg
+                          ta.code AS to_asset_code, ta.registration AS to_asset_reg,
+                          fl.code AS from_store_location_code, fl.name AS from_store_location_name,
+                          tl.code AS to_store_location_code, tl.name AS to_store_location_name
                      FROM mtn m
                      LEFT JOIN assets fa ON fa.id = m.from_asset_id
                      LEFT JOIN assets ta ON ta.id = m.to_asset_id
+                     LEFT JOIN store_locations fl ON fl.id = m.from_store_location_id
+                     LEFT JOIN store_locations tl ON tl.id = m.to_store_location_id
                     WHERE m.id = ? OR m.mtn_no = ?`, id, req.params.id);
   if (!mtn) return res.status(404).json({ error: 'MTN not found' });
   // mtnLines() rather than a second copy of the same joins: it is what POST /mtn and
@@ -4168,7 +4469,7 @@ function assetByCode(text) {
 }
 
 /** One item as it arrives from the client, resolved against the catalogue and the asset book. */
-function mtnLineValues(raw) {
+function mtnLineValues(raw, headerFromLoc = null, headerToLoc = null) {
   const cat = categories.resolve(raw);
   return {
     store_item_id: toInt(raw.store_item_id),
@@ -4185,18 +4486,22 @@ function mtnLineValues(raw) {
     // The place each end names, from the list (Stage 2) — picked, or read from the text.
     from_place: places.forEnd(raw.from_place, raw.from_location),
     to_place: places.forEnd(raw.to_place, raw.to_location),
+    from_store_location_id: toInt(raw.from_store_location_id) || toInt(headerFromLoc) || null,
+    to_store_location_id: toInt(raw.to_store_location_id) || toInt(headerToLoc) || null,
     reason: clean(raw.reason),
   };
 }
 
-function insertMtnLine(mtnId, raw, lineNo) {
-  const v = mtnLineValues(raw);
+function insertMtnLine(mtnId, raw, lineNo, headerFromLoc = null, headerToLoc = null) {
+  const v = mtnLineValues(raw, headerFromLoc, headerToLoc);
   return run(
     `INSERT INTO mtn_lines (mtn_id, line_no, store_item_id, description, qty, unit, category, category_id,
-                            from_location, to_location, from_asset_id, to_asset_id, reason, from_place, to_place)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                            from_location, to_location, from_asset_id, to_asset_id, reason, from_place, to_place,
+                            from_store_location_id, to_store_location_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     mtnId, lineNo, v.store_item_id, v.description, v.qty, v.unit, v.category, v.category_id,
-    v.from_location, v.to_location, v.from_asset_id, v.to_asset_id, v.reason, v.from_place, v.to_place
+    v.from_location, v.to_location, v.from_asset_id, v.to_asset_id, v.reason, v.from_place, v.to_place,
+    v.from_store_location_id, v.to_store_location_id
   ).lastInsertRowid;
 }
 
@@ -4208,7 +4513,8 @@ function incomingMtnLines(b) {
   // A transfer raised the way it always was: description + qty on the note itself.
   return b.description !== undefined || b.qty !== undefined
     ? [{ description: b.description, qty: b.qty, unit: b.unit, store_item_id: b.store_item_id,
-      category: b.category, category_id: b.category_id }]
+      category: b.category, category_id: b.category_id,
+      from_store_location_id: b.from_store_location_id, to_store_location_id: b.to_store_location_id }]
     : [];
 }
 
@@ -4239,6 +4545,22 @@ router.post('/mtn', requireCap('stores.mtn.edit'), chainPipeline.idempotencyGuar
   if (n.error) return res.status(409).json({ error: n.error });
   const mtnNo = n.no;
   const ends = endsOf(b);
+  const fromLocId = toInt(b.from_store_location_id) || null;
+  const toLocId = toInt(b.to_store_location_id) || null;
+
+  if (fromLocId && toLocId && fromLocId === toLocId) {
+    return res.status(400).json({ error: 'Origin and destination store locations cannot be the same' });
+  }
+  if (fromLocId) {
+    const fl = get('SELECT id, is_active FROM store_locations WHERE id = ?', fromLocId);
+    if (!fl) return res.status(400).json({ error: 'Origin store location not found' });
+    if (!fl.is_active) return res.status(400).json({ error: 'Origin store location is inactive' });
+  }
+  if (toLocId) {
+    const tl = get('SELECT id, is_active FROM store_locations WHERE id = ?', toLocId);
+    if (!tl) return res.status(400).json({ error: 'Destination store location not found' });
+    if (!tl.is_active) return res.status(400).json({ error: 'Destination store location is inactive' });
+  }
 
   let chainNo = clean(b.chain_no);
   const mrnId = toInt(b.mrn_id) || null;
@@ -4250,15 +4572,15 @@ router.post('/mtn', requireCap('stores.mtn.edit'), chainPipeline.idempotencyGuar
   const id = tx(() => {
     const info = run(
       `INSERT INTO mtn (mtn_no, txn_date, from_location, to_location, from_asset_id, to_asset_id, transferred_by, received_by, reason,
-                        from_place, to_place, workshop_id, mrn_id, chain_no)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                        from_place, to_place, workshop_id, mrn_id, chain_no, from_store_location_id, to_store_location_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       mtnNo, b.txn_date || new Date().toISOString().slice(0, 10),
       ends.from_location, ends.to_location, from.assetId || null, to.assetId || null,
       b.transferred_by || null, b.received_by || null, b.reason || null, ends.from_place, ends.to_place,
       require('../lib/workshops').homeOf(req.user),   // Step 2c: the workshop that writes it
-      mrnId, chainNo
+      mrnId, chainNo, fromLocId, toLocId
     );
-    items.forEach((l, i) => insertMtnLine(info.lastInsertRowid, l, i + 1));
+    items.forEach((l, i) => insertMtnLine(info.lastInsertRowid, l, i + 1, fromLocId, toLocId));
     syncMtnHeader(info.lastInsertRowid);
     stores.stampTransfer(info.lastInsertRowid);
     stores.checkTransfer(req.user, info.lastInsertRowid);
@@ -4271,12 +4593,16 @@ router.post('/mtn', requireCap('stores.mtn.edit'), chainPipeline.idempotencyGuar
 }));
 
 const mtnLines = (mtnId) => all(
-  `SELECT l.*, af.code AS from_asset_code, at2.code AS to_asset_code, fs.name AS from_store, ts.name AS to_store
+  `SELECT l.*, af.code AS from_asset_code, at2.code AS to_asset_code, fs.name AS from_store, ts.name AS to_store,
+          fl.code AS from_store_location_code, fl.name AS from_store_location_name,
+          tl.code AS to_store_location_code, tl.name AS to_store_location_name
      FROM mtn_lines l
      LEFT JOIN assets af  ON af.id  = l.from_asset_id
      LEFT JOIN assets at2 ON at2.id = l.to_asset_id
      LEFT JOIN workshops fs ON fs.id = l.from_store_id
      LEFT JOIN workshops ts ON ts.id = l.to_store_id
+     LEFT JOIN store_locations fl ON fl.id = l.from_store_location_id
+     LEFT JOIN store_locations tl ON tl.id = l.to_store_location_id
     WHERE l.mtn_id = ? ORDER BY l.line_no, l.id`, mtnId);
 
 // Add an item to an existing note.
@@ -4287,8 +4613,9 @@ router.post('/mtn/:id/lines', requireCap('stores.mtn.edit'), guardMtn, asyncHand
   if (!clean(req.body.description)) return res.status(400).json({ error: 'Describe the item' });
   const lineId = tx(() => {
     stores.checkTransfer(req.user, id);
+    const mtn = get('SELECT from_store_location_id, to_store_location_id FROM mtn WHERE id = ?', id);
     const next = (get('SELECT MAX(line_no) m FROM mtn_lines WHERE mtn_id = ?', id).m || 0) + 1;
-    const newId = insertMtnLine(id, req.body, next);
+    const newId = insertMtnLine(id, req.body, next, mtn ? mtn.from_store_location_id : null, mtn ? mtn.to_store_location_id : null);
     syncMtnHeader(id);
     stores.stampTransfer(id);
     stores.checkTransfer(req.user, id);
@@ -4300,7 +4627,7 @@ router.post('/mtn/:id/lines', requireCap('stores.mtn.edit'), guardMtn, asyncHand
   res.status(201).json(get('SELECT * FROM mtn_lines WHERE id = ?', lineId));
 }));
 
-const MTN_LINE_EDITABLE = ['description', 'unit', 'from_location', 'to_location', 'reason'];
+const MTN_LINE_EDITABLE = ['description', 'unit', 'from_location', 'to_location', 'reason', 'from_store_location_id', 'to_store_location_id'];
 
 router.patch('/mtn/line/:id', requireCap('stores.mtn.edit'), guardMtnLine, asyncHandler((req, res) => {
   const lineId = toInt(req.params.id);
@@ -4314,7 +4641,8 @@ router.patch('/mtn/line/:id', requireCap('stores.mtn.edit'), guardMtnLine, async
   }
   for (const c of MTN_LINE_EDITABLE) {
     if (req.body[c] === undefined) continue;
-    sets.push(`${c} = ?`); params.push(clean(req.body[c])); after[c] = clean(req.body[c]);
+    const val = (c === 'from_store_location_id' || c === 'to_store_location_id') ? (toInt(req.body[c]) || null) : clean(req.body[c]);
+    sets.push(`${c} = ?`); params.push(val); after[c] = val;
   }
   if (req.body.category_id !== undefined || req.body.category !== undefined) {
     const cat = categories.resolve(req.body);
@@ -4342,7 +4670,7 @@ router.patch('/mtn/line/:id', requireCap('stores.mtn.edit'), guardMtnLine, async
     run(`UPDATE mtn_lines SET ${sets.join(', ')} WHERE id = ?`, ...params, lineId);
     syncMtnHeader(before.mtn_id);
     // Stage 4: a new end may start (or stop) moving stock between two stores.
-    if (after.from_place !== undefined || after.to_place !== undefined) stores.stampTransfer(before.mtn_id);
+    if (after.from_place !== undefined || after.to_place !== undefined || after.from_store_location_id !== undefined || after.to_store_location_id !== undefined) stores.stampTransfer(before.mtn_id);
     stores.checkTransfer(req.user, before.mtn_id);
     stock.rebuild({ transfersOf: before.mtn_id });
   });
@@ -4375,7 +4703,7 @@ router.delete('/mtn/line/:id', requireCap('stores.mtn.edit'), guardMtnLine, asyn
 // not an authority to spend, so there is no approval to invalidate; it is simply corrected
 // and audited.
 const MTN_EDITABLE = ['txn_date', 'description', 'from_location', 'to_location',
-  'transferred_by', 'received_by', 'reason'];
+  'transferred_by', 'received_by', 'reason', 'from_store_location_id', 'to_store_location_id'];
 
 router.patch('/mtn/:id', requireCap('stores.mtn.edit'), guardMtn, asyncHandler((req, res) => {
   const id = toInt(req.params.id);
@@ -4419,7 +4747,7 @@ router.patch('/mtn/:id', requireCap('stores.mtn.edit'), guardMtn, asyncHandler((
     stores.checkTransfer(req.user, id);
     if (sets.length) run(`UPDATE mtn SET ${sets.join(', ')} WHERE id = ?`, ...params, id);
     // Stage 4: new ends, or a new date, decide again which stores (if any) it moves stock between.
-    if (after.from_place !== undefined || after.to_place !== undefined || after.txn_date !== undefined) stores.stampTransfer(id);
+    if (after.from_place !== undefined || after.to_place !== undefined || after.txn_date !== undefined || after.from_store_location_id !== undefined || after.to_store_location_id !== undefined) stores.stampTransfer(id);
     stores.checkTransfer(req.user, id);
     if (itemFields.length && lines.length === 1) {
       const v = mtnLineValues({ ...lines[0], ...req.body });
@@ -4574,8 +4902,8 @@ router.post('/mtn/:id/accept', requireCap('stores.mtn.edit'), guardMtn, chainPip
     run(`INSERT INTO mtn_approvals (mtn_id, stage, role, approver_id, signed_name, signature, decision, reason)
          VALUES (?, 'accept', 'storekeeper', ?, ?, ?, 'approved', ?)`,
       id, req.user.id, accBy, accSig, req.body.reason || 'Goods received, inspected and accepted into destination stock');
-    stock.rebuild({ transfersOf: id });     // into the receiving store
     supplyRoutes.onMtnAccepted(id, req.body.receipts || req.body.items, req.user);
+    stock.rebuild({ transfersOf: id });     // into the receiving store
   });
 
   const discrepancies = all('SELECT * FROM delivery_discrepancies WHERE mtn_id = ? ORDER BY id DESC', id);
@@ -4631,20 +4959,25 @@ router.get('/export/mrn.xlsx', asyncHandler(async (req, res) => {
 // Comprehensive store reorder analysis, stock health, and inter-workshop opportunities
 router.get('/rebalance/analysis', permissions.requireModule('stores', 'view'), asyncHandler((req, res) => {
   const userStore = stores.homeStore(req.user) || 1;
-  const storeId = req.query.store_id ? toInt(req.query.store_id) : userStore;
+  const physicalStoreId = req.query.physical_store_id ? toInt(req.query.physical_store_id) : null;
+  const storeId = req.query.store_id ? toInt(req.query.store_id) : (!physicalStoreId ? userStore : null);
+  const targetStore = physicalStoreId ? { physical_store_id: physicalStoreId } : storeId;
   const section = req.query.section ? String(req.query.section).toLowerCase() : null;
   const days = req.query.days ? toInt(req.query.days) : 90;
 
-  const storeData = reorderRebalance.calculateStoreRop(storeId, { demandDays: days });
-  const opportunities = reorderRebalance.findRebalanceOpportunities({ storeId, section });
+  const storeData = reorderRebalance.calculateStoreRop(targetStore, { demandDays: days, isPhysicalStore: Boolean(physicalStoreId) });
+  const opportunities = reorderRebalance.findRebalanceOpportunities({ storeId, physicalStoreId, section });
 
   // Also find all surplus items in THIS store that can be donated to other stores
   const mySurplus = storeData.items.filter((it) => it.available_surplus > 0);
 
   res.json({
     ok: true,
-    store_id: storeId,
+    store_id: storeData.store_id,
+    physical_store_id: storeData.physical_store_id,
     store_name: storeData.store_name,
+    store_code: storeData.store_code,
+    store_type: storeData.store_type,
     kpis: storeData.kpis,
     items: section ? storeData.items.filter((it) => it.section === section) : storeData.items,
     opportunities,
@@ -4655,7 +4988,10 @@ router.get('/rebalance/analysis', permissions.requireModule('stores', 'view'), a
 // Apply computed ROP, Safety Stock, and ROQ levels
 router.post('/rebalance/apply-rop', permissions.requireModule('stores', 'edit'), asyncHandler((req, res) => {
   const b = req.body || {};
+  const physicalStoreId = toInt(b.physical_store_id);
   const storeId = toInt(b.store_id) || stores.homeStore(req.user) || 1;
+  const targetStore = physicalStoreId ? { physical_store_id: physicalStoreId, store_id: storeId } : storeId;
+
   if (!stores.mayManage(req.user, storeId)) {
     return res.status(403).json({ error: `You set levels only for your own store (${stores.label(stores.homeStore(req.user))}).` });
   }
@@ -4664,18 +5000,20 @@ router.post('/rebalance/apply-rop', permissions.requireModule('stores', 'edit'),
     return res.status(400).json({ error: 'No items provided for ROP application.' });
   }
 
-  const result = reorderRebalance.applyRopLevels(storeId, items, req.user);
+  const result = reorderRebalance.applyRopLevels(targetStore, items, req.user);
   res.json(result);
 }));
 
-// 1-Click Inter-Workshop Material Transfer Note (MTN) Creation
+// 1-Click Inter-Store Material Transfer Note (MTN) Creation
 router.post('/rebalance/create-mtn', permissions.requireModule('stores', 'edit'), asyncHandler((req, res) => {
   const b = req.body || {};
   const fromStoreId = toInt(b.from_store_id);
   const toStoreId = toInt(b.to_store_id);
+  const fromStoreLocationId = toInt(b.from_store_location_id);
+  const toStoreLocationId = toInt(b.to_store_location_id);
   const items = Array.isArray(b.items) ? b.items : [];
 
-  if (!fromStoreId || !toStoreId) {
+  if ((!fromStoreId && !fromStoreLocationId) || (!toStoreId && !toStoreLocationId)) {
     return res.status(400).json({ error: 'Source and destination store IDs are required.' });
   }
   if (items.length === 0) {
@@ -4685,6 +5023,8 @@ router.post('/rebalance/create-mtn', permissions.requireModule('stores', 'edit')
   const result = reorderRebalance.createRebalanceMtn({
     fromStoreId,
     toStoreId,
+    fromStoreLocationId,
+    toStoreLocationId,
     items,
     reason: b.reason,
     user: req.user
@@ -4698,16 +5038,133 @@ router.get('/rebalance/item-history', permissions.requireModule('stores', 'view'
   const itemKey = String(req.query.item_key || '').trim();
   if (!itemKey) return res.status(400).json({ error: 'item_key is required.' });
 
+  const physicalStoreId = req.query.physical_store_id ? toInt(req.query.physical_store_id) : null;
   const storeId = req.query.store_id ? toInt(req.query.store_id) : null;
+  const targetStore = physicalStoreId ? { physical_store_id: physicalStoreId } : (storeId || stores.homeStore(req.user) || 1);
   const days = req.query.days ? toInt(req.query.days) : 90;
 
-  const history = reorderRebalance.getItemDemandHistory(section, itemKey, storeId, { days });
-  const rop = reorderRebalance.calculateItemRop(section, itemKey, storeId || stores.homeStore(req.user) || 1, { demandDays: days });
+  const history = reorderRebalance.getItemDemandHistory(section, itemKey, targetStore, { days, isPhysicalStore: Boolean(physicalStoreId) });
+  const rop = reorderRebalance.calculateItemRop(section, itemKey, targetStore, { demandDays: days, isPhysicalStore: Boolean(physicalStoreId) });
 
   res.json({
     ok: true,
     history,
     rop
+  });
+}));
+
+// Storekeeper Workspace & Physical Store Cockpit
+router.get('/cockpit', permissions.requireModule('stores', 'view'), asyncHandler((req, res) => {
+  const userStore = stores.homeStore(req.user) || 1;
+  const physicalStoreId = req.query.physical_store_id ? toInt(req.query.physical_store_id) : null;
+  const storeId = req.query.store_id ? toInt(req.query.store_id) : (!physicalStoreId ? userStore : null);
+  const targetStore = physicalStoreId ? { physical_store_id: physicalStoreId } : storeId;
+  const days = req.query.days ? toInt(req.query.days) : 90;
+
+  // 1. Resolve Store Context
+  const ctx = reorderRebalance.resolveStoreContext(targetStore);
+  const physId = ctx.physical_store_id;
+  const sId = ctx.store_id;
+
+  // 2. ROP & Deficit Analysis
+  const storeData = reorderRebalance.calculateStoreRop(targetStore, { demandDays: days, isPhysicalStore: Boolean(physId) });
+  const opportunities = reorderRebalance.findRebalanceOpportunities({ storeId: sId, physicalStoreId: physId });
+
+  // 3. Inbound Transfers (MTNs arriving at this store: in-transit or received)
+  let inWhere = '';
+  const inParams = [];
+  if (physId) {
+    inWhere = `(m.to_store_location_id = ?
+                OR EXISTS (SELECT 1 FROM mtn_lines ml WHERE ml.mtn_id = m.id AND ml.to_store_location_id = ?)
+                OR (m.to_store_location_id IS NULL AND EXISTS (SELECT 1 FROM mtn_lines ml WHERE ml.mtn_id = m.id AND ml.to_store_id = ?)))`;
+    inParams.push(physId, physId, sId);
+  } else {
+    inWhere = 'EXISTS (SELECT 1 FROM mtn_lines ml WHERE ml.mtn_id = m.id AND ml.to_store_id = ?)';
+    inParams.push(sId);
+  }
+  const inboundTransfers = all(`
+    SELECT m.id, m.mtn_no, m.chain_no, m.txn_date, m.status, m.from_location, m.to_location,
+           m.from_store_location_id, m.to_store_location_id,
+           fsl.code AS from_store_location_code, tsl.code AS to_store_location_code,
+           (SELECT COUNT(*) FROM mtn_lines ml WHERE ml.mtn_id = m.id) AS item_count,
+           (SELECT ROUND(COALESCE(SUM(qty), 0), 2) FROM mtn_lines ml WHERE ml.mtn_id = m.id) AS total_qty,
+           (SELECT ml.description FROM mtn_lines ml WHERE ml.mtn_id = m.id LIMIT 1) AS sample_item
+      FROM mtn m
+      LEFT JOIN store_locations fsl ON fsl.id = m.from_store_location_id
+      LEFT JOIN store_locations tsl ON tsl.id = m.to_store_location_id
+     WHERE (${inWhere})
+       AND m.status IN ('approved', 'dispatched', 'received')
+     ORDER BY m.id DESC LIMIT 30
+  `, ...inParams);
+
+  // 4. Outbound Transfers (MTNs shipping out from this store: to approve or to dispatch)
+  let outWhere = '';
+  const outParams = [];
+  if (physId) {
+    outWhere = `(m.from_store_location_id = ?
+                 OR EXISTS (SELECT 1 FROM mtn_lines ml WHERE ml.mtn_id = m.id AND ml.from_store_location_id = ?)
+                 OR (m.from_store_location_id IS NULL AND EXISTS (SELECT 1 FROM mtn_lines ml WHERE ml.mtn_id = m.id AND ml.from_store_id = ?)))`;
+    outParams.push(physId, physId, sId);
+  } else {
+    outWhere = 'EXISTS (SELECT 1 FROM mtn_lines ml WHERE ml.mtn_id = m.id AND ml.from_store_id = ?)';
+    outParams.push(sId);
+  }
+  const outboundTransfers = all(`
+    SELECT m.id, m.mtn_no, m.chain_no, m.txn_date, m.status, m.from_location, m.to_location,
+           m.from_store_location_id, m.to_store_location_id,
+           fsl.code AS from_store_location_code, tsl.code AS to_store_location_code,
+           (SELECT COUNT(*) FROM mtn_lines ml WHERE ml.mtn_id = m.id) AS item_count,
+           (SELECT ROUND(COALESCE(SUM(qty), 0), 2) FROM mtn_lines ml WHERE ml.mtn_id = m.id) AS total_qty,
+           (SELECT ml.description FROM mtn_lines ml WHERE ml.mtn_id = m.id LIMIT 1) AS sample_item
+      FROM mtn m
+      LEFT JOIN store_locations fsl ON fsl.id = m.from_store_location_id
+      LEFT JOIN store_locations tsl ON tsl.id = m.to_store_location_id
+     WHERE (${outWhere})
+       AND m.status IN ('draft', 'approved')
+     ORDER BY m.id DESC LIMIT 30
+  `, ...outParams);
+
+  // 5. Open Requisitions (MRNs targeting this workshop/site store)
+  const openMrns = all(`
+    SELECT m.id, m.mrn_no, m.chain_no, m.req_date, m.status, m.site_authority_status,
+           m.purpose, a.code AS asset_code,
+           (SELECT COUNT(*) FROM mrn_lines ml WHERE ml.mrn_id = m.id) AS item_count,
+           (SELECT COUNT(*) FROM mrn_lines ml WHERE ml.mrn_id = m.id AND ml.qty_received < ml.qty) AS pending_lines
+      FROM mrn m
+      LEFT JOIN assets a ON a.id = m.asset_id
+     WHERE m.workshop_id = ?
+       AND m.status NOT IN ('received', 'rejected', 'closed')
+     ORDER BY m.id DESC LIMIT 20
+  `, sId);
+
+  // 6. Surplus available to donate
+  const mySurplus = storeData.items.filter((it) => it.available_surplus > 0);
+
+  // 7. Deficits needing action
+  const urgentDeficits = storeData.items.filter((it) => it.shortfall > 0);
+
+  res.json({
+    ok: true,
+    store: {
+      physical_store_id: physId,
+      store_id: sId,
+      name: ctx.name,
+      code: ctx.code,
+      store_type: ctx.store_type
+    },
+    kpis: {
+      ...storeData.kpis,
+      inbound_pending: inboundTransfers.length,
+      outbound_pending: outboundTransfers.length,
+      open_mrns: openMrns.length,
+      surplus_items_count: mySurplus.length
+    },
+    inbound_transfers: inboundTransfers,
+    outbound_transfers: outboundTransfers,
+    open_mrns: openMrns,
+    rebalance_opportunities: opportunities,
+    urgent_deficits: urgentDeficits,
+    surplus_available: mySurplus
   });
 }));
 

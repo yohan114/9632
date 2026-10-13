@@ -17,6 +17,7 @@ const backupStatus = require('./lib/backup_status');
 const { securityHeaders, originGuard } = require('./lib/security');
 const dailyReports = require('./lib/daily_reports');
 const emitter = require('./lib/emitter');
+const vehicleDocuments = require('./lib/vehicle_documents');
 
 // Apply schema on boot (idempotent).
 migrate();
@@ -63,11 +64,38 @@ app.get('/api/health', (req, res) => {
   res.json(out);
 });
 
+// Maintenance broadcast endpoint: callable with system secret (from CLI) or admin session
+app.post('/api/system/maintenance-broadcast', (req, res) => {
+  const secret = req.headers['x-system-secret'];
+  const isAuthorized = (secret && secret === config.sessionSecret) ||
+                       (req.user && hasCap(req.user, 'system.status'));
+  if (!isAuthorized) {
+    return res.status(403).json({ error: 'Unauthorized broadcast' });
+  }
+
+  const seconds = Math.max(1, Math.round(Number(req.body?.seconds || (Number(req.body?.minutes) * 60) || 120)));
+  const title = String(req.body?.title || '⚠️ SYSTEM UPDATE NOTICE');
+  const message = String(req.body?.message || `The system is updating in ${Math.ceil(seconds / 60)} minutes. Please save all files and tasks and log out now.`);
+
+  const payload = {
+    title,
+    message,
+    seconds,
+    expiresAt: Date.now() + seconds * 1000,
+    timestamp: new Date().toISOString()
+  };
+
+  emitter.emit('maintenance_alert', payload);
+  if (io) io.emit('maintenance_alert', payload);
+
+  res.json({ ok: true, broadcasted: true, payload });
+});
+
 // Global API authentication gate (R-04):
-// Every /api route requires an authenticated session, except /api/auth/login, /api/health, and
-// /api/auth/mfa/verify — the second step of signing in, which by design comes before any session.
+// Every /api route requires an authenticated session, except /api/auth/login, /api/health,
+// /api/auth/mfa/verify, and /api/system/maintenance-broadcast (which validates secret internally).
 app.use('/api', (req, res, next) => {
-  if (req.path === '/auth/login' || req.path === '/health' || req.path === '/auth/mfa/verify') return next();
+  if (req.path === '/auth/login' || req.path === '/health' || req.path === '/auth/mfa/verify' || req.path === '/system/maintenance-broadcast') return next();
   if (!req.user) return res.status(401).json({ error: 'Authentication required' });
   next();
 });
@@ -118,6 +146,8 @@ const storesGate = (req, res, next) =>
     ? next()
     : requireModule('stores')(req, res, next);
 app.use('/api/stores', storesGate, require('./routes/stores'));
+app.use('/api/store-locations', require('./routes/store_locations'));
+app.use('/api/stores/locations', require('./routes/store_locations'));
 app.use('/api/general-stock', requireModule('stores'), require('./routes/general_stock'));
 app.use('/api/oil', requireModule('oil'), require('./routes/oil'));
 app.use('/api/batteries', requireModule('batteries'), require('./routes/batteries'));
@@ -148,6 +178,9 @@ app.use('/api/reports', require('./routes/reports'));
 // Vehicle lubricant capacities from Fleet_Oil_Lubricant_Capacities.xlsx
 app.use('/api/lubricant-capacities', requireModule('lubricants'), require('./routes/lubricant_capacities'));
 app.use('/api/tyre-battery', requireModule('tb_reports'), require('./routes/tyre_battery'));
+// Vehicle documents & statutory renewal monitoring (Operations / Fleet)
+app.use('/api/vehicle-documents', require('./routes/vehicle_documents'));
+app.use('/api/fleet/documents', require('./routes/vehicle_documents'));
 // Requesting, issuing and accounting for the old unit. Mounted apart from the reporting routes
 // above because those are gated on `reports` — a storekeeper who may not read cost reports still
 // has to be able to issue a tyre. Each endpoint carries its own role check instead, and the
@@ -158,7 +191,7 @@ app.use('/api/tb', require('./routes/tyre_battery_requests'));
 // by role, because a permission level can say "may use this screen" but not "may use half of it".
 // Priority changes happen from the workshop and stores screens day-to-day, so those two endpoints
 // are open to anyone who holds the capability or workshop/stores role (checked inside the router).
-const PURCHASING_PRIORITY_PATH = /^\/lines\/\d+\/(priority|priority-history)$/;
+const PURCHASING_PRIORITY_PATH = /^\/lines\/\d+\/(priority|priority-history|delivery-location)$/;
 const purchasingGate = (req, res, next) =>
   PURCHASING_PRIORITY_PATH.test(req.path)
     ? next()
@@ -265,7 +298,7 @@ function sweepSockets() {
 emitter.on('sessions_changed', () => setImmediate(sweepSockets));
 setInterval(sweepSockets, 60 * 1000).unref();
 
-const LIVE_EVENTS = ['stock_updated', 'oil_updated', 'filter_updated', 'job_updated', 'request_updated', 'dashboard_refresh', 'data_changed'];
+const LIVE_EVENTS = ['stock_updated', 'oil_updated', 'filter_updated', 'job_updated', 'request_updated', 'dashboard_refresh', 'data_changed', 'maintenance_alert'];
 for (const event of LIVE_EVENTS) {
   emitter.on(event, (data) => io.emit(event, data));
 }
@@ -311,6 +344,8 @@ if (require.main === module) {
   startScheduler();
   // Freeze the day's Pending Parts and Maintenance Summery, hourly, so the record keeps itself.
   dailyReports.startScheduler();
+  // Periodic statutory compliance checks, reminder logs, and future version promotion.
+  vehicleDocuments.startScheduler();
   httpServer.listen(config.port, config.host, () => {
     console.log(`WorkshopOne listening on ${config.host}:${config.port}`);
     console.log('Real-time (socket.io) enabled');

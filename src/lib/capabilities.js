@@ -35,6 +35,15 @@ const CAPABILITIES = [
   C('workshops.all', 'users', 'Work across all workshops (head office)', ['manager', 'operational_manager', 'purchase_head_office', 'purchase_local'], null, 'workshops'),
   C('fleet.capacities.edit', 'assets', 'Add, edit or delete vehicle lubricant capacities', [], null, 'lubricants'),
 
+  // ---- vehicle documents & statutory compliance ----------------------------------------------
+  C('vehicle_docs.view', 'assets', 'View vehicle statutory documents, statuses and countdowns', ['transport_manager', 'assistant_transport_manager', 'operational_manager', 'manager', 'workshop', 'engineer', 'assistant_engineer'], 'assets', 'assets'),
+  C('vehicle_docs.edit', 'assets', 'Create or edit vehicle document metadata and records', ['transport_manager', 'assistant_transport_manager', 'operational_manager', 'manager'], 'assets', 'assets'),
+  C('vehicle_docs.upload', 'assets', 'Upload certificates, cover notes and payment receipts', ['transport_manager', 'assistant_transport_manager', 'operational_manager', 'manager', 'workshop'], 'assets', 'assets'),
+  C('vehicle_docs.renew', 'assets', 'Submit renewal versions and manage renewal tasks', ['transport_manager', 'assistant_transport_manager', 'operational_manager', 'manager'], 'assets', 'assets'),
+  C('vehicle_docs.verify', 'assets', 'Verify and promote renewed document versions (Transport / Ops Manager)', ['transport_manager', 'operational_manager', 'manager'], 'assets', 'assets'),
+  C('vehicle_docs.download', 'assets', 'Download attached document files and certificates', ['transport_manager', 'assistant_transport_manager', 'operational_manager', 'manager', 'workshop', 'engineer', 'assistant_engineer'], 'assets', 'assets'),
+  C('vehicle_docs.exempt', 'assets', 'Mark vehicle document requirements as exempt (off-road / laid-up)', ['transport_manager', 'operational_manager', 'manager'], 'assets', 'assets'),
+
   // ---- labour --------------------------------------------------------------------------------
   C('mechanics.create', 'labour', 'Add a mechanic', ['manager'], null, 'labour'),
   C('mechanics.edit', 'labour', 'Edit labourer status, resignation or profile', ['manager'], null, 'labour'),
@@ -90,6 +99,7 @@ const CAPABILITIES = [
   C('stores.mrn.create', 'stores', 'Raise a Material Requisition Note (MRN)', ['storekeeper', 'workshop', 'assistant_transport_manager'], 'stores', 'stores'),
   C('stores.mrn.edit', 'stores', 'Change or cancel an open MRN', ['storekeeper', 'workshop'], 'stores', 'stores'),
   C('stores.mrn.certify', 'stores', 'Certify an MRN (workshop step)', ['workshop'], null, 'stores'),
+  C('stores.mrn.site_authority', 'stores', 'Review and approve/reject material demand as Site Authority', ['manager', 'operational_manager', 'transport_manager', 'engineer', 'workshop'], null, 'stores'),
   C('stores.mrn.approve', 'stores', 'Approve an MRN (operations step, up to your limit)', ['operational_manager', 'manager'], null, 'stores'),
   C('stores.mrn.reject', 'stores', 'Reject an MRN at certify or approve step', ['workshop', 'operational_manager', 'manager'], null, 'stores'),
   C('stores.mrn.amend_settled', 'stores', 'Amend a settled MRN after issues have posted', ['operational_manager', 'manager'], 'stores', 'stores'),
@@ -115,6 +125,9 @@ const CAPABILITIES = [
   C('general.items.edit', 'stores', 'Add a general rack item', ['storekeeper'], 'stores', 'stores'),
   C('general.stock.adjust', 'stores', 'Adjust a general rack item\'s stock', ['storekeeper'], 'stores', 'stores'),
   C('general.items.price', 'stores', 'Set a general rack item\'s price', ['storekeeper'], 'stores', 'stores'),
+  C('stores.locations.view', 'stores', 'View physical store locations and hierarchy', ['storekeeper', 'main_storekeeper', 'manager', 'operational_manager', 'transport_manager', 'workshop'], 'stores', 'stores'),
+  C('stores.locations.manage', 'stores', 'Configure physical store locations and hierarchy', ['main_storekeeper', 'manager'], 'stores', 'stores'),
+  C('stores.locations.access', 'stores', 'Assign store location permissions to staff', ['manager'], 'stores', 'stores'),
 
   // ---- tools & toolboxes (workshop tooling, daily stores issue, engineer scrap approval) ------
   C('tools.view', 'stores', 'View tools inventory, mechanic toolboxes, daily logs and scrap records', ['storekeeper', 'workshop', 'engineer', 'assistant_engineer', 'operational_manager', 'manager'], 'stores', 'stores'),

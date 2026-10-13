@@ -812,6 +812,27 @@ function migrate() {
   }
   // Improvement plan, Step 3a: who raised each request, and the seal of what was certified.
   requestRulesStep3a();
+
+  // Statutory and company vehicle document types
+  try {
+    multidb.seedVehicleDocTypes(db);
+    fs.mkdirSync(path.join(config.uploadDir, 'vehicle_documents'), { recursive: true });
+  } catch {}
+
+  // Physical Store Locations & Central Hierarchy (Plan Phase 1)
+  try {
+    require('../lib/store_locations').seedStoreLocations(db);
+  } catch (err) {
+    console.warn('Physical store locations initial seed skipped:', err.message);
+  }
+
+  // Stock Movement Integration & Physical Store Tracking (Plan Phase 2)
+  try {
+    storesLocationsStage2(db);
+  } catch (err) {
+    console.warn('Physical store locations stage 2 migration skipped:', err.message);
+  }
+
   return db;
 }
 
@@ -954,6 +975,11 @@ function storesStage4() {
     db.exec(`CREATE TRIGGER IF NOT EXISTS trg_${t}_store AFTER INSERT ON ${t} WHEN NEW.store_id IS NULL
              BEGIN UPDATE ${t} SET store_id = ${expr} WHERE id = NEW.id; END;`);
   }
+}
+
+// Physical Store Locations — Stage 2: Stock Movement Integration & Physical Store Tracking (Plan Revision 2)
+function storesLocationsStage2(dbInstance = db) {
+  require('../lib/store_locations').migrateStoreLocationsStage2(dbInstance);
 }
 
 // A TRANSFER MOVES THE SHELF WHEN THE GOODS MOVE: out of the sending store once the note is
@@ -1890,8 +1916,31 @@ function closureRulesAndUniversalTrace() {
   ensureColumn('mrn_lines', 'cancellation_reason', 'TEXT');
   ensureColumn('mrn_lines', 'cancelled_by', 'TEXT');
   ensureColumn('mrn_lines', 'cancelled_at', 'TEXT');
+  ensureColumn('mrn_lines', 'qty_outstanding', 'REAL DEFAULT 0');
+  ensureColumn('mrn_lines', 'local_issue_qty', 'REAL DEFAULT 0');
+  ensureColumn('mtn', 'from_store_id', 'INTEGER');
+  ensureColumn('mtn', 'to_store_id', 'INTEGER');
+  ensureColumn('mtn', 'workshop_id', 'INTEGER');
+
+  // Phase A: Site Authority Demand Approval Gate
+  ensureColumn('mrn', 'site_authority_status', "TEXT NOT NULL DEFAULT 'approved'");
+  ensureColumn('mrn', 'site_authority_user_id', 'INTEGER REFERENCES users(id)');
+  ensureColumn('mrn', 'site_authority_at', 'TEXT');
+  ensureColumn('mrn', 'site_authority_notes', 'TEXT');
+
+  // Phase B (Step 6): Main Workshop Replenishment via Main Stores
+  ensureColumn('mrn', 'parent_mrn_id', 'INTEGER REFERENCES mrn(id)');
+  ensureColumn('mrn', 'replenishment_type', 'TEXT');
+  ensureColumn('mrn', 'from_store_location_id', 'INTEGER REFERENCES store_locations(id)');
+  ensureColumn('mrn_lines', 'parent_mrn_line_id', 'INTEGER REFERENCES mrn_lines(id)');
+  ensureColumn('mrn_lines', 'child_mrn_id', 'INTEGER REFERENCES mrn(id)');
+  ensureColumn('mrn_lines', 'child_mrn_line_id', 'INTEGER REFERENCES mrn_lines(id)');
+
+  // Phase C (Step 7): Direct Sourcing Store Location per line
+  ensureColumn('mrn_lines', 'source_store_location_id', 'INTEGER REFERENCES store_locations(id)');
 
   // Step 7: Automated Reorder Point (ROP) & Rebalancing
+  ensureColumn('store_reorder', 'physical_store_id', 'INTEGER REFERENCES store_locations(id)');
   ensureColumn('store_reorder', 'safety_stock', 'REAL DEFAULT 0');
   ensureColumn('store_reorder', 'reorder_qty', 'REAL DEFAULT 0');
   ensureColumn('store_reorder', 'avg_daily_demand', 'REAL DEFAULT 0');
@@ -1900,8 +1949,14 @@ function closureRulesAndUniversalTrace() {
   ensureColumn('store_reorder', 'last_calculated_at', 'TEXT');
 
   // Indexes
+  db.exec('CREATE INDEX IF NOT EXISTS idx_store_reorder_phys ON store_reorder(physical_store_id, section, item_key);');
   db.exec('CREATE INDEX IF NOT EXISTS idx_mrn_status ON mrn(status);');
   db.exec('CREATE INDEX IF NOT EXISTS idx_mrn_lines_cancelled ON mrn_lines(is_cancelled);');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_mrn_site_auth ON mrn(site_authority_status);');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_mrn_parent ON mrn(parent_mrn_id);');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_mrnl_parent ON mrn_lines(parent_mrn_line_id);');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_mrnl_child ON mrn_lines(child_mrn_id);');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_mrnl_src_store ON mrn_lines(source_store_location_id);');
 }
 
 function ensureColumn(table, col, def) {

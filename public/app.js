@@ -542,7 +542,96 @@ function wireLiveUpdates() {
     const cur = curRoute();
     if (LIVE_AGG_ROUTES.includes(cur) || ((p && LIVE_ENTITY_ROUTES[p.entity]) || []).includes(cur)) refresh();
   });
+  LiveERP.on('maintenance_alert', (d) => {
+    showMaintenanceBanner(d);
+  });
   LiveERP.on('connect', () => { if (ME) render(); }); // reconnect catch-up — never leave a stale view
+}
+
+function showMaintenanceBanner(d) {
+  let banner = document.getElementById('maintenance-alert-banner');
+  if (!banner) {
+    banner = document.createElement('div');
+    banner.id = 'maintenance-alert-banner';
+    document.body.prepend(banner);
+  }
+  banner.style.cssText = `
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    z-index: 999999;
+    background: linear-gradient(90deg, #b91c1c 0%, #991b1b 100%);
+    color: #ffffff;
+    padding: 12px 24px;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.4);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    font-family: inherit;
+    border-bottom: 3px solid #f87171;
+  `;
+
+  let remaining = Math.max(0, Math.round(d.seconds || (d.expiresAt ? (d.expiresAt - Date.now()) / 1000 : 120)));
+
+  const updateText = () => {
+    const mins = Math.floor(remaining / 60);
+    const secs = remaining % 60;
+    const timeStr = `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+    banner.innerHTML = `
+      <div style="display:flex;align-items:center;gap:14px">
+        <span style="font-size:28px">⚠️</span>
+        <div>
+          <b style="font-size:16px;letter-spacing:0.5px;text-transform:uppercase">${esc(d.title || 'SYSTEM UPDATE NOTICE')}</b>
+          <div style="font-size:13px;opacity:0.95;margin-top:2px">${esc(d.message || 'The system will update in 2 minutes. Please save all files, complete your tasks, and log out now.')}</div>
+        </div>
+      </div>
+      <div style="display:flex;align-items:center;gap:14px">
+        <div style="background:#7f1d1d;color:#fef08a;padding:6px 16px;border-radius:6px;font-weight:700;font-family:monospace;font-size:18px;border:1px solid #f87171;display:flex;align-items:center;gap:6px">
+          <span>⏱️</span> <span>${timeStr}</span>
+        </div>
+        <button id="btn-maint-logout" class="btn" style="background:#ffffff;color:#b91c1c;font-weight:700;padding:7px 16px;font-size:13px;border:none;cursor:pointer;border-radius:6px;box-shadow:0 2px 6px rgba(0,0,0,0.2)">
+          Save &amp; Log Out Now
+        </button>
+      </div>
+    `;
+
+    const logoutBtn = banner.querySelector('#btn-maint-logout');
+    if (logoutBtn) {
+      logoutBtn.onclick = () => {
+        const lo = document.getElementById('logout');
+        if (lo) lo.click();
+        else {
+          api('/auth/logout', { method: 'POST' }).finally(() => { location.reload(); });
+        }
+      };
+    }
+
+    if (remaining <= 0) {
+      clearInterval(banner._timer);
+      banner.innerHTML = `
+        <div style="display:flex;align-items:center;gap:14px;width:100%;justify-content:center;padding:4px 0">
+          <span style="font-size:26px">🔄</span>
+          <b style="font-size:16px">The system is updating now. Please wait while the server restarts... (Page will automatically reload once online)</b>
+        </div>
+      `;
+      const pollHealth = setInterval(async () => {
+        try {
+          const res = await fetch('/api/health');
+          if (res.ok) {
+            clearInterval(pollHealth);
+            location.reload();
+          }
+        } catch {}
+      }, 3000);
+    }
+    remaining--;
+  };
+
+  if (banner._timer) clearInterval(banner._timer);
+  updateText();
+  banner._timer = setInterval(updateText, 1000);
 }
 // live-client.js self-loads the socket client asynchronously; wire up as soon as it exists.
 (function tryWireLive() { if (window.LiveERP) return void wireLiveUpdates(); setTimeout(tryWireLive, 800); })();
@@ -795,6 +884,7 @@ const NAV = [
   ['services', '🛠️', 'Service Records'],
   ['lubecapacities', '🛢️', 'Lubricant Capacities'],
   ['assets', '🚜', 'Assets'],
+  ['vehicledocuments', '📜', 'Vehicle Documents'],
   ['labour', '👷', 'Labour & Mechanics'],
   ['stores', '📦', 'Stores'],
   ['tools', '🧰', 'Tools & Toolboxes'],
@@ -813,7 +903,7 @@ const NAV = [
 ];
 // Which permission module governs each nav item's visibility (dashboard always on).
 const NAV_MODULE = {
-  assets: 'assets', jobs: 'jobs', jobrequests: 'jobrequests', field: 'jobs', operations: 'assets', dailywork: 'dailywork', services: 'filters', lubecapacities: 'jobs',
+  assets: 'assets', vehicledocuments: 'assets', jobs: 'jobs', jobrequests: 'jobrequests', field: 'jobs', operations: 'assets', dailywork: 'dailywork', services: 'filters', lubecapacities: 'jobs',
   labour: 'labour', stores: 'stores', tools: 'tools', stocktake: 'stores', stockcockpit: 'stores', generalstock: 'stores', oil: 'oil', batteries: 'batteries', filters: 'filters', filterstock: 'filters',
   projects: 'projects', aliases: 'aliases', attention: 'reports', progress: 'reports',
   teardown: 'reports', reports: 'reports', tyrebattery: 'reports',
@@ -841,7 +931,7 @@ const NAV_GROUP = {
   dashboard: 'Operations', jobs: 'Operations', jobrequests: 'Operations', field: 'Operations', operations: 'Operations', dailywork: 'Operations', services: 'Operations', lubecapacities: 'Operations',
   stores: 'Inventory', tools: 'Inventory', stocktake: 'Inventory',
   purchasing: 'Procurement', tbrequests: 'Procurement',
-  assets: 'Fleet', serviceplan: 'Fleet',
+  assets: 'Fleet', vehicledocuments: 'Fleet', serviceplan: 'Fleet',
   reports: 'Analysis', attention: 'Analysis', progress: 'Analysis', teardown: 'Analysis', tyrebattery: 'Analysis', aliases: 'Analysis', projects: 'Analysis', labour: 'Analysis',
   workshops: 'Admin', access: 'Admin',
 };
@@ -1311,9 +1401,10 @@ function renderOnHoldWatchboard(oh) {
 }
 
 async function dashMain(c) {
-  const [d, mc, wm] = await Promise.all([
+  const [d, mc, wm, vdocSum] = await Promise.all([
     api('/reports/dashboard'), canView('reports') ? api('/reports/monthly') : null,
     api('/dashboard/workflow-monitor').catch(() => null),
+    api('/vehicle-documents/compliance-summary').catch(() => null),
   ]);
   const na = d.needs_attention || {};
   const naTotal = Object.values(na).reduce((a, b) => a + (b || 0), 0);
@@ -1331,11 +1422,13 @@ async function dashMain(c) {
     { m: 'dailywork', route: 'dailywork', ico: '📅', title: 'Daily Work', sub: 'log hours' },
     { m: 'batteries', route: 'batteries', ico: '🔋', title: 'Batteries', sub: 'track · swap' },
     { m: 'assets', route: 'assets', ico: '🚜', title: 'Assets', sub: 'fleet registry' },
+    { m: 'assets', route: 'vehicledocuments', ico: '📜', title: 'Vehicle Docs', sub: 'statutory · renewals · eRL' },
   ].filter((w) => canEdit(w.m)).map((w) => `<a class="card stat" href="#/${w.route}" style="text-decoration:none;align-items:flex-start;gap:2px"><span class="n" style="font-size:26px">${w.ico}</span><span class="l"><b>${w.title}</b><br>${w.sub}</span></a>`).join('');
 
   // Top Pulse KPI Ribbon
   const isAdminOrManager = isAdmin() || canFull('jobs') || canDo('users.manage');
   const kp = (wm && wm.kpis) || {};
+  const vk = (vdocSum && vdocSum.kpis) || {};
   const kpiRibbon = `
     <div class="grid section" style="grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;margin-bottom:14px">
       ${mc ? `<div class="card stat"><span class="n">${moneyC(mc.this_month.total)}</span><span class="l">This Month Spend</span></div>` : ''}
@@ -1343,6 +1436,7 @@ async function dashMain(c) {
       <a class="card stat" href="#/jobs?tab=ongoing" style="text-decoration:none"><span class="n">${kp.vehicles_in_workshop ?? 0}</span><span class="l">Vehicles in Workshop</span></a>
       <a class="card stat" href="#/dashboard" style="text-decoration:none"><span class="n" style="color:${kp.total_pending ? 'var(--amber)' : 'var(--green)'}">${kp.total_pending ?? 0}</span><span class="l">Pending Approvals</span></a>
       <a class="card stat" href="#/stores?tab=stock" style="text-decoration:none"><span class="n" style="color:${kp.low_stock_total ? 'var(--red)' : 'inherit'}">${kp.low_stock_total ?? 0}</span><span class="l">Low Stock Items</span></a>
+      ${vk.total_vehicles ? `<a class="card stat" href="#/vehicledocuments" style="text-decoration:none"><span class="n" style="color:${(vk.critical_count || vk.expired_count) ? 'var(--red)' : (vk.warning_count ? 'var(--amber)' : 'var(--green)')}">${vk.compliance_percentage ?? 100}%</span><span class="l">Fleet Statutory Docs</span></a>` : ''}
       ${isAdminOrManager ? `<a class="card stat" href="#admin-onhold-watchboard" style="text-decoration:none"><span class="n" style="color:${(kp.on_hold_total || 0) ? 'var(--red)' : 'var(--green)'}">${kp.on_hold_total ?? 0}</span><span class="l">On-Hold Bottlenecks</span></a>` : ''}
       ${kp.field_down != null ? `<a class="card stat" href="#/field" style="text-decoration:none"><span class="n" style="color:${kp.field_down ? 'var(--red)' : 'inherit'}">${kp.field_down}</span><span class="l">Field Breakdowns Down</span></a>` : ''}
     </div>`;
@@ -1544,7 +1638,7 @@ routes.assets = async (c, params) => {
     <div id="atable"><div class="muted">Loading…</div></div>`;
   const load = async () => {
     const regOnly = qs('#aregonly').checked;
-    const list = await api('/assets?limit=1500' + (regOnly ? '&in_register=1' : ''));
+    const list = await api('/assets?limit=10000' + (regOnly ? '&in_register=1' : ''));
     const rows = list.map((a) => `<tr data-id="${a.id}" style="cursor:pointer">
       <td><a href="#/assets/${a.id}">${esc(a.registration || a.code)}</a></td>
       <td>${esc(a.ec_code || '—')}</td>
@@ -1554,7 +1648,7 @@ routes.assets = async (c, params) => {
       <td><span class="badge ${a.status === 'active' ? 'green' : a.status === 'under_repair' ? 'amber' : ''}">${esc(a.status)}</span></td>
       <td class="num">${a.open_jobs}</td>
       <td class="num">${money(a.lifetime_cost)}</td></tr>`);
-    qs('#acount').textContent = `${list.length}${list.length === 1500 ? '+' : ''} asset${list.length === 1 ? '' : 's'}`;
+    qs('#acount').textContent = `${list.length}${list.length === 10000 ? '+' : ''} asset${list.length === 1 ? '' : 's'}`;
     qs('#atable').innerHTML = tableWrap(
       [{ label: 'Code' }, { label: 'E&C No' }, { label: 'Class' }, { label: 'Type' }, { label: 'Project' }, { label: 'Status' }, { label: 'Open Jobs', num: true }, { label: 'Lifetime Cost', num: true }],
       rows, { scroll: true });
@@ -1577,20 +1671,99 @@ async function newAssetModal() {
     <div class="row">${field('Code *', 'code', { placeholder: 'e.g. 28-4314' })}${field('Class', 'asset_class', { type: 'select', options: ['vehicle', 'plant', 'generator', 'tool', 'machine', 'other'].map((v) => ({ value: v, label: v })) })}</div>
     <div class="row">${field('Brand', 'brand')}${field('Type', 'type')}</div>
     <div class="row">${field('Home Project', 'home_project_id', { type: 'select', options: opts })}${field('Registration', 'registration')}</div>
+    <div class="row">${field('E&C No', 'ec_code', { placeholder: 'e.g. EC-102' })}<label style="display:flex;align-items:center;gap:8px;margin-top:20px;cursor:pointer"><input type="checkbox" id="f_in_register" checked style="width:auto"> <span style="font-weight:600">Include in Registered Fleet</span></label></div>
     <div style="margin-top:14px;text-align:right"><button class="primary" id="save">Create</button></div>`, (body, close) => {
     qs('#save', body).onclick = async () => {
       const d = formData(body);
       d.current_project_id = d.home_project_id;
-      try { await api('/assets', { method: 'POST', body: d }); toast('Asset created'); close(); render(); }
-      catch (e) { toast(e.message, 'err'); }
+      d.in_register = qs('#f_in_register', body).checked ? 1 : 0;
+      try {
+        await api('/assets', { method: 'POST', body: d });
+        toast('Asset created successfully', 'ok');
+        close();
+        render();
+      } catch (e) {
+        toast(e.message, 'err');
+      }
     };
   });
 }
 
 async function assetDetail(c, id) {
-  const a = await api('/assets/' + id);
+  const [a, vDocs, erl] = await Promise.all([
+    api('/assets/' + id),
+    api('/vehicle-documents/assets/' + id).catch(() => []),
+    api('/assets/' + id + '/erl-checklist').catch(() => null),
+  ]);
   const lc = a.lifetime_cost;
   const sd = a.service_due;
+
+  const erlBanner = erl ? `
+    <div style="margin-bottom:12px;padding:10px 14px;border-radius:6px;display:flex;align-items:center;justify-content:space-between;gap:12px;${
+      erl.ready_for_renewal
+        ? 'background:rgba(46,125,50,0.12);border:1px solid var(--green);color:var(--green)'
+        : 'background:rgba(198,40,40,0.1);border:1px solid var(--red);color:var(--red)'
+    }">
+      <div>
+        <div style="font-weight:700;display:flex;align-items:center;gap:6px">
+          ${erl.ready_for_renewal ? '✅ Ready for eRL Revenue Licence Renewal' : '⚠️ eRL Renewal Prerequisites Alert'}
+        </div>
+        <div style="font-size:12px;margin-top:2px;color:var(--text)">
+          ${erl.blockers && erl.blockers.length ? 'Attention needed: ' + esc(erl.blockers.join('; ')) : 'All prerequisite documents verified for online renewal.'}
+        </div>
+      </div>
+      <button class="sm" id="btn-erl-check" style="white-space:nowrap">📋 eRL Checklist</button>
+    </div>` : '';
+
+  const docRows = (vDocs || []).map((d) => {
+    const cur = d.current_version;
+    const ev = d.evaluation || {};
+    const badge = ev.badge || { text: 'Unknown', color: 'gray' };
+    const badgeCls = badge.color === 'green' ? 'green' : (badge.color === 'red' ? 'red' : (badge.color === 'amber' ? 'amber' : (badge.color === 'blue' ? 'blue' : '')));
+    const catLabel = d.doc_type_category === 'statutory' ? '🏛️ Statutory' : (d.doc_type_category === 'commercial' ? '💼 Commercial' : '🏢 Internal');
+    const att = (d.attachments && d.attachments[0]) || null;
+    const attLink = att
+      ? `<a href="/api/vehicle-documents/attachments/${att.id}/download" target="_blank" class="btn sm" style="text-decoration:none;padding:2px 8px;font-size:11px" title="Download certificate">📄 ${esc(att.original_filename)}</a>`
+      : '<span class="muted" style="font-size:11px">None</span>';
+
+    const actions = [
+      canDo('vehicle_docs.renew') ? `<button class="sm btn-renew-doc" data-id="${d.id}" data-name="${esc(d.doc_type_name)}" style="padding:2px 8px;font-size:11px">+ Renew</button>` : '',
+      canDo('vehicle_docs.view') ? `<button class="sm btn-history-doc" data-id="${d.id}" data-name="${esc(d.doc_type_name)}" style="padding:2px 8px;font-size:11px">History</button>` : '',
+      canDo('vehicle_docs.exempt') ? `<button class="sm btn-exempt-doc" data-id="${d.id}" data-name="${esc(d.doc_type_name)}" data-exempt="${d.is_exempt ? '1' : '0'}" style="padding:2px 8px;font-size:11px">${d.is_exempt ? 'Un-exempt' : 'Exempt'}</button>` : '',
+    ].filter(Boolean).join(' ');
+
+    return `<tr>
+      <td>
+        <b>${esc(d.doc_type_name)}</b>
+        ${d.is_required ? '<span class="badge blue" style="font-size:10px;margin-left:4px">Mandatory</span>' : ''}
+        ${d.is_exempt ? `<div class="muted" style="font-size:11px">Exempt: ${esc(d.exemption_reason || 'Laid up / off-road')}</div>` : ''}
+      </td>
+      <td><span class="muted" style="font-size:11px">${catLabel}</span></td>
+      <td><code>${esc(cur ? cur.doc_number : '—')}</code></td>
+      <td>${esc(cur ? cur.valid_until : '—')}</td>
+      <td><span class="badge ${badgeCls}">${esc(badge.text)}</span></td>
+      <td>${attLink}</td>
+      <td style="white-space:nowrap">${actions}</td>
+    </tr>`;
+  });
+
+  const docsCard = (canDo('vehicle_docs.view') && vDocs && vDocs.length) ? `
+    <div class="card section">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+        <h3 style="margin:0">📜 Statutory Documents & Renewals</h3>
+        <div style="display:flex;gap:8px">
+          ${erl ? '<button class="sm" id="btn-erl-check-top">📋 eRL Checklist</button>' : ''}
+          <a href="#/vehicledocuments" class="btn sm" style="text-decoration:none">Fleet Compliance Board →</a>
+        </div>
+      </div>
+      ${erlBanner}
+      ${tableWrap(
+        [{ label: 'Document Type' }, { label: 'Category' }, { label: 'Document No' }, { label: 'Valid Until' }, { label: 'Status' }, { label: 'Attachment' }, { label: 'Actions' }],
+        docRows,
+        { scroll: true }
+      )}
+    </div>` : '';
+
   c.innerHTML = `${pageHeader(idLabel(a.asset), '<a href="#/assets">← Assets</a>')}
     <div class="toolbar"><span class="badge">${esc(a.asset.asset_class)}</span>
       <span class="badge ${a.asset.status === 'active' ? 'green' : a.asset.status === 'under_repair' ? 'amber' : ''}">${esc(a.asset.status)}</span>
@@ -1620,6 +1793,7 @@ async function assetDetail(c, id) {
         ${(a.partly_closed_jobs || []).length ? `<div class="muted" style="font-size:12px;margin:8px 0 2px">Partly closed — prices still to come</div>${a.partly_closed_jobs.map(assetJobLine).join('')}` : ''}
       </div>
     </div>
+    ${docsCard}
     <div class="card section"><h3>Moves</h3>
       ${(a.moves || []).length ? `<ul class="timeline">${a.moves.map((m) => `<li><span class="date">${esc(m.move_date)}</span><span>${esc(m.from)} → <b>${esc(m.to)}</b>${m.note ? ` — ${esc(m.note)}` : ''}${m.moved_by ? ` <span class="muted">(${esc(m.moved_by)})</span>` : ''}</span></li>`).join('')}</ul>`
     : '<span class="muted">No moves recorded yet.</span>'}
@@ -1627,8 +1801,22 @@ async function assetDetail(c, id) {
     <div class="card"><h3>Unified Timeline</h3>
       <ul class="timeline">${a.timeline.map((t) => `<li><span class="date">${esc(t.date || '')}</span><span class="badge ${t.kind === 'job' ? 'blue' : ''}">${esc(t.kind)}</span><span>${esc(t.ref ? t.ref + ' · ' : '')}${esc(t.description || '')}</span></li>`).join('') || '<li class="muted">No activity</li>'}</ul>
     </div>`;
-  if (qs('#editasset')) qs('#editasset').onclick = () => editAssetModal(a.asset);
-  if (qs('#moveasset')) qs('#moveasset').onclick = () => moveMachineModal(a.asset, a.place, () => assetDetail(c, id));
+  if (qs('#editasset', c)) qs('#editasset', c).onclick = () => editAssetModal(a.asset);
+  if (qs('#moveasset', c)) qs('#moveasset', c).onclick = () => moveMachineModal(a.asset, a.place, () => assetDetail(c, id));
+
+  const erlOpen = () => showErlChecklistModal(id, a.asset.registration || a.asset.code);
+  if (qs('#btn-erl-check', c)) qs('#btn-erl-check', c).onclick = erlOpen;
+  if (qs('#btn-erl-check-top', c)) qs('#btn-erl-check-top', c).onclick = erlOpen;
+
+  qsa('.btn-renew-doc', c).forEach((btn) => {
+    btn.onclick = () => showRenewDocumentModal(btn.dataset.id, btn.dataset.name, () => assetDetail(c, id));
+  });
+  qsa('.btn-history-doc', c).forEach((btn) => {
+    btn.onclick = () => showDocumentHistoryModal(btn.dataset.id, btn.dataset.name);
+  });
+  qsa('.btn-exempt-doc', c).forEach((btn) => {
+    btn.onclick = () => showDocumentExemptionModal(btn.dataset.id, btn.dataset.name, btn.dataset.exempt === '1', () => assetDetail(c, id));
+  });
 }
 
 // Stage 7: move a machine to another project or site, from a date. Every move is kept.
@@ -1664,6 +1852,664 @@ async function editAssetModal(asset) {
     qs('#save', body).onclick = async () => {
       try { await api('/assets/' + asset.id, { method: 'PATCH', body: formData(body) }); toast('Saved'); close(); render(); }
       catch (e) { toast(e.message, 'err'); }
+    };
+  });
+}
+
+// ===========================================================================
+// ---- Vehicle Documents & Statutory Compliance (Phase 4)
+// ===========================================================================
+routes.vehicledocuments = async (c, parts = []) => {
+  const sp = new URLSearchParams(location.hash.split('?')[1] || '');
+  const tab = sp.get('tab') || 'compliance';
+  const TABS = [
+    ['compliance', '📊 Fleet Compliance'],
+    ['upcoming', '⏳ Upcoming Expirations'],
+    ['tasks', '📋 Renewal Tasks']
+  ];
+
+  const tabToolbar = `<div class="toolbar" style="margin-bottom:12px">${TABS
+    .map(([t, l]) => `<button class="sm ${t === tab ? 'primary' : ''}" onclick="location.hash='#/vehicledocuments?tab=${t}'">${l}</button>`).join('')}</div>`;
+
+  c.innerHTML = pageHeader('Vehicle Documents & Statutory Compliance') + tabToolbar + '<div id="vdocbody" class="muted">Loading…</div>';
+  const body = qs('#vdocbody', c);
+
+  if (tab === 'compliance') {
+    return renderVdocCompliance(body, sp);
+  } else if (tab === 'upcoming') {
+    return renderVdocUpcoming(body, sp);
+  } else if (tab === 'tasks') {
+    return renderVdocTasks(body, sp);
+  }
+};
+
+async function renderVdocCompliance(body, sp) {
+  let sum;
+  try {
+    sum = await api('/vehicle-documents/compliance-summary');
+  } catch (e) {
+    body.innerHTML = `<div class="card err">${esc(e.message)}</div>`;
+    return;
+  }
+
+  const kp = sum.kpis || {};
+  const tb = sum.type_breakdown || {};
+  const vehicles = sum.vehicles || [];
+
+  // Traffic-light KPI Ribbon
+  const pctColor = kp.compliance_percentage >= 90 ? 'var(--green)' : (kp.compliance_percentage >= 70 ? 'var(--amber)' : 'var(--red)');
+  const kpiCards = `
+    <div class="grid section" style="grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-bottom:14px">
+      <div class="card stat"><span class="n">${kp.total_vehicles ?? 0}</span><span class="l">Registered Fleet</span></div>
+      <div class="card stat"><span class="n" style="color:${pctColor}">${kp.compliance_percentage ?? 100}%</span><span class="l">Compliance Rate</span></div>
+      <div class="card stat"><span class="n" style="color:var(--green)">${kp.fully_compliant ?? 0}</span><span class="l">Fully Compliant</span></div>
+      <div class="card stat"><span class="n" style="color:var(--red)">${kp.critical_count ?? 0}</span><span class="l">Critical (≤7d)</span></div>
+      <div class="card stat"><span class="n" style="color:var(--amber)">${kp.warning_count ?? 0}</span><span class="l">Expiring Soon (8-30d)</span></div>
+      <div class="card stat"><span class="n" style="color:var(--red)">${kp.expired_count ?? 0}</span><span class="l">Expired / Overdue</span></div>
+      <div class="card stat"><span class="n">${kp.exempt_count ?? 0}</span><span class="l">Laid-up / Exempt</span></div>
+    </div>`;
+
+  // Category summary pills
+  const typeChips = [
+    { label: 'Revenue Licence (eRL)', key: 'revenue_licence', icon: '🏛️' },
+    { label: 'Vehicle Insurance', key: 'insurance', icon: '🛡️' },
+    { label: 'Emission Test (VET)', key: 'emission', icon: '💨' },
+    { label: 'Fitness Certificate', key: 'fitness', icon: '🩺' },
+  ].map((tc) => {
+    const s = tb[tc.key] || { valid: 0, critical: 0, warning: 0, expired: 0, exempt: 0 };
+    const issueCount = (s.critical || 0) + (s.expired || 0);
+    return `<div class="card" style="padding:10px 14px;display:flex;align-items:center;justify-content:space-between;gap:10px">
+      <div style="font-weight:600">${tc.icon} ${tc.label}</div>
+      <div style="display:flex;gap:6px;font-size:12px">
+        <span class="badge green" title="Valid">${s.valid || 0} valid</span>
+        ${s.warning ? `<span class="badge amber" title="Expiring Soon">${s.warning} soon</span>` : ''}
+        ${issueCount ? `<span class="badge red" title="Critical or Expired">${issueCount} alert</span>` : ''}
+        ${s.exempt ? `<span class="badge" title="Exempt">${s.exempt} exempt</span>` : ''}
+      </div>
+    </div>`;
+  }).join('');
+
+  const typeGrid = `<div class="grid section" style="grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:10px;margin-bottom:14px">${typeChips}</div>`;
+
+  // Filter toolbar
+  const filterToolbar = `
+    <div class="toolbar" style="margin-bottom:10px">
+      <input type="search" id="vdoc-q" placeholder="Search vehicle code / registration / type…" style="max-width:280px">
+      <select id="vdoc-status-filter" style="max-width:200px">
+        <option value="">All Compliance Statuses</option>
+        <option value="compliant">Fully Compliant</option>
+        <option value="critical">Critical (≤7 days)</option>
+        <option value="warning">Expiring Soon (8–30 days)</option>
+        <option value="expired">Expired</option>
+        <option value="missing">Missing Documents</option>
+        <option value="exempt">Laid-up / Exempt</option>
+      </select>
+      <div class="spacer"></div>
+      <a href="/api/vehicle-documents/export.xlsx" class="btn sm" style="text-decoration:none">📊 Export Excel</a>
+      <span class="muted" id="vdoc-count" style="font-size:12px">${vehicles.length} vehicles</span>
+    </div>`;
+
+  body.innerHTML = kpiCards + typeGrid + filterToolbar + '<div id="vdoc-table-container"></div>';
+
+  const container = qs('#vdoc-table-container', body);
+
+  function renderRows() {
+    const q = (qs('#vdoc-q', body).value || '').trim().toLowerCase();
+    const st = qs('#vdoc-status-filter', body).value;
+
+    const filtered = vehicles.filter((v) => {
+      if (st && v.overall_status !== st) return false;
+      if (q) {
+        const text = `${v.code || ''} ${v.registration || ''} ${v.type || ''}`.toLowerCase();
+        if (!text.includes(q)) return false;
+      }
+      return true;
+    });
+
+    qs('#vdoc-count', body).textContent = `${filtered.length} of ${vehicles.length} vehicles`;
+
+    const rows = filtered.map((v) => {
+      const stBadge = v.overall_status === 'compliant'
+        ? '<span class="badge green">Compliant</span>'
+        : (v.overall_status === 'warning'
+            ? '<span class="badge amber">Expiring Soon</span>'
+            : (v.overall_status === 'critical'
+                ? '<span class="badge red">Critical</span>'
+                : (v.overall_status === 'expired'
+                    ? '<span class="badge red">Expired</span>'
+                    : (v.overall_status === 'missing'
+                        ? '<span class="badge red">Missing Docs</span>'
+                        : '<span class="badge">Exempt</span>'))));
+
+      // Mini document chips
+      const docChips = (v.documents || []).filter((d) => ['cr', 'revenue_licence', 'insurance', 'emission', 'fitness'].includes(d.doc_type_code)).map((d) => {
+        const ev = d.evaluation || {};
+        const b = ev.badge || { text: '—', color: 'gray' };
+        const color = b.color === 'green' ? 'green' : (b.color === 'red' ? 'red' : (b.color === 'amber' ? 'amber' : ''));
+        const shortName = d.doc_type_code === 'revenue_licence' ? 'eRL' : (d.doc_type_code === 'insurance' ? 'INS' : (d.doc_type_code === 'emission' ? 'VET' : (d.doc_type_code === 'fitness' ? 'VCR' : 'CR')));
+        return `<span class="badge ${color}" style="font-size:10px;padding:1px 5px" title="${esc(d.doc_type_name)}: ${esc(b.text)}">${shortName}: ${esc(b.text)}</span>`;
+      }).join(' ');
+
+      return `<tr>
+        <td>
+          <a href="#/assets/${v.asset_id}" style="font-weight:700;text-decoration:none">🚜 ${esc(v.code)}</a>
+          ${v.registration ? `<span style="margin-left:6px;font-size:12px;color:var(--text)">[${esc(v.registration)}]</span>` : ''}
+          <div class="muted" style="font-size:11px">${esc(v.type || '—')}</div>
+        </td>
+        <td>${stBadge}</td>
+        <td><div style="display:flex;gap:4px;flex-wrap:wrap">${docChips}</div></td>
+        <td style="white-space:nowrap;text-align:right">
+          <a href="#/assets/${v.asset_id}" class="btn sm" style="text-decoration:none;padding:2px 8px;font-size:11px">Inspect Asset</a>
+          <button class="sm btn-vdoc-erl" data-id="${v.asset_id}" data-name="${esc(v.registration || v.code)}" style="padding:2px 8px;font-size:11px">📋 eRL Check</button>
+        </td>
+      </tr>`;
+    });
+
+    container.innerHTML = tableWrap(
+      [{ label: 'Vehicle / Asset' }, { label: 'Compliance Status' }, { label: 'Statutory Certificates' }, { label: 'Actions', cls: 'num' }],
+      rows,
+      { scroll: true }
+    );
+
+    qsa('.btn-vdoc-erl', container).forEach((btn) => {
+      btn.onclick = () => showErlChecklistModal(btn.dataset.id, btn.dataset.name);
+    });
+  }
+
+  qs('#vdoc-q', body).oninput = renderRows;
+  qs('#vdoc-status-filter', body).onchange = renderRows;
+  renderRows();
+}
+
+async function renderVdocUpcoming(body, sp) {
+  const days = Number(sp.get('days')) || 30;
+  let upcoming;
+  try {
+    upcoming = await api(`/vehicle-documents/upcoming-expirations?daysAhead=${days}`);
+  } catch (e) {
+    body.innerHTML = `<div class="card err">${esc(e.message)}</div>`;
+    return;
+  }
+
+  const horizons = [14, 30, 60, 90];
+  const horizonButtons = horizons.map((h) => `
+    <button class="sm ${h === days ? 'primary' : ''}" onclick="location.hash='#/vehicledocuments?tab=upcoming&days=${h}'">${h} Days</button>
+  `).join('');
+
+  const toolbar = `
+    <div class="toolbar" style="margin-bottom:12px">
+      <span style="font-size:13px;font-weight:600;margin-right:8px">Horizon:</span>
+      ${horizonButtons}
+      <div class="spacer"></div>
+      <a href="/api/vehicle-documents/export.xlsx" class="btn sm" style="text-decoration:none">📊 Export Excel</a>
+      <span class="muted" style="font-size:12px">${upcoming.length} certificates expiring within ${days} days</span>
+    </div>`;
+
+  const rows = upcoming.map((u) => {
+    const badgeColor = u.badge && u.badge.color;
+    const badgeCls = badgeColor === 'green' ? 'green' : (badgeColor === 'red' ? 'red' : (badgeColor === 'amber' ? 'amber' : 'blue'));
+    const attLink = u.version_id
+      ? `<button class="sm btn-up-hist" data-id="${u.document_id}" data-name="${esc(u.doc_type_name)}" style="padding:2px 8px;font-size:11px">History / Scans</button>`
+      : '<span class="muted">—</span>';
+
+    return `<tr>
+      <td>
+        <a href="#/assets/${u.asset_id}" style="font-weight:700;text-decoration:none">🚜 ${esc(u.asset_code)}</a>
+        ${u.registration ? `<span style="margin-left:6px;font-size:12px;color:var(--text)">[${esc(u.registration)}]</span>` : ''}
+        <div class="muted" style="font-size:11px">${esc(u.asset_type || '')}</div>
+      </td>
+      <td><b>${esc(u.doc_type_name)}</b></td>
+      <td><code>${esc(u.doc_number || '—')}</code></td>
+      <td><b>${esc(u.valid_until)}</b></td>
+      <td><span class="badge ${badgeCls}">${esc((u.badge && u.badge.text) || u.days_remaining + 'd')}</span></td>
+      <td>${attLink}</td>
+      <td style="white-space:nowrap;text-align:right">
+        ${canDo('vehicle_docs.renew') ? `<button class="sm btn-up-renew" data-id="${u.document_id}" data-name="${esc(u.doc_type_name)}" style="padding:2px 8px;font-size:11px">+ Renew</button>` : ''}
+        <a href="#/assets/${u.asset_id}" class="btn sm" style="text-decoration:none;padding:2px 8px;font-size:11px">Inspect Asset</a>
+      </td>
+    </tr>`;
+  });
+
+  body.innerHTML = toolbar + tableWrap(
+    [{ label: 'Vehicle' }, { label: 'Document Type' }, { label: 'Certificate No' }, { label: 'Valid Until' }, { label: 'Countdown' }, { label: 'Files' }, { label: 'Actions', cls: 'num' }],
+    rows,
+    { scroll: true }
+  );
+
+  qsa('.btn-up-renew', body).forEach((btn) => {
+    btn.onclick = () => showRenewDocumentModal(btn.dataset.id, btn.dataset.name, () => renderVdocUpcoming(body, sp));
+  });
+  qsa('.btn-up-hist', body).forEach((btn) => {
+    btn.onclick = () => showDocumentHistoryModal(btn.dataset.id, btn.dataset.name);
+  });
+}
+
+async function renderVdocTasks(body, sp) {
+  const activeOnly = sp.get('active_only') !== '0';
+  const stage = sp.get('stage') || '';
+
+  let tasks;
+  try {
+    const qParts = [];
+    if (activeOnly) qParts.push('active_only=1');
+    if (stage) qParts.push('stage=' + encodeURIComponent(stage));
+    tasks = await api('/vehicle-documents/tasks' + (qParts.length ? '?' + qParts.join('&') : ''));
+  } catch (e) {
+    body.innerHTML = `<div class="card err">${esc(e.message)}</div>`;
+    return;
+  }
+
+  const STAGES = [
+    { value: '', label: 'All Stages' },
+    { value: 'assigned', label: 'Assigned' },
+    { value: 'application_submitted', label: 'Application Submitted' },
+    { value: 'pending_verification', label: 'Pending Verification' },
+    { value: 'completed', label: 'Completed' },
+  ];
+
+  const stageOpts = STAGES.map((s) => `<option value="${s.value}" ${s.value === stage ? 'selected' : ''}>${esc(s.label)}</option>`).join('');
+
+  const toolbar = `
+    <div class="toolbar" style="margin-bottom:12px">
+      <label style="display:flex;align-items:center;gap:6px;flex-direction:row;font-size:13px;width:auto">
+        <input type="checkbox" id="task-active-only" ${activeOnly ? 'checked' : ''} style="width:auto"> Active tasks only
+      </label>
+      <select id="task-stage-filter" style="max-width:200px">${stageOpts}</select>
+      <div class="spacer"></div>
+      <span class="muted" style="font-size:12px">${tasks.length} tasks</span>
+    </div>`;
+
+  const rows = tasks.map((t) => {
+    const stageBadge = t.stage === 'completed'
+      ? '<span class="badge green">Completed</span>'
+      : (t.stage === 'application_submitted' || t.stage === 'pending_verification'
+          ? '<span class="badge amber">' + esc(t.stage) + '</span>'
+          : '<span class="badge blue">' + esc(t.stage) + '</span>');
+
+    const costStr = t.actual_cost != null ? money(t.actual_cost) : (t.estimated_cost != null ? money(t.estimated_cost) + ' (est)' : '—');
+
+    return `<tr>
+      <td>#${t.id} <div class="muted" style="font-size:11px">${String(t.created_at || '').slice(0, 10)}</div></td>
+      <td>
+        <a href="#/assets/${t.asset_id}" style="font-weight:700;text-decoration:none">🚜 ${esc(t.asset_code)}</a>
+        ${t.registration ? `<span style="margin-left:6px;font-size:12px;color:var(--text)">[${esc(t.registration)}]</span>` : ''}
+      </td>
+      <td><b>${esc(t.doc_type_name)}</b></td>
+      <td>${stageBadge}</td>
+      <td>${esc(t.target_date || '—')}</td>
+      <td>${costStr}</td>
+      <td>${esc(t.assigned_to_name || '—')}</td>
+      <td>${t.temporary_receipt_no ? `<span class="badge" style="font-size:10px">RCP: ${esc(t.temporary_receipt_no)}</span> ` : ''}${esc(t.notes || '—')}</td>
+      <td style="white-space:nowrap;text-align:right">
+        ${canDo('vehicle_docs.renew') ? `<button class="sm btn-task-edit" data-id="${t.id}" style="padding:2px 8px;font-size:11px">Update</button>` : ''}
+        <button class="sm btn-task-hist" data-id="${t.document_id}" data-name="${esc(t.doc_type_name)}" style="padding:2px 8px;font-size:11px">Doc</button>
+      </td>
+    </tr>`;
+  });
+
+  body.innerHTML = toolbar + tableWrap(
+    [{ label: 'Task' }, { label: 'Vehicle' }, { label: 'Document Type' }, { label: 'Stage' }, { label: 'Target Date' }, { label: 'Fee / Cost' }, { label: 'Assigned To' }, { label: 'Notes / Receipt' }, { label: 'Actions', cls: 'num' }],
+    rows,
+    { scroll: true }
+  );
+
+  qs('#task-active-only', body).onchange = (e) => {
+    location.hash = `#/vehicledocuments?tab=tasks&active_only=${e.target.checked ? '1' : '0'}&stage=${encodeURIComponent(qs('#task-stage-filter', body).value)}`;
+  };
+  qs('#task-stage-filter', body).onchange = (e) => {
+    location.hash = `#/vehicledocuments?tab=tasks&active_only=${qs('#task-active-only', body).checked ? '1' : '0'}&stage=${encodeURIComponent(e.target.value)}`;
+  };
+
+  qsa('.btn-task-edit', body).forEach((btn) => {
+    btn.onclick = () => showUpdateRenewalTaskModal(btn.dataset.id, () => renderVdocTasks(body, sp));
+  });
+  qsa('.btn-task-hist', body).forEach((btn) => {
+    btn.onclick = () => showDocumentHistoryModal(btn.dataset.id, btn.dataset.name);
+  });
+}
+
+async function showErlChecklistModal(assetId, assetName) {
+  let erl;
+  try {
+    erl = await api('/assets/' + assetId + '/erl-checklist');
+  } catch (e) {
+    return toast(e.message, 'err');
+  }
+
+  const alertBox = erl.ready_for_renewal
+    ? `<div style="padding:12px 16px;background:rgba(46,125,50,0.12);border:1px solid var(--green);border-radius:6px;color:var(--green);font-weight:600;margin-bottom:14px">
+        ✅ All prerequisite documents verified! Eligible for DMT Electronic Revenue Licence (eRL) online renewal.
+       </div>`
+    : `<div style="padding:12px 16px;background:rgba(198,40,40,0.1);border:1px solid var(--red);border-radius:6px;color:var(--red);margin-bottom:14px">
+        <div style="font-weight:700">⚠️ eRL Online Renewal Prerequisites Incomplete:</div>
+        <ul style="margin:6px 0 0 18px;font-size:13px">${(erl.blockers || []).map((b) => `<li>${esc(b)}</li>`).join('')}</ul>
+       </div>`;
+
+  const windowBox = `
+    <div class="card" style="margin-bottom:14px;padding:12px 14px;background:var(--surface)">
+      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
+        <div>
+          <b>1-Calendar-Month Renewal Window</b>
+          <div class="muted" style="font-size:12px">Motor Traffic Act: Annual Revenue Licence can only be renewed within one calendar month of expiration.</div>
+        </div>
+        <div>
+          <span class="badge blue">Target Date: ${esc(String(erl.evaluated_at || '').slice(0, 10))}</span>
+        </div>
+      </div>
+    </div>`;
+
+  const rows = (erl.items || []).map((it) => {
+    const badge = it.passed
+      ? '<span class="badge green">Pass</span>'
+      : (it.required ? '<span class="badge red">Action Required</span>' : '<span class="badge">Optional</span>');
+
+    return `<tr>
+      <td><b>${esc(it.label)}</b> ${it.required ? '<span class="badge blue" style="font-size:10px;margin-left:4px">Mandatory</span>' : '<span class="muted" style="font-size:10px">Optional</span>'}</td>
+      <td>${badge}</td>
+      <td style="font-size:13px">${esc(it.details || '—')}</td>
+    </tr>`;
+  });
+
+  const bodyHtml = alertBox + windowBox + tableWrap(
+    [{ label: 'Prerequisite Requirement' }, { label: 'Status' }, { label: 'Verification Details' }],
+    rows,
+    { scroll: true }
+  ) + `<div style="margin-top:16px;text-align:right"><button class="primary" id="btn-erl-close">Close</button></div>`;
+
+  modal(`eRL Renewal Readiness · ${assetName || ('Asset #' + assetId)}`, bodyHtml, (body, close) => {
+    qs('#btn-erl-close', body).onclick = close;
+  }, { wide: true });
+}
+
+async function showRenewDocumentModal(docId, docName, onDone) {
+  let doc;
+  try {
+    doc = await api('/vehicle-documents/' + docId);
+  } catch (e) {
+    return toast(e.message, 'err');
+  }
+
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const nextYear = new Date();
+  nextYear.setFullYear(nextYear.getFullYear() + 1);
+  const nextYearStr = nextYear.toISOString().slice(0, 10);
+
+  const bodyHtml = `
+    <p class="muted" style="margin-top:0">Vehicle: <b>${esc(doc.asset_code || '')}</b> ${doc.registration ? `[${esc(doc.registration)}]` : ''} · Category: <b>${esc(doc.doc_type_category || '')}</b></p>
+    <div class="row">
+      ${field('Document / Certificate No *', 'doc_number', { placeholder: 'e.g. RL-2026-992 or POL-88123' })}
+      ${field('Issuing Authority / Company', 'issuer_name', { placeholder: 'e.g. DMT Western Province / SLIC / DriveGreen' })}
+    </div>
+    <div class="row">
+      ${field('Issue Date', 'issue_date', { type: 'date', value: todayStr })}
+      ${field('Valid From', 'valid_from', { type: 'date', value: todayStr })}
+    </div>
+    <div class="row">
+      ${field('Valid Until *', 'valid_until', { type: 'date', value: nextYearStr })}
+      ${field('Cost / Fee (LKR)', 'cost_amount', { type: 'number', placeholder: '0' })}
+    </div>
+    ${field('Notes / Policy Details', 'notes', { type: 'textarea', placeholder: 'e.g. Annual renewal cover note' })}
+    <div style="margin-top:10px">
+      <label>Certificate / Cover Note Scan (PDF, Image)</label>
+      <input type="file" id="renewal_scan_file" accept=".pdf,image/*" style="margin-top:4px">
+      <div class="muted" style="font-size:11px;margin-top:2px">Supported: PDF, JPG, PNG (Max 15 MB)</div>
+    </div>
+    ${canDo('vehicle_docs.verify') ? `
+      <div style="margin-top:12px;padding:8px 12px;background:rgba(46,125,50,0.08);border-radius:6px">
+        <label style="display:flex;align-items:center;gap:8px;flex-direction:row;font-size:13px;width:auto;cursor:pointer">
+          <input type="checkbox" name="fast_track" checked style="width:auto"> ⚡ Fast-track Manager Verification (immediately promote to active coverage)
+        </label>
+      </div>` : ''}
+    <div style="margin-top:16px;text-align:right">
+      <button class="primary" id="btn-submit-renewal">Submit Renewal</button>
+    </div>`;
+
+  modal(`Submit Renewal · ${docName}`, bodyHtml, (body, close) => {
+    qs('#btn-submit-renewal', body).onclick = async () => {
+      const f = formData(body);
+      if (!f.doc_number || !f.doc_number.trim()) return toast('Document / Certificate number is required', 'err');
+      if (!f.valid_until) return toast('Valid until expiration date is required', 'err');
+
+      const fileInput = qs('#renewal_scan_file', body);
+      const file = fileInput && fileInput.files && fileInput.files[0];
+
+      let filePayload = null;
+      if (file) {
+        if (file.size > 15 * 1024 * 1024) return toast('File size exceeds 15 MB limit', 'err');
+        try {
+          filePayload = await new Promise((res, rej) => {
+            const reader = new FileReader();
+            reader.onload = () => res({ dataUrl: reader.result, originalFilename: file.name, mimeType: file.type });
+            reader.onerror = rej;
+            reader.readAsDataURL(file);
+          });
+        } catch (e) {
+          return toast('Could not read scan file: ' + e.message, 'err');
+        }
+      }
+
+      const payload = {
+        doc_number: f.doc_number.trim(),
+        issuer_name: f.issuer_name ? f.issuer_name.trim() : null,
+        issue_date: f.issue_date || todayStr,
+        valid_from: f.valid_from || todayStr,
+        valid_until: f.valid_until,
+        cost_amount: f.cost_amount ? Number(f.cost_amount) : 0,
+        notes: f.notes ? f.notes.trim() : null,
+      };
+
+      try {
+        const ver = await api(`/vehicle-documents/${docId}/versions`, { method: 'POST', body: payload });
+        if (filePayload && ver && ver.id) {
+          await api(`/vehicle-documents/versions/${ver.id}/attachments`, {
+            method: 'POST',
+            body: {
+              dataUrl: filePayload.dataUrl,
+              originalFilename: filePayload.originalFilename,
+              mimeType: filePayload.mimeType,
+              kind: 'certificate'
+            }
+          });
+        }
+        if (f.fast_track && canDo('vehicle_docs.verify') && ver && ver.id) {
+          await api(`/vehicle-documents/versions/${ver.id}/verify`, {
+            method: 'POST',
+            body: { decision: 'approve', notes: 'Fast-track verification on renewal submission' }
+          });
+        }
+        toast('Renewal version submitted successfully');
+        close();
+        if (onDone) onDone();
+      } catch (err) {
+        toast(err.message, 'err');
+      }
+    };
+  });
+}
+
+async function showDocumentHistoryModal(docId, docName) {
+  let doc, history;
+  try {
+    [doc, history] = await Promise.all([
+      api('/vehicle-documents/' + docId),
+      api('/vehicle-documents/' + docId + '/history'),
+    ]);
+  } catch (e) {
+    return toast(e.message, 'err');
+  }
+
+  const containerInfo = `
+    <div style="margin-bottom:14px;padding:10px 14px;background:var(--surface);border-radius:6px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
+      <div>
+        <b>${esc(doc.doc_type_name || docName)}</b> · Vehicle: <b>${esc(doc.asset_code || '')}</b> ${doc.registration ? `[${esc(doc.registration)}]` : ''}
+        <div class="muted" style="font-size:12px">Category: ${esc(doc.doc_type_category || '')} · Mandatory: ${doc.is_required ? 'Yes' : 'No'}</div>
+      </div>
+      <div>
+        ${doc.is_exempt ? `<span class="badge" style="background:var(--border)">Exempt: ${esc(doc.exemption_reason || 'Off-road / Laid up')}</span>` : '<span class="badge green">Active Tracking</span>'}
+      </div>
+    </div>`;
+
+  const rows = (history || []).map((v) => {
+    const isCurrent = doc.current_version_id === v.id;
+    const stBadge = v.status === 'verified'
+      ? `<span class="badge green">Verified${isCurrent ? ' (Active)' : ''}</span>`
+      : (v.status === 'pending_verification'
+          ? '<span class="badge amber">Pending Verification</span>'
+          : (v.status === 'superseded' ? '<span class="badge">Superseded</span>' : '<span class="badge">' + esc(v.status) + '</span>'));
+
+    const attList = (v.attachments || []).map((att) => `
+      <a href="/api/vehicle-documents/attachments/${att.id}/download" target="_blank" class="btn sm" style="text-decoration:none;padding:2px 8px;font-size:11px;margin:2px" title="SHA-256: ${esc(att.sha256 || '')}">
+        📄 ${esc(att.original_filename)} (${Math.round(att.file_size / 1024)} KB)
+      </a>
+    `).join(' ');
+
+    const verifyActions = (v.status === 'pending_verification' && canDo('vehicle_docs.verify')) ? `
+      <div style="margin-top:4px">
+        <button class="sm green btn-ver-approve" data-id="${v.id}" style="padding:2px 8px;font-size:11px">Approve</button>
+        <button class="sm red btn-ver-reject" data-id="${v.id}" style="padding:2px 8px;font-size:11px">Reject</button>
+      </div>` : '';
+
+    return `<tr>
+      <td><b>v${v.version_no}</b></td>
+      <td><code>${esc(v.doc_number)}</code></td>
+      <td>${esc(v.valid_from || '—')} → <b>${esc(v.valid_until)}</b></td>
+      <td>${esc(v.issuer_name || '—')}</td>
+      <td>
+        ${stBadge}
+        ${v.verified_by_name ? `<div class="muted" style="font-size:11px">By ${esc(v.verified_by_name)} on ${String(v.verified_at || '').slice(0, 10)}</div>` : ''}
+        ${v.verification_notes ? `<div class="muted" style="font-size:11px">Note: ${esc(v.verification_notes)}</div>` : ''}
+        ${verifyActions}
+      </td>
+      <td>${attList || '<span class="muted" style="font-size:11px">No scans attached</span>'}</td>
+      <td>${v.cost_amount ? money(v.cost_amount) : '—'}</td>
+    </tr>`;
+  });
+
+  const bodyHtml = containerInfo + tableWrap(
+    [{ label: 'Ver' }, { label: 'Certificate No' }, { label: 'Validity Period' }, { label: 'Issuer' }, { label: 'Verification Status' }, { label: 'Attached Scans' }, { label: 'Cost' }],
+    rows,
+    { scroll: true }
+  ) + `<div style="margin-top:14px;text-align:right"><button class="primary" id="btn-hist-close">Close</button></div>`;
+
+  modal(`Version History & Audits · ${docName}`, bodyHtml, (body, close) => {
+    qs('#btn-hist-close', body).onclick = close;
+
+    qsa('.btn-ver-approve', body).forEach((btn) => {
+      btn.onclick = async () => {
+        try {
+          await api(`/vehicle-documents/versions/${btn.dataset.id}/verify`, { method: 'POST', body: { decision: 'approve', notes: 'Approved by Manager' } });
+          toast('Version verified and promoted');
+          close();
+          showDocumentHistoryModal(docId, docName);
+        } catch (e) { toast(e.message, 'err'); }
+      };
+    });
+
+    qsa('.btn-ver-reject', body).forEach((btn) => {
+      btn.onclick = async () => {
+        const reason = prompt('Reason for rejection:');
+        if (reason === null) return;
+        try {
+          await api(`/vehicle-documents/versions/${btn.dataset.id}/verify`, { method: 'POST', body: { decision: 'reject', notes: reason } });
+          toast('Version rejected');
+          close();
+          showDocumentHistoryModal(docId, docName);
+        } catch (e) { toast(e.message, 'err'); }
+      };
+    });
+  }, { wide: true });
+}
+
+function showDocumentExemptionModal(docId, docName, isCurrentlyExempt, onDone) {
+  if (isCurrentlyExempt) {
+    modal(`Re-activate Statutory Monitoring · ${docName}`, `
+      <p>This statutory requirement is currently marked <b>EXEMPT</b> (laid-up / off-road fleet).</p>
+      <p>Re-activating will restore statutory compliance tracking, expiration countdowns, and renewal reminders.</p>
+      <div style="margin-top:16px;text-align:right">
+        <button class="primary" id="btn-confirm-unexempt">Confirm Re-activation</button>
+      </div>`, (body, close) => {
+      qs('#btn-confirm-unexempt', body).onclick = async () => {
+        try {
+          await api(`/vehicle-documents/${docId}/exemption`, { method: 'PUT', body: { isExempt: false } });
+          toast('Statutory monitoring re-activated');
+          close();
+          if (onDone) onDone();
+        } catch (e) { toast(e.message, 'err'); }
+      };
+    });
+  } else {
+    modal(`Exempt Statutory Requirement · ${docName}`, `
+      <p class="muted" style="margin-top:0">Exempting this requirement indicates the vehicle is formally laid up in the workshop for major overhaul or operated strictly off-road. Expiration alerts will be paused.</p>
+      ${field('Reason for Exemption *', 'reason', { placeholder: 'e.g. Laid up in workshop for major engine overhaul' })}
+      <div style="margin-top:16px;text-align:right">
+        <button class="primary" id="btn-confirm-exempt">Confirm Exemption</button>
+      </div>`, (body, close) => {
+      qs('#btn-confirm-exempt', body).onclick = async () => {
+        const r = (formData(body).reason || '').trim();
+        if (!r) return toast('Please specify an exemption reason', 'err');
+        try {
+          await api(`/vehicle-documents/${docId}/exemption`, { method: 'PUT', body: { isExempt: true, reason: r } });
+          toast('Vehicle document requirement marked exempt');
+          close();
+          if (onDone) onDone();
+        } catch (e) { toast(e.message, 'err'); }
+      };
+    });
+  }
+}
+
+async function showUpdateRenewalTaskModal(taskId, onDone) {
+  let tasks;
+  try {
+    tasks = await api('/vehicle-documents/tasks');
+  } catch (e) {
+    return toast(e.message, 'err');
+  }
+  const task = tasks.find((t) => String(t.id) === String(taskId));
+  if (!task) return toast('Task not found', 'err');
+
+  const STAGES = [
+    { value: 'assigned', label: 'Assigned' },
+    { value: 'application_submitted', label: 'Application Submitted' },
+    { value: 'pending_verification', label: 'Pending Verification' },
+    { value: 'completed', label: 'Completed' },
+  ];
+
+  const bodyHtml = `
+    <p class="muted" style="margin-top:0">Vehicle: <b>${esc(task.asset_code)}</b> ${task.registration ? `[${esc(task.registration)}]` : ''} · <b>${esc(task.doc_type_name)}</b></p>
+    <div class="row">
+      ${field('Workflow Stage', 'stage', { type: 'select', options: STAGES, value: task.stage })}
+      ${field('Target Completion Date', 'target_date', { type: 'date', value: task.target_date || '' })}
+    </div>
+    <div class="row">
+      ${field('Estimated Cost (LKR)', 'estimated_cost', { type: 'number', value: task.estimated_cost || '' })}
+      ${field('Actual Cost (LKR)', 'actual_cost', { type: 'number', value: task.actual_cost || '' })}
+    </div>
+    ${field('Temporary Receipt No', 'temporary_receipt_no', { placeholder: 'e.g. RCP-DMT-12345', value: task.temporary_receipt_no || '' })}
+    ${field('Notes', 'notes', { type: 'textarea', value: task.notes || '' })}
+    <div style="margin-top:16px;text-align:right">
+      <button class="primary" id="btn-save-task">Update Task</button>
+    </div>`;
+
+  modal(`Update Renewal Task #${taskId}`, bodyHtml, (body, close) => {
+    qs('#btn-save-task', body).onclick = async () => {
+      const f = formData(body);
+      try {
+        await api(`/vehicle-documents/tasks/${taskId}`, {
+          method: 'PUT',
+          body: {
+            stage: f.stage,
+            target_date: f.target_date || null,
+            estimated_cost: f.estimated_cost ? Number(f.estimated_cost) : null,
+            actual_cost: f.actual_cost ? Number(f.actual_cost) : null,
+            temporary_receipt_no: f.temporary_receipt_no ? f.temporary_receipt_no.trim() : null,
+            notes: f.notes ? f.notes.trim() : null,
+          }
+        });
+        toast('Renewal task updated');
+        close();
+        if (onDone) onDone();
+      } catch (e) { toast(e.message, 'err'); }
     };
   });
 }
@@ -3754,9 +4600,11 @@ routes.labour = async (c) => {
 // These predate the one-open-card rule, which only stops NEW ones. Collapsed by
 // default — it's a backlog to work off, not an error.
 async function loadVehicleConflicts(el) {
+  if (!el) return;
   let d;
   try { d = await api('/jobs/duplicates'); } catch (e) { return; }
-  if (!d.vehicle_count) { el.innerHTML = ''; return; }
+  if (!el || !el.isConnected) return;
+  if (!d || !d.vehicle_count) { el.innerHTML = ''; return; }
   el.innerHTML = `<details class="card section" style="border-left:4px solid var(--amber);margin-bottom:12px">
     <summary style="cursor:pointer"><b>⚠ ${num(d.vehicle_count)} vehicle${d.vehicle_count === 1 ? '' : 's'} with more than one open job card</b>
       <span class="muted"> — ${num(d.job_count)} cards. New duplicates are blocked; close these off when you can.</span></summary>
@@ -5159,6 +6007,18 @@ async function newGrnModal(onDone) {
     nextNo = `GRN-${new Date().getFullYear()}-0001`;
   }
 
+  let locations = [];
+  try {
+    locations = await api('/store-locations');
+  } catch (e) {
+    locations = [];
+  }
+  const locOpts = locations.map((l) => ({ value: l.id, label: `${l.code} — ${l.name} (${l.store_type || 'store'})` }));
+  if (!locOpts.length) {
+    locOpts.push({ value: 1, label: 'MAIN-STORES — Central Main Stores (main_store)' });
+    locOpts.push({ value: 2, label: 'MAIN-WORKSHOP — Main Workshop Stores (workshop_store)' });
+  }
+
   let pendingMrnLines = [];
   try {
     pendingMrnLines = await api('/stores/awaiting-grn?limit=100');
@@ -5178,6 +6038,7 @@ async function newGrnModal(onDone) {
         ${fld('Invoice No', 'invoice_no', { placeholder: 'e.g. INV-9901' })}
         ${fld('Invoice Date', 'invoice_date', { type: 'date' })}
         ${fld('Purchase Source', 'purchase_source', { type: 'select', options: SOURCE_OPTS, value: 'local_purchase' })}
+        ${fld('Receiving Destination Store *', 'physical_store_id', { type: 'select', options: locOpts, value: 2 })}
         ${fld('Project / Workshop Site', 'project_site', { value: 'Central Workshop — Badalgama' })}
       </div>
     </div>
@@ -5269,6 +6130,20 @@ async function newGrnModal(onDone) {
         };
       });
 
+      const srcSel = qs('[name="purchase_source"]', mbody);
+      const storeSel = qs('[name="physical_store_id"]', mbody);
+      if (srcSel && storeSel) {
+        srcSel.addEventListener('change', () => {
+          if (srcSel.value === 'head_office') {
+            const ms = locations.find((l) => l.store_type === 'main_store' || l.code === 'MAIN-STORES');
+            if (ms) storeSel.value = ms.id;
+          } else if (srcSel.value === 'local_purchase') {
+            const ws = locations.find((l) => l.code === 'MAIN-WORKSHOP' || l.store_type === 'workshop_store');
+            if (ws) storeSel.value = ws.id;
+          }
+        });
+      }
+
       qs('#gsave', mbody).onclick = async () => {
         const grnNo = qs('[name="grn_no"]', mbody).value.trim();
         const receivedDate = qs('[name="received_date"]', mbody).value;
@@ -5278,6 +6153,7 @@ async function newGrnModal(onDone) {
         const invoiceNo = qs('[name="invoice_no"]', mbody).value.trim();
         const invoiceDate = qs('[name="invoice_date"]', mbody).value;
         const purchaseSource = qs('[name="purchase_source"]', mbody).value;
+        const physicalStoreId = Number(qs('[name="physical_store_id"]', mbody)?.value) || null;
         const projectSite = qs('[name="project_site"]', mbody).value.trim();
 
         if (!grnNo) return toast('GRN number is required', 'err');
@@ -5322,6 +6198,7 @@ async function newGrnModal(onDone) {
               invoice_no: invoiceNo,
               invoice_date: invoiceDate || null,
               purchase_source: purchaseSource,
+              physical_store_id: physicalStoreId,
               project_site: projectSite,
               lines,
             }
@@ -5364,7 +6241,8 @@ routes.stores = async (c, parts = []) => {
   };
   // Part 2: every kind of stock in one view, and the stock take.
   // Part 4: scrap and waste oil leave on a disposal note.
-  const PRIMARY = [['monitor', '📊 MONITOR'], ['flow', GROUPS.flow.label], ['mtn', '🔁 TRANSFERS'], ['stock', '📦 STOCK'], ['counts', '🧮 STOCK TAKE'], ['disposal', '♻️ DISPOSAL']];
+  const PRIMARY = [['cockpit', '🎯 STORE COCKPIT'], ['monitor', '📊 MONITOR'], ['flow', GROUPS.flow.label], ['mtn', '🔁 TRANSFERS'], ['stock', '📦 STOCK'], ['counts', '🧮 STOCK TAKE'], ['disposal', '♻️ DISPOSAL']];
+  if (canDo('stores.locations.view')) PRIMARY.push(['locations', '🏢 STORE LOCATIONS']);
 
   const group = GROUPS[tab] ? tab : null;
   if (group) tab = sp.get('sub') || GROUPS[group].subs[0][0];      // a group renders its sub-view
@@ -5378,8 +6256,12 @@ routes.stores = async (c, parts = []) => {
 
   c.innerHTML = pageHeader('Stores') + primaryBar + subBar + '<div id="storebody" class="muted">Loading…</div>';
   const body = qs('#storebody');
-  if (tab === 'monitor') {
+  if (tab === 'cockpit') {
+    return storesCockpit(body, sp);
+  } else if (tab === 'monitor') {
     return storesMonitor(body);
+  } else if (tab === 'locations') {
+    return storeLocationsTab(body);
   } else if (tab === 'stock') {
     return storesStock(body, sp);
   } else if (tab === 'counts') {
@@ -5828,7 +6710,7 @@ routes.stores = async (c, parts = []) => {
           <td>${esc(String(t.txn_date || '').slice(0, 10))}</td>
           <td class="desc-col"><b>${esc(t.description || '')}</b>${t.moves_stock ? ' <span class="badge green" title="Moves stock from one store to another: out of the sending store when it is dispatched, into the receiving store when it is accepted">moves stock</span>' : ''}
             ${(t.item_count || 1) > 1 ? `<span class="badge blue" style="margin-left:4px">${t.item_count} items</span>` : ''}</td>
-          <td>${esc(t.from_location || t.from_asset_code || '—')} → ${esc(t.to_location || t.to_asset_code || '—')}</td>
+          <td>${t.from_store_location_code ? `<span class="badge gray" style="font-size:10px">${esc(t.from_store_location_code)}</span> ` : ''}${esc(t.from_location || t.from_asset_code || '—')} → ${t.to_store_location_code ? `<span class="badge gray" style="font-size:10px">${esc(t.to_store_location_code)}</span> ` : ''}${esc(t.to_location || t.to_asset_code || '—')}</td>
           <td class="num"><b>${num(t.qty)}</b></td>
           <td>
             ${docRoadBar(rd)}
@@ -6053,6 +6935,538 @@ const FLOW_STEPS = [
 const FLOW_STEP_LABEL = Object.fromEntries(FLOW_STEPS.concat([['imported', 'Imported history']]));
 const FLOW_KINDS = [['', 'All kinds'], ['general', 'Parts & general'], ['oil', 'Lubricants'], ['filter', 'Filters'], ['tyre', 'Tyres'], ['battery', 'Batteries']];
 const FLOW_KIND_LABEL = Object.fromEntries(FLOW_KINDS);
+
+// ===========================================================================
+// Physical Store Locations & Central Hierarchy (Plan Revision 2, Phase 1)
+// ===========================================================================
+
+async function storeLocationsTab(body) {
+  body.innerHTML = '<div class="muted" style="padding:20px">Loading physical store locations…</div>';
+
+  try {
+    const [storesRes, treeRes, wsRes, projectsRes, reconcileRes, inTransitRes] = await Promise.all([
+      api('/store-locations'),
+      api('/store-locations/tree'),
+      api('/workshops').catch(() => []),
+      api('/projects').catch(() => []),
+      api('/store-locations/reconciliation').catch(() => null),
+      api('/store-locations/in-transit').catch(() => [])
+    ]);
+
+    const stores = Array.isArray(storesRes) ? storesRes : (storesRes && storesRes.stores) || [];
+    const workshops = Array.isArray(wsRes) ? wsRes : (wsRes && wsRes.workshops) || [];
+    const projects = Array.isArray(projectsRes) ? projectsRes : (projectsRes && projectsRes.projects) || [];
+
+    const canManage = canDo('stores.locations.manage') || (typeof isAdmin === 'function' && isAdmin()) || (ME && (ME.roles || []).includes('admin'));
+
+    const typeBadge = (type) => {
+      switch (type) {
+        case 'MAIN_STORE':
+          return '<span class="badge" style="background:#1e3a8a;color:#fff;font-weight:600">Central Main Store</span>';
+        case 'MAIN_WORKSHOP_STORE':
+          return '<span class="badge" style="background:#b45309;color:#fff;font-weight:600">Main Workshop Store</span>';
+        case 'SITE_STORE':
+          return '<span class="badge" style="background:#0f766e;color:#fff;font-weight:600">Site Store</span>';
+        case 'SITE_WORKSHOP_STORE':
+          return '<span class="badge" style="background:#15803d;color:#fff;font-weight:600">Site Workshop Store</span>';
+        default:
+          return `<span class="badge">${esc(type)}</span>`;
+      }
+    };
+
+    // Shadow Stock Parity Verification (Phase 2)
+    const renderReconciliation = () => {
+      if (!reconcileRes) return '';
+      const rec = reconcileRes;
+      const secList = rec.sections ? Object.values(rec.sections) : [];
+      return `
+        <div style="background:var(--card, #fff);border:1px solid ${rec.in_sync ? '#16a34a' : '#dc2626'};border-radius:8px;padding:16px;margin-bottom:20px;box-shadow:0 1px 3px rgba(0,0,0,0.05)">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px">
+            <div style="display:flex;align-items:center;gap:10px">
+              <span style="font-size:18px">${rec.in_sync ? '🛡️' : '⚠️'}</span>
+              <div>
+                <span style="font-weight:700;font-size:15px">Shadow Stock Parity Verification</span>
+                <span class="muted" style="font-size:12px;margin-left:8px">(Phase 2 Parallel Ledger Verification)</span>
+              </div>
+            </div>
+            <div>
+              ${rec.in_sync ? '<span class="badge green" style="font-size:12px;font-weight:700">✓ 100% PARITY CONFIRMED (Delta = 0)</span>' : '<span class="badge red">Discrepancy Detected</span>'}
+            </div>
+          </div>
+          <div style="font-size:12px;color:var(--text-muted, #64748b);margin-bottom:12px">
+            Parallel tracking ensures historical Central Workshop balances are identical between legacy workshop views and new physical store views. Central Main Stores starts at 0 until verified by physical count.
+          </div>
+          <div style="overflow-x:auto">
+            <table class="table" style="margin:0;width:100%;font-size:12px">
+              <thead>
+                <tr style="border-bottom:1px solid var(--border, #e2e8f0);text-align:left">
+                  <th style="padding:6px 10px">Inventory Section</th>
+                  <th style="padding:6px 10px;text-align:right">Legacy CW Balance</th>
+                  <th style="padding:6px 10px;text-align:right">Physical Main Workshop</th>
+                  <th style="padding:6px 10px;text-align:right">Central Main Stores</th>
+                  <th style="padding:6px 10px;text-align:right">Delta</th>
+                  <th style="padding:6px 10px;text-align:center">Parity Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${secList.map(s => `
+                  <tr style="border-bottom:1px solid var(--border, #f1f5f9)">
+                    <td style="padding:6px 10px;font-weight:600;text-transform:capitalize">${esc(s.section)}</td>
+                    <td style="padding:6px 10px;text-align:right;font-family:monospace">${Number(s.legacy_cw_balance).toLocaleString()}</td>
+                    <td style="padding:6px 10px;text-align:right;font-family:monospace;font-weight:600">${Number(s.physical_workshop_balance).toLocaleString()}</td>
+                    <td style="padding:6px 10px;text-align:right;font-family:monospace;color:#64748b">${Number(s.central_main_stores_balance).toLocaleString()}</td>
+                    <td style="padding:6px 10px;text-align:right;font-family:monospace;font-weight:700;color:${s.delta === 0 ? '#16a34a' : '#dc2626'}">${s.delta === 0 ? '0' : s.delta}</td>
+                    <td style="padding:6px 10px;text-align:center">${s.matched ? '<span style="color:#16a34a;font-weight:700">✓ In-Sync</span>' : '<span style="color:#dc2626;font-weight:700">Mismatch</span>'}</td>
+                  </tr>
+                `).join('')}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      `;
+    };
+
+    // Goods in Transit (Phase 2)
+    const renderInTransit = () => {
+      const list = Array.isArray(inTransitRes) ? inTransitRes : [];
+      return `
+        <div style="background:var(--card, #fff);border:1px solid var(--border, #e5e7eb);border-radius:8px;padding:16px;margin-bottom:20px">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+            <div style="font-weight:700;font-size:15px;display:flex;align-items:center;gap:8px">
+              <span>🚚 Goods in Transit Between Physical Stores</span>
+              <span class="badge sm ${list.length ? 'yellow' : 'gray'}">${list.length} in transit</span>
+            </div>
+          </div>
+          ${list.length === 0 ? `
+            <div class="muted" style="font-size:12px;padding:6px 0;display:flex;align-items:center;gap:6px">
+              <span>✅</span> All store-to-store transfers are delivered and accepted. No items currently in transit.
+            </div>
+          ` : `
+            <div style="overflow-x:auto">
+              <table class="table" style="margin:0;width:100%;font-size:12px">
+                <thead>
+                  <tr style="border-bottom:1px solid var(--border, #e5e7eb);text-align:left">
+                    <th style="padding:6px 10px">MTN #</th>
+                    <th style="padding:6px 10px">Date</th>
+                    <th style="padding:6px 10px">From Store</th>
+                    <th style="padding:6px 10px">To Store</th>
+                    <th style="padding:6px 10px">Item</th>
+                    <th style="padding:6px 10px;text-align:right">Qty In-Transit</th>
+                    <th style="padding:6px 10px">Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${list.map(t => `
+                    <tr style="border-bottom:1px solid var(--border, #f1f5f9)">
+                      <td style="padding:6px 10px;font-family:monospace;font-weight:600">MTN ${esc(t.mtn_no)}</td>
+                      <td style="padding:6px 10px">${esc(t.txn_date || '')}</td>
+                      <td style="padding:6px 10px;font-weight:600">${esc(t.from_location_name || t.from_location_code || 'Store ' + t.from_store_id)}</td>
+                      <td style="padding:6px 10px;font-weight:600">${esc(t.to_location_name || t.to_location_code || 'Store ' + t.to_store_id)}</td>
+                      <td style="padding:6px 10px">${esc(t.description || t.item_name || '')}</td>
+                      <td style="padding:6px 10px;text-align:right;font-family:monospace;font-weight:700">${Number(t.qty_in_transit).toLocaleString()}</td>
+                      <td style="padding:6px 10px"><span class="badge sm yellow">${esc(t.status)}</span></td>
+                    </tr>
+                  `).join('')}
+                </tbody>
+              </table>
+            </div>
+          `}
+        </div>
+      `;
+    };
+
+    // Topology visualization
+    const renderTree = () => {
+      if (!treeRes || !treeRes.main_store) {
+        return '<div class="muted" style="margin-bottom:16px">No central store hierarchy configured yet.</div>';
+      }
+      const ms = treeRes.main_store;
+      const mw = ms.main_workshop;
+
+      return `
+        <div style="background:var(--card, #fff);border:1px solid var(--border, #e5e7eb);border-radius:8px;padding:16px;margin-bottom:20px">
+          <div style="font-weight:700;font-size:15px;margin-bottom:12px;display:flex;align-items:center;gap:8px">
+            <span>🌐 Store Network Topology</span>
+            <span class="muted" style="font-size:12px;font-weight:normal">(Central Authority & Workshop Stock Pools)</span>
+          </div>
+
+          <div style="display:flex;flex-direction:column;gap:14px;padding-left:8px;font-size:13px">
+            <!-- Level 1: Central Main Stores -->
+            <div style="border-left:3px solid #1e3a8a;padding-left:12px">
+              <div style="display:flex;align-items:center;gap:8px;font-weight:700;flex-wrap:wrap">
+                <span style="font-size:16px">🏛️</span>
+                <span>${esc(ms.name)}</span>
+                <span class="code" style="font-size:11px">${esc(ms.code)}</span>
+                ${typeBadge(ms.store_type)}
+                <span class="muted" style="font-size:11px">Central Purchasing & Site Stock Authority</span>
+              </div>
+
+              <!-- Level 2 Branches: Site Stores & Main Workshop Stores -->
+              <div style="margin-top:10px;margin-left:16px;display:flex;flex-direction:column;gap:12px">
+                <!-- Branch A: General Site Stores -->
+                <div style="border-left:2px dashed #0f766e;padding-left:12px">
+                  <div style="font-weight:600;color:#0f766e;margin-bottom:6px">├── 🏗️ General Site Stores (Civil & Project Materials):</div>
+                  <div style="display:flex;flex-wrap:wrap;gap:8px">
+                    ${(ms.site_stores && ms.site_stores.length) ? ms.site_stores.map(ss => `
+                      <div style="background:var(--subtle, #f3f4f6);border:1px solid var(--border, #e5e7eb);border-radius:6px;padding:6px 10px;display:flex;align-items:center;gap:6px">
+                        <span>📦</span>
+                        <span style="font-weight:600">${esc(ss.name)}</span>
+                        <span class="code" style="font-size:10px">${esc(ss.code)}</span>
+                        ${typeBadge(ss.store_type)}
+                      </div>
+                    `).join('') : '<span class="muted" style="font-style:italic">No site stores configured yet</span>'}
+                  </div>
+                </div>
+
+                <!-- Branch B: Main Workshop Stores -->
+                ${mw ? `
+                  <div style="border-left:2px solid #b45309;padding-left:12px">
+                    <div style="display:flex;align-items:center;gap:8px;font-weight:700;margin-bottom:6px;flex-wrap:wrap">
+                      <span>├── 🔧</span>
+                      <span>${esc(mw.name)}</span>
+                      <span class="code" style="font-size:11px">${esc(mw.code)}</span>
+                      ${typeBadge(mw.store_type)}
+                      <span class="muted" style="font-size:11px">Central Workshop Pool (Replenished via Main Stores)</span>
+                    </div>
+
+                    <!-- Level 3: Site Workshop Stores -->
+                    <div style="margin-left:16px;border-left:2px dashed #15803d;padding-left:12px">
+                      <div style="font-weight:600;color:#15803d;margin-bottom:6px">└── 🚜 Site Workshop Stores (Field Equipment & Spare Parts):</div>
+                      <div style="display:flex;flex-wrap:wrap;gap:8px">
+                        ${(mw.site_workshop_stores && mw.site_workshop_stores.length) ? mw.site_workshop_stores.map(sw => `
+                          <div style="background:var(--subtle, #f3f4f6);border:1px solid var(--border, #e5e7eb);border-radius:6px;padding:6px 10px;display:flex;align-items:center;gap:6px">
+                            <span>🛠️</span>
+                            <span style="font-weight:600">${esc(sw.name)}</span>
+                            <span class="code" style="font-size:10px">${esc(sw.code)}</span>
+                            ${typeBadge(sw.store_type)}
+                          </div>
+                        `).join('') : '<span class="muted" style="font-style:italic">No site workshop stores configured yet</span>'}
+                      </div>
+                    </div>
+                  </div>
+                ` : '<div class="muted">Main Workshop Store not linked</div>'}
+              </div>
+            </div>
+          </div>
+        </div>
+      `;
+    };
+
+    // Table view
+    const renderTable = () => `
+      <div class="card" style="padding:0;overflow:hidden">
+        <div style="padding:12px 16px;background:var(--subtle, #f9fafb);border-bottom:1px solid var(--border, #e5e7eb);display:flex;justify-content:space-between;align-items:center">
+          <div style="font-weight:700">Physical Store Locations Master Register</div>
+          <div class="muted" style="font-size:12px">${stores.length} registered locations</div>
+        </div>
+        <div style="overflow-x:auto">
+          <table class="table" style="margin:0;width:100%;font-size:13px">
+            <thead>
+              <tr style="text-align:left;border-bottom:1px solid var(--border, #e5e7eb)">
+                <th style="padding:10px 12px">Code</th>
+                <th style="padding:10px 12px">Store Name</th>
+                <th style="padding:10px 12px">Store Type</th>
+                <th style="padding:10px 12px">Parent Store</th>
+                <th style="padding:10px 12px">Workshop / Site Link</th>
+                <th style="padding:10px 12px">Legacy Map</th>
+                <th style="padding:10px 12px">Status</th>
+                <th style="padding:10px 12px;text-align:right;position:sticky;right:0;background:var(--subtle, #f9fafb);z-index:2;box-shadow:-2px 0 4px rgba(0,0,0,0.06)">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${stores.map(s => `
+                <tr style="border-bottom:1px solid var(--border, #f3f4f6)">
+                  <td style="padding:10px 12px;font-family:monospace;font-weight:600">${esc(s.code)}</td>
+                  <td style="padding:10px 12px;font-weight:600">${esc(s.name)}${s.notes ? `<br><span class="muted" style="font-size:11px;font-weight:normal">${esc(s.notes)}</span>` : ''}</td>
+                  <td style="padding:10px 12px">${typeBadge(s.store_type)}</td>
+                  <td style="padding:10px 12px">${s.parent_store_name ? `<span>${esc(s.parent_store_name)}</span> <span class="code" style="font-size:10px">(${esc(s.parent_store_code)})</span>` : '<span class="muted">Top Level (None)</span>'}</td>
+                  <td style="padding:10px 12px">${s.workshop_name ? `🏢 ${esc(s.workshop_name)}` : (s.site_name ? `🏗️ ${esc(s.site_name)}` : '<span class="muted">—</span>')}</td>
+                  <td style="padding:10px 12px">${s.legacy_store_id ? `<span class="badge sm gray">Store ID #${s.legacy_store_id}</span>` : '<span class="muted">—</span>'}</td>
+                  <td style="padding:10px 12px">${s.active ? '<span class="badge green sm">Active</span>' : '<span class="badge red sm">Inactive</span>'}</td>
+                  <td style="padding:10px 12px;text-align:right;white-space:nowrap;position:sticky;right:0;background:var(--card-bg, #fff);z-index:1;box-shadow:-2px 0 4px rgba(0,0,0,0.06)">
+                    <button class="sm" onclick="showStoreLocationStockModal(${s.id})">📦 Stock</button>
+                    ${canManage ? `<button class="sm primary" onclick="showStoreLocationModal(${s.id})" style="margin-left:4px">✏️ Edit</button>` : ''}
+                  </td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    `;
+
+    body.innerHTML = `
+      <div style="margin-bottom:14px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">
+        <div>
+          <h2 style="margin:0;font-size:18px">🏢 Physical Store Locations & Central Hierarchy</h2>
+          <div class="muted" style="font-size:12px;margin-top:2px">Central Main Stores authority and Main Workshop equipment stock pool</div>
+        </div>
+        <div style="display:flex;gap:8px">
+          ${canManage ? '<button class="primary sm" id="btnNewStoreLoc" onclick="showStoreLocationModal()">+ New Store Location</button>' : ''}
+          <button class="sm" id="btnRefreshStoreLoc" onclick="const b = document.querySelector(\'#storebody\'); if (b) storeLocationsTab(b);">🔄 Refresh</button>
+        </div>
+      </div>
+      ${renderReconciliation()}
+      ${renderInTransit()}
+      ${renderTree()}
+      ${renderTable()}
+    `;
+
+    if (canManage && qs('#btnNewStoreLoc')) {
+      qs('#btnNewStoreLoc').onclick = () => showStoreLocationModal();
+    }
+    if (qs('#btnRefreshStoreLoc')) {
+      qs('#btnRefreshStoreLoc').onclick = () => storeLocationsTab(body);
+    }
+  } catch (err) {
+    body.innerHTML = `<div class="card alert red">Error loading store locations: ${esc(err.message)}</div>`;
+  }
+}
+
+async function showStoreLocationStockModal(storeId, storeName = '') {
+  modal(`Stock Breakdown: ${storeName || 'Store Location #' + storeId}`, '<div class="muted" style="padding:20px">Loading live stock…</div>', async (mBody, close) => {
+    try {
+      const data = await api(`/store-locations/${storeId}/stock`);
+      const s = data.store || {};
+      const modalTitle = mBody.closest('.modal') ? mBody.closest('.modal').querySelector('h2') : null;
+      if (modalTitle && s.name) modalTitle.textContent = `Stock Breakdown: ${s.name} (${s.code || ''})`;
+      const sums = data.summaries || {};
+      const secKeys = ['oil', 'filter', 'battery', 'tyre', 'general'];
+      const secLabels = { oil: '🛢️ Oil & Lubricants', filter: '🔍 Filters', battery: '🔋 Batteries', tyre: '🛞 Tyres', general: '📦 General Items' };
+
+      mBody.innerHTML = `
+        <div style="font-size:13px">
+          <div style="margin-bottom:14px;background:var(--subtle, #f8fafc);padding:10px 12px;border-radius:6px;border:1px solid var(--border, #e2e8f0);display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+            <div>
+              <span style="font-weight:700">${esc(s.name)}</span>
+              <span class="code" style="font-size:11px;margin-left:6px">${esc(s.code)}</span>
+            </div>
+            <div>
+              <span class="badge sm">${esc(s.store_type || '')}</span>
+            </div>
+          </div>
+
+          <table class="table" style="width:100%;margin-bottom:16px;font-size:12px">
+            <thead>
+              <tr style="border-bottom:1px solid var(--border, #e2e8f0);text-align:left">
+                <th style="padding:8px 10px">Inventory Section</th>
+                <th style="padding:8px 10px;text-align:right">Received</th>
+                <th style="padding:8px 10px;text-align:right">Issued</th>
+                <th style="padding:8px 10px;text-align:right">On-Hand Balance</th>
+                <th style="padding:8px 10px;text-align:right">Active Items</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${secKeys.map(k => {
+                const row = sums[k] || { received: 0, issued: 0, balance: 0, items: 0 };
+                return `
+                  <tr style="border-bottom:1px solid var(--border, #f1f5f9)">
+                    <td style="padding:8px 10px;font-weight:600">${secLabels[k]}</td>
+                    <td style="padding:8px 10px;text-align:right;font-family:monospace">${Number(row.received || 0).toLocaleString()}</td>
+                    <td style="padding:8px 10px;text-align:right;font-family:monospace">${Number(row.issued || 0).toLocaleString()}</td>
+                    <td style="padding:8px 10px;text-align:right;font-family:monospace;font-weight:700;color:${(row.balance || 0) < 0 ? '#dc2626' : 'inherit'}">${Number(row.balance || 0).toLocaleString()}</td>
+                    <td style="padding:8px 10px;text-align:right;font-family:monospace">${row.items || 0}</td>
+                  </tr>
+                `;
+              }).join('')}
+            </tbody>
+          </table>
+
+          <div style="display:flex;justify-content:flex-end">
+            <button class="btn" id="btn_close_loc_stock">Close</button>
+          </div>
+        </div>
+      `;
+      qs('#btn_close_loc_stock', mBody).onclick = close;
+    } catch (e) {
+      mBody.innerHTML = `<div class="card alert red">Error loading stock: ${esc(e.message)}</div>`;
+    }
+  }, { wide: true });
+}
+
+async function showStoreLocationModal(storeId = null) {
+  let store = null;
+  const [storesRes, wsRes, projectsRes] = await Promise.all([
+    api('/store-locations'),
+    api('/workshops').catch(() => []),
+    api('/projects').catch(() => [])
+  ]);
+
+  const stores = Array.isArray(storesRes) ? storesRes : (storesRes && storesRes.stores) || [];
+  const workshops = Array.isArray(wsRes) ? wsRes : (wsRes && wsRes.workshops) || [];
+  const projects = Array.isArray(projectsRes) ? projectsRes : (projectsRes && projectsRes.projects) || [];
+
+  if (storeId) {
+    store = stores.find(s => Number(s.id) === Number(storeId));
+  }
+
+  const isNew = !store;
+  const title = isNew ? 'Add Physical Store Location' : `Edit Store Location: ${store.name}`;
+
+  const mainStores = stores.filter(s => s.store_type === 'MAIN_STORE' && s.active);
+  const mainWorkshopStores = stores.filter(s => s.store_type === 'MAIN_WORKSHOP_STORE' && s.active);
+
+  const html = `
+    <div style="font-size:13px">
+      <div style="margin-bottom:12px">
+        <label style="display:block;font-weight:600;margin-bottom:4px">Store Code *</label>
+        <input id="sl_code" class="input" style="width:100%;font-family:monospace" placeholder="e.g. SITE-STORE-RUWANWELLA" value="${esc(store ? store.code : '')}" ${!isNew ? 'readonly' : ''} />
+        <span class="muted" style="font-size:11px">Unique uppercase identifier (e.g. MAIN-STORES, MAIN-WORKSHOP, SITE-STORE-01)</span>
+      </div>
+
+      <div style="margin-bottom:12px">
+        <label style="display:block;font-weight:600;margin-bottom:4px">Store Name *</label>
+        <input id="sl_name" class="input" style="width:100%" placeholder="e.g. Ruwanwella Project Site Store" value="${esc(store ? store.name : '')}" />
+      </div>
+
+      <div style="margin-bottom:12px">
+        <label style="display:block;font-weight:600;margin-bottom:4px">Store Type *</label>
+        <select id="sl_type" class="select" style="width:100%" ${!isNew ? 'disabled' : ''}>
+          <option value="SITE_STORE" ${store && store.store_type === 'SITE_STORE' ? 'selected' : ''}>Site Store (General project & civil materials)</option>
+          <option value="SITE_WORKSHOP_STORE" ${store && store.store_type === 'SITE_WORKSHOP_STORE' ? 'selected' : ''}>Site Workshop Store (Field workshop parts & consumables)</option>
+          <option value="MAIN_WORKSHOP_STORE" ${store && store.store_type === 'MAIN_WORKSHOP_STORE' ? 'selected' : ''}>Main Workshop Store (Central workshop equipment pool)</option>
+          <option value="MAIN_STORE" ${store && store.store_type === 'MAIN_STORE' ? 'selected' : ''}>Central Main Store (Central authority for site stock & purchasing)</option>
+        </select>
+      </div>
+
+      <div id="sl_parent_wrap" style="margin-bottom:12px">
+        <label style="display:block;font-weight:600;margin-bottom:4px">Parent Store *</label>
+        <select id="sl_parent" class="select" style="width:100%">
+          <option value="">— None (Top Level) —</option>
+          ${stores.filter(s => isNew || s.id !== store.id).map(s => `
+            <option value="${s.id}" ${store && store.parent_store_id === s.id ? 'selected' : ''}>
+              ${esc(s.name)} (${esc(s.code)} - ${esc(s.store_type)})
+            </option>
+          `).join('')}
+        </select>
+        <span class="muted" id="sl_parent_hint" style="font-size:11px">Site Stores parent to Main Stores; Site Workshop Stores parent to Main Workshop Stores.</span>
+      </div>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
+        <div>
+          <label style="display:block;font-weight:600;margin-bottom:4px">Linked Workshop (Optional)</label>
+          <select id="sl_ws" class="select" style="width:100%">
+            <option value="">— None —</option>
+            ${workshops.map(w => `
+              <option value="${w.id}" ${store && store.workshop_id === w.id ? 'selected' : ''}>
+                ${esc(w.name)} (${esc(w.code)})
+              </option>
+            `).join('')}
+          </select>
+        </div>
+        <div>
+          <label style="display:block;font-weight:600;margin-bottom:4px">Linked Project / Site (Optional)</label>
+          <select id="sl_site" class="select" style="width:100%">
+            <option value="">— None —</option>
+            ${projects.map(p => `
+              <option value="${p.id}" ${store && store.site_id === p.id ? 'selected' : ''}>
+                ${esc(p.name)}
+              </option>
+            `).join('')}
+          </select>
+        </div>
+      </div>
+
+      <div style="margin-bottom:12px">
+        <label style="display:block;font-weight:600;margin-bottom:4px">Operational Notes</label>
+        <textarea id="sl_notes" class="input" style="width:100%;height:60px" placeholder="Location, compound details, or notes...">${esc(store ? (store.notes || '') : '')}</textarea>
+      </div>
+
+      ${!isNew ? `
+        <div style="margin-bottom:12px">
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
+            <input type="checkbox" id="sl_active" ${store.active ? 'checked' : ''} />
+            <span style="font-weight:600">Store Location is Active</span>
+          </label>
+        </div>
+      ` : ''}
+
+      <div style="margin-top:16px;display:flex;gap:8px;justify-content:flex-end">
+        <button class="btn" id="sl_btn_cancel">Cancel</button>
+        <button class="btn primary" id="sl_btn_save">${isNew ? 'Create Store Location' : 'Save Changes'}</button>
+      </div>
+    </div>
+  `;
+
+  modal(title, html, (mBody, close) => {
+    qs('#sl_btn_cancel', mBody).onclick = close;
+
+    const typeSelect = qs('#sl_type', mBody);
+    const parentSelect = qs('#sl_parent', mBody);
+    const parentWrap = qs('#sl_parent_wrap', mBody);
+    const parentHint = qs('#sl_parent_hint', mBody);
+
+    const updateParentRules = () => {
+      const val = typeSelect.value;
+      if (val === 'MAIN_STORE') {
+        parentSelect.value = '';
+        parentWrap.style.display = 'none';
+      } else {
+        parentWrap.style.display = 'block';
+        if (val === 'SITE_STORE' || val === 'MAIN_WORKSHOP_STORE') {
+          parentHint.textContent = 'Parent must be a Central Main Store.';
+          if (mainStores.length && !parentSelect.value) {
+            parentSelect.value = String(mainStores[0].id);
+          }
+        } else if (val === 'SITE_WORKSHOP_STORE') {
+          parentHint.textContent = 'Parent must be a Main Workshop Store.';
+          if (mainWorkshopStores.length && !parentSelect.value) {
+            parentSelect.value = String(mainWorkshopStores[0].id);
+          }
+        }
+      }
+    };
+
+    typeSelect.addEventListener('change', updateParentRules);
+    updateParentRules();
+
+    qs('#sl_btn_save', mBody).onclick = async () => {
+      const code = qs('#sl_code', mBody).value.trim().toUpperCase();
+      const name = qs('#sl_name', mBody).value.trim();
+      const storeType = typeSelect.value;
+      const parentId = parentSelect.value ? Number(parentSelect.value) : null;
+      const wsId = qs('#sl_ws', mBody).value ? Number(qs('#sl_ws', mBody).value) : null;
+      const siteId = qs('#sl_site', mBody).value ? Number(qs('#sl_site', mBody).value) : null;
+      const notes = qs('#sl_notes', mBody).value.trim();
+      const active = qs('#sl_active', mBody) ? qs('#sl_active', mBody).checked : true;
+
+      if (!name) return toast('Store name is required.', 'err');
+      if (isNew && !code) return toast('Store code is required.', 'err');
+
+      if (storeType === 'MAIN_STORE' && parentId) {
+        return toast('Central Main Store cannot have a parent store.', 'err');
+      }
+      if (storeType !== 'MAIN_STORE' && !parentId) {
+        return toast('Please select a parent store for this location.', 'err');
+      }
+
+      try {
+        if (isNew) {
+          await api('/store-locations', {
+            method: 'POST',
+            body: { code, name, store_type: storeType, parent_store_id: parentId, workshop_id: wsId, site_id: siteId, notes }
+          });
+          toast('Physical store location created successfully', 'ok');
+        } else {
+          await api(`/store-locations/${store.id}`, {
+            method: 'PUT',
+            body: { name, parent_store_id: parentId, workshop_id: wsId, site_id: siteId, notes, active }
+          });
+          toast('Store location updated successfully', 'ok');
+        }
+        close();
+        const b = qs('#storebody');
+        if (b) storeLocationsTab(b);
+      } catch (err) {
+        toast(err.message, 'err');
+      }
+    };
+  }, { wide: true });
+}
+
+window.showStoreLocationModal = showStoreLocationModal;
+window.showStoreLocationStockModal = showStoreLocationStockModal;
+window.storeLocationsTab = storeLocationsTab;
 
 async function storesMonitor(body) {
   const m = await api('/stores/flow/monitor');
@@ -7437,6 +8851,562 @@ async function storesUniversalTrace(body, sp) {
 }
 
 // ===========================================================================
+// Phase E: 1-Click Rebalance Transfer Modal with Safe Buffer Verification
+// ===========================================================================
+function openRebalanceTransferModal(opp, onDone) {
+  modal('⚡ Create Rebalance Transfer MTN', `
+    <div style="margin-bottom:12px">
+      <p class="muted" style="margin:0 0 10px">Initiates an official Material Transfer Note (MTN) linking source and destination workshop stores with universal chain tracking.</p>
+      <div class="row">
+        <div class="field"><label>Source (Donating Store):</label><input type="text" value="${esc(opp.from_store_name)}" readonly disabled></div>
+        <div class="field"><label>Destination (Receiving Store):</label><input type="text" value="${esc(opp.to_store_name)}" readonly disabled></div>
+      </div>
+      <div class="row">
+        <div class="field"><label>Item Description:</label><input type="text" value="${esc(opp.item_name)}" readonly disabled></div>
+        ${field('Transfer Quantity (' + esc(opp.unit) + ')', 'transfer_qty', { type: 'number', value: opp.suggested_transfer_qty, min: 1, max: opp.from_available_surplus })}
+      </div>
+      <div style="background:var(--surface-2,#f8fafc);padding:10px 12px;border-radius:6px;margin:8px 0;font-size:12px;border:1px solid var(--border,#e2e8f0)">
+        <span>🛡️ <b>Safe Buffer Preservation:</b> Donating store holds <b>${num(opp.from_balance)}</b> on hand. Transferring <b>${num(opp.suggested_transfer_qty)}</b> leaves <b>${num(opp.from_balance - opp.suggested_transfer_qty)}</b>, safely above its threshold (ROP: ${num(opp.from_rop || 0)} + SS: ${num(opp.from_safety_stock || 0)}).</span>
+      </div>
+      ${field('Transfer Reason / Justification', 'transfer_reason', { value: `Inter-workshop rebalance: surplus transfer to resolve shortfall at ${opp.to_store_name}` })}
+    </div>
+    <div style="display:flex;justify-content:flex-end;gap:8px">
+      <button class="primary" id="modal-submit-mtn">⚡ Create Draft MTN</button>
+    </div>
+  `, (box, close) => {
+    qs('#modal-submit-mtn', box).onclick = async () => {
+      const qtyVal = Number(qs('input[name="transfer_qty"]', box).value) || 0;
+      const reasonVal = qs('input[name="transfer_reason"]', box).value.trim();
+      if (qtyVal <= 0) return toast('Transfer quantity must be greater than 0', 'err');
+
+      try {
+        const res = await api('/stores/rebalance/create-mtn', {
+          method: 'POST',
+          body: {
+            from_store_id: opp.from_store_id,
+            to_store_id: opp.to_store_id,
+            from_store_location_id: opp.from_store_location_id,
+            to_store_location_id: opp.to_store_location_id,
+            reason: reasonVal,
+            items: [{
+              section: opp.section,
+              item_key: opp.item_key,
+              item_name: opp.item_name,
+              qty: qtyVal,
+              unit: opp.unit
+            }]
+          }
+        });
+
+        close();
+        toast(`Transfer Note #${res.mtn_no} created with Chain ${res.chain_no}!`, 'ok');
+        if (typeof onDone === 'function') onDone(res);
+        else location.hash = `#/stores?tab=mtn&id=${res.mtn_id}`;
+      } catch (e) {
+        toast(e.message, 'err');
+      }
+    };
+  });
+}
+
+// ===========================================================================
+// Phase E: Storekeeper Workspace & Physical Store Multi-Store Cockpit
+// ===========================================================================
+async function storesCockpit(body, sp) {
+  let curStore = sp.get('store_id') || sp.get('physical_store_id') || (ME && (ME.store_location_id ? ('p:' + ME.store_location_id) : (ME.workshop_id ? ('w:' + ME.workshop_id) : 'p:1')));
+  let curDays = sp.get('days') || '90';
+  let activeTab = sp.get('view') || 'overview'; // 'overview' | 'inbound' | 'outbound' | 'rebalance' | 'surplus'
+
+  // Fetch physical store locations and fallback workshops
+  let storeLocations = [];
+  try { storeLocations = await api('/store-locations?active_only=true'); } catch {}
+  let workshops = [];
+  try {
+    const wsRes = await api('/workshops');
+    workshops = Array.isArray(wsRes) ? wsRes : (wsRes && wsRes.workshops) || [];
+  } catch {}
+
+  // Build selectable store options
+  const storeOptions = [];
+  if (storeLocations.length) {
+    const mainStores = storeLocations.filter((s) => s.store_type === 'MAIN_STORE');
+    const mainWs = storeLocations.filter((s) => s.store_type === 'MAIN_WORKSHOP_STORE');
+    const siteStores = storeLocations.filter((s) => s.store_type === 'SITE_STORE');
+    const others = storeLocations.filter((s) => !['MAIN_STORE', 'MAIN_WORKSHOP_STORE', 'SITE_STORE'].includes(s.store_type));
+
+    if (mainStores.length) {
+      storeOptions.push({ optgroup: '🏢 Central Stores (Main Depot)', items: mainStores.map((s) => ({ value: 'p:' + s.id, label: `${s.name} (${s.code})`, id: s.id, isPhys: true })) });
+    }
+    if (mainWs.length) {
+      storeOptions.push({ optgroup: '🔧 Central Workshop Stores', items: mainWs.map((s) => ({ value: 'p:' + s.id, label: `${s.name} (${s.code})`, id: s.id, isPhys: true })) });
+    }
+    if (siteStores.length) {
+      storeOptions.push({ optgroup: '🏗️ Remote Site Stores', items: siteStores.map((s) => ({ value: 'p:' + s.id, label: `${s.name} (${s.code})`, id: s.id, isPhys: true })) });
+    }
+    if (others.length) {
+      storeOptions.push({ optgroup: '📦 Other Store Locations', items: others.map((s) => ({ value: 'p:' + s.id, label: `${s.name} (${s.code})`, id: s.id, isPhys: true })) });
+    }
+  } else if (workshops.length) {
+    storeOptions.push({ optgroup: '🏪 Workshop Stores', items: workshops.map((w) => ({ value: 'w:' + w.id, label: `${w.name || w.code}`, id: w.id, isPhys: false })) });
+  } else {
+    storeOptions.push({ optgroup: '🏪 Stores', items: [{ value: 'p:1', label: 'Central Main Stores', id: 1, isPhys: true }] });
+  }
+
+  // Determine selected value
+  let selectedVal = String(curStore);
+  if (!selectedVal.startsWith('p:') && !selectedVal.startsWith('w:')) {
+    const numId = Number(selectedVal);
+    const matchedLoc = storeLocations.find((s) => s.id === numId);
+    if (matchedLoc) selectedVal = 'p:' + numId;
+    else selectedVal = 'w:' + numId;
+  }
+
+  body.innerHTML = `
+    <div class="toolbar" style="margin-bottom:12px;flex-wrap:wrap;gap:8px;background:var(--surface-card,#fff);padding:10px 14px;border-radius:8px;border:1px solid var(--border,#e2e8f0)">
+      <div style="display:flex;align-items:center;gap:8px">
+        <span style="font-size:22px">🏪</span>
+        <div>
+          <label style="font-weight:700;font-size:12px;display:block;text-transform:uppercase;letter-spacing:0.5px;color:var(--muted)">Store Workspace:</label>
+          <select id="cockpit-store-sel" style="min-width:280px;font-weight:600">
+            ${storeOptions.map((g) => `
+              <optgroup label="${esc(g.optgroup)}">
+                ${g.items.map((it) => `<option value="${it.value}" ${it.value === selectedVal ? 'selected' : ''}>${esc(it.label)}</option>`).join('')}
+              </optgroup>
+            `).join('')}
+          </select>
+        </div>
+      </div>
+
+      <div class="spacer"></div>
+
+      <div style="display:flex;align-items:center;gap:6px">
+        <label style="font-weight:600;font-size:12px">Rolling Horizon:</label>
+        <select id="cockpit-days-sel" style="min-width:110px">
+          <option value="30" ${curDays === '30' ? 'selected' : ''}>30 Days</option>
+          <option value="60" ${curDays === '60' ? 'selected' : ''}>60 Days</option>
+          <option value="90" ${curDays === '90' ? 'selected' : ''}>90 Days</option>
+          <option value="180" ${curDays === '180' ? 'selected' : ''}>180 Days</option>
+        </select>
+      </div>
+
+      <button class="sm" id="cockpit-btn-refresh">🔄 Refresh</button>
+      <a class="btn sm" href="#/stores?tab=flow&sub=rebalance" title="Open Deep Rebalance & ROP Configuration">⚖️ Deep Rebalance</a>
+    </div>
+
+    <div id="cockpit-banner" style="margin-bottom:12px"></div>
+    <div id="cockpit-kpis" style="margin-bottom:14px"></div>
+
+    <div class="pill-row" style="margin-bottom:14px;gap:6px;flex-wrap:wrap">
+      <button class="sm ${activeTab === 'overview' ? 'primary' : ''}" id="cp-tab-overview">⚡ Action Queues <span id="cp-cnt-actions" class="badge">0</span></button>
+      <button class="sm ${activeTab === 'inbound' ? 'primary' : ''}" id="cp-tab-inbound">📥 Inbound Deliveries <span id="cp-cnt-inbound" class="badge">0</span></button>
+      <button class="sm ${activeTab === 'outbound' ? 'primary' : ''}" id="cp-tab-outbound">📤 Outbound Dispatches <span id="cp-cnt-outbound" class="badge">0</span></button>
+      <button class="sm ${activeTab === 'rebalance' ? 'primary' : ''}" id="cp-tab-rebalance">⚖️ Rebalance Shortfalls <span id="cp-cnt-deficits" class="badge">0</span></button>
+      <button class="sm ${activeTab === 'surplus' ? 'primary' : ''}" id="cp-tab-surplus">📦 Safe Surplus to Share <span id="cp-cnt-surplus" class="badge">0</span></button>
+    </div>
+
+    <div id="cockpit-content"><div class="muted">Loading storekeeper cockpit data...</div></div>
+  `;
+
+  const bannerHost = qs('#cockpit-banner', body);
+  const kpisHost = qs('#cockpit-kpis', body);
+  const contentHost = qs('#cockpit-content', body);
+
+  let cachedCockpit = null;
+
+  async function loadCockpit() {
+    contentHost.innerHTML = '<div class="muted" style="padding:24px;text-align:center">Aggregating store shelf velocity, transfer pipelines & rebalancing opportunities...</div>';
+    try {
+      const q = new URLSearchParams({ days: curDays });
+      if (selectedVal.startsWith('p:')) {
+        q.set('physical_store_id', selectedVal.slice(2));
+      } else if (selectedVal.startsWith('w:')) {
+        q.set('store_id', selectedVal.slice(2));
+      } else {
+        q.set('physical_store_id', selectedVal);
+      }
+
+      cachedCockpit = await api('/stores/cockpit?' + q.toString());
+      renderCockpit();
+    } catch (e) {
+      contentHost.innerHTML = `<div class="card err"><p>${esc(e.message)}</p></div>`;
+    }
+  }
+
+  function renderCockpit() {
+    if (!cachedCockpit) return;
+    const { store, kpis, inbound_transfers, outbound_transfers, open_mrns, rebalance_opportunities, urgent_deficits, surplus_available } = cachedCockpit;
+
+    // Render Banner
+    const typeBadges = {
+      MAIN_STORE: '<span class="badge blue" style="font-size:12px;padding:3px 8px">🏢 Central Main Stores · Top Inventory Authority</span>',
+      MAIN_WORKSHOP_STORE: '<span class="badge purple" style="font-size:12px;padding:3px 8px">🔧 Central Main Workshop · Heavy Fleet Spares Depot</span>',
+      SITE_STORE: '<span class="badge green" style="font-size:12px;padding:3px 8px">🏗️ Unified Site Store · Construction Project Operations</span>'
+    };
+    bannerHost.innerHTML = `
+      <div class="card" style="display:flex;justify-content:space-between;align-items:center;padding:12px 16px;background:var(--surface-card,#fff);border-left:4px solid var(--primary,#2b6cb0)">
+        <div>
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px">
+            <h2 style="margin:0;font-size:18px">${esc(store.name)}</h2>
+            <code>${esc(store.code)}</code>
+          </div>
+          <div>${typeBadges[store.store_type] || `<span class="badge">${esc(store.store_type || 'Store')}</span>`}</div>
+        </div>
+        <div style="text-align:right">
+          <div style="font-size:12px;color:var(--muted)">Active Model Horizon: <b>${num(curDays)} Days</b></div>
+          <div style="font-size:12px;margin-top:2px">Tracked SKUs: <b>${num(kpis.total_items)}</b></div>
+        </div>
+      </div>
+    `;
+
+    // Render KPIs
+    kpisHost.innerHTML = `
+      <div class="grid section" style="grid-template-columns:repeat(auto-fit, minmax(200px, 1fr));gap:10px">
+        <div class="card stat" style="border-top:3px solid ${(kpis.stockouts + kpis.critical) > 0 ? 'var(--danger,#c4392c)' : 'var(--border,#cbd5e1)'}">
+          <span class="n" style="color:${(kpis.stockouts + kpis.critical) > 0 ? 'var(--danger,#c4392c)' : 'inherit'}">${num(kpis.stockouts + kpis.critical)}</span>
+          <span class="l">Critical Deficits</span>
+          <div class="muted" style="font-size:11px;margin-top:4px">
+            <span class="badge red">${num(kpis.stockouts)} Stockouts</span> · <span class="badge amber">${num(kpis.critical)} Critical</span>
+          </div>
+        </div>
+        <div class="card stat" style="border-top:3px solid ${inbound_transfers.length > 0 ? '#3182ce' : 'var(--border,#cbd5e1)'}">
+          <span class="n" style="color:${inbound_transfers.length > 0 ? '#3182ce' : 'inherit'}">${num(inbound_transfers.length)}</span>
+          <span class="l">Inbound Deliveries</span>
+          <div class="muted" style="font-size:11px;margin-top:4px">
+            Arrivals to receive & bin
+          </div>
+        </div>
+        <div class="card stat" style="border-top:3px solid ${outbound_transfers.length > 0 ? '#d69e2e' : 'var(--border,#cbd5e1)'}">
+          <span class="n" style="color:${outbound_transfers.length > 0 ? '#d69e2e' : 'inherit'}">${num(outbound_transfers.length)}</span>
+          <span class="l">Outbound Shipments</span>
+          <div class="muted" style="font-size:11px;margin-top:4px">
+            Transfers to approve / dispatch
+          </div>
+        </div>
+        <div class="card stat" style="border-top:3px solid ${rebalance_opportunities.length > 0 ? '#38a169' : 'var(--border,#cbd5e1)'}">
+          <span class="n" style="color:#2f855a">${num(rebalance_opportunities.length)}</span>
+          <span class="l">Rebalance Matches</span>
+          <div class="muted" style="font-size:11px;margin-top:4px">
+            Surplus available at other sites
+          </div>
+        </div>
+        <div class="card stat" style="border-top:3px solid #718096">
+          <span class="n">${num(surplus_available.length)}</span>
+          <span class="l">Surplus to Share</span>
+          <div class="muted" style="font-size:11px;margin-top:4px">
+            ${num(kpis.total_surplus_available)} units above safety stock
+          </div>
+        </div>
+      </div>
+    `;
+
+    // Badges on pills
+    const totalActions = inbound_transfers.length + outbound_transfers.length + rebalance_opportunities.length;
+    qs('#cp-cnt-actions', body).textContent = num(totalActions);
+    qs('#cp-cnt-inbound', body).textContent = num(inbound_transfers.length);
+    qs('#cp-cnt-outbound', body).textContent = num(outbound_transfers.length);
+    qs('#cp-cnt-deficits', body).textContent = num(urgent_deficits.length);
+    qs('#cp-cnt-surplus', body).textContent = num(surplus_available.length);
+
+    if (activeTab === 'overview') {
+      renderOverviewTab(inbound_transfers, outbound_transfers, rebalance_opportunities);
+    } else if (activeTab === 'inbound') {
+      renderInboundTab(inbound_transfers);
+    } else if (activeTab === 'outbound') {
+      renderOutboundTab(outbound_transfers);
+    } else if (activeTab === 'rebalance') {
+      renderRebalanceTab(urgent_deficits, rebalance_opportunities);
+    } else if (activeTab === 'surplus') {
+      renderSurplusTab(surplus_available);
+    }
+  }
+
+  function renderOverviewTab(inbound, outbound, opportunities) {
+    let html = '';
+
+    // Action Queues Grid
+    html += `
+      <div class="grid" style="grid-template-columns:repeat(auto-fit, minmax(420px, 1fr));gap:14px;margin-bottom:14px">
+        <!-- Inbound Deliveries Queue -->
+        <div class="card section" style="margin:0">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+            <h3 style="margin:0">📥 Inbound Deliveries Awaiting Confirmation</h3>
+            <span class="badge blue">${num(inbound.length)}</span>
+          </div>
+          ${inbound.length ? tableWrap([
+            { label: 'MTN No' }, { label: 'Origin Store' }, { label: 'Item & Qty', cls: 'desc-col' }, { label: 'Status' }, { label: 'Action', num: true }
+          ], inbound.slice(0, 10).map((t) => {
+            let actBtn = '';
+            if (t.status === 'dispatched') actBtn = `<button class="sm primary" data-cp-rx="${t.id}" title="Confirm delivery from transport driver">📥 Receive</button>`;
+            else if (t.status === 'received') actBtn = `<button class="sm primary" data-cp-accept="${t.id}" title="Accept items and add to shelf inventory">✅ Accept</button>`;
+            return `<tr>
+              <td><b><a href="#/stores?tab=mtn&id=${t.id}">${esc(t.mtn_no)}</a></b>${t.chain_no ? `<br><span class="badge purple" style="font-size:10px">${esc(t.chain_no)}</span>` : ''}</td>
+              <td>${t.from_store_location_code ? `<code>${esc(t.from_store_location_code)}</code> ` : ''}${esc(t.from_location || '—')}</td>
+              <td class="desc-col"><b>${esc(t.sample_item || '')}</b>${t.item_count > 1 ? ` <span class="badge gray">+${t.item_count - 1}</span>` : ''}<br><span class="muted">${num(t.total_qty)} units total</span></td>
+              <td><span class="badge ${t.status === 'dispatched' ? 'purple' : 'teal'}">${esc(t.status)}</span></td>
+              <td class="num">${actBtn}</td>
+            </tr>`;
+          }), { scroll: true }) : '<p class="muted" style="padding:14px;text-align:center;margin:0">No inbound transfers in transit to this store.</p>'}
+        </div>
+
+        <!-- Outbound Dispatches Queue -->
+        <div class="card section" style="margin:0">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+            <h3 style="margin:0">📤 Outbound Shipments Awaiting Dispatch</h3>
+            <span class="badge amber">${num(outbound.length)}</span>
+          </div>
+          ${outbound.length ? tableWrap([
+            { label: 'MTN No' }, { label: 'Destination Store' }, { label: 'Item & Qty', cls: 'desc-col' }, { label: 'Status' }, { label: 'Action', num: true }
+          ], outbound.slice(0, 10).map((t) => {
+            let actBtn = '';
+            if (t.status === 'draft') actBtn = `<button class="sm primary" data-cp-app="${t.id}" title="Sign and approve transfer">✍ Approve</button>`;
+            else if (t.status === 'approved') actBtn = `<button class="sm primary" data-cp-dispatch="${t.id}" title="Hand over to transport driver">🚀 Dispatch</button>`;
+            return `<tr>
+              <td><b><a href="#/stores?tab=mtn&id=${t.id}">${esc(t.mtn_no)}</a></b>${t.chain_no ? `<br><span class="badge purple" style="font-size:10px">${esc(t.chain_no)}</span>` : ''}</td>
+              <td>${t.to_store_location_code ? `<code>${esc(t.to_store_location_code)}</code> ` : ''}${esc(t.to_location || '—')}</td>
+              <td class="desc-col"><b>${esc(t.sample_item || '')}</b>${t.item_count > 1 ? ` <span class="badge gray">+${t.item_count - 1}</span>` : ''}<br><span class="muted">${num(t.total_qty)} units total</span></td>
+              <td><span class="badge ${t.status === 'draft' ? 'amber' : 'blue'}">${esc(t.status)}</span></td>
+              <td class="num">${actBtn}</td>
+            </tr>`;
+          }), { scroll: true }) : '<p class="muted" style="padding:14px;text-align:center;margin:0">No outbound transfers pending dispatch.</p>'}
+        </div>
+      </div>
+    `;
+
+    // Rebalance Recommendations Card
+    html += `
+      <div class="card section">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+          <div>
+            <h3 style="margin:0">⚡ Inter-Store Rebalance Recommendations</h3>
+            <p class="muted" style="margin:2px 0 0;font-size:12px">Surplus stock from other company stores that directly fulfills deficits at this location.</p>
+          </div>
+          <span class="badge green">${num(opportunities.length)} Opportunities</span>
+        </div>
+        ${opportunities.length ? tableWrap([
+          { label: 'Urgency' }, { label: 'Item & Category', cls: 'desc-col' }, { label: 'Donating Store' }, { label: 'Current Bal' }, { label: 'Rec. Transfer' }, { label: 'Action', num: true }
+        ], opportunities.slice(0, 8).map((o) => `
+          <tr>
+            <td>${o.urgency === 'HIGH' ? '<span class="badge red">CRITICAL</span>' : '<span class="badge amber">LOW</span>'}</td>
+            <td class="desc-col"><b>${esc(o.item_name)}</b><br><span class="muted" style="font-size:11px"><code>${esc(o.item_key)}</code> · ${esc(o.section)}</span></td>
+            <td><b>${esc(o.from_store_name)}</b><br><span class="muted" style="font-size:11px">Safe surplus: <b style="color:#2f855a">${num(o.from_available_surplus)}</b></span></td>
+            <td><b style="color:var(--danger,#c4392c)">${num(o.to_balance)}</b> (ROP: ${num(o.to_rop)})</td>
+            <td><b style="font-size:14px;color:#2f855a">${num(o.suggested_transfer_qty)}</b> ${esc(o.unit)}</td>
+            <td class="num"><button class="sm primary cp-btn-rebalance" data-opp="${esc(encodeURIComponent(JSON.stringify(o)))}">⚡ Quick MTN</button></td>
+          </tr>
+        `), { scroll: true }) : '<p class="muted" style="padding:14px;text-align:center;margin:0">All items at this store are above reorder thresholds or no other store currently holds surplus.</p>'}
+      </div>
+    `;
+
+    contentHost.innerHTML = html;
+    bindTransferActionEvents(contentHost);
+  }
+
+  function renderInboundTab(inbound) {
+    if (!inbound.length) {
+      contentHost.innerHTML = '<div class="card section" style="text-align:center;padding:30px"><div style="font-size:32px;margin-bottom:8px">📥</div><h3 style="margin:0 0 6px">No Inbound Deliveries in Transit</h3><p class="muted" style="margin:0">There are no transfer shipments currently heading to this store.</p></div>';
+      return;
+    }
+
+    contentHost.innerHTML = `
+      <div class="card section">
+        <h3 style="margin:0 0 8px">Inbound Transfers Destined for This Store</h3>
+        ${tableWrap([
+          { label: 'MTN No & Chain' }, { label: 'Date' }, { label: 'Origin Store' }, { label: 'Item & Qty', cls: 'desc-col' },
+          { label: 'Progress' }, { label: 'Status' }, { label: 'Document' }, { label: 'Action', num: true }
+        ], inbound.map((t) => {
+          let actBtn = '';
+          if (t.status === 'dispatched') actBtn = `<button class="sm primary" data-cp-rx="${t.id}" title="Confirm delivery from transport driver">📥 Receive</button>`;
+          else if (t.status === 'received') actBtn = `<button class="sm primary" data-cp-accept="${t.id}" title="Accept items and add to shelf inventory">✅ Accept</button>`;
+          const rd = mtnRoad(t);
+          return `<tr>
+            <td><b><a href="#/stores?tab=mtn&id=${t.id}">${esc(t.mtn_no)}</a></b>${t.chain_no ? `<br><span class="badge purple" style="font-size:10px">${esc(t.chain_no)}</span>` : ''}</td>
+            <td>${esc(String(t.txn_date || '').slice(0, 10))}</td>
+            <td>${t.from_store_location_code ? `<code>${esc(t.from_store_location_code)}</code> ` : ''}${esc(t.from_location || '—')}</td>
+            <td class="desc-col"><b>${esc(t.sample_item || '')}</b>${t.item_count > 1 ? ` <span class="badge gray">+${t.item_count - 1} more</span>` : ''}<br><span class="muted">${num(t.total_qty)} units total</span></td>
+            <td>${docRoadBar(rd)}<span class="muted" style="font-size:11px">${esc(rd.label)}</span></td>
+            <td><span class="badge ${t.status === 'dispatched' ? 'purple' : 'teal'}">${esc(t.status)}</span></td>
+            <td style="white-space:nowrap">
+              <a class="btn sm" href="/api/stores/mtn/${t.id}/print.html" target="_blank" title="Print MTN">🖨</a>
+              <a class="btn sm" href="/api/stores/mtn/${t.id}/download.pdf" download title="Download PDF">⬇ PDF</a>
+            </td>
+            <td class="num">${actBtn}</td>
+          </tr>`;
+        }), { scroll: true })}
+      </div>
+    `;
+    bindTransferActionEvents(contentHost);
+  }
+
+  function renderOutboundTab(outbound) {
+    if (!outbound.length) {
+      contentHost.innerHTML = '<div class="card section" style="text-align:center;padding:30px"><div style="font-size:32px;margin-bottom:8px">📤</div><h3 style="margin:0 0 6px">No Outbound Shipments Pending</h3><p class="muted" style="margin:0">There are no outbound transfers waiting to be approved or dispatched from this store.</p></div>';
+      return;
+    }
+
+    contentHost.innerHTML = `
+      <div class="card section">
+        <h3 style="margin:0 0 8px">Outbound Transfers Originating from This Store</h3>
+        ${tableWrap([
+          { label: 'MTN No & Chain' }, { label: 'Date' }, { label: 'Destination Store' }, { label: 'Item & Qty', cls: 'desc-col' },
+          { label: 'Progress' }, { label: 'Status' }, { label: 'Document' }, { label: 'Action', num: true }
+        ], outbound.map((t) => {
+          let actBtn = '';
+          if (t.status === 'draft') actBtn = `<button class="sm primary" data-cp-app="${t.id}" title="Sign and approve transfer">✍ Approve</button>`;
+          else if (t.status === 'approved') actBtn = `<button class="sm primary" data-cp-dispatch="${t.id}" title="Hand over to transport driver">🚀 Dispatch</button>`;
+          const rd = mtnRoad(t);
+          return `<tr>
+            <td><b><a href="#/stores?tab=mtn&id=${t.id}">${esc(t.mtn_no)}</a></b>${t.chain_no ? `<br><span class="badge purple" style="font-size:10px">${esc(t.chain_no)}</span>` : ''}</td>
+            <td>${esc(String(t.txn_date || '').slice(0, 10))}</td>
+            <td>${t.to_store_location_code ? `<code>${esc(t.to_store_location_code)}</code> ` : ''}${esc(t.to_location || '—')}</td>
+            <td class="desc-col"><b>${esc(t.sample_item || '')}</b>${t.item_count > 1 ? ` <span class="badge gray">+${t.item_count - 1} more</span>` : ''}<br><span class="muted">${num(t.total_qty)} units total</span></td>
+            <td>${docRoadBar(rd)}<span class="muted" style="font-size:11px">${esc(rd.label)}</span></td>
+            <td><span class="badge ${t.status === 'draft' ? 'amber' : 'blue'}">${esc(t.status)}</span></td>
+            <td style="white-space:nowrap">
+              <a class="btn sm" href="/api/stores/mtn/${t.id}/print.html" target="_blank" title="Print MTN">🖨</a>
+              <a class="btn sm" href="/api/stores/mtn/${t.id}/download.pdf" download title="Download PDF">⬇ PDF</a>
+            </td>
+            <td class="num">${actBtn}</td>
+          </tr>`;
+        }), { scroll: true })}
+      </div>
+    `;
+    bindTransferActionEvents(contentHost);
+  }
+
+  function renderRebalanceTab(deficits, opportunities) {
+    let html = '';
+    html += `
+      <div class="card section" style="margin-bottom:14px">
+        <h3 style="margin:0 0 6px">Items Below Reorder Point (ROP) at This Store</h3>
+        <p class="muted" style="margin:0 0 10px;font-size:12px">Calculated dynamically from ${num(curDays)}-day active consumption history.</p>
+        ${deficits.length ? tableWrap([
+          { label: 'Status' }, { label: 'Item & SKU', cls: 'desc-col' }, { label: 'Balance' }, { label: 'ADD' }, { label: 'Safety Stock' }, { label: 'Target ROP' }, { label: 'Shortfall' }
+        ], deficits.map((d) => `
+          <tr>
+            <td>${d.status === 'STOCKOUT' ? '<span class="badge red">STOCKOUT</span>' : (d.status === 'CRITICAL' ? '<span class="badge red">CRITICAL</span>' : '<span class="badge amber">LOW</span>')}</td>
+            <td class="desc-col"><b>${esc(d.item_name)}</b><br><span class="muted" style="font-size:11px"><code>${esc(d.item_key)}</code> · ${esc(d.section)}</span></td>
+            <td class="num"><b style="color:var(--danger,#c4392c)">${num(d.balance)}</b></td>
+            <td class="num">${num(d.avg_daily_demand)}/d</td>
+            <td class="num">${num(d.safety_stock)}</td>
+            <td class="num"><b style="color:#2f855a">${num(d.rop)}</b></td>
+            <td class="num"><b style="font-size:14px;color:var(--danger,#c4392c)">${num(d.shortfall)}</b> ${esc(d.unit)}</td>
+          </tr>
+        `), { scroll: true }) : '<p class="muted" style="padding:14px;text-align:center;margin:0">All items are at or above reorder thresholds!</p>'}
+      </div>
+
+      <div class="card section">
+        <h3 style="margin:0 0 6px">Inter-Store Rebalancing Matches</h3>
+        ${opportunities.length ? tableWrap([
+          { label: 'Priority' }, { label: 'Item & SKU', cls: 'desc-col' }, { label: 'Donating Store' }, { label: 'Shortfall' }, { label: 'Transfer Qty' }, { label: 'Action', num: true }
+        ], opportunities.map((o) => `
+          <tr>
+            <td>${o.urgency === 'HIGH' ? '<span class="badge red">CRITICAL</span>' : '<span class="badge amber">LOW</span>'}</td>
+            <td class="desc-col"><b>${esc(o.item_name)}</b><br><span class="muted" style="font-size:11px"><code>${esc(o.item_key)}</code> · ${esc(o.section)}</span></td>
+            <td><b>${esc(o.from_store_name)}</b><br><span class="muted" style="font-size:11px">Available surplus: <b style="color:#2f855a">${num(o.from_available_surplus)}</b></span></td>
+            <td class="num"><b style="color:var(--danger,#c4392c)">${num(o.shortfall)}</b></td>
+            <td class="num"><b style="font-size:14px;color:#2f855a">${num(o.suggested_transfer_qty)}</b> ${esc(o.unit)}</td>
+            <td class="num"><button class="sm primary cp-btn-rebalance" data-opp="${esc(encodeURIComponent(JSON.stringify(o)))}">⚡ Quick MTN</button></td>
+          </tr>
+        `), { scroll: true }) : '<p class="muted" style="padding:14px;text-align:center;margin:0">No donating stores currently hold surplus for these items.</p>'}
+      </div>
+    `;
+    contentHost.innerHTML = html;
+    bindTransferActionEvents(contentHost);
+  }
+
+  function renderSurplusTab(surplus) {
+    if (!surplus.length) {
+      contentHost.innerHTML = '<div class="card section" style="text-align:center;padding:30px"><div style="font-size:32px;margin-bottom:8px">📦</div><h3 style="margin:0 0 6px">No Surplus Inventory Available to Share</h3><p class="muted" style="margin:0">All items at this store are within their target buffer (ROP + Safety Stock).</p></div>';
+      return;
+    }
+
+    contentHost.innerHTML = `
+      <div class="card section">
+        <h3 style="margin:0 0 6px">Surplus Stock Above Safety Buffer</h3>
+        <p class="muted" style="margin:0 0 10px;font-size:12px">These items can be safely transferred to support remote site deficits without endangering local operations.</p>
+        ${tableWrap([
+          { label: 'Item & SKU', cls: 'desc-col' }, { label: 'Current Balance' }, { label: 'ROP' }, { label: 'Safety Stock' }, { label: 'Safe Surplus to Share' }
+        ], surplus.map((s) => `
+          <tr>
+            <td class="desc-col"><b>${esc(s.item_name)}</b><br><span class="muted" style="font-size:11px"><code>${esc(s.item_key)}</code> · ${esc(s.section)}</span></td>
+            <td class="num"><b>${num(s.balance)}</b> ${esc(s.unit)}</td>
+            <td class="num">${num(s.rop)}</td>
+            <td class="num">${num(s.safety_stock)}</td>
+            <td class="num"><b style="font-size:14px;color:#2f855a">${num(s.available_surplus)}</b> ${esc(s.unit)}</td>
+          </tr>
+        `), { scroll: true })}
+      </div>
+    `;
+  }
+
+  function bindTransferActionEvents(host) {
+    qsa('[data-cp-app]', host).forEach((b) => {
+      b.onclick = async () => {
+        try {
+          const t = await api('/stores/mtn/' + b.dataset.cpApp);
+          mtnSignModal(t, 'approve', loadCockpit);
+        } catch (e) { toast(e.message, 'err'); }
+      };
+    });
+    qsa('[data-cp-dispatch]', host).forEach((b) => {
+      b.onclick = async () => {
+        try {
+          const t = await api('/stores/mtn/' + b.dataset.cpDispatch);
+          mtnSignModal(t, 'dispatch', loadCockpit);
+        } catch (e) { toast(e.message, 'err'); }
+      };
+    });
+    qsa('[data-cp-rx]', host).forEach((b) => {
+      b.onclick = async () => {
+        try {
+          const t = await api('/stores/mtn/' + b.dataset.cpRx);
+          mtnSignModal(t, 'receive', loadCockpit);
+        } catch (e) { toast(e.message, 'err'); }
+      };
+    });
+    qsa('[data-cp-accept]', host).forEach((b) => {
+      b.onclick = async () => {
+        try {
+          const t = await api('/stores/mtn/' + b.dataset.cpAccept);
+          mtnSignModal(t, 'accept', loadCockpit);
+        } catch (e) { toast(e.message, 'err'); }
+      };
+    });
+    qsa('.cp-btn-rebalance', host).forEach((b) => {
+      b.onclick = () => {
+        const opp = JSON.parse(decodeURIComponent(b.dataset.opp));
+        openRebalanceTransferModal(opp, loadCockpit);
+      };
+    });
+  }
+
+  function updatePills() {
+    qsa('[id^="cp-tab-"]', body).forEach((btn) => btn.classList.remove('primary'));
+    const activeBtn = qs(`#cp-tab-${activeTab}`, body);
+    if (activeBtn) activeBtn.classList.add('primary');
+  }
+
+  // Event Listeners
+  qs('#cockpit-store-sel', body).onchange = (e) => {
+    selectedVal = e.target.value;
+    loadCockpit();
+  };
+  qs('#cockpit-days-sel', body).onchange = (e) => {
+    curDays = e.target.value;
+    loadCockpit();
+  };
+  qs('#cockpit-btn-refresh', body).onclick = () => loadCockpit();
+
+  qs('#cp-tab-overview', body).onclick = () => { activeTab = 'overview'; updatePills(); renderCockpit(); };
+  qs('#cp-tab-inbound', body).onclick = () => { activeTab = 'inbound'; updatePills(); renderCockpit(); };
+  qs('#cp-tab-outbound', body).onclick = () => { activeTab = 'outbound'; updatePills(); renderCockpit(); };
+  qs('#cp-tab-rebalance', body).onclick = () => { activeTab = 'rebalance'; updatePills(); renderCockpit(); };
+  qs('#cp-tab-surplus', body).onclick = () => { activeTab = 'surplus'; updatePills(); renderCockpit(); };
+
+  await loadCockpit();
+}
+
+// ===========================================================================
 // Step 7: Automated Reorder Point (ROP) & Inter-Workshop Stock Rebalancing
 // ===========================================================================
 async function storesRebalanceView(body, sp) {
@@ -7445,21 +9415,50 @@ async function storesRebalanceView(body, sp) {
   let curDays = sp.get('days') || '90';
   let activeTab = sp.get('view') || 'transfers'; // 'transfers' | 'recalibrate' | 'surplus'
 
-  // Fetch list of workshops for the dropdown
+  // Fetch physical store locations and fallback workshops
+  let storeLocations = [];
+  try { storeLocations = await api('/store-locations?active_only=true'); } catch {}
   let workshops = [];
   try {
-    workshops = await api('/workshops');
+    const wsRes = await api('/workshops');
+    workshops = Array.isArray(wsRes) ? wsRes : (wsRes && wsRes.workshops) || [];
   } catch {}
-  if (!workshops.length) {
-    workshops = [{ id: 1, name: 'Central Workshop', code: 'CW' }];
+
+  const storeOptions = [];
+  if (storeLocations.length) {
+    const mainStores = storeLocations.filter((s) => s.store_type === 'MAIN_STORE');
+    const mainWs = storeLocations.filter((s) => s.store_type === 'MAIN_WORKSHOP_STORE');
+    const siteStores = storeLocations.filter((s) => s.store_type === 'SITE_STORE');
+    const others = storeLocations.filter((s) => !['MAIN_STORE', 'MAIN_WORKSHOP_STORE', 'SITE_STORE'].includes(s.store_type));
+
+    if (mainStores.length) storeOptions.push({ optgroup: '🏢 Central Stores (Main Depot)', items: mainStores.map((s) => ({ value: 'p:' + s.id, label: `${s.name} (${s.code})` })) });
+    if (mainWs.length) storeOptions.push({ optgroup: '🔧 Central Workshop Stores', items: mainWs.map((s) => ({ value: 'p:' + s.id, label: `${s.name} (${s.code})` })) });
+    if (siteStores.length) storeOptions.push({ optgroup: '🏗️ Remote Site Stores', items: siteStores.map((s) => ({ value: 'p:' + s.id, label: `${s.name} (${s.code})` })) });
+    if (others.length) storeOptions.push({ optgroup: '📦 Other Locations', items: others.map((s) => ({ value: 'p:' + s.id, label: `${s.name} (${s.code})` })) });
+  } else if (workshops.length) {
+    storeOptions.push({ optgroup: '🏪 Workshop Stores', items: workshops.map((w) => ({ value: 'w:' + w.id, label: `${w.name || w.code}` })) });
+  } else {
+    storeOptions.push({ optgroup: '🏪 Stores', items: [{ value: 'p:1', label: 'Central Main Stores' }] });
+  }
+
+  let selectedVal = String(curStore);
+  if (!selectedVal.startsWith('p:') && !selectedVal.startsWith('w:')) {
+    const numId = Number(selectedVal);
+    const matchedLoc = storeLocations.find((s) => s.id === numId);
+    if (matchedLoc) selectedVal = 'p:' + numId;
+    else selectedVal = 'w:' + numId;
   }
 
   body.innerHTML = `
     <div class="toolbar" style="margin-bottom:12px;flex-wrap:wrap;gap:8px">
       <div style="display:flex;align-items:center;gap:6px">
-        <label style="font-weight:600;font-size:13px">🏪 Workshop Store:</label>
-        <select id="reb-store-sel" style="min-width:200px">
-          ${workshops.map((w) => `<option value="${w.id}" ${String(w.id) === String(curStore) ? 'selected' : ''}>${esc(w.name || w.code)}</option>`).join('')}
+        <label style="font-weight:600;font-size:13px">🏪 Store Location:</label>
+        <select id="reb-store-sel" style="min-width:260px">
+          ${storeOptions.map((g) => `
+            <optgroup label="${esc(g.optgroup)}">
+              ${g.items.map((it) => `<option value="${it.value}" ${it.value === selectedVal ? 'selected' : ''}>${esc(it.label)}</option>`).join('')}
+            </optgroup>
+          `).join('')}
         </select>
       </div>
 
@@ -7508,7 +9507,14 @@ async function storesRebalanceView(body, sp) {
   async function loadData() {
     contentHost.innerHTML = '<div class="muted" style="padding:20px;text-align:center">Computing rolling consumption & finding cross-workshop surpluses...</div>';
     try {
-      const q = new URLSearchParams({ store_id: curStore, days: curDays });
+      const q = new URLSearchParams({ days: curDays });
+      if (selectedVal.startsWith('p:')) {
+        q.set('physical_store_id', selectedVal.slice(2));
+      } else if (selectedVal.startsWith('w:')) {
+        q.set('store_id', selectedVal.slice(2));
+      } else {
+        q.set('physical_store_id', selectedVal);
+      }
       if (curSec !== 'all') q.set('section', curSec);
 
       cachedAnalysis = await api('/stores/rebalance/analysis?' + q.toString());
@@ -7630,57 +9636,7 @@ async function storesRebalanceView(body, sp) {
     qsa('.reb-btn-transfer', contentHost).forEach((btn) => {
       btn.onclick = () => {
         const opp = JSON.parse(decodeURIComponent(btn.dataset.opp));
-        openTransferModal(opp);
-      };
-    });
-  }
-
-  function openTransferModal(opp) {
-    modal('⚡ Create Rebalance Transfer MTN', `
-      <div style="margin-bottom:12px">
-        <p class="muted" style="margin:0 0 10px">Initiates an official Material Transfer Note (MTN) linking source and destination workshop stores with universal chain tracking.</p>
-        <div class="row">
-          <div class="field"><label>Source (Donating Store):</label><input type="text" value="${esc(opp.from_store_name)}" readonly disabled></div>
-          <div class="field"><label>Destination (Receiving Store):</label><input type="text" value="${esc(opp.to_store_name)}" readonly disabled></div>
-        </div>
-        <div class="row">
-          <div class="field"><label>Item Description:</label><input type="text" value="${esc(opp.item_name)}" readonly disabled></div>
-          ${field('Transfer Quantity (' + esc(opp.unit) + ')', 'transfer_qty', { type: 'number', value: opp.suggested_transfer_qty, min: 1, max: opp.from_available_surplus })}
-        </div>
-        ${field('Transfer Reason / Justification', 'transfer_reason', { value: `Inter-workshop rebalance: surplus transfer to resolve shortfall at ${opp.to_store_name}` })}
-      </div>
-      <div style="display:flex;justify-content:flex-end;gap:8px">
-        <button class="primary" id="modal-submit-mtn">⚡ Create Draft MTN</button>
-      </div>
-    `, (box, close) => {
-      qs('#modal-submit-mtn', box).onclick = async () => {
-        const qtyVal = Number(qs('input[name="transfer_qty"]', box).value) || 0;
-        const reasonVal = qs('input[name="transfer_reason"]', box).value.trim();
-        if (qtyVal <= 0) return toast('Transfer quantity must be greater than 0', 'err');
-
-        try {
-          const res = await api('/stores/rebalance/create-mtn', {
-            method: 'POST',
-            body: {
-              from_store_id: opp.from_store_id,
-              to_store_id: opp.to_store_id,
-              reason: reasonVal,
-              items: [{
-                section: opp.section,
-                item_key: opp.item_key,
-                item_name: opp.item_name,
-                qty: qtyVal,
-                unit: opp.unit
-              }]
-            }
-          });
-
-          close();
-          toast(`Transfer Note #${res.mtn_no} created with Chain ${res.chain_no}!`, 'ok');
-          location.hash = `#/stores?tab=mtn&id=${res.mtn_id}`;
-        } catch (e) {
-          toast(e.message, 'err');
-        }
+        openRebalanceTransferModal(opp, loadData);
       };
     });
   }
@@ -7750,9 +9706,13 @@ async function storesRebalanceView(body, sp) {
       qs('#reb-btn-apply-bulk', contentHost).onclick = async () => {
         if (!confirm(`Apply calculated ROPs to all ${items.length} items for this store?`)) return;
         try {
+          const bodyPayload = { items };
+          if (selectedVal.startsWith('p:')) bodyPayload.physical_store_id = Number(selectedVal.slice(2));
+          else if (selectedVal.startsWith('w:')) bodyPayload.store_id = Number(selectedVal.slice(2));
+          else bodyPayload.physical_store_id = Number(selectedVal);
           await api('/stores/rebalance/apply-rop', {
             method: 'POST',
-            body: { store_id: curStore, items }
+            body: bodyPayload
           });
           toast(`Updated reorder thresholds for ${items.length} items!`, 'ok');
           loadData();
@@ -7766,9 +9726,13 @@ async function storesRebalanceView(body, sp) {
       btn.onclick = async () => {
         const it = JSON.parse(decodeURIComponent(btn.dataset.item));
         try {
+          const bodyPayload = { items: [it] };
+          if (selectedVal.startsWith('p:')) bodyPayload.physical_store_id = Number(selectedVal.slice(2));
+          else if (selectedVal.startsWith('w:')) bodyPayload.store_id = Number(selectedVal.slice(2));
+          else bodyPayload.physical_store_id = Number(selectedVal);
           await api('/stores/rebalance/apply-rop', {
             method: 'POST',
-            body: { store_id: curStore, items: [it] }
+            body: bodyPayload
           });
           toast(`Updated ROP for ${it.item_name} to ${it.rop}`, 'ok');
           loadData();
@@ -7856,7 +9820,8 @@ async function storesRebalanceView(body, sp) {
 
   // Event Listeners
   qs('#reb-store-sel', body).onchange = (e) => {
-    curStore = e.target.value;
+    selectedVal = e.target.value;
+    curStore = selectedVal;
     history.replaceState(null, '', `#/stores?tab=flow&sub=rebalance&store_id=${curStore}&section=${curSec}&days=${curDays}&view=${activeTab}`);
     loadData();
   };
@@ -7880,9 +9845,13 @@ async function storesRebalanceView(body, sp) {
       if (!cachedAnalysis || !cachedAnalysis.items.length) return;
       if (!confirm(`Apply calculated ROPs to all ${cachedAnalysis.items.length} items?`)) return;
       try {
+        const bodyPayload = { items: cachedAnalysis.items };
+        if (selectedVal.startsWith('p:')) bodyPayload.physical_store_id = Number(selectedVal.slice(2));
+        else if (selectedVal.startsWith('w:')) bodyPayload.store_id = Number(selectedVal.slice(2));
+        else bodyPayload.physical_store_id = Number(selectedVal);
         await api('/stores/rebalance/apply-rop', {
           method: 'POST',
-          body: { store_id: curStore, items: cachedAnalysis.items }
+          body: bodyPayload
         });
         toast('Recalibrated all items successfully!', 'ok');
         loadData();
@@ -8336,6 +10305,7 @@ async function mrnPipelineModal(mrnId) {
               <th class="num">Approved</th>
               <th class="num">Sent (MTN)</th>
               <th class="num">Received</th>
+              <th class="num">Outstanding</th>
               <th class="num">Shortage</th>
               <th class="num">Issued</th>
               <th>Pipeline Stage</th>
@@ -8350,6 +10320,7 @@ async function mrnPipelineModal(mrnId) {
                 <td class="num">${num(l.qty_approved)}</td>
                 <td class="num">${num(l.qty_sent)}</td>
                 <td class="num">${num(l.qty_received)}</td>
+                <td class="num">${(l.qty_outstanding > 0 || (l.qty_requested - l.qty_received > 0)) ? `<span class="badge amber">${num(l.qty_outstanding || (l.qty_requested - l.qty_received))}</span>` : '<span class="badge green">0</span>'}</td>
                 <td class="num" style="${l.qty_short > 0 ? 'color:var(--red, #dc2626);font-weight:bold' : ''}">${l.qty_short > 0 ? `-${num(l.qty_short)}` : '0'}${l.discrepancy_reason ? `<br><small class="muted">${esc(l.discrepancy_reason)}</small>` : ''}</td>
                 <td class="num">${num(l.qty_issued)}</td>
                 <td><span class="badge ${l.route_badge || 'blue'}">${esc((l.pipeline_stage || '').replace(/_/g, ' '))}</span></td>
@@ -8482,7 +10453,7 @@ function mrnLineModal(line, m, onDone, told) {
 }
 
 // E-signature modal for MRN certify / approve / reject.
-function mrnSignModal(mrn, action, onDone) {
+async function mrnSignModal(mrn, action, onDone) {
   const meta = {
     certify: { title: 'Certify MRN', verb: 'certify', btn: 'Sign & Certify' },
     approve: { title: 'Approve MRN', verb: 'approve', btn: 'Sign & Approve' },
@@ -8490,8 +10461,52 @@ function mrnSignModal(mrn, action, onDone) {
   }[action];
   const who = esc(ME.fullName || ME.username);
   const withSig = action !== 'reject';
+
+  let avail = null;
+  if (action === 'approve') {
+    try { avail = await api('/stores/mrn/' + mrn.id + '/availability'); } catch (e) { avail = null; }
+  }
+
+  let availHtml = '';
+  if (avail && avail.lines && avail.lines.length) {
+    const badgeColor = { full: 'green', partial: 'amber', unavailable: 'red' }[avail.overall_status] || 'blue';
+    availHtml = `
+      <div style="margin:10px 0;padding:10px;border-radius:6px;background:var(--bg-card, #f8fafc);border:1px solid var(--border)">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+          <b>Main Workshop Stores Availability:</b>
+          <span class="badge ${badgeColor}">${esc(avail.overall_status.toUpperCase())}</span>
+        </div>
+        <table class="tight" style="width:100%;font-size:12px">
+          <thead>
+            <tr>
+              <th>Item</th>
+              <th class="num">Requested</th>
+              <th class="num">On-Hand</th>
+              <th class="num">Available</th>
+              <th class="num">Approve Qty</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${avail.lines.map((al) => {
+              const bClr = { full: 'green', partial: 'amber', unavailable: 'red' }[al.status] || 'gray';
+              return `<tr>
+                <td>${esc(al.description)}</td>
+                <td class="num">${num(al.qty_requested)} ${esc(al.unit || '')}</td>
+                <td class="num">${num(al.on_hand)}</td>
+                <td class="num"><span class="badge sm ${bClr}">${num(al.available)}</span></td>
+                <td class="num"><input type="number" step="any" min="0" max="${al.qty_requested}" class="appr-qty-input" data-line-id="${al.line_id}" value="${al.fulfillable_qty}" style="width:70px;padding:2px 4px;font-size:12px;text-align:right"></td>
+              </tr>`;
+            }).join('')}
+          </tbody>
+        </table>
+        <small class="muted">Unfulfilled remainder stays open as outstanding demand (auto-MTN drafted for approved qty).</small>
+      </div>
+    `;
+  }
+
   modal(meta.title + ' — ' + esc(mrn.mrn_no), `
     <p class="muted">Signing as <b>${who}</b> <span class="badge blue">${esc(ME.roles.join(', '))}</span></p>
+    ${availHtml}
     ${action === 'reject'
       ? field('Reason (required)', 'reason')
       : `<label style="display:flex;gap:8px;align-items:flex-start;font-weight:400"><input type="checkbox" id="confirm" style="width:auto;margin-top:3px"> I, ${who}, ${meta.verb} this material requisition. This records my e-signature and time.</label>
@@ -8506,7 +10521,16 @@ function mrnSignModal(mrn, action, onDone) {
       if (action === 'reject' && !String(f.reason || '').trim()) return toast('A reason is required to reject', 'err');
       const signature = (withSig && pad && !pad.isEmpty()) ? pad.dataURL() : undefined;
       const past = { certify: 'certified', approve: 'approved', reject: 'rejected' }[action];
-      try { await api('/stores/mrn/' + mrn.id + '/' + action, { method: 'POST', body: { reason: f.reason, signature } }); toast('MRN ' + past + (action !== 'reject' ? ' · e-signed' : '')); close(); onDone(); } catch (e) {
+
+      const lines = [];
+      qsa('.appr-qty-input', body).forEach((inp) => {
+        lines.push({ id: inp.dataset.lineId, qty_approved: Number(inp.value) || 0 });
+      });
+
+      const payload = { reason: f.reason, signature };
+      if (lines.length) payload.lines = lines;
+
+      try { await api('/stores/mrn/' + mrn.id + '/' + action, { method: 'POST', body: payload }); toast('MRN ' + past + (action !== 'reject' ? ' · e-signed' : '')); close(); onDone(); } catch (e) {
         toast(e.message, 'err');
         // Step 3a: changed after it was certified — it went back to be certified, so show it as it is now.
         if (e.data && e.data.recertification_required) { close(); onDone(); }
@@ -8515,7 +10539,16 @@ function mrnSignModal(mrn, action, onDone) {
   });
 }
 
-function receiveModal(mrn, lineId, desc, remaining, onDone) {
+async function receiveModal(mrn, lineId, desc, remaining, onDone) {
+  let locations = [];
+  try { locations = await api('/store-locations'); } catch (e) { locations = []; }
+  const defaultLocId = mrn.target_store_location_id || (mrn.purchase_source === 'head_office' ? 1 : 2);
+  const locOpts = locations.map((l) => ({ value: l.id, label: `${l.code} — ${l.name} (${l.store_type || 'store'})` }));
+  if (!locOpts.length) {
+    locOpts.push({ value: 1, label: 'MAIN-STORES — Central Main Stores' });
+    locOpts.push({ value: 2, label: 'MAIN-WORKSHOP — Main Workshop Stores' });
+  }
+
   modal('Receive against MRN ' + mrn.mrn_no, `
     <p class="muted">${esc(desc)} — remaining <b>${esc(remaining)}</b>${mrn.chain_no ? ` · <span class="badge purple">Chain: ${esc(mrn.chain_no)}</span>` : ''}</p>
     ${field('Qty received *', 'qty', { type: 'number', value: remaining })}
@@ -8525,12 +10558,27 @@ function receiveModal(mrn, lineId, desc, remaining, onDone) {
     </div>
     ${field('Unit price (Rs)', 'unit_price', { type: 'number' })}
     ${field('Purchase source', 'purchase_source', { type: 'select', options: SOURCE_OPTS, value: mrn.purchase_source || '' })}
+    ${field('Receiving Destination Store *', 'physical_store_id', { type: 'select', options: locOpts, value: defaultLocId })}
     ${field('Supplier', 'supplier')}
     ${field('GRN No', 'grn_no')}
     ${field('Invoice No', 'invoice_no')}
     ${field('Delivery date', 'delivery_date', { type: 'date' })}
     <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Record receipt</button></div>`,
     (mbody, close) => {
+      const srcSel = qs('[name="purchase_source"]', mbody);
+      const storeSel = qs('[name="physical_store_id"]', mbody);
+      if (srcSel && storeSel) {
+        srcSel.addEventListener('change', () => {
+          if (srcSel.value === 'head_office') {
+            const ms = locations.find((l) => l.store_type === 'main_store' || l.code === 'MAIN-STORES');
+            if (ms) storeSel.value = ms.id;
+          } else if (srcSel.value === 'local_purchase') {
+            const ws = locations.find((l) => l.code === 'MAIN-WORKSHOP' || l.store_type === 'workshop_store');
+            if (ws) storeSel.value = ws.id;
+          }
+        });
+      }
+
       const qtyInp = qs('input[name="qty"]', mbody);
       const shortBox = qs('#short_reason_box', mbody);
       const remNum = Number(remaining) || 0;
@@ -8564,6 +10612,7 @@ function receiveModal(mrn, lineId, desc, remaining, onDone) {
               discrepancy_reason: shortQty > 0 ? f.discrepancy_reason : undefined,
               chain_no: mrn.chain_no || undefined,
               unit_price: f.unit_price, purchase_source: f.purchase_source || undefined,
+              physical_store_id: f.physical_store_id ? Number(f.physical_store_id) : undefined,
               supplier: f.supplier, grn_no: f.grn_no, invoice_no: f.invoice_no, delivery_date: f.delivery_date,
             },
             idempotencyKey: 'grn_rec_' + mrn.id + '_' + lineId + '_' + Date.now(),
@@ -12880,26 +14929,56 @@ routes.projects = async (c, params) => {
 // ---- Alias queue (assets + mechanics)
 routes.aliases = async (c) => {
   const [pending, all, assets, mPending, mechs] = await Promise.all([
-    api('/aliases?resolved=0'), api('/aliases?resolved=1&limit=100'), api('/assets?limit=1000'),
+    api('/aliases?resolved=0'), api('/aliases?resolved=1&limit=500'), api('/assets?limit=10000'),
     api('/mechanics/aliases?resolved=0'), api('/mechanics'),
   ]);
-  const aopts = assets.map((a) => `<option value="${a.id}">${esc(a.code)} — ${esc(a.brand || '')} ${esc(a.type || '')}</option>`).join('');
+  const aopts = assets.map((a) => {
+    const regPart = (a.registration && a.registration !== a.code) ? ` (${a.registration})` : '';
+    const descPart = [a.brand, a.type].filter(Boolean).join(' ');
+    return `<option value="${a.id}">${esc(a.code)}${esc(regPart)}${descPart ? ' — ' + esc(descPart) : ''}</option>`;
+  }).join('');
   const mopts = mechs.map((m) => `<option value="${m.id}">${esc(m.name)}${m.rate ? ' (Rs ' + m.rate + '/h)' : ''}</option>`).join('');
   c.innerHTML = `${pageHeader('Resolver Queues', 'The learning glue: unrecognised vehicle & mechanic text is queued here, never lost.')}
-    <div class="card section"><h3>Vehicles — pending link (${pending.length})</h3>
-      ${pending.length ? tableWrap([{ label: 'Raw Text' }, { label: 'Hits', num: true }, { label: 'Source' }, { label: 'Link to Asset' }],
-    pending.map((a) => `<tr><td>${esc(a.raw_text)}</td><td class="num">${a.hit_count}</td><td>${esc(a.source || '')}</td>
-          <td>${canDo('aliases.vehicle.resolve') ? `<select data-alias="${a.id}" style="width:auto;display:inline-block"><option value="">— pick —</option>${aopts}</select> <button class="sm" data-link="${a.id}">Link</button>` : '<span class="muted">read-only</span>'}</td></tr>`)) : '<span class="muted">Queue empty — every name resolves.</span>'}</div>
+    <div class="card section">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:8px">
+        <h3 style="margin:0">Vehicles — pending link (${pending.length})</h3>
+        ${pending.length ? '<input id="alias_veh_filter" type="search" placeholder="Filter pending vehicles…" style="max-width:240px;margin:0">' : ''}
+      </div>
+      <div id="alias_veh_list">
+        ${pending.length ? tableWrap([
+          { label: 'Raw Text' },
+          { label: 'Hits', num: true, width: '70px' },
+          { label: 'Source', width: '110px' },
+          { label: 'Link to Asset', width: '340px' }
+        ],
+        pending.map((a) => `<tr data-raw="${esc(a.raw_text.toLowerCase())}"><td>${esc(a.raw_text)}</td><td class="num">${a.hit_count}</td><td>${esc(a.source || '')}</td>
+            <td style="white-space:nowrap">${(canDo('aliases.vehicle.resolve') || isAdmin()) ? `<select data-alias="${a.id}" style="width:auto;display:inline-block;max-width:260px"><option value="">— pick asset —</option>${aopts}</select> <button class="sm primary" data-link="${a.id}" style="margin-left:6px">Link</button>` : '<span class="muted">read-only</span>'}</td></tr>`), { fit: true }) : '<span class="muted">Queue empty — every name resolves.</span>'}
+      </div>
+    </div>
     <div class="card section"><h3>Mechanic names — pending link (${mPending.length})</h3>
-      ${mPending.length ? tableWrap([{ label: 'Raw Text' }, { label: 'Hits', num: true }, { label: 'Source' }, { label: 'Link to Mechanic' }],
+      ${mPending.length ? tableWrap([
+        { label: 'Raw Text' },
+        { label: 'Hits', num: true, width: '70px' },
+        { label: 'Source', width: '110px' },
+        { label: 'Link to Mechanic', width: '340px' }
+      ],
       mPending.map((a) => `<tr><td>${esc(a.raw_text)}</td><td class="num">${a.hit_count}</td><td>${esc(a.source || '')}</td>
-          <td>${canDo('aliases.mechanic.resolve') ? `<select data-malias="${a.id}" style="width:auto;display:inline-block"><option value="">— pick —</option>${mopts}</select> <button class="sm" data-mlink="${a.id}">Link</button>` : '<span class="muted">read-only</span>'}</td></tr>`)) : '<span class="muted">Queue empty — every mechanic name resolves.</span>'}</div>
+          <td style="white-space:nowrap">${(canDo('aliases.mechanic.resolve') || isAdmin()) ? `<select data-malias="${a.id}" style="width:auto;display:inline-block;max-width:260px"><option value="">— pick —</option>${mopts}</select> <button class="sm primary" data-mlink="${a.id}" style="margin-left:6px">Link</button>` : '<span class="muted">read-only</span>'}</td></tr>`), { fit: true }) : '<span class="muted">Queue empty — every mechanic name resolves.</span>'}</div>
     <div class="grid">
-      <div class="card"><h3>Resolved vehicle aliases</h3>
+      <div class="card"><h3>Resolved vehicle aliases (${all.length})</h3>
         ${tableWrap([{ label: 'Raw Text' }, { label: 'Asset' }, { label: 'Hits', num: true }], all.map((a) => `<tr><td>${esc(a.raw_text)}</td><td>${esc(a.asset_code || '')}</td><td class="num">${a.hit_count}</td></tr>`), { scroll: true })}</div>
       <div class="card"><h3>Mechanics &amp; rates</h3>
         ${tableWrap([{ label: 'Mechanic' }, { label: 'Rate/h', num: true }], mechs.map((m) => `<tr><td>${esc(m.name)}</td><td class="num">${m.rate == null ? '<span class="badge amber">no rate</span>' : money(m.rate)}</td></tr>`), { scroll: true })}</div>
     </div>`;
+  const vehFilter = qs('#alias_veh_filter', c);
+  if (vehFilter) {
+    vehFilter.oninput = (e) => {
+      const q = e.target.value.toLowerCase().trim();
+      qsa('#alias_veh_list tbody tr', c).forEach((tr) => {
+        tr.style.display = !q || tr.dataset.raw.includes(q) || tr.textContent.toLowerCase().includes(q) ? '' : 'none';
+      });
+    };
+  }
   qsa('[data-link]').forEach((b) => b.onclick = async () => {
     const sel = qs(`[data-alias="${b.dataset.link}"]`);
     if (!sel.value) return toast('Pick an asset', 'err');
@@ -13450,7 +15529,7 @@ async function purchasingQueue(body, sp) {
       { label: 'Vehicle', width: '110px' },
       { label: 'Item & Urgency Note', cls: 'desc-col' },
       { label: 'Qty', num: true, width: '68px' },
-      { label: 'Channel', width: '110px' },
+      { label: 'Channel & Destination', width: '140px' },
       { label: 'Road', width: '170px' },
     ];
     if (cur.tab === 'bought') {
@@ -13472,7 +15551,14 @@ async function purchasingQueue(body, sp) {
             ${r.source_changed_reason ? `<div class="muted" style="font-size:11px;margin-top:2px">↔ from ${esc(r.source_changed_from || '?')}: ${esc(r.source_changed_reason)}</div>` : ''}
           </td>`,
           `<td class="num">${num(r.qty)}${r.unit ? ' ' + esc(r.unit) : ''}</td>`,
-          `<td>${chan(r.purchase_source)}</td>`,
+          `<td>
+            ${chan(r.purchase_source)}
+            <div style="font-size:11px;margin-top:3px;display:flex;align-items:center;gap:3px">
+              <span class="muted" title="Receiving Destination Store">📍</span>
+              <span class="mono" style="font-size:10.5px" title="${esc(r.target_store_name || '')}">${esc(r.target_store_code || (r.purchase_source === 'head_office' ? 'MAIN-STORES' : 'MAIN-WORKSHOP'))}</span>
+              ${cur.tab !== 'bought' ? `<a href="javascript:void(0)" data-dest="${r.id}" data-cur-store="${r.target_store_location_id || ''}" style="font-size:11px;text-decoration:none;margin-left:2px" title="Change delivery destination store">✎</a>` : ''}
+            </div>
+          </td>`,
           `<td>${roadBar(r)}</td>`,
         ];
         if (cur.tab === 'bought') {
@@ -13495,6 +15581,7 @@ async function purchasingQueue(body, sp) {
 
       qsa('[data-buy]', body).forEach((b) => { b.onclick = () => markBought(b.dataset.buy, load); });
       qsa('[data-move]', body).forEach((b) => { b.onclick = () => moveChannel(b.dataset.move, b.dataset.src, load); });
+      qsa('[data-dest]', body).forEach((b) => { b.onclick = () => changeDeliveryLocationModal(b.dataset.dest, b.dataset.curStore, load); });
       qsa('[data-prio]', body).forEach((b) => { b.onclick = () => adjustPriorityModal(b.dataset.prio, b.dataset.cur, b.dataset.note, load); });
       qsa('[data-view]', body).forEach((b) => { b.onclick = () => viewPurchase(b.dataset.view, load); });
     } catch (renderErr) {
@@ -13597,6 +15684,45 @@ async function adjustPriorityModal(lineId, currentPriority, currentNote, onDone)
     });
 }
 
+// Set physical store location for receiving purchased items (Step 3)
+async function changeDeliveryLocationModal(lineId, curStoreId, onDone) {
+  let locations = [];
+  try {
+    locations = await api('/store-locations');
+  } catch (e) {
+    locations = [];
+  }
+  const opts = [{ value: '', label: '— Default based on channel (Head Office ➔ Central Main Stores, Local ➔ Main Workshop) —' }].concat(
+    locations.map((l) => ({ value: l.id, label: `${l.code} — ${l.name} (${l.store_type || 'store'})` }))
+  );
+  modal('🏢 Set Delivery Destination Store', `
+    <p class="muted" style="font-size:12.5px;margin:0 0 10px">
+      Select which physical store location will receive this purchased item when delivered.
+      <br>Central procurement normally delivers to <b>Central Main Stores</b>; local purchases route directly to <b>Main Workshop Stores</b>.
+    </p>
+    ${field('Destination Store', 'target_store_location_id', { type: 'select', options: opts, value: curStoreId || '' })}
+    <div style="margin-top:14px;text-align:right">
+      <button class="primary" id="save-dest">Save Destination</button>
+    </div>
+  `, (mbody, close) => {
+    qs('#save-dest', mbody).onclick = async () => {
+      const val = qs('[name="target_store_location_id"]', mbody).value;
+      const targetStoreLocationId = val ? Number(val) : null;
+      try {
+        await api(`/purchasing/lines/${lineId}/delivery-location`, {
+          method: 'POST',
+          body: { target_store_location_id: targetStoreLocationId }
+        });
+        toast('Delivery destination updated');
+        close();
+        if (onDone) onDone();
+      } catch (err) {
+        toast(err.message, 'err');
+      }
+    };
+  });
+}
+
 // The tick. The invoice photo is required — it is the evidence the whole screen exists to collect.
 function markBought(lineId, onDone) {
   modal('Mark bought', `
@@ -13634,6 +15760,7 @@ async function viewPurchase(lineId, onDone) {
     <div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(160px,1fr))">
       ${[['Priority', d.buying_priority ? `${puPrioBadge(d.buying_priority, d.priority_note)}` : 'P3 Routine'],
          ['Channel', d.purchase_source ? (d.purchase_source === 'head_office' ? 'Head Office' : 'Local Purchase') : 'Unassigned'],
+         ['Destination', d.target_store_name ? `${esc(d.target_store_code)} (${esc(d.target_store_name)})` : (d.purchase_source === 'head_office' ? 'Central Main Stores (default)' : 'Main Workshop Stores (default)')],
          ['Supplier', d.supplier], ['Invoice', d.invoice_no], ['Invoice date', String(d.invoice_date || '').slice(0, 10)],
          ['Amount', d.purchase_amount == null ? '—' : money(d.purchase_amount)], ['Bought by', d.purchased_by],
          ['Bought on', String(d.purchased_at || '').slice(0, 10)]]
@@ -15997,6 +18124,7 @@ async function mtnModal(existing, onDone) {
   // Places (Stage 2): workshops, projects and sites, offered as you type "From" and "To". Picking
   // one links the note to that place; anything else typed (a machine, "Head Office") stays text.
   const placeList = await api('/stores/places').catch(() => []);
+  const storeLocList = await api('/store-locations?active_only=true').catch(() => []);
   const placeOf = (text) => { const p = placeList.find((x) => x.label === String(text || '').trim()); return p ? p.key : undefined; };
   const wsd = wsMulti() ? await workshopsData().catch(() => null) : null;
   const fld = (...args) => `<div class="fld">${field(...args)}</div>`;
@@ -16007,6 +18135,21 @@ async function mtnModal(existing, onDone) {
       <div class="fgrid">
         ${fld('MTN No *', 'mtn_no', { value: existing ? v.mtn_no || '' : suggested })}
         ${fld('Date', 'txn_date', { type: 'date', value: String(v.txn_date || today).slice(0, 10) })}
+        ${storeLocList.length ? `
+        <div class="fld">
+          <label style="font-size:12px;display:block;margin-bottom:3px">From physical store</label>
+          <select name="from_store_location_id" class="input">
+            <option value="">-- Non-store transfer / Free text --</option>
+            ${storeLocList.map(l => `<option value="${l.id}"${(v.from_store_location_id === l.id) ? ' selected' : ''}>[${esc(l.code)}] ${esc(l.name)}</option>`).join('')}
+          </select>
+        </div>
+        <div class="fld">
+          <label style="font-size:12px;display:block;margin-bottom:3px">To physical store</label>
+          <select name="to_store_location_id" class="input">
+            <option value="">-- Non-store transfer / Free text --</option>
+            ${storeLocList.map(l => `<option value="${l.id}"${(v.to_store_location_id === l.id) ? ' selected' : ''}>[${esc(l.code)}] ${esc(l.name)}</option>`).join('')}
+          </select>
+        </div>` : ''}
         ${fld('From location', 'from_location', { value: v.from_location || '' })}
         ${fld('To location', 'to_location', { value: v.to_location || '' })}
         ${fld('Transferred by', 'transferred_by', { value: v.transferred_by || '' })}
@@ -16188,28 +18331,72 @@ async function mtnModal(existing, onDone) {
         loadReceived(false);
       }, 600);
       loadReceived(false);
-      // Stage 4: say when the note moves stock — from one workshop's store to another's, on its date.
-      if (wsd && wsd.stores_multi) {
-        const storeOn = (wsId, date) => {
-          const w = wsd.workshops.find((x) => x.id === wsId);
-          if (!w) return null;
-          return w.own_store && (!w.store_opened || w.store_opened <= date) ? w.id : (w.uses_store || wsd.default_id);
-        };
-        const wsAt = (text) => { const k = placeOf(text); return k && /^w:\d+$/.test(k) ? Number(k.slice(2)) : null; };
-        const hint = () => {
-          const date = qs('input[name=txn_date]', root).value;
+      const fromLocSel = qs('select[name=from_store_location_id]', root);
+      const toLocSel = qs('select[name=to_store_location_id]', root);
+
+      const storeOn = (wsId, date) => {
+        if (!wsd) return null;
+        const w = wsd.workshops && wsd.workshops.find((x) => x.id === wsId);
+        if (!w) return null;
+        return w.own_store && (!w.store_opened || w.store_opened <= date) ? w.id : (w.uses_store || wsd.default_id);
+      };
+      const wsAt = (text) => { const k = placeOf(text); return k && /^w:\d+$/.test(k) ? Number(k.slice(2)) : null; };
+      const hint = () => {
+        const date = qs('input[name=txn_date]', root).value;
+        const el = qs('#tstock', root);
+        const fLocId = fromLocSel && fromLocSel.value ? Number(fromLocSel.value) : null;
+        const tLocId = toLocSel && toLocSel.value ? Number(toLocSel.value) : null;
+        if (fLocId && tLocId) {
+          if (fLocId === tLocId) {
+            el.style.display = '';
+            el.innerHTML = '<span class="badge red">error</span> Origin and Destination store locations cannot be the same.';
+            return;
+          }
+          const fLoc = storeLocList.find((x) => x.id === fLocId);
+          const tLoc = storeLocList.find((x) => x.id === tLocId);
+          el.style.display = '';
+          el.innerHTML = `<span class="badge green">moves stock</span> Physical store transfer from <b>${esc(fLoc ? fLoc.name : 'Origin')}</b> to <b>${esc(tLoc ? tLoc.name : 'Destination')}</b>. Off sending shelf on dispatch, onto receiving shelf on acceptance. Tracked in-transit.`;
+          return;
+        }
+        if (wsd && wsd.stores_multi) {
           const f = wsAt(qs('input[name=from_location]', root).value);
           const t = wsAt(qs('input[name=to_location]', root).value);
           const a = f && storeOn(f, date); const b = t && storeOn(t, date);
-          const el = qs('#tstock', root);
           el.style.display = a && b && a !== b ? '' : 'none';
-          // WHEN, not just whether: the shelf changes as the goods do (src/lib/stock.js
-          // transfers), so saying "moves stock" on its own reads as "the moment you save this".
           el.innerHTML = a && b && a !== b ? `<span class="badge green">moves stock</span> Out of ${esc(wsName(wsd, a))}'s store when this note is dispatched, into ${esc(wsName(wsd, b))}'s store when it is accepted — dated ${esc(date)}. Nothing leaves the shelf before that.` : '';
+        } else {
+          el.style.display = 'none';
+        }
+      };
+
+      if (fromLocSel) {
+        fromLocSel.onchange = () => {
+          const loc = storeLocList.find((x) => String(x.id) === String(fromLocSel.value));
+          if (loc) {
+            const cur = (qs('input[name=from_location]', root) && qs('input[name=from_location]', root).value.trim()) || '';
+            if (!cur || storeLocList.some((x) => cur === `[${x.code}] ${x.name}` || cur === x.name || cur === x.code)) {
+              if (qs('input[name=from_location]', root)) qs('input[name=from_location]', root).value = `[${loc.code}] ${loc.name}`;
+            }
+          }
+          hint();
         };
-        qsa('input[name=from_location],input[name=to_location],input[name=txn_date]', root).forEach((i) => { i.addEventListener('input', hint); i.addEventListener('change', hint); });
-        hint();
       }
+      if (toLocSel) {
+        toLocSel.onchange = () => {
+          const loc = storeLocList.find((x) => String(x.id) === String(toLocSel.value));
+          if (loc) {
+            const cur = (qs('input[name=to_location]', root) && qs('input[name=to_location]', root).value.trim()) || '';
+            if (!cur || storeLocList.some((x) => cur === `[${x.code}] ${x.name}` || cur === x.name || cur === x.code)) {
+              if (qs('input[name=to_location]', root)) qs('input[name=to_location]', root).value = `[${loc.code}] ${loc.name}`;
+            }
+          }
+          hint();
+        };
+      }
+
+      qsa('input[name=from_location],input[name=to_location],input[name=txn_date]', root).forEach((i) => { i.addEventListener('input', hint); i.addEventListener('change', hint); });
+      hint();
+
       qs('#tcancel', root).onclick = close;
 
       const readLines = () => qsa('.mrnline', lines).map((row) => ({
@@ -16225,6 +18412,8 @@ async function mtnModal(existing, onDone) {
         to_location: qs('input[name=tto]', row).value.trim() || undefined,
         from_place: placeOf(qs('input[name=tfrom]', row).value),
         to_place: placeOf(qs('input[name=tto]', row).value),
+        from_store_location_id: fromLocSel && fromLocSel.value ? Number(fromLocSel.value) : undefined,
+        to_store_location_id: toLocSel && toLocSel.value ? Number(toLocSel.value) : undefined,
         reason: qs('input[name=treason]', row).value.trim() || undefined,
       })).filter((l) => l.description);
 
@@ -16242,8 +18431,13 @@ async function mtnModal(existing, onDone) {
           to_location: d.to_location, transferred_by: d.transferred_by, received_by: d.received_by,
           // The picker writes `asset`/`asset_id`; the note calls that end its "to asset".
           reason: d.reason, to_asset: d.asset || d.to_asset, to_asset_id: d.asset_id || undefined,
-          from_place: placeOf(d.from_location), to_place: placeOf(d.to_location)
+          from_place: placeOf(d.from_location), to_place: placeOf(d.to_location),
+          from_store_location_id: fromLocSel && fromLocSel.value ? Number(fromLocSel.value) : undefined,
+          to_store_location_id: toLocSel && toLocSel.value ? Number(toLocSel.value) : undefined,
         };
+        if (head.from_store_location_id && head.to_store_location_id && head.from_store_location_id === head.to_store_location_id) {
+          return toast('Origin and destination store locations cannot be the same', 'err');
+        }
         try {
           if (!existing) {
             const idempKey = 'mtn_create_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7);

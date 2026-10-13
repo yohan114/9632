@@ -52,14 +52,17 @@ const LINE_COLS = `
   l.invoice_date, l.purchase_amount,
   l.source_changed_at, l.source_changed_by, l.source_changed_reason, l.source_changed_from,
   l.buying_priority, l.priority_note, l.priority_updated_at, l.priority_updated_by,
+  l.target_store_location_id,
   m.mrn_no, m.req_date, m.required_date, m.requested_by, m.purpose, m.approval_status,
-  m.purchase_requested_at, m.job_id,
+  m.purchase_requested_at, m.job_id, m.workshop_id, m.target_store_location_id AS mrn_target_store_location_id,
+  tsl.code AS target_store_code, tsl.name AS target_store_name, tsl.store_type AS target_store_type,
   a.code AS asset_code, a.registration AS asset_reg,
   (SELECT COUNT(*) FROM mrn_line_invoices i WHERE i.mrn_line_id = l.id) AS invoice_images`;
 
 const LINE_FROM = `
   FROM mrn_lines l
   JOIN mrn m ON m.id = l.mrn_id
+  LEFT JOIN store_locations tsl ON tsl.id = COALESCE(l.target_store_location_id, m.target_store_location_id)
   LEFT JOIN assets a ON a.id = m.asset_id`;
 
 /** A channel the caller is actually allowed to act on, or null. */
@@ -213,6 +216,52 @@ router.get('/lines/:id/priority-history', requireAuth, asyncHandler((req, res) =
   res.json({ rows });
 }));
 
+// ---- delivery destination assignment ---------------------------------------
+
+router.post('/lines/:id/delivery-location', requireAuth, asyncHandler((req, res) => {
+  const id = toInt(req.params.id);
+  const line = get('SELECT l.*, m.mrn_no FROM mrn_lines l JOIN mrn m ON m.id = l.mrn_id WHERE l.id = ?', id);
+  if (!line) return res.status(404).json({ error: 'Item not found' });
+  if (Number(line.qty_received) > 0) {
+    return res.status(409).json({ error: 'Some goods already received — delivery destination cannot be changed' });
+  }
+
+  const canEdit = hasCap(req.user, 'purchasing.all_channels')
+    || hasCap(req.user, 'stores.mrn.edit')
+    || (req.user.roles && (
+      req.user.roles.includes('workshop')
+      || req.user.roles.includes('operational_manager')
+      || req.user.roles.includes('manager')
+      || req.user.roles.includes('purchase_head_office')
+      || req.user.roles.includes('purchase_local')
+    ));
+  if (!canEdit) return res.status(403).json({ error: 'Permission denied to set delivery destination' });
+
+  const targetStoreLocationId = req.body.target_store_location_id != null && req.body.target_store_location_id !== ''
+    ? toInt(req.body.target_store_location_id)
+    : null;
+
+  if (targetStoreLocationId) {
+    const loc = get('SELECT id, name, code, active FROM store_locations WHERE id = ?', targetStoreLocationId);
+    if (!loc) return res.status(400).json({ error: 'Target store location not found' });
+    if (!loc.active) return res.status(400).json({ error: 'Target store location is inactive' });
+  }
+
+  run('UPDATE mrn_lines SET target_store_location_id = ? WHERE id = ?', targetStoreLocationId, id);
+
+  audit.record({
+    userId: req.user.id,
+    entity: 'mrn_lines',
+    entityId: id,
+    action: 'delivery_location',
+    before: { target_store_location_id: line.target_store_location_id },
+    after: { target_store_location_id: targetStoreLocationId }
+  });
+
+  emitter.emit('data_changed', { what: 'purchasing' });
+  res.json({ ok: true, target_store_location_id: targetStoreLocationId, message: 'Delivery location updated' });
+}));
+
 /**
  * The MRN header's purchase_source is a SUMMARY of its lines, not a second truth.
  * 'mixed' when the lines disagree, which is a normal state here and must not be flattened to
@@ -272,13 +321,17 @@ router.post('/lines/:id/purchase', requireAuth, editsLine, asyncHandler((req, re
   const amount = req.body.purchase_amount === '' || req.body.purchase_amount == null
     ? null : toNum(req.body.purchase_amount, 0);
 
+  const targetStoreLocationId = req.body.target_store_location_id !== undefined
+    ? (req.body.target_store_location_id ? toInt(req.body.target_store_location_id) : null)
+    : line.target_store_location_id;
+
   tx(() => {
     run(`UPDATE mrn_lines
             SET purchased_at = datetime('now'), purchased_by = ?, supplier = ?, invoice_no = ?,
-                invoice_date = ?, purchase_amount = ?
+                invoice_date = ?, purchase_amount = ?, target_store_location_id = ?
           WHERE id = ?`,
     req.user.username, String(req.body.supplier).trim(), String(req.body.invoice_no).trim(),
-    invoiceDate || null, amount, id);
+    invoiceDate || null, amount, targetStoreLocationId, id);
     let seq = 0;
     for (const img of req.body.images) {
       run('INSERT INTO mrn_line_invoices (mrn_line_id, seq, image, uploaded_by) VALUES (?, ?, ?, ?)',

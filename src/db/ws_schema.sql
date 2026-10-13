@@ -657,6 +657,7 @@ CREATE TABLE store_counts (
 CREATE TABLE store_reorder (
   id                  INTEGER PRIMARY KEY AUTOINCREMENT,
   store_id            INTEGER NOT NULL,
+  physical_store_id   INTEGER,
   section             TEXT NOT NULL,
   item_key            TEXT NOT NULL,
   level               REAL NOT NULL,
