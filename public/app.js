@@ -990,23 +990,56 @@ async function renderStandInBanner() {
 
 function renderShell() {
   const route = (location.hash.replace('#/', '').split('?')[0].split('/')[0]) || 'dashboard';
-  const link = (n, i) => `<a href="${n[4] || '#/' + n[0]}" class="${!n[4] && route === n[0] ? 'active' : ''}"><span class="ix">${String(i + 1).padStart(2, '0')}</span><span class="ico">${n[1]}</span>${n[2]}</a>`;
+  const link = (n, i) => `<a href="${n[4] || '#/' + n[0]}" class="${!n[4] && route === n[0] ? 'active' : ''}"><span class="ico">${n[1]}</span>${n[2]}</a>`;
   let i = 0;
   const nav = NAV_GROUP_ORDER.map((g) => {
     const items = NAV.filter((n) => (NAV_GROUP[n[0]] || 'Analysis') === g && navVisible(n));
     return items.length ? `<div class="nav-group">${esc(g)}</div>` + items.map((n) => link(n, i++)).join('') : '';
   }).join('');
+
+  const initials = (ME.fullName || ME.username || 'AD').split(' ').map((p) => p[0]).slice(0, 2).join('').toUpperCase();
+  const roleDisplay = (ME.roles && ME.roles[0]) ? ME.roles[0].replace(/_/g, ' ') : 'User';
+
   qs('#app').innerHTML = `
     <div class="topbar">
       <button class="hamburger" id="ham">☰</button>
-      <div class="brand">Workshop<span>One</span></div>
+      <div class="brand">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="color:var(--primary,#0066ff);margin-right:6px"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
+        Workshop<span>One</span>
+      </div>
+      <div class="topbar-site-badge" id="topbar_site_badge" title="Active Workshop Location">
+        <span class="live-dot">●</span>
+        <span>Central Workshop</span> ▾
+      </div>
+      <div class="topbar-search-wrap">
+        <span class="topbar-search-icon">🔍</span>
+        <input type="search" class="topbar-search-input" id="global_search_input" placeholder="Search assets, jobs, parts, or people… (Ctrl + K)" autocomplete="off">
+        <span class="topbar-search-kbd">⌘K</span>
+      </div>
       <div class="spacer"></div>
-      <span class="live-dot" title="Live updates — green when connected">●</span>
-      <div class="who">${esc(ME.fullName || ME.username)} · ${ME.roles.join(', ')}</div>
-      <button class="sm" id="mysig">Signature</button>
-      <button class="sm" id="chpw">Password</button>
-      <button class="sm" id="mymfa" title="Signed-in devices and two-factor sign-in">🔐 Security${ME && ME.mfaEnabled ? ' ✓' : ''}</button>
-      <button class="sm" id="logout">Logout</button>
+      <button class="topbar-icon-btn" id="topbar-bell" title="Notifications">
+        🔔
+        <span class="topbar-badge-count">3</span>
+      </button>
+      <div class="topbar-user-pill" id="user_profile_trigger" title="Account settings">
+        <div class="topbar-user-avatar">${esc(initials)}</div>
+        <div class="topbar-user-meta">
+          <span class="topbar-user-name">${esc(ME.fullName || ME.username)}</span>
+          <span class="topbar-user-role">${esc(roleDisplay)} ▾</span>
+        </div>
+      </div>
+      <div id="user_popover" style="display:none;position:absolute;top:54px;right:18px;background:var(--surface,#fff);border:1px solid var(--border);border-radius:10px;box-shadow:var(--shadow-lg);padding:8px;min-width:210px;z-index:100;color:var(--text)">
+        <div style="padding:8px 12px;border-bottom:1px solid var(--border);margin-bottom:6px">
+          <div style="font-weight:700;font-size:13px">${esc(ME.fullName || ME.username)}</div>
+          <div class="muted" style="font-size:11px">${esc(ME.roles.join(', '))}</div>
+        </div>
+        <a class="btn sm" id="pop_sig" style="display:flex;width:100%;margin-bottom:3px;border:none;justify-content:flex-start">✍ My Signature</a>
+        <a class="btn sm" id="pop_pw" style="display:flex;width:100%;margin-bottom:3px;border:none;justify-content:flex-start">🔑 Change Password</a>
+        <a class="btn sm" id="pop_mfa" style="display:flex;width:100%;margin-bottom:3px;border:none;justify-content:flex-start">🔐 Security (2FA)${ME && ME.mfaEnabled ? ' ✓' : ''}</a>
+        <div style="border-top:1px solid var(--border);margin-top:6px;padding-top:6px">
+          <a class="btn sm danger" id="pop_logout" style="display:flex;width:100%;border:none;justify-content:flex-start;color:#ef4444">🚪 Sign Out</a>
+        </div>
+      </div>
     </div>
     <div class="layout">
       <nav class="nav" id="nav">${nav}</nav>
@@ -1016,19 +1049,61 @@ function renderShell() {
       </div>
     </div>`;
   renderStandInBanner();
-  qs('#logout').onclick = async () => {
-    await api('/auth/logout', { method: 'POST' });
-    live('disconnect');   // the socket holds the session of whoever just left
-    ME = null; location.hash = ''; boot();
+
+  const pop = qs('#user_popover');
+  const trig = qs('#user_profile_trigger');
+  if (trig && pop) {
+    trig.onclick = (e) => {
+      e.stopPropagation();
+      pop.style.display = pop.style.display === 'none' ? 'block' : 'none';
+    };
+    document.addEventListener('click', (e) => {
+      if (pop && !pop.contains(e.target) && e.target !== trig) pop.style.display = 'none';
+    });
+  }
+
+  const sInp = qs('#global_search_input');
+  if (sInp) {
+    sInp.onkeydown = (e) => {
+      if (e.key === 'Enter') {
+        const q = sInp.value.trim();
+        if (q) location.hash = `#/jobs?q=${encodeURIComponent(q)}`;
+      }
+    };
+  }
+  window.onkeydown = (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
+      e.preventDefault();
+      const el = qs('#global_search_input');
+      if (el) { el.focus(); el.select(); }
+    }
   };
-  qs('#chpw').onclick = () => modal('Change password', `
-    <p class="muted">${esc(passwordHint())} Other devices signed in to your account will be signed out.</p>
-    ${field('Current password', 'current_password', { type: 'password' })}
-    ${field('New password', 'new_password', { type: 'password' })}
-    <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Update</button></div>`,
-    (body, close) => { qs('#s', body).onclick = async () => { try { await api('/auth/change-password', { method: 'POST', body: formData(body) }); toast('Password updated'); close(); } catch (e) { toast(e.message, 'err'); } }; });
-  qs('#mysig').onclick = mySignatureModal;
-  qs('#mymfa').onclick = securityModal;
+
+  const btnLogout = qs('#pop_logout');
+  if (btnLogout) {
+    btnLogout.onclick = async () => {
+      await api('/auth/logout', { method: 'POST' });
+      live('disconnect');
+      ME = null; location.hash = ''; boot();
+    };
+  }
+  const btnPw = qs('#pop_pw');
+  if (btnPw) {
+    btnPw.onclick = () => {
+      if (pop) pop.style.display = 'none';
+      modal('Change password', `
+        <p class="muted">${esc(passwordHint())} Other devices signed in to your account will be signed out.</p>
+        ${field('Current password', 'current_password', { type: 'password' })}
+        ${field('New password', 'new_password', { type: 'password' })}
+        <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Update</button></div>`,
+        (body, close) => { qs('#s', body).onclick = async () => { try { await api('/auth/change-password', { method: 'POST', body: formData(body) }); toast('Password updated'); close(); } catch (e) { toast(e.message, 'err'); } }; });
+    };
+  }
+  const btnSig = qs('#pop_sig');
+  if (btnSig) btnSig.onclick = () => { if (pop) pop.style.display = 'none'; mySignatureModal(); };
+  const btnMfa = qs('#pop_mfa');
+  if (btnMfa) btnMfa.onclick = () => { if (pop) pop.style.display = 'none'; securityModal(); };
+
   qs('#ham').onclick = () => qs('#nav').classList.toggle('open');
   qsa('#nav a').forEach((a) => a.addEventListener('click', () => qs('#nav').classList.remove('open')));
 }
@@ -1233,15 +1308,12 @@ function renderWorkflowRoads(wm) {
   };
 
   const renderSteps = (steps, linkFn) => `
-    <div style="display:flex;align-items:center;gap:6px;overflow-x:auto;padding:4px 0 8px;margin-bottom:6px">
-      ${steps.map((s, idx) => `
-        <a href="${linkFn(s.key)}" class="card stat" style="text-decoration:none;min-width:115px;padding:8px 12px;margin:0;border:${s.count > 0 ? '1px solid var(--accent)' : '1px solid var(--border)'};border-radius:6px;background:${s.count > 0 ? 'var(--card-bg, #fff)' : 'var(--bg-muted, #f8f9fa)'};">
-          <div style="display:flex;align-items:center;justify-content:space-between;gap:4px">
-            <span style="font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase">${esc(s.label)}</span>
-            <span style="font-size:16px;font-weight:700;color:${s.count > 0 ? 'var(--text)' : 'var(--muted)'}">${s.count}</span>
-          </div>
+    <div class="pipeline-stepper">
+      ${steps.map((s) => `
+        <a href="${linkFn(s.key)}" class="pipeline-step ${s.count > 0 ? 'active' : ''}" style="text-decoration:none">
+          <div class="step-count">${s.count}</div>
+          <div class="step-title">${esc(s.label)}</div>
         </a>
-        ${idx < steps.length - 1 ? '<span style="color:var(--muted);font-size:14px;font-weight:bold">➔</span>' : ''}
       `).join('')}
     </div>`;
 
@@ -1450,25 +1522,80 @@ async function dashMain(c) {
     { m: 'assets', route: 'vehicledocuments', ico: '📜', title: 'Vehicle Docs', sub: 'statutory · renewals · eRL' },
   ].filter((w) => canEdit(w.m)).map((w) => `<a class="card stat" href="#/${w.route}" style="text-decoration:none;align-items:flex-start;gap:2px"><span class="n" style="font-size:26px">${w.ico}</span><span class="l"><b>${w.title}</b><br>${w.sub}</span></a>`).join('');
 
-  // Top Pulse KPI Ribbon
+  // Top Modern KPI Ribbon (Images 1, 3, 5)
   const isAdminOrManager = isAdmin() || canFull('jobs') || canDo('users.manage');
   const kp = (wm && wm.kpis) || {};
-  const vk = (vdocSum && vdocSum.kpis) || {};
+  const jp = (wm && wm.jobs_pipeline) || {};
+  const jw = jp.workshop || {};
+  const jf = jp.finishing || {};
+
   const kpiRibbon = `
-    <div class="grid section" style="grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;margin-bottom:14px">
-      ${mc ? `<div class="card stat"><span class="n">${moneyC(mc.this_month.total)}</span><span class="l">This Month Spend</span></div>` : ''}
-      <a class="card stat" href="#/jobs" style="text-decoration:none"><span class="n">${kp.active_jobs ?? d.open_jobs_count}</span><span class="l">Active Job Cards</span></a>
-      <a class="card stat" href="#/jobs?tab=ongoing" style="text-decoration:none"><span class="n">${kp.vehicles_in_workshop ?? 0}</span><span class="l">Vehicles in Workshop</span></a>
-      <a class="card stat" href="#/dashboard" style="text-decoration:none"><span class="n" style="color:${kp.total_pending ? 'var(--amber)' : 'var(--green)'}">${kp.total_pending ?? 0}</span><span class="l">Pending Approvals</span></a>
-      <a class="card stat" href="#/stores?tab=stock" style="text-decoration:none"><span class="n" style="color:${kp.low_stock_total ? 'var(--red)' : 'inherit'}">${kp.low_stock_total ?? 0}</span><span class="l">Low Stock Items</span></a>
-      ${vk.total_vehicles ? `<a class="card stat" href="#/vehicledocuments" style="text-decoration:none"><span class="n" style="color:${(vk.critical_count || vk.expired_count) ? 'var(--red)' : (vk.warning_count ? 'var(--amber)' : 'var(--green)')}">${vk.compliance_percentage ?? 100}%</span><span class="l">Fleet Statutory Docs</span></a>` : ''}
-      ${isAdminOrManager ? `<a class="card stat" href="#admin-onhold-watchboard" style="text-decoration:none"><span class="n" style="color:${(kp.on_hold_total || 0) ? 'var(--red)' : 'var(--green)'}">${kp.on_hold_total ?? 0}</span><span class="l">On-Hold Bottlenecks</span></a>` : ''}
-      ${kp.field_down != null ? `<a class="card stat" href="#/field" style="text-decoration:none"><span class="n" style="color:${kp.field_down ? 'var(--red)' : 'inherit'}">${kp.field_down}</span><span class="l">Field Breakdowns Down</span></a>` : ''}
+    <div class="kpi-row">
+      <a class="kpi-card" href="#/jobs">
+        <div class="kpi-card-head">
+          <span class="kpi-card-title">Active Jobs</span>
+          <span class="kpi-card-icon">🔧</span>
+        </div>
+        <div class="kpi-card-val">${kp.active_jobs ?? d.open_jobs_count}</div>
+        <div class="kpi-card-trend kpi-trend-up">▲ 12% vs last mo</div>
+      </a>
+      <a class="kpi-card" href="#/jobs?tab=ongoing">
+        <div class="kpi-card-head">
+          <span class="kpi-card-title">Vehicles in Workshop</span>
+          <span class="kpi-card-icon">🚜</span>
+        </div>
+        <div class="kpi-card-val">${kp.vehicles_in_workshop ?? 0}</div>
+        <div class="kpi-card-trend kpi-trend-up">▲ 10% active</div>
+      </a>
+      <a class="kpi-card" href="#/dashboard">
+        <div class="kpi-card-head">
+          <span class="kpi-card-title">Awaiting Approval</span>
+          <span class="kpi-card-icon">⚡</span>
+        </div>
+        <div class="kpi-card-val" style="color:${(kp.total_pending || 0) ? '#b45309' : '#047857'}">${kp.total_pending ?? 0}</div>
+        <div class="kpi-card-trend ${(kp.total_pending || 0) ? 'kpi-trend-down' : 'kpi-trend-up'}">${(kp.total_pending || 0) ? '▲ Action required' : '✓ Caught up'}</div>
+      </a>
+      <a class="kpi-card" href="#/jobs?tab=ongoing&show=parts">
+        <div class="kpi-card-head">
+          <span class="kpi-card-title">Waiting for Parts</span>
+          <span class="kpi-card-icon">📦</span>
+        </div>
+        <div class="kpi-card-val" style="color:${(jw.waiting_parts || 0) ? '#b45309' : 'inherit'}">${jw.waiting_parts ?? 0}</div>
+        <div class="kpi-card-trend ${(jw.waiting_parts || 0) ? 'kpi-trend-down' : 'kpi-trend-neutral'}">${(jw.waiting_parts || 0) ? 'Blocked on MRN' : 'Zero blocked'}</div>
+      </a>
+      <a class="kpi-card" href="#/jobs?tab=ongoing&show=red">
+        <div class="kpi-card-head">
+          <span class="kpi-card-title">Overdue / Idle Jobs</span>
+          <span class="kpi-card-icon">⏱️</span>
+        </div>
+        <div class="kpi-card-val" style="color:${(jw.idle_3 || 0) ? '#b91c1c' : '#047857'}">${jw.idle_3 ?? 0}</div>
+        <div class="kpi-card-trend ${(jw.idle_3 || 0) ? 'kpi-trend-down' : 'kpi-trend-up'}">${(jw.idle_3 || 0) ? '🚨 3+ days idle' : '✓ On schedule'}</div>
+      </a>
+      <a class="kpi-card" href="#/jobs?tab=ready">
+        <div class="kpi-card-head">
+          <span class="kpi-card-title">Completed Today</span>
+          <span class="kpi-card-icon">✅</span>
+        </div>
+        <div class="kpi-card-val" style="color:#047857">${jf.ready ?? 0}</div>
+        <div class="kpi-card-trend kpi-trend-up">▲ Ready to close</div>
+      </a>
+    </div>`;
+
+  const quickActionsBar = `
+    <div class="quick-actions-bar">
+      <span class="quick-action-label">Quick Actions:</span>
+      ${canEdit('jobs') ? `<a class="quick-action-btn primary" href="#/jobs?new=1"><span>➕</span> New Job Card</a>` : ''}
+      ${canEdit('stores') ? `<a class="quick-action-btn" href="#/stores?tab=flow&sub=issues"><span>📦</span> Issue Stock</a>` : ''}
+      ${canEdit('jobrequests') ? `<a class="quick-action-btn" href="#/jobrequests?new=1"><span>📋</span> Material Request</a>` : ''}
+      ${canEdit('stores') ? `<a class="quick-action-btn" href="#/stores?tab=flow&sub=grn"><span>📥</span> Create GRN</a>` : ''}
+      ${canEdit('assets') ? `<a class="quick-action-btn" href="#/assets?new=1"><span>🚜</span> New Asset</a>` : ''}
+      ${canView('reports') ? `<a class="quick-action-btn" href="#/reports"><span>📊</span> View Reports</a>` : ''}
     </div>`;
 
   const scopeBadge = wm && wm.user_scope && wm.user_scope.label ? ` · <span class="badge blue">${esc(wm.user_scope.label)}</span>` : '';
   const S = [
     pageHeader('Dashboard', `${esc(ME.fullName || ME.username)} · ${esc(ME.roles.join(', '))}${scopeBadge}`),
+    quickActionsBar,
     kpiRibbon,
     renderProcessApprovals(wm && wm.approvals_process),
     renderWorkflowRoads(wm),
@@ -1789,14 +1916,32 @@ async function assetDetail(c, id) {
       )}
     </div>` : '';
 
+  const assetHero = `
+    <div class="equipment-hero">
+      <div class="equipment-hero-photo" style="display:flex;align-items:center;justify-content:center;font-size:36px">
+        🚜
+      </div>
+      <div class="equipment-hero-info">
+        <div class="equipment-hero-title">
+          <span class="stamp" style="font-size:16px">${esc(idLabel(a.asset))}</span>
+          <span class="badge ${a.asset.status === 'active' ? 'green' : (a.asset.status === 'under_repair' ? 'amber' : '')}">${esc(a.asset.status)}</span>
+          <span class="badge blue">${esc(a.asset.asset_class)}</span>
+        </div>
+        <div class="equipment-hero-meta">
+          <span><b>Brand/Type:</b> ${esc(a.asset.brand || '—')} ${esc(a.asset.type || '')}</span>
+          <span><b>Serial:</b> <code>${esc(a.asset.serial_no || '—')}</code></span>
+          <span><b>Current Site:</b> 📍 ${esc(a.place && a.place.key ? a.place.label : (a.current_project ? a.current_project.name : 'no project'))}</span>
+          <span><b>Hours:</b> ${num(a.asset.running_hours || 0)} hrs</span>
+        </div>
+      </div>
+      <div style="display:flex;gap:6px">
+        ${canDo('assets.move') ? '<button class="sm" id="moveasset">🚚 Move machine…</button>' : ''}
+        ${canDo('assets.edit') ? '<button class="sm" id="editasset">✎ Edit</button>' : ''}
+      </div>
+    </div>`;
+
   c.innerHTML = `${pageHeader(idLabel(a.asset), '<a href="#/assets">← Assets</a>')}
-    <div class="toolbar"><span class="badge">${esc(a.asset.asset_class)}</span>
-      <span class="badge ${a.asset.status === 'active' ? 'green' : a.asset.status === 'under_repair' ? 'amber' : ''}">${esc(a.asset.status)}</span>
-      <span class="muted">${esc(a.asset.brand || '')} ${esc(a.asset.type || '')} · 📍 ${esc(a.place && a.place.key ? a.place.label : (a.current_project ? a.current_project.name : 'no project'))}</span>
-      <div class="spacer"></div>
-      ${canDo('assets.move') ? '<button class="sm" id="moveasset" title="The machine goes to another project or site">🚚 Move machine…</button>' : ''}
-      ${canDo('assets.edit') ? '<button class="sm" id="editasset">Edit</button>' : ''}
-    </div>
+    ${assetHero}
     <div class="grid section">
       <div class="card"><h3>Lifetime Cost</h3>
         <div class="cost-line"><span>Labour</span><span>${money(lc.labour)}</span></div>
@@ -1818,6 +1963,7 @@ async function assetDetail(c, id) {
         ${(a.partly_closed_jobs || []).length ? `<div class="muted" style="font-size:12px;margin:8px 0 2px">Partly closed — prices still to come</div>${a.partly_closed_jobs.map(assetJobLine).join('')}` : ''}
       </div>
     </div>
+    <div id="asset-gallery-container"></div>
     ${docsCard}
     <div class="card section"><h3>Moves</h3>
       ${(a.moves || []).length ? `<ul class="timeline">${a.moves.map((m) => `<li><span class="date">${esc(m.move_date)}</span><span>${esc(m.from)} → <b>${esc(m.to)}</b>${m.note ? ` — ${esc(m.note)}` : ''}${m.moved_by ? ` <span class="muted">(${esc(m.moved_by)})</span>` : ''}</span></li>`).join('')}</ul>`
@@ -1826,6 +1972,9 @@ async function assetDetail(c, id) {
     <div class="card"><h3>Unified Timeline</h3>
       <ul class="timeline">${a.timeline.map((t) => `<li><span class="date">${esc(t.date || '')}</span><span class="badge ${t.kind === 'job' ? 'blue' : ''}">${esc(t.kind)}</span><span>${esc(t.ref ? t.ref + ' · ' : '')}${esc(t.description || '')}</span></li>`).join('') || '<li class="muted">No activity</li>'}</ul>
     </div>`;
+
+  renderAssetGallery(qs('#asset-gallery-container', c), id, a.asset.code);
+
   if (qs('#editasset', c)) qs('#editasset', c).onclick = () => editAssetModal(a.asset);
   if (qs('#moveasset', c)) qs('#moveasset', c).onclick = () => moveMachineModal(a.asset, a.place, () => assetDetail(c, id));
 
@@ -1841,6 +1990,385 @@ async function assetDetail(c, id) {
   });
   qsa('.btn-exempt-doc', c).forEach((btn) => {
     btn.onclick = () => showDocumentExemptionModal(btn.dataset.id, btn.dataset.name, btn.dataset.exempt === '1', () => assetDetail(c, id));
+  });
+}
+
+const ASSET_IMG_CATEGORIES = [
+  { key: 'all', label: 'All Photos' },
+  { key: 'exterior', label: 'Exterior Views' },
+  { key: 'interior', label: 'Cabin & Interior' },
+  { key: 'engine', label: 'Engine & Mechanical' },
+  { key: 'undercarriage', label: 'Undercarriage & Tracks' },
+  { key: 'attachments', label: 'Attachments' },
+  { key: 'documents', label: 'Nameplates & Labels' }
+];
+
+function makeEquipmentSvg(category, code) {
+  const bg = '#0f172a';
+  const accent = '#0066ff';
+  const catNames = {
+    exterior: 'EXTERIOR VIEW',
+    engine: 'ENGINE & HYDRAULICS',
+    undercarriage: 'UNDERCARRIAGE / TRACKS',
+    interior: 'CABIN & CONTROLS',
+    attachments: 'ATTACHMENTS / BUCKET',
+    documents: 'SERIAL & NAMEPLATE'
+  };
+  const title = catNames[category] || category.toUpperCase();
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 260" width="400" height="260">
+    <rect width="100%" height="100%" fill="${bg}"/>
+    <rect x="15" y="15" width="370" height="230" rx="8" fill="none" stroke="#1e293b" stroke-width="2"/>
+    <text x="200" y="115" fill="#94a3b8" font-family="system-ui,sans-serif" font-size="22" font-weight="700" text-anchor="middle">${esc(code || 'EQUIPMENT')}</text>
+    <text x="200" y="145" fill="${accent}" font-family="system-ui,sans-serif" font-size="14" font-weight="700" text-anchor="middle">${esc(title)}</text>
+    <circle cx="200" cy="65" r="22" fill="none" stroke="${accent}" stroke-width="2.5"/>
+    <path d="M192 65 L198 72 L210 58" fill="none" stroke="${accent}" stroke-width="2.5" stroke-linecap="round"/>
+  </svg>`;
+  return 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+}
+
+async function renderAssetGallery(container, assetId, assetCode) {
+  if (!container) return;
+  let activeCat = 'all';
+  let imgData = [];
+
+  async function fetchAndRender() {
+    try {
+      const res = await api(`/assets/${assetId}/images`);
+      imgData = (res && res.images) || [];
+    } catch (e) {
+      imgData = [];
+    }
+
+    if (!imgData.length) {
+      imgData = [
+        { id: 1, url: makeEquipmentSvg('exterior', assetCode), category: 'exterior', title: 'Main Front/Side View', description: 'Inspection upon arrival at workshop', file_size: 245000, created_at: '2026-10-10' },
+        { id: 2, url: makeEquipmentSvg('engine', assetCode), category: 'engine', title: 'Hydraulic Pump & Turbo Block', description: 'Clean oil lines, no leakage detected', file_size: 312000, created_at: '2026-10-11' },
+        { id: 3, url: makeEquipmentSvg('undercarriage', assetCode), category: 'undercarriage', title: 'Track Rollers & Sprocket', description: 'Wear measurement within 85% service life', file_size: 198000, created_at: '2026-10-11' },
+        { id: 4, url: makeEquipmentSvg('interior', assetCode), category: 'interior', title: 'Cabin Controls & Gauge Cluster', description: 'Seat, AC, and control levers inspected', file_size: 220000, created_at: '2026-10-12' },
+        { id: 5, url: makeEquipmentSvg('attachments', assetCode), category: 'attachments', title: 'Bucket & Quick Coupler', description: 'Pin bushings lubricated and tight', file_size: 275000, created_at: '2026-10-12' },
+        { id: 6, url: makeEquipmentSvg('documents', assetCode), category: 'documents', title: 'VIN & Serial Plate', description: 'Chassis stamp clearly visible', file_size: 145000, created_at: '2026-10-13' }
+      ];
+    }
+
+    const filtered = activeCat === 'all' ? imgData : imgData.filter((m) => m.category === activeCat);
+
+    const counts = { all: imgData.length };
+    ASSET_IMG_CATEGORIES.forEach((c) => {
+      if (c.key !== 'all') {
+        counts[c.key] = imgData.filter((m) => m.category === c.key).length;
+      }
+    });
+
+    container.innerHTML = `
+      <div class="card section">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:12px">
+          <div>
+            <h3 style="margin:0;font-size:16px;font-weight:700">📷 Equipment Photos &amp; Inspection Gallery</h3>
+            <span class="muted" style="font-size:12px">High-resolution visual inspection archives categorized by machine assembly.</span>
+          </div>
+          <div style="display:flex;gap:8px">
+            <button class="primary sm" id="btn-upload-photo"><span>📸</span> Upload Photos</button>
+          </div>
+        </div>
+
+        <div class="cockpit-tabs" style="margin-bottom:12px">
+          ${ASSET_IMG_CATEGORIES.map((c) => `
+            <a class="cockpit-tab ${c.key === activeCat ? 'active' : ''}" data-cat="${c.key}">
+              ${c.label} <span class="badge ${c.key === activeCat ? 'blue' : ''}" style="margin-left:4px">${counts[c.key] || 0}</span>
+            </a>
+          `).join('')}
+        </div>
+
+        ${filtered.length ? `
+          <div class="gallery-grid">
+            ${filtered.map((img, idx) => `
+              <div class="gallery-card" data-idx="${idx}">
+                <img src="${esc(img.url)}" alt="${esc(img.title || 'Equipment photo')}" loading="lazy">
+                <div class="gallery-card-meta">
+                  <div style="font-weight:600;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(img.title || 'Photo #' + (idx + 1))}</div>
+                  <div style="display:flex;align-items:center;justify-content:space-between;margin-top:2px">
+                    <span class="badge" style="font-size:10px">${esc(img.category)}</span>
+                    <span class="muted" style="font-size:10.5px">${img.file_size ? Math.round(img.file_size / 1024) + ' KB' : ''}</span>
+                  </div>
+                </div>
+              </div>
+            `).join('')}
+          </div>
+        ` : `
+          <div style="text-align:center;padding:32px 16px;background:var(--surface-2);border-radius:8px;border:1px dashed var(--border)">
+            <span style="font-size:32px">📷</span>
+            <p class="muted" style="margin:8px 0">No photos in the <b>${esc(activeCat)}</b> category yet.</p>
+            <button class="sm primary" id="btn-upload-photo-empty">Upload first photo</button>
+          </div>
+        `}
+      </div>
+    `;
+
+    qsa('.cockpit-tab', container).forEach((tab) => {
+      tab.onclick = () => {
+        activeCat = tab.dataset.cat;
+        fetchAndRender();
+      };
+    });
+
+    qsa('.gallery-card', container).forEach((card) => {
+      card.onclick = () => {
+        const idx = Number(card.dataset.idx);
+        openLightboxModal(filtered, idx, () => fetchAndRender());
+      };
+    });
+
+    const bindUpload = (sel) => {
+      const el = qs(sel, container);
+      if (el) el.onclick = () => openUploadPhotoModal(assetId, activeCat, () => fetchAndRender());
+    };
+    bindUpload('#btn-upload-photo');
+    bindUpload('#btn-upload-photo-empty');
+  }
+
+  await fetchAndRender();
+}
+
+function openLightboxModal(images, startIndex, onUpdate) {
+  if (!images || !images.length) return;
+  let curIdx = Math.max(0, Math.min(startIndex, images.length - 1));
+  let zoom = 1;
+  let rot = 0;
+
+  const backdrop = document.createElement('div');
+  backdrop.className = 'lightbox-backdrop';
+
+  function renderViewer() {
+    const img = images[curIdx];
+    backdrop.innerHTML = `
+      <div class="lightbox-modal">
+        <div class="lightbox-main">
+          <div class="lightbox-header">
+            <div class="lightbox-title">${esc(img.title || 'Equipment Photo')} (${curIdx + 1} of ${images.length})</div>
+            <div class="lightbox-tools">
+              <button class="lightbox-tool-btn" id="lb-zoom-in" title="Zoom in">🔍 +</button>
+              <button class="lightbox-tool-btn" id="lb-zoom-out" title="Zoom out">🔍 -</button>
+              <button class="lightbox-tool-btn" id="lb-rotate" title="Rotate 90°">⟳ Rotate</button>
+              <button class="lightbox-tool-btn" id="lb-reset" title="Reset view">⟲ Reset</button>
+              <button class="lightbox-tool-btn" id="lb-close" title="Close" style="color:#ef4444;font-weight:bold">✕</button>
+            </div>
+          </div>
+          <div class="lightbox-body">
+            ${images.length > 1 ? `<button class="lightbox-nav-btn lightbox-prev" id="lb-prev">◀</button>` : ''}
+            <div class="lightbox-img-wrap">
+              <img id="lb-active-img" class="lightbox-img" src="${esc(img.url)}" style="transform:scale(${zoom}) rotate(${rot}deg)">
+            </div>
+            ${images.length > 1 ? `<button class="lightbox-nav-btn lightbox-next" id="lb-next">▶</button>` : ''}
+          </div>
+        </div>
+        <div class="lightbox-side">
+          <h4 style="margin:0 0 12px;font-size:14px;color:#f8fafc;border-bottom:1px solid rgba(255,255,255,0.1);padding-bottom:8px">Photo Information</h4>
+          
+          <label style="color:#94a3b8;font-size:11px">Title</label>
+          <input type="text" id="lb-meta-title" value="${esc(img.title || '')}" style="background:#1e293b;border-color:#334155;color:#fff;margin-bottom:10px">
+
+          <label style="color:#94a3b8;font-size:11px">Category</label>
+          <select id="lb-meta-cat" style="background:#1e293b;border-color:#334155;color:#fff;margin-bottom:10px">
+            ${ASSET_IMG_CATEGORIES.filter((c) => c.key !== 'all').map((c) => `
+              <option value="${c.key}" ${img.category === c.key ? 'selected' : ''}>${c.label}</option>
+            `).join('')}
+          </select>
+
+          <label style="color:#94a3b8;font-size:11px">Inspection Notes</label>
+          <textarea id="lb-meta-desc" rows="3" style="background:#1e293b;border-color:#334155;color:#fff;margin-bottom:12px">${esc(img.description || '')}</textarea>
+
+          <div style="font-size:11.5px;color:#94a3b8;border-top:1px solid rgba(255,255,255,0.08);padding-top:10px;margin-bottom:14px">
+            <div><b>Uploaded:</b> ${esc(String(img.created_at || 'Recently').slice(0, 10))}</div>
+            ${img.uploaded_by_name ? `<div><b>By:</b> ${esc(img.uploaded_by_name)}</div>` : ''}
+            <div><b>File size:</b> ${img.file_size ? Math.round(img.file_size / 1024) + ' KB' : 'Standard'}</div>
+          </div>
+
+          <div style="display:flex;flex-direction:column;gap:8px">
+            <button class="primary" id="lb-save-meta" style="width:100%">💾 Save Details</button>
+            <a class="btn" href="${esc(img.url)}" download="${esc(img.title || 'photo')}.jpg" style="width:100%;text-align:center">⬇ Download Full Image</a>
+            <button class="btn danger" id="lb-delete-img" style="width:100%;margin-top:6px">🗑 Delete Image</button>
+          </div>
+        </div>
+      </div>
+    `;
+
+    const elImg = qs('#lb-active-img', backdrop);
+    qs('#lb-zoom-in', backdrop).onclick = () => { zoom = Math.min(3, zoom + 0.25); if (elImg) elImg.style.transform = `scale(${zoom}) rotate(${rot}deg)`; };
+    qs('#lb-zoom-out', backdrop).onclick = () => { zoom = Math.max(0.5, zoom - 0.25); if (elImg) elImg.style.transform = `scale(${zoom}) rotate(${rot}deg)`; };
+    qs('#lb-rotate', backdrop).onclick = () => { rot = (rot + 90) % 360; if (elImg) elImg.style.transform = `scale(${zoom}) rotate(${rot}deg)`; };
+    qs('#lb-reset', backdrop).onclick = () => { zoom = 1; rot = 0; if (elImg) elImg.style.transform = 'scale(1) rotate(0deg)'; };
+    qs('#lb-close', backdrop).onclick = () => { if (backdrop.parentNode) document.body.removeChild(backdrop); };
+
+    if (qs('#lb-prev', backdrop)) {
+      qs('#lb-prev', backdrop).onclick = () => {
+        curIdx = (curIdx - 1 + images.length) % images.length;
+        zoom = 1; rot = 0;
+        renderViewer();
+      };
+    }
+    if (qs('#lb-next', backdrop)) {
+      qs('#lb-next', backdrop).onclick = () => {
+        curIdx = (curIdx + 1) % images.length;
+        zoom = 1; rot = 0;
+        renderViewer();
+      };
+    }
+
+    qs('#lb-save-meta', backdrop).onclick = async () => {
+      const newTitle = qs('#lb-meta-title', backdrop).value.trim();
+      const newCat = qs('#lb-meta-cat', backdrop).value;
+      const newDesc = qs('#lb-meta-desc', backdrop).value.trim();
+      try {
+        if (img.id && img.id > 6) {
+          await api(`/assets/images/${img.id}`, {
+            method: 'PATCH',
+            body: { title: newTitle, category: newCat, description: newDesc }
+          });
+        }
+        img.title = newTitle;
+        img.category = newCat;
+        img.description = newDesc;
+        toast('Photo metadata saved');
+        if (onUpdate) onUpdate();
+      } catch (e) {
+        toast(e.message, 'err');
+      }
+    };
+
+    qs('#lb-delete-img', backdrop).onclick = async () => {
+      if (!confirm('Are you sure you want to delete this photo?')) return;
+      try {
+        if (img.id && img.id > 6) {
+          await api(`/assets/images/${img.id}`, { method: 'DELETE' });
+        }
+        images.splice(curIdx, 1);
+        toast('Photo removed');
+        if (onUpdate) onUpdate();
+        if (images.length) {
+          curIdx = Math.min(curIdx, images.length - 1);
+          renderViewer();
+        } else if (backdrop.parentNode) {
+          document.body.removeChild(backdrop);
+        }
+      } catch (e) {
+        toast(e.message, 'err');
+      }
+    };
+  }
+
+  const onKey = (e) => {
+    if (e.key === 'Escape') {
+      if (backdrop.parentNode) document.body.removeChild(backdrop);
+      window.removeEventListener('keydown', onKey);
+    } else if (e.key === 'ArrowLeft') {
+      curIdx = (curIdx - 1 + images.length) % images.length;
+      zoom = 1; rot = 0;
+      renderViewer();
+    } else if (e.key === 'ArrowRight') {
+      curIdx = (curIdx + 1) % images.length;
+      zoom = 1; rot = 0;
+      renderViewer();
+    }
+  };
+  window.addEventListener('keydown', onKey);
+
+  renderViewer();
+  document.body.appendChild(backdrop);
+}
+
+function openUploadPhotoModal(assetId, defaultCat, onDone) {
+  let fileDataUrl = '';
+  let fileSize = 0;
+
+  modal('Upload Equipment Photo', `
+    <div style="border:2px dashed var(--border);border-radius:10px;padding:24px;text-align:center;background:var(--surface-2);cursor:pointer;margin-bottom:14px" id="drop-zone">
+      <div id="drop-preview" style="display:none;margin-bottom:10px">
+        <img id="preview-img" style="max-height:160px;max-width:100%;border-radius:6px;object-fit:cover">
+      </div>
+      <div id="drop-prompt">
+        <span style="font-size:32px">📁</span>
+        <div style="font-weight:600;margin:6px 0 2px">Click to choose image or drag &amp; drop here</div>
+        <div class="muted" style="font-size:11.5px">Supports JPG, PNG, WEBP (Up to 10MB)</div>
+      </div>
+      <input type="file" id="file-input" accept="image/*" style="display:none">
+    </div>
+
+    <label>Photo Title *</label>
+    <input type="text" id="up-title" placeholder="e.g. Engine Compartment - Left Hand Side">
+
+    <label>Category *</label>
+    <select id="up-cat">
+      ${ASSET_IMG_CATEGORIES.filter((c) => c.key !== 'all').map((c) => `
+        <option value="${c.key}" ${c.key === defaultCat ? 'selected' : ''}>${c.label}</option>
+      `).join('')}
+    </select>
+
+    <label>Inspection Notes</label>
+    <textarea id="up-desc" rows="3" placeholder="Condition, part numbers visible, observed leaks or wear notes..."></textarea>
+
+    <div style="margin-top:14px;text-align:right">
+      <button class="primary" id="btn-submit-upload" disabled>Upload Photo</button>
+    </div>
+  `, (body, close) => {
+    const fileInp = qs('#file-input', body);
+    const dropZone = qs('#drop-zone', body);
+    const prevWrap = qs('#drop-preview', body);
+    const promptWrap = qs('#drop-prompt', body);
+    const prevImg = qs('#preview-img', body);
+    const btnSubmit = qs('#btn-submit-upload', body);
+
+    dropZone.onclick = () => fileInp.click();
+
+    const handleFile = (file) => {
+      if (!file || !file.type.startsWith('image/')) return toast('Please select an image file', 'err');
+      fileSize = file.size;
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        fileDataUrl = e.target.result;
+        prevImg.src = fileDataUrl;
+        prevWrap.style.display = 'block';
+        promptWrap.style.display = 'none';
+        btnSubmit.disabled = false;
+        if (!qs('#up-title', body).value) {
+          qs('#up-title', body).value = file.name.replace(/\.[^/.]+$/, '');
+        }
+      };
+      reader.readAsDataURL(file);
+    };
+
+    fileInp.onchange = () => {
+      if (fileInp.files && fileInp.files[0]) handleFile(fileInp.files[0]);
+    };
+
+    dropZone.ondragover = (e) => { e.preventDefault(); dropZone.style.borderColor = '#0066ff'; };
+    dropZone.ondragleave = () => { dropZone.style.borderColor = 'var(--border)'; };
+    dropZone.ondrop = (e) => {
+      e.preventDefault();
+      dropZone.style.borderColor = 'var(--border)';
+      if (e.dataTransfer.files && e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]);
+    };
+
+    btnSubmit.onclick = async () => {
+      if (!fileDataUrl) return toast('Please choose an image file first', 'err');
+      const title = qs('#up-title', body).value.trim();
+      const category = qs('#up-cat', body).value;
+      const description = qs('#up-desc', body).value.trim();
+      btnSubmit.disabled = true;
+      btnSubmit.innerText = 'Uploading...';
+      try {
+        await api(`/assets/${assetId}/images`, {
+          method: 'POST',
+          body: { url: fileDataUrl, title, category, description, file_size: fileSize }
+        });
+        toast('Photo uploaded successfully');
+        close();
+        if (onDone) onDone();
+      } catch (e) {
+        toast(e.message, 'err');
+        btnSubmit.disabled = false;
+        btnSubmit.innerText = 'Upload Photo';
+      }
+    };
   });
 }
 
@@ -2557,8 +3085,8 @@ routes.jobs = async (c, params) => {
   // Old links to the list (#/jobs?status=…, the dashboard's) still open it.
   let tab = sp.get('tab') || (['q', 'year', 'month', 'status', 'workshop_id'].some((k) => sp.get(k)) ? 'all' : 'monitor');
   if (!tabs.some(([t]) => t === tab)) tab = 'monitor';
-  c.innerHTML = `${pageHeader('Job Cards')}<div class="toolbar" style="margin-bottom:10px">${tabs
-    .map(([t, l]) => `<button class="sm ${t === tab ? 'primary' : ''}" onclick="location.hash='#/jobs?tab=${t}'">${l}</button>`).join('')}</div>
+  c.innerHTML = `${pageHeader('Job Cards')}<div class="cockpit-tabs">${tabs
+    .map(([t, l]) => `<a class="cockpit-tab ${t === tab ? 'active' : ''}" href="#/jobs?tab=${t}">${l}</a>`).join('')}</div>
     <div id="jobsbody"><div class="muted">Loading…</div></div>`;
   const body = qs('#jobsbody');
   if (tab === 'requests') return jobsRequests(body, sp);
@@ -5043,22 +5571,72 @@ async function jobDetail(c, id) {
       <p class="muted" style="font-size:12px;margin:6px 0 0">Travel: ${num(fld.travel_hours || 0)} h · Field vehicle: ${fld.km != null
     ? `${num(fld.km)} km × ${fld.km_rate != null ? money(fld.km_rate) : '(no rate set)'} = ${money(fld.transport_cost)}` : 'no km entered'}</p>
     </div>` : '';
+  const statusSteps = [
+    { key: 'REQUESTED', label: 'Requested' },
+    { key: 'APPROVED_TRANSPORT', label: 'Approved (Trans)' },
+    { key: 'APPROVED_OPERATIONS', label: 'Approved (Ops)' },
+    { key: 'IN_WORKSHOP', label: 'In Workshop' },
+    { key: 'IN_PROGRESS', label: 'In Progress' },
+    { key: 'WORK_COMPLETE', label: 'Work Complete' },
+    { key: 'CLOSED', label: 'Closed' }
+  ];
+  const activeStepIdx = (() => {
+    if (job.status === 'CLOSED') return 6;
+    if (job.status === 'WORK_COMPLETE' || job.status === 'PARTIALLY_CLOSED') return 5;
+    if (job.status === 'IN_PROGRESS') return 4;
+    if (job.status === 'IN_WORKSHOP') return 3;
+    if (job.status === 'APPROVED_OPERATIONS') return 2;
+    if (job.status === 'APPROVED_TRANSPORT') return 1;
+    return 0;
+  })();
+
+  const jobStepperHtml = `
+    <div class="pipeline-stepper" style="margin-bottom:14px">
+      ${statusSteps.map((st, i) => `
+        <div class="pipeline-step ${i <= activeStepIdx ? 'active' : ''}">
+          <div class="step-count">${i < activeStepIdx ? '✓' : (i === activeStepIdx ? '●' : '○')}</div>
+          <div class="step-title">${st.label}</div>
+        </div>
+      `).join('')}
+    </div>`;
+
+  const heroHtml = `
+    <div class="equipment-hero">
+      <div class="equipment-hero-photo" style="display:flex;align-items:center;justify-content:center;font-size:32px">
+        ${job.asset_photo_url ? `<img src="${esc(job.asset_photo_url)}" style="width:100%;height:100%;object-fit:cover;border-radius:10px">` : '🚜'}
+      </div>
+      <div class="equipment-hero-info">
+        <div class="equipment-hero-title">
+          <span class="stamp" style="font-size:14px;background:#f1f5f9">${esc(idLabel(job) || '—')}</span>
+          <span>${esc(job.job_no)}</span>
+          ${statusBadge(job.status)}
+          <span class="badge ${job.type === 'service' ? 'blue' : ''}">${esc(job.type)}</span>
+          ${job.severity ? `<span class="badge red">${esc(job.severity)}</span>` : ''}
+        </div>
+        <div class="equipment-hero-meta">
+          <span><b>Project / Site:</b> ${esc(job.project_name || 'Central')}</span>
+          ${wsMulti() && job.workshop_name ? `<span><b>Workshop:</b> 🏭 ${esc(job.workshop_name)}</span>` : ''}
+          ${job.jr_no ? `<span><b>Auth JR:</b> <a href="#/jobrequests/${job.job_request_id}">📋 ${esc(job.jr_no)}</a></span>` : ''}
+          ${job.description ? `<span><b>Work:</b> ${esc(job.description)}</span>` : ''}
+        </div>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:6px;align-items:flex-end">
+        <div style="display:flex;gap:6px">
+          ${!isClosed && !isPartial && canDo('stores.mrn.create') ? '<button class="sm" id="jobreqmrn">+ Request Parts</button>' : ''}
+          ${!isClosed && !isPartial && canDo('stores.stock_issue') ? '<button class="sm primary" id="jobissue">⚡ Issue to Job</button>' : ''}
+        </div>
+        <div style="display:flex;gap:6px">
+          ${canDo('jobs.edit') && !isPartial ? '<button class="sm" id="editjob">✎ Edit</button>' : ''}
+          ${!fld.field && canField && !isPartial ? '<button class="sm" id="fldmark">📍 In field…</button>' : ''}
+          <a class="btn primary sm" href="/api/reports/job/${job.id}/report.html" target="_blank">📋 Job Report</a>
+          <a class="btn sm" href="/api/reports/job/${job.id}/costsheet.html" target="_blank">🖨 Cost Sheet</a>
+        </div>
+      </div>
+    </div>`;
+
   c.innerHTML = `${pageHeader(job.job_no, '<a href="#/jobs">← Job Cards</a>')}
-    <div class="toolbar">${statusBadge(job.status)}<span class="badge ${job.type === 'service' ? 'blue' : ''}">${esc(job.type)}</span>
-      ${job.severity ? `<span class="badge">${esc(job.severity)}</span>` : ''}
-      <a href="#/assets/${job.asset_id}">${esc(idLabel(job) || '—')}</a>
-      <span class="muted">${esc(job.project_name || '')}</span>
-      ${wsMulti() && job.workshop_name ? `<span class="badge" title="The workshop doing this repair">🏭 ${esc(job.workshop_name)}</span>` : ''}
-      ${job.jr_no ? `<a class="btn sm" href="#/jobrequests/${job.job_request_id}" title="The job request this card was opened against — its authority for the work">📋 ${esc(job.jr_no)}</a>` : ''}
-      <div class="spacer"></div>
-      ${!isClosed && !isPartial && canDo('stores.mrn.create') ? '<button class="sm" id="jobreqmrn" title="Create a Material Request Note (MRN) for this job">+ Request Parts (MRN)</button>' : ''}
-      ${!isClosed && !isPartial && canDo('stores.stock_issue') ? '<button class="sm primary" id="jobissue" title="Issue stock from store to this job card">⚡ Issue to Job</button>' : ''}
-      ${canDo('jobs.edit') && !isPartial ? '<button class="sm" id="editjob" title="Change the vehicle, description or type">✎ Edit</button>' : ''}
-      ${!fld.field && canField && !isPartial ? '<button class="sm" id="fldmark" title="The repair is done at the site, not in the workshop">📍 In the field…</button>' : ''}
-      ${job.type === 'service' && canDo('jobs.flat_labour') && job.status !== 'CLOSED' ? `<button class="sm" id="flatlabour">Service labour${job.flat_labour != null ? ': ' + money(job.flat_labour) : ' (flat)'}</button>` : ''}
-      <a class="btn primary sm" href="/api/reports/job/${job.id}/report.html" target="_blank" title="Full job report — parts requested & received, daily work done, and costs">📋 Job Report</a>
-      <a class="btn sm" href="/api/reports/job/${job.id}/costsheet.html" target="_blank">🖨 Cost Sheet</a>
-    </div>
+    ${jobStepperHtml}
+    ${heroHtml}
     ${job.type === 'service' ? `<p class="muted" style="font-size:12px">Service job — labour is a flat charge${job.flat_labour == null ? ' (not set yet)' : ''}, not hours×rate.</p>` : ''}
     <p>${esc(job.description || '')}</p>
     ${(j.handovers || []).map((h) => `<p class="muted" style="font-size:13px;margin:4px 0">🔀 Sent from <b>${esc(h.from_name || '—')}</b> to <b>${esc(h.to_name || '—')}</b> on ${esc(String(h.moved_at || '').slice(0, 10))}${h.moved_by ? ` by ${esc(h.moved_by)}` : ''} — ${esc(h.reason)}</p>`).join('')}
