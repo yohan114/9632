@@ -15155,25 +15155,27 @@ routes.aliases = async (c) => {
     }
 
     wrap.innerHTML = tableWrap([
-      { label: 'Raw Text' },
-      { label: 'Hits', num: true, width: '70px' },
-      { label: 'Section / Source', width: '160px' },
-      { label: 'Link to Registered Asset', width: '380px' }
+      { label: 'Raw Unrecognised Text', cls: 'desc-col', width: '220px' },
+      { label: 'Link to Registered Asset', width: '290px' },
+      { label: 'Section / Source', width: '150px' },
+      { label: 'Hits', num: true, width: '70px' }
     ],
     filtered.map((a) => `<tr data-alias-row="${a.id}">
-      <td><b>${esc(a.raw_text)}</b></td>
-      <td class="num">${a.hit_count}</td>
-      <td>${getSecBadge(a.source)}</td>
+      <td class="desc-col"><b>${esc(a.raw_text)}</b></td>
       <td style="white-space:nowrap">
         ${canResolve ? `
-          <select data-alias="${a.id}" style="width:auto;display:inline-block;max-width:240px;font-size:12px">
-            <option value="">— pick asset —</option>${aopts}
-          </select>
-          <button class="sm primary" data-link="${a.id}" style="margin-left:6px">Link</button>
-          ${isAdmin() ? `<button class="sm" data-del-alias="${a.id}" style="margin-left:4px" title="Ignore / Delete raw alias">✕</button>` : ''}
+          <div style="display:flex;align-items:center;gap:6px">
+            <select data-alias="${a.id}" style="width:190px;max-width:210px;font-size:12px;padding:3px 6px;margin:0">
+              <option value="">— pick asset —</option>${aopts}
+            </select>
+            <button class="sm primary" data-link="${a.id}" style="padding:3px 10px;font-size:12px;flex-shrink:0">Link</button>
+            ${isAdmin() ? `<button class="sm" data-del-alias="${a.id}" style="padding:3px 6px;font-size:12px;flex-shrink:0" title="Ignore / Delete raw alias">✕</button>` : ''}
+          </div>
         ` : '<span class="muted">read-only</span>'}
       </td>
-    </tr>`), { fit: true });
+      <td>${getSecBadge(a.source)}</td>
+      <td class="num">${a.hit_count}</td>
+    </tr>`), { fit: true, scroll: true });
 
     qsa('[data-link]', wrap).forEach((b) => {
       b.onclick = async () => {
@@ -15223,28 +15225,30 @@ routes.aliases = async (c) => {
         return;
       }
       wrap.innerHTML = tableWrap([
-        { label: 'Job Card' },
-        { label: 'Requested Date', width: '110px' },
-        { label: 'Workshop', width: '180px' },
-        { label: 'Type', width: '90px' },
-        { label: 'Description / Task' },
-        { label: 'Allocate Vehicle', width: '340px' }
+        { label: 'Job Card', width: '130px' },
+        { label: 'Allocate Vehicle', width: '280px' },
+        { label: 'Date', width: '95px' },
+        { label: 'Workshop', width: '150px' },
+        { label: 'Type', width: '80px' },
+        { label: 'Description / Task', cls: 'desc-col' }
       ],
       list.map((j) => `<tr data-job-row="${j.id}">
         <td><a href="#/jobs/${j.id}"><b>${esc(j.job_no)}</b></a></td>
-        <td>${esc(j.requested_at ? j.requested_at.slice(0, 10) : '-')}</td>
-        <td>${esc(j.workshop_name)}</td>
-        <td><span class="badge ${j.type === 'repair' ? 'amber' : 'blue'}">${esc(j.type || 'job')}</span></td>
-        <td>${esc(j.description || '-')}</td>
         <td style="white-space:nowrap">
           ${canResolve ? `
-            <select data-job-sel="${j.id}" style="width:auto;display:inline-block;max-width:240px;font-size:12px">
-              <option value="">— pick vehicle —</option>${aopts}
-            </select>
-            <button class="sm primary" data-job-btn="${j.id}" style="margin-left:6px">Allocate</button>
+            <div style="display:flex;align-items:center;gap:6px">
+              <select data-job-sel="${j.id}" style="width:190px;max-width:210px;font-size:12px;padding:3px 6px;margin:0">
+                <option value="">— pick vehicle —</option>${aopts}
+              </select>
+              <button class="sm primary" data-job-btn="${j.id}" style="padding:3px 10px;font-size:12px;flex-shrink:0">Allocate</button>
+            </div>
           ` : '<span class="muted">read-only</span>'}
         </td>
-      </tr>`), { fit: true });
+        <td>${esc(j.requested_at ? j.requested_at.slice(0, 10) : '-')}</td>
+        <td style="font-size:12px;white-space:normal;max-width:150px;line-height:1.3">${esc(j.workshop_name)}</td>
+        <td><span class="badge ${j.type === 'repair' ? 'amber' : 'blue'}">${esc(j.type || 'job')}</span></td>
+        <td class="desc-col">${esc(j.description || '-')}</td>
+      </tr>`), { fit: true, scroll: true });
 
       qsa('[data-job-btn]', wrap).forEach((btn) => {
         btn.onclick = async () => {
@@ -15275,28 +15279,30 @@ routes.aliases = async (c) => {
         return;
       }
       wrap.innerHTML = tableWrap([
-        { label: 'Date', width: '100px' },
-        { label: 'Recorded Label', width: '140px' },
-        { label: 'Site / Location', width: '140px' },
-        { label: 'Repair Details' },
-        { label: 'Total (Rs)', num: true, width: '100px' },
-        { label: 'Allocate Vehicle', width: '340px' }
+        { label: 'Service Date', width: '100px' },
+        { label: 'Allocate Vehicle', width: '280px' },
+        { label: 'Recorded Label', width: '120px' },
+        { label: 'Site / Location', width: '130px' },
+        { label: 'Repair Details', cls: 'desc-col' },
+        { label: 'Total (Rs)', num: true, width: '100px' }
       ],
       list.map((s) => `<tr data-svc-row="${s.id}">
         <td>${esc(s.service_date || '-')}</td>
-        <td><code>${esc(s.vehicle_label || '(blank)')}</code></td>
-        <td>${esc(s.site_location || '-')}</td>
-        <td>${esc(s.repair_details || '-')}</td>
-        <td class="num">${money(s.grand_total || 0)}</td>
         <td style="white-space:nowrap">
           ${canResolve ? `
-            <select data-svc-sel="${s.id}" style="width:auto;display:inline-block;max-width:240px;font-size:12px">
-              <option value="">— pick vehicle —</option>${aopts}
-            </select>
-            <button class="sm primary" data-svc-btn="${s.id}" style="margin-left:6px">Allocate</button>
+            <div style="display:flex;align-items:center;gap:6px">
+              <select data-svc-sel="${s.id}" style="width:190px;max-width:210px;font-size:12px;padding:3px 6px;margin:0">
+                <option value="">— pick vehicle —</option>${aopts}
+              </select>
+              <button class="sm primary" data-svc-btn="${s.id}" style="padding:3px 10px;font-size:12px;flex-shrink:0">Allocate</button>
+            </div>
           ` : '<span class="muted">read-only</span>'}
         </td>
-      </tr>`), { fit: true });
+        <td><code>${esc(s.vehicle_label || '(blank)')}</code></td>
+        <td style="font-size:12px;white-space:normal;max-width:130px">${esc(s.site_location || '-')}</td>
+        <td class="desc-col">${esc(s.repair_details || '-')}</td>
+        <td class="num">${money(s.grand_total || 0)}</td>
+      </tr>`), { fit: true, scroll: true });
 
       qsa('[data-svc-btn]', wrap).forEach((btn) => {
         btn.onclick = async () => {
@@ -15328,29 +15334,31 @@ routes.aliases = async (c) => {
       }
       wrap.innerHTML = tableWrap([
         { label: 'Issue Date', width: '100px' },
-        { label: 'MIN No', width: '140px' },
-        { label: 'Item / Spares Description' },
-        { label: 'Qty', num: true, width: '80px' },
-        { label: 'Purpose / Job' },
-        { label: 'Store', width: '140px' },
-        { label: 'Allocate Vehicle', width: '340px' }
+        { label: 'MIN No', width: '130px' },
+        { label: 'Allocate Vehicle', width: '280px' },
+        { label: 'Item / Spares Description', cls: 'desc-col' },
+        { label: 'Qty', num: true, width: '70px' },
+        { label: 'Purpose / Job', cls: 'desc-col' },
+        { label: 'Store', width: '140px' }
       ],
       list.map((i) => `<tr data-issue-row="${i.id}">
         <td>${esc(i.issue_date || '-')}</td>
         <td><b>${esc(i.min_no || '-')}</b></td>
-        <td>${esc(i.description || '-')}</td>
-        <td class="num">${i.qty} ${esc(i.unit || '')}</td>
-        <td>${esc(i.purpose || '-')}</td>
-        <td>${esc(i.store_name)}</td>
         <td style="white-space:nowrap">
           ${canResolve ? `
-            <select data-issue-sel="${i.id}" style="width:auto;display:inline-block;max-width:240px;font-size:12px">
-              <option value="">— pick vehicle —</option>${aopts}
-            </select>
-            <button class="sm primary" data-issue-btn="${i.id}" style="margin-left:6px">Allocate</button>
+            <div style="display:flex;align-items:center;gap:6px">
+              <select data-issue-sel="${i.id}" style="width:190px;max-width:210px;font-size:12px;padding:3px 6px;margin:0">
+                <option value="">— pick vehicle —</option>${aopts}
+              </select>
+              <button class="sm primary" data-issue-btn="${i.id}" style="padding:3px 10px;font-size:12px;flex-shrink:0">Allocate</button>
+            </div>
           ` : '<span class="muted">read-only</span>'}
         </td>
-      </tr>`), { fit: true });
+        <td class="desc-col">${esc(i.description || '-')}</td>
+        <td class="num">${i.qty} ${esc(i.unit || '')}</td>
+        <td class="desc-col">${esc(i.purpose || '-')}</td>
+        <td style="font-size:12px;white-space:normal;max-width:140px">${esc(i.store_name)}</td>
+      </tr>`), { fit: true, scroll: true });
 
       qsa('[data-issue-btn]', wrap).forEach((btn) => {
         btn.onclick = async () => {
@@ -15382,29 +15390,31 @@ routes.aliases = async (c) => {
       }
       wrap.innerHTML = tableWrap([
         { label: 'MRN No', width: '110px' },
-        { label: 'Date', width: '100px' },
-        { label: 'Requested By', width: '130px' },
-        { label: 'Purpose / Notes' },
+        { label: 'Allocate Vehicle', width: '280px' },
+        { label: 'Date', width: '95px' },
+        { label: 'Requested By', width: '120px' },
+        { label: 'Purpose / Notes', cls: 'desc-col' },
         { label: 'Workshop', width: '150px' },
-        { label: 'Status', width: '90px' },
-        { label: 'Allocate Vehicle', width: '340px' }
+        { label: 'Status', width: '80px' }
       ],
       list.map((m) => `<tr data-mrn-row="${m.id}">
         <td><a href="#/stores/mrn/${m.id}"><b>${esc(m.mrn_no || m.id)}</b></a></td>
-        <td>${esc(m.req_date || '-')}</td>
-        <td>${esc(m.requested_by || '-')}</td>
-        <td>${esc(m.purpose || '-')}</td>
-        <td>${esc(m.workshop_name)}</td>
-        <td><span class="badge ${m.status === 'open' ? 'blue' : ''}">${esc(m.status || '')}</span></td>
         <td style="white-space:nowrap">
           ${canResolve ? `
-            <select data-mrn-sel="${m.id}" style="width:auto;display:inline-block;max-width:240px;font-size:12px">
-              <option value="">— pick vehicle —</option>${aopts}
-            </select>
-            <button class="sm primary" data-mrn-btn="${m.id}" style="margin-left:6px">Allocate</button>
+            <div style="display:flex;align-items:center;gap:6px">
+              <select data-mrn-sel="${m.id}" style="width:190px;max-width:210px;font-size:12px;padding:3px 6px;margin:0">
+                <option value="">— pick vehicle —</option>${aopts}
+              </select>
+              <button class="sm primary" data-mrn-btn="${m.id}" style="padding:3px 10px;font-size:12px;flex-shrink:0">Allocate</button>
+            </div>
           ` : '<span class="muted">read-only</span>'}
         </td>
-      </tr>`), { fit: true });
+        <td>${esc(m.req_date || '-')}</td>
+        <td>${esc(m.requested_by || '-')}</td>
+        <td class="desc-col">${esc(m.purpose || '-')}</td>
+        <td style="font-size:12px;white-space:normal;max-width:150px">${esc(m.workshop_name)}</td>
+        <td><span class="badge ${m.status === 'open' ? 'blue' : ''}">${esc(m.status || '')}</span></td>
+      </tr>`), { fit: true, scroll: true });
 
       qsa('[data-mrn-btn]', wrap).forEach((btn) => {
         btn.onclick = async () => {
