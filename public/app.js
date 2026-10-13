@@ -14951,36 +14951,164 @@ routes.projects = async (c, params) => {
   if (qs('#npr')) qs('#npr').onclick = () => simpleCreateModal('New Project', '/projects', [['Code', 'code'], ['Name *', 'name'], ['Location', 'location']]);
 };
 
-// ---- Alias queue (assets + mechanics)
+// ---- Alias queue (assets + mechanics) with Section Division & Missing Vehicle Allocation
 routes.aliases = async (c) => {
-  const [pending, all, assets, mPending, mechs] = await Promise.all([
-    api('/aliases?resolved=0'), api('/aliases?resolved=1&limit=500'), api('/assets?limit=10000'),
-    api('/mechanics/aliases?resolved=0'), api('/mechanics'),
+  const [pending, all, assets, mPending, mechs, audit] = await Promise.all([
+    api('/aliases?resolved=0'),
+    api('/aliases?resolved=1&limit=500'),
+    api('/assets?limit=10000'),
+    api('/mechanics/aliases?resolved=0'),
+    api('/mechanics'),
+    api('/aliases/sections-audit').catch(() => ({ missingJobs: [], missingServices: [], missingIssues: [], missingMrn: [], counts: { jobs: 0, services: 0, issues: 0, mrn: 0, totalMissing: 0 } })),
   ]);
+
   const aopts = assets.map((a) => {
     const regPart = (a.registration && a.registration !== a.code) ? ` (${a.registration})` : '';
     const descPart = [a.brand, a.type].filter(Boolean).join(' ');
     return `<option value="${a.id}">${esc(a.code)}${esc(regPart)}${descPart ? ' — ' + esc(descPart) : ''}</option>`;
   }).join('');
   const mopts = mechs.map((m) => `<option value="${m.id}">${esc(m.name)}${m.rate ? ' (Rs ' + m.rate + '/h)' : ''}</option>`).join('');
-  c.innerHTML = `${pageHeader('Resolver Queues', 'The learning glue: unrecognised vehicle & mechanic text is queued here, never lost.')}
-    <div class="card section">
-      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:8px">
-        <h3 style="margin:0">Vehicles — pending link (${pending.length})</h3>
-        ${pending.length ? '<input id="alias_veh_filter" type="search" placeholder="Filter pending vehicles…" style="max-width:240px;margin:0">' : ''}
+
+  // Local state
+  let pendingList = [...pending];
+  let missingJobs = [...(audit.missingJobs || [])];
+  let missingServices = [...(audit.missingServices || [])];
+  let missingIssues = [...(audit.missingIssues || [])];
+  let missingMrn = [...(audit.missingMrn || [])];
+
+  let currentMainTab = 'aliases';
+  let currentSecFilter = 'all';
+  let currentAllocTab = 'jobs';
+  let vehSearchQuery = '';
+  let allocSearchQuery = '';
+
+  const secMeta = {
+    oilbook: { label: 'Oil & Fuel', icon: '🛢️', badgeCls: 'blue' },
+    stores: { label: 'Stores & Requisitions', icon: '📦', badgeCls: 'green' },
+    battery: { label: 'Tyres & Batteries', icon: '🔋', badgeCls: 'amber' },
+    daily_work: { label: 'Daily Work', icon: '🚜', badgeCls: 'violet' },
+    fleet: { label: 'Fleet Register', icon: '🚚', badgeCls: '' },
+    general: { label: 'General / Other', icon: '🏷️', badgeCls: '' },
+  };
+  const getSecBadge = (s) => {
+    const meta = secMeta[s] || secMeta.general;
+    return `<span class="badge ${meta.badgeCls}">${meta.icon} ${esc(meta.label)}</span>`;
+  };
+
+  const getSecCounts = () => {
+    const counts = { all: pendingList.length, oilbook: 0, stores: 0, battery: 0, daily_work: 0, other: 0 };
+    for (const item of pendingList) {
+      if (item.source === 'oilbook') counts.oilbook++;
+      else if (item.source === 'stores') counts.stores++;
+      else if (item.source === 'battery') counts.battery++;
+      else if (item.source === 'daily_work') counts.daily_work++;
+      else counts.other++;
+    }
+    return counts;
+  };
+  const getTotalMissing = () => missingJobs.length + missingServices.length + missingIssues.length + missingMrn.length;
+
+  const updateHeaderCounters = () => {
+    const sc = getSecCounts();
+    const totMis = getTotalMissing();
+    const valAliases = qs('#kpi-val-aliases', c); if (valAliases) valAliases.textContent = pendingList.length;
+    const subAliases = qs('#kpi-sub-aliases', c); if (subAliases) subAliases.textContent = `Oil ${sc.oilbook} · Stores ${sc.stores} · Tyre ${sc.battery} · Daily ${sc.daily_work}`;
+    const valJobs = qs('#kpi-val-jobs', c); if (valJobs) valJobs.textContent = missingJobs.length;
+    const valSvc = qs('#kpi-val-services', c); if (valSvc) valSvc.textContent = missingServices.length;
+    const valIss = qs('#kpi-val-issues', c); if (valIss) valIss.textContent = missingIssues.length;
+    const valMrn = qs('#kpi-val-mrn', c); if (valMrn) valMrn.textContent = missingMrn.length;
+
+    const tabAliases = qs('#tab-cnt-aliases', c); if (tabAliases) tabAliases.textContent = pendingList.length;
+    const tabMissing = qs('#tab-cnt-missing', c); if (tabMissing) tabMissing.textContent = totMis;
+
+    const cntSecAll = qs('#cnt-sec-all', c); if (cntSecAll) cntSecAll.textContent = sc.all;
+    const cntSecOil = qs('#cnt-sec-oilbook', c); if (cntSecOil) cntSecOil.textContent = sc.oilbook;
+    const cntSecSto = qs('#cnt-sec-stores', c); if (cntSecSto) cntSecSto.textContent = sc.stores;
+    const cntSecBat = qs('#cnt-sec-battery', c); if (cntSecBat) cntSecBat.textContent = sc.battery;
+    const cntSecDai = qs('#cnt-sec-daily', c); if (cntSecDai) cntSecDai.textContent = sc.daily_work;
+    const cntSecOth = qs('#cnt-sec-other', c); if (cntSecOth) cntSecOth.textContent = sc.other;
+
+    const cntAlJobs = qs('#cnt-alloc-jobs', c); if (cntAlJobs) cntAlJobs.textContent = missingJobs.length;
+    const cntAlSvc = qs('#cnt-alloc-services', c); if (cntAlSvc) cntAlSvc.textContent = missingServices.length;
+    const cntAlIss = qs('#cnt-alloc-issues', c); if (cntAlIss) cntAlIss.textContent = missingIssues.length;
+    const cntAlMrn = qs('#cnt-alloc-mrn', c); if (cntAlMrn) cntAlMrn.textContent = missingMrn.length;
+  };
+
+  const sc = getSecCounts();
+  const totMis = getTotalMissing();
+
+  c.innerHTML = `${pageHeader('Resolver Queues & Vehicle Allocation', 'Divided by section: unrecognised vehicle & mechanic text, plus missing vehicle allocations across jobs, services, issues, and stores.')}
+    <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(180px, 1fr));gap:10px;margin-bottom:14px">
+      <div class="card" id="kpi-aliases" style="cursor:pointer;padding:12px;border-left:4px solid var(--primary);transition:transform .15s">
+        <div class="muted" style="font-size:11px;text-transform:uppercase;font-weight:600">Pending Vehicle Aliases</div>
+        <div style="font-size:22px;font-weight:700;margin:4px 0" id="kpi-val-aliases">${pendingList.length}</div>
+        <div class="muted" style="font-size:11px" id="kpi-sub-aliases">Oil ${sc.oilbook} · Stores ${sc.stores} · Tyre ${sc.battery} · Daily ${sc.daily_work}</div>
       </div>
-      <div id="alias_veh_list">
-        ${pending.length ? tableWrap([
-          { label: 'Raw Text' },
-          { label: 'Hits', num: true, width: '70px' },
-          { label: 'Source', width: '110px' },
-          { label: 'Link to Asset', width: '340px' }
-        ],
-        pending.map((a) => `<tr data-raw="${esc(a.raw_text.toLowerCase())}"><td>${esc(a.raw_text)}</td><td class="num">${a.hit_count}</td><td>${esc(a.source || '')}</td>
-            <td style="white-space:nowrap">${(canDo('aliases.vehicle.resolve') || isAdmin()) ? `<select data-alias="${a.id}" style="width:auto;display:inline-block;max-width:260px"><option value="">— pick asset —</option>${aopts}</select> <button class="sm primary" data-link="${a.id}" style="margin-left:6px">Link</button>` : '<span class="muted">read-only</span>'}</td></tr>`), { fit: true }) : '<span class="muted">Queue empty — every name resolves.</span>'}
+      <div class="card" id="kpi-jobs" style="cursor:pointer;padding:12px;border-left:4px solid ${missingJobs.length ? 'var(--amber,#f2a900)' : 'var(--green,#3c7d5a)'}">
+        <div class="muted" style="font-size:11px;text-transform:uppercase;font-weight:600">Job Cards Missing Vehicle</div>
+        <div style="font-size:22px;font-weight:700;margin:4px 0;color:${missingJobs.length ? 'var(--amber,#d9822b)' : 'inherit'}" id="kpi-val-jobs">${missingJobs.length}</div>
+        <div class="muted" style="font-size:11px">${missingJobs.length ? 'Needs vehicle allocation' : 'All jobs allocated'}</div>
+      </div>
+      <div class="card" id="kpi-services" style="cursor:pointer;padding:12px;border-left:4px solid ${missingServices.length ? 'var(--amber,#f2a900)' : 'var(--green,#3c7d5a)'}">
+        <div class="muted" style="font-size:11px;text-transform:uppercase;font-weight:600">Services Missing Vehicle</div>
+        <div style="font-size:22px;font-weight:700;margin:4px 0;color:${missingServices.length ? 'var(--amber,#d9822b)' : 'inherit'}" id="kpi-val-services">${missingServices.length}</div>
+        <div class="muted" style="font-size:11px">${missingServices.length ? 'Needs vehicle allocation' : 'All services allocated'}</div>
+      </div>
+      <div class="card" id="kpi-issues" style="cursor:pointer;padding:12px;border-left:4px solid ${missingIssues.length ? 'var(--amber,#f2a900)' : 'var(--green,#3c7d5a)'}">
+        <div class="muted" style="font-size:11px;text-transform:uppercase;font-weight:600">Store Issues Missing Vehicle</div>
+        <div style="font-size:22px;font-weight:700;margin:4px 0;color:${missingIssues.length ? 'var(--amber,#d9822b)' : 'inherit'}" id="kpi-val-issues">${missingIssues.length}</div>
+        <div class="muted" style="font-size:11px">${missingIssues.length ? 'Unassigned issue lines' : 'All issues allocated'}</div>
+      </div>
+      <div class="card" id="kpi-mrn" style="cursor:pointer;padding:12px;border-left:4px solid ${missingMrn.length ? 'var(--primary)' : 'var(--green,#3c7d5a)'}">
+        <div class="muted" style="font-size:11px;text-transform:uppercase;font-weight:600">MRN Requisitions</div>
+        <div style="font-size:22px;font-weight:700;margin:4px 0" id="kpi-val-mrn">${missingMrn.length}</div>
+        <div class="muted" style="font-size:11px">${missingMrn.length ? 'General / unassigned vehicle' : 'All MRNs assigned'}</div>
       </div>
     </div>
-    <div class="card section"><h3>Mechanic names — pending link (${mPending.length})</h3>
+
+    <div class="toolbar" style="margin:0 0 12px;gap:8px;flex-wrap:wrap">
+      <div class="pill-row" id="alias_main_tabs" style="margin:0">
+        <button class="sm primary" data-tab="aliases">🏷️ Pending Aliases (<span id="tab-cnt-aliases">${pendingList.length}</span>)</button>
+        <button class="sm" data-tab="missing">⚠️ Missing Vehicle Allocations (<span id="tab-cnt-missing">${totMis}</span>)</button>
+        <button class="sm" data-tab="mechanics">👨‍🔧 Mechanic Names (${mPending.length})</button>
+        <button class="sm" data-tab="resolved">📜 Resolved History &amp; Rates</button>
+      </div>
+    </div>
+
+    <!-- Tab 1: Pending Vehicle Aliases Divided by Section -->
+    <div id="pane_aliases" class="card section">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:10px">
+        <div class="pill-row" id="alias_sec_filters" style="margin:0">
+          <button class="sm primary" data-sec="all">All Sections (<span id="cnt-sec-all">${sc.all}</span>)</button>
+          <button class="sm" data-sec="oilbook">🛢️ Oil &amp; Fuel (<span id="cnt-sec-oilbook">${sc.oilbook}</span>)</button>
+          <button class="sm" data-sec="stores">📦 Stores (<span id="cnt-sec-stores">${sc.stores}</span>)</button>
+          <button class="sm" data-sec="battery">🔋 Tyres &amp; Battery (<span id="cnt-sec-battery">${sc.battery}</span>)</button>
+          <button class="sm" data-sec="daily_work">🚜 Daily Work (<span id="cnt-sec-daily">${sc.daily_work}</span>)</button>
+          ${sc.other ? `<button class="sm" data-sec="other">Other (<span id="cnt-sec-other">${sc.other}</span>)</button>` : ''}
+        </div>
+        <input id="alias_veh_filter" type="search" placeholder="Search text or section…" style="max-width:240px;margin:0;font-size:12px;padding:4px 8px">
+      </div>
+      <div id="alias_veh_table_wrap"></div>
+    </div>
+
+    <!-- Tab 2: Missing Vehicle Allocations Across Sections -->
+    <div id="pane_missing" class="card section" style="display:none">
+      <p class="muted" style="margin-top:0;font-size:12px">Records where vehicle was not specified upon entry. Assigning a vehicle here directly links costs, stock moves, and workshop logs to the selected vehicle register.</p>
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:10px">
+        <div class="pill-row" id="alloc_sub_tabs" style="margin:0">
+          <button class="sm primary" data-alloc="jobs">🔧 Job Cards (<span id="cnt-alloc-jobs">${missingJobs.length}</span>)</button>
+          <button class="sm" data-alloc="services">⚙️ Service Records (<span id="cnt-alloc-services">${missingServices.length}</span>)</button>
+          <button class="sm" data-alloc="issues">📦 Store Issues (<span id="cnt-alloc-issues">${missingIssues.length}</span>)</button>
+          <button class="sm" data-alloc="mrn">📋 Material Requisitions (<span id="cnt-alloc-mrn">${missingMrn.length}</span>)</button>
+        </div>
+        <input id="alloc_filter" type="search" placeholder="Search records…" style="max-width:240px;margin:0;font-size:12px;padding:4px 8px">
+      </div>
+      <div id="alloc_table_wrap"></div>
+    </div>
+
+    <!-- Tab 3: Mechanic Aliases -->
+    <div id="pane_mechanics" class="card section" style="display:none">
+      <h3 style="margin-top:0">Mechanic names — pending link (${mPending.length})</h3>
       ${mPending.length ? tableWrap([
         { label: 'Raw Text' },
         { label: 'Hits', num: true, width: '70px' },
@@ -14988,32 +15116,402 @@ routes.aliases = async (c) => {
         { label: 'Link to Mechanic', width: '340px' }
       ],
       mPending.map((a) => `<tr><td>${esc(a.raw_text)}</td><td class="num">${a.hit_count}</td><td>${esc(a.source || '')}</td>
-          <td style="white-space:nowrap">${(canDo('aliases.mechanic.resolve') || isAdmin()) ? `<select data-malias="${a.id}" style="width:auto;display:inline-block;max-width:260px"><option value="">— pick —</option>${mopts}</select> <button class="sm primary" data-mlink="${a.id}" style="margin-left:6px">Link</button>` : '<span class="muted">read-only</span>'}</td></tr>`), { fit: true }) : '<span class="muted">Queue empty — every mechanic name resolves.</span>'}</div>
-    <div class="grid">
-      <div class="card"><h3>Resolved vehicle aliases (${all.length})</h3>
-        ${tableWrap([{ label: 'Raw Text' }, { label: 'Asset' }, { label: 'Hits', num: true }], all.map((a) => `<tr><td>${esc(a.raw_text)}</td><td>${esc(a.asset_code || '')}</td><td class="num">${a.hit_count}</td></tr>`), { scroll: true })}</div>
-      <div class="card"><h3>Mechanics &amp; rates</h3>
-        ${tableWrap([{ label: 'Mechanic' }, { label: 'Rate/h', num: true }], mechs.map((m) => `<tr><td>${esc(m.name)}</td><td class="num">${m.rate == null ? '<span class="badge amber">no rate</span>' : money(m.rate)}</td></tr>`), { scroll: true })}</div>
+          <td style="white-space:nowrap">${(canDo('aliases.mechanic.resolve') || isAdmin()) ? `<select data-malias="${a.id}" style="width:auto;display:inline-block;max-width:260px"><option value="">— pick —</option>${mopts}</select> <button class="sm primary" data-mlink="${a.id}" style="margin-left:6px">Link</button>` : '<span class="muted">read-only</span>'}</td></tr>`), { fit: true }) : '<span class="muted">Queue empty — every mechanic name resolves.</span>'}
+    </div>
+
+    <!-- Tab 4: Resolved History & Rates -->
+    <div id="pane_resolved" style="display:none">
+      <div class="grid">
+        <div class="card"><h3>Resolved vehicle aliases (${all.length})</h3>
+          ${tableWrap([{ label: 'Raw Text' }, { label: 'Asset' }, { label: 'Hits', num: true }], all.map((a) => `<tr><td>${esc(a.raw_text)}</td><td>${esc(a.asset_code || '')}</td><td class="num">${a.hit_count}</td></tr>`), { scroll: true })}</div>
+        <div class="card"><h3>Mechanics &amp; rates</h3>
+          ${tableWrap([{ label: 'Mechanic' }, { label: 'Rate/h', num: true }], mechs.map((m) => `<tr><td>${esc(m.name)}</td><td class="num">${m.rate == null ? '<span class="badge amber">no rate</span>' : money(m.rate)}</td></tr>`), { scroll: true })}</div>
+      </div>
     </div>`;
-  const vehFilter = qs('#alias_veh_filter', c);
-  if (vehFilter) {
-    vehFilter.oninput = (e) => {
-      const q = e.target.value.toLowerCase().trim();
-      qsa('#alias_veh_list tbody tr', c).forEach((tr) => {
-        tr.style.display = !q || tr.dataset.raw.includes(q) || tr.textContent.toLowerCase().includes(q) ? '' : 'none';
+
+  const canResolve = canDo('aliases.vehicle.resolve') || isAdmin();
+
+  const renderAliasesTable = () => {
+    const wrap = qs('#alias_veh_table_wrap', c);
+    if (!wrap) return;
+    let filtered = pendingList;
+    if (currentSecFilter !== 'all') {
+      if (currentSecFilter === 'other') {
+        filtered = filtered.filter((a) => !['oilbook', 'stores', 'battery', 'daily_work'].includes(a.source));
+      } else {
+        filtered = filtered.filter((a) => a.source === currentSecFilter);
+      }
+    }
+    if (vehSearchQuery) {
+      filtered = filtered.filter((a) =>
+        (a.raw_text && a.raw_text.toLowerCase().includes(vehSearchQuery)) ||
+        (a.source && a.source.toLowerCase().includes(vehSearchQuery))
+      );
+    }
+
+    if (!filtered.length) {
+      wrap.innerHTML = `<div class="muted" style="text-align:center;padding:24px">No pending aliases found${currentSecFilter !== 'all' ? ' for ' + esc(secMeta[currentSecFilter]?.label || currentSecFilter) : ''}.</div>`;
+      return;
+    }
+
+    wrap.innerHTML = tableWrap([
+      { label: 'Raw Text' },
+      { label: 'Hits', num: true, width: '70px' },
+      { label: 'Section / Source', width: '160px' },
+      { label: 'Link to Registered Asset', width: '380px' }
+    ],
+    filtered.map((a) => `<tr data-alias-row="${a.id}">
+      <td><b>${esc(a.raw_text)}</b></td>
+      <td class="num">${a.hit_count}</td>
+      <td>${getSecBadge(a.source)}</td>
+      <td style="white-space:nowrap">
+        ${canResolve ? `
+          <select data-alias="${a.id}" style="width:auto;display:inline-block;max-width:240px;font-size:12px">
+            <option value="">— pick asset —</option>${aopts}
+          </select>
+          <button class="sm primary" data-link="${a.id}" style="margin-left:6px">Link</button>
+          ${isAdmin() ? `<button class="sm" data-del-alias="${a.id}" style="margin-left:4px" title="Ignore / Delete raw alias">✕</button>` : ''}
+        ` : '<span class="muted">read-only</span>'}
+      </td>
+    </tr>`), { fit: true });
+
+    qsa('[data-link]', wrap).forEach((b) => {
+      b.onclick = async () => {
+        const id = b.dataset.link;
+        const sel = qs(`[data-alias="${id}"]`, wrap);
+        if (!sel || !sel.value) return toast('Pick an asset first', 'err');
+        try {
+          await api(`/aliases/${id}/link`, { method: 'POST', body: { asset_id: sel.value } });
+          toast('Linked asset & cascaded to matching records', 'ok');
+          pendingList = pendingList.filter((x) => String(x.id) !== String(id));
+          updateHeaderCounters();
+          renderAliasesTable();
+        } catch (e) { toast(e.message, 'err'); }
+      };
+    });
+
+    qsa('[data-del-alias]', wrap).forEach((b) => {
+      b.onclick = async () => {
+        const id = b.dataset.delAlias;
+        if (!confirm('Remove this unrecognized text entry from the alias queue?')) return;
+        try {
+          await api(`/aliases/${id}`, { method: 'DELETE' });
+          toast('Alias removed', 'ok');
+          pendingList = pendingList.filter((x) => String(x.id) !== String(id));
+          updateHeaderCounters();
+          renderAliasesTable();
+        } catch (e) { toast(e.message, 'err'); }
+      };
+    });
+  };
+
+  const renderAllocTable = () => {
+    const wrap = qs('#alloc_table_wrap', c);
+    if (!wrap) return;
+
+    if (currentAllocTab === 'jobs') {
+      let list = missingJobs;
+      if (allocSearchQuery) {
+        list = list.filter((j) =>
+          (j.job_no && j.job_no.toLowerCase().includes(allocSearchQuery)) ||
+          (j.description && j.description.toLowerCase().includes(allocSearchQuery)) ||
+          (j.workshop_name && j.workshop_name.toLowerCase().includes(allocSearchQuery))
+        );
+      }
+      if (!list.length) {
+        wrap.innerHTML = '<div class="muted" style="text-align:center;padding:24px">All job cards have vehicles allocated! No unassigned jobs found.</div>';
+        return;
+      }
+      wrap.innerHTML = tableWrap([
+        { label: 'Job Card' },
+        { label: 'Requested Date', width: '110px' },
+        { label: 'Workshop', width: '180px' },
+        { label: 'Type', width: '90px' },
+        { label: 'Description / Task' },
+        { label: 'Allocate Vehicle', width: '340px' }
+      ],
+      list.map((j) => `<tr data-job-row="${j.id}">
+        <td><a href="#/jobs/${j.id}"><b>${esc(j.job_no)}</b></a></td>
+        <td>${esc(j.requested_at ? j.requested_at.slice(0, 10) : '-')}</td>
+        <td>${esc(j.workshop_name)}</td>
+        <td><span class="badge ${j.type === 'repair' ? 'amber' : 'blue'}">${esc(j.type || 'job')}</span></td>
+        <td>${esc(j.description || '-')}</td>
+        <td style="white-space:nowrap">
+          ${canResolve ? `
+            <select data-job-sel="${j.id}" style="width:auto;display:inline-block;max-width:240px;font-size:12px">
+              <option value="">— pick vehicle —</option>${aopts}
+            </select>
+            <button class="sm primary" data-job-btn="${j.id}" style="margin-left:6px">Allocate</button>
+          ` : '<span class="muted">read-only</span>'}
+        </td>
+      </tr>`), { fit: true });
+
+      qsa('[data-job-btn]', wrap).forEach((btn) => {
+        btn.onclick = async () => {
+          const id = btn.dataset.jobBtn;
+          const sel = qs(`[data-job-sel="${id}"]`, wrap);
+          if (!sel || !sel.value) return toast('Pick an asset first', 'err');
+          try {
+            await api('/aliases/allocate-job', { method: 'POST', body: { job_id: id, asset_id: sel.value } });
+            toast('Vehicle allocated to Job Card', 'ok');
+            missingJobs = missingJobs.filter((x) => String(x.id) !== String(id));
+            updateHeaderCounters();
+            renderAllocTable();
+          } catch (e) { toast(e.message, 'err'); }
+        };
       });
+
+    } else if (currentAllocTab === 'services') {
+      let list = missingServices;
+      if (allocSearchQuery) {
+        list = list.filter((s) =>
+          (s.vehicle_label && s.vehicle_label.toLowerCase().includes(allocSearchQuery)) ||
+          (s.repair_details && s.repair_details.toLowerCase().includes(allocSearchQuery)) ||
+          (s.site_location && s.site_location.toLowerCase().includes(allocSearchQuery))
+        );
+      }
+      if (!list.length) {
+        wrap.innerHTML = '<div class="muted" style="text-align:center;padding:24px">All service records have vehicles allocated! No unassigned services found.</div>';
+        return;
+      }
+      wrap.innerHTML = tableWrap([
+        { label: 'Date', width: '100px' },
+        { label: 'Recorded Label', width: '140px' },
+        { label: 'Site / Location', width: '140px' },
+        { label: 'Repair Details' },
+        { label: 'Total (Rs)', num: true, width: '100px' },
+        { label: 'Allocate Vehicle', width: '340px' }
+      ],
+      list.map((s) => `<tr data-svc-row="${s.id}">
+        <td>${esc(s.service_date || '-')}</td>
+        <td><code>${esc(s.vehicle_label || '(blank)')}</code></td>
+        <td>${esc(s.site_location || '-')}</td>
+        <td>${esc(s.repair_details || '-')}</td>
+        <td class="num">${money(s.grand_total || 0)}</td>
+        <td style="white-space:nowrap">
+          ${canResolve ? `
+            <select data-svc-sel="${s.id}" style="width:auto;display:inline-block;max-width:240px;font-size:12px">
+              <option value="">— pick vehicle —</option>${aopts}
+            </select>
+            <button class="sm primary" data-svc-btn="${s.id}" style="margin-left:6px">Allocate</button>
+          ` : '<span class="muted">read-only</span>'}
+        </td>
+      </tr>`), { fit: true });
+
+      qsa('[data-svc-btn]', wrap).forEach((btn) => {
+        btn.onclick = async () => {
+          const id = btn.dataset.svcBtn;
+          const sel = qs(`[data-svc-sel="${id}"]`, wrap);
+          if (!sel || !sel.value) return toast('Pick an asset first', 'err');
+          try {
+            await api('/aliases/allocate-service', { method: 'POST', body: { service_id: id, asset_id: sel.value } });
+            toast('Vehicle allocated to Service record', 'ok');
+            missingServices = missingServices.filter((x) => String(x.id) !== String(id));
+            updateHeaderCounters();
+            renderAllocTable();
+          } catch (e) { toast(e.message, 'err'); }
+        };
+      });
+
+    } else if (currentAllocTab === 'issues') {
+      let list = missingIssues;
+      if (allocSearchQuery) {
+        list = list.filter((i) =>
+          (i.min_no && i.min_no.toLowerCase().includes(allocSearchQuery)) ||
+          (i.description && i.description.toLowerCase().includes(allocSearchQuery)) ||
+          (i.purpose && i.purpose.toLowerCase().includes(allocSearchQuery))
+        );
+      }
+      if (!list.length) {
+        wrap.innerHTML = '<div class="muted" style="text-align:center;padding:24px">All store issues have vehicles allocated! No unassigned issue lines found.</div>';
+        return;
+      }
+      wrap.innerHTML = tableWrap([
+        { label: 'Issue Date', width: '100px' },
+        { label: 'MIN No', width: '140px' },
+        { label: 'Item / Spares Description' },
+        { label: 'Qty', num: true, width: '80px' },
+        { label: 'Purpose / Job' },
+        { label: 'Store', width: '140px' },
+        { label: 'Allocate Vehicle', width: '340px' }
+      ],
+      list.map((i) => `<tr data-issue-row="${i.id}">
+        <td>${esc(i.issue_date || '-')}</td>
+        <td><b>${esc(i.min_no || '-')}</b></td>
+        <td>${esc(i.description || '-')}</td>
+        <td class="num">${i.qty} ${esc(i.unit || '')}</td>
+        <td>${esc(i.purpose || '-')}</td>
+        <td>${esc(i.store_name)}</td>
+        <td style="white-space:nowrap">
+          ${canResolve ? `
+            <select data-issue-sel="${i.id}" style="width:auto;display:inline-block;max-width:240px;font-size:12px">
+              <option value="">— pick vehicle —</option>${aopts}
+            </select>
+            <button class="sm primary" data-issue-btn="${i.id}" style="margin-left:6px">Allocate</button>
+          ` : '<span class="muted">read-only</span>'}
+        </td>
+      </tr>`), { fit: true });
+
+      qsa('[data-issue-btn]', wrap).forEach((btn) => {
+        btn.onclick = async () => {
+          const id = btn.dataset.issueBtn;
+          const sel = qs(`[data-issue-sel="${id}"]`, wrap);
+          if (!sel || !sel.value) return toast('Pick an asset first', 'err');
+          try {
+            await api('/aliases/allocate-issue', { method: 'POST', body: { issue_id: id, asset_id: sel.value } });
+            toast('Vehicle allocated to Store Issue', 'ok');
+            missingIssues = missingIssues.filter((x) => String(x.id) !== String(id));
+            updateHeaderCounters();
+            renderAllocTable();
+          } catch (e) { toast(e.message, 'err'); }
+        };
+      });
+
+    } else if (currentAllocTab === 'mrn') {
+      let list = missingMrn;
+      if (allocSearchQuery) {
+        list = list.filter((m) =>
+          (m.mrn_no && m.mrn_no.toLowerCase().includes(allocSearchQuery)) ||
+          (m.purpose && m.purpose.toLowerCase().includes(allocSearchQuery)) ||
+          (m.requested_by && m.requested_by.toLowerCase().includes(allocSearchQuery))
+        );
+      }
+      if (!list.length) {
+        wrap.innerHTML = '<div class="muted" style="text-align:center;padding:24px">All MRNs have vehicles allocated!</div>';
+        return;
+      }
+      wrap.innerHTML = tableWrap([
+        { label: 'MRN No', width: '110px' },
+        { label: 'Date', width: '100px' },
+        { label: 'Requested By', width: '130px' },
+        { label: 'Purpose / Notes' },
+        { label: 'Workshop', width: '150px' },
+        { label: 'Status', width: '90px' },
+        { label: 'Allocate Vehicle', width: '340px' }
+      ],
+      list.map((m) => `<tr data-mrn-row="${m.id}">
+        <td><a href="#/stores/mrn/${m.id}"><b>${esc(m.mrn_no || m.id)}</b></a></td>
+        <td>${esc(m.req_date || '-')}</td>
+        <td>${esc(m.requested_by || '-')}</td>
+        <td>${esc(m.purpose || '-')}</td>
+        <td>${esc(m.workshop_name)}</td>
+        <td><span class="badge ${m.status === 'open' ? 'blue' : ''}">${esc(m.status || '')}</span></td>
+        <td style="white-space:nowrap">
+          ${canResolve ? `
+            <select data-mrn-sel="${m.id}" style="width:auto;display:inline-block;max-width:240px;font-size:12px">
+              <option value="">— pick vehicle —</option>${aopts}
+            </select>
+            <button class="sm primary" data-mrn-btn="${m.id}" style="margin-left:6px">Allocate</button>
+          ` : '<span class="muted">read-only</span>'}
+        </td>
+      </tr>`), { fit: true });
+
+      qsa('[data-mrn-btn]', wrap).forEach((btn) => {
+        btn.onclick = async () => {
+          const id = btn.dataset.mrnBtn;
+          const sel = qs(`[data-mrn-sel="${id}"]`, wrap);
+          if (!sel || !sel.value) return toast('Pick an asset first', 'err');
+          try {
+            await api('/aliases/allocate-mrn', { method: 'POST', body: { mrn_id: id, asset_id: sel.value } });
+            toast('Vehicle allocated to MRN', 'ok');
+            missingMrn = missingMrn.filter((x) => String(x.id) !== String(id));
+            updateHeaderCounters();
+            renderAllocTable();
+          } catch (e) { toast(e.message, 'err'); }
+        };
+      });
+    }
+  };
+
+  const switchMainTab = (tab) => {
+    currentMainTab = tab;
+    qsa('#alias_main_tabs button', c).forEach((b) => b.classList.toggle('primary', b.dataset.tab === tab));
+    const pAliases = qs('#pane_aliases', c); if (pAliases) pAliases.style.display = tab === 'aliases' ? '' : 'none';
+    const pMissing = qs('#pane_missing', c); if (pMissing) pMissing.style.display = tab === 'missing' ? '' : 'none';
+    const pMechs = qs('#pane_mechanics', c); if (pMechs) pMechs.style.display = tab === 'mechanics' ? '' : 'none';
+    const pResolved = qs('#pane_resolved', c); if (pResolved) pResolved.style.display = tab === 'resolved' ? '' : 'none';
+    if (tab === 'aliases') renderAliasesTable();
+    if (tab === 'missing') renderAllocTable();
+  };
+
+  qsa('#alias_main_tabs button', c).forEach((b) => {
+    b.onclick = () => switchMainTab(b.dataset.tab);
+  });
+
+  const kpiAliases = qs('#kpi-aliases', c);
+  if (kpiAliases) kpiAliases.onclick = () => switchMainTab('aliases');
+  const kpiJobs = qs('#kpi-jobs', c);
+  if (kpiJobs) kpiJobs.onclick = () => {
+    switchMainTab('missing');
+    currentAllocTab = 'jobs';
+    qsa('#alloc_sub_tabs button', c).forEach((b) => b.classList.toggle('primary', b.dataset.alloc === 'jobs'));
+    renderAllocTable();
+  };
+  const kpiSvc = qs('#kpi-services', c);
+  if (kpiSvc) kpiSvc.onclick = () => {
+    switchMainTab('missing');
+    currentAllocTab = 'services';
+    qsa('#alloc_sub_tabs button', c).forEach((b) => b.classList.toggle('primary', b.dataset.alloc === 'services'));
+    renderAllocTable();
+  };
+  const kpiIss = qs('#kpi-issues', c);
+  if (kpiIss) kpiIss.onclick = () => {
+    switchMainTab('missing');
+    currentAllocTab = 'issues';
+    qsa('#alloc_sub_tabs button', c).forEach((b) => b.classList.toggle('primary', b.dataset.alloc === 'issues'));
+    renderAllocTable();
+  };
+  const kpiMrn = qs('#kpi-mrn', c);
+  if (kpiMrn) kpiMrn.onclick = () => {
+    switchMainTab('missing');
+    currentAllocTab = 'mrn';
+    qsa('#alloc_sub_tabs button', c).forEach((b) => b.classList.toggle('primary', b.dataset.alloc === 'mrn'));
+    renderAllocTable();
+  };
+
+  qsa('#alias_sec_filters button', c).forEach((b) => {
+    b.onclick = () => {
+      currentSecFilter = b.dataset.sec;
+      qsa('#alias_sec_filters button', c).forEach((btn) => btn.classList.toggle('primary', btn.dataset.sec === currentSecFilter));
+      renderAliasesTable();
+    };
+  });
+
+  qsa('#alloc_sub_tabs button', c).forEach((b) => {
+    b.onclick = () => {
+      currentAllocTab = b.dataset.alloc;
+      qsa('#alloc_sub_tabs button', c).forEach((btn) => btn.classList.toggle('primary', btn.dataset.alloc === currentAllocTab));
+      renderAllocTable();
+    };
+  });
+
+  const vehFilterInp = qs('#alias_veh_filter', c);
+  if (vehFilterInp) {
+    vehFilterInp.oninput = (e) => {
+      vehSearchQuery = e.target.value.toLowerCase().trim();
+      renderAliasesTable();
     };
   }
-  qsa('[data-link]').forEach((b) => b.onclick = async () => {
-    const sel = qs(`[data-alias="${b.dataset.link}"]`);
-    if (!sel.value) return toast('Pick an asset', 'err');
-    try { await api(`/aliases/${b.dataset.link}/link`, { method: 'POST', body: { asset_id: sel.value } }); toast('Linked'); render(); } catch (e) { toast(e.message, 'err'); }
+  const allocFilterInp = qs('#alloc_filter', c);
+  if (allocFilterInp) {
+    allocFilterInp.oninput = (e) => {
+      allocSearchQuery = e.target.value.toLowerCase().trim();
+      renderAllocTable();
+    };
+  }
+
+  qsa('[data-mlink]', c).forEach((b) => b.onclick = async () => {
+    const sel = qs(`[data-malias="${b.dataset.mlink}"]`, c);
+    if (!sel || !sel.value) return toast('Pick a mechanic', 'err');
+    try {
+      await api(`/mechanics/aliases/${b.dataset.mlink}/link`, { method: 'POST', body: { mechanic_id: sel.value } });
+      toast('Linked mechanic', 'ok');
+      routes.aliases(c);
+    } catch (e) { toast(e.message, 'err'); }
   });
-  qsa('[data-mlink]').forEach((b) => b.onclick = async () => {
-    const sel = qs(`[data-malias="${b.dataset.mlink}"]`);
-    if (!sel.value) return toast('Pick a mechanic', 'err');
-    try { await api(`/mechanics/aliases/${b.dataset.mlink}/link`, { method: 'POST', body: { mechanic_id: sel.value } }); toast('Linked'); render(); } catch (e) { toast(e.message, 'err'); }
-  });
+
+  renderAliasesTable();
+  renderAllocTable();
 };
 
 // ---- Reports
