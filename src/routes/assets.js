@@ -63,7 +63,7 @@ router.get('/', asyncHandler((req, res) => {
   res.json(rows.map((r) => Object.fromEntries(PICKER_FIELDS.filter((k) => k in r).map((k) => [k, r[k]]))));
 }));
 
-router.get('/export.xlsx', asyncHandler(async (req, res) => {
+router.get('/export.xlsx', requireCap('assets.export', 'assets.view'), asyncHandler(async (req, res) => {
   const rows = listAssets({ ...req.query, limit: 100000 });
   await sendXlsx(res, 'assets.xlsx', [{
     name: 'Assets',
@@ -93,7 +93,7 @@ router.get('/search', asyncHandler((req, res) => {
   res.json(all(`SELECT id, code, registration, asset_class FROM assets ORDER BY in_register DESC, code LIMIT ${toInt(req.query.limit, 20)}`));
 }));
 
-router.get('/:id', asyncHandler((req, res) => {
+router.get('/:id', requireCap('assets.view'), asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   const asset = get('SELECT * FROM assets WHERE id = ?', id);
   if (!asset) return res.status(404).json({ error: 'Asset not found' });
@@ -275,7 +275,7 @@ try {
 }
 
 // Multi-category image gallery endpoints (Images 2 & 4)
-router.get('/:id/images', asyncHandler((req, res) => {
+router.get('/:id/images', requireCap('assets.view'), asyncHandler((req, res) => {
   const assetId = toInt(req.params.id);
   const asset = get('SELECT id FROM assets WHERE id = ?', assetId);
   if (!asset) return res.status(404).json({ error: 'Asset not found' });
@@ -296,7 +296,7 @@ router.get('/:id/images', asyncHandler((req, res) => {
   res.json({ asset_id: assetId, images });
 }));
 
-router.post('/:id/images', requireCap('assets.edit'), asyncHandler((req, res) => {
+router.post('/:id/images', requireCap('assets.photo.upload', 'assets.edit'), asyncHandler((req, res) => {
   const assetId = toInt(req.params.id);
   const asset = get('SELECT id FROM assets WHERE id = ?', assetId);
   if (!asset) return res.status(404).json({ error: 'Asset not found' });
@@ -315,7 +315,7 @@ router.post('/:id/images', requireCap('assets.edit'), asyncHandler((req, res) =>
   res.status(201).json(created);
 }));
 
-router.patch('/images/:imageId', requireCap('assets.edit'), asyncHandler((req, res) => {
+router.patch('/images/:imageId', requireCap('assets.photo.upload', 'assets.edit'), asyncHandler((req, res) => {
   const imageId = toInt(req.params.imageId);
   const before = get('SELECT * FROM asset_images WHERE id = ?', imageId);
   if (!before) return res.status(404).json({ error: 'Image not found' });
@@ -331,13 +331,32 @@ router.patch('/images/:imageId', requireCap('assets.edit'), asyncHandler((req, r
   res.json(after);
 }));
 
-router.delete('/images/:imageId', requireCap('assets.edit'), asyncHandler((req, res) => {
+router.delete('/images/:imageId', requireCap('assets.photo.upload', 'assets.edit'), asyncHandler((req, res) => {
   const imageId = toInt(req.params.imageId);
   const before = get('SELECT * FROM asset_images WHERE id = ?', imageId);
   if (!before) return res.status(404).json({ error: 'Image not found' });
   run('DELETE FROM asset_images WHERE id = ?', imageId);
   audit.record({ userId: req.user.id, entity: 'asset_image', entityId: imageId, action: 'delete', before });
   res.json({ ok: true, deleted_id: imageId });
+}));
+
+// Delete asset (or soft-decommission if linked to work orders or documents)
+router.delete('/:id', requireCap('assets.delete'), asyncHandler((req, res) => {
+  const id = toInt(req.params.id);
+  const asset = get('SELECT * FROM assets WHERE id = ?', id);
+  if (!asset) return res.status(404).json({ error: 'Asset not found' });
+
+  const hasJobs = get('SELECT 1 FROM job_cards WHERE asset_id = ? LIMIT 1', id);
+  const hasDocs = get('SELECT 1 FROM vehicle_documents WHERE asset_id = ? LIMIT 1', id);
+  if (hasJobs || hasDocs) {
+    run("UPDATE assets SET status = 'scrapped', in_register = 0, updated_at = datetime('now') WHERE id = ?", id);
+    audit.record({ userId: req.user.id, entity: 'asset', entityId: id, action: 'deactivate', before: asset });
+    return res.json({ ok: true, deactivated: true, message: 'Asset has historical records; decommissioned and archived instead of purged' });
+  }
+
+  run('DELETE FROM assets WHERE id = ?', id);
+  audit.record({ userId: req.user.id, entity: 'asset', entityId: id, action: 'delete', before: asset });
+  res.json({ ok: true, deleted: true });
 }));
 
 module.exports = router;

@@ -84,7 +84,7 @@ router.get('/upcoming-expirations', requireCap('vehicle_docs.view'), asyncHandle
  * GET /export.xlsx
  * Export comprehensive vehicle statutory documents compliance register to Excel.
  */
-router.get('/export.xlsx', requireCap('vehicle_docs.view'), asyncHandler(async (req, res) => {
+router.get('/export.xlsx', requireCap('vehicle_docs.export', 'vehicle_docs.view'), asyncHandler(async (req, res) => {
   const today = req.query.today ? String(req.query.today).trim() : undefined;
   const summary = vdocs.getFleetComplianceSummary({ today });
   const vehicles = summary.vehicles || [];
@@ -380,6 +380,19 @@ router.delete('/attachments/:attachmentId', requireCap('vehicle_docs.upload', 'v
   const attachmentId = toInt(req.params.attachmentId);
   const result = vdocs.deleteAttachment(attachmentId, req.user);
   res.json(result);
+}));
+
+/**
+ * DELETE /:documentId
+ * Remove or deactivate a statutory document requirement.
+ */
+router.delete('/:documentId', requireCap('vehicle_docs.delete'), asyncHandler((req, res) => {
+  const docId = toInt(req.params.documentId);
+  const doc = get('SELECT * FROM vehicle_documents WHERE id = ?', docId);
+  if (!doc) return res.status(404).json({ error: 'Vehicle document not found' });
+  run('UPDATE vehicle_documents SET active = 0, updated_at = datetime("now") WHERE id = ?', docId);
+  audit.record({ userId: req.user.id, entity: 'vehicle_document', entityId: docId, action: 'delete', before: doc });
+  res.json({ ok: true, deleted: true });
 }));
 
 module.exports = router;

@@ -195,7 +195,7 @@ function labourFor(entry) {
 
 // Monthly summary of daily work: selected month's total hours + breakdown per mechanic/laborer.
 // Supports ?month=YYYY-MM (defaults to latest month) and optional ?format=xlsx for Excel export.
-router.get('/monthly-summary', asyncHandler(async (req, res) => {
+router.get('/monthly-summary', requireCap('dailywork.view'), asyncHandler(async (req, res) => {
   rateCache.clear();
   // Step 2b: your own workshops' month, like the rest of this page.
   const own = scope.filter(req.user, 'j.workshop_id');
@@ -389,7 +389,7 @@ router.get('/monthly-summary', asyncHandler(async (req, res) => {
 // Optional ?mechanic= filters by specific mechanic.
 // Optional ?q= filters by vehicle code, registration, mechanic, description, job number.
 // Optional ?format=xlsx exports the full month log as Excel.
-router.get('/month', asyncHandler(async (req, res) => {
+router.get('/month', requireCap('dailywork.view'), asyncHandler(async (req, res) => {
   rateCache.clear();
 
   let month = String(req.query.month || '').slice(0, 7);
@@ -480,7 +480,7 @@ router.get('/month', asyncHandler(async (req, res) => {
 }));
 
 // Distinct days that have daily work logged, newest first, with per-day totals.
-router.get('/days', asyncHandler((req, res) => {
+router.get('/days', requireCap('dailywork.view'), asyncHandler((req, res) => {
   const own = scope.filter(req.user, 'j.workshop_id');   // Stage 3: your own workshop's work only
   const days = all(
     `SELECT w.work_date AS date,
@@ -497,7 +497,7 @@ router.get('/days', asyncHandler((req, res) => {
 
 // All daily-work entries for ONE day, with job + vehicle context and labour cost.
 // Optional ?q= filters by vehicle / mechanic / description / job number.
-router.get('/', asyncHandler((req, res) => {
+router.get('/', requireCap('dailywork.view'), asyncHandler((req, res) => {
   rateCache.clear();
   const date = String(req.query.date || '').slice(0, 10);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
@@ -618,7 +618,7 @@ router.post('/', requireCap('dailywork.add'), asyncHandler((req, res) => {
 }));
 
 // Rapid multi-row timesheet logging endpoint
-router.post('/bulk-log', requireCap('dailywork.edit'), asyncHandler((req, res) => {
+router.post('/bulk-log', requireCap('dailywork.bulk_log', 'dailywork.edit'), asyncHandler((req, res) => {
   const b = req.body || {};
   const date = String(b.date || '').slice(0, 10);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return res.status(400).json({ error: 'Valid date (YYYY-MM-DD) required' });
@@ -774,7 +774,7 @@ router.patch('/:id', requireCap('dailywork.edit'), asyncHandler((req, res) => {
 
 // Remove a daily-work line (mis-keyed entry / duplicate). The job total and that month's labour
 // are re-costed straight away, and the deletion is audited with the full line it removed.
-router.delete('/:id', requireCap('dailywork.edit'), asyncHandler((req, res) => {
+router.delete('/:id', requireCap('dailywork.delete', 'dailywork.edit'), asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   const w = get('SELECT * FROM job_daily_work WHERE id = ?', id);
   if (!w) return res.status(404).json({ error: 'Entry not found' });

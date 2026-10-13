@@ -160,156 +160,316 @@ router.patch('/roles/:name', requireCap('access.manage'), asyncHandler((req, res
 
 // ---- permissions ----------------------------------------------------------------------------
 
+// ---- permissions ----------------------------------------------------------------------------
+
+const DOMAINS = [
+  { id: 'Operations', name: 'Operations & Execution', icon: '⚙️', description: 'Workshop floor execution, job cards, breakdowns, field work, and daily technician labor' },
+  { id: 'Fleet', name: 'Fleet Management', icon: '🚛', description: 'Equipment registry, statutory compliance, lubricant capacities, mechanic trades, and sites' },
+  { id: 'Inventory', name: 'Inventory & Warehousing', icon: '📦', description: 'Central & site stores, MRN demands, tool control, bulk oils, and parts catalogue' },
+  { id: 'Procurement', name: 'Procurement & Purchasing', icon: '🛒', description: 'Purchase requisitions, supplier orders, Tyre & Battery workflows' },
+  { id: 'Analysis', name: 'Analysis & Intelligence', icon: '📊', description: 'Attention cockpit, daily progress, cost teardowns, and executive fleet analytics' },
+  { id: 'Admin', name: 'Governance & Administration', icon: '🛡️', description: 'Workshop tenancies, access control profiles, and user credential management' }
+];
+
+const serializeCaps = () => capabilities.CAPABILITIES.map(({ key, module, label, needs, section, actvt, domain, dualAuth }) => ({
+  key, module, label, needs, section: section || module, actvt: actvt || '02', domain: domain || 'Operations', dualAuth: !!dualAuth
+}));
+
 router.get('/capabilities', requireCap('access.manage'), asyncHandler((_req, res) => {
   res.json({
-    capabilities: capabilities.CAPABILITIES.map(({ key, module, label, needs }) => ({ key, module, label, needs })),
+    domains: DOMAINS,
+    sections: FUNCTIONAL_SECTIONS,
+    capabilities: serializeCaps(),
     modules: permissions.MODULES,
     roles: describeRoles(),
   });
 }));
 
-// ---- section-wise access control (Single point per section) --------------------------------
+// ---- 24 Functional Sections across 6 SAP Operational Domains --------------------------------
 
 const FUNCTIONAL_SECTIONS = [
+  // DOMAIN 1: OPERATIONS
   {
-    id: 'operations',
-    name: 'Operations & Workshop',
-    icon: '🔧',
-    description: 'Job cards, job requests, repairs, field service and workshop management',
-    modules: ['jobs', 'jobrequests'],
+    id: 'dashboard', name: 'Dashboard & Executive KPIs', icon: '📊', domain: 'Operations',
+    description: 'High-level operational overview, pending action counters and fleet KPIs',
+    modules: ['dashboard'],
     presets: {
-      none: { modules: { jobs: 'none', jobrequests: 'none' }, caps: [] },
-      view: { modules: { jobs: 'view', jobrequests: 'view' }, caps: [] },
-      operator: {
-        modules: { jobs: 'edit', jobrequests: 'edit' },
-        caps: ['jobs.start', 'jobs.complete', 'jobs.dailywork', 'jobs.parts', 'jobs.field', 'jobrequests.create']
-      },
-      manager: {
-        modules: { jobs: 'full', jobrequests: 'full' },
-        caps: ['jobs.create', 'jobs.edit', 'jobs.approve_transport', 'jobs.approve_operations', 'jobs.assign_workshop', 'jobs.start', 'jobs.complete', 'jobs.close', 'jobs.close_on_date', 'jobs.reject', 'jobs.return', 'jobs.reopen_request', 'jobs.reopen', 'jobs.reason', 'jobs.dailywork', 'jobs.parts', 'jobs.flat_labour', 'jobs.partial_close', 'jobs.breakdown', 'jobs.field', 'jobs.triage', 'jobrequests.create', 'jobrequests.certify', 'jobrequests.approve', 'jobrequests.reject']
-      }
+      none: { modules: { dashboard: 'none' }, caps: [] },
+      view: { modules: { dashboard: 'view' }, caps: ['dashboard.view'] },
+      operator: { modules: { dashboard: 'view' }, caps: ['dashboard.view', 'dashboard.kpi.view'] },
+      manager: { modules: { dashboard: 'full' }, caps: ['dashboard.view', 'dashboard.kpi.view', 'dashboard.export'] }
     }
   },
   {
-    id: 'stores',
-    name: 'Inventory & Stores',
-    icon: '📦',
-    description: 'Store items, MRNs, receipts (GRN), issues, transfer notes (MTN), lubricants and filters',
-    modules: ['stores', 'oil', 'filters'],
+    id: 'jobs', name: 'Job Cards & Work Orders', icon: '📋', domain: 'Operations',
+    description: 'Job cards, bay assignments, repair progress, and job closures',
+    modules: ['jobs'],
     presets: {
-      none: { modules: { stores: 'none', oil: 'none', filters: 'none' }, caps: [] },
-      view: { modules: { stores: 'view', oil: 'view', filters: 'view' }, caps: [] },
-      operator: {
-        modules: { stores: 'edit', oil: 'edit', filters: 'edit' },
-        caps: ['stores.items.edit', 'stores.mrn.create', 'stores.grn.receive', 'stores.grn.edit', 'stores.issue', 'stores.stock_issue', 'stores.issue_return', 'stores.mtn.edit', 'stores.stock.count', 'oil.ledger.post', 'oil.count', 'filters.stock.receive', 'filters.stock.issue']
-      },
-      manager: {
-        modules: { stores: 'full', oil: 'full', filters: 'full' },
-        caps: ['stores.items.edit', 'stores.items.txn', 'stores.categories.edit', 'stores.mrn.create', 'stores.mrn.edit', 'stores.mrn.certify', 'stores.mrn.approve', 'stores.mrn.reject', 'stores.mrn.amend_settled', 'stores.grn.receive', 'stores.grn.edit', 'stores.issue', 'stores.stock_issue', 'stores.reorder_mrn', 'stores.stock.rebuild', 'stores.mtn.edit', 'stores.issue_return', 'stores.stock.count', 'stores.stock.levels', 'stores.count.approve', 'stores.disposal.edit', 'stores.disposal.approve', 'general.items.edit', 'general.stock.adjust', 'general.items.price', 'oil.identity.resolve', 'oil.products.edit', 'oil.prices.edit', 'oil.ledger.post', 'oil.count', 'services.attachments', 'filters.stock.edit', 'filters.stock.receive', 'filters.stock.issue']
-      }
+      none: { modules: { jobs: 'none' }, caps: [] },
+      view: { modules: { jobs: 'view' }, caps: ['jobs.view'] },
+      operator: { modules: { jobs: 'edit' }, caps: ['jobs.view', 'jobs.start', 'jobs.complete', 'jobs.dailywork', 'jobs.parts'] },
+      manager: { modules: { jobs: 'full' }, caps: ['jobs.view', 'jobs.create', 'jobs.edit', 'jobs.approve_transport', 'jobs.approve_operations', 'jobs.assign_workshop', 'jobs.start', 'jobs.complete', 'jobs.close', 'jobs.close_on_date', 'jobs.reject', 'jobs.return', 'jobs.reason', 'jobs.dailywork', 'jobs.parts', 'jobs.flat_labour', 'jobs.triage', 'jobs.partial_close', 'jobs.reopen_request', 'jobs.reopen', 'jobs.settings', 'jobs.cost.view', 'jobs.export', 'jobs.view_other_workshops'] }
     }
   },
   {
-    id: 'fleet',
-    name: 'Fleet & Assets',
-    icon: '🚜',
-    description: 'Vehicles, heavy machinery, projects, workshops and mechanics roster',
-    modules: ['assets', 'projects', 'labour', 'aliases'],
+    id: 'jobrequests', name: 'Job Requests', icon: '📝', domain: 'Operations',
+    description: 'Incoming vehicle repair requests from drivers and transport officers',
+    modules: ['jobrequests'],
     presets: {
-      none: { modules: { assets: 'none', projects: 'none', labour: 'none', aliases: 'none' }, caps: [] },
-      view: { modules: { assets: 'view', projects: 'view', labour: 'view', aliases: 'view' }, caps: [] },
-      operator: {
-        modules: { assets: 'view', projects: 'view', labour: 'view', aliases: 'view' },
-        caps: ['aliases.vehicle.resolve', 'aliases.mechanic.resolve']
-      },
-      manager: {
-        modules: { assets: 'full', projects: 'full', labour: 'full', aliases: 'full' },
-        caps: ['assets.create', 'assets.edit', 'assets.move', 'fleet.capacities.edit', 'aliases.vehicle.resolve', 'aliases.mechanic.resolve', 'projects.manage', 'workshops.manage', 'workshops.all', 'mechanics.create', 'labour.rates.edit', 'mechanics.move']
-      }
+      none: { modules: { jobrequests: 'none' }, caps: [] },
+      view: { modules: { jobrequests: 'view' }, caps: ['jobrequests.view'] },
+      operator: { modules: { jobrequests: 'edit' }, caps: ['jobrequests.view', 'jobrequests.create'] },
+      manager: { modules: { jobrequests: 'full' }, caps: ['jobrequests.view', 'jobrequests.create', 'jobrequests.certify', 'jobrequests.approve', 'jobrequests.reject', 'jobrequests.delete'] }
     }
   },
   {
-    id: 'dailywork',
-    name: 'Daily Work & Attendance',
-    icon: '📅',
-    description: 'Mechanics daily labor booking, attendance logs, day-end sign-offs and unlock overrides',
+    id: 'field', name: 'Field Work & Breakdowns', icon: '🚜', domain: 'Operations',
+    description: 'Mobile road assistance, site breakdowns, and field service allowances',
+    modules: ['field'],
+    presets: {
+      none: { modules: { field: 'none' }, caps: [] },
+      view: { modules: { field: 'view' }, caps: ['field.view'] },
+      operator: { modules: { field: 'edit' }, caps: ['field.view', 'field.create', 'field.edit', 'jobs.breakdown', 'jobs.field'] },
+      manager: { modules: { field: 'full' }, caps: ['field.view', 'field.create', 'field.edit', 'field.approve', 'field.export', 'jobs.breakdown', 'jobs.field'] }
+    }
+  },
+  {
+    id: 'operations', name: 'Operations & Deployments', icon: '🗺️', domain: 'Operations',
+    description: 'Fleet operating sites, carrier dispatches, and machine deployment movements',
+    modules: ['operations'],
+    presets: {
+      none: { modules: { operations: 'none' }, caps: [] },
+      view: { modules: { operations: 'view' }, caps: ['operations.view'] },
+      operator: { modules: { operations: 'edit' }, caps: ['operations.view', 'operations.dispatch', 'operations.site_change'] },
+      manager: { modules: { operations: 'full' }, caps: ['operations.view', 'operations.dispatch', 'operations.site_change', 'operations.export'] }
+    }
+  },
+  {
+    id: 'dailywork', name: 'Daily Work & Attendance', icon: '📅', domain: 'Operations',
+    description: 'Daily technician labor timesheets, attendance logs, and workday sign-offs',
     modules: ['dailywork'],
     presets: {
       none: { modules: { dailywork: 'none' }, caps: [] },
-      view: { modules: { dailywork: 'view' }, caps: [] },
-      operator: {
-        modules: { dailywork: 'edit' },
-        caps: ['dailywork.add', 'attendance.record']
-      },
-      manager: {
-        modules: { dailywork: 'full' },
-        caps: ['dailywork.add', 'dailywork.edit', 'attendance.record', 'attendance.signoff', 'attendance.unlock', 'attendance.settings']
-      }
+      view: { modules: { dailywork: 'view' }, caps: ['dailywork.view'] },
+      operator: { modules: { dailywork: 'edit' }, caps: ['dailywork.view', 'dailywork.add', 'dailywork.bulk_log', 'attendance.record'] },
+      manager: { modules: { dailywork: 'full' }, caps: ['dailywork.view', 'dailywork.add', 'dailywork.edit', 'dailywork.delete', 'dailywork.bulk_log', 'dailywork.export', 'attendance.record', 'attendance.unlock', 'attendance.signoff', 'attendance.settings'] }
     }
   },
   {
-    id: 'purchasing',
-    name: 'Procurement & Purchasing',
-    icon: '🛒',
-    description: 'Head office and local purchasing channels, supplier orders and technical specifications',
-    modules: ['purchasing', 'tb_request'],
+    id: 'services', name: 'Service Records & Passports', icon: '🛠️', domain: 'Operations',
+    description: 'Preventative maintenance history, scheduled services, and passport certification',
+    modules: ['services'],
     presets: {
-      none: { modules: { purchasing: 'none', tb_request: 'none' }, caps: [] },
-      view: { modules: { purchasing: 'view', tb_request: 'view' }, caps: [] },
-      operator: {
-        modules: { purchasing: 'edit', tb_request: 'edit' },
-        caps: ['purchasing.head_office', 'purchasing.local']
-      },
-      manager: {
-        modules: { purchasing: 'full', tb_request: 'full' },
-        caps: ['purchasing.head_office', 'purchasing.local', 'purchasing.all_channels', 'tb.specs.edit']
-      }
+      none: { modules: { services: 'none' }, caps: [] },
+      view: { modules: { services: 'view' }, caps: ['services.view'] },
+      operator: { modules: { services: 'edit' }, caps: ['services.view', 'services.create', 'services.edit', 'services.attachments'] },
+      manager: { modules: { services: 'full' }, caps: ['services.view', 'services.create', 'services.edit', 'services.certify', 'services.delete', 'services.attachments', 'services.export'] }
     }
   },
   {
-    id: 'batteries',
-    name: 'Batteries & Tyres Management',
-    icon: '🔋',
-    description: 'Battery registration, warranty tracking, swaps, events and photos',
+    id: 'service_plan', name: 'Service & Filter Plan', icon: '📈', domain: 'Operations',
+    description: 'Interval-based service plans, upcoming service countdowns, and filter kits',
+    modules: ['service_plan'],
+    presets: {
+      none: { modules: { service_plan: 'none' }, caps: [] },
+      view: { modules: { service_plan: 'view' }, caps: ['service_plan.view'] },
+      operator: { modules: { service_plan: 'edit' }, caps: ['service_plan.view', 'service_plan.manage'] },
+      manager: { modules: { service_plan: 'full' }, caps: ['service_plan.view', 'service_plan.manage', 'service_plan.export'] }
+    }
+  },
+
+  // DOMAIN 2: FLEET MANAGEMENT
+  {
+    id: 'assets', name: 'Fleet Register & Assets', icon: '🚛', domain: 'Fleet',
+    description: 'Heavy machinery, trucks, light vehicles, asset master, and gallery photos',
+    modules: ['assets'],
+    presets: {
+      none: { modules: { assets: 'none' }, caps: [] },
+      view: { modules: { assets: 'view' }, caps: ['assets.view'] },
+      operator: { modules: { assets: 'view' }, caps: ['assets.view', 'assets.photo.upload'] },
+      manager: { modules: { assets: 'full' }, caps: ['assets.view', 'assets.create', 'assets.edit', 'assets.delete', 'assets.deactivate', 'assets.photo.upload', 'assets.repoint', 'assets.move', 'assets.export'] }
+    }
+  },
+  {
+    id: 'vehicle_docs', name: 'Statutory Vehicle Documents', icon: '📜', domain: 'Fleet',
+    description: 'Revenue licenses, insurance, eco-tests, fitness certificates, and exemptions',
+    modules: ['vehicle_docs'],
+    presets: {
+      none: { modules: { vehicle_docs: 'none' }, caps: [] },
+      view: { modules: { vehicle_docs: 'view' }, caps: ['vehicle_docs.view', 'vehicle_docs.download'] },
+      operator: { modules: { vehicle_docs: 'edit' }, caps: ['vehicle_docs.view', 'vehicle_docs.upload', 'vehicle_docs.renew', 'vehicle_docs.download'] },
+      manager: { modules: { vehicle_docs: 'full' }, caps: ['vehicle_docs.view', 'vehicle_docs.create', 'vehicle_docs.edit', 'vehicle_docs.delete', 'vehicle_docs.upload', 'vehicle_docs.renew', 'vehicle_docs.verify', 'vehicle_docs.download', 'vehicle_docs.exempt', 'vehicle_docs.export'] }
+    }
+  },
+  {
+    id: 'lubricants', name: 'Lubricant Capacities', icon: '🛢️', domain: 'Fleet',
+    description: 'OEM fluid capacities, sump, transmission, and hydraulic specifications',
+    modules: ['lubricants'],
+    presets: {
+      none: { modules: { lubricants: 'none' }, caps: [] },
+      view: { modules: { lubricants: 'view' }, caps: ['lubricants.view', 'lubricants.export'] },
+      operator: { modules: { lubricants: 'edit' }, caps: ['lubricants.view', 'lubricants.create', 'lubricants.edit', 'fleet.capacities.edit'] },
+      manager: { modules: { lubricants: 'full' }, caps: ['lubricants.view', 'lubricants.create', 'lubricants.edit', 'fleet.capacities.edit', 'lubricants.delete', 'lubricants.import', 'lubricants.export'] }
+    }
+  },
+  {
+    id: 'labour', name: 'Labour Rates & Mechanics', icon: '💼', domain: 'Fleet',
+    description: 'Mechanic directory, trade specialties, hourly wages, and charge-out rates',
+    modules: ['labour'],
+    presets: {
+      none: { modules: { labour: 'none' }, caps: [] },
+      view: { modules: { labour: 'view' }, caps: ['labour.mechanics.view'] },
+      operator: { modules: { labour: 'view' }, caps: ['labour.mechanics.view'] },
+      manager: { modules: { labour: 'full' }, caps: ['labour.mechanics.view', 'labour.mechanics.create', 'labour.mechanics.edit', 'labour.mechanics.move', 'labour.mechanics.deactivate', 'labour.rates.view', 'labour.rates.edit'] }
+    }
+  },
+  {
+    id: 'projects', name: 'Projects & Sites', icon: '🏗️', domain: 'Fleet',
+    description: 'Civil contracts, quarry locations, road schemes, and project yards',
+    modules: ['projects'],
+    presets: {
+      none: { modules: { projects: 'none' }, caps: [] },
+      view: { modules: { projects: 'view' }, caps: ['projects.view'] },
+      operator: { modules: { projects: 'view' }, caps: ['projects.view'] },
+      manager: { modules: { projects: 'full' }, caps: ['projects.view', 'projects.manage', 'projects.close', 'projects.export'] }
+    }
+  },
+  {
+    id: 'aliases', name: 'Alias Queue', icon: '🏷️', domain: 'Fleet',
+    description: 'Fuzzy resolution queue for non-standard vehicle names and mechanic text',
+    modules: ['aliases'],
+    presets: {
+      none: { modules: { aliases: 'none' }, caps: [] },
+      view: { modules: { aliases: 'view' }, caps: ['aliases.view'] },
+      operator: { modules: { aliases: 'edit' }, caps: ['aliases.view', 'aliases.vehicle.resolve', 'aliases.mechanic.resolve', 'aliases.allocate'] },
+      manager: { modules: { aliases: 'full' }, caps: ['aliases.view', 'aliases.vehicle.resolve', 'aliases.mechanic.resolve', 'aliases.allocate', 'aliases.ignore'] }
+    }
+  },
+
+  // DOMAIN 3: INVENTORY & WAREHOUSING
+  {
+    id: 'stores', name: 'Stores & Stock Locations', icon: '📦', domain: 'Inventory',
+    description: 'Parts catalogue, multi-store physical hierarchy, bin cards, MRN and GRN ledgers',
+    modules: ['stores'],
+    presets: {
+      none: { modules: { stores: 'none' }, caps: [] },
+      view: { modules: { stores: 'view' }, caps: ['stores.view', 'stores.locations.view'] },
+      operator: { modules: { stores: 'edit' }, caps: ['stores.view', 'stores.items.create', 'stores.items.edit', 'stores.items.txn', 'stores.mrn.create', 'stores.mrn.edit', 'stores.grn.receive', 'stores.issue', 'stores.stock_issue', 'stores.mtn.edit', 'stores.issue_return', 'stores.stock.count'] },
+      manager: { modules: { stores: 'full' }, caps: ['stores.view', 'stores.items.create', 'stores.items.edit', 'stores.items.price', 'stores.items.delete', 'stores.items.txn', 'stores.categories.edit', 'stores.locations.view', 'stores.locations.manage', 'stores.locations.access', 'stores.stock.rebuild', 'stores.stock.levels', 'stores.export', 'stores.mrn.create', 'stores.mrn.edit', 'stores.mrn.certify', 'stores.mrn.site_authority', 'stores.mrn.approve', 'stores.mrn.reject', 'stores.mrn.amend_settled', 'stores.grn.receive', 'stores.grn.edit', 'stores.grn.approve', 'stores.grn.reject', 'stores.issue', 'stores.stock_issue', 'stores.min.approve', 'stores.min.reject', 'stores.reorder_mrn', 'stores.mtn.edit', 'stores.mtn.approve', 'stores.mtn.reject', 'stores.issue_return', 'stores.stock.count', 'stores.count.approve', 'stores.disposal.edit', 'stores.disposal.approve', 'general.items.edit', 'general.stock.adjust', 'general.items.price'] }
+    }
+  },
+  {
+    id: 'tools', name: 'Tools, Toolboxes & Scrap Control', icon: '🧰', domain: 'Inventory',
+    description: 'Specialized tools catalogue, mechanic toolboxes, daily logs, and scrap approval',
+    modules: ['tools'],
+    presets: {
+      none: { modules: { tools: 'none' }, caps: [] },
+      view: { modules: { tools: 'view' }, caps: ['tools.view'] },
+      operator: { modules: { tools: 'edit' }, caps: ['tools.view', 'tools.manage', 'tools.issue', 'tools.damage.report', 'tools.toolbox.audit'] },
+      manager: { modules: { tools: 'full' }, caps: ['tools.view', 'tools.manage', 'tools.delete', 'tools.issue', 'tools.damage.report', 'tools.scrap.approve', 'tools.toolbox.audit', 'tools.export'] }
+    }
+  },
+  {
+    id: 'oil', name: 'Oil & Bulk Lubricants', icon: '🛢️', domain: 'Inventory',
+    description: 'Bulk engine/hydraulic oil barrels, dipstick stock counts, and dispensing logs',
+    modules: ['oil'],
+    presets: {
+      none: { modules: { oil: 'none' }, caps: [] },
+      view: { modules: { oil: 'view' }, caps: ['oil.view'] },
+      operator: { modules: { oil: 'edit' }, caps: ['oil.view', 'oil.identity.resolve', 'oil.ledger.post', 'oil.count'] },
+      manager: { modules: { oil: 'full' }, caps: ['oil.view', 'oil.identity.resolve', 'oil.products.edit', 'oil.prices.edit', 'oil.ledger.post', 'oil.count', 'oil.export'] }
+    }
+  },
+  {
+    id: 'batteries', name: 'Batteries Inventory & Pool', icon: '🔋', domain: 'Inventory',
+    description: 'Serial-tracked commercial battery pool, warranty logs, voltage tests, and swaps',
     modules: ['batteries'],
     presets: {
       none: { modules: { batteries: 'none' }, caps: [] },
-      view: { modules: { batteries: 'view' }, caps: [] },
-      operator: {
-        modules: { batteries: 'edit' },
-        caps: ['batteries.register', 'batteries.photos', 'batteries.event']
-      },
-      manager: {
-        modules: { batteries: 'full' },
-        caps: ['batteries.register', 'batteries.photos', 'batteries.event']
-      }
+      view: { modules: { batteries: 'view' }, caps: ['batteries.view'] },
+      operator: { modules: { batteries: 'edit' }, caps: ['batteries.view', 'batteries.register', 'batteries.photos', 'batteries.event', 'batteries.swap'] },
+      manager: { modules: { batteries: 'full' }, caps: ['batteries.view', 'batteries.register', 'batteries.photos', 'batteries.event', 'batteries.swap', 'batteries.warranty.claim', 'batteries.scrap.approve', 'batteries.export'] }
     }
   },
   {
-    id: 'admin',
-    name: 'System & Administration',
-    icon: '🛡️',
-    description: 'User accounts, role access control, system diagnostics and daily report notes',
-    modules: ['users', 'reports'],
+    id: 'filters', name: 'Filters Catalogue & Prices', icon: '⚙️', domain: 'Inventory',
+    description: 'OEM & replacement air/oil/hydraulic filters catalogue, stock, and pricing',
+    modules: ['filters'],
     presets: {
-      none: { modules: { users: 'none', reports: 'none' }, caps: [] },
-      view: { modules: { users: 'none', reports: 'view' }, caps: [] },
-      operator: {
-        modules: { users: 'none', reports: 'view' },
-        caps: ['reports.daily.notes']
-      },
-      manager: {
-        modules: { users: 'full', reports: 'full' },
-        caps: ['users.manage', 'access.manage', 'system.status', 'jobs.settings', 'reports.daily.notes', 'reports.repair_sections.sync']
-      }
+      none: { modules: { filters: 'none' }, caps: [] },
+      view: { modules: { filters: 'view' }, caps: ['filters.view'] },
+      operator: { modules: { filters: 'edit' }, caps: ['filters.view', 'filters.stock.receive', 'filters.stock.issue'] },
+      manager: { modules: { filters: 'full' }, caps: ['filters.view', 'filters.items.manage', 'filters.prices.edit', 'filters.stock.edit', 'filters.stock.receive', 'filters.stock.issue', 'filters.export'] }
+    }
+  },
+
+  // DOMAIN 4: PROCUREMENT & PURCHASING
+  {
+    id: 'purchasing', name: 'Purchasing & Requisitions', icon: '🛒', domain: 'Procurement',
+    description: 'Purchase requests, head office vs local procurement channels, and PO tracking',
+    modules: ['purchasing'],
+    presets: {
+      none: { modules: { purchasing: 'none' }, caps: [] },
+      view: { modules: { purchasing: 'view' }, caps: ['purchasing.view'] },
+      operator: { modules: { purchasing: 'edit' }, caps: ['purchasing.view', 'purchasing.local'] },
+      manager: { modules: { purchasing: 'full' }, caps: ['purchasing.view', 'purchasing.head_office', 'purchasing.local', 'purchasing.all_channels', 'purchasing.po.create', 'purchasing.po.approve', 'purchasing.export'] }
+    }
+  },
+  {
+    id: 'tb_requests', name: 'Tyre & Battery Workflows', icon: '🔄', domain: 'Procurement',
+    description: 'End-to-end Tyre & Battery requests, purchasing approvals, and GRN receipts',
+    modules: ['tb_requests'],
+    presets: {
+      none: { modules: { tb_requests: 'none' }, caps: [] },
+      view: { modules: { tb_requests: 'view' }, caps: ['tb_requests.view'] },
+      operator: { modules: { tb_requests: 'edit' }, caps: ['tb_requests.view', 'tb_requests.create', 'tb_requests.purchase', 'tb_requests.receive', 'tb_requests.issue'] },
+      manager: { modules: { tb_requests: 'full' }, caps: ['tb_requests.view', 'tb_requests.create', 'tb_requests.purchase', 'tb_requests.receive', 'tb_requests.issue', 'tb_requests.approve', 'tb.specs.edit'] }
+    }
+  },
+
+  // DOMAIN 5: ANALYSIS & INTELLIGENCE
+  {
+    id: 'tb_reports', name: 'Tyre & Battery Analytics', icon: '📊', domain: 'Analysis',
+    description: 'Tyre and battery life expectancy analytics, scrap ratios, and cost summaries',
+    modules: ['tb_reports'],
+    presets: {
+      none: { modules: { tb_reports: 'none' }, caps: [] },
+      view: { modules: { tb_reports: 'view' }, caps: ['tb_reports.view'] },
+      operator: { modules: { tb_reports: 'view' }, caps: ['tb_reports.view'] },
+      manager: { modules: { tb_reports: 'full' }, caps: ['tb_reports.view', 'tb_reports.export'] }
+    }
+  },
+  {
+    id: 'reports', name: 'Reports & Business Intelligence', icon: '📑', domain: 'Analysis',
+    description: 'Needs attention cockpit, daily progress, cost teardown, and analytical reports',
+    modules: ['attention', 'daily_progress', 'cost_teardown', 'reports'],
+    presets: {
+      none: { modules: { attention: 'none', daily_progress: 'none', cost_teardown: 'none', reports: 'none' }, caps: [] },
+      view: { modules: { attention: 'view', daily_progress: 'view', cost_teardown: 'view', reports: 'view' }, caps: ['attention.view', 'daily_progress.view', 'cost_teardown.view', 'reports.view'] },
+      operator: { modules: { attention: 'view', daily_progress: 'view', cost_teardown: 'view', reports: 'view' }, caps: ['attention.view', 'daily_progress.view', 'cost_teardown.view', 'reports.view', 'reports.daily.notes'] },
+      manager: { modules: { attention: 'full', daily_progress: 'full', cost_teardown: 'full', reports: 'full' }, caps: ['attention.view', 'attention.override', 'daily_progress.view', 'daily_progress.export', 'cost_teardown.view', 'cost_teardown.unmask', 'cost_teardown.export', 'reports.view', 'reports.daily.notes', 'reports.export', 'reports.repair_sections.sync'] }
+    }
+  },
+
+  // DOMAIN 6: GOVERNANCE & ADMINISTRATION
+  {
+    id: 'access', name: 'Governance, Workshops & Access', icon: '🔐', domain: 'Admin',
+    description: 'Workshop multi-tenancy locations, role capability profiles, and user accounts',
+    modules: ['workshops', 'access', 'users'],
+    presets: {
+      none: { modules: { workshops: 'none', access: 'none', users: 'none' }, caps: [] },
+      view: { modules: { workshops: 'view', access: 'none', users: 'none' }, caps: ['workshops.view'] },
+      operator: { modules: { workshops: 'view', access: 'none', users: 'none' }, caps: ['workshops.view'] },
+      manager: { modules: { workshops: 'full', access: 'full', users: 'full' }, caps: ['workshops.view', 'workshops.manage', 'workshops.all', 'access.manage', 'users.manage', 'system.status', 'audit.view'] }
     }
   }
 ];
 
 router.get('/section-matrix', requireCap('access.manage'), asyncHandler((_req, res) => {
   res.json({
+    domains: DOMAINS,
     sections: FUNCTIONAL_SECTIONS,
-    capabilities: capabilities.CAPABILITIES.map(({ key, module, label, needs }) => ({ key, module, label, needs })),
+    capabilities: serializeCaps(),
     modules: permissions.MODULES,
     roles: describeRoles(),
     matrix: permissions.getMatrix(),
@@ -469,6 +629,9 @@ router.get('/people/:id', requireCap('access.manage'), asyncHandler((req, res) =
         key: c.key,
         label: c.label,
         needs: c.needs,
+        actvt: c.actvt || '02',
+        domain: c.domain || 'Operations',
+        dualAuth: !!c.dualAuth,
         role_granted: roleGranted,
         override_granted: overrideGranted,
         effective_granted: effectiveGranted,

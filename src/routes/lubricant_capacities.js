@@ -23,7 +23,7 @@ const strOrNull = (v) => {
 };
 
 // ---- 1. List Vehicle Capacities & Summary -----------------------------------
-router.get('/', requireAuth, asyncHandler((req, res) => {
+router.get('/', requireCap('lubricants.view'), asyncHandler((req, res) => {
   const q = String(req.query.q || '').trim();
   const category = String(req.query.category || '').trim();
   const basis = String(req.query.basis || '').trim();
@@ -126,7 +126,7 @@ router.get('/', requireAuth, asyncHandler((req, res) => {
 }));
 
 // ---- 2. Single Vehicle Capacity Detail -------------------------------------
-router.get('/:id', requireAuth, asyncHandler((req, res) => {
+router.get('/:id', requireCap('lubricants.view'), asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   const item = get(
     `SELECT v.*, a.code AS asset_code, a.registration AS asset_registration, a.brand AS asset_brand, a.model_no AS asset_model
@@ -141,7 +141,7 @@ router.get('/:id', requireAuth, asyncHandler((req, res) => {
 }));
 
 // ---- 5. Admin Create Vehicle Capacity --------------------------------------
-router.post('/', requireCap('fleet.capacities.edit'), asyncHandler((req, res) => {
+router.post('/', requireCap('lubricants.create', 'lubricants.edit', 'fleet.capacities.edit'), asyncHandler((req, res) => {
   const b = req.body || {};
   const ec_no = strOrNull(b.ec_no);
   const registration = strOrNull(b.registration);
@@ -211,7 +211,7 @@ router.post('/', requireCap('fleet.capacities.edit'), asyncHandler((req, res) =>
 }));
 
 // ---- 6. Admin Update Vehicle Capacity --------------------------------------
-router.put('/:id', requireCap('fleet.capacities.edit'), asyncHandler((req, res) => {
+router.put('/:id', requireCap('lubricants.edit', 'fleet.capacities.edit'), asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   const existing = get('SELECT * FROM vehicle_lubricant_capacities WHERE id = ?', id);
   if (!existing) return res.status(404).json({ error: 'Vehicle capacity record not found' });
@@ -298,7 +298,7 @@ router.put('/:id', requireCap('fleet.capacities.edit'), asyncHandler((req, res) 
 }));
 
 // ---- 7. Admin Delete Vehicle Capacity --------------------------------------
-router.delete('/:id', requireCap('fleet.capacities.edit'), asyncHandler((req, res) => {
+router.delete('/:id', requireCap('lubricants.delete', 'fleet.capacities.edit'), asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   const existing = get('SELECT * FROM vehicle_lubricant_capacities WHERE id = ?', id);
   if (!existing) return res.status(404).json({ error: 'Vehicle capacity record not found' });

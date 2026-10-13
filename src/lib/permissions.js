@@ -37,7 +37,7 @@ const SECTIONS = [
   { id: 5, key: 'dailywork', label: 'Daily Work', icon: '📅', group: 'Operations', enforce: true },
   { id: 6, key: 'services', label: 'Service Records', icon: '🛠️', group: 'Operations', enforce: true },
   { id: 7, key: 'lubricants', label: 'Lubricant Capacities', icon: '🛢️', group: 'Fleet', enforce: true },
-  { id: 8, key: 'assets', label: 'Assets', icon: '🚛', group: 'Fleet', enforce: true },
+  { id: 8, key: 'assets', label: 'Assets', icon: '🚛', group: 'Fleet', enforce: true, parts: [{ key: 'vehicle_docs', label: 'Vehicle Documents' }] },
   { id: 9, key: 'labour', label: 'Labour Rates', icon: '💼', group: 'Fleet', enforce: true },
   { id: 10, key: 'stores', label: 'Stores', icon: '📦', group: 'Inventory', enforce: true, parts: [{ key: 'oil', label: 'Oil & Lube' }, { key: 'batteries', label: 'Batteries' }, { key: 'filters', label: 'Filters & Prices' }, { key: 'tools', label: 'Tools & Toolboxes' }] },
   { id: 11, key: 'service_plan', label: 'Service & Filter Plan', icon: '📈', group: 'Operations', enforce: true },
@@ -63,6 +63,7 @@ const PART_MODULES = [
   { key: 'batteries', label: 'Batteries', enforce: true, parent: 'stores' },
   { key: 'filters', label: 'Filters & Prices', enforce: true, parent: 'stores' },
   { key: 'tools', label: 'Tools & Toolboxes', enforce: true, parent: 'stores' },
+  { key: 'vehicle_docs', label: 'Vehicle Documents', enforce: true, parent: 'assets' },
   { key: 'tb_request', label: 'T&B · Request', enforce: false, parent: 'tb_requests' },
   { key: 'tb_purchase', label: 'T&B · Send to purchase', enforce: false, parent: 'tb_requests' },
   { key: 'tb_grn', label: 'T&B · Receive (GRN)', enforce: false, parent: 'tb_requests' },
@@ -81,96 +82,96 @@ const MODULE_KEYS = MODULES.map((m) => m.key);
 const DEFAULT_MATRIX = {
   storekeeper: {
     dashboard: 'view', jobs: 'view', jobrequests: 'none', field: 'view', operations: 'view',
-    dailywork: 'none', services: 'view', lubricants: 'view', assets: 'view', labour: 'none',
-    stores: 'full', oil: 'full', batteries: 'full', filters: 'full', service_plan: 'view',
+    dailywork: 'none', services: 'view', lubricants: 'view', assets: 'view', vehicle_docs: 'view', labour: 'none',
+    stores: 'full', oil: 'full', batteries: 'full', filters: 'full', tools: 'full', service_plan: 'view',
     projects: 'view', aliases: 'view', attention: 'view', daily_progress: 'view', cost_teardown: 'view',
     purchasing: 'view', tb_requests: 'edit', tb_request: 'edit', tb_purchase: 'edit', tb_grn: 'edit', tb_issue: 'edit',
     tb_reports: 'view', reports: 'view', workshops: 'none', access: 'none', users: 'none'
   },
   main_storekeeper: {
     dashboard: 'view', jobs: 'view', jobrequests: 'none', field: 'view', operations: 'view',
-    dailywork: 'none', services: 'view', lubricants: 'view', assets: 'view', labour: 'none',
-    stores: 'view', oil: 'view', batteries: 'view', filters: 'view', service_plan: 'view',
+    dailywork: 'none', services: 'view', lubricants: 'view', assets: 'view', vehicle_docs: 'view', labour: 'none',
+    stores: 'view', oil: 'view', batteries: 'view', filters: 'view', tools: 'view', service_plan: 'view',
     projects: 'view', aliases: 'view', attention: 'view', daily_progress: 'view', cost_teardown: 'view',
     purchasing: 'view', tb_requests: 'view', tb_request: 'view', tb_purchase: 'view', tb_grn: 'view', tb_issue: 'none',
     tb_reports: 'view', reports: 'view', workshops: 'none', access: 'none', users: 'none'
   },
   transport_manager: {
     dashboard: 'view', jobs: 'edit', jobrequests: 'edit', field: 'edit', operations: 'edit',
-    dailywork: 'view', services: 'view', lubricants: 'view', assets: 'edit', labour: 'view',
-    stores: 'none', oil: 'none', batteries: 'view', filters: 'view', service_plan: 'view',
+    dailywork: 'view', services: 'view', lubricants: 'view', assets: 'edit', vehicle_docs: 'edit', labour: 'view',
+    stores: 'none', oil: 'none', batteries: 'view', filters: 'view', tools: 'none', service_plan: 'view',
     projects: 'view', aliases: 'view', attention: 'view', daily_progress: 'view', cost_teardown: 'view',
     purchasing: 'none', tb_requests: 'view', tb_request: 'view', tb_purchase: 'none', tb_grn: 'none', tb_issue: 'none',
     tb_reports: 'view', reports: 'view', workshops: 'none', access: 'none', users: 'none'
   },
   assistant_transport_manager: {
     dashboard: 'view', jobs: 'view', jobrequests: 'edit', field: 'view', operations: 'view',
-    dailywork: 'view', services: 'view', lubricants: 'view', assets: 'view', labour: 'none',
-    stores: 'none', oil: 'none', batteries: 'view', filters: 'view', service_plan: 'view',
+    dailywork: 'view', services: 'view', lubricants: 'view', assets: 'view', vehicle_docs: 'edit', labour: 'none',
+    stores: 'none', oil: 'none', batteries: 'view', filters: 'view', tools: 'none', service_plan: 'view',
     projects: 'view', aliases: 'none', attention: 'view', daily_progress: 'view', cost_teardown: 'view',
     purchasing: 'none', tb_requests: 'view', tb_request: 'view', tb_purchase: 'none', tb_grn: 'none', tb_issue: 'none',
     tb_reports: 'view', reports: 'view', workshops: 'none', access: 'none', users: 'none'
   },
   operational_manager: {
     dashboard: 'view', jobs: 'edit', jobrequests: 'edit', field: 'edit', operations: 'edit',
-    dailywork: 'view', services: 'edit', lubricants: 'edit', assets: 'edit', labour: 'view',
-    stores: 'view', oil: 'view', batteries: 'view', filters: 'view', service_plan: 'edit',
+    dailywork: 'view', services: 'edit', lubricants: 'edit', assets: 'edit', vehicle_docs: 'full', labour: 'view',
+    stores: 'view', oil: 'view', batteries: 'view', filters: 'view', tools: 'edit', service_plan: 'edit',
     projects: 'edit', aliases: 'view', attention: 'full', daily_progress: 'full', cost_teardown: 'full',
     purchasing: 'full', tb_requests: 'edit', tb_request: 'edit', tb_purchase: 'view', tb_grn: 'view', tb_issue: 'view',
     tb_reports: 'full', reports: 'full', workshops: 'edit', access: 'none', users: 'none'
   },
   manager: {
     dashboard: 'view', jobs: 'edit', jobrequests: 'edit', field: 'edit', operations: 'edit',
-    dailywork: 'view', services: 'edit', lubricants: 'edit', assets: 'view', labour: 'view',
-    stores: 'view', oil: 'view', batteries: 'view', filters: 'view', service_plan: 'edit',
+    dailywork: 'view', services: 'edit', lubricants: 'edit', assets: 'view', vehicle_docs: 'full', labour: 'view',
+    stores: 'view', oil: 'view', batteries: 'view', filters: 'view', tools: 'full', service_plan: 'edit',
     projects: 'view', aliases: 'view', attention: 'full', daily_progress: 'full', cost_teardown: 'full',
     purchasing: 'full', tb_requests: 'edit', tb_request: 'edit', tb_purchase: 'view', tb_grn: 'view', tb_issue: 'view',
     tb_reports: 'full', reports: 'full', workshops: 'edit', access: 'none', users: 'none'
   },
   workshop: {
     dashboard: 'view', jobs: 'edit', jobrequests: 'view', field: 'edit', operations: 'view',
-    dailywork: 'edit', services: 'edit', lubricants: 'edit', assets: 'view', labour: 'edit',
-    stores: 'view', oil: 'edit', batteries: 'edit', filters: 'full', service_plan: 'view',
+    dailywork: 'edit', services: 'edit', lubricants: 'edit', assets: 'view', vehicle_docs: 'edit', labour: 'edit',
+    stores: 'view', oil: 'edit', batteries: 'edit', filters: 'full', tools: 'edit', service_plan: 'view',
     projects: 'view', aliases: 'edit', attention: 'view', daily_progress: 'view', cost_teardown: 'view',
     purchasing: 'none', tb_requests: 'edit', tb_request: 'edit', tb_purchase: 'none', tb_grn: 'none', tb_issue: 'none',
     tb_reports: 'view', reports: 'view', workshops: 'none', access: 'none', users: 'none'
   },
   purchase_head_office: {
     dashboard: 'none', jobs: 'none', jobrequests: 'none', field: 'none', operations: 'none',
-    dailywork: 'none', services: 'none', lubricants: 'none', assets: 'none', labour: 'none',
-    stores: 'none', oil: 'none', batteries: 'none', filters: 'none', service_plan: 'none',
+    dailywork: 'none', services: 'none', lubricants: 'none', assets: 'none', vehicle_docs: 'none', labour: 'none',
+    stores: 'none', oil: 'none', batteries: 'none', filters: 'none', tools: 'none', service_plan: 'none',
     projects: 'none', aliases: 'none', attention: 'none', daily_progress: 'none', cost_teardown: 'none',
     purchasing: 'full', tb_requests: 'none', tb_request: 'none', tb_purchase: 'none', tb_grn: 'none', tb_issue: 'none',
     tb_reports: 'none', reports: 'none', workshops: 'none', access: 'none', users: 'none'
   },
   purchase_local: {
     dashboard: 'none', jobs: 'none', jobrequests: 'none', field: 'none', operations: 'none',
-    dailywork: 'none', services: 'none', lubricants: 'none', assets: 'none', labour: 'none',
-    stores: 'none', oil: 'none', batteries: 'none', filters: 'none', service_plan: 'none',
+    dailywork: 'none', services: 'none', lubricants: 'none', assets: 'none', vehicle_docs: 'none', labour: 'none',
+    stores: 'none', oil: 'none', batteries: 'none', filters: 'none', tools: 'none', service_plan: 'none',
     projects: 'none', aliases: 'none', attention: 'none', daily_progress: 'none', cost_teardown: 'none',
     purchasing: 'full', tb_requests: 'none', tb_request: 'none', tb_purchase: 'none', tb_grn: 'none', tb_issue: 'none',
     tb_reports: 'none', reports: 'none', workshops: 'none', access: 'none', users: 'none'
   },
   viewer: {
     dashboard: 'view', jobs: 'view', jobrequests: 'view', field: 'view', operations: 'view',
-    dailywork: 'view', services: 'view', lubricants: 'view', assets: 'view', labour: 'view',
-    stores: 'view', oil: 'view', batteries: 'view', filters: 'view', service_plan: 'view',
+    dailywork: 'view', services: 'view', lubricants: 'view', assets: 'view', vehicle_docs: 'view', labour: 'view',
+    stores: 'view', oil: 'view', batteries: 'view', filters: 'view', tools: 'view', service_plan: 'view',
     projects: 'view', aliases: 'view', attention: 'view', daily_progress: 'view', cost_teardown: 'view',
     purchasing: 'view', tb_requests: 'view', tb_request: 'view', tb_purchase: 'view', tb_grn: 'view', tb_issue: 'view',
     tb_reports: 'view', reports: 'view', workshops: 'view', access: 'none', users: 'none'
   },
   engineer: {
     dashboard: 'view', jobs: 'edit', jobrequests: 'edit', field: 'edit', operations: 'edit',
-    dailywork: 'view', services: 'edit', lubricants: 'view', assets: 'view', labour: 'view',
-    stores: 'view', oil: 'view', batteries: 'view', filters: 'view', service_plan: 'edit',
+    dailywork: 'view', services: 'edit', lubricants: 'view', assets: 'view', vehicle_docs: 'view', labour: 'view',
+    stores: 'view', oil: 'view', batteries: 'view', filters: 'view', tools: 'edit', service_plan: 'edit',
     projects: 'view', aliases: 'view', attention: 'view', daily_progress: 'view', cost_teardown: 'view',
     purchasing: 'view', tb_requests: 'view', tb_request: 'view', tb_purchase: 'none', tb_grn: 'none', tb_issue: 'none',
     tb_reports: 'view', reports: 'view', workshops: 'view', access: 'none', users: 'none'
   },
   assistant_engineer: {
     dashboard: 'view', jobs: 'edit', jobrequests: 'edit', field: 'edit', operations: 'view',
-    dailywork: 'view', services: 'view', lubricants: 'view', assets: 'view', labour: 'none',
-    stores: 'view', oil: 'view', batteries: 'view', filters: 'view', service_plan: 'view',
+    dailywork: 'view', services: 'view', lubricants: 'view', assets: 'view', vehicle_docs: 'view', labour: 'none',
+    stores: 'view', oil: 'view', batteries: 'view', filters: 'view', tools: 'view', service_plan: 'view',
     projects: 'view', aliases: 'none', attention: 'view', daily_progress: 'view', cost_teardown: 'view',
     purchasing: 'none', tb_requests: 'view', tb_request: 'view', tb_purchase: 'none', tb_grn: 'none', tb_issue: 'none',
     tb_reports: 'view', reports: 'view', workshops: 'none', access: 'none', users: 'none'

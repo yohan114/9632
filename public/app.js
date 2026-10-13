@@ -510,6 +510,13 @@ const canFull = (m) => isAdmin() || (ME && ME.permissions ? rankL(ME.permissions
 // (capNeeds), and a button whose request the server would refuse is not shown.
 const canDo = (...caps) => !!ME && caps.some((c) => (ME.caps || []).includes(c)
   && (!(ME.capNeeds && ME.capNeeds[c]) || canEdit(ME.capNeeds[c])));
+// Hybrid SAP Fiori UX: Render active button if permitted, or disabled button with padlock + tooltip if unauthorized
+const fioriActionBtn = (cap, { label, icon = '', cls = 'primary', id = '', attrs = '', title = '' } = {}) => {
+  if (canDo(cap)) {
+    return `<button class="${cls}" ${id ? `id="${id}"` : ''} ${attrs} ${title ? `title="${title}"` : ''}>${icon ? `${icon} ` : ''}${label}</button>`;
+  }
+  return `<button class="btn disabled" disabled style="opacity:0.5;cursor:not-allowed" title="🔒 Permission restricted (${cap}). Contact your Administrator.">${icon ? `${icon} ` : ''}🔒 ${label}</button>`;
+};
 const qs = (s, r = document) => r.querySelector(s);
 const qsa = (s, r = document) => [...r.querySelectorAll(s)];
 
@@ -18832,12 +18839,23 @@ async function renderPeopleAccess(c, wantedUserId) {
     }).join('') || '<tr><td class="muted" style="text-align:center">No matching people</td></tr>';
 
     const GROUPS = [
-      { id: 'operations', name: 'Operations & Execution', icon: '🔧' },
-      { id: 'stores', name: 'Stores & Inventory', icon: '📦' },
-      { id: 'fleet', name: 'Fleet & Assets', icon: '🚜' },
-      { id: 'control', name: 'Control & Intelligence', icon: '📊' },
-      { id: 'governance', name: 'Governance & Access', icon: '🛡️' },
+      { id: 'Operations', name: 'Operations & Execution', icon: '⚙️' },
+      { id: 'Fleet', name: 'Fleet Management', icon: '🚛' },
+      { id: 'Inventory', name: 'Inventory & Warehousing', icon: '📦' },
+      { id: 'Procurement', name: 'Procurement & Purchasing', icon: '🛒' },
+      { id: 'Analysis', name: 'Analysis & Intelligence', icon: '📊' },
+      { id: 'Admin', name: 'Governance & Administration', icon: '🛡️' },
     ];
+
+    const ACTVT_MAP = {
+      '01': { label: '01 · Create', cls: 'badge teal' },
+      '02': { label: '02 · Change', cls: 'badge blue' },
+      '03': { label: '03 · Display', cls: 'badge' },
+      '06': { label: '06 · Delete', cls: 'badge red' },
+      '08': { label: '08 · Export', cls: 'badge purple' },
+      '10': { label: '10 · Approve', cls: 'badge green' },
+      'A1': { label: 'A1 · Certify', cls: 'badge amber' },
+    };
 
     const LV_BTN = [
       { key: 'none', label: 'None' },
@@ -18848,7 +18866,7 @@ async function renderPeopleAccess(c, wantedUserId) {
     ];
 
     const groupCards = GROUPS.map((grp) => {
-      const grpSections = sections.filter((s) => s.group === grp.id);
+      const grpSections = sections.filter((s) => (s.group || '').toLowerCase() === grp.id.toLowerCase());
       if (!grpSections.length) return '';
 
       const secHtml = grpSections.map((sec) => {
@@ -18871,12 +18889,18 @@ async function renderPeopleAccess(c, wantedUserId) {
             const hasCap = capEdits[c.key] !== undefined ? capEdits[c.key] : c.effective_granted;
             const isCapOverridden = capEdits[c.key] !== undefined ? (capEdits[c.key] !== c.role_granted) : c.is_override;
             const disabled = isSelf || !canEditTarget ? 'disabled' : '';
+            const actvt = ACTVT_MAP[c.actvt] || { label: c.actvt || '02', cls: 'badge' };
+            const dualBadge = c.dualAuth ? `<span class="badge amber" style="font-size:9px;font-weight:600" title="Mandatory 4-Eyes Dual Authorization">👥 4-Eyes Dual Auth</span> ` : '';
             return `<label style="display:flex;align-items:flex-start;gap:8px;margin:5px 0;font-weight:normal;font-size:12px">
               <input type="checkbox" style="width:auto;margin-top:2px" data-pcap="${esc(c.key)}" ${hasCap ? 'checked' : ''} ${disabled}>
               <div>
-                <span>${esc(c.label)}</span>
-                ${isCapOverridden ? `<span class="badge amber" style="font-size:9px;margin-left:4px">Custom override</span>` : `<span class="muted" style="font-size:10px;margin-left:4px">(${c.role_granted ? 'Granted by role' : 'Not in role'})</span>`}
-                <div class="muted" style="font-size:10px">${esc(c.key)}</div>
+                <div style="display:flex;align-items:center;gap:4px;flex-wrap:wrap">
+                  <span class="${actvt.cls}" style="font-size:9px;font-family:monospace">${actvt.label}</span>
+                  ${dualBadge}
+                  <span style="font-weight:500">${esc(c.label)}</span>
+                  ${isCapOverridden ? `<span class="badge amber" style="font-size:9px;margin-left:4px">Custom override</span>` : `<span class="muted" style="font-size:10px;margin-left:4px">(${c.role_granted ? 'Granted by role' : 'Not in role'})</span>`}
+                </div>
+                <div class="muted" style="font-size:10px;font-family:monospace">${esc(c.key)}</div>
               </div>
             </label>`;
           }).join('');
@@ -19346,7 +19370,7 @@ async function renderAccessHistory(c) {
 async function renderRolesManager(c, wanted) {
   const sm = await api('/access/section-matrix').catch(async () => {
     const [cat, board] = await Promise.all([api('/access/capabilities'), api('/access/matrix')]);
-    return { sections: [], capabilities: cat.capabilities, modules: cat.modules, roles: cat.roles, matrix: board };
+    return { domains: [], sections: [], capabilities: cat.capabilities, modules: cat.modules, roles: cat.roles, matrix: board };
   });
   const roles = sm.roles;
   const sel = roles.find((r) => r.name === wanted) || roles.find((r) => r.active && !r.locked) || roles[0];
@@ -19360,111 +19384,297 @@ async function renderRolesManager(c, wanted) {
 
   const roleList = roles.map((r) => `<tr data-pick="${esc(r.name)}" style="cursor:pointer;${r.name === sel.name ? 'background:#eef2ff;' : ''}${r.active ? '' : 'opacity:.55;'}">
     <td><b>${esc(r.label || r.name)}</b>${r.locked ? ' <span class="badge amber">everything</span>' : ''}${r.is_system ? '' : ' <span class="badge blue">custom</span>'}${r.active ? '' : ' <span class="badge">retired</span>'}
-    <br><span class="muted" style="font-size:11px">${r.users} user(s) · ${r.locked ? 'all' : r.caps.length} permission(s)</span></td></tr>`).join('');
+    <br><span class="muted" style="font-size:11px">${r.users} user(s) · ${r.locked ? 'all (227)' : r.caps.length} permission(s)</span></td></tr>`).join('');
 
-  // Fallback if sections not returned: group by module
-  const sections = (sm.sections && sm.sections.length) ? sm.sections : [
-    { id: 'all', name: 'Permissions', icon: '⚙️', description: 'All module capabilities', modules: sm.modules.map((m) => m.key) }
+  // 6 SAP Operational Domains
+  const domains = (sm.domains && sm.domains.length) ? sm.domains : [
+    { id: 'Operations', name: 'Operations & Execution', icon: '⚙️', description: 'Workshop floor execution, job cards, breakdowns, field work, and daily technician labor' },
+    { id: 'Fleet', name: 'Fleet Management', icon: '🚛', description: 'Equipment registry, statutory compliance, lubricant capacities, mechanic trades, and sites' },
+    { id: 'Inventory', name: 'Inventory & Warehousing', icon: '📦', description: 'Central & site stores, MRN demands, tool control, bulk oils, and parts catalogue' },
+    { id: 'Procurement', name: 'Procurement & Purchasing', icon: '🛒', description: 'Purchase requisitions, supplier orders, Tyre & Battery workflows' },
+    { id: 'Analysis', name: 'Analysis & Intelligence', icon: '📊', description: 'Attention cockpit, daily progress, cost teardowns, and executive fleet analytics' },
+    { id: 'Admin', name: 'Governance & Administration', icon: '🛡️', description: 'Workshop tenancies, access control profiles, and user credential management' }
   ];
+
+  const sections = (sm.sections && sm.sections.length) ? sm.sections : [];
 
   const LVLS = ['none', 'view', 'add', 'edit', 'full'];
   const LV_LABEL = { none: 'None', view: 'View', add: 'Add', edit: 'Edit', full: 'Full' };
 
-  const sectionCards = sections.map((sec) => {
-    const secCaps = sm.capabilities.filter((cap) => sec.modules.includes(cap.module));
-    
-    // 1. Module Clearance Control for this section
-    const modClearanceHtml = sec.modules.map((m) => {
-      const curLvl = levelOf(sel.name, m);
-      const isLocked = sel.locked || !editable;
-      const pills = LVLS.map((lvl) => {
-        const isCurrent = (sel.locked && lvl === 'full') || (!sel.locked && curLvl === lvl);
-        const cls = isCurrent ? (lvl === 'full' ? 'primary' : (lvl === 'edit' ? 'badge green' : (lvl === 'add' ? 'badge teal' : (lvl === 'view' ? 'badge blue' : 'badge amber')))) : 'btn sm';
-        const style = isCurrent ? 'font-weight:bold;' : 'opacity:.7;';
-        return `<button class="${cls}" style="${style}padding:2px 8px;font-size:11px" data-setlvl="${esc(m)}:${lvl}" ${isLocked ? 'disabled' : ''}>${LV_LABEL[lvl]}</button>`;
-      }).join(' ');
-      return `<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:4px 0">
-        <span style="font-size:12px;font-weight:600">${esc(modLabel[m] || m)}:</span>
-        <div style="display:flex;gap:4px">${pills}</div>
-      </div>`;
-    }).join('');
+  const ACTVT_MAP = {
+    '01': { label: '01 · Create', cls: 'badge teal' },
+    '02': { label: '02 · Change', cls: 'badge blue' },
+    '03': { label: '03 · Display', cls: 'badge' },
+    '06': { label: '06 · Delete', cls: 'badge red' },
+    '08': { label: '08 · Export', cls: 'badge purple' },
+    '10': { label: '10 · Approve', cls: 'badge green' },
+    'A1': { label: 'A1 · Certify', cls: 'badge amber' },
+  };
 
-    // 2. Preset Buttons for this section
-    const presetsHtml = (sec.presets && editable) ? `
-      <div style="display:flex;align-items:center;gap:6px;margin:8px 0 10px;padding:6px 8px;background:var(--bg-muted, #f8f9fa);border-radius:4px;flex-wrap:wrap">
-        <span class="muted" style="font-size:11px;font-weight:600">Quick Presets:</span>
-        <button class="btn sm" data-preset="${esc(sec.id)}:none" title="Remove all access to this section">❌ No Access</button>
-        <button class="btn sm" data-preset="${esc(sec.id)}:view" title="Read-only clearance">👁️ Read-Only</button>
-        <button class="btn sm" data-preset="${esc(sec.id)}:operator" title="Set standard operator clearance & tools">⚙️ Operator</button>
-        <button class="btn sm" data-preset="${esc(sec.id)}:manager" title="Full clearance and manager capabilities">👑 Full Manager</button>
-      </div>` : '';
+  const totalCapsCount = sm.capabilities.length || 227;
+  const heldCapsCount = sel.locked ? totalCapsCount : sel.caps.length;
+  const heldPct = Math.round((heldCapsCount / totalCapsCount) * 100);
 
-    // 3. Capabilities checkboxes
-    const capListHtml = secCaps.map((cap) => {
-      const has = sel.locked || held.has(cap.key);
-      const canTick = editable && (has || isAdmin() || mine.has(cap.key));
-      const needsMod = cap.needs;
-      const currentModLvl = needsMod ? levelOf(sel.name, needsMod) : 'full';
-      const short = (needsMod && !sel.locked && rankL(currentModLvl) < 2)
-        ? ` <span class="badge amber" style="font-size:10px" title="Ticking this will auto-elevate ${esc(modLabel[needsMod] || needsMod)} to EDIT">auto-elevates ${esc(modLabel[needsMod] || needsMod)} to EDIT</span>` : '';
-      return `<label style="display:flex;flex-direction:row;gap:8px;align-items:flex-start;margin:4px 0;font-weight:normal">
-        <input type="checkbox" style="width:auto;margin-top:3px" data-cap="${esc(cap.key)}" data-needs="${esc(cap.needs || '')}" ${has ? 'checked' : ''} ${canTick ? '' : 'disabled'}>
-        <span style="font-size:13px">${esc(cap.label)}${short}<br><span class="muted" style="font-size:11px">${esc(cap.key)}</span></span>
-      </label>`;
+  // Group sections by domain
+  const domainSectionsHtml = domains.map((dom) => {
+    const domSections = sections.filter((s) => (s.domain || '').toLowerCase() === dom.id.toLowerCase());
+    if (!domSections.length) return '';
+
+    // Count capabilities in this domain
+    const domCaps = sm.capabilities.filter((c) => (c.domain || '').toLowerCase() === dom.id.toLowerCase());
+    const domHeld = domCaps.filter((c) => sel.locked || held.has(c.key)).length;
+
+    const sectionsHtml = domSections.map((sec) => {
+      const secCaps = sm.capabilities.filter((cap) => (cap.section === sec.id || (sec.modules || []).includes(cap.module) || cap.module === sec.id));
+      const secHeld = secCaps.filter((c) => sel.locked || held.has(c.key)).length;
+
+      // Module Clearance Control
+      const modClearanceHtml = (sec.modules || []).map((m) => {
+        const curLvl = levelOf(sel.name, m);
+        const isLocked = sel.locked || !editable;
+        const pills = LVLS.map((lvl) => {
+          const isCurrent = (sel.locked && lvl === 'full') || (!sel.locked && curLvl === lvl);
+          const cls = isCurrent ? (lvl === 'full' ? 'primary' : (lvl === 'edit' ? 'badge green' : (lvl === 'add' ? 'badge teal' : (lvl === 'view' ? 'badge blue' : 'badge amber')))) : 'btn sm';
+          const style = isCurrent ? 'font-weight:bold;' : 'opacity:.7;';
+          return `<button class="${cls}" style="${style}padding:2px 8px;font-size:11px" data-setlvl="${esc(m)}:${lvl}" ${isLocked ? 'disabled' : ''}>${LV_LABEL[lvl]}</button>`;
+        }).join(' ');
+        return `<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:3px 0">
+          <span style="font-size:12px;font-weight:600">${esc(modLabel[m] || m)}:</span>
+          <div style="display:flex;gap:4px">${pills}</div>
+        </div>`;
+      }).join('');
+
+      // Preset Buttons
+      const presetsHtml = (sec.presets && editable) ? `
+        <div style="display:flex;align-items:center;gap:6px;margin:6px 0 8px;padding:4px 8px;background:var(--bg-muted, #f8f9fa);border-radius:4px;flex-wrap:wrap">
+          <span class="muted" style="font-size:11px;font-weight:600">Quick Presets:</span>
+          <button class="btn sm" data-preset="${esc(sec.id)}:none" title="Remove all access">❌ None</button>
+          <button class="btn sm" data-preset="${esc(sec.id)}:view" title="Read-only clearance">👁️ Read-Only</button>
+          <button class="btn sm" data-preset="${esc(sec.id)}:operator" title="Standard operator clearance">⚙️ Operator</button>
+          <button class="btn sm" data-preset="${esc(sec.id)}:manager" title="Full clearance and manager capabilities">👑 Full Manager</button>
+        </div>` : '';
+
+      // Bulk section actions
+      const bulkActionsHtml = editable ? `
+        <div style="display:flex;gap:6px;align-items:center;margin:6px 0 8px">
+          <button class="btn sm" data-bulk-cap="${esc(sec.id)}:grant" title="Grant all capabilities in this section" style="font-size:11px">+ Grant All (${secCaps.length})</button>
+          <button class="btn sm" data-bulk-cap="${esc(sec.id)}:view" title="Grant view capability only" style="font-size:11px">👁️ View Only</button>
+          <button class="btn sm danger" data-bulk-cap="${esc(sec.id)}:revoke" title="Revoke all capabilities in this section" style="font-size:11px">– Revoke All</button>
+        </div>` : '';
+
+      // Capabilities checkboxes
+      const capListHtml = secCaps.map((cap) => {
+        const has = sel.locked || held.has(cap.key);
+        const canTick = editable && (has || isAdmin() || mine.has(cap.key));
+        const needsMod = cap.needs;
+        const currentModLvl = needsMod ? levelOf(sel.name, needsMod) : 'full';
+        const short = (needsMod && !sel.locked && rankL(currentModLvl) < 2)
+          ? ` <span class="badge amber" style="font-size:9px" title="Ticking this will auto-elevate ${esc(modLabel[needsMod] || needsMod)} to EDIT">auto-elevates ${esc(modLabel[needsMod] || needsMod)} to EDIT</span>` : '';
+        const actvt = ACTVT_MAP[cap.actvt] || { label: cap.actvt || '02', cls: 'badge' };
+        const dualAuthBadge = cap.dualAuth ? `<span class="badge amber" style="font-size:9px;font-weight:600" title="Mandatory 4-Eyes Dual Authorization Required">👥 4-Eyes Dual Auth</span> ` : '';
+
+        return `<div class="cap-row" data-cap-key="${esc(cap.key)}" data-actvt="${esc(cap.actvt || '02')}" data-dual="${cap.dualAuth ? '1' : '0'}" style="display:flex;align-items:flex-start;gap:8px;padding:4px 0;border-bottom:1px solid var(--border-light, #f1f5f9)">
+          <input type="checkbox" style="width:auto;margin-top:3px" data-cap="${esc(cap.key)}" data-needs="${esc(cap.needs || '')}" ${has ? 'checked' : ''} ${canTick ? '' : 'disabled'}>
+          <div style="flex:1">
+            <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+              <span class="${actvt.cls}" style="font-size:10px;font-family:monospace">${actvt.label}</span>
+              ${dualAuthBadge}
+              <span style="font-size:13px;font-weight:500">${esc(cap.label)}</span>
+              ${short}
+            </div>
+            <div style="font-size:11px;color:var(--text-muted, #64748b);font-family:monospace;margin-top:1px">${esc(cap.key)}</div>
+          </div>
+        </div>`;
+      }).join('');
+
+      return `
+        <div class="card section-card" data-section-id="${esc(sec.id)}" style="margin-bottom:10px;background:var(--card-sub-bg, #fff);border:1px solid var(--border-light, #e2e8f0);border-radius:6px;padding:12px">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px">
+            <div style="display:flex;align-items:center;gap:8px">
+              <span style="font-size:18px">${sec.icon || '📁'}</span>
+              <div>
+                <b style="font-size:14px">${esc(sec.name)}</b>
+                <div class="muted" style="font-size:11px">${esc(sec.description || '')}</div>
+              </div>
+            </div>
+            <span class="badge blue" style="font-size:11px">${secHeld} / ${secCaps.length} granted</span>
+          </div>
+
+          ${modClearanceHtml ? `
+          <div style="background:var(--bg-muted, #f8fafc);border:1px solid var(--border-light, #eee);border-radius:6px;padding:6px 10px;margin-bottom:8px">
+            <div class="muted" style="font-size:10px;font-weight:600;margin-bottom:2px;text-transform:uppercase">Section Clearance:</div>
+            ${modClearanceHtml}
+          </div>` : ''}
+
+          ${presetsHtml}
+          ${bulkActionsHtml}
+
+          <div style="margin-top:8px">
+            <div class="muted" style="font-size:10px;font-weight:600;margin-bottom:4px;text-transform:uppercase">Granular Capabilities (${secCaps.length}):</div>
+            <div class="caps-list" style="max-height:280px;overflow-y:auto;padding-right:4px">
+              ${capListHtml || '<span class="muted" style="font-size:12px">No capabilities configured</span>'}
+            </div>
+          </div>
+        </div>`;
     }).join('');
 
     return `
-      <div class="card section" style="margin-bottom:14px;border-top:3px solid var(--accent)">
-        <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:10px">
-          <div>
-            <h3 style="margin:0;display:flex;align-items:center;gap:6px">
-              <span>${sec.icon || '📁'}</span>
-              <span>${esc(sec.name)}</span>
-            </h3>
-            <p class="muted" style="margin:2px 0 8px;font-size:12px">${esc(sec.description || '')}</p>
+      <details open class="domain-accordion card" data-domain-id="${esc(dom.id)}" style="margin-bottom:14px;border:1px solid var(--border-light, #cbd5e1);border-radius:8px;padding:0;overflow:hidden">
+        <summary style="cursor:pointer;padding:12px 16px;background:var(--bg-muted, #f1f5f9);display:flex;align-items:center;justify-content:space-between;user-select:none;font-weight:600">
+          <div style="display:flex;align-items:center;gap:10px">
+            <span style="font-size:20px">${dom.icon}</span>
+            <div>
+              <span style="font-size:15px;color:var(--text-normal, #1e293b)">${esc(dom.name)}</span>
+              <div class="muted" style="font-size:11px;font-weight:normal">${esc(dom.description || '')}</div>
+            </div>
           </div>
+          <div style="display:flex;align-items:center;gap:8px">
+            <span class="badge ${domHeld > 0 ? 'green' : ''}" style="font-size:12px">${domHeld} / ${domCaps.length} granted</span>
+            <span class="muted" style="font-size:12px">▾</span>
+          </div>
+        </summary>
+        <div style="padding:14px">
+          ${sectionsHtml}
         </div>
-        <div style="background:var(--card-sub-bg, #fafafa);border:1px solid var(--border-light, #eee);border-radius:6px;padding:8px 12px;margin-bottom:10px">
-          <div class="muted" style="font-size:11px;font-weight:600;margin-bottom:4px;text-transform:uppercase">Section Clearance:</div>
-          ${modClearanceHtml}
-        </div>
-        ${presetsHtml}
-        <div style="margin-top:6px">
-          <div class="muted" style="font-size:11px;font-weight:600;margin-bottom:6px;text-transform:uppercase">Granular Capabilities (${secCaps.length}):</div>
-          ${capListHtml || '<span class="muted" style="font-size:12px">No specific granular capabilities for this section</span>'}
-        </div>
-      </div>`;
+      </details>`;
   }).join('');
 
   c.innerHTML = `<div style="display:grid;grid-template-columns:minmax(220px,300px) 1fr;gap:14px;align-items:start">
-    <div class="card"><div class="toolbar" style="margin:0 0 8px"><h3 style="margin:0">Roles</h3><div class="spacer"></div><button class="primary sm" id="newrole">+ New Role</button></div>
-      <div class="table-wrap scroll"><table><tbody>${roleList}</tbody></table></div></div>
+    <div class="card">
+      <div class="toolbar" style="margin:0 0 8px">
+        <h3 style="margin:0">Roles</h3><div class="spacer"></div>
+        <button class="primary sm" id="newrole">+ New Role</button>
+      </div>
+      <div style="margin-bottom:8px">
+        <input type="text" id="role-search" placeholder="Search roles..." class="input sm" style="width:100%;box-sizing:border-box">
+      </div>
+      <div class="table-wrap scroll" style="max-height:calc(100vh - 230px)">
+        <table id="role-table"><tbody>${roleList}</tbody></table>
+      </div>
+    </div>
+
     <div>
-      <div class="card" style="margin-bottom:12px">
-        <div class="toolbar" style="margin:0"><h2 style="margin:0">${esc(sel.label || sel.name)}</h2><div class="spacer"></div>
+      <div class="card" style="margin-bottom:12px;border-top:3px solid var(--accent, #2563eb)">
+        <div class="toolbar" style="margin:0">
+          <div>
+            <h2 style="margin:0;display:flex;align-items:center;gap:8px">
+              <span>${esc(sel.label || sel.name)}</span>
+              ${sel.locked ? '<span class="badge amber">System Admin</span>' : (sel.is_system ? '<span class="badge blue">Standard Role</span>' : '<span class="badge purple">Custom Role</span>')}
+              ${sel.active ? '' : '<span class="badge red">Retired</span>'}
+            </h2>
+          </div>
+          <div class="spacer"></div>
           ${sel.locked ? '' : `<button class="sm" id="editrole">✎ Rename / describe</button>
           ${sel.active ? '<button class="sm danger" id="retirerole">Retire</button>' : '<button class="sm" id="reinstaterole">Reinstate</button>'}`}
         </div>
+
+        <div style="display:flex;align-items:center;gap:12px;margin:10px 0 8px;flex-wrap:wrap">
+          <div style="flex:1;min-width:200px">
+            <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:4px">
+              <b>Granular Capabilities Coverage:</b>
+              <span><b>${heldCapsCount}</b> / ${totalCapsCount} (${heldPct}%)</span>
+            </div>
+            <div style="height:8px;background:var(--border-light, #e2e8f0);border-radius:4px;overflow:hidden">
+              <div style="height:100%;width:${heldPct}%;background:var(--accent, #2563eb);transition:width .3s ease"></div>
+            </div>
+          </div>
+        </div>
+
         <label style="flex-direction:row;display:flex;gap:6px;align-items:center;margin:8px 0 0;font-weight:normal">
           <input type="checkbox" id="rolemfa" style="width:auto" ${sel.require_mfa ? 'checked' : ''} ${sel.active && (!sel.locked || isAdmin()) ? '' : 'disabled'}>
-          Require two-factor sign-in for everyone with this role <span class="muted" style="font-size:12px">— recommended for admins, approvers and purchasing</span></label>
+          Require two-factor sign-in for everyone with this role <span class="muted" style="font-size:12px">— recommended for approvers and financial roles</span>
+        </label>
         <p class="muted" style="margin:6px 0 0">${esc(sel.description || '')}${sel.description ? '<br>' : ''}Key <code>${esc(sel.name)}</code> · held by ${sel.users} active user(s).
-          ${sel.locked ? ' Admin always holds every permission and cannot be changed.' : ''}
-          ${!sel.active ? ' Retired — it grants nothing until reinstated.' : ''}
-          ${editable ? ' Single-point access: configure both base section clearance and all granular capabilities per section directly below.' : ''}</p>
+          ${sel.locked ? ' System Administrator always holds every capability and cannot be altered.' : ''}
+          ${editable ? ' Single-point SAP Fiori Access: configure section clearance and granular action permissions across the 6 Operational Domains below.' : ''}</p>
       </div>
-      ${sectionCards}
-    </div></div>`;
+
+      <!-- SAP Capability Search & Filter Bar -->
+      <div class="card" style="margin-bottom:12px;padding:10px 14px;background:var(--card-sub-bg, #f8fafc)">
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+          <input type="search" id="cap-filter-input" placeholder="🔍 Filter 227 capabilities (e.g. scrap, delete, wage, mrn, asset, actvt 06)..." style="flex:1;min-width:220px;padding:6px 12px;border:1px solid var(--border-light, #cbd5e1);border-radius:6px">
+          <div style="display:flex;gap:4px;flex-wrap:wrap" id="actvt-filter-bar">
+            <button class="btn sm active" data-actvt-filter="all">All</button>
+            <button class="btn sm" data-actvt-filter="01">01 Create</button>
+            <button class="btn sm" data-actvt-filter="02">02 Change</button>
+            <button class="btn sm" data-actvt-filter="03">03 View</button>
+            <button class="btn sm" data-actvt-filter="06">06 Delete</button>
+            <button class="btn sm" data-actvt-filter="08">08 Export</button>
+            <button class="btn sm" data-actvt-filter="10">10 Approve</button>
+            <button class="btn sm" data-actvt-filter="dual">👥 Dual Auth</button>
+          </div>
+        </div>
+      </div>
+
+      <div id="domains-container">
+        ${domainSectionsHtml}
+      </div>
+    </div>
+  </div>`;
 
   const reload = (name) => { location.hash = '#/access?tab=roles&role=' + encodeURIComponent(name || sel.name); };
   qsa('[data-pick]', c).forEach((tr) => { tr.onclick = () => reload(tr.dataset.pick); });
 
-  qs('#rolemfa', c).onchange = async (e) => {
-    const on = e.target.checked;
-    if (on && !confirm(`Everyone with "${sel.label || sel.name}" will have to set up two-factor sign-in before they can use the system. Continue?`)) { e.target.checked = false; return; }
-    try { await api('/access/roles/' + encodeURIComponent(sel.name), { method: 'PATCH', body: { require_mfa: on } }); toast(on ? 'Two-factor sign-in required for this role' : 'No longer required'); reload(); }
-    catch (err) { e.target.checked = !on; toast(err.message, 'err'); }
+  if (qs('#role-search', c)) {
+    qs('#role-search', c).oninput = (e) => {
+      const q = e.target.value.toLowerCase().trim();
+      qsa('#role-table tr', c).forEach((tr) => {
+        tr.style.display = (!q || tr.textContent.toLowerCase().includes(q)) ? '' : 'none';
+      });
+    };
+  }
+
+  // Capability search and activity badge filter
+  const filterCaps = () => {
+    const q = (qs('#cap-filter-input', c)?.value || '').toLowerCase().trim();
+    const actvt = qs('#actvt-filter-bar .active', c)?.dataset.actvtFilter || 'all';
+
+    qsa('.domain-accordion', c).forEach((domEl) => {
+      let domVisibleCount = 0;
+      qsa('.section-card', domEl).forEach((secEl) => {
+        let secVisibleCount = 0;
+        qsa('.cap-row', secEl).forEach((row) => {
+          const text = row.textContent.toLowerCase();
+          const rowActvt = row.dataset.actvt;
+          const isDual = row.dataset.dual === '1';
+
+          let matchesQ = !q || text.includes(q);
+          let matchesActvt = actvt === 'all' ||
+            (actvt === 'dual' ? isDual : rowActvt === actvt);
+
+          const visible = matchesQ && matchesActvt;
+          row.style.display = visible ? 'flex' : 'none';
+          if (visible) secVisibleCount++;
+        });
+
+        secEl.style.display = (secVisibleCount > 0 || (!q && actvt === 'all')) ? '' : 'none';
+        if (secVisibleCount > 0) domVisibleCount += secVisibleCount;
+      });
+
+      domEl.style.display = (domVisibleCount > 0 || (!q && actvt === 'all')) ? '' : 'none';
+      if (q || actvt !== 'all') domEl.open = true;
+    });
   };
+
+  if (qs('#cap-filter-input', c)) qs('#cap-filter-input', c).oninput = filterCaps;
+
+  qsa('#actvt-filter-bar button', c).forEach((btn) => {
+    btn.onclick = () => {
+      qsa('#actvt-filter-bar button', c).forEach((b) => b.classList.remove('active'));
+      btn.classList.add('active');
+      filterCaps();
+    };
+  });
+
+  // Role 2FA toggle
+  if (qs('#rolemfa', c)) {
+    qs('#rolemfa', c).onchange = async (e) => {
+      const on = e.target.checked;
+      if (on && !confirm(`Everyone with "${sel.label || sel.name}" will have to set up two-factor sign-in before they can use the system. Continue?`)) { e.target.checked = false; return; }
+      try { await api('/access/roles/' + encodeURIComponent(sel.name), { method: 'PATCH', body: { require_mfa: on } }); toast(on ? 'Two-factor sign-in required for this role' : 'No longer required'); reload(); }
+      catch (err) { e.target.checked = !on; toast(err.message, 'err'); }
+    };
+  }
 
   // Direct section clearance level buttons
   qsa('[data-setlvl]', c).forEach((btn) => {
@@ -19488,7 +19698,7 @@ async function renderRolesManager(c, wanted) {
       const sec = sections.find((s) => s.id === secId);
       if (!sec || !sec.presets || !sec.presets[presetKey]) return;
       const p = sec.presets[presetKey];
-      const secCaps = sm.capabilities.filter((cap) => sec.modules.includes(cap.module));
+      const secCaps = sm.capabilities.filter((cap) => (cap.section === sec.id || (sec.modules || []).includes(cap.module) || cap.module === sec.id));
       const capUpdates = {};
       for (const cap of secCaps) {
         capUpdates[cap.key] = p.caps.includes(cap.key);
@@ -19499,6 +19709,41 @@ async function renderRolesManager(c, wanted) {
           body: { role: sel.name, modules: p.modules, capabilities: capUpdates }
         });
         toast(`Applied ${presetKey.toUpperCase()} preset to ${sec.name}`);
+        await renderRolesManager(c, sel.name);
+      } catch (err) { toast(err.message, 'err'); }
+    };
+  });
+
+  // Bulk section action buttons
+  qsa('[data-bulk-cap]', c).forEach((btn) => {
+    btn.onclick = async () => {
+      const [secId, action] = btn.dataset.bulkCap.split(':');
+      const sec = sections.find((s) => s.id === secId);
+      if (!sec) return;
+      const secCaps = sm.capabilities.filter((cap) => (cap.section === sec.id || (sec.modules || []).includes(cap.module) || cap.module === sec.id));
+      const capUpdates = {};
+      const modUpdates = {};
+
+      if (action === 'grant') {
+        for (const cap of secCaps) {
+          capUpdates[cap.key] = true;
+          if (cap.needs) modUpdates[cap.needs] = 'edit';
+        }
+      } else if (action === 'revoke') {
+        for (const cap of secCaps) capUpdates[cap.key] = false;
+      } else if (action === 'view') {
+        for (const cap of secCaps) {
+          capUpdates[cap.key] = cap.actvt === '03' || cap.key.endsWith('.view');
+        }
+        for (const m of (sec.modules || [])) modUpdates[m] = 'view';
+      }
+
+      try {
+        await api('/access/section-save', {
+          method: 'POST',
+          body: { role: sel.name, modules: modUpdates, capabilities: capUpdates }
+        });
+        toast(`Updated capabilities for ${sec.name}`);
         await renderRolesManager(c, sel.name);
       } catch (err) { toast(err.message, 'err'); }
     };
@@ -19533,7 +19778,7 @@ async function renderRolesManager(c, wanted) {
     };
   });
 
-  qs('#newrole', c).onclick = () => modal('New role', `
+  if (qs('#newrole', c)) qs('#newrole', c).onclick = () => modal('New role', `
     ${field('Name *', 'label', { placeholder: 'e.g. Site Storekeeper' })}
     ${field('What this role is for', 'description', { type: 'textarea' })}
     ${field('Start from', 'clone_from', { type: 'select', options: [{ value: '', label: '— no permissions (tick them after) —' }]
@@ -19547,6 +19792,7 @@ async function renderRolesManager(c, wanted) {
         catch (e) { toast(e.message, 'err'); }
       };
     });
+
   if (qs('#editrole', c)) qs('#editrole', c).onclick = () => modal('Rename / describe', `
     ${field('Name *', 'label', { value: sel.label || '' })}
     ${field('What this role is for', 'description', { type: 'textarea', value: sel.description || '' })}
@@ -19557,6 +19803,7 @@ async function renderRolesManager(c, wanted) {
         catch (e) { toast(e.message, 'err'); }
       };
     });
+
   const setActive = async (active) => {
     try { await api('/access/roles/' + encodeURIComponent(sel.name), { method: 'PATCH', body: { active } }); toast(active ? 'Role reinstated' : 'Role retired'); reload(); }
     catch (e) { toast(e.message, 'err'); }

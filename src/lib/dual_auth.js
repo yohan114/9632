@@ -136,6 +136,11 @@ const MANDATORY_4EYES_OPERATIONS = new Set([
   'stocktake_correction',   // Physical stock reconciliation
   'security_escalation',    // Promoting to admin or changing access matrix
   'limit_override',         // Expense exceeding single-user approval limit
+  'asset_delete',           // Deleting vehicle or machine from asset master
+  'attendance_unlock',      // Unlocking historical signed-off attendance day
+  'wage_rate_edit',         // Modifying mechanic hourly wage/charge rates
+  'doc_exemption',          // Exempting asset from statutory compliance
+  'mrn_amend_settled'       // Amending settled MRN after issues have posted
 ]);
 
 function isDualAuthRequired(operationType, { financialAmount = 0, userLimit = null } = {}) {

@@ -54,7 +54,7 @@ function nextSeq(prefix, table, col = 'log_no') {
 // ---- TOOLS INVENTORY & CATALOGUE ------------------------------------------
 
 // List tools with filters
-router.get('/', asyncHandler((req, res) => {
+router.get('/', requireCap('tools.view', 'stores.view'), asyncHandler((req, res) => {
   const type = clean(req.query.type); // 'common' | 'mechanic' | 'all'
   const category = clean(req.query.category);
   const status = clean(req.query.status);
@@ -135,7 +135,7 @@ router.get('/', asyncHandler((req, res) => {
 }));
 
 // KPI stats
-router.get('/stats', asyncHandler((req, res) => {
+router.get('/stats', requireCap('tools.view', 'stores.view'), asyncHandler((req, res) => {
   const own = ownTools(req.user, 'workshop_id');
   const mine = own.sql ? ` AND ${own.sql}` : '';
   const n = (where) => get(`SELECT COUNT(*) AS c FROM workshop_tools WHERE (${where})${mine}`, ...own.params).c;
@@ -169,7 +169,7 @@ router.get('/stats', asyncHandler((req, res) => {
 }));
 
 // List mechanics with personal toolbox counts & summary
-router.get('/mechanic-boxes', asyncHandler((req, res) => {
+router.get('/mechanic-boxes', requireCap('tools.view', 'stores.view'), asyncHandler((req, res) => {
   const ownT = ownTools(req.user);
   const ownM = ownTools(req.user, workshops.mechanicWorkshopSql('m'));
   const mechs = all(`
@@ -197,7 +197,7 @@ router.get('/mechanic-boxes', asyncHandler((req, res) => {
 // Tool detail
 // Only a number is a tool: as `/:id` this route stood in front of /logs and /scrap-requests below
 // and answered both with "Tool not found".
-router.get('/:id(\\d+)', reachTool, asyncHandler((req, res) => {
+router.get('/:id(\\d+)', requireCap('tools.view', 'stores.view'), reachTool, asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   const tool = get('SELECT * FROM workshop_tools WHERE id = ?', id);
   if (!tool) return res.status(404).json({ error: 'Tool not found' });
@@ -331,7 +331,7 @@ router.patch('/:id', requireCap('tools.manage', 'stores.items.edit'), reachTool,
 }));
 
 // Delete tool (if no logs or scrap history)
-router.delete('/:id', requireCap('tools.manage'), reachTool, asyncHandler((req, res) => {
+router.delete('/:id', requireCap('tools.delete', 'tools.manage'), reachTool, asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   const tool = get('SELECT * FROM workshop_tools WHERE id = ?', id);
   if (!tool) return res.status(404).json({ error: 'Tool not found' });
@@ -354,7 +354,7 @@ router.delete('/:id', requireCap('tools.manage'), reachTool, asyncHandler((req, 
 // ---- DAILY STORE ISSUE & RETURN LOG ---------------------------------------
 
 // List daily logs
-router.get('/logs', asyncHandler((req, res) => {
+router.get('/logs', requireCap('tools.view', 'tools.issue'), asyncHandler((req, res) => {
   const status = clean(req.query.status); // 'issued' | 'returned' | 'all'
   const date = clean(req.query.date);
   const mechanicId = toInt(req.query.mechanic_id);
@@ -514,7 +514,7 @@ router.post('/logs/:id/return', requireCap('tools.issue', 'stores.issue', 'tools
 // ---- BROKEN / DAMAGED TOOLS & ENGINEER SCRAP APPROVAL --------------------
 
 // List scrap requests
-router.get('/scrap-requests', asyncHandler((req, res) => {
+router.get('/scrap-requests', requireCap('tools.view', 'tools.scrap.approve', 'tools.damage.report'), asyncHandler((req, res) => {
   const status = clean(req.query.status);
   const q = clean(req.query.q).toLowerCase();
 
@@ -554,7 +554,7 @@ router.get('/scrap-requests', asyncHandler((req, res) => {
 }));
 
 // Single scrap request details
-router.get('/scrap-requests/:id', reachScrap, asyncHandler((req, res) => {
+router.get('/scrap-requests/:id', requireCap('tools.view', 'tools.scrap.approve', 'tools.damage.report'), reachScrap, asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   const sr = get(`
     SELECT sr.*,
@@ -741,7 +741,7 @@ router.post('/scrap-requests/:id/reject', requireCap('tools.scrap.approve'), rea
 
 // ---- OFFICIAL TOOL SCRAP CERTIFICATE (EC1.ST.FO.06) -----------------------
 
-router.get('/scrap-requests/:id/print.html', reachScrap, asyncHandler((req, res) => {
+router.get('/scrap-requests/:id/print.html', requireCap('tools.view', 'tools.scrap.approve', 'tools.export'), reachScrap, asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   const sr = get(`
     SELECT sr.*,
@@ -758,7 +758,7 @@ router.get('/scrap-requests/:id/print.html', reachScrap, asyncHandler((req, res)
   res.send(html);
 }));
 
-router.get('/scrap-requests/:id/download.pdf', reachScrap, asyncHandler(async (req, res) => {
+router.get('/scrap-requests/:id/download.pdf', requireCap('tools.view', 'tools.scrap.approve', 'tools.export'), reachScrap, asyncHandler(async (req, res) => {
   const id = toInt(req.params.id);
   const sr = get(`
     SELECT sr.*,
