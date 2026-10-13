@@ -573,9 +573,14 @@ function showMaintenanceBanner(d) {
     border-bottom: 3px solid #f87171;
   `;
 
-  let remaining = Math.max(0, Math.round(d.seconds || (d.expiresAt ? (d.expiresAt - Date.now()) / 1000 : 120)));
+  const expiresAt = Number(d.expiresAt || (Date.now() + (Number(d.remainingSeconds || d.seconds || 120) * 1000)));
+
+  // If a countdown is already smoothly running for this exact maintenance window, do not reset it
+  if (banner._timer && banner._activeExpiry === expiresAt) return;
+  banner._activeExpiry = expiresAt;
 
   const updateText = () => {
+    const remaining = Math.max(0, Math.round((expiresAt - Date.now()) / 1000));
     const mins = Math.floor(remaining / 60);
     const secs = remaining % 60;
     const timeStr = `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
@@ -610,6 +615,7 @@ function showMaintenanceBanner(d) {
 
     if (remaining <= 0) {
       clearInterval(banner._timer);
+      banner._timer = null;
       banner.innerHTML = `
         <div style="display:flex;align-items:center;gap:14px;width:100%;justify-content:center;padding:4px 0">
           <span style="font-size:26px">🔄</span>
@@ -626,7 +632,6 @@ function showMaintenanceBanner(d) {
         } catch {}
       }, 3000);
     }
-    remaining--;
   };
 
   if (banner._timer) clearInterval(banner._timer);
