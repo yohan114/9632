@@ -28,6 +28,12 @@ const refCache = new Map();
 function clearRefCache() { refCache.clear(); }
 
 async function api(path, opts = {}) {
+  if (isScreenLocked && path !== '/auth/login' && path !== '/auth/logout' && path !== '/auth/me') {
+    showIdleLockScreen();
+    const err = new Error('Session is locked. Please enter your password to unlock.');
+    err.status = 423;
+    throw err;
+  }
   const method = (opts.method || 'GET').toUpperCase();
   const isRefPath = method === 'GET' && REF_CACHE_PATHS.has(path.split('?')[0]);
   if (isRefPath) {
@@ -73,10 +79,13 @@ async function api(path, opts = {}) {
 // before, it warns. Activity is shared across this browser's tabs (localStorage), so working in one
 // tab keeps the others signed in. The server enforces the same limit on its own (src/lib/auth.js).
 const ACTIVITY_KEY = 'wo_last_activity';
+const SCREEN_LOCKED_KEY = 'wo_screen_locked';
+let isScreenLocked = false;
 let _lastInput = Date.now();
 let _lastStored = 0;
 let _idleWarned = false;
 function noteActivity() {
+  if (isScreenLocked) return;
   _lastInput = Date.now();
   if (_lastInput - _lastStored > 5000) {
     _lastStored = _lastInput;
@@ -1083,41 +1092,68 @@ async function openDualAuthModal() {
   });
 }
 
-let lastUserActivity = Date.now();
 const IDLE_LOCK_MS = 15 * 60 * 1000;
-let isScreenLocked = false;
 let idleLockBound = false;
 
 function setupIdleLock() {
   if (idleLockBound) return;
   idleLockBound = true;
-  ['mousemove', 'keydown', 'mousedown', 'touchstart', 'scroll'].forEach((evt) => {
-    window.addEventListener(evt, () => {
-      if (!isScreenLocked) lastUserActivity = Date.now();
-    }, { passive: true });
-  });
 
-  setInterval(() => {
-    if (!ME || isScreenLocked) return;
-    if (Date.now() - lastUserActivity > IDLE_LOCK_MS) {
+  // Check immediately on startup (including page refresh / reload)
+  try {
+    const isLockedPersisted = localStorage.getItem(SCREEN_LOCKED_KEY) === '1';
+    if (isLockedPersisted || idleMs() >= IDLE_LOCK_MS) {
       showIdleLockScreen();
     }
-  }, 10000);
+  } catch {}
+
+  // Periodic interval check (every 2.5 seconds)
+  setInterval(() => {
+    if (!ME || isScreenLocked) return;
+    try {
+      const isLockedPersisted = localStorage.getItem(SCREEN_LOCKED_KEY) === '1';
+      if (isLockedPersisted || idleMs() >= IDLE_LOCK_MS) {
+        showIdleLockScreen();
+      }
+    } catch {}
+  }, 2500);
+
+  // Synchronize lock state across multiple browser tabs in real time
+  window.addEventListener('storage', (e) => {
+    if (e.key === SCREEN_LOCKED_KEY) {
+      if (e.newValue === '1' && !isScreenLocked) {
+        showIdleLockScreen();
+      } else if (e.newValue !== '1' && isScreenLocked) {
+        isScreenLocked = false;
+        const el = document.getElementById('idle-lock-overlay');
+        if (el && el.parentNode) el.parentNode.removeChild(el);
+      }
+    }
+  });
 }
 
 function showIdleLockScreen() {
   isScreenLocked = true;
-  const lockEl = document.createElement('div');
+  try { localStorage.setItem(SCREEN_LOCKED_KEY, '1'); } catch {}
+
+  // Avoid creating multiple overlay elements in DOM
+  let lockEl = document.getElementById('idle-lock-overlay');
+  if (lockEl) return;
+
+  const userName = (ME && (ME.fullName || ME.username))
+    || (() => { try { return localStorage.getItem('wo_last_user') || 'System Admin'; } catch { return 'System Admin'; } })();
+
+  lockEl = document.createElement('div');
   lockEl.id = 'idle-lock-overlay';
   lockEl.style.cssText = 'position:fixed;inset:0;background:rgba(11,20,36,0.96);z-index:99999;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(8px);color:#fff';
   lockEl.innerHTML = `
     <div style="background:#0f172a;border:1px solid #334155;border-radius:12px;padding:28px;max-width:380px;width:90%;text-align:center;box-shadow:0 25px 50px -12px rgba(0,0,0,0.5)">
       <span style="font-size:40px">🔒</span>
-      <h3 style="margin:12px 0 4px;color:#fff">Session Locked</h3>
-      <p class="muted" style="margin:0 0 16px;font-size:12px;color:#94a3b8">Locked due to 15 minutes of inactivity for ${esc(ME.fullName || ME.username)}.</p>
-      <input type="password" id="unlock-pass" placeholder="Enter your password to unlock" style="background:#1e293b;border-color:#334155;color:#fff;margin-bottom:12px">
-      <button class="primary" id="btn-unlock-session" style="width:100%;margin-bottom:8px">Unlock Session</button>
-      <button class="btn" id="btn-lock-logout" style="width:100%;font-size:12px">Sign in as different user</button>
+      <h3 style="margin:12px 0 4px;color:#fff;font-size:16px;letter-spacing:0.5px;text-transform:uppercase">Session Locked</h3>
+      <p class="muted" style="margin:0 0 16px;font-size:12px;color:#94a3b8">Locked due to 15 minutes of inactivity for ${esc(userName)}.</p>
+      <input type="password" id="unlock-pass" placeholder="Enter your password to unlock" style="background:#1e293b;border:1px solid #334155;color:#fff;margin-bottom:12px;border-radius:6px;padding:10px 12px;width:100%;box-sizing:border-box">
+      <button class="primary" id="btn-unlock-session" style="width:100%;margin-bottom:8px;padding:10px;font-weight:600;border-radius:6px">Unlock Session</button>
+      <button class="btn" id="btn-lock-logout" style="width:100%;font-size:12px;padding:8px;background:#fff;color:#0f172a;border-radius:6px">Sign in as different user</button>
     </div>
   `;
 
@@ -1129,10 +1165,14 @@ function showIdleLockScreen() {
   const doUnlock = async () => {
     const pw = (inp && inp.value) || '';
     if (!pw) return toast('Password required', 'err');
+    const uName = (ME && ME.username)
+      || (() => { try { return localStorage.getItem('wo_last_user'); } catch { return ''; } })();
+
     try {
-      await api('/auth/login', { method: 'POST', body: { username: ME.username, password: pw } });
+      await api('/auth/login', { method: 'POST', body: { username: uName, password: pw } });
       isScreenLocked = false;
-      lastUserActivity = Date.now();
+      try { localStorage.removeItem(SCREEN_LOCKED_KEY); } catch {}
+      noteActivity();
       if (lockEl.parentNode) document.body.removeChild(lockEl);
       toast('Session unlocked');
     } catch (e) {
@@ -1145,8 +1185,13 @@ function showIdleLockScreen() {
   }
   qs('#btn-unlock-session', lockEl).onclick = doUnlock;
   qs('#btn-lock-logout', lockEl).onclick = async () => {
-    await api('/auth/logout', { method: 'POST' });
     isScreenLocked = false;
+    try {
+      localStorage.removeItem(SCREEN_LOCKED_KEY);
+      localStorage.removeItem(ACTIVITY_KEY);
+      localStorage.removeItem('wo_last_user');
+    } catch {}
+    await api('/auth/logout', { method: 'POST' });
     if (lockEl.parentNode) document.body.removeChild(lockEl);
     ME = null; location.hash = ''; boot();
   };
@@ -1246,6 +1291,12 @@ function renderShell() {
   const btnLogout = qs('#pop_logout');
   if (btnLogout) {
     btnLogout.onclick = async () => {
+      isScreenLocked = false;
+      try {
+        localStorage.removeItem(SCREEN_LOCKED_KEY);
+        localStorage.removeItem(ACTIVITY_KEY);
+        localStorage.removeItem('wo_last_user');
+      } catch {}
       await api('/auth/logout', { method: 'POST' });
       live('disconnect');
       ME = null; location.hash = ''; boot();
@@ -22641,6 +22692,13 @@ function renderMfaStep(challenge, username, err) {
 
 // What happens once someone is fully signed in, however they got there.
 function afterSignIn() {
+  isScreenLocked = false;
+  try {
+    localStorage.removeItem(SCREEN_LOCKED_KEY);
+    if (ME && ME.username) localStorage.setItem('wo_last_user', ME.username);
+  } catch {}
+  noteActivity();
+  setupIdleLock();
   live('connect');   // the socket is refused until a session exists
   location.hash = '#/dashboard'; render();
   if (ME.mustChangePassword) forceChangePassword();
@@ -22851,7 +22909,15 @@ function renderLogin(err) {
 
 async function boot() {
   try {
+    // Check if session was locked before reload to enforce lock immediately with zero flash
+    try {
+      if (localStorage.getItem(SCREEN_LOCKED_KEY) === '1') {
+        showIdleLockScreen();
+      }
+    } catch {}
+
     ME = await api('/auth/me');
+    try { if (ME && ME.username) localStorage.setItem('wo_last_user', ME.username); } catch {}
     live('connect');   // an existing session — open the live socket
     setupIdleLock();
     if (!location.hash) location.hash = '#/dashboard';
