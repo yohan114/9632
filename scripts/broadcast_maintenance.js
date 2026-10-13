@@ -7,7 +7,21 @@
 //   node scripts/broadcast_maintenance.js 120 "System update in 2 minutes. Please save all files and log out."
 
 const http = require('http');
-const config = require('../src/config');
+const path = require('path');
+let config;
+try {
+  config = require('../src/config');
+} catch {
+  try {
+    config = require(path.join(process.cwd(), 'src', 'config'));
+  } catch {
+    try {
+      config = require('/opt/workshopone/app/src/config');
+    } catch {
+      config = { port: 3000, sessionSecret: '' };
+    }
+  }
+}
 
 const args = process.argv.slice(2);
 let seconds = 120;
