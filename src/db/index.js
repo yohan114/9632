@@ -1957,6 +1957,9 @@ function closureRulesAndUniversalTrace() {
   db.exec('CREATE INDEX IF NOT EXISTS idx_mrnl_parent ON mrn_lines(parent_mrn_line_id);');
   db.exec('CREATE INDEX IF NOT EXISTS idx_mrnl_child ON mrn_lines(child_mrn_id);');
   db.exec('CREATE INDEX IF NOT EXISTS idx_mrnl_src_store ON mrn_lines(source_store_location_id);');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_audit_log_created ON audit_log(created_at DESC);');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_audit_log_user ON audit_log(user_id, created_at DESC);');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_audit_log_entity_act ON audit_log(entity, action, created_at DESC);');
 }
 
 function ensureColumn(table, col, def) {

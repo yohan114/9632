@@ -932,6 +932,7 @@ const NAV = [
   ['reports', '📈', 'Reports'],
   ['workshops', '🏭', 'Workshops', 'workshops'],
   ['access', '🔐', 'Access Control', 'admin'],
+  ['auditlogs', '🛡️', 'User Activity Logs', 'audit_admin'],
 ];
 // Which permission module governs each nav item's visibility (dashboard always on).
 const NAV_MODULE = {
@@ -948,6 +949,7 @@ const NAV_MODULE = {
   matreq: 'stores', stockissues: 'stores', serviceplan: 'filters',
 };
 function navVisible(n) {
+  if (n[3] === 'audit_admin') return !!(ME && ME.roles && ME.roles.includes('admin'));
   if (n[3] === 'admin') return canDo('access.manage', 'users.manage');
   if (n[3] === 'workshops') return canDo('workshops.manage', 'mechanics.move');
   if (n[0] === 'dashboard') return true;
@@ -965,7 +967,7 @@ const NAV_GROUP = {
   purchasing: 'Procurement', tbrequests: 'Procurement',
   assets: 'Fleet', vehicledocuments: 'Fleet', serviceplan: 'Fleet',
   reports: 'Analysis', attention: 'Analysis', progress: 'Analysis', teardown: 'Analysis', tyrebattery: 'Analysis', aliases: 'Analysis', projects: 'Analysis', labour: 'Analysis',
-  workshops: 'Admin', access: 'Admin',
+  workshops: 'Admin', access: 'Admin', auditlogs: 'Admin',
 };
 
 async function renderStandInBanner() {
@@ -18575,6 +18577,7 @@ routes.access = async (c) => {
   tabs.push(['stand_ins', 'Stand-in Approvals']);
   if (canDo('users.manage')) tabs.push(['users', 'User Accounts']);
   if (canDo('access.manage')) tabs.push(['history', 'Audit Trail']);
+  if (ME && ME.roles && ME.roles.includes('admin')) tabs.push(['auditlogs', '🛡️ User Activity Logs']);
 
   const sp = new URLSearchParams(location.hash.split('?')[1] || '');
   const tab = tabs.some((t) => t[0] === sp.get('tab')) ? sp.get('tab') : tabs[0][0];
@@ -18610,6 +18613,7 @@ routes.access = async (c) => {
   else if (tab === 'limits') await renderApprovalLimits(pane);
   else if (tab === 'stand_ins') await renderStandIns(pane);
   else if (tab === 'history') await renderAccessHistory(pane);
+  else if (tab === 'auditlogs') await renderAuditLogs(pane);
   else await renderRolesManager(pane, sp.get('role'));
 };
 routes.users = async () => { location.hash = '#/access?tab=users'; };
@@ -19366,6 +19370,598 @@ async function renderAccessHistory(c) {
   `;
 }
 
+// ===========================================================================
+// SAP Enterprise User Activity Logs & Security Audit Trail (Z_WO_AUDIT)
+// Standard: SAP NetWeaver Security Audit (SM20) & Application Log (SLG1)
+// Access: Restricted strictly to Administrator role
+// ===========================================================================
+
+routes.auditlogs = async (c) => renderAuditLogs(c);
+
+async function openAuditDiffModal(id) {
+  try {
+    const d = await api(`/audit-logs/${id}`);
+    const dateFormatted = d.created_at ? String(d.created_at).slice(0, 19).replace('T', ' ') : '—';
+    const initials = (d.full_name || d.username || 'SY').split(' ').map((p) => p[0]).slice(0, 2).join('').toUpperCase();
+
+    const diff = d.diff || { changed: {}, added: {}, removed: {}, unchanged: {} };
+    const changedKeys = Object.keys(diff.changed);
+    const addedKeys = Object.keys(diff.added);
+    const removedKeys = Object.keys(diff.removed);
+    const hasDiff = changedKeys.length > 0 || addedKeys.length > 0 || removedKeys.length > 0;
+
+    let deltaTableRows = '';
+
+    // 1. Changed fields (Yellow)
+    for (const k of changedKeys) {
+      const bVal = JSON.stringify(diff.changed[k].before);
+      const aVal = JSON.stringify(diff.changed[k].after);
+      deltaTableRows += `
+        <tr style="background:#fefce8">
+          <td style="font-weight:700;font-family:monospace;font-size:12px">${esc(k)}</td>
+          <td style="color:#b91c1c;text-decoration:line-through;word-break:break-all;font-size:12px;font-family:monospace">${esc(bVal)}</td>
+          <td style="color:#15803d;font-weight:600;word-break:break-all;font-size:12px;font-family:monospace">${esc(aVal)}</td>
+          <td><span class="badge blue">Modified</span></td>
+        </tr>`;
+    }
+
+    // 2. Added fields (Green)
+    for (const k of addedKeys) {
+      const aVal = JSON.stringify(diff.added[k]);
+      deltaTableRows += `
+        <tr style="background:#f0fdf4">
+          <td style="font-weight:700;font-family:monospace;font-size:12px">${esc(k)}</td>
+          <td class="muted" style="font-size:12px">—</td>
+          <td style="color:#15803d;font-weight:600;word-break:break-all;font-size:12px;font-family:monospace">${esc(aVal)}</td>
+          <td><span class="badge green">Added</span></td>
+        </tr>`;
+    }
+
+    // 3. Removed fields (Red)
+    for (const k of removedKeys) {
+      const bVal = JSON.stringify(diff.removed[k]);
+      deltaTableRows += `
+        <tr style="background:#fef2f2">
+          <td style="font-weight:700;font-family:monospace;font-size:12px">${esc(k)}</td>
+          <td style="color:#b91c1c;text-decoration:line-through;word-break:break-all;font-size:12px;font-family:monospace">${esc(bVal)}</td>
+          <td class="muted" style="font-size:12px">—</td>
+          <td><span class="badge red">Removed</span></td>
+        </tr>`;
+    }
+
+    const modalHtml = `
+      <div style="font-size:13px">
+        <!-- Event Meta Header -->
+        <div style="display:flex;align-items:center;justify-content:space-between;background:rgba(0,0,0,0.02);border:1px solid var(--border);border-radius:8px;padding:12px 16px;margin-bottom:14px;flex-wrap:wrap;gap:10px">
+          <div style="display:flex;align-items:center;gap:12px">
+            <div style="width:36px;height:36px;border-radius:50%;background:#e0e7ff;color:#3730a3;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:13px">
+              ${esc(initials)}
+            </div>
+            <div>
+              <div style="font-weight:700;color:var(--text)">${esc(d.full_name || d.username)} <span class="muted" style="font-size:11px">(@${esc(d.username)})</span></div>
+              <div class="muted" style="font-size:11px">Event ID: <b>#${d.id}</b> · Location: ${esc(d.workshop_name || 'All Sites / Central')}</div>
+            </div>
+          </div>
+          <div style="text-align:right">
+            <div><span class="badge blue">${esc(d.entity)}</span> <span class="badge green">${esc(d.action)}</span> ${d.entity_id ? `<span class="badge" style="background:#f1f5f9">ID: ${esc(d.entity_id)}</span>` : ''}</div>
+            <div class="muted" style="font-size:11px;margin-top:4px">📅 ${esc(dateFormatted)}</div>
+          </div>
+        </div>
+
+        ${d.reason ? `<div style="background:#eff6ff;border-left:4px solid #3b82f6;padding:10px 14px;border-radius:4px;margin-bottom:14px;font-size:12px"><b>Reason / Justification:</b> <i>${esc(d.reason)}</i></div>` : ''}
+
+        <!-- Tab switches: Visual Delta vs Raw JSON -->
+        <div style="display:flex;gap:8px;border-bottom:1px solid var(--border);margin-bottom:12px">
+          <button class="btn sm primary" id="tab-btn-visual-diff">Visual Field Delta</button>
+          <button class="btn sm" id="tab-btn-raw-before">Before State (JSON)</button>
+          <button class="btn sm" id="tab-btn-raw-after">After State (JSON)</button>
+        </div>
+
+        <!-- 1. Visual Delta View -->
+        <div id="diff-pane-visual">
+          ${hasDiff ? `
+            <div class="table-wrap scroll" style="max-height:360px">
+              <table>
+                <thead>
+                  <tr>
+                    <th style="width:25%">Property / Column</th>
+                    <th style="width:35%">Previous Value (Before)</th>
+                    <th style="width:35%">New Value (After)</th>
+                    <th style="width:10%">Delta</th>
+                  </tr>
+                </thead>
+                <tbody>${deltaTableRows}</tbody>
+              </table>
+            </div>
+          ` : `
+            <div class="card" style="text-align:center;padding:24px;background:#f8fafc">
+              <div style="font-size:24px;margin-bottom:6px">ℹ️</div>
+              <p class="muted" style="margin:0">No field mutations recorded for this event (e.g. read event, initial authentication, or raw event log).</p>
+            </div>
+          `}
+        </div>
+
+        <!-- 2. Raw JSON Before -->
+        <div id="diff-pane-before" style="display:none">
+          <pre style="background:#0f172a;color:#e2e8f0;padding:14px;border-radius:6px;max-height:360px;overflow:auto;font-size:11px;font-family:monospace">${esc(JSON.stringify(d.before, null, 2) || 'null')}</pre>
+        </div>
+
+        <!-- 3. Raw JSON After -->
+        <div id="diff-pane-after" style="display:none">
+          <pre style="background:#0f172a;color:#e2e8f0;padding:14px;border-radius:6px;max-height:360px;overflow:auto;font-size:11px;font-family:monospace">${esc(JSON.stringify(d.after, null, 2) || 'null')}</pre>
+        </div>
+      </div>
+    `;
+
+    modal(`Audit Event #${d.id} · ${d.entity} (${d.action})`, modalHtml, (body) => {
+      const pVisual = qs('#diff-pane-visual', body);
+      const pBefore = qs('#diff-pane-before', body);
+      const pAfter = qs('#diff-pane-after', body);
+      const bVisual = qs('#tab-btn-visual-diff', body);
+      const bBefore = qs('#tab-btn-raw-before', body);
+      const bAfter = qs('#tab-btn-raw-after', body);
+
+      const selectTab = (activeBtn, activePane) => {
+        [bVisual, bBefore, bAfter].forEach((b) => b.classList.remove('primary'));
+        [pVisual, pBefore, pAfter].forEach((p) => { p.style.display = 'none'; });
+        activeBtn.classList.add('primary');
+        activePane.style.display = 'block';
+      };
+
+      bVisual.onclick = () => selectTab(bVisual, pVisual);
+      bBefore.onclick = () => selectTab(bBefore, pBefore);
+      bAfter.onclick = () => selectTab(bAfter, pAfter);
+    }, { wide: true });
+  } catch (err) {
+    toast(err.message, 'err');
+  }
+}
+
+async function renderAuditLogs(c) {
+  if (!ME || !ME.roles || !ME.roles.includes('admin')) {
+    c.innerHTML = `
+      <div class="card" style="margin:24px;max-width:600px;border-left:4px solid #ef4444">
+        <h3 style="color:#ef4444;margin:0 0 8px">🔒 Access Denied · Administrator Only</h3>
+        <p class="muted" style="margin:0 0 16px">The Security Audit Trail & User Activity Logs section is restricted exclusively to System Administrators per Enterprise Policy.</p>
+        <a class="btn sm" href="#/dashboard">Return to Dashboard</a>
+      </div>
+    `;
+    return;
+  }
+
+  const filters = {
+    userId: '',
+    entity: 'all',
+    action: 'all',
+    dateFrom: '',
+    dateTo: '',
+    search: '',
+    limit: 50,
+    offset: 0,
+  };
+
+  let filterOptionsLoaded = false;
+  let searchDebounceTimer = null;
+
+  c.innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:16px;flex-wrap:wrap;gap:12px">
+      <div>
+        <div class="crumb">Admin / Governance</div>
+        <h1 style="margin:0;display:flex;align-items:center;gap:8px">
+          <span>🛡️</span> User Activity Logs & Security Audit Trail
+        </h1>
+        <div class="muted" style="font-size:12px;margin-top:4px">
+          SAP NetWeaver Security Audit (SM20) & Application Log (SLG1) compliant immutable audit ledger
+        </div>
+      </div>
+      <div style="display:flex;gap:8px">
+        <button class="btn sm" id="btn-export-audit" title="Download Excel audit report">📥 Export to Excel</button>
+        <button class="btn sm primary" id="btn-refresh-audit">🔄 Refresh</button>
+      </div>
+    </div>
+
+    <!-- 1. SAP Fiori Analytical KPI Cards -->
+    <div id="audit-kpi-container" style="display:grid;grid-template-columns:repeat(auto-fit, minmax(180px, 1fr));gap:12px;margin-bottom:16px">
+      <div class="card" style="padding:14px;border-left:4px solid #3b82f6">
+        <div class="muted" style="font-size:11px;text-transform:uppercase;font-weight:700">Total System Events</div>
+        <div id="kpi-total" style="font-size:24px;font-weight:700;color:var(--text);margin:4px 0">...</div>
+        <div class="muted" style="font-size:11px">All time recorded</div>
+      </div>
+      <div class="card" style="padding:14px;border-left:4px solid #10b981">
+        <div class="muted" style="font-size:11px;text-transform:uppercase;font-weight:700">Events Today</div>
+        <div id="kpi-today" style="font-size:24px;font-weight:700;color:#059669;margin:4px 0">...</div>
+        <div class="muted" style="font-size:11px">Daily operational volume</div>
+      </div>
+      <div class="card" style="padding:14px;border-left:4px solid #ef4444">
+        <div class="muted" style="font-size:11px;text-transform:uppercase;font-weight:700">Critical Mutations / Deletes</div>
+        <div id="kpi-deletes" style="font-size:24px;font-weight:700;color:#dc2626;margin:4px 0">...</div>
+        <div class="muted" style="font-size:11px">Void, scrap & delete actions</div>
+      </div>
+      <div class="card" style="padding:14px;border-left:4px solid #f59e0b">
+        <div class="muted" style="font-size:11px;text-transform:uppercase;font-weight:700">Sign-Ins Today</div>
+        <div id="kpi-logins" style="font-size:24px;font-weight:700;color:#d97706;margin:4px 0">...</div>
+        <div class="muted" style="font-size:11px"><span id="kpi-failed-logins" style="color:#ef4444">0</span> failed attempts</div>
+      </div>
+      <div class="card" style="padding:14px;border-left:4px solid #8b5cf6">
+        <div class="muted" style="font-size:11px;text-transform:uppercase;font-weight:700">Active Users Today</div>
+        <div id="kpi-active-users" style="font-size:24px;font-weight:700;color:#7c3aed;margin:4px 0">...</div>
+        <div class="muted" style="font-size:11px">Unique actors performing actions</div>
+      </div>
+    </div>
+
+    <!-- 2. SAP Fiori Smart Filter Bar -->
+    <div class="card" style="padding:16px;margin-bottom:16px;background:var(--surface,#fff)">
+      <div style="font-weight:700;font-size:13px;margin-bottom:12px;display:flex;align-items:center;gap:6px">
+        <span>🔍</span> Smart Filter Bar
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(180px, 1fr));gap:12px;align-items:end">
+        <div>
+          <label style="font-size:11px;font-weight:600;display:block;margin-bottom:4px">Actor / User</label>
+          <select id="flt-audit-user" style="width:100%;font-size:12px;padding:6px 8px;border-radius:6px;border:1px solid var(--border)">
+            <option value="">All Actors</option>
+          </select>
+        </div>
+        <div>
+          <label style="font-size:11px;font-weight:600;display:block;margin-bottom:4px">Module / Entity</label>
+          <select id="flt-audit-entity" style="width:100%;font-size:12px;padding:6px 8px;border-radius:6px;border:1px solid var(--border)">
+            <option value="all">All Modules</option>
+          </select>
+        </div>
+        <div>
+          <label style="font-size:11px;font-weight:600;display:block;margin-bottom:4px">Action Type</label>
+          <select id="flt-audit-action" style="width:100%;font-size:12px;padding:6px 8px;border-radius:6px;border:1px solid var(--border)">
+            <option value="all">All Actions</option>
+          </select>
+        </div>
+        <div>
+          <label style="font-size:11px;font-weight:600;display:block;margin-bottom:4px">Date Range Preset</label>
+          <select id="flt-audit-preset" style="width:100%;font-size:12px;padding:6px 8px;border-radius:6px;border:1px solid var(--border)">
+            <option value="all">All Time</option>
+            <option value="today">Today</option>
+            <option value="yesterday">Yesterday</option>
+            <option value="7days">Last 7 Days</option>
+            <option value="30days">Last 30 Days</option>
+            <option value="custom">Custom Dates</option>
+          </select>
+        </div>
+        <div id="flt-custom-date-wrap" style="display:none;grid-column:span 2;gap:8px">
+          <div style="flex:1">
+            <label style="font-size:11px;font-weight:600;display:block;margin-bottom:4px">From Date</label>
+            <input type="date" id="flt-audit-date-from" style="width:100%;font-size:12px;padding:5px 8px;border-radius:6px;border:1px solid var(--border)">
+          </div>
+          <div style="flex:1">
+            <label style="font-size:11px;font-weight:600;display:block;margin-bottom:4px">To Date</label>
+            <input type="date" id="flt-audit-date-to" style="width:100%;font-size:12px;padding:5px 8px;border-radius:6px;border:1px solid var(--border)">
+          </div>
+        </div>
+        <div>
+          <label style="font-size:11px;font-weight:600;display:block;margin-bottom:4px">Search Reason / Notes / Keyword</label>
+          <input type="search" id="flt-audit-search" placeholder="Type keyword..." style="width:100%;font-size:12px;padding:6px 8px;border-radius:6px;border:1px solid var(--border)">
+        </div>
+        <div style="display:flex;gap:6px">
+          <button class="btn sm" id="btn-reset-filters" style="width:100%">Clear Filters</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 3. Table & Pagination Container -->
+    <div class="card" style="padding:0;overflow:hidden">
+      <div style="padding:12px 16px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;background:rgba(0,0,0,0.02)">
+        <div id="audit-table-count" style="font-size:13px;font-weight:600;color:var(--text)">
+          Loading records...
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;font-size:12px">
+          <span class="muted">Per page:</span>
+          <select id="sel-audit-limit" style="font-size:12px;padding:2px 6px;border-radius:4px;border:1px solid var(--border)">
+            <option value="50">50</option>
+            <option value="100">100</option>
+            <option value="200">200</option>
+          </select>
+        </div>
+      </div>
+
+      <div id="audit-table-wrap">
+        <div class="muted" style="padding:32px;text-align:center">Fetching security audit events...</div>
+      </div>
+
+      <div id="audit-pagination-bar" style="padding:10px 16px;border-top:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;background:rgba(0,0,0,0.01);font-size:12px">
+      </div>
+    </div>
+  `;
+
+  async function loadStats() {
+    try {
+      const s = await api('/audit-logs/stats');
+      qs('#kpi-total', c).innerText = (s.totalEvents || 0).toLocaleString();
+      qs('#kpi-today', c).innerText = (s.todayEvents || 0).toLocaleString();
+      qs('#kpi-deletes', c).innerText = (s.criticalDeletes || 0).toLocaleString();
+      qs('#kpi-logins', c).innerText = (s.todayLogins || 0).toLocaleString();
+      qs('#kpi-failed-logins', c).innerText = s.failedLoginsToday || 0;
+      qs('#kpi-active-users', c).innerText = (s.activeUsersToday || 0).toLocaleString();
+    } catch {}
+  }
+
+  async function loadLogs() {
+    const wrap = qs('#audit-table-wrap', c);
+    const countEl = qs('#audit-table-count', c);
+    const pageBar = qs('#audit-pagination-bar', c);
+
+    wrap.innerHTML = '<div class="muted" style="padding:32px;text-align:center">Loading security audit records...</div>';
+
+    const p = new URLSearchParams();
+    if (filters.userId) p.set('userId', filters.userId);
+    if (filters.entity && filters.entity !== 'all') p.set('entity', filters.entity);
+    if (filters.action && filters.action !== 'all') p.set('action', filters.action);
+    if (filters.dateFrom) p.set('dateFrom', filters.dateFrom);
+    if (filters.dateTo) p.set('dateTo', filters.dateTo);
+    if (filters.search) p.set('search', filters.search);
+    p.set('limit', filters.limit);
+    p.set('offset', filters.offset);
+
+    try {
+      const data = await api(`/audit-logs?${p.toString()}`);
+
+      // Populate filter options if not loaded yet
+      if (!filterOptionsLoaded && data.filterOptions) {
+        filterOptionsLoaded = true;
+        const uSel = qs('#flt-audit-user', c);
+        const eSel = qs('#flt-audit-entity', c);
+        const aSel = qs('#flt-audit-action', c);
+
+        if (data.filterOptions.actors) {
+          data.filterOptions.actors.forEach((a) => {
+            const opt = document.createElement('option');
+            opt.value = a.id;
+            opt.innerText = `${a.full_name || a.username} (@${a.username})`;
+            uSel.appendChild(opt);
+          });
+        }
+        if (data.filterOptions.entities) {
+          data.filterOptions.entities.forEach((ent) => {
+            const opt = document.createElement('option');
+            opt.value = ent;
+            opt.innerText = ent;
+            eSel.appendChild(opt);
+          });
+        }
+        if (data.filterOptions.actions) {
+          data.filterOptions.actions.forEach((act) => {
+            const opt = document.createElement('option');
+            opt.value = act;
+            opt.innerText = act;
+            aSel.appendChild(opt);
+          });
+        }
+      }
+
+      const total = data.pagination.total || 0;
+      const startIdx = total === 0 ? 0 : filters.offset + 1;
+      const endIdx = Math.min(filters.offset + (data.logs || []).length, total);
+
+      countEl.innerHTML = `Showing <b>${startIdx} - ${endIdx}</b> of <b>${total.toLocaleString()}</b> events`;
+
+      if (!data.logs || !data.logs.length) {
+        wrap.innerHTML = '<div class="muted" style="padding:32px;text-align:center">No audit log records match the current filter criteria.</div>';
+        pageBar.innerHTML = '';
+        return;
+      }
+
+      // Render table rows
+      const rowsHtml = data.logs.map((r) => {
+        const timeStr = String(r.created_at || '').slice(0, 19).replace('T', ' ');
+        const initials = (r.full_name || r.username || 'SY').split(' ').map((x) => x[0]).slice(0, 2).join('').toUpperCase();
+
+        // Entity badge style
+        let entColor = 'blue';
+        if (r.entity === 'session' || r.entity === 'user') entColor = 'amber';
+        else if (r.entity.includes('job')) entColor = 'blue';
+        else if (r.entity.includes('store') || r.entity === 'mrn' || r.entity === 'issues') entColor = 'green';
+        else if (r.entity.includes('tool') || r.entity === 'vehicle_documents') entColor = 'purple';
+
+        // Action badge style
+        let actClass = 'badge';
+        let actStyle = 'background:#f1f5f9;color:#334155';
+        if (/delete|void|scrap|revoke|lock/i.test(r.action)) {
+          actStyle = 'background:#fee2e2;color:#991b1b;font-weight:600';
+        } else if (/create|issue|receive|add/i.test(r.action)) {
+          actStyle = 'background:#dcfce7;color:#166534;font-weight:600';
+        } else if (/approve|sign|close/i.test(r.action)) {
+          actStyle = 'background:#f3e8ff;color:#6b21a8;font-weight:600';
+        } else if (/edit|update|move/i.test(r.action)) {
+          actStyle = 'background:#e0f2fe;color:#0369a1;font-weight:600';
+        }
+
+        return `
+          <tr>
+            <td style="white-space:nowrap;font-size:11px;font-family:monospace;color:var(--text)">
+              ${esc(timeStr)}
+            </td>
+            <td>
+              <div style="display:flex;align-items:center;gap:8px">
+                <div style="width:24px;height:24px;border-radius:50%;background:#e2e8f0;font-size:10px;font-weight:700;display:flex;align-items:center;justify-content:center;color:#475569">
+                  ${esc(initials)}
+                </div>
+                <div>
+                  <div style="font-weight:600;font-size:12px;color:var(--text)">${esc(r.username)}</div>
+                  ${r.full_name && r.full_name !== r.username ? `<div class="muted" style="font-size:10px">${esc(r.full_name)}</div>` : ''}
+                </div>
+              </div>
+            </td>
+            <td style="font-size:11px">
+              ${r.workshop_name ? `<span class="badge" style="background:#f8fafc;border:1px solid #cbd5e1">${esc(r.workshop_name)}</span>` : '<span class="muted">—</span>'}
+            </td>
+            <td>
+              <span class="badge ${entColor}">${esc(r.entity)}</span>
+              ${r.entity_id ? `<span class="muted" style="font-size:11px;margin-left:4px">#${esc(r.entity_id)}</span>` : ''}
+            </td>
+            <td>
+              <span class="${actClass}" style="${actStyle}">${esc(r.action)}</span>
+            </td>
+            <td style="max-width:260px;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(r.reason || '')}">
+              ${r.reason ? esc(r.reason) : '<span class="muted">—</span>'}
+            </td>
+            <td>
+              ${r.has_changes ? `<span class="badge" style="background:#f1f5f9;font-size:10px" title="${esc(r.changes_summary)}">Delta recorded</span>` : '<span class="muted" style="font-size:10px">—</span>'}
+            </td>
+            <td style="text-align:right">
+              <button class="btn sm btn-view-diff" data-id="${r.id}" style="padding:2px 8px;font-size:11px">🔍 View Diff</button>
+            </td>
+          </tr>
+        `;
+      }).join('');
+
+      wrap.innerHTML = `
+        <div class="table-wrap scroll" style="max-height:calc(100vh - 360px)">
+          <table>
+            <thead>
+              <tr>
+                <th style="width:14%">Timestamp</th>
+                <th style="width:18%">Actor</th>
+                <th style="width:12%">Location</th>
+                <th style="width:15%">Entity</th>
+                <th style="width:12%">Action</th>
+                <th style="width:15%">Reason / Note</th>
+                <th style="width:10%">Changes</th>
+                <th style="width:8%;text-align:right">Details</th>
+              </tr>
+            </thead>
+            <tbody>${rowsHtml}</tbody>
+          </table>
+        </div>
+      `;
+
+      // Bind diff buttons
+      qsa('.btn-view-diff', wrap).forEach((btn) => {
+        btn.onclick = () => openAuditDiffModal(btn.dataset.id);
+      });
+
+      // Pagination controls
+      const curPage = data.pagination.currentPage || 1;
+      const totalPages = data.pagination.pages || 1;
+
+      pageBar.innerHTML = `
+        <div class="muted">Page <b>${curPage}</b> of <b>${totalPages}</b></div>
+        <div style="display:flex;gap:6px">
+          <button class="btn sm" id="btn-page-first" ${curPage <= 1 ? 'disabled' : ''}>« First</button>
+          <button class="btn sm" id="btn-page-prev" ${curPage <= 1 ? 'disabled' : ''}>‹ Prev</button>
+          <button class="btn sm" id="btn-page-next" ${curPage >= totalPages ? 'disabled' : ''}>Next ›</button>
+          <button class="btn sm" id="btn-page-last" ${curPage >= totalPages ? 'disabled' : ''}>Last »</button>
+        </div>
+      `;
+
+      const btnFirst = qs('#btn-page-first', pageBar);
+      const btnPrev = qs('#btn-page-prev', pageBar);
+      const btnNext = qs('#btn-page-next', pageBar);
+      const btnLast = qs('#btn-page-last', pageBar);
+
+      if (btnFirst) btnFirst.onclick = () => { filters.offset = 0; loadLogs(); };
+      if (btnPrev) btnPrev.onclick = () => { filters.offset = Math.max(0, filters.offset - filters.limit); loadLogs(); };
+      if (btnNext) btnNext.onclick = () => { filters.offset = filters.offset + filters.limit; loadLogs(); };
+      if (btnLast) btnLast.onclick = () => { filters.offset = (totalPages - 1) * filters.limit; loadLogs(); };
+
+    } catch (err) {
+      wrap.innerHTML = `<div class="card err" style="margin:16px">Failed to load audit logs: ${esc(err.message)}</div>`;
+    }
+  }
+
+  // Bind top level buttons
+  qs('#btn-refresh-audit', c).onclick = () => { loadStats(); loadLogs(); };
+  qs('#btn-export-audit', c).onclick = () => {
+    const p = new URLSearchParams();
+    if (filters.userId) p.set('userId', filters.userId);
+    if (filters.entity && filters.entity !== 'all') p.set('entity', filters.entity);
+    if (filters.action && filters.action !== 'all') p.set('action', filters.action);
+    if (filters.dateFrom) p.set('dateFrom', filters.dateFrom);
+    if (filters.dateTo) p.set('dateTo', filters.dateTo);
+    if (filters.search) p.set('search', filters.search);
+    window.open(`/api/audit-logs/export.xlsx?${p.toString()}`, '_blank');
+  };
+
+  // Bind filters
+  qs('#flt-audit-user', c).onchange = (e) => { filters.userId = e.target.value; filters.offset = 0; loadLogs(); };
+  qs('#flt-audit-entity', c).onchange = (e) => { filters.entity = e.target.value; filters.offset = 0; loadLogs(); };
+  qs('#flt-audit-action', c).onchange = (e) => { filters.action = e.target.value; filters.offset = 0; loadLogs(); };
+
+  qs('#sel-audit-limit', c).onchange = (e) => {
+    filters.limit = Number(e.target.value) || 50;
+    filters.offset = 0;
+    loadLogs();
+  };
+
+  qs('#flt-audit-preset', c).onchange = (e) => {
+    const v = e.target.value;
+    const cWrap = qs('#flt-custom-date-wrap', c);
+    const now = new Date();
+    const todayStr = now.toISOString().slice(0, 10);
+
+    if (v === 'today') {
+      cWrap.style.display = 'none';
+      filters.dateFrom = todayStr;
+      filters.dateTo = todayStr;
+    } else if (v === 'yesterday') {
+      cWrap.style.display = 'none';
+      const y = new Date(now.getTime() - 86400000).toISOString().slice(0, 10);
+      filters.dateFrom = y;
+      filters.dateTo = y;
+    } else if (v === '7days') {
+      cWrap.style.display = 'none';
+      const d7 = new Date(now.getTime() - 7 * 86400000).toISOString().slice(0, 10);
+      filters.dateFrom = d7;
+      filters.dateTo = todayStr;
+    } else if (v === '30days') {
+      cWrap.style.display = 'none';
+      const d30 = new Date(now.getTime() - 30 * 86400000).toISOString().slice(0, 10);
+      filters.dateFrom = d30;
+      filters.dateTo = todayStr;
+    } else if (v === 'custom') {
+      cWrap.style.display = 'flex';
+      return;
+    } else {
+      cWrap.style.display = 'none';
+      filters.dateFrom = '';
+      filters.dateTo = '';
+    }
+    filters.offset = 0;
+    loadLogs();
+  };
+
+  qs('#flt-audit-date-from', c).onchange = (e) => { filters.dateFrom = e.target.value; filters.offset = 0; loadLogs(); };
+  qs('#flt-audit-date-to', c).onchange = (e) => { filters.dateTo = e.target.value; filters.offset = 0; loadLogs(); };
+
+  qs('#flt-audit-search', c).oninput = (e) => {
+    clearTimeout(searchDebounceTimer);
+    searchDebounceTimer = setTimeout(() => {
+      filters.search = e.target.value.trim();
+      filters.offset = 0;
+      loadLogs();
+    }, 300);
+  };
+
+  qs('#btn-reset-filters', c).onclick = () => {
+    filters.userId = '';
+    filters.entity = 'all';
+    filters.action = 'all';
+    filters.dateFrom = '';
+    filters.dateTo = '';
+    filters.search = '';
+    filters.offset = 0;
+
+    qs('#flt-audit-user', c).value = '';
+    qs('#flt-audit-entity', c).value = 'all';
+    qs('#flt-audit-action', c).value = 'all';
+    qs('#flt-audit-preset', c).value = 'all';
+    qs('#flt-custom-date-wrap', c).style.display = 'none';
+    qs('#flt-audit-date-from', c).value = '';
+    qs('#flt-audit-date-to', c).value = '';
+    qs('#flt-audit-search', c).value = '';
+
+    loadLogs();
+  };
+
+  // Initial load
+  loadStats();
+  loadLogs();
+}
 
 async function renderRolesManager(c, wanted) {
   const sm = await api('/access/section-matrix').catch(async () => {

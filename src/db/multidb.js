@@ -539,6 +539,14 @@ function migrate() {
     } catch (err) {
       console.warn('Failed to ensure physical store location tables in coreDb:', err.message);
     }
+
+    try {
+      coreDb.exec(`
+        CREATE INDEX IF NOT EXISTS idx_audit_log_created ON audit_log(created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_audit_log_user ON audit_log(user_id, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_audit_log_entity_act ON audit_log(entity, action, created_at DESC);
+      `);
+    } catch {}
   }
 
   // Ensure vehicle document tables in baseDb (if present)

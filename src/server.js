@@ -127,6 +127,7 @@ app.use('/api', (req, res, next) => {
 app.use('/api/auth', require('./routes/auth'));
 app.use('/api/access', require('./routes/access'));
 app.use('/api/dual-auth', require('./routes/dual_auth'));
+app.use('/api/audit-logs', require('./routes/audit_logs'));
 // The picker lists stay open to anyone signed in; anything else about a vehicle needs Assets.
 // This only relaxes the MODULE check -- the global /api gate above still demands a session -- and
 // routes/assets.js trims those two responses to PICKER_FIELDS, so no cost or history goes with

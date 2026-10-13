@@ -336,6 +336,10 @@ const CAPABILITIES = [
   C('dual_auth.override', 'access', 'Executive override on pending 4-Eyes dual auth requests', ['manager'], null, 'access', '10', 'Admin'),
   C('user.session.kill', 'access', 'Terminate active user web and mobile sessions', ['manager'], null, 'access', '06', 'Admin'),
   C('mfa.enforce', 'access', 'Enforce mandatory Two-Factor Authentication on roles', ['manager'], null, 'access', '02', 'Admin'),
+
+  // ---- 30. User Activity Logs & Security Audit Trail (Z_WO_AUDIT) ----------------------------
+  C('audit.logs.view', 'audit_logs', 'View all user activity logs and security audit trail', [], null, 'audit_logs', '03', 'Admin'),
+  C('audit.logs.export', 'audit_logs', 'Export security audit trail and user activities to Excel/CSV', [], null, 'audit_logs', '08', 'Admin'),
 ];
 
 

@@ -51,7 +51,7 @@ const SECTIONS = [
   { id: 19, key: 'tb_reports', label: 'Tyre & Battery', icon: '📊', group: 'Analysis', enforce: true },
   { id: 20, key: 'reports', label: 'Reports', icon: '📑', group: 'Analysis', enforce: true },
   { id: 21, key: 'workshops', label: 'Workshops', icon: '🏢', group: 'Admin', enforce: true },
-  { id: 22, key: 'access', label: 'Access Control', icon: '🔐', group: 'Admin', enforce: true, parts: [{ key: 'users', label: 'Users & Access' }] },
+  { id: 22, key: 'access', label: 'Access Control', icon: '🔐', group: 'Admin', enforce: true, parts: [{ key: 'users', label: 'Users & Access' }, { key: 'audit_logs', label: 'User Activity Logs' }] },
 ];
 
 const SECTION_KEYS = SECTIONS.map((s) => s.key);
@@ -69,6 +69,7 @@ const PART_MODULES = [
   { key: 'tb_grn', label: 'T&B · Receive (GRN)', enforce: false, parent: 'tb_requests' },
   { key: 'tb_issue', label: 'T&B · Issue', enforce: false, parent: 'tb_requests' },
   { key: 'users', label: 'Users & Access', enforce: false, parent: 'access' },
+  { key: 'audit_logs', label: 'User Activity Logs', enforce: true, parent: 'access' },
 ];
 
 const MODULES = [
