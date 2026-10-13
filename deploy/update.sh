@@ -52,12 +52,13 @@ sudo -u "$USER" git -C "$APP" log --oneline "$BEFORE..$AFTER" | sed 's/^/    /'
 # ---------------------------------------------------------------------------
 if [ "${1:-}" != "--now" ] && [ "${1:-}" != "--skip-notice" ]; then
   say "2. Broadcasting 2-minute maintenance alert to active users"
-  if sudo -u "$USER" git -C "$APP" rev-parse "origin/$BRANCH:scripts/broadcast_maintenance.js" >/dev/null 2>&1; then
-    sudo -u "$USER" git -C "$APP" show "origin/$BRANCH:scripts/broadcast_maintenance.js" > "/tmp/broadcast_maintenance.js"
-    sudo -u "$USER" bash -c "cd $APP && PORT=$PORT node /tmp/broadcast_maintenance.js 120 'The system will update in 2 minutes. Please save all files, complete tasks, and log out now.'" || true
-    rm -f "/tmp/broadcast_maintenance.js"
-  elif [ -f "$APP/scripts/broadcast_maintenance.js" ]; then
+  if [ -f "$APP/scripts/broadcast_maintenance.js" ]; then
     sudo -u "$USER" bash -c "cd $APP && PORT=$PORT node scripts/broadcast_maintenance.js 120 'The system will update in 2 minutes. Please save all files, complete tasks, and log out now.'" || true
+  elif sudo -u "$USER" git -C "$APP" rev-parse "origin/$BRANCH:scripts/broadcast_maintenance.js" >/dev/null 2>&1; then
+    mkdir -p "$APP/scripts"
+    sudo -u "$USER" git -C "$APP" show "origin/$BRANCH:scripts/broadcast_maintenance.js" > "$APP/scripts/.tmp_broadcast.js"
+    sudo -u "$USER" bash -c "cd $APP && PORT=$PORT node scripts/.tmp_broadcast.js 120 'The system will update in 2 minutes. Please save all files, complete tasks, and log out now.'" || true
+    rm -f "$APP/scripts/.tmp_broadcast.js"
   fi
 else
   ok "Immediate update requested (--now): skipping 2-minute notice"
