@@ -776,6 +776,12 @@ router.get('/mechanics-kpi', requireKpiAccess, asyncHandler(async (req, res) => 
   const workshopsList = all('SELECT id, code, name FROM workshops WHERE active = 1 ORDER BY is_default DESC, name');
 
   res.json({
+    month: isCustomRange ? null : month,
+    from: isCustomRange ? qFrom : `${month}-01`,
+    to: isCustomRange ? qTo : `${month}-31`,
+    period_label: isCustomRange ? `${qFrom} to ${qTo}` : formatMonthLabel(month),
+    available_months: months.map((m) => ({ month: m, label: formatMonthLabel(m) })),
+    workshops: workshopsList,
     period: {
       mode: isCustomRange ? 'range' : 'month',
       month: isCustomRange ? null : month,
@@ -794,6 +800,7 @@ router.get('/mechanics-kpi', requireKpiAccess, asyncHandler(async (req, res) => 
       coverage_pct: coveragePct,
       total_line_hours: r2(totalLineHours),
       total_mechanic_hours: r2(totalBookedMechanicHours),
+      total_hours: r2(totalBookedMechanicHours),
       regular_hours: r2(totalRegularHours),
       travel_hours: r2(totalTravelHours),
       total_internal_cost: r2(totalInternalCost),
@@ -822,12 +829,20 @@ router.get('/mechanics-kpi/detail', requireKpiAccess, asyncHandler((req, res) =>
   const targetCanon = mechanics.resolveMechanicName(rawMech) || rawMech;
 
   const own = scope.filter(req.user, 'j.workshop_id');
+  const andOwn = own.sql ? ` AND ${own.sql}` : '';
   const qFrom = String(req.query.from || '').slice(0, 10);
   const qTo = String(req.query.to || '').slice(0, 10);
   const isCustomRange = /^\d{4}-\d{2}-\d{2}$/.test(qFrom) && /^\d{4}-\d{2}-\d{2}$/.test(qTo);
   let month = String(req.query.month || '').slice(0, 7);
   if (!isCustomRange && !/^\d{4}-\d{2}$/.test(month)) {
-    month = new Date().toISOString().slice(0, 7);
+    const slCurMonth = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Colombo' }).format(new Date()).slice(0, 7);
+    const months = all(
+      `SELECT DISTINCT strftime('%Y-%m', w.work_date) AS month
+         FROM job_daily_work w LEFT JOIN job_cards j ON j.id = w.job_id
+        WHERE w.work_date IS NOT NULL${andOwn}
+        ORDER BY month DESC`, ...own.params
+    ).map((r) => r.month).filter(Boolean);
+    month = months.length ? months[0] : slCurMonth;
   }
 
   const conds = [];
