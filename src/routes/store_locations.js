@@ -145,7 +145,7 @@ router.get('/:id/stock', requireCap('stores.locations.view'), asyncHandler((req,
  * POST /:id/quick-adjust
  * Set or adjust physical count / opening balance and/or reorder level for an item in a physical store location.
  */
-router.post('/:id/quick-adjust', requireCap('stores.count', 'stores.locations.manage', 'stores.edit'), asyncHandler((req, res) => {
+router.post('/:id/quick-adjust', requireCap('stores.stock.count', 'stores.locations.manage', 'stores.stock.levels', 'stores.items.txn'), asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   const store = storeLocs.getStoreLocationById(id);
   if (!store) return res.status(404).json({ error: `Store location ID ${id} not found.` });
