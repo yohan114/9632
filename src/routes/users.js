@@ -9,6 +9,7 @@ const audit = require('../lib/audit');
 const passwordPolicy = require('../lib/password_policy');
 const rules = require('../lib/access_rules');
 const workshops = require('../lib/workshops');
+const storeLocs = require('../lib/store_locations');
 
 // A password an admin types is a TEMPORARY one: the admin knows it, and so may whoever it was
 // passed to on paper or over the phone. So it must still meet the rules (it is live until first
@@ -24,6 +25,11 @@ function userWithRoles(id) {
   const u = get('SELECT id, username, full_name, active, created_at, workshop_id FROM users WHERE id = ?', id);
   if (!u) return null;
   u.roles = auth.rolesForUser(id);
+  try {
+    u.store_locations = storeLocs.getUserStoreLocations(id);
+  } catch (_) {
+    u.store_locations = [];
+  }
   return u;
 }
 
@@ -55,7 +61,14 @@ router.get('/roles', requireAuth, asyncHandler((_req, res) => res.json(
 
 router.get('/', requireCap('users.manage'), asyncHandler((_req, res) => {
   const users = all('SELECT id, username, full_name, active, created_at, mfa_enabled, workshop_id FROM users ORDER BY username');
-  for (const u of users) u.roles = auth.rolesForUser(u.id);
+  for (const u of users) {
+    u.roles = auth.rolesForUser(u.id);
+    try {
+      u.store_locations = storeLocs.getUserStoreLocations(u.id);
+    } catch (_) {
+      u.store_locations = [];
+    }
+  }
   res.json(users);
 }));
 
@@ -74,7 +87,28 @@ router.post('/', requireCap('users.manage'), asyncHandler((req, res) => {
     setRoles(info.lastInsertRowid, roles);
     return info.lastInsertRowid;
   });
-  audit.record({ userId: req.user.id, entity: 'user', entityId: id, action: 'create', after: { username: b.username, roles, workshop_id: workshopId } });
+
+  // Assign physical store location access if provided
+  const storeId = toInt(b.store_location_id || b.store_id);
+  if (storeId) {
+    const isMain = roles.includes('main_storekeeper');
+    const p = b.store_permissions || {};
+    const perms = {
+      can_view: p.can_view != null ? (p.can_view ? 1 : 0) : 1,
+      can_receive: p.can_receive != null ? (p.can_receive ? 1 : 0) : 1,
+      can_issue: p.can_issue != null ? (p.can_issue ? 1 : 0) : 1,
+      can_dispatch: p.can_dispatch != null ? (p.can_dispatch ? 1 : 0) : (isMain ? 1 : 0),
+      can_count: p.can_count != null ? (p.can_count ? 1 : 0) : 1,
+      can_request: p.can_request != null ? (p.can_request ? 1 : 0) : 1
+    };
+    try {
+      storeLocs.setUserStoreLocationAccess(id, storeId, perms, req.user);
+    } catch (err) {
+      console.warn('Initial store assignment warning:', err.message);
+    }
+  }
+
+  audit.record({ userId: req.user.id, entity: 'user', entityId: id, action: 'create', after: { username: b.username, roles, workshop_id: workshopId, store_location_id: storeId } });
   res.status(201).json(userWithRoles(id));
 }));
 
@@ -160,6 +194,79 @@ router.post('/:id/sessions/revoke', requireCap('users.manage'), asyncHandler((re
   const ended = auth.revokeSessions(id, id === req.user.id ? { exceptToken: req.user.token } : {});
   audit.record({ userId: req.user.id, entity: 'user', entityId: id, action: 'sessions_revoked', after: { ended } });
   res.json({ ok: true, ended });
+}));
+
+// List physical store locations with access flags for a user
+router.get('/:id/stores', requireCap('users.manage'), asyncHandler((req, res) => {
+  const id = toInt(req.params.id);
+  const u = get('SELECT id, username, full_name FROM users WHERE id = ?', id);
+  if (!u) return res.status(404).json({ error: 'User not found' });
+  rules.assertCanManageUser(req.user, id);
+
+  const allStores = storeLocs.listStoreLocations({ activeOnly: true });
+  const userAccess = storeLocs.getUserStoreLocations(id);
+  const accessMap = new Map(userAccess.map((a) => [Number(a.store_location_id), a]));
+
+  const result = allStores.map((s) => {
+    const a = accessMap.get(Number(s.id));
+    return {
+      store_id: s.id,
+      store_code: s.code,
+      store_name: s.name,
+      store_type: s.store_type,
+      workshop_id: s.workshop_id,
+      has_access: !!a,
+      can_view: a ? a.can_view : 0,
+      can_receive: a ? a.can_receive : 0,
+      can_issue: a ? a.can_issue : 0,
+      can_dispatch: a ? a.can_dispatch : 0,
+      can_count: a ? a.can_count : 0,
+      can_request: a ? a.can_request : 0
+    };
+  });
+  res.json({ user_id: id, username: u.username, full_name: u.full_name, stores: result });
+}));
+
+// Set or update store location access for a user
+router.post('/:id/stores', requireCap('users.manage'), asyncHandler((req, res) => {
+  const id = toInt(req.params.id);
+  const u = get('SELECT id, username FROM users WHERE id = ?', id);
+  if (!u) return res.status(404).json({ error: 'User not found' });
+  rules.assertCanManageUser(req.user, id);
+
+  const b = req.body;
+  if (Array.isArray(b.stores)) {
+    for (const item of b.stores) {
+      const sId = toInt(item.store_id || item.store_location_id);
+      if (!sId) continue;
+      if (item.has_access || item.can_view || item.can_receive || item.can_issue) {
+        storeLocs.setUserStoreLocationAccess(id, sId, {
+          can_view: item.can_view ? 1 : 1,
+          can_receive: item.can_receive ? 1 : 0,
+          can_issue: item.can_issue ? 1 : 0,
+          can_dispatch: item.can_dispatch ? 1 : 0,
+          can_count: item.can_count ? 1 : 0,
+          can_request: item.can_request ? 1 : 0
+        }, req.user);
+      } else {
+        storeLocs.revokeUserStoreLocationAccess(id, sId, req.user);
+      }
+    }
+  } else {
+    const sId = toInt(b.store_id || b.store_location_id);
+    if (!sId) return res.status(400).json({ error: 'store_location_id is required' });
+    storeLocs.setUserStoreLocationAccess(id, sId, b, req.user);
+  }
+  res.json(userWithRoles(id));
+}));
+
+// Revoke a store location from a user
+router.delete('/:id/stores/:storeId', requireCap('users.manage'), asyncHandler((req, res) => {
+  const id = toInt(req.params.id);
+  const storeId = toInt(req.params.storeId);
+  rules.assertCanManageUser(req.user, id);
+  storeLocs.revokeUserStoreLocationAccess(id, storeId, req.user);
+  res.json({ ok: true, revoked_store_id: storeId });
 }));
 
 module.exports = router;

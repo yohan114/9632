@@ -141,15 +141,21 @@ setInterval(() => {
 // everyone who opened the list.
 const esc = (v) => String(v == null ? '' : v).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const money = (n) => 'Rs ' + (Number(n) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const num = (n) => (Number(n) || 0).toLocaleString('en-US');
 // Sri Lankan Standard Time (SLST: Asia/Colombo, UTC+05:30)
 const SL_TZ = 'Asia/Colombo';
 
 /**
- * Safely parse any date/time string from server/DB as a JS Date object.
+ * Safely parse any date/time string or Date from server/DB as a JS Date object.
  * SQLite timestamps like "YYYY-MM-DD HH:MM:SS" without TZ are stored in UTC.
  */
 function parseServerDate(s) {
   if (!s) return null;
+  if (s instanceof Date) return Number.isNaN(s.getTime()) ? null : s;
+  if (typeof s === 'number') {
+    const dn = new Date(s);
+    return Number.isNaN(dn.getTime()) ? null : dn;
+  }
   const str = String(s).trim();
   if (!str) return null;
   if (/^\d{4}-\d{2}-\d{2}$/.test(str)) {
@@ -158,7 +164,9 @@ function parseServerDate(s) {
   let iso = str.replace(' ', 'T');
   if (!/[zZ]|[+-]\d\d:?\d\d$/.test(iso)) iso += 'Z';
   const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? null : d;
+  if (!Number.isNaN(d.getTime())) return d;
+  const fallback = new Date(str);
+  return Number.isNaN(fallback.getTime()) ? null : fallback;
 }
 
 /**
@@ -1318,9 +1326,9 @@ function renderShell() {
         <span class="live-dot">●</span>
         <span>Central Workshop</span> ▾
       </div>
-      <div class="topbar-site-badge" id="topbar_sl_clock" title="Sri Lanka Standard Time (Asia/Colombo · UTC+05:30)" style="margin-left:4px;display:inline-flex;align-items:center;gap:5px;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.16);padding:3px 9px;border-radius:6px">
+      <div class="topbar-site-badge" id="topbar_sl_clock" title="Sri Lanka Standard Time (Asia/Colombo · UTC+05:30)" style="margin-left:4px;display:inline-flex;align-items:center;gap:5px;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.16);padding:3px 10px;border-radius:16px;white-space:nowrap;flex-shrink:0">
         <span style="font-size:12px">🇱🇰</span>
-        <span id="live_sl_clock" style="font-weight:700;font-size:11.5px;color:var(--text);letter-spacing:0.2px">${slDateTime(new Date(), { timeOnly: true })} SLST</span>
+        <span id="live_sl_clock" style="font-weight:700;font-size:11.5px;color:#e2e8f0;letter-spacing:0.2px">${slNowTime()} SLST</span>
       </div>
       <div class="topbar-search-wrap">
         <span class="topbar-search-icon">🔍</span>
@@ -1364,7 +1372,7 @@ function renderShell() {
   if (!window._slClockInterval) {
     window._slClockInterval = setInterval(() => {
       const el = document.getElementById('live_sl_clock');
-      if (el) el.textContent = `${slDateTime(new Date(), { timeOnly: true })} SLST`;
+      if (el) el.textContent = `${slNowTime()} SLST`;
     }, 10000);
   }
 
@@ -21923,8 +21931,149 @@ async function renderClearanceBoard(c) {
   });
 }
 
+async function userStoreAccessModal(u, onSave) {
+  modal(`Store & Site Store Access — ${esc(u.username)}`, '<div class="muted" style="padding:20px">Loading user store access…</div>', async (mBody, close) => {
+    try {
+      const res = await api(`/users/${u.id}/stores`);
+      const stores = res.stores || [];
+      const render = () => {
+        mBody.innerHTML = `
+          <div style="font-size:13px">
+            <div style="background:var(--subtle,#f8fafc);border:1px solid var(--border,#e2e8f0);border-radius:8px;padding:12px 14px;margin-bottom:14px">
+              <div style="font-weight:700;font-size:14px">${esc(u.full_name || u.username)} <span class="muted" style="font-size:12px;font-weight:normal">(@${esc(u.username)})</span></div>
+              <div class="muted" style="font-size:11.5px;margin-top:2px">Configure which Central Main Stores, Workshop Stores, and Project Site Stores this user can operate.</div>
+            </div>
+            <div style="overflow-x:auto;max-height:420px;border:1px solid var(--border,#e5e7eb);border-radius:6px;margin-bottom:14px">
+              <table class="table" style="width:100%;margin:0;font-size:12px">
+                <thead>
+                  <tr style="background:var(--subtle,#f9fafb);border-bottom:1px solid var(--border,#e5e7eb);text-align:left">
+                    <th style="padding:8px 10px">Physical Store Location</th>
+                    <th style="padding:8px 10px;text-align:center" title="Grant access to this store">Access</th>
+                    <th style="padding:8px 10px;text-align:center" title="Can view on-hand stock and bin cards">View</th>
+                    <th style="padding:8px 10px;text-align:center" title="Can receive goods (GRN / inbound MTN)">Receive</th>
+                    <th style="padding:8px 10px;text-align:center" title="Can issue parts to Job Cards / Vehicles (MIN)">Issue</th>
+                    <th style="padding:8px 10px;text-align:center" title="Can dispatch outbound MTNs to other stores">Dispatch</th>
+                    <th style="padding:8px 10px;text-align:center" title="Can perform physical stock counts">Count</th>
+                    <th style="padding:8px 10px;text-align:center" title="Can raise MRN replenishment requests">Request</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${stores.map((s) => {
+                    const icon = s.store_type === 'MAIN_STORE' ? '🏛️' : (s.store_type === 'MAIN_WORKSHOP_STORE' ? '🔧' : '📦');
+                    const badgeCls = s.store_type === 'MAIN_STORE' ? 'blue' : (s.store_type === 'MAIN_WORKSHOP_STORE' ? 'amber' : 'green');
+                    return `
+                      <tr style="border-bottom:1px solid var(--border,#f1f5f9)" data-store-row="${s.store_id}">
+                        <td style="padding:8px 10px">
+                          <span style="font-size:14px;margin-right:4px">${icon}</span>
+                          <b>${esc(s.store_name)}</b> <span class="code" style="font-size:10px">(${esc(s.store_code)})</span>
+                          <br><span class="badge ${badgeCls} sm" style="font-size:10px">${esc(s.store_type)}</span>
+                        </td>
+                        <td style="padding:8px 10px;text-align:center">
+                          <input type="checkbox" class="chk-has-access" data-sid="${s.store_id}" ${s.has_access ? 'checked' : ''} />
+                        </td>
+                        <td style="padding:8px 10px;text-align:center">
+                          <input type="checkbox" data-sid="${s.store_id}" data-perm="can_view" ${s.can_view ? 'checked' : ''} ${!s.has_access ? 'disabled' : ''} />
+                        </td>
+                        <td style="padding:8px 10px;text-align:center">
+                          <input type="checkbox" data-sid="${s.store_id}" data-perm="can_receive" ${s.can_receive ? 'checked' : ''} ${!s.has_access ? 'disabled' : ''} />
+                        </td>
+                        <td style="padding:8px 10px;text-align:center">
+                          <input type="checkbox" data-sid="${s.store_id}" data-perm="can_issue" ${s.can_issue ? 'checked' : ''} ${!s.has_access ? 'disabled' : ''} />
+                        </td>
+                        <td style="padding:8px 10px;text-align:center">
+                          <input type="checkbox" data-sid="${s.store_id}" data-perm="can_dispatch" ${s.can_dispatch ? 'checked' : ''} ${!s.has_access ? 'disabled' : ''} />
+                        </td>
+                        <td style="padding:8px 10px;text-align:center">
+                          <input type="checkbox" data-sid="${s.store_id}" data-perm="can_count" ${s.can_count ? 'checked' : ''} ${!s.has_access ? 'disabled' : ''} />
+                        </td>
+                        <td style="padding:8px 10px;text-align:center">
+                          <input type="checkbox" data-sid="${s.store_id}" data-perm="can_request" ${s.can_request ? 'checked' : ''} ${!s.has_access ? 'disabled' : ''} />
+                        </td>
+                      </tr>`;
+                  }).join('')}
+                </tbody>
+              </table>
+            </div>
+            <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+              <span class="muted" style="font-size:11.5px">Changes take effect immediately for stock visibility and transactions.</span>
+              <div style="display:flex;gap:6px">
+                <button type="button" class="btn sm" id="btn_cancel_store_access">Cancel</button>
+                <button type="button" class="btn sm primary" id="btn_save_store_access">Save Store Access</button>
+              </div>
+            </div>
+          </div>
+        `;
+
+        qsa('.chk-has-access', mBody).forEach((ch) => {
+          ch.onchange = () => {
+            const sid = ch.dataset.sid;
+            const checked = ch.checked;
+            const row = qs(`[data-store-row="${sid}"]`, mBody);
+            if (row) {
+              qsa('[data-perm]', row).forEach((p) => {
+                p.disabled = !checked;
+                if (checked) p.checked = true;
+              });
+            }
+          };
+        });
+
+        qs('#btn_cancel_store_access', mBody).onclick = close;
+        qs('#btn_save_store_access', mBody).onclick = async () => {
+          const payload = [];
+          stores.forEach((s) => {
+            const sid = s.store_id;
+            const row = qs(`[data-store-row="${sid}"]`, mBody);
+            if (!row) return;
+            const hasAccess = qs('.chk-has-access', row).checked;
+            const getVal = (perm) => {
+              const el = qs(`[data-perm="${perm}"]`, row);
+              return el && el.checked ? 1 : 0;
+            };
+            payload.push({
+              store_id: sid,
+              has_access: hasAccess,
+              can_view: hasAccess ? getVal('can_view') : 0,
+              can_receive: hasAccess ? getVal('can_receive') : 0,
+              can_issue: hasAccess ? getVal('can_issue') : 0,
+              can_dispatch: hasAccess ? getVal('can_dispatch') : 0,
+              can_count: hasAccess ? getVal('can_count') : 0,
+              can_request: hasAccess ? getVal('can_request') : 0
+            });
+          });
+
+          try {
+            await api(`/users/${u.id}/stores`, { method: 'POST', body: { stores: payload } });
+            close();
+            toast('Store permissions saved');
+            if (typeof onSave === 'function') onSave();
+          } catch (e) {
+            toast(e.message, 'err');
+          }
+        };
+      };
+
+      render();
+    } catch (err) {
+      mBody.innerHTML = `<div class="card alert red">Error loading store permissions: ${esc(err.message)}</div>`;
+    }
+  }, { wide: true });
+}
+
 async function renderUsersManager(c) {
-  const [users, roles, wsd] = await Promise.all([api('/users'), api('/users/roles'), workshopsData(true)]);
+  const [users, roles, wsd, storeLocsRes] = await Promise.all([
+    api('/users'),
+    api('/users/roles'),
+    workshopsData(true),
+    api('/store-locations').catch(() => [])
+  ]);
+  const allStoreLocations = Array.isArray(storeLocsRes) ? storeLocsRes : (storeLocsRes && storeLocsRes.stores) || [];
+  const storeOptions = [{ value: '', label: '— No specific store (Workshop / Fleet / General) —' }]
+    .concat(allStoreLocations.map((s) => {
+      const icon = s.store_type === 'MAIN_STORE' ? '🏛️' : (s.store_type === 'MAIN_WORKSHOP_STORE' ? '🔧' : '📦');
+      return { value: String(s.id), label: `${icon} ${s.name} (${s.code})` };
+    }));
+
   // Home workshop (Stage 2): shown once there is more than one workshop.
   const multi = wsd.multi;
   const labelOf = Object.fromEntries(roles.map((r) => [r.name, r.label || r.name]));
@@ -21933,17 +22082,40 @@ async function renderUsersManager(c) {
       <span>${esc(r.label || r.name)}${r.description ? `<br><span class="muted" style="font-size:11px">${esc(r.description)}</span>` : ''}</span></label>`).join('');
   const picked = (body) => qsa('[data-role]', body).filter((x) => x.checked).map((x) => x.dataset.role);
 
+  const tableHeaders = [{ label: 'Username' }, { label: 'Name' }]
+    .concat(multi ? [{ label: 'Workshop' }] : [])
+    .concat([{ label: 'Assigned Store(s)' }, { label: 'Roles' }, { label: '2FA' }, { label: 'Active' }, { label: '' }]);
+
   c.innerHTML = `<div class="toolbar"><button class="primary" id="nu">+ New User</button><div class="spacer"></div><span class="muted">${users.length} user(s)</span></div>
-    ${tableWrap([{ label: 'Username' }, { label: 'Name' }].concat(multi ? [{ label: 'Workshop' }] : []).concat([{ label: 'Roles' }, { label: '2FA' }, { label: 'Active' }, { label: '' }]),
-    users.map((u) => `<tr${u.active ? '' : ' style="opacity:.55"'}><td>${esc(u.username)}</td><td>${esc(u.full_name || '')}</td>
-      ${multi ? `<td>${esc(wsName(wsd, u.workshop_id))} <button class="sm" data-uws="${u.id}" title="Change home workshop">✎</button></td>` : ''}
-      <td>${u.roles.map((r) => `<span class="badge">${esc(labelOf[r] || r)}</span>`).join(' ')}</td>
-      <td>${u.mfa_enabled ? '<span class="badge green">on</span>' : '<span class="muted">off</span>'}</td><td>${u.active ? '✓' : '✕'}</td>
-      <td style="white-space:nowrap"><button class="sm" data-roles="${u.id}">Roles</button> <button class="sm" data-reset="${u.id}">Reset password</button>
-        <button class="sm" data-sessions="${u.id}">Sessions</button>
-        ${u.mfa_enabled ? `<button class="sm" data-mfareset="${u.id}" title="Lost or new phone">Reset 2FA</button>` : ''}
-        <button class="sm ${u.active ? 'danger' : ''}" data-active="${u.id}">${u.active ? 'Deactivate' : 'Activate'}</button></td></tr>`))}`;
+    ${tableWrap(tableHeaders,
+    users.map((u) => {
+      const storesBadge = (u.store_locations && u.store_locations.length)
+        ? u.store_locations.map(sl => {
+            const icon = sl.store_type === 'MAIN_STORE' ? '🏛️' : (sl.store_type === 'MAIN_WORKSHOP_STORE' ? '🔧' : '📦');
+            const cls = sl.store_type === 'MAIN_STORE' ? 'blue' : (sl.store_type === 'MAIN_WORKSHOP_STORE' ? 'amber' : 'green');
+            return `<span class="badge ${cls}" style="font-size:11px;white-space:nowrap" title="${esc(sl.store_name)}: ${sl.can_issue ? 'Issue ' : ''}${sl.can_receive ? 'Receive ' : ''}${sl.can_dispatch ? 'Dispatch ' : ''}${sl.can_count ? 'Count' : ''}">${icon} ${esc(sl.store_name || sl.store_code)}</span>`;
+          }).join(' ')
+        : '<span class="muted" style="font-size:11.5px">—</span>';
+
+      return `<tr${u.active ? '' : ' style="opacity:.55"'}><td>${esc(u.username)}</td><td>${esc(u.full_name || '')}</td>
+        ${multi ? `<td>${esc(wsName(wsd, u.workshop_id))} <button class="sm" data-uws="${u.id}" title="Change home workshop">✎</button></td>` : ''}
+        <td>${storesBadge}</td>
+        <td>${u.roles.map((r) => `<span class="badge">${esc(labelOf[r] || r)}</span>`).join(' ')}</td>
+        <td>${u.mfa_enabled ? '<span class="badge green">on</span>' : '<span class="muted">off</span>'}</td><td>${u.active ? '✓' : '✕'}</td>
+        <td style="white-space:nowrap">
+          <button class="sm" data-roles="${u.id}">Roles</button>
+          <button class="sm" data-stores="${u.id}" title="Manage physical store and site store permissions">Stores</button>
+          <button class="sm" data-reset="${u.id}">Reset password</button>
+          <button class="sm" data-sessions="${u.id}">Sessions</button>
+          ${u.mfa_enabled ? `<button class="sm" data-mfareset="${u.id}" title="Lost or new phone">Reset 2FA</button>` : ''}
+          <button class="sm ${u.active ? 'danger' : ''}" data-active="${u.id}">${u.active ? 'Deactivate' : 'Activate'}</button></td></tr>`;
+    }))}`;
+
   qsa('[data-sessions]', c).forEach((b) => b.onclick = () => userSessionsModal(users.find((x) => x.id == b.dataset.sessions)));
+  qsa('[data-stores]', c).forEach((b) => b.onclick = () => {
+    const u = users.find((x) => x.id == b.dataset.stores);
+    if (u) userStoreAccessModal(u, () => renderUsersManager(c));
+  });
   qsa('[data-mfareset]', c).forEach((b) => b.onclick = async () => {
     const u = users.find((x) => x.id == b.dataset.mfareset);
     if (!confirm(`Reset two-factor sign-in for ${u.username}? They are signed out, and set it up again with their new phone at next sign-in (if their role requires it) or when they choose to.`)) return;
@@ -21952,9 +22124,30 @@ async function renderUsersManager(c) {
 
   qs('#nu', c).onclick = () => modal('New User', `${field('Username *', 'username')}${field('Temporary password *', 'password', { type: 'password' })}
     <p class="muted">${esc(passwordHint())} They must choose their own at first sign-in.</p>${field('Full name', 'full_name')}
-    ${multi ? field('Home workshop', 'workshop_id', { type: 'select', options: wsOptions(wsd), value: wsd.default_id }) : ''}<label>Roles</label>${roleBoxes()}
+    ${multi ? field('Home workshop', 'workshop_id', { type: 'select', options: wsOptions(wsd), value: wsd.default_id }) : ''}
+    ${field('Store Assignment (for Storekeepers)', 'store_location_id', { type: 'select', options: storeOptions, value: '' })}
+    <p class="muted" style="margin:-4px 0 8px;font-size:11.5px">Select <b>Central Main Stores</b> for central procurement/depot storekeepers, or a <b>Site Store</b> for project site storekeepers.</p>
+    <label>Roles</label>${roleBoxes()}
     <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Create</button></div>`,
     (body, close) => {
+      // Auto-suggest store location when specific roles are toggled
+      const storeSelect = qs('select[name="store_location_id"]', body);
+      qsa('[data-role]', body).forEach((rBox) => {
+        rBox.onchange = () => {
+          if (!storeSelect) return;
+          const rName = rBox.dataset.role;
+          if (rBox.checked) {
+            if (rName === 'main_storekeeper') {
+              const ms = allStoreLocations.find(s => s.store_type === 'MAIN_STORE');
+              if (ms) storeSelect.value = String(ms.id);
+            } else if (rName === 'storekeeper' && !storeSelect.value) {
+              const ss = allStoreLocations.find(s => s.store_type === 'SITE_STORE' || s.store_type === 'MAIN_WORKSHOP_STORE');
+              if (ss) storeSelect.value = String(ss.id);
+            }
+          }
+        };
+      });
+
       qs('#s', body).onclick = async () => {
         const d = formData(body); d.roles = picked(body);
         try { await api('/users', { method: 'POST', body: d }); close(); toast('User created'); renderUsersManager(c); } catch (e) { toast(e.message, 'err'); }
