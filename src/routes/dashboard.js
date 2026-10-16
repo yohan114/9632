@@ -13,14 +13,10 @@ const { asyncHandler } = require('../lib/http');
 
 const router = express.Router();
 
-// The Live Overview: cost trends, the costliest vehicles and everyone's recent activity. The
-// Dashboard shows it only with the Reports section, so the server asks for the same.
+// Dashboard endpoints are accessible to all authenticated users; financial figures and sensitive
+// rollups are gated per-field based on the user's module & capability permissions.
 router.use(requireAuth);
-router.use((req, res, next) => {
-  const permissions = require('../lib/permissions');
-  if (permissions.reaches(req.user, 'reports')) return next();
-  return res.status(403).json({ error: 'Your role has no view access to reports' });
-});
+const permissions = require('../lib/permissions');
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
@@ -32,6 +28,8 @@ const limits = require('../lib/approval_limits');
 const { hasCap } = require('../lib/auth');
 const attendance = require('../lib/attendance');
 const jobClose = require('../lib/job_close');
+const costing = require('../lib/costing');
+const mechanicsLib = require('../lib/mechanics');
 
 // Live, in-flight MRNs awaiting a decision. approval_status is 'requested' | 'certified'
 // | 'approved' | 'rejected' (there is no 'pending'); the 1500+ imported rows are
@@ -175,18 +173,68 @@ function costFigures(ws) {
   return { monthly_cost_total: now ? now.total : 0, monthly_cost_trend, top_5_cost_vehicles };
 }
 
+/** Quick MTD & Today Mechanics KPI pulse for users with dailywork / labour / reports privileges */
+function mechanicsPulse(user, ws) {
+  const ym = new Date().toISOString().slice(0, 7);
+  const td = today();
+  const dwWs = wsSql('COALESCE(j.workshop_id, d.workshop_id)', ws);
+  const rows = all(`
+    SELECT d.work_date, d.mechanic, COALESCE(d.hours, 0) AS hours, COALESCE(d.outside_labour, 0) AS outside_labour
+      FROM job_daily_work d
+      LEFT JOIN job_cards j ON j.id = d.job_id
+     WHERE substr(d.work_date, 1, 7) = ?${dwWs}
+  `, ym);
+  let todayHours = 0;
+  const todayMechs = new Set();
+  let mtdHours = 0;
+  let mtdInternalCost = 0;
+  let mtdOutsideCost = 0;
+  for (const r of rows) {
+    const names = mechanicsLib.splitMechanics(r.mechanic);
+    const lineHours = Number(r.hours) || 0;
+    const lineOutside = Number(r.outside_labour) || 0;
+    mtdOutsideCost += lineOutside;
+    if (r.work_date === td) {
+      todayHours += lineHours;
+      for (const n of names) todayMechs.add(mechanicsLib.resolveMechanicName(n) || n);
+    }
+    for (const rawName of (names.length ? names : [r.mechanic || 'Unknown'])) {
+      const canon = mechanicsLib.resolveMechanicName(rawName) || rawName;
+      const rate = costing.labourRateFor(canon, r.work_date);
+      mtdHours += lineHours;
+      mtdInternalCost += lineHours * rate;
+    }
+  }
+  const netSavings = r2(mtdOutsideCost - mtdInternalCost);
+  const roiRatio = mtdInternalCost > 0 ? r2(mtdOutsideCost / mtdInternalCost) : 0;
+  return {
+    month: ym,
+    today_hours: r2(todayHours),
+    today_mechanics_count: todayMechs.size,
+    mtd_hours: r2(mtdHours),
+    mtd_internal_cost: r2(mtdInternalCost),
+    mtd_outside_cost: r2(mtdOutsideCost),
+    mtd_net_savings: netSavings,
+    mtd_roi_ratio: roiRatio
+  };
+}
+
 // ---- overview -------------------------------------------------------------
 router.get('/overview', asyncHandler((req, res) => {
   const ws = scope.reach(req.user);   // Step 2b: null = every workshop
+  const canReports = permissions.reaches(req.user, 'reports') || hasCap(req.user, 'reports.financial');
+  const canJobs = permissions.reaches(req.user, 'jobs') || permissions.reaches(req.user, 'jobrequests');
+  const canStores = permissions.reaches(req.user, 'stores') || permissions.reaches(req.user, 'oil') || permissions.reaches(req.user, 'generalstock');
+
   const { active_jobs, vehicles_in_workshop, pending_requests, todays_issue_cost } = counts(ws);
   const low = lowStock(req.user);
-  const { monthly_cost_total, monthly_cost_trend, top_5_cost_vehicles } = costFigures(ws);
+  const costs = canReports ? costFigures(ws) : { monthly_cost_total: null, monthly_cost_trend: [], top_5_cost_vehicles: [] };
 
   // Job status mix over the last 90 days (by the real job date, falling back to created_at).
-  const job_status_breakdown = all(
+  const job_status_breakdown = canJobs ? all(
     `SELECT status, COUNT(*) AS count FROM job_cards
       WHERE date(COALESCE(requested_at, created_at)) >= date('now', '-90 days')${wsSql('workshop_id', ws)}
-      GROUP BY status ORDER BY count DESC`);
+      GROUP BY status ORDER BY count DESC`) : [];
 
   // Step 2b: kept to your own workshops, the actions of their people (each person's home workshop).
   const recent_activity = all(
@@ -199,9 +247,13 @@ router.get('/overview', asyncHandler((req, res) => {
   res.json({
     active_jobs, pending_requests, vehicles_in_workshop,
     low_stock_items: low.general, low_oil_stock: low.oil, low_filter_stock: low.filter,
-    todays_issue_cost, monthly_cost_total,
-    job_status_breakdown, top_5_cost_vehicles, monthly_cost_trend,
-    recent_activity, stock_alerts: low.list(),
+    todays_issue_cost: (canReports || canStores) ? todays_issue_cost : null,
+    monthly_cost_total: costs.monthly_cost_total,
+    job_status_breakdown,
+    top_5_cost_vehicles: costs.top_5_cost_vehicles,
+    monthly_cost_trend: costs.monthly_cost_trend,
+    recent_activity,
+    stock_alerts: canStores ? low.list() : [],
     generated_at: new Date().toISOString(),
   });
 }));
@@ -226,6 +278,7 @@ function unsignedFor(wsList) {
 router.get('/workflow-monitor', asyncHandler((req, res) => {
   const user = req.user;
   const may = (cap) => hasCap(user, cap);
+  const canMod = (m) => permissions.reaches(user, m);
   const jm = jobsFlow.monitor(user);
   const sm = storesFlow.monitor(user);
   const rReach = scope.reach(user);
@@ -236,7 +289,8 @@ router.get('/workflow-monitor', asyncHandler((req, res) => {
   const active_jobs = get(`SELECT COUNT(*) c FROM job_cards j WHERE ${jobstate.openSql('j')}${andJ}`, ...jOwn.params).c;
   const vehicles_in_workshop = get(`SELECT COUNT(DISTINCT j.asset_id) c FROM job_cards j WHERE ${jobstate.openSql('j')} AND j.asset_id IS NOT NULL${andJ}`, ...jOwn.params).c;
   // Step 2b: your own workshops' cost this month, your own store's low stock.
-  const { monthly_cost_total } = costFigures(rReach);
+  const canReports = canMod('reports') || may('reports.financial');
+  const { monthly_cost_total } = canReports ? costFigures(rReach) : { monthly_cost_total: null };
   const low = lowStock(user);
   const low_stock_total = low.general + low.oil + low.filter;
 
@@ -399,6 +453,72 @@ router.get('/workflow-monitor', asyncHandler((req, res) => {
 
   // Process Group 3: Warehouse & Physical Controls
   const warehouse = [];
+  if (may('stores.grn.approve')) {
+    try {
+      const pendingGrns = all(`SELECT v.id, v.grn_no, v.received_date, v.supplier, sl.name AS store_name,
+          (SELECT COUNT(*) FROM grn g WHERE g.voucher_id = v.id OR g.grn_no = v.grn_no) AS lines
+          FROM grn_vouchers v LEFT JOIN store_locations sl ON sl.id = v.physical_store_id
+          WHERE v.status = 'pending_approval' ORDER BY v.id DESC LIMIT 20`);
+      for (const v of pendingGrns) {
+        warehouse.push({
+          id: v.id, kind: 'grn_approve', ref: v.grn_no, title: `GRN Voucher ${v.grn_no}`,
+          vehicle: v.store_name || v.supplier || 'Stores', description: `${v.lines || 1} item(s) · ${v.supplier || 'Supplier'}`,
+          date: v.received_date, link: `#/stores?tab=flow&sub=grn&id=${v.id}`, action: 'Approve GRN'
+        });
+      }
+    } catch (e) { /* table optional */ }
+  }
+  if (may('stores.min.approve')) {
+    try {
+      const pendingMins = all(`SELECT n.id, n.min_no, n.issue_date, n.purpose, n.requested_by, a.code AS asset_code, a.registration AS asset_reg,
+          (SELECT COUNT(*) FROM issues i WHERE i.min_id = n.id OR i.min_no = n.min_no) AS lines
+          FROM min_notes n LEFT JOIN assets a ON a.id = n.asset_id
+          WHERE n.status = 'requested' ORDER BY n.id DESC LIMIT 20`);
+      for (const n of pendingMins) {
+        warehouse.push({
+          id: n.id, kind: 'min_approve', ref: n.min_no, title: `Issue Note ${n.min_no}`,
+          vehicle: [n.asset_reg, n.asset_code].filter(Boolean).join(' · ') || 'General Issue',
+          description: `${n.lines || 1} item(s) · ${n.purpose || ''}`, requester: n.requested_by,
+          date: n.issue_date, link: `#/stores?tab=flow&sub=issues&min=${n.id}`, action: 'Approve MIN'
+        });
+      }
+    } catch (e) { /* table optional */ }
+  }
+  if (may('stores.mtn.approve')) {
+    try {
+      const pendingMtns = all(`SELECT t.id, t.mtn_no, t.txn_date, t.description, t.from_location, t.to_location,
+          fl.name AS from_store_name, tl.name AS to_store_name
+          FROM mtn t LEFT JOIN store_locations fl ON fl.id = t.from_store_location_id
+          LEFT JOIN store_locations tl ON tl.id = t.to_store_location_id
+          WHERE t.status IN ('draft', 'pending_approval') ORDER BY t.id DESC LIMIT 20`);
+      for (const t of pendingMtns) {
+        warehouse.push({
+          id: t.id, kind: 'mtn_approve', ref: t.mtn_no, title: `Transfer ${t.mtn_no}`,
+          vehicle: `${t.from_store_name || t.from_location || 'Origin'} → ${t.to_store_name || t.to_location || 'Dest'}`,
+          description: t.description || 'Material Transfer', date: t.txn_date,
+          link: `#/stores?tab=mtn&id=${t.id}`, action: 'Approve MTN'
+        });
+      }
+    } catch (e) { /* table optional */ }
+  }
+  if (may('stores.mtn.edit') || may('stores.grn.receive')) {
+    try {
+      const inTransitMtns = all(`SELECT t.id, t.mtn_no, t.txn_date, t.status, t.description, t.from_location, t.to_location,
+          fl.name AS from_store_name, tl.name AS to_store_name
+          FROM mtn t LEFT JOIN store_locations fl ON fl.id = t.from_store_location_id
+          LEFT JOIN store_locations tl ON tl.id = t.to_store_location_id
+          WHERE t.status IN ('dispatched', 'received') ORDER BY t.id DESC LIMIT 20`);
+      for (const t of inTransitMtns) {
+        warehouse.push({
+          id: t.id, kind: 'mtn_receive', ref: t.mtn_no, title: `In-Transit MTN ${t.mtn_no}`,
+          vehicle: `${t.from_store_name || t.from_location || 'Origin'} → ${t.to_store_name || t.to_location || 'Site Store'}`,
+          description: `${t.description || 'Transfer'} (${t.status === 'received' ? 'Ready to Accept' : 'Dispatched'})`,
+          date: t.txn_date, link: `#/stores?tab=mtn&id=${t.id}`,
+          action: t.status === 'received' ? 'Accept Stock' : 'Receive MTN'
+        });
+      }
+    } catch (e) { /* table optional */ }
+  }
   if (may('stores.count.approve')) {
     const submittedSessions = all(`SELECT s.id, s.count_no, s.scope, s.kind, s.started_at, w.name AS store_name
         FROM count_sessions s LEFT JOIN workshops w ON w.id = s.store_id
@@ -466,7 +586,11 @@ router.get('/workflow-monitor', asyncHandler((req, res) => {
   }
 
   const total_pending = inflow.length + authorizations.length + warehouse.length + compliance.length;
-  const is_approver = total_pending > 0 || ['stores.mrn.certify', 'stores.mrn.approve', 'jobs.approve_transport', 'jobs.approve_operations', 'jobrequests.certify', 'jobrequests.approve', 'jobs.create', 'attendance.signoff', 'jobs.reopen', 'stores.count.approve', 'stores.disposal.approve'].some(may);
+  const is_approver = total_pending > 0 || [
+    'stores.mrn.certify', 'stores.mrn.approve', 'stores.grn.approve', 'stores.min.approve', 'stores.mtn.approve',
+    'jobs.approve_transport', 'jobs.approve_operations', 'jobrequests.certify', 'jobrequests.approve',
+    'jobs.create', 'attendance.signoff', 'jobs.reopen', 'stores.count.approve', 'stores.disposal.approve'
+  ].some(may);
 
   // 5. Admin / Manager On-Hold & Bottleneck Center
   const on_hold = {
@@ -506,6 +630,37 @@ router.get('/workflow-monitor', asyncHandler((req, res) => {
     ? { id: rReach[0], label: (get('SELECT name FROM workshops WHERE id = ?', rReach[0]) || {}).name || null }
     : null;
 
+  const canSeeMechanics = canMod('dailywork') || canMod('labour') || canReports;
+  const mechanics_pulse = canSeeMechanics ? mechanicsPulse(user, rReach) : null;
+
+  const privilege_profile = {
+    roles: user.roles || [],
+    is_admin: (user.roles || []).includes('admin'),
+    domains: {
+      jobs: canMod('jobs') || canMod('jobrequests') || canMod('service'),
+      stores: canMod('stores') || canMod('oil') || canMod('generalstock'),
+      purchasing: canMod('purchasing'),
+      mechanics: canSeeMechanics,
+      assets: canMod('assets') || canMod('batteries') || canMod('tyres'),
+      reports: canReports,
+    },
+    approver_badges: [
+      may('jobrequests.certify') ? 'Certify Job Requests' : null,
+      may('jobrequests.approve') ? 'Approve Job Requests' : null,
+      may('jobs.approve_transport') ? 'Transport Approve Jobs' : null,
+      may('jobs.approve_operations') ? 'Operations Approve Jobs' : null,
+      may('stores.mrn.certify') ? 'Certify MRN' : null,
+      may('stores.mrn.approve') ? 'Approve MRN' : null,
+      may('stores.grn.approve') ? 'Approve GRN' : null,
+      may('stores.min.approve') ? 'Approve MIN' : null,
+      may('stores.mtn.approve') ? 'Approve MTN' : null,
+      may('stores.count.approve') ? 'Approve Stock Take' : null,
+      may('stores.disposal.approve') ? 'Approve Disposals' : null,
+      may('attendance.signoff') ? 'Sign-off Workday' : null,
+      may('jobs.close') ? 'Close Job Cards' : null,
+    ].filter(Boolean)
+  };
+
   res.json({
     kpis: {
       active_jobs, vehicles_in_workshop, total_pending,
@@ -514,6 +669,8 @@ router.get('/workflow-monitor', asyncHandler((req, res) => {
     },
     jobs_pipeline: jobs_road,
     stores_pipeline: stores_road,
+    mechanics_pulse,
+    privilege_profile,
     approvals_process: {
       inflow,
       authorizations,
@@ -530,12 +687,14 @@ router.get('/workflow-monitor', asyncHandler((req, res) => {
 // ---- lightweight poll -----------------------------------------------------
 router.get('/live-stats', asyncHandler((req, res) => {
   const ws = scope.reach(req.user);   // Step 2b: as the overview
+  const canReports = permissions.reaches(req.user, 'reports') || hasCap(req.user, 'reports.financial');
   const c = counts(ws);
   const low = lowStock(req.user);
   res.json({
     active_jobs: c.active_jobs, pending_requests: c.pending_requests,
     low_stock_alerts: low.general + low.oil + low.filter,
-    todays_cost: c.todays_issue_cost, monthly_cost: costFigures(ws).monthly_cost_total,
+    todays_cost: canReports ? c.todays_issue_cost : null,
+    monthly_cost: canReports ? costFigures(ws).monthly_cost_total : null,
   });
 }));
 

@@ -226,10 +226,33 @@ function getStoreLocationByCode(code) {
   return get(sql, String(code).trim()) || null;
 }
 
+function ensureStoreMetaCols(targetDb = null) {
+  const cols = [
+    ['incharge_name', 'TEXT'],
+    ['contact_phone', 'TEXT'],
+    ['address', 'TEXT'],
+    ['allow_direct_grn', 'INTEGER NOT NULL DEFAULT 0'],
+    ['allow_direct_issue', 'INTEGER NOT NULL DEFAULT 1'],
+  ];
+  for (const [col, def] of cols) {
+    try {
+      const existing = targetDb
+        ? targetDb.prepare('PRAGMA table_info(store_locations)').all()
+        : all('PRAGMA table_info(store_locations)');
+      if (existing.length && !existing.some((c) => c.name === col)) {
+        const sql = `ALTER TABLE store_locations ADD COLUMN ${col} ${def}`;
+        if (targetDb) targetDb.exec(sql);
+        else run(sql);
+      }
+    } catch (_) {}
+  }
+}
+
 /**
  * Create a new physical store location.
  */
 function createStoreLocation(data, user = null) {
+  ensureStoreMetaCols();
   const code = String(data.code || '').trim().toUpperCase();
   const name = String(data.name || '').trim();
   const storeType = String(data.store_type || data.storeType || '').trim();
@@ -239,6 +262,11 @@ function createStoreLocation(data, user = null) {
   const isDefault = data.is_default ? 1 : 0;
   const openedAt = data.opened_at ? String(data.opened_at).trim() : null;
   const notes = data.notes ? String(data.notes).trim() : null;
+  const inchargeName = data.incharge_name ? String(data.incharge_name).trim() : null;
+  const contactPhone = data.contact_phone ? String(data.contact_phone).trim() : null;
+  const address = data.address ? String(data.address).trim() : null;
+  const allowDirectGrn = data.allow_direct_grn ? 1 : 0;
+  const allowDirectIssue = data.allow_direct_issue !== undefined ? (data.allow_direct_issue ? 1 : 0) : 1;
 
   if (!code) throw new Error('Store location code is required.');
   if (!name) throw new Error('Store location name is required.');
@@ -270,9 +298,12 @@ function createStoreLocation(data, user = null) {
     const info = run(`
       INSERT INTO store_locations (
         code, name, store_type, parent_store_id, site_id, workshop_id,
-        active, is_default, opened_at, notes, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, datetime('now'), datetime('now'))
-    `, code, name, storeType, parentStoreId, siteId, workshopId, isDefault, openedAt, notes);
+        active, is_default, opened_at, notes,
+        incharge_name, contact_phone, address, allow_direct_grn, allow_direct_issue,
+        created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+    `, code, name, storeType, parentStoreId, siteId, workshopId, isDefault, openedAt, notes,
+       inchargeName, contactPhone, address, allowDirectGrn, allowDirectIssue);
 
     const id = info.lastInsertRowid;
 
@@ -294,7 +325,7 @@ function createStoreLocation(data, user = null) {
         entity: 'store_location',
         entityId: newId,
         action: 'create',
-        after: { code, name, storeType, parentStoreId, workshopId, siteId }
+        after: { code, name, storeType, parentStoreId, workshopId, siteId, inchargeName, contactPhone, address, allowDirectGrn, allowDirectIssue }
       });
     } catch (_) {}
   }
@@ -306,6 +337,7 @@ function createStoreLocation(data, user = null) {
  * Update an existing store location.
  */
 function updateStoreLocation(id, data, user = null) {
+  ensureStoreMetaCols();
   const store = get('SELECT * FROM store_locations WHERE id = ?', id);
   if (!store) throw new Error(`Store location ID ${id} not found.`);
 
@@ -316,6 +348,11 @@ function updateStoreLocation(id, data, user = null) {
   const notes = data.notes !== undefined ? (data.notes ? String(data.notes).trim() : null) : store.notes;
   const isDefault = data.is_default !== undefined ? (data.is_default ? 1 : 0) : store.is_default;
   const active = data.active !== undefined ? (data.active ? 1 : 0) : store.active;
+  const inchargeName = data.incharge_name !== undefined ? (data.incharge_name ? String(data.incharge_name).trim() : null) : store.incharge_name;
+  const contactPhone = data.contact_phone !== undefined ? (data.contact_phone ? String(data.contact_phone).trim() : null) : store.contact_phone;
+  const address = data.address !== undefined ? (data.address ? String(data.address).trim() : null) : store.address;
+  const allowDirectGrn = data.allow_direct_grn !== undefined ? (data.allow_direct_grn ? 1 : 0) : (store.allow_direct_grn || 0);
+  const allowDirectIssue = data.allow_direct_issue !== undefined ? (data.allow_direct_issue ? 1 : 0) : (store.allow_direct_issue != null ? store.allow_direct_issue : 1);
 
   if (!name) throw new Error('Store location name cannot be empty.');
 
@@ -332,9 +369,15 @@ function updateStoreLocation(id, data, user = null) {
              notes = ?,
              is_default = ?,
              active = ?,
+             incharge_name = ?,
+             contact_phone = ?,
+             address = ?,
+             allow_direct_grn = ?,
+             allow_direct_issue = ?,
              updated_at = datetime('now')
        WHERE id = ?
-    `, name, parentStoreId, siteId, workshopId, notes, isDefault, active, id);
+    `, name, parentStoreId, siteId, workshopId, notes, isDefault, active,
+       inchargeName, contactPhone, address, allowDirectGrn, allowDirectIssue, id);
 
     // Update legacy mapping if workshop changed
     if (workshopId && workshopId !== store.workshop_id) {
@@ -354,7 +397,7 @@ function updateStoreLocation(id, data, user = null) {
         entityId: id,
         action: 'update',
         before: store,
-        after: { name, parentStoreId, siteId, workshopId, notes, isDefault, active }
+        after: { name, parentStoreId, siteId, workshopId, notes, isDefault, active, inchargeName, contactPhone, address, allowDirectGrn, allowDirectIssue }
       });
     } catch (_) {}
   }
@@ -406,23 +449,41 @@ function retireStoreLocation(id, user = null) {
  * Build complete store hierarchy tree for visual UI presentation.
  */
 function getStoreHierarchyTree() {
+  ensureStoreMetaCols();
   const allStores = listStoreLocations();
 
   const mainStore = allStores.find((s) => s.store_type === STORE_TYPES.MAIN_STORE && s.active);
   if (!mainStore) return { main_store: null, unlinked: allStores };
 
-  const siteStores = allStores.filter((s) => s.store_type === STORE_TYPES.SITE_STORE && s.active);
   const mainWorkshop = allStores.find((s) => s.store_type === STORE_TYPES.MAIN_WORKSHOP_STORE && s.active);
+
+  // Child site stores directly under Central Main Store
+  const directSiteStores = allStores.filter((s) =>
+    s.active &&
+    (s.store_type === STORE_TYPES.SITE_STORE || s.store_type === STORE_TYPES.SITE_WORKSHOP_STORE) &&
+    (!mainWorkshop || Number(s.parent_store_id) !== Number(mainWorkshop.id))
+  );
+
+  // Child site/workshop stores parented under Central Main Workshop Store
+  const workshopChildStores = mainWorkshop
+    ? allStores.filter((s) =>
+        s.active &&
+        (s.store_type === STORE_TYPES.SITE_STORE || s.store_type === STORE_TYPES.SITE_WORKSHOP_STORE) &&
+        Number(s.parent_store_id) === Number(mainWorkshop.id)
+      )
+    : [];
 
   return {
     main_store: {
       ...mainStore,
       type_label: STORE_TYPE_LABELS[mainStore.store_type] || 'Central Main Store',
-      site_stores: siteStores.map((s) => ({ ...s, type_label: STORE_TYPE_LABELS[s.store_type] || 'Site Store' })),
+      site_stores: directSiteStores.map((s) => ({ ...s, type_label: STORE_TYPE_LABELS[s.store_type] || 'Site Store' })),
       main_workshop: mainWorkshop
         ? {
             ...mainWorkshop,
-            type_label: STORE_TYPE_LABELS[mainWorkshop.store_type] || 'Main Workshop Store'
+            type_label: STORE_TYPE_LABELS[mainWorkshop.store_type] || 'Main Workshop Store',
+            site_workshop_stores: workshopChildStores.map((s) => ({ ...s, type_label: STORE_TYPE_LABELS[s.store_type] || 'Site Store' })),
+            site_stores: workshopChildStores.map((s) => ({ ...s, type_label: STORE_TYPE_LABELS[s.store_type] || 'Site Store' })),
           }
         : null
     },
@@ -629,6 +690,8 @@ function seedStoreLocations(targetDb = null) {
     );
   `);
 
+  ensureStoreMetaCols(targetDb);
+
   // 1. Seed MAIN_STORE: Central Main Stores (Top central authority for sites and purchasing)
   let mainStore = qGet('SELECT * FROM store_locations WHERE code = ?', 'MAIN-STORES');
   if (!mainStore) {
@@ -661,14 +724,13 @@ function seedStoreLocations(targetDb = null) {
   }
 
   // 3. Seed unified SITE_STORE for Workshop 2 (Galagedara / GWS)
-  // Plan requirement: "there is no site workshop store only have site store"
   // Automatically migrate any legacy SITE_WORKSHOP_STORE records to SITE_STORE
   qRun(`
     UPDATE store_locations
        SET store_type = 'SITE_STORE',
            code = REPLACE(code, 'SITE-WORKSHOP-', 'SITE-STORE-'),
            name = REPLACE(name, 'Site Workshop Store', 'Site Store'),
-           parent_store_id = ?
+           parent_store_id = COALESCE(parent_store_id, ?)
      WHERE store_type = 'SITE_WORKSHOP_STORE'
   `, mainStore ? mainStore.id : 1);
 
@@ -681,13 +743,13 @@ function seedStoreLocations(targetDb = null) {
         VALUES ('SITE-STORE-GWS', 'Galagedara Site Store', 'SITE_STORE', ?, ?, 1, 0, 'Unified site store for Galagedara project')
       `, mainWsStore.id, gws.id);
       gwsStore = qGet("SELECT * FROM store_locations WHERE code = 'SITE-STORE-GWS'");
-    } else {
+    } else if (gwsStore.code === 'SITE-WORKSHOP-GWS' || gwsStore.store_type === 'SITE_WORKSHOP_STORE') {
       qRun(`
         UPDATE store_locations
            SET code = 'SITE-STORE-GWS',
                name = 'Galagedara Site Store',
                store_type = 'SITE_STORE',
-               parent_store_id = ?
+               parent_store_id = COALESCE(parent_store_id, ?)
          WHERE id = ?
       `, mainWsStore.id, gwsStore.id);
       gwsStore = qGet('SELECT * FROM store_locations WHERE id = ?', gwsStore.id);

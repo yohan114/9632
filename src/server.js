@@ -127,6 +127,7 @@ app.use('/api', (req, res, next) => {
 app.use('/api/auth', require('./routes/auth'));
 app.use('/api/access', require('./routes/access'));
 app.use('/api/dual-auth', require('./routes/dual_auth'));
+app.use('/api/notifications', require('./routes/notifications'));
 app.use('/api/audit-logs', require('./routes/audit_logs'));
 // The picker lists stay open to anyone signed in; anything else about a vehicle needs Assets.
 // This only relaxes the MODULE check -- the global /api gate above still demands a session -- and
@@ -183,7 +184,11 @@ app.use('/api/tools', require('./routes/tools'));
 app.use('/api/stock-cockpit', requireModule('stores'), require('./routes/stock_cockpit'));
 app.use('/api/jobs', requireModule('jobs'), require('./routes/jobcards'));
 app.use('/api/job-requests', requireModule('jobrequests'), require('./routes/jobrequests'));
-app.use('/api/daily-work', requireModule('dailywork'), require('./routes/dailywork'));
+const dailyWorkGate = (req, res, next) =>
+  req.path.startsWith('/mechanics-kpi')
+    ? requireAuth(req, res, next)
+    : requireModule('dailywork')(req, res, next);
+app.use('/api/daily-work', dailyWorkGate, require('./routes/dailywork'));
 // Mechanic attendance and the day tally. Reading needs Daily Work view (checked inside); each write
 // is decided by its own capability, because the managers who sign off and unlock a day hold Daily
 // Work at view only.

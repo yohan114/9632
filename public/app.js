@@ -927,6 +927,7 @@ const NAV = [
   ['field', '📍', 'Field Work'],
   ['operations', '🧭', 'Operations'],
   ['dailywork', '📅', 'Daily Work'],
+  ['mechanics-kpi', '👷', 'Mechanics KPI'],
   ['services', '🛠️', 'Service Records'],
   ['lubecapacities', '🛢️', 'Lubricant Capacities'],
   ['assets', '🚜', 'Assets'],
@@ -950,7 +951,7 @@ const NAV = [
 ];
 // Which permission module governs each nav item's visibility (dashboard always on).
 const NAV_MODULE = {
-  assets: 'assets', vehicledocuments: 'assets', jobs: 'jobs', jobrequests: 'jobrequests', field: 'jobs', operations: 'assets', dailywork: 'dailywork', services: 'filters', lubecapacities: 'jobs',
+  assets: 'assets', vehicledocuments: 'assets', jobs: 'jobs', jobrequests: 'jobrequests', field: 'jobs', operations: 'assets', dailywork: 'dailywork', 'mechanics-kpi': 'dailywork', services: 'filters', lubecapacities: 'jobs',
   labour: 'labour', stores: 'stores', tools: 'tools', stocktake: 'stores', stockcockpit: 'stores', generalstock: 'stores', oil: 'oil', batteries: 'batteries', filters: 'filters', filterstock: 'filters',
   projects: 'projects', aliases: 'aliases', attention: 'reports', progress: 'reports',
   teardown: 'reports', reports: 'reports', tyrebattery: 'reports',
@@ -967,6 +968,7 @@ function navVisible(n) {
   if (n[3] === 'admin') return canDo('access.manage', 'users.manage');
   if (n[3] === 'workshops') return canDo('workshops.manage', 'mechanics.move');
   if (n[0] === 'dashboard') return true;
+  if (n[0] === 'mechanics-kpi') return canView('dailywork') || canView('labour') || canView('reports');
   // Job Cards holds the job requests too (its Requests tab).
   if (n[0] === 'jobs') return canView('jobs') || canView('jobrequests');
   const m = NAV_MODULE[n[0]];
@@ -976,7 +978,7 @@ function navVisible(n) {
 // Sidebar grouping — headings shown above each cluster (a group with no visible item is hidden).
 const NAV_GROUP_ORDER = ['Operations', 'Inventory', 'Procurement', 'Fleet', 'Analysis', 'Admin'];
 const NAV_GROUP = {
-  dashboard: 'Operations', jobs: 'Operations', jobrequests: 'Operations', field: 'Operations', operations: 'Operations', dailywork: 'Operations', services: 'Operations', lubecapacities: 'Operations',
+  dashboard: 'Operations', jobs: 'Operations', jobrequests: 'Operations', field: 'Operations', operations: 'Operations', dailywork: 'Operations', 'mechanics-kpi': 'Operations', services: 'Operations', lubecapacities: 'Operations',
   stores: 'Inventory', tools: 'Inventory', stocktake: 'Inventory',
   purchasing: 'Procurement', tbrequests: 'Procurement',
   assets: 'Fleet', vehicledocuments: 'Fleet', serviceplan: 'Fleet',
@@ -1236,10 +1238,11 @@ function renderShell() {
         <span class="topbar-search-kbd">⌘K</span>
       </div>
       <div class="spacer"></div>
-      <button class="topbar-icon-btn" id="topbar-bell" title="Notifications">
+      <button class="topbar-icon-btn" id="topbar-bell" title="Live Notifications, Certifications & Approvals" style="position:relative">
         🔔
-        <span class="topbar-badge-count">3</span>
+        <span class="topbar-badge-count" id="topbar_notif_badge" style="display:none">0</span>
       </button>
+      <div id="notif_popover" style="display:none;position:fixed;top:54px;right:18px;width:440px;max-width:calc(100vw - 24px);max-height:calc(100vh - 76px);background:var(--surface,#fff);border:1px solid var(--border);border-radius:12px;box-shadow:0 16px 40px rgba(15,23,42,0.22);z-index:950;color:var(--text);flex-direction:column;overflow:hidden"></div>
       <div class="topbar-user-pill" id="user_profile_trigger" title="Account settings">
         <div class="topbar-user-avatar">${esc(initials)}</div>
         <div class="topbar-user-meta">
@@ -1271,14 +1274,15 @@ function renderShell() {
 
   const pop = qs('#user_popover');
   const trig = qs('#user_profile_trigger');
+  const notifPop = qs('#notif_popover');
+  const btnBell = qs('#topbar-bell');
+
   if (trig && pop) {
     trig.onclick = (e) => {
       e.stopPropagation();
+      if (notifPop) { notifPop.style.display = 'none'; _notifState.open = false; }
       pop.style.display = pop.style.display === 'none' ? 'block' : 'none';
     };
-    document.addEventListener('click', (e) => {
-      if (pop && !pop.contains(e.target) && e.target !== trig) pop.style.display = 'none';
-    });
   }
 
   const sInp = qs('#global_search_input');
@@ -1329,21 +1333,265 @@ function renderShell() {
   const btnMfa = qs('#pop_mfa');
   if (btnMfa) btnMfa.onclick = () => { if (pop) pop.style.display = 'none'; securityModal(); };
 
-  const btnBell = qs('#topbar-bell');
-  if (btnBell) {
-    btnBell.onclick = openDualAuthModal;
-    api('/dual-auth/pending').then((res) => {
-      const cnt = (res && res.total) || 0;
-      const bEl = qs('.topbar-badge-count', btnBell);
-      if (bEl) {
-        bEl.innerText = cnt;
-        bEl.style.display = cnt > 0 ? 'inline-block' : 'none';
+  if (btnBell && notifPop) {
+    btnBell.onclick = (e) => {
+      e.stopPropagation();
+      if (pop) pop.style.display = 'none';
+      const isOpen = notifPop.style.display === 'flex';
+      if (isOpen) {
+        notifPop.style.display = 'none';
+        _notifState.open = false;
+      } else {
+        notifPop.style.display = 'flex';
+        _notifState.open = true;
+        renderNotifPopover();
+        refreshNotifications({ showToastOnNew: false });
       }
-    }).catch(() => {});
+    };
+    setupLiveNotifications();
+    refreshNotifications({ showToastOnNew: false });
   }
 
   qs('#ham').onclick = () => qs('#nav').classList.toggle('open');
   qsa('#nav a').forEach((a) => a.addEventListener('click', () => qs('#nav').classList.remove('open')));
+}
+
+// ---------------------------------------------------------------- Real-Time Privilege Notification Center
+const _notifState = {
+  data: null,
+  activeTab: 'all',
+  open: false,
+  knownKeys: new Set(),
+  initialized: false,
+  boundListeners: false,
+  refreshTimer: null,
+};
+
+function updateBellBadge(data) {
+  const btnBell = qs('#topbar-bell');
+  const bEl = qs('#topbar_notif_badge') || (btnBell && qs('.topbar-badge-count', btnBell));
+  if (!bEl) return;
+  const cnt = (data && data.badge_count) || 0;
+  const unread = (data && data.total_unread) || 0;
+  const displayCnt = unread > 0 ? unread : cnt;
+  if (displayCnt > 0) {
+    bEl.textContent = displayCnt > 99 ? '99+' : String(displayCnt);
+    bEl.style.display = 'inline-block';
+    bEl.style.background = (data && data.actionable_unread > 0) ? '#dc2626' : '#2563eb';
+  } else {
+    bEl.textContent = '0';
+    bEl.style.display = 'none';
+  }
+}
+
+async function refreshNotifications({ showToastOnNew = false } = {}) {
+  if (!ME || isScreenLocked) return;
+  try {
+    const res = await api('/notifications');
+    if (!res) return;
+    _notifState.data = res;
+    updateBellBadge(res);
+
+    const items = res.items || [];
+    if (_notifState.initialized && showToastOnNew) {
+      const newItems = items.filter((it) => it.unread && !_notifState.knownKeys.has(it.key));
+      if (newItems.length > 0) {
+        const top = newItems[0];
+        toast(`🔔 [${top.badge}] ${top.title}${newItems.length > 1 ? ` (+${newItems.length - 1} more)` : ''}`);
+      }
+    }
+    _notifState.knownKeys = new Set(items.map((it) => it.key));
+    _notifState.initialized = true;
+
+    if (_notifState.open) {
+      renderNotifPopover();
+    }
+  } catch (e) {
+    // quiet on background poll error
+  }
+}
+
+function renderNotifPopover() {
+  const pop = qs('#notif_popover');
+  if (!pop) return;
+  const data = _notifState.data;
+  if (!data) {
+    pop.innerHTML = `<div style="padding:20px;text-align:center" class="muted">Loading privilege-scoped notifications…</div>`;
+    return;
+  }
+
+  const counts = data.counts || {};
+  const tab = _notifState.activeTab || 'all';
+  const allItems = data.items || [];
+  const filtered = tab === 'all'
+    ? allItems
+    : allItems.filter((i) => i.category === tab);
+
+  const tabs = [
+    { key: 'all', label: 'All', count: counts.all || 0 },
+    { key: 'certifications', label: 'Certify', count: counts.certifications || 0 },
+    { key: 'approvals', label: 'Approve', count: counts.approvals || 0 },
+    { key: 'transfers_ops', label: 'Transfers & Ops', count: counts.transfers_ops || 0 },
+    { key: 'status_updates', label: 'Certified/Approved Log', count: counts.status_updates || 0 },
+  ];
+
+  const authBadges = (data.authorities && data.authorities.length)
+    ? data.authorities.slice(0, 4).map((a) => `<span style="background:#eff6ff;color:#1d4ed8;border:1px solid #bfdbfe;border-radius:4px;padding:1px 5px;font-size:10px;font-weight:600">${esc(a)}</span>`).join(' ')
+      + (data.authorities.length > 4 ? ` <span class="muted" style="font-size:10px">+${data.authorities.length - 4} more</span>` : '')
+    : `<span class="muted" style="font-size:11px">Scoped to your role & workshop permissions</span>`;
+
+  pop.innerHTML = `
+    <div style="padding:12px 14px;border-bottom:1px solid var(--border);background:linear-gradient(135deg,#f8fafc 0%,#eff6ff 100%)">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px">
+        <div style="display:flex;align-items:center;gap:6px">
+          <span style="font-size:15px">🔔</span>
+          <b style="font-size:13.5px">Notifications & Approvals</b>
+          ${data.total_unread > 0 ? `<span class="badge red" style="font-size:10.5px">${data.total_unread} unread</span>` : `<span class="badge green" style="font-size:10.5px">Up to date</span>`}
+        </div>
+        <div style="display:flex;gap:4px">
+          <button type="button" class="sm" id="notif_btn_dual" title="4-Eyes Dual-Authorization Queue" style="font-size:11px;padding:3px 7px">🛡️ 4-Eyes</button>
+          <button type="button" class="sm" id="notif_btn_readall" title="Mark all notifications as read" style="font-size:11px;padding:3px 7px" ${data.total_unread > 0 ? '' : 'disabled'}>✓ Mark Read</button>
+          <button type="button" class="sm" id="notif_btn_refresh" title="Refresh now" style="font-size:11px;padding:3px 7px">↻</button>
+        </div>
+      </div>
+      <div style="display:flex;flex-wrap:wrap;gap:4px;align-items:center">
+        <span class="muted" style="font-size:10.5px;margin-right:2px">Active Authorities:</span>
+        ${authBadges}
+      </div>
+    </div>
+
+    <div style="display:flex;gap:4px;padding:8px 10px;border-bottom:1px solid var(--border);overflow-x:auto;background:#f8fafc;flex-shrink:0">
+      ${tabs.map((t) => {
+        const active = t.key === tab;
+        return `<button type="button" class="sm notif-tab-btn" data-tab="${t.key}" style="white-space:nowrap;font-size:11px;padding:4px 8px;border-radius:999px;border:1px solid ${active ? '#2563eb' : 'var(--border)'};background:${active ? '#2563eb' : '#fff'};color:${active ? '#fff' : 'var(--text)'};font-weight:${active ? '700' : '500'}">
+          ${esc(t.label)} <span style="opacity:0.85">(${t.count})</span>
+        </button>`;
+      }).join('')}
+    </div>
+
+    <div style="overflow-y:auto;max-height:420px;padding:8px;display:flex;flex-direction:column;gap:6px;background:var(--surface,#fff)">
+      ${filtered.length ? filtered.map((item) => `
+        <div class="notif-card-item" data-key="${esc(item.key)}" data-link="${esc(item.link || '')}" style="padding:10px 12px;border:1px solid ${item.unread ? '#bfdbfe' : 'var(--border)'};border-left:4px solid ${item.badge_color === 'red' ? '#dc2626' : item.badge_color === 'amber' ? '#d97706' : item.badge_color === 'green' ? '#16a34a' : item.badge_color === 'blue' ? '#2563eb' : '#64748b'};border-radius:8px;background:${item.unread ? '#f8fbff' : '#fff'};cursor:pointer;transition:background .15s">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:6px;margin-bottom:4px">
+            <div style="display:flex;align-items:center;gap:6px">
+              ${item.unread ? '<span style="width:7px;height:7px;border-radius:50%;background:#2563eb;display:inline-block" title="Unread"></span>' : ''}
+              <span class="badge ${esc(item.badge_color || 'blue')}" style="font-size:10px;font-weight:700">${esc(item.badge)}</span>
+              <code style="font-size:11px">${esc(item.ref || '')}</code>
+            </div>
+            <span class="muted" style="font-size:10.5px">${item.timestamp ? timeAgo(item.timestamp) : ''}</span>
+          </div>
+          <div style="font-weight:700;font-size:12.5px;color:var(--text);margin-bottom:2px">${esc(item.title)}</div>
+          <div style="font-size:11.5px;color:#334155;margin-bottom:4px">${esc(item.subtitle || '')}</div>
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:4px">
+            <span class="muted" style="font-size:10.5px">${esc(item.meta || '')}</span>
+            <span style="font-size:11px;font-weight:700;color:var(--primary,#0066ff);white-space:nowrap">${esc(item.action_label || 'Open')} →</span>
+          </div>
+        </div>
+      `).join('') : `
+        <div style="padding:32px 16px;text-align:center">
+          <div style="font-size:26px;margin-bottom:6px">✅</div>
+          <div style="font-weight:700;font-size:13px">All Caught Up</div>
+          <div class="muted" style="font-size:11.5px;margin-top:2px">No pending certifications, approvals, or notifications in this tab for your permissions.</div>
+        </div>
+      `}
+    </div>
+  `;
+
+  qsa('.notif-tab-btn', pop).forEach((b) => {
+    b.onclick = (e) => {
+      e.stopPropagation();
+      _notifState.activeTab = b.dataset.tab;
+      renderNotifPopover();
+    };
+  });
+
+  const btnReadAll = qs('#notif_btn_readall', pop);
+  if (btnReadAll) {
+    btnReadAll.onclick = async (e) => {
+      e.stopPropagation();
+      try {
+        await api('/notifications/read-all', { method: 'POST' });
+        await refreshNotifications({ showToastOnNew: false });
+        toast('All notifications marked as read');
+      } catch (err) {
+        toast(err.message, 'err');
+      }
+    };
+  }
+
+  const btnRefresh = qs('#notif_btn_refresh', pop);
+  if (btnRefresh) {
+    btnRefresh.onclick = (e) => {
+      e.stopPropagation();
+      refreshNotifications({ showToastOnNew: false });
+    };
+  }
+
+  const btnDual = qs('#notif_btn_dual', pop);
+  if (btnDual) {
+    btnDual.onclick = (e) => {
+      e.stopPropagation();
+      pop.style.display = 'none';
+      _notifState.open = false;
+      openDualAuthModal();
+    };
+  }
+
+  qsa('.notif-card-item', pop).forEach((card) => {
+    card.onclick = async (e) => {
+      e.stopPropagation();
+      const key = card.dataset.key;
+      const link = card.dataset.link;
+      if (key) {
+        api('/notifications/read', { method: 'POST', body: { key } }).then(() => refreshNotifications({ showToastOnNew: false })).catch(() => {});
+      }
+      pop.style.display = 'none';
+      _notifState.open = false;
+      if (link === '__DUAL_AUTH_MODAL__') {
+        openDualAuthModal();
+      } else if (link) {
+        if (location.hash === link) render();
+        else location.hash = link;
+      }
+    };
+  });
+}
+
+function setupLiveNotifications() {
+  if (_notifState.boundListeners) return;
+  _notifState.boundListeners = true;
+
+  document.addEventListener('click', (e) => {
+    const pop = qs('#user_popover');
+    const trig = qs('#user_profile_trigger');
+    if (pop && !pop.contains(e.target) && (!trig || !trig.contains(e.target))) {
+      pop.style.display = 'none';
+    }
+    const notifPop = qs('#notif_popover');
+    const btnBell = qs('#topbar-bell');
+    if (notifPop && !notifPop.contains(e.target) && (!btnBell || !btnBell.contains(e.target))) {
+      notifPop.style.display = 'none';
+      _notifState.open = false;
+    }
+  });
+
+  const scheduleLiveRefresh = () => {
+    clearTimeout(_notifState.refreshTimer);
+    _notifState.refreshTimer = setTimeout(() => {
+      refreshNotifications({ showToastOnNew: true });
+    }, 650);
+  };
+
+  if (window.LiveERP && typeof window.LiveERP.on === 'function') {
+    ['data_changed', 'request_updated', 'stock_updated', 'job_updated', 'dashboard_refresh', 'notification_push'].forEach((ev) => {
+      window.LiveERP.on(ev, scheduleLiveRefresh);
+    });
+  }
+
+  // Fallback periodic refresh every 45 seconds
+  setInterval(() => {
+    if (ME && !isScreenLocked) refreshNotifications({ showToastOnNew: true });
+  }, 45000);
 }
 
 // ---------------------------------------------------------------- router
@@ -1614,6 +1862,29 @@ function renderWorkflowRoads(wm) {
     `);
   }
 
+  // 3. Mechanics KPI & Labour Efficiency Pulse (for users with dailywork / labour / reports privileges)
+  const mp = wm.mechanics_pulse;
+  if (mp && (canView('dailywork') || canView('labour') || canView('reports'))) {
+    const savPositive = (mp.mtd_net_savings || 0) >= 0;
+    html.push(`
+      <div class="card section" style="margin-bottom:14px;border-top:3px solid #8b5cf6">
+        <div class="toolbar" style="margin:0 0 8px">
+          <h3 style="margin:0">👷 Mechanics KPI &amp; Outside vs. Internal Cost Pulse (${esc(mp.month || 'MTD')})</h3>
+          <div class="spacer"></div>
+          <a class="sm btn primary" href="#/mechanics-kpi">📊 Open Mechanics KPI View →</a>
+        </div>
+        <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(175px,1fr));gap:8px;margin-top:6px">
+          ${miniCard(`${num(mp.today_hours || 0)} hrs`, 'Worked Today', '#/dailywork', 'blue', `${mp.today_mechanics_count || 0} mechanic(s) active`)}
+          ${miniCard(`${num(mp.mtd_hours || 0)} hrs`, 'Booked Hours (MTD)', '#/mechanics-kpi', 'blue', 'Daily work done')}
+          ${miniCard(moneyC(mp.mtd_internal_cost || 0), 'Internal Wage Cost', '#/mechanics-kpi', '', 'Hours × Hourly Rate')}
+          ${miniCard(moneyC(mp.mtd_outside_cost || 0), 'Outside Labor Value', '#/mechanics-kpi', 'green', 'External market valuation')}
+          ${miniCard(moneyC(mp.mtd_net_savings || 0), 'Net Workshop Saving', '#/mechanics-kpi', savPositive ? 'green' : 'red', 'Outside − Internal Cost')}
+          ${miniCard(`${mp.mtd_roi_ratio || 0}x`, 'Value-to-Wage ROI', '#/mechanics-kpi', (mp.mtd_roi_ratio || 0) >= 1 ? 'green' : 'amber', 'Return per Rs 1 wage')}
+        </div>
+      </div>
+    `);
+  }
+
   return html.join('');
 }
 
@@ -1755,47 +2026,53 @@ async function dashMain(c) {
   // Role-tailored cockpit: quick-launch tiles for the sections this user can work in.
   const wsTiles = [
     { m: 'stores', route: 'stores', ico: '📦', title: 'Stores', sub: 'MRNs · receive · issue' },
+    { m: 'stores', route: 'stores?tab=locations', ico: '🏪', title: 'Site Stores', sub: 'locations · stock · MTN' },
     { m: 'oil', route: 'oil', ico: '🛢️', title: 'Oil & Lube', sub: 'issue · stock book' },
     { m: 'jobrequests', route: 'jobrequests', ico: '📋', title: 'Job Requests', sub: 'raise · certify · approve' },
     { m: 'jobs', route: 'jobs', ico: '🔧', title: 'Job Cards', sub: 'manage work' },
     { m: 'dailywork', route: 'dailywork', ico: '📅', title: 'Daily Work', sub: 'log hours' },
+    { m: 'dailywork', route: 'mechanics-kpi', ico: '📊', title: 'Mechanics KPI', sub: 'outside vs wage ROI' },
     { m: 'batteries', route: 'batteries', ico: '🔋', title: 'Batteries', sub: 'track · swap' },
     { m: 'assets', route: 'assets', ico: '🚜', title: 'Assets', sub: 'fleet registry' },
     { m: 'assets', route: 'vehicledocuments', ico: '📜', title: 'Vehicle Docs', sub: 'statutory · renewals · eRL' },
-  ].filter((w) => canEdit(w.m)).map((w) => `<a class="card stat" href="#/${w.route}" style="text-decoration:none;align-items:flex-start;gap:2px"><span class="n" style="font-size:26px">${w.ico}</span><span class="l"><b>${w.title}</b><br>${w.sub}</span></a>`).join('');
+  ].filter((w) => canView(w.m)).map((w) => `<a class="card stat" href="#/${w.route}" style="text-decoration:none;align-items:flex-start;gap:2px"><span class="n" style="font-size:26px">${w.ico}</span><span class="l"><b>${w.title}</b><br>${w.sub}</span></a>`).join('');
 
-  // Top Modern KPI Ribbon (Images 1, 3, 5)
+  // Privilege-aware KPI Ribbon: dynamically adapts to the user's granted capabilities & modules
   const isAdminOrManager = isAdmin() || canFull('jobs') || canDo('users.manage');
   const kp = (wm && wm.kpis) || {};
   const jp = (wm && wm.jobs_pipeline) || {};
+  const sp = (wm && wm.stores_pipeline) || {};
+  const mp = (wm && wm.mechanics_pulse) || null;
+  const pp = (wm && wm.privilege_profile) || {};
   const jw = jp.workshop || {};
   const jf = jp.finishing || {};
+  const st = sp.today || {};
+  const sh = sp.shelf || {};
 
-  const kpiRibbon = `
-    <div class="kpi-row">
+  const kpiCards = [];
+  // 1. Pending Approvals / Certifications card (always shown first if user is an approver/certifier or has pending tasks)
+  if ((wm && wm.approvals_process && wm.approvals_process.is_approver) || (kp.total_pending > 0)) {
+    kpiCards.push(`
+      <a class="kpi-card" href="#/dashboard" onclick="const el=document.getElementById('dash-approvals-card');if(el){el.scrollIntoView({behavior:'smooth'});return false;}">
+        <div class="kpi-card-head">
+          <span class="kpi-card-title">Awaiting Your Action</span>
+          <span class="kpi-card-icon">⚡</span>
+        </div>
+        <div class="kpi-card-val" style="color:${(kp.total_pending || 0) ? '#b45309' : '#047857'}">${kp.total_pending ?? 0}</div>
+        <div class="kpi-card-trend ${(kp.total_pending || 0) ? 'kpi-trend-down' : 'kpi-trend-up'}">${(kp.total_pending || 0) ? '▲ Certify / Approve' : '✓ All caught up'}</div>
+      </a>`);
+  }
+
+  // 2. Jobs / Workshop KPIs (if user has jobs or jobrequests view access)
+  if (canView('jobs') || canView('jobrequests')) {
+    kpiCards.push(`
       <a class="kpi-card" href="#/jobs">
         <div class="kpi-card-head">
           <span class="kpi-card-title">Active Jobs</span>
           <span class="kpi-card-icon">🔧</span>
         </div>
         <div class="kpi-card-val">${kp.active_jobs ?? d.open_jobs_count}</div>
-        <div class="kpi-card-trend kpi-trend-up">▲ 12% vs last mo</div>
-      </a>
-      <a class="kpi-card" href="#/jobs?tab=ongoing">
-        <div class="kpi-card-head">
-          <span class="kpi-card-title">Vehicles in Workshop</span>
-          <span class="kpi-card-icon">🚜</span>
-        </div>
-        <div class="kpi-card-val">${kp.vehicles_in_workshop ?? 0}</div>
-        <div class="kpi-card-trend kpi-trend-up">▲ 10% active</div>
-      </a>
-      <a class="kpi-card" href="#/dashboard">
-        <div class="kpi-card-head">
-          <span class="kpi-card-title">Awaiting Approval</span>
-          <span class="kpi-card-icon">⚡</span>
-        </div>
-        <div class="kpi-card-val" style="color:${(kp.total_pending || 0) ? '#b45309' : '#047857'}">${kp.total_pending ?? 0}</div>
-        <div class="kpi-card-trend ${(kp.total_pending || 0) ? 'kpi-trend-down' : 'kpi-trend-up'}">${(kp.total_pending || 0) ? '▲ Action required' : '✓ Caught up'}</div>
+        <div class="kpi-card-trend kpi-trend-up">${kp.vehicles_in_workshop ?? 0} vehicles in workshop</div>
       </a>
       <a class="kpi-card" href="#/jobs?tab=ongoing&show=parts">
         <div class="kpi-card-head">
@@ -1815,36 +2092,91 @@ async function dashMain(c) {
       </a>
       <a class="kpi-card" href="#/jobs?tab=ready">
         <div class="kpi-card-head">
-          <span class="kpi-card-title">Completed Today</span>
+          <span class="kpi-card-title">Ready to Close</span>
           <span class="kpi-card-icon">✅</span>
         </div>
         <div class="kpi-card-val" style="color:#047857">${jf.ready ?? 0}</div>
-        <div class="kpi-card-trend kpi-trend-up">▲ Ready to close</div>
-      </a>
-    </div>`;
+        <div class="kpi-card-trend kpi-trend-up">▲ Work completed</div>
+      </a>`);
+  }
+
+  // 3. Mechanics KPI Card (if user has dailywork, labour, or reports access)
+  if (mp && (canView('dailywork') || canView('labour') || canView('reports'))) {
+    const netSav = mp.mtd_net_savings || 0;
+    kpiCards.push(`
+      <a class="kpi-card" href="#/mechanics-kpi">
+        <div class="kpi-card-head">
+          <span class="kpi-card-title">Mechanics Net Saving</span>
+          <span class="kpi-card-icon">👷</span>
+        </div>
+        <div class="kpi-card-val" style="color:${netSav >= 0 ? '#047857' : '#b91c1c'};font-size:20px">${moneyC(netSav)}</div>
+        <div class="kpi-card-trend ${netSav >= 0 ? 'kpi-trend-up' : 'kpi-trend-down'}">ROI ${mp.mtd_roi_ratio || 0}x · ${num(mp.mtd_hours || 0)}h MTD</div>
+      </a>`);
+  }
+
+  // 4. Stores & Inventory KPIs (prioritized for Storekeepers / Site Store users or filling up to 6 cards)
+  if ((canView('stores') || canView('oil')) && kpiCards.length < 6) {
+    kpiCards.push(`
+      <a class="kpi-card" href="#/stores?tab=stock">
+        <div class="kpi-card-head">
+          <span class="kpi-card-title">Low Stock Alerts</span>
+          <span class="kpi-card-icon">📉</span>
+        </div>
+        <div class="kpi-card-val" style="color:${(kp.low_stock_total || 0) ? '#b91c1c' : '#047857'}">${kp.low_stock_total ?? 0}</div>
+        <div class="kpi-card-trend ${(kp.low_stock_total || 0) ? 'kpi-trend-down' : 'kpi-trend-up'}">${st.received || 0} GRN · ${st.issued || 0} Issues today</div>
+      </a>`);
+    if (!canView('jobs')) {
+      kpiCards.push(`
+        <a class="kpi-card" href="#/stores?tab=flow&sub=lines&step=requested">
+          <div class="kpi-card-head">
+            <span class="kpi-card-title">Open MRN Lines</span>
+            <span class="kpi-card-icon">📋</span>
+          </div>
+          <div class="kpi-card-val">${(sp.steps && ((sp.steps.requested || 0) + (sp.steps.certified || 0) + (sp.steps.to_buy || 0))) || 0}</div>
+          <div class="kpi-card-trend kpi-trend-neutral">${sh.unpriced_receipts || 0} unpriced receipts</div>
+        </a>
+        <a class="kpi-card" href="#/stores?tab=locations">
+          <div class="kpi-card-head">
+            <span class="kpi-card-title">Site Store Transfers</span>
+            <span class="kpi-card-icon">🏪</span>
+          </div>
+          <div class="kpi-card-val">${st.transfers_week || 0}</div>
+          <div class="kpi-card-trend kpi-trend-up">MTNs in last 7 days</div>
+        </a>`);
+    }
+  }
+
+  const kpiRibbon = kpiCards.length ? `<div class="kpi-row">${kpiCards.slice(0, 6).join('')}</div>` : '';
 
   const quickActionsBar = `
     <div class="quick-actions-bar">
       <span class="quick-action-label">Quick Actions:</span>
       ${canEdit('jobs') ? `<a class="quick-action-btn primary" href="#/jobs?new=1"><span>➕</span> New Job Card</a>` : ''}
+      ${canEdit('jobrequests') ? `<a class="quick-action-btn" href="#/jobrequests?new=1"><span>📋</span> Job Request</a>` : ''}
+      ${(canView('dailywork') || canView('labour') || canView('reports')) ? `<a class="quick-action-btn" href="#/mechanics-kpi"><span>📊</span> Mechanics KPI</a>` : ''}
+      ${canEdit('dailywork') ? `<a class="quick-action-btn" href="#/dailywork"><span>📅</span> Log Daily Work</a>` : ''}
       ${canEdit('stores') ? `<a class="quick-action-btn" href="#/stores?tab=flow&sub=issues"><span>📦</span> Issue Stock</a>` : ''}
-      ${canEdit('jobrequests') ? `<a class="quick-action-btn" href="#/jobrequests?new=1"><span>📋</span> Material Request</a>` : ''}
       ${canEdit('stores') ? `<a class="quick-action-btn" href="#/stores?tab=flow&sub=grn"><span>📥</span> Create GRN</a>` : ''}
+      ${canView('stores') ? `<a class="quick-action-btn" href="#/stores?tab=locations"><span>🏪</span> Site Stores</a>` : ''}
       ${canEdit('assets') ? `<a class="quick-action-btn" href="#/assets?new=1"><span>🚜</span> New Asset</a>` : ''}
-      ${canView('reports') ? `<a class="quick-action-btn" href="#/reports"><span>📊</span> View Reports</a>` : ''}
+      ${canView('reports') ? `<a class="quick-action-btn" href="#/reports"><span>📈</span> Reports</a>` : ''}
     </div>`;
 
-  const scopeBadge = wm && wm.user_scope && wm.user_scope.label ? ` · <span class="badge blue">${esc(wm.user_scope.label)}</span>` : '';
+  const scopeBadge = wm && wm.user_scope && wm.user_scope.label ? ` · <span class="badge blue">📍 ${esc(wm.user_scope.label)}</span>` : ' · <span class="badge green">🌐 All Workshops</span>';
+  const privBadges = (pp.approver_badges || []).map((b) => `<span class="badge" style="background:#eff6ff;color:#1d4ed8;border:1px solid #bfdbfe;font-size:11px">✓ ${esc(b)}</span>`).join(' ');
+  const privBanner = privBadges ? `<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:-4px 0 12px"><span class="muted" style="font-size:11.5px;font-weight:600">Your Active Authorities:</span>${privBadges}</div>` : '';
+
   const S = [
     pageHeader('Dashboard', `${esc(ME.fullName || ME.username)} · ${esc(ME.roles.join(', '))}${scopeBadge}`),
+    privBanner,
     quickActionsBar,
     kpiRibbon,
-    renderProcessApprovals(wm && wm.approvals_process),
+    `<div id="dash-approvals-card">${renderProcessApprovals(wm && wm.approvals_process)}</div>`,
     renderWorkflowRoads(wm),
     isAdminOrManager ? renderOnHoldWatchboard(wm && wm.on_hold) : ''
   ].filter(Boolean);
-  if (wsTiles) S.push(`<div class="card section"><h3 style="margin-top:0">Your workspace</h3><div class="grid">${wsTiles}</div></div>`);
-  if (canView('reports')) S.push(`
+  if (wsTiles) S.push(`<div class="card section"><h3 style="margin-top:0">Your Workspace Modules</h3><div class="grid">${wsTiles}</div></div>`);
+  if (canView('reports') && mc && mc.this_month) S.push(`
     <h3 style="margin-top:0">This Month · ${monthName(mc.this_month.month)}</h3>
     <div class="grid section">
       <div class="card stat"><span class="n">${moneyC(mc.this_month.total)}</span><span class="l">Total Cost</span></div>
@@ -1914,7 +2246,7 @@ async function dashMain(c) {
     </div><div id="dc-charts-msg" class="muted" style="display:none;padding:8px"></div></div>`);
   S.push(`<div class="card section"><h3 style="margin-top:0">Recent Activity</h3><div id="dc-feed" class="muted">Loading…</div></div>`);
   c.innerHTML = S.join('\n');
-  if (canView('reports')) dashRenderOverview();
+  dashRenderOverview();
 }
 
 // Charts + activity feed for the dashboard (additive; isolated so a failure never
@@ -3983,6 +4315,7 @@ routes.dailywork = async (c) => {
         <h3 style="margin:0">Monthly Labour Working Hours</h3>
         <span class="muted" style="font-weight:400">— selected month total hours &amp; each laborer's monthly working hours</span>
         <div class="spacer"></div>
+        <a class="btn sm" href="#/mechanics-kpi" style="background:#eff6ff;color:#1d4ed8;border-color:#bfdbfe;font-weight:700">👷 Mechanics KPI &amp; Outside Cost View</a>
         <div><label>Month</label><select id="dwm-month" style="max-width:190px"></select></div>
         <a class="btn sm" id="dwm-dl" href="#" target="_blank">⬇ Excel Summary</a>
       </div>
@@ -4718,9 +5051,9 @@ async function addWorkDoneModal(defaultDate, onDone) {
     <select id="dwmech"><option value="">— add a mechanic —</option>${renderMechOpts(mechs)}</select>
     <div id="dwcrew" class="pill-row" style="margin:6px 0;min-height:6px"></div>
     <input type="hidden" name="mechanic">
-    ${field('Hours', 'hours', { type: 'number' })}
+    <div class="row">${field('Hours', 'hours', { type: 'number' })}${field('Outside labor (Rs, equivalent outside cost)', 'outside_labour', { type: 'number', placeholder: 'Optional' })}</div>
     <div id="dw-hint" style="font-size:12px;margin-top:4px"></div>
-    <p class="muted" style="font-size:12px;margin:2px 0 0">Pick each mechanic who worked — each is charged the full hours at their own rate.</p>
+    <p class="muted" style="font-size:12px;margin:2px 0 0">Pick each mechanic who worked — each is charged the full hours at their own rate. Outside labor is what this job would cost if sent outside (for Mechanics KPI).</p>
     <div class="row">${field('Travel (to or from a field job)', 'travel', { type: 'checkbox' })}${field('External repair (outside work)', 'is_external', { type: 'checkbox' })}${field('External value (Rs, if external)', 'external_value', { type: 'number' })}</div>
     <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Add</button></div>`, (body, close) => {
     const getTarget = wireTargetPicker(body, 'dwt');
@@ -4786,10 +5119,11 @@ async function quickTimesheetGridModal(defaultDate, onDone) {
       <table class="data-table" style="width:100%;margin:0">
         <thead>
           <tr>
-            <th style="width:200px">Mechanic</th>
-            <th style="width:140px">Vehicle / Machine</th>
+            <th style="width:190px">Mechanic</th>
+            <th style="width:130px">Vehicle / Machine</th>
             <th>Work Description</th>
-            <th style="width:90px;text-align:right">Hours</th>
+            <th style="width:85px;text-align:right">Hours</th>
+            <th style="width:115px;text-align:right">Outside Cost (Rs)</th>
             <th style="width:40px"></th>
           </tr>
         </thead>
@@ -4813,6 +5147,7 @@ async function quickTimesheetGridModal(defaultDate, onDone) {
         <td><input type="text" class="tg-asset" placeholder="e.g. AC06" value="${esc(initialData.asset || '')}" style="width:100%"></td>
         <td><input type="text" class="tg-desc" placeholder="Work done..." value="${esc(initialData.description || '')}" style="width:100%"></td>
         <td><input type="number" step="0.5" min="0" class="tg-hours" placeholder="0" value="${initialData.hours != null ? initialData.hours : ''}" style="width:100%;text-align:right"></td>
+        <td><input type="number" step="10" min="0" class="tg-outside" placeholder="Optional" value="${initialData.outside_labour != null ? initialData.outside_labour : ''}" style="width:100%;text-align:right"></td>
         <td style="text-align:center"><button class="sm danger tg-del" title="Remove row" style="padding:2px 6px">✕</button></td>
       `;
       qs('.tg-del', tr).onclick = () => { tr.remove(); };
@@ -4844,10 +5179,12 @@ async function quickTimesheetGridModal(defaultDate, onDone) {
         const asset = qs('.tg-asset', r).value.trim();
         const description = qs('.tg-desc', r).value.trim();
         const hours = parseFloat(qs('.tg-hours', r).value) || 0;
+        const outRaw = qs('.tg-outside', r) ? qs('.tg-outside', r).value.trim() : '';
+        const outside_labour = outRaw === '' ? null : (parseFloat(outRaw) || 0);
         if (!mechanic && !asset && !description && hours === 0) continue;
         if (!mechanic) return toast('Mechanic is required for all non-empty rows', 'err');
         if (hours <= 0) return toast(`Please enter hours for mechanic "${mechanic}"`, 'err');
-        entries.push({ mechanic, asset, description, hours });
+        entries.push({ mechanic, asset, description, hours, outside_labour });
       }
       if (!entries.length) return toast('Please enter at least one timesheet entry', 'err');
 
@@ -5351,6 +5688,7 @@ routes.labour = async (c) => {
         </select>
         ${canCreate ? '<button class="primary sm" id="btn-add-mech">+ Register Labourer</button>' : ''}
         ${canEditRates ? '<button class="sm" id="btn-add-rate">+ Set Hourly Rate</button>' : ''}
+        <a class="btn sm" href="#/mechanics-kpi" style="background:#eff6ff;color:#1d4ed8;border-color:#bfdbfe;font-weight:700">👷 Mechanics KPI &amp; Cost Efficiency</a>
       </div>
       <div id="labour-tab-content"><div class="muted">Loading labour roster…</div></div>
     </div>`;
@@ -5390,6 +5728,623 @@ routes.labour = async (c) => {
 
   renderContent();
 };
+
+// ---- Mechanics KPI & Cost Efficiency View (#/mechanics-kpi) -----------------
+routes['mechanics-kpi'] = async (c) => {
+  const sp = new URLSearchParams(location.hash.split('?')[1] || '');
+  let periodMode = (sp.get('from') && sp.get('to')) ? 'custom' : 'month';
+  let selectedMonth = sp.get('month') || '';
+  let customFrom = sp.get('from') || '';
+  let customTo = sp.get('to') || '';
+  let selectedWs = sp.get('workshop_id') || '';
+  let selectedMech = sp.get('mechanic') || '';
+  let searchQ = '';
+  let activeTab = sp.get('tab') || 'scorecard'; // 'scorecard' | 'unpriced' | 'vehicles'
+  let kpiData = null;
+  let chartCompare = null;
+  let chartTrend = null;
+
+  const canEditOutside = canDo('dailywork.edit');
+  const canEditRates = canDo('labour.rates.edit');
+
+  c.innerHTML = `${pageHeader('Mechanics KPI & Cost Efficiency', 'Compare internal mechanics hourly wage cost against outside market labour cost across daily work done.')}
+    <div class="card section" style="margin-bottom:14px;padding:12px 16px;background:linear-gradient(135deg,#f8fafc 0%,#eff6ff 100%);border:1px solid #bfdbfe">
+      <div class="toolbar" style="margin:0;gap:10px;flex-wrap:wrap;align-items:flex-end">
+        <div>
+          <label style="font-size:11px;font-weight:700;color:#475569;text-transform:uppercase">Period Mode</label>
+          <div style="display:flex;gap:4px">
+            <button class="sm ${periodMode === 'month' ? 'primary' : ''}" id="mkpi-mode-month">📅 Month</button>
+            <button class="sm ${periodMode === 'custom' ? 'primary' : ''}" id="mkpi-mode-custom">📆 Date Range</button>
+          </div>
+        </div>
+        <div id="mkpi-month-box" style="${periodMode === 'month' ? '' : 'display:none'}">
+          <label style="font-size:11px;font-weight:700;color:#475569;text-transform:uppercase">Month</label>
+          <select id="mkpi-month" style="min-width:175px"></select>
+        </div>
+        <div id="mkpi-range-box" style="display:${periodMode === 'custom' ? 'flex' : 'none'};gap:6px;align-items:flex-end">
+          <div>
+            <label style="font-size:11px;font-weight:700;color:#475569;text-transform:uppercase">From</label>
+            <input type="date" id="mkpi-from" value="${esc(customFrom)}" style="max-width:145px">
+          </div>
+          <div>
+            <label style="font-size:11px;font-weight:700;color:#475569;text-transform:uppercase">To</label>
+            <input type="date" id="mkpi-to" value="${esc(customTo)}" style="max-width:145px">
+          </div>
+          <button class="sm primary" id="mkpi-apply-range">Apply</button>
+        </div>
+        <div id="mkpi-ws-box" style="display:none">
+          <label style="font-size:11px;font-weight:700;color:#475569;text-transform:uppercase">Workshop / Site</label>
+          <select id="mkpi-ws" style="min-width:165px"><option value="">All Workshops</option></select>
+        </div>
+        <div>
+          <label style="font-size:11px;font-weight:700;color:#475569;text-transform:uppercase">Mechanic Filter</label>
+          <select id="mkpi-mech" style="min-width:170px"><option value="">All Mechanics</option></select>
+        </div>
+        <div class="spacer"></div>
+        <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+          <a class="btn sm" id="mkpi-xlsx" href="#" target="_blank" style="background:#059669;color:#fff;border-color:#059669;font-weight:700">⬇ Export KPI Excel</a>
+          <a class="btn sm" href="#/dailywork">📅 Daily Work Log</a>
+          <a class="btn sm" href="#/labour">👷 Labour Rates</a>
+        </div>
+      </div>
+    </div>
+
+    <div id="mkpi-summary-cards" class="grid section" style="grid-template-columns:repeat(auto-fit,minmax(195px,1fr));gap:12px;margin-bottom:14px">
+      <div class="card"><div class="muted">Loading KPI metrics…</div></div>
+    </div>
+
+    <div class="grid section" style="grid-template-columns:repeat(auto-fit,minmax(380px,1fr));gap:14px;margin-bottom:14px">
+      <div class="card" style="padding:14px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+          <h3 style="margin:0;font-size:14px">📊 Internal Wage Cost vs. Outside Cost Value (Top Mechanics)</h3>
+          <span class="muted" style="font-size:11px">Rs comparison</span>
+        </div>
+        <div style="height:260px;position:relative"><canvas id="mkpi-chart-compare"></canvas></div>
+      </div>
+      <div class="card" style="padding:14px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+          <h3 style="margin:0;font-size:14px">📈 Daily Labour Cost &amp; Outside Value Trend</h3>
+          <span class="muted" style="font-size:11px" id="mkpi-period-label"></span>
+        </div>
+        <div style="height:260px;position:relative"><canvas id="mkpi-chart-trend"></canvas></div>
+      </div>
+    </div>
+
+    <div class="card section">
+      <div class="toolbar" style="margin:0 0 12px;gap:8px;flex-wrap:wrap">
+        <div id="mkpi-tabs" style="display:flex;gap:6px;flex-wrap:wrap"></div>
+        <div class="spacer"></div>
+        <input type="search" id="mkpi-search" placeholder="Search mechanic, vehicle, job, desc…" style="min-width:240px">
+      </div>
+      <div id="mkpi-tab-body"><div class="muted">Loading scorecard…</div></div>
+    </div>`;
+
+  const buildQuery = (extra = {}) => {
+    const q = new URLSearchParams();
+    if (periodMode === 'custom' && customFrom && customTo) {
+      q.set('from', customFrom);
+      q.set('to', customTo);
+    } else if (selectedMonth) {
+      q.set('month', selectedMonth);
+    }
+    if (selectedWs) q.set('workshop_id', selectedWs);
+    if (selectedMech) q.set('mechanic', selectedMech);
+    Object.entries(extra).forEach(([k, v]) => { if (v != null && v !== '') q.set(k, v); });
+    return q.toString();
+  };
+
+  const loadKpi = async () => {
+    try {
+      const qsStr = buildQuery();
+      kpiData = await api('/daily-work/mechanics-kpi' + (qsStr ? '?' + qsStr : ''));
+      if (!selectedMonth && kpiData.month) selectedMonth = kpiData.month;
+      if (!customFrom && kpiData.from) customFrom = kpiData.from;
+      if (!customTo && kpiData.to) customTo = kpiData.to;
+
+      // Populate month selector
+      const mSel = qs('#mkpi-month', c);
+      if (mSel && !mSel.options.length) {
+        mSel.innerHTML = (kpiData.available_months || []).map((o) => `<option value="${esc(o.month)}">${esc(o.label)}</option>`).join('');
+      }
+      if (mSel && selectedMonth) mSel.value = selectedMonth;
+      if (qs('#mkpi-from', c) && customFrom) qs('#mkpi-from', c).value = customFrom;
+      if (qs('#mkpi-to', c) && customTo) qs('#mkpi-to', c).value = customTo;
+
+      // Populate workshops if multiple
+      const wsBox = qs('#mkpi-ws-box', c);
+      const wsSel = qs('#mkpi-ws', c);
+      if (wsBox && wsSel && kpiData.workshops && kpiData.workshops.length > 1 && ME && ME.seesAllWorkshops) {
+        wsBox.style.display = '';
+        wsSel.innerHTML = '<option value="">All Workshops</option>' + kpiData.workshops.map((w) => `<option value="${w.id}" ${String(w.id) === String(selectedWs) ? 'selected' : ''}>${esc(w.name)} (${esc(w.code)})</option>`).join('');
+      }
+
+      // Populate mechanic dropdown (keep full list if not filtered)
+      const mechSel = qs('#mkpi-mech', c);
+      if (mechSel && (!mechSel.options || mechSel.options.length <= 1 || !selectedMech)) {
+        const curM = selectedMech;
+        mechSel.innerHTML = '<option value="">All Mechanics (' + (kpiData.mechanics || []).length + ')</option>' +
+          (kpiData.mechanics || []).map((m) => `<option value="${esc(m.mechanic)}" ${m.mechanic === curM ? 'selected' : ''}>${esc(m.mechanic)} (${num(m.total_hours)}h · ${m.hourly_rate != null ? 'Rs ' + m.hourly_rate + '/h' : 'no rate'})</option>`).join('');
+      }
+
+      // Update Excel export link
+      if (qs('#mkpi-xlsx', c)) {
+        qs('#mkpi-xlsx', c).href = '/api/daily-work/mechanics-kpi?' + buildQuery({ format: 'xlsx' });
+      }
+      if (qs('#mkpi-period-label', c)) {
+        qs('#mkpi-period-label', c).textContent = kpiData.period_label || '';
+      }
+
+      renderSummaryCards();
+      renderCharts();
+      renderTabBody();
+    } catch (e) {
+      qs('#mkpi-summary-cards', c).innerHTML = `<div class="card err">${esc(e.message)}</div>`;
+    }
+  };
+
+  const renderSummaryCards = () => {
+    if (!kpiData || !kpiData.summary) return;
+    const s = kpiData.summary;
+    const savPositive = s.net_savings >= 0;
+    const roiTone = s.roi_ratio == null ? '#64748b' : (s.roi_ratio >= 1.3 ? '#16a34a' : (s.roi_ratio >= 1.0 ? '#2563eb' : '#dc2626'));
+    const utilBadge = s.attendance_enabled && s.utilisation != null
+      ? `<span class="badge ${s.utilisation > 100 ? 'red' : s.utilisation >= 85 ? 'green' : 'amber'}" style="font-size:10.5px">${s.utilisation}% util</span>`
+      : `<span class="muted" style="font-size:11px">${s.mechanics_count} active mechanics</span>`;
+
+    qs('#mkpi-summary-cards', c).innerHTML = `
+      <div class="card" style="padding:12px 14px;border-left:4px solid #2563eb">
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <span class="muted" style="font-size:11px;font-weight:700;text-transform:uppercase">Working Hours</span>
+          ${utilBadge}
+        </div>
+        <div style="font-size:22px;font-weight:800;color:#0f172a;margin:4px 0">${num(s.total_hours)} <span style="font-size:13px;font-weight:600;color:#64748b">hrs</span></div>
+        <div class="muted" style="font-size:11.5px">${num(s.regular_hours)}h bay/field · ${num(s.travel_hours)}h travel</div>
+      </div>
+
+      <div class="card" style="padding:12px 14px;border-left:4px solid #0284c7">
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <span class="muted" style="font-size:11px;font-weight:700;text-transform:uppercase">Our Mechanics Cost</span>
+          <span class="badge blue" style="font-size:10px">Rate × Hours</span>
+        </div>
+        <div style="font-size:22px;font-weight:800;color:#0f172a;margin:4px 0">${moneyC(s.internal_cost)}</div>
+        <div class="muted" style="font-size:11.5px">Avg wage: <b>${money(s.avg_hourly_cost)}/hr</b>${s.unrated_mechanics_count ? ` · <span style="color:#d97706">${s.unrated_mechanics_count} unrated</span>` : ''}</div>
+      </div>
+
+      <div class="card" style="padding:12px 14px;border-left:4px solid #7c3aed">
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <span class="muted" style="font-size:11px;font-weight:700;text-transform:uppercase">Outside Cost Value</span>
+          <span class="badge" style="font-size:10px;background:#f3e8ff;color:#6d28d9">Market Value</span>
+        </div>
+        <div style="font-size:22px;font-weight:800;color:#4c1d95;margin:4px 0">${moneyC(s.outside_cost)}</div>
+        <div class="muted" style="font-size:11.5px">Across <b>${s.entries_with_outside_cost}</b> priced work lines</div>
+      </div>
+
+      <div class="card" style="padding:12px 14px;border-left:4px solid ${savPositive ? '#16a34a' : '#dc2626'};background:${savPositive ? '#f0fdf4' : '#fef2f2'}">
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <span style="font-size:11px;font-weight:700;text-transform:uppercase;color:${savPositive ? '#166534' : '#991b1b'}">Net Workshop Savings</span>
+          <span class="badge ${savPositive ? 'green' : 'red'}" style="font-size:10px">${savPositive ? 'Saved In-House' : 'Cost Deficit'}</span>
+        </div>
+        <div style="font-size:22px;font-weight:800;color:${savPositive ? '#15803d' : '#b91c1c'};margin:4px 0">${savPositive ? '+' : ''}${moneyC(s.net_savings)}</div>
+        <div class="muted" style="font-size:11.5px">Outside Value − Internal Wage Cost</div>
+      </div>
+
+      <div class="card" style="padding:12px 14px;border-left:4px solid ${roiTone}">
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <span class="muted" style="font-size:11px;font-weight:700;text-transform:uppercase">KPI ROI Multiplier</span>
+          <span class="badge ${s.roi_ratio >= 1.2 ? 'green' : (s.roi_ratio >= 1.0 ? 'blue' : 'amber')}" style="font-size:10px">Target ≥ 1.2x</span>
+        </div>
+        <div style="font-size:22px;font-weight:800;color:${roiTone};margin:4px 0">${s.roi_ratio != null ? s.roi_ratio + 'x' : '—'}</div>
+        <div class="muted" style="font-size:11.5px">Output value: <b>${money(s.effective_value_per_hr)}/hr</b> worked</div>
+      </div>
+
+      <div class="card" style="padding:12px 14px;border-left:4px solid ${s.coverage_pct >= 80 ? '#16a34a' : '#f59e0b'};cursor:pointer" id="mkpi-card-coverage" title="Click to view & price lines missing Outside Cost">
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <span class="muted" style="font-size:11px;font-weight:700;text-transform:uppercase">Outside Cost Coverage</span>
+          <span class="badge ${s.coverage_pct >= 80 ? 'green' : 'amber'}" style="font-size:10px">${s.entries_missing_outside_cost} unpriced</span>
+        </div>
+        <div style="font-size:22px;font-weight:800;color:#0f172a;margin:4px 0">${s.coverage_pct}%</div>
+        <div class="muted" style="font-size:11.5px">${s.entries_with_outside_cost} of ${s.entries_count} lines priced · <u style="color:#2563eb">Price now</u></div>
+      </div>
+    `;
+
+    if (qs('#mkpi-card-coverage', c)) {
+      qs('#mkpi-card-coverage', c).onclick = () => {
+        activeTab = 'unpriced';
+        renderTabBody();
+        qs('#mkpi-tabs', c).scrollIntoView({ behavior: 'smooth', block: 'start' });
+      };
+    }
+  };
+
+  const renderCharts = () => {
+    if (typeof Chart === 'undefined' || !kpiData) return;
+    if (chartCompare) { chartCompare.destroy(); chartCompare = null; }
+    if (chartTrend) { chartTrend.destroy(); chartTrend = null; }
+
+    const topMechs = (kpiData.mechanics || []).slice(0, 10);
+    const ctx1 = qs('#mkpi-chart-compare', c);
+    if (ctx1 && topMechs.length) {
+      chartCompare = new Chart(ctx1, {
+        type: 'bar',
+        data: {
+          labels: topMechs.map((m) => m.mechanic.length > 14 ? m.mechanic.slice(0, 14) + '…' : m.mechanic),
+          datasets: [
+            {
+              label: 'Our Wage Cost (Rs)',
+              data: topMechs.map((m) => m.internal_cost),
+              backgroundColor: 'rgba(2, 132, 199, 0.8)',
+              borderRadius: 4,
+            },
+            {
+              label: 'Outside Labour Value (Rs)',
+              data: topMechs.map((m) => m.outside_cost),
+              backgroundColor: 'rgba(124, 58, 237, 0.8)',
+              borderRadius: 4,
+            },
+            {
+              label: 'Net Saving (Rs)',
+              data: topMechs.map((m) => m.net_savings),
+              backgroundColor: topMechs.map((m) => m.net_savings >= 0 ? 'rgba(22, 163, 74, 0.85)' : 'rgba(220, 38, 38, 0.85)'),
+              borderRadius: 4,
+            },
+          ],
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: { legend: { position: 'bottom', labels: { boxWidth: 12, font: { size: 11 } } } },
+          scales: {
+            y: { beginAtZero: true, ticks: { callback: (v) => 'Rs ' + Number(v).toLocaleString() } },
+          },
+        },
+      });
+    }
+
+    const trend = kpiData.daily_trend || [];
+    const ctx2 = qs('#mkpi-chart-trend', c);
+    if (ctx2 && trend.length) {
+      chartTrend = new Chart(ctx2, {
+        type: 'line',
+        data: {
+          labels: trend.map((d) => d.date.slice(5)),
+          datasets: [
+            {
+              label: 'Outside Value (Rs)',
+              data: trend.map((d) => d.outside_cost),
+              borderColor: '#7c3aed',
+              backgroundColor: 'rgba(124, 58, 237, 0.12)',
+              fill: true,
+              tension: 0.25,
+            },
+            {
+              label: 'Our Wage Cost (Rs)',
+              data: trend.map((d) => d.internal_cost),
+              borderColor: '#0284c7',
+              backgroundColor: 'rgba(2, 132, 199, 0.1)',
+              fill: true,
+              tension: 0.25,
+            },
+          ],
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: { legend: { position: 'bottom', labels: { boxWidth: 12, font: { size: 11 } } } },
+          scales: {
+            y: { beginAtZero: true, ticks: { callback: (v) => 'Rs ' + Number(v).toLocaleString() } },
+          },
+        },
+      });
+    }
+  };
+
+  const openMechanicDrilldownModal = async (mechName) => {
+    try {
+      const qsStr = buildQuery({ mechanic: mechName });
+      const d = await api('/daily-work/mechanics-kpi/detail?' + qsStr);
+      const lines = d.lines || [];
+      const totHrs = lines.reduce((s, l) => s + (Number(l.hours) || 0), 0);
+      const totInt = lines.reduce((s, l) => s + (Number(l.mechanic_internal_cost) || 0), 0);
+      const totOut = lines.reduce((s, l) => s + (Number(l.mechanic_outside_share) || 0), 0);
+      const totSav = totOut - totInt;
+
+      const rows = lines.map((l) => {
+        const sav = l.net_saving;
+        const outCell = canEditOutside
+          ? `<div style="display:flex;gap:4px;justify-content:flex-end;align-items:center">
+               <input type="number" step="50" min="0" class="mkpi-dd-out" data-id="${l.id}" value="${l.outside_labour != null ? l.outside_labour : ''}" placeholder="—" style="width:92px;text-align:right;padding:3px 6px">
+               <button class="sm mkpi-dd-save" data-id="${l.id}" title="Save Outside Cost">💾</button>
+             </div>`
+          : (l.outside_labour != null ? money(l.outside_labour) : '<span class="muted">—</span>');
+        return `<tr>
+          <td>${esc(l.work_date)}</td>
+          <td><a href="#/jobs/${l.job_id}" onclick="qs('.modal-backdrop')?.remove()"><b>${esc(l.job_no)}</b></a></td>
+          <td>${esc(l.asset_code || '—')}${l.asset_reg ? ` <span class="muted">(${esc(l.asset_reg)})</span>` : ''}</td>
+          <td>${esc(l.crew || l.mechanic)}${l.crew_size > 1 ? ` <span class="badge blue" title="Shared across ${l.crew_size} mechanics">${l.crew_size} crew</span>` : ''}</td>
+          <td class="desc-col">${esc(l.description || '')}</td>
+          <td class="num"><b>${num(l.hours)}h</b></td>
+          <td class="num">${l.mechanic_rate != null ? money(l.mechanic_rate) + '/h' : '<span class="badge amber">no rate</span>'}</td>
+          <td class="num">${money(l.mechanic_internal_cost)}</td>
+          <td class="num">${outCell}</td>
+          <td class="num" style="font-weight:700;color:${sav >= 0 ? 'var(--green)' : 'var(--red)'}">${sav >= 0 ? '+' : ''}${money(sav)}</td>
+        </tr>`;
+      });
+
+      modal(`👷 Mechanic KPI Drill-Down — ${esc(d.mechanic)}`, `
+        <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin-bottom:12px">
+          <div class="card stat"><span class="n">${num(totHrs)} hrs</span><span class="l">Booked Hours (${lines.length} lines)</span></div>
+          <div class="card stat"><span class="n">${d.current_rate != null ? money(d.current_rate) + '/hr' : 'Unrated'}</span><span class="l">Current Hourly Rate</span></div>
+          <div class="card stat"><span class="n">${money(totInt)}</span><span class="l">Our Wage Cost</span></div>
+          <div class="card stat"><span class="n">${money(totOut)}</span><span class="l">Attributed Outside Value</span></div>
+          <div class="card stat"><span class="n" style="color:${totSav >= 0 ? 'var(--green)' : 'var(--red)'}">${totSav >= 0 ? '+' : ''}${money(totSav)}</span><span class="l">Net Workshop Saving</span></div>
+        </div>
+        ${tableWrap([
+          { label: 'Date', width: '92px' },
+          { label: 'Job No', width: '100px' },
+          { label: 'Vehicle', width: '120px' },
+          { label: 'Crew', width: '130px' },
+          { label: 'Work Description', cls: 'desc-col' },
+          { label: 'Hours', num: true, width: '65px' },
+          { label: 'Rate', num: true, width: '85px' },
+          { label: 'Wage Cost', num: true, width: '95px' },
+          { label: 'Line Outside Cost (Rs)', num: true, width: '140px' },
+          { label: 'Net Saving', num: true, width: '100px' },
+        ], rows, { scroll: true })}
+      `, (body) => {
+        qsa('.mkpi-dd-save', body).forEach((btn) => {
+          btn.onclick = async () => {
+            const id = btn.dataset.id;
+            const inp = qs(`.mkpi-dd-out[data-id="${id}"]`, body);
+            if (!inp) return;
+            const val = inp.value.trim() === '' ? null : parseFloat(inp.value);
+            try {
+              await api(`/daily-work/${id}/outside-cost`, { method: 'PATCH', body: { outside_labour: val } });
+              toast('Outside cost updated');
+              loadKpi();
+            } catch (e) { toast(e.message, 'err'); }
+          };
+        });
+      }, { wide: true });
+    } catch (e) {
+      toast(e.message, 'err');
+    }
+  };
+
+  const renderTabBody = () => {
+    if (!kpiData) return;
+    const mechs = kpiData.mechanics || [];
+    const unpriced = kpiData.unpriced_lines || [];
+    const vehicles = kpiData.top_vehicles || [];
+    const q = searchQ.trim().toLowerCase();
+
+    qs('#mkpi-tabs', c).innerHTML = `
+      <button class="sm ${activeTab === 'scorecard' ? 'primary' : ''}" data-mkpitab="scorecard">👷 Mechanics KPI Scorecard (${mechs.length})</button>
+      <button class="sm ${activeTab === 'unpriced' ? 'primary' : ''}" data-mkpitab="unpriced">⚡ Missing Outside Cost Queue (${unpriced.length})</button>
+      <button class="sm ${activeTab === 'vehicles' ? 'primary' : ''}" data-mkpitab="vehicles">🚜 Top Vehicles &amp; Machines (${vehicles.length})</button>
+    `;
+    qsa('[data-mkpitab]', qs('#mkpi-tabs', c)).forEach((b) => {
+      b.onclick = () => { activeTab = b.dataset.mkpitab; renderTabBody(); };
+    });
+
+    const bodyEl = qs('#mkpi-tab-body', c);
+    if (!bodyEl) return;
+
+    if (activeTab === 'scorecard') {
+      const filtered = mechs.filter((m) => !q || m.mechanic.toLowerCase().includes(q) || (m.workshop_name || '').toLowerCase().includes(q));
+      const attOn = kpiData.summary && kpiData.summary.attendance_enabled;
+      const rows = filtered.map((m) => {
+        const isResigned = m.status === 'resigned' || m.active === 0;
+        const statusBadge = isResigned
+          ? `<span class="badge red" style="font-size:10px;margin-left:4px">Resigned</span>`
+          : (m.workshop_code ? `<span class="badge blue" style="font-size:10px;margin-left:4px">${esc(m.workshop_code)}</span>` : '');
+        const rateCell = m.hourly_rate === 0
+          ? '<span class="badge blue">Staff (Rs 0/h)</span>'
+          : (m.hourly_rate != null
+            ? `<b>${money(m.hourly_rate)}/hr</b>`
+            : `<span class="badge amber">Unrated</span>`);
+        const rateBtn = canEditRates
+          ? ` <button class="sm" data-setrate="${esc(m.mechanic)}" data-currate="${m.hourly_rate != null ? m.hourly_rate : ''}" title="Set/Update Hourly Rate" style="padding:1px 5px;font-size:10px">✎</button>`
+          : '';
+        const sav = m.net_savings || 0;
+        const savCell = `<span style="font-weight:800;color:${sav >= 0 ? 'var(--green)' : 'var(--red)'}">${sav >= 0 ? '+' : ''}${money(sav)}</span>`;
+        const roiBadge = m.roi_ratio == null
+          ? '<span class="muted">—</span>'
+          : `<span class="badge ${m.roi_ratio >= 1.3 ? 'green' : (m.roi_ratio >= 1.0 ? 'blue' : 'red')}">${m.roi_ratio}x</span>`;
+        const covBadge = `<span class="badge ${m.coverage_pct >= 80 ? 'green' : (m.coverage_pct >= 40 ? 'amber' : '')}">${m.coverage_pct}% (${m.entries_with_outside_cost}/${m.entries_count})</span>`;
+
+        return `<tr>
+          <td><b>${esc(m.mechanic)}</b>${statusBadge}</td>
+          <td class="num" style="white-space:nowrap">${rateCell}${rateBtn}</td>
+          <td class="num"><b>${num(m.total_hours)} hrs</b>${m.travel_hours ? `<div class="muted" style="font-size:10.5px">${num(m.travel_hours)}h travel</div>` : ''}</td>
+          ${attOn ? `<td class="num">${m.attended_hours ? fmtH(m.attended_hours) : '—'}${m.utilisation != null ? `<div><span class="badge ${m.utilisation > 100 ? 'red' : m.utilisation >= 85 ? 'green' : 'amber'}" style="font-size:10px">${m.utilisation}%</span></div>` : ''}</td>` : ''}
+          <td class="num">${m.jobs_count} jobs · ${m.vehicles_count} veh</td>
+          <td class="num"><b>${money(m.internal_cost)}</b></td>
+          <td class="num"><b style="color:#4c1d95">${money(m.outside_cost)}</b>${m.raw_outside_cost !== m.outside_cost ? `<div class="muted" style="font-size:10px" title="Total on shared crew lines before splitting">Line total: ${money(m.raw_outside_cost)}</div>` : ''}</td>
+          <td class="num">${savCell}</td>
+          <td class="num">${roiBadge}<div class="muted" style="font-size:10px">${money(m.effective_value_per_hr)}/hr</div></td>
+          <td class="num">${covBadge}</td>
+          <td class="num"><button class="sm primary" data-drill="${esc(m.mechanic)}">🔍 Drill-Down</button></td>
+        </tr>`;
+      });
+
+      const heads = [
+        { label: 'Mechanic / Laborer' },
+        { label: 'Hourly Rate', num: true },
+        { label: 'Working Hours', num: true },
+      ];
+      if (attOn) heads.push({ label: 'Attended / Util %', num: true });
+      heads.push(
+        { label: 'Scope', num: true },
+        { label: 'Our Wage Cost (Rs)', num: true },
+        { label: 'Outside Cost (Rs)', num: true },
+        { label: 'Net Saving (Rs)', num: true },
+        { label: 'KPI ROI / Output', num: true },
+        { label: 'Priced Lines', num: true },
+        { label: 'Action', num: true }
+      );
+
+      bodyEl.innerHTML = filtered.length
+        ? tableWrap(heads, rows, { scroll: true })
+        : '<p class="muted">No mechanics match the current filter.</p>';
+
+      qsa('[data-drill]', bodyEl).forEach((b) => {
+        b.onclick = () => openMechanicDrilldownModal(b.dataset.drill);
+      });
+      qsa('[data-setrate]', bodyEl).forEach((b) => {
+        b.onclick = () => {
+          const name = b.dataset.setrate;
+          const cur = b.dataset.currate;
+          modal('Update Mechanic Hourly Rate', `
+            ${field('Mechanic Name', 'mechanic', { value: name })}
+            ${field('Hourly Rate (Rs/hr)', 'rate', { type: 'number', value: cur, placeholder: 'e.g. 450' })}
+            <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Save Rate</button></div>
+          `, (mBody, close) => {
+            qs('#s', mBody).onclick = async () => {
+              const f = formData(mBody);
+              if (!f.mechanic || f.rate === '') return toast('Enter a valid hourly rate', 'err');
+              try {
+                await api('/mechanics/rates', { method: 'POST', body: { mechanic: f.mechanic, rate: f.rate } });
+                toast('Hourly rate updated — recalculating KPIs');
+                close();
+                loadKpi();
+              } catch (e) { toast(e.message, 'err'); }
+            };
+          });
+        };
+      });
+      return;
+    }
+
+    if (activeTab === 'unpriced') {
+      const filtered = unpriced.filter((u) => !q || (u.mechanic || '').toLowerCase().includes(q) || (u.asset_code || '').toLowerCase().includes(q) || (u.job_no || '').toLowerCase().includes(q) || (u.description || '').toLowerCase().includes(q));
+      const rows = filtered.map((u) => `<tr>
+        <td>${esc(u.work_date)}</td>
+        <td><a href="#/jobs/${u.job_id}"><b>${esc(u.job_no)}</b></a></td>
+        <td>${esc(u.asset_code || '—')}${u.asset_reg ? ` <span class="muted">(${esc(u.asset_reg)})</span>` : ''}</td>
+        <td><b>${esc(u.mechanic || '—')}</b></td>
+        <td class="desc-col">${esc(u.description || '')}</td>
+        <td class="num"><b>${num(u.hours)}h</b></td>
+        <td class="num">${money(u.internal_cost)}</td>
+        <td class="num">
+          ${canEditOutside
+            ? `<div style="display:flex;gap:4px;justify-content:flex-end;align-items:center">
+                 <input type="number" step="50" min="0" class="mkpi-unp-inp" data-id="${u.id}" placeholder="Enter outside Rs…" style="width:125px;text-align:right">
+                 <button class="sm primary mkpi-unp-save" data-id="${u.id}">Save</button>
+               </div>`
+            : '<span class="muted">Requires dailywork.edit</span>'}
+        </td>
+      </tr>`);
+
+      bodyEl.innerHTML = `
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;flex-wrap:wrap;gap:8px">
+          <div class="muted" style="font-size:12.5px">Enter what each job line would have cost if sent to an outside workshop. Saving updates the Mechanics KPI &amp; ROI immediately.</div>
+          ${canEditOutside && filtered.length ? '<button class="primary sm" id="mkpi-save-all-unp">💾 Save All Entered Outside Costs</button>' : ''}
+        </div>
+        ${filtered.length
+          ? tableWrap([
+              { label: 'Date', width: '95px' },
+              { label: 'Job No', width: '105px' },
+              { label: 'Vehicle', width: '130px' },
+              { label: 'Mechanic / Crew', width: '150px' },
+              { label: 'Description of Work', cls: 'desc-col' },
+              { label: 'Hours', num: true, width: '75px' },
+              { label: 'Our Wage Cost', num: true, width: '110px' },
+              { label: 'Outside Cost (Rs)', num: true, width: '190px' },
+            ], rows, { scroll: true })
+          : '<div class="card"><p class="muted">🎉 Every daily work line in this period has an Outside Cost recorded!</p></div>'}
+      `;
+
+      qsa('.mkpi-unp-save', bodyEl).forEach((btn) => {
+        btn.onclick = async () => {
+          const id = btn.dataset.id;
+          const inp = qs(`.mkpi-unp-inp[data-id="${id}"]`, bodyEl);
+          if (!inp || inp.value.trim() === '') return toast('Enter an outside cost amount (Rs)', 'err');
+          try {
+            await api(`/daily-work/${id}/outside-cost`, { method: 'PATCH', body: { outside_labour: parseFloat(inp.value) } });
+            toast('Outside cost saved');
+            loadKpi();
+          } catch (e) { toast(e.message, 'err'); }
+        };
+      });
+
+      if (qs('#mkpi-save-all-unp', bodyEl)) {
+        qs('#mkpi-save-all-unp', bodyEl).onclick = async () => {
+          const updates = [];
+          qsa('.mkpi-unp-inp', bodyEl).forEach((inp) => {
+            if (inp.value.trim() !== '') {
+              const val = parseFloat(inp.value);
+              if (!isNaN(val) && val >= 0) updates.push({ id: Number(inp.dataset.id), outside_labour: val });
+            }
+          });
+          if (!updates.length) return toast('Type outside cost amounts in one or more rows first', 'err');
+          try {
+            const res = await api('/daily-work/batch-update', { method: 'POST', body: { updates } });
+            toast(`✓ Saved outside costs for ${res.updated_count} work lines!`);
+            loadKpi();
+          } catch (e) { toast(e.message, 'err'); }
+        };
+      }
+      return;
+    }
+
+    if (activeTab === 'vehicles') {
+      const filtered = vehicles.filter((v) => !q || (v.asset_code || '').toLowerCase().includes(q) || (v.asset_reg || '').toLowerCase().includes(q));
+      const rows = filtered.map((v) => {
+        const sav = v.net_savings || 0;
+        return `<tr>
+          <td><b>${esc(v.asset_code)}</b></td>
+          <td>${esc(v.asset_reg || '—')}</td>
+          <td class="num">${v.entries}</td>
+          <td class="num"><b>${num(v.hours)} hrs</b></td>
+          <td class="num">${money(v.internal_cost)}</td>
+          <td class="num"><b style="color:#4c1d95">${money(v.outside_cost)}</b></td>
+          <td class="num" style="font-weight:800;color:${sav >= 0 ? 'var(--green)' : 'var(--red)'}">${sav >= 0 ? '+' : ''}${money(sav)}</td>
+        </tr>`;
+      });
+      bodyEl.innerHTML = filtered.length
+        ? tableWrap([
+            { label: 'Vehicle / Asset Code' },
+            { label: 'Registration' },
+            { label: 'Work Entries', num: true },
+            { label: 'Total Hours', num: true },
+            { label: 'Our Wage Cost (Rs)', num: true },
+            { label: 'Outside Cost Value (Rs)', num: true },
+            { label: 'Net Workshop Saving (Rs)', num: true },
+          ], rows, { scroll: true })
+        : '<p class="muted">No vehicle work records found in this period.</p>';
+    }
+  };
+
+  // Wire filter controls
+  qs('#mkpi-mode-month', c).onclick = () => {
+    periodMode = 'month';
+    qs('#mkpi-mode-month', c).classList.add('primary');
+    qs('#mkpi-mode-custom', c).classList.remove('primary');
+    qs('#mkpi-month-box', c).style.display = '';
+    qs('#mkpi-range-box', c).style.display = 'none';
+    loadKpi();
+  };
+  qs('#mkpi-mode-custom', c).onclick = () => {
+    periodMode = 'custom';
+    qs('#mkpi-mode-custom', c).classList.add('primary');
+    qs('#mkpi-mode-month', c).classList.remove('primary');
+    qs('#mkpi-month-box', c).style.display = 'none';
+    qs('#mkpi-range-box', c).style.display = 'flex';
+  };
+  qs('#mkpi-month', c).onchange = (e) => { selectedMonth = e.target.value; loadKpi(); };
+  qs('#mkpi-apply-range', c).onclick = () => {
+    customFrom = qs('#mkpi-from', c).value;
+    customTo = qs('#mkpi-to', c).value;
+    if (!customFrom || !customTo) return toast('Pick both From and To dates', 'err');
+    loadKpi();
+  };
+  qs('#mkpi-ws', c).onchange = (e) => { selectedWs = e.target.value; loadKpi(); };
+  qs('#mkpi-mech', c).onchange = (e) => { selectedMech = e.target.value; loadKpi(); };
+  qs('#mkpi-search', c).oninput = (e) => { searchQ = e.target.value; renderTabBody(); };
+
+  await loadKpi();
+};
+routes.mechanicskpi = routes['mechanics-kpi'];
 
 // ---- vehicle conflicts: more than one open card on the same vehicle --------
 // These predate the one-open-card rule, which only stops NEW ones. Collapsed by
@@ -7874,12 +8829,16 @@ async function storeLocationsTab(body) {
     // Goods in Transit (Phase 2)
     const renderInTransit = () => {
       const list = Array.isArray(inTransitRes) ? inTransitRes : [];
+      const canActMtn = canDo('stores.mtn.edit');
       return `
         <div style="background:var(--card, #fff);border:1px solid var(--border, #e5e7eb);border-radius:8px;padding:16px;margin-bottom:20px">
-          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px">
             <div style="font-weight:700;font-size:15px;display:flex;align-items:center;gap:8px">
               <span>🚚 Goods in Transit Between Physical Stores</span>
               <span class="badge sm ${list.length ? 'yellow' : 'gray'}">${list.length} in transit</span>
+            </div>
+            <div>
+              <a class="btn sm" href="#/stores?tab=mtn&step=in_transit">Open Full MTN Board →</a>
             </div>
           </div>
           ${list.length === 0 ? `
@@ -7898,6 +8857,7 @@ async function storeLocationsTab(body) {
                     <th style="padding:6px 10px">Item</th>
                     <th style="padding:6px 10px;text-align:right">Qty In-Transit</th>
                     <th style="padding:6px 10px">Status</th>
+                    <th style="padding:6px 10px;text-align:right">Action</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -7910,6 +8870,11 @@ async function storeLocationsTab(body) {
                       <td style="padding:6px 10px">${esc(t.description || t.item_name || '')}</td>
                       <td style="padding:6px 10px;text-align:right;font-family:monospace;font-weight:700">${Number(t.qty_in_transit).toLocaleString()}</td>
                       <td style="padding:6px 10px"><span class="badge sm yellow">${esc(t.status)}</span></td>
+                      <td style="padding:6px 10px;text-align:right;white-space:nowrap">
+                        ${canActMtn && t.status === 'dispatched' ? `<button class="sm primary" data-sl-mtn-rec="${t.mtn_id}">📥 Receive</button>` : ''}
+                        ${canActMtn && t.status === 'received' ? `<button class="sm primary" data-sl-mtn-acc="${t.mtn_id}">✅ Accept</button>` : ''}
+                        <a class="btn sm" href="#/stores?tab=mtn&q=${encodeURIComponent(t.mtn_no || '')}">View</a>
+                      </td>
                     </tr>
                   `).join('')}
                 </tbody>
@@ -7930,45 +8895,46 @@ async function storeLocationsTab(body) {
 
       return `
         <div style="background:var(--card, #fff);border:1px solid var(--border, #e5e7eb);border-radius:8px;padding:16px;margin-bottom:20px">
-          <div style="font-weight:700;font-size:15px;margin-bottom:12px;display:flex;align-items:center;gap:8px">
+          <div style="font-weight:700;font-size:15px;margin-bottom:12px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
             <span>🌐 Store Network Topology</span>
-            <span class="muted" style="font-size:12px;font-weight:normal">(Central Authority & Workshop Stock Pools)</span>
+            <span class="muted" style="font-size:12px;font-weight:normal">(Click any store card to inspect shelf stock, transfers, or modify store profile)</span>
           </div>
 
           <div style="display:flex;flex-direction:column;gap:14px;padding-left:8px;font-size:13px">
             <!-- Level 1: Central Main Stores -->
             <div style="border-left:3px solid #1e3a8a;padding-left:12px">
-              <div style="display:flex;align-items:center;gap:8px;font-weight:700;flex-wrap:wrap">
+              <div style="display:flex;align-items:center;gap:8px;font-weight:700;flex-wrap:wrap;cursor:pointer" onclick="showStoreLocationStockModal(${ms.id}, '${esc(ms.name)}')">
                 <span style="font-size:16px">🏛️</span>
-                <span>${esc(ms.name)}</span>
+                <span style="text-decoration:underline;color:#1e3a8a">${esc(ms.name)}</span>
                 <span class="code" style="font-size:11px">${esc(ms.code)}</span>
                 ${typeBadge(ms.store_type)}
-                <span class="muted" style="font-size:11px">Central Purchasing & Site Stock Authority</span>
+                <span class="muted" style="font-size:11px">Central Purchasing &amp; Site Stock Authority</span>
               </div>
 
               <!-- Level 2 Branches: Site Stores & Main Workshop Stores -->
               <div style="margin-top:10px;margin-left:16px;display:flex;flex-direction:column;gap:12px">
                 <!-- Branch A: General Site Stores -->
                 <div style="border-left:2px dashed #0f766e;padding-left:12px">
-                  <div style="font-weight:600;color:#0f766e;margin-bottom:6px">├── 🏗️ General Site Stores (Civil & Project Materials):</div>
+                  <div style="font-weight:600;color:#0f766e;margin-bottom:6px">├── 🏗️ General &amp; Project Site Stores (${(ms.site_stores || []).length}):</div>
                   <div style="display:flex;flex-wrap:wrap;gap:8px">
                     ${(ms.site_stores && ms.site_stores.length) ? ms.site_stores.map(ss => `
-                      <div style="background:var(--subtle, #f3f4f6);border:1px solid var(--border, #e5e7eb);border-radius:6px;padding:6px 10px;display:flex;align-items:center;gap:6px">
+                      <div onclick="showStoreLocationStockModal(${ss.id}, '${esc(ss.name)}')" style="cursor:pointer;background:var(--subtle, #f3f4f6);border:1px solid var(--border, #e5e7eb);border-radius:6px;padding:6px 10px;display:flex;align-items:center;gap:6px;transition:transform 0.1s" title="Click to open Site Store Stock & Operations">
                         <span>📦</span>
-                        <span style="font-weight:600">${esc(ss.name)}</span>
+                        <span style="font-weight:600;color:#0f172a">${esc(ss.name)}</span>
                         <span class="code" style="font-size:10px">${esc(ss.code)}</span>
+                        ${ss.incharge_name ? `<span class="badge sm" style="font-size:10px">👤 ${esc(ss.incharge_name)}</span>` : ''}
                         ${typeBadge(ss.store_type)}
                       </div>
-                    `).join('') : '<span class="muted" style="font-style:italic">No site stores configured yet</span>'}
+                    `).join('') : '<span class="muted" style="font-style:italic">No general site stores configured yet</span>'}
                   </div>
                 </div>
 
                 <!-- Branch B: Main Workshop Stores -->
                 ${mw ? `
                   <div style="border-left:2px solid #b45309;padding-left:12px">
-                    <div style="display:flex;align-items:center;gap:8px;font-weight:700;margin-bottom:6px;flex-wrap:wrap">
+                    <div style="display:flex;align-items:center;gap:8px;font-weight:700;margin-bottom:6px;flex-wrap:wrap;cursor:pointer" onclick="showStoreLocationStockModal(${mw.id}, '${esc(mw.name)}')">
                       <span>├── 🔧</span>
-                      <span>${esc(mw.name)}</span>
+                      <span style="text-decoration:underline;color:#b45309">${esc(mw.name)}</span>
                       <span class="code" style="font-size:11px">${esc(mw.code)}</span>
                       ${typeBadge(mw.store_type)}
                       <span class="muted" style="font-size:11px">Central Workshop Pool (Replenished via Main Stores)</span>
@@ -7976,16 +8942,17 @@ async function storeLocationsTab(body) {
 
                     <!-- Level 3: Site Workshop Stores -->
                     <div style="margin-left:16px;border-left:2px dashed #15803d;padding-left:12px">
-                      <div style="font-weight:600;color:#15803d;margin-bottom:6px">└── 🚜 Site Workshop Stores (Field Equipment & Spare Parts):</div>
+                      <div style="font-weight:600;color:#15803d;margin-bottom:6px">└── 🚜 Workshop-Linked Site Stores (${(mw.site_workshop_stores || []).length}):</div>
                       <div style="display:flex;flex-wrap:wrap;gap:8px">
                         ${(mw.site_workshop_stores && mw.site_workshop_stores.length) ? mw.site_workshop_stores.map(sw => `
-                          <div style="background:var(--subtle, #f3f4f6);border:1px solid var(--border, #e5e7eb);border-radius:6px;padding:6px 10px;display:flex;align-items:center;gap:6px">
+                          <div onclick="showStoreLocationStockModal(${sw.id}, '${esc(sw.name)}')" style="cursor:pointer;background:var(--subtle, #f3f4f6);border:1px solid var(--border, #e5e7eb);border-radius:6px;padding:6px 10px;display:flex;align-items:center;gap:6px" title="Click to open Site Store Stock & Operations">
                             <span>🛠️</span>
-                            <span style="font-weight:600">${esc(sw.name)}</span>
+                            <span style="font-weight:600;color:#0f172a">${esc(sw.name)}</span>
                             <span class="code" style="font-size:10px">${esc(sw.code)}</span>
+                            ${sw.incharge_name ? `<span class="badge sm" style="font-size:10px">👤 ${esc(sw.incharge_name)}</span>` : ''}
                             ${typeBadge(sw.store_type)}
                           </div>
-                        `).join('') : '<span class="muted" style="font-style:italic">No site workshop stores configured yet</span>'}
+                        `).join('') : '<span class="muted" style="font-style:italic">No workshop-linked site stores configured yet</span>'}
                       </div>
                     </div>
                   </div>
@@ -8009,11 +8976,12 @@ async function storeLocationsTab(body) {
             <thead>
               <tr style="text-align:left;border-bottom:1px solid var(--border, #e5e7eb)">
                 <th style="padding:10px 12px">Code</th>
-                <th style="padding:10px 12px">Store Name</th>
+                <th style="padding:10px 12px">Store Name &amp; Address</th>
                 <th style="padding:10px 12px">Store Type</th>
                 <th style="padding:10px 12px">Parent Store</th>
                 <th style="padding:10px 12px">Workshop / Site Link</th>
-                <th style="padding:10px 12px">Legacy Map</th>
+                <th style="padding:10px 12px">Storekeeper / In-Charge</th>
+                <th style="padding:10px 12px">Site Operations</th>
                 <th style="padding:10px 12px">Status</th>
                 <th style="padding:10px 12px;text-align:right;position:sticky;right:0;background:var(--subtle, #f9fafb);z-index:2;box-shadow:-2px 0 4px rgba(0,0,0,0.06)">Actions</th>
               </tr>
@@ -8022,16 +8990,29 @@ async function storeLocationsTab(body) {
               ${stores.map(s => `
                 <tr style="border-bottom:1px solid var(--border, #f3f4f6)">
                   <td style="padding:10px 12px;font-family:monospace;font-weight:600">${esc(s.code)}</td>
-                  <td style="padding:10px 12px;font-weight:600">${esc(s.name)}${s.notes ? `<br><span class="muted" style="font-size:11px;font-weight:normal">${esc(s.notes)}</span>` : ''}</td>
+                  <td style="padding:10px 12px;font-weight:600">
+                    ${esc(s.name)}
+                    ${s.address ? `<br><span class="muted" style="font-size:11px;font-weight:normal">📍 ${esc(s.address)}</span>` : ''}
+                    ${s.notes ? `<br><span class="muted" style="font-size:11px;font-weight:normal">${esc(s.notes)}</span>` : ''}
+                  </td>
                   <td style="padding:10px 12px">${typeBadge(s.store_type)}</td>
                   <td style="padding:10px 12px">${s.parent_store_name ? `<span>${esc(s.parent_store_name)}</span> <span class="code" style="font-size:10px">(${esc(s.parent_store_code)})</span>` : '<span class="muted">Top Level (None)</span>'}</td>
-                  <td style="padding:10px 12px">${s.workshop_name ? `🏢 ${esc(s.workshop_name)}` : (s.site_name ? `🏗️ ${esc(s.site_name)}` : '<span class="muted">—</span>')}</td>
-                  <td style="padding:10px 12px">${s.legacy_store_id ? `<span class="badge sm gray">Store ID #${s.legacy_store_id}</span>` : '<span class="muted">—</span>'}</td>
+                  <td style="padding:10px 12px">${s.workshop_name ? `🏢 ${esc(s.workshop_name)}` : (s.site_name ? `🏗️ ${esc(s.site_name)}` : '<span class="muted">—</span>')}${s.legacy_store_id ? `<br><span class="badge sm gray" style="font-size:10px">Store #${s.legacy_store_id}</span>` : ''}</td>
+                  <td style="padding:10px 12px">
+                    ${s.incharge_name ? `<b>👤 ${esc(s.incharge_name)}</b>` : '<span class="muted">Not set</span>'}
+                    ${s.contact_phone ? `<br><span class="muted" style="font-size:11px">📞 ${esc(s.contact_phone)}</span>` : ''}
+                  </td>
+                  <td style="padding:10px 12px">
+                    <div style="display:flex;gap:4px;flex-wrap:wrap">
+                      ${s.allow_direct_issue !== 0 ? '<span class="badge green sm" style="font-size:10px" title="Can issue stock directly to site jobs/machines">Direct Issue</span>' : '<span class="badge gray sm" style="font-size:10px">No Direct Issue</span>'}
+                      ${s.allow_direct_grn ? '<span class="badge blue sm" style="font-size:10px" title="Can receive direct local purchases/GRNs at site">Direct GRN</span>' : ''}
+                    </div>
+                  </td>
                   <td style="padding:10px 12px">${s.active ? '<span class="badge green sm">Active</span>' : '<span class="badge red sm">Inactive</span>'}</td>
                   <td style="padding:10px 12px;text-align:right;white-space:nowrap;position:sticky;right:0;background:var(--card-bg, #fff);z-index:1;box-shadow:-2px 0 4px rgba(0,0,0,0.06)">
-                    <button class="sm" onclick="showStoreLocationStockModal(${s.id})">📦 Stock</button>
+                    <button class="sm primary" onclick="showStoreLocationStockModal(${s.id}, '${esc(s.name)}')">📦 Shelf Stock &amp; Ops</button>
                     ${canManage ? `<button class="sm" onclick="showStoreLocationAccessModal(${s.id})" style="margin-left:4px" title="Manage user access and permissions for this store">🔑 Permissions</button>` : ''}
-                    ${canManage ? `<button class="sm primary" onclick="showStoreLocationModal(${s.id})" style="margin-left:4px">✏️ Edit</button>` : ''}
+                    ${canManage ? `<button class="sm" onclick="showStoreLocationModal(${s.id})" style="margin-left:4px">✏️ Modify</button>` : ''}
                   </td>
                 </tr>
               `).join('')}
@@ -8044,12 +9025,12 @@ async function storeLocationsTab(body) {
     body.innerHTML = `
       <div style="margin-bottom:14px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">
         <div>
-          <h2 style="margin:0;font-size:18px">🏢 Physical Store Locations & Central Hierarchy</h2>
-          <div class="muted" style="font-size:12px;margin-top:2px">Central Main Stores authority and Main Workshop equipment stock pool</div>
+          <h2 style="margin:0;font-size:18px">🏢 Physical Store Locations &amp; Site Store Hub</h2>
+          <div class="muted" style="font-size:12px;margin-top:2px">Central Main Stores, Main Workshop Stores, and Project / Workshop Site Stores</div>
         </div>
-        <div style="display:flex;gap:8px">
-          ${canManage ? '<button class="primary sm" id="btnNewStoreLoc" onclick="showStoreLocationModal()">+ New Store Location</button>' : ''}
-          <button class="sm" id="btnRefreshStoreLoc" onclick="const b = document.querySelector(\'#storebody\'); if (b) storeLocationsTab(b);">🔄 Refresh</button>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          ${canManage ? '<button class="primary sm" id="btnNewStoreLoc">+ Add Site Store / Location</button>' : ''}
+          <button class="sm" id="btnRefreshStoreLoc">🔄 Refresh</button>
         </div>
       </div>
       ${renderReconciliation()}
@@ -8058,75 +9039,382 @@ async function storeLocationsTab(body) {
       ${renderTable()}
     `;
 
-    if (canManage && qs('#btnNewStoreLoc')) {
-      qs('#btnNewStoreLoc').onclick = () => showStoreLocationModal();
+    if (canManage && qs('#btnNewStoreLoc', body)) {
+      qs('#btnNewStoreLoc', body).onclick = () => showStoreLocationModal();
     }
-    if (qs('#btnRefreshStoreLoc')) {
-      qs('#btnRefreshStoreLoc').onclick = () => storeLocationsTab(body);
+    if (qs('#btnRefreshStoreLoc', body)) {
+      qs('#btnRefreshStoreLoc', body).onclick = () => storeLocationsTab(body);
     }
+    qsa('[data-sl-mtn-rec]', body).forEach((b) => {
+      b.onclick = async () => {
+        try {
+          const m = await api('/stores/mtn/' + b.dataset.slMtnRec);
+          mtnSignModal(m, 'receive', () => storeLocationsTab(body));
+        } catch (e) { toast(e.message, 'err'); }
+      };
+    });
+    qsa('[data-sl-mtn-acc]', body).forEach((b) => {
+      b.onclick = async () => {
+        try {
+          const m = await api('/stores/mtn/' + b.dataset.slMtnAcc);
+          mtnSignModal(m, 'accept', () => storeLocationsTab(body));
+        } catch (e) { toast(e.message, 'err'); }
+      };
+    });
   } catch (err) {
     body.innerHTML = `<div class="card alert red">Error loading store locations: ${esc(err.message)}</div>`;
   }
 }
 
 async function showStoreLocationStockModal(storeId, storeName = '') {
-  modal(`Stock Breakdown: ${storeName || 'Store Location #' + storeId}`, '<div class="muted" style="padding:20px">Loading live stock…</div>', async (mBody, close) => {
-    try {
-      const data = await api(`/store-locations/${storeId}/stock`);
+  modal(`📦 Site Store Workspace: ${storeName || 'Store Location #' + storeId}`, '<div class="muted" style="padding:20px">Loading live site store shelf inventory, transfers &amp; movements…</div>', async (mBody, close) => {
+    let curTab = 'items'; // 'items' | 'transit' | 'moves'
+    let curSection = 'all';
+    let searchQ = '';
+    let showOnlyPositive = false;
+    let data = null;
+
+    const canAdjust = canDo('stores.count') || canDo('stores.locations.manage') || canDo('stores.edit');
+    const canManageStore = canDo('stores.locations.manage') || (ME && (ME.roles || []).includes('admin'));
+    const canEditMtn = canDo('stores.mtn.edit');
+
+    const secKeys = ['oil', 'filter', 'battery', 'tyre', 'general'];
+    const secLabels = {
+      all: '📚 All Sections',
+      oil: '🛢️ Oil & Lubricants',
+      filter: '🔍 Filters',
+      battery: '🔋 Batteries',
+      tyre: '🛞 Tyres',
+      general: '📦 General Items'
+    };
+
+    const loadData = async () => {
+      try {
+        data = await api(`/store-locations/${storeId}/stock?include_items=1`);
+        const s = data.store || {};
+        const modalTitle = mBody.closest('.modal') ? mBody.closest('.modal').querySelector('h2') : null;
+        if (modalTitle && s.name) modalTitle.textContent = `📦 Site Store Workspace: ${s.name} (${s.code || ''})`;
+        renderWorkspace();
+      } catch (e) {
+        mBody.innerHTML = `<div class="card alert red">Error loading stock: ${esc(e.message)}</div>`;
+      }
+    };
+
+    const openQuickAdjustModal = (item = null) => {
+      const isNewItem = !item;
+      const s = (data && data.store) || {};
+      modal(`${isNewItem ? '➕ Add Opening Stock / Item to ' : '⚖️ Adjust Stock / Reorder Level — '}${esc(s.name || '')}`, `
+        <div style="font-size:13px">
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
+            <div>
+              <label style="font-weight:600">Inventory Section *</label>
+              <select id="qa_sec" style="width:100%" ${!isNewItem ? 'disabled' : ''}>
+                ${secKeys.map((k) => `<option value="${k}" ${(item && item.section === k) || (!item && k === (curSection === 'all' ? 'general' : curSection)) ? 'selected' : ''}>${secLabels[k]}</option>`).join('')}
+              </select>
+            </div>
+            <div>
+              <label style="font-weight:600">Item Key / Part Code</label>
+              <input id="qa_key" value="${esc(item ? item.item_key : '')}" ${!isNewItem ? 'readonly' : ''} placeholder="Auto-derived if blank" style="width:100%;font-family:monospace">
+            </div>
+          </div>
+          <div style="margin-bottom:10px">
+            <label style="font-weight:600">Item Name / Description *</label>
+            <input id="qa_name" value="${esc(item ? (item.item_name || item.item_key) : '')}" ${!isNewItem ? 'readonly' : ''} placeholder="e.g. Cement 50kg Bag, 15W40 Engine Oil, Oil Filter C-206" style="width:100%">
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:10px">
+            <div>
+              <label style="font-weight:600">Current Book Balance</label>
+              <input value="${item ? Number(item.balance || 0) : 0}" readonly style="width:100%;background:#f1f5f9;font-weight:700">
+            </div>
+            <div>
+              <label style="font-weight:600">Physical Count / New Balance</label>
+              <input type="number" step="0.01" min="0" id="qa_counted" value="${item ? Number(item.balance || 0) : ''}" placeholder="Leave blank to keep" style="width:100%;font-weight:700">
+            </div>
+            <div>
+              <label style="font-weight:600">Reorder Level (Min Stock)</label>
+              <input type="number" step="1" min="0" id="qa_reorder" value="${item && item.reorder_level != null ? item.reorder_level : ''}" placeholder="e.g. 5" style="width:100%">
+            </div>
+          </div>
+          <div style="margin-bottom:12px">
+            <label style="font-weight:600">Adjustment Reason / Note</label>
+            <input id="qa_note" value="${isNewItem ? 'Site store opening balance' : 'Physical shelf verification at site store'}" style="width:100%">
+          </div>
+          <div style="display:flex;justify-content:flex-end;gap:8px">
+            <button class="btn" id="qa_cancel">Cancel</button>
+            <button class="btn primary" id="qa_save">💾 Save Stock Adjustment</button>
+          </div>
+        </div>
+      `, (qaBody, closeQa) => {
+        qs('#qa_cancel', qaBody).onclick = closeQa;
+        qs('#qa_save', qaBody).onclick = async () => {
+          const section = qs('#qa_sec', qaBody).value;
+          const item_name = qs('#qa_name', qaBody).value.trim();
+          const item_key = qs('#qa_key', qaBody).value.trim();
+          const counted_qty = qs('#qa_counted', qaBody).value.trim();
+          const reorder_level = qs('#qa_reorder', qaBody).value.trim();
+          const note = qs('#qa_note', qaBody).value.trim();
+          if (!item_name && !item_key) return toast('Item name is required', 'err');
+          if (counted_qty === '' && reorder_level === '') return toast('Enter a physical count or reorder level', 'err');
+          try {
+            await api(`/store-locations/${storeId}/quick-adjust`, {
+              method: 'POST',
+              body: {
+                section,
+                item_name,
+                item_key: item_key || undefined,
+                counted_qty: counted_qty === '' ? undefined : Number(counted_qty),
+                reorder_level: reorder_level === '' ? undefined : Number(reorder_level),
+                note
+              }
+            });
+            toast('Site store stock updated successfully', 'ok');
+            closeQa();
+            loadData();
+          } catch (err) { toast(err.message, 'err'); }
+        };
+      });
+    };
+
+    const renderWorkspace = () => {
       const s = data.store || {};
-      const modalTitle = mBody.closest('.modal') ? mBody.closest('.modal').querySelector('h2') : null;
-      if (modalTitle && s.name) modalTitle.textContent = `Stock Breakdown: ${s.name} (${s.code || ''})`;
       const sums = data.summaries || {};
-      const secKeys = ['oil', 'filter', 'battery', 'tyre', 'general'];
-      const secLabels = { oil: '🛢️ Oil & Lubricants', filter: '🔍 Filters', battery: '🔋 Batteries', tyre: '🛞 Tyres', general: '📦 General Items' };
+      const allItems = data.items || [];
+      const inTransit = data.in_transit || [];
+      const recentMoves = data.recent_moves || [];
+
+      const q = searchQ.trim().toLowerCase();
+      const filteredItems = allItems.filter((it) => {
+        if (curSection !== 'all' && it.section !== curSection) return false;
+        if (showOnlyPositive && !(Number(it.balance) > 0)) return false;
+        if (q && !(String(it.item_name || '').toLowerCase().includes(q) || String(it.item_key || '').toLowerCase().includes(q))) return false;
+        return true;
+      });
 
       mBody.innerHTML = `
         <div style="font-size:13px">
-          <div style="margin-bottom:14px;background:var(--subtle, #f8fafc);padding:10px 12px;border-radius:6px;border:1px solid var(--border, #e2e8f0);display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+          <!-- Top Store Profile Banner -->
+          <div style="margin-bottom:14px;background:linear-gradient(135deg,#f8fafc 0%,#eff6ff 100%);padding:12px 14px;border-radius:8px;border:1px solid #bfdbfe;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">
             <div>
-              <span style="font-weight:700">${esc(s.name)}</span>
-              <span class="code" style="font-size:11px;margin-left:6px">${esc(s.code)}</span>
+              <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+                <span style="font-weight:800;font-size:15px;color:#0f172a">${esc(s.name)}</span>
+                <span class="code" style="font-size:11px">${esc(s.code)}</span>
+                <span class="badge blue sm">${esc(s.store_type || '')}</span>
+                ${s.parent_store_name ? `<span class="muted" style="font-size:11.5px">Parent: <b>${esc(s.parent_store_name)}</b></span>` : ''}
+              </div>
+              <div style="margin-top:4px;font-size:12px;color:#475569;display:flex;gap:12px;flex-wrap:wrap">
+                <span>👤 In-Charge: <b>${esc(s.incharge_name || 'Not assigned')}</b></span>
+                ${s.contact_phone ? `<span>📞 <b>${esc(s.contact_phone)}</b></span>` : ''}
+                ${s.address ? `<span>📍 ${esc(s.address)}</span>` : ''}
+                ${s.workshop_name ? `<span>🏢 Workshop: <b>${esc(s.workshop_name)}</b></span>` : ''}
+              </div>
             </div>
-            <div>
-              <span class="badge sm">${esc(s.store_type || '')}</span>
+            <div style="display:flex;gap:6px;flex-wrap:wrap">
+              ${canAdjust ? `<button class="sm primary" id="sl_ws_add_stock">+ Add / Adjust Stock</button>` : ''}
+              ${canManageStore ? `<button class="sm" id="sl_ws_edit_store">✏️ Modify Site Store</button>` : ''}
             </div>
           </div>
 
-          <table class="table" style="width:100%;margin-bottom:16px;font-size:12px">
-            <thead>
-              <tr style="border-bottom:1px solid var(--border, #e2e8f0);text-align:left">
-                <th style="padding:8px 10px">Inventory Section</th>
-                <th style="padding:8px 10px;text-align:right">Received</th>
-                <th style="padding:8px 10px;text-align:right">Issued</th>
-                <th style="padding:8px 10px;text-align:right">On-Hand Balance</th>
-                <th style="padding:8px 10px;text-align:right">Active Items</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${secKeys.map(k => {
-                const row = sums[k] || { received: 0, issued: 0, balance: 0, items: 0 };
-                return `
-                  <tr style="border-bottom:1px solid var(--border, #f1f5f9)">
-                    <td style="padding:8px 10px;font-weight:600">${secLabels[k]}</td>
-                    <td style="padding:8px 10px;text-align:right;font-family:monospace">${Number(row.received || 0).toLocaleString()}</td>
-                    <td style="padding:8px 10px;text-align:right;font-family:monospace">${Number(row.issued || 0).toLocaleString()}</td>
-                    <td style="padding:8px 10px;text-align:right;font-family:monospace;font-weight:700;color:${(row.balance || 0) < 0 ? '#dc2626' : 'inherit'}">${Number(row.balance || 0).toLocaleString()}</td>
-                    <td style="padding:8px 10px;text-align:right;font-family:monospace">${row.items || 0}</td>
-                  </tr>
-                `;
-              }).join('')}
-            </tbody>
-          </table>
+          <!-- 5 Section Summary Cards (Clickable filters) -->
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(135px,1fr));gap:8px;margin-bottom:14px">
+            <div class="card" data-sec-pick="all" style="padding:8px 10px;cursor:pointer;border:2px solid ${curSection === 'all' ? '#2563eb' : 'var(--border)'};background:${curSection === 'all' ? '#eff6ff' : '#fff'}">
+              <div style="font-size:11px;font-weight:700;color:#475569">📚 ALL SECTIONS</div>
+              <div style="font-size:17px;font-weight:800;margin-top:2px">${allItems.filter(x => Number(x.balance) > 0).length} <span class="muted" style="font-size:11px;font-weight:normal">stocked items</span></div>
+            </div>
+            ${secKeys.map((k) => {
+              const row = sums[k] || { received: 0, issued: 0, balance: 0, items: 0 };
+              const active = curSection === k;
+              return `
+                <div class="card" data-sec-pick="${k}" style="padding:8px 10px;cursor:pointer;border:2px solid ${active ? '#2563eb' : 'var(--border)'};background:${active ? '#eff6ff' : '#fff'}">
+                  <div style="font-size:11px;font-weight:700;color:#475569">${secLabels[k]}</div>
+                  <div style="font-size:17px;font-weight:800;margin-top:2px;color:${(row.balance || 0) < 0 ? '#dc2626' : '#0f172a'}">${Number(row.balance || 0).toLocaleString()} <span class="muted" style="font-size:11px;font-weight:normal">bal</span></div>
+                  <div class="muted" style="font-size:10.5px">In: ${Number(row.received || 0).toLocaleString()} · Out: ${Number(row.issued || 0).toLocaleString()}</div>
+                </div>
+              `;
+            }).join('')}
+          </div>
 
-          <div style="display:flex;justify-content:flex-end">
+          <!-- Workspace Sub-Tabs -->
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:8px">
+            <div style="display:flex;gap:6px;flex-wrap:wrap">
+              <button class="sm ${curTab === 'items' ? 'primary' : ''}" data-wstab="items">📦 Shelf Inventory (${filteredItems.length})</button>
+              <button class="sm ${curTab === 'transit' ? 'primary' : ''}" data-wstab="transit">🚚 In-Transit Transfers (${inTransit.length})</button>
+              <button class="sm ${curTab === 'moves' ? 'primary' : ''}" data-wstab="moves">📜 Recent Stock Moves (${recentMoves.length})</button>
+            </div>
+            ${curTab === 'items' ? `
+              <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+                <label style="display:flex;align-items:center;gap:4px;font-size:12px;cursor:pointer;margin:0">
+                  <input type="checkbox" id="sl_ws_pos" ${showOnlyPositive ? 'checked' : ''}> On-hand &gt; 0 only
+                </label>
+                <input type="search" id="sl_ws_q" value="${esc(searchQ)}" placeholder="Search item name or code…" style="min-width:210px">
+              </div>
+            ` : ''}
+          </div>
+
+          <!-- Tab Body -->
+          <div id="sl_ws_body" style="max-height:390px;overflow-y:auto"></div>
+
+          <div style="margin-top:14px;display:flex;justify-content:flex-end">
             <button class="btn" id="btn_close_loc_stock">Close</button>
           </div>
         </div>
       `;
+
+      const tabBody = qs('#sl_ws_body', mBody);
+      if (curTab === 'items') {
+        if (!filteredItems.length) {
+          tabBody.innerHTML = `<div class="card"><p class="muted">No items match the current filter in this store location.${canAdjust ? ' Click <b>+ Add / Adjust Stock</b> above to enter an opening balance.' : ''}</p></div>`;
+        } else {
+          tabBody.innerHTML = `
+            <table class="table" style="width:100%;font-size:12px;margin:0">
+              <thead>
+                <tr style="border-bottom:1px solid var(--border);text-align:left">
+                  <th style="padding:6px 8px">Section</th>
+                  <th style="padding:6px 8px">Item Name / Part</th>
+                  <th style="padding:6px 8px;text-align:right">Received</th>
+                  <th style="padding:6px 8px;text-align:right">Issued</th>
+                  <th style="padding:6px 8px;text-align:right">On-Hand Balance</th>
+                  <th style="padding:6px 8px;text-align:right">Reorder Min</th>
+                  <th style="padding:6px 8px;text-align:right">Unit Price</th>
+                  <th style="padding:6px 8px">Last Move</th>
+                  ${canAdjust ? '<th style="padding:6px 8px;text-align:right">Adjust</th>' : ''}
+                </tr>
+              </thead>
+              <tbody>
+                ${filteredItems.map((it, idx) => {
+                  const bal = Number(it.balance || 0);
+                  const reord = it.reorder_level != null ? Number(it.reorder_level) : null;
+                  const isLow = reord != null && reord > 0 && bal <= reord;
+                  return `
+                    <tr style="border-bottom:1px solid #f1f5f9;${isLow ? 'background:#fffbeb' : ''}">
+                      <td style="padding:6px 8px"><span class="badge sm">${esc(it.section)}</span></td>
+                      <td style="padding:6px 8px"><b>${esc(it.item_name || it.item_key)}</b> <span class="muted" style="font-family:monospace;font-size:10.5px">(${esc(it.item_key)})</span></td>
+                      <td style="padding:6px 8px;text-align:right;font-family:monospace">${Number(it.received || 0).toLocaleString()}</td>
+                      <td style="padding:6px 8px;text-align:right;font-family:monospace">${Number(it.issued || 0).toLocaleString()}</td>
+                      <td style="padding:6px 8px;text-align:right;font-family:monospace;font-weight:700;color:${bal < 0 ? '#dc2626' : (isLow ? '#d97706' : '#0f172a')}">${bal.toLocaleString()}${isLow ? ' ⚠️' : ''}</td>
+                      <td style="padding:6px 8px;text-align:right;font-family:monospace">${reord != null ? reord : '<span class="muted">—</span>'}</td>
+                      <td style="padding:6px 8px;text-align:right;font-family:monospace">${it.unit_price != null ? money(it.unit_price) : '<span class="muted">—</span>'}</td>
+                      <td style="padding:6px 8px">${esc(it.last_move || '—')}</td>
+                      ${canAdjust ? `<td style="padding:6px 8px;text-align:right"><button class="sm" data-qa-idx="${idx}">⚖️ Adjust</button></td>` : ''}
+                    </tr>
+                  `;
+                }).join('')}
+              </tbody>
+            </table>
+          `;
+          qsa('[data-qa-idx]', tabBody).forEach((b) => {
+            b.onclick = () => openQuickAdjustModal(filteredItems[Number(b.dataset.qaIdx)]);
+          });
+        }
+      } else if (curTab === 'transit') {
+        if (!inTransit.length) {
+          tabBody.innerHTML = `<div class="card"><p class="muted">✅ No goods currently in transit to or from this store location.</p></div>`;
+        } else {
+          tabBody.innerHTML = `
+            <table class="table" style="width:100%;font-size:12px;margin:0">
+              <thead>
+                <tr style="border-bottom:1px solid var(--border);text-align:left">
+                  <th style="padding:6px 8px">MTN #</th>
+                  <th style="padding:6px 8px">Date</th>
+                  <th style="padding:6px 8px">From → To</th>
+                  <th style="padding:6px 8px">Item</th>
+                  <th style="padding:6px 8px;text-align:right">Qty</th>
+                  <th style="padding:6px 8px">Status</th>
+                  <th style="padding:6px 8px;text-align:right">Action</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${inTransit.map((t) => `
+                  <tr style="border-bottom:1px solid #f1f5f9">
+                    <td style="padding:6px 8px;font-family:monospace;font-weight:700">MTN ${esc(t.mtn_no)}</td>
+                    <td style="padding:6px 8px">${esc(t.txn_date || '')}</td>
+                    <td style="padding:6px 8px">${esc(t.from_location_code || '')} → <b>${esc(t.to_location_code || '')}</b></td>
+                    <td style="padding:6px 8px">${esc(t.description || t.item_name || '')}</td>
+                    <td style="padding:6px 8px;text-align:right;font-weight:700">${Number(t.qty_in_transit).toLocaleString()}</td>
+                    <td style="padding:6px 8px"><span class="badge sm yellow">${esc(t.status)}</span></td>
+                    <td style="padding:6px 8px;text-align:right">
+                      ${canEditMtn && t.status === 'dispatched' ? `<button class="sm primary" data-ws-mtn-rec="${t.mtn_id}">📥 Receive</button>` : ''}
+                      ${canEditMtn && t.status === 'received' ? `<button class="sm primary" data-ws-mtn-acc="${t.mtn_id}">✅ Accept</button>` : ''}
+                    </td>
+                  </tr>
+                `).join('')}
+              </tbody>
+            </table>
+          `;
+          qsa('[data-ws-mtn-rec]', tabBody).forEach((b) => {
+            b.onclick = async () => {
+              const m = await api('/stores/mtn/' + b.dataset.wsMtnRec);
+              close();
+              mtnSignModal(m, 'receive', () => showStoreLocationStockModal(storeId, storeName));
+            };
+          });
+          qsa('[data-ws-mtn-acc]', tabBody).forEach((b) => {
+            b.onclick = async () => {
+              const m = await api('/stores/mtn/' + b.dataset.wsMtnAcc);
+              close();
+              mtnSignModal(m, 'accept', () => showStoreLocationStockModal(storeId, storeName));
+            };
+          });
+        }
+      } else if (curTab === 'moves') {
+        if (!recentMoves.length) {
+          tabBody.innerHTML = `<div class="card"><p class="muted">No stock movements recorded yet for this physical store location.</p></div>`;
+        } else {
+          tabBody.innerHTML = `
+            <table class="table" style="width:100%;font-size:12px;margin:0">
+              <thead>
+                <tr style="border-bottom:1px solid var(--border);text-align:left">
+                  <th style="padding:6px 8px">Date</th>
+                  <th style="padding:6px 8px">Section</th>
+                  <th style="padding:6px 8px">Type</th>
+                  <th style="padding:6px 8px">Item</th>
+                  <th style="padding:6px 8px;text-align:right">Qty</th>
+                  <th style="padding:6px 8px">Vehicle / Job</th>
+                  <th style="padding:6px 8px">Ref / Note</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${recentMoves.map((m) => `
+                  <tr style="border-bottom:1px solid #f1f5f9">
+                    <td style="padding:6px 8px">${esc(m.txn_date || '')}</td>
+                    <td style="padding:6px 8px"><span class="badge sm">${esc(m.section)}</span></td>
+                    <td style="padding:6px 8px"><span class="badge sm ${m.kind === 'in' || m.kind === 'opening' ? 'green' : (m.kind === 'adjust' ? 'blue' : 'amber')}">${esc(m.kind)}</span></td>
+                    <td style="padding:6px 8px"><b>${esc(m.item_name || m.item_key)}</b></td>
+                    <td style="padding:6px 8px;text-align:right;font-family:monospace;font-weight:700">${Number(m.qty).toLocaleString()}</td>
+                    <td style="padding:6px 8px">${esc(m.asset_code || '')}${m.job_no ? ` · ${esc(m.job_no)}` : ''}</td>
+                    <td style="padding:6px 8px" class="muted">${esc(m.ref || '')}${m.note ? ` (${esc(m.note)})` : ''}</td>
+                  </tr>
+                `).join('')}
+              </tbody>
+            </table>
+          `;
+        }
+      }
+
+      // Wire controls
       qs('#btn_close_loc_stock', mBody).onclick = close;
-    } catch (e) {
-      mBody.innerHTML = `<div class="card alert red">Error loading stock: ${esc(e.message)}</div>`;
-    }
+      if (qs('#sl_ws_add_stock', mBody)) qs('#sl_ws_add_stock', mBody).onclick = () => openQuickAdjustModal(null);
+      if (qs('#sl_ws_edit_store', mBody)) qs('#sl_ws_edit_store', mBody).onclick = () => { close(); showStoreLocationModal(storeId); };
+      qsa('[data-sec-pick]', mBody).forEach((el) => {
+        el.onclick = () => { curSection = el.dataset.secPick; curTab = 'items'; renderWorkspace(); };
+      });
+      qsa('[data-wstab]', mBody).forEach((el) => {
+        el.onclick = () => { curTab = el.dataset.wstab; renderWorkspace(); };
+      });
+      if (qs('#sl_ws_pos', mBody)) {
+        qs('#sl_ws_pos', mBody).onchange = (e) => { showOnlyPositive = e.target.checked; renderWorkspace(); };
+      }
+      if (qs('#sl_ws_q', mBody)) {
+        qs('#sl_ws_q', mBody).oninput = (e) => {
+          searchQ = e.target.value;
+          const pos = e.target.selectionStart;
+          renderWorkspace();
+          const inp = qs('#sl_ws_q', mBody);
+          if (inp) { inp.focus(); try { inp.setSelectionRange(pos, pos); } catch (_) {} }
+        };
+      }
+    };
+
+    await loadData();
   }, { wide: true });
 }
 
@@ -8147,45 +9435,47 @@ async function showStoreLocationModal(storeId = null) {
   }
 
   const isNew = !store;
-  const title = isNew ? 'Add Physical Store Location' : `Edit Store Location: ${store.name}`;
+  const title = isNew ? 'Add Physical Store / Site Store Location' : `Modify Store Location: ${store.name}`;
 
   const mainStores = stores.filter(s => s.store_type === 'MAIN_STORE' && s.active);
   const mainWorkshopStores = stores.filter(s => s.store_type === 'MAIN_WORKSHOP_STORE' && s.active);
 
   const html = `
     <div style="font-size:13px">
-      <div style="margin-bottom:12px">
-        <label style="display:block;font-weight:600;margin-bottom:4px">Store Code *</label>
-        <input id="sl_code" class="input" style="width:100%;font-family:monospace" placeholder="e.g. SITE-STORE-RUWANWELLA" value="${esc(store ? store.code : '')}" ${!isNew ? 'readonly' : ''} />
-        <span class="muted" style="font-size:11px">Unique uppercase identifier (e.g. MAIN-STORES, MAIN-WORKSHOP, SITE-STORE-01)</span>
+      <div style="display:grid;grid-template-columns:1fr 1.4fr;gap:12px;margin-bottom:12px">
+        <div>
+          <label style="display:block;font-weight:600;margin-bottom:4px">Store Code *</label>
+          <input id="sl_code" class="input" style="width:100%;font-family:monospace" placeholder="e.g. SITE-STORE-RUWANWELLA" value="${esc(store ? store.code : '')}" ${!isNew ? 'readonly' : ''} />
+          <span class="muted" style="font-size:11px">Unique uppercase ID</span>
+        </div>
+        <div>
+          <label style="display:block;font-weight:600;margin-bottom:4px">Store Name *</label>
+          <input id="sl_name" class="input" style="width:100%" placeholder="e.g. Ruwanwella Project Site Store" value="${esc(store ? store.name : '')}" />
+        </div>
       </div>
 
-      <div style="margin-bottom:12px">
-        <label style="display:block;font-weight:600;margin-bottom:4px">Store Name *</label>
-        <input id="sl_name" class="input" style="width:100%" placeholder="e.g. Ruwanwella Project Site Store" value="${esc(store ? store.name : '')}" />
-      </div>
-
-      <div style="margin-bottom:12px">
-        <label style="display:block;font-weight:600;margin-bottom:4px">Store Type *</label>
-        <select id="sl_type" class="select" style="width:100%" ${!isNew ? 'disabled' : ''}>
-          <option value="SITE_STORE" ${store && store.store_type === 'SITE_STORE' ? 'selected' : ''}>Site Store (General project & civil materials)</option>
-          <option value="SITE_WORKSHOP_STORE" ${store && store.store_type === 'SITE_WORKSHOP_STORE' ? 'selected' : ''}>Site Workshop Store (Field workshop parts & consumables)</option>
-          <option value="MAIN_WORKSHOP_STORE" ${store && store.store_type === 'MAIN_WORKSHOP_STORE' ? 'selected' : ''}>Main Workshop Store (Central workshop equipment pool)</option>
-          <option value="MAIN_STORE" ${store && store.store_type === 'MAIN_STORE' ? 'selected' : ''}>Central Main Store (Central authority for site stock & purchasing)</option>
-        </select>
-      </div>
-
-      <div id="sl_parent_wrap" style="margin-bottom:12px">
-        <label style="display:block;font-weight:600;margin-bottom:4px">Parent Store *</label>
-        <select id="sl_parent" class="select" style="width:100%">
-          <option value="">— None (Top Level) —</option>
-          ${stores.filter(s => isNew || s.id !== store.id).map(s => `
-            <option value="${s.id}" ${store && store.parent_store_id === s.id ? 'selected' : ''}>
-              ${esc(s.name)} (${esc(s.code)} - ${esc(s.store_type)})
-            </option>
-          `).join('')}
-        </select>
-        <span class="muted" id="sl_parent_hint" style="font-size:11px">Site Stores parent to Main Stores; Site Workshop Stores parent to Main Workshop Stores.</span>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
+        <div>
+          <label style="display:block;font-weight:600;margin-bottom:4px">Store Type *</label>
+          <select id="sl_type" class="select" style="width:100%" ${!isNew ? 'disabled' : ''}>
+            <option value="SITE_STORE" ${store && store.store_type === 'SITE_STORE' ? 'selected' : ''}>Site Store (Project / Field Site Store)</option>
+            <option value="SITE_WORKSHOP_STORE" ${store && store.store_type === 'SITE_WORKSHOP_STORE' ? 'selected' : ''}>Site Workshop Store (Field Workshop Pool)</option>
+            <option value="MAIN_WORKSHOP_STORE" ${store && store.store_type === 'MAIN_WORKSHOP_STORE' ? 'selected' : ''}>Main Workshop Store (Central Workshop Pool)</option>
+            <option value="MAIN_STORE" ${store && store.store_type === 'MAIN_STORE' ? 'selected' : ''}>Central Main Store (Top Central Authority)</option>
+          </select>
+        </div>
+        <div id="sl_parent_wrap">
+          <label style="display:block;font-weight:600;margin-bottom:4px">Parent Store *</label>
+          <select id="sl_parent" class="select" style="width:100%">
+            <option value="">— None (Top Level) —</option>
+            ${stores.filter(s => (isNew || s.id !== store.id) && (s.store_type === 'MAIN_STORE' || s.store_type === 'MAIN_WORKSHOP_STORE')).map(s => `
+              <option value="${s.id}" ${store && store.parent_store_id === s.id ? 'selected' : ''}>
+                ${esc(s.name)} (${esc(s.code)})
+              </option>
+            `).join('')}
+          </select>
+          <span class="muted" id="sl_parent_hint" style="font-size:11px">Parent to Central Main Store or Main Workshop Store.</span>
+        </div>
       </div>
 
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
@@ -8213,23 +9503,47 @@ async function showStoreLocationModal(storeId = null) {
         </div>
       </div>
 
-      <div style="margin-bottom:12px">
-        <label style="display:block;font-weight:600;margin-bottom:4px">Operational Notes</label>
-        <textarea id="sl_notes" class="input" style="width:100%;height:60px" placeholder="Location, compound details, or notes...">${esc(store ? (store.notes || '') : '')}</textarea>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
+        <div>
+          <label style="display:block;font-weight:600;margin-bottom:4px">Storekeeper / Site In-Charge Name</label>
+          <input id="sl_incharge" class="input" style="width:100%" placeholder="e.g. Mr. Kamal Perera" value="${esc(store ? (store.incharge_name || '') : '')}" />
+        </div>
+        <div>
+          <label style="display:block;font-weight:600;margin-bottom:4px">Site Contact Phone</label>
+          <input id="sl_phone" class="input" style="width:100%" placeholder="e.g. 077-1234567" value="${esc(store ? (store.contact_phone || '') : '')}" />
+        </div>
       </div>
 
-      ${!isNew ? `
-        <div style="margin-bottom:12px">
-          <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
+      <div style="margin-bottom:12px">
+        <label style="display:block;font-weight:600;margin-bottom:4px">Site Location / Compound Address</label>
+        <input id="sl_address" class="input" style="width:100%" placeholder="e.g. KM 42 Site Yard, Galagedara Road" value="${esc(store ? (store.address || '') : '')}" />
+      </div>
+
+      <div style="margin-bottom:12px">
+        <label style="display:block;font-weight:600;margin-bottom:4px">Operational Notes</label>
+        <textarea id="sl_notes" class="input" style="width:100%;height:54px" placeholder="Container number, key holder, or special site notes...">${esc(store ? (store.notes || '') : '')}</textarea>
+      </div>
+
+      <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:6px;padding:10px 12px;margin-bottom:12px;display:flex;gap:18px;flex-wrap:wrap">
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;margin:0">
+          <input type="checkbox" id="sl_direct_issue" ${!store || store.allow_direct_issue !== 0 ? 'checked' : ''} />
+          <span style="font-weight:600">Allow Direct Issue to Machines / Jobs at Site</span>
+        </label>
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;margin:0">
+          <input type="checkbox" id="sl_direct_grn" ${store && store.allow_direct_grn ? 'checked' : ''} />
+          <span style="font-weight:600">Allow Direct Local GRN Receiving at Site</span>
+        </label>
+        ${!isNew ? `
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;margin:0">
             <input type="checkbox" id="sl_active" ${store.active ? 'checked' : ''} />
-            <span style="font-weight:600">Store Location is Active</span>
+            <span style="font-weight:600">Store Location Active</span>
           </label>
-        </div>
-      ` : ''}
+        ` : ''}
+      </div>
 
       <div style="margin-top:16px;display:flex;gap:8px;justify-content:flex-end">
         <button class="btn" id="sl_btn_cancel">Cancel</button>
-        <button class="btn primary" id="sl_btn_save">${isNew ? 'Create Store Location' : 'Save Changes'}</button>
+        <button class="btn primary" id="sl_btn_save">${isNew ? 'Create Store Location' : 'Save Modifications'}</button>
       </div>
     </div>
   `;
@@ -8249,7 +9563,12 @@ async function showStoreLocationModal(storeId = null) {
         parentWrap.style.display = 'none';
       } else {
         parentWrap.style.display = 'block';
-        if (val === 'SITE_STORE' || val === 'MAIN_WORKSHOP_STORE') {
+        if (val === 'SITE_STORE') {
+          parentHint.textContent = 'Can parent to Central Main Stores (general project) or Main Workshop Stores (workshop site).';
+          if (mainStores.length && !parentSelect.value) {
+            parentSelect.value = String(mainStores[0].id);
+          }
+        } else if (val === 'MAIN_WORKSHOP_STORE') {
           parentHint.textContent = 'Parent must be a Central Main Store.';
           if (mainStores.length && !parentSelect.value) {
             parentSelect.value = String(mainStores[0].id);
@@ -8273,7 +9592,12 @@ async function showStoreLocationModal(storeId = null) {
       const parentId = parentSelect.value ? Number(parentSelect.value) : null;
       const wsId = qs('#sl_ws', mBody).value ? Number(qs('#sl_ws', mBody).value) : null;
       const siteId = qs('#sl_site', mBody).value ? Number(qs('#sl_site', mBody).value) : null;
+      const incharge_name = qs('#sl_incharge', mBody).value.trim();
+      const contact_phone = qs('#sl_phone', mBody).value.trim();
+      const address = qs('#sl_address', mBody).value.trim();
       const notes = qs('#sl_notes', mBody).value.trim();
+      const allow_direct_issue = qs('#sl_direct_issue', mBody).checked ? 1 : 0;
+      const allow_direct_grn = qs('#sl_direct_grn', mBody).checked ? 1 : 0;
       const active = qs('#sl_active', mBody) ? qs('#sl_active', mBody).checked : true;
 
       if (!name) return toast('Store name is required.', 'err');
@@ -8287,18 +9611,17 @@ async function showStoreLocationModal(storeId = null) {
       }
 
       try {
+        const payload = {
+          code, name, store_type: storeType, parent_store_id: parentId,
+          workshop_id: wsId, site_id: siteId, notes, active,
+          incharge_name, contact_phone, address, allow_direct_issue, allow_direct_grn
+        };
         if (isNew) {
-          await api('/store-locations', {
-            method: 'POST',
-            body: { code, name, store_type: storeType, parent_store_id: parentId, workshop_id: wsId, site_id: siteId, notes }
-          });
+          await api('/store-locations', { method: 'POST', body: payload });
           toast('Physical store location created successfully', 'ok');
         } else {
-          await api(`/store-locations/${store.id}`, {
-            method: 'PUT',
-            body: { name, parent_store_id: parentId, workshop_id: wsId, site_id: siteId, notes, active }
-          });
-          toast('Store location updated successfully', 'ok');
+          await api(`/store-locations/${store.id}`, { method: 'PUT', body: payload });
+          toast('Store location modifications saved', 'ok');
         }
         close();
         const b = qs('#storebody');

@@ -24,7 +24,13 @@ function record({ userId = null, entity, entityId = null, action, before = null,
   // so this fires after the write lands. Best-effort — never break the write on notify.
   if (!notify) return;
   try {
-    emitter.notify(entity, action, { id: entityId, asset_id: after && after.asset_id, job_id: after && after.job_id });
+    emitter.notify(entity, action, {
+      id: entityId,
+      reason: reason || null,
+      actor_id: userId || null,
+      asset_id: after && after.asset_id,
+      job_id: after && after.job_id
+    });
   } catch (e) { /* notify is advisory */ }
 }
 
