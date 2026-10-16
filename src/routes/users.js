@@ -79,8 +79,17 @@ router.post('/', requireCap('users.manage'), asyncHandler((req, res) => {
   checkAdminPassword(b.password, b.username);
   const roles = checkedRoleNames(b.roles);
   rules.assertCanAssignRoles(req.user, roles);
-  // Home workshop (Stage 2): the one chosen, else the default.
-  const workshopId = workshops.forNew(null, b.workshop_id);
+  // Auto-resolve workshop_id: from chosen store if linked, or fallback to default (1: Central Workshop)
+  let workshopId = 1;
+  const storeId = toInt(b.store_location_id || b.store_id);
+  if (storeId) {
+    try {
+      const sRow = get('SELECT workshop_id FROM store_locations WHERE id = ?', storeId);
+      if (sRow && sRow.workshop_id) workshopId = sRow.workshop_id;
+    } catch (_) {}
+  } else if (b.workshop_id) {
+    workshopId = workshops.forNew(null, b.workshop_id);
+  }
   const id = tx(() => {
     const info = run('INSERT INTO users (username, password_hash, full_name, active, must_change_password, workshop_id) VALUES (?, ?, ?, 1, 1, ?)',
       b.username, auth.hashPassword(b.password), b.full_name || null, workshopId);
@@ -89,7 +98,6 @@ router.post('/', requireCap('users.manage'), asyncHandler((req, res) => {
   });
 
   // Assign physical store location access if provided
-  const storeId = toInt(b.store_location_id || b.store_id);
   if (storeId) {
     const isMain = roles.includes('main_storekeeper');
     const p = b.store_permissions || {};

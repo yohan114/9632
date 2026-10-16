@@ -1039,7 +1039,6 @@ const NAV = [
   ['tbrequests', '🛞', 'Tyre & Battery Requests'],
   ['tyrebattery', '🛞', 'Tyre & Battery'],
   ['reports', '📈', 'Reports'],
-  ['workshops', '🏭', 'Workshops', 'workshops'],
   ['access', '🔐', 'Access Control', 'admin'],
   ['auditlogs', '🛡️', 'User Activity Logs', 'audit_admin'],
 ];
@@ -1060,7 +1059,6 @@ const NAV_MODULE = {
 function navVisible(n) {
   if (n[3] === 'audit_admin') return !!(ME && ME.roles && ME.roles.includes('admin'));
   if (n[3] === 'admin') return canDo('access.manage', 'users.manage');
-  if (n[3] === 'workshops') return canDo('workshops.manage', 'mechanics.move');
   if (n[0] === 'dashboard') return true;
   if (n[0] === 'mechanics-kpi') return canView('dailywork') || canView('labour') || canView('reports');
   // Job Cards holds the job requests too (its Requests tab).
@@ -1077,7 +1075,7 @@ const NAV_GROUP = {
   purchasing: 'Procurement', tbrequests: 'Procurement',
   assets: 'Fleet', vehicledocuments: 'Fleet', serviceplan: 'Fleet',
   reports: 'Analysis', attention: 'Analysis', progress: 'Analysis', teardown: 'Analysis', tyrebattery: 'Analysis', aliases: 'Analysis', projects: 'Analysis', labour: 'Analysis',
-  workshops: 'Admin', access: 'Admin', auditlogs: 'Admin',
+  access: 'Admin', auditlogs: 'Admin',
 };
 
 async function renderStandInBanner() {
@@ -19946,117 +19944,7 @@ const wsOptions = (d) => d.workshops.filter((w) => w.active).map((w) => ({ value
 const wsName = (d, id) => { const w = d && d.workshops.find((x) => x.id === id); return w ? w.name : '—'; };
 
 routes.workshops = async (c) => {
-  if (!canDo('workshops.manage', 'mechanics.move')) { c.innerHTML = '<div class="card err">You do not have access to this page.</div>'; return; }
-  const [d, mechs] = await Promise.all([workshopsData(true), api('/workshops/mechanics')]);
-  const manage = canDo('workshops.manage');
-  const move = canDo('mechanics.move');
-  // Stage 4: each workshop has its own store or uses another's. Shown once there are two workshops.
-  const storeCell = (w) => {
-    if (w.own_store) return `<span class="badge green">Own store</span>${w.store_opened ? `<br><span class="muted" style="font-size:12px">since ${esc(w.store_opened)}</span>` : ''}`;
-    return `<span class="muted">Uses</span> ${esc(wsName(d, d.store_of[w.id]))}`;
-  };
-  const rows = d.workshops.map((w) => `<tr${w.active ? '' : ' style="opacity:.55"'}>
-    <td><b>${esc(w.name)}</b>${w.is_default ? ' <span class="badge blue">main</span>' : ''}${w.active ? '' : ' <span class="badge">retired</span>'}<br><span class="muted" style="font-size:12px">${esc(w.code)}${w.place ? ' · ' + esc(w.place) : ''}</span></td>
-    <td class="num">${w.users}</td><td class="num">${w.mechanics}</td><td class="num">${w.open_jobs}</td>
-    ${d.multi ? `<td>${storeCell(w)}</td>` : ''}
-    ${manage ? `<td class="num" style="white-space:nowrap"><button class="sm" data-wedit="${w.id}">✎ Edit</button>
-      ${d.multi && w.active && !w.is_default ? `<button class="sm" data-wstore="${w.id}">Store…</button>` : ''}
-      ${w.is_default ? '' : (w.active ? `<button class="sm danger" data-wretire="${w.id}">Retire</button>` : `<button class="sm" data-wback="${w.id}">Reinstate</button>`)}</td>` : ''}</tr>`);
-  const mrows = mechs.filter((m) => m.active).map((m) => `<tr><td>${esc(m.name)}</td><td>${esc(wsName(d, m.workshop_id))}</td>
-    <td class="muted">${m.last_move ? 'since ' + esc(m.last_move) : ''}</td>
-    ${move ? `<td class="num"><button class="sm" data-mmove="${m.id}" data-name="${esc(m.name)}" data-ws="${m.workshop_id}">Move…</button></td>` : ''}</tr>`);
-  c.innerHTML = `${pageHeader('Workshops', 'Where vehicles are repaired. Sites — where vehicles work — are on the Projects page.')}
-    <div class="card">
-      <div class="toolbar" style="margin:0 0 8px"><h3 style="margin:0">Workshops</h3><div class="spacer"></div>${manage ? '<button class="primary sm" id="wnew">+ Add workshop</button>' : ''}</div>
-      ${tableWrap([{ label: 'Workshop' }, { label: 'People', num: true }, { label: 'Mechanics', num: true }, { label: 'Open job cards', num: true }]
-    .concat(d.multi ? [{ label: 'Store' }] : []).concat(manage ? [{ label: '', num: true }] : []), rows)}
-      <p class="muted" style="font-size:12px;margin:8px 0 0">${d.multi
-        ? 'Each person has a home workshop (Access Control → Users). New job cards go to the home workshop of whoever raises them.'
-        : 'With one workshop, nothing else changes on any screen. When you add a second, job cards, requests and people show their workshop.'}</p>
-      ${d.multi ? `<p class="muted" style="font-size:12px;margin:4px 0 0">${d.stores_multi
-    ? 'Each store has its own stock. Goods received go into the store of the request\'s workshop; issues come out of the store of the job\'s workshop.'
-    : 'All stock is in one store. Give a workshop its own store with Store…'}</p>` : ''}
-    </div>
-    <div class="card">
-      <div class="toolbar" style="margin:0 0 6px"><h3 style="margin:0">Separate workshops</h3><div class="spacer"></div>
-        ${manage ? `<button class="sm ${d.separate ? 'danger' : 'primary'}" id="wsep">${d.separate ? 'Turn off' : 'Turn on'}</button>` : ''}</div>
-      <p style="margin:0">${d.separate
-        ? (d.separate_in_force ? '<span class="badge green">On</span> Each workshop sees only its own job cards, job requests, requests (MRN), daily work and approvals.'
-          : '<span class="badge amber">On, waiting</span> It takes effect when there is a second workshop.')
-        : '<span class="badge">Off</span> Everyone sees every workshop\'s work, as before.'}</p>
-      <p class="muted" style="font-size:12px;margin:6px 0 0">Head office (Admin, Manager, Operational Manager, Purchasing) always sees every workshop.
-        Store staff see the requests and job cards of every workshop their store serves. Vehicles and reports stay shared.</p>
-    </div>
-    <div class="card">
-      <h3 style="margin:0 0 8px">Mechanics</h3>
-      ${tableWrap([{ label: 'Mechanic' }, { label: 'Workshop' }, { label: '' }].concat(move ? [{ label: '', num: true }] : []), mrows, { scroll: true })}
-      <p class="muted" style="font-size:12px;margin:8px 0 0">A move keeps its date, so hours worked before it stay with the old workshop.</p>
-    </div>`;
-  const edit = (w) => modal(w ? `Edit ${w.name}` : 'Add a workshop', `
-    ${field('Name', 'name', { value: w ? w.name : '', placeholder: 'e.g. Muthur Site Workshop' })}
-    ${field('Short code', 'code', { value: w ? w.code : '', placeholder: 'e.g. MTR' })}
-    ${field('Place', 'place', { value: w ? (w.place || '') : '', placeholder: 'Town' })}
-    <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Save</button></div>`, (body, close) => {
-    qs('#s', body).onclick = async () => {
-      try {
-        await api(w ? `/workshops/${w.id}` : '/workshops', { method: w ? 'PATCH' : 'POST', body: formData(body) });
-        close(); toast('Saved'); routes.workshops(c);
-      } catch (e) { toast(e.message, 'err'); }
-    };
-  });
-  if (qs('#wnew', c)) qs('#wnew', c).onclick = () => edit(null);
-  if (qs('#wsep', c)) qs('#wsep', c).onclick = async () => {
-    const on = !d.separate;
-    if (on && !confirm('Turn on "Separate workshops"? People outside head office will then see only their own workshop\'s job cards, requests and daily work.')) return;
-    try { await api('/workshops/separate', { method: 'PUT', body: { on } }); toast(on ? 'Separate workshops: on' : 'Separate workshops: off'); routes.workshops(c); }
-    catch (e) { toast(e.message, 'err'); }
-  };
-  qsa('[data-wedit]', c).forEach((b) => { b.onclick = () => edit(d.workshops.find((w) => String(w.id) === b.dataset.wedit)); });
-  // Stage 4: its own store (from a date), or the store it uses.
-  qsa('[data-wstore]', c).forEach((b) => {
-    const w = d.workshops.find((x) => String(x.id) === b.dataset.wstore);
-    const others = d.stores.filter((st) => st.id !== w.id).map((st) => ({ value: st.id, label: st.name }));
-    const today = new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10);
-    b.onclick = () => modal(`Store of ${w.name}`, `
-      <label style="display:block;margin:4px 0"><input type="radio" name="kind" value="own" ${w.own_store ? 'checked' : ''}> Own store</label>
-      <div id="st-own" style="margin-left:22px">${w.own_store
-    ? `<p class="muted" style="margin:0">Open${w.store_opened ? ' since ' + esc(w.store_opened) : ''}.</p>`
-    : field('Opens on', 'opened', { type: 'date', value: today })}</div>
-      <label style="display:block;margin:8px 0 4px"><input type="radio" name="kind" value="uses" ${w.own_store ? '' : 'checked'}> Uses another workshop's store</label>
-      <div id="st-uses" style="margin-left:22px">${field('Store', 'uses', { type: 'select', options: others, value: d.store_of[w.id] })}</div>
-      <p class="muted" style="font-size:12px">A new store starts empty. Send stock to it with a transfer note (MTN). What was received before it opened stays where it was.</p>
-      <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Save</button></div>`, (body, close) => {
-      qs('#s', body).onclick = async () => {
-        const own = qs('input[name="kind"]:checked', body).value === 'own';
-        if (own && !w.own_store && !confirm(`Open a store at ${w.name}? From then on its goods received and issues are in its own store.`)) return;
-        try {
-          const f = formData(body);
-          await api(`/workshops/${w.id}/store`, { method: 'PUT', body: own ? { own: true, opened: f.opened } : { own: false, uses: f.uses } });
-          close(); toast('Saved'); routes.workshops(c);
-        } catch (e) { toast(e.message, 'err'); }
-      };
-    });
-  });
-  const setActive = async (id, active) => {
-    try { await api(`/workshops/${id}`, { method: 'PATCH', body: { active } }); toast(active ? 'Reinstated' : 'Retired'); routes.workshops(c); }
-    catch (e) { toast(e.message, 'err'); }
-  };
-  qsa('[data-wretire]', c).forEach((b) => { b.onclick = () => { if (confirm('Retire this workshop? Nothing can be added to it until it is reinstated.')) setActive(b.dataset.wretire, false); }; });
-  qsa('[data-wback]', c).forEach((b) => { b.onclick = () => setActive(b.dataset.wback, true); });
-  qsa('[data-mmove]', c).forEach((b) => {
-    b.onclick = () => modal(`Move ${b.dataset.name}`, `
-      ${field('To workshop', 'workshop_id', { type: 'select', options: wsOptions(d), value: Number(b.dataset.ws) })}
-      ${field('From date', 'from_date', { type: 'date', value: new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10) })}
-      ${field('Note (optional)', 'note')}
-      <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Move</button></div>`, (body, close) => {
-      qs('#s', body).onclick = async () => {
-        try {
-          const r = await api(`/workshops/mechanics/${b.dataset.mmove}/move`, { method: 'POST', body: formData(body) });
-          close(); toast(`${r.mechanic} → ${r.workshop} from ${r.from_date}`); routes.workshops(c);
-        } catch (e) { toast(e.message, 'err'); }
-      };
-    });
-  });
+  location.replace('#/stores?tab=locations');
 };
 
 // ---- Access Control — roles & permissions, clearance board, users --------------------------
@@ -22082,9 +21970,7 @@ async function renderUsersManager(c) {
       <span>${esc(r.label || r.name)}${r.description ? `<br><span class="muted" style="font-size:11px">${esc(r.description)}</span>` : ''}</span></label>`).join('');
   const picked = (body) => qsa('[data-role]', body).filter((x) => x.checked).map((x) => x.dataset.role);
 
-  const tableHeaders = [{ label: 'Username' }, { label: 'Name' }]
-    .concat(multi ? [{ label: 'Workshop' }] : [])
-    .concat([{ label: 'Assigned Store(s)' }, { label: 'Roles' }, { label: '2FA' }, { label: 'Active' }, { label: '' }]);
+  const tableHeaders = [{ label: 'Username' }, { label: 'Name' }, { label: 'Assigned Store(s)' }, { label: 'Roles' }, { label: '2FA' }, { label: 'Active' }, { label: '' }];
 
   c.innerHTML = `<div class="toolbar"><button class="primary" id="nu">+ New User</button><div class="spacer"></div><span class="muted">${users.length} user(s)</span></div>
     ${tableWrap(tableHeaders,
@@ -22098,7 +21984,7 @@ async function renderUsersManager(c) {
         : '<span class="muted" style="font-size:11.5px">—</span>';
 
       return `<tr${u.active ? '' : ' style="opacity:.55"'}><td>${esc(u.username)}</td><td>${esc(u.full_name || '')}</td>
-        ${multi ? `<td>${esc(wsName(wsd, u.workshop_id))} <button class="sm" data-uws="${u.id}" title="Change home workshop">✎</button></td>` : ''}
+        
         <td>${storesBadge}</td>
         <td>${u.roles.map((r) => `<span class="badge">${esc(labelOf[r] || r)}</span>`).join(' ')}</td>
         <td>${u.mfa_enabled ? '<span class="badge green">on</span>' : '<span class="muted">off</span>'}</td><td>${u.active ? '✓' : '✕'}</td>
@@ -22124,8 +22010,7 @@ async function renderUsersManager(c) {
 
   qs('#nu', c).onclick = () => modal('New User', `${field('Username *', 'username')}${field('Temporary password *', 'password', { type: 'password' })}
     <p class="muted">${esc(passwordHint())} They must choose their own at first sign-in.</p>${field('Full name', 'full_name')}
-    ${multi ? field('Home workshop', 'workshop_id', { type: 'select', options: wsOptions(wsd), value: wsd.default_id }) : ''}
-    ${field('Store Assignment (for Storekeepers)', 'store_location_id', { type: 'select', options: storeOptions, value: '' })}
+    ${field('Store & Site Location Assignment', 'store_location_id', { type: 'select', options: storeOptions, value: '' })}
     <p class="muted" style="margin:-4px 0 8px;font-size:11.5px">Select <b>Central Main Stores</b> for central procurement/depot storekeepers, or a <b>Site Store</b> for project site storekeepers.</p>
     <label>Roles</label>${roleBoxes()}
     <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Create</button></div>`,
