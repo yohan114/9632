@@ -2989,12 +2989,12 @@ function openUploadPhotoModal(assetId, defaultCat, onDone) {
 
     dropZone.onclick = () => fileInp.click();
 
-    const handleFile = (file) => {
+    const handleFile = async (file) => {
       if (!file || !file.type.startsWith('image/')) return toast('Please select an image file', 'err');
-      fileSize = file.size;
-      const reader = new FileReader();
-      reader.onload = (e) => {
-        fileDataUrl = e.target.result;
+      btnSubmit.disabled = true;
+      try {
+        fileDataUrl = await resizeToDataUrl(file);
+        fileSize = Math.round(fileDataUrl.length * 0.75);
         prevImg.src = fileDataUrl;
         prevWrap.style.display = 'block';
         promptWrap.style.display = 'none';
@@ -3002,8 +3002,10 @@ function openUploadPhotoModal(assetId, defaultCat, onDone) {
         if (!qs('#up-title', body).value) {
           qs('#up-title', body).value = file.name.replace(/\.[^/.]+$/, '');
         }
-      };
-      reader.readAsDataURL(file);
+      } catch (err) {
+        btnSubmit.disabled = false;
+        toast(err.message || 'Could not process image', 'err');
+      }
     };
 
     fileInp.onchange = () => {
@@ -5933,14 +5935,21 @@ routes['mechanics-kpi'] = async (c) => {
     try {
       const qsStr = buildQuery();
       kpiData = await api('/daily-work/mechanics-kpi' + (qsStr ? '?' + qsStr : ''));
-      if (!selectedMonth && kpiData.month) selectedMonth = kpiData.month;
-      if (!customFrom && kpiData.from) customFrom = kpiData.from;
-      if (!customTo && kpiData.to) customTo = kpiData.to;
+      const activeMonth = kpiData.month || (kpiData.period && kpiData.period.month) || '';
+      const availMonths = kpiData.available_months || (kpiData.period && kpiData.period.available_months) || [];
+      const periodFrom = kpiData.from || (kpiData.period && kpiData.period.from) || '';
+      const periodTo = kpiData.to || (kpiData.period && kpiData.period.to) || '';
+      const periodLabel = kpiData.period_label || (kpiData.period && kpiData.period.month_label) || '';
+      const wsList = kpiData.workshops || (kpiData.period && kpiData.period.workshops) || [];
+
+      if (!selectedMonth && activeMonth) selectedMonth = activeMonth;
+      if (!customFrom && periodFrom) customFrom = periodFrom;
+      if (!customTo && periodTo) customTo = periodTo;
 
       // Populate month selector
       const mSel = qs('#mkpi-month', c);
-      if (mSel && !mSel.options.length) {
-        mSel.innerHTML = (kpiData.available_months || []).map((o) => `<option value="${esc(o.month)}">${esc(o.label)}</option>`).join('');
+      if (mSel && (!mSel.options.length || mSel.options.length <= 1)) {
+        mSel.innerHTML = availMonths.map((o) => `<option value="${esc(o.month)}" ${o.month === selectedMonth ? 'selected' : ''}>${esc(o.label)}</option>`).join('');
       }
       if (mSel && selectedMonth) mSel.value = selectedMonth;
       if (qs('#mkpi-from', c) && customFrom) qs('#mkpi-from', c).value = customFrom;
@@ -5949,9 +5958,9 @@ routes['mechanics-kpi'] = async (c) => {
       // Populate workshops if multiple
       const wsBox = qs('#mkpi-ws-box', c);
       const wsSel = qs('#mkpi-ws', c);
-      if (wsBox && wsSel && kpiData.workshops && kpiData.workshops.length > 1 && ME && ME.seesAllWorkshops) {
+      if (wsBox && wsSel && wsList.length > 1 && ME && ME.seesAllWorkshops) {
         wsBox.style.display = '';
-        wsSel.innerHTML = '<option value="">All Workshops</option>' + kpiData.workshops.map((w) => `<option value="${w.id}" ${String(w.id) === String(selectedWs) ? 'selected' : ''}>${esc(w.name)} (${esc(w.code)})</option>`).join('');
+        wsSel.innerHTML = '<option value="">All Workshops</option>' + wsList.map((w) => `<option value="${w.id}" ${String(w.id) === String(selectedWs) ? 'selected' : ''}>${esc(w.name)} (${esc(w.code)})</option>`).join('');
       }
 
       // Populate mechanic dropdown (keep full list if not filtered)

@@ -40,8 +40,8 @@ app.disable('x-powered-by');
 app.use(securityHeaders);
 // Before the body parsers: a cross-site write is refused before its body is even read.
 app.use('/api', originGuard());
-app.use(express.json({ limit: '5mb' }));
-app.use(express.urlencoded({ extended: true }));
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ limit: '50mb', extended: true }));
 app.use(cookieParser());
 app.use(authenticate);
 app.use(multidb.multidbMiddleware);

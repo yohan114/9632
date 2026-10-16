@@ -7,7 +7,9 @@ function asyncHandler(fn) {
 
 /** Throw a 400 unless every listed field is present and non-empty in obj. */
 function require_(obj, fields) {
-  const missing = fields.filter((f) => obj[f] === undefined || obj[f] === null || obj[f] === '');
+  if (typeof fields === 'string') fields = [fields];
+  if (!Array.isArray(fields)) fields = [];
+  const missing = fields.filter((f) => !obj || obj[f] === undefined || obj[f] === null || obj[f] === '');
   if (missing.length) {
     const err = new Error('Missing required field(s): ' + missing.join(', '));
     err.status = 400;
