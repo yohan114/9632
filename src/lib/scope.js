@@ -25,18 +25,56 @@ const workshops = require('./workshops');
 
 const FLAG = 'workshops_separate';
 
+function getCoreDbSafe() {
+  try {
+    const multidb = require('../db/multidb');
+    if (multidb && typeof multidb.isMultiDb === 'function' && multidb.isMultiDb()) {
+      return multidb.getCoreDb();
+    }
+  } catch (_) {}
+  return null;
+}
+
 function switchedOn() {
+  const core = getCoreDbSafe();
+  if (core) {
+    try {
+      const r = core.prepare('SELECT value FROM settings WHERE key = ?').get(FLAG);
+      if (r && r.value !== undefined) return r.value === '1';
+    } catch (_) {}
+  }
   const r = get('SELECT value FROM settings WHERE key = ?', FLAG);
   return !!(r && r.value === '1');
 }
 
+
 function setSwitch(actor, on) {
-  run(`INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`, FLAG, on ? '1' : '0');
-  require('./audit').record({ userId: actor.id, entity: 'settings', entityId: null, action: on ? 'workshops_separate_on' : 'workshops_separate_off' });
+  const val = on ? '1' : '0';
+  const core = getCoreDbSafe();
+  if (core) {
+    try {
+      core.prepare(`INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run(FLAG, val);
+    } catch (_) {}
+  }
+  run(`INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`, FLAG, val);
+  try {
+    const multidb = require('../db/multidb');
+    if (multidb && multidb.isMultiDb && multidb.isMultiDb()) {
+      const wsList = (core || multidb.getCoreDb()).prepare('SELECT id FROM workshops').all();
+      for (const w of wsList) {
+        try {
+          const wDb = multidb.getWorkshopDb(w.id);
+          wDb.prepare(`INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run(FLAG, val);
+        } catch (_) {}
+      }
+    }
+  } catch (_) {}
+  require('./audit').record({ userId: actor ? actor.id : null, entity: 'settings', entityId: null, action: on ? 'workshops_separate_on' : 'workshops_separate_off' });
 }
 
 /** Scoping is in force: switched on, and there is more than one workshop to keep apart. */
 const enabled = () => switchedOn() && workshops.isMulti();
+
 
 const isAdmin = (user) => !!(user && (user.roles || []).includes('admin'));
 const headOffice = (user) => isAdmin(user) || require('./auth').hasCap(user, 'workshops.all');
@@ -216,9 +254,22 @@ function toolRefusal(user, toolId) {
  */
 function ownStore(user) {
   const stores = require('./stores');
-  if (!enabled() || headOffice(user) || !stores.isMulti()) return null;
+  if (!enabled() || headOffice(user)) return null;
+  // If user has specific store location assigned, check store_location_access
+  try {
+    const storeLocs = require('./store_locations');
+    const uStores = storeLocs.getUserStoreLocations(user.id);
+    if (uStores && uStores.length > 0) {
+      // If user has a site store, scope strictly to that store
+      const siteStore = uStores.find((s) => s.store_type === 'SITE_STORE') || uStores[0];
+      const leg = storeLocs.resolveLegacyStoreId(siteStore.store_location_id);
+      if (leg) return leg;
+    }
+  } catch (_) {}
+  if (!stores.isMulti()) return null;
   return stores.homeStore(user);
 }
+
 
 /** A row filed with no store is the main store's — everything recorded before Stage 4 is. */
 const storeOfRow = (column) => `COALESCE(${column}, (SELECT id FROM workshops WHERE is_default = 1 ORDER BY id LIMIT 1))`;
