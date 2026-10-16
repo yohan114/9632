@@ -26,11 +26,47 @@ const clientIp = (req) => req.ip || (req.connection && req.connection.remoteAddr
 function workshopFields(user) {
   const ws = require('../lib/workshops');
   const scope = require('../lib/scope');
+  const storeLocs = require('../lib/store_locations');
   // Home workshop, and whether there is more than one (multi-site Stage 2): the screens show
   // workshop pickers and filters only when there is.
   const home = ws.byId(ws.homeOf(user));
+  let userStores = [];
+  try {
+    userStores = storeLocs.getUserStoreLocations(user.id) || [];
+  } catch (_) {}
+
+  // If user has no specific store entries yet, fallback to matched workshop store or default store
+  if (!userStores.length) {
+    try {
+      const allStores = storeLocs.listStoreLocations() || [];
+      const match = (home && allStores.find((s) => s.workshop_id === home.id))
+        || allStores.find((s) => s.store_type === 'MAIN_STORE')
+        || allStores.find((s) => s.is_default)
+        || allStores[0];
+      if (match) {
+        userStores = [{
+          store_location_id: match.id,
+          store_name: match.name,
+          store_code: match.code,
+          store_type: match.store_type,
+          can_view: 1, can_request: 1, can_issue: 1, can_receive: 1, can_dispatch: 1, can_count: 1
+        }];
+      }
+    } catch (_) {}
+  }
+
+  const primaryStore = (userStores && userStores.length > 0) ? userStores[0] : null;
+  const activeStoreName = primaryStore
+    ? primaryStore.store_name
+    : (home ? home.name : 'Central Main Stores');
+
   return {
-    workshop: home ? { id: home.id, code: home.code, name: home.name } : null, workshopsMulti: ws.isMulti(),
+    workshop: home ? { id: home.id, code: home.code, name: home.name } : null,
+    workshopsMulti: ws.isMulti(),
+    storeLocations: userStores,
+    primaryStore: primaryStore,
+    storeLocationId: primaryStore ? primaryStore.store_location_id : null,
+    storeName: activeStoreName,
     // Stage 3: whether this person sees every workshop's job cards (always, until scoping is on).
     seesAllWorkshops: scope.seesAllJobs(user),
     // Stage 4: the workshops seen (null = all) — store staff see every workshop their store serves.

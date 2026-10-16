@@ -635,9 +635,25 @@ router.get('/workflow-monitor', asyncHandler((req, res) => {
     + (on_hold.unpriced_grns_count || 0)
     + (on_hold.unreturned_cores ? ((on_hold.unreturned_cores.tyre || 0) + (on_hold.unreturned_cores.battery || 0)) : 0);
 
-  const userScope = rReach && rReach.length === 1
-    ? { id: rReach[0], label: (get('SELECT name FROM workshops WHERE id = ?', rReach[0]) || {}).name || null }
-    : null;
+  let userScope = null;
+  if (rReach && rReach.length === 1) {
+    userScope = { id: rReach[0], label: (get('SELECT name FROM workshops WHERE id = ?', rReach[0]) || {}).name || null };
+  } else {
+    try {
+      const storeLocs = require('../lib/store_locations');
+      const uStores = storeLocs.getUserStoreLocations(user.id);
+      if (uStores && uStores.length > 0) {
+        const siteStore = uStores.find((s) => s.store_type === 'SITE_STORE') || uStores[0];
+        const isAdminUser = (user.roles || []).includes('admin');
+        if (!isAdminUser || uStores.length === 1) {
+          userScope = { id: siteStore.store_location_id, label: siteStore.store_name, code: siteStore.store_code, isStore: true };
+        }
+      } else if (user.workshop_id && user.workshop_id !== 1) {
+        const wsRow = get('SELECT name FROM workshops WHERE id = ?', user.workshop_id);
+        if (wsRow) userScope = { id: user.workshop_id, label: wsRow.name };
+      }
+    } catch (_) {}
+  }
 
   const canSeeMechanics = canMod('dailywork') || canMod('labour') || canReports;
   const mechanics_pulse = canSeeMechanics ? mechanicsPulse(user, rReach) : null;

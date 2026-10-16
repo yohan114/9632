@@ -1301,6 +1301,82 @@ function showIdleLockScreen() {
   };
 }
 
+async function openStoreLocationSwitcherModal() {
+  modal('Active Store & Site Location Context', '<div class="muted" style="padding:20px">Loading store locations…</div>', async (mBody, close) => {
+    try {
+      const stores = await api('/store-locations?active_only=true');
+      const activeName = (ME && ME.storeName) || (ME && ME.primaryStore && ME.primaryStore.store_name) || 'Central Main Stores';
+      const myStores = (ME && ME.storeLocations) || [];
+      const isAdminUser = isAdmin();
+
+      const mainStores = stores.filter((s) => s.store_type === 'MAIN_STORE');
+      const mainWs = stores.filter((s) => s.store_type === 'MAIN_WORKSHOP_STORE');
+      const siteStores = stores.filter((s) => s.store_type === 'SITE_STORE');
+
+      const renderStoreRow = (s) => {
+        const isActive = (ME && ME.storeLocationId == s.id) || (s.name === activeName);
+        const myGrant = myStores.find((ms) => ms.store_location_id == s.id);
+        const hasAccess = isAdminUser || !!myGrant;
+        const icon = s.store_type === 'MAIN_STORE' ? '🏛️' : (s.store_type === 'MAIN_WORKSHOP_STORE' ? '🔧' : '🏗️');
+        return `
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 12px;border:1px solid ${isActive ? 'var(--primary,#0066ff)' : 'var(--border,#e2e8f0)'};border-radius:8px;background:${isActive ? 'rgba(0,102,255,0.06)' : 'var(--surface,#fff)'};margin-bottom:6px">
+            <div style="display:flex;align-items:center;gap:10px;min-width:0">
+              <span style="font-size:18px">${icon}</span>
+              <div style="min-width:0">
+                <div style="font-weight:600;font-size:13px;display:flex;align-items:center;gap:6px">
+                  <span>${esc(s.name)}</span>
+                  <span class="code" style="font-size:10px">${esc(s.code)}</span>
+                  ${isActive ? '<span class="badge blue sm" style="font-size:10px">Active</span>' : ''}
+                </div>
+                <div class="muted" style="font-size:11px">${esc(s.notes || (s.parent_store_name ? `Replenished via ${s.parent_store_name}` : 'Main Inventory Depot'))}</div>
+              </div>
+            </div>
+            <div style="display:flex;align-items:center;gap:6px;flex-shrink:0">
+              <a href="#/stores?tab=locations&id=${s.id}" class="btn sm" onclick="${close}">Inspect</a>
+              ${canView('stores') ? `<a href="#/stores?tab=onhand&physical_store_id=${s.id}" class="btn sm" onclick="${close}">Stock</a>` : ''}
+              ${hasAccess && !isActive ? `<button class="btn sm primary" data-switch-store="${s.id}" data-store-name="${esc(s.name)}">Switch Context</button>` : ''}
+            </div>
+          </div>
+        `;
+      };
+
+      mBody.innerHTML = `
+        <div style="font-size:13px">
+          <div style="display:flex;align-items:center;gap:8px;background:var(--subtle,#f8fafc);border:1px solid var(--border,#e2e8f0);padding:10px 12px;border-radius:8px;margin-bottom:12px">
+            <span style="font-size:20px">📍</span>
+            <div>
+              <div style="font-weight:700">Currently Operating As: <span style="color:var(--primary,#0066ff)">${esc(activeName)}</span></div>
+              <div class="muted" style="font-size:11px">User: <b>${esc(ME.fullName || ME.username)}</b> · Roles: <b>${esc(ME.roles.join(', '))}</b></div>
+            </div>
+          </div>
+
+          <div style="max-height:400px;overflow-y:auto;padding-right:4px">
+            ${mainStores.length ? `<div style="font-size:11px;font-weight:700;color:var(--text-muted,#64748b);text-transform:uppercase;margin:6px 0">Central Main Stores</div>${mainStores.map(renderStoreRow).join('')}` : ''}
+            ${mainWs.length ? `<div style="font-size:11px;font-weight:700;color:var(--text-muted,#64748b);text-transform:uppercase;margin:10px 0 6px">Central Main Workshop Stores</div>${mainWs.map(renderStoreRow).join('')}` : ''}
+            ${siteStores.length ? `<div style="font-size:11px;font-weight:700;color:var(--text-muted,#64748b);text-transform:uppercase;margin:10px 0 6px">Remote Project Site Stores</div>${siteStores.map(renderStoreRow).join('')}` : ''}
+          </div>
+        </div>
+      `;
+
+      qsa('[data-switch-store]', mBody).forEach((btn) => {
+        btn.onclick = () => {
+          const sid = Number(btn.dataset.switchStore);
+          const sname = btn.dataset.storeName;
+          ME.storeLocationId = sid;
+          ME.storeName = sname;
+          const topbarBadgeText = qs('#topbar_site_name');
+          if (topbarBadgeText) topbarBadgeText.textContent = sname;
+          toast(`Active store context switched to ${sname}`);
+          close();
+          render();
+        };
+      });
+    } catch (err) {
+      mBody.innerHTML = `<div class="card err">${esc(err.message)}</div>`;
+    }
+  });
+}
+
 function renderShell() {
   const route = (location.hash.replace('#/', '').split('?')[0].split('/')[0]) || 'dashboard';
   const link = (n, i) => `<a href="${n[4] || '#/' + n[0]}" class="${!n[4] && route === n[0] ? 'active' : ''}"><span class="ico">${n[1]}</span>${n[2]}</a>`;
@@ -1312,6 +1388,11 @@ function renderShell() {
 
   const initials = (ME.fullName || ME.username || 'AD').split(' ').map((p) => p[0]).slice(0, 2).join('').toUpperCase();
   const roleDisplay = (ME.roles && ME.roles[0]) ? ME.roles[0].replace(/_/g, ' ') : 'User';
+  const activeLocationLabel = (ME && ME.storeName)
+    || (ME && ME.primaryStore && ME.primaryStore.store_name)
+    || (ME && ME.storeLocations && ME.storeLocations.length && ME.storeLocations[0].store_name)
+    || (ME && ME.workshop && ME.workshop.name)
+    || 'Central Main Stores';
 
   qs('#app').innerHTML = `
     <div class="topbar">
@@ -1320,9 +1401,9 @@ function renderShell() {
         <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="color:var(--primary,#0066ff);margin-right:6px"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
         Workshop<span>One</span>
       </div>
-      <div class="topbar-site-badge" id="topbar_site_badge" title="Active Workshop Location">
+      <div class="topbar-site-badge" id="topbar_site_badge" title="Active Store / Site Location — Click to view or switch" style="cursor:pointer">
         <span class="live-dot">●</span>
-        <span>Central Workshop</span> ▾
+        <span id="topbar_site_name">${esc(activeLocationLabel)}</span> ▾
       </div>
       <div class="topbar-site-badge" id="topbar_sl_clock" title="Sri Lanka Standard Time (Asia/Colombo · UTC+05:30)" style="margin-left:4px;display:inline-flex;align-items:center;gap:5px;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.16);padding:3px 10px;border-radius:16px;white-space:nowrap;flex-shrink:0">
         <span style="font-size:12px">🇱🇰</span>
@@ -1372,6 +1453,13 @@ function renderShell() {
       const el = document.getElementById('live_sl_clock');
       if (el) el.textContent = `${slNowTime()} SLST`;
     }, 10000);
+  }
+
+  const topbarSiteBadge = qs('#topbar_site_badge');
+  if (topbarSiteBadge) {
+    topbarSiteBadge.onclick = () => {
+      openStoreLocationSwitcherModal();
+    };
   }
 
   const pop = qs('#user_popover');
@@ -2264,7 +2352,17 @@ async function dashMain(c) {
       ${canView('reports') ? `<a class="quick-action-btn" href="#/reports"><span>📈</span> Reports</a>` : ''}
     </div>`;
 
-  const scopeBadge = wm && wm.user_scope && wm.user_scope.label ? ` · <span class="badge blue">📍 ${esc(wm.user_scope.label)}</span>` : ' · <span class="badge green">🌐 All Workshops</span>';
+  let activeScopeLabel = null;
+  if (wm && wm.user_scope && wm.user_scope.label) {
+    activeScopeLabel = wm.user_scope.label;
+  } else if (ME && ME.storeName && ME.storeName !== 'Central Main Stores' && ME.storeName !== 'Central Workshop — Badalgama') {
+    activeScopeLabel = ME.storeName;
+  } else if (ME && ME.primaryStore && ME.primaryStore.store_type === 'SITE_STORE') {
+    activeScopeLabel = ME.primaryStore.store_name;
+  }
+  const scopeBadge = activeScopeLabel
+    ? ` · <span class="badge blue">📍 ${esc(activeScopeLabel)}</span>`
+    : ' · <span class="badge green">🌐 All Stores &amp; Workshops</span>';
   const privBadges = (pp.approver_badges || []).map((b) => `<span class="badge" style="background:#eff6ff;color:#1d4ed8;border:1px solid #bfdbfe;font-size:11px">✓ ${esc(b)}</span>`).join(' ');
   const privBanner = privBadges ? `<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:-4px 0 12px"><span class="muted" style="font-size:11.5px;font-weight:600">Your Active Authorities:</span>${privBadges}</div>` : '';
 
@@ -20189,7 +20287,11 @@ const lvlChip = (lvl) => {
 
 // ---- Tab 1: People & Overrides ------------------------------------------------
 async function renderPeopleAccess(c, wantedUserId) {
-  const [data, wsd] = await Promise.all([api('/access/people'), workshopsData(true)]);
+  const [data, storeLocsList, wsd] = await Promise.all([
+    api('/access/people'),
+    api('/store-locations?active_only=true').catch(() => []),
+    workshopsData(true).catch(() => ({ workshops: [] }))
+  ]);
   const people = data.people || [];
   if (!people.length) {
     c.innerHTML = '<div class="card muted">No users found.</div>';
@@ -20226,7 +20328,7 @@ async function renderPeopleAccess(c, wantedUserId) {
             <span>${esc(p.full_name || p.username)}</span>
             ${p.overrides_count > 0 ? `<span class="badge amber" style="font-size:10px" title="${p.overrides_count} custom overrides">${p.overrides_count} custom</span>` : ''}
           </div>
-          <div class="muted" style="font-size:11px;font-weight:normal">${esc(p.username)} · ${esc(roleStr)}</div>
+          <div class="muted" style="font-size:11px;font-weight:normal">${esc(p.username)} · ${esc(roleStr)}${p.primary_store_name ? ` · <span style="color:var(--primary,#0066ff)">📍 ${esc(p.primary_store_name)}</span>` : ''}</div>
         </td>
       </tr>`;
     }).join('') || '<tr><td class="muted" style="text-align:center">No matching people</td></tr>';
@@ -20339,9 +20441,12 @@ async function renderPeopleAccess(c, wantedUserId) {
       </div>`;
     }).join('');
 
-    const wsOptions = [{ value: '', label: '— Default (Any / Head Office) —' }].concat(
-      (wsd.workshops || []).map((w) => ({ value: String(w.id), label: w.name + (w.code ? ` (${w.code})` : '') }))
-    );
+    const mainStores = (storeLocsList || []).filter((s) => s.store_type === 'MAIN_STORE');
+    const mainWsStores = (storeLocsList || []).filter((s) => s.store_type === 'MAIN_WORKSHOP_STORE');
+    const siteStores = (storeLocsList || []).filter((s) => s.store_type === 'SITE_STORE');
+    const otherStores = (storeLocsList || []).filter((s) => !['MAIN_STORE', 'MAIN_WORKSHOP_STORE', 'SITE_STORE'].includes(s.store_type));
+
+    const selectedStoreId = String(u.primary_store_id || (u.store_locations && u.store_locations[0] && u.store_locations[0].store_location_id) || '');
 
     c.innerHTML = `<div style="display:grid;grid-template-columns:minmax(240px,310px) 1fr;gap:14px;align-items:start">
       <div class="card" style="padding:12px">
@@ -20378,9 +20483,16 @@ async function renderPeopleAccess(c, wantedUserId) {
 
           <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(200px, 1fr));gap:10px;background:var(--bg-muted, #f8fafc);padding:10px;border-radius:6px">
             <div>
-              <label style="font-size:11px;font-weight:600;margin-bottom:4px">Home Workshop:</label>
-              <select id="user-ws" style="width:100%" ${isSelf || !canEditTarget ? 'disabled' : ''}>
-                ${wsOptions.map((o) => `<option value="${o.value}" ${String(u.home_workshop_id || '') === o.value ? 'selected' : ''}>${esc(o.label)}</option>`).join('')}
+              <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
+                <label style="font-size:11px;font-weight:600">Primary Store & Site Location:</label>
+                <button class="btn sm" id="btn-user-store-perms" type="button" title="Configure granular view/receive/issue/count permissions across all store locations" style="padding:2px 7px;font-size:11px">🏪 Manage Access</button>
+              </div>
+              <select id="user-store-loc" style="width:100%" ${isSelf || !canEditTarget ? 'disabled' : ''}>
+                <option value="">— Unassigned (Enterprise Access) —</option>
+                ${mainStores.length ? `<optgroup label="🏢 Central Main Store">${mainStores.map((s) => `<option value="${s.id}" ${selectedStoreId === String(s.id) ? 'selected' : ''}>${esc(s.name)} (${esc(s.code)})</option>`).join('')}</optgroup>` : ''}
+                ${mainWsStores.length ? `<optgroup label="🔧 Central Main Workshop Store">${mainWsStores.map((s) => `<option value="${s.id}" ${selectedStoreId === String(s.id) ? 'selected' : ''}>${esc(s.name)} (${esc(s.code)})</option>`).join('')}</optgroup>` : ''}
+                ${siteStores.length ? `<optgroup label="🏗️ Project Site Stores">${siteStores.map((s) => `<option value="${s.id}" ${selectedStoreId === String(s.id) ? 'selected' : ''}>${esc(s.name)} (${esc(s.code)})</option>`).join('')}</optgroup>` : ''}
+                ${otherStores.length ? `<optgroup label="📦 Other Store Locations">${otherStores.map((s) => `<option value="${s.id}" ${selectedStoreId === String(s.id) ? 'selected' : ''}>${esc(s.name)} (${esc(s.code)})</option>`).join('')}</optgroup>` : ''}
               </select>
             </div>
             <div>
@@ -20433,17 +20545,26 @@ async function renderPeopleAccess(c, wantedUserId) {
       };
     });
 
+    const btnStorePerms = qs('#btn-user-store-perms', c);
+    if (btnStorePerms) {
+      btnStorePerms.onclick = () => {
+        userStoreAccessModal(u, async () => {
+          await renderPeopleAccess(c, u.id);
+        });
+      };
+    }
+
     const saveBtn = qs('#btn-save-access', c);
     if (saveBtn) {
       saveBtn.onclick = async () => {
-        const wsVal = qs('#user-ws', c).value;
+        const storeLocVal = qs('#user-store-loc', c) ? qs('#user-store-loc', c).value : '';
         const limitVal = qs('#user-limit', c).value.trim();
         const untilVal = qs('#user-until', c).value.trim();
 
         const payload = {
           sections: sectionEdits,
           capabilities: capEdits,
-          home_workshop_id: wsVal || null,
+          store_location_id: storeLocVal || null,
           approval_limit: limitVal === '' ? null : Number(limitVal),
           access_until: untilVal || null,
         };
