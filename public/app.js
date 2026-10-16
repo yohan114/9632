@@ -141,8 +141,93 @@ setInterval(() => {
 // everyone who opened the list.
 const esc = (v) => String(v == null ? '' : v).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const money = (n) => 'Rs ' + (Number(n) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-const num = (n) => (Number(n) || 0).toLocaleString('en-US');
-const today = () => new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+// Sri Lankan Standard Time (SLST: Asia/Colombo, UTC+05:30)
+const SL_TZ = 'Asia/Colombo';
+
+/**
+ * Safely parse any date/time string from server/DB as a JS Date object.
+ * SQLite timestamps like "YYYY-MM-DD HH:MM:SS" without TZ are stored in UTC.
+ */
+function parseServerDate(s) {
+  if (!s) return null;
+  const str = String(s).trim();
+  if (!str) return null;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(str)) {
+    return new Date(str + 'T00:00:00+05:30');
+  }
+  let iso = str.replace(' ', 'T');
+  if (!/[zZ]|[+-]\d\d:?\d\d$/.test(iso)) iso += 'Z';
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+/**
+ * Format a timestamp into Sri Lankan Time (Asia/Colombo, UTC+5:30).
+ * Default output: "YYYY-MM-DD hh:mm A" (e.g. "2026-10-16 09:54 AM")
+ */
+function slDateTime(s, opts = {}) {
+  const d = parseServerDate(s);
+  if (!d) return s ? esc(String(s)) : '—';
+  try {
+    const parts = new Intl.DateTimeFormat('en-GB', {
+      timeZone: SL_TZ,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: opts.seconds ? '2-digit' : undefined,
+      hour12: opts.hour12 !== false,
+    }).formatToParts(d);
+
+    const getVal = (type) => (parts.find((p) => p.type === type) || {}).value || '';
+    const day = getVal('day');
+    const month = getVal('month');
+    const year = getVal('year');
+    const hour = getVal('hour');
+    const minute = getVal('minute');
+    const second = getVal('second');
+    const dayPeriod = (getVal('dayPeriod') || '').toUpperCase();
+
+    const timeStr = opts.seconds
+      ? `${hour}:${minute}:${second}${dayPeriod ? ' ' + dayPeriod : ''}`
+      : `${hour}:${minute}${dayPeriod ? ' ' + dayPeriod : ''}`;
+
+    if (opts.timeOnly) return timeStr;
+    if (opts.dateOnly) return `${year}-${month}-${day}`;
+    return `${year}-${month}-${day} ${timeStr}`;
+  } catch (e) {
+    return esc(String(s));
+  }
+}
+
+function slDate(s) {
+  if (!s) return '—';
+  return slDateTime(s, { dateOnly: true });
+}
+
+function slTime(s) {
+  if (!s) return '—';
+  return slDateTime(s, { timeOnly: true });
+}
+
+function slToday() {
+  try {
+    return new Intl.DateTimeFormat('en-CA', { timeZone: SL_TZ }).format(new Date());
+  } catch (e) {
+    return new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+  }
+}
+
+function slNowTime() {
+  try {
+    return new Intl.DateTimeFormat('en-US', { timeZone: SL_TZ, hour: '2-digit', minute: '2-digit', hour12: true }).format(new Date());
+  } catch (e) {
+    return new Date().toLocaleTimeString();
+  }
+}
+
+const today = () => slToday();
 const moneyC = (n) => { n = Number(n) || 0; const a = Math.abs(n); return a >= 1e6 ? 'Rs ' + (n / 1e6).toFixed(2) + 'M' : a >= 1e3 ? 'Rs ' + Math.round(n / 1e3) + 'K' : 'Rs ' + Math.round(n); };
 const MONTH_NAMES = ['', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const monthName = (m) => { const [y, mo] = String(m).split('-'); return (MONTH_NAMES[+mo] || mo) + ' ' + y; };
@@ -172,14 +257,15 @@ function loadChartJs(cb) {
 }
 function timeAgo(s) {
   if (!s) return '';
-  let iso = String(s).replace(' ', 'T'); if (!/[zZ]|[+-]\d\d:?\d\d$/.test(iso)) iso += 'Z';
-  let diff = (Date.now() - new Date(iso).getTime()) / 1000;
+  const d = parseServerDate(s);
+  if (!d) return esc(String(s));
+  let diff = (Date.now() - d.getTime()) / 1000;
   if (isNaN(diff)) return esc(String(s)); if (diff < 0) diff = 0;
   if (diff < 60) return 'just now';
   if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
   if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
   if (diff < 2592000) return Math.floor(diff / 86400) + 'd ago';
-  return new Date(iso).toISOString().slice(0, 10);
+  return slDate(s);
 }
 const ENTITY_ICON = { mrn: '📝', issue: '📤', stock_ledger: '🛢️', filter_stock: '🛞', store_item: '📦', product: '🛢️', job_card: '🔧', stock_count: '🔢', session: '🔑', battery: '🔋', asset: '🚜' };
 
@@ -1037,7 +1123,7 @@ async function openDualAuthModal() {
         <div class="card" style="padding:12px;border-left:4px solid ${req.can_approve ? 'var(--primary,#0066ff)' : 'var(--muted)'}">
           <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
             <span class="badge blue" style="font-weight:bold">${esc(req.operation_type.replace(/_/g, ' ').toUpperCase())}</span>
-            <span class="muted" style="font-size:11px">${esc(String(req.requested_at || '').slice(0, 16).replace('T', ' '))}</span>
+            <span class="muted" style="font-size:11px">${slDateTime(req.requested_at)}</span>
           </div>
           <div style="font-size:13px;font-weight:600;margin-bottom:4px">
             Entity: <code>${esc(req.entity_type)} #${req.entity_id}</code>
@@ -1232,6 +1318,10 @@ function renderShell() {
         <span class="live-dot">●</span>
         <span>Central Workshop</span> ▾
       </div>
+      <div class="topbar-site-badge" id="topbar_sl_clock" title="Sri Lanka Standard Time (Asia/Colombo · UTC+05:30)" style="margin-left:4px;display:inline-flex;align-items:center;gap:5px;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.16);padding:3px 9px;border-radius:6px">
+        <span style="font-size:12px">🇱🇰</span>
+        <span id="live_sl_clock" style="font-weight:700;font-size:11.5px;color:var(--text);letter-spacing:0.2px">${slDateTime(new Date(), { timeOnly: true })} SLST</span>
+      </div>
       <div class="topbar-search-wrap">
         <span class="topbar-search-icon">🔍</span>
         <input type="search" class="topbar-search-input" id="global_search_input" placeholder="Search assets, jobs, parts, or people… (Ctrl + K)" autocomplete="off">
@@ -1271,6 +1361,12 @@ function renderShell() {
       </div>
     </div>`;
   renderStandInBanner();
+  if (!window._slClockInterval) {
+    window._slClockInterval = setInterval(() => {
+      const el = document.getElementById('live_sl_clock');
+      if (el) el.textContent = `${slDateTime(new Date(), { timeOnly: true })} SLST`;
+    }, 10000);
+  }
 
   const pop = qs('#user_popover');
   const trig = qs('#user_profile_trigger');
@@ -6369,7 +6465,7 @@ async function loadVehicleConflicts(el) {
 // ---- Field work (Stage 6) ------------------------------------------------------------------
 // A repair done at the site. The times are typed as 'YYYY-MM-DDTHH:MM' in the form and kept as
 // 'YYYY-MM-DD HH:MM'.
-const fldTime = (s) => (s ? esc(String(s).replace('T', ' ').slice(0, 16)) : '—');
+const fldTime = (s) => (s ? slDateTime(s) : '—');
 const fldInput = (s) => (s ? String(s).replace(' ', 'T').slice(0, 16) : '');
 // Under an hour in minutes ("25 min"), else hours ("3.5 h").
 const fldHours = (h) => (h == null ? '—' : (Math.abs(h) < 1 ? `${Math.round(h * 60)} min` : `${num(h)} h`));
@@ -20769,7 +20865,7 @@ routes.auditlogs = async (c) => renderAuditLogs(c);
 async function openAuditDiffModal(id) {
   try {
     const d = await api(`/audit-logs/${id}`);
-    const dateFormatted = d.created_at ? String(d.created_at).slice(0, 19).replace('T', ' ') : '—';
+    const dateFormatted = d.created_at ? slDateTime(d.created_at, { seconds: true }) + ' (SLST)' : '—';
     const initials = (d.full_name || d.username || 'SY').split(' ').map((p) => p[0]).slice(0, 2).join('').toUpperCase();
 
     const diff = d.diff || { changed: {}, added: {}, removed: {}, unchanged: {} };
@@ -21136,7 +21232,7 @@ async function renderAuditLogs(c) {
 
       // Render table rows
       const rowsHtml = data.logs.map((r) => {
-        const timeStr = String(r.created_at || '').slice(0, 19).replace('T', ' ');
+        const timeStr = slDateTime(r.created_at, { seconds: true });
         const initials = (r.full_name || r.username || 'SY').split(' ').map((x) => x[0]).slice(0, 2).join('').toUpperCase();
 
         // Entity badge style
@@ -24117,11 +24213,11 @@ function forceMfaSetup() {
 // Server times are UTC "YYYY-MM-DD HH:MM:SS" (or ISO). Shown as "12 min ago · 24 Sep 09:14".
 function whenText(t) {
   if (!t) return '—';
-  const ms = Date.parse(String(t).includes('T') ? t : String(t).replace(' ', 'T') + 'Z');
-  if (!Number.isFinite(ms)) return esc(t);
-  const mins = Math.round((Date.now() - ms) / 60000);
+  const d = parseServerDate(t);
+  if (!d) return esc(t);
+  const mins = Math.round((Date.now() - d.getTime()) / 60000);
   const rel = mins < 1 ? 'just now' : mins < 60 ? `${mins} min ago` : mins < 1440 ? `${Math.round(mins / 60)} h ago` : `${Math.round(mins / 1440)} d ago`;
-  return `${rel} <span class="muted" style="font-size:11px">· ${esc(new Date(ms).toLocaleString([], { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }))}</span>`;
+  return `${rel} <span class="muted" style="font-size:11px">· ${esc(slDateTime(t))} (SLST)</span>`;
 }
 function sessionRows(list, { mine }) {
   return list.map((x) => `<tr>

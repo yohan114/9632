@@ -422,7 +422,8 @@ router.get('/mechanics-kpi', requireKpiAccess, asyncHandler(async (req, res) => 
 
   let month = String(req.query.month || '').slice(0, 7);
   if (!isCustomRange && !/^\d{4}-\d{2}$/.test(month)) {
-    month = months.length ? months[0] : new Date().toISOString().slice(0, 7);
+    const slCurMonth = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Colombo' }).format(new Date()).slice(0, 7);
+    month = months.length ? months[0] : slCurMonth;
   }
 
   const wsFilterId = toInt(req.query.workshop_id);
@@ -460,9 +461,13 @@ router.get('/mechanics-kpi', requireKpiAccess, asyncHandler(async (req, res) => 
     ...params
   );
 
+  const wsOn = workshops.mechanicWorkshopSql('m');
   const mechProfiles = new Map(
-    all(`SELECT m.*, ws.name AS workshop_name, ws.code AS workshop_code
-           FROM mechanics m LEFT JOIN workshops ws ON ws.id = m.workshop_id`).map((m) => [m.name, m])
+    all(`SELECT m.id, m.name, m.status, m.active,
+                ws.name AS workshop_name, ws.code AS workshop_code,
+                (${wsOn}) AS workshop_id
+           FROM mechanics m
+           LEFT JOIN workshops ws ON ws.id = (${wsOn})`).map((m) => [m.name, m])
   );
 
   const mechMap = new Map();

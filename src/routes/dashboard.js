@@ -42,8 +42,17 @@ const LOW_GENERAL = 'is_general = 1 AND balance <= COALESCE(min_stock, 0)';
 const LOW_OIL = '(COALESCE(stock_qty,0) <= 0 OR (COALESCE(reorder_level,0) > 0 AND COALESCE(stock_qty,0) <= reorder_level))';
 const LOW_FILTER = 'qty_in_stock <= COALESCE(reorder_level, 0)';
 
-const today = () => new Date().toISOString().slice(0, 10);
-const nowYM = () => { const d = new Date(); return { year: d.getFullYear(), month: d.getMonth() + 1 }; };
+const today = () => {
+  try {
+    return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Colombo' }).format(new Date());
+  } catch (_) {
+    return new Date().toISOString().slice(0, 10);
+  }
+};
+const nowYM = () => {
+  const [y, m] = today().split('-');
+  return { year: parseInt(y, 10), month: parseInt(m, 10) };
+};
 
 function lastNMonths(n) {
   const out = [];

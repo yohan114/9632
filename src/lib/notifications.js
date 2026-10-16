@@ -41,6 +41,21 @@ function ensureNotificationTable() {
 
 ensureNotificationTable();
 
+function slFormat(s) {
+  if (!s) return '';
+  const d = new Date(String(s).includes('T') ? s : String(s).replace(' ', 'T') + 'Z');
+  if (isNaN(d.getTime())) return String(s);
+  return new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Asia/Colombo',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: true,
+  }).format(d);
+}
+
 function attendanceWorkshops(user) {
   if (!scope.enabled()) return [null];
   const own = scope.onlyWorkshop(user, { store: false });
@@ -685,7 +700,7 @@ function getNotificationsForUser(user) {
         ref: `${target.label}${log.entity_id ? ' #' + log.entity_id : ''}`,
         title: `${target.label} ${log.entity_id ? '#' + log.entity_id : ''} — ${actUpper}`,
         subtitle: log.reason || `${actUpper} recorded on ${target.label}`,
-        meta: `By ${log.full_name || log.username || 'System'} · ${String(log.created_at || '').slice(0, 16).replace('T', ' ')}`,
+        meta: `By ${log.full_name || log.username || 'System'} · ${slFormat(log.created_at)}`,
         timestamp: log.created_at || '',
         link: target.link,
         action_label: 'Open',
