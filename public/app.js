@@ -20233,8 +20233,8 @@ routes.reports = async (c) => {
       <a class="btn primary sm" href="/api/reports/monthly-cost.xlsx?year=${y}&month=${mo}${repWsQ()}">⬇ Download 14-Sheet Bill</a>
     </div>` : `<div style="background:${pl.is_profit ? '#e6f4ea' : '#fce8e6'};border:1px solid ${pl.is_profit ? '#a8dab5' : '#f5c6cb'};padding:12px;border-radius:6px;margin-bottom:12px;display:flex;align-items:center;justify-content:space-between">
       <div>
-        <div style="font-weight:700;font-size:15px;color:${pl.is_profit ? '#137333' : '#c5221f'}">${pl.is_profit ? 'PROFIT' : 'LOSS'}: Rs ${money(pl.saving_amount)}</div>
-        <div style="font-size:12px;color:#3c4043">In-house absorbed cost: <b>Rs ${money(pl.in_house_cost)}</b> vs Outside estimate: <b>Rs ${money(pl.outside_cost)}</b> (${(pl.saving_pct * 100).toFixed(1)}% ${pl.is_profit ? 'cheaper than outside' : 'more expensive than outside'})</div>
+        <div style="font-weight:700;font-size:15px;color:${pl.is_profit ? '#137333' : '#c5221f'}">${pl.is_profit ? 'PROFIT' : 'LOSS'}: ${money(pl.saving_amount)}</div>
+        <div style="font-size:12px;color:#3c4043">In-house absorbed cost: <b>${money(pl.in_house_cost)}</b> vs Outside estimate: <b>${money(pl.outside_cost)}</b> (${(pl.saving_pct * 100).toFixed(1)}% ${pl.is_profit ? 'cheaper than outside' : 'more expensive than outside'})</div>
       </div>
       <a class="btn primary sm" href="/api/reports/monthly-cost.xlsx?year=${y}&month=${mo}${repWsQ()}">⬇ Download 14-Sheet Bill</a>
     </div>`) : '';
