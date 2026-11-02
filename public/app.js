@@ -3464,7 +3464,7 @@ async function renderVdocTasks(body, sp) {
         ${t.registration ? `<span style="margin-left:6px;font-size:12px;color:var(--text)">[${esc(t.registration)}]</span>` : ''}
       </td>
       <td><b>${esc(t.doc_type_name)}</b></td>
-      <td>${stageBadge}</td>
+      <td>${stageBadge}${inlineDelayBadgeHtml(m.req_date, l.last_received, remaining > 0 && !l.is_cancelled && m.approval_status !== 'rejected')}</td>
       <td>${esc(t.target_date || '—')}</td>
       <td>${costStr}</td>
       <td>${esc(t.assigned_to_name || '—')}</td>
@@ -10145,6 +10145,36 @@ async function storesMonitor(body) {
     </div>`;
 }
 
+function calcDaysBetween(d1Str, d2Str) {
+  const a = String(d1Str || '').trim().slice(0, 10);
+  const b = String(d2Str || '').trim().slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(a) || !/^\d{4}-\d{2}-\d{2}$/.test(b)) return null;
+  const [y1, m1, day1] = a.split('-').map(Number);
+  const [y2, m2, day2] = b.split('-').map(Number);
+  return Math.max(0, Math.round((Date.UTC(y2, m2 - 1, day2) - Date.UTC(y1, m1 - 1, day1)) / 86400000));
+}
+
+function inlineDelayBadgeHtml(reqDate, recvDate, isPending) {
+  const reqD = String(reqDate || '').trim().slice(0, 10);
+  const recD = String(recvDate || '').trim().slice(0, 10);
+  if (recD && reqD) {
+    const d = calcDaysBetween(reqD, recD);
+    if (d != null) {
+      const cls = d <= 3 ? 'green' : d <= 7 ? 'blue' : d <= 14 ? 'amber' : 'red';
+      return ` <span class="badge sm ${cls}" title="Request Date: ${esc(reqD)} → Received Date: ${esc(recD)} (${d} day${d === 1 ? '' : 's'})">⏱ ${d}d delay</span>`;
+    }
+  }
+  if (isPending && reqD) {
+    const today = new Date().toISOString().slice(0, 10);
+    const w = calcDaysBetween(reqD, today);
+    if (w != null) {
+      const cls = w <= 3 ? '' : w <= 7 ? 'blue' : w <= 14 ? 'amber' : 'red';
+      return ` <span class="badge sm ${cls}" title="Requested on ${esc(reqD)} — waiting ${w} day${w === 1 ? '' : 's'}">⏳ ${w}d wait</span>`;
+    }
+  }
+  return '';
+}
+
 async function storesLines(body, sp) {
   const cur = { step: sp.get('step') || 'open', kind: sp.get('kind') || '', q: sp.get('q') || '', source: sp.get('source') || '' };
   if (!FLOW_STEPS.some(([k]) => k === cur.step)) cur.step = 'open';
@@ -10155,6 +10185,7 @@ async function storesLines(body, sp) {
       <select id="flkind" style="max-width:160px">${FLOW_KINDS.map(([v, l]) => `<option value="${v}" ${v === cur.kind ? 'selected' : ''}>${l}</option>`).join('')}</select>
       <select id="flsrc" style="max-width:160px"><option value="">All sources</option><option value="head_office" ${cur.source === 'head_office' ? 'selected' : ''}>Head Office</option><option value="local_purchase" ${cur.source === 'local_purchase' ? 'selected' : ''}>Local Purchase</option></select>
       <a class="btn sm" id="flxls" href="#">⬇ Excel</a>
+      <a class="btn sm" href="#/reports?focus=delays" title="Open Request Items Delay & Lead-Time Report">⏱ Delay Report</a>
       <div class="spacer"></div>
       ${canDo('stores.mrn.create') ? '<button class="sm" id="flnew">+ New request (MRN)</button>' : ''}
       ${canDo('stores.stock_issue') ? '<button class="sm primary" id="flissue">⚡ Direct issue</button>' : ''}
@@ -10202,7 +10233,7 @@ async function storesLines(body, sp) {
         <td class="desc-col">${esc(r.description || '')} <span class="badge">${esc(FLOW_KIND_LABEL[r.kind] || r.kind)}</span>
           ${r.buying_priority ? ` <span class="badge sm ${r.buying_priority === 'P1_CRITICAL' ? 'red' : (r.buying_priority === 'P2_URGENT' ? 'amber' : '')}" style="cursor:pointer" data-fl-prio="${r.id}" data-prio-val="${esc(r.buying_priority)}" data-prio-note="${esc(r.priority_note || '')}" title="${esc(r.priority_note || 'Click to adjust priority')}">${esc(r.buying_priority === 'P1_CRITICAL' ? '🚨 P1 Breakdown' : (r.buying_priority === 'P2_URGENT' ? '⚡ P2 Urgent' : (r.buying_priority === 'P4_LOW' ? 'P4 Stock' : 'P3 Routine')))}</span>` : ''}
           ${r.priority_note ? `<div style="font-size:11px;color:var(--amber);margin-top:2px"><b>Urgency Note:</b> ${esc(r.priority_note)}</div>` : ''}
-          <br><span class="muted" style="font-size:12px">received ${num(r.received)} of ${num(r.qty)}${r.issued > 0 ? ` · issued ${num(r.issued)}` : ''}</span>${r.unpriced ? ` <span class="badge amber">${r.unpriced} unpriced</span>` : ''}</td>
+          <br><span class="muted" style="font-size:12px">received ${num(r.received)} of ${num(r.qty)}${r.last_received ? ` on <b>${esc(String(r.last_received).slice(0, 10))}</b>` : ''}${r.issued > 0 ? ` · issued ${num(r.issued)}` : ''}</span>${r.unpriced ? ` <span class="badge amber">${r.unpriced} unpriced</span>` : ''}${inlineDelayBadgeHtml(r.req_date, r.last_received, r.received < r.qty - 0.001 && r.step !== 'rejected' && r.step !== 'imported')}</td>
         <td>${roadBar(r)}<span class="muted" style="font-size:11px">${esc(FLOW_STEP_LABEL[r.step] || r.step)}</span></td>
         <td><div style="display:flex;flex-wrap:wrap;gap:4px;justify-content:flex-end">${actions(r)}</div></td></tr>`),
       { scroll: true })
@@ -12937,7 +12968,7 @@ async function mrnList(body, params) {
             : rec < req ? '<span class="badge blue">partial</span>' : '<span class="badge green">received</span>';
           return `<tr><td>${esc(l.description || '')}</td><td>${esc(l.category || '')}</td>
             <td class="num">${num(req)}</td><td class="num">${num(rec)}</td>
-            <td style="white-space:nowrap">${receivedDate(l)}</td>
+            <td style="white-space:nowrap">${receivedDate(l)}${inlineDelayBadgeHtml(d.mrn.req_date, l.last_received, rec < req && !l.is_cancelled)}</td>
             <td class="num">${req - rec > 0 ? `<b>${num(req - rec)}</b>` : '—'}</td><td>${st}</td></tr>`;
         }).join('');
         holder.firstChild.innerHTML = `<div style="font-weight:600;margin-bottom:4px">${d.lines.length} item(s) on ${esc(d.mrn.mrn_no)}${d.mrn.purpose ? ' — ' + esc(d.mrn.purpose) : ''}</div>`
@@ -13034,7 +13065,7 @@ async function mrnDetail(body, id) {
     const photoBtn = `<button class="sm ${photoCount > 0 ? 'badge green' : 'badge amber'}" data-grn-photo="${g.id}" data-desc="${esc(g.description || '')}" style="cursor:pointer" title="Attached Invoice / PDF / Photographic evidence">📎 ${photoCount > 0 ? photoCount + ' Doc(s)' : '+ Attach Doc'}</button> `;
     return `<tr>
     <td>${esc(g.grn_no || '—')}</td>
-    <td style="white-space:nowrap">${g.delivery_date ? esc(String(g.delivery_date).slice(0, 10)) : '<span class="muted">—</span>'}</td>
+    <td style="white-space:nowrap">${g.delivery_date ? esc(String(g.delivery_date).slice(0, 10)) + inlineDelayBadgeHtml(m.req_date, g.delivery_date, false) : '<span class="muted">—</span>'}</td>
     <td>${esc(g.description || '')}</td>
     <td class="num">${num(g.qty)}</td>
     <td class="num">${g.unit_price == null ? '<span class="badge amber">awaiting</span>' : money(g.unit_price)}</td>
@@ -19947,6 +19978,82 @@ routes.reports = async (c) => {
         <a class="btn primary sm" id="mcr-dl" href="#">⬇ Download Excel</a>
       </div>
       <div id="mcr-preview" class="muted">Loading…</div></div>
+    <div class="card section" id="rdd-card">
+      <div class="toolbar" style="margin-top:0;flex-wrap:wrap;gap:8px">
+        <div>
+          <h3 style="margin:0">⏱ Request Items Delay &amp; Lead-Time Report</h3>
+          <span class="muted" style="font-weight:400;font-size:12px">— Track exact delay days between <b>MRN Request Date</b> and <b>GRN Received Date</b> (plus stage split: Approval vs. Buying/Supplier)</span>
+        </div>
+        <div class="spacer"></div>
+        <a class="btn sm" id="rdd-print" href="#" target="_blank">🖨 Print / PDF</a>
+        <a class="btn primary sm" id="rdd-xlsx" href="#">⬇ Export Excel (.xlsx)</a>
+      </div>
+      <div class="toolbar" style="margin:8px 0 12px;flex-wrap:wrap;gap:8px;background:var(--surface-2,#f8fafc);padding:10px;border-radius:6px;border:1px solid var(--border,#e2e8f0)">
+        <div class="fld">
+          <label style="font-size:11px">Date Basis</label>
+          <select id="rdd-date-field" style="max-width:145px;font-size:12px">
+            <option value="req_date" selected>Request Date</option>
+            <option value="received_date">Received Date</option>
+          </select>
+        </div>
+        <div class="fld">
+          <label style="font-size:11px">From</label>
+          <input type="date" id="rdd-from" style="font-size:12px">
+        </div>
+        <div class="fld">
+          <label style="font-size:11px">To</label>
+          <input type="date" id="rdd-to" style="font-size:12px">
+        </div>
+        <div class="fld">
+          <label style="font-size:11px">Status</label>
+          <select id="rdd-status" style="max-width:195px;font-size:12px">
+            <option value="received" selected>Received Items (Req vs Recv)</option>
+            <option value="all">All Requested (Recv + Pending)</option>
+            <option value="pending">Still Pending (Unreceived)</option>
+            <option value="delayed">Delayed Only (&gt; 7 Days)</option>
+            <option value="critical">Critical Delay (15+ Days)</option>
+          </select>
+        </div>
+        <div class="fld">
+          <label style="font-size:11px">Purchase Source</label>
+          <select id="rdd-source" style="max-width:150px;font-size:12px">
+            <option value="all">All Sources</option>
+            <option value="head_office">Head Office</option>
+            <option value="local_purchase">Local Purchase</option>
+          </select>
+        </div>
+        <div class="fld">
+          <label style="font-size:11px">Min Delay</label>
+          <select id="rdd-mindays" style="max-width:120px;font-size:12px">
+            <option value="">All Delays</option>
+            <option value="3">≥ 3 Days</option>
+            <option value="7">≥ 7 Days</option>
+            <option value="14">≥ 14 Days</option>
+            <option value="30">≥ 30 Days</option>
+          </select>
+        </div>
+        <div class="fld">
+          <label style="font-size:11px">Sort By</label>
+          <select id="rdd-sort" style="max-width:155px;font-size:12px">
+            <option value="delay_desc" selected>Longest Delay First</option>
+            <option value="delay_asc">Shortest Delay First</option>
+            <option value="req_desc">Newest Request Date</option>
+            <option value="recv_desc">Newest Received Date</option>
+          </select>
+        </div>
+        <div class="fld" style="flex:1;min-width:180px">
+          <label style="font-size:11px">Search (MRN / GRN / Vehicle / Item / Supplier)</label>
+          <input type="search" id="rdd-q" placeholder="Type to filter items…" style="width:100%;font-size:12px">
+        </div>
+      </div>
+      <div id="rdd-kpis" style="margin-bottom:10px"></div>
+      <div id="rdd-aging" style="margin-bottom:10px"></div>
+      <details id="rdd-breakdown-wrap" style="margin-bottom:12px">
+        <summary style="cursor:pointer;font-size:12.5px;font-weight:600;color:var(--primary,#1d4ed8)">📊 View Head Office vs. Local Purchase &amp; Supplier Lead-Time Breakdown</summary>
+        <div id="rdd-breakdown" style="margin-top:8px"></div>
+      </details>
+      <div id="rdd-body"><div class="muted">Loading request delay analysis…</div></div>
+    </div>
     ${wsd && !seen && !REP_WS ? `<div class="card section"><h3 style="margin-top:0">Workshops compared <span class="muted" style="font-weight:400;font-size:12px">— the month chosen above, one row per workshop</span></h3>
       <div id="rep-cmp" class="muted">Loading…</div></div>` : ''}`;
   if (qs('#rep-ws', c)) qs('#rep-ws', c).onchange = (e) => { REP_WS = e.target.value; routes.reports(c); };
@@ -20161,6 +20268,212 @@ routes.reports = async (c) => {
   if (qs('#mcr-edit', c)) qs('#mcr-edit', c).onclick = () => openMonthlyInputs(+mcrYear.value, +mcrMonth.value, loadMcr);
   qs('#mcr-reconcile', c).onclick = () => openRepairSectionsReconciler(+mcrYear.value, +mcrMonth.value, loadMcr);
   loadMcr();
+
+  // ---- Request Items Delay & Lead-Time Report ------------------------------
+  const rddDateField = qs('#rdd-date-field', c);
+  const rddFrom = qs('#rdd-from', c);
+  const rddTo = qs('#rdd-to', c);
+  const rddStatus = qs('#rdd-status', c);
+  const rddSource = qs('#rdd-source', c);
+  const rddMinDays = qs('#rdd-mindays', c);
+  const rddSort = qs('#rdd-sort', c);
+  const rddQ = qs('#rdd-q', c);
+  const rddKpis = qs('#rdd-kpis', c);
+  const rddAging = qs('#rdd-aging', c);
+  const rddBreakdown = qs('#rdd-breakdown', c);
+  const rddBody = qs('#rdd-body', c);
+  const rddXlsx = qs('#rdd-xlsx', c);
+  const rddPrint = qs('#rdd-print', c);
+
+  const buildRddParams = () => {
+    const p = new URLSearchParams();
+    if (rddDateField.value) p.set('date_field', rddDateField.value);
+    if (rddFrom.value) p.set('from', rddFrom.value);
+    if (rddTo.value) p.set('to', rddTo.value);
+    if (rddStatus.value) p.set('status', rddStatus.value);
+    if (rddSource.value && rddSource.value !== 'all') p.set('source', rddSource.value);
+    if (rddMinDays.value) p.set('min_days', rddMinDays.value);
+    if (rddSort.value) p.set('sort', rddSort.value);
+    if (rddQ.value.trim()) p.set('q', rddQ.value.trim());
+    if (REP_WS) p.set('workshop_id', REP_WS);
+    return p.toString();
+  };
+
+  const loadRdd = async () => {
+    const qsStr = buildRddParams();
+    rddXlsx.href = '/api/reports/request-delays/export.xlsx?' + qsStr;
+    rddPrint.href = '/api/reports/request-delays/print.html?' + qsStr;
+    rddBody.innerHTML = '<div class="muted">Calculating request-to-receipt lead times…</div>';
+    try {
+      const d = await api('/reports/request-delays?' + qsStr);
+      const s = d.summary || {};
+      const rows = d.rows || [];
+
+      // Render KPIs
+      rddKpis.innerHTML = `
+        <div class="grid" style="grid-template-columns:repeat(auto-fit, minmax(185px, 1fr));gap:8px">
+          <div class="card stat" style="padding:10px 12px;border-top:3px solid #2563eb">
+            <span class="n" style="color:#1e40af">${s.avg_delay_days || 0} days</span>
+            <span class="l">Avg Delivery Delay (Req → Recv)</span>
+            <div class="muted" style="font-size:11px;margin-top:3px">Median: <b>${s.median_delay_days || 0}d</b> · Max: <b>${s.max_delay_days || 0}d</b> (${num(s.received_lines || 0)} items)</div>
+          </div>
+          <div class="card stat" style="padding:10px 12px;border-top:3px solid #0d9488">
+            <span class="n" style="font-size:17px">${s.avg_approval_days || 0}d <span class="muted" style="font-size:12px">+</span> ${s.avg_procurement_days || 0}d</span>
+            <span class="l">Stage Split (Approval + Buying)</span>
+            <div class="muted" style="font-size:11px;margin-top:3px">Appr: <b>${s.avg_approval_days || 0}d</b> · Buying/Supplier: <b>${s.avg_procurement_days || 0}d</b></div>
+          </div>
+          <div class="card stat" style="padding:10px 12px;border-top:3px solid #7c3aed">
+            <span class="n" style="font-size:17px">HO: ${s.head_office_avg_days || 0}d · LP: ${s.local_purchase_avg_days || 0}d</span>
+            <span class="l">Head Office vs Local Purchase</span>
+            <div class="muted" style="font-size:11px;margin-top:3px">Head Office (${num(s.head_office_count || 0)}) · Local (${num(s.local_purchase_count || 0)})</div>
+          </div>
+          <div class="card stat" style="padding:10px 12px;border-top:3px solid #16a34a">
+            <span class="n" style="color:#15803d">${s.on_time_rate_pct || 0}%</span>
+            <span class="l">On-Time Rate (≤ 7 Days)</span>
+            <div class="muted" style="font-size:11px;margin-top:3px"><b>${num(s.on_time_count || 0)}</b> of ${num(s.received_lines || 0)} received within 7 days</div>
+          </div>
+          <div class="card stat" style="padding:10px 12px;border-top:3px solid ${(s.critical_count || 0) > 0 ? '#dc2626' : '#f59e0b'}">
+            <span class="n" style="color:${(s.critical_count || 0) > 0 ? '#dc2626' : 'inherit'}">${num(s.critical_count || 0)} critical</span>
+            <span class="l">Delayed (15+d) &amp; Pending Watch</span>
+            <div class="muted" style="font-size:11px;margin-top:3px">Still Pending: <b>${num(s.pending_lines || 0)}</b> (Oldest wait: <b>${s.oldest_pending_days || 0}d</b>)</div>
+          </div>
+        </div>
+      `;
+
+      // Render Visual Aging Distribution Bar
+      const totRec = Math.max(1, s.received_lines || 0);
+      const pFast = Math.round(((s.fast_count || 0) / totRec) * 100);
+      const pMod = Math.round(((s.moderate_count || 0) / totRec) * 100);
+      const pDel = Math.round(((s.delayed_count || 0) / totRec) * 100);
+      const pCrit = Math.max(0, 100 - pFast - pMod - pDel);
+
+      rddAging.innerHTML = (s.received_lines || 0) > 0 ? `
+        <div style="background:var(--surface-2,#f8fafc);border:1px solid var(--border,#e2e8f0);border-radius:6px;padding:8px 12px;font-size:12px">
+          <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:5px">
+            <span><b>Delivery Lead-Time Distribution (${num(s.received_lines)} received items):</b></span>
+            <div style="display:flex;gap:12px;flex-wrap:wrap">
+              <span>🟢 <b>0–3d (Fast):</b> ${num(s.fast_count || 0)} (${pFast}%)</span>
+              <span>🔵 <b>4–7d (Normal):</b> ${num(s.moderate_count || 0)} (${pMod}%)</span>
+              <span>🟠 <b>8–14d (Delayed):</b> ${num(s.delayed_count || 0)} (${pDel}%)</span>
+              <span>🔴 <b>15+d (Critical):</b> ${num(s.critical_count || 0)} (${pCrit}%)</span>
+            </div>
+          </div>
+          <div style="display:flex;height:8px;border-radius:4px;overflow:hidden;background:#e2e8f0">
+            <div style="width:${pFast}%;background:#16a34a" title="0-3d Fast: ${s.fast_count}"></div>
+            <div style="width:${pMod}%;background:#2563eb" title="4-7d Normal: ${s.moderate_count}"></div>
+            <div style="width:${pDel}%;background:#f59e0b" title="8-14d Delayed: ${s.delayed_count}"></div>
+            <div style="width:${pCrit}%;background:#dc2626" title="15+d Critical: ${s.critical_count}"></div>
+          </div>
+        </div>
+      ` : '';
+
+      // Render Breakdown Tables (By Source & Top Suppliers)
+      const bySrc = d.by_source || [];
+      const bySup = (d.by_supplier || []).slice(0, 12);
+      rddBreakdown.innerHTML = `
+        <div class="grid" style="grid-template-columns:repeat(auto-fit, minmax(380px, 1fr));gap:12px">
+          <div>
+            <h4 style="margin:0 0 6px;font-size:13px">By Purchase Source (Head Office vs. Local)</h4>
+            ${bySrc.length ? tableWrap(
+              [{ label: 'Channel' }, { label: 'Total', num: true }, { label: 'Received', num: true }, { label: 'Pending', num: true }, { label: 'Avg Delay', num: true }, { label: 'Max', num: true }, { label: '≤ 7d Rate', num: true }],
+              bySrc.map((b) => `<tr>
+                <td><b>${esc(b.label)}</b></td>
+                <td class="num">${num(b.total_items)}</td>
+                <td class="num">${num(b.received_items)}</td>
+                <td class="num">${num(b.pending_items)}</td>
+                <td class="num"><b>${b.avg_delay_days} d</b></td>
+                <td class="num">${b.max_delay_days} d</td>
+                <td class="num"><span class="badge ${b.on_time_rate_pct >= 75 ? 'green' : b.on_time_rate_pct >= 50 ? 'amber' : 'red'}">${b.on_time_rate_pct}%</span></td>
+              </tr>`)
+            ) : '<p class="muted">No source data.</p>'}
+          </div>
+          <div>
+            <h4 style="margin:0 0 6px;font-size:13px">Top Suppliers by Delivery Volume &amp; Lead-Time</h4>
+            ${bySup.length ? tableWrap(
+              [{ label: 'Supplier' }, { label: 'Items', num: true }, { label: 'Avg Delay', num: true }, { label: 'Min / Max', num: true }, { label: '> 7d Delayed', num: true }, { label: '≤ 7d Rate', num: true }],
+              bySup.map((sup) => `<tr>
+                <td><b>${esc(sup.supplier)}</b></td>
+                <td class="num">${num(sup.items_count)}</td>
+                <td class="num"><b>${sup.avg_delay_days} d</b></td>
+                <td class="num">${sup.min_delay_days}d / ${sup.max_delay_days}d</td>
+                <td class="num">${sup.delayed_over_7d > 0 ? `<span class="badge amber">${sup.delayed_over_7d}</span>` : '0'}</td>
+                <td class="num"><span class="badge ${sup.on_time_rate_pct >= 75 ? 'green' : sup.on_time_rate_pct >= 50 ? 'amber' : 'red'}">${sup.on_time_rate_pct}%</span></td>
+              </tr>`)
+            ) : '<p class="muted">No supplier receipt data for this filter.</p>'}
+          </div>
+        </div>
+      `;
+
+      // Render Detailed Line Table
+      if (!rows.length) {
+        rddBody.innerHTML = '<p class="muted">No requested items match the selected filters.</p>';
+        return;
+      }
+
+      rddBody.innerHTML = tableWrap(
+        [
+          { label: 'MRN No', width: '78px' },
+          { label: 'Vehicle / Job', width: '115px' },
+          { label: 'Item Description', cls: 'desc-col' },
+          { label: 'Source', width: '105px' },
+          { label: 'Req / Recv', num: true, width: '82px' },
+          { label: 'Request Date', width: '92px' },
+          { label: 'Approved Date', width: '92px' },
+          { label: 'Received Date', width: '96px' },
+          { label: 'GRN & Supplier', width: '165px' },
+          { label: 'Appr Days', num: true, width: '68px' },
+          { label: 'Buying Days', num: true, width: '74px' },
+          { label: 'Delay / Wait Time', width: '125px' },
+        ],
+        rows.map((r) => {
+          const delayHtml = r.delay_days != null
+            ? `<span class="badge ${r.delay_badge || 'blue'}" title="Requested: ${esc(r.req_date)} → Received: ${esc(r.received_date)}">⏱ ${r.delay_days} day${r.delay_days === 1 ? '' : 's'}</span>`
+            : (r.waiting_days != null
+              ? `<span class="badge ${r.delay_badge || 'amber'}" title="Requested on ${esc(r.req_date)} — still awaiting delivery">⏳ Waiting ${r.waiting_days}d</span>`
+              : '<span class="muted">—</span>');
+
+          return `<tr>
+            <td><a href="#/stores?tab=mrn&id=${r.mrn_id}"><b>${esc(r.mrn_no)}</b></a>${wsMulti() && r.workshop_code ? `<br><span class="muted" style="font-size:10px">${esc(r.workshop_code)}</span>` : ''}</td>
+            <td>${r.asset_id ? `<a href="#/assets/${r.asset_id}">${esc(r.vehicle)}</a>` : esc(r.vehicle || '—')}${r.job_no ? `<br><a href="#/jobs/${r.job_id}" style="font-size:11px">${esc(r.job_no)}</a>` : ''}</td>
+            <td class="desc-col"><b>${esc(r.description)}</b> <span class="muted" style="font-size:11px">(${esc(r.unit)})</span>
+              ${r.buying_priority && r.buying_priority !== 'P3_ROUTINE' ? ` <span class="badge sm ${r.buying_priority === 'P1_CRITICAL' ? 'red' : 'amber'}">${esc(r.buying_priority === 'P1_CRITICAL' ? 'P1 Breakdown' : (r.buying_priority === 'P2_URGENT' ? 'P2 Urgent' : r.buying_priority))}</span>` : ''}</td>
+            <td><span class="badge ${r.source === 'head_office' ? 'blue' : (r.source === 'local_purchase' ? 'teal' : '')}">${esc(r.source_label)}</span></td>
+            <td class="num">${num(r.qty_requested)} / <b style="color:${r.qty_received >= r.qty_requested ? 'var(--green)' : 'var(--amber)'}">${num(r.qty_received)}</b></td>
+            <td>${esc(r.req_date || '—')}</td>
+            <td>${esc(r.approved_date || '—')}</td>
+            <td><b>${esc(r.received_date || (r.fulfillment_status === 'pending' ? 'Pending' : '—'))}</b>${r.receipt_days > 1 ? `<br><span class="muted" style="font-size:10.5px" title="Delivered across ${r.receipt_days} dates (first batch on ${esc(r.first_received_date)})">1st: ${esc(r.first_received_date)} (${r.receipt_days} drops)</span>` : ''}</td>
+            <td>${r.grn_nos ? `<b>GRN ${esc(r.grn_nos)}</b>` : '<span class="muted">—</span>'}${r.supplier ? `<br><span class="muted" style="font-size:11px">${esc(r.supplier)}</span>` : ''}</td>
+            <td class="num">${r.approval_days != null ? r.approval_days + 'd' : '<span class="muted">—</span>'}</td>
+            <td class="num">${r.procurement_days != null ? r.procurement_days + 'd' : '<span class="muted">—</span>'}</td>
+            <td>${delayHtml}</td>
+          </tr>`;
+        }),
+        { scroll: true }
+      ) + (d.total_matching > rows.length ? `<p class="muted" style="font-size:12px;margin:6px 0 0">Showing top ${rows.length} of ${num(d.total_matching)} matching items. Use <b>⬇ Export Excel (.xlsx)</b> to download all ${num(d.total_matching)} rows.</p>` : '');
+    } catch (e) {
+      rddBody.innerHTML = `<p class="err">${esc(e.message)}</p>`;
+    }
+  };
+
+  [rddDateField, rddFrom, rddTo, rddStatus, rddSource, rddMinDays, rddSort].forEach((el) => {
+    if (el) el.onchange = loadRdd;
+  });
+  let rddTimer;
+  if (rddQ) {
+    rddQ.oninput = () => {
+      clearTimeout(rddTimer);
+      rddTimer = setTimeout(loadRdd, 260);
+    };
+  }
+  loadRdd();
+
+  // If navigated with #/reports?focus=delays, scroll smoothly to the delay report card
+  if (location.hash.includes('focus=delays')) {
+    setTimeout(() => {
+      const card = qs('#rdd-card', c);
+      if (card) card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 120);
+  }
 };
 
 // ---- Needs Attention (advisory intelligence — read-only)
