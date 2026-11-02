@@ -3438,29 +3438,72 @@ function syncIssueToLedgers(issueId) {
   const lubricants = require('../lib/lubricants');
   const aliases = require('../lib/aliases');
   const cat = String(iss.category || '').toLowerCase();
-  const isLube = cat.includes('lubric') || cat.includes('oil') || lubricants.isLubricant(iss.description, iss.issue_date);
+  const desc = String(iss.description || '').trim();
 
-  if (isLube) {
-    const match = lubricants.resolveLubricant(iss.description, { record: false, on: iss.issue_date });
-    let prodId = match.resolved && match.productId ? match.productId : null;
-    if (!prodId) {
-      const d = String(iss.description || '').toUpperCase();
-      if (d.includes('BREAK OIL') || d.includes('BRAKE OIL')) prodId = (get('SELECT id FROM products WHERE name LIKE \'%Brake Oil%\' LIMIT 1') || {}).id;
-      else if (d.includes('RUBBER GREASE')) prodId = (get('SELECT id FROM products WHERE name = \'Rubber Grease\' LIMIT 1') || {}).id;
-      else if (d.includes('WD-40') || d.includes('WD 40')) prodId = (get('SELECT id FROM products WHERE name = \'WD-40\' LIMIT 1') || {}).id;
-      else if (d.includes('CV GREASE')) prodId = (get('SELECT id FROM products WHERE name = \'CV Grease\' LIMIT 1') || {}).id;
-      else if (d.includes('COOLANT')) prodId = (get('SELECT id FROM products WHERE name = \'Coolant\' LIMIT 1') || {}).id;
-      else if (d.includes('PETROL ENGINE OIL')) prodId = (get('SELECT id FROM products WHERE name = \'20W-50\' OR category = \'engine_oil\' LIMIT 1') || {}).id;
-      else if (d.includes('GREASE') && !d.includes('SEAL') && !d.includes('GUN') && !d.includes('NOZZLE')) prodId = (get('SELECT id FROM products WHERE name = \'Grease\' LIMIT 1') || {}).id;
+  let prodId = null;
+  const match = lubricants.resolveLubricant(desc, { record: false, on: iss.issue_date });
+  if (match.resolved && match.productId) {
+    prodId = match.productId;
+  } else {
+    const d = desc.toUpperCase();
+    if (d.includes('BREAK OIL') || d.includes('BRAKE OIL')) prodId = (get('SELECT id FROM products WHERE name LIKE \'%Brake Oil%\' LIMIT 1') || {}).id;
+    else if (d.includes('RUBBER GREASE')) prodId = (get('SELECT id FROM products WHERE name = \'Rubber Grease\' LIMIT 1') || {}).id;
+    else if (d.includes('WD-40') || d.includes('WD 40')) prodId = (get('SELECT id FROM products WHERE name = \'WD-40\' LIMIT 1') || {}).id;
+    else if (d.includes('CV GREASE')) prodId = (get('SELECT id FROM products WHERE name = \'CV Grease\' LIMIT 1') || {}).id;
+    else if (d.includes('COOLANT')) prodId = (get('SELECT id FROM products WHERE name = \'Coolant\' LIMIT 1') || {}).id;
+    else if (d.includes('PETROL ENGINE OIL')) prodId = (get('SELECT id FROM products WHERE name = \'20W-50\' OR category = \'engine_oil\' LIMIT 1') || {}).id;
+    else if (d.includes('GREASE') && !d.includes('SEAL') && !d.includes('GUN') && !d.includes('NOZZLE')) prodId = (get('SELECT id FROM products WHERE name = \'Grease\' LIMIT 1') || {}).id;
+  }
+
+  if (prodId) {
+    const already = get('SELECT id FROM stock_ledger WHERE source_issue_id = ?', iss.id);
+    if (!already) {
+      const prod = get('SELECT unit_price FROM products WHERE id = ?', prodId);
+      const price = iss.unit_price != null && iss.unit_price > 0 ? iss.unit_price : (prod?.unit_price || 0);
+      const prev = (get('SELECT balance_after FROM stock_ledger WHERE product_id = ? ORDER BY txn_date DESC, id DESC LIMIT 1', prodId) || {}).balance_after || 0;
+      const newBal = prev - Math.abs(iss.qty);
+
+      let assetId = iss.asset_id;
+      if (!assetId && iss.job_id) {
+        const j = get('SELECT asset_id FROM job_cards WHERE id = ?', iss.job_id);
+        if (j && j.asset_id) assetId = j.asset_id;
+      }
+      if (!assetId && iss.purpose) {
+        const r = aliases.resolveAsset(iss.purpose, { record: false });
+        if (r.resolved && r.assetId) assetId = r.assetId;
+      }
+
+      run(`
+        INSERT INTO stock_ledger (product_id, kind, qty, balance_after, unit_price, asset_id, job_id, consumer, mr_no, txn_date, store_id, physical_store_id, source_issue_id)
+        VALUES (?, 'issue', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `, prodId, -Math.abs(iss.qty), newBal, price, assetId || null, iss.job_id || null, iss.purpose || iss.description, iss.min_no || 'Store Issue', iss.issue_date, iss.store_id || 1, iss.physical_store_id || 2, iss.id);
+      run('UPDATE products SET stock_qty = ? WHERE id = ?', newBal, prodId);
+    }
+  } else if (cat !== 'battery' && !cat.includes('tyre')) {
+    // General Items / Consumables / Hardware / Fasteners / Electrical / Bearings / Belts / Tools / Cotton Waste / etc.
+    let storeItemId = iss.store_item_id;
+    if (!storeItemId && desc) {
+      const existing = get('SELECT id FROM store_items WHERE LOWER(TRIM(name)) = LOWER(TRIM(?)) LIMIT 1', desc);
+      if (existing) {
+        storeItemId = existing.id;
+      } else {
+        const ins = run(`
+          INSERT INTO store_items (name, category, unit, rack, is_general, balance, unit_cost)
+          VALUES (?, COALESCE(?, 'General Items'), 'nos', 'General', 1, 0, ?)
+        `, desc, iss.category || 'General Items', iss.unit_price || 0);
+        storeItemId = ins.lastInsertRowid;
+      }
+      run('UPDATE issues SET store_item_id = ? WHERE id = ?', storeItemId, iss.id);
     }
 
-    if (prodId) {
-      const already = get('SELECT id FROM stock_ledger WHERE source_issue_id = ?', iss.id);
+    if (storeItemId) {
+      run('UPDATE store_items SET is_general = 1 WHERE id = ? AND is_general = 0', storeItemId);
+      const already = get('SELECT id FROM general_item_txns WHERE source_issue_id = ?', iss.id);
       if (!already) {
-        const prod = get('SELECT unit_price FROM products WHERE id = ?', prodId);
-        const price = iss.unit_price != null && iss.unit_price > 0 ? iss.unit_price : (prod?.unit_price || 0);
-        const prev = (get('SELECT balance_after FROM stock_ledger WHERE product_id = ? ORDER BY txn_date DESC, id DESC LIMIT 1', prodId) || {}).balance_after || 0;
+        const prev = (get('SELECT balance_after FROM general_item_txns WHERE store_item_id = ? ORDER BY txn_date DESC, id DESC LIMIT 1', storeItemId) || {}).balance_after || iss.item_balance || 0;
         const newBal = prev - Math.abs(iss.qty);
+        const si = get('SELECT unit_cost FROM store_items WHERE id = ?', storeItemId);
+        const price = iss.unit_price != null && iss.unit_price > 0 ? iss.unit_price : (si?.unit_cost || 0);
 
         let assetId = iss.asset_id;
         if (!assetId && iss.job_id) {
@@ -3473,22 +3516,11 @@ function syncIssueToLedgers(issueId) {
         }
 
         run(`
-          INSERT INTO stock_ledger (product_id, kind, qty, balance_after, unit_price, asset_id, job_id, consumer, mr_no, txn_date, store_id, physical_store_id, source_issue_id)
-          VALUES (?, 'issue', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `, prodId, -Math.abs(iss.qty), newBal, price, assetId || null, iss.job_id || null, iss.purpose || iss.description, iss.min_no || 'Store Issue', iss.issue_date, iss.store_id || 1, iss.physical_store_id || 2, iss.id);
-        run('UPDATE products SET stock_qty = ? WHERE id = ?', newBal, prodId);
+          INSERT INTO general_item_txns (store_item_id, txn_type, qty, balance_after, unit_price, asset_id, job_id, ref, txn_date, store_id, physical_store_id, source_issue_id)
+          VALUES (?, 'issue', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `, storeItemId, -Math.abs(iss.qty), newBal, price, assetId || null, iss.job_id || null, iss.min_no || iss.purpose || 'Store Issue', iss.issue_date, iss.store_id || 1, iss.physical_store_id || 2, iss.id);
+        run('UPDATE store_items SET balance = ? WHERE id = ?', newBal, storeItemId);
       }
-    }
-  } else if (iss.store_item_id && (iss.is_general || cat.includes('general') || cat.includes('consumable'))) {
-    const already = get('SELECT id FROM general_item_txns WHERE source_issue_id = ?', iss.id);
-    if (!already) {
-      const prev = (get('SELECT balance_after FROM general_item_txns WHERE store_item_id = ? ORDER BY txn_date DESC, id DESC LIMIT 1', iss.store_item_id) || {}).balance_after || iss.item_balance || 0;
-      const newBal = prev - Math.abs(iss.qty);
-      run(`
-        INSERT INTO general_item_txns (store_item_id, txn_type, qty, balance_after, unit_price, asset_id, job_id, ref, txn_date, store_id, physical_store_id, source_issue_id)
-        VALUES (?, 'issue', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `, iss.store_item_id, -Math.abs(iss.qty), newBal, iss.unit_price, iss.asset_id, iss.job_id, iss.min_no || 'Store Issue', iss.issue_date, iss.store_id || 1, iss.physical_store_id || 2, iss.id);
-      run('UPDATE store_items SET balance = ? WHERE id = ?', newBal, iss.store_item_id);
     }
   }
 }

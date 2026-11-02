@@ -842,6 +842,12 @@ function migrate() {
   } catch (err) {
     console.warn('Migration 045 auto-sync skipped:', err.message);
   }
+  // General Item Issues reconciliation & Store Items balance sync
+  try {
+    require('../migrate/046_fix_general_item_issues').runMigration(db);
+  } catch (err) {
+    console.warn('Migration 046 auto-sync skipped:', err.message);
+  }
 
   return db;
 }

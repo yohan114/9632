@@ -885,6 +885,18 @@ router.get('/monthly/:month/asset/:id', requireModule('reports'), asyncHandler((
   const general_lines = all(`SELECT t.txn_date, si.name product, si.unit, ABS(t.qty) qty, COALESCE(t.unit_price, si.unit_cost, 0) unit_price, t.ref
                                FROM general_item_txns t JOIN store_items si ON si.id = t.store_item_id LEFT JOIN job_cards j ON j.id = t.job_id
                               WHERE t.asset_id=? AND t.txn_type='issue' AND substr(t.txn_date,1,7)=?${wsSql('COALESCE(j.workshop_id, t.store_id)', ws)} ORDER BY t.txn_date, t.id`, id, month);
+  const unlinked_gen = all(`SELECT i.issue_date AS txn_date, i.description AS product, COALESCE(si.unit, 'nos') AS unit, ABS(i.qty) AS qty, COALESCE(i.unit_price, si.unit_cost, 0) AS unit_price, i.min_no AS ref
+                             FROM issues i
+                             LEFT JOIN store_items si ON si.id = i.store_item_id
+                             LEFT JOIN job_cards j ON j.id = i.job_id
+                            WHERE i.asset_id = ? AND substr(i.issue_date,1,7) = ?
+                              AND COALESCE(i.voided, 0) = 0
+                              AND (i.source_table IS NULL OR i.source_table NOT IN ('general_item_txns', 'stock_ledger'))
+                              AND NOT EXISTS (SELECT 1 FROM stock_ledger sl WHERE sl.source_issue_id = i.id)
+                              AND NOT EXISTS (SELECT 1 FROM general_item_txns git WHERE git.source_issue_id = i.id)
+                              AND COALESCE(i.category, '') NOT IN ('Battery', 'Tyres & Wheels', 'Lubricants', 'Lubricants & Fluids')
+                              ${wsSql('COALESCE(j.workshop_id, i.store_id)', ws)} ORDER BY i.issue_date, i.id`, id, month);
+  general_lines.push(...unlinked_gen);
   const labour = labour_lines.reduce((s, l) => s + (l.amount || 0), 0);
   const material = material_lines.reduce((s, l) => s + (l.qty || 0) * (l.unit_price || 0), 0);
   const oil = oil_lines.reduce((s, l) => s + (l.qty || 0) * (l.unit_price || 0), 0);

@@ -47,6 +47,19 @@ function monthlyRollup(ws) {
   for (const r of all(`SELECT substr(t.txn_date,1,7) m, ROUND(SUM(ABS(t.qty) * COALESCE(t.unit_price, si.unit_cost, 0)), 2) v
                          FROM general_item_txns t JOIN store_items si ON si.id = t.store_item_id LEFT JOIN job_cards j ON j.id = t.job_id
                         WHERE t.txn_type = 'issue' AND t.txn_date IS NOT NULL${wsSql('COALESCE(j.workshop_id, t.store_id)', ws)} GROUP BY m`)) if (r.m) M(r.m).general = r.v || 0;
+  for (const r of all(`SELECT substr(i.issue_date,1,7) m, ROUND(SUM(ABS(i.qty) * COALESCE(i.unit_price, si.unit_cost, 0)), 2) v
+                         FROM issues i
+                         LEFT JOIN store_items si ON si.id = i.store_item_id
+                         LEFT JOIN job_cards j ON j.id = i.job_id
+                        WHERE i.issue_date IS NOT NULL
+                          AND COALESCE(i.voided, 0) = 0
+                          AND (i.source_table IS NULL OR i.source_table NOT IN ('general_item_txns', 'stock_ledger'))
+                          AND NOT EXISTS (SELECT 1 FROM stock_ledger sl WHERE sl.source_issue_id = i.id)
+                          AND NOT EXISTS (SELECT 1 FROM general_item_txns git WHERE git.source_issue_id = i.id)
+                          AND COALESCE(i.category, '') NOT IN ('Battery', 'Tyres & Wheels', 'Lubricants', 'Lubricants & Fluids')
+                          ${wsSql('COALESCE(j.workshop_id, i.store_id)', ws)} GROUP BY m`)) {
+    if (r.m && r.v) M(r.m).general = r2((M(r.m).general || 0) + r.v);
+  }
   for (const r of all(`SELECT substr(requested_at,1,7) m, COUNT(*) c FROM job_cards WHERE requested_at IS NOT NULL${wsSql('workshop_id', ws)} GROUP BY m`)) if (r.m) M(r.m).jobs = r.c || 0;
   // Service records — cost computed live: priced filters (book × qty) + oils + labour + sundry, by service month.
   for (const r of all(`SELECT substr(j.service_date,1,7) m, ROUND(SUM(COALESCE(p.unit_price,0) * COALESCE(f.qty,1)),2) v
@@ -87,6 +100,19 @@ function monthAssets(month, ws) {
   for (const r of all(`SELECT t.asset_id id, ROUND(SUM(ABS(t.qty) * COALESCE(t.unit_price, si.unit_cost, 0)), 2) v
                          FROM general_item_txns t JOIN store_items si ON si.id = t.store_item_id LEFT JOIN job_cards j ON j.id = t.job_id
                         WHERE t.asset_id IS NOT NULL AND t.txn_type='issue' AND substr(t.txn_date,1,7)=?${wsSql('COALESCE(j.workshop_id, t.store_id)', ws)} GROUP BY t.asset_id`, month)) A(r.id).general = r.v || 0;
+  for (const r of all(`SELECT i.asset_id id, ROUND(SUM(ABS(i.qty) * COALESCE(i.unit_price, si.unit_cost, 0)), 2) v
+                         FROM issues i
+                         LEFT JOIN store_items si ON si.id = i.store_item_id
+                         LEFT JOIN job_cards j ON j.id = i.job_id
+                        WHERE i.asset_id IS NOT NULL AND substr(i.issue_date,1,7)=?
+                          AND COALESCE(i.voided, 0) = 0
+                          AND (i.source_table IS NULL OR i.source_table NOT IN ('general_item_txns', 'stock_ledger'))
+                          AND NOT EXISTS (SELECT 1 FROM stock_ledger sl WHERE sl.source_issue_id = i.id)
+                          AND NOT EXISTS (SELECT 1 FROM general_item_txns git WHERE git.source_issue_id = i.id)
+                          AND COALESCE(i.category, '') NOT IN ('Battery', 'Tyres & Wheels', 'Lubricants', 'Lubricants & Fluids')
+                          ${wsSql('COALESCE(j.workshop_id, i.store_id)', ws)} GROUP BY i.asset_id`, month)) {
+    if (r.id && r.v) A(r.id).general = r2((A(r.id).general || 0) + r.v);
+  }
   return [...map.values()].map((o) => {
     const a = get('SELECT code, registration, ec_code FROM assets WHERE id=?', o.asset_id);
     return { ...o, asset_code: a ? a.code : '(unlinked)', registration: a ? a.registration : null, ec_code: a ? a.ec_code : null,
