@@ -584,6 +584,35 @@ function renderGrnDocumentHtml(grnIdentifier, { forPdf = false } = {}) {
   const appSig = sigSrc(voucher.approved_sig);
   const grnDisplayNo = voucher.grn_no || ('GRN-' + String(voucher.id).padStart(4, '0'));
 
+  let grnAttachments = [];
+  if (!forPdf) {
+    try {
+      const evidencePhotos = require('./evidence_photos');
+      const seenPaths = new Set();
+      for (const l of lines) {
+        if (!l || !l.id) continue;
+        const lPhotos = evidencePhotos.listPhotos('grn', l.id);
+        for (const p of lPhotos) {
+          const key = p.file_path || p.url || String(p.id);
+          if (!seenPaths.has(key)) {
+            seenPaths.add(key);
+            grnAttachments.push(p);
+          }
+        }
+      }
+    } catch (e) {
+      // Ignore attachment lookup error on print view
+    }
+  }
+  const attachmentsBlockHtml = (!forPdf && grnAttachments.length)
+    ? `<div class="noprint" style="max-width:1060px;margin:8px auto 18px;background:#fff;border:1px solid #cbd5e1;border-radius:6px;padding:10px 14px;font-family:Arial,sans-serif">
+         <div style="font-weight:700;font-size:12px;color:#0f172a;margin-bottom:6px">📎 Attached Supplier Invoices &amp; Supporting Documents (${grnAttachments.length})</div>
+         <div style="display:flex;flex-wrap:wrap;gap:8px">
+           ${grnAttachments.map((a, idx) => `<a href="${esc(a.url)}" target="_blank" rel="noopener" style="display:inline-flex;align-items:center;gap:6px;padding:5px 10px;background:#f8fafc;border:1px solid #cbd5e1;border-radius:4px;color:#0f766e;text-decoration:none;font-size:11.5px;font-weight:600">${a.is_pdf ? '📄' : (a.is_image ? '🖼️' : '📎')} ${esc(a.file_name || ('Document #' + (idx + 1)))} <span style="color:#64748b;font-weight:400">(${esc(a.kind || 'invoice')})</span></a>`).join('')}
+         </div>
+       </div>`
+    : '';
+
   return `<!doctype html>
 <html>
 <head>
@@ -671,6 +700,7 @@ ${renderControls('grn', voucher.id, forPdf)}
     <span></span>
   </div>
 </div>
+${attachmentsBlockHtml}
 </body>
 </html>`;
 }

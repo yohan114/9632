@@ -1415,7 +1415,9 @@ router.get('/grn', asyncHandler((req, res) => {
   res.json(all(
     `SELECT g.*, m.mrn_no, m.req_date AS mrn_req_date, a.code AS asset_code,
             COALESCE(g.status, gv.status, 'pending_approval') AS grn_status,
-            sl.name AS physical_store_name, sl.code AS physical_store_code, sl.store_type AS physical_store_type
+            sl.name AS physical_store_name, sl.code AS physical_store_code, sl.store_type AS physical_store_type,
+            ((SELECT COUNT(*) FROM line_evidence_photos p WHERE p.entity_type = 'grn' AND p.entity_id = g.id)
+             + CASE WHEN g.mrn_line_id IS NOT NULL THEN (SELECT COUNT(*) FROM mrn_line_invoices i WHERE i.mrn_line_id = g.mrn_line_id) ELSE 0 END) AS attachment_count
        FROM grn g
        LEFT JOIN grn_vouchers gv ON gv.id = g.voucher_id
        LEFT JOIN mrn m ON m.id = g.mrn_id
@@ -1554,7 +1556,9 @@ function awaitingPriceRows(query, user) {
     `SELECT g.id, g.grn_no, g.grn_date, g.description, g.received_part_no, g.qty, g.supplier, g.invoice_no, g.invoice_date, g.delivery_date,
             COALESCE(g.purchase_source_norm, ml.purchase_source, m.purchase_source) AS source,
             COALESCE(ml.category, si.category) AS category,
-            m.id AS mrn_id, m.mrn_no, m.req_date, a.code AS asset_code
+            m.id AS mrn_id, m.mrn_no, m.req_date, a.code AS asset_code,
+            ((SELECT COUNT(*) FROM line_evidence_photos p WHERE p.entity_type = 'grn' AND p.entity_id = g.id)
+             + CASE WHEN g.mrn_line_id IS NOT NULL THEN (SELECT COUNT(*) FROM mrn_line_invoices i WHERE i.mrn_line_id = g.mrn_line_id) ELSE 0 END) AS attachment_count
        FROM grn g
        LEFT JOIN mrn m ON m.id = g.mrn_id
        LEFT JOIN mrn_lines ml ON ml.id = g.mrn_line_id
@@ -2078,11 +2082,20 @@ router.post('/grn', requireCap('stores.grn.receive'), chainPipeline.idempotencyG
         }, req.user);
       }
     }
+    // Save any attached invoice / delivery note / supporting documents
+    if (Array.isArray(b.attachments) && b.attachments.length) {
+      evidencePhotos.saveBatchGrnAttachments({
+        grnIds: [info.lastInsertRowid],
+        attachments: b.attachments,
+        defaultKind: 'invoice',
+        userId: req.user ? req.user.id : null
+      });
+    }
     // Stores plan, Part 3: on the shelf now, not at the next rebuild.
     stock.sync({ grn: [info.lastInsertRowid] });
     return info.lastInsertRowid;
   });
-  audit.record({ userId: req.user.id, entity: 'grn', entityId: result, action: 'create', after: { chain_no: chainNo, physical_store_id: physStoreId, store_id: legStoreId } });
+  audit.record({ userId: req.user.id, entity: 'grn', entityId: result, action: 'create', after: { chain_no: chainNo, physical_store_id: physStoreId, store_id: legStoreId, attachments_count: Array.isArray(b.attachments) ? b.attachments.length : 0 } });
   res.status(201).json(get('SELECT * FROM grn WHERE id = ?', result));
 }));
 
@@ -2137,13 +2150,23 @@ router.get('/grn/:id', guardReceipt, asyncHandler((req, res, next) => {
     };
   }
   const grnIds = lines.map((l) => l.id);
-  const grnPhotoMap = evidencePhotos.getBatchPhotos('grn', grnIds);
+  const seenPaths = new Set();
+  const allAttachments = [];
   for (const l of lines) {
-    l.photos = grnPhotoMap.get(l.id) || [];
+    const lPhotos = evidencePhotos.listPhotos('grn', l.id);
+    l.photos = lPhotos;
+    l.attachments = lPhotos;
+    for (const p of lPhotos) {
+      const key = p.file_path || p.url || String(p.id);
+      if (!seenPaths.has(key)) {
+        seenPaths.add(key);
+        allAttachments.push(p);
+      }
+    }
   }
-  const photos = grnPhotoMap.get(g.id) || [];
-  g.photos = photos;
-  res.json({ grn: g, voucher, lines, approvals, photos });
+  g.photos = allAttachments;
+  g.attachments = allAttachments;
+  res.json({ grn: g, voucher, lines, approvals, photos: allAttachments, attachments: allAttachments });
 }));
 
 // ---- GRN Receipt Evidence Photos (Step 5) ----------------------------------
@@ -2168,10 +2191,11 @@ router.post('/grn/:id/photos', requireAuth, asyncHandler((req, res) => {
   const photo = evidencePhotos.savePhoto({
     entityType: 'grn',
     entityId: grn.id,
-    dataUrl: b.dataUrl || b.photo || b.image,
+    dataUrl: b.dataUrl || b.photo || b.image || b.file,
     filename: b.filename || b.file_name,
-    kind: b.kind || 'delivery_goods',
-    caption: b.caption,
+    mimeType: b.mimeType || b.mime_type || '',
+    kind: b.kind || 'invoice',
+    caption: b.caption || b.note,
     userId: req.user ? req.user.id : null,
   });
 
@@ -2195,8 +2219,8 @@ router.delete('/grn/:id/photos/:photoId', requireAuth, asyncHandler((req, res) =
   if (no) return res.status(403).json(no);
 
   const photo = evidencePhotos.getPhoto(photoId);
-  if (!photo || photo.entity_type !== 'grn' || photo.entity_id !== grnId) {
-    return res.status(404).json({ error: 'Evidence photo not found on this receipt' });
+  if (!photo || photo.entity_type !== 'grn') {
+    return res.status(404).json({ error: 'Attachment not found on this receipt' });
   }
 
   const canDelete = req.user.is_admin || photo.uploaded_by === req.user.id || hasCap(req.user, 'stores.grn.receive', 'stores.grn.edit');
@@ -2236,7 +2260,10 @@ router.get('/evidence-photos/:photoId/raw', requireAuth, asyncHandler((req, res)
   }
 
   const stat = fs.statSync(photo.absPath);
-  res.setHeader('Content-Type', photo.mime_type || 'image/jpeg');
+  const safeName = String(photo.file_name || 'document').replace(/[^a-zA-Z0-9._-]/g, '_');
+  const disp = req.query.download === '1' ? 'attachment' : 'inline';
+  res.setHeader('Content-Type', photo.mime_type || 'application/octet-stream');
+  res.setHeader('Content-Disposition', `${disp}; filename="${safeName}"`);
   res.setHeader('Content-Length', stat.size);
   res.setHeader('Cache-Control', 'private, max-age=86400');
   fs.createReadStream(photo.absPath).pipe(res);
@@ -2262,7 +2289,8 @@ router.get('/grn-vouchers', asyncHandler((req, res) => {
     `SELECT v.*,
             sl.name AS physical_store_name, sl.code AS physical_store_code,
             (SELECT COUNT(*) FROM grn g WHERE g.voucher_id = v.id OR g.grn_no = v.grn_no) AS item_count,
-            (SELECT SUM(g.qty * COALESCE(g.unit_price, 0)) FROM grn g WHERE g.voucher_id = v.id OR g.grn_no = v.grn_no) AS total_value
+            (SELECT SUM(g.qty * COALESCE(g.unit_price, 0)) FROM grn g WHERE g.voucher_id = v.id OR g.grn_no = v.grn_no) AS total_value,
+            (SELECT COUNT(DISTINCT p.file_path) FROM line_evidence_photos p JOIN grn g ON p.entity_type = 'grn' AND p.entity_id = g.id WHERE g.voucher_id = v.id OR g.grn_no = v.grn_no) AS attachment_count
        FROM grn_vouchers v
        LEFT JOIN store_locations sl ON sl.id = v.physical_store_id
        ${where}
@@ -2290,7 +2318,22 @@ router.get('/grn-vouchers/:id', guardVoucher, asyncHandler((req, res) => {
     `SELECT a.*, u.username FROM grn_approvals a
      LEFT JOIN users u ON u.id = a.approver_id
      WHERE a.voucher_id = ? ORDER BY a.id`, voucher.id);
-  res.json({ voucher, lines, approvals });
+  const seenVoucherPaths = new Set();
+  const voucherAttachments = [];
+  for (const l of lines) {
+    const lPhotos = evidencePhotos.listPhotos('grn', l.id);
+    l.photos = lPhotos;
+    l.attachments = lPhotos;
+    for (const p of lPhotos) {
+      const key = p.file_path || p.url || String(p.id);
+      if (!seenVoucherPaths.has(key)) {
+        seenVoucherPaths.add(key);
+        voucherAttachments.push(p);
+      }
+    }
+  }
+  voucher.attachments = voucherAttachments;
+  res.json({ voucher, lines, approvals, attachments: voucherAttachments });
 }));
 
 router.post('/grn-vouchers', requireCap('stores.grn.receive'), chainPipeline.idempotencyGuard('grn_voucher_create'), asyncHandler((req, res) => {
@@ -2458,6 +2501,14 @@ router.post('/grn-vouchers', requireCap('stores.grn.receive'), chainPipeline.ide
     }
 
     const allAffected = newIds.concat(grnIds);
+    if (allAffected.length && Array.isArray(b.attachments) && b.attachments.length) {
+      evidencePhotos.saveBatchGrnAttachments({
+        grnIds: allAffected,
+        attachments: b.attachments,
+        defaultKind: 'invoice',
+        userId: req.user ? req.user.id : null
+      });
+    }
     if (allAffected.length) {
       stock.sync({ grn: allAffected });
     }
@@ -2475,6 +2526,24 @@ router.post('/grn-vouchers/:id/approve', requireCap('stores.grn.approve'), guard
   const v = get('SELECT * FROM grn_vouchers WHERE id = ? OR grn_no = ?', id, req.params.id);
   if (!v) return res.status(404).json({ error: 'GRN voucher not found' });
   if (v.status === 'approved') return res.status(409).json({ error: 'Already approved' });
+  const vLines = all('SELECT id, mrn_line_id FROM grn WHERE voucher_id = ? OR grn_no = ?', v.id, v.grn_no);
+  const vGrnIds = vLines.map((l) => l.id);
+  if (Array.isArray(req.body.attachments) && req.body.attachments.length && vGrnIds.length) {
+    evidencePhotos.saveBatchGrnAttachments({
+      grnIds: vGrnIds,
+      attachments: req.body.attachments,
+      defaultKind: 'invoice',
+      userId: req.user ? req.user.id : null
+    });
+  }
+  const hasDoc = vLines.some((l) => evidencePhotos.listPhotos('grn', l.id).length > 0);
+  if (!hasDoc && !req.body.allow_without_doc) {
+    return res.status(400).json({
+      error: 'Please attach the Supplier Invoice, Delivery Note, or supporting document (Image/PDF) before approving this GRN.',
+      code: 'MISSING_GRN_DOCUMENT'
+    });
+  }
+
   const s = signer(req.user.id);
   const sig = req.body.signature || s.sig || null;
   const now = new Date().toISOString();
@@ -2522,6 +2591,21 @@ router.post('/grn/:id/approve', requireCap('stores.grn.approve'), guardReceipt, 
   const id = toInt(req.params.id);
   const g = get('SELECT * FROM grn WHERE id = ?', id);
   if (!g) return res.status(404).json({ error: 'GRN record not found' });
+  if (Array.isArray(req.body.attachments) && req.body.attachments.length) {
+    evidencePhotos.saveBatchGrnAttachments({
+      grnIds: [id],
+      attachments: req.body.attachments,
+      defaultKind: 'invoice',
+      userId: req.user ? req.user.id : null
+    });
+  }
+  const hasDoc = evidencePhotos.listPhotos('grn', id).length > 0;
+  if (!hasDoc && !req.body.allow_without_doc) {
+    return res.status(400).json({
+      error: 'Please attach the Supplier Invoice, Delivery Note, or supporting document (Image/PDF) before approving this GRN.',
+      code: 'MISSING_GRN_DOCUMENT'
+    });
+  }
   const s = signer(req.user.id);
   const sig = req.body.signature || s.sig || null;
   const now = new Date().toISOString();
@@ -3660,6 +3744,14 @@ router.post('/grn/bulk-price', requireCap('stores.grn.edit'), asyncHandler((req,
           && before.unit_price == null && before.priced_at == null) sets.push("priced_at = datetime('now')");
       if (!sets.length) continue;
       run(`UPDATE grn SET ${sets.join(', ')} WHERE id = ?`, ...params, id);
+      if (Array.isArray(r.attachments) && r.attachments.length) {
+        evidencePhotos.saveBatchGrnAttachments({
+          grnIds: [id],
+          attachments: r.attachments,
+          defaultKind: 'invoice',
+          userId: req.user ? req.user.id : null
+        });
+      }
       touched.push(id); saved++;
     }
     if (touched.length) stock.sync({ grn: touched });      // the price and date the shelf carries
@@ -3728,6 +3820,14 @@ router.post('/grn/bulk-receive', requireCap('stores.grn.receive'), asyncHandler(
         r.delivery_date || new Date().toISOString().slice(0, 10), src, purchaseSourceNorm(src),
         rowStoreId, rowPhysStoreId);
       run('UPDATE mrn_lines SET qty_received = COALESCE(qty_received,0) + ? WHERE id = ?', qty, lineId);
+      if (Array.isArray(r.attachments) && r.attachments.length) {
+        evidencePhotos.saveBatchGrnAttachments({
+          grnIds: [info.lastInsertRowid],
+          attachments: r.attachments,
+          defaultKind: 'invoice',
+          userId: req.user ? req.user.id : null
+        });
+      }
       created.push(info.lastInsertRowid);
       mrnIds.add(line.mrn_id);
     }
@@ -3779,8 +3879,27 @@ router.patch('/grn/:id', requireCap('stores.grn.edit'), guardReceipt, asyncHandl
   if (req.body.unit_price !== undefined && before.unit_price == null && req.body.unit_price !== '' && req.body.unit_price !== null && before.priced_at == null) {
     sets.push("priced_at = datetime('now')");
   }
+  if (Array.isArray(req.body.attachments) && req.body.attachments.length) {
+    evidencePhotos.saveBatchGrnAttachments({
+      grnIds: [id],
+      attachments: req.body.attachments,
+      defaultKind: 'invoice',
+      userId: req.user ? req.user.id : null
+    });
+  }
+  const hasPriceNow = req.body.unit_price !== undefined && req.body.unit_price !== '' && req.body.unit_price !== null;
+  if (hasPriceNow && !req.body.allow_without_doc) {
+    const existingDocs = evidencePhotos.listPhotos('grn', id);
+    if (!existingDocs.length) {
+      return res.status(400).json({
+        error: 'Please attach the Supplier Invoice or supporting document (Image/PDF) when pricing this GRN, or tick "Invoice document not physically available yet".',
+        code: 'MISSING_GRN_DOCUMENT'
+      });
+    }
+  }
   if (sets.length) tx(() => { run(`UPDATE grn SET ${sets.join(', ')} WHERE id = ?`, ...params, id); stock.sync({ grn: [id] }); });
   const after = get('SELECT * FROM grn WHERE id = ?', id);
+  after.attachments = evidencePhotos.listPhotos('grn', id);
   audit.record({ userId: req.user.id, entity: 'grn', entityId: id, action: 'update', before, after, reason: 'late pricing' });
   res.json(after);
 }));

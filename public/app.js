@@ -8090,12 +8090,18 @@ async function newGrnModal(onDone) {
       </div>
       <p class="muted" style="font-size:11.5px;margin:8px 0 0">Leave Unit Price blank if awaiting invoice pricing. Items will show under "To price" and proceed to approval.</p>
     </div>
+    <div class="card" style="margin-top:12px">
+      <h4 style="margin:0 0 4px">3 · Supplier Invoice / Delivery Note / Document Attachment</h4>
+      <div class="muted" style="font-size:11.5px;margin-bottom:6px">Attach the supplier invoice, delivery note, or goods receipt photo (Image or PDF). If the invoice is arriving later, you may attach it during pricing/approval.</div>
+      ${grnAttachmentBoxHtml('newgrn', { title: '📎 Attach Invoice / Delivery Note / PDF / Image' })}
+    </div>
     <div style="margin-top:14px;display:flex;justify-content:space-between;align-items:center">
       <span class="muted" style="font-size:12px">Recorded by <b>${esc(ME ? (ME.fullName || ME.username) : 'Storekeeper')}</b></span>
       <button class="primary" id="gsave" style="padding:8px 20px;font-size:14px">📥 Record Goods Receipt (GRN)</button>
     </div>`,
     (mbody, close) => {
       const tbody = qs('#grnitemsbody', mbody);
+      const newGrnAtt = wireGrnAttachmentBox(mbody, 'newgrn');
       const addRow = (item = {}) => {
         const tr = document.createElement('tr');
         tr.innerHTML = `
@@ -8210,6 +8216,7 @@ async function newGrnModal(onDone) {
               physical_store_id: physicalStoreId,
               project_site: projectSite,
               lines,
+              attachments: newGrnAtt.getAttachments(),
             }
           });
           toast(`Goods Received Note ${res.grn_no} recorded · Pending approval`);
@@ -8381,6 +8388,7 @@ routes.stores = async (c, parts = []) => {
           </td>
           <td>${stBadge}</td>
           <td style="white-space:nowrap">
+            <button class="sm ${Number(g.attachment_count) > 0 ? 'badge green' : 'badge amber'}" data-grn-docs="${g.id}" style="cursor:pointer;margin-right:4px" title="${Number(g.attachment_count) > 0 ? 'View or add attached Invoice / PDF / Documents' : 'No Invoice/Document attached yet — click to attach'}">📎 ${Number(g.attachment_count) > 0 ? `${g.attachment_count} Doc${Number(g.attachment_count) === 1 ? '' : 's'}` : '+ Attach Doc'}</button>
             <a class="btn sm" href="/api/stores/grn/${g.id}/print.html" target="_blank" title="Print GRN Document (EC1.ST.FO.2:5:21.12)">🖨</a>
             <a class="btn sm" href="/api/stores/grn/${g.id}/download.pdf" download title="Download GRN PDF">⬇ PDF</a>
           </td>
@@ -8389,6 +8397,10 @@ routes.stores = async (c, parts = []) => {
         : '<div class="card"><p class="muted">No Goods Received Notes match this view.</p></div>';
       if (canRx) qsa('[data-price]', qs('#gtable', body)).forEach((btn) => btn.onclick = () => grnPriceModal(list.find((x) => String(x.id) === btn.dataset.price), load));
       qsa('[data-grn-detail]', qs('#gtable', body)).forEach((btn) => btn.onclick = () => grnApprovalModal(list.find((x) => String(x.id) === btn.dataset.grnDetail), load));
+      qsa('[data-grn-docs]', qs('#gtable', body)).forEach((btn) => btn.onclick = () => {
+        const g = list.find((x) => String(x.id) === btn.dataset.grnDocs);
+        if (g) openGrnDocumentsModal(g.id, g.grn_no || ('GRN-' + g.id), load);
+      });
       qsa('[data-grn-app]', qs('#gtable', body)).forEach((btn) => btn.onclick = () => grnSignModal(list.find((x) => String(x.id) === btn.dataset.grnApp), 'approve', load));
       qsa('[data-grn-rej]', qs('#gtable', body)).forEach((btn) => btn.onclick = () => grnSignModal(list.find((x) => String(x.id) === btn.dataset.grnRej), 'reject', load));
       qsa('[data-grn-issue]', qs('#gtable', body)).forEach((btn) => {
@@ -10230,7 +10242,9 @@ function flowReceiveModal(r, onDone) {
     <div class="row"><div>${field('Supplier', 'supplier', { value: r.bought_from || '' })}</div><div>${field('Invoice no', 'invoice_no')}</div></div>
     ${field('Unit price (Rs) — can be added later', 'unit_price', { type: 'number' })}
     ${r.kind === 'filter' ? field('Part number on the box, if different', 'received_part_no') : ''}
+    ${grnAttachmentBoxHtml('flowrec', { title: '📎 Attach Invoice / Delivery Note / Document (optional at receipt)' })}
     <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Mark received</button></div>`, (mb, close) => {
+    const flowAtt = wireGrnAttachmentBox(mb, 'flowrec');
     qs('#s', mb).onclick = async () => {
       const f = formData(mb);
       if (!(Number(f.qty) > 0)) return toast('How many arrived?', 'err');
@@ -10238,6 +10252,7 @@ function flowReceiveModal(r, onDone) {
         const res = await api('/stores/grn/bulk-receive', { method: 'POST', body: { rows: [{
           mrn_line_id: r.id, qty: f.qty, delivery_date: f.delivery_date || undefined, supplier: f.supplier || undefined,
           invoice_no: f.invoice_no || undefined, unit_price: f.unit_price === '' ? undefined : f.unit_price, received_part_no: f.received_part_no || undefined,
+          attachments: flowAtt.getAttachments(),
         }] } });
         if (!res.received) return toast('Not received: ' + (((res.skipped || [])[0] || {}).reason || 'nothing to receive'), 'err');
         close(); toast('Received ' + num(f.qty)); if (onDone) onDone();
@@ -10372,7 +10387,7 @@ async function receivePriceTab(body) {
         [{ label: 'GRN No' }, { label: 'GRN date' }, { label: 'Received' }, { label: 'MRN' }, { label: 'Vehicle' },
         { label: 'Item', cls: 'desc-col' },
         { label: 'Qty', num: true }, { label: 'Unit price', num: true }, { label: 'Value', num: true },
-        { label: 'Supplier' }, { label: 'Invoice' }, { label: 'Source' }],
+        { label: 'Supplier' }, { label: 'Invoice' }, { label: 'Doc' }, { label: 'Source' }],
         list.map((r) => `<tr>
           ${cell(r.id, 'grn_no', r.grn_no || '', { w: '92px', ph: 'GRN no' })}
           ${cell(r.id, 'grn_date', String(r.grn_date || '').slice(0, 10), { type: 'date', w: '126px' })}
@@ -10386,8 +10401,12 @@ async function receivePriceTab(body) {
           <td class="num muted" data-val="${r.id}">—</td>
           ${cell(r.id, 'supplier', r.supplier || '', { w: '120px' })}
           ${cell(r.id, 'invoice_no', r.invoice_no || '', { w: '104px' })}
+          <td style="white-space:nowrap"><button type="button" class="sm ${Number(r.attachment_count) > 0 ? 'badge green' : 'badge amber'}" data-ws-doc="${r.id}" data-ws-grn="${esc(r.grn_no || ('GRN-' + r.id))}" style="cursor:pointer" title="Attach or view Invoice / PDF">📎 ${Number(r.attachment_count) > 0 ? r.attachment_count : '+ Doc'}</button></td>
           ${cell(r.id, 'purchase_source', r.source || '', { type: 'select', options: SRC_OPTS })}</tr>`),
         { scroll: true }) : '<div class="card"><p class="muted">Everything received has a price. 🎉</p></div>';
+      qsa('[data-ws-doc]', qs('#wsTable', body)).forEach((btn) => {
+        btn.onclick = () => openGrnDocumentsModal(btn.dataset.wsDoc, btn.dataset.wsGrn, load);
+      });
       // live value = qty × the price being typed
       const qtyById = Object.fromEntries(list.map((r) => [String(r.id), Number(r.qty) || 0]));
       qsa('#wsTable input[data-f="unit_price"]', body).forEach((inp) => {
@@ -10740,6 +10759,284 @@ async function compressImageFile(file, maxWidth = 1600, quality = 0.82) {
   });
 }
 
+// Prepare any attachment file (Image, PDF, or Office Document up to 15 MB) for GRN upload.
+function prepareAttachmentFile(file) {
+  return new Promise((resolve, reject) => {
+    if (!file) return reject(new Error('Please select a file'));
+    if (file.size > 15 * 1024 * 1024) {
+      return reject(new Error(`File "${file.name}" exceeds the 15 MB limit`));
+    }
+    if (file.type && file.type.startsWith('image/')) {
+      return compressImageFile(file).then(resolve).catch(reject);
+    }
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      resolve({
+        dataUrl: e.target.result,
+        filename: file.name,
+        mimeType: file.type || 'application/octet-stream',
+        originalSize: file.size,
+        compressedSize: file.size
+      });
+    };
+    reader.onerror = () => reject(new Error('Failed to read document file'));
+    reader.readAsDataURL(file);
+  });
+}
+
+const GRN_DOC_KIND_LABELS = {
+  invoice: 'Tax Invoice / Bill',
+  delivery_note: 'Delivery Note / Challan',
+  po_copy: 'Purchase Order (PO) Copy',
+  delivery_goods: 'Delivered Goods Photo',
+  supporting_doc: 'Supporting Document',
+  damage_in_transit: 'Transit Damage / Defect',
+  nameplate: 'Nameplate / Packaging Label',
+  worn_part: 'Worn / Broken Part',
+  general: 'General Attachment',
+};
+
+function grnAttachmentBoxHtml(prefix = 'gatt', { required = false, showOverride = false, overrideLabel = 'Invoice / document not physically available yet — allow saving without attachment', title = '📎 Attach Supplier Invoice / Delivery Note / Supporting Document (Image or PDF)' } = {}) {
+  return `
+    <div class="grn-att-box" data-att-prefix="${esc(prefix)}" style="background:var(--surface-2, #f8fafc);border:1px dashed var(--border, #cbd5e1);border-radius:6px;padding:10px 12px;margin:10px 0">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px;flex-wrap:wrap">
+        <div style="font-weight:600;font-size:12.5px;color:var(--text)">${title}${required ? ' <span style="color:var(--red, #dc2626)">*</span>' : ''}</div>
+        <span class="muted" style="font-size:11px">Supports PDF, JPG, PNG, WebP, Word/Excel (up to 15 MB)</span>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:6px">
+        <select id="${esc(prefix)}-kind" style="font-size:12px;padding:5px 8px;width:auto;min-width:170px">
+          <option value="invoice">📄 Tax Invoice / Bill</option>
+          <option value="delivery_note">🚚 Delivery Note / Challan</option>
+          <option value="po_copy">📋 Purchase Order (PO) Copy</option>
+          <option value="delivery_goods">📦 Delivered Goods Photo</option>
+          <option value="supporting_doc">📎 Other Supporting Document</option>
+        </select>
+        <input type="text" id="${esc(prefix)}-caption" placeholder="Optional note / invoice ref..." style="font-size:12px;padding:5px 8px;flex:1;min-width:150px" />
+        <label class="btn sm primary" style="cursor:pointer;margin:0;white-space:nowrap">
+          + Choose File(s)
+          <input type="file" id="${esc(prefix)}-file" accept="image/*,application/pdf,.pdf,.doc,.docx,.xls,.xlsx,.csv,.txt" multiple style="display:none" />
+        </label>
+      </div>
+      <div id="${esc(prefix)}-status" class="muted" style="font-size:11.5px"></div>
+      <div id="${esc(prefix)}-list" style="display:flex;flex-direction:column;gap:5px;margin-top:6px"></div>
+      ${showOverride ? `
+        <label style="display:flex;align-items:center;gap:6px;margin-top:8px;font-size:12px;font-weight:500;color:var(--amber-text, #b45309);cursor:pointer">
+          <input type="checkbox" id="${esc(prefix)}-override" style="width:auto;margin:0" />
+          ${esc(overrideLabel)}
+        </label>
+      ` : ''}
+    </div>
+  `;
+}
+
+function wireGrnAttachmentBox(container, prefix = 'gatt') {
+  const queued = [];
+  const fileInp = qs(`#${prefix}-file`, container);
+  const kindSel = qs(`#${prefix}-kind`, container);
+  const capInp = qs(`#${prefix}-caption`, container);
+  const statusEl = qs(`#${prefix}-status`, container);
+  const listEl = qs(`#${prefix}-list`, container);
+  const overrideChk = qs(`#${prefix}-override`, container);
+
+  const renderQueue = () => {
+    if (!listEl) return;
+    if (!queued.length) {
+      listEl.innerHTML = '<div class="muted" style="font-size:11.5px">No new files selected yet.</div>';
+      return;
+    }
+    listEl.innerHTML = queued.map((item, idx) => {
+      const isPdf = (item.mimeType || '').includes('pdf') || (item.filename || '').toLowerCase().endsWith('.pdf');
+      const isImg = (item.mimeType || '').startsWith('image/');
+      const icon = isPdf ? '📄' : (isImg ? '🖼️' : '📎');
+      const kb = Math.max(1, Math.round((item.compressedSize || item.originalSize || 0) / 1024));
+      return `
+        <div style="display:flex;align-items:center;gap:8px;background:var(--card-bg, #fff);border:1px solid var(--border, #e2e8f0);border-radius:4px;padding:5px 8px;font-size:12px">
+          <span>${icon}</span>
+          <b style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:240px">${esc(item.filename)}</b>
+          <span class="badge blue sm">${esc(GRN_DOC_KIND_LABELS[item.kind] || item.kind)}</span>
+          ${item.caption ? `<span class="muted" style="font-size:11px">· ${esc(item.caption)}</span>` : ''}
+          <span class="muted" style="font-size:11px;margin-left:auto">${kb} KB</span>
+          <button type="button" class="sm danger" data-rm-att="${idx}" style="padding:1px 6px">✕</button>
+        </div>
+      `;
+    }).join('');
+    qsa('[data-rm-att]', listEl).forEach((btn) => {
+      btn.onclick = () => {
+        queued.splice(Number(btn.dataset.rmAtt), 1);
+        renderQueue();
+      };
+    });
+  };
+
+  if (fileInp) {
+    fileInp.onchange = async () => {
+      const files = Array.from(fileInp.files || []);
+      if (!files.length) return;
+      const kind = kindSel ? kindSel.value : 'invoice';
+      const caption = capInp ? capInp.value.trim() : '';
+      if (statusEl) statusEl.textContent = 'Preparing selected file(s)...';
+      for (const f of files) {
+        try {
+          const prep = await prepareAttachmentFile(f);
+          queued.push({
+            dataUrl: prep.dataUrl,
+            filename: prep.filename,
+            mimeType: prep.mimeType,
+            originalSize: prep.originalSize,
+            compressedSize: prep.compressedSize,
+            kind,
+            caption
+          });
+        } catch (err) {
+          toast(err.message, 'err');
+        }
+      }
+      if (statusEl) statusEl.textContent = '';
+      fileInp.value = '';
+      if (capInp) capInp.value = '';
+      renderQueue();
+    };
+  }
+
+  renderQueue();
+
+  return {
+    getAttachments: () => queued.slice(),
+    isOverrideChecked: () => !!(overrideChk && overrideChk.checked),
+    clear: () => { queued.length = 0; renderQueue(); }
+  };
+}
+
+function renderGrnAttachmentsListHtml(attachments = [], { canDelete = false } = {}) {
+  if (!attachments || !attachments.length) {
+    return '<div class="muted" style="font-size:12px;padding:8px;border:1px dashed var(--border);border-radius:6px;text-align:center">No invoice or supporting documents attached to this GRN yet.</div>';
+  }
+  return `<div style="display:grid;grid-template-columns:repeat(auto-fill, minmax(250px, 1fr));gap:8px">
+    ${attachments.map((p) => {
+      const isPdf = p.is_pdf || (p.mime_type || '').includes('pdf') || String(p.file_name || '').toLowerCase().endsWith('.pdf');
+      const isImg = p.is_image || (p.mime_type || '').startsWith('image/');
+      const kb = Math.max(1, Math.round((p.file_size || 0) / 1024));
+      const thumbHtml = isImg
+        ? `<div class="grn-att-preview" data-img-url="${esc(p.url)}" data-title="${esc(p.file_name || 'Invoice Image')}" style="cursor:pointer;flex-shrink:0"><img src="${esc(p.url)}" style="width:56px;height:56px;object-fit:cover;border-radius:4px;border:1px solid var(--border)" /></div>`
+        : `<a href="${esc(p.url)}" target="_blank" rel="noopener" style="width:56px;height:56px;display:flex;flex-direction:column;align-items:center;justify-content:center;background:var(--surface-2, #f1f5f9);border:1px solid var(--border);border-radius:4px;text-decoration:none;flex-shrink:0;font-size:20px" title="Open ${esc(p.file_name || 'Document')}">${isPdf ? '📄' : '📎'}<span style="font-size:9px;font-weight:700;color:var(--muted)">${isPdf ? 'PDF' : 'DOC'}</span></a>`;
+      return `
+        <div style="display:flex;gap:10px;padding:8px;border:1px solid var(--border);border-radius:6px;background:var(--card-bg, #fff);align-items:flex-start">
+          ${thumbHtml}
+          <div style="flex:1;min-width:0;font-size:11.5px">
+            <div style="display:flex;align-items:center;gap:4px;flex-wrap:wrap;margin-bottom:2px">
+              <span class="badge ${p.kind === 'invoice' ? 'green' : 'blue'} sm">${esc(GRN_DOC_KIND_LABELS[p.kind] || p.kind || 'Document')}</span>
+              <span class="muted" style="font-size:10px">${kb} KB</span>
+            </div>
+            <div style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(p.file_name || '')}">${esc(p.file_name || 'Attached Document')}</div>
+            ${p.caption ? `<div class="muted" style="font-size:11px;overflow:hidden;text-overflow:ellipsis">${esc(p.caption)}</div>` : ''}
+            <div style="margin-top:4px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+              ${isImg
+                ? `<a href="javascript:void(0)" class="grn-att-preview" data-img-url="${esc(p.url)}" data-title="${esc(p.file_name || 'Invoice Image')}" style="font-size:11px;color:var(--primary);font-weight:600">🔍 View</a>`
+                : `<a href="${esc(p.url)}" target="_blank" rel="noopener" style="font-size:11px;color:var(--primary);font-weight:600">🔍 Open ${isPdf ? 'PDF' : 'File'}</a>`}
+              <a href="${esc(p.url)}${String(p.url || '').includes('?') ? '&' : '?'}download=1" download="${esc(p.file_name || 'document')}" style="font-size:11px;color:var(--muted)">⬇ Download</a>
+              ${canDelete && p.source !== 'mrn_line_invoice' ? `<a href="javascript:void(0)" class="grn-att-del" data-photo-id="${p.id}" style="font-size:11px;color:var(--red, #dc2626)">✕ Delete</a>` : ''}
+            </div>
+          </div>
+        </div>
+      `;
+    }).join('')}
+  </div>`;
+}
+
+function bindGrnAttachmentsListEvents(container, grnId, onRefresh) {
+  qsa('.grn-att-preview', container).forEach((el) => {
+    el.onclick = () => openPhotoLightbox(el.dataset.imgUrl, el.dataset.title || 'Attached Document');
+  });
+  qsa('.grn-att-del', container).forEach((btn) => {
+    btn.onclick = async () => {
+      if (!confirm('Remove this attached document from the GRN?')) return;
+      try {
+        await api(`/stores/grn/${grnId}/photos/${btn.dataset.photoId}`, { method: 'DELETE' });
+        toast('Attachment removed');
+        if (onRefresh) onRefresh();
+      } catch (e) {
+        toast(e.message, 'err');
+      }
+    };
+  });
+}
+
+async function openGrnDocumentsModal(grnId, grnNo = '', onDone = null) {
+  const canEdit = canDo('stores.grn.receive', 'stores.grn.edit', 'stores.grn.approve');
+  const bg = modal(`📎 Invoice & Supporting Documents — ${grnNo || ('GRN #' + grnId)}`, `
+    <div style="font-size:12.5px;color:var(--muted);margin-bottom:8px">
+      Attach and inspect supplier tax invoices, delivery notes, PO copies, or goods photos (Image or PDF) for this Goods Received Note.
+    </div>
+    <div id="grn-docs-existing" style="margin-bottom:12px"><div class="muted">Loading attached documents…</div></div>
+    ${canEdit ? `
+      <div id="grn-docs-upload-area">
+        ${grnAttachmentBoxHtml('gdocmodal', { title: '+ Upload New Invoice / PDF / Supporting Document' })}
+        <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:8px">
+          <button class="primary sm" id="gdoc-upload-save">📤 Upload Selected File(s)</button>
+        </div>
+      </div>
+    ` : ''}
+    <div style="display:flex;justify-content:flex-end;margin-top:12px;border-top:1px solid var(--border);padding-top:10px">
+      <button class="sm" id="gdoc-close">Done</button>
+    </div>
+  `, (mbody, close) => {
+    const existingEl = qs('#grn-docs-existing', mbody);
+    const attCtrl = canEdit ? wireGrnAttachmentBox(mbody, 'gdocmodal') : null;
+
+    const refreshList = async () => {
+      try {
+        const list = await api(`/stores/grn/${grnId}/photos`);
+        existingEl.innerHTML = renderGrnAttachmentsListHtml(list, { canDelete: canEdit });
+        bindGrnAttachmentsListEvents(existingEl, grnId, refreshList);
+      } catch (e) {
+        existingEl.innerHTML = `<div class="err">${esc(e.message)}</div>`;
+      }
+    };
+
+    if (qs('#gdoc-upload-save', mbody)) {
+      qs('#gdoc-upload-save', mbody).onclick = async () => {
+        const files = attCtrl ? attCtrl.getAttachments() : [];
+        if (!files.length) return toast('Please choose at least one file to upload', 'err');
+        const btn = qs('#gdoc-upload-save', mbody);
+        btn.disabled = true;
+        btn.textContent = 'Uploading…';
+        try {
+          for (const f of files) {
+            await api(`/stores/grn/${grnId}/photos`, {
+              method: 'POST',
+              body: {
+                dataUrl: f.dataUrl,
+                filename: f.filename,
+                mimeType: f.mimeType,
+                kind: f.kind || 'invoice',
+                caption: f.caption || ''
+              }
+            });
+          }
+          toast(`Uploaded ${files.length} document(s)`);
+          attCtrl.clear();
+          await refreshList();
+          if (onDone) onDone();
+        } catch (e) {
+          toast(e.message, 'err');
+        } finally {
+          btn.disabled = false;
+          btn.textContent = '📤 Upload Selected File(s)';
+        }
+      };
+    }
+
+    qs('#gdoc-close', mbody).onclick = () => {
+      close();
+      if (onDone) onDone();
+    };
+
+    refreshList();
+  });
+  const box = qs('.modal', bg);
+  if (box) { box.style.width = 'min(740px, 95vw)'; box.style.maxWidth = 'none'; }
+}
+
 function openPhotoLightbox(photoUrl, title = 'Photo Evidence') {
   const bg = document.createElement('div');
   bg.className = 'modal-bg';
@@ -10820,18 +11117,21 @@ function openSideBySidePhotoModal({ mrnLineId = null, grnId = null, description 
         
         ${gId ? `
           <div style="background:var(--table-hover, rgba(0,0,0,0.02));padding:8px 10px;border-radius:6px;margin-bottom:12px;border:1px dashed var(--border)">
-            <div style="font-weight:600;font-size:11.5px;margin-bottom:6px">+ Upload Receipt Evidence Photo</div>
+            <div style="font-weight:600;font-size:11.5px;margin-bottom:6px">+ Upload Invoice / PDF / Receipt Evidence</div>
             <div style="display:flex;gap:6px;margin-bottom:6px;flex-wrap:wrap">
               <select id="rec-kind" style="font-size:11.5px;padding:3px 6px">
+                <option value="invoice">Tax Invoice / Bill (Image/PDF)</option>
+                <option value="delivery_note">Delivery Note / Challan</option>
+                <option value="po_copy">Purchase Order (PO) Copy</option>
                 <option value="delivery_goods">Delivered Goods Condition</option>
                 <option value="damage_in_transit">Transit Damage / Defect</option>
                 <option value="nameplate">Packaging Label / Specs</option>
-                <option value="general">General Evidence</option>
+                <option value="supporting_doc">Other Supporting Document</option>
               </select>
               <input type="text" id="rec-caption" placeholder="Optional notes / caption..." style="font-size:11.5px;flex:1;min-width:120px;padding:3px 6px" />
             </div>
             <div style="display:flex;gap:6px;align-items:center">
-              <input type="file" id="rec-file" accept="image/*" style="font-size:11.5px;flex:1" />
+              <input type="file" id="rec-file" accept="image/*,application/pdf,.pdf,.doc,.docx,.xls,.xlsx" style="font-size:11.5px;flex:1" />
               <button class="sm primary" id="rec-upload-btn" style="white-space:nowrap">Upload</button>
             </div>
             <div id="rec-upload-msg" style="font-size:11px;margin-top:4px"></div>
@@ -10856,6 +11156,7 @@ function openSideBySidePhotoModal({ mrnLineId = null, grnId = null, description 
     };
 
     const kindLabels = {
+      ...GRN_DOC_KIND_LABELS,
       worn_part: 'Worn / Broken Part',
       nameplate: 'Nameplate / Serial',
       delivery_goods: 'Delivered Goods',
@@ -10864,23 +11165,32 @@ function openSideBySidePhotoModal({ mrnLineId = null, grnId = null, description 
     };
 
     function renderPhotoCard(p, isReq) {
+      const isPdf = p.is_pdf || (p.mime_type || '').includes('pdf') || String(p.file_name || '').toLowerCase().endsWith('.pdf');
+      const isImg = p.is_image || (p.mime_type || '').startsWith('image/');
+      const thumbEl = isImg
+        ? `<div style="cursor:pointer;flex-shrink:0" class="photo-thumb-wrap" data-img-url="${esc(p.url)}" title="Click to inspect full image">
+            <img src="${esc(p.url)}" style="width:72px;height:72px;object-fit:cover;border-radius:4px;border:1px solid var(--border)" />
+          </div>`
+        : `<a href="${esc(p.url)}" target="_blank" rel="noopener" style="width:72px;height:72px;display:flex;flex-direction:column;align-items:center;justify-content:center;background:var(--surface-2, #f1f5f9);border:1px solid var(--border);border-radius:4px;text-decoration:none;flex-shrink:0;font-size:24px" title="Open Document">${isPdf ? '📄' : '📎'}<span style="font-size:10px;font-weight:700;color:var(--muted)">${isPdf ? 'PDF' : 'DOC'}</span></a>`;
       return `
         <div style="display:flex;gap:10px;padding:8px;border:1px solid var(--border);border-radius:6px;background:var(--card-bg, #fff);align-items:flex-start">
-          <div style="cursor:pointer;flex-shrink:0" class="photo-thumb-wrap" data-img-url="${esc(p.url)}" title="Click to inspect full image">
-            <img src="${esc(p.url)}" style="width:72px;height:72px;object-fit:cover;border-radius:4px;border:1px solid var(--border)" />
-          </div>
+          ${thumbEl}
           <div style="flex:1;min-width:0;font-size:11.5px">
             <div style="display:flex;align-items:center;gap:6px;margin-bottom:2px">
-              <span class="badge ${p.kind === 'damage_in_transit' ? 'red' : 'blue'} sm">${esc(kindLabels[p.kind] || p.kind)}</span>
-              <span class="muted" style="font-size:10.5px">${Math.round((p.file_size || 0) / 1024)} KB</span>
+              <span class="badge ${p.kind === 'damage_in_transit' ? 'red' : (p.kind === 'invoice' ? 'green' : 'blue')} sm">${esc(kindLabels[p.kind] || p.kind)}</span>
+              <span class="muted" style="font-size:10.5px">${Math.max(1, Math.round((p.file_size || 0) / 1024))} KB</span>
             </div>
-            ${p.caption ? `<div style="font-weight:600;margin-bottom:2px;overflow:hidden;text-overflow:ellipsis">${esc(p.caption)}</div>` : ''}
+            ${p.file_name ? `<div style="font-weight:600;margin-bottom:2px;overflow:hidden;text-overflow:ellipsis">${esc(p.file_name)}</div>` : ''}
+            ${p.caption ? `<div class="muted" style="margin-bottom:2px;overflow:hidden;text-overflow:ellipsis">${esc(p.caption)}</div>` : ''}
             <div class="muted" style="font-size:10.5px">
               By ${esc(p.uploaded_by_name || 'User')} · ${esc(String(p.uploaded_at || '').slice(0, 16).replace('T', ' '))}
             </div>
-            <div style="margin-top:4px;display:flex;gap:6px">
-              <a href="javascript:void(0)" class="photo-thumb-wrap" data-img-url="${esc(p.url)}" style="font-size:11px;color:var(--blue)">🔍 Inspect</a>
-              ${(ME && (ME.is_admin || ME.id === p.uploaded_by || canDo('stores.mrn.edit', 'stores.grn.edit'))) ? `
+            <div style="margin-top:4px;display:flex;gap:8px;align-items:center">
+              ${isImg
+                ? `<a href="javascript:void(0)" class="photo-thumb-wrap" data-img-url="${esc(p.url)}" style="font-size:11px;color:var(--blue)">🔍 Inspect</a>`
+                : `<a href="${esc(p.url)}" target="_blank" rel="noopener" style="font-size:11px;color:var(--blue)">🔍 Open ${isPdf ? 'PDF' : 'File'}</a>`}
+              <a href="${esc(p.url)}${String(p.url || '').includes('?') ? '&' : '?'}download=1" download="${esc(p.file_name || 'document')}" style="font-size:11px;color:var(--muted)">⬇ Download</a>
+              ${(ME && p.source !== 'mrn_line_invoice' && (ME.is_admin || ME.id === p.uploaded_by || canDo('stores.mrn.edit', 'stores.grn.edit'))) ? `
                 <a href="javascript:void(0)" class="photo-del-btn" data-del-id="${p.id}" data-is-req="${isReq ? '1' : '0'}" style="font-size:11px;color:var(--red, #dc2626)">✕ Delete</a>
               ` : ''}
             </div>
@@ -11001,15 +11311,16 @@ function openSideBySidePhotoModal({ mrnLineId = null, grnId = null, description 
         const caption = (qs('#rec-caption', body).value || '').trim();
 
         try {
-          msg.textContent = 'Compressing image...';
-          const compressed = await compressImageFile(file);
-          msg.textContent = 'Uploading (~' + Math.round(compressed.compressedSize / 1024) + ' KB)...';
+          msg.textContent = 'Preparing file...';
+          const prepared = await prepareAttachmentFile(file);
+          msg.textContent = 'Uploading (~' + Math.max(1, Math.round(prepared.compressedSize / 1024)) + ' KB)...';
 
           await api('/stores/grn/' + gId + '/photos', {
             method: 'POST',
             body: {
-              dataUrl: compressed.dataUrl,
-              filename: compressed.filename,
+              dataUrl: prepared.dataUrl,
+              filename: prepared.filename,
+              mimeType: prepared.mimeType,
               kind,
               caption
             }
@@ -12720,7 +13031,7 @@ async function mrnDetail(body, id) {
   });
   const grnRows = d.grns.map((g) => {
     const photoCount = (g.photos && g.photos.length) || 0;
-    const photoBtn = `<button class="sm" data-grn-photo="${g.id}" data-desc="${esc(g.description || '')}" title="Photographic evidence (delivered goods)">📷 ${photoCount > 0 ? photoCount : '+ Photo'}</button> `;
+    const photoBtn = `<button class="sm ${photoCount > 0 ? 'badge green' : 'badge amber'}" data-grn-photo="${g.id}" data-desc="${esc(g.description || '')}" style="cursor:pointer" title="Attached Invoice / PDF / Photographic evidence">📎 ${photoCount > 0 ? photoCount + ' Doc(s)' : '+ Attach Doc'}</button> `;
     return `<tr>
     <td>${esc(g.grn_no || '—')}</td>
     <td style="white-space:nowrap">${g.delivery_date ? esc(String(g.delivery_date).slice(0, 10)) : '<span class="muted">—</span>'}</td>
@@ -13185,8 +13496,10 @@ async function receiveModal(mrn, lineId, desc, remaining, onDone) {
     ${field('GRN No', 'grn_no')}
     ${field('Invoice No', 'invoice_no')}
     ${field('Delivery date', 'delivery_date', { type: 'date' })}
+    ${grnAttachmentBoxHtml('recmodal', { title: '📎 Attach Supplier Invoice / Delivery Note / Document (Image or PDF)' })}
     <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Record receipt</button></div>`,
     (mbody, close) => {
+      const recAtt = wireGrnAttachmentBox(mbody, 'recmodal');
       const srcSel = qs('[name="purchase_source"]', mbody);
       const storeSel = qs('[name="physical_store_id"]', mbody);
       if (srcSel && storeSel) {
@@ -13236,6 +13549,7 @@ async function receiveModal(mrn, lineId, desc, remaining, onDone) {
               unit_price: f.unit_price, purchase_source: f.purchase_source || undefined,
               physical_store_id: f.physical_store_id ? Number(f.physical_store_id) : undefined,
               supplier: f.supplier, grn_no: f.grn_no, invoice_no: f.invoice_no, delivery_date: f.delivery_date,
+              attachments: recAtt.getAttachments(),
             },
             idempotencyKey: 'grn_rec_' + mrn.id + '_' + lineId + '_' + Date.now(),
           });
@@ -13247,7 +13561,12 @@ async function receiveModal(mrn, lineId, desc, remaining, onDone) {
 }
 
 // Add / edit the price (and supplier/invoice) on a received record (GRN).
-function grnPriceModal(g, onDone) {
+async function grnPriceModal(g, onDone) {
+  let existingDocs = [];
+  try {
+    existingDocs = await api('/stores/grn/' + g.id + '/photos');
+  } catch (e) {}
+
   modal((g.unit_price == null ? 'Add price — GRN ' : 'Edit price — GRN ') + (g.grn_no || ''), `
     <p class="muted">${esc(g.description || '')} — qty ${num(g.qty)}</p>
     ${field('Unit price (Rs) *', 'unit_price', { type: 'number', value: g.unit_price == null ? '' : g.unit_price })}
@@ -13255,26 +13574,49 @@ function grnPriceModal(g, onDone) {
     ${field('Invoice No', 'invoice_no', { value: g.invoice_no || '' })}
     ${field('Invoice date', 'invoice_date', { type: 'date', value: (g.invoice_date || '').slice(0, 10) })}
     ${field('Purchase source', 'purchase_source', { type: 'select', options: SOURCE_OPTS, value: g.purchase_source || '' })}
-    <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Save price</button></div>`,
+    <div style="margin-top:10px">
+      <div style="font-weight:600;font-size:12.5px;margin-bottom:6px">Attached Supplier Invoice / Documents (${existingDocs.length})</div>
+      <div id="gprice-existing-docs">${renderGrnAttachmentsListHtml(existingDocs, { canDelete: true })}</div>
+      ${grnAttachmentBoxHtml('gprice', {
+        required: existingDocs.length === 0,
+        showOverride: existingDocs.length === 0,
+        overrideLabel: 'Invoice document not physically available yet — allow saving provisional price without attachment',
+        title: existingDocs.length ? '+ Attach Additional Invoice / Document' : '📎 Attach Supplier Invoice / Supporting Document (Image or PDF)'
+      })}
+    </div>
+    <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Save price &amp; document</button></div>`,
     (mb, close) => {
+      const attCtrl = wireGrnAttachmentBox(mb, 'gprice');
+      bindGrnAttachmentsListEvents(qs('#gprice-existing-docs', mb), g.id, async () => {
+        existingDocs = await api('/stores/grn/' + g.id + '/photos').catch(() => []);
+        qs('#gprice-existing-docs', mb).innerHTML = renderGrnAttachmentsListHtml(existingDocs, { canDelete: true });
+      });
+
       qs('#s', mb).onclick = async () => {
         const f = formData(mb);
         if (f.unit_price === '' || Number(f.unit_price) < 0 || isNaN(Number(f.unit_price))) return toast('Enter a valid unit price', 'err');
+        const newFiles = attCtrl.getAttachments();
+        const allowWithoutDoc = attCtrl.isOverrideChecked();
+        if (!existingDocs.length && !newFiles.length && !allowWithoutDoc) {
+          return toast('Please attach the Supplier Invoice / supporting document (Image or PDF), or tick the provisional override checkbox.', 'err');
+        }
         try {
           await api('/stores/grn/' + g.id, {
             method: 'PATCH', body: {
               unit_price: f.unit_price, supplier: f.supplier, invoice_no: f.invoice_no,
               invoice_date: f.invoice_date, purchase_source: f.purchase_source || undefined,
+              attachments: newFiles,
+              allow_without_doc: allowWithoutDoc,
             }
           });
-          toast('Price saved'); close(); onDone();
+          toast('Price saved'); close(); if (onDone) onDone();
         } catch (e) { toast(e.message, 'err'); }
       };
     });
 }
 
 // ===== GRN Approval & Sign Modals (EC1.ST.FO.2:5:21.12) ====================
-function grnSignModal(g, action, onDone) {
+async function grnSignModal(g, action, onDone) {
   const meta = {
     approve: { title: 'Approve GRN', verb: 'approve', btn: 'Sign & Approve', role: 'Store Manager / In-Charge' },
     reject: { title: 'Reject GRN', verb: 'reject', btn: 'Reject', role: 'Store Manager / In-Charge' },
@@ -13285,15 +13627,40 @@ function grnSignModal(g, action, onDone) {
   const id = g.id || g.voucher_id;
   const endpoint = g.voucher_id ? `/stores/grn-vouchers/${g.voucher_id}/${action}` : `/stores/grn/${id}/${action}`;
 
+  let existingDocs = [];
+  if (action === 'approve' && g.id) {
+    try {
+      existingDocs = await api('/stores/grn/' + g.id + '/photos');
+    } catch (e) {}
+  } else if (action === 'approve' && Array.isArray(g.attachments)) {
+    existingDocs = g.attachments;
+  }
+
   modal(meta.title + ' — ' + grnNo, `
     <p class="muted">Signing as <b>${who}</b> <span class="badge blue">${esc(ME.roles.join(', '))}</span> · Role: <b>${esc(meta.role)}</b></p>
     ${action === 'reject'
       ? field('Reason for rejection (required) *', 'reason')
-      : `<label style="display:flex;gap:8px;align-items:flex-start;font-weight:400"><input type="checkbox" id="confirm" style="width:auto;margin-top:3px"> I, ${who}, ${meta.verb} this Goods Received Note. This certifies delivery verification and records my electronic signature.</label>
+      : `
+         <div style="margin-bottom:10px">
+           <div style="font-weight:600;font-size:12.5px;margin-bottom:4px">Attached Supplier Invoice &amp; Supporting Documents (${existingDocs.length})</div>
+           ${existingDocs.length
+             ? renderGrnAttachmentsListHtml(existingDocs, { canDelete: false })
+             : `<div style="background:rgba(245,158,11,0.1);border:1px solid #f59e0b;color:#b45309;padding:8px 10px;border-radius:6px;font-size:12px;margin-bottom:6px">
+                  ⚠️ <b>No Supplier Invoice / Delivery Note attached yet.</b> Please attach the invoice or supporting document below before approving this GRN.
+                </div>`}
+           ${grnAttachmentBoxHtml('gsign', {
+             required: existingDocs.length === 0,
+             showOverride: existingDocs.length === 0,
+             overrideLabel: 'Approve without attached invoice/document (document will be uploaded later)',
+             title: existingDocs.length ? '+ Attach Additional Document (Optional)' : '📎 Attach Supplier Invoice / Delivery Note / Document (Image or PDF)'
+           })}
+         </div>
+         <label style="display:flex;gap:8px;align-items:flex-start;font-weight:400"><input type="checkbox" id="confirm" style="width:auto;margin-top:3px"> I, ${who}, ${meta.verb} this Goods Received Note. This certifies delivery verification and records my electronic signature.</label>
          <label>Electronic Signature</label>${signaturePadHtml('signpad')}
          ${field('Remark (optional)', 'reason')}`}
     <div style="margin-top:12px;text-align:right"><button class="primary" id="s">${meta.btn}</button></div>`, (body, close) => {
     let pad = null;
+    const signAtt = action === 'approve' ? wireGrnAttachmentBox(body, 'gsign') : null;
     if (withSig) {
       pad = wireSignaturePad(body, 'signpad', null);
       (async () => { try { const s = (await api('/auth/signature')).signature; if (s) pad.load(s); } catch (e) {} })();
@@ -13302,9 +13669,22 @@ function grnSignModal(g, action, onDone) {
       const f = formData(body);
       if (action !== 'reject' && !qs('#confirm', body).checked) return toast('Tick the confirmation to e-sign', 'err');
       if (action === 'reject' && !String(f.reason || '').trim()) return toast('A reason is required to reject', 'err');
+      const newFiles = signAtt ? signAtt.getAttachments() : [];
+      const allowWithoutDoc = signAtt ? signAtt.isOverrideChecked() : false;
+      if (action === 'approve' && !existingDocs.length && !newFiles.length && !allowWithoutDoc) {
+        return toast('Please attach the Supplier Invoice / supporting document (Image or PDF) before approving, or tick the override checkbox.', 'err');
+      }
       const signature = (withSig && pad && !pad.isEmpty()) ? pad.dataURL() : undefined;
       try {
-        await api(endpoint, { method: 'POST', body: { reason: f.reason, signature } });
+        await api(endpoint, {
+          method: 'POST',
+          body: {
+            reason: f.reason,
+            signature,
+            attachments: newFiles,
+            allow_without_doc: allowWithoutDoc || existingDocs.length > 0,
+          }
+        });
         toast('GRN ' + (action === 'reject' ? 'rejected' : 'approved · e-signed'));
         close(); if (onDone) onDone();
       } catch (e) { toast(e.message, 'err'); }
@@ -13322,6 +13702,8 @@ async function grnApprovalModal(g, onDone) {
   const v = d.voucher || g;
   const lines = d.lines || [d.grn || g];
   const approvals = d.approvals || [];
+  const attachments = d.attachments || d.photos || [];
+  const primaryGrnId = (d.grn && d.grn.id) || (lines[0] && lines[0].id) || g.id;
   const status = v.status || g.grn_status || g.status || 'pending_approval';
 
   const badge = {
@@ -13332,6 +13714,7 @@ async function grnApprovalModal(g, onDone) {
 
   const canApprove = canDo('stores.grn.approve') && status === 'pending_approval';
   const canReject = canDo('stores.grn.reject') && status === 'pending_approval';
+  const canUploadDoc = canDo('stores.grn.receive', 'stores.grn.edit', 'stores.grn.approve');
   const sig = (name, at) => name ? `${esc(name)} <span class="muted">· ${esc((at || '').slice(0, 16).replace('T', ' '))}</span>` : '<span class="muted">pending</span>';
 
   const rows = lines.map((l, i) => `<tr>
@@ -13365,6 +13748,19 @@ async function grnApprovalModal(g, onDone) {
       ${v.rejection_reason ? `<p class="err" style="margin:8px 0 0;font-size:12.5px"><b>Rejection Reason:</b> ${esc(v.rejection_reason)}</p>` : ''}
       ${approvals.length ? `<div style="margin-top:10px;border-top:1px solid var(--border);padding-top:6px">${approvals.map((a) => `<div class="cost-line" style="font-size:12px"><span>${a.decision === 'rejected' ? '✕' : '✓'} ${esc(a.stage)} — <b>${esc(a.signed_name || '')}</b> <span class="muted">(${esc(a.role || '')})</span>${a.reason ? ' · ' + esc(a.reason) : ''}</span><span class="muted">${esc((a.created_at || '').slice(0, 16).replace('T', ' '))}</span></div>`).join('')}</div>` : ''}
     </div>
+    <div class="card" style="margin-bottom:12px">
+      <div class="toolbar" style="margin:0 0 8px">
+        <h3 style="margin:0">📎 Attached Supplier Invoices &amp; Supporting Documents (<span id="gdetail-att-count">${attachments.length}</span>)</h3>
+        <div class="spacer"></div>
+        ${canUploadDoc && primaryGrnId ? '<button class="sm primary" id="gdetail-manage-docs">+ Upload / Manage Documents</button>' : ''}
+      </div>
+      ${!attachments.length && status === 'pending_approval' ? `
+        <div style="background:rgba(245,158,11,0.1);border:1px solid #f59e0b;color:#b45309;padding:8px 10px;border-radius:6px;font-size:12px;margin-bottom:8px">
+          ⚠️ <b>No Supplier Invoice / Delivery Note attached yet.</b> Attach the invoice (Image or PDF) before approving this GRN.
+        </div>
+      ` : ''}
+      <div id="gdetail-att-list">${renderGrnAttachmentsListHtml(attachments, { canDelete: canUploadDoc })}</div>
+    </div>
     <div class="card">
       <div class="toolbar" style="margin:0 0 6px">
         <h3 style="margin:0">Delivery & Line Items (${lines.length})</h3>
@@ -13375,8 +13771,21 @@ async function grnApprovalModal(g, onDone) {
       <p class="muted" style="margin:0 0 8px;font-size:12.5px">Supplier: <b>${esc(v.supplier || '—')}</b> · Delivery Date: <b>${esc(String(v.received_date || v.delivery_date || '').slice(0, 10))}</b> · Invoice: <b>${esc(v.invoice_no || '—')}</b>${v.po_no ? ` · PO: <b>${esc(v.po_no)}</b>` : ''}</p>
       ${tableWrap([{ label: '#', num: true }, { label: 'Item description' }, { label: 'Qty', num: true }, { label: 'Unit price (Rs)', num: true }, { label: 'Total value', num: true }, { label: 'MRN' }], [rows.join('')], { scroll: true })}
     </div>`, (mbody, close) => {
-    if (qs('#gappbtn', mbody)) qs('#gappbtn', mbody).onclick = () => { close(); grnSignModal(g, 'approve', () => { if (onDone) onDone(); grnApprovalModal(g, onDone); }); };
-    if (qs('#grejbtn', mbody)) qs('#grejbtn', mbody).onclick = () => { close(); grnSignModal(g, 'reject', () => { if (onDone) onDone(); grnApprovalModal(g, onDone); }); };
+    bindGrnAttachmentsListEvents(qs('#gdetail-att-list', mbody), primaryGrnId, () => {
+      close();
+      grnApprovalModal(g, onDone);
+    });
+    if (qs('#gdetail-manage-docs', mbody)) {
+      qs('#gdetail-manage-docs', mbody).onclick = () => {
+        close();
+        openGrnDocumentsModal(primaryGrnId, v.grn_no || ('GRN-' + v.id), () => {
+          if (onDone) onDone();
+          grnApprovalModal(g, onDone);
+        });
+      };
+    }
+    if (qs('#gappbtn', mbody)) qs('#gappbtn', mbody).onclick = () => { close(); grnSignModal({ ...g, id: primaryGrnId, voucher_id: v.id, attachments }, 'approve', () => { if (onDone) onDone(); grnApprovalModal(g, onDone); }); };
+    if (qs('#grejbtn', mbody)) qs('#grejbtn', mbody).onclick = () => { close(); grnSignModal({ ...g, id: primaryGrnId, voucher_id: v.id, attachments }, 'reject', () => { if (onDone) onDone(); grnApprovalModal(g, onDone); }); };
   });
   const box = qs('.modal', bg);
   if (box) { box.style.width = 'min(900px, 96vw)'; box.style.maxWidth = 'none'; }
