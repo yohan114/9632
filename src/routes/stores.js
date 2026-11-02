@@ -805,10 +805,13 @@ router.get('/flow/export.xlsx', asyncHandler(async (req, res) => {
       { header: 'Vehicle', key: 'vehicle', width: 16 }, { header: 'Job No', key: 'job_no', width: 16 },
       { header: 'Item', key: 'description', width: 40 }, { header: 'Kind', key: 'kind', width: 10 },
       { header: 'Qty', key: 'qty', width: 8 }, { header: 'Received', key: 'received', width: 10 },
+      { header: 'Received Date', key: 'last_received', width: 14 },
+      { header: 'Delay / Wait (Days)', key: 'delay_label', width: 18 },
       { header: 'Issued', key: 'issued', width: 9 }, { header: 'Awaiting price', key: 'unpriced', width: 13 },
       { header: 'Value (Rs)', key: 'value', width: 13 }, { header: 'Step', key: 'step_label', width: 16 },
     ],
     rows: rows.map((r) => ({ ...r, vehicle: r.asset_reg || r.asset_code || '', req_date: String(r.req_date || '').slice(0, 10),
+      delay_label: r.delay_days != null ? `${r.delay_days}d (Received)` : (r.waiting_days != null ? `Waiting ${r.waiting_days}d` : ''),
       step_label: STEP_LABEL[r.step] || r.step })),
   }]);
 }));

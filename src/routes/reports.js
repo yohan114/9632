@@ -1895,3 +1895,50 @@ router.put('/daily/pending-price/notes/:grnId', requireAuth,
            updated_at = datetime('now'), updated_by = excluded.updated_by`, id, remarks, req.user.id);
     res.json({ ok: true });
   }));
+
+// ---------------------------------------------------------------------------
+// Request Items Delay & Lead-Time Report (Request Date vs. Received Date)
+// ---------------------------------------------------------------------------
+const delayReport = require('../lib/request_delay_report');
+
+function mayReadDelayReport(req, res) {
+  const permissions = require('../lib/permissions');
+  if (req.user && req.user.roles && req.user.roles.includes('admin')) return true;
+  if (
+    permissions.meets(permissions.effectiveLevel(req.user, 'reports'), 'view') ||
+    permissions.meets(permissions.effectiveLevel(req.user, 'stores'), 'view') ||
+    permissions.meets(permissions.effectiveLevel(req.user, 'purchasing'), 'view')
+  ) {
+    return true;
+  }
+  res.status(403).json({ error: 'Your account has no view access to reports or stores' });
+  return false;
+}
+
+router.get('/request-delays', requireAuth, asyncHandler((req, res) => {
+  if (!mayReadDelayReport(req, res)) return;
+  const ws = reportWs(req);
+  const data = delayReport.buildRequestDelayReport(req.query || {}, { ws });
+  res.json(data);
+}));
+
+router.get('/request-delays/export.xlsx', requireAuth, asyncHandler(async (req, res) => {
+  if (!mayReadDelayReport(req, res)) return;
+  const ws = reportWs(req);
+  const data = delayReport.buildRequestDelayReport({ ...(req.query || {}), limit: 10000 }, { ws, includeAllRows: true });
+  const wb = delayReport.buildRequestDelayWorkbook(data, wsTitle(ws));
+  const today = new Date().toISOString().slice(0, 10);
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', `attachment; filename="Request-Items-Delay-Report${wsFile(ws)}-${today}.xlsx"`);
+  await wb.xlsx.write(res);
+  res.end();
+}));
+
+router.get('/request-delays/print.html', requireAuth, asyncHandler((req, res) => {
+  if (!mayReadDelayReport(req, res)) return;
+  const ws = reportWs(req);
+  const data = delayReport.buildRequestDelayReport({ ...(req.query || {}), limit: 2000 }, { ws });
+  const html = delayReport.renderRequestDelayPrintHtml(data, wsTitle(ws), req.query || {});
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  res.send(html);
+}));
