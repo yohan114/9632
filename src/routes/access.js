@@ -23,6 +23,7 @@ const permissions = require('../lib/permissions');
 const capabilities = require('../lib/capabilities');
 const rules = require('../lib/access_rules');
 const audit = require('../lib/audit');
+const storeLocs = require('../lib/store_locations');
 
 const router = express.Router();
 
@@ -564,6 +565,19 @@ router.get('/people', requireCap('access.manage'), asyncHandler((_req, res) => {
     const capOverrides = all('SELECT capability, granted FROM user_capabilities WHERE user_id = ?', u.id);
     const overridesCount = permOverrides.length + capOverrides.length;
 
+    let primaryStoreId = null;
+    let primaryStoreName = null;
+    try {
+      const uStores = storeLocs.getUserStoreLocations(u.id) || [];
+      if (uStores.length > 0) {
+        primaryStoreId = uStores[0].store_location_id;
+        primaryStoreName = uStores[0].store_name;
+      } else if (u.home_workshop_id) {
+        const matched = (storeLocs.listStoreLocations() || []).find((s) => s.workshop_id === u.home_workshop_id);
+        if (matched) { primaryStoreId = matched.id; primaryStoreName = matched.name; }
+      }
+    } catch (_) {}
+
     return {
       id: u.id,
       username: u.username,
@@ -571,6 +585,8 @@ router.get('/people', requireCap('access.manage'), asyncHandler((_req, res) => {
       active: !!u.active,
       home_workshop_id: u.home_workshop_id,
       home_workshop_name: u.home_workshop_name,
+      primary_store_id: primaryStoreId,
+      primary_store_name: primaryStoreName,
       approval_limit: u.approval_limit,
       access_until: u.access_until,
       roles,
@@ -595,6 +611,20 @@ router.get('/people/:id', requireCap('access.manage'), asyncHandler((req, res) =
      WHERE u.id = ?
   `, userId);
   if (!u) return res.status(404).json({ error: 'User not found' });
+
+  let uStores = [];
+  let primaryStoreId = null;
+  let primaryStoreName = null;
+  try {
+    uStores = storeLocs.getUserStoreLocations(userId) || [];
+    if (uStores.length > 0) {
+      primaryStoreId = uStores[0].store_location_id;
+      primaryStoreName = uStores[0].store_name;
+    } else if (u.home_workshop_id) {
+      const matched = (storeLocs.listStoreLocations() || []).find((s) => s.workshop_id === u.home_workshop_id);
+      if (matched) { primaryStoreId = matched.id; primaryStoreName = matched.name; }
+    }
+  } catch (_) {}
 
   const roles = all(`
     SELECT r.id, r.name, r.label
@@ -663,6 +693,9 @@ router.get('/people/:id', requireCap('access.manage'), asyncHandler((req, res) =
       active: !!u.active,
       home_workshop_id: u.home_workshop_id,
       home_workshop_name: u.home_workshop_name,
+      primary_store_id: primaryStoreId,
+      primary_store_name: primaryStoreName,
+      store_locations: uStores,
       approval_limit: u.approval_limit,
       access_until: u.access_until,
       roles,
@@ -737,10 +770,21 @@ router.post('/people/:id/save', requireCap('access.manage'), asyncHandler((req, 
       const until = b.access_until === '' || b.access_until === null ? null : String(b.access_until).trim();
       sets.push('access_until = ?'); params.push(until || null);
     }
-    if (b.home_workshop_id !== undefined || b.workshop_id !== undefined) {
-      const val = b.home_workshop_id !== undefined ? b.home_workshop_id : b.workshop_id;
-      const wsId = val ? toInt(val) : null;
-      sets.push('workshop_id = ?'); params.push(wsId);
+    if (b.store_location_id !== undefined || b.primary_store_id !== undefined || b.home_workshop_id !== undefined || b.workshop_id !== undefined) {
+      const storeId = b.store_location_id !== undefined ? b.store_location_id : b.primary_store_id;
+      if (storeId) {
+        const sid = toInt(storeId);
+        try {
+          storeLocs.setUserStoreLocationAccess(userId, sid, { can_view: 1, can_receive: 1, can_issue: 1, can_count: 1, can_request: 1, can_dispatch: 1 }, req.user);
+        } catch (_) {}
+        const st = storeLocs.getStoreLocationById(sid);
+        const wsId = st && st.workshop_id ? st.workshop_id : 1;
+        sets.push('workshop_id = ?'); params.push(wsId);
+      } else {
+        const val = b.home_workshop_id !== undefined ? b.home_workshop_id : b.workshop_id;
+        const wsId = val ? toInt(val) : 1;
+        sets.push('workshop_id = ?'); params.push(wsId);
+      }
     }
     if (sets.length > 0) {
       run(`UPDATE users SET ${sets.join(', ')} WHERE id = ?`, ...params, userId);

@@ -141,15 +141,21 @@ setInterval(() => {
 // everyone who opened the list.
 const esc = (v) => String(v == null ? '' : v).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const money = (n) => 'Rs ' + (Number(n) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const num = (n) => (Number(n) || 0).toLocaleString('en-US');
 // Sri Lankan Standard Time (SLST: Asia/Colombo, UTC+05:30)
 const SL_TZ = 'Asia/Colombo';
 
 /**
- * Safely parse any date/time string from server/DB as a JS Date object.
+ * Safely parse any date/time string or Date from server/DB as a JS Date object.
  * SQLite timestamps like "YYYY-MM-DD HH:MM:SS" without TZ are stored in UTC.
  */
 function parseServerDate(s) {
   if (!s) return null;
+  if (s instanceof Date) return Number.isNaN(s.getTime()) ? null : s;
+  if (typeof s === 'number') {
+    const dn = new Date(s);
+    return Number.isNaN(dn.getTime()) ? null : dn;
+  }
   const str = String(s).trim();
   if (!str) return null;
   if (/^\d{4}-\d{2}-\d{2}$/.test(str)) {
@@ -158,7 +164,9 @@ function parseServerDate(s) {
   let iso = str.replace(' ', 'T');
   if (!/[zZ]|[+-]\d\d:?\d\d$/.test(iso)) iso += 'Z';
   const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? null : d;
+  if (!Number.isNaN(d.getTime())) return d;
+  const fallback = new Date(str);
+  return Number.isNaN(fallback.getTime()) ? null : fallback;
 }
 
 /**
@@ -1031,7 +1039,6 @@ const NAV = [
   ['tbrequests', '🛞', 'Tyre & Battery Requests'],
   ['tyrebattery', '🛞', 'Tyre & Battery'],
   ['reports', '📈', 'Reports'],
-  ['workshops', '🏭', 'Workshops', 'workshops'],
   ['access', '🔐', 'Access Control', 'admin'],
   ['auditlogs', '🛡️', 'User Activity Logs', 'audit_admin'],
 ];
@@ -1052,7 +1059,6 @@ const NAV_MODULE = {
 function navVisible(n) {
   if (n[3] === 'audit_admin') return !!(ME && ME.roles && ME.roles.includes('admin'));
   if (n[3] === 'admin') return canDo('access.manage', 'users.manage');
-  if (n[3] === 'workshops') return canDo('workshops.manage', 'mechanics.move');
   if (n[0] === 'dashboard') return true;
   if (n[0] === 'mechanics-kpi') return canView('dailywork') || canView('labour') || canView('reports');
   // Job Cards holds the job requests too (its Requests tab).
@@ -1069,7 +1075,7 @@ const NAV_GROUP = {
   purchasing: 'Procurement', tbrequests: 'Procurement',
   assets: 'Fleet', vehicledocuments: 'Fleet', serviceplan: 'Fleet',
   reports: 'Analysis', attention: 'Analysis', progress: 'Analysis', teardown: 'Analysis', tyrebattery: 'Analysis', aliases: 'Analysis', projects: 'Analysis', labour: 'Analysis',
-  workshops: 'Admin', access: 'Admin', auditlogs: 'Admin',
+  access: 'Admin', auditlogs: 'Admin',
 };
 
 async function renderStandInBanner() {
@@ -1295,6 +1301,82 @@ function showIdleLockScreen() {
   };
 }
 
+async function openStoreLocationSwitcherModal() {
+  modal('Active Store & Site Location Context', '<div class="muted" style="padding:20px">Loading store locations…</div>', async (mBody, close) => {
+    try {
+      const stores = await api('/store-locations?active_only=true');
+      const activeName = (ME && ME.storeName) || (ME && ME.primaryStore && ME.primaryStore.store_name) || 'Central Main Stores';
+      const myStores = (ME && ME.storeLocations) || [];
+      const isAdminUser = isAdmin();
+
+      const mainStores = stores.filter((s) => s.store_type === 'MAIN_STORE');
+      const mainWs = stores.filter((s) => s.store_type === 'MAIN_WORKSHOP_STORE');
+      const siteStores = stores.filter((s) => s.store_type === 'SITE_STORE');
+
+      const renderStoreRow = (s) => {
+        const isActive = (ME && ME.storeLocationId == s.id) || (s.name === activeName);
+        const myGrant = myStores.find((ms) => ms.store_location_id == s.id);
+        const hasAccess = isAdminUser || !!myGrant;
+        const icon = s.store_type === 'MAIN_STORE' ? '🏛️' : (s.store_type === 'MAIN_WORKSHOP_STORE' ? '🔧' : '🏗️');
+        return `
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 12px;border:1px solid ${isActive ? 'var(--primary,#0066ff)' : 'var(--border,#e2e8f0)'};border-radius:8px;background:${isActive ? 'rgba(0,102,255,0.06)' : 'var(--surface,#fff)'};margin-bottom:6px">
+            <div style="display:flex;align-items:center;gap:10px;min-width:0">
+              <span style="font-size:18px">${icon}</span>
+              <div style="min-width:0">
+                <div style="font-weight:600;font-size:13px;display:flex;align-items:center;gap:6px">
+                  <span>${esc(s.name)}</span>
+                  <span class="code" style="font-size:10px">${esc(s.code)}</span>
+                  ${isActive ? '<span class="badge blue sm" style="font-size:10px">Active</span>' : ''}
+                </div>
+                <div class="muted" style="font-size:11px">${esc(s.notes || (s.parent_store_name ? `Replenished via ${s.parent_store_name}` : 'Main Inventory Depot'))}</div>
+              </div>
+            </div>
+            <div style="display:flex;align-items:center;gap:6px;flex-shrink:0">
+              <a href="#/stores?tab=locations&id=${s.id}" class="btn sm" onclick="${close}">Inspect</a>
+              ${canView('stores') ? `<a href="#/stores?tab=onhand&physical_store_id=${s.id}" class="btn sm" onclick="${close}">Stock</a>` : ''}
+              ${hasAccess && !isActive ? `<button class="btn sm primary" data-switch-store="${s.id}" data-store-name="${esc(s.name)}">Switch Context</button>` : ''}
+            </div>
+          </div>
+        `;
+      };
+
+      mBody.innerHTML = `
+        <div style="font-size:13px">
+          <div style="display:flex;align-items:center;gap:8px;background:var(--subtle,#f8fafc);border:1px solid var(--border,#e2e8f0);padding:10px 12px;border-radius:8px;margin-bottom:12px">
+            <span style="font-size:20px">📍</span>
+            <div>
+              <div style="font-weight:700">Currently Operating As: <span style="color:var(--primary,#0066ff)">${esc(activeName)}</span></div>
+              <div class="muted" style="font-size:11px">User: <b>${esc(ME.fullName || ME.username)}</b> · Roles: <b>${esc(ME.roles.join(', '))}</b></div>
+            </div>
+          </div>
+
+          <div style="max-height:400px;overflow-y:auto;padding-right:4px">
+            ${mainStores.length ? `<div style="font-size:11px;font-weight:700;color:var(--text-muted,#64748b);text-transform:uppercase;margin:6px 0">Central Main Stores</div>${mainStores.map(renderStoreRow).join('')}` : ''}
+            ${mainWs.length ? `<div style="font-size:11px;font-weight:700;color:var(--text-muted,#64748b);text-transform:uppercase;margin:10px 0 6px">Central Main Workshop Stores</div>${mainWs.map(renderStoreRow).join('')}` : ''}
+            ${siteStores.length ? `<div style="font-size:11px;font-weight:700;color:var(--text-muted,#64748b);text-transform:uppercase;margin:10px 0 6px">Remote Project Site Stores</div>${siteStores.map(renderStoreRow).join('')}` : ''}
+          </div>
+        </div>
+      `;
+
+      qsa('[data-switch-store]', mBody).forEach((btn) => {
+        btn.onclick = () => {
+          const sid = Number(btn.dataset.switchStore);
+          const sname = btn.dataset.storeName;
+          ME.storeLocationId = sid;
+          ME.storeName = sname;
+          const topbarBadgeText = qs('#topbar_site_name');
+          if (topbarBadgeText) topbarBadgeText.textContent = sname;
+          toast(`Active store context switched to ${sname}`);
+          close();
+          render();
+        };
+      });
+    } catch (err) {
+      mBody.innerHTML = `<div class="card err">${esc(err.message)}</div>`;
+    }
+  });
+}
+
 function renderShell() {
   const route = (location.hash.replace('#/', '').split('?')[0].split('/')[0]) || 'dashboard';
   const link = (n, i) => `<a href="${n[4] || '#/' + n[0]}" class="${!n[4] && route === n[0] ? 'active' : ''}"><span class="ico">${n[1]}</span>${n[2]}</a>`;
@@ -1306,6 +1388,11 @@ function renderShell() {
 
   const initials = (ME.fullName || ME.username || 'AD').split(' ').map((p) => p[0]).slice(0, 2).join('').toUpperCase();
   const roleDisplay = (ME.roles && ME.roles[0]) ? ME.roles[0].replace(/_/g, ' ') : 'User';
+  const activeLocationLabel = (ME && ME.storeName)
+    || (ME && ME.primaryStore && ME.primaryStore.store_name)
+    || (ME && ME.storeLocations && ME.storeLocations.length && ME.storeLocations[0].store_name)
+    || (ME && ME.workshop && ME.workshop.name)
+    || 'Central Main Stores';
 
   qs('#app').innerHTML = `
     <div class="topbar">
@@ -1314,13 +1401,13 @@ function renderShell() {
         <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="color:var(--primary,#0066ff);margin-right:6px"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
         Workshop<span>One</span>
       </div>
-      <div class="topbar-site-badge" id="topbar_site_badge" title="Active Workshop Location">
+      <div class="topbar-site-badge" id="topbar_site_badge" title="Active Store / Site Location — Click to view or switch" style="cursor:pointer">
         <span class="live-dot">●</span>
-        <span>Central Workshop</span> ▾
+        <span id="topbar_site_name">${esc(activeLocationLabel)}</span> ▾
       </div>
-      <div class="topbar-site-badge" id="topbar_sl_clock" title="Sri Lanka Standard Time (Asia/Colombo · UTC+05:30)" style="margin-left:4px;display:inline-flex;align-items:center;gap:5px;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.16);padding:3px 9px;border-radius:6px">
+      <div class="topbar-site-badge" id="topbar_sl_clock" title="Sri Lanka Standard Time (Asia/Colombo · UTC+05:30)" style="margin-left:4px;display:inline-flex;align-items:center;gap:5px;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.16);padding:3px 10px;border-radius:16px;white-space:nowrap;flex-shrink:0">
         <span style="font-size:12px">🇱🇰</span>
-        <span id="live_sl_clock" style="font-weight:700;font-size:11.5px;color:var(--text);letter-spacing:0.2px">${slDateTime(new Date(), { timeOnly: true })} SLST</span>
+        <span id="live_sl_clock" style="font-weight:700;font-size:11.5px;color:#e2e8f0;letter-spacing:0.2px">${slNowTime()} SLST</span>
       </div>
       <div class="topbar-search-wrap">
         <span class="topbar-search-icon">🔍</span>
@@ -1364,8 +1451,15 @@ function renderShell() {
   if (!window._slClockInterval) {
     window._slClockInterval = setInterval(() => {
       const el = document.getElementById('live_sl_clock');
-      if (el) el.textContent = `${slDateTime(new Date(), { timeOnly: true })} SLST`;
+      if (el) el.textContent = `${slNowTime()} SLST`;
     }, 10000);
+  }
+
+  const topbarSiteBadge = qs('#topbar_site_badge');
+  if (topbarSiteBadge) {
+    topbarSiteBadge.onclick = () => {
+      openStoreLocationSwitcherModal();
+    };
   }
 
   const pop = qs('#user_popover');
@@ -2258,7 +2352,17 @@ async function dashMain(c) {
       ${canView('reports') ? `<a class="quick-action-btn" href="#/reports"><span>📈</span> Reports</a>` : ''}
     </div>`;
 
-  const scopeBadge = wm && wm.user_scope && wm.user_scope.label ? ` · <span class="badge blue">📍 ${esc(wm.user_scope.label)}</span>` : ' · <span class="badge green">🌐 All Workshops</span>';
+  let activeScopeLabel = null;
+  if (wm && wm.user_scope && wm.user_scope.label) {
+    activeScopeLabel = wm.user_scope.label;
+  } else if (ME && ME.storeName && ME.storeName !== 'Central Main Stores' && ME.storeName !== 'Central Workshop — Badalgama') {
+    activeScopeLabel = ME.storeName;
+  } else if (ME && ME.primaryStore && ME.primaryStore.store_type === 'SITE_STORE') {
+    activeScopeLabel = ME.primaryStore.store_name;
+  }
+  const scopeBadge = activeScopeLabel
+    ? ` · <span class="badge blue">📍 ${esc(activeScopeLabel)}</span>`
+    : ' · <span class="badge green">🌐 All Stores &amp; Workshops</span>';
   const privBadges = (pp.approver_badges || []).map((b) => `<span class="badge" style="background:#eff6ff;color:#1d4ed8;border:1px solid #bfdbfe;font-size:11px">✓ ${esc(b)}</span>`).join(' ');
   const privBanner = privBadges ? `<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:-4px 0 12px"><span class="muted" style="font-size:11.5px;font-weight:600">Your Active Authorities:</span>${privBadges}</div>` : '';
 
@@ -7986,12 +8090,18 @@ async function newGrnModal(onDone) {
       </div>
       <p class="muted" style="font-size:11.5px;margin:8px 0 0">Leave Unit Price blank if awaiting invoice pricing. Items will show under "To price" and proceed to approval.</p>
     </div>
+    <div class="card" style="margin-top:12px">
+      <h4 style="margin:0 0 4px">3 · Supplier Invoice / Delivery Note / Document Attachment</h4>
+      <div class="muted" style="font-size:11.5px;margin-bottom:6px">Attach the supplier invoice, delivery note, or goods receipt photo (Image or PDF). If the invoice is arriving later, you may attach it during pricing/approval.</div>
+      ${grnAttachmentBoxHtml('newgrn', { title: '📎 Attach Invoice / Delivery Note / PDF / Image' })}
+    </div>
     <div style="margin-top:14px;display:flex;justify-content:space-between;align-items:center">
       <span class="muted" style="font-size:12px">Recorded by <b>${esc(ME ? (ME.fullName || ME.username) : 'Storekeeper')}</b></span>
       <button class="primary" id="gsave" style="padding:8px 20px;font-size:14px">📥 Record Goods Receipt (GRN)</button>
     </div>`,
     (mbody, close) => {
       const tbody = qs('#grnitemsbody', mbody);
+      const newGrnAtt = wireGrnAttachmentBox(mbody, 'newgrn');
       const addRow = (item = {}) => {
         const tr = document.createElement('tr');
         tr.innerHTML = `
@@ -8106,6 +8216,7 @@ async function newGrnModal(onDone) {
               physical_store_id: physicalStoreId,
               project_site: projectSite,
               lines,
+              attachments: newGrnAtt.getAttachments(),
             }
           });
           toast(`Goods Received Note ${res.grn_no} recorded · Pending approval`);
@@ -8277,6 +8388,7 @@ routes.stores = async (c, parts = []) => {
           </td>
           <td>${stBadge}</td>
           <td style="white-space:nowrap">
+            <button class="sm ${Number(g.attachment_count) > 0 ? 'badge green' : 'badge amber'}" data-grn-docs="${g.id}" style="cursor:pointer;margin-right:4px" title="${Number(g.attachment_count) > 0 ? 'View or add attached Invoice / PDF / Documents' : 'No Invoice/Document attached yet — click to attach'}">📎 ${Number(g.attachment_count) > 0 ? `${g.attachment_count} Doc${Number(g.attachment_count) === 1 ? '' : 's'}` : '+ Attach Doc'}</button>
             <a class="btn sm" href="/api/stores/grn/${g.id}/print.html" target="_blank" title="Print GRN Document (EC1.ST.FO.2:5:21.12)">🖨</a>
             <a class="btn sm" href="/api/stores/grn/${g.id}/download.pdf" download title="Download GRN PDF">⬇ PDF</a>
           </td>
@@ -8285,6 +8397,10 @@ routes.stores = async (c, parts = []) => {
         : '<div class="card"><p class="muted">No Goods Received Notes match this view.</p></div>';
       if (canRx) qsa('[data-price]', qs('#gtable', body)).forEach((btn) => btn.onclick = () => grnPriceModal(list.find((x) => String(x.id) === btn.dataset.price), load));
       qsa('[data-grn-detail]', qs('#gtable', body)).forEach((btn) => btn.onclick = () => grnApprovalModal(list.find((x) => String(x.id) === btn.dataset.grnDetail), load));
+      qsa('[data-grn-docs]', qs('#gtable', body)).forEach((btn) => btn.onclick = () => {
+        const g = list.find((x) => String(x.id) === btn.dataset.grnDocs);
+        if (g) openGrnDocumentsModal(g.id, g.grn_no || ('GRN-' + g.id), load);
+      });
       qsa('[data-grn-app]', qs('#gtable', body)).forEach((btn) => btn.onclick = () => grnSignModal(list.find((x) => String(x.id) === btn.dataset.grnApp), 'approve', load));
       qsa('[data-grn-rej]', qs('#gtable', body)).forEach((btn) => btn.onclick = () => grnSignModal(list.find((x) => String(x.id) === btn.dataset.grnRej), 'reject', load));
       qsa('[data-grn-issue]', qs('#gtable', body)).forEach((btn) => {
@@ -10126,7 +10242,9 @@ function flowReceiveModal(r, onDone) {
     <div class="row"><div>${field('Supplier', 'supplier', { value: r.bought_from || '' })}</div><div>${field('Invoice no', 'invoice_no')}</div></div>
     ${field('Unit price (Rs) — can be added later', 'unit_price', { type: 'number' })}
     ${r.kind === 'filter' ? field('Part number on the box, if different', 'received_part_no') : ''}
+    ${grnAttachmentBoxHtml('flowrec', { title: '📎 Attach Invoice / Delivery Note / Document (optional at receipt)' })}
     <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Mark received</button></div>`, (mb, close) => {
+    const flowAtt = wireGrnAttachmentBox(mb, 'flowrec');
     qs('#s', mb).onclick = async () => {
       const f = formData(mb);
       if (!(Number(f.qty) > 0)) return toast('How many arrived?', 'err');
@@ -10134,6 +10252,7 @@ function flowReceiveModal(r, onDone) {
         const res = await api('/stores/grn/bulk-receive', { method: 'POST', body: { rows: [{
           mrn_line_id: r.id, qty: f.qty, delivery_date: f.delivery_date || undefined, supplier: f.supplier || undefined,
           invoice_no: f.invoice_no || undefined, unit_price: f.unit_price === '' ? undefined : f.unit_price, received_part_no: f.received_part_no || undefined,
+          attachments: flowAtt.getAttachments(),
         }] } });
         if (!res.received) return toast('Not received: ' + (((res.skipped || [])[0] || {}).reason || 'nothing to receive'), 'err');
         close(); toast('Received ' + num(f.qty)); if (onDone) onDone();
@@ -10268,7 +10387,7 @@ async function receivePriceTab(body) {
         [{ label: 'GRN No' }, { label: 'GRN date' }, { label: 'Received' }, { label: 'MRN' }, { label: 'Vehicle' },
         { label: 'Item', cls: 'desc-col' },
         { label: 'Qty', num: true }, { label: 'Unit price', num: true }, { label: 'Value', num: true },
-        { label: 'Supplier' }, { label: 'Invoice' }, { label: 'Source' }],
+        { label: 'Supplier' }, { label: 'Invoice' }, { label: 'Doc' }, { label: 'Source' }],
         list.map((r) => `<tr>
           ${cell(r.id, 'grn_no', r.grn_no || '', { w: '92px', ph: 'GRN no' })}
           ${cell(r.id, 'grn_date', String(r.grn_date || '').slice(0, 10), { type: 'date', w: '126px' })}
@@ -10282,8 +10401,12 @@ async function receivePriceTab(body) {
           <td class="num muted" data-val="${r.id}">—</td>
           ${cell(r.id, 'supplier', r.supplier || '', { w: '120px' })}
           ${cell(r.id, 'invoice_no', r.invoice_no || '', { w: '104px' })}
+          <td style="white-space:nowrap"><button type="button" class="sm ${Number(r.attachment_count) > 0 ? 'badge green' : 'badge amber'}" data-ws-doc="${r.id}" data-ws-grn="${esc(r.grn_no || ('GRN-' + r.id))}" style="cursor:pointer" title="Attach or view Invoice / PDF">📎 ${Number(r.attachment_count) > 0 ? r.attachment_count : '+ Doc'}</button></td>
           ${cell(r.id, 'purchase_source', r.source || '', { type: 'select', options: SRC_OPTS })}</tr>`),
         { scroll: true }) : '<div class="card"><p class="muted">Everything received has a price. 🎉</p></div>';
+      qsa('[data-ws-doc]', qs('#wsTable', body)).forEach((btn) => {
+        btn.onclick = () => openGrnDocumentsModal(btn.dataset.wsDoc, btn.dataset.wsGrn, load);
+      });
       // live value = qty × the price being typed
       const qtyById = Object.fromEntries(list.map((r) => [String(r.id), Number(r.qty) || 0]));
       qsa('#wsTable input[data-f="unit_price"]', body).forEach((inp) => {
@@ -10636,6 +10759,284 @@ async function compressImageFile(file, maxWidth = 1600, quality = 0.82) {
   });
 }
 
+// Prepare any attachment file (Image, PDF, or Office Document up to 15 MB) for GRN upload.
+function prepareAttachmentFile(file) {
+  return new Promise((resolve, reject) => {
+    if (!file) return reject(new Error('Please select a file'));
+    if (file.size > 15 * 1024 * 1024) {
+      return reject(new Error(`File "${file.name}" exceeds the 15 MB limit`));
+    }
+    if (file.type && file.type.startsWith('image/')) {
+      return compressImageFile(file).then(resolve).catch(reject);
+    }
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      resolve({
+        dataUrl: e.target.result,
+        filename: file.name,
+        mimeType: file.type || 'application/octet-stream',
+        originalSize: file.size,
+        compressedSize: file.size
+      });
+    };
+    reader.onerror = () => reject(new Error('Failed to read document file'));
+    reader.readAsDataURL(file);
+  });
+}
+
+const GRN_DOC_KIND_LABELS = {
+  invoice: 'Tax Invoice / Bill',
+  delivery_note: 'Delivery Note / Challan',
+  po_copy: 'Purchase Order (PO) Copy',
+  delivery_goods: 'Delivered Goods Photo',
+  supporting_doc: 'Supporting Document',
+  damage_in_transit: 'Transit Damage / Defect',
+  nameplate: 'Nameplate / Packaging Label',
+  worn_part: 'Worn / Broken Part',
+  general: 'General Attachment',
+};
+
+function grnAttachmentBoxHtml(prefix = 'gatt', { required = false, showOverride = false, overrideLabel = 'Invoice / document not physically available yet — allow saving without attachment', title = '📎 Attach Supplier Invoice / Delivery Note / Supporting Document (Image or PDF)' } = {}) {
+  return `
+    <div class="grn-att-box" data-att-prefix="${esc(prefix)}" style="background:var(--surface-2, #f8fafc);border:1px dashed var(--border, #cbd5e1);border-radius:6px;padding:10px 12px;margin:10px 0">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px;flex-wrap:wrap">
+        <div style="font-weight:600;font-size:12.5px;color:var(--text)">${title}${required ? ' <span style="color:var(--red, #dc2626)">*</span>' : ''}</div>
+        <span class="muted" style="font-size:11px">Supports PDF, JPG, PNG, WebP, Word/Excel (up to 15 MB)</span>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:6px">
+        <select id="${esc(prefix)}-kind" style="font-size:12px;padding:5px 8px;width:auto;min-width:170px">
+          <option value="invoice">📄 Tax Invoice / Bill</option>
+          <option value="delivery_note">🚚 Delivery Note / Challan</option>
+          <option value="po_copy">📋 Purchase Order (PO) Copy</option>
+          <option value="delivery_goods">📦 Delivered Goods Photo</option>
+          <option value="supporting_doc">📎 Other Supporting Document</option>
+        </select>
+        <input type="text" id="${esc(prefix)}-caption" placeholder="Optional note / invoice ref..." style="font-size:12px;padding:5px 8px;flex:1;min-width:150px" />
+        <label class="btn sm primary" style="cursor:pointer;margin:0;white-space:nowrap">
+          + Choose File(s)
+          <input type="file" id="${esc(prefix)}-file" accept="image/*,application/pdf,.pdf,.doc,.docx,.xls,.xlsx,.csv,.txt" multiple style="display:none" />
+        </label>
+      </div>
+      <div id="${esc(prefix)}-status" class="muted" style="font-size:11.5px"></div>
+      <div id="${esc(prefix)}-list" style="display:flex;flex-direction:column;gap:5px;margin-top:6px"></div>
+      ${showOverride ? `
+        <label style="display:flex;align-items:center;gap:6px;margin-top:8px;font-size:12px;font-weight:500;color:var(--amber-text, #b45309);cursor:pointer">
+          <input type="checkbox" id="${esc(prefix)}-override" style="width:auto;margin:0" />
+          ${esc(overrideLabel)}
+        </label>
+      ` : ''}
+    </div>
+  `;
+}
+
+function wireGrnAttachmentBox(container, prefix = 'gatt') {
+  const queued = [];
+  const fileInp = qs(`#${prefix}-file`, container);
+  const kindSel = qs(`#${prefix}-kind`, container);
+  const capInp = qs(`#${prefix}-caption`, container);
+  const statusEl = qs(`#${prefix}-status`, container);
+  const listEl = qs(`#${prefix}-list`, container);
+  const overrideChk = qs(`#${prefix}-override`, container);
+
+  const renderQueue = () => {
+    if (!listEl) return;
+    if (!queued.length) {
+      listEl.innerHTML = '<div class="muted" style="font-size:11.5px">No new files selected yet.</div>';
+      return;
+    }
+    listEl.innerHTML = queued.map((item, idx) => {
+      const isPdf = (item.mimeType || '').includes('pdf') || (item.filename || '').toLowerCase().endsWith('.pdf');
+      const isImg = (item.mimeType || '').startsWith('image/');
+      const icon = isPdf ? '📄' : (isImg ? '🖼️' : '📎');
+      const kb = Math.max(1, Math.round((item.compressedSize || item.originalSize || 0) / 1024));
+      return `
+        <div style="display:flex;align-items:center;gap:8px;background:var(--card-bg, #fff);border:1px solid var(--border, #e2e8f0);border-radius:4px;padding:5px 8px;font-size:12px">
+          <span>${icon}</span>
+          <b style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:240px">${esc(item.filename)}</b>
+          <span class="badge blue sm">${esc(GRN_DOC_KIND_LABELS[item.kind] || item.kind)}</span>
+          ${item.caption ? `<span class="muted" style="font-size:11px">· ${esc(item.caption)}</span>` : ''}
+          <span class="muted" style="font-size:11px;margin-left:auto">${kb} KB</span>
+          <button type="button" class="sm danger" data-rm-att="${idx}" style="padding:1px 6px">✕</button>
+        </div>
+      `;
+    }).join('');
+    qsa('[data-rm-att]', listEl).forEach((btn) => {
+      btn.onclick = () => {
+        queued.splice(Number(btn.dataset.rmAtt), 1);
+        renderQueue();
+      };
+    });
+  };
+
+  if (fileInp) {
+    fileInp.onchange = async () => {
+      const files = Array.from(fileInp.files || []);
+      if (!files.length) return;
+      const kind = kindSel ? kindSel.value : 'invoice';
+      const caption = capInp ? capInp.value.trim() : '';
+      if (statusEl) statusEl.textContent = 'Preparing selected file(s)...';
+      for (const f of files) {
+        try {
+          const prep = await prepareAttachmentFile(f);
+          queued.push({
+            dataUrl: prep.dataUrl,
+            filename: prep.filename,
+            mimeType: prep.mimeType,
+            originalSize: prep.originalSize,
+            compressedSize: prep.compressedSize,
+            kind,
+            caption
+          });
+        } catch (err) {
+          toast(err.message, 'err');
+        }
+      }
+      if (statusEl) statusEl.textContent = '';
+      fileInp.value = '';
+      if (capInp) capInp.value = '';
+      renderQueue();
+    };
+  }
+
+  renderQueue();
+
+  return {
+    getAttachments: () => queued.slice(),
+    isOverrideChecked: () => !!(overrideChk && overrideChk.checked),
+    clear: () => { queued.length = 0; renderQueue(); }
+  };
+}
+
+function renderGrnAttachmentsListHtml(attachments = [], { canDelete = false } = {}) {
+  if (!attachments || !attachments.length) {
+    return '<div class="muted" style="font-size:12px;padding:8px;border:1px dashed var(--border);border-radius:6px;text-align:center">No invoice or supporting documents attached to this GRN yet.</div>';
+  }
+  return `<div style="display:grid;grid-template-columns:repeat(auto-fill, minmax(250px, 1fr));gap:8px">
+    ${attachments.map((p) => {
+      const isPdf = p.is_pdf || (p.mime_type || '').includes('pdf') || String(p.file_name || '').toLowerCase().endsWith('.pdf');
+      const isImg = p.is_image || (p.mime_type || '').startsWith('image/');
+      const kb = Math.max(1, Math.round((p.file_size || 0) / 1024));
+      const thumbHtml = isImg
+        ? `<div class="grn-att-preview" data-img-url="${esc(p.url)}" data-title="${esc(p.file_name || 'Invoice Image')}" style="cursor:pointer;flex-shrink:0"><img src="${esc(p.url)}" style="width:56px;height:56px;object-fit:cover;border-radius:4px;border:1px solid var(--border)" /></div>`
+        : `<a href="${esc(p.url)}" target="_blank" rel="noopener" style="width:56px;height:56px;display:flex;flex-direction:column;align-items:center;justify-content:center;background:var(--surface-2, #f1f5f9);border:1px solid var(--border);border-radius:4px;text-decoration:none;flex-shrink:0;font-size:20px" title="Open ${esc(p.file_name || 'Document')}">${isPdf ? '📄' : '📎'}<span style="font-size:9px;font-weight:700;color:var(--muted)">${isPdf ? 'PDF' : 'DOC'}</span></a>`;
+      return `
+        <div style="display:flex;gap:10px;padding:8px;border:1px solid var(--border);border-radius:6px;background:var(--card-bg, #fff);align-items:flex-start">
+          ${thumbHtml}
+          <div style="flex:1;min-width:0;font-size:11.5px">
+            <div style="display:flex;align-items:center;gap:4px;flex-wrap:wrap;margin-bottom:2px">
+              <span class="badge ${p.kind === 'invoice' ? 'green' : 'blue'} sm">${esc(GRN_DOC_KIND_LABELS[p.kind] || p.kind || 'Document')}</span>
+              <span class="muted" style="font-size:10px">${kb} KB</span>
+            </div>
+            <div style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(p.file_name || '')}">${esc(p.file_name || 'Attached Document')}</div>
+            ${p.caption ? `<div class="muted" style="font-size:11px;overflow:hidden;text-overflow:ellipsis">${esc(p.caption)}</div>` : ''}
+            <div style="margin-top:4px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+              ${isImg
+                ? `<a href="javascript:void(0)" class="grn-att-preview" data-img-url="${esc(p.url)}" data-title="${esc(p.file_name || 'Invoice Image')}" style="font-size:11px;color:var(--primary);font-weight:600">🔍 View</a>`
+                : `<a href="${esc(p.url)}" target="_blank" rel="noopener" style="font-size:11px;color:var(--primary);font-weight:600">🔍 Open ${isPdf ? 'PDF' : 'File'}</a>`}
+              <a href="${esc(p.url)}${String(p.url || '').includes('?') ? '&' : '?'}download=1" download="${esc(p.file_name || 'document')}" style="font-size:11px;color:var(--muted)">⬇ Download</a>
+              ${canDelete && p.source !== 'mrn_line_invoice' ? `<a href="javascript:void(0)" class="grn-att-del" data-photo-id="${p.id}" style="font-size:11px;color:var(--red, #dc2626)">✕ Delete</a>` : ''}
+            </div>
+          </div>
+        </div>
+      `;
+    }).join('')}
+  </div>`;
+}
+
+function bindGrnAttachmentsListEvents(container, grnId, onRefresh) {
+  qsa('.grn-att-preview', container).forEach((el) => {
+    el.onclick = () => openPhotoLightbox(el.dataset.imgUrl, el.dataset.title || 'Attached Document');
+  });
+  qsa('.grn-att-del', container).forEach((btn) => {
+    btn.onclick = async () => {
+      if (!confirm('Remove this attached document from the GRN?')) return;
+      try {
+        await api(`/stores/grn/${grnId}/photos/${btn.dataset.photoId}`, { method: 'DELETE' });
+        toast('Attachment removed');
+        if (onRefresh) onRefresh();
+      } catch (e) {
+        toast(e.message, 'err');
+      }
+    };
+  });
+}
+
+async function openGrnDocumentsModal(grnId, grnNo = '', onDone = null) {
+  const canEdit = canDo('stores.grn.receive', 'stores.grn.edit', 'stores.grn.approve');
+  const bg = modal(`📎 Invoice & Supporting Documents — ${grnNo || ('GRN #' + grnId)}`, `
+    <div style="font-size:12.5px;color:var(--muted);margin-bottom:8px">
+      Attach and inspect supplier tax invoices, delivery notes, PO copies, or goods photos (Image or PDF) for this Goods Received Note.
+    </div>
+    <div id="grn-docs-existing" style="margin-bottom:12px"><div class="muted">Loading attached documents…</div></div>
+    ${canEdit ? `
+      <div id="grn-docs-upload-area">
+        ${grnAttachmentBoxHtml('gdocmodal', { title: '+ Upload New Invoice / PDF / Supporting Document' })}
+        <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:8px">
+          <button class="primary sm" id="gdoc-upload-save">📤 Upload Selected File(s)</button>
+        </div>
+      </div>
+    ` : ''}
+    <div style="display:flex;justify-content:flex-end;margin-top:12px;border-top:1px solid var(--border);padding-top:10px">
+      <button class="sm" id="gdoc-close">Done</button>
+    </div>
+  `, (mbody, close) => {
+    const existingEl = qs('#grn-docs-existing', mbody);
+    const attCtrl = canEdit ? wireGrnAttachmentBox(mbody, 'gdocmodal') : null;
+
+    const refreshList = async () => {
+      try {
+        const list = await api(`/stores/grn/${grnId}/photos`);
+        existingEl.innerHTML = renderGrnAttachmentsListHtml(list, { canDelete: canEdit });
+        bindGrnAttachmentsListEvents(existingEl, grnId, refreshList);
+      } catch (e) {
+        existingEl.innerHTML = `<div class="err">${esc(e.message)}</div>`;
+      }
+    };
+
+    if (qs('#gdoc-upload-save', mbody)) {
+      qs('#gdoc-upload-save', mbody).onclick = async () => {
+        const files = attCtrl ? attCtrl.getAttachments() : [];
+        if (!files.length) return toast('Please choose at least one file to upload', 'err');
+        const btn = qs('#gdoc-upload-save', mbody);
+        btn.disabled = true;
+        btn.textContent = 'Uploading…';
+        try {
+          for (const f of files) {
+            await api(`/stores/grn/${grnId}/photos`, {
+              method: 'POST',
+              body: {
+                dataUrl: f.dataUrl,
+                filename: f.filename,
+                mimeType: f.mimeType,
+                kind: f.kind || 'invoice',
+                caption: f.caption || ''
+              }
+            });
+          }
+          toast(`Uploaded ${files.length} document(s)`);
+          attCtrl.clear();
+          await refreshList();
+          if (onDone) onDone();
+        } catch (e) {
+          toast(e.message, 'err');
+        } finally {
+          btn.disabled = false;
+          btn.textContent = '📤 Upload Selected File(s)';
+        }
+      };
+    }
+
+    qs('#gdoc-close', mbody).onclick = () => {
+      close();
+      if (onDone) onDone();
+    };
+
+    refreshList();
+  });
+  const box = qs('.modal', bg);
+  if (box) { box.style.width = 'min(740px, 95vw)'; box.style.maxWidth = 'none'; }
+}
+
 function openPhotoLightbox(photoUrl, title = 'Photo Evidence') {
   const bg = document.createElement('div');
   bg.className = 'modal-bg';
@@ -10716,18 +11117,21 @@ function openSideBySidePhotoModal({ mrnLineId = null, grnId = null, description 
         
         ${gId ? `
           <div style="background:var(--table-hover, rgba(0,0,0,0.02));padding:8px 10px;border-radius:6px;margin-bottom:12px;border:1px dashed var(--border)">
-            <div style="font-weight:600;font-size:11.5px;margin-bottom:6px">+ Upload Receipt Evidence Photo</div>
+            <div style="font-weight:600;font-size:11.5px;margin-bottom:6px">+ Upload Invoice / PDF / Receipt Evidence</div>
             <div style="display:flex;gap:6px;margin-bottom:6px;flex-wrap:wrap">
               <select id="rec-kind" style="font-size:11.5px;padding:3px 6px">
+                <option value="invoice">Tax Invoice / Bill (Image/PDF)</option>
+                <option value="delivery_note">Delivery Note / Challan</option>
+                <option value="po_copy">Purchase Order (PO) Copy</option>
                 <option value="delivery_goods">Delivered Goods Condition</option>
                 <option value="damage_in_transit">Transit Damage / Defect</option>
                 <option value="nameplate">Packaging Label / Specs</option>
-                <option value="general">General Evidence</option>
+                <option value="supporting_doc">Other Supporting Document</option>
               </select>
               <input type="text" id="rec-caption" placeholder="Optional notes / caption..." style="font-size:11.5px;flex:1;min-width:120px;padding:3px 6px" />
             </div>
             <div style="display:flex;gap:6px;align-items:center">
-              <input type="file" id="rec-file" accept="image/*" style="font-size:11.5px;flex:1" />
+              <input type="file" id="rec-file" accept="image/*,application/pdf,.pdf,.doc,.docx,.xls,.xlsx" style="font-size:11.5px;flex:1" />
               <button class="sm primary" id="rec-upload-btn" style="white-space:nowrap">Upload</button>
             </div>
             <div id="rec-upload-msg" style="font-size:11px;margin-top:4px"></div>
@@ -10752,6 +11156,7 @@ function openSideBySidePhotoModal({ mrnLineId = null, grnId = null, description 
     };
 
     const kindLabels = {
+      ...GRN_DOC_KIND_LABELS,
       worn_part: 'Worn / Broken Part',
       nameplate: 'Nameplate / Serial',
       delivery_goods: 'Delivered Goods',
@@ -10760,23 +11165,32 @@ function openSideBySidePhotoModal({ mrnLineId = null, grnId = null, description 
     };
 
     function renderPhotoCard(p, isReq) {
+      const isPdf = p.is_pdf || (p.mime_type || '').includes('pdf') || String(p.file_name || '').toLowerCase().endsWith('.pdf');
+      const isImg = p.is_image || (p.mime_type || '').startsWith('image/');
+      const thumbEl = isImg
+        ? `<div style="cursor:pointer;flex-shrink:0" class="photo-thumb-wrap" data-img-url="${esc(p.url)}" title="Click to inspect full image">
+            <img src="${esc(p.url)}" style="width:72px;height:72px;object-fit:cover;border-radius:4px;border:1px solid var(--border)" />
+          </div>`
+        : `<a href="${esc(p.url)}" target="_blank" rel="noopener" style="width:72px;height:72px;display:flex;flex-direction:column;align-items:center;justify-content:center;background:var(--surface-2, #f1f5f9);border:1px solid var(--border);border-radius:4px;text-decoration:none;flex-shrink:0;font-size:24px" title="Open Document">${isPdf ? '📄' : '📎'}<span style="font-size:10px;font-weight:700;color:var(--muted)">${isPdf ? 'PDF' : 'DOC'}</span></a>`;
       return `
         <div style="display:flex;gap:10px;padding:8px;border:1px solid var(--border);border-radius:6px;background:var(--card-bg, #fff);align-items:flex-start">
-          <div style="cursor:pointer;flex-shrink:0" class="photo-thumb-wrap" data-img-url="${esc(p.url)}" title="Click to inspect full image">
-            <img src="${esc(p.url)}" style="width:72px;height:72px;object-fit:cover;border-radius:4px;border:1px solid var(--border)" />
-          </div>
+          ${thumbEl}
           <div style="flex:1;min-width:0;font-size:11.5px">
             <div style="display:flex;align-items:center;gap:6px;margin-bottom:2px">
-              <span class="badge ${p.kind === 'damage_in_transit' ? 'red' : 'blue'} sm">${esc(kindLabels[p.kind] || p.kind)}</span>
-              <span class="muted" style="font-size:10.5px">${Math.round((p.file_size || 0) / 1024)} KB</span>
+              <span class="badge ${p.kind === 'damage_in_transit' ? 'red' : (p.kind === 'invoice' ? 'green' : 'blue')} sm">${esc(kindLabels[p.kind] || p.kind)}</span>
+              <span class="muted" style="font-size:10.5px">${Math.max(1, Math.round((p.file_size || 0) / 1024))} KB</span>
             </div>
-            ${p.caption ? `<div style="font-weight:600;margin-bottom:2px;overflow:hidden;text-overflow:ellipsis">${esc(p.caption)}</div>` : ''}
+            ${p.file_name ? `<div style="font-weight:600;margin-bottom:2px;overflow:hidden;text-overflow:ellipsis">${esc(p.file_name)}</div>` : ''}
+            ${p.caption ? `<div class="muted" style="margin-bottom:2px;overflow:hidden;text-overflow:ellipsis">${esc(p.caption)}</div>` : ''}
             <div class="muted" style="font-size:10.5px">
               By ${esc(p.uploaded_by_name || 'User')} · ${esc(String(p.uploaded_at || '').slice(0, 16).replace('T', ' '))}
             </div>
-            <div style="margin-top:4px;display:flex;gap:6px">
-              <a href="javascript:void(0)" class="photo-thumb-wrap" data-img-url="${esc(p.url)}" style="font-size:11px;color:var(--blue)">🔍 Inspect</a>
-              ${(ME && (ME.is_admin || ME.id === p.uploaded_by || canDo('stores.mrn.edit', 'stores.grn.edit'))) ? `
+            <div style="margin-top:4px;display:flex;gap:8px;align-items:center">
+              ${isImg
+                ? `<a href="javascript:void(0)" class="photo-thumb-wrap" data-img-url="${esc(p.url)}" style="font-size:11px;color:var(--blue)">🔍 Inspect</a>`
+                : `<a href="${esc(p.url)}" target="_blank" rel="noopener" style="font-size:11px;color:var(--blue)">🔍 Open ${isPdf ? 'PDF' : 'File'}</a>`}
+              <a href="${esc(p.url)}${String(p.url || '').includes('?') ? '&' : '?'}download=1" download="${esc(p.file_name || 'document')}" style="font-size:11px;color:var(--muted)">⬇ Download</a>
+              ${(ME && p.source !== 'mrn_line_invoice' && (ME.is_admin || ME.id === p.uploaded_by || canDo('stores.mrn.edit', 'stores.grn.edit'))) ? `
                 <a href="javascript:void(0)" class="photo-del-btn" data-del-id="${p.id}" data-is-req="${isReq ? '1' : '0'}" style="font-size:11px;color:var(--red, #dc2626)">✕ Delete</a>
               ` : ''}
             </div>
@@ -10897,15 +11311,16 @@ function openSideBySidePhotoModal({ mrnLineId = null, grnId = null, description 
         const caption = (qs('#rec-caption', body).value || '').trim();
 
         try {
-          msg.textContent = 'Compressing image...';
-          const compressed = await compressImageFile(file);
-          msg.textContent = 'Uploading (~' + Math.round(compressed.compressedSize / 1024) + ' KB)...';
+          msg.textContent = 'Preparing file...';
+          const prepared = await prepareAttachmentFile(file);
+          msg.textContent = 'Uploading (~' + Math.max(1, Math.round(prepared.compressedSize / 1024)) + ' KB)...';
 
           await api('/stores/grn/' + gId + '/photos', {
             method: 'POST',
             body: {
-              dataUrl: compressed.dataUrl,
-              filename: compressed.filename,
+              dataUrl: prepared.dataUrl,
+              filename: prepared.filename,
+              mimeType: prepared.mimeType,
               kind,
               caption
             }
@@ -12616,7 +13031,7 @@ async function mrnDetail(body, id) {
   });
   const grnRows = d.grns.map((g) => {
     const photoCount = (g.photos && g.photos.length) || 0;
-    const photoBtn = `<button class="sm" data-grn-photo="${g.id}" data-desc="${esc(g.description || '')}" title="Photographic evidence (delivered goods)">📷 ${photoCount > 0 ? photoCount : '+ Photo'}</button> `;
+    const photoBtn = `<button class="sm ${photoCount > 0 ? 'badge green' : 'badge amber'}" data-grn-photo="${g.id}" data-desc="${esc(g.description || '')}" style="cursor:pointer" title="Attached Invoice / PDF / Photographic evidence">📎 ${photoCount > 0 ? photoCount + ' Doc(s)' : '+ Attach Doc'}</button> `;
     return `<tr>
     <td>${esc(g.grn_no || '—')}</td>
     <td style="white-space:nowrap">${g.delivery_date ? esc(String(g.delivery_date).slice(0, 10)) : '<span class="muted">—</span>'}</td>
@@ -13081,8 +13496,10 @@ async function receiveModal(mrn, lineId, desc, remaining, onDone) {
     ${field('GRN No', 'grn_no')}
     ${field('Invoice No', 'invoice_no')}
     ${field('Delivery date', 'delivery_date', { type: 'date' })}
+    ${grnAttachmentBoxHtml('recmodal', { title: '📎 Attach Supplier Invoice / Delivery Note / Document (Image or PDF)' })}
     <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Record receipt</button></div>`,
     (mbody, close) => {
+      const recAtt = wireGrnAttachmentBox(mbody, 'recmodal');
       const srcSel = qs('[name="purchase_source"]', mbody);
       const storeSel = qs('[name="physical_store_id"]', mbody);
       if (srcSel && storeSel) {
@@ -13132,6 +13549,7 @@ async function receiveModal(mrn, lineId, desc, remaining, onDone) {
               unit_price: f.unit_price, purchase_source: f.purchase_source || undefined,
               physical_store_id: f.physical_store_id ? Number(f.physical_store_id) : undefined,
               supplier: f.supplier, grn_no: f.grn_no, invoice_no: f.invoice_no, delivery_date: f.delivery_date,
+              attachments: recAtt.getAttachments(),
             },
             idempotencyKey: 'grn_rec_' + mrn.id + '_' + lineId + '_' + Date.now(),
           });
@@ -13143,7 +13561,12 @@ async function receiveModal(mrn, lineId, desc, remaining, onDone) {
 }
 
 // Add / edit the price (and supplier/invoice) on a received record (GRN).
-function grnPriceModal(g, onDone) {
+async function grnPriceModal(g, onDone) {
+  let existingDocs = [];
+  try {
+    existingDocs = await api('/stores/grn/' + g.id + '/photos');
+  } catch (e) {}
+
   modal((g.unit_price == null ? 'Add price — GRN ' : 'Edit price — GRN ') + (g.grn_no || ''), `
     <p class="muted">${esc(g.description || '')} — qty ${num(g.qty)}</p>
     ${field('Unit price (Rs) *', 'unit_price', { type: 'number', value: g.unit_price == null ? '' : g.unit_price })}
@@ -13151,26 +13574,49 @@ function grnPriceModal(g, onDone) {
     ${field('Invoice No', 'invoice_no', { value: g.invoice_no || '' })}
     ${field('Invoice date', 'invoice_date', { type: 'date', value: (g.invoice_date || '').slice(0, 10) })}
     ${field('Purchase source', 'purchase_source', { type: 'select', options: SOURCE_OPTS, value: g.purchase_source || '' })}
-    <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Save price</button></div>`,
+    <div style="margin-top:10px">
+      <div style="font-weight:600;font-size:12.5px;margin-bottom:6px">Attached Supplier Invoice / Documents (${existingDocs.length})</div>
+      <div id="gprice-existing-docs">${renderGrnAttachmentsListHtml(existingDocs, { canDelete: true })}</div>
+      ${grnAttachmentBoxHtml('gprice', {
+        required: existingDocs.length === 0,
+        showOverride: existingDocs.length === 0,
+        overrideLabel: 'Invoice document not physically available yet — allow saving provisional price without attachment',
+        title: existingDocs.length ? '+ Attach Additional Invoice / Document' : '📎 Attach Supplier Invoice / Supporting Document (Image or PDF)'
+      })}
+    </div>
+    <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Save price &amp; document</button></div>`,
     (mb, close) => {
+      const attCtrl = wireGrnAttachmentBox(mb, 'gprice');
+      bindGrnAttachmentsListEvents(qs('#gprice-existing-docs', mb), g.id, async () => {
+        existingDocs = await api('/stores/grn/' + g.id + '/photos').catch(() => []);
+        qs('#gprice-existing-docs', mb).innerHTML = renderGrnAttachmentsListHtml(existingDocs, { canDelete: true });
+      });
+
       qs('#s', mb).onclick = async () => {
         const f = formData(mb);
         if (f.unit_price === '' || Number(f.unit_price) < 0 || isNaN(Number(f.unit_price))) return toast('Enter a valid unit price', 'err');
+        const newFiles = attCtrl.getAttachments();
+        const allowWithoutDoc = attCtrl.isOverrideChecked();
+        if (!existingDocs.length && !newFiles.length && !allowWithoutDoc) {
+          return toast('Please attach the Supplier Invoice / supporting document (Image or PDF), or tick the provisional override checkbox.', 'err');
+        }
         try {
           await api('/stores/grn/' + g.id, {
             method: 'PATCH', body: {
               unit_price: f.unit_price, supplier: f.supplier, invoice_no: f.invoice_no,
               invoice_date: f.invoice_date, purchase_source: f.purchase_source || undefined,
+              attachments: newFiles,
+              allow_without_doc: allowWithoutDoc,
             }
           });
-          toast('Price saved'); close(); onDone();
+          toast('Price saved'); close(); if (onDone) onDone();
         } catch (e) { toast(e.message, 'err'); }
       };
     });
 }
 
 // ===== GRN Approval & Sign Modals (EC1.ST.FO.2:5:21.12) ====================
-function grnSignModal(g, action, onDone) {
+async function grnSignModal(g, action, onDone) {
   const meta = {
     approve: { title: 'Approve GRN', verb: 'approve', btn: 'Sign & Approve', role: 'Store Manager / In-Charge' },
     reject: { title: 'Reject GRN', verb: 'reject', btn: 'Reject', role: 'Store Manager / In-Charge' },
@@ -13181,15 +13627,40 @@ function grnSignModal(g, action, onDone) {
   const id = g.id || g.voucher_id;
   const endpoint = g.voucher_id ? `/stores/grn-vouchers/${g.voucher_id}/${action}` : `/stores/grn/${id}/${action}`;
 
+  let existingDocs = [];
+  if (action === 'approve' && g.id) {
+    try {
+      existingDocs = await api('/stores/grn/' + g.id + '/photos');
+    } catch (e) {}
+  } else if (action === 'approve' && Array.isArray(g.attachments)) {
+    existingDocs = g.attachments;
+  }
+
   modal(meta.title + ' — ' + grnNo, `
     <p class="muted">Signing as <b>${who}</b> <span class="badge blue">${esc(ME.roles.join(', '))}</span> · Role: <b>${esc(meta.role)}</b></p>
     ${action === 'reject'
       ? field('Reason for rejection (required) *', 'reason')
-      : `<label style="display:flex;gap:8px;align-items:flex-start;font-weight:400"><input type="checkbox" id="confirm" style="width:auto;margin-top:3px"> I, ${who}, ${meta.verb} this Goods Received Note. This certifies delivery verification and records my electronic signature.</label>
+      : `
+         <div style="margin-bottom:10px">
+           <div style="font-weight:600;font-size:12.5px;margin-bottom:4px">Attached Supplier Invoice &amp; Supporting Documents (${existingDocs.length})</div>
+           ${existingDocs.length
+             ? renderGrnAttachmentsListHtml(existingDocs, { canDelete: false })
+             : `<div style="background:rgba(245,158,11,0.1);border:1px solid #f59e0b;color:#b45309;padding:8px 10px;border-radius:6px;font-size:12px;margin-bottom:6px">
+                  ⚠️ <b>No Supplier Invoice / Delivery Note attached yet.</b> Please attach the invoice or supporting document below before approving this GRN.
+                </div>`}
+           ${grnAttachmentBoxHtml('gsign', {
+             required: existingDocs.length === 0,
+             showOverride: existingDocs.length === 0,
+             overrideLabel: 'Approve without attached invoice/document (document will be uploaded later)',
+             title: existingDocs.length ? '+ Attach Additional Document (Optional)' : '📎 Attach Supplier Invoice / Delivery Note / Document (Image or PDF)'
+           })}
+         </div>
+         <label style="display:flex;gap:8px;align-items:flex-start;font-weight:400"><input type="checkbox" id="confirm" style="width:auto;margin-top:3px"> I, ${who}, ${meta.verb} this Goods Received Note. This certifies delivery verification and records my electronic signature.</label>
          <label>Electronic Signature</label>${signaturePadHtml('signpad')}
          ${field('Remark (optional)', 'reason')}`}
     <div style="margin-top:12px;text-align:right"><button class="primary" id="s">${meta.btn}</button></div>`, (body, close) => {
     let pad = null;
+    const signAtt = action === 'approve' ? wireGrnAttachmentBox(body, 'gsign') : null;
     if (withSig) {
       pad = wireSignaturePad(body, 'signpad', null);
       (async () => { try { const s = (await api('/auth/signature')).signature; if (s) pad.load(s); } catch (e) {} })();
@@ -13198,9 +13669,22 @@ function grnSignModal(g, action, onDone) {
       const f = formData(body);
       if (action !== 'reject' && !qs('#confirm', body).checked) return toast('Tick the confirmation to e-sign', 'err');
       if (action === 'reject' && !String(f.reason || '').trim()) return toast('A reason is required to reject', 'err');
+      const newFiles = signAtt ? signAtt.getAttachments() : [];
+      const allowWithoutDoc = signAtt ? signAtt.isOverrideChecked() : false;
+      if (action === 'approve' && !existingDocs.length && !newFiles.length && !allowWithoutDoc) {
+        return toast('Please attach the Supplier Invoice / supporting document (Image or PDF) before approving, or tick the override checkbox.', 'err');
+      }
       const signature = (withSig && pad && !pad.isEmpty()) ? pad.dataURL() : undefined;
       try {
-        await api(endpoint, { method: 'POST', body: { reason: f.reason, signature } });
+        await api(endpoint, {
+          method: 'POST',
+          body: {
+            reason: f.reason,
+            signature,
+            attachments: newFiles,
+            allow_without_doc: allowWithoutDoc || existingDocs.length > 0,
+          }
+        });
         toast('GRN ' + (action === 'reject' ? 'rejected' : 'approved · e-signed'));
         close(); if (onDone) onDone();
       } catch (e) { toast(e.message, 'err'); }
@@ -13218,6 +13702,8 @@ async function grnApprovalModal(g, onDone) {
   const v = d.voucher || g;
   const lines = d.lines || [d.grn || g];
   const approvals = d.approvals || [];
+  const attachments = d.attachments || d.photos || [];
+  const primaryGrnId = (d.grn && d.grn.id) || (lines[0] && lines[0].id) || g.id;
   const status = v.status || g.grn_status || g.status || 'pending_approval';
 
   const badge = {
@@ -13228,6 +13714,7 @@ async function grnApprovalModal(g, onDone) {
 
   const canApprove = canDo('stores.grn.approve') && status === 'pending_approval';
   const canReject = canDo('stores.grn.reject') && status === 'pending_approval';
+  const canUploadDoc = canDo('stores.grn.receive', 'stores.grn.edit', 'stores.grn.approve');
   const sig = (name, at) => name ? `${esc(name)} <span class="muted">· ${esc((at || '').slice(0, 16).replace('T', ' '))}</span>` : '<span class="muted">pending</span>';
 
   const rows = lines.map((l, i) => `<tr>
@@ -13261,6 +13748,19 @@ async function grnApprovalModal(g, onDone) {
       ${v.rejection_reason ? `<p class="err" style="margin:8px 0 0;font-size:12.5px"><b>Rejection Reason:</b> ${esc(v.rejection_reason)}</p>` : ''}
       ${approvals.length ? `<div style="margin-top:10px;border-top:1px solid var(--border);padding-top:6px">${approvals.map((a) => `<div class="cost-line" style="font-size:12px"><span>${a.decision === 'rejected' ? '✕' : '✓'} ${esc(a.stage)} — <b>${esc(a.signed_name || '')}</b> <span class="muted">(${esc(a.role || '')})</span>${a.reason ? ' · ' + esc(a.reason) : ''}</span><span class="muted">${esc((a.created_at || '').slice(0, 16).replace('T', ' '))}</span></div>`).join('')}</div>` : ''}
     </div>
+    <div class="card" style="margin-bottom:12px">
+      <div class="toolbar" style="margin:0 0 8px">
+        <h3 style="margin:0">📎 Attached Supplier Invoices &amp; Supporting Documents (<span id="gdetail-att-count">${attachments.length}</span>)</h3>
+        <div class="spacer"></div>
+        ${canUploadDoc && primaryGrnId ? '<button class="sm primary" id="gdetail-manage-docs">+ Upload / Manage Documents</button>' : ''}
+      </div>
+      ${!attachments.length && status === 'pending_approval' ? `
+        <div style="background:rgba(245,158,11,0.1);border:1px solid #f59e0b;color:#b45309;padding:8px 10px;border-radius:6px;font-size:12px;margin-bottom:8px">
+          ⚠️ <b>No Supplier Invoice / Delivery Note attached yet.</b> Attach the invoice (Image or PDF) before approving this GRN.
+        </div>
+      ` : ''}
+      <div id="gdetail-att-list">${renderGrnAttachmentsListHtml(attachments, { canDelete: canUploadDoc })}</div>
+    </div>
     <div class="card">
       <div class="toolbar" style="margin:0 0 6px">
         <h3 style="margin:0">Delivery & Line Items (${lines.length})</h3>
@@ -13271,8 +13771,21 @@ async function grnApprovalModal(g, onDone) {
       <p class="muted" style="margin:0 0 8px;font-size:12.5px">Supplier: <b>${esc(v.supplier || '—')}</b> · Delivery Date: <b>${esc(String(v.received_date || v.delivery_date || '').slice(0, 10))}</b> · Invoice: <b>${esc(v.invoice_no || '—')}</b>${v.po_no ? ` · PO: <b>${esc(v.po_no)}</b>` : ''}</p>
       ${tableWrap([{ label: '#', num: true }, { label: 'Item description' }, { label: 'Qty', num: true }, { label: 'Unit price (Rs)', num: true }, { label: 'Total value', num: true }, { label: 'MRN' }], [rows.join('')], { scroll: true })}
     </div>`, (mbody, close) => {
-    if (qs('#gappbtn', mbody)) qs('#gappbtn', mbody).onclick = () => { close(); grnSignModal(g, 'approve', () => { if (onDone) onDone(); grnApprovalModal(g, onDone); }); };
-    if (qs('#grejbtn', mbody)) qs('#grejbtn', mbody).onclick = () => { close(); grnSignModal(g, 'reject', () => { if (onDone) onDone(); grnApprovalModal(g, onDone); }); };
+    bindGrnAttachmentsListEvents(qs('#gdetail-att-list', mbody), primaryGrnId, () => {
+      close();
+      grnApprovalModal(g, onDone);
+    });
+    if (qs('#gdetail-manage-docs', mbody)) {
+      qs('#gdetail-manage-docs', mbody).onclick = () => {
+        close();
+        openGrnDocumentsModal(primaryGrnId, v.grn_no || ('GRN-' + v.id), () => {
+          if (onDone) onDone();
+          grnApprovalModal(g, onDone);
+        });
+      };
+    }
+    if (qs('#gappbtn', mbody)) qs('#gappbtn', mbody).onclick = () => { close(); grnSignModal({ ...g, id: primaryGrnId, voucher_id: v.id, attachments }, 'approve', () => { if (onDone) onDone(); grnApprovalModal(g, onDone); }); };
+    if (qs('#grejbtn', mbody)) qs('#grejbtn', mbody).onclick = () => { close(); grnSignModal({ ...g, id: primaryGrnId, voucher_id: v.id, attachments }, 'reject', () => { if (onDone) onDone(); grnApprovalModal(g, onDone); }); };
   });
   const box = qs('.modal', bg);
   if (box) { box.style.width = 'min(900px, 96vw)'; box.style.maxWidth = 'none'; }
@@ -19938,117 +20451,7 @@ const wsOptions = (d) => d.workshops.filter((w) => w.active).map((w) => ({ value
 const wsName = (d, id) => { const w = d && d.workshops.find((x) => x.id === id); return w ? w.name : '—'; };
 
 routes.workshops = async (c) => {
-  if (!canDo('workshops.manage', 'mechanics.move')) { c.innerHTML = '<div class="card err">You do not have access to this page.</div>'; return; }
-  const [d, mechs] = await Promise.all([workshopsData(true), api('/workshops/mechanics')]);
-  const manage = canDo('workshops.manage');
-  const move = canDo('mechanics.move');
-  // Stage 4: each workshop has its own store or uses another's. Shown once there are two workshops.
-  const storeCell = (w) => {
-    if (w.own_store) return `<span class="badge green">Own store</span>${w.store_opened ? `<br><span class="muted" style="font-size:12px">since ${esc(w.store_opened)}</span>` : ''}`;
-    return `<span class="muted">Uses</span> ${esc(wsName(d, d.store_of[w.id]))}`;
-  };
-  const rows = d.workshops.map((w) => `<tr${w.active ? '' : ' style="opacity:.55"'}>
-    <td><b>${esc(w.name)}</b>${w.is_default ? ' <span class="badge blue">main</span>' : ''}${w.active ? '' : ' <span class="badge">retired</span>'}<br><span class="muted" style="font-size:12px">${esc(w.code)}${w.place ? ' · ' + esc(w.place) : ''}</span></td>
-    <td class="num">${w.users}</td><td class="num">${w.mechanics}</td><td class="num">${w.open_jobs}</td>
-    ${d.multi ? `<td>${storeCell(w)}</td>` : ''}
-    ${manage ? `<td class="num" style="white-space:nowrap"><button class="sm" data-wedit="${w.id}">✎ Edit</button>
-      ${d.multi && w.active && !w.is_default ? `<button class="sm" data-wstore="${w.id}">Store…</button>` : ''}
-      ${w.is_default ? '' : (w.active ? `<button class="sm danger" data-wretire="${w.id}">Retire</button>` : `<button class="sm" data-wback="${w.id}">Reinstate</button>`)}</td>` : ''}</tr>`);
-  const mrows = mechs.filter((m) => m.active).map((m) => `<tr><td>${esc(m.name)}</td><td>${esc(wsName(d, m.workshop_id))}</td>
-    <td class="muted">${m.last_move ? 'since ' + esc(m.last_move) : ''}</td>
-    ${move ? `<td class="num"><button class="sm" data-mmove="${m.id}" data-name="${esc(m.name)}" data-ws="${m.workshop_id}">Move…</button></td>` : ''}</tr>`);
-  c.innerHTML = `${pageHeader('Workshops', 'Where vehicles are repaired. Sites — where vehicles work — are on the Projects page.')}
-    <div class="card">
-      <div class="toolbar" style="margin:0 0 8px"><h3 style="margin:0">Workshops</h3><div class="spacer"></div>${manage ? '<button class="primary sm" id="wnew">+ Add workshop</button>' : ''}</div>
-      ${tableWrap([{ label: 'Workshop' }, { label: 'People', num: true }, { label: 'Mechanics', num: true }, { label: 'Open job cards', num: true }]
-    .concat(d.multi ? [{ label: 'Store' }] : []).concat(manage ? [{ label: '', num: true }] : []), rows)}
-      <p class="muted" style="font-size:12px;margin:8px 0 0">${d.multi
-        ? 'Each person has a home workshop (Access Control → Users). New job cards go to the home workshop of whoever raises them.'
-        : 'With one workshop, nothing else changes on any screen. When you add a second, job cards, requests and people show their workshop.'}</p>
-      ${d.multi ? `<p class="muted" style="font-size:12px;margin:4px 0 0">${d.stores_multi
-    ? 'Each store has its own stock. Goods received go into the store of the request\'s workshop; issues come out of the store of the job\'s workshop.'
-    : 'All stock is in one store. Give a workshop its own store with Store…'}</p>` : ''}
-    </div>
-    <div class="card">
-      <div class="toolbar" style="margin:0 0 6px"><h3 style="margin:0">Separate workshops</h3><div class="spacer"></div>
-        ${manage ? `<button class="sm ${d.separate ? 'danger' : 'primary'}" id="wsep">${d.separate ? 'Turn off' : 'Turn on'}</button>` : ''}</div>
-      <p style="margin:0">${d.separate
-        ? (d.separate_in_force ? '<span class="badge green">On</span> Each workshop sees only its own job cards, job requests, requests (MRN), daily work and approvals.'
-          : '<span class="badge amber">On, waiting</span> It takes effect when there is a second workshop.')
-        : '<span class="badge">Off</span> Everyone sees every workshop\'s work, as before.'}</p>
-      <p class="muted" style="font-size:12px;margin:6px 0 0">Head office (Admin, Manager, Operational Manager, Purchasing) always sees every workshop.
-        Store staff see the requests and job cards of every workshop their store serves. Vehicles and reports stay shared.</p>
-    </div>
-    <div class="card">
-      <h3 style="margin:0 0 8px">Mechanics</h3>
-      ${tableWrap([{ label: 'Mechanic' }, { label: 'Workshop' }, { label: '' }].concat(move ? [{ label: '', num: true }] : []), mrows, { scroll: true })}
-      <p class="muted" style="font-size:12px;margin:8px 0 0">A move keeps its date, so hours worked before it stay with the old workshop.</p>
-    </div>`;
-  const edit = (w) => modal(w ? `Edit ${w.name}` : 'Add a workshop', `
-    ${field('Name', 'name', { value: w ? w.name : '', placeholder: 'e.g. Muthur Site Workshop' })}
-    ${field('Short code', 'code', { value: w ? w.code : '', placeholder: 'e.g. MTR' })}
-    ${field('Place', 'place', { value: w ? (w.place || '') : '', placeholder: 'Town' })}
-    <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Save</button></div>`, (body, close) => {
-    qs('#s', body).onclick = async () => {
-      try {
-        await api(w ? `/workshops/${w.id}` : '/workshops', { method: w ? 'PATCH' : 'POST', body: formData(body) });
-        close(); toast('Saved'); routes.workshops(c);
-      } catch (e) { toast(e.message, 'err'); }
-    };
-  });
-  if (qs('#wnew', c)) qs('#wnew', c).onclick = () => edit(null);
-  if (qs('#wsep', c)) qs('#wsep', c).onclick = async () => {
-    const on = !d.separate;
-    if (on && !confirm('Turn on "Separate workshops"? People outside head office will then see only their own workshop\'s job cards, requests and daily work.')) return;
-    try { await api('/workshops/separate', { method: 'PUT', body: { on } }); toast(on ? 'Separate workshops: on' : 'Separate workshops: off'); routes.workshops(c); }
-    catch (e) { toast(e.message, 'err'); }
-  };
-  qsa('[data-wedit]', c).forEach((b) => { b.onclick = () => edit(d.workshops.find((w) => String(w.id) === b.dataset.wedit)); });
-  // Stage 4: its own store (from a date), or the store it uses.
-  qsa('[data-wstore]', c).forEach((b) => {
-    const w = d.workshops.find((x) => String(x.id) === b.dataset.wstore);
-    const others = d.stores.filter((st) => st.id !== w.id).map((st) => ({ value: st.id, label: st.name }));
-    const today = new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10);
-    b.onclick = () => modal(`Store of ${w.name}`, `
-      <label style="display:block;margin:4px 0"><input type="radio" name="kind" value="own" ${w.own_store ? 'checked' : ''}> Own store</label>
-      <div id="st-own" style="margin-left:22px">${w.own_store
-    ? `<p class="muted" style="margin:0">Open${w.store_opened ? ' since ' + esc(w.store_opened) : ''}.</p>`
-    : field('Opens on', 'opened', { type: 'date', value: today })}</div>
-      <label style="display:block;margin:8px 0 4px"><input type="radio" name="kind" value="uses" ${w.own_store ? '' : 'checked'}> Uses another workshop's store</label>
-      <div id="st-uses" style="margin-left:22px">${field('Store', 'uses', { type: 'select', options: others, value: d.store_of[w.id] })}</div>
-      <p class="muted" style="font-size:12px">A new store starts empty. Send stock to it with a transfer note (MTN). What was received before it opened stays where it was.</p>
-      <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Save</button></div>`, (body, close) => {
-      qs('#s', body).onclick = async () => {
-        const own = qs('input[name="kind"]:checked', body).value === 'own';
-        if (own && !w.own_store && !confirm(`Open a store at ${w.name}? From then on its goods received and issues are in its own store.`)) return;
-        try {
-          const f = formData(body);
-          await api(`/workshops/${w.id}/store`, { method: 'PUT', body: own ? { own: true, opened: f.opened } : { own: false, uses: f.uses } });
-          close(); toast('Saved'); routes.workshops(c);
-        } catch (e) { toast(e.message, 'err'); }
-      };
-    });
-  });
-  const setActive = async (id, active) => {
-    try { await api(`/workshops/${id}`, { method: 'PATCH', body: { active } }); toast(active ? 'Reinstated' : 'Retired'); routes.workshops(c); }
-    catch (e) { toast(e.message, 'err'); }
-  };
-  qsa('[data-wretire]', c).forEach((b) => { b.onclick = () => { if (confirm('Retire this workshop? Nothing can be added to it until it is reinstated.')) setActive(b.dataset.wretire, false); }; });
-  qsa('[data-wback]', c).forEach((b) => { b.onclick = () => setActive(b.dataset.wback, true); });
-  qsa('[data-mmove]', c).forEach((b) => {
-    b.onclick = () => modal(`Move ${b.dataset.name}`, `
-      ${field('To workshop', 'workshop_id', { type: 'select', options: wsOptions(d), value: Number(b.dataset.ws) })}
-      ${field('From date', 'from_date', { type: 'date', value: new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10) })}
-      ${field('Note (optional)', 'note')}
-      <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Move</button></div>`, (body, close) => {
-      qs('#s', body).onclick = async () => {
-        try {
-          const r = await api(`/workshops/mechanics/${b.dataset.mmove}/move`, { method: 'POST', body: formData(body) });
-          close(); toast(`${r.mechanic} → ${r.workshop} from ${r.from_date}`); routes.workshops(c);
-        } catch (e) { toast(e.message, 'err'); }
-      };
-    });
-  });
+  location.replace('#/stores?tab=locations');
 };
 
 // ---- Access Control — roles & permissions, clearance board, users --------------------------
@@ -20293,7 +20696,11 @@ const lvlChip = (lvl) => {
 
 // ---- Tab 1: People & Overrides ------------------------------------------------
 async function renderPeopleAccess(c, wantedUserId) {
-  const [data, wsd] = await Promise.all([api('/access/people'), workshopsData(true)]);
+  const [data, storeLocsList, wsd] = await Promise.all([
+    api('/access/people'),
+    api('/store-locations?active_only=true').catch(() => []),
+    workshopsData(true).catch(() => ({ workshops: [] }))
+  ]);
   const people = data.people || [];
   if (!people.length) {
     c.innerHTML = '<div class="card muted">No users found.</div>';
@@ -20330,7 +20737,7 @@ async function renderPeopleAccess(c, wantedUserId) {
             <span>${esc(p.full_name || p.username)}</span>
             ${p.overrides_count > 0 ? `<span class="badge amber" style="font-size:10px" title="${p.overrides_count} custom overrides">${p.overrides_count} custom</span>` : ''}
           </div>
-          <div class="muted" style="font-size:11px;font-weight:normal">${esc(p.username)} · ${esc(roleStr)}</div>
+          <div class="muted" style="font-size:11px;font-weight:normal">${esc(p.username)} · ${esc(roleStr)}${p.primary_store_name ? ` · <span style="color:var(--primary,#0066ff)">📍 ${esc(p.primary_store_name)}</span>` : ''}</div>
         </td>
       </tr>`;
     }).join('') || '<tr><td class="muted" style="text-align:center">No matching people</td></tr>';
@@ -20443,9 +20850,12 @@ async function renderPeopleAccess(c, wantedUserId) {
       </div>`;
     }).join('');
 
-    const wsOptions = [{ value: '', label: '— Default (Any / Head Office) —' }].concat(
-      (wsd.workshops || []).map((w) => ({ value: String(w.id), label: w.name + (w.code ? ` (${w.code})` : '') }))
-    );
+    const mainStores = (storeLocsList || []).filter((s) => s.store_type === 'MAIN_STORE');
+    const mainWsStores = (storeLocsList || []).filter((s) => s.store_type === 'MAIN_WORKSHOP_STORE');
+    const siteStores = (storeLocsList || []).filter((s) => s.store_type === 'SITE_STORE');
+    const otherStores = (storeLocsList || []).filter((s) => !['MAIN_STORE', 'MAIN_WORKSHOP_STORE', 'SITE_STORE'].includes(s.store_type));
+
+    const selectedStoreId = String(u.primary_store_id || (u.store_locations && u.store_locations[0] && u.store_locations[0].store_location_id) || '');
 
     c.innerHTML = `<div style="display:grid;grid-template-columns:minmax(240px,310px) 1fr;gap:14px;align-items:start">
       <div class="card" style="padding:12px">
@@ -20482,9 +20892,16 @@ async function renderPeopleAccess(c, wantedUserId) {
 
           <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(200px, 1fr));gap:10px;background:var(--bg-muted, #f8fafc);padding:10px;border-radius:6px">
             <div>
-              <label style="font-size:11px;font-weight:600;margin-bottom:4px">Home Workshop:</label>
-              <select id="user-ws" style="width:100%" ${isSelf || !canEditTarget ? 'disabled' : ''}>
-                ${wsOptions.map((o) => `<option value="${o.value}" ${String(u.home_workshop_id || '') === o.value ? 'selected' : ''}>${esc(o.label)}</option>`).join('')}
+              <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
+                <label style="font-size:11px;font-weight:600">Primary Store & Site Location:</label>
+                <button class="btn sm" id="btn-user-store-perms" type="button" title="Configure granular view/receive/issue/count permissions across all store locations" style="padding:2px 7px;font-size:11px">🏪 Manage Access</button>
+              </div>
+              <select id="user-store-loc" style="width:100%" ${isSelf || !canEditTarget ? 'disabled' : ''}>
+                <option value="">— Unassigned (Enterprise Access) —</option>
+                ${mainStores.length ? `<optgroup label="🏢 Central Main Store">${mainStores.map((s) => `<option value="${s.id}" ${selectedStoreId === String(s.id) ? 'selected' : ''}>${esc(s.name)} (${esc(s.code)})</option>`).join('')}</optgroup>` : ''}
+                ${mainWsStores.length ? `<optgroup label="🔧 Central Main Workshop Store">${mainWsStores.map((s) => `<option value="${s.id}" ${selectedStoreId === String(s.id) ? 'selected' : ''}>${esc(s.name)} (${esc(s.code)})</option>`).join('')}</optgroup>` : ''}
+                ${siteStores.length ? `<optgroup label="🏗️ Project Site Stores">${siteStores.map((s) => `<option value="${s.id}" ${selectedStoreId === String(s.id) ? 'selected' : ''}>${esc(s.name)} (${esc(s.code)})</option>`).join('')}</optgroup>` : ''}
+                ${otherStores.length ? `<optgroup label="📦 Other Store Locations">${otherStores.map((s) => `<option value="${s.id}" ${selectedStoreId === String(s.id) ? 'selected' : ''}>${esc(s.name)} (${esc(s.code)})</option>`).join('')}</optgroup>` : ''}
               </select>
             </div>
             <div>
@@ -20537,17 +20954,26 @@ async function renderPeopleAccess(c, wantedUserId) {
       };
     });
 
+    const btnStorePerms = qs('#btn-user-store-perms', c);
+    if (btnStorePerms) {
+      btnStorePerms.onclick = () => {
+        userStoreAccessModal(u, async () => {
+          await renderPeopleAccess(c, u.id);
+        });
+      };
+    }
+
     const saveBtn = qs('#btn-save-access', c);
     if (saveBtn) {
       saveBtn.onclick = async () => {
-        const wsVal = qs('#user-ws', c).value;
+        const storeLocVal = qs('#user-store-loc', c) ? qs('#user-store-loc', c).value : '';
         const limitVal = qs('#user-limit', c).value.trim();
         const untilVal = qs('#user-until', c).value.trim();
 
         const payload = {
           sections: sectionEdits,
           capabilities: capEdits,
-          home_workshop_id: wsVal || null,
+          store_location_id: storeLocVal || null,
           approval_limit: limitVal === '' ? null : Number(limitVal),
           access_until: untilVal || null,
         };
@@ -21923,8 +22349,149 @@ async function renderClearanceBoard(c) {
   });
 }
 
+async function userStoreAccessModal(u, onSave) {
+  modal(`Store & Site Store Access — ${esc(u.username)}`, '<div class="muted" style="padding:20px">Loading user store access…</div>', async (mBody, close) => {
+    try {
+      const res = await api(`/users/${u.id}/stores`);
+      const stores = res.stores || [];
+      const render = () => {
+        mBody.innerHTML = `
+          <div style="font-size:13px">
+            <div style="background:var(--subtle,#f8fafc);border:1px solid var(--border,#e2e8f0);border-radius:8px;padding:12px 14px;margin-bottom:14px">
+              <div style="font-weight:700;font-size:14px">${esc(u.full_name || u.username)} <span class="muted" style="font-size:12px;font-weight:normal">(@${esc(u.username)})</span></div>
+              <div class="muted" style="font-size:11.5px;margin-top:2px">Configure which Central Main Stores, Workshop Stores, and Project Site Stores this user can operate.</div>
+            </div>
+            <div style="overflow-x:auto;max-height:420px;border:1px solid var(--border,#e5e7eb);border-radius:6px;margin-bottom:14px">
+              <table class="table" style="width:100%;margin:0;font-size:12px">
+                <thead>
+                  <tr style="background:var(--subtle,#f9fafb);border-bottom:1px solid var(--border,#e5e7eb);text-align:left">
+                    <th style="padding:8px 10px">Physical Store Location</th>
+                    <th style="padding:8px 10px;text-align:center" title="Grant access to this store">Access</th>
+                    <th style="padding:8px 10px;text-align:center" title="Can view on-hand stock and bin cards">View</th>
+                    <th style="padding:8px 10px;text-align:center" title="Can receive goods (GRN / inbound MTN)">Receive</th>
+                    <th style="padding:8px 10px;text-align:center" title="Can issue parts to Job Cards / Vehicles (MIN)">Issue</th>
+                    <th style="padding:8px 10px;text-align:center" title="Can dispatch outbound MTNs to other stores">Dispatch</th>
+                    <th style="padding:8px 10px;text-align:center" title="Can perform physical stock counts">Count</th>
+                    <th style="padding:8px 10px;text-align:center" title="Can raise MRN replenishment requests">Request</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${stores.map((s) => {
+                    const icon = s.store_type === 'MAIN_STORE' ? '🏛️' : (s.store_type === 'MAIN_WORKSHOP_STORE' ? '🔧' : '📦');
+                    const badgeCls = s.store_type === 'MAIN_STORE' ? 'blue' : (s.store_type === 'MAIN_WORKSHOP_STORE' ? 'amber' : 'green');
+                    return `
+                      <tr style="border-bottom:1px solid var(--border,#f1f5f9)" data-store-row="${s.store_id}">
+                        <td style="padding:8px 10px">
+                          <span style="font-size:14px;margin-right:4px">${icon}</span>
+                          <b>${esc(s.store_name)}</b> <span class="code" style="font-size:10px">(${esc(s.store_code)})</span>
+                          <br><span class="badge ${badgeCls} sm" style="font-size:10px">${esc(s.store_type)}</span>
+                        </td>
+                        <td style="padding:8px 10px;text-align:center">
+                          <input type="checkbox" class="chk-has-access" data-sid="${s.store_id}" ${s.has_access ? 'checked' : ''} />
+                        </td>
+                        <td style="padding:8px 10px;text-align:center">
+                          <input type="checkbox" data-sid="${s.store_id}" data-perm="can_view" ${s.can_view ? 'checked' : ''} ${!s.has_access ? 'disabled' : ''} />
+                        </td>
+                        <td style="padding:8px 10px;text-align:center">
+                          <input type="checkbox" data-sid="${s.store_id}" data-perm="can_receive" ${s.can_receive ? 'checked' : ''} ${!s.has_access ? 'disabled' : ''} />
+                        </td>
+                        <td style="padding:8px 10px;text-align:center">
+                          <input type="checkbox" data-sid="${s.store_id}" data-perm="can_issue" ${s.can_issue ? 'checked' : ''} ${!s.has_access ? 'disabled' : ''} />
+                        </td>
+                        <td style="padding:8px 10px;text-align:center">
+                          <input type="checkbox" data-sid="${s.store_id}" data-perm="can_dispatch" ${s.can_dispatch ? 'checked' : ''} ${!s.has_access ? 'disabled' : ''} />
+                        </td>
+                        <td style="padding:8px 10px;text-align:center">
+                          <input type="checkbox" data-sid="${s.store_id}" data-perm="can_count" ${s.can_count ? 'checked' : ''} ${!s.has_access ? 'disabled' : ''} />
+                        </td>
+                        <td style="padding:8px 10px;text-align:center">
+                          <input type="checkbox" data-sid="${s.store_id}" data-perm="can_request" ${s.can_request ? 'checked' : ''} ${!s.has_access ? 'disabled' : ''} />
+                        </td>
+                      </tr>`;
+                  }).join('')}
+                </tbody>
+              </table>
+            </div>
+            <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+              <span class="muted" style="font-size:11.5px">Changes take effect immediately for stock visibility and transactions.</span>
+              <div style="display:flex;gap:6px">
+                <button type="button" class="btn sm" id="btn_cancel_store_access">Cancel</button>
+                <button type="button" class="btn sm primary" id="btn_save_store_access">Save Store Access</button>
+              </div>
+            </div>
+          </div>
+        `;
+
+        qsa('.chk-has-access', mBody).forEach((ch) => {
+          ch.onchange = () => {
+            const sid = ch.dataset.sid;
+            const checked = ch.checked;
+            const row = qs(`[data-store-row="${sid}"]`, mBody);
+            if (row) {
+              qsa('[data-perm]', row).forEach((p) => {
+                p.disabled = !checked;
+                if (checked) p.checked = true;
+              });
+            }
+          };
+        });
+
+        qs('#btn_cancel_store_access', mBody).onclick = close;
+        qs('#btn_save_store_access', mBody).onclick = async () => {
+          const payload = [];
+          stores.forEach((s) => {
+            const sid = s.store_id;
+            const row = qs(`[data-store-row="${sid}"]`, mBody);
+            if (!row) return;
+            const hasAccess = qs('.chk-has-access', row).checked;
+            const getVal = (perm) => {
+              const el = qs(`[data-perm="${perm}"]`, row);
+              return el && el.checked ? 1 : 0;
+            };
+            payload.push({
+              store_id: sid,
+              has_access: hasAccess,
+              can_view: hasAccess ? getVal('can_view') : 0,
+              can_receive: hasAccess ? getVal('can_receive') : 0,
+              can_issue: hasAccess ? getVal('can_issue') : 0,
+              can_dispatch: hasAccess ? getVal('can_dispatch') : 0,
+              can_count: hasAccess ? getVal('can_count') : 0,
+              can_request: hasAccess ? getVal('can_request') : 0
+            });
+          });
+
+          try {
+            await api(`/users/${u.id}/stores`, { method: 'POST', body: { stores: payload } });
+            close();
+            toast('Store permissions saved');
+            if (typeof onSave === 'function') onSave();
+          } catch (e) {
+            toast(e.message, 'err');
+          }
+        };
+      };
+
+      render();
+    } catch (err) {
+      mBody.innerHTML = `<div class="card alert red">Error loading store permissions: ${esc(err.message)}</div>`;
+    }
+  }, { wide: true });
+}
+
 async function renderUsersManager(c) {
-  const [users, roles, wsd] = await Promise.all([api('/users'), api('/users/roles'), workshopsData(true)]);
+  const [users, roles, wsd, storeLocsRes] = await Promise.all([
+    api('/users'),
+    api('/users/roles'),
+    workshopsData(true),
+    api('/store-locations').catch(() => [])
+  ]);
+  const allStoreLocations = Array.isArray(storeLocsRes) ? storeLocsRes : (storeLocsRes && storeLocsRes.stores) || [];
+  const storeOptions = [{ value: '', label: '— No specific store (Workshop / Fleet / General) —' }]
+    .concat(allStoreLocations.map((s) => {
+      const icon = s.store_type === 'MAIN_STORE' ? '🏛️' : (s.store_type === 'MAIN_WORKSHOP_STORE' ? '🔧' : '📦');
+      return { value: String(s.id), label: `${icon} ${s.name} (${s.code})` };
+    }));
+
   // Home workshop (Stage 2): shown once there is more than one workshop.
   const multi = wsd.multi;
   const labelOf = Object.fromEntries(roles.map((r) => [r.name, r.label || r.name]));
@@ -21933,17 +22500,38 @@ async function renderUsersManager(c) {
       <span>${esc(r.label || r.name)}${r.description ? `<br><span class="muted" style="font-size:11px">${esc(r.description)}</span>` : ''}</span></label>`).join('');
   const picked = (body) => qsa('[data-role]', body).filter((x) => x.checked).map((x) => x.dataset.role);
 
+  const tableHeaders = [{ label: 'Username' }, { label: 'Name' }, { label: 'Assigned Store(s)' }, { label: 'Roles' }, { label: '2FA' }, { label: 'Active' }, { label: '' }];
+
   c.innerHTML = `<div class="toolbar"><button class="primary" id="nu">+ New User</button><div class="spacer"></div><span class="muted">${users.length} user(s)</span></div>
-    ${tableWrap([{ label: 'Username' }, { label: 'Name' }].concat(multi ? [{ label: 'Workshop' }] : []).concat([{ label: 'Roles' }, { label: '2FA' }, { label: 'Active' }, { label: '' }]),
-    users.map((u) => `<tr${u.active ? '' : ' style="opacity:.55"'}><td>${esc(u.username)}</td><td>${esc(u.full_name || '')}</td>
-      ${multi ? `<td>${esc(wsName(wsd, u.workshop_id))} <button class="sm" data-uws="${u.id}" title="Change home workshop">✎</button></td>` : ''}
-      <td>${u.roles.map((r) => `<span class="badge">${esc(labelOf[r] || r)}</span>`).join(' ')}</td>
-      <td>${u.mfa_enabled ? '<span class="badge green">on</span>' : '<span class="muted">off</span>'}</td><td>${u.active ? '✓' : '✕'}</td>
-      <td style="white-space:nowrap"><button class="sm" data-roles="${u.id}">Roles</button> <button class="sm" data-reset="${u.id}">Reset password</button>
-        <button class="sm" data-sessions="${u.id}">Sessions</button>
-        ${u.mfa_enabled ? `<button class="sm" data-mfareset="${u.id}" title="Lost or new phone">Reset 2FA</button>` : ''}
-        <button class="sm ${u.active ? 'danger' : ''}" data-active="${u.id}">${u.active ? 'Deactivate' : 'Activate'}</button></td></tr>`))}`;
+    ${tableWrap(tableHeaders,
+    users.map((u) => {
+      const storesBadge = (u.store_locations && u.store_locations.length)
+        ? u.store_locations.map(sl => {
+            const icon = sl.store_type === 'MAIN_STORE' ? '🏛️' : (sl.store_type === 'MAIN_WORKSHOP_STORE' ? '🔧' : '📦');
+            const cls = sl.store_type === 'MAIN_STORE' ? 'blue' : (sl.store_type === 'MAIN_WORKSHOP_STORE' ? 'amber' : 'green');
+            return `<span class="badge ${cls}" style="font-size:11px;white-space:nowrap" title="${esc(sl.store_name)}: ${sl.can_issue ? 'Issue ' : ''}${sl.can_receive ? 'Receive ' : ''}${sl.can_dispatch ? 'Dispatch ' : ''}${sl.can_count ? 'Count' : ''}">${icon} ${esc(sl.store_name || sl.store_code)}</span>`;
+          }).join(' ')
+        : '<span class="muted" style="font-size:11.5px">—</span>';
+
+      return `<tr${u.active ? '' : ' style="opacity:.55"'}><td>${esc(u.username)}</td><td>${esc(u.full_name || '')}</td>
+        
+        <td>${storesBadge}</td>
+        <td>${u.roles.map((r) => `<span class="badge">${esc(labelOf[r] || r)}</span>`).join(' ')}</td>
+        <td>${u.mfa_enabled ? '<span class="badge green">on</span>' : '<span class="muted">off</span>'}</td><td>${u.active ? '✓' : '✕'}</td>
+        <td style="white-space:nowrap">
+          <button class="sm" data-roles="${u.id}">Roles</button>
+          <button class="sm" data-stores="${u.id}" title="Manage physical store and site store permissions">Stores</button>
+          <button class="sm" data-reset="${u.id}">Reset password</button>
+          <button class="sm" data-sessions="${u.id}">Sessions</button>
+          ${u.mfa_enabled ? `<button class="sm" data-mfareset="${u.id}" title="Lost or new phone">Reset 2FA</button>` : ''}
+          <button class="sm ${u.active ? 'danger' : ''}" data-active="${u.id}">${u.active ? 'Deactivate' : 'Activate'}</button></td></tr>`;
+    }))}`;
+
   qsa('[data-sessions]', c).forEach((b) => b.onclick = () => userSessionsModal(users.find((x) => x.id == b.dataset.sessions)));
+  qsa('[data-stores]', c).forEach((b) => b.onclick = () => {
+    const u = users.find((x) => x.id == b.dataset.stores);
+    if (u) userStoreAccessModal(u, () => renderUsersManager(c));
+  });
   qsa('[data-mfareset]', c).forEach((b) => b.onclick = async () => {
     const u = users.find((x) => x.id == b.dataset.mfareset);
     if (!confirm(`Reset two-factor sign-in for ${u.username}? They are signed out, and set it up again with their new phone at next sign-in (if their role requires it) or when they choose to.`)) return;
@@ -21952,9 +22540,29 @@ async function renderUsersManager(c) {
 
   qs('#nu', c).onclick = () => modal('New User', `${field('Username *', 'username')}${field('Temporary password *', 'password', { type: 'password' })}
     <p class="muted">${esc(passwordHint())} They must choose their own at first sign-in.</p>${field('Full name', 'full_name')}
-    ${multi ? field('Home workshop', 'workshop_id', { type: 'select', options: wsOptions(wsd), value: wsd.default_id }) : ''}<label>Roles</label>${roleBoxes()}
+    ${field('Store & Site Location Assignment', 'store_location_id', { type: 'select', options: storeOptions, value: '' })}
+    <p class="muted" style="margin:-4px 0 8px;font-size:11.5px">Select <b>Central Main Stores</b> for central procurement/depot storekeepers, or a <b>Site Store</b> for project site storekeepers.</p>
+    <label>Roles</label>${roleBoxes()}
     <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Create</button></div>`,
     (body, close) => {
+      // Auto-suggest store location when specific roles are toggled
+      const storeSelect = qs('select[name="store_location_id"]', body);
+      qsa('[data-role]', body).forEach((rBox) => {
+        rBox.onchange = () => {
+          if (!storeSelect) return;
+          const rName = rBox.dataset.role;
+          if (rBox.checked) {
+            if (rName === 'main_storekeeper') {
+              const ms = allStoreLocations.find(s => s.store_type === 'MAIN_STORE');
+              if (ms) storeSelect.value = String(ms.id);
+            } else if (rName === 'storekeeper' && !storeSelect.value) {
+              const ss = allStoreLocations.find(s => s.store_type === 'SITE_STORE' || s.store_type === 'MAIN_WORKSHOP_STORE');
+              if (ss) storeSelect.value = String(ss.id);
+            }
+          }
+        };
+      });
+
       qs('#s', body).onclick = async () => {
         const d = formData(body); d.roles = picked(body);
         try { await api('/users', { method: 'POST', body: d }); close(); toast('User created'); renderUsersManager(c); } catch (e) { toast(e.message, 'err'); }

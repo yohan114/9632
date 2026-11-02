@@ -307,12 +307,12 @@ function rebuild(opts = {}) {
 
     for (const l of all(
       `SELECT l.id, l.description, l.qty, l.qty_received, l.category, l.store_item_id, l.from_store_id, l.to_store_id,
-              l.from_store_location_id, l.to_store_location_id,
+              l.from_store_location_id, l.to_store_location_id, l.to_location, l.to_place,
               t.mtn_no, t.txn_date, t.status, si.name AS item_name, si.category AS item_cat
          FROM mtn_lines l JOIN mtn t ON t.id = l.mtn_id
          LEFT JOIN store_items si ON si.id = l.store_item_id
-        WHERE ((l.from_store_id IS NOT NULL AND l.to_store_id IS NOT NULL AND l.from_store_id <> l.to_store_id)
-            OR (l.from_store_location_id IS NOT NULL AND l.to_store_location_id IS NOT NULL AND l.from_store_location_id <> l.to_store_location_id))
+        WHERE (l.from_store_id IS NOT NULL OR l.from_store_location_id IS NOT NULL
+            OR l.to_store_id IS NOT NULL OR l.to_store_location_id IS NOT NULL)
           AND COALESCE(l.qty,0) > 0
           AND t.status IN (${GONE.map(() => '?').join(', ')})
           ${mtnId ? 'AND l.mtn_id = ?' : ''}`, ...GONE, ...(mtnId ? [mtnId] : []))) {
@@ -322,11 +322,13 @@ function rebuild(opts = {}) {
       const base = { section, item_key: key, item_name: name, txn_date: l.txn_date,
         store_item_id: l.store_item_id, ref: 'MTN ' + l.mtn_no, source_table: 'mtn_lines', source_id: l.id };
 
-      const fromDesc = locName.get(l.from_store_location_id) || storeName.get(l.from_store_id) || 'another store';
-      const toDesc = locName.get(l.to_store_location_id) || storeName.get(l.to_store_id) || 'another store';
+      const fromDesc = locName.get(l.from_store_location_id) || storeName.get(l.from_store_id) || 'store';
+      const toDesc = locName.get(l.to_store_location_id) || storeName.get(l.to_store_id) || l.to_location || l.to_place || 'site';
 
-      insert({ ...base, qty: l.qty, kind: 'out', store_id: l.from_store_id, physical_store_id: l.from_store_location_id, note: 'to ' + toDesc });
-      if (l.status === TAKEN_IN) {
+      if (l.from_store_id || l.from_store_location_id) {
+        insert({ ...base, qty: l.qty, kind: 'out', store_id: l.from_store_id, physical_store_id: l.from_store_location_id, note: 'to ' + toDesc });
+      }
+      if (l.status === TAKEN_IN && (l.to_store_id || l.to_store_location_id)) {
         const inQty = (l.qty_received != null && Number(l.qty_received) >= 0) ? Number(l.qty_received) : l.qty;
         insert({ ...base, qty: inQty, kind: 'in', store_id: l.to_store_id, physical_store_id: l.to_store_location_id, note: 'from ' + fromDesc });
       }
@@ -393,7 +395,7 @@ function rebuild(opts = {}) {
     for (const t of all(
       `SELECT t.id, t.txn_type, t.qty, t.unit_price, t.txn_date, t.asset_id, t.job_id, t.ref, t.store_item_id, t.store_id, t.physical_store_id,
               si.name, si.category
-         FROM general_item_txns t JOIN store_items si ON si.id = t.store_item_id WHERE 1${idsIn('general_item_txns', 't.id')}`)) {
+         FROM general_item_txns t JOIN store_items si ON si.id = t.store_item_id WHERE (t.source_issue_id IS NULL)${idsIn('general_item_txns', 't.id')}`)) {
       const section = sectionOf(t.category);
       const kind = t.txn_type === 'issue' ? 'out' : (t.txn_type === 'opening' ? 'opening' : 'in');
       // Its 'receipt' rows are the same deliveries the GRN already records (23 of 32 match a
@@ -436,7 +438,7 @@ function rebuild(opts = {}) {
       `SELECT s.id, s.kind, s.qty, s.unit_price, s.txn_date, s.asset_id, s.job_id, s.mr_no, s.consumer, s.store_id, s.physical_store_id,
               p.name, p.code
          FROM stock_ledger s JOIN products p ON p.id = s.product_id
-        WHERE COALESCE(s.voided,0) = 0${idsIn('stock_ledger', 's.id')}`)) {
+        WHERE COALESCE(s.voided,0) = 0 AND (s.source_issue_id IS NULL)${idsIn('stock_ledger', 's.id')}`)) {
       const kind = s.kind === 'issue' ? 'out' : (s.kind === 'opening' ? 'opening' : (s.kind === 'adjustment' ? 'adjust' : 'in'));
       // `adjust` is the one kind that carries a sign: every balance reads it as `THEN qty`, so a
       // negative delta subtracts with no change to a single balance query.
@@ -550,7 +552,7 @@ function rebuild(opts = {}) {
          LEFT JOIN store_items si ON si.id = i.store_item_id
          LEFT JOIN grn g          ON g.id = i.grn_id
          LEFT JOIN mrn_lines gml  ON gml.id = g.mrn_line_id
-        WHERE COALESCE(i.qty,0) > 0${idsIn('issues', 'i.id')}`)) {
+        WHERE COALESCE(i.qty,0) > 0 AND (i.source_table IS NULL OR i.source_table NOT IN ('general_item_txns', 'stock_ledger'))${idsIn('issues', 'i.id')}`)) {
       // An issue raised against a specific receipt mirrors that receipt: same section, same
       // key, and the same counts flag — a cut-over receipt was never added to the balance, so
       // taking it out must not subtract from one either.
@@ -612,7 +614,7 @@ function rebuild(opts = {}) {
 
 // The source tables stock_moves is projected from, as sync() may name them.
 const SOURCES = ['grn', 'general_item_txns', 'stock_ledger', 'service_filters', 'filter_stock', 'tyre_battery_issues',
-  'issues', 'issue_returns', 'store_counts'];
+  'issues', 'issue_returns', 'store_counts', 'mtn_lines'];
 
 /**
  * Bring the stock up to date with just-written source rows (stores plan, Part 3), in the same
@@ -671,7 +673,7 @@ function storeWhere(alias, store, physicalStoreId = null) {
       return { sql: ` AND ${alias}store_id = ?`, params: [Number(store)] };
     }
   }
-  return { sql: ` AND ${alias}source_table <> 'mtn_lines'`, params: [] };
+  return { sql: ` AND (${alias}source_table <> 'mtn_lines' OR ${alias}source_id IN (SELECT id FROM mtn_lines WHERE to_store_id IS NULL AND to_store_location_id IS NULL))`, params: [] };
 }
 
 /** Headline figures for a section: received, issued, balance — in one store, or in all. */

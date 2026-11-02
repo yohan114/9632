@@ -21,6 +21,11 @@ const vehicleDocuments = require('./lib/vehicle_documents');
 
 // Apply schema on boot (idempotent).
 migrate();
+try {
+  require('./lib/store_locations').seedStoreLocations();
+} catch (e) {
+  console.warn('Store locations seed warning:', e.message);
+}
 
 const app = express();
 // WHO IS ALLOWED TO TELL US THE VISITOR'S ADDRESS.
