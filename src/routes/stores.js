@@ -3339,6 +3339,71 @@ function receiptIsJobs(grnId, jobId) {
     grnId, jobId, jobId);
 }
 
+function syncIssueToLedgers(issueId) {
+  const iss = get(`
+    SELECT i.*, si.is_general, si.balance AS item_balance, si.unit_cost
+      FROM issues i
+      LEFT JOIN store_items si ON si.id = i.store_item_id
+     WHERE i.id = ?
+  `, issueId);
+  if (!iss || iss.source_table) return;
+
+  const lubricants = require('../lib/lubricants');
+  const isLube = iss.category === 'Lubricants' || lubricants.isLubricant(iss.description, iss.issue_date);
+
+  if (isLube) {
+    const match = lubricants.resolveLubricant(iss.description, { record: false, on: iss.issue_date });
+    if (match.resolved && match.productId) {
+      const already = get('SELECT id FROM stock_ledger WHERE source_issue_id = ?', iss.id);
+      if (!already) {
+        const prev = (get('SELECT balance_after FROM stock_ledger WHERE product_id = ? ORDER BY txn_date DESC, id DESC LIMIT 1', match.productId) || {}).balance_after || 0;
+        const newBal = prev - Math.abs(iss.qty);
+        run(`
+          INSERT INTO stock_ledger (product_id, kind, qty, balance_after, unit_price, asset_id, job_id, consumer, mr_no, txn_date, store_id, physical_store_id, source_issue_id)
+          VALUES (?, 'issue', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `, match.productId, -Math.abs(iss.qty), newBal, iss.unit_price, iss.asset_id, iss.job_id, iss.description, iss.min_no || 'Store Issue', iss.issue_date, iss.store_id || 1, iss.physical_store_id || 2, iss.id);
+        run('UPDATE products SET stock_qty = ? WHERE id = ?', newBal, match.productId);
+      }
+    }
+  } else if (iss.store_item_id && (iss.is_general || iss.category === 'General Items')) {
+    const already = get('SELECT id FROM general_item_txns WHERE source_issue_id = ?', iss.id);
+    if (!already) {
+      const prev = (get('SELECT balance_after FROM general_item_txns WHERE store_item_id = ? ORDER BY txn_date DESC, id DESC LIMIT 1', iss.store_item_id) || {}).balance_after || iss.item_balance || 0;
+      const newBal = prev - Math.abs(iss.qty);
+      run(`
+        INSERT INTO general_item_txns (store_item_id, txn_type, qty, balance_after, unit_price, asset_id, job_id, ref, txn_date, store_id, physical_store_id, source_issue_id)
+        VALUES (?, 'issue', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `, iss.store_item_id, -Math.abs(iss.qty), newBal, iss.unit_price, iss.asset_id, iss.job_id, iss.min_no || 'Store Issue', iss.issue_date, iss.store_id || 1, iss.physical_store_id || 2, iss.id);
+      run('UPDATE store_items SET balance = ? WHERE id = ?', newBal, iss.store_item_id);
+    }
+  }
+}
+
+function syncMtnStock(mtnId) {
+  const lines = all('SELECT * FROM mtn_lines WHERE mtn_id = ?', mtnId);
+  const lubricants = require('../lib/lubricants');
+  for (const l of lines) {
+    if (l.store_item_id) {
+      run('UPDATE store_items SET balance = COALESCE(balance, 0) - ? WHERE id = ?', l.qty, l.store_item_id);
+      const prev = (get('SELECT balance_after FROM general_item_txns WHERE store_item_id = ? ORDER BY txn_date DESC, id DESC LIMIT 1', l.store_item_id) || {}).balance_after || 0;
+      const newBal = prev - l.qty;
+      run(`INSERT INTO general_item_txns (store_item_id, txn_type, qty, balance_after, unit_price, ref, txn_date, store_id, physical_store_id)
+           VALUES (?, 'issue', ?, ?, ?, ?, (SELECT txn_date FROM mtn WHERE id = ?), ?, ?)`,
+        l.store_item_id, -l.qty, newBal, l.value, 'MTN Transfer', mtnId, l.from_store_id || 1, l.from_store_location_id || 2);
+    } else {
+      const match = lubricants.resolveLubricant(l.description, { record: false });
+      if (match.resolved && match.productId) {
+        const prev = (get('SELECT balance_after FROM stock_ledger WHERE product_id = ? ORDER BY txn_date DESC, id DESC LIMIT 1', match.productId) || {}).balance_after || 0;
+        const newBal = prev - l.qty;
+        run(`INSERT INTO stock_ledger (product_id, kind, qty, balance_after, unit_price, consumer, mtn_no, txn_date, store_id, physical_store_id)
+             VALUES (?, 'issue', ?, ?, ?, ?, (SELECT mtn_no FROM mtn WHERE id = ?), (SELECT txn_date FROM mtn WHERE id = ?), ?, ?)`,
+          match.productId, -l.qty, newBal, l.value, l.to_location || 'Site Transfer', mtnId, mtnId, l.from_store_id || 1, l.from_store_location_id || 2);
+        run('UPDATE products SET stock_qty = ? WHERE id = ?', newBal, match.productId);
+      }
+    }
+  }
+}
+
 // ---- Issue stock ------------------------------------------------------------
 // Several lines in one go, against a job card OR a vehicle (either is enough). Each line
 // deducts its section's balance. Going negative is reported, not blocked — the part is in
@@ -3469,6 +3534,7 @@ router.post('/stock-issue', requireCap('stores.stock_issue'), asyncHandler((req,
     // The one issue rule (Part 3): not more than the shelf holds.
     stockRule.check([{ section: rec.section, item_key: rec.item_key, store_id: get('SELECT store_id FROM issues WHERE id = ?', info.lastInsertRowid).store_id,
       delta: rec.counts ? -qty : 0 }]);
+    syncIssueToLedgers(info.lastInsertRowid);
 
     done.push({
       code: 'MRN ' + rec.mrn_no, name: rec.description, section: rec.section, qty,
@@ -3534,6 +3600,7 @@ router.post('/stock-issue', requireCap('stores.stock_issue'), asyncHandler((req,
       // The one issue rule (Part 3): once it has started in this store, nothing past zero.
       stockRule.check([{ section: item.section, item_key: item.item_key,
         store_id: get('SELECT store_id FROM issues WHERE id = ?', info.lastInsertRowid).store_id, delta: -qty }]);
+      syncIssueToLedgers(info.lastInsertRowid);
 
       const after = Math.round((before - qty) * 100) / 100;
       done.push({ code: item.code, name: item.name, section: item.section, qty, balance_before: before, balance_after: after,
@@ -3966,6 +4033,7 @@ router.post('/issues', requireCap('stores.issue'), chainPipeline.idempotencyGuar
     }
     // Stores plan, Part 3: off the shelf now, and — once the store's rule has started — not past zero.
     stockRule.check(stock.sync({ issues: [info.lastInsertRowid] }));
+    syncIssueToLedgers(info.lastInsertRowid);
     return info.lastInsertRowid;
   });
   // Refresh the job's stored totals so job-based cost reports reflect the new issue
@@ -4173,6 +4241,7 @@ router.post('/min', requireCap('stores.issue'), chainPipeline.idempotencyGuard('
 
     if (createdIds.length) {
       stockRule.check(stock.sync({ issues: createdIds }));
+      for (const cid of createdIds) syncIssueToLedgers(cid);
     }
 
     if (jobId) { try { costing.refreshJobTotals(jobId); } catch (e) { /* non-fatal */ } }
@@ -4585,6 +4654,7 @@ router.post('/mtn', requireCap('stores.mtn.edit'), chainPipeline.idempotencyGuar
     stores.stampTransfer(info.lastInsertRowid);
     stores.checkTransfer(req.user, info.lastInsertRowid);
     stock.rebuild({ transfersOf: info.lastInsertRowid });
+    syncMtnStock(info.lastInsertRowid);
     return info.lastInsertRowid;
   });
   audit.record({ userId: req.user.id, entity: 'mtn', entityId: id, action: 'create',
@@ -4853,6 +4923,7 @@ router.post('/mtn/:id/dispatch', requireCap('stores.mtn.edit'), guardMtn, chainP
          VALUES (?, 'dispatch', 'driver', ?, ?, ?, 'approved', ?)`,
       id, req.user.id, recBy, recSig, req.body.reason || 'Handed over for transit');
     stock.rebuild({ transfersOf: id });     // out of the sending store: it is on the lorry
+    syncMtnStock(id);
     supplyRoutes.onMtnDispatched(id);
   });
 

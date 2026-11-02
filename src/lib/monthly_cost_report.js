@@ -760,7 +760,7 @@ function buildTyre(wb, ym, period, wsId) {
 // 6. Oils & Lubrication
 // ---------------------------------------------------------------------------
 const OILVAL = 'ABS(sl.qty) * COALESCE(sl.unit_price, pr.unit_price, 0)';
-const LUBE = "pr.category IN ('engine_oil','gear_oil','hydraulic','grease')";
+const LUBE = "pr.category <> 'fuel'";
 // The same rule as LUBE, applied to a free-text description rather than a joined product row:
 // resolve the words to a product in the oil book, then ask whether that product is one of the
 // categories this report counts as Oil. Deliberately NOT "any lubricant" — brake fluid, coolant,

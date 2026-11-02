@@ -155,29 +155,44 @@ function physicalLocationAtPlace(placeKey) {
  * site, to a machine, between two workshops sharing one store — stays a paper record, as before.
  */
 function stampTransfer(mtnId) {
-  const t = get('SELECT id, txn_date, from_place, to_place, from_store_location_id, to_store_location_id FROM mtn WHERE id = ?', mtnId);
+  const t = get('SELECT id, txn_date, from_location, to_location, from_place, to_place, workshop_id, from_store_location_id, to_store_location_id FROM mtn WHERE id = ?', mtnId);
   if (!t) return;
   const date = String(t.txn_date || '').slice(0, 10);
   let storeLocations;
   try { storeLocations = require('./store_locations'); } catch {}
 
-  const headerFromLoc = t.from_store_location_id || physicalLocationAtPlace(t.from_place);
-  const headerToLoc = t.to_store_location_id || physicalLocationAtPlace(t.to_place);
+  const locMap = {
+    'MAIN STORES': 1, 'CENTRAL MAIN STORES': 1, 'MAIN STORE': 1,
+    'WORK SHOP STORES': 2, 'BADALGAMA WORK SHOP STORES': 2, 'CENTRAL STORE BADALGAMA': 2, 'CENTRAL WORKSHOP': 2,
+    'GALAGEDARA': 3, 'SITE-STORE-GWS': 3, 'CEP/03 GALAGEDARA': 3,
+    'CEP-03': 4, 'CEP-03 WADAKADA': 4, 'CEP-03 WADAKADA MECHANIC': 4, 'CEP-03(E)': 4,
+    'RUWANWELLA': 5, 'RUWANWELLA WATER PROJECT': 5,
+    'MARAWILA': 6, 'MARAWILA ROAD PROJECT': 6,
+    'BATTICALOA': 7, 'BATTICALOA LOT/2': 7, 'BATTICALOA LOT/3': 7, 'BATTICALOA WORK SHOP': 7, 'BATTICALOA LOT 03': 7, 'BATTICOLOA': 7,
+    'MUTHUR': 8, 'MUTHUR PLANT': 8,
+  };
+  const normLoc = (str) => {
+    if (!str) return null;
+    const cleanStr = String(str).toUpperCase().replace(/[^A-Z0-9/ ]/g, ' ').replace(/\s+/g, ' ').trim();
+    for (const [k, id] of Object.entries(locMap)) {
+      if (cleanStr.includes(k) || k.includes(cleanStr)) return id;
+    }
+    return null;
+  };
 
-  for (const l of all('SELECT id, from_place, to_place, from_store_location_id, to_store_location_id FROM mtn_lines WHERE mtn_id = ?', mtnId)) {
+  const headerFromLoc = t.from_store_location_id || physicalLocationAtPlace(t.from_place) || normLoc(t.from_location) || (t.workshop_id === 2 ? 3 : 2);
+  const headerToLoc = t.to_store_location_id || physicalLocationAtPlace(t.to_place) || normLoc(t.to_location);
+
+  for (const l of all('SELECT id, from_location, to_location, from_place, to_place, from_store_location_id, to_store_location_id FROM mtn_lines WHERE mtn_id = ?', mtnId)) {
     let from = storeAtPlace(l.from_place || t.from_place, date);
     let to = storeAtPlace(l.to_place || t.to_place, date);
 
-    let fromLoc = l.from_store_location_id || physicalLocationAtPlace(l.from_place) || headerFromLoc;
-    let toLoc = l.to_store_location_id || physicalLocationAtPlace(l.to_place) || headerToLoc;
+    let fromLoc = l.from_store_location_id || physicalLocationAtPlace(l.from_place) || normLoc(l.from_location) || headerFromLoc;
+    let toLoc = l.to_store_location_id || physicalLocationAtPlace(l.to_place) || normLoc(l.to_location) || headerToLoc;
 
     if (storeLocations) {
-      if (fromLoc && !from) {
-        from = storeLocations.resolveLegacyStoreId(fromLoc);
-      }
-      if (toLoc && !to) {
-        to = storeLocations.resolveLegacyStoreId(toLoc);
-      }
+      if (fromLoc && !from) from = storeLocations.resolveLegacyStoreId(fromLoc) || (fromLoc === 3 ? 2 : 1);
+      if (toLoc && !to) to = storeLocations.resolveLegacyStoreId(toLoc) || (toLoc === 3 ? 2 : 1);
       if (from && !fromLoc) {
         const p = storeLocations.resolvePhysicalStore(from);
         if (p) fromLoc = p.id;
@@ -188,15 +203,15 @@ function stampTransfer(mtnId) {
       }
     }
 
-    const moves = from && to && from !== to;
-    const movesLoc = fromLoc && toLoc && fromLoc !== toLoc;
+    const movesToStore = to && to !== from;
+    const movesToLoc = toLoc && toLoc !== fromLoc;
 
     run(
       'UPDATE mtn_lines SET from_store_id = ?, to_store_id = ?, from_store_location_id = ?, to_store_location_id = ? WHERE id = ?',
-      moves ? from : null,
-      moves ? to : null,
-      movesLoc ? fromLoc : null,
-      movesLoc ? toLoc : null,
+      from || null,
+      movesToStore ? to : null,
+      fromLoc || null,
+      movesToLoc ? toLoc : null,
       l.id
     );
   }
@@ -204,10 +219,12 @@ function stampTransfer(mtnId) {
   try {
     run(`
       UPDATE mtn
-         SET from_store_location_id = COALESCE(from_store_location_id, (SELECT from_store_location_id FROM mtn_lines WHERE mtn_id = mtn.id AND from_store_location_id IS NOT NULL LIMIT 1)),
-             to_store_location_id = COALESCE(to_store_location_id, (SELECT to_store_location_id FROM mtn_lines WHERE mtn_id = mtn.id AND to_store_location_id IS NOT NULL LIMIT 1))
+         SET from_store_location_id = COALESCE(from_store_location_id, (SELECT from_store_location_id FROM mtn_lines WHERE mtn_id = mtn.id AND from_store_location_id IS NOT NULL LIMIT 1), ?),
+             to_store_location_id = COALESCE(to_store_location_id, (SELECT to_store_location_id FROM mtn_lines WHERE mtn_id = mtn.id AND to_store_location_id IS NOT NULL LIMIT 1), ?),
+             from_store_id = COALESCE(from_store_id, (SELECT from_store_id FROM mtn_lines WHERE mtn_id = mtn.id AND from_store_id IS NOT NULL LIMIT 1)),
+             to_store_id = COALESCE(to_store_id, (SELECT to_store_id FROM mtn_lines WHERE mtn_id = mtn.id AND to_store_id IS NOT NULL LIMIT 1))
        WHERE id = ?
-    `, mtnId);
+    `, headerFromLoc, headerToLoc, mtnId);
   } catch {}
 }
 

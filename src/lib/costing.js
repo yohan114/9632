@@ -130,8 +130,9 @@ function computeJobCost(jobId) {
 
   // --- general (general item issues to this job) ---
   let general = 0;
-  for (const g of all(`SELECT * FROM general_item_txns WHERE job_id = ? AND txn_type = 'issue'`, jobId)) {
-    if (g.unit_price != null) general += Math.abs(g.qty || 0) * g.unit_price;
+  for (const g of all(`SELECT t.*, si.unit_cost FROM general_item_txns t LEFT JOIN store_items si ON si.id = t.store_item_id WHERE t.job_id = ? AND t.txn_type = 'issue'`, jobId)) {
+    const price = g.unit_price != null ? g.unit_price : (g.unit_cost || 0);
+    general += Math.abs(g.qty || 0) * price;
   }
 
   // --- external WORK value (daily-work is_external only): the "external cost of our job" from the

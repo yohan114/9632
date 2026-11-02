@@ -882,13 +882,17 @@ router.get('/monthly/:month/asset/:id', requireModule('reports'), asyncHandler((
   const oil_lines = all(`SELECT sl.txn_date, pr.name product, pr.unit, ABS(sl.qty) qty, COALESCE(sl.unit_price, pr.unit_price) unit_price
                            FROM stock_ledger sl JOIN products pr ON pr.id=sl.product_id LEFT JOIN job_cards j ON j.id = sl.job_id
                           WHERE sl.asset_id=? AND sl.kind='issue' AND ${OIL_NOT_SERVICE} AND substr(sl.txn_date,1,7)=?${wsSql(OIL_WS, ws)} ORDER BY sl.txn_date, sl.id`, id, month);
+  const general_lines = all(`SELECT t.txn_date, si.name product, si.unit, ABS(t.qty) qty, COALESCE(t.unit_price, si.unit_cost, 0) unit_price, t.ref
+                               FROM general_item_txns t JOIN store_items si ON si.id = t.store_item_id LEFT JOIN job_cards j ON j.id = t.job_id
+                              WHERE t.asset_id=? AND t.txn_type='issue' AND substr(t.txn_date,1,7)=?${wsSql('COALESCE(j.workshop_id, t.store_id)', ws)} ORDER BY t.txn_date, t.id`, id, month);
   const labour = labour_lines.reduce((s, l) => s + (l.amount || 0), 0);
   const material = material_lines.reduce((s, l) => s + (l.qty || 0) * (l.unit_price || 0), 0);
   const oil = oil_lines.reduce((s, l) => s + (l.qty || 0) * (l.unit_price || 0), 0);
+  const general = general_lines.reduce((s, l) => s + (l.qty || 0) * (l.unit_price || 0), 0);
   res.json({ month, asset_id: id, asset_code: asset ? asset.code : '(unlinked)',
     asset_reg: asset ? asset.registration : null, asset_ec: asset ? asset.ec_code : null,
-    labour: r2(labour), material: r2(material), oil: r2(oil), total: r2(labour + material + oil),
-    labour_lines, material_lines, oil_lines });
+    labour: r2(labour), material: r2(material), oil: r2(oil), general: r2(general), total: r2(labour + material + oil + general),
+    labour_lines, material_lines, oil_lines, general_lines });
 }));
 
 // ---- role-aware "pending your approval" queue (for the dashboard) ----------
