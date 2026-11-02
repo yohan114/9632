@@ -836,6 +836,12 @@ function migrate() {
   } catch (err) {
     console.warn('Physical store locations stage 2 migration skipped:', err.message);
   }
+  // General & Lubricant Issues reconciliation & Stock sync
+  try {
+    require('../migrate/045_fix_issues_mtn_stock').runMigration(db);
+  } catch (err) {
+    console.warn('Migration 045 auto-sync skipped:', err.message);
+  }
 
   return db;
 }
