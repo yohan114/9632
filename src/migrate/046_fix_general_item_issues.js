@@ -81,7 +81,16 @@ function migrateSingleDb(targetDb, label) {
        AND (i.source_table IS NULL OR i.source_table NOT IN ('general_item_txns', 'stock_ledger'))
        AND NOT EXISTS (SELECT 1 FROM stock_ledger sl WHERE sl.source_issue_id = i.id)
        AND NOT EXISTS (SELECT 1 FROM general_item_txns git WHERE git.source_issue_id = i.id)
-       AND COALESCE(i.category, '') NOT IN ('Battery', 'Tyres & Wheels')
+       AND i.grn_id IS NULL
+       AND i.mrn_no IS NULL
+       AND i.mrn_line_id IS NULL
+       AND NOT EXISTS (
+         SELECT 1 FROM job_parts jp
+          WHERE jp.job_id = i.job_id
+            AND (jp.source_type = 'issue' OR jp.mrn_line_id = i.id OR LOWER(TRIM(jp.description)) = LOWER(TRIM(i.description)))
+       )
+       AND COALESCE(i.category, '') NOT IN ('Battery', 'Tyres & Wheels', 'Filters')
+       AND LOWER(i.description) NOT LIKE '%filter%'
   `).all();
 
   console.log(`Found ${candidates.length} unlinked candidate issues in ${label}`);
@@ -96,7 +105,8 @@ function migrateSingleDb(targetDb, label) {
   targetDb.transaction(() => {
     for (const iss of candidates) {
       const desc = String(iss.description || '').trim();
-      const match = lubricants.resolveLubricant(desc, { record: false, on: iss.issue_date });
+      const isCotton = desc.toUpperCase().includes('COTTON');
+      const match = !isCotton ? lubricants.resolveLubricant(desc, { record: false, on: iss.issue_date }) : { resolved: false };
 
       // Check if this issue is an actual lubricant/oil product
       let prodId = match.resolved && match.productId ? match.productId : null;

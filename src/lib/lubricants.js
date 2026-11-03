@@ -110,7 +110,7 @@ function seedCatalogueAliases() {
  */
 function resolveLubricant(text, { source = null, record = true, on = null } = {}) {
   const norm = normLube(text);
-  if (!norm) return { productId: null, product: null, resolved: false, aliasId: null };
+  if (!norm || norm.includes('COTTON')) return { productId: null, product: null, resolved: false, aliasId: null };
 
   // A name can mean different products at different times — HD-68 was Caltex and is now
   // Valvoline — so take the latest meaning that had started by the movement's own date.
@@ -118,7 +118,7 @@ function resolveLubricant(text, { source = null, record = true, on = null } = {}
   // fallback and wins only when no dated one applies yet. With no date given, the newest wins,
   // because that is what someone typing the name today means.
   const day = on ? String(on).slice(0, 10) : null;
-  const hit = day
+  let hit = day
     ? get(`SELECT * FROM lubricant_aliases
             WHERE raw_norm = ? AND effective_from <= ?
             ORDER BY effective_from DESC LIMIT 1`, norm, day)

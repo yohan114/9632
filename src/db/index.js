@@ -848,6 +848,12 @@ function migrate() {
   } catch (err) {
     console.warn('Migration 046 auto-sync skipped:', err.message);
   }
+  // Deduplicate General Items, clean overlaps & recalculate costs
+  try {
+    require('../migrate/047_deduplicate_general_items').runMigration(db);
+  } catch (err) {
+    console.warn('Migration 047 deduplication skipped:', err.message);
+  }
 
   return db;
 }

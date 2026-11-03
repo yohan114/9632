@@ -87,6 +87,7 @@ function resolveProject(targetDb, text) {
 
 function resolveProductResilient(targetDb, desc, date) {
   if (!desc) return null;
+  if (String(desc).toUpperCase().includes('COTTON')) return null;
   try {
     const match = lubricants.resolveLubricant(desc, { record: false, on: date });
     if (match && match.resolved && match.productId) return match.productId;
@@ -344,7 +345,7 @@ function migrateSingleDb(targetDb, label) {
   const unlinkedLubeIssues = targetDb.prepare(`
     SELECT i.id, i.asset_id, i.job_id, i.store_item_id, i.description, i.qty, i.unit_price, i.issue_date, i.issued_by, i.category, i.purpose, i.store_id, i.physical_store_id
       FROM issues i
-     WHERE (LOWER(i.category) LIKE '%lubric%' OR LOWER(i.category) LIKE '%oil%' OR LOWER(i.category) LIKE '%fluid%')
+     WHERE (LOWER(i.category) LIKE '%lubric%' OR LOWER(i.category) LIKE '%oil%' OR LOWER(i.category) LIKE '%fluid%') AND LOWER(i.description) NOT LIKE '%cotton%'
        AND COALESCE(i.voided, 0) = 0
        AND NOT EXISTS (SELECT 1 FROM stock_ledger sl WHERE sl.source_issue_id = i.id OR (i.source_table = 'stock_ledger' AND sl.id = i.source_id))
   `).all();

@@ -3439,23 +3439,31 @@ function syncIssueToLedgers(issueId) {
   const aliases = require('../lib/aliases');
   const cat = String(iss.category || '').toLowerCase();
   const desc = String(iss.description || '').trim();
+  const d = desc.toUpperCase();
+
+  // Cotton Waste is strictly a workshop consumable (General Items), never an oil/fluid
+  const isCotton = d.includes('COTTON');
 
   let prodId = null;
-  const match = lubricants.resolveLubricant(desc, { record: false, on: iss.issue_date });
-  if (match.resolved && match.productId) {
-    prodId = match.productId;
-  } else {
-    const d = desc.toUpperCase();
-    if (d.includes('BREAK OIL') || d.includes('BRAKE OIL')) prodId = (get('SELECT id FROM products WHERE name LIKE \'%Brake Oil%\' LIMIT 1') || {}).id;
-    else if (d.includes('RUBBER GREASE')) prodId = (get('SELECT id FROM products WHERE name = \'Rubber Grease\' LIMIT 1') || {}).id;
-    else if (d.includes('WD-40') || d.includes('WD 40')) prodId = (get('SELECT id FROM products WHERE name = \'WD-40\' LIMIT 1') || {}).id;
-    else if (d.includes('CV GREASE')) prodId = (get('SELECT id FROM products WHERE name = \'CV Grease\' LIMIT 1') || {}).id;
-    else if (d.includes('COOLANT')) prodId = (get('SELECT id FROM products WHERE name = \'Coolant\' LIMIT 1') || {}).id;
-    else if (d.includes('PETROL ENGINE OIL')) prodId = (get('SELECT id FROM products WHERE name = \'20W-50\' OR category = \'engine_oil\' LIMIT 1') || {}).id;
-    else if (d.includes('GREASE') && !d.includes('SEAL') && !d.includes('GUN') && !d.includes('NOZZLE')) prodId = (get('SELECT id FROM products WHERE name = \'Grease\' LIMIT 1') || {}).id;
+  if (!isCotton) {
+    const match = lubricants.resolveLubricant(desc, { record: false, on: iss.issue_date });
+    if (match.resolved && match.productId) {
+      prodId = match.productId;
+    } else {
+      if (d.includes('BREAK OIL') || d.includes('BRAKE OIL')) prodId = (get('SELECT id FROM products WHERE name LIKE \'%Brake Oil%\' LIMIT 1') || {}).id;
+      else if (d.includes('RUBBER GREASE')) prodId = (get('SELECT id FROM products WHERE name = \'Rubber Grease\' LIMIT 1') || {}).id;
+      else if (d.includes('WD-40') || d.includes('WD 40')) prodId = (get('SELECT id FROM products WHERE name = \'WD-40\' LIMIT 1') || {}).id;
+      else if (d.includes('CV GREASE')) prodId = (get('SELECT id FROM products WHERE name = \'CV Grease\' LIMIT 1') || {}).id;
+      else if (d.includes('COOLANT')) prodId = (get('SELECT id FROM products WHERE name = \'Coolant\' LIMIT 1') || {}).id;
+      else if (d.includes('PETROL ENGINE OIL')) prodId = (get('SELECT id FROM products WHERE name = \'20W-50\' OR category = \'engine_oil\' LIMIT 1') || {}).id;
+      else if (d.includes('GREASE') && !d.includes('SEAL') && !d.includes('GUN') && !d.includes('NOZZLE')) prodId = (get('SELECT id FROM products WHERE name = \'Grease\' LIMIT 1') || {}).id;
+    }
   }
 
   if (prodId) {
+    // If it is synced to oil stock_ledger, it must NEVER be in general_item_txns
+    run('DELETE FROM general_item_txns WHERE source_issue_id = ?', iss.id);
+
     const already = get('SELECT id FROM stock_ledger WHERE source_issue_id = ?', iss.id);
     if (!already) {
       const prod = get('SELECT unit_price FROM products WHERE id = ?', prodId);
@@ -3479,7 +3487,24 @@ function syncIssueToLedgers(issueId) {
       `, prodId, -Math.abs(iss.qty), newBal, price, assetId || null, iss.job_id || null, iss.purpose || iss.description, iss.min_no || 'Store Issue', iss.issue_date, iss.store_id || 1, iss.physical_store_id || 2, iss.id);
       run('UPDATE products SET stock_qty = ? WHERE id = ?', newBal, prodId);
     }
-  } else if (cat !== 'battery' && !cat.includes('tyre')) {
+  } else {
+    // Check if this issue is an MRN/GRN spare part handover, a filter, a battery/tyre, or already in job_parts
+    const isHandover = iss.grn_id != null || iss.mrn_no != null || iss.mrn_line_id != null;
+    const isFilter = cat === 'filters' || cat.includes('filter') || desc.toLowerCase().includes('filter');
+    const isBatteryOrTyre = cat === 'battery' || cat.includes('tyre');
+    const hasJobPart = iss.job_id && !!get(`
+      SELECT 1 FROM job_parts
+       WHERE job_id = ?
+         AND (source_type = 'issue' OR mrn_line_id = ? OR LOWER(TRIM(description)) = LOWER(TRIM(?)))
+       LIMIT 1
+    `, iss.job_id, iss.id, desc);
+
+    if (isHandover || isFilter || isBatteryOrTyre || hasJobPart) {
+      // Must not be in general_item_txns
+      run('DELETE FROM general_item_txns WHERE source_issue_id = ?', iss.id);
+      return;
+    }
+
     // General Items / Consumables / Hardware / Fasteners / Electrical / Bearings / Belts / Tools / Cotton Waste / etc.
     let storeItemId = iss.store_item_id;
     if (!storeItemId && desc) {
