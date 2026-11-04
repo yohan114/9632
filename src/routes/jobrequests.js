@@ -74,7 +74,8 @@ router.get('/', asyncHandler((req, res) => {
   const where = clauses.length ? 'WHERE ' + clauses.join(' AND ') : '';
   res.json(all(
     `SELECT r.*, a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec,
-            p.name AS project_name, j.job_no AS job_no, (SELECT code FROM workshops w WHERE w.id = r.workshop_id) AS workshop_code
+            p.name AS project_name, j.job_no AS job_no, (SELECT code FROM workshops w WHERE w.id = r.workshop_id) AS workshop_code,
+            s.job_no AS service_job_no, s.service_date
        FROM job_requests r
        LEFT JOIN assets a ON a.id = r.asset_id
        LEFT JOIN projects p ON p.id = r.project_id
@@ -90,11 +91,13 @@ router.get('/:id', asyncHandler((req, res) => {
   const jr = get(
     `SELECT r.*, a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec,
             p.name AS project_name, j.job_no AS job_no, j.status AS job_status,
+            s.job_no AS service_job_no, s.service_date,
             (SELECT name FROM workshops w WHERE w.id = r.workshop_id) AS workshop_name
        FROM job_requests r
        LEFT JOIN assets a ON a.id = r.asset_id
        LEFT JOIN projects p ON p.id = r.project_id
        LEFT JOIN job_cards j ON j.id = r.job_id
+       LEFT JOIN service_jobs s ON s.id = r.service_id
       WHERE r.id = ?`, id);
   if (!jr) return res.status(404).json({ error: 'Job request not found' });
   res.json({
@@ -127,12 +130,16 @@ router.post('/', requireCap('jobrequests.create'), asyncHandler((req, res) => {
   const reqBy = String(b.requested_by || '').trim() || (ru ? (ru.full_name || ru.username) : null);
   // The workshop it is for: the one chosen, else the raiser's own (Stage 3).
   const workshopId = workshops.forNew(req.user, b.workshop_id);
+  const serviceType = type === 'service' ? (String(b.service_type || '').trim() || null) : null;
+  const meterReading = String(b.meter_reading || '').trim() || null;
   const result = run(
     `INSERT INTO job_requests (jr_no, req_date, asset_id, project_id, type, severity, priority, description,
-                               required_date, requested_by, requested_by_user, requested_sig, workshop_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                               required_date, requested_by, requested_by_user, requested_sig, workshop_id,
+                               service_type, meter_reading)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     jrNo, b.req_date || new Date().toISOString().slice(0, 10), assetId || null, toInt(b.project_id),
-    type, severity, priority, b.description, b.required_date || null, reqBy, req.user.id, ru ? ru.signature : null, workshopId
+    type, severity, priority, b.description, b.required_date || null, reqBy, req.user.id, ru ? ru.signature : null, workshopId,
+    serviceType, meterReading
   );
   audit.record({ userId: req.user.id, entity: 'job_request', entityId: result.lastInsertRowid, action: 'create', after: { jr_no: jrNo } });
   // Raising a request is never blocked — transport must always be able to log a fault.

@@ -450,6 +450,28 @@ router.post('/xref', asyncHandler((req, res) => {
   res.status(201).json({ catalogue_id: cid, crossRefs: xrefsFor(cid) });
 }));
 
+// ---- pending service requests ---------------------------------------------
+router.get('/pending-requests', asyncHandler((req, res) => {
+  const own = scope.filter(req.user, 'r.workshop_id', { store: false });
+  const w = ["r.type = 'service'", "r.approval_status = 'approved'", "r.service_id IS NULL"];
+  const p = [];
+  if (own.sql) { w.push(own.sql); p.push(...own.params); }
+  if (req.query.workshop_id) { w.push('r.workshop_id = ?'); p.push(toInt(req.query.workshop_id)); }
+  const where = w.length ? 'WHERE ' + w.join(' AND ') : '';
+  const rows = all(
+    `SELECT r.*, a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec,
+            p.name AS project_name, w.code AS workshop_code, w.name AS workshop_name
+       FROM job_requests r
+       LEFT JOIN assets a ON a.id = r.asset_id
+       LEFT JOIN projects p ON p.id = r.project_id
+       LEFT JOIN workshops w ON w.id = r.workshop_id
+      ${where}
+      ORDER BY r.id DESC`,
+    ...p
+  );
+  res.json(rows);
+}));
+
 // ---- service records ------------------------------------------------------
 router.get('/services', asyncHandler((req, res) => {
   const clauses = [];
@@ -498,7 +520,8 @@ router.get('/services', asyncHandler((req, res) => {
   const rows = all(
     `SELECT s.id, s.vehicle_label, s.service_date, s.service_type, s.site_location, s.grand_total,
             s.labour_charge, s.outside_estimate, s.meter_reading, s.next_service_meter, s.job_no,
-            s.repair_details, s.upkeeping, s.workshop_id,
+            s.repair_details, s.upkeeping, s.workshop_id, s.job_request_id,
+            (SELECT jr_no FROM job_requests WHERE id = s.job_request_id) AS jr_no,
             (SELECT w.code FROM workshops w WHERE w.id = s.workshop_id) AS workshop_code,
             a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec,
             (SELECT COUNT(*) FROM service_filters f WHERE f.service_id = s.id) AS filter_count,
@@ -582,20 +605,25 @@ router.post('/services', asyncHandler((req, res) => {
   const card = serviceCard(req.user, clean(b.job_no));
 
   const out = tx(() => {
+    const jrId = toInt(b.job_request_id) || null;
     const info = run(
       `INSERT INTO service_jobs (vehicle_label, asset_id, service_date, job_no, reg_id, model_no, meter_reading, next_service_meter,
                                  service_type, site_location, repair_details, upkeeping, labour_rate, sundry_rate,
-                                 parts_subtotal, labour_charge, sundry_amount, grand_total, store_id, workshop_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                                 parts_subtotal, labour_charge, sundry_amount, grand_total, store_id, workshop_id, job_request_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       vehicleLabel, assetId || null, date, clean(b.job_no), clean(b.reg_id), clean(b.model_no),
       clean(b.meter_reading), clean(b.next_service_meter), clean(b.service_type), clean(b.site_location),
       clean(b.repair_details), clean(b.upkeeping), labourRate, sundryRate,
       partsSubtotal, labourCharge, sundryAmount, grandTotal,
       // Stage 4: the store its filters and oil come out of — its job card's workshop's, else yours.
       stores.forEntry(req.user, card ? card.id : null, date),
-      b.workshop_id ? toInt(b.workshop_id) : (card ? card.workshop_id : workshops.homeOf(req.user))
+      b.workshop_id ? toInt(b.workshop_id) : (card ? card.workshop_id : workshops.homeOf(req.user)),
+      jrId
     );
     const sid = info.lastInsertRowid;
+    if (jrId) {
+      run(`UPDATE job_requests SET service_id = ? WHERE id = ?`, sid, jrId);
+    }
     const store = serviceStore(sid);
     let oilIssues = 0;
     const filterLines = writeServiceLines(sid, p);
@@ -803,7 +831,9 @@ router.get('/services/:id', asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   mustReadService(req.user, id);
   const job = get(
-    `SELECT s.*, a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec, ${COST_SQL} AS computed_cost
+    `SELECT s.*, a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec,
+            (SELECT jr_no FROM job_requests WHERE id = s.job_request_id) AS jr_no,
+            ${COST_SQL} AS computed_cost
        FROM service_jobs s LEFT JOIN assets a ON a.id = s.asset_id WHERE s.id = ?`, id);
   if (!job) return res.status(404).json({ error: 'Service not found' });
   job.read_only = scope.isReadOnly(req.user, job.workshop_id);

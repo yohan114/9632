@@ -854,6 +854,12 @@ function migrate() {
   } catch (err) {
     console.warn('Migration 047 deduplication skipped:', err.message);
   }
+  // Service Job Requests, Service Records Linking & Daily Work Service Tracking
+  try {
+    require('../migrate/048_service_requests_and_dailywork').runMigration(db);
+  } catch (err) {
+    console.warn('Migration 048 service requests skipped:', err.message);
+  }
 
   return db;
 }
