@@ -25,7 +25,7 @@ router.get('/', requireCap('aliases.view'), asyncHandler((req, res) => {
 
 router.get('/pending', requireCap('aliases.view'), asyncHandler((_req, res) => res.json(aliases.pendingAliases())));
 
-router.get('/sections-audit', requireCap('aliases.view'), asyncHandler((_req, res) => res.json(aliases.getMissingAllocations())));
+router.get('/sections-audit', requireCap('aliases.view'), asyncHandler((req, res) => res.json(aliases.getMissingAllocations(req.user))));
 
 router.post('/resolve', requireCap('aliases.vehicle.resolve', 'aliases.mechanic.resolve'), asyncHandler((req, res) => {
   require_(req.body, ['text']);

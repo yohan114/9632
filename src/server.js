@@ -50,6 +50,7 @@ app.use(express.urlencoded({ limit: '50mb', extended: true }));
 app.use(cookieParser());
 app.use(authenticate);
 app.use(multidb.multidbMiddleware);
+app.use(require('./lib/context').activeContextMiddleware);
 app.use(enforcePasswordChange);
 // Someone whose role requires two-factor sign-in, and who has not set it up, reaches only the
 // enrolment screens until they have (src/lib/auth.js).

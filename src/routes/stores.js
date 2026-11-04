@@ -2672,8 +2672,21 @@ router.get('/grn-vouchers/:id/download.pdf', guardVoucher, asyncHandler(async (r
 // them together. Someone outside head office, with the workshops kept apart, sees their own store.
 function stockStore(req) {
   if (!stores.isMulti()) return { store: null, fixed: false };
+  const context = require('../lib/context');
+  const asked = String(req.query.store_id || req.query.physical_store_id || '').trim();
+
+  // If sub-store user requested another store directly, assert access and reject
+  if (asked && asked !== 'all' && Number(asked)) {
+    context.assertStoreAccess(req, Number(asked));
+  }
+
+  // Active context: if not in All Sites mode, default to active store
+  if (req.user && !req.user.isAllSitesMode && req.user.activeStoreId) {
+    const sId = scope.ownStore(req.user) || req.user.activeStoreId;
+    return { store: sId, fixed: !context.isMainStoreUser(req.user) };
+  }
+
   if (scope.enabled() && !scope.headOffice(req.user)) return { store: stores.homeStore(req.user), fixed: true };
-  const asked = String(req.query.store_id || '').trim();
   if (!asked || asked === 'all') return { store: null, fixed: false };
   const s = stores.byId(toInt(asked));
   if (!s || !s.active) { const e = new Error('No such store'); e.status = 400; throw e; }
@@ -5237,8 +5250,12 @@ router.get('/export/mrn.xlsx', asyncHandler(async (req, res) => {
 
 // Comprehensive store reorder analysis, stock health, and inter-workshop opportunities
 router.get('/rebalance/analysis', permissions.requireModule('stores', 'view'), asyncHandler((req, res) => {
+  const context = require('../lib/context');
+  const physicalStoreId = req.query.physical_store_id ? toInt(req.query.physical_store_id) : (req.user.activeStoreId || null);
+  if (physicalStoreId) {
+    context.assertStoreAccess(req, physicalStoreId);
+  }
   const userStore = stores.homeStore(req.user) || 1;
-  const physicalStoreId = req.query.physical_store_id ? toInt(req.query.physical_store_id) : null;
   const storeId = req.query.store_id ? toInt(req.query.store_id) : (!physicalStoreId ? userStore : null);
   const targetStore = physicalStoreId ? { physical_store_id: physicalStoreId } : storeId;
   const section = req.query.section ? String(req.query.section).toLowerCase() : null;
@@ -5334,8 +5351,12 @@ router.get('/rebalance/item-history', permissions.requireModule('stores', 'view'
 
 // Storekeeper Workspace & Physical Store Cockpit
 router.get('/cockpit', permissions.requireModule('stores', 'view'), asyncHandler((req, res) => {
+  const context = require('../lib/context');
+  const physicalStoreId = req.query.physical_store_id ? toInt(req.query.physical_store_id) : (req.user.activeStoreId || null);
+  if (physicalStoreId) {
+    context.assertStoreAccess(req, physicalStoreId);
+  }
   const userStore = stores.homeStore(req.user) || 1;
-  const physicalStoreId = req.query.physical_store_id ? toInt(req.query.physical_store_id) : null;
   const storeId = req.query.store_id ? toInt(req.query.store_id) : (!physicalStoreId ? userStore : null);
   const targetStore = physicalStoreId ? { physical_store_id: physicalStoreId } : storeId;
   const days = req.query.days ? toInt(req.query.days) : 90;

@@ -112,14 +112,16 @@ function lowStock(user, limit = 30) {
 }
 
 /** Open cards, vehicles in, live requests and today's issues — of the workshops in `ws` (null: all). */
-function counts(ws) {
+function counts(ws, projId = null) {
+  const pSql = projId ? ' AND j.project_id = ' + Number(projId) : '';
+  const pSqlMrn = projId ? ' AND (workshop_id IS NULL AND (project_id = ' + Number(projId) + ' OR asset_id IN (SELECT id FROM assets WHERE current_project_id = ' + Number(projId) + ')))' : '';
   return {
-    active_jobs: get(`SELECT COUNT(*) c FROM job_cards j WHERE ${jobstate.openSql('j')}${wsSql('j.workshop_id', ws)}`).c,
-    vehicles_in_workshop: get(`SELECT COUNT(DISTINCT j.asset_id) c FROM job_cards j WHERE ${jobstate.openSql('j')} AND j.asset_id IS NOT NULL${wsSql('j.workshop_id', ws)}`).c,
-    pending_requests: get(`SELECT COUNT(*) c FROM mrn WHERE (${LIVE_PENDING_MRN})${wsSql('workshop_id', ws)}`).c,
+    active_jobs: get(`SELECT COUNT(*) c FROM job_cards j WHERE ${jobstate.openSql('j')}${wsSql('j.workshop_id', ws)}${pSql}`).c,
+    vehicles_in_workshop: get(`SELECT COUNT(DISTINCT j.asset_id) c FROM job_cards j WHERE ${jobstate.openSql('j')} AND j.asset_id IS NOT NULL${wsSql('j.workshop_id', ws)}${pSql}`).c,
+    pending_requests: get(`SELECT COUNT(*) c FROM mrn WHERE (${LIVE_PENDING_MRN})${ws ? wsSql('workshop_id', ws) : pSqlMrn}`).c,
     // An issue is its job card's workshop's, else the store it left.
     todays_issue_cost: get(`SELECT COALESCE(SUM(i.qty * COALESCE(i.unit_price, 0)), 0) v FROM issues i
-                             LEFT JOIN job_cards j ON j.id = i.job_id WHERE i.issue_date = ?${wsSql('COALESCE(j.workshop_id, i.store_id)', ws)}`, today()).v,
+                             LEFT JOIN job_cards j ON j.id = i.job_id WHERE i.issue_date = ?${wsSql('COALESCE(j.workshop_id, i.store_id)', ws)}${pSql}`, today()).v,
   };
 }
 
@@ -235,7 +237,7 @@ router.get('/overview', asyncHandler((req, res) => {
   const canJobs = permissions.reaches(req.user, 'jobs') || permissions.reaches(req.user, 'jobrequests');
   const canStores = permissions.reaches(req.user, 'stores') || permissions.reaches(req.user, 'oil') || permissions.reaches(req.user, 'generalstock');
 
-  const { active_jobs, vehicles_in_workshop, pending_requests, todays_issue_cost } = counts(ws);
+  const { active_jobs, vehicles_in_workshop, pending_requests, todays_issue_cost } = counts(ws, (req.user && !req.user.isAllSitesMode) ? req.user.activeProjectId : null);
   const low = lowStock(req.user);
   const costs = canReports ? costFigures(ws) : { monthly_cost_total: null, monthly_cost_trend: [], top_5_cost_vehicles: [] };
 

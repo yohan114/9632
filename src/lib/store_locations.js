@@ -617,7 +617,7 @@ function revokeUserStoreLocationAccess(userId, storeLocationId, user = null) {
  */
 function getUserStoreLocations(userId) {
   return all(`
-    SELECT sla.*, sl.name AS store_name, sl.code AS store_code, sl.store_type, sl.active AS store_active
+    SELECT sla.*, sl.name AS store_name, sl.code AS store_code, sl.store_type, sl.workshop_id, sl.project_id, sl.active AS store_active
       FROM store_location_access sla
       JOIN store_locations sl ON sl.id = sla.store_location_id
      WHERE sla.user_id = ?

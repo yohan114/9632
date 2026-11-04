@@ -88,6 +88,9 @@ const seesAll = (user) => !enabled() || headOffice(user);
  * false): every workshop their store serves. Anyone else: their home workshop.
  */
 function reach(user, { store = true } = {}) {
+  if (user && !user.isAllSitesMode && user.activeWorkshopId) {
+    return [user.activeWorkshopId];
+  }
   if (seesAll(user)) return null;
   const home = workshops.homeOf(user);
   if (store && storeStaff(user)) {
@@ -140,6 +143,9 @@ function mayRead(user, workshopId, kind) {
  * Filter for readable records: shows all workshops when the person holds cross-workshop read capability.
  */
 function readFilter(user, column, kind) {
+  if (user && !user.isAllSitesMode && user.activeWorkshopId) {
+    return filter(user, column);
+  }
   if (seesAll(user)) return { sql: '', params: [] };
   if ((kind === 'job' || kind === 'service') && require('./auth').hasCap(user, 'jobs.view_other_workshops')) {
     return { sql: '', params: [] };
@@ -163,6 +169,9 @@ function isReadOnly(user, workshopId) {
  *   - anyone else: their own workshop — store staff may pick among the workshops their store serves.
  */
 function reportWorkshop(user, asked) {
+  if (user && !user.isAllSitesMode && user.activeWorkshopId) {
+    return { ws: user.activeWorkshopId, fixed: true, choices: [user.activeWorkshopId] };
+  }
   if (!workshops.isMulti()) return { ws: null, fixed: false, choices: null };
   const a = Number(asked) || null;
   const r = reach(user);
@@ -253,6 +262,12 @@ function toolRefusal(user, toolId) {
  * workshops kept apart and more than one store, someone outside head office sees their own.
  */
 function ownStore(user) {
+  if (user && !user.isAllSitesMode && user.activeStoreId) {
+    const storeLocs = require('./store_locations');
+    const leg = storeLocs.resolveLegacyStoreId(user.activeStoreId);
+    if (leg) return leg;
+    return user.activeStoreId;
+  }
   const stores = require('./stores');
   if (!enabled() || headOffice(user)) return null;
   // If user has specific store location assigned, check store_location_access

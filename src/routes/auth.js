@@ -60,7 +60,13 @@ function workshopFields(user) {
     ? primaryStore.store_name
     : (home ? home.name : 'Central Main Stores');
 
+  const context = require('../lib/context');
+  const isMainStore = context.isMainStoreUser(user);
   return {
+    isMainStore,
+    storeType: primaryStore ? primaryStore.store_type : null,
+    activeWorkshopId: primaryStore ? primaryStore.workshop_id : (home ? home.id : null),
+    activeProjectId: primaryStore ? primaryStore.project_id : null,
     workshop: home ? { id: home.id, code: home.code, name: home.name } : null,
     workshopsMulti: ws.isMulti(),
     storeLocations: userStores,

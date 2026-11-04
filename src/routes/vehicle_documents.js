@@ -65,7 +65,7 @@ router.get('/types', requireCap('vehicle_docs.view'), asyncHandler((req, res) =>
  */
 router.get('/compliance-summary', requireCap('vehicle_docs.view'), asyncHandler((req, res) => {
   const today = req.query.today ? String(req.query.today).trim() : undefined;
-  const summary = vdocs.getFleetComplianceSummary({ today });
+  const summary = vdocs.getFleetComplianceSummary({ today, projectId: (req.user && !req.user.isAllSitesMode) ? req.user.activeProjectId : null, workshopId: (req.user && !req.user.isAllSitesMode) ? req.user.activeWorkshopId : null });
   res.json(summary);
 }));
 
@@ -76,7 +76,7 @@ router.get('/compliance-summary', requireCap('vehicle_docs.view'), asyncHandler(
 router.get('/upcoming-expirations', requireCap('vehicle_docs.view'), asyncHandler((req, res) => {
   const daysAhead = toInt(req.query.daysAhead || req.query.days_ahead, 30);
   const today = req.query.today ? String(req.query.today).trim() : undefined;
-  const list = vdocs.getUpcomingExpirations({ daysAhead, today });
+  const list = vdocs.getUpcomingExpirations({ daysAhead, today, projectId: (req.user && !req.user.isAllSitesMode) ? req.user.activeProjectId : null, workshopId: (req.user && !req.user.isAllSitesMode) ? req.user.activeWorkshopId : null });
   res.json(list);
 }));
 

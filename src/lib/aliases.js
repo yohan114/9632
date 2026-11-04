@@ -196,13 +196,16 @@ function queryAliasQueue(opts = {}) {
 /**
  * Comprehensive audit of missing vehicle allocations across jobs, job requests, services, issues, and MRN.
  */
-function getMissingAllocations() {
+function getMissingAllocations(user = null) {
+  const wsFilter = (user && !user.isAllSitesMode && user.activeWorkshopId) ? ' AND workshop_id = ' + Number(user.activeWorkshopId) : '';
+  const storeFilter = (user && !user.isAllSitesMode && user.activeStoreId) ? ' AND store_id = ' + Number(user.activeStoreId) : '';
+
   const missingJobs = all(`
     SELECT j.id, j.job_no, j.type, j.description, j.status, j.site, j.requested_at, j.workshop_id,
            COALESCE(w.name, 'Default Workshop') AS workshop_name
       FROM job_cards j
       LEFT JOIN workshops w ON w.id = j.workshop_id
-     WHERE j.asset_id IS NULL
+     WHERE j.asset_id IS NULL${wsFilter.replace('workshop_id', 'j.workshop_id')}
      ORDER BY j.id DESC
      LIMIT 200
   `);
@@ -212,7 +215,7 @@ function getMissingAllocations() {
            COALESCE(w.name, 'Central Workshop') AS workshop_name
       FROM job_requests r
       LEFT JOIN workshops w ON w.id = r.workshop_id
-     WHERE r.asset_id IS NULL
+     WHERE r.asset_id IS NULL${wsFilter.replace('workshop_id', 'r.workshop_id')}
      ORDER BY r.id DESC
      LIMIT 200
   `);
@@ -223,7 +226,7 @@ function getMissingAllocations() {
            COALESCE(w.name, 'Central Workshop') AS workshop_name
       FROM service_jobs s
       LEFT JOIN workshops w ON w.id = s.workshop_id
-     WHERE s.asset_id IS NULL
+     WHERE s.asset_id IS NULL${wsFilter.replace('workshop_id', 's.workshop_id')}
      ORDER BY s.id DESC
      LIMIT 200
   `);
@@ -233,7 +236,7 @@ function getMissingAllocations() {
            i.store_id, COALESCE(w.name, 'Central Stores') AS store_name
       FROM issues i
       LEFT JOIN workshops w ON w.id = i.store_id
-     WHERE i.asset_id IS NULL
+     WHERE i.asset_id IS NULL${storeFilter.replace('store_id', 'i.store_id')}
      ORDER BY i.id DESC
      LIMIT 200
   `);
@@ -243,7 +246,7 @@ function getMissingAllocations() {
            COALESCE(w.name, 'Central Workshop') AS workshop_name
       FROM mrn m
       LEFT JOIN workshops w ON w.id = m.workshop_id
-     WHERE m.asset_id IS NULL
+     WHERE m.asset_id IS NULL${wsFilter.replace('workshop_id', 'm.workshop_id')}
      ORDER BY m.id DESC
      LIMIT 200
   `);

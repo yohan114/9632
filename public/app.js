@@ -43,6 +43,11 @@ async function api(path, opts = {}) {
   const baseUrl = (window.WORKSHOPONE_API_BASE || '').replace(/\/+$/, '');
   const url = (baseUrl ? baseUrl : '') + '/api' + path;
   const headers = { ...(opts.body ? { 'Content-Type': 'application/json' } : {}), 'X-WO-Idle-Ms': String(idleMs()), ...(opts.headers || {}) };
+  if (typeof ME !== 'undefined' && ME && ME.storeLocationId) {
+    headers['X-Store-Location-Id'] = String(ME.storeLocationId);
+    if (ME.activeWorkshopId) headers['X-Workshop-Id'] = String(ME.activeWorkshopId);
+    if (ME.activeProjectId) headers['X-Project-Id'] = String(ME.activeProjectId);
+  }
   if (opts.idempotencyKey) {
     headers['Idempotency-Key'] = opts.idempotencyKey;
   }
@@ -1301,13 +1306,44 @@ function showIdleLockScreen() {
   };
 }
 
+function initActiveContext() {
+  if (!ME) return;
+  const isMain = isAdmin() || (ME && ME.isMainStore);
+  if (isMain) {
+    try {
+      const saved = localStorage.getItem('wo_active_store_id');
+      if (saved && Number(saved)) {
+        ME.storeLocationId = Number(saved);
+        if (ME.storeLocations && ME.storeLocations.length) {
+          const match = ME.storeLocations.find((x) => x.store_location_id == saved || x.id == saved);
+          if (match) {
+            ME.storeName = match.store_name || match.name;
+            ME.activeWorkshopId = match.workshop_id || null;
+            ME.activeProjectId = match.project_id || null;
+            ME.storeType = match.store_type;
+          }
+        }
+      }
+    } catch (_) {}
+  } else {
+    try { localStorage.removeItem('wo_active_store_id'); } catch (_) {}
+    if (ME.primaryStore) {
+      ME.storeLocationId = ME.primaryStore.store_location_id || ME.primaryStore.id;
+      ME.storeName = ME.primaryStore.store_name || ME.primaryStore.name;
+      ME.activeWorkshopId = ME.primaryStore.workshop_id || null;
+      ME.activeProjectId = ME.primaryStore.project_id || null;
+      ME.storeType = ME.primaryStore.store_type;
+    }
+  }
+}
+
 async function openStoreLocationSwitcherModal() {
   modal('Active Store & Site Location Context', '<div class="muted" style="padding:20px">Loading store locations…</div>', async (mBody, close) => {
     try {
       const stores = await api('/store-locations?active_only=true');
       const activeName = (ME && ME.storeName) || (ME && ME.primaryStore && ME.primaryStore.store_name) || 'Central Main Stores';
       const myStores = (ME && ME.storeLocations) || [];
-      const isAdminUser = isAdmin();
+      const isAdminUser = isAdmin() || (ME && ME.isMainStore);
 
       const mainStores = stores.filter((s) => s.store_type === 'MAIN_STORE');
       const mainWs = stores.filter((s) => s.store_type === 'MAIN_WORKSHOP_STORE');
@@ -1316,7 +1352,8 @@ async function openStoreLocationSwitcherModal() {
       const renderStoreRow = (s) => {
         const isActive = (ME && ME.storeLocationId == s.id) || (s.name === activeName);
         const myGrant = myStores.find((ms) => ms.store_location_id == s.id);
-        const hasAccess = isAdminUser || !!myGrant;
+        const isPermitted = isAdminUser || (myGrant && myGrant.can_view);
+        const canSwitch = isAdminUser;
         const icon = s.store_type === 'MAIN_STORE' ? '🏛️' : (s.store_type === 'MAIN_WORKSHOP_STORE' ? '🔧' : '🏗️');
         return `
           <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 12px;border:1px solid ${isActive ? 'var(--primary,#0066ff)' : 'var(--border,#e2e8f0)'};border-radius:8px;background:${isActive ? 'rgba(0,102,255,0.06)' : 'var(--surface,#fff)'};margin-bottom:6px">
@@ -1326,15 +1363,15 @@ async function openStoreLocationSwitcherModal() {
                 <div style="font-weight:600;font-size:13px;display:flex;align-items:center;gap:6px">
                   <span>${esc(s.name)}</span>
                   <span class="code" style="font-size:10px">${esc(s.code)}</span>
-                  ${isActive ? '<span class="badge blue sm" style="font-size:10px">Active</span>' : ''}
+                  ${isActive ? '<span class="badge blue sm" style="font-size:10px">Active Context</span>' : ''}
                 </div>
                 <div class="muted" style="font-size:11px">${esc(s.notes || (s.parent_store_name ? `Replenished via ${s.parent_store_name}` : 'Main Inventory Depot'))}</div>
               </div>
             </div>
             <div style="display:flex;align-items:center;gap:6px;flex-shrink:0">
-              <a href="#/stores?tab=locations&id=${s.id}" class="btn sm" onclick="${close}">Inspect</a>
-              ${canView('stores') ? `<a href="#/stores?tab=onhand&physical_store_id=${s.id}" class="btn sm" onclick="${close}">Stock</a>` : ''}
-              ${hasAccess && !isActive ? `<button class="btn sm primary" data-switch-store="${s.id}" data-store-name="${esc(s.name)}">Switch Context</button>` : ''}
+              ${(isAdminUser || isActive) ? `<a href="#/stores?tab=locations&id=${s.id}" class="btn sm" onclick="${close}">Inspect</a>` : ''}
+              ${(isAdminUser || isActive) && canView('stores') ? `<a href="#/stores?tab=onhand&physical_store_id=${s.id}" class="btn sm" onclick="${close}">Stock</a>` : ''}
+              ${canSwitch && !isActive ? `<button class="btn sm primary" data-switch-store="${s.id}" data-store-name="${esc(s.name)}">Switch Context</button>` : (!isAdminUser && !isActive ? '<span class="muted" style="font-size:11px">🔒 Locked to site</span>' : '')}
             </div>
           </div>
         `;
@@ -1343,12 +1380,20 @@ async function openStoreLocationSwitcherModal() {
       mBody.innerHTML = `
         <div style="font-size:13px">
           <div style="display:flex;align-items:center;gap:8px;background:var(--subtle,#f8fafc);border:1px solid var(--border,#e2e8f0);padding:10px 12px;border-radius:8px;margin-bottom:12px">
-            <span style="font-size:20px">📍</span>
+            <span style="font-size:20px">${isAdminUser ? '📍' : '🔒'}</span>
             <div>
               <div style="font-weight:700">Currently Operating As: <span style="color:var(--primary,#0066ff)">${esc(activeName)}</span></div>
-              <div class="muted" style="font-size:11px">User: <b>${esc(ME.fullName || ME.username)}</b> · Roles: <b>${esc(ME.roles.join(', '))}</b></div>
+              <div class="muted" style="font-size:11px">User: <b>${esc(ME.fullName || ME.username)}</b> · Clearance: <b>${isAdminUser ? 'Central Main Stores Authority' : 'Site Sub-Store Restricted'}</b></div>
             </div>
           </div>
+          ${!isAdminUser ? `
+            <div style="background:#fffbeb;border:1px solid #fde68a;color:#92400e;padding:10px 12px;border-radius:8px;margin-bottom:12px;font-size:12px;display:flex;align-items:flex-start;gap:8px">
+              <span style="font-size:16px">ℹ️</span>
+              <div>
+                <b>Sub-Store Local Scoping Active:</b> Your account is stationed at <b>${esc(activeName)}</b>. Sub-stores operate strictly within their site's local data and inventory. Inter-store material transfers are managed exclusively via <b>Material Transfer Notes (MTN)</b> in Stores &rarr; Transfers.
+              </div>
+            </div>
+          ` : ''}
 
           <div style="max-height:400px;overflow-y:auto;padding-right:4px">
             ${mainStores.length ? `<div style="font-size:11px;font-weight:700;color:var(--text-muted,#64748b);text-transform:uppercase;margin:6px 0">Central Main Stores</div>${mainStores.map(renderStoreRow).join('')}` : ''}
@@ -1362,8 +1407,13 @@ async function openStoreLocationSwitcherModal() {
         btn.onclick = () => {
           const sid = Number(btn.dataset.switchStore);
           const sname = btn.dataset.storeName;
+          const target = stores.find((x) => x.id === sid);
           ME.storeLocationId = sid;
           ME.storeName = sname;
+          ME.activeWorkshopId = (target && target.workshop_id) || null;
+          ME.activeProjectId = (target && target.project_id) || null;
+          ME.storeType = target ? target.store_type : null;
+          try { localStorage.setItem('wo_active_store_id', String(sid)); } catch (_) {}
           const topbarBadgeText = qs('#topbar_site_name');
           if (topbarBadgeText) topbarBadgeText.textContent = sname;
           toast(`Active store context switched to ${sname}`);
@@ -1401,10 +1451,17 @@ function renderShell() {
         <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="color:var(--primary,#0066ff);margin-right:6px"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
         Workshop<span>One</span>
       </div>
-      <div class="topbar-site-badge" id="topbar_site_badge" title="Active Store / Site Location — Click to view or switch" style="cursor:pointer">
-        <span class="live-dot">●</span>
-        <span id="topbar_site_name">${esc(activeLocationLabel)}</span> ▾
-      </div>
+      ${(() => {
+        const isMain = isAdmin() || (ME && ME.isMainStore);
+        const icon = isMain ? '<span class="live-dot">●</span>' : '<span style="font-size:11px;margin-right:2px">🔒</span>';
+        const tip = isMain ? 'Active Store / Site Location — Click to view or switch' : 'Assigned Site Store — Operating locally (MTN for transfers)';
+        return `
+          <div class="topbar-site-badge" id="topbar_site_badge" title="${tip}" style="cursor:pointer">
+            ${icon}
+            <span id="topbar_site_name">${esc(activeLocationLabel)}</span> ▾
+          </div>
+        `;
+      })()}
       <div class="topbar-site-badge" id="topbar_sl_clock" title="Sri Lanka Standard Time (Asia/Colombo · UTC+05:30)" style="margin-left:4px;display:inline-flex;align-items:center;gap:5px;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.16);padding:3px 10px;border-radius:16px;white-space:nowrap;flex-shrink:0">
         <span style="font-size:12px">🇱🇰</span>
         <span id="live_sl_clock" style="font-weight:700;font-size:11.5px;color:#e2e8f0;letter-spacing:0.2px">${slNowTime()} SLST</span>
@@ -25252,7 +25309,7 @@ function renderMfaStep(challenge, username, err) {
     const go = async () => {
       try {
         ME = await api('/auth/mfa/verify', { method: 'POST', body: { challenge, code: qs('#mc').value } });
-        afterSignIn();
+        initActiveContext(); afterSignIn();
         if (ME.recoveryCodesLeft != null) {
           toast(ME.recoveryCodesLeft <= 3
             ? `Signed in with a recovery code — only ${ME.recoveryCodesLeft} left. Make new ones under Two-factor.`
@@ -25498,7 +25555,7 @@ async function boot() {
       }
     } catch {}
 
-    ME = await api('/auth/me');
+    ME = await api('/auth/me'); initActiveContext();
     try { if (ME && ME.username) localStorage.setItem('wo_last_user', ME.username); } catch {}
     live('connect');   // an existing session — open the live socket
     setupIdleLock();

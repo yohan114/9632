@@ -166,8 +166,8 @@ const CAPABILITIES = [
   C('projects.export', 'projects', 'Export projects master directory and active sites', OPS_MANAGERS, null, 'projects', '08', 'Fleet'),
 
   // ---- 14. Alias Queue (Z_WO_ALIAS) ----------------------------------------------------------
-  C('aliases.view', 'aliases', 'View unrecognised vehicle and mechanic text queue', ['storekeeper', 'workshop', 'manager', 'operational_manager'], null, 'aliases', '03', 'Fleet'),
-  C('aliases.vehicle.resolve', 'aliases', 'Link or dismiss an unrecognised vehicle name', ['storekeeper', 'workshop', 'manager'], null, 'aliases', '02', 'Fleet'),
+  C('aliases.view', 'aliases', 'View unrecognised vehicle and mechanic text queue', STORE_STAFF.concat(['workshop', 'manager', 'operational_manager']), null, 'aliases', '03', 'Fleet'),
+  C('aliases.vehicle.resolve', 'aliases', 'Link or dismiss an unrecognised vehicle name', STORE_STAFF.concat(['workshop', 'manager']), null, 'aliases', '02', 'Fleet'),
   C('aliases.mechanic.resolve', 'aliases', 'Link an unrecognised mechanic name', ['storekeeper', 'manager'], null, 'aliases', '02', 'Fleet'),
   C('aliases.allocate', 'aliases', 'Allocate vehicle to job request directly in alias queue', ['storekeeper', 'workshop', 'manager'], null, 'aliases', '02', 'Fleet'),
   C('aliases.ignore', 'aliases', 'Dismiss or ignore an unresolvable raw text entry', ['storekeeper', 'manager'], null, 'aliases', '02', 'Fleet'),

@@ -1107,14 +1107,24 @@ function getFleetComplianceSummary(options = {}) {
   const today = options.today || getColomboToday();
 
   // Fetch all registered fleet assets
+  let assetFilter = '';
+  const params = [];
+  if (options.projectId) {
+    assetFilter = ' AND (current_project_id = ? OR home_project_id = ?)';
+    params.push(options.projectId, options.projectId);
+  } else if (options.workshopId) {
+    assetFilter = ' AND (EXISTS (SELECT 1 FROM job_cards j WHERE j.asset_id = assets.id AND j.workshop_id = ?) OR EXISTS (SELECT 1 FROM service_jobs s WHERE s.asset_id = assets.id AND s.workshop_id = ?))';
+    params.push(options.workshopId, options.workshopId);
+  }
   const assets = db.prepare(`
     SELECT id, code, registration, type, asset_class, status, home_project_id, current_project_id
       FROM assets
      WHERE registration IS NOT NULL
        AND registration != ''
        AND status NOT IN ('scrapped', 'sold')
+       ${assetFilter}
      ORDER BY code ASC
-  `).all();
+  `).all(...params);
 
   const totalVehicles = assets.length;
   let fullyCompliant = 0;
@@ -1229,10 +1239,20 @@ function getFleetComplianceSummary(options = {}) {
 /**
  * Returns a list of all document certificates expiring in the next N days.
  */
-function getUpcomingExpirations({ daysAhead = 30, today = getColomboToday() } = {}) {
+function getUpcomingExpirations({ daysAhead = 30, today = getColomboToday(), projectId = null, workshopId = null } = {}) {
   const db = getDb();
   const maxDate = new Date(new Date(today + 'T00:00:00Z').getTime() + (daysAhead * 24 * 60 * 60 * 1000))
     .toISOString().slice(0, 10);
+
+  let assetFilter = '';
+  const params = [maxDate];
+  if (projectId) {
+    assetFilter = ' AND (a.current_project_id = ? OR a.home_project_id = ?)';
+    params.push(projectId, projectId);
+  } else if (workshopId) {
+    assetFilter = ' AND (EXISTS (SELECT 1 FROM job_cards j WHERE j.asset_id = a.id AND j.workshop_id = ?) OR EXISTS (SELECT 1 FROM service_jobs s WHERE s.asset_id = a.id AND s.workshop_id = ?))';
+    params.push(workshopId, workshopId);
+  }
 
   const rows = db.prepare(`
     SELECT vd.id AS document_id,
@@ -1255,8 +1275,9 @@ function getUpcomingExpirations({ daysAhead = 30, today = getColomboToday() } = 
      WHERE vd.is_exempt = 0
        AND v.status = 'verified'
        AND v.valid_until <= ?
+       ${assetFilter}
      ORDER BY v.valid_until ASC
-  `).all(maxDate);
+  `).all(...params);
 
   return rows.map((r) => {
     const days = calculateDaysRemaining(r.valid_until, today);

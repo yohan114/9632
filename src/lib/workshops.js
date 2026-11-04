@@ -90,6 +90,7 @@ function mustBeActive(id) {
 /** This person's home workshop (the default if they have none). */
 function homeOf(user) {
   if (!user) return defaultId();
+  if (!user.isAllSitesMode && user.activeWorkshopId) return user.activeWorkshopId;
   const u = get('SELECT workshop_id FROM users WHERE id = ?', user.id);
   const w = u && u.workshop_id && byId(u.workshop_id);
   return w && w.active ? w.id : defaultId();

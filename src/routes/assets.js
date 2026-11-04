@@ -28,7 +28,7 @@ const cleanValue = (col, v) => {
   return Number.isFinite(n) ? n : null;
 };
 
-function listAssets(query = {}) {
+function listAssets(query = {}, user = null) {
   const clauses = [];
   const params = [];
   if (query.q) {
@@ -36,7 +36,18 @@ function listAssets(query = {}) {
     const like = '%' + query.q + '%';
     params.push(like, like, like, like);
   }
-  if (query.project_id) { clauses.push('a.current_project_id = ?'); params.push(toInt(query.project_id)); }
+  if (query.project_id) {
+    clauses.push('a.current_project_id = ?');
+    params.push(toInt(query.project_id));
+  } else if (user && !user.isAllSitesMode) {
+    if (user.activeProjectId) {
+      clauses.push('(a.current_project_id = ? OR a.home_project_id = ?)');
+      params.push(user.activeProjectId, user.activeProjectId);
+    } else if (user.activeWorkshopId) {
+      clauses.push('(EXISTS (SELECT 1 FROM job_cards j WHERE j.asset_id = a.id AND j.workshop_id = ?) OR EXISTS (SELECT 1 FROM service_jobs s WHERE s.asset_id = a.id AND s.workshop_id = ?))');
+      params.push(user.activeWorkshopId, user.activeWorkshopId);
+    }
+  }
   if (query.status) { clauses.push('a.status = ?'); params.push(query.status); }
   if (query.asset_class) { clauses.push('a.asset_class = ?'); params.push(query.asset_class); }
   if (query.in_register !== undefined) { clauses.push('a.in_register = ?'); params.push(toInt(query.in_register)); }
@@ -58,13 +69,13 @@ function listAssets(query = {}) {
 // Without Assets, the list is for the pickers: which vehicle, not what it has cost.
 const PICKER_FIELDS = ['id', 'code', 'registration', 'ec_code', 'asset_class', 'type', 'brand'];
 router.get('/', asyncHandler((req, res) => {
-  const rows = listAssets(req.query);
+  const rows = listAssets(req.query, req.user);
   if (require('../lib/permissions').reaches(req.user, 'assets')) return res.json(rows);
   res.json(rows.map((r) => Object.fromEntries(PICKER_FIELDS.filter((k) => k in r).map((k) => [k, r[k]]))));
 }));
 
 router.get('/export.xlsx', requireCap('assets.export', 'assets.view'), asyncHandler(async (req, res) => {
-  const rows = listAssets({ ...req.query, limit: 100000 });
+  const rows = listAssets({ ...req.query, limit: 100000 }, req.user);
   await sendXlsx(res, 'assets.xlsx', [{
     name: 'Assets',
     columns: [

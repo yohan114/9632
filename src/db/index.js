@@ -860,6 +860,12 @@ function migrate() {
   } catch (err) {
     console.warn('Migration 048 service requests skipped:', err.message);
   }
+  // Store Location Project Links, Workshop Bridges & Context Access Grants
+  try {
+    require('../migrate/049_store_location_project_links').runMigration(db);
+  } catch (err) {
+    console.warn('Migration 049 store location links skipped:', err.message);
+  }
 
   return db;
 }
