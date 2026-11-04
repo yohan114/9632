@@ -5,10 +5,12 @@
  * Material Transfers (MTN) and Stock Balance Reconciliation.
  *
  * Runs across both monolithic database (rawDb) and all workshop databases when multidb is active.
+ * Idempotent: safe to run on every boot / deploy.
  */
 
 const { rawDb, multidb } = require('../db');
 const aliases = require('../lib/aliases');
+const lubricants = require('../lib/lubricants');
 
 function ensureCol(d, table, col, def) {
   const tbl = d.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table);
@@ -18,6 +20,113 @@ function ensureCol(d, table, col, def) {
     d.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${def}`);
     console.log(`Added column ${col} to ${table}`);
   }
+}
+
+function resolveAssetResilient(targetDb, text) {
+  if (!text) return null;
+  const raw = String(text).trim();
+  const norm = aliases.normalize(raw);
+  if (!norm) return null;
+
+  // 1. Try aliases resolver
+  try {
+    const res = aliases.resolveAsset(raw, { record: false });
+    if (res && res.resolved && res.assetId) return res.assetId;
+  } catch {}
+
+  // 2. Direct code_norm match
+  let a = targetDb.prepare('SELECT id FROM assets WHERE code_norm = ? LIMIT 1').get(norm);
+  if (a) return a.id;
+
+  // 3. Normalized registration match
+  a = targetDb.prepare("SELECT id FROM assets WHERE UPPER(REPLACE(REPLACE(registration, '-', ''), ' ', '')) = ? LIMIT 1").get(norm);
+  if (a) return a.id;
+
+  // 4. Normalized ec_code match
+  a = targetDb.prepare("SELECT id FROM assets WHERE UPPER(REPLACE(REPLACE(ec_code, '-', ''), ' ', '')) = ? LIMIT 1").get(norm);
+  if (a) return a.id;
+
+  // 5. Code token extraction
+  const token = aliases.extractCode(raw);
+  if (token) {
+    const tNorm = aliases.normalize(token);
+    if (tNorm && tNorm !== norm) {
+      a = targetDb.prepare('SELECT id FROM assets WHERE code_norm = ? LIMIT 1').get(tNorm);
+      if (a) return a.id;
+    }
+  }
+
+  // 6. Service truck
+  if (raw.toUpperCase().startsWith('SERVICE TRUCK')) {
+    a = targetDb.prepare("SELECT id FROM assets WHERE code LIKE 'Service Truck%' LIMIT 1").get();
+    if (a) return a.id;
+  }
+
+  return null;
+}
+
+function resolveProject(targetDb, text) {
+  if (!text) return null;
+  const t = String(text).toUpperCase();
+  const prjs = targetDb.prepare('SELECT id, name FROM projects').all();
+  for (const p of prjs) {
+    const pName = p.name.toUpperCase();
+    if (t.includes('MARAWILA') && pName.includes('MARAWILA')) return p.id;
+    if (t.includes('RUWANWELLA') && pName.includes('RUWANWELLA')) return p.id;
+    if (t.includes('BATTICALOA') && pName.includes('BATTICALOA')) return p.id;
+    if (t.includes('BATTICOLOA') && pName.includes('BATTICALOA')) return p.id;
+    if (t.includes('IGINIMITIYA') && pName.includes('IGINIMITIYA')) return p.id;
+    if (t.includes('MUTHUR') && pName.includes('MUTHUR')) return p.id;
+    if (t.includes('CEP-03') && pName.includes('CEP-03')) return p.id;
+    if (t.includes('PORT CITY') && pName.includes('PORT CITY')) return p.id;
+    if (t.includes('AWISSAWELLA') && pName.includes('AWISSAWELLA')) return p.id;
+    if (t.includes('MUSALI') && pName.includes('MUSALI')) return p.id;
+  }
+  return null;
+}
+
+function resolveProductResilient(targetDb, desc, date) {
+  if (!desc) return null;
+  if (String(desc).toUpperCase().includes('COTTON')) return null;
+  try {
+    const match = lubricants.resolveLubricant(desc, { record: false, on: date });
+    if (match && match.resolved && match.productId) return match.productId;
+  } catch {}
+
+  const d = String(desc).toUpperCase();
+  if (d.includes('BREAK OIL') || d.includes('BRAKE OIL')) {
+    const p = targetDb.prepare("SELECT id FROM products WHERE name LIKE '%Brake Oil%' OR name LIKE '%Break Oil%' LIMIT 1").get();
+    if (p) return p.id;
+  }
+  if (d.includes('RUBBER GREASE')) {
+    const p = targetDb.prepare("SELECT id FROM products WHERE name = 'Rubber Grease' LIMIT 1").get();
+    if (p) return p.id;
+  }
+  if (d.includes('WD-40') || d.includes('WD 40')) {
+    const p = targetDb.prepare("SELECT id FROM products WHERE name = 'WD-40' LIMIT 1").get();
+    if (p) return p.id;
+  }
+  if (d.includes('CV GREASE')) {
+    const p = targetDb.prepare("SELECT id FROM products WHERE name = 'CV Grease' LIMIT 1").get();
+    if (p) return p.id;
+  }
+  if (d.includes('COOLANT')) {
+    const p = targetDb.prepare("SELECT id FROM products WHERE name = 'Coolant' LIMIT 1").get();
+    if (p) return p.id;
+  }
+  if (d.includes('PETROL ENGINE OIL')) {
+    const p = targetDb.prepare("SELECT id FROM products WHERE name = '20W-50' OR category = 'engine_oil' LIMIT 1").get();
+    if (p) return p.id;
+  }
+  if (d.includes('HAVOLINE')) {
+    const p = targetDb.prepare("SELECT id FROM products WHERE name LIKE 'Havoline%' LIMIT 1").get();
+    if (p) return p.id;
+  }
+  if (d.includes('GREASE') && !d.includes('SEAL') && !d.includes('GUN') && !d.includes('NOZZLE')) {
+    const p = targetDb.prepare("SELECT id FROM products WHERE name = 'Grease' LIMIT 1").get();
+    if (p) return p.id;
+  }
+  return null;
 }
 
 function migrateSingleDb(targetDb, label) {
@@ -33,6 +142,13 @@ function migrateSingleDb(targetDb, label) {
   targetDb.exec('CREATE INDEX IF NOT EXISTS idx_git_src_issue ON general_item_txns(source_issue_id);');
   targetDb.exec('CREATE INDEX IF NOT EXISTS idx_sl_src_issue ON stock_ledger(source_issue_id);');
 
+  // Seed lubricant catalogue aliases
+  try {
+    lubricants.seedCatalogueAliases();
+  } catch (e) {
+    console.warn('Catalogue alias seeding warning:', e.message);
+  }
+
   // 2. Fix Typo Dates
   console.log('Fixing typo dates...');
   targetDb.exec(`
@@ -43,38 +159,57 @@ function migrateSingleDb(targetDb, label) {
     UPDATE stock_moves SET txn_date = '2026-08' || substr(txn_date, 8) WHERE txn_date LIKE '0004-08-%';
   `);
 
-  // 3. Resolve Missing Asset IDs on stock_ledger
-  console.log('Resolving missing asset_id on stock_ledger...');
-  const unlinkedOil = targetDb.prepare("SELECT id, consumer, job_id FROM stock_ledger WHERE kind = 'issue' AND asset_id IS NULL AND consumer IS NOT NULL").all();
+  // 3. Resolve Missing Asset IDs & Project IDs on stock_ledger
+  console.log('Resolving missing asset_id & project_id on stock_ledger...');
+  const unlinkedOil = targetDb.prepare("SELECT id, consumer, mr_no, job_id, source_issue_id, project_id FROM stock_ledger WHERE kind = 'issue' AND (asset_id IS NULL OR project_id IS NULL)").all();
   let resolvedOil = 0;
+  let resolvedPrj = 0;
   for (const row of unlinkedOil) {
     let aid = null;
     if (row.job_id) {
       const j = targetDb.prepare('SELECT asset_id FROM job_cards WHERE id = ?').get(row.job_id);
       if (j && j.asset_id) aid = j.asset_id;
     }
-    if (!aid && row.consumer) {
-      const r = aliases.resolveAsset(row.consumer, { record: false });
-      if (r.resolved && r.assetId) aid = r.assetId;
+    if (!aid && row.source_issue_id) {
+      const i = targetDb.prepare('SELECT asset_id FROM issues WHERE id = ?').get(row.source_issue_id);
+      if (i && i.asset_id) aid = i.asset_id;
+    }
+    if (!aid) {
+      aid = resolveAssetResilient(targetDb, row.consumer) || resolveAssetResilient(targetDb, row.mr_no);
     }
     if (aid) {
       targetDb.prepare('UPDATE stock_ledger SET asset_id = ? WHERE id = ?').run(aid, row.id);
       resolvedOil++;
     }
-  }
-  console.log(`Resolved ${resolvedOil} / ${unlinkedOil.length} unlinked stock_ledger rows to vehicles.`);
 
-  // Also check issues where asset_id IS NULL but job_id is populated
-  const unlinkedIssues = targetDb.prepare('SELECT id, job_id, purpose, description FROM issues WHERE asset_id IS NULL AND job_id IS NOT NULL').all();
+    if (!row.project_id) {
+      const prjId = resolveProject(targetDb, row.consumer) || resolveProject(targetDb, row.mr_no);
+      if (prjId) {
+        targetDb.prepare('UPDATE stock_ledger SET project_id = ? WHERE id = ?').run(prjId, row.id);
+        resolvedPrj++;
+      }
+    }
+  }
+  console.log(`Resolved ${resolvedOil} vehicles, ${resolvedPrj} projects on stock_ledger.`);
+
+  // Also check issues where asset_id IS NULL but job_id or purpose has vehicle
+  const unlinkedIssues = targetDb.prepare('SELECT id, job_id, purpose, description FROM issues WHERE asset_id IS NULL').all();
   let resolvedIssues = 0;
   for (const row of unlinkedIssues) {
-    const j = targetDb.prepare('SELECT asset_id FROM job_cards WHERE id = ?').get(row.job_id);
-    if (j && j.asset_id) {
-      targetDb.prepare('UPDATE issues SET asset_id = ? WHERE id = ?').run(j.asset_id, row.id);
+    let aid = null;
+    if (row.job_id) {
+      const j = targetDb.prepare('SELECT asset_id FROM job_cards WHERE id = ?').get(row.job_id);
+      if (j && j.asset_id) aid = j.asset_id;
+    }
+    if (!aid) {
+      aid = resolveAssetResilient(targetDb, row.purpose) || resolveAssetResilient(targetDb, row.description);
+    }
+    if (aid) {
+      targetDb.prepare('UPDATE issues SET asset_id = ? WHERE id = ?').run(aid, row.id);
       resolvedIssues++;
     }
   }
-  console.log(`Resolved ${resolvedIssues} unlinked issues rows from their job cards.`);
+  console.log(`Resolved ${resolvedIssues} unlinked issues rows to vehicles.`);
 
   // 4. Backfill Missing Unit Prices
   console.log('Backfilling missing unit prices...');
@@ -102,6 +237,16 @@ function migrateSingleDb(targetDb, label) {
        AND EXISTS (SELECT 1 FROM store_items si WHERE si.id = issues.store_item_id AND si.unit_cost > 0)
   `).run();
   console.log(`Backfilled unit_price on ${issPrices.changes} issues rows from store_items.`);
+
+  // Backfill oil issue prices from products if still null/0
+  const issOilPrices = targetDb.prepare(`
+    UPDATE issues
+       SET unit_price = (SELECT pr.unit_price FROM products pr WHERE UPPER(pr.name) = UPPER(issues.description) LIMIT 1)
+     WHERE (unit_price IS NULL OR unit_price = 0)
+       AND (LOWER(category) LIKE '%lubric%' OR LOWER(category) LIKE '%oil%')
+       AND EXISTS (SELECT 1 FROM products pr WHERE UPPER(pr.name) = UPPER(issues.description) AND pr.unit_price > 0)
+  `).run();
+  console.log(`Backfilled unit_price on ${issOilPrices.changes} oil issues from products.`);
 
   // 5. Material Transfers (MTN) Normalization & Stamping
   console.log('Normalizing and stamping Material Transfers (MTN)...');
@@ -195,51 +340,44 @@ function migrateSingleDb(targetDb, label) {
   }
   console.log(`Cross-synced ${syncedSl} stock_ledger issues into issues table.`);
 
-  // C) Newer issues -> general_item_txns (if general) and stock_ledger (if oil)
-  console.log('Cross-syncing newer issues into general_item_txns and stock_ledger...');
-  const recentIssues = targetDb.prepare(`
-    SELECT i.id, i.asset_id, i.job_id, i.store_item_id, i.description, i.qty, i.unit_price, i.issue_date, i.issued_by, i.category, i.store_id, i.physical_store_id,
-           si.is_general, si.balance AS item_balance
+  // C) Cross-Sync ALL lubricant issues from issues table into stock_ledger
+  console.log('Cross-syncing all lubricant issues into stock_ledger...');
+  const unlinkedLubeIssues = targetDb.prepare(`
+    SELECT i.id, i.asset_id, i.job_id, i.store_item_id, i.description, i.qty, i.unit_price, i.issue_date, i.issued_by, i.category, i.purpose, i.store_id, i.physical_store_id
       FROM issues i
-      LEFT JOIN store_items si ON si.id = i.store_item_id
-     WHERE i.source_table IS NULL
+     WHERE (LOWER(i.category) LIKE '%lubric%' OR LOWER(i.category) LIKE '%oil%' OR LOWER(i.category) LIKE '%fluid%') AND LOWER(i.description) NOT LIKE '%cotton%'
        AND COALESCE(i.voided, 0) = 0
+       AND NOT EXISTS (SELECT 1 FROM stock_ledger sl WHERE sl.source_issue_id = i.id OR (i.source_table = 'stock_ledger' AND sl.id = i.source_id))
   `).all();
 
-  const lubricants = require('../lib/lubricants');
-  let newGitSynced = 0;
   let newSlSynced = 0;
+  for (const iss of unlinkedLubeIssues) {
+    const prodId = resolveProductResilient(targetDb, iss.description, iss.issue_date);
+    if (prodId) {
+      const prod = targetDb.prepare('SELECT unit_price FROM products WHERE id = ?').get(prodId);
+      const price = iss.unit_price != null && iss.unit_price > 0 ? iss.unit_price : (prod?.unit_price || 0);
+      const prev = (targetDb.prepare('SELECT balance_after FROM stock_ledger WHERE product_id = ? ORDER BY txn_date DESC, id DESC LIMIT 1').get(prodId) || {}).balance_after || 0;
+      const newBal = prev - Math.abs(iss.qty);
 
-  for (const iss of recentIssues) {
-    const isLube = iss.category === 'Lubricants' || lubricants.isLubricant(iss.description, iss.issue_date);
-    if (isLube) {
-      const match = lubricants.resolveLubricant(iss.description, { record: false, on: iss.issue_date });
-      if (match.resolved && match.productId) {
-        const already = targetDb.prepare('SELECT id FROM stock_ledger WHERE source_issue_id = ?').get(iss.id);
-        if (!already) {
-          const prev = (targetDb.prepare('SELECT balance_after FROM stock_ledger WHERE product_id = ? ORDER BY txn_date DESC, id DESC LIMIT 1').get(match.productId) || {}).balance_after || 0;
-          const newBal = prev - Math.abs(iss.qty);
-          targetDb.prepare(`
-            INSERT INTO stock_ledger (product_id, kind, qty, balance_after, unit_price, asset_id, job_id, consumer, mr_no, txn_date, store_id, physical_store_id, source_issue_id)
-            VALUES (?, 'issue', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-          `).run(match.productId, -Math.abs(iss.qty), newBal, iss.unit_price, iss.asset_id, iss.job_id, iss.description, 'Store Issue', iss.issue_date, iss.store_id || 1, iss.physical_store_id || 2, iss.id);
-          newSlSynced++;
-        }
+      let assetId = iss.asset_id;
+      if (!assetId && iss.job_id) {
+        const j = targetDb.prepare('SELECT asset_id FROM job_cards WHERE id = ?').get(iss.job_id);
+        if (j && j.asset_id) assetId = j.asset_id;
       }
-    } else if (iss.store_item_id && iss.is_general) {
-      const already = targetDb.prepare('SELECT id FROM general_item_txns WHERE source_issue_id = ?').get(iss.id);
-      if (!already) {
-        const prev = (targetDb.prepare('SELECT balance_after FROM general_item_txns WHERE store_item_id = ? ORDER BY txn_date DESC, id DESC LIMIT 1').get(iss.store_item_id) || {}).balance_after || iss.item_balance || 0;
-        const newBal = prev - Math.abs(iss.qty);
-        targetDb.prepare(`
-          INSERT INTO general_item_txns (store_item_id, txn_type, qty, balance_after, unit_price, asset_id, job_id, ref, txn_date, store_id, physical_store_id, source_issue_id)
-          VALUES (?, 'issue', ?, ?, ?, ?, ?, 'Store Issue', ?, ?, ?, ?)
-        `).run(iss.store_item_id, -Math.abs(iss.qty), newBal, iss.unit_price, iss.asset_id, iss.job_id, iss.issue_date, iss.store_id || 1, iss.physical_store_id || 2, iss.id);
-        newGitSynced++;
+      if (!assetId) {
+        assetId = resolveAssetResilient(targetDb, iss.purpose) || resolveAssetResilient(targetDb, iss.description);
       }
+
+      const prjId = resolveProject(targetDb, iss.purpose) || resolveProject(targetDb, iss.description);
+
+      targetDb.prepare(`
+        INSERT INTO stock_ledger (product_id, kind, qty, balance_after, unit_price, asset_id, project_id, job_id, consumer, mr_no, txn_date, store_id, physical_store_id, source_issue_id)
+        VALUES (?, 'issue', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(prodId, -Math.abs(iss.qty), newBal, price, assetId || null, prjId || null, iss.job_id || null, iss.purpose || iss.description, 'Store Issue', iss.issue_date, iss.store_id || 1, iss.physical_store_id || 2, iss.id);
+      newSlSynced++;
     }
   }
-  console.log(`Synced ${newGitSynced} recent general issues to general_item_txns, ${newSlSynced} recent oil issues to stock_ledger.`);
+  console.log(`Cross-synced ${newSlSynced} lubricant issues into stock_ledger.`);
 
   // 7. Synchronize store_items.balance and products.stock_qty
   console.log('Synchronizing store_items.balance and products.stock_qty...');
@@ -251,50 +389,58 @@ function migrateSingleDb(targetDb, label) {
     }
   }
 
-  const generalItems = targetDb.prepare('SELECT id FROM store_items WHERE is_general = 1').all();
-  for (const gi of generalItems) {
-    const lastRow = targetDb.prepare('SELECT balance_after FROM general_item_txns WHERE store_item_id = ? ORDER BY txn_date DESC, id DESC LIMIT 1').get(gi.id);
+  const items = targetDb.prepare('SELECT id FROM store_items').all();
+  for (const item of items) {
+    const lastRow = targetDb.prepare('SELECT balance_after FROM general_item_txns WHERE store_item_id = ? ORDER BY txn_date DESC, id DESC LIMIT 1').get(item.id);
     if (lastRow && lastRow.balance_after != null) {
-      targetDb.prepare('UPDATE store_items SET balance = ? WHERE id = ?').run(lastRow.balance_after, gi.id);
+      targetDb.prepare('UPDATE store_items SET balance = ? WHERE id = ?').run(lastRow.balance_after, item.id);
     }
   }
+
+  console.log(`Synchronized stock quantities for ${products.length} products and ${items.length} store items.`);
 }
 
-function runMigration() {
-  console.log('=== Starting Migration 045 ===');
+function runMigration(optionalDb) {
+  console.log('=== Running Migration 045: Issues, Stock & Lubricant Report Fix ===');
 
-  // Migrate rawDb
-  migrateSingleDb(rawDb, 'rawDb (workshopone.db)');
+  if (optionalDb) {
+    migrateSingleDb(optionalDb, 'Database instance');
+  } else {
+    migrateSingleDb(rawDb, 'Monolithic (rawDb)');
+  }
 
-  // Migrate all workshop databases if multidb is active
   if (multidb.isMultiDb()) {
     const wsList = multidb.listWorkshopDatabases();
     console.log(`Found ${wsList.length} workshop database(s).`);
     for (const ws of wsList) {
       multidb.withWorkshop(ws.id, () => {
         migrateSingleDb(multidb.activeDb(), `Workshop ${ws.code} (id: ${ws.id})`);
-        console.log(`Rebuilding stock_moves for workshop ${ws.code}...`);
-        const stock = require('../lib/stock');
-        const rep = stock.rebuild({ wipe: true });
-        console.log(`stock_moves rebuild completed for workshop ${ws.code}:`, rep);
+        try {
+          const stock = require('../lib/stock');
+          stock.rebuild({ wipe: true });
+        } catch {}
       });
     }
   } else {
-    console.log('Rebuilding stock_moves for rawDb...');
-    const stock = require('../lib/stock');
-    const rep = stock.rebuild({ wipe: true });
-    console.log('stock_moves rebuild completed:', rep);
+    try {
+      const stock = require('../lib/stock');
+      stock.rebuild({ wipe: true });
+    } catch (e) {
+      console.warn('stock_moves rebuild skipped:', e.message);
+    }
   }
 
   // Recalculate vehicle_monthly_costs
   console.log('\nRecalculating vehicle_monthly_costs...');
   const costing = require('../lib/costing');
-  const { all } = require('../db');
-  const vMonths = all(`
+  const targetDb = optionalDb || rawDb;
+  const vMonths = targetDb.prepare(`
     SELECT DISTINCT asset_id, substr(issue_date, 1, 7) ym FROM issues WHERE asset_id IS NOT NULL AND issue_date IS NOT NULL
     UNION
     SELECT DISTINCT j.asset_id, substr(jl.work_date, 1, 7) ym FROM job_labour jl JOIN job_cards j ON j.id = jl.job_id WHERE j.asset_id IS NOT NULL AND jl.work_date IS NOT NULL
-  `);
+    UNION
+    SELECT DISTINCT sl.asset_id, substr(sl.txn_date, 1, 7) ym FROM stock_ledger sl WHERE sl.asset_id IS NOT NULL AND sl.txn_date IS NOT NULL
+  `).all();
 
   let recalced = 0;
   for (const vm of vMonths) {

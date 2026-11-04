@@ -836,6 +836,30 @@ function migrate() {
   } catch (err) {
     console.warn('Physical store locations stage 2 migration skipped:', err.message);
   }
+  // General & Lubricant Issues reconciliation & Stock sync
+  try {
+    require('../migrate/045_fix_issues_mtn_stock').runMigration(db);
+  } catch (err) {
+    console.warn('Migration 045 auto-sync skipped:', err.message);
+  }
+  // General Item Issues reconciliation & Store Items balance sync
+  try {
+    require('../migrate/046_fix_general_item_issues').runMigration(db);
+  } catch (err) {
+    console.warn('Migration 046 auto-sync skipped:', err.message);
+  }
+  // Deduplicate General Items, clean overlaps & recalculate costs
+  try {
+    require('../migrate/047_deduplicate_general_items').runMigration(db);
+  } catch (err) {
+    console.warn('Migration 047 deduplication skipped:', err.message);
+  }
+  // Service Job Requests, Service Records Linking & Daily Work Service Tracking
+  try {
+    require('../migrate/048_service_requests_and_dailywork').runMigration(db);
+  } catch (err) {
+    console.warn('Migration 048 service requests skipped:', err.message);
+  }
 
   return db;
 }

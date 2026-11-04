@@ -451,10 +451,12 @@ router.get('/mechanics-kpi', requireKpiAccess, asyncHandler(async (req, res) => 
   const rows = all(
     `SELECT w.*, j.job_no, j.asset_id AS job_asset_id, j.workshop_id, j.outside_estimate AS job_outside_estimate,
             j.status AS job_status, a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec,
-            ws.name AS workshop_name, ws.code AS workshop_code
+            ws.name AS workshop_name, ws.code AS workshop_code,
+            s.service_type, s.job_no AS service_job_no
        FROM job_daily_work w
        JOIN job_cards j ON j.id = w.job_id
-       LEFT JOIN assets a ON a.id = j.asset_id
+       LEFT JOIN service_jobs s ON s.id = w.service_id
+       LEFT JOIN assets a ON a.id = COALESCE(w.asset_id, s.asset_id, j.asset_id)
        LEFT JOIN workshops ws ON ws.id = j.workshop_id
       WHERE ${conds.join(' AND ')}
       ORDER BY w.work_date DESC, w.id DESC`,
@@ -476,6 +478,9 @@ router.get('/mechanics-kpi', requireKpiAccess, asyncHandler(async (req, res) => 
   const unpricedLines = [];
   const distinctJobs = new Map();
   const distinctVehicles = new Set();
+  const distinctServices = new Set();
+  let totalServiceHours = 0;
+  let totalRepairHours = 0;
 
   let totalLineHours = 0;
   let totalBookedMechanicHours = 0;
@@ -501,6 +506,8 @@ router.get('/mechanics-kpi', requireKpiAccess, asyncHandler(async (req, res) => 
         current_rate: rate,
         regular_hours: 0,
         travel_hours: 0,
+        service_hours: 0,
+        repair_hours: 0,
         total_hours: 0,
         internal_cost: 0,
         outside_cost: 0,
@@ -512,6 +519,7 @@ router.get('/mechanics-kpi', requireKpiAccess, asyncHandler(async (req, res) => 
         crew_entries_count: 0,
         jobs_set: new Set(),
         vehicles_set: new Set(),
+        services_set: new Set(),
       });
     }
     return mechMap.get(canonical);
@@ -547,6 +555,11 @@ router.get('/mechanics-kpi', requireKpiAccess, asyncHandler(async (req, res) => 
     if (w.job_asset_id) {
       distinctVehicles.add(w.job_asset_id);
     }
+    if (w.service_id) {
+      distinctServices.add(w.service_id);
+    }
+    if (w.work_type === 'service') totalServiceHours += hrs;
+    else totalRepairHours += hrs;
 
     // Calculate each crew member's effective rate & internal cost on this line
     const crewCosts = canonNames.map((canon) => {
@@ -572,6 +585,12 @@ router.get('/mechanics-kpi', requireKpiAccess, asyncHandler(async (req, res) => 
       } else {
         m.regular_hours += hrs;
         totalRegularHours += hrs;
+      }
+      if (w.work_type === 'service') {
+        m.service_hours += hrs;
+        if (w.service_id) m.services_set.add(w.service_id);
+      } else {
+        m.repair_hours += hrs;
       }
       m.total_hours += hrs;
       totalBookedMechanicHours += hrs;
@@ -675,6 +694,9 @@ router.get('/mechanics-kpi', requireKpiAccess, asyncHandler(async (req, res) => 
       hourly_rate: m.current_rate,
       regular_hours: r2(m.regular_hours),
       travel_hours: r2(m.travel_hours),
+      service_hours: r2(m.service_hours),
+      repair_hours: r2(m.repair_hours),
+      services_count: m.services_set.size,
       total_hours: totHrs,
       attended_hours: m.attended_hours !== undefined ? r2(m.attended_hours) : null,
       utilisation: m.utilisation !== undefined ? m.utilisation : null,
@@ -803,6 +825,9 @@ router.get('/mechanics-kpi', requireKpiAccess, asyncHandler(async (req, res) => 
       total_hours: r2(totalBookedMechanicHours),
       regular_hours: r2(totalRegularHours),
       travel_hours: r2(totalTravelHours),
+      service_hours: r2(totalServiceHours),
+      repair_hours: r2(totalRepairHours),
+      distinct_services_count: distinctServices.size,
       total_internal_cost: r2(totalInternalCost),
       total_outside_cost: r2(totalOutsideCost),
       job_outside_estimate_total: jobOutsideEstimateTotal,
@@ -865,10 +890,12 @@ router.get('/mechanics-kpi/detail', requireKpiAccess, asyncHandler((req, res) =>
 
   const rows = all(
     `SELECT w.*, j.job_no, j.asset_id AS job_asset_id, j.outside_estimate AS job_outside_estimate,
-            a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec
+            a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec,
+            s.service_type, s.job_no AS service_job_no
        FROM job_daily_work w
        JOIN job_cards j ON j.id = w.job_id
-       LEFT JOIN assets a ON a.id = j.asset_id
+       LEFT JOIN service_jobs s ON s.id = w.service_id
+       LEFT JOIN assets a ON a.id = COALESCE(w.asset_id, s.asset_id, j.asset_id)
       WHERE ${conds.join(' AND ')}
       ORDER BY w.work_date DESC, w.id DESC`,
     ...params
@@ -910,6 +937,10 @@ router.get('/mechanics-kpi/detail', requireKpiAccess, asyncHandler((req, res) =>
       line_outside_cost: r2(outsideVal),
       attributed_outside_cost: r2(attrOutside),
       net_saving: r2(attrOutside - me.cost),
+      work_type: w.work_type || 'repair',
+      service_id: w.service_id || null,
+      service_job_no: w.service_job_no || null,
+      service_type: w.service_type || null,
     });
   }
 
@@ -983,11 +1014,13 @@ router.get('/month', requireCap('dailywork.view'), asyncHandler(async (req, res)
 
   let rows = all(
     `SELECT w.id, w.work_date, w.mechanic, w.description, w.hours, w.is_external, w.external_value, w.outside_labour, w.travel,
+            w.service_id, w.work_type, s.service_type, s.job_no AS service_job_no,
             j.id AS job_id, j.job_no, j.type, j.status,
             a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec, p.name AS project_name
        FROM job_daily_work w
        JOIN job_cards j ON j.id = w.job_id
-       LEFT JOIN assets a ON a.id = j.asset_id
+       LEFT JOIN service_jobs s ON s.id = w.service_id
+       LEFT JOIN assets a ON a.id = COALESCE(w.asset_id, s.asset_id, j.asset_id)
        LEFT JOIN projects p ON p.id = j.project_id
       WHERE ${conditions.join(' AND ')}
       ORDER BY w.work_date DESC, a.code, w.id`,
@@ -1082,11 +1115,13 @@ router.get('/', requireCap('dailywork.view'), asyncHandler((req, res) => {
   if (own.sql) { filter += ` AND ${own.sql}`; params.push(...own.params); }
   const rows = all(
     `SELECT w.id, w.work_date, w.mechanic, w.description, w.hours, w.is_external, w.external_value, w.outside_labour,
+            w.service_id, w.work_type, s.service_type, s.job_no AS service_job_no,
             j.id AS job_id, j.job_no, j.type, j.status,
             a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec, p.name AS project_name
        FROM job_daily_work w
        JOIN job_cards j ON j.id = w.job_id
-       LEFT JOIN assets a ON a.id = j.asset_id
+       LEFT JOIN service_jobs s ON s.id = w.service_id
+       LEFT JOIN assets a ON a.id = COALESCE(w.asset_id, s.asset_id, j.asset_id)
        LEFT JOIN projects p ON p.id = j.project_id
       WHERE w.work_date = ? ${filter}
       ORDER BY a.code, w.id`,
@@ -1134,7 +1169,22 @@ router.post('/', requireCap('dailywork.add'), asyncHandler((req, res) => {
     return r.id;
   };
 
-  if (b.request_type === 'general') {
+  const serviceId = toInt(b.service_id) || null;
+  const workType = (serviceId || b.work_type === 'service') ? 'service' : 'repair';
+  let svc = null;
+  if (serviceId) {
+    svc = get('SELECT id, asset_id, service_date, job_no FROM service_jobs WHERE id = ?', serviceId);
+  }
+
+  if (serviceId && svc) {
+    let assetId = toInt(b.asset_id) || svc.asset_id || null;
+    if (assetId) {
+      const job = jobForEntry(assetId, date);
+      jobId = job ? job.id : forVehicle(assetId);
+    } else {
+      jobId = generalWorkshopJob(workshops.homeOf(req.user));
+    }
+  } else if (b.request_type === 'general') {
     // General workshop work. Naming a vehicle books the cost to THAT vehicle for the month:
     // it goes on the vehicle's open card, or on a card created and closed on this work date —
     // so it reports under the vehicle instead of the shared workshop container.
@@ -1175,10 +1225,10 @@ router.post('/', requireCap('dailywork.add'), asyncHandler((req, res) => {
     : null;
 
   const info = run(
-    `INSERT INTO job_daily_work (job_id, work_date, mechanic, description, hours, is_external, external_value, outside_labour, asset_id, travel)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO job_daily_work (job_id, work_date, mechanic, description, hours, is_external, external_value, outside_labour, asset_id, travel, service_id, work_type)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     jobId, date, mechanic, description, hours, isExternal, isExternal ? toNum(b.external_value, 0) : 0, outsideLabour, lineAsset,
-    b.travel && !isExternal ? 1 : 0   // Stage 6: travel to a field job — costed like any hour, shown apart
+    b.travel && !isExternal ? 1 : 0, serviceId, workType
   );
   costing.refreshJobTotals(jobId);
   mechanics.syncJobLabourForMonth(date.slice(0, 7));
@@ -1296,6 +1346,8 @@ router.patch('/:id', requireCap('dailywork.edit'), asyncHandler((req, res) => {
   const sets = [];
   const params = [];
   const put = (col, v) => { sets.push(col + ' = ?'); params.push(v); };
+  if (req.body.service_id !== undefined) put('service_id', toInt(req.body.service_id) || null);
+  if (req.body.work_type !== undefined) put('work_type', req.body.work_type === 'service' ? 'service' : 'repair');
   if (req.body.hours !== undefined) put('hours', toNum(req.body.hours, 0));
   if (req.body.mechanic !== undefined) put('mechanic', String(req.body.mechanic).trim() || null);
   if (req.body.description !== undefined) put('description', String(req.body.description).trim() || null);

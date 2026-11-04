@@ -391,24 +391,43 @@ function recalcVehicleMonth(assetId, year, month) {
   const labour = round2(get(
     `SELECT COALESCE(SUM(jl.amount),0) v FROM job_labour jl JOIN job_cards j ON j.id = jl.job_id
       WHERE j.asset_id = ? AND substr(jl.work_date,1,7) = ?`, assetId, ym).v);
+
+  // Oil from stock_ledger for this asset and month
+  const slOil = get(
+    `SELECT COALESCE(SUM(ABS(sl.qty) * COALESCE(sl.unit_price, pr.unit_price, 0)), 0) v
+       FROM stock_ledger sl JOIN products pr ON pr.id = sl.product_id
+      WHERE sl.asset_id = ? AND substr(sl.txn_date,1,7) = ? AND sl.kind = 'issue'
+        AND COALESCE(sl.voided,0) = 0 AND COALESCE(sl.consumer_type,'') <> 'service'`, assetId, ym).v;
+
+  // Direct lubricant issues not in stock_ledger
+  const issuesOil = get(
+    `SELECT COALESCE(SUM(i.qty * COALESCE(i.unit_price, 0)), 0) v
+       FROM issues i
+      WHERE i.asset_id = ? AND substr(i.issue_date,1,7) = ?
+        AND (LOWER(i.category) LIKE '%lubric%' OR LOWER(i.category) LIKE '%oil%')
+        AND NOT EXISTS (SELECT 1 FROM stock_ledger sl WHERE sl.source_issue_id = i.id)`, assetId, ym).v;
+
+  const oil = round2(slOil + issuesOil);
+
   // Parts brought back unused (Stage 6 return notes) come off the month of the issue they undo.
   const parts = round2(get(
     `SELECT COALESCE(SUM(qty * COALESCE(unit_price,0)),0)
           - COALESCE((SELECT SUM(r.qty * COALESCE(ir.unit_price,0)) FROM issue_returns r JOIN issues ir ON ir.id = r.issue_id
                        WHERE ir.asset_id = ? AND substr(ir.issue_date,1,7) = ?), 0) v
-       FROM issues WHERE asset_id = ? AND substr(issue_date,1,7) = ?`, assetId, ym, assetId, ym).v);
+       FROM issues WHERE asset_id = ? AND substr(issue_date,1,7) = ?
+        AND LOWER(category) NOT LIKE '%lubric%' AND LOWER(category) NOT LIKE '%oil%'`, assetId, ym, assetId, ym).v);
 
   const row = get('SELECT * FROM vehicle_monthly_costs WHERE asset_id = ? AND year = ? AND month = ?', assetId, year, month);
   if (!row) {
-    if (!labour && !parts) return null;               // nothing to record
-    run(`INSERT INTO vehicle_monthly_costs (asset_id, year, month, labour_cost, parts_cost, total_cost, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, datetime('now'))`, assetId, year, month, labour, parts, round2(labour + parts));
+    if (!labour && !parts && !oil) return null;               // nothing to record
+    run(`INSERT INTO vehicle_monthly_costs (asset_id, year, month, labour_cost, parts_cost, oil_cost, total_cost, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))`, assetId, year, month, labour, parts, oil, round2(labour + parts + oil));
     return { labour, parts };
   }
-  const others = ['fuel_cost', 'oil_cost', 'filter_cost', 'battery_cost'].reduce((s, c) => s + (row[c] || 0), 0);
+  const others = ['fuel_cost', 'filter_cost', 'battery_cost'].reduce((s, c) => s + (row[c] || 0), 0);
   run(`UPDATE vehicle_monthly_costs
-          SET labour_cost = ?, parts_cost = ?, total_cost = ?, updated_at = datetime('now')
-        WHERE id = ?`, labour, parts, round2(others + labour + parts), row.id);
+          SET labour_cost = ?, parts_cost = ?, oil_cost = ?, total_cost = ?, updated_at = datetime('now')
+        WHERE id = ?`, labour, parts, oil, round2(others + labour + parts + oil), row.id);
   return { labour, parts };
 }
 

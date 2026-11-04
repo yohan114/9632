@@ -3436,32 +3436,116 @@ function syncIssueToLedgers(issueId) {
   if (!iss || iss.source_table) return;
 
   const lubricants = require('../lib/lubricants');
-  const isLube = iss.category === 'Lubricants' || lubricants.isLubricant(iss.description, iss.issue_date);
+  const aliases = require('../lib/aliases');
+  const cat = String(iss.category || '').toLowerCase();
+  const desc = String(iss.description || '').trim();
+  const d = desc.toUpperCase();
 
-  if (isLube) {
-    const match = lubricants.resolveLubricant(iss.description, { record: false, on: iss.issue_date });
+  // Cotton Waste is strictly a workshop consumable (General Items), never an oil/fluid
+  const isCotton = d.includes('COTTON');
+
+  let prodId = null;
+  if (!isCotton) {
+    const match = lubricants.resolveLubricant(desc, { record: false, on: iss.issue_date });
     if (match.resolved && match.productId) {
-      const already = get('SELECT id FROM stock_ledger WHERE source_issue_id = ?', iss.id);
-      if (!already) {
-        const prev = (get('SELECT balance_after FROM stock_ledger WHERE product_id = ? ORDER BY txn_date DESC, id DESC LIMIT 1', match.productId) || {}).balance_after || 0;
-        const newBal = prev - Math.abs(iss.qty);
-        run(`
-          INSERT INTO stock_ledger (product_id, kind, qty, balance_after, unit_price, asset_id, job_id, consumer, mr_no, txn_date, store_id, physical_store_id, source_issue_id)
-          VALUES (?, 'issue', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `, match.productId, -Math.abs(iss.qty), newBal, iss.unit_price, iss.asset_id, iss.job_id, iss.description, iss.min_no || 'Store Issue', iss.issue_date, iss.store_id || 1, iss.physical_store_id || 2, iss.id);
-        run('UPDATE products SET stock_qty = ? WHERE id = ?', newBal, match.productId);
-      }
+      prodId = match.productId;
+    } else {
+      if (d.includes('BREAK OIL') || d.includes('BRAKE OIL')) prodId = (get('SELECT id FROM products WHERE name LIKE \'%Brake Oil%\' LIMIT 1') || {}).id;
+      else if (d.includes('RUBBER GREASE')) prodId = (get('SELECT id FROM products WHERE name = \'Rubber Grease\' LIMIT 1') || {}).id;
+      else if (d.includes('WD-40') || d.includes('WD 40')) prodId = (get('SELECT id FROM products WHERE name = \'WD-40\' LIMIT 1') || {}).id;
+      else if (d.includes('CV GREASE')) prodId = (get('SELECT id FROM products WHERE name = \'CV Grease\' LIMIT 1') || {}).id;
+      else if (d.includes('COOLANT')) prodId = (get('SELECT id FROM products WHERE name = \'Coolant\' LIMIT 1') || {}).id;
+      else if (d.includes('PETROL ENGINE OIL')) prodId = (get('SELECT id FROM products WHERE name = \'20W-50\' OR category = \'engine_oil\' LIMIT 1') || {}).id;
+      else if (d.includes('GREASE') && !d.includes('SEAL') && !d.includes('GUN') && !d.includes('NOZZLE')) prodId = (get('SELECT id FROM products WHERE name = \'Grease\' LIMIT 1') || {}).id;
     }
-  } else if (iss.store_item_id && (iss.is_general || iss.category === 'General Items')) {
-    const already = get('SELECT id FROM general_item_txns WHERE source_issue_id = ?', iss.id);
+  }
+
+  if (prodId) {
+    // If it is synced to oil stock_ledger, it must NEVER be in general_item_txns
+    run('DELETE FROM general_item_txns WHERE source_issue_id = ?', iss.id);
+
+    const already = get('SELECT id FROM stock_ledger WHERE source_issue_id = ?', iss.id);
     if (!already) {
-      const prev = (get('SELECT balance_after FROM general_item_txns WHERE store_item_id = ? ORDER BY txn_date DESC, id DESC LIMIT 1', iss.store_item_id) || {}).balance_after || iss.item_balance || 0;
+      const prod = get('SELECT unit_price FROM products WHERE id = ?', prodId);
+      const price = iss.unit_price != null && iss.unit_price > 0 ? iss.unit_price : (prod?.unit_price || 0);
+      const prev = (get('SELECT balance_after FROM stock_ledger WHERE product_id = ? ORDER BY txn_date DESC, id DESC LIMIT 1', prodId) || {}).balance_after || 0;
       const newBal = prev - Math.abs(iss.qty);
+
+      let assetId = iss.asset_id;
+      if (!assetId && iss.job_id) {
+        const j = get('SELECT asset_id FROM job_cards WHERE id = ?', iss.job_id);
+        if (j && j.asset_id) assetId = j.asset_id;
+      }
+      if (!assetId && iss.purpose) {
+        const r = aliases.resolveAsset(iss.purpose, { record: false });
+        if (r.resolved && r.assetId) assetId = r.assetId;
+      }
+
       run(`
-        INSERT INTO general_item_txns (store_item_id, txn_type, qty, balance_after, unit_price, asset_id, job_id, ref, txn_date, store_id, physical_store_id, source_issue_id)
-        VALUES (?, 'issue', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `, iss.store_item_id, -Math.abs(iss.qty), newBal, iss.unit_price, iss.asset_id, iss.job_id, iss.min_no || 'Store Issue', iss.issue_date, iss.store_id || 1, iss.physical_store_id || 2, iss.id);
-      run('UPDATE store_items SET balance = ? WHERE id = ?', newBal, iss.store_item_id);
+        INSERT INTO stock_ledger (product_id, kind, qty, balance_after, unit_price, asset_id, job_id, consumer, mr_no, txn_date, store_id, physical_store_id, source_issue_id)
+        VALUES (?, 'issue', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `, prodId, -Math.abs(iss.qty), newBal, price, assetId || null, iss.job_id || null, iss.purpose || iss.description, iss.min_no || 'Store Issue', iss.issue_date, iss.store_id || 1, iss.physical_store_id || 2, iss.id);
+      run('UPDATE products SET stock_qty = ? WHERE id = ?', newBal, prodId);
+    }
+  } else {
+    // Check if this issue is an MRN/GRN spare part handover, a filter, a battery/tyre, or already in job_parts
+    const isHandover = iss.grn_id != null || iss.mrn_no != null || iss.mrn_line_id != null;
+    const isFilter = cat === 'filters' || cat.includes('filter') || desc.toLowerCase().includes('filter');
+    const isBatteryOrTyre = cat === 'battery' || cat.includes('tyre');
+    const hasJobPart = iss.job_id && !!get(`
+      SELECT 1 FROM job_parts
+       WHERE job_id = ?
+         AND (source_type = 'issue' OR mrn_line_id = ? OR LOWER(TRIM(description)) = LOWER(TRIM(?)))
+       LIMIT 1
+    `, iss.job_id, iss.id, desc);
+
+    if (isHandover || isFilter || isBatteryOrTyre || hasJobPart) {
+      // Must not be in general_item_txns
+      run('DELETE FROM general_item_txns WHERE source_issue_id = ?', iss.id);
+      return;
+    }
+
+    // General Items / Consumables / Hardware / Fasteners / Electrical / Bearings / Belts / Tools / Cotton Waste / etc.
+    let storeItemId = iss.store_item_id;
+    if (!storeItemId && desc) {
+      const existing = get('SELECT id FROM store_items WHERE LOWER(TRIM(name)) = LOWER(TRIM(?)) LIMIT 1', desc);
+      if (existing) {
+        storeItemId = existing.id;
+      } else {
+        const ins = run(`
+          INSERT INTO store_items (name, category, unit, rack, is_general, balance, unit_cost)
+          VALUES (?, COALESCE(?, 'General Items'), 'nos', 'General', 1, 0, ?)
+        `, desc, iss.category || 'General Items', iss.unit_price || 0);
+        storeItemId = ins.lastInsertRowid;
+      }
+      run('UPDATE issues SET store_item_id = ? WHERE id = ?', storeItemId, iss.id);
+    }
+
+    if (storeItemId) {
+      run('UPDATE store_items SET is_general = 1 WHERE id = ? AND is_general = 0', storeItemId);
+      const already = get('SELECT id FROM general_item_txns WHERE source_issue_id = ?', iss.id);
+      if (!already) {
+        const prev = (get('SELECT balance_after FROM general_item_txns WHERE store_item_id = ? ORDER BY txn_date DESC, id DESC LIMIT 1', storeItemId) || {}).balance_after || iss.item_balance || 0;
+        const newBal = prev - Math.abs(iss.qty);
+        const si = get('SELECT unit_cost FROM store_items WHERE id = ?', storeItemId);
+        const price = iss.unit_price != null && iss.unit_price > 0 ? iss.unit_price : (si?.unit_cost || 0);
+
+        let assetId = iss.asset_id;
+        if (!assetId && iss.job_id) {
+          const j = get('SELECT asset_id FROM job_cards WHERE id = ?', iss.job_id);
+          if (j && j.asset_id) assetId = j.asset_id;
+        }
+        if (!assetId && iss.purpose) {
+          const r = aliases.resolveAsset(iss.purpose, { record: false });
+          if (r.resolved && r.assetId) assetId = r.assetId;
+        }
+
+        run(`
+          INSERT INTO general_item_txns (store_item_id, txn_type, qty, balance_after, unit_price, asset_id, job_id, ref, txn_date, store_id, physical_store_id, source_issue_id)
+          VALUES (?, 'issue', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `, storeItemId, -Math.abs(iss.qty), newBal, price, assetId || null, iss.job_id || null, iss.min_no || iss.purpose || 'Store Issue', iss.issue_date, iss.store_id || 1, iss.physical_store_id || 2, iss.id);
+        run('UPDATE store_items SET balance = ? WHERE id = ?', newBal, storeItemId);
+      }
     }
   }
 }
@@ -3596,13 +3680,14 @@ router.post('/stock-issue', requireCap('stores.stock_issue'), asyncHandler((req,
     // basis migrate/015 recomputes from, so skipping the bump here would make the stored rollup
     // disagree with its own definition and shift silently the next time migrations are run.
     const lineCost = qty * (linePrice || 0);
+    const isLubeIssue = String(cat.category || '').toLowerCase().includes('lubric') || String(cat.category || '').toLowerCase().includes('oil');
     if (assetId && validPeriod && lineCost) {
       run(
-        `INSERT INTO vehicle_monthly_costs (asset_id, year, month, parts_cost, total_cost)
+        `INSERT INTO vehicle_monthly_costs (asset_id, year, month, ${isLubeIssue ? 'oil_cost' : 'parts_cost'}, total_cost)
          VALUES (?, ?, ?, ?, ?)
          ON CONFLICT(asset_id, year, month) DO UPDATE SET
-           parts_cost = parts_cost + excluded.parts_cost,
-           total_cost = total_cost + excluded.parts_cost,
+           ${isLubeIssue ? 'oil_cost = oil_cost + excluded.oil_cost' : 'parts_cost = parts_cost + excluded.parts_cost'},
+           total_cost = total_cost + excluded.total_cost,
            updated_at = datetime('now')`,
         assetId, yr, mo, lineCost, lineCost);
     }
@@ -3664,15 +3749,16 @@ router.post('/stock-issue', requireCap('stores.stock_issue'), asyncHandler((req,
          VALUES (?, 'issue', ?, ?, ?, ?, 0)`,
         jobId, info.lastInsertRowid, item.name, qty, linePrice);
       const lineCost = qty * (linePrice || 0);
+      const isLubeIssue = String(cat.category || '').toLowerCase().includes('lubric') || String(cat.category || '').toLowerCase().includes('oil');
       if (assetId && validPeriod) {
         run(
-          `INSERT INTO vehicle_monthly_costs (asset_id, year, month, parts_cost, total_cost)
-           VALUES (?, ?, ?, ?, ?)
-           ON CONFLICT(asset_id, year, month) DO UPDATE SET
-             parts_cost = parts_cost + excluded.parts_cost,
-             total_cost = total_cost + excluded.parts_cost,
-             updated_at = datetime('now')`,
-          assetId, yr, mo, lineCost, lineCost);
+        `INSERT INTO vehicle_monthly_costs (asset_id, year, month, ${isLubeIssue ? 'oil_cost' : 'parts_cost'}, total_cost)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(asset_id, year, month) DO UPDATE SET
+           ${isLubeIssue ? 'oil_cost = oil_cost + excluded.oil_cost' : 'parts_cost = parts_cost + excluded.parts_cost'},
+           total_cost = total_cost + excluded.total_cost,
+           updated_at = datetime('now')`,
+        assetId, yr, mo, lineCost, lineCost);
       }
 
       // The stock movement — this is what deducts the balance and shows in the section view.
@@ -4142,16 +4228,16 @@ router.post('/issues', requireCap('stores.issue'), chainPipeline.idempotencyGuar
     // asset-linked issues; general (assetless) issues are counted in KPIs but have no
     // vehicle to attribute to. Incremental upsert keeps total = Σ components, matching
     // the invariant the 015 backfill establishes.
+    const isLubeIssue = String(cat.category || '').toLowerCase().includes('lubric') || String(cat.category || '').toLowerCase().includes('oil');
     if (assetId && validPeriod) {
       run(
-        `INSERT INTO vehicle_monthly_costs (asset_id, year, month, parts_cost, total_cost)
+        `INSERT INTO vehicle_monthly_costs (asset_id, year, month, ${isLubeIssue ? 'oil_cost' : 'parts_cost'}, total_cost)
          VALUES (?, ?, ?, ?, ?)
          ON CONFLICT(asset_id, year, month) DO UPDATE SET
-           parts_cost = parts_cost + excluded.parts_cost,
-           total_cost = total_cost + excluded.parts_cost,
+           ${isLubeIssue ? 'oil_cost = oil_cost + excluded.oil_cost' : 'parts_cost = parts_cost + excluded.parts_cost'},
+           total_cost = total_cost + excluded.total_cost,
            updated_at = datetime('now')`,
-        assetId, yr, mo, lineCost, lineCost
-      );
+        assetId, yr, mo, lineCost, lineCost);
     }
     // Stores plan, Part 3: off the shelf now, and — once the store's rule has started — not past zero.
     stockRule.check(stock.sync({ issues: [info.lastInsertRowid] }));

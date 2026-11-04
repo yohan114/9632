@@ -53,6 +53,27 @@ const displayName = (name) => String(name == null ? '' : name)
   .replace(/\s{2,}/g, ' ')
   .trim();
 
+const COMMON_LUBE_MAPPINGS = [
+  { raw: 'Break Oil', target: 'Brake Oil' },
+  { raw: 'Break Oil 1L', target: 'Brake Oil' },
+  { raw: 'Brake Oil 1L', target: 'Brake Oil' },
+  { raw: 'Break Oil DOT-5', target: 'Break Oil DOT-5' },
+  { raw: 'Brake Oil DOT-5', target: 'Break Oil DOT-5' },
+  { raw: 'WD-40', target: 'WD-40' },
+  { raw: 'WD 40', target: 'WD-40' },
+  { raw: 'Rubber Grease', target: 'Rubber Grease' },
+  { raw: 'CV Grease', target: 'CV Grease' },
+  { raw: 'Petrol Engine Oil', target: '20W-50' },
+  { raw: 'Coolant', target: 'Coolant' },
+  { raw: 'Coolant — DAH-2228', target: 'Coolant' },
+  { raw: 'Radiator Coolant', target: 'Coolant' },
+  { raw: 'MP Grease', target: 'Grease' },
+  { raw: 'Multi Purpose Grease', target: 'Grease' },
+  { raw: 'Super Diesel 15W40', target: '15W40 (CI-04) Valvoline' },
+  { raw: 'Super Diesel', target: '15W40 (CI-04) Valvoline' },
+  { raw: 'Havoline 20W-40', target: 'Havoline 20W-40' }
+];
+
 /** Give every catalogue product an alias to its own name. Idempotent. */
 function seedCatalogueAliases() {
   for (const p of all(`SELECT id, name FROM products WHERE name IS NOT NULL AND TRIM(name) <> ''`)) {
@@ -65,6 +86,21 @@ function seedCatalogueAliases() {
            resolved   = MAX(lubricant_aliases.resolved, excluded.resolved),
            updated_at = datetime('now')`, p.name, norm, p.id);
   }
+
+  for (const m of COMMON_LUBE_MAPPINGS) {
+    const p = get('SELECT id FROM products WHERE name = ? OR UPPER(name) = UPPER(?) LIMIT 1', m.target, m.target);
+    if (p) {
+      const norm = normLube(m.raw);
+      if (norm) {
+        run(`INSERT INTO lubricant_aliases (raw_text, raw_norm, product_id, effective_from, resolved, source)
+             VALUES (?, ?, ?, '', 1, 'alias_rule')
+             ON CONFLICT(raw_norm, effective_from) DO UPDATE SET
+               product_id = excluded.product_id,
+               resolved = 1,
+               updated_at = datetime('now')`, m.raw, norm, p.id);
+      }
+    }
+  }
 }
 
 /**
@@ -74,7 +110,7 @@ function seedCatalogueAliases() {
  */
 function resolveLubricant(text, { source = null, record = true, on = null } = {}) {
   const norm = normLube(text);
-  if (!norm) return { productId: null, product: null, resolved: false, aliasId: null };
+  if (!norm || norm.includes('COTTON')) return { productId: null, product: null, resolved: false, aliasId: null };
 
   // A name can mean different products at different times — HD-68 was Caltex and is now
   // Valvoline — so take the latest meaning that had started by the movement's own date.
@@ -82,12 +118,33 @@ function resolveLubricant(text, { source = null, record = true, on = null } = {}
   // fallback and wins only when no dated one applies yet. With no date given, the newest wins,
   // because that is what someone typing the name today means.
   const day = on ? String(on).slice(0, 10) : null;
-  const hit = day
+  let hit = day
     ? get(`SELECT * FROM lubricant_aliases
             WHERE raw_norm = ? AND effective_from <= ?
             ORDER BY effective_from DESC LIMIT 1`, norm, day)
     : get(`SELECT * FROM lubricant_aliases WHERE raw_norm = ?
             ORDER BY effective_from DESC LIMIT 1`, norm);
+  // Resilient fallback for common variations
+  if (!hit && norm.includes('BREAKOIL')) {
+    const fixedNorm = norm.replace('BREAKOIL', 'BRAKEOIL');
+    hit = get(`SELECT * FROM lubricant_aliases WHERE raw_norm = ? ORDER BY effective_from DESC LIMIT 1`, fixedNorm);
+  }
+  if (!hit && norm.includes('COOLANT')) {
+    hit = get(`SELECT * FROM lubricant_aliases WHERE raw_norm = 'COOLANT' ORDER BY effective_from DESC LIMIT 1`);
+  }
+  if (!hit && norm.includes('RUBBERGREASE')) {
+    hit = get(`SELECT * FROM lubricant_aliases WHERE raw_norm = 'RUBBERGREASE' ORDER BY effective_from DESC LIMIT 1`);
+  }
+  if (!hit && (norm.includes('WD40') || norm.includes('WD040'))) {
+    hit = get(`SELECT * FROM lubricant_aliases WHERE raw_norm = 'WD40' ORDER BY effective_from DESC LIMIT 1`);
+  }
+  if (!hit && norm.includes('CVGREASE')) {
+    hit = get(`SELECT * FROM lubricant_aliases WHERE raw_norm = 'CVGREASE' ORDER BY effective_from DESC LIMIT 1`);
+  }
+  if (!hit && norm.includes('PETROLENGINEOIL')) {
+    hit = get(`SELECT * FROM lubricant_aliases WHERE raw_norm = 'PETROLENGINEOIL' ORDER BY effective_from DESC LIMIT 1`);
+  }
+
   if (hit) {
     if (record) run('UPDATE lubricant_aliases SET hit_count = hit_count + 1, updated_at = datetime(\'now\') WHERE id = ?', hit.id);
     return {

@@ -98,6 +98,7 @@ function requestRows(user, statuses, f) {
     `SELECT r.id, r.jr_no AS no, r.req_date, r.type, r.severity, r.priority, r.description, r.requested_by,
             r.approval_status, r.certified_by, r.certified_at, r.approved_by, r.approved_at, r.workshop_id, r.asset_id, r.requested_by_user,
             r.job_id, j.job_no, j.status AS job_status, ${ASSET}, w.code AS workshop_code,
+            r.service_id, r.service_type, r.meter_reading, s.job_no AS service_job_no, s.service_date,
             (SELECT x.approver_id FROM job_request_approvals x WHERE x.job_request_id = r.id AND x.stage = 'certify'
                 AND x.decision = 'approved' ORDER BY x.id DESC LIMIT 1) AS certifier_id,
             (SELECT x.reason FROM job_request_approvals x WHERE x.job_request_id = r.id AND x.decision = 'rejected'
@@ -105,6 +106,7 @@ function requestRows(user, statuses, f) {
             (SELECT x.created_at FROM job_request_approvals x WHERE x.job_request_id = r.id AND x.decision = 'rejected'
               ORDER BY x.id DESC LIMIT 1) AS rejected_at
        FROM job_requests r LEFT JOIN assets a ON a.id = r.asset_id LEFT JOIN job_cards j ON j.id = r.job_id
+       LEFT JOIN service_jobs s ON s.id = r.service_id
        LEFT JOIN workshops w ON w.id = r.workshop_id
       WHERE ${w.join(' AND ')}`, ...p);
 }
@@ -159,8 +161,10 @@ const may = (user, from, to) => jobstate.checkTransition(from, to, user).ok;
 const vehicle = (r) => ({ asset_id: r.asset_id, asset_code: r.asset_code, asset_reg: r.asset_reg, asset_ec: r.asset_ec });
 
 function shapeRequest(user, r, now) {
-  // An approved request is at to_open until its card exists, and at approved once it does.
-  const step = r.approval_status === 'approved' ? (r.job_id ? 'approved' : 'to_open')
+  const isService = r.type === 'service';
+  const fulfilled = isService ? !!r.service_id : !!r.job_id;
+  // An approved request is at to_open until its card/service exists, and at approved once it does.
+  const step = r.approval_status === 'approved' ? (fulfilled ? 'approved' : 'to_open')
     : { requested: 'to_certify', certified: 'to_approve', rejected: 'rejected' }[r.approval_status];
   const since = step === 'to_approve' ? r.certified_at
     : ((step === 'approved' || step === 'to_open') ? r.approved_at : (step === 'rejected' ? r.rejected_at : r.req_date));
@@ -172,21 +176,24 @@ function shapeRequest(user, r, now) {
   const open = step === 'to_certify' || step === 'to_approve';
   // Waiting on somebody, so the days it has been waiting are worth counting.
   const waiting = open || step === 'to_open';
+  const waitingFor = (step === 'to_open' && isService) ? 'Service team to create service record' : WAITING[step];
   return {
     kind: 'jr', id: r.id, no: r.no, date: day10(r.req_date), type: r.type, severity: r.severity, priority: r.priority,
     description: r.description, requested_by: r.requested_by, workshop_id: r.workshop_id, workshop_code: r.workshop_code,
-    ...vehicle(r), step, waiting_for: WAITING[step], since: day10(since), days: waiting ? daysSince(since, now) : null,
-    job_id: r.job_id, job_no: r.job_no, reject_reason: r.reject_reason,
+    ...vehicle(r), step, waiting_for: waitingFor, since: day10(since), days: waiting ? daysSince(since, now) : null,
+    job_id: r.job_id, job_no: r.job_no, service_id: r.service_id, service_job_no: r.service_job_no,
+    service_type: r.service_type, meter_reading: r.meter_reading, reject_reason: r.reject_reason,
     note: (step === 'to_certify' || step === 'to_approve') && raised ? 'You raised it — someone else certifies and approves.'
       : (step === 'to_approve' && mine ? 'You certified it — another manager approves.' : null),
-    road: roadOf(step === 'approved' ? r.job_status : null, { rejected: step === 'rejected', approved: step === 'to_open' }),
+    road: roadOf(step === 'approved' ? (isService ? 'CLOSED' : r.job_status) : null, { rejected: step === 'rejected', approved: step === 'to_open' }),
     link: '#/jobrequests/' + r.id,
     can: {
       certify: step === 'to_certify' && hasCap(user, 'jobrequests.certify') && !raised,
       approve: step === 'to_approve' && hasCap(user, 'jobrequests.approve') && !mine && !raised,
       reject: open && hasCap(user, 'jobrequests.reject'),
       // The workshop's step: open the job card against the approved request.
-      open_card: step === 'to_open' && hasCap(user, 'jobs.create'),
+      open_card: step === 'to_open' && !isService && hasCap(user, 'jobs.create'),
+      create_service: step === 'to_open' && isService && (hasCap(user, 'services.create') || hasCap(user, 'filters.edit') || hasCap(user, 'jobs.create')),
     },
   };
 }

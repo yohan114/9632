@@ -760,7 +760,7 @@ function buildTyre(wb, ym, period, wsId) {
 // 6. Oils & Lubrication
 // ---------------------------------------------------------------------------
 const OILVAL = 'ABS(sl.qty) * COALESCE(sl.unit_price, pr.unit_price, 0)';
-const LUBE = "pr.category <> 'fuel'";
+const LUBE = "pr.category <> 'fuel' AND LOWER(pr.name) NOT LIKE '%cotton waste%'";
 // The same rule as LUBE, applied to a free-text description rather than a joined product row:
 // resolve the words to a product in the oil book, then ask whether that product is one of the
 // categories this report counts as Oil. Deliberately NOT "any lubricant" — brake fluid, coolant,
@@ -828,29 +828,89 @@ function buildOils(wb, ym, period, repairOil, serviceOil, repairJobIds, wsId) {
 // ---------------------------------------------------------------------------
 // 7. General Items
 // ---------------------------------------------------------------------------
-function buildGeneral(wb, ym, period, wsId) {
+function buildGeneral(wb, ym, period, repairJobIds, wsId) {
   const ws = wb.addWorksheet('General Items');
   [6, 14, 30, 24, 10, 13, 14, 18].forEach((w, i) => { ws.getColumn(i + 1).width = w; });
   titleBand(ws, 8, 'General / store item consumption (workshop consumables & hardware)', period);
   ['Se: no', 'Date', 'Item', 'Vehicle / Consumer', 'Qty', 'Unit Price (Rs)', 'Total Cost (Rs)', 'Remarks']
     .forEach((t, i) => { ws.mergeCells(4, i + 1, 5, i + 1); const c = ws.getCell(4, i + 1); c.value = t; headerCell(c); });
-  const rows = all(
-    `SELECT t.txn_date, si.name item, ABS(t.qty) qty,
+
+  const rendered = new Set(repairJobIds || []);
+
+  const rawGitRows = all(
+    `SELECT t.id, t.txn_date, si.name item, ABS(t.qty) qty,
             COALESCE(t.unit_price, si.unit_cost, 0) unit_price,
             ABS(t.qty) * COALESCE(t.unit_price, si.unit_cost, 0) cost,
-            t.ref, a.registration reg, a.code code, jc.job_no
+            t.ref, a.registration reg, a.code code, jc.job_no,
+            t.source_issue_id, t.job_id
        FROM general_item_txns t JOIN store_items si ON si.id = t.store_item_id
        LEFT JOIN assets a ON a.id = t.asset_id LEFT JOIN job_cards jc ON jc.id = t.job_id
-      WHERE t.txn_type = 'issue' AND substr(t.txn_date,1,7) = ?${wsIs('COALESCE(jc.workshop_id, t.store_id)', wsId)} ORDER BY t.txn_date, t.id`, ym);
+      WHERE t.txn_type = 'issue' AND substr(t.txn_date,1,7) = ?${wsIs('COALESCE(jc.workshop_id, t.store_id)', wsId)}
+      ORDER BY t.txn_date, t.id`, ym);
+
+  const gitRows = rawGitRows.filter((r) => {
+    // 1. Exclude if job is already rendered on Repair Sheet (already counted in Repair Other material)
+    if (r.job_id != null && rendered.has(r.job_id)) return false;
+    // 2. Exclude if item is an oil/lubricant (belongs on Sheet 6)
+    if (isReportOil(r.item, r.txn_date)) return false;
+    // 3. Exclude filters
+    const itemLow = String(r.item || '').toLowerCase();
+    if (itemLow.includes('filter')) return false;
+    return true;
+  });
+
+  const coveredIssueIds = new Set(gitRows.filter((r) => r.source_issue_id != null).map((r) => r.source_issue_id));
+
+  // Fallback / direct issues from issues table not in general_item_txns or stock_ledger
+  const directRows = all(
+    `SELECT i.id, i.issue_date txn_date, i.description item, ABS(i.qty) qty,
+            COALESCE(i.unit_price, si.unit_cost, 0) unit_price,
+            ABS(i.qty) * COALESCE(i.unit_price, si.unit_cost, 0) cost,
+            i.min_no ref, i.purpose consumer, a.registration reg, a.code code, jc.job_no,
+            i.category, i.job_id
+       FROM issues i
+       LEFT JOIN store_items si ON si.id = i.store_item_id
+       LEFT JOIN assets a ON a.id = i.asset_id
+       LEFT JOIN job_cards jc ON jc.id = i.job_id
+      WHERE substr(i.issue_date,1,7) = ?
+        AND COALESCE(i.voided, 0) = 0
+        AND i.grn_id IS NULL
+        AND i.mrn_no IS NULL
+        AND i.mrn_line_id IS NULL
+        AND (i.source_table IS NULL OR i.source_table NOT IN ('general_item_txns', 'stock_ledger'))
+        AND NOT EXISTS (SELECT 1 FROM stock_ledger sl WHERE sl.source_issue_id = i.id)
+        AND NOT EXISTS (SELECT 1 FROM general_item_txns git WHERE git.source_issue_id = i.id)
+        AND NOT EXISTS (
+          SELECT 1 FROM job_parts jp
+           WHERE jp.job_id = i.job_id
+             AND (jp.source_type = 'issue' OR jp.mrn_line_id = i.id OR LOWER(TRIM(jp.description)) = LOWER(TRIM(i.description)))
+        )
+        AND COALESCE(i.category, '') NOT IN ('Battery', 'Tyres & Wheels', 'Filters')
+        AND LOWER(i.description) NOT LIKE '%filter%'
+        ${wsIs('COALESCE(jc.workshop_id, i.store_id)', wsId)}
+      ORDER BY i.issue_date, i.id`, ym);
+
+  const extra = [];
+  for (const iss of directRows) {
+    if (coveredIssueIds.has(iss.id)) continue;
+    if (iss.job_id != null && rendered.has(iss.job_id)) continue;
+    if (isReportOil(iss.item, iss.txn_date)) continue;
+    extra.push(iss);
+  }
+
+  const rows = [...gitRows, ...extra].sort((a, b) =>
+    String(a.txn_date).localeCompare(String(b.txn_date)) || (a.id - b.id)
+  );
+
   let r = 6, se = 1, total = 0;
   for (const x of rows) {
     const cost = r2(x.cost);
     textCell(ws, r, 1, se); textCell(ws, r, 2, dateOnly(x.txn_date)); textCell(ws, r, 3, x.item || '', { wrap: true });
-    textCell(ws, r, 4, x.reg || x.code || x.ref || '');
+    textCell(ws, r, 4, x.reg || x.code || x.consumer || x.ref || '');
     const qc = ws.getCell(r, 5); qc.value = r2(x.qty); qc.numFmt = '#,##0.##'; qc.alignment = { horizontal: 'right' }; border(qc);
     moneyCell(ws, r, 6, x.unit_price);
     formulaMoney(ws, r, 7, `IF(E${r}="","",E${r}*F${r})`, cost);
-    textCell(ws, r, 8, x.job_no ? ('Job ' + x.job_no) : '');
+    textCell(ws, r, 8, x.job_no ? ('Job ' + x.job_no) : (x.ref || ''));
     total += cost; r++; se++;
   }
   const last = r - 1, gr = r;
@@ -862,7 +922,7 @@ function buildGeneral(wb, ym, period, wsId) {
   const noteRow = gr + 2;
   ws.mergeCells(noteRow, 1, noteRow, 8);
   const nc = ws.getCell(noteRow, 1);
-  nc.value = `${rows.length} issue(s); ${priced} priced. Unpriced items show Rs 0 — set the item’s price to include its cost.`;
+  nc.value = `Note: this sheet counts general store consumables & hardware issued directly (no job) plus items on jobs NOT shown on this month’s Repair sheet. General items on the Repair sheet’s own jobs are counted in Repair cost (Other material) — not re-counted here. (${rows.length} issues; ${priced} priced).`;
   nc.font = { italic: true, size: 9 }; nc.alignment = { wrapText: true, vertical: 'top' };
   signatures(ws, noteRow + 3, 8);
   return { name: 'General Items', sums: { total }, count: rows.length, grand_row: gr, priced, refs: { total: `'General Items'!G${gr}` } };
@@ -1471,7 +1531,7 @@ async function buildWorkbook(year, month, opts = {}) {
   parts.battery = buildBattery(wb, ym, period, wsId);
   parts.tyre = buildTyre(wb, ym, period, wsId);
   parts.oils = buildOils(wb, ym, period, parts.repair.sums.oil, parts.service.sums.oil, parts.repair.repair_job_ids, wsId);
-  parts.general = buildGeneral(wb, ym, period, wsId);
+  parts.general = buildGeneral(wb, ym, period, parts.repair.repair_job_ids, wsId);
   parts.fuel = buildFuel(wb, year, month, period, wsId);
   parts.salaries = buildSalaries(wb, year, month, ym, period, wsId);
   parts.other = buildOther(wb, year, month, period, wsId);

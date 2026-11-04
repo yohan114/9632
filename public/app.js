@@ -3961,6 +3961,8 @@ async function jobsRequests(body, sp) {
       if (r.can.reject) b.push(`<button class="sm danger" data-act="reject" data-i="${r.kind}:${r.id}">Reject</button>`);
       if (r.can.review) b.push('<a class="btn sm" href="#/jobreview">🧹 Review…</a>');
       if (r.can.open_card) b.push(`<button class="sm primary" data-act="open_card" data-i="${r.kind}:${r.id}">🔧 Open job card</button>`);
+      if (r.can.create_service) b.push(`<button class="sm primary" data-act="create_service" data-i="${r.kind}:${r.id}">🛢️ Create service</button>`);
+      if (r.step === 'approved' && r.service_id) b.push(`<a class="btn sm" href="#/services/${r.service_id}">Service ${esc(r.service_job_no || '#' + r.service_id)}</a>`);
       if (r.step === 'approved' && r.job_id) b.push(`<a class="btn sm" href="#/jobs/${r.job_id}">Card ${esc(r.job_no || '')}</a>`);
       return b.join(' ');
     };
@@ -4263,6 +4265,7 @@ function jobReqAction(act, r, done) {
   if (!r) return;
   // The workshop's step: open the card against this approved request.
   if (act === 'open_card') return openJobCardModal(r, done);
+  if (act === 'create_service') { location.hash = '#/services/new?job_request_id=' + r.id; return; }
   if (r.kind === 'jr') return jobRequestSignModal({ ...r, jr_no: r.no }, act === 'certify' ? 'certify' : (act === 'approve' ? 'approve' : 'reject'), done);
   if (act === 'transport' || act === 'operations') {
     if (!confirm(`Approve ${r.no} (${act})?`)) return;
@@ -4839,9 +4842,16 @@ routes.dailywork = async (c) => {
       const costCell = e.is_external
         ? money(e.external_value)
         : money(e.labour_cost) + (e.unrated && e.unrated.length ? ` <span class="badge amber" title="No rate for: ${esc(e.unrated.join(', '))}">no rate</span>` : '');
+      const isSvc = e.work_type === 'service' || !!e.service_id;
+      const typeBadge = isSvc
+        ? '<span class="badge blue" style="font-size:10.5px">🛢️ Service</span>'
+        : '<span class="badge" style="font-size:10.5px">🔧 Repair</span>';
+      const jobLink = isSvc
+        ? (e.service_id ? `<a href="#/services/${e.service_id}"><b>${esc(e.service_job_no || 'SR #' + e.service_id)}</b></a>` : `<b>${esc(e.job_no)}</b>`)
+        : `<a href="#/jobs/${e.job_id}"><b>${esc(e.job_no)}</b></a>`;
       return `<tr>
       <td>${esc(idLabel(e) || '—')}</td>
-      <td><a href="#/jobs/${e.job_id}">${esc(e.job_no)}</a></td>
+      <td>${typeBadge} ${jobLink}</td>
       <td>${esc(e.mechanic || '—')}</td>
       <td class="desc-col">${esc(e.description || '')}</td>
       <td class="num">${hoursCell}</td>
@@ -5247,7 +5257,24 @@ async function addWorkDoneModal(defaultDate, onDone) {
 
   modal('Add Work Done', `
     ${field('Date', 'work_date', { type: 'date', value: curDate })}
-    ${targetPickerHtml('dwt', { label: 'Work for', generalLabel: 'General workshop', generalVehicle: true })}
+    <label style="font-weight:700">Work Category</label>
+    <div class="pill-row" style="margin-bottom:10px">
+      <label style="font-weight:500;cursor:pointer"><input type="radio" name="dw_kind" value="repair" checked style="width:auto"> 🔧 Repair Job Card</label>
+      <label style="font-weight:500;cursor:pointer"><input type="radio" name="dw_kind" value="service" style="width:auto"> 🛢️ Service Record / Job</label>
+      <label style="font-weight:500;cursor:pointer"><input type="radio" name="dw_kind" value="general" style="width:auto"> ⚙️ General Workshop</label>
+    </div>
+    <div id="dw_repair_box">
+      ${targetPickerHtml('dwt', { label: 'Job Card', generalLabel: 'General workshop', generalVehicle: true })}
+    </div>
+    <div id="dw_service_box" style="display:none;background:rgba(37,99,235,0.06);border:1px solid #bfdbfe;border-radius:6px;padding:10px 12px;margin-bottom:10px">
+      <label style="font-weight:600">Select Active / Recent Service Job *</label>
+      <div style="position:relative">
+        <input type="text" id="dw_svc_q" placeholder="Type vehicle no / site / service no to find service record…" autocomplete="off">
+        <div id="dw_svc_menu" style="position:absolute;z-index:60;left:0;right:0;top:100%;background:var(--surface);border:1px solid var(--border);border-radius:6px;box-shadow:var(--shadow);max-height:220px;overflow:auto;display:none"></div>
+      </div>
+      <input type="hidden" name="service_id" id="dw_service_id">
+      <div id="dw_svc_sel" class="muted" style="font-size:12px;margin-top:4px">No service selected yet.</div>
+    </div>
     ${field('Description of work', 'description')}
     <label>Mechanic(s)</label>
     <select id="dwmech"><option value="">— add a mechanic —</option>${renderMechOpts(mechs)}</select>
@@ -5259,6 +5286,81 @@ async function addWorkDoneModal(defaultDate, onDone) {
     <div class="row">${field('Travel (to or from a field job)', 'travel', { type: 'checkbox' })}${field('External repair (outside work)', 'is_external', { type: 'checkbox' })}${field('External value (Rs, if external)', 'external_value', { type: 'number' })}</div>
     <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Add</button></div>`, (body, close) => {
     const getTarget = wireTargetPicker(body, 'dwt');
+    const repBox = qs('#dw_repair_box', body);
+    const svcBox = qs('#dw_service_box', body);
+    const svcQ = qs('#dw_svc_q', body);
+    const svcMenu = qs('#dw_svc_menu', body);
+    const svcIdInp = qs('#dw_service_id', body);
+    const svcSel = qs('#dw_svc_sel', body);
+    let recentServices = [];
+
+    const loadServices = async () => {
+      try {
+        recentServices = await api('/filters/services?limit=100');
+      } catch (e) { recentServices = []; }
+    };
+    loadServices();
+
+    const renderSvcMenu = (items) => {
+      if (!items.length) { svcMenu.style.display = 'none'; return; }
+      svcMenu.innerHTML = items.map((s) => `
+        <div class="svc-opt" data-sid="${s.id}" style="padding:6px 10px;cursor:pointer;border-bottom:1px solid var(--border)">
+          <b>${esc(idLabel(s) || s.vehicle_label || 'Vehicle')}</b>
+          <span class="badge blue" style="float:right">${esc(s.service_type || 'Service')}</span>
+          <div class="muted" style="font-size:11.5px">Date: ${esc((s.service_date || '').slice(0, 10))}${s.job_no ? ' · Job ' + esc(s.job_no) : ''}${s.meter_reading ? ' · Meter ' + esc(s.meter_reading) : ''}</div>
+        </div>
+      `).join('');
+      svcMenu.style.display = 'block';
+      qsa('.svc-opt', svcMenu).forEach((el) => {
+        el.onmousedown = (e) => {
+          e.preventDefault();
+          const s = recentServices.find((x) => String(x.id) === el.dataset.sid);
+          if (s) {
+            svcIdInp.value = s.id;
+            svcQ.value = [idLabel(s) || s.vehicle_label, s.service_type].filter(Boolean).join(' · ');
+            svcSel.innerHTML = `Selected: <b>${esc(idLabel(s) || s.vehicle_label)}</b> — ${esc(s.service_type || '')} (ID #${s.id})`;
+          }
+          svcMenu.style.display = 'none';
+        };
+      });
+    };
+
+    if (svcQ) {
+      svcQ.oninput = () => {
+        const term = svcQ.value.trim().toLowerCase();
+        const hits = recentServices.filter((s) => !term ||
+          (idLabel(s) || '').toLowerCase().includes(term) ||
+          (s.vehicle_label || '').toLowerCase().includes(term) ||
+          (s.service_type || '').toLowerCase().includes(term) ||
+          (s.job_no || '').toLowerCase().includes(term));
+        renderSvcMenu(hits.slice(0, 20));
+      };
+      svcQ.onfocus = () => {
+        if (!svcQ.value.trim()) renderSvcMenu(recentServices.slice(0, 20));
+      };
+      svcQ.onblur = () => { setTimeout(() => { if (svcMenu) svcMenu.style.display = 'none'; }, 200); };
+    }
+
+    qsa('input[name=dw_kind]', body).forEach((r) => {
+      r.onchange = () => {
+        const v = qs('input[name=dw_kind]:checked', body).value;
+        if (v === 'service') {
+          repBox.style.display = 'none';
+          svcBox.style.display = 'block';
+        } else if (v === 'general') {
+          repBox.style.display = 'block';
+          svcBox.style.display = 'none';
+          const genRadio = qs('input[name=dwt_type][value=general]', body);
+          if (genRadio) { genRadio.checked = true; genRadio.dispatchEvent(new Event('change')); }
+        } else {
+          repBox.style.display = 'block';
+          svcBox.style.display = 'none';
+          const vehRadio = qs('input[name=dwt_type][value=vehicle]', body);
+          if (vehRadio) { vehRadio.checked = true; vehRadio.dispatchEvent(new Event('change')); }
+        }
+      };
+    });
+
     const crew = [];
     const hidden = qs('input[name=mechanic]', body);
     const chips = qs('#dwcrew', body);
@@ -5286,6 +5388,18 @@ async function addWorkDoneModal(defaultDate, onDone) {
     qs('#dwmech', body).onchange = (e) => { const v = e.target.value; if (v && !crew.includes(v)) { crew.push(v); paint(); } e.target.value = ''; };
     qs('#s', body).onclick = async () => {
       const f = formData(body);
+      const kind = qs('input[name=dw_kind]:checked', body) ? qs('input[name=dw_kind]:checked', body).value : 'repair';
+      if (kind === 'service') {
+        const sid = qs('#dw_service_id', body).value;
+        if (!sid) return toast('Please select the Service Job', 'err');
+        try {
+          const r = await api('/daily-work', { method: 'POST', body: { ...f, work_type: 'service', service_id: sid } });
+          toast('Logged to service job ' + (r.job_no || '#' + sid));
+          close();
+          onDone(r.date);
+        } catch (e) { toast(e.message, 'err'); }
+        return;
+      }
       const t = getTarget();
       if (t.type === 'vehicle' && !t.job_id) return toast('Pick the machine/vehicle job card', 'err');
       try {
@@ -6107,7 +6221,7 @@ routes['mechanics-kpi'] = async (c) => {
           ${utilBadge}
         </div>
         <div style="font-size:22px;font-weight:800;color:#0f172a;margin:4px 0">${num(s.total_hours)} <span style="font-size:13px;font-weight:600;color:#64748b">hrs</span></div>
-        <div class="muted" style="font-size:11.5px">${num(s.regular_hours)}h bay/field · ${num(s.travel_hours)}h travel</div>
+        <div class="muted" style="font-size:11.5px">${num(s.repair_hours || s.regular_hours)}h repair · ${num(s.service_hours || 0)}h service${s.travel_hours ? ' · ' + num(s.travel_hours) + 'h travel' : ''}</div>
       </div>
 
       <div class="card" style="padding:12px 14px;border-left:4px solid #0284c7">
@@ -6265,9 +6379,14 @@ routes['mechanics-kpi'] = async (c) => {
                <button class="sm mkpi-dd-save" data-id="${l.id}" title="Save Outside Cost">💾</button>
              </div>`
           : (l.outside_labour != null ? money(l.outside_labour) : '<span class="muted">—</span>');
+        const isSvc = l.work_type === 'service' || !!l.service_id;
+        const typeBadge = isSvc ? '<span class="badge blue" style="font-size:10px">🛢️ Service</span> ' : '<span class="badge" style="font-size:10px">🔧 Repair</span> ';
+        const jobLnk = isSvc && l.service_id
+          ? `<a href="#/services/${l.service_id}" onclick="qs('.modal-backdrop')?.remove()"><b>${esc(l.service_job_no || 'SR #' + l.service_id)}</b></a>`
+          : `<a href="#/jobs/${l.job_id}" onclick="qs('.modal-backdrop')?.remove()"><b>${esc(l.job_no)}</b></a>`;
         return `<tr>
           <td>${esc(l.work_date)}</td>
-          <td><a href="#/jobs/${l.job_id}" onclick="qs('.modal-backdrop')?.remove()"><b>${esc(l.job_no)}</b></a></td>
+          <td>${typeBadge}${jobLnk}</td>
           <td>${esc(l.asset_code || '—')}${l.asset_reg ? ` <span class="muted">(${esc(l.asset_reg)})</span>` : ''}</td>
           <td>${esc(l.crew || l.mechanic)}${l.crew_size > 1 ? ` <span class="badge blue" title="Shared across ${l.crew_size} mechanics">${l.crew_size} crew</span>` : ''}</td>
           <td class="desc-col">${esc(l.description || '')}</td>
@@ -6364,7 +6483,7 @@ routes['mechanics-kpi'] = async (c) => {
         return `<tr>
           <td><b>${esc(m.mechanic)}</b>${statusBadge}</td>
           <td class="num" style="white-space:nowrap">${rateCell}${rateBtn}</td>
-          <td class="num"><b>${num(m.total_hours)} hrs</b>${m.travel_hours ? `<div class="muted" style="font-size:10.5px">${num(m.travel_hours)}h travel</div>` : ''}</td>
+          <td class="num"><b>${num(m.total_hours)} hrs</b><div class="muted" style="font-size:10.5px">${num(m.repair_hours || m.total_hours)}h rep · <span style="color:#2563eb">${num(m.service_hours || 0)}h svc (${m.services_count || 0})</span>${m.travel_hours ? ' · ' + num(m.travel_hours) + 'h trv' : ''}</div></td>
           ${attOn ? `<td class="num">${m.attended_hours ? fmtH(m.attended_hours) : '—'}${m.utilisation != null ? `<div><span class="badge ${m.utilisation > 100 ? 'red' : m.utilisation >= 85 ? 'green' : 'amber'}" style="font-size:10px">${m.utilisation}%</span></div>` : ''}</td>` : ''}
           <td class="num">${m.jobs_count} jobs · ${m.vehicles_count} veh</td>
           <td class="num"><b>${money(m.internal_cost)}</b></td>
@@ -6800,7 +6919,7 @@ async function opsHandovers(body) {
 // its own, and whether the card goes straight into the bay.
 async function newJobModal(onDone) {
   let waiting = [];
-  try { waiting = (await api('/job-flow/requests?step=to_open&limit=200')).rows || []; } catch (e) { /* shown below */ }
+  try { waiting = ((await api('/job-flow/requests?step=to_open&limit=200')).rows || []).filter((r) => r.type !== 'service'); } catch (e) { /* shown below */ }
   if (!waiting.length) {
     return modal('Open a job card', `
       <p>There is no approved job request waiting for a job card.</p>
@@ -16304,9 +16423,11 @@ async function jobRequestDetail(c, id) {
     ? `<p class="muted" style="margin:8px 0 0">${mineRaised ? 'You raised this request. Someone else certifies and approves it.' : 'You certified this request. Another manager approves it.'}</p>` : '';
   const canReject = canDo('jobrequests.reject') && st !== 'approved' && st !== 'rejected';
   // Approved and no card yet: the workshop's step.
-  const awaitingCard = st === 'approved' && !r.job_id;
+  const awaitingCard = st === 'approved' && !r.job_id && r.type !== 'service';
+  const awaitingService = st === 'approved' && !r.service_id && r.type === 'service';
   const canOpenCard = awaitingCard && canDo('jobs.create');
-  const badge = jrBadge(st, st === 'approved' ? !!r.job_id : undefined);
+  const canCreateService = awaitingService && (canDo('services.create') || canDo('filters.edit') || canDo('jobs.create'));
+  const badge = jrBadge(st, st === 'approved' ? (r.type === 'service' ? !!r.service_id : !!r.job_id) : undefined);
 
   let vehAllocHtml = '';
   if (!r.asset_id && (canDo('aliases.vehicle.resolve') || canDo('jobrequests.create') || isAdmin())) {
@@ -16335,6 +16456,7 @@ async function jobRequestDetail(c, id) {
         ${canCertify ? '<button class="sm primary" id="jrcertify">✍ Certify</button>' : ''}
         ${canApprove ? '<button class="sm primary" id="jrapprove">✅ Approve</button>' : ''}
         ${canOpenCard ? '<button class="sm primary" id="jropen">🔧 Open job card</button>' : ''}
+        ${canCreateService ? '<button class="sm primary" id="jrcreateservice">🛢️ Create Service Record</button>' : ''}
         ${canReject ? '<button class="sm danger" id="jrreject">Reject</button>' : ''}
       </div>${selfNote}
       <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-top:8px;font-size:13px">
@@ -16346,16 +16468,21 @@ async function jobRequestDetail(c, id) {
     </div>
     <div class="card">
       <h3>Job Request ${esc(r.jr_no)} ${badge}</h3>
-      <p class="muted">Date ${esc((r.req_date || '').slice(0, 10))} · Vehicle ${r.asset_id ? esc(idLabel(r)) : `<span class="badge amber">Not allocated</span>`}${vehAllocHtml} · ${esc((r.type || '').toUpperCase())}${r.severity ? ' / ' + esc(r.severity) : ''} · Priority ${esc(r.priority || 'normal')}${r.project_name ? ' · ' + esc(r.project_name) : ''}${r.required_date ? ' · required ' + esc((r.required_date || '').slice(0, 10)) : ''}</p>
+      <p class="muted">Date ${esc((r.req_date || '').slice(0, 10))} · Vehicle ${r.asset_id ? esc(idLabel(r)) : `<span class="badge amber">Not allocated</span>`}${vehAllocHtml} · ${esc((r.type || '').toUpperCase())}${r.severity ? ' / ' + esc(r.severity) : ''}${r.service_type ? ' · Type <b>' + esc(r.service_type) + '</b>' : ''}${r.meter_reading ? ' · Meter <b>' + esc(r.meter_reading) + '</b>' : ''} · Priority ${esc(r.priority || 'normal')}${r.project_name ? ' · ' + esc(r.project_name) : ''}${r.required_date ? ' · required ' + esc((r.required_date || '').slice(0, 10)) : ''}</p>
       <div style="white-space:pre-wrap;border:1px solid var(--border);border-radius:6px;padding:10px;background:var(--surface)">${esc(r.description || '')}</div>
+      ${r.service_id ? `<p style="margin-top:10px">✅ Approved — service record created: <a href="#/services/${r.service_id}"><b>${esc(r.service_job_no || 'Service Record #' + r.service_id)}</b></a></p>` : ''}
       ${r.job_no ? `<p style="margin-top:10px">✅ Approved — job card opened: <a href="#/jobs/${r.job_id}"><b>${esc(r.job_no)}</b></a>${r.job_status ? ' <span class="badge">' + esc(r.job_status) + '</span>' : ''}</p>` : ''}
       ${awaitingCard ? `<p style="margin-top:10px">✅ Approved — waiting for the workshop to open the job card.${canOpenCard ? '' : '<br><span class="muted" style="font-size:12px">The workshop opens it; this request is its authority for the work.</span>'}</p>` : ''}
+      ${awaitingService ? `<p style="margin-top:10px">✅ Approved — waiting for service team to create service record.${canCreateService ? '' : '<br><span class="muted" style="font-size:12px">The service team creates it in Service Records; this request is its authority for the service.</span>'}</p>` : ''}
     </div>`;
   if (qs('#jrcertify')) qs('#jrcertify').onclick = () => jobRequestSignModal(r, 'certify', () => jobRequestDetail(c, id));
   if (qs('#jrapprove')) qs('#jrapprove').onclick = () => jobRequestSignModal(r, 'approve', () => jobRequestDetail(c, id));
   if (qs('#jrreject')) qs('#jrreject').onclick = () => jobRequestSignModal(r, 'reject', () => jobRequestDetail(c, id));
   if (qs('#jropen')) {
     qs('#jropen').onclick = () => openJobCardModal({ ...r, no: r.jr_no, asset_id: r.asset_id }, () => jobRequestDetail(c, id));
+  }
+  if (qs('#jrcreateservice')) {
+    qs('#jrcreateservice').onclick = () => { location.hash = '#/services/new?job_request_id=' + r.id; };
   }
   if (qs('#jr_alloc_btn')) {
     qs('#jr_alloc_btn').onclick = async () => {
@@ -16423,13 +16550,35 @@ async function newJobRequestModal() {
     <div class="row">${field('JR Number (edit to override)', 'jr_no', { value: nextNo })}${field('Date', 'req_date', { type: 'date', value: new Date().toISOString().slice(0, 10) })}</div>
     <p class="muted" style="font-size:12px;margin:0 0 4px">Continues from the last number (${esc(nextNo || 'auto')}). Change it to set a specific number.</p>
     ${assetPickerHtml('Vehicle / Machine (search & select) *')}
-    <div class="row">${field('Type', 'type', { type: 'select', options: [{ value: 'repair', label: 'Repair' }, { value: 'service', label: 'Service' }] })}${field('Severity', 'severity', { type: 'select', options: [{ value: '', label: '—' }, { value: 'major', label: 'Major' }, { value: 'minor', label: 'Minor' }] })}</div>
+    <div class="row">
+      ${field('Request Category *', 'type', { type: 'select', options: [{ value: 'repair', label: '🔧 Repair Request' }, { value: 'service', label: '🛢️ Service Request' }] })}
+      ${field('Severity', 'severity', { type: 'select', options: [{ value: '', label: '—' }, { value: 'major', label: 'Major' }, { value: 'minor', label: 'Minor' }] })}
+    </div>
+    <div id="jr_service_fields" style="display:none;background:rgba(37,99,235,0.06);border:1px solid #bfdbfe;border-radius:6px;padding:8px 12px;margin-bottom:10px">
+      <div class="row">
+        ${field('Service Interval / Type', 'service_type', { placeholder: 'e.g. 5,000 km, 250 Hrs, 500 Hrs, General' })}
+        ${field('Current Meter / Odometer Reading', 'meter_reading', { placeholder: 'e.g. 125,400 km or 3,450 hrs' })}
+      </div>
+      <p class="muted" style="font-size:11.5px;margin:2px 0 0">Approved service requests route directly to the Service Records section for service job execution.</p>
+    </div>
     <div class="row">${field('Priority', 'priority', { type: 'select', options: [{ value: 'normal', label: 'Normal' }, { value: 'urgent', label: 'Urgent' }] })}${field('Required date', 'required_date', { type: 'date' })}</div>
     ${field('Project', 'project_id', { type: 'select', options: projOpts })}
     ${field('Work requested *', 'description', { type: 'textarea' })}
     ${field('Requested by', 'requested_by')}
     <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Create Job Request</button></div>`, (body, close) => {
     wireAssetPicker(body);
+    const typeSel = qs('select[name=type]', body);
+    const svcFlds = qs('#jr_service_fields', body);
+    const syncType = () => {
+      const isSvc = typeSel && typeSel.value === 'service';
+      if (svcFlds) svcFlds.style.display = isSvc ? 'block' : 'none';
+      const descEl = qs('textarea[name=description]', body);
+      if (isSvc && descEl && !descEl.value) {
+        descEl.placeholder = 'e.g. Scheduled periodic service maintenance, oil change and filter replacements.';
+      }
+    };
+    if (typeSel) typeSel.onchange = syncType;
+    syncType();
     qs('#s', body).onclick = async () => {
       const d = formData(body);
       if (!String(d.description || '').trim()) return toast('Describe the work requested', 'err');
@@ -16909,6 +17058,49 @@ async function renderServiceRecords(c) {
       <span class="muted" id="scount"></span>
     </div>
     <div id="stable"><div class="muted">Loading…</div></div>`;
+
+  // Check for pending approved service requests
+  try {
+    const pendingReqs = await api('/filters/pending-requests');
+    if (Array.isArray(pendingReqs) && pendingReqs.length && qs('#stable', c)) {
+      const banner = document.createElement('div');
+      banner.className = 'card';
+      banner.style.cssText = 'border-left:4px solid #2563eb;background:rgba(37,99,235,0.05);margin-bottom:14px;padding:12px 16px';
+      banner.innerHTML = `
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+          <div style="font-weight:700;font-size:14px;color:#1e40af">
+            📨 Approved Service Requests Awaiting Service Record (${pendingReqs.length})
+          </div>
+          <span class="badge blue">Pending Action</span>
+        </div>
+        <div class="table-wrap scroll" style="max-height:220px">
+          <table class="table sm" style="margin:0;width:100%;font-size:12px">
+            <thead>
+              <tr>
+                <th>JR No</th><th>Vehicle</th><th>Service Type</th><th>Meter Reading</th><th>Req. Date</th><th>Requested By</th><th>Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${pendingReqs.map((pr) => `<tr>
+                <td><a href="#/jobrequests/${pr.id}"><b>${esc(pr.jr_no)}</b></a></td>
+                <td>${esc([pr.asset_reg, pr.asset_code].filter(Boolean).join(' · ') || '—')}</td>
+                <td><span class="badge blue">${esc(pr.service_type || 'Service')}</span></td>
+                <td>${esc(pr.meter_reading || '—')}</td>
+                <td>${esc((pr.req_date || '').slice(0, 10))}</td>
+                <td>${esc(pr.requested_by || '—')}</td>
+                <td>
+                  <a class="btn sm primary" href="#/services/new?job_request_id=${pr.id}">🛢️ Create Service</a>
+                </td>
+              </tr>`).join('')}
+            </tbody>
+          </table>
+        </div>
+      `;
+      c.insertBefore(banner, qs('#stable', c));
+    }
+  } catch (err) {
+    console.warn('Could not load pending service requests:', err);
+  }
 
   // Populate vehicle selector dropdown for 1-click vehicle history
   try {
@@ -17523,6 +17715,17 @@ async function showVehicleCapacityEditModal(id, onDone) {
 async function renderNewServiceForm(c, existing) {
   const edit = existing ? existing.service : null;
   const today = new Date().toISOString().slice(0, 10);
+  const urlSp = new URLSearchParams(location.hash.split('?')[1] || '');
+  const jrIdParam = urlSp.get('job_request_id') || urlSp.get('jr');
+  let loadedJr = null;
+  if (!edit && jrIdParam) {
+    try {
+      const jrd = await api('/job-requests/' + jrIdParam);
+      loadedJr = jrd && jrd.request ? jrd.request : null;
+    } catch (e) {
+      console.warn('Could not load job request for service form:', e);
+    }
+  }
   const ref = await api('/filters/reference');
   const oilTypeOpts = '<option value="">—</option>' + ref.oilTypes.map((t) => `<option value="${esc(t.code)}" data-price="${t.unit_price}">${esc(t.code)}</option>`).join('');
   const oilRows = ref.oils.map((o) => `<tr>
@@ -17540,6 +17743,12 @@ async function renderNewServiceForm(c, existing) {
       <td><input type="number" class="f_price" style="width:96px"></td></tr>`).join('');
   const back = edit ? `<a href="#/services/${edit.id}">← Back to the record</a>` : '<a href="#/services">← Service Records</a>';
   c.innerHTML = `${pageHeader('Vehicle / Machinery Service Details', back)}
+    ${loadedJr ? `<div class="card" style="border-left:4px solid #16a34a;background:#f0fdf4;margin-bottom:12px;padding:10px 14px">
+      <span class="badge green">Fulfilling Job Request ${esc(loadedJr.jr_no)}</span>
+      <b style="margin-left:6px">${esc(loadedJr.asset_reg || loadedJr.asset_code || '')}</b> · ${esc(loadedJr.service_type || 'Scheduled Service')}
+      ${loadedJr.meter_reading ? ' · Meter: <b>' + esc(loadedJr.meter_reading) + '</b>' : ''}
+    </div>` : ''}
+    <input type="hidden" name="job_request_id" value="${esc(loadedJr ? loadedJr.id : (edit ? edit.job_request_id || '' : ''))}">
     <div class="card">
       <div class="mrnsec">
         <div class="mrnsec-h">Which machine</div>
@@ -17603,6 +17812,15 @@ async function renderNewServiceForm(c, existing) {
   // Oils and filters are laid out one row per stocked oil / per filter category, which is the
   // paper sheet's shape — so a service that used two filters of one category, or an oil no
   // longer on the list, needs a row adding for the surplus rather than quietly losing it.
+  if (loadedJr) {
+    qs('.apick-input', c).value = idLabel(loadedJr) || loadedJr.asset_reg || loadedJr.asset_code || '';
+    qs('input[name=asset_id]', c).value = loadedJr.asset_id || '';
+    if (loadedJr.service_type) qs('[name=service_type]', c).value = loadedJr.service_type;
+    if (loadedJr.meter_reading) qs('[name=meter_reading]', c).value = loadedJr.meter_reading;
+    if (loadedJr.description) qs('[name=repair_details]', c).value = loadedJr.description;
+    if (loadedJr.asset_reg) qs('[name=reg_id]', c).value = loadedJr.asset_reg;
+    if (loadedJr.asset_ec) qs('[name=ec_code_disp]', c).value = loadedJr.asset_ec;
+  }
   if (edit) {
     for (const [name, val] of [
       ['reg_id', edit.reg_id], ['ec_code_disp', edit.asset_ec], ['model_no', edit.model_no],
@@ -17867,6 +18085,7 @@ async function renderNewServiceForm(c, existing) {
       service_type: qs('[name=service_type]', c).value, site_location: qs('[name=site_location]', c).value,
       upkeeping: qs('[name=upkeeping]', c).value, repair_details: qs('[name=repair_details]', c).value,
       labour_rate: qs('#labourRate', c).value, sundry_rate: qs('#sundryRate', c).value,
+      job_request_id: qs('input[name=job_request_id]', c) ? qs('input[name=job_request_id]', c).value : (edit ? edit.job_request_id : null),
       oils, filters, parts,
     };
     const btn = qs('#saveService', c);
@@ -17901,7 +18120,7 @@ async function serviceDetail(c, id) {
       ${editable ? `<a class="btn sm primary" href="#/services/${s.id}/edit">✏️ Edit</a>` : ''}
       <a class="btn sm" href="/api/filters/services/${s.id}/print.html" target="_blank">🖨 Print</a></div>
     <div class="card"><h3 style="margin-top:0">${esc(idLabel(s) || s.vehicle_label || 'Vehicle')}</h3>
-      <p class="muted">${esc((s.service_date || '').slice(0, 10))}${s.job_no ? ' · Job ' + esc(s.job_no) : ''}${s.service_type ? ' · type ' + esc(s.service_type) : ''}${s.site_location ? ' · ' + esc(s.site_location) : ''}${s.meter_reading ? ' · meter ' + esc(s.meter_reading) : ''}${s.next_service_meter ? ' · next ' + esc(s.next_service_meter) : ''}</p>
+      <p class="muted">${esc((s.service_date || '').slice(0, 10))}${s.jr_no ? ' · Request <a href="#/jobrequests/' + s.job_request_id + '"><b>' + esc(s.jr_no) + '</b></a>' : ''}${s.job_no ? ' · Job ' + esc(s.job_no) : ''}${s.service_type ? ' · type ' + esc(s.service_type) : ''}${s.site_location ? ' · ' + esc(s.site_location) : ''}${s.meter_reading ? ' · meter ' + esc(s.meter_reading) : ''}${s.next_service_meter ? ' · next ' + esc(s.next_service_meter) : ''}</p>
       ${s.repair_details ? `<div style="white-space:pre-wrap;border:1px solid var(--border);border-radius:6px;padding:8px">${esc(s.repair_details)}</div>` : ''}</div>
     <div class="grid" style="grid-template-columns:1fr 1fr;align-items:start">
       <div class="card"><h3 style="margin-top:0">Oils / Lubricants <span class="muted" style="font-weight:400">(${d.oils.length})</span></h3>
