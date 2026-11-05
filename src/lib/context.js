@@ -46,27 +46,51 @@ function isMainStoreUser(user) {
  * Resolve the user's home / assigned site store location ID.
  */
 function getUserAssignedStoreId(user) {
-  if (!user) return 1;
-  try {
-    const uStores = storeLocations.getUserStoreLocations(user.id);
-    if (uStores && uStores.length > 0) {
-      // If user has a site store, return that
-      const site = uStores.find((s) => s.store_type === 'SITE_STORE') || uStores[0];
-      return site.store_location_id || site.id;
-    }
-  } catch (_) {}
-
-  // Workshop fallback
-  const homeWs = workshops.homeOf(user);
-  if (homeWs) {
-    try {
-      const allStores = storeLocations.listStoreLocations() || [];
-      const matched = allStores.find((s) => s.workshop_id === homeWs && s.active);
-      if (matched) return matched.id;
-    } catch (_) {}
+  if (!user) {
+    const err = new Error('No store assigned — contact administrator');
+    err.status = 403;
+    throw err;
   }
 
-  return 1;
+  let uStores = null;
+  try {
+    uStores = storeLocations.getUserStoreLocations(user.id);
+  } catch (err) {
+    console.error('Error resolving user store locations:', err);
+    throw err;
+  }
+
+  if (uStores && uStores.length > 0) {
+    const site = uStores.find((s) => s.store_type === 'SITE_STORE') || uStores[0];
+    return site.store_location_id || site.id;
+  }
+
+  // Workshop fallback only if user explicitly has a workshop_id assigned
+  let userWs = user.workshop_id;
+  if (!userWs && user.id) {
+    try {
+      const u = get('SELECT workshop_id FROM users WHERE id = ?', user.id);
+      userWs = u ? u.workshop_id : null;
+    } catch (err) {
+      console.error('Error fetching user workshop_id:', err);
+      throw err;
+    }
+  }
+
+  if (userWs) {
+    try {
+      const allStores = storeLocations.listStoreLocations() || [];
+      const matched = allStores.find((s) => s.workshop_id === userWs && s.active);
+      if (matched) return matched.id;
+    } catch (err) {
+      console.error('Error matching workshop store location:', err);
+      throw err;
+    }
+  }
+
+  const err = new Error('No store assigned — contact administrator');
+  err.status = 403;
+  throw err;
 }
 
 /**
@@ -161,14 +185,21 @@ function resolveRequestContext(req) {
 /**
  * Express middleware to automatically resolve active context on every authenticated request.
  */
-function activeContextMiddleware(req, _res, next) {
+function activeContextMiddleware(req, res, next) {
   if (req.user) {
-    const ctx = resolveRequestContext(req);
-    req.user.activeContext = ctx;
-    req.user.activeStoreId = ctx.activeStoreId;
-    req.user.activeWorkshopId = ctx.activeWorkshopId;
-    req.user.activeProjectId = ctx.activeProjectId;
-    req.user.isAllSitesMode = ctx.isAllSitesMode;
+    try {
+      const ctx = resolveRequestContext(req);
+      req.user.activeContext = ctx;
+      req.user.activeStoreId = ctx.activeStoreId;
+      req.user.activeWorkshopId = ctx.activeWorkshopId;
+      req.user.activeProjectId = ctx.activeProjectId;
+      req.user.isAllSitesMode = ctx.isAllSitesMode;
+    } catch (err) {
+      if (err.status === 403) {
+        return res.status(403).json({ error: err.message });
+      }
+      return next(err);
+    }
   }
   next();
 }
