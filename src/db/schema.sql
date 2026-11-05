@@ -891,7 +891,7 @@ CREATE TABLE IF NOT EXISTS job_cards (
   asset_id             INTEGER REFERENCES assets(id),
   project_id           INTEGER REFERENCES projects(id),
   site                 TEXT,
-  type                 TEXT NOT NULL DEFAULT 'repair' CHECK (type IN ('repair','service')),
+  type                 TEXT NOT NULL DEFAULT 'repair' CHECK (type IN ('repair','service','fabrication')),
   severity             TEXT CHECK (severity IN ('major','minor')),
   description          TEXT,
   status               TEXT NOT NULL DEFAULT 'REQUESTED'
@@ -917,7 +917,9 @@ CREATE TABLE IF NOT EXISTS job_cards (
   external_cost        REAL DEFAULT 0,
   total_cost           REAL DEFAULT 0,
   created_at           TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at           TEXT NOT NULL DEFAULT (datetime('now'))
+  updated_at           TEXT NOT NULL DEFAULT (datetime('now')),
+  fabrication_kind     TEXT,
+  issue_store_location_id INTEGER REFERENCES store_locations(id)
 );
 CREATE INDEX IF NOT EXISTS idx_jobs_asset ON job_cards(asset_id);
 CREATE INDEX IF NOT EXISTS idx_jobs_status ON job_cards(status);

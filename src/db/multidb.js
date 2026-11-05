@@ -526,6 +526,7 @@ function migrate() {
 
         try {
           require('../lib/store_locations').migrateStoreLocationsStage2(wdb);
+          require('../migrate/050_fabrication_job_type').rebuildJobCardsIfNeeded(wdb, f);
         } catch {}
 
         wdb.close();

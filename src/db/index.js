@@ -72,6 +72,8 @@ function migrate() {
     certified_by      TEXT, certified_at TEXT, certified_sig TEXT,
     approved_by       TEXT, approved_at TEXT, approved_sig TEXT,
     job_id            INTEGER REFERENCES job_cards(id),  -- the job card created on final approval
+    fabrication_kind  TEXT,
+    issue_store_location_id INTEGER REFERENCES store_locations(id),
     created_at        TEXT NOT NULL DEFAULT (datetime('now'))
   );
   CREATE INDEX IF NOT EXISTS idx_job_requests_asset ON job_requests(asset_id);
@@ -876,6 +878,15 @@ function migrate() {
     }
   } catch (err) {
     console.warn('Migration 049 store location links skipped:', err.message);
+  }
+  // Fabrication Job Type & In-place Job Cards Rebuild
+  try {
+    if (!db.prepare("SELECT 1 FROM settings WHERE key = 'migration_050_done'").get()) {
+      require('../migrate/050_fabrication_job_type').runMigration(db);
+      db.prepare("INSERT INTO settings (key, value) VALUES ('migration_050_done', '1')").run();
+    }
+  } catch (err) {
+    console.warn('Migration 050 fabrication job type skipped:', err.message);
   }
 
   return db;

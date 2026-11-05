@@ -599,7 +599,7 @@ CREATE TABLE "job_cards" (
   asset_id             INTEGER,
   project_id           INTEGER,
   site                 TEXT,
-  type                 TEXT NOT NULL DEFAULT 'repair' CHECK (type IN ('repair','service')),
+  type                 TEXT NOT NULL DEFAULT 'repair' CHECK (type IN ('repair','service','fabrication')),
   severity             TEXT CHECK (severity IN ('major','minor')),
   description          TEXT,
   status               TEXT NOT NULL DEFAULT 'REQUESTED'
@@ -626,7 +626,7 @@ CREATE TABLE "job_cards" (
   total_cost           REAL DEFAULT 0,
   created_at           TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at           TEXT NOT NULL DEFAULT (datetime('now'))
-, recorded_cost REAL, other_cost REAL NOT NULL DEFAULT 0, outside_estimate REAL DEFAULT 0, original_completed_at TEXT, partial_closed_at TEXT, partial_closed_by INTEGER, partial_note TEXT, continues_job_id INTEGER REFERENCES job_cards(id), workshop_id INTEGER, field INTEGER NOT NULL DEFAULT 0, field_place TEXT, field_location TEXT, breakdown INTEGER NOT NULL DEFAULT 0, reported_at TEXT, arrived_at TEXT, working_at TEXT, field_km REAL, field_km_rate REAL, job_request_id INTEGER REFERENCES job_requests(id));
+, recorded_cost REAL, other_cost REAL NOT NULL DEFAULT 0, outside_estimate REAL DEFAULT 0, original_completed_at TEXT, partial_closed_at TEXT, partial_closed_by INTEGER, partial_note TEXT, continues_job_id INTEGER REFERENCES job_cards(id), workshop_id INTEGER, field INTEGER NOT NULL DEFAULT 0, field_place TEXT, field_location TEXT, breakdown INTEGER NOT NULL DEFAULT 0, reported_at TEXT, arrived_at TEXT, working_at TEXT, field_km REAL, field_km_rate REAL, job_request_id INTEGER REFERENCES job_requests(id), fabrication_kind TEXT, issue_store_location_id INTEGER);
 
 CREATE TABLE mechanic_workshops (
   id           INTEGER PRIMARY KEY AUTOINCREMENT,
