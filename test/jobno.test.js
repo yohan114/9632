@@ -71,6 +71,17 @@ test('service cards count separately from repairs', () => {
     'and the repair count is untouched by the service one');
 });
 
+test('fabrication cards count separately from repairs and services with F letter', () => {
+  // Three books, three sequences. Fabrication has its own F counter and touches neither R nor S.
+  assert.strictEqual(nextJobNo('fabrication', SEP), '2026/9/F/1');
+  card('2026/9/F/1');
+  assert.strictEqual(nextJobNo('fabrication', new Date(2026, 9, 2)), '2026/10/F/2');
+  assert.strictEqual(nextJobNo('repair', new Date(2026, 9, 2)), '2026/10/R/587',
+    'and the repair count is untouched by fabrication');
+  assert.strictEqual(nextJobNo('service', new Date(2026, 9, 2)), '2026/10/S/2',
+    'and the service count is untouched by fabrication');
+});
+
 test('a number already used is stepped over rather than colliding', () => {
   // job_no is UNIQUE and the imported history is not ours to predict. A clash would surface as a
   // 500 on the Create button — nothing a person could act on.
