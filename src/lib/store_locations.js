@@ -914,6 +914,40 @@ function migrateStoreLocationsStage2(targetDb) {
       UPDATE mtn
          SET to_store_location_id = (SELECT to_store_location_id FROM mtn_lines WHERE mtn_id = mtn.id AND to_store_location_id IS NOT NULL LIMIT 1)
        WHERE to_store_location_id IS NULL;
+
+      UPDATE mrn
+         SET target_store_location_id = COALESCE(
+               (SELECT store_location_id FROM ${mapTbl} WHERE legacy_store_id = mrn.workshop_id LIMIT 1),
+               (SELECT id FROM ${locTbl} WHERE workshop_id = mrn.workshop_id AND active = 1 ORDER BY is_default DESC, id ASC LIMIT 1),
+               2
+             )
+       WHERE target_store_location_id IS NULL;
+
+      UPDATE mrn_lines
+         SET target_store_location_id = (SELECT target_store_location_id FROM mrn WHERE mrn.id = mrn_lines.mrn_id)
+       WHERE target_store_location_id IS NULL;
+
+      DROP TRIGGER IF EXISTS trg_mrn_target_store;
+      CREATE TRIGGER trg_mrn_target_store AFTER INSERT ON mrn
+      WHEN NEW.target_store_location_id IS NULL
+      BEGIN
+        UPDATE mrn
+           SET target_store_location_id = COALESCE(
+                 (SELECT store_location_id FROM ${mapTbl} WHERE legacy_store_id = NEW.workshop_id LIMIT 1),
+                 (SELECT id FROM ${locTbl} WHERE workshop_id = NEW.workshop_id AND active = 1 ORDER BY is_default DESC, id ASC LIMIT 1),
+                 2
+               )
+         WHERE id = NEW.id;
+      END;
+
+      DROP TRIGGER IF EXISTS trg_mrnl_target_store;
+      CREATE TRIGGER trg_mrnl_target_store AFTER INSERT ON mrn_lines
+      WHEN NEW.target_store_location_id IS NULL
+      BEGIN
+        UPDATE mrn_lines
+           SET target_store_location_id = (SELECT target_store_location_id FROM mrn WHERE id = NEW.mrn_id)
+         WHERE id = NEW.id;
+      END;
     `);
   } catch {}
 
