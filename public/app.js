@@ -3980,8 +3980,8 @@ async function jobsRequests(body, sp) {
   body.innerHTML = `
     <div class="toolbar">
       <input id="jrf-q" type="search" placeholder="Search number, vehicle, work, who asked…" value="${esc(cur.q)}" style="max-width:280px">
-      <select id="jrf-type" style="max-width:140px"><option value="">Repair &amp; service</option>
-        <option value="repair" ${cur.type === 'repair' ? 'selected' : ''}>Repair</option><option value="service" ${cur.type === 'service' ? 'selected' : ''}>Service</option></select>
+      <select id="jrf-type" style="max-width:140px"><option value="">All Categories</option>
+        <option value="repair" ${cur.type === 'repair' ? 'selected' : ''}>Repair</option><option value="service" ${cur.type === 'service' ? 'selected' : ''}>Service</option><option value="fabrication" ${cur.type === 'fabrication' ? 'selected' : ''}>Fabrication</option></select>
       <a class="btn sm" id="jrf-xls" href="#">⬇ Excel</a>
       <div class="spacer"></div>
       ${canDo('jobrequests.create') ? '<button class="sm" id="jrf-newjr">+ New job request</button>' : ''}
@@ -4031,7 +4031,7 @@ async function jobsRequests(body, sp) {
         ${anyBulk ? `<td>${bulkable(r) ? `<input type="checkbox" class="jrf-chk" data-i="${r.kind}:${r.id}">` : ''}</td>` : ''}
         <td><a href="${r.link}"><b>${esc(r.no)}</b></a><br><span class="badge ${JOB_REQ_KIND[r.kind][0]}">${JOB_REQ_KIND[r.kind][1]}</span>${r.imported ? ' <span class="badge">imported</span>' : ''}<br><span class="muted" style="font-size:12px">${esc(r.date || '')}</span></td>
         <td class="desc-col">${esc(idLabel(r) || '—')}</td>
-        <td class="desc-col"><span class="badge ${r.type === 'service' ? 'blue' : ''}">${esc(r.type || '')}</span>${r.priority === 'urgent' ? ' <span class="badge red">urgent</span>' : ''} ${esc(String(r.description || '').slice(0, 120))}
+        <td class="desc-col"><span class="badge ${r.type === 'service' ? 'blue' : (r.type === 'fabrication' ? 'violet' : '')}">${esc(r.type || '')}</span>${r.fabrication_kind ? ` <span class="badge" title="Kind">${esc(r.fabrication_kind)}</span>` : ''}${r.priority === 'urgent' ? ' <span class="badge red">urgent</span>' : ''} ${esc(String(r.description || '').slice(0, 120))}
           ${r.reason ? `<br><span class="muted" style="font-size:12px">Why reopen: ${esc(r.reason)}</span>` : ''}
           <br><span class="muted" style="font-size:12px">Asked by ${esc(r.requested_by || '—')}</span></td>
         <td>${esc(r.waiting_for)}${r.days != null ? ` <span class="badge ${r.days > 7 ? 'red' : (r.days > 2 ? 'amber' : '')}">${r.days} day${r.days === 1 ? '' : 's'}</span>` : ''}${r.reject_reason && r.step === 'rejected' ? `<br><span class="muted" style="font-size:12px">${esc(r.reject_reason)}</span>` : ''}${r.note ? `<br><span class="muted" style="font-size:12px">${esc(r.note)}</span>` : ''}
@@ -4116,8 +4116,8 @@ async function jobsOngoing(body, sp) {
   body.innerHTML = `
     <div class="toolbar">
       <input id="og-q" type="search" placeholder="Search job no, vehicle, work…" value="${esc(cur.q)}" style="max-width:260px">
-      <select id="og-type" style="max-width:140px"><option value="">Repair &amp; service</option>
-        <option value="repair" ${cur.type === 'repair' ? 'selected' : ''}>Repair</option><option value="service" ${cur.type === 'service' ? 'selected' : ''}>Service</option></select>
+      <select id="og-type" style="max-width:140px"><option value="">All Categories</option>
+        <option value="repair" ${cur.type === 'repair' ? 'selected' : ''}>Repair</option><option value="service" ${cur.type === 'service' ? 'selected' : ''}>Service</option><option value="fabrication" ${cur.type === 'fabrication' ? 'selected' : ''}>Fabrication</option></select>
       <div class="spacer"></div>
       ${canView('reports') ? '<a class="btn sm" href="/api/reports/ongoing-jobs.xlsx">⬇ Excel</a><a class="btn sm" href="/api/reports/ongoing-jobs.html" target="_blank">🖨 PDF</a>' : ''}
     </div>
@@ -4135,7 +4135,7 @@ async function jobsOngoing(body, sp) {
     qs('#og-show', body).innerHTML = ONGOING_SHOW.map(([k, l]) => `<button class="sm ${k === cur.show ? 'primary' : ''}" data-show="${k}">${esc(l)} <span class="badge ${k === 'no_reason' && d.counts[k] ? 'red' : ''}">${d.counts[k]}</span></button>`).join('');
     qsa('[data-show]', body).forEach((b) => { b.onclick = () => { cur.show = b.dataset.show; load(); }; });
     const jobCell = (r) => `<a href="${r.link}"><b>${esc(r.job_no)}</b></a> · ${esc(idLabel(r) || '—')}${r.field ? ` <span class="badge ${r.breakdown ? 'red' : 'amber'}">${r.breakdown ? 'Breakdown' : 'Field'}</span>` : ''}${r.workshop_code && wsMulti() ? ` <span class="badge">${esc(r.workshop_code)}</span>` : ''}
-          <div style="font-size:12.5px">${r.type === 'service' ? '<span class="badge blue">service</span> ' : ''}${esc(String(r.description || '').slice(0, 120))}</div>
+          <div style="font-size:12.5px">${r.type === 'service' ? '<span class="badge blue">service</span> ' : (r.type === 'fabrication' ? '<span class="badge violet">fabrication</span> ' : '')}${esc(String(r.description || '').slice(0, 120))}</div>
           <div class="muted" style="font-size:12px">open ${plural(r.days_open || 0, 'day')}</div>`;
     const workedCell = (r) => `${attendedChip(r)}
           <div class="muted" style="font-size:12px">${r.state === 'today' ? esc(r.today_mechanics || '') : (r.last_worked ? `Last: ${esc(r.last_worked)} · ${esc(r.last_mechanics || '')}` : 'No work yet')}${r.hours ? ` · ${num(r.hours)} h so far` : ''}</div>`;
@@ -4189,7 +4189,7 @@ function finLink(kind, r) {
 const finStatus = (r) => (r.status === 'PARTIALLY_CLOSED' ? '<span class="badge amber">Partly closed</span>' : '<span class="badge blue">Work done</span>');
 function finJobCell(r) {
   return `<a href="${r.link}"><b>${esc(r.job_no)}</b></a> · ${esc(idLabel(r) || '—')}${r.workshop_code && wsMulti() ? ` <span class="badge">${esc(r.workshop_code)}</span>` : ''}
-    <div style="font-size:12.5px">${r.type === 'service' ? '<span class="badge blue">service</span> ' : ''}${esc(String(r.description || '').slice(0, 120))}</div>
+    <div style="font-size:12.5px">${r.type === 'service' ? '<span class="badge blue">service</span> ' : (r.type === 'fabrication' ? '<span class="badge violet">fabrication</span> ' : '')}${esc(String(r.description || '').slice(0, 120))}</div>
     <div class="muted" style="font-size:12px">${finStatus(r)} ${r.since ? `since ${esc(r.since)} · ${plural(r.days || 0, 'day')}` : ''}${r.partly_by ? ` · by ${esc(r.partly_by)}` : ''}</div>
     ${r.note ? `<div class="muted" style="font-size:12px">Note: ${esc(r.note)}</div>` : ''}`;
 }
@@ -4203,8 +4203,8 @@ async function jobsFinishing(body, sp) {
   body.innerHTML = `
     <div class="toolbar">
       <input id="fin-q" type="search" placeholder="Search job no, vehicle, work…" value="${esc(cur.q)}" style="max-width:260px">
-      <select id="fin-type" style="max-width:140px"><option value="">Repair &amp; service</option>
-        <option value="repair" ${cur.type === 'repair' ? 'selected' : ''}>Repair</option><option value="service" ${cur.type === 'service' ? 'selected' : ''}>Service</option></select>
+      <select id="fin-type" style="max-width:140px"><option value="">All Categories</option>
+        <option value="repair" ${cur.type === 'repair' ? 'selected' : ''}>Repair</option><option value="service" ${cur.type === 'service' ? 'selected' : ''}>Service</option><option value="fabrication" ${cur.type === 'fabrication' ? 'selected' : ''}>Fabrication</option></select>
       <div class="spacer"></div><a class="btn sm" href="#/jobs?tab=ready">✅ Ready to close <span class="badge" id="fin-ready">…</span></a>
     </div>
     <p class="muted" style="margin:0 0 8px;font-size:12.5px">Work is done, but something is still missing. Click a red or amber label to fix it. When nothing is missing, the card moves to Ready to close by itself.</p>
@@ -4243,8 +4243,8 @@ async function jobsReady(body, sp) {
   body.innerHTML = `
     <div class="toolbar">
       <input id="rdy-q" type="search" placeholder="Search job no, vehicle, work…" value="${esc(cur.q)}" style="max-width:260px">
-      <select id="rdy-type" style="max-width:140px"><option value="">Repair &amp; service</option>
-        <option value="repair" ${cur.type === 'repair' ? 'selected' : ''}>Repair</option><option value="service" ${cur.type === 'service' ? 'selected' : ''}>Service</option></select>
+      <select id="rdy-type" style="max-width:140px"><option value="">All Categories</option>
+        <option value="repair" ${cur.type === 'repair' ? 'selected' : ''}>Repair</option><option value="service" ${cur.type === 'service' ? 'selected' : ''}>Service</option><option value="fabrication" ${cur.type === 'fabrication' ? 'selected' : ''}>Fabrication</option></select>
     </div>
     <p class="muted" style="margin:0 0 8px;font-size:12.5px">Nothing is missing on these cards. Check the cost, then close one card, or tick several and close them together. Closing fixes the final cost.</p>
     <div id="rdy-bulk" class="toolbar" style="display:none;margin:0 0 8px"></div>
@@ -4352,7 +4352,7 @@ function jobReqAction(act, r, done) {
 
 async function jobsAllCards(c, sp) {
   const cur = { q: sp.get('q') || '', year: sp.get('year') || '', month: sp.get('month') || '', status: sp.get('status') || '',
-    workshop: sp.get('workshop_id') || '' };
+    type: sp.get('type') || '', workshop: sp.get('workshop_id') || '' };
   // Workshop filter and tag (Stage 2): only once there is more than one workshop. The filter is for
   // those who see every workshop; someone kept to their own (Stage 3) has nothing to choose.
   const wsd = wsMulti() ? await workshopsData() : null;
@@ -4370,6 +4370,7 @@ async function jobsAllCards(c, sp) {
       <input id="jq" type="search" placeholder="Search job no or vehicle…" value="${esc(cur.q)}" style="max-width:240px">
       <select id="jyear" style="max-width:120px"><option value="">All years</option>${years.map((y) => `<option ${String(y) === cur.year ? 'selected' : ''}>${y}</option>`).join('')}</select>
       <select id="jmonth" style="max-width:140px"><option value="">All months</option>${MONTHS.map(([v, l]) => `<option value="${v}" ${v === cur.month ? 'selected' : ''}>${l}</option>`).join('')}</select>
+      <select id="jtype" style="max-width:140px"><option value="">All types</option><option value="repair" ${cur.type === 'repair' ? 'selected' : ''}>Repair</option><option value="service" ${cur.type === 'service' ? 'selected' : ''}>Service</option><option value="fabrication" ${cur.type === 'fabrication' ? 'selected' : ''}>Fabrication</option></select>
       <select id="jstatus" style="max-width:200px"><option value="">All statuses</option>${JOB_STATUSES.map((s) => `<option ${s === cur.status ? 'selected' : ''}>${s}</option>`).join('')}${cur.status && !JOB_STATUSES.includes(cur.status) ? `<option value="${esc(cur.status)}" selected>${cur.status === 'APPROVED_OPERATIONS,IN_WORKSHOP' ? 'Approved, not started' : esc(cur.status.replace(/,/g, ' or '))}</option>` : ''}</select>
       ${wsFilter ? `<select id="jws" style="max-width:220px"><option value="">All workshops</option>${wsd.workshops.filter((w) => !ME.workshopsSeen || ME.workshopsSeen.includes(w.id)).map((w) => `<option value="${w.id}" ${String(w.id) === cur.workshop ? 'selected' : ''}>${esc(w.name)}</option>`).join('')}</select>` : ''}
       <button class="sm" id="jclear">Clear</button>
@@ -4402,6 +4403,7 @@ async function jobsAllCards(c, sp) {
     if (qs('#jyear').value) p.set('year', qs('#jyear').value);
     if (qs('#jmonth').value) p.set('month', qs('#jmonth').value);
     if (qs('#jstatus').value) p.set('status', qs('#jstatus').value);
+    if (qs('#jtype') && qs('#jtype').value) p.set('type', qs('#jtype').value);
     if (qs('#jws') && qs('#jws').value) p.set('workshop_id', qs('#jws').value);
     return p;
   };
@@ -4433,7 +4435,7 @@ async function jobsAllCards(c, sp) {
       <td><a href="#/jobs/${j.id}">${esc(j.job_no)}</a>${wsd && j.workshop_code ? `<br><span class="badge" title="${esc(wsName(wsd, j.workshop_id))}">${esc(j.workshop_code)}</span>` : ''}</td>
       <td class="desc-col">${vehText(j) ? `<span class="stamp">${esc(vehText(j))}</span>` : '—'}</td>
       <td class="desc-col" title="${esc(j.description || '')}">${esc(j.description || '')}</td>
-      <td><span class="badge ${j.type === 'service' ? 'blue' : ''}">${esc(j.type)}</span>${j.field ? ` <span class="badge ${j.breakdown ? 'red' : 'amber'}" title="Repaired at the site">${j.breakdown ? 'Breakdown' : 'Field'}</span>` : ''}</td>
+      <td><span class="badge ${j.type === 'service' ? 'blue' : (j.type === 'fabrication' ? 'violet' : '')}">${esc(j.type)}</span>${j.fabrication_kind ? ` <span class="badge" title="Kind">${esc(j.fabrication_kind)}</span>` : ''}${j.field ? ` <span class="badge ${j.breakdown ? 'red' : 'amber'}" title="Repaired at the site">${j.breakdown ? 'Breakdown' : 'Field'}</span>` : ''}</td>
       <td>${statusBadge(j.status)}</td>
       <td class="desc-col">${esc(j.project_name || '')}</td>
       <td class="num">${j.labour_cost ? money(j.labour_cost) : '—'}</td>
@@ -4540,8 +4542,9 @@ async function jobsAllCards(c, sp) {
   qs('#jyear').onchange = load;
   qs('#jmonth').onchange = load;
   qs('#jstatus').onchange = load;
+  if (qs('#jtype')) qs('#jtype').onchange = load;
   if (qs('#jws')) qs('#jws').onchange = load;
-  qs('#jclear').onclick = () => { qs('#jq').value = ''; qs('#jyear').value = ''; qs('#jmonth').value = ''; qs('#jstatus').value = ''; if (qs('#jws')) qs('#jws').value = ''; load(); };
+  qs('#jclear').onclick = () => { qs('#jq').value = ''; qs('#jyear').value = ''; qs('#jmonth').value = ''; qs('#jstatus').value = ''; if (qs('#jtype')) qs('#jtype').value = ''; if (qs('#jws')) qs('#jws').value = ''; load(); };
   if (qs('#jfilter-backlog')) {
     qs('#jfilter-backlog').onclick = () => {
       qs('#jstatus').value = 'REQUESTED';
@@ -7192,7 +7195,7 @@ async function jobDetail(c, id) {
           <span class="stamp" style="font-size:14px;background:#f1f5f9">${esc(idLabel(job) || '—')}</span>
           <span>${esc(job.job_no)}</span>
           ${statusBadge(job.status)}
-          <span class="badge ${job.type === 'service' ? 'blue' : ''}">${esc(job.type)}</span>
+          <span class="badge ${job.type === 'service' ? 'blue' : (job.type === 'fabrication' ? 'violet' : '')}">${esc(job.type)}</span>${job.fabrication_kind ? ` <span class="badge" title="Kind">${esc(job.fabrication_kind)}</span>` : ''}
           ${job.severity ? `<span class="badge red">${esc(job.severity)}</span>` : ''}
         </div>
         <div class="equipment-hero-meta">
@@ -7220,6 +7223,7 @@ async function jobDetail(c, id) {
     ${jobStepperHtml}
     ${heroHtml}
     ${job.type === 'service' ? `<p class="muted" style="font-size:12px">Service job — labour is a flat charge${job.flat_labour == null ? ' (not set yet)' : ''}, not hours×rate.</p>` : ''}
+    ${job.type === 'fabrication' ? `<p class="muted" style="font-size:12px">🏗️ Fabrication job (${esc(job.fabrication_kind || 'build')}) — materials issued from Central Main Stores.</p>` : ''}
     <p>${esc(job.description || '')}</p>
     ${(j.handovers || []).map((h) => `<p class="muted" style="font-size:13px;margin:4px 0">🔀 Sent from <b>${esc(h.from_name || '—')}</b> to <b>${esc(h.to_name || '—')}</b> on ${esc(String(h.moved_at || '').slice(0, 10))}${h.moved_by ? ` by ${esc(h.moved_by)}` : ''} — ${esc(h.reason)}</p>`).join('')}
     ${fieldPanel}
@@ -16525,7 +16529,7 @@ async function jobRequestDetail(c, id) {
     </div>
     <div class="card">
       <h3>Job Request ${esc(r.jr_no)} ${badge}</h3>
-      <p class="muted">Date ${esc((r.req_date || '').slice(0, 10))} · Vehicle ${r.asset_id ? esc(idLabel(r)) : `<span class="badge amber">Not allocated</span>`}${vehAllocHtml} · ${esc((r.type || '').toUpperCase())}${r.severity ? ' / ' + esc(r.severity) : ''}${r.service_type ? ' · Type <b>' + esc(r.service_type) + '</b>' : ''}${r.meter_reading ? ' · Meter <b>' + esc(r.meter_reading) + '</b>' : ''} · Priority ${esc(r.priority || 'normal')}${r.project_name ? ' · ' + esc(r.project_name) : ''}${r.required_date ? ' · required ' + esc((r.required_date || '').slice(0, 10)) : ''}</p>
+      <p class="muted">Date ${esc((r.req_date || '').slice(0, 10))} · Vehicle ${r.asset_id ? esc(idLabel(r)) : `<span class="badge amber">Not allocated</span>`}${vehAllocHtml} · ${esc((r.type || '').toUpperCase())}${r.severity ? ' / ' + esc(r.severity) : ''}${r.fabrication_kind ? ' · Kind <b>' + esc(r.fabrication_kind) + '</b>' : ''}${r.service_type ? ' · Type <b>' + esc(r.service_type) + '</b>' : ''}${r.meter_reading ? ' · Meter <b>' + esc(r.meter_reading) + '</b>' : ''} · Priority ${esc(r.priority || 'normal')}${r.project_name ? ' · ' + esc(r.project_name) : ''}${r.required_date ? ' · required ' + esc((r.required_date || '').slice(0, 10)) : ''}</p>
       <div style="white-space:pre-wrap;border:1px solid var(--border);border-radius:6px;padding:10px;background:var(--surface)">${esc(r.description || '')}</div>
       ${r.service_id ? `<p style="margin-top:10px">✅ Approved — service record created: <a href="#/services/${r.service_id}"><b>${esc(r.service_job_no || 'Service Record #' + r.service_id)}</b></a></p>` : ''}
       ${r.job_no ? `<p style="margin-top:10px">✅ Approved — job card opened: <a href="#/jobs/${r.job_id}"><b>${esc(r.job_no)}</b></a>${r.job_status ? ' <span class="badge">' + esc(r.job_status) + '</span>' : ''}</p>` : ''}
@@ -16608,7 +16612,7 @@ async function newJobRequestModal() {
     <p class="muted" style="font-size:12px;margin:0 0 4px">Continues from the last number (${esc(nextNo || 'auto')}). Change it to set a specific number.</p>
     ${assetPickerHtml('Vehicle / Machine (search & select) *')}
     <div class="row">
-      ${field('Request Category *', 'type', { type: 'select', options: [{ value: 'repair', label: '🔧 Repair Request' }, { value: 'service', label: '🛢️ Service Request' }] })}
+      ${field('Request Category *', 'type', { type: 'select', options: [{ value: 'repair', label: '🔧 Repair Request' }, { value: 'service', label: '🛢️ Service Request' }, { value: 'fabrication', label: '🏗️ Fabrication Request' }] })}
       ${field('Severity', 'severity', { type: 'select', options: [{ value: '', label: '—' }, { value: 'major', label: 'Major' }, { value: 'minor', label: 'Minor' }] })}
     </div>
     <div id="jr_service_fields" style="display:none;background:rgba(37,99,235,0.06);border:1px solid #bfdbfe;border-radius:6px;padding:8px 12px;margin-bottom:10px">
@@ -16618,6 +16622,16 @@ async function newJobRequestModal() {
       </div>
       <p class="muted" style="font-size:11.5px;margin:2px 0 0">Approved service requests route directly to the Service Records section for service job execution.</p>
     </div>
+    <div id="jr_fabrication_fields" style="display:none;background:rgba(109,40,217,0.06);border:1px solid #ddd6fe;border-radius:6px;padding:8px 12px;margin-bottom:10px">
+      <div class="row">
+        ${field('Fabrication Kind *', 'fabrication_kind', { type: 'select', options: [
+          { value: 'new', label: 'New Fabrication / Build' },
+          { value: 'repair', label: 'Fabrication Repair' },
+          { value: 'service', label: 'Fabrication Modification / Service' }
+        ] })}
+      </div>
+      <p class="muted" style="font-size:11.5px;margin:2px 0 0">Materials for fabrication are issued from Central Main Stores. For new builds without an assigned vehicle yet, vehicle selection is optional.</p>
+    </div>
     <div class="row">${field('Priority', 'priority', { type: 'select', options: [{ value: 'normal', label: 'Normal' }, { value: 'urgent', label: 'Urgent' }] })}${field('Required date', 'required_date', { type: 'date' })}</div>
     ${field('Project', 'project_id', { type: 'select', options: projOpts })}
     ${field('Work requested *', 'description', { type: 'textarea' })}
@@ -16626,12 +16640,17 @@ async function newJobRequestModal() {
     wireAssetPicker(body);
     const typeSel = qs('select[name=type]', body);
     const svcFlds = qs('#jr_service_fields', body);
+    const fabFlds = qs('#jr_fabrication_fields', body);
     const syncType = () => {
       const isSvc = typeSel && typeSel.value === 'service';
+      const isFab = typeSel && typeSel.value === 'fabrication';
       if (svcFlds) svcFlds.style.display = isSvc ? 'block' : 'none';
+      if (fabFlds) fabFlds.style.display = isFab ? 'block' : 'none';
       const descEl = qs('textarea[name=description]', body);
       if (isSvc && descEl && !descEl.value) {
         descEl.placeholder = 'e.g. Scheduled periodic service maintenance, oil change and filter replacements.';
+      } else if (isFab && descEl && !descEl.value) {
+        descEl.placeholder = 'e.g. Custom body build, bucket fabrication, structural welding or chassis modification.';
       }
     };
     if (typeSel) typeSel.onchange = syncType;
@@ -16639,7 +16658,7 @@ async function newJobRequestModal() {
     qs('#s', body).onclick = async () => {
       const d = formData(body);
       if (!String(d.description || '').trim()) return toast('Describe the work requested', 'err');
-      if (!d.asset && !d.asset_id) return toast('Pick the vehicle / machine', 'err');
+      if (!d.asset && !d.asset_id && !(d.type === 'fabrication' && d.fabrication_kind === 'new')) return toast('Pick the vehicle / machine', 'err');
       try {
         const r = await api('/job-requests', { method: 'POST', body: d });
         close();
