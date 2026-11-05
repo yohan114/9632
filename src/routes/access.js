@@ -189,7 +189,7 @@ const serializeCaps = () => capabilities.CAPABILITIES.map(({ key, module, label,
   key, module, label, needs, section: section || module, actvt: actvt || '02', domain: domain || 'Operations', dualAuth: !!dualAuth
 }));
 
-router.get('/capabilities', requireCap('access.manage'), asyncHandler((_req, res) => {
+router.get('/capabilities', requireCap('access.manage', 'users.manage'), asyncHandler((_req, res) => {
   res.json({
     domains: DOMAINS,
     sections: FUNCTIONAL_SECTIONS,
@@ -479,7 +479,7 @@ const FUNCTIONAL_SECTIONS = [
   }
 ];
 
-router.get('/section-matrix', requireCap('access.manage'), asyncHandler((_req, res) => {
+router.get('/section-matrix', requireCap('access.manage', 'users.manage'), asyncHandler((_req, res) => {
   res.json({
     domains: DOMAINS,
     sections: FUNCTIONAL_SECTIONS,

@@ -10,6 +10,8 @@ const passwordPolicy = require('../lib/password_policy');
 const rules = require('../lib/access_rules');
 const workshops = require('../lib/workshops');
 const storeLocs = require('../lib/store_locations');
+const permissions = require('../lib/permissions');
+const capabilities = require('../lib/capabilities');
 
 // A password an admin types is a TEMPORARY one: the admin knows it, and so may whoever it was
 // passed to on paper or over the phone. So it must still meet the rules (it is live until first
@@ -22,9 +24,11 @@ function checkAdminPassword(pw, username) {
 const router = express.Router();
 
 function userWithRoles(id) {
-  const u = get('SELECT id, username, full_name, active, created_at, workshop_id FROM users WHERE id = ?', id);
+  const u = get('SELECT id, username, full_name, active, created_at, workshop_id, access_until, approval_limit FROM users WHERE id = ?', id);
   if (!u) return null;
   u.roles = auth.rolesForUser(id);
+  u.permissions = permissions.effectiveUserPermissions(u);
+  u.caps = capabilities.effectiveCaps(u);
   try {
     u.store_locations = storeLocs.getUserStoreLocations(id);
   } catch (_) {
@@ -60,7 +64,7 @@ router.get('/roles', requireAuth, asyncHandler((_req, res) => res.json(
   all('SELECT id, name, label, description FROM roles WHERE COALESCE(active, 1) = 1 ORDER BY id'))));
 
 router.get('/', requireCap('users.manage'), asyncHandler((_req, res) => {
-  const users = all('SELECT id, username, full_name, active, created_at, mfa_enabled, workshop_id FROM users ORDER BY username');
+  const users = all('SELECT id, username, full_name, active, created_at, mfa_enabled, workshop_id, access_until FROM users ORDER BY username');
   for (const u of users) {
     u.roles = auth.rolesForUser(u.id);
     try {
@@ -79,6 +83,34 @@ router.post('/', requireCap('users.manage'), asyncHandler((req, res) => {
   checkAdminPassword(b.password, b.username);
   const roles = checkedRoleNames(b.roles);
   rules.assertCanAssignRoles(req.user, roles);
+
+  const sectionUpdates = b.sections || b.permissions || {};
+  const capUpdates = b.capabilities || b.caps || {};
+
+  // Check section clearance limits (grant only what caller holds)
+  for (const [sectionKey, lvl] of Object.entries(sectionUpdates)) {
+    if (lvl !== null && lvl !== undefined && lvl !== '') {
+      if (!permissions.LEVELS.includes(lvl)) return res.status(400).json({ error: `Invalid level ${lvl}` });
+      rules.assertCanSetLevel(req.user, sectionKey, lvl);
+    }
+  }
+
+  // Check capability limits (grant only what caller holds)
+  const capsToGrant = Object.entries(capUpdates)
+    .filter(([, val]) => val === true || val === 1)
+    .map(([k]) => k);
+  if (capsToGrant.length > 0) {
+    rules.assertCanGrantCaps(req.user, capsToGrant);
+  }
+
+  // Validate access_until if provided
+  let accessUntil = null;
+  if (b.access_until) {
+    const d = new Date(b.access_until);
+    if (isNaN(d.getTime())) return res.status(400).json({ error: 'Invalid access_until date' });
+    accessUntil = d.toISOString();
+  }
+
   // Auto-resolve workshop_id: from chosen store if linked, or fallback to default (1: Central Workshop)
   let workshopId = 1;
   const storeId = toInt(b.store_location_id || b.store_id);
@@ -90,11 +122,28 @@ router.post('/', requireCap('users.manage'), asyncHandler((req, res) => {
   } else if (b.workshop_id) {
     workshopId = workshops.forNew(null, b.workshop_id);
   }
+
   const id = tx(() => {
-    const info = run('INSERT INTO users (username, password_hash, full_name, active, must_change_password, workshop_id) VALUES (?, ?, ?, 1, 1, ?)',
-      b.username, auth.hashPassword(b.password), b.full_name || null, workshopId);
-    setRoles(info.lastInsertRowid, roles);
-    return info.lastInsertRowid;
+    const info = run('INSERT INTO users (username, password_hash, full_name, active, must_change_password, workshop_id, access_until) VALUES (?, ?, ?, 1, 1, ?, ?)',
+      b.username, auth.hashPassword(b.password), b.full_name || null, workshopId, accessUntil);
+    const userId = info.lastInsertRowid;
+    setRoles(userId, roles);
+
+    // Save section overrides
+    for (const [sectionKey, lvl] of Object.entries(sectionUpdates)) {
+      if (lvl !== null && lvl !== '' && lvl !== undefined) {
+        permissions.setUserPermission(userId, sectionKey, lvl);
+      }
+    }
+
+    // Save capability overrides
+    for (const [capKey, granted] of Object.entries(capUpdates)) {
+      if (granted !== null && granted !== undefined && granted !== '') {
+        capabilities.setUserCapability(userId, capKey, !!granted);
+      }
+    }
+
+    return userId;
   });
 
   // Assign physical store location access if provided
@@ -116,7 +165,23 @@ router.post('/', requireCap('users.manage'), asyncHandler((req, res) => {
     }
   }
 
-  audit.record({ userId: req.user.id, entity: 'user', entityId: id, action: 'create', after: { username: b.username, roles, workshop_id: workshopId, store_location_id: storeId } });
+  audit.record({
+    userId: req.user.id,
+    entity: 'user',
+    entityId: id,
+    action: 'create',
+    after: {
+      username: b.username,
+      roles,
+      workshop_id: workshopId,
+      store_location_id: storeId,
+      access_until: accessUntil,
+      sections: sectionUpdates,
+      capabilities: capUpdates,
+      reason: b.override_reason || b.reason || null
+    }
+  });
+
   res.status(201).json(userWithRoles(id));
 }));
 
@@ -133,6 +198,10 @@ router.patch('/:id', requireCap('users.manage'), asyncHandler((req, res) => {
   if (b.full_name !== undefined) { sets.push('full_name = ?'); params.push(b.full_name); }
   if (b.active !== undefined) { sets.push('active = ?'); params.push(b.active ? 1 : 0); }
   if (b.workshop_id !== undefined) { sets.push('workshop_id = ?'); params.push(workshops.mustBeActive(b.workshop_id).id); }
+  if (b.access_until !== undefined) {
+    sets.push('access_until = ?');
+    params.push(b.access_until ? new Date(b.access_until).toISOString() : null);
+  }
   if (b.password) {
     checkAdminPassword(b.password, before.username);
     sets.push('password_hash = ?'); params.push(auth.hashPassword(b.password));

@@ -23086,6 +23086,473 @@ async function userStoreAccessModal(u, onSave) {
   }, { wide: true });
 }
 
+
+// ===========================================================================
+// Multi-Step New User Provisioning & Granular Clearance Wizard (Plan Phase 2)
+// 1. Account credentials & Role Template
+// 2. Physical Store & Site Scope + Expiry (access_until)
+// 3. Action Checklist grouped by section, prefilled from template, "custom" tag
+// ===========================================================================
+async function openNewUserWizard(roles, allStoreLocations, storeOptions, wsd, onComplete) {
+  let sm = null;
+  try {
+    sm = await api('/access/section-matrix');
+  } catch (err) {
+    try {
+      sm = await api('/access/capabilities');
+    } catch (_) {}
+  }
+
+  const defaultRole = roles.find(r => r.name === 'site_storekeeper') || roles.find(r => r.name === 'storekeeper') || roles[0] || { name: 'site_storekeeper', label: 'Site Storekeeper' };
+
+  const state = {
+    step: 1,
+    username: '',
+    password: '',
+    full_name: '',
+    selectedRole: defaultRole.name,
+    workshop_id: '1',
+    store_location_id: '',
+    access_until: '',
+    override_reason: '',
+    sectionEdits: {},
+    capEdits: {},
+  };
+
+  const pickDefaultStore = (roleName) => {
+    if (roleName === 'main_storekeeper') {
+      const ms = allStoreLocations.find(s => s.store_type === 'MAIN_STORE');
+      if (ms) return String(ms.id);
+    } else if (roleName === 'site_storekeeper') {
+      const ss = allStoreLocations.find(s => s.store_type === 'SITE_STORE' || s.store_type === 'MAIN_WORKSHOP_STORE');
+      if (ss) return String(ss.id);
+    }
+    return '';
+  };
+  state.store_location_id = pickDefaultStore(state.selectedRole);
+
+  const getRoleTemplateDefaults = (roleName) => {
+    const levels = {};
+    const caps = new Set();
+    if (sm && sm.matrix && sm.matrix.grid && sm.matrix.grid[roleName]) {
+      Object.assign(levels, sm.matrix.grid[roleName]);
+    }
+    if (sm && sm.capabilities) {
+      for (const c of sm.capabilities) {
+        if (roleName === 'admin' || (c.legacy && c.legacy.includes(roleName))) {
+          caps.add(c.key);
+        }
+      }
+    }
+    return { levels, caps };
+  };
+
+  modal('New User Provisioning & Access Clearance', '<div id="nu-wizard-container"></div>', (body, close) => {
+    const container = qs('#nu-wizard-container', body);
+
+    const render = () => {
+      const roleDef = roles.find(r => r.name === state.selectedRole) || { name: state.selectedRole, label: state.selectedRole };
+      const template = getRoleTemplateDefaults(state.selectedRole);
+
+      let overrideCount = 0;
+      for (const [sKey, lvl] of Object.entries(state.sectionEdits)) {
+        if (lvl && lvl !== (template.levels[sKey] || 'none')) overrideCount++;
+      }
+      for (const [cKey, val] of Object.entries(state.capEdits)) {
+        if (val !== undefined && val !== template.caps.has(cKey)) overrideCount++;
+      }
+
+      const steps = [
+        { num: 1, title: 'Account & Role Template' },
+        { num: 2, title: 'Store & Site Scope' },
+        { num: 3, title: 'Action Checklist & Clearance' },
+      ];
+      const stepperHtml = `
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;padding:8px 12px;background:var(--bg-muted, #f1f5f9);border-radius:8px">
+          ${steps.map(s => {
+            const isCur = state.step === s.num;
+            const isDone = state.step > s.num;
+            const bg = isCur ? 'var(--primary, #0066ff)' : (isDone ? '#10b981' : '#cbd5e1');
+            const color = isCur || isDone ? '#fff' : '#64748b';
+            return `
+              <div style="display:flex;align-items:center;gap:8px;font-size:12.5px;font-weight:${isCur ? '700' : '500'}">
+                <span style="display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:50%;background:${bg};color:${color};font-size:11px">
+                  ${isDone ? '✓' : s.num}
+                </span>
+                <span style="${isCur ? 'color:var(--primary, #0066ff);' : (isDone ? 'color:#10b981;' : 'color:#64748b;')}">${s.title}</span>
+              </div>
+            `;
+          }).join('<span class="muted" style="margin:0 4px">→</span>')}
+        </div>
+      `;
+
+      let contentHtml = '';
+
+      if (state.step === 1) {
+        contentHtml = `
+          ${stepperHtml}
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
+            <div>
+              <label style="display:block;font-weight:600;font-size:12px;margin-bottom:4px">Username *</label>
+              <input class="input" style="width:100%" id="nu_username" value="${esc(state.username)}" placeholder="e.g. saman_p" />
+            </div>
+            <div>
+              <label style="display:block;font-weight:600;font-size:12px;margin-bottom:4px">Full Name</label>
+              <input class="input" style="width:100%" id="nu_fullname" value="${esc(state.full_name)}" placeholder="e.g. Saman Perera" />
+            </div>
+          </div>
+          <div style="margin-bottom:14px">
+            <label style="display:block;font-weight:600;font-size:12px;margin-bottom:4px">Temporary Password *</label>
+            <input class="input" style="width:100%" type="password" id="nu_password" value="${esc(state.password)}" placeholder="Must be at least 10 characters" />
+            <p class="muted" style="font-size:11.5px;margin:3px 0 0">${esc(passwordHint())} They must choose their own at first sign-in.</p>
+          </div>
+
+          <div style="margin-bottom:14px">
+            <label style="display:block;font-weight:700;font-size:13px;margin-bottom:6px">Select Primary Role Template *</label>
+            <p class="muted" style="font-size:11.5px;margin:0 0 8px">The starting baseline for what this person can do. You can fine-tune specific actions in Step 3.</p>
+            <div style="display:grid;grid-template-columns:repeat(auto-fill, minmax(280px, 1fr));gap:8px;max-height:220px;overflow-y:auto;padding:4px;border:1px solid var(--border,#e2e8f0);border-radius:8px;background:var(--card,#fff)">
+              ${roles.map(r => {
+                const checked = state.selectedRole === r.name;
+                const isSiteSk = r.name === 'site_storekeeper';
+                return `
+                  <label style="display:flex;align-items:flex-start;gap:8px;padding:8px 10px;border-radius:6px;border:1px solid ${checked ? 'var(--primary,#0066ff)' : 'transparent'};background:${checked ? '#eff6ff' : 'transparent'};cursor:pointer">
+                    <input type="radio" name="nu_role" value="${esc(r.name)}" ${checked ? 'checked' : ''} style="margin-top:3px" />
+                    <div>
+                      <div style="font-weight:600;font-size:12.5px;color:${checked ? 'var(--primary,#0066ff)' : 'inherit'}">
+                        ${esc(r.label || r.name)}
+                        ${isSiteSk ? '<span class="badge green" style="font-size:9.5px;margin-left:4px">Recommended for Sites</span>' : ''}
+                      </div>
+                      <div class="muted" style="font-size:11px">${esc(r.description || 'Standard role template')}</div>
+                    </div>
+                  </label>
+                `;
+              }).join('')}
+            </div>
+          </div>
+
+          <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px">
+            <button class="btn" id="nu_cancel">Cancel</button>
+            <button class="primary" id="nu_step1_next">Next: Store & Site Scope →</button>
+          </div>
+        `;
+      } else if (state.step === 2) {
+        contentHtml = `
+          ${stepperHtml}
+          <div class="card" style="padding:10px 14px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;margin-bottom:14px">
+            <span class="muted" style="font-size:11.5px">Configuring for:</span> <b>${esc(state.full_name || state.username)}</b>
+            <span class="muted" style="font-size:11.5px;margin-left:12px">Role Template:</span> <span class="badge blue">${esc(roleDef.label || roleDef.name)}</span>
+          </div>
+
+          <div style="margin-bottom:14px">
+            <label style="display:block;font-weight:600;font-size:12.5px;margin-bottom:4px">Physical Store & Site Location Assignment</label>
+            <select class="input" id="nu_store_select" style="width:100%">
+              ${storeOptions.map(o => `<option value="${esc(o.value)}" ${String(state.store_location_id) === String(o.value) ? 'selected' : ''}>${esc(o.label)}</option>`).join('')}
+            </select>
+            <p class="muted" style="font-size:11.5px;margin:4px 0 0">
+              ${state.selectedRole === 'site_storekeeper'
+                ? '⭐ <b>Site Storekeeper selected:</b> Assign to their project site store (e.g. Galagedara Site Store). Transactions (MRN, issues, receipts) will be scoped to this store location.'
+                : (state.selectedRole === 'main_storekeeper'
+                  ? '🏛️ <b>Main Storekeeper selected:</b> Assign to Central Main Stores for company-wide store oversight.'
+                  : 'Assigning a physical store isolates stock balances and requisitions for this user.')}
+            </p>
+          </div>
+
+          ${multi ? `
+          <div style="margin-bottom:14px">
+            <label style="display:block;font-weight:600;font-size:12.5px;margin-bottom:4px">Home Workshop Branch</label>
+            <select class="input" id="nu_workshop_select" style="width:100%">
+              ${wsOptions(wsd).map(o => `<option value="${esc(o.value)}" ${String(state.workshop_id) === String(o.value) ? 'selected' : ''}>${esc(o.label)}</option>`).join('')}
+            </select>
+            <p class="muted" style="font-size:11.5px;margin:4px 0 0">New job cards and requests they raise originate from this workshop.</p>
+          </div>` : ''}
+
+          <div style="margin-bottom:14px;background:#fefce8;border:1px solid #fef08a;border-radius:8px;padding:12px">
+            <label style="display:block;font-weight:600;font-size:12.5px;color:#854d0e;margin-bottom:4px">⏱️ Temporary Access Expiry (Optional)</label>
+            <input class="input" type="datetime-local" id="nu_access_until" value="${esc(state.access_until ? state.access_until.slice(0, 16) : '')}" style="width:260px" />
+            <p class="muted" style="font-size:11.5px;margin:4px 0 0">
+              Leave blank for standard permanent access. Set an expiry date/time for relief cover, temporary contractors, or audited probationary access. Once expired, all actions are automatically revoked.
+            </p>
+          </div>
+
+          <div style="display:flex;justify-content:space-between;margin-top:16px">
+            <button class="btn" id="nu_step2_back">← Back</button>
+            <button class="primary" id="nu_step2_next">Next: Review & Customize Actions →</button>
+          </div>
+        `;
+      } else if (state.step === 3) {
+        const GROUPS = [
+          { id: 'Operations', name: 'Operations & Execution', icon: '⚙️' },
+          { id: 'Fleet', name: 'Fleet Management', icon: '🚛' },
+          { id: 'Inventory', name: 'Inventory & Warehousing', icon: '📦' },
+          { id: 'Procurement', name: 'Procurement & Purchasing', icon: '🛒' },
+          { id: 'Analysis', name: 'Analysis & Intelligence', icon: '📊' },
+          { id: 'Admin', name: 'Governance & Administration', icon: '🛡️' },
+        ];
+
+        const ACTVT_MAP = {
+          '01': { label: '01 · Create', cls: 'badge teal' },
+          '02': { label: '02 · Change', cls: 'badge blue' },
+          '03': { label: '03 · Display', cls: 'badge' },
+          '06': { label: '06 · Delete', cls: 'badge red' },
+          '08': { label: '08 · Export', cls: 'badge purple' },
+          '10': { label: '10 · Approve', cls: 'badge green' },
+          'A1': { label: 'A1 · Certify', cls: 'badge amber' },
+        };
+
+        const LV_BTN = [
+          { key: 'none', label: 'None' },
+          { key: 'view', label: 'View' },
+          { key: 'add', label: 'Add' },
+          { key: 'edit', label: 'Edit' },
+          { key: 'full', label: 'Full' },
+        ];
+
+        const allSections = (sm && sm.sections) || [];
+        const allCapabilities = (sm && sm.capabilities) || [];
+
+        const groupsHtml = GROUPS.map(grp => {
+          const grpSections = allSections.filter(s => (s.domain || s.group || '').toLowerCase() === grp.id.toLowerCase());
+          if (!grpSections.length) return '';
+
+          const sectionsHtml = grpSections.map(sec => {
+            const roleLvl = template.levels[sec.id || sec.key] || 'none';
+            const curLvl = state.sectionEdits[sec.id || sec.key] !== undefined ? state.sectionEdits[sec.id || sec.key] : roleLvl;
+            const isLvlCustom = curLvl !== roleLvl;
+
+            const lvlButtons = LV_BTN.map(b => {
+              const isSel = curLvl === b.key;
+              const cls = isSel ? 'primary' : 'btn sm';
+              const style = isSel ? 'font-weight:700;padding:2px 8px;font-size:11px' : 'opacity:.7;padding:2px 8px;font-size:11px';
+              return `<button type="button" class="${cls}" style="${style}" data-wizard-sec="${esc(sec.id || sec.key)}" data-lvl="${b.key}">${b.label}</button>`;
+            }).join(' ');
+
+            const secCaps = allCapabilities.filter(c => (c.section || c.module) === (sec.id || sec.key));
+            let capsHtml = '';
+            if (secCaps.length > 0) {
+              const capItems = secCaps.map(c => {
+                const roleGranted = template.caps.has(c.key);
+                const isChecked = state.capEdits[c.key] !== undefined ? state.capEdits[c.key] : roleGranted;
+                const isCapCustom = isChecked !== roleGranted;
+                const actvt = ACTVT_MAP[c.actvt] || { label: c.actvt || '02', cls: 'badge' };
+                const dualBadge = c.dualAuth ? `<span class="badge amber" style="font-size:9px">👥 4-Eyes</span> ` : '';
+
+                return `
+                  <label style="display:flex;align-items:flex-start;gap:8px;margin:4px 0;font-size:12px;font-weight:normal">
+                    <input type="checkbox" data-wizard-cap="${esc(c.key)}" ${isChecked ? 'checked' : ''} style="margin-top:2px" />
+                    <div>
+                      <div style="display:flex;align-items:center;gap:4px;flex-wrap:wrap">
+                        <span class="${actvt.cls}" style="font-size:9px;font-family:monospace">${actvt.label}</span>
+                        ${dualBadge}
+                        <span style="font-weight:${isChecked ? '600' : '400'}">${esc(c.label)}</span>
+                        ${isCapCustom ? '<span class="badge amber" style="font-size:9px">⚡ Custom Override</span>' : ''}
+                      </div>
+                      <div class="muted" style="font-size:10px;font-family:monospace">${esc(c.key)}</div>
+                    </div>
+                  </label>
+                `;
+              }).join('');
+
+              capsHtml = `
+                <details style="margin-top:6px;border-top:1px dashed #e2e8f0;padding-top:4px">
+                  <summary style="cursor:pointer;font-size:11px;font-weight:600;color:var(--text-muted, #64748b)">
+                    Individual Action Capabilities (${secCaps.length})
+                  </summary>
+                  <div style="margin-top:4px;padding-left:6px">${capItems}</div>
+                </details>
+              `;
+            }
+
+            return `
+              <div class="card" style="padding:10px;margin-bottom:8px;border:1px solid #e2e8f0;border-radius:6px;background:#fff">
+                <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+                  <div style="display:flex;align-items:center;gap:6px">
+                    <span style="font-size:16px">${sec.icon || '📦'}</span>
+                    <div>
+                      <b style="font-size:13px">${esc(sec.name || sec.label)}</b>
+                      <div class="muted" style="font-size:11px">${esc(sec.description || '')}</div>
+                    </div>
+                  </div>
+                  <div>
+                    ${isLvlCustom ? '<span class="badge amber" style="font-size:10px">⚡ Custom Clearance</span>' : `<span class="badge blue" style="font-size:10px">Template (${roleLvl.toUpperCase()})</span>`}
+                  </div>
+                </div>
+                <div style="display:flex;align-items:center;justify-content:space-between;background:#f8fafc;padding:4px 8px;border-radius:4px">
+                  <span class="muted" style="font-size:10.5px;font-weight:600">SECTION CLEARANCE:</span>
+                  <div style="display:flex;gap:3px">${lvlButtons}</div>
+                </div>
+                ${capsHtml}
+              </div>
+            `;
+          }).join('');
+
+          return `
+            <div style="margin-bottom:14px">
+              <div style="font-weight:700;font-size:13px;color:#1e293b;margin-bottom:6px;display:flex;align-items:center;gap:6px">
+                <span>${grp.icon}</span> <span>${grp.name}</span>
+              </div>
+              ${sectionsHtml}
+            </div>
+          `;
+        }).join('');
+
+        contentHtml = `
+          ${stepperHtml}
+          <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;padding:10px 14px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;margin-bottom:12px">
+            <div style="font-size:12.5px">
+              User: <b>${esc(state.username)}</b> (${esc(state.full_name || '—')}) |
+              Template: <span class="badge blue">${esc(roleDef.label || roleDef.name)}</span> |
+              Overrides: <span class="badge ${overrideCount > 0 ? 'amber' : 'green'}">${overrideCount > 0 ? `${overrideCount} custom` : '0 (Template default)'}</span>
+            </div>
+            <div>
+              <button class="btn sm" id="nu_reset_template" title="Discard customizations and revert to role template">↺ Reset to Role Template</button>
+            </div>
+          </div>
+
+          ${overrideCount > 0 ? `
+          <div style="margin-bottom:12px;background:#fffbeb;border:1px solid #fde68a;border-radius:6px;padding:8px 12px">
+            <label style="display:block;font-weight:600;font-size:12px;color:#92400e;margin-bottom:4px">
+              📝 Audit Justification for Custom Overrides (Recorded in Security Log)
+            </label>
+            <input class="input" id="nu_override_reason" value="${esc(state.override_reason)}" placeholder="e.g. Authorized stand-in for store manager during audit" style="width:100%;font-size:12px" />
+          </div>` : ''}
+
+          <div style="margin-bottom:10px">
+            <input class="input" id="nu_action_search" placeholder="🔍 Filter sections and actions (e.g. issue, mrn, price, grn)..." style="width:100%;font-size:12px" />
+          </div>
+
+          <div id="nu_actions_scroll" style="max-height:360px;overflow-y:auto;padding-right:4px">
+            ${groupsHtml}
+          </div>
+
+          <div style="display:flex;justify-content:space-between;margin-top:16px">
+            <button class="btn" id="nu_step3_back">← Back to Scope</button>
+            <button class="primary" id="nu_submit_create">Create User & Provision Access</button>
+          </div>
+        `;
+      }
+
+      container.innerHTML = contentHtml;
+
+      if (state.step === 1) {
+        qs('#nu_cancel', container).onclick = () => close();
+        qsa('input[name="nu_role"]', container).forEach(r => {
+          r.onchange = () => {
+            state.selectedRole = r.value;
+            state.store_location_id = pickDefaultStore(r.value);
+            render();
+          };
+        });
+        qs('#nu_step1_next', container).onclick = () => {
+          state.username = qs('#nu_username', container).value.trim();
+          state.full_name = qs('#nu_fullname', container).value.trim();
+          state.password = qs('#nu_password', container).value;
+          if (!state.username) return toast('Username is required', 'err');
+          if (!state.password || state.password.length < passwordMinLength()) return toast(passwordHint(), 'err');
+          state.step = 2;
+          render();
+        };
+      } else if (state.step === 2) {
+        qs('#nu_step2_back', container).onclick = () => { state.step = 1; render(); };
+        qs('#nu_step2_next', container).onclick = () => {
+          state.store_location_id = qs('#nu_store_select', container).value;
+          if (qs('#nu_workshop_select', container)) state.workshop_id = qs('#nu_workshop_select', container).value;
+          state.access_until = qs('#nu_access_until', container).value;
+          state.step = 3;
+          render();
+        };
+      } else if (state.step === 3) {
+        qs('#nu_step3_back', container).onclick = () => { state.step = 2; render(); };
+
+        const searchInput = qs('#nu_action_search', container);
+        if (searchInput) {
+          searchInput.oninput = () => {
+            const term = searchInput.value.toLowerCase().trim();
+            qsa('#nu_actions_scroll .card', container).forEach(card => {
+              const text = card.textContent.toLowerCase();
+              card.style.display = (!term || text.includes(term)) ? '' : 'none';
+              const details = qs('details', card);
+              if (details && term && text.includes(term)) details.open = true;
+            });
+          };
+        }
+
+        qsa('[data-wizard-sec]', container).forEach(btn => {
+          btn.onclick = () => {
+            const secKey = btn.dataset.wizardSec;
+            const lvl = btn.dataset.lvl;
+            state.sectionEdits[secKey] = lvl;
+            render();
+          };
+        });
+
+        qsa('[data-wizard-cap]', container).forEach(cb => {
+          cb.onchange = () => {
+            const capKey = cb.dataset.wizardCap;
+            state.capEdits[capKey] = cb.checked;
+            render();
+          };
+        });
+
+        const resetBtn = qs('#nu_reset_template', container);
+        if (resetBtn) {
+          resetBtn.onclick = () => {
+            state.sectionEdits = {};
+            state.capEdits = {};
+            state.override_reason = '';
+            toast('Reverted all actions to role template defaults');
+            render();
+          };
+        }
+
+        qs('#nu_submit_create', container).onclick = async () => {
+          const reasonInput = qs('#nu_override_reason', container);
+          if (reasonInput) state.override_reason = reasonInput.value.trim();
+
+          const template = getRoleTemplateDefaults(state.selectedRole);
+
+          const sectionsPayload = {};
+          for (const [secKey, lvl] of Object.entries(state.sectionEdits)) {
+            if (lvl && lvl !== (template.levels[secKey] || 'none')) {
+              sectionsPayload[secKey] = lvl;
+            }
+          }
+
+          const capsPayload = {};
+          for (const [capKey, val] of Object.entries(state.capEdits)) {
+            if (val !== undefined && val !== template.caps.has(capKey)) {
+              capsPayload[capKey] = val;
+            }
+          }
+
+          const payload = {
+            username: state.username,
+            password: state.password,
+            full_name: state.full_name || null,
+            roles: [state.selectedRole],
+            workshop_id: state.workshop_id ? Number(state.workshop_id) : 1,
+            store_location_id: state.store_location_id ? Number(state.store_location_id) : null,
+            access_until: state.access_until ? new Date(state.access_until).toISOString() : null,
+            sections: sectionsPayload,
+            capabilities: capsPayload,
+            override_reason: state.override_reason || null,
+          };
+
+          try {
+            await api('/users', { method: 'POST', body: payload });
+            close();
+            toast(`User ${state.username} created successfully with customized clearance`);
+            if (onComplete) onComplete();
+          } catch (err) {
+            toast(err.message, 'err');
+          }
+        };
+      }
+    };
+
+    render();
+  }, { wide: true });
+}
+
 async function renderUsersManager(c) {
   const [users, roles, wsd, storeLocsRes] = await Promise.all([
     api('/users'),
@@ -23146,36 +23613,7 @@ async function renderUsersManager(c) {
     try { await api(`/users/${u.id}/mfa-reset`, { method: 'POST' }); toast('Two-factor sign-in reset'); renderUsersManager(c); } catch (e) { toast(e.message, 'err'); }
   });
 
-  qs('#nu', c).onclick = () => modal('New User', `${field('Username *', 'username')}${field('Temporary password *', 'password', { type: 'password' })}
-    <p class="muted">${esc(passwordHint())} They must choose their own at first sign-in.</p>${field('Full name', 'full_name')}
-    ${field('Store & Site Location Assignment', 'store_location_id', { type: 'select', options: storeOptions, value: '' })}
-    <p class="muted" style="margin:-4px 0 8px;font-size:11.5px">Select <b>Central Main Stores</b> for central procurement/depot storekeepers, or a <b>Site Store</b> for project site storekeepers.</p>
-    <label>Roles</label>${roleBoxes()}
-    <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Create</button></div>`,
-    (body, close) => {
-      // Auto-suggest store location when specific roles are toggled
-      const storeSelect = qs('select[name="store_location_id"]', body);
-      qsa('[data-role]', body).forEach((rBox) => {
-        rBox.onchange = () => {
-          if (!storeSelect) return;
-          const rName = rBox.dataset.role;
-          if (rBox.checked) {
-            if (rName === 'main_storekeeper') {
-              const ms = allStoreLocations.find(s => s.store_type === 'MAIN_STORE');
-              if (ms) storeSelect.value = String(ms.id);
-            } else if (rName === 'storekeeper' && !storeSelect.value) {
-              const ss = allStoreLocations.find(s => s.store_type === 'SITE_STORE' || s.store_type === 'MAIN_WORKSHOP_STORE');
-              if (ss) storeSelect.value = String(ss.id);
-            }
-          }
-        };
-      });
-
-      qs('#s', body).onclick = async () => {
-        const d = formData(body); d.roles = picked(body);
-        try { await api('/users', { method: 'POST', body: d }); close(); toast('User created'); renderUsersManager(c); } catch (e) { toast(e.message, 'err'); }
-      };
-    });
+  qs('#nu', c).onclick = () => openNewUserWizard(roles, allStoreLocations, storeOptions, wsd, () => renderUsersManager(c));
   qsa('[data-uws]', c).forEach((b) => b.onclick = () => {
     const u = users.find((x) => x.id == b.dataset.uws);
     modal('Home workshop — ' + u.username, `${field('Workshop', 'workshop_id', { type: 'select', options: wsOptions(wsd), value: u.workshop_id })}
