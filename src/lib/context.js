@@ -31,19 +31,10 @@ function isMainStoreUser(user) {
   if (!user) return false;
   if ((user.roles || []).includes('admin')) return true;
   if ((user.roles || []).includes('main_storekeeper')) return true;
-  if (user.username === 'mstore') return true;
 
   try {
     const auth = require('./auth');
     if (auth.hasCap(user, 'workshops.all') || auth.hasCap(user, 'stores.all')) {
-      return true;
-    }
-  } catch (_) {}
-
-  // Check if primary assigned store is MAIN_STORE
-  try {
-    const uStores = storeLocations.getUserStoreLocations(user.id);
-    if (uStores && uStores.some((s) => s.store_type === 'MAIN_STORE')) {
       return true;
     }
   } catch (_) {}
@@ -92,12 +83,41 @@ function resolveRequestContext(req) {
     // Sub-store users are strictly locked to their assigned site store
     activeStoreId = getUserAssignedStoreId(user);
   } else {
-    // Main Store / Admin users: header or query parameter wins, fallback to 1 (Central Main Stores)
-    const rawHeader = req.headers['x-store-location-id'] || (req.query && req.query.store_location_id);
-    if (rawHeader && Number(rawHeader)) {
-      activeStoreId = Number(rawHeader);
-    } else {
-      activeStoreId = 1;
+    // Main Store / Admin users: validate can_view grant for non-admins and audit context switches
+    const rawHeader = req.headers && (req.headers['x-store-location-id'] || (req.query && req.query.store_location_id));
+    let requestedStoreId = rawHeader && Number(rawHeader) ? Number(rawHeader) : null;
+
+    const isAdmin = (user && (user.roles || []).includes('admin'));
+    if (requestedStoreId && !isAdmin && user) {
+      let canView = false;
+      try {
+        const access = get('SELECT can_view FROM store_location_access WHERE user_id = ? AND store_location_id = ?', user.id, requestedStoreId);
+        canView = access && access.can_view === 1;
+      } catch (_) {}
+      if (!canView) {
+        requestedStoreId = null;
+      }
+    }
+
+    const prevStoreId = (req.session && req.session.activeStoreId) != null ? req.session.activeStoreId : null;
+    activeStoreId = requestedStoreId || prevStoreId || 1;
+
+    if (req.session && prevStoreId != null && activeStoreId !== prevStoreId && user) {
+      req.session.activeStoreId = activeStoreId;
+      try {
+        const audit = require('./audit');
+        const ip = req.ip || (req.connection && req.connection.remoteAddress) || '127.0.0.1';
+        audit.record({
+          userId: user.id,
+          entity: 'store_context',
+          entityId: activeStoreId,
+          action: 'switch_context',
+          before: { from_store_id: prevStoreId },
+          after: { to_store_id: activeStoreId, ip }
+        });
+      } catch (_) {}
+    } else if (req.session && req.session.activeStoreId == null) {
+      req.session.activeStoreId = activeStoreId;
     }
   }
 
