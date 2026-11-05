@@ -169,10 +169,10 @@ function isReadOnly(user, workshopId) {
  *   - anyone else: their own workshop — store staff may pick among the workshops their store serves.
  */
 function reportWorkshop(user, asked) {
+  if (!workshops.isMulti()) return { ws: null, fixed: false, choices: null };
   if (user && !user.isAllSitesMode && user.activeWorkshopId) {
     return { ws: user.activeWorkshopId, fixed: true, choices: [user.activeWorkshopId] };
   }
-  if (!workshops.isMulti()) return { ws: null, fixed: false, choices: null };
   const a = Number(asked) || null;
   const r = reach(user);
   if (r == null) return { ws: a && workshops.byId(a) ? a : null, fixed: false, choices: null };

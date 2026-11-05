@@ -481,6 +481,7 @@ router.get('/mechanics-kpi', requireKpiAccess, asyncHandler(async (req, res) => 
   const distinctServices = new Set();
   let totalServiceHours = 0;
   let totalRepairHours = 0;
+  let totalFabricationHours = 0;
 
   let totalLineHours = 0;
   let totalBookedMechanicHours = 0;
@@ -508,6 +509,7 @@ router.get('/mechanics-kpi', requireKpiAccess, asyncHandler(async (req, res) => 
         travel_hours: 0,
         service_hours: 0,
         repair_hours: 0,
+        fabrication_hours: 0,
         total_hours: 0,
         internal_cost: 0,
         outside_cost: 0,
@@ -559,6 +561,7 @@ router.get('/mechanics-kpi', requireKpiAccess, asyncHandler(async (req, res) => 
       distinctServices.add(w.service_id);
     }
     if (w.work_type === 'service') totalServiceHours += hrs;
+    else if (w.work_type === 'fabrication') totalFabricationHours += hrs;
     else totalRepairHours += hrs;
 
     // Calculate each crew member's effective rate & internal cost on this line
@@ -589,6 +592,8 @@ router.get('/mechanics-kpi', requireKpiAccess, asyncHandler(async (req, res) => 
       if (w.work_type === 'service') {
         m.service_hours += hrs;
         if (w.service_id) m.services_set.add(w.service_id);
+      } else if (w.work_type === 'fabrication') {
+        m.fabrication_hours += hrs;
       } else {
         m.repair_hours += hrs;
       }
@@ -696,6 +701,7 @@ router.get('/mechanics-kpi', requireKpiAccess, asyncHandler(async (req, res) => 
       travel_hours: r2(m.travel_hours),
       service_hours: r2(m.service_hours),
       repair_hours: r2(m.repair_hours),
+      fabrication_hours: r2(m.fabrication_hours),
       services_count: m.services_set.size,
       total_hours: totHrs,
       attended_hours: m.attended_hours !== undefined ? r2(m.attended_hours) : null,
@@ -827,6 +833,7 @@ router.get('/mechanics-kpi', requireKpiAccess, asyncHandler(async (req, res) => 
       travel_hours: r2(totalTravelHours),
       service_hours: r2(totalServiceHours),
       repair_hours: r2(totalRepairHours),
+      fabrication_hours: r2(totalFabricationHours),
       distinct_services_count: distinctServices.size,
       total_internal_cost: r2(totalInternalCost),
       total_outside_cost: r2(totalOutsideCost),
@@ -1170,7 +1177,7 @@ router.post('/', requireCap('dailywork.add'), asyncHandler((req, res) => {
   };
 
   const serviceId = toInt(b.service_id) || null;
-  const workType = (serviceId || b.work_type === 'service') ? 'service' : 'repair';
+  let workType = (serviceId || b.work_type === 'service') ? 'service' : (b.work_type === 'fabrication' ? 'fabrication' : 'repair');
   let svc = null;
   if (serviceId) {
     svc = get('SELECT id, asset_id, service_date, job_no FROM service_jobs WHERE id = ?', serviceId);
@@ -1214,6 +1221,7 @@ router.post('/', requireCap('dailywork.add'), asyncHandler((req, res) => {
   }
   const job = get('SELECT * FROM job_cards WHERE id = ?', jobId);
   if (!job) return res.status(404).json({ error: 'Job not found' });
+  if (job && job.type === 'fabrication') workType = 'fabrication';
   assertDailyWorkAllowed(job.id, req.user, [date]);
 
   // The machine goes ON THE LINE now, not just into the choice of job card. This route already
@@ -1298,16 +1306,21 @@ router.post('/bulk-log', requireCap('dailywork.bulk_log', 'dailywork.edit'), asy
         }
       }
 
-      const job = get('SELECT id, asset_id, job_no FROM job_cards WHERE id = ?', jobId);
+      const job = get('SELECT id, asset_id, job_no, type FROM job_cards WHERE id = ?', jobId);
       if (!job) continue;
       if (!lineAsset && job.asset_id) lineAsset = job.asset_id;
 
+      let workType = e.work_type;
+      if (!workType) {
+        workType = (job && job.type === 'fabrication') ? 'fabrication' : (job && job.type === 'service' ? 'service' : 'repair');
+      }
+
       assertDailyWorkAllowed(jobId, req.user, [date]);   // a whole batch is refused, not half-applied
       const info = run(
-        `INSERT INTO job_daily_work (job_id, work_date, mechanic, description, hours, is_external, external_value, outside_labour, asset_id, travel)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO job_daily_work (job_id, work_date, mechanic, description, hours, is_external, external_value, outside_labour, asset_id, travel, work_type)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         jobId, date, mechanic, description, hours, isExternal, isExternal ? toNum(e.external_value, 0) : 0, outsideLabour, lineAsset,
-        e.travel && !isExternal ? 1 : 0   // Stage 6: a travel line
+        e.travel && !isExternal ? 1 : 0, workType
       );
       createdIds.push(info.lastInsertRowid);
       affectedJobs.add(jobId);
@@ -1347,7 +1360,10 @@ router.patch('/:id', requireCap('dailywork.edit'), asyncHandler((req, res) => {
   const params = [];
   const put = (col, v) => { sets.push(col + ' = ?'); params.push(v); };
   if (req.body.service_id !== undefined) put('service_id', toInt(req.body.service_id) || null);
-  if (req.body.work_type !== undefined) put('work_type', req.body.work_type === 'service' ? 'service' : 'repair');
+  if (req.body.work_type !== undefined) {
+    const wt = req.body.work_type;
+    put('work_type', (wt === 'service' || wt === 'fabrication') ? wt : 'repair');
+  }
   if (req.body.hours !== undefined) put('hours', toNum(req.body.hours, 0));
   if (req.body.mechanic !== undefined) put('mechanic', String(req.body.mechanic).trim() || null);
   if (req.body.description !== undefined) put('description', String(req.body.description).trim() || null);

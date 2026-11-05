@@ -96,7 +96,8 @@ function buildProfitLoss(ws, period, parts) {
   const repPOut = parts && parts.repair ? parts.repair.pending_jobs.reduce((a, b) => a + num(b.outside_estimate), 0) : 0;
   const repOOut = parts && parts.repair ? num(parts.repair.other_labour_outside) : 0;
   const svcOut = parts && parts.service ? num(parts.service.sums.outsideWithTrn) : 0;
-  const totOutEst = repCOut + repPOut + repOOut + svcOut;
+  const fabOut = parts && parts.fabrication ? (num(parts.fabrication.sums.outside) || 0) : 0;
+  const totOutEst = repCOut + repPOut + repOOut + svcOut + fabOut;
 
   const absorbedSaving = totOutEst - totAbsorbed;
   const absorbedPct = totOutEst > 0 ? (absorbedSaving / totOutEst) : 0;
@@ -249,7 +250,8 @@ function buildRepair(wb, ym, period, wsId) {
   // month, and closing it fully later does not move it.
   const closed = all(`SELECT ${JOB_COLS} ${JOB_FROM}
       WHERE ${jobstate.reportClosedSql('j')} AND j.completed_at IS NOT NULL AND substr(j.completed_at,1,7) = ?
-        AND (j.description IS NULL OR (j.description NOT LIKE 'Stores materials%' AND j.description NOT LIKE 'auto-created container%'))${wsIs('j.workshop_id', wsId)}
+        AND (j.description IS NULL OR (j.description NOT LIKE 'Stores materials%' AND j.description NOT LIKE 'auto-created container%'))
+        AND COALESCE(j.type, 'repair') = 'repair'${wsIs('j.workshop_id', wsId)}
       ORDER BY j.completed_at, j.id`, ym);
 
   // Pending = repairs still open. The owner hand-curates which open jobs to show (some carry no cost
@@ -273,6 +275,7 @@ function buildRepair(wb, ym, period, wsId) {
   } else {
     pending = all(`SELECT ${JOB_COLS} ${JOB_FROM}
         WHERE ${jobstate.reportPendingSql('j')}
+          AND COALESCE(j.type, 'repair') = 'repair'
           AND (j.description IS NULL OR (j.description NOT LIKE 'Stores materials%' AND j.description NOT LIKE 'auto-created container%'))
           AND (
             j.job_no = '2025/10/R/759'
@@ -568,6 +571,147 @@ function buildRepair(wb, ym, period, wsId) {
     repair_job_ids,
     closed_job_rows, pending_job_rows,
     closed_jobs: closed, pending_jobs: pending, other_labour: otherLabour, spares_supply: sparesSupply,
+    refs: { labour: q(9), material: q(10), oil: q(11), other: q(12), total: q(13), outside: `N${gr}` },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// 2b. Fabrication cost
+// ---------------------------------------------------------------------------
+function buildFabrication(wb, ym, period, wsId) {
+  const ws = wb.addWorksheet('Fabrication cost');
+  [6, 14, 16, 20, 18, 12, 20, 40, 14, 14, 14, 14, 14, 16, 16].forEach((w, i) => { ws.getColumn(i + 1).width = w; });
+  titleBand(ws, 15, 'Fabrication cost — jobs completed or in progress', period);
+  ['Se: no', 'Date', 'Job No', 'Type', 'Vehicle / Reg No', 'EC No', 'Project', 'Description of Work', 'Work done (Labour) (Rs)', 'Spare parts (Rs)', 'Lubricant (Rs)', 'Other (Rs)', 'Total (Rs)', 'Outside labor (Rs)', 'Remarks']
+    .forEach((t, i) => { ws.mergeCells(4, i + 1, 5, i + 1); const c = ws.getCell(4, i + 1); c.value = t; headerCell(c); });
+
+  const JOB_COLS = `j.id, j.job_no, j.completed_at, j.requested_at, j.created_at, j.status, j.description, j.site, j.outside_estimate, j.partial_closed_at,
+            a.type atype, a.registration reg, a.code code, a.ec_code ec, p.name project,
+            COALESCE((SELECT SUM(amount) FROM job_labour WHERE job_id = j.id AND substr(work_date,1,7) = '${ym}'), 0) labour,
+            COALESCE((SELECT SUM(outside_labour) FROM job_daily_work WHERE job_id = j.id), 0) entry_outside_all,
+            COALESCE((SELECT SUM(outside_labour) FROM job_daily_work WHERE job_id = j.id AND substr(work_date,1,7) = '${ym}'), 0) entry_outside_month,
+            COALESCE(j.material_cost,0) material, COALESCE(j.oil_cost,0) oil,
+            COALESCE(j.general_cost,0) general, COALESCE(j.other_cost,0) other,
+            j.field, j.field_km, j.field_location`;
+  const JOB_FROM = 'FROM job_cards j LEFT JOIN assets a ON a.id = j.asset_id LEFT JOIN projects p ON p.id = j.project_id';
+
+  const closed = all(`SELECT ${JOB_COLS} ${JOB_FROM}
+      WHERE ${jobstate.reportClosedSql('j')} AND j.completed_at IS NOT NULL AND substr(j.completed_at,1,7) = ?
+        AND j.type = 'fabrication'${wsIs('j.workshop_id', wsId)}
+      ORDER BY j.completed_at, j.id`, ym);
+
+  const pending = all(`SELECT ${JOB_COLS} ${JOB_FROM}
+      WHERE ${jobstate.reportPendingSql('j')}
+        AND j.type = 'fabrication'
+        AND substr(COALESCE(j.requested_at, j.created_at),1,7) <= ?
+        AND (EXISTS (SELECT 1 FROM job_daily_work w WHERE w.job_id = j.id AND substr(w.work_date,1,7) = ?)
+             OR EXISTS (SELECT 1 FROM issues iss WHERE iss.job_id = j.id AND substr(iss.issue_date,1,7) = ?)
+             OR EXISTS (SELECT 1 FROM mrn m WHERE m.job_id = j.id AND substr(m.req_date,1,7) = ?))${wsIs('j.workshop_id', wsId)}
+      ORDER BY COALESCE(j.requested_at, j.created_at) DESC, j.id DESC`, ym, ym, ym, ym);
+
+  for (const j of pending) {
+    let material = 0; let oilFromParts = 0;
+    for (const p of all(`SELECT jp.description, jp.qty, jp.unit_price, m.req_date
+         FROM job_parts jp JOIN mrn_lines ml ON ml.id = jp.mrn_line_id JOIN mrn m ON m.id = ml.mrn_id
+        WHERE jp.job_id = ? AND substr(m.req_date,1,7) = ?`, j.id, ym)) {
+      const v = (p.qty || 0) * (p.unit_price || 0);
+      if (isReportOil(p.description, p.req_date)) oilFromParts += v; else material += v;
+    }
+    for (const iss of all(`SELECT qty, unit_price, description, category FROM issues WHERE job_id = ? AND substr(issue_date,1,7) = ?`, j.id, ym)) {
+      const v = (iss.qty || 0) * (iss.unit_price || 0);
+      if (isReportOil(iss.description, ym)) oilFromParts += v;
+      else material += v;
+    }
+    j.material = r2(material);
+    j.oil = r2(oilFromParts);
+    j.general = 0;
+    j.other = 0;
+  }
+
+  const KEYS = [[9, 'labour'], [10, 'material'], [11, 'oil'], [12, 'other'], [13, 'total']];
+  const newSec = () => ({ labour: 0, material: 0, oil: 0, other: 0, total: 0, outside: 0 });
+  const sums = newSec();
+  let r = 7, se = 1;
+
+  const jobRow = (j, dateVal, sec) => {
+    const other = r2(num(j.general) + num(j.other));
+    const total = r2(num(j.labour) + num(j.material) + num(j.oil) + other);
+    const outsideEst = num(j.outside_estimate);
+    textCell(ws, r, 1, se); textCell(ws, r, 2, dateOnly(dateVal)); textCell(ws, r, 3, j.job_no);
+    textCell(ws, r, 4, j.atype || 'Fabrication'); textCell(ws, r, 5, j.reg || j.code || ''); textCell(ws, r, 6, j.ec || '');
+    textCell(ws, r, 7, j.project || j.site || ''); textCell(ws, r, 8, j.description || '', { wrap: true });
+    moneyCell(ws, r, 9, j.labour); moneyCell(ws, r, 10, j.material); moneyCell(ws, r, 11, j.oil);
+    moneyCell(ws, r, 12, other); moneyCell(ws, r, 13, total);
+    if (outsideEst > 0) moneyCell(ws, r, 14, outsideEst); else textCell(ws, r, 14, '');
+    textCell(ws, r, 15, '');
+    const vals = { labour: num(j.labour), material: num(j.material), oil: num(j.oil), other, total, outside: outsideEst };
+    for (const k of Object.keys(vals)) { sec[k] += vals[k]; sums[k] += vals[k]; }
+    r++; se++;
+  };
+
+  const banner = (text) => {
+    ws.mergeCells(r, 1, r, 15); const c = ws.getCell(r, 1); c.value = text;
+    c.font = { bold: true, size: 11 }; c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE3E9EF' } };
+    for (let col = 1; col <= 15; col++) border(ws.getCell(r, col));
+    r++;
+  };
+
+  const subtotal = (label, first, lastRow, sec) => {
+    ws.mergeCells(r, 1, r, 8); const c = ws.getCell(r, 1); c.value = label; c.font = { bold: true }; c.alignment = { horizontal: 'right' }; border(c);
+    for (let col = 2; col <= 8; col++) border(ws.getCell(r, col));
+    for (const [col, key] of KEYS) {
+      if (lastRow >= first) formulaMoney(ws, r, col, `SUM(${colL(col)}${first}:${colL(col)}${lastRow})`, sec[key], true);
+      else moneyCell(ws, r, col, 0).font = { bold: true };
+    }
+    if (lastRow >= first) formulaMoney(ws, r, 14, `SUM(N${first}:N${lastRow})`, sec.outside, true);
+    else moneyCell(ws, r, 14, 0).font = { bold: true };
+    textCell(ws, r, 15, '');
+    return r++;
+  };
+
+  const closedSec = newSec(), pendingSec = newSec();
+  const fabrication_job_ids = [];
+  const closed_job_rows = [];
+  const pending_job_rows = [];
+
+  banner(`Closed Fabrication Jobs — completed & closed in ${period}; labour = this month's work (${closed.length})`);
+  const cFirst = r;
+  for (const j of closed) {
+    j.outside_estimate = num(j.outside_estimate) || num(j.entry_outside_all);
+    closed_job_rows.push({ id: j.id, job_no: j.job_no, row: r, labour: num(j.labour), outside: num(j.outside_estimate) });
+    jobRow(j, j.completed_at, closedSec);
+    fabrication_job_ids.push(j.id);
+  }
+  const cSub = subtotal('Closed fabrication jobs subtotal', cFirst, r - 1, closedSec);
+
+  banner(`Pending Fabrication Jobs — in progress as of ${period}, THIS MONTH'S cost only (${pending.length})`);
+  const pFirst = r;
+  for (const j of pending) {
+    j.outside_estimate = num(j.outside_estimate) || num(j.entry_outside_month);
+    pending_job_rows.push({ id: j.id, job_no: j.job_no, row: r, labour: num(j.labour), outside: num(j.outside_estimate) });
+    jobRow(j, j.requested_at || j.created_at, pendingSec);
+    fabrication_job_ids.push(j.id);
+  }
+  const pSub = subtotal('Pending fabrication jobs subtotal', pFirst, r - 1, pendingSec);
+
+  const gr = r;
+  ws.mergeCells(gr, 1, gr, 8); const gl = ws.getCell(gr, 1); gl.value = 'Grand total fabrication cost'; gl.font = { bold: true }; gl.alignment = { horizontal: 'right' }; border(gl);
+  for (let col = 2; col <= 8; col++) border(ws.getCell(gr, col));
+  for (const [col, key] of KEYS) formulaMoney(ws, gr, col, `${colL(col)}${cSub}+${colL(col)}${pSub}`, sums[key], true);
+  formulaMoney(ws, gr, 14, `N${cSub}+N${pSub}`, sums.outside, true);
+  textCell(ws, gr, 15, '');
+
+  signatures(ws, gr + 3, 15);
+
+  const q = (col) => `'Fabrication cost'!${colL(col)}${gr}`;
+  return {
+    name: 'Fabrication cost', sums, count: closed.length + pending.length,
+    closed_count: closed.length, pending_count: pending.length,
+    closed_total: closedSec.total, pending_total: pendingSec.total,
+    closed_sub_row: cSub, pending_sub_row: pSub, grand_row: gr,
+    fabrication_job_ids,
+    closed_job_rows, pending_job_rows,
+    closed_jobs: closed, pending_jobs: pending,
     refs: { labour: q(9), material: q(10), oil: q(11), other: q(12), total: q(13), outside: `N${gr}` },
   };
 }
@@ -1074,19 +1218,22 @@ function buildTotal(wb, parts, period) {
 
   const R = parts.repair.refs, RS = parts.repair.sums;
   const SV = parts.service.refs, SS = parts.service.sums;
+  const FAB = parts.fabrication ? parts.fabrication.refs : { labour: 0, material: 0, oil: 0, other: 0, outside: '' };
+  const FABS = parts.fabrication ? parts.fabrication.sums : { labour: 0, material: 0, oil: 0, other: 0, outside: 0 };
   const TY = parts.tyre.refs, TS = parts.tyre.sums;
   const BT = parts.battery.refs, BS = parts.battery.sums;
 
   const rowDefs = [
     { row: 8, label: 'Repair', cells: { 3: [R.labour, RS.labour], 5: [R.material, RS.material], 6: [R.oil, RS.oil], 7: [R.other, RS.other] }, sundryPct: 0.01, outsideRef: [R.outside, RS.outside] },
     { row: 9, label: 'Service', cells: { 3: [SV.labour, SS.labour], 5: [SV.filter, SS.filter], 6: [SV.oil, SS.oil], 7: [SV.other, SS.other] }, sundryPct: 0.01, outsideRef: [SV.outside, SS.outsideWithTrn] },
-    { row: 10, label: 'Tyre work cost', cells: { 5: [TY.tyre, TS.tyre], 7: [TY.tube, TS.tube] }, sundryPct: 0 },
-    { row: 11, label: 'Battery cost', cells: { 5: [BT.battery, BS.battery], 7: [BT.other, BS.other] }, sundryPct: 0 },
-    { row: 12, label: 'Oils & Lubrication', cells: { 6: [parts.oils.refs.total, parts.oils.sums.total] }, sundryPct: 0 },
-    { row: 13, label: 'General Items', cells: { 7: [parts.general.refs.total, parts.general.sums.total] }, sundryPct: 0 },
-    { row: 14, label: 'Fuel & Rental Cost', cells: { 8: [`'Fuel & Rental Cost'!H${parts.fuel.grand_row} + 'Fuel & Rental Cost'!L${parts.fuel.grand_row}`, parts.fuel.sums.cost + parts.fuel.sums.rental] }, sundryPct: 0 },
-    { row: 15, label: 'Salaries Cost', cells: { 8: [parts.salaries.refs.total, parts.salaries.sums.total] }, sundryPct: 0 },
-    { row: 16, label: 'Other Cost', cells: { 8: [parts.other.refs.total, parts.other.sums.total] }, sundryPct: 0 },
+    { row: 10, label: 'Fabrication', cells: { 3: [FAB.labour, FABS.labour], 5: [FAB.material, FABS.material], 6: [FAB.oil, FABS.oil], 7: [FAB.other, FABS.other] }, sundryPct: 0.01, outsideRef: [FAB.outside, FABS.outside] },
+    { row: 11, label: 'Tyre work cost', cells: { 5: [TY.tyre, TS.tyre], 7: [TY.tube, TS.tube] }, sundryPct: 0 },
+    { row: 12, label: 'Battery cost', cells: { 5: [BT.battery, BS.battery], 7: [BT.other, BS.other] }, sundryPct: 0 },
+    { row: 13, label: 'Oils & Lubrication', cells: { 6: [parts.oils.refs.total, parts.oils.sums.total] }, sundryPct: 0 },
+    { row: 14, label: 'General Items', cells: { 7: [parts.general.refs.total, parts.general.sums.total] }, sundryPct: 0 },
+    { row: 15, label: 'Fuel & Rental Cost', cells: { 8: [`'Fuel & Rental Cost'!H${parts.fuel.grand_row} + 'Fuel & Rental Cost'!L${parts.fuel.grand_row}`, parts.fuel.sums.cost + parts.fuel.sums.rental] }, sundryPct: 0 },
+    { row: 16, label: 'Salaries Cost', cells: { 8: [parts.salaries.refs.total, parts.salaries.sums.total] }, sundryPct: 0 },
+    { row: 17, label: 'Other Cost', cells: { 8: [parts.other.refs.total, parts.other.sums.total] }, sundryPct: 0 },
   ];
 
   for (const d of rowDefs) {
@@ -1116,14 +1263,14 @@ function buildTotal(wb, parts, period) {
     }
   }
 
-  // Overhead Staff (Row 17)
+  // Overhead Staff (Row 18)
   const overheadStaffCost = parts.salaries.overhead_total || 0;
-  textCell(ws, 17, 2, 'Overhead Staff').font = { bold: true };
-  const c17_3 = ws.getCell(17, 3); c17_3.value = { formula: "SUM('Salaries Cost'!G6:G13)", result: overheadStaffCost }; c17_3.numFmt = MONEY; border(c17_3);
-  for (let col = 4; col <= 13; col++) border(ws.getCell(17, col));
+  textCell(ws, 18, 2, 'Overhead Staff').font = { bold: true };
+  const c18_3 = ws.getCell(18, 3); c18_3.value = { formula: "SUM('Salaries Cost'!G6:G13)", result: overheadStaffCost }; c18_3.numFmt = MONEY; border(c18_3);
+  for (let col = 4; col <= 13; col++) border(ws.getCell(18, col));
 
-  // Grand total row 18
-  const gRow = 18;
+  // Grand total row 19
+  const gRow = 19;
   const gl = ws.getCell(gRow, 2); gl.value = 'Grand total cost'; gl.font = { bold: true }; gl.alignment = { horizontal: 'right' }; border(gl);
   const colTotals = {};
   for (let col = 3; col <= 13; col++) {
@@ -1135,7 +1282,7 @@ function buildTotal(wb, parts, period) {
     }
     if (col === 3) s += overheadStaffCost; // include Overhead Staff in Col C
     colTotals[col] = s;
-    const fStr = col === 3 ? `SUM(C8:C17)` : `SUM(${colL(col)}8:${colL(col)}16)`;
+    const fStr = col === 3 ? `SUM(C8:C18)` : `SUM(${colL(col)}8:${colL(col)}17)`;
     formulaMoney(ws, gRow, col, fStr, s, true);
   }
 
@@ -1190,9 +1337,9 @@ function buildMaterialSummary(wb, parts, period) {
   const p13 = ws.getCell(13, 7); p13.value = { formula: 'IFERROR(F13/$F$13,"")', result: 1 }; p13.numFmt = '0.0%'; p13.font = { bold: true }; border(p13);
 
   ws.mergeCells(18, 2, 18, 7); ws.getCell(18, 2).value = "MEMO  —  the rest of June's workshop cost (not material)"; ws.getCell(18, 2).font = { bold: true, size: 11 };
-  textCell(ws, 19, 2, 'Labour charged to jobs'); formulaMoney(ws, 19, 6, "'Total cost'!C18", parts.total.columns[3] || (parts.repair.sums.labour + parts.service.sums.labour));
-  textCell(ws, 20, 2, 'Sundry (1% loading)'); formulaMoney(ws, 20, 6, "'Total cost'!I18", parts.total.columns[9] || 0);
-  textCell(ws, 21, 2, 'Overheads — fuel & rental, salaries, electricity, telephone, misc'); formulaMoney(ws, 21, 6, "'Total cost'!H18", parts.total.columns[8] || (parts.fuel.sums.cost + parts.fuel.sums.rental + parts.salaries.sums.total + parts.other.sums.total));
+  textCell(ws, 19, 2, 'Labour charged to jobs'); formulaMoney(ws, 19, 6, "'Total cost'!C19", parts.total.columns[3] || (parts.repair.sums.labour + parts.service.sums.labour + (parts.fabrication ? parts.fabrication.sums.labour : 0)));
+  textCell(ws, 20, 2, 'Sundry (1% loading)'); formulaMoney(ws, 20, 6, "'Total cost'!I19", parts.total.columns[9] || 0);
+  textCell(ws, 21, 2, 'Overheads — fuel & rental, salaries, electricity, telephone, misc'); formulaMoney(ws, 21, 6, "'Total cost'!H19", parts.total.columns[8] || (parts.fuel.sums.cost + parts.fuel.sums.rental + parts.salaries.sums.total + parts.other.sums.total));
   textCell(ws, 22, 2, 'Grand total June workshop cost').font = { bold: true };
   formulaMoney(ws, 22, 6, 'F13+SUM(F19:F21)', parts.total.grand_total, true);
 }
@@ -1306,7 +1453,7 @@ function buildCostComparison(wb, parts, period) {
 
   // 2. Wages paid basis
   textCell(ws, 26, 2, '2.  Wages & salaries actually paid');
-  formulaMoney(ws, 26, 4, `'Total cost'!H15`, totWages);
+  formulaMoney(ws, 26, 4, `'Total cost'!H16`, totWages);
   formulaMoney(ws, 26, 5, `$D$21`, totOutside);
   formulaMoney(ws, 26, 6, `E26-D26`, totOutside - totWages);
   const p26c = ws.getCell(26, 7); p26c.value = { formula: `IF(E26=0,"",F26/E26)`, result: pct(totOutside - totWages, totOutside) }; p26c.numFmt = '0.0%'; border(p26c);
@@ -1318,13 +1465,13 @@ function buildCostComparison(wb, parts, period) {
   formulaMoney(ws, 27, 6, `E27-D27`, totOutside - totAbsorbed, true);
   const p27c = ws.getCell(27, 7); p27c.value = { formula: `IF(E27=0,"",F27/E27)`, result: pct(totOutside - totAbsorbed, totOutside) }; p27c.numFmt = '0.0%'; p27c.font = { bold: true }; border(p27c);
 
-  textCell(ws, 28, 2, '        Wages & salaries paid'); formulaMoney(ws, 28, 4, `'Total cost'!H15`, totWages);
-  textCell(ws, 29, 2, '        Workshop vehicles — fuel & rental'); formulaMoney(ws, 29, 4, `'Total cost'!H14`, totVehicles);
-  textCell(ws, 30, 2, '        Site overheads — electricity, telephone, misc'); formulaMoney(ws, 30, 4, `'Total cost'!H16`, totOverheads);
+  textCell(ws, 28, 2, '        Wages & salaries paid'); formulaMoney(ws, 28, 4, `'Total cost'!H16`, totWages);
+  textCell(ws, 29, 2, '        Workshop vehicles — fuel & rental'); formulaMoney(ws, 29, 4, `'Total cost'!H15`, totVehicles);
+  textCell(ws, 30, 2, '        Site overheads — electricity, telephone, misc'); formulaMoney(ws, 30, 4, `'Total cost'!H17`, totOverheads);
 
   textCell(ws, 31, 2, 'Memo — materials excluded from both sides (spares, oils, tyres, batteries, general items)');
-  const totMat = parts.repair.sums.material + parts.repair.sums.oil + parts.service.sums.filter + parts.service.sums.oil + parts.oils.sums.total + parts.tyre.sums.total + parts.battery.sums.total + parts.general.sums.total;
-  formulaMoney(ws, 31, 4, `'Total cost'!E18+'Total cost'!F18+'Total cost'!G18`, totMat);
+  const totMat = parts.repair.sums.material + parts.repair.sums.oil + (parts.fabrication ? (parts.fabrication.sums.material + parts.fabrication.sums.oil) : 0) + parts.service.sums.filter + parts.service.sums.oil + parts.oils.sums.total + parts.tyre.sums.total + parts.battery.sums.total + parts.general.sums.total;
+  formulaMoney(ws, 31, 4, `'Total cost'!E19+'Total cost'!F19+'Total cost'!G19`, totMat);
   formulaMoney(ws, 31, 5, `D31`, totMat);
   formulaMoney(ws, 31, 6, `E31-D31`, 0);
 }
@@ -1408,13 +1555,55 @@ function buildJobWiseComparison(wb, parts, period) {
     r++; se++;
   }
 
+  if (parts.fabrication && parts.fabrication.count > 0) {
+    if (parts.fabrication.closed_jobs.length > 0) {
+      banner('Fabrication — closed jobs');
+      for (let i = 0; i < parts.fabrication.closed_jobs.length; i++) {
+        const srcRow = 7 + i;
+        const j = parts.fabrication.closed_jobs[i];
+        textCell(ws, r, 2, se);
+        ws.getCell(r, 3).value = { formula: `IF('Fabrication cost'!C${srcRow}="","",'Fabrication cost'!C${srcRow})`, result: j.job_no }; border(ws.getCell(r, 3));
+        ws.getCell(r, 4).value = { formula: `IF('Fabrication cost'!E${srcRow}="","",'Fabrication cost'!E${srcRow})`, result: j.reg || j.code || '' }; border(ws.getCell(r, 4));
+        ws.getCell(r, 5).value = { formula: `IF('Fabrication cost'!H${srcRow}="","",'Fabrication cost'!H${srcRow})`, result: j.description || '' }; border(ws.getCell(r, 5));
+        formulaMoney(ws, r, 6, `'Fabrication cost'!I${srcRow}`, j.labour);
+        formulaMoney(ws, r, 7, `'Fabrication cost'!M${srcRow}`, j.labour + j.material + j.oil + j.general + j.other);
+        formulaMoney(ws, r, 8, `'Fabrication cost'!N${srcRow}`, j.outside_estimate);
+        formulaMoney(ws, r, 9, `H${r}-F${r}`, j.outside_estimate - j.labour);
+        const pc = ws.getCell(r, 10); pc.value = { formula: `IF(H${r}=0,"",I${r}/H${r})`, result: j.outside_estimate ? (j.outside_estimate - j.labour) / j.outside_estimate : 0 }; pc.numFmt = '0.0%'; border(pc);
+        const eg = ws.getCell(r, 11); eg.value = { formula: `IF(H${r}=0,"No","Yes")`, result: j.outside_estimate > 0 ? 'Yes' : 'No' }; border(eg);
+        textCell(ws, r, 12, '');
+        r++; se++;
+      }
+    }
+
+    if (parts.fabrication.pending_jobs.length > 0) {
+      banner('Fabrication — pending / work-in-progress jobs');
+      for (let i = 0; i < parts.fabrication.pending_jobs.length; i++) {
+        const srcRow = parts.fabrication.closed_sub_row + 2 + i;
+        const j = parts.fabrication.pending_jobs[i];
+        textCell(ws, r, 2, se);
+        ws.getCell(r, 3).value = { formula: `IF('Fabrication cost'!C${srcRow}="","",'Fabrication cost'!C${srcRow})`, result: j.job_no }; border(ws.getCell(r, 3));
+        ws.getCell(r, 4).value = { formula: `IF('Fabrication cost'!E${srcRow}="","",'Fabrication cost'!E${srcRow})`, result: j.reg || j.code || '' }; border(ws.getCell(r, 4));
+        ws.getCell(r, 5).value = { formula: `IF('Fabrication cost'!H${srcRow}="","",'Fabrication cost'!H${srcRow})`, result: j.description || '' }; border(ws.getCell(r, 5));
+        formulaMoney(ws, r, 6, `'Fabrication cost'!I${srcRow}`, j.labour);
+        formulaMoney(ws, r, 7, `'Fabrication cost'!M${srcRow}`, j.labour + j.material + j.oil + j.general + j.other);
+        formulaMoney(ws, r, 8, `'Fabrication cost'!N${srcRow}`, j.outside_estimate);
+        formulaMoney(ws, r, 9, `H${r}-F${r}`, j.outside_estimate - j.labour);
+        const pc = ws.getCell(r, 10); pc.value = { formula: `IF(H${r}=0,"",I${r}/H${r})`, result: j.outside_estimate ? (j.outside_estimate - j.labour) / j.outside_estimate : 0 }; pc.numFmt = '0.0%'; border(pc);
+        const eg = ws.getCell(r, 11); eg.value = { formula: `IF(H${r}=0,"No","Yes")`, result: j.outside_estimate > 0 ? 'Yes' : 'No' }; border(eg);
+        textCell(ws, r, 12, '');
+        r++; se++;
+      }
+    }
+  }
+
   // Subtotals and Grand total for Job-wise Comparison
   const gr = r;
   ws.mergeCells(gr, 2, gr, 5); const gl = ws.getCell(gr, 2); gl.value = 'Grand Total'; gl.font = { bold: true }; gl.alignment = { horizontal: 'right' }; border(gl);
   for (let col = 3; col <= 5; col++) border(ws.getCell(gr, col));
-  const totLab = parts.repair.sums.labour + parts.service.sums.labour;
-  const totTotal = parts.repair.sums.total + parts.service.sums.total;
-  const totOutside = parts.repair.sums.outside + parts.service.sums.outsideWithTrn;
+  const totLab = parts.repair.sums.labour + parts.service.sums.labour + (parts.fabrication ? parts.fabrication.sums.labour : 0);
+  const totTotal = parts.repair.sums.total + parts.service.sums.total + (parts.fabrication ? parts.fabrication.sums.total : 0);
+  const totOutside = parts.repair.sums.outside + parts.service.sums.outsideWithTrn + (parts.fabrication ? parts.fabrication.sums.outside : 0);
   const totSaving = totOutside - totLab;
   const savingPct = totOutside > 0 ? (totSaving / totOutside) : 0;
   formulaMoney(ws, gr, 6, `SUM(F6:F${gr-1})`, totLab, true);
@@ -1527,11 +1716,13 @@ async function buildWorkbook(year, month, opts = {}) {
 
   // Build source data sheets
   parts.repair = buildRepair(wb, ym, period, wsId);
+  parts.fabrication = buildFabrication(wb, ym, period, wsId);
   parts.service = buildService(wb, ym, period, wsId);
   parts.battery = buildBattery(wb, ym, period, wsId);
   parts.tyre = buildTyre(wb, ym, period, wsId);
-  parts.oils = buildOils(wb, ym, period, parts.repair.sums.oil, parts.service.sums.oil, parts.repair.repair_job_ids, wsId);
-  parts.general = buildGeneral(wb, ym, period, parts.repair.repair_job_ids, wsId);
+  const renderedJobIds = [...(parts.repair.repair_job_ids || []), ...(parts.fabrication.fabrication_job_ids || [])];
+  parts.oils = buildOils(wb, ym, period, parts.repair.sums.oil, parts.service.sums.oil, renderedJobIds, wsId);
+  parts.general = buildGeneral(wb, ym, period, renderedJobIds, wsId);
   parts.fuel = buildFuel(wb, year, month, period, wsId);
   parts.salaries = buildSalaries(wb, year, month, ym, period, wsId);
   parts.other = buildOther(wb, year, month, period, wsId);
@@ -1572,6 +1763,7 @@ async function compare(year, month) {
       repair_jobs: num(parts.repair.closed_count) + num(parts.repair.pending_count),
       jobs_closed: num(parts.repair.closed_count),
       services: num(parts.service.count),
+      fabrications: parts.fabrication ? (num(parts.fabrication.closed_count) + num(parts.fabrication.pending_count)) : 0,
       labour: r2(c[3]), spare_parts: r2(c[5]), lubricants: r2(c[6]), other_material: r2(c[7]),
       overheads: r2(c[8]), total: r2(total.grand_total), hours_booked: num(hours),
     });

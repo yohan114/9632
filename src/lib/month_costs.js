@@ -24,7 +24,7 @@ const OIL_WS = 'COALESCE(j.workshop_id, sl.store_id)';
 /** Every month's figures, newest first. */
 function monthlyRollup(ws) {
   const map = new Map();
-  const M = (m) => { if (!map.has(m)) map.set(m, { month: m, labour: 0, head_office: 0, local_purchase: 0, oil: 0, general: 0, jobs: 0, service: 0 }); return map.get(m); };
+  const M = (m) => { if (!map.has(m)) map.set(m, { month: m, labour: 0, head_office: 0, local_purchase: 0, oil: 0, general: 0, jobs: 0, service: 0, fabrication: 0 }); return map.get(m); };
   for (const r of all(`SELECT substr(jl.work_date,1,7) m, ROUND(SUM(jl.amount),2) v FROM job_labour jl LEFT JOIN job_cards j ON j.id = jl.job_id
                         WHERE jl.work_date IS NOT NULL${wsSql('j.workshop_id', ws)} GROUP BY m`)) if (r.m) M(r.m).labour = r.v || 0;
   for (const r of all(`SELECT substr(g.delivery_date,1,7) m, g.purchase_source_norm src, ROUND(SUM(g.qty*g.unit_price),2) v
@@ -74,9 +74,14 @@ function monthlyRollup(ws) {
                         WHERE j.service_date IS NOT NULL${wsSql('j.workshop_id', ws)} GROUP BY m`)) if (r.m) M(r.m).service += (r.v || 0);
   for (const r of all(`SELECT substr(service_date,1,7) m, ROUND(SUM(COALESCE(labour_charge,0)) + SUM(COALESCE(sundry_amount,0)),2) v
                          FROM service_jobs WHERE service_date IS NOT NULL${wsSql('workshop_id', ws)} GROUP BY m`)) if (r.m) M(r.m).service += (r.v || 0);
+  for (const r of all(`SELECT substr(j.completed_at,1,7) m, ROUND(SUM(COALESCE(j.total_cost, 0)), 2) v
+                         FROM job_cards j
+                        WHERE j.type = 'fabrication' AND j.completed_at IS NOT NULL${wsSql('j.workshop_id', ws)} GROUP BY m`)) {
+    if (r.m && r.v) M(r.m).fabrication = (M(r.m).fabrication || 0) + r.v;
+  }
   const tm = new Date().toISOString().slice(0, 7);
   return [...map.values()]
-    .map((o) => ({ ...o, general: r2(o.general), service: r2(o.service), total: r2(o.labour + o.head_office + o.local_purchase + o.oil + (o.general || 0) + o.service) }))
+    .map((o) => ({ ...o, general: r2(o.general), service: r2(o.service), fabrication: r2(o.fabrication), total: r2(o.labour + o.head_office + o.local_purchase + o.oil + (o.general || 0) + o.service + (o.fabrication || 0)) }))
     .filter((o) => o.month <= tm) // drop spurious future-dated (data-error) months
     .sort((a, b) => b.month.localeCompare(a.month));
 }
