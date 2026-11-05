@@ -170,6 +170,27 @@ const ownWs = (user, expr) => scope.wsSql(expr, scope.reach(user));
 const ownWsCond = (user, expr) => { const s = ownWs(user, expr); return s ? s.slice(' AND '.length) : null; };
 /** Guard a record whose workshop `sql` finds by id: null when the person may reach it, else the 403 body. */
 function reachRefusal(user, what, sql, id) {
+  if (!user) return null;
+  try {
+    const context = require('../lib/context');
+    const ss = context.storeScopeFor(user);
+    if (!ss.isGlobal) {
+      if (what === 'receipt') {
+        const g = get('SELECT physical_store_id, store_id FROM grn WHERE id = ?', id);
+        const sid = (g && g.physical_store_id) || (g && g.store_id);
+        if (sid && !ss.canAccess(sid, 'view')) {
+          return { error: `Tenancy boundary violation: ${what} #${id} belongs to a different store location.`, status: 403 };
+        }
+      } else if (what === 'issue') {
+        const i = get('SELECT issue_store_location_id, store_id FROM issues WHERE id = ?', id);
+        const sid = (i && i.issue_store_location_id) || (i && i.store_id);
+        if (sid && !ss.canAccess(sid, 'view')) {
+          return { error: `Tenancy boundary violation: ${what} #${id} belongs to a different store location.`, status: 403 };
+        }
+      }
+    }
+  } catch (_) {}
+
   if (!scope.enabled()) return null;
   const r = get(sql, id);
   if (!r) return null;
@@ -988,6 +1009,10 @@ router.post('/mrn', requireCap('stores.mrn.create'), chainPipeline.idempotencyGu
     : (job && job.type === 'fabrication' ? (job.issue_store_location_id || 1) : toInt(req.headers['x-store-location-id'] || req.user?.activeStoreId));
   const reqWsId = require('../lib/workshops').forRequest(req.user, jobId);
   const targetLoc = targetStoreLocationId ? storeLocations.getStoreLocation(targetStoreLocationId) : null;
+  const storeScope = require('../lib/context').storeScopeFor(req.user);
+  if (targetStoreLocationId) {
+    storeScope.assertAccess(targetStoreLocationId, 'request');
+  }
   const isSiteReq = (targetLoc && targetLoc.store_type === 'SITE_STORE') || (reqWsId && reqWsId !== 1);
   const initialSiteAuth = b.site_authority_status || (isSiteReq ? 'pending' : 'approved');
 
@@ -2071,6 +2096,10 @@ router.post('/grn', requireCap('stores.grn.receive'), chainPipeline.idempotencyG
     directDelivery: b.direct_delivery
   });
   const legStoreId = storeLocations.resolveLegacyStoreId(physStoreId) || 1;
+  const grnStoreScope = require('../lib/context').storeScopeFor(req.user);
+  if (physStoreId) {
+    grnStoreScope.assertAccess(physStoreId, 'receive');
+  }
 
   const result = tx(() => {
     const info = run(
@@ -2851,6 +2880,11 @@ router.post('/stock/:section/count', requireCap('stores.stock.count'), asyncHand
 router.get('/counts', asyncHandler((req, res) => res.json(stockCount.list(req.user, req.query))));
 router.post('/counts', requireCap('stores.stock.count'), asyncHandler((req, res) => {
   const b = req.body || {};
+  const countStoreScope = require('../lib/context').storeScopeFor(req.user);
+  const targetCountStore = toInt(b.physical_store_id || b.store_id);
+  if (targetCountStore) {
+    countStoreScope.assertAccess(targetCountStore, 'count');
+  }
   res.status(201).json(stockCount.start(req.user, { storeId: toInt(b.store_id), kind: b.kind, date: b.count_date, note: b.note }));
 }));
 router.get('/counts/:id', asyncHandler((req, res) => res.json(stockCount.detail(req.user, toInt(req.params.id)))));
@@ -3770,7 +3804,10 @@ router.post('/stock-issue', requireCap('stores.stock_issue'), asyncHandler((req,
   // that received it, stamped on the issue row itself).
   const isFabricationCard = jobCardObj && jobCardObj.type === 'fabrication';
   const fabStoreId = isFabricationCard ? (jobCardObj.issue_store_location_id || 1) : null;
-  checkFabricationOrStoreIssueAccess(req.user, fabStoreId || (b.physical_store_id ? toInt(b.physical_store_id) : 2), jobId);
+  const targetPhysStoreId = fabStoreId || (b.physical_store_id ? toInt(b.physical_store_id) : (req.user?.activeStoreId || 2));
+  const stockIssueScope = require('../lib/context').storeScopeFor(req.user);
+  stockIssueScope.assertAccess(targetPhysStoreId, 'issue');
+  checkFabricationOrStoreIssueAccess(req.user, targetPhysStoreId, jobId);
 
   const multiStore = stores.isMulti();
   const issueStore = stores.forEntry(req.user, jobId, issueDate);
@@ -4391,6 +4428,16 @@ router.post('/issues', requireCap('stores.issue'), chainPipeline.idempotencyGuar
   if (job && job.type === 'fabrication') {
     physStoreId = job.issue_store_location_id || 1;
     legStoreId = 1;
+  }
+  const issueStoreScope = require('../lib/context').storeScopeFor(req.user);
+  if (physStoreId) {
+    issueStoreScope.assertAccess(physStoreId, 'issue');
+  } else if (legStoreId) {
+    const resolved = storeLocations.resolvePhysicalStore(legStoreId);
+    if (resolved) issueStoreScope.assertAccess(resolved.id, 'issue');
+  } else if (!issueStoreScope.isGlobal) {
+    physStoreId = issueStoreScope.primaryStoreId;
+    if (physStoreId) issueStoreScope.assertAccess(physStoreId, 'issue');
   }
   checkFabricationOrStoreIssueAccess(req.user, physStoreId || 2, jobId);
   // A closed / rejected card can still take a late issue, but only deliberately: the
@@ -5091,6 +5138,17 @@ router.post('/mtn', requireCap('stores.mtn.edit'), chainPipeline.idempotencyGuar
     const tl = get('SELECT id, COALESCE(active, 1) AS is_active FROM store_locations WHERE id = ?', toLocId);
     if (!tl) return res.status(400).json({ error: 'Destination store location not found' });
     if (!tl.is_active) return res.status(400).json({ error: 'Destination store location is inactive' });
+  }
+
+  const mtnScope = require('../lib/context').storeScopeFor(req.user);
+  if (!mtnScope.isGlobal) {
+    const canFrom = fromLocId && mtnScope.canAccess(fromLocId, 'dispatch');
+    const canTo = toLocId && mtnScope.canAccess(toLocId, 'receive');
+    if (!canFrom && !canTo) {
+      return res.status(403).json({
+        error: 'Tenancy boundary violation: You must be assigned to either the origin or destination store location to transfer items.'
+      });
+    }
   }
 
   let chainNo = clean(b.chain_no);

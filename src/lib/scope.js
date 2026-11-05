@@ -205,6 +205,19 @@ function jobReadRefusal(user, jobId) {
 }
 
 function mrnRefusal(user, mrnId) {
+  if (!user) return null;
+  try {
+    const context = require('./context');
+    const ss = context.storeScopeFor(user);
+    if (!ss.isGlobal) {
+      const m = get('SELECT target_store_location_id, workshop_id FROM mrn WHERE id = ?', mrnId);
+      if (m && m.target_store_location_id) {
+        if (!ss.canAccess(m.target_store_location_id, 'view')) {
+          return { error: `Tenancy boundary violation: MRN #${mrnId} belongs to a different store location.`, status: 403 };
+        }
+      }
+    }
+  } catch (_) {}
   if (!enabled()) return null;
   const m = get('SELECT workshop_id FROM mrn WHERE id = ?', mrnId);
   if (!m || mayReach(user, m.workshop_id)) return null;

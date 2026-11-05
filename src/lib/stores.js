@@ -253,6 +253,12 @@ const wholeCountRefusal = () => (isMulti()
 
 /** May this person count or set levels in this store? Head office any; anyone else their own. */
 function mayManage(user, storeId) {
+  try {
+    const context = require('./context');
+    const ss = context.storeScopeFor(user);
+    if (ss.isGlobal) return true;
+    return ss.canAccess(storeId, 'count');
+  } catch (_) {}
   const scope = require('./scope');
   if (!scope.enabled() || scope.headOffice(user)) return true;
   return homeStore(user) === Number(storeId);

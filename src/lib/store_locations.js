@@ -981,6 +981,7 @@ function migrateStoreLocationsStage2(targetDb) {
 }
 
 module.exports = {
+  storeScopeFor: (user) => require('./context').storeScopeFor(user),
   STORE_TYPES,
   STORE_TYPE_LABELS,
   validateHierarchy,
