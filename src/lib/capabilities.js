@@ -206,6 +206,7 @@ const CAPABILITIES = [
   C('stores.grn.edit', 'stores', 'Price or edit a goods receipt (GRN)', STORE_STAFF, 'stores', 'stores', '02', 'Inventory'),
   C('stores.grn.approve', 'stores', 'Approve a Goods Received Note (GRN) posting', OPS_MANAGERS.concat(['workshop']), null, 'stores', '10', 'Inventory'),
   C('stores.grn.reject', 'stores', 'Reject a Goods Received Note (GRN)', OPS_MANAGERS.concat(['workshop']), null, 'stores', '10', 'Inventory'),
+  C('stores.grn.override_doc', 'stores', 'Override missing document requirement when approving or pricing GRN', ['operational_manager'], null, 'stores', '02', 'Inventory', true),
   C('stores.issue', 'stores', 'Hand over parts against an approved MRN', STORE_STAFF, 'stores', 'stores', '02', 'Inventory'),
   C('stores.stock_issue', 'stores', 'Issue catalogue parts from the shelf onto a job card', STORE_STAFF, 'stores', 'stores', '02', 'Inventory'),
   C('stores.min.approve', 'stores', 'Approve a Material Issue Note (MIN)', ['workshop', 'operational_manager', 'manager'], null, 'stores', '10', 'Inventory'),

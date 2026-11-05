@@ -2567,10 +2567,33 @@ router.post('/grn-vouchers/:id/approve', requireCap('stores.grn.approve'), guard
     });
   }
   const hasDoc = vLines.some((l) => evidencePhotos.listPhotos('grn', l.id).length > 0);
-  if (!hasDoc && !req.body.allow_without_doc) {
-    return res.status(400).json({
-      error: 'Please attach the Supplier Invoice, Delivery Note, or supporting document (Image/PDF) before approving this GRN.',
-      code: 'MISSING_GRN_DOCUMENT'
+  if (!hasDoc) {
+    if (!req.body.allow_without_doc) {
+      return res.status(400).json({
+        error: 'Please attach the Supplier Invoice, Delivery Note, or supporting document (Image/PDF) before approving this GRN.',
+        code: 'MISSING_GRN_DOCUMENT'
+      });
+    }
+    if (!hasCap(req.user, 'stores.grn.override_doc') && !isAdmin(req.user)) {
+      return res.status(403).json({
+        error: 'Your role does not allow approving GRN without invoice or delivery document.',
+        code: 'FORBIDDEN_DOC_OVERRIDE'
+      });
+    }
+    const reason = String(req.body.override_reason || req.body.reason || '').trim();
+    if (!reason) {
+      return res.status(400).json({
+        error: 'A reason is required when approving a GRN without supporting invoice/delivery documents.',
+        code: 'DOC_OVERRIDE_REASON_REQUIRED'
+      });
+    }
+    audit.record({
+      userId: req.user.id,
+      entity: 'grn_voucher',
+      entityId: v.id,
+      action: 'override_missing_doc',
+      reason,
+      after: { grn_no: v.grn_no, voucher_id: v.id }
     });
   }
 
@@ -2630,10 +2653,33 @@ router.post('/grn/:id/approve', requireCap('stores.grn.approve'), guardReceipt, 
     });
   }
   const hasDoc = evidencePhotos.listPhotos('grn', id).length > 0;
-  if (!hasDoc && !req.body.allow_without_doc) {
-    return res.status(400).json({
-      error: 'Please attach the Supplier Invoice, Delivery Note, or supporting document (Image/PDF) before approving this GRN.',
-      code: 'MISSING_GRN_DOCUMENT'
+  if (!hasDoc) {
+    if (!req.body.allow_without_doc) {
+      return res.status(400).json({
+        error: 'Please attach the Supplier Invoice, Delivery Note, or supporting document (Image/PDF) before approving this GRN.',
+        code: 'MISSING_GRN_DOCUMENT'
+      });
+    }
+    if (!hasCap(req.user, 'stores.grn.override_doc') && !isAdmin(req.user)) {
+      return res.status(403).json({
+        error: 'Your role does not allow approving GRN without invoice or delivery document.',
+        code: 'FORBIDDEN_DOC_OVERRIDE'
+      });
+    }
+    const reason = String(req.body.override_reason || req.body.reason || '').trim();
+    if (!reason) {
+      return res.status(400).json({
+        error: 'A reason is required when approving a GRN without supporting invoice/delivery documents.',
+        code: 'DOC_OVERRIDE_REASON_REQUIRED'
+      });
+    }
+    audit.record({
+      userId: req.user.id,
+      entity: 'grn',
+      entityId: id,
+      action: 'override_missing_doc',
+      reason,
+      after: { grn_no: g.grn_no, id }
     });
   }
   const s = signer(req.user.id);
@@ -4021,12 +4067,35 @@ router.patch('/grn/:id', requireCap('stores.grn.edit'), guardReceipt, asyncHandl
     });
   }
   const hasPriceNow = req.body.unit_price !== undefined && req.body.unit_price !== '' && req.body.unit_price !== null;
-  if (hasPriceNow && !req.body.allow_without_doc) {
+  if (hasPriceNow) {
     const existingDocs = evidencePhotos.listPhotos('grn', id);
     if (!existingDocs.length) {
-      return res.status(400).json({
-        error: 'Please attach the Supplier Invoice or supporting document (Image/PDF) when pricing this GRN, or tick "Invoice document not physically available yet".',
-        code: 'MISSING_GRN_DOCUMENT'
+      if (!req.body.allow_without_doc) {
+        return res.status(400).json({
+          error: 'Please attach the Supplier Invoice or supporting document (Image/PDF) when pricing this GRN, or tick "Invoice document not physically available yet".',
+          code: 'MISSING_GRN_DOCUMENT'
+        });
+      }
+      if (!hasCap(req.user, 'stores.grn.override_doc') && !isAdmin(req.user)) {
+        return res.status(403).json({
+          error: 'Your role does not allow pricing GRN without invoice or delivery document.',
+          code: 'FORBIDDEN_DOC_OVERRIDE'
+        });
+      }
+      const reason = String(req.body.override_reason || req.body.reason || '').trim();
+      if (!reason) {
+        return res.status(400).json({
+          error: 'A reason is required when pricing a GRN without supporting invoice/delivery documents.',
+          code: 'DOC_OVERRIDE_REASON_REQUIRED'
+        });
+      }
+      audit.record({
+        userId: req.user.id,
+        entity: 'grn',
+        entityId: id,
+        action: 'override_missing_doc_pricing',
+        reason,
+        after: { grn_no: before.grn_no, unit_price: req.body.unit_price }
       });
     }
   }
