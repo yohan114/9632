@@ -850,6 +850,18 @@ router.get('/mrn', asyncHandler((req, res) => {
   if (req.query.status) { clauses.push('m.status = ?'); params.push(req.query.status); }
   // Which workshop asked (multi-site Stage 2).
   if (req.query.workshop_id) { clauses.push('m.workshop_id = ?'); params.push(toInt(req.query.workshop_id)); }
+  // Active store location scoping (Central Main Stores fresh section vs Workshop Stores vs Site Stores)
+  const activeStoreId = toInt(req.headers['x-store-location-id'] || req.query.store_location_id || req.user?.activeStoreId);
+  if (activeStoreId) {
+    if (activeStoreId === 1) {
+      clauses.push('m.target_store_location_id = 1');
+    } else if (activeStoreId === 2) {
+      clauses.push('(m.target_store_location_id = 2 OR (m.target_store_location_id IS NULL AND (m.workshop_id = 1 OR m.workshop_id IS NULL)))');
+    } else {
+      clauses.push('(m.target_store_location_id = ? OR (m.target_store_location_id IS NULL AND m.workshop_id = (SELECT workshop_id FROM store_locations WHERE id = ?)))');
+      params.push(activeStoreId, activeStoreId);
+    }
+  }
   // Stage 3: your own workshop's requests only (head office and store staff: all).
   { const own = scope.filter(req.user, 'm.workshop_id'); if (own.sql) { clauses.push(own.sql); params.push(...own.params); } }
   // Approval-workflow tabs. 'pending' = live MRNs awaiting certification (excludes
@@ -903,15 +915,30 @@ router.get('/mrn', asyncHandler((req, res) => {
 router.get('/mrn/counts', asyncHandler((req, res) => {
   const own = scope.filter(req.user, 'm.workshop_id');
   const wClause = own.sql ? ` AND ${own.sql}` : '';
-  const toCertify = get(`SELECT COUNT(*) c FROM mrn m WHERE m.approval_status = 'requested' AND m.requested_by IS NOT NULL AND TRIM(m.requested_by) <> ''${wClause}`, ...own.params).c;
-  const toApprove = get(`SELECT COUNT(*) c FROM mrn m WHERE m.approval_status = 'certified'${wClause}`, ...own.params).c;
-  const toReceive = get(`SELECT COUNT(*) c FROM mrn m WHERE m.status != 'closed' AND (m.approval_status = 'approved' OR (m.approval_status = 'requested' AND (m.requested_by IS NULL OR TRIM(m.requested_by) = ''))) AND (SELECT COALESCE(SUM(qty_received),0) FROM mrn_lines ml WHERE ml.mrn_id = m.id) = 0${wClause}`, ...own.params).c;
-  const partial = get(`SELECT COUNT(*) c FROM mrn m WHERE m.status != 'closed' AND (m.approval_status = 'approved' OR (m.approval_status = 'requested' AND (m.requested_by IS NULL OR TRIM(m.requested_by) = ''))) AND (SELECT COALESCE(SUM(qty_received),0) FROM mrn_lines ml WHERE ml.mrn_id = m.id) > 0 AND (SELECT COALESCE(SUM(qty_received),0) FROM mrn_lines ml WHERE ml.mrn_id = m.id) < (SELECT COALESCE(SUM(qty),0) FROM mrn_lines ml WHERE ml.mrn_id = m.id)${wClause}`, ...own.params).c;
-  const done = get(`SELECT COUNT(*) c FROM mrn m WHERE m.status != 'closed' AND (SELECT COALESCE(SUM(qty_received),0) FROM mrn_lines ml WHERE ml.mrn_id = m.id) >= (SELECT COALESCE(SUM(qty),0) FROM mrn_lines ml WHERE ml.mrn_id = m.id) AND (SELECT COUNT(*) FROM mrn_lines ml WHERE ml.mrn_id = m.id) > 0 AND m.approval_status != 'rejected'${wClause}`, ...own.params).c;
-  const closed = get(`SELECT COUNT(*) c FROM mrn m WHERE m.status = 'closed'${wClause}`, ...own.params).c;
-  const rejected = get(`SELECT COUNT(*) c FROM mrn m WHERE m.approval_status = 'rejected'${wClause}`, ...own.params).c;
+  const activeStoreId = toInt(req.headers['x-store-location-id'] || req.query.store_location_id || req.user?.activeStoreId);
+  let storeClause = '';
+  const storeParams = [];
+  if (activeStoreId) {
+    if (activeStoreId === 1) {
+      storeClause = ' AND m.target_store_location_id = 1';
+    } else if (activeStoreId === 2) {
+      storeClause = ' AND (m.target_store_location_id = 2 OR (m.target_store_location_id IS NULL AND (m.workshop_id = 1 OR m.workshop_id IS NULL)))';
+    } else {
+      storeClause = ' AND (m.target_store_location_id = ? OR (m.target_store_location_id IS NULL AND m.workshop_id = (SELECT workshop_id FROM store_locations WHERE id = ?)))';
+      storeParams.push(activeStoreId, activeStoreId);
+    }
+  }
+  const fullWhere = `${wClause}${storeClause}`;
+  const allParams = [...own.params, ...storeParams];
+  const toCertify = get(`SELECT COUNT(*) c FROM mrn m WHERE m.approval_status = 'requested' AND m.requested_by IS NOT NULL AND TRIM(m.requested_by) <> ''${fullWhere}`, ...allParams).c;
+  const toApprove = get(`SELECT COUNT(*) c FROM mrn m WHERE m.approval_status = 'certified'${fullWhere}`, ...allParams).c;
+  const toReceive = get(`SELECT COUNT(*) c FROM mrn m WHERE m.status != 'closed' AND (m.approval_status = 'approved' OR (m.approval_status = 'requested' AND (m.requested_by IS NULL OR TRIM(m.requested_by) = ''))) AND (SELECT COALESCE(SUM(qty_received),0) FROM mrn_lines ml WHERE ml.mrn_id = m.id) = 0${fullWhere}`, ...allParams).c;
+  const partial = get(`SELECT COUNT(*) c FROM mrn m WHERE m.status != 'closed' AND (m.approval_status = 'approved' OR (m.approval_status = 'requested' AND (m.requested_by IS NULL OR TRIM(m.requested_by) = ''))) AND (SELECT COALESCE(SUM(qty_received),0) FROM mrn_lines ml WHERE ml.mrn_id = m.id) > 0 AND (SELECT COALESCE(SUM(qty_received),0) FROM mrn_lines ml WHERE ml.mrn_id = m.id) < (SELECT COALESCE(SUM(qty),0) FROM mrn_lines ml WHERE ml.mrn_id = m.id)${fullWhere}`, ...allParams).c;
+  const done = get(`SELECT COUNT(*) c FROM mrn m WHERE m.status != 'closed' AND (SELECT COALESCE(SUM(qty_received),0) FROM mrn_lines ml WHERE ml.mrn_id = m.id) >= (SELECT COALESCE(SUM(qty),0) FROM mrn_lines ml WHERE ml.mrn_id = m.id) AND (SELECT COUNT(*) FROM mrn_lines ml WHERE ml.mrn_id = m.id) > 0 AND m.approval_status != 'rejected'${fullWhere}`, ...allParams).c;
+  const closed = get(`SELECT COUNT(*) c FROM mrn m WHERE m.status = 'closed'${fullWhere}`, ...allParams).c;
+  const rejected = get(`SELECT COUNT(*) c FROM mrn m WHERE m.approval_status = 'rejected'${fullWhere}`, ...allParams).c;
   const allTodo = toCertify + toApprove + toReceive + partial;
-  const total = get(`SELECT COUNT(*) c FROM mrn m WHERE 1=1${wClause}`, ...own.params).c;
+  const total = get(`SELECT COUNT(*) c FROM mrn m WHERE 1=1${fullWhere}`, ...allParams).c;
   res.json({ all_todo: allTodo, to_certify: toCertify, to_approve: toApprove, to_receive: toReceive, partial, done, closed, rejected, all: total });
 }));
 
@@ -956,9 +983,9 @@ router.post('/mrn', requireCap('stores.mrn.create'), chainPipeline.idempotencyGu
   // Record the requesting storekeeper (also marks this as a live, in-flow MRN vs imported history).
   const ru = get('SELECT full_name, username FROM users WHERE id = ?', req.user.id);
   const reqBy = String(b.requested_by || '').trim() || (ru ? (ru.full_name || ru.username) : null);
-  const targetStoreLocationId = b.target_store_location_id != null && b.target_store_location_id !== ''
+  const targetStoreLocationId = (b.target_store_location_id != null && b.target_store_location_id !== '')
     ? toInt(b.target_store_location_id)
-    : null;
+    : toInt(req.headers['x-store-location-id'] || req.user?.activeStoreId);
   const reqWsId = require('../lib/workshops').forRequest(req.user, jobId);
   const targetLoc = targetStoreLocationId ? storeLocations.getStoreLocation(targetStoreLocationId) : null;
   const isSiteReq = (targetLoc && targetLoc.store_type === 'SITE_STORE') || (reqWsId && reqWsId !== 1);
@@ -1401,12 +1428,10 @@ router.get('/grn', asyncHandler((req, res) => {
       clauses.push("COALESCE(g.status, gv.status, 'pending_approval') = 'rejected'");
     }
   }
-  if (req.query.physical_store_id) {
+  const activeStoreLocId = toInt(req.headers['x-store-location-id'] || req.query.store_location_id || req.query.physical_store_id || req.user?.activeStoreId);
+  if (activeStoreLocId) {
     clauses.push('g.physical_store_id = ?');
-    params.push(toInt(req.query.physical_store_id));
-  } else if (req.query.store_location_id) {
-    clauses.push('g.physical_store_id = ?');
-    params.push(toInt(req.query.store_location_id));
+    params.push(activeStoreLocId);
   }
   if (req.query.q && String(req.query.q).trim()) {
     const like = '%' + String(req.query.q).trim() + '%';
@@ -1430,8 +1455,10 @@ router.get('/grn', asyncHandler((req, res) => {
 }));
 
 router.get('/grn/counts', asyncHandler((req, res) => {
-  const FROM = 'FROM grn g LEFT JOIN grn_vouchers gv ON gv.id = g.voucher_id LEFT JOIN mrn m ON m.id = g.mrn_id';
-  const own = ownWs(req.user, GRN_WS);   // Step 2c
+  const activeStoreLocId = toInt(req.headers['x-store-location-id'] || req.query.store_location_id || req.query.physical_store_id || req.user?.activeStoreId);
+  const storeClause = activeStoreLocId ? ` AND g.physical_store_id = ${activeStoreLocId}` : '';
+  const FROM = `FROM grn g LEFT JOIN grn_vouchers gv ON gv.id = g.voucher_id LEFT JOIN mrn m ON m.id = g.mrn_id`;
+  const own = `${ownWs(req.user, GRN_WS)}${storeClause}`;   // Step 2c
   const allTodo = get(`SELECT COUNT(*) c ${FROM}
     WHERE (COALESCE(g.status, gv.status, 'pending_approval') = 'pending_approval' OR g.unit_price IS NULL) AND COALESCE(g.status, gv.status, 'pending_approval') != 'rejected'${own}`).c;
   const toPrice = get(`SELECT COUNT(*) c ${FROM}
@@ -4057,6 +4084,11 @@ router.get('/general-job', asyncHandler((req, res) => {
 router.get('/issues', asyncHandler((req, res) => {
   const clauses = [];
   const params = [];
+  const activeStoreId = toInt(req.headers['x-store-location-id'] || req.query.store_location_id || req.query.physical_store_id || req.user?.activeStoreId);
+  if (activeStoreId) {
+    clauses.push('i.physical_store_id = ?');
+    params.push(activeStoreId);
+  }
   if (req.query.asset_id) { clauses.push('i.asset_id = ?'); params.push(toInt(req.query.asset_id)); }
   if (req.query.job_id) { clauses.push('i.job_id = ?'); params.push(toInt(req.query.job_id)); }
   if (req.query.category) { clauses.push('i.category = ?'); params.push(req.query.category); }
@@ -4103,8 +4135,10 @@ router.get('/issues', asyncHandler((req, res) => {
 }));
 
 router.get('/issues/counts', asyncHandler((req, res) => {
+  const activeStoreId = toInt(req.headers['x-store-location-id'] || req.query.store_location_id || req.query.physical_store_id || req.user?.activeStoreId);
+  const storeClause = activeStoreId ? ` AND i.physical_store_id = ${activeStoreId}` : '';
   const FROM = 'FROM issues i LEFT JOIN min_notes n ON n.id = i.min_id LEFT JOIN job_cards j ON j.id = i.job_id';
-  const own = ownWs(req.user, ISSUE_WS);   // Step 2c
+  const own = `${ownWs(req.user, ISSUE_WS)}${storeClause}`;   // Step 2c
   const toApprove = get(`SELECT COUNT(*) c ${FROM} WHERE COALESCE(n.status, 'issued') IN ('pending_approval', 'requested')${own}`).c;
   const toIssue = get(`SELECT COUNT(*) c ${FROM} WHERE COALESCE(n.status, 'issued') = 'approved'${own}`).c;
   const issued = get(`SELECT COUNT(*) c ${FROM} WHERE COALESCE(n.status, 'issued') = 'issued'${own}`).c;
