@@ -2222,7 +2222,7 @@ router.delete('/grn/:id/photos/:photoId', requireAuth, asyncHandler((req, res) =
   if (no) return res.status(403).json(no);
 
   const photo = evidencePhotos.getPhoto(photoId);
-  if (!photo || photo.entity_type !== 'grn') {
+  if (!photo || photo.entity_type !== 'grn' || photo.entity_id !== grnId) {
     return res.status(404).json({ error: 'Attachment not found on this receipt' });
   }
 
