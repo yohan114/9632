@@ -70,7 +70,7 @@ function loadJob(id) {
 // The only two kinds of card. The letter in the job number (…/R/… or …/S/…) is set from this
 // at creation and is never rewritten afterwards — the number is what is printed on the
 // paperwork, so it stays put and a later type change is reported as a mismatch instead.
-const JOB_TYPES = ['repair', 'service'];
+const JOB_TYPES = ['repair', 'service', 'fabrication'];
 
 
 // ---- list / create --------------------------------------------------------
@@ -249,7 +249,7 @@ router.post(
     }
     // The vehicle is the master key — a card that points at nothing cannot roll a cost up to an
     // asset. An unresolved request names its vehicle only as text, waiting in the Alias Queue.
-    if (!jr.asset_id) {
+    if (!jr.asset_id && (jr.type !== 'fabrication' || jr.fabrication_kind !== 'new')) {
       return res.status(409).json({
         error: `Job request ${jr.jr_no} has no vehicle linked yet — link its vehicle in the Alias Queue first.`,
         unlinked_asset: true,
@@ -257,7 +257,7 @@ router.post(
     }
     // One open card per vehicle. This is where the rule bites now: approving a request no longer
     // makes a card, so there is nothing to block until the workshop opens one.
-    const guard = jobstate.checkOneOpenJob(jr.asset_id);
+    const guard = jr.asset_id ? jobstate.checkOneOpenJob(jr.asset_id) : { ok: true };
     if (!guard.ok) return res.status(409).json({ error: guard.error, blocking_job: guard.blocking });
 
     // The workshop that does the repair: the one chosen, else the request's own, else the opener's.
@@ -266,7 +266,7 @@ router.post(
     // The workshop's own note goes UNDER the requested work, never over it.
     const note = String(b.note || '').trim();
     const description = note ? `${String(jr.description || '').trim()}\n\nWorkshop note: ${note}`.trim() : jr.description;
-    const type = jr.type === 'service' ? 'service' : 'repair';
+    const type = jr.type === 'service' ? 'service' : (jr.type === 'fabrication' ? 'fabrication' : 'repair');
     const takeIn = (b.take_in === true || b.take_in === 1 || b.take_in === '1') && hasCap(req.user, 'jobs.assign_workshop');
 
     const no = jobNo(type);
@@ -274,8 +274,8 @@ router.post(
       const info = run(
         `INSERT INTO job_cards (job_no, ref, asset_id, project_id, site, type, severity, description,
                                 status, requested_by, requested_by_user, requested_at,
-                                approved_transport_at, approved_ops_at, workshop_id, job_request_id)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                                approved_transport_at, approved_ops_at, workshop_id, job_request_id, fabrication_kind, issue_store_location_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         no,
         b.ref || null,
         jr.asset_id,
@@ -291,7 +291,9 @@ router.post(
         jr.certified_at,
         jr.approved_at,
         workshopId,
-        jr.id
+        jr.id,
+        jr.fabrication_kind || null,
+        jr.issue_store_location_id || (type === 'fabrication' ? 1 : null)
       );
       const id = info.lastInsertRowid;
       // Both approvals mirrored onto the card's own trail — they were given on the request, and
@@ -1409,7 +1411,7 @@ router.patch(
         }
         if (hoursCost > 0) warnings.push(`Rs ${hoursCost.toLocaleString()} of hours-based labour no longer counts — set the service flat labour.`);
       }
-      const letter = newType === 'service' ? 'S' : 'R';
+      const letter = newType === 'service' ? 'S' : (newType === 'fabrication' ? 'F' : 'R');
       if (job.job_no && !String(job.job_no).includes('/' + letter + '/')) {
         warnings.push(`Job number ${job.job_no} keeps its original letter — it is on the printed paperwork, so it is not renumbered.`);
       }

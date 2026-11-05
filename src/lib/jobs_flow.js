@@ -98,6 +98,7 @@ function requestRows(user, statuses, f) {
     `SELECT r.id, r.jr_no AS no, r.req_date, r.type, r.severity, r.priority, r.description, r.requested_by,
             r.approval_status, r.certified_by, r.certified_at, r.approved_by, r.approved_at, r.workshop_id, r.asset_id, r.requested_by_user,
             r.job_id, j.job_no, j.status AS job_status, ${ASSET}, w.code AS workshop_code,
+            r.fabrication_kind, r.issue_store_location_id,
             r.service_id, r.service_type, r.meter_reading, s.job_no AS service_job_no, s.service_date,
             (SELECT x.approver_id FROM job_request_approvals x WHERE x.job_request_id = r.id AND x.stage = 'certify'
                 AND x.decision = 'approved' ORDER BY x.id DESC LIMIT 1) AS certifier_id,
@@ -183,6 +184,7 @@ function shapeRequest(user, r, now) {
     ...vehicle(r), step, waiting_for: waitingFor, since: day10(since), days: waiting ? daysSince(since, now) : null,
     job_id: r.job_id, job_no: r.job_no, service_id: r.service_id, service_job_no: r.service_job_no,
     service_type: r.service_type, meter_reading: r.meter_reading, reject_reason: r.reject_reason,
+    fabrication_kind: r.fabrication_kind, issue_store_location_id: r.issue_store_location_id,
     note: (step === 'to_certify' || step === 'to_approve') && raised ? 'You raised it — someone else certifies and approves.'
       : (step === 'to_approve' && mine ? 'You certified it — another manager approves.' : null),
     road: roadOf(step === 'approved' ? (isService ? 'CLOSED' : r.job_status) : null, { rejected: step === 'rejected', approved: step === 'to_open' }),

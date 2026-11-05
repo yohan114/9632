@@ -51,7 +51,8 @@ const signer = (userId, actingFor = null) => {
   };
 };
 
-const TYPES = ['repair', 'service'];
+const TYPES = ['repair', 'service', 'fabrication'];
+const FAB_KINDS = ['new', 'repair', 'service'];
 const SEVERITIES = ['major', 'minor'];
 const PRIORITIES = ['normal', 'urgent'];
 
@@ -111,6 +112,23 @@ router.post('/', requireCap('jobrequests.create'), asyncHandler((req, res) => {
   const b = req.body;
   require_(b, ['description']);
   const type = TYPES.includes(b.type) ? b.type : 'repair';
+  let fabricationKind = null;
+  let issueStoreLocationId = null;
+
+  if (type === 'fabrication') {
+    const fabSetting = get("SELECT value FROM settings WHERE key = 'fabrication.enabled'")?.value;
+    if (fabSetting !== '1') {
+      return res.status(403).json({ error: 'Fabrication section is currently disabled.' });
+    }
+    if (!hasCap(req.user, 'jobrequests.create_fabrication')) {
+      return res.status(403).json({ error: 'Permission denied: jobrequests.create_fabrication required.' });
+    }
+    fabricationKind = String(b.fabrication_kind || '').toLowerCase().trim();
+    if (!FAB_KINDS.includes(fabricationKind)) {
+      return res.status(400).json({ error: 'fabrication_kind must be one of: new, repair, service' });
+    }
+    issueStoreLocationId = toInt(b.issue_store_location_id) || 1; // Default Central Main Stores
+  }
   const severity = SEVERITIES.includes(b.severity) ? b.severity : null;
   const priority = PRIORITIES.includes(b.priority) ? b.priority : 'normal';
 
@@ -135,11 +153,11 @@ router.post('/', requireCap('jobrequests.create'), asyncHandler((req, res) => {
   const result = run(
     `INSERT INTO job_requests (jr_no, req_date, asset_id, project_id, type, severity, priority, description,
                                required_date, requested_by, requested_by_user, requested_sig, workshop_id,
-                               service_type, meter_reading)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                               service_type, meter_reading, fabrication_kind, issue_store_location_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     jrNo, b.req_date || new Date().toISOString().slice(0, 10), assetId || null, toInt(b.project_id),
     type, severity, priority, b.description, b.required_date || null, reqBy, req.user.id, ru ? ru.signature : null, workshopId,
-    serviceType, meterReading
+    serviceType, meterReading, fabricationKind, issueStoreLocationId
   );
   audit.record({ userId: req.user.id, entity: 'job_request', entityId: result.lastInsertRowid, action: 'create', after: { jr_no: jrNo } });
   // Raising a request is never blocked — transport must always be able to log a fault.

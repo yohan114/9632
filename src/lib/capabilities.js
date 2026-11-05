@@ -66,6 +66,7 @@ const CAPABILITIES = [
   // ---- 3. Job Requests (Z_WO_JREQ) -----------------------------------------------------------
   C('jobrequests.view', 'jobrequests', 'View incoming vehicle repair requests', ALL_ROLES, null, 'jobs', '03', 'Operations'),
   C('jobrequests.create', 'jobrequests', 'Raise a job request from driver or field', ['assistant_transport_manager', 'transport_manager', 'workshop'], 'jobrequests', 'jobs', '01', 'Operations'),
+  C('jobrequests.create_fabrication', 'jobrequests', 'Raise a fabrication job request', ['assistant_transport_manager', 'transport_manager', 'workshop', 'manager', 'operational_manager'], 'jobrequests', 'jobs', '01', 'Operations'),
   C('jobrequests.certify', 'jobrequests', 'Certify a job request (transport step)', ['transport_manager'], 'jobrequests', 'jobs', 'A1', 'Operations'),
   C('jobrequests.approve', 'jobrequests', 'Approve a job request (operations step)', OPS_MANAGERS, 'jobrequests', 'jobs', '10', 'Operations'),
   C('jobrequests.reject', 'jobrequests', 'Reject a job request at certify or approve step', ['transport_manager', 'operational_manager', 'manager'], 'jobrequests', 'jobs', '10', 'Operations'),
