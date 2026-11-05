@@ -889,6 +889,15 @@ function migrate() {
   } catch (err) {
     console.warn('Migration 050 fabrication job type skipped:', err.message);
   }
+  // Seed Site Storekeeper Role Permissions & Capabilities
+  try {
+    if (!db.prepare("SELECT 1 FROM settings WHERE key = 'migration_051_done'").get()) {
+      require('../migrate/051_seed_site_storekeeper_role').runMigration(db);
+      db.prepare("INSERT INTO settings (key, value) VALUES ('migration_051_done', '1')").run();
+    }
+  } catch (err) {
+    console.warn('Migration 051 site storekeeper seed skipped:', err.message);
+  }
 
   return db;
 }

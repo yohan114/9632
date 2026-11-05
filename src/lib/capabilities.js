@@ -18,11 +18,12 @@ const C = (key, module, label, legacy = [], needs = null, section = null, actvt 
   key, module, label, legacy: Array.isArray(legacy) ? legacy : [], needs, section: section || module, actvt, domain, dualAuth: !!dualAuth
 });
 
-const ALL_ROLES = ['storekeeper', 'main_storekeeper', 'workshop', 'transport_manager', 'assistant_transport_manager', 'operational_manager', 'manager', 'purchase_head_office', 'purchase_local', 'viewer'];
+const ALL_ROLES = ['storekeeper', 'main_storekeeper', 'site_storekeeper', 'workshop', 'transport_manager', 'assistant_transport_manager', 'operational_manager', 'manager', 'purchase_head_office', 'purchase_local', 'viewer'];
 const OPS_MANAGERS = ['operational_manager', 'manager'];
 const TRANSPORT_MANAGERS = ['transport_manager', 'assistant_transport_manager', 'operational_manager', 'manager'];
 const ALL_MANAGERS = ['transport_manager', 'assistant_transport_manager', 'operational_manager', 'manager'];
 const STORE_STAFF = ['storekeeper', 'main_storekeeper'];
+const SITE_STORE_STAFF = ['storekeeper', 'main_storekeeper', 'site_storekeeper'];
 
 const CAPABILITIES = [
   // ============================================================================================
@@ -181,6 +182,7 @@ const CAPABILITIES = [
   C('stores.view', 'stores', 'View parts catalogue, shelf locations, and bin cards', ALL_ROLES, 'stores', 'stores', '03', 'Inventory'),
   C('stores.items.create', 'stores', 'Register a new store inventory SKU and barcode', STORE_STAFF.concat(['manager']), 'stores', 'stores', '01', 'Inventory'),
   C('stores.items.edit', 'stores', 'Create or edit store catalogue items and their prices', STORE_STAFF.concat(['manager']), 'stores', 'stores', '02', 'Inventory'),
+  C('stores.edit', 'stores', 'Legacy alias: Edit store items and physical inventory', STORE_STAFF.concat(['manager']), 'stores', 'stores', '02', 'Inventory'),
   C('stores.items.price', 'stores', 'Set parts standard cost and issue charge-out prices', STORE_STAFF.concat(['manager']), 'stores', 'stores', '02', 'Inventory'),
   C('stores.items.delete', 'stores', 'Delete an obsolete or unused store catalogue SKU', ['manager'], 'stores', 'stores', '06', 'Inventory', true),
   C('stores.items.txn', 'stores', 'Record manual stock receipts, adjustments and issues', STORE_STAFF, 'stores', 'stores', '02', 'Inventory'),
@@ -194,30 +196,32 @@ const CAPABILITIES = [
   C('general.items.edit', 'stores', 'Add a general rack item', STORE_STAFF, 'stores', 'stores', '02', 'Inventory'),
   C('general.stock.adjust', 'stores', 'Adjust a general rack item\'s stock', STORE_STAFF, 'stores', 'stores', '02', 'Inventory'),
   C('general.items.price', 'stores', 'Set a general rack item\'s price', STORE_STAFF, 'stores', 'stores', '02', 'Inventory'),
+  C('stores.all', 'stores', 'Access all stores and central stock network (Main Store oversight)', ['main_storekeeper', 'manager', 'operational_manager'], 'stores', 'stores', '03', 'Inventory'),
 
   // ---- 16. Stores Documents & Transactions (Z_WO_SDOC) ---------------------------------------
-  C('stores.mrn.create', 'stores', 'Raise a Material Requisition Note (MRN)', STORE_STAFF.concat(['workshop', 'assistant_transport_manager']), 'stores', 'stores', '01', 'Inventory'),
-  C('stores.mrn.edit', 'stores', 'Change or cancel an open MRN', STORE_STAFF.concat(['workshop']), 'stores', 'stores', '02', 'Inventory'),
+  C('stores.mrn.create', 'stores', 'Raise a Material Requisition Note (MRN)', SITE_STORE_STAFF.concat(['workshop', 'assistant_transport_manager']), 'stores', 'stores', '01', 'Inventory'),
+  C('stores.mrn.edit', 'stores', 'Change or cancel an open MRN', SITE_STORE_STAFF.concat(['workshop']), 'stores', 'stores', '02', 'Inventory'),
   C('stores.mrn.certify', 'stores', 'Certify an MRN (workshop step)', ['workshop'], null, 'stores', 'A1', 'Inventory'),
   C('stores.mrn.site_authority', 'stores', 'Review and approve/reject material demand as Site Authority', ALL_MANAGERS.concat(['workshop', 'engineer']), null, 'stores', '10', 'Inventory'),
   C('stores.mrn.approve', 'stores', 'Approve an MRN (operations step, up to your limit)', OPS_MANAGERS, null, 'stores', '10', 'Inventory'),
   C('stores.mrn.reject', 'stores', 'Reject an MRN at certify or approve step', ['workshop', 'operational_manager', 'manager'], null, 'stores', '10', 'Inventory'),
   C('stores.mrn.amend_settled', 'stores', 'Amend a settled MRN after issues have posted', OPS_MANAGERS, 'stores', 'stores', '02', 'Inventory', true),
-  C('stores.grn.receive', 'stores', 'Receive goods into workshop store or central store (GRN)', STORE_STAFF, 'stores', 'stores', '01', 'Inventory'),
+  C('stores.grn.receive', 'stores', 'Receive goods into workshop store or central store (GRN)', SITE_STORE_STAFF, 'stores', 'stores', '01', 'Inventory'),
   C('stores.grn.edit', 'stores', 'Price or edit a goods receipt (GRN)', STORE_STAFF, 'stores', 'stores', '02', 'Inventory'),
   C('stores.grn.approve', 'stores', 'Approve a Goods Received Note (GRN) posting', OPS_MANAGERS.concat(['workshop']), null, 'stores', '10', 'Inventory'),
   C('stores.grn.reject', 'stores', 'Reject a Goods Received Note (GRN)', OPS_MANAGERS.concat(['workshop']), null, 'stores', '10', 'Inventory'),
   C('stores.grn.override_doc', 'stores', 'Override missing document requirement when approving or pricing GRN', ['operational_manager'], null, 'stores', '02', 'Inventory', true),
-  C('stores.issue', 'stores', 'Hand over parts against an approved MRN', STORE_STAFF, 'stores', 'stores', '02', 'Inventory'),
-  C('stores.stock_issue', 'stores', 'Issue catalogue parts from the shelf onto a job card', STORE_STAFF, 'stores', 'stores', '02', 'Inventory'),
+  C('stores.issue', 'stores', 'Hand over parts against an approved MRN', SITE_STORE_STAFF, 'stores', 'stores', '02', 'Inventory'),
+  C('stores.stock_issue', 'stores', 'Issue catalogue parts from the shelf onto a job card', SITE_STORE_STAFF, 'stores', 'stores', '02', 'Inventory'),
   C('stores.min.approve', 'stores', 'Approve a Material Issue Note (MIN)', ['workshop', 'operational_manager', 'manager'], null, 'stores', '10', 'Inventory'),
   C('stores.min.reject', 'stores', 'Reject a Material Issue Note (MIN)', ['workshop', 'operational_manager', 'manager'], null, 'stores', '10', 'Inventory'),
   C('stores.reorder_mrn', 'stores', 'Generate restock MRNs from stock cockpit reorder lines', STORE_STAFF.concat(['manager']), 'stores', 'stores', '01', 'Inventory'),
   C('stores.mtn.edit', 'stores', 'Create, send, receive or cancel Material Transfer Notes (MTN)', STORE_STAFF, 'stores', 'stores', '01', 'Inventory'),
   C('stores.mtn.approve', 'stores', 'Approve a Material Transfer Note (MTN)', ['workshop', 'operational_manager', 'manager'], null, 'stores', '10', 'Inventory'),
   C('stores.mtn.reject', 'stores', 'Reject a Material Transfer Note (MTN)', ['workshop', 'operational_manager', 'manager'], null, 'stores', '10', 'Inventory'),
-  C('stores.issue_return', 'stores', 'Return an issued part back to store stock', STORE_STAFF, 'stores', 'stores', '02', 'Inventory'),
-  C('stores.stock.count', 'stores', 'Open and record physical stock counts', STORE_STAFF.concat(['manager']), 'stores', 'stores', '01', 'Inventory'),
+  C('stores.issue_return', 'stores', 'Return an issued part back to store stock', SITE_STORE_STAFF, 'stores', 'stores', '02', 'Inventory'),
+  C('stores.stock.count', 'stores', 'Open and record physical stock counts', SITE_STORE_STAFF.concat(['manager']), 'stores', 'stores', '01', 'Inventory'),
+  C('stores.count', 'stores', 'Legacy alias: Open and record physical stock counts', SITE_STORE_STAFF.concat(['manager']), 'stores', 'stores', '01', 'Inventory'),
   C('stores.count.approve', 'stores', 'Approve a stock take and put its corrections into stock (HO)', OPS_MANAGERS, null, 'stores', '10', 'Inventory', true),
   C('stores.disposal.edit', 'stores', 'Write a disposal note (scrap and waste oil to sell)', STORE_STAFF, 'stores', 'stores', '01', 'Inventory'),
   C('stores.disposal.approve', 'stores', 'Approve a disposal note, with buyer, amount and date', OPS_MANAGERS, null, 'stores', '10', 'Inventory'),
@@ -237,7 +241,7 @@ const CAPABILITIES = [
   C('oil.identity.resolve', 'oil', 'Decide which oil-book product a lubricant name is', STORE_STAFF, 'oil', 'oil', '02', 'Inventory'),
   C('oil.products.edit', 'oil', 'Add or edit an oil product brand or grade', STORE_STAFF.concat(['manager']), 'oil', 'oil', '02', 'Inventory'),
   C('oil.prices.edit', 'oil', 'Set oil procurement cost and charge-out prices', STORE_STAFF.concat(['manager']), 'oil', 'oil', '02', 'Inventory'),
-  C('oil.ledger.post', 'oil', 'Post bulk oil receipts and sump dispense issues', STORE_STAFF, 'oil', 'oil', '01', 'Inventory'),
+  C('oil.ledger.post', 'oil', 'Post bulk oil receipts and sump dispense issues', SITE_STORE_STAFF, 'oil', 'oil', '01', 'Inventory'),
   C('oil.count', 'oil', 'Record an oil dipstick physical stock count', STORE_STAFF, 'oil', 'oil', '01', 'Inventory'),
   C('oil.export', 'oil', 'Export lubricant consumption ledgers and dip records', STORE_STAFF.concat(OPS_MANAGERS), 'oil', 'oil', '08', 'Inventory'),
 
@@ -252,8 +256,9 @@ const CAPABILITIES = [
   // ---- 20. Filters & Consumables (Z_WO_FILT) -------------------------------------------------
   C('filters.view', 'filters', 'View filter catalogue and store bin stock balances', ALL_ROLES, 'filters', 'filters', '03', 'Inventory'),
   C('filters.stock.edit', 'filters', 'Add or edit a filter stock item part number', STORE_STAFF, 'filters', 'filters', '02', 'Inventory'),
-  C('filters.stock.receive', 'filters', 'Receive filters into store inventory', STORE_STAFF, 'filters', 'filters', '01', 'Inventory'),
-  C('filters.stock.issue', 'filters', 'Issue filters from stock against service job cards', STORE_STAFF, 'filters', 'filters', '02', 'Inventory'),
+  C('filters.edit', 'filters', 'Legacy alias: Add or edit filter parts and stock balances', STORE_STAFF, 'filters', 'filters', '02', 'Inventory'),
+  C('filters.stock.receive', 'filters', 'Receive filters into store inventory', SITE_STORE_STAFF, 'filters', 'filters', '01', 'Inventory'),
+  C('filters.stock.issue', 'filters', 'Issue filters from stock against service job cards', SITE_STORE_STAFF, 'filters', 'filters', '02', 'Inventory'),
   C('filters.prices.edit', 'filters', 'Set filter procurement cost and issue prices', STORE_STAFF.concat(['manager']), 'filters', 'filters', '02', 'Inventory'),
   C('filters.export', 'filters', 'Export filter stock valuation and consumption matrix', STORE_STAFF.concat(OPS_MANAGERS), 'filters', 'filters', '08', 'Inventory'),
 
@@ -315,6 +320,7 @@ const CAPABILITIES = [
   // ---- 27. Reports & Financial Statements (Z_WO_REP) -----------------------------------------
   C('reports.view', 'reports', 'View standard monthly vehicle cost reports', ALL_ROLES, null, 'reports', '03', 'Analysis'),
   C('reports.financial.view', 'reports', 'CONFIDENTIAL: View total company expenditure and profit margins', OPS_MANAGERS, null, 'reports', '03', 'Analysis'),
+  C('reports.financial', 'reports', 'Legacy alias: View total company expenditure and profit margins', OPS_MANAGERS, null, 'reports', '03', 'Analysis'),
   C('reports.monthly_cost.edit', 'reports', 'Edit monthly vehicle cost inputs (fuel, depreciation, leasing)', OPS_MANAGERS, null, 'reports', '02', 'Analysis'),
   C('reports.repair_sections.sync', 'reports', 'Re-sync labour into the repair sections report', ['operational_manager', 'workshop'], null, 'reports', '02', 'Analysis'),
   C('reports.export_excel', 'reports', 'Download unmasked financial reports to Excel', OPS_MANAGERS, null, 'reports', '08', 'Analysis'),

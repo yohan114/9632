@@ -22506,7 +22506,7 @@ async function renderRolesManager(c, wanted) {
   const editable = !sel.locked && sel.active;
 
   const roleList = roles.map((r) => `<tr data-pick="${esc(r.name)}" style="cursor:pointer;${r.name === sel.name ? 'background:#eef2ff;' : ''}${r.active ? '' : 'opacity:.55;'}">
-    <td><b>${esc(r.label || r.name)}</b>${r.locked ? ' <span class="badge amber">everything</span>' : ''}${r.is_system ? '' : ' <span class="badge blue">custom</span>'}${r.active ? '' : ' <span class="badge">retired</span>'}
+    <td><b>${esc(r.label || r.name)}</b>${r.locked ? ' <span class="badge amber">everything</span>' : ''}${r.is_system ? '' : ' <span class="badge blue">custom</span>'}${r.active ? '' : ' <span class="badge">retired</span>'}${r.incomplete ? ' <span class="badge red" style="background:#fee2e2;color:#991b1b;border:1px solid #f87171" title="' + esc(r.incomplete_reason || 'Incomplete role: no actions granted') + '">⚠️ incomplete</span>' : ''}
     <br><span class="muted" style="font-size:11px">${r.users} user(s) · ${r.locked ? 'all (227)' : r.caps.length} permission(s)</span></td></tr>`).join('');
 
   // 6 SAP Operational Domains

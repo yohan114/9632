@@ -97,6 +97,14 @@ const DEFAULT_MATRIX = {
     purchasing: 'view', tb_requests: 'view', tb_request: 'view', tb_purchase: 'view', tb_grn: 'view', tb_issue: 'none',
     tb_reports: 'view', reports: 'view', workshops: 'none', access: 'none', users: 'none'
   },
+  site_storekeeper: {
+    dashboard: 'view', jobs: 'view', jobrequests: 'none', field: 'view', operations: 'view',
+    dailywork: 'none', services: 'view', lubricants: 'view', assets: 'view', vehicle_docs: 'view', labour: 'none',
+    stores: 'edit', oil: 'edit', batteries: 'view', filters: 'edit', tools: 'view', service_plan: 'view',
+    projects: 'view', aliases: 'view', attention: 'view', daily_progress: 'view', cost_teardown: 'none',
+    purchasing: 'none', tb_requests: 'none', tb_request: 'none', tb_purchase: 'none', tb_grn: 'none', tb_issue: 'none',
+    tb_reports: 'none', reports: 'view', workshops: 'none', access: 'none', users: 'none', audit_logs: 'none'
+  },
   transport_manager: {
     dashboard: 'view', jobs: 'edit', jobrequests: 'edit', field: 'edit', operations: 'edit',
     dailywork: 'view', services: 'view', lubricants: 'view', assets: 'edit', vehicle_docs: 'edit', labour: 'view',

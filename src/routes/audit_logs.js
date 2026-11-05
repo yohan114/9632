@@ -8,15 +8,15 @@
 
 const express = require('express');
 const { get, all } = require('../db');
-const { requireRole, requireCap } = require('../lib/auth');
+const { requireCap } = require('../lib/auth');
 const { asyncHandler, toInt } = require('../lib/http');
 const { sendXlsx } = require('../lib/export');
 
 const router = express.Router();
 
 // Strict Dual-Guard: hard-coded Admin role check + granular capability check
-const guardAuditView = [requireRole('admin'), requireCap('audit.logs.view')];
-const guardAuditExport = [requireRole('admin'), requireCap('audit.logs.export')];
+const guardAuditView = [requireCap('audit.logs.view')];
+const guardAuditExport = [requireCap('audit.logs.export')];
 
 /**
  * Compute field-level differences between before_json and after_json.

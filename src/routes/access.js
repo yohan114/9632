@@ -39,15 +39,28 @@ function describeRoles() {
       JOIN user_roles ur ON ur.role_id = r.id JOIN users u ON u.id = ur.user_id AND u.active = 1
       GROUP BY r.name`).map((r) => [r.name, r.n]));
   return all('SELECT name, label, description, is_system, active, require_mfa, created_at FROM roles ORDER BY active DESC, id')
-    .map((r) => ({
+    .map((r) => {
+      const caps = capabilities.capsForRole(r.name);
+      const isAllNone = permissions.MODULE_KEYS.every((m) => permissions.levelForRoles([r.name], m) === 'none');
+      const isIncomplete = r.name !== 'admin' && (caps.length === 0 || isAllNone);
+      let reason = null;
+      if (isIncomplete) {
+        if (caps.length === 0 && isAllNone) reason = 'No section permissions or capabilities granted';
+        else if (caps.length === 0) reason = 'No capabilities granted';
+        else reason = 'All sections set to none';
+      }
+      return {
       ...r,
       is_system: !!r.is_system,
       active: r.active !== 0,
       require_mfa: !!r.require_mfa,
       locked: r.name === 'admin',
       users: holders.get(r.name) || 0,
-      caps: capabilities.capsForRole(r.name),
-    }));
+        caps,
+        incomplete: isIncomplete,
+        incomplete_reason: reason,
+      };
+    });
 }
 
 // A role's permanent key, from its label: "Site Storekeeper — Matara" → site_storekeeper_matara.

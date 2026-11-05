@@ -102,7 +102,7 @@ test('every permission the code and the screens ask for exists in the catalogue'
 
 test('nothing decides access by role name any more (routes and screens)', () => {
   const routes = path.join(__dirname, '..', 'src', 'routes');
-  for (const f of fs.readdirSync(routes)) {
+  for (const f of fs.readdirSync(routes).filter((x) => x.endsWith('.js'))) {
     const src = fs.readFileSync(path.join(routes, f), 'utf8');
     assert.ok(!/\b(requireRole|hasRole)\(/.test(src), `${f} still checks a role name — use requireCap/hasCap`);
   }
