@@ -512,6 +512,18 @@ function migrate() {
           if (!mtnCols.includes('workshop_id')) wdb.exec('ALTER TABLE mtn ADD COLUMN workshop_id INTEGER');
         }
 
+        // Tag transfer rows with mtn_id on workshop DB ledgers
+        const slColCheck = wdb.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'stock_ledger'").get();
+        if (slColCheck) {
+          const slCols = wdb.prepare('PRAGMA table_info(stock_ledger)').all().map((c) => c.name);
+          if (!slCols.includes('mtn_id')) wdb.exec('ALTER TABLE stock_ledger ADD COLUMN mtn_id INTEGER');
+        }
+        const gitColCheck = wdb.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'general_item_txns'").get();
+        if (gitColCheck) {
+          const gitCols = wdb.prepare('PRAGMA table_info(general_item_txns)').all().map((c) => c.name);
+          if (!gitCols.includes('mtn_id')) wdb.exec('ALTER TABLE general_item_txns ADD COLUMN mtn_id INTEGER');
+        }
+
         try {
           require('../lib/store_locations').migrateStoreLocationsStage2(wdb);
         } catch {}

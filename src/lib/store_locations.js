@@ -817,6 +817,8 @@ function migrateStoreLocationsStage2(targetDb) {
   ensureCol('mrn', 'target_store_location_id', colDef);
   ensureCol('mrn_lines', 'target_store_location_id', colDef);
   ensureCol('grn_vouchers', 'physical_store_id', colDef);
+  ensureCol('stock_ledger', 'mtn_id', 'INTEGER');
+  ensureCol('general_item_txns', 'mtn_id', 'INTEGER');
 
   if (isWsDb) {
     ensureCol('ws_meta', 'physical_store_id', 'INTEGER');
