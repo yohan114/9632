@@ -266,7 +266,7 @@ function ownStore(user) {
     const storeLocs = require('./store_locations');
     const leg = storeLocs.resolveLegacyStoreId(user.activeStoreId);
     if (leg) return leg;
-    return user.activeStoreId;
+    return null;
   }
   const stores = require('./stores');
   if (!enabled() || headOffice(user)) return null;

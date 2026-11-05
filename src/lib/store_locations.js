@@ -529,7 +529,7 @@ function resolveLegacyStoreId(storeLocationId) {
   if (mapped) return mapped.legacy_store_id;
 
   const loc = get('SELECT workshop_id FROM store_locations WHERE id = ?', storeLocationId);
-  return loc && loc.workshop_id ? loc.workshop_id : 1; // Default to Workshop 1 (CW)
+  return loc && loc.workshop_id ? loc.workshop_id : null;
 }
 
 /**

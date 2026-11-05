@@ -95,6 +95,18 @@ const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
 function lowStock(user, limit = 30) {
   const store = scope.ownStore(user);
   if (store == null) {
+    if (user && !user.isAllSitesMode && user.activeStoreId) {
+      const alerts = require('../lib/store_shelf').reorderAlerts(user.activeStoreId);
+      const n = (sec) => alerts.filter((a) => a.section === sec).length;
+      return {
+        general: n('general'), oil: n('oil'), filter: n('filter'),
+        list: () => alerts.slice(0, limit).map((a) => ({ name: a.name, category: a.category, current: a.current_stock,
+          reorder: a.reorder_level, kind: a.section, status: statusOf(a.current_stock, a.reorder_level) })),
+      };
+    }
+    if (user && !user.isAllSitesMode) {
+      return { general: 0, oil: 0, filter: 0, list: () => [] };
+    }
     return {
       general: get(`SELECT COUNT(*) c FROM store_items WHERE ${LOW_GENERAL}`).c,
       oil: get(`SELECT COUNT(*) c FROM products WHERE active = 1 AND ${LOW_OIL}`).c,
@@ -115,13 +127,14 @@ function lowStock(user, limit = 30) {
 function counts(ws, projId = null) {
   const pSql = projId ? ' AND j.project_id = ' + Number(projId) : '';
   const pSqlMrn = projId ? ' AND (workshop_id IS NULL AND (project_id = ' + Number(projId) + ' OR asset_id IN (SELECT id FROM assets WHERE current_project_id = ' + Number(projId) + ')))' : '';
+  const pSqlIssue = projId ? ' AND j.project_id = ' + Number(projId) : '';
   return {
     active_jobs: get(`SELECT COUNT(*) c FROM job_cards j WHERE ${jobstate.openSql('j')}${wsSql('j.workshop_id', ws)}${pSql}`).c,
     vehicles_in_workshop: get(`SELECT COUNT(DISTINCT j.asset_id) c FROM job_cards j WHERE ${jobstate.openSql('j')} AND j.asset_id IS NOT NULL${wsSql('j.workshop_id', ws)}${pSql}`).c,
     pending_requests: get(`SELECT COUNT(*) c FROM mrn WHERE (${LIVE_PENDING_MRN})${ws ? wsSql('workshop_id', ws) : pSqlMrn}`).c,
     // An issue is its job card's workshop's, else the store it left.
     todays_issue_cost: get(`SELECT COALESCE(SUM(i.qty * COALESCE(i.unit_price, 0)), 0) v FROM issues i
-                             LEFT JOIN job_cards j ON j.id = i.job_id WHERE i.issue_date = ?${wsSql('COALESCE(j.workshop_id, i.store_id)', ws)}${pSql}`, today()).v,
+                             LEFT JOIN job_cards j ON j.id = i.job_id WHERE i.issue_date = ?${wsSql('COALESCE(j.workshop_id, i.store_id)', ws)}${pSqlIssue}`, today()).v,
   };
 }
 
@@ -130,8 +143,47 @@ function counts(ws, projId = null) {
  * vehicle cost rollup, which keeps no workshop; one workshop's are worked out from its own labour,
  * receipts, oil and services (src/lib/month_costs.js), the figures Reports → Monthly shows it.
  */
-function costFigures(ws) {
+function costFigures(ws, projId = null) {
   const { year, month } = nowYM();
+  if (projId != null && ws == null) {
+    const pId = Number(projId);
+    const top_5_cost_vehicles = all(
+      `SELECT v.asset_id, a.code, a.registration, a.ec_code,
+              ROUND(v.total_cost,2) AS total_cost, ROUND(v.parts_cost,2) AS parts_cost,
+              ROUND(v.oil_cost,2) AS oil_cost, ROUND(v.filter_cost,2) AS filter_cost, ROUND(v.labour_cost,2) AS labour_cost
+         FROM vehicle_monthly_costs v
+         JOIN assets a ON a.id = v.asset_id
+        WHERE v.year = ? AND v.month = ? AND v.total_cost > 0 AND a.current_project_id = ?
+        ORDER BY v.total_cost DESC LIMIT 5`, year, month, pId);
+
+    const periods = lastNMonths(6);
+    const minIdx = periods[0].year * 12 + periods[0].month;
+    const trendRows = all(
+      `SELECT v.year, v.month,
+              ROUND(SUM(v.parts_cost),2) AS parts_cost, ROUND(SUM(v.oil_cost),2) AS oil_cost,
+              ROUND(SUM(v.filter_cost),2) AS filter_cost, ROUND(SUM(v.labour_cost),2) AS labour_cost,
+              ROUND(SUM(v.total_cost),2) AS total_cost
+         FROM vehicle_monthly_costs v
+         JOIN assets a ON a.id = v.asset_id
+        WHERE (v.year * 12 + v.month) >= ? AND a.current_project_id = ?
+        GROUP BY v.year, v.month`, minIdx, pId);
+    const byKey = {};
+    for (const r of trendRows) byKey[r.year + '-' + r.month] = r;
+    const monthly_cost_trend = periods.map((p) => {
+      const r = byKey[p.year + '-' + p.month] || {};
+      return {
+        month: p.label, year: p.year, month_num: p.month,
+        parts_cost: r.parts_cost || 0, oil_cost: r.oil_cost || 0,
+        filter_cost: r.filter_cost || 0, labour_cost: r.labour_cost || 0, total_cost: r.total_cost || 0,
+      };
+    });
+    const monthly_cost_total = get(
+      `SELECT COALESCE(SUM(v.total_cost), 0) v
+         FROM vehicle_monthly_costs v
+         JOIN assets a ON a.id = v.asset_id
+        WHERE v.year = ? AND v.month = ? AND a.current_project_id = ?`, year, month, pId).v;
+    return { monthly_cost_total, monthly_cost_trend, top_5_cost_vehicles };
+  }
   if (ws == null) {
     const top_5_cost_vehicles = all(
       `SELECT v.asset_id, a.code, a.registration, a.ec_code,
@@ -237,22 +289,32 @@ router.get('/overview', asyncHandler((req, res) => {
   const canJobs = permissions.reaches(req.user, 'jobs') || permissions.reaches(req.user, 'jobrequests');
   const canStores = permissions.reaches(req.user, 'stores') || permissions.reaches(req.user, 'oil') || permissions.reaches(req.user, 'generalstock');
 
-  const { active_jobs, vehicles_in_workshop, pending_requests, todays_issue_cost } = counts(ws, (req.user && !req.user.isAllSitesMode) ? req.user.activeProjectId : null);
+  const projId = (req.user && !req.user.isAllSitesMode) ? req.user.activeProjectId : null;
+  const { active_jobs, vehicles_in_workshop, pending_requests, todays_issue_cost } = counts(ws, projId);
   const low = lowStock(req.user);
-  const costs = canReports ? costFigures(ws) : { monthly_cost_total: null, monthly_cost_trend: [], top_5_cost_vehicles: [] };
+  const costs = canReports ? costFigures(ws, projId) : { monthly_cost_total: null, monthly_cost_trend: [], top_5_cost_vehicles: [] };
 
   // Job status mix over the last 90 days (by the real job date, falling back to created_at).
+  const pSqlJob = (projId && !ws) ? ` AND project_id = ${Number(projId)}` : '';
   const job_status_breakdown = canJobs ? all(
     `SELECT status, COUNT(*) AS count FROM job_cards
-      WHERE date(COALESCE(requested_at, created_at)) >= date('now', '-90 days')${wsSql('workshop_id', ws)}
+      WHERE date(COALESCE(requested_at, created_at)) >= date('now', '-90 days')${wsSql('workshop_id', ws)}${pSqlJob}
       GROUP BY status ORDER BY count DESC`) : [];
 
-  // Step 2b: kept to your own workshops, the actions of their people (each person's home workshop).
+  // Step 2b: kept to your own workshops or project, the actions of their people.
+  let actWhere = '';
+  if (ws != null) {
+    actWhere = `WHERE al.user_id IS NOT NULL${wsSql('u.workshop_id', ws)}`;
+  } else if (projId != null) {
+    actWhere = `WHERE (al.entity = 'projects' AND al.entity_id = ${Number(projId)})
+      OR al.entity_id IN (SELECT id FROM job_cards WHERE project_id = ${Number(projId)})
+      OR al.user_id IN (SELECT sla.user_id FROM store_location_access sla JOIN store_locations sl ON sl.id = sla.store_location_id WHERE sl.project_id = ${Number(projId)})`;
+  }
   const recent_activity = all(
     `SELECT al.id, al.entity, al.entity_id, al.action, al.reason, al.created_at,
             u.username, u.full_name
        FROM audit_log al LEFT JOIN users u ON u.id = al.user_id
-      ${ws == null ? '' : `WHERE al.user_id IS NOT NULL${wsSql('u.workshop_id', ws)}`}
+      ${actWhere}
       ORDER BY al.id DESC LIMIT 15`);
 
   res.json({
