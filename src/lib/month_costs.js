@@ -35,7 +35,7 @@ function monthlyRollup(ws) {
   }
   for (const r of all(`SELECT substr(sl.txn_date,1,7) m, ROUND(SUM(${OIL_VAL}),2) v FROM stock_ledger sl
                          JOIN products pr ON pr.id = sl.product_id LEFT JOIN job_cards j ON j.id = sl.job_id
-                        WHERE sl.kind='issue' AND COALESCE(sl.voided,0)=0 AND sl.txn_date IS NOT NULL AND ${OIL_NOT_SERVICE} AND LOWER(pr.name) NOT LIKE '%cotton waste%'${wsSql(OIL_WS, ws)} GROUP BY m`)) if (r.m) M(r.m).oil = r.v || 0;
+                        WHERE sl.kind='issue' AND COALESCE(sl.voided,0)=0 AND sl.txn_date IS NOT NULL AND sl.mtn_id IS NULL AND COALESCE(sl.consumer,'') <> 'Site Transfer' AND sl.mtn_no IS NULL AND ${OIL_NOT_SERVICE} AND LOWER(pr.name) NOT LIKE '%cotton waste%'${wsSql(OIL_WS, ws)} GROUP BY m`)) if (r.m) M(r.m).oil = r.v || 0;
   for (const r of all(`SELECT substr(i.issue_date,1,7) m, ROUND(SUM(i.qty * COALESCE(i.unit_price, 0)), 2) v
                          FROM issues i LEFT JOIN job_cards j ON j.id = i.job_id
                         WHERE (LOWER(i.category) LIKE '%lubric%' OR LOWER(i.category) LIKE '%oil%')
@@ -46,7 +46,7 @@ function monthlyRollup(ws) {
   }
   for (const r of all(`SELECT substr(t.txn_date,1,7) m, ROUND(SUM(ABS(t.qty) * COALESCE(t.unit_price, si.unit_cost, 0)), 2) v
                          FROM general_item_txns t JOIN store_items si ON si.id = t.store_item_id LEFT JOIN job_cards j ON j.id = t.job_id
-                        WHERE t.txn_type = 'issue' AND t.txn_date IS NOT NULL${wsSql('COALESCE(j.workshop_id, t.store_id)', ws)} GROUP BY m`)) if (r.m) M(r.m).general = r.v || 0;
+                        WHERE t.txn_type = 'issue' AND t.txn_date IS NOT NULL AND t.mtn_id IS NULL AND COALESCE(t.ref,'') <> 'MTN Transfer'${wsSql('COALESCE(j.workshop_id, t.store_id)', ws)} GROUP BY m`)) if (r.m) M(r.m).general = r.v || 0;
   for (const r of all(`SELECT substr(i.issue_date,1,7) m, ROUND(SUM(ABS(i.qty) * COALESCE(i.unit_price, si.unit_cost, 0)), 2) v
                          FROM issues i
                          LEFT JOIN store_items si ON si.id = i.store_item_id
@@ -91,7 +91,7 @@ function monthAssets(month, ws) {
                         WHERE m.asset_id IS NOT NULL AND g.unit_price IS NOT NULL AND substr(g.delivery_date,1,7)=?${wsSql(GRN_WS, ws)} GROUP BY m.asset_id`, month)) A(r.id).material = r.v || 0;
   for (const r of all(`SELECT sl.asset_id id, ROUND(SUM(${OIL_VAL}),2) v FROM stock_ledger sl JOIN products pr ON pr.id=sl.product_id
                          LEFT JOIN job_cards j ON j.id = sl.job_id
-                        WHERE sl.asset_id IS NOT NULL AND sl.kind='issue' AND COALESCE(sl.voided,0)=0 AND ${OIL_NOT_SERVICE} AND LOWER(pr.name) NOT LIKE '%cotton waste%' AND substr(sl.txn_date,1,7)=?${wsSql(OIL_WS, ws)} GROUP BY sl.asset_id`, month)) A(r.id).oil = r.v || 0;
+                        WHERE sl.asset_id IS NOT NULL AND sl.kind='issue' AND COALESCE(sl.voided,0)=0 AND sl.mtn_id IS NULL AND COALESCE(sl.consumer,'') <> 'Site Transfer' AND sl.mtn_no IS NULL AND ${OIL_NOT_SERVICE} AND LOWER(pr.name) NOT LIKE '%cotton waste%' AND substr(sl.txn_date,1,7)=?${wsSql(OIL_WS, ws)} GROUP BY sl.asset_id`, month)) A(r.id).oil = r.v || 0;
   for (const r of all(`SELECT i.asset_id id, ROUND(SUM(i.qty * COALESCE(i.unit_price, 0)), 2) v
                          FROM issues i LEFT JOIN job_cards j ON j.id = i.job_id
                         WHERE i.asset_id IS NOT NULL AND (LOWER(i.category) LIKE '%lubric%' OR LOWER(i.category) LIKE '%oil%')
@@ -102,7 +102,7 @@ function monthAssets(month, ws) {
   }
   for (const r of all(`SELECT t.asset_id id, ROUND(SUM(ABS(t.qty) * COALESCE(t.unit_price, si.unit_cost, 0)), 2) v
                          FROM general_item_txns t JOIN store_items si ON si.id = t.store_item_id LEFT JOIN job_cards j ON j.id = t.job_id
-                        WHERE t.asset_id IS NOT NULL AND t.txn_type='issue' AND substr(t.txn_date,1,7)=?${wsSql('COALESCE(j.workshop_id, t.store_id)', ws)} GROUP BY t.asset_id`, month)) A(r.id).general = r.v || 0;
+                        WHERE t.asset_id IS NOT NULL AND t.txn_type='issue' AND t.mtn_id IS NULL AND COALESCE(t.ref,'') <> 'MTN Transfer' AND substr(t.txn_date,1,7)=?${wsSql('COALESCE(j.workshop_id, t.store_id)', ws)} GROUP BY t.asset_id`, month)) A(r.id).general = r.v || 0;
   for (const r of all(`SELECT i.asset_id id, ROUND(SUM(ABS(i.qty) * COALESCE(i.unit_price, si.unit_cost, 0)), 2) v
                          FROM issues i
                          LEFT JOIN store_items si ON si.id = i.store_item_id

@@ -3573,17 +3573,17 @@ function syncMtnStock(mtnId) {
     if (l.store_item_id) {
       const prev = (get('SELECT balance_after FROM general_item_txns WHERE store_item_id = ? ORDER BY txn_date DESC, id DESC LIMIT 1', l.store_item_id) || {}).balance_after || 0;
       const newBal = prev - l.qty;
-      run(`INSERT INTO general_item_txns (store_item_id, txn_type, qty, balance_after, unit_price, ref, txn_date, store_id, physical_store_id)
-           VALUES (?, 'issue', ?, ?, ?, ?, (SELECT txn_date FROM mtn WHERE id = ?), ?, ?)`,
-        l.store_item_id, -l.qty, newBal, l.value, 'MTN Transfer', mtnId, l.from_store_id || 1, l.from_store_location_id || 2);
+      run(`INSERT INTO general_item_txns (store_item_id, txn_type, qty, balance_after, unit_price, ref, txn_date, store_id, physical_store_id, mtn_id)
+           VALUES (?, 'issue', ?, ?, ?, ?, (SELECT txn_date FROM mtn WHERE id = ?), ?, ?, ?)`,
+        l.store_item_id, -l.qty, newBal, l.value, 'MTN Transfer', mtnId, l.from_store_id || 1, l.from_store_location_id || 2, mtnId);
     } else {
       const match = lubricants.resolveLubricant(l.description, { record: false });
       if (match.resolved && match.productId) {
         const prev = (get('SELECT balance_after FROM stock_ledger WHERE product_id = ? ORDER BY txn_date DESC, id DESC LIMIT 1', match.productId) || {}).balance_after || 0;
         const newBal = prev - l.qty;
-        run(`INSERT INTO stock_ledger (product_id, kind, qty, balance_after, unit_price, consumer, mtn_no, txn_date, store_id, physical_store_id)
-             VALUES (?, 'issue', ?, ?, ?, ?, (SELECT mtn_no FROM mtn WHERE id = ?), (SELECT txn_date FROM mtn WHERE id = ?), ?, ?)`,
-          match.productId, -l.qty, newBal, l.value, l.to_location || 'Site Transfer', mtnId, mtnId, l.from_store_id || 1, l.from_store_location_id || 2);
+        run(`INSERT INTO stock_ledger (product_id, kind, qty, balance_after, unit_price, consumer, mtn_no, txn_date, store_id, physical_store_id, mtn_id)
+             VALUES (?, 'issue', ?, ?, ?, ?, (SELECT mtn_no FROM mtn WHERE id = ?), (SELECT txn_date FROM mtn WHERE id = ?), ?, ?, ?)`,
+          match.productId, -l.qty, newBal, l.value, l.to_location || 'Site Transfer', mtnId, mtnId, l.from_store_id || 1, l.from_store_location_id || 2, mtnId);
       }
     }
   }

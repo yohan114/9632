@@ -306,10 +306,10 @@ function buildRepair(wb, ym, period, wsId) {
     j.material = r2(material);
     j.oil = r2(oilFromParts + ((get(`SELECT ROUND(SUM(ABS(sl.qty) * COALESCE(sl.unit_price, pr.unit_price, 0)), 2) v
          FROM stock_ledger sl JOIN products pr ON pr.id = sl.product_id
-        WHERE sl.job_id = ? AND sl.kind = 'issue' AND ${LUBE} AND COALESCE(sl.voided,0) = 0 AND substr(sl.txn_date,1,7) = ?`, j.id, ym) || {}).v || 0));
+        WHERE sl.job_id = ? AND sl.kind = 'issue' AND ${LUBE} AND COALESCE(sl.voided,0) = 0 AND sl.mtn_id IS NULL AND COALESCE(sl.consumer,'') <> 'Site Transfer' AND sl.mtn_no IS NULL AND substr(sl.txn_date,1,7) = ?`, j.id, ym) || {}).v || 0));
     j.general = (get(`SELECT ROUND(SUM(ABS(t.qty) * COALESCE(t.unit_price, si.unit_cost, 0)), 2) v
          FROM general_item_txns t JOIN store_items si ON si.id = t.store_item_id
-        WHERE t.job_id = ? AND t.txn_type = 'issue' AND substr(t.txn_date,1,7) = ?`, j.id, ym) || {}).v || 0;
+        WHERE t.job_id = ? AND t.txn_type = 'issue' AND t.mtn_id IS NULL AND COALESCE(t.ref,'') <> 'MTN Transfer' AND substr(t.txn_date,1,7) = ?`, j.id, ym) || {}).v || 0;
     j.other = 0;
   }
 
@@ -791,7 +791,7 @@ function buildOils(wb, ym, period, repairOil, serviceOil, repairJobIds, wsId) {
        FROM stock_ledger sl JOIN products pr ON pr.id = sl.product_id
        LEFT JOIN assets a ON a.id = sl.asset_id LEFT JOIN projects prj ON prj.id = sl.project_id
        LEFT JOIN job_cards jc ON jc.id = sl.job_id
-      WHERE sl.kind = 'issue' AND ${LUBE} AND COALESCE(sl.voided,0) = 0
+      WHERE sl.kind = 'issue' AND ${LUBE} AND COALESCE(sl.voided,0) = 0 AND sl.mtn_id IS NULL AND COALESCE(sl.consumer,'') <> 'Site Transfer' AND sl.mtn_no IS NULL
         AND COALESCE(sl.consumer_type,'') <> 'service' AND substr(sl.txn_date,1,7) = ?${wsIs('COALESCE(jc.workshop_id, sl.store_id)', wsId)}
       ORDER BY sl.txn_date, sl.id`, ym);
   const rows = rawRows.filter((x) =>
@@ -845,7 +845,7 @@ function buildGeneral(wb, ym, period, repairJobIds, wsId) {
             t.source_issue_id, t.job_id
        FROM general_item_txns t JOIN store_items si ON si.id = t.store_item_id
        LEFT JOIN assets a ON a.id = t.asset_id LEFT JOIN job_cards jc ON jc.id = t.job_id
-      WHERE t.txn_type = 'issue' AND substr(t.txn_date,1,7) = ?${wsIs('COALESCE(jc.workshop_id, t.store_id)', wsId)}
+      WHERE t.txn_type = 'issue' AND t.mtn_id IS NULL AND COALESCE(t.ref,'') <> 'MTN Transfer' AND substr(t.txn_date,1,7) = ?${wsIs('COALESCE(jc.workshop_id, t.store_id)', wsId)}
       ORDER BY t.txn_date, t.id`, ym);
 
   const gitRows = rawGitRows.filter((r) => {

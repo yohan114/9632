@@ -395,7 +395,7 @@ function rebuild(opts = {}) {
     for (const t of all(
       `SELECT t.id, t.txn_type, t.qty, t.unit_price, t.txn_date, t.asset_id, t.job_id, t.ref, t.store_item_id, t.store_id, t.physical_store_id,
               si.name, si.category
-         FROM general_item_txns t JOIN store_items si ON si.id = t.store_item_id WHERE (t.source_issue_id IS NULL)${idsIn('general_item_txns', 't.id')}`)) {
+         FROM general_item_txns t JOIN store_items si ON si.id = t.store_item_id WHERE (t.source_issue_id IS NULL) AND t.mtn_id IS NULL AND COALESCE(t.ref,'') <> 'MTN Transfer'${idsIn('general_item_txns', 't.id')}`)) {
       const section = sectionOf(t.category);
       const kind = t.txn_type === 'issue' ? 'out' : (t.txn_type === 'opening' ? 'opening' : 'in');
       // Its 'receipt' rows are the same deliveries the GRN already records (23 of 32 match a
@@ -438,7 +438,7 @@ function rebuild(opts = {}) {
       `SELECT s.id, s.kind, s.qty, s.unit_price, s.txn_date, s.asset_id, s.job_id, s.mr_no, s.consumer, s.store_id, s.physical_store_id,
               p.name, p.code
          FROM stock_ledger s JOIN products p ON p.id = s.product_id
-        WHERE COALESCE(s.voided,0) = 0 AND (s.source_issue_id IS NULL)${idsIn('stock_ledger', 's.id')}`)) {
+        WHERE COALESCE(s.voided,0) = 0 AND (s.source_issue_id IS NULL) AND s.mtn_id IS NULL AND COALESCE(s.consumer,'') <> 'Site Transfer' AND s.mtn_no IS NULL${idsIn('stock_ledger', 's.id')}`)) {
       const kind = s.kind === 'issue' ? 'out' : (s.kind === 'opening' ? 'opening' : (s.kind === 'adjustment' ? 'adjust' : 'in'));
       // `adjust` is the one kind that carries a sign: every balance reads it as `THEN qty`, so a
       // negative delta subtracts with no change to a single balance query.

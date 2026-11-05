@@ -656,6 +656,7 @@ CREATE TABLE IF NOT EXISTS general_item_txns (
   job_id         INTEGER REFERENCES job_cards(id),
   unit_price     REAL,
   ref            TEXT,
+  mtn_id         INTEGER REFERENCES mtn(id),
   txn_date       TEXT NOT NULL DEFAULT (date('now')),
   created_at     TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -695,6 +696,7 @@ CREATE TABLE IF NOT EXISTS stock_ledger (
   consumer_type TEXT,                         -- asset / project / unknown / internal (from source)
   mr_no         TEXT,                         -- cross-links to Stores MRN
   mtn_no        TEXT,                         -- cross-links to Stores MTN
+  mtn_id        INTEGER REFERENCES mtn(id),
   voided        INTEGER NOT NULL DEFAULT 0,
   legacy_id     INTEGER,                      -- source transactions.id
   txn_date      TEXT NOT NULL DEFAULT (date('now')),

@@ -203,6 +203,8 @@ function migrate() {
   ensureColumn('issues', 'source_id', 'INTEGER');
   ensureColumn('general_item_txns', 'source_issue_id', 'INTEGER');
   ensureColumn('stock_ledger', 'source_issue_id', 'INTEGER');
+  ensureColumn('general_item_txns', 'mtn_id', 'INTEGER REFERENCES mtn(id)');
+  ensureColumn('stock_ledger', 'mtn_id', 'INTEGER REFERENCES mtn(id)');
   // Two-factor sign-in (src/lib/mfa.js). The keys are stored encrypted (src/lib/secretbox.js).
   ensureColumn('roles', 'require_mfa', 'INTEGER NOT NULL DEFAULT 0');
   ensureColumn('users', 'mfa_enabled', 'INTEGER NOT NULL DEFAULT 0');
