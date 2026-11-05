@@ -93,16 +93,21 @@ function migrateSingleDb(targetDb, label) {
   const mainStore = allStores.find((s) => s.store_type === 'MAIN_STORE') || allStores[0];
   const mainWsStore = allStores.find((s) => s.store_type === 'MAIN_WORKSHOP_STORE') || allStores[0];
 
-  const insertAccess = targetDb.prepare(`
+  const insertAdminAccess = targetDb.prepare(`
     INSERT OR IGNORE INTO store_location_access (user_id, store_location_id, can_view, can_request, can_issue, can_receive, can_dispatch, can_count)
     VALUES (?, ?, 1, 1, 1, 1, 1, 1)
+  `);
+
+  const insertAccess = targetDb.prepare(`
+    INSERT OR IGNORE INTO store_location_access (user_id, store_location_id, can_view, can_request, can_issue, can_receive, can_dispatch, can_count)
+    VALUES (?, ?, 1, 1, 0, 0, 0, 0)
   `);
 
   for (const u of users) {
     if (u.username === 'admin') {
       // Admin gets access to all stores
       for (const s of allStores) {
-        insertAccess.run(u.id, s.id);
+        insertAdminAccess.run(u.id, s.id);
       }
     } else if (u.username === 'mstore') {
       // Main storekeeper gets access to Central Main Stores + Central Workshop Stores
@@ -112,9 +117,9 @@ function migrateSingleDb(targetDb, label) {
       // Galagedara site user -> Galagedara Site Store
       const gwsStore = allStores.find((s) => s.workshop_id === 2 || s.code === 'SITE-STORE-GWS');
       if (gwsStore) insertAccess.run(u.id, gwsStore.id);
-    } else {
-      // Default to their workshop store or main store
-      const wsStore = (u.workshop_id && allStores.find((s) => s.workshop_id === u.workshop_id)) || mainStore;
+    } else if (u.workshop_id) {
+      // User with specific workshop store
+      const wsStore = allStores.find((s) => s.workshop_id === u.workshop_id);
       if (wsStore) insertAccess.run(u.id, wsStore.id);
     }
   }
