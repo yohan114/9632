@@ -385,19 +385,17 @@ function effectiveCaps(user) {
   const roles = user.roles || [];
   if (roles.includes('admin')) return CAP_KEYS.slice();
 
-  // Temporary access check
-  if (user.access_until) {
+  // Temporary access check: if elevation has expired, fall back to baseline role template
+  const isElevationExpired = user.access_until && (() => {
     const until = new Date(user.access_until);
-    if (!isNaN(until.getTime()) && until < new Date()) {
-      return [];
-    }
-  }
+    return !isNaN(until.getTime()) && until < new Date();
+  })();
 
-  // Start with role capabilities
+  // Start with role capabilities (baseline template)
   const set = new Set(capsForRoles(roles));
 
-  // Apply user-level capability overrides
-  if (user.id) {
+  // If elevation has NOT expired, apply user-level capability overrides
+  if (user.id && !isElevationExpired) {
     const userCaps = all('SELECT capability, granted FROM user_capabilities WHERE user_id = ?', user.id);
     for (const uc of userCaps) {
       if (isCapability(uc.capability)) {

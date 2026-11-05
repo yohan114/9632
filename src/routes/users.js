@@ -12,6 +12,7 @@ const workshops = require('../lib/workshops');
 const storeLocs = require('../lib/store_locations');
 const permissions = require('../lib/permissions');
 const capabilities = require('../lib/capabilities');
+const sod = require('../lib/sod');
 
 // A password an admin types is a TEMPORARY one: the admin knows it, and so may whoever it was
 // passed to on paper or over the phone. So it must still meet the rules (it is live until first
@@ -101,6 +102,25 @@ router.post('/', requireCap('users.manage'), asyncHandler((req, res) => {
     .map(([k]) => k);
   if (capsToGrant.length > 0) {
     rules.assertCanGrantCaps(req.user, capsToGrant);
+  }
+
+  // Segregation of Duties (SoD) validation (unless creating an admin account)
+  if (!roles.includes('admin')) {
+    const baseCaps = capabilities.capsForRoles(roles);
+    const prospectiveCaps = new Set(baseCaps);
+    for (const [k, v] of Object.entries(capUpdates)) {
+      if (v === true || v === 1) prospectiveCaps.add(k);
+      else if (v === false || v === 0) prospectiveCaps.delete(k);
+    }
+    const sodResult = sod.assertNoSodConflicts(Array.from(prospectiveCaps), b.override_reason || b.reason);
+    if (sodResult && sodResult.allowedWithException) {
+      audit.record({
+        userId: req.user.id,
+        entity: 'sod_governance_exception',
+        action: 'user_create_exception_approved',
+        after: { username: b.username, conflicts: sodResult.conflicts, reason: sodResult.reason }
+      });
+    }
   }
 
   // Validate access_until if provided

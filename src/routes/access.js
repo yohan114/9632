@@ -24,6 +24,7 @@ const capabilities = require('../lib/capabilities');
 const rules = require('../lib/access_rules');
 const audit = require('../lib/audit');
 const storeLocs = require('../lib/store_locations');
+const sod = require('../lib/sod');
 
 const router = express.Router();
 
@@ -113,6 +114,27 @@ router.post('/roles', requireCap('access.manage'), asyncHandler((req, res) => {
     for (const m of permissions.MODULE_KEYS) levels[m] = permissions.levelForRoles([from], m);
     rules.assertCanGrantCaps(req.user, caps);
     for (const [m, lvl] of Object.entries(levels)) rules.assertCanSetLevel(req.user, m, lvl);
+  }
+
+    if (caps && caps.length > 0) {
+    const sodResult = sod.assertNoSodConflicts(caps, req.body.override_reason || req.body.reason);
+    if (sodResult && sodResult.allowedWithException) {
+      audit.record({
+        userId: req.user.id,
+        entity: 'sod_governance_exception',
+        action: 'role_create_exception_approved',
+        after: { role: label, conflicts: sodResult.conflicts, reason: sodResult.reason }
+      });
+    }
+    const sensitive = sod.findSensitiveCapabilities(caps);
+    if (sensitive.length > 0) {
+      audit.record({
+        userId: req.user.id,
+        entity: 'role_security_alert',
+        action: 'sensitive_role_created',
+        after: { role: label, sensitive_caps: sensitive }
+      });
+    }
   }
 
   const name = newRoleName(label);
@@ -753,6 +775,38 @@ router.post('/people/:id/save', requireCap('access.manage'), asyncHandler((req, 
     rules.assertCanGrantCaps(req.user, capsToGrant);
   }
 
+    // Check Segregation of Duties (SoD) conflict rules unless target user has admin role
+  const targetRoles = all('SELECT r.name FROM user_roles ur JOIN roles r ON r.id = ur.role_id WHERE ur.user_id = ?', userId).map((r) => r.name);
+  if (!targetRoles.includes('admin')) {
+    const baseCaps = capabilities.capsForRoles(targetRoles);
+    const prospectiveCaps = new Set(baseCaps);
+    const existingOverrides = all('SELECT capability, granted FROM user_capabilities WHERE user_id = ?', userId);
+    for (const eo of existingOverrides) {
+      if (eo.granted) prospectiveCaps.add(eo.capability);
+      else prospectiveCaps.delete(eo.capability);
+    }
+    for (const [k, val] of Object.entries(capUpdates)) {
+      if (val === true || val === 1) {
+        prospectiveCaps.add(k);
+      } else if (val === false || val === 0) {
+        prospectiveCaps.delete(k);
+      } else if (val === null || val === undefined || val === '') {
+        if (baseCaps.includes(k)) prospectiveCaps.add(k);
+        else prospectiveCaps.delete(k);
+      }
+    }
+    const sodResult = sod.assertNoSodConflicts(Array.from(prospectiveCaps), b.override_reason || b.reason);
+    if (sodResult && sodResult.allowedWithException) {
+      audit.record({
+        userId: req.user.id,
+        entity: 'sod_governance_exception',
+        entityId: userId,
+        action: 'user_override_exception_approved',
+        after: { username: targetUser.username, conflicts: sodResult.conflicts, reason: sodResult.reason }
+      });
+    }
+  }
+
   tx(() => {
     // 1. Save section overrides
     for (const [sectionKey, lvl] of Object.entries(sectionUpdates)) {
@@ -1035,13 +1089,13 @@ router.get('/history', requireCap('access.manage'), asyncHandler((req, res) => {
 }));
 
 // 9. Compliance Access Matrix Report (People × 22 Sections)
-router.get('/report', requireCap('access.manage'), asyncHandler(async (req, res) => {
+router.get(['/review-report', '/report'], requireCap('access.manage'), asyncHandler(async (req, res) => {
   const users = all(`
     SELECT u.id, u.username, u.full_name, u.active, u.approval_limit, u.access_until,
-           w.name AS home_workshop_name
+           u.workshop_id, w.name AS home_workshop_name
       FROM users u
       LEFT JOIN workshops w ON w.id = u.workshop_id
-     WHERE u.active = 1
+     ${req.query.all ? '' : 'WHERE u.active = 1'}
      ORDER BY u.username
   `);
 
@@ -1056,46 +1110,106 @@ router.get('/report', requireCap('access.manage'), asyncHandler(async (req, res)
              (SELECT COUNT(*) FROM user_capabilities WHERE user_id = ?) AS cnt
     `, u.id, u.id).cnt || 0;
 
+    let storeLocations = [];
+    try {
+      storeLocations = storeLocs.getUserStoreLocations(u.id);
+    } catch (_) {}
+
+    let isElevationExpired = false;
+    if (u.access_until) {
+      const until = new Date(u.access_until);
+      isElevationExpired = !isNaN(until.getTime()) && until < new Date();
+    }
+
+    const sessionRow = get('SELECT MAX(COALESCE(last_seen_at, created_at)) AS last_seen FROM sessions WHERE user_id = ?', u.id);
+    const lastSeen = sessionRow ? sessionRow.last_seen : null;
+
+    const sodConflicts = !roleNames.includes('admin') ? sod.findSodConflicts(caps) : [];
+    const sensitiveCaps = sod.findSensitiveCapabilities(caps);
+
     return {
       id: u.id,
       username: u.username,
       full_name: u.full_name,
+      active: u.active === 1,
       roles: roleNames.join(', '),
+      role_list: roles,
       workshop: u.home_workshop_name || '',
       approval_limit: u.approval_limit,
       access_until: u.access_until,
+      is_elevation_expired: isElevationExpired,
       has_overrides: overrides > 0,
       overrides_count: overrides,
       caps_count: caps.length,
+      store_locations: storeLocations,
+      assigned_stores_summary: storeLocations.map((s) => `${s.store_code} (${s.store_name})`).join('; ') || 'None (Default Workshop)',
+      sod_conflicts: sodConflicts,
+      sod_conflict_count: sodConflicts.length,
+      sensitive_capabilities: sensitiveCaps,
+      last_seen: lastSeen,
       levels: perms,
     };
   });
 
-  if (req.query.format === 'xlsx') {
+  if (req.query.format === 'xlsx' || req.query.format === 'excel') {
     const { sendXlsx } = require('../lib/export');
-    const cols = [
+    const reviewCols = [
       { header: 'Username', key: 'username', width: 16 },
       { header: 'Full Name', key: 'full_name', width: 22 },
-      { header: 'Roles', key: 'roles', width: 20 },
+      { header: 'Status', key: 'status', width: 10 },
+      { header: 'Roles', key: 'roles', width: 22 },
       { header: 'Workshop', key: 'workshop', width: 16 },
-      { header: 'Overrides', key: 'overrides_count', width: 12 },
-      { header: 'Approval Limit', key: 'approval_limit', width: 15 },
-      { header: 'Access Until', key: 'access_until', width: 15 },
+      { header: 'Assigned Stores', key: 'assigned_stores', width: 32 },
+      { header: 'Last Login / Seen', key: 'last_seen', width: 20 },
+      { header: 'Access Until', key: 'access_until', width: 18 },
+      { header: 'Elevation Expired?', key: 'elevation_expired', width: 16 },
+      { header: 'Overrides Count', key: 'overrides_count', width: 14 },
+      { header: 'SoD Conflicts', key: 'sod_conflicts_summary', width: 35 },
+      { header: 'Sensitive Capabilities', key: 'sensitive_caps_summary', width: 35 }
+    ];
+    const reviewRows = matrix.map((m) => ({
+      username: m.username,
+      full_name: m.full_name || '',
+      status: m.active ? 'ACTIVE' : 'INACTIVE',
+      roles: m.roles,
+      workshop: m.workshop,
+      assigned_stores: m.assigned_stores_summary,
+      last_seen: m.last_seen || 'Never',
+      access_until: m.access_until || 'Indefinite',
+      elevation_expired: m.is_elevation_expired ? 'YES (FALLBACK ACTIVE)' : 'NO',
+      overrides_count: m.overrides_count,
+      sod_conflicts_summary: m.sod_conflicts.map((c) => `[${c.rule.code}] ${c.rule.title}`).join('; ') || 'None',
+      sensitive_caps_summary: m.sensitive_capabilities.join(', ') || 'None'
+    }));
+
+    const matrixCols = [
+      { header: 'Username', key: 'username', width: 16 },
+      { header: 'Roles', key: 'roles', width: 20 }
     ];
     for (const s of permissions.SECTIONS) {
-      cols.push({ header: s.label, key: s.key, width: 14 });
+      matrixCols.push({ header: s.label, key: s.key, width: 14 });
     }
-    const rows = matrix.map((m) => {
-      const r = { ...m };
+    const matrixRows = matrix.map((m) => {
+      const r = { username: m.username, roles: m.roles };
       for (const [k, v] of Object.entries(m.levels)) {
         r[k] = String(v).toUpperCase();
       }
       return r;
     });
-    return sendXlsx(res, 'Access-Control-Matrix.xlsx', [{ name: 'Access Matrix', columns: cols, rows }]);
+
+    return sendXlsx(res, 'Access-Governance-Review-Report.xlsx', [
+      { name: 'Access Review', columns: reviewCols, rows: reviewRows },
+      { name: 'Clearance Matrix', columns: matrixCols, rows: matrixRows }
+    ]);
   }
 
-  res.json({ sections: permissions.SECTIONS, users: matrix, people: matrix });
+  res.json({
+    generated_at: new Date().toISOString(),
+    total_users: matrix.length,
+    sections: permissions.SECTIONS,
+    users: matrix,
+    people: matrix
+  });
 }));
 
 // ---- approval limits (src/lib/approval_limits.js) ------------------------------------------
