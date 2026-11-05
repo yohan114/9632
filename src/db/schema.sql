@@ -525,6 +525,7 @@ CREATE TABLE IF NOT EXISTS mtn (
   to_store_id    INTEGER REFERENCES workshops(id),
   workshop_id    INTEGER REFERENCES workshops(id),
   status         TEXT DEFAULT 'draft',
+  stock_synced_at TEXT,
   rejection_reason TEXT,
   mrn_id         INTEGER REFERENCES mrn(id),
   auto_generated INTEGER DEFAULT 0,

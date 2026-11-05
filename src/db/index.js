@@ -1964,6 +1964,7 @@ function closureRulesAndUniversalTrace() {
   ensureColumn('mtn', 'from_store_id', 'INTEGER');
   ensureColumn('mtn', 'to_store_id', 'INTEGER');
   ensureColumn('mtn', 'workshop_id', 'INTEGER');
+  ensureColumn('mtn', 'stock_synced_at', 'TEXT');
 
   // Phase A: Site Authority Demand Approval Gate
   ensureColumn('mrn', 'site_authority_status', "TEXT NOT NULL DEFAULT 'approved'");

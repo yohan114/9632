@@ -3564,6 +3564,9 @@ function syncIssueToLedgers(issueId) {
 }
 
 function syncMtnStock(mtnId) {
+  const claim = run("UPDATE mtn SET stock_synced_at = datetime('now') WHERE id = ? AND stock_synced_at IS NULL", mtnId);
+  if (claim.changes !== 1) return;
+
   const lines = all('SELECT * FROM mtn_lines WHERE mtn_id = ?', mtnId);
   const lubricants = require('../lib/lubricants');
   for (const l of lines) {
@@ -4842,12 +4845,12 @@ router.post('/mtn', requireCap('stores.mtn.edit'), chainPipeline.idempotencyGuar
     return res.status(400).json({ error: 'Origin and destination store locations cannot be the same' });
   }
   if (fromLocId) {
-    const fl = get('SELECT id, is_active FROM store_locations WHERE id = ?', fromLocId);
+    const fl = get('SELECT id, COALESCE(active, 1) AS is_active FROM store_locations WHERE id = ?', fromLocId);
     if (!fl) return res.status(400).json({ error: 'Origin store location not found' });
     if (!fl.is_active) return res.status(400).json({ error: 'Origin store location is inactive' });
   }
   if (toLocId) {
-    const tl = get('SELECT id, is_active FROM store_locations WHERE id = ?', toLocId);
+    const tl = get('SELECT id, COALESCE(active, 1) AS is_active FROM store_locations WHERE id = ?', toLocId);
     if (!tl) return res.status(400).json({ error: 'Destination store location not found' });
     if (!tl.is_active) return res.status(400).json({ error: 'Destination store location is inactive' });
   }
@@ -4875,7 +4878,6 @@ router.post('/mtn', requireCap('stores.mtn.edit'), chainPipeline.idempotencyGuar
     stores.stampTransfer(info.lastInsertRowid);
     stores.checkTransfer(req.user, info.lastInsertRowid);
     stock.rebuild({ transfersOf: info.lastInsertRowid });
-    syncMtnStock(info.lastInsertRowid);
     return info.lastInsertRowid;
   });
   audit.record({ userId: req.user.id, entity: 'mtn', entityId: id, action: 'create',
