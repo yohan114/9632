@@ -416,6 +416,7 @@ function migrate() {
   // Preserve the source item category on stores records (9-category breakdown).
   ensureColumn('mrn_lines', 'category', 'TEXT');
   ensureColumn('issues', 'category', 'TEXT');
+  ensureColumn('issues', 'service_id', 'INTEGER REFERENCES service_jobs(id)');
   ensureColumn('mtn', 'category', 'TEXT');
   // Sub-category link (item_categories.id, always a LEAF/sub-category). The free-text
   // `category` column above stays and is written in step with it — every existing

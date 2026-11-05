@@ -949,14 +949,14 @@ router.post('/mrn', requireCap('stores.mrn.create'), chainPipeline.idempotencyGu
   // may be linked as well (it is what makes the request gate that job's closure), and
   // when it is, it must belong to the same vehicle.
   const requestType = b.request_type === 'general' ? 'general' : 'vehicle';
-  let assetId = null, unresolved = null, jobId = null;
+  let assetId = null, unresolved = null, jobId = null, job = null;
   if (requestType === 'vehicle') {
     const r = resolveAssetId(b);
     assetId = r.assetId;
     unresolved = r.unresolved;
     jobId = toInt(b.job_id) || null;
     if (jobId) {
-      const job = get('SELECT id, job_no, status, asset_id FROM job_cards WHERE id = ?', jobId);
+      job = get('SELECT id, job_no, status, asset_id, type, issue_store_location_id FROM job_cards WHERE id = ?', jobId);
       if (!job) return res.status(400).json({ error: 'Unknown job card' });
       { const no = scope.jobRefusal(req.user, jobId); if (no) return res.status(403).json(no); }   // Step 2c
       // A finished card takes no new requests (jobstate.checkAdd).
@@ -985,7 +985,7 @@ router.post('/mrn', requireCap('stores.mrn.create'), chainPipeline.idempotencyGu
   const reqBy = String(b.requested_by || '').trim() || (ru ? (ru.full_name || ru.username) : null);
   const targetStoreLocationId = (b.target_store_location_id != null && b.target_store_location_id !== '')
     ? toInt(b.target_store_location_id)
-    : toInt(req.headers['x-store-location-id'] || req.user?.activeStoreId);
+    : (job && job.type === 'fabrication' ? (job.issue_store_location_id || 1) : toInt(req.headers['x-store-location-id'] || req.user?.activeStoreId));
   const reqWsId = require('../lib/workshops').forRequest(req.user, jobId);
   const targetLoc = targetStoreLocationId ? storeLocations.getStoreLocation(targetStoreLocationId) : null;
   const isSiteReq = (targetLoc && targetLoc.store_type === 'SITE_STORE') || (reqWsId && reqWsId !== 1);
@@ -3512,6 +3512,54 @@ function receiptIsJobs(grnId, jobId) {
     grnId, jobId, jobId);
 }
 
+function checkFabricationOrStoreIssueAccess(user, targetPhysStoreId, jobId) {
+  if (Number(targetPhysStoreId) === 1) {
+    const context = require('../lib/context');
+    const isMainStaff = context.isMainStoreUser(user);
+    if (!jobId) {
+      if (!isMainStaff) {
+        const err = new Error('Issues without a job from Central Main Stores are limited to main-store staff.');
+        err.status = 403;
+        throw err;
+      }
+      return;
+    }
+    const j = get('SELECT id, type, workshop_id, issue_store_location_id FROM job_cards WHERE id = ?', jobId);
+    if (!j) return;
+    if (j.type === 'fabrication') {
+      const isSiteUser = user.workshop_id && user.workshop_id !== 1 && !isMainStaff;
+      let hasGrant = false;
+      try {
+        const access = get('SELECT can_issue FROM store_location_access WHERE user_id = ? AND store_location_id = 1', user.id);
+        hasGrant = access && access.can_issue === 1;
+      } catch {}
+      if (!isMainStaff && !hasGrant) {
+        const err = new Error('You do not have permission to issue materials from Central Main Stores.');
+        err.status = 403;
+        throw err;
+      }
+      if (isSiteUser && !hasGrant) {
+        const err = new Error('Site users cannot issue materials for fabrication job cards from Central Main Stores.');
+        err.status = 403;
+        throw err;
+      }
+      return;
+    }
+    if (!isMainStaff) {
+      let hasGrant = false;
+      try {
+        const access = get('SELECT can_issue FROM store_location_access WHERE user_id = ? AND store_location_id = 1', user.id);
+        hasGrant = access && access.can_issue === 1;
+      } catch {}
+      if (!hasGrant) {
+        const err = new Error('Issues from Central Main Stores are limited to main-store staff.');
+        err.status = 403;
+        throw err;
+      }
+    }
+  }
+}
+
 function syncIssueToLedgers(issueId) {
   const iss = get(`
     SELECT i.*, si.is_general, si.balance AS item_balance, si.unit_cost
@@ -3682,8 +3730,10 @@ router.post('/stock-issue', requireCap('stores.stock_issue'), asyncHandler((req,
   // reports. A job card knows its own vehicle; a bare vehicle is resolved to that
   // vehicle's open card, falling back to the General Workshop container.
   let landedOn = null;
+  let jobCardObj = null;
   if (jobId) {
-    const j = get('SELECT id, job_no, status, asset_id, partial_closed_at FROM job_cards WHERE id = ?', jobId);
+    const j = get('SELECT id, job_no, status, asset_id, partial_closed_at, type, issue_store_location_id FROM job_cards WHERE id = ?', jobId);
+    jobCardObj = j;
     if (!j) return res.status(400).json({ error: 'Unknown job card' });
     // A closed card can still take a late issue, but only deliberately (jobstate.checkAdd). A partly
     // closed one takes only what was received against its OWN requests — nothing else off the shelf.
@@ -3718,6 +3768,10 @@ router.post('/stock-issue', requireCap('stores.stock_issue'), asyncHandler((req,
   const skipped = [];
   // Stage 4: the store it all comes out of — the job card's workshop's (a received line: the store
   // that received it, stamped on the issue row itself).
+  const isFabricationCard = jobCardObj && jobCardObj.type === 'fabrication';
+  const fabStoreId = isFabricationCard ? (jobCardObj.issue_store_location_id || 1) : null;
+  checkFabricationOrStoreIssueAccess(req.user, fabStoreId || (b.physical_store_id ? toInt(b.physical_store_id) : 2), jobId);
+
   const multiStore = stores.isMulti();
   const issueStore = stores.forEntry(req.user, jobId, issueDate);
 
@@ -3746,11 +3800,13 @@ router.post('/stock-issue', requireCap('stores.stock_issue'), asyncHandler((req,
     }
     const cat = categories.resolve({ category: rec.category || SECTION_CATEGORY[rec.section] });
 
+    let physStoreId = fabStoreId || rec.physical_store_id || null;
+    let legStoreId = isFabricationCard ? 1 : (rec.store_id || null);
     const info = run(
-      `INSERT INTO issues (asset_id, job_id, grn_id, store_item_id, description, qty, unit_price, issue_date, issued_by, category, category_id, min_id, min_no, purpose)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO issues (asset_id, job_id, grn_id, store_item_id, description, qty, unit_price, issue_date, issued_by, category, category_id, min_id, min_no, purpose, physical_store_id, store_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       assetId, jobId, rec.grn_id, rec.store_item_id || null, rec.description, qty, linePrice, issueDate, issuedBy,
-      cat.category, cat.category_id, minId, minNo, purposeText);
+      cat.category, cat.category_id, minId, minNo, purposeText, physStoreId, legStoreId);
 
     // Was the cost already booked AT RECEIPT? That is specifically a source_type='grn' part —
     // matching any job_part would also match the 'issue' part this very handler writes, so the
@@ -3787,12 +3843,13 @@ router.post('/stock-issue', requireCap('stores.stock_issue'), asyncHandler((req,
     // store that received it, which is the store the issue row was stamped with.
     run(
       `INSERT INTO stock_moves (section, kind, item_key, item_name, qty, unit_price, txn_date,
-                                asset_id, job_id, mrn_line_id, grn_id, store_item_id, ref, note, source_table, source_id, counts, store_id)
-       VALUES (?, 'out', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'issues', ?, ?, ?)`,
+                                asset_id, job_id, mrn_line_id, grn_id, store_item_id, ref, note, source_table, source_id, counts, store_id, physical_store_id)
+       VALUES (?, 'out', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'issues', ?, ?, ?, ?)`,
       rec.section, rec.item_key, rec.description, qty, linePrice, issueDate,
       assetId, jobId, rec.mrn_line_id, rec.grn_id, rec.store_item_id || null,
       rec.mrn_no ? 'MRN ' + rec.mrn_no : null, clean(ln.note) || null, info.lastInsertRowid, rec.counts,
-      get('SELECT store_id FROM issues WHERE id = ?', info.lastInsertRowid).store_id);
+      legStoreId || get('SELECT store_id FROM issues WHERE id = ?', info.lastInsertRowid).store_id,
+      physStoreId || get('SELECT physical_store_id FROM issues WHERE id = ?', info.lastInsertRowid).physical_store_id);
     // The one issue rule (Part 3): not more than the shelf holds.
     stockRule.check([{ section: rec.section, item_key: rec.item_key, store_id: get('SELECT store_id FROM issues WHERE id = ?', info.lastInsertRowid).store_id,
       delta: rec.counts ? -qty : 0 }]);
@@ -3818,18 +3875,26 @@ router.post('/stock-issue', requireCap('stores.stock_issue'), asyncHandler((req,
       if (!item) { skipped.push(`item ${ln.stock_item_id} is not in the catalogue — nothing issued for it`); continue; }
 
       // Stage 4: the balance of the shelf it comes off — the job card's workshop's store.
-      const before = stock.balanceOf(item.section, item.item_key, multiStore ? issueStore : null);
+      const before = stock.balanceOf(item.section, item.item_key, isFabricationCard ? { physical_store_id: fabStoreId } : (multiStore ? issueStore : null));
+      if (isFabricationCard && before < qty - 0.001) {
+        const e = new Error(`${item.code || item.name}: not enough stock in Central Main Stores (available: ${before}, requested: ${qty}).`);
+        e.status = 409;
+        throw e;
+      }
       const price = ln.unit_price === '' || ln.unit_price == null ? item.unit_price : toNum(ln.unit_price);
 
       const linePrice = price == null ? null : n2price(price);
       const cat = categories.resolve({ category_id: ln.category_id, category: ln.category || SECTION_CATEGORY[item.section] });
 
       // The issue document.
+      let physStoreId = fabStoreId || null;
+      let legStoreId = isFabricationCard ? 1 : null;
       const info = run(
-        `INSERT INTO issues (asset_id, job_id, store_item_id, description, qty, unit_price, issue_date, issued_by, category, category_id, min_id, min_no, purpose)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO issues (asset_id, job_id, store_item_id, description, qty, unit_price, issue_date, issued_by, category, category_id, min_id, min_no, purpose, physical_store_id, store_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         assetId, jobId, item.source_table === 'store_items' ? item.source_id : null,
-        item.name, qty, linePrice, issueDate, issuedBy, cat.category, cat.category_id, minId, minNo, clean(ln.note) || purposeText);
+        item.name, qty, linePrice, issueDate, issuedBy, cat.category, cat.category_id, minId, minNo, clean(ln.note) || purposeText,
+        physStoreId, legStoreId);
 
       // Same three writes POST /issues makes, for the same reasons: the job_part is what
       // makes the line count EXACTLY ONCE in computeJobCost, and the rollup upsert moves a
@@ -3854,15 +3919,18 @@ router.post('/stock-issue', requireCap('stores.stock_issue'), asyncHandler((req,
       // The stock movement — this is what deducts the balance and shows in the section view.
       run(
         `INSERT INTO stock_moves (section, kind, item_key, item_name, qty, unit_price, txn_date,
-                                  asset_id, job_id, store_item_id, ref, note, source_table, source_id, counts, store_id)
-         VALUES (?, 'out', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'issues', ?, 1, ?)`,
+                                  asset_id, job_id, store_item_id, ref, note, source_table, source_id, counts, store_id, physical_store_id)
+         VALUES (?, 'out', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'issues', ?, 1, ?, ?)`,
         item.section, item.item_key, item.name, qty, price == null ? null : n2price(price), issueDate,
         assetId, jobId, item.source_table === 'store_items' ? item.source_id : null,
         item.code, clean(ln.note) || null, info.lastInsertRowid,
-        get('SELECT store_id FROM issues WHERE id = ?', info.lastInsertRowid).store_id);
+        legStoreId || get('SELECT store_id FROM issues WHERE id = ?', info.lastInsertRowid).store_id,
+        physStoreId || get('SELECT physical_store_id FROM issues WHERE id = ?', info.lastInsertRowid).physical_store_id);
       // The one issue rule (Part 3): once it has started in this store, nothing past zero.
       stockRule.check([{ section: item.section, item_key: item.item_key,
-        store_id: get('SELECT store_id FROM issues WHERE id = ?', info.lastInsertRowid).store_id, delta: -qty }]);
+        store_id: legStoreId || get('SELECT store_id FROM issues WHERE id = ?', info.lastInsertRowid).store_id,
+        physical_store_id: physStoreId || get('SELECT physical_store_id FROM issues WHERE id = ?', info.lastInsertRowid).physical_store_id,
+        delta: -qty }]);
       syncIssueToLedgers(info.lastInsertRowid);
 
       const after = Math.round((before - qty) * 100) / 100;
@@ -4237,8 +4305,10 @@ router.post('/issues/:id/return', requireCap('stores.issue_return'), asyncHandle
   if (date < String(i.issue_date).slice(0, 10)) return res.status(400).json({ error: 'A return cannot be dated before the issue.' });
 
   const out = tx(() => {
-    const rid = run(`INSERT INTO issue_returns (issue_id, qty, return_date, note, store_id, returned_by) VALUES (?, ?, ?, ?, ?, ?)`,
-      i.id, qty, date, clean(b.note) || null, i.store_id || null, req.user.id).lastInsertRowid;
+    const om = get("SELECT * FROM stock_moves WHERE source_table = 'issues' AND source_id = ? AND kind = 'out' LIMIT 1", i.id);
+    const returnPhysStoreId = i.physical_store_id || (om && om.physical_store_id) || null;
+    const rid = run(`INSERT INTO issue_returns (issue_id, qty, return_date, note, store_id, physical_store_id, returned_by) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      i.id, qty, date, clean(b.note) || null, i.store_id || null, returnPhysStoreId, req.user.id).lastInsertRowid;
     // The cost comes off the job that carries it: the issue's own line, or — for a received line
     // costed at receipt — the job the request was for.
     const own = get("SELECT job_id, unit_price FROM job_parts WHERE source_type = 'issue' AND source_id = ?", i.id);
@@ -4253,13 +4323,33 @@ router.post('/issues/:id/return', requireCap('stores.issue_return'), asyncHandle
       run('UPDATE issue_returns SET job_part_id = ? WHERE id = ?', jp, rid);
     }
     // Back on the shelf it left: the mirror of the issue's own movement (same item, store and count).
-    const om = get("SELECT * FROM stock_moves WHERE source_table = 'issues' AND source_id = ? AND kind = 'out' LIMIT 1", i.id);
     if (om) {
       run(`INSERT OR IGNORE INTO stock_moves (section, kind, item_key, item_name, qty, unit_price, txn_date, asset_id, job_id,
-                                              mrn_line_id, grn_id, store_item_id, ref, note, source_table, source_id, counts, store_id)
-           VALUES (?, 'in', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Return', ?, 'issue_returns', ?, ?, ?)`,
+                                              mrn_line_id, grn_id, store_item_id, ref, note, source_table, source_id, counts, store_id, physical_store_id)
+           VALUES (?, 'in', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Return', ?, 'issue_returns', ?, ?, ?, ?)`,
       om.section, om.item_key, om.item_name, qty, om.unit_price, date, om.asset_id, om.job_id,
-      om.mrn_line_id, om.grn_id, om.store_item_id, clean(b.note) || null, rid, om.counts, om.store_id);
+      om.mrn_line_id, om.grn_id, om.store_item_id, clean(b.note) || null, rid, om.counts, om.store_id, om.physical_store_id || returnPhysStoreId);
+    }
+    if (returnPhysStoreId) {
+      const origSl = get('SELECT * FROM stock_ledger WHERE source_issue_id = ? LIMIT 1', i.id);
+      if (origSl) {
+        const prevBal = (get('SELECT balance_after FROM stock_ledger WHERE product_id = ? AND physical_store_id = ? ORDER BY txn_date DESC, id DESC LIMIT 1', origSl.product_id, returnPhysStoreId) || {}).balance_after || 0;
+        const newBal = prevBal + Math.abs(qty);
+        run(`
+          INSERT INTO stock_ledger (product_id, kind, qty, balance_after, unit_price, asset_id, job_id, consumer, mr_no, txn_date, store_id, physical_store_id)
+          VALUES (?, 'receive', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `, origSl.product_id, Math.abs(qty), newBal, origSl.unit_price, i.asset_id || null, i.job_id || null, 'Return from ' + (i.job_id ? `Job ${i.job_id}` : 'issue'), 'Return ' + rid, date, i.store_id || null, returnPhysStoreId);
+        run('UPDATE products SET stock_qty = COALESCE(stock_qty, 0) + ? WHERE id = ?', Math.abs(qty), origSl.product_id);
+      }
+      const origGit = get('SELECT * FROM general_item_txns WHERE source_issue_id = ? LIMIT 1', i.id);
+      if (origGit) {
+        const prevBal = (get('SELECT balance_after FROM general_item_txns WHERE store_item_id = ? AND physical_store_id = ? ORDER BY txn_date DESC, id DESC LIMIT 1', origGit.store_item_id, returnPhysStoreId) || {}).balance_after || 0;
+        const newBal = prevBal + Math.abs(qty);
+        run(`
+          INSERT INTO general_item_txns (store_item_id, txn_type, qty, balance_after, unit_price, asset_id, job_id, ref, txn_date, store_id, physical_store_id)
+          VALUES (?, 'return', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `, origGit.store_item_id, Math.abs(qty), newBal, origGit.unit_price, i.asset_id || null, i.job_id || null, 'Return ' + rid, date, i.store_id || null, returnPhysStoreId);
+      }
     }
     const rLineId = i.mrn_line_id || (i.grn_id ? get('SELECT mrn_line_id FROM grn WHERE id = ?', i.grn_id)?.mrn_line_id : null);
     if (rLineId) supplyRoutes.onIssueReturned(rLineId, qty);
@@ -4292,9 +4382,17 @@ router.post('/issues', requireCap('stores.issue'), chainPipeline.idempotencyGuar
   // picker offers (see GET /general-job), not a silent fallback.
   const jobId = toInt(b.job_id) || null;
   if (!jobId) return res.status(400).json({ error: 'Select the job card this issue belongs to' });
-  const job = get('SELECT id, job_no, status, asset_id FROM job_cards WHERE id = ?', jobId);
+  const job = get('SELECT id, job_no, status, asset_id, type, issue_store_location_id FROM job_cards WHERE id = ?', jobId);
   if (!job) return res.status(400).json({ error: 'Unknown job card' });
   { const no = scope.jobRefusal(req.user, jobId); if (no) return res.status(403).json(no); }   // Step 2c
+
+  let physStoreId = b.physical_store_id != null && b.physical_store_id !== '' ? toInt(b.physical_store_id) : null;
+  let legStoreId = b.store_id != null && b.store_id !== '' ? toInt(b.store_id) : null;
+  if (job && job.type === 'fabrication') {
+    physStoreId = job.issue_store_location_id || 1;
+    legStoreId = 1;
+  }
+  checkFabricationOrStoreIssueAccess(req.user, physStoreId || 2, jobId);
   // A closed / rejected card can still take a late issue, but only deliberately: the
   // client has to come back with allow_closed so a mis-picked card can't slip through.
   const isClosed = jobstate.isFinal(job.status);   // also marks the audit entry as a late issue
@@ -4311,6 +4409,15 @@ router.post('/issues', requireCap('stores.issue'), chainPipeline.idempotencyGuar
   const lineCost = qty * (unitPrice || 0);
   const [yr, mo] = issueDate.split('-').map((n) => parseInt(n, 10)); // rollup period
   const validPeriod = yr >= 1900 && mo >= 1 && mo <= 12;
+
+  if (job && job.type === 'fabrication') {
+    const sec = cat.category === 'filters' ? 'filter' : (String(cat.category || '').toLowerCase().includes('oil') ? 'oil' : 'general');
+    const key = stock.itemKey(sec, b.description);
+    const bal = stock.balanceOf(sec, key, { physical_store_id: physStoreId });
+    if (bal < qty - 0.001) {
+      return res.status(409).json({ error: `not enough stock in Central Main Stores for ${b.description} (available: ${bal}, requested: ${qty}).` });
+    }
+  }
 
   const grnId = toInt(b.grn_id) || null;
   const mrnLineId = toInt(b.mrn_line_id) || (grnId ? get('SELECT mrn_line_id FROM grn WHERE id = ?', grnId)?.mrn_line_id : null);
@@ -4332,10 +4439,11 @@ router.post('/issues', requireCap('stores.issue'), chainPipeline.idempotencyGuar
 
   const issueId = tx(() => {
     const info = run(
-      `INSERT INTO issues (asset_id, job_id, service_id, store_item_id, description, qty, unit_price, issue_date, issued_by, category, category_id, grn_id, mrn_line_id, chain_no)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO issues (asset_id, job_id, service_id, store_item_id, description, qty, unit_price, issue_date, issued_by, category, category_id, grn_id, mrn_line_id, chain_no, physical_store_id, store_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       assetId || null, jobId, serviceId, toInt(b.store_item_id), b.description, qty,
-      unitPrice, issueDate, b.issued_by || null, cat.category, cat.category_id, grnId, mrnLineId, chainNo
+      unitPrice, issueDate, b.issued_by || null, cat.category, cat.category_id, grnId, mrnLineId, chainNo,
+      physStoreId, legStoreId
     );
     if (mrnLineId) supplyRoutes.onIssueCreated(mrnLineId, qty);
     // Materialise the issue as a source_type='issue' job_part (mirrors migrate/09) so it
@@ -4462,11 +4570,14 @@ router.post('/min', requireCap('stores.issue'), chainPipeline.idempotencyGuard('
   let job = null;
   let assetId = toInt(b.asset_id) || null;
   if (jobId) {
-    job = get('SELECT id, job_no, status, asset_id, workshop_id FROM job_cards WHERE id = ?', jobId);
+    job = get('SELECT id, job_no, status, asset_id, workshop_id, type, issue_store_location_id FROM job_cards WHERE id = ?', jobId);
     if (!job) return res.status(400).json({ error: 'Unknown job card' });
     { const no = scope.jobRefusal(req.user, jobId); if (no) return res.status(403).json(no); }   // Step 2c
     if (!assetId && job.asset_id) assetId = job.asset_id;
   }
+  const isFabrication = job && job.type === 'fabrication';
+  const targetPhysStoreId = isFabrication ? (job.issue_store_location_id || 1) : (b.physical_store_id ? toInt(b.physical_store_id) : null);
+  checkFabricationOrStoreIssueAccess(req.user, targetPhysStoreId || 2, jobId);
   // Step 2c: the note is its card's workshop's, else the workshop of whoever writes it.
   const noteWs = (job && job.workshop_id) || require('../lib/workshops').homeOf(req.user);
   const projectId = toInt(b.project_id) || null;
@@ -4483,6 +4594,26 @@ router.post('/min', requireCap('stores.issue'), chainPipeline.idempotencyGuard('
 
   const [yr, mo] = issueDate.split('-').map((n) => parseInt(n, 10));
   const validPeriod = yr >= 1900 && mo >= 1 && mo <= 12;
+
+  if (isFabrication) {
+    for (let idx = 0; idx < items.length; idx++) {
+      const it = items[idx];
+      const q = toNum(it.qty, 1);
+      const sId = toInt(it.store_item_id) || null;
+      let desc = clean(it.description);
+      if (sId && !desc) {
+        const si = get('SELECT name FROM store_items WHERE id = ?', sId);
+        if (si) desc = si.name;
+      }
+      const cat = categories.resolve(it);
+      const sec = cat.category === 'filters' ? 'filter' : (String(cat.category || '').toLowerCase().includes('oil') ? 'oil' : 'general');
+      const key = stock.itemKey(sec, desc);
+      const bal = stock.balanceOf(sec, key, { physical_store_id: targetPhysStoreId });
+      if (bal < q - 0.001) {
+        return res.status(409).json({ error: `not enough stock in Central Main Stores for ${desc} (available: ${bal}, requested: ${q}).` });
+      }
+    }
+  }
 
   // Inherit or resolve chain_no
   let chainNo = clean(b.chain_no);
@@ -4527,7 +4658,7 @@ router.post('/min', requireCap('stores.issue'), chainPipeline.idempotencyGuard('
       let catName = clean(it.category) || null;
 
       if (sId) {
-        const si = get('SELECT id, name, unit, unit_price, category_id FROM store_items WHERE id = ?', sId);
+        const si = get('SELECT id, name, unit, unit_cost AS unit_price, category_id FROM store_items WHERE id = ?', sId);
         if (si) {
           if (!desc) desc = si.name;
           if (!unit && si.unit) unit = si.unit;
@@ -4540,12 +4671,15 @@ router.post('/min', requireCap('stores.issue'), chainPipeline.idempotencyGuard('
       const cost = q * (unitPrice || 0);
       sumCost += cost;
 
+      let linePhysStoreId = isFabrication ? targetPhysStoreId : (it.physical_store_id != null && it.physical_store_id !== '' ? toInt(it.physical_store_id) : targetPhysStoreId);
+      let lineLegStoreId = isFabrication ? 1 : (it.store_id != null && it.store_id !== '' ? toInt(it.store_id) : null);
       const ins = run(
         `INSERT INTO issues (asset_id, job_id, store_item_id, description, qty, unit, unit_price,
-                             issue_date, issued_by, category, category_id, min_id, min_no, purpose, chain_no)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                             issue_date, issued_by, category, category_id, min_id, min_no, purpose, chain_no, physical_store_id, store_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         assetId, jobId, sId, desc, q, unit, unitPrice,
-        issueDate, reqBy, catName, catId, minId, minNo, clean(it.purpose) || purpose, chainNo
+        issueDate, reqBy, catName, catId, minId, minNo, clean(it.purpose) || purpose, chainNo,
+        linePhysStoreId, lineLegStoreId
       );
       const isId = ins.lastInsertRowid;
       createdIds.push(isId);

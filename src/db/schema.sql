@@ -471,6 +471,7 @@ CREATE TABLE IF NOT EXISTS issues (
   qty           REAL NOT NULL DEFAULT 1,
   unit          TEXT DEFAULT 'nos',
   unit_price    REAL,                         -- NULL = awaiting price
+  service_id    INTEGER REFERENCES service_jobs(id),
   issue_date    TEXT NOT NULL DEFAULT (date('now')),
   issued_by     TEXT,
   purpose       TEXT,

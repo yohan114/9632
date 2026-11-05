@@ -73,7 +73,10 @@ const homeStore = (user) => storeOf(workshops.homeOf(user));
 
 /** The store a book entry comes out of: its job card's workshop's, else the person's own. */
 function forEntry(user, jobId, date) {
-  const j = jobId ? get('SELECT workshop_id FROM job_cards WHERE id = ?', jobId) : null;
+  const j = jobId ? get('SELECT workshop_id, type, issue_store_location_id FROM job_cards WHERE id = ?', jobId) : null;
+  if (j && j.type === 'fabrication') {
+    return j.issue_store_location_id || 1;
+  }
   return storeOf(j ? j.workshop_id : workshops.homeOf(user), date);
 }
 
