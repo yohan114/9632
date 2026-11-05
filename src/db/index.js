@@ -838,7 +838,10 @@ function migrate() {
   }
   // General & Lubricant Issues reconciliation & Stock sync
   try {
-    require('../migrate/045_fix_issues_mtn_stock').runMigration(db);
+    if (!db.prepare("SELECT 1 FROM settings WHERE key = 'migration_045_done'").get()) {
+      require('../migrate/045_fix_issues_mtn_stock').runMigration(db);
+      db.prepare("INSERT INTO settings (key, value) VALUES ('migration_045_done', '1')").run();
+    }
   } catch (err) {
     console.warn('Migration 045 auto-sync skipped:', err.message);
   }
@@ -850,7 +853,10 @@ function migrate() {
   }
   // Deduplicate General Items, clean overlaps & recalculate costs
   try {
-    require('../migrate/047_deduplicate_general_items').runMigration(db);
+    if (!db.prepare("SELECT 1 FROM settings WHERE key = 'migration_047_done'").get()) {
+      require('../migrate/047_deduplicate_general_items').runMigration(db);
+      db.prepare("INSERT INTO settings (key, value) VALUES ('migration_047_done', '1')").run();
+    }
   } catch (err) {
     console.warn('Migration 047 deduplication skipped:', err.message);
   }
@@ -862,7 +868,10 @@ function migrate() {
   }
   // Store Location Project Links, Workshop Bridges & Context Access Grants
   try {
-    require('../migrate/049_store_location_project_links').runMigration(db);
+    if (!db.prepare("SELECT 1 FROM settings WHERE key = 'migration_049_done'").get()) {
+      require('../migrate/049_store_location_project_links').runMigration(db);
+      db.prepare("INSERT INTO settings (key, value) VALUES ('migration_049_done', '1')").run();
+    }
   } catch (err) {
     console.warn('Migration 049 store location links skipped:', err.message);
   }
