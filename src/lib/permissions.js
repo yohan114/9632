@@ -224,11 +224,22 @@ function effectiveLevel(user, sectionKey) {
   const roles = user.roles || [];
   if (roles.includes('admin')) return 'full';
 
-  // Check temporary access expiration: if elevation has expired, ignore user_permissions overrides and fall back to role template
-  const isElevationExpired = isAccessExpired(user);
+  if (isAccessExpired(user)) {
+    let hasOverrides = false;
+    if (user.id) {
+      try {
+        const rowP = get('SELECT 1 FROM user_permissions WHERE user_id = ? LIMIT 1', user.id);
+        const rowC = get('SELECT 1 FROM user_capabilities WHERE user_id = ? LIMIT 1', user.id);
+        hasOverrides = !!(rowP || rowC);
+      } catch (_) {}
+      if (!hasOverrides) return 'none';
+      return levelForRoles(roles, sectionKey);
+    }
+    return 'none';
+  }
 
   // 1. Check user-specific override in user_permissions (only if elevation not expired)
-  if (user.id && !isElevationExpired) {
+  if (user.id) {
     const row = get('SELECT level FROM user_permissions WHERE user_id = ? AND section = ?', user.id, sectionKey);
     if (row && LEVELS.includes(row.level)) {
       return row.level;
@@ -241,7 +252,7 @@ function effectiveLevel(user, sectionKey) {
   // 3. Step 3b: Stand-in delegated approval clearance (only if not expired)
   // If the user holds delegated capabilities in this section, ensure at least 'add' clearance
   // so the module guard allows approval/certification POST requests.
-  if (user.id && !isElevationExpired && !user.skipDelegations) {
+  if (user.id && !user.skipDelegations) {
     try {
       const standIn = require('./stand_in');
       const dCaps = standIn.delegatedCapsFor(user.id);

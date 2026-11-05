@@ -150,7 +150,7 @@ test('Governance & SoD: saving user overrides blocks conflicting duties without 
       status() { return this; },
       json(d) { createdUser = d; return this; }
     },
-    () => {}
+    (err) => { if (err) throw err; }
   );
   assert.ok(createdUser && createdUser.id);
 
@@ -220,7 +220,7 @@ test('Governance: emergency elevation auto-expiry falls back to baseline role te
       status() { return this; },
       json(d) { createdUser = d; return this; }
     },
-    () => {}
+    (err) => { if (err) throw err; }
   );
   const userId = createdUser.id;
 
@@ -243,7 +243,7 @@ test('Governance: emergency elevation auto-expiry falls back to baseline role te
       status() { return this; },
       json() { return this; }
     },
-    () => {}
+    (err) => { if (err) throw err; }
   );
 
   const activeUser = get('SELECT id, username, access_until FROM users WHERE id = ?', userId);
@@ -280,7 +280,7 @@ test('Governance & SoD: access review report endpoint returns accurate governanc
     {
       json(d) { reportJson = d; return this; }
     },
-    () => {}
+    (err) => { if (err) throw err; }
   );
 
   assert.ok(reportJson, 'Report JSON returned');
@@ -310,7 +310,7 @@ test('Governance & SoD: access review report endpoint returns accurate governanc
       query: { format: 'xlsx' }
     },
     mockRes,
-    () => {}
+    (err) => { if (err) throw err; }
   );
 
   assert.strictEqual(xlsxHeaders['Content-Type'], 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');

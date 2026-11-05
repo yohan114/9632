@@ -116,7 +116,7 @@ router.post('/roles', requireCap('access.manage'), asyncHandler((req, res) => {
     for (const [m, lvl] of Object.entries(levels)) rules.assertCanSetLevel(req.user, m, lvl);
   }
 
-    if (caps && caps.length > 0) {
+    if ((!from || req.body.capabilities || req.body.caps) && caps && caps.length > 0) {
     const sodResult = sod.assertNoSodConflicts(caps, req.body.override_reason || req.body.reason);
     if (sodResult && sodResult.allowedWithException) {
       audit.record({

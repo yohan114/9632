@@ -12,7 +12,7 @@
 //      granted = 0 -> explicitly revoked from this user
 // ===========================================================================
 
-const { all, run } = require('../db');
+const { get, all, run } = require('../db');
 
 const C = (key, module, label, legacy = [], needs = null, section = null, actvt = '02', domain = 'Operations', dualAuth = false) => ({
   key, module, label, legacy: Array.isArray(legacy) ? legacy : [], needs, section: section || module, actvt, domain, dualAuth: !!dualAuth
@@ -385,17 +385,28 @@ function effectiveCaps(user) {
   const roles = user.roles || [];
   if (roles.includes('admin')) return CAP_KEYS.slice();
 
-  // Temporary access check: if elevation has expired, fall back to baseline role template
-  const isElevationExpired = user.access_until && (() => {
+  // Temporary access / elevation check
+  if (user.access_until) {
     const until = new Date(user.access_until);
-    return !isNaN(until.getTime()) && until < new Date();
-  })();
+    if (!isNaN(until.getTime()) && until < new Date()) {
+      let hasOverrides = false;
+      if (user.id) {
+        try {
+          const rowC = get('SELECT 1 FROM user_capabilities WHERE user_id = ? LIMIT 1', user.id);
+          const rowP = get('SELECT 1 FROM user_permissions WHERE user_id = ? LIMIT 1', user.id);
+          hasOverrides = !!(rowC || rowP);
+        } catch (_) {}
+      }
+      if (!hasOverrides) return [];
+      return capsForRoles(roles);
+    }
+  }
 
   // Start with role capabilities (baseline template)
   const set = new Set(capsForRoles(roles));
 
   // If elevation has NOT expired, apply user-level capability overrides
-  if (user.id && !isElevationExpired) {
+  if (user.id) {
     const userCaps = all('SELECT capability, granted FROM user_capabilities WHERE user_id = ?', user.id);
     for (const uc of userCaps) {
       if (isCapability(uc.capability)) {
