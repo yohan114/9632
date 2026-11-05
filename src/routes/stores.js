@@ -3571,7 +3571,6 @@ function syncMtnStock(mtnId) {
   const lubricants = require('../lib/lubricants');
   for (const l of lines) {
     if (l.store_item_id) {
-      run('UPDATE store_items SET balance = COALESCE(balance, 0) - ? WHERE id = ?', l.qty, l.store_item_id);
       const prev = (get('SELECT balance_after FROM general_item_txns WHERE store_item_id = ? ORDER BY txn_date DESC, id DESC LIMIT 1', l.store_item_id) || {}).balance_after || 0;
       const newBal = prev - l.qty;
       run(`INSERT INTO general_item_txns (store_item_id, txn_type, qty, balance_after, unit_price, ref, txn_date, store_id, physical_store_id)
@@ -3585,7 +3584,6 @@ function syncMtnStock(mtnId) {
         run(`INSERT INTO stock_ledger (product_id, kind, qty, balance_after, unit_price, consumer, mtn_no, txn_date, store_id, physical_store_id)
              VALUES (?, 'issue', ?, ?, ?, ?, (SELECT mtn_no FROM mtn WHERE id = ?), (SELECT txn_date FROM mtn WHERE id = ?), ?, ?)`,
           match.productId, -l.qty, newBal, l.value, l.to_location || 'Site Transfer', mtnId, mtnId, l.from_store_id || 1, l.from_store_location_id || 2);
-        run('UPDATE products SET stock_qty = ? WHERE id = ?', newBal, match.productId);
       }
     }
   }
