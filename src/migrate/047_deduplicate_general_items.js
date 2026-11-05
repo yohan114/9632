@@ -42,15 +42,18 @@ function migrateSingleDb(targetDb, label) {
         FROM general_item_txns git
         LEFT JOIN store_items si ON si.id = git.store_item_id
         LEFT JOIN issues i ON i.id = git.source_issue_id
-       WHERE (i.id IS NOT NULL AND (i.grn_id IS NOT NULL OR i.mrn_no IS NOT NULL OR i.mrn_line_id IS NOT NULL))
-          OR (i.id IS NOT NULL AND EXISTS (
-               SELECT 1 FROM job_parts jp
-                WHERE jp.job_id = i.job_id
-                  AND (jp.source_type = 'issue' OR jp.mrn_line_id = i.id OR LOWER(TRIM(jp.description)) = LOWER(TRIM(i.description)))
-             ))
-          OR (si.category = 'Filters' OR LOWER(si.name) LIKE '%filter%' OR (i.id IS NOT NULL AND (i.category = 'Filters' OR LOWER(i.description) LIKE '%filter%')))
-          OR EXISTS (SELECT 1 FROM stock_ledger sl WHERE sl.source_issue_id = git.source_issue_id)
-          OR (si.category = 'Lubricants & Fluids' AND LOWER(si.name) NOT LIKE '%cotton%')
+       WHERE git.txn_type = 'issue'
+         AND (
+           (i.id IS NOT NULL AND (i.grn_id IS NOT NULL OR i.mrn_no IS NOT NULL OR i.mrn_line_id IS NOT NULL))
+           OR (i.id IS NOT NULL AND EXISTS (
+                SELECT 1 FROM job_parts jp
+                 WHERE jp.job_id = i.job_id
+                   AND (jp.source_type = 'issue' OR jp.mrn_line_id = i.id OR LOWER(TRIM(jp.description)) = LOWER(TRIM(i.description)))
+              ))
+           OR (si.category = 'Filters' OR LOWER(si.name) LIKE '%filter%' OR (i.id IS NOT NULL AND (i.category = 'Filters' OR LOWER(i.description) LIKE '%filter%')))
+           OR EXISTS (SELECT 1 FROM stock_ledger sl WHERE sl.source_issue_id = git.source_issue_id)
+           OR (si.category = 'Lubricants & Fluids' AND LOWER(si.name) NOT LIKE '%cotton%')
+         )
     `).all();
 
     console.log(`Found ${dupGitRows.length} duplicate rows to purge from general_item_txns.`);
@@ -82,15 +85,17 @@ function migrateSingleDb(targetDb, label) {
     const items = targetDb.prepare('SELECT id FROM store_items').all();
     for (const item of items) {
       const lastRow = targetDb.prepare('SELECT balance_after FROM general_item_txns WHERE store_item_id = ? ORDER BY txn_date DESC, id DESC LIMIT 1').get(item.id);
-      const bal = lastRow && lastRow.balance_after != null ? lastRow.balance_after : 0;
-      targetDb.prepare('UPDATE store_items SET balance = ? WHERE id = ?').run(bal, item.id);
+      if (lastRow && lastRow.balance_after != null) {
+        targetDb.prepare('UPDATE store_items SET balance = ? WHERE id = ?').run(lastRow.balance_after, item.id);
+      }
     }
 
     const prods = targetDb.prepare('SELECT id FROM products').all();
     for (const p of prods) {
       const lastRow = targetDb.prepare('SELECT balance_after FROM stock_ledger WHERE product_id = ? AND COALESCE(voided, 0) = 0 ORDER BY txn_date DESC, id DESC LIMIT 1').get(p.id);
-      const bal = lastRow && lastRow.balance_after != null ? lastRow.balance_after : 0;
-      targetDb.prepare('UPDATE products SET stock_qty = ? WHERE id = ?').run(bal, p.id);
+      if (lastRow && lastRow.balance_after != null) {
+        targetDb.prepare('UPDATE products SET stock_qty = ? WHERE id = ?').run(lastRow.balance_after, p.id);
+      }
     }
   })();
 
@@ -108,7 +113,9 @@ function migrateSingleDb(targetDb, label) {
     try {
       costing.computeJobCost(j.id);
       jobsUpdated++;
-    } catch {}
+    } catch (err) {
+      console.warn(`[047] Failed to recompute cost for job ${j.id}:`, err.message);
+    }
   }
   console.log(`Recomputed costs for ${jobsUpdated} job card(s).`);
 
@@ -133,7 +140,9 @@ function migrateSingleDb(targetDb, label) {
       try {
         costing.recalcVehicleMonth(vm.asset_id, yr, mo);
         recalced++;
-      } catch {}
+      } catch (err) {
+        console.warn(`[047] Failed to recalculate monthly cost for asset ${vm.asset_id} (${vm.ym}):`, err.message);
+      }
     }
     console.log(`Recalculated monthly costs for ${recalced} vehicle-month combinations.`);
   } catch (err) {
