@@ -45,8 +45,39 @@ app.disable('x-powered-by');
 app.use(securityHeaders);
 // Before the body parsers: a cross-site write is refused before its body is even read.
 app.use('/api', originGuard());
-app.use(express.json({ limit: '50mb' }));
-app.use(express.urlencoded({ limit: '50mb', extended: true }));
+
+// Targeted body parsers (M1): global 1mb limit, raised to 50mb strictly on upload endpoints
+const uploadJson = express.json({ limit: '50mb' });
+const uploadUrlencoded = express.urlencoded({ limit: '50mb', extended: true });
+const standardJson = express.json({ limit: '1mb' });
+const standardUrlencoded = express.urlencoded({ limit: '1mb', extended: true });
+
+const isUploadRoute = (req) => {
+  const p = (req.originalUrl || req.url || '').split('?')[0];
+  return (
+    p.includes('/photos') ||
+    p.includes('/attachments') ||
+    p.includes('/images') ||
+    p.includes('/invoices') ||
+    p.includes('/evidence') ||
+    p.includes('/vehicle-documents') ||
+    p.includes('/fleet/documents') ||
+    p.includes('/signature')
+  );
+};
+
+app.use((req, res, next) => {
+  if (isUploadRoute(req)) {
+    return uploadJson(req, res, (err) => {
+      if (err) return next(err);
+      uploadUrlencoded(req, res, next);
+    });
+  }
+  return standardJson(req, res, (err) => {
+    if (err) return next(err);
+    standardUrlencoded(req, res, next);
+  });
+});
 app.use(cookieParser());
 app.use(authenticate);
 app.use(multidb.multidbMiddleware);
