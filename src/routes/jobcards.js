@@ -249,7 +249,7 @@ router.post(
     }
     // The vehicle is the master key — a card that points at nothing cannot roll a cost up to an
     // asset. An unresolved request names its vehicle only as text, waiting in the Alias Queue.
-    if (!jr.asset_id && (jr.type !== 'fabrication' || jr.fabrication_kind !== 'new')) {
+    if (!jr.asset_id && (jr.type !== 'fabrication' || (jr.work_target !== 'general' && jr.fabrication_kind !== 'new'))) {
       return res.status(409).json({
         error: `Job request ${jr.jr_no} has no vehicle linked yet — link its vehicle in the Alias Queue first.`,
         unlinked_asset: true,

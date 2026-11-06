@@ -68,6 +68,10 @@ router.get('/', asyncHandler((req, res) => {
     clauses.push('(r.jr_no LIKE ? OR r.description LIKE ? OR a.code LIKE ? OR a.registration LIKE ? OR a.ec_code LIKE ?)');
     params.push(like, like, like, like, like);
   }
+  // Fabrication row-level hiding
+  const fabClause = scope.fabricationClause(req.user, 'r');
+  if (fabClause) clauses.push(fabClause);
+
   // Stage 3: your own workshop's requests (head office: all, or the one asked for).
   const own = scope.filter(req.user, 'r.workshop_id', { store: false });
   if (own.sql) { clauses.push(own.sql); params.push(...own.params); }
@@ -100,7 +104,9 @@ router.get('/:id', asyncHandler((req, res) => {
        LEFT JOIN job_cards j ON j.id = r.job_id
        LEFT JOIN service_jobs s ON s.id = r.service_id
       WHERE r.id = ?`, id);
-  if (!jr) return res.status(404).json({ error: 'Job request not found' });
+  if (!jr || (jr.type === 'fabrication' && !isAdmin(req.user) && !hasCap(req.user, 'fabrication.view'))) {
+    return res.status(404).json({ error: 'Job request not found' });
+  }
   res.json({
     request: jr,
     approvals: all('SELECT a.*, u.username FROM job_request_approvals a LEFT JOIN users u ON u.id = a.approver_id WHERE a.job_request_id = ? ORDER BY a.id', id),
@@ -115,6 +121,15 @@ router.post('/', requireCap('jobrequests.create'), asyncHandler((req, res) => {
   let fabricationKind = null;
   let issueStoreLocationId = null;
 
+  let workTarget = 'vehicle';
+  let category = null;
+  let drawingRef = null;
+  let drawingPath = null;
+  let drawingFilename = null;
+  let costCentre = null;
+  let quantityOrSize = null;
+  let deliverTo = null;
+
   if (type === 'fabrication') {
     const fabSetting = get("SELECT value FROM settings WHERE key = 'fabrication.enabled'")?.value;
     if (fabSetting !== '1') {
@@ -123,11 +138,26 @@ router.post('/', requireCap('jobrequests.create'), asyncHandler((req, res) => {
     if (!hasCap(req.user, 'jobrequests.create_fabrication')) {
       return res.status(403).json({ error: 'Permission denied: jobrequests.create_fabrication required.' });
     }
-    fabricationKind = String(b.fabrication_kind || '').toLowerCase().trim();
+    fabricationKind = String(b.fabrication_kind || 'new').toLowerCase().trim();
     if (!FAB_KINDS.includes(fabricationKind)) {
       return res.status(400).json({ error: 'fabrication_kind must be one of: new, repair, service' });
     }
     issueStoreLocationId = toInt(b.issue_store_location_id) || 1; // Default Central Main Stores
+    workTarget = b.work_target === 'general' ? 'general' : 'vehicle';
+    if (workTarget === 'general') {
+      category = String(b.category || '').trim();
+      if (!category) return res.status(400).json({ error: 'General works requires a category.' });
+      costCentre = String(b.cost_centre || '').trim();
+      if (!costCentre) return res.status(400).json({ error: 'General works requires a cost centre (project or department).' });
+      drawingRef = String(b.drawing_ref || b.drawing_notes || '').trim();
+      if (!drawingRef && !b.drawing_path) {
+        return res.status(400).json({ error: 'General works requires a drawing reference or justification.' });
+      }
+      drawingPath = b.drawing_path || null;
+      drawingFilename = b.drawing_filename || null;
+      quantityOrSize = b.quantity_or_size || null;
+      deliverTo = b.deliver_to || null;
+    }
   }
   const severity = SEVERITIES.includes(b.severity) ? b.severity : null;
   const priority = PRIORITIES.includes(b.priority) ? b.priority : 'normal';
@@ -153,11 +183,13 @@ router.post('/', requireCap('jobrequests.create'), asyncHandler((req, res) => {
   const result = run(
     `INSERT INTO job_requests (jr_no, req_date, asset_id, project_id, type, severity, priority, description,
                                required_date, requested_by, requested_by_user, requested_sig, workshop_id,
-                               service_type, meter_reading, fabrication_kind, issue_store_location_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                               service_type, meter_reading, fabrication_kind, issue_store_location_id,
+                               work_target, category, drawing_ref, drawing_path, drawing_filename, cost_centre, quantity_or_size, deliver_to)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     jrNo, b.req_date || new Date().toISOString().slice(0, 10), assetId || null, toInt(b.project_id),
     type, severity, priority, b.description, b.required_date || null, reqBy, req.user.id, ru ? ru.signature : null, workshopId,
-    serviceType, meterReading, fabricationKind, issueStoreLocationId
+    serviceType, meterReading, fabricationKind, issueStoreLocationId,
+    workTarget, category, drawingRef, drawingPath, drawingFilename, costCentre, quantityOrSize, deliverTo
   );
   audit.record({ userId: req.user.id, entity: 'job_request', entityId: result.lastInsertRowid, action: 'create', after: { jr_no: jrNo } });
   // Raising a request is never blocked — transport must always be able to log a fault.
@@ -173,7 +205,9 @@ router.post('/', requireCap('jobrequests.create'), asyncHandler((req, res) => {
 router.post('/:id/certify', requireCap('jobrequests.certify'), asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   const jr = get('SELECT * FROM job_requests WHERE id = ?', id);
-  if (!jr) return res.status(404).json({ error: 'Job request not found' });
+  if (!jr || (jr.type === 'fabrication' && !isAdmin(req.user) && !hasCap(req.user, 'fabrication.view'))) {
+    return res.status(404).json({ error: 'Job request not found' });
+  }
   if (jr.approval_status === 'approved') return res.status(409).json({ error: 'Already approved — cannot re-certify' });
   if (jr.approval_status === 'rejected') return res.status(409).json({ error: 'This request was rejected' });
   const actingFor = standIn.resolveActingFor(req.user, 'jobrequests.certify', req.body.stand_in_for);
@@ -199,7 +233,9 @@ router.post('/:id/certify', requireCap('jobrequests.certify'), asyncHandler((req
 router.post('/:id/approve', requireCap('jobrequests.approve'), asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   const jr = get('SELECT * FROM job_requests WHERE id = ?', id);
-  if (!jr) return res.status(404).json({ error: 'Job request not found' });
+  if (!jr || (jr.type === 'fabrication' && !isAdmin(req.user) && !hasCap(req.user, 'fabrication.view'))) {
+    return res.status(404).json({ error: 'Job request not found' });
+  }
   if (jr.approval_status === 'rejected') return res.status(409).json({ error: 'This request was rejected' });
   if (jr.approval_status === 'approved') return res.status(409).json({ error: 'Already approved' });
   if (jr.approval_status !== 'certified') return res.status(409).json({ error: 'Request must be certified (Transport Manager) before Operational Manager approval' });
@@ -233,7 +269,9 @@ router.post('/:id/approve', requireCap('jobrequests.approve'), asyncHandler((req
 router.post('/:id/reject', requireCap('jobrequests.reject'), asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   const jr = get('SELECT * FROM job_requests WHERE id = ?', id);
-  if (!jr) return res.status(404).json({ error: 'Job request not found' });
+  if (!jr || (jr.type === 'fabrication' && !isAdmin(req.user) && !hasCap(req.user, 'fabrication.view'))) {
+    return res.status(404).json({ error: 'Job request not found' });
+  }
   if (jr.approval_status === 'approved') return res.status(409).json({ error: 'Already approved — cannot reject' });
   if (!String(req.body.reason || '').trim()) return res.status(400).json({ error: 'A reason is required to reject' });
   const actingFor = standIn.resolveActingFor(req.user, 'jobrequests.reject', req.body.stand_in_for);

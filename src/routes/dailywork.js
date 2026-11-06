@@ -6,7 +6,7 @@
 
 const express = require('express');
 const { get, all, run, tx } = require('../db');
-const { requireCap } = require('../lib/auth');
+const { requireCap, hasCap } = require('../lib/auth');
 const { asyncHandler, toNum, toInt } = require('../lib/http');
 const audit = require('../lib/audit');
 const costing = require('../lib/costing');

@@ -86,6 +86,8 @@ const ASSET = 'a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS a
 function requestRows(user, statuses, f) {
   const w = [`r.approval_status IN (${statuses.map(() => '?').join(',')})`];
   const p = [...statuses];
+  const fab = scope.fabricationClause(user, 'r');
+  if (fab) w.push(fab);
   const own = scope.filter(user, 'r.workshop_id', { store: false });
   if (own.sql) { w.push(own.sql); p.push(...own.params); }
   if (f.workshop_id) { w.push('r.workshop_id = ?'); p.push(Number(f.workshop_id)); }
@@ -116,6 +118,8 @@ function requestRows(user, statuses, f) {
 function cardRows(user, statuses, f) {
   const w = [`j.status IN (${statuses.map(() => '?').join(',')})`, `NOT ${review.CONTAINER_SQL}`];
   const p = [...statuses];
+  const fab = scope.fabricationClause(user, 'j');
+  if (fab) w.push(fab);
   const own = scope.filter(user, 'j.workshop_id');
   if (own.sql) { w.push(own.sql); p.push(...own.params); }
   if (f.workshop_id) { w.push('j.workshop_id = ?'); p.push(Number(f.workshop_id)); }
@@ -141,6 +145,8 @@ function cardRows(user, statuses, f) {
 function reopenRows(user, f) {
   const w = ["r.status = 'pending'"];
   const p = [];
+  const fab = scope.fabricationClause(user, 'j');
+  if (fab) w.push(fab);
   const own = scope.filter(user, 'j.workshop_id');
   if (own.sql) { w.push(own.sql); p.push(...own.params); }
   if (f.workshop_id) { w.push('j.workshop_id = ?'); p.push(Number(f.workshop_id)); }
@@ -194,7 +200,9 @@ function shapeRequest(user, r, now) {
       approve: step === 'to_approve' && hasCap(user, 'jobrequests.approve') && !mine && !raised,
       reject: open && hasCap(user, 'jobrequests.reject'),
       // The workshop's step: open the job card against the approved request.
-      open_card: step === 'to_open' && !isService && hasCap(user, 'jobs.create'),
+      open_card: step === 'to_open' && !isService && (
+        r.type === 'fabrication' ? hasCap(user, 'fabrication.open_card') : hasCap(user, 'jobs.create')
+      ),
       create_service: step === 'to_open' && isService && (hasCap(user, 'services.create') || hasCap(user, 'filters.edit') || hasCap(user, 'jobs.create')),
     },
   };
@@ -298,13 +306,13 @@ function counts(user) {
     // here are the two closed piles — and 'approved' now means approved AND opened, so the ones
     // still waiting for the workshop are not counted twice.
     for (const [st, key, extra] of [['approved', 'approved', ' AND job_id IS NOT NULL'], ['rejected', 'rejected', '']]) {
-      n[key] += get(`SELECT COUNT(*) c FROM job_requests WHERE approval_status = ?${extra}${own.sql ? ' AND ' + own.sql : ''}`, st, ...own.params).c;
+      n[key] += get(`SELECT COUNT(*) c FROM job_requests WHERE approval_status = ?${extra}${own.sql ? ' AND ' + own.sql : ''}${scope.fabricationFilter(user, '')}`, st, ...own.params).c;
     }
   }
   if (sees(user, 'jobs')) {
     const own = scope.filter(user, 'j.workshop_id');
     n.rejected += get(`SELECT COUNT(*) c FROM job_cards j WHERE j.status = 'REJECTED' AND COALESCE(j.is_historical, 0) = 0
-                         AND NOT ${review.CONTAINER_SQL}${own.sql ? ' AND ' + own.sql : ''}`, ...own.params).c;
+                         AND NOT ${review.CONTAINER_SQL}${own.sql ? ' AND ' + own.sql : ''}${scope.fabricationFilter(user, 'j')}`, ...own.params).c;
   }
   return n;
 }
@@ -381,6 +389,8 @@ const reasonView = (r) => (r ? { code: r.reason, label: REASONS[r.reason] || r.r
 function ongoingRows(user, f = {}, onlyIds = null) {
   const w = [`j.status IN (${ONGOING.map(() => '?').join(',')})`, 'COALESCE(j.is_historical, 0) = 0', `NOT ${review.CONTAINER_SQL}`];
   const p = [...ONGOING];
+  const fab = scope.fabricationClause(user, 'j');
+  if (fab) w.push(fab);
   // user null: one card read for its own page, which checked who may see it.
   const own = user ? scope.filter(user, 'j.workshop_id') : { sql: '' };
   if (own.sql) { w.push(own.sql); p.push(...own.params); }

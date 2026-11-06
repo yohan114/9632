@@ -898,6 +898,15 @@ function migrate() {
   } catch (err) {
     console.warn('Migration 051 site storekeeper seed skipped:', err.message);
   }
+  // Fabrication Access Foundation & General Works Schema
+  try {
+    if (!db.prepare("SELECT 1 FROM settings WHERE key = 'migration_052_done'").get()) {
+      require('../migrate/052_fabrication_access_and_schema').runMigration(db);
+      db.prepare("INSERT INTO settings (key, value) VALUES ('migration_052_done', '1')").run();
+    }
+  } catch (err) {
+    console.warn('Migration 052 fabrication schema skipped:', err.message);
+  }
 
   return db;
 }

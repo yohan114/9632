@@ -369,7 +369,7 @@ router.get('/workflow-monitor', asyncHandler((req, res) => {
   const low_stock_total = low.general + low.oil + low.filter;
 
   // 2. Jobs Road & Pipeline
-  const closed_this_month = get(`SELECT COUNT(*) c FROM job_cards j WHERE j.status = 'CLOSED' AND strftime('%Y-%m', j.completed_at) = strftime('%Y-%m', 'now')${andJ}`, ...jOwn.params).c;
+  const closed_this_month = get(`SELECT COUNT(*) c FROM job_cards j WHERE j.status = 'CLOSED' AND strftime('%Y-%m', j.completed_at) = strftime('%Y-%m', 'now')${andJ}${fabFilterJ}`, ...jOwn.params).c;
   const jobs_counts = jobsFlow.counts(user);
   const jobs_road = {
     steps: [
@@ -425,7 +425,7 @@ router.get('/workflow-monitor', asyncHandler((req, res) => {
     const jrs = all(`SELECT r.id, r.jr_no, r.req_date, r.requested_by, r.description,
           a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec
         FROM job_requests r LEFT JOIN assets a ON a.id = r.asset_id
-        WHERE r.approval_status = 'requested'${and(rOwn)} ORDER BY r.id DESC LIMIT 30`, ...rOwn.params);
+        WHERE r.approval_status = 'requested'${and(rOwn)}${scope.fabricationFilter(user, 'r')} ORDER BY r.id DESC LIMIT 30`, ...rOwn.params);
     for (const r of jrs) {
       inflow.push({
         id: r.id, kind: 'jr_certify', ref: r.jr_no, title: `Job Request ${r.jr_no}`,
@@ -441,7 +441,7 @@ router.get('/workflow-monitor', asyncHandler((req, res) => {
     const waiting = all(`SELECT r.id, r.jr_no, r.req_date, r.approved_at, r.requested_by, r.certified_by, r.approved_by, r.description,
           a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec
         FROM job_requests r LEFT JOIN assets a ON a.id = r.asset_id
-        WHERE r.approval_status = 'approved' AND r.job_id IS NULL${and(rOwn)} ORDER BY r.approved_at, r.id LIMIT 30`, ...rOwn.params);
+        WHERE r.approval_status = 'approved' AND r.job_id IS NULL${and(rOwn)}${scope.fabricationFilter(user, 'r')} ORDER BY r.approved_at, r.id LIMIT 30`, ...rOwn.params);
     for (const r of waiting) {
       inflow.push({
         id: r.id, kind: 'jr_open_card', ref: r.jr_no, title: `Job Request ${r.jr_no}`,
@@ -471,7 +471,7 @@ router.get('/workflow-monitor', asyncHandler((req, res) => {
     const jrs = all(`SELECT r.id, r.jr_no, r.req_date, r.requested_by, r.certified_by, r.description,
           a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec
         FROM job_requests r LEFT JOIN assets a ON a.id = r.asset_id
-        WHERE r.approval_status = 'certified'${and(rOwn)} ORDER BY r.id DESC LIMIT 30`, ...rOwn.params);
+        WHERE r.approval_status = 'certified'${and(rOwn)}${scope.fabricationFilter(user, 'r')} ORDER BY r.id DESC LIMIT 30`, ...rOwn.params);
     for (const r of jrs) {
       authorizations.push({
         id: r.id, kind: 'jr_approve', ref: r.jr_no, title: `Job Request ${r.jr_no}`,
@@ -485,7 +485,7 @@ router.get('/workflow-monitor', asyncHandler((req, res) => {
     const jc = all(`SELECT j.id, j.job_no, j.requested_at, j.description,
              a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec
         FROM job_cards j LEFT JOIN assets a ON a.id = j.asset_id
-        WHERE j.status = 'REQUESTED' AND j.approved_transport_at IS NULL AND j.is_historical = 0${and(jOwn)} ORDER BY j.id DESC LIMIT 30`, ...jOwn.params);
+        WHERE j.status = 'REQUESTED' AND j.approved_transport_at IS NULL AND j.is_historical = 0${and(jOwn)}${scope.fabricationFilter(user, 'j')} ORDER BY j.id DESC LIMIT 30`, ...jOwn.params);
     for (const j of jc) {
       authorizations.push({
         id: j.id, kind: 'job_transport', ref: j.job_no, title: `Job Card ${j.job_no}`,
@@ -499,7 +499,7 @@ router.get('/workflow-monitor', asyncHandler((req, res) => {
     const jc = all(`SELECT j.id, j.job_no, j.requested_at, j.description,
              a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec
         FROM job_cards j LEFT JOIN assets a ON a.id = j.asset_id
-        WHERE j.approved_transport_at IS NOT NULL AND j.approved_ops_at IS NULL AND j.is_historical = 0${and(jOwn)} ORDER BY j.id DESC LIMIT 30`, ...jOwn.params);
+        WHERE j.approved_transport_at IS NOT NULL AND j.approved_ops_at IS NULL AND j.is_historical = 0${and(jOwn)}${scope.fabricationFilter(user, 'j')} ORDER BY j.id DESC LIMIT 30`, ...jOwn.params);
     for (const j of jc) {
       authorizations.push({
         id: j.id, kind: 'job_ops', ref: j.job_no, title: `Job Card ${j.job_no}`,

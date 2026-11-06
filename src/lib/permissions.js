@@ -52,6 +52,7 @@ const SECTIONS = [
   { id: 20, key: 'reports', label: 'Reports', icon: '📑', group: 'Analysis', enforce: true },
   { id: 21, key: 'workshops', label: 'Workshops', icon: '🏢', group: 'Admin', enforce: true },
   { id: 22, key: 'access', label: 'Access Control', icon: '🔐', group: 'Admin', enforce: true, parts: [{ key: 'users', label: 'Users & Access' }, { key: 'audit_logs', label: 'User Activity Logs' }] },
+  { id: 23, key: 'fabrication', label: 'Fabrication & General Works', icon: '⚙️', group: 'Operations', enforce: true, parts: [{ key: 'fabrication_costing', label: 'Fabrication Costing' }] },
 ];
 
 const SECTION_KEYS = SECTIONS.map((s) => s.key);
@@ -70,6 +71,7 @@ const PART_MODULES = [
   { key: 'tb_issue', label: 'T&B · Issue', enforce: false, parent: 'tb_requests' },
   { key: 'users', label: 'Users & Access', enforce: false, parent: 'access' },
   { key: 'audit_logs', label: 'User Activity Logs', enforce: true, parent: 'access' },
+  { key: 'fabrication_costing', label: 'Fabrication Costing', enforce: true, parent: 'fabrication' },
 ];
 
 const MODULES = [
@@ -87,7 +89,8 @@ const DEFAULT_MATRIX = {
     stores: 'full', oil: 'full', batteries: 'full', filters: 'full', tools: 'full', service_plan: 'view',
     projects: 'view', aliases: 'view', attention: 'view', daily_progress: 'view', cost_teardown: 'view',
     purchasing: 'view', tb_requests: 'edit', tb_request: 'edit', tb_purchase: 'edit', tb_grn: 'edit', tb_issue: 'edit',
-    tb_reports: 'view', reports: 'view', workshops: 'none', access: 'none', users: 'none'
+    tb_reports: 'view', reports: 'view', workshops: 'none', access: 'none', users: 'none',
+    fabrication: 'none', fabrication_costing: 'none'
   },
   main_storekeeper: {
     dashboard: 'view', jobs: 'view', jobrequests: 'none', field: 'view', operations: 'view',
@@ -95,7 +98,17 @@ const DEFAULT_MATRIX = {
     stores: 'view', oil: 'view', batteries: 'view', filters: 'view', tools: 'view', service_plan: 'view',
     projects: 'view', aliases: 'view', attention: 'view', daily_progress: 'view', cost_teardown: 'view',
     purchasing: 'view', tb_requests: 'view', tb_request: 'view', tb_purchase: 'view', tb_grn: 'view', tb_issue: 'none',
-    tb_reports: 'view', reports: 'view', workshops: 'none', access: 'none', users: 'none'
+    tb_reports: 'view', reports: 'view', workshops: 'none', access: 'none', users: 'none',
+    fabrication: 'none', fabrication_costing: 'none'
+  },
+  fabrication_officer: {
+    dashboard: 'view', jobs: 'view', jobrequests: 'view', field: 'none', operations: 'view',
+    dailywork: 'view', services: 'view', lubricants: 'view', assets: 'view', vehicle_docs: 'view', labour: 'none',
+    stores: 'view', oil: 'view', batteries: 'view', filters: 'view', tools: 'view', service_plan: 'none',
+    projects: 'view', aliases: 'none', attention: 'view', daily_progress: 'view', cost_teardown: 'none',
+    purchasing: 'none', tb_requests: 'none', tb_request: 'none', tb_purchase: 'none', tb_grn: 'none', tb_issue: 'none',
+    tb_reports: 'none', reports: 'view', workshops: 'none', access: 'none', users: 'none', audit_logs: 'none',
+    fabrication: 'full', fabrication_costing: 'full'
   },
   site_storekeeper: {
     dashboard: 'view', jobs: 'view', jobrequests: 'none', field: 'view', operations: 'view',
@@ -103,7 +116,8 @@ const DEFAULT_MATRIX = {
     stores: 'edit', oil: 'edit', batteries: 'view', filters: 'edit', tools: 'view', service_plan: 'view',
     projects: 'view', aliases: 'view', attention: 'view', daily_progress: 'view', cost_teardown: 'none',
     purchasing: 'none', tb_requests: 'none', tb_request: 'none', tb_purchase: 'none', tb_grn: 'none', tb_issue: 'none',
-    tb_reports: 'none', reports: 'view', workshops: 'none', access: 'none', users: 'none', audit_logs: 'none'
+    tb_reports: 'none', reports: 'view', workshops: 'none', access: 'none', users: 'none', audit_logs: 'none',
+    fabrication: 'none', fabrication_costing: 'none'
   },
   transport_manager: {
     dashboard: 'view', jobs: 'edit', jobrequests: 'edit', field: 'edit', operations: 'edit',
@@ -111,7 +125,8 @@ const DEFAULT_MATRIX = {
     stores: 'none', oil: 'none', batteries: 'view', filters: 'view', tools: 'none', service_plan: 'view',
     projects: 'view', aliases: 'view', attention: 'view', daily_progress: 'view', cost_teardown: 'view',
     purchasing: 'none', tb_requests: 'view', tb_request: 'view', tb_purchase: 'none', tb_grn: 'none', tb_issue: 'none',
-    tb_reports: 'view', reports: 'view', workshops: 'none', access: 'none', users: 'none'
+    tb_reports: 'view', reports: 'view', workshops: 'none', access: 'none', users: 'none',
+    fabrication: 'none', fabrication_costing: 'none'
   },
   assistant_transport_manager: {
     dashboard: 'view', jobs: 'view', jobrequests: 'edit', field: 'view', operations: 'view',
@@ -119,7 +134,8 @@ const DEFAULT_MATRIX = {
     stores: 'none', oil: 'none', batteries: 'view', filters: 'view', tools: 'none', service_plan: 'view',
     projects: 'view', aliases: 'none', attention: 'view', daily_progress: 'view', cost_teardown: 'view',
     purchasing: 'none', tb_requests: 'view', tb_request: 'view', tb_purchase: 'none', tb_grn: 'none', tb_issue: 'none',
-    tb_reports: 'view', reports: 'view', workshops: 'none', access: 'none', users: 'none'
+    tb_reports: 'view', reports: 'view', workshops: 'none', access: 'none', users: 'none',
+    fabrication: 'none', fabrication_costing: 'none'
   },
   operational_manager: {
     dashboard: 'view', jobs: 'edit', jobrequests: 'edit', field: 'edit', operations: 'edit',
@@ -127,7 +143,8 @@ const DEFAULT_MATRIX = {
     stores: 'view', oil: 'view', batteries: 'view', filters: 'view', tools: 'edit', service_plan: 'edit',
     projects: 'edit', aliases: 'view', attention: 'full', daily_progress: 'full', cost_teardown: 'full',
     purchasing: 'full', tb_requests: 'edit', tb_request: 'edit', tb_purchase: 'view', tb_grn: 'view', tb_issue: 'view',
-    tb_reports: 'full', reports: 'full', workshops: 'edit', access: 'none', users: 'none'
+    tb_reports: 'full', reports: 'full', workshops: 'edit', access: 'none', users: 'none',
+    fabrication: 'full', fabrication_costing: 'full'
   },
   manager: {
     dashboard: 'view', jobs: 'edit', jobrequests: 'edit', field: 'edit', operations: 'edit',
@@ -135,7 +152,8 @@ const DEFAULT_MATRIX = {
     stores: 'view', oil: 'view', batteries: 'view', filters: 'view', tools: 'full', service_plan: 'edit',
     projects: 'view', aliases: 'view', attention: 'full', daily_progress: 'full', cost_teardown: 'full',
     purchasing: 'full', tb_requests: 'edit', tb_request: 'edit', tb_purchase: 'view', tb_grn: 'view', tb_issue: 'view',
-    tb_reports: 'full', reports: 'full', workshops: 'edit', access: 'none', users: 'none'
+    tb_reports: 'full', reports: 'full', workshops: 'edit', access: 'none', users: 'none',
+    fabrication: 'full', fabrication_costing: 'full'
   },
   workshop: {
     dashboard: 'view', jobs: 'edit', jobrequests: 'view', field: 'edit', operations: 'view',
@@ -143,7 +161,8 @@ const DEFAULT_MATRIX = {
     stores: 'view', oil: 'edit', batteries: 'edit', filters: 'full', tools: 'edit', service_plan: 'view',
     projects: 'view', aliases: 'edit', attention: 'view', daily_progress: 'view', cost_teardown: 'view',
     purchasing: 'none', tb_requests: 'edit', tb_request: 'edit', tb_purchase: 'none', tb_grn: 'none', tb_issue: 'none',
-    tb_reports: 'view', reports: 'view', workshops: 'none', access: 'none', users: 'none'
+    tb_reports: 'view', reports: 'view', workshops: 'none', access: 'none', users: 'none',
+    fabrication: 'none', fabrication_costing: 'none'
   },
   purchase_head_office: {
     dashboard: 'none', jobs: 'none', jobrequests: 'none', field: 'none', operations: 'none',
@@ -151,7 +170,8 @@ const DEFAULT_MATRIX = {
     stores: 'none', oil: 'none', batteries: 'none', filters: 'none', tools: 'none', service_plan: 'none',
     projects: 'none', aliases: 'none', attention: 'none', daily_progress: 'none', cost_teardown: 'none',
     purchasing: 'full', tb_requests: 'none', tb_request: 'none', tb_purchase: 'none', tb_grn: 'none', tb_issue: 'none',
-    tb_reports: 'none', reports: 'none', workshops: 'none', access: 'none', users: 'none'
+    tb_reports: 'none', reports: 'none', workshops: 'none', access: 'none', users: 'none',
+    fabrication: 'none', fabrication_costing: 'none'
   },
   purchase_local: {
     dashboard: 'none', jobs: 'none', jobrequests: 'none', field: 'none', operations: 'none',
@@ -159,7 +179,8 @@ const DEFAULT_MATRIX = {
     stores: 'none', oil: 'none', batteries: 'none', filters: 'none', tools: 'none', service_plan: 'none',
     projects: 'none', aliases: 'none', attention: 'none', daily_progress: 'none', cost_teardown: 'none',
     purchasing: 'full', tb_requests: 'none', tb_request: 'none', tb_purchase: 'none', tb_grn: 'none', tb_issue: 'none',
-    tb_reports: 'none', reports: 'none', workshops: 'none', access: 'none', users: 'none'
+    tb_reports: 'none', reports: 'none', workshops: 'none', access: 'none', users: 'none',
+    fabrication: 'none', fabrication_costing: 'none'
   },
   viewer: {
     dashboard: 'view', jobs: 'view', jobrequests: 'view', field: 'view', operations: 'view',
@@ -167,7 +188,8 @@ const DEFAULT_MATRIX = {
     stores: 'view', oil: 'view', batteries: 'view', filters: 'view', tools: 'view', service_plan: 'view',
     projects: 'view', aliases: 'view', attention: 'view', daily_progress: 'view', cost_teardown: 'view',
     purchasing: 'view', tb_requests: 'view', tb_request: 'view', tb_purchase: 'view', tb_grn: 'view', tb_issue: 'view',
-    tb_reports: 'view', reports: 'view', workshops: 'view', access: 'none', users: 'none'
+    tb_reports: 'view', reports: 'view', workshops: 'view', access: 'none', users: 'none',
+    fabrication: 'none', fabrication_costing: 'none'
   },
   engineer: {
     dashboard: 'view', jobs: 'edit', jobrequests: 'edit', field: 'edit', operations: 'edit',
@@ -175,7 +197,8 @@ const DEFAULT_MATRIX = {
     stores: 'view', oil: 'view', batteries: 'view', filters: 'view', tools: 'edit', service_plan: 'edit',
     projects: 'view', aliases: 'view', attention: 'view', daily_progress: 'view', cost_teardown: 'view',
     purchasing: 'view', tb_requests: 'view', tb_request: 'view', tb_purchase: 'none', tb_grn: 'none', tb_issue: 'none',
-    tb_reports: 'view', reports: 'view', workshops: 'view', access: 'none', users: 'none'
+    tb_reports: 'view', reports: 'view', workshops: 'view', access: 'none', users: 'none',
+    fabrication: 'view', fabrication_costing: 'view'
   },
   assistant_engineer: {
     dashboard: 'view', jobs: 'edit', jobrequests: 'edit', field: 'edit', operations: 'view',
@@ -183,7 +206,8 @@ const DEFAULT_MATRIX = {
     stores: 'view', oil: 'view', batteries: 'view', filters: 'view', tools: 'view', service_plan: 'view',
     projects: 'view', aliases: 'none', attention: 'view', daily_progress: 'view', cost_teardown: 'view',
     purchasing: 'none', tb_requests: 'view', tb_request: 'view', tb_purchase: 'none', tb_grn: 'none', tb_issue: 'none',
-    tb_reports: 'view', reports: 'view', workshops: 'none', access: 'none', users: 'none'
+    tb_reports: 'view', reports: 'view', workshops: 'none', access: 'none', users: 'none',
+    fabrication: 'view', fabrication_costing: 'view'
   }
 };
 

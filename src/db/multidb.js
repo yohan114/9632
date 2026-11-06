@@ -528,6 +528,7 @@ function migrate() {
         try {
           require('../lib/store_locations').migrateStoreLocationsStage2(wdb);
           require('../migrate/050_fabrication_job_type').rebuildJobCardsIfNeeded(wdb, f);
+          require('../migrate/052_fabrication_access_and_schema').runMigration(wdb);
         } catch {}
 
         wdb.close();
@@ -552,6 +553,12 @@ function migrate() {
       require('../lib/store_locations').migrateStoreLocationsStage2(coreDb);
     } catch (err) {
       console.warn('Failed to ensure physical store location tables in coreDb:', err.message);
+    }
+
+    try {
+      require('../migrate/052_fabrication_access_and_schema').runMigration(coreDb);
+    } catch (err) {
+      console.warn('Failed to run migration 052 on coreDb:', err.message);
     }
 
     try {

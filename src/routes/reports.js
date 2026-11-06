@@ -943,26 +943,26 @@ router.get('/pending-approvals', asyncHandler((req, res) => {
     out.transport = all(`SELECT j.id, j.job_no, j.requested_at, j.description,
              a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec
         FROM job_cards j LEFT JOIN assets a ON a.id = j.asset_id
-        WHERE j.status = 'REQUESTED' AND j.approved_transport_at IS NULL AND j.is_historical = 0${and(jOwn)} ORDER BY j.id DESC LIMIT 50`, ...jOwn.params);
+        WHERE j.status = 'REQUESTED' AND j.approved_transport_at IS NULL AND j.is_historical = 0${and(jOwn)}${scope.fabricationFilter(req.user, 'j')} ORDER BY j.id DESC LIMIT 50`, ...jOwn.params);
   }
   if (may('jobs.approve_operations')) {
     out.ops = all(`SELECT j.id, j.job_no, j.requested_at, j.description,
              a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec
         FROM job_cards j LEFT JOIN assets a ON a.id = j.asset_id
-        WHERE j.approved_transport_at IS NOT NULL AND j.approved_ops_at IS NULL AND j.is_historical = 0${and(jOwn)} ORDER BY j.id DESC LIMIT 50`, ...jOwn.params);
+        WHERE j.approved_transport_at IS NOT NULL AND j.approved_ops_at IS NULL AND j.is_historical = 0${and(jOwn)}${scope.fabricationFilter(req.user, 'j')} ORDER BY j.id DESC LIMIT 50`, ...jOwn.params);
   }
   // Job Requests (Transport): Transport Manager certifies → Operational Manager approves.
   if (may('jobrequests.certify')) {
     out.jr_certify = all(`SELECT r.id, r.jr_no, r.req_date, r.requested_by, r.description,
           a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec
         FROM job_requests r LEFT JOIN assets a ON a.id = r.asset_id
-        WHERE r.approval_status = 'requested'${and(rOwn)} ORDER BY r.id DESC LIMIT 50`, ...rOwn.params);
+        WHERE r.approval_status = 'requested'${and(rOwn)}${scope.fabricationFilter(req.user, 'r')} ORDER BY r.id DESC LIMIT 50`, ...rOwn.params);
   }
   if (may('jobrequests.approve')) {
     out.jr_approve = all(`SELECT r.id, r.jr_no, r.req_date, r.requested_by, r.certified_by, r.description,
           a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec
         FROM job_requests r LEFT JOIN assets a ON a.id = r.asset_id
-        WHERE r.approval_status = 'certified'${and(rOwn)} ORDER BY r.id DESC LIMIT 50`, ...rOwn.params);
+        WHERE r.approval_status = 'certified'${and(rOwn)}${scope.fabricationFilter(req.user, 'r')} ORDER BY r.id DESC LIMIT 50`, ...rOwn.params);
   }
   // Reopen requests (W2): for whoever may reopen — except the person who asked, who cannot approve
   // their own (an admin excepted, as for the other approvals).
@@ -1861,6 +1861,8 @@ router.put('/daily/job-summary/notes/:jobId', requireAuth,
   require('../lib/auth').requireCap('reports.daily.notes'),
   asyncHandler((req, res) => {
     const id = toInt(req.params.jobId);
+    const fabRef = scope.fabricationJobRefusal(req.user, id);
+    if (fabRef) return res.status(404).json({ error: 'Job not found' });
     if (!get('SELECT 1 v FROM job_cards WHERE id = ?', id)) return res.status(404).json({ error: 'Job not found' });
     { const no = require('../lib/scope').jobRefusal(req.user, id); if (no) return res.status(403).json(no); }
     const b = req.body || {};

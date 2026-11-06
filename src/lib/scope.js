@@ -190,17 +190,84 @@ function refusal(what, workshopId) {
  * Guard a job card by id: null when the person may reach it (or it does not exist — the route's
  * own 404 says so), else the 403 body.
  */
+
+// ---- Fabrication Row-Level Security & Hiding (Plan Phase 1) ------------------
+
+/**
+ * WHERE fragment hiding fabrication records from users without fabrication.view.
+ * @param {Object} user Current session user
+ * @param {string} alias Alias for job_cards ('j') or job_requests ('r')
+ * @returns {string} e.g. " AND (j.type <> 'fabrication' OR j.type IS NULL)" or ""
+ */
+function fabricationFilter(user, alias = 'j') {
+  if (!user) return alias ? ` AND (${alias}.type <> 'fabrication' OR ${alias}.type IS NULL)` : " AND (type <> 'fabrication' OR type IS NULL)";
+  if (isAdmin(user) || require('./auth').hasCap(user, 'fabrication.view')) {
+    return '';
+  }
+  const prefix = alias ? `${alias}.` : '';
+  return ` AND (${prefix}type <> 'fabrication' OR ${prefix}type IS NULL)`;
+}
+
+function fabricationClause(user, alias = 'j') {
+  if (!user) return alias ? `(${alias}.type <> 'fabrication' OR ${alias}.type IS NULL)` : "(type <> 'fabrication' OR type IS NULL)";
+  if (isAdmin(user) || require('./auth').hasCap(user, 'fabrication.view')) {
+    return null;
+  }
+  const prefix = alias ? `${alias}.` : '';
+  return `(${prefix}type <> 'fabrication' OR ${prefix}type IS NULL)`;
+}
+
+/**
+ * 404 refusal for unauthorized access to a fabrication job card.
+ */
+function fabricationJobRefusal(user, jobId) {
+  if (!jobId) return null;
+  if (isAdmin(user) || require('./auth').hasCap(user, 'fabrication.view')) return null;
+  const j = get('SELECT type FROM job_cards WHERE id = ?', jobId);
+  if (j && j.type === 'fabrication') {
+    return { error: 'Job not found', status: 404 };
+  }
+  return null;
+}
+
+/**
+ * 404 refusal for unauthorized access to a fabrication job request.
+ */
+function fabricationRequestRefusal(user, jrId) {
+  if (!jrId) return null;
+  if (isAdmin(user) || require('./auth').hasCap(user, 'fabrication.view')) return null;
+  const r = get('SELECT type FROM job_requests WHERE id = ?', jrId);
+  if (r && r.type === 'fabrication') {
+    return { error: 'Job request not found', status: 404 };
+  }
+  return null;
+}
+
 function jobRefusal(user, jobId) {
+  if (!jobId) return null;
+  const j = get('SELECT workshop_id, type FROM job_cards WHERE id = ?', jobId);
+  if (!j) return null;
+  if (j.type === 'fabrication') {
+    if (!isAdmin(user) && !require('./auth').hasCap(user, 'fabrication.view', 'fabrication.issue_target')) {
+      return { error: 'Job not found', status: 404 };
+    }
+  }
   if (!enabled()) return null;
-  const j = get('SELECT workshop_id FROM job_cards WHERE id = ?', jobId);
-  if (!j || mayReach(user, j.workshop_id)) return null;
+  if (mayReach(user, j.workshop_id)) return null;
   return refusal('job card', j.workshop_id);
 }
 
 function jobReadRefusal(user, jobId) {
+  if (!jobId) return null;
+  const j = get('SELECT workshop_id, type FROM job_cards WHERE id = ?', jobId);
+  if (!j) return null;
+  if (j.type === 'fabrication') {
+    if (!isAdmin(user) && !require('./auth').hasCap(user, 'fabrication.view')) {
+      return { error: 'Job not found', status: 404 };
+    }
+  }
   if (!enabled()) return null;
-  const j = get('SELECT workshop_id FROM job_cards WHERE id = ?', jobId);
-  if (!j || mayRead(user, j.workshop_id, 'job')) return null;
+  if (mayRead(user, j.workshop_id, 'job')) return null;
   return refusal('job card', j.workshop_id);
 }
 
@@ -225,21 +292,28 @@ function mrnRefusal(user, mrnId) {
 }
 
 function jobRequestRefusal(user, jrId) {
+  if (!jrId) return null;
+  const r = get('SELECT workshop_id, type FROM job_requests WHERE id = ?', jrId);
+  if (!r) return null;
+  if (r.type === 'fabrication') {
+    if (!isAdmin(user) && !require('./auth').hasCap(user, 'fabrication.view')) {
+      return { error: 'Job request not found', status: 404 };
+    }
+  }
   if (!enabled()) return null;
-  const r = get('SELECT workshop_id FROM job_requests WHERE id = ?', jrId);
-  if (!r || mayReach(user, r.workshop_id, { store: false })) return null;
+  if (mayReach(user, r.workshop_id, { store: false })) return null;
   return refusal('job request', r.workshop_id);
 }
 
 /** Express guard for routers whose `:id` is a job card (router.param). */
 function jobParam(req, res, next, id) {
   const no = jobRefusal(req.user, Number(id));
-  return no ? res.status(403).json(no) : next();
+  return no ? res.status(no.status || 403).json(no) : next();
 }
 
 function jobReadParam(req, res, next, id) {
   const no = jobReadRefusal(req.user, Number(id));
-  return no ? res.status(403).json(no) : next();
+  return no ? res.status(no.status || 403).json(no) : next();
 }
 
 // ---- The rest of a workshop's own records (improvement plan, Step 2) --------------------------
@@ -339,4 +413,5 @@ module.exports = {
   FLAG, switchedOn, setSwitch, enabled, headOffice, storeStaff, seesAll, seesAllJobs, reach, onlyWorkshop,
   filter, mayReach, mayRead, readFilter, isReadOnly, reportWorkshop, refusal, jobRefusal, jobReadRefusal, mrnRefusal, jobRequestRefusal, jobParam,
   jobReadParam, serviceRefusal, serviceReadRefusal, toolRefusal, ownStore, storeOfRow, storeFilter, storeRefusal, reportWs, wsSql,
+  fabricationFilter, fabricationClause, fabricationJobRefusal, fabricationRequestRefusal,
 };

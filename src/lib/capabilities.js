@@ -18,7 +18,7 @@ const C = (key, module, label, legacy = [], needs = null, section = null, actvt 
   key, module, label, legacy: Array.isArray(legacy) ? legacy : [], needs, section: section || module, actvt, domain, dualAuth: !!dualAuth
 });
 
-const ALL_ROLES = ['storekeeper', 'main_storekeeper', 'site_storekeeper', 'workshop', 'transport_manager', 'assistant_transport_manager', 'operational_manager', 'manager', 'purchase_head_office', 'purchase_local', 'viewer'];
+const ALL_ROLES = ['storekeeper', 'main_storekeeper', 'site_storekeeper', 'workshop', 'transport_manager', 'assistant_transport_manager', 'operational_manager', 'manager', 'purchase_head_office', 'purchase_local', 'viewer', 'fabrication_officer'];
 const OPS_MANAGERS = ['operational_manager', 'manager'];
 const TRANSPORT_MANAGERS = ['transport_manager', 'assistant_transport_manager', 'operational_manager', 'manager'];
 const ALL_MANAGERS = ['transport_manager', 'assistant_transport_manager', 'operational_manager', 'manager'];
@@ -67,7 +67,7 @@ const CAPABILITIES = [
   // ---- 3. Job Requests (Z_WO_JREQ) -----------------------------------------------------------
   C('jobrequests.view', 'jobrequests', 'View incoming vehicle repair requests', ALL_ROLES, null, 'jobs', '03', 'Operations'),
   C('jobrequests.create', 'jobrequests', 'Raise a job request from driver or field', ['assistant_transport_manager', 'transport_manager', 'workshop'], 'jobrequests', 'jobs', '01', 'Operations'),
-  C('jobrequests.create_fabrication', 'jobrequests', 'Raise a fabrication job request', ['assistant_transport_manager', 'transport_manager', 'workshop', 'manager', 'operational_manager'], 'jobrequests', 'jobs', '01', 'Operations'),
+  C('jobrequests.create_fabrication', 'jobrequests', 'Raise a fabrication job request', ['assistant_transport_manager', 'transport_manager', 'workshop', 'manager', 'operational_manager', 'fabrication_officer'], 'jobrequests', 'jobs', '01', 'Operations'),
   C('jobrequests.certify', 'jobrequests', 'Certify a job request (transport step)', ['transport_manager'], 'jobrequests', 'jobs', 'A1', 'Operations'),
   C('jobrequests.approve', 'jobrequests', 'Approve a job request (operations step)', OPS_MANAGERS, 'jobrequests', 'jobs', '10', 'Operations'),
   C('jobrequests.reject', 'jobrequests', 'Reject a job request at certify or approve step', ['transport_manager', 'operational_manager', 'manager'], 'jobrequests', 'jobs', '10', 'Operations'),
@@ -348,6 +348,24 @@ const CAPABILITIES = [
   // ---- 30. User Activity Logs & Security Audit Trail (Z_WO_AUDIT) ----------------------------
   C('audit.logs.view', 'audit_logs', 'View all user activity logs and security audit trail', [], null, 'audit_logs', '03', 'Admin'),
   C('audit.logs.export', 'audit_logs', 'Export security audit trail and user activities to Excel/CSV', [], null, 'audit_logs', '08', 'Admin'),
+
+  // ============================================================================================
+  // DOMAIN: FABRICATION & GENERAL WORKS (Z_WO_FAB)
+  // ============================================================================================
+  C('fabrication.view', 'fabrication', 'View fabrication requests, cards, and dashboard tile', ['fabrication_officer', 'operational_manager', 'manager'], null, 'fabrication', '03', 'Operations'),
+  C('fabrication.open_card', 'fabrication', 'Open a job card from an approved fabrication request', ['fabrication_officer'], 'fabrication', 'fabrication', '01', 'Operations'),
+  C('fabrication.edit', 'fabrication', 'Edit fabrication card details, work target, category, and drawing reference', ['fabrication_officer'], 'fabrication', 'fabrication', '02', 'Operations'),
+  C('fabrication.dailywork', 'fabrication', 'Log labour hours on fabrication cards', ['fabrication_officer', 'operational_manager', 'workshop', 'manager'], null, 'fabrication', '02', 'Operations'),
+  C('fabrication.parts', 'fabrication', 'Request materials (MRN) and price non-stock lines on fabrication cards', ['fabrication_officer'], null, 'fabrication', '02', 'Operations'),
+  C('fabrication.drawings', 'fabrication', 'Upload and view fabrication drawings and specifications', ['fabrication_officer', 'operational_manager', 'manager'], null, 'fabrication', '02', 'Operations'),
+  C('fabrication.cost.view', 'fabrication_costing', 'View fabrication costs unmasked (amounts, not individual wage rates)', ['fabrication_officer', 'operational_manager', 'manager'], 'fabrication', 'fabrication', '03', 'Operations'),
+  C('fabrication.cost.edit', 'fabrication_costing', 'Prepare and edit the Fabrication Costing Sheet', ['fabrication_officer'], 'fabrication_costing', 'fabrication', '02', 'Operations'),
+  C('fabrication.cost.approve', 'fabrication_costing', 'Approve the Fabrication Costing Sheet (dual authorization required)', ['operational_manager', 'manager'], 'fabrication_costing', 'fabrication', '10', 'Operations', true),
+  C('fabrication.close', 'fabrication', 'Close fabrication job card and freeze final cost snapshot', ['operational_manager', 'manager'], 'fabrication', 'fabrication', '10', 'Operations'),
+  C('fabrication.issue_target', 'stores', 'Pick a fabrication card as the target of a store issue (masks drawing, cost, and notes)', ['storekeeper', 'main_storekeeper', 'site_storekeeper'], null, 'stores', '02', 'Inventory'),
+  C('fabrication.export', 'fabrication', 'Export fabrication cost sheets and summary reports', ['fabrication_officer', 'operational_manager', 'manager'], null, 'fabrication', '08', 'Operations'),
+  C('fabrication.settings', 'fabrication', 'Manage fabrication categories, overhead rates, and general works options', ['manager'], null, 'fabrication', '02', 'Operations'),
+  C('fabrication.assign_access', 'access', 'Grant or remove Fabrication Officer access privileges', ['manager'], null, 'access', '02', 'Admin'),
 ];
 
 

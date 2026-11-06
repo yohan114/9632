@@ -205,7 +205,7 @@ function getMissingAllocations(user = null) {
            COALESCE(w.name, 'Default Workshop') AS workshop_name
       FROM job_cards j
       LEFT JOIN workshops w ON w.id = j.workshop_id
-     WHERE j.asset_id IS NULL${wsFilter.replace('workshop_id', 'j.workshop_id')}
+     WHERE j.asset_id IS NULL AND (j.type <> 'fabrication' OR j.work_target <> 'general')${wsFilter.replace('workshop_id', 'j.workshop_id')}
      ORDER BY j.id DESC
      LIMIT 200
   `);
@@ -215,7 +215,7 @@ function getMissingAllocations(user = null) {
            COALESCE(w.name, 'Central Workshop') AS workshop_name
       FROM job_requests r
       LEFT JOIN workshops w ON w.id = r.workshop_id
-     WHERE r.asset_id IS NULL${wsFilter.replace('workshop_id', 'r.workshop_id')}
+     WHERE r.asset_id IS NULL AND (r.type <> 'fabrication' OR r.work_target <> 'general')${wsFilter.replace('workshop_id', 'r.workshop_id')}
      ORDER BY r.id DESC
      LIMIT 200
   `);

@@ -52,6 +52,13 @@ const SOD_RULES = [
     caps: ['stores.disposal.request', 'stores.disposal.approve'],
     severity: 'CRITICAL',
     description: 'A person proposing asset scrapping or disposal cannot approve write-off disposals.'
+  },
+  {
+    code: 'SOD-FAB-01',
+    title: 'Fabrication Costing Preparation & Cost Approval',
+    caps: ['fabrication.cost.edit', 'fabrication.cost.approve'],
+    severity: 'CRITICAL',
+    description: 'The officer preparing the fabrication costing sheet cannot approve it for financial posting.'
   }
 ];
 
