@@ -510,6 +510,7 @@ function migrate() {
           if (!mtnCols.includes('from_store_id')) wdb.exec('ALTER TABLE mtn ADD COLUMN from_store_id INTEGER');
           if (!mtnCols.includes('to_store_id')) wdb.exec('ALTER TABLE mtn ADD COLUMN to_store_id INTEGER');
           if (!mtnCols.includes('workshop_id')) wdb.exec('ALTER TABLE mtn ADD COLUMN workshop_id INTEGER');
+          if (!mtnCols.includes('stock_synced_at')) wdb.exec('ALTER TABLE mtn ADD COLUMN stock_synced_at TEXT');
         }
 
         // Tag transfer rows with mtn_id on workshop DB ledgers

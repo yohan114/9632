@@ -3722,8 +3722,18 @@ function syncIssueToLedgers(issueId) {
 }
 
 function syncMtnStock(mtnId) {
-  const claim = run("UPDATE mtn SET stock_synced_at = datetime('now') WHERE id = ? AND stock_synced_at IS NULL", mtnId);
-  if (claim.changes !== 1) return;
+  let claim;
+  try {
+    claim = run("UPDATE mtn SET stock_synced_at = datetime('now') WHERE id = ? AND stock_synced_at IS NULL", mtnId);
+  } catch (err) {
+    if (/no such column: stock_synced_at/i.test(err.message)) {
+      run('ALTER TABLE mtn ADD COLUMN stock_synced_at TEXT');
+      claim = run("UPDATE mtn SET stock_synced_at = datetime('now') WHERE id = ? AND stock_synced_at IS NULL", mtnId);
+    } else {
+      throw err;
+    }
+  }
+  if (!claim || claim.changes !== 1) return;
 
   const lines = all('SELECT * FROM mtn_lines WHERE mtn_id = ?', mtnId);
   const lubricants = require('../lib/lubricants');
