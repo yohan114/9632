@@ -216,7 +216,7 @@ const CAPABILITIES = [
   C('stores.min.approve', 'stores', 'Approve a Material Issue Note (MIN)', ['workshop', 'operational_manager', 'manager'], null, 'stores', '10', 'Inventory'),
   C('stores.min.reject', 'stores', 'Reject a Material Issue Note (MIN)', ['workshop', 'operational_manager', 'manager'], null, 'stores', '10', 'Inventory'),
   C('stores.reorder_mrn', 'stores', 'Generate restock MRNs from stock cockpit reorder lines', STORE_STAFF.concat(['manager']), 'stores', 'stores', '01', 'Inventory'),
-  C('stores.mtn.edit', 'stores', 'Create, send, receive or cancel Material Transfer Notes (MTN)', STORE_STAFF, 'stores', 'stores', '01', 'Inventory'),
+  C('stores.mtn.edit', 'stores', 'Create, send, receive or cancel Material Transfer Notes (MTN)', SITE_STORE_STAFF, 'stores', 'stores', '01', 'Inventory'),
   C('stores.mtn.approve', 'stores', 'Approve a Material Transfer Note (MTN)', ['workshop', 'operational_manager', 'manager'], null, 'stores', '10', 'Inventory'),
   C('stores.mtn.reject', 'stores', 'Reject a Material Transfer Note (MTN)', ['workshop', 'operational_manager', 'manager'], null, 'stores', '10', 'Inventory'),
   C('stores.issue_return', 'stores', 'Return an issued part back to store stock', SITE_STORE_STAFF, 'stores', 'stores', '02', 'Inventory'),

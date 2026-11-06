@@ -30,6 +30,8 @@ const attendance = require('../lib/attendance');
 const jobClose = require('../lib/job_close');
 const costing = require('../lib/costing');
 const mechanicsLib = require('../lib/mechanics');
+const context = require('../lib/context');
+const storeLocations = require('../lib/store_locations');
 
 // Live, in-flight MRNs awaiting a decision. approval_status is 'requested' | 'certified'
 // | 'approved' | 'rejected' (there is no 'pending'); the 1500+ imported rows are
@@ -441,7 +443,7 @@ router.get('/workflow-monitor', asyncHandler((req, res) => {
     const waiting = all(`SELECT r.id, r.jr_no, r.req_date, r.approved_at, r.requested_by, r.certified_by, r.approved_by, r.description,
           a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec
         FROM job_requests r LEFT JOIN assets a ON a.id = r.asset_id
-        WHERE r.approval_status = 'approved' AND r.job_id IS NULL${and(rOwn)}${scope.fabricationFilter(user, 'r')} ORDER BY r.approved_at, r.id LIMIT 30`, ...rOwn.params);
+        WHERE r.approval_status = 'approved' AND r.job_id IS NULL AND (r.type <> 'fabrication' OR r.type IS NULL)${and(rOwn)}${scope.fabricationFilter(user, 'r')} ORDER BY r.approved_at, r.id LIMIT 30`, ...rOwn.params);
     for (const r of waiting) {
       inflow.push({
         id: r.id, kind: 'jr_open_card', ref: r.jr_no, title: `Job Request ${r.jr_no}`,
@@ -452,6 +454,26 @@ router.get('/workflow-monitor', asyncHandler((req, res) => {
       });
     }
   }
+  if (may('fabrication.open_card')) {
+    const fabWaiting = all(`SELECT r.id, r.jr_no, r.req_date, r.approved_at, r.requested_by, r.certified_by, r.approved_by, r.description,
+          r.work_target, r.category,
+          a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec
+        FROM job_requests r LEFT JOIN assets a ON a.id = r.asset_id
+        WHERE r.approval_status = 'approved' AND r.job_id IS NULL AND r.type = 'fabrication'${and(rOwn)} ORDER BY r.approved_at, r.id LIMIT 30`, ...rOwn.params);
+    for (const r of fabWaiting) {
+      const targetLabel = r.work_target === 'general'
+        ? `General: ${r.category || 'Works'}`
+        : [r.asset_reg, r.asset_ec, r.asset_code].filter(Boolean).join(' · ');
+      inflow.push({
+        id: r.id, kind: 'fab_open_card', ref: r.jr_no, title: `Fabrication Request ${r.jr_no}`,
+        vehicle: targetLabel,
+        description: r.description, requester: r.requested_by, certified_by: r.certified_by,
+        approved_by: r.approved_by, date: (r.approved_at || r.req_date || '').slice(0, 10),
+        link: `#/jobrequests/${r.id}`, action: 'Open fabrication card'
+      });
+    }
+  }
+
   if (may('stores.mrn.certify')) {
     const mrns = all(`SELECT m.id, m.mrn_no, m.req_date, m.requested_by, a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec, ${lineCount}
         FROM mrn m LEFT JOIN assets a ON a.id = m.asset_id WHERE ${INFLOW_MRN}${and(mOwn)} ORDER BY m.req_date DESC, m.id DESC LIMIT 30`, ...mOwn.params);
@@ -777,6 +799,150 @@ router.get('/workflow-monitor', asyncHandler((req, res) => {
 }));
 
 // ---- lightweight poll -----------------------------------------------------
+/**
+ * GET /stores-controls
+ * Phase 6 Site Stores & Warehouse Controls Dashboard
+ * Scoped strictly to the active physical store location from user context.
+ */
+router.get('/stores-controls', asyncHandler((req, res) => {
+  const user = req.user;
+  const isMainStore = context.isMainStoreUser(user);
+  const storeScope = context.storeScopeFor(user);
+
+  let activeStoreId = null;
+  if (!isMainStore) {
+    activeStoreId = context.getUserAssignedStoreId(user);
+  } else {
+    activeStoreId = req.query.store_id ? Number(req.query.store_id) : ((req.activeContext && req.activeContext.activeStoreId) || 1);
+  }
+
+  const storeInfo = storeLocations.getStoreLocationById(activeStoreId) || { id: activeStoreId, name: 'Active Store', code: 'STORE' };
+
+  // 1. Incoming MTN waiting to accept
+  const incomingMtn = all(`
+    SELECT t.id, t.mtn_no, t.txn_date, t.description, t.qty, t.status,
+           t.from_location, t.to_location, t.from_place, t.to_place,
+           t.approved_by, t.created_at,
+           fl.name AS from_store_name, tl.name AS to_store_name
+      FROM mtn t
+      LEFT JOIN store_locations fl ON fl.id = t.from_store_location_id
+      LEFT JOIN store_locations tl ON tl.id = t.to_store_location_id
+     WHERE (t.to_store_location_id = ? OR (t.to_store_location_id IS NULL AND t.to_store_id = ?))
+       AND t.status IN ('dispatched', 'approved')
+     ORDER BY t.id DESC LIMIT 20
+  `, activeStoreId, activeStoreId);
+
+  // 2. Outgoing MTN in transit
+  const outgoingInTransit = all(`
+    SELECT t.id, t.mtn_no, t.txn_date, t.description, t.qty, t.status,
+           t.from_location, t.to_location, t.from_place, t.to_place,
+           t.received_by AS driver_name,
+           fl.name AS from_store_name, tl.name AS to_store_name
+      FROM mtn t
+      LEFT JOIN store_locations fl ON fl.id = t.from_store_location_id
+      LEFT JOIN store_locations tl ON tl.id = t.to_store_location_id
+     WHERE (t.from_store_location_id = ? OR (t.from_store_location_id IS NULL AND t.from_store_id = ?))
+       AND t.status = 'dispatched'
+     ORDER BY t.id DESC LIMIT 20
+  `, activeStoreId, activeStoreId);
+
+  // 3. MTN ready to dispatch
+  const readyToDispatch = all(`
+    SELECT t.id, t.mtn_no, t.txn_date, t.description, t.qty, t.status,
+           t.from_location, t.to_location, t.from_place, t.to_place,
+           fl.name AS from_store_name, tl.name AS to_store_name
+      FROM mtn t
+      LEFT JOIN store_locations fl ON fl.id = t.from_store_location_id
+      LEFT JOIN store_locations tl ON tl.id = t.to_store_location_id
+     WHERE (t.from_store_location_id = ? OR (t.from_store_location_id IS NULL AND t.from_store_id = ?))
+       AND t.status = 'approved'
+     ORDER BY t.id DESC LIMIT 20
+  `, activeStoreId, activeStoreId);
+
+  // 4. Pending Material Requests (MRNs requested for this store)
+  const pendingRequests = all(`
+    SELECT m.id, m.mrn_no, m.req_date, m.purpose, m.approval_status,
+           a.code AS asset_code, a.registration AS asset_reg,
+           (SELECT COUNT(*) FROM mrn_lines ml WHERE ml.mrn_id = m.id) AS lines_count
+      FROM mrn m
+      LEFT JOIN assets a ON a.id = m.asset_id
+     WHERE m.approval_status = 'requested'
+       AND (m.target_store_location_id = ? OR (m.target_store_location_id IS NULL AND m.workshop_id = ?))
+     ORDER BY m.id DESC LIMIT 20
+  `, activeStoreId, activeStoreId);
+
+  // 5. Goods to receive (GRN vouchers in draft or pending for this store)
+  const goodsToReceive = all(`
+    SELECT g.id, g.grn_no, g.received_date, g.supplier, g.status,
+           (SELECT COUNT(*) FROM grn gl WHERE gl.voucher_id = g.id) AS lines_count
+      FROM grn_vouchers g
+     WHERE g.status IN ('draft', 'pending')
+       AND (g.physical_store_id = ? OR g.physical_store_id IS NULL)
+     ORDER BY g.id DESC LIMIT 20
+  `, activeStoreId);
+
+  // 6. Today's issues from this store
+  const todaysIssues = all(`
+    SELECT i.id, COALESCE(i.min_no, i.mrn_no, '#' || i.id) AS issue_no, i.issue_date, i.qty, i.description AS item_name,
+           j.job_no, a.code AS asset_code, a.registration AS asset_reg
+      FROM issues i
+      LEFT JOIN job_cards j ON j.id = i.job_id
+      LEFT JOIN assets a ON a.id = i.asset_id
+     WHERE date(i.issue_date) = date('now')
+       AND (i.physical_store_id = ? OR (i.physical_store_id IS NULL AND i.store_id = ?))
+     ORDER BY i.id DESC LIMIT 30
+  `, activeStoreId, activeStoreId);
+
+  // 7. Low stock items strictly scoped to this store
+  let lowStock = [];
+  try {
+    lowStock = all(`
+      SELECT sm.item_name, sm.item_key,
+             COALESCE(SUM(CASE WHEN sm.kind = 'in' THEN sm.qty ELSE -sm.qty END), 0) AS balance,
+             COALESCE(sr.level, 5) AS reorder_level
+        FROM stock_moves sm
+        LEFT JOIN store_reorder sr ON (sr.physical_store_id = ? OR sr.store_id = ?) AND sr.item_key = sm.item_key
+       WHERE (sm.physical_store_id = ? OR sm.store_id = ?)
+       GROUP BY sm.item_key, sm.item_name
+      HAVING balance <= reorder_level
+       ORDER BY balance ASC LIMIT 30
+    `, activeStoreId, activeStoreId, activeStoreId, activeStoreId);
+  } catch (_) {
+    lowStock = [];
+  }
+
+  // User permissions on this store
+  const userPerms = {
+    can_view: storeScope.canAccess(activeStoreId, 'view'),
+    can_issue: storeScope.canAccess(activeStoreId, 'issue'),
+    can_receive: storeScope.canAccess(activeStoreId, 'receive'),
+    can_dispatch: storeScope.canAccess(activeStoreId, 'dispatch'),
+    can_count: storeScope.canAccess(activeStoreId, 'count'),
+  };
+
+  res.json({
+    active_store: storeInfo,
+    is_main_store: isMainStore,
+    permissions: userPerms,
+    incoming_mtn: incomingMtn,
+    outgoing_in_transit: outgoingInTransit,
+    ready_to_dispatch: readyToDispatch,
+    pending_requests: pendingRequests,
+    goods_to_receive: goodsToReceive,
+    todays_issues: todaysIssues,
+    low_stock: lowStock,
+    summary_counts: {
+      incoming_mtn: incomingMtn.length,
+      outgoing_in_transit: outgoingInTransit.length,
+      ready_to_dispatch: readyToDispatch.length,
+      pending_requests: pendingRequests.length,
+      goods_to_receive: goodsToReceive.length,
+      todays_issues: todaysIssues.length,
+      low_stock: lowStock.length
+    }
+  });
+}));
+
 router.get('/live-stats', asyncHandler((req, res) => {
   const ws = scope.reach(req.user);   // Step 2b: as the overview
   const canReports = permissions.reaches(req.user, 'reports') || hasCap(req.user, 'reports.financial');

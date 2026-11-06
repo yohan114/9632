@@ -233,6 +233,7 @@ function ensureStoreMetaCols(targetDb = null) {
     ['address', 'TEXT'],
     ['allow_direct_grn', 'INTEGER NOT NULL DEFAULT 0'],
     ['allow_direct_issue', 'INTEGER NOT NULL DEFAULT 1'],
+    ['project_id', 'INTEGER'],
   ];
   for (const [col, def] of cols) {
     try {
@@ -638,6 +639,12 @@ function getUserStoreLocations(userId) {
  * Preserves existing workshop stock balances by mapping Workshop 1 to Main Workshop Stores.
  */
 function seedStoreLocations(targetDb = null) {
+  if (targetDb && multidb && typeof multidb.isMultiDb === 'function' && multidb.isMultiDb()) {
+    try {
+      const isWsDb = Boolean(targetDb.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='ws_meta'").get());
+      if (isWsDb) return;
+    } catch (_) {}
+  }
   const qGet = (sql, ...p) => (targetDb ? targetDb.prepare(sql).get(...p) : get(sql, ...p));
   const qRun = (sql, ...p) => (targetDb ? targetDb.prepare(sql).run(...p) : run(sql, ...p));
   const qAll = (sql, ...p) => (targetDb ? targetDb.prepare(sql).all(...p) : all(sql, ...p));

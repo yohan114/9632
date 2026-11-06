@@ -230,12 +230,30 @@ const guardMin = (req, res, next) => { const no = minRefusal(req.user, req.param
 // at either end, on the note or on any of its items — the place keys of a workshop are 'w:<id>'.
 function mtnOwnCond(user) {
   const r = scope.enabled() ? scope.reach(user) : null;
-  if (r == null) return null;
-  const ids = r.map(Number).filter(Number.isInteger);
-  if (!ids.length) return '0';
-  const places = ids.map((i) => `'w:${i}'`).join(',');
-  return `(${scope.storeOfRow('t.workshop_id')} IN (${ids.join(',')}) OR t.from_place IN (${places}) OR t.to_place IN (${places})
-           OR EXISTS (SELECT 1 FROM mtn_lines mx WHERE mx.mtn_id = t.id AND (mx.from_place IN (${places}) OR mx.to_place IN (${places}))))`;
+  let storeIds = null;
+  try {
+    const storeScope = require('../lib/context').storeScopeFor(user);
+    if (!storeScope.isGlobal) {
+      storeIds = (storeScope.storeIds || [storeScope.primaryStoreId]).filter(Boolean).map(Number);
+    }
+  } catch (e) {}
+
+  if (r == null && !storeIds) return null;
+
+  const clauses = [];
+  if (r != null) {
+    const ids = r.map(Number).filter(Number.isInteger);
+    if (ids.length) {
+      const places = ids.map((i) => `'w:${i}'`).join(',');
+      clauses.push(`(${scope.storeOfRow('t.workshop_id')} IN (${ids.join(',')}) OR t.from_place IN (${places}) OR t.to_place IN (${places})
+               OR EXISTS (SELECT 1 FROM mtn_lines mx WHERE mx.mtn_id = t.id AND (mx.from_place IN (${places}) OR mx.to_place IN (${places}))))`);
+    }
+  }
+  if (storeIds && storeIds.length) {
+    clauses.push(`(t.from_store_location_id IN (${storeIds.join(',')}) OR t.to_store_location_id IN (${storeIds.join(',')}) OR t.from_store_id IN (${storeIds.join(',')}) OR t.to_store_id IN (${storeIds.join(',')}))`);
+  }
+  if (!clauses.length) return '0';
+  return '(' + clauses.join(' OR ') + ')';
 }
 function mtnRefusal(user, idOrNo) {
   const cond = mtnOwnCond(user);
@@ -5434,6 +5452,14 @@ router.post('/mtn/:id/dispatch', requireCap('stores.mtn.edit'), guardMtn, chainP
   const id = toInt(req.params.id);
   const m = get('SELECT * FROM mtn WHERE id = ?', id);
   if (!m) return res.status(404).json({ error: 'MTN not found' });
+
+  const issueStoreScope = require('../lib/context').storeScopeFor(req.user);
+  if (!issueStoreScope.isGlobal) {
+    const fromId = m.from_store_location_id || m.from_store_id || m.workshop_id;
+    if (fromId && !issueStoreScope.canAccess(fromId, 'dispatch')) {
+      return res.status(403).json({ error: 'You do not have authorization to dispatch MTNs from this store location.' });
+    }
+  }
   const s = signer(req.user.id);
   const appBy = clean(req.body.approved_by) || s.name;
   const appSig = clean(req.body.approved_sig) || s.sig || null;
@@ -5490,6 +5516,14 @@ router.post('/mtn/:id/accept', requireCap('stores.mtn.edit'), guardMtn, chainPip
   const id = toInt(req.params.id);
   const m = get('SELECT * FROM mtn WHERE id = ?', id);
   if (!m) return res.status(404).json({ error: 'MTN not found' });
+
+  const receiveStoreScope = require('../lib/context').storeScopeFor(req.user);
+  if (!receiveStoreScope.isGlobal) {
+    const toId = m.to_store_location_id || m.to_store_id;
+    if (toId && !receiveStoreScope.canAccess(toId, 'receive')) {
+      return res.status(403).json({ error: 'You do not have authorization to accept MTNs addressed to this destination store.' });
+    }
+  }
   const s = signer(req.user.id);
   const accBy = clean(req.body.accepted_by) || s.name;
   const accSig = clean(req.body.accepted_sig) || s.sig || null;
