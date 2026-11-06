@@ -298,7 +298,7 @@ function rebuild(opts = {}) {
   // read with no store leaves transfers out entirely (storeWhere below), because across all
   // stores one store's issue is the other's receipt.
   const GONE = ['dispatched', 'received', 'accepted'];   // it has left the sending store
-  const TAKEN_IN = 'accepted';                           // the receiving store has it on the shelf
+  const TAKEN_IN = ['received', 'accepted'];             // the receiving store has it on the shelf
   const transfers = (mtnId) => {
     const storeName = new Map(all('SELECT id, code FROM workshops').map((w) => [w.id, w.code]));
     let locRows = [];
@@ -306,13 +306,17 @@ function rebuild(opts = {}) {
     const locName = new Map(locRows.map((s) => [s.id, s.name || s.code]));
 
     for (const l of all(
-      `SELECT l.id, l.description, l.qty, l.qty_received, l.category, l.store_item_id, l.from_store_id, l.to_store_id,
-              l.from_store_location_id, l.to_store_location_id, l.to_location, l.to_place,
+      `SELECT l.id, l.description, l.qty, l.qty_received, l.category, l.store_item_id,
+              COALESCE(l.from_store_id, t.from_store_id) AS from_store_id,
+              COALESCE(l.to_store_id, t.to_store_id) AS to_store_id,
+              COALESCE(l.from_store_location_id, t.from_store_location_id) AS from_store_location_id,
+              COALESCE(l.to_store_location_id, t.to_store_location_id) AS to_store_location_id,
+              l.to_location, l.to_place,
               t.mtn_no, t.txn_date, t.status, si.name AS item_name, si.category AS item_cat
          FROM mtn_lines l JOIN mtn t ON t.id = l.mtn_id
          LEFT JOIN store_items si ON si.id = l.store_item_id
-        WHERE (l.from_store_id IS NOT NULL OR l.from_store_location_id IS NOT NULL
-            OR l.to_store_id IS NOT NULL OR l.to_store_location_id IS NOT NULL)
+        WHERE (l.from_store_id IS NOT NULL OR l.from_store_location_id IS NOT NULL OR t.from_store_location_id IS NOT NULL
+            OR l.to_store_id IS NOT NULL OR l.to_store_location_id IS NOT NULL OR t.to_store_location_id IS NOT NULL)
           AND COALESCE(l.qty,0) > 0
           AND t.status IN (${GONE.map(() => '?').join(', ')})
           ${mtnId ? 'AND l.mtn_id = ?' : ''}`, ...GONE, ...(mtnId ? [mtnId] : []))) {
@@ -328,7 +332,7 @@ function rebuild(opts = {}) {
       if (l.from_store_id || l.from_store_location_id) {
         insert({ ...base, qty: l.qty, kind: 'out', store_id: l.from_store_id, physical_store_id: l.from_store_location_id, note: 'to ' + toDesc });
       }
-      if (l.status === TAKEN_IN && (l.to_store_id || l.to_store_location_id)) {
+      if (TAKEN_IN.includes(l.status) && (l.to_store_id || l.to_store_location_id)) {
         const inQty = (l.qty_received != null && Number(l.qty_received) >= 0) ? Number(l.qty_received) : l.qty;
         insert({ ...base, qty: inQty, kind: 'in', store_id: l.to_store_id, physical_store_id: l.to_store_location_id, note: 'from ' + fromDesc });
       }

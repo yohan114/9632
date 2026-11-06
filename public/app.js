@@ -8891,17 +8891,34 @@ routes.stores = async (c, parts = []) => {
             accepted: '<span class="badge green">✓ Accepted</span>',
             rejected: '<span class="badge red">✕ Rejected</span>',
           }[mtnStatus] || `<span class="badge">${esc(mtnStatus)}</span>`;
+          const myStoreId = (typeof ME !== 'undefined' && ME) ? (ME.storeLocationId || (ME.primaryStore && (ME.primaryStore.store_location_id || ME.primaryStore.id))) : null;
+          const myStoreAccess = (ME && ME.storeLocations && Array.isArray(ME.storeLocations)) ? ME.storeLocations.find((x) => (x.store_location_id || x.id) == myStoreId) : null;
+          const isMainOrAdmin = isAdmin() || (ME && ME.isMainStore);
+          const canDispStore = isMainOrAdmin || (myStoreAccess ? !!myStoreAccess.can_dispatch : true);
+          const canRecStore = isMainOrAdmin || (myStoreAccess ? !!myStoreAccess.can_receive : true);
+          const fromMatch = isMainOrAdmin || (!t.from_store_location_id || Number(t.from_store_location_id) === Number(myStoreId));
+          const toMatch = isMainOrAdmin || (!t.to_store_location_id || Number(t.to_store_location_id) === Number(myStoreId));
+          const isSenderAtTransit = !isMainOrAdmin && (Number(t.from_store_location_id) === Number(myStoreId)) && (Number(t.to_store_location_id) !== Number(myStoreId));
+
           const rd = mtnRoad(t);
           let flowBtn = '';
           if (rd.step === 'to_approve') {
             if (canDo('stores.mtn.approve')) flowBtn += `<button class="sm primary" data-mtn-app="${t.id}" title="Sign & Approve Transfer">✍ Approve</button> `;
             if (canDo('stores.mtn.reject')) flowBtn += `<button class="sm danger" data-mtn-rej="${t.id}" title="Reject Transfer">✕</button> `;
           } else if (rd.step === 'to_dispatch') {
-            if (canT) flowBtn += `<button class="sm primary" data-dispatch="${t.id}" title="Dispatch transfer">🚀 Dispatch</button> `;
+            if (canT && fromMatch && canDispStore) flowBtn += `<button class="sm primary" data-dispatch="${t.id}" title="Dispatch transfer">🚀 Dispatch</button> `;
           } else if (rd.step === 'in_transit') {
-            if (canT) flowBtn += `<button class="sm primary" data-receive="${t.id}" title="Confirm in-transit arrival">📥 Receive</button> `;
+            if (canT && toMatch && canRecStore) {
+              flowBtn += `<button class="sm primary" data-receive="${t.id}" title="Confirm in-transit arrival">📥 Receive</button> `;
+            } else if (isSenderAtTransit) {
+              flowBtn += `<span class="badge purple" style="font-size:10.5px">Awaiting receipt at ${esc(t.to_store_location_name || t.to_location || 'Dest.')}</span> `;
+            }
           } else if (rd.step === 'to_accept') {
-            if (canT) flowBtn += `<button class="sm primary" data-accept="${t.id}" title="Accept & Bin Stock">✅ Accept</button> `;
+            if (canT && toMatch && canRecStore) {
+              flowBtn += `<button class="sm primary" data-accept="${t.id}" title="Accept & Bin Stock">✅ Accept</button> `;
+            } else if (isSenderAtTransit) {
+              flowBtn += `<span class="badge purple" style="font-size:10.5px">Awaiting receipt at ${esc(t.to_store_location_name || t.to_location || 'Dest.')}</span> `;
+            }
           }
           flowBtn += `<button class="sm" data-mtn-detail="${t.id}">Details</button> `;
           if (canT) flowBtn += `<button class="sm" data-mtn="${t.id}">✎</button>`;
@@ -14290,11 +14307,20 @@ async function mtnApprovalModal(t, onDone) {
     rejected: '<span class="badge red">✕ Rejected</span>',
   }[status] || `<span class="badge">${esc(status)}</span>`;
 
+  const myStoreId = (typeof ME !== 'undefined' && ME) ? (ME.storeLocationId || (ME.primaryStore && (ME.primaryStore.store_location_id || ME.primaryStore.id))) : null;
+  const myStoreAccess = (ME && ME.storeLocations && Array.isArray(ME.storeLocations)) ? ME.storeLocations.find((x) => (x.store_location_id || x.id) == myStoreId) : null;
+  const isMainOrAdmin = isAdmin() || (ME && ME.isMainStore);
+  const canDispStore = isMainOrAdmin || (myStoreAccess ? !!myStoreAccess.can_dispatch : true);
+  const canRecStore = isMainOrAdmin || (myStoreAccess ? !!myStoreAccess.can_receive : true);
+  const fromMatch = isMainOrAdmin || (!m.from_store_location_id || Number(m.from_store_location_id) === Number(myStoreId));
+  const toMatch = isMainOrAdmin || (!m.to_store_location_id || Number(m.to_store_location_id) === Number(myStoreId));
+  const isSenderAtTransit = !isMainOrAdmin && (Number(m.from_store_location_id) === Number(myStoreId)) && (Number(m.to_store_location_id) !== Number(myStoreId)) && (status === 'dispatched' || status === 'received');
+
   const canApprove = canDo('stores.mtn.approve') && (status === 'draft' || status === 'pending_approval');
   const canReject = canDo('stores.mtn.reject') && (status === 'draft' || status === 'pending_approval');
-  const canDispatch = canDo('stores.mtn.edit') && status === 'approved';
-  const canReceive = canDo('stores.mtn.edit') && status === 'dispatched';
-  const canAccept = canDo('stores.mtn.edit') && status === 'received';
+  const canDispatch = canDo('stores.mtn.edit') && status === 'approved' && fromMatch && canDispStore;
+  const canReceive = canDo('stores.mtn.edit') && status === 'dispatched' && toMatch && canRecStore;
+  const canAccept = canDo('stores.mtn.edit') && status === 'received' && toMatch && canRecStore;
   const sig = (name, at) => name ? `${esc(name)} <span class="muted">· ${esc((at || '').slice(0, 16).replace('T', ' '))}</span>` : '<span class="muted">pending</span>';
 
   const rows = lines.map((l, i) => `<tr>
@@ -14311,6 +14337,7 @@ async function mtnApprovalModal(t, onDone) {
     <div style="font-size:12px;color:var(--muted);margin-bottom:8px">Doc. No.: <b>EC1.ST.FO.05</b> · Materials Transfer Note</div>
     <div class="card" style="margin-bottom:12px">
       <div class="toolbar" style="margin:0 0 8px"><h3 style="margin:0">4-Stage Custody Chain & Approvals</h3><div class="spacer"></div>${badge}
+        ${isSenderAtTransit ? `<span class="badge purple">Awaiting receipt at ${esc(m.to_store_location_name || m.to_location || 'destination')}</span>` : ''}
         ${canApprove ? '<button class="sm primary" id="tappbtn">✍ Sign & Approve</button>' : ''}
         ${canReject ? '<button class="sm danger" id="trejbtn">✕ Reject</button>' : ''}
         ${canDispatch ? '<button class="sm primary" id="tdspbtn">🚀 Dispatch (In Transit)</button>' : ''}

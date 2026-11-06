@@ -3753,23 +3753,69 @@ function syncMtnStock(mtnId) {
   }
   if (!claim || claim.changes !== 1) return;
 
+  const m = get('SELECT id, txn_date, mtn_no, from_store_id, to_store_id, from_store_location_id, to_store_location_id FROM mtn WHERE id = ?', mtnId);
   const lines = all('SELECT * FROM mtn_lines WHERE mtn_id = ?', mtnId);
   const lubricants = require('../lib/lubricants');
   for (const l of lines) {
+    const fromStoreLocId = l.from_store_location_id || (m && m.from_store_location_id) || 2;
+    const fromStoreId = l.from_store_id || (m && m.from_store_id) || 1;
+
     if (l.store_item_id) {
-      const prev = (get('SELECT balance_after FROM general_item_txns WHERE store_item_id = ? ORDER BY txn_date DESC, id DESC LIMIT 1', l.store_item_id) || {}).balance_after || 0;
+      const prev = (get('SELECT balance_after FROM general_item_txns WHERE store_item_id = ? AND physical_store_id = ? ORDER BY txn_date DESC, id DESC LIMIT 1', l.store_item_id, fromStoreLocId) || {}).balance_after || 0;
       const newBal = prev - l.qty;
       run(`INSERT INTO general_item_txns (store_item_id, txn_type, qty, balance_after, unit_price, ref, txn_date, store_id, physical_store_id, mtn_id)
-           VALUES (?, 'issue', ?, ?, ?, ?, (SELECT txn_date FROM mtn WHERE id = ?), ?, ?, ?)`,
-        l.store_item_id, -l.qty, newBal, l.value, 'MTN Transfer', mtnId, l.from_store_id || 1, l.from_store_location_id || 2, mtnId);
+           VALUES (?, 'issue', ?, ?, ?, ?, ?, ?, ?, ?)`,
+        l.store_item_id, -l.qty, newBal, l.value, 'MTN Transfer', m ? m.txn_date : new Date().toISOString().slice(0, 10), fromStoreId, fromStoreLocId, mtnId);
     } else {
       const match = lubricants.resolveLubricant(l.description, { record: false });
       if (match.resolved && match.productId) {
-        const prev = (get('SELECT balance_after FROM stock_ledger WHERE product_id = ? ORDER BY txn_date DESC, id DESC LIMIT 1', match.productId) || {}).balance_after || 0;
+        const prev = (get('SELECT balance_after FROM stock_ledger WHERE product_id = ? AND physical_store_id = ? ORDER BY txn_date DESC, id DESC LIMIT 1', match.productId, fromStoreLocId) || {}).balance_after || 0;
         const newBal = prev - l.qty;
         run(`INSERT INTO stock_ledger (product_id, kind, qty, balance_after, unit_price, consumer, mtn_no, txn_date, store_id, physical_store_id, mtn_id)
-             VALUES (?, 'issue', ?, ?, ?, ?, (SELECT mtn_no FROM mtn WHERE id = ?), (SELECT txn_date FROM mtn WHERE id = ?), ?, ?, ?)`,
-          match.productId, -l.qty, newBal, l.value, l.to_location || 'Site Transfer', mtnId, mtnId, l.from_store_id || 1, l.from_store_location_id || 2, mtnId);
+             VALUES (?, 'issue', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          match.productId, -l.qty, newBal, l.value, l.to_location || 'Site Transfer', m ? m.mtn_no : null, m ? m.txn_date : new Date().toISOString().slice(0, 10), fromStoreId, fromStoreLocId, mtnId);
+      }
+    }
+  }
+}
+
+function syncMtnReceiveStock(mtnId) {
+  let claim;
+  try {
+    claim = run("UPDATE mtn SET receive_stock_synced_at = datetime('now') WHERE id = ? AND receive_stock_synced_at IS NULL", mtnId);
+  } catch (err) {
+    if (/no such column: receive_stock_synced_at/i.test(err.message)) {
+      run('ALTER TABLE mtn ADD COLUMN receive_stock_synced_at TEXT');
+      claim = run("UPDATE mtn SET receive_stock_synced_at = datetime('now') WHERE id = ? AND receive_stock_synced_at IS NULL", mtnId);
+    } else {
+      throw err;
+    }
+  }
+  if (!claim || claim.changes !== 1) return;
+
+  const m = get('SELECT id, txn_date, mtn_no, from_store_id, to_store_id, from_store_location_id, to_store_location_id FROM mtn WHERE id = ?', mtnId);
+  const lines = all('SELECT * FROM mtn_lines WHERE mtn_id = ?', mtnId);
+  const lubricants = require('../lib/lubricants');
+  for (const l of lines) {
+    const toStoreLocId = l.to_store_location_id || (m && m.to_store_location_id);
+    const toStoreId = l.to_store_id || (m && m.to_store_id) || 1;
+    const inQty = (l.qty_received != null && Number(l.qty_received) >= 0) ? Number(l.qty_received) : Number(l.qty || 0);
+    if (!(inQty > 0)) continue;
+
+    if (l.store_item_id) {
+      const prev = (get('SELECT balance_after FROM general_item_txns WHERE store_item_id = ? AND physical_store_id = ? ORDER BY txn_date DESC, id DESC LIMIT 1', l.store_item_id, toStoreLocId) || {}).balance_after || 0;
+      const newBal = prev + inQty;
+      run(`INSERT INTO general_item_txns (store_item_id, txn_type, qty, balance_after, unit_price, ref, txn_date, store_id, physical_store_id, mtn_id)
+           VALUES (?, 'receipt', ?, ?, ?, ?, ?, ?, ?, ?)`,
+        l.store_item_id, inQty, newBal, l.value, 'MTN Transfer', m ? m.txn_date : new Date().toISOString().slice(0, 10), toStoreId, toStoreLocId, mtnId);
+    } else {
+      const match = lubricants.resolveLubricant(l.description, { record: false });
+      if (match.resolved && match.productId) {
+        const prev = (get('SELECT balance_after FROM stock_ledger WHERE product_id = ? AND physical_store_id = ? ORDER BY txn_date DESC, id DESC LIMIT 1', match.productId, toStoreLocId) || {}).balance_after || 0;
+        const newBal = prev + inQty;
+        run(`INSERT INTO stock_ledger (product_id, kind, qty, balance_after, unit_price, consumer, mtn_no, txn_date, store_id, physical_store_id, mtn_id)
+             VALUES (?, 'receipt', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          match.productId, inQty, newBal, l.value, 'Site Transfer', m ? m.mtn_no : null, m ? m.txn_date : new Date().toISOString().slice(0, 10), toStoreId, toStoreLocId, mtnId);
       }
     }
   }
@@ -5454,9 +5500,14 @@ router.post('/mtn/:id/dispatch', requireCap('stores.mtn.edit'), guardMtn, chainP
   if (!m) return res.status(404).json({ error: 'MTN not found' });
 
   const issueStoreScope = require('../lib/context').storeScopeFor(req.user);
+  const fromStoreId = m.from_store_location_id || m.from_store_id || m.workshop_id;
+  const activeStoreId = (req.activeContext && req.activeContext.activeStoreId) || req.user.activeStoreId || (req.user.storeLocations && req.user.storeLocations[0] && req.user.storeLocations[0].id) || req.user.store_location_id;
+
   if (!issueStoreScope.isGlobal) {
-    const fromId = m.from_store_location_id || m.from_store_id || m.workshop_id;
-    if (fromId && !issueStoreScope.canAccess(fromId, 'dispatch')) {
+    if (fromStoreId && activeStoreId && Number(fromStoreId) !== Number(activeStoreId)) {
+      return res.status(403).json({ error: 'Only the origin store may dispatch this transfer.' });
+    }
+    if (fromStoreId && !issueStoreScope.canAccess(fromStoreId, 'dispatch')) {
       return res.status(403).json({ error: 'You do not have authorization to dispatch MTNs from this store location.' });
     }
   }
@@ -5482,7 +5533,19 @@ router.post('/mtn/:id/dispatch', requireCap('stores.mtn.edit'), guardMtn, chainP
     supplyRoutes.onMtnDispatched(id);
   });
 
-  audit.record({ userId: req.user.id, entity: 'mtn', entityId: id, action: 'dispatch', after: { status: 'dispatched', received_by: recBy } });
+  const linesCount = (get('SELECT COUNT(*) c FROM mtn_lines WHERE mtn_id = ?', id) || {}).c || 0;
+  audit.record({
+    userId: req.user.id,
+    entity: 'mtn',
+    entityId: id,
+    action: 'dispatch',
+    ip: req.ip || req.connection?.remoteAddress,
+    from_store_location_id: m.from_store_location_id,
+    to_store_location_id: m.to_store_location_id,
+    lines_count: linesCount,
+    override: issueStoreScope.isGlobal && fromStoreId && activeStoreId && Number(fromStoreId) !== Number(activeStoreId),
+    after: { status: 'dispatched', received_by: recBy }
+  });
   emitter.emit('stock_updated', { mtn_id: id, action: 'dispatch' });
   res.json({ ok: true, status: 'dispatched', received_by: recBy, received_at: now });
 }));
@@ -5492,6 +5555,20 @@ router.post('/mtn/:id/receive', requireCap('stores.mtn.edit'), guardMtn, asyncHa
   const id = toInt(req.params.id);
   const m = get('SELECT * FROM mtn WHERE id = ?', id);
   if (!m) return res.status(404).json({ error: 'MTN not found' });
+
+  const receiveStoreScope = require('../lib/context').storeScopeFor(req.user);
+  const toStoreId = m.to_store_location_id || m.to_store_id;
+  const activeStoreId = (req.activeContext && req.activeContext.activeStoreId) || req.user.activeStoreId || (req.user.storeLocations && req.user.storeLocations[0] && req.user.storeLocations[0].id) || req.user.store_location_id;
+
+  if (!receiveStoreScope.isGlobal) {
+    if (toStoreId && activeStoreId && Number(toStoreId) !== Number(activeStoreId)) {
+      return res.status(403).json({ error: 'Only the destination store may receive or accept this transfer.' });
+    }
+    if (toStoreId && !receiveStoreScope.canAccess(toStoreId, 'receive')) {
+      return res.status(403).json({ error: 'You do not have authorization to receive MTNs addressed to this destination store.' });
+    }
+  }
+
   const recBy = clean(req.body.received_by) || req.user.fullName || req.user.username;
   const recSig = clean(req.body.received_sig) || null;
   const desig = clean(req.body.received_designation) || 'Transport Driver';
@@ -5503,10 +5580,23 @@ router.post('/mtn/:id/receive', requireCap('stores.mtn.edit'), guardMtn, asyncHa
     run(`INSERT INTO mtn_approvals (mtn_id, stage, role, approver_id, signed_name, signature, decision, reason)
          VALUES (?, 'receive', 'driver', ?, ?, ?, 'approved', ?)`,
       id, req.user.id, recBy, recSig, req.body.reason || 'Transit confirmed');
-    stock.rebuild({ transfersOf: id });     // still in transit — off one shelf, not yet on the other
+    stock.rebuild({ transfersOf: id });     // received at destination
+    syncMtnReceiveStock(id);
   });
 
-  audit.record({ userId: req.user.id, entity: 'mtn', entityId: id, action: 'receive', after: { status: 'received', received_by: recBy } });
+  const linesCount = (get('SELECT COUNT(*) c FROM mtn_lines WHERE mtn_id = ?', id) || {}).c || 0;
+  audit.record({
+    userId: req.user.id,
+    entity: 'mtn',
+    entityId: id,
+    action: 'receive',
+    ip: req.ip || req.connection?.remoteAddress,
+    from_store_location_id: m.from_store_location_id,
+    to_store_location_id: m.to_store_location_id,
+    lines_count: linesCount,
+    override: receiveStoreScope.isGlobal && toStoreId && activeStoreId && Number(toStoreId) !== Number(activeStoreId),
+    after: { status: 'received', received_by: recBy }
+  });
   emitter.emit('stock_updated', { mtn_id: id, action: 'receive' });
   res.json({ ok: true, status: 'received', received_by: recBy, received_at: now });
 }));
@@ -5518,9 +5608,14 @@ router.post('/mtn/:id/accept', requireCap('stores.mtn.edit'), guardMtn, chainPip
   if (!m) return res.status(404).json({ error: 'MTN not found' });
 
   const receiveStoreScope = require('../lib/context').storeScopeFor(req.user);
+  const toStoreId = m.to_store_location_id || m.to_store_id;
+  const activeStoreId = (req.activeContext && req.activeContext.activeStoreId) || req.user.activeStoreId || (req.user.storeLocations && req.user.storeLocations[0] && req.user.storeLocations[0].id) || req.user.store_location_id;
+
   if (!receiveStoreScope.isGlobal) {
-    const toId = m.to_store_location_id || m.to_store_id;
-    if (toId && !receiveStoreScope.canAccess(toId, 'receive')) {
+    if (toStoreId && activeStoreId && Number(toStoreId) !== Number(activeStoreId)) {
+      return res.status(403).json({ error: 'Only the destination store may receive or accept this transfer.' });
+    }
+    if (toStoreId && !receiveStoreScope.canAccess(toStoreId, 'receive')) {
       return res.status(403).json({ error: 'You do not have authorization to accept MTNs addressed to this destination store.' });
     }
   }
@@ -5538,10 +5633,23 @@ router.post('/mtn/:id/accept', requireCap('stores.mtn.edit'), guardMtn, chainPip
       id, req.user.id, accBy, accSig, req.body.reason || 'Goods received, inspected and accepted into destination stock');
     supplyRoutes.onMtnAccepted(id, req.body.receipts || req.body.items, req.user);
     stock.rebuild({ transfersOf: id });     // into the receiving store
+    syncMtnReceiveStock(id);
   });
 
   const discrepancies = all('SELECT * FROM delivery_discrepancies WHERE mtn_id = ? ORDER BY id DESC', id);
-  audit.record({ userId: req.user.id, entity: 'mtn', entityId: id, action: 'accept', after: { status: 'accepted', accepted_by: accBy, discrepancies_count: discrepancies.length } });
+  const linesCount = (get('SELECT COUNT(*) c FROM mtn_lines WHERE mtn_id = ?', id) || {}).c || 0;
+  audit.record({
+    userId: req.user.id,
+    entity: 'mtn',
+    entityId: id,
+    action: 'accept',
+    ip: req.ip || req.connection?.remoteAddress,
+    from_store_location_id: m.from_store_location_id,
+    to_store_location_id: m.to_store_location_id,
+    lines_count: linesCount,
+    override: receiveStoreScope.isGlobal && toStoreId && activeStoreId && Number(toStoreId) !== Number(activeStoreId),
+    after: { status: 'accepted', accepted_by: accBy, discrepancies_count: discrepancies.length }
+  });
   emitter.emit('stock_updated', { mtn_id: id, action: 'accept' });
   res.json({ ok: true, status: 'accepted', accepted_by: accBy, accepted_at: now, discrepancies });
 }));

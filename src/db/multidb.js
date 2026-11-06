@@ -529,6 +529,7 @@ function migrate() {
           require('../lib/store_locations').migrateStoreLocationsStage2(wdb);
           require('../migrate/050_fabrication_job_type').rebuildJobCardsIfNeeded(wdb, f);
           require('../migrate/052_fabrication_access_and_schema').runMigration(wdb);
+          require('../migrate/053_mtn_store_locations').runMigration(wdb);
         } catch {}
 
         wdb.close();

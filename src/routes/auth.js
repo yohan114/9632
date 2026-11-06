@@ -49,7 +49,7 @@ function workshopFields(user) {
           store_name: match.name,
           store_code: match.code,
           store_type: match.store_type,
-          can_view: 1, can_request: 1, can_issue: 1, can_receive: 1, can_dispatch: 1, can_count: 1
+          can_view: 1, can_request: 0, can_issue: 0, can_receive: 0, can_dispatch: 0, can_count: 0
         }];
       }
     } catch (_) {}

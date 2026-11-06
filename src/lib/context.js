@@ -230,8 +230,8 @@ function getWorkshopScopeSql(req, column = 'workshop_id') {
     return { sql: `${column} = ?`, params: [ctx.activeWorkshopId] };
   }
 
-  // If site store is not a workshop store (e.g. project-only store), return 0 or empty depending on design
-  return { sql: '', params: [] };
+  // Project-only store: isolated from workshop-scoped data
+  return { sql: '0 = 1', params: [] };
 }
 
 /**

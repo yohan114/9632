@@ -881,10 +881,10 @@ router.get('/monthly/:month/asset/:id', requireModule('reports'), asyncHandler((
                                WHERE m.asset_id=? AND g.unit_price IS NOT NULL AND substr(g.delivery_date,1,7)=?${wsSql(GRN_WS, ws)} ORDER BY g.delivery_date, g.id`, id, month);
   const oil_lines = all(`SELECT sl.txn_date, pr.name product, pr.unit, ABS(sl.qty) qty, COALESCE(sl.unit_price, pr.unit_price) unit_price
                            FROM stock_ledger sl JOIN products pr ON pr.id=sl.product_id LEFT JOIN job_cards j ON j.id = sl.job_id
-                          WHERE sl.asset_id=? AND sl.kind='issue' AND ${OIL_NOT_SERVICE} AND substr(sl.txn_date,1,7)=?${wsSql(OIL_WS, ws)} ORDER BY sl.txn_date, sl.id`, id, month);
+                          WHERE sl.asset_id=? AND sl.kind='issue' AND ${OIL_NOT_SERVICE} AND sl.mtn_id IS NULL AND COALESCE(sl.consumer,'') <> 'Site Transfer' AND sl.mtn_no IS NULL AND substr(sl.txn_date,1,7)=?${wsSql(OIL_WS, ws)} ORDER BY sl.txn_date, sl.id`, id, month);
   const general_lines = all(`SELECT t.txn_date, si.name product, si.unit, ABS(t.qty) qty, COALESCE(t.unit_price, si.unit_cost, 0) unit_price, t.ref
                                FROM general_item_txns t JOIN store_items si ON si.id = t.store_item_id LEFT JOIN job_cards j ON j.id = t.job_id
-                              WHERE t.asset_id=? AND t.txn_type='issue' AND substr(t.txn_date,1,7)=?${wsSql('COALESCE(j.workshop_id, t.store_id)', ws)} ORDER BY t.txn_date, t.id`, id, month);
+                              WHERE t.asset_id=? AND t.txn_type='issue' AND t.mtn_id IS NULL AND COALESCE(t.ref,'') <> 'MTN Transfer' AND substr(t.txn_date,1,7)=?${wsSql('COALESCE(j.workshop_id, t.store_id)', ws)} ORDER BY t.txn_date, t.id`, id, month);
   const unlinked_gen = all(`SELECT i.issue_date AS txn_date, i.description AS product, COALESCE(si.unit, 'nos') AS unit, ABS(i.qty) AS qty, COALESCE(i.unit_price, si.unit_cost, 0) AS unit_price, i.min_no AS ref
                              FROM issues i
                              LEFT JOIN store_items si ON si.id = i.store_item_id

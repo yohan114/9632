@@ -907,6 +907,15 @@ function migrate() {
   } catch (err) {
     console.warn('Migration 052 fabrication schema skipped:', err.message);
   }
+  // MTN Store Locations & Legacy Backfill
+  try {
+    if (!db.prepare("SELECT 1 FROM settings WHERE key = 'migration_053_done'").get()) {
+      require('../migrate/053_mtn_store_locations').runMigration(db);
+      db.prepare("INSERT INTO settings (key, value) VALUES ('migration_053_done', '1')").run();
+    }
+  } catch (err) {
+    console.warn('Migration 053 MTN store locations skipped:', err.message);
+  }
 
   return db;
 }
