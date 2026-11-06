@@ -219,8 +219,27 @@ app.use('/api/tools', require('./routes/tools'));
 // -- including a role deliberately given nothing -- able to read it. main gated the mount; that
 // gate is kept, in this branch's vocabulary.
 app.use('/api/stock-cockpit', requireModule('stores'), require('./routes/stock_cockpit'));
-app.use('/api/jobs', requireModule('jobs'), require('./routes/jobcards'));
-app.use('/api/job-requests', requireModule('jobrequests'), require('./routes/jobrequests'));
+const jobsGate = (req, res, next) => {
+  if (req.user && (hasCap(req.user, 'fabrication.open_card') || (req.user.roles && req.user.roles.includes('fabrication_officer')))) {
+    return next();
+  }
+  return requireModule('jobs')(req, res, next);
+};
+app.use('/api/jobs', jobsGate, require('./routes/jobcards'));
+const jobRequestsGate = (req, res, next) => {
+  if (req.user && (hasCap(req.user, 'jobrequests.create_fabrication') || (req.user.roles && req.user.roles.includes('fabrication_officer')))) {
+    return next();
+  }
+  return requireModule('jobrequests')(req, res, next);
+};
+app.use('/api/job-requests', jobRequestsGate, require('./routes/jobrequests'));
+const fabricationGate = (req, res, next) => {
+  if (req.path.startsWith('/categories') || req.path.startsWith('/drawings')) {
+    return requireAuth(req, res, next);
+  }
+  return requireModule('fabrication', 'view')(req, res, next);
+};
+app.use('/api/fabrication', fabricationGate, require('./routes/fabrication'));
 const dailyWorkGate = (req, res, next) =>
   req.path.startsWith('/mechanics-kpi')
     ? requireAuth(req, res, next)

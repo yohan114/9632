@@ -235,7 +235,7 @@ function fabricationJobRefusal(user, jobId) {
  */
 function fabricationRequestRefusal(user, jrId) {
   if (!jrId) return null;
-  if (isAdmin(user) || require('./auth').hasCap(user, 'fabrication.view')) return null;
+  if (isAdmin(user) || require('./auth').hasCap(user, 'fabrication.view', 'jobrequests.certify', 'jobrequests.approve')) return null;
   const r = get('SELECT type FROM job_requests WHERE id = ?', jrId);
   if (r && r.type === 'fabrication') {
     return { error: 'Job request not found', status: 404 };
@@ -262,7 +262,7 @@ function jobReadRefusal(user, jobId) {
   const j = get('SELECT workshop_id, type FROM job_cards WHERE id = ?', jobId);
   if (!j) return null;
   if (j.type === 'fabrication') {
-    if (!isAdmin(user) && !require('./auth').hasCap(user, 'fabrication.view')) {
+    if (!isAdmin(user) && !require('./auth').hasCap(user, 'fabrication.view', 'jobrequests.certify', 'jobrequests.approve')) {
       return { error: 'Job not found', status: 404 };
     }
   }
@@ -296,7 +296,7 @@ function jobRequestRefusal(user, jrId) {
   const r = get('SELECT workshop_id, type FROM job_requests WHERE id = ?', jrId);
   if (!r) return null;
   if (r.type === 'fabrication') {
-    if (!isAdmin(user) && !require('./auth').hasCap(user, 'fabrication.view')) {
+    if (!isAdmin(user) && !require('./auth').hasCap(user, 'fabrication.view', 'jobrequests.certify', 'jobrequests.approve')) {
       return { error: 'Job request not found', status: 404 };
     }
   }

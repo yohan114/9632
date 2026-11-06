@@ -28,7 +28,7 @@ const workshops = require('../lib/workshops');
 // Stage 3: a request of another workshop is out of reach for anyone outside head office.
 router.param('id', (req, res, next, id) => {
   const no = scope.jobRequestRefusal(req.user, toInt(id));
-  return no ? res.status(403).json(no) : next();
+  return no ? res.status(no.status || 403).json(no) : next();
 });
 
 // Next request number — continues from the last JR-#### (editable in the form).
@@ -104,7 +104,7 @@ router.get('/:id', asyncHandler((req, res) => {
        LEFT JOIN job_cards j ON j.id = r.job_id
        LEFT JOIN service_jobs s ON s.id = r.service_id
       WHERE r.id = ?`, id);
-  if (!jr || (jr.type === 'fabrication' && !isAdmin(req.user) && !hasCap(req.user, 'fabrication.view'))) {
+  if (!jr || (jr.type === 'fabrication' && !isAdmin(req.user) && !hasCap(req.user, 'fabrication.view', 'jobrequests.approve'))) {
     return res.status(404).json({ error: 'Job request not found' });
   }
   res.json({
@@ -114,10 +114,13 @@ router.get('/:id', asyncHandler((req, res) => {
 }));
 
 // ---- create (Transport Assistant Manager) ---------------------------------
-router.post('/', requireCap('jobrequests.create'), asyncHandler((req, res) => {
+router.post('/', requireCap('jobrequests.create', 'jobrequests.create_fabrication'), asyncHandler((req, res) => {
   const b = req.body;
   require_(b, ['description']);
   const type = TYPES.includes(b.type) ? b.type : 'repair';
+  if (type !== 'fabrication' && !hasCap(req.user, 'jobrequests.create') && !isAdmin(req.user)) {
+    return res.status(403).json({ error: 'Permission denied: jobrequests.create required.' });
+  }
   let fabricationKind = null;
   let issueStoreLocationId = null;
 
@@ -205,7 +208,7 @@ router.post('/', requireCap('jobrequests.create'), asyncHandler((req, res) => {
 router.post('/:id/certify', requireCap('jobrequests.certify'), asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   const jr = get('SELECT * FROM job_requests WHERE id = ?', id);
-  if (!jr || (jr.type === 'fabrication' && !isAdmin(req.user) && !hasCap(req.user, 'fabrication.view'))) {
+  if (!jr || (jr.type === 'fabrication' && !isAdmin(req.user) && !hasCap(req.user, 'fabrication.view', 'jobrequests.certify'))) {
     return res.status(404).json({ error: 'Job request not found' });
   }
   if (jr.approval_status === 'approved') return res.status(409).json({ error: 'Already approved — cannot re-certify' });
@@ -233,7 +236,7 @@ router.post('/:id/certify', requireCap('jobrequests.certify'), asyncHandler((req
 router.post('/:id/approve', requireCap('jobrequests.approve'), asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   const jr = get('SELECT * FROM job_requests WHERE id = ?', id);
-  if (!jr || (jr.type === 'fabrication' && !isAdmin(req.user) && !hasCap(req.user, 'fabrication.view'))) {
+  if (!jr || (jr.type === 'fabrication' && !isAdmin(req.user) && !hasCap(req.user, 'fabrication.view', 'jobrequests.certify', 'jobrequests.approve'))) {
     return res.status(404).json({ error: 'Job request not found' });
   }
   if (jr.approval_status === 'rejected') return res.status(409).json({ error: 'This request was rejected' });
@@ -269,7 +272,7 @@ router.post('/:id/approve', requireCap('jobrequests.approve'), asyncHandler((req
 router.post('/:id/reject', requireCap('jobrequests.reject'), asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   const jr = get('SELECT * FROM job_requests WHERE id = ?', id);
-  if (!jr || (jr.type === 'fabrication' && !isAdmin(req.user) && !hasCap(req.user, 'fabrication.view'))) {
+  if (!jr || (jr.type === 'fabrication' && !isAdmin(req.user) && !hasCap(req.user, 'fabrication.view', 'jobrequests.certify', 'jobrequests.approve'))) {
     return res.status(404).json({ error: 'Job request not found' });
   }
   if (jr.approval_status === 'approved') return res.status(409).json({ error: 'Already approved — cannot reject' });

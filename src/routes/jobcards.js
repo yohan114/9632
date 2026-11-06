@@ -109,6 +109,13 @@ router.get(
     }
     // Only currently-open job cards (for pickers that log against an active job).
     if (req.query.open === '1') clauses.push(jobstate.openSql('j'));
+
+    // Fabrication visibility isolation:
+    const canViewFab = isAdmin(req.user) || hasCap(req.user, 'fabrication.view');
+    const isIssuePicker = (req.query.open === '1' || req.query.for_issue === '1' || req.query.picker === '1') && hasCap(req.user, 'fabrication.issue_target');
+    if (!canViewFab && !isIssuePicker) {
+      clauses.push("j.type <> 'fabrication'");
+    }
     // Free-text search across job number, vehicle and references. A vehicle the
     // user types (e.g. "LO-5981") may live in the asset's canonical code, its
     // registration, its ec_code, or only as an alias — so we check them all, plus
@@ -186,6 +193,17 @@ router.get(
       );
     for (const r of rows) {
       r.read_only = scope.isReadOnly(req.user, r.workshop_id);
+      if (r.type === 'fabrication' && !canViewFab) {
+        // Mask sensitive fields for storekeeper picker (fabrication.issue_target)
+        r.total_cost = 0;
+        r.material_cost = 0;
+        r.labour_cost = 0;
+        r.other_cost = 0;
+        delete r.drawing_ref;
+        delete r.drawing_path;
+        delete r.drawing_filename;
+        delete r.cost_centre;
+      }
     }
     res.json(rows);
   })
@@ -212,7 +230,7 @@ router.get(
 router.post(
   '/',
   requireAuth,
-  requireCap('jobs.create'),
+  requireCap('jobs.create', 'fabrication.open_card'),
   asyncHandler((req, res) => {
     const b = req.body;
     const jrId = toInt(b.job_request_id);
@@ -222,12 +240,24 @@ router.post(
         needs_job_request: true,
       });
     }
-    // Stage 3: another workshop's request is out of reach, the same test the job request routes make.
-    const outOfReach = scope.jobRequestRefusal(req.user, jrId);
-    if (outOfReach) return res.status(403).json(outOfReach);
 
     const jr = get('SELECT * FROM job_requests WHERE id = ?', jrId);
     if (!jr) return res.status(404).json({ error: 'Job request not found' });
+
+    // Fabrication open_card gate: only users holding fabrication.open_card may open a fabrication card
+    if (jr.type === 'fabrication') {
+      if (!hasCap(req.user, 'fabrication.open_card') && !isAdmin(req.user)) {
+        return res.status(403).json({ error: 'Permission denied: fabrication.open_card required to open a fabrication job card.' });
+      }
+    } else {
+      if (!hasCap(req.user, 'jobs.create') && !isAdmin(req.user)) {
+        return res.status(403).json({ error: 'Permission denied: jobs.create required.' });
+      }
+    }
+
+    // Stage 3: another workshop's request is out of reach, the same test the job request routes make.
+    const outOfReach = scope.jobRequestRefusal(req.user, jrId);
+    if (outOfReach) return res.status(outOfReach.status || 403).json(outOfReach);
     if (jr.approval_status !== 'approved') {
       const waiting = {
         requested: 'it is still waiting for the Transport Manager to certify it',
@@ -274,8 +304,9 @@ router.post(
       const info = run(
         `INSERT INTO job_cards (job_no, ref, asset_id, project_id, site, type, severity, description,
                                 status, requested_by, requested_by_user, requested_at,
-                                approved_transport_at, approved_ops_at, workshop_id, job_request_id, fabrication_kind, issue_store_location_id)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                                approved_transport_at, approved_ops_at, workshop_id, job_request_id, fabrication_kind, issue_store_location_id,
+                                work_target, category, drawing_ref, drawing_path, drawing_filename, cost_centre, quantity_or_size, deliver_to)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         no,
         b.ref || null,
         jr.asset_id,
@@ -293,7 +324,15 @@ router.post(
         workshopId,
         jr.id,
         jr.fabrication_kind || null,
-        jr.issue_store_location_id || (type === 'fabrication' ? 1 : null)
+        jr.issue_store_location_id || (type === 'fabrication' ? 1 : null),
+        jr.work_target || 'vehicle',
+        jr.category || null,
+        jr.drawing_ref || null,
+        jr.drawing_path || null,
+        jr.drawing_filename || null,
+        jr.cost_centre || null,
+        jr.quantity_or_size || null,
+        jr.deliver_to || null
       );
       const id = info.lastInsertRowid;
       // Both approvals mirrored onto the card's own trail — they were given on the request, and

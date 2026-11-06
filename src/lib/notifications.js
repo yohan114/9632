@@ -560,7 +560,7 @@ function getNotificationsForUser(user) {
       SELECT r.id, r.jr_no, r.req_date, r.approved_at, r.requested_by, r.certified_by, r.approved_by, r.description,
              a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec
         FROM job_requests r LEFT JOIN assets a ON a.id = r.asset_id
-       WHERE r.approval_status = 'approved' AND r.job_id IS NULL${and(rOwn)}
+       WHERE r.approval_status = 'approved' AND r.job_id IS NULL AND (r.type <> 'fabrication' OR r.type IS NULL)${and(rOwn)}
        ORDER BY r.approved_at DESC, r.id DESC LIMIT 20`, ...(rOwn.params || []));
     for (const r of waiting) {
       const veh = [r.asset_reg, r.asset_ec, r.asset_code].filter(Boolean).join(' · ');
@@ -579,6 +579,37 @@ function getNotificationsForUser(user) {
         link: `#/jobrequests/${r.id}`,
         action_label: 'Open Job Card',
         capability: 'jobs.create',
+      });
+    }
+  }
+
+  if (may('fabrication.open_card')) {
+    const fabWaiting = all(`
+      SELECT r.id, r.jr_no, r.req_date, r.approved_at, r.requested_by, r.certified_by, r.approved_by, r.description,
+             r.work_target, r.category,
+             a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec
+        FROM job_requests r LEFT JOIN assets a ON a.id = r.asset_id
+       WHERE r.approval_status = 'approved' AND r.job_id IS NULL AND r.type = 'fabrication'${and(rOwn)}
+       ORDER BY r.approved_at DESC, r.id DESC LIMIT 20`, ...(rOwn.params || []));
+    for (const r of fabWaiting) {
+      const targetLabel = r.work_target === 'general'
+        ? `General: ${r.category || 'Works'}`
+        : [r.asset_reg, r.asset_ec, r.asset_code].filter(Boolean).join(' · ');
+      pushItem({
+        key: `ops:fab_open:${r.id}`,
+        category: 'transfers_ops',
+        kind: 'fabrication_open_card',
+        badge: 'APPROVED FABRICATION',
+        badge_color: 'purple',
+        priority: 'high',
+        ref: r.jr_no,
+        title: `Approved Fabrication JR ${r.jr_no} — Ready to Open Card`,
+        subtitle: `${targetLabel ? targetLabel + ' — ' : ''}${r.description || ''}`,
+        meta: `Approved by ${r.approved_by || 'Manager'} · Certified by ${r.certified_by || 'Engineer'}`,
+        timestamp: r.approved_at || r.req_date || '',
+        link: `#/jobrequests/${r.id}`,
+        action_label: 'Open Fabrication Card',
+        capability: 'fabrication.open_card',
       });
     }
   }

@@ -80,6 +80,13 @@ function runMigration(targetDb) {
     console.log(`[052] Backfilled ${capsSeeded} role_capabilities entries`);
   }
 
+  // Check if targetDb is a workshop database (has job_cards or job_requests)
+  const isWorkshopDb = Boolean(targetDb.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='job_cards'").get());
+  if (!isWorkshopDb) {
+    console.log('[052] Core DB updated (roles/permissions/capabilities); skipping workshop schema');
+    return;
+  }
+
   // 4. Columns on job_requests and job_cards for General Works
   ensureCol(targetDb, 'job_requests', 'work_target', "TEXT DEFAULT 'vehicle'");
   ensureCol(targetDb, 'job_requests', 'category', 'TEXT');
@@ -100,6 +107,21 @@ function runMigration(targetDb) {
   ensureCol(targetDb, 'job_cards', 'deliver_to', 'TEXT');
 
   // 5. Create Costing Tables
+  // In multi-database SQLite setups, users table resides in core.db so workshop db cannot FK to users(id).
+  targetDb.pragma('foreign_keys = OFF');
+  try {
+    const adjTable = targetDb.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='fabrication_costing_adjustments'").get();
+    if (adjTable && adjTable.sql && adjTable.sql.includes('REFERENCES users(id)')) {
+      targetDb.exec('DROP TABLE IF EXISTS fabrication_costing_adjustments;');
+    }
+    const sheetTable = targetDb.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='fabrication_costing_sheets'").get();
+    if (sheetTable && sheetTable.sql && sheetTable.sql.includes('REFERENCES users(id)')) {
+      targetDb.exec('DROP TABLE IF EXISTS fabrication_costing_sheets;');
+    }
+  } finally {
+    targetDb.pragma('foreign_keys = ON');
+  }
+
   targetDb.exec(`
     CREATE TABLE IF NOT EXISTS fabrication_costing_sheets (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -110,12 +132,12 @@ function runMigration(targetDb) {
       estimated_total REAL DEFAULT 0,
       outside_quotation REAL DEFAULT 0,
       overhead_percentage REAL DEFAULT 0,
-      prepared_by INTEGER REFERENCES users(id),
+      prepared_by INTEGER,
       prepared_at TEXT,
       submitted_at TEXT,
-      approved_by INTEGER REFERENCES users(id),
+      approved_by INTEGER,
       approved_at TEXT,
-      rejected_by INTEGER REFERENCES users(id),
+      rejected_by INTEGER,
       rejected_at TEXT,
       rejection_reason TEXT,
       notes TEXT,
@@ -133,7 +155,7 @@ function runMigration(targetDb) {
       reason TEXT NOT NULL,
       supplier_or_contractor TEXT,
       invoice_ref TEXT,
-      created_by INTEGER REFERENCES users(id),
+      created_by INTEGER,
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
 

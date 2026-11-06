@@ -170,11 +170,30 @@ function computeJobCost(jobId) {
  *  and balancing other_cost that refreshJobTotals persists — without writing. Use
  *  this wherever a cost breakdown is shown so the displayed columns sum to the
  *  same total that is stored on the card. */
+function fabricationCostExtra(jobId) {
+  try {
+    const job = get('SELECT type FROM job_cards WHERE id = ?', jobId);
+    if (!job || job.type !== 'fabrication') return 0;
+    const sheet = get("SELECT id, overhead_percentage FROM fabrication_costing_sheets WHERE job_id = ? AND status = 'approved'", jobId);
+    if (!sheet) return 0;
+    const adj = get("SELECT COALESCE(SUM(amount), 0) AS total FROM fabrication_costing_adjustments WHERE sheet_id = ?", sheet.id);
+    const adjTotal = adj ? adj.total : 0;
+    const c = computeJobCost(jobId);
+    const subtotal = c.total_cost + adjTotal;
+    const overhead = round2(subtotal * ((sheet.overhead_percentage || 0) / 100));
+    return round2(adjTotal + overhead);
+  } catch (e) {
+    return 0;
+  }
+}
+
 function reconciledCost(jobId) {
   const c = computeJobCost(jobId);
   const job = get('SELECT is_historical, recorded_cost, total_cost FROM job_cards WHERE id = ?', jobId);
-  const total = historicalTotal(job, c.total_cost);
-  // other_cost carries the field transport (Stage 6) as well as any gap to a recorded total.
+  let total = historicalTotal(job, c.total_cost);
+  const fabExtra = fabricationCostExtra(jobId);
+  if (fabExtra > 0) total = round2(total + fabExtra);
+  // other_cost carries the field transport (Stage 6) as well as any gap to a recorded total and approved fabrication extra.
   c.other_cost = round2(total - (c.total_cost - c.field_cost));
   c.total_cost = total;
   return c;
@@ -317,9 +336,11 @@ function refreshJobTotals(jobId) {
   // asset_id is needed by the per-vehicle rollup below — omitting it made `if (job.asset_id)`
   // always false, so vehicle_monthly_costs.labour_cost never moved after the 015 backfill.
   const job = get('SELECT asset_id, is_historical, recorded_cost, total_cost FROM job_cards WHERE id = ?', jobId);
-  const totalToStore = historicalTotal(job, c.total_cost); // historical: keep imported total, don't recompute to ~0
-  // Balancing bucket (recorded vs itemised) — and the field transport (Stage 6), which has no
-  // column of its own, so the stored columns still add up to total_cost.
+  let totalToStore = historicalTotal(job, c.total_cost); // historical: keep imported total, don't recompute to ~0
+  const fabExtra = fabricationCostExtra(jobId);
+  if (fabExtra > 0) totalToStore = round2(totalToStore + fabExtra);
+  // Balancing bucket (recorded vs itemised) — and the field transport (Stage 6) and approved fabrication extra,
+  // so the stored columns still add up to total_cost.
   const otherCost = round2(totalToStore - (c.total_cost - c.field_cost));
   tx(() => {
     // Months this job touched BEFORE the rebuild. Needed because the rollup below walks the
