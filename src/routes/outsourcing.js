@@ -20,6 +20,7 @@ const validation = require('../lib/outsourcing_validation');
 const access = require('../lib/outsourcing_access');
 const outsourcingPdf = require('../lib/outsourcing_pdf');
 const mailOutbox = require('../lib/mail_outbox');
+const scope = require('../lib/scope');
 
 function requireCap(...caps) {
   return (req, res, next) => {
@@ -129,18 +130,49 @@ router.get('/requests', requireCap('outsourcing.view'), asyncHandler(async (req,
   const repairJobId = req.query.repair_job_id ? Number(req.query.repair_job_id) : null;
   const serviceRecId = req.query.service_record_id ? Number(req.query.service_record_id) : null;
 
-  if (!repairJobId && !serviceRecId) {
-    return res.status(400).json({ error: 'Must provide either repair_job_id or service_record_id query parameter' });
+  const clauses = [];
+  const params = [];
+
+  if (repairJobId || serviceRecId) {
+    // Check parent access
+    const pCheck = access.checkParentAccess(req.user, repairJobId ? 'repair' : 'service', repairJobId || serviceRecId);
+    if (!pCheck.allowed) {
+      return res.status(403).json({ error: pCheck.reason });
+    }
+    if (repairJobId) {
+      clauses.push('r.repair_job_id = ?');
+      params.push(repairJobId);
+    } else {
+      clauses.push('r.service_record_id = ?');
+      params.push(serviceRecId);
+    }
+  } else {
+    // Global register query: allow listing across jobs with appropriate scoping
+    if (req.query.status && req.query.status !== 'all') {
+      clauses.push('r.status = ?');
+      params.push(req.query.status);
+    }
+    if (req.query.workshop_id) {
+      clauses.push('r.workshop_id = ?');
+      params.push(Number(req.query.workshop_id));
+    } else {
+      const own = scope.readFilter(req.user, 'r.workshop_id', 'job');
+      if (own.sql) {
+        clauses.push(own.sql);
+        params.push(...own.params);
+      }
+    }
+    if (req.query.asset_id) {
+      clauses.push('r.asset_id = ?');
+      params.push(Number(req.query.asset_id));
+    }
+    const canViewFab = req.user.role === 'admin' || req.user.roles?.includes('admin') || access.hasCap(req.user, 'fabrication.view');
+    if (!canViewFab) {
+      clauses.push("(j.type IS NULL OR j.type <> 'fabrication')");
+    }
   }
 
-  // Check parent access
-  const pCheck = access.checkParentAccess(req.user, repairJobId ? 'repair' : 'service', repairJobId || serviceRecId);
-  if (!pCheck.allowed) {
-    return res.status(403).json({ error: pCheck.reason });
-  }
-
-  const where = repairJobId ? 'r.repair_job_id = ?' : 'r.service_record_id = ?';
-  const param = repairJobId || serviceRecId;
+  const whereSql = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
 
   const rows = all(`
     SELECT r.*,
@@ -149,16 +181,21 @@ router.get('/requests', requireCap('outsourcing.view'), asyncHandler(async (req,
            eng.full_name AS assigned_engineer_name,
            a.registration AS asset_registration,
            a.code AS asset_code,
+           COALESCE(j.job_no, s.job_no) AS parent_job_no,
            (SELECT COUNT(*) FROM outsourcing_request_lines WHERE request_id = r.id) AS lines_count,
-           (SELECT id FROM outsourcing_documents WHERE request_id = r.id ORDER BY id DESC LIMIT 1) AS latest_document_id
+           (SELECT id FROM outsourcing_documents WHERE request_id = r.id ORDER BY id DESC LIMIT 1) AS latest_document_id,
+           (SELECT amount FROM outsourcing_cost_links WHERE request_id = r.id ORDER BY id DESC LIMIT 1) AS posted_invoice_amount,
+           (SELECT invoice_no FROM outsourcing_cost_links WHERE request_id = r.id ORDER BY id DESC LIMIT 1) AS posted_invoice_no
       FROM outsourcing_requests r
       JOIN outsourcing_vendors v ON v.id = r.vendor_id
       JOIN users u ON u.id = r.created_by
       LEFT JOIN users eng ON eng.id = r.assigned_engineer_id
       LEFT JOIN assets a ON a.id = r.asset_id
-     WHERE ${where}
+      LEFT JOIN job_cards j ON j.id = r.repair_job_id
+      LEFT JOIN service_jobs s ON s.id = r.service_record_id
+     ${whereSql}
      ORDER BY r.id DESC
-  `, param);
+  `, ...params);
 
   res.json({ requests: rows });
 }));

@@ -26380,9 +26380,14 @@ async function jobsOutsourcing(body, sp) {
 async function openNewOutsourcingModal(ctx, onDone) {
   let vData = { vendors: [] };
   let users = [];
+  let openJobs = [];
   try {
     vData = await api('/outsourcing/vendors');
     users = await api('/users').catch(() => []);
+    if (!ctx.repairJobId && !ctx.serviceRecordId) {
+      const jRes = await api('/jobs?open=1&limit=50').catch(() => []);
+      openJobs = Array.isArray(jRes) ? jRes : (jRes.jobs || []);
+    }
   } catch (err) {
     console.error(err);
   }
@@ -26406,7 +26411,23 @@ async function openNewOutsourcingModal(ctx, onDone) {
 
   const defaultDate = new Date(Date.now() + 3 * 86400000).toISOString().slice(0, 10);
 
+  const parentJobHtml = (!ctx.repairJobId && !ctx.serviceRecordId) ? `
+    <div class="field" style="margin-bottom:12px">
+      ${field('Parent Repair Job Card *', 'repair_job_id', {
+        type: 'select',
+        options: [
+          { value: '', label: '— Select Active Job Card —' },
+          ...openJobs.map((j) => ({
+            value: j.id,
+            label: `${j.job_no} — ${j.asset_reg || j.asset_code || ('Asset #' + j.asset_id)} (${j.status || 'OPEN'})`
+          }))
+        ]
+      })}
+    </div>
+  ` : '';
+
   const html = `
+    ${parentJobHtml}
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
       <div class="field">
         ${field('Vendor', 'vendor_id', { type: 'select', options: vendorOptions, value: ccom.id })}
@@ -26574,7 +26595,15 @@ async function openNewOutsourcingModal(ctx, onDone) {
       };
 
       if (ctx.repairJobId) payload.repair_job_id = Number(ctx.repairJobId);
+      else if (form.repair_job_id) payload.repair_job_id = Number(form.repair_job_id);
+
       if (ctx.serviceRecordId) payload.service_record_id = Number(ctx.serviceRecordId);
+      else if (form.service_record_id) payload.service_record_id = Number(form.service_record_id);
+
+      if (!payload.repair_job_id && !payload.service_record_id) {
+        toast('Please select an active Job Card to link this C.COM request to', 'err');
+        return null;
+      }
 
       return payload;
     };

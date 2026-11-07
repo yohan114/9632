@@ -520,4 +520,21 @@ test('CCOM Outsourced Service & Repair Requests Suite', async (t) => {
     assert.strictEqual(draftRow.status, 'cancelled');
     assert.strictEqual(draftRow.cancellation_reason, 'Internal workshop decided to overhaul in-house instead');
   });
+
+  await t.test('19. Global register listing without query parameters returns requests with parent_job_no and invoice cost', async () => {
+    const res = await fetch(`${base}/api/outsourcing/requests`, {
+      headers: { cookie: cookieSk }
+    });
+    assert.strictEqual(res.status, 200);
+    const json = await res.json();
+    assert.ok(Array.isArray(json.requests), 'Must return requests array');
+    assert.ok(json.requests.length >= 2, 'Should contain created requests');
+
+    const verifiedReq = json.requests.find((r) => r.id === requestId);
+    assert.ok(verifiedReq, 'Completed request must be present in global register');
+    assert.strictEqual(verifiedReq.vendor_name, 'C.COM (United Motors Lanka PLC)');
+    assert.strictEqual(verifiedReq.posted_invoice_amount, 85000);
+    assert.strictEqual(verifiedReq.posted_invoice_no, 'CCOM-INV-2026-8812');
+    assert.ok(verifiedReq.parent_job_no, 'Parent job number should be populated');
+  });
 });
