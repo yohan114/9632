@@ -284,6 +284,9 @@ app.use('/api/purchasing', purchasingGate, require('./routes/purchasing'));
 // Enterprise SAP Integration Gateway (OData v4 & REST compliant with SAP API Style Guide)
 app.use('/api/sap/v1', require('./routes/sap'));
 
+// CCOM Outsourced Service & Repair Requests
+app.use('/api/outsourcing', require('./routes/outsourcing'));
+
 // Static frontend (SPA). index.html is served with a per-boot cache-bust token on
 // app.js / styles.css so a normal reload always picks up the latest build.
 const publicDir = path.join(__dirname, '..', 'public');

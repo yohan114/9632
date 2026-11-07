@@ -518,6 +518,7 @@ router.get(
       parts,
       mrnItems,
       unissued_shelf_parts,
+      outsourcingRequests: all(`SELECT r.*, v.name AS vendor_name, u.full_name AS assigned_engineer_name, cr.full_name AS created_by_name, cl.invoice_no AS posted_invoice_no, cl.amount AS posted_invoice_amount FROM outsourcing_requests r LEFT JOIN outsourcing_vendors v ON v.id = r.vendor_id LEFT JOIN users u ON u.id = r.assigned_engineer_id LEFT JOIN users cr ON cr.id = r.created_by LEFT JOIN outsourcing_cost_links cl ON cl.request_id = r.id WHERE r.repair_job_id = ? ORDER BY r.id DESC`, id),
       labour: cost.labourLines,
       labourStored: labour,
       oilIssues,

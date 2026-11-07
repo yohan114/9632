@@ -72,6 +72,7 @@ const PART_MODULES = [
   { key: 'users', label: 'Users & Access', enforce: false, parent: 'access' },
   { key: 'audit_logs', label: 'User Activity Logs', enforce: true, parent: 'access' },
   { key: 'fabrication_costing', label: 'Fabrication Costing', enforce: true, parent: 'fabrication' },
+  { key: 'outsourcing', label: 'Outsourced Requests (CCOM)', enforce: true, parent: 'jobs' },
 ];
 
 const MODULES = [
@@ -90,7 +91,7 @@ const DEFAULT_MATRIX = {
     projects: 'view', aliases: 'view', attention: 'view', daily_progress: 'view', cost_teardown: 'view',
     purchasing: 'view', tb_requests: 'edit', tb_request: 'edit', tb_purchase: 'edit', tb_grn: 'edit', tb_issue: 'edit',
     tb_reports: 'view', reports: 'view', workshops: 'none', access: 'none', users: 'none',
-    fabrication: 'none', fabrication_costing: 'none'
+    fabrication: 'none', fabrication_costing: 'none', outsourcing: 'edit'
   },
   main_storekeeper: {
     dashboard: 'view', jobs: 'view', jobrequests: 'none', field: 'view', operations: 'view',

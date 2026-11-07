@@ -366,6 +366,21 @@ const CAPABILITIES = [
   C('fabrication.export', 'fabrication', 'Export fabrication cost sheets and summary reports', ['fabrication_officer', 'operational_manager', 'manager'], null, 'fabrication', '08', 'Operations'),
   C('fabrication.settings', 'fabrication', 'Manage fabrication categories, overhead rates, and general works options', ['manager'], null, 'fabrication', '02', 'Operations'),
   C('fabrication.assign_access', 'access', 'Grant or remove Fabrication Officer access privileges', ['manager'], null, 'access', '02', 'Admin'),
+  // ============================================================================================
+  // DOMAIN: CCOM OUTSOURCED SERVICE & REPAIR REQUESTS (Z_WO_OUTSRC)
+  // ============================================================================================
+  C('outsourcing.view', 'outsourcing', 'View CCOM outsourced repair requests and documents', ALL_ROLES.concat(['engineer', 'assistant_engineer']), null, 'jobs', '03', 'Operations'),
+  C('outsourcing.create', 'outsourcing', 'Create a CCOM outsourced service & repair request draft', ['storekeeper', 'site_storekeeper', 'main_storekeeper', 'workshop', 'manager', 'operational_manager'], 'jobs', 'jobs', '01', 'Operations'),
+  C('outsourcing.edit_draft', 'outsourcing', 'Edit Draft and Returned CCOM outsourcing requests', ['storekeeper', 'site_storekeeper', 'main_storekeeper', 'workshop', 'manager', 'operational_manager'], 'jobs', 'jobs', '02', 'Operations'),
+  C('outsourcing.submit', 'outsourcing', 'Submit CCOM outsourcing request for Mechanical Engineer approval', ['storekeeper', 'site_storekeeper', 'main_storekeeper', 'workshop', 'manager', 'operational_manager'], 'jobs', 'jobs', '02', 'Operations'),
+  C('outsourcing.approve', 'outsourcing', 'Review, return, approve and electronically sign CCOM request', ['engineer', 'assistant_engineer', 'manager'], 'jobs', 'jobs', '10', 'Operations', true),
+  C('outsourcing.send', 'outsourcing', 'Review and queue approved CCOM request PDF for email dispatch', ['storekeeper', 'site_storekeeper', 'main_storekeeper', 'engineer', 'manager', 'operational_manager'], 'jobs', 'jobs', '02', 'Operations'),
+  C('outsourcing.record_progress', 'outsourcing', 'Record C.COM acknowledgement, technician progress, and work updates', ['storekeeper', 'site_storekeeper', 'main_storekeeper', 'engineer', 'workshop', 'manager', 'operational_manager'], 'jobs', 'jobs', '02', 'Operations'),
+  C('outsourcing.verify_completion', 'outsourcing', 'Verify external completion of CCOM outsourced work', ['engineer', 'assistant_engineer', 'manager'], 'jobs', 'jobs', '10', 'Operations'),
+  C('outsourcing.cost.view', 'outsourcing', 'View CCOM outsourced financial invoices and cost posting info', ['engineer', 'manager', 'operational_manager', 'transport_manager'], 'jobs', 'jobs', '03', 'Operations'),
+  C('outsourcing.cost.post', 'outsourcing', 'Post verified CCOM actual charges to parent repair job or service record', ['storekeeper', 'main_storekeeper', 'manager', 'operational_manager'], 'jobs', 'jobs', '02', 'Operations'),
+  C('outsourcing.cancel', 'outsourcing', 'Cancel CCOM outsourced request with reason', ['engineer', 'manager', 'operational_manager'], 'jobs', 'jobs', '06', 'Operations'),
+  C('outsourcing.settings', 'outsourcing', 'Maintain CCOM vendors, contact directory, and outbox configuration', ['manager'], null, 'jobs', '02', 'Operations'),
 ];
 
 

@@ -34,6 +34,10 @@ test('Site Stores Controls Dashboard & MTN Tenancy Boundaries Suite', async (t) 
   });
 
   const pwHash = auth.hashPassword('SiteSecret123!');
+  run(`INSERT OR IGNORE INTO workshops (id, name, code, is_default, active) VALUES (3, 'Galagedara Site Workshop', 'GALA', 0, 1)`);
+  run(`INSERT OR IGNORE INTO workshops (id, name, code, is_default, active) VALUES (4, 'CEP-03 Site Workshop', 'CEP3', 0, 1)`);
+  run(`INSERT OR IGNORE INTO store_locations (id, code, name, store_type, active) VALUES (3, 'SITE-GALA', 'Galagedara Site Store', 'SITE_STORE', 1)`);
+  run(`INSERT OR IGNORE INTO store_locations (id, code, name, store_type, active) VALUES (4, 'SITE-CEP03', 'CEP-03 Project Site Store', 'SITE_STORE', 1)`);
 
   // Low stock item seeded in stock_moves and store_reorder for Store 3
   run(`INSERT OR IGNORE INTO stock_moves (section, kind, item_key, item_name, qty, physical_store_id, store_id, source_table, source_id)
@@ -42,6 +46,7 @@ test('Site Stores Controls Dashboard & MTN Tenancy Boundaries Suite', async (t) 
        VALUES (3, 3, 'general', 'ROD6013', 10)`);
 
   // 1. Seed admin user
+  run("INSERT OR IGNORE INTO roles (name, label, is_system, active) VALUES ('admin', 'Administrator', 1, 1)");
   let adminUser = get("SELECT * FROM users WHERE username = 'admin_site_test'");
   if (!adminUser) {
     const res = run("INSERT INTO users (username, full_name, active, password_hash) VALUES ('admin_site_test', 'Site Test Admin', 1, ?)", pwHash);

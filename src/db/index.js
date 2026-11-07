@@ -913,6 +913,16 @@ function migrate() {
       require('../migrate/053_mtn_store_locations').runMigration(db);
       db.prepare("INSERT INTO settings (key, value) VALUES ('migration_053_done', '1')").run();
     }
+
+  // CCOM Outsourced Service & Repair Requests
+  try {
+    if (!db.prepare("SELECT 1 FROM settings WHERE key = 'migration_054_done'").get()) {
+      require('../migrate/054_ccom_outsourcing').runMigration(db);
+      db.prepare("INSERT INTO settings (key, value) VALUES ('migration_054_done', '1')").run();
+    }
+  } catch (err) {
+    console.warn('Migration 054 CCOM outsourcing skipped:', err.message);
+  }
   } catch (err) {
     console.warn('Migration 053 MTN store locations skipped:', err.message);
   }

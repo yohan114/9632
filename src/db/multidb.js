@@ -530,6 +530,7 @@ function migrate() {
           require('../migrate/050_fabrication_job_type').rebuildJobCardsIfNeeded(wdb, f);
           require('../migrate/052_fabrication_access_and_schema').runMigration(wdb);
           require('../migrate/053_mtn_store_locations').runMigration(wdb);
+          require('../migrate/054_ccom_outsourcing').runMigration(wdb);
         } catch {}
 
         wdb.close();
@@ -558,6 +559,7 @@ function migrate() {
 
     try {
       require('../migrate/052_fabrication_access_and_schema').runMigration(coreDb);
+      require('../migrate/054_ccom_outsourcing').runMigration(coreDb);
     } catch (err) {
       console.warn('Failed to run migration 052 on coreDb:', err.message);
     }

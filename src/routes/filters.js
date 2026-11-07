@@ -845,7 +845,8 @@ router.get('/services/:id', asyncHandler((req, res) => {
       WHERE f.service_id = ? ORDER BY f.id`, id);
   const oils = all('SELECT id, oil_name, oil_type, action_type, qty, price FROM service_oils WHERE service_id = ? ORDER BY id', id);
   const parts = all('SELECT id, description, unit, rate, qty, amount FROM service_parts WHERE service_id = ? ORDER BY id', id);
-  res.json({ service: job, filters, oils, parts, attachments: attachmentList(id) });
+  const outsourcingRequests = all(`SELECT r.*, v.name AS vendor_name, u.full_name AS assigned_engineer_name, cr.full_name AS created_by_name, cl.invoice_no AS posted_invoice_no, cl.amount AS posted_invoice_amount FROM outsourcing_requests r LEFT JOIN outsourcing_vendors v ON v.id = r.vendor_id LEFT JOIN users u ON u.id = r.assigned_engineer_id LEFT JOIN users cr ON cr.id = r.created_by LEFT JOIN outsourcing_cost_links cl ON cl.request_id = r.id WHERE r.service_record_id = ? ORDER BY r.id DESC`, id);
+  res.json({ service: job, filters, oils, parts, attachments: attachmentList(id), outsourcingRequests });
 }));
 
 // ---- scanned service sheets ------------------------------------------------
