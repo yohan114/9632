@@ -88,6 +88,24 @@ function runMigration(targetDb) {
     }
   }
 
+  // In multi-database SQLite setups, users, assets, workshops reside in core.db so workshop db cannot FK to them.
+  targetDb.pragma('foreign_keys = OFF');
+  try {
+    const reqTable = targetDb.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='outsourcing_requests'").get();
+    if (reqTable && reqTable.sql && (reqTable.sql.includes('REFERENCES users(id)') || reqTable.sql.includes('REFERENCES assets(id)') || reqTable.sql.includes('REFERENCES workshops(id)'))) {
+      targetDb.exec('DROP TABLE IF EXISTS outsourcing_cost_links;');
+      targetDb.exec('DROP TABLE IF EXISTS outsourcing_events;');
+      targetDb.exec('DROP TABLE IF EXISTS outsourcing_email_outbox;');
+      targetDb.exec('DROP TABLE IF EXISTS outsourcing_documents;');
+      targetDb.exec('DROP TABLE IF EXISTS outsourcing_approvals;');
+      targetDb.exec('DROP TABLE IF EXISTS outsourcing_revisions;');
+      targetDb.exec('DROP TABLE IF EXISTS outsourcing_request_lines;');
+      targetDb.exec('DROP TABLE IF EXISTS outsourcing_requests;');
+    }
+  } finally {
+    targetDb.pragma('foreign_keys = ON');
+  }
+
   // 3. Create outsourcing_requests
   targetDb.exec(`
     CREATE TABLE IF NOT EXISTS outsourcing_requests (
@@ -97,7 +115,7 @@ function runMigration(targetDb) {
       service_record_id    INTEGER REFERENCES service_jobs(id),
       vendor_id            INTEGER NOT NULL REFERENCES outsourcing_vendors(id),
       vendor_contact_id    INTEGER REFERENCES outsourcing_vendor_contacts(id),
-      assigned_engineer_id INTEGER REFERENCES users(id),
+      assigned_engineer_id INTEGER,
       request_type         TEXT NOT NULL DEFAULT 'repair' CHECK (request_type IN ('repair', 'service')),
       required_date        TEXT,
       priority             TEXT NOT NULL DEFAULT 'normal',
@@ -109,13 +127,13 @@ function runMigration(targetDb) {
       status               TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'pending_approval', 'returned', 'approved', 'sent', 'acknowledged', 'in_progress', 'completed', 'closed', 'cancelled')),
       version              INTEGER NOT NULL DEFAULT 1,
       current_revision_id  INTEGER,
-      created_by           INTEGER NOT NULL REFERENCES users(id),
-      store_location_id    INTEGER REFERENCES store_locations(id),
-      workshop_id          INTEGER REFERENCES workshops(id),
-      asset_id             INTEGER REFERENCES assets(id),
+      created_by           INTEGER NOT NULL,
+      store_location_id    INTEGER,
+      workshop_id          INTEGER,
+      asset_id             INTEGER,
       asset_snapshot       TEXT,
       cancellation_reason  TEXT,
-      cancelled_by         INTEGER REFERENCES users(id),
+      cancelled_by         INTEGER,
       cancelled_at         TEXT,
       created_at           TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at           TEXT NOT NULL DEFAULT (datetime('now')),
@@ -152,7 +170,7 @@ function runMigration(targetDb) {
       revision_no   INTEGER NOT NULL,
       content_json  TEXT NOT NULL,
       content_hash  TEXT NOT NULL,
-      submitted_by  INTEGER NOT NULL REFERENCES users(id),
+      submitted_by  INTEGER NOT NULL,
       submitted_at  TEXT NOT NULL DEFAULT (datetime('now'))
     );
     CREATE INDEX IF NOT EXISTS idx_outsrc_rev_req ON outsourcing_revisions(request_id);
@@ -164,7 +182,7 @@ function runMigration(targetDb) {
       id             INTEGER PRIMARY KEY AUTOINCREMENT,
       request_id     INTEGER NOT NULL REFERENCES outsourcing_requests(id) ON DELETE CASCADE,
       revision_id    INTEGER NOT NULL REFERENCES outsourcing_revisions(id),
-      engineer_id    INTEGER NOT NULL REFERENCES users(id),
+      engineer_id    INTEGER NOT NULL,
       decision       TEXT NOT NULL CHECK (decision IN ('approved', 'returned')),
       approval_note  TEXT,
       signed_name    TEXT,
@@ -205,7 +223,7 @@ function runMigration(targetDb) {
       provider_msg_id  TEXT,
       sent_at          TEXT,
       error_message    TEXT,
-      created_by       INTEGER NOT NULL REFERENCES users(id),
+      created_by       INTEGER NOT NULL,
       created_at       TEXT NOT NULL DEFAULT (datetime('now'))
     );
     CREATE INDEX IF NOT EXISTS idx_outsrc_outbox_status ON outsourcing_email_outbox(status);
@@ -218,7 +236,7 @@ function runMigration(targetDb) {
       id           INTEGER PRIMARY KEY AUTOINCREMENT,
       request_id   INTEGER NOT NULL REFERENCES outsourcing_requests(id) ON DELETE CASCADE,
       event_type   TEXT NOT NULL,
-      user_id      INTEGER REFERENCES users(id),
+      user_id      INTEGER,
       details_json TEXT,
       created_at   TEXT NOT NULL DEFAULT (datetime('now'))
     );
@@ -235,7 +253,7 @@ function runMigration(targetDb) {
       amount             REAL NOT NULL,
       posted_to_parent   INTEGER NOT NULL DEFAULT 0,
       parent_cost_type   TEXT,
-      posted_by          INTEGER REFERENCES users(id),
+      posted_by          INTEGER,
       posted_at          TEXT,
       notes              TEXT,
       created_at         TEXT NOT NULL DEFAULT (datetime('now'))

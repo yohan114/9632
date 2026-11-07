@@ -371,7 +371,7 @@ router.get('/workflow-monitor', asyncHandler((req, res) => {
   const low_stock_total = low.general + low.oil + low.filter;
 
   // 2. Jobs Road & Pipeline
-  const closed_this_month = get(`SELECT COUNT(*) c FROM job_cards j WHERE j.status = 'CLOSED' AND strftime('%Y-%m', j.completed_at) = strftime('%Y-%m', 'now')${andJ}${fabFilterJ}`, ...jOwn.params).c;
+  const closed_this_month = get(`SELECT COUNT(*) c FROM job_cards j WHERE j.status = 'CLOSED' AND strftime('%Y-%m', j.completed_at) = strftime('%Y-%m', 'now')${andJ}`, ...jOwn.params).c;
   const jobs_counts = jobsFlow.counts(user);
   const jobs_road = {
     steps: [
