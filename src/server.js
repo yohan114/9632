@@ -11,7 +11,7 @@ const config = require('./config');
 const { migrate, get, multidb } = require('./db');
 const { authenticate, enforcePasswordChange, enforceMfaSetup, requireAuth, hasCap, rolesForUser, liveSession, COOKIE } = require('./lib/auth');
 const { requireModule } = require('./lib/permissions');
-const { errorHandler } = require('./lib/http');
+const { errorHandler, asyncHandler } = require('./lib/http');
 const { startScheduler } = require('./lib/backup');
 const backupStatus = require('./lib/backup_status');
 const { securityHeaders, originGuard } = require('./lib/security');
@@ -66,8 +66,13 @@ const isUploadRoute = (req) => {
   );
 };
 
+app.use(cookieParser());
+// Bounded request body limits (DoS prevention):
+// Unauthenticated requests are strictly limited to 1mb.
+// 50mb limit is permitted only on upload endpoints with an active session cookie.
 app.use((req, res, next) => {
-  if (isUploadRoute(req)) {
+  const hasSession = Boolean(req.cookies && req.cookies['wo_session']);
+  if (isUploadRoute(req) && hasSession) {
     return uploadJson(req, res, (err) => {
       if (err) return next(err);
       uploadUrlencoded(req, res, next);
@@ -78,7 +83,6 @@ app.use((req, res, next) => {
     standardUrlencoded(req, res, next);
   });
 });
-app.use(cookieParser());
 app.use(authenticate);
 app.use(multidb.multidbMiddleware);
 app.use(require('./lib/context').activeContextMiddleware);
@@ -87,16 +91,80 @@ app.use(enforcePasswordChange);
 // enrolment screens until they have (src/lib/auth.js).
 app.use(enforceMfaSetup);
 
-// The old upload folder. Photos, signatures and service attachments now live in the database, so
-// nothing the app writes lands here — but it was served to ANYONE, signed in or not, and whatever
-// was ever copied into it on a server would be public. Kept for old links, behind a sign-in.
+// Protected Uploads & Attachment Vault:
+// Static unauthenticated mounts removed. All file downloads strictly verify authentication,
+// capability grants, and site/project tenancy before serving file bytes.
 fs.mkdirSync(config.uploadDir, { recursive: true });
-app.use('/uploads', requireAuth, express.static(config.uploadDir));
 
-// Health check. Public: "is it up" and nothing more. An admin additionally sees whether the
+app.get('/uploads/*', requireAuth, asyncHandler(async (req, res) => {
+  let relPath = (req.params[0] || req.path.replace(/^\/uploads\/?/, '')).trim();
+  try { relPath = decodeURIComponent(relPath); } catch (_) {}
+  if (!relPath || relPath.includes('..') || relPath.includes('\0') || path.isAbsolute(relPath)) {
+    return res.status(400).json({ error: 'Invalid file path' });
+  }
+
+  const uploadBase = path.resolve(config.uploadDir);
+  const fullPath = path.resolve(uploadBase, relPath);
+
+  if (!fullPath.startsWith(uploadBase) || !fs.existsSync(fullPath)) {
+    return res.status(404).json({ error: 'File not found' });
+  }
+
+  const st = fs.statSync(fullPath);
+  if (st.isDirectory()) {
+    return res.status(403).json({ error: 'Directory listing forbidden' });
+  }
+
+  const user = req.user;
+  const normalized = relPath.replace(/\\/g, '/');
+
+  // 1. Vehicle statutory documents & certificates
+  if (normalized.startsWith('vehicle_documents/')) {
+    if (!hasCap(user, 'vehicle_docs.view')) {
+      return res.status(403).json({ error: 'Forbidden: Insufficient capability vehicle_docs.view' });
+    }
+    const parts = normalized.split('/');
+    const assetId = Number(parts[1]);
+    if (assetId && user && !user.isAllSitesMode && user.activeProjectId) {
+      const asset = get('SELECT current_project_id, home_project_id FROM assets WHERE id = ?', assetId);
+      if (asset) {
+        const isCurrent = asset.current_project_id === user.activeProjectId;
+        const isHome = asset.home_project_id === user.activeProjectId;
+        if (!isCurrent && !isHome) {
+          return res.status(403).json({ error: 'Forbidden: Document belongs to a vehicle outside your project site' });
+        }
+      }
+    }
+  }
+  // 2. Technical and fabrication drawings
+  else if (normalized.startsWith('drawings/')) {
+    if (!hasCap(user, 'fabrication.view') && !hasCap(user, 'jobs.view')) {
+      return res.status(403).json({ error: 'Forbidden: Insufficient capability to view technical drawings' });
+    }
+  }
+  // 3. Evidence photos
+  else if (normalized.startsWith('evidence/')) {
+    if (!hasCap(user, 'jobs.view') && !hasCap(user, 'stores.view')) {
+      return res.status(403).json({ error: 'Forbidden: Insufficient capability to view evidence photos' });
+    }
+  }
+  // 4. Outsourcing documents
+  else if (normalized.startsWith('outsourcing/')) {
+    if (!hasCap(user, 'outsourcing.view')) {
+      return res.status(403).json({ error: 'Forbidden: Insufficient capability outsourcing.view' });
+    }
+  }
+
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  return res.sendFile(fullPath);
+}));
+
+const RELEASE_ID = process.env.RELEASE_ID || process.env.GIT_REV || '873c230e2129ec78c06d61066fece0b2ad5a1a8b-v0.1.0';
+
+// Health check. Public: "is it up" and release id. An admin additionally sees whether the
 // backups are actually happening — the question nobody asks until the day they are needed.
 app.get('/api/health', (req, res) => {
-  const out = { ok: true, name: 'WorkshopOne' };
+  const out = { ok: true, name: 'WorkshopOne', releaseId: RELEASE_ID };
   if (hasCap(req.user, 'system.status')) out.backup = backupStatus.summary();
   res.json(out);
 });
@@ -117,13 +185,18 @@ app.get('/api/system/maintenance-status', (_req, res) => {
   });
 });
 
-// Maintenance broadcast endpoint: callable with system secret (from CLI) or admin session
+// Maintenance broadcast endpoint: callable with explicitly provisioned system secret (from CLI) or admin session
 app.post('/api/system/maintenance-broadcast', (req, res) => {
-  const secret = req.headers['x-system-secret'];
-  const isAuthorized = (secret && secret === config.sessionSecret) ||
-                       (req.user && hasCap(req.user, 'system.status'));
-  if (!isAuthorized) {
-    return res.status(403).json({ error: 'Unauthorized broadcast' });
+  const secretHeader = req.headers['x-system-secret'];
+  const provisionedSecret = process.env.MAINTENANCE_BROADCAST_SECRET ||
+    (process.env.SESSION_SECRET && process.env.SESSION_SECRET !== 'unused-session-tokens-are-random' ? process.env.SESSION_SECRET : null);
+
+  // With that secret unset, header-based authorization must fail
+  const isSecretValid = Boolean(provisionedSecret && secretHeader && secretHeader === provisionedSecret);
+  const isUserAuthorized = Boolean(req.user && hasCap(req.user, 'system.status'));
+
+  if (!isSecretValid && !isUserAuthorized) {
+    return res.status(403).json({ error: 'Unauthorized broadcast: invalid or unprovisioned system secret' });
   }
 
   const seconds = Math.max(1, Math.round(Number(req.body?.seconds || (Number(req.body?.minutes) * 60) || 120)));

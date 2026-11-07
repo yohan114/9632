@@ -84,9 +84,11 @@ router.get('/upcoming-expirations', requireCap('vehicle_docs.view'), asyncHandle
  * GET /export.xlsx
  * Export comprehensive vehicle statutory documents compliance register to Excel.
  */
-router.get('/export.xlsx', requireCap('vehicle_docs.export', 'vehicle_docs.view'), asyncHandler(async (req, res) => {
+router.get('/export.xlsx', requireCap('vehicle_docs.export'), asyncHandler(async (req, res) => {
   const today = req.query.today ? String(req.query.today).trim() : undefined;
-  const summary = vdocs.getFleetComplianceSummary({ today });
+  const projectId = (req.user && !req.user.isAllSitesMode) ? req.user.activeProjectId : null;
+  const workshopId = (req.user && !req.user.isAllSitesMode) ? req.user.activeWorkshopId : null;
+  const summary = vdocs.getFleetComplianceSummary({ today, projectId, workshopId });
   const vehicles = summary.vehicles || [];
 
   const rows = [];

@@ -26,13 +26,17 @@ const workshops = require('./workshops');
 
 /**
  * Check if a user has Main Store / Executive clearance to inspect all stores or switch context.
+ * Strict authority: no username-based privileges, explicit capabilities or active assignments required.
  */
 function isMainStoreUser(user) {
-  if (!user) return false;
-  if ((user.roles || []).includes('admin')) return true;
-  if ((user.roles || []).includes('main_storekeeper')) return true;
-  if (Array.isArray(user.caps) && (user.caps.includes('workshops.all') || user.caps.includes('stores.all'))) return true;
-  if (Array.isArray(user.capabilities) && (user.capabilities.includes('workshops.all') || user.capabilities.includes('stores.all'))) return true;
+  if (!user || user.active === 0) return false;
+
+  const roles = user.roles || [];
+  const caps = user.caps || user.capabilities || [];
+
+  if (roles.includes('admin') || caps.includes('workshops.all') || caps.includes('stores.all')) {
+    return true;
+  }
 
   try {
     const auth = require('./auth');
@@ -41,57 +45,65 @@ function isMainStoreUser(user) {
     }
   } catch (_) {}
 
+  // main_storekeeper role must hold an active assignment to a MAIN_STORE with can_view = 1
+  if (roles.includes('main_storekeeper')) {
+    try {
+      const uStores = storeLocations.getUserStoreLocations(user.id) || [];
+      const hasActiveMainStore = uStores.some((s) => s.store_type === 'MAIN_STORE' && s.can_view === 1 && (s.store_active === 1 || s.store_active == null));
+      if (hasActiveMainStore) return true;
+    } catch (_) {}
+  }
+
   return false;
 }
 
 /**
  * Resolve the user's home / assigned site store location ID.
+ * On missing, inactive, or unresolved assignments, denies scoped operations (throws 403).
  */
 function getUserAssignedStoreId(user) {
-  if (!user) {
-    const err = new Error('No store assigned — contact administrator');
+  if (!user || user.active === 0) {
+    const err = new Error('User inactive or unauthenticated — access denied');
     err.status = 403;
     throw err;
   }
 
-  let uStores = null;
+  let uStores = [];
   try {
-    uStores = storeLocations.getUserStoreLocations(user.id);
+    uStores = storeLocations.getUserStoreLocations(user.id) || [];
   } catch (err) {
     console.error('Error resolving user store locations:', err);
     throw err;
   }
 
-  if (uStores && uStores.length > 0) {
-    const site = uStores.find((s) => s.store_type === 'SITE_STORE') || uStores[0];
+  // Filter to active store locations where user has active can_view clearance
+  const activeStores = uStores.filter((s) => (s.store_active === 1 || s.store_active == null) && s.can_view === 1);
+  if (activeStores && activeStores.length > 0) {
+    const site = activeStores.find((s) => s.store_type === 'SITE_STORE') || activeStores[0];
     return site.store_location_id || site.id;
   }
 
   if (user.store_location_id) {
-    return Number(user.store_location_id);
+    try {
+      const s = storeLocations.getStoreLocationById(Number(user.store_location_id));
+      if (s && (s.active === 1 || s.active == null)) return s.id;
+    } catch (_) {}
   }
 
-  // Workshop fallback only if user explicitly has a workshop_id assigned
-  let userWs = user.workshop_id;
-  if (!userWs && user.id) {
+  if (user.id) {
     try {
-      const u = get('SELECT workshop_id, store_location_id FROM users WHERE id = ?', user.id);
-      if (u && u.store_location_id) return Number(u.store_location_id);
-      userWs = u ? u.workshop_id : null;
+      const u = get('SELECT store_location_id, active FROM users WHERE id = ?', user.id);
+      if (u && u.active === 0) {
+        const err = new Error('User account is deactivated');
+        err.status = 403;
+        throw err;
+      }
+      if (u && u.store_location_id) {
+        const s = storeLocations.getStoreLocationById(Number(u.store_location_id));
+        if (s && (s.active === 1 || s.active == null)) return s.id;
+      }
     } catch (err) {
-      console.error('Error fetching user workshop_id:', err);
-      throw err;
-    }
-  }
-
-  if (userWs) {
-    try {
-      const allStores = storeLocations.listStoreLocations() || [];
-      const matched = allStores.find((s) => s.workshop_id === userWs && s.active);
-      if (matched) return matched.id;
-    } catch (err) {
-      console.error('Error matching workshop store location:', err);
-      throw err;
+      if (err.status === 403) throw err;
     }
   }
 
@@ -112,7 +124,11 @@ function resolveRequestContext(req) {
 
   if (!isMainStore) {
     // Sub-store users are strictly locked to their assigned site store
-    activeStoreId = getUserAssignedStoreId(user);
+    try {
+      activeStoreId = getUserAssignedStoreId(user);
+    } catch (_) {
+      activeStoreId = null;
+    }
   } else {
     // Main Store / Admin users: validate can_view grant for non-admins and audit context switches
     const rawHeader = req.headers && (req.headers['x-store-location-id'] || (req.query && req.query.store_location_id));
@@ -154,11 +170,13 @@ function resolveRequestContext(req) {
 
   // Load store location master record from storeLocations helper (core.db in multidb)
   let storeLoc = null;
-  try {
-    storeLoc = storeLocations.getStoreLocationById(activeStoreId);
-  } catch (_) {}
+  if (activeStoreId) {
+    try {
+      storeLoc = storeLocations.getStoreLocationById(activeStoreId);
+    } catch (_) {}
+  }
 
-  if (!storeLoc) {
+  if (!storeLoc && isMainStore) {
     try {
       const allStores = storeLocations.listStoreLocations() || [];
       storeLoc = allStores.find((s) => s.store_type === 'MAIN_STORE') || allStores[0];
@@ -169,17 +187,17 @@ function resolveRequestContext(req) {
     activeStoreId = storeLoc.id;
   }
 
-  const isAllSitesMode = isMainStore && storeLoc.store_type === 'MAIN_STORE';
-  const activeWorkshopId = storeLoc.workshop_id || null;
-  const activeProjectId = storeLoc.project_id || null;
+  const isAllSitesMode = isMainStore && storeLoc?.store_type === 'MAIN_STORE';
+  const activeWorkshopId = storeLoc?.workshop_id || (user && user.workshop_id) || null;
+  const activeProjectId = storeLoc?.project_id || null;
 
   const ctx = {
     isMainStoreUser: isMainStore,
     isAllSitesMode,
-    activeStoreId,
-    activeStoreCode: storeLoc.code,
-    activeStoreName: storeLoc.name,
-    activeStoreType: storeLoc.store_type,
+    activeStoreId: storeLoc ? storeLoc.id : null,
+    activeStoreCode: storeLoc ? storeLoc.code : null,
+    activeStoreName: storeLoc ? storeLoc.name : null,
+    activeStoreType: storeLoc ? storeLoc.store_type : null,
     activeWorkshopId,
     activeProjectId,
     storeLocation: storeLoc

@@ -51,7 +51,7 @@ test('Site Stores Controls Dashboard & MTN Tenancy Boundaries Suite', async (t) 
   if (!adminUser) {
     const res = run("INSERT INTO users (username, full_name, active, password_hash) VALUES ('admin_site_test', 'Site Test Admin', 1, ?)", pwHash);
     adminUser = get('SELECT * FROM users WHERE id = ?', res.lastInsertRowid);
-  }
+  } else { run('UPDATE users SET password_hash = ?, active = 1 WHERE id = ?', pwHash, adminUser.id); }
   run("INSERT OR IGNORE INTO user_roles (user_id, role_id) VALUES (?, (SELECT id FROM roles WHERE name = 'admin'))", adminUser.id);
 
   // 2. Seed site storekeeper for Store 3 (Galagedara Site Store)
@@ -59,7 +59,7 @@ test('Site Stores Controls Dashboard & MTN Tenancy Boundaries Suite', async (t) 
   if (!sk3) {
     const res = run("INSERT INTO users (username, full_name, active, password_hash) VALUES ('sk_site_3_test', 'Site 3 Storekeeper', 1, ?)", pwHash);
     sk3 = get('SELECT * FROM users WHERE id = ?', res.lastInsertRowid);
-  }
+  } else { run('UPDATE users SET password_hash = ?, active = 1 WHERE id = ?', pwHash, sk3.id); }
   run("INSERT OR IGNORE INTO user_roles (user_id, role_id) VALUES (?, (SELECT id FROM roles WHERE name = 'site_storekeeper'))", sk3.id);
   storeLocations.setUserStoreLocationAccess(sk3.id, 3, {
     can_view: 1, can_request: 1, can_issue: 1, can_receive: 1, can_dispatch: 1, can_count: 1
@@ -70,7 +70,7 @@ test('Site Stores Controls Dashboard & MTN Tenancy Boundaries Suite', async (t) 
   if (!sk4) {
     const res = run("INSERT INTO users (username, full_name, active, password_hash) VALUES ('sk_site_4_test', 'Site 4 Storekeeper', 1, ?)", pwHash);
     sk4 = get('SELECT * FROM users WHERE id = ?', res.lastInsertRowid);
-  }
+  } else { run('UPDATE users SET password_hash = ?, active = 1 WHERE id = ?', pwHash, sk4.id); }
   run("INSERT OR IGNORE INTO user_roles (user_id, role_id) VALUES (?, (SELECT id FROM roles WHERE name = 'site_storekeeper'))", sk4.id);
   storeLocations.setUserStoreLocationAccess(sk4.id, 4, {
     can_view: 1, can_request: 1, can_issue: 1, can_receive: 1, can_dispatch: 1, can_count: 1

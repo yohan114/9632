@@ -105,7 +105,10 @@ function getWorkshopDb(workshopId, { readOnly = false } = {}) {
   const absPath = path.resolve(getTargetDir(), relFile);
 
   if (!fs.existsSync(absPath)) {
-    // If CW.db or site db does not exist yet, fall back to baseDb if present
+    // If dedicated sub-workshop database does not exist yet, fall back to default workshop (CW.db)
+    if (ws.id !== 1) {
+      return getWorkshopDb(1, { readOnly });
+    }
     if (baseDb) return baseDb;
     throw new Error(`Workshop database file not found: ${absPath}`);
   }

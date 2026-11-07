@@ -36,17 +36,32 @@ function listAssets(query = {}, user = null) {
     const like = '%' + query.q + '%';
     params.push(like, like, like, like);
   }
-  if (query.project_id) {
+  if (user && !user.isAllSitesMode) {
+    if (user.activeProjectId) {
+      if (query.project_id) {
+        const reqPid = toInt(query.project_id);
+        if (reqPid !== user.activeProjectId) {
+          // Empty intersection: user is not authorized for requested foreign project
+          clauses.push('1 = 0');
+        } else {
+          clauses.push('(a.current_project_id = ? OR a.home_project_id = ?)');
+          params.push(user.activeProjectId, user.activeProjectId);
+        }
+      } else {
+        clauses.push('(a.current_project_id = ? OR a.home_project_id = ?)');
+        params.push(user.activeProjectId, user.activeProjectId);
+      }
+    } else if (user.activeWorkshopId) {
+      if (query.workshop_id && toInt(query.workshop_id) !== user.activeWorkshopId) {
+        clauses.push('1 = 0');
+      } else {
+        clauses.push('(EXISTS (SELECT 1 FROM job_cards j WHERE j.asset_id = a.id AND j.workshop_id = ?) OR EXISTS (SELECT 1 FROM service_jobs s WHERE s.asset_id = a.id AND s.workshop_id = ?))');
+        params.push(user.activeWorkshopId, user.activeWorkshopId);
+      }
+    }
+  } else if (query.project_id) {
     clauses.push('a.current_project_id = ?');
     params.push(toInt(query.project_id));
-  } else if (user && !user.isAllSitesMode) {
-    if (user.activeProjectId) {
-      clauses.push('(a.current_project_id = ? OR a.home_project_id = ?)');
-      params.push(user.activeProjectId, user.activeProjectId);
-    } else if (user.activeWorkshopId) {
-      clauses.push('(EXISTS (SELECT 1 FROM job_cards j WHERE j.asset_id = a.id AND j.workshop_id = ?) OR EXISTS (SELECT 1 FROM service_jobs s WHERE s.asset_id = a.id AND s.workshop_id = ?))');
-      params.push(user.activeWorkshopId, user.activeWorkshopId);
-    }
   }
   if (query.status) { clauses.push('a.status = ?'); params.push(query.status); }
   if (query.asset_class) { clauses.push('a.asset_class = ?'); params.push(query.asset_class); }
@@ -89,25 +104,44 @@ router.get('/export.xlsx', requireCap('assets.export', 'assets.view'), asyncHand
   }]);
 }));
 
-// Lightweight typeahead for vehicle/asset pickers — code + registration only.
+// Lightweight typeahead for vehicle/asset pickers — scoped to user project/workshop
 router.get('/search', asyncHandler((req, res) => {
   const q = String(req.query.q || '').trim();
+  const user = req.user;
+  const clauses = [];
+  const params = [];
   if (q) {
     const like = '%' + q + '%';
-    return res.json(all(
-      `SELECT id, code, registration, asset_class FROM assets
-        WHERE code LIKE ? OR registration LIKE ? OR ec_code LIKE ?
-        ORDER BY (code = ?) DESC, in_register DESC, code
-        LIMIT ${toInt(req.query.limit, 20)}`,
-      like, like, like, q));
+    clauses.push('(code LIKE ? OR registration LIKE ? OR ec_code LIKE ?)');
+    params.push(like, like, like);
   }
-  res.json(all(`SELECT id, code, registration, asset_class FROM assets ORDER BY in_register DESC, code LIMIT ${toInt(req.query.limit, 20)}`));
+  if (user && !user.isAllSitesMode) {
+    if (user.activeProjectId) {
+      clauses.push('(current_project_id = ? OR home_project_id = ?)');
+      params.push(user.activeProjectId, user.activeProjectId);
+    } else if (user.activeWorkshopId) {
+      clauses.push('(EXISTS (SELECT 1 FROM job_cards j WHERE j.asset_id = assets.id AND j.workshop_id = ?) OR EXISTS (SELECT 1 FROM service_jobs s WHERE s.asset_id = assets.id AND s.workshop_id = ?))');
+      params.push(user.activeWorkshopId, user.activeWorkshopId);
+    }
+  }
+  const where = clauses.length ? 'WHERE ' + clauses.join(' AND ') : '';
+  const orderClause = q ? 'ORDER BY in_register DESC, code' : 'ORDER BY in_register DESC, code';
+  res.json(all(`SELECT id, code, registration, asset_class FROM assets ${where} ${orderClause} LIMIT ${toInt(req.query.limit, 20)}`, ...params));
 }));
 
 router.get('/:id', requireCap('assets.view'), asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   const asset = get('SELECT * FROM assets WHERE id = ?', id);
   if (!asset) return res.status(404).json({ error: 'Asset not found' });
+  if (req.user && !req.user.isAllSitesMode) {
+    if (req.user.activeProjectId) {
+      const isCur = asset.current_project_id === req.user.activeProjectId;
+      const isHome = asset.home_project_id === req.user.activeProjectId;
+      if (!isCur && !isHome) {
+        return res.status(404).json({ error: 'Asset not found' });
+      }
+    }
+  }
   const current_project = asset.current_project_id ? get('SELECT * FROM projects WHERE id = ?', asset.current_project_id) : null;
   const current_battery = get(`SELECT * FROM batteries WHERE current_asset_id = ? AND state='installed' LIMIT 1`, id);
   // A vehicle is shared by every workshop (Stage 3), so all its cards are listed — but a card of
