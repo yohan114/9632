@@ -85,6 +85,7 @@ router.get('/', asyncHandler((req, res) => {
        LEFT JOIN assets a ON a.id = r.asset_id
        LEFT JOIN projects p ON p.id = r.project_id
        LEFT JOIN job_cards j ON j.id = r.job_id
+       LEFT JOIN service_jobs s ON s.id = r.service_id
        ${where} ORDER BY r.id DESC LIMIT ${toInt(req.query.limit, 300)}`,
     ...params
   ));

@@ -663,13 +663,13 @@ router.get('/summary', requireCap('fabrication.view'), asyncHandler((req, res) =
       SUM(CASE WHEN j.work_target <> 'general' OR j.work_target IS NULL THEN 1 ELSE 0 END) AS vehicle_works_count,
       ROUND(COALESCE(SUM(j.total_cost), 0), 2) AS total_cost
     FROM job_cards j
-    WHERE j.type = 'fabrication' ${fabClause}
+    WHERE j.type = 'fabrication' ${fabClause ? ' AND ' + fabClause : ''}
   `);
 
   const categoriesDist = all(`
     SELECT COALESCE(j.category, 'unassigned') AS category, COUNT(*) AS count, ROUND(COALESCE(SUM(j.total_cost), 0), 2) AS cost
       FROM job_cards j
-     WHERE j.type = 'fabrication' AND j.work_target = 'general' ${fabClause}
+     WHERE j.type = 'fabrication' AND j.work_target = 'general' ${fabClause ? ' AND ' + fabClause : ''}
      GROUP BY j.category
   `);
 

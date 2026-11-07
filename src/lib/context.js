@@ -335,21 +335,21 @@ function storeScopeFor(user) {
     }
   } catch (_) {}
 
-  // 2. Look up primary store_location_id from user object or users table
+  // 2. Look up primary store_location_id from user object, user_store_locations, or workshop mapping
   let primaryId = user.store_location_id ? Number(user.store_location_id) : null;
-  if (!primaryId && user.id) {
-    try {
-      const uRow = get('SELECT store_location_id, workshop_id FROM users WHERE id = ?', user.id);
-      if (uRow && uRow.store_location_id) primaryId = Number(uRow.store_location_id);
-      if (!primaryId && uRow && uRow.workshop_id) {
-        const mapped = storeLocations.resolvePhysicalStore(uRow.workshop_id);
-        if (mapped) primaryId = Number(mapped.id);
-      }
-    } catch (_) {}
-  } else if (!primaryId && user.workshop_id) {
+  if (!primaryId && user.workshop_id) {
     try {
       const mapped = storeLocations.resolvePhysicalStore(user.workshop_id);
       if (mapped) primaryId = Number(mapped.id);
+    } catch (_) {}
+  }
+  if (!primaryId && user.id) {
+    try {
+      const uRow = get('SELECT workshop_id FROM users WHERE id = ?', user.id);
+      if (uRow && uRow.workshop_id) {
+        const mapped = storeLocations.resolvePhysicalStore(uRow.workshop_id);
+        if (mapped) primaryId = Number(mapped.id);
+      }
     } catch (_) {}
   }
 
