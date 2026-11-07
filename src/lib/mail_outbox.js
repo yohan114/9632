@@ -94,13 +94,46 @@ async function processOutboxItem(outboxId) {
     }
 
     // Provider dispatch
-    // In production, nodemailer or standard SMTP transport is used if env vars exist
-    // Otherwise fallback to reliable local outbox simulation
+    // If SMTP credentials exist, dispatch via nodemailer transport;
+    // otherwise fallback safely to outbox simulation for offline/test environments.
     let providerMsgId = null;
+    const smtpService = process.env.SMTP_SERVICE;
     const smtpHost = process.env.SMTP_HOST;
-    if (smtpHost) {
-      // SMTP transport could be invoked here
-      providerMsgId = `smtp_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
+    const smtpUser = process.env.SMTP_USER;
+    const smtpPass = process.env.SMTP_PASS;
+    const smtpPort = parseInt(process.env.SMTP_PORT || '587', 10);
+    const smtpSecure = process.env.SMTP_SECURE === '1' || process.env.SMTP_SECURE === 'true' || smtpPort === 465;
+    const smtpFrom = process.env.SMTP_FROM || (smtpUser ? `"WorkshopOne" <${smtpUser}>` : 'workshop@edwardchristie.com');
+
+    if (smtpUser && (smtpHost || smtpService)) {
+      const nodemailer = require('nodemailer');
+      const transportOpts = smtpService
+        ? {
+            service: smtpService,
+            auth: { user: smtpUser, pass: smtpPass }
+          }
+        : {
+            host: smtpHost,
+            port: smtpPort,
+            secure: smtpSecure,
+            auth: { user: smtpUser, pass: smtpPass }
+          };
+
+      const transporter = nodemailer.createTransport(transportOpts);
+      const mailOptions = {
+        from: smtpFrom,
+        to: toList.map((t) => (t && t.name ? `"${t.name}" <${t.email}>` : (t && t.email ? t.email : t))).join(', '),
+        cc: ccList.length ? ccList.map((c) => (c && c.name ? `"${c.name}" <${c.email}>` : (c && c.email ? c.email : c))).join(', ') : undefined,
+        subject: item.subject,
+        text: item.body,
+        attachments: attachments.map((a) => ({
+          filename: a.filename || 'Request_Document.pdf',
+          path: a.file_path
+        }))
+      };
+
+      const info = await transporter.sendMail(mailOptions);
+      providerMsgId = info.messageId || `smtp_${Date.now()}`;
     } else {
       providerMsgId = `local_sim_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
     }
