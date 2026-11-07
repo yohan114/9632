@@ -107,15 +107,15 @@ async function processOutboxItem(outboxId) {
 
     if (smtpUser && (smtpHost || smtpService)) {
       const nodemailer = require('nodemailer');
-      const transportOpts = smtpService
+      const transportOpts = smtpHost
         ? {
-            service: smtpService,
-            auth: { user: smtpUser, pass: smtpPass }
-          }
-        : {
             host: smtpHost,
             port: smtpPort,
             secure: smtpSecure,
+            auth: { user: smtpUser, pass: smtpPass }
+          }
+        : {
+            service: smtpService,
             auth: { user: smtpUser, pass: smtpPass }
           };
 

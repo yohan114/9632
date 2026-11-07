@@ -62,11 +62,13 @@ async function main() {
     process.exit(1);
   }
 
-  const transportOpts = smtpService
-    ? { service: smtpService, auth: { user: smtpUser, pass: smtpPass } }
-    : { host: smtpHost, port: smtpPort, secure: smtpSecure, auth: { user: smtpUser, pass: smtpPass } };
+  const transportOpts = smtpHost
+    ? { host: smtpHost, port: smtpPort, secure: smtpSecure, auth: { user: smtpUser, pass: smtpPass } }
+    : (smtpService
+        ? { service: smtpService, auth: { user: smtpUser, pass: smtpPass } }
+        : { host: 'smtp.gmail.com', port: 465, secure: true, auth: { user: smtpUser, pass: smtpPass } });
 
-  console.log('1. Connecting to mail server...');
+  console.log('1. Connecting to mail server (' + (transportOpts.host || transportOpts.service) + (transportOpts.port ? ':' + transportOpts.port : '') + ')...');
   const transporter = nodemailer.createTransport(transportOpts);
 
   try {
@@ -74,7 +76,21 @@ async function main() {
     console.log('✅ Connection to mail server successful! Credentials are valid.');
   } catch (err) {
     console.error('❌ Connection failed:', err.message);
-    if (smtpService === 'gmail' || (smtpHost && smtpHost.includes('gmail'))) {
+    if (err.message && err.message.includes('timeout')) {
+      console.log('\n⚠️ Connection Timed Out! Your VPS host (DigitalOcean) is blocking this port.');
+      if (smtpPort === 587 || smtpService === 'gmail') {
+        console.log('👉 SWITCH TO PORT 465 (SSL):');
+        console.log('   In .env, replace your SMTP lines with:');
+        console.log('   ----------------------------------------');
+        console.log('   SMTP_HOST=smtp.gmail.com');
+        console.log('   SMTP_PORT=465');
+        console.log('   SMTP_SECURE=1');
+        console.log('   SMTP_USER=' + smtpUser);
+        console.log('   SMTP_PASS=' + smtpPass);
+        console.log('   SMTP_FROM="Edward & Christie Workshop" <' + smtpUser + '>');
+        console.log('   ----------------------------------------');
+      }
+    } else if (smtpService === 'gmail' || (smtpHost && smtpHost.includes('gmail'))) {
       console.log('\n💡 Note for Gmail: Regular account passwords cannot be used directly.');
       console.log('   You must enable 2-Step Verification and generate an "App Password":');
       console.log('   1. Visit: https://myaccount.google.com/apppasswords');
