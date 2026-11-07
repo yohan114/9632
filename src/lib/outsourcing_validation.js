@@ -150,9 +150,13 @@ function validateEmailPayload(b) {
   const errors = [];
 
   let to = [];
-  if (Array.isArray(b.to) && b.to.length) {
-    for (const r of b.to) {
-      const email = typeof r === 'string' ? r : (r && r.email);
+  let rawTo = b.to;
+  if (typeof rawTo === 'string') {
+    rawTo = rawTo.split(/[,;\s]+/).map((s) => s.trim()).filter(Boolean);
+  }
+  if (Array.isArray(rawTo) && rawTo.length) {
+    for (const r of rawTo) {
+      const email = typeof r === 'string' ? r.trim() : (r && r.email ? String(r.email).trim() : '');
       const name = typeof r === 'object' && r ? r.name : '';
       if (!isValidEmail(email)) {
         errors.push(`Invalid recipient email address: '${email}'`);
@@ -160,19 +164,26 @@ function validateEmailPayload(b) {
         to.push({ email: sanitizeOneLine(email), name: sanitizeOneLine(name) || null });
       }
     }
-  } else {
+  }
+  if (!to.length && !errors.length) {
     errors.push('At least one valid recipient email is required.');
   }
 
   let cc = [];
-  if (Array.isArray(b.cc)) {
-    for (const r of b.cc) {
-      const email = typeof r === 'string' ? r : (r && r.email);
+  let rawCc = b.cc;
+  if (typeof rawCc === 'string') {
+    rawCc = rawCc.split(/[,;\s]+/).map((s) => s.trim()).filter(Boolean);
+  }
+  if (Array.isArray(rawCc)) {
+    for (const r of rawCc) {
+      const email = typeof r === 'string' ? r.trim() : (r && r.email ? String(r.email).trim() : '');
       const name = typeof r === 'object' && r ? r.name : '';
-      if (!isValidEmail(email)) {
-        errors.push(`Invalid CC recipient email address: '${email}'`);
-      } else {
-        cc.push({ email: sanitizeOneLine(email), name: sanitizeOneLine(name) || null });
+      if (email) {
+        if (!isValidEmail(email)) {
+          errors.push(`Invalid CC recipient email address: '${email}'`);
+        } else {
+          cc.push({ email: sanitizeOneLine(email), name: sanitizeOneLine(name) || null });
+        }
       }
     }
   }

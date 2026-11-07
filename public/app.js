@@ -26093,9 +26093,9 @@ function renderOutsourcingJobSectionHtml(job, reqs = []) {
         const canApprove = (canDo('outsourcing.approve') || isAdmin()) && r.status === 'pending_approval' && r.created_by !== (ME && ME.id);
         const canEditDraft = (canDo('outsourcing.edit_draft') || isAdmin()) && ['draft', 'returned'].includes(r.status);
         const canSubmit = (canDo('outsourcing.create') || canDo('outsourcing.edit_draft') || isAdmin()) && ['draft', 'returned'].includes(r.status);
-        const canSend = (canDo('outsourcing.send_email') || isAdmin()) && ['approved', 'sent'].includes(r.status);
+        const canSend = (canDo('outsourcing.send') || canDo('outsourcing.send_email') || isAdmin()) && ['approved', 'sent'].includes(r.status);
         const canVerify = (canDo('outsourcing.verify_completion') || canDo('outsourcing.approve') || isAdmin()) && ['sent', 'acknowledged', 'in_progress'].includes(r.status);
-        const canPostCost = (canDo('outsourcing.post_cost') || isAdmin()) && ['approved', 'sent', 'acknowledged', 'in_progress', 'completed'].includes(r.status) && r.status !== 'closed';
+        const canPostCost = (canDo('outsourcing.cost.post') || canDo('outsourcing.post_cost') || isAdmin()) && ['approved', 'sent', 'acknowledged', 'in_progress', 'completed'].includes(r.status) && r.status !== 'closed';
         const canCancel = (canDo('outsourcing.cancel') || isAdmin()) && !['closed', 'cancelled'].includes(r.status);
         const isApprovedOrPast = ['approved', 'sent', 'acknowledged', 'in_progress', 'completed', 'closed'].includes(r.status);
 
@@ -26204,9 +26204,9 @@ function renderOutsourcingServiceSectionHtml(service, reqs = []) {
         const canApprove = (canDo('outsourcing.approve') || isAdmin()) && r.status === 'pending_approval' && r.created_by !== (ME && ME.id);
         const canEditDraft = (canDo('outsourcing.edit_draft') || isAdmin()) && ['draft', 'returned'].includes(r.status);
         const canSubmit = (canDo('outsourcing.create') || canDo('outsourcing.edit_draft') || isAdmin()) && ['draft', 'returned'].includes(r.status);
-        const canSend = (canDo('outsourcing.send_email') || isAdmin()) && ['approved', 'sent'].includes(r.status);
+        const canSend = (canDo('outsourcing.send') || canDo('outsourcing.send_email') || isAdmin()) && ['approved', 'sent'].includes(r.status);
         const canVerify = (canDo('outsourcing.verify_completion') || canDo('outsourcing.approve') || isAdmin()) && ['sent', 'acknowledged', 'in_progress'].includes(r.status);
-        const canPostCost = (canDo('outsourcing.post_cost') || isAdmin()) && ['approved', 'sent', 'acknowledged', 'in_progress', 'completed'].includes(r.status) && r.status !== 'closed';
+        const canPostCost = (canDo('outsourcing.cost.post') || canDo('outsourcing.post_cost') || isAdmin()) && ['approved', 'sent', 'acknowledged', 'in_progress', 'completed'].includes(r.status) && r.status !== 'closed';
         const canCancel = (canDo('outsourcing.cancel') || isAdmin()) && !['closed', 'cancelled'].includes(r.status);
         const isApprovedOrPast = ['approved', 'sent', 'acknowledged', 'in_progress', 'completed', 'closed'].includes(r.status);
 
@@ -27106,19 +27106,22 @@ Edward & Christie Central Workshop Administration`;
   modal('Email Official Request to C.COM: ' + r.ref_no, html, (body, close) => {
     qs('#btn-email-cancel', body).onclick = close;
     qs('#btn-email-send', body).onclick = async () => {
-      const to = qs('#txt-email-to', body).value.trim();
-      const cc = qs('#txt-email-cc', body).value.trim() || undefined;
+      const toVal = qs('#txt-email-to', body).value.trim();
+      const ccVal = qs('#txt-email-cc', body).value.trim();
       const subject = qs('#txt-email-subject', body).value.trim();
       const bodyText = qs('#txt-email-body', body).value.trim();
 
-      if (!to) return toast('Recipient email is required', 'err');
+      if (!toVal) return toast('Recipient email is required', 'err');
       if (!subject) return toast('Subject is required', 'err');
       if (!bodyText) return toast('Body is required', 'err');
+
+      const toList = toVal.split(/[,;]+/).map((s) => s.trim()).filter(Boolean);
+      const ccList = ccVal ? ccVal.split(/[,;]+/).map((s) => s.trim()).filter(Boolean) : [];
 
       try {
         await api(`/outsourcing/requests/${r.id}/send`, {
           method: 'POST',
-          body: { to, cc, subject, body: bodyText }
+          body: { to: toList, cc: ccList, subject, body: bodyText }
         });
         toast('✓ Email queued and dispatched to C.COM!');
         close();
