@@ -563,6 +563,9 @@ function migrate() {
     try {
       require('../migrate/052_fabrication_access_and_schema').runMigration(coreDb);
       require('../migrate/054_ccom_outsourcing').runMigration(coreDb);
+      require('../migrate/055_fuel_core_schema').runMigration(coreDb);
+      require('../migrate/056_fleet_allocations_and_billing').runMigration(coreDb);
+      require('../migrate/057_fleet_financial_ledger').runMigration(coreDb);
     } catch (err) {
       console.warn('Failed to run migration 052 on coreDb:', err.message);
     }

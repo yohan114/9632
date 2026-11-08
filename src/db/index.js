@@ -927,6 +927,36 @@ function migrate() {
     console.warn('Migration 053 MTN store locations skipped:', err.message);
   }
 
+  // Fuel Management & Bulk Tanks (Plan V2 - Migration 055)
+  try {
+    if (!db.prepare("SELECT 1 FROM settings WHERE key = 'migration_055_done'").get()) {
+      require('../migrate/055_fuel_core_schema').runMigration(db);
+      db.prepare("INSERT INTO settings (key, value) VALUES ('migration_055_done', '1')").run();
+    }
+  } catch (err) {
+    console.warn('Migration 055 Fuel core schema skipped:', err.message);
+  }
+
+  // Fleet Allocations & Rental Billing (Plan V2 - Migration 056)
+  try {
+    if (!db.prepare("SELECT 1 FROM settings WHERE key = 'migration_056_done'").get()) {
+      require('../migrate/056_fleet_allocations_and_billing').runMigration(db);
+      db.prepare("INSERT INTO settings (key, value) VALUES ('migration_056_done', '1')").run();
+    }
+  } catch (err) {
+    console.warn('Migration 056 Fleet allocations and billing skipped:', err.message);
+  }
+
+  // Fleet Financial Ledger & Identity Mapping (Plan V2 - Migration 057)
+  try {
+    if (!db.prepare("SELECT 1 FROM settings WHERE key = 'migration_057_done'").get()) {
+      require('../migrate/057_fleet_financial_ledger').runMigration(db);
+      db.prepare("INSERT INTO settings (key, value) VALUES ('migration_057_done', '1')").run();
+    }
+  } catch (err) {
+    console.warn('Migration 057 Fleet financial ledger skipped:', err.message);
+  }
+
   return db;
 }
 

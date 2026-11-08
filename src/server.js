@@ -360,6 +360,19 @@ app.use('/api/sap/v1', require('./routes/sap'));
 // CCOM Outsourced Service & Repair Requests
 app.use('/api/outsourcing', require('./routes/outsourcing'));
 
+// Fuel Operations & Bulk Tanks (Plan V2)
+app.use('/api/fuel/tanks', require('./routes/fuel_tanks'));
+app.use('/api/fuel', require('./routes/fuel'));
+
+// Fleet Allocations & Machine Hire Billing (Plan V2)
+app.use('/api/hire', require('./routes/hire_billing'));
+
+// Fleet Financial Reporting & Profitability (Plan V2)
+app.use('/api/fleet/finance', require('./routes/fleet_finance'));
+
+// Consolidated Master Dashboard (Plan V2)
+app.use('/api/master-dashboard', require('./routes/master_dashboard'));
+
 // Static frontend (SPA). index.html is served with a per-boot cache-bust token on
 // app.js / styles.css so a normal reload always picks up the latest build.
 const publicDir = path.join(__dirname, '..', 'public');

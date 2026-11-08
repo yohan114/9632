@@ -381,6 +381,45 @@ const CAPABILITIES = [
   C('outsourcing.cost.post', 'outsourcing', 'Post verified CCOM actual charges to parent repair job or service record', ['storekeeper', 'main_storekeeper', 'manager', 'operational_manager'], 'jobs', 'jobs', '02', 'Operations'),
   C('outsourcing.cancel', 'outsourcing', 'Cancel CCOM outsourced request with reason', ['engineer', 'manager', 'operational_manager'], 'jobs', 'jobs', '06', 'Operations'),
   C('outsourcing.settings', 'outsourcing', 'Maintain CCOM vendors, contact directory, and outbox configuration', ['manager'], null, 'jobs', '02', 'Operations'),
+
+  // ============================================================================================
+  // DOMAIN 6: FUEL & BULK TANKS (Z_WO_FUEL)
+  // ============================================================================================
+  C('fuel.view', 'fuel', 'View fuel issues, tank stock, meter readings and fuel logs', ALL_ROLES, null, 'fuel', '03', 'Operations'),
+  C('fuel.request', 'fuel', 'Raise a fuel requisition request for vehicles or machinery', OPS_MANAGERS.concat(['transport_manager', 'workshop', 'site_storekeeper']), null, 'fuel', '01', 'Operations'),
+  C('fuel.issue', 'fuel', 'Dispense fuel and record authoritative fuel issues with meter readings', ['workshop', 'site_storekeeper', 'storekeeper'].concat(OPS_MANAGERS), null, 'fuel', '02', 'Operations'),
+  C('fuel.approve', 'fuel', 'Approve fuel requisitions and bulk supply orders', OPS_MANAGERS.concat(['transport_manager']), null, 'fuel', '10', 'Operations'),
+  C('fuel.correct', 'fuel', 'Submit and approve fuel issue corrections with photo evidence', OPS_MANAGERS, null, 'fuel', '02', 'Operations', true),
+  C('fuel.void', 'fuel', 'Void an erroneous fuel issue transaction with documented reason', ['manager'], null, 'fuel', '06', 'Operations', true),
+  C('fuel.export', 'fuel', 'Export fuel consumption logs and bowser reconciliations', OPS_MANAGERS.concat(['transport_manager']), null, 'fuel', '08', 'Operations'),
+  C('fuel.tanks.view', 'fuel', 'View bulk storage tanks, bowser levels, and dip chart history', ALL_ROLES, null, 'fuel', '03', 'Operations'),
+  C('fuel.tanks.manage', 'fuel', 'Configure bulk fuel tanks, calibration curves, and project bindings', ['manager', 'operational_manager'], null, 'fuel', '02', 'Operations'),
+  C('fuel.tanks.dip', 'fuel', 'Record physical dipstick measurements and reconcile theoretical balance', ['workshop', 'site_storekeeper', 'storekeeper'].concat(OPS_MANAGERS), null, 'fuel', '02', 'Operations'),
+  C('fuel.tanks.refill', 'fuel', 'Receive bulk fuel deliveries from Ceypetco/dealers into storage tanks', ['workshop', 'site_storekeeper'].concat(OPS_MANAGERS), null, 'fuel', '01', 'Operations'),
+  C('fuel.prices.view', 'fuel', 'View Ceypetco market fuel price history', OPS_MANAGERS.concat(['transport_manager', 'viewer']), null, 'fuel', '03', 'Operations'),
+  C('fuel.prices.manage', 'fuel', 'Set or update Ceypetco fuel retail price points in LKR cents', ['manager', 'operational_manager'], null, 'fuel', '02', 'Operations'),
+
+  // ============================================================================================
+  // DOMAIN 7: HIRE ALLOCATIONS & RENTAL BILLING (Z_WO_HIRE)
+  // ============================================================================================
+  C('allocations.view', 'hire', 'View vehicle site allocations, machine deployments, and assignment history', ALL_ROLES, null, 'hire', '03', 'Fleet'),
+  C('allocations.manage', 'hire', 'Create and modify machine site deployments and Dry/Wet allocation terms', OPS_MANAGERS.concat(['transport_manager']), null, 'hire', '02', 'Fleet'),
+  C('hire.rates.view', 'hire', 'View machine hire rate cards, minimum contract hours, and dry/wet tariffs', ALL_ROLES, null, 'hire', '03', 'Fleet'),
+  C('hire.rates.manage', 'hire', 'Configure asset and category rental rate cards and minimum billable units', ['manager', 'operational_manager'], null, 'hire', '02', 'Fleet'),
+  C('hire.billing.view', 'hire', 'View draft and finalized machine rental bills and line item details', OPS_MANAGERS.concat(['transport_manager', 'viewer']), null, 'hire', '03', 'Fleet'),
+  C('hire.billing.generate', 'hire', 'Generate monthly machine rental and fuel recharge bills', OPS_MANAGERS, null, 'hire', '01', 'Fleet'),
+  C('hire.billing.finalise', 'hire', 'Finalise, issue, and seal machine rental bills with tax calculation', ['manager'], null, 'hire', '10', 'Fleet', true),
+  C('hire.billing.export', 'hire', 'Export customer and project billing statements and invoice PDFs', OPS_MANAGERS.concat(['transport_manager']), null, 'hire', '08', 'Fleet'),
+
+  // ============================================================================================
+  // DOMAIN 8: FLEET FINANCE & EXECUTIVE DASHBOARD (Z_WO_FIN)
+  // ============================================================================================
+  C('fleet.profitability.view', 'finance', 'View vehicle profitability, operating contribution, and direct costs', OPS_MANAGERS.concat(['transport_manager']), null, 'finance', '03', 'Fleet'),
+  C('fleet.profitability.view_all', 'finance', 'View company-wide consolidated fleet financial performance and margins', ['manager', 'operational_manager'], null, 'finance', '03', 'Fleet'),
+  C('fleet.profitability.export', 'finance', 'Export vehicle P&L analysis and audited financial statements', ['manager', 'operational_manager'], null, 'finance', '08', 'Fleet'),
+  C('finance.period.close', 'finance', 'Seal and lock a monthly financial period against further postings', ['manager'], null, 'finance', '10', 'Fleet', true),
+  C('finance.period.reopen', 'finance', 'Reopen a sealed financial period for authorized audit adjustments', [], null, 'finance', '02', 'Fleet', true),
+  C('master_dashboard.view', 'dashboard', 'Access consolidated executive master dashboard across maintenance, fuel and hire', ALL_ROLES, null, 'dashboard', '03', 'Operations'),
 ];
 
 

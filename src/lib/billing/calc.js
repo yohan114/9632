@@ -68,6 +68,48 @@ function computeTotals(input) {
   };
 }
 
+/**
+ * High-level rental bill generator adapter
+ */
+function calculateRentalBill(input) {
+  const actual = Number(input.actualUnits) || 0;
+  const minimum = Number(input.minimumUnits) || 0;
+  const rate = Number(input.rateCents) || 0;
+  const fuelLitres = Number(input.fuelLitres) || 0;
+  const fuelPrice = Number(input.fuelPriceCents) || 34100;
+  const fuelCost = Math.round(fuelLitres * fuelPrice);
+  const ssclRate = input.ssclRate !== undefined ? Number(input.ssclRate) : 0.025;
+  const vatRate = input.vatRate !== undefined ? Number(input.vatRate) : 0.18;
+  const bRaw = String(input.rateBasis || input.basis || 'd').toLowerCase();
+  const basis = bRaw === 'wet' || bRaw === 'w' ? 'w' : (bRaw === 'fully_wet' || bRaw === 'fw' ? 'fw' : 'd');
+  const fuelOnly = Boolean(input.fuelOnly);
+
+  const res = computeTotals({
+    billingMode: input.billingMode || 'hourly',
+    rateBasis: basis,
+    rateCents: rate,
+    actualUnits: actual,
+    minimumUnits: minimum,
+    fuelLitres,
+    fuelCostCents: fuelCost,
+    ssclRate,
+    vatRate,
+    fuelOnly,
+  });
+
+  return {
+    ...res,
+    actualUnits: actual,
+    minimumUnits: minimum,
+    fuelLitres,
+    fuelCostCents: fuelCost,
+    ssclRate,
+    vatRate,
+    breakdownDays: Number(input.breakdownDays) || 0,
+    breakdownDeductCents: 0,
+  };
+}
+
 /** Convert integer LKR cents to decimal Rupees */
 function centsToLkr(cents) {
   return (Number(cents) || 0) / 100;
@@ -98,6 +140,7 @@ module.exports = {
   BILLING_MODES,
   RATE_BASES,
   computeTotals,
+  calculateRentalBill,
   centsToLkr,
   lkrToCents,
   unitLabel,

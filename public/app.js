@@ -1028,7 +1028,9 @@ function formData(root) {
 
 // ---------------------------------------------------------------- shell
 const NAV = [
+  ['master-dashboard', '⚡', 'Master Cockpit'],
   ['dashboard', '📊', 'Dashboard'],
+  ['fuel', '⛽', 'Fuel Operations'],
   ['jobs', '🔧', 'Job Cards'],
   ['field', '📍', 'Field Work'],
   ['operations', '🧭', 'Operations'],
@@ -1038,8 +1040,10 @@ const NAV = [
   ['lubecapacities', '🛢️', 'Lubricant Capacities'],
   ['assets', '🚜', 'Assets'],
   ['vehicledocuments', '📜', 'Vehicle Documents'],
+  ['hire-billing', '📑', 'Machine Hire & Billing'],
   ['labour', '👷', 'Labour & Mechanics'],
   ['stores', '📦', 'Stores'],
+  ['fuel-tanks', '🛢️', 'Fuel Tanks & Bowsers'],
   ['tools', '🧰', 'Tools & Toolboxes'],
   ['serviceplan', '🗓️', 'Service & Filter Plan'],
   ['projects', '🏗️', 'Projects'],
@@ -1051,6 +1055,7 @@ const NAV = [
   ['tbrequests', '🛞', 'Tyre & Battery Requests'],
   ['tyrebattery', '🛞', 'Tyre & Battery'],
   ['reports', '📈', 'Reports'],
+  ['fleet-profitability', '📊', 'Fleet Profitability'],
   ['access', '🔐', 'Access Control', 'admin'],
   ['auditlogs', '🛡️', 'User Activity Logs', 'audit_admin'],
 ];
@@ -1071,7 +1076,11 @@ const NAV_MODULE = {
 function navVisible(n) {
   if (n[3] === 'audit_admin') return !!(ME && ME.roles && ME.roles.includes('admin'));
   if (n[3] === 'admin') return canDo('access.manage', 'users.manage');
-  if (n[0] === 'dashboard') return true;
+  if (n[0] === 'dashboard' || n[0] === 'master-dashboard') return true;
+  if (n[0] === 'fuel') return canDo('fuel.view') || isAdmin();
+  if (n[0] === 'fuel-tanks') return canDo('fuel.tanks.view') || isAdmin();
+  if (n[0] === 'hire-billing') return canDo('hire.billing.view') || isAdmin();
+  if (n[0] === 'fleet-profitability') return canDo('fleet.profitability.view') || isAdmin();
   if (n[0] === 'mechanics-kpi') return canView('dailywork') || canView('labour') || canView('reports');
   // Job Cards holds the job requests too (its Requests tab).
   if (n[0] === 'jobs') return canView('jobs') || canView('jobrequests');
@@ -1082,11 +1091,11 @@ function navVisible(n) {
 // Sidebar grouping — headings shown above each cluster (a group with no visible item is hidden).
 const NAV_GROUP_ORDER = ['Operations', 'Inventory', 'Procurement', 'Fleet', 'Analysis', 'Admin'];
 const NAV_GROUP = {
-  dashboard: 'Operations', jobs: 'Operations', jobrequests: 'Operations', field: 'Operations', operations: 'Operations', dailywork: 'Operations', 'mechanics-kpi': 'Operations', services: 'Operations', lubecapacities: 'Operations',
-  stores: 'Inventory', tools: 'Inventory', stocktake: 'Inventory',
+  'master-dashboard': 'Operations', dashboard: 'Operations', fuel: 'Operations', jobs: 'Operations', jobrequests: 'Operations', field: 'Operations', operations: 'Operations', dailywork: 'Operations', 'mechanics-kpi': 'Operations', services: 'Operations', lubecapacities: 'Operations',
+  stores: 'Inventory', 'fuel-tanks': 'Inventory', tools: 'Inventory', stocktake: 'Inventory',
   purchasing: 'Procurement', tbrequests: 'Procurement',
-  assets: 'Fleet', vehicledocuments: 'Fleet', serviceplan: 'Fleet',
-  reports: 'Analysis', attention: 'Analysis', progress: 'Analysis', teardown: 'Analysis', tyrebattery: 'Analysis', aliases: 'Analysis', projects: 'Analysis', labour: 'Analysis',
+  assets: 'Fleet', 'hire-billing': 'Fleet', vehicledocuments: 'Fleet', serviceplan: 'Fleet',
+  reports: 'Analysis', 'fleet-profitability': 'Analysis', attention: 'Analysis', progress: 'Analysis', teardown: 'Analysis', tyrebattery: 'Analysis', aliases: 'Analysis', projects: 'Analysis', labour: 'Analysis',
   access: 'Admin', auditlogs: 'Admin',
 };
 
@@ -26112,9 +26121,9 @@ function renderOutsourcingJobSectionHtml(job, reqs = []) {
         const canApprove = (canDo('outsourcing.approve') || isAdmin()) && r.status === 'pending_approval' && r.created_by !== (ME && ME.id);
         const canEditDraft = (canDo('outsourcing.edit_draft') || isAdmin()) && ['draft', 'returned'].includes(r.status);
         const canSubmit = (canDo('outsourcing.create') || canDo('outsourcing.edit_draft') || isAdmin()) && ['draft', 'returned'].includes(r.status);
-        const canSend = (canDo('outsourcing.send') || canDo('outsourcing.send_email') || isAdmin()) && ['approved', 'sent'].includes(r.status);
+        const canSend = (canDo('outsourcing.send') || isAdmin()) && ['approved', 'sent'].includes(r.status);
         const canVerify = (canDo('outsourcing.verify_completion') || canDo('outsourcing.approve') || isAdmin()) && ['sent', 'acknowledged', 'in_progress'].includes(r.status);
-        const canPostCost = (canDo('outsourcing.cost.post') || canDo('outsourcing.post_cost') || isAdmin()) && ['approved', 'sent', 'acknowledged', 'in_progress', 'completed'].includes(r.status) && r.status !== 'closed';
+        const canPostCost = (canDo('outsourcing.cost.post') || isAdmin()) && ['approved', 'sent', 'acknowledged', 'in_progress', 'completed'].includes(r.status) && r.status !== 'closed';
         const canCancel = (canDo('outsourcing.cancel') || isAdmin()) && !['closed', 'cancelled'].includes(r.status);
         const isApprovedOrPast = ['approved', 'sent', 'acknowledged', 'in_progress', 'completed', 'closed'].includes(r.status);
 
@@ -26223,9 +26232,9 @@ function renderOutsourcingServiceSectionHtml(service, reqs = []) {
         const canApprove = (canDo('outsourcing.approve') || isAdmin()) && r.status === 'pending_approval' && r.created_by !== (ME && ME.id);
         const canEditDraft = (canDo('outsourcing.edit_draft') || isAdmin()) && ['draft', 'returned'].includes(r.status);
         const canSubmit = (canDo('outsourcing.create') || canDo('outsourcing.edit_draft') || isAdmin()) && ['draft', 'returned'].includes(r.status);
-        const canSend = (canDo('outsourcing.send') || canDo('outsourcing.send_email') || isAdmin()) && ['approved', 'sent'].includes(r.status);
+        const canSend = (canDo('outsourcing.send') || isAdmin()) && ['approved', 'sent'].includes(r.status);
         const canVerify = (canDo('outsourcing.verify_completion') || canDo('outsourcing.approve') || isAdmin()) && ['sent', 'acknowledged', 'in_progress'].includes(r.status);
-        const canPostCost = (canDo('outsourcing.cost.post') || canDo('outsourcing.post_cost') || isAdmin()) && ['approved', 'sent', 'acknowledged', 'in_progress', 'completed'].includes(r.status) && r.status !== 'closed';
+        const canPostCost = (canDo('outsourcing.cost.post') || isAdmin()) && ['approved', 'sent', 'acknowledged', 'in_progress', 'completed'].includes(r.status) && r.status !== 'closed';
         const canCancel = (canDo('outsourcing.cancel') || isAdmin()) && !['closed', 'cancelled'].includes(r.status);
         const isApprovedOrPast = ['approved', 'sent', 'acknowledged', 'in_progress', 'completed', 'closed'].includes(r.status);
 
