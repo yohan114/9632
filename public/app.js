@@ -261,8 +261,15 @@ function loadChartJs(cb) {
   if (!_chartLoading) {
     _chartLoading = new Promise((resolve) => {
       const s = document.createElement('script');
-      s.src = 'https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js';
-      s.onload = () => resolve(true); s.onerror = () => resolve(false);
+      s.src = '/js/chart.umd.min.js';
+      s.onload = () => resolve(true);
+      s.onerror = () => {
+        const cdn = document.createElement('script');
+        cdn.src = 'https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js';
+        cdn.onload = () => resolve(true);
+        cdn.onerror = () => resolve(false);
+        document.head.appendChild(cdn);
+      };
       document.head.appendChild(s);
     });
   }
@@ -6275,6 +6282,13 @@ routes['mechanics-kpi'] = async (c) => {
       ? `<span class="badge ${s.utilisation > 100 ? 'red' : s.utilisation >= 85 ? 'green' : 'amber'}" style="font-size:10.5px">${s.utilisation}% util</span>`
       : `<span class="muted" style="font-size:11px">${s.mechanics_count} active mechanics</span>`;
 
+    const internalCost = s.internal_cost != null ? s.internal_cost : (s.total_internal_cost || 0);
+    const outsideCost = s.outside_cost != null ? s.outside_cost : (s.total_outside_cost || 0);
+    const avgWage = s.avg_hourly_cost != null ? s.avg_hourly_cost : (s.avg_wage_per_hr || 0);
+    const avgVal = s.effective_value_per_hr != null ? s.effective_value_per_hr : (s.avg_value_per_hr || 0);
+    const pricedCount = s.entries_with_outside_cost != null ? s.entries_with_outside_cost : (s.priced_entries_count || 0);
+    const unpricedCount = s.entries_missing_outside_cost != null ? s.entries_missing_outside_cost : (s.unpriced_entries_count || 0);
+
     qs('#mkpi-summary-cards', c).innerHTML = `
       <div class="card" style="padding:12px 14px;border-left:4px solid #2563eb">
         <div style="display:flex;justify-content:space-between;align-items:center">
@@ -6290,8 +6304,8 @@ routes['mechanics-kpi'] = async (c) => {
           <span class="muted" style="font-size:11px;font-weight:700;text-transform:uppercase">Our Mechanics Cost</span>
           <span class="badge blue" style="font-size:10px">Rate × Hours</span>
         </div>
-        <div style="font-size:22px;font-weight:800;color:#0f172a;margin:4px 0">${moneyC(s.internal_cost)}</div>
-        <div class="muted" style="font-size:11.5px">Avg wage: <b>${money(s.avg_hourly_cost)}/hr</b>${s.unrated_mechanics_count ? ` · <span style="color:#d97706">${s.unrated_mechanics_count} unrated</span>` : ''}</div>
+        <div style="font-size:22px;font-weight:800;color:#0f172a;margin:4px 0">${moneyC(internalCost)}</div>
+        <div class="muted" style="font-size:11.5px">Avg wage: <b>${money(avgWage)}/hr</b>${s.unrated_mechanics_count ? ` · <span style="color:#d97706">${s.unrated_mechanics_count} unrated</span>` : ''}</div>
       </div>
 
       <div class="card" style="padding:12px 14px;border-left:4px solid #7c3aed">
@@ -6299,8 +6313,8 @@ routes['mechanics-kpi'] = async (c) => {
           <span class="muted" style="font-size:11px;font-weight:700;text-transform:uppercase">Outside Cost Value</span>
           <span class="badge" style="font-size:10px;background:#f3e8ff;color:#6d28d9">Market Value</span>
         </div>
-        <div style="font-size:22px;font-weight:800;color:#4c1d95;margin:4px 0">${moneyC(s.outside_cost)}</div>
-        <div class="muted" style="font-size:11.5px">Across <b>${s.entries_with_outside_cost}</b> priced work lines</div>
+        <div style="font-size:22px;font-weight:800;color:#4c1d95;margin:4px 0">${moneyC(outsideCost)}</div>
+        <div class="muted" style="font-size:11.5px">Across <b>${pricedCount}</b> priced work lines</div>
       </div>
 
       <div class="card" style="padding:12px 14px;border-left:4px solid ${savPositive ? '#16a34a' : '#dc2626'};background:${savPositive ? '#f0fdf4' : '#fef2f2'}">
@@ -6318,16 +6332,16 @@ routes['mechanics-kpi'] = async (c) => {
           <span class="badge ${s.roi_ratio >= 1.2 ? 'green' : (s.roi_ratio >= 1.0 ? 'blue' : 'amber')}" style="font-size:10px">Target ≥ 1.2x</span>
         </div>
         <div style="font-size:22px;font-weight:800;color:${roiTone};margin:4px 0">${s.roi_ratio != null ? s.roi_ratio + 'x' : '—'}</div>
-        <div class="muted" style="font-size:11.5px">Output value: <b>${money(s.effective_value_per_hr)}/hr</b> worked</div>
+        <div class="muted" style="font-size:11.5px">Output value: <b>${money(avgVal)}/hr</b> worked</div>
       </div>
 
       <div class="card" style="padding:12px 14px;border-left:4px solid ${s.coverage_pct >= 80 ? '#16a34a' : '#f59e0b'};cursor:pointer" id="mkpi-card-coverage" title="Click to view & price lines missing Outside Cost">
         <div style="display:flex;justify-content:space-between;align-items:center">
           <span class="muted" style="font-size:11px;font-weight:700;text-transform:uppercase">Outside Cost Coverage</span>
-          <span class="badge ${s.coverage_pct >= 80 ? 'green' : 'amber'}" style="font-size:10px">${s.entries_missing_outside_cost} unpriced</span>
+          <span class="badge ${s.coverage_pct >= 80 ? 'green' : 'amber'}" style="font-size:10px">${unpricedCount} unpriced</span>
         </div>
         <div style="font-size:22px;font-weight:800;color:#0f172a;margin:4px 0">${s.coverage_pct}%</div>
-        <div class="muted" style="font-size:11.5px">${s.entries_with_outside_cost} of ${s.entries_count} lines priced · <u style="color:#2563eb">Price now</u></div>
+        <div class="muted" style="font-size:11.5px">${pricedCount} of ${s.entries_count} lines priced · <u style="color:#2563eb">Price now</u></div>
       </div>
     `;
 
@@ -6341,85 +6355,90 @@ routes['mechanics-kpi'] = async (c) => {
   };
 
   const renderCharts = () => {
-    if (typeof Chart === 'undefined' || !kpiData) return;
-    if (chartCompare) { chartCompare.destroy(); chartCompare = null; }
-    if (chartTrend) { chartTrend.destroy(); chartTrend = null; }
+    if (!kpiData) return;
+    loadChartJs((ok) => {
+      if (!ok) return;
+      const ctx1 = qs('#mkpi-chart-compare', c);
+      const ctx2 = qs('#mkpi-chart-trend', c);
+      if (!ctx1 && !ctx2) return;
 
-    const topMechs = (kpiData.mechanics || []).slice(0, 10);
-    const ctx1 = qs('#mkpi-chart-compare', c);
-    if (ctx1 && topMechs.length) {
-      chartCompare = new Chart(ctx1, {
-        type: 'bar',
-        data: {
-          labels: topMechs.map((m) => m.mechanic.length > 14 ? m.mechanic.slice(0, 14) + '…' : m.mechanic),
-          datasets: [
-            {
-              label: 'Our Wage Cost (Rs)',
-              data: topMechs.map((m) => m.internal_cost),
-              backgroundColor: 'rgba(2, 132, 199, 0.8)',
-              borderRadius: 4,
-            },
-            {
-              label: 'Outside Labour Value (Rs)',
-              data: topMechs.map((m) => m.outside_cost),
-              backgroundColor: 'rgba(124, 58, 237, 0.8)',
-              borderRadius: 4,
-            },
-            {
-              label: 'Net Saving (Rs)',
-              data: topMechs.map((m) => m.net_savings),
-              backgroundColor: topMechs.map((m) => m.net_savings >= 0 ? 'rgba(22, 163, 74, 0.85)' : 'rgba(220, 38, 38, 0.85)'),
-              borderRadius: 4,
-            },
-          ],
-        },
-        options: {
-          responsive: true,
-          maintainAspectRatio: false,
-          plugins: { legend: { position: 'bottom', labels: { boxWidth: 12, font: { size: 11 } } } },
-          scales: {
-            y: { beginAtZero: true, ticks: { callback: (v) => 'Rs ' + Number(v).toLocaleString() } },
-          },
-        },
-      });
-    }
+      if (chartCompare) { try { chartCompare.destroy(); } catch (_) {} chartCompare = null; }
+      if (chartTrend) { try { chartTrend.destroy(); } catch (_) {} chartTrend = null; }
 
-    const trend = kpiData.daily_trend || [];
-    const ctx2 = qs('#mkpi-chart-trend', c);
-    if (ctx2 && trend.length) {
-      chartTrend = new Chart(ctx2, {
-        type: 'line',
-        data: {
-          labels: trend.map((d) => d.date.slice(5)),
-          datasets: [
-            {
-              label: 'Outside Value (Rs)',
-              data: trend.map((d) => d.outside_cost),
-              borderColor: '#7c3aed',
-              backgroundColor: 'rgba(124, 58, 237, 0.12)',
-              fill: true,
-              tension: 0.25,
-            },
-            {
-              label: 'Our Wage Cost (Rs)',
-              data: trend.map((d) => d.internal_cost),
-              borderColor: '#0284c7',
-              backgroundColor: 'rgba(2, 132, 199, 0.1)',
-              fill: true,
-              tension: 0.25,
-            },
-          ],
-        },
-        options: {
-          responsive: true,
-          maintainAspectRatio: false,
-          plugins: { legend: { position: 'bottom', labels: { boxWidth: 12, font: { size: 11 } } } },
-          scales: {
-            y: { beginAtZero: true, ticks: { callback: (v) => 'Rs ' + Number(v).toLocaleString() } },
+      const topMechs = (kpiData.mechanics || []).slice(0, 10);
+      if (ctx1 && topMechs.length) {
+        chartCompare = new Chart(ctx1, {
+          type: 'bar',
+          data: {
+            labels: topMechs.map((m) => m.mechanic.length > 14 ? m.mechanic.slice(0, 14) + '…' : m.mechanic),
+            datasets: [
+              {
+                label: 'Our Wage Cost (Rs)',
+                data: topMechs.map((m) => m.internal_cost),
+                backgroundColor: 'rgba(2, 132, 199, 0.8)',
+                borderRadius: 4,
+              },
+              {
+                label: 'Outside Labour Value (Rs)',
+                data: topMechs.map((m) => m.outside_cost),
+                backgroundColor: 'rgba(124, 58, 237, 0.8)',
+                borderRadius: 4,
+              },
+              {
+                label: 'Net Saving (Rs)',
+                data: topMechs.map((m) => m.net_savings),
+                backgroundColor: topMechs.map((m) => m.net_savings >= 0 ? 'rgba(22, 163, 74, 0.85)' : 'rgba(220, 38, 38, 0.85)'),
+                borderRadius: 4,
+              },
+            ],
           },
-        },
-      });
-    }
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: { legend: { position: 'bottom', labels: { boxWidth: 12, font: { size: 11 } } } },
+            scales: {
+              y: { beginAtZero: true, ticks: { callback: (v) => 'Rs ' + Number(v).toLocaleString() } },
+            },
+          },
+        });
+      }
+
+      const trend = kpiData.daily_trend || [];
+      if (ctx2 && trend.length) {
+        chartTrend = new Chart(ctx2, {
+          type: 'line',
+          data: {
+            labels: trend.map((d) => d.date.slice(5)),
+            datasets: [
+              {
+                label: 'Outside Value (Rs)',
+                data: trend.map((d) => d.outside_cost),
+                borderColor: '#7c3aed',
+                backgroundColor: 'rgba(124, 58, 237, 0.12)',
+                fill: true,
+                tension: 0.25,
+              },
+              {
+                label: 'Our Wage Cost (Rs)',
+                data: trend.map((d) => d.internal_cost),
+                borderColor: '#0284c7',
+                backgroundColor: 'rgba(2, 132, 199, 0.1)',
+                fill: true,
+                tension: 0.25,
+              },
+            ],
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: { legend: { position: 'bottom', labels: { boxWidth: 12, font: { size: 11 } } } },
+            scales: {
+              y: { beginAtZero: true, ticks: { callback: (v) => 'Rs ' + Number(v).toLocaleString() } },
+            },
+          },
+        });
+      }
+    });
   };
 
   const openMechanicDrilldownModal = async (mechName) => {
