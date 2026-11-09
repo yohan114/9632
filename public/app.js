@@ -6456,8 +6456,8 @@ routes['mechanics-kpi'] = async (c) => {
       const d = await api('/daily-work/mechanics-kpi/detail?' + qsStr);
       const lines = d.lines || [];
       const totHrs = lines.reduce((s, l) => s + (Number(l.hours) || 0), 0);
-      const totInt = lines.reduce((s, l) => s + (Number(l.mechanic_internal_cost) || 0), 0);
-      const totOut = lines.reduce((s, l) => s + (Number(l.mechanic_outside_share) || 0), 0);
+      const totInt = lines.reduce((s, l) => s + (Number(l.mechanic_internal_cost ?? l.internal_cost) || 0), 0);
+      const totOut = lines.reduce((s, l) => s + (Number(l.mechanic_outside_share ?? l.attributed_outside_cost) || 0), 0);
       const totSav = totOut - totInt;
 
       const rows = lines.map((l) => {
@@ -6476,12 +6476,12 @@ routes['mechanics-kpi'] = async (c) => {
         return `<tr>
           <td>${esc(l.work_date)}</td>
           <td>${typeBadge}${jobLnk}</td>
-          <td>${esc(l.asset_code || '—')}${l.asset_reg ? ` <span class="muted">(${esc(l.asset_reg)})</span>` : ''}</td>
+          <td>${esc(l.vehicle || [l.asset_code, l.asset_reg].filter(Boolean).join(' · ') || '—')}</td>
           <td>${esc(l.crew || l.mechanic)}${l.crew_size > 1 ? ` <span class="badge blue" title="Shared across ${l.crew_size} mechanics">${l.crew_size} crew</span>` : ''}</td>
           <td class="desc-col">${esc(l.description || '')}</td>
           <td class="num"><b>${num(l.hours)}h</b></td>
-          <td class="num">${l.mechanic_rate != null ? money(l.mechanic_rate) + '/h' : '<span class="badge amber">no rate</span>'}</td>
-          <td class="num">${money(l.mechanic_internal_cost)}</td>
+          <td class="num">${(l.mechanic_rate != null ? l.mechanic_rate : l.hourly_rate) != null ? money(l.mechanic_rate ?? l.hourly_rate) + '/h' : '<span class="badge amber">no rate</span>'}</td>
+          <td class="num">${money(l.mechanic_internal_cost ?? l.internal_cost)}</td>
           <td class="num">${outCell}</td>
           <td class="num" style="font-weight:700;color:${sav >= 0 ? 'var(--green)' : 'var(--red)'}">${sav >= 0 ? '+' : ''}${money(sav)}</td>
         </tr>`;
@@ -6567,7 +6567,8 @@ routes['mechanics-kpi'] = async (c) => {
         const roiBadge = m.roi_ratio == null
           ? '<span class="muted">—</span>'
           : `<span class="badge ${m.roi_ratio >= 1.3 ? 'green' : (m.roi_ratio >= 1.0 ? 'blue' : 'red')}">${m.roi_ratio}x</span>`;
-        const covBadge = `<span class="badge ${m.coverage_pct >= 80 ? 'green' : (m.coverage_pct >= 40 ? 'amber' : '')}">${m.coverage_pct}% (${m.entries_with_outside_cost}/${m.entries_count})</span>`;
+        const priced = m.entries_with_outside_cost != null ? m.entries_with_outside_cost : (m.priced_entries_count || 0);
+        const covBadge = `<span class="badge ${m.coverage_pct >= 80 ? 'green' : (m.coverage_pct >= 40 ? 'amber' : '')}">${m.coverage_pct}% (${priced}/${m.entries_count})</span>`;
 
         return `<tr>
           <td><b>${esc(m.mechanic)}</b>${statusBadge}</td>
@@ -6637,7 +6638,7 @@ routes['mechanics-kpi'] = async (c) => {
       const rows = filtered.map((u) => `<tr>
         <td>${esc(u.work_date)}</td>
         <td><a href="#/jobs/${u.job_id}"><b>${esc(u.job_no)}</b></a></td>
-        <td>${esc(u.asset_code || '—')}${u.asset_reg ? ` <span class="muted">(${esc(u.asset_reg)})</span>` : ''}</td>
+        <td><b>${esc(u.vehicle || [u.asset_code, u.asset_reg].filter(Boolean).join(' · ') || '—')}</b></td>
         <td><b>${esc(u.mechanic || '—')}</b></td>
         <td class="desc-col">${esc(u.description || '')}</td>
         <td class="num"><b>${num(u.hours)}h</b></td>
@@ -6705,12 +6706,12 @@ routes['mechanics-kpi'] = async (c) => {
     }
 
     if (activeTab === 'vehicles') {
-      const filtered = vehicles.filter((v) => !q || (v.asset_code || '').toLowerCase().includes(q) || (v.asset_reg || '').toLowerCase().includes(q));
+      const filtered = vehicles.filter((v) => !q || (v.vehicle || '').toLowerCase().includes(q) || (v.asset_code || '').toLowerCase().includes(q) || (v.asset_reg || '').toLowerCase().includes(q));
       const rows = filtered.map((v) => {
         const sav = v.net_savings || 0;
         return `<tr>
-          <td><b>${esc(v.asset_code)}</b></td>
-          <td>${esc(v.asset_reg || '—')}</td>
+          <td><b>${esc(v.asset_code || v.vehicle || 'General Workshop')}</b></td>
+          <td>${esc(v.asset_reg || (v.vehicle && v.vehicle !== v.asset_code ? v.vehicle : '—'))}</td>
           <td class="num">${v.entries}</td>
           <td class="num"><b>${num(v.hours)} hrs</b></td>
           <td class="num">${money(v.internal_cost)}</td>
