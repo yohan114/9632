@@ -1858,7 +1858,7 @@ function setupLiveNotifications() {
 }
 
 // ---------------------------------------------------------------- router
-const routes = {};
+const routes = window.routes = window.routes || {};
 async function render() {
   if (!ME) return;
   if (isScreenLocked) {
