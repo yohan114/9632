@@ -568,6 +568,11 @@ function migrate() {
     }
 
     try {
+      coreDb.prepare("DELETE FROM role_capabilities WHERE role IN ('storekeeper', 'main_storekeeper') AND capability = 'stores.items.price'").run();
+      coreDb.prepare("DELETE FROM role_capabilities WHERE role = 'manager' AND capability IN ('stores.stock.count', 'stores.count', 'purchasing.po.create')").run();
+    } catch {}
+
+    try {
       coreDb.exec(`
         CREATE INDEX IF NOT EXISTS idx_audit_log_created ON audit_log(created_at DESC);
         CREATE INDEX IF NOT EXISTS idx_audit_log_user ON audit_log(user_id, created_at DESC);

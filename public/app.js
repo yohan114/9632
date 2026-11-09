@@ -17922,7 +17922,7 @@ async function renderNewServiceForm(c, existing) {
     </div>
     <div class="card"><div class="toolbar" style="margin:0 0 8px"><h3 style="margin:0">Other Costs (parts, consumables)</h3><div class="spacer"></div><button type="button" class="sm" id="addpart">+ line</button></div>
       <div class="table-wrap"><table><thead><tr><th>Description</th><th>Unit</th><th>Rate</th><th>Qty</th><th>Amount</th></tr></thead><tbody id="partBody"></tbody></table></div></div>
-    ${renderOutsourcingServiceSectionHtml(s, d.outsourcingRequests || [])}
+    ${edit ? renderOutsourcingServiceSectionHtml(edit, (existing && existing.outsourcingRequests) || []) : ''}
     <div class="grid" style="grid-template-columns:2fr 1fr;align-items:start">
       <div class="card"><h3 style="margin-top:0">Repair / Service Details</h3>${field('', 'repair_details', { type: 'textarea' })}</div>
       <div class="card"><h3 style="margin-top:0">Totals</h3>
@@ -18266,6 +18266,7 @@ async function serviceDetail(c, id) {
         ${editable ? '<button class="sm primary" id="attachBtn">📎 Attach PDF</button><input type="file" id="attachFile" accept="application/pdf,.pdf" multiple style="display:none">' : ''}
       </div>
       <div id="attachList"></div></div>
+    ${renderOutsourcingServiceSectionHtml(s, d.outsourcingRequests || [])}
     ${(d.parts && d.parts.length) ? `<div class="card"><h3 style="margin-top:0">Other Costs</h3>
       ${tableWrap([{ label: 'Description' }, { label: 'Unit' }, { label: 'Rate', num: true }, { label: 'Qty', num: true }, { label: 'Amount', num: true }],
         d.parts.map((p) => `<tr><td>${esc(p.description || '')}</td><td>${esc(p.unit || '')}</td><td class="num">${money(p.rate)}</td><td class="num">${num(p.qty)}</td><td class="num">${money(p.amount)}</td></tr>`))}</div>` : ''}
@@ -21572,6 +21573,13 @@ async function renderPeopleAccess(c, wantedUserId) {
               <input type="date" id="user-until" value="${u.access_until ? esc(u.access_until.slice(0, 10)) : ''}" style="width:100%" ${isSelf || !canEditTarget ? 'disabled' : ''}>
             </div>
           </div>
+          <div style="margin-top:8px;padding:8px 10px;background:#f8fafc;border-radius:6px;border:1px dashed var(--border, #cbd5e1)">
+            <label style="font-size:11px;font-weight:600;margin-bottom:4px;display:flex;align-items:center;gap:6px">
+              <span>🛡️ Emergency Dual Clearance / SoD Justification (optional):</span>
+              <span class="muted" style="font-weight:normal">(min 10 chars, required only when authorizing toxic combinations)</span>
+            </label>
+            <input type="text" id="user-sod-reason" placeholder="e.g. Approved temporary dual clearance during stockkeeper leave (Ref: SEC-2026-01)" style="width:100%;font-size:12px;box-sizing:border-box" ${isSelf || !canEditTarget ? 'disabled' : ''}>
+          </div>
         </div>
 
         ${groupCards}
@@ -21628,6 +21636,7 @@ async function renderPeopleAccess(c, wantedUserId) {
         const storeLocVal = qs('#user-store-loc', c) ? qs('#user-store-loc', c).value : '';
         const limitVal = qs('#user-limit', c).value.trim();
         const untilVal = qs('#user-until', c).value.trim();
+        const sodReasonVal = qs('#user-sod-reason', c) ? qs('#user-sod-reason', c).value.trim() : '';
 
         const payload = {
           sections: sectionEdits,
@@ -21635,19 +21644,52 @@ async function renderPeopleAccess(c, wantedUserId) {
           store_location_id: storeLocVal || null,
           approval_limit: limitVal === '' ? null : Number(limitVal),
           access_until: untilVal || null,
+          override_reason: sodReasonVal || null,
         };
 
-        try {
-          saveBtn.disabled = true;
-          saveBtn.innerText = 'Saving…';
-          await api('/access/people/' + u.id + '/save', { method: 'POST', body: payload });
-          toast(`Access permissions saved for ${u.full_name || u.username}`);
-          await renderPeopleAccess(c, u.id);
-        } catch (e) {
-          toast(e.message, 'err');
-          saveBtn.disabled = false;
-          saveBtn.innerText = '💾 Save Access';
-        }
+        const executeSave = async (extraPayload = {}) => {
+          try {
+            saveBtn.disabled = true;
+            saveBtn.innerText = 'Saving…';
+            await api('/access/people/' + u.id + '/save', { method: 'POST', body: { ...payload, ...extraPayload } });
+            toast(`Access permissions saved for ${u.full_name || u.username}`);
+            await renderPeopleAccess(c, u.id);
+          } catch (e) {
+            saveBtn.disabled = false;
+            saveBtn.innerText = '💾 Save Access';
+            if (e.message && (e.message.includes('Segregation of Duties') || e.message.includes('SoD Conflict') || e.message.includes('SOD-'))) {
+              modal('Emergency Dual Clearance Authorization', `
+                <div style="margin-bottom:12px;padding:10px;background:#fef2f2;border:1px solid #fecaca;border-radius:6px;color:#991b1b;font-size:13px">
+                  <b>⚠️ Segregation of Duties (SoD) Conflict Detected:</b>
+                  <p style="margin:6px 0 0;font-size:12px;white-space:pre-wrap">${esc(e.message)}</p>
+                </div>
+                <p style="font-size:13px;margin:0 0 8px">To authorize emergency dual clearance under SOX/GRC compliance, please provide an approved justification reason (minimum 10 characters):</p>
+                <div style="margin-bottom:12px">
+                  <textarea id="modal-sod-justification" rows="3" style="width:100%;box-sizing:border-box" placeholder="e.g. Approved temporary dual clearance during stockkeeper leave by Operations Manager (Ref: SEC-2026-42)"></textarea>
+                </div>
+                <div style="display:flex;justify-content:flex-end;gap:8px">
+                  <button class="btn" id="modal-sod-cancel">Cancel</button>
+                  <button class="primary" id="modal-sod-submit">Authorize &amp; Save</button>
+                </div>`,
+                (mbody, close) => {
+                  qs('#modal-sod-cancel', mbody).onclick = close;
+                  qs('#modal-sod-submit', mbody).onclick = async () => {
+                    const reason = (qs('#modal-sod-justification', mbody).value || '').trim();
+                    if (reason.length < 10) {
+                      return toast('Justification reason must be at least 10 characters', 'err');
+                    }
+                    close();
+                    await executeSave({ override_reason: reason });
+                  };
+                }
+              );
+            } else {
+              toast(e.message, 'err');
+            }
+          }
+        };
+
+        await executeSave();
       };
     }
 
@@ -26112,9 +26154,9 @@ function renderOutsourcingJobSectionHtml(job, reqs = []) {
         const canApprove = (canDo('outsourcing.approve') || isAdmin()) && r.status === 'pending_approval' && r.created_by !== (ME && ME.id);
         const canEditDraft = (canDo('outsourcing.edit_draft') || isAdmin()) && ['draft', 'returned'].includes(r.status);
         const canSubmit = (canDo('outsourcing.create') || canDo('outsourcing.edit_draft') || isAdmin()) && ['draft', 'returned'].includes(r.status);
-        const canSend = (canDo('outsourcing.send') || canDo('outsourcing.send_email') || isAdmin()) && ['approved', 'sent'].includes(r.status);
+        const canSend = (canDo('outsourcing.send') || isAdmin()) && ['approved', 'sent'].includes(r.status);
         const canVerify = (canDo('outsourcing.verify_completion') || canDo('outsourcing.approve') || isAdmin()) && ['sent', 'acknowledged', 'in_progress'].includes(r.status);
-        const canPostCost = (canDo('outsourcing.cost.post') || canDo('outsourcing.post_cost') || isAdmin()) && ['approved', 'sent', 'acknowledged', 'in_progress', 'completed'].includes(r.status) && r.status !== 'closed';
+        const canPostCost = (canDo('outsourcing.cost.post') || isAdmin()) && ['approved', 'sent', 'acknowledged', 'in_progress', 'completed'].includes(r.status) && r.status !== 'closed';
         const canCancel = (canDo('outsourcing.cancel') || isAdmin()) && !['closed', 'cancelled'].includes(r.status);
         const isApprovedOrPast = ['approved', 'sent', 'acknowledged', 'in_progress', 'completed', 'closed'].includes(r.status);
 
@@ -26223,9 +26265,9 @@ function renderOutsourcingServiceSectionHtml(service, reqs = []) {
         const canApprove = (canDo('outsourcing.approve') || isAdmin()) && r.status === 'pending_approval' && r.created_by !== (ME && ME.id);
         const canEditDraft = (canDo('outsourcing.edit_draft') || isAdmin()) && ['draft', 'returned'].includes(r.status);
         const canSubmit = (canDo('outsourcing.create') || canDo('outsourcing.edit_draft') || isAdmin()) && ['draft', 'returned'].includes(r.status);
-        const canSend = (canDo('outsourcing.send') || canDo('outsourcing.send_email') || isAdmin()) && ['approved', 'sent'].includes(r.status);
+        const canSend = (canDo('outsourcing.send') || isAdmin()) && ['approved', 'sent'].includes(r.status);
         const canVerify = (canDo('outsourcing.verify_completion') || canDo('outsourcing.approve') || isAdmin()) && ['sent', 'acknowledged', 'in_progress'].includes(r.status);
-        const canPostCost = (canDo('outsourcing.cost.post') || canDo('outsourcing.post_cost') || isAdmin()) && ['approved', 'sent', 'acknowledged', 'in_progress', 'completed'].includes(r.status) && r.status !== 'closed';
+        const canPostCost = (canDo('outsourcing.cost.post') || isAdmin()) && ['approved', 'sent', 'acknowledged', 'in_progress', 'completed'].includes(r.status) && r.status !== 'closed';
         const canCancel = (canDo('outsourcing.cancel') || isAdmin()) && !['closed', 'cancelled'].includes(r.status);
         const isApprovedOrPast = ['approved', 'sent', 'acknowledged', 'in_progress', 'completed', 'closed'].includes(r.status);
 
