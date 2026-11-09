@@ -85,7 +85,7 @@ const config = {
   // Optional second location (external drive / network share) mirrored on each snapshot.
   backupMirrorDir: process.env.BACKUP_MIRROR_DIR ? path.resolve(ROOT, process.env.BACKUP_MIRROR_DIR) : null,
   backupIntervalMinutes: int('BACKUP_INTERVAL_MINUTES', 30),
-  backupRetention: int('BACKUP_RETENTION', 96),
+  backupRetention: int('BACKUP_RETENTION', 10),
   forecastWindowDays: int('FORECAST_WINDOW_DAYS', 90),
   lowStockDays: int('LOW_STOCK_DAYS', 14),
   // Anomaly thresholds — BUSINESS CALLS. Defaults are sensible starting points;
