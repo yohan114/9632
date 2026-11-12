@@ -189,7 +189,7 @@ test('the People list and one person\'s access, for whoever manages access', asy
   const d = (await call('boss', 'GET', `/access/people/${U.help}`)).body;
   assert.strictEqual(d.user.id, U.help);
   assert.deepStrictEqual(d.user.roles.map((r) => r.name), ['helper']);
-  assert.strictEqual(d.sections.length, 22);
+  assert.strictEqual(d.sections.length, 28, 'the 28 sidebar sections (22 + fabrication, cockpit and the four fuel-merge ones)');
   assert.deepStrictEqual(d.levels, ['none', 'view', 'add', 'edit', 'full']);
   const sec = (k) => d.sections.find((x) => x.key === k);
   assert.deepStrictEqual(
@@ -265,7 +265,7 @@ test('copy another person\'s levels; reset back to the role', async () => {
   assert.strictEqual((await copyFrom('boss', 'help', 'sk')).status, 200);
   assert.deepStrictEqual([(await me('help')).reports, (await me('help')).oil], ['full', 'full'],
     'the storekeeper\'s own levels are the helper\'s now');
-  // Read back off the sections only for Reports: /people/:id walks the 22 sidebar SECTIONS, and
+  // Read back off the sections only for Reports: /people/:id walks the 28 sidebar SECTIONS, and
   // Oil is not one of them -- it is a switch under Lubricants, like jobrequests under Job Cards.
   // A level can still be held on it, which is why me() above sees both.
   const copied = (await call('boss', 'GET', `/access/people/${U.help}`)).body.sections;

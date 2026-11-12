@@ -201,8 +201,11 @@ test('the workshop can read job requests — it cannot open a card without one',
   const reaches = require('../src/lib/permissions').reaches;
   assert.ok(reaches({ id: U.ws, roles: ['workshop'] }, 'jobrequests'), 'it sees them');
   const wsCaps = caps.capsForRole('workshop');
+  // Since the capability catalogue (094ccc0) the workshop may also RAISE a request (a breakdown it
+  // finds itself); it still signs none of them, so a card always waits for the approvals.
+  assert.ok(wsCaps.includes('jobrequests.create'), 'it may raise one');
   assert.deepStrictEqual(
-    ['jobrequests.create', 'jobrequests.certify', 'jobrequests.approve', 'jobrequests.reject'].filter((c) => wsCaps.includes(c)),
+    ['jobrequests.certify', 'jobrequests.approve', 'jobrequests.reject'].filter((c) => wsCaps.includes(c)),
     [], 'and signs none of them');
 });
 

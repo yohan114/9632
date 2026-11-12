@@ -112,7 +112,10 @@ test('someone without Reports is refused every report on the server', async () =
     .replace(':jobId', String(J)).replace(':lineId', '1').replace(':grnId', '1');
   // Read from other sections, checked for those instead (below).
   const elsewhere = new Set(['/dashboard', '/pending-approvals', '/service-outside',
-    '/job/:id/report', '/job/:id/report.html', '/job/:id/costsheet', '/job/:id/costsheet.html']);
+    '/job/:id/report', '/job/:id/report.html', '/job/:id/costsheet', '/job/:id/costsheet.html',
+    // The request-delay report is read by Stores and Purchasing as well as Reports (a48a88f,
+    // mayReadDelayReport in src/routes/reports.js); checked on its own below.
+    '/request-delays', '/request-delays/export.xlsx', '/request-delays/print.html']);
   let n = 0;
   for (const layer of router.stack.filter((l) => l.route)) {
     const p = layer.route.path;
@@ -126,6 +129,10 @@ test('someone without Reports is refused every report on the server', async () =
     }
   }
   assert.ok(n >= 35, `every address walked (${n})`);
+  for (const p of ['/request-delays', '/request-delays/print.html']) {
+    assert.strictEqual(await status('no', 'GET', '/reports' + p), 403, `no: ${p}`);
+    assert.strictEqual(await status('buyer', 'GET', '/reports' + p), 200, `buyer (Purchasing): ${p}`);
+  }
   for (const p of ['/dashboard/overview', '/dashboard/live-stats']) {
     assert.strictEqual(await status('buyer', 'GET', p), 403, p);
     assert.strictEqual(await status('view', 'GET', p), 200, p + ' with Reports');

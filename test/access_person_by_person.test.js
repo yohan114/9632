@@ -110,9 +110,14 @@ async function as(user) {
   return cookies[user];
 }
 
-// ---------------------------------------------------------------- Canonical 22 sections & 5 levels
-test('Canonical 22 sections and 5 clearance levels are defined correctly', () => {
-  assert.strictEqual(permissions.SECTIONS.length, 22);
+// ---------------------------------------------------------------- Canonical 28 sections & 5 levels
+// 22 at the start; Fabrication and the Master Cockpit came with the fabrication work, and the fuel
+// merge added Fuel, Machine Hire, Vehicle Costing and Fleet Profitability (src/lib/permissions.js).
+const SECTION_COUNT = 28;
+test('Canonical 28 sections and 5 clearance levels are defined correctly', () => {
+  assert.strictEqual(permissions.SECTIONS.length, SECTION_COUNT);
+  assert.strictEqual(new Set(permissions.SECTIONS.map((s) => s.key)).size, SECTION_COUNT, 'each key once');
+  for (const k of ['fabrication', 'master_dashboard', 'fuel', 'hire', 'costing', 'finance']) assert.ok(permissions.SECTION_KEYS.includes(k), k);
   assert.deepStrictEqual(permissions.LEVELS, ['none', 'view', 'add', 'edit', 'full']);
 
   assert.strictEqual(permissions.rank('none'), 0);
@@ -268,12 +273,12 @@ test('Access Control API: GET /api/access/people', async () => {
   assert.strictEqual(typeof person.override_count, 'number');
 });
 
-test('Access Control API: GET /api/access/people/:id returns detailed 22-section breakdown', async () => {
+test('Access Control API: GET /api/access/people/:id returns detailed 28-section breakdown', async () => {
   const adminCookie = await as('admin_user');
   const res = await req('GET', `/api/access/people/${wsUser1Id}`, { cookie: adminCookie });
   assert.strictEqual(res.status, 200);
   assert.strictEqual(res.body.user.id, wsUser1Id);
-  assert.strictEqual(res.body.sections.length, 22);
+  assert.strictEqual(res.body.sections.length, SECTION_COUNT);
 
   const purchasingSec = res.body.sections.find((s) => s.key === 'purchasing');
   assert.ok(purchasingSec);
@@ -374,7 +379,7 @@ test('Access Control API: GET /api/access/report returns matrix', async () => {
   const adminCookie = await as('admin_user');
   const res = await req('GET', '/api/access/report?format=json', { cookie: adminCookie });
   assert.strictEqual(res.status, 200);
-  assert.strictEqual(res.body.sections.length, 22);
+  assert.strictEqual(res.body.sections.length, SECTION_COUNT);
   assert.ok(res.body.people.length >= 4);
 
   const xlsxRes = await req('GET', '/api/access/report?format=xlsx', { cookie: adminCookie });

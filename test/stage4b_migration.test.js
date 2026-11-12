@@ -46,8 +46,10 @@ test('the first start: the main workshop has its store, and everything already r
   assert.deepStrictEqual(get('SELECT from_store_id, to_store_id FROM mtn_lines WHERE id = 1'), { from_store_id: null, to_store_id: null },
     'an old transfer note stays paper');
   const trig = all("SELECT name FROM sqlite_master WHERE type = 'trigger' AND name LIKE 'trg_%_store' ORDER BY name").map((r) => r.name);
-  assert.deepStrictEqual(trig, ['trg_general_item_txns_store', 'trg_grn_store', 'trg_issues_store', 'trg_service_jobs_store',
-    'trg_stock_ledger_store', 'trg_tyre_battery_issues_store']);
+  // The store locations work added more triggers whose names end in _store (the *_leg_store
+  // stamps, trg_mrn_target_store, ...); the six Stage 4b ones must all be among them.
+  for (const t of ['trg_general_item_txns_store', 'trg_grn_store', 'trg_issues_store', 'trg_service_jobs_store',
+    'trg_stock_ledger_store', 'trg_tyre_battery_issues_store']) assert.ok(trig.includes(t), t);
 });
 
 test('it runs once', () => {

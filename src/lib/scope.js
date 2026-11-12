@@ -80,6 +80,16 @@ const isAdmin = (user) => !!(user && (user.roles || []).includes('admin'));
 const headOffice = (user) => isAdmin(user) || require('./auth').hasCap(user, 'workshops.all');
 const storeStaff = (user) => require('./auth').hasCap(user, 'stores.grn.receive', 'stores.issue');
 
+/**
+ * The workshop a person is held to by their active store context (context.js), or null. Only a real
+ * store context holds anyone: a site store user is kept to that store's workshop whether or not the
+ * workshops are kept apart (the Active Store context). Someone with no store assigned has no active
+ * store; their activeWorkshopId is only their home workshop, and the Stage 3/4 rules below decide
+ * what they see - everything while the workshops are not kept apart, the workshops their store
+ * serves for store staff.
+ */
+const contextWorkshop = (user) => (user && !user.isAllSitesMode && user.activeStoreId && user.activeWorkshopId) ? user.activeWorkshopId : null;
+
 /** Sees every workshop's job requests (scoping off, or head office). */
 const seesAll = (user) => !enabled() || headOffice(user);
 
@@ -88,9 +98,7 @@ const seesAll = (user) => !enabled() || headOffice(user);
  * false): every workshop their store serves. Anyone else: their home workshop.
  */
 function reach(user, { store = true } = {}) {
-  if (user && !user.isAllSitesMode && user.activeWorkshopId) {
-    return [user.activeWorkshopId];
-  }
+  if (contextWorkshop(user)) return [contextWorkshop(user)];
   if (seesAll(user)) return null;
   const home = workshops.homeOf(user);
   if (store && storeStaff(user)) {
@@ -143,7 +151,7 @@ function mayRead(user, workshopId, kind) {
  * Filter for readable records: shows all workshops when the person holds cross-workshop read capability.
  */
 function readFilter(user, column, kind) {
-  if (user && !user.isAllSitesMode && user.activeWorkshopId) {
+  if (contextWorkshop(user)) {
     return filter(user, column);
   }
   if (seesAll(user)) return { sql: '', params: [] };
@@ -170,8 +178,9 @@ function isReadOnly(user, workshopId) {
  */
 function reportWorkshop(user, asked) {
   if (!workshops.isMulti()) return { ws: null, fixed: false, choices: null };
-  if (user && !user.isAllSitesMode && user.activeWorkshopId) {
-    return { ws: user.activeWorkshopId, fixed: true, choices: [user.activeWorkshopId] };
+  if (contextWorkshop(user)) {
+    const w = contextWorkshop(user);
+    return { ws: w, fixed: true, choices: [w] };
   }
   const a = Number(asked) || null;
   const r = reach(user);

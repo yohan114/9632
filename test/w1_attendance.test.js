@@ -341,7 +341,8 @@ test('a role without attendance.record gets 403; reading follows Daily Work clea
   assert.strictEqual((await req('GET', `/api/attendance/day?date=${T}`, { cookie: await as('look') })).status, 200, 'viewer reads');
   assert.strictEqual((await req('GET', `/api/attendance/day?date=${T}`, { cookie: await as('sk') })).status, 403, 'no Daily Work clearance, no attendance');
   assert.strictEqual((await req('POST', '/api/attendance/day/signoff', { cookie: await as('clerk'), body: { date: day(-4) } })).status, 403);
-  assert.strictEqual((await req('PUT', '/api/attendance/settings', { cookie: await as('mgr'), body: { tolerance_minutes: 30 } })).status, 403, 'settings are admin only');
+  // The manager holds attendance.settings since the capability catalogue (094ccc0); the clerk does not.
+  assert.strictEqual((await req('PUT', '/api/attendance/settings', { cookie: await as('clerk'), body: { tolerance_minutes: 30 } })).status, 403, 'settings need attendance.settings');
   const ok = await req('POST', '/api/attendance/day', { cookie: await as('ws'), body });
   assert.strictEqual(ok.status, 200, ok.text);
   const audited = get("SELECT action, after_json FROM audit_log WHERE entity = 'mechanic_attendance' ORDER BY id DESC LIMIT 1");

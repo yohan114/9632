@@ -19,7 +19,9 @@ migrate();
 
 // Seed workshops first for foreign key integrity
 run("INSERT OR IGNORE INTO workshops (id, code, name, active) VALUES (1, 'CW', 'Central Workshop', 1)");
-run("INSERT OR IGNORE INTO workshops (id, code, name, active) VALUES (2, 'WS2', 'Workshop 2', 1)");
+// Galagedara (code GWS), so the seed gives it its site store (store 3, used below). The seed used to
+// treat whichever workshop had id 2 as Galagedara; it goes by the code now.
+run("INSERT OR IGNORE INTO workshops (id, code, name, active) VALUES (2, 'GWS', 'Galagedara Workshop', 1)");
 
 storeLocations.seedStoreLocations(db);
 

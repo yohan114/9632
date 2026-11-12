@@ -226,22 +226,24 @@ test('search and the kind of work narrow the list', async () => {
 
 // ================================================================== who may press what
 test('the buttons follow the permissions, and nobody approves their own step twice', async () => {
+  // A job request row also carries create_service (a service sheet straight from an approved service
+  // request, src/lib/jobs_flow.js); none of the requests here is an approved service request.
   const tm = (await list('tm')).rows;
-  assert.deepStrictEqual(find(tm, 'jr', JR1).can, { certify: true, approve: false, reject: true, open_card: false });
+  assert.deepStrictEqual(find(tm, 'jr', JR1).can, { certify: true, approve: false, reject: true, open_card: false, create_service: false });
   assert.deepStrictEqual(find(tm, 'card', C1).can, { transport: true, operations: false, reject: true, review: false });
   assert.strictEqual(find(tm, 'card', C2).can.operations, false, 'the Transport Manager does not give the operations approval');
   const asst = (await list('asst')).rows;
-  assert.deepStrictEqual(find(asst, 'jr', JR1).can, { certify: false, approve: false, reject: false, open_card: false }, 'who raises does not decide');
-  assert.deepStrictEqual(find(asst, 'jr', JR2).can, { certify: false, approve: false, reject: false, open_card: false });
+  assert.deepStrictEqual(find(asst, 'jr', JR1).can, { certify: false, approve: false, reject: false, open_card: false, create_service: false }, 'who raises does not decide');
+  assert.deepStrictEqual(find(asst, 'jr', JR2).can, { certify: false, approve: false, reject: false, open_card: false, create_service: false });
   assert.deepStrictEqual(find(asst, 'card', C2).can, { transport: false, operations: false, reject: false, review: false });
   assert.strictEqual(find(tm, 'reopen', REOPEN).can.reopen, false, 'the Transport Manager does not reopen'); 
   const om = (await list('om')).rows;
-  assert.deepStrictEqual(find(om, 'jr', JR2).can, { certify: false, approve: true, reject: true, open_card: false });
+  assert.deepStrictEqual(find(om, 'jr', JR2).can, { certify: false, approve: true, reject: true, open_card: false, create_service: false });
   // Opening the card is the workshop's, and only once the request is approved.
   assert.strictEqual(find(om, 'jr', JR5).can.open_card, false, 'the Operational Manager approves; it does not open the card');
   const wsRows = (await list('ws')).rows;
   assert.strictEqual(find(wsRows, 'jr', JR5).can.open_card, true, 'the workshop opens it');
-  assert.deepStrictEqual(find(wsRows, 'jr', JR5).can, { certify: false, approve: false, reject: false, open_card: true },
+  assert.deepStrictEqual(find(wsRows, 'jr', JR5).can, { certify: false, approve: false, reject: false, open_card: true, create_service: false },
     'and that is the only button it has on a job request');
   assert.strictEqual(find(tm, 'jr', JR5).can.open_card, false, 'the Transport Manager no longer opens cards');
   assert.deepStrictEqual(find(om, 'card', C2).can, { transport: false, operations: true, reject: true, review: false });

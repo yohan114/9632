@@ -74,6 +74,7 @@ test.before(async () => {
   mkUser('om_user', 'operational_manager');
   mkUser('ws_user', 'workshop');
   mkUser('plain_viewer', 'viewer');
+  mkUser('fab_user', 'fabrication_officer');   // role created by migration 052
 
   // Seed sample vehicle, project, workshop
   run("INSERT INTO assets (code, code_norm, status) VALUES ('FAB-01', 'FAB01', 'active')");
@@ -179,9 +180,14 @@ test('Fabrication Request & Card Flow', async (t) => {
   assert.strictEqual(appRes.status, 200);
   assert.strictEqual(appRes.body.request.approval_status, 'approved');
 
-  // 8. Workshop opens Job Card against approved request
+  // 8. The fabrication officer opens the Job Card against the approved request. Since a650822 a
+  // fabrication card needs fabrication.open_card (the fabrication officer's), not just jobs.create:
+  // the workshop, which opens repair cards, is refused this one.
+  const wsOpen = await req('POST', '/api/jobs', { cookie: wsCookie, body: { job_request_id: jr.id, take_in: true } });
+  assert.strictEqual(wsOpen.status, 403);
+  assert.match(wsOpen.body.error, /fabrication\.open_card/);
   const openRes = await req('POST', '/api/jobs', {
-    cookie: wsCookie,
+    cookie: await login('fab_user'),
     body: {
       job_request_id: jr.id,
       take_in: true,
@@ -218,9 +224,9 @@ test('Fabrication Request & Card Flow', async (t) => {
   await req('POST', `/api/job-requests/${unallocJr.id}/certify`, { cookie: tmCookie, body: {} });
   await req('POST', `/api/job-requests/${unallocJr.id}/approve`, { cookie: omCookie, body: {} });
 
-  // Workshop opens unallocated fabrication card
+  // The fabrication officer opens the unallocated fabrication card
   const unallocJobRes = await req('POST', '/api/jobs', {
-    cookie: wsCookie,
+    cookie: await login('fab_user'),
     body: { job_request_id: unallocJr.id },
   });
   assert.strictEqual(unallocJobRes.status, 201);

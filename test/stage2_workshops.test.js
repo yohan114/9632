@@ -107,16 +107,19 @@ test('"All workshops" (the head-office view) comes with the manager, operations 
   const caps = require('../src/lib/capabilities');
   for (const r of ['manager', 'operational_manager', 'purchase_local', 'admin']) assert.ok(caps.capsForRole(r).includes('workshops.all'), r);
   for (const r of ['workshop', 'storekeeper', 'transport_manager']) assert.ok(!caps.capsForRole(r).includes('workshops.all'), r);
-  assert.ok(!caps.capsForRole('manager').includes('workshops.manage'), 'adding workshops is admin only');
+  // Adding workshops was admin-only at Stage 2; the capability catalogue (094ccc0) gave it to the
+  // manager as well. Nobody else holds it.
+  assert.ok(caps.capsForRole('manager').includes('workshops.manage'), 'the manager adds workshops');
+  for (const r of ['operational_manager', 'workshop', 'storekeeper', 'transport_manager']) assert.ok(!caps.capsForRole(r).includes('workshops.manage'), r);
   assert.ok(caps.capsForRole('manager').includes('mechanics.move'));
 });
 
 // ================================================================== the list
 let MTR;
-test('the admin adds a workshop; it must have a proper code and a new name; nobody else may', async () => {
+test('the admin adds a workshop; it must have a proper code and a new name; nobody without workshops.manage may', async () => {
   const boss = await as('boss');
   const add = (body, who = boss) => req('POST', '/api/workshops', { cookie: who, body });
-  assert.strictEqual((await add({ code: 'MTR', name: 'Muthur Site Workshop', place: 'Muthur' }, await as('mgr'))).status, 403);
+  assert.strictEqual((await add({ code: 'MTR', name: 'Muthur Site Workshop', place: 'Muthur' }, await as('om'))).status, 403);
   assert.strictEqual((await add({ code: 'bad code!', name: 'Muthur Site Workshop' })).status, 400);
   assert.strictEqual((await add({ code: 'MTR', name: 'M' })).status, 400);
   assert.strictEqual((await add({ code: 'CW', name: 'Another' })).status, 409, 'the code is taken');

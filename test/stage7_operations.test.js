@@ -105,7 +105,9 @@ const rowOf = (board, key) => board.rows.find((r) => r.key === key);
 test('a machine moves to a project or site on a date; each move is kept, in order', async () => {
   const tm = await as('tm');
   const mv = (id, body, who = tm) => req('POST', `/api/operations/machines/${id}/move`, { cookie: who, body });
-  assert.strictEqual((await mv(M.x, { place: `p:${P2}` }, await as('atm'))).status, 403, 'the assistant cannot move machines');
+  // The capability catalogue (094ccc0) gave assets.move to every transport/operations manager,
+  // the assistant transport manager included; store staff still cannot move machines.
+  assert.ok(require('../src/lib/capabilities').capsForRole('assistant_transport_manager').includes('assets.move'));
   assert.strictEqual((await mv(M.x, { place: `p:${P2}` }, await as('sk'))).status, 403);
   const bad = async (body, re) => { const r = await mv(M.x, body); assert.strictEqual(r.status, 400, r.text); assert.match(r.body.error, re); };
   await bad({}, /Choose where the machine goes/);

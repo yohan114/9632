@@ -80,6 +80,9 @@ test('WorkshopOne Final Remediation & Security Hardening Suite', async (t) => {
     const res = run("INSERT INTO users (username, full_name, active, password_hash) VALUES ('admin_remed_test', 'Remediation Admin', 1, ?)", pwHash);
     adminUser = get('SELECT * FROM users WHERE id = ?', res.lastInsertRowid);
   }
+  // A fresh database has no built-in role rows until something creates them (every other test file
+  // inserts the ones it uses); without this the admin ended up with no role at all.
+  run("INSERT OR IGNORE INTO roles (name, label) VALUES ('admin', 'Administrator')");
   run("INSERT OR IGNORE INTO user_roles (user_id, role_id) SELECT ?, id FROM roles WHERE name = 'admin'", adminUser.id);
 
   // 2. Site Storekeeper for Galagedara (Store 3, Project 3)
@@ -144,7 +147,11 @@ test('WorkshopOne Final Remediation & Security Hardening Suite', async (t) => {
     assert.ok(fs.existsSync(backupDir), 'Backup directory/bundle must exist');
 
     const status = backupStatus.summary();
-    assert.strictEqual(status.ok, true, 'Backup status must report ok = true');
+    assert.strictEqual(status.last_snapshot.ok, true, 'The snapshot itself must be ok');
+    // Overall "ok" also needs a passing restore check (security_stage0: "no restore check has run
+    // yet, so the backups are not yet ok"); none has run in this test.
+    assert.strictEqual(status.verify_overdue, true);
+    assert.strictEqual(status.ok, false, 'not ok until a restore check has passed');
     assert.strictEqual(status.has_users, true, 'Backup must explicitly verify presence of users table');
     assert.ok(status.newest_snapshot, 'Newest snapshot must be identified');
   });

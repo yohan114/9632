@@ -120,8 +120,8 @@ test('one store: the main workshop has it, everything is in it, and no screen sh
 
 // ================================================================== the store of a workshop
 test('opening a store: workshops.manage only; from today or earlier; the main store stays; a used store stays', async () => {
-  const mgr = await as('mgr');
-  assert.strictEqual((await req('PUT', `/api/workshops/${MTR}/store`, { cookie: mgr, body: { own: true } })).status, 403);
+  // The manager holds workshops.manage since the capability catalogue (094ccc0); the workshop does not.
+  assert.strictEqual((await req('PUT', `/api/workshops/${MTR}/store`, { cookie: await as('wsM'), body: { own: true } })).status, 403);
   const boss = await as('boss');
   assert.strictEqual((await req('PUT', `/api/workshops/${MTR}/store`, { cookie: boss, body: { own: true, opened: day(1) } })).status, 400);
   const r = await req('PUT', `/api/workshops/${MTR}/store`, { cookie: boss, body: { own: true } });
@@ -247,13 +247,15 @@ test('a transfer moves the shelf when the goods move: out when dispatched, in wh
   // Dispatched: gone from Central, and in transit — so not Muthur's either.
   assert.strictEqual((await req('POST', `/api/stores/mtn/${T}/dispatch`, { cookie: skC })).status, 200);
   assert.deepStrictEqual([bal(CW), bal(MTR)], [4, 7], 'out of Central when it goes on the lorry');
-  assert.strictEqual((await req('POST', `/api/stores/mtn/${T}/receive`, { cookie: skC })).status, 200);
-  assert.deepStrictEqual([bal(CW), bal(MTR)], [4, 7], 'the driver confirming transit is not an arrival');
-  assert.strictEqual(bal(null), 13, 'in transit or not, the company holds what it held');
-  // Accepted: on Muthur's shelf.
-  assert.strictEqual((await req('POST', `/api/stores/mtn/${T}/accept`, { cookie: await as('skM') })).status, 200);
-  assert.deepStrictEqual([bal(CW), bal(MTR)], [4, 9], 'into Muthur when its storekeeper takes it in');
+  assert.strictEqual(bal(null), 13, 'in transit, the company holds what it held');
+  // Received at the destination: on Muthur's shelf. Since the MTN receive/accept work (7106629,
+  // test/mtn_receive_accept_and_stock.test.js) "receive" is the destination store's receipt, and
+  // the goods land then; accepting them afterwards is the sign-off and moves nothing a second time.
+  assert.strictEqual((await req('POST', `/api/stores/mtn/${T}/receive`, { cookie: await as('skM') })).status, 200);
+  assert.deepStrictEqual([bal(CW), bal(MTR)], [4, 9], 'into Muthur when its storekeeper receives it');
   assert.strictEqual(bal(null), 13, 'the company holds what it held');
+  assert.strictEqual((await req('POST', `/api/stores/mtn/${T}/accept`, { cookie: await as('skM') })).status, 200);
+  assert.deepStrictEqual([bal(CW), bal(MTR)], [4, 9], 'accepting it does not count it twice');
   const tot = stock.summary('general');
   assert.strictEqual(tot.received, 16, 'all stores: a transfer is not a receipt');
   assert.strictEqual(stock.summary('general', { store: MTR }).received, 12, 'in Muthur\'s store it is');
@@ -419,7 +421,9 @@ test('workshops kept apart: store staff see the workshops their store serves, an
   const h = (await req('GET', `/api/stores/stock/general?store_id=${CW}`, { cookie: await as('mgr') })).body;
   assert.strictEqual(h.store.id, CW);
   assert.strictEqual(h.fixed, false);
-  assert.deepStrictEqual([h.can.count, h.can.levels], [true, true]);
+  // The manager sets levels but no longer counts (segregation of duties, 81e8f2d - as in
+  // stores_p2_counts): it approves the counts instead.
+  assert.deepStrictEqual([h.can.count, h.can.levels], [false, true]);
 });
 
 // ====================================================== the upgrade, on an existing database

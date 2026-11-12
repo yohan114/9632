@@ -79,6 +79,25 @@ run("INSERT OR IGNORE INTO grn (id, grn_no, store_item_id, description, unit_pri
 run("INSERT OR IGNORE INTO grn (id, grn_no, store_item_id, description, unit_price, qty) VALUES (2, 'GRN-P-002', 2, 'Hydraulic Hose 1/2in', 3000, 20)");
 run("INSERT OR IGNORE INTO grn (id, grn_no, store_item_id, description, unit_price, qty) VALUES (3, 'GRN-P-003', 3, 'Special Seal Ring', 15000, 5)");
 
+// What the Central Main Workshop Stores (store location 2) has on its shelf. Approval now approves
+// a main-store line only as far as stock can cover it (onMrnApproved: local shelf, then the supplying
+// central store); the store_items balances above are the old book and no longer count.
+{
+  const stock = require('../src/lib/stock');
+  const keyOf = (desc) => {
+    const sec = stock.sectionOf(desc);
+    return [sec, sec === 'filter' ? (stock.filterKey(desc) || stock.itemKey(sec, desc)) : stock.itemKey(sec, desc)];
+  };
+  const [sec, key] = keyOf('Air Filter Cat 320');
+  run(`INSERT INTO stock_moves (store_id, physical_store_id, section, item_key, item_name, kind, qty, txn_date, counts, source_table, source_id)
+       VALUES (1, 2, ?, ?, 'Air Filter Cat 320', 'in', 50, date('now'), 1, 'manual', 9001)`, sec, key);
+}
+// Badalgama's own site store, supplied by the Central Main Workshop Stores. Transfers now run between
+// store locations: without one, a Badalgama request is filed under the central store itself
+// (trg_mrn_target_store's fallback) and is "fulfilled locally" off the central shelf.
+run(`INSERT INTO store_locations (code, name, store_type, parent_store_id, workshop_id, active)
+     VALUES ('SITE-STORE-BDG', 'Badalgama Site Store', 'SITE_STORE', 2, 2, 1)`);
+
 test('Step 4a: Database schema has all supply route & pipeline columns', () => {
   const lineCols = all("PRAGMA table_info('mrn_lines')").map((c) => c.name);
   assert(lineCols.includes('supply_route'), 'mrn_lines.supply_route must exist');
@@ -206,8 +225,9 @@ test('Step 4a: Quantity Progression & Auto-MTN generation on MRN approval', () =
     VALUES (?, 3, 'Special Seal Ring', 2, 'nos', 'local_purchase')
   `, mrnId).lastInsertRowid;
 
-  // Approve the MRN
-  run("UPDATE mrn SET approval_status = 'approved', approved_by = 'mgr_user', approved_at = '2026-10-05T10:00:00Z' WHERE id = ?", mrnId);
+  // Approve the MRN. A site's request also needs its Site Authority's approval before it reaches the
+  // stores (the Phase A gate in onMrnApproved).
+  run("UPDATE mrn SET approval_status = 'approved', approved_by = 'mgr_user', approved_at = '2026-10-05T10:00:00Z', site_authority_status = 'approved' WHERE id = ?", mrnId);
   supplyRoutes.onMrnApproved(mrnId, mgrUser);
 
   // 1. Check qty_approved set on all lines
@@ -224,8 +244,8 @@ test('Step 4a: Quantity Progression & Auto-MTN generation on MRN approval', () =
   assert(autoMtn, 'Auto MTN record must exist');
   assert.strictEqual(autoMtn.auto_generated, 1, 'MTN must be flagged as auto_generated');
   assert.strictEqual(autoMtn.mrn_id, mrnId, 'MTN must reference the MRN ID');
-  assert.strictEqual(autoMtn.from_location, 'Central Workshop — Badalgama', 'Source workshop must be Central Store');
-  assert.strictEqual(autoMtn.to_location, 'Badalgama Site', 'Destination workshop must be Badalgama');
+  assert.strictEqual(autoMtn.from_location, 'Central Main Workshop Stores', 'Source must be the central workshop store');
+  assert.strictEqual(autoMtn.to_location, 'Badalgama Site Store', 'Destination must be the Badalgama site store');
   assert.strictEqual(autoMtn.status, 'draft', 'Auto MTN must start in draft status');
 
   const mtnLines = all('SELECT * FROM mtn_lines WHERE mtn_id = ?', autoMtn.id);

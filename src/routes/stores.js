@@ -40,6 +40,16 @@ const evidencePhotos = require('../lib/evidence_photos');
 const reorderRebalance = require('../lib/reorder_rebalance');
 const storeLocations = require('../lib/store_locations');
 
+// The store a list is narrowed to: the one asked for (the screens send X-Store-Location-Id), else
+// the person's own store. Someone in all-sites mode (head office, the Central Main Stores) who asks
+// for no store sees every store, as everywhere else that reads isAllSitesMode (scope.js, assets,
+// dashboard) - their default context is not a request to see the main store's shelf alone.
+function listStoreId(req, { physical = false } = {}) {
+  const asked = req.headers['x-store-location-id'] || req.query.store_location_id || (physical ? req.query.physical_store_id : null);
+  if (asked) return toInt(asked);
+  return req.user && !req.user.isAllSitesMode ? toInt(req.user.activeStoreId) : null;
+}
+
 /**
  * Resolve the receiving physical store ID for any GRN receipt (Step 3: Purchasing & GRN Routing).
  * Rules:
@@ -228,12 +238,21 @@ function minRefusal(user, idOrNo) {
 const guardMin = (req, res, next) => { const no = minRefusal(req.user, req.params.id); return no ? res.status(403).json(no) : next(); };
 // A transfer note is its own workshop's (the one that wrote it: mtn.workshop_id) and each workshop
 // at either end, on the note or on any of its items — the place keys of a workshop are 'w:<id>'.
+/** Assigned to a store (or working in one): the store context holds them, as in scope.reach. */
+function hasStoreContext(user) {
+  if (!user) return false;
+  if (user.activeStoreId) return true;
+  try { return (storeLocations.getUserStoreLocations(user.id) || []).length > 0; } catch (_) { return false; }
+}
 function mtnOwnCond(user) {
   const r = scope.enabled() ? scope.reach(user) : null;
   let storeIds = null;
   try {
+    // Only a real store context holds someone to its transfers, as in scope.reach (contextWorkshop):
+    // with no store assigned, storeScopeFor still names a fallback "primary" store, and that is not
+    // a reason to hide the other workshops' notes while the workshops are not kept apart.
     const storeScope = require('../lib/context').storeScopeFor(user);
-    if (!storeScope.isGlobal) {
+    if (!storeScope.isGlobal && hasStoreContext(user)) {
       storeIds = (storeScope.storeIds || [storeScope.primaryStoreId]).filter(Boolean).map(Number);
     }
   } catch (e) {}
@@ -890,7 +909,7 @@ router.get('/mrn', asyncHandler((req, res) => {
   // Which workshop asked (multi-site Stage 2).
   if (req.query.workshop_id) { clauses.push('m.workshop_id = ?'); params.push(toInt(req.query.workshop_id)); }
   // Active store location scoping (Central Main Stores fresh section vs Workshop Stores vs Site Stores)
-  const activeStoreId = toInt(req.headers['x-store-location-id'] || req.query.store_location_id || req.user?.activeStoreId);
+  const activeStoreId = listStoreId(req);
   if (activeStoreId) {
     if (activeStoreId === 1) {
       clauses.push('m.target_store_location_id = 1');
@@ -954,7 +973,7 @@ router.get('/mrn', asyncHandler((req, res) => {
 router.get('/mrn/counts', asyncHandler((req, res) => {
   const own = scope.filter(req.user, 'm.workshop_id');
   const wClause = own.sql ? ` AND ${own.sql}` : '';
-  const activeStoreId = toInt(req.headers['x-store-location-id'] || req.query.store_location_id || req.user?.activeStoreId);
+  const activeStoreId = listStoreId(req);
   let storeClause = '';
   const storeParams = [];
   if (activeStoreId) {
@@ -1024,7 +1043,9 @@ router.post('/mrn', requireCap('stores.mrn.create'), chainPipeline.idempotencyGu
   const reqBy = String(b.requested_by || '').trim() || (ru ? (ru.full_name || ru.username) : null);
   const targetStoreLocationId = (b.target_store_location_id != null && b.target_store_location_id !== '')
     ? toInt(b.target_store_location_id)
-    : (job && job.type === 'fabrication' ? (job.issue_store_location_id || 1) : toInt(req.headers['x-store-location-id'] || req.user?.activeStoreId));
+    // No store named: an all-sites user's default context (the Central Main Stores) is not a choice,
+    // so the request goes to its workshop's store (trg_mrn_target_store), as for everyone else.
+    : (job && job.type === 'fabrication' ? (job.issue_store_location_id || 1) : listStoreId(req));
   const reqWsId = require('../lib/workshops').forRequest(req.user, jobId);
   const targetLoc = targetStoreLocationId ? storeLocations.getStoreLocation(targetStoreLocationId) : null;
   const storeScope = require('../lib/context').storeScopeFor(req.user);
@@ -1471,7 +1492,7 @@ router.get('/grn', asyncHandler((req, res) => {
       clauses.push("COALESCE(g.status, gv.status, 'pending_approval') = 'rejected'");
     }
   }
-  const activeStoreLocId = toInt(req.headers['x-store-location-id'] || req.query.store_location_id || req.query.physical_store_id || req.user?.activeStoreId);
+  const activeStoreLocId = listStoreId(req, { physical: true });
   if (activeStoreLocId) {
     clauses.push('g.physical_store_id = ?');
     params.push(activeStoreLocId);
@@ -1498,7 +1519,7 @@ router.get('/grn', asyncHandler((req, res) => {
 }));
 
 router.get('/grn/counts', asyncHandler((req, res) => {
-  const activeStoreLocId = toInt(req.headers['x-store-location-id'] || req.query.store_location_id || req.query.physical_store_id || req.user?.activeStoreId);
+  const activeStoreLocId = listStoreId(req, { physical: true });
   const storeClause = activeStoreLocId ? ` AND g.physical_store_id = ${activeStoreLocId}` : '';
   const FROM = `FROM grn g LEFT JOIN grn_vouchers gv ON gv.id = g.voucher_id LEFT JOIN mrn m ON m.id = g.mrn_id`;
   const own = `${ownWs(req.user, GRN_WS)}${storeClause}`;   // Step 2c
@@ -2795,9 +2816,13 @@ function stockStore(req) {
   const context = require('../lib/context');
   const asked = String(req.query.store_id || req.query.physical_store_id || '').trim();
 
-  // If sub-store user requested another store directly, assert access and reject
-  if (asked && asked !== 'all' && Number(asked)) {
-    context.assertStoreAccess(req, Number(asked));
+  // A store location asked for directly (physical_store_id) is checked against the store scope.
+  // store_id is a workshop store - another number space (workshop 1's store is location 2, location
+  // 1 the Central Main Stores) - and is settled below: anyone held to a store sees their own,
+  // whatever they ask for.
+  const askedLoc = String(req.query.physical_store_id || '').trim();
+  if (askedLoc && askedLoc !== 'all' && Number(askedLoc)) {
+    context.assertStoreAccess(req, Number(askedLoc));
   }
 
   // Active context: if not in All Sites mode, default to active store
@@ -2899,7 +2924,9 @@ router.get('/counts', asyncHandler((req, res) => res.json(stockCount.list(req.us
 router.post('/counts', requireCap('stores.stock.count'), asyncHandler((req, res) => {
   const b = req.body || {};
   const countStoreScope = require('../lib/context').storeScopeFor(req.user);
-  const targetCountStore = toInt(b.physical_store_id || b.store_id);
+  // store_id is a workshop store, checked by stockCount.start (mayCount -> stores.mayManage); only a
+  // physical_store_id is a store location the store scope can be asked about directly.
+  const targetCountStore = toInt(b.physical_store_id);
   if (targetCountStore) {
     countStoreScope.assertAccess(targetCountStore, 'count');
   }
@@ -4332,7 +4359,7 @@ router.get('/general-job', asyncHandler((req, res) => {
 router.get('/issues', asyncHandler((req, res) => {
   const clauses = [];
   const params = [];
-  const activeStoreId = toInt(req.headers['x-store-location-id'] || req.query.store_location_id || req.query.physical_store_id || req.user?.activeStoreId);
+  const activeStoreId = listStoreId(req, { physical: true });
   if (activeStoreId) {
     clauses.push('i.physical_store_id = ?');
     params.push(activeStoreId);
@@ -4383,7 +4410,7 @@ router.get('/issues', asyncHandler((req, res) => {
 }));
 
 router.get('/issues/counts', asyncHandler((req, res) => {
-  const activeStoreId = toInt(req.headers['x-store-location-id'] || req.query.store_location_id || req.query.physical_store_id || req.user?.activeStoreId);
+  const activeStoreId = listStoreId(req, { physical: true });
   const storeClause = activeStoreId ? ` AND i.physical_store_id = ${activeStoreId}` : '';
   const FROM = 'FROM issues i LEFT JOIN min_notes n ON n.id = i.min_id LEFT JOIN job_cards j ON j.id = i.job_id';
   const own = `${ownWs(req.user, ISSUE_WS)}${storeClause}`;   // Step 2c
@@ -5173,6 +5200,18 @@ function incomingMtnLines(b) {
 // A note's two ends: the place picked from the list, or the one its text names (Stage 2). A place
 // picked with no text writes the place's name as the text, so every screen and printout that
 // reads the text still shows where the goods went.
+/** The store location a picked place names: loc:<id>, or w:<workshop> when that workshop has one. */
+function locationAtPlace(key) {
+  const s = String(key || '').trim();
+  const mLoc = /^(?:loc|sl):(\d+)$/i.exec(s);
+  if (mLoc) return Number(mLoc[1]);
+  const mWs = /^w:(\d+)$/i.exec(s);
+  if (!mWs) return null;
+  const ws = Number(mWs[1]);
+  const p = storeLocations.resolvePhysicalStore(ws);
+  return p && Number(storeLocations.resolveLegacyStoreId(p.id)) === ws ? Number(p.id) : null;
+}
+
 function endsOf(b) {
   const out = {};
   for (const side of ['from', 'to']) {
@@ -5215,9 +5254,17 @@ router.post('/mtn', requireCap('stores.mtn.edit'), chainPipeline.idempotencyGuar
   }
 
   const mtnScope = require('../lib/context').storeScopeFor(req.user);
-  if (!mtnScope.isGlobal) {
-    const canFrom = fromLocId && mtnScope.canAccess(fromLocId, 'dispatch');
-    const canTo = toLocId && mtnScope.canAccess(toLocId, 'receive');
+  // Someone assigned to a store, or naming store locations, must be at one end of what they write.
+  // Someone with no store at all (scope.reach's rule: no store context) writes notes as before -
+  // between two outside places too - and the workshop rules decide what they then see.
+  if (!mtnScope.isGlobal && (hasStoreContext(req.user) || fromLocId || toLocId)) {
+    // An end picked from the places list (Stage 2: w:<workshop>, loc:<id>) names its store location
+    // just as well as from_store_location_id does; without this a storekeeper using the picker was
+    // refused every transfer. A workshop with no location of its own names none.
+    const fromCheck = fromLocId || locationAtPlace(ends.from_place);
+    const toCheck = toLocId || locationAtPlace(ends.to_place);
+    const canFrom = fromCheck && mtnScope.canAccess(fromCheck, 'dispatch');
+    const canTo = toCheck && mtnScope.canAccess(toCheck, 'receive');
     if (!canFrom && !canTo) {
       return res.status(403).json({
         error: 'Tenancy boundary violation: You must be assigned to either the origin or destination store location to transfer items.'
@@ -5301,6 +5348,12 @@ router.patch('/mtn/line/:id', requireCap('stores.mtn.edit'), guardMtnLine, async
     const q = toNum(req.body.qty, 0);
     if (!(q > 0)) return res.status(400).json({ error: 'Quantity must be more than 0' });
     sets.push('qty = ?'); params.push(q); after.qty = q;
+    // A line received in full was received at its quantity: correcting the quantity corrects what
+    // came in with it, or the destination shelf keeps the old figure (stock.rebuild reads
+    // qty_received). A short receipt was counted at the door and stays as counted.
+    if (before.qty_received != null && Number(before.qty_received) === Number(before.qty)) {
+      sets.push('qty_received = ?'); params.push(q);
+    }
   }
   for (const c of MTN_LINE_EDITABLE) {
     if (req.body[c] === undefined) continue;

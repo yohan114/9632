@@ -223,15 +223,17 @@ test('cost by vehicle, project, site and source are the site\'s own; head office
 // ================================================================== the month
 test('the month: totals, the vehicles behind them and one vehicle\'s lines are the site\'s own', async () => {
   const m = (await GET('leadM', '/api/reports/monthly')).body.this_month;
-  assert.deepStrictEqual([m.labour, m.head_office, m.local_purchase, m.oil, m.service, m.jobs, m.total], [100, 0, 7, 20, 50, 1, 177]);
+  // The month's total also counts General Items issued straight to a job (src/lib/month_costs.js):
+  // the 22 nut issued at Muthur. 100 + 7 + 20 + 50 + 22 = 199.
+  assert.deepStrictEqual([m.labour, m.head_office, m.local_purchase, m.oil, m.service, m.general, m.jobs, m.total], [100, 0, 7, 20, 50, 22, 1, 199]);
   const hq = (await GET('mgr', '/api/reports/monthly')).body.this_month;
   assert.deepStrictEqual([hq.labour, hq.head_office, hq.oil, hq.service, hq.jobs], [530, 100, 250, 70, 4]);
   const a = (await GET('leadM', `/api/reports/monthly/${YM}/assets`)).body.assets;
-  assert.deepStrictEqual(a.map((r) => [r.asset_id, r.labour, r.material, r.oil, r.total]), [[S.veh, 100, 7, 20, 127]]);
+  assert.deepStrictEqual(a.map((r) => [r.asset_id, r.labour, r.material, r.oil, r.general, r.total]), [[S.veh, 100, 7, 20, 22, 149]]);
   const d = (await GET('leadM', `/api/reports/monthly/${YM}/asset/${S.veh}`)).body;
   assert.deepStrictEqual(d.labour_lines.map((l) => l.job_no), [S.jM.no]);
   assert.deepStrictEqual(d.material_lines.map((l) => l.description), ['Wiper']);
-  assert.strictEqual(d.total, 127);
+  assert.strictEqual(d.total, 149, 'labour 100 + wiper 7 + oil 20 + the 22 nut (General Items)');
   assert.strictEqual((await GET('mgr', `/api/reports/monthly/${YM}/asset/${S.veh}`)).body.labour_lines.length, 3);
   assert.deepStrictEqual((await GET('mgr', `/api/reports/monthly/${YM}/assets`)).body.assets.map((r) => r.asset_id).sort(), [S.veh, S.vCw].sort());
 });
@@ -291,10 +293,12 @@ test('the company rollup and the company oil counts are head office\'s; stock va
   assert.strictEqual(sv.store_id, MTR);
   assert.strictEqual(sv.oil_value, 280, '28 L on Muthur\'s shelf at Rs 10');
   assert.strictEqual(sv.grand_total, 437);
-  // Muthur's shelf: its wiper, Filter X, hose and belt (each at the item's price, as every stock
-  // screen values it).
-  assert.strictEqual(sv.general_parts_value, 157, 'not Central\'s filters, hose and belt');
-  assert.deepStrictEqual(sv.counts, { general: 4, oil: 1, filter: 0 });
+  // Muthur's shelf: its wiper, hose and belt as general parts, and Filter X - which the stock book
+  // now files under Filters (stock.sectionOf), not General - each at the item's price, as every
+  // stock screen values it. The same 437 in all.
+  assert.strictEqual(sv.general_parts_value, 77, 'not Central\'s filters, hose and belt');
+  assert.strictEqual(sv.filter_value, 80, 'Muthur\'s Filter X');
+  assert.deepStrictEqual(sv.counts, { general: 3, oil: 1, filter: 1 });
   assert.strictEqual((await GET('mgr', '/api/reports/stock-valuation')).body.store_id, undefined, 'head office: the company\'s');
 });
 
@@ -329,10 +333,11 @@ test('the dashboard overview, live figures and workflow monitor are the site\'s 
   assert.strictEqual(ov.vehicles_in_workshop, 1);
   assert.strictEqual(ov.pending_requests, 1);
   assert.strictEqual(ov.todays_issue_cost, 22);
-  assert.strictEqual(ov.monthly_cost_total, 177, 'worked out from Muthur\'s own month, not the company rollup');
-  assert.deepStrictEqual(ov.top_5_cost_vehicles.map((v) => [v.asset_id, v.total_cost]), [[S.veh, 127]]);
+  // Muthur's month with its General Items (the 22 nut): 199, see "the month" above.
+  assert.strictEqual(ov.monthly_cost_total, 199, 'worked out from Muthur\'s own month, not the company rollup');
+  assert.deepStrictEqual(ov.top_5_cost_vehicles.map((v) => [v.asset_id, v.total_cost]), [[S.veh, 149]]);
   const last = ov.monthly_cost_trend[ov.monthly_cost_trend.length - 1];
-  assert.deepStrictEqual([last.parts_cost, last.oil_cost, last.labour_cost, last.service_cost, last.total_cost], [7, 20, 100, 50, 177]);
+  assert.deepStrictEqual([last.parts_cost, last.oil_cost, last.labour_cost, last.service_cost, last.total_cost], [7, 20, 100, 50, 199]);
   assert.deepStrictEqual(ov.job_status_breakdown.map((s) => [s.status, s.count]), [['IN_PROGRESS', 1]]);
   assert.deepStrictEqual(ov.recent_activity.map((a) => a.action).filter((a) => a.endsWith('did_this')), ['muthur_did_this']);
   assert.deepStrictEqual([ov.low_stock_items, ov.low_oil_stock, ov.low_filter_stock], [0, 1, 0], 'Muthur\'s store: the oil under 40');
@@ -346,10 +351,10 @@ test('the dashboard overview, live figures and workflow monitor are the site\'s 
   assert.strictEqual(hq.low_stock_items, 3, 'the company\'s book: the rag, the hose and the belt');
 
   const live = (await GET('leadM', '/api/dashboard/live-stats')).body;
-  assert.deepStrictEqual([live.active_jobs, live.pending_requests, live.low_stock_alerts, live.todays_cost, live.monthly_cost], [1, 1, 1, 22, 177]);
+  assert.deepStrictEqual([live.active_jobs, live.pending_requests, live.low_stock_alerts, live.todays_cost, live.monthly_cost], [1, 1, 1, 22, 199]);
   assert.strictEqual((await GET('mgr', '/api/dashboard/live-stats')).body.monthly_cost, 999);
   const wf = (await GET('leadM', '/api/dashboard/workflow-monitor')).body.kpis;
-  assert.deepStrictEqual([wf.monthly_cost_total, wf.low_stock_total], [177, 1]);
+  assert.deepStrictEqual([wf.monthly_cost_total, wf.low_stock_total], [199, 1]);
 });
 
 // ================================================================== projects, the Daily Work month
