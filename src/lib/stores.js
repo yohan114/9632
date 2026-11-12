@@ -174,16 +174,22 @@ function stampTransfer(mtnId) {
     'BATTICALOA': 7, 'BATTICALOA LOT/2': 7, 'BATTICALOA LOT/3': 7, 'BATTICALOA WORK SHOP': 7, 'BATTICALOA LOT 03': 7, 'BATTICOLOA': 7,
     'MUTHUR': 8, 'MUTHUR PLANT': 8,
   };
+  // locMap holds the ids the live register was seeded with; a database seeded differently (a new
+  // install, a test) may not have that store at all, and stamping a missing id breaks the foreign key.
+  const knownLoc = (id) => {
+    if (!id) return null;
+    try { return get('SELECT 1 x FROM store_locations WHERE id = ?', id) ? id : null; } catch { return null; }
+  };
   const normLoc = (str) => {
     if (!str) return null;
     const cleanStr = String(str).toUpperCase().replace(/[^A-Z0-9/ ]/g, ' ').replace(/\s+/g, ' ').trim();
     for (const [k, id] of Object.entries(locMap)) {
-      if (cleanStr.includes(k) || k.includes(cleanStr)) return id;
+      if (cleanStr.includes(k) || k.includes(cleanStr)) return knownLoc(id);
     }
     return null;
   };
 
-  const headerFromLoc = t.from_store_location_id || physicalLocationAtPlace(t.from_place) || normLoc(t.from_location) || (t.workshop_id === 2 ? 3 : 2);
+  const headerFromLoc = t.from_store_location_id || physicalLocationAtPlace(t.from_place) || normLoc(t.from_location) || knownLoc(t.workshop_id === 2 ? 3 : 2);
   const headerToLoc = t.to_store_location_id || physicalLocationAtPlace(t.to_place) || normLoc(t.to_location);
 
   for (const l of all('SELECT id, from_location, to_location, from_place, to_place, from_store_location_id, to_store_location_id FROM mtn_lines WHERE mtn_id = ?', mtnId)) {
