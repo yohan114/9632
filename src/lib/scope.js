@@ -289,7 +289,10 @@ function mrnRefusal(user, mrnId) {
       const m = get('SELECT target_store_location_id, workshop_id FROM mrn WHERE id = ?', mrnId);
       if (m && m.target_store_location_id) {
         if (!ss.canAccess(m.target_store_location_id, 'view')) {
-          return { error: `Tenancy boundary violation: MRN #${mrnId} belongs to a different store location.`, status: 403 };
+          const isOwnWorkshop = user.workshop_id && Number(user.workshop_id) === Number(m.workshop_id);
+          if (!isOwnWorkshop) {
+            return { error: `Tenancy boundary violation: MRN #${mrnId} belongs to a different store location.`, status: 403 };
+          }
         }
       }
     }

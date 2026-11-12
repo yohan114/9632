@@ -7373,7 +7373,7 @@ async function jobDetail(c, id) {
           <td>${canDo('jobs.parts') ? `<button class="sm" data-price="${p.id}">Price</button>${isPartial ? '' : ` <button class="sm" data-del-part="${p.id}" title="Take off this job — the item goes back to unassigned parts, it is not deleted">✕</button>`}` : ''}</td></tr>`))}
     </div>
     ${j.mrnItems && j.mrnItems.length ? `<div class="card section"><h3>MRN Items <span class="muted">— requested materials (${j.mrnItems.length})</span></h3>
-      ${tableWrap([{ label: 'Priority' }, { label: 'MRN No' }, { label: 'Date' }, { label: 'Item & Urgency Note' }, { label: 'Category' }, { label: 'Qty Req', num: true }, { label: 'Qty Recd', num: true }, { label: 'Shelf Status' }, { label: 'Action' }],
+      ${tableWrap([{ label: 'Priority' }, { label: 'MRN No' }, { label: 'Date' }, { label: 'Item & Urgency Note' }, { label: 'Category' }, { label: 'Qty Req', num: true }, { label: 'Qty Recd', num: true }, { label: 'GRN Price', num: true }, { label: 'Shelf Status' }, { label: 'Action' }],
         j.mrnItems.map((m) => {
           const avail = Number(m.remaining_in_store) || 0;
           const recd = Number(m.qty_received) || 0;
@@ -7404,14 +7404,15 @@ async function jobDetail(c, id) {
             <td>${esc(m.category || '')}</td>
             <td class="num">${num(m.qty)}</td>
             <td class="num">${num(m.qty_received)}</td>
+            <td class="num">${m.unit_price != null ? money(m.unit_price) : '<span class="badge amber">unpriced</span>'}</td>
             <td>${statusBadgeHtml}</td>
             <td><div style="display:flex;gap:4px;flex-wrap:wrap">${btns.length ? btns.join(' ') : '—'}</div></td></tr>`;
         }), { scroll: true })}</div>` : ''}
     ${j.oilIssues.length ? `<div class="card section"><h3>Oil / Lubricant Issued</h3>${tableWrap([{ label: 'Product' }, { label: 'Qty', num: true }, { label: 'Unit Price', num: true }], j.oilIssues.map((o) => `<tr><td>${esc(o.product_name)}</td><td class="num">${num(Math.abs(o.qty))} ${esc(o.unit)}</td><td class="num">${money(o.unit_price)}</td></tr>`))}</div>` : ''}
     ${renderOutsourcingJobSectionHtml(job, j.outsourcingRequests || [])}
     ${j.generalIssues && j.generalIssues.length ? `<div class="card section"><h3>General Items Issued <span class="muted">(${j.generalIssues.length})</span></h3>
-      ${tableWrap([{ label: 'Date' }, { label: 'Item' }, { label: 'Qty', num: true }, { label: 'Ref / MR' }],
-          j.generalIssues.map((g) => `<tr><td>${esc((g.txn_date || '').slice(0, 10))}</td><td>${esc(g.item_name || '')}</td><td class="num">${num(Math.abs(g.qty))}</td><td>${esc(g.ref || '')}</td></tr>`), { scroll: true })}</div>` : ''}`;
+      ${tableWrap([{ label: 'Date' }, { label: 'Item' }, { label: 'Qty', num: true }, { label: 'Unit Price', num: true }, { label: 'Amount', num: true }, { label: 'Ref / MR' }],
+          j.generalIssues.map((g) => `<tr><td>${esc((g.txn_date || '').slice(0, 10))}</td><td>${esc(g.item_name || '')}</td><td class="num">${num(Math.abs(g.qty))}</td><td class="num">${g.unit_price != null ? money(g.unit_price) : '—'}</td><td class="num">${g.unit_price != null ? money(Math.abs(g.qty) * g.unit_price) : '—'}</td><td>${esc(g.ref || '')}</td></tr>`), { scroll: true })}</div>` : ''}`;
 
   // wire actions
   qsa('#transitions button[data-to]').forEach((b) => b.onclick = () => doTransition(job.id, b.dataset.to, job.status));
@@ -23577,6 +23578,10 @@ async function openNewUserWizard(roles, allStoreLocations, storeOptions, wsd, on
   }
 
   const defaultRole = roles.find(r => r.name === 'site_storekeeper') || roles.find(r => r.name === 'storekeeper') || roles[0] || { name: 'site_storekeeper', label: 'Site Storekeeper' };
+  // Home workshop picker (step 2) is shown once there is more than one workshop. `multi` lives in
+  // renderUsersManager, not here: reading it unbound threw "multi is not defined" the moment step 1's
+  // Next was pressed, so no new user could be created at all.
+  const multi = Boolean(wsd && wsd.multi);
 
   const state = {
     step: 1,

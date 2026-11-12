@@ -478,7 +478,7 @@ router.get(
               ROUND(MAX(0, COALESCE(g.qty, ml.qty_received, 0) - (COALESCE((SELECT SUM(i.qty) FROM issues i WHERE i.grn_id = g.id), 0) - COALESCE((SELECT SUM(r.qty) FROM issue_returns r JOIN issues ir ON ir.id = r.issue_id WHERE ir.grn_id = g.id), 0))), 2) AS remaining_in_store
          FROM mrn_lines ml
          JOIN mrn m ON m.id = ml.mrn_id
-         LEFT JOIN grn g ON g.mrn_line_id = ml.id
+         LEFT JOIN grn g ON (g.mrn_line_id = ml.id OR (g.mrn_line_id IS NULL AND g.mrn_id = ml.mrn_id))
          JOIN job_cards j ON j.id = ?
         WHERE m.job_id = j.id
            OR ml.id IN (SELECT mrn_line_id FROM job_parts WHERE job_id = j.id AND mrn_line_id IS NOT NULL)
