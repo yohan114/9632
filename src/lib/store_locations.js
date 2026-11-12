@@ -741,7 +741,9 @@ function seedStoreLocations(targetDb = null) {
      WHERE store_type = 'SITE_WORKSHOP_STORE'
   `, mainStore ? mainStore.id : 1);
 
-  const gws = qGet("SELECT id, code, name FROM workshops WHERE code = 'GWS' OR id = 2 LIMIT 1");
+  // Galagedara by its code only. "OR id = 2" made whichever workshop was created second - on a new
+  // install, or any test database - a Galagedara site store owner, mapped to SITE-STORE-GWS.
+  const gws = qGet("SELECT id, code, name FROM workshops WHERE code = 'GWS' LIMIT 1");
   if (gws && mainWsStore) {
     let gwsStore = qGet("SELECT * FROM store_locations WHERE code IN ('SITE-STORE-GWS', 'SITE-WORKSHOP-GWS')");
     if (!gwsStore) {
