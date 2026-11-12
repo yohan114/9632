@@ -111,19 +111,21 @@ function resolveStoreContext(storeOrLocId, opts = {}) {
   if (physId && !legId) {
     try {
       legId = storeLocs.resolveLegacyStoreId(physId);
-      if (!legId && locRow && locRow.workshop_id) {
-        legId = locRow.workshop_id;
-      } else if (!legId) {
-        legId = physId;
-      }
+      // A location with no legacy store and no workshop (the Central Main Stores) has no legacy
+      // shelf: its id is a store_locations id, never a workshop id, so it is not used as one.
+      if (!legId && locRow && locRow.workshop_id) legId = locRow.workshop_id;
     } catch {}
   }
   if (legId && !physId) {
     try {
-      physId = storeLocs.resolvePhysicalStore(legId);
-      if (physId && !locRow) {
-        locRow = storeLocs.getStoreLocationById(physId);
-      }
+      // resolvePhysicalStore returns the store_locations row, not its id, and when the workshop has
+      // no physical store of its own it falls back to the main workshop store. A workshop keeping
+      // its own (legacy) store must not borrow that one, or its balance is read from the wrong
+      // shelf; getAllActiveStores lists such a workshop on its own as "w:<id>" for the same reason.
+      const phys = storeLocs.resolvePhysicalStore(legId);
+      const owned = phys && Number(storeLocs.resolveLegacyStoreId(phys.id)) === Number(legId);
+      physId = owned ? Number(phys.id) : null;
+      if (physId && !locRow) locRow = phys;
     } catch {}
   }
   let wsRow = null;
@@ -138,7 +140,7 @@ function resolveStoreContext(storeOrLocId, opts = {}) {
 
   return {
     physical_store_id: physId || (locRow ? locRow.id : null),
-    store_id: legId || (wsRow ? wsRow.id : 1),
+    store_id: legId || (wsRow ? wsRow.id : null),
     name,
     code,
     store_type: storeType
@@ -164,7 +166,9 @@ function getAllActiveStores() {
         key: 'p:' + s.id,
         id: s.id,
         physical_store_id: s.id,
-        store_id: legId || 1,
+        // null for a location with no legacy store: defaulting to 1 made the Central Main Stores
+        // count Central Workshop's unstamped movements a second time.
+        store_id: legId,
         code: s.code,
         name: s.name,
         store_type: s.store_type
@@ -340,7 +344,9 @@ function calculateItemRop(section, itemKey, storeOrLocId, opts = {}) {
       balance = Number(stock.balanceOf(section, itemKey, null, { physical_store_id: physId })) || 0;
       if (balance === 0) {
         const hasPhysMoves = get('SELECT 1 FROM stock_moves WHERE physical_store_id = ? LIMIT 1', physId);
-        if (!hasPhysMoves) {
+        // Fall back to the legacy shelf only when there is one: balanceOf with no store at all
+        // is the whole company's stock, not this location's.
+        if (!hasPhysMoves && storeId != null) {
           balance = Number(stock.balanceOf(section, itemKey, storeId)) || 0;
         }
       }
