@@ -13,6 +13,7 @@ const router = express.Router();
 const { get, all } = require('../db');
 const { requireAuth, requireCap } = require('../lib/auth');
 const { asyncHandler } = require('../lib/http');
+const jobstate = require('../lib/jobstate');
 
 router.get('/summary', requireAuth, requireCap('master_dashboard.view'), asyncHandler(async (req, res) => {
   const today = new Date().toISOString().slice(0, 10);
@@ -31,7 +32,9 @@ router.get('/summary', requireAuth, requireCap('master_dashboard.view'), asyncHa
   // 2. Open job cards
   let openJobs = 0;
   try {
-    const jobRow = get("SELECT COUNT(*) AS count FROM job_cards WHERE UPPER(status) NOT IN ('CLOSED', 'REJECTED')");
+    // The one definition of an open card (src/lib/jobstate.js): a partly closed card has released
+    // the vehicle and is not open, as on every other dashboard.
+    const jobRow = get(`SELECT COUNT(*) AS count FROM job_cards WHERE ${jobstate.openSql()}`);
     openJobs = jobRow ? jobRow.count : 0;
   } catch (_) {}
 
