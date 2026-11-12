@@ -7222,6 +7222,9 @@ async function jobDetail(c, id) {
           <span><b>Project / Site:</b> ${esc(job.project_name || 'Central')}</span>
           ${wsMulti() && job.workshop_name ? `<span><b>Workshop:</b> 🏭 ${esc(job.workshop_name)}</span>` : ''}
           ${job.jr_no ? `<span><b>Auth JR:</b> <a href="#/jobrequests/${job.job_request_id}">📋 ${esc(job.jr_no)}</a></span>` : ''}
+          ${job.driver_name ? `<span><b>Driver / Person:</b> 👤 ${esc(job.driver_name)}</span>` : ''}
+          ${job.contact_no ? `<span><b>Contact:</b> 📞 ${esc(job.contact_no)}</span>` : ''}
+          ${job.meter_reading ? `<span><b>Meter:</b> ⏱️ ${esc(job.meter_reading)}</span>` : ''}
           ${job.description ? `<span><b>Work:</b> ${esc(job.description)}</span>` : ''}
         </div>
       </div>
@@ -16665,13 +16668,25 @@ async function newJobRequestModal() {
       ${field('Request Category *', 'type', { type: 'select', options: [{ value: 'repair', label: '🔧 Repair Request' }, { value: 'service', label: '🛢️ Service Request' }, { value: 'fabrication', label: '🏗️ Fabrication Request' }] })}
       ${field('Severity', 'severity', { type: 'select', options: [{ value: '', label: '—' }, { value: 'major', label: 'Major' }, { value: 'minor', label: 'Minor' }] })}
     </div>
+
+    <!-- Conditional Driver, Contact, Meter fields for Repair, Service, & Fabrication Repair -->
+    <div id="jr_vehicle_driver_fields" style="background:#f8fafc;border:1px solid #cbd5e1;border-radius:6px;padding:8px 12px;margin-bottom:10px">
+      <div class="row">
+        ${field('Driver Name *', 'driver_name', { placeholder: 'e.g. K.A. Dharmasena' })}
+        ${field('Contact Number *', 'contact_no', { placeholder: 'e.g. 077 123 4567' })}
+      </div>
+      <div class="row">
+        ${field('Current Meter / Odometer Reading *', 'meter_reading', { placeholder: 'e.g. 125,400 km or 3,450 hrs' })}
+      </div>
+    </div>
+
     <div id="jr_service_fields" style="display:none;background:rgba(37,99,235,0.06);border:1px solid #bfdbfe;border-radius:6px;padding:8px 12px;margin-bottom:10px">
       <div class="row">
         ${field('Service Interval / Type', 'service_type', { placeholder: 'e.g. 5,000 km, 250 Hrs, 500 Hrs, General' })}
-        ${field('Current Meter / Odometer Reading', 'meter_reading', { placeholder: 'e.g. 125,400 km or 3,450 hrs' })}
       </div>
       <p class="muted" style="font-size:11.5px;margin:2px 0 0">Approved service requests route directly to the Service Records section for service job execution.</p>
     </div>
+
     <div id="jr_fabrication_fields" style="display:none;background:rgba(109,40,217,0.06);border:1px solid #ddd6fe;border-radius:6px;padding:8px 12px;margin-bottom:10px">
       <div class="row">
         ${field('Fabrication Kind *', 'fabrication_kind', { type: 'select', options: [
@@ -16680,8 +16695,16 @@ async function newJobRequestModal() {
           { value: 'service', label: 'Fabrication Modification / Service' }
         ] })}
       </div>
+      <!-- Request person & contact for new fabrication or modifications -->
+      <div id="jr_fab_project_fields" style="margin-top:8px">
+        <div class="row">
+          ${field('Request Person Name *', 'fab_request_person', { placeholder: 'e.g. Project Supervisor / Site Incharge' })}
+          ${field('Contact Number *', 'fab_contact_no', { placeholder: 'e.g. 077 123 4567' })}
+        </div>
+      </div>
       <p class="muted" style="font-size:11.5px;margin:2px 0 0">Materials for fabrication are issued from Central Main Stores. For new builds without an assigned vehicle yet, vehicle selection is optional.</p>
     </div>
+
     <div class="row">${field('Priority', 'priority', { type: 'select', options: [{ value: 'normal', label: 'Normal' }, { value: 'urgent', label: 'Urgent' }] })}${field('Required date', 'required_date', { type: 'date' })}</div>
     ${field('Project', 'project_id', { type: 'select', options: projOpts })}
     ${field('Work requested *', 'description', { type: 'textarea' })}
@@ -16689,13 +16712,27 @@ async function newJobRequestModal() {
     <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Create Job Request</button></div>`, (body, close) => {
     wireAssetPicker(body);
     const typeSel = qs('select[name=type]', body);
+    const fabKindSel = qs('select[name=fabrication_kind]', body);
     const svcFlds = qs('#jr_service_fields', body);
     const fabFlds = qs('#jr_fabrication_fields', body);
+    const driverFlds = qs('#jr_vehicle_driver_fields', body);
+    const fabProjFlds = qs('#jr_fab_project_fields', body);
+
     const syncType = () => {
-      const isSvc = typeSel && typeSel.value === 'service';
-      const isFab = typeSel && typeSel.value === 'fabrication';
+      const type = typeSel ? typeSel.value : 'repair';
+      const isSvc = type === 'service';
+      const isFab = type === 'fabrication';
+      const fabKind = fabKindSel ? fabKindSel.value : 'new';
+
       if (svcFlds) svcFlds.style.display = isSvc ? 'block' : 'none';
       if (fabFlds) fabFlds.style.display = isFab ? 'block' : 'none';
+
+      // Repair, Service, or Fabrication Repair -> Driver Name, Contact Number, Meter Reading
+      // New Fabrication / Modification -> Request Person Name, Contact Number
+      const isVehicleDriverJob = (type === 'repair') || (type === 'service') || (isFab && fabKind === 'repair');
+      if (driverFlds) driverFlds.style.display = isVehicleDriverJob ? 'block' : 'none';
+      if (fabProjFlds) fabProjFlds.style.display = (!isVehicleDriverJob && isFab) ? 'block' : 'none';
+
       const descEl = qs('textarea[name=description]', body);
       if (isSvc && descEl && !descEl.value) {
         descEl.placeholder = 'e.g. Scheduled periodic service maintenance, oil change and filter replacements.';
@@ -16704,11 +16741,35 @@ async function newJobRequestModal() {
       }
     };
     if (typeSel) typeSel.onchange = syncType;
+    if (fabKindSel) fabKindSel.onchange = syncType;
     syncType();
+
     qs('#s', body).onclick = async () => {
       const d = formData(body);
       if (!String(d.description || '').trim()) return toast('Describe the work requested', 'err');
-      if (!d.asset && !d.asset_id && !(d.type === 'fabrication' && d.fabrication_kind === 'new')) return toast('Pick the vehicle / machine', 'err');
+
+      const type = d.type || 'repair';
+      const isFab = type === 'fabrication';
+      const fabKind = d.fabrication_kind || 'new';
+      const isVehicleDriverJob = (type === 'repair') || (type === 'service') || (isFab && fabKind === 'repair');
+
+      if (isVehicleDriverJob) {
+        if (!d.asset && !d.asset_id) return toast('Pick the vehicle / machine', 'err');
+        if (!String(d.driver_name || '').trim()) return toast('Enter driver name', 'err');
+        if (!String(d.contact_no || '').trim()) return toast('Enter driver contact number', 'err');
+        if (!String(d.meter_reading || '').trim()) return toast('Enter current meter reading', 'err');
+      } else {
+        if (!d.asset && !d.asset_id && !(isFab && fabKind === 'new')) return toast('Pick the vehicle / machine', 'err');
+        const reqPerson = String(d.fab_request_person || d.requested_by || '').trim();
+        const contact = String(d.fab_contact_no || d.contact_no || '').trim();
+        if (!reqPerson) return toast('Enter request person name', 'err');
+        if (!contact) return toast('Enter contact number', 'err');
+        d.requested_by = reqPerson;
+        d.driver_name = reqPerson;
+        d.contact_no = contact;
+        d.meter_reading = null;
+      }
+
       try {
         const r = await api('/job-requests', { method: 'POST', body: d });
         close();
@@ -20303,6 +20364,7 @@ routes.reports = async (c) => {
         <button class="sm primary" id="dr-t-pending">📦 Pending Parts</button>
         <button class="sm" id="dr-t-price">💰 Pending Price</button>
         <button class="sm" id="dr-t-jobs">🔧 Job Record Summary</button>
+        <button class="sm" id="dr-t-cost">💵 Daily Cost</button>
         <button class="sm" id="dr-t-tally" style="display:none">⏱ Day Tally</button>
         <div class="spacer"></div>
         <span class="muted" id="dr-stamp" style="font-size:12px"></span>
@@ -20439,6 +20501,208 @@ routes.reports = async (c) => {
         + (d.unmatched && d.unmatched.length ? `<p class="muted" style="margin-top:8px"><b>Names not matched to a mechanic:</b> ${d.unmatched.map((u) => `${esc(u.name)} (${fmtH(u.hours)}, ${esc(u.jobs)})`).join(' · ')}</p>` : '');
       return;
     }
+    if (drKind === 'daily_cost') {
+      const s = d.summary || {};
+      const ov = d.overheads || { monthly: {}, daily: {} };
+      const m = ov.monthly || {};
+      const oDaily = ov.daily || {};
+
+      drBody.innerHTML = `
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px;margin-bottom:16px">
+          <div class="card" style="padding:12px;border-left:4px solid #2563eb">
+            <div class="muted" style="font-size:11px;text-transform:uppercase;font-weight:600">Our Labour Value</div>
+            <div style="font-size:20px;font-weight:700;color:#1e3a8a;margin-top:2px">Rs ${money(s.internal_labour_value)}</div>
+            <div class="muted" style="font-size:11.5px;margin-top:2px">${num(s.internal_labour_hours)} hrs actual work logged</div>
+          </div>
+          <div class="card" style="padding:12px;border-left:4px solid #7c3aed">
+            <div class="muted" style="font-size:11px;text-transform:uppercase;font-weight:600">Outside Value</div>
+            <div style="font-size:20px;font-weight:700;color:#5b21b6;margin-top:2px">Rs ${money(s.outside_value)}</div>
+            <div class="muted" style="font-size:11.5px;margin-top:2px">${(d.outside && d.outside.lines) ? d.outside.lines.length : 0} external charge(s)</div>
+          </div>
+          <div class="card" style="padding:12px;border-left:4px solid #059669">
+            <div class="muted" style="font-size:11px;text-transform:uppercase;font-weight:600">Spares Cost (Same Day)</div>
+            <div style="font-size:20px;font-weight:700;color:#065f46;margin-top:2px">Rs ${money(s.spares_total_value)}</div>
+            <div class="muted" style="font-size:11.5px;margin-top:2px">Local: ${money(s.spares_local_value)} · HO: ${money(s.spares_head_office_value)} · Gen: ${money(s.spares_general_value)}</div>
+          </div>
+          <div class="card" style="padding:12px;border-left:4px solid #d97706">
+            <div style="display:flex;justify-content:space-between;align-items:center">
+              <div class="muted" style="font-size:11px;text-transform:uppercase;font-weight:600">Daily Overheads</div>
+              ${canEdit('reports') || canDo('reports.edit') ? '<button class="sm" id="btn-edit-overheads" style="padding:1px 6px;font-size:10.5px">⚙️ Overheads</button>' : ''}
+            </div>
+            <div style="font-size:20px;font-weight:700;color:#92400e;margin-top:2px">Rs ${money(s.daily_overheads_value)}</div>
+            <div class="muted" style="font-size:11.5px;margin-top:2px">1/${d.days_in_month} of monthly overheads</div>
+          </div>
+        </div>
+
+        <div style="background:#1e3a8a;color:#ffffff;padding:14px 18px;border-radius:8px;margin-bottom:18px;display:flex;align-items:center;justify-content:space-between;box-shadow:0 2px 4px rgba(0,0,0,0.1)">
+          <div>
+            <div style="font-size:12px;text-transform:uppercase;letter-spacing:0.5px;opacity:0.85">Grand Total Daily Operating Cost</div>
+            <div style="font-size:24px;font-weight:800;margin-top:2px">Rs ${money(s.grand_total)}</div>
+          </div>
+          <div style="text-align:right;font-size:12px;opacity:0.9">
+            <div><b>Workshop:</b> ${esc(d.workshop_name)}</div>
+            <div><b>Report Date:</b> ${esc(d.as_of)} (${d.year_month})</div>
+          </div>
+        </div>
+
+        <!-- 1. OUR LABOUR DETAIL -->
+        <div style="margin-bottom:20px">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+            <h4 style="margin:0;font-size:14px;color:#1e3a8a">1. Our Labour Actual Work Value (${money(s.internal_labour_value)} Rs · ${num(s.internal_labour_hours)} hrs)</h4>
+          </div>
+          ${!(d.labour && d.labour.lines && d.labour.lines.length) ? '<p class="muted" style="font-size:12px">No internal mechanics labour recorded on this date.</p>' :
+            tableWrap([
+              { label: 'Mechanic', width: '150px' },
+              { label: 'Vehicle', width: '110px' },
+              { label: 'Job No', width: '100px' },
+              { label: 'Work Description', cls: 'desc-col' },
+              { label: 'Hours', num: true, width: '70px' },
+              { label: 'Rate (Rs)', num: true, width: '100px' },
+              { label: 'Amount (Rs)', num: true, width: '120px' }
+            ],
+            d.labour.lines.map(l => `<tr>
+              <td><b>${esc(l.mechanic)}</b>${l.travel ? ' <span class="badge blue">travel</span>' : ''}</td>
+              <td>${esc(l.vehicle)}</td>
+              <td>${l.job_id ? `<a href="#/jobs/${l.job_id}"><b>${esc(l.job_no)}</b></a>` : esc(l.job_no)}</td>
+              <td class="desc-col">${esc(l.description || '—')}</td>
+              <td class="num">${num(l.hours)}</td>
+              <td class="num">${l.rate ? money(l.rate) : '<span class="badge amber">no rate</span>'}</td>
+              <td class="num"><b>${money(l.amount)}</b></td>
+            </tr>`), { scroll: true })}
+        </div>
+
+        <!-- 2. OUTSIDE VALUE DETAIL -->
+        <div style="margin-bottom:20px">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+            <h4 style="margin:0;font-size:14px;color:#5b21b6">2. Outside Labour &amp; External Repairs (${money(s.outside_value)} Rs)</h4>
+          </div>
+          ${!(d.outside && d.outside.lines && d.outside.lines.length) ? '<p class="muted" style="font-size:12px">No outside labour or repair charges on this date.</p>' :
+            tableWrap([
+              { label: 'Provider / Mechanic', width: '160px' },
+              { label: 'Vehicle', width: '110px' },
+              { label: 'Job No', width: '100px' },
+              { label: 'Work / Charge Description', cls: 'desc-col' },
+              { label: 'Source', width: '110px' },
+              { label: 'Value (Rs)', num: true, width: '120px' }
+            ],
+            d.outside.lines.map(o => `<tr>
+              <td><b>${esc(o.mechanic)}</b></td>
+              <td>${esc(o.vehicle)}</td>
+              <td>${o.job_id ? `<a href="#/jobs/${o.job_id}"><b>${esc(o.job_no)}</b></a>` : esc(o.job_no)}</td>
+              <td class="desc-col">${esc(o.description || '—')}</td>
+              <td><span class="badge ${o.source === 'external_repair' ? 'violet' : ''}">${esc(o.source === 'external_repair' ? 'Job Part' : 'Daily Work')}</span></td>
+              <td class="num"><b>${money(o.amount)}</b></td>
+            </tr>`), { scroll: true })}
+        </div>
+
+        <!-- 3. SPARES COST DETAIL -->
+        <div style="margin-bottom:20px">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+            <h4 style="margin:0;font-size:14px;color:#065f46">3. Spares Issued on this Date (${money(s.spares_total_value)} Rs)</h4>
+          </div>
+          ${!(d.spares && (d.spares.local_purchase.lines.length + d.spares.head_office.lines.length + d.spares.general_items.lines.length)) ?
+            '<p class="muted" style="font-size:12px">No store items or spares issued on this date.</p>' :
+            tableWrap([
+              { label: 'Category', width: '130px' },
+              { label: 'Description', cls: 'desc-col' },
+              { label: 'Part / Item No', width: '120px' },
+              { label: 'Vehicle', width: '100px' },
+              { label: 'Job No', width: '90px' },
+              { label: 'Qty', num: true, width: '70px' },
+              { label: 'Unit Price (Rs)', num: true, width: '110px' },
+              { label: 'Amount (Rs)', num: true, width: '120px' }
+            ],
+            [
+              ...d.spares.local_purchase.lines.map(x => ({ ...x, cat: 'Local Purchase', badgeCls: 'blue' })),
+              ...d.spares.head_office.lines.map(x => ({ ...x, cat: 'Head Office', badgeCls: 'green' })),
+              ...d.spares.general_items.lines.map(x => ({ ...x, cat: 'General Store', badgeCls: 'amber' }))
+            ].map(sp => `<tr>
+              <td><span class="badge ${sp.badgeCls}">${esc(sp.cat)}</span></td>
+              <td class="desc-col">${esc(sp.description)}</td>
+              <td><code>${esc(sp.part_no)}</code></td>
+              <td>${esc(sp.vehicle)}</td>
+              <td>${sp.job_no !== '—' ? `<b>${esc(sp.job_no)}</b>` : '—'}</td>
+              <td class="num">${num(sp.qty)} ${esc(sp.unit || '')}</td>
+              <td class="num">${sp.is_unpriced ? '<span class="badge amber">awaiting price</span>' : money(sp.unit_price)}</td>
+              <td class="num"><b>${money(sp.amount)}</b></td>
+            </tr>`), { scroll: true })}
+        </div>
+
+        <!-- 4. ALLOCATED OVERHEADS DETAIL -->
+        <div style="margin-bottom:20px">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+            <h4 style="margin:0;font-size:14px;color:#92400e">4. Allocated Monthly Overheads (${money(s.daily_overheads_value)} Rs / day)</h4>
+            ${canEdit('reports') || canDo('reports.edit') ? '<button class="sm" id="btn-edit-overheads-2" style="font-size:11px">⚙️ Edit Settings</button>' : ''}
+          </div>
+          ${tableWrap([
+            { label: 'Expense Item' },
+            { label: 'Basis / Description' },
+            { label: 'Monthly Budget (Rs)', num: true },
+            { label: 'Days in Month', num: true },
+            { label: 'Prorated Daily Cost (Rs)', num: true }
+          ], [
+            `<tr><td><b>Electricity</b></td><td class="muted">Approx. Rs 60,000 per month (prorated per day)</td><td class="num">${money(m.electricity_cost)}</td><td class="num">${d.days_in_month}</td><td class="num"><b>${money(oDaily.electricity)}</b></td></tr>`,
+            `<tr><td><b>Internet Bill</b></td><td class="muted">Monthly internet connection fee</td><td class="num">${money(m.internet_bill)}</td><td class="num">${d.days_in_month}</td><td class="num"><b>${money(oDaily.internet)}</b></td></tr>`,
+            `<tr><td><b>Telephone Allowance</b></td><td class="muted">Staff communication allowance</td><td class="num">${money(m.telephone_allowance)}</td><td class="num">${d.days_in_month}</td><td class="num"><b>${money(oDaily.telephone)}</b></td></tr>`,
+            `<tr><td><b>Travelling Allowance</b></td><td class="muted">Outside repair service vehicle allowance</td><td class="num">${money(m.travelling_allowance)}</td><td class="num">${d.days_in_month}</td><td class="num"><b>${money(oDaily.travelling)}</b></td></tr>`,
+            `<tr><td><b>Other Expenses</b></td><td class="muted">${esc(m.notes || 'General miscellaneous overheads')}</td><td class="num">${money(m.other_expenses)}</td><td class="num">${d.days_in_month}</td><td class="num"><b>${money(oDaily.other)}</b></td></tr>`,
+            `<tr style="background:#fef3c7;font-weight:700"><td>Total Daily Overheads</td><td>Sum of all prorated daily overhead categories</td><td class="num">${money((m.electricity_cost || 0) + (m.internet_bill || 0) + (m.telephone_allowance || 0) + (m.travelling_allowance || 0) + (m.other_expenses || 0))}</td><td class="num">${d.days_in_month}</td><td class="num" style="color:#92400e">${money(s.daily_overheads_value)}</td></tr>`
+          ])}
+        </div>
+
+        <!-- 5. DEFERRED MODULES -->
+        <div style="background:#f8fafc;border:1px dashed #cbd5e1;border-radius:6px;padding:12px;margin-bottom:10px">
+          <div style="font-weight:600;font-size:12px;color:#475569;margin-bottom:4px">⏸️ Deferred Future Modules (Under Development)</div>
+          <div class="muted" style="font-size:11.5px">
+            <b>Fuel Cost:</b> Complex module scheduled for future implementation (Current: Rs 0.00)<br>
+            <b>Vehicle Rental Cost:</b> Complex module scheduled for future implementation (Current: Rs 0.00)
+          </div>
+        </div>
+      `;
+
+      // Wire Edit Overheads button
+      const openOverheadsModal = () => {
+        modal(`Monthly Overheads Setting (${d.year_month})`, `
+          <p class="muted" style="font-size:12px;margin-top:0">Set monthly overhead figures for <b>${esc(d.workshop_name)}</b>. Daily operating cost will automatically prorate each value by the number of days in the month (${d.days_in_month} days).</p>
+          <div class="row">
+            ${field('Electricity Cost (Monthly Rs)', 'electricity_cost', { type: 'number', value: m.electricity_cost })}
+            ${field('Internet Bill (Monthly Rs)', 'internet_bill', { type: 'number', value: m.internet_bill })}
+          </div>
+          <div class="row">
+            ${field('Telephone Allowance (Monthly Rs)', 'telephone_allowance', { type: 'number', value: m.telephone_allowance })}
+            ${field('Travelling Allowance (Service Vehicle Rs)', 'travelling_allowance', { type: 'number', value: m.travelling_allowance })}
+          </div>
+          <div class="row">
+            ${field('Other General Overheads (Monthly Rs)', 'other_expenses', { type: 'number', value: m.other_expenses })}
+          </div>
+          ${field('Notes / Basis of Allocation', 'notes', { type: 'textarea', value: m.notes || '' })}
+          <div style="margin-top:12px;text-align:right">
+            <button class="primary" id="save-ov-btn">💾 Save Overheads</button>
+          </div>
+        `, (modalBody, modalClose) => {
+          qs('#save-ov-btn', modalBody).onclick = async () => {
+            const formDataObj = formData(modalBody);
+            formDataObj.workshop_id = d.workshop_id || 1;
+            formDataObj.year_month = d.year_month;
+            try {
+              await api('/reports/overheads', { method: 'POST', body: formDataObj });
+              toast('Monthly overheads updated successfully', 'ok');
+              modalClose();
+              drLoad();
+            } catch (err) {
+              toast(err.message, 'err');
+            }
+          };
+        });
+      };
+
+      const btn1 = qs('#btn-edit-overheads', drBody);
+      if (btn1) btn1.onclick = openOverheadsModal;
+      const btn2 = qs('#btn-edit-overheads-2', drBody);
+      if (btn2) btn2.onclick = openOverheadsModal;
+
+      return;
+    }
     if (drKind === 'pending_price') {
       if (!d.sections.length) { drBody.innerHTML = '<p class="muted">Everything received has a price. 🎉</p>'; return; }
       drBody.innerHTML = d.sections.map((s) => `
@@ -20510,6 +20774,7 @@ routes.reports = async (c) => {
     qs('#dr-t-pending', c).classList.toggle('primary', drKind === 'pending_parts');
     qs('#dr-t-price', c).classList.toggle('primary', drKind === 'pending_price');
     qs('#dr-t-jobs', c).classList.toggle('primary', drKind === 'job_summary');
+    if (qs('#dr-t-cost', c)) qs('#dr-t-cost', c).classList.toggle('primary', drKind === 'daily_cost');
     qs('#dr-t-tally', c).classList.toggle('primary', drKind === 'day_tally');
     drBody.innerHTML = '<div class="muted">Loading…</div>';
     try { drRender(await api(`/reports/daily/${drKind}?date=${date}${repWsQ()}`)); }
@@ -20527,6 +20792,7 @@ routes.reports = async (c) => {
   qs('#dr-t-pending', c).onclick = () => { drKind = 'pending_parts'; drLoad(); };
   qs('#dr-t-price', c).onclick = () => { drKind = 'pending_price'; drLoad(); };
   qs('#dr-t-jobs', c).onclick = () => { drKind = 'job_summary'; drLoad(); };
+  if (qs('#dr-t-cost', c)) qs('#dr-t-cost', c).onclick = () => { drKind = 'daily_cost'; drLoad(); };
   qs('#dr-t-tally', c).onclick = () => { drKind = 'day_tally'; drLoad(); };
   // The Day Tally tab is there only while attendance is on, and for those who may read Daily Work.
   if (canView('dailywork')) {

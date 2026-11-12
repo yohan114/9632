@@ -466,7 +466,13 @@ function dayTally({ asOf, ws = null } = {}) {
   };
 }
 
-const BUILDERS = { pending_parts: pendingParts, job_summary: jobSummary, pending_price: pendingPrice, day_tally: dayTally };
+const BUILDERS = {
+  pending_parts: pendingParts,
+  job_summary: jobSummary,
+  pending_price: pendingPrice,
+  day_tally: dayTally,
+  daily_cost: (opts) => require('./daily_cost').computeDailyCost(opts)
+};
 
 /** Build a report for a day, live from the system. */
 function build(kind, opts) {
@@ -689,7 +695,13 @@ function dayTallyWorkbook(data) {
   return wb;
 }
 
-const WORKBOOKS = { pending_parts: pendingPartsWorkbook, job_summary: jobSummaryWorkbook, pending_price: pendingPriceWorkbook, day_tally: dayTallyWorkbook };
+const WORKBOOKS = {
+  pending_parts: pendingPartsWorkbook,
+  job_summary: jobSummaryWorkbook,
+  pending_price: pendingPriceWorkbook,
+  day_tally: dayTallyWorkbook,
+  daily_cost: (data) => require('./daily_cost').dailyCostWorkbook(data)
+};
 const workbookFor = (kind, data) => WORKBOOKS[kind](data);
 
 module.exports.pendingPartsWorkbook = pendingPartsWorkbook;

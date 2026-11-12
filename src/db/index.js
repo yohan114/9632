@@ -933,6 +933,16 @@ function migrate() {
   } catch (err) {
     console.warn('Migration 055 Storekeeper Grants & Price Sync skipped:', err.message);
   }
+
+  // Job Request Driver Fields & Daily Cost Overheads
+  try {
+    if (!db.prepare("SELECT 1 FROM settings WHERE key = 'migration_056_done'").get()) {
+      require('../migrate/056_job_request_driver_fields_and_daily_cost').runMigration(db);
+      db.prepare("INSERT INTO settings (key, value) VALUES ('migration_056_done', '1')").run();
+    }
+  } catch (err) {
+    console.warn('Migration 056 Job Request Driver Fields & Daily Cost skipped:', err.message);
+  }
   } catch (err) {
     console.warn('Migration 053 MTN store locations skipped:', err.message);
   }

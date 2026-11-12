@@ -305,8 +305,9 @@ router.post(
         `INSERT INTO job_cards (job_no, ref, asset_id, project_id, site, type, severity, description,
                                 status, requested_by, requested_by_user, requested_at,
                                 approved_transport_at, approved_ops_at, workshop_id, job_request_id, fabrication_kind, issue_store_location_id,
-                                work_target, category, drawing_ref, drawing_path, drawing_filename, cost_centre, quantity_or_size, deliver_to)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                                work_target, category, drawing_ref, drawing_path, drawing_filename, cost_centre, quantity_or_size, deliver_to,
+                                driver_name, contact_no, meter_reading)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         no,
         b.ref || null,
         jr.asset_id,
@@ -332,7 +333,10 @@ router.post(
         jr.drawing_filename || null,
         jr.cost_centre || null,
         jr.quantity_or_size || null,
-        jr.deliver_to || null
+        jr.deliver_to || null,
+        jr.driver_name || null,
+        jr.contact_no || null,
+        jr.meter_reading || null
       );
       const id = info.lastInsertRowid;
       // Both approvals mirrored onto the card's own trail — they were given on the request, and
@@ -1479,6 +1483,20 @@ router.patch(
         }
         sets.push('asset_id = ?'); params.push(newAssetId);
       } else newAssetId = undefined;
+    }
+
+    // -- driver & contact & meter reading
+    if (b.driver_name !== undefined) {
+      sets.push('driver_name = ?');
+      params.push(String(b.driver_name || '').trim() || null);
+    }
+    if (b.contact_no !== undefined || b.contact_number !== undefined) {
+      sets.push('contact_no = ?');
+      params.push(String(b.contact_no !== undefined ? b.contact_no : b.contact_number || '').trim() || null);
+    }
+    if (b.meter_reading !== undefined) {
+      sets.push('meter_reading = ?');
+      params.push(String(b.meter_reading || '').trim() || null);
     }
 
     if (!sets.length) return res.json({ ...loadJob(id), warnings });

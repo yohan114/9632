@@ -534,6 +534,7 @@ function migrate() {
           require('../migrate/052_fabrication_access_and_schema').runMigration(wdb);
           require('../migrate/053_mtn_store_locations').runMigration(wdb);
           require('../migrate/054_ccom_outsourcing').runMigration(wdb);
+          require('../migrate/056_job_request_driver_fields_and_daily_cost').runMigration(wdb);
         } catch {}
 
         wdb.close();
@@ -563,6 +564,7 @@ function migrate() {
     try {
       require('../migrate/052_fabrication_access_and_schema').runMigration(coreDb);
       require('../migrate/054_ccom_outsourcing').runMigration(coreDb);
+      require('../migrate/056_job_request_driver_fields_and_daily_cost').runMigration(coreDb);
     } catch (err) {
       console.warn('Failed to run migration 052 on coreDb:', err.message);
     }

@@ -1784,7 +1784,7 @@ module.exports = router;
 // columns carry forward until the supervisor edits them.
 // ---------------------------------------------------------------------------
 const daily = require('../lib/daily_reports');
-const KINDS = ['pending_parts', 'job_summary', 'pending_price', 'day_tally'];
+const KINDS = ['pending_parts', 'job_summary', 'pending_price', 'day_tally', 'daily_cost'];
 const kindOf = (v) => (KINDS.includes(v) ? v : null);
 // The day tally is attendance: it follows the Daily Work section clearance, like /api/attendance.
 function mayReadKind(req, res, kind) {
@@ -1850,7 +1850,7 @@ router.get('/daily/:kind/export.xlsx', requireAuth, asyncHandler(async (req, res
   const saved = date ? daily.readSnapshot(kind, date, ws) : null;
   const data = saved && !req.query.live ? saved.data : daily.build(kind, { asOf: date, ws });
   const wb = daily.workbookFor(kind, data);
-  const name = { pending_parts: 'Pending parts', pending_price: 'Pending price', day_tally: 'Day tally' }[kind] || 'Job report';
+  const name = { pending_parts: 'Pending parts', pending_price: 'Pending price', day_tally: 'Day tally', daily_cost: 'Daily Cost Report' }[kind] || 'Job report';
   res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
   res.setHeader('Content-Disposition', `attachment; filename="${name}${wsCode(ws)} ${data.as_of}.xlsx"`);
   await wb.xlsx.write(res);
@@ -1956,4 +1956,27 @@ router.get('/request-delays/print.html', requireAuth, asyncHandler((req, res) =>
   const html = delayReport.renderRequestDelayPrintHtml(data, wsTitle(ws), req.query || {});
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
   res.send(html);
+}));
+
+// --- Monthly Overheads Management ---
+router.get('/overheads/:yearMonth', requireAuth, asyncHandler((req, res) => {
+  const permissions = require('../lib/permissions');
+  if (!req.user.roles?.includes('admin') && !permissions.meets(permissions.effectiveLevel(req.user, 'reports'), 'view')) {
+    return res.status(403).json({ error: 'Your account has no view access to reports' });
+  }
+  const ws = reportWs(req) || 1;
+  const ym = String(req.params.yearMonth || '').slice(0, 7);
+  const data = require('../lib/daily_cost').getOverheads(ws, ym);
+  res.json(data);
+}));
+
+router.post('/overheads', requireAuth, asyncHandler((req, res) => {
+  const permissions = require('../lib/permissions');
+  if (!req.user.roles?.includes('admin') && !permissions.meets(permissions.effectiveLevel(req.user, 'reports'), 'edit')) {
+    return res.status(403).json({ error: 'Permission denied: reports edit required to modify overheads.' });
+  }
+  const ws = toInt(req.body.workshop_id) || reportWs(req) || 1;
+  const ym = String(req.body.year_month || '').slice(0, 7);
+  const updated = require('../lib/daily_cost').saveOverheads(ws, ym, req.body, req.user.id);
+  res.json({ ok: true, overheads: updated });
 }));
