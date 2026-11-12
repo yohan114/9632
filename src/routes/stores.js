@@ -5344,6 +5344,12 @@ router.patch('/mtn/line/:id', requireCap('stores.mtn.edit'), guardMtnLine, async
     const q = toNum(req.body.qty, 0);
     if (!(q > 0)) return res.status(400).json({ error: 'Quantity must be more than 0' });
     sets.push('qty = ?'); params.push(q); after.qty = q;
+    // A line received in full was received at its quantity: correcting the quantity corrects what
+    // came in with it, or the destination shelf keeps the old figure (stock.rebuild reads
+    // qty_received). A short receipt was counted at the door and stays as counted.
+    if (before.qty_received != null && Number(before.qty_received) === Number(before.qty)) {
+      sets.push('qty_received = ?'); params.push(q);
+    }
   }
   for (const c of MTN_LINE_EDITABLE) {
     if (req.body[c] === undefined) continue;

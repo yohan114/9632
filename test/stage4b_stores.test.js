@@ -247,13 +247,15 @@ test('a transfer moves the shelf when the goods move: out when dispatched, in wh
   // Dispatched: gone from Central, and in transit — so not Muthur's either.
   assert.strictEqual((await req('POST', `/api/stores/mtn/${T}/dispatch`, { cookie: skC })).status, 200);
   assert.deepStrictEqual([bal(CW), bal(MTR)], [4, 7], 'out of Central when it goes on the lorry');
-  assert.strictEqual((await req('POST', `/api/stores/mtn/${T}/receive`, { cookie: skC })).status, 200);
-  assert.deepStrictEqual([bal(CW), bal(MTR)], [4, 7], 'the driver confirming transit is not an arrival');
-  assert.strictEqual(bal(null), 13, 'in transit or not, the company holds what it held');
-  // Accepted: on Muthur's shelf.
-  assert.strictEqual((await req('POST', `/api/stores/mtn/${T}/accept`, { cookie: await as('skM') })).status, 200);
-  assert.deepStrictEqual([bal(CW), bal(MTR)], [4, 9], 'into Muthur when its storekeeper takes it in');
+  assert.strictEqual(bal(null), 13, 'in transit, the company holds what it held');
+  // Received at the destination: on Muthur's shelf. Since the MTN receive/accept work (7106629,
+  // test/mtn_receive_accept_and_stock.test.js) "receive" is the destination store's receipt, and
+  // the goods land then; accepting them afterwards is the sign-off and moves nothing a second time.
+  assert.strictEqual((await req('POST', `/api/stores/mtn/${T}/receive`, { cookie: await as('skM') })).status, 200);
+  assert.deepStrictEqual([bal(CW), bal(MTR)], [4, 9], 'into Muthur when its storekeeper receives it');
   assert.strictEqual(bal(null), 13, 'the company holds what it held');
+  assert.strictEqual((await req('POST', `/api/stores/mtn/${T}/accept`, { cookie: await as('skM') })).status, 200);
+  assert.deepStrictEqual([bal(CW), bal(MTR)], [4, 9], 'accepting it does not count it twice');
   const tot = stock.summary('general');
   assert.strictEqual(tot.received, 16, 'all stores: a transfer is not a receipt');
   assert.strictEqual(stock.summary('general', { store: MTR }).received, 12, 'in Muthur\'s store it is');
