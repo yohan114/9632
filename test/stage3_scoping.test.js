@@ -110,7 +110,8 @@ test('switched off (the default): everyone sees every workshop, exactly as befor
 });
 
 test('the switch: only whoever manages workshops turns it on; with one workshop it waits', async () => {
-  assert.strictEqual((await req('PUT', '/api/workshops/separate', { cookie: await as('mgr'), body: { on: true } })).status, 403);
+  // The manager holds workshops.manage since the capability catalogue (094ccc0); operations does not.
+  assert.strictEqual((await req('PUT', '/api/workshops/separate', { cookie: await as('om'), body: { on: true } })).status, 403);
   run('UPDATE workshops SET active = 0 WHERE id = ?', MTR);
   try {
     const r = await req('PUT', '/api/workshops/separate', { cookie: await as('boss'), body: { on: true } });

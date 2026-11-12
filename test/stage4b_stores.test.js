@@ -120,8 +120,8 @@ test('one store: the main workshop has it, everything is in it, and no screen sh
 
 // ================================================================== the store of a workshop
 test('opening a store: workshops.manage only; from today or earlier; the main store stays; a used store stays', async () => {
-  const mgr = await as('mgr');
-  assert.strictEqual((await req('PUT', `/api/workshops/${MTR}/store`, { cookie: mgr, body: { own: true } })).status, 403);
+  // The manager holds workshops.manage since the capability catalogue (094ccc0); the workshop does not.
+  assert.strictEqual((await req('PUT', `/api/workshops/${MTR}/store`, { cookie: await as('wsM'), body: { own: true } })).status, 403);
   const boss = await as('boss');
   assert.strictEqual((await req('PUT', `/api/workshops/${MTR}/store`, { cookie: boss, body: { own: true, opened: day(1) } })).status, 400);
   const r = await req('PUT', `/api/workshops/${MTR}/store`, { cookie: boss, body: { own: true } });
