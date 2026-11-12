@@ -392,7 +392,7 @@ router.get('/job/:id/report.html', requireView('jobs', 'reports'), asyncHandler(
   button{padding:8px 14px;font-size:14px;margin:10px 0;cursor:pointer}
   @media print{.noprint{display:none}}
 </style></head><body>
-<button class="noprint" onclick="window.print()">🖨 Print / Save as PDF</button>
+<button class="noprint" data-print>🖨 Print / Save as PDF</button><script src="/js/dom-actions.js"></script>
 <h1>Edward &amp; Christie (Pvt) Ltd — Job Report</h1>
 <div class="sub">Job <b>${esc(j.job_no)}</b> · ${esc(veh)}${j.asset_type ? ' · ' + esc(j.asset_type) : ''}${j.project_name ? ' · ' + esc(j.project_name) : ''}</div>
 <div class="hdr">
@@ -647,7 +647,7 @@ router.get('/ongoing-jobs.html', requireModule('reports', 'view'), asyncHandler(
   button{padding:8px 14px;font-size:14px;margin:10px 0;cursor:pointer}
   @media print{.noprint{display:none}}
 </style></head><body>
-<button class="noprint" onclick="window.print()">🖨 Print / Save as PDF</button>
+<button class="noprint" data-print>🖨 Print / Save as PDF</button><script src="/js/dom-actions.js"></script>
 <h1>Edward &amp; Christie (Pvt) Ltd — Ongoing Jobs &amp; Delay Points${esc(wsTitle(ws))}</h1>
 <div class="sub">All jobs still open, raised since <b>${esc(cut)}</b> (last ${months} months) · as at ${esc(today)} · ${jobs.length} job(s) · older never-closed jobs excluded</div>
 <div class="tot">
@@ -750,7 +750,7 @@ router.get('/jobs-summary.html', requireModule('reports', 'view'), asyncHandler(
   button{padding:8px 14px;font-size:14px;margin:10px 0;cursor:pointer}
   @media print{.noprint{display:none}}
 </style></head><body>
-<button class="noprint" onclick="window.print()">🖨 Print / Save as PDF</button>
+<button class="noprint" data-print>🖨 Print / Save as PDF</button><script src="/js/dom-actions.js"></script>
 <h1>Edward &amp; Christie (Pvt) Ltd — Jobs Attended${esc(wsTitle(ws))}</h1>
 <div class="sub">${from ? 'From <b>' + esc(from) + '</b>' + (to ? ' to <b>' + esc(to) + '</b>' : ' onward') : 'All current jobs (2026 onward)'} · ${jobs.length} job(s) · most recently attended first</div>
 <div class="tot">
@@ -813,7 +813,7 @@ router.get('/job/:id/costsheet.html', canViewJobCost, asyncHandler((req, res) =>
   @media print{.noprint{display:none}}
   button{padding:8px 14px;font-size:14px;cursor:pointer;margin-bottom:12px}
 </style></head><body>
-<button class="noprint" onclick="window.print()">Print / Save PDF</button>
+<button class="noprint" data-print>Print / Save PDF</button><script src="/js/dom-actions.js"></script>
 <h1>Job Cost Sheet — ${esc(s.job.job_no)}</h1>
 <div class="meta">
   <b>Asset:</b> ${esc(s.asset_code || '—')} &nbsp; <b>Project:</b> ${esc(s.job.project_name || '—')} &nbsp;
@@ -1117,7 +1117,7 @@ router.get('/daily-progress/print.html', requireModule('daily_progress'), asyncH
   button { padding:8px 14px; font-size:14px; margin:10px 0; cursor:pointer; }
   @media print { .noprint { display:none; } }
 </style></head><body>
-<button class="noprint" onclick="window.print()">🖨 Print / Save as PDF</button>
+<button class="noprint" data-print>🖨 Print / Save as PDF</button><script src="/js/dom-actions.js"></script>
 <h1>Edward &amp; Christie (Pvt) Ltd — Daily Report${wsName ? ` · ${esc(wsName)}` : ''}</h1>
 <div class="sub">Date: <b>${esc(date)}</b> · ${t.jobs} job(s) worked · ${t.hours} mechanic-hours</div>
 <div class="tot">
@@ -1215,7 +1215,7 @@ router.get('/teardown/asset/:id/print.html', requireModule('cost_teardown'), asy
   td.num, th.num { text-align:right; } button { padding:8px 14px; font-size:14px; margin:10px 0; cursor:pointer; }
   @media print { .noprint { display:none; } }
 </style></head><body>
-<button class="noprint" onclick="window.print()">🖨 Print / Save as PDF</button>
+<button class="noprint" data-print>🖨 Print / Save as PDF</button><script src="/js/dom-actions.js"></script>
 <h1>Edward &amp; Christie (Pvt) Ltd — Cost Teardown${esc(wsTitle(t.workshop_id))}</h1>
 <div class="sub">Vehicle: <b>${esc(veh)}</b> · ${esc([t.asset.brand, t.asset.type].filter(Boolean).join(' '))} · ${b.jobs} job(s) · lifetime <b>${m(b.total)}</b></div>
 <table><thead><tr><th>Cost bucket</th><th class="num">Amount</th><th class="num">Share</th></tr></thead><tbody>
@@ -1680,7 +1680,7 @@ router.get('/monthly-repair-detail.html', requireAuth, requireModule('reports'),
   .grand table { width:auto; margin-left:auto; border-collapse:collapse; } .grand td { padding:3px 12px; } .grand .tot { font-size:15px; font-weight:bold; border-top:2px solid #333; }
   @media print { .noprint { display:none; } }
 </style></head><body>
-<button class="noprint" onclick="window.print()">🖨 Print / Save as PDF</button>
+<button class="noprint" data-print>🖨 Print / Save as PDF</button><script src="/js/dom-actions.js"></script>
 <h1>Edward &amp; Christie (Pvt) Ltd — ${wsName ? esc(wsName) : 'Badalgama W/S'}</h1>
 <div class="sub">Monthly Repair Detail — <b>${esc(period)}</b> · ${g.jobs} job(s)</div>
 ${closedHtml}

@@ -647,7 +647,7 @@ function renderRequestDelayPrintHtml(data, workshopTitle = '', query = {}) {
 </head>
 <body>
   <div class="noprint">
-    <button class="btn" onclick="window.print()">🖨 Print / Save as PDF</button>
+    <button class="btn" data-print>🖨 Print / Save as PDF</button><script src="/js/dom-actions.js"></script>
   </div>
   <div class="hdr">
     <div>

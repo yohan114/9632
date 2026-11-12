@@ -345,8 +345,8 @@ function renderControls(docType, id, forPdf) {
   if (forPdf) return '';
   return `
     <div class="toolbar noprint">
-      <button type="button" onclick="history.back()">← Back</button>
-      <button type="button" onclick="window.print()">🖨 Print / Save as PDF</button>
+      <button type="button" data-back>← Back</button>
+      <button type="button" data-print>🖨 Print / Save as PDF</button><script src="/js/dom-actions.js"></script>
       <a class="primary" href="/api/stores/${docType}/${id}/download.pdf" download>⬇ Download Official PDF</a>
     </div>`;
 }

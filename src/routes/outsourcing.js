@@ -21,6 +21,7 @@ const access = require('../lib/outsourcing_access');
 const outsourcingPdf = require('../lib/outsourcing_pdf');
 const mailOutbox = require('../lib/mail_outbox');
 const scope = require('../lib/scope');
+const { allowSameOriginFraming } = require('../lib/security');
 
 function requireCap(...caps) {
   return (req, res, next) => {
@@ -565,6 +566,8 @@ router.get('/requests/:id/preview', requireCap('outsourcing.view'), asyncHandler
   const isDraft = r.status !== 'approved' && r.status !== 'sent' && r.status !== 'completed' && r.status !== 'closed';
 
   const html = outsourcingPdf.buildHtml(r, lines, approval, isDraft);
+  // Shown inside an <iframe> on the request screen, so our own pages may frame this one.
+  allowSameOriginFraming(res);
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
   res.send(html);
 }));

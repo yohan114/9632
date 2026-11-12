@@ -37,7 +37,7 @@
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
           <label style="font-size:12px;font-weight:600">Period Month:</label>
           <input type="month" id="fr_month_input" class="input sm" value="${esc(selectedMonth)}" style="width:145px">
-          <button class="btn sm" onclick="window.print()">🖨️ Print View</button>
+          <button class="btn sm" data-print>🖨️ Print View</button>
           <a href="#/fuel" class="btn sm primary">⛽ Fuel Command Center</a>
         </div>
       </div>

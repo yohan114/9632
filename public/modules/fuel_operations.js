@@ -640,7 +640,7 @@
                 <td style="padding:9px 12px;white-space:nowrap">${esc(String(r.issue_date || '').slice(0, 16))}</td>
                 <td style="padding:9px 12px;font-family:monospace;font-size:11.5px">${esc(r.issue_no || r.id.slice(0, 10))}</td>
                 <td style="padding:9px 12px">
-                  <a href="javascript:void(0)" class="btn-veh-360" data-code="${esc(r.asset_code)}" style="font-weight:700;color:var(--primary,#0066ff);text-decoration:underline">${esc(r.asset_code)}</a>
+                  <a href="#" data-nolink class="btn-veh-360" data-code="${esc(r.asset_code)}" style="font-weight:700;color:var(--primary,#0066ff);text-decoration:underline">${esc(r.asset_code)}</a>
                   ${isVoid ? '<span class="badge danger" style="margin-left:4px">VOID</span>' : ''}
                   ${corrBadge}
                 </td>
@@ -767,7 +767,7 @@
               <tr>
                 <td style="padding:10px 12px;white-space:nowrap">${esc(String(c.requested_at || '').slice(0, 16))}</td>
                 <td style="padding:10px 12px">
-                  <a href="javascript:void(0)" class="btn-corr-veh" data-code="${esc(c.asset_code || '')}" style="font-weight:700">${esc(c.asset_code || '—')}</a>
+                  <a href="#" data-nolink class="btn-corr-veh" data-code="${esc(c.asset_code || '')}" style="font-weight:700">${esc(c.asset_code || '—')}</a>
                   <div class="muted" style="font-size:11px">${esc(c.project_name || c.tank_name || 'Central')}</div>
                 </td>
                 <td style="padding:10px 12px"><span class="badge">${esc(c.correction_type || 'EDIT')}</span></td>
@@ -964,7 +964,7 @@
                     <tbody>
                       ${(data.siteVehicles || []).length ? data.siteVehicles.map((v) => `
                         <tr>
-                          <td><a href="javascript:void(0)" class="sc-veh-360" data-code="${esc(v.code)}" style="font-weight:700">${esc(v.code)}</a></td>
+                          <td><a href="#" data-nolink class="sc-veh-360" data-code="${esc(v.code)}" style="font-weight:700">${esc(v.code)}</a></td>
                           <td>${esc(v.registration || '—')}</td>
                           <td>${esc(v.category || '—')}</td>
                           <td>${v.current_hours ? fmtNum(v.current_hours, 0) : '—'}</td>
@@ -987,7 +987,7 @@
                       ${(data.recentIssues || []).length ? data.recentIssues.map((r, idx) => `
                         <tr>
                           <td>${esc(String(r.issue_date || '').slice(0, 10))}</td>
-                          <td><a href="javascript:void(0)" class="sc-veh-360" data-code="${esc(r.asset_code)}" style="font-weight:700">${esc(r.asset_code)}</a></td>
+                          <td><a href="#" data-nolink class="sc-veh-360" data-code="${esc(r.asset_code)}" style="font-weight:700">${esc(r.asset_code)}</a></td>
                           <td style="text-align:right;font-weight:700">${fmtNum(r.litres, 1)} L</td>
                           <td>${r.meter_reading ? fmtNum(r.meter_reading, 1) : '—'}</td>
                           <td>${esc(r.driver_name || '—')}</td>
@@ -1239,7 +1239,7 @@
                 <div class="muted" style="font-size:12px">Total Litres: <b>${fmtNum(res.totals.litres, 1)} L</b> · Total Cost: <b>${fmtLkr(res.totals.costLkr)}</b> · ${res.totals.issues} slips across ${res.totals.vehicles} vehicles</div>
               </div>
               <div style="display:flex;gap:8px">
-                <button class="btn sm" onclick="window.print()">🖨️ Print Sheet</button>
+                <button class="btn sm" data-print>🖨️ Print Sheet</button>
                 <button class="btn sm" id="btn_close_ss">✕ Close</button>
               </div>
             </div>

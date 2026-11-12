@@ -14,7 +14,7 @@ const { requireModule } = require('./lib/permissions');
 const { errorHandler, asyncHandler } = require('./lib/http');
 const { startScheduler } = require('./lib/backup');
 const backupStatus = require('./lib/backup_status');
-const { securityHeaders, originGuard, trustedOrigins, originAllowed } = require('./lib/security');
+const { securityHeaders, originGuard, trustedOrigins, originAllowed, cspReport, CSP_REPORT_PATH } = require('./lib/security');
 const dailyReports = require('./lib/daily_reports');
 const emitter = require('./lib/emitter');
 const vehicleDocuments = require('./lib/vehicle_documents');
@@ -44,6 +44,9 @@ app.set('trust proxy', process.env.TRUST_PROXY || 'loopback');
 // "X-Powered-By: Express" tells a scanner which exploits to try first, and tells a user nothing.
 app.disable('x-powered-by');
 app.use(securityHeaders);
+// Browsers report what the Content-Security-Policy blocked. Outside /api (no CSRF check: the
+// browser posts these itself) and before sign-in, with its own small body limit.
+app.post(CSP_REPORT_PATH, cspReport());
 // Before the body parsers: a cross-site write is refused before its body is even read.
 app.use('/api', originGuard());
 

@@ -79,9 +79,10 @@ async function login(username, password) {
 test('every response carries the security headers, and no X-Powered-By', async () => {
   const r = await req('GET', '/api/health');
   assert.strictEqual(r.headers['x-content-type-options'], 'nosniff');
-  assert.strictEqual(r.headers['x-frame-options'], 'SAMEORIGIN');
+  assert.strictEqual(r.headers['x-frame-options'], 'DENY');
   assert.strictEqual(r.headers['referrer-policy'], 'strict-origin-when-cross-origin');
-  assert.ok(r.headers['content-security-policy-report-only'].includes("object-src 'none'"));
+  assert.ok(r.headers['content-security-policy'].includes("object-src 'none'"), 'the policy is enforced, not report-only');
+  assert.strictEqual(r.headers['content-security-policy-report-only'], undefined);
   assert.ok(r.headers['permissions-policy'].includes('microphone=()'));
   assert.strictEqual(r.headers['x-powered-by'], undefined, 'the framework is not advertised');
   assert.strictEqual(r.headers['cache-control'], 'no-store', 'API answers never sit in a shared PC\'s cache');

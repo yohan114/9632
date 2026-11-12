@@ -341,7 +341,7 @@ router.get('/:id/print.html', asyncHandler((req, res) => {
   @media print { .noprint { display: none; } }
 </style></head>
 <body>
-<button class="noprint" onclick="window.print()">🖨 Print / Save as PDF</button>
+<button class="noprint" data-print>🖨 Print / Save as PDF</button><script src="/js/dom-actions.js"></script>
 <div class="sheet">
   <div class="hd"><div class="co">Edward and Christie (Pvt) Ltd</div><div class="ti">Job Request</div></div>
   <div class="meta">

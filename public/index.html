@@ -11,56 +11,27 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <title>WorkshopOne — Central Workshop Master System</title>
   <link rel="manifest" href="/manifest.json">
-  <link rel="stylesheet" href="/styles.css?v=8">
+  <link rel="stylesheet" href="/styles.css?v=9">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔧</text></svg>">
 </head>
 <body>
   <div id="app"><div class="login-wrap"><div class="muted">Loading…</div></div></div>
-  <script src="/js/server-config.js?v=8"></script>
+  <script src="/js/dom-actions.js?v=9"></script>
+  <script src="/js/server-config.js?v=9"></script>
   <script src="/js/chart.umd.min.js"></script>
-  <script src="/app.js?v=8"></script>
-  <script src="/modules/fuel_operations.js?v=8"></script>
-  <script src="/modules/fuel_tanks.js?v=8"></script>
-  <script src="/modules/hire_billing.js?v=8"></script>
-  <script src="/modules/fleet_profitability.js?v=8"></script>
-  <script src="/modules/master_dashboard.js?v=8"></script>
-  <script src="/modules/vehicle_costing.js?v=8"></script>
-  <script src="/modules/fuel_readings.js?v=8"></script>
-  <script src="/modules/fuel_prices.js?v=8"></script>
-  <script src="/modules/fuel_reports.js?v=8"></script>
-  <script src="/modules/fuel_alerts.js?v=8"></script>
-  <script src="/js/live-client.js?v=8"></script>
-  <script src="/js/mobile-nav.js?v=8"></script>
-  <script>
-    // The service worker gives the installed app something to show with no network. It also sits
-    // in front of every request, so a stale one can serve stale code indefinitely — that is what
-    // stranded staff on "LiveERP.connect is not a function" and survived hard reloads. Two guards:
-    // ask the browser to check for a new worker on every load, and when one is waiting, tell it to
-    // take over at once and reload rather than waiting for every tab to be closed.
-    if ('serviceWorker' in navigator) {
-      window.addEventListener('load', () => {
-        navigator.serviceWorker.register('/sw.js').then((reg) => {
-          reg.update();
-          reg.addEventListener('updatefound', () => {
-            const fresh = reg.installing;
-            if (!fresh) return;
-            fresh.addEventListener('statechange', () => {
-              // 'installed' with a controller present means an UPDATE, not a first install.
-              if (fresh.state === 'installed' && navigator.serviceWorker.controller) {
-                fresh.postMessage('skip-waiting');
-              }
-            });
-          });
-        }).catch(err => console.error('SW reg error:', err));
-
-        let reloading = false;
-        navigator.serviceWorker.addEventListener('controllerchange', () => {
-          if (reloading) return;          // guard: controllerchange can fire more than once
-          reloading = true;
-          location.reload();
-        });
-      });
-    }
-  </script>
+  <script src="/app.js?v=9"></script>
+  <script src="/modules/fuel_operations.js?v=9"></script>
+  <script src="/modules/fuel_tanks.js?v=9"></script>
+  <script src="/modules/hire_billing.js?v=9"></script>
+  <script src="/modules/fleet_profitability.js?v=9"></script>
+  <script src="/modules/master_dashboard.js?v=9"></script>
+  <script src="/modules/vehicle_costing.js?v=9"></script>
+  <script src="/modules/fuel_readings.js?v=9"></script>
+  <script src="/modules/fuel_prices.js?v=9"></script>
+  <script src="/modules/fuel_reports.js?v=9"></script>
+  <script src="/modules/fuel_alerts.js?v=9"></script>
+  <script src="/js/live-client.js?v=9"></script>
+  <script src="/js/mobile-nav.js?v=9"></script>
+  <script src="/js/sw-register.js?v=9"></script>
 </body>
 </html>

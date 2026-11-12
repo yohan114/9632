@@ -1678,7 +1678,7 @@ h2{font-size:14px;margin:18px 0 6px;border-bottom:2px solid #333;padding-bottom:
 .meta{color:#555;font-size:12px;margin-bottom:8px}table{width:100%;border-collapse:collapse;font-size:12px;margin-bottom:8px}
 th,td{border:1px solid #bbb;padding:4px 7px;text-align:left}th{background:#eee}td.num,th.num{text-align:right}
 button{padding:8px 14px;font-size:14px;cursor:pointer;margin-bottom:10px}@media print{.noprint{display:none}}</style></head>
-<body><button class="noprint" onclick="window.print()">Print / Save PDF</button>
+<body><button class="noprint" data-print>Print / Save PDF</button><script src="/js/dom-actions.js"></script>
 <h1>${esc(title)}</h1><div class="meta">Edward &amp; Christie (Pvt) Ltd — Badalgama W/S · ${esc(subtitle)} · ${total} item(s)</div>
 ${body || '<p>No items.</p>'}</body></html>`;
 }
@@ -2047,7 +2047,7 @@ router.get('/pending/print.html', asyncHandler((req, res) => {
 <style>body{font-family:system-ui,Arial,sans-serif;margin:22px;color:#111}h1{font-size:19px;margin:0 0 2px}h2{font-size:14px;margin:18px 0 6px;border-bottom:2px solid #333;padding-bottom:3px}
 .meta{color:#555;font-size:12px;margin-bottom:8px}table{width:100%;border-collapse:collapse;font-size:12px;margin-bottom:8px}th,td{border:1px solid #bbb;padding:4px 7px;text-align:left}th{background:#eee}td.num,th.num{text-align:right}
 button{padding:8px 14px;font-size:14px;cursor:pointer;margin-bottom:10px}@media print{.noprint{display:none}}</style></head>
-<body><button class="noprint" onclick="window.print()">Print / Save PDF</button>
+<body><button class="noprint" data-print>Print / Save PDF</button><script src="/js/dom-actions.js"></script>
 <h1>Pending Purchases — ${esc(which)}</h1>
 <div class="meta">Edward &amp; Christie · items requested but not fully received (partial + not received) · ${rows.length} item(s)</div>
 ${req.query.source ? section(which, groups[req.query.source] || []) : section('Head Office', groups.head_office) + section('Local Purchase', groups.local_purchase) + section('Not Sourced Yet', groups.unsourced)}

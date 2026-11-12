@@ -263,13 +263,8 @@ function loadChartJs(cb) {
       const s = document.createElement('script');
       s.src = '/js/chart.umd.min.js';
       s.onload = () => resolve(true);
-      s.onerror = () => {
-        const cdn = document.createElement('script');
-        cdn.src = 'https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js';
-        cdn.onload = () => resolve(true);
-        cdn.onerror = () => resolve(false);
-        document.head.appendChild(cdn);
-      };
+      // The bundled copy only: the Content-Security-Policy (script-src 'self') refuses a CDN.
+      s.onerror = () => resolve(false);
       document.head.appendChild(s);
     });
   }
@@ -1395,8 +1390,8 @@ async function openStoreLocationSwitcherModal() {
               </div>
             </div>
             <div style="display:flex;align-items:center;gap:6px;flex-shrink:0">
-              ${(isAdminUser || isActive) ? `<a href="#/stores?tab=locations&id=${s.id}" class="btn sm" onclick="${close}">Inspect</a>` : ''}
-              ${(isAdminUser || isActive) && canView('stores') ? `<a href="#/stores?tab=onhand&physical_store_id=${s.id}" class="btn sm" onclick="${close}">Stock</a>` : ''}
+              ${(isAdminUser || isActive) ? `<a href="#/stores?tab=locations&id=${s.id}" class="btn sm" data-close-modal>Inspect</a>` : ''}
+              ${(isAdminUser || isActive) && canView('stores') ? `<a href="#/stores?tab=onhand&physical_store_id=${s.id}" class="btn sm" data-close-modal>Stock</a>` : ''}
               ${canSwitch && !isActive ? `<button class="btn sm primary" data-switch-store="${s.id}" data-store-name="${esc(s.name)}">Switch Context</button>` : (!isAdminUser && !isActive ? '<span class="muted" style="font-size:11px">🔒 Locked to site</span>' : '')}
             </div>
           </div>
@@ -1885,7 +1880,7 @@ async function render() {
   } catch (e) {
     // Stage 3: a record of another workshop is not an error, just not yours to open.
     content.innerHTML = e.data && e.data.other_workshop
-      ? `<div class="card"><p><b>${esc(e.message)}</b></p><p class="muted">Each workshop sees its own work. Ask head office if you need it.</p><a class="btn sm" href="javascript:history.back()">← Back</a></div>`
+      ? `<div class="card"><p><b>${esc(e.message)}</b></p><p class="muted">Each workshop sees its own work. Ask head office if you need it.</p><a class="btn sm" href="#" data-back>← Back</a></div>`
       : `<div class="card"><p class="err">Error: ${esc(e.message)}</p></div>`;
   }
 }
@@ -1945,7 +1940,7 @@ async function dashPurchasing(c) {
       <div class="card"><div class="stat"><div class="l">You buy</div><div>${esc(mine)}</div></div></div>
     </div>
     <div class="toolbar" style="margin:0 0 8px"><h2 style="margin:0">Waiting to be bought</h2><div class="spacer"></div>
-      <button class="sm primary" onclick="location.hash='#/purchasing'">Open the list</button></div>
+      <button class="sm primary" data-nav="#/purchasing">Open the list</button></div>
     <div id="dpl"></div>`;
 
   qs('#dpl', c).innerHTML = d.rows.length ? tableWrap(
@@ -2326,7 +2321,7 @@ async function dashMain(c) {
   // 1. Pending Approvals / Certifications card (always shown first if user is an approver/certifier or has pending tasks)
   if ((wm && wm.approvals_process && wm.approvals_process.is_approver) || (kp.total_pending > 0)) {
     kpiCards.push(`
-      <a class="kpi-card" href="#/dashboard" onclick="const el=document.getElementById('dash-approvals-card');if(el){el.scrollIntoView({behavior:'smooth'});return false;}">
+      <a class="kpi-card" href="#/dashboard" data-scroll-to="dash-approvals-card">
         <div class="kpi-card-head">
           <span class="kpi-card-title">Awaiting Your Action</span>
           <span class="kpi-card-icon">⚡</span>
@@ -2471,7 +2466,7 @@ async function dashMain(c) {
     </div>
     <div class="card section"><div class="toolbar" style="margin:0 0 8px"><h3 style="margin:0">Monthly Cost History</h3><div class="spacer"></div><span class="muted">click a month to drill in →</span></div>
       ${tableWrap([{ label: 'Month' }, { label: 'Jobs', num: true }, { label: 'Labour', num: true }, { label: 'Head Office', num: true }, { label: 'Local', num: true }, { label: 'Oil', num: true }, { label: 'Service', num: true }, { label: 'Total', num: true }],
-    mc.months.map((m) => `<tr style="cursor:pointer" onclick="location.hash='#/dashboard?month=${m.month}'">
+    mc.months.map((m) => `<tr style="cursor:pointer" data-nav="#/dashboard?month=${m.month}">
           <td><b>${monthName(m.month)}</b></td>
           <td class="num">${m.jobs}</td>
           <td class="num">${money(m.labour)}</td>
@@ -2587,7 +2582,7 @@ async function dashRenderOverview() {
 // Drill 1: which vehicles cost the most in a given month.
 async function dashMonthAssets(c, month) {
   const data = await api('/reports/monthly/' + month + '/assets');
-  const rows = data.assets.map((a) => `<tr style="cursor:pointer" onclick="location.hash='#/dashboard?month=${month}&asset=${a.asset_id}'">
+  const rows = data.assets.map((a) => `<tr style="cursor:pointer" data-nav="#/dashboard?month=${month}&asset=${a.asset_id}">
     <td>${a.asset_code ? `<span class="stamp">${esc(a.asset_code)}</span>` : '—'}</td>
     <td class="num">${money(a.labour)}</td>
     <td class="num">${money(a.material)}</td>
@@ -3281,7 +3276,7 @@ routes.vehicledocuments = async (c, parts = []) => {
   ];
 
   const tabToolbar = `<div class="toolbar" style="margin-bottom:12px">${TABS
-    .map(([t, l]) => `<button class="sm ${t === tab ? 'primary' : ''}" onclick="location.hash='#/vehicledocuments?tab=${t}'">${l}</button>`).join('')}</div>`;
+    .map(([t, l]) => `<button class="sm ${t === tab ? 'primary' : ''}" data-nav="#/vehicledocuments?tab=${t}">${l}</button>`).join('')}</div>`;
 
   c.innerHTML = pageHeader('Vehicle Documents & Statutory Compliance') + tabToolbar + '<div id="vdocbody" class="muted">Loading…</div>';
   const body = qs('#vdocbody', c);
@@ -3445,7 +3440,7 @@ async function renderVdocUpcoming(body, sp) {
 
   const horizons = [14, 30, 60, 90];
   const horizonButtons = horizons.map((h) => `
-    <button class="sm ${h === days ? 'primary' : ''}" onclick="location.hash='#/vehicledocuments?tab=upcoming&days=${h}'">${h} Days</button>
+    <button class="sm ${h === days ? 'primary' : ''}" data-nav="#/vehicledocuments?tab=upcoming&days=${h}">${h} Days</button>
   `).join('');
 
   const toolbar = `
@@ -6481,8 +6476,8 @@ routes['mechanics-kpi'] = async (c) => {
         const isSvc = l.work_type === 'service' || !!l.service_id;
         const typeBadge = isSvc ? '<span class="badge blue" style="font-size:10px">🛢️ Service</span> ' : '<span class="badge" style="font-size:10px">🔧 Repair</span> ';
         const jobLnk = isSvc && l.service_id
-          ? `<a href="#/services/${l.service_id}" onclick="qs('.modal-backdrop')?.remove()"><b>${esc(l.service_job_no || 'SR #' + l.service_id)}</b></a>`
-          : `<a href="#/jobs/${l.job_id}" onclick="qs('.modal-backdrop')?.remove()"><b>${esc(l.job_no)}</b></a>`;
+          ? `<a href="#/services/${l.service_id}" data-close-modal><b>${esc(l.service_job_no || 'SR #' + l.service_id)}</b></a>`
+          : `<a href="#/jobs/${l.job_id}" data-close-modal><b>${esc(l.job_no)}</b></a>`;
         return `<tr>
           <td>${esc(l.work_date)}</td>
           <td>${typeBadge}${jobLnk}</td>
@@ -8488,9 +8483,9 @@ routes.stores = async (c, parts = []) => {
 
   const isOn = (t) => (owner ? t === owner : t === tab);
   const primaryBar = `<div class="toolbar" style="margin-bottom:4px">${PRIMARY
-    .map(([t, l]) => `<button class="sm ${isOn(t) ? 'primary' : ''}" onclick="location.hash='#/stores?tab=${t}'">${l}</button>`).join('')}</div>`;
+    .map(([t, l]) => `<button class="sm ${isOn(t) ? 'primary' : ''}" data-nav="#/stores?tab=${t}">${l}</button>`).join('')}</div>`;
   const subBar = owner ? `<div class="toolbar" style="margin:0 0 10px 0">${GROUPS[owner].subs
-    .map(([s, l]) => `<button class="sm ${s === tab ? 'primary' : ''}" onclick="location.hash='#/stores?tab=${owner}&sub=${s}'">${l}</button>`).join('')}</div>` : '';
+    .map(([s, l]) => `<button class="sm ${s === tab ? 'primary' : ''}" data-nav="#/stores?tab=${owner}&sub=${s}">${l}</button>`).join('')}</div>` : '';
 
   c.innerHTML = pageHeader('Stores') + primaryBar + subBar + '<div id="storebody" class="muted">Loading…</div>';
   const body = qs('#storebody');
@@ -9363,7 +9358,7 @@ async function storeLocationsTab(body) {
           <div style="display:flex;flex-direction:column;gap:14px;padding-left:8px;font-size:13px">
             <!-- Level 1: Central Main Stores -->
             <div style="border-left:3px solid #1e3a8a;padding-left:12px">
-              <div style="display:flex;align-items:center;gap:8px;font-weight:700;flex-wrap:wrap;cursor:pointer" onclick="showStoreLocationStockModal(${ms.id}, '${esc(ms.name)}')">
+              <div style="display:flex;align-items:center;gap:8px;font-weight:700;flex-wrap:wrap;cursor:pointer" data-store-stock="${ms.id}" data-store-name="${esc(ms.name)}">
                 <span style="font-size:16px">🏛️</span>
                 <span style="text-decoration:underline;color:#1e3a8a">${esc(ms.name)}</span>
                 <span class="code" style="font-size:11px">${esc(ms.code)}</span>
@@ -9378,7 +9373,7 @@ async function storeLocationsTab(body) {
                   <div style="font-weight:600;color:#0f766e;margin-bottom:6px">├── 🏗️ General &amp; Project Site Stores (${(ms.site_stores || []).length}):</div>
                   <div style="display:flex;flex-wrap:wrap;gap:8px">
                     ${(ms.site_stores && ms.site_stores.length) ? ms.site_stores.map(ss => `
-                      <div onclick="showStoreLocationStockModal(${ss.id}, '${esc(ss.name)}')" style="cursor:pointer;background:var(--subtle, #f3f4f6);border:1px solid var(--border, #e5e7eb);border-radius:6px;padding:6px 10px;display:flex;align-items:center;gap:6px;transition:transform 0.1s" title="Click to open Site Store Stock & Operations">
+                      <div data-store-stock="${ss.id}" data-store-name="${esc(ss.name)}" style="cursor:pointer;background:var(--subtle, #f3f4f6);border:1px solid var(--border, #e5e7eb);border-radius:6px;padding:6px 10px;display:flex;align-items:center;gap:6px;transition:transform 0.1s" title="Click to open Site Store Stock & Operations">
                         <span>📦</span>
                         <span style="font-weight:600;color:#0f172a">${esc(ss.name)}</span>
                         <span class="code" style="font-size:10px">${esc(ss.code)}</span>
@@ -9392,7 +9387,7 @@ async function storeLocationsTab(body) {
                 <!-- Branch B: Main Workshop Stores -->
                 ${mw ? `
                   <div style="border-left:2px solid #b45309;padding-left:12px">
-                    <div style="display:flex;align-items:center;gap:8px;font-weight:700;margin-bottom:6px;flex-wrap:wrap;cursor:pointer" onclick="showStoreLocationStockModal(${mw.id}, '${esc(mw.name)}')">
+                    <div style="display:flex;align-items:center;gap:8px;font-weight:700;margin-bottom:6px;flex-wrap:wrap;cursor:pointer" data-store-stock="${mw.id}" data-store-name="${esc(mw.name)}">
                       <span>├── 🔧</span>
                       <span style="text-decoration:underline;color:#b45309">${esc(mw.name)}</span>
                       <span class="code" style="font-size:11px">${esc(mw.code)}</span>
@@ -9405,7 +9400,7 @@ async function storeLocationsTab(body) {
                       <div style="font-weight:600;color:#15803d;margin-bottom:6px">└── 🚜 Workshop-Linked Site Stores (${(mw.site_workshop_stores || []).length}):</div>
                       <div style="display:flex;flex-wrap:wrap;gap:8px">
                         ${(mw.site_workshop_stores && mw.site_workshop_stores.length) ? mw.site_workshop_stores.map(sw => `
-                          <div onclick="showStoreLocationStockModal(${sw.id}, '${esc(sw.name)}')" style="cursor:pointer;background:var(--subtle, #f3f4f6);border:1px solid var(--border, #e5e7eb);border-radius:6px;padding:6px 10px;display:flex;align-items:center;gap:6px" title="Click to open Site Store Stock & Operations">
+                          <div data-store-stock="${sw.id}" data-store-name="${esc(sw.name)}" style="cursor:pointer;background:var(--subtle, #f3f4f6);border:1px solid var(--border, #e5e7eb);border-radius:6px;padding:6px 10px;display:flex;align-items:center;gap:6px" title="Click to open Site Store Stock & Operations">
                             <span>🛠️</span>
                             <span style="font-weight:600;color:#0f172a">${esc(sw.name)}</span>
                             <span class="code" style="font-size:10px">${esc(sw.code)}</span>
@@ -9470,9 +9465,9 @@ async function storeLocationsTab(body) {
                   </td>
                   <td style="padding:10px 12px">${s.active ? '<span class="badge green sm">Active</span>' : '<span class="badge red sm">Inactive</span>'}</td>
                   <td style="padding:10px 12px;text-align:right;white-space:nowrap;position:sticky;right:0;background:var(--card-bg, #fff);z-index:1;box-shadow:-2px 0 4px rgba(0,0,0,0.06)">
-                    <button class="sm primary" onclick="showStoreLocationStockModal(${s.id}, '${esc(s.name)}')">📦 Shelf Stock &amp; Ops</button>
-                    ${canManage ? `<button class="sm" onclick="showStoreLocationAccessModal(${s.id})" style="margin-left:4px" title="Manage user access and permissions for this store">🔑 Permissions</button>` : ''}
-                    ${canManage ? `<button class="sm" onclick="showStoreLocationModal(${s.id})" style="margin-left:4px">✏️ Modify</button>` : ''}
+                    <button class="sm primary" data-store-stock="${s.id}" data-store-name="${esc(s.name)}">📦 Shelf Stock &amp; Ops</button>
+                    ${canManage ? `<button class="sm" data-store-access="${s.id}" style="margin-left:4px" title="Manage user access and permissions for this store">🔑 Permissions</button>` : ''}
+                    ${canManage ? `<button class="sm" data-store-edit="${s.id}" style="margin-left:4px">✏️ Modify</button>` : ''}
                   </td>
                 </tr>
               `).join('')}
@@ -10339,6 +10334,16 @@ async function showStoreLocationAccessModal(storeId) {
 window.showStoreLocationModal = showStoreLocationModal;
 window.showStoreLocationStockModal = showStoreLocationStockModal;
 window.showStoreLocationAccessModal = showStoreLocationAccessModal;
+
+// The store-location cards say which store they open with data- attributes (the enforced
+// Content-Security-Policy refuses inline onclick). One listener for every card on every screen.
+document.addEventListener('click', (e) => {
+  const el = e.target.closest && e.target.closest('[data-store-stock],[data-store-access],[data-store-edit]');
+  if (!el) return;
+  if (el.dataset.storeStock) showStoreLocationStockModal(Number(el.dataset.storeStock), el.dataset.storeName || '');
+  else if (el.dataset.storeAccess) showStoreLocationAccessModal(Number(el.dataset.storeAccess));
+  else if (el.dataset.storeEdit) showStoreLocationModal(Number(el.dataset.storeEdit));
+});
 window.storeLocationsTab = storeLocationsTab;
 
 async function storesMonitor(body) {
@@ -11201,10 +11206,10 @@ function renderGrnAttachmentsListHtml(attachments = [], { canDelete = false } = 
             ${p.caption ? `<div class="muted" style="font-size:11px;overflow:hidden;text-overflow:ellipsis">${esc(p.caption)}</div>` : ''}
             <div style="margin-top:4px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
               ${isImg
-                ? `<a href="javascript:void(0)" class="grn-att-preview" data-img-url="${esc(p.url)}" data-title="${esc(p.file_name || 'Invoice Image')}" style="font-size:11px;color:var(--primary);font-weight:600">🔍 View</a>`
+                ? `<a href="#" data-nolink class="grn-att-preview" data-img-url="${esc(p.url)}" data-title="${esc(p.file_name || 'Invoice Image')}" style="font-size:11px;color:var(--primary);font-weight:600">🔍 View</a>`
                 : `<a href="${esc(p.url)}" target="_blank" rel="noopener" style="font-size:11px;color:var(--primary);font-weight:600">🔍 Open ${isPdf ? 'PDF' : 'File'}</a>`}
               <a href="${esc(p.url)}${String(p.url || '').includes('?') ? '&' : '?'}download=1" download="${esc(p.file_name || 'document')}" style="font-size:11px;color:var(--muted)">⬇ Download</a>
-              ${canDelete && p.source !== 'mrn_line_invoice' ? `<a href="javascript:void(0)" class="grn-att-del" data-photo-id="${p.id}" style="font-size:11px;color:var(--red, #dc2626)">✕ Delete</a>` : ''}
+              ${canDelete && p.source !== 'mrn_line_invoice' ? `<a href="#" data-nolink class="grn-att-del" data-photo-id="${p.id}" style="font-size:11px;color:var(--red, #dc2626)">✕ Delete</a>` : ''}
             </div>
           </div>
         </div>
@@ -11457,11 +11462,11 @@ function openSideBySidePhotoModal({ mrnLineId = null, grnId = null, description 
             </div>
             <div style="margin-top:4px;display:flex;gap:8px;align-items:center">
               ${isImg
-                ? `<a href="javascript:void(0)" class="photo-thumb-wrap" data-img-url="${esc(p.url)}" style="font-size:11px;color:var(--blue)">🔍 Inspect</a>`
+                ? `<a href="#" data-nolink class="photo-thumb-wrap" data-img-url="${esc(p.url)}" style="font-size:11px;color:var(--blue)">🔍 Inspect</a>`
                 : `<a href="${esc(p.url)}" target="_blank" rel="noopener" style="font-size:11px;color:var(--blue)">🔍 Open ${isPdf ? 'PDF' : 'File'}</a>`}
               <a href="${esc(p.url)}${String(p.url || '').includes('?') ? '&' : '?'}download=1" download="${esc(p.file_name || 'document')}" style="font-size:11px;color:var(--muted)">⬇ Download</a>
               ${(ME && p.source !== 'mrn_line_invoice' && (ME.is_admin || ME.id === p.uploaded_by || canDo('stores.mrn.edit', 'stores.grn.edit'))) ? `
-                <a href="javascript:void(0)" class="photo-del-btn" data-del-id="${p.id}" data-is-req="${isReq ? '1' : '0'}" style="font-size:11px;color:var(--red, #dc2626)">✕ Delete</a>
+                <a href="#" data-nolink class="photo-del-btn" data-del-id="${p.id}" data-is-req="${isReq ? '1' : '0'}" style="font-size:11px;color:var(--red, #dc2626)">✕ Delete</a>
               ` : ''}
             </div>
           </div>
@@ -15094,7 +15099,7 @@ routes.tools = async (c) => {
 
   const tabsBar = `
     <div class="toolbar" style="margin-bottom:12px;gap:6px;flex-wrap:wrap">
-      ${TABS.map(([t, l]) => `<button class="sm ${t === tab ? 'primary' : ''}" onclick="location.hash='#/tools?tab=${t}'">${l}</button>`).join('')}
+      ${TABS.map(([t, l]) => `<button class="sm ${t === tab ? 'primary' : ''}" data-nav="#/tools?tab=${t}">${l}</button>`).join('')}
     </div>
   `;
 
@@ -17634,7 +17639,7 @@ async function renderVehicleCapacitiesList(c, isAdmin) {
         const vehLabel = `<b>${esc(it.ec_no || it.registration || 'Vehicle #' + it.id)}</b>${(it.ec_no && it.registration) ? `<br><span class="muted" style="font-size:11px">${esc(it.registration)}</span>` : ''}`;
 
         return `<tr>
-          <td><a href="javascript:void(0)" class="vlc-view-link" data-id="${it.id}" style="text-decoration:none">${vehLabel}</a></td>
+          <td><a href="#" data-nolink class="vlc-view-link" data-id="${it.id}" style="text-decoration:none">${vehLabel}</a></td>
           <td><span class="badge" style="font-size:11px">${esc(it.category || '—')}</span></td>
           <td><b>${esc(it.brand || '—')}</b> ${esc(it.model || '')}</td>
           <td>${esc(it.year || '—')}</td>
@@ -19419,8 +19424,8 @@ routes.purchasing = async (c) => {
   c.innerHTML = pageHeader('Procurement & Purchasing',
     'What has been approved and needs to be bought. Workshop urgency ranks priority; both Head Office and Local buyers can reassign channels.') + `
     <div class="tabs" style="margin:0 0 12px 0">
-      <button class="${tab === 'monitor' ? 'active' : ''}" onclick="location.hash='#/purchasing?tab=monitor'">📊 Monitor Cockpit</button>
-      <button class="${tab !== 'monitor' ? 'active' : ''}" onclick="location.hash='#/purchasing?tab=to_buy'">📋 Work Queues</button>
+      <button class="${tab === 'monitor' ? 'active' : ''}" data-nav="#/purchasing?tab=monitor">📊 Monitor Cockpit</button>
+      <button class="${tab !== 'monitor' ? 'active' : ''}" data-nav="#/purchasing?tab=to_buy">📋 Work Queues</button>
     </div>
     <div id="pu-content"></div>`;
 
@@ -19598,7 +19603,7 @@ async function purchasingQueue(body, sp) {
             <div style="font-size:11px;margin-top:3px;display:flex;align-items:center;gap:3px">
               <span class="muted" title="Receiving Destination Store">📍</span>
               <span class="mono" style="font-size:10.5px" title="${esc(r.target_store_name || '')}">${esc(r.target_store_code || (r.purchase_source === 'head_office' ? 'MAIN-STORES' : 'MAIN-WORKSHOP'))}</span>
-              ${cur.tab !== 'bought' ? `<a href="javascript:void(0)" data-dest="${r.id}" data-cur-store="${r.target_store_location_id || ''}" style="font-size:11px;text-decoration:none;margin-left:2px" title="Change delivery destination store">✎</a>` : ''}
+              ${cur.tab !== 'bought' ? `<a href="#" data-nolink data-dest="${r.id}" data-cur-store="${r.target_store_location_id || ''}" style="font-size:11px;text-decoration:none;margin-left:2px" title="Change delivery destination store">✎</a>` : ''}
             </div>
           </td>`,
           `<td>${roadBar(r)}</td>`,
@@ -19870,19 +19875,19 @@ routes.tbrequests = async (c) => {
   const sp = new URLSearchParams(location.hash.split('?')[1] || '');
   const kind = sp.get('kind') === 'battery' ? 'battery' : 'tyre';
   const tab = sp.get('tab') || 'requests';
-  const go = (t, k) => `location.hash='#/tbrequests?tab=${t}&kind=${k || kind}'`;
+  const go = (t, k) => `#/tbrequests?tab=${t}&kind=${k || kind}`;
 
   c.innerHTML = pageHeader('Tyre & Battery Requests',
     'Ask for one, have it approved, issue it against the request, and record what came off.') + `
     <div class="toolbar" style="margin-bottom:4px">
-      <button class="sm ${kind === 'tyre' ? 'primary' : ''}" onclick="${go(tab, 'tyre')}">🛞 Tyre</button>
-      <button class="sm ${kind === 'battery' ? 'primary' : ''}" onclick="${go(tab, 'battery')}">🔋 Battery</button>
+      <button class="sm ${kind === 'tyre' ? 'primary' : ''}" data-nav="${go(tab, 'tyre')}">🛞 Tyre</button>
+      <button class="sm ${kind === 'battery' ? 'primary' : ''}" data-nav="${go(tab, 'battery')}">🔋 Battery</button>
       <div class="spacer"></div>
       ${canEdit('tb_request') ? '<button class="primary sm" id="tb-new">+ New request</button>' : ''}
     </div>
     <div class="toolbar" style="margin:0 0 10px 0">
       ${[['requests', 'Requests'], ['purchase', 'To purchase'], ['issue', 'Ready to issue'], ['returns', 'Old units due'], ['specs', 'Sizes &amp; prices']]
-      .map(([t, l]) => `<button class="sm ${t === tab ? 'primary' : ''}" onclick="${go(t)}">${l}</button>`).join('')}
+      .map(([t, l]) => `<button class="sm ${t === tab ? 'primary' : ''}" data-nav="${go(t)}">${l}</button>`).join('')}
     </div>
     <div id="tb-body" class="muted">Loading…</div>`;
 
@@ -20609,7 +20614,7 @@ routes.reports = async (c) => {
     const line = (label, count, total, warn) => `<tr><td>${esc(label)}</td><td class="num">${count}</td><td class="num">${money(total)}</td><td>${warn ? '<span class="badge amber">enter inputs</span>' : ''}</td></tr>`;
     const rows = [
       line('1. PROFIT OR LOSS', 'Headline', pl ? (isZero ? 0 : (pl.is_profit ? pl.saving_amount : -pl.saving_amount)) : 0),
-      `<tr><td><a href="javascript:void(0)" id="mcr-row-repsec" style="font-weight:600;color:inherit;text-decoration:underline" title="Click to view Repair Cost Sections Reconciler">2. Repair cost (Closed + Pending + Other Labour + Spares)</a> <button class="sm" style="padding:1px 6px;margin-left:6px;font-size:11px" onclick="document.getElementById('mcr-reconcile').click()">Reconcile ⚖️</button></td><td class="num">${(p.repair.closed_count + p.repair.pending_count)} jobs</td><td class="num">${money(p.repair.closed_total + p.repair.pending_total + p.repair.other_labour_total + p.repair.spares_supply_total)}</td><td></td></tr>`,
+      `<tr><td><a href="#" data-nolink id="mcr-row-repsec" style="font-weight:600;color:inherit;text-decoration:underline" title="Click to view Repair Cost Sections Reconciler">2. Repair cost (Closed + Pending + Other Labour + Spares)</a> <button class="sm" style="padding:1px 6px;margin-left:6px;font-size:11px" data-click-target="mcr-reconcile">Reconcile ⚖️</button></td><td class="num">${(p.repair.closed_count + p.repair.pending_count)} jobs</td><td class="num">${money(p.repair.closed_total + p.repair.pending_total + p.repair.other_labour_total + p.repair.spares_supply_total)}</td><td></td></tr>`,
       line('3. Service cost', p.service.count, p.service.total),
       line('4. Battery cost', p.battery.count, p.battery.total),
       line('5. Tyre work cost', p.tyre.count, p.tyre.total),
@@ -24822,7 +24827,7 @@ async function renderStockCockpitSection(c) {
             ${num(k.sku_counts.general)} Gen · ${num(k.sku_counts.filters)} Filters · ${num(k.sku_counts.oil)} Oil · ${num(k.sku_counts.in_store_batteries)} Bat
           </div>
         </div>
-        <div class="card stat" style="cursor:pointer" onclick="location.hash='#/stores?tab=flow&sub=rebalance'">
+        <div class="card stat" style="cursor:pointer" data-nav="#/stores?tab=flow&sub=rebalance">
           <span class="n" style="color:${k.reorder_summary.critical_count > 0 ? 'var(--danger,#c4392c)' : 'inherit'}">${num(k.reorder_summary.total_alerts)} Items</span>
           <span class="l">Reorder Shortfalls</span>
           <div class="muted" style="font-size:11px;margin-top:4px">
@@ -26118,7 +26123,7 @@ async function renderFilterStock(c) {
       qs('#fs-count', c).textContent = items.length + (items.length === 1 ? ' type' : ' types');
       const headers = [{ label: 'Type' }, { label: 'Brand' }, { label: 'Part No' }, { label: 'Compatible Vehicles' }, { label: 'In Stock', num: true }, { label: 'Reorder', num: true }, { label: 'Unit Cost', num: true }, { label: 'Status' }, { label: 'Actions' }];
       const body = items.map((r) => `<tr${r.status !== 'ok' ? ' style="background:rgba(224,168,0,.06)"' : ''}>
-        <td><a href="javascript:void 0" data-led="${r.id}"><b>${esc(r.filter_type)}</b></a></td>
+        <td><a href="#" data-nolink data-led="${r.id}"><b>${esc(r.filter_type)}</b></a></td>
         <td>${esc(r.brand || '—')}</td><td>${esc(r.part_no || '—')}</td><td>${fsPills(r.compatible_assets)}</td>
         <td class="num">${num(r.qty_in_stock)} ${esc(r.unit || '')}</td><td class="num">${num(r.reorder_level)}</td>
         <td class="num">${money(r.unit_cost)}</td><td>${fsStatus(r.status)}</td>
@@ -26457,7 +26462,7 @@ function renderLogin(err) {
       // origin of its own. In a browser this button offered a way to point the app at a machine
       // that is not the one serving it, which is never right and, on the day the system went
       // public, left PCs calling an unreachable LAN address and reporting only "Failed to fetch".
-      ? `<button type="button" class="btn" onclick="window.configureServerIp()" style="width:100%;margin-top:8px;font-size:12px;cursor:pointer">⚙️ Server: ${esc(currentServer)}</button>`
+      ? `<button type="button" class="btn" id="cfg-server-ip" style="width:100%;margin-top:8px;font-size:12px;cursor:pointer">⚙️ Server: ${esc(currentServer)}</button>`
       : ''}
     <!-- The demo credentials that used to be printed here (admin/admin, store/store, …) are gone.
          They were seed passwords, all since rotated, so the hint was wrong as well as unwise:
@@ -26474,6 +26479,8 @@ function renderLogin(err) {
   };
   qs('#login').onclick = go;
   qs('#p').addEventListener('keydown', (e) => { if (e.key === 'Enter') go(); });
+  const cfgBtn = qs('#cfg-server-ip');
+  if (cfgBtn) cfgBtn.onclick = () => window.configureServerIp();
 }
 
 

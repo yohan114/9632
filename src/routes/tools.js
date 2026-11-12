@@ -828,7 +828,7 @@ function renderScrapCertificateHtml(sr, forPdf = false) {
 <body>
   ${forPdf ? '' : `
   <div class="toolbar noprint">
-    <button onclick="window.print()">🖨 Print Certificate</button>
+    <button data-print>🖨 Print Certificate</button><script src="/js/dom-actions.js"></script>
     <a class="primary" href="/api/tools/scrap-requests/${sr.id}/download.pdf" download>⬇ Download PDF</a>
   </div>`}
   <div class="sheet">
