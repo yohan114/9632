@@ -40,6 +40,16 @@ const evidencePhotos = require('../lib/evidence_photos');
 const reorderRebalance = require('../lib/reorder_rebalance');
 const storeLocations = require('../lib/store_locations');
 
+// The store a list is narrowed to: the one asked for (the screens send X-Store-Location-Id), else
+// the person's own store. Someone in all-sites mode (head office, the Central Main Stores) who asks
+// for no store sees every store, as everywhere else that reads isAllSitesMode (scope.js, assets,
+// dashboard) - their default context is not a request to see the main store's shelf alone.
+function listStoreId(req, { physical = false } = {}) {
+  const asked = req.headers['x-store-location-id'] || req.query.store_location_id || (physical ? req.query.physical_store_id : null);
+  if (asked) return toInt(asked);
+  return req.user && !req.user.isAllSitesMode ? toInt(req.user.activeStoreId) : null;
+}
+
 /**
  * Resolve the receiving physical store ID for any GRN receipt (Step 3: Purchasing & GRN Routing).
  * Rules:
@@ -890,7 +900,7 @@ router.get('/mrn', asyncHandler((req, res) => {
   // Which workshop asked (multi-site Stage 2).
   if (req.query.workshop_id) { clauses.push('m.workshop_id = ?'); params.push(toInt(req.query.workshop_id)); }
   // Active store location scoping (Central Main Stores fresh section vs Workshop Stores vs Site Stores)
-  const activeStoreId = toInt(req.headers['x-store-location-id'] || req.query.store_location_id || req.user?.activeStoreId);
+  const activeStoreId = listStoreId(req);
   if (activeStoreId) {
     if (activeStoreId === 1) {
       clauses.push('m.target_store_location_id = 1');
@@ -954,7 +964,7 @@ router.get('/mrn', asyncHandler((req, res) => {
 router.get('/mrn/counts', asyncHandler((req, res) => {
   const own = scope.filter(req.user, 'm.workshop_id');
   const wClause = own.sql ? ` AND ${own.sql}` : '';
-  const activeStoreId = toInt(req.headers['x-store-location-id'] || req.query.store_location_id || req.user?.activeStoreId);
+  const activeStoreId = listStoreId(req);
   let storeClause = '';
   const storeParams = [];
   if (activeStoreId) {
@@ -1471,7 +1481,7 @@ router.get('/grn', asyncHandler((req, res) => {
       clauses.push("COALESCE(g.status, gv.status, 'pending_approval') = 'rejected'");
     }
   }
-  const activeStoreLocId = toInt(req.headers['x-store-location-id'] || req.query.store_location_id || req.query.physical_store_id || req.user?.activeStoreId);
+  const activeStoreLocId = listStoreId(req, { physical: true });
   if (activeStoreLocId) {
     clauses.push('g.physical_store_id = ?');
     params.push(activeStoreLocId);
@@ -1498,7 +1508,7 @@ router.get('/grn', asyncHandler((req, res) => {
 }));
 
 router.get('/grn/counts', asyncHandler((req, res) => {
-  const activeStoreLocId = toInt(req.headers['x-store-location-id'] || req.query.store_location_id || req.query.physical_store_id || req.user?.activeStoreId);
+  const activeStoreLocId = listStoreId(req, { physical: true });
   const storeClause = activeStoreLocId ? ` AND g.physical_store_id = ${activeStoreLocId}` : '';
   const FROM = `FROM grn g LEFT JOIN grn_vouchers gv ON gv.id = g.voucher_id LEFT JOIN mrn m ON m.id = g.mrn_id`;
   const own = `${ownWs(req.user, GRN_WS)}${storeClause}`;   // Step 2c
@@ -4332,7 +4342,7 @@ router.get('/general-job', asyncHandler((req, res) => {
 router.get('/issues', asyncHandler((req, res) => {
   const clauses = [];
   const params = [];
-  const activeStoreId = toInt(req.headers['x-store-location-id'] || req.query.store_location_id || req.query.physical_store_id || req.user?.activeStoreId);
+  const activeStoreId = listStoreId(req, { physical: true });
   if (activeStoreId) {
     clauses.push('i.physical_store_id = ?');
     params.push(activeStoreId);
@@ -4383,7 +4393,7 @@ router.get('/issues', asyncHandler((req, res) => {
 }));
 
 router.get('/issues/counts', asyncHandler((req, res) => {
-  const activeStoreId = toInt(req.headers['x-store-location-id'] || req.query.store_location_id || req.query.physical_store_id || req.user?.activeStoreId);
+  const activeStoreId = listStoreId(req, { physical: true });
   const storeClause = activeStoreId ? ` AND i.physical_store_id = ${activeStoreId}` : '';
   const FROM = 'FROM issues i LEFT JOIN min_notes n ON n.id = i.min_id LEFT JOIN job_cards j ON j.id = i.job_id';
   const own = `${ownWs(req.user, ISSUE_WS)}${storeClause}`;   // Step 2c
