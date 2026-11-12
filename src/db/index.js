@@ -923,6 +923,16 @@ function migrate() {
   } catch (err) {
     console.warn('Migration 054 CCOM outsourcing skipped:', err.message);
   }
+
+  // Storekeeper Grants & Price Cascading Sync
+  try {
+    if (!db.prepare("SELECT 1 FROM settings WHERE key = 'migration_055_done'").get()) {
+      require('../migrate/055_storekeeper_grants_and_price_sync').runMigration(db);
+      db.prepare("INSERT INTO settings (key, value) VALUES ('migration_055_done', '1')").run();
+    }
+  } catch (err) {
+    console.warn('Migration 055 Storekeeper Grants & Price Sync skipped:', err.message);
+  }
   } catch (err) {
     console.warn('Migration 053 MTN store locations skipped:', err.message);
   }

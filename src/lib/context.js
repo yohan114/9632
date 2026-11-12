@@ -353,7 +353,7 @@ function storeScopeFor(user) {
     } catch (_) {}
   }
 
-  if (primaryId && !allowedStoreMap.has(primaryId)) {
+  if (allowedStoreMap.size === 0 && primaryId && !allowedStoreMap.has(primaryId)) {
     allowedStoreMap.set(primaryId, {
       store_location_id: primaryId,
       can_view: 1,
@@ -363,6 +363,27 @@ function storeScopeFor(user) {
       can_dispatch: 1,
       can_count: 1
     });
+  }
+
+  // Central Workshop (Workshop 1) houses both MAIN-STORES (1) and MAIN-WORKSHOP (2).
+  // Central staff assigned to either central store (1 or 2) need access to both co-located stores,
+  // but site store personnel (Store ID > 2) must remain strictly locked to their site store.
+  const hasCentralGrant = allowedStoreMap.has(1) || allowedStoreMap.has(2);
+  const hasSiteStoreOnly = Array.from(allowedStoreMap.keys()).some((sid) => sid > 2);
+  if (hasCentralGrant && !hasSiteStoreOnly) {
+    for (const sid of [1, 2]) {
+      if (!allowedStoreMap.has(sid)) {
+        allowedStoreMap.set(sid, {
+          store_location_id: sid,
+          can_view: 1,
+          can_request: 1,
+          can_issue: 1,
+          can_receive: 1,
+          can_dispatch: 1,
+          can_count: 1
+        });
+      }
+    }
   }
 
   const storeIds = Array.from(allowedStoreMap.keys());

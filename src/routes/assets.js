@@ -2,7 +2,7 @@
 
 const express = require('express');
 const jobstate = require('../lib/jobstate');
-const { get, all, run, tx } = require('../db');
+const { get, all, run, tx, multidb } = require('../db');
 const { requireCap } = require('../lib/auth');
 const { asyncHandler, require_, toInt, toNum } = require('../lib/http');
 const audit = require('../lib/audit');
@@ -298,10 +298,16 @@ router.get('/:id/erl-checklist', requireCap('vehicle_docs.view'), asyncHandler((
   res.json(evaluation);
 }));
 
-// Initialize asset_images table in core database
+// asset_images (and the users it joins) live in core.db in multi-database mode, where the workshop
+// connection reaches them through `ATTACH ... AS core`. A single-database install has no `core`
+// schema at all, so there the prefix must be left off. Hard-coding `core.` broke the gallery on the
+// single-database VPS: "unknown database core" at startup, "no such table: core.asset_images" per call.
+const coreTbl = (name) => (multidb.isMultiDb() ? `core.${name}` : name);
+
+// Initialize asset_images table (core database in multi-database mode, the only database otherwise)
 try {
   run(`
-    CREATE TABLE IF NOT EXISTS core.asset_images (
+    CREATE TABLE IF NOT EXISTS ${coreTbl('asset_images')} (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       asset_id INTEGER NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
       url TEXT NOT NULL,
@@ -313,8 +319,8 @@ try {
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
   `);
-  run(`CREATE INDEX IF NOT EXISTS core.idx_asset_images_asset ON asset_images(asset_id)`);
-  run(`CREATE INDEX IF NOT EXISTS core.idx_asset_images_category ON asset_images(category)`);
+  run(`CREATE INDEX IF NOT EXISTS ${coreTbl('idx_asset_images_asset')} ON asset_images(asset_id)`);
+  run(`CREATE INDEX IF NOT EXISTS ${coreTbl('idx_asset_images_category')} ON asset_images(category)`);
 } catch (e) {
   console.error('Failed to init asset_images table:', e);
 }
@@ -327,8 +333,8 @@ router.get('/:id/images', requireCap('assets.view'), asyncHandler((req, res) => 
   const category = req.query.category ? String(req.query.category).trim() : null;
   let sql = `
     SELECT ai.*, u.full_name AS uploaded_by_name, u.username AS uploaded_by_username
-      FROM core.asset_images ai
-      LEFT JOIN core.users u ON u.id = ai.uploaded_by
+      FROM ${coreTbl('asset_images')} ai
+      LEFT JOIN ${coreTbl('users')} u ON u.id = ai.uploaded_by
      WHERE ai.asset_id = ?
   `;
   const params = [assetId];
@@ -352,36 +358,36 @@ router.post('/:id/images', requireCap('assets.photo.upload', 'assets.edit'), asy
   const description = (req.body.description || '').trim() || null;
   const fileSize = req.body.file_size ? toInt(req.body.file_size) : null;
   const info = run(
-    `INSERT INTO core.asset_images (asset_id, url, category, title, description, file_size, uploaded_by)
+    `INSERT INTO ${coreTbl('asset_images')} (asset_id, url, category, title, description, file_size, uploaded_by)
      VALUES (?, ?, ?, ?, ?, ?, ?)`,
     assetId, url, category, title, description, fileSize, req.user ? req.user.id : null
   );
-  const created = get('SELECT * FROM core.asset_images WHERE id = ?', info.lastInsertRowid);
+  const created = get(`SELECT * FROM ${coreTbl('asset_images')} WHERE id = ?`, info.lastInsertRowid);
   audit.record({ userId: req.user ? req.user.id : null, entity: 'asset_image', entityId: created.id, action: 'upload', after: { assetId, category, title } });
   res.status(201).json(created);
 }));
 
 router.patch('/images/:imageId', requireCap('assets.photo.upload', 'assets.edit'), asyncHandler((req, res) => {
   const imageId = toInt(req.params.imageId);
-  const before = get('SELECT * FROM core.asset_images WHERE id = ?', imageId);
+  const before = get(`SELECT * FROM ${coreTbl('asset_images')} WHERE id = ?`, imageId);
   if (!before) return res.status(404).json({ error: 'Image not found' });
   const title = req.body.title !== undefined ? req.body.title : before.title;
   const category = req.body.category !== undefined ? req.body.category.toLowerCase().trim() : before.category;
   const description = req.body.description !== undefined ? req.body.description : before.description;
   run(
-    `UPDATE core.asset_images SET title = ?, category = ?, description = ? WHERE id = ?`,
+    `UPDATE ${coreTbl('asset_images')} SET title = ?, category = ?, description = ? WHERE id = ?`,
     title, category, description, imageId
   );
-  const after = get('SELECT * FROM core.asset_images WHERE id = ?', imageId);
+  const after = get(`SELECT * FROM ${coreTbl('asset_images')} WHERE id = ?`, imageId);
   audit.record({ userId: req.user ? req.user.id : null, entity: 'asset_image', entityId: imageId, action: 'update', before, after });
   res.json(after);
 }));
 
 router.delete('/images/:imageId', requireCap('assets.photo.upload', 'assets.edit'), asyncHandler((req, res) => {
   const imageId = toInt(req.params.imageId);
-  const before = get('SELECT * FROM core.asset_images WHERE id = ?', imageId);
+  const before = get(`SELECT * FROM ${coreTbl('asset_images')} WHERE id = ?`, imageId);
   if (!before) return res.status(404).json({ error: 'Image not found' });
-  run('DELETE FROM core.asset_images WHERE id = ?', imageId);
+  run(`DELETE FROM ${coreTbl('asset_images')} WHERE id = ?`, imageId);
   audit.record({ userId: req.user ? req.user.id : null, entity: 'asset_image', entityId: imageId, action: 'delete', before });
   res.json({ ok: true, deleted_id: imageId });
 }));

@@ -242,7 +242,10 @@ function costFigures(ws, projId = null) {
 function mechanicsPulse(user, ws) {
   const ym = new Date().toISOString().slice(0, 7);
   const td = today();
-  const dwWs = wsSql('COALESCE(j.workshop_id, d.workshop_id)', ws);
+  // job_daily_work has no workshop_id column, so the workshop comes from the job card alone. The
+  // old COALESCE(j.workshop_id, d.workshop_id) failed every workflow-monitor call with "no such
+  // column: d.workshop_id" (hot-fixed on the VPS 2026-11-10; this brings the fix into the repo).
+  const dwWs = wsSql('j.workshop_id', ws);
   const rows = all(`
     SELECT d.work_date, d.mechanic, COALESCE(d.hours, 0) AS hours, COALESCE(d.outside_labour, 0) AS outside_labour
       FROM job_daily_work d
