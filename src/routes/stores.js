@@ -1034,7 +1034,9 @@ router.post('/mrn', requireCap('stores.mrn.create'), chainPipeline.idempotencyGu
   const reqBy = String(b.requested_by || '').trim() || (ru ? (ru.full_name || ru.username) : null);
   const targetStoreLocationId = (b.target_store_location_id != null && b.target_store_location_id !== '')
     ? toInt(b.target_store_location_id)
-    : (job && job.type === 'fabrication' ? (job.issue_store_location_id || 1) : toInt(req.headers['x-store-location-id'] || req.user?.activeStoreId));
+    // No store named: an all-sites user's default context (the Central Main Stores) is not a choice,
+    // so the request goes to its workshop's store (trg_mrn_target_store), as for everyone else.
+    : (job && job.type === 'fabrication' ? (job.issue_store_location_id || 1) : listStoreId(req));
   const reqWsId = require('../lib/workshops').forRequest(req.user, jobId);
   const targetLoc = targetStoreLocationId ? storeLocations.getStoreLocation(targetStoreLocationId) : null;
   const storeScope = require('../lib/context').storeScopeFor(req.user);
