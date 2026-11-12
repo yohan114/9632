@@ -5185,6 +5185,18 @@ function incomingMtnLines(b) {
 // A note's two ends: the place picked from the list, or the one its text names (Stage 2). A place
 // picked with no text writes the place's name as the text, so every screen and printout that
 // reads the text still shows where the goods went.
+/** The store location a picked place names: loc:<id>, or w:<workshop> when that workshop has one. */
+function locationAtPlace(key) {
+  const s = String(key || '').trim();
+  const mLoc = /^(?:loc|sl):(\d+)$/i.exec(s);
+  if (mLoc) return Number(mLoc[1]);
+  const mWs = /^w:(\d+)$/i.exec(s);
+  if (!mWs) return null;
+  const ws = Number(mWs[1]);
+  const p = storeLocations.resolvePhysicalStore(ws);
+  return p && Number(storeLocations.resolveLegacyStoreId(p.id)) === ws ? Number(p.id) : null;
+}
+
 function endsOf(b) {
   const out = {};
   for (const side of ['from', 'to']) {
@@ -5228,8 +5240,13 @@ router.post('/mtn', requireCap('stores.mtn.edit'), chainPipeline.idempotencyGuar
 
   const mtnScope = require('../lib/context').storeScopeFor(req.user);
   if (!mtnScope.isGlobal) {
-    const canFrom = fromLocId && mtnScope.canAccess(fromLocId, 'dispatch');
-    const canTo = toLocId && mtnScope.canAccess(toLocId, 'receive');
+    // An end picked from the places list (Stage 2: w:<workshop>, loc:<id>) names its store location
+    // just as well as from_store_location_id does; without this a storekeeper using the picker was
+    // refused every transfer. A workshop with no location of its own names none.
+    const fromCheck = fromLocId || locationAtPlace(ends.from_place);
+    const toCheck = toLocId || locationAtPlace(ends.to_place);
+    const canFrom = fromCheck && mtnScope.canAccess(fromCheck, 'dispatch');
+    const canTo = toCheck && mtnScope.canAccess(toCheck, 'receive');
     if (!canFrom && !canTo) {
       return res.status(403).json({
         error: 'Tenancy boundary violation: You must be assigned to either the origin or destination store location to transfer items.'
