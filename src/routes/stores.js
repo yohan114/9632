@@ -238,6 +238,12 @@ function minRefusal(user, idOrNo) {
 const guardMin = (req, res, next) => { const no = minRefusal(req.user, req.params.id); return no ? res.status(403).json(no) : next(); };
 // A transfer note is its own workshop's (the one that wrote it: mtn.workshop_id) and each workshop
 // at either end, on the note or on any of its items — the place keys of a workshop are 'w:<id>'.
+/** Assigned to a store (or working in one): the store context holds them, as in scope.reach. */
+function hasStoreContext(user) {
+  if (!user) return false;
+  if (user.activeStoreId) return true;
+  try { return (storeLocations.getUserStoreLocations(user.id) || []).length > 0; } catch (_) { return false; }
+}
 function mtnOwnCond(user) {
   const r = scope.enabled() ? scope.reach(user) : null;
   let storeIds = null;
@@ -246,7 +252,7 @@ function mtnOwnCond(user) {
     // with no store assigned, storeScopeFor still names a fallback "primary" store, and that is not
     // a reason to hide the other workshops' notes while the workshops are not kept apart.
     const storeScope = require('../lib/context').storeScopeFor(user);
-    if (!storeScope.isGlobal && user && user.activeStoreId) {
+    if (!storeScope.isGlobal && hasStoreContext(user)) {
       storeIds = (storeScope.storeIds || [storeScope.primaryStoreId]).filter(Boolean).map(Number);
     }
   } catch (e) {}
@@ -5244,10 +5250,10 @@ router.post('/mtn', requireCap('stores.mtn.edit'), chainPipeline.idempotencyGuar
   }
 
   const mtnScope = require('../lib/context').storeScopeFor(req.user);
-  // Someone assigned to a store must be at one end of what they write. Someone with no store at all
-  // (scope.reach's rule: no active store, no store context) writes notes as before - between two
-  // outside places too - and the workshop rules decide what they then see.
-  if (!mtnScope.isGlobal && req.user.activeStoreId) {
+  // Someone assigned to a store, or naming store locations, must be at one end of what they write.
+  // Someone with no store at all (scope.reach's rule: no store context) writes notes as before -
+  // between two outside places too - and the workshop rules decide what they then see.
+  if (!mtnScope.isGlobal && (hasStoreContext(req.user) || fromLocId || toLocId)) {
     // An end picked from the places list (Stage 2: w:<workshop>, loc:<id>) names its store location
     // just as well as from_store_location_id does; without this a storekeeper using the picker was
     // refused every transfer. A workshop with no location of its own names none.
