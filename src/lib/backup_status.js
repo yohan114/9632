@@ -104,7 +104,10 @@ function summary() {
     last_verify: s.verify || null,
     // The restore check runs weekly. Older than 8 days means the timer is not running.
     verify_overdue: verifyAgeDays == null || verifyAgeDays > 8,
-    ok: !stale && !!(s.snapshot && s.snapshot.ok) && hasUsers && !(s.snapshot && s.snapshot.mirror && s.snapshot.mirror.ok === false),
+    // A backup nobody has restored is a hope, not a backup: "ok" also needs a passing restore check
+    // inside the last 8 days, as it did before (security stage 0). A failed check makes it not ok.
+    ok: !stale && !!(s.snapshot && s.snapshot.ok) && hasUsers && !(s.snapshot && s.snapshot.mirror && s.snapshot.mirror.ok === false)
+      && !!(s.verify && s.verify.ok) && verifyAgeDays != null && verifyAgeDays <= 8,
   };
 }
 
