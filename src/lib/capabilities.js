@@ -47,6 +47,8 @@ const CAPABILITIES = [
   C('jobs.complete', 'jobs', 'Mark a job card\'s physical repair work complete', ['workshop'], 'jobs', 'jobs', '02', 'Operations'),
   C('jobs.close', 'jobs', 'Close a job card and seal financial posting', ['operational_manager', 'workshop', 'manager'], 'jobs', 'jobs', '10', 'Operations'),
   C('jobs.close_on_date', 'jobs', 'Close a job card on a chosen (past) date', ['operational_manager', 'workshop', 'manager'], 'jobs', 'jobs', '02', 'Operations'),
+  // Read by jobstate.checkAdd (daily work, parts, prices, attachments, edits on a CLOSED card).
+  C('jobs.edit_closed', 'jobs', 'Change items on a CLOSED job card', ['workshop', 'storekeeper', 'manager'], 'jobs', 'jobs', '02', 'Operations'),
   C('jobs.reject', 'jobs', 'Reject a job card at an approval step', ['transport_manager', 'operational_manager', 'manager'], 'jobs', 'jobs', '10', 'Operations'),
   C('jobs.return', 'jobs', 'Send a job card back to "requested" state', ['transport_manager', 'operational_manager', 'manager'], 'jobs', 'jobs', '10', 'Operations'),
   C('jobs.reopen', 'jobs', 'Reopen a CLOSED job card for corrections', ['operational_manager', 'manager', 'workshop'], 'jobs', 'jobs', '02', 'Operations', true),

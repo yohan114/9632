@@ -179,11 +179,16 @@ const INLINE_UPLOAD_EXTS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.
 
 const RELEASE_ID = process.env.RELEASE_ID || process.env.GIT_REV || '873c230e2129ec78c06d61066fece0b2ad5a1a8b-v0.1.0';
 
-// Health check. Public: "is it up" and release id. An admin additionally sees whether the
-// backups are actually happening — the question nobody asks until the day they are needed.
+// Health check. Public: "is it up", nothing more - which build is running is a fingerprint for
+// anyone probing the server (test/security_stage0.test.js). Whoever holds system.status also sees
+// the release id and whether the backups are actually happening - the question nobody asks until
+// the day they are needed.
 app.get('/api/health', (req, res) => {
-  const out = { ok: true, name: 'WorkshopOne', releaseId: RELEASE_ID };
-  if (hasCap(req.user, 'system.status')) out.backup = backupStatus.summary();
+  const out = { ok: true, name: 'WorkshopOne' };
+  if (hasCap(req.user, 'system.status')) {
+    out.releaseId = RELEASE_ID;
+    out.backup = backupStatus.summary();
+  }
   res.json(out);
 });
 

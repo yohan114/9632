@@ -103,8 +103,9 @@ test('evidencePhotos rejects invalid entity types and invalid MIME formats', () 
   }, /Invalid entity type/);
 
   assert.throws(() => {
-    evidencePhotos.savePhoto({ entityType: 'mrn_line', entityId: 1, dataUrl: 'data:text/plain;base64,aGVsbG8=' });
-  }, /Invalid image format/);
+    // Plain text, CSV and office files are accepted as evidence documents now; HTML never is.
+    evidencePhotos.savePhoto({ entityType: 'mrn_line', entityId: 1, dataUrl: 'data:text/html;base64,PHNjcmlwdD4=' });
+  }, /Unsupported file type "text\/html"/);
 });
 
 test('evidencePhotos rejects non-existent MRN lines', () => {

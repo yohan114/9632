@@ -3,6 +3,25 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
+const os = require('os');
+const path = require('path');
+
+// Its own database. This file used to render MIN 1234, GRN 7206, MTN 328 and MRN 3222 out of
+// whatever DB_PATH pointed at - the live register on the PC it was written on, nothing at all on a
+// clean checkout (CI), where every render came back null. The same numbers are now made here.
+const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'wo-docs-print-'));
+process.env.DB_PATH = path.join(TMP, 'docs.db');
+process.env.BACKUP_DIR = path.join(TMP, 'backups');
+process.env.BACKUP_INTERVAL_MINUTES = '0';
+const { migrate, run } = require('../src/db');
+migrate();
+run("INSERT INTO issues (id, issue_date, description, qty, unit) VALUES (1234, '2026-10-06', 'Hydraulic Oil Seal 45x65', 2, 'nos')");
+run("INSERT INTO grn (id, grn_no, grn_date, description, qty, unit_price, supplier) VALUES (7206, 'GRN-7206', '2026-10-06', 'Fan Belt', 4, 1200, 'Dimo')");
+run("INSERT INTO mtn (id, mtn_no, txn_date, from_location, to_location, description, qty) VALUES (328, '328', '2026-10-06', 'Work Shop Stores', 'CEP-03 Wadakada', 'Fly Wheel', 1)");
+run("INSERT INTO mtn_lines (mtn_id, line_no, description, qty, unit) VALUES (328, 1, 'Fly Wheel', 1, 'nos')");
+run("INSERT INTO mrn (id, mrn_no, req_date, status) VALUES (3222, 'MRN-3222', '2026-10-06', 'open')");
+run("INSERT INTO mrn_lines (mrn_id, description, qty, unit) VALUES (3222, 'Brake Pad Set', 2, 'nos')");
+const { findBrowserPath } = require('../src/lib/pdf_generator');
 
 const {
   renderMinDocumentHtml,
@@ -70,7 +89,8 @@ test('Store ISO Documents: Styling, Layout & PDF Rendering', async (t) => {
     assert.match(html, /Required<br>Qty\./, 'Has required qty column');
   });
 
-  await t.test('5. Headless Edge generates single-page PDF without errors', async () => {
+  // Needs Edge or Chrome on the machine (pdf_generator.findBrowserPath); skipped where there is none.
+  await t.test('5. Headless Edge generates single-page PDF without errors', { skip: !findBrowserPath() && 'no Edge or Chrome on this machine' }, async () => {
     const html = renderMinDocumentHtml(1234, { forPdf: true });
     const pdfBuf = await generatePdfBuffer(html);
     assert.ok(pdfBuf && pdfBuf.length > 5000, 'Generates valid non-empty PDF binary');

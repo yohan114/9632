@@ -662,7 +662,7 @@ function updateDraftVersion(versionId, data, user) {
  * Manager verification & version promotion:
  * Approves and promotes renewed version to active coverage.
  */
-function verifyVersion(versionId, { decision, notes = '' }, user) {
+function verifyVersion(versionId, { decision, notes = '', today: asOf = null }, user) {
   const db = getDb();
   const ver = db.prepare('SELECT * FROM vehicle_doc_versions WHERE id = ?').get(versionId);
   if (!ver) {
@@ -676,7 +676,8 @@ function verifyVersion(versionId, { decision, notes = '' }, user) {
     throw err;
   }
 
-  const today = getColomboToday();
+  // asOf: the day to judge "effective now" by (a test, a back-dated check); the Colombo date otherwise.
+  const today = asOf || getColomboToday();
   const now = getColomboNow();
 
   if (decision === 'approve') {

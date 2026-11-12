@@ -240,7 +240,8 @@ function runMigration(targetDb) {
     const insertStmt = targetDb.prepare(`
       INSERT INTO role_capabilities (role, capability, granted, updated_at)
       VALUES (?, ?, 1, datetime('now'))
-      ON CONFLICT(role, capability) DO UPDATE SET granted = 1, updated_at = datetime('now')
+      -- DO NOTHING: this runs on every start, and must not give back a permission an admin took away.
+      ON CONFLICT(role, capability) DO NOTHING
     `);
 
     for (const fc of fuelCapabilities) {

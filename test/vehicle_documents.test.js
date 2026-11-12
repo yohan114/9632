@@ -274,7 +274,11 @@ test('Future-dated renewal stays verified ahead without replacing active coverag
     cost_amount: 85000,
     status: 'draft'
   }, tmUser);
-  vdocs.verifyVersion(v1.id, { decision: 'approve' }, adminUser);
+  // Verified "on" 2026-10-08, the day this test is set on: verifyVersion makes a version current at
+  // once only when its valid_from has come, and judged by the real clock V2 (from 2026-11-01) became
+  // current on verification from that date on.
+  const AS_OF = '2026-10-08';
+  vdocs.verifyVersion(v1.id, { decision: 'approve', today: AS_OF }, adminUser);
 
   // Check current version is V1
   let curIns = vdocs.getVehicleDocuments(101).find((d) => d.doc_type_code === 'insurance');
@@ -289,7 +293,7 @@ test('Future-dated renewal stays verified ahead without replacing active coverag
     cost_amount: 92000,
     status: 'pending_verification'
   }, tmUser);
-  vdocs.verifyVersion(v2.id, { decision: 'approve' }, adminUser);
+  vdocs.verifyVersion(v2.id, { decision: 'approve', today: AS_OF }, adminUser);
 
   // V2 is verified ahead, but current_version_id must STILL BE V1 because today is 2026-10-08!
   curIns = vdocs.getVehicleDocuments(101, { today: '2026-10-08' }).find((d) => d.doc_type_code === 'insurance');
@@ -476,7 +480,7 @@ test('runDailyReminderCheck evaluates fleet, auto-promotes eligible versions, an
     valid_from: '2026-10-10',
     valid_until: '2027-10-10'
   }, tmUser);
-  vdocs.verifyVersion(futureVer.id, { decision: 'approve' }, adminUser);
+  vdocs.verifyVersion(futureVer.id, { decision: 'approve', today: '2026-10-08' }, adminUser);
 
   // 1. Run check on 2026-10-08 -> version is future-dated, not promoted yet
   const resBefore = vdocs.runDailyReminderCheck({ today: '2026-10-08' });

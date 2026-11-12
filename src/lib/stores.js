@@ -136,20 +136,28 @@ function storeAtPlace(placeKey, date) {
   return storeOf(Number(m[1]), date);
 }
 
-/** The physical store location at one end of a transfer: 'loc:<id>' / 'sl:<id>' or workshop 'w:<id>'. */
-function physicalLocationAtPlace(placeKey) {
+/**
+ * The store location at one end of a transfer: 'loc:<id>' / 'sl:<id>', or for a workshop 'w:<id>'
+ * the location of the store that served it on `date` (stores.storeOf), when that store has one of
+ * its own. Never the main workshop store as a stand-in: a workshop with a store of its own but no
+ * location for it is not the Central shelf.
+ */
+function physicalLocationAtPlace(placeKey, date) {
   const s = String(placeKey || '').trim();
   const mLoc = /^(?:loc|sl):(\d+)$/i.exec(s);
   if (mLoc) return Number(mLoc[1]);
-  const mWs = /^w:(\d+)$/i.exec(s);
-  if (mWs) {
-    try {
-      const storeLocations = require('./store_locations');
-      const p = storeLocations.resolvePhysicalStore(Number(mWs[1]));
-      return p ? p.id : null;
-    } catch {}
-  }
-  return null;
+  const legacy = storeAtPlace(s, date);
+  return legacy ? ownedLocation(legacy) : null;
+}
+
+/** The store location that belongs to a workshop store (mapping, else workshop_id), or null. */
+function ownedLocation(storeId) {
+  if (!storeId) return null;
+  try {
+    const storeLocations = require('./store_locations');
+    const p = storeLocations.resolvePhysicalStore(Number(storeId));
+    return p && Number(storeLocations.resolveLegacyStoreId(p.id)) === Number(storeId) ? Number(p.id) : null;
+  } catch { return null; }
 }
 
 /**
@@ -174,60 +182,68 @@ function stampTransfer(mtnId) {
     'BATTICALOA': 7, 'BATTICALOA LOT/2': 7, 'BATTICALOA LOT/3': 7, 'BATTICALOA WORK SHOP': 7, 'BATTICALOA LOT 03': 7, 'BATTICOLOA': 7,
     'MUTHUR': 8, 'MUTHUR PLANT': 8,
   };
+  // locMap holds the ids the live register was seeded with; a database seeded differently (a new
+  // install, a test) may not have that store at all, and stamping a missing id breaks the foreign key.
+  const knownLoc = (id) => {
+    if (!id) return null;
+    try { return get('SELECT 1 x FROM store_locations WHERE id = ?', id) ? id : null; } catch { return null; }
+  };
   const normLoc = (str) => {
     if (!str) return null;
     const cleanStr = String(str).toUpperCase().replace(/[^A-Z0-9/ ]/g, ' ').replace(/\s+/g, ' ').trim();
     for (const [k, id] of Object.entries(locMap)) {
-      if (cleanStr.includes(k) || k.includes(cleanStr)) return id;
+      if (cleanStr.includes(k) || k.includes(cleanStr)) return knownLoc(id);
     }
     return null;
   };
 
-  const headerFromLoc = t.from_store_location_id || physicalLocationAtPlace(t.from_place) || normLoc(t.from_location) || (t.workshop_id === 2 ? 3 : 2);
-  const headerToLoc = t.to_store_location_id || physicalLocationAtPlace(t.to_place) || normLoc(t.to_location);
+  const headerFromLoc = t.from_store_location_id || physicalLocationAtPlace(t.from_place, date) || normLoc(t.from_location) || knownLoc(t.workshop_id === 2 ? 3 : 2);
+  const headerToLoc = t.to_store_location_id || physicalLocationAtPlace(t.to_place, date) || normLoc(t.to_location);
 
+  let anyMoves = false;
   for (const l of all('SELECT id, from_location, to_location, from_place, to_place, from_store_location_id, to_store_location_id FROM mtn_lines WHERE mtn_id = ?', mtnId)) {
     let from = storeAtPlace(l.from_place || t.from_place, date);
     let to = storeAtPlace(l.to_place || t.to_place, date);
 
-    let fromLoc = l.from_store_location_id || physicalLocationAtPlace(l.from_place) || normLoc(l.from_location) || headerFromLoc;
-    let toLoc = l.to_store_location_id || physicalLocationAtPlace(l.to_place) || normLoc(l.to_location) || headerToLoc;
+    let fromLoc = l.from_store_location_id || physicalLocationAtPlace(l.from_place, date) || normLoc(l.from_location) || headerFromLoc;
+    let toLoc = l.to_store_location_id || physicalLocationAtPlace(l.to_place, date) || normLoc(l.to_location) || headerToLoc;
 
+    // Each end in both numbering schemes, where the other one says it (no guessing a store).
     if (storeLocations) {
-      if (fromLoc && !from) from = storeLocations.resolveLegacyStoreId(fromLoc) || (fromLoc === 3 ? 2 : 1);
-      if (toLoc && !to) to = storeLocations.resolveLegacyStoreId(toLoc) || (toLoc === 3 ? 2 : 1);
-      if (from && !fromLoc) {
-        const p = storeLocations.resolvePhysicalStore(from);
-        if (p) fromLoc = p.id;
-      }
-      if (to && !toLoc) {
-        const p = storeLocations.resolvePhysicalStore(to);
-        if (p) toLoc = p.id;
-      }
+      if (fromLoc && !from) from = storeLocations.resolveLegacyStoreId(fromLoc) || null;
+      if (toLoc && !to) to = storeLocations.resolveLegacyStoreId(toLoc) || null;
     }
+    if (from && !fromLoc) fromLoc = ownedLocation(from);
+    if (to && !toLoc) toLoc = ownedLocation(to);
 
-    const movesToStore = to && to !== from;
-    const movesToLoc = toLoc && toLoc !== fromLoc;
+    // Stock moves only between two DIFFERENT stores (see above): two store locations, or two
+    // workshop stores. Anything else - to a site or a machine, between two workshops sharing a
+    // store, before a store opened - is a paper record and is stamped with no store at all.
+    const moves = Boolean((fromLoc && toLoc && Number(fromLoc) !== Number(toLoc)) || (from && to && from !== to));
+    if (moves) anyMoves = true;
 
     run(
       'UPDATE mtn_lines SET from_store_id = ?, to_store_id = ?, from_store_location_id = ?, to_store_location_id = ? WHERE id = ?',
-      from || null,
-      movesToStore ? to : null,
-      fromLoc || null,
-      movesToLoc ? toLoc : null,
+      moves ? (from || null) : null,
+      moves ? (to || null) : null,
+      moves ? (fromLoc || null) : null,
+      moves ? (toLoc || null) : null,
       l.id
     );
   }
 
+  // The note's own ends follow its items; a paper note gets none (stock.rebuild reads the note's
+  // ends for items that have none, so a stamped header would move a paper note's stock).
+  if (!anyMoves) return;
   try {
     run(`
       UPDATE mtn
-         SET from_store_location_id = COALESCE(from_store_location_id, (SELECT from_store_location_id FROM mtn_lines WHERE mtn_id = mtn.id AND from_store_location_id IS NOT NULL LIMIT 1), ?),
-             to_store_location_id = COALESCE(to_store_location_id, (SELECT to_store_location_id FROM mtn_lines WHERE mtn_id = mtn.id AND to_store_location_id IS NOT NULL LIMIT 1), ?),
+         SET from_store_location_id = COALESCE(from_store_location_id, (SELECT from_store_location_id FROM mtn_lines WHERE mtn_id = mtn.id AND from_store_location_id IS NOT NULL LIMIT 1)),
+             to_store_location_id = COALESCE(to_store_location_id, (SELECT to_store_location_id FROM mtn_lines WHERE mtn_id = mtn.id AND to_store_location_id IS NOT NULL LIMIT 1)),
              from_store_id = COALESCE(from_store_id, (SELECT from_store_id FROM mtn_lines WHERE mtn_id = mtn.id AND from_store_id IS NOT NULL LIMIT 1)),
              to_store_id = COALESCE(to_store_id, (SELECT to_store_id FROM mtn_lines WHERE mtn_id = mtn.id AND to_store_id IS NOT NULL LIMIT 1))
        WHERE id = ?
-    `, headerFromLoc, headerToLoc, mtnId);
+    `, mtnId);
   } catch {}
 }
 
@@ -253,15 +269,23 @@ const wholeCountRefusal = () => (isMulti()
 
 /** May this person count or set levels in this store? Head office any; anyone else their own. */
 function mayManage(user, storeId) {
+  const sid = Number(storeId);
   try {
     const context = require('./context');
     const ss = context.storeScopeFor(user);
     if (ss.isGlobal) return true;
-    return ss.canAccess(storeId, 'count');
+    // storeId is a workshop store (stores.byId); the store scope speaks store_locations ids, and the
+    // two number spaces overlap (workshop 1's store is store location 2, not 1). Ask about the
+    // location that belongs to this store: being outside it refuses. Being inside it is not enough
+    // on its own - every workshop without a location of its own is scoped to the main workshop
+    // store - so the Stage 4 rule below still decides.
+    const storeLocations = require('./store_locations');
+    const phys = storeLocations.resolvePhysicalStore(sid);
+    if (phys && Number(storeLocations.resolveLegacyStoreId(phys.id)) === sid && !ss.canAccess(phys.id, 'count')) return false;
   } catch (_) {}
   const scope = require('./scope');
   if (!scope.enabled() || scope.headOffice(user)) return true;
-  return homeStore(user) === Number(storeId);
+  return homeStore(user) === sid;
 }
 
 // ---- reorder levels, per store (a stock take is src/lib/stock_count.js) -------------------------

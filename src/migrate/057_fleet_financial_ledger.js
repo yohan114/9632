@@ -113,13 +113,16 @@ function runMigration(targetDb) {
       { key: 'fleet.profitability.export', roles: ['admin', 'manager', 'operational_manager'] },
       { key: 'finance.period.close', roles: ['admin', 'manager'] },
       { key: 'finance.period.reopen', roles: ['admin'] },
-      { key: 'master_dashboard.view', roles: ['admin', 'manager', 'operational_manager', 'transport_manager', 'assistant_transport_manager', 'viewer'] },
+      // The same roles as the catalogue (src/lib/capabilities.js) and the access matrix, where the
+      // assistant transport manager and the viewer have no Master Cockpit.
+      { key: 'master_dashboard.view', roles: ['admin', 'manager', 'operational_manager', 'transport_manager'] },
     ];
 
     const insertStmt = targetDb.prepare(`
       INSERT INTO role_capabilities (role, capability, granted, updated_at)
       VALUES (?, ?, 1, datetime('now'))
-      ON CONFLICT(role, capability) DO UPDATE SET granted = 1, updated_at = datetime('now')
+      -- DO NOTHING: this runs on every start, and must not give back a permission an admin took away.
+      ON CONFLICT(role, capability) DO NOTHING
     `);
 
     for (const fc of finCapabilities) {

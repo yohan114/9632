@@ -268,7 +268,9 @@ test('the Stock view: value, last count, the first full count of each kind; the 
   const pad = d.items.find((i) => i.item_key === PAD);
   assert.deepStrictEqual([pad.balance, pad.unit_price, pad.value, pad.last_count], [8, 500, 4000, TODAY]);
   assert.strictEqual(d.summary.value, 8 * 500 + 3 * 1200 + 12 * 50);
-  assert.deepStrictEqual([d.can.count, d.can.approve, d.home.id], [true, true, CW], 'one store: counted there');
+  // The manager approves stock takes and, by the segregation-of-duties rule on the role templates
+  // (seedCapabilities in src/lib/capabilities.js), no longer counts as well: count false, approve true.
+  assert.deepStrictEqual([d.can.count, d.can.approve, d.home.id], [false, true, CW], 'one store: counted there');
   const ty = ok(await call('mgr', 'GET', '/stock/tyre'));
   assert.deepStrictEqual([ty.items[0].balance, ty.items[0].unit_price, ty.items[0].value, ty.summary.value], [-1, 45000, 0, 0]);
   const fi = ok(await call('mgr', 'GET', '/stock/filter')).items.find((i) => i.item_key === 'FF5052');
@@ -333,7 +335,7 @@ test('with a store in each workshop, store staff count their own store; head off
     const ov = ok(await call('skM', 'GET', '/stock/overview'));
     const gen = ov.kinds.find((k) => k.section === 'general');
     assert.deepStrictEqual([ov.store.id, gen.full_count, gen.low], [MTR, TODAY, 1]);
-    assert.deepStrictEqual(ok(await call('mgr', 'GET', `/stock/general?store_id=${MTR}`)).can, { count: true, levels: true, approve: true });
+    assert.deepStrictEqual(ok(await call('mgr', 'GET', `/stock/general?store_id=${MTR}`)).can, { count: false, levels: true, approve: true }, 'the manager approves, does not count (SoD)');
   } finally {
     scope.setSwitch({ id: U.boss }, false);
     run('UPDATE workshops SET own_store = 0 WHERE id = ?', MTR);

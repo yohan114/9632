@@ -48,6 +48,10 @@ const WAITING_A = card('Back side sheet bush repair', { date: BEFORE });
 run("INSERT INTO job_daily_work (job_id, work_date, mechanic, hours) VALUES (?, ?, 'Anura', 4)", WAITING_A, day(-10));
 const WAITING_B = card('Silencer repair', { date: BEFORE });
 const WAITING_C = card('Jack repair', { status: 'APPROVED_TRANSPORT', date: BEFORE });
+// BEFORE is a fixed date, so from 2026-11-09 these were over 90 days old, and with nothing recorded
+// on them the script counted them as stuck too. Recent work keeps them what they stand for here:
+// cards waiting on paper approvals that are being worked on, not abandoned ones.
+for (const id of [WAITING_B, WAITING_C]) run("INSERT INTO job_daily_work (job_id, work_date, mechanic, hours) VALUES (?, ?, 'Anura', 1)", id, day(-10));
 // From the cut-off the approvals belong in the app, so these go through the process.
 const ON_CUTOFF = card('Raised on the cut-off day', { date: ON });
 const AFTER_CUTOFF = card('Raised after the cut-off', { date: AFTER });

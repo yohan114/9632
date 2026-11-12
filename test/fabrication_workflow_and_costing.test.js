@@ -37,6 +37,13 @@ test('Fabrication General Works & Costing Sheet End-to-End Suite', async (t) => 
 
   const pwHash = auth.hashPassword('Secret123!');
 
+  // A fresh database has only the roles a migration creates (site_storekeeper, fabrication_officer);
+  // the built-in ones are made by whoever uses them. Without these rows the user_roles inserts below
+  // quietly did nothing (OR IGNORE over a NULL role_id) and the "admin" had no role at all.
+  for (const r of ['admin', 'transport_manager', 'workshop', 'operational_manager']) {
+    run('INSERT OR IGNORE INTO roles (name, label) VALUES (?, ?)', r, r);
+  }
+
   // Seed or fetch users
   let adminUser = get("SELECT * FROM users WHERE username = 'admin_fab_test'");
   if (!adminUser) {

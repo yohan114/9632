@@ -156,7 +156,9 @@ test('every receipt and issue reaches the shelf as it is saved; a full rebuild a
   assert.strictEqual(movePrice(g2), null);
   ok(await call('sk', 'POST', '/stores/grn/bulk-price', { rows: [{ id: g2, unit_price: 520 }] }));
   assert.strictEqual(movePrice(g2), 520);
-  ok(await call('sk', 'PATCH', `/stores/grn/${g2}`, { unit_price: 530 }));
+  // Pricing a receipt by hand needs its invoice attached (6f6d424 / 6f90321: MISSING_GRN_DOCUMENT).
+  const invoice = { dataUrl: 'data:application/pdf;base64,JVBERi0xLjQKJSVFT0YK', filename: 'invoice.pdf', kind: 'invoice' };
+  ok(await call('sk', 'PATCH', `/stores/grn/${g2}`, { unit_price: 530, attachments: [invoice] }));
   assert.strictEqual(movePrice(g2), 530);
   ok(await issueItem(2), 201);
   // Only the rows a write names are brought up to date — nothing else is touched.
