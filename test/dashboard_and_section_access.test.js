@@ -143,25 +143,25 @@ test('access section-matrix requires admin permission', async () => {
   assert.strictEqual(r.status, 403);
 });
 
-test('access section-matrix returns 7 functional sections and capabilities for admin', async () => {
+test('access section-matrix returns the functional sections and capabilities for admin', async () => {
   const r = await api('/access/section-matrix', { cookie: adminCookie });
   assert.strictEqual(r.status, 200);
 
+  // The seven broad sections were split into one per screen by the capability catalogue (094ccc0,
+  // "24-section granular capabilities"), and the fuel merge added fuel, hire, costing and finance.
   assert(Array.isArray(r.body.sections), 'sections must be array');
-  assert.strictEqual(r.body.sections.length, 7, 'must define 7 functional sections');
+  const ids = r.body.sections.map(s => s.id);
+  assert.strictEqual(new Set(ids).size, ids.length, 'each section once');
+  for (const id of ['dashboard', 'jobs', 'jobrequests', 'operations', 'dailywork', 'stores', 'batteries', 'purchasing',
+    'reports', 'access', 'fuel', 'hire', 'costing', 'finance']) assert(ids.includes(id), `section ${id}`);
+  for (const sec of r.body.sections) {
+    assert(Array.isArray(sec.modules) && sec.modules.length, `${sec.id} has modules`);
+    for (const p of ['none', 'view', 'operator', 'manager']) assert(sec.presets[p], `${sec.id} has the ${p} preset`);
+  }
 
-  const expectedSections = ['operations', 'stores', 'fleet', 'dailywork', 'purchasing', 'batteries', 'admin'];
-  const actualSectionIds = r.body.sections.map(s => s.id);
-  assert.deepStrictEqual(actualSectionIds, expectedSections);
-
-  // Check structure of first section (operations)
-  const ops = r.body.sections.find(s => s.id === 'operations');
-  assert(ops.modules.includes('jobs'));
-  assert(ops.modules.includes('jobrequests'));
-  assert(ops.presets.none);
-  assert(ops.presets.view);
-  assert(ops.presets.operator);
-  assert(ops.presets.manager);
+  const jobs = r.body.sections.find(s => s.id === 'jobs');
+  assert(jobs.modules.includes('jobs'));
+  assert(r.body.sections.find(s => s.id === 'jobrequests').modules.includes('jobrequests'));
   assert(r.body.capabilities.some(c => c.key === 'jobs.create'));
 
   // Check roles list

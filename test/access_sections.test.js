@@ -146,10 +146,16 @@ test('day one: every built-in role has on each new switch the level it had on th
 
 
 test('Lubricant Capacities, the stock cockpit and the Alias Queue', async () => {
+  // Since the capability catalogue (094ccc0) the capacities list also needs lubricants.view, on top
+  // of the section clearance: a role opened only on the section switch is still refused the list.
+  await refused('lubeonly', '/lubricant-capacities');
+  capabilities.setCapability('lubeonly', 'lubricants.view', true);
   await letThrough('lubeonly', '/lubricant-capacities');
   await refused('jobsonly', '/lubricant-capacities');
   await letThrough('storesonly', '/stock-cockpit/overview');
   await refused('jobsonly', '/stock-cockpit/overview');
+  await refused('aliasonly', '/aliases');   // the queue itself needs aliases.view as well (094ccc0)
+  capabilities.setCapability('aliasonly', 'aliases.view', true);
   await letThrough('aliasonly', '/aliases');
   await letThrough('aliasonly', '/mechanics/aliases');
   await refused('jobsonly', '/aliases');
