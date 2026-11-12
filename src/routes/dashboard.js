@@ -147,7 +147,9 @@ function counts(ws, projId = null) {
  */
 function costFigures(ws, projId = null) {
   const { year, month } = nowYM();
-  if (projId != null && ws == null) {
+  // A project store's figures are its project's vehicles, whether or not the person is also held to
+  // a workshop (a project store without a workshop of its own leaves them at their home workshop).
+  if (projId != null) {
     const pId = Number(projId);
     const top_5_cost_vehicles = all(
       `SELECT v.asset_id, a.code, a.registration, a.ec_code,
@@ -298,20 +300,24 @@ router.get('/overview', asyncHandler((req, res) => {
   const costs = canReports ? costFigures(ws, projId) : { monthly_cost_total: null, monthly_cost_trend: [], top_5_cost_vehicles: [] };
 
   // Job status mix over the last 90 days (by the real job date, falling back to created_at).
-  const pSqlJob = (projId && !ws) ? ` AND project_id = ${Number(projId)}` : '';
+  // Kept to the project whenever there is one, as counts() keeps active_jobs - not only when the
+  // person also sees every workshop, which let a project store's breakdown count other projects.
+  const pSqlJob = projId ? ` AND project_id = ${Number(projId)}` : '';
   const job_status_breakdown = canJobs ? all(
     `SELECT status, COUNT(*) AS count FROM job_cards
       WHERE date(COALESCE(requested_at, created_at)) >= date('now', '-90 days')${wsSql('workshop_id', ws)}${pSqlJob}
       GROUP BY status ORDER BY count DESC`) : [];
 
   // Step 2b: kept to your own workshops or project, the actions of their people.
+  // A project store's own project comes first, as for the figures above: everyone at the home
+  // workshop it falls back to is not its people.
   let actWhere = '';
-  if (ws != null) {
-    actWhere = `WHERE al.user_id IS NOT NULL${wsSql('u.workshop_id', ws)}`;
-  } else if (projId != null) {
+  if (projId != null) {
     actWhere = `WHERE (al.entity = 'projects' AND al.entity_id = ${Number(projId)})
       OR al.entity_id IN (SELECT id FROM job_cards WHERE project_id = ${Number(projId)})
       OR al.user_id IN (SELECT sla.user_id FROM store_location_access sla JOIN store_locations sl ON sl.id = sla.store_location_id WHERE sl.project_id = ${Number(projId)})`;
+  } else if (ws != null) {
+    actWhere = `WHERE al.user_id IS NOT NULL${wsSql('u.workshop_id', ws)}`;
   }
   const recent_activity = all(
     `SELECT al.id, al.entity, al.entity_id, al.action, al.reason, al.created_at,
