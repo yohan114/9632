@@ -19,6 +19,69 @@ const sessionPolicy = () => ({ idleMinutes: config.sessionIdleMinutes || 0, ttlH
 
 const clientIp = (req) => req.ip || (req.connection && req.connection.remoteAddress) || 'unknown';
 
+// Where a person works, as the screens need it — in the sign-in reply and in /auth/me alike. The
+// sign-in reply used to leave these out, so until the page was next reloaded the screens took a
+// person who had just signed in for one with a single workshop: no workshop column, the whole
+// company's wording on stock screens.
+function workshopFields(user) {
+  const ws = require('../lib/workshops');
+  const scope = require('../lib/scope');
+  const storeLocs = require('../lib/store_locations');
+  // Home workshop, and whether there is more than one (multi-site Stage 2): the screens show
+  // workshop pickers and filters only when there is.
+  const home = ws.byId(ws.homeOf(user));
+  let userStores = [];
+  try {
+    userStores = storeLocs.getUserStoreLocations(user.id) || [];
+  } catch (_) {}
+
+  // If user has no specific store entries yet, fallback to matched workshop store or default store
+  if (!userStores.length) {
+    try {
+      const allStores = storeLocs.listStoreLocations() || [];
+      const match = (home && allStores.find((s) => s.workshop_id === home.id))
+        || allStores.find((s) => s.store_type === 'MAIN_STORE')
+        || allStores.find((s) => s.is_default)
+        || allStores[0];
+      if (match) {
+        userStores = [{
+          store_location_id: match.id,
+          store_name: match.name,
+          store_code: match.code,
+          store_type: match.store_type,
+          can_view: 1, can_request: 0, can_issue: 0, can_receive: 0, can_dispatch: 0, can_count: 0
+        }];
+      }
+    } catch (_) {}
+  }
+
+  const primaryStore = (userStores && userStores.length > 0) ? userStores[0] : null;
+  const activeStoreName = primaryStore
+    ? primaryStore.store_name
+    : (home ? home.name : 'Central Main Stores');
+
+  const context = require('../lib/context');
+  const isMainStore = context.isMainStoreUser(user);
+  return {
+    isMainStore,
+    storeType: primaryStore ? primaryStore.store_type : null,
+    activeWorkshopId: primaryStore ? primaryStore.workshop_id : (home ? home.id : null),
+    activeProjectId: primaryStore ? primaryStore.project_id : null,
+    workshop: home ? { id: home.id, code: home.code, name: home.name } : null,
+    workshopsMulti: ws.isMulti(),
+    storeLocations: userStores,
+    primaryStore: primaryStore,
+    storeLocationId: primaryStore ? primaryStore.store_location_id : null,
+    storeName: activeStoreName,
+    // Stage 3: whether this person sees every workshop's job cards (always, until scoping is on).
+    seesAllWorkshops: scope.seesAllJobs(user),
+    // Stage 4: the workshops seen (null = all) — store staff see every workshop their store serves.
+    workshopsSeen: scope.reach(user),
+    // Step 2: the store whose stock this person's screens show, or null for every store.
+    ownStore: scope.ownStore(user),
+  };
+}
+
 // A session, its cookie, and the signed-in user as the screens need them. The one way into the
 // system: after a password (no second factor on the account), or after a code (/mfa/verify).
 function startSession(req, res, user, { mfaVerified = false, method = 'password', extra = {} } = {}) {
@@ -46,6 +109,7 @@ function startSession(req, res, user, { mfaVerified = false, method = 'password'
     mfaEnabled: st.enabled,
     mfaSetupRequired: st.setupRequired,
     sessionPolicy: sessionPolicy(),
+    ...workshopFields({ ...uObj, caps }),
     ...extra,
   });
 }
@@ -281,16 +345,14 @@ router.get('/me', (req, res) => {
   // The session token is the key to this account; it lives in an httpOnly cookie precisely so page
   // script cannot read it. Echoing it back in a JSON body would undo that.
   const { token: _token, ...me } = req.user;
-  // Home workshop, and whether there is more than one (multi-site Stage 2): the screens show
-  // workshop pickers and filters only when there is.
-  const ws = require('../lib/workshops');
-  const home = ws.byId(ws.homeOf(req.user));
-  res.json({ ...me, permissions: permissions.userPermissions(req.user.roles), hasSignature: !!(u && u.signature),
-    workshop: home ? { id: home.id, code: home.code, name: home.name } : null, workshopsMulti: ws.isMulti(),
-    // Stage 3: whether this person sees every workshop's job cards (always, until scoping is on).
-    seesAllWorkshops: require('../lib/scope').seesAllJobs(req.user),
-    // Stage 4: the workshops seen (null = all) — store staff see every workshop their store serves.
-    workshopsSeen: require('../lib/scope').reach(req.user),
+  // effectiveUserPermissions, not userPermissions: the first reads the person's OWN levels where
+  // they have any and falls back to their roles', the second only ever answers the roles' template.
+  // The sign-in reply already answers the effective set, so a level given or taken from one person
+  // applied until the page next asked /auth/me and was handed the role template back -- a level
+  // taken away reappeared, one granted vanished, and the per-person screen looked like it had done
+  // nothing. The whole point of that screen is that a person can differ from their role.
+  res.json({ ...me, permissions: permissions.effectiveUserPermissions(req.user), hasSignature: !!(u && u.signature),
+    ...workshopFields(req.user),
     capNeeds: require('../lib/capabilities').needsFor(req.user.caps || []),
     sessionPolicy: sessionPolicy(),
     passwordPolicy: passwordPolicy.describe() });

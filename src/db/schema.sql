@@ -131,6 +131,23 @@ CREATE TABLE IF NOT EXISTS audit_log (
 );
 CREATE INDEX IF NOT EXISTS idx_audit_entity ON audit_log(entity, entity_id);
 
+CREATE TABLE IF NOT EXISTS stand_in_delegations (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  granter_id      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  stand_in_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  start_date      TEXT NOT NULL,          -- YYYY-MM-DD
+  end_date        TEXT NOT NULL,          -- YYYY-MM-DD
+  reason          TEXT NOT NULL,
+  active          INTEGER NOT NULL DEFAULT 1,
+  created_by      INTEGER NOT NULL REFERENCES users(id),
+  created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+  revoked_at      TEXT,
+  revoked_by      INTEGER REFERENCES users(id),
+  revoked_reason  TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_delegations_stand_in ON stand_in_delegations(stand_in_id, active, start_date, end_date);
+CREATE INDEX IF NOT EXISTS idx_delegations_granter ON stand_in_delegations(granter_id, active);
+
 -- ---------------------------------------------------------------------------
 -- STORES & INVENTORY  (MRN -> GRN -> Issue -> MTN + general items)
 -- ---------------------------------------------------------------------------
@@ -159,8 +176,20 @@ CREATE TABLE IF NOT EXISTS mrn (
   job_id        INTEGER REFERENCES job_cards(id),
   purpose       TEXT,
   requested_by  TEXT,
+  chain_no      TEXT,
   status        TEXT NOT NULL DEFAULT 'open'
-                  CHECK (status IN ('open','partially_received','received','cancelled')),
+                  CHECK (status IN ('open','partially_received','received','cancelled','closed')),
+  closed_by     TEXT,
+  closed_at     TEXT,
+  closure_notes TEXT,
+  site_authority_status TEXT NOT NULL DEFAULT 'approved'
+                  CHECK (site_authority_status IN ('pending', 'approved', 'rejected')),
+  site_authority_user_id INTEGER REFERENCES users(id),
+  site_authority_at TEXT,
+  site_authority_notes TEXT,
+  parent_mrn_id INTEGER REFERENCES mrn(id),
+  replenishment_type TEXT,
+  from_store_location_id INTEGER REFERENCES store_locations(id),
   created_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_mrn_asset ON mrn(asset_id);
@@ -174,6 +203,26 @@ CREATE TABLE IF NOT EXISTS mrn_lines (
   qty           REAL NOT NULL DEFAULT 0,
   unit          TEXT DEFAULT 'nos',
   qty_received  REAL NOT NULL DEFAULT 0,
+  qty_approved  REAL NOT NULL DEFAULT 0,
+  qty_sent      REAL NOT NULL DEFAULT 0,
+  qty_issued    REAL NOT NULL DEFAULT 0,
+  qty_short     REAL NOT NULL DEFAULT 0,
+  qty_outstanding REAL NOT NULL DEFAULT 0,
+  local_issue_qty REAL NOT NULL DEFAULT 0,
+  parent_mrn_line_id INTEGER REFERENCES mrn_lines(id),
+  child_mrn_id  INTEGER REFERENCES mrn(id),
+  child_mrn_line_id INTEGER REFERENCES mrn_lines(id),
+  discrepancy_reason TEXT,
+  is_cancelled  INTEGER DEFAULT 0,
+  cancellation_reason TEXT,
+  cancelled_by  TEXT,
+  cancelled_at  TEXT,
+  supply_route  TEXT DEFAULT 'main_store',   -- main_store | head_office | local_purchase | direct_delivery
+  auto_mtn_id   INTEGER REFERENCES mtn(id),
+  source_store_location_id INTEGER REFERENCES store_locations(id),
+  route_assigned_by TEXT,
+  route_assigned_at TEXT,
+  route_assigned_reason TEXT,
   legacy_item_id INTEGER,                    -- source items.id (bridges receipts.itemId -> GRN)
   buying_priority TEXT DEFAULT 'P3_ROUTINE', -- P1_CRITICAL | P2_URGENT | P3_ROUTINE | P4_LOW
   priority_note   TEXT,
@@ -197,6 +246,7 @@ CREATE INDEX IF NOT EXISTS idx_mrn_line_pri_hist ON mrn_line_priority_history(mr
 CREATE TABLE IF NOT EXISTS grn_vouchers (
   id               INTEGER PRIMARY KEY AUTOINCREMENT,
   grn_no           TEXT NOT NULL UNIQUE,
+  chain_no         TEXT,
   received_date    TEXT NOT NULL DEFAULT (date('now')),
   supplier         TEXT,
   project_site     TEXT,
@@ -237,6 +287,7 @@ CREATE TABLE IF NOT EXISTS grn (
   id             INTEGER PRIMARY KEY AUTOINCREMENT,
   voucher_id     INTEGER REFERENCES grn_vouchers(id),
   grn_no         TEXT,
+  chain_no       TEXT,
   mrn_id         INTEGER REFERENCES mrn(id),
   mrn_line_id    INTEGER REFERENCES mrn_lines(id),
   store_item_id  INTEGER REFERENCES store_items(id),
@@ -307,6 +358,9 @@ CREATE TABLE IF NOT EXISTS stock_moves (
   source_id     INTEGER NOT NULL,
   -- 1 = counts toward the balance. Movements from before a section's cut-over are kept at 0:
   -- they stay fully visible as history without dragging the balance negative.
+  grn_id        INTEGER REFERENCES grn(id),
+  store_id      INTEGER REFERENCES workshops(id),
+  physical_store_id INTEGER REFERENCES store_locations(id),
   counts        INTEGER NOT NULL DEFAULT 1,
   created_at    TEXT NOT NULL DEFAULT (datetime('now')),
   -- item_key is part of the key because ONE source row can move TWO DIFFERENT items: a service
@@ -363,6 +417,7 @@ CREATE INDEX IF NOT EXISTS idx_grn_no ON grn(grn_no);
 CREATE TABLE IF NOT EXISTS min_notes (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
   min_no        TEXT NOT NULL UNIQUE,
+  chain_no      TEXT,
   issue_date    TEXT NOT NULL DEFAULT (date('now')),
   project_id    INTEGER REFERENCES projects(id),
   asset_id      INTEGER REFERENCES assets(id),
@@ -408,6 +463,7 @@ CREATE TABLE IF NOT EXISTS issues (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
   min_id        INTEGER REFERENCES min_notes(id),
   min_no        TEXT,
+  chain_no      TEXT,
   asset_id      INTEGER REFERENCES assets(id),
   job_id        INTEGER REFERENCES job_cards(id),
   store_item_id INTEGER REFERENCES store_items(id),
@@ -415,20 +471,28 @@ CREATE TABLE IF NOT EXISTS issues (
   qty           REAL NOT NULL DEFAULT 1,
   unit          TEXT DEFAULT 'nos',
   unit_price    REAL,                         -- NULL = awaiting price
+  service_id    INTEGER REFERENCES service_jobs(id),
   issue_date    TEXT NOT NULL DEFAULT (date('now')),
   issued_by     TEXT,
   purpose       TEXT,
+  mrn_line_id   INTEGER REFERENCES mrn_lines(id),
   created_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_issues_asset ON issues(asset_id);
 CREATE INDEX IF NOT EXISTS idx_issues_job ON issues(job_id);
-CREATE INDEX IF NOT EXISTS idx_issues_min_id ON issues(min_id);
-CREATE INDEX IF NOT EXISTS idx_issues_min_no ON issues(min_no);
+-- idx_issues_min_id and idx_issues_min_no are NOT created here. min_id and min_no are columns the
+-- MIN work added to `issues`, a table that already exists on any database built before it: the
+-- CREATE TABLE above is then a no-op, the columns never appear, and indexing them here throws
+-- "no such column: min_id" out of db.exec(schema) -- which is the very first thing migrate() does,
+-- so the server will not start on an existing database at all. src/db/index.js adds the columns
+-- with ensureColumn() and creates both indexes immediately after, which is the right order.
+-- Anything indexing a column added to a pre-existing table belongs there, not here.
 
 -- Material Transfer Note between locations / vehicles (Doc. No. EC1.ST.FO.05).
 CREATE TABLE IF NOT EXISTS mtn (
   id             INTEGER PRIMARY KEY AUTOINCREMENT,
   mtn_no         TEXT NOT NULL UNIQUE,        -- continues existing seq (~57xxx)
+  chain_no       TEXT,
   mr_no          TEXT,                        -- Material Requisition reference
   txn_date       TEXT NOT NULL DEFAULT (date('now')),
   store_item_id  INTEGER REFERENCES store_items(id),
@@ -456,8 +520,16 @@ CREATE TABLE IF NOT EXISTS mtn (
   accepted_sig   TEXT,
   accepted_at    TEXT,
   accepted_designation TEXT,
+  from_store_location_id INTEGER REFERENCES store_locations(id),
+  to_store_location_id   INTEGER REFERENCES store_locations(id),
+  from_store_id  INTEGER REFERENCES workshops(id),
+  to_store_id    INTEGER REFERENCES workshops(id),
+  workshop_id    INTEGER REFERENCES workshops(id),
   status         TEXT DEFAULT 'draft',
+  stock_synced_at TEXT,
   rejection_reason TEXT,
+  mrn_id         INTEGER REFERENCES mrn(id),
+  auto_generated INTEGER DEFAULT 0,
   created_at     TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_mtn_no ON mtn(mtn_no);
@@ -493,6 +565,9 @@ CREATE TABLE IF NOT EXISTS mtn_lines (
   store_item_id  INTEGER REFERENCES store_items(id),
   description    TEXT,
   qty            REAL NOT NULL DEFAULT 0,
+  qty_received   REAL,
+  qty_short      REAL NOT NULL DEFAULT 0,
+  discrepancy_reason TEXT,
   unit           TEXT,
   category       TEXT,
   category_id    INTEGER REFERENCES item_categories(id),
@@ -500,13 +575,76 @@ CREATE TABLE IF NOT EXISTS mtn_lines (
   to_location    TEXT,
   from_asset_id  INTEGER REFERENCES assets(id),
   to_asset_id    INTEGER REFERENCES assets(id),
+  from_store_id  INTEGER REFERENCES workshops(id),
+  to_store_id    INTEGER REFERENCES workshops(id),
+  from_store_location_id INTEGER REFERENCES store_locations(id),
+  to_store_location_id   INTEGER REFERENCES store_locations(id),
   reason         TEXT,
   value          REAL DEFAULT 0,
   mr_no          TEXT,
+  mrn_id         INTEGER REFERENCES mrn(id),
+  mrn_line_id    INTEGER REFERENCES mrn_lines(id),
   remarks        TEXT,
   created_at     TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_mtn_lines_mtn ON mtn_lines(mtn_id);
+
+-- Step 4b: Delivery Discrepancies and Short Deliveries
+CREATE TABLE IF NOT EXISTS delivery_discrepancies (
+  id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+  chain_no            TEXT,
+  mrn_id              INTEGER REFERENCES mrn(id),
+  mrn_line_id         INTEGER REFERENCES mrn_lines(id),
+  mtn_id              INTEGER REFERENCES mtn(id),
+  mtn_line_id         INTEGER REFERENCES mtn_lines(id),
+  grn_id              INTEGER REFERENCES grn(id),
+  item_description    TEXT,
+  qty_expected        REAL NOT NULL DEFAULT 0,
+  qty_received        REAL NOT NULL DEFAULT 0,
+  qty_short           REAL NOT NULL DEFAULT 0,
+  reason              TEXT NOT NULL,
+  status              TEXT NOT NULL DEFAULT 'open',
+  reported_by         TEXT,
+  reported_by_user    INTEGER REFERENCES users(id),
+  reported_at         TEXT DEFAULT (datetime('now')),
+  resolution_notes    TEXT,
+  resolved_by         TEXT,
+  resolved_at         TEXT,
+  created_at          TEXT DEFAULT CURRENT_TIMESTAMP,
+  updated_at          TEXT DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_discrepancies_status ON delivery_discrepancies(status);
+CREATE INDEX IF NOT EXISTS idx_discrepancies_mrn ON delivery_discrepancies(mrn_id);
+
+-- Step 5: Evidence Photos for Request Lines and Receipts (Off-DB File Storage)
+CREATE TABLE IF NOT EXISTS line_evidence_photos (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  entity_type   TEXT NOT NULL,        -- 'mrn_line' | 'grn'
+  entity_id     INTEGER NOT NULL,     -- mrn_lines.id or grn.id
+  kind          TEXT NOT NULL DEFAULT 'general', -- 'worn_part' | 'nameplate' | 'delivery_goods' | 'damage_in_transit' | 'general'
+  file_path     TEXT NOT NULL,        -- relative to uploads dir, e.g. 'evidence/mrn_line/...'
+  file_name     TEXT NOT NULL,        -- original filename
+  mime_type     TEXT NOT NULL,        -- 'image/jpeg', 'image/png', 'image/webp'
+  file_size     INTEGER NOT NULL,     -- byte size on disk
+  caption       TEXT,                 -- optional note/caption
+  uploaded_by   INTEGER REFERENCES users(id),
+  uploaded_at   TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_evidence_photos_lookup ON line_evidence_photos(entity_type, entity_id);
+
+-- Step 4b: Idempotency keys to prevent duplicate operations across stores workflows
+CREATE TABLE IF NOT EXISTS idempotency_keys (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  key            TEXT NOT NULL UNIQUE,
+  user_id        INTEGER,
+  action         TEXT,
+  status         TEXT DEFAULT 'pending',
+  response_code  INTEGER,
+  response_body  TEXT,
+  created_at     TEXT DEFAULT CURRENT_TIMESTAMP,
+  updated_at     TEXT DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_idempotency_key ON idempotency_keys(key);
 
 -- Running-balance ledger for general consumables.
 CREATE TABLE IF NOT EXISTS general_item_txns (
@@ -519,6 +657,7 @@ CREATE TABLE IF NOT EXISTS general_item_txns (
   job_id         INTEGER REFERENCES job_cards(id),
   unit_price     REAL,
   ref            TEXT,
+  mtn_id         INTEGER REFERENCES mtn(id),
   txn_date       TEXT NOT NULL DEFAULT (date('now')),
   created_at     TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -558,6 +697,7 @@ CREATE TABLE IF NOT EXISTS stock_ledger (
   consumer_type TEXT,                         -- asset / project / unknown / internal (from source)
   mr_no         TEXT,                         -- cross-links to Stores MRN
   mtn_no        TEXT,                         -- cross-links to Stores MTN
+  mtn_id        INTEGER REFERENCES mtn(id),
   voided        INTEGER NOT NULL DEFAULT 0,
   legacy_id     INTEGER,                      -- source transactions.id
   txn_date      TEXT NOT NULL DEFAULT (date('now')),
@@ -752,7 +892,7 @@ CREATE TABLE IF NOT EXISTS job_cards (
   asset_id             INTEGER REFERENCES assets(id),
   project_id           INTEGER REFERENCES projects(id),
   site                 TEXT,
-  type                 TEXT NOT NULL DEFAULT 'repair' CHECK (type IN ('repair','service')),
+  type                 TEXT NOT NULL DEFAULT 'repair' CHECK (type IN ('repair','service','fabrication')),
   severity             TEXT CHECK (severity IN ('major','minor')),
   description          TEXT,
   status               TEXT NOT NULL DEFAULT 'REQUESTED'
@@ -778,7 +918,9 @@ CREATE TABLE IF NOT EXISTS job_cards (
   external_cost        REAL DEFAULT 0,
   total_cost           REAL DEFAULT 0,
   created_at           TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at           TEXT NOT NULL DEFAULT (datetime('now'))
+  updated_at           TEXT NOT NULL DEFAULT (datetime('now')),
+  fabrication_kind     TEXT,
+  issue_store_location_id INTEGER REFERENCES store_locations(id)
 );
 CREATE INDEX IF NOT EXISTS idx_jobs_asset ON job_cards(asset_id);
 CREATE INDEX IF NOT EXISTS idx_jobs_status ON job_cards(status);
@@ -789,6 +931,7 @@ CREATE TABLE IF NOT EXISTS job_approvals (
   job_id      INTEGER NOT NULL REFERENCES job_cards(id) ON DELETE CASCADE,
   role        TEXT NOT NULL CHECK (role IN ('transport_manager','operational_manager')),
   approver_id INTEGER REFERENCES users(id),
+  signed_name TEXT,
   decision    TEXT NOT NULL CHECK (decision IN ('approved','rejected')),
   reason      TEXT,
   created_at  TEXT NOT NULL DEFAULT (datetime('now'))
@@ -1214,6 +1357,66 @@ CREATE TABLE IF NOT EXISTS mechanic_workshops (
 );
 CREATE INDEX IF NOT EXISTS idx_mech_ws ON mechanic_workshops(mechanic_id, from_date);
 
+-- ===========================================================================
+-- PHYSICAL STORE LOCATIONS & HIERARCHY (Main Stores / Workshop Stores Plan, Phase 1)
+-- ===========================================================================
+
+CREATE TABLE IF NOT EXISTS store_locations (
+  id               INTEGER PRIMARY KEY AUTOINCREMENT,
+  code             TEXT NOT NULL UNIQUE,              -- Stable uppercase code (e.g. 'MAIN-STORES', 'MAIN-WORKSHOP', 'SITE-GWS-WORKSHOP')
+  name             TEXT NOT NULL,                     -- Human-readable name
+  store_type       TEXT NOT NULL CHECK (store_type IN (
+                     'MAIN_STORE',                    -- Central authority for site-store stock & purchasing
+                     'SITE_STORE',                    -- General site materials store at project/site
+                     'MAIN_WORKSHOP_STORE',           -- Central stock source for Site Workshop Stores
+                     'SITE_WORKSHOP_STORE'            -- Workshop parts & consumables store for site workshop
+                   )),
+  parent_store_id  INTEGER REFERENCES store_locations(id),
+  site_id          INTEGER REFERENCES sites(id),
+  workshop_id      INTEGER REFERENCES workshops(id),
+  active           INTEGER NOT NULL DEFAULT 1,
+  is_default       INTEGER NOT NULL DEFAULT 0,
+  opened_at        TEXT,
+  closed_at        TEXT,
+  notes            TEXT,
+  created_at       TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at       TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_store_locations_type ON store_locations(store_type);
+CREATE INDEX IF NOT EXISTS idx_store_locations_parent ON store_locations(parent_store_id);
+CREATE INDEX IF NOT EXISTS idx_store_locations_workshop ON store_locations(workshop_id);
+CREATE INDEX IF NOT EXISTS idx_store_locations_site ON store_locations(site_id);
+
+-- Explicit physical store user access grants (independent of workshop scope)
+CREATE TABLE IF NOT EXISTS store_location_access (
+  id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id            INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  store_location_id  INTEGER NOT NULL REFERENCES store_locations(id) ON DELETE CASCADE,
+  can_view           INTEGER NOT NULL DEFAULT 1,
+  can_request        INTEGER NOT NULL DEFAULT 0,
+  can_issue          INTEGER NOT NULL DEFAULT 0,
+  can_receive        INTEGER NOT NULL DEFAULT 0,
+  can_dispatch       INTEGER NOT NULL DEFAULT 0,
+  can_count          INTEGER NOT NULL DEFAULT 0,
+  created_at         TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(user_id, store_location_id)
+);
+CREATE INDEX IF NOT EXISTS idx_store_loc_access_user ON store_location_access(user_id);
+CREATE INDEX IF NOT EXISTS idx_store_loc_access_store ON store_location_access(store_location_id);
+
+-- Legacy compatibility bridge mapping between legacy store_id / workshop_id and store_locations
+CREATE TABLE IF NOT EXISTS store_location_mappings (
+  id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+  legacy_store_id    INTEGER NOT NULL UNIQUE,          -- Historical workshop.id used as store_id
+  workshop_id        INTEGER REFERENCES workshops(id),
+  store_location_id  INTEGER NOT NULL REFERENCES store_locations(id),
+  is_primary         INTEGER NOT NULL DEFAULT 1,
+  notes              TEXT,
+  created_at         TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_store_loc_map_legacy ON store_location_mappings(legacy_store_id);
+CREATE INDEX IF NOT EXISTS idx_store_loc_map_loc ON store_location_mappings(store_location_id);
+
 -- Stage 4: a store per workshop (src/lib/stores.js). A store is known by the workshop that owns it.
 -- A stock take: what was counted on the shelf of one store, against what the book said then. The
 -- difference is the correction (an 'adjust' movement in stock_moves).
@@ -1235,13 +1438,20 @@ CREATE INDEX IF NOT EXISTS idx_store_counts ON store_counts(store_id, section, i
 
 -- The level at which one store reorders an item. No row = no level set.
 CREATE TABLE IF NOT EXISTS store_reorder (
-  id         INTEGER PRIMARY KEY AUTOINCREMENT,
-  store_id   INTEGER NOT NULL REFERENCES workshops(id),
-  section    TEXT NOT NULL,
-  item_key   TEXT NOT NULL,
-  level      REAL NOT NULL,
-  set_by     INTEGER REFERENCES users(id),
-  set_at     TEXT NOT NULL DEFAULT (datetime('now')),
+  id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+  store_id            INTEGER NOT NULL REFERENCES workshops(id),
+  physical_store_id   INTEGER REFERENCES store_locations(id),
+  section             TEXT NOT NULL,
+  item_key            TEXT NOT NULL,
+  level               REAL NOT NULL,
+  safety_stock        REAL DEFAULT 0,
+  reorder_qty         REAL DEFAULT 0,
+  avg_daily_demand    REAL DEFAULT 0,
+  lead_time_days      INTEGER DEFAULT 7,
+  auto_calc           INTEGER DEFAULT 1,
+  last_calculated_at  TEXT,
+  set_by              INTEGER REFERENCES users(id),
+  set_at              TEXT NOT NULL DEFAULT (datetime('now')),
   UNIQUE (store_id, section, item_key)
 );
 
@@ -1519,3 +1729,120 @@ CREATE TABLE IF NOT EXISTS tool_scrap_requests (
   updated_at          TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_tool_scrap_status ON tool_scrap_requests(status);
+
+-- ---------------------------------------------------------------------------
+-- VEHICLE DOCUMENTS & RENEWAL MONITORING (Operations Module)
+-- ---------------------------------------------------------------------------
+
+-- 1. Statutory & Company Document Type Catalog
+CREATE TABLE IF NOT EXISTS vehicle_doc_types (
+  id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+  code                TEXT NOT NULL UNIQUE,       -- 'cr', 'revenue_licence', 'insurance', 'emission', 'fitness', 'permit', 'company_doc'
+  name                TEXT NOT NULL,              -- 'Certificate of Registration', 'Revenue Licence', etc.
+  category            TEXT NOT NULL DEFAULT 'statutory', -- 'master' | 'statutory' | 'permit' | 'company'
+  is_renewable        INTEGER NOT NULL DEFAULT 1, -- 0 for CR, 1 for RL/Insurance/Emission/Fitness
+  is_master           INTEGER NOT NULL DEFAULT 0, -- 1 for CR (permanent vehicle identity master)
+  default_remind_days INTEGER NOT NULL DEFAULT 30,-- Default reminder threshold (30 days / 1 month)
+  applies_to_classes  TEXT,                       -- JSON array or NULL for all: '["vehicle", "plant"]'
+  requires_fitness    INTEGER NOT NULL DEFAULT 0, -- Heavy / commercial vehicles flag
+  sort_order          INTEGER NOT NULL DEFAULT 0,
+  active              INTEGER NOT NULL DEFAULT 1,
+  created_at          TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_vdoc_types_code ON vehicle_doc_types(code);
+
+-- 2. Vehicle Document Container (Links document type to specific asset/vehicle)
+CREATE TABLE IF NOT EXISTS vehicle_documents (
+  id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+  asset_id            INTEGER NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+  doc_type_id         INTEGER NOT NULL REFERENCES vehicle_doc_types(id),
+  is_required         INTEGER NOT NULL DEFAULT 1, -- 1 = required for this vehicle
+  is_exempt           INTEGER NOT NULL DEFAULT 0, -- 1 = formally exempt (laid-up / off-road)
+  exemption_reason    TEXT,
+  exemption_date      TEXT,
+  exemption_by        INTEGER REFERENCES users(id),
+  current_version_id  INTEGER,                    -- Pointer to active, verified version in vehicle_doc_versions
+  created_at          TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at          TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(asset_id, doc_type_id)
+);
+CREATE INDEX IF NOT EXISTS idx_vdocs_asset ON vehicle_documents(asset_id);
+CREATE INDEX IF NOT EXISTS idx_vdocs_type ON vehicle_documents(doc_type_id);
+
+-- 3. Document Versions (Immutable historical record of every issued certificate period)
+CREATE TABLE IF NOT EXISTS vehicle_doc_versions (
+  id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+  document_id         INTEGER NOT NULL REFERENCES vehicle_documents(id) ON DELETE CASCADE,
+  version_no          INTEGER NOT NULL DEFAULT 1,
+  doc_number          TEXT NOT NULL,              -- Certificate / Licence / Policy number
+  issuer_name         TEXT,                       -- DMT Western Province, SLIC, CleanCo, Laughs, etc.
+  issue_date          TEXT NOT NULL,              -- YYYY-MM-DD
+  valid_from          TEXT NOT NULL,              -- YYYY-MM-DD
+  valid_until         TEXT NOT NULL,              -- YYYY-MM-DD (Statutory expiration date)
+  valid_until_time    TEXT,                       -- Optional specific time (e.g. 23:59:59)
+  cost_amount         REAL DEFAULT 0,             -- Statutory renewal fee / premium / test charge (Rs.)
+  policy_type         TEXT,                       -- 'comprehensive', 'third_party', 'standard_test', etc.
+  responsible_user_id INTEGER REFERENCES users(id),-- Action owner / assigned transport officer
+  notes               TEXT,                       -- Exceptions, pending endorsements, failed test notes
+  status              TEXT NOT NULL DEFAULT 'draft', -- 'draft' | 'pending_verification' | 'verified' | 'superseded' | 'cancelled'
+  verified_by         INTEGER REFERENCES users(id),
+  verified_at         TEXT,
+  verification_notes  TEXT,
+  created_by          INTEGER REFERENCES users(id),
+  created_at          TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_vdoc_versions_doc ON vehicle_doc_versions(document_id);
+CREATE INDEX IF NOT EXISTS idx_vdoc_versions_valid ON vehicle_doc_versions(valid_until);
+CREATE INDEX IF NOT EXISTS idx_vdoc_versions_status ON vehicle_doc_versions(status);
+
+-- 4. Document Attachments (PDF certificates, payment receipts, temporary cover notes)
+CREATE TABLE IF NOT EXISTS vehicle_doc_attachments (
+  id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+  version_id          INTEGER NOT NULL REFERENCES vehicle_doc_versions(id) ON DELETE CASCADE,
+  kind                TEXT NOT NULL,              -- 'certificate', 'receipt', 'temporary_slip', 'application_ack', 'supporting'
+  original_filename   TEXT NOT NULL,
+  stored_filename     TEXT NOT NULL,
+  file_path           TEXT NOT NULL,              -- Relative to storage root
+  mime_type           TEXT NOT NULL,              -- 'application/pdf', 'image/jpeg', 'image/png'
+  file_size           INTEGER NOT NULL,
+  sha256              TEXT NOT NULL,
+  uploaded_by         INTEGER REFERENCES users(id),
+  uploaded_at         TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_vdoc_attachments_ver ON vehicle_doc_attachments(version_id);
+
+-- 5. Renewal Tasks & Preparation Checklist (Work-in-progress renewal tracker)
+CREATE TABLE IF NOT EXISTS vehicle_renewal_tasks (
+  id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+  document_id         INTEGER NOT NULL REFERENCES vehicle_documents(id) ON DELETE CASCADE,
+  target_version_id   INTEGER REFERENCES vehicle_doc_versions(id),
+  stage               TEXT NOT NULL DEFAULT 'not_started',
+  -- 'not_started' | 'assigned' | 'preparing' | 'appointment_booked' | 'application_submitted' |
+  -- 'awaiting_document' | 'pending_verification' | 'completed' | 'returned'
+  assigned_to         INTEGER REFERENCES users(id),
+  target_date         TEXT,                       -- Internal readiness target date before statutory expiry
+  checklist_json      TEXT,                       -- Serialized JSON prerequisite checklist evaluation
+  estimated_cost      REAL DEFAULT 0,
+  actual_cost         REAL DEFAULT 0,
+  temporary_receipt_no TEXT,
+  completed_at        TEXT,
+  created_at          TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at          TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_vrenewal_tasks_doc ON vehicle_renewal_tasks(document_id);
+CREATE INDEX IF NOT EXISTS idx_vrenewal_tasks_stage ON vehicle_renewal_tasks(stage);
+CREATE INDEX IF NOT EXISTS idx_vrenewal_tasks_assign ON vehicle_renewal_tasks(assigned_to);
+
+-- 6. Notification & Delivery Log (Deduplicated audit trail for expiry reminders)
+CREATE TABLE IF NOT EXISTS vehicle_doc_reminders (
+  id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+  version_id          INTEGER NOT NULL REFERENCES vehicle_doc_versions(id) ON DELETE CASCADE,
+  stage               TEXT NOT NULL,              -- '1_month', '14_days', '7_days', '3_days', '1_day', 'expiry_day', 'overdue'
+  recipient_id        INTEGER NOT NULL REFERENCES users(id),
+  channel             TEXT NOT NULL DEFAULT 'in_app', -- 'in_app', 'digest', 'email'
+  sent_at             TEXT NOT NULL DEFAULT (datetime('now')),
+  acknowledged_at     TEXT,
+  UNIQUE(version_id, stage, recipient_id)
+);
+CREATE INDEX IF NOT EXISTS idx_vdoc_reminders_ver ON vehicle_doc_reminders(version_id);
+CREATE INDEX IF NOT EXISTS idx_vdoc_reminders_stage ON vehicle_doc_reminders(stage);

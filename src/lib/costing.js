@@ -130,8 +130,9 @@ function computeJobCost(jobId) {
 
   // --- general (general item issues to this job) ---
   let general = 0;
-  for (const g of all(`SELECT * FROM general_item_txns WHERE job_id = ? AND txn_type = 'issue'`, jobId)) {
-    if (g.unit_price != null) general += Math.abs(g.qty || 0) * g.unit_price;
+  for (const g of all(`SELECT t.*, si.unit_cost FROM general_item_txns t LEFT JOIN store_items si ON si.id = t.store_item_id WHERE t.job_id = ? AND t.txn_type = 'issue'`, jobId)) {
+    const price = g.unit_price != null ? g.unit_price : (g.unit_cost || 0);
+    general += Math.abs(g.qty || 0) * price;
   }
 
   // --- external WORK value (daily-work is_external only): the "external cost of our job" from the
@@ -169,11 +170,30 @@ function computeJobCost(jobId) {
  *  and balancing other_cost that refreshJobTotals persists — without writing. Use
  *  this wherever a cost breakdown is shown so the displayed columns sum to the
  *  same total that is stored on the card. */
+function fabricationCostExtra(jobId) {
+  try {
+    const job = get('SELECT type FROM job_cards WHERE id = ?', jobId);
+    if (!job || job.type !== 'fabrication') return 0;
+    const sheet = get("SELECT id, overhead_percentage FROM fabrication_costing_sheets WHERE job_id = ? AND status = 'approved'", jobId);
+    if (!sheet) return 0;
+    const adj = get("SELECT COALESCE(SUM(amount), 0) AS total FROM fabrication_costing_adjustments WHERE sheet_id = ?", sheet.id);
+    const adjTotal = adj ? adj.total : 0;
+    const c = computeJobCost(jobId);
+    const subtotal = c.total_cost + adjTotal;
+    const overhead = round2(subtotal * ((sheet.overhead_percentage || 0) / 100));
+    return round2(adjTotal + overhead);
+  } catch (e) {
+    return 0;
+  }
+}
+
 function reconciledCost(jobId) {
   const c = computeJobCost(jobId);
   const job = get('SELECT is_historical, recorded_cost, total_cost FROM job_cards WHERE id = ?', jobId);
-  const total = historicalTotal(job, c.total_cost);
-  // other_cost carries the field transport (Stage 6) as well as any gap to a recorded total.
+  let total = historicalTotal(job, c.total_cost);
+  const fabExtra = fabricationCostExtra(jobId);
+  if (fabExtra > 0) total = round2(total + fabExtra);
+  // other_cost carries the field transport (Stage 6) as well as any gap to a recorded total and approved fabrication extra.
   c.other_cost = round2(total - (c.total_cost - c.field_cost));
   c.total_cost = total;
   return c;
@@ -205,14 +225,42 @@ function closureReadiness(jobId) {
   const add = (text, kind) => items.push({ kind, text });
   const job = get('SELECT type, flat_labour, is_historical FROM job_cards WHERE id = ?', jobId);
 
-  // every requested part has a GRN (MRN lines fully received)
+  // every requested part has a GRN (MRN lines fully received, or cancelled / shortage settled)
   for (const l of all(
     `SELECT ml.*, m.mrn_no FROM mrn_lines ml JOIN mrn m ON m.id = ml.mrn_id WHERE m.job_id = ?`,
     jobId
   )) {
-    if ((l.qty_received || 0) < (l.qty || 0)) {
+    if (l.is_cancelled) continue;
+
+    let shortageSettled = false;
+    try {
+      const disc = get('SELECT status FROM delivery_discrepancies WHERE mrn_line_id = ? ORDER BY id DESC LIMIT 1', l.id);
+      if (disc && ['resolved', 'written_off'].includes(disc.status)) shortageSettled = true;
+    } catch {
+      // table may not exist in lightweight mocks
+    }
+
+    const fulfilled = (l.qty_received || 0) >= (l.qty || 0) ||
+      (shortageSettled && ((l.qty_received || 0) + (l.qty_short || 0)) >= (l.qty || 0));
+
+    if (!fulfilled) {
       add(`MRN ${l.mrn_no}: "${l.description}" received ${l.qty_received || 0}/${l.qty} — awaiting GRN`, 'received');
     }
+  }
+
+  // open delivery shortages on linked MRNs
+  try {
+    const openDiscs = all(`
+      SELECT d.id, d.item_description, d.qty_short, d.status, m.mrn_no
+        FROM delivery_discrepancies d
+        JOIN mrn m ON m.id = d.mrn_id
+       WHERE m.job_id = ? AND d.status IN ('open', 'investigating')
+    `, jobId);
+    for (const d of openDiscs) {
+      add(`Delivery shortage on MRN ${d.mrn_no || '—'}: "${d.item_description}" (${d.qty_short} short, status: ${d.status})`, 'received');
+    }
+  } catch {
+    // graceful fallback
   }
 
   // every delivered shelf part must be issued to the job (or accounted for)
@@ -288,9 +336,11 @@ function refreshJobTotals(jobId) {
   // asset_id is needed by the per-vehicle rollup below — omitting it made `if (job.asset_id)`
   // always false, so vehicle_monthly_costs.labour_cost never moved after the 015 backfill.
   const job = get('SELECT asset_id, is_historical, recorded_cost, total_cost FROM job_cards WHERE id = ?', jobId);
-  const totalToStore = historicalTotal(job, c.total_cost); // historical: keep imported total, don't recompute to ~0
-  // Balancing bucket (recorded vs itemised) — and the field transport (Stage 6), which has no
-  // column of its own, so the stored columns still add up to total_cost.
+  let totalToStore = historicalTotal(job, c.total_cost); // historical: keep imported total, don't recompute to ~0
+  const fabExtra = fabricationCostExtra(jobId);
+  if (fabExtra > 0) totalToStore = round2(totalToStore + fabExtra);
+  // Balancing bucket (recorded vs itemised) — and the field transport (Stage 6) and approved fabrication extra,
+  // so the stored columns still add up to total_cost.
   const otherCost = round2(totalToStore - (c.total_cost - c.field_cost));
   tx(() => {
     // Months this job touched BEFORE the rebuild. Needed because the rollup below walks the
@@ -362,24 +412,43 @@ function recalcVehicleMonth(assetId, year, month) {
   const labour = round2(get(
     `SELECT COALESCE(SUM(jl.amount),0) v FROM job_labour jl JOIN job_cards j ON j.id = jl.job_id
       WHERE j.asset_id = ? AND substr(jl.work_date,1,7) = ?`, assetId, ym).v);
+
+  // Oil from stock_ledger for this asset and month
+  const slOil = get(
+    `SELECT COALESCE(SUM(ABS(sl.qty) * COALESCE(sl.unit_price, pr.unit_price, 0)), 0) v
+       FROM stock_ledger sl JOIN products pr ON pr.id = sl.product_id
+      WHERE sl.asset_id = ? AND substr(sl.txn_date,1,7) = ? AND sl.kind = 'issue'
+        AND COALESCE(sl.voided,0) = 0 AND COALESCE(sl.consumer_type,'') <> 'service'`, assetId, ym).v;
+
+  // Direct lubricant issues not in stock_ledger
+  const issuesOil = get(
+    `SELECT COALESCE(SUM(i.qty * COALESCE(i.unit_price, 0)), 0) v
+       FROM issues i
+      WHERE i.asset_id = ? AND substr(i.issue_date,1,7) = ?
+        AND (LOWER(i.category) LIKE '%lubric%' OR LOWER(i.category) LIKE '%oil%')
+        AND NOT EXISTS (SELECT 1 FROM stock_ledger sl WHERE sl.source_issue_id = i.id)`, assetId, ym).v;
+
+  const oil = round2(slOil + issuesOil);
+
   // Parts brought back unused (Stage 6 return notes) come off the month of the issue they undo.
   const parts = round2(get(
     `SELECT COALESCE(SUM(qty * COALESCE(unit_price,0)),0)
           - COALESCE((SELECT SUM(r.qty * COALESCE(ir.unit_price,0)) FROM issue_returns r JOIN issues ir ON ir.id = r.issue_id
                        WHERE ir.asset_id = ? AND substr(ir.issue_date,1,7) = ?), 0) v
-       FROM issues WHERE asset_id = ? AND substr(issue_date,1,7) = ?`, assetId, ym, assetId, ym).v);
+       FROM issues WHERE asset_id = ? AND substr(issue_date,1,7) = ?
+        AND LOWER(category) NOT LIKE '%lubric%' AND LOWER(category) NOT LIKE '%oil%'`, assetId, ym, assetId, ym).v);
 
   const row = get('SELECT * FROM vehicle_monthly_costs WHERE asset_id = ? AND year = ? AND month = ?', assetId, year, month);
   if (!row) {
-    if (!labour && !parts) return null;               // nothing to record
-    run(`INSERT INTO vehicle_monthly_costs (asset_id, year, month, labour_cost, parts_cost, total_cost, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, datetime('now'))`, assetId, year, month, labour, parts, round2(labour + parts));
+    if (!labour && !parts && !oil) return null;               // nothing to record
+    run(`INSERT INTO vehicle_monthly_costs (asset_id, year, month, labour_cost, parts_cost, oil_cost, total_cost, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))`, assetId, year, month, labour, parts, oil, round2(labour + parts + oil));
     return { labour, parts };
   }
-  const others = ['fuel_cost', 'oil_cost', 'filter_cost', 'battery_cost'].reduce((s, c) => s + (row[c] || 0), 0);
+  const others = ['fuel_cost', 'filter_cost', 'battery_cost'].reduce((s, c) => s + (row[c] || 0), 0);
   run(`UPDATE vehicle_monthly_costs
-          SET labour_cost = ?, parts_cost = ?, total_cost = ?, updated_at = datetime('now')
-        WHERE id = ?`, labour, parts, round2(others + labour + parts), row.id);
+          SET labour_cost = ?, parts_cost = ?, oil_cost = ?, total_cost = ?, updated_at = datetime('now')
+        WHERE id = ?`, labour, parts, oil, round2(others + labour + parts + oil), row.id);
   return { labour, parts };
 }
 
@@ -413,13 +482,14 @@ function round2(n) {
 /**
  * Standard project cost rollup across all job cards belonging to a project.
  * Locks the row schema across single project view and consolidated reports.
+ * opts.ws: only one workshop's cards (or a list of workshops' — src/lib/scope.js wsSql).
  */
-function projectCost(projectId) {
+function projectCost(projectId, opts = {}) {
   const cost = get(
     `SELECT COALESCE(SUM(labour_cost),0) labour, COALESCE(SUM(material_cost),0) material,
             COALESCE(SUM(oil_cost),0) oil, COALESCE(SUM(general_cost),0) general,
             COALESCE(SUM(external_cost),0) external, COALESCE(SUM(total_cost),0) total
-       FROM job_cards WHERE project_id = ?`, projectId
+       FROM job_cards WHERE project_id = ?${require('./scope').wsSql('workshop_id', opts.ws)}`, projectId
   ) || { labour: 0, material: 0, oil: 0, general: 0, external: 0, total: 0 };
   return {
     labour: round2(cost.labour),
@@ -434,10 +504,10 @@ function projectCost(projectId) {
 /**
  * Consolidated project cost summary across all registered projects.
  */
-function projectsCostSummary() {
+function projectsCostSummary(opts = {}) {
   const projects = all('SELECT id, code, name FROM projects ORDER BY name');
   return projects.map((p) => {
-    const c = projectCost(p.id);
+    const c = projectCost(p.id, opts);
     return {
       project_id: p.id,
       project_code: p.code || '',

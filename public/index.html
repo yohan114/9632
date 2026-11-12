@@ -11,15 +11,26 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <title>WorkshopOne — Central Workshop Master System</title>
   <link rel="manifest" href="/manifest.json">
-  <link rel="stylesheet" href="/styles.css">
+  <link rel="stylesheet" href="/styles.css?v=8">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔧</text></svg>">
 </head>
 <body>
   <div id="app"><div class="login-wrap"><div class="muted">Loading…</div></div></div>
-  <script src="/js/server-config.js"></script>
-  <script src="/app.js?v=3"></script>
-  <script src="/js/live-client.js"></script>
-  <script src="/js/mobile-nav.js"></script>
+  <script src="/js/server-config.js?v=8"></script>
+  <script src="/js/chart.umd.min.js"></script>
+  <script src="/app.js?v=8"></script>
+  <script src="/modules/fuel_operations.js?v=8"></script>
+  <script src="/modules/fuel_tanks.js?v=8"></script>
+  <script src="/modules/hire_billing.js?v=8"></script>
+  <script src="/modules/fleet_profitability.js?v=8"></script>
+  <script src="/modules/master_dashboard.js?v=8"></script>
+  <script src="/modules/vehicle_costing.js?v=8"></script>
+  <script src="/modules/fuel_readings.js?v=8"></script>
+  <script src="/modules/fuel_prices.js?v=8"></script>
+  <script src="/modules/fuel_reports.js?v=8"></script>
+  <script src="/modules/fuel_alerts.js?v=8"></script>
+  <script src="/js/live-client.js?v=8"></script>
+  <script src="/js/mobile-nav.js?v=8"></script>
   <script>
     // The service worker gives the installed app something to show with no network. It also sits
     // in front of every request, so a stale one can serve stale code indefinitely — that is what

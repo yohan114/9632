@@ -15,6 +15,13 @@ const emitter = require('../lib/emitter');
 
 const router = express.Router();
 
+// Improvement plan, Step 2: this register holds ONE figure per filter for the whole company. Someone
+// kept to their own store (src/lib/scope.js) is sent to their store's filters in Stores → Stock,
+// which are kept store by store — this register would show, and change, every store's at once.
+router.use((req, res, next) => (require('../lib/scope').ownStore(req.user)
+  ? res.status(409).json({ error: 'Filters are kept store by store now. Open Stores → Stock → Filter to see your store.' })
+  : next()));
+
 // green OK / orange Low / red Critical, by qty vs reorder level.
 const statusOf = (qty, reorder) => (qty <= 0 ? 'critical' : (qty <= (Number(reorder) || 0) ? 'low' : 'ok'));
 

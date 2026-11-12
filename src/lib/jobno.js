@@ -20,7 +20,7 @@
 
 const { get, all } = require('../db');
 
-const letterFor = (type) => (type === 'service' ? 'S' : 'R');
+const letterFor = (type) => (type === 'service' ? 'S' : (type === 'fabrication' ? 'F' : 'R'));
 
 /**
  * The next number for this kind of card.

@@ -73,7 +73,10 @@ const homeStore = (user) => storeOf(workshops.homeOf(user));
 
 /** The store a book entry comes out of: its job card's workshop's, else the person's own. */
 function forEntry(user, jobId, date) {
-  const j = jobId ? get('SELECT workshop_id FROM job_cards WHERE id = ?', jobId) : null;
+  const j = jobId ? get('SELECT workshop_id, type, issue_store_location_id FROM job_cards WHERE id = ?', jobId) : null;
+  if (j && j.type === 'fabrication') {
+    return j.issue_store_location_id || 1;
+  }
   return storeOf(j ? j.workshop_id : workshops.homeOf(user), date);
 }
 
@@ -133,21 +136,99 @@ function storeAtPlace(placeKey, date) {
   return storeOf(Number(m[1]), date);
 }
 
+/** The physical store location at one end of a transfer: 'loc:<id>' / 'sl:<id>' or workshop 'w:<id>'. */
+function physicalLocationAtPlace(placeKey) {
+  const s = String(placeKey || '').trim();
+  const mLoc = /^(?:loc|sl):(\d+)$/i.exec(s);
+  if (mLoc) return Number(mLoc[1]);
+  const mWs = /^w:(\d+)$/i.exec(s);
+  if (mWs) {
+    try {
+      const storeLocations = require('./store_locations');
+      const p = storeLocations.resolvePhysicalStore(Number(mWs[1]));
+      return p ? p.id : null;
+    } catch {}
+  }
+  return null;
+}
+
 /**
  * Stamp each item of a transfer note with the two stores it moves between. A line's own ends win
  * over the note's. Only a move between two DIFFERENT stores moves stock; anything else — to a
  * site, to a machine, between two workshops sharing one store — stays a paper record, as before.
  */
 function stampTransfer(mtnId) {
-  const t = get('SELECT id, txn_date, from_place, to_place FROM mtn WHERE id = ?', mtnId);
+  const t = get('SELECT id, txn_date, from_location, to_location, from_place, to_place, workshop_id, from_store_location_id, to_store_location_id FROM mtn WHERE id = ?', mtnId);
   if (!t) return;
   const date = String(t.txn_date || '').slice(0, 10);
-  for (const l of all('SELECT id, from_place, to_place FROM mtn_lines WHERE mtn_id = ?', mtnId)) {
-    const from = storeAtPlace(l.from_place || t.from_place, date);
-    const to = storeAtPlace(l.to_place || t.to_place, date);
-    const moves = from && to && from !== to;
-    run('UPDATE mtn_lines SET from_store_id = ?, to_store_id = ? WHERE id = ?', moves ? from : null, moves ? to : null, l.id);
+  let storeLocations;
+  try { storeLocations = require('./store_locations'); } catch {}
+
+  const locMap = {
+    'MAIN STORES': 1, 'CENTRAL MAIN STORES': 1, 'MAIN STORE': 1,
+    'WORK SHOP STORES': 2, 'BADALGAMA WORK SHOP STORES': 2, 'CENTRAL STORE BADALGAMA': 2, 'CENTRAL WORKSHOP': 2,
+    'GALAGEDARA': 3, 'SITE-STORE-GWS': 3, 'CEP/03 GALAGEDARA': 3,
+    'CEP-03': 4, 'CEP-03 WADAKADA': 4, 'CEP-03 WADAKADA MECHANIC': 4, 'CEP-03(E)': 4,
+    'RUWANWELLA': 5, 'RUWANWELLA WATER PROJECT': 5,
+    'MARAWILA': 6, 'MARAWILA ROAD PROJECT': 6,
+    'BATTICALOA': 7, 'BATTICALOA LOT/2': 7, 'BATTICALOA LOT/3': 7, 'BATTICALOA WORK SHOP': 7, 'BATTICALOA LOT 03': 7, 'BATTICOLOA': 7,
+    'MUTHUR': 8, 'MUTHUR PLANT': 8,
+  };
+  const normLoc = (str) => {
+    if (!str) return null;
+    const cleanStr = String(str).toUpperCase().replace(/[^A-Z0-9/ ]/g, ' ').replace(/\s+/g, ' ').trim();
+    for (const [k, id] of Object.entries(locMap)) {
+      if (cleanStr.includes(k) || k.includes(cleanStr)) return id;
+    }
+    return null;
+  };
+
+  const headerFromLoc = t.from_store_location_id || physicalLocationAtPlace(t.from_place) || normLoc(t.from_location) || (t.workshop_id === 2 ? 3 : 2);
+  const headerToLoc = t.to_store_location_id || physicalLocationAtPlace(t.to_place) || normLoc(t.to_location);
+
+  for (const l of all('SELECT id, from_location, to_location, from_place, to_place, from_store_location_id, to_store_location_id FROM mtn_lines WHERE mtn_id = ?', mtnId)) {
+    let from = storeAtPlace(l.from_place || t.from_place, date);
+    let to = storeAtPlace(l.to_place || t.to_place, date);
+
+    let fromLoc = l.from_store_location_id || physicalLocationAtPlace(l.from_place) || normLoc(l.from_location) || headerFromLoc;
+    let toLoc = l.to_store_location_id || physicalLocationAtPlace(l.to_place) || normLoc(l.to_location) || headerToLoc;
+
+    if (storeLocations) {
+      if (fromLoc && !from) from = storeLocations.resolveLegacyStoreId(fromLoc) || (fromLoc === 3 ? 2 : 1);
+      if (toLoc && !to) to = storeLocations.resolveLegacyStoreId(toLoc) || (toLoc === 3 ? 2 : 1);
+      if (from && !fromLoc) {
+        const p = storeLocations.resolvePhysicalStore(from);
+        if (p) fromLoc = p.id;
+      }
+      if (to && !toLoc) {
+        const p = storeLocations.resolvePhysicalStore(to);
+        if (p) toLoc = p.id;
+      }
+    }
+
+    const movesToStore = to && to !== from;
+    const movesToLoc = toLoc && toLoc !== fromLoc;
+
+    run(
+      'UPDATE mtn_lines SET from_store_id = ?, to_store_id = ?, from_store_location_id = ?, to_store_location_id = ? WHERE id = ?',
+      from || null,
+      movesToStore ? to : null,
+      fromLoc || null,
+      movesToLoc ? toLoc : null,
+      l.id
+    );
   }
+
+  try {
+    run(`
+      UPDATE mtn
+         SET from_store_location_id = COALESCE(from_store_location_id, (SELECT from_store_location_id FROM mtn_lines WHERE mtn_id = mtn.id AND from_store_location_id IS NOT NULL LIMIT 1), ?),
+             to_store_location_id = COALESCE(to_store_location_id, (SELECT to_store_location_id FROM mtn_lines WHERE mtn_id = mtn.id AND to_store_location_id IS NOT NULL LIMIT 1), ?),
+             from_store_id = COALESCE(from_store_id, (SELECT from_store_id FROM mtn_lines WHERE mtn_id = mtn.id AND from_store_id IS NOT NULL LIMIT 1)),
+             to_store_id = COALESCE(to_store_id, (SELECT to_store_id FROM mtn_lines WHERE mtn_id = mtn.id AND to_store_id IS NOT NULL LIMIT 1))
+       WHERE id = ?
+    `, headerFromLoc, headerToLoc, mtnId);
+  } catch {}
 }
 
 /**
@@ -172,6 +253,12 @@ const wholeCountRefusal = () => (isMulti()
 
 /** May this person count or set levels in this store? Head office any; anyone else their own. */
 function mayManage(user, storeId) {
+  try {
+    const context = require('./context');
+    const ss = context.storeScopeFor(user);
+    if (ss.isGlobal) return true;
+    return ss.canAccess(storeId, 'count');
+  } catch (_) {}
   const scope = require('./scope');
   if (!scope.enabled() || scope.headOffice(user)) return true;
   return homeStore(user) === Number(storeId);

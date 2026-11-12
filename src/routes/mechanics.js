@@ -56,7 +56,7 @@ router.get('/', asyncHandler((req, res) => {
 
   const whereSql = whereClauses.length ? `WHERE ${whereClauses.join(' AND ')}` : '';
 
-  res.json(all(
+  const rows = all(
     `SELECT x.*,
             (SELECT w.name FROM workshops w WHERE w.id = x.workshop_id) AS workshop_name,
             (SELECT w.code FROM workshops w WHERE w.id = x.workshop_id) AS workshop_code
@@ -66,30 +66,15 @@ router.get('/', asyncHandler((req, res) => {
                     (SELECT MAX(mw.from_date) FROM mechanic_workshops mw WHERE mw.mechanic_id = m.id AND mw.from_date > '2000-01-01') AS last_move
                FROM mechanics m) x ${whereSql} ORDER BY x.active DESC, x.name`,
     ...params
-  ));
+  );
+  // Without Labour the rate comes back null rather than being dropped: this tree's own
+  // "sanitize financial and rate data" test pins that shape, and the lineage that wanted the key
+  // absent entirely is not the one being kept. The list stays open either way, because the names
+  // fill the daily-work and crew pickers.
+  res.json(rows);
 }));
 
 // Single mechanic details with transfer history and labour rate history
-router.get('/:id', asyncHandler((req, res) => {
-  const id = toInt(req.params.id);
-  const m = get('SELECT * FROM mechanics WHERE id = ?', id);
-  if (!m) return res.status(404).json({ error: 'Mechanic not found' });
-  const ws = require('../lib/workshops');
-  const currentWsId = ws.mechanicWorkshop(id);
-  const currentWs = currentWsId ? ws.byId(currentWsId) : null;
-  const history = ws.mechanicHistory(id);
-  const rates = all('SELECT * FROM labour_rates WHERE mechanic = ? ORDER BY effective_from DESC, id DESC', m.name);
-  res.json({
-    mechanic: {
-      ...m,
-      workshop_id: currentWsId,
-      workshop_name: currentWs ? currentWs.name : null,
-      workshop_code: currentWs ? currentWs.code : null,
-    },
-    transfers: history,
-    rates,
-  });
-}));
 
 router.post('/', requireCap('mechanics.create'), asyncHandler((req, res) => {
   require_(req.body, ['name']);
@@ -184,14 +169,16 @@ router.post('/rates', requireCap('labour.rates.edit'), asyncHandler((req, res) =
 }));
 
 // Labour names that appear in the daily-work log but have NO hourly rate yet. Gated on labour clearance.
-router.get('/unassigned', requireModule('labour'), asyncHandler((_req, res) => {
+router.get('/unassigned', requireModule('labour'), asyncHandler((req, res) => {
   const rated = new Set(
     all('SELECT DISTINCT mechanic FROM labour_rates').map((r) => mechanics.normalizeMechanic(r.mechanic))
   );
   const acc = new Map(); // canonicalNorm -> { name, norm, entries, resolved, resolvedName }
+  // Step 2c: names from your own workshops' daily work.
+  const scope = require('../lib/scope');
   for (const row of all(
-    `SELECT mechanic, COUNT(*) c FROM job_daily_work
-      WHERE mechanic IS NOT NULL AND mechanic <> '' GROUP BY mechanic`
+    `SELECT w.mechanic, COUNT(*) c FROM job_daily_work w LEFT JOIN job_cards j ON j.id = w.job_id
+      WHERE w.mechanic IS NOT NULL AND w.mechanic <> ''${scope.wsSql('j.workshop_id', scope.reach(req.user))} GROUP BY w.mechanic`
   )) {
     for (const raw of mechanics.splitMechanics(row.mechanic)) {
       const norm = mechanics.normalizeMechanic(raw);
@@ -222,6 +209,32 @@ router.get('/aliases', requireModule('aliases'), asyncHandler((req, res) => {
     q: req.query.q,
     limit: req.query.limit,
   }));
+}));
+
+// One mechanic's record. LAST among the GETs on purpose: '/:id' matches a single segment, so while
+// it sat above them it swallowed /rates, /unassigned and /aliases -- Express takes the first route
+// that matches, and those three never ran at all. Their handlers were dead code and the screens
+// that call them got a 404 for a mechanic named "rates". Anything added below this line will be
+// swallowed the same way, so add it above.
+router.get('/:id', requireModule('labour'), asyncHandler((req, res) => {
+  const id = toInt(req.params.id);
+  const m = get('SELECT * FROM mechanics WHERE id = ?', id);
+  if (!m) return res.status(404).json({ error: 'Mechanic not found' });
+  const ws = require('../lib/workshops');
+  const currentWsId = ws.mechanicWorkshop(id);
+  const currentWs = currentWsId ? ws.byId(currentWsId) : null;
+  const history = ws.mechanicHistory(id);
+  const rates = all('SELECT * FROM labour_rates WHERE mechanic = ? ORDER BY effective_from DESC, id DESC', m.name);
+  res.json({
+    mechanic: {
+      ...m,
+      workshop_id: currentWsId,
+      workshop_name: currentWs ? currentWs.name : null,
+      workshop_code: currentWs ? currentWs.code : null,
+    },
+    transfers: history,
+    rates,
+  });
 }));
 
 router.post('/aliases/:id/link', requireCap('aliases.mechanic.resolve'), asyncHandler((req, res) => {

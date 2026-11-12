@@ -12,10 +12,19 @@ const db = new Database(config.dbPath);
 db.pragma('journal_mode = WAL');
 db.pragma('foreign_keys = ON');
 
+const multidb = require('./multidb');
+try {
+  multidb.init(db);
+} catch {}
+
 /**
  * Apply the schema. Idempotent — every statement is CREATE ... IF NOT EXISTS.
  */
 function migrate() {
+  if (multidb.isMultiDb()) {
+    multidb.migrate();
+    return;
+  }
   // stock_moves' unique key gained item_key, so one service line can record BOTH of the filters
   // it fits. CREATE TABLE IF NOT EXISTS cannot change a constraint, and SQLite cannot alter one
   // in place — but stock_moves is a PROJECTION, regenerated from the source tables by
@@ -43,7 +52,8 @@ function migrate() {
   );
   CREATE INDEX IF NOT EXISTS idx_mrn_approvals ON mrn_approvals(mrn_id);`);
   // Job Request (Transport) — Assistant Transport raises → Transport Manager certifies
-  // → Operational Manager approves; on final approval a job card is auto-created.
+  // → Operational Manager approves. The workshop then opens the job card against the approved
+  // request; job_id is that card, set when the workshop opens it (it used to be set by the approval).
   db.exec(`CREATE TABLE IF NOT EXISTS job_requests (
     id                INTEGER PRIMARY KEY AUTOINCREMENT,
     jr_no             TEXT NOT NULL UNIQUE,      -- editable, continues from the last number
@@ -62,6 +72,8 @@ function migrate() {
     certified_by      TEXT, certified_at TEXT, certified_sig TEXT,
     approved_by       TEXT, approved_at TEXT, approved_sig TEXT,
     job_id            INTEGER REFERENCES job_cards(id),  -- the job card created on final approval
+    fabrication_kind  TEXT,
+    issue_store_location_id INTEGER REFERENCES store_locations(id),
     created_at        TEXT NOT NULL DEFAULT (datetime('now'))
   );
   CREATE INDEX IF NOT EXISTS idx_job_requests_asset ON job_requests(asset_id);
@@ -87,6 +99,12 @@ function migrate() {
     level  TEXT NOT NULL DEFAULT 'none',
     PRIMARY KEY (role, module)
   );`);
+  // A person's own level on a section switch, set on the People screen (access plan, Part 2). It
+  // replaces their roles' level on that switch — more or less. No row: their roles decide.
+  // user_permissions is defined below, keyed by `section`. main's lineage declared the same table
+  // here keyed by `module`; both arrived in this merge and CREATE TABLE IF NOT EXISTS meant the
+  // first one won silently, leaving the index on `section` to fail at boot. This branch keeps the
+  // `section` spelling, so main's copy is gone rather than duplicated.
   // Capabilities — the individual actions a role may take (src/lib/capabilities.js). Keyed by role
   // NAME like role_permissions. Taking a capability away sets granted = 0 instead of deleting the
   // row, so the boot-time seed (INSERT OR IGNORE) can never quietly give it back.
@@ -97,6 +115,57 @@ function migrate() {
     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
     PRIMARY KEY (role, capability)
   );`);
+
+  // MIGRATION, and it has to run before the table below is touched. Two lineages built this table:
+  // one keyed by `module` with set_by/set_at, this one by `section` with updated_by/updated_at. On a
+  // database the other one created, CREATE TABLE IF NOT EXISTS below does nothing (the table is
+  // already there, with `module`), and then the index on `section` throws "no such column: section"
+  // out of migrate() -- so the server does not start at all, and nobody can sign in. A fresh
+  // database never shows it, which is every test, so it has to be caught here by looking at what is
+  // actually on disk. The rows are a person's own access levels and are carried across, not dropped.
+  const upExists = db.prepare(
+    "SELECT 1 x FROM sqlite_master WHERE type = 'table' AND name = 'user_permissions'").get();
+  if (upExists) {
+    const cols = db.prepare('PRAGMA table_info(user_permissions)').all().map((c) => c.name);
+    if (cols.includes('module') && !cols.includes('section')) {
+      const hadSetBy = cols.includes('set_by');
+      const hadSetAt = cols.includes('set_at');
+      db.exec('BEGIN');
+      try {
+        db.exec(`CREATE TABLE user_permissions__new (
+          id         INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          section    TEXT NOT NULL,
+          level      TEXT NOT NULL DEFAULT 'none',
+          updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_by INTEGER REFERENCES users(id),
+          UNIQUE(user_id, section)
+        );`);
+        // Only rows whose person still exists. The old table put no foreign key on user_id and the
+        // new one does, so a level left behind by a deleted account would fail the insert and roll
+        // the whole migration back -- which would leave the server unable to start over a row that
+        // means nothing anyway. Orphans are counted and reported rather than silently lost.
+        const total = db.prepare('SELECT COUNT(*) c FROM user_permissions').get().c;
+        db.exec(`INSERT OR IGNORE INTO user_permissions__new (user_id, section, level, updated_at, updated_by)
+                 SELECT p.user_id, p.module, p.level,
+                        ${hadSetAt ? 'p.set_at' : "datetime('now')"},
+                        ${hadSetBy ? '(SELECT u.id FROM users u WHERE u.id = p.set_by)' : 'NULL'}
+                   FROM user_permissions p
+                  WHERE EXISTS (SELECT 1 FROM users u WHERE u.id = p.user_id);`);
+        const moved = db.prepare('SELECT COUNT(*) c FROM user_permissions__new').get().c;
+        if (moved < total) {
+          console.log(`user_permissions: ${total - moved} level(s) belonged to accounts that no longer exist; not carried over.`);
+        }
+        db.exec('DROP TABLE user_permissions;');
+        db.exec('ALTER TABLE user_permissions__new RENAME TO user_permissions;');
+        db.exec('COMMIT');
+        console.log(`user_permissions: re-keyed from module to section, ${moved} personal level(s) carried over.`);
+      } catch (e) {
+        db.exec('ROLLBACK');
+        throw e;
+      }
+    }
+  }
 
   // Person-by-person access overrides (WorkshopOne Plan Part B):
   // Every person can have their own 5-level clearance per section, and their own capability ticks.
@@ -132,6 +201,12 @@ function migrate() {
   ensureColumn('roles', 'created_at', 'TEXT');
   ensureColumn('users', 'access_until', 'TEXT');
   ensureColumn('users', 'approval_limit', 'REAL');
+  ensureColumn('issues', 'source_table', 'TEXT');
+  ensureColumn('issues', 'source_id', 'INTEGER');
+  ensureColumn('general_item_txns', 'source_issue_id', 'INTEGER');
+  ensureColumn('stock_ledger', 'source_issue_id', 'INTEGER');
+  ensureColumn('general_item_txns', 'mtn_id', 'INTEGER REFERENCES mtn(id)');
+  ensureColumn('stock_ledger', 'mtn_id', 'INTEGER REFERENCES mtn(id)');
   // Two-factor sign-in (src/lib/mfa.js). The keys are stored encrypted (src/lib/secretbox.js).
   ensureColumn('roles', 'require_mfa', 'INTEGER NOT NULL DEFAULT 0');
   ensureColumn('users', 'mfa_enabled', 'INTEGER NOT NULL DEFAULT 0');
@@ -341,6 +416,7 @@ function migrate() {
   // Preserve the source item category on stores records (9-category breakdown).
   ensureColumn('mrn_lines', 'category', 'TEXT');
   ensureColumn('issues', 'category', 'TEXT');
+  ensureColumn('issues', 'service_id', 'INTEGER REFERENCES service_jobs(id)');
   ensureColumn('mtn', 'category', 'TEXT');
   // Sub-category link (item_categories.id, always a LEAF/sub-category). The free-text
   // `category` column above stays and is written in step with it — every existing
@@ -457,6 +533,7 @@ function migrate() {
   ensureColumn('users', 'signature', 'TEXT');       // each user's saved signature image
   ensureColumn('mrn', 'requested_sig', 'TEXT'); ensureColumn('mrn', 'certified_sig', 'TEXT'); ensureColumn('mrn', 'approved_sig', 'TEXT');
   ensureColumn('mrn_approvals', 'signature', 'TEXT'); // signature snapshot applied at signing
+  ensureColumn('job_approvals', 'signed_name', 'TEXT'); // e-signature snapshot / stand-in label
   ensureColumn('general_item_txns', 'source', 'TEXT'); // import source tag (idempotent re-import)
   // Consolidated MRN item catalogue (deduped from mrn_lines descriptions).
   ensureColumn('store_items', 'unit_cost', 'REAL DEFAULT 0');
@@ -703,13 +780,26 @@ function migrate() {
   fieldStage6();
   operationsStage7();
   storesCountsPart2();
+  jobCardNeedsRequest();
   storesServicesPart3();
   storesUnitsPart4();
   storesDocumentsProcess();
+  // After storesDocumentsProcess(), which is what adds mtn.status: on a database from before the
+  // 4-document lifecycle the column does not exist yet, and reading it here stopped migrate()
+  // dead — no column, no server, nobody can sign in.
+  transferStockByStage();
   labourLifecycleProcess();
   toolsAndToolboxesProcess();
+  ownRecordsStep2();
+  ownRecordsStep2c();
+  supplyRoutesAndPipeline();
+  chainNumberAndShortDelivery();
+  closureRulesAndUniversalTrace();
 
   // Seed the RBAC matrix once (safe to require here — db exports are already set).
+  // Sections split off a shared switch start at that switch's level (access plan, Part 1) — before
+  // the defaults, so a level an admin set on the old switch carries over rather than the default.
+  try { require('../lib/permissions').splitSections(); } catch (e) { /* table may not exist yet on very first pass */ }
   try { require('../lib/permissions').seedDefaults(); } catch (e) { /* table may not exist yet on very first pass */ }
   // Seed the built-in roles' capabilities (idempotent) and mark those roles as shipped with the
   // system, so the Access screen can tell them apart from roles an admin created.
@@ -718,7 +808,155 @@ function migrate() {
     caps.seedCapabilities();
     const names = [...caps.RESERVED_ROLE_NAMES];
     db.prepare(`UPDATE roles SET is_system = 1 WHERE is_system = 0 AND name IN (${names.map(() => '?').join(',')})`).run(...names);
+    // The job title as the workshop says it: Transport Assistant Manager, not Assistant Transport
+    // Manager. The role's KEY never changes — capabilities, the access matrix and every user_roles
+    // row are keyed on assistant_transport_manager — only the words people read. A database the
+    // old wording was seeded into keeps it otherwise, because the seed is INSERT OR IGNORE.
+    // Matching on the old label makes this run once and never again, and leaves alone a label
+    // somebody has since set themselves.
+    db.prepare("UPDATE roles SET label = 'Transport Assistant Manager' WHERE name = 'assistant_transport_manager' AND label = 'Assistant Transport Manager'").run();
+    // Opening a job card belongs to the workshop now (see jobCardNeedsRequest). Has to be here,
+    // after seedCapabilities(): it is INSERT OR IGNORE, so revoking before it runs is undone.
+    jobCardCreateToWorkshop();
   }
+  // Improvement plan, Step 3a: who raised each request, and the seal of what was certified.
+  requestRulesStep3a();
+
+  // Statutory and company vehicle document types
+  try {
+    multidb.seedVehicleDocTypes(db);
+    fs.mkdirSync(path.join(config.uploadDir, 'vehicle_documents'), { recursive: true });
+  } catch {}
+
+  // Physical Store Locations & Central Hierarchy (Plan Phase 1)
+  try {
+    require('../lib/store_locations').seedStoreLocations(db);
+  } catch (err) {
+    console.warn('Physical store locations initial seed skipped:', err.message);
+  }
+
+  // Stock Movement Integration & Physical Store Tracking (Plan Phase 2)
+  try {
+    storesLocationsStage2(db);
+  } catch (err) {
+    console.warn('Physical store locations stage 2 migration skipped:', err.message);
+  }
+  // General & Lubricant Issues reconciliation & Stock sync
+  try {
+    if (!db.prepare("SELECT 1 FROM settings WHERE key = 'migration_045_done'").get()) {
+      require('../migrate/045_fix_issues_mtn_stock').runMigration(db);
+      db.prepare("INSERT INTO settings (key, value) VALUES ('migration_045_done', '1')").run();
+    }
+  } catch (err) {
+    console.warn('Migration 045 auto-sync skipped:', err.message);
+  }
+  // General Item Issues reconciliation & Store Items balance sync
+  try {
+    require('../migrate/046_fix_general_item_issues').runMigration(db);
+  } catch (err) {
+    console.warn('Migration 046 auto-sync skipped:', err.message);
+  }
+  // Deduplicate General Items, clean overlaps & recalculate costs
+  try {
+    if (!db.prepare("SELECT 1 FROM settings WHERE key = 'migration_047_done'").get()) {
+      require('../migrate/047_deduplicate_general_items').runMigration(db);
+      db.prepare("INSERT INTO settings (key, value) VALUES ('migration_047_done', '1')").run();
+    }
+  } catch (err) {
+    console.warn('Migration 047 deduplication skipped:', err.message);
+  }
+  // Service Job Requests, Service Records Linking & Daily Work Service Tracking
+  try {
+    require('../migrate/048_service_requests_and_dailywork').runMigration(db);
+  } catch (err) {
+    console.warn('Migration 048 service requests skipped:', err.message);
+  }
+  // Store Location Project Links, Workshop Bridges & Context Access Grants
+  try {
+    if (!db.prepare("SELECT 1 FROM settings WHERE key = 'migration_049_done'").get()) {
+      require('../migrate/049_store_location_project_links').runMigration(db);
+      db.prepare("INSERT INTO settings (key, value) VALUES ('migration_049_done', '1')").run();
+    }
+  } catch (err) {
+    console.warn('Migration 049 store location links skipped:', err.message);
+  }
+  // Fabrication Job Type & In-place Job Cards Rebuild
+  try {
+    if (!db.prepare("SELECT 1 FROM settings WHERE key = 'migration_050_done'").get()) {
+      require('../migrate/050_fabrication_job_type').runMigration(db);
+      db.prepare("INSERT INTO settings (key, value) VALUES ('migration_050_done', '1')").run();
+    }
+  } catch (err) {
+    console.warn('Migration 050 fabrication job type skipped:', err.message);
+  }
+  // Seed Site Storekeeper Role Permissions & Capabilities
+  try {
+    if (!db.prepare("SELECT 1 FROM settings WHERE key = 'migration_051_done'").get()) {
+      require('../migrate/051_seed_site_storekeeper_role').runMigration(db);
+      db.prepare("INSERT INTO settings (key, value) VALUES ('migration_051_done', '1')").run();
+    }
+  } catch (err) {
+    console.warn('Migration 051 site storekeeper seed skipped:', err.message);
+  }
+  // Fabrication Access Foundation & General Works Schema
+  try {
+    if (!db.prepare("SELECT 1 FROM settings WHERE key = 'migration_052_done'").get()) {
+      require('../migrate/052_fabrication_access_and_schema').runMigration(db);
+      db.prepare("INSERT INTO settings (key, value) VALUES ('migration_052_done', '1')").run();
+    }
+  } catch (err) {
+    console.warn('Migration 052 fabrication schema skipped:', err.message);
+  }
+  // MTN Store Locations & Legacy Backfill
+  try {
+    if (!db.prepare("SELECT 1 FROM settings WHERE key = 'migration_053_done'").get()) {
+      require('../migrate/053_mtn_store_locations').runMigration(db);
+      db.prepare("INSERT INTO settings (key, value) VALUES ('migration_053_done', '1')").run();
+    }
+
+  // CCOM Outsourced Service & Repair Requests
+  try {
+    if (!db.prepare("SELECT 1 FROM settings WHERE key = 'migration_054_done'").get()) {
+      require('../migrate/054_ccom_outsourcing').runMigration(db);
+      db.prepare("INSERT INTO settings (key, value) VALUES ('migration_054_done', '1')").run();
+    }
+  } catch (err) {
+    console.warn('Migration 054 CCOM outsourcing skipped:', err.message);
+  }
+  } catch (err) {
+    console.warn('Migration 053 MTN store locations skipped:', err.message);
+  }
+
+  // Fuel Management & Bulk Tanks (Plan V2 - Migration 055)
+  try {
+    if (!db.prepare("SELECT 1 FROM settings WHERE key = 'migration_055_done'").get()) {
+      require('../migrate/055_fuel_core_schema').runMigration(db);
+      db.prepare("INSERT INTO settings (key, value) VALUES ('migration_055_done', '1')").run();
+    }
+  } catch (err) {
+    console.warn('Migration 055 Fuel core schema skipped:', err.message);
+  }
+
+  // Fleet Allocations & Rental Billing (Plan V2 - Migration 056)
+  try {
+    if (!db.prepare("SELECT 1 FROM settings WHERE key = 'migration_056_done'").get()) {
+      require('../migrate/056_fleet_allocations_and_billing').runMigration(db);
+      db.prepare("INSERT INTO settings (key, value) VALUES ('migration_056_done', '1')").run();
+    }
+  } catch (err) {
+    console.warn('Migration 056 Fleet allocations and billing skipped:', err.message);
+  }
+
+  // Fleet Financial Ledger & Identity Mapping (Plan V2 - Migration 057)
+  try {
+    if (!db.prepare("SELECT 1 FROM settings WHERE key = 'migration_057_done'").get()) {
+      require('../migrate/057_fleet_financial_ledger').runMigration(db);
+      db.prepare("INSERT INTO settings (key, value) VALUES ('migration_057_done', '1')").run();
+    }
+  } catch (err) {
+    console.warn('Migration 057 Fleet financial ledger skipped:', err.message);
+  }
+
   return db;
 }
 
@@ -863,6 +1101,49 @@ function storesStage4() {
   }
 }
 
+// Physical Store Locations — Stage 2: Stock Movement Integration & Physical Store Tracking (Plan Revision 2)
+function storesLocationsStage2(dbInstance = db) {
+  require('../lib/store_locations').migrateStoreLocationsStage2(dbInstance);
+}
+
+// A TRANSFER MOVES THE SHELF WHEN THE GOODS MOVE: out of the sending store once the note is
+// dispatched, into the receiving store once it is accepted (src/lib/stock.js transfers). It used
+// to happen the moment the note was typed, whatever its status, and rejecting a note never put
+// the stock back — so the movements on an existing database have to be squared with the rule.
+//
+// THE SHELVES DO NOT CHANGE ON UPGRADE. A note that is already counted on the shelves and never
+// got past the typing stage is marked accepted, which is what it is: every transfer in the book
+// happened, and every imported one reads as 'draft' only because the importers never set a
+// status and the column defaults to it. The figures therefore come out of the update as they
+// went in. What does change is the two cases the old code had wrong — a note still waiting to
+// be dispatched, and a rejected one — whose goods go back on the shelf they never left.
+//
+// Runs once, on the first start after the update, and never again (the settings key).
+function transferStockByStage() {
+  if (db.prepare("SELECT 1 x FROM settings WHERE key = 'mtn_stock_at_dispatch'").get()) return;
+  const counted = `SELECT l.id FROM mtn_lines l JOIN mtn t ON t.id = l.mtn_id`;
+  const rep = db.transaction(() => ({
+    // Already on the shelves, never dispatched on paper: that is a completed transfer.
+    accepted: db.prepare(`UPDATE mtn SET status = 'accepted'
+       WHERE COALESCE(status, 'draft') IN ('draft', 'pending_approval')
+         AND id IN (SELECT l.mtn_id FROM mtn_lines l
+                     JOIN stock_moves sm ON sm.source_table = 'mtn_lines' AND sm.source_id = l.id)`).run().changes,
+    // Movements the rule would never have written: the note is not dispatched, or was rejected.
+    returned: db.prepare(`DELETE FROM stock_moves WHERE source_table = 'mtn_lines'
+         AND source_id IN (${counted} WHERE COALESCE(t.status, '') NOT IN ('dispatched', 'received', 'accepted'))`).run().changes,
+    // In transit: gone from the sending store, not yet taken in by the receiving one.
+    in_transit: db.prepare(`DELETE FROM stock_moves WHERE source_table = 'mtn_lines' AND kind = 'in'
+         AND source_id IN (${counted} WHERE t.status IN ('dispatched', 'received'))`).run().changes,
+  }))();
+  db.prepare("INSERT INTO settings (key, value) VALUES ('mtn_stock_at_dispatch', ?)")
+    .run(JSON.stringify({ at: new Date().toISOString(), ...rep }));
+  if (rep.accepted || rep.returned || rep.in_transit) {
+    console.log(`mtn: stock now follows the stage — ${rep.accepted} completed transfer(s) marked accepted `
+      + `(the shelves keep what they hold), ${rep.returned} movement(s) of notes not yet dispatched or rejected `
+      + `put back, ${rep.in_transit} arrival(s) held until the goods are accepted.`);
+  }
+}
+
 // Stage 4: a day is signed off per workshop once the workshops are kept apart. workday_signoffs was
 // made with work_date UNIQUE, which SQLite cannot change in place — so the table is rebuilt once,
 // every row kept as a whole-company sign-off (workshop_id 0, which is what it was).
@@ -947,6 +1228,55 @@ function fieldStage6() {
   allowReturnParts();
 }
 
+// A job card is opened by the workshop, against an approved job request, and carries a pointer back
+// to it. The approval used to make the card itself, so every card made that way is already linked —
+// the other way round, through job_requests.job_id. Both pointers are kept from here on (the routes
+// write them in one transaction); this backfills the new one from the old.
+//
+// There is deliberately NO NOT NULL and no trigger. The rule that a card needs a request is a CHECK
+// THE ROUTE MAKES, because four insert paths legitimately have no request and must keep working:
+// a breakdown reported at a site (src/lib/field.js), the continuation card at partial close
+// (src/lib/job_close.js — it inherits the parent's request), the GENERAL-WS and monthly labour
+// container cards, and imported history.
+function jobCardNeedsRequest() {
+  ensureColumn('job_cards', 'job_request_id', 'INTEGER REFERENCES job_requests(id)');
+  db.exec(`
+    UPDATE job_cards SET job_request_id = (SELECT r.id FROM job_requests r WHERE r.job_id = job_cards.id)
+     WHERE job_request_id IS NULL
+       AND EXISTS (SELECT 1 FROM job_requests r WHERE r.job_id = job_cards.id);
+    CREATE INDEX IF NOT EXISTS idx_jobs_job_request ON job_cards(job_request_id);`);
+}
+
+// jobs.create changes hands: the Transport Manager raised cards directly, and no longer does — the
+// workshop opens them from an approved request. Taking it out of the capability TEMPLATE
+// (src/lib/capabilities.js) does not move it on a database that has already been seeded: the row
+// (transport_manager, jobs.create, 1) is there, and seedCapabilities() only ever INSERTs OR IGNOREs.
+// So it is revoked here, by hand, ONCE — guarded by a settings key, so an admin who decides to give
+// it back is not overruled on the next start.
+//
+// Any OTHER role holding it is left exactly as it is and reported instead: a role an admin made and
+// granted this to is their decision, not this migration's.
+function jobCardCreateToWorkshop() {
+  if (db.prepare("SELECT 1 FROM settings WHERE key = 'jobs_create_to_workshop'").get()) return;
+  const held = db.prepare("SELECT role FROM role_capabilities WHERE capability = 'jobs.create' AND granted = 1").all()
+    .map((r) => r.role);
+  const moved = db.prepare("UPDATE role_capabilities SET granted = 0, updated_at = datetime('now') WHERE role = 'transport_manager' AND capability = 'jobs.create' AND granted = 1").run().changes;
+  // The other half of the same move: the workshop opens cards from approved requests, so it must be
+  // able to READ job requests — it was 'none'. seedDefaults() is INSERT OR IGNORE too, so the level
+  // on an already-seeded database is lifted here. Only from 'none': a level an admin has already
+  // raised is theirs, and is not pushed back down.
+  const seen = db.prepare("UPDATE role_permissions SET level = 'view' WHERE role = 'workshop' AND module = 'jobrequests' AND level = 'none'").run().changes;
+  const others = held.filter((r) => r !== 'transport_manager' && r !== 'workshop');
+  db.prepare("INSERT INTO settings (key, value) VALUES ('jobs_create_to_workshop', ?)")
+    .run(JSON.stringify({ at: new Date().toISOString(), revoked_from_transport_manager: moved, workshop_sees_requests: seen, left_alone: others }));
+  if (moved) console.log('jobs: opening a job card is the workshop\'s now — taken off the Transport Manager.');
+  if (seen) console.log('jobs: the workshop can now see job requests (it needs to, to open cards from them).');
+  if (others.length) {
+    console.log(`jobs: these roles also open job cards and were left as they are: ${others.join(', ')}. `
+      + 'They now need an approved job request like everyone else (Access Control -> Roles to change it).');
+  }
+}
+
 // Stage 7: a machine can stand at a site of a project, not only at the project (src/lib/operations.js).
 function operationsStage7() {
   ensureColumn('assets', 'current_site_id', 'INTEGER REFERENCES sites(id)');
@@ -980,6 +1310,50 @@ function storesUnitsPart4() {
     if (grn.length || issues.length) require('../lib/stock').sync({ grn, tyre_battery_issues: issues });
     db.prepare("INSERT INTO settings (key, value) VALUES ('stock_tb_by_spec', ?)").run(JSON.stringify({ at: new Date().toISOString(), grn: grn.length, issues: issues.length }));
   }
+}
+
+// Improvement plan, Step 2: a service record and a tool belong to a workshop, like a job card, so a
+// workshop kept apart sees only its own (src/lib/scope.js).
+//   - a service record: its job card's workshop; with no card, the store it drew from (a store is
+//     known by the workshop that owns it) — the rule the Stage 5 reports already used — else the
+//     main workshop. The route writes it on every new record; the trigger covers anything else.
+//   - a tool: the workshop it was entered for; a mechanic's toolbox without one, the mechanic's
+//     workshop; else the main workshop.
+// Nothing moves for anyone while the workshops are not kept apart.
+// Improvement plan, Step 2c: an issue note and a transfer note belong to a workshop too. The routes
+// write it (the card's workshop, else the writer's); what has none takes it by the same rule.
+function ownRecordsStep2c() {
+  const DEF = '(SELECT id FROM workshops WHERE is_default = 1 ORDER BY id LIMIT 1)';
+  // An issue note: its job card's workshop, else the main one's.
+  const minWs = (n) => `COALESCE((SELECT j.workshop_id FROM job_cards j WHERE j.id = ${n}.job_id), ${DEF})`;
+  db.exec(`UPDATE min_notes SET workshop_id = ${minWs('min_notes')} WHERE workshop_id IS NULL;
+           CREATE TRIGGER IF NOT EXISTS trg_min_notes_ws AFTER INSERT ON min_notes WHEN NEW.workshop_id IS NULL
+           BEGIN UPDATE min_notes SET workshop_id = ${minWs('NEW')} WHERE id = NEW.id; END;`);
+  // A transfer note: the workshop it is sent from, else the one it goes to, else the main one's.
+  ensureColumn('mtn', 'workshop_id', 'INTEGER REFERENCES workshops(id)');
+  const placeWs = (col) => `(SELECT w.id FROM workshops w WHERE ${col} = 'w:' || w.id)`;
+  const mtnWs = (t) => `COALESCE(${placeWs(`${t}.from_place`)}, ${placeWs(`${t}.to_place`)}, ${DEF})`;
+  db.exec(`UPDATE mtn SET workshop_id = ${mtnWs('mtn')} WHERE workshop_id IS NULL;
+           CREATE INDEX IF NOT EXISTS idx_mtn_ws ON mtn(workshop_id);
+           CREATE TRIGGER IF NOT EXISTS trg_mtn_ws AFTER INSERT ON mtn WHEN NEW.workshop_id IS NULL
+           BEGIN UPDATE mtn SET workshop_id = ${mtnWs('NEW')} WHERE id = NEW.id; END;`);
+}
+
+function ownRecordsStep2() {
+  const DEF = '(SELECT id FROM workshops WHERE is_default = 1 ORDER BY id LIMIT 1)';
+  const jobWs = (s) => `(SELECT j.workshop_id FROM job_cards j WHERE j.job_no = ${s}.job_no AND COALESCE(${s}.job_no, '') <> '' ORDER BY j.id DESC LIMIT 1)`;
+  ensureColumn('service_jobs', 'workshop_id', 'INTEGER REFERENCES workshops(id)');
+  db.exec(`UPDATE service_jobs SET workshop_id = COALESCE(${jobWs('service_jobs')}, store_id, ${DEF}) WHERE workshop_id IS NULL;
+           CREATE INDEX IF NOT EXISTS idx_service_jobs_ws ON service_jobs(workshop_id);
+           CREATE TRIGGER IF NOT EXISTS trg_service_jobs_ws AFTER INSERT ON service_jobs WHEN NEW.workshop_id IS NULL
+           BEGIN UPDATE service_jobs SET workshop_id = COALESCE(${jobWs('NEW')}, NEW.store_id, ${DEF}) WHERE id = NEW.id; END;`);
+
+  const mechWs = require('../lib/workshops').mechanicWorkshopSql('m');
+  const toolWs = (t) => `COALESCE((SELECT ${mechWs} FROM mechanics m WHERE m.id = ${t}.mechanic_id), ${DEF})`;
+  db.exec(`UPDATE workshop_tools SET workshop_id = ${toolWs('workshop_tools')} WHERE workshop_id IS NULL;
+           CREATE INDEX IF NOT EXISTS idx_tools_ws ON workshop_tools(workshop_id);
+           CREATE TRIGGER IF NOT EXISTS trg_tools_ws AFTER INSERT ON workshop_tools WHEN NEW.workshop_id IS NULL
+           BEGIN UPDATE workshop_tools SET workshop_id = ${toolWs('NEW')} WHERE id = NEW.id; END;`);
 }
 
 // 4-Document Store Lifecycle (MRN, GRN, MIN, MTN) with multi-stage signoffs and PDF support.
@@ -1461,21 +1835,290 @@ function allowReturnParts() {
   }
 }
 
+// Improvement plan, Step 3a (src/lib/request_rules.js): whoever raised a request does not certify
+// or approve it, and what was certified is what gets approved.
+//   - mrn.raised_by_user: the user who raised it. A job request has had requested_by_user from
+//     the start; an MRN kept only the typed name. Requests raised in the app take it from their
+//     'create' line in the audit log; imported ones have none, and the rule passes them by.
+//   - certified_seal: the fingerprint of what was certified. Requests already certified are sealed
+//     as they stand now.
+function requestRulesStep3a() {
+  ensureColumn('mrn', 'raised_by_user', 'INTEGER REFERENCES users(id)');
+  ensureColumn('mrn', 'certified_seal', 'TEXT');
+  ensureColumn('job_requests', 'certified_seal', 'TEXT');
+  db.exec(`UPDATE mrn SET raised_by_user = (SELECT a.user_id FROM audit_log a
+                                             WHERE a.entity = 'mrn' AND a.action = 'create' AND a.entity_id = mrn.id
+                                             ORDER BY a.id LIMIT 1)
+            WHERE raised_by_user IS NULL`);
+  require('../lib/request_rules').sealMissing();
+}
+
+function supplyRoutesAndPipeline() {
+  ensureColumn('mrn_lines', 'supply_route', "TEXT DEFAULT 'main_store'");
+  ensureColumn('mrn_lines', 'qty_approved', 'REAL DEFAULT 0');
+  ensureColumn('mrn_lines', 'qty_sent', 'REAL DEFAULT 0');
+  ensureColumn('mrn_lines', 'qty_issued', 'REAL DEFAULT 0');
+  ensureColumn('mrn_lines', 'auto_mtn_id', 'INTEGER REFERENCES mtn(id)');
+  ensureColumn('mrn_lines', 'route_assigned_by', 'TEXT');
+  ensureColumn('mrn_lines', 'route_assigned_at', 'TEXT');
+  ensureColumn('mrn_lines', 'route_assigned_reason', 'TEXT');
+
+  db.exec(`UPDATE mrn_lines SET supply_route = CASE
+    WHEN purchase_source = 'head_office' THEN 'head_office'
+    WHEN purchase_source = 'local_purchase' THEN 'local_purchase'
+    ELSE COALESCE(supply_route, 'main_store')
+  END WHERE supply_route IS NULL OR supply_route = '';`);
+
+  db.exec(`UPDATE mrn_lines SET qty_approved = qty
+   WHERE (qty_approved IS NULL OR qty_approved = 0)
+     AND mrn_id IN (SELECT id FROM mrn WHERE approval_status = 'approved');`);
+
+  db.exec(`UPDATE mrn_lines SET qty_issued = COALESCE((
+    SELECT SUM(i.qty) FROM issues i
+    JOIN grn g ON g.id = i.grn_id
+    WHERE g.mrn_line_id = mrn_lines.id
+  ), 0) WHERE qty_issued IS NULL OR qty_issued = 0;`);
+
+  ensureColumn('mtn', 'mrn_id', 'INTEGER REFERENCES mrn(id)');
+  ensureColumn('mtn', 'auto_generated', 'INTEGER DEFAULT 0');
+  ensureColumn('mtn_lines', 'mrn_id', 'INTEGER REFERENCES mrn(id)');
+  ensureColumn('mtn_lines', 'mrn_line_id', 'INTEGER REFERENCES mrn_lines(id)');
+  ensureColumn('issues', 'mrn_line_id', 'INTEGER REFERENCES mrn_lines(id)');
+
+  db.exec('CREATE INDEX IF NOT EXISTS idx_mrn_lines_route ON mrn_lines(supply_route);');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_mtn_mrn ON mtn(mrn_id);');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_mtn_lines_mrn_line ON mtn_lines(mrn_line_id);');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_issues_mrn_line ON issues(mrn_line_id);');
+}
+
+function chainNumberAndShortDelivery() {
+  // Step 4b: Universal Chain Number columns across document lifecycle
+  ensureColumn('mrn', 'chain_no', 'TEXT');
+  ensureColumn('mtn', 'chain_no', 'TEXT');
+  ensureColumn('grn', 'chain_no', 'TEXT');
+  ensureColumn('grn_vouchers', 'chain_no', 'TEXT');
+  ensureColumn('min_notes', 'chain_no', 'TEXT');
+  ensureColumn('issues', 'chain_no', 'TEXT');
+
+  // Step 4b: Short delivery columns
+  ensureColumn('mrn_lines', 'qty_short', 'REAL DEFAULT 0');
+  ensureColumn('mrn_lines', 'discrepancy_reason', 'TEXT');
+  ensureColumn('mtn_lines', 'qty_received', 'REAL');
+  ensureColumn('mtn_lines', 'qty_short', 'REAL DEFAULT 0');
+  ensureColumn('mtn_lines', 'discrepancy_reason', 'TEXT');
+
+  // Step 4b: Delivery discrepancies table
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS delivery_discrepancies (
+      id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+      chain_no            TEXT,
+      mrn_id              INTEGER REFERENCES mrn(id),
+      mrn_line_id         INTEGER REFERENCES mrn_lines(id),
+      mtn_id              INTEGER REFERENCES mtn(id),
+      mtn_line_id         INTEGER REFERENCES mtn_lines(id),
+      grn_id              INTEGER REFERENCES grn(id),
+      item_description    TEXT,
+      qty_expected        REAL NOT NULL DEFAULT 0,
+      qty_received        REAL NOT NULL DEFAULT 0,
+      qty_short           REAL NOT NULL DEFAULT 0,
+      reason              TEXT NOT NULL,
+      status              TEXT NOT NULL DEFAULT 'open',
+      reported_by         TEXT,
+      reported_by_user    INTEGER REFERENCES users(id),
+      reported_at         TEXT DEFAULT (datetime('now')),
+      resolution_notes    TEXT,
+      resolved_by         TEXT,
+      resolved_at         TEXT,
+      created_at          TEXT DEFAULT CURRENT_TIMESTAMP,
+      updated_at          TEXT DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+
+  // Step 4b: Idempotency keys table
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS idempotency_keys (
+      id             INTEGER PRIMARY KEY AUTOINCREMENT,
+      key            TEXT NOT NULL UNIQUE,
+      user_id        INTEGER,
+      action         TEXT,
+      status         TEXT DEFAULT 'pending',
+      response_code  INTEGER,
+      response_body  TEXT,
+      created_at     TEXT DEFAULT CURRENT_TIMESTAMP,
+      updated_at     TEXT DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+
+  // Indexes on chain_no and foreign keys
+  db.exec('CREATE INDEX IF NOT EXISTS idx_mrn_chain_no ON mrn(chain_no);');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_mtn_chain_no ON mtn(chain_no);');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_grn_chain_no ON grn(chain_no);');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_grn_vouchers_chain_no ON grn_vouchers(chain_no);');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_min_notes_chain_no ON min_notes(chain_no);');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_issues_chain_no ON issues(chain_no);');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_discrepancies_chain_no ON delivery_discrepancies(chain_no);');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_discrepancies_status ON delivery_discrepancies(status);');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_discrepancies_mrn ON delivery_discrepancies(mrn_id);');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_idempotency_key ON idempotency_keys(key);');
+
+  // Backfill chain_no for existing MRNs if any have NULL
+  try {
+    const unchained = db.prepare(`SELECT id, req_date FROM mrn WHERE chain_no IS NULL ORDER BY id ASC`).all();
+    if (unchained.length > 0) {
+      const existing = db.prepare(`SELECT MAX(CAST(SUBSTR(chain_no, 10) AS INTEGER)) as max_seq FROM mrn WHERE chain_no LIKE 'CHN-%'`).get();
+      let maxSeq = (existing && existing.max_seq) ? Number(existing.max_seq) : 0;
+
+      const updMrn = db.prepare(`UPDATE mrn SET chain_no = ? WHERE id = ?`);
+      const updMtn = db.prepare(`UPDATE mtn SET chain_no = ? WHERE mrn_id = ? AND (chain_no IS NULL OR chain_no = '')`);
+      const updGrn = db.prepare(`UPDATE grn SET chain_no = ? WHERE mrn_id = ? AND (chain_no IS NULL OR chain_no = '')`);
+      const updGrnVoucher = db.prepare(`UPDATE grn_vouchers SET chain_no = ? WHERE id IN (SELECT voucher_id FROM grn WHERE mrn_id = ? AND voucher_id IS NOT NULL) AND (chain_no IS NULL OR chain_no = '')`);
+      const updIssues = db.prepare(`UPDATE issues SET chain_no = ? WHERE (mrn_line_id IN (SELECT id FROM mrn_lines WHERE mrn_id = ?) OR grn_id IN (SELECT id FROM grn WHERE mrn_id = ?)) AND (chain_no IS NULL OR chain_no = '')`);
+
+      for (const m of unchained) {
+        maxSeq++;
+        const y = (m.req_date && String(m.req_date).slice(0, 4)) || new Date().getFullYear();
+        const chainNo = `CHN-${y}-${String(maxSeq).padStart(5, '0')}`;
+        updMrn.run(chainNo, m.id);
+        updMtn.run(chainNo, m.id);
+        updGrn.run(chainNo, m.id);
+        updGrnVoucher.run(chainNo, m.id);
+        updIssues.run(chainNo, m.id);
+      }
+    }
+  } catch (e) {
+    // Graceful fallback if tables are empty or newly initialized
+  }
+}
+
+function allowClosedMrn() {
+  const cur = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='mrn'").get();
+  if (!cur || /'closed'/.test(cur.sql)) return;
+  const list = /(CHECK\s*\(\s*status\s+IN\s*\()/i;
+  if (!list.test(cur.sql)) return;
+  const widened = cur.sql
+    .replace(/^CREATE TABLE (IF NOT EXISTS )?("?)mrn\2/i, 'CREATE TABLE tmp_mrn')
+    .replace(list, "$1'closed',");
+  if (!/^CREATE TABLE tmp_mrn/.test(widened)) throw new Error('mrn: unexpected table definition - status not widened');
+  const cols = db.prepare('PRAGMA table_info(mrn)').all().map((c) => `"${c.name}"`).join(', ');
+  const indexes = db.prepare("SELECT sql FROM sqlite_master WHERE type='index' AND tbl_name='mrn' AND sql IS NOT NULL").all();
+  const triggers = db.prepare("SELECT name, sql FROM sqlite_master WHERE type='trigger' AND (tbl_name='mrn' OR sql LIKE '% mrn %' OR sql LIKE '%(mrn %' OR sql LIKE '%,mrn %' OR sql LIKE '%\nmrn %')").all();
+  const seq = db.prepare("SELECT seq FROM sqlite_sequence WHERE name='mrn'").get();
+  const dangling = () => db.prepare('PRAGMA foreign_key_check').all().filter((r) => r.parent === 'mrn' || r.table === 'mrn').length;
+  const before = dangling();
+  const count = db.prepare('SELECT COUNT(*) n FROM mrn').get().n;
+  db.pragma('foreign_keys = OFF');
+  try {
+    db.transaction(() => {
+      for (const t of triggers) db.exec(`DROP TRIGGER IF EXISTS "${t.name}"`);
+      db.exec(`${widened};
+               INSERT INTO tmp_mrn (${cols}) SELECT ${cols} FROM mrn;
+               DROP TABLE mrn;
+               ALTER TABLE tmp_mrn RENAME TO mrn;`);
+      for (const x of indexes) db.exec(x.sql);
+      for (const t of triggers) db.exec(t.sql);
+      if (seq) db.prepare("UPDATE sqlite_sequence SET seq = MAX(seq, ?) WHERE name = 'mrn'").run(seq.seq);
+      if (db.prepare('SELECT COUNT(*) n FROM mrn').get().n !== count || dangling() !== before) {
+        throw new Error('mrn rebuild did not keep every record and reference - not applied');
+      }
+    })();
+  } finally {
+    db.pragma('foreign_keys = ON');
+  }
+}
+
+function closureRulesAndUniversalTrace() {
+  // Allow 'closed' status on mrn
+  allowClosedMrn();
+
+  // Step 4c: MRN formal closure tracking
+  ensureColumn('mrn', 'closed_by', 'TEXT');
+  ensureColumn('mrn', 'closed_at', 'TEXT');
+  ensureColumn('mrn', 'closure_notes', 'TEXT');
+
+  // Step 4c: Line-item cancellation
+  ensureColumn('mrn_lines', 'is_cancelled', 'INTEGER DEFAULT 0');
+  ensureColumn('mrn_lines', 'cancellation_reason', 'TEXT');
+  ensureColumn('mrn_lines', 'cancelled_by', 'TEXT');
+  ensureColumn('mrn_lines', 'cancelled_at', 'TEXT');
+  ensureColumn('mrn_lines', 'qty_outstanding', 'REAL DEFAULT 0');
+  ensureColumn('mrn_lines', 'local_issue_qty', 'REAL DEFAULT 0');
+  ensureColumn('mtn', 'from_store_id', 'INTEGER');
+  ensureColumn('mtn', 'to_store_id', 'INTEGER');
+  ensureColumn('mtn', 'workshop_id', 'INTEGER');
+  ensureColumn('mtn', 'stock_synced_at', 'TEXT');
+
+  // Phase A: Site Authority Demand Approval Gate
+  ensureColumn('mrn', 'site_authority_status', "TEXT NOT NULL DEFAULT 'approved'");
+  ensureColumn('mrn', 'site_authority_user_id', 'INTEGER REFERENCES users(id)');
+  ensureColumn('mrn', 'site_authority_at', 'TEXT');
+  ensureColumn('mrn', 'site_authority_notes', 'TEXT');
+
+  // Phase B (Step 6): Main Workshop Replenishment via Main Stores
+  ensureColumn('mrn', 'parent_mrn_id', 'INTEGER REFERENCES mrn(id)');
+  ensureColumn('mrn', 'replenishment_type', 'TEXT');
+  ensureColumn('mrn', 'from_store_location_id', 'INTEGER REFERENCES store_locations(id)');
+  ensureColumn('mrn_lines', 'parent_mrn_line_id', 'INTEGER REFERENCES mrn_lines(id)');
+  ensureColumn('mrn_lines', 'child_mrn_id', 'INTEGER REFERENCES mrn(id)');
+  ensureColumn('mrn_lines', 'child_mrn_line_id', 'INTEGER REFERENCES mrn_lines(id)');
+
+  // Phase C (Step 7): Direct Sourcing Store Location per line
+  ensureColumn('mrn_lines', 'source_store_location_id', 'INTEGER REFERENCES store_locations(id)');
+
+  // Step 7: Automated Reorder Point (ROP) & Rebalancing
+  ensureColumn('store_reorder', 'physical_store_id', 'INTEGER REFERENCES store_locations(id)');
+  ensureColumn('store_reorder', 'safety_stock', 'REAL DEFAULT 0');
+  ensureColumn('store_reorder', 'reorder_qty', 'REAL DEFAULT 0');
+  ensureColumn('store_reorder', 'avg_daily_demand', 'REAL DEFAULT 0');
+  ensureColumn('store_reorder', 'lead_time_days', 'INTEGER DEFAULT 7');
+  ensureColumn('store_reorder', 'auto_calc', 'INTEGER DEFAULT 1');
+  ensureColumn('store_reorder', 'last_calculated_at', 'TEXT');
+
+  // Indexes
+  db.exec('CREATE INDEX IF NOT EXISTS idx_store_reorder_phys ON store_reorder(physical_store_id, section, item_key);');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_mrn_status ON mrn(status);');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_mrn_lines_cancelled ON mrn_lines(is_cancelled);');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_mrn_site_auth ON mrn(site_authority_status);');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_mrn_parent ON mrn(parent_mrn_id);');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_mrnl_parent ON mrn_lines(parent_mrn_line_id);');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_mrnl_child ON mrn_lines(child_mrn_id);');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_mrnl_src_store ON mrn_lines(source_store_location_id);');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_audit_log_created ON audit_log(created_at DESC);');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_audit_log_user ON audit_log(user_id, created_at DESC);');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_audit_log_entity_act ON audit_log(entity, action, created_at DESC);');
+}
+
 function ensureColumn(table, col, def) {
+  const tbl = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table);
+  if (!tbl) return;
   const exists = db.prepare(`PRAGMA table_info(${table})`).all().some((c) => c.name === col);
   if (!exists) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${def}`);
 }
 
+// Dynamic routing: when multidb is active, route through multidb.activeDb(); otherwise monolithic db.
+const currentDb = () => (multidb.isMultiDb() ? multidb.activeDb() : db);
+
 // Thin helpers so route code reads the same everywhere.
-const get = (sql, ...params) => db.prepare(sql).get(...params);
-const all = (sql, ...params) => db.prepare(sql).all(...params);
-const run = (sql, ...params) => db.prepare(sql).run(...params);
+const get = (sql, ...params) => currentDb().prepare(sql).get(...params);
+const all = (sql, ...params) => currentDb().prepare(sql).all(...params);
+const run = (sql, ...params) => currentDb().prepare(sql).run(...params);
 
 /**
  * Run fn() inside a transaction. better-sqlite3 transactions are synchronous.
  */
 function tx(fn) {
-  return db.transaction(fn)();
+  return currentDb().transaction(fn)();
 }
 
-module.exports = { db, migrate, get, all, run, tx };
+// Proxy db so direct access like db.prepare, db.exec, db.transaction route to activeDb() when multidb is active
+const dbProxy = new Proxy(db, {
+  get(target, prop, receiver) {
+    const active = multidb.isMultiDb() ? multidb.activeDb() : target;
+    const value = Reflect.get(active, prop, active);
+    if (typeof value === 'function') {
+      return value.bind(active);
+    }
+    return value;
+  }
+});
+
+module.exports = { db: dbProxy, rawDb: db, migrate, get, all, run, tx, multidb };

@@ -56,11 +56,27 @@ function mechanicWorkshop(mechanicId, date = today()) {
 /** Every workshop, with how many people, mechanics and open job cards belong to it. */
 function list() {
   const { notFinalSql } = require('./jobstate');
-  return all(`SELECT w.*,
+  const rows = all(`SELECT w.*,
       (SELECT COUNT(*) FROM users u WHERE u.workshop_id = w.id AND u.active = 1) AS users,
       (SELECT COUNT(*) FROM mechanics m WHERE COALESCE(m.active, 1) = 1 AND ${mechanicWorkshopSql('m')} = w.id) AS mechanics,
-      (SELECT COUNT(*) FROM job_cards j WHERE j.workshop_id = w.id AND ${notFinalSql('j')}) AS open_jobs
+      (SELECT COUNT(*) FROM job_cards j WHERE j.workshop_id = w.id AND ${notFinalSql('j')}) AS open_jobs,
+      (SELECT COUNT(*) FROM stock_moves sm WHERE sm.store_id = w.id) AS stock_count
     FROM workshops w ORDER BY w.active DESC, w.is_default DESC, w.name`);
+  return rows.map((w) => {
+    const no_mechanics = Number(w.mechanics || 0) === 0;
+    const no_stock = Number(w.stock_count || 0) === 0;
+    const nobody_assigned = Number(w.users || 0) === 0;
+    const ready = !no_mechanics && !no_stock && !nobody_assigned;
+    return {
+      ...w,
+      readiness: {
+        ready,
+        no_mechanics,
+        no_stock,
+        nobody_assigned,
+      },
+    };
+  });
 }
 
 /** A workshop someone chose: it must exist and be in use. */
@@ -74,6 +90,7 @@ function mustBeActive(id) {
 /** This person's home workshop (the default if they have none). */
 function homeOf(user) {
   if (!user) return defaultId();
+  if (!user.isAllSitesMode && user.activeWorkshopId) return user.activeWorkshopId;
   const u = get('SELECT workshop_id FROM users WHERE id = ?', user.id);
   const w = u && u.workshop_id && byId(u.workshop_id);
   return w && w.active ? w.id : defaultId();
@@ -104,7 +121,9 @@ const GENERAL_REF = 'general-workshop';
 const generalRef = (workshopId) => (!workshopId || workshopId === defaultId() ? GENERAL_REF : `${GENERAL_REF}:${workshopId}`);
 const isGeneralCard = (job) => !!job && (job.legacy_ref === GENERAL_REF || String(job.legacy_ref || '').startsWith(`${GENERAL_REF}:`));
 
-/** The workshop's general card id (0 when it has none yet), creating it if asked. */
+/** The workshop's general card id (0 when it has none yet), creating it if asked.
+ *  Exempt from "a card needs an approved job request" (routes/jobcards.js): this is a cost
+ *  container for work that belongs to no vehicle, not a repair anyone requested. */
 function generalCardId(workshopId, { create = false, description = 'General workshop (not vehicle-specific)' } = {}) {
   const ref = generalRef(workshopId);
   const j = get('SELECT id FROM job_cards WHERE legacy_ref = ? LIMIT 1', ref);
@@ -119,14 +138,50 @@ function generalCardId(workshopId, { create = false, description = 'General work
 // ---- managing the list ---------------------------------------------------------------------
 
 function create(actor, body) {
+  const { multidb } = require('../db');
+  if (multidb && multidb.isMultiDb()) {
+    return multidb.createWorkshopDatabase(actor, body);
+  }
+
   const code = clean(body.code, 10).toUpperCase();
   const name = clean(body.name, 80);
   if (!/^[A-Z0-9-]{1,10}$/.test(code)) fail(400, 'Give a short code: letters and numbers, up to 10 (e.g. MTR).');
   if (name.length < 3) fail(400, 'Give the workshop a name.');
   if (get('SELECT 1 FROM workshops WHERE code = ? OR LOWER(name) = LOWER(?)', code, name)) fail(409, 'A workshop with that code or name already exists.');
-  const id = run('INSERT INTO workshops (code, name, place) VALUES (?, ?, ?)', code, name, clean(body.place, 80) || null).lastInsertRowid;
-  audit({ userId: actor.id, entity: 'workshop', entityId: id, action: 'create', after: byId(id) });
-  return byId(id);
+
+  return tx(() => {
+    // 1. Workshop row
+    const id = run('INSERT INTO workshops (code, name, place) VALUES (?, ?, ?)', code, name, clean(body.place, 80) || null).lastInsertRowid;
+    audit({ userId: actor.id, entity: 'workshop', entityId: id, action: 'create', after: byId(id) });
+
+    // 2. Own store opening today (when requested or store_opened is provided)
+    const wantsOwnStore = body.own_store === true || body.own_store === 'true' || body.own_store === 1 || Boolean(body.store_opened);
+    if (wantsOwnStore) {
+      const stores = require('./stores');
+      stores.setStore(actor, id, {
+        own: true,
+        opened: body.store_opened ? String(body.store_opened).slice(0, 10) : today(),
+      });
+    }
+
+    // 3. Assigned users
+    const userIds = Array.isArray(body.user_ids)
+      ? body.user_ids
+      : (body.user_ids ? String(body.user_ids).split(',').map((x) => x.trim()).filter(Boolean) : []);
+    if (userIds.length > 0) {
+      for (const uid of userIds) {
+        run('UPDATE users SET workshop_id = ? WHERE id = ?', id, Number(uid));
+      }
+    }
+
+    // 4. Optional separation switch
+    if (body.enable_separation === true || body.enable_separation === '1' || body.enable_separation === 'true') {
+      const scope = require('./scope');
+      scope.setSwitch(actor, true);
+    }
+
+    return byId(id);
+  });
 }
 
 function update(actor, id, body) {

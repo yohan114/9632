@@ -13,13 +13,13 @@ const { asyncHandler } = require('../lib/http');
 
 const router = express.Router();
 
-// No module gate (every role sees the dashboard) — but authentication IS required, so
-// an anonymous request can't read aggregate operational data.
+// Dashboard endpoints are accessible to all authenticated users; financial figures and sensitive
+// rollups are gated per-field based on the user's module & capability permissions.
 router.use(requireAuth);
+const permissions = require('../lib/permissions');
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
-const OPEN_JOBS = require('../lib/jobstate').openSql();   // cards that hold their vehicle
 const jobsFlow = require('../lib/jobs_flow');
 const storesFlow = require('../lib/stores_flow');
 const jobstate = require('../lib/jobstate');
@@ -28,6 +28,10 @@ const limits = require('../lib/approval_limits');
 const { hasCap } = require('../lib/auth');
 const attendance = require('../lib/attendance');
 const jobClose = require('../lib/job_close');
+const costing = require('../lib/costing');
+const mechanicsLib = require('../lib/mechanics');
+const context = require('../lib/context');
+const storeLocations = require('../lib/store_locations');
 
 // Live, in-flight MRNs awaiting a decision. approval_status is 'requested' | 'certified'
 // | 'approved' | 'rejected' (there is no 'pending'); the 1500+ imported rows are
@@ -40,8 +44,17 @@ const LOW_GENERAL = 'is_general = 1 AND balance <= COALESCE(min_stock, 0)';
 const LOW_OIL = '(COALESCE(stock_qty,0) <= 0 OR (COALESCE(reorder_level,0) > 0 AND COALESCE(stock_qty,0) <= reorder_level))';
 const LOW_FILTER = 'qty_in_stock <= COALESCE(reorder_level, 0)';
 
-const today = () => new Date().toISOString().slice(0, 10);
-const nowYM = () => { const d = new Date(); return { year: d.getFullYear(), month: d.getMonth() + 1 }; };
+const today = () => {
+  try {
+    return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Colombo' }).format(new Date());
+  } catch (_) {
+    return new Date().toISOString().slice(0, 10);
+  }
+};
+const nowYM = () => {
+  const [y, m] = today().split('-');
+  return { year: parseInt(y, 10), month: parseInt(m, 10) };
+};
 
 function lastNMonths(n) {
   const out = [];
@@ -73,69 +86,250 @@ function stockAlerts(limit = 30) {
   return rows.slice(0, limit);
 }
 
-// ---- overview -------------------------------------------------------------
-router.get('/overview', asyncHandler((_req, res) => {
+// ---- improvement plan, Step 2b: your own workshops' figures --------------------------------------
+// With the workshops kept apart, someone outside head office sees their own workshops' jobs,
+// requests, issues and cost here (scope.reach) and their own store's stock (scope.ownStore). Head
+// office — and everyone, until the workshops are kept apart — sees the company's, as before.
+const wsSql = (...a) => scope.wsSql(...a);
+const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+
+/** Low stock in each kind, and the list behind it: the company's, or one store's. */
+function lowStock(user, limit = 30) {
+  const store = scope.ownStore(user);
+  if (store == null) {
+    if (user && !user.isAllSitesMode && user.activeStoreId) {
+      const alerts = require('../lib/store_shelf').reorderAlerts(user.activeStoreId);
+      const n = (sec) => alerts.filter((a) => a.section === sec).length;
+      return {
+        general: n('general'), oil: n('oil'), filter: n('filter'),
+        list: () => alerts.slice(0, limit).map((a) => ({ name: a.name, category: a.category, current: a.current_stock,
+          reorder: a.reorder_level, kind: a.section, status: statusOf(a.current_stock, a.reorder_level) })),
+      };
+    }
+    if (user && !user.isAllSitesMode) {
+      return { general: 0, oil: 0, filter: 0, list: () => [] };
+    }
+    return {
+      general: get(`SELECT COUNT(*) c FROM store_items WHERE ${LOW_GENERAL}`).c,
+      oil: get(`SELECT COUNT(*) c FROM products WHERE active = 1 AND ${LOW_OIL}`).c,
+      filter: get(`SELECT COUNT(*) c FROM filter_stock WHERE ${LOW_FILTER}`).c,
+      list: () => stockAlerts(limit),
+    };
+  }
+  const alerts = require('../lib/store_shelf').reorderAlerts(store);
+  const n = (sec) => alerts.filter((a) => a.section === sec).length;
+  return {
+    general: n('general'), oil: n('oil'), filter: n('filter'),
+    list: () => alerts.slice(0, limit).map((a) => ({ name: a.name, category: a.category, current: a.current_stock,
+      reorder: a.reorder_level, kind: a.section, status: statusOf(a.current_stock, a.reorder_level) })),
+  };
+}
+
+/** Open cards, vehicles in, live requests and today's issues — of the workshops in `ws` (null: all). */
+function counts(ws, projId = null) {
+  const pSql = projId ? ' AND j.project_id = ' + Number(projId) : '';
+  const pSqlMrn = projId ? ' AND (workshop_id IS NULL AND (project_id = ' + Number(projId) + ' OR asset_id IN (SELECT id FROM assets WHERE current_project_id = ' + Number(projId) + ')))' : '';
+  const pSqlIssue = projId ? ' AND j.project_id = ' + Number(projId) : '';
+  return {
+    active_jobs: get(`SELECT COUNT(*) c FROM job_cards j WHERE ${jobstate.openSql('j')}${wsSql('j.workshop_id', ws)}${pSql}`).c,
+    vehicles_in_workshop: get(`SELECT COUNT(DISTINCT j.asset_id) c FROM job_cards j WHERE ${jobstate.openSql('j')} AND j.asset_id IS NOT NULL${wsSql('j.workshop_id', ws)}${pSql}`).c,
+    pending_requests: get(`SELECT COUNT(*) c FROM mrn WHERE (${LIVE_PENDING_MRN})${ws ? wsSql('workshop_id', ws) : pSqlMrn}`).c,
+    // An issue is its job card's workshop's, else the store it left.
+    todays_issue_cost: get(`SELECT COALESCE(SUM(i.qty * COALESCE(i.unit_price, 0)), 0) v FROM issues i
+                             LEFT JOIN job_cards j ON j.id = i.job_id WHERE i.issue_date = ?${wsSql('COALESCE(j.workshop_id, i.store_id)', ws)}${pSqlIssue}`, today()).v,
+  };
+}
+
+/**
+ * This month's cost, the six-month trend and the five costliest vehicles. The company's come from the
+ * vehicle cost rollup, which keeps no workshop; one workshop's are worked out from its own labour,
+ * receipts, oil and services (src/lib/month_costs.js), the figures Reports → Monthly shows it.
+ */
+function costFigures(ws, projId = null) {
   const { year, month } = nowYM();
+  if (projId != null && ws == null) {
+    const pId = Number(projId);
+    const top_5_cost_vehicles = all(
+      `SELECT v.asset_id, a.code, a.registration, a.ec_code,
+              ROUND(v.total_cost,2) AS total_cost, ROUND(v.parts_cost,2) AS parts_cost,
+              ROUND(v.oil_cost,2) AS oil_cost, ROUND(v.filter_cost,2) AS filter_cost, ROUND(v.labour_cost,2) AS labour_cost
+         FROM vehicle_monthly_costs v
+         JOIN assets a ON a.id = v.asset_id
+        WHERE v.year = ? AND v.month = ? AND v.total_cost > 0 AND a.current_project_id = ?
+        ORDER BY v.total_cost DESC LIMIT 5`, year, month, pId);
 
-  const active_jobs = get(`SELECT COUNT(*) c FROM job_cards WHERE ${OPEN_JOBS}`).c;
-  const vehicles_in_workshop = get(`SELECT COUNT(DISTINCT asset_id) c FROM job_cards WHERE ${OPEN_JOBS} AND asset_id IS NOT NULL`).c;
-  const pending_requests = get(`SELECT COUNT(*) c FROM mrn WHERE ${LIVE_PENDING_MRN}`).c;
+    const periods = lastNMonths(6);
+    const minIdx = periods[0].year * 12 + periods[0].month;
+    const trendRows = all(
+      `SELECT v.year, v.month,
+              ROUND(SUM(v.parts_cost),2) AS parts_cost, ROUND(SUM(v.oil_cost),2) AS oil_cost,
+              ROUND(SUM(v.filter_cost),2) AS filter_cost, ROUND(SUM(v.labour_cost),2) AS labour_cost,
+              ROUND(SUM(v.total_cost),2) AS total_cost
+         FROM vehicle_monthly_costs v
+         JOIN assets a ON a.id = v.asset_id
+        WHERE (v.year * 12 + v.month) >= ? AND a.current_project_id = ?
+        GROUP BY v.year, v.month`, minIdx, pId);
+    const byKey = {};
+    for (const r of trendRows) byKey[r.year + '-' + r.month] = r;
+    const monthly_cost_trend = periods.map((p) => {
+      const r = byKey[p.year + '-' + p.month] || {};
+      return {
+        month: p.label, year: p.year, month_num: p.month,
+        parts_cost: r.parts_cost || 0, oil_cost: r.oil_cost || 0,
+        filter_cost: r.filter_cost || 0, labour_cost: r.labour_cost || 0, total_cost: r.total_cost || 0,
+      };
+    });
+    const monthly_cost_total = get(
+      `SELECT COALESCE(SUM(v.total_cost), 0) v
+         FROM vehicle_monthly_costs v
+         JOIN assets a ON a.id = v.asset_id
+        WHERE v.year = ? AND v.month = ? AND a.current_project_id = ?`, year, month, pId).v;
+    return { monthly_cost_total, monthly_cost_trend, top_5_cost_vehicles };
+  }
+  if (ws == null) {
+    const top_5_cost_vehicles = all(
+      `SELECT v.asset_id, a.code, a.registration, a.ec_code,
+              ROUND(v.total_cost,2) AS total_cost, ROUND(v.parts_cost,2) AS parts_cost,
+              ROUND(v.oil_cost,2) AS oil_cost, ROUND(v.filter_cost,2) AS filter_cost, ROUND(v.labour_cost,2) AS labour_cost
+         FROM vehicle_monthly_costs v LEFT JOIN assets a ON a.id = v.asset_id
+        WHERE v.year = ? AND v.month = ? AND v.total_cost > 0
+        ORDER BY v.total_cost DESC LIMIT 5`, year, month);
 
-  const low_stock_items = get(`SELECT COUNT(*) c FROM store_items WHERE ${LOW_GENERAL}`).c;
-  const low_oil_stock = get(`SELECT COUNT(*) c FROM products WHERE active = 1 AND ${LOW_OIL}`).c;
-  const low_filter_stock = get(`SELECT COUNT(*) c FROM filter_stock WHERE ${LOW_FILTER}`).c;
+    // Monthly cost trend — last 6 months, zero-filled.
+    const periods = lastNMonths(6);
+    const minIdx = periods[0].year * 12 + periods[0].month;
+    const trendRows = all(
+      `SELECT year, month,
+              ROUND(SUM(parts_cost),2) AS parts_cost, ROUND(SUM(oil_cost),2) AS oil_cost,
+              ROUND(SUM(filter_cost),2) AS filter_cost, ROUND(SUM(labour_cost),2) AS labour_cost,
+              ROUND(SUM(total_cost),2) AS total_cost
+         FROM vehicle_monthly_costs WHERE (year * 12 + month) >= ? GROUP BY year, month`, minIdx);
+    const byKey = {};
+    for (const r of trendRows) byKey[r.year + '-' + r.month] = r;
+    const monthly_cost_trend = periods.map((p) => {
+      const r = byKey[p.year + '-' + p.month] || {};
+      return {
+        month: p.label, year: p.year, month_num: p.month,
+        parts_cost: r.parts_cost || 0, oil_cost: r.oil_cost || 0,
+        filter_cost: r.filter_cost || 0, labour_cost: r.labour_cost || 0, total_cost: r.total_cost || 0,
+      };
+    });
+    const monthly_cost_total = get(
+      `SELECT COALESCE(SUM(total_cost), 0) v FROM vehicle_monthly_costs WHERE year = ? AND month = ?`, year, month).v;
+    return { monthly_cost_total, monthly_cost_trend, top_5_cost_vehicles };
+  }
 
-  const todays_issue_cost = get(
-    `SELECT COALESCE(SUM(qty * COALESCE(unit_price, 0)), 0) v FROM issues WHERE issue_date = ?`, today()).v;
-  const monthly_cost_total = get(
-    `SELECT COALESCE(SUM(total_cost), 0) v FROM vehicle_monthly_costs WHERE year = ? AND month = ?`, year, month).v;
-
-  // Job status mix over the last 90 days (by the real job date, falling back to created_at).
-  const job_status_breakdown = all(
-    `SELECT status, COUNT(*) AS count FROM job_cards
-      WHERE date(COALESCE(requested_at, created_at)) >= date('now', '-90 days')
-      GROUP BY status ORDER BY count DESC`);
-
-  const top_5_cost_vehicles = all(
-    `SELECT v.asset_id, a.code, a.registration, a.ec_code,
-            ROUND(v.total_cost,2) AS total_cost, ROUND(v.parts_cost,2) AS parts_cost,
-            ROUND(v.oil_cost,2) AS oil_cost, ROUND(v.filter_cost,2) AS filter_cost, ROUND(v.labour_cost,2) AS labour_cost
-       FROM vehicle_monthly_costs v LEFT JOIN assets a ON a.id = v.asset_id
-      WHERE v.year = ? AND v.month = ? AND v.total_cost > 0
-      ORDER BY v.total_cost DESC LIMIT 5`, year, month);
-
-  // Monthly cost trend — last 6 months, zero-filled.
-  const periods = lastNMonths(6);
-  const minIdx = periods[0].year * 12 + periods[0].month;
-  const trendRows = all(
-    `SELECT year, month,
-            ROUND(SUM(parts_cost),2) AS parts_cost, ROUND(SUM(oil_cost),2) AS oil_cost,
-            ROUND(SUM(filter_cost),2) AS filter_cost, ROUND(SUM(labour_cost),2) AS labour_cost,
-            ROUND(SUM(total_cost),2) AS total_cost
-       FROM vehicle_monthly_costs WHERE (year * 12 + month) >= ? GROUP BY year, month`, minIdx);
-  const byKey = {};
-  for (const r of trendRows) byKey[r.year + '-' + r.month] = r;
-  const monthly_cost_trend = periods.map((p) => {
-    const r = byKey[p.year + '-' + p.month] || {};
+  const mc = require('../lib/month_costs');
+  const key = (y, m) => `${y}-${String(m).padStart(2, '0')}`;
+  const byMonth = new Map(mc.monthlyRollup(ws).map((m) => [m.month, m]));
+  const monthly_cost_trend = lastNMonths(6).map((p) => {
+    const r = byMonth.get(key(p.year, p.month)) || {};
+    // A workshop's own figures have no filter line of their own: a filter is in a service, or a part.
     return {
       month: p.label, year: p.year, month_num: p.month,
-      parts_cost: r.parts_cost || 0, oil_cost: r.oil_cost || 0,
-      filter_cost: r.filter_cost || 0, labour_cost: r.labour_cost || 0, total_cost: r.total_cost || 0,
+      parts_cost: r2((r.head_office || 0) + (r.local_purchase || 0)), oil_cost: r.oil || 0, filter_cost: 0,
+      labour_cost: r.labour || 0, service_cost: r.service || 0, total_cost: r.total || 0,
     };
   });
+  const top_5_cost_vehicles = mc.monthAssets(key(year, month), ws).filter((a) => a.total > 0).slice(0, 5)
+    .map((a) => ({ asset_id: a.asset_id, code: a.asset_code, registration: a.registration, ec_code: a.ec_code,
+      total_cost: a.total, parts_cost: a.material, oil_cost: a.oil, filter_cost: 0, labour_cost: a.labour }));
+  const now = byMonth.get(key(year, month));
+  return { monthly_cost_total: now ? now.total : 0, monthly_cost_trend, top_5_cost_vehicles };
+}
 
+/** Quick MTD & Today Mechanics KPI pulse for users with dailywork / labour / reports privileges */
+function mechanicsPulse(user, ws) {
+  const ym = new Date().toISOString().slice(0, 7);
+  const td = today();
+  const dwWs = wsSql('COALESCE(j.workshop_id, s.workshop_id)', ws);
+  const rows = all(`
+    SELECT d.work_date, d.mechanic, COALESCE(d.hours, 0) AS hours, COALESCE(d.outside_labour, 0) AS outside_labour
+      FROM job_daily_work d
+      LEFT JOIN job_cards j ON j.id = d.job_id
+      LEFT JOIN service_jobs s ON s.id = d.service_id
+     WHERE substr(d.work_date, 1, 7) = ?${dwWs}
+  `, ym);
+  let todayHours = 0;
+  const todayMechs = new Set();
+  let mtdHours = 0;
+  let mtdInternalCost = 0;
+  let mtdOutsideCost = 0;
+  for (const r of rows) {
+    const names = mechanicsLib.splitMechanics(r.mechanic);
+    const lineHours = Number(r.hours) || 0;
+    const lineOutside = Number(r.outside_labour) || 0;
+    mtdOutsideCost += lineOutside;
+    if (r.work_date === td) {
+      todayHours += lineHours;
+      for (const n of names) todayMechs.add(mechanicsLib.resolveMechanicName(n) || n);
+    }
+    for (const rawName of (names.length ? names : [r.mechanic || 'Unknown'])) {
+      const canon = mechanicsLib.resolveMechanicName(rawName) || rawName;
+      const rate = costing.labourRateFor(canon, r.work_date);
+      mtdHours += lineHours;
+      mtdInternalCost += lineHours * rate;
+    }
+  }
+  const netSavings = r2(mtdOutsideCost - mtdInternalCost);
+  const roiRatio = mtdInternalCost > 0 ? r2(mtdOutsideCost / mtdInternalCost) : 0;
+  return {
+    month: ym,
+    today_hours: r2(todayHours),
+    today_mechanics_count: todayMechs.size,
+    mtd_hours: r2(mtdHours),
+    mtd_internal_cost: r2(mtdInternalCost),
+    mtd_outside_cost: r2(mtdOutsideCost),
+    mtd_net_savings: netSavings,
+    mtd_roi_ratio: roiRatio
+  };
+}
+
+// ---- overview -------------------------------------------------------------
+router.get('/overview', asyncHandler((req, res) => {
+  const ws = scope.reach(req.user);   // Step 2b: null = every workshop
+  const canReports = permissions.reaches(req.user, 'reports') || hasCap(req.user, 'reports.financial');
+  const canJobs = permissions.reaches(req.user, 'jobs') || permissions.reaches(req.user, 'jobrequests');
+  const canStores = permissions.reaches(req.user, 'stores') || permissions.reaches(req.user, 'oil') || permissions.reaches(req.user, 'generalstock');
+
+  const projId = (req.user && !req.user.isAllSitesMode) ? req.user.activeProjectId : null;
+  const { active_jobs, vehicles_in_workshop, pending_requests, todays_issue_cost } = counts(ws, projId);
+  const low = lowStock(req.user);
+  const costs = canReports ? costFigures(ws, projId) : { monthly_cost_total: null, monthly_cost_trend: [], top_5_cost_vehicles: [] };
+
+  // Job status mix over the last 90 days (by the real job date, falling back to created_at).
+  const pSqlJob = (projId && !ws) ? ` AND project_id = ${Number(projId)}` : '';
+  const job_status_breakdown = canJobs ? all(
+    `SELECT status, COUNT(*) AS count FROM job_cards
+      WHERE date(COALESCE(requested_at, created_at)) >= date('now', '-90 days')${wsSql('workshop_id', ws)}${pSqlJob}
+      GROUP BY status ORDER BY count DESC`) : [];
+
+  // Step 2b: kept to your own workshops or project, the actions of their people.
+  let actWhere = '';
+  if (ws != null) {
+    actWhere = `WHERE al.user_id IS NOT NULL${wsSql('u.workshop_id', ws)}`;
+  } else if (projId != null) {
+    actWhere = `WHERE (al.entity = 'projects' AND al.entity_id = ${Number(projId)})
+      OR al.entity_id IN (SELECT id FROM job_cards WHERE project_id = ${Number(projId)})
+      OR al.user_id IN (SELECT sla.user_id FROM store_location_access sla JOIN store_locations sl ON sl.id = sla.store_location_id WHERE sl.project_id = ${Number(projId)})`;
+  }
   const recent_activity = all(
     `SELECT al.id, al.entity, al.entity_id, al.action, al.reason, al.created_at,
             u.username, u.full_name
        FROM audit_log al LEFT JOIN users u ON u.id = al.user_id
+      ${actWhere}
       ORDER BY al.id DESC LIMIT 15`);
 
   res.json({
     active_jobs, pending_requests, vehicles_in_workshop,
-    low_stock_items, low_oil_stock, low_filter_stock,
-    todays_issue_cost, monthly_cost_total,
-    job_status_breakdown, top_5_cost_vehicles, monthly_cost_trend,
-    recent_activity, stock_alerts: stockAlerts(),
+    low_stock_items: low.general, low_oil_stock: low.oil, low_filter_stock: low.filter,
+    todays_issue_cost: (canReports || canStores) ? todays_issue_cost : null,
+    monthly_cost_total: costs.monthly_cost_total,
+    job_status_breakdown,
+    top_5_cost_vehicles: costs.top_5_cost_vehicles,
+    monthly_cost_trend: costs.monthly_cost_trend,
+    recent_activity,
+    stock_alerts: canStores ? low.list() : [],
     generated_at: new Date().toISOString(),
   });
 }));
@@ -160,21 +354,22 @@ function unsignedFor(wsList) {
 router.get('/workflow-monitor', asyncHandler((req, res) => {
   const user = req.user;
   const may = (cap) => hasCap(user, cap);
+  const canMod = (m) => permissions.reaches(user, m);
+
   const jm = jobsFlow.monitor(user);
   const sm = storesFlow.monitor(user);
   const rReach = scope.reach(user);
-  const { year, month } = nowYM();
 
   // 1. Core KPIs
   const jOwn = scope.filter(user, 'j.workshop_id');
   const andJ = jOwn.sql ? ` AND ${jOwn.sql}` : '';
   const active_jobs = get(`SELECT COUNT(*) c FROM job_cards j WHERE ${jobstate.openSql('j')}${andJ}`, ...jOwn.params).c;
   const vehicles_in_workshop = get(`SELECT COUNT(DISTINCT j.asset_id) c FROM job_cards j WHERE ${jobstate.openSql('j')} AND j.asset_id IS NOT NULL${andJ}`, ...jOwn.params).c;
-  const monthly_cost_total = get(`SELECT COALESCE(SUM(total_cost), 0) v FROM vehicle_monthly_costs WHERE year = ? AND month = ?`, year, month).v;
-  const low_stock_items = get(`SELECT COUNT(*) c FROM store_items WHERE ${LOW_GENERAL}`).c;
-  const low_oil_stock = get(`SELECT COUNT(*) c FROM products WHERE active = 1 AND ${LOW_OIL}`).c;
-  const low_filter_stock = get(`SELECT COUNT(*) c FROM filter_stock WHERE ${LOW_FILTER}`).c;
-  const low_stock_total = low_stock_items + low_oil_stock + low_filter_stock;
+  // Step 2b: your own workshops' cost this month, your own store's low stock.
+  const canReports = canMod('reports') || may('reports.financial');
+  const { monthly_cost_total } = canReports ? costFigures(rReach) : { monthly_cost_total: null };
+  const low = lowStock(user);
+  const low_stock_total = low.general + low.oil + low.filter;
 
   // 2. Jobs Road & Pipeline
   const closed_this_month = get(`SELECT COUNT(*) c FROM job_cards j WHERE j.status = 'CLOSED' AND strftime('%Y-%m', j.completed_at) = strftime('%Y-%m', 'now')${andJ}`, ...jOwn.params).c;
@@ -233,7 +428,7 @@ router.get('/workflow-monitor', asyncHandler((req, res) => {
     const jrs = all(`SELECT r.id, r.jr_no, r.req_date, r.requested_by, r.description,
           a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec
         FROM job_requests r LEFT JOIN assets a ON a.id = r.asset_id
-        WHERE r.approval_status = 'requested'${and(rOwn)} ORDER BY r.id DESC LIMIT 30`, ...rOwn.params);
+        WHERE r.approval_status = 'requested'${and(rOwn)}${scope.fabricationFilter(user, 'r')} ORDER BY r.id DESC LIMIT 30`, ...rOwn.params);
     for (const r of jrs) {
       inflow.push({
         id: r.id, kind: 'jr_certify', ref: r.jr_no, title: `Job Request ${r.jr_no}`,
@@ -243,6 +438,43 @@ router.get('/workflow-monitor', asyncHandler((req, res) => {
       });
     }
   }
+  // The workshop's own step: a job request with all three signatures, waiting for its job card.
+  // Without this the workshop has no prompt that work has been cleared for it.
+  if (may('jobs.create')) {
+    const waiting = all(`SELECT r.id, r.jr_no, r.req_date, r.approved_at, r.requested_by, r.certified_by, r.approved_by, r.description,
+          a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec
+        FROM job_requests r LEFT JOIN assets a ON a.id = r.asset_id
+        WHERE r.approval_status = 'approved' AND r.job_id IS NULL AND (r.type <> 'fabrication' OR r.type IS NULL)${and(rOwn)}${scope.fabricationFilter(user, 'r')} ORDER BY r.approved_at, r.id LIMIT 30`, ...rOwn.params);
+    for (const r of waiting) {
+      inflow.push({
+        id: r.id, kind: 'jr_open_card', ref: r.jr_no, title: `Job Request ${r.jr_no}`,
+        vehicle: [r.asset_reg, r.asset_ec, r.asset_code].filter(Boolean).join(' · '),
+        description: r.description, requester: r.requested_by, certified_by: r.certified_by,
+        approved_by: r.approved_by, date: (r.approved_at || r.req_date || '').slice(0, 10),
+        link: `#/jobrequests/${r.id}`, action: 'Open job card'
+      });
+    }
+  }
+  if (may('fabrication.open_card')) {
+    const fabWaiting = all(`SELECT r.id, r.jr_no, r.req_date, r.approved_at, r.requested_by, r.certified_by, r.approved_by, r.description,
+          r.work_target, r.category,
+          a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec
+        FROM job_requests r LEFT JOIN assets a ON a.id = r.asset_id
+        WHERE r.approval_status = 'approved' AND r.job_id IS NULL AND r.type = 'fabrication'${and(rOwn)} ORDER BY r.approved_at, r.id LIMIT 30`, ...rOwn.params);
+    for (const r of fabWaiting) {
+      const targetLabel = r.work_target === 'general'
+        ? `General: ${r.category || 'Works'}`
+        : [r.asset_reg, r.asset_ec, r.asset_code].filter(Boolean).join(' · ');
+      inflow.push({
+        id: r.id, kind: 'fab_open_card', ref: r.jr_no, title: `Fabrication Request ${r.jr_no}`,
+        vehicle: targetLabel,
+        description: r.description, requester: r.requested_by, certified_by: r.certified_by,
+        approved_by: r.approved_by, date: (r.approved_at || r.req_date || '').slice(0, 10),
+        link: `#/jobrequests/${r.id}`, action: 'Open fabrication card'
+      });
+    }
+  }
+
   if (may('stores.mrn.certify')) {
     const mrns = all(`SELECT m.id, m.mrn_no, m.req_date, m.requested_by, a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec, ${lineCount}
         FROM mrn m LEFT JOIN assets a ON a.id = m.asset_id WHERE ${INFLOW_MRN}${and(mOwn)} ORDER BY m.req_date DESC, m.id DESC LIMIT 30`, ...mOwn.params);
@@ -262,7 +494,7 @@ router.get('/workflow-monitor', asyncHandler((req, res) => {
     const jrs = all(`SELECT r.id, r.jr_no, r.req_date, r.requested_by, r.certified_by, r.description,
           a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec
         FROM job_requests r LEFT JOIN assets a ON a.id = r.asset_id
-        WHERE r.approval_status = 'certified'${and(rOwn)} ORDER BY r.id DESC LIMIT 30`, ...rOwn.params);
+        WHERE r.approval_status = 'certified'${and(rOwn)}${scope.fabricationFilter(user, 'r')} ORDER BY r.id DESC LIMIT 30`, ...rOwn.params);
     for (const r of jrs) {
       authorizations.push({
         id: r.id, kind: 'jr_approve', ref: r.jr_no, title: `Job Request ${r.jr_no}`,
@@ -276,7 +508,7 @@ router.get('/workflow-monitor', asyncHandler((req, res) => {
     const jc = all(`SELECT j.id, j.job_no, j.requested_at, j.description,
              a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec
         FROM job_cards j LEFT JOIN assets a ON a.id = j.asset_id
-        WHERE j.status = 'REQUESTED' AND j.approved_transport_at IS NULL AND j.is_historical = 0${and(jOwn)} ORDER BY j.id DESC LIMIT 30`, ...jOwn.params);
+        WHERE j.status = 'REQUESTED' AND j.approved_transport_at IS NULL AND j.is_historical = 0${and(jOwn)}${scope.fabricationFilter(user, 'j')} ORDER BY j.id DESC LIMIT 30`, ...jOwn.params);
     for (const j of jc) {
       authorizations.push({
         id: j.id, kind: 'job_transport', ref: j.job_no, title: `Job Card ${j.job_no}`,
@@ -290,7 +522,7 @@ router.get('/workflow-monitor', asyncHandler((req, res) => {
     const jc = all(`SELECT j.id, j.job_no, j.requested_at, j.description,
              a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec
         FROM job_cards j LEFT JOIN assets a ON a.id = j.asset_id
-        WHERE j.approved_transport_at IS NOT NULL AND j.approved_ops_at IS NULL AND j.is_historical = 0${and(jOwn)} ORDER BY j.id DESC LIMIT 30`, ...jOwn.params);
+        WHERE j.approved_transport_at IS NOT NULL AND j.approved_ops_at IS NULL AND j.is_historical = 0${and(jOwn)}${scope.fabricationFilter(user, 'j')} ORDER BY j.id DESC LIMIT 30`, ...jOwn.params);
     for (const j of jc) {
       authorizations.push({
         id: j.id, kind: 'job_ops', ref: j.job_no, title: `Job Card ${j.job_no}`,
@@ -318,6 +550,72 @@ router.get('/workflow-monitor', asyncHandler((req, res) => {
 
   // Process Group 3: Warehouse & Physical Controls
   const warehouse = [];
+  if (may('stores.grn.approve')) {
+    try {
+      const pendingGrns = all(`SELECT v.id, v.grn_no, v.received_date, v.supplier, sl.name AS store_name,
+          (SELECT COUNT(*) FROM grn g WHERE g.voucher_id = v.id OR g.grn_no = v.grn_no) AS lines
+          FROM grn_vouchers v LEFT JOIN store_locations sl ON sl.id = v.physical_store_id
+          WHERE v.status = 'pending_approval' ORDER BY v.id DESC LIMIT 20`);
+      for (const v of pendingGrns) {
+        warehouse.push({
+          id: v.id, kind: 'grn_approve', ref: v.grn_no, title: `GRN Voucher ${v.grn_no}`,
+          vehicle: v.store_name || v.supplier || 'Stores', description: `${v.lines || 1} item(s) · ${v.supplier || 'Supplier'}`,
+          date: v.received_date, link: `#/stores?tab=flow&sub=grn&id=${v.id}`, action: 'Approve GRN'
+        });
+      }
+    } catch (e) { /* table optional */ }
+  }
+  if (may('stores.min.approve')) {
+    try {
+      const pendingMins = all(`SELECT n.id, n.min_no, n.issue_date, n.purpose, n.requested_by, a.code AS asset_code, a.registration AS asset_reg,
+          (SELECT COUNT(*) FROM issues i WHERE i.min_id = n.id OR i.min_no = n.min_no) AS lines
+          FROM min_notes n LEFT JOIN assets a ON a.id = n.asset_id
+          WHERE n.status = 'requested' ORDER BY n.id DESC LIMIT 20`);
+      for (const n of pendingMins) {
+        warehouse.push({
+          id: n.id, kind: 'min_approve', ref: n.min_no, title: `Issue Note ${n.min_no}`,
+          vehicle: [n.asset_reg, n.asset_code].filter(Boolean).join(' · ') || 'General Issue',
+          description: `${n.lines || 1} item(s) · ${n.purpose || ''}`, requester: n.requested_by,
+          date: n.issue_date, link: `#/stores?tab=flow&sub=issues&min=${n.id}`, action: 'Approve MIN'
+        });
+      }
+    } catch (e) { /* table optional */ }
+  }
+  if (may('stores.mtn.approve')) {
+    try {
+      const pendingMtns = all(`SELECT t.id, t.mtn_no, t.txn_date, t.description, t.from_location, t.to_location,
+          fl.name AS from_store_name, tl.name AS to_store_name
+          FROM mtn t LEFT JOIN store_locations fl ON fl.id = t.from_store_location_id
+          LEFT JOIN store_locations tl ON tl.id = t.to_store_location_id
+          WHERE t.status IN ('draft', 'pending_approval') ORDER BY t.id DESC LIMIT 20`);
+      for (const t of pendingMtns) {
+        warehouse.push({
+          id: t.id, kind: 'mtn_approve', ref: t.mtn_no, title: `Transfer ${t.mtn_no}`,
+          vehicle: `${t.from_store_name || t.from_location || 'Origin'} → ${t.to_store_name || t.to_location || 'Dest'}`,
+          description: t.description || 'Material Transfer', date: t.txn_date,
+          link: `#/stores?tab=mtn&id=${t.id}`, action: 'Approve MTN'
+        });
+      }
+    } catch (e) { /* table optional */ }
+  }
+  if (may('stores.mtn.edit') || may('stores.grn.receive')) {
+    try {
+      const inTransitMtns = all(`SELECT t.id, t.mtn_no, t.txn_date, t.status, t.description, t.from_location, t.to_location,
+          fl.name AS from_store_name, tl.name AS to_store_name
+          FROM mtn t LEFT JOIN store_locations fl ON fl.id = t.from_store_location_id
+          LEFT JOIN store_locations tl ON tl.id = t.to_store_location_id
+          WHERE t.status IN ('dispatched', 'received') ORDER BY t.id DESC LIMIT 20`);
+      for (const t of inTransitMtns) {
+        warehouse.push({
+          id: t.id, kind: 'mtn_receive', ref: t.mtn_no, title: `In-Transit MTN ${t.mtn_no}`,
+          vehicle: `${t.from_store_name || t.from_location || 'Origin'} → ${t.to_store_name || t.to_location || 'Site Store'}`,
+          description: `${t.description || 'Transfer'} (${t.status === 'received' ? 'Ready to Accept' : 'Dispatched'})`,
+          date: t.txn_date, link: `#/stores?tab=mtn&id=${t.id}`,
+          action: t.status === 'received' ? 'Accept Stock' : 'Receive MTN'
+        });
+      }
+    } catch (e) { /* table optional */ }
+  }
   if (may('stores.count.approve')) {
     const submittedSessions = all(`SELECT s.id, s.count_no, s.scope, s.kind, s.started_at, w.name AS store_name
         FROM count_sessions s LEFT JOIN workshops w ON w.id = s.store_id
@@ -385,7 +683,11 @@ router.get('/workflow-monitor', asyncHandler((req, res) => {
   }
 
   const total_pending = inflow.length + authorizations.length + warehouse.length + compliance.length;
-  const is_approver = total_pending > 0 || ['stores.mrn.certify', 'stores.mrn.approve', 'jobs.approve_transport', 'jobs.approve_operations', 'jobrequests.certify', 'jobrequests.approve', 'attendance.signoff', 'jobs.reopen', 'stores.count.approve', 'stores.disposal.approve'].some(may);
+  const is_approver = total_pending > 0 || [
+    'stores.mrn.certify', 'stores.mrn.approve', 'stores.grn.approve', 'stores.min.approve', 'stores.mtn.approve',
+    'jobs.approve_transport', 'jobs.approve_operations', 'jobrequests.certify', 'jobrequests.approve',
+    'jobs.create', 'attendance.signoff', 'jobs.reopen', 'stores.count.approve', 'stores.disposal.approve'
+  ].some(may);
 
   // 5. Admin / Manager On-Hold & Bottleneck Center
   const on_hold = {
@@ -421,9 +723,58 @@ router.get('/workflow-monitor', asyncHandler((req, res) => {
     + (on_hold.unpriced_grns_count || 0)
     + (on_hold.unreturned_cores ? ((on_hold.unreturned_cores.tyre || 0) + (on_hold.unreturned_cores.battery || 0)) : 0);
 
-  const userScope = rReach && rReach.length === 1
-    ? { id: rReach[0], label: (get('SELECT name FROM workshops WHERE id = ?', rReach[0]) || {}).name || null }
-    : null;
+  let userScope = null;
+  try {
+    const storeLocs = require('../lib/store_locations');
+    const uStores = storeLocs.getUserStoreLocations(user.id);
+    if (uStores && uStores.length > 0) {
+      const siteStore = uStores.find((s) => s.store_type === 'SITE_STORE') || uStores[0];
+      const isAdminUser = (user.roles || []).includes('admin');
+      if (!isAdminUser || uStores.length === 1) {
+        userScope = { id: siteStore.store_location_id, label: siteStore.store_name, code: siteStore.store_code, isStore: true };
+      }
+    }
+  } catch (_) {}
+  if (!userScope) {
+    if (rReach && rReach.length === 1) {
+      userScope = { id: rReach[0], label: (get('SELECT name FROM workshops WHERE id = ?', rReach[0]) || {}).name || null };
+    } else if (user.workshop_id && user.workshop_id !== 1) {
+      const wsRow = get('SELECT name FROM workshops WHERE id = ?', user.workshop_id);
+      if (wsRow) userScope = { id: user.workshop_id, label: wsRow.name };
+    }
+  }
+
+
+  const canSeeMechanics = canMod('dailywork') || canMod('labour') || canReports;
+  const mechanics_pulse = canSeeMechanics ? mechanicsPulse(user, rReach) : null;
+
+  const privilege_profile = {
+    roles: user.roles || [],
+    is_admin: (user.roles || []).includes('admin'),
+    domains: {
+      jobs: canMod('jobs') || canMod('jobrequests') || canMod('service'),
+      stores: canMod('stores') || canMod('oil') || canMod('generalstock'),
+      purchasing: canMod('purchasing'),
+      mechanics: canSeeMechanics,
+      assets: canMod('assets') || canMod('batteries') || canMod('tyres'),
+      reports: canReports,
+    },
+    approver_badges: [
+      may('jobrequests.certify') ? 'Certify Job Requests' : null,
+      may('jobrequests.approve') ? 'Approve Job Requests' : null,
+      may('jobs.approve_transport') ? 'Transport Approve Jobs' : null,
+      may('jobs.approve_operations') ? 'Operations Approve Jobs' : null,
+      may('stores.mrn.certify') ? 'Certify MRN' : null,
+      may('stores.mrn.approve') ? 'Approve MRN' : null,
+      may('stores.grn.approve') ? 'Approve GRN' : null,
+      may('stores.min.approve') ? 'Approve MIN' : null,
+      may('stores.mtn.approve') ? 'Approve MTN' : null,
+      may('stores.count.approve') ? 'Approve Stock Take' : null,
+      may('stores.disposal.approve') ? 'Approve Disposals' : null,
+      may('attendance.signoff') ? 'Sign-off Workday' : null,
+      may('jobs.close') ? 'Close Job Cards' : null,
+    ].filter(Boolean)
+  };
 
   res.json({
     kpis: {
@@ -433,6 +784,8 @@ router.get('/workflow-monitor', asyncHandler((req, res) => {
     },
     jobs_pipeline: jobs_road,
     stores_pipeline: stores_road,
+    mechanics_pulse,
+    privilege_profile,
     approvals_process: {
       inflow,
       authorizations,
@@ -447,17 +800,161 @@ router.get('/workflow-monitor', asyncHandler((req, res) => {
 }));
 
 // ---- lightweight poll -----------------------------------------------------
-router.get('/live-stats', asyncHandler((_req, res) => {
-  const { year, month } = nowYM();
-  const active_jobs = get(`SELECT COUNT(*) c FROM job_cards WHERE ${OPEN_JOBS}`).c;
-  const pending_requests = get(`SELECT COUNT(*) c FROM mrn WHERE ${LIVE_PENDING_MRN}`).c;
-  const low_stock_alerts =
-    get(`SELECT COUNT(*) c FROM store_items WHERE ${LOW_GENERAL}`).c +
-    get(`SELECT COUNT(*) c FROM products WHERE active = 1 AND ${LOW_OIL}`).c +
-    get(`SELECT COUNT(*) c FROM filter_stock WHERE ${LOW_FILTER}`).c;
-  const todays_cost = get(`SELECT COALESCE(SUM(qty * COALESCE(unit_price,0)),0) v FROM issues WHERE issue_date = ?`, today()).v;
-  const monthly_cost = get(`SELECT COALESCE(SUM(total_cost),0) v FROM vehicle_monthly_costs WHERE year = ? AND month = ?`, year, month).v;
-  res.json({ active_jobs, pending_requests, low_stock_alerts, todays_cost, monthly_cost });
+/**
+ * GET /stores-controls
+ * Phase 6 Site Stores & Warehouse Controls Dashboard
+ * Scoped strictly to the active physical store location from user context.
+ */
+router.get('/stores-controls', asyncHandler((req, res) => {
+  const user = req.user;
+  const isMainStore = context.isMainStoreUser(user);
+  const storeScope = context.storeScopeFor(user);
+
+  let activeStoreId = null;
+  if (!isMainStore) {
+    activeStoreId = context.getUserAssignedStoreId(user);
+  } else {
+    activeStoreId = req.query.store_id ? Number(req.query.store_id) : ((req.activeContext && req.activeContext.activeStoreId) || 1);
+  }
+
+  const storeInfo = storeLocations.getStoreLocationById(activeStoreId) || { id: activeStoreId, name: 'Active Store', code: 'STORE' };
+
+  // 1. Incoming MTN waiting to accept
+  const incomingMtn = all(`
+    SELECT t.id, t.mtn_no, t.txn_date, t.description, t.qty, t.status,
+           t.from_location, t.to_location, t.from_place, t.to_place,
+           t.approved_by, t.created_at,
+           fl.name AS from_store_name, tl.name AS to_store_name
+      FROM mtn t
+      LEFT JOIN store_locations fl ON fl.id = t.from_store_location_id
+      LEFT JOIN store_locations tl ON tl.id = t.to_store_location_id
+     WHERE (t.to_store_location_id = ? OR (t.to_store_location_id IS NULL AND t.to_store_id = ?))
+       AND t.status IN ('dispatched', 'approved')
+     ORDER BY t.id DESC LIMIT 20
+  `, activeStoreId, activeStoreId);
+
+  // 2. Outgoing MTN in transit
+  const outgoingInTransit = all(`
+    SELECT t.id, t.mtn_no, t.txn_date, t.description, t.qty, t.status,
+           t.from_location, t.to_location, t.from_place, t.to_place,
+           t.received_by AS driver_name,
+           fl.name AS from_store_name, tl.name AS to_store_name
+      FROM mtn t
+      LEFT JOIN store_locations fl ON fl.id = t.from_store_location_id
+      LEFT JOIN store_locations tl ON tl.id = t.to_store_location_id
+     WHERE (t.from_store_location_id = ? OR (t.from_store_location_id IS NULL AND t.from_store_id = ?))
+       AND t.status = 'dispatched'
+     ORDER BY t.id DESC LIMIT 20
+  `, activeStoreId, activeStoreId);
+
+  // 3. MTN ready to dispatch
+  const readyToDispatch = all(`
+    SELECT t.id, t.mtn_no, t.txn_date, t.description, t.qty, t.status,
+           t.from_location, t.to_location, t.from_place, t.to_place,
+           fl.name AS from_store_name, tl.name AS to_store_name
+      FROM mtn t
+      LEFT JOIN store_locations fl ON fl.id = t.from_store_location_id
+      LEFT JOIN store_locations tl ON tl.id = t.to_store_location_id
+     WHERE (t.from_store_location_id = ? OR (t.from_store_location_id IS NULL AND t.from_store_id = ?))
+       AND t.status = 'approved'
+     ORDER BY t.id DESC LIMIT 20
+  `, activeStoreId, activeStoreId);
+
+  // 4. Pending Material Requests (MRNs requested for this store)
+  const pendingRequests = all(`
+    SELECT m.id, m.mrn_no, m.req_date, m.purpose, m.approval_status,
+           a.code AS asset_code, a.registration AS asset_reg,
+           (SELECT COUNT(*) FROM mrn_lines ml WHERE ml.mrn_id = m.id) AS lines_count
+      FROM mrn m
+      LEFT JOIN assets a ON a.id = m.asset_id
+     WHERE m.approval_status = 'requested'
+       AND (m.target_store_location_id = ? OR (m.target_store_location_id IS NULL AND m.workshop_id = ?))
+     ORDER BY m.id DESC LIMIT 20
+  `, activeStoreId, activeStoreId);
+
+  // 5. Goods to receive (GRN vouchers in draft or pending for this store)
+  const goodsToReceive = all(`
+    SELECT g.id, g.grn_no, g.received_date, g.supplier, g.status,
+           (SELECT COUNT(*) FROM grn gl WHERE gl.voucher_id = g.id) AS lines_count
+      FROM grn_vouchers g
+     WHERE g.status IN ('draft', 'pending')
+       AND (g.physical_store_id = ? OR g.physical_store_id IS NULL)
+     ORDER BY g.id DESC LIMIT 20
+  `, activeStoreId);
+
+  // 6. Today's issues from this store
+  const todaysIssues = all(`
+    SELECT i.id, COALESCE(i.min_no, i.mrn_no, '#' || i.id) AS issue_no, i.issue_date, i.qty, i.description AS item_name,
+           j.job_no, a.code AS asset_code, a.registration AS asset_reg
+      FROM issues i
+      LEFT JOIN job_cards j ON j.id = i.job_id
+      LEFT JOIN assets a ON a.id = i.asset_id
+     WHERE date(i.issue_date) = date('now')
+       AND (i.physical_store_id = ? OR (i.physical_store_id IS NULL AND i.store_id = ?))
+     ORDER BY i.id DESC LIMIT 30
+  `, activeStoreId, activeStoreId);
+
+  // 7. Low stock items strictly scoped to this store
+  let lowStock = [];
+  try {
+    lowStock = all(`
+      SELECT sm.item_name, sm.item_key,
+             COALESCE(SUM(CASE WHEN sm.kind = 'in' THEN sm.qty ELSE -sm.qty END), 0) AS balance,
+             COALESCE(sr.level, 5) AS reorder_level
+        FROM stock_moves sm
+        LEFT JOIN store_reorder sr ON (sr.physical_store_id = ? OR sr.store_id = ?) AND sr.item_key = sm.item_key
+       WHERE (sm.physical_store_id = ? OR sm.store_id = ?)
+       GROUP BY sm.item_key, sm.item_name
+      HAVING balance <= reorder_level
+       ORDER BY balance ASC LIMIT 30
+    `, activeStoreId, activeStoreId, activeStoreId, activeStoreId);
+  } catch (_) {
+    lowStock = [];
+  }
+
+  // User permissions on this store
+  const userPerms = {
+    can_view: storeScope.canAccess(activeStoreId, 'view'),
+    can_issue: storeScope.canAccess(activeStoreId, 'issue'),
+    can_receive: storeScope.canAccess(activeStoreId, 'receive'),
+    can_dispatch: storeScope.canAccess(activeStoreId, 'dispatch'),
+    can_count: storeScope.canAccess(activeStoreId, 'count'),
+  };
+
+  res.json({
+    active_store: storeInfo,
+    is_main_store: isMainStore,
+    permissions: userPerms,
+    incoming_mtn: incomingMtn,
+    outgoing_in_transit: outgoingInTransit,
+    ready_to_dispatch: readyToDispatch,
+    pending_requests: pendingRequests,
+    goods_to_receive: goodsToReceive,
+    todays_issues: todaysIssues,
+    low_stock: lowStock,
+    summary_counts: {
+      incoming_mtn: incomingMtn.length,
+      outgoing_in_transit: outgoingInTransit.length,
+      ready_to_dispatch: readyToDispatch.length,
+      pending_requests: pendingRequests.length,
+      goods_to_receive: goodsToReceive.length,
+      todays_issues: todaysIssues.length,
+      low_stock: lowStock.length
+    }
+  });
+}));
+
+router.get('/live-stats', asyncHandler((req, res) => {
+  const ws = scope.reach(req.user);   // Step 2b: as the overview
+  const canReports = permissions.reaches(req.user, 'reports') || hasCap(req.user, 'reports.financial');
+  const c = counts(ws);
+  const low = lowStock(req.user);
+  res.json({
+    active_jobs: c.active_jobs, pending_requests: c.pending_requests,
+    low_stock_alerts: low.general + low.oil + low.filter,
+    todays_cost: canReports ? c.todays_issue_cost : null,
+    monthly_cost: canReports ? costFigures(ws).monthly_cost_total : null,
+  });
 }));
 
 module.exports = router;

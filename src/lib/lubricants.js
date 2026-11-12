@@ -53,6 +53,27 @@ const displayName = (name) => String(name == null ? '' : name)
   .replace(/\s{2,}/g, ' ')
   .trim();
 
+const COMMON_LUBE_MAPPINGS = [
+  { raw: 'Break Oil', target: 'Brake Oil' },
+  { raw: 'Break Oil 1L', target: 'Brake Oil' },
+  { raw: 'Brake Oil 1L', target: 'Brake Oil' },
+  { raw: 'Break Oil DOT-5', target: 'Break Oil DOT-5' },
+  { raw: 'Brake Oil DOT-5', target: 'Break Oil DOT-5' },
+  { raw: 'WD-40', target: 'WD-40' },
+  { raw: 'WD 40', target: 'WD-40' },
+  { raw: 'Rubber Grease', target: 'Rubber Grease' },
+  { raw: 'CV Grease', target: 'CV Grease' },
+  { raw: 'Petrol Engine Oil', target: '20W-50' },
+  { raw: 'Coolant', target: 'Coolant' },
+  { raw: 'Coolant — DAH-2228', target: 'Coolant' },
+  { raw: 'Radiator Coolant', target: 'Coolant' },
+  { raw: 'MP Grease', target: 'Grease' },
+  { raw: 'Multi Purpose Grease', target: 'Grease' },
+  { raw: 'Super Diesel 15W40', target: '15W40 (CI-04) Valvoline' },
+  { raw: 'Super Diesel', target: '15W40 (CI-04) Valvoline' },
+  { raw: 'Havoline 20W-40', target: 'Havoline 20W-40' }
+];
+
 /** Give every catalogue product an alias to its own name. Idempotent. */
 function seedCatalogueAliases() {
   for (const p of all(`SELECT id, name FROM products WHERE name IS NOT NULL AND TRIM(name) <> ''`)) {
@@ -65,6 +86,21 @@ function seedCatalogueAliases() {
            resolved   = MAX(lubricant_aliases.resolved, excluded.resolved),
            updated_at = datetime('now')`, p.name, norm, p.id);
   }
+
+  for (const m of COMMON_LUBE_MAPPINGS) {
+    const p = get('SELECT id FROM products WHERE name = ? OR UPPER(name) = UPPER(?) LIMIT 1', m.target, m.target);
+    if (p) {
+      const norm = normLube(m.raw);
+      if (norm) {
+        run(`INSERT INTO lubricant_aliases (raw_text, raw_norm, product_id, effective_from, resolved, source)
+             VALUES (?, ?, ?, '', 1, 'alias_rule')
+             ON CONFLICT(raw_norm, effective_from) DO UPDATE SET
+               product_id = excluded.product_id,
+               resolved = 1,
+               updated_at = datetime('now')`, m.raw, norm, p.id);
+      }
+    }
+  }
 }
 
 /**
@@ -74,7 +110,7 @@ function seedCatalogueAliases() {
  */
 function resolveLubricant(text, { source = null, record = true, on = null } = {}) {
   const norm = normLube(text);
-  if (!norm) return { productId: null, product: null, resolved: false, aliasId: null };
+  if (!norm || norm.includes('COTTON')) return { productId: null, product: null, resolved: false, aliasId: null };
 
   // A name can mean different products at different times — HD-68 was Caltex and is now
   // Valvoline — so take the latest meaning that had started by the movement's own date.
@@ -82,12 +118,33 @@ function resolveLubricant(text, { source = null, record = true, on = null } = {}
   // fallback and wins only when no dated one applies yet. With no date given, the newest wins,
   // because that is what someone typing the name today means.
   const day = on ? String(on).slice(0, 10) : null;
-  const hit = day
+  let hit = day
     ? get(`SELECT * FROM lubricant_aliases
             WHERE raw_norm = ? AND effective_from <= ?
             ORDER BY effective_from DESC LIMIT 1`, norm, day)
     : get(`SELECT * FROM lubricant_aliases WHERE raw_norm = ?
             ORDER BY effective_from DESC LIMIT 1`, norm);
+  // Resilient fallback for common variations
+  if (!hit && norm.includes('BREAKOIL')) {
+    const fixedNorm = norm.replace('BREAKOIL', 'BRAKEOIL');
+    hit = get(`SELECT * FROM lubricant_aliases WHERE raw_norm = ? ORDER BY effective_from DESC LIMIT 1`, fixedNorm);
+  }
+  if (!hit && norm.includes('COOLANT')) {
+    hit = get(`SELECT * FROM lubricant_aliases WHERE raw_norm = 'COOLANT' ORDER BY effective_from DESC LIMIT 1`);
+  }
+  if (!hit && norm.includes('RUBBERGREASE')) {
+    hit = get(`SELECT * FROM lubricant_aliases WHERE raw_norm = 'RUBBERGREASE' ORDER BY effective_from DESC LIMIT 1`);
+  }
+  if (!hit && (norm.includes('WD40') || norm.includes('WD040'))) {
+    hit = get(`SELECT * FROM lubricant_aliases WHERE raw_norm = 'WD40' ORDER BY effective_from DESC LIMIT 1`);
+  }
+  if (!hit && norm.includes('CVGREASE')) {
+    hit = get(`SELECT * FROM lubricant_aliases WHERE raw_norm = 'CVGREASE' ORDER BY effective_from DESC LIMIT 1`);
+  }
+  if (!hit && norm.includes('PETROLENGINEOIL')) {
+    hit = get(`SELECT * FROM lubricant_aliases WHERE raw_norm = 'PETROLENGINEOIL' ORDER BY effective_from DESC LIMIT 1`);
+  }
+
   if (hit) {
     if (record) run('UPDATE lubricant_aliases SET hit_count = hit_count + 1, updated_at = datetime(\'now\') WHERE id = ?', hit.id);
     return {
@@ -182,28 +239,37 @@ function currentBalance(productId) {
  * Unified oil forecast and reorder threshold evaluator.
  * Centralizes consumption rates, days of cover, and low stock flags.
  */
+/**
+ * opts.store: one store's forecast (improvement plan, Step 2) — what that store issued, what is on
+ * its shelf and the level it reorders at; without it, the company's, as always.
+ */
 function oilForecast(opts = {}) {
   const windowDays = opts.windowDays || config.forecastWindowDays;
   const lowStockDays = opts.lowStockDays || config.lowStockDays;
   const since = new Date(Date.now() - windowDays * 86400 * 1000).toISOString().slice(0, 10);
   const products = all('SELECT * FROM products ORDER BY name');
+  const stock = require('./stock');
+  const shelf = opts.store ? { bal: stock.storeBalances('oil', opts.store), lvl: stock.storeLevels('oil', opts.store) } : null;
+  const inStore = opts.store ? ` AND ${require('./scope').storeOfRow('store_id')} = ?` : '';
   const out = products.map((p) => {
     const consRow = get(
-      `SELECT COALESCE(SUM(ABS(qty)),0) c FROM stock_ledger WHERE product_id = ? AND kind = 'issue' AND txn_date >= ?`,
-      p.id, since
+      `SELECT COALESCE(SUM(ABS(qty)),0) c FROM stock_ledger WHERE product_id = ? AND kind = 'issue' AND txn_date >= ?${inStore}`,
+      p.id, since, ...(opts.store ? [opts.store] : [])
     );
     const consumption = consRow.c || 0;
     const dailyRate = consumption / windowDays;
-    const balance = currentBalance(p.id);
+    const key = shelf && stock.itemKey('oil', p.name, p.code || p.name);
+    const balance = shelf ? (shelf.bal.get(key) || 0) : currentBalance(p.id);
+    const reorder = shelf ? (shelf.lvl.get(key) || 0) : p.reorder_level;
     const daysOfCover = dailyRate > 0 ? balance / dailyRate : null;
-    const low = (daysOfCover != null && daysOfCover <= lowStockDays) || (p.reorder_level > 0 && balance <= p.reorder_level);
+    const low = (daysOfCover != null && daysOfCover <= lowStockDays) || (reorder > 0 && balance <= reorder);
     return {
       product_id: p.id,
       id: p.id,
       name: p.name,
       unit: p.unit,
       balance,
-      reorder_level: p.reorder_level,
+      reorder_level: reorder,
       consumption_window: consumption,
       daily_rate: Math.round(dailyRate * 100) / 100,
       days_of_cover: daysOfCover == null ? null : Math.round(daysOfCover),

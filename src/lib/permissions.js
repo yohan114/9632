@@ -37,7 +37,7 @@ const SECTIONS = [
   { id: 5, key: 'dailywork', label: 'Daily Work', icon: '📅', group: 'Operations', enforce: true },
   { id: 6, key: 'services', label: 'Service Records', icon: '🛠️', group: 'Operations', enforce: true },
   { id: 7, key: 'lubricants', label: 'Lubricant Capacities', icon: '🛢️', group: 'Fleet', enforce: true },
-  { id: 8, key: 'assets', label: 'Assets', icon: '🚛', group: 'Fleet', enforce: true },
+  { id: 8, key: 'assets', label: 'Assets', icon: '🚛', group: 'Fleet', enforce: true, parts: [{ key: 'vehicle_docs', label: 'Vehicle Documents' }] },
   { id: 9, key: 'labour', label: 'Labour Rates', icon: '💼', group: 'Fleet', enforce: true },
   { id: 10, key: 'stores', label: 'Stores', icon: '📦', group: 'Inventory', enforce: true, parts: [{ key: 'oil', label: 'Oil & Lube' }, { key: 'batteries', label: 'Batteries' }, { key: 'filters', label: 'Filters & Prices' }, { key: 'tools', label: 'Tools & Toolboxes' }] },
   { id: 11, key: 'service_plan', label: 'Service & Filter Plan', icon: '📈', group: 'Operations', enforce: true },
@@ -51,7 +51,13 @@ const SECTIONS = [
   { id: 19, key: 'tb_reports', label: 'Tyre & Battery', icon: '📊', group: 'Analysis', enforce: true },
   { id: 20, key: 'reports', label: 'Reports', icon: '📑', group: 'Analysis', enforce: true },
   { id: 21, key: 'workshops', label: 'Workshops', icon: '🏢', group: 'Admin', enforce: true },
-  { id: 22, key: 'access', label: 'Access Control', icon: '🔐', group: 'Admin', enforce: true, parts: [{ key: 'users', label: 'Users & Access' }] },
+  { id: 22, key: 'access', label: 'Access Control', icon: '🔐', group: 'Admin', enforce: true, parts: [{ key: 'users', label: 'Users & Access' }, { key: 'audit_logs', label: 'User Activity Logs' }] },
+  { id: 23, key: 'fabrication', label: 'Fabrication & General Works', icon: '⚙️', group: 'Operations', enforce: true, parts: [{ key: 'fabrication_costing', label: 'Fabrication Costing' }] },
+  { id: 24, key: 'master_dashboard', label: 'Master Cockpit', icon: '⚡', group: 'Operations', enforce: true },
+  { id: 25, key: 'fuel', label: 'Fuel Operations & Bowsers', icon: '⛽', group: 'Operations', enforce: true, parts: [{ key: 'fuel_tanks', label: 'Fuel Tanks & Bowsers' }, { key: 'fuel_readings', label: 'Daily Pump Readings' }, { key: 'fuel_prices', label: 'Fuel Prices & Tariffs' }, { key: 'fuel_reports', label: 'Fuel Efficiency & Norms' }, { key: 'fuel_alerts', label: 'Fuel Discrepancy Alerts' }] },
+  { id: 26, key: 'hire', label: 'Machine Hire & Billing', icon: '📑', group: 'Fleet', enforce: true },
+  { id: 27, key: 'costing', label: 'Final Vehicle Costing P&L', icon: '💰', group: 'Fleet', enforce: true },
+  { id: 28, key: 'finance', label: 'Fleet Profitability', icon: '📊', group: 'Analysis', enforce: true },
 ];
 
 const SECTION_KEYS = SECTIONS.map((s) => s.key);
@@ -63,11 +69,20 @@ const PART_MODULES = [
   { key: 'batteries', label: 'Batteries', enforce: true, parent: 'stores' },
   { key: 'filters', label: 'Filters & Prices', enforce: true, parent: 'stores' },
   { key: 'tools', label: 'Tools & Toolboxes', enforce: true, parent: 'stores' },
+  { key: 'vehicle_docs', label: 'Vehicle Documents', enforce: true, parent: 'assets' },
   { key: 'tb_request', label: 'T&B · Request', enforce: false, parent: 'tb_requests' },
   { key: 'tb_purchase', label: 'T&B · Send to purchase', enforce: false, parent: 'tb_requests' },
   { key: 'tb_grn', label: 'T&B · Receive (GRN)', enforce: false, parent: 'tb_requests' },
   { key: 'tb_issue', label: 'T&B · Issue', enforce: false, parent: 'tb_requests' },
   { key: 'users', label: 'Users & Access', enforce: false, parent: 'access' },
+  { key: 'audit_logs', label: 'User Activity Logs', enforce: true, parent: 'access' },
+  { key: 'fabrication_costing', label: 'Fabrication Costing', enforce: true, parent: 'fabrication' },
+  { key: 'outsourcing', label: 'Outsourced Requests (CCOM)', enforce: true, parent: 'jobs' },
+  { key: 'fuel_tanks', label: 'Fuel Tanks & Bowsers', enforce: true, parent: 'fuel' },
+  { key: 'fuel_readings', label: 'Daily Pump Readings', enforce: true, parent: 'fuel' },
+  { key: 'fuel_prices', label: 'Fuel Prices & Tariffs', enforce: true, parent: 'fuel' },
+  { key: 'fuel_reports', label: 'Fuel Efficiency & Norms', enforce: true, parent: 'fuel' },
+  { key: 'fuel_alerts', label: 'Fuel Discrepancy Alerts', enforce: true, parent: 'fuel' },
 ];
 
 const MODULES = [
@@ -77,108 +92,169 @@ const MODULES = [
 
 const MODULE_KEYS = MODULES.map((m) => m.key);
 
-// Seed policy — mirrors today's effective access across all 22 sections. Admin omitted (always full).
+// Seed policy — mirrors today's effective access across all 28 sections. Admin omitted (always full).
 const DEFAULT_MATRIX = {
   storekeeper: {
-    dashboard: 'view', jobs: 'view', jobrequests: 'none', field: 'view', operations: 'view',
-    dailywork: 'none', services: 'view', lubricants: 'view', assets: 'view', labour: 'none',
-    stores: 'full', oil: 'full', batteries: 'full', filters: 'full', service_plan: 'view',
+    dashboard: 'view', master_dashboard: 'none', jobs: 'view', jobrequests: 'none', field: 'view', operations: 'view',
+    dailywork: 'none', services: 'view', lubricants: 'view', assets: 'view', vehicle_docs: 'view', labour: 'none',
+    stores: 'full', oil: 'full', batteries: 'full', filters: 'full', tools: 'full', service_plan: 'view',
     projects: 'view', aliases: 'view', attention: 'view', daily_progress: 'view', cost_teardown: 'view',
     purchasing: 'view', tb_requests: 'edit', tb_request: 'edit', tb_purchase: 'edit', tb_grn: 'edit', tb_issue: 'edit',
-    tb_reports: 'view', reports: 'view', workshops: 'none', access: 'none', users: 'none'
+    tb_reports: 'view', reports: 'view', workshops: 'none', access: 'none', users: 'none',
+    fabrication: 'none', fabrication_costing: 'none', outsourcing: 'edit',
+    fuel: 'edit', fuel_tanks: 'edit', fuel_readings: 'edit', fuel_prices: 'view', fuel_reports: 'view', fuel_alerts: 'view',
+    hire: 'none', costing: 'none', finance: 'none'
   },
   main_storekeeper: {
-    dashboard: 'view', jobs: 'view', jobrequests: 'none', field: 'view', operations: 'view',
-    dailywork: 'none', services: 'view', lubricants: 'view', assets: 'view', labour: 'none',
-    stores: 'view', oil: 'view', batteries: 'view', filters: 'view', service_plan: 'view',
+    dashboard: 'view', master_dashboard: 'none', jobs: 'view', jobrequests: 'none', field: 'view', operations: 'view',
+    dailywork: 'none', services: 'view', lubricants: 'view', assets: 'view', vehicle_docs: 'view', labour: 'none',
+    stores: 'view', oil: 'view', batteries: 'view', filters: 'view', tools: 'view', service_plan: 'view',
     projects: 'view', aliases: 'view', attention: 'view', daily_progress: 'view', cost_teardown: 'view',
     purchasing: 'view', tb_requests: 'view', tb_request: 'view', tb_purchase: 'view', tb_grn: 'view', tb_issue: 'none',
-    tb_reports: 'view', reports: 'view', workshops: 'none', access: 'none', users: 'none'
+    tb_reports: 'view', reports: 'view', workshops: 'none', access: 'none', users: 'none',
+    fabrication: 'none', fabrication_costing: 'none', outsourcing: 'edit',
+    fuel: 'view', fuel_tanks: 'view', fuel_readings: 'view', fuel_prices: 'view', fuel_reports: 'view', fuel_alerts: 'view',
+    hire: 'none', costing: 'none', finance: 'none'
+  },
+  fabrication_officer: {
+    dashboard: 'view', master_dashboard: 'none', jobs: 'view', jobrequests: 'view', field: 'none', operations: 'view',
+    dailywork: 'view', services: 'view', lubricants: 'view', assets: 'view', vehicle_docs: 'view', labour: 'none',
+    stores: 'view', oil: 'view', batteries: 'view', filters: 'view', tools: 'view', service_plan: 'none',
+    projects: 'view', aliases: 'none', attention: 'view', daily_progress: 'view', cost_teardown: 'none',
+    purchasing: 'none', tb_requests: 'none', tb_request: 'none', tb_purchase: 'none', tb_grn: 'none', tb_issue: 'none',
+    tb_reports: 'none', reports: 'view', workshops: 'none', access: 'none', users: 'none', audit_logs: 'none',
+    fabrication: 'full', fabrication_costing: 'full'
+  },
+  site_storekeeper: {
+    dashboard: 'view', master_dashboard: 'none', jobs: 'view', jobrequests: 'none', field: 'view', operations: 'view',
+    dailywork: 'none', services: 'view', lubricants: 'view', assets: 'view', vehicle_docs: 'view', labour: 'none',
+    stores: 'edit', oil: 'edit', batteries: 'view', filters: 'edit', tools: 'view', service_plan: 'view',
+    projects: 'view', aliases: 'view', attention: 'view', daily_progress: 'view', cost_teardown: 'none',
+    purchasing: 'none', tb_requests: 'none', tb_request: 'none', tb_purchase: 'none', tb_grn: 'none', tb_issue: 'none',
+    tb_reports: 'none', reports: 'view', workshops: 'none', access: 'none', users: 'none', audit_logs: 'none',
+    fabrication: 'none', fabrication_costing: 'none',
+    fuel: 'edit', fuel_tanks: 'edit', fuel_readings: 'edit', fuel_prices: 'view', fuel_reports: 'view', fuel_alerts: 'view',
+    hire: 'none', costing: 'none', finance: 'none'
   },
   transport_manager: {
-    dashboard: 'view', jobs: 'edit', jobrequests: 'edit', field: 'edit', operations: 'edit',
-    dailywork: 'view', services: 'view', lubricants: 'view', assets: 'edit', labour: 'view',
-    stores: 'none', oil: 'none', batteries: 'view', filters: 'view', service_plan: 'view',
+    dashboard: 'view', master_dashboard: 'view', jobs: 'edit', jobrequests: 'edit', field: 'edit', operations: 'edit',
+    dailywork: 'view', services: 'view', lubricants: 'view', assets: 'edit', vehicle_docs: 'edit', labour: 'view',
+    stores: 'none', oil: 'none', batteries: 'view', filters: 'view', tools: 'none', service_plan: 'view',
     projects: 'view', aliases: 'view', attention: 'view', daily_progress: 'view', cost_teardown: 'view',
     purchasing: 'none', tb_requests: 'view', tb_request: 'view', tb_purchase: 'none', tb_grn: 'none', tb_issue: 'none',
-    tb_reports: 'view', reports: 'view', workshops: 'none', access: 'none', users: 'none'
+    tb_reports: 'view', reports: 'view', workshops: 'none', access: 'none', users: 'none',
+    fabrication: 'none', fabrication_costing: 'none',
+    fuel: 'edit', fuel_tanks: 'view', fuel_readings: 'edit', fuel_prices: 'view', fuel_reports: 'view', fuel_alerts: 'view',
+    hire: 'edit', costing: 'view', finance: 'view'
   },
   assistant_transport_manager: {
-    dashboard: 'view', jobs: 'view', jobrequests: 'edit', field: 'view', operations: 'view',
-    dailywork: 'view', services: 'view', lubricants: 'view', assets: 'view', labour: 'none',
-    stores: 'none', oil: 'none', batteries: 'view', filters: 'view', service_plan: 'view',
+    dashboard: 'view', master_dashboard: 'none', jobs: 'view', jobrequests: 'edit', field: 'view', operations: 'view',
+    dailywork: 'view', services: 'view', lubricants: 'view', assets: 'view', vehicle_docs: 'edit', labour: 'none',
+    stores: 'none', oil: 'none', batteries: 'view', filters: 'view', tools: 'none', service_plan: 'view',
     projects: 'view', aliases: 'none', attention: 'view', daily_progress: 'view', cost_teardown: 'view',
     purchasing: 'none', tb_requests: 'view', tb_request: 'view', tb_purchase: 'none', tb_grn: 'none', tb_issue: 'none',
-    tb_reports: 'view', reports: 'view', workshops: 'none', access: 'none', users: 'none'
+    tb_reports: 'view', reports: 'view', workshops: 'none', access: 'none', users: 'none',
+    fabrication: 'none', fabrication_costing: 'none',
+    fuel: 'view', fuel_tanks: 'view', fuel_readings: 'view', fuel_prices: 'view', fuel_reports: 'view', fuel_alerts: 'view',
+    hire: 'view', costing: 'none', finance: 'none'
   },
   operational_manager: {
-    dashboard: 'view', jobs: 'edit', jobrequests: 'edit', field: 'edit', operations: 'edit',
-    dailywork: 'view', services: 'edit', lubricants: 'edit', assets: 'edit', labour: 'view',
-    stores: 'view', oil: 'view', batteries: 'view', filters: 'view', service_plan: 'edit',
+    dashboard: 'view', master_dashboard: 'full', jobs: 'edit', jobrequests: 'edit', field: 'edit', operations: 'edit',
+    dailywork: 'view', services: 'edit', lubricants: 'edit', assets: 'edit', vehicle_docs: 'full', labour: 'view',
+    stores: 'view', oil: 'view', batteries: 'view', filters: 'view', tools: 'edit', service_plan: 'edit',
     projects: 'edit', aliases: 'view', attention: 'full', daily_progress: 'full', cost_teardown: 'full',
     purchasing: 'full', tb_requests: 'edit', tb_request: 'edit', tb_purchase: 'view', tb_grn: 'view', tb_issue: 'view',
-    tb_reports: 'full', reports: 'full', workshops: 'edit', access: 'none', users: 'none'
+    tb_reports: 'full', reports: 'full', workshops: 'edit', access: 'none', users: 'none',
+    fabrication: 'full', fabrication_costing: 'full', outsourcing: 'full',
+    fuel: 'full', fuel_tanks: 'full', fuel_readings: 'full', fuel_prices: 'full', fuel_reports: 'full', fuel_alerts: 'full',
+    hire: 'full', costing: 'full', finance: 'full'
   },
   manager: {
-    dashboard: 'view', jobs: 'edit', jobrequests: 'edit', field: 'edit', operations: 'edit',
-    dailywork: 'view', services: 'edit', lubricants: 'edit', assets: 'view', labour: 'view',
-    stores: 'view', oil: 'view', batteries: 'view', filters: 'view', service_plan: 'edit',
+    dashboard: 'view', master_dashboard: 'full', jobs: 'edit', jobrequests: 'edit', field: 'edit', operations: 'edit',
+    dailywork: 'view', services: 'edit', lubricants: 'edit', assets: 'view', vehicle_docs: 'full', labour: 'view',
+    stores: 'view', oil: 'view', batteries: 'view', filters: 'view', tools: 'full', service_plan: 'edit',
     projects: 'view', aliases: 'view', attention: 'full', daily_progress: 'full', cost_teardown: 'full',
     purchasing: 'full', tb_requests: 'edit', tb_request: 'edit', tb_purchase: 'view', tb_grn: 'view', tb_issue: 'view',
-    tb_reports: 'full', reports: 'full', workshops: 'edit', access: 'none', users: 'none'
+    tb_reports: 'full', reports: 'full', workshops: 'edit', access: 'none', users: 'none',
+    fabrication: 'full', fabrication_costing: 'full', outsourcing: 'full',
+    fuel: 'full', fuel_tanks: 'full', fuel_readings: 'full', fuel_prices: 'full', fuel_reports: 'full', fuel_alerts: 'full',
+    hire: 'full', costing: 'full', finance: 'full'
   },
   workshop: {
-    dashboard: 'view', jobs: 'edit', jobrequests: 'none', field: 'edit', operations: 'view',
-    dailywork: 'edit', services: 'edit', lubricants: 'edit', assets: 'view', labour: 'edit',
-    stores: 'view', oil: 'edit', batteries: 'edit', filters: 'full', service_plan: 'view',
+    dashboard: 'view', master_dashboard: 'none', jobs: 'edit', jobrequests: 'view', field: 'edit', operations: 'view',
+    dailywork: 'edit', services: 'edit', lubricants: 'edit', assets: 'view', vehicle_docs: 'edit', labour: 'edit',
+    stores: 'view', oil: 'edit', batteries: 'edit', filters: 'full', tools: 'edit', service_plan: 'view',
     projects: 'view', aliases: 'edit', attention: 'view', daily_progress: 'view', cost_teardown: 'view',
     purchasing: 'none', tb_requests: 'edit', tb_request: 'edit', tb_purchase: 'none', tb_grn: 'none', tb_issue: 'none',
-    tb_reports: 'view', reports: 'view', workshops: 'none', access: 'none', users: 'none'
+    tb_reports: 'view', reports: 'view', workshops: 'none', access: 'none', users: 'none',
+    fabrication: 'none', fabrication_costing: 'none', outsourcing: 'edit',
+    fuel: 'edit', fuel_tanks: 'edit', fuel_readings: 'edit', fuel_prices: 'view', fuel_reports: 'view', fuel_alerts: 'view',
+    hire: 'none', costing: 'none', finance: 'none'
+  },
+  fuel_officer: {
+    dashboard: 'view', master_dashboard: 'none', assets: 'view', projects: 'view',
+    fuel: 'full', fuel_tanks: 'full', fuel_readings: 'full', fuel_prices: 'edit', fuel_reports: 'full', fuel_alerts: 'full',
+    hire: 'view', costing: 'none', finance: 'none'
+  },
+  accountant: {
+    dashboard: 'view', master_dashboard: 'view', jobs: 'view', assets: 'view', projects: 'view', stores: 'view',
+    reports: 'full', cost_teardown: 'full', purchasing: 'view', outsourcing: 'view',
+    fuel: 'view', fuel_tanks: 'view', fuel_readings: 'view', fuel_prices: 'edit', fuel_reports: 'full', fuel_alerts: 'view',
+    hire: 'full', costing: 'full', finance: 'full'
   },
   purchase_head_office: {
     dashboard: 'none', jobs: 'none', jobrequests: 'none', field: 'none', operations: 'none',
-    dailywork: 'none', services: 'none', lubricants: 'none', assets: 'none', labour: 'none',
-    stores: 'none', oil: 'none', batteries: 'none', filters: 'none', service_plan: 'none',
+    dailywork: 'none', services: 'none', lubricants: 'none', assets: 'none', vehicle_docs: 'none', labour: 'none',
+    stores: 'none', oil: 'none', batteries: 'none', filters: 'none', tools: 'none', service_plan: 'none',
     projects: 'none', aliases: 'none', attention: 'none', daily_progress: 'none', cost_teardown: 'none',
     purchasing: 'full', tb_requests: 'none', tb_request: 'none', tb_purchase: 'none', tb_grn: 'none', tb_issue: 'none',
-    tb_reports: 'none', reports: 'none', workshops: 'none', access: 'none', users: 'none'
+    tb_reports: 'none', reports: 'none', workshops: 'none', access: 'none', users: 'none',
+    fabrication: 'none', fabrication_costing: 'none'
   },
   purchase_local: {
     dashboard: 'none', jobs: 'none', jobrequests: 'none', field: 'none', operations: 'none',
-    dailywork: 'none', services: 'none', lubricants: 'none', assets: 'none', labour: 'none',
-    stores: 'none', oil: 'none', batteries: 'none', filters: 'none', service_plan: 'none',
+    dailywork: 'none', services: 'none', lubricants: 'none', assets: 'none', vehicle_docs: 'none', labour: 'none',
+    stores: 'none', oil: 'none', batteries: 'none', filters: 'none', tools: 'none', service_plan: 'none',
     projects: 'none', aliases: 'none', attention: 'none', daily_progress: 'none', cost_teardown: 'none',
     purchasing: 'full', tb_requests: 'none', tb_request: 'none', tb_purchase: 'none', tb_grn: 'none', tb_issue: 'none',
-    tb_reports: 'none', reports: 'none', workshops: 'none', access: 'none', users: 'none'
+    tb_reports: 'none', reports: 'none', workshops: 'none', access: 'none', users: 'none',
+    fabrication: 'none', fabrication_costing: 'none'
   },
   viewer: {
     dashboard: 'view', jobs: 'view', jobrequests: 'view', field: 'view', operations: 'view',
-    dailywork: 'view', services: 'view', lubricants: 'view', assets: 'view', labour: 'view',
-    stores: 'view', oil: 'view', batteries: 'view', filters: 'view', service_plan: 'view',
+    dailywork: 'view', services: 'view', lubricants: 'view', assets: 'view', vehicle_docs: 'view', labour: 'view',
+    stores: 'view', oil: 'view', batteries: 'view', filters: 'view', tools: 'view', service_plan: 'view',
     projects: 'view', aliases: 'view', attention: 'view', daily_progress: 'view', cost_teardown: 'view',
     purchasing: 'view', tb_requests: 'view', tb_request: 'view', tb_purchase: 'view', tb_grn: 'view', tb_issue: 'view',
-    tb_reports: 'view', reports: 'view', workshops: 'view', access: 'none', users: 'none'
+    tb_reports: 'view', reports: 'view', workshops: 'view', access: 'none', users: 'none',
+    fabrication: 'none', fabrication_costing: 'none'
   },
   engineer: {
     dashboard: 'view', jobs: 'edit', jobrequests: 'edit', field: 'edit', operations: 'edit',
-    dailywork: 'view', services: 'edit', lubricants: 'view', assets: 'view', labour: 'view',
-    stores: 'view', oil: 'view', batteries: 'view', filters: 'view', service_plan: 'edit',
+    dailywork: 'view', services: 'edit', lubricants: 'view', assets: 'view', vehicle_docs: 'view', labour: 'view',
+    stores: 'view', oil: 'view', batteries: 'view', filters: 'view', tools: 'edit', service_plan: 'edit',
     projects: 'view', aliases: 'view', attention: 'view', daily_progress: 'view', cost_teardown: 'view',
     purchasing: 'view', tb_requests: 'view', tb_request: 'view', tb_purchase: 'none', tb_grn: 'none', tb_issue: 'none',
-    tb_reports: 'view', reports: 'view', workshops: 'view', access: 'none', users: 'none'
+    tb_reports: 'view', reports: 'view', workshops: 'view', access: 'none', users: 'none',
+    fabrication: 'view', fabrication_costing: 'view'
   },
   assistant_engineer: {
     dashboard: 'view', jobs: 'edit', jobrequests: 'edit', field: 'edit', operations: 'view',
-    dailywork: 'view', services: 'view', lubricants: 'view', assets: 'view', labour: 'none',
-    stores: 'view', oil: 'view', batteries: 'view', filters: 'view', service_plan: 'view',
+    dailywork: 'view', services: 'view', lubricants: 'view', assets: 'view', vehicle_docs: 'view', labour: 'none',
+    stores: 'view', oil: 'view', batteries: 'view', filters: 'view', tools: 'view', service_plan: 'view',
     projects: 'view', aliases: 'none', attention: 'view', daily_progress: 'view', cost_teardown: 'view',
     purchasing: 'none', tb_requests: 'view', tb_request: 'view', tb_purchase: 'none', tb_grn: 'none', tb_issue: 'none',
-    tb_reports: 'view', reports: 'view', workshops: 'none', access: 'none', users: 'none'
+    tb_reports: 'view', reports: 'view', workshops: 'none', access: 'none', users: 'none',
+    fabrication: 'view', fabrication_costing: 'view'
   }
 };
 
 // Backfill any missing (role, module) cell from seed policy
 function seedDefaults() {
+  try {
+    run("INSERT OR IGNORE INTO roles (name, label, active) VALUES ('fuel_officer', 'Fuel Officer / Bowser Clerk', 1)");
+    run("INSERT OR IGNORE INTO roles (name, label, active) VALUES ('accountant', 'Cost Accountant / Finance', 1)");
+  } catch (_) {}
   let seeded = 0;
   for (const role of Object.keys(DEFAULT_MATRIX)) {
     for (const mod of MODULE_KEYS) {
@@ -214,12 +290,21 @@ function effectiveLevel(user, sectionKey) {
   const roles = user.roles || [];
   if (roles.includes('admin')) return 'full';
 
-  // Check temporary access expiration if access_until is set
   if (isAccessExpired(user)) {
+    let hasOverrides = false;
+    if (user.id) {
+      try {
+        const rowP = get('SELECT 1 FROM user_permissions WHERE user_id = ? LIMIT 1', user.id);
+        const rowC = get('SELECT 1 FROM user_capabilities WHERE user_id = ? LIMIT 1', user.id);
+        hasOverrides = !!(rowP || rowC);
+      } catch (_) {}
+      if (!hasOverrides) return 'none';
+      return levelForRoles(roles, sectionKey);
+    }
     return 'none';
   }
 
-  // 1. Check user-specific override in user_permissions
+  // 1. Check user-specific override in user_permissions (only if elevation not expired)
   if (user.id) {
     const row = get('SELECT level FROM user_permissions WHERE user_id = ? AND section = ?', user.id, sectionKey);
     if (row && LEVELS.includes(row.level)) {
@@ -228,7 +313,27 @@ function effectiveLevel(user, sectionKey) {
   }
 
   // 2. Fall back to role template (highest level among user's roles)
-  return levelForRoles(roles, sectionKey);
+  let level = levelForRoles(roles, sectionKey);
+
+  // 3. Step 3b: Stand-in delegated approval clearance (only if not expired)
+  // If the user holds delegated capabilities in this section, ensure at least 'add' clearance
+  // so the module guard allows approval/certification POST requests.
+  if (user.id && !user.skipDelegations) {
+    try {
+      const standIn = require('./stand_in');
+      const dCaps = standIn.delegatedCapsFor(user.id);
+      const capabilities = require('./capabilities');
+      const hasCapInSection = dCaps.some(cap => {
+        const c = capabilities.get(cap);
+        return c && (c.section === sectionKey || c.module === sectionKey || c.needs === sectionKey);
+      });
+      if (hasCapInSection && LEVELS.indexOf(level) < LEVELS.indexOf('add')) {
+        level = 'add';
+      }
+    } catch {}
+  }
+
+  return level;
 }
 
 // Full effective {section: level} map for a specific user
@@ -306,8 +411,66 @@ function clearUserPermissions(userId) {
   run('DELETE FROM user_permissions WHERE user_id = ?', userId);
 }
 
+// ---------------------------------------------------------------------------
+// The access helpers main's Part 1/2 built, over this branch's primitives.
+//
+// Both lineages implemented the same design -- five levels, a role template with a per-person
+// override -- and this branch's version is the base here. What main had that this did not is a
+// finer-grained guard vocabulary: requireView and reaches take SEVERAL switches and pass if any
+// one of them opens, which requireModule cannot say. Nine files main wrote use it. Rewriting
+// those call sites into requireModule would quietly coarsen them (a route opened by "field OR
+// jobs" would become one or the other), so the helpers are provided here instead and the routes
+// keep their meaning.
+// ---------------------------------------------------------------------------
+
+/** The level a request implies: reading needs view, creating needs add, anything else edit. */
+const needFor = (method) => (method === 'GET' || method === 'HEAD' ? 'view' : (method === 'POST' ? 'add' : 'edit'));
+
+/** One person's level on one switch. */
+const levelFor = (user, sectionKey) => effectiveLevel(user, sectionKey);
+
+/** Every switch's level for one person. */
+const userLevels = (user) => effectiveUserPermissions(user);
+
+/** Does this person reach ANY of these switches at this level? An admin always does. */
+function reaches(user, keys, need = 'view') {
+  if (!user) return false;
+  if (user.roles && user.roles.includes('admin')) return true;
+  return (Array.isArray(keys) ? keys : [keys]).some((k) => meets(effectiveLevel(user, k), need));
+}
+
+/** Router guard for a section that any one of several switches opens. */
+function requireView(...keys) {
+  return (req, res, next) => {
+    if (!req.user) return res.status(401).json({ error: 'Authentication required' });
+    if (reaches(req.user, keys)) return next();
+    return res.status(403).json({ error: `Your account has no view access to ${keys.join(' or ')}` });
+  };
+}
+
+/** A person's own level on a switch; null or '' drops them back to what their roles give. */
+function setPersonal(userId, sectionKey, level) {
+  if (level === null || level === undefined || level === '') return removeUserPermission(userId, sectionKey);
+  return setUserPermission(userId, sectionKey, level);
+}
+
+// A section split off an older shared switch starts at that switch's level. The sections here were
+// written as their own from the start and carry no `from`, so SPLIT is empty and this does
+// nothing -- it stays because src/db/index.js calls it on every migrate.
+const SPLIT = MODULES.filter((m) => m.from).map((m) => [m.key, m.from]);
+function splitSections() {
+  let copied = 0;
+  for (const [key, from] of SPLIT) {
+    copied += run(`INSERT OR IGNORE INTO role_permissions (role, module, level)
+                   SELECT role, ?, level FROM role_permissions WHERE module = ?`, key, from).changes;
+  }
+  return { copied };
+}
+
 module.exports = {
   LEVELS, SECTIONS, SECTION_KEYS, MODULES, MODULE_KEYS, DEFAULT_MATRIX, rank, meets,
   seedDefaults, levelForRoles, effectiveLevel, effectiveUserPermissions, userPermissions,
   isAccessExpired, requireModule, getMatrix, setPermission, setUserPermission, removeUserPermission, clearUserPermissions,
+  // main's helpers, implemented above over the same primitives
+  needFor, levelFor, userLevels, reaches, requireView, setPersonal, SPLIT, splitSections,
 };

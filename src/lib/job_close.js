@@ -134,12 +134,17 @@ function partialClose(job, { user, note = '', date = null, openNew = false, newJ
     releaseVehicle(job);
     if (openNew) {
       const desc = String(newJob.description || '').trim() || `Continued from ${job.job_no}${job.description ? ': ' + job.description : ''}`;
+      // Exempt from "a card needs a job request" (routes/jobcards.js): this card is not new work,
+      // it is the unfinished tail of a card that already went through the three signatures — so it
+      // INHERITS that card's request rather than needing one of its own, and the chain from the
+      // signed paper to the last card in it stays unbroken.
       newJobId = run(
         // Same workshop as the card it continues (Stage 2).
-        `INSERT INTO job_cards (job_no, asset_id, project_id, site, type, description, status, requested_by, requested_by_user, continues_job_id, workshop_id)
-         VALUES (?, ?, ?, ?, ?, ?, 'REQUESTED', ?, ?, ?, ?)`,
+        `INSERT INTO job_cards (job_no, asset_id, project_id, site, type, description, status, requested_by, requested_by_user, continues_job_id, workshop_id, job_request_id)
+         VALUES (?, ?, ?, ?, ?, ?, 'REQUESTED', ?, ?, ?, ?, ?)`,
         jobno.nextJobNo(newType), job.asset_id, job.project_id || null, job.site || null, newType, desc.slice(0, 500),
-        (user && (user.fullName || user.username)) || null, user ? user.id : null, job.id, job.workshop_id || null).lastInsertRowid;
+        (user && (user.fullName || user.username)) || null, user ? user.id : null, job.id, job.workshop_id || null,
+        job.job_request_id || null).lastInsertRowid;
     }
   });
   return { job: get('SELECT * FROM job_cards WHERE id = ?', job.id), newJobId, missing: readiness.missing };

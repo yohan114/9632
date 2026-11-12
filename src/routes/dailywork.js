@@ -6,7 +6,7 @@
 
 const express = require('express');
 const { get, all, run, tx } = require('../db');
-const { requireCap } = require('../lib/auth');
+const { requireCap, hasCap } = require('../lib/auth');
 const { asyncHandler, toNum, toInt } = require('../lib/http');
 const audit = require('../lib/audit');
 const costing = require('../lib/costing');
@@ -120,6 +120,8 @@ function assetLabel(assetId, fallback) {
 //   2. this month's existing auto card for the vehicle (one per vehicle per month), with its
 //      date window widened to cover the new day;
 //   3. a new card, CLOSED on the work date, so the cost lands in that month under the vehicle.
+// Exempt from "a card needs an approved job request" (routes/jobcards.js): the monthly container
+// is created already CLOSED, to carry a cost to a vehicle and a month. Nobody requests it.
 function autoVehicleJob(assetId, date, rawLabel, user = null) {
   // Reuse the vehicle's open card only if this day's work actually falls in its life. Without
   // the date bound the newest open card claimed everything: one REQUESTED card ended up holding
@@ -193,14 +195,17 @@ function labourFor(entry) {
 
 // Monthly summary of daily work: selected month's total hours + breakdown per mechanic/laborer.
 // Supports ?month=YYYY-MM (defaults to latest month) and optional ?format=xlsx for Excel export.
-router.get('/monthly-summary', asyncHandler(async (req, res) => {
+router.get('/monthly-summary', requireCap('dailywork.view'), asyncHandler(async (req, res) => {
   rateCache.clear();
+  // Step 2b: your own workshops' month, like the rest of this page.
+  const own = scope.filter(req.user, 'j.workshop_id');
+  const andOwn = own.sql ? ` AND ${own.sql}` : '';
 
   const months = all(
-    `SELECT DISTINCT strftime('%Y-%m', work_date) AS month
-       FROM job_daily_work
-      WHERE work_date IS NOT NULL
-      ORDER BY month DESC`
+    `SELECT DISTINCT strftime('%Y-%m', w.work_date) AS month
+       FROM job_daily_work w LEFT JOIN job_cards j ON j.id = w.job_id
+      WHERE w.work_date IS NOT NULL${andOwn}
+      ORDER BY month DESC`, ...own.params
   ).map((r) => r.month).filter(Boolean);
 
   let month = String(req.query.month || '').slice(0, 7);
@@ -213,17 +218,17 @@ router.get('/monthly-summary', asyncHandler(async (req, res) => {
        FROM job_daily_work w
        JOIN job_cards j ON j.id = w.job_id
        LEFT JOIN assets a ON a.id = j.asset_id
-      WHERE strftime('%Y-%m', w.work_date) = ?
+      WHERE strftime('%Y-%m', w.work_date) = ?${andOwn}
       ORDER BY w.work_date, w.id`,
-    month
+    month, ...own.params
   );
 
   const jlRows = all(
-    `SELECT mechanic, SUM(amount) AS total_cost, COUNT(*) AS entries
-       FROM job_labour
-      WHERE substr(work_date,1,7) = ?
-      GROUP BY mechanic`,
-    month
+    `SELECT jl.mechanic, SUM(jl.amount) AS total_cost, COUNT(*) AS entries
+       FROM job_labour jl LEFT JOIN job_cards j ON j.id = jl.job_id
+      WHERE substr(jl.work_date,1,7) = ?${andOwn}
+      GROUP BY jl.mechanic`,
+    month, ...own.params
   );
   const jlMap = new Map();
   for (const r of jlRows) {
@@ -305,7 +310,8 @@ router.get('/monthly-summary', asyncHandler(async (req, res) => {
   // exactly the case worth seeing. Labour cost is untouched: it stays booked hours × rate.
   let att = null;
   if (attendance.isEnabled()) {
-    att = attendance.month(month);
+    // Step 2b: your own workshop's attendance when you are kept to it (head office: everyone's).
+    att = attendance.month(month, { ws: scope.enabled() ? scope.onlyWorkshop(req.user, { store: false }) : null });
     const byNorm = new Map(att.mechanics.map((m) => [mechanics.normalizeMechanic(m.name), m]));
     for (const l of laborSummary) {
       const a = byNorm.get(mechanics.normalizeMechanic(l.mechanic));
@@ -379,11 +385,648 @@ router.get('/monthly-summary', asyncHandler(async (req, res) => {
   });
 }));
 
+// ===========================================================================
+// Mechanics KPI & Outside Cost vs. Internal Hourly Rate Analytics Engine
+// ===========================================================================
+const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+
+function requireKpiAccess(req, res, next) {
+  const permissions = require('../lib/permissions');
+  const { hasCap } = require('../lib/auth');
+  if (
+    hasCap(req.user, 'dailywork.view') ||
+    permissions.reaches(req.user, 'dailywork') ||
+    permissions.reaches(req.user, 'labour') ||
+    permissions.reaches(req.user, 'reports')
+  ) {
+    return next();
+  }
+  return res.status(403).json({ error: 'Requires Daily Work, Mechanics/Labour, or Reports access' });
+}
+
+router.get('/mechanics-kpi', requireKpiAccess, asyncHandler(async (req, res) => {
+  rateCache.clear();
+  const own = scope.filter(req.user, 'j.workshop_id');
+  const andOwn = own.sql ? ` AND ${own.sql}` : '';
+
+  const months = all(
+    `SELECT DISTINCT strftime('%Y-%m', w.work_date) AS month
+       FROM job_daily_work w LEFT JOIN job_cards j ON j.id = w.job_id
+      WHERE w.work_date IS NOT NULL${andOwn}
+      ORDER BY month DESC`, ...own.params
+  ).map((r) => r.month).filter(Boolean);
+
+  const qFrom = String(req.query.from || '').slice(0, 10);
+  const qTo = String(req.query.to || '').slice(0, 10);
+  const isCustomRange = /^\d{4}-\d{2}-\d{2}$/.test(qFrom) && /^\d{4}-\d{2}-\d{2}$/.test(qTo);
+
+  let month = String(req.query.month || '').slice(0, 7);
+  if (!isCustomRange && !/^\d{4}-\d{2}$/.test(month)) {
+    const slCurMonth = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Colombo' }).format(new Date()).slice(0, 7);
+    month = months.length ? months[0] : slCurMonth;
+  }
+
+  const wsFilterId = toInt(req.query.workshop_id);
+  const mechFilterRaw = String(req.query.mechanic || '').trim();
+  const mechFilterCanon = mechFilterRaw ? mechanics.resolveMechanicName(mechFilterRaw) : '';
+
+  const conds = [];
+  const params = [];
+  if (isCustomRange) {
+    conds.push('w.work_date >= ? AND w.work_date <= ?');
+    params.push(qFrom, qTo);
+  } else {
+    conds.push("strftime('%Y-%m', w.work_date) = ?");
+    params.push(month);
+  }
+  if (wsFilterId) {
+    conds.push('j.workshop_id = ?');
+    params.push(wsFilterId);
+  }
+  if (own.sql) {
+    conds.push(own.sql);
+    params.push(...own.params);
+  }
+
+  const rows = all(
+    `SELECT w.*, j.job_no, j.asset_id AS job_asset_id, j.workshop_id, j.outside_estimate AS job_outside_estimate,
+            j.status AS job_status, a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec,
+            ws.name AS workshop_name, ws.code AS workshop_code,
+            s.service_type, s.job_no AS service_job_no
+       FROM job_daily_work w
+       JOIN job_cards j ON j.id = w.job_id
+       LEFT JOIN service_jobs s ON s.id = w.service_id
+       LEFT JOIN assets a ON a.id = COALESCE(w.asset_id, s.asset_id, j.asset_id)
+       LEFT JOIN workshops ws ON ws.id = j.workshop_id
+      WHERE ${conds.join(' AND ')}
+      ORDER BY w.work_date DESC, w.id DESC`,
+    ...params
+  );
+
+  const wsOn = workshops.mechanicWorkshopSql('m');
+  const mechProfiles = new Map(
+    all(`SELECT m.id, m.name, m.status, m.active,
+                ws.name AS workshop_name, ws.code AS workshop_code,
+                (${wsOn}) AS workshop_id
+           FROM mechanics m
+           LEFT JOIN workshops ws ON ws.id = (${wsOn})`).map((m) => [m.name, m])
+  );
+
+  const mechMap = new Map();
+  const dailyTrendMap = new Map();
+  const vehicleMap = new Map();
+  const unpricedLines = [];
+  const distinctJobs = new Map();
+  const distinctVehicles = new Set();
+  const distinctServices = new Set();
+  let totalServiceHours = 0;
+  let totalRepairHours = 0;
+  let totalFabricationHours = 0;
+
+  let totalLineHours = 0;
+  let totalBookedMechanicHours = 0;
+  let totalRegularHours = 0;
+  let totalTravelHours = 0;
+  let totalInternalCost = 0;
+  let totalOutsideCost = 0;
+  let externalOutsourceTotal = 0;
+  let pricedEntriesCount = 0;
+  let unpricedEntriesCount = 0;
+
+  const ensureMechanic = (canonical) => {
+    if (!mechMap.has(canonical)) {
+      const prof = mechProfiles.get(canonical) || {};
+      const rate = currentRate(canonical);
+      mechMap.set(canonical, {
+        mechanic: canonical,
+        status: prof.status || 'active',
+        active: prof.active !== undefined ? prof.active : 1,
+        workshop_id: prof.workshop_id || null,
+        workshop_name: prof.workshop_name || null,
+        workshop_code: prof.workshop_code || null,
+        current_rate: rate,
+        regular_hours: 0,
+        travel_hours: 0,
+        service_hours: 0,
+        repair_hours: 0,
+        fabrication_hours: 0,
+        total_hours: 0,
+        internal_cost: 0,
+        outside_cost: 0,
+        raw_outside_cost: 0,
+        entries_count: 0,
+        priced_entries_count: 0,
+        unpriced_entries_count: 0,
+        solo_entries_count: 0,
+        crew_entries_count: 0,
+        jobs_set: new Set(),
+        vehicles_set: new Set(),
+        services_set: new Set(),
+      });
+    }
+    return mechMap.get(canonical);
+  };
+
+  for (const w of rows) {
+    if (w.is_external) {
+      externalOutsourceTotal += Number(w.external_value) || 0;
+      continue;
+    }
+
+    const names = mechanics.splitMechanics(w.mechanic);
+    const canonNames = names.length
+      ? names.map((n) => mechanics.resolveMechanicName(n) || n)
+      : (w.mechanic ? [mechanics.resolveMechanicName(w.mechanic) || w.mechanic] : []);
+
+    if (mechFilterCanon && !canonNames.includes(mechFilterCanon)) {
+      continue;
+    }
+
+    const hrs = Number(w.hours) || 0;
+    const isTravel = Boolean(w.travel);
+    const outsideVal = Number(w.outside_labour) || 0;
+    const hasOutside = outsideVal > 0;
+
+    totalLineHours += hrs;
+    if (hasOutside) pricedEntriesCount++;
+    else unpricedEntriesCount++;
+
+    if (w.job_id) {
+      distinctJobs.set(w.job_id, Number(w.job_outside_estimate) || 0);
+    }
+    if (w.job_asset_id) {
+      distinctVehicles.add(w.job_asset_id);
+    }
+    if (w.service_id) {
+      distinctServices.add(w.service_id);
+    }
+    if (w.work_type === 'service') totalServiceHours += hrs;
+    else if (w.work_type === 'fabrication') totalFabricationHours += hrs;
+    else totalRepairHours += hrs;
+
+    // Calculate each crew member's effective rate & internal cost on this line
+    const crewCosts = canonNames.map((canon) => {
+      const effRate = costing.labourRateFor(canon, w.work_date) ?? currentRate(canon) ?? 0;
+      const cost = hrs * effRate;
+      return { canon, effRate, cost };
+    });
+    const lineInternalCost = crewCosts.reduce((s, c) => s + c.cost, 0);
+    const crewCount = crewCosts.length || 1;
+
+    totalOutsideCost += outsideVal;
+    totalInternalCost += lineInternalCost;
+
+    // Attribute outside cost proportionally across the crew so workshop totals never double-count
+    for (const member of crewCosts) {
+      const share = lineInternalCost > 0 ? (member.cost / lineInternalCost) : (1 / crewCount);
+      const attrOutside = outsideVal * share;
+
+      const m = ensureMechanic(member.canon);
+      if (isTravel) {
+        m.travel_hours += hrs;
+        totalTravelHours += hrs;
+      } else {
+        m.regular_hours += hrs;
+        totalRegularHours += hrs;
+      }
+      if (w.work_type === 'service') {
+        m.service_hours += hrs;
+        if (w.service_id) m.services_set.add(w.service_id);
+      } else if (w.work_type === 'fabrication') {
+        m.fabrication_hours += hrs;
+      } else {
+        m.repair_hours += hrs;
+      }
+      m.total_hours += hrs;
+      totalBookedMechanicHours += hrs;
+      m.internal_cost += member.cost;
+      m.outside_cost += attrOutside;
+      m.raw_outside_cost += outsideVal;
+      m.entries_count += 1;
+      if (hasOutside) m.priced_entries_count += 1;
+      else m.unpriced_entries_count += 1;
+      if (crewCount === 1) m.solo_entries_count += 1;
+      else m.crew_entries_count += 1;
+      if (w.job_id) m.jobs_set.add(w.job_id);
+      if (w.job_asset_id) m.vehicles_set.add(w.job_asset_id);
+    }
+
+    // Daily trend accumulation
+    const dKey = String(w.work_date || '').slice(0, 10);
+    if (dKey) {
+      const dt = dailyTrendMap.get(dKey) || { date: dKey, hours: 0, internal_cost: 0, outside_cost: 0, entries: 0 };
+      dt.hours += hrs * crewCount;
+      dt.internal_cost += lineInternalCost;
+      dt.outside_cost += outsideVal;
+      dt.entries += 1;
+      dailyTrendMap.set(dKey, dt);
+    }
+
+    // Vehicle breakdown accumulation
+    const vKey = w.job_asset_id || 'general';
+    const vLabel = [w.asset_reg, w.asset_ec, w.asset_code].filter(Boolean).join(' · ') || 'General Workshop';
+    const vb = vehicleMap.get(vKey) || {
+      asset_id: w.job_asset_id,
+      asset_code: w.asset_code || (w.job_asset_id ? 'Asset #' + w.job_asset_id : 'General Workshop'),
+      asset_reg: w.asset_reg || '',
+      asset_ec: w.asset_ec || '',
+      vehicle: vLabel,
+      hours: 0,
+      internal_cost: 0,
+      outside_cost: 0,
+      entries: 0
+    };
+    vb.hours += hrs * crewCount;
+    vb.internal_cost += lineInternalCost;
+    vb.outside_cost += outsideVal;
+    vb.entries += 1;
+    vehicleMap.set(vKey, vb);
+
+    // Collect unpriced lines so supervisors can fill in missing outside costs inline
+    if (!hasOutside && unpricedLines.length < 150) {
+      unpricedLines.push({
+        id: w.id,
+        work_date: w.work_date,
+        job_id: w.job_id,
+        job_no: w.job_no,
+        asset_id: w.job_asset_id,
+        asset_code: w.asset_code || (w.job_asset_id ? 'Asset #' + w.job_asset_id : ''),
+        asset_reg: w.asset_reg || '',
+        asset_ec: w.asset_ec || '',
+        vehicle: vLabel,
+        mechanic: canonNames.join(', '),
+        description: w.description || '',
+        hours: r2(hrs),
+        crew_count: crewCount,
+        internal_cost: r2(lineInternalCost),
+        outside_labour: w.outside_labour,
+      });
+    }
+  }
+
+  // Attendance & Utilisation merge (when viewing a single month and attendance is enabled)
+  let attInfo = null;
+  if (!isCustomRange && attendance.isEnabled()) {
+    try {
+      const attWs = wsFilterId || (scope.enabled() ? scope.onlyWorkshop(req.user, { store: false }) : null);
+      const att = attendance.month(month, { ws: attWs });
+      attInfo = { from: att.from, to: att.to };
+      const byNorm = new Map(att.mechanics.map((m) => [mechanics.normalizeMechanic(m.name), m]));
+      for (const m of mechMap.values()) {
+        const a = byNorm.get(mechanics.normalizeMechanic(m.mechanic));
+        if (a) {
+          byNorm.delete(mechanics.normalizeMechanic(m.mechanic));
+          m.attended_hours = a.attended_hours;
+          m.booked_hours = a.booked_hours;
+          m.utilisation = a.utilisation;
+        }
+      }
+      if (!mechFilterCanon) {
+        for (const a of byNorm.values()) {
+          if ((a.attended_hours || 0) > 0) {
+            const m = ensureMechanic(a.name);
+            m.attended_hours = a.attended_hours;
+            m.booked_hours = a.booked_hours;
+            m.utilisation = a.utilisation;
+          }
+        }
+      }
+    } catch (e) { /* attendance optional */ }
+  }
+
+  const mechanicsScorecard = [...mechMap.values()].map((m) => {
+    const intCost = r2(m.internal_cost);
+    const outCost = r2(m.outside_cost);
+    const netSav = r2(outCost - intCost);
+    const totHrs = r2(m.total_hours);
+    const roi = intCost > 0 ? r2(outCost / intCost) : 0;
+    const effValPerHr = totHrs > 0 ? r2(outCost / totHrs) : 0;
+    const netSavPerHr = totHrs > 0 ? r2(netSav / totHrs) : 0;
+    const covPct = m.entries_count > 0 ? Math.round((m.priced_entries_count / m.entries_count) * 100) : 0;
+    return {
+      mechanic: m.mechanic,
+      status: m.status,
+      active: m.active,
+      workshop_id: m.workshop_id,
+      workshop_name: m.workshop_name,
+      workshop_code: m.workshop_code,
+      hourly_rate: m.current_rate,
+      regular_hours: r2(m.regular_hours),
+      travel_hours: r2(m.travel_hours),
+      service_hours: r2(m.service_hours),
+      repair_hours: r2(m.repair_hours),
+      fabrication_hours: r2(m.fabrication_hours),
+      services_count: m.services_set.size,
+      total_hours: totHrs,
+      attended_hours: m.attended_hours !== undefined ? r2(m.attended_hours) : null,
+      utilisation: m.utilisation !== undefined ? m.utilisation : null,
+      internal_cost: intCost,
+      outside_cost: outCost,
+      raw_outside_cost: r2(m.raw_outside_cost),
+      net_savings: netSav,
+      roi_ratio: roi,
+      effective_value_per_hr: effValPerHr,
+      net_saving_per_hr: netSavPerHr,
+      entries_count: m.entries_count,
+      priced_entries_count: m.priced_entries_count,
+      entries_with_outside_cost: m.priced_entries_count,
+      unpriced_entries_count: m.unpriced_entries_count,
+      entries_missing_outside_cost: m.unpriced_entries_count,
+      coverage_pct: covPct,
+      solo_entries_count: m.solo_entries_count,
+      crew_entries_count: m.crew_entries_count,
+      jobs_count: m.jobs_set.size,
+      vehicles_count: m.vehicles_set.size,
+    };
+  }).sort((a, b) => (b.net_savings - a.net_savings) || (b.total_hours - a.total_hours));
+
+  const jobOutsideEstimateTotal = r2([...distinctJobs.values()].reduce((s, v) => s + v, 0));
+  const totalEntries = pricedEntriesCount + unpricedEntriesCount;
+  const coveragePct = totalEntries > 0 ? Math.round((pricedEntriesCount / totalEntries) * 100) : 0;
+  const netSavingsTotal = r2(totalOutsideCost - totalInternalCost);
+  const overallRoi = totalInternalCost > 0 ? r2(totalOutsideCost / totalInternalCost) : 0;
+  const avgValuePerHr = totalBookedMechanicHours > 0 ? r2(totalOutsideCost / totalBookedMechanicHours) : 0;
+  const avgWagePerHr = totalBookedMechanicHours > 0 ? r2(totalInternalCost / totalBookedMechanicHours) : 0;
+
+  const dailyTrend = [...dailyTrendMap.values()]
+    .sort((a, b) => a.date.localeCompare(b.date))
+    .map((d) => ({
+      date: d.date,
+      hours: r2(d.hours),
+      internal_cost: r2(d.internal_cost),
+      outside_cost: r2(d.outside_cost),
+      net_savings: r2(d.outside_cost - d.internal_cost),
+      entries: d.entries,
+    }));
+
+  const topVehicles = [...vehicleMap.values()]
+    .map((v) => ({
+      ...v,
+      hours: r2(v.hours),
+      internal_cost: r2(v.internal_cost),
+      outside_cost: r2(v.outside_cost),
+      net_savings: r2(v.outside_cost - v.internal_cost),
+    }))
+    .sort((a, b) => b.outside_cost - a.outside_cost || b.hours - a.hours)
+    .slice(0, 15);
+
+  const monthLabels = {
+    '01': 'January', '02': 'February', '03': 'March', '04': 'April',
+    '05': 'May', '06': 'June', '07': 'July', '08': 'August',
+    '09': 'September', '10': 'October', '11': 'November', '12': 'December'
+  };
+  const formatMonthLabel = (m) => {
+    const [y, mm] = String(m || '').split('-');
+    return `${monthLabels[mm] || mm} ${y || ''}`.trim();
+  };
+
+  if (req.query.format === 'xlsx') {
+    const scorecardCols = [
+      { header: 'Mechanic', key: 'mechanic', width: 24 },
+      { header: 'Workshop', key: 'workshop_name', width: 18 },
+      { header: 'Hourly Rate (Rs/hr)', key: 'hourly_rate', width: 18 },
+      { header: 'Regular Hrs', key: 'regular_hours', width: 14 },
+      { header: 'Travel Hrs', key: 'travel_hours', width: 13 },
+      { header: 'Total Working Hrs', key: 'total_hours', width: 18 },
+      { header: 'Attended Hrs', key: 'attended_hours', width: 14 },
+      { header: 'Utilisation %', key: 'utilisation', width: 14 },
+      { header: 'Internal Wage Cost (Rs)', key: 'internal_cost', width: 22 },
+      { header: 'Outside Cost Value (Rs)', key: 'outside_cost', width: 22 },
+      { header: 'Net Savings (Rs)', key: 'net_savings', width: 20 },
+      { header: 'ROI Multiplier (x)', key: 'roi_ratio', width: 16 },
+      { header: 'Value Generated / Hr (Rs)', key: 'effective_value_per_hr', width: 22 },
+      { header: 'Distinct Jobs', key: 'jobs_count', width: 14 },
+      { header: 'Distinct Vehicles', key: 'vehicles_count', width: 16 },
+      { header: 'Outside Cost Coverage %', key: 'coverage_pct', width: 20 },
+    ];
+    const unpricedCols = [
+      { header: 'Line ID', key: 'id', width: 10 },
+      { header: 'Date', key: 'work_date', width: 12 },
+      { header: 'Job No', key: 'job_no', width: 16 },
+      { header: 'Vehicle', key: 'vehicle', width: 20 },
+      { header: 'Mechanic(s)', key: 'mechanic', width: 24 },
+      { header: 'Work Description', key: 'description', width: 42 },
+      { header: 'Hours', key: 'hours', width: 10 },
+      { header: 'Internal Wage Cost (Rs)', key: 'internal_cost', width: 20 },
+      { header: 'Outside Cost (Rs) [To Fill]', key: 'outside_labour', width: 24 },
+    ];
+    const periodSlug = isCustomRange ? `${qFrom}_to_${qTo}` : month;
+    return sendXlsx(res, `mechanics-kpi-${periodSlug}.xlsx`, [
+      { name: 'Mechanics KPI Scorecard', columns: scorecardCols, rows: mechanicsScorecard },
+      { name: 'Missing Outside Cost Lines', columns: unpricedCols, rows: unpricedLines },
+    ]);
+  }
+
+  const workshopsList = all('SELECT id, code, name FROM workshops WHERE active = 1 ORDER BY is_default DESC, name');
+
+  res.json({
+    month: isCustomRange ? null : month,
+    from: isCustomRange ? qFrom : `${month}-01`,
+    to: isCustomRange ? qTo : `${month}-31`,
+    period_label: isCustomRange ? `${qFrom} to ${qTo}` : formatMonthLabel(month),
+    available_months: months.map((m) => ({ month: m, label: formatMonthLabel(m) })),
+    workshops: workshopsList,
+    period: {
+      mode: isCustomRange ? 'range' : 'month',
+      month: isCustomRange ? null : month,
+      month_label: isCustomRange ? `${qFrom} to ${qTo}` : formatMonthLabel(month),
+      from: isCustomRange ? qFrom : `${month}-01`,
+      to: isCustomRange ? qTo : `${month}-31`,
+      available_months: months.map((m) => ({ month: m, label: formatMonthLabel(m) })),
+      workshops: workshopsList,
+      attendance: attInfo,
+    },
+    summary: {
+      mechanics_count: mechanicsScorecard.length,
+      entries_count: totalEntries,
+      priced_entries_count: pricedEntriesCount,
+      entries_with_outside_cost: pricedEntriesCount,
+      unpriced_entries_count: unpricedEntriesCount,
+      entries_missing_outside_cost: unpricedEntriesCount,
+      coverage_pct: coveragePct,
+      total_line_hours: r2(totalLineHours),
+      total_mechanic_hours: r2(totalBookedMechanicHours),
+      total_hours: r2(totalBookedMechanicHours),
+      regular_hours: r2(totalRegularHours),
+      travel_hours: r2(totalTravelHours),
+      service_hours: r2(totalServiceHours),
+      repair_hours: r2(totalRepairHours),
+      fabrication_hours: r2(totalFabricationHours),
+      distinct_services_count: distinctServices.size,
+      total_internal_cost: r2(totalInternalCost),
+      internal_cost: r2(totalInternalCost),
+      total_outside_cost: r2(totalOutsideCost),
+      outside_cost: r2(totalOutsideCost),
+      job_outside_estimate_total: jobOutsideEstimateTotal,
+      external_outsource_total: r2(externalOutsourceTotal),
+      net_savings: netSavingsTotal,
+      roi_ratio: overallRoi,
+      avg_value_per_hr: avgValuePerHr,
+      effective_value_per_hr: avgValuePerHr,
+      avg_wage_per_hr: avgWagePerHr,
+      avg_hourly_cost: avgWagePerHr,
+      distinct_jobs_count: distinctJobs.size,
+      distinct_vehicles_count: distinctVehicles.size,
+    },
+    mechanics: mechanicsScorecard,
+    unpriced_lines: unpricedLines,
+    daily_trend: dailyTrend,
+    top_vehicles: topVehicles,
+  });
+}));
+
+// Detailed drill-down for a single mechanic over the selected month or date range
+router.get('/mechanics-kpi/detail', requireKpiAccess, asyncHandler((req, res) => {
+  rateCache.clear();
+  const rawMech = String(req.query.mechanic || '').trim();
+  if (!rawMech) return res.status(400).json({ error: 'mechanic parameter is required' });
+  const targetCanon = mechanics.resolveMechanicName(rawMech) || rawMech;
+
+  const own = scope.filter(req.user, 'j.workshop_id');
+  const andOwn = own.sql ? ` AND ${own.sql}` : '';
+  const qFrom = String(req.query.from || '').slice(0, 10);
+  const qTo = String(req.query.to || '').slice(0, 10);
+  const isCustomRange = /^\d{4}-\d{2}-\d{2}$/.test(qFrom) && /^\d{4}-\d{2}-\d{2}$/.test(qTo);
+  let month = String(req.query.month || '').slice(0, 7);
+  if (!isCustomRange && !/^\d{4}-\d{2}$/.test(month)) {
+    const slCurMonth = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Colombo' }).format(new Date()).slice(0, 7);
+    const months = all(
+      `SELECT DISTINCT strftime('%Y-%m', w.work_date) AS month
+         FROM job_daily_work w LEFT JOIN job_cards j ON j.id = w.job_id
+        WHERE w.work_date IS NOT NULL${andOwn}
+        ORDER BY month DESC`, ...own.params
+    ).map((r) => r.month).filter(Boolean);
+    month = months.length ? months[0] : slCurMonth;
+  }
+
+  const conds = [];
+  const params = [];
+  if (isCustomRange) {
+    conds.push('w.work_date >= ? AND w.work_date <= ?');
+    params.push(qFrom, qTo);
+  } else {
+    conds.push("strftime('%Y-%m', w.work_date) = ?");
+    params.push(month);
+  }
+  if (req.query.workshop_id) {
+    conds.push('j.workshop_id = ?');
+    params.push(toInt(req.query.workshop_id));
+  }
+  if (own.sql) {
+    conds.push(own.sql);
+    params.push(...own.params);
+  }
+
+  const rows = all(
+    `SELECT w.*, j.job_no, j.asset_id AS job_asset_id, j.outside_estimate AS job_outside_estimate,
+            a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec,
+            s.service_type, s.job_no AS service_job_no
+       FROM job_daily_work w
+       JOIN job_cards j ON j.id = w.job_id
+       LEFT JOIN service_jobs s ON s.id = w.service_id
+       LEFT JOIN assets a ON a.id = COALESCE(w.asset_id, s.asset_id, j.asset_id)
+      WHERE ${conds.join(' AND ')}
+      ORDER BY w.work_date DESC, w.id DESC`,
+    ...params
+  );
+
+  const lines = [];
+  for (const w of rows) {
+    if (w.is_external) continue;
+    const names = mechanics.splitMechanics(w.mechanic);
+    const canonNames = names.length
+      ? names.map((n) => mechanics.resolveMechanicName(n) || n)
+      : (w.mechanic ? [mechanics.resolveMechanicName(w.mechanic) || w.mechanic] : []);
+    if (!canonNames.includes(targetCanon)) continue;
+
+    const hrs = Number(w.hours) || 0;
+    const outsideVal = Number(w.outside_labour) || 0;
+    const crewCosts = canonNames.map((canon) => {
+      const effRate = costing.labourRateFor(canon, w.work_date) ?? currentRate(canon) ?? 0;
+      return { canon, effRate, cost: hrs * effRate };
+    });
+    const lineInternalCost = crewCosts.reduce((s, c) => s + c.cost, 0);
+    const me = crewCosts.find((c) => c.canon === targetCanon) || { effRate: currentRate(targetCanon) || 0, cost: 0 };
+    const share = lineInternalCost > 0 ? (me.cost / lineInternalCost) : (1 / (crewCosts.length || 1));
+    const attrOutside = outsideVal * share;
+
+    lines.push({
+      id: w.id,
+      work_date: w.work_date,
+      job_id: w.job_id,
+      job_no: w.job_no,
+      asset_id: w.job_asset_id,
+      asset_code: w.asset_code,
+      asset_reg: w.asset_reg,
+      asset_ec: w.asset_ec,
+      vehicle: [w.asset_reg, w.asset_ec, w.asset_code].filter(Boolean).join(' · ') || 'General Workshop',
+      description: w.description || '',
+      crew: canonNames.join(', '),
+      crew_size: canonNames.length,
+      is_crew: canonNames.length > 1,
+      travel: Boolean(w.travel),
+      hours: r2(hrs),
+      hourly_rate: me.effRate,
+      mechanic_rate: me.effRate,
+      internal_cost: r2(me.cost),
+      mechanic_internal_cost: r2(me.cost),
+      line_outside_cost: r2(outsideVal),
+      outside_labour: r2(outsideVal),
+      attributed_outside_cost: r2(attrOutside),
+      mechanic_outside_share: r2(attrOutside),
+      net_saving: r2(attrOutside - me.cost),
+      work_type: w.work_type || 'repair',
+      service_id: w.service_id || null,
+      service_job_no: w.service_job_no || null,
+      service_type: w.service_type || null,
+    });
+  }
+
+  res.json({
+    mechanic: targetCanon,
+    hourly_rate: currentRate(targetCanon),
+    current_rate: currentRate(targetCanon),
+    lines_count: lines.length,
+    lines,
+  });
+}));
+
+// Fast inline update for outside_labour on a single daily work line from Mechanics KPI view
+router.patch('/:id/outside-cost', requireCap('dailywork.edit'), asyncHandler((req, res) => {
+  const id = toInt(req.params.id);
+  const w = get('SELECT * FROM job_daily_work WHERE id = ?', id);
+  if (!w) return res.status(404).json({ error: 'Daily work entry not found' });
+  assertDailyWorkAllowed(w.job_id, req.user, [w.work_date]);
+
+  const rawVal = req.body.outside_labour;
+  const newOutside = (rawVal === null || rawVal === '' || rawVal === undefined) ? null : toNum(rawVal, 0);
+  if (newOutside !== null && newOutside < 0) {
+    return res.status(400).json({ error: 'Outside cost cannot be negative' });
+  }
+
+  run('UPDATE job_daily_work SET outside_labour = ? WHERE id = ?', newOutside, id);
+  if (w.job_id) costing.refreshJobTotals(w.job_id);
+
+  audit.record({
+    userId: req.user.id,
+    entity: 'job_daily_work',
+    entityId: id,
+    action: 'edit_outside_cost',
+    before: { outside_labour: w.outside_labour },
+    after: { outside_labour: newOutside },
+  });
+
+  const emitter = require('../lib/emitter');
+  emitter.emit('data_changed', { entity: 'daily_work', id, job_id: w.job_id });
+
+  res.json({ ok: true, id, outside_labour: newOutside });
+}));
+
 // All daily-work entries for a FULL MONTH (for month-wise checking & time updating).
 // Optional ?mechanic= filters by specific mechanic.
 // Optional ?q= filters by vehicle code, registration, mechanic, description, job number.
 // Optional ?format=xlsx exports the full month log as Excel.
-router.get('/month', asyncHandler(async (req, res) => {
+router.get('/month', requireCap('dailywork.view'), asyncHandler(async (req, res) => {
   rateCache.clear();
 
   let month = String(req.query.month || '').slice(0, 7);
@@ -410,11 +1053,13 @@ router.get('/month', asyncHandler(async (req, res) => {
 
   let rows = all(
     `SELECT w.id, w.work_date, w.mechanic, w.description, w.hours, w.is_external, w.external_value, w.outside_labour, w.travel,
+            w.service_id, w.work_type, s.service_type, s.job_no AS service_job_no,
             j.id AS job_id, j.job_no, j.type, j.status,
             a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec, p.name AS project_name
        FROM job_daily_work w
        JOIN job_cards j ON j.id = w.job_id
-       LEFT JOIN assets a ON a.id = j.asset_id
+       LEFT JOIN service_jobs s ON s.id = w.service_id
+       LEFT JOIN assets a ON a.id = COALESCE(w.asset_id, s.asset_id, j.asset_id)
        LEFT JOIN projects p ON p.id = j.project_id
       WHERE ${conditions.join(' AND ')}
       ORDER BY w.work_date DESC, a.code, w.id`,
@@ -474,7 +1119,7 @@ router.get('/month', asyncHandler(async (req, res) => {
 }));
 
 // Distinct days that have daily work logged, newest first, with per-day totals.
-router.get('/days', asyncHandler((req, res) => {
+router.get('/days', requireCap('dailywork.view'), asyncHandler((req, res) => {
   const own = scope.filter(req.user, 'j.workshop_id');   // Stage 3: your own workshop's work only
   const days = all(
     `SELECT w.work_date AS date,
@@ -491,7 +1136,7 @@ router.get('/days', asyncHandler((req, res) => {
 
 // All daily-work entries for ONE day, with job + vehicle context and labour cost.
 // Optional ?q= filters by vehicle / mechanic / description / job number.
-router.get('/', asyncHandler((req, res) => {
+router.get('/', requireCap('dailywork.view'), asyncHandler((req, res) => {
   rateCache.clear();
   const date = String(req.query.date || '').slice(0, 10);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
@@ -509,11 +1154,13 @@ router.get('/', asyncHandler((req, res) => {
   if (own.sql) { filter += ` AND ${own.sql}`; params.push(...own.params); }
   const rows = all(
     `SELECT w.id, w.work_date, w.mechanic, w.description, w.hours, w.is_external, w.external_value, w.outside_labour,
+            w.service_id, w.work_type, s.service_type, s.job_no AS service_job_no,
             j.id AS job_id, j.job_no, j.type, j.status,
             a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec, p.name AS project_name
        FROM job_daily_work w
        JOIN job_cards j ON j.id = w.job_id
-       LEFT JOIN assets a ON a.id = j.asset_id
+       LEFT JOIN service_jobs s ON s.id = w.service_id
+       LEFT JOIN assets a ON a.id = COALESCE(w.asset_id, s.asset_id, j.asset_id)
        LEFT JOIN projects p ON p.id = j.project_id
       WHERE w.work_date = ? ${filter}
       ORDER BY a.code, w.id`,
@@ -561,7 +1208,22 @@ router.post('/', requireCap('dailywork.add'), asyncHandler((req, res) => {
     return r.id;
   };
 
-  if (b.request_type === 'general') {
+  const serviceId = toInt(b.service_id) || null;
+  let workType = (serviceId || b.work_type === 'service') ? 'service' : (b.work_type === 'fabrication' ? 'fabrication' : 'repair');
+  let svc = null;
+  if (serviceId) {
+    svc = get('SELECT id, asset_id, service_date, job_no FROM service_jobs WHERE id = ?', serviceId);
+  }
+
+  if (serviceId && svc) {
+    let assetId = toInt(b.asset_id) || svc.asset_id || null;
+    if (assetId) {
+      const job = jobForEntry(assetId, date);
+      jobId = job ? job.id : forVehicle(assetId);
+    } else {
+      jobId = generalWorkshopJob(workshops.homeOf(req.user));
+    }
+  } else if (b.request_type === 'general') {
     // General workshop work. Naming a vehicle books the cost to THAT vehicle for the month:
     // it goes on the vehicle's open card, or on a card created and closed on this work date —
     // so it reports under the vehicle instead of the shared workshop container.
@@ -591,28 +1253,32 @@ router.post('/', requireCap('dailywork.add'), asyncHandler((req, res) => {
   }
   const job = get('SELECT * FROM job_cards WHERE id = ?', jobId);
   if (!job) return res.status(404).json({ error: 'Job not found' });
+  if (job && job.type === 'fabrication') workType = 'fabrication';
   assertDailyWorkAllowed(job.id, req.user, [date]);
 
   // The machine goes ON THE LINE now, not just into the choice of job card. This route already
   // worked the asset out — to find or create the card — and then threw it away, which is why the
   // GENERAL-WS pool has 159 rows whose vehicle is knowable only from the prose someone typed.
   const lineAsset = toInt(b.asset_id) || job.asset_id || null;
+  const outsideLabour = b.outside_labour !== undefined && b.outside_labour !== null && b.outside_labour !== ''
+    ? Math.max(0, toNum(b.outside_labour, 0))
+    : null;
 
   const info = run(
-    `INSERT INTO job_daily_work (job_id, work_date, mechanic, description, hours, is_external, external_value, asset_id, travel)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    jobId, date, mechanic, description, hours, isExternal, isExternal ? toNum(b.external_value, 0) : 0, lineAsset,
-    b.travel && !isExternal ? 1 : 0   // Stage 6: travel to a field job — costed like any hour, shown apart
+    `INSERT INTO job_daily_work (job_id, work_date, mechanic, description, hours, is_external, external_value, outside_labour, asset_id, travel, service_id, work_type)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    jobId, date, mechanic, description, hours, isExternal, isExternal ? toNum(b.external_value, 0) : 0, outsideLabour, lineAsset,
+    b.travel && !isExternal ? 1 : 0, serviceId, workType
   );
   costing.refreshJobTotals(jobId);
   mechanics.syncJobLabourForMonth(date.slice(0, 7));
-  audit.record({ userId: req.user.id, entity: 'job_daily_work', entityId: info.lastInsertRowid, action: 'create', after: { job_no: job.job_no, date, auto_created: autoCreated } });
+  audit.record({ userId: req.user.id, entity: 'job_daily_work', entityId: info.lastInsertRowid, action: 'create', after: { job_no: job.job_no, date, auto_created: autoCreated, outside_labour: outsideLabour } });
   rateCache.clear();
   res.status(201).json({ id: info.lastInsertRowid, job_no: job.job_no, date, unresolved, auto_created: autoCreated });
 }));
 
 // Rapid multi-row timesheet logging endpoint
-router.post('/bulk-log', requireCap('dailywork.edit'), asyncHandler((req, res) => {
+router.post('/bulk-log', requireCap('dailywork.bulk_log', 'dailywork.edit'), asyncHandler((req, res) => {
   const b = req.body || {};
   const date = String(b.date || '').slice(0, 10);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return res.status(400).json({ error: 'Valid date (YYYY-MM-DD) required' });
@@ -632,6 +1298,9 @@ router.post('/bulk-log', requireCap('dailywork.edit'), asyncHandler((req, res) =
       let description = String(e.description || '').trim();
       const isExternal = e.is_external ? 1 : 0;
       const rawVeh = String(e.asset || '').trim();
+      const outsideLabour = e.outside_labour !== undefined && e.outside_labour !== null && e.outside_labour !== ''
+        ? Math.max(0, toNum(e.outside_labour, 0))
+        : null;
 
       if (!mechanic) continue; // skip blank row
       if (hours <= 0 && !isExternal) continue;
@@ -669,16 +1338,21 @@ router.post('/bulk-log', requireCap('dailywork.edit'), asyncHandler((req, res) =
         }
       }
 
-      const job = get('SELECT id, asset_id, job_no FROM job_cards WHERE id = ?', jobId);
+      const job = get('SELECT id, asset_id, job_no, type FROM job_cards WHERE id = ?', jobId);
       if (!job) continue;
       if (!lineAsset && job.asset_id) lineAsset = job.asset_id;
 
+      let workType = e.work_type;
+      if (!workType) {
+        workType = (job && job.type === 'fabrication') ? 'fabrication' : (job && job.type === 'service' ? 'service' : 'repair');
+      }
+
       assertDailyWorkAllowed(jobId, req.user, [date]);   // a whole batch is refused, not half-applied
       const info = run(
-        `INSERT INTO job_daily_work (job_id, work_date, mechanic, description, hours, is_external, external_value, asset_id, travel)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        jobId, date, mechanic, description, hours, isExternal, isExternal ? toNum(e.external_value, 0) : 0, lineAsset,
-        e.travel && !isExternal ? 1 : 0   // Stage 6: a travel line
+        `INSERT INTO job_daily_work (job_id, work_date, mechanic, description, hours, is_external, external_value, outside_labour, asset_id, travel, work_type)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        jobId, date, mechanic, description, hours, isExternal, isExternal ? toNum(e.external_value, 0) : 0, outsideLabour, lineAsset,
+        e.travel && !isExternal ? 1 : 0, workType
       );
       createdIds.push(info.lastInsertRowid);
       affectedJobs.add(jobId);
@@ -717,6 +1391,11 @@ router.patch('/:id', requireCap('dailywork.edit'), asyncHandler((req, res) => {
   const sets = [];
   const params = [];
   const put = (col, v) => { sets.push(col + ' = ?'); params.push(v); };
+  if (req.body.service_id !== undefined) put('service_id', toInt(req.body.service_id) || null);
+  if (req.body.work_type !== undefined) {
+    const wt = req.body.work_type;
+    put('work_type', (wt === 'service' || wt === 'fabrication') ? wt : 'repair');
+  }
   if (req.body.hours !== undefined) put('hours', toNum(req.body.hours, 0));
   if (req.body.mechanic !== undefined) put('mechanic', String(req.body.mechanic).trim() || null);
   if (req.body.description !== undefined) put('description', String(req.body.description).trim() || null);
@@ -768,7 +1447,7 @@ router.patch('/:id', requireCap('dailywork.edit'), asyncHandler((req, res) => {
 
 // Remove a daily-work line (mis-keyed entry / duplicate). The job total and that month's labour
 // are re-costed straight away, and the deletion is audited with the full line it removed.
-router.delete('/:id', requireCap('dailywork.edit'), asyncHandler((req, res) => {
+router.delete('/:id', requireCap('dailywork.delete', 'dailywork.edit'), asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   const w = get('SELECT * FROM job_daily_work WHERE id = ?', id);
   if (!w) return res.status(404).json({ error: 'Entry not found' });

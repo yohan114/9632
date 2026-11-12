@@ -189,6 +189,10 @@ function stamp(actor, jobId, which) {
 /**
  * A breakdown reported from a site: a field job card, open at once (S6-D2). The one-open-card rule
  * still holds — a machine that already has an open card is marked on that card instead.
+ *
+ * Exempt from "a card needs an approved job request" (routes/jobcards.js): a machine standing dead
+ * at a site cannot wait for three signatures. The card is flagged breakdown = 1, which is what says
+ * why it has no request behind it.
  */
 function reportBreakdown(actor, body = {}) {
   const workshops = require('./workshops');

@@ -93,14 +93,34 @@ function resolveAsset(rawText, opts = {}) {
   return { assetId: null, aliasId, resolved: false, via: 'pending' };
 }
 
-/** Link a pending alias to an asset (a human's decision). Auto-resolves next time. */
+/** Link a pending alias to an asset (a human's decision). Auto-resolves next time and cascades to unallocated records. */
 function linkAlias(aliasId, assetId) {
+  const existing = get('SELECT * FROM asset_aliases WHERE id = ?', aliasId);
   run(
     `UPDATE asset_aliases
        SET asset_id = ?, resolved = 1, hit_count = hit_count + 1, updated_at = datetime('now')
      WHERE id = ?`,
     assetId, aliasId
   );
+
+  // Retroactive cascade linking:
+  if (existing && existing.raw_text) {
+    const raw = String(existing.raw_text).trim();
+    const norm = existing.raw_norm;
+    try {
+      // 1. service_jobs with matching vehicle_label where asset_id is missing
+      run('UPDATE service_jobs SET asset_id = ? WHERE asset_id IS NULL AND (vehicle_label = ? OR vehicle_label = ?)', assetId, raw, norm);
+      // 2. job_daily_work with matching vehicle
+      run('UPDATE job_daily_work SET asset_id = ? WHERE asset_id IS NULL AND (vehicle = ? OR vehicle = ?)', assetId, raw, norm);
+      // 3. issues with matching description/purpose
+      run('UPDATE issues SET asset_id = ? WHERE asset_id IS NULL AND (purpose = ? OR purpose LIKE ?)', assetId, raw, '%' + raw + '%');
+      // 4. job_requests where asset is missing and description matches
+      run('UPDATE job_requests SET asset_id = ? WHERE asset_id IS NULL AND (description LIKE ? OR description LIKE ?)', assetId, '%' + raw + '%', '%' + norm + '%');
+    } catch (e) {
+      // Best effort cascade
+    }
+  }
+
   return get('SELECT * FROM asset_aliases WHERE id = ?', aliasId);
 }
 
@@ -139,12 +159,26 @@ function findOrCreateAsset(code, extra = {}) {
  * Keeps sorting, filtering, and pagination unified across entities.
  */
 function queryAliasQueue(opts = {}) {
-  const { table, targetTable, targetIdCol, targetNameCol, targetAlias = 'canonical_name', resolved, q, limit = 500 } = opts;
+  const {
+    table = 'asset_aliases',
+    targetTable = 'assets',
+    targetIdCol = 'asset_id',
+    targetNameCol = 'code',
+    targetAlias = 'asset_code',
+    resolved,
+    q,
+    limit = 500,
+    source
+  } = opts;
   const clauses = [];
   const params = [];
   if (resolved !== undefined && resolved !== null && resolved !== '') {
     clauses.push('al.resolved = ?');
     params.push(Number(resolved) ? 1 : 0);
+  }
+  if (source && String(source).trim()) {
+    clauses.push('al.source = ?');
+    params.push(String(source).trim());
   }
   if (q && String(q).trim()) {
     clauses.push('al.raw_text LIKE ?');
@@ -154,18 +188,104 @@ function queryAliasQueue(opts = {}) {
   const sql = `SELECT al.*, tgt.${targetNameCol} AS ${targetAlias} FROM ${table} al
      LEFT JOIN ${targetTable} tgt ON tgt.id = al.${targetIdCol}
      ${where}
-    ORDER BY al.resolved ASC, al.hit_count DESC, al.updated_at DESC
+    ORDER BY al.resolved ASC, al.updated_at DESC, al.hit_count DESC
     LIMIT ${Number(limit) || 500}`;
   return all(sql, ...params);
+}
+
+/**
+ * Comprehensive audit of missing vehicle allocations across jobs, job requests, services, issues, and MRN.
+ */
+function getMissingAllocations(user = null) {
+  const wsFilter = (user && !user.isAllSitesMode && user.activeWorkshopId) ? ' AND workshop_id = ' + Number(user.activeWorkshopId) : '';
+  const storeFilter = (user && !user.isAllSitesMode && user.activeStoreId) ? ' AND store_id = ' + Number(user.activeStoreId) : '';
+
+  const missingJobs = all(`
+    SELECT j.id, j.job_no, j.type, j.description, j.status, j.site, j.requested_at, j.workshop_id,
+           COALESCE(w.name, 'Default Workshop') AS workshop_name
+      FROM job_cards j
+      LEFT JOIN workshops w ON w.id = j.workshop_id
+     WHERE j.asset_id IS NULL AND (j.type <> 'fabrication' OR j.work_target <> 'general')${wsFilter.replace('workshop_id', 'j.workshop_id')}
+     ORDER BY j.id DESC
+     LIMIT 200
+  `);
+
+  const missingJobRequests = all(`
+    SELECT r.id, r.jr_no, r.req_date, r.type, r.description, r.approval_status, r.requested_by, r.workshop_id,
+           COALESCE(w.name, 'Central Workshop') AS workshop_name
+      FROM job_requests r
+      LEFT JOIN workshops w ON w.id = r.workshop_id
+     WHERE r.asset_id IS NULL AND (r.type <> 'fabrication' OR r.work_target <> 'general')${wsFilter.replace('workshop_id', 'r.workshop_id')}
+     ORDER BY r.id DESC
+     LIMIT 200
+  `);
+
+  const missingServices = all(`
+    SELECT s.id, s.service_date, s.vehicle_label, s.service_type, s.site_location, s.repair_details,
+           s.parts_subtotal, s.labour_charge, s.grand_total, s.workshop_id,
+           COALESCE(w.name, 'Central Workshop') AS workshop_name
+      FROM service_jobs s
+      LEFT JOIN workshops w ON w.id = s.workshop_id
+     WHERE s.asset_id IS NULL${wsFilter.replace('workshop_id', 's.workshop_id')}
+     ORDER BY s.id DESC
+     LIMIT 200
+  `);
+
+  const missingIssues = all(`
+    SELECT i.id, i.issue_date, i.description, i.qty, i.unit, i.purpose, i.min_no, i.chain_no,
+           i.store_id, COALESCE(w.name, 'Central Stores') AS store_name
+      FROM issues i
+      LEFT JOIN workshops w ON w.id = i.store_id
+     WHERE i.asset_id IS NULL${storeFilter.replace('store_id', 'i.store_id')}
+     ORDER BY i.id DESC
+     LIMIT 200
+  `);
+
+  const missingMrn = all(`
+    SELECT m.id, m.mrn_no, m.req_date, m.purpose, m.requested_by, m.status, m.workshop_id,
+           COALESCE(w.name, 'Central Workshop') AS workshop_name
+      FROM mrn m
+      LEFT JOIN workshops w ON w.id = m.workshop_id
+     WHERE m.asset_id IS NULL${wsFilter.replace('workshop_id', 'm.workshop_id')}
+     ORDER BY m.id DESC
+     LIMIT 200
+  `);
+
+  const aliasSections = all(`
+    SELECT COALESCE(source, 'general') AS section, COUNT(*) AS count
+      FROM asset_aliases
+     WHERE resolved = 0
+     GROUP BY source
+     ORDER BY count DESC
+  `);
+
+  return {
+    missingJobs,
+    missingJobRequests,
+    missingServices,
+    missingIssues,
+    missingMrn,
+    aliasSections,
+    counts: {
+      jobs: missingJobs.length,
+      jobRequests: missingJobRequests.length,
+      services: missingServices.length,
+      issues: missingIssues.length,
+      mrn: missingMrn.length,
+      totalMissing: missingJobs.length + missingJobRequests.length + missingServices.length + missingIssues.length + missingMrn.length
+    }
+  };
 }
 
 module.exports = {
   normalize,
   extractCode,
   resolveAsset,
+  bumpAlias,
   linkAlias,
   pendingAliases,
   findOrCreateAsset,
   queryAliasQueue,
+  getMissingAllocations,
 };
 

@@ -7,6 +7,9 @@ logs/
 data/*.db
 data/*.db-shm
 data/*.db-wal
+# Everything else the running app writes under data/ too (e.g. data/outsourcing/ — generated CCOM
+# request PDFs, which are company documents). The repository is public.
+data/
 backups/
 
 # Uploaded evidence photos
@@ -58,3 +61,9 @@ mfa.key
 # env backups carry the same secrets as .env
 .env.bak-*
 .env.*.bak
+
+# Legacy exports that carry user password hashes. They stay on disk (sources/service/service.db is
+# still read by migrations 21-29 when present, and each skips cleanly when it is absent), but never
+# in git: the repository is public.
+sources/oil/users.csv
+sources/service/service.db

@@ -1,0 +1,817 @@
+'use strict';
+
+const fs = require('fs');
+const path = require('path');
+const { AsyncLocalStorage } = require('node:async_hooks');
+// Plain better-sqlite3 (already a dependency). No encryption is applied to any database here;
+// per-workshop encryption keys are NOT implemented yet.
+const Database = require('better-sqlite3');
+const config = require('../config');
+
+const storage = new AsyncLocalStorage();
+
+let coreDb = null;
+let baseDb = null;
+let isMultiDbEnabled = false;
+const openWorkshops = new Map();
+
+let activeTargetDir = path.dirname(config.dbPath);
+
+function getTargetDir() { return activeTargetDir; }
+function getCoreDbPath() { return path.join(activeTargetDir, 'core.db'); }
+function getWorkshopsDir() { return path.join(activeTargetDir, 'workshops'); }
+
+function init(customBaseDb = null, customTargetDir = null) {
+  if (customBaseDb) {
+    baseDb = customBaseDb;
+  }
+  if (customTargetDir) {
+    activeTargetDir = customTargetDir;
+  } else if (!customBaseDb && config.dbPath) {
+    activeTargetDir = path.dirname(config.dbPath);
+  }
+
+  const corePath = getCoreDbPath();
+  // Opt-in only. A core.db lying beside the live database (e.g. left by a trial split) must never
+  // switch the running app over by itself: only MULTIDB=1, or a caller naming the target directory
+  // explicitly (the split tests), turns multi-database mode on — and only if core.db is there.
+  const optedIn = Boolean(customTargetDir) || process.env.MULTIDB === '1';
+  isMultiDbEnabled = optedIn && fs.existsSync(corePath);
+  if (process.env.MULTIDB === '1' && !isMultiDbEnabled) {
+    console.warn(`MULTIDB=1 but ${corePath} does not exist — staying in single-database mode.`);
+  }
+
+  if (coreDb) {
+    try { coreDb.close(); } catch {}
+    coreDb = null;
+  }
+  openWorkshops.clear();
+
+  if (isMultiDbEnabled) {
+    coreDb = new Database(corePath);
+    coreDb.pragma('journal_mode = WAL');
+    coreDb.pragma('foreign_keys = ON');
+
+    fs.mkdirSync(getWorkshopsDir(), { recursive: true });
+    fs.mkdirSync(path.join(activeTargetDir, 'keys'), { recursive: true });
+    fs.mkdirSync(path.join(activeTargetDir, 'archive'), { recursive: true });
+  }
+}
+
+function isMultiDb() {
+  return isMultiDbEnabled;
+}
+
+function getCoreDb() {
+  if (!isMultiDbEnabled) return baseDb;
+  if (!coreDb) init();
+  return coreDb;
+}
+
+function getWorkshopDb(workshopId, { readOnly = false } = {}) {
+  if (!isMultiDbEnabled) return baseDb;
+
+  const wsId = Number(workshopId) || 1;
+  const cacheKey = `${wsId}:${readOnly ? 'ro' : 'rw'}`;
+  if (openWorkshops.has(cacheKey)) {
+    const cached = openWorkshops.get(cacheKey);
+    try {
+      cached.prepare('SELECT 1').get();
+      return cached;
+    } catch {
+      openWorkshops.delete(cacheKey);
+    }
+  }
+
+  const cDb = getCoreDb();
+  let ws = cDb.prepare(`
+    SELECT w.*, wd.db_file, wd.state
+      FROM workshops w
+      LEFT JOIN workshop_databases wd ON wd.workshop_id = w.id
+     WHERE w.id = ?
+  `).get(wsId);
+
+  if (!ws) {
+    // Fall back to default workshop (CW)
+    ws = cDb.prepare(`
+      SELECT w.*, wd.db_file, wd.state
+        FROM workshops w
+        LEFT JOIN workshop_databases wd ON wd.workshop_id = w.id
+       WHERE w.is_default = 1 ORDER BY w.id LIMIT 1
+    `).get() || { id: 1, code: 'CW', db_file: 'workshops/CW.db', state: 'live' };
+  }
+
+  const relFile = ws.db_file || `workshops/${ws.code}.db`;
+  const absPath = path.resolve(getTargetDir(), relFile);
+
+  if (!fs.existsSync(absPath)) {
+    // If dedicated sub-workshop database does not exist yet, fall back to default workshop (CW.db)
+    if (ws.id !== 1) {
+      return getWorkshopDb(1, { readOnly });
+    }
+    if (baseDb) return baseDb;
+    throw new Error(`Workshop database file not found: ${absPath}`);
+  }
+
+  const wsDb = new Database(absPath, { readonly: readOnly });
+  wsDb.pragma('journal_mode = WAL');
+  wsDb.pragma('foreign_keys = ON');
+
+  // Attach core database
+  wsDb.exec(`ATTACH DATABASE '${getCoreDbPath().replace(/\\/g, '/')}' AS core`);
+
+  // If read-only or standard workshop connection, guard core tables against unauthorized mutations
+  if (!readOnly) {
+    // We keep guards for site safety
+  }
+
+  openWorkshops.set(cacheKey, wsDb);
+  return wsDb;
+}
+
+function activeDb() {
+  const store = storage.getStore();
+  if (store && store.db) return store.db;
+  if (isMultiDbEnabled) {
+    return getWorkshopDb(1);
+  }
+  return baseDb;
+}
+
+function activeWorkshopId() {
+  const store = storage.getStore();
+  if (store && store.workshopId) return store.workshopId;
+  return 1;
+}
+
+function withWorkshop(workshopId, fn) {
+  const db = getWorkshopDb(workshopId);
+  return storage.run({ workshopId, db }, fn);
+}
+
+function withCore(fn) {
+  const db = getCoreDb();
+  return storage.run({ isCore: true, db }, fn);
+}
+
+function withReadOnlyWorkshop(workshopId, fn) {
+  const db = getWorkshopDb(workshopId, { readOnly: true });
+  return storage.run({ workshopId, db, readOnly: true }, fn);
+}
+
+function multidbMiddleware(req, res, next) {
+  if (!isMultiDbEnabled) return next();
+  const wsId = (req.user && req.user.workshop_id) || 1;
+  withWorkshop(wsId, () => next());
+}
+
+// ---- Sub-Workshop Automatic Provisioning (§5) -------------------------------
+
+function createWorkshopDatabase(actor, body) {
+  const code = String(body.code || '').trim().toUpperCase();
+  const name = String(body.name || '').trim();
+  const place = String(body.place || '').trim() || null;
+  const ownStore = body.own_store === true || body.own_store === 'true' || body.own_store === 1 || Boolean(body.store_opened);
+  const storeOpened = body.store_opened || new Date().toISOString().slice(0, 10);
+  const userIds = Array.isArray(body.user_ids) ? body.user_ids : (body.user_id ? [body.user_id] : []);
+
+  if (!/^[A-Z0-9-]{1,10}$/.test(code)) throw new Error('Invalid code: letters and numbers up to 10 (e.g. MTR).');
+  if (name.length < 3) throw new Error('Give the workshop a name.');
+
+  const cDb = getCoreDb();
+  const existing = cDb.prepare('SELECT 1 FROM workshops WHERE code = ? OR LOWER(name) = LOWER(?)').get(code, name);
+  if (existing) throw new Error('A workshop with that code or name already exists.');
+
+  return cDb.transaction(() => {
+    // 1. Insert workshop in core
+    const wsInfo = cDb.prepare(`
+      INSERT INTO workshops (code, name, place, own_store, store_opened, active)
+      VALUES (?, ?, ?, ?, ?, 1)
+    `).run(code, name, place, ownStore ? 1 : 0, ownStore ? storeOpened : null);
+    const wsId = wsInfo.lastInsertRowid;
+
+    // 2. Reserve in workshop_databases (provisioning)
+    const dbRelPath = `workshops/${code}.db`;
+    const dbAbsPath = path.resolve(getTargetDir(), dbRelPath);
+    cDb.prepare(`
+      INSERT INTO workshop_databases (workshop_id, code, db_file, state)
+      VALUES (?, ?, ?, 'provisioning')
+    `).run(wsId, code, dbRelPath);
+
+    // 3. Create workshop database file and schema
+    if (fs.existsSync(dbAbsPath)) fs.unlinkSync(dbAbsPath);
+    const wsDb = new Database(dbAbsPath);
+    wsDb.pragma('journal_mode = WAL');
+    wsDb.pragma('foreign_keys = OFF');
+
+    const wsSchemaPath = path.join(__dirname, 'ws_schema.sql');
+    if (fs.existsSync(wsSchemaPath)) {
+      wsDb.exec(fs.readFileSync(wsSchemaPath, 'utf8'));
+    }
+
+    // 4. Set ws_meta
+    wsDb.prepare(`
+      INSERT OR REPLACE INTO ws_meta (workshop_id, code, name, store_id)
+      VALUES (?, ?, ?, ?)
+    `).run(wsId, code, name, ownStore ? wsId : 1);
+
+    // 5. Attach core.db
+    wsDb.exec(`ATTACH DATABASE '${getCoreDbPath().replace(/\\/g, '/')}' AS core`);
+    wsDb.pragma('foreign_keys = ON');
+    wsDb.close();
+
+    // 6. Assign users
+    if (userIds.length > 0) {
+      const uStmt = cDb.prepare('UPDATE users SET workshop_id = ? WHERE id = ?');
+      for (const uid of userIds) uStmt.run(wsId, uid);
+    }
+
+    // 7. Optional main store grant
+    if (body.grant_main_store) {
+      cDb.prepare(`
+        INSERT INTO store_access_grants (
+          workshop_id, store_id, can_view, can_request, can_draw,
+          covering, valid_from, granted_by, state
+        ) VALUES (?, 1, 1, 1, 1, 'all', date('now'), ?, 'pending')
+      `).run(wsId, actor ? actor.id : 1);
+    }
+
+    // 8. Mark live
+    cDb.prepare(`
+      UPDATE workshop_databases SET state = 'live', verified_at = datetime('now')
+      WHERE workshop_id = ?
+    `).run(wsId);
+
+    // 9. Record company audit
+    cDb.prepare(`
+      INSERT INTO audit_log (user_id, entity, entity_id, action, after_json)
+      VALUES (?, 'workshop', ?, 'create_database', ?)
+    `).run(actor ? actor.id : null, wsId, JSON.stringify({ code, name, dbFile: dbRelPath }));
+
+    return cDb.prepare('SELECT * FROM workshops WHERE id = ?').get(wsId);
+  })();
+}
+
+// ---- Vehicle Holds (§7.1) ---------------------------------------------------
+
+function claimVehicleHold(assetId, workshopId, jobId, jobNo) {
+  const cDb = getCoreDb();
+  try {
+    cDb.prepare(`
+      INSERT INTO vehicle_holds (asset_id, workshop_id, job_id, job_no)
+      VALUES (?, ?, ?, ?)
+    `).run(assetId, workshopId, jobId, jobNo);
+    return true;
+  } catch (err) {
+    if (/UNIQUE|PRIMARY KEY/i.test(err.message)) {
+      const cur = cDb.prepare('SELECT * FROM vehicle_holds WHERE asset_id = ?').get(assetId);
+      const errOut = new Error(`Vehicle already has open job card ${cur.job_no} at workshop #${cur.workshop_id}`);
+      errOut.status = 409;
+      errOut.existingHold = cur;
+      throw errOut;
+    }
+    throw err;
+  }
+}
+
+function releaseVehicleHold(assetId) {
+  const cDb = getCoreDb();
+  cDb.prepare('DELETE FROM vehicle_holds WHERE asset_id = ?').run(assetId);
+}
+
+function getVehicleHold(assetId) {
+  const cDb = getCoreDb();
+  return cDb.prepare('SELECT * FROM vehicle_holds WHERE asset_id = ?').get(assetId);
+}
+
+// ---- Main Store Access Grants (§6) ------------------------------------------
+
+function listStoreGrants(workshopId = null) {
+  const cDb = getCoreDb();
+  if (workshopId) {
+    return cDb.prepare(`
+      SELECT g.*, w.name AS workshop_name, u1.username AS granted_by_name, u2.username AS approved_by_name
+        FROM store_access_grants g
+        JOIN workshops w ON w.id = g.workshop_id
+        LEFT JOIN users u1 ON u1.id = g.granted_by
+        LEFT JOIN users u2 ON u2.id = g.approved_by
+       WHERE g.workshop_id = ?
+       ORDER BY g.id DESC
+    `).all(workshopId);
+  }
+  return cDb.prepare(`
+    SELECT g.*, w.name AS workshop_name, u1.username AS granted_by_name, u2.username AS approved_by_name
+      FROM store_access_grants g
+      JOIN workshops w ON w.id = g.workshop_id
+      LEFT JOIN users u1 ON u1.id = g.granted_by
+      LEFT JOIN users u2 ON u2.id = g.approved_by
+     ORDER BY g.id DESC
+  `).all();
+}
+
+function createStoreGrant(actor, data) {
+  const cDb = getCoreDb();
+  const info = cDb.prepare(`
+    INSERT INTO store_access_grants (
+      workshop_id, store_id, can_view, can_request, can_draw,
+      covering, item_keys, line_limit, monthly_limit,
+      valid_from, valid_to, granted_by, state, reason
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
+  `).run(
+    Number(data.workshop_id),
+    Number(data.store_id || 1),
+    data.can_view ? 1 : 0,
+    data.can_request ? 1 : 0,
+    data.can_draw ? 1 : 0,
+    data.covering || 'all',
+    data.item_keys ? JSON.stringify(data.item_keys) : null,
+    data.line_limit || null,
+    data.monthly_limit || null,
+    data.valid_from || new Date().toISOString().slice(0, 10),
+    data.valid_to || null,
+    actor.id,
+    data.reason || null
+  );
+  return cDb.prepare('SELECT * FROM store_access_grants WHERE id = ?').get(info.lastInsertRowid);
+}
+
+function approveStoreGrant(actor, grantId) {
+  const cDb = getCoreDb();
+  const grant = cDb.prepare('SELECT * FROM store_access_grants WHERE id = ?').get(grantId);
+  if (!grant) throw new Error('Grant not found');
+  if (grant.granted_by === actor.id) {
+    const err = new Error('Two-person rule: Grant cannot be approved by the same admin who granted it.');
+    err.status = 403;
+    throw err;
+  }
+  cDb.prepare(`
+    UPDATE store_access_grants
+       SET state = 'active', approved_by = ?, updated_at = datetime('now')
+     WHERE id = ?
+  `).run(actor.id, grantId);
+  return cDb.prepare('SELECT * FROM store_access_grants WHERE id = ?').get(grantId);
+}
+
+function updateStoreGrantState(actor, grantId, state, reason) {
+  const cDb = getCoreDb();
+  cDb.prepare(`
+    UPDATE store_access_grants
+       SET state = ?, reason = COALESCE(?, reason), updated_at = datetime('now')
+     WHERE id = ?
+  `).run(state, reason, grantId);
+  return cDb.prepare('SELECT * FROM store_access_grants WHERE id = ?').get(grantId);
+}
+
+function checkStoreAccess(workshopId, storeId = 1, kind = 'request') {
+  if (!isMultiDbEnabled) return { allowed: true };
+  const wsId = Number(workshopId);
+  if (wsId === storeId) return { allowed: true }; // Own store
+
+  const cDb = getCoreDb();
+  const grant = cDb.prepare(`
+    SELECT * FROM store_access_grants
+     WHERE workshop_id = ? AND store_id = ? AND state = 'active'
+       AND (valid_to IS NULL OR valid_to >= date('now'))
+     ORDER BY id DESC LIMIT 1
+  `).get(wsId, storeId);
+
+  if (!grant) return { allowed: false, reason: 'No active grant to access main store' };
+
+  if (kind === 'view' && !grant.can_view) return { allowed: false, reason: 'Grant does not permit viewing' };
+  if (kind === 'request' && !grant.can_request) return { allowed: false, reason: 'Grant does not permit requests' };
+  if (kind === 'draw' && !grant.can_draw) return { allowed: false, reason: 'Grant does not permit drawing stock' };
+
+  return { allowed: true, grant };
+}
+
+function listWorkshopDatabases() {
+  const cDb = getCoreDb();
+  return cDb.prepare(`
+    SELECT wd.*, w.name, w.place
+      FROM workshop_databases wd
+      JOIN workshops w ON w.id = wd.workshop_id
+     ORDER BY wd.workshop_id
+  `).all();
+}
+
+function runIntegrityVerification() {
+  const cDb = getCoreDb();
+  const results = {
+    core: { integrity: 'ok' },
+    workshops: {},
+    vehicle_holds: { total: 0 },
+    passed: true
+  };
+
+  try {
+    const cInteg = cDb.prepare('PRAGMA integrity_check').all();
+    if (cInteg.length !== 1 || cInteg[0].integrity_check !== 'ok') {
+      results.core.integrity = cInteg;
+      results.passed = false;
+    }
+  } catch (e) {
+    results.core.integrity = e.message;
+    results.passed = false;
+  }
+
+  const holds = cDb.prepare('SELECT COUNT(*) c FROM vehicle_holds').get();
+  results.vehicle_holds.total = holds ? holds.c : 0;
+
+  const wsList = cDb.prepare("SELECT * FROM workshop_databases WHERE state = 'live'").all();
+  for (const w of wsList) {
+    try {
+      const db = getWorkshopDb(w.workshop_id);
+      const wInteg = db.prepare('PRAGMA integrity_check').all();
+      const ok = wInteg.length === 1 && wInteg[0].integrity_check === 'ok';
+      results.workshops[w.code] = { integrity: ok ? 'ok' : wInteg };
+      if (!ok) results.passed = false;
+    } catch (e) {
+      results.workshops[w.code] = { error: e.message };
+      results.passed = false;
+    }
+  }
+
+  try {
+    cDb.prepare('INSERT INTO integrity_runs (passed, report_json) VALUES (?, ?)').run(
+      results.passed ? 1 : 0, JSON.stringify(results)
+    );
+  } catch {}
+
+  return results;
+}
+
+function migrate() {
+  if (!isMultiDbEnabled) return;
+  const wsDir = getWorkshopsDir();
+  if (fs.existsSync(wsDir)) {
+    const wsFiles = fs.readdirSync(wsDir).filter((f) => f.endsWith('.db'));
+    for (const f of wsFiles) {
+      try {
+        const dbPath = path.join(wsDir, f);
+        const wdb = new Database(dbPath);
+        wdb.exec(`
+          CREATE TABLE IF NOT EXISTS line_evidence_photos (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            entity_type   TEXT NOT NULL,
+            entity_id     INTEGER NOT NULL,
+            kind          TEXT NOT NULL,
+            file_path     TEXT NOT NULL,
+            file_name     TEXT NOT NULL,
+            mime_type     TEXT NOT NULL,
+            file_size     INTEGER NOT NULL,
+            caption       TEXT,
+            uploaded_by   INTEGER,
+            uploaded_at   TEXT NOT NULL DEFAULT (datetime('now'))
+          );
+          CREATE INDEX IF NOT EXISTS idx_evidence_photos_lookup ON line_evidence_photos(entity_type, entity_id);
+        `);
+
+        // Step 7: Ensure store_reorder columns in workshop DB
+        const srExists = wdb.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'store_reorder'").get();
+        if (srExists) {
+          const cols = wdb.prepare('PRAGMA table_info(store_reorder)').all().map((c) => c.name);
+          if (!cols.includes('physical_store_id')) wdb.exec('ALTER TABLE store_reorder ADD COLUMN physical_store_id INTEGER');
+          if (!cols.includes('safety_stock')) wdb.exec('ALTER TABLE store_reorder ADD COLUMN safety_stock REAL DEFAULT 0');
+          if (!cols.includes('reorder_qty')) wdb.exec('ALTER TABLE store_reorder ADD COLUMN reorder_qty REAL DEFAULT 0');
+          if (!cols.includes('avg_daily_demand')) wdb.exec('ALTER TABLE store_reorder ADD COLUMN avg_daily_demand REAL DEFAULT 0');
+          if (!cols.includes('lead_time_days')) wdb.exec('ALTER TABLE store_reorder ADD COLUMN lead_time_days INTEGER DEFAULT 7');
+          if (!cols.includes('auto_calc')) wdb.exec('ALTER TABLE store_reorder ADD COLUMN auto_calc INTEGER DEFAULT 1');
+          if (!cols.includes('last_calculated_at')) wdb.exec('ALTER TABLE store_reorder ADD COLUMN last_calculated_at TEXT');
+        }
+
+        // Phase A, B, C columns on mrn in workshop DB
+        const mrnExists = wdb.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'mrn'").get();
+        if (mrnExists) {
+          const mCols = wdb.prepare('PRAGMA table_info(mrn)').all().map((c) => c.name);
+          if (!mCols.includes('site_authority_status')) wdb.exec("ALTER TABLE mrn ADD COLUMN site_authority_status TEXT NOT NULL DEFAULT 'approved'");
+          if (!mCols.includes('site_authority_user_id')) wdb.exec('ALTER TABLE mrn ADD COLUMN site_authority_user_id INTEGER');
+          if (!mCols.includes('site_authority_at')) wdb.exec('ALTER TABLE mrn ADD COLUMN site_authority_at TEXT');
+          if (!mCols.includes('site_authority_notes')) wdb.exec('ALTER TABLE mrn ADD COLUMN site_authority_notes TEXT');
+          if (!mCols.includes('parent_mrn_id')) wdb.exec('ALTER TABLE mrn ADD COLUMN parent_mrn_id INTEGER');
+          if (!mCols.includes('replenishment_type')) wdb.exec('ALTER TABLE mrn ADD COLUMN replenishment_type TEXT');
+          if (!mCols.includes('from_store_location_id')) wdb.exec('ALTER TABLE mrn ADD COLUMN from_store_location_id INTEGER');
+        }
+
+        // Phase A, B, C columns on mrn_lines in workshop DB
+        const mlExists = wdb.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'mrn_lines'").get();
+        if (mlExists) {
+          const mlCols = wdb.prepare('PRAGMA table_info(mrn_lines)').all().map((c) => c.name);
+          if (!mlCols.includes('parent_mrn_line_id')) wdb.exec('ALTER TABLE mrn_lines ADD COLUMN parent_mrn_line_id INTEGER');
+          if (!mlCols.includes('child_mrn_id')) wdb.exec('ALTER TABLE mrn_lines ADD COLUMN child_mrn_id INTEGER');
+          if (!mlCols.includes('child_mrn_line_id')) wdb.exec('ALTER TABLE mrn_lines ADD COLUMN child_mrn_line_id INTEGER');
+          if (!mlCols.includes('source_store_location_id')) wdb.exec('ALTER TABLE mrn_lines ADD COLUMN source_store_location_id INTEGER');
+          if (!mlCols.includes('qty_outstanding')) wdb.exec('ALTER TABLE mrn_lines ADD COLUMN qty_outstanding REAL DEFAULT 0');
+          if (!mlCols.includes('local_issue_qty')) wdb.exec('ALTER TABLE mrn_lines ADD COLUMN local_issue_qty REAL DEFAULT 0');
+          if (!mlCols.includes('is_cancelled')) wdb.exec('ALTER TABLE mrn_lines ADD COLUMN is_cancelled INTEGER DEFAULT 0');
+          if (!mlCols.includes('cancellation_reason')) wdb.exec('ALTER TABLE mrn_lines ADD COLUMN cancellation_reason TEXT');
+        }
+
+        // Phase A, B, C columns on mtn in workshop DB
+        const mtnExists = wdb.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'mtn'").get();
+        if (mtnExists) {
+          const mtnCols = wdb.prepare('PRAGMA table_info(mtn)').all().map((c) => c.name);
+          if (!mtnCols.includes('from_store_id')) wdb.exec('ALTER TABLE mtn ADD COLUMN from_store_id INTEGER');
+          if (!mtnCols.includes('to_store_id')) wdb.exec('ALTER TABLE mtn ADD COLUMN to_store_id INTEGER');
+          if (!mtnCols.includes('workshop_id')) wdb.exec('ALTER TABLE mtn ADD COLUMN workshop_id INTEGER');
+          if (!mtnCols.includes('stock_synced_at')) wdb.exec('ALTER TABLE mtn ADD COLUMN stock_synced_at TEXT');
+        }
+
+        // Tag transfer rows with mtn_id on workshop DB ledgers
+        const slColCheck = wdb.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'stock_ledger'").get();
+        if (slColCheck) {
+          const slCols = wdb.prepare('PRAGMA table_info(stock_ledger)').all().map((c) => c.name);
+          if (!slCols.includes('mtn_id')) wdb.exec('ALTER TABLE stock_ledger ADD COLUMN mtn_id INTEGER');
+        }
+        const gitColCheck = wdb.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'general_item_txns'").get();
+        if (gitColCheck) {
+          const gitCols = wdb.prepare('PRAGMA table_info(general_item_txns)').all().map((c) => c.name);
+          if (!gitCols.includes('mtn_id')) wdb.exec('ALTER TABLE general_item_txns ADD COLUMN mtn_id INTEGER');
+        }
+
+        try {
+          require('../lib/store_locations').migrateStoreLocationsStage2(wdb);
+          require('../migrate/050_fabrication_job_type').rebuildJobCardsIfNeeded(wdb, f);
+          require('../migrate/052_fabrication_access_and_schema').runMigration(wdb);
+          require('../migrate/053_mtn_store_locations').runMigration(wdb);
+          require('../migrate/054_ccom_outsourcing').runMigration(wdb);
+        } catch {}
+
+        wdb.close();
+      } catch (err) {
+        // ignore
+      }
+    }
+  }
+
+  // Ensure vehicle document tables in core.db
+  if (coreDb) {
+    try {
+      coreDb.exec(VEHICLE_DOCS_CORE_SCHEMA);
+      seedVehicleDocTypes(coreDb);
+    } catch (err) {
+      console.warn('Failed to ensure vehicle document tables in coreDb:', err.message);
+    }
+
+    try {
+      coreDb.exec(STORE_LOCATIONS_CORE_SCHEMA);
+      require('../lib/store_locations').seedStoreLocations(coreDb);
+      require('../lib/store_locations').migrateStoreLocationsStage2(coreDb);
+    } catch (err) {
+      console.warn('Failed to ensure physical store location tables in coreDb:', err.message);
+    }
+
+    try {
+      require('../migrate/052_fabrication_access_and_schema').runMigration(coreDb);
+      require('../migrate/054_ccom_outsourcing').runMigration(coreDb);
+      require('../migrate/055_fuel_core_schema').runMigration(coreDb);
+      require('../migrate/056_fleet_allocations_and_billing').runMigration(coreDb);
+      require('../migrate/057_fleet_financial_ledger').runMigration(coreDb);
+    } catch (err) {
+      console.warn('Failed to run migration 052 on coreDb:', err.message);
+    }
+
+    try {
+      coreDb.exec(`
+        CREATE INDEX IF NOT EXISTS idx_audit_log_created ON audit_log(created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_audit_log_user ON audit_log(user_id, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_audit_log_entity_act ON audit_log(entity, action, created_at DESC);
+      `);
+    } catch {}
+  }
+
+  // Ensure vehicle document tables in baseDb (if present)
+  if (baseDb) {
+    try {
+      baseDb.exec(VEHICLE_DOCS_CORE_SCHEMA);
+      seedVehicleDocTypes(baseDb);
+    } catch {}
+
+    try {
+      baseDb.exec(STORE_LOCATIONS_CORE_SCHEMA);
+      require('../lib/store_locations').seedStoreLocations(baseDb);
+      require('../lib/store_locations').migrateStoreLocationsStage2(baseDb);
+    } catch {}
+  }
+
+  // Ensure uploads/vehicle_documents directory exists
+  try {
+    const vdocDir = path.resolve(config.uploadDir || path.join(__dirname, '..', '..', 'uploads'), 'vehicle_documents');
+    fs.mkdirSync(vdocDir, { recursive: true });
+  } catch {}
+}
+
+const VEHICLE_DOCS_CORE_SCHEMA = `
+CREATE TABLE IF NOT EXISTS vehicle_doc_types (
+  id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+  code                TEXT NOT NULL UNIQUE,
+  name                TEXT NOT NULL,
+  category            TEXT NOT NULL DEFAULT 'statutory',
+  is_renewable        INTEGER NOT NULL DEFAULT 1,
+  is_master           INTEGER NOT NULL DEFAULT 0,
+  default_remind_days INTEGER NOT NULL DEFAULT 30,
+  applies_to_classes  TEXT,
+  requires_fitness    INTEGER NOT NULL DEFAULT 0,
+  sort_order          INTEGER NOT NULL DEFAULT 0,
+  active              INTEGER NOT NULL DEFAULT 1,
+  created_at          TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_vdoc_types_code ON vehicle_doc_types(code);
+
+CREATE TABLE IF NOT EXISTS vehicle_documents (
+  id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+  asset_id            INTEGER NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+  doc_type_id         INTEGER NOT NULL REFERENCES vehicle_doc_types(id),
+  is_required         INTEGER NOT NULL DEFAULT 1,
+  is_exempt           INTEGER NOT NULL DEFAULT 0,
+  exemption_reason    TEXT,
+  exemption_date      TEXT,
+  exemption_by        INTEGER REFERENCES users(id),
+  current_version_id  INTEGER,
+  created_at          TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at          TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(asset_id, doc_type_id)
+);
+CREATE INDEX IF NOT EXISTS idx_vdocs_asset ON vehicle_documents(asset_id);
+CREATE INDEX IF NOT EXISTS idx_vdocs_type ON vehicle_documents(doc_type_id);
+
+CREATE TABLE IF NOT EXISTS vehicle_doc_versions (
+  id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+  document_id         INTEGER NOT NULL REFERENCES vehicle_documents(id) ON DELETE CASCADE,
+  version_no          INTEGER NOT NULL DEFAULT 1,
+  doc_number          TEXT NOT NULL,
+  issuer_name         TEXT,
+  issue_date          TEXT NOT NULL,
+  valid_from          TEXT NOT NULL,
+  valid_until         TEXT NOT NULL,
+  valid_until_time    TEXT,
+  cost_amount         REAL DEFAULT 0,
+  policy_type         TEXT,
+  responsible_user_id INTEGER REFERENCES users(id),
+  notes               TEXT,
+  status              TEXT NOT NULL DEFAULT 'draft',
+  verified_by         INTEGER REFERENCES users(id),
+  verified_at         TEXT,
+  verification_notes  TEXT,
+  created_by          INTEGER REFERENCES users(id),
+  created_at          TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_vdoc_versions_doc ON vehicle_doc_versions(document_id);
+CREATE INDEX IF NOT EXISTS idx_vdoc_versions_valid ON vehicle_doc_versions(valid_until);
+CREATE INDEX IF NOT EXISTS idx_vdoc_versions_status ON vehicle_doc_versions(status);
+
+CREATE TABLE IF NOT EXISTS vehicle_doc_attachments (
+  id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+  version_id          INTEGER NOT NULL REFERENCES vehicle_doc_versions(id) ON DELETE CASCADE,
+  kind                TEXT NOT NULL,
+  original_filename   TEXT NOT NULL,
+  stored_filename     TEXT NOT NULL,
+  file_path           TEXT NOT NULL,
+  mime_type           TEXT NOT NULL,
+  file_size           INTEGER NOT NULL,
+  sha256              TEXT NOT NULL,
+  uploaded_by         INTEGER REFERENCES users(id),
+  uploaded_at         TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_vdoc_attachments_ver ON vehicle_doc_attachments(version_id);
+
+CREATE TABLE IF NOT EXISTS vehicle_renewal_tasks (
+  id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+  document_id         INTEGER NOT NULL REFERENCES vehicle_documents(id) ON DELETE CASCADE,
+  target_version_id   INTEGER REFERENCES vehicle_doc_versions(id),
+  stage               TEXT NOT NULL DEFAULT 'not_started',
+  assigned_to         INTEGER REFERENCES users(id),
+  target_date         TEXT,
+  checklist_json      TEXT,
+  estimated_cost      REAL DEFAULT 0,
+  actual_cost         REAL DEFAULT 0,
+  temporary_receipt_no TEXT,
+  completed_at        TEXT,
+  created_at          TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at          TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_vrenewal_tasks_doc ON vehicle_renewal_tasks(document_id);
+CREATE INDEX IF NOT EXISTS idx_vrenewal_tasks_stage ON vehicle_renewal_tasks(stage);
+CREATE INDEX IF NOT EXISTS idx_vrenewal_tasks_assign ON vehicle_renewal_tasks(assigned_to);
+
+CREATE TABLE IF NOT EXISTS vehicle_doc_reminders (
+  id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+  version_id          INTEGER NOT NULL REFERENCES vehicle_doc_versions(id) ON DELETE CASCADE,
+  stage               TEXT NOT NULL,
+  recipient_id        INTEGER NOT NULL REFERENCES users(id),
+  channel             TEXT NOT NULL DEFAULT 'in_app',
+  sent_at             TEXT NOT NULL DEFAULT (datetime('now')),
+  acknowledged_at     TEXT,
+  UNIQUE(version_id, stage, recipient_id)
+);
+CREATE INDEX IF NOT EXISTS idx_vdoc_reminders_ver ON vehicle_doc_reminders(version_id);
+CREATE INDEX IF NOT EXISTS idx_vdoc_reminders_stage ON vehicle_doc_reminders(stage);
+`;
+
+const DEFAULT_DOC_TYPES = [
+  { code: 'cr', name: 'Certificate of Registration', category: 'master', is_renewable: 0, is_master: 1, default_remind_days: 0, applies_to_classes: null, requires_fitness: 0, sort_order: 1 },
+  { code: 'revenue_licence', name: 'Revenue Licence', category: 'statutory', is_renewable: 1, is_master: 0, default_remind_days: 30, applies_to_classes: null, requires_fitness: 0, sort_order: 2 },
+  { code: 'insurance', name: 'Vehicle Insurance', category: 'statutory', is_renewable: 1, is_master: 0, default_remind_days: 30, applies_to_classes: null, requires_fitness: 0, sort_order: 3 },
+  { code: 'emission', name: 'Vehicle Emission Test', category: 'statutory', is_renewable: 1, is_master: 0, default_remind_days: 30, applies_to_classes: null, requires_fitness: 0, sort_order: 4 },
+  { code: 'fitness', name: 'Vehicle Fitness Certificate', category: 'statutory', is_renewable: 1, is_master: 0, default_remind_days: 30, applies_to_classes: JSON.stringify(['heavy_commercial', 'bus', 'lorry', 'truck', 'dual_purpose', 'commercial']), requires_fitness: 1, sort_order: 5 },
+  { code: 'permit', name: 'Passenger / Service Permit', category: 'permit', is_renewable: 1, is_master: 0, default_remind_days: 30, applies_to_classes: null, requires_fitness: 0, sort_order: 6 },
+  { code: 'company_doc', name: 'Company / Operational Document', category: 'company', is_renewable: 1, is_master: 0, default_remind_days: 30, applies_to_classes: null, requires_fitness: 0, sort_order: 7 }
+];
+
+function seedVehicleDocTypes(targetDb) {
+  if (!targetDb) return;
+  const insert = targetDb.prepare(`
+    INSERT OR IGNORE INTO vehicle_doc_types
+    (code, name, category, is_renewable, is_master, default_remind_days, applies_to_classes, requires_fitness, sort_order, active)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+  `);
+  for (const t of DEFAULT_DOC_TYPES) {
+    insert.run(t.code, t.name, t.category, t.is_renewable, t.is_master, t.default_remind_days, t.applies_to_classes, t.requires_fitness, t.sort_order);
+  }
+}
+
+const STORE_LOCATIONS_CORE_SCHEMA = `
+CREATE TABLE IF NOT EXISTS store_locations (
+  id               INTEGER PRIMARY KEY AUTOINCREMENT,
+  code             TEXT NOT NULL UNIQUE,
+  name             TEXT NOT NULL,
+  store_type       TEXT NOT NULL CHECK (store_type IN (
+                     'MAIN_STORE',
+                     'SITE_STORE',
+                     'MAIN_WORKSHOP_STORE',
+                     'SITE_WORKSHOP_STORE'
+                   )),
+  parent_store_id  INTEGER REFERENCES store_locations(id),
+  site_id          INTEGER REFERENCES sites(id),
+  workshop_id      INTEGER REFERENCES workshops(id),
+  active           INTEGER NOT NULL DEFAULT 1,
+  is_default       INTEGER NOT NULL DEFAULT 0,
+  opened_at        TEXT,
+  closed_at        TEXT,
+  notes            TEXT,
+  created_at       TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at       TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_store_locations_type ON store_locations(store_type);
+CREATE INDEX IF NOT EXISTS idx_store_locations_parent ON store_locations(parent_store_id);
+CREATE INDEX IF NOT EXISTS idx_store_locations_workshop ON store_locations(workshop_id);
+CREATE INDEX IF NOT EXISTS idx_store_locations_site ON store_locations(site_id);
+
+CREATE TABLE IF NOT EXISTS store_location_access (
+  id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id            INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  store_location_id  INTEGER NOT NULL REFERENCES store_locations(id) ON DELETE CASCADE,
+  can_view           INTEGER NOT NULL DEFAULT 1,
+  can_request        INTEGER NOT NULL DEFAULT 0,
+  can_issue          INTEGER NOT NULL DEFAULT 0,
+  can_receive        INTEGER NOT NULL DEFAULT 0,
+  can_dispatch       INTEGER NOT NULL DEFAULT 0,
+  can_count          INTEGER NOT NULL DEFAULT 0,
+  created_at         TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(user_id, store_location_id)
+);
+CREATE INDEX IF NOT EXISTS idx_store_loc_access_user ON store_location_access(user_id);
+CREATE INDEX IF NOT EXISTS idx_store_loc_access_store ON store_location_access(store_location_id);
+
+CREATE TABLE IF NOT EXISTS store_location_mappings (
+  id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+  legacy_store_id    INTEGER NOT NULL UNIQUE,
+  workshop_id        INTEGER REFERENCES workshops(id),
+  store_location_id  INTEGER NOT NULL REFERENCES store_locations(id),
+  is_primary         INTEGER NOT NULL DEFAULT 1,
+  notes              TEXT,
+  created_at         TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_store_loc_map_legacy ON store_location_mappings(legacy_store_id);
+CREATE INDEX IF NOT EXISTS idx_store_loc_map_loc ON store_location_mappings(store_location_id);
+`;
+
+module.exports = {
+  init,
+  migrate,
+  isMultiDb,
+  getCoreDb,
+  getWorkshopDb,
+  activeDb,
+  activeWorkshopId,
+  withWorkshop,
+  withCore,
+  withReadOnlyWorkshop,
+  multidbMiddleware,
+  createWorkshopDatabase,
+  claimVehicleHold,
+  releaseVehicleHold,
+  getVehicleHold,
+  listStoreGrants,
+  createStoreGrant,
+  approveStoreGrant,
+  updateStoreGrantState,
+  checkStoreAccess,
+  listWorkshopDatabases,
+  runIntegrityVerification,
+  getCoreDbPath,
+  getWorkshopsDir,
+  getTargetDir,
+  seedVehicleDocTypes,
+  VEHICLE_DOCS_CORE_SCHEMA,
+  STORE_LOCATIONS_CORE_SCHEMA
+};

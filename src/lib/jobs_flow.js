@@ -23,12 +23,12 @@ const { get, all, run } = require('../db');
 const scope = require('./scope');
 const jobstate = require('./jobstate');
 const review = require('./job_review');
-const { meets, levelForRoles } = require('./permissions');
+const { reaches } = require('./permissions');
 
 const isAdmin = (user) => require('./access_rules').isAdmin(user);
 const hasCap = (user, cap) => require('./auth').hasCap(user, cap);
 /** May this person see a module's records at all (the same test as requireModule's GET; admin: always)? */
-const sees = (user, module) => meets(levelForRoles((user && user.roles) || [], module), 'view');
+const sees = (user, module) => reaches(user, module);
 const today = () => { const d = new Date(); return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10); };
 const day10 = (v) => (v ? String(v).slice(0, 10) : null);
 const daysSince = (d, now = today()) => (d ? Math.max(0, Math.round((Date.parse(now) - Date.parse(day10(d))) / 86400000)) : null);
@@ -41,9 +41,11 @@ const AT = { REQUESTED: 1, APPROVED_TRANSPORT: 1, APPROVED_OPERATIONS: 2, IN_WOR
   WORK_COMPLETE: 5, PARTIALLY_CLOSED: 5, CLOSED: ROAD.length };
 
 /** The road of a card by its status — or of a request not yet a card (`status` null). `priced`: its
- *  work is done and nothing is missing, so it waits only to be closed. */
-function roadOf(status, { rejected = false, priced = false } = {}) {
-  let now = rejected || status === 'REJECTED' ? -1 : (status ? AT[status] : 1);
+ *  work is done and nothing is missing, so it waits only to be closed. `approved`: a request that
+ *  has all three signatures and no card yet — it has PASSED "approved" and waits for the workshop
+ *  to open the card, which an unapproved request has not. */
+function roadOf(status, { rejected = false, priced = false, approved = false } = {}) {
+  let now = rejected || status === 'REJECTED' ? -1 : (status ? AT[status] : (approved ? 2 : 1));
   if (priced && now === AT.WORK_COMPLETE) now++;
   return ROAD.map(([key, label], i) => {
     let state;
@@ -54,22 +56,28 @@ function roadOf(status, { rejected = false, priced = false } = {}) {
 }
 
 // ---- the Requests list ---------------------------------------------------------------------------
-//   open         everything waiting for somebody's decision: the next five together
+//   open         everything waiting for somebody's decision: the next six together
 //   to_certify   job requests waiting for the Transport Manager
 //   to_approve   job requests waiting for the Operational Manager
-//   transport    cards raised directly, waiting for transport approval
-//   operations   cards approved by transport, waiting for operations
+//   to_open      job requests approved, waiting for the WORKSHOP to open the job card
+//   transport    cards raised directly, waiting for transport approval (legacy: no new ones)
+//   operations   cards approved by transport, waiting for operations (legacy: no new ones)
 //   reopen       reopen requests waiting for a manager
 //   stuck        requested cards that never moved (older than the review screen's limit)
-//   approved     job requests approved: each made its card
+//   approved     job requests approved AND opened: each has its card
 //   rejected     job requests and cards turned down
-const STEPS = ['open', 'to_certify', 'to_approve', 'transport', 'operations', 'reopen', 'stuck', 'approved', 'rejected'];
-const OPEN_STEPS = ['to_certify', 'to_approve', 'transport', 'operations', 'reopen'];
+//
+// to_open is the workshop's own inbox, and the reason it is an OPEN step: approving a request no
+// longer makes the card, so between the last signature and the workshop opening it, the request is
+// waiting on somebody — and anything waiting on somebody belongs in this list.
+const STEPS = ['open', 'to_certify', 'to_approve', 'to_open', 'transport', 'operations', 'reopen', 'stuck', 'approved', 'rejected'];
+const OPEN_STEPS = ['to_certify', 'to_approve', 'to_open', 'transport', 'operations', 'reopen'];
 const TODO = OPEN_STEPS.concat(['stuck']);
 const WAITING = {
   to_certify: 'Transport Manager to certify', to_approve: 'Operational Manager to approve',
+  to_open: 'Workshop to open the job card',
   transport: 'Transport approval', operations: 'Operations approval', reopen: 'A manager to decide the reopen',
-  stuck: 'Review: raised long ago, nothing done', approved: 'Approved — card made', rejected: 'Rejected',
+  stuck: 'Review: raised long ago, nothing done', approved: 'Approved — card opened', rejected: 'Rejected',
 };
 
 const ASSET = 'a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec';
@@ -78,6 +86,8 @@ const ASSET = 'a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS a
 function requestRows(user, statuses, f) {
   const w = [`r.approval_status IN (${statuses.map(() => '?').join(',')})`];
   const p = [...statuses];
+  const fab = scope.fabricationClause(user, 'r');
+  if (fab) w.push(fab);
   const own = scope.filter(user, 'r.workshop_id', { store: false });
   if (own.sql) { w.push(own.sql); p.push(...own.params); }
   if (f.workshop_id) { w.push('r.workshop_id = ?'); p.push(Number(f.workshop_id)); }
@@ -88,8 +98,10 @@ function requestRows(user, statuses, f) {
   }
   return all(
     `SELECT r.id, r.jr_no AS no, r.req_date, r.type, r.severity, r.priority, r.description, r.requested_by,
-            r.approval_status, r.certified_by, r.certified_at, r.approved_by, r.approved_at, r.workshop_id, r.asset_id,
+            r.approval_status, r.certified_by, r.certified_at, r.approved_by, r.approved_at, r.workshop_id, r.asset_id, r.requested_by_user,
             r.job_id, j.job_no, j.status AS job_status, ${ASSET}, w.code AS workshop_code,
+            r.fabrication_kind, r.issue_store_location_id,
+            r.service_id, r.service_type, r.meter_reading, s.job_no AS service_job_no, s.service_date,
             (SELECT x.approver_id FROM job_request_approvals x WHERE x.job_request_id = r.id AND x.stage = 'certify'
                 AND x.decision = 'approved' ORDER BY x.id DESC LIMIT 1) AS certifier_id,
             (SELECT x.reason FROM job_request_approvals x WHERE x.job_request_id = r.id AND x.decision = 'rejected'
@@ -97,6 +109,7 @@ function requestRows(user, statuses, f) {
             (SELECT x.created_at FROM job_request_approvals x WHERE x.job_request_id = r.id AND x.decision = 'rejected'
               ORDER BY x.id DESC LIMIT 1) AS rejected_at
        FROM job_requests r LEFT JOIN assets a ON a.id = r.asset_id LEFT JOIN job_cards j ON j.id = r.job_id
+       LEFT JOIN service_jobs s ON s.id = r.service_id
        LEFT JOIN workshops w ON w.id = r.workshop_id
       WHERE ${w.join(' AND ')}`, ...p);
 }
@@ -105,6 +118,8 @@ function requestRows(user, statuses, f) {
 function cardRows(user, statuses, f) {
   const w = [`j.status IN (${statuses.map(() => '?').join(',')})`, `NOT ${review.CONTAINER_SQL}`];
   const p = [...statuses];
+  const fab = scope.fabricationClause(user, 'j');
+  if (fab) w.push(fab);
   const own = scope.filter(user, 'j.workshop_id');
   if (own.sql) { w.push(own.sql); p.push(...own.params); }
   if (f.workshop_id) { w.push('j.workshop_id = ?'); p.push(Number(f.workshop_id)); }
@@ -130,6 +145,8 @@ function cardRows(user, statuses, f) {
 function reopenRows(user, f) {
   const w = ["r.status = 'pending'"];
   const p = [];
+  const fab = scope.fabricationClause(user, 'j');
+  if (fab) w.push(fab);
   const own = scope.filter(user, 'j.workshop_id');
   if (own.sql) { w.push(own.sql); p.push(...own.params); }
   if (f.workshop_id) { w.push('j.workshop_id = ?'); p.push(Number(f.workshop_id)); }
@@ -151,22 +168,42 @@ const may = (user, from, to) => jobstate.checkTransition(from, to, user).ok;
 const vehicle = (r) => ({ asset_id: r.asset_id, asset_code: r.asset_code, asset_reg: r.asset_reg, asset_ec: r.asset_ec });
 
 function shapeRequest(user, r, now) {
-  const step = { requested: 'to_certify', certified: 'to_approve', approved: 'approved', rejected: 'rejected' }[r.approval_status];
-  const since = step === 'to_approve' ? r.certified_at : (step === 'approved' ? r.approved_at : (step === 'rejected' ? r.rejected_at : r.req_date));
+  const isService = r.type === 'service';
+  const fulfilled = isService ? !!r.service_id : !!r.job_id;
+  // An approved request is at to_open until its card/service exists, and at approved once it does.
+  const step = r.approval_status === 'approved' ? (fulfilled ? 'approved' : 'to_open')
+    : { requested: 'to_certify', certified: 'to_approve', rejected: 'rejected' }[r.approval_status];
+  const since = step === 'to_approve' ? r.certified_at
+    : ((step === 'approved' || step === 'to_open') ? r.approved_at : (step === 'rejected' ? r.rejected_at : r.req_date));
   const mine = !isAdmin(user) && r.certifier_id != null && r.certifier_id === user.id;
+  // Step 3a: whoever raised it neither certifies nor approves it (src/lib/request_rules.js).
+  const raised = !isAdmin(user) && r.requested_by_user != null && r.requested_by_user === user.id;
+  // Still open to a decision by transport or operations — which an APPROVED request is not, so it
+  // can no longer be rejected (the route refuses it too).
   const open = step === 'to_certify' || step === 'to_approve';
+  // Waiting on somebody, so the days it has been waiting are worth counting.
+  const waiting = open || step === 'to_open';
+  const waitingFor = (step === 'to_open' && isService) ? 'Service team to create service record' : WAITING[step];
   return {
     kind: 'jr', id: r.id, no: r.no, date: day10(r.req_date), type: r.type, severity: r.severity, priority: r.priority,
     description: r.description, requested_by: r.requested_by, workshop_id: r.workshop_id, workshop_code: r.workshop_code,
-    ...vehicle(r), step, waiting_for: WAITING[step], since: day10(since), days: open ? daysSince(since, now) : null,
-    job_id: r.job_id, job_no: r.job_no, reject_reason: r.reject_reason,
-    note: step === 'to_approve' && mine ? 'You certified it — another manager approves.' : null,
-    road: roadOf(step === 'approved' ? r.job_status : null, { rejected: step === 'rejected' }),
+    ...vehicle(r), step, waiting_for: waitingFor, since: day10(since), days: waiting ? daysSince(since, now) : null,
+    job_id: r.job_id, job_no: r.job_no, service_id: r.service_id, service_job_no: r.service_job_no,
+    service_type: r.service_type, meter_reading: r.meter_reading, reject_reason: r.reject_reason,
+    fabrication_kind: r.fabrication_kind, issue_store_location_id: r.issue_store_location_id,
+    note: (step === 'to_certify' || step === 'to_approve') && raised ? 'You raised it — someone else certifies and approves.'
+      : (step === 'to_approve' && mine ? 'You certified it — another manager approves.' : null),
+    road: roadOf(step === 'approved' ? (isService ? 'CLOSED' : r.job_status) : null, { rejected: step === 'rejected', approved: step === 'to_open' }),
     link: '#/jobrequests/' + r.id,
     can: {
-      certify: step === 'to_certify' && hasCap(user, 'jobrequests.certify'),
-      approve: step === 'to_approve' && hasCap(user, 'jobrequests.approve') && !mine,
+      certify: step === 'to_certify' && hasCap(user, 'jobrequests.certify') && !raised,
+      approve: step === 'to_approve' && hasCap(user, 'jobrequests.approve') && !mine && !raised,
       reject: open && hasCap(user, 'jobrequests.reject'),
+      // The workshop's step: open the job card against the approved request.
+      open_card: step === 'to_open' && !isService && (
+        r.type === 'fabrication' ? hasCap(user, 'fabrication.open_card') : hasCap(user, 'jobs.create')
+      ),
+      create_service: step === 'to_open' && isService && (hasCap(user, 'services.create') || hasCap(user, 'filters.edit') || hasCap(user, 'jobs.create')),
     },
   };
 }
@@ -217,9 +254,14 @@ function rowsFor(user, steps, f = {}) {
   const want = (s) => steps.includes(s);
   const out = [];
   if (sees(user, 'jobrequests')) {
-    const st = [['requested', 'to_certify'], ['certified', 'to_approve'], ['approved', 'approved'], ['rejected', 'rejected']]
-      .filter(([, s]) => want(s)).map(([a]) => a);
-    if (st.length) out.push(...requestRows(user, st, f).map((r) => shapeRequest(user, r, now)));
+    // 'approved' feeds two steps — to_open while no card exists, approved once one does — so the
+    // rows are filtered by the step they SHAPED to, not only by the status they were read for.
+    const st = [['requested', ['to_certify']], ['certified', ['to_approve']],
+      ['approved', ['to_open', 'approved']], ['rejected', ['rejected']]]
+      .filter(([, ss]) => ss.some(want)).map(([a]) => a);
+    if (st.length) {
+      out.push(...requestRows(user, st, f).map((r) => shapeRequest(user, r, now)).filter((r) => want(r.step)));
+    }
   }
   if (sees(user, 'jobs')) {
     const st = [];
@@ -260,14 +302,17 @@ function counts(user) {
   n.open = OPEN_STEPS.reduce((t, s) => t + n[s], 0);
   if (sees(user, 'jobrequests')) {
     const own = scope.filter(user, 'workshop_id', { store: false });
-    for (const [st, key] of [['approved', 'approved'], ['rejected', 'rejected']]) {
-      n[key] += get(`SELECT COUNT(*) c FROM job_requests WHERE approval_status = ?${own.sql ? ' AND ' + own.sql : ''}`, st, ...own.params).c;
+    // to_open is already counted from the rows above (it is an open step). What is left to count
+    // here are the two closed piles — and 'approved' now means approved AND opened, so the ones
+    // still waiting for the workshop are not counted twice.
+    for (const [st, key, extra] of [['approved', 'approved', ' AND job_id IS NOT NULL'], ['rejected', 'rejected', '']]) {
+      n[key] += get(`SELECT COUNT(*) c FROM job_requests WHERE approval_status = ?${extra}${own.sql ? ' AND ' + own.sql : ''}${scope.fabricationFilter(user, '')}`, st, ...own.params).c;
     }
   }
   if (sees(user, 'jobs')) {
     const own = scope.filter(user, 'j.workshop_id');
     n.rejected += get(`SELECT COUNT(*) c FROM job_cards j WHERE j.status = 'REJECTED' AND COALESCE(j.is_historical, 0) = 0
-                         AND NOT ${review.CONTAINER_SQL}${own.sql ? ' AND ' + own.sql : ''}`, ...own.params).c;
+                         AND NOT ${review.CONTAINER_SQL}${own.sql ? ' AND ' + own.sql : ''}${scope.fabricationFilter(user, 'j')}`, ...own.params).c;
   }
   return n;
 }
@@ -344,6 +389,8 @@ const reasonView = (r) => (r ? { code: r.reason, label: REASONS[r.reason] || r.r
 function ongoingRows(user, f = {}, onlyIds = null) {
   const w = [`j.status IN (${ONGOING.map(() => '?').join(',')})`, 'COALESCE(j.is_historical, 0) = 0', `NOT ${review.CONTAINER_SQL}`];
   const p = [...ONGOING];
+  const fab = scope.fabricationClause(user, 'j');
+  if (fab) w.push(fab);
   // user null: one card read for its own page, which checked who may see it.
   const own = user ? scope.filter(user, 'j.workshop_id') : { sql: '' };
   if (own.sql) { w.push(own.sql); p.push(...own.params); }
@@ -636,7 +683,7 @@ function monitor(user) {
   const n = counts(user);
   const out = {
     sees: { jobs: seesJobs, jobrequests: sees(user, 'jobrequests') },
-    requests: { to_certify: n.to_certify, to_approve: n.to_approve, transport: n.transport, operations: n.operations, reopen: n.reopen, open: n.open },
+    requests: { to_certify: n.to_certify, to_approve: n.to_approve, to_open: n.to_open, transport: n.transport, operations: n.operations, reopen: n.reopen, open: n.open },
     workshop: null, finishing: null, watch: null,
   };
   const r = scope.reach(user);
@@ -651,7 +698,7 @@ function monitor(user) {
   out.finishing = { work_done: fc.work_done, partly_closed: fc.partly_closed, ready: fc.ready };
   const fieldInUse = !!get('SELECT 1 x FROM job_cards WHERE field = 1 LIMIT 1');
   out.watch = {
-    breakdowns_down: fieldInUse ? require('./field').downCount(user) : null,
+    breakdowns_down: fieldInUse && sees(user, 'field') ? require('./field').downCount(user) : null,
     reopen: n.reopen,
     stuck: n.stuck,
     two_open: jobstate.duplicateOpenJobs({ workshopId: r }).length,

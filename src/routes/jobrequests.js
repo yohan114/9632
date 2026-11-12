@@ -1,9 +1,13 @@
 'use strict';
 
 // Job Request (Transport) — a formal 3-stage e-signed request that a job be done
-// on a vehicle/machine. Assistant Transport Manager raises it → Transport Manager
-// certifies → Operational Manager approves. On final approval a Job Card is created
-// (already past both approval gates) and linked back to the request.
+// on a vehicle/machine. Transport Assistant Manager raises it → Transport Manager
+// certifies → Operational Manager approves.
+//
+// Approval does NOT make the job card. It clears the request, and the WORKSHOP then opens the card
+// against it (POST /api/jobs with job_request_id — see routes/jobcards.js), which is also what
+// links the two. Approval used to insert the card itself; every card made that way is still linked,
+// and reads the same, through job_requests.job_id.
 
 const express = require('express');
 const { get, all, run, tx } = require('../db');
@@ -14,8 +18,8 @@ const { isAdmin } = require('../lib/access_rules');
 const { asyncHandler, require_, toInt } = require('../lib/http');
 const audit = require('../lib/audit');
 const aliases = require('../lib/aliases');
-const costing = require('../lib/costing');
 const jobstate = require('../lib/jobstate');
+const requestRules = require('../lib/request_rules');   // Step 3a: no self sign-off; what was certified is approved
 
 const router = express.Router();
 const scope = require('../lib/scope');
@@ -24,13 +28,8 @@ const workshops = require('../lib/workshops');
 // Stage 3: a request of another workshop is out of reach for anyone outside head office.
 router.param('id', (req, res, next, id) => {
   const no = scope.jobRequestRefusal(req.user, toInt(id));
-  return no ? res.status(403).json(no) : next();
+  return no ? res.status(no.status || 403).json(no) : next();
 });
-
-// One generator, shared with routes/jobcards.js. This file used to carry its own copy — identical,
-// separately maintained, and therefore free to drift: a card raised from a job request would have
-// numbered itself by whichever copy had been changed last.
-const jobNo = (type) => require('../lib/jobno').nextJobNo(type);
 
 // Next request number — continues from the last JR-#### (editable in the form).
 function nextJrNo() {
@@ -42,9 +41,18 @@ function nextJrNo() {
   return 'JR-' + String(max + 1).padStart(4, '0');
 }
 
-const signer = (userId) => { const u = get('SELECT full_name, username, signature FROM users WHERE id = ?', userId); return { name: u ? (u.full_name || u.username) : 'user', sig: u ? u.signature : null }; };
+const standIn = require('../lib/stand_in');
+const signer = (userId, actingFor = null) => {
+  const u = get('SELECT full_name, username, signature FROM users WHERE id = ?', userId);
+  return {
+    name: standIn.formatSignerName(u, actingFor),
+    sig: u ? u.signature : null,
+    baseName: u ? (u.full_name || u.username) : 'user',
+  };
+};
 
-const TYPES = ['repair', 'service'];
+const TYPES = ['repair', 'service', 'fabrication'];
+const FAB_KINDS = ['new', 'repair', 'service'];
 const SEVERITIES = ['major', 'minor'];
 const PRIORITIES = ['normal', 'urgent'];
 
@@ -60,6 +68,10 @@ router.get('/', asyncHandler((req, res) => {
     clauses.push('(r.jr_no LIKE ? OR r.description LIKE ? OR a.code LIKE ? OR a.registration LIKE ? OR a.ec_code LIKE ?)');
     params.push(like, like, like, like, like);
   }
+  // Fabrication row-level hiding
+  const fabClause = scope.fabricationClause(req.user, 'r');
+  if (fabClause) clauses.push(fabClause);
+
   // Stage 3: your own workshop's requests (head office: all, or the one asked for).
   const own = scope.filter(req.user, 'r.workshop_id', { store: false });
   if (own.sql) { clauses.push(own.sql); params.push(...own.params); }
@@ -67,11 +79,13 @@ router.get('/', asyncHandler((req, res) => {
   const where = clauses.length ? 'WHERE ' + clauses.join(' AND ') : '';
   res.json(all(
     `SELECT r.*, a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec,
-            p.name AS project_name, j.job_no AS job_no, (SELECT code FROM workshops w WHERE w.id = r.workshop_id) AS workshop_code
+            p.name AS project_name, j.job_no AS job_no, (SELECT code FROM workshops w WHERE w.id = r.workshop_id) AS workshop_code,
+            s.job_no AS service_job_no, s.service_date
        FROM job_requests r
        LEFT JOIN assets a ON a.id = r.asset_id
        LEFT JOIN projects p ON p.id = r.project_id
        LEFT JOIN job_cards j ON j.id = r.job_id
+       LEFT JOIN service_jobs s ON s.id = r.service_id
        ${where} ORDER BY r.id DESC LIMIT ${toInt(req.query.limit, 300)}`,
     ...params
   ));
@@ -83,24 +97,72 @@ router.get('/:id', asyncHandler((req, res) => {
   const jr = get(
     `SELECT r.*, a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec,
             p.name AS project_name, j.job_no AS job_no, j.status AS job_status,
+            s.job_no AS service_job_no, s.service_date,
             (SELECT name FROM workshops w WHERE w.id = r.workshop_id) AS workshop_name
        FROM job_requests r
        LEFT JOIN assets a ON a.id = r.asset_id
        LEFT JOIN projects p ON p.id = r.project_id
        LEFT JOIN job_cards j ON j.id = r.job_id
+       LEFT JOIN service_jobs s ON s.id = r.service_id
       WHERE r.id = ?`, id);
-  if (!jr) return res.status(404).json({ error: 'Job request not found' });
+  if (!jr || (jr.type === 'fabrication' && !isAdmin(req.user) && !hasCap(req.user, 'fabrication.view', 'jobrequests.approve'))) {
+    return res.status(404).json({ error: 'Job request not found' });
+  }
   res.json({
     request: jr,
     approvals: all('SELECT a.*, u.username FROM job_request_approvals a LEFT JOIN users u ON u.id = a.approver_id WHERE a.job_request_id = ? ORDER BY a.id', id),
   });
 }));
 
-// ---- create (Assistant Transport Manager) ---------------------------------
-router.post('/', requireCap('jobrequests.create'), asyncHandler((req, res) => {
+// ---- create (Transport Assistant Manager) ---------------------------------
+router.post('/', requireCap('jobrequests.create', 'jobrequests.create_fabrication'), asyncHandler((req, res) => {
   const b = req.body;
   require_(b, ['description']);
   const type = TYPES.includes(b.type) ? b.type : 'repair';
+  if (type !== 'fabrication' && !hasCap(req.user, 'jobrequests.create') && !isAdmin(req.user)) {
+    return res.status(403).json({ error: 'Permission denied: jobrequests.create required.' });
+  }
+  let fabricationKind = null;
+  let issueStoreLocationId = null;
+
+  let workTarget = 'vehicle';
+  let category = null;
+  let drawingRef = null;
+  let drawingPath = null;
+  let drawingFilename = null;
+  let costCentre = null;
+  let quantityOrSize = null;
+  let deliverTo = null;
+
+  if (type === 'fabrication') {
+    const fabSetting = get("SELECT value FROM settings WHERE key = 'fabrication.enabled'")?.value;
+    if (fabSetting !== '1') {
+      return res.status(403).json({ error: 'Fabrication section is currently disabled.' });
+    }
+    if (!hasCap(req.user, 'jobrequests.create_fabrication')) {
+      return res.status(403).json({ error: 'Permission denied: jobrequests.create_fabrication required.' });
+    }
+    fabricationKind = String(b.fabrication_kind || 'new').toLowerCase().trim();
+    if (!FAB_KINDS.includes(fabricationKind)) {
+      return res.status(400).json({ error: 'fabrication_kind must be one of: new, repair, service' });
+    }
+    issueStoreLocationId = toInt(b.issue_store_location_id) || 1; // Default Central Main Stores
+    workTarget = b.work_target === 'general' ? 'general' : 'vehicle';
+    if (workTarget === 'general') {
+      category = String(b.category || '').trim();
+      if (!category) return res.status(400).json({ error: 'General works requires a category.' });
+      costCentre = String(b.cost_centre || '').trim();
+      if (!costCentre) return res.status(400).json({ error: 'General works requires a cost centre (project or department).' });
+      drawingRef = String(b.drawing_ref || b.drawing_notes || '').trim();
+      if (!drawingRef && !b.drawing_path) {
+        return res.status(400).json({ error: 'General works requires a drawing reference or justification.' });
+      }
+      drawingPath = b.drawing_path || null;
+      drawingFilename = b.drawing_filename || null;
+      quantityOrSize = b.quantity_or_size || null;
+      deliverTo = b.deliver_to || null;
+    }
+  }
   const severity = SEVERITIES.includes(b.severity) ? b.severity : null;
   const priority = PRIORITIES.includes(b.priority) ? b.priority : 'normal';
 
@@ -120,12 +182,18 @@ router.post('/', requireCap('jobrequests.create'), asyncHandler((req, res) => {
   const reqBy = String(b.requested_by || '').trim() || (ru ? (ru.full_name || ru.username) : null);
   // The workshop it is for: the one chosen, else the raiser's own (Stage 3).
   const workshopId = workshops.forNew(req.user, b.workshop_id);
+  const serviceType = type === 'service' ? (String(b.service_type || '').trim() || null) : null;
+  const meterReading = String(b.meter_reading || '').trim() || null;
   const result = run(
     `INSERT INTO job_requests (jr_no, req_date, asset_id, project_id, type, severity, priority, description,
-                               required_date, requested_by, requested_by_user, requested_sig, workshop_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                               required_date, requested_by, requested_by_user, requested_sig, workshop_id,
+                               service_type, meter_reading, fabrication_kind, issue_store_location_id,
+                               work_target, category, drawing_ref, drawing_path, drawing_filename, cost_centre, quantity_or_size, deliver_to)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     jrNo, b.req_date || new Date().toISOString().slice(0, 10), assetId || null, toInt(b.project_id),
-    type, severity, priority, b.description, b.required_date || null, reqBy, req.user.id, ru ? ru.signature : null, workshopId
+    type, severity, priority, b.description, b.required_date || null, reqBy, req.user.id, ru ? ru.signature : null, workshopId,
+    serviceType, meterReading, fabricationKind, issueStoreLocationId,
+    workTarget, category, drawingRef, drawingPath, drawingFilename, costCentre, quantityOrSize, deliverTo
   );
   audit.record({ userId: req.user.id, entity: 'job_request', entityId: result.lastInsertRowid, action: 'create', after: { jr_no: jrNo } });
   // Raising a request is never blocked — transport must always be able to log a fault.
@@ -141,84 +209,86 @@ router.post('/', requireCap('jobrequests.create'), asyncHandler((req, res) => {
 router.post('/:id/certify', requireCap('jobrequests.certify'), asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   const jr = get('SELECT * FROM job_requests WHERE id = ?', id);
-  if (!jr) return res.status(404).json({ error: 'Job request not found' });
+  if (!jr || (jr.type === 'fabrication' && !isAdmin(req.user) && !hasCap(req.user, 'fabrication.view', 'jobrequests.certify'))) {
+    return res.status(404).json({ error: 'Job request not found' });
+  }
   if (jr.approval_status === 'approved') return res.status(409).json({ error: 'Already approved — cannot re-certify' });
   if (jr.approval_status === 'rejected') return res.status(409).json({ error: 'This request was rejected' });
-  const s = signer(req.user.id); const sig = req.body.signature || s.sig || null;
+  const actingFor = standIn.resolveActingFor(req.user, 'jobrequests.certify', req.body.stand_in_for);
+  { const no = requestRules.selfRefusal(req.user, 'jr', jr, 'certify', actingFor); if (no) return res.status(403).json(no); }   // Step 3a & 3b
+  const s = signer(req.user.id, actingFor); const sig = req.body.signature || s.sig || null;
+  const certRole = actingFor ? 'stand_in' : 'transport_manager';
   tx(() => {
-    run(`UPDATE job_requests SET approval_status = 'certified', certified_by = ?, certified_at = datetime('now'), certified_sig = ? WHERE id = ?`, s.name, sig, id);
-    run(`INSERT INTO job_request_approvals (job_request_id, stage, role, approver_id, signed_name, signature, decision, reason) VALUES (?, 'certify', 'transport_manager', ?, ?, ?, 'approved', ?)`, id, req.user.id, s.name, sig, req.body.reason || null);
+    // Step 3a: sealed as certified — approval checks nothing has changed since.
+    run(`UPDATE job_requests SET approval_status = 'certified', certified_by = ?, certified_at = datetime('now'), certified_sig = ?, certified_seal = ? WHERE id = ?`,
+      s.name, sig, requestRules.seal('jr', id), id);
+    run(`INSERT INTO job_request_approvals (job_request_id, stage, role, approver_id, signed_name, signature, decision, reason) VALUES (?, 'certify', ?, ?, ?, ?, 'approved', ?)`, id, certRole, req.user.id, s.name, sig, req.body.reason || null);
   });
-  audit.record({ userId: req.user.id, entity: 'job_request', entityId: id, action: 'certify', after: { certified_by: s.name }, reason: req.body.reason });
+  audit.record({ userId: req.user.id, entity: 'job_request', entityId: id, action: 'certify', after: { certified_by: s.name, stand_in_for: actingFor ? actingFor.id : null }, reason: req.body.reason });
   res.json(get('SELECT * FROM job_requests WHERE id = ?', id));
 }));
 
-// ---- approve (Operational Manager) → creates the job card ------------------
+// ---- approve (Operational Manager) → clears it for the workshop ------------
+// This is the last signature, not the job card. The workshop opens the card against the approved
+// request (POST /api/jobs with job_request_id), and the one-open-card-per-vehicle rule is checked
+// THERE, where a card is actually made. Here it is only reported: a request that has been through
+// three signatures must not be left unapprovable because of an unrelated card still open on the
+// vehicle — by the time the workshop opens this one, that card may well be closed.
 router.post('/:id/approve', requireCap('jobrequests.approve'), asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   const jr = get('SELECT * FROM job_requests WHERE id = ?', id);
-  if (!jr) return res.status(404).json({ error: 'Job request not found' });
+  if (!jr || (jr.type === 'fabrication' && !isAdmin(req.user) && !hasCap(req.user, 'fabrication.view', 'jobrequests.certify', 'jobrequests.approve'))) {
+    return res.status(404).json({ error: 'Job request not found' });
+  }
   if (jr.approval_status === 'rejected') return res.status(409).json({ error: 'This request was rejected' });
+  if (jr.approval_status === 'approved') return res.status(409).json({ error: 'Already approved' });
   if (jr.approval_status !== 'certified') return res.status(409).json({ error: 'Request must be certified (Transport Manager) before Operational Manager approval' });
+  const actingFor = standIn.resolveActingFor(req.user, 'jobrequests.approve', req.body.stand_in_for);
+  { const no = requestRules.selfRefusal(req.user, 'jr', jr, 'approve', actingFor); if (no) return res.status(403).json(no); }   // Step 3a & 3b
   const certRow = get(`SELECT approver_id FROM job_request_approvals WHERE job_request_id = ? AND stage = 'certify' AND decision = 'approved' ORDER BY id DESC LIMIT 1`, id);
-  if (certRow && certRow.approver_id === req.user.id && !isAdmin(req.user)) {
+  if (certRow && (certRow.approver_id === req.user.id || (actingFor && certRow.approver_id === actingFor.id)) && !isAdmin(req.user)) {
     return res.status(403).json({ error: 'Segregation of duties violation: approver cannot be the same person who certified the job request.' });
   }
-  // Approval is what creates the job card — so the one-open-card-per-vehicle rule
-  // applies here too. Checked BEFORE anything is written, so a blocked approval
-  // leaves the request exactly as it was.
-  const guard = jobstate.checkOneOpenJob(jr.asset_id);
-  if (!guard.ok) {
-    return res.status(409).json({
-      error: `${guard.blocking.job_no} (${guard.blocking.status}) is still open for this vehicle — close it, or add this work to that card.`,
-      blocking_job: guard.blocking,
-    });
+  // Step 3a: what was certified is what gets approved. Changed since: it goes back to be certified.
+  if (requestRules.changedSinceCertified('jr', jr)) {
+    tx(() => requestRules.withdrawJobRequest(jr, req.user.id));
+    audit.record({ userId: req.user.id, entity: 'job_request', entityId: id, action: 'update', reason: 'certification withdrawn — the request changed after signing' });
+    return res.status(409).json({ error: requestRules.CHANGED, recertification_required: true });
   }
-  const s = signer(req.user.id); const sig = req.body.signature || s.sig || null;
-  const out = tx(() => {
-    // Create the job card — already past both approval gates (this request WAS the approval).
-    const no = jobNo(jr.type);
-    // The card goes to the request's workshop (the raiser's, unless another was chosen).
-    const info = run(
-      `INSERT INTO job_cards (job_no, asset_id, project_id, type, severity, description, status,
-                              requested_by, requested_by_user, requested_at, approved_transport_at, approved_ops_at, workshop_id)
-       VALUES (?, ?, ?, ?, ?, ?, 'APPROVED_OPERATIONS', ?, ?, ?, datetime('now'), datetime('now'), ?)`,
-      no, jr.asset_id, jr.project_id, jr.type, jr.severity, jr.description,
-      jr.requested_by, jr.requested_by_user, jr.req_date || new Date().toISOString().slice(0, 10),
-      jr.workshop_id || workshops.homeOf(jr.requested_by_user ? { id: jr.requested_by_user } : null)
-    );
-    const jobId = info.lastInsertRowid;
-    // Mirror the two approvals onto the job card's own audit trail.
-    const certRow = get(`SELECT approver_id FROM job_request_approvals WHERE job_request_id = ? AND stage = 'certify' AND decision = 'approved' ORDER BY id DESC LIMIT 1`, id);
-    run(`INSERT INTO job_approvals (job_id, role, approver_id, decision, reason) VALUES (?, 'transport_manager', ?, 'approved', ?)`,
-      jobId, certRow ? certRow.approver_id : null, `Certified via Job Request ${jr.jr_no}${jr.certified_by ? ' by ' + jr.certified_by : ''}`);
-    run(`INSERT INTO job_approvals (job_id, role, approver_id, decision, reason) VALUES (?, 'operational_manager', ?, 'approved', ?)`,
-      jobId, req.user.id, `Approved via Job Request ${jr.jr_no}`);
-    run(`UPDATE job_requests SET approval_status = 'approved', approved_by = ?, approved_at = datetime('now'), approved_sig = ?, job_id = ? WHERE id = ?`, s.name, sig, jobId, id);
-    run(`INSERT INTO job_request_approvals (job_request_id, stage, role, approver_id, signed_name, signature, decision, reason) VALUES (?, 'approve', 'operational_manager', ?, ?, ?, 'approved', ?)`, id, req.user.id, s.name, sig, req.body.reason || null);
-    return jobId;
+  const s = signer(req.user.id, actingFor); const sig = req.body.signature || s.sig || null;
+  const appRole = actingFor ? 'stand_in' : 'operational_manager';
+  tx(() => {
+    run(`UPDATE job_requests SET approval_status = 'approved', approved_by = ?, approved_at = datetime('now'), approved_sig = ? WHERE id = ?`, s.name, sig, id);
+    run(`INSERT INTO job_request_approvals (job_request_id, stage, role, approver_id, signed_name, signature, decision, reason) VALUES (?, 'approve', ?, ?, ?, ?, 'approved', ?)`, id, appRole, req.user.id, s.name, sig, req.body.reason || null);
   });
-  costing.refreshJobTotals(out);
-  audit.record({ userId: req.user.id, entity: 'job_request', entityId: id, action: 'approve', after: { approved_by: s.name, job_id: out }, reason: req.body.reason });
-  res.json({ request: get('SELECT * FROM job_requests WHERE id = ?', id), job: get('SELECT id, job_no FROM job_cards WHERE id = ?', out) });
+  audit.record({ userId: req.user.id, entity: 'job_request', entityId: id, action: 'approve', after: { approved_by: s.name, stand_in_for: actingFor ? actingFor.id : null }, reason: req.body.reason });
+  res.json({
+    request: get('SELECT * FROM job_requests WHERE id = ?', id),
+    // A heads-up, not a refusal — the same one raising a request already gives.
+    open_job: jobstate.openJobFor(jr.asset_id),
+  });
 }));
 
 // ---- reject (Transport Manager or Operational Manager) --------------------
 router.post('/:id/reject', requireCap('jobrequests.reject'), asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   const jr = get('SELECT * FROM job_requests WHERE id = ?', id);
-  if (!jr) return res.status(404).json({ error: 'Job request not found' });
+  if (!jr || (jr.type === 'fabrication' && !isAdmin(req.user) && !hasCap(req.user, 'fabrication.view', 'jobrequests.certify', 'jobrequests.approve'))) {
+    return res.status(404).json({ error: 'Job request not found' });
+  }
   if (jr.approval_status === 'approved') return res.status(409).json({ error: 'Already approved — cannot reject' });
   if (!String(req.body.reason || '').trim()) return res.status(400).json({ error: 'A reason is required to reject' });
-  const s = signer(req.user.id);
+  const actingFor = standIn.resolveActingFor(req.user, 'jobrequests.reject', req.body.stand_in_for);
+  const s = signer(req.user.id, actingFor);
   const asApprover = hasCap(req.user, 'jobrequests.approve');
   const stage = asApprover ? 'approve' : 'certify';
+  const role = actingFor ? 'stand_in' : (asApprover ? 'operational_manager' : 'transport_manager');
   tx(() => {
     run(`UPDATE job_requests SET approval_status = 'rejected' WHERE id = ?`, id);
     run(`INSERT INTO job_request_approvals (job_request_id, stage, role, approver_id, signed_name, signature, decision, reason) VALUES (?, ?, ?, ?, ?, ?, 'rejected', ?)`,
-      id, stage, asApprover ? 'operational_manager' : 'transport_manager', req.user.id, s.name, req.body.signature || s.sig || null, req.body.reason);
+      id, stage, role, req.user.id, s.name, req.body.signature || s.sig || null, req.body.reason);
   });
-  audit.record({ userId: req.user.id, entity: 'job_request', entityId: id, action: 'reject', after: { by: s.name }, reason: req.body.reason });
+  audit.record({ userId: req.user.id, entity: 'job_request', entityId: id, action: 'reject', after: { by: s.name, stand_in_for: actingFor ? actingFor.id : null }, reason: req.body.reason });
   res.json(get('SELECT * FROM job_requests WHERE id = ?', id));
 }));
 
@@ -282,12 +352,12 @@ router.get('/:id/print.html', asyncHandler((req, res) => {
     <div><b>Project:</b> ${esc(jr.project_name || '')}</div>
     <div><b>Required Date:</b> ${esc(d(jr.required_date))}</div>
     <div><b>Priority:</b> ${esc(jr.priority || 'normal')}</div>
-    <div><b>Job Card:</b> ${esc(jr.job_no || '(created on approval)')}</div>
+    <div><b>Job Card:</b> ${esc(jr.job_no || '(opened by the workshop)')}</div>
     <div><b>Requested by:</b> ${esc(jr.requested_by || '')}</div>
   </div>
   <div class="desc"><span class="k">Work requested</span>${esc(jr.description || '')}</div>
   <div class="sign">
-    ${sigBlock('Requested By', jr.requested_by, jr.req_date, 'Assistant Transport Manager', jr.requested_sig, false)}
+    ${sigBlock('Requested By', jr.requested_by, jr.req_date, 'Transport Assistant Manager', jr.requested_sig, false)}
     ${sigBlock('Certified By', jr.certified_by, jr.certified_at, 'Transport Manager', jr.certified_sig, false)}
     ${sigBlock('Approved By', jr.approved_by, jr.approved_at, 'Operational Manager', jr.approved_sig, true)}
   </div>

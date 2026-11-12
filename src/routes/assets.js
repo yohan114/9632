@@ -14,7 +14,7 @@ const router = express.Router();
 const MUTABLE = [
   'registration', 'ec_code', 'brand', 'type', 'model_no', 'capacity', 'yom',
   'serial_no', 'chassis_no', 'engine_no', 'asset_class', 'home_project_id',
-  'current_project_id', 'status', 'running_hours', 'notes',
+  'current_project_id', 'status', 'running_hours', 'notes', 'in_register',
 ];
 
 // Columns that must hold a number or nothing. An HTML <select>/<input> that the user left
@@ -28,7 +28,7 @@ const cleanValue = (col, v) => {
   return Number.isFinite(n) ? n : null;
 };
 
-function listAssets(query = {}) {
+function listAssets(query = {}, user = null) {
   const clauses = [];
   const params = [];
   if (query.q) {
@@ -36,7 +36,33 @@ function listAssets(query = {}) {
     const like = '%' + query.q + '%';
     params.push(like, like, like, like);
   }
-  if (query.project_id) { clauses.push('a.current_project_id = ?'); params.push(toInt(query.project_id)); }
+  if (user && !user.isAllSitesMode) {
+    if (user.activeProjectId) {
+      if (query.project_id) {
+        const reqPid = toInt(query.project_id);
+        if (reqPid !== user.activeProjectId) {
+          // Empty intersection: user is not authorized for requested foreign project
+          clauses.push('1 = 0');
+        } else {
+          clauses.push('(a.current_project_id = ? OR a.home_project_id = ?)');
+          params.push(user.activeProjectId, user.activeProjectId);
+        }
+      } else {
+        clauses.push('(a.current_project_id = ? OR a.home_project_id = ?)');
+        params.push(user.activeProjectId, user.activeProjectId);
+      }
+    } else if (user.activeWorkshopId) {
+      if (query.workshop_id && toInt(query.workshop_id) !== user.activeWorkshopId) {
+        clauses.push('1 = 0');
+      } else {
+        clauses.push('(EXISTS (SELECT 1 FROM job_cards j WHERE j.asset_id = a.id AND j.workshop_id = ?) OR EXISTS (SELECT 1 FROM service_jobs s WHERE s.asset_id = a.id AND s.workshop_id = ?))');
+        params.push(user.activeWorkshopId, user.activeWorkshopId);
+      }
+    }
+  } else if (query.project_id) {
+    clauses.push('a.current_project_id = ?');
+    params.push(toInt(query.project_id));
+  }
   if (query.status) { clauses.push('a.status = ?'); params.push(query.status); }
   if (query.asset_class) { clauses.push('a.asset_class = ?'); params.push(query.asset_class); }
   if (query.in_register !== undefined) { clauses.push('a.in_register = ?'); params.push(toInt(query.in_register)); }
@@ -55,10 +81,16 @@ function listAssets(query = {}) {
   );
 }
 
-router.get('/', asyncHandler((req, res) => res.json(listAssets(req.query))));
+// Without Assets, the list is for the pickers: which vehicle, not what it has cost.
+const PICKER_FIELDS = ['id', 'code', 'registration', 'ec_code', 'asset_class', 'type', 'brand'];
+router.get('/', asyncHandler((req, res) => {
+  const rows = listAssets(req.query, req.user);
+  if (require('../lib/permissions').reaches(req.user, 'assets')) return res.json(rows);
+  res.json(rows.map((r) => Object.fromEntries(PICKER_FIELDS.filter((k) => k in r).map((k) => [k, r[k]]))));
+}));
 
-router.get('/export.xlsx', asyncHandler(async (req, res) => {
-  const rows = listAssets({ ...req.query, limit: 100000 });
+router.get('/export.xlsx', requireCap('assets.export', 'assets.view'), asyncHandler(async (req, res) => {
+  const rows = listAssets({ ...req.query, limit: 100000 }, req.user);
   await sendXlsx(res, 'assets.xlsx', [{
     name: 'Assets',
     columns: [
@@ -72,33 +104,59 @@ router.get('/export.xlsx', asyncHandler(async (req, res) => {
   }]);
 }));
 
-// Lightweight typeahead for vehicle/asset pickers — code + registration only.
+// Lightweight typeahead for vehicle/asset pickers — scoped to user project/workshop
 router.get('/search', asyncHandler((req, res) => {
   const q = String(req.query.q || '').trim();
+  const user = req.user;
+  const clauses = [];
+  const params = [];
   if (q) {
     const like = '%' + q + '%';
-    return res.json(all(
-      `SELECT id, code, registration, asset_class FROM assets
-        WHERE code LIKE ? OR registration LIKE ? OR ec_code LIKE ?
-        ORDER BY (code = ?) DESC, in_register DESC, code
-        LIMIT ${toInt(req.query.limit, 20)}`,
-      like, like, like, q));
+    clauses.push('(code LIKE ? OR registration LIKE ? OR ec_code LIKE ?)');
+    params.push(like, like, like);
   }
-  res.json(all(`SELECT id, code, registration, asset_class FROM assets ORDER BY in_register DESC, code LIMIT ${toInt(req.query.limit, 20)}`));
+  if (user && !user.isAllSitesMode) {
+    if (user.activeProjectId) {
+      clauses.push('(current_project_id = ? OR home_project_id = ?)');
+      params.push(user.activeProjectId, user.activeProjectId);
+    } else if (user.activeWorkshopId) {
+      clauses.push('(EXISTS (SELECT 1 FROM job_cards j WHERE j.asset_id = assets.id AND j.workshop_id = ?) OR EXISTS (SELECT 1 FROM service_jobs s WHERE s.asset_id = assets.id AND s.workshop_id = ?))');
+      params.push(user.activeWorkshopId, user.activeWorkshopId);
+    }
+  }
+  const where = clauses.length ? 'WHERE ' + clauses.join(' AND ') : '';
+  const orderClause = q ? 'ORDER BY in_register DESC, code' : 'ORDER BY in_register DESC, code';
+  res.json(all(`SELECT id, code, registration, asset_class FROM assets ${where} ${orderClause} LIMIT ${toInt(req.query.limit, 20)}`, ...params));
 }));
 
-router.get('/:id', asyncHandler((req, res) => {
+router.get('/:id', requireCap('assets.view'), asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   const asset = get('SELECT * FROM assets WHERE id = ?', id);
   if (!asset) return res.status(404).json({ error: 'Asset not found' });
+  if (req.user && !req.user.isAllSitesMode) {
+    if (req.user.activeProjectId) {
+      const isCur = asset.current_project_id === req.user.activeProjectId;
+      const isHome = asset.home_project_id === req.user.activeProjectId;
+      if (!isCur && !isHome) {
+        return res.status(404).json({ error: 'Asset not found' });
+      }
+    }
+  }
   const current_project = asset.current_project_id ? get('SELECT * FROM projects WHERE id = ?', asset.current_project_id) : null;
   const current_battery = get(`SELECT * FROM batteries WHERE current_asset_id = ? AND state='installed' LIMIT 1`, id);
   // A vehicle is shared by every workshop (Stage 3), so all its cards are listed — but a card of
   // another workshop shows only its number, status and workshop: no description, no cost, no link.
   const scope = require('../lib/scope');
   const WS = '(SELECT name FROM workshops w WHERE w.id = job_cards.workshop_id) AS workshop_name, workshop_id';
-  const veil = (j) => (scope.mayReach(req.user, j.workshop_id) ? { ...j, reachable: true }
-    : { id: j.id, job_no: j.job_no, status: j.status, type: j.type, workshop_name: j.workshop_name, workshop_id: j.workshop_id, reachable: false });
+  const veil = (j) => {
+    if (scope.mayReach(req.user, j.workshop_id)) {
+      return { ...j, reachable: true, read_only: scope.isReadOnly(req.user, j.workshop_id) };
+    }
+    if (scope.mayRead(req.user, j.workshop_id, 'job')) {
+      return { ...j, reachable: true, read_only: true };
+    }
+    return { id: j.id, job_no: j.job_no, status: j.status, type: j.type, workshop_name: j.workshop_name, workshop_id: j.workshop_id, reachable: false };
+  };
   const open_jobs = all(`SELECT id, job_no, type, status, description, total_cost, ${WS} FROM job_cards WHERE asset_id = ? AND ${jobstate.openSql()} ORDER BY id DESC`, id).map(veil);
   // Partly closed (W2): the vehicle has left them, but prices or records are still to come.
   const partly_closed_jobs = all(`SELECT id, job_no, type, status, description, total_cost, partial_closed_at, ${WS} FROM job_cards WHERE asset_id = ? AND status = ? ORDER BY id DESC`, id, jobstate.PARTIAL).map(veil);
@@ -169,12 +227,32 @@ router.post('/', requireCap('assets.create'), asyncHandler((req, res) => {
   require_(b, ['code']);
   const norm = aliases.normalize(b.code);
   if (get('SELECT id FROM assets WHERE code_norm = ?', norm)) return res.status(409).json({ error: 'Asset code already exists' });
-  const given = MUTABLE.filter((c) => b[c] !== undefined);
-  const cols = ['code', 'code_norm', ...given];
-  const vals = [b.code, norm, ...given.map((c) => cleanValue(c, b[c]))];
+
+  // Default in_register to 1 when adding an asset manually from UI/API unless explicitly set to 0
+  const inRegister = b.in_register !== undefined ? (Number(b.in_register) ? 1 : 0) : 1;
+  const given = MUTABLE.filter((c) => c !== 'in_register' && b[c] !== undefined);
+  const cols = ['code', 'code_norm', 'in_register', ...given];
+  const vals = [b.code, norm, inRegister, ...given.map((c) => cleanValue(c, b[c]))];
   const info = run(`INSERT INTO assets (${cols.join(',')}) VALUES (${cols.map(() => '?').join(',')})`, ...vals);
-  audit.record({ userId: req.user.id, entity: 'asset', entityId: info.lastInsertRowid, action: 'create', after: { code: b.code } });
-  res.status(201).json(get('SELECT * FROM assets WHERE id = ?', info.lastInsertRowid));
+  const newAssetId = info.lastInsertRowid;
+
+  // Auto-resolve any pending aliases that match the new asset's code or registration
+  const regNorm = b.registration ? aliases.normalize(b.registration) : null;
+  const pending = all(
+    'SELECT id FROM asset_aliases WHERE (raw_norm = ? OR (raw_norm = ? AND ? IS NOT NULL)) AND resolved = 0',
+    norm, regNorm, regNorm
+  );
+  for (const p of pending) {
+    aliases.linkAlias(p.id, newAssetId);
+  }
+  // Record canonical code and registration aliases as resolved
+  aliases.bumpAlias(norm, b.code, newAssetId, true, 'manual');
+  if (regNorm && regNorm !== norm) {
+    aliases.bumpAlias(regNorm, b.registration, newAssetId, true, 'manual');
+  }
+
+  audit.record({ userId: req.user.id, entity: 'asset', entityId: newAssetId, action: 'create', after: { code: b.code, in_register: inRegister } });
+  res.status(201).json(get('SELECT * FROM assets WHERE id = ?', newAssetId));
 }));
 
 router.patch('/:id', requireCap('assets.edit'), asyncHandler((req, res) => {
@@ -199,6 +277,132 @@ router.patch('/:id', requireCap('assets.edit'), asyncHandler((req, res) => {
   const after = get('SELECT * FROM assets WHERE id = ?', id);
   audit.record({ userId: req.user.id, entity: 'asset', entityId: id, action: 'update', before, after });
   res.json(after);
+}));
+
+// Vehicle documents & statutory renewal compliance (Phase 3)
+router.get('/:id/documents', requireCap('vehicle_docs.view'), asyncHandler((req, res) => {
+  const id = toInt(req.params.id);
+  const asset = get('SELECT id FROM assets WHERE id = ?', id);
+  if (!asset) return res.status(404).json({ error: 'Asset not found' });
+  const today = req.query.today ? String(req.query.today).trim() : undefined;
+  const docs = require('../lib/vehicle_documents').getVehicleDocuments(id, { today });
+  res.json(docs);
+}));
+
+router.get('/:id/erl-checklist', requireCap('vehicle_docs.view'), asyncHandler((req, res) => {
+  const id = toInt(req.params.id);
+  const asset = get('SELECT id FROM assets WHERE id = ?', id);
+  if (!asset) return res.status(404).json({ error: 'Asset not found' });
+  const targetDate = req.query.targetDate || req.query.target_date;
+  const evaluation = require('../lib/vehicle_documents').evaluateErlChecklist(id, { targetDate });
+  res.json(evaluation);
+}));
+
+// Initialize asset_images table
+try {
+  run(`
+    CREATE TABLE IF NOT EXISTS asset_images (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      asset_id INTEGER NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+      url TEXT NOT NULL,
+      category TEXT NOT NULL DEFAULT 'exterior',
+      title TEXT,
+      description TEXT,
+      file_size INTEGER,
+      uploaded_by INTEGER REFERENCES users(id),
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+  `);
+  run(`CREATE INDEX IF NOT EXISTS idx_asset_images_asset ON asset_images(asset_id)`);
+  run(`CREATE INDEX IF NOT EXISTS idx_asset_images_category ON asset_images(category)`);
+} catch (e) {
+  console.error('Failed to init asset_images table:', e);
+}
+
+// Multi-category image gallery endpoints (Images 2 & 4)
+router.get('/:id/images', requireCap('assets.view'), asyncHandler((req, res) => {
+  const assetId = toInt(req.params.id);
+  const asset = get('SELECT id FROM assets WHERE id = ?', assetId);
+  if (!asset) return res.status(404).json({ error: 'Asset not found' });
+  const category = req.query.category ? String(req.query.category).trim() : null;
+  let sql = `
+    SELECT ai.*, u.full_name AS uploaded_by_name, u.username AS uploaded_by_username
+      FROM asset_images ai
+      LEFT JOIN users u ON u.id = ai.uploaded_by
+     WHERE ai.asset_id = ?
+  `;
+  const params = [assetId];
+  if (category && category !== 'all') {
+    sql += ` AND ai.category = ?`;
+    params.push(category);
+  }
+  sql += ` ORDER BY ai.created_at DESC`;
+  const images = all(sql, ...params);
+  res.json({ asset_id: assetId, images });
+}));
+
+router.post('/:id/images', requireCap('assets.photo.upload', 'assets.edit'), asyncHandler((req, res) => {
+  const assetId = toInt(req.params.id);
+  const asset = get('SELECT id FROM assets WHERE id = ?', assetId);
+  if (!asset) return res.status(404).json({ error: 'Asset not found' });
+  require_(req.body, ['url']);
+  const url = String(req.body.url).trim();
+  const category = (req.body.category || 'exterior').toLowerCase().trim();
+  const title = (req.body.title || '').trim() || null;
+  const description = (req.body.description || '').trim() || null;
+  const fileSize = req.body.file_size ? toInt(req.body.file_size) : null;
+  const info = run(
+    `INSERT INTO asset_images (asset_id, url, category, title, description, file_size, uploaded_by)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    assetId, url, category, title, description, fileSize, req.user ? req.user.id : null
+  );
+  const created = get('SELECT * FROM asset_images WHERE id = ?', info.lastInsertRowid);
+  audit.record({ userId: req.user ? req.user.id : null, entity: 'asset_image', entityId: created.id, action: 'upload', after: { assetId, category, title } });
+  res.status(201).json(created);
+}));
+
+router.patch('/images/:imageId', requireCap('assets.photo.upload', 'assets.edit'), asyncHandler((req, res) => {
+  const imageId = toInt(req.params.imageId);
+  const before = get('SELECT * FROM asset_images WHERE id = ?', imageId);
+  if (!before) return res.status(404).json({ error: 'Image not found' });
+  const title = req.body.title !== undefined ? req.body.title : before.title;
+  const category = req.body.category !== undefined ? req.body.category.toLowerCase().trim() : before.category;
+  const description = req.body.description !== undefined ? req.body.description : before.description;
+  run(
+    `UPDATE asset_images SET title = ?, category = ?, description = ? WHERE id = ?`,
+    title, category, description, imageId
+  );
+  const after = get('SELECT * FROM asset_images WHERE id = ?', imageId);
+  audit.record({ userId: req.user ? req.user.id : null, entity: 'asset_image', entityId: imageId, action: 'update', before, after });
+  res.json(after);
+}));
+
+router.delete('/images/:imageId', requireCap('assets.photo.upload', 'assets.edit'), asyncHandler((req, res) => {
+  const imageId = toInt(req.params.imageId);
+  const before = get('SELECT * FROM asset_images WHERE id = ?', imageId);
+  if (!before) return res.status(404).json({ error: 'Image not found' });
+  run('DELETE FROM asset_images WHERE id = ?', imageId);
+  audit.record({ userId: req.user ? req.user.id : null, entity: 'asset_image', entityId: imageId, action: 'delete', before });
+  res.json({ ok: true, deleted_id: imageId });
+}));
+
+// Delete asset (or soft-decommission if linked to work orders or documents)
+router.delete('/:id', requireCap('assets.delete'), asyncHandler((req, res) => {
+  const id = toInt(req.params.id);
+  const asset = get('SELECT * FROM assets WHERE id = ?', id);
+  if (!asset) return res.status(404).json({ error: 'Asset not found' });
+
+  const hasJobs = get('SELECT 1 FROM job_cards WHERE asset_id = ? LIMIT 1', id);
+  const hasDocs = get('SELECT 1 FROM vehicle_documents WHERE asset_id = ? LIMIT 1', id);
+  if (hasJobs || hasDocs) {
+    run("UPDATE assets SET status = 'scrapped', in_register = 0, updated_at = datetime('now') WHERE id = ?", id);
+    audit.record({ userId: req.user.id, entity: 'asset', entityId: id, action: 'deactivate', before: asset });
+    return res.json({ ok: true, deactivated: true, message: 'Asset has historical records; decommissioned and archived instead of purged' });
+  }
+
+  run('DELETE FROM assets WHERE id = ?', id);
+  audit.record({ userId: req.user.id, entity: 'asset', entityId: id, action: 'delete', before: asset });
+  res.json({ ok: true, deleted: true });
 }));
 
 module.exports = router;

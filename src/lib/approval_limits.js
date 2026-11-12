@@ -60,13 +60,51 @@ function limitFor(user, kind) {
   kindDef(kind);
   const roles = (user && user.roles) || [];
   if (isAdminRoles(roles)) return null;
+
+  // Step 3b (Decision D9): Stand-in approvals inherit the granter's limit.
+  let delegatedBest = 0;
+  let hasDelegationForKind = false;
+  let granterUnlimited = false;
+
+  if (user && user.id && !user.skipDelegations) {
+    try {
+      const standIn = require('./stand_in');
+      const delegations = standIn.getActiveDelegationsFor(user.id);
+      for (const d of delegations) {
+        const granter = get('SELECT id, active, access_until FROM users WHERE id = ?', d.granter_id);
+        if (!granter || !granter.active) continue;
+        granter.roles = all('SELECT r.name FROM roles r JOIN user_roles ur ON ur.role_id = r.id WHERE ur.user_id = ?', granter.id).map((r) => r.name);
+        const granterGiving = rolesGiving(granter.roles, kind);
+        if (granterGiving.length > 0) {
+          hasDelegationForKind = true;
+          const gLimit = limitFor({ ...granter, skipDelegations: true }, kind);
+          if (gLimit === null) {
+            granterUnlimited = true;
+          } else {
+            delegatedBest = Math.max(delegatedBest, gLimit);
+          }
+        }
+      }
+    } catch {
+      // safe fallback before stand_in table is initialized
+    }
+  }
+
+  if (granterUnlimited) return null;
+
   const giving = rolesGiving(roles, kind);
-  if (!giving.length) return null;   // the route's own capability check refuses them first
+  if (!giving.length) {
+    if (hasDelegationForKind) return delegatedBest;
+    return null;   // the route's own capability check refuses them first
+  }
   let best = 0;
   for (const role of giving) {
     const row = limitRow(role, kind);
     if (!row) return null;
     best = Math.max(best, row.max_amount);
+  }
+  if (hasDelegationForKind) {
+    best = Math.max(best, delegatedBest);
   }
   return best;
 }

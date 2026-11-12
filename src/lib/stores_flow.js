@@ -64,7 +64,9 @@ const LINE_SQL = `
                          - (SELECT COALESCE(SUM(r.qty), 0) FROM issue_returns r JOIN issues i ON i.id = r.issue_id WHERE i.grn_id = g.id)) AS shelf_grn_id,
          ${ISSUED_SQL} AS issued,
          (SELECT ROUND(COALESCE(SUM(g.qty * g.unit_price), 0), 2) FROM grn g WHERE g.mrn_line_id = ml.id AND g.unit_price IS NOT NULL) AS value,
-         (SELECT MAX(date(NULLIF(g.delivery_date, ''))) FROM grn g WHERE g.mrn_line_id = ml.id) AS last_received
+         m.approved_at,
+         (SELECT MIN(date(COALESCE(NULLIF(TRIM(g.delivery_date), ''), NULLIF(TRIM(g.grn_date), '')))) FROM grn g WHERE g.mrn_line_id = ml.id AND COALESCE(g.qty, 0) > 0) AS first_received,
+         (SELECT MAX(date(COALESCE(NULLIF(TRIM(g.delivery_date), ''), NULLIF(TRIM(g.grn_date), '')))) FROM grn g WHERE g.mrn_line_id = ml.id AND COALESCE(g.qty, 0) > 0) AS last_received
     FROM mrn_lines ml
     JOIN mrn m ON m.id = ml.mrn_id
     LEFT JOIN assets a ON a.id = m.asset_id
@@ -164,8 +166,20 @@ function lines(user, query = {}) {
       ORDER BY x.req_date DESC, x.mrn_id DESC, x.id
       LIMIT ${limit}`, ...p);
   const stock = require('./stock');
+  const { diffDays, classifyDelayBand } = require('./request_delay_report');
+  const todayStr = new Date().toISOString().slice(0, 10);
   for (const r of rows) {
     r.step = stepOf(r);
+    const reqD = r.req_date ? String(r.req_date).slice(0, 10) : '';
+    const recD = r.last_received ? String(r.last_received).slice(0, 10) : '';
+    r.delay_days = (r.received > 0 && reqD && recD) ? diffDays(reqD, recD) : null;
+    r.waiting_days = (r.received < r.qty - 0.001 && reqD && r.approval_status !== 'rejected' && r.mrn_status !== 'cancelled')
+      ? diffDays(reqD, todayStr)
+      : null;
+    const eff = r.delay_days != null ? r.delay_days : r.waiting_days;
+    const band = classifyDelayBand(eff);
+    r.delay_band = band.key;
+    r.delay_badge = band.badge;
     r.road = roadOf(r, r.step);
     r.on_shelf = r.request_type === 'general' ? 0 : Math.max(0, Math.round((r.received - r.issued) * 100) / 100);
     // What the line's buttons act on: the receipt still on the shelf (to issue), and the receipt
@@ -211,7 +225,7 @@ function monitor(user) {
   const st = store ? ' AND store_id = ?' : '';
   const sp = store ? [store] : [];
   const issued_today = get(`SELECT COUNT(*) n FROM issues WHERE date(issue_date) = date('now', 'localtime')${st}`, ...sp).n
-    + get("SELECT COUNT(*) n FROM tyre_battery_issues WHERE date(issue_date) = date('now', 'localtime')").n;
+    + get(`SELECT COUNT(*) n FROM tyre_battery_issues WHERE date(issue_date) = date('now', 'localtime')${st}`, ...sp).n;
   const received_today = get(`SELECT COUNT(*) n FROM grn WHERE date(NULLIF(delivery_date, '')) = date('now', 'localtime')${st}`, ...sp).n;
   const transfers_week = store
     ? get(`SELECT COUNT(DISTINCT t.id) n FROM mtn t JOIN mtn_lines l ON l.mtn_id = t.id
@@ -225,7 +239,7 @@ function monitor(user) {
   let low_stock = 0;
   for (const sid of storeIds) for (const section of stock.SECTIONS) low_stock += stock.items(section, null, 5000, { store: sid, low: true }).length;
 
-  const battery_warranty = require('./intelligence').warrantyRadar(60).expiring.length;
+  const battery_warranty = require('./intelligence').warrantyRadar(60, { store }).expiring.length;
 
   // Stock takes (Part 2): being counted, and waiting for head office.
   const stock_takes = require('./stock_count').waiting(store);
@@ -237,10 +251,11 @@ function monitor(user) {
                               WHERE i.source = 'request' AND i.kind IN ('tyre','battery')
                                 AND NOT EXISTS (SELECT 1 FROM tb_returns r WHERE r.issue_id = i.id)${store ? ' AND i.store_id = ?' : ''}`, ...sp);
   const disposals = require('./disposal').waiting(store);
+  const open_discrepancies = (get("SELECT COUNT(*) n FROM delivery_discrepancies WHERE status IN ('open', 'investigating')") || {}).n || 0;
 
   return {
     steps: counts, to_certify, to_approve, issued_today, received_today, transfers_week, low_stock, battery_warranty, stock_takes,
-    old_units_due, disposals,
+    old_units_due, disposals, open_discrepancies,
     store: store ? { id: store, label: stores.label(store) } : null,
   };
 }

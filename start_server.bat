@@ -32,23 +32,23 @@ if not exist "node_modules\" (
     )
 )
 
-:: 3. Check if server is already listening on port 1929
-netstat -ano | findstr /C:":1929 " | findstr "LISTENING" >nul 2>&1
+:: 3. Check if server is already listening on port 1949
+netstat -ano | findstr /C:":1949 " | findstr "LISTENING" >nul 2>&1
 if %ERRORLEVEL% equ 0 (
-    echo [NOTE] WorkshopOne server is already running on port 1929.
-    echo [INFO] Opening browser at http://localhost:1929 ...
-    start "" "http://localhost:1929"
+    echo [NOTE] WorkshopOne server is already running on port 1949.
+    echo [INFO] Opening browser at http://localhost:1949 ...
+    start "" "http://localhost:1949"
     goto end
 )
 
 :: 4. Start the server
 echo [INFO] Starting WorkshopOne Server...
-echo [INFO] Local Address:  http://localhost:1929
+echo [INFO] Local Address:  http://localhost:1949
 echo [INFO] Press Ctrl+C in this window at any time to stop the server.
 echo.
 
 :: Open browser
-start "" "http://localhost:1929"
+start "" "http://localhost:1949"
 
 :: Run Node server
 node src/server.js

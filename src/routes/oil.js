@@ -13,8 +13,32 @@ const { sendXlsx } = require('../lib/export');
 
 const lubricants = require('../lib/lubricants');
 const stores = require('../lib/stores');
+const scope = require('../lib/scope');
+const stock = require('../lib/stock');
 
 const router = express.Router();
+
+// ---- Improvement plan, Step 2: one store's oil for someone kept to it ---------------------------
+// The book below was written for one company store: its stock figure, reorder level and counts are
+// the company's. With the workshops kept apart and more than one store, someone outside head office
+// sees their own store — its shelf (src/lib/stock.js), its own reorder levels, its own movements —
+// and counts it in the Stock panel. Products, prices and names stay the company's.
+const ownLedger = (user, alias = 'sl.') => scope.storeFilter(user, alias + 'store_id');
+/** Rows carrying stock_qty and reorder_level, put onto one store's shelf when the person is kept to it. */
+function onOwnShelf(user, rows) {
+  const store = scope.ownStore(user);
+  if (!store) return rows;
+  const bal = stock.storeBalances('oil', store);
+  const lvl = stock.storeLevels('oil', store);
+  for (const r of rows) {
+    const k = stock.itemKey('oil', r.name, r.code || r.name);
+    r.stock_qty = bal.get(k) || 0;
+    r.reorder_level = lvl.get(k) || 0;
+    if ('total_value' in r) r.total_value = Math.round(r.stock_qty * (Number(r.unit_price) || 0) * 100) / 100;
+  }
+  return rows;
+}
+const companyCountsRefusal = (user) => (scope.ownStore(user) ? stores.wholeCountRefusal() : null);
 
 // ---- naming: which lubricant is this? -------------------------------------
 // Every product now carries the code the unified catalogue minted for it (OIL-0001…), and a
@@ -89,9 +113,11 @@ function currentBalance(productId) {
 }
 
 // ---- products -------------------------------------------------------------
-router.get('/products', asyncHandler((_req, res) => {
+router.get('/products', asyncHandler((req, res) => {
   const rows = all('SELECT * FROM products ORDER BY name');
   for (const p of rows) p.current_balance = currentBalance(p.id);
+  // Step 2c: kept to your own store, its quantity — not the company's one figure.
+  if (scope.ownStore(req.user)) for (const p of onOwnShelf(req.user, rows)) p.current_balance = p.stock_qty;
   res.json(rows);
 }));
 
@@ -160,6 +186,7 @@ router.get('/ledger', asyncHandler((req, res) => {
   if (req.query.asset_id) { clauses.push('sl.asset_id = ?'); params.push(toInt(req.query.asset_id)); }
   if (req.query.from) { clauses.push('sl.txn_date >= ?'); params.push(req.query.from); }
   if (req.query.to) { clauses.push('sl.txn_date <= ?'); params.push(req.query.to); }
+  { const own = ownLedger(req.user); if (own.sql) { clauses.push(own.sql); params.push(...own.params); } }
   const where = clauses.length ? 'WHERE ' + clauses.join(' AND ') : '';
   res.json(all(
     `SELECT sl.*, pr.name AS product_name, pr.unit, a.code AS asset_code FROM stock_ledger sl
@@ -252,9 +279,10 @@ router.post('/ledger', requireCap('oil.ledger.post'), asyncHandler((req, res) =>
   res.status(201).json({ ledger: get('SELECT * FROM stock_ledger WHERE id = ?', ledgerId), unresolved });
 }));
 
-router.get('/balances', asyncHandler((_req, res) => {
-  const rows = all('SELECT id, name, unit, reorder_level FROM products ORDER BY name');
-  res.json(rows.map((p) => ({ product_id: p.id, name: p.name, unit: p.unit, balance: currentBalance(p.id), reorder_level: p.reorder_level })));
+router.get('/balances', asyncHandler((req, res) => {
+  const rows = all('SELECT id, code, name, unit, reorder_level FROM products ORDER BY name')
+    .map((p) => ({ ...p, stock_qty: currentBalance(p.id) }));
+  res.json(onOwnShelf(req.user, rows).map((p) => ({ product_id: p.id, name: p.name, unit: p.unit, balance: p.stock_qty, reorder_level: p.reorder_level })));
 }));
 
 // ---- stock summary / low stock / consumption (oil-stock page) --------------
@@ -265,8 +293,8 @@ const OIL_STOCK_COLS = `id, code, name, sheet_name, unit, category, COALESCE(reo
   ROUND(COALESCE(stock_qty,0) * COALESCE(unit_price,0), 2) AS total_value`;
 
 // Products with current stock + valuation, grouped by category, plus headline totals.
-router.get('/stock-summary', asyncHandler((_req, res) => {
-  const products = all(`SELECT ${OIL_STOCK_COLS} FROM products WHERE active = 1 ORDER BY category, name`);
+router.get('/stock-summary', asyncHandler((req, res) => {
+  const products = onOwnShelf(req.user, all(`SELECT ${OIL_STOCK_COLS} FROM products WHERE active = 1 ORDER BY category, name`));
   const groups = {};
   let totalLitres = 0, totalValue = 0, lowCount = 0;
   for (const p of products) {
@@ -285,10 +313,10 @@ router.get('/stock-summary', asyncHandler((_req, res) => {
 }));
 
 // Products at or below their reorder level (or out of stock).
-router.get('/low-stock', asyncHandler((_req, res) => {
-  const rows = all(`SELECT ${OIL_STOCK_COLS} FROM products
-     WHERE active = 1 AND (COALESCE(stock_qty,0) <= 0 OR (COALESCE(reorder_level,0) > 0 AND COALESCE(stock_qty,0) <= reorder_level))
-     ORDER BY (COALESCE(stock_qty,0) - COALESCE(reorder_level,0)) ASC, name`);
+router.get('/low-stock', asyncHandler((req, res) => {
+  const rows = onOwnShelf(req.user, all(`SELECT ${OIL_STOCK_COLS} FROM products WHERE active = 1`))
+    .filter((r) => r.stock_qty <= 0 || (r.reorder_level > 0 && r.stock_qty <= r.reorder_level))
+    .sort((a, b) => (a.stock_qty - a.reorder_level) - (b.stock_qty - b.reorder_level) || String(a.name).localeCompare(String(b.name)));
   for (const r of rows) r.status = oilStatus(r.stock_qty, r.reorder_level);
   res.json(rows);
 }));
@@ -301,25 +329,27 @@ router.get('/consumption/:year/:month', asyncHandler((req, res) => {
   const ym = String(year) + '-' + String(month).padStart(2, '0'); // 'YYYY-MM'
   const CONS = `SUM(ABS(sl.qty))`;
   const COST = `SUM(ABS(sl.qty) * COALESCE(sl.unit_price, p.unit_price, 0))`;
-  const where = `sl.kind = 'issue' AND COALESCE(sl.voided,0) = 0 AND substr(sl.txn_date,1,7) = ?`;
+  const own = ownLedger(req.user);
+  const where = `sl.kind = 'issue' AND COALESCE(sl.voided,0) = 0 AND substr(sl.txn_date,1,7) = ?${own.sql ? ` AND ${own.sql}` : ''}`;
   const by_product = all(
     `SELECT p.id AS product_id, p.name, p.category, p.unit, ROUND(${CONS},2) AS litres, ROUND(${COST},2) AS cost
        FROM stock_ledger sl JOIN products p ON p.id = sl.product_id
-      WHERE ${where} GROUP BY p.id ORDER BY litres DESC`, ym);
+      WHERE ${where} GROUP BY p.id ORDER BY litres DESC`, ym, ...own.params);
   const by_category = all(
     `SELECT COALESCE(p.category,'other') AS category, ROUND(${CONS},2) AS litres, ROUND(${COST},2) AS cost
        FROM stock_ledger sl JOIN products p ON p.id = sl.product_id
-      WHERE ${where} GROUP BY 1 ORDER BY litres DESC`, ym);
+      WHERE ${where} GROUP BY 1 ORDER BY litres DESC`, ym, ...own.params);
   const by_vehicle = all(
     `SELECT sl.asset_id, a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec,
             ROUND(${CONS},2) AS litres, ROUND(${COST},2) AS cost
        FROM stock_ledger sl JOIN products p ON p.id = sl.product_id LEFT JOIN assets a ON a.id = sl.asset_id
-      WHERE ${where} AND sl.asset_id IS NOT NULL GROUP BY sl.asset_id ORDER BY litres DESC LIMIT 50`, ym);
+      WHERE ${where} AND sl.asset_id IS NOT NULL GROUP BY sl.asset_id ORDER BY litres DESC LIMIT 50`, ym, ...own.params);
   res.json({ year, month, by_product, by_category, by_vehicle });
 }));
 
 // ---- stock counts ---------------------------------------------------------
 router.get('/counts', asyncHandler((req, res) => {
+  { const no = companyCountsRefusal(req.user); if (no) return res.status(409).json({ error: no }); }
   const clauses = [];
   const params = [];
   if (req.query.period) { clauses.push('sc.period = ?'); params.push(req.query.period); }
@@ -330,6 +360,7 @@ router.get('/counts', asyncHandler((req, res) => {
 router.post('/counts', requireCap('oil.count'), asyncHandler((req, res) => {
   const b = req.body;
   require_(b, ['product_id', 'period', 'counted_qty']);
+  { const no = companyCountsRefusal(req.user); if (no) return res.status(409).json({ error: no }); }
   // Stage 4: posting the count sets the whole company's figure — not with several stores.
   if (b.post_adjustment && stores.wholeCountRefusal()) return res.status(409).json({ error: stores.wholeCountRefusal() });
   const productId = toInt(b.product_id);
@@ -361,12 +392,14 @@ router.post('/counts', requireCap('oil.count'), asyncHandler((req, res) => {
 }));
 
 // ---- forecast -------------------------------------------------------------
-router.get('/forecast', asyncHandler((_req, res) => {
-  res.json(lubricants.oilForecast());
+router.get('/forecast', asyncHandler((req, res) => {
+  res.json(lubricants.oilForecast({ store: scope.ownStore(req.user) }));
 }));
 
-router.get('/export/ledger.xlsx', asyncHandler(async (_req, res) => {
-  const rows = all(`SELECT sl.txn_date, pr.name AS product, sl.kind, sl.qty, sl.balance_after, sl.unit_price, a.code AS asset FROM stock_ledger sl JOIN products pr ON pr.id=sl.product_id LEFT JOIN assets a ON a.id=sl.asset_id ORDER BY sl.id DESC`);
+router.get('/export/ledger.xlsx', asyncHandler(async (req, res) => {
+  const own = ownLedger(req.user);
+  const rows = all(`SELECT sl.txn_date, pr.name AS product, sl.kind, sl.qty, sl.balance_after, sl.unit_price, a.code AS asset FROM stock_ledger sl JOIN products pr ON pr.id=sl.product_id LEFT JOIN assets a ON a.id=sl.asset_id
+                     ${own.sql ? `WHERE ${own.sql}` : ''} ORDER BY sl.id DESC`, ...own.params);
   await sendXlsx(res, 'oil-ledger.xlsx', [{
     name: 'Ledger',
     columns: [

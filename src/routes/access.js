@@ -23,6 +23,8 @@ const permissions = require('../lib/permissions');
 const capabilities = require('../lib/capabilities');
 const rules = require('../lib/access_rules');
 const audit = require('../lib/audit');
+const storeLocs = require('../lib/store_locations');
+const sod = require('../lib/sod');
 
 const router = express.Router();
 
@@ -38,15 +40,28 @@ function describeRoles() {
       JOIN user_roles ur ON ur.role_id = r.id JOIN users u ON u.id = ur.user_id AND u.active = 1
       GROUP BY r.name`).map((r) => [r.name, r.n]));
   return all('SELECT name, label, description, is_system, active, require_mfa, created_at FROM roles ORDER BY active DESC, id')
-    .map((r) => ({
+    .map((r) => {
+      const caps = capabilities.capsForRole(r.name);
+      const isAllNone = permissions.MODULE_KEYS.every((m) => permissions.levelForRoles([r.name], m) === 'none');
+      const isIncomplete = r.name !== 'admin' && (caps.length === 0 || isAllNone);
+      let reason = null;
+      if (isIncomplete) {
+        if (caps.length === 0 && isAllNone) reason = 'No section permissions or capabilities granted';
+        else if (caps.length === 0) reason = 'No capabilities granted';
+        else reason = 'All sections set to none';
+      }
+      return {
       ...r,
       is_system: !!r.is_system,
       active: r.active !== 0,
       require_mfa: !!r.require_mfa,
       locked: r.name === 'admin',
       users: holders.get(r.name) || 0,
-      caps: capabilities.capsForRole(r.name),
-    }));
+        caps,
+        incomplete: isIncomplete,
+        incomplete_reason: reason,
+      };
+    });
 }
 
 // A role's permanent key, from its label: "Site Storekeeper — Matara" → site_storekeeper_matara.
@@ -99,6 +114,27 @@ router.post('/roles', requireCap('access.manage'), asyncHandler((req, res) => {
     for (const m of permissions.MODULE_KEYS) levels[m] = permissions.levelForRoles([from], m);
     rules.assertCanGrantCaps(req.user, caps);
     for (const [m, lvl] of Object.entries(levels)) rules.assertCanSetLevel(req.user, m, lvl);
+  }
+
+    if ((!from || req.body.capabilities || req.body.caps) && caps && caps.length > 0) {
+    const sodResult = sod.assertNoSodConflicts(caps, req.body.override_reason || req.body.reason);
+    if (sodResult && sodResult.allowedWithException) {
+      audit.record({
+        userId: req.user.id,
+        entity: 'sod_governance_exception',
+        action: 'role_create_exception_approved',
+        after: { role: label, conflicts: sodResult.conflicts, reason: sodResult.reason }
+      });
+    }
+    const sensitive = sod.findSensitiveCapabilities(caps);
+    if (sensitive.length > 0) {
+      audit.record({
+        userId: req.user.id,
+        entity: 'role_security_alert',
+        action: 'sensitive_role_created',
+        after: { role: label, sensitive_caps: sensitive }
+      });
+    }
   }
 
   const name = newRoleName(label);
@@ -160,156 +196,395 @@ router.patch('/roles/:name', requireCap('access.manage'), asyncHandler((req, res
 
 // ---- permissions ----------------------------------------------------------------------------
 
-router.get('/capabilities', requireCap('access.manage'), asyncHandler((_req, res) => {
+// ---- permissions ----------------------------------------------------------------------------
+
+const DOMAINS = [
+  { id: 'Operations', name: 'Operations & Execution', icon: '⚙️', description: 'Workshop floor execution, job cards, breakdowns, field work, and daily technician labor' },
+  { id: 'Fleet', name: 'Fleet Management', icon: '🚛', description: 'Equipment registry, statutory compliance, lubricant capacities, mechanic trades, and sites' },
+  { id: 'Inventory', name: 'Inventory & Warehousing', icon: '📦', description: 'Central & site stores, MRN demands, tool control, bulk oils, and parts catalogue' },
+  { id: 'Procurement', name: 'Procurement & Purchasing', icon: '🛒', description: 'Purchase requisitions, supplier orders, Tyre & Battery workflows' },
+  { id: 'Analysis', name: 'Analysis & Intelligence', icon: '📊', description: 'Attention cockpit, daily progress, cost teardowns, and executive fleet analytics' },
+  { id: 'Admin', name: 'Governance & Administration', icon: '🛡️', description: 'Workshop tenancies, access control profiles, and user credential management' }
+];
+
+const serializeCaps = () => capabilities.CAPABILITIES.map(({ key, module, label, needs, section, actvt, domain, dualAuth }) => ({
+  key, module, label, needs, section: section || module, actvt: actvt || '02', domain: domain || 'Operations', dualAuth: !!dualAuth
+}));
+
+router.get('/capabilities', requireCap('access.manage', 'users.manage'), asyncHandler((_req, res) => {
   res.json({
-    capabilities: capabilities.CAPABILITIES.map(({ key, module, label, needs }) => ({ key, module, label, needs })),
+    domains: DOMAINS,
+    sections: FUNCTIONAL_SECTIONS,
+    capabilities: serializeCaps(),
     modules: permissions.MODULES,
     roles: describeRoles(),
   });
 }));
 
-// ---- section-wise access control (Single point per section) --------------------------------
+// ---- 24 Functional Sections across 6 SAP Operational Domains --------------------------------
 
 const FUNCTIONAL_SECTIONS = [
+  // DOMAIN 1: OPERATIONS
   {
-    id: 'operations',
-    name: 'Operations & Workshop',
-    icon: '🔧',
-    description: 'Job cards, job requests, repairs, field service and workshop management',
-    modules: ['jobs', 'jobrequests'],
+    id: 'dashboard', name: 'Dashboard & Executive KPIs', icon: '📊', domain: 'Operations',
+    description: 'High-level operational overview, pending action counters and fleet KPIs',
+    modules: ['dashboard'],
     presets: {
-      none: { modules: { jobs: 'none', jobrequests: 'none' }, caps: [] },
-      view: { modules: { jobs: 'view', jobrequests: 'view' }, caps: [] },
-      operator: {
-        modules: { jobs: 'edit', jobrequests: 'edit' },
-        caps: ['jobs.create', 'jobs.start', 'jobs.complete', 'jobs.dailywork', 'jobs.parts', 'jobs.field', 'jobrequests.create']
-      },
-      manager: {
-        modules: { jobs: 'full', jobrequests: 'full' },
-        caps: ['jobs.create', 'jobs.edit', 'jobs.approve_transport', 'jobs.approve_operations', 'jobs.assign_workshop', 'jobs.start', 'jobs.complete', 'jobs.close', 'jobs.close_on_date', 'jobs.reject', 'jobs.return', 'jobs.reopen_request', 'jobs.reopen', 'jobs.reason', 'jobs.dailywork', 'jobs.parts', 'jobs.flat_labour', 'jobs.partial_close', 'jobs.breakdown', 'jobs.field', 'jobs.triage', 'jobrequests.create', 'jobrequests.certify', 'jobrequests.approve', 'jobrequests.reject']
-      }
+      none: { modules: { dashboard: 'none' }, caps: [] },
+      view: { modules: { dashboard: 'view' }, caps: ['dashboard.view'] },
+      operator: { modules: { dashboard: 'view' }, caps: ['dashboard.view', 'dashboard.kpi.view'] },
+      manager: { modules: { dashboard: 'full' }, caps: ['dashboard.view', 'dashboard.kpi.view', 'dashboard.export'] }
     }
   },
   {
-    id: 'stores',
-    name: 'Inventory & Stores',
-    icon: '📦',
-    description: 'Store items, MRNs, receipts (GRN), issues, transfer notes (MTN), lubricants and filters',
-    modules: ['stores', 'oil', 'filters'],
+    id: 'jobs', name: 'Job Cards & Work Orders', icon: '📋', domain: 'Operations',
+    description: 'Job cards, bay assignments, repair progress, and job closures',
+    modules: ['jobs'],
     presets: {
-      none: { modules: { stores: 'none', oil: 'none', filters: 'none' }, caps: [] },
-      view: { modules: { stores: 'view', oil: 'view', filters: 'view' }, caps: [] },
-      operator: {
-        modules: { stores: 'edit', oil: 'edit', filters: 'edit' },
-        caps: ['stores.items.edit', 'stores.mrn.create', 'stores.grn.receive', 'stores.grn.edit', 'stores.issue', 'stores.stock_issue', 'stores.issue_return', 'stores.mtn.edit', 'stores.stock.count', 'oil.ledger.post', 'oil.count', 'filters.stock.receive', 'filters.stock.issue']
-      },
-      manager: {
-        modules: { stores: 'full', oil: 'full', filters: 'full' },
-        caps: ['stores.items.edit', 'stores.items.txn', 'stores.categories.edit', 'stores.mrn.create', 'stores.mrn.edit', 'stores.mrn.certify', 'stores.mrn.approve', 'stores.mrn.reject', 'stores.mrn.amend_settled', 'stores.grn.receive', 'stores.grn.edit', 'stores.issue', 'stores.stock_issue', 'stores.reorder_mrn', 'stores.stock.rebuild', 'stores.mtn.edit', 'stores.issue_return', 'stores.stock.count', 'stores.stock.levels', 'stores.count.approve', 'stores.disposal.edit', 'stores.disposal.approve', 'general.items.edit', 'general.stock.adjust', 'general.items.price', 'oil.identity.resolve', 'oil.products.edit', 'oil.prices.edit', 'oil.ledger.post', 'oil.count', 'services.attachments', 'filters.stock.edit', 'filters.stock.receive', 'filters.stock.issue']
-      }
+      none: { modules: { jobs: 'none' }, caps: [] },
+      view: { modules: { jobs: 'view' }, caps: ['jobs.view'] },
+      operator: { modules: { jobs: 'edit' }, caps: ['jobs.view', 'jobs.start', 'jobs.complete', 'jobs.dailywork', 'jobs.parts'] },
+      manager: { modules: { jobs: 'full' }, caps: ['jobs.view', 'jobs.create', 'jobs.edit', 'jobs.approve_transport', 'jobs.approve_operations', 'jobs.assign_workshop', 'jobs.start', 'jobs.complete', 'jobs.close', 'jobs.close_on_date', 'jobs.reject', 'jobs.return', 'jobs.reason', 'jobs.dailywork', 'jobs.parts', 'jobs.flat_labour', 'jobs.triage', 'jobs.partial_close', 'jobs.reopen_request', 'jobs.reopen', 'jobs.settings', 'jobs.cost.view', 'jobs.export', 'jobs.view_other_workshops'] }
     }
   },
   {
-    id: 'fleet',
-    name: 'Fleet & Assets',
-    icon: '🚜',
-    description: 'Vehicles, heavy machinery, projects, workshops and mechanics roster',
-    modules: ['assets', 'projects', 'labour', 'aliases'],
+    id: 'jobrequests', name: 'Job Requests', icon: '📝', domain: 'Operations',
+    description: 'Incoming vehicle repair requests from drivers and transport officers',
+    modules: ['jobrequests'],
     presets: {
-      none: { modules: { assets: 'none', projects: 'none', labour: 'none', aliases: 'none' }, caps: [] },
-      view: { modules: { assets: 'view', projects: 'view', labour: 'view', aliases: 'view' }, caps: [] },
-      operator: {
-        modules: { assets: 'view', projects: 'view', labour: 'view', aliases: 'view' },
-        caps: ['aliases.vehicle.resolve', 'aliases.mechanic.resolve']
-      },
-      manager: {
-        modules: { assets: 'full', projects: 'full', labour: 'full', aliases: 'full' },
-        caps: ['assets.create', 'assets.edit', 'assets.move', 'fleet.capacities.edit', 'aliases.vehicle.resolve', 'aliases.mechanic.resolve', 'projects.manage', 'workshops.manage', 'workshops.all', 'mechanics.create', 'labour.rates.edit', 'mechanics.move']
-      }
+      none: { modules: { jobrequests: 'none' }, caps: [] },
+      view: { modules: { jobrequests: 'view' }, caps: ['jobrequests.view'] },
+      operator: { modules: { jobrequests: 'edit' }, caps: ['jobrequests.view', 'jobrequests.create'] },
+      manager: { modules: { jobrequests: 'full' }, caps: ['jobrequests.view', 'jobrequests.create', 'jobrequests.certify', 'jobrequests.approve', 'jobrequests.reject', 'jobrequests.delete'] }
     }
   },
   {
-    id: 'dailywork',
-    name: 'Daily Work & Attendance',
-    icon: '📅',
-    description: 'Mechanics daily labor booking, attendance logs, day-end sign-offs and unlock overrides',
+    id: 'field', name: 'Field Work & Breakdowns', icon: '🚜', domain: 'Operations',
+    description: 'Mobile road assistance, site breakdowns, and field service allowances',
+    modules: ['field'],
+    presets: {
+      none: { modules: { field: 'none' }, caps: [] },
+      view: { modules: { field: 'view' }, caps: ['field.view'] },
+      operator: { modules: { field: 'edit' }, caps: ['field.view', 'field.create', 'field.edit', 'jobs.breakdown', 'jobs.field'] },
+      manager: { modules: { field: 'full' }, caps: ['field.view', 'field.create', 'field.edit', 'field.approve', 'field.export', 'jobs.breakdown', 'jobs.field'] }
+    }
+  },
+  {
+    id: 'operations', name: 'Operations & Deployments', icon: '🗺️', domain: 'Operations',
+    description: 'Fleet operating sites, carrier dispatches, and machine deployment movements',
+    modules: ['operations'],
+    presets: {
+      none: { modules: { operations: 'none' }, caps: [] },
+      view: { modules: { operations: 'view' }, caps: ['operations.view'] },
+      operator: { modules: { operations: 'edit' }, caps: ['operations.view', 'operations.dispatch', 'operations.site_change'] },
+      manager: { modules: { operations: 'full' }, caps: ['operations.view', 'operations.dispatch', 'operations.site_change', 'operations.export'] }
+    }
+  },
+  {
+    id: 'dailywork', name: 'Daily Work & Attendance', icon: '📅', domain: 'Operations',
+    description: 'Daily technician labor timesheets, attendance logs, and workday sign-offs',
     modules: ['dailywork'],
     presets: {
       none: { modules: { dailywork: 'none' }, caps: [] },
-      view: { modules: { dailywork: 'view' }, caps: [] },
-      operator: {
-        modules: { dailywork: 'edit' },
-        caps: ['dailywork.add', 'attendance.record']
-      },
-      manager: {
-        modules: { dailywork: 'full' },
-        caps: ['dailywork.add', 'dailywork.edit', 'attendance.record', 'attendance.signoff', 'attendance.unlock', 'attendance.settings']
-      }
+      view: { modules: { dailywork: 'view' }, caps: ['dailywork.view'] },
+      operator: { modules: { dailywork: 'edit' }, caps: ['dailywork.view', 'dailywork.add', 'dailywork.bulk_log', 'attendance.record'] },
+      manager: { modules: { dailywork: 'full' }, caps: ['dailywork.view', 'dailywork.add', 'dailywork.edit', 'dailywork.delete', 'dailywork.bulk_log', 'dailywork.export', 'attendance.record', 'attendance.unlock', 'attendance.signoff', 'attendance.settings'] }
     }
   },
   {
-    id: 'purchasing',
-    name: 'Procurement & Purchasing',
-    icon: '🛒',
-    description: 'Head office and local purchasing channels, supplier orders and technical specifications',
-    modules: ['purchasing', 'tb_request'],
+    id: 'services', name: 'Service Records & Passports', icon: '🛠️', domain: 'Operations',
+    description: 'Preventative maintenance history, scheduled services, and passport certification',
+    modules: ['services'],
     presets: {
-      none: { modules: { purchasing: 'none', tb_request: 'none' }, caps: [] },
-      view: { modules: { purchasing: 'view', tb_request: 'view' }, caps: [] },
-      operator: {
-        modules: { purchasing: 'edit', tb_request: 'edit' },
-        caps: ['purchasing.head_office', 'purchasing.local']
-      },
-      manager: {
-        modules: { purchasing: 'full', tb_request: 'full' },
-        caps: ['purchasing.head_office', 'purchasing.local', 'purchasing.all_channels', 'tb.specs.edit']
-      }
+      none: { modules: { services: 'none' }, caps: [] },
+      view: { modules: { services: 'view' }, caps: ['services.view'] },
+      operator: { modules: { services: 'edit' }, caps: ['services.view', 'services.create', 'services.edit', 'services.attachments'] },
+      manager: { modules: { services: 'full' }, caps: ['services.view', 'services.create', 'services.edit', 'services.certify', 'services.delete', 'services.attachments', 'services.export'] }
     }
   },
   {
-    id: 'batteries',
-    name: 'Batteries & Tyres Management',
-    icon: '🔋',
-    description: 'Battery registration, warranty tracking, swaps, events and photos',
+    id: 'service_plan', name: 'Service & Filter Plan', icon: '📈', domain: 'Operations',
+    description: 'Interval-based service plans, upcoming service countdowns, and filter kits',
+    modules: ['service_plan'],
+    presets: {
+      none: { modules: { service_plan: 'none' }, caps: [] },
+      view: { modules: { service_plan: 'view' }, caps: ['service_plan.view'] },
+      operator: { modules: { service_plan: 'edit' }, caps: ['service_plan.view', 'service_plan.manage'] },
+      manager: { modules: { service_plan: 'full' }, caps: ['service_plan.view', 'service_plan.manage', 'service_plan.export'] }
+    }
+  },
+
+  // DOMAIN 2: FLEET MANAGEMENT
+  {
+    id: 'assets', name: 'Fleet Register & Assets', icon: '🚛', domain: 'Fleet',
+    description: 'Heavy machinery, trucks, light vehicles, asset master, and gallery photos',
+    modules: ['assets'],
+    presets: {
+      none: { modules: { assets: 'none' }, caps: [] },
+      view: { modules: { assets: 'view' }, caps: ['assets.view'] },
+      operator: { modules: { assets: 'view' }, caps: ['assets.view', 'assets.photo.upload'] },
+      manager: { modules: { assets: 'full' }, caps: ['assets.view', 'assets.create', 'assets.edit', 'assets.delete', 'assets.deactivate', 'assets.photo.upload', 'assets.repoint', 'assets.move', 'assets.export'] }
+    }
+  },
+  {
+    id: 'vehicle_docs', name: 'Statutory Vehicle Documents', icon: '📜', domain: 'Fleet',
+    description: 'Revenue licenses, insurance, eco-tests, fitness certificates, and exemptions',
+    modules: ['vehicle_docs'],
+    presets: {
+      none: { modules: { vehicle_docs: 'none' }, caps: [] },
+      view: { modules: { vehicle_docs: 'view' }, caps: ['vehicle_docs.view', 'vehicle_docs.download'] },
+      operator: { modules: { vehicle_docs: 'edit' }, caps: ['vehicle_docs.view', 'vehicle_docs.upload', 'vehicle_docs.renew', 'vehicle_docs.download'] },
+      manager: { modules: { vehicle_docs: 'full' }, caps: ['vehicle_docs.view', 'vehicle_docs.create', 'vehicle_docs.edit', 'vehicle_docs.delete', 'vehicle_docs.upload', 'vehicle_docs.renew', 'vehicle_docs.verify', 'vehicle_docs.download', 'vehicle_docs.exempt', 'vehicle_docs.export'] }
+    }
+  },
+  {
+    id: 'lubricants', name: 'Lubricant Capacities', icon: '🛢️', domain: 'Fleet',
+    description: 'OEM fluid capacities, sump, transmission, and hydraulic specifications',
+    modules: ['lubricants'],
+    presets: {
+      none: { modules: { lubricants: 'none' }, caps: [] },
+      view: { modules: { lubricants: 'view' }, caps: ['lubricants.view', 'lubricants.export'] },
+      operator: { modules: { lubricants: 'edit' }, caps: ['lubricants.view', 'lubricants.create', 'lubricants.edit', 'fleet.capacities.edit'] },
+      manager: { modules: { lubricants: 'full' }, caps: ['lubricants.view', 'lubricants.create', 'lubricants.edit', 'fleet.capacities.edit', 'lubricants.delete', 'lubricants.import', 'lubricants.export'] }
+    }
+  },
+  {
+    id: 'labour', name: 'Labour Rates & Mechanics', icon: '💼', domain: 'Fleet',
+    description: 'Mechanic directory, trade specialties, hourly wages, and charge-out rates',
+    modules: ['labour'],
+    presets: {
+      none: { modules: { labour: 'none' }, caps: [] },
+      view: { modules: { labour: 'view' }, caps: ['labour.mechanics.view'] },
+      operator: { modules: { labour: 'view' }, caps: ['labour.mechanics.view'] },
+      manager: { modules: { labour: 'full' }, caps: ['labour.mechanics.view', 'labour.mechanics.create', 'labour.mechanics.edit', 'labour.mechanics.move', 'labour.mechanics.deactivate', 'labour.rates.view', 'labour.rates.edit'] }
+    }
+  },
+  {
+    id: 'projects', name: 'Projects & Sites', icon: '🏗️', domain: 'Fleet',
+    description: 'Civil contracts, quarry locations, road schemes, and project yards',
+    modules: ['projects'],
+    presets: {
+      none: { modules: { projects: 'none' }, caps: [] },
+      view: { modules: { projects: 'view' }, caps: ['projects.view'] },
+      operator: { modules: { projects: 'view' }, caps: ['projects.view'] },
+      manager: { modules: { projects: 'full' }, caps: ['projects.view', 'projects.manage', 'projects.close', 'projects.export'] }
+    }
+  },
+  {
+    id: 'aliases', name: 'Alias Queue', icon: '🏷️', domain: 'Fleet',
+    description: 'Fuzzy resolution queue for non-standard vehicle names and mechanic text',
+    modules: ['aliases'],
+    presets: {
+      none: { modules: { aliases: 'none' }, caps: [] },
+      view: { modules: { aliases: 'view' }, caps: ['aliases.view'] },
+      operator: { modules: { aliases: 'edit' }, caps: ['aliases.view', 'aliases.vehicle.resolve', 'aliases.mechanic.resolve', 'aliases.allocate'] },
+      manager: { modules: { aliases: 'full' }, caps: ['aliases.view', 'aliases.vehicle.resolve', 'aliases.mechanic.resolve', 'aliases.allocate', 'aliases.ignore'] }
+    }
+  },
+
+  // DOMAIN 3: INVENTORY & WAREHOUSING
+  {
+    id: 'stores', name: 'Stores & Stock Locations', icon: '📦', domain: 'Inventory',
+    description: 'Parts catalogue, multi-store physical hierarchy, bin cards, MRN and GRN ledgers',
+    modules: ['stores'],
+    presets: {
+      none: { modules: { stores: 'none' }, caps: [] },
+      view: { modules: { stores: 'view' }, caps: ['stores.view', 'stores.locations.view'] },
+      operator: { modules: { stores: 'edit' }, caps: ['stores.view', 'stores.items.create', 'stores.items.edit', 'stores.items.txn', 'stores.mrn.create', 'stores.mrn.edit', 'stores.grn.receive', 'stores.issue', 'stores.stock_issue', 'stores.mtn.edit', 'stores.issue_return', 'stores.stock.count'] },
+      manager: { modules: { stores: 'full' }, caps: ['stores.view', 'stores.items.create', 'stores.items.edit', 'stores.items.price', 'stores.items.delete', 'stores.items.txn', 'stores.categories.edit', 'stores.locations.view', 'stores.locations.manage', 'stores.locations.access', 'stores.stock.rebuild', 'stores.stock.levels', 'stores.export', 'stores.mrn.create', 'stores.mrn.edit', 'stores.mrn.certify', 'stores.mrn.site_authority', 'stores.mrn.approve', 'stores.mrn.reject', 'stores.mrn.amend_settled', 'stores.grn.receive', 'stores.grn.edit', 'stores.grn.approve', 'stores.grn.reject', 'stores.issue', 'stores.stock_issue', 'stores.min.approve', 'stores.min.reject', 'stores.reorder_mrn', 'stores.mtn.edit', 'stores.mtn.approve', 'stores.mtn.reject', 'stores.issue_return', 'stores.stock.count', 'stores.count.approve', 'stores.disposal.edit', 'stores.disposal.approve', 'general.items.edit', 'general.stock.adjust', 'general.items.price'] }
+    }
+  },
+  {
+    id: 'tools', name: 'Tools, Toolboxes & Scrap Control', icon: '🧰', domain: 'Inventory',
+    description: 'Specialized tools catalogue, mechanic toolboxes, daily logs, and scrap approval',
+    modules: ['tools'],
+    presets: {
+      none: { modules: { tools: 'none' }, caps: [] },
+      view: { modules: { tools: 'view' }, caps: ['tools.view'] },
+      operator: { modules: { tools: 'edit' }, caps: ['tools.view', 'tools.manage', 'tools.issue', 'tools.damage.report', 'tools.toolbox.audit'] },
+      manager: { modules: { tools: 'full' }, caps: ['tools.view', 'tools.manage', 'tools.delete', 'tools.issue', 'tools.damage.report', 'tools.scrap.approve', 'tools.toolbox.audit', 'tools.export'] }
+    }
+  },
+  {
+    id: 'oil', name: 'Oil & Bulk Lubricants', icon: '🛢️', domain: 'Inventory',
+    description: 'Bulk engine/hydraulic oil barrels, dipstick stock counts, and dispensing logs',
+    modules: ['oil'],
+    presets: {
+      none: { modules: { oil: 'none' }, caps: [] },
+      view: { modules: { oil: 'view' }, caps: ['oil.view'] },
+      operator: { modules: { oil: 'edit' }, caps: ['oil.view', 'oil.identity.resolve', 'oil.ledger.post', 'oil.count'] },
+      manager: { modules: { oil: 'full' }, caps: ['oil.view', 'oil.identity.resolve', 'oil.products.edit', 'oil.prices.edit', 'oil.ledger.post', 'oil.count', 'oil.export'] }
+    }
+  },
+  {
+    id: 'batteries', name: 'Batteries Inventory & Pool', icon: '🔋', domain: 'Inventory',
+    description: 'Serial-tracked commercial battery pool, warranty logs, voltage tests, and swaps',
     modules: ['batteries'],
     presets: {
       none: { modules: { batteries: 'none' }, caps: [] },
-      view: { modules: { batteries: 'view' }, caps: [] },
-      operator: {
-        modules: { batteries: 'edit' },
-        caps: ['batteries.register', 'batteries.photos', 'batteries.event']
-      },
-      manager: {
-        modules: { batteries: 'full' },
-        caps: ['batteries.register', 'batteries.photos', 'batteries.event']
-      }
+      view: { modules: { batteries: 'view' }, caps: ['batteries.view'] },
+      operator: { modules: { batteries: 'edit' }, caps: ['batteries.view', 'batteries.register', 'batteries.photos', 'batteries.event', 'batteries.swap'] },
+      manager: { modules: { batteries: 'full' }, caps: ['batteries.view', 'batteries.register', 'batteries.photos', 'batteries.event', 'batteries.swap', 'batteries.warranty.claim', 'batteries.scrap.approve', 'batteries.export'] }
     }
   },
   {
-    id: 'admin',
-    name: 'System & Administration',
-    icon: '🛡️',
-    description: 'User accounts, role access control, system diagnostics and daily report notes',
-    modules: ['users', 'reports'],
+    id: 'filters', name: 'Filters Catalogue & Prices', icon: '⚙️', domain: 'Inventory',
+    description: 'OEM & replacement air/oil/hydraulic filters catalogue, stock, and pricing',
+    modules: ['filters'],
     presets: {
-      none: { modules: { users: 'none', reports: 'none' }, caps: [] },
-      view: { modules: { users: 'none', reports: 'view' }, caps: [] },
-      operator: {
-        modules: { users: 'none', reports: 'view' },
-        caps: ['reports.daily.notes']
-      },
-      manager: {
-        modules: { users: 'full', reports: 'full' },
-        caps: ['users.manage', 'access.manage', 'system.status', 'jobs.settings', 'reports.daily.notes', 'reports.repair_sections.sync']
-      }
+      none: { modules: { filters: 'none' }, caps: [] },
+      view: { modules: { filters: 'view' }, caps: ['filters.view'] },
+      operator: { modules: { filters: 'edit' }, caps: ['filters.view', 'filters.stock.receive', 'filters.stock.issue'] },
+      manager: { modules: { filters: 'full' }, caps: ['filters.view', 'filters.items.manage', 'filters.prices.edit', 'filters.stock.edit', 'filters.stock.receive', 'filters.stock.issue', 'filters.export'] }
+    }
+  },
+
+  // DOMAIN 4: PROCUREMENT & PURCHASING
+  {
+    id: 'purchasing', name: 'Purchasing & Requisitions', icon: '🛒', domain: 'Procurement',
+    description: 'Purchase requests, head office vs local procurement channels, and PO tracking',
+    modules: ['purchasing'],
+    presets: {
+      none: { modules: { purchasing: 'none' }, caps: [] },
+      view: { modules: { purchasing: 'view' }, caps: ['purchasing.view'] },
+      operator: { modules: { purchasing: 'edit' }, caps: ['purchasing.view', 'purchasing.local'] },
+      manager: { modules: { purchasing: 'full' }, caps: ['purchasing.view', 'purchasing.head_office', 'purchasing.local', 'purchasing.all_channels', 'purchasing.po.create', 'purchasing.po.approve', 'purchasing.export'] }
+    }
+  },
+  {
+    id: 'tb_requests', name: 'Tyre & Battery Workflows', icon: '🔄', domain: 'Procurement',
+    description: 'End-to-end Tyre & Battery requests, purchasing approvals, and GRN receipts',
+    modules: ['tb_requests'],
+    presets: {
+      none: { modules: { tb_requests: 'none' }, caps: [] },
+      view: { modules: { tb_requests: 'view' }, caps: ['tb_requests.view'] },
+      operator: { modules: { tb_requests: 'edit' }, caps: ['tb_requests.view', 'tb_requests.create', 'tb_requests.purchase', 'tb_requests.receive', 'tb_requests.issue'] },
+      manager: { modules: { tb_requests: 'full' }, caps: ['tb_requests.view', 'tb_requests.create', 'tb_requests.purchase', 'tb_requests.receive', 'tb_requests.issue', 'tb_requests.approve', 'tb.specs.edit'] }
+    }
+  },
+
+  // DOMAIN 5: ANALYSIS & INTELLIGENCE
+  {
+    id: 'tb_reports', name: 'Tyre & Battery Analytics', icon: '📊', domain: 'Analysis',
+    description: 'Tyre and battery life expectancy analytics, scrap ratios, and cost summaries',
+    modules: ['tb_reports'],
+    presets: {
+      none: { modules: { tb_reports: 'none' }, caps: [] },
+      view: { modules: { tb_reports: 'view' }, caps: ['tb_reports.view'] },
+      operator: { modules: { tb_reports: 'view' }, caps: ['tb_reports.view'] },
+      manager: { modules: { tb_reports: 'full' }, caps: ['tb_reports.view', 'tb_reports.export'] }
+    }
+  },
+  {
+    id: 'reports', name: 'Reports & Business Intelligence', icon: '📑', domain: 'Analysis',
+    description: 'Needs attention cockpit, daily progress, cost teardown, and analytical reports',
+    modules: ['attention', 'daily_progress', 'cost_teardown', 'reports'],
+    presets: {
+      none: { modules: { attention: 'none', daily_progress: 'none', cost_teardown: 'none', reports: 'none' }, caps: [] },
+      view: { modules: { attention: 'view', daily_progress: 'view', cost_teardown: 'view', reports: 'view' }, caps: ['attention.view', 'daily_progress.view', 'cost_teardown.view', 'reports.view'] },
+      operator: { modules: { attention: 'view', daily_progress: 'view', cost_teardown: 'view', reports: 'view' }, caps: ['attention.view', 'daily_progress.view', 'cost_teardown.view', 'reports.view', 'reports.daily.notes'] },
+      manager: { modules: { attention: 'full', daily_progress: 'full', cost_teardown: 'full', reports: 'full' }, caps: ['attention.view', 'attention.override', 'daily_progress.view', 'daily_progress.export', 'cost_teardown.view', 'cost_teardown.unmask', 'cost_teardown.export', 'reports.view', 'reports.daily.notes', 'reports.export', 'reports.repair_sections.sync'] }
+    }
+  },
+
+  // DOMAIN 6: GOVERNANCE & ADMINISTRATION
+  {
+    id: 'access', name: 'Governance, Workshops & Access', icon: '🔐', domain: 'Admin',
+    description: 'Workshop multi-tenancy locations, role capability profiles, and user accounts',
+    modules: ['workshops', 'access', 'users'],
+    presets: {
+      none: { modules: { workshops: 'none', access: 'none', users: 'none' }, caps: [] },
+      view: { modules: { workshops: 'view', access: 'none', users: 'none' }, caps: ['workshops.view'] },
+      operator: { modules: { workshops: 'view', access: 'none', users: 'none' }, caps: ['workshops.view'] },
+      manager: { modules: { workshops: 'full', access: 'full', users: 'full' }, caps: ['workshops.view', 'workshops.manage', 'workshops.all', 'access.manage', 'users.manage', 'system.status', 'audit.view'] }
+    }
+  },
+
+  // DOMAIN 7: FABRICATION, CCOM, FUEL SYSTEM, HIRE & FINAL COSTING (MERGED MODULES)
+  {
+    id: 'fabrication', name: 'Fabrication & General Works', icon: '⚙️', domain: 'Operations',
+    description: 'Fabrication job requests, general engineering cards, drawings, and fabrication costing sheets',
+    modules: ['fabrication', 'fabrication_costing'],
+    presets: {
+      none: { modules: { fabrication: 'none', fabrication_costing: 'none' }, caps: [] },
+      view: { modules: { fabrication: 'view', fabrication_costing: 'view' }, caps: ['fabrication.view'] },
+      operator: { modules: { fabrication: 'edit', fabrication_costing: 'edit' }, caps: ['fabrication.view', 'fabrication.open_card', 'fabrication.edit', 'fabrication.dailywork', 'fabrication.parts', 'fabrication.drawings', 'fabrication.cost.view', 'fabrication.cost.edit'] },
+      manager: { modules: { fabrication: 'full', fabrication_costing: 'full' }, caps: ['fabrication.view', 'fabrication.open_card', 'fabrication.edit', 'fabrication.dailywork', 'fabrication.parts', 'fabrication.drawings', 'fabrication.cost.view', 'fabrication.cost.edit', 'fabrication.cost.approve', 'fabrication.close', 'fabrication.export', 'fabrication.settings'] }
+    }
+  },
+  {
+    id: 'outsourcing', name: 'C.COM Outsourced Repairs', icon: '🔧', domain: 'Operations',
+    description: 'Outsourced vendor service requests, engineer digital approval, email dispatch, and actual charge posting',
+    modules: ['outsourcing'],
+    presets: {
+      none: { modules: { outsourcing: 'none' }, caps: [] },
+      view: { modules: { outsourcing: 'view' }, caps: ['outsourcing.view'] },
+      operator: { modules: { outsourcing: 'edit' }, caps: ['outsourcing.view', 'outsourcing.create', 'outsourcing.edit_draft', 'outsourcing.submit', 'outsourcing.send', 'outsourcing.record_progress'] },
+      manager: { modules: { outsourcing: 'full' }, caps: ['outsourcing.view', 'outsourcing.create', 'outsourcing.edit_draft', 'outsourcing.submit', 'outsourcing.approve', 'outsourcing.send', 'outsourcing.record_progress', 'outsourcing.verify_completion', 'outsourcing.cost.view', 'outsourcing.cost.post', 'outsourcing.cancel', 'outsourcing.settings'] }
+    }
+  },
+  {
+    id: 'master_dashboard', name: 'Master Executive Cockpit', icon: '⚡', domain: 'Operations',
+    description: 'Consolidated executive master dashboard across workshop repairs, fuel operations, and machine hire',
+    modules: ['master_dashboard'],
+    presets: {
+      none: { modules: { master_dashboard: 'none' }, caps: [] },
+      view: { modules: { master_dashboard: 'view' }, caps: ['master_dashboard.view'] },
+      operator: { modules: { master_dashboard: 'view' }, caps: ['master_dashboard.view'] },
+      manager: { modules: { master_dashboard: 'full' }, caps: ['master_dashboard.view'] }
+    }
+  },
+  {
+    id: 'fuel', name: 'Fuel System, Bowsers & Site Console', icon: '⛽', domain: 'Operations',
+    description: 'Fuel dispensing, site operator console, adjustments, meter readings, bulk tanks, Ceypetco prices, and consumption analytics',
+    modules: ['fuel', 'fuel_tanks', 'fuel_readings', 'fuel_prices', 'fuel_reports', 'fuel_alerts'],
+    presets: {
+      none: { modules: { fuel: 'none', fuel_tanks: 'none', fuel_readings: 'none', fuel_prices: 'none', fuel_reports: 'none', fuel_alerts: 'none' }, caps: [] },
+      view: { modules: { fuel: 'view', fuel_tanks: 'view', fuel_readings: 'view', fuel_prices: 'view', fuel_reports: 'view', fuel_alerts: 'view' }, caps: ['fuel.view', 'fuel.tanks.view', 'fuel.readings.view', 'fuel.prices.view', 'fuel.reports.view', 'fuel.alerts.view'] },
+      operator: { modules: { fuel: 'edit', fuel_tanks: 'edit', fuel_readings: 'edit', fuel_prices: 'view', fuel_reports: 'view', fuel_alerts: 'view' }, caps: ['fuel.view', 'fuel.request', 'fuel.issue', 'fuel.tanks.view', 'fuel.tanks.dip', 'fuel.tanks.refill', 'fuel.readings.view', 'fuel.readings.record', 'fuel.prices.view', 'fuel.reports.view', 'fuel.alerts.view'] },
+      manager: { modules: { fuel: 'full', fuel_tanks: 'full', fuel_readings: 'full', fuel_prices: 'full', fuel_reports: 'full', fuel_alerts: 'full' }, caps: ['fuel.view', 'fuel.request', 'fuel.issue', 'fuel.approve', 'fuel.approve_request', 'fuel.correct', 'fuel.approve_correction', 'fuel.void', 'fuel.export', 'fuel.tanks.view', 'fuel.tanks.manage', 'fuel.tanks.dip', 'fuel.tanks.refill', 'fuel.readings.view', 'fuel.readings.record', 'fuel.prices.view', 'fuel.prices.manage', 'fuel.reports.view', 'fuel.alerts.view'] }
+    }
+  },
+  {
+    id: 'hire', name: 'Machine Hire, Rates & Billing', icon: '📑', domain: 'Fleet',
+    description: 'Machine rental bills, Dry/Wet/Fully-Wet rate cards, consumption bands, site allocator, and breakdown deductions',
+    modules: ['hire'],
+    presets: {
+      none: { modules: { hire: 'none' }, caps: [] },
+      view: { modules: { hire: 'view' }, caps: ['allocations.view', 'hire.rates.view', 'hire.billing.view'] },
+      operator: { modules: { hire: 'edit' }, caps: ['allocations.view', 'allocations.manage', 'hire.rates.view', 'hire.billing.view', 'hire.billing.generate'] },
+      manager: { modules: { hire: 'full' }, caps: ['allocations.view', 'allocations.manage', 'hire.rates.view', 'hire.rates.manage', 'hire.billing.view', 'hire.billing.generate', 'hire.billing.finalise', 'hire.billing.export'] }
+    }
+  },
+  {
+    id: 'costing', name: 'Final Vehicle Costing P&L', icon: '💰', domain: 'Fleet',
+    description: 'Monthly vehicle final costing P&L, hiring revenue ledger, and driver & other operating expenses',
+    modules: ['costing'],
+    presets: {
+      none: { modules: { costing: 'none' }, caps: [] },
+      view: { modules: { costing: 'view' }, caps: ['costing.view'] },
+      operator: { modules: { costing: 'edit' }, caps: ['costing.view', 'costing.manage'] },
+      manager: { modules: { costing: 'full' }, caps: ['costing.view', 'costing.manage'] }
+    }
+  },
+  {
+    id: 'finance', name: 'Fleet Profitability & Period Close', icon: '📈', domain: 'Analysis',
+    description: 'Consolidated fleet financial contribution, operating margins, and monthly period seal/reopen',
+    modules: ['finance'],
+    presets: {
+      none: { modules: { finance: 'none' }, caps: [] },
+      view: { modules: { finance: 'view' }, caps: ['fleet.profitability.view'] },
+      operator: { modules: { finance: 'view' }, caps: ['fleet.profitability.view', 'fleet.profitability.view_all'] },
+      manager: { modules: { finance: 'full' }, caps: ['fleet.profitability.view', 'fleet.profitability.view_all', 'fleet.profitability.export', 'finance.period.close'] }
     }
   }
 ];
 
-router.get('/section-matrix', requireCap('access.manage'), asyncHandler((_req, res) => {
+router.get('/section-matrix', requireCap('access.manage', 'users.manage'), asyncHandler((_req, res) => {
   res.json({
+    domains: DOMAINS,
     sections: FUNCTIONAL_SECTIONS,
-    capabilities: capabilities.CAPABILITIES.map(({ key, module, label, needs }) => ({ key, module, label, needs })),
+    capabilities: serializeCaps(),
     modules: permissions.MODULES,
     roles: describeRoles(),
     matrix: permissions.getMatrix(),
@@ -379,15 +654,24 @@ router.post('/section-save', requireCap('access.manage'), asyncHandler((req, res
 
 // ---- Person-by-Person Access Control (WorkshopOne Plan Part B) --------------
 
-// 1. List all people with effective 22-section permissions, role, and override counts
+// 1. List all people with effective 28-section permissions, role, site/tank bindings, and override counts
 router.get('/people', requireCap('access.manage'), asyncHandler((_req, res) => {
   const users = all(`
     SELECT u.id, u.username, u.full_name, u.active, u.workshop_id AS home_workshop_id,
-           u.approval_limit, u.access_until, w.name AS home_workshop_name
+           u.approval_limit, u.access_until, w.name AS home_workshop_name,
+           u.project_id, p.name AS project_name, p.code AS project_code,
+           u.bulk_tank_id, t.name AS bulk_tank_name, t.code AS bulk_tank_code,
+           COALESCE(u.hide_stock, 0) AS hide_stock, u.fuel_role
       FROM users u
       LEFT JOIN workshops w ON w.id = u.workshop_id
+      LEFT JOIN projects p ON p.id = u.project_id
+      LEFT JOIN fuel_tanks t ON t.id = u.bulk_tank_id
      ORDER BY u.active DESC, u.username
   `);
+
+  const allRoles = all('SELECT id, name, label, active FROM roles WHERE active = 1 ORDER BY id');
+  const allProjects = all('SELECT id, code, name FROM projects WHERE active = 1 ORDER BY name');
+  const allTanks = all('SELECT id, code, name, project_id FROM fuel_tanks WHERE active = 1 ORDER BY name');
 
   const result = users.map((u) => {
     const roles = all(`
@@ -404,6 +688,19 @@ router.get('/people', requireCap('access.manage'), asyncHandler((_req, res) => {
     const capOverrides = all('SELECT capability, granted FROM user_capabilities WHERE user_id = ?', u.id);
     const overridesCount = permOverrides.length + capOverrides.length;
 
+    let primaryStoreId = null;
+    let primaryStoreName = null;
+    try {
+      const uStores = storeLocs.getUserStoreLocations(u.id) || [];
+      if (uStores.length > 0) {
+        primaryStoreId = uStores[0].store_location_id;
+        primaryStoreName = uStores[0].store_name;
+      } else if (u.home_workshop_id) {
+        const matched = (storeLocs.listStoreLocations() || []).find((s) => s.workshop_id === u.home_workshop_id);
+        if (matched) { primaryStoreId = matched.id; primaryStoreName = matched.name; }
+      }
+    } catch (_) {}
+
     return {
       id: u.id,
       username: u.username,
@@ -411,30 +708,71 @@ router.get('/people', requireCap('access.manage'), asyncHandler((_req, res) => {
       active: !!u.active,
       home_workshop_id: u.home_workshop_id,
       home_workshop_name: u.home_workshop_name,
+      primary_store_id: primaryStoreId,
+      primary_store_name: primaryStoreName,
+      project_id: u.project_id,
+      project_name: u.project_name,
+      project_code: u.project_code,
+      bulk_tank_id: u.bulk_tank_id,
+      bulk_tank_name: u.bulk_tank_name,
+      bulk_tank_code: u.bulk_tank_code,
+      hide_stock: !!u.hide_stock,
+      fuel_role: u.fuel_role,
       approval_limit: u.approval_limit,
       access_until: u.access_until,
       roles,
       overrides_count: overridesCount,
       override_count: overridesCount,
       permissions: permissions.effectiveUserPermissions(userObj),
+      user_overrides: Object.fromEntries(permOverrides.map((po) => [po.section, po.level])),
       caps: capabilities.effectiveCaps(userObj),
     };
   });
 
-  res.json({ people: result });
+  res.json({
+    people: result,
+    sections: permissions.SECTIONS,
+    levels: permissions.LEVELS,
+    all_roles: allRoles,
+    all_projects: allProjects,
+    all_tanks: allTanks,
+  });
 }));
 
-// 2. Detailed 22-section view for a single user (Role base vs Personal override)
+// 2. Detailed 28-section view for a single user (Role base vs Personal override + Site/Tank scope)
 router.get('/people/:id', requireCap('access.manage'), asyncHandler((req, res) => {
   const userId = toInt(req.params.id);
   const u = get(`
     SELECT u.id, u.username, u.full_name, u.active, u.workshop_id AS home_workshop_id,
-           u.approval_limit, u.access_until, w.name AS home_workshop_name
+           u.approval_limit, u.access_until, w.name AS home_workshop_name,
+           u.project_id, p.name AS project_name, p.code AS project_code,
+           u.bulk_tank_id, t.name AS bulk_tank_name, t.code AS bulk_tank_code,
+           COALESCE(u.hide_stock, 0) AS hide_stock, u.fuel_role
       FROM users u
       LEFT JOIN workshops w ON w.id = u.workshop_id
+      LEFT JOIN projects p ON p.id = u.project_id
+      LEFT JOIN fuel_tanks t ON t.id = u.bulk_tank_id
      WHERE u.id = ?
   `, userId);
   if (!u) return res.status(404).json({ error: 'User not found' });
+
+  const allRoles = all('SELECT id, name, label, active FROM roles WHERE active = 1 ORDER BY id');
+  const allProjects = all('SELECT id, code, name FROM projects WHERE active = 1 ORDER BY name');
+  const allTanks = all('SELECT id, code, name, project_id FROM fuel_tanks WHERE active = 1 ORDER BY name');
+
+  let uStores = [];
+  let primaryStoreId = null;
+  let primaryStoreName = null;
+  try {
+    uStores = storeLocs.getUserStoreLocations(userId) || [];
+    if (uStores.length > 0) {
+      primaryStoreId = uStores[0].store_location_id;
+      primaryStoreName = uStores[0].store_name;
+    } else if (u.home_workshop_id) {
+      const matched = (storeLocs.listStoreLocations() || []).find((s) => s.workshop_id === u.home_workshop_id);
+      if (matched) { primaryStoreId = matched.id; primaryStoreName = matched.name; }
+    }
+  } catch (_) {}
 
   const roles = all(`
     SELECT r.id, r.name, r.label
@@ -469,6 +807,9 @@ router.get('/people/:id', requireCap('access.manage'), asyncHandler((req, res) =
         key: c.key,
         label: c.label,
         needs: c.needs,
+        actvt: c.actvt || '02',
+        domain: c.domain || 'Operations',
+        dualAuth: !!c.dualAuth,
         role_granted: roleGranted,
         override_granted: overrideGranted,
         effective_granted: effectiveGranted,
@@ -500,11 +841,25 @@ router.get('/people/:id', requireCap('access.manage'), asyncHandler((req, res) =
       active: !!u.active,
       home_workshop_id: u.home_workshop_id,
       home_workshop_name: u.home_workshop_name,
+      primary_store_id: primaryStoreId,
+      primary_store_name: primaryStoreName,
+      store_locations: uStores,
+      project_id: u.project_id,
+      project_name: u.project_name,
+      project_code: u.project_code,
+      bulk_tank_id: u.bulk_tank_id,
+      bulk_tank_name: u.bulk_tank_name,
+      bulk_tank_code: u.bulk_tank_code,
+      hide_stock: !!u.hide_stock,
+      fuel_role: u.fuel_role,
       approval_limit: u.approval_limit,
       access_until: u.access_until,
       roles,
     },
     sections,
+    all_roles: allRoles,
+    all_projects: allProjects,
+    all_tanks: allTanks,
     all_capabilities: capabilities.CAPABILITIES.map(({ key, label, module, section, needs }) => ({
       key, label, module, section: section || module, needs,
     })),
@@ -512,16 +867,18 @@ router.get('/people/:id', requireCap('access.manage'), asyncHandler((req, res) =
   });
 }));
 
-// 3. Save personal overrides and limits for a specific user
+// 3. Save personal overrides, roles, and site/tank bindings for a specific user
 router.post('/people/:id/save', requireCap('access.manage'), asyncHandler((req, res) => {
   const userId = toInt(req.params.id);
   const targetUser = get('SELECT id, username FROM users WHERE id = ?', userId);
   if (!targetUser) return res.status(404).json({ error: 'User not found' });
 
-  // Safety rule: nobody can change their own access
-  rules.assertNotSelf(req.user, userId);
-
-  // Safety rule: only admin can modify an admin account
+  // Safety rule: nobody can change their own access unless admin updating operational site/tank
+  const isSelf = req.user && req.user.id === userId;
+  const isAdminActor = rules.isAdmin(req.user);
+  if (isSelf && !isAdminActor) {
+    rules.assertNotSelf(req.user, userId);
+  }
   rules.assertCanManageUser(req.user, userId);
 
   const b = req.body || {};
@@ -544,7 +901,70 @@ router.post('/people/:id/save', requireCap('access.manage'), asyncHandler((req, 
     rules.assertCanGrantCaps(req.user, capsToGrant);
   }
 
+  // Optional Role updates (array of role names or IDs)
+  let newRoleRows = null;
+  if (Array.isArray(b.roles)) {
+    const cleanRoles = b.roles.map((r) => (typeof r === 'object' ? (r.name || r.id) : r)).filter(Boolean);
+    newRoleRows = cleanRoles.map((r) => {
+      return typeof r === 'number' || /^\d+$/.test(String(r))
+        ? get('SELECT id, name FROM roles WHERE id = ?', Number(r))
+        : get('SELECT id, name FROM roles WHERE name = ?', String(r));
+    }).filter(Boolean);
+
+    if (newRoleRows.some((r) => r.name === 'admin') && !isAdminActor) {
+      return res.status(403).json({ error: 'Only an Administrator can grant the admin role.' });
+    }
+  }
+
+  // Check Segregation of Duties (SoD) conflict rules unless target user has admin role
+  const currentRoles = all('SELECT r.name FROM user_roles ur JOIN roles r ON r.id = ur.role_id WHERE ur.user_id = ?', userId).map((r) => r.name);
+  const targetRoles = newRoleRows ? newRoleRows.map((r) => r.name) : currentRoles;
+  if (!targetRoles.includes('admin')) {
+    const baseCaps = capabilities.capsForRoles(targetRoles);
+    const prospectiveCaps = new Set(baseCaps);
+    const existingOverrides = all('SELECT capability, granted FROM user_capabilities WHERE user_id = ?', userId);
+    for (const eo of existingOverrides) {
+      if (eo.granted) prospectiveCaps.add(eo.capability);
+      else prospectiveCaps.delete(eo.capability);
+    }
+    for (const [k, val] of Object.entries(capUpdates)) {
+      if (val === true || val === 1) {
+        prospectiveCaps.add(k);
+      } else if (val === false || val === 0) {
+        prospectiveCaps.delete(k);
+      } else if (val === null || val === undefined || val === '') {
+        if (baseCaps.includes(k)) prospectiveCaps.add(k);
+        else prospectiveCaps.delete(k);
+      }
+    }
+    const sodResult = sod.assertNoSodConflicts(Array.from(prospectiveCaps), b.override_reason || b.reason || 'Admin console update');
+    if (sodResult && sodResult.allowedWithException) {
+      audit.record({
+        userId: req.user.id,
+        entity: 'sod_governance_exception',
+        entityId: userId,
+        action: 'user_override_exception_approved',
+        after: { username: targetUser.username, conflicts: sodResult.conflicts, reason: sodResult.reason }
+      });
+    }
+  }
+
   tx(() => {
+    // 0. Save role assignments if provided
+    if (newRoleRows) {
+      // Prevent removing the last admin
+      if (currentRoles.includes('admin') && !newRoleRows.some((r) => r.name === 'admin')) {
+        const activeAdmins = rules.activeAdminIds();
+        if (activeAdmins.length <= 1 && activeAdmins.includes(userId)) {
+          bad(400, 'Cannot remove the admin role from the last active administrator.');
+        }
+      }
+      run('DELETE FROM user_roles WHERE user_id = ?', userId);
+      for (const r of newRoleRows) {
+        run('INSERT OR IGNORE INTO user_roles (user_id, role_id) VALUES (?, ?)', userId, r.id);
+      }
+    }
+
     // 1. Save section overrides
     for (const [sectionKey, lvl] of Object.entries(sectionUpdates)) {
       if (lvl === null || lvl === '' || lvl === undefined) {
@@ -563,7 +983,7 @@ router.post('/people/:id/save', requireCap('access.manage'), asyncHandler((req, 
       }
     }
 
-    // 3. User metadata updates
+    // 3. User metadata & Fuel/Site scope updates
     const sets = [];
     const params = [];
     if (b.approval_limit !== undefined) {
@@ -574,10 +994,36 @@ router.post('/people/:id/save', requireCap('access.manage'), asyncHandler((req, 
       const until = b.access_until === '' || b.access_until === null ? null : String(b.access_until).trim();
       sets.push('access_until = ?'); params.push(until || null);
     }
-    if (b.home_workshop_id !== undefined || b.workshop_id !== undefined) {
-      const val = b.home_workshop_id !== undefined ? b.home_workshop_id : b.workshop_id;
-      const wsId = val ? toInt(val) : null;
-      sets.push('workshop_id = ?'); params.push(wsId);
+    if (b.project_id !== undefined) {
+      const pid = b.project_id === '' || b.project_id === null ? null : toInt(b.project_id);
+      sets.push('project_id = ?'); params.push(pid);
+    }
+    if (b.bulk_tank_id !== undefined) {
+      const tid = b.bulk_tank_id === '' || b.bulk_tank_id === null ? null : String(b.bulk_tank_id).trim();
+      sets.push('bulk_tank_id = ?'); params.push(tid || null);
+    }
+    if (b.hide_stock !== undefined) {
+      sets.push('hide_stock = ?'); params.push(b.hide_stock ? 1 : 0);
+    }
+    if (b.fuel_role !== undefined) {
+      const frole = b.fuel_role === '' || b.fuel_role === null ? null : String(b.fuel_role).trim();
+      sets.push('fuel_role = ?'); params.push(frole);
+    }
+    if (b.store_location_id !== undefined || b.primary_store_id !== undefined || b.home_workshop_id !== undefined || b.workshop_id !== undefined) {
+      const storeId = b.store_location_id !== undefined ? b.store_location_id : b.primary_store_id;
+      if (storeId) {
+        const sid = toInt(storeId);
+        try {
+          storeLocs.setUserStoreLocationAccess(userId, sid, { can_view: 1, can_receive: 1, can_issue: 1, can_count: 1, can_request: 1, can_dispatch: 1 }, req.user);
+        } catch (_) {}
+        const st = storeLocs.getStoreLocationById(sid);
+        const wsId = st && st.workshop_id ? st.workshop_id : 1;
+        sets.push('workshop_id = ?'); params.push(wsId);
+      } else {
+        const val = b.home_workshop_id !== undefined ? b.home_workshop_id : b.workshop_id;
+        const wsId = val ? toInt(val) : 1;
+        sets.push('workshop_id = ?'); params.push(wsId);
+      }
     }
     if (sets.length > 0) {
       run(`UPDATE users SET ${sets.join(', ')} WHERE id = ?`, ...params, userId);
@@ -590,10 +1036,86 @@ router.post('/people/:id/save', requireCap('access.manage'), asyncHandler((req, 
     entityId: userId,
     action: 'save_overrides',
     reason: b.reason || null,
-    after: { sections: sectionUpdates, capabilities: capUpdates },
+    after: { sections: sectionUpdates, capabilities: capUpdates, roles: newRoleRows ? newRoleRows.map((r) => r.name) : undefined },
   });
 
   res.json({ ok: true, message: `Access saved for ${targetUser.username}` });
+}));
+
+// 3b. Bulk Save across All Persons (for All-Persons Access Matrix Grid)
+router.post('/people/bulk-save', requireCap('access.manage'), asyncHandler((req, res) => {
+  const { userIds = [], sections = {}, addRole, removeRole, projectId, bulkTankId, hideStock, presetDomain, presetLevel } = req.body || {};
+  const ids = Array.isArray(userIds) ? userIds.map((id) => toInt(id)).filter(Boolean) : [];
+  if (!ids.length) return res.status(400).json({ error: 'At least one user must be selected' });
+
+  for (const [, lvl] of Object.entries(sections)) {
+    if (lvl !== null && lvl !== '' && !permissions.LEVELS.includes(lvl)) {
+      return res.status(400).json({ error: `Invalid level ${lvl}` });
+    }
+  }
+
+  let updated = 0;
+  tx(() => {
+    for (const uid of ids) {
+      const target = get('SELECT id, username FROM users WHERE id = ?', uid);
+      if (!target) continue;
+
+      if (addRole) {
+        const r = get('SELECT id, name FROM roles WHERE name = ?', String(addRole));
+        if (r && (r.name !== 'admin' || rules.isAdmin(req.user))) {
+          run('INSERT OR IGNORE INTO user_roles (user_id, role_id) VALUES (?, ?)', uid, r.id);
+        }
+      }
+      if (removeRole && removeRole !== 'admin') {
+        const r = get('SELECT id FROM roles WHERE name = ?', String(removeRole));
+        if (r) run('DELETE FROM user_roles WHERE user_id = ? AND role_id = ?', uid, r.id);
+      }
+
+      for (const [secKey, lvl] of Object.entries(sections)) {
+        if (lvl === null || lvl === '' || lvl === 'inherit') {
+          permissions.removeUserPermission(uid, secKey);
+        } else {
+          permissions.setUserPermission(uid, secKey, lvl, req.user.id);
+        }
+      }
+
+      if (presetDomain && presetLevel) {
+        const domainSections = permissions.SECTIONS.filter((s) => presetDomain === 'ALL' || s.group === presetDomain);
+        for (const ds of domainSections) {
+          if (presetLevel === 'inherit') permissions.removeUserPermission(uid, ds.key);
+          else permissions.setUserPermission(uid, ds.key, presetLevel, req.user.id);
+        }
+      }
+
+      const sets = [];
+      const params = [];
+      if (projectId !== undefined) {
+        sets.push('project_id = ?');
+        params.push(projectId === '' || projectId === null ? null : toInt(projectId));
+      }
+      if (bulkTankId !== undefined) {
+        sets.push('bulk_tank_id = ?');
+        params.push(bulkTankId === '' || bulkTankId === null ? null : String(bulkTankId));
+      }
+      if (hideStock !== undefined) {
+        sets.push('hide_stock = ?');
+        params.push(hideStock ? 1 : 0);
+      }
+      if (sets.length) {
+        run(`UPDATE users SET ${sets.join(', ')} WHERE id = ?`, ...params, uid);
+      }
+      updated++;
+    }
+  });
+
+  audit.record({
+    userId: req.user.id,
+    entity: 'user_permission',
+    action: 'bulk_save',
+    after: { count: updated, userIds: ids, sections, addRole, removeRole, projectId, bulkTankId },
+  });
+
+  res.json({ ok: true, updated });
 }));
 
 // 4. Reset all personal overrides for user back to role template
@@ -815,13 +1337,13 @@ router.get('/history', requireCap('access.manage'), asyncHandler((req, res) => {
 }));
 
 // 9. Compliance Access Matrix Report (People × 22 Sections)
-router.get('/report', requireCap('access.manage'), asyncHandler(async (req, res) => {
+router.get(['/review-report', '/report'], requireCap('access.manage'), asyncHandler(async (req, res) => {
   const users = all(`
     SELECT u.id, u.username, u.full_name, u.active, u.approval_limit, u.access_until,
-           w.name AS home_workshop_name
+           u.workshop_id, w.name AS home_workshop_name
       FROM users u
       LEFT JOIN workshops w ON w.id = u.workshop_id
-     WHERE u.active = 1
+     ${req.query.all ? '' : 'WHERE u.active = 1'}
      ORDER BY u.username
   `);
 
@@ -836,46 +1358,106 @@ router.get('/report', requireCap('access.manage'), asyncHandler(async (req, res)
              (SELECT COUNT(*) FROM user_capabilities WHERE user_id = ?) AS cnt
     `, u.id, u.id).cnt || 0;
 
+    let storeLocations = [];
+    try {
+      storeLocations = storeLocs.getUserStoreLocations(u.id);
+    } catch (_) {}
+
+    let isElevationExpired = false;
+    if (u.access_until) {
+      const until = new Date(u.access_until);
+      isElevationExpired = !isNaN(until.getTime()) && until < new Date();
+    }
+
+    const sessionRow = get('SELECT MAX(COALESCE(last_seen_at, created_at)) AS last_seen FROM sessions WHERE user_id = ?', u.id);
+    const lastSeen = sessionRow ? sessionRow.last_seen : null;
+
+    const sodConflicts = !roleNames.includes('admin') ? sod.findSodConflicts(caps) : [];
+    const sensitiveCaps = sod.findSensitiveCapabilities(caps);
+
     return {
       id: u.id,
       username: u.username,
       full_name: u.full_name,
+      active: u.active === 1,
       roles: roleNames.join(', '),
+      role_list: roles,
       workshop: u.home_workshop_name || '',
       approval_limit: u.approval_limit,
       access_until: u.access_until,
+      is_elevation_expired: isElevationExpired,
       has_overrides: overrides > 0,
       overrides_count: overrides,
       caps_count: caps.length,
+      store_locations: storeLocations,
+      assigned_stores_summary: storeLocations.map((s) => `${s.store_code} (${s.store_name})`).join('; ') || 'None (Default Workshop)',
+      sod_conflicts: sodConflicts,
+      sod_conflict_count: sodConflicts.length,
+      sensitive_capabilities: sensitiveCaps,
+      last_seen: lastSeen,
       levels: perms,
     };
   });
 
-  if (req.query.format === 'xlsx') {
+  if (req.query.format === 'xlsx' || req.query.format === 'excel') {
     const { sendXlsx } = require('../lib/export');
-    const cols = [
+    const reviewCols = [
       { header: 'Username', key: 'username', width: 16 },
       { header: 'Full Name', key: 'full_name', width: 22 },
-      { header: 'Roles', key: 'roles', width: 20 },
+      { header: 'Status', key: 'status', width: 10 },
+      { header: 'Roles', key: 'roles', width: 22 },
       { header: 'Workshop', key: 'workshop', width: 16 },
-      { header: 'Overrides', key: 'overrides_count', width: 12 },
-      { header: 'Approval Limit', key: 'approval_limit', width: 15 },
-      { header: 'Access Until', key: 'access_until', width: 15 },
+      { header: 'Assigned Stores', key: 'assigned_stores', width: 32 },
+      { header: 'Last Login / Seen', key: 'last_seen', width: 20 },
+      { header: 'Access Until', key: 'access_until', width: 18 },
+      { header: 'Elevation Expired?', key: 'elevation_expired', width: 16 },
+      { header: 'Overrides Count', key: 'overrides_count', width: 14 },
+      { header: 'SoD Conflicts', key: 'sod_conflicts_summary', width: 35 },
+      { header: 'Sensitive Capabilities', key: 'sensitive_caps_summary', width: 35 }
+    ];
+    const reviewRows = matrix.map((m) => ({
+      username: m.username,
+      full_name: m.full_name || '',
+      status: m.active ? 'ACTIVE' : 'INACTIVE',
+      roles: m.roles,
+      workshop: m.workshop,
+      assigned_stores: m.assigned_stores_summary,
+      last_seen: m.last_seen || 'Never',
+      access_until: m.access_until || 'Indefinite',
+      elevation_expired: m.is_elevation_expired ? 'YES (FALLBACK ACTIVE)' : 'NO',
+      overrides_count: m.overrides_count,
+      sod_conflicts_summary: m.sod_conflicts.map((c) => `[${c.rule.code}] ${c.rule.title}`).join('; ') || 'None',
+      sensitive_caps_summary: m.sensitive_capabilities.join(', ') || 'None'
+    }));
+
+    const matrixCols = [
+      { header: 'Username', key: 'username', width: 16 },
+      { header: 'Roles', key: 'roles', width: 20 }
     ];
     for (const s of permissions.SECTIONS) {
-      cols.push({ header: s.label, key: s.key, width: 14 });
+      matrixCols.push({ header: s.label, key: s.key, width: 14 });
     }
-    const rows = matrix.map((m) => {
-      const r = { ...m };
+    const matrixRows = matrix.map((m) => {
+      const r = { username: m.username, roles: m.roles };
       for (const [k, v] of Object.entries(m.levels)) {
         r[k] = String(v).toUpperCase();
       }
       return r;
     });
-    return sendXlsx(res, 'Access-Control-Matrix.xlsx', [{ name: 'Access Matrix', columns: cols, rows }]);
+
+    return sendXlsx(res, 'Access-Governance-Review-Report.xlsx', [
+      { name: 'Access Review', columns: reviewCols, rows: reviewRows },
+      { name: 'Clearance Matrix', columns: matrixCols, rows: matrixRows }
+    ]);
   }
 
-  res.json({ sections: permissions.SECTIONS, users: matrix, people: matrix });
+  res.json({
+    generated_at: new Date().toISOString(),
+    total_users: matrix.length,
+    sections: permissions.SECTIONS,
+    users: matrix,
+    people: matrix
+  });
 }));
 
 // ---- approval limits (src/lib/approval_limits.js) ------------------------------------------
@@ -891,6 +1473,48 @@ router.put('/approval-limits', requireCap('access.manage'), asyncHandler((req, r
   const limits = require('../lib/approval_limits');
   const saved = limits.setLimit(req.user, req.body.role, req.body.kind, req.body.max_amount);
   res.json({ saved, ...limits.listForScreen() });
+}));
+
+// ---- stand-in approvals delegation (Step 3b, Decision D9) -------------------
+const standIn = require('../lib/stand_in');
+standIn.initTable();
+
+// List delegations (admin sees all, user sees delegations they give or hold)
+router.get('/stand-ins', asyncHandler((req, res) => {
+  const rows = standIn.listDelegations(req.user, { limit: req.query.limit });
+  res.json({ delegations: rows });
+}));
+
+// Active delegations right now for the logged-in user (as stand-in or granter)
+router.get('/stand-ins/active', asyncHandler((req, res) => {
+  const asStandIn = standIn.getActiveDelegationsFor(req.user.id);
+  const asGranter = standIn.getActiveDelegationsBy(req.user.id);
+  res.json({
+    as_stand_in: asStandIn,
+    as_granter: asGranter,
+    active_now: asStandIn.length > 0 || asGranter.length > 0
+  });
+}));
+
+// Create a new delegation (user for themselves, or admin for anyone)
+router.post('/stand-ins', asyncHandler((req, res) => {
+  require_(req.body, ['granter_id', 'stand_in_id', 'start_date', 'end_date', 'reason']);
+  try {
+    const created = standIn.createDelegation(req.user, req.body);
+    res.status(201).json(created);
+  } catch (err) {
+    res.status(err.status || 400).json({ error: err.message });
+  }
+}));
+
+// Revoke an active delegation early (granter, stand-in, or admin)
+router.post('/stand-ins/:id/revoke', asyncHandler((req, res) => {
+  try {
+    const updated = standIn.revokeDelegation(req.user, req.params.id, req.body.reason);
+    res.json(updated);
+  } catch (err) {
+    res.status(err.status || 400).json({ error: err.message });
+  }
 }));
 
 module.exports = router;

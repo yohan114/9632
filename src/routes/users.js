@@ -9,6 +9,10 @@ const audit = require('../lib/audit');
 const passwordPolicy = require('../lib/password_policy');
 const rules = require('../lib/access_rules');
 const workshops = require('../lib/workshops');
+const storeLocs = require('../lib/store_locations');
+const permissions = require('../lib/permissions');
+const capabilities = require('../lib/capabilities');
+const sod = require('../lib/sod');
 
 // A password an admin types is a TEMPORARY one: the admin knows it, and so may whoever it was
 // passed to on paper or over the phone. So it must still meet the rules (it is live until first
@@ -21,9 +25,16 @@ function checkAdminPassword(pw, username) {
 const router = express.Router();
 
 function userWithRoles(id) {
-  const u = get('SELECT id, username, full_name, active, created_at, workshop_id FROM users WHERE id = ?', id);
+  const u = get('SELECT id, username, full_name, active, created_at, workshop_id, access_until, approval_limit FROM users WHERE id = ?', id);
   if (!u) return null;
   u.roles = auth.rolesForUser(id);
+  u.permissions = permissions.effectiveUserPermissions(u);
+  u.caps = capabilities.effectiveCaps(u);
+  try {
+    u.store_locations = storeLocs.getUserStoreLocations(id);
+  } catch (_) {
+    u.store_locations = [];
+  }
   return u;
 }
 
@@ -54,8 +65,15 @@ router.get('/roles', requireAuth, asyncHandler((_req, res) => res.json(
   all('SELECT id, name, label, description FROM roles WHERE COALESCE(active, 1) = 1 ORDER BY id'))));
 
 router.get('/', requireCap('users.manage'), asyncHandler((_req, res) => {
-  const users = all('SELECT id, username, full_name, active, created_at, mfa_enabled, workshop_id FROM users ORDER BY username');
-  for (const u of users) u.roles = auth.rolesForUser(u.id);
+  const users = all('SELECT id, username, full_name, active, created_at, mfa_enabled, workshop_id, access_until FROM users ORDER BY username');
+  for (const u of users) {
+    u.roles = auth.rolesForUser(u.id);
+    try {
+      u.store_locations = storeLocs.getUserStoreLocations(u.id);
+    } catch (_) {
+      u.store_locations = [];
+    }
+  }
   res.json(users);
 }));
 
@@ -66,15 +84,124 @@ router.post('/', requireCap('users.manage'), asyncHandler((req, res) => {
   checkAdminPassword(b.password, b.username);
   const roles = checkedRoleNames(b.roles);
   rules.assertCanAssignRoles(req.user, roles);
-  // Home workshop (Stage 2): the one chosen, else the default.
-  const workshopId = workshops.forNew(null, b.workshop_id);
+
+  const sectionUpdates = b.sections || b.permissions || {};
+  const capUpdates = b.capabilities || b.caps || {};
+
+  // Check section clearance limits (grant only what caller holds)
+  for (const [sectionKey, lvl] of Object.entries(sectionUpdates)) {
+    if (lvl !== null && lvl !== undefined && lvl !== '') {
+      if (!permissions.LEVELS.includes(lvl)) return res.status(400).json({ error: `Invalid level ${lvl}` });
+      rules.assertCanSetLevel(req.user, sectionKey, lvl);
+    }
+  }
+
+  // Check capability limits (grant only what caller holds)
+  const capsToGrant = Object.entries(capUpdates)
+    .filter(([, val]) => val === true || val === 1)
+    .map(([k]) => k);
+  if (capsToGrant.length > 0) {
+    rules.assertCanGrantCaps(req.user, capsToGrant);
+  }
+
+  // Segregation of Duties (SoD) validation (unless creating an admin account)
+  if (!roles.includes('admin')) {
+    const baseCaps = capabilities.capsForRoles(roles);
+    const prospectiveCaps = new Set(baseCaps);
+    for (const [k, v] of Object.entries(capUpdates)) {
+      if (v === true || v === 1) prospectiveCaps.add(k);
+      else if (v === false || v === 0) prospectiveCaps.delete(k);
+    }
+    const sodResult = sod.assertNoSodConflicts(Array.from(prospectiveCaps), b.override_reason || b.reason);
+    if (sodResult && sodResult.allowedWithException) {
+      audit.record({
+        userId: req.user.id,
+        entity: 'sod_governance_exception',
+        action: 'user_create_exception_approved',
+        after: { username: b.username, conflicts: sodResult.conflicts, reason: sodResult.reason }
+      });
+    }
+  }
+
+  // Validate access_until if provided
+  let accessUntil = null;
+  if (b.access_until) {
+    const d = new Date(b.access_until);
+    if (isNaN(d.getTime())) return res.status(400).json({ error: 'Invalid access_until date' });
+    accessUntil = d.toISOString();
+  }
+
+  // Auto-resolve workshop_id: from chosen store if linked, or fallback to default (1: Central Workshop)
+  let workshopId = 1;
+  const storeId = toInt(b.store_location_id || b.store_id);
+  if (storeId) {
+    try {
+      const sRow = get('SELECT workshop_id FROM store_locations WHERE id = ?', storeId);
+      if (sRow && sRow.workshop_id) workshopId = sRow.workshop_id;
+    } catch (_) {}
+  } else if (b.workshop_id) {
+    workshopId = workshops.forNew(null, b.workshop_id);
+  }
+
   const id = tx(() => {
-    const info = run('INSERT INTO users (username, password_hash, full_name, active, must_change_password, workshop_id) VALUES (?, ?, ?, 1, 1, ?)',
-      b.username, auth.hashPassword(b.password), b.full_name || null, workshopId);
-    setRoles(info.lastInsertRowid, roles);
-    return info.lastInsertRowid;
+    const info = run('INSERT INTO users (username, password_hash, full_name, active, must_change_password, workshop_id, access_until) VALUES (?, ?, ?, 1, 1, ?, ?)',
+      b.username, auth.hashPassword(b.password), b.full_name || null, workshopId, accessUntil);
+    const userId = info.lastInsertRowid;
+    setRoles(userId, roles);
+
+    // Save section overrides
+    for (const [sectionKey, lvl] of Object.entries(sectionUpdates)) {
+      if (lvl !== null && lvl !== '' && lvl !== undefined) {
+        permissions.setUserPermission(userId, sectionKey, lvl);
+      }
+    }
+
+    // Save capability overrides
+    for (const [capKey, granted] of Object.entries(capUpdates)) {
+      if (granted !== null && granted !== undefined && granted !== '') {
+        capabilities.setUserCapability(userId, capKey, !!granted);
+      }
+    }
+
+    return userId;
   });
-  audit.record({ userId: req.user.id, entity: 'user', entityId: id, action: 'create', after: { username: b.username, roles, workshop_id: workshopId } });
+
+  // Assign physical store location access if provided
+  if (storeId) {
+    const isMain = roles.includes('main_storekeeper');
+    const p = b.store_permissions || {};
+    const perms = {
+      can_view: p.can_view != null ? (p.can_view ? 1 : 0) : 1,
+      can_receive: p.can_receive != null ? (p.can_receive ? 1 : 0) : 1,
+      can_issue: p.can_issue != null ? (p.can_issue ? 1 : 0) : 1,
+      can_dispatch: p.can_dispatch != null ? (p.can_dispatch ? 1 : 0) : (isMain ? 1 : 0),
+      can_count: p.can_count != null ? (p.can_count ? 1 : 0) : 1,
+      can_request: p.can_request != null ? (p.can_request ? 1 : 0) : 1
+    };
+    try {
+      storeLocs.setUserStoreLocationAccess(id, storeId, perms, req.user);
+    } catch (err) {
+      console.warn('Initial store assignment warning:', err.message);
+    }
+  }
+
+  audit.record({
+    userId: req.user.id,
+    entity: 'user',
+    entityId: id,
+    action: 'create',
+    after: {
+      username: b.username,
+      roles,
+      workshop_id: workshopId,
+      store_location_id: storeId,
+      access_until: accessUntil,
+      sections: sectionUpdates,
+      capabilities: capUpdates,
+      reason: b.override_reason || b.reason || null
+    }
+  });
+
   res.status(201).json(userWithRoles(id));
 }));
 
@@ -91,6 +218,10 @@ router.patch('/:id', requireCap('users.manage'), asyncHandler((req, res) => {
   if (b.full_name !== undefined) { sets.push('full_name = ?'); params.push(b.full_name); }
   if (b.active !== undefined) { sets.push('active = ?'); params.push(b.active ? 1 : 0); }
   if (b.workshop_id !== undefined) { sets.push('workshop_id = ?'); params.push(workshops.mustBeActive(b.workshop_id).id); }
+  if (b.access_until !== undefined) {
+    sets.push('access_until = ?');
+    params.push(b.access_until ? new Date(b.access_until).toISOString() : null);
+  }
   if (b.password) {
     checkAdminPassword(b.password, before.username);
     sets.push('password_hash = ?'); params.push(auth.hashPassword(b.password));
@@ -123,6 +254,7 @@ router.post('/:id/roles', requireCap('users.manage'), asyncHandler((req, res) =>
   const current = all('SELECT r.name FROM user_roles ur JOIN roles r ON r.id = ur.role_id WHERE ur.user_id = ?', id).map((r) => r.name);
   rules.assertCanAssignRoles(req.user, roles.filter((r) => !current.includes(r)));
   rules.assertKeepsAnAdmin({ userId: id, newRoles: roles });
+  rules.assertNotOwn(req.user, id);   // your roles are your access: someone else changes them (Part 2)
   tx(() => setRoles(id, roles));
   audit.record({ userId: req.user.id, entity: 'user', entityId: id, action: 'set_roles', before: { roles: current }, after: { roles } });
   res.json(userWithRoles(id));
@@ -159,6 +291,79 @@ router.post('/:id/sessions/revoke', requireCap('users.manage'), asyncHandler((re
   const ended = auth.revokeSessions(id, id === req.user.id ? { exceptToken: req.user.token } : {});
   audit.record({ userId: req.user.id, entity: 'user', entityId: id, action: 'sessions_revoked', after: { ended } });
   res.json({ ok: true, ended });
+}));
+
+// List physical store locations with access flags for a user
+router.get('/:id/stores', requireCap('users.manage'), asyncHandler((req, res) => {
+  const id = toInt(req.params.id);
+  const u = get('SELECT id, username, full_name FROM users WHERE id = ?', id);
+  if (!u) return res.status(404).json({ error: 'User not found' });
+  rules.assertCanManageUser(req.user, id);
+
+  const allStores = storeLocs.listStoreLocations({ activeOnly: true });
+  const userAccess = storeLocs.getUserStoreLocations(id);
+  const accessMap = new Map(userAccess.map((a) => [Number(a.store_location_id), a]));
+
+  const result = allStores.map((s) => {
+    const a = accessMap.get(Number(s.id));
+    return {
+      store_id: s.id,
+      store_code: s.code,
+      store_name: s.name,
+      store_type: s.store_type,
+      workshop_id: s.workshop_id,
+      has_access: !!a,
+      can_view: a ? a.can_view : 0,
+      can_receive: a ? a.can_receive : 0,
+      can_issue: a ? a.can_issue : 0,
+      can_dispatch: a ? a.can_dispatch : 0,
+      can_count: a ? a.can_count : 0,
+      can_request: a ? a.can_request : 0
+    };
+  });
+  res.json({ user_id: id, username: u.username, full_name: u.full_name, stores: result });
+}));
+
+// Set or update store location access for a user
+router.post('/:id/stores', requireCap('users.manage'), asyncHandler((req, res) => {
+  const id = toInt(req.params.id);
+  const u = get('SELECT id, username FROM users WHERE id = ?', id);
+  if (!u) return res.status(404).json({ error: 'User not found' });
+  rules.assertCanManageUser(req.user, id);
+
+  const b = req.body;
+  if (Array.isArray(b.stores)) {
+    for (const item of b.stores) {
+      const sId = toInt(item.store_id || item.store_location_id);
+      if (!sId) continue;
+      if (item.has_access || item.can_view || item.can_receive || item.can_issue) {
+        storeLocs.setUserStoreLocationAccess(id, sId, {
+          can_view: item.can_view ? 1 : 1,
+          can_receive: item.can_receive ? 1 : 0,
+          can_issue: item.can_issue ? 1 : 0,
+          can_dispatch: item.can_dispatch ? 1 : 0,
+          can_count: item.can_count ? 1 : 0,
+          can_request: item.can_request ? 1 : 0
+        }, req.user);
+      } else {
+        storeLocs.revokeUserStoreLocationAccess(id, sId, req.user);
+      }
+    }
+  } else {
+    const sId = toInt(b.store_id || b.store_location_id);
+    if (!sId) return res.status(400).json({ error: 'store_location_id is required' });
+    storeLocs.setUserStoreLocationAccess(id, sId, b, req.user);
+  }
+  res.json(userWithRoles(id));
+}));
+
+// Revoke a store location from a user
+router.delete('/:id/stores/:storeId', requireCap('users.manage'), asyncHandler((req, res) => {
+  const id = toInt(req.params.id);
+  const storeId = toInt(req.params.storeId);
+  rules.assertCanManageUser(req.user, id);
+  storeLocs.revokeUserStoreLocationAccess(id, storeId, req.user);
+  res.json({ ok: true, revoked_store_id: storeId });
 }));
 
 module.exports = router;
