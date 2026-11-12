@@ -2909,7 +2909,9 @@ router.get('/counts', asyncHandler((req, res) => res.json(stockCount.list(req.us
 router.post('/counts', requireCap('stores.stock.count'), asyncHandler((req, res) => {
   const b = req.body || {};
   const countStoreScope = require('../lib/context').storeScopeFor(req.user);
-  const targetCountStore = toInt(b.physical_store_id || b.store_id);
+  // store_id is a workshop store, checked by stockCount.start (mayCount -> stores.mayManage); only a
+  // physical_store_id is a store location the store scope can be asked about directly.
+  const targetCountStore = toInt(b.physical_store_id);
   if (targetCountStore) {
     countStoreScope.assertAccess(targetCountStore, 'count');
   }

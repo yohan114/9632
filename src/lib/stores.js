@@ -266,11 +266,12 @@ function mayManage(user, storeId) {
     if (ss.isGlobal) return true;
     // storeId is a workshop store (stores.byId); the store scope speaks store_locations ids, and the
     // two number spaces overlap (workshop 1's store is store location 2, not 1). Ask about the
-    // location that belongs to this store; a store with no location of its own falls through to
-    // the Stage 4 rule below.
+    // location that belongs to this store: being outside it refuses. Being inside it is not enough
+    // on its own - every workshop without a location of its own is scoped to the main workshop
+    // store - so the Stage 4 rule below still decides.
     const storeLocations = require('./store_locations');
     const phys = storeLocations.resolvePhysicalStore(sid);
-    if (phys && Number(storeLocations.resolveLegacyStoreId(phys.id)) === sid) return ss.canAccess(phys.id, 'count');
+    if (phys && Number(storeLocations.resolveLegacyStoreId(phys.id)) === sid && !ss.canAccess(phys.id, 'count')) return false;
   } catch (_) {}
   const scope = require('./scope');
   if (!scope.enabled() || scope.headOffice(user)) return true;
