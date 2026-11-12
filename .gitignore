@@ -2,13 +2,9 @@ node_modules/
 *.log
 npm-debug.log*
 logs/
+scratch/
 
 # Local database + backups (data is seeded/migrated, never committed)
-data/*.db
-data/*.db-shm
-data/*.db-wal
-# Everything else the running app writes under data/ too (e.g. data/outsourcing/ — generated CCOM
-# request PDFs, which are company documents). The repository is public.
 data/
 backups/
 
@@ -67,3 +63,7 @@ mfa.key
 # in git: the repository is public.
 sources/oil/users.csv
 sources/service/service.db
+
+# Local agent skills cache (skills installed globally in ~/.gemini/config/skills)
+.agents/
+skills-lock.json

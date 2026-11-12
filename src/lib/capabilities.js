@@ -184,7 +184,7 @@ const CAPABILITIES = [
   C('stores.items.create', 'stores', 'Register a new store inventory SKU and barcode', STORE_STAFF.concat(['manager']), 'stores', 'stores', '01', 'Inventory'),
   C('stores.items.edit', 'stores', 'Create or edit store catalogue items and their prices', STORE_STAFF.concat(['manager']), 'stores', 'stores', '02', 'Inventory'),
   C('stores.edit', 'stores', 'Legacy alias: Edit store items and physical inventory', STORE_STAFF.concat(['manager']), 'stores', 'stores', '02', 'Inventory'),
-  C('stores.items.price', 'stores', 'Set parts standard cost and issue charge-out prices', STORE_STAFF.concat(['manager']), 'stores', 'stores', '02', 'Inventory'),
+  C('stores.items.price', 'stores', 'Set parts standard cost and issue charge-out prices', ['manager'], 'stores', 'stores', '02', 'Inventory'),
   C('stores.items.delete', 'stores', 'Delete an obsolete or unused store catalogue SKU', ['manager'], 'stores', 'stores', '06', 'Inventory', true),
   C('stores.items.txn', 'stores', 'Record manual stock receipts, adjustments and issues', STORE_STAFF, 'stores', 'stores', '02', 'Inventory'),
   C('stores.categories.edit', 'stores', 'Add or rename store item categories', STORE_STAFF.concat(['manager']), 'stores', 'stores', '02', 'Inventory'),
@@ -221,8 +221,8 @@ const CAPABILITIES = [
   C('stores.mtn.approve', 'stores', 'Approve a Material Transfer Note (MTN)', ['workshop', 'operational_manager', 'manager'], null, 'stores', '10', 'Inventory'),
   C('stores.mtn.reject', 'stores', 'Reject a Material Transfer Note (MTN)', ['workshop', 'operational_manager', 'manager'], null, 'stores', '10', 'Inventory'),
   C('stores.issue_return', 'stores', 'Return an issued part back to store stock', SITE_STORE_STAFF, 'stores', 'stores', '02', 'Inventory'),
-  C('stores.stock.count', 'stores', 'Open and record physical stock counts', SITE_STORE_STAFF.concat(['manager']), 'stores', 'stores', '01', 'Inventory'),
-  C('stores.count', 'stores', 'Legacy alias: Open and record physical stock counts', SITE_STORE_STAFF.concat(['manager']), 'stores', 'stores', '01', 'Inventory'),
+  C('stores.stock.count', 'stores', 'Open and record physical stock counts', SITE_STORE_STAFF, 'stores', 'stores', '01', 'Inventory'),
+  C('stores.count', 'stores', 'Legacy alias: Open and record physical stock counts', SITE_STORE_STAFF, 'stores', 'stores', '01', 'Inventory'),
   C('stores.count.approve', 'stores', 'Approve a stock take and put its corrections into stock (HO)', OPS_MANAGERS, null, 'stores', '10', 'Inventory', true),
   C('stores.disposal.edit', 'stores', 'Write a disposal note (scrap and waste oil to sell)', STORE_STAFF, 'stores', 'stores', '01', 'Inventory'),
   C('stores.disposal.approve', 'stores', 'Approve a disposal note, with buyer, amount and date', OPS_MANAGERS, null, 'stores', '10', 'Inventory'),
@@ -273,7 +273,7 @@ const CAPABILITIES = [
   C('purchasing.local', 'purchasing', 'Work the Local purchasing channel', ['purchase_local', 'manager'], 'purchasing', 'purchasing', '02', 'Procurement'),
   C('purchasing.all_channels', 'purchasing', 'Work both purchasing channels (managers)', OPS_MANAGERS, 'purchasing', 'purchasing', '03', 'Procurement'),
   C('purchasing.priority_edit', 'purchasing', 'Adjust buying priorities and urgency notes', ['workshop', 'operational_manager', 'manager', 'purchase_head_office', 'purchase_local'], 'purchasing', 'purchasing', '02', 'Procurement'),
-  C('purchasing.po.create', 'purchasing', 'Generate formal Purchase Orders to vendors', ['purchase_head_office', 'purchase_local', 'manager'], 'purchasing', 'purchasing', '01', 'Procurement'),
+  C('purchasing.po.create', 'purchasing', 'Generate formal Purchase Orders to vendors', ['purchase_head_office', 'purchase_local'], 'purchasing', 'purchasing', '01', 'Procurement'),
   C('purchasing.po.approve', 'purchasing', 'Approve vendor purchase orders up to limit', OPS_MANAGERS, 'purchasing', 'purchasing', '10', 'Procurement'),
   C('purchasing.suppliers.manage', 'purchasing', 'Maintain vendor master records, payment terms, and ratings', ['purchase_head_office', 'manager'], 'purchasing', 'purchasing', '02', 'Procurement'),
   C('purchasing.price_override', 'purchasing', 'Override negotiated vendor catalogue rates', OPS_MANAGERS, 'purchasing', 'purchasing', '02', 'Procurement'),
@@ -450,6 +450,9 @@ function seedCapabilities() {
       seeded += run('INSERT OR IGNORE INTO role_capabilities (role, capability, granted) VALUES (?, ?, 1)', role, c.key).changes;
     }
   }
+  // Enforce SoD compliance by cleaning legacy toxic combinations on baseline role templates
+  run("DELETE FROM role_capabilities WHERE role IN ('storekeeper', 'main_storekeeper') AND capability = 'stores.items.price'");
+  run("DELETE FROM role_capabilities WHERE role = 'manager' AND capability IN ('stores.stock.count', 'stores.count', 'purchasing.po.create')");
   return { seeded };
 }
 

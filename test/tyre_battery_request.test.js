@@ -42,6 +42,8 @@ const mkUser = (name, roles) => {
 mkUser('boss', ['admin']);
 mkUser('keeper', ['storekeeper']);
 mkUser('fitter', ['workshop']);
+// Step 3a: whoever raised a request does not certify it — another engineer does.
+mkUser('engineer', ['workshop']);
 mkUser('opsman', ['operational_manager']);
 
 const app = require('../src/server');
@@ -50,7 +52,7 @@ const cookies = {};
 test.before(async () => {
   await new Promise((res) => { server = app.listen(0, res); });
   base = `http://127.0.0.1:${server.address().port}`;
-  for (const u of ['boss', 'keeper', 'fitter', 'opsman']) {
+  for (const u of ['boss', 'keeper', 'fitter', 'engineer', 'opsman']) {
     const r = await fetch(`${base}/api/auth/login`, {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ username: u, password: 'pw' }),
@@ -131,6 +133,11 @@ test('a request names the machine, the shelf and the reason', async () => {
   assert.strictEqual(line.position, 'RL1');
   assert.strictEqual(line.km_reading, 145320);
   assert.strictEqual(line.reason, 'worn');
+  // Step 3a: who raised it is on the request, and they do not certify it — another engineer does.
+  assert.strictEqual(get('SELECT raised_by_user u FROM mrn WHERE id = ?', requestId).u, get("SELECT id FROM users WHERE username = 'fitter'").id);
+  const self = await as('fitter', 'POST', `/api/stores/mrn/${requestId}/certify`, {});
+  assert.strictEqual(self.status, 403);
+  assert.match((await json(self)).error, /You raised this request/);
 });
 
 test('it is an ordinary MRN, so it lands in the inbox the managers already read', () => {
@@ -184,7 +191,7 @@ test('an unapproved request issues nothing', async () => {
 });
 
 test('once certified and approved, the store can issue it', async () => {
-  const c = await as('fitter', 'POST', `/api/stores/mrn/${requestId}/certify`, { signed_name: 'fitter' });
+  const c = await as('engineer', 'POST', `/api/stores/mrn/${requestId}/certify`, { signed_name: 'engineer' });
   assert.ok(c.status < 300, JSON.stringify(await json(c)));
   const a = await as('opsman', 'POST', `/api/stores/mrn/${requestId}/approve`, { signed_name: 'opsman' });
   assert.ok(a.status < 300, JSON.stringify(await json(a)));
@@ -366,7 +373,7 @@ test('each line on a multi-item request is approved and issued on its own', asyn
     kind: 'tyre', asset_id: ASSET, reason: 'worn',
     lines: [{ spec_id: TYRE, qty: 1, position: 'FL' }, { spec_id: TUBE, qty: 1 }],
   }));
-  await as('fitter', 'POST', `/api/stores/mrn/${made.id}/certify`, { signed_name: 'fitter' });
+  await as('engineer', 'POST', `/api/stores/mrn/${made.id}/certify`, { signed_name: 'engineer' });
   await as('opsman', 'POST', `/api/stores/mrn/${made.id}/approve`, { signed_name: 'opsman' });
   const detail = await json(await as('keeper', 'GET', '/api/tb/requests/' + made.id));
   assert.strictEqual(detail.lines.length, 2);
@@ -428,7 +435,7 @@ test('a role without Issue cannot issue, even on an approved request', async () 
   const made = await json(await as('fitter', 'POST', '/api/tb/requests', {
     kind: 'tyre', asset_id: ASSET, reason: 'worn', lines: [{ spec_id: TYRE, qty: 1 }],
   }));
-  await as('fitter', 'POST', `/api/stores/mrn/${made.id}/certify`, { signed_name: 'fitter' });
+  await as('engineer', 'POST', `/api/stores/mrn/${made.id}/certify`, { signed_name: 'engineer' });
   await as('opsman', 'POST', `/api/stores/mrn/${made.id}/approve`, { signed_name: 'opsman' });
   const detail = await json(await as('keeper', 'GET', '/api/tb/requests/' + made.id));
   const lineId = detail.lines[0].mrn_line_id;
@@ -514,7 +521,7 @@ test('an unapproved request cannot be sent to be bought', async () => {
 });
 
 test('an approved one stands in the purchase queue until somebody sends it', async () => {
-  await as('fitter', 'POST', `/api/stores/mrn/${buyId}/certify`, { signed_name: 'fitter' });
+  await as('engineer', 'POST', `/api/stores/mrn/${buyId}/certify`, { signed_name: 'engineer' });
   await as('opsman', 'POST', `/api/stores/mrn/${buyId}/approve`, { signed_name: 'opsman' });
   const q = await json(await as('keeper', 'GET', '/api/tb/requests?kind=tyre&awaiting_purchase=1'));
   assert.ok(q.some((r) => r.id === buyId), 'approved and unbought is the queue the store works from');
@@ -544,7 +551,7 @@ test('a local purchase is a deliberate exception, and says so', async () => {
   const b = await json(await as('fitter', 'POST', '/api/tb/requests', {
     kind: 'battery', asset_id: ASSET, reason: 'no_crank', lines: [{ spec_id: BATT, qty: 1 }],
   }));
-  await as('fitter', 'POST', `/api/stores/mrn/${b.id}/certify`, { signed_name: 'fitter' });
+  await as('engineer', 'POST', `/api/stores/mrn/${b.id}/certify`, { signed_name: 'engineer' });
   await as('opsman', 'POST', `/api/stores/mrn/${b.id}/approve`, { signed_name: 'opsman' });
   await as('keeper', 'POST', `/api/tb/requests/${b.id}/purchase`, { purchase_source: 'local_purchase' });
   assert.strictEqual(get('SELECT purchase_source FROM mrn WHERE id = ?', b.id).purchase_source, 'local_purchase');
@@ -554,7 +561,7 @@ test('sending to purchase needs its own permission', async () => {
   const b = await json(await as('fitter', 'POST', '/api/tb/requests', {
     kind: 'tyre', asset_id: ASSET, reason: 'worn', lines: [{ spec_id: TYRE, qty: 1 }],
   }));
-  await as('fitter', 'POST', `/api/stores/mrn/${b.id}/certify`, { signed_name: 'fitter' });
+  await as('engineer', 'POST', `/api/stores/mrn/${b.id}/certify`, { signed_name: 'engineer' });
   await as('opsman', 'POST', `/api/stores/mrn/${b.id}/approve`, { signed_name: 'opsman' });
   // The fitter who raised it may not send it to be bought.
   const denied = await as('fitter', 'POST', `/api/tb/requests/${b.id}/purchase`, {});
@@ -605,7 +612,7 @@ test('but Main Stores cannot issue out of the workshop store', async () => {
   const made = await json(await as('fitter', 'POST', '/api/tb/requests', {
     kind: 'tyre', asset_id: ASSET, reason: 'worn', lines: [{ spec_id: TYRE, qty: 1 }],
   }));
-  await as('fitter', 'POST', `/api/stores/mrn/${made.id}/certify`, { signed_name: 'fitter' });
+  await as('engineer', 'POST', `/api/stores/mrn/${made.id}/certify`, { signed_name: 'engineer' });
   await as('opsman', 'POST', `/api/stores/mrn/${made.id}/approve`, { signed_name: 'opsman' });
   const detail = await json(await as('keeper', 'GET', '/api/tb/requests/' + made.id));
 

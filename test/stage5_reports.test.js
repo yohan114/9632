@@ -87,7 +87,7 @@ run("INSERT INTO tyre_battery_issues (kind, issue_date, qty, category, category_
 const PROD = run("INSERT INTO products (code, name, unit, category, unit_price) VALUES ('OIL-7001', 'Engine Oil 15W40', 'L', 'engine_oil', 1500)").lastInsertRowid;
 run("INSERT INTO stock_ledger (product_id, kind, qty, balance_after, txn_date, store_id) VALUES (?, 'issue', -4, 0, ?, ?)", PROD, TODAY, MTR);
 const RAG = run("INSERT INTO store_items (name, is_general, balance, unit_cost) VALUES ('Shop Rag', 1, 10, 50)").lastInsertRowid;
-run("INSERT INTO general_item_txns (store_item_id, txn_type, qty, balance_after, job_id, txn_date) VALUES (?, 'issue', -3, 7, ?, ?)", RAG, J.openC, TODAY);
+run("INSERT INTO general_item_txns (store_item_id, txn_type, qty, balance_after, txn_date, store_id) VALUES (?, 'issue', -3, 7, ?, ?)", RAG, TODAY, CW);
 // Monthly inputs already entered (before this stage): Central's.
 run("INSERT INTO monthly_report_inputs (year, month, sheet, seq, label, amount1) VALUES (?, ?, 'other', 0, 'Electricity', 10000)", YEAR, MONTH);
 

@@ -391,7 +391,7 @@ const FUNCTIONAL_SECTIONS = [
       none: { modules: { stores: 'none' }, caps: [] },
       view: { modules: { stores: 'view' }, caps: ['stores.view', 'stores.locations.view'] },
       operator: { modules: { stores: 'edit' }, caps: ['stores.view', 'stores.items.create', 'stores.items.edit', 'stores.items.txn', 'stores.mrn.create', 'stores.mrn.edit', 'stores.grn.receive', 'stores.issue', 'stores.stock_issue', 'stores.mtn.edit', 'stores.issue_return', 'stores.stock.count'] },
-      manager: { modules: { stores: 'full' }, caps: ['stores.view', 'stores.items.create', 'stores.items.edit', 'stores.items.price', 'stores.items.delete', 'stores.items.txn', 'stores.categories.edit', 'stores.locations.view', 'stores.locations.manage', 'stores.locations.access', 'stores.stock.rebuild', 'stores.stock.levels', 'stores.export', 'stores.mrn.create', 'stores.mrn.edit', 'stores.mrn.certify', 'stores.mrn.site_authority', 'stores.mrn.approve', 'stores.mrn.reject', 'stores.mrn.amend_settled', 'stores.grn.receive', 'stores.grn.edit', 'stores.grn.approve', 'stores.grn.reject', 'stores.issue', 'stores.stock_issue', 'stores.min.approve', 'stores.min.reject', 'stores.reorder_mrn', 'stores.mtn.edit', 'stores.mtn.approve', 'stores.mtn.reject', 'stores.issue_return', 'stores.stock.count', 'stores.count.approve', 'stores.disposal.edit', 'stores.disposal.approve', 'general.items.edit', 'general.stock.adjust', 'general.items.price'] }
+      manager: { modules: { stores: 'full' }, caps: ['stores.view', 'stores.items.create', 'stores.items.edit', 'stores.items.price', 'stores.items.delete', 'stores.items.txn', 'stores.categories.edit', 'stores.locations.view', 'stores.locations.manage', 'stores.locations.access', 'stores.stock.rebuild', 'stores.stock.levels', 'stores.export', 'stores.mrn.edit', 'stores.mrn.certify', 'stores.mrn.site_authority', 'stores.mrn.approve', 'stores.mrn.reject', 'stores.mrn.amend_settled', 'stores.grn.edit', 'stores.grn.approve', 'stores.grn.reject', 'stores.issue', 'stores.stock_issue', 'stores.min.approve', 'stores.min.reject', 'stores.reorder_mrn', 'stores.mtn.edit', 'stores.mtn.approve', 'stores.mtn.reject', 'stores.issue_return', 'stores.count.approve', 'stores.disposal.edit', 'stores.disposal.approve', 'general.items.edit', 'general.stock.adjust', 'general.items.price'] }
     }
   },
   {
@@ -867,16 +867,36 @@ router.get('/people/:id', requireCap('access.manage'), asyncHandler((req, res) =
   });
 }));
 
+// Does a /people/:id/save body change the person's access (as opposed to only their operational
+// scope)? The screen always sends approval_limit and access_until, so those count only if they differ.
+function touchesOwnAccess(b, userId) {
+  const nonEmpty = (o) => o && typeof o === 'object' && Object.keys(o).length > 0;
+  if (nonEmpty(b.sections) || nonEmpty(b.permissions) || nonEmpty(b.capabilities) || nonEmpty(b.caps)) return true;
+  if (Array.isArray(b.roles)) return true;
+  const cur = get('SELECT approval_limit, access_until FROM users WHERE id = ?', userId) || {};
+  if (b.approval_limit !== undefined) {
+    const v = b.approval_limit === '' || b.approval_limit === null ? null : Number(b.approval_limit);
+    if (v !== (cur.approval_limit == null ? null : Number(cur.approval_limit))) return true;
+  }
+  if (b.access_until !== undefined) {
+    const v = b.access_until === '' || b.access_until === null ? null : String(b.access_until).trim();
+    if (v !== (cur.access_until || null)) return true;
+  }
+  return false;
+}
+
 // 3. Save personal overrides, roles, and site/tank bindings for a specific user
 router.post('/people/:id/save', requireCap('access.manage'), asyncHandler((req, res) => {
   const userId = toInt(req.params.id);
   const targetUser = get('SELECT id, username FROM users WHERE id = ?', userId);
   if (!targetUser) return res.status(404).json({ error: 'User not found' });
 
-  // Safety rule: nobody can change their own access unless admin updating operational site/tank
+  // Safety rule: nobody changes their own ACCESS — not even an admin (sections, capabilities,
+  // roles, approval limit, access expiry). An admin may still set their own OPERATIONAL scope (site
+  // or store, project, fuel tank, fuel role, hide-stock), which grants nothing.
   const isSelf = req.user && req.user.id === userId;
   const isAdminActor = rules.isAdmin(req.user);
-  if (isSelf && !isAdminActor) {
+  if (isSelf && (!isAdminActor || touchesOwnAccess(req.body || {}, userId))) {
     rules.assertNotSelf(req.user, userId);
   }
   rules.assertCanManageUser(req.user, userId);
@@ -937,7 +957,7 @@ router.post('/people/:id/save', requireCap('access.manage'), asyncHandler((req, 
         else prospectiveCaps.delete(k);
       }
     }
-    const sodResult = sod.assertNoSodConflicts(Array.from(prospectiveCaps), b.override_reason || b.reason || 'Admin console update');
+    const sodResult = sod.assertNoSodConflicts(Array.from(prospectiveCaps), b.override_reason || b.reason);
     if (sodResult && sodResult.allowedWithException) {
       audit.record({
         userId: req.user.id,

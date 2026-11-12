@@ -10,6 +10,7 @@ const TEST_DB = path.join(os.tmpdir(), 'workshopone-stock-cockpit-test.db');
 for (const s of ['', '-shm', '-wal']) { try { fs.unlinkSync(TEST_DB + s); } catch {} }
 process.env.DB_PATH = TEST_DB;
 process.env.BACKUP_INTERVAL_MINUTES = '0';
+process.env.MULTIDB = '0';
 
 const { migrate, run, get } = require('../src/db');
 const auth = require('../src/lib/auth');

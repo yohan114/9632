@@ -82,6 +82,11 @@ async function as(user) {
   return cookies[user];
 }
 
+// Opening a job card takes a job request through all three signatures first, so these use the
+// shared helper rather than repeating the four calls. `boss` is an admin and can play every part.
+const { openJobCard, approvedRequest } = require('./helpers/open_job');
+const postAs = (user) => async (path_, body) => req('POST', path_, { cookie: await as(user), body });
+
 // ================================================================== one workshop: as before
 test('one workshop (the start): everyone and everything is at Central Workshop, and nothing shows', async () => {
   const me = (await req('GET', '/api/auth/me', { cookie: await as('ws') })).body;
@@ -91,8 +96,8 @@ test('one workshop (the start): everyone and everything is at Central Workshop, 
   assert.strictEqual(list.multi, false);
   assert.strictEqual(list.workshops.length, 1);
   assert.strictEqual(list.workshops[0].users, 6);
-  // A job card raised with nothing said about workshops lands at Central Workshop.
-  const r = await req('POST', '/api/jobs', { cookie: await as('ws'), body: { asset_id: asset('ONE-1'), description: 'brakes' } });
+  // A job card opened with nothing said about workshops lands at Central Workshop.
+  const r = await openJobCard(postAs('boss'), { asset_id: asset('ONE-1'), description: 'brakes' });
   assert.strictEqual(r.status, 201, r.text);
   assert.strictEqual(r.body.job.workshop_id, CW);
   assert.strictEqual(r.body.job.workshop_name, 'Central Workshop — Badalgama');
@@ -145,9 +150,14 @@ test('a person\'s home workshop: set on create or later, only to a workshop in u
 // ================================================================== job cards
 test('a job card goes to the workshop of whoever raises it, or the one chosen; it can be moved while open', async () => {
   const ws = await as('ws');   // now at Muthur
-  const a = await req('POST', '/api/jobs', { cookie: ws, body: { asset_id: asset('JC-1'), description: 'gearbox' } });
+  // The request is raised for Muthur, so the card opened against it is a Muthur card — the workshop
+  // may read requests but not raise them, so the two steps are done by the two different people.
+  const a = await openJobCard(postAs('boss'), { asset_id: asset('JC-1'), description: 'gearbox', workshop_id: MTR }, {}, postAs('ws'));
+  assert.strictEqual(a.status, 201, a.text);
   assert.strictEqual(a.body.job.workshop_id, MTR);
-  const b = await req('POST', '/api/jobs', { cookie: ws, body: { asset_id: asset('JC-2'), description: 'x', workshop_id: CW } });
+  // Unless the workshop opening it says otherwise.
+  const b = await openJobCard(postAs('boss'), { asset_id: asset('JC-2'), description: 'x', workshop_id: MTR }, { workshop_id: CW }, postAs('ws'));
+  assert.strictEqual(b.status, 201, b.text);
   assert.strictEqual(b.body.job.workshop_id, CW);
   // The list filter, and each row's workshop.
   const mine = (await req('GET', `/api/jobs?workshop_id=${MTR}`, { cookie: ws })).body;
@@ -178,11 +188,20 @@ test('a job request\'s card goes to the raiser\'s workshop; a partial close\'s n
   run("INSERT INTO job_request_approvals (job_request_id, stage, role, approver_id, decision) VALUES (?, 'certify', 'transport_manager', ?, 'approved')", jr, U.tm);
   const r = await req('POST', `/api/job-requests/${jr}/approve`, { cookie: await as('om'), body: {} });
   assert.strictEqual(r.status, 200, r.text);
-  assert.strictEqual(J(r.body.job.id).workshop_id, MTR, 'fitter1 is at Muthur');
+  assert.strictEqual(r.body.job, undefined, 'the approval clears the request; it does not make the card');
+  // The workshop opens it. Whoever opens it, the card follows the REQUEST's workshop — so this one
+  // is opened by somebody posted to Central, and still lands at Muthur where it was raised.
+  run('UPDATE users SET workshop_id = ? WHERE id = ?', CW, U.ws);
+  let opened;
+  try {
+    opened = await req('POST', '/api/jobs', { cookie: await as('ws'), body: { job_request_id: jr } });
+  } finally { run('UPDATE users SET workshop_id = ? WHERE id = ?', MTR, U.ws); }
+  assert.strictEqual(opened.status, 201, opened.text);
+  assert.strictEqual(J(opened.body.job.id).workshop_id, MTR, 'fitter1 is at Muthur');
 
   closeLib.setEnabled(true);
   try {
-    const card = r.body.job.id;
+    const card = opened.body.job.id;
     run("UPDATE job_cards SET status = 'IN_PROGRESS' WHERE id = ?", card);
     run("INSERT INTO job_daily_work (job_id, work_date, mechanic, description, hours) VALUES (?, ?, 'Anura', 'work', 2)", card, day(-1));
     run("INSERT INTO job_parts (job_id, source_type, description, qty, unit_price) VALUES (?, 'external', 'Seal', 1, NULL)", card);
@@ -199,7 +218,7 @@ test('a request goes to its job card\'s workshop, else to the person who raised 
   const sk = await as('sk');
   run('UPDATE users SET workshop_id = ? WHERE id = ?', MTR, U.sk);   // a storekeeper posted to Muthur
   try {
-    const jobAtCw = J((await req('POST', '/api/jobs', { cookie: await as('ws'), body: { asset_id: asset('MR-1'), description: 'x', workshop_id: CW } })).body.job.id);
+    const jobAtCw = J((await openJobCard(postAs('boss'), { asset_id: asset('MR-1'), description: 'x' }, { workshop_id: CW }, postAs('ws'))).body.job.id);
     const withJob = await req('POST', '/api/stores/mrn', { cookie: sk, body: { request_type: 'vehicle', asset_id: jobAtCw.asset_id, job_id: jobAtCw.id,
       lines: [{ description: 'Hose', qty: 1 }] } });
     assert.strictEqual(withJob.status, 201, withJob.text);
@@ -212,7 +231,7 @@ test('a request goes to its job card\'s workshop, else to the person who raised 
     assert.ok(list.some((m) => m.id === idOf(general)) && !list.some((m) => m.id === idOf(withJob)));
     assert.strictEqual((await req('GET', `/api/stores/mrn/${idOf(general)}`, { cookie: sk })).body.mrn.workshop_name, 'Muthur Workshop');
   } finally { run('UPDATE users SET workshop_id = ? WHERE id = ?', CW, U.sk); }
-  const jobAtMtr = J((await req('POST', '/api/jobs', { cookie: await as('ws'), body: { asset_id: asset('MR-2'), description: 'x' } })).body.job.id);
+  const jobAtMtr = J((await openJobCard(postAs('boss'), { asset_id: asset('MR-2'), description: 'x', workshop_id: MTR }, {}, postAs('ws'))).body.job.id);
   // Inserted by any other path with a job: the job's workshop, from the trigger.
   const raw = run("INSERT INTO mrn (mrn_no, job_id) VALUES ('RAW-1', ?)", jobAtMtr.id).lastInsertRowid;
   assert.strictEqual(get('SELECT workshop_id w FROM mrn WHERE id = ?', raw).w, MTR);
@@ -255,7 +274,8 @@ test('a workshop is retired only when empty; the main one never; nothing new goe
   assert.match(busy.body.error, /still has \d+ user\(s\), 1 mechanic\(s\), \d+ open job card\(s\)/);
   const spare = (await req('POST', '/api/workshops', { cookie: boss, body: { code: 'SPR', name: 'Spare Yard' } })).body.id;
   assert.strictEqual((await off(spare)).status, 200);
-  assert.strictEqual((await req('POST', '/api/jobs', { cookie: await as('ws'), body: { asset_id: asset('RT-1'), description: 'x', workshop_id: spare } })).status, 400);
+  const forSpare = await approvedRequest(postAs('boss'), { asset_id: asset('RT-1'), description: 'x' });
+  assert.strictEqual((await req('POST', '/api/jobs', { cookie: await as('ws'), body: { job_request_id: forSpare.id, workshop_id: spare } })).status, 400);
   assert.strictEqual((await req('PATCH', `/api/users/${U.sk}`, { cookie: boss, body: { workshop_id: spare } })).status, 400);
   assert.strictEqual((await req('PATCH', `/api/workshops/${spare}`, { cookie: boss, body: { active: true } })).status, 200);
 });

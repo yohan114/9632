@@ -65,7 +65,7 @@ function int(name, def) {
 
 const config = {
   root: ROOT,
-  port: int('PORT', 1949),
+  port: int('PORT', 3000),
   host: process.env.HOST || '0.0.0.0', // bind all interfaces so the LAN can reach it
   dbPath: path.resolve(ROOT, process.env.DB_PATH || './data/workshopone_merged.db'),
   // NOT USED, and deliberately left saying so. A session token is 32 random bytes from

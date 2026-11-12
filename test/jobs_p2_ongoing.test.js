@@ -47,7 +47,16 @@ const U = { boss: mkUser('boss', ['admin']), ws: mkUser('ws', ['workshop'], CW, 
 // Dates: today, and N working days back (Sundays skipped) — counted here the long way round.
 const iso = (d) => new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
 const TODAY = iso(new Date());
-const wd = (n) => { const d = new Date(); let k = 0; while (k < n) { d.setDate(d.getDate() - 1); if (d.getDay() !== 0) k++; } return iso(d); };
+// n working days back = a day with n working days after it, up to and including today (the rule's
+// count, flow.workingDays). On a Sunday, today itself is not one: counting back from Friday as if it
+// were made "two working days ago" Friday, which the rule rightly calls one (Saturday) — and the
+// tests below failed every Sunday. On any other day this gives the same date as before.
+const wd = (n) => {
+  const d = new Date(); let k = 0;
+  while (k < n) { if (d.getDay() !== 0) k++; d.setDate(d.getDate() - 1); }
+  while (d.getDay() === 0) d.setDate(d.getDate() - 1);   // work is logged on a Saturday, not a Sunday
+  return iso(d);
+};
 const cal = (n) => { const d = new Date(); d.setDate(d.getDate() - n); return iso(d); };
 const YM = `${new Date().getFullYear()}/${new Date().getMonth() + 1}`;
 

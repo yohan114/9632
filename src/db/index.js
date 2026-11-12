@@ -1016,6 +1016,13 @@ function workshopsStage2() {
   // Transfer notes name their two ends as free text; each end can now also point at a place from
   // the list ('w:<id>' a workshop, 'p:<id>' a project, 's:<id>' a site). The text stays as written.
   ensureColumn('users', 'workshop_id', 'INTEGER REFERENCES workshops(id)');
+  // A person's operational scope from the fuel merge (Access -> People reads and saves these). They
+  // were only ever added by scripts/enrich_fuel_v2_schema.js, so on a fresh database the People
+  // screen failed with "no such column: u.project_id".
+  ensureColumn('users', 'project_id', 'INTEGER');
+  ensureColumn('users', 'bulk_tank_id', 'TEXT');
+  ensureColumn('users', 'hide_stock', 'INTEGER DEFAULT 0');
+  ensureColumn('users', 'fuel_role', 'TEXT');
   ensureColumn('job_cards', 'workshop_id', 'INTEGER REFERENCES workshops(id)');
   ensureColumn('mrn', 'workshop_id', 'INTEGER REFERENCES workshops(id)');
   ensureColumn('mtn', 'from_place', 'TEXT');

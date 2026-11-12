@@ -102,7 +102,7 @@ test('every permission the code and the screens ask for exists in the catalogue'
 
 test('nothing decides access by role name any more (routes and screens)', () => {
   const routes = path.join(__dirname, '..', 'src', 'routes');
-  for (const f of fs.readdirSync(routes)) {
+  for (const f of fs.readdirSync(routes).filter((x) => x.endsWith('.js'))) {
     const src = fs.readFileSync(path.join(routes, f), 'utf8');
     assert.ok(!/\b(requireRole|hasRole)\(/.test(src), `${f} still checks a role name — use requireCap/hasCap`);
   }
@@ -293,7 +293,9 @@ test('the last active admin cannot be switched off or demoted — not even by th
   assert.strictEqual(roles.body.active_admins, 1, 'the screen can warn about it');
 
   const secondId = mkUser('deputy', ['admin']);
-  assert.strictEqual((await req('POST', `/api/users/${chiefId}/roles`, { cookie: admin, body: { roles: ['admin', 'viewer'] } })).status, 200);
+  // Nobody changes their own roles (access plan, Part 2): the deputy changes the chief's.
+  assert.strictEqual((await req('POST', `/api/users/${chiefId}/roles`, { cookie: admin, body: { roles: ['admin', 'viewer'] } })).status, 403);
+  assert.strictEqual((await req('POST', `/api/users/${chiefId}/roles`, { cookie: await login('deputy'), body: { roles: ['admin', 'viewer'] } })).status, 200);
   assert.strictEqual((await req('PATCH', `/api/users/${secondId}`, { cookie: admin, body: { active: false } })).status, 200, 'with two, one may go');
   assert.ok(get('SELECT 1 x FROM users WHERE id = ? AND active = 1', chiefId));
 });

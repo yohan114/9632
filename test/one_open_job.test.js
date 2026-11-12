@@ -1,9 +1,11 @@
 'use strict';
 
-// Phase D — one open job card per vehicle. Enforced where a card is born (raised
-// directly, or created when a job request is approved) and when a closed card is
-// reopened. Vehicles that already carry several open cards are grandfathered: they
-// keep them, cannot gain another, and are listed for clean-up.
+// Phase D — one open job card per vehicle. Enforced where a card is BORN — which is now one place
+// only, the workshop opening a card against an approved job request — and when a closed card is
+// reopened. It used to be checked at a job request's approval too, because the approval made the
+// card; it no longer makes one, so there is nothing to check there and the rule bites one step
+// later instead. Vehicles that already carry several open cards are grandfathered: they keep them,
+// cannot gain another, and are listed for clean-up.
 const os = require('os');
 const path = require('path');
 const fs = require('fs');
@@ -61,7 +63,11 @@ async function req(path_, opts = {}) {
   const ct = res.headers.get('content-type') || '';
   return { status: res.status, body: ct.includes('json') ? await res.json() : await res.text() };
 }
-const raise = (assetId, extra = {}) => req('/api/jobs', { method: 'POST', body: { asset_id: assetId, description: 'new fault', ...extra } });
+const { openJobCard } = require('./helpers/open_job');
+const post = (path_, body) => req(path_, { method: 'POST', body });
+// A card is opened against an approved job request now, so "raise" walks all four steps. The
+// request itself is never blocked — only the card at the end of it.
+const raise = (assetId, extra = {}) => openJobCard(post, { asset_id: assetId, description: 'new fault' }, extra);
 
 test('a vehicle with an open card cannot get another', async () => {
   const r = await raise(busy);
@@ -141,26 +147,37 @@ test('reopening keeps the card in its original cost-report month', async () => {
     're-closing must not move the job out of the month already reported to the owner');
 });
 
-test('approving a job request is blocked while the vehicle has an open card', async () => {
+test('a job request still goes all the way through; OPENING its card is what is blocked', async () => {
+  // Three signatures are never held back by a card that is open today and may be closed tomorrow.
   const jr = await req('/api/job-requests', { method: 'POST', body: { asset_id: busy, description: 'another fault' } });
   assert.strictEqual(jr.status, 201, 'raising a request is never blocked');
   assert.ok(jr.body.open_job, 'but it warns that a card is already open');
   assert.strictEqual(jr.body.open_job.job_no, '2026/7/R/1');
+  const id = jr.body.request.id;
 
-  await req(`/api/job-requests/${jr.body.request.id}/certify`, { method: 'POST', body: {} });
-  const approve = await req(`/api/job-requests/${jr.body.request.id}/approve`, { method: 'POST', body: {} });
-  assert.strictEqual(approve.status, 409);
-  assert.strictEqual(approve.body.blocking_job.job_no, '2026/7/R/1');
-  // Nothing was written: the request is still certified and has no job card.
-  const after = get('SELECT approval_status, job_id FROM job_requests WHERE id = ?', jr.body.request.id);
-  assert.strictEqual(after.approval_status, 'certified');
-  assert.strictEqual(after.job_id, null);
+  assert.strictEqual((await post(`/api/job-requests/${id}/certify`, {})).status, 200);
+  const approve = await post(`/api/job-requests/${id}/approve`, {});
+  assert.strictEqual(approve.status, 200, 'the approval goes through');
+  assert.strictEqual(approve.body.open_job.job_no, '2026/7/R/1', 'and says the vehicle is still busy');
+  // Approved, and no card: the approval does not make one any more.
+  const after = get('SELECT approval_status, job_id FROM job_requests WHERE id = ?', id);
+  assert.deepStrictEqual([after.approval_status, after.job_id], ['approved', null]);
 
-  // Close the blocker and the same approval goes through.
+  // The workshop cannot open it while the vehicle is held.
+  const blocked = await post('/api/jobs', { job_request_id: id });
+  assert.strictEqual(blocked.status, 409);
+  assert.strictEqual(blocked.body.blocking_job.job_no, '2026/7/R/1');
+  assert.strictEqual(get('SELECT job_id FROM job_requests WHERE id = ?', id).job_id, null, 'nothing was written');
+
+  // Close the blocker and the same request opens.
   run("UPDATE job_cards SET status = 'CLOSED' WHERE job_no = '2026/7/R/1'");
-  const ok = await req(`/api/job-requests/${jr.body.request.id}/approve`, { method: 'POST', body: {} });
-  assert.strictEqual(ok.status, 200);
+  const ok = await post('/api/jobs', { job_request_id: id });
+  assert.strictEqual(ok.status, 201);
   assert.ok(ok.body.job.job_no);
+  assert.strictEqual(get('SELECT job_id FROM job_requests WHERE id = ?', id).job_id, ok.body.job.id,
+    'both pointers are set, and agree');
+  assert.strictEqual(ok.body.job.job_request_id, id);
+  run("UPDATE job_cards SET status = 'CLOSED' WHERE id = ?", ok.body.job.id);
 });
 
 test('vehicles that already had several open cards keep them, but gain no more', async () => {

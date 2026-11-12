@@ -71,6 +71,17 @@ test('service cards count separately from repairs', () => {
     'and the repair count is untouched by the service one');
 });
 
+test('fabrication cards count separately from repairs and services with F letter', () => {
+  // Three books, three sequences. Fabrication has its own F counter and touches neither R nor S.
+  assert.strictEqual(nextJobNo('fabrication', SEP), '2026/9/F/1');
+  card('2026/9/F/1');
+  assert.strictEqual(nextJobNo('fabrication', new Date(2026, 9, 2)), '2026/10/F/2');
+  assert.strictEqual(nextJobNo('repair', new Date(2026, 9, 2)), '2026/10/R/587',
+    'and the repair count is untouched by fabrication');
+  assert.strictEqual(nextJobNo('service', new Date(2026, 9, 2)), '2026/10/S/2',
+    'and the service count is untouched by fabrication');
+});
+
 test('a number already used is stepped over rather than colliding', () => {
   // job_no is UNIQUE and the imported history is not ours to predict. A clash would surface as a
   // 500 on the Create button — nothing a person could act on.
@@ -95,14 +106,16 @@ test('another year in the book does not raise this year count', () => {
     '2025 reached 920 and that has nothing to do with 2026');
 });
 
-test('both routes mint numbers the same way', () => {
-  // routes/jobcards.js and routes/jobrequests.js each carried their own copy — identical, and free
-  // to drift, so a card raised from a job request could be numbered by whichever had been updated
-  // last. They share this module now.
+test('one route mints numbers, through the shared generator', () => {
+  // routes/jobcards.js and routes/jobrequests.js each carried their own copy of this — identical,
+  // and free to drift, so a card raised from a job request could be numbered by whichever had been
+  // updated last. Then they shared this module. Now only one of them mints at all: a card is
+  // opened by the workshop, so routes/jobcards.js is the only place a job number is handed out,
+  // and routes/jobrequests.js must not go back to minting one of its own.
   const jobcards = fs.readFileSync(path.join(__dirname, '..', 'src', 'routes', 'jobcards.js'), 'utf8');
   const jobrequests = fs.readFileSync(path.join(__dirname, '..', 'src', 'routes', 'jobrequests.js'), 'utf8');
-  for (const [name, src] of [['jobcards', jobcards], ['jobrequests', jobrequests]]) {
-    assert.match(src, /lib\/jobno/, `${name}.js must use the shared generator`);
-    assert.ok(!/function jobNo\s*\(/.test(src), `${name}.js still defines its own jobNo()`);
-  }
+  assert.match(jobcards, /lib\/jobno/, 'jobcards.js must use the shared generator');
+  assert.ok(!/function jobNo\s*\(/.test(jobcards), 'jobcards.js still defines its own jobNo()');
+  assert.ok(!/jobno|nextJobNo/.test(jobrequests), 'jobrequests.js does not open cards, so it mints no numbers');
+  assert.ok(!/INSERT INTO job_cards/.test(jobrequests), 'approving a job request must not make the card');
 });

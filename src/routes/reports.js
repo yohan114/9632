@@ -12,6 +12,7 @@ const { sendXlsx } = require('../lib/export');
 const monthlyReport = require('../lib/monthly_cost_report');
 const mechanics = require('../lib/mechanics');
 const lubricants = require('../lib/lubricants');
+const scope = require('../lib/scope');
 
 const { requireModule, requireView } = require('../lib/permissions');
 
