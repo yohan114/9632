@@ -293,10 +293,12 @@ test('the company rollup and the company oil counts are head office\'s; stock va
   assert.strictEqual(sv.store_id, MTR);
   assert.strictEqual(sv.oil_value, 280, '28 L on Muthur\'s shelf at Rs 10');
   assert.strictEqual(sv.grand_total, 437);
-  // Muthur's shelf: its wiper, Filter X, hose and belt (each at the item's price, as every stock
-  // screen values it).
-  assert.strictEqual(sv.general_parts_value, 157, 'not Central\'s filters, hose and belt');
-  assert.deepStrictEqual(sv.counts, { general: 4, oil: 1, filter: 0 });
+  // Muthur's shelf: its wiper, hose and belt as general parts, and Filter X - which the stock book
+  // now files under Filters (stock.sectionOf), not General - each at the item's price, as every
+  // stock screen values it. The same 437 in all.
+  assert.strictEqual(sv.general_parts_value, 77, 'not Central\'s filters, hose and belt');
+  assert.strictEqual(sv.filter_value, 80, 'Muthur\'s Filter X');
+  assert.deepStrictEqual(sv.counts, { general: 3, oil: 1, filter: 1 });
   assert.strictEqual((await GET('mgr', '/api/reports/stock-valuation')).body.store_id, undefined, 'head office: the company\'s');
 });
 
