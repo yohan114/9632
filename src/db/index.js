@@ -927,6 +927,36 @@ function migrate() {
     console.warn('Migration 053 MTN store locations skipped:', err.message);
   }
 
+  // Fuel Management & Bulk Tanks (Plan V2 - Migration 055)
+  try {
+    if (!db.prepare("SELECT 1 FROM settings WHERE key = 'migration_055_done'").get()) {
+      require('../migrate/055_fuel_core_schema').runMigration(db);
+      db.prepare("INSERT INTO settings (key, value) VALUES ('migration_055_done', '1')").run();
+    }
+  } catch (err) {
+    console.warn('Migration 055 Fuel core schema skipped:', err.message);
+  }
+
+  // Fleet Allocations & Rental Billing (Plan V2 - Migration 056)
+  try {
+    if (!db.prepare("SELECT 1 FROM settings WHERE key = 'migration_056_done'").get()) {
+      require('../migrate/056_fleet_allocations_and_billing').runMigration(db);
+      db.prepare("INSERT INTO settings (key, value) VALUES ('migration_056_done', '1')").run();
+    }
+  } catch (err) {
+    console.warn('Migration 056 Fleet allocations and billing skipped:', err.message);
+  }
+
+  // Fleet Financial Ledger & Identity Mapping (Plan V2 - Migration 057)
+  try {
+    if (!db.prepare("SELECT 1 FROM settings WHERE key = 'migration_057_done'").get()) {
+      require('../migrate/057_fleet_financial_ledger').runMigration(db);
+      db.prepare("INSERT INTO settings (key, value) VALUES ('migration_057_done', '1')").run();
+    }
+  } catch (err) {
+    console.warn('Migration 057 Fleet financial ledger skipped:', err.message);
+  }
+
   return db;
 }
 
@@ -986,6 +1016,13 @@ function workshopsStage2() {
   // Transfer notes name their two ends as free text; each end can now also point at a place from
   // the list ('w:<id>' a workshop, 'p:<id>' a project, 's:<id>' a site). The text stays as written.
   ensureColumn('users', 'workshop_id', 'INTEGER REFERENCES workshops(id)');
+  // A person's operational scope from the fuel merge (Access -> People reads and saves these). They
+  // were only ever added by scripts/enrich_fuel_v2_schema.js, so on a fresh database the People
+  // screen failed with "no such column: u.project_id".
+  ensureColumn('users', 'project_id', 'INTEGER');
+  ensureColumn('users', 'bulk_tank_id', 'TEXT');
+  ensureColumn('users', 'hide_stock', 'INTEGER DEFAULT 0');
+  ensureColumn('users', 'fuel_role', 'TEXT');
   ensureColumn('job_cards', 'workshop_id', 'INTEGER REFERENCES workshops(id)');
   ensureColumn('mrn', 'workshop_id', 'INTEGER REFERENCES workshops(id)');
   ensureColumn('mtn', 'from_place', 'TEXT');

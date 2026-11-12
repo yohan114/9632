@@ -242,11 +242,12 @@ function costFigures(ws, projId = null) {
 function mechanicsPulse(user, ws) {
   const ym = new Date().toISOString().slice(0, 7);
   const td = today();
-  const dwWs = wsSql('COALESCE(j.workshop_id, d.workshop_id)', ws);
+  const dwWs = wsSql('COALESCE(j.workshop_id, s.workshop_id)', ws);
   const rows = all(`
     SELECT d.work_date, d.mechanic, COALESCE(d.hours, 0) AS hours, COALESCE(d.outside_labour, 0) AS outside_labour
       FROM job_daily_work d
       LEFT JOIN job_cards j ON j.id = d.job_id
+      LEFT JOIN service_jobs s ON s.id = d.service_id
      WHERE substr(d.work_date, 1, 7) = ?${dwWs}
   `, ym);
   let todayHours = 0;

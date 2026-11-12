@@ -27,7 +27,8 @@ router.get('/integrity', requireCap('system.status', 'access.manage'), asyncHand
 }));
 
 // 3. Approve a Dual-Authorization Request (Enforces 4-Eyes Principle)
-router.post('/:id/approve', asyncHandler((req, res) => {
+// Deciding someone else's 4-eyes request is itself privileged: it needs dual_auth.override.
+router.post('/:id/approve', requireCap('dual_auth.override'), asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   const note = req.body.note ? String(req.body.note).trim() : '';
 
@@ -42,17 +43,23 @@ router.post('/:id/approve', asyncHandler((req, res) => {
     });
   }
 
+  // A job is reopened from its job card and nowhere else: that path puts it back in the cost-report
+  // month it was first closed in and records the reopen. A raw UPDATE of job_cards here skipped
+  // both, so its cost moved to whatever month it was next closed in. The request stays PENDING.
+  if (request.operation_type === 'job_reopen') {
+    return res.status(409).json({
+      error: 'Reopen this job from its job card (status change, or "Request reopen" when partial close is on). That keeps it in its original cost-report month. This request has not been applied.',
+      job_id: request.entity_id,
+    });
+  }
+
   // Execute underlying action upon dual-approval
   let executionResult = null;
   tx(() => {
     dualAuth.approveDualAuthRequest(id, req.user.id, note);
 
     // Apply operation based on type
-    if (request.operation_type === 'job_reopen') {
-      const jobId = request.entity_id;
-      run("UPDATE job_cards SET status = 'IN_PROGRESS', closed_at = NULL, completed_at = NULL, updated_at = datetime('now') WHERE id = ?", jobId);
-      executionResult = { reopened_job_id: jobId };
-    } else if (request.operation_type === 'stock_scrap') {
+    if (request.operation_type === 'stock_scrap') {
       if (request.entity_type === 'tool') {
         run("UPDATE tools SET status = 'scrapped', updated_at = datetime('now') WHERE id = ?", request.entity_id);
       } else if (request.entity_type === 'battery') {
@@ -71,7 +78,7 @@ router.post('/:id/approve', asyncHandler((req, res) => {
 }));
 
 // 4. Reject a Dual-Authorization Request
-router.post('/:id/reject', asyncHandler((req, res) => {
+router.post('/:id/reject', requireCap('dual_auth.override'), asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   const note = req.body.note ? String(req.body.note).trim() : 'Rejected by second reviewer';
 

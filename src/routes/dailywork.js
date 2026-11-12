@@ -625,7 +625,17 @@ router.get('/mechanics-kpi', requireKpiAccess, asyncHandler(async (req, res) => 
     // Vehicle breakdown accumulation
     const vKey = w.job_asset_id || 'general';
     const vLabel = [w.asset_reg, w.asset_ec, w.asset_code].filter(Boolean).join(' · ') || 'General Workshop';
-    const vb = vehicleMap.get(vKey) || { asset_id: w.job_asset_id, vehicle: vLabel, hours: 0, internal_cost: 0, outside_cost: 0, entries: 0 };
+    const vb = vehicleMap.get(vKey) || {
+      asset_id: w.job_asset_id,
+      asset_code: w.asset_code || (w.job_asset_id ? 'Asset #' + w.job_asset_id : 'General Workshop'),
+      asset_reg: w.asset_reg || '',
+      asset_ec: w.asset_ec || '',
+      vehicle: vLabel,
+      hours: 0,
+      internal_cost: 0,
+      outside_cost: 0,
+      entries: 0
+    };
     vb.hours += hrs * crewCount;
     vb.internal_cost += lineInternalCost;
     vb.outside_cost += outsideVal;
@@ -639,6 +649,10 @@ router.get('/mechanics-kpi', requireKpiAccess, asyncHandler(async (req, res) => 
         work_date: w.work_date,
         job_id: w.job_id,
         job_no: w.job_no,
+        asset_id: w.job_asset_id,
+        asset_code: w.asset_code || (w.job_asset_id ? 'Asset #' + w.job_asset_id : ''),
+        asset_reg: w.asset_reg || '',
+        asset_ec: w.asset_ec || '',
         vehicle: vLabel,
         mechanic: canonNames.join(', '),
         description: w.description || '',
@@ -715,7 +729,9 @@ router.get('/mechanics-kpi', requireKpiAccess, asyncHandler(async (req, res) => 
       net_saving_per_hr: netSavPerHr,
       entries_count: m.entries_count,
       priced_entries_count: m.priced_entries_count,
+      entries_with_outside_cost: m.priced_entries_count,
       unpriced_entries_count: m.unpriced_entries_count,
+      entries_missing_outside_cost: m.unpriced_entries_count,
       coverage_pct: covPct,
       solo_entries_count: m.solo_entries_count,
       crew_entries_count: m.crew_entries_count,
@@ -939,16 +955,25 @@ router.get('/mechanics-kpi/detail', requireKpiAccess, asyncHandler((req, res) =>
       work_date: w.work_date,
       job_id: w.job_id,
       job_no: w.job_no,
+      asset_id: w.job_asset_id,
+      asset_code: w.asset_code,
+      asset_reg: w.asset_reg,
+      asset_ec: w.asset_ec,
       vehicle: [w.asset_reg, w.asset_ec, w.asset_code].filter(Boolean).join(' · ') || 'General Workshop',
       description: w.description || '',
-      crew: canonNames,
+      crew: canonNames.join(', '),
+      crew_size: canonNames.length,
       is_crew: canonNames.length > 1,
       travel: Boolean(w.travel),
       hours: r2(hrs),
       hourly_rate: me.effRate,
+      mechanic_rate: me.effRate,
       internal_cost: r2(me.cost),
+      mechanic_internal_cost: r2(me.cost),
       line_outside_cost: r2(outsideVal),
+      outside_labour: r2(outsideVal),
       attributed_outside_cost: r2(attrOutside),
+      mechanic_outside_share: r2(attrOutside),
       net_saving: r2(attrOutside - me.cost),
       work_type: w.work_type || 'repair',
       service_id: w.service_id || null,
@@ -960,6 +985,7 @@ router.get('/mechanics-kpi/detail', requireKpiAccess, asyncHandler((req, res) =>
   res.json({
     mechanic: targetCanon,
     hourly_rate: currentRate(targetCanon),
+    current_rate: currentRate(targetCanon),
     lines_count: lines.length,
     lines,
   });

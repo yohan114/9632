@@ -49,11 +49,11 @@ router.get('/analytics/datasphere-package', requireSapAuth(), (req, res) => {
   res.json(sapAnalytics.extractDataspherePackage());
 });
 
-router.get('/analytics/cds-models', (req, res) => {
+router.get('/analytics/cds-models', requireSapAuth(), (req, res) => {
   res.type('text/plain').send(sapAnalytics.getCdsAnalyticalModels());
 });
 
-router.get('/analytics/hana-ddl', (req, res) => {
+router.get('/analytics/hana-ddl', requireSapAuth(), (req, res) => {
   res.type('text/plain').send(sapAnalytics.getHanaSqlScriptDdl());
 });
 

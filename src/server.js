@@ -14,7 +14,7 @@ const { requireModule } = require('./lib/permissions');
 const { errorHandler, asyncHandler } = require('./lib/http');
 const { startScheduler } = require('./lib/backup');
 const backupStatus = require('./lib/backup_status');
-const { securityHeaders, originGuard } = require('./lib/security');
+const { securityHeaders, originGuard, trustedOrigins, originAllowed } = require('./lib/security');
 const dailyReports = require('./lib/daily_reports');
 const emitter = require('./lib/emitter');
 const vehicleDocuments = require('./lib/vehicle_documents');
@@ -34,12 +34,13 @@ const app = express();
 // Facing the internet it is a hole: a client sends "X-Forwarded-For: 1.2.3.4", changes it every
 // request, and walks straight through the login rate limiter, which counts by address.
 //
-// In production only the proxy on this machine is believed. nginx sits on 127.0.0.1, rewrites the
-// address to the real visitor using Cloudflare's CF-Connecting-IP (see deploy/nginx-storesdb.conf),
-// and passes it on — so the chain of trust ends at something we control. A request arriving from
-// anywhere else has its forwarding headers ignored, which is exactly what should happen.
-app.set('trust proxy', process.env.TRUST_PROXY
-  || (process.env.NODE_ENV === 'production' ? 'loopback' : true));
+// Only the proxy on this machine is believed — in every mode, not just production: a LAN server
+// with NODE_ENV unset is just as reachable by someone who wants past the rate limiter. nginx sits on
+// 127.0.0.1, rewrites the address to the real visitor using Cloudflare's CF-Connecting-IP (see
+// deploy/nginx-storesdb.conf), and passes it on — so the chain of trust ends at something we
+// control. A request arriving from anywhere else has its forwarding headers ignored, which is
+// exactly what should happen. TRUST_PROXY overrides this for a proxy on another machine.
+app.set('trust proxy', process.env.TRUST_PROXY || 'loopback');
 // "X-Powered-By: Express" tells a scanner which exploits to try first, and tells a user nothing.
 app.disable('x-powered-by');
 app.use(securityHeaders);
@@ -67,12 +68,14 @@ const isUploadRoute = (req) => {
 };
 
 app.use(cookieParser());
-// Bounded request body limits (DoS prevention):
-// Unauthenticated requests are strictly limited to 1mb.
-// 50mb limit is permitted only on upload endpoints with an active session cookie.
+app.use(authenticate);
+// Bounded request body limits (DoS prevention), parsed AFTER authenticate on purpose:
+// 1mb for everyone, 50mb only on upload endpoints for a request authenticate() has actually signed
+// in. Checking for a session COOKIE instead (as this did) let anyone send `wo_session=x` and have a
+// 50mb body read before anything looked at whether the cookie was real. Nothing in authenticate,
+// multidb or the context middleware reads req.body.
 app.use((req, res, next) => {
-  const hasSession = Boolean(req.cookies && req.cookies['wo_session']);
-  if (isUploadRoute(req) && hasSession) {
+  if (isUploadRoute(req) && req.user) {
     return uploadJson(req, res, (err) => {
       if (err) return next(err);
       uploadUrlencoded(req, res, next);
@@ -83,7 +86,6 @@ app.use((req, res, next) => {
     standardUrlencoded(req, res, next);
   });
 });
-app.use(authenticate);
 app.use(multidb.multidbMiddleware);
 app.use(require('./lib/context').activeContextMiddleware);
 app.use(enforcePasswordChange);
@@ -156,8 +158,21 @@ app.get('/uploads/*', requireAuth, asyncHandler(async (req, res) => {
   }
 
   res.setHeader('X-Content-Type-Options', 'nosniff');
+  // An uploaded file is someone else's content served from OUR origin. Opened directly (an .html,
+  // an .svg, anything a browser would render), it must not run script as this site: the sandbox
+  // gives it a unique opaque origin with scripts off. Anything that is not a plain image or a PDF is
+  // handed over as a download instead of being rendered at all.
+  //
+  // PDFs are the exception to the sandbox: Chrome's built-in PDF viewer can refuse to open a
+  // sandboxed document, and a PDF cannot run script as this site anyway — any script in it runs
+  // inside the viewer, not in the page's origin.
+  const ext = path.extname(fullPath).toLowerCase();
+  if (ext !== '.pdf') res.setHeader('Content-Security-Policy', 'sandbox');
+  if (!INLINE_UPLOAD_EXTS.has(ext)) res.attachment(path.basename(fullPath));
   return res.sendFile(fullPath);
 }));
+// SVG is deliberately absent: it is an image format that can carry script.
+const INLINE_UPLOAD_EXTS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.pdf']);
 
 const RELEASE_ID = process.env.RELEASE_ID || process.env.GIT_REV || '873c230e2129ec78c06d61066fece0b2ad5a1a8b-v0.1.0';
 
@@ -360,6 +375,30 @@ app.use('/api/sap/v1', require('./routes/sap'));
 // CCOM Outsourced Service & Repair Requests
 app.use('/api/outsourcing', require('./routes/outsourcing'));
 
+// Fuel Operations & Bulk Tanks (Plan V2)
+app.use('/api/fuel/tanks', require('./routes/fuel_tanks'));
+app.use('/api/fuel', require('./routes/fuel'));
+
+// Fleet Allocations & Machine Hire Billing (Plan V2)
+app.use('/api/hire', require('./routes/hire_billing'));
+
+// Fleet Financial Reporting & Profitability (Plan V2)
+app.use('/api/fleet/finance', require('./routes/fleet_finance'));
+
+// Consolidated Master Dashboard (Plan V2)
+app.use('/api/master-dashboard', require('./routes/master_dashboard'));
+
+// Vehicle Final Costing Report & Monthly Fleet Costing (Master Costing Engine)
+app.use('/api/vehicle-costing', require('./routes/vehicle_costing'));
+
+// Meter Readings & Daily Telemetry
+app.use('/api/meters', require('./routes/meters'));
+app.use('/api/fuel/readings', require('./routes/meters'));
+
+// Fuel System compatibility aliases
+app.use('/api/tanks', require('./routes/fuel_tanks'));
+app.use('/api/billing', require('./routes/hire_billing'));
+
 // Static frontend (SPA). index.html is served with a per-boot cache-bust token on
 // app.js / styles.css so a normal reload always picks up the latest build.
 const publicDir = path.join(__dirname, '..', 'public');
@@ -386,7 +425,7 @@ const getBuildToken = () => {
 const sendIndex = (res) => {
   const token = getBuildToken();
   const html = fs.readFileSync(path.join(publicDir, 'index.html'), 'utf8')
-    .replace(/(\/(?:app\.js|styles\.css|js\/[\w.-]+\.(?:js|css)))(\?v=[^"']*)?/g, `$1?v=${token}`);
+    .replace(/(\/(?:app\.js|styles\.css|(?:js|modules)\/[\w.-]+\.(?:js|css)))(\?v=[^"']*)?/g, `$1?v=${token}`);
   res.type('html').set('Cache-Control', 'no-cache, no-store, must-revalidate').set('Pragma', 'no-cache').send(html);
 };
 app.get('/', (_req, res) => sendIndex(res));
@@ -404,13 +443,28 @@ app.use(errorHandler);
 // Route files stay unchanged — they just call emitter.emit('<event>', data); we
 // forward each known event to every socket. Nothing above this line changed.
 const httpServer = http.createServer(app);
-// On the LAN any origin was fine — nothing else was on the network. Behind a public domain an
-// open socket accepts a connection from any page on the internet, so in production it is pinned to
-// the site's own origin. PUBLIC_ORIGIN is the https:// address the workshop actually types.
+// The socket is pinned to this site and the trusted app origins (PUBLIC_ORIGIN, the packaged
+// Android app, CSRF_TRUSTED_ORIGINS — the same list the CSRF check uses, src/lib/security.js).
+// It used to answer every origin WITH credentials, so any page on the internet could ride a signed-in
+// visitor's cookie into the live feed through the polling transport.
+//
+// Two locks. `cors` only grants the cross-origin read to a trusted origin (this site's own pages are
+// same-origin and need no CORS header). `allowRequest` refuses the handshake outright when a browser
+// says it came from any other page — and, unlike `cors`, it also covers the WebSocket upgrade, which
+// browsers do not hold to the same-origin rules. No Origin header at all = not a browser (scripts,
+// the native app's HTTP layer): allowed here, and still has to pass the session check below.
+const socketTrusted = trustedOrigins();
 const io = new Server(httpServer, {
   cors: {
-    origin: (origin, callback) => callback(null, true),
+    origin: (origin, callback) => callback(null, Boolean(origin) && socketTrusted.has(String(origin).trim().replace(/\/+$/, '').toLowerCase())),
     credentials: true
+  },
+  allowRequest: (req, callback) => {
+    const origin = req.headers.origin;
+    if (origin === undefined) return callback(null, true);
+    if (originAllowed(origin, req.headers.host, socketTrusted)) return callback(null, true);
+    console.warn(`[security] refused live-socket handshake from origin ${origin}`);
+    return callback('origin not allowed', false);
   },
 });
 app.set('io', io); // available to routes via req.app.get('io') if ever needed directly

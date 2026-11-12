@@ -13,7 +13,7 @@ const path = require('path');
 //   editing a config file expects and is not what dotenv does. It mattered because the runbook
 //   said to copy .env.example and then add your settings: appending HOST and DB_PATH below the
 //   example's own HOST and DB_PATH left the EXAMPLE's values in force, silently. The app bound
-//   0.0.0.0 and opened ./data/workshopone.db — a new, empty file beside the code — instead of the
+//   0.0.0.0 and opened ./data/workshopone_merged.db — a new, empty file beside the code — instead of the
 //   database that had just been carried across. A duplicate key now warns as well, because
 //   whichever way it resolves, someone typed something they are not getting.
 //
@@ -67,7 +67,7 @@ const config = {
   root: ROOT,
   port: int('PORT', 3000),
   host: process.env.HOST || '0.0.0.0', // bind all interfaces so the LAN can reach it
-  dbPath: path.resolve(ROOT, process.env.DB_PATH || './data/workshopone.db'),
+  dbPath: path.resolve(ROOT, process.env.DB_PATH || './data/workshopone_merged.db'),
   // NOT USED, and deliberately left saying so. A session token is 32 random bytes from
   // crypto.randomBytes stored server-side in `sessions` — nothing is signed, so there is no secret
   // to keep. The deployment notes used to tell you to change this before go-live, which sent you
@@ -85,7 +85,7 @@ const config = {
   // Optional second location (external drive / network share) mirrored on each snapshot.
   backupMirrorDir: process.env.BACKUP_MIRROR_DIR ? path.resolve(ROOT, process.env.BACKUP_MIRROR_DIR) : null,
   backupIntervalMinutes: int('BACKUP_INTERVAL_MINUTES', 30),
-  backupRetention: int('BACKUP_RETENTION', 96),
+  backupRetention: int('BACKUP_RETENTION', 10),
   forecastWindowDays: int('FORECAST_WINDOW_DAYS', 90),
   lowStockDays: int('LOW_STOCK_DAYS', 14),
   // Anomaly thresholds — BUSINESS CALLS. Defaults are sensible starting points;

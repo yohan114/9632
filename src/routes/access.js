@@ -498,6 +498,85 @@ const FUNCTIONAL_SECTIONS = [
       operator: { modules: { workshops: 'view', access: 'none', users: 'none' }, caps: ['workshops.view'] },
       manager: { modules: { workshops: 'full', access: 'full', users: 'full' }, caps: ['workshops.view', 'workshops.manage', 'workshops.all', 'access.manage', 'users.manage', 'system.status', 'audit.view'] }
     }
+  },
+
+  // DOMAIN 7: FABRICATION, CCOM, FUEL SYSTEM, HIRE & FINAL COSTING (MERGED MODULES)
+  {
+    id: 'fabrication', name: 'Fabrication & General Works', icon: '⚙️', domain: 'Operations',
+    description: 'Fabrication job requests, general engineering cards, drawings, and fabrication costing sheets',
+    modules: ['fabrication', 'fabrication_costing'],
+    presets: {
+      none: { modules: { fabrication: 'none', fabrication_costing: 'none' }, caps: [] },
+      view: { modules: { fabrication: 'view', fabrication_costing: 'view' }, caps: ['fabrication.view'] },
+      operator: { modules: { fabrication: 'edit', fabrication_costing: 'edit' }, caps: ['fabrication.view', 'fabrication.open_card', 'fabrication.edit', 'fabrication.dailywork', 'fabrication.parts', 'fabrication.drawings', 'fabrication.cost.view', 'fabrication.cost.edit'] },
+      manager: { modules: { fabrication: 'full', fabrication_costing: 'full' }, caps: ['fabrication.view', 'fabrication.open_card', 'fabrication.edit', 'fabrication.dailywork', 'fabrication.parts', 'fabrication.drawings', 'fabrication.cost.view', 'fabrication.cost.edit', 'fabrication.cost.approve', 'fabrication.close', 'fabrication.export', 'fabrication.settings'] }
+    }
+  },
+  {
+    id: 'outsourcing', name: 'C.COM Outsourced Repairs', icon: '🔧', domain: 'Operations',
+    description: 'Outsourced vendor service requests, engineer digital approval, email dispatch, and actual charge posting',
+    modules: ['outsourcing'],
+    presets: {
+      none: { modules: { outsourcing: 'none' }, caps: [] },
+      view: { modules: { outsourcing: 'view' }, caps: ['outsourcing.view'] },
+      operator: { modules: { outsourcing: 'edit' }, caps: ['outsourcing.view', 'outsourcing.create', 'outsourcing.edit_draft', 'outsourcing.submit', 'outsourcing.send', 'outsourcing.record_progress'] },
+      manager: { modules: { outsourcing: 'full' }, caps: ['outsourcing.view', 'outsourcing.create', 'outsourcing.edit_draft', 'outsourcing.submit', 'outsourcing.approve', 'outsourcing.send', 'outsourcing.record_progress', 'outsourcing.verify_completion', 'outsourcing.cost.view', 'outsourcing.cost.post', 'outsourcing.cancel', 'outsourcing.settings'] }
+    }
+  },
+  {
+    id: 'master_dashboard', name: 'Master Executive Cockpit', icon: '⚡', domain: 'Operations',
+    description: 'Consolidated executive master dashboard across workshop repairs, fuel operations, and machine hire',
+    modules: ['master_dashboard'],
+    presets: {
+      none: { modules: { master_dashboard: 'none' }, caps: [] },
+      view: { modules: { master_dashboard: 'view' }, caps: ['master_dashboard.view'] },
+      operator: { modules: { master_dashboard: 'view' }, caps: ['master_dashboard.view'] },
+      manager: { modules: { master_dashboard: 'full' }, caps: ['master_dashboard.view'] }
+    }
+  },
+  {
+    id: 'fuel', name: 'Fuel System, Bowsers & Site Console', icon: '⛽', domain: 'Operations',
+    description: 'Fuel dispensing, site operator console, adjustments, meter readings, bulk tanks, Ceypetco prices, and consumption analytics',
+    modules: ['fuel', 'fuel_tanks', 'fuel_readings', 'fuel_prices', 'fuel_reports', 'fuel_alerts'],
+    presets: {
+      none: { modules: { fuel: 'none', fuel_tanks: 'none', fuel_readings: 'none', fuel_prices: 'none', fuel_reports: 'none', fuel_alerts: 'none' }, caps: [] },
+      view: { modules: { fuel: 'view', fuel_tanks: 'view', fuel_readings: 'view', fuel_prices: 'view', fuel_reports: 'view', fuel_alerts: 'view' }, caps: ['fuel.view', 'fuel.tanks.view', 'fuel.readings.view', 'fuel.prices.view', 'fuel.reports.view', 'fuel.alerts.view'] },
+      operator: { modules: { fuel: 'edit', fuel_tanks: 'edit', fuel_readings: 'edit', fuel_prices: 'view', fuel_reports: 'view', fuel_alerts: 'view' }, caps: ['fuel.view', 'fuel.request', 'fuel.issue', 'fuel.tanks.view', 'fuel.tanks.dip', 'fuel.tanks.refill', 'fuel.readings.view', 'fuel.readings.record', 'fuel.prices.view', 'fuel.reports.view', 'fuel.alerts.view'] },
+      manager: { modules: { fuel: 'full', fuel_tanks: 'full', fuel_readings: 'full', fuel_prices: 'full', fuel_reports: 'full', fuel_alerts: 'full' }, caps: ['fuel.view', 'fuel.request', 'fuel.issue', 'fuel.approve', 'fuel.approve_request', 'fuel.correct', 'fuel.approve_correction', 'fuel.void', 'fuel.export', 'fuel.tanks.view', 'fuel.tanks.manage', 'fuel.tanks.dip', 'fuel.tanks.refill', 'fuel.readings.view', 'fuel.readings.record', 'fuel.prices.view', 'fuel.prices.manage', 'fuel.reports.view', 'fuel.alerts.view'] }
+    }
+  },
+  {
+    id: 'hire', name: 'Machine Hire, Rates & Billing', icon: '📑', domain: 'Fleet',
+    description: 'Machine rental bills, Dry/Wet/Fully-Wet rate cards, consumption bands, site allocator, and breakdown deductions',
+    modules: ['hire'],
+    presets: {
+      none: { modules: { hire: 'none' }, caps: [] },
+      view: { modules: { hire: 'view' }, caps: ['allocations.view', 'hire.rates.view', 'hire.billing.view'] },
+      operator: { modules: { hire: 'edit' }, caps: ['allocations.view', 'allocations.manage', 'hire.rates.view', 'hire.billing.view', 'hire.billing.generate'] },
+      manager: { modules: { hire: 'full' }, caps: ['allocations.view', 'allocations.manage', 'hire.rates.view', 'hire.rates.manage', 'hire.billing.view', 'hire.billing.generate', 'hire.billing.finalise', 'hire.billing.export'] }
+    }
+  },
+  {
+    id: 'costing', name: 'Final Vehicle Costing P&L', icon: '💰', domain: 'Fleet',
+    description: 'Monthly vehicle final costing P&L, hiring revenue ledger, and driver & other operating expenses',
+    modules: ['costing'],
+    presets: {
+      none: { modules: { costing: 'none' }, caps: [] },
+      view: { modules: { costing: 'view' }, caps: ['costing.view'] },
+      operator: { modules: { costing: 'edit' }, caps: ['costing.view', 'costing.manage'] },
+      manager: { modules: { costing: 'full' }, caps: ['costing.view', 'costing.manage'] }
+    }
+  },
+  {
+    id: 'finance', name: 'Fleet Profitability & Period Close', icon: '📈', domain: 'Analysis',
+    description: 'Consolidated fleet financial contribution, operating margins, and monthly period seal/reopen',
+    modules: ['finance'],
+    presets: {
+      none: { modules: { finance: 'none' }, caps: [] },
+      view: { modules: { finance: 'view' }, caps: ['fleet.profitability.view'] },
+      operator: { modules: { finance: 'view' }, caps: ['fleet.profitability.view', 'fleet.profitability.view_all'] },
+      manager: { modules: { finance: 'full' }, caps: ['fleet.profitability.view', 'fleet.profitability.view_all', 'fleet.profitability.export', 'finance.period.close'] }
+    }
   }
 ];
 
@@ -575,15 +654,24 @@ router.post('/section-save', requireCap('access.manage'), asyncHandler((req, res
 
 // ---- Person-by-Person Access Control (WorkshopOne Plan Part B) --------------
 
-// 1. List all people with effective 22-section permissions, role, and override counts
+// 1. List all people with effective 28-section permissions, role, site/tank bindings, and override counts
 router.get('/people', requireCap('access.manage'), asyncHandler((_req, res) => {
   const users = all(`
     SELECT u.id, u.username, u.full_name, u.active, u.workshop_id AS home_workshop_id,
-           u.approval_limit, u.access_until, w.name AS home_workshop_name
+           u.approval_limit, u.access_until, w.name AS home_workshop_name,
+           u.project_id, p.name AS project_name, p.code AS project_code,
+           u.bulk_tank_id, t.name AS bulk_tank_name, t.code AS bulk_tank_code,
+           COALESCE(u.hide_stock, 0) AS hide_stock, u.fuel_role
       FROM users u
       LEFT JOIN workshops w ON w.id = u.workshop_id
+      LEFT JOIN projects p ON p.id = u.project_id
+      LEFT JOIN fuel_tanks t ON t.id = u.bulk_tank_id
      ORDER BY u.active DESC, u.username
   `);
+
+  const allRoles = all('SELECT id, name, label, active FROM roles WHERE active = 1 ORDER BY id');
+  const allProjects = all('SELECT id, code, name FROM projects WHERE active = 1 ORDER BY name');
+  const allTanks = all('SELECT id, code, name, project_id FROM fuel_tanks WHERE active = 1 ORDER BY name');
 
   const result = users.map((u) => {
     const roles = all(`
@@ -622,30 +710,55 @@ router.get('/people', requireCap('access.manage'), asyncHandler((_req, res) => {
       home_workshop_name: u.home_workshop_name,
       primary_store_id: primaryStoreId,
       primary_store_name: primaryStoreName,
+      project_id: u.project_id,
+      project_name: u.project_name,
+      project_code: u.project_code,
+      bulk_tank_id: u.bulk_tank_id,
+      bulk_tank_name: u.bulk_tank_name,
+      bulk_tank_code: u.bulk_tank_code,
+      hide_stock: !!u.hide_stock,
+      fuel_role: u.fuel_role,
       approval_limit: u.approval_limit,
       access_until: u.access_until,
       roles,
       overrides_count: overridesCount,
       override_count: overridesCount,
       permissions: permissions.effectiveUserPermissions(userObj),
+      user_overrides: Object.fromEntries(permOverrides.map((po) => [po.section, po.level])),
       caps: capabilities.effectiveCaps(userObj),
     };
   });
 
-  res.json({ people: result });
+  res.json({
+    people: result,
+    sections: permissions.SECTIONS,
+    levels: permissions.LEVELS,
+    all_roles: allRoles,
+    all_projects: allProjects,
+    all_tanks: allTanks,
+  });
 }));
 
-// 2. Detailed 22-section view for a single user (Role base vs Personal override)
+// 2. Detailed 28-section view for a single user (Role base vs Personal override + Site/Tank scope)
 router.get('/people/:id', requireCap('access.manage'), asyncHandler((req, res) => {
   const userId = toInt(req.params.id);
   const u = get(`
     SELECT u.id, u.username, u.full_name, u.active, u.workshop_id AS home_workshop_id,
-           u.approval_limit, u.access_until, w.name AS home_workshop_name
+           u.approval_limit, u.access_until, w.name AS home_workshop_name,
+           u.project_id, p.name AS project_name, p.code AS project_code,
+           u.bulk_tank_id, t.name AS bulk_tank_name, t.code AS bulk_tank_code,
+           COALESCE(u.hide_stock, 0) AS hide_stock, u.fuel_role
       FROM users u
       LEFT JOIN workshops w ON w.id = u.workshop_id
+      LEFT JOIN projects p ON p.id = u.project_id
+      LEFT JOIN fuel_tanks t ON t.id = u.bulk_tank_id
      WHERE u.id = ?
   `, userId);
   if (!u) return res.status(404).json({ error: 'User not found' });
+
+  const allRoles = all('SELECT id, name, label, active FROM roles WHERE active = 1 ORDER BY id');
+  const allProjects = all('SELECT id, code, name FROM projects WHERE active = 1 ORDER BY name');
+  const allTanks = all('SELECT id, code, name, project_id FROM fuel_tanks WHERE active = 1 ORDER BY name');
 
   let uStores = [];
   let primaryStoreId = null;
@@ -731,11 +844,22 @@ router.get('/people/:id', requireCap('access.manage'), asyncHandler((req, res) =
       primary_store_id: primaryStoreId,
       primary_store_name: primaryStoreName,
       store_locations: uStores,
+      project_id: u.project_id,
+      project_name: u.project_name,
+      project_code: u.project_code,
+      bulk_tank_id: u.bulk_tank_id,
+      bulk_tank_name: u.bulk_tank_name,
+      bulk_tank_code: u.bulk_tank_code,
+      hide_stock: !!u.hide_stock,
+      fuel_role: u.fuel_role,
       approval_limit: u.approval_limit,
       access_until: u.access_until,
       roles,
     },
     sections,
+    all_roles: allRoles,
+    all_projects: allProjects,
+    all_tanks: allTanks,
     all_capabilities: capabilities.CAPABILITIES.map(({ key, label, module, section, needs }) => ({
       key, label, module, section: section || module, needs,
     })),
@@ -743,16 +867,38 @@ router.get('/people/:id', requireCap('access.manage'), asyncHandler((req, res) =
   });
 }));
 
-// 3. Save personal overrides and limits for a specific user
+// Does a /people/:id/save body change the person's access (as opposed to only their operational
+// scope)? The screen always sends approval_limit and access_until, so those count only if they differ.
+function touchesOwnAccess(b, userId) {
+  const nonEmpty = (o) => o && typeof o === 'object' && Object.keys(o).length > 0;
+  if (nonEmpty(b.sections) || nonEmpty(b.permissions) || nonEmpty(b.capabilities) || nonEmpty(b.caps)) return true;
+  if (Array.isArray(b.roles)) return true;
+  const cur = get('SELECT approval_limit, access_until FROM users WHERE id = ?', userId) || {};
+  if (b.approval_limit !== undefined) {
+    const v = b.approval_limit === '' || b.approval_limit === null ? null : Number(b.approval_limit);
+    if (v !== (cur.approval_limit == null ? null : Number(cur.approval_limit))) return true;
+  }
+  if (b.access_until !== undefined) {
+    const v = b.access_until === '' || b.access_until === null ? null : String(b.access_until).trim();
+    if (v !== (cur.access_until || null)) return true;
+  }
+  return false;
+}
+
+// 3. Save personal overrides, roles, and site/tank bindings for a specific user
 router.post('/people/:id/save', requireCap('access.manage'), asyncHandler((req, res) => {
   const userId = toInt(req.params.id);
   const targetUser = get('SELECT id, username FROM users WHERE id = ?', userId);
   if (!targetUser) return res.status(404).json({ error: 'User not found' });
 
-  // Safety rule: nobody can change their own access
-  rules.assertNotSelf(req.user, userId);
-
-  // Safety rule: only admin can modify an admin account
+  // Safety rule: nobody changes their own ACCESS — not even an admin (sections, capabilities,
+  // roles, approval limit, access expiry). An admin may still set their own OPERATIONAL scope (site
+  // or store, project, fuel tank, fuel role, hide-stock), which grants nothing.
+  const isSelf = req.user && req.user.id === userId;
+  const isAdminActor = rules.isAdmin(req.user);
+  if (isSelf && (!isAdminActor || touchesOwnAccess(req.body || {}, userId))) {
+    rules.assertNotSelf(req.user, userId);
+  }
   rules.assertCanManageUser(req.user, userId);
 
   const b = req.body || {};
@@ -775,8 +921,24 @@ router.post('/people/:id/save', requireCap('access.manage'), asyncHandler((req, 
     rules.assertCanGrantCaps(req.user, capsToGrant);
   }
 
-    // Check Segregation of Duties (SoD) conflict rules unless target user has admin role
-  const targetRoles = all('SELECT r.name FROM user_roles ur JOIN roles r ON r.id = ur.role_id WHERE ur.user_id = ?', userId).map((r) => r.name);
+  // Optional Role updates (array of role names or IDs)
+  let newRoleRows = null;
+  if (Array.isArray(b.roles)) {
+    const cleanRoles = b.roles.map((r) => (typeof r === 'object' ? (r.name || r.id) : r)).filter(Boolean);
+    newRoleRows = cleanRoles.map((r) => {
+      return typeof r === 'number' || /^\d+$/.test(String(r))
+        ? get('SELECT id, name FROM roles WHERE id = ?', Number(r))
+        : get('SELECT id, name FROM roles WHERE name = ?', String(r));
+    }).filter(Boolean);
+
+    if (newRoleRows.some((r) => r.name === 'admin') && !isAdminActor) {
+      return res.status(403).json({ error: 'Only an Administrator can grant the admin role.' });
+    }
+  }
+
+  // Check Segregation of Duties (SoD) conflict rules unless target user has admin role
+  const currentRoles = all('SELECT r.name FROM user_roles ur JOIN roles r ON r.id = ur.role_id WHERE ur.user_id = ?', userId).map((r) => r.name);
+  const targetRoles = newRoleRows ? newRoleRows.map((r) => r.name) : currentRoles;
   if (!targetRoles.includes('admin')) {
     const baseCaps = capabilities.capsForRoles(targetRoles);
     const prospectiveCaps = new Set(baseCaps);
@@ -808,6 +970,21 @@ router.post('/people/:id/save', requireCap('access.manage'), asyncHandler((req, 
   }
 
   tx(() => {
+    // 0. Save role assignments if provided
+    if (newRoleRows) {
+      // Prevent removing the last admin
+      if (currentRoles.includes('admin') && !newRoleRows.some((r) => r.name === 'admin')) {
+        const activeAdmins = rules.activeAdminIds();
+        if (activeAdmins.length <= 1 && activeAdmins.includes(userId)) {
+          bad(400, 'Cannot remove the admin role from the last active administrator.');
+        }
+      }
+      run('DELETE FROM user_roles WHERE user_id = ?', userId);
+      for (const r of newRoleRows) {
+        run('INSERT OR IGNORE INTO user_roles (user_id, role_id) VALUES (?, ?)', userId, r.id);
+      }
+    }
+
     // 1. Save section overrides
     for (const [sectionKey, lvl] of Object.entries(sectionUpdates)) {
       if (lvl === null || lvl === '' || lvl === undefined) {
@@ -826,7 +1003,7 @@ router.post('/people/:id/save', requireCap('access.manage'), asyncHandler((req, 
       }
     }
 
-    // 3. User metadata updates
+    // 3. User metadata & Fuel/Site scope updates
     const sets = [];
     const params = [];
     if (b.approval_limit !== undefined) {
@@ -836,6 +1013,21 @@ router.post('/people/:id/save', requireCap('access.manage'), asyncHandler((req, 
     if (b.access_until !== undefined) {
       const until = b.access_until === '' || b.access_until === null ? null : String(b.access_until).trim();
       sets.push('access_until = ?'); params.push(until || null);
+    }
+    if (b.project_id !== undefined) {
+      const pid = b.project_id === '' || b.project_id === null ? null : toInt(b.project_id);
+      sets.push('project_id = ?'); params.push(pid);
+    }
+    if (b.bulk_tank_id !== undefined) {
+      const tid = b.bulk_tank_id === '' || b.bulk_tank_id === null ? null : String(b.bulk_tank_id).trim();
+      sets.push('bulk_tank_id = ?'); params.push(tid || null);
+    }
+    if (b.hide_stock !== undefined) {
+      sets.push('hide_stock = ?'); params.push(b.hide_stock ? 1 : 0);
+    }
+    if (b.fuel_role !== undefined) {
+      const frole = b.fuel_role === '' || b.fuel_role === null ? null : String(b.fuel_role).trim();
+      sets.push('fuel_role = ?'); params.push(frole);
     }
     if (b.store_location_id !== undefined || b.primary_store_id !== undefined || b.home_workshop_id !== undefined || b.workshop_id !== undefined) {
       const storeId = b.store_location_id !== undefined ? b.store_location_id : b.primary_store_id;
@@ -864,10 +1056,86 @@ router.post('/people/:id/save', requireCap('access.manage'), asyncHandler((req, 
     entityId: userId,
     action: 'save_overrides',
     reason: b.reason || null,
-    after: { sections: sectionUpdates, capabilities: capUpdates },
+    after: { sections: sectionUpdates, capabilities: capUpdates, roles: newRoleRows ? newRoleRows.map((r) => r.name) : undefined },
   });
 
   res.json({ ok: true, message: `Access saved for ${targetUser.username}` });
+}));
+
+// 3b. Bulk Save across All Persons (for All-Persons Access Matrix Grid)
+router.post('/people/bulk-save', requireCap('access.manage'), asyncHandler((req, res) => {
+  const { userIds = [], sections = {}, addRole, removeRole, projectId, bulkTankId, hideStock, presetDomain, presetLevel } = req.body || {};
+  const ids = Array.isArray(userIds) ? userIds.map((id) => toInt(id)).filter(Boolean) : [];
+  if (!ids.length) return res.status(400).json({ error: 'At least one user must be selected' });
+
+  for (const [, lvl] of Object.entries(sections)) {
+    if (lvl !== null && lvl !== '' && !permissions.LEVELS.includes(lvl)) {
+      return res.status(400).json({ error: `Invalid level ${lvl}` });
+    }
+  }
+
+  let updated = 0;
+  tx(() => {
+    for (const uid of ids) {
+      const target = get('SELECT id, username FROM users WHERE id = ?', uid);
+      if (!target) continue;
+
+      if (addRole) {
+        const r = get('SELECT id, name FROM roles WHERE name = ?', String(addRole));
+        if (r && (r.name !== 'admin' || rules.isAdmin(req.user))) {
+          run('INSERT OR IGNORE INTO user_roles (user_id, role_id) VALUES (?, ?)', uid, r.id);
+        }
+      }
+      if (removeRole && removeRole !== 'admin') {
+        const r = get('SELECT id FROM roles WHERE name = ?', String(removeRole));
+        if (r) run('DELETE FROM user_roles WHERE user_id = ? AND role_id = ?', uid, r.id);
+      }
+
+      for (const [secKey, lvl] of Object.entries(sections)) {
+        if (lvl === null || lvl === '' || lvl === 'inherit') {
+          permissions.removeUserPermission(uid, secKey);
+        } else {
+          permissions.setUserPermission(uid, secKey, lvl, req.user.id);
+        }
+      }
+
+      if (presetDomain && presetLevel) {
+        const domainSections = permissions.SECTIONS.filter((s) => presetDomain === 'ALL' || s.group === presetDomain);
+        for (const ds of domainSections) {
+          if (presetLevel === 'inherit') permissions.removeUserPermission(uid, ds.key);
+          else permissions.setUserPermission(uid, ds.key, presetLevel, req.user.id);
+        }
+      }
+
+      const sets = [];
+      const params = [];
+      if (projectId !== undefined) {
+        sets.push('project_id = ?');
+        params.push(projectId === '' || projectId === null ? null : toInt(projectId));
+      }
+      if (bulkTankId !== undefined) {
+        sets.push('bulk_tank_id = ?');
+        params.push(bulkTankId === '' || bulkTankId === null ? null : String(bulkTankId));
+      }
+      if (hideStock !== undefined) {
+        sets.push('hide_stock = ?');
+        params.push(hideStock ? 1 : 0);
+      }
+      if (sets.length) {
+        run(`UPDATE users SET ${sets.join(', ')} WHERE id = ?`, ...params, uid);
+      }
+      updated++;
+    }
+  });
+
+  audit.record({
+    userId: req.user.id,
+    entity: 'user_permission',
+    action: 'bulk_save',
+    after: { count: updated, userIds: ids, sections, addRole, removeRole, projectId, bulkTankId },
+  });
+
+  res.json({ ok: true, updated });
 }));
 
 // 4. Reset all personal overrides for user back to role template

@@ -87,19 +87,24 @@ function trustedOrigins(env = process.env) {
   return new Set(list.map((o) => o.trim().replace(/\/+$/, '').toLowerCase()).filter(Boolean));
 }
 
+// Is `origin` this host (the request's Host header) or one of the trusted origins? Shared by the
+// CSRF check below and the live-update socket's handshake check (src/server.js).
+function originAllowed(origin, host, trusted) {
+  const o = String(origin).trim().toLowerCase();
+  // "null" is what a sandboxed frame or a file:// page sends. It is not an address, and an
+  // attacker can produce it on purpose, so it is only accepted when explicitly listed.
+  if (o === 'null') return trusted.has('null');
+  let u;
+  try { u = new URL(o); } catch { return false; }
+  const h = String(host || '').trim().toLowerCase();
+  if (h && u.host === h) return true;
+  return trusted.has(u.origin);
+}
+
 function originGuard({ env = process.env } = {}) {
   const trusted = trustedOrigins(env);
 
-  const allowed = (origin, host) => {
-    const o = String(origin).trim().toLowerCase();
-    // "null" is what a sandboxed frame or a file:// page sends. It is not an address, and an
-    // attacker can produce it on purpose, so it is only accepted when explicitly listed.
-    if (o === 'null') return trusted.has('null');
-    let u;
-    try { u = new URL(o); } catch { return false; }
-    if (host && u.host === host) return true;
-    return trusted.has(u.origin);
-  };
+  const allowed = (origin, host) => originAllowed(origin, host, trusted);
 
   return (req, res, next) => {
     if (SAFE_METHODS.has(req.method)) return next();
@@ -128,4 +133,4 @@ function originGuard({ env = process.env } = {}) {
   };
 }
 
-module.exports = { securityHeaders, originGuard, trustedOrigins, CSP };
+module.exports = { securityHeaders, originGuard, trustedOrigins, originAllowed, CSP };

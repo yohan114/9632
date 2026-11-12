@@ -157,7 +157,8 @@ router.delete('/categories/:id', requireCap('fabrication.settings'), asyncHandle
 // 2. Drawings Upload & Streaming
 // ---------------------------------------------------------------------------
 
-const ALLOWED_DRAWING_EXTS = new Set(['.pdf', '.png', '.jpg', '.jpeg', '.svg', '.dwg', '.dxf', '.step', '.stp']);
+// No .svg: an SVG can carry script, and a drawing is served from this site's own origin.
+const ALLOWED_DRAWING_EXTS = new Set(['.pdf', '.png', '.jpg', '.jpeg', '.dwg', '.dxf', '.step', '.stp']);
 
 /**
  * POST /drawings
@@ -214,6 +215,9 @@ router.get('/drawings/:filename', requireCap('fabrication.drawings', 'fabricatio
     return res.status(404).json({ error: 'Drawing file not found.' });
   }
 
+  // A download, never rendered in the page's origin (older uploads may still be .svg).
+  res.setHeader('Content-Security-Policy', 'sandbox');
+  res.attachment(filename);
   res.sendFile(filePath);
 }));
 

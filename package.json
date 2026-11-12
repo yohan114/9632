@@ -11,6 +11,7 @@
     "seed": "node src/db/seed.js",
     "reset": "node src/db/migrate.js --reset && node src/db/seed.js",
     "migrate:real": "node src/migrate/run.js --reset",
+    "sync:live": "node scripts/sync_all_live_data.js",
     "backup": "node scripts/backup.js",
     "restore": "node scripts/restore.js",
     "admin": "node scripts/admin.js",

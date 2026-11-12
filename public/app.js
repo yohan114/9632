@@ -1028,7 +1028,10 @@ function formData(root) {
 
 // ---------------------------------------------------------------- shell
 const NAV = [
+  ['master-dashboard', '⚡', 'Master Cockpit'],
   ['dashboard', '📊', 'Dashboard'],
+  ['fuel', '⛽', 'Fuel Operations'],
+  ['vehicle-costing', '💰', 'Final Vehicle Costing P&L'],
   ['jobs', '🔧', 'Job Cards'],
   ['field', '📍', 'Field Work'],
   ['operations', '🧭', 'Operations'],
@@ -1038,8 +1041,12 @@ const NAV = [
   ['lubecapacities', '🛢️', 'Lubricant Capacities'],
   ['assets', '🚜', 'Assets'],
   ['vehicledocuments', '📜', 'Vehicle Documents'],
+  ['hire-billing', '📑', 'Machine Hire & Billing'],
   ['labour', '👷', 'Labour & Mechanics'],
   ['stores', '📦', 'Stores'],
+  ['fuel-tanks', '🛢️', 'Fuel Tanks & Bowsers'],
+  ['fuel-readings', '⏱️', 'Daily Pump Readings'],
+  ['fuel-prices', '🏷️', 'Fuel Prices & Tariffs'],
   ['tools', '🧰', 'Tools & Toolboxes'],
   ['serviceplan', '🗓️', 'Service & Filter Plan'],
   ['projects', '🏗️', 'Projects'],
@@ -1051,20 +1058,22 @@ const NAV = [
   ['tbrequests', '🛞', 'Tyre & Battery Requests'],
   ['tyrebattery', '🛞', 'Tyre & Battery'],
   ['reports', '📈', 'Reports'],
+  ['fuel-reports', '📋', 'Fuel Efficiency & Norms'],
+  ['fuel-alerts', '🚨', 'Fuel Discrepancy Alerts'],
+  ['fleet-profitability', '📊', 'Fleet Profitability'],
   ['access', '🔐', 'Access Control', 'admin'],
   ['auditlogs', '🛡️', 'User Activity Logs', 'audit_admin'],
 ];
 // Which permission module governs each nav item's visibility (dashboard always on).
 const NAV_MODULE = {
+  'master-dashboard': 'master_dashboard',
+  fuel: 'fuel', 'fuel-tanks': 'fuel_tanks', 'fuel-readings': 'fuel_readings', 'fuel-prices': 'fuel_prices', 'fuel-reports': 'fuel_reports', 'fuel-alerts': 'fuel_alerts',
+  'vehicle-costing': 'costing', 'hire-billing': 'hire', 'fleet-profitability': 'finance',
   assets: 'assets', vehicledocuments: 'assets', jobs: 'jobs', jobrequests: 'jobrequests', field: 'jobs', operations: 'assets', dailywork: 'dailywork', 'mechanics-kpi': 'dailywork', services: 'filters', lubecapacities: 'jobs',
   labour: 'labour', stores: 'stores', tools: 'tools', stocktake: 'stores', stockcockpit: 'stores', generalstock: 'stores', oil: 'oil', batteries: 'batteries', filters: 'filters', filterstock: 'filters',
   projects: 'projects', aliases: 'aliases', attention: 'reports', progress: 'reports',
   teardown: 'reports', reports: 'reports', tyrebattery: 'reports',
-  // The request screen belongs to whoever may raise one. The ledger above stays on 'reports',
-  // because reading what was issued is a different question from being allowed to issue it.
   tbrequests: 'tb_request',
-  // Enforced, so the two buying officers see this and nobody else does. Which of the two
-  // channels each one sees is decided by the server from their role — the nav only opens the door.
   purchasing: 'purchasing',
   matreq: 'stores', stockissues: 'stores', serviceplan: 'filters',
 };
@@ -1072,6 +1081,16 @@ function navVisible(n) {
   if (n[3] === 'audit_admin') return !!(ME && ME.roles && ME.roles.includes('admin'));
   if (n[3] === 'admin') return canDo('access.manage', 'users.manage');
   if (n[0] === 'dashboard') return true;
+  if (n[0] === 'master-dashboard') return isAdmin() || canView('master_dashboard') || canDo('master_dashboard.view');
+  if (n[0] === 'vehicle-costing') return isAdmin() || canView('costing') || canDo('costing.view');
+  if (n[0] === 'fuel') return isAdmin() || canView('fuel') || canDo('fuel.view');
+  if (n[0] === 'fuel-tanks') return isAdmin() || canView('fuel_tanks') || canView('fuel') || canDo('fuel.tanks.view');
+  if (n[0] === 'fuel-readings') return isAdmin() || canView('fuel_readings') || canView('fuel') || canDo('fuel.readings.view');
+  if (n[0] === 'fuel-prices') return isAdmin() || canView('fuel_prices') || canView('fuel') || canDo('fuel.prices.view');
+  if (n[0] === 'fuel-reports') return isAdmin() || canView('fuel_reports') || canView('fuel') || canDo('fuel.reports.view');
+  if (n[0] === 'fuel-alerts') return isAdmin() || canView('fuel_alerts') || canView('fuel') || canDo('fuel.alerts.view');
+  if (n[0] === 'hire-billing') return isAdmin() || canView('hire') || canDo('hire.billing.view');
+  if (n[0] === 'fleet-profitability') return isAdmin() || canView('finance') || canView('costing') || canDo('fleet.profitability.view');
   if (n[0] === 'mechanics-kpi') return canView('dailywork') || canView('labour') || canView('reports');
   // Job Cards holds the job requests too (its Requests tab).
   if (n[0] === 'jobs') return canView('jobs') || canView('jobrequests');
@@ -1082,11 +1101,11 @@ function navVisible(n) {
 // Sidebar grouping — headings shown above each cluster (a group with no visible item is hidden).
 const NAV_GROUP_ORDER = ['Operations', 'Inventory', 'Procurement', 'Fleet', 'Analysis', 'Admin'];
 const NAV_GROUP = {
-  dashboard: 'Operations', jobs: 'Operations', jobrequests: 'Operations', field: 'Operations', operations: 'Operations', dailywork: 'Operations', 'mechanics-kpi': 'Operations', services: 'Operations', lubecapacities: 'Operations',
-  stores: 'Inventory', tools: 'Inventory', stocktake: 'Inventory',
+  'master-dashboard': 'Operations', dashboard: 'Operations', fuel: 'Operations', 'fuel-readings': 'Operations', jobs: 'Operations', jobrequests: 'Operations', field: 'Operations', operations: 'Operations', dailywork: 'Operations', 'mechanics-kpi': 'Operations', services: 'Operations', lubecapacities: 'Operations',
+  stores: 'Inventory', 'fuel-tanks': 'Inventory', 'fuel-prices': 'Inventory', tools: 'Inventory', stocktake: 'Inventory',
   purchasing: 'Procurement', tbrequests: 'Procurement',
-  assets: 'Fleet', vehicledocuments: 'Fleet', serviceplan: 'Fleet',
-  reports: 'Analysis', attention: 'Analysis', progress: 'Analysis', teardown: 'Analysis', tyrebattery: 'Analysis', aliases: 'Analysis', projects: 'Analysis', labour: 'Analysis',
+  assets: 'Fleet', 'vehicle-costing': 'Fleet', 'hire-billing': 'Fleet', vehicledocuments: 'Fleet', serviceplan: 'Fleet',
+  reports: 'Analysis', 'fuel-reports': 'Analysis', 'fuel-alerts': 'Analysis', 'fleet-profitability': 'Analysis', attention: 'Analysis', progress: 'Analysis', teardown: 'Analysis', tyrebattery: 'Analysis', aliases: 'Analysis', projects: 'Analysis', labour: 'Analysis',
   access: 'Admin', auditlogs: 'Admin',
 };
 
@@ -1849,7 +1868,7 @@ function setupLiveNotifications() {
 }
 
 // ---------------------------------------------------------------- router
-const routes = {};
+const routes = window.routes = window.routes || {};
 async function render() {
   if (!ME) return;
   if (isScreenLocked) {
@@ -6447,8 +6466,8 @@ routes['mechanics-kpi'] = async (c) => {
       const d = await api('/daily-work/mechanics-kpi/detail?' + qsStr);
       const lines = d.lines || [];
       const totHrs = lines.reduce((s, l) => s + (Number(l.hours) || 0), 0);
-      const totInt = lines.reduce((s, l) => s + (Number(l.mechanic_internal_cost) || 0), 0);
-      const totOut = lines.reduce((s, l) => s + (Number(l.mechanic_outside_share) || 0), 0);
+      const totInt = lines.reduce((s, l) => s + (Number(l.mechanic_internal_cost ?? l.internal_cost) || 0), 0);
+      const totOut = lines.reduce((s, l) => s + (Number(l.mechanic_outside_share ?? l.attributed_outside_cost) || 0), 0);
       const totSav = totOut - totInt;
 
       const rows = lines.map((l) => {
@@ -6467,12 +6486,12 @@ routes['mechanics-kpi'] = async (c) => {
         return `<tr>
           <td>${esc(l.work_date)}</td>
           <td>${typeBadge}${jobLnk}</td>
-          <td>${esc(l.asset_code || '—')}${l.asset_reg ? ` <span class="muted">(${esc(l.asset_reg)})</span>` : ''}</td>
+          <td>${esc(l.vehicle || [l.asset_code, l.asset_reg].filter(Boolean).join(' · ') || '—')}</td>
           <td>${esc(l.crew || l.mechanic)}${l.crew_size > 1 ? ` <span class="badge blue" title="Shared across ${l.crew_size} mechanics">${l.crew_size} crew</span>` : ''}</td>
           <td class="desc-col">${esc(l.description || '')}</td>
           <td class="num"><b>${num(l.hours)}h</b></td>
-          <td class="num">${l.mechanic_rate != null ? money(l.mechanic_rate) + '/h' : '<span class="badge amber">no rate</span>'}</td>
-          <td class="num">${money(l.mechanic_internal_cost)}</td>
+          <td class="num">${(l.mechanic_rate != null ? l.mechanic_rate : l.hourly_rate) != null ? money(l.mechanic_rate ?? l.hourly_rate) + '/h' : '<span class="badge amber">no rate</span>'}</td>
+          <td class="num">${money(l.mechanic_internal_cost ?? l.internal_cost)}</td>
           <td class="num">${outCell}</td>
           <td class="num" style="font-weight:700;color:${sav >= 0 ? 'var(--green)' : 'var(--red)'}">${sav >= 0 ? '+' : ''}${money(sav)}</td>
         </tr>`;
@@ -6558,7 +6577,8 @@ routes['mechanics-kpi'] = async (c) => {
         const roiBadge = m.roi_ratio == null
           ? '<span class="muted">—</span>'
           : `<span class="badge ${m.roi_ratio >= 1.3 ? 'green' : (m.roi_ratio >= 1.0 ? 'blue' : 'red')}">${m.roi_ratio}x</span>`;
-        const covBadge = `<span class="badge ${m.coverage_pct >= 80 ? 'green' : (m.coverage_pct >= 40 ? 'amber' : '')}">${m.coverage_pct}% (${m.entries_with_outside_cost}/${m.entries_count})</span>`;
+        const priced = m.entries_with_outside_cost != null ? m.entries_with_outside_cost : (m.priced_entries_count || 0);
+        const covBadge = `<span class="badge ${m.coverage_pct >= 80 ? 'green' : (m.coverage_pct >= 40 ? 'amber' : '')}">${m.coverage_pct}% (${priced}/${m.entries_count})</span>`;
 
         return `<tr>
           <td><b>${esc(m.mechanic)}</b>${statusBadge}</td>
@@ -6628,7 +6648,7 @@ routes['mechanics-kpi'] = async (c) => {
       const rows = filtered.map((u) => `<tr>
         <td>${esc(u.work_date)}</td>
         <td><a href="#/jobs/${u.job_id}"><b>${esc(u.job_no)}</b></a></td>
-        <td>${esc(u.asset_code || '—')}${u.asset_reg ? ` <span class="muted">(${esc(u.asset_reg)})</span>` : ''}</td>
+        <td><b>${esc(u.vehicle || [u.asset_code, u.asset_reg].filter(Boolean).join(' · ') || '—')}</b></td>
         <td><b>${esc(u.mechanic || '—')}</b></td>
         <td class="desc-col">${esc(u.description || '')}</td>
         <td class="num"><b>${num(u.hours)}h</b></td>
@@ -6696,12 +6716,12 @@ routes['mechanics-kpi'] = async (c) => {
     }
 
     if (activeTab === 'vehicles') {
-      const filtered = vehicles.filter((v) => !q || (v.asset_code || '').toLowerCase().includes(q) || (v.asset_reg || '').toLowerCase().includes(q));
+      const filtered = vehicles.filter((v) => !q || (v.vehicle || '').toLowerCase().includes(q) || (v.asset_code || '').toLowerCase().includes(q) || (v.asset_reg || '').toLowerCase().includes(q));
       const rows = filtered.map((v) => {
         const sav = v.net_savings || 0;
         return `<tr>
-          <td><b>${esc(v.asset_code)}</b></td>
-          <td>${esc(v.asset_reg || '—')}</td>
+          <td><b>${esc(v.asset_code || v.vehicle || 'General Workshop')}</b></td>
+          <td>${esc(v.asset_reg || (v.vehicle && v.vehicle !== v.asset_code ? v.vehicle : '—'))}</td>
           <td class="num">${v.entries}</td>
           <td class="num"><b>${num(v.hours)} hrs</b></td>
           <td class="num">${money(v.internal_cost)}</td>
@@ -21124,20 +21144,21 @@ routes.access = async (c) => {
   if (!canDo('access.manage', 'users.manage')) { c.innerHTML = '<div class="card err">You do not have access to this page.</div>'; return; }
   const tabs = [];
   if (canDo('access.manage')) {
-    tabs.push(['people', 'People (Overrides)']);
-    tabs.push(['sections', 'Sections Audit']);
-    tabs.push(['roles', 'Role Templates']);
-    tabs.push(['board', 'Clearance Board']);
-    tabs.push(['limits', 'Approval limits']);
+    tabs.push(['people', '👤 People (By Person)']);
+    tabs.push(['matrix', '👥 All-Persons Matrix (Quick Grid)']);
+    tabs.push(['sections', '🔍 Sections Audit']);
+    tabs.push(['roles', '🎭 Role Templates']);
+    tabs.push(['board', '📋 Clearance Board']);
+    tabs.push(['limits', '💰 Approval Limits']);
   }
-  tabs.push(['stand_ins', 'Stand-in Approvals']);
-  if (canDo('users.manage')) tabs.push(['users', 'User Accounts']);
-  if (canDo('access.manage')) tabs.push(['history', 'Audit Trail']);
+  tabs.push(['stand_ins', '🤝 Stand-in Approvals']);
+  if (canDo('users.manage')) tabs.push(['users', '🔑 User Accounts']);
+  if (canDo('access.manage')) tabs.push(['history', '📜 Audit Trail']);
   if (ME && ME.roles && ME.roles.includes('admin')) tabs.push(['auditlogs', '🛡️ User Activity Logs']);
 
   const sp = new URLSearchParams(location.hash.split('?')[1] || '');
   const tab = tabs.some((t) => t[0] === sp.get('tab')) ? sp.get('tab') : tabs[0][0];
-  c.innerHTML = `${pageHeader('Access Control', 'Access person-by-person, role starting templates, 22 canonical sections & audit compliance.')}
+  c.innerHTML = `${pageHeader('Access Control & All-Persons Governance', 'Manage person-by-person roles, 28 canonical sections, Site Bowser & Project scopes, All-Persons Quick Grid & audit compliance.')}
     <div id="admin-warn"></div>
     <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:12px">
       <div class="pill-row">
@@ -21163,6 +21184,7 @@ routes.access = async (c) => {
   }).catch(() => {});
   const pane = qs('#apane', c);
   if (tab === 'people') await renderPeopleAccess(pane, sp.get('user'));
+  else if (tab === 'matrix') await renderAllPersonsMatrix(pane);
   else if (tab === 'sections') await renderSectionsAudit(pane, sp.get('section'));
   else if (tab === 'users') await renderUsersManager(pane);
   else if (tab === 'board') await renderClearanceBoard(pane);
@@ -21371,13 +21393,19 @@ async function renderPeopleAccess(c, wantedUserId) {
   const details = await api('/access/people/' + sel.id);
   const u = details.user;
   const sections = details.sections;
+  const allRoles = details.all_roles || data.all_roles || [];
+  const allProjects = details.all_projects || data.all_projects || [];
+  const allTanks = details.all_tanks || data.all_tanks || [];
 
   // Local state for edits
   const sectionEdits = {};
   const capEdits = {};
+  const selectedRolesSet = new Set((u.roles || []).map((r) => r.name));
+  let rolesChanged = false;
 
   const canEditTarget = !isAdmin() && u.roles.some((r) => r.name === 'admin') ? false : true;
   const isSelf = ME && ME.id == u.id;
+  const canEditScope = canEditTarget && (!isSelf || isAdmin());
 
   const renderAll = () => {
     const q = (qs('#person-search', c) ? qs('#person-search', c).value : '').toLowerCase().trim();
@@ -21385,29 +21413,33 @@ async function renderPeopleAccess(c, wantedUserId) {
       if (!q) return true;
       return (p.full_name || '').toLowerCase().includes(q) ||
              (p.username || '').toLowerCase().includes(q) ||
+             (p.project_name || '').toLowerCase().includes(q) ||
+             (p.bulk_tank_name || '').toLowerCase().includes(q) ||
              p.roles.some((r) => (r.label || r.name).toLowerCase().includes(q));
     });
 
     const listHtml = filtered.map((p) => {
       const isSel = p.id == u.id;
       const roleStr = p.roles.map((r) => r.label || r.name).join(', ') || 'No roles';
+      const siteTag = p.project_name ? ` · <span style="color:#0284c7">🏗️ ${esc(p.project_name)}</span>` : '';
+      const tankTag = p.bulk_tank_name ? ` · <span style="color:#d97706">⛽ ${esc(p.bulk_tank_name)}</span>` : '';
       return `<tr data-pick-user="${p.id}" style="cursor:pointer;${isSel ? 'background:var(--bg-active, #eef2ff);font-weight:600;' : ''}${p.active ? '' : 'opacity:.55;'}">
         <td>
           <div style="display:flex;align-items:center;justify-content:space-between;gap:6px">
             <span>${esc(p.full_name || p.username)}</span>
             ${p.overrides_count > 0 ? `<span class="badge amber" style="font-size:10px" title="${p.overrides_count} custom overrides">${p.overrides_count} custom</span>` : ''}
           </div>
-          <div class="muted" style="font-size:11px;font-weight:normal">${esc(p.username)} · ${esc(roleStr)}${p.primary_store_name ? ` · <span style="color:var(--primary,#0066ff)">📍 ${esc(p.primary_store_name)}</span>` : ''}</div>
+          <div class="muted" style="font-size:11px;font-weight:normal">${esc(p.username)} · ${esc(roleStr)}${p.primary_store_name ? ` · <span style="color:var(--primary,#0066ff)">📍 ${esc(p.primary_store_name)}</span>` : ''}${siteTag}${tankTag}</div>
         </td>
       </tr>`;
     }).join('') || '<tr><td class="muted" style="text-align:center">No matching people</td></tr>';
 
     const GROUPS = [
       { id: 'Operations', name: 'Operations & Execution', icon: '⚙️' },
-      { id: 'Fleet', name: 'Fleet Management', icon: '🚛' },
+      { id: 'Fleet', name: 'Fleet, Fuel & Hire Management', icon: '🚛' },
       { id: 'Inventory', name: 'Inventory & Warehousing', icon: '📦' },
       { id: 'Procurement', name: 'Procurement & Purchasing', icon: '🛒' },
-      { id: 'Analysis', name: 'Analysis & Intelligence', icon: '📊' },
+      { id: 'Analysis', name: 'Analysis, Costing & Intelligence', icon: '📊' },
       { id: 'Admin', name: 'Governance & Administration', icon: '🛡️' },
     ];
 
@@ -21503,9 +21535,16 @@ async function renderPeopleAccess(c, wantedUserId) {
       }).join('');
 
       return `<div style="margin-bottom:18px">
-        <h3 style="margin:0 0 8px;font-size:14px;color:var(--text-muted, #475569);display:flex;align-items:center;gap:6px">
-          <span>${grp.icon}</span> <span>${esc(grp.name)}</span>
-        </h3>
+        <div style="display:flex;align-items:center;justify-content:space-between;margin:0 0 8px">
+          <h3 style="margin:0;font-size:14px;color:var(--text-muted, #475569);display:flex;align-items:center;gap:6px">
+            <span>${grp.icon}</span> <span>${esc(grp.name)}</span>
+          </h3>
+          ${!isSelf && canEditTarget ? `<div style="display:flex;gap:4px">
+            <button class="btn sm" style="font-size:10px;padding:2px 6px" data-grp-set="${grp.id}:view">All View</button>
+            <button class="btn sm" style="font-size:10px;padding:2px 6px" data-grp-set="${grp.id}:edit">All Edit</button>
+            <button class="btn sm" style="font-size:10px;padding:2px 6px" data-grp-set="${grp.id}:full">All Full</button>
+          </div>` : ''}
+        </div>
         ${secHtml}
       </div>`;
     }).join('');
@@ -21516,11 +21555,24 @@ async function renderPeopleAccess(c, wantedUserId) {
     const otherStores = (storeLocsList || []).filter((s) => !['MAIN_STORE', 'MAIN_WORKSHOP_STORE', 'SITE_STORE'].includes(s.store_type));
 
     const selectedStoreId = String(u.primary_store_id || (u.store_locations && u.store_locations[0] && u.store_locations[0].store_location_id) || '');
+    const curProjVal = qs('#user-project-id', c) ? qs('#user-project-id', c).value : String(u.project_id || '');
+    const curTankVal = qs('#user-bulk-tank-id', c) ? qs('#user-bulk-tank-id', c).value : String(u.bulk_tank_id || '');
+    const curFuelRoleVal = qs('#user-fuel-role', c) ? qs('#user-fuel-role', c).value : String(u.fuel_role || '');
+    const curHideStockVal = qs('#user-hide-stock', c) ? qs('#user-hide-stock', c).checked : !!u.hide_stock;
+
+    const rolesChipsHtml = allRoles.map((r) => {
+      const hasRole = selectedRolesSet.has(r.name);
+      const dis = (isSelf || !canEditTarget || (r.name === 'admin' && !isAdmin())) ? 'disabled' : '';
+      return `<label style="display:inline-flex;align-items:center;gap:5px;padding:4px 9px;border-radius:16px;border:1px solid ${hasRole ? '#2563eb' : '#cbd5e1'};background:${hasRole ? '#eff6ff' : '#fff'};font-size:11.5px;font-weight:${hasRole ? '600' : '400'};cursor:${dis ? 'not-allowed' : 'pointer'}">
+        <input type="checkbox" style="width:auto;margin:0" data-person-role="${esc(r.name)}" ${hasRole ? 'checked' : ''} ${dis}>
+        <span>${esc(r.label || r.name)}</span>
+      </label>`;
+    }).join(' ');
 
     c.innerHTML = `<div style="display:grid;grid-template-columns:minmax(240px,310px) 1fr;gap:14px;align-items:start">
       <div class="card" style="padding:12px">
         <div style="margin-bottom:8px">
-          <input type="text" id="person-search" placeholder="Search people..." value="${esc(q)}" style="width:100%;box-sizing:border-box">
+          <input type="text" id="person-search" placeholder="Search person, role, site, tank..." value="${esc(q)}" style="width:100%;box-sizing:border-box">
         </div>
         <div class="table-wrap scroll" style="max-height:calc(100vh - 250px)">
           <table><tbody>${listHtml}</tbody></table>
@@ -21536,27 +21588,39 @@ async function renderPeopleAccess(c, wantedUserId) {
                 ${u.active ? '<span class="badge green">Active</span>' : '<span class="badge">Inactive</span>'}
               </h2>
               <div class="muted" style="font-size:12px;margin-top:2px">
-                Username: <code>${esc(u.username)}</code> · Roles: ${u.roles.map((r) => `<span class="badge blue">${esc(r.label || r.name)}</span>`).join(' ') || 'None'}
+                Username: <code>${esc(u.username)}</code>
+                ${u.project_name ? ` · Site: <span class="badge blue">🏗️ ${esc(u.project_name)}</span>` : ''}
+                ${u.bulk_tank_name ? ` · Bowser: <span class="badge amber">⛽ ${esc(u.bulk_tank_name)}</span>` : ''}
               </div>
             </div>
             <div style="display:flex;gap:6px;flex-wrap:wrap">
               <button class="btn sm" id="btn-compare" title="Compare this person's access with another person or role">🔍 Compare</button>
               <button class="btn sm" id="btn-copy-from" ${isSelf || !canEditTarget ? 'disabled' : ''} title="Copy all overrides from another person">📋 Copy From...</button>
               <button class="btn sm" id="btn-reset-user" ${isSelf || !canEditTarget ? 'disabled' : ''} title="Remove all personal overrides and revert to role template">↺ Reset to Role</button>
-              <button class="primary sm" id="btn-save-access" ${isSelf || !canEditTarget ? 'disabled' : ''}>💾 Save Access</button>
+              <button class="primary sm" id="btn-save-access" ${!canEditScope ? 'disabled' : ''}>💾 Save Access & Scope</button>
             </div>
           </div>
 
-          ${isSelf ? '<div class="card" style="background:#fffbeb;border-left:4px solid #f59e0b;padding:8px 12px;margin-bottom:10px;font-size:12px">⚠️ <b>Safety Rule:</b> You cannot modify your own access permissions. Have another administrator change them if needed.</div>' : ''}
+          ${isSelf && !isAdmin() ? '<div class="card" style="background:#fffbeb;border-left:4px solid #f59e0b;padding:8px 12px;margin-bottom:10px;font-size:12px">⚠️ <b>Safety Rule:</b> You cannot modify your own access permissions. Have another administrator change them if needed.</div>' : ''}
           ${!canEditTarget ? '<div class="card err" style="padding:8px 12px;margin-bottom:10px;font-size:12px">⛔ Only an administrator can modify an administrator account.</div>' : ''}
 
-          <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(200px, 1fr));gap:10px;background:var(--bg-muted, #f8fafc);padding:10px;border-radius:6px">
+          <!-- Multi-Role Assignment -->
+          <div style="background:#f8fafc;border:1px solid #e2e8f0;padding:10px 12px;border-radius:6px;margin-bottom:10px">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;flex-wrap:wrap;gap:6px">
+              <label style="font-size:11.5px;font-weight:700;color:#1e293b;margin:0">🎭 Assigned Roles (Click to toggle roles for this person):</label>
+              ${rolesChanged ? '<span class="badge amber">Unsaved role changes — click Save Access & Scope</span>' : ''}
+            </div>
+            <div style="display:flex;gap:6px;flex-wrap:wrap">${rolesChipsHtml}</div>
+          </div>
+
+          <!-- Store, Project Site, Site Bowser & Limits -->
+          <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(195px, 1fr));gap:10px;background:var(--bg-muted, #f8fafc);padding:10px;border-radius:6px;margin-bottom:10px">
             <div>
               <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
-                <label style="font-size:11px;font-weight:600">Primary Store & Site Location:</label>
-                <button class="btn sm" id="btn-user-store-perms" type="button" title="Configure granular view/receive/issue/count permissions across all store locations" style="padding:2px 7px;font-size:11px">🏪 Manage Access</button>
+                <label style="font-size:11px;font-weight:600">Primary Store Location:</label>
+                <button class="btn sm" id="btn-user-store-perms" type="button" title="Configure granular view/receive/issue/count permissions across all store locations" style="padding:2px 7px;font-size:11px">🏪 Stores</button>
               </div>
-              <select id="user-store-loc" style="width:100%" ${isSelf || !canEditTarget ? 'disabled' : ''}>
+              <select id="user-store-loc" style="width:100%" ${!canEditScope ? 'disabled' : ''}>
                 <option value="">— Unassigned (Enterprise Access) —</option>
                 ${mainStores.length ? `<optgroup label="🏢 Central Main Store">${mainStores.map((s) => `<option value="${s.id}" ${selectedStoreId === String(s.id) ? 'selected' : ''}>${esc(s.name)} (${esc(s.code)})</option>`).join('')}</optgroup>` : ''}
                 ${mainWsStores.length ? `<optgroup label="🔧 Central Main Workshop Store">${mainWsStores.map((s) => `<option value="${s.id}" ${selectedStoreId === String(s.id) ? 'selected' : ''}>${esc(s.name)} (${esc(s.code)})</option>`).join('')}</optgroup>` : ''}
@@ -21565,14 +21629,55 @@ async function renderPeopleAccess(c, wantedUserId) {
               </select>
             </div>
             <div>
-              <label style="font-size:11px;font-weight:600;margin-bottom:4px">Personal Approval Limit (Rs):</label>
-              <input type="number" id="user-limit" placeholder="Role template default" value="${u.approval_limit != null ? esc(u.approval_limit) : ''}" style="width:100%" ${isSelf || !canEditTarget ? 'disabled' : ''}>
+              <label style="font-size:11px;font-weight:600;margin-bottom:4px;display:block">🏗️ Assigned Project Site (Fuel/Site Scope):</label>
+              <select id="user-project-id" style="width:100%" ${!canEditScope ? 'disabled' : ''}>
+                <option value="">— All Projects / Head Office —</option>
+                ${allProjects.map((p) => `<option value="${p.id}" ${curProjVal === String(p.id) ? 'selected' : ''}>${esc(p.name)} (${esc(p.code || p.id)})</option>`).join('')}
+              </select>
             </div>
             <div>
-              <label style="font-size:11px;font-weight:600;margin-bottom:4px">Temporary Access Until (Date):</label>
-              <input type="date" id="user-until" value="${u.access_until ? esc(u.access_until.slice(0, 10)) : ''}" style="width:100%" ${isSelf || !canEditTarget ? 'disabled' : ''}>
+              <label style="font-size:11px;font-weight:600;margin-bottom:4px;display:block">⛽ Assigned Site Bowser / Bulk Tank:</label>
+              <select id="user-bulk-tank-id" style="width:100%" ${!canEditScope ? 'disabled' : ''}>
+                <option value="">— Any / Workshop Pump —</option>
+                ${allTanks.map((t) => `<option value="${esc(t.id)}" ${curTankVal === String(t.id) ? 'selected' : ''}>${esc(t.name)} (${esc(t.code || t.id)})</option>`).join('')}
+              </select>
+            </div>
+            <div>
+              <label style="font-size:11px;font-weight:600;margin-bottom:4px;display:block">🛢️ Fuel Console Role & Blind Stock:</label>
+              <div style="display:flex;gap:6px;align-items:center">
+                <select id="user-fuel-role" style="flex:1" ${!canEditScope ? 'disabled' : ''}>
+                  <option value="">— Auto from Role —</option>
+                  <option value="SITE_OPERATOR" ${curFuelRoleVal === 'SITE_OPERATOR' ? 'selected' : ''}>Site Fuel Operator</option>
+                  <option value="WORKSHOP_FUEL" ${curFuelRoleVal === 'WORKSHOP_FUEL' ? 'selected' : ''}>Workshop Fuel Attendant</option>
+                  <option value="FUEL_MANAGER" ${curFuelRoleVal === 'FUEL_MANAGER' ? 'selected' : ''}>Fuel Manager</option>
+                  <option value="APPROVER" ${curFuelRoleVal === 'APPROVER' ? 'selected' : ''}>Fuel Approver</option>
+                  <option value="VIEWER" ${curFuelRoleVal === 'VIEWER' ? 'selected' : ''}>Fuel Viewer</option>
+                </select>
+                <label style="display:flex;align-items:center;gap:4px;font-size:11px;white-space:nowrap;margin:0" title="Hide running tank balance from this Site Fuel Operator">
+                  <input type="checkbox" id="user-hide-stock" style="width:auto;margin:0" ${curHideStockVal ? 'checked' : ''} ${!canEditScope ? 'disabled' : ''}>
+                  Hide Stock
+                </label>
+              </div>
+            </div>
+            <div>
+              <label style="font-size:11px;font-weight:600;margin-bottom:4px;display:block">Personal Approval Limit (Rs):</label>
+              <input type="number" id="user-limit" placeholder="Role template default" value="${u.approval_limit != null ? esc(u.approval_limit) : ''}" style="width:100%" ${!canEditScope ? 'disabled' : ''}>
+            </div>
+            <div>
+              <label style="font-size:11px;font-weight:600;margin-bottom:4px;display:block">Temporary Access Until (Date):</label>
+              <input type="date" id="user-until" value="${u.access_until ? esc(u.access_until.slice(0, 10)) : ''}" style="width:100%" ${!canEditScope ? 'disabled' : ''}>
             </div>
           </div>
+
+          <!-- 1-Click Quick Domain Presets -->
+          ${!isSelf && canEditTarget ? `<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding-top:4px">
+            <span class="muted" style="font-size:11px;font-weight:600">⚡ Quick Presets:</span>
+            <button class="btn sm" style="font-size:11px" data-quick-preset="all_full">Grant All 28 Full</button>
+            <button class="btn sm" style="font-size:11px" data-quick-preset="all_view">Grant All 28 View</button>
+            <button class="btn sm" style="font-size:11px" data-quick-preset="fuel_suite">⛽ Fuel, Meters & Hire Full</button>
+            <button class="btn sm" style="font-size:11px" data-quick-preset="workshop_suite">🔧 Workshop & Stores Full</button>
+            <button class="btn sm" style="font-size:11px" data-quick-preset="costing_suite">📊 Costing, KPI & Reports Full</button>
+          </div>` : ''}
           <div style="margin-top:8px;padding:8px 10px;background:#f8fafc;border-radius:6px;border:1px dashed var(--border, #cbd5e1)">
             <label style="font-size:11px;font-weight:600;margin-bottom:4px;display:flex;align-items:center;gap:6px">
               <span>🛡️ Emergency Dual Clearance / SoD Justification (optional):</span>
@@ -21595,6 +21700,39 @@ async function renderPeopleAccess(c, wantedUserId) {
       tr.onclick = async () => {
         const uid = tr.dataset.pickUser;
         await renderPeopleAccess(c, uid);
+      };
+    });
+
+    qsa('[data-person-role]', c).forEach((chk) => {
+      chk.onchange = () => {
+        const rName = chk.dataset.personRole;
+        if (chk.checked) selectedRolesSet.add(rName);
+        else selectedRolesSet.delete(rName);
+        rolesChanged = true;
+        renderAll();
+      };
+    });
+
+    qsa('[data-grp-set]', c).forEach((btn) => {
+      btn.onclick = () => {
+        const [grpId, lvl] = btn.dataset.grpSet.split(':');
+        sections.filter((s) => (s.group || '').toLowerCase() === grpId.toLowerCase()).forEach((s) => {
+          sectionEdits[s.key] = lvl;
+        });
+        renderAll();
+      };
+    });
+
+    qsa('[data-quick-preset]', c).forEach((btn) => {
+      btn.onclick = () => {
+        const p = btn.dataset.quickPreset;
+        if (p === 'all_full') sections.forEach((s) => { sectionEdits[s.key] = 'full'; });
+        else if (p === 'all_view') sections.forEach((s) => { sectionEdits[s.key] = 'view'; });
+        else if (p === 'fuel_suite') ['fuel', 'meters', 'hire', 'assets', 'services', 'filters', 'oil'].forEach((k) => { sectionEdits[k] = 'full'; });
+        else if (p === 'workshop_suite') ['jobrequests', 'jobs', 'fabrication', 'outsourcing', 'services', 'stores', 'mrn', 'grn', 'issues'].forEach((k) => { sectionEdits[k] = 'full'; });
+        else if (p === 'costing_suite') ['dashboard', 'master_dashboard', 'costing', 'finance', 'hire', 'kpi', 'reports'].forEach((k) => { sectionEdits[k] = 'full'; });
+        toast('Preset staged — click Save Access & Scope to apply');
+        renderAll();
       };
     });
 
@@ -21634,6 +21772,10 @@ async function renderPeopleAccess(c, wantedUserId) {
     if (saveBtn) {
       saveBtn.onclick = async () => {
         const storeLocVal = qs('#user-store-loc', c) ? qs('#user-store-loc', c).value : '';
+        const projVal = qs('#user-project-id', c) ? qs('#user-project-id', c).value : '';
+        const tankVal = qs('#user-bulk-tank-id', c) ? qs('#user-bulk-tank-id', c).value : '';
+        const fuelRoleVal = qs('#user-fuel-role', c) ? qs('#user-fuel-role', c).value : '';
+        const hideStockVal = qs('#user-hide-stock', c) ? qs('#user-hide-stock', c).checked : false;
         const limitVal = qs('#user-limit', c).value.trim();
         const untilVal = qs('#user-until', c).value.trim();
         const sodReasonVal = qs('#user-sod-reason', c) ? qs('#user-sod-reason', c).value.trim() : '';
@@ -21641,7 +21783,12 @@ async function renderPeopleAccess(c, wantedUserId) {
         const payload = {
           sections: sectionEdits,
           capabilities: capEdits,
+          roles: rolesChanged ? Array.from(selectedRolesSet) : undefined,
           store_location_id: storeLocVal || null,
+          project_id: projVal || null,
+          bulk_tank_id: tankVal || null,
+          fuel_role: fuelRoleVal || null,
+          hide_stock: hideStockVal,
           approval_limit: limitVal === '' ? null : Number(limitVal),
           access_until: untilVal || null,
           override_reason: sodReasonVal || null,
@@ -21652,11 +21799,11 @@ async function renderPeopleAccess(c, wantedUserId) {
             saveBtn.disabled = true;
             saveBtn.innerText = 'Saving…';
             await api('/access/people/' + u.id + '/save', { method: 'POST', body: { ...payload, ...extraPayload } });
-            toast(`Access permissions saved for ${u.full_name || u.username}`);
+            toast(`Access & operational scope saved for ${u.full_name || u.username}`);
             await renderPeopleAccess(c, u.id);
           } catch (e) {
             saveBtn.disabled = false;
-            saveBtn.innerText = '💾 Save Access';
+            saveBtn.innerText = '💾 Save Access & Scope';
             if (e.message && (e.message.includes('Segregation of Duties') || e.message.includes('SoD Conflict') || e.message.includes('SOD-'))) {
               modal('Emergency Dual Clearance Authorization', `
                 <div style="margin-bottom:12px;padding:10px;background:#fef2f2;border:1px solid #fecaca;border-radius:6px;color:#991b1b;font-size:13px">
@@ -21745,6 +21892,239 @@ async function renderPeopleAccess(c, wantedUserId) {
   };
 
   renderAll();
+}
+
+// ---- Tab 1b: All-Persons Access Matrix (Quick Grid across all 31 users × 28 sections) ----
+async function renderAllPersonsMatrix(c) {
+  const data = await api('/access/people');
+  const people = data.people || [];
+  const sections = data.sections || [];
+  const allRoles = data.all_roles || [];
+  const allProjects = data.all_projects || [];
+  const allTanks = data.all_tanks || [];
+  const selectedIds = new Set();
+
+  let searchQ = '';
+  let roleFilter = '';
+  let domainFilter = 'ALL';
+
+  const NEXT_LVL = { none: 'view', view: 'add', add: 'edit', edit: 'full', full: 'none' };
+
+  const draw = () => {
+    const filteredPeople = people.filter((p) => {
+      if (roleFilter && !p.roles.some((r) => r.name === roleFilter)) return false;
+      if (searchQ) {
+        const hay = `${p.full_name || ''} ${p.username || ''} ${p.project_name || ''} ${p.bulk_tank_name || ''} ${p.roles.map((r) => r.label || r.name).join(' ')}`.toLowerCase();
+        if (!hay.includes(searchQ)) return false;
+      }
+      return true;
+    });
+
+    const visibleSections = domainFilter === 'ALL'
+      ? sections
+      : sections.filter((s) => (s.group || '').toLowerCase() === domainFilter.toLowerCase());
+
+    const rowsHtml = filteredPeople.map((p) => {
+      const isSelf = ME && ME.id == p.id;
+      const isTargetAdmin = p.roles.some((r) => r.name === 'admin');
+      const canModify = (!isSelf && (isAdmin() || !isTargetAdmin));
+      const checked = selectedIds.has(p.id) ? 'checked' : '';
+      const roleBadges = p.roles.map((r) => `<span class="badge blue" style="font-size:9.5px">${esc(r.label || r.name)}</span>`).join(' ');
+      const scopeBadges = [
+        p.project_name ? `<span class="badge" style="font-size:9.5px;background:#e0f2fe;color:#0369a1">🏗️ ${esc(p.project_name)}</span>` : '',
+        p.bulk_tank_name ? `<span class="badge amber" style="font-size:9.5px">⛽ ${esc(p.bulk_tank_name)}</span>` : '',
+        p.hide_stock ? `<span class="badge red" style="font-size:9px">🙈 Blind Stock</span>` : ''
+      ].filter(Boolean).join(' ');
+
+      const cells = visibleSections.map((s) => {
+        const eff = (p.permissions && p.permissions[s.key]) || 'none';
+        const isOv = p.user_overrides && p.user_overrides[s.key] !== undefined;
+        return `<td style="text-align:center;padding:4px 3px;cursor:${canModify ? 'pointer' : 'not-allowed'};${isOv ? 'background:rgba(245,158,11,0.09);' : ''}"
+          data-mcell="${p.id}:${esc(s.key)}:${eff}" title="${esc(p.full_name || p.username)} · ${esc(s.label)}: ${eff.toUpperCase()}${isOv ? ' (Custom Override)' : ' (Role Default)'} — Click to cycle">
+          ${lvlChip(eff)}${isOv ? '<sup style="color:#d97706;font-weight:bold">*</sup>' : ''}
+        </td>`;
+      }).join('');
+
+      return `<tr style="${p.active ? '' : 'opacity:.55'}">
+        <td style="text-align:center"><input type="checkbox" style="width:auto" data-msel="${p.id}" ${checked} ${canModify ? '' : 'disabled'}></td>
+        <td style="position:sticky;left:0;background:var(--surface,#fff);z-index:2;min-width:210px;border-right:2px solid var(--border,#e2e8f0)">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:4px">
+            <a href="#/access?tab=people&user=${p.id}" style="font-weight:600;text-decoration:none">${esc(p.full_name || p.username)}</a>
+            <span class="muted" style="font-size:10px">${esc(p.username)}</span>
+          </div>
+          <div style="margin-top:2px;display:flex;gap:3px;flex-wrap:wrap">${roleBadges} ${scopeBadges}</div>
+        </td>
+        ${cells}
+      </tr>`;
+    }).join('');
+
+    c.innerHTML = `
+      <div class="card" style="margin-bottom:12px">
+        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:10px">
+          <div>
+            <h3 style="margin:0">👥 All-Persons Access Matrix (${filteredPeople.length} of ${people.length} People × ${visibleSections.length} Sections)</h3>
+            <p class="muted" style="margin:2px 0 0;font-size:12px">Click any cell to cycle clearance (<b>None → View → Add → Edit → Full</b>), or select multiple people below to bulk-assign Roles, Project Sites, Bowsers, or Domain clearances.</p>
+          </div>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            <input type="search" id="mat-search" placeholder="Search person, role, site..." value="${esc(searchQ)}" style="width:200px">
+            <select id="mat-role">
+              <option value="">All Roles</option>
+              ${allRoles.map((r) => `<option value="${esc(r.name)}" ${roleFilter === r.name ? 'selected' : ''}>${esc(r.label || r.name)}</option>`).join('')}
+            </select>
+            <select id="mat-domain">
+              <option value="ALL" ${domainFilter === 'ALL' ? 'selected' : ''}>All 28 Sections</option>
+              <option value="Operations" ${domainFilter === 'Operations' ? 'selected' : ''}>⚙️ Operations</option>
+              <option value="Fleet" ${domainFilter === 'Fleet' ? 'selected' : ''}>🚛 Fleet, Fuel & Hire</option>
+              <option value="Inventory" ${domainFilter === 'Inventory' ? 'selected' : ''}>📦 Inventory & Stores</option>
+              <option value="Procurement" ${domainFilter === 'Procurement' ? 'selected' : ''}>🛒 Procurement</option>
+              <option value="Analysis" ${domainFilter === 'Analysis' ? 'selected' : ''}>📊 Analysis & Costing</option>
+              <option value="Admin" ${domainFilter === 'Admin' ? 'selected' : ''}>🛡️ Admin</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- Bulk Action Toolbar -->
+        <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:6px;padding:10px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+          <span style="font-size:12px;font-weight:700;color:#1e293b">☑️ Selected (${selectedIds.size}):</span>
+          <select id="bulk-add-role" style="font-size:12px">
+            <option value="">+ Add Role…</option>
+            ${allRoles.map((r) => `<option value="${esc(r.name)}">+ ${esc(r.label || r.name)}</option>`).join('')}
+          </select>
+          <select id="bulk-project" style="font-size:12px">
+            <option value="__KEEP__">🏗️ Project Site (No change)</option>
+            <option value="">— Clear Project Site —</option>
+            ${allProjects.map((p) => `<option value="${p.id}">🏗️ ${esc(p.name)}</option>`).join('')}
+          </select>
+          <select id="bulk-tank" style="font-size:12px">
+            <option value="__KEEP__">⛽ Site Bowser (No change)</option>
+            <option value="">— Clear Bowser —</option>
+            ${allTanks.map((t) => `<option value="${esc(t.id)}">⛽ ${esc(t.name)}</option>`).join('')}
+          </select>
+          <select id="bulk-domain" style="font-size:12px">
+            <option value="">📂 Domain Preset…</option>
+            <option value="ALL">All 28 Sections</option>
+            <option value="Operations">⚙️ Operations</option>
+            <option value="Fleet">🚛 Fleet, Fuel & Hire</option>
+            <option value="Inventory">📦 Inventory & Stores</option>
+            <option value="Procurement">🛒 Procurement</option>
+            <option value="Analysis">📊 Analysis & Costing</option>
+          </select>
+          <select id="bulk-level" style="font-size:12px">
+            <option value="">Level…</option>
+            <option value="full">FULL</option>
+            <option value="edit">EDIT</option>
+            <option value="add">ADD</option>
+            <option value="view">VIEW</option>
+            <option value="none">NONE</option>
+          </select>
+          <button class="primary sm" id="btn-bulk-apply" ${selectedIds.size === 0 ? 'disabled' : ''}>⚡ Apply to ${selectedIds.size} Selected</button>
+        </div>
+      </div>
+
+      <div class="card" style="padding:0;overflow:hidden">
+        <div class="table-wrap scroll" style="max-height:calc(100vh - 280px)">
+          <table style="font-size:11.5px">
+            <thead>
+              <tr>
+                <th style="width:32px;text-align:center"><input type="checkbox" id="mat-sel-all" style="width:auto"></th>
+                <th style="position:sticky;left:0;background:var(--surface,#f8fafc);z-index:3;min-width:210px;border-right:2px solid var(--border,#e2e8f0)">Person / Roles / Site Scope</th>
+                ${visibleSections.map((s) => `<th style="text-align:center;min-width:68px;white-space:nowrap" title="${esc(s.description || s.label)}"><div>${s.icon}</div><div style="font-size:10px">${esc(s.label)}</div></th>`).join('')}
+              </tr>
+            </thead>
+            <tbody>${rowsHtml}</tbody>
+          </table>
+        </div>
+      </div>
+    `;
+
+    qs('#mat-search', c).oninput = (e) => { searchQ = e.target.value.toLowerCase().trim(); draw(); };
+    qs('#mat-role', c).onchange = (e) => { roleFilter = e.target.value; draw(); };
+    qs('#mat-domain', c).onchange = (e) => { domainFilter = e.target.value; draw(); };
+
+    const selAll = qs('#mat-sel-all', c);
+    if (selAll) {
+      selAll.onchange = () => {
+        filteredPeople.forEach((p) => {
+          const isSelf = ME && ME.id == p.id;
+          const isTargetAdmin = p.roles.some((r) => r.name === 'admin');
+          if (!isSelf && (isAdmin() || !isTargetAdmin)) {
+            if (selAll.checked) selectedIds.add(p.id);
+            else selectedIds.delete(p.id);
+          }
+        });
+        draw();
+      };
+    }
+
+    qsa('[data-msel]', c).forEach((chk) => {
+      chk.onchange = () => {
+        const uid = Number(chk.dataset.msel);
+        if (chk.checked) selectedIds.add(uid);
+        else selectedIds.delete(uid);
+        draw();
+      };
+    });
+
+    qsa('[data-mcell]', c).forEach((td) => {
+      td.onclick = async () => {
+        const [uidStr, secKey, curLvl] = td.dataset.mcell.split(':');
+        const uid = Number(uidStr);
+        const p = people.find((x) => x.id === uid);
+        if (!p) return;
+        const isSelf = ME && ME.id == p.id;
+        const isTargetAdmin = p.roles.some((r) => r.name === 'admin');
+        if (isSelf || (!isAdmin() && isTargetAdmin)) return toast('Cannot modify this account directly', 'err');
+
+        const nextLvl = NEXT_LVL[curLvl] || 'view';
+        try {
+          await api('/access/people/' + uid + '/save', {
+            method: 'POST',
+            body: { sections: { [secKey]: nextLvl } }
+          });
+          p.permissions[secKey] = nextLvl;
+          if (!p.user_overrides) p.user_overrides = {};
+          p.user_overrides[secKey] = nextLvl;
+          toast(`${p.username} · ${secKey} → ${nextLvl.toUpperCase()}`);
+          draw();
+        } catch (e) {
+          toast(e.message, 'err');
+        }
+      };
+    });
+
+    const applyBtn = qs('#btn-bulk-apply', c);
+    if (applyBtn) {
+      applyBtn.onclick = async () => {
+        const addRole = qs('#bulk-add-role', c).value;
+        const projVal = qs('#bulk-project', c).value;
+        const tankVal = qs('#bulk-tank', c).value;
+        const presetDom = qs('#bulk-domain', c).value;
+        const presetLvl = qs('#bulk-level', c).value;
+
+        const body = { userIds: Array.from(selectedIds) };
+        if (addRole) body.addRole = addRole;
+        if (projVal !== '__KEEP__') body.projectId = projVal;
+        if (tankVal !== '__KEEP__') body.bulkTankId = tankVal;
+        if (presetDom && presetLvl) {
+          body.presetDomain = presetDom;
+          body.presetLevel = presetLvl;
+        }
+
+        try {
+          applyBtn.disabled = true;
+          applyBtn.innerText = 'Applying…';
+          const res = await api('/access/people/bulk-save', { method: 'POST', body });
+          toast(`Updated ${res.updated_count} person(s)`);
+          await renderAllPersonsMatrix(c);
+        } catch (e) {
+          toast(e.message, 'err');
+          applyBtn.disabled = false;
+        }
+      };
+    }
+  };
+
+  draw();
 }
 
 function openCompareModal(u, people) {

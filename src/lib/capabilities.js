@@ -109,6 +109,7 @@ const CAPABILITIES = [
 
   // ---- 8. Service Plan (Z_WO_SPLAN) ----------------------------------------------------------
   C('service_plan.view', 'service_plan', 'View service interval forecast matrix and upcoming countdowns', ALL_ROLES, null, 'service_plan', '03', 'Operations'),
+  C('service_plan.manage', 'service_plan', 'Log completed PM services and update service schedules', ['operational_manager', 'manager', 'workshop'], null, 'service_plan', '02', 'Operations'),
   C('service_plan.calculate', 'service_plan', 'Recalculate PM forecast based on latest machine meter readings', ['operational_manager', 'manager', 'workshop'], null, 'service_plan', '02', 'Operations'),
   C('service_plan.override_interval', 'service_plan', 'Override default OEM service intervals for severe site conditions', OPS_MANAGERS, null, 'service_plan', '02', 'Operations'),
   C('service_plan.export', 'service_plan', 'Export scheduled maintenance forecast calendar', ALL_MANAGERS, null, 'service_plan', '08', 'Operations'),
@@ -381,6 +382,57 @@ const CAPABILITIES = [
   C('outsourcing.cost.post', 'outsourcing', 'Post verified CCOM actual charges to parent repair job or service record', ['storekeeper', 'main_storekeeper', 'manager', 'operational_manager'], 'jobs', 'jobs', '02', 'Operations'),
   C('outsourcing.cancel', 'outsourcing', 'Cancel CCOM outsourced request with reason', ['engineer', 'manager', 'operational_manager'], 'jobs', 'jobs', '06', 'Operations'),
   C('outsourcing.settings', 'outsourcing', 'Maintain CCOM vendors, contact directory, and outbox configuration', ['manager'], null, 'jobs', '02', 'Operations'),
+
+  // ============================================================================================
+  // DOMAIN 6: FUEL & BULK TANKS (Z_WO_FUEL)
+  // ============================================================================================
+  C('fuel.view', 'fuel', 'View fuel issues, tank stock, meter readings and fuel logs', ALL_ROLES.concat(['fuel_officer', 'accountant']), null, 'fuel', '03', 'Operations'),
+  C('fuel.request', 'fuel', 'Raise a fuel requisition request for vehicles or machinery', OPS_MANAGERS.concat(['transport_manager', 'workshop', 'site_storekeeper', 'fuel_officer']), null, 'fuel', '01', 'Operations'),
+  C('fuel.issue', 'fuel', 'Dispense fuel and record authoritative fuel issues with meter readings', ['workshop', 'site_storekeeper', 'storekeeper', 'fuel_officer'].concat(OPS_MANAGERS), null, 'fuel', '02', 'Operations'),
+  C('fuel.approve', 'fuel', 'Approve fuel requisitions and bulk supply orders', OPS_MANAGERS.concat(['transport_manager']), null, 'fuel', '10', 'Operations'),
+  C('fuel.approve_request', 'fuel', 'Review and approve vehicle fuel requisition requests', OPS_MANAGERS.concat(['transport_manager', 'fuel_officer']), null, 'fuel', '10', 'Operations'),
+  C('fuel.correct', 'fuel', 'Submit and approve fuel issue corrections with photo evidence', OPS_MANAGERS.concat(['fuel_officer']), null, 'fuel', '02', 'Operations', true),
+  C('fuel.approve_correction', 'fuel', 'Approve or reject fuel issue adjustments and stock corrections', OPS_MANAGERS.concat(['fuel_officer', 'manager']), null, 'fuel', '10', 'Operations', true),
+  C('fuel.void', 'fuel', 'Void an erroneous fuel issue transaction with documented reason', ['manager'], null, 'fuel', '06', 'Operations', true),
+  C('fuel.export', 'fuel', 'Export fuel consumption logs and bowser reconciliations', OPS_MANAGERS.concat(['transport_manager', 'fuel_officer', 'accountant']), null, 'fuel', '08', 'Operations'),
+  C('fuel.tanks.view', 'fuel_tanks', 'View bulk storage tanks, bowser levels, and dip chart history', ALL_ROLES.concat(['fuel_officer', 'accountant']), null, 'fuel_tanks', '03', 'Operations'),
+  C('fuel.tanks.manage', 'fuel_tanks', 'Configure bulk fuel tanks, calibration curves, and project bindings', ['manager', 'operational_manager', 'fuel_officer'], null, 'fuel_tanks', '02', 'Operations'),
+  C('fuel.tanks.dip', 'fuel_tanks', 'Record physical dipstick measurements and reconcile theoretical balance', ['workshop', 'site_storekeeper', 'storekeeper', 'fuel_officer'].concat(OPS_MANAGERS), null, 'fuel_tanks', '02', 'Operations'),
+  C('fuel.tanks.refill', 'fuel_tanks', 'Receive bulk fuel deliveries from Ceypetco/dealers into storage tanks', ['workshop', 'site_storekeeper', 'fuel_officer'].concat(OPS_MANAGERS), null, 'fuel_tanks', '01', 'Operations'),
+  C('fuel.prices.view', 'fuel_prices', 'View Ceypetco market fuel price history', OPS_MANAGERS.concat(['transport_manager', 'viewer', 'fuel_officer', 'accountant']), null, 'fuel_prices', '03', 'Operations'),
+  C('fuel.prices.manage', 'fuel_prices', 'Set or update Ceypetco fuel retail price points in LKR cents', ['manager', 'operational_manager', 'fuel_officer', 'accountant'], null, 'fuel_prices', '02', 'Operations'),
+
+  // ============================================================================================
+  // DOMAIN 7: HIRE ALLOCATIONS & RENTAL BILLING (Z_WO_HIRE)
+  // ============================================================================================
+  C('allocations.view', 'hire', 'View vehicle site allocations, machine deployments, and assignment history', ALL_ROLES.concat(['accountant']), null, 'hire', '03', 'Fleet'),
+  C('allocations.manage', 'hire', 'Create and modify machine site deployments and Dry/Wet allocation terms', OPS_MANAGERS.concat(['transport_manager']), null, 'hire', '02', 'Fleet'),
+  C('hire.rates.view', 'hire', 'View machine hire rate cards, minimum contract hours, and dry/wet tariffs', ALL_ROLES.concat(['accountant']), null, 'hire', '03', 'Fleet'),
+  C('hire.rates.manage', 'hire', 'Configure asset and category rental rate cards and minimum billable units', ['manager', 'operational_manager', 'accountant'], null, 'hire', '02', 'Fleet'),
+  C('hire.billing.view', 'hire', 'View draft and finalized machine rental bills and line item details', OPS_MANAGERS.concat(['transport_manager', 'viewer', 'accountant']), null, 'hire', '03', 'Fleet'),
+  C('hire.billing.generate', 'hire', 'Generate monthly machine rental and fuel recharge bills', OPS_MANAGERS.concat(['accountant']), null, 'hire', '01', 'Fleet'),
+  C('hire.billing.finalise', 'hire', 'Finalise, issue, and seal machine rental bills with tax calculation', ['manager', 'accountant'], null, 'hire', '10', 'Fleet', true),
+  C('hire.billing.export', 'hire', 'Export customer and project billing statements and invoice PDFs', OPS_MANAGERS.concat(['transport_manager', 'accountant']), null, 'hire', '08', 'Fleet'),
+
+  // ============================================================================================
+  // DOMAIN 8: FLEET FINANCE & EXECUTIVE DASHBOARD (Z_WO_FIN)
+  // ============================================================================================
+  C('fleet.profitability.view', 'finance', 'View vehicle profitability, operating contribution, and direct costs', OPS_MANAGERS.concat(['transport_manager', 'accountant']), null, 'finance', '03', 'Fleet'),
+  C('fleet.profitability.view_all', 'finance', 'View company-wide consolidated fleet financial performance and margins', ['manager', 'operational_manager', 'accountant'], null, 'finance', '03', 'Fleet'),
+  C('fleet.profitability.export', 'finance', 'Export vehicle P&L analysis and audited financial statements', ['manager', 'operational_manager', 'accountant'], null, 'finance', '08', 'Fleet'),
+  C('finance.period.close', 'finance', 'Seal and lock a monthly financial period against further postings', ['manager', 'accountant'], null, 'finance', '10', 'Fleet', true),
+  C('finance.period.reopen', 'finance', 'Reopen a sealed financial period for authorized audit adjustments', [], null, 'finance', '02', 'Fleet', true),
+  C('master_dashboard.view', 'master_dashboard', 'Access consolidated executive master dashboard across maintenance, fuel and hire', OPS_MANAGERS.concat(['transport_manager', 'accountant']), null, 'master_dashboard', '03', 'Operations'),
+
+  // ============================================================================================
+  // DOMAIN 9: VEHICLE COSTING & FINAL P&L (Z_WO_COSTING)
+  // ============================================================================================
+  C('costing.view', 'costing', 'View Monthly Vehicle Final Costing Report & P&L Analysis', OPS_MANAGERS.concat(['transport_manager', 'accountant', 'viewer']), null, 'costing', '03', 'Fleet'),
+  C('costing.manage', 'costing', 'Manage Vehicle Hiring Revenue and Driver/Other Costs', OPS_MANAGERS.concat(['accountant']), null, 'costing', '02', 'Fleet'),
+  C('fuel.readings.view', 'fuel_readings', 'View daily pump meter readings and asset telemetry', ALL_ROLES.concat(['fuel_officer', 'accountant']), null, 'fuel_readings', '03', 'Operations'),
+  C('fuel.readings.record', 'fuel_readings', 'Record daily pump meter readings', ['workshop', 'site_storekeeper', 'storekeeper', 'fuel_officer'].concat(OPS_MANAGERS), null, 'fuel_readings', '02', 'Operations'),
+  C('fuel.reports.view', 'fuel_reports', 'View fuel efficiency norms, site breakdown & variance reports', ALL_ROLES.concat(['fuel_officer', 'accountant']), null, 'fuel_reports', '03', 'Operations'),
+  C('fuel.alerts.view', 'fuel_alerts', 'View fuel anomaly, threshold, and discrepancy alerts', ALL_ROLES.concat(['fuel_officer', 'accountant']), null, 'fuel_alerts', '03', 'Operations'),
 ];
 
 
