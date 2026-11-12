@@ -242,8 +242,11 @@ function mtnOwnCond(user) {
   const r = scope.enabled() ? scope.reach(user) : null;
   let storeIds = null;
   try {
+    // Only a real store context holds someone to its transfers, as in scope.reach (contextWorkshop):
+    // with no store assigned, storeScopeFor still names a fallback "primary" store, and that is not
+    // a reason to hide the other workshops' notes while the workshops are not kept apart.
     const storeScope = require('../lib/context').storeScopeFor(user);
-    if (!storeScope.isGlobal) {
+    if (!storeScope.isGlobal && user && user.activeStoreId) {
       storeIds = (storeScope.storeIds || [storeScope.primaryStoreId]).filter(Boolean).map(Number);
     }
   } catch (e) {}
@@ -5241,7 +5244,10 @@ router.post('/mtn', requireCap('stores.mtn.edit'), chainPipeline.idempotencyGuar
   }
 
   const mtnScope = require('../lib/context').storeScopeFor(req.user);
-  if (!mtnScope.isGlobal) {
+  // Someone assigned to a store must be at one end of what they write. Someone with no store at all
+  // (scope.reach's rule: no active store, no store context) writes notes as before - between two
+  // outside places too - and the workshop rules decide what they then see.
+  if (!mtnScope.isGlobal && req.user.activeStoreId) {
     // An end picked from the places list (Stage 2: w:<workshop>, loc:<id>) names its store location
     // just as well as from_store_location_id does; without this a storekeeper using the picker was
     // refused every transfer. A workshop with no location of its own names none.
