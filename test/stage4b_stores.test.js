@@ -421,7 +421,9 @@ test('workshops kept apart: store staff see the workshops their store serves, an
   const h = (await req('GET', `/api/stores/stock/general?store_id=${CW}`, { cookie: await as('mgr') })).body;
   assert.strictEqual(h.store.id, CW);
   assert.strictEqual(h.fixed, false);
-  assert.deepStrictEqual([h.can.count, h.can.levels], [true, true]);
+  // The manager sets levels but no longer counts (segregation of duties, 81e8f2d - as in
+  // stores_p2_counts): it approves the counts instead.
+  assert.deepStrictEqual([h.can.count, h.can.levels], [false, true]);
 });
 
 // ====================================================== the upgrade, on an existing database

@@ -2816,9 +2816,13 @@ function stockStore(req) {
   const context = require('../lib/context');
   const asked = String(req.query.store_id || req.query.physical_store_id || '').trim();
 
-  // If sub-store user requested another store directly, assert access and reject
-  if (asked && asked !== 'all' && Number(asked)) {
-    context.assertStoreAccess(req, Number(asked));
+  // A store location asked for directly (physical_store_id) is checked against the store scope.
+  // store_id is a workshop store - another number space (workshop 1's store is location 2, location
+  // 1 the Central Main Stores) - and is settled below: anyone held to a store sees their own,
+  // whatever they ask for.
+  const askedLoc = String(req.query.physical_store_id || '').trim();
+  if (askedLoc && askedLoc !== 'all' && Number(askedLoc)) {
+    context.assertStoreAccess(req, Number(askedLoc));
   }
 
   // Active context: if not in All Sites mode, default to active store
