@@ -259,15 +259,22 @@ const wholeCountRefusal = () => (isMulti()
 
 /** May this person count or set levels in this store? Head office any; anyone else their own. */
 function mayManage(user, storeId) {
+  const sid = Number(storeId);
   try {
     const context = require('./context');
     const ss = context.storeScopeFor(user);
     if (ss.isGlobal) return true;
-    return ss.canAccess(storeId, 'count');
+    // storeId is a workshop store (stores.byId); the store scope speaks store_locations ids, and the
+    // two number spaces overlap (workshop 1's store is store location 2, not 1). Ask about the
+    // location that belongs to this store; a store with no location of its own falls through to
+    // the Stage 4 rule below.
+    const storeLocations = require('./store_locations');
+    const phys = storeLocations.resolvePhysicalStore(sid);
+    if (phys && Number(storeLocations.resolveLegacyStoreId(phys.id)) === sid) return ss.canAccess(phys.id, 'count');
   } catch (_) {}
   const scope = require('./scope');
   if (!scope.enabled() || scope.headOffice(user)) return true;
-  return homeStore(user) === Number(storeId);
+  return homeStore(user) === sid;
 }
 
 // ---- reorder levels, per store (a stock take is src/lib/stock_count.js) -------------------------
