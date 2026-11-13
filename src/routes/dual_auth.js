@@ -99,18 +99,35 @@ router.post('/users/:userId/workshops', requireCap('users.manage', 'access.manag
   const workshopIds = Array.isArray(req.body.workshop_ids) ? req.body.workshop_ids.map(Number).filter(Boolean) : [];
   const primaryId = toInt(req.body.primary_workshop_id) || (workshopIds[0] || null);
 
-  tx(() => {
-    run('DELETE FROM user_workshops WHERE user_id = ?', userId);
-    for (const wsId of workshopIds) {
-      run(
-        `INSERT INTO user_workshops (user_id, workshop_id, is_primary) VALUES (?, ?, ?)`,
-        userId, wsId, wsId === primaryId ? 1 : 0
-      );
-    }
-    if (primaryId) {
-      run('UPDATE users SET workshop_id = ? WHERE id = ?', primaryId, userId);
-    }
-  });
+  const multidb = require('../db/multidb');
+  if (multidb.isMultiDb()) {
+    const cDb = multidb.getCoreDb();
+    dualAuth.initDualAuthTables(cDb);
+    cDb.transaction(() => {
+      cDb.prepare('DELETE FROM user_workshops WHERE user_id = ?').run(userId);
+      for (const wsId of workshopIds) {
+        cDb.prepare(
+          `INSERT INTO user_workshops (user_id, workshop_id, is_primary) VALUES (?, ?, ?)`
+        ).run(userId, wsId, wsId === primaryId ? 1 : 0);
+      }
+      if (primaryId) {
+        cDb.prepare('UPDATE users SET workshop_id = ? WHERE id = ?').run(primaryId, userId);
+      }
+    })();
+  } else {
+    tx(() => {
+      run('DELETE FROM user_workshops WHERE user_id = ?', userId);
+      for (const wsId of workshopIds) {
+        run(
+          `INSERT INTO user_workshops (user_id, workshop_id, is_primary) VALUES (?, ?, ?)`,
+          userId, wsId, wsId === primaryId ? 1 : 0
+        );
+      }
+      if (primaryId) {
+        run('UPDATE users SET workshop_id = ? WHERE id = ?', primaryId, userId);
+      }
+    });
+  }
 
   audit.record({
     userId: req.user.id,

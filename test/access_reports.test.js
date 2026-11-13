@@ -112,7 +112,8 @@ test('someone without Reports is refused every report on the server', async () =
     .replace(':jobId', String(J)).replace(':lineId', '1').replace(':grnId', '1');
   // Read from other sections, checked for those instead (below).
   const elsewhere = new Set(['/dashboard', '/pending-approvals', '/service-outside',
-    '/job/:id/report', '/job/:id/report.html', '/job/:id/costsheet', '/job/:id/costsheet.html']);
+    '/job/:id/report', '/job/:id/report.html', '/job/:id/costsheet', '/job/:id/costsheet.html',
+    '/request-delays', '/request-delays/export.xlsx', '/request-delays/print.html']);
   let n = 0;
   for (const layer of router.stack.filter((l) => l.route)) {
     const p = layer.route.path;

@@ -56,7 +56,7 @@ test.before(async () => {
   capabilities.seedCapabilities();
 
   // Create roles
-  for (const r of ['admin', 'assistant_transport_manager', 'transport_manager', 'operational_manager', 'workshop', 'viewer']) {
+  for (const r of ['admin', 'assistant_transport_manager', 'transport_manager', 'operational_manager', 'workshop', 'fabrication_officer', 'viewer']) {
     run('INSERT OR IGNORE INTO roles (name, label) VALUES (?, ?)', r, r);
   }
 
@@ -73,6 +73,7 @@ test.before(async () => {
   mkUser('tm_user', 'transport_manager');
   mkUser('om_user', 'operational_manager');
   mkUser('ws_user', 'workshop');
+  mkUser('fab_user', 'fabrication_officer');
   mkUser('plain_viewer', 'viewer');
 
   // Seed sample vehicle, project, workshop
@@ -96,6 +97,7 @@ test('Fabrication Request & Card Flow', async (t) => {
   const tmCookie = await login('tm_user');
   const omCookie = await login('om_user');
   const wsCookie = await login('ws_user');
+  const fabCookie = await login('fab_user');
   const viewCookie = await login('plain_viewer');
 
   const asset = get("SELECT id FROM assets WHERE code = 'FAB-01'");
@@ -180,8 +182,18 @@ test('Fabrication Request & Card Flow', async (t) => {
   assert.strictEqual(appRes.body.request.approval_status, 'approved');
 
   // 8. Workshop opens Job Card against approved request
-  const openRes = await req('POST', '/api/jobs', {
+  const wsDeniedRes = await req('POST', '/api/jobs', {
     cookie: wsCookie,
+    body: {
+      job_request_id: jr.id,
+      take_in: true,
+      note: 'Started fabrication jig setup',
+    },
+  });
+  assert.strictEqual(wsDeniedRes.status, 403);
+
+  const openRes = await req('POST', '/api/jobs', {
+    cookie: fabCookie,
     body: {
       job_request_id: jr.id,
       take_in: true,
@@ -218,9 +230,9 @@ test('Fabrication Request & Card Flow', async (t) => {
   await req('POST', `/api/job-requests/${unallocJr.id}/certify`, { cookie: tmCookie, body: {} });
   await req('POST', `/api/job-requests/${unallocJr.id}/approve`, { cookie: omCookie, body: {} });
 
-  // Workshop opens unallocated fabrication card
+  // Fabrication officer opens unallocated fabrication card
   const unallocJobRes = await req('POST', '/api/jobs', {
-    cookie: wsCookie,
+    cookie: fabCookie,
     body: { job_request_id: unallocJr.id },
   });
   assert.strictEqual(unallocJobRes.status, 201);

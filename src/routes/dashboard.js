@@ -300,7 +300,7 @@ router.get('/overview', asyncHandler((req, res) => {
   const costs = canReports ? costFigures(ws, projId) : { monthly_cost_total: null, monthly_cost_trend: [], top_5_cost_vehicles: [] };
 
   // Job status mix over the last 90 days (by the real job date, falling back to created_at).
-  const pSqlJob = (projId && !ws) ? ` AND project_id = ${Number(projId)}` : '';
+  const pSqlJob = projId ? ` AND project_id = ${Number(projId)}` : '';
   const job_status_breakdown = canJobs ? all(
     `SELECT status, COUNT(*) AS count FROM job_cards
       WHERE date(COALESCE(requested_at, created_at)) >= date('now', '-90 days')${wsSql('workshop_id', ws)}${pSqlJob}

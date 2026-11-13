@@ -916,6 +916,9 @@ function migrate() {
       require('../migrate/053_mtn_store_locations').runMigration(db);
       db.prepare("INSERT INTO settings (key, value) VALUES ('migration_053_done', '1')").run();
     }
+  } catch (err) {
+    console.warn('Migration 053 MTN store locations skipped:', err.message);
+  }
 
   // CCOM Outsourced Service & Repair Requests
   try {
@@ -930,7 +933,13 @@ function migrate() {
   // Storekeeper Grants & Price Cascading Sync
   try {
     if (!db.prepare("SELECT 1 FROM settings WHERE key = 'migration_055_done'").get()) {
-      require('../migrate/055_storekeeper_grants_and_price_sync').runMigration(db);
+      const m55 = require('../migrate/055_storekeeper_grants_and_price_sync').runMigration(db);
+      if (m55 && Array.isArray(m55.affectedJobIds) && m55.affectedJobIds.length) {
+        try {
+          const costing = require('../lib/costing');
+          for (const jid of m55.affectedJobIds) costing.refreshJobTotals(jid);
+        } catch {}
+      }
       db.prepare("INSERT INTO settings (key, value) VALUES ('migration_055_done', '1')").run();
     }
   } catch (err) {
@@ -945,9 +954,6 @@ function migrate() {
     }
   } catch (err) {
     console.warn('Migration 056 Job Request Driver Fields & Daily Cost skipped:', err.message);
-  }
-  } catch (err) {
-    console.warn('Migration 053 MTN store locations skipped:', err.message);
   }
 
   return db;

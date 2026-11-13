@@ -39,6 +39,7 @@ const CAPABILITIES = [
   C('jobs.view', 'jobs', 'View open and closed job cards and service sheets', ALL_ROLES, null, 'jobs', '03', 'Operations'),
   C('jobs.create', 'jobs', 'Open a job card from an approved job request', ['workshop', 'manager'], 'jobs', 'jobs', '01', 'Operations'),
   C('jobs.edit', 'jobs', 'Change a job card\'s vehicle, description or type', ['workshop', 'operational_manager', 'manager'], 'jobs', 'jobs', '02', 'Operations'),
+  C('jobs.edit_closed', 'jobs', 'Change items on a CLOSED job card', ['workshop', 'storekeeper', 'operational_manager', 'manager'], 'jobs', 'jobs', '02', 'Operations'),
   C('jobs.delete', 'jobs', 'Delete or void an un-started job card', ['manager'], 'jobs', 'jobs', '06', 'Operations', true),
   C('jobs.approve_transport', 'jobs', 'Approve a job card — transport step', ['transport_manager'], 'jobs', 'jobs', '10', 'Operations'),
   C('jobs.approve_operations', 'jobs', 'Approve a job card — operations step', OPS_MANAGERS, 'jobs', 'jobs', '10', 'Operations'),
@@ -96,7 +97,7 @@ const CAPABILITIES = [
   C('attendance.record', 'dailywork', 'Record technician daily attendance (Present/Absent/Leave)', ['workshop', 'manager'], null, 'dailywork', '01', 'Operations'),
   C('attendance.unlock', 'dailywork', 'Unlock historical signed-off attendance day', OPS_MANAGERS, null, 'dailywork', '02', 'Operations', true),
   C('attendance.signoff', 'dailywork', 'Sign off a day\'s attendance and work tallies (locks day)', ['workshop', 'manager'], null, 'dailywork', '10', 'Operations'),
-  C('attendance.settings', 'dailywork', 'Configure overtime policy and attendance locks', ['manager'], null, 'dailywork', '02', 'Operations'),
+  C('attendance.settings', 'dailywork', 'Configure overtime policy and attendance locks', [], null, 'dailywork', '02', 'Operations'),
 
   // ---- 7. Service Records (Z_WO_SERV) --------------------------------------------------------
   C('services.view', 'services', 'View preventative maintenance records and service passports', ALL_ROLES, null, 'services', '03', 'Operations'),
@@ -125,7 +126,7 @@ const CAPABILITIES = [
   C('assets.deactivate', 'assets', 'Mark machine decommissioned, scrapped, or archived', ALL_MANAGERS, 'assets', 'assets', '02', 'Fleet'),
   C('assets.photo.upload', 'assets', 'Upload, re-order, and categorize asset gallery photos', ['storekeeper', 'workshop', 'manager', 'transport_manager'], 'assets', 'assets', '02', 'Fleet'),
   C('assets.repoint', 'assets', 'Repoint legacy vehicle codes to standardized numbers', ['manager'], null, 'assets', '02', 'Fleet'),
-  C('assets.move', 'assets', 'Move a machine to another project or site', ALL_MANAGERS, null, 'operations', '02', 'Fleet'),
+  C('assets.move', 'assets', 'Move a machine to another project or site', ['transport_manager', 'operational_manager', 'manager'], null, 'operations', '02', 'Fleet'),
   C('assets.export', 'assets', 'Export complete fleet register and depreciation summaries', ALL_MANAGERS, null, 'assets', '08', 'Fleet'),
 
   // ---- 10. Vehicle Statutory Documents (Z_WO_VDOC) -------------------------------------------

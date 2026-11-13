@@ -130,8 +130,16 @@ function computeJobCost(jobId) {
 
   // --- general (general item issues to this job) ---
   let general = 0;
-  for (const g of all(`SELECT t.*, si.unit_cost FROM general_item_txns t LEFT JOIN store_items si ON si.id = t.store_item_id WHERE t.job_id = ? AND t.txn_type = 'issue'`, jobId)) {
-    const price = g.unit_price != null ? g.unit_price : (g.unit_cost || 0);
+  for (const g of all(`
+    SELECT t.*, si.unit_cost
+      FROM general_item_txns t
+      LEFT JOIN store_items si ON si.id = t.store_item_id
+     WHERE t.job_id = ? AND t.txn_type = 'issue'
+       AND (t.source_issue_id IS NULL OR NOT EXISTS (
+         SELECT 1 FROM job_parts jp WHERE jp.source_type = 'issue' AND jp.source_id = t.source_issue_id
+       ))
+  `, jobId)) {
+    const price = (g.unit_price != null && g.unit_price > 0) ? g.unit_price : (g.unit_cost || 0);
     general += Math.abs(g.qty || 0) * price;
   }
 

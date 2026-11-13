@@ -138,8 +138,8 @@ function resolveRequestContext(req) {
     if (requestedStoreId && !isAdmin && user) {
       let canView = false;
       try {
-        const access = get('SELECT can_view FROM store_location_access WHERE user_id = ? AND store_location_id = ?', user.id, requestedStoreId);
-        canView = access && access.can_view === 1;
+        const rows = storeLocations.getUserStoreLocations(user.id) || [];
+        canView = rows.some((s) => Number(s.store_location_id || s.id) === Number(requestedStoreId) && s.can_view === 1);
       } catch (_) {}
       if (!canView) {
         requestedStoreId = null;
@@ -188,7 +188,9 @@ function resolveRequestContext(req) {
   }
 
   const isAllSitesMode = isMainStore && storeLoc?.store_type === 'MAIN_STORE';
-  const activeWorkshopId = storeLoc?.workshop_id || (user && user.workshop_id) || null;
+  const activeWorkshopId = storeLoc
+    ? (storeLoc.workshop_id || (storeLoc.project_id ? null : ((user && user.workshop_id) || null)))
+    : ((user && user.workshop_id) || null);
   const activeProjectId = storeLoc?.project_id || null;
 
   const ctx = {
@@ -345,7 +347,10 @@ function storeScopeFor(user) {
   }
   if (!primaryId && user.id) {
     try {
-      const uRow = get('SELECT workshop_id FROM users WHERE id = ?', user.id);
+      const multidb = require('../db/multidb');
+      const uRow = (multidb && multidb.isMultiDb && multidb.isMultiDb())
+        ? multidb.getCoreDb().prepare('SELECT workshop_id FROM users WHERE id = ?').get(user.id)
+        : get('SELECT workshop_id FROM users WHERE id = ?', user.id);
       if (uRow && uRow.workshop_id) {
         const mapped = storeLocations.resolvePhysicalStore(uRow.workshop_id);
         if (mapped) primaryId = Number(mapped.id);
@@ -369,8 +374,9 @@ function storeScopeFor(user) {
   // Central staff assigned to either central store (1 or 2) need access to both co-located stores,
   // but site store personnel (Store ID > 2) must remain strictly locked to their site store.
   const hasCentralGrant = allowedStoreMap.has(1) || allowedStoreMap.has(2);
+  const isPrimaryCentral = primaryId === 1 || primaryId === 2 || user.workshop_id === 1;
   const hasSiteStoreOnly = Array.from(allowedStoreMap.keys()).some((sid) => sid > 2);
-  if (hasCentralGrant && !hasSiteStoreOnly) {
+  if (hasCentralGrant && (isPrimaryCentral || !hasSiteStoreOnly)) {
     for (const sid of [1, 2]) {
       if (!allowedStoreMap.has(sid)) {
         allowedStoreMap.set(sid, {

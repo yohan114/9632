@@ -301,7 +301,10 @@ test('health tells an admin about the backups, and tells everyone else nothing m
   const { snapshot } = require('../src/lib/backup');
   await snapshot();
   const anon = await req('GET', '/api/health');
-  assert.deepStrictEqual(anon.body, { ok: true, name: 'WorkshopOne' });
+  assert.strictEqual(anon.body.ok, true);
+  assert.strictEqual(anon.body.name, 'WorkshopOne');
+  assert.ok(typeof anon.body.releaseId === 'string' && anon.body.releaseId.length > 0);
+  assert.strictEqual(anon.body.backup, undefined);
   const keeper = await req('GET', '/api/health', { cookie: await login('sunil', 'rivet-willow-summit') });
   assert.strictEqual(keeper.body.backup, undefined);
   const admin = await req('GET', '/api/health', { cookie: await login('chief', ADMIN_PW) });

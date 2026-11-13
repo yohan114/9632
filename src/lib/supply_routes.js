@@ -663,7 +663,10 @@ function onMrnApproved(mrnId, user, options = {}) {
 
   // If requesting workshop is Central Workshop itself (same store), no inter-site MTN needed.
   // Note: Transfers between Main Stores (1) and Main Workshop (2) are distinct physical stores (1 != 2)!
-  const isSameStore = Boolean(destStoreLocId && sendingStoreLocId && destStoreLocId === sendingStoreLocId);
+  const isSameStore = Boolean(
+    (destStoreLocId && sendingStoreLocId && destStoreLocId === sendingStoreLocId)
+    || (mrn.workshop_id === 1 && !isReplenishment && (!mrn.target_store_location_id || (destStoreLoc && destStoreLoc.store_type === 'MAIN_WORKSHOP_STORE')))
+  );
 
   // Phase A Gate: Site Authority Demand Approval Gate
   // A Site request must NOT enter store fulfillment queues or generate MTNs until its assigned Site Authority approves it.

@@ -41,6 +41,19 @@ const reorderRebalance = require('../lib/reorder_rebalance');
 const storeLocations = require('../lib/store_locations');
 
 /**
+ * Resolve optional store location filter for GRN / Issue list & count endpoints.
+ * Head-office users in All-Sites mode (`isAllSitesMode`) see across all stores unless
+ * they explicitly specify `x-store-location-id`, `store_location_id`, or `physical_store_id`.
+ */
+function resolveListStoreFilter(req) {
+  const explicit = toInt(
+    req.headers['x-store-location-id'] || req.query.store_location_id || req.query.physical_store_id
+  );
+  if (explicit) return explicit;
+  return req.user?.isAllSitesMode ? null : toInt(req.user?.activeStoreId);
+}
+
+/**
  * Resolve the receiving physical store ID for any GRN receipt (Step 3: Purchasing & GRN Routing).
  * Rules:
  * 1. Explicit physical_store_id or store_location_id provided -> validate and use.
@@ -194,19 +207,23 @@ const ownWsCond = (user, expr) => { const s = ownWs(user, expr); return s ? s.sl
 /** Guard a record whose workshop `sql` finds by id: null when the person may reach it, else the 403 body. */
 function reachRefusal(user, what, sql, id) {
   if (!user) return null;
+  let skipWorkshopScope = false;
   try {
     const context = require('../lib/context');
     const ss = context.storeScopeFor(user);
     if (!ss.isGlobal) {
       if (what === 'receipt') {
         const g = get(`
-          SELECT g.physical_store_id, g.store_id, m.workshop_id
+          SELECT g.physical_store_id, g.store_id, g.purchase_source, g.purchase_source_norm, m.workshop_id
             FROM grn g
             LEFT JOIN mrn m ON m.id = g.mrn_id
            WHERE g.id = ?`, id);
         const sid = (g && g.physical_store_id) || (g && g.store_id);
         const isOwnWorkshop = g && g.workshop_id && user.workshop_id && g.workshop_id === user.workshop_id;
-        if (sid && !ss.canAccess(sid, 'view') && !isOwnWorkshop) {
+        const isHeadOfficeGrn = g && (g.purchase_source === 'head_office' || g.purchase_source_norm === 'head_office');
+        const isCwStoreUser = user.workshop_id === 1 && (ss.canAccess(1, 'view') || ss.canAccess(2, 'view'));
+        if (isHeadOfficeGrn && isCwStoreUser) skipWorkshopScope = true;
+        if (sid && !ss.canAccess(sid, 'view') && !isOwnWorkshop && !(isHeadOfficeGrn && isCwStoreUser)) {
           return { error: `Tenancy boundary violation: ${what} #${id} belongs to a different store location.`, status: 403 };
         }
       } else if (what === 'issue') {
@@ -224,7 +241,7 @@ function reachRefusal(user, what, sql, id) {
     }
   } catch (_) {}
 
-  if (!scope.enabled()) return null;
+  if (skipWorkshopScope || !scope.enabled()) return null;
   const r = get(sql, id);
   if (!r) return null;
   const ws = r.ws || require('../lib/workshops').defaultId();
@@ -251,13 +268,35 @@ function cascadeGrnPrice(grnId, unitPrice) {
 
   // 1. Update all issues linked to this GRN (by grn_id or mrn_line_id)
   const linkedIssues = all(`
-    SELECT id, job_id, asset_id FROM issues
+    SELECT id, job_id, asset_id, qty, description FROM issues
      WHERE grn_id = ?
         OR (? IS NOT NULL AND mrn_line_id = ?)
   `, grnId, grn.mrn_line_id, grn.mrn_line_id);
   for (const iss of linkedIssues) {
     run('UPDATE issues SET unit_price = ?, grn_id = COALESCE(grn_id, ?) WHERE id = ?', price, grnId, iss.id);
-    if (iss.job_id) affectedJobIds.add(iss.job_id);
+    if (iss.job_id) {
+      affectedJobIds.add(iss.job_id);
+      const hasJp = get(`
+        SELECT id FROM job_parts
+         WHERE job_id = ?
+           AND (
+             (source_type = 'issue' AND source_id = ?)
+             OR (source_type = 'grn' AND source_id = ?)
+             OR (? IS NOT NULL AND mrn_line_id = ?)
+           )
+         LIMIT 1
+      `, iss.job_id, iss.id, grnId, grn.mrn_line_id, grn.mrn_line_id);
+      if (!hasJp) {
+        const hasGit = get('SELECT id FROM general_item_txns WHERE source_issue_id = ? LIMIT 1', iss.id);
+        if (!hasGit) {
+          run(
+            `INSERT INTO job_parts (job_id, mrn_line_id, description, qty, unit_price, source_type, source_id)
+             VALUES (?, ?, ?, ?, ?, 'issue', ?)`,
+            iss.job_id, grn.mrn_line_id || null, iss.description || grn.description || 'Store Issue', iss.qty || 1, price, iss.id
+          );
+        }
+      }
+    }
 
     // Update job_parts that came from this issue
     run("UPDATE job_parts SET unit_price = ? WHERE source_type = 'issue' AND source_id = ?", price, iss.id);
@@ -294,13 +333,20 @@ function cascadeGrnPrice(grnId, unitPrice) {
     }
   }
 
-  // 5. Update unpriced general_item_txns for this store item
+  // 5. Update unpriced general_item_txns and issues/job_parts for this store item
   if (storeItemId) {
-    const gitJobs = all('SELECT DISTINCT job_id FROM general_item_txns WHERE store_item_id = ? AND (unit_price IS NULL OR unit_price = 0) AND job_id IS NOT NULL', storeItemId);
+    const gitJobs = all('SELECT DISTINCT job_id FROM general_item_txns WHERE store_item_id = ? AND (unit_price IS NULL OR unit_price <= 0) AND job_id IS NOT NULL', storeItemId);
     for (const gj of gitJobs) {
       if (gj.job_id) affectedJobIds.add(gj.job_id);
     }
-    run('UPDATE general_item_txns SET unit_price = ? WHERE store_item_id = ? AND (unit_price IS NULL OR unit_price = 0)', price, storeItemId);
+    run('UPDATE general_item_txns SET unit_price = ? WHERE store_item_id = ? AND (unit_price IS NULL OR unit_price <= 0)', price, storeItemId);
+
+    const unpricedIssues = all('SELECT id, job_id FROM issues WHERE store_item_id = ? AND (unit_price IS NULL OR unit_price <= 0)', storeItemId);
+    for (const ui of unpricedIssues) {
+      run('UPDATE issues SET unit_price = ? WHERE id = ?', price, ui.id);
+      if (ui.job_id) affectedJobIds.add(ui.job_id);
+      run("UPDATE job_parts SET unit_price = ? WHERE source_type = 'issue' AND source_id = ? AND (unit_price IS NULL OR unit_price <= 0)", price, ui.id);
+    }
   }
 
   // 6. Check if MRN was raised for a specific job card
@@ -1012,7 +1058,9 @@ router.get('/mrn', asyncHandler((req, res) => {
   // Which workshop asked (multi-site Stage 2).
   if (req.query.workshop_id) { clauses.push('m.workshop_id = ?'); params.push(toInt(req.query.workshop_id)); }
   // Active store location scoping (Central Main Stores fresh section vs Workshop Stores vs Site Stores)
-  const activeStoreId = toInt(req.headers['x-store-location-id'] || req.query.store_location_id || req.user?.activeStoreId);
+  const isGlobal = Boolean(req.user?.isAllSitesMode);
+  const explicitStoreId = toInt(req.headers['x-store-location-id'] || req.query.store_location_id);
+  const activeStoreId = isGlobal ? explicitStoreId : toInt(req.user?.activeStoreId || explicitStoreId);
   if (activeStoreId) {
     if (activeStoreId === 1) {
       clauses.push('m.target_store_location_id = 1');
@@ -1076,7 +1124,9 @@ router.get('/mrn', asyncHandler((req, res) => {
 router.get('/mrn/counts', asyncHandler((req, res) => {
   const own = scope.filter(req.user, 'm.workshop_id');
   const wClause = own.sql ? ` AND ${own.sql}` : '';
-  const activeStoreId = toInt(req.headers['x-store-location-id'] || req.query.store_location_id || req.user?.activeStoreId);
+  const isGlobal = Boolean(req.user?.isAllSitesMode);
+  const explicitStoreId = toInt(req.headers['x-store-location-id'] || req.query.store_location_id);
+  const activeStoreId = isGlobal ? explicitStoreId : toInt(req.user?.activeStoreId || explicitStoreId);
   let storeClause = '';
   const storeParams = [];
   if (activeStoreId) {
@@ -1615,7 +1665,7 @@ router.get('/grn', asyncHandler((req, res) => {
       clauses.push("COALESCE(g.status, gv.status, 'pending_approval') = 'rejected'");
     }
   }
-  const activeStoreLocId = toInt(req.headers['x-store-location-id'] || req.query.store_location_id || req.query.physical_store_id || req.user?.activeStoreId);
+  const activeStoreLocId = resolveListStoreFilter(req);
   if (activeStoreLocId) {
     clauses.push('g.physical_store_id = ?');
     params.push(activeStoreLocId);
@@ -1642,7 +1692,7 @@ router.get('/grn', asyncHandler((req, res) => {
 }));
 
 router.get('/grn/counts', asyncHandler((req, res) => {
-  const activeStoreLocId = toInt(req.headers['x-store-location-id'] || req.query.store_location_id || req.query.physical_store_id || req.user?.activeStoreId);
+  const activeStoreLocId = resolveListStoreFilter(req);
   const storeClause = activeStoreLocId ? ` AND g.physical_store_id = ${activeStoreLocId}` : '';
   const FROM = `FROM grn g LEFT JOIN grn_vouchers gv ON gv.id = g.voucher_id LEFT JOIN mrn m ON m.id = g.mrn_id`;
   const own = `${ownWs(req.user, GRN_WS)}${storeClause}`;   // Step 2c
@@ -3735,8 +3785,7 @@ function checkFabricationOrStoreIssueAccess(user, targetPhysStoreId, jobId) {
       const isSiteUser = user.workshop_id && user.workshop_id !== 1 && !isMainStaff;
       let hasGrant = false;
       try {
-        const access = get('SELECT can_issue FROM store_location_access WHERE user_id = ? AND store_location_id = 1', user.id);
-        hasGrant = access && access.can_issue === 1;
+        hasGrant = context.storeScopeFor(user).canAccess(1, 'issue');
       } catch {}
       if (!isMainStaff && !hasGrant) {
         const err = new Error('You do not have permission to issue materials from Central Main Stores.');
@@ -3753,8 +3802,7 @@ function checkFabricationOrStoreIssueAccess(user, targetPhysStoreId, jobId) {
     if (!isMainStaff) {
       let hasGrant = false;
       try {
-        const access = get('SELECT can_issue FROM store_location_access WHERE user_id = ? AND store_location_id = 1', user.id);
-        hasGrant = access && access.can_issue === 1;
+        hasGrant = context.storeScopeFor(user).canAccess(1, 'issue');
       } catch {}
       if (!hasGrant) {
         const err = new Error('Issues from Central Main Stores are limited to main-store staff.');
@@ -4354,7 +4402,13 @@ router.post('/grn/bulk-receive', requireCap('stores.grn.receive'), asyncHandler(
         run('UPDATE mrn SET status = ? WHERE id = ?', open === 0 ? 'received' : (any > 0 ? 'partially_received' : 'open'), mid);
       }
     }
-    if (created.length) stock.sync({ grn: created });      // Part 3: on the shelf now
+    if (created.length) {
+      stock.sync({ grn: created });      // Part 3: on the shelf now
+      for (const cid of created) {
+        const gRow = get('SELECT unit_price FROM grn WHERE id = ?', cid);
+        if (gRow && Number(gRow.unit_price) > 0) cascadeGrnPrice(cid, gRow.unit_price);
+      }
+    }
   });
   if (created.length) audit.record({ userId: req.user.id, entity: 'grn', action: 'bulk_receive', after: { count: created.length, mrns: [...mrnIds] } });
   res.json({ ok: true, received: created.length, mrns: mrnIds.size, skipped });
@@ -4494,7 +4548,7 @@ router.get('/general-job', asyncHandler((req, res) => {
 router.get('/issues', asyncHandler((req, res) => {
   const clauses = [];
   const params = [];
-  const activeStoreId = toInt(req.headers['x-store-location-id'] || req.query.store_location_id || req.query.physical_store_id || req.user?.activeStoreId);
+  const activeStoreId = resolveListStoreFilter(req);
   if (activeStoreId) {
     clauses.push('i.physical_store_id = ?');
     params.push(activeStoreId);
@@ -4545,7 +4599,7 @@ router.get('/issues', asyncHandler((req, res) => {
 }));
 
 router.get('/issues/counts', asyncHandler((req, res) => {
-  const activeStoreId = toInt(req.headers['x-store-location-id'] || req.query.store_location_id || req.query.physical_store_id || req.user?.activeStoreId);
+  const activeStoreId = resolveListStoreFilter(req);
   const storeClause = activeStoreId ? ` AND i.physical_store_id = ${activeStoreId}` : '';
   const FROM = 'FROM issues i LEFT JOIN min_notes n ON n.id = i.min_id LEFT JOIN job_cards j ON j.id = i.job_id';
   const own = `${ownWs(req.user, ISSUE_WS)}${storeClause}`;   // Step 2c
@@ -5871,12 +5925,19 @@ router.get('/export/mrn.xlsx', asyncHandler(async (req, res) => {
 // Comprehensive store reorder analysis, stock health, and inter-workshop opportunities
 router.get('/rebalance/analysis', permissions.requireModule('stores', 'view'), asyncHandler((req, res) => {
   const context = require('../lib/context');
-  const physicalStoreId = req.query.physical_store_id ? toInt(req.query.physical_store_id) : (req.user.activeStoreId || null);
+  const explicitPhys = req.query.physical_store_id ? toInt(req.query.physical_store_id) : null;
+  const explicitStore = req.query.store_id ? toInt(req.query.store_id) : null;
+  const physicalStoreId = explicitPhys || (!explicitStore ? (req.user.activeStoreId || null) : null);
   if (physicalStoreId) {
     context.assertStoreAccess(req, physicalStoreId);
+  } else if (explicitStore) {
+    const resolvedCtx = reorderRebalance.resolveStoreContext(explicitStore);
+    if (resolvedCtx && resolvedCtx.physical_store_id) {
+      context.assertStoreAccess(req, resolvedCtx.physical_store_id);
+    }
   }
   const userStore = stores.homeStore(req.user) || 1;
-  const storeId = req.query.store_id ? toInt(req.query.store_id) : (!physicalStoreId ? userStore : null);
+  const storeId = explicitStore || (!physicalStoreId ? userStore : null);
   const targetStore = physicalStoreId ? { physical_store_id: physicalStoreId } : storeId;
   const section = req.query.section ? String(req.query.section).toLowerCase() : null;
   const days = req.query.days ? toInt(req.query.days) : 90;
@@ -5972,12 +6033,19 @@ router.get('/rebalance/item-history', permissions.requireModule('stores', 'view'
 // Storekeeper Workspace & Physical Store Cockpit
 router.get('/cockpit', permissions.requireModule('stores', 'view'), asyncHandler((req, res) => {
   const context = require('../lib/context');
-  const physicalStoreId = req.query.physical_store_id ? toInt(req.query.physical_store_id) : (req.user.activeStoreId || null);
+  const explicitPhys = req.query.physical_store_id ? toInt(req.query.physical_store_id) : null;
+  const explicitStore = req.query.store_id ? toInt(req.query.store_id) : null;
+  const physicalStoreId = explicitPhys || (!explicitStore ? (req.user.activeStoreId || null) : null);
   if (physicalStoreId) {
     context.assertStoreAccess(req, physicalStoreId);
+  } else if (explicitStore) {
+    const resolvedCtx = reorderRebalance.resolveStoreContext(explicitStore);
+    if (resolvedCtx && resolvedCtx.physical_store_id) {
+      context.assertStoreAccess(req, resolvedCtx.physical_store_id);
+    }
   }
   const userStore = stores.homeStore(req.user) || 1;
-  const storeId = req.query.store_id ? toInt(req.query.store_id) : (!physicalStoreId ? userStore : null);
+  const storeId = explicitStore || (!physicalStoreId ? userStore : null);
   const targetStore = physicalStoreId ? { physical_store_id: physicalStoreId } : storeId;
   const days = req.query.days ? toInt(req.query.days) : 90;
 

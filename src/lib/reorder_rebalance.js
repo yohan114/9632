@@ -113,16 +113,27 @@ function resolveStoreContext(storeOrLocId, opts = {}) {
       legId = storeLocs.resolveLegacyStoreId(physId);
       if (!legId && locRow && locRow.workshop_id) {
         legId = locRow.workshop_id;
-      } else if (!legId) {
-        legId = physId;
       }
     } catch {}
   }
   if (legId && !physId) {
     try {
-      physId = storeLocs.resolvePhysicalStore(legId);
-      if (physId && !locRow) {
-        locRow = storeLocs.getStoreLocationById(physId);
+      const resolvedPhys = storeLocs.resolvePhysicalStore(legId);
+      const resolvedId = resolvedPhys && typeof resolvedPhys === 'object' ? resolvedPhys.id : resolvedPhys;
+      // Do not inherit MAIN_WORKSHOP fallback when a site workshop has no dedicated store_locations row
+      const hasMapping = resolvedId
+        ? !!get('SELECT 1 FROM store_location_mappings WHERE legacy_store_id = ? AND store_location_id = ? LIMIT 1', legId, resolvedId)
+        : false;
+      const matchesWorkshop = resolvedPhys && typeof resolvedPhys === 'object'
+        ? Number(resolvedPhys.workshop_id) === Number(legId)
+        : false;
+      if (resolvedId && (hasMapping || matchesWorkshop || Number(legId) === 1)) {
+        physId = resolvedId;
+        if (!locRow) {
+          locRow = (resolvedPhys && typeof resolvedPhys === 'object' && resolvedPhys.name)
+            ? resolvedPhys
+            : storeLocs.getStoreLocationById(physId);
+        }
       }
     } catch {}
   }
@@ -164,7 +175,7 @@ function getAllActiveStores() {
         key: 'p:' + s.id,
         id: s.id,
         physical_store_id: s.id,
-        store_id: legId || 1,
+        store_id: legId || null,
         code: s.code,
         name: s.name,
         store_type: s.store_type
@@ -338,9 +349,12 @@ function calculateItemRop(section, itemKey, storeOrLocId, opts = {}) {
     let balance = 0;
     if (physId != null) {
       balance = Number(stock.balanceOf(section, itemKey, null, { physical_store_id: physId })) || 0;
-      if (balance === 0) {
-        const hasPhysMoves = get('SELECT 1 FROM stock_moves WHERE physical_store_id = ? LIMIT 1', physId);
-        if (!hasPhysMoves) {
+      if (balance === 0 && storeId != null && ctx.store_type !== 'MAIN_STORE') {
+        const hasPhysItemMoves = get(
+          'SELECT 1 FROM stock_moves WHERE physical_store_id = ? AND section = ? AND item_key = ? LIMIT 1',
+          physId, section, itemKey
+        );
+        if (!hasPhysItemMoves) {
           balance = Number(stock.balanceOf(section, itemKey, storeId)) || 0;
         }
       }

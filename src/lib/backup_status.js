@@ -93,6 +93,7 @@ function summary() {
   // without one means the scheduler, the disk or the database is in trouble.
   const stale = intervalMin > 0 && (!newest || newest.ageMinutes > intervalMin * 3);
   const verifyAgeDays = s.verify && s.verify.at ? (Date.now() - Date.parse(s.verify.at)) / 86400000 : null;
+  const verifyOverdue = verifyAgeDays == null || verifyAgeDays > 8;
 
   const hasUsers = Boolean((newest && newest.hasUsers) || (s.snapshot && s.snapshot.hasUsers));
 
@@ -103,8 +104,8 @@ function summary() {
     last_snapshot: s.snapshot || null,
     last_verify: s.verify || null,
     // The restore check runs weekly. Older than 8 days means the timer is not running.
-    verify_overdue: verifyAgeDays == null || verifyAgeDays > 8,
-    ok: !stale && !!(s.snapshot && s.snapshot.ok) && hasUsers && !(s.snapshot && s.snapshot.mirror && s.snapshot.mirror.ok === false),
+    verify_overdue: verifyOverdue,
+    ok: !stale && !!(s.snapshot && s.snapshot.ok) && hasUsers && !(s.snapshot && s.snapshot.mirror && s.snapshot.mirror.ok === false) && !verifyOverdue && !(s.verify && s.verify.ok === false),
   };
 }
 

@@ -2,14 +2,21 @@
 
 const express = require('express');
 const { get, all, run } = require('../db');
-const { requireCap } = require('../lib/auth');
+const { hasCap } = require('../lib/auth');
+const { meets, effectiveLevel } = require('../lib/permissions');
 const { asyncHandler, require_, toInt } = require('../lib/http');
 const audit = require('../lib/audit');
 const aliases = require('../lib/aliases');
 
 const router = express.Router();
 
-router.get('/', requireCap('aliases.view'), asyncHandler((req, res) => {
+const allowAliases = (level, ...caps) => (req, res, next) => {
+  if (!req.user) return res.status(401).json({ error: 'Authentication required' });
+  if (hasCap(req.user, ...caps) || meets(effectiveLevel(req.user, 'aliases'), level)) return next();
+  return res.status(403).json({ error: 'Your account has no access to Aliases for this action' });
+};
+
+router.get('/', allowAliases('view', 'aliases.view'), asyncHandler((req, res) => {
   res.json(aliases.queryAliasQueue({
     table: 'asset_aliases',
     targetTable: 'assets',
@@ -23,18 +30,18 @@ router.get('/', requireCap('aliases.view'), asyncHandler((req, res) => {
   }));
 }));
 
-router.get('/pending', requireCap('aliases.view'), asyncHandler((_req, res) => res.json(aliases.pendingAliases())));
+router.get('/pending', allowAliases('view', 'aliases.view'), asyncHandler((_req, res) => res.json(aliases.pendingAliases())));
 
-router.get('/sections-audit', requireCap('aliases.view'), asyncHandler((req, res) => res.json(aliases.getMissingAllocations(req.user))));
+router.get('/sections-audit', allowAliases('view', 'aliases.view'), asyncHandler((req, res) => res.json(aliases.getMissingAllocations(req.user))));
 
-router.post('/resolve', requireCap('aliases.vehicle.resolve', 'aliases.mechanic.resolve'), asyncHandler((req, res) => {
+router.post('/resolve', allowAliases('edit', 'aliases.vehicle.resolve', 'aliases.mechanic.resolve'), asyncHandler((req, res) => {
   require_(req.body, ['text']);
   const r = aliases.resolveAsset(req.body.text, { source: 'preview' });
   const asset = r.assetId ? get('SELECT * FROM assets WHERE id = ?', r.assetId) : null;
   res.json({ ...r, asset });
 }));
 
-router.post('/:id/link', requireCap('aliases.vehicle.resolve'), asyncHandler((req, res) => {
+router.post('/:id/link', allowAliases('edit', 'aliases.vehicle.resolve'), asyncHandler((req, res) => {
   require_(req.body, ['asset_id']);
   const id = toInt(req.params.id);
   const before = get('SELECT * FROM asset_aliases WHERE id = ?', id);
@@ -46,7 +53,7 @@ router.post('/:id/link', requireCap('aliases.vehicle.resolve'), asyncHandler((re
   res.json(updated);
 }));
 
-router.post('/allocate-job', requireCap('aliases.allocate', 'aliases.vehicle.resolve'), asyncHandler((req, res) => {
+router.post('/allocate-job', allowAliases('edit', 'aliases.allocate', 'aliases.vehicle.resolve'), asyncHandler((req, res) => {
   require_(req.body, ['job_id', 'asset_id']);
   const jobId = toInt(req.body.job_id);
   const assetId = toInt(req.body.asset_id);
@@ -63,7 +70,7 @@ router.post('/allocate-job', requireCap('aliases.allocate', 'aliases.vehicle.res
   res.json({ ok: true, job_id: jobId, asset_id: asset.id });
 }));
 
-router.post('/allocate-service', requireCap('aliases.allocate', 'aliases.vehicle.resolve'), asyncHandler((req, res) => {
+router.post('/allocate-service', allowAliases('edit', 'aliases.allocate', 'aliases.vehicle.resolve'), asyncHandler((req, res) => {
   require_(req.body, ['service_id', 'asset_id']);
   const serviceId = toInt(req.body.service_id);
   const assetId = toInt(req.body.asset_id);
@@ -77,7 +84,7 @@ router.post('/allocate-service', requireCap('aliases.allocate', 'aliases.vehicle
   res.json({ ok: true, service_id: serviceId, asset_id: asset.id });
 }));
 
-router.post('/allocate-issue', requireCap('aliases.allocate', 'aliases.vehicle.resolve'), asyncHandler((req, res) => {
+router.post('/allocate-issue', allowAliases('edit', 'aliases.allocate', 'aliases.vehicle.resolve'), asyncHandler((req, res) => {
   require_(req.body, ['issue_id', 'asset_id']);
   const issueId = toInt(req.body.issue_id);
   const assetId = toInt(req.body.asset_id);
@@ -92,7 +99,7 @@ router.post('/allocate-issue', requireCap('aliases.allocate', 'aliases.vehicle.r
   res.json({ ok: true, issue_id: issueId, asset_id: asset.id });
 }));
 
-router.post('/allocate-mrn', requireCap('aliases.allocate', 'aliases.vehicle.resolve'), asyncHandler((req, res) => {
+router.post('/allocate-mrn', allowAliases('edit', 'aliases.allocate', 'aliases.vehicle.resolve'), asyncHandler((req, res) => {
   require_(req.body, ['mrn_id', 'asset_id']);
   const mrnId = toInt(req.body.mrn_id);
   const assetId = toInt(req.body.asset_id);
@@ -106,7 +113,7 @@ router.post('/allocate-mrn', requireCap('aliases.allocate', 'aliases.vehicle.res
   res.json({ ok: true, mrn_id: mrnId, asset_id: asset.id });
 }));
 
-router.post('/allocate-job-request', requireCap('aliases.allocate', 'aliases.vehicle.resolve'), asyncHandler((req, res) => {
+router.post('/allocate-job-request', allowAliases('edit', 'aliases.allocate', 'aliases.vehicle.resolve'), asyncHandler((req, res) => {
   require_(req.body, ['job_request_id', 'asset_id']);
   const jrId = toInt(req.body.job_request_id);
   const assetId = toInt(req.body.asset_id);
@@ -123,7 +130,7 @@ router.post('/allocate-job-request', requireCap('aliases.allocate', 'aliases.veh
   res.json({ ok: true, job_request_id: jrId, asset_id: asset.id });
 }));
 
-router.delete('/:id', requireCap('aliases.ignore', 'aliases.vehicle.resolve'), asyncHandler((req, res) => {
+router.delete('/:id', allowAliases('full', 'aliases.ignore', 'aliases.vehicle.resolve'), asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   run('DELETE FROM asset_aliases WHERE id = ?', id);
   audit.record({ userId: req.user.id, entity: 'asset_alias', entityId: id, action: 'delete' });

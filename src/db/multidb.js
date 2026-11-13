@@ -440,8 +440,141 @@ function runIntegrityVerification() {
   return results;
 }
 
+function ensureColIfTableExists(targetDb, tableName, colName, colDef) {
+  const hasTbl = targetDb.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(tableName);
+  if (!hasTbl) return;
+  const cols = targetDb.prepare(`PRAGMA table_info("${tableName}")`).all().map((c) => c.name);
+  if (!cols.includes(colName)) {
+    targetDb.exec(`ALTER TABLE "${tableName}" ADD COLUMN ${colName} ${colDef}`);
+  }
+}
+
+function stripMissingReferencesSql(sql, missingTables) {
+  let out = String(sql || '');
+  for (const tbl of missingTables) {
+    const esc = tbl.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    out = out.replace(
+      new RegExp(`,\\s*FOREIGN\\s+KEY\\s*\\([^)]+\\)\\s*REFERENCES\\s+["'\`]?${esc}["'\`]?\\s*(?:\\([^)]*\\))?(?:\\s+ON\\s+(?:DELETE|UPDATE)\\s+(?:CASCADE|SET\\s+NULL|SET\\s+DEFAULT|RESTRICT|NO\\s+ACTION))*(?:\\s+MATCH\\s+\\w+)?(?:\\s+(?:NOT\\s+)?DEFERRABLE(?:\\s+INITIALLY\\s+(?:DEFERRED|IMMEDIATE))?)?`, 'gi'),
+      ''
+    );
+    out = out.replace(
+      new RegExp(`FOREIGN\\s+KEY\\s*\\([^)]+\\)\\s*REFERENCES\\s+["'\`]?${esc}["'\`]?\\s*(?:\\([^)]*\\))?(?:\\s+ON\\s+(?:DELETE|UPDATE)\\s+(?:CASCADE|SET\\s+NULL|SET\\s+DEFAULT|RESTRICT|NO\\s+ACTION))*(?:\\s+MATCH\\s+\\w+)?(?:\\s+(?:NOT\\s+)?DEFERRABLE(?:\\s+INITIALLY\\s+(?:DEFERRED|IMMEDIATE))?)?\\s*,\\s*`, 'gi'),
+      ''
+    );
+    out = out.replace(
+      new RegExp(`\\s+REFERENCES\\s+["'\`]?${esc}["'\`]?\\s*(?:\\([^)]*\\))?(?:\\s+ON\\s+(?:DELETE|UPDATE)\\s+(?:CASCADE|SET\\s+NULL|SET\\s+DEFAULT|RESTRICT|NO\\s+ACTION))*(?:\\s+MATCH\\s+\\w+)?(?:\\s+(?:NOT\\s+)?DEFERRABLE(?:\\s+INITIALLY\\s+(?:DEFERRED|IMMEDIATE))?)?`, 'gi'),
+      ''
+    );
+  }
+  return out;
+}
+
+function repairDanglingCrossDbForeignKeys(targetDb, label = 'db') {
+  if (!targetDb) return;
+  const tables = targetDb.prepare("SELECT name, sql FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all();
+  const existingNames = new Set(tables.map((t) => String(t.name).toLowerCase()));
+
+  // Drop empty stale *_new rebuild remnants (e.g., fabrication_costing_sheets_new) when base table exists
+  for (const t of tables) {
+    if (t.name.endsWith('_new')) {
+      const baseName = t.name.slice(0, -4);
+      if (existingNames.has(baseName.toLowerCase())) {
+        try {
+          const c = targetDb.prepare(`SELECT COUNT(*) AS c FROM "${t.name}"`).get();
+          if (c && c.c === 0) {
+            targetDb.exec(`DROP TABLE IF EXISTS "${t.name}"`);
+            existingNames.delete(t.name.toLowerCase());
+          }
+        } catch {}
+      }
+    }
+  }
+
+  for (const t of tables) {
+    if (!existingNames.has(t.name.toLowerCase()) || !t.sql) continue;
+    let fks = [];
+    try {
+      fks = targetDb.prepare(`PRAGMA foreign_key_list("${t.name}")`).all();
+    } catch { continue; }
+    const missing = Array.from(new Set(fks.map((x) => x.table).filter((refTbl) => !existingNames.has(String(refTbl).toLowerCase()))));
+    if (!missing.length) continue;
+
+    const newSql = stripMissingReferencesSql(t.sql, missing);
+    if (newSql === t.sql) continue;
+
+    const indexes = targetDb.prepare("SELECT name, sql FROM sqlite_master WHERE type = 'index' AND tbl_name = ? AND sql IS NOT NULL").all(t.name);
+    const triggers = targetDb.prepare("SELECT name, sql FROM sqlite_master WHERE type = 'trigger' AND tbl_name = ? AND sql IS NOT NULL").all(t.name);
+    const oldName = `__fk_old_${t.name}`;
+    const prevFk = targetDb.pragma('foreign_keys', { simple: true });
+    targetDb.pragma('foreign_keys = OFF');
+    try {
+      targetDb.transaction(() => {
+        targetDb.exec(`DROP TABLE IF EXISTS "${oldName}"`);
+        targetDb.exec(`ALTER TABLE "${t.name}" RENAME TO "${oldName}"`);
+        targetDb.exec(newSql);
+        targetDb.exec(`INSERT INTO "${t.name}" SELECT * FROM "${oldName}"`);
+        targetDb.exec(`DROP TABLE "${oldName}"`);
+        for (const idx of indexes) targetDb.exec(idx.sql);
+        for (const trg of triggers) targetDb.exec(trg.sql);
+      })();
+      console.log(`[multidb] Repaired cross-DB FK constraints on ${label}.${t.name} (removed refs to: ${missing.join(', ')})`);
+    } catch (err) {
+      console.warn(`[multidb] Failed repairing cross-DB FKs on ${label}.${t.name}:`, err.message);
+    } finally {
+      targetDb.pragma(`foreign_keys = ${prevFk ? 'ON' : 'OFF'}`);
+    }
+  }
+}
+
+function ensureWorkshopSchemaParity(wdb) {
+  wdb.exec(`
+    CREATE TABLE IF NOT EXISTS settings (
+      key   TEXT PRIMARY KEY,
+      value TEXT
+    );
+    CREATE TABLE IF NOT EXISTS audit_ledger (
+      id               INTEGER PRIMARY KEY AUTOINCREMENT,
+      timestamp        TEXT NOT NULL DEFAULT (datetime('now')),
+      user_id          INTEGER NOT NULL,
+      action           TEXT NOT NULL,
+      entity           TEXT NOT NULL,
+      entity_id        INTEGER,
+      payload_snapshot TEXT NOT NULL,
+      prev_hash        TEXT NOT NULL,
+      hash             TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_audit_ledger_entity ON audit_ledger(entity, entity_id);
+    CREATE TABLE IF NOT EXISTS user_notification_reads (
+      user_id   INTEGER NOT NULL,
+      notif_key TEXT NOT NULL,
+      read_at   TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (user_id, notif_key)
+    );
+    CREATE INDEX IF NOT EXISTS idx_user_notif_reads_user ON user_notification_reads(user_id);
+  `);
+
+  ensureColIfTableExists(wdb, 'general_item_txns', 'source_issue_id', 'INTEGER');
+  ensureColIfTableExists(wdb, 'issues', 'source_table', 'TEXT');
+  ensureColIfTableExists(wdb, 'issues', 'source_id', 'INTEGER');
+  ensureColIfTableExists(wdb, 'job_daily_work', 'service_id', 'INTEGER');
+  ensureColIfTableExists(wdb, 'job_daily_work', 'work_type', 'TEXT');
+  ensureColIfTableExists(wdb, 'job_requests', 'service_type', 'TEXT');
+  ensureColIfTableExists(wdb, 'job_requests', 'service_id', 'INTEGER');
+  ensureColIfTableExists(wdb, 'job_requests', 'fabrication_kind', 'TEXT');
+  ensureColIfTableExists(wdb, 'job_requests', 'issue_store_location_id', 'INTEGER');
+  ensureColIfTableExists(wdb, 'service_jobs', 'job_request_id', 'INTEGER');
+  ensureColIfTableExists(wdb, 'stock_ledger', 'source_issue_id', 'INTEGER');
+  ensureColIfTableExists(wdb, 'store_locations', 'incharge_name', 'TEXT');
+  ensureColIfTableExists(wdb, 'store_locations', 'contact_phone', 'TEXT');
+  ensureColIfTableExists(wdb, 'store_locations', 'address', 'TEXT');
+  ensureColIfTableExists(wdb, 'store_locations', 'allow_direct_grn', 'INTEGER DEFAULT 1');
+  ensureColIfTableExists(wdb, 'store_locations', 'allow_direct_issue', 'INTEGER DEFAULT 1');
+  ensureColIfTableExists(wdb, 'store_locations', 'project_id', 'INTEGER');
+}
+
 function migrate() {
   if (!isMultiDbEnabled) return;
+  const cDbForMigrate = getCoreDb();
   const wsDir = getWorkshopsDir();
   if (fs.existsSync(wsDir)) {
     const wsFiles = fs.readdirSync(wsDir).filter((f) => f.endsWith('.db'));
@@ -449,6 +582,8 @@ function migrate() {
       try {
         const dbPath = path.join(wsDir, f);
         const wdb = new Database(dbPath);
+        wdb.pragma('foreign_keys = OFF');
+        ensureWorkshopSchemaParity(wdb);
         wdb.exec(`
           CREATE TABLE IF NOT EXISTS line_evidence_photos (
             id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -534,12 +669,32 @@ function migrate() {
           require('../migrate/052_fabrication_access_and_schema').runMigration(wdb);
           require('../migrate/053_mtn_store_locations').runMigration(wdb);
           require('../migrate/054_ccom_outsourcing').runMigration(wdb);
+          if (!wdb.prepare("SELECT 1 FROM settings WHERE key = 'migration_055_done'").get()) {
+            const m55 = require('../migrate/055_storekeeper_grants_and_price_sync').runMigration(wdb, { coreDb: cDbForMigrate });
+            if (m55 && Array.isArray(m55.affectedJobIds) && m55.affectedJobIds.length) {
+              try {
+                wdb.exec(`ATTACH DATABASE '${getCoreDbPath().replace(/\\/g, '/')}' AS core`);
+                const costing = require('../lib/costing');
+                storage.run({ workshopId: 1, db: wdb }, () => {
+                  for (const jid of m55.affectedJobIds) {
+                    try { costing.refreshJobTotals(jid); } catch {}
+                  }
+                });
+              } catch (e) {
+                console.warn(`[055] Cost refresh warning on ${f}:`, e.message);
+              }
+            }
+            wdb.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('migration_055_done', '1')").run();
+          }
           require('../migrate/056_job_request_driver_fields_and_daily_cost').runMigration(wdb);
-        } catch {}
+        } catch (migErr) {
+          console.warn(`[multidb] Migration warning on ${f}:`, migErr.message);
+        }
 
+        repairDanglingCrossDbForeignKeys(wdb, f);
         wdb.close();
       } catch (err) {
-        // ignore
+        console.warn(`[multidb] Failed opening/migrating ${f}:`, err.message);
       }
     }
   }
@@ -564,10 +719,15 @@ function migrate() {
     try {
       require('../migrate/052_fabrication_access_and_schema').runMigration(coreDb);
       require('../migrate/054_ccom_outsourcing').runMigration(coreDb);
+      require('../migrate/055_storekeeper_grants_and_price_sync').runMigration(coreDb);
       require('../migrate/056_job_request_driver_fields_and_daily_cost').runMigration(coreDb);
+      require('../lib/stand_in').initTable(coreDb);
+      require('../lib/dual_auth').initDualAuthTables(coreDb);
     } catch (err) {
-      console.warn('Failed to run migration 052 on coreDb:', err.message);
+      console.warn('Failed to run migrations on coreDb:', err.message);
     }
+
+    repairDanglingCrossDbForeignKeys(coreDb, 'core.db');
 
     try {
       coreDb.prepare("DELETE FROM role_capabilities WHERE role IN ('storekeeper', 'main_storekeeper') AND capability = 'stores.items.price'").run();

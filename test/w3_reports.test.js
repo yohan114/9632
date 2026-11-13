@@ -133,7 +133,7 @@ test('a month with no partly closed job is built exactly as before', async () =>
     assert.ok(repairCells(wb).some((r) => r.some((v) => String(v) === 'Closed Jobs — completed & closed in June 2026; labour = this month\'s work (2)')),
       'the banner reads as it always did');
     assert.ok(!wb.getWorksheet('Attendance & utilisation'), 'no extra sheet while attendance is off');
-    assert.strictEqual(wb.worksheets.length, 14);
+    assert.strictEqual(wb.worksheets.length, 15);
   } finally {
     run("UPDATE job_cards SET status = 'PARTIALLY_CLOSED' WHERE id = ?", B);
   }

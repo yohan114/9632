@@ -2,10 +2,22 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const os = require('os');
 const path = require('path');
 const fs = require('fs');
 
-const { db, get, all, run } = require('../src/db');
+const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'wo-fab-wf-'));
+process.env.DB_PATH = path.join(TMP, 'test.db');
+process.env.BACKUP_INTERVAL_MINUTES = '0';
+delete process.env.MULTIDB;
+
+const { db, get, all, run, migrate } = require('../src/db');
+migrate();
+for (const r of ['admin', 'transport_manager', 'operational_manager', 'manager', 'workshop', 'storekeeper', 'fabrication_officer', 'viewer']) {
+  run('INSERT OR IGNORE INTO roles (name) VALUES (?)', r);
+}
+require('../src/lib/permissions').seedDefaults();
+require('../src/lib/capabilities').seedCapabilities();
 const auth = require('../src/lib/auth');
 const costing = require('../src/lib/costing');
 const app = require('../src/server');

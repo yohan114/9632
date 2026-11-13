@@ -236,7 +236,7 @@ function saveBatchGrnAttachments({ grnIds = [], attachments = [], defaultKind = 
 
   for (const att of attachments) {
     if (!att) continue;
-    const dataUrl = att.dataUrl || att.photo || att.image || att.file;
+    const dataUrl = att.dataUrl || att.data_url || att.photo || att.image || att.file;
     if (!dataUrl && !att.buffer) continue;
 
     // Save on primary GRN ID (which also auto-propagates to voucher siblings, and we explicitly link any remaining cleanIds)

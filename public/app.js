@@ -20527,7 +20527,7 @@ routes.reports = async (c) => {
           <div class="card" style="padding:12px;border-left:4px solid #d97706">
             <div style="display:flex;justify-content:space-between;align-items:center">
               <div class="muted" style="font-size:11px;text-transform:uppercase;font-weight:600">Daily Overheads</div>
-              ${canEdit('reports') || canDo('reports.edit') ? '<button class="sm" id="btn-edit-overheads" style="padding:1px 6px;font-size:10.5px">⚙️ Overheads</button>' : ''}
+              ${canEdit('reports') || canDo('reports.monthly_cost.edit') ? '<button class="sm" id="btn-edit-overheads" style="padding:1px 6px;font-size:10.5px">⚙️ Overheads</button>' : ''}
             </div>
             <div style="font-size:20px;font-weight:700;color:#92400e;margin-top:2px">Rs ${money(s.daily_overheads_value)}</div>
             <div class="muted" style="font-size:11.5px;margin-top:2px">1/${d.days_in_month} of monthly overheads</div>
@@ -20632,7 +20632,7 @@ routes.reports = async (c) => {
         <div style="margin-bottom:20px">
           <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
             <h4 style="margin:0;font-size:14px;color:#92400e">4. Allocated Monthly Overheads (${money(s.daily_overheads_value)} Rs / day)</h4>
-            ${canEdit('reports') || canDo('reports.edit') ? '<button class="sm" id="btn-edit-overheads-2" style="font-size:11px">⚙️ Edit Settings</button>' : ''}
+            ${canEdit('reports') || canDo('reports.monthly_cost.edit') ? '<button class="sm" id="btn-edit-overheads-2" style="font-size:11px">⚙️ Edit Settings</button>' : ''}
           </div>
           ${tableWrap([
             { label: 'Expense Item' },

@@ -103,8 +103,8 @@ test('evidencePhotos rejects invalid entity types and invalid MIME formats', () 
   }, /Invalid entity type/);
 
   assert.throws(() => {
-    evidencePhotos.savePhoto({ entityType: 'mrn_line', entityId: 1, dataUrl: 'data:text/plain;base64,aGVsbG8=' });
-  }, /Invalid image format/);
+    evidencePhotos.savePhoto({ entityType: 'mrn_line', entityId: 1, dataUrl: 'data:application/x-msdownload;base64,aGVsbG8=' });
+  }, /(Unsupported file type|Invalid file format)/);
 });
 
 test('evidencePhotos rejects non-existent MRN lines', () => {

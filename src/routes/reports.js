@@ -1972,7 +1972,7 @@ router.get('/overheads/:yearMonth', requireAuth, asyncHandler((req, res) => {
 
 router.post('/overheads', requireAuth, asyncHandler((req, res) => {
   const permissions = require('../lib/permissions');
-  if (!req.user.roles?.includes('admin') && !permissions.meets(permissions.effectiveLevel(req.user, 'reports'), 'edit')) {
+  if (!req.user.roles?.includes('admin') && !permissions.meets(permissions.effectiveLevel(req.user, 'reports'), 'edit') && !hasCap(req.user, 'reports.monthly_cost.edit')) {
     return res.status(403).json({ error: 'Permission denied: reports edit required to modify overheads.' });
   }
   const ws = toInt(req.body.workshop_id) || reportWs(req) || 1;

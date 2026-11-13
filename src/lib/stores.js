@@ -174,38 +174,50 @@ function stampTransfer(mtnId) {
     'BATTICALOA': 7, 'BATTICALOA LOT/2': 7, 'BATTICALOA LOT/3': 7, 'BATTICALOA WORK SHOP': 7, 'BATTICALOA LOT 03': 7, 'BATTICOLOA': 7,
     'MUTHUR': 8, 'MUTHUR PLANT': 8,
   };
+  const validLocId = (locId) => {
+    const n = Number(locId);
+    if (!n) return null;
+    try { return get('SELECT id FROM store_locations WHERE id = ?', n) ? n : null; } catch { return null; }
+  };
+  const validWsId = (wsId) => {
+    const n = Number(wsId);
+    if (!n) return null;
+    return workshops.byId(n) ? n : null;
+  };
   const normLoc = (str) => {
     if (!str) return null;
     const cleanStr = String(str).toUpperCase().replace(/[^A-Z0-9/ ]/g, ' ').replace(/\s+/g, ' ').trim();
     for (const [k, id] of Object.entries(locMap)) {
-      if (cleanStr.includes(k) || k.includes(cleanStr)) return id;
+      if (cleanStr.includes(k) || k.includes(cleanStr)) return validLocId(id);
     }
     return null;
   };
 
-  const headerFromLoc = t.from_store_location_id || physicalLocationAtPlace(t.from_place) || normLoc(t.from_location) || (t.workshop_id === 2 ? 3 : 2);
-  const headerToLoc = t.to_store_location_id || physicalLocationAtPlace(t.to_place) || normLoc(t.to_location);
+  const headerFromLoc = validLocId(t.from_store_location_id || physicalLocationAtPlace(t.from_place) || normLoc(t.from_location) || (t.workshop_id === 2 ? 3 : 2));
+  const headerToLoc = validLocId(t.to_store_location_id || physicalLocationAtPlace(t.to_place) || normLoc(t.to_location));
 
   for (const l of all('SELECT id, from_location, to_location, from_place, to_place, from_store_location_id, to_store_location_id FROM mtn_lines WHERE mtn_id = ?', mtnId)) {
     let from = storeAtPlace(l.from_place || t.from_place, date);
     let to = storeAtPlace(l.to_place || t.to_place, date);
 
-    let fromLoc = l.from_store_location_id || physicalLocationAtPlace(l.from_place) || normLoc(l.from_location) || headerFromLoc;
-    let toLoc = l.to_store_location_id || physicalLocationAtPlace(l.to_place) || normLoc(l.to_location) || headerToLoc;
+    let fromLoc = validLocId(l.from_store_location_id || physicalLocationAtPlace(l.from_place) || normLoc(l.from_location) || headerFromLoc);
+    let toLoc = validLocId(l.to_store_location_id || physicalLocationAtPlace(l.to_place) || normLoc(l.to_location) || headerToLoc);
 
     if (storeLocations) {
-      if (fromLoc && !from) from = storeLocations.resolveLegacyStoreId(fromLoc) || (fromLoc === 3 ? 2 : 1);
-      if (toLoc && !to) to = storeLocations.resolveLegacyStoreId(toLoc) || (toLoc === 3 ? 2 : 1);
+      if (fromLoc && !from) from = validWsId(storeLocations.resolveLegacyStoreId(fromLoc) || (fromLoc === 3 ? 2 : 1));
+      if (toLoc && !to) to = validWsId(storeLocations.resolveLegacyStoreId(toLoc) || (toLoc === 3 ? 2 : 1));
       if (from && !fromLoc) {
         const p = storeLocations.resolvePhysicalStore(from);
-        if (p) fromLoc = p.id;
+        if (p) fromLoc = validLocId(p.id);
       }
       if (to && !toLoc) {
         const p = storeLocations.resolvePhysicalStore(to);
-        if (p) toLoc = p.id;
+        if (p) toLoc = validLocId(p.id);
       }
     }
 
+    from = validWsId(from);
+    to = validWsId(to);
     const movesToStore = to && to !== from;
     const movesToLoc = toLoc && toLoc !== fromLoc;
 
