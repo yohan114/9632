@@ -594,6 +594,7 @@ function migrate() {
       baseDb.exec(STORE_LOCATIONS_CORE_SCHEMA);
       require('../lib/store_locations').seedStoreLocations(baseDb);
       require('../lib/store_locations').migrateStoreLocationsStage2(baseDb);
+      require('../migrate/056_job_request_driver_fields_and_daily_cost').runMigration(baseDb);
     } catch {}
   }
 

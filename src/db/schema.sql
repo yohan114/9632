@@ -919,6 +919,9 @@ CREATE TABLE IF NOT EXISTS job_cards (
   total_cost           REAL DEFAULT 0,
   created_at           TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at           TEXT NOT NULL DEFAULT (datetime('now')),
+  driver_name          TEXT,
+  contact_no           TEXT,
+  meter_reading        TEXT,
   fabrication_kind     TEXT,
   issue_store_location_id INTEGER REFERENCES store_locations(id)
 );
@@ -1846,3 +1849,20 @@ CREATE TABLE IF NOT EXISTS vehicle_doc_reminders (
 );
 CREATE INDEX IF NOT EXISTS idx_vdoc_reminders_ver ON vehicle_doc_reminders(version_id);
 CREATE INDEX IF NOT EXISTS idx_vdoc_reminders_stage ON vehicle_doc_reminders(stage);
+
+-- Workshop Monthly Overheads (Daily Cost Reporting)
+CREATE TABLE IF NOT EXISTS workshop_monthly_overheads (
+  id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+  workshop_id         INTEGER NOT NULL DEFAULT 1,
+  year_month          TEXT NOT NULL,
+  electricity_cost    REAL NOT NULL DEFAULT 60000.0,
+  internet_bill       REAL NOT NULL DEFAULT 5000.0,
+  telephone_allowance REAL NOT NULL DEFAULT 13250.0,
+  travelling_allowance REAL NOT NULL DEFAULT 0.0,
+  other_expenses      REAL NOT NULL DEFAULT 5000.0,
+  notes               TEXT,
+  updated_by          INTEGER REFERENCES users(id),
+  updated_at          TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(workshop_id, year_month)
+);
+CREATE INDEX IF NOT EXISTS idx_workshop_overheads_ym ON workshop_monthly_overheads(year_month);

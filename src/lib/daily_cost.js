@@ -27,6 +27,33 @@ const DEFAULT_OVERHEADS = {
   notes: 'Standard baseline overheads'
 };
 
+const CREATE_OVERHEADS_TABLE_SQL = `
+  CREATE TABLE IF NOT EXISTS workshop_monthly_overheads (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    workshop_id         INTEGER NOT NULL DEFAULT 1,
+    year_month          TEXT NOT NULL,
+    electricity_cost    REAL NOT NULL DEFAULT 60000.0,
+    internet_bill       REAL NOT NULL DEFAULT 5000.0,
+    telephone_allowance REAL NOT NULL DEFAULT 13250.0,
+    travelling_allowance REAL NOT NULL DEFAULT 0.0,
+    other_expenses      REAL NOT NULL DEFAULT 5000.0,
+    notes               TEXT,
+    updated_by          INTEGER,
+    updated_at          TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(workshop_id, year_month)
+  );
+  CREATE INDEX IF NOT EXISTS idx_workshop_overheads_ym ON workshop_monthly_overheads(year_month);
+`;
+
+function ensureOverheadsTable() {
+  try {
+    const { db } = require('../db');
+    db.exec(CREATE_OVERHEADS_TABLE_SQL);
+  } catch (e) {
+    // ignore
+  }
+}
+
 function round2(v) {
   return Math.round((Number(v) || 0) * 100) / 100;
 }
@@ -43,10 +70,17 @@ function getOverheads(workshopId = 1, yearMonth) {
   const ws = Number(workshopId) || 1;
   const ym = String(yearMonth || '').slice(0, 7) || new Date().toISOString().slice(0, 7);
 
-  const row = get(
-    `SELECT * FROM workshop_monthly_overheads WHERE workshop_id = ? AND year_month = ?`,
-    ws, ym
-  );
+  ensureOverheadsTable();
+
+  let row = null;
+  try {
+    row = get(
+      `SELECT * FROM workshop_monthly_overheads WHERE workshop_id = ? AND year_month = ?`,
+      ws, ym
+    );
+  } catch (err) {
+    console.warn(`getOverheads failed for ws ${ws}, ym ${ym}:`, err.message);
+  }
 
   const [y, m] = ym.split('-').map(Number);
   const daysInMonth = (y && m) ? getDaysInMonth(y, m) : 30;
@@ -98,6 +132,8 @@ function saveOverheads(workshopId = 1, yearMonth, payload = {}, userId = null) {
     throw err;
   }
 
+  ensureOverheadsTable();
+
   const electricity = payload.electricity_cost !== undefined ? Math.max(0, Number(payload.electricity_cost) || 0) : DEFAULT_OVERHEADS.electricity_cost;
   const internet = payload.internet_bill !== undefined ? Math.max(0, Number(payload.internet_bill) || 0) : DEFAULT_OVERHEADS.internet_bill;
   const telephone = payload.telephone_allowance !== undefined ? Math.max(0, Number(payload.telephone_allowance) || 0) : DEFAULT_OVERHEADS.telephone_allowance;
@@ -133,8 +169,16 @@ function computeDailyCost({ asOf, ws = null } = {}) {
   const wsId = ws ? Number(ws) : 1;
   const ym = date.slice(0, 7);
 
-  const wsRow = get('SELECT id, name, code FROM workshops WHERE id = ?', wsId);
-  const workshopName = wsRow ? wsRow.name : 'Central Workshop';
+  let workshopName = 'Central Workshop';
+  try {
+    const wsRow = get('SELECT id, name, code FROM workshops WHERE id = ?', wsId);
+    if (wsRow && wsRow.name) workshopName = wsRow.name;
+  } catch (_) {
+    try {
+      const wsRow = get('SELECT id, name, code FROM core.workshops WHERE id = ?', wsId);
+      if (wsRow && wsRow.name) workshopName = wsRow.name;
+    } catch (_) {}
+  }
 
   // 1. Labour & Outside value from job_daily_work
   const dwSql = `
@@ -150,7 +194,8 @@ function computeDailyCost({ asOf, ws = null } = {}) {
      ORDER BY w.id ASC
   `;
   const dwParams = ws ? [date, wsId] : [date];
-  const dwRows = all(dwSql, ...dwParams);
+  let dwRows = [];
+  try { dwRows = all(dwSql, ...dwParams); } catch (e) { console.warn('daily_cost dwRows error:', e.message); }
 
   const labourLines = [];
   const outsideLines = [];
@@ -234,7 +279,8 @@ function computeDailyCost({ asOf, ws = null } = {}) {
      ORDER BY jp.id ASC
   `;
   const extPartsParams = ws ? [date, wsId] : [date];
-  const extPartsRows = all(extPartsSql, ...extPartsParams);
+  let extPartsRows = [];
+  try { extPartsRows = all(extPartsSql, ...extPartsParams); } catch (e) { console.warn('extPartsRows error:', e.message); }
 
   let extRepairsTotal = 0;
   for (const ep of extPartsRows) {
@@ -280,7 +326,8 @@ function computeDailyCost({ asOf, ws = null } = {}) {
      ORDER BY i.id ASC
   `;
   const issuesParams = ws ? [date, wsId] : [date];
-  const issueRows = all(issuesSql, ...issuesParams);
+  let issueRows = [];
+  try { issueRows = all(issuesSql, ...issuesParams); } catch (e) { console.warn('issuesRows error:', e.message); }
 
   const localSparesLines = [];
   const hoSparesLines = [];
@@ -335,7 +382,8 @@ function computeDailyCost({ asOf, ws = null } = {}) {
      ORDER BY git.id ASC
   `;
   const genParams = ws ? [date, wsId] : [date];
-  const genRows = all(genSql, ...genParams);
+  let genRows = [];
+  try { genRows = all(genSql, ...genParams); } catch (e) { console.warn('genRows error:', e.message); }
 
   const genSparesLines = [];
   let genSparesTotal = 0;

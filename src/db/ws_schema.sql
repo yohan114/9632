@@ -248,6 +248,9 @@ CREATE TABLE job_requests (
     approval_status   TEXT NOT NULL DEFAULT 'requested', -- requested | certified | approved | rejected
     requested_by      TEXT,
     requested_by_user INTEGER,
+    driver_name       TEXT,
+    contact_no        TEXT,
+    meter_reading     TEXT,
     requested_sig     TEXT,
     certified_by      TEXT, certified_at TEXT, certified_sig TEXT,
     approved_by       TEXT, approved_at TEXT, approved_sig TEXT,
@@ -625,7 +628,10 @@ CREATE TABLE "job_cards" (
   external_cost        REAL DEFAULT 0,
   total_cost           REAL DEFAULT 0,
   created_at           TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at           TEXT NOT NULL DEFAULT (datetime('now'))
+  updated_at           TEXT NOT NULL DEFAULT (datetime('now')),
+  driver_name          TEXT,
+  contact_no           TEXT,
+  meter_reading        TEXT
 , recorded_cost REAL, other_cost REAL NOT NULL DEFAULT 0, outside_estimate REAL DEFAULT 0, original_completed_at TEXT, partial_closed_at TEXT, partial_closed_by INTEGER, partial_note TEXT, continues_job_id INTEGER REFERENCES job_cards(id), workshop_id INTEGER, field INTEGER NOT NULL DEFAULT 0, field_place TEXT, field_location TEXT, breakdown INTEGER NOT NULL DEFAULT 0, reported_at TEXT, arrived_at TEXT, working_at TEXT, field_km REAL, field_km_rate REAL, job_request_id INTEGER REFERENCES job_requests(id), fabrication_kind TEXT, issue_store_location_id INTEGER);
 
 CREATE TABLE mechanic_workshops (
@@ -1236,3 +1242,20 @@ CREATE TRIGGER trg_mrn_workshop AFTER INSERT ON mrn WHEN NEW.workshop_id IS NULL
 CREATE TRIGGER trg_grn_store AFTER INSERT ON grn WHEN NEW.store_id IS NULL BEGIN UPDATE grn SET store_id = COALESCE((SELECT store_id FROM ws_meta LIMIT 1), (SELECT workshop_id FROM ws_meta LIMIT 1)) WHERE id = NEW.id; END;;
 CREATE TRIGGER trg_tyre_battery_issues_store AFTER INSERT ON tyre_battery_issues WHEN NEW.store_id IS NULL BEGIN UPDATE tyre_battery_issues SET store_id = COALESCE((SELECT store_id FROM ws_meta LIMIT 1), (SELECT workshop_id FROM ws_meta LIMIT 1)) WHERE id = NEW.id; END;;
 CREATE TRIGGER trg_min_notes_ws AFTER INSERT ON min_notes WHEN NEW.workshop_id IS NULL BEGIN UPDATE min_notes SET workshop_id = COALESCE((SELECT j.workshop_id FROM job_cards j WHERE j.id = NEW.job_id), (SELECT workshop_id FROM ws_meta LIMIT 1)) WHERE id = NEW.id; END;;
+
+-- Workshop Monthly Overheads (Daily Cost Reporting)
+CREATE TABLE IF NOT EXISTS workshop_monthly_overheads (
+  id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+  workshop_id         INTEGER NOT NULL DEFAULT 1,
+  year_month          TEXT NOT NULL,
+  electricity_cost    REAL NOT NULL DEFAULT 60000.0,
+  internet_bill       REAL NOT NULL DEFAULT 5000.0,
+  telephone_allowance REAL NOT NULL DEFAULT 13250.0,
+  travelling_allowance REAL NOT NULL DEFAULT 0.0,
+  other_expenses      REAL NOT NULL DEFAULT 5000.0,
+  notes               TEXT,
+  updated_by          INTEGER,
+  updated_at          TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(workshop_id, year_month)
+);
+CREATE INDEX IF NOT EXISTS idx_workshop_overheads_ym ON workshop_monthly_overheads(year_month);

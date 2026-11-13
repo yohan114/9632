@@ -68,6 +68,9 @@ function migrate() {
     approval_status   TEXT NOT NULL DEFAULT 'requested', -- requested | certified | approved | rejected
     requested_by      TEXT,
     requested_by_user INTEGER REFERENCES users(id),
+    driver_name       TEXT,
+    contact_no        TEXT,
+    meter_reading     TEXT,
     requested_sig     TEXT,
     certified_by      TEXT, certified_at TEXT, certified_sig TEXT,
     approved_by       TEXT, approved_at TEXT, approved_sig TEXT,
