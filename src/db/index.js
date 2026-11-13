@@ -956,6 +956,13 @@ function migrate() {
     console.warn('Migration 056 Job Request Driver Fields & Daily Cost skipped:', err.message);
   }
 
+  // Restore Assistant Transport Manager job request & breakdown permissions
+  try {
+    require('../migrate/057_assistant_transport_jobcard_permissions').runMigration(db);
+  } catch (err) {
+    console.warn('Migration 057 Assistant Transport permissions skipped:', err.message);
+  }
+
   return db;
 }
 

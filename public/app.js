@@ -2405,8 +2405,8 @@ async function dashMain(c) {
   const quickActionsBar = `
     <div class="quick-actions-bar">
       <span class="quick-action-label">Quick Actions:</span>
-      ${canEdit('jobs') ? `<a class="quick-action-btn primary" href="#/jobs?new=1"><span>➕</span> New Job Card</a>` : ''}
-      ${canEdit('jobrequests') ? `<a class="quick-action-btn" href="#/jobrequests?new=1"><span>📋</span> Job Request</a>` : ''}
+      ${canDo('jobs.create') ? `<a class="quick-action-btn primary" href="#/jobs?new=1"><span>➕</span> New Job Card</a>` : ''}
+      ${canDo('jobrequests.create', 'jobrequests.create_fabrication') ? `<a class="quick-action-btn" href="#/jobrequests?new=1"><span>📋</span> Job Request</a>` : ''}
       ${(canView('dailywork') || canView('labour') || canView('reports')) ? `<a class="quick-action-btn" href="#/mechanics-kpi"><span>📊</span> Mechanics KPI</a>` : ''}
       ${canEdit('dailywork') ? `<a class="quick-action-btn" href="#/dailywork"><span>📅</span> Log Daily Work</a>` : ''}
       ${canEdit('stores') ? `<a class="quick-action-btn" href="#/stores?tab=flow&sub=issues"><span>📦</span> Issue Stock</a>` : ''}
@@ -3929,13 +3929,33 @@ routes.jobs = async (c, params) => {
     .map(([t, l]) => `<a class="cockpit-tab ${t === tab ? 'active' : ''}" href="#/jobs?tab=${t}">${l}</a>`).join('')}</div>
     <div id="jobsbody"><div class="muted">Loading…</div></div>`;
   const body = qs('#jobsbody');
-  if (tab === 'requests') return jobsRequests(body, sp);
-  if (tab === 'all') return jobsAllCards(body, sp);
-  if (tab === 'ongoing') return jobsOngoing(body, sp);
-  if (tab === 'finishing') return jobsFinishing(body, sp);
-  if (tab === 'ready') return jobsReady(body, sp);
-  if (tab === 'outsourcing') return jobsOutsourcing(body, sp);
-  return jobsMonitor(body);
+  const wantNew = sp.get('new') === '1';
+  if (wantNew) {
+    const cleanSp = new URLSearchParams(sp);
+    cleanSp.delete('new');
+    const cleanQs = cleanSp.toString();
+    history.replaceState(null, '', '#/jobs' + (cleanQs ? '?' + cleanQs : ''));
+  }
+  let res;
+  if (tab === 'requests') res = await jobsRequests(body, sp);
+  else if (tab === 'all') res = await jobsAllCards(body, sp);
+  else if (tab === 'ongoing') res = await jobsOngoing(body, sp);
+  else if (tab === 'finishing') res = await jobsFinishing(body, sp);
+  else if (tab === 'ready') res = await jobsReady(body, sp);
+  else if (tab === 'outsourcing') res = await jobsOutsourcing(body, sp);
+  else res = await jobsMonitor(body);
+  if (wantNew) {
+    if (tab === 'requests' && canDo('jobrequests.create', 'jobrequests.create_fabrication')) {
+      newJobRequestModal();
+    } else if (canDo('jobs.create')) {
+      newJobModal(() => {
+        if (tab === 'requests') jobsRequests(body, sp);
+        else if (tab === 'monitor') jobsMonitor(body);
+        else jobsAllCards(body, sp);
+      });
+    }
+  }
+  return res;
 };
 
 const monCard = (n, label, href, tone, note) => `<a class="card stat" href="${href}" style="text-decoration:none">
@@ -3992,7 +4012,7 @@ async function jobsRequests(body, sp) {
         <option value="repair" ${cur.type === 'repair' ? 'selected' : ''}>Repair</option><option value="service" ${cur.type === 'service' ? 'selected' : ''}>Service</option><option value="fabrication" ${cur.type === 'fabrication' ? 'selected' : ''}>Fabrication</option></select>
       <a class="btn sm" id="jrf-xls" href="#">⬇ Excel</a>
       <div class="spacer"></div>
-      ${canDo('jobrequests.create') ? '<button class="sm" id="jrf-newjr">+ New job request</button>' : ''}
+      ${canDo('jobrequests.create', 'jobrequests.create_fabrication') ? '<button class="sm" id="jrf-newjr">+ New job request</button>' : ''}
       ${canDo('jobs.create') ? '<button class="sm" id="jrf-newjob" title="A job card is opened against a job request that has been certified and approved">🔧 Open job card from a request</button>' : ''}
     </div>
     <div class="pill-row" id="jrf-steps" style="margin:0 0 10px;flex-wrap:wrap;gap:6px"></div>
@@ -16519,7 +16539,11 @@ const jrBadge = (s, hasCard) => (s === 'approved' && hasCard === false
 routes.jobrequests = async (c, params) => {
   if (params[0]) return jobRequestDetail(c, params[0]);
   // The list is the Job Cards page's Requests tab now (job cards plan, Part 1).
-  location.replace('#/jobs?tab=requests' + (/[?&]q=/.test(location.hash) ? '&q=' + encodeURIComponent(new URLSearchParams(location.hash.split('?')[1]).get('q')) : ''));
+  const src = new URLSearchParams(location.hash.split('?')[1] || '');
+  const dst = new URLSearchParams({ tab: 'requests' });
+  if (src.get('q')) dst.set('q', src.get('q'));
+  if (src.get('new')) dst.set('new', src.get('new'));
+  location.replace('#/jobs?' + dst.toString());
 };
 
 async function jobRequestDetail(c, id) {

@@ -721,6 +721,7 @@ function migrate() {
       require('../migrate/054_ccom_outsourcing').runMigration(coreDb);
       require('../migrate/055_storekeeper_grants_and_price_sync').runMigration(coreDb);
       require('../migrate/056_job_request_driver_fields_and_daily_cost').runMigration(coreDb);
+      require('../migrate/057_assistant_transport_jobcard_permissions').runMigration(coreDb);
       require('../lib/stand_in').initTable(coreDb);
       require('../lib/dual_auth').initDualAuthTables(coreDb);
     } catch (err) {
@@ -755,6 +756,7 @@ function migrate() {
       require('../lib/store_locations').seedStoreLocations(baseDb);
       require('../lib/store_locations').migrateStoreLocationsStage2(baseDb);
       require('../migrate/056_job_request_driver_fields_and_daily_cost').runMigration(baseDb);
+      require('../migrate/057_assistant_transport_jobcard_permissions').runMigration(baseDb);
     } catch {}
   }
 

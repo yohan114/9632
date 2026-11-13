@@ -1266,8 +1266,24 @@ function getUpcomingExpirations({ daysAhead = 30, today = getColomboToday(), pro
     assetFilter = ' AND (a.current_project_id = ? OR a.home_project_id = ?)';
     params.push(projectId, projectId);
   } else if (workshopId) {
-    assetFilter = ' AND (EXISTS (SELECT 1 FROM job_cards j WHERE j.asset_id = a.id AND j.workshop_id = ?) OR EXISTS (SELECT 1 FROM service_jobs s WHERE s.asset_id = a.id AND s.workshop_id = ?))';
-    params.push(workshopId, workshopId);
+    if (multidb && typeof multidb.isMultiDb === 'function' && multidb.isMultiDb()) {
+      try {
+        const wsDb = multidb.getWorkshopDb(Number(workshopId));
+        if (wsDb) {
+          const ids = wsDb.prepare('SELECT DISTINCT asset_id FROM job_cards WHERE asset_id IS NOT NULL UNION SELECT DISTINCT asset_id FROM service_jobs WHERE asset_id IS NOT NULL').all().map(r => r.asset_id).filter(Boolean);
+          if (ids.length > 0) {
+            assetFilter = ' AND a.id IN (' + ids.join(',') + ')';
+          } else {
+            assetFilter = ' AND 1 = 0';
+          }
+        }
+      } catch {
+        assetFilter = ' AND 1 = 0';
+      }
+    } else {
+      assetFilter = ' AND (EXISTS (SELECT 1 FROM job_cards j WHERE j.asset_id = a.id AND j.workshop_id = ?) OR EXISTS (SELECT 1 FROM service_jobs s WHERE s.asset_id = a.id AND s.workshop_id = ?))';
+      params.push(workshopId, workshopId);
+    }
   }
 
   const rows = db.prepare(`
