@@ -151,3 +151,29 @@ test('public/app.js fixes all UI audit regressions', () => {
   assert.ok(appJs.includes('modal-x'));
   assert.ok(appJs.includes("try { await api('/auth/logout', { method: 'POST' }); } catch {}"));
 });
+
+test('migration 056 heals missing driver columns even when migration_056_done is already set', () => {
+  const Database = require('better-sqlite3');
+  const tmpDbPath = path.join(TMP, 'heal-056.db');
+  const legacyDb = new Database(tmpDbPath);
+  legacyDb.exec(`
+    CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT);
+    INSERT INTO settings (key, value) VALUES ('migration_056_done', '1');
+    CREATE TABLE job_requests (id INTEGER PRIMARY KEY AUTOINCREMENT, req_no TEXT, asset_id INTEGER, defect TEXT);
+    CREATE TABLE job_cards (id INTEGER PRIMARY KEY AUTOINCREMENT, job_no TEXT, asset_id INTEGER);
+  `);
+  const { runMigration } = require('../src/migrate/056_job_request_driver_fields_and_daily_cost');
+  // Replicate src/db/index.js check logic against the legacy DB
+  const hasCol = (tbl, col) => legacyDb.prepare(`PRAGMA table_info(${tbl})`).all().some((c) => c.name === col);
+  assert.equal(hasCol('job_requests', 'driver_name'), false);
+  if (!legacyDb.prepare("SELECT 1 FROM settings WHERE key = 'migration_056_done'").get() || !hasCol('job_requests', 'driver_name') || !hasCol('job_cards', 'driver_name')) {
+    runMigration(legacyDb);
+  }
+  assert.equal(hasCol('job_requests', 'driver_name'), true);
+  assert.equal(hasCol('job_requests', 'contact_no'), true);
+  assert.equal(hasCol('job_requests', 'meter_reading'), true);
+  assert.equal(hasCol('job_cards', 'driver_name'), true);
+  assert.equal(hasCol('job_cards', 'contact_no'), true);
+  assert.equal(hasCol('job_cards', 'meter_reading'), true);
+  legacyDb.close();
+});

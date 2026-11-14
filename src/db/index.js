@@ -947,10 +947,15 @@ function migrate() {
   }
 
   // Job Request Driver Fields & Daily Cost Overheads
+  // Re-run idempotently if an older backup/restore stamped migration_056_done without driver columns.
   try {
-    if (!db.prepare("SELECT 1 FROM settings WHERE key = 'migration_056_done'").get()) {
+    const hasCol = (tbl, col) => db.prepare(`PRAGMA table_info(${tbl})`).all().some((c) => c.name === col);
+    const needs056 = !db.prepare("SELECT 1 FROM settings WHERE key = 'migration_056_done'").get()
+      || !hasCol('job_requests', 'driver_name')
+      || !hasCol('job_cards', 'driver_name');
+    if (needs056) {
       require('../migrate/056_job_request_driver_fields_and_daily_cost').runMigration(db);
-      db.prepare("INSERT INTO settings (key, value) VALUES ('migration_056_done', '1')").run();
+      db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('migration_056_done', '1')").run();
     }
   } catch (err) {
     console.warn('Migration 056 Job Request Driver Fields & Daily Cost skipped:', err.message);
