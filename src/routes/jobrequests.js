@@ -209,6 +209,219 @@ router.post('/', requireCap('jobrequests.create', 'jobrequests.create_fabricatio
   });
 }));
 
+// ---- pre-approval edit (Assistant Transport Manager / Transport / Workshop) ----
+// A job request may be corrected right up until Operational Manager approval.
+// Editing a CERTIFIED request withdraws that certification so it must be re-certified
+// against the updated request (Step 3a seal protection).
+router.patch('/:id', requireCap('jobrequests.edit'), asyncHandler((req, res) => {
+  const id = toInt(req.params.id);
+  const jr = get('SELECT * FROM job_requests WHERE id = ?', id);
+  if (!jr || (jr.type === 'fabrication' && !isAdmin(req.user) && !hasCap(req.user, 'fabrication.view', 'jobrequests.certify', 'jobrequests.approve'))) {
+    return res.status(404).json({ error: 'Job request not found' });
+  }
+  if (jr.approval_status === 'approved') {
+    return res.status(409).json({ error: 'Already approved — a job request cannot be edited after approval' });
+  }
+  if (jr.approval_status === 'rejected') {
+    return res.status(409).json({ error: 'This request was rejected — raise a new request instead' });
+  }
+  if (jr.job_id || jr.service_id) {
+    return res.status(409).json({ error: 'A job card or service record is already linked to this request' });
+  }
+
+  const b = req.body || {};
+  const sets = [];
+  const params = [];
+  const before = {};
+  const after = {};
+
+  const track = (col, nextVal) => {
+    const prevNorm = jr[col] == null ? null : jr[col];
+    const nextNorm = nextVal == null ? null : nextVal;
+    if (String(prevNorm ?? '') === String(nextNorm ?? '')) return;
+    sets.push(`${col} = ?`);
+    params.push(nextNorm);
+    before[col] = prevNorm;
+    after[col] = nextNorm;
+  };
+
+  if (b.jr_no !== undefined) {
+    const nextNo = String(b.jr_no || '').trim();
+    if (!nextNo) return res.status(400).json({ error: 'jr_no cannot be blank' });
+    const clash = get('SELECT id FROM job_requests WHERE jr_no = ? AND id <> ?', nextNo, id);
+    if (clash) return res.status(409).json({ error: `Job request number ${nextNo} already exists` });
+    track('jr_no', nextNo);
+  }
+  if (b.req_date !== undefined) {
+    const rd = String(b.req_date || '').trim().slice(0, 10);
+    if (!rd) return res.status(400).json({ error: 'req_date cannot be blank' });
+    track('req_date', rd);
+  }
+  if (b.required_date !== undefined) {
+    track('required_date', b.required_date ? String(b.required_date).trim().slice(0, 10) : null);
+  }
+
+  const nextType = b.type !== undefined ? (TYPES.includes(b.type) ? b.type : null) : jr.type;
+  if (!nextType) return res.status(400).json({ error: 'type must be repair, service, or fabrication' });
+  if (nextType === 'fabrication' && jr.type !== 'fabrication') {
+    const fabSetting = get("SELECT value FROM settings WHERE key = 'fabrication.enabled'")?.value;
+    if (fabSetting !== '1') return res.status(403).json({ error: 'Fabrication section is currently disabled.' });
+    if (!hasCap(req.user, 'jobrequests.create_fabrication')) {
+      return res.status(403).json({ error: 'Permission denied: jobrequests.create_fabrication required.' });
+    }
+  }
+  if (b.type !== undefined) track('type', nextType);
+
+  let unresolved = null;
+  if (b.asset_id !== undefined || b.asset !== undefined) {
+    let nextAssetId = b.asset_id !== undefined && b.asset_id !== '' && b.asset_id !== null ? toInt(b.asset_id) : null;
+    if (!nextAssetId && b.asset && String(b.asset).trim()) {
+      const resolved = aliases.resolveAsset(String(b.asset).trim(), { source: 'job_request' });
+      nextAssetId = resolved.assetId;
+      if (!resolved.resolved) unresolved = { aliasId: resolved.aliasId, raw: b.asset };
+    }
+    track('asset_id', nextAssetId);
+  }
+  if (b.project_id !== undefined) {
+    track('project_id', b.project_id !== '' && b.project_id !== null ? toInt(b.project_id) : null);
+  }
+  if (b.severity !== undefined) {
+    if (b.severity && !SEVERITIES.includes(b.severity)) {
+      return res.status(400).json({ error: 'severity must be major or minor' });
+    }
+    track('severity', b.severity || null);
+  }
+  if (b.priority !== undefined) {
+    if (!PRIORITIES.includes(b.priority)) {
+      return res.status(400).json({ error: 'priority must be normal or urgent' });
+    }
+    track('priority', b.priority);
+  }
+  if (b.description !== undefined) {
+    const desc = String(b.description || '').trim();
+    if (!desc) return res.status(400).json({ error: 'description is required' });
+    track('description', desc);
+  }
+  if (b.requested_by !== undefined) {
+    track('requested_by', String(b.requested_by || '').trim() || null);
+  }
+  if (b.service_type !== undefined || (b.type !== undefined && nextType !== 'service')) {
+    const svc = nextType === 'service' ? (String((b.service_type !== undefined ? b.service_type : jr.service_type) || '').trim() || null) : null;
+    track('service_type', svc);
+  }
+  if (b.meter_reading !== undefined) track('meter_reading', String(b.meter_reading || '').trim() || null);
+  if (b.driver_name !== undefined) track('driver_name', String(b.driver_name || '').trim() || null);
+  if (b.contact_no !== undefined || b.contact_number !== undefined) {
+    const rawContact = b.contact_no !== undefined ? b.contact_no : b.contact_number;
+    track('contact_no', String(rawContact || '').trim() || null);
+  }
+  if (b.workshop_id !== undefined && b.workshop_id !== '' && b.workshop_id !== null) {
+    track('workshop_id', workshops.forNew(req.user, b.workshop_id));
+  }
+
+  if (nextType === 'fabrication') {
+    const nextFabKind = b.fabrication_kind !== undefined
+      ? String(b.fabrication_kind || 'new').toLowerCase().trim()
+      : (jr.fabrication_kind || 'new');
+    if (!FAB_KINDS.includes(nextFabKind)) {
+      return res.status(400).json({ error: 'fabrication_kind must be one of: new, repair, service' });
+    }
+    track('fabrication_kind', nextFabKind);
+    if (b.issue_store_location_id !== undefined) {
+      track('issue_store_location_id', toInt(b.issue_store_location_id) || 1);
+    }
+    const nextTarget = b.work_target !== undefined
+      ? (b.work_target === 'general' ? 'general' : 'vehicle')
+      : (jr.work_target || 'vehicle');
+    track('work_target', nextTarget);
+    if (nextTarget === 'general') {
+      const cat = String((b.category !== undefined ? b.category : jr.category) || '').trim();
+      const cc = String((b.cost_centre !== undefined ? b.cost_centre : jr.cost_centre) || '').trim();
+      const dRef = String((b.drawing_ref !== undefined ? b.drawing_ref : (b.drawing_notes !== undefined ? b.drawing_notes : jr.drawing_ref)) || '').trim();
+      if (!cat) return res.status(400).json({ error: 'General works requires a category.' });
+      if (!cc) return res.status(400).json({ error: 'General works requires a cost centre (project or department).' });
+      if (!dRef && !jr.drawing_path && !b.drawing_path) {
+        return res.status(400).json({ error: 'General works requires a drawing reference or justification.' });
+      }
+      track('category', cat);
+      track('cost_centre', cc);
+      track('drawing_ref', dRef || null);
+      if (b.quantity_or_size !== undefined) track('quantity_or_size', b.quantity_or_size || null);
+      if (b.deliver_to !== undefined) track('deliver_to', b.deliver_to || null);
+    }
+  }
+
+  let recertificationRequired = false;
+  const wasCertified = jr.approval_status === 'certified';
+
+  if (sets.length > 0) {
+    tx(() => {
+      run(`UPDATE job_requests SET ${sets.join(', ')} WHERE id = ?`, ...params, id);
+      if (wasCertified) {
+        requestRules.withdrawJobRequest(jr, req.user.id);
+        recertificationRequired = true;
+      }
+    });
+    audit.record({
+      userId: req.user.id,
+      entity: 'job_request',
+      entityId: id,
+      action: 'update',
+      before,
+      after,
+      reason: recertificationRequired ? 'edited before approval — certification withdrawn' : 'edited before approval',
+    });
+  }
+
+  const updated = get(
+    `SELECT r.*, a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec,
+            p.name AS project_name, j.job_no AS job_no, j.status AS job_status,
+            s.job_no AS service_job_no, s.service_date,
+            (SELECT name FROM workshops w WHERE w.id = r.workshop_id) AS workshop_name
+       FROM job_requests r
+       LEFT JOIN assets a ON a.id = r.asset_id
+       LEFT JOIN projects p ON p.id = r.project_id
+       LEFT JOIN job_cards j ON j.id = r.job_id
+       LEFT JOIN service_jobs s ON s.id = r.service_id
+      WHERE r.id = ?`, id);
+
+  res.json({
+    request: updated,
+    unresolved,
+    recertification_required: recertificationRequired,
+    open_job: jobstate.openJobFor(updated.asset_id),
+  });
+}));
+
+// ---- cancel / delete unapproved job request -------------------------------
+router.delete('/:id', asyncHandler((req, res) => {
+  const id = toInt(req.params.id);
+  const jr = get('SELECT * FROM job_requests WHERE id = ?', id);
+  if (!jr || (jr.type === 'fabrication' && !isAdmin(req.user) && !hasCap(req.user, 'fabrication.view', 'jobrequests.certify', 'jobrequests.approve'))) {
+    return res.status(404).json({ error: 'Job request not found' });
+  }
+  const canDeleteAny = isAdmin(req.user) || hasCap(req.user, 'jobrequests.delete');
+  const canWithdrawOwn = hasCap(req.user, 'jobrequests.edit') && jr.requested_by_user === req.user.id && jr.approval_status === 'requested';
+  if (!canDeleteAny && !canWithdrawOwn) {
+    return res.status(403).json({ error: 'Permission denied: jobrequests.delete is required (or edit permission on your own uncertified request).' });
+  }
+  if (jr.approval_status === 'approved' || jr.job_id || jr.service_id) {
+    return res.status(409).json({ error: 'Approved or linked job request cannot be deleted' });
+  }
+  tx(() => {
+    run('DELETE FROM job_request_approvals WHERE job_request_id = ?', id);
+    run('DELETE FROM job_requests WHERE id = ?', id);
+  });
+  audit.record({
+    userId: req.user.id,
+    entity: 'job_request',
+    entityId: id,
+    action: 'delete',
+    before: { jr_no: jr.jr_no, approval_status: jr.approval_status, description: jr.description },
+  });
+  res.json({ ok: true, id });
+}));
+
 // ---- certify (Transport Manager) ------------------------------------------
 router.post('/:id/certify', requireCap('jobrequests.certify'), asyncHandler((req, res) => {
   const id = toInt(req.params.id);

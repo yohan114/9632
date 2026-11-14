@@ -963,6 +963,13 @@ function migrate() {
     console.warn('Migration 057 Assistant Transport permissions skipped:', err.message);
   }
 
+  // Grant Assistant Transport Manager asset/project management and pre-approval JR edits
+  try {
+    require('../migrate/058_assistant_transport_assets_projects_jr_edit').runMigration(db);
+  } catch (err) {
+    console.warn('Migration 058 Assistant Transport asset/project/JR edit permissions skipped:', err.message);
+  }
+
   return db;
 }
 

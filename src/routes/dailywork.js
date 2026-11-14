@@ -715,6 +715,7 @@ router.get('/mechanics-kpi', requireKpiAccess, asyncHandler(async (req, res) => 
       net_saving_per_hr: netSavPerHr,
       entries_count: m.entries_count,
       priced_entries_count: m.priced_entries_count,
+      entries_with_outside_cost: m.priced_entries_count,
       unpriced_entries_count: m.unpriced_entries_count,
       coverage_pct: covPct,
       solo_entries_count: m.solo_entries_count,

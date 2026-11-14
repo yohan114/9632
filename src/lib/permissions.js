@@ -131,9 +131,9 @@ const DEFAULT_MATRIX = {
   },
   assistant_transport_manager: {
     dashboard: 'view', jobs: 'view', jobrequests: 'edit', field: 'view', operations: 'view',
-    dailywork: 'view', services: 'view', lubricants: 'view', assets: 'view', vehicle_docs: 'edit', labour: 'none',
+    dailywork: 'view', services: 'view', lubricants: 'view', assets: 'edit', vehicle_docs: 'edit', labour: 'none',
     stores: 'none', oil: 'none', batteries: 'view', filters: 'view', tools: 'none', service_plan: 'view',
-    projects: 'view', aliases: 'none', attention: 'view', daily_progress: 'view', cost_teardown: 'view',
+    projects: 'edit', aliases: 'none', attention: 'view', daily_progress: 'view', cost_teardown: 'view',
     purchasing: 'none', tb_requests: 'view', tb_request: 'view', tb_purchase: 'none', tb_grn: 'none', tb_issue: 'none',
     tb_reports: 'view', reports: 'view', workshops: 'none', access: 'none', users: 'none',
     fabrication: 'none', fabrication_costing: 'none'

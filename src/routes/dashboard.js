@@ -292,7 +292,7 @@ router.get('/overview', asyncHandler((req, res) => {
   const ws = scope.reach(req.user);   // Step 2b: null = every workshop
   const canReports = permissions.reaches(req.user, 'reports') || hasCap(req.user, 'reports.financial');
   const canJobs = permissions.reaches(req.user, 'jobs') || permissions.reaches(req.user, 'jobrequests');
-  const canStores = permissions.reaches(req.user, 'stores') || permissions.reaches(req.user, 'oil') || permissions.reaches(req.user, 'generalstock');
+  const canStores = permissions.reaches(req.user, 'stores') || permissions.reaches(req.user, 'oil') || permissions.reaches(req.user, 'batteries') || permissions.reaches(req.user, 'filters');
 
   const projId = (req.user && !req.user.isAllSitesMode) ? req.user.activeProjectId : null;
   const { active_jobs, vehicles_in_workshop, pending_requests, todays_issue_cost } = counts(ws, projId);
@@ -755,7 +755,7 @@ router.get('/workflow-monitor', asyncHandler((req, res) => {
     is_admin: (user.roles || []).includes('admin'),
     domains: {
       jobs: canMod('jobs') || canMod('jobrequests') || canMod('service'),
-      stores: canMod('stores') || canMod('oil') || canMod('generalstock'),
+      stores: canMod('stores') || canMod('oil') || canMod('batteries') || canMod('filters'),
       purchasing: canMod('purchasing'),
       mechanics: canSeeMechanics,
       assets: canMod('assets') || canMod('batteries') || canMod('tyres'),
