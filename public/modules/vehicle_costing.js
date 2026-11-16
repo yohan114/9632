@@ -53,7 +53,7 @@
         if (btn) {
           if (t === tabId.replace('-', '_')) {
             btn.style.borderBottom = '2px solid var(--primary,#0066ff)';
-            btn.style.color = 'var(--text,#fff)';
+            btn.style.color = 'var(--text)';
             btn.classList.add('active');
           } else {
             btn.style.borderBottom = 'none';
@@ -90,7 +90,7 @@
     async function renderCurrentTab() {
       const container = qs('#costing_tab_content');
       if (!container) return;
-      container.innerHTML = '<div class="card" style="padding:30px;text-align:center" class="muted">Loading ' + currentTab + '...</div>';
+      container.innerHTML = `<div class="card muted" style="padding:30px;text-align:center">Loading ${esc(currentTab)}...</div>`;
 
       try {
         if (currentTab === 'fleet-summary') {
@@ -122,21 +122,21 @@
             <div class="muted" style="font-size:11px;font-weight:600">HIRING REVENUE</div>
             <div style="font-size:20px;font-weight:800;margin-top:4px;color:var(--primary,#0066ff)">${moneyC(totals.total_hiring_revenue || 0)}</div>
           </div>
-          <div class="card" style="padding:14px;border-left:4px solid var(--amber,#f59e0b)">
+          <div class="card" style="padding:14px;border-left:4px solid var(--cost-amber,#b45309)">
             <div class="muted" style="font-size:11px;font-weight:600">WORKSHOP REPAIRS</div>
-            <div style="font-size:20px;font-weight:800;margin-top:4px;color:var(--amber,#f59e0b)">${moneyC(totals.total_repair_cost || 0)}</div>
+            <div style="font-size:20px;font-weight:800;margin-top:4px;color:var(--cost-amber,#b45309)">${moneyC(totals.total_repair_cost || 0)}</div>
           </div>
-          <div class="card" style="padding:14px;border-left:4px solid #6366f1">
+          <div class="card" style="padding:14px;border-left:4px solid var(--cost-diesel,#4f46e5)">
             <div class="muted" style="font-size:11px;font-weight:600">DIESEL COST (${num(totals.total_diesel_litres || 0)} L)</div>
-            <div style="font-size:20px;font-weight:800;margin-top:4px;color:#6366f1">${moneyC(totals.total_diesel_cost || 0)}</div>
+            <div style="font-size:20px;font-weight:800;margin-top:4px;color:var(--cost-diesel,#4f46e5)">${moneyC(totals.total_diesel_cost || 0)}</div>
           </div>
-          <div class="card" style="padding:14px;border-left:4px solid #ec4899">
+          <div class="card" style="padding:14px;border-left:4px solid var(--cost-driver,#be185d)">
             <div class="muted" style="font-size:11px;font-weight:600">DRIVER &amp; OTHER COSTS</div>
-            <div style="font-size:20px;font-weight:800;margin-top:4px;color:#ec4899">${moneyC(totals.total_driver_other_cost || 0)}</div>
+            <div style="font-size:20px;font-weight:800;margin-top:4px;color:var(--cost-driver,#be185d)">${moneyC(totals.total_driver_other_cost || 0)}</div>
           </div>
-          <div class="card" style="padding:14px;border-left:4px solid ${(totals.total_net_profit || 0) >= 0 ? 'var(--green,#10b981)' : 'var(--red,#ef4444)'}">
+          <div class="card" style="padding:14px;border-left:4px solid ${(totals.total_net_profit || 0) >= 0 ? 'var(--cost-pos,#047857)' : 'var(--cost-neg,#dc2626)'}">
             <div class="muted" style="font-size:11px;font-weight:600">NET FLEET PROFIT / LOSS</div>
-            <div style="font-size:20px;font-weight:800;margin-top:4px;color:${(totals.total_net_profit || 0) >= 0 ? 'var(--green,#10b981)' : 'var(--red,#ef4444)'}">${moneyC(totals.total_net_profit || 0)}</div>
+            <div style="font-size:20px;font-weight:800;margin-top:4px;color:${(totals.total_net_profit || 0) >= 0 ? 'var(--cost-pos,#047857)' : 'var(--cost-neg,#dc2626)'}">${moneyC(totals.total_net_profit || 0)}</div>
           </div>
         </div>
 
@@ -150,7 +150,7 @@
         <div class="card" style="overflow-x:auto;padding:0">
           <table class="table" style="width:100%;margin:0;font-size:13px" id="costing_fleet_table">
             <thead>
-              <tr style="background:rgba(255,255,255,0.02)">
+              <tr>
                 <th>Asset Code</th>
                 <th>Registration</th>
                 <th>Category</th>
@@ -166,7 +166,7 @@
             <tbody>
               ${vehicles.slice(0, 150).map(v => {
                 const profit = v.net_profit || 0;
-                const profitColor = profit > 0 ? 'var(--green,#10b981)' : (profit < 0 ? 'var(--red,#ef4444)' : 'inherit');
+                const profitColor = profit > 0 ? 'var(--cost-pos,#047857)' : (profit < 0 ? 'var(--cost-neg,#dc2626)' : 'inherit');
                 const vId = v.id || v.asset_id;
                 return `
                   <tr>
@@ -174,10 +174,10 @@
                     <td>${esc(v.registration || '-')}</td>
                     <td class="muted">${esc(v.category || '-')}</td>
                     <td style="text-align:right;color:var(--primary,#0066ff)">${money(v.hiring_revenue || 0)}</td>
-                    <td style="text-align:right;color:var(--amber,#f59e0b)">${money(v.repair_cost || 0)}</td>
+                    <td style="text-align:right;color:var(--cost-amber,#b45309)">${money(v.repair_cost || 0)}</td>
                     <td style="text-align:right">${num(v.diesel_litres || 0)}</td>
-                    <td style="text-align:right;color:#6366f1">${money(v.diesel_cost || 0)}</td>
-                    <td style="text-align:right;color:#ec4899">${money(v.driver_other_cost || 0)}</td>
+                    <td style="text-align:right;color:var(--cost-diesel,#4f46e5)">${money(v.diesel_cost || 0)}</td>
+                    <td style="text-align:right;color:var(--cost-driver,#be185d)">${money(v.driver_other_cost || 0)}</td>
                     <td style="text-align:right;font-weight:700;color:${profitColor}">${money(profit)}</td>
                     <td style="text-align:center">
                       <button class="btn sm" data-view-report="${vId}" style="padding:2px 8px;font-size:11px">📄 Costing Report</button>
@@ -226,7 +226,7 @@
       const repairIssues = breakdown.repair_costs ? (breakdown.repair_costs.store_issues || []) : (breakdown.issues || []);
       const dieselIssues = breakdown.diesel_costs ? (breakdown.diesel_costs.issues || []) : (breakdown.fuel_issues || []);
       const profit = financial.net_profit || 0;
-      const profitColor = profit >= 0 ? '#10b981' : '#ef4444';
+      const profitColor = profit >= 0 ? 'var(--cost-pos,#047857)' : 'var(--cost-neg,#dc2626)';
 
       container.innerHTML = `
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:10px">
@@ -243,33 +243,33 @@
         </div>
 
         <!-- Printable Costing Sheet Section -->
-        <div id="printable_costing_card" class="card" style="padding:24px;background:var(--card-bg,#1e293b);border:1px solid var(--border,#334155);border-radius:8px">
+        <div id="printable_costing_card" class="card" style="padding:24px;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:8px">
           <!-- Letterhead -->
-          <div style="display:flex;justify-content:space-between;border-bottom:2px solid #334155;padding-bottom:14px;margin-bottom:16px">
+          <div style="display:flex;justify-content:space-between;border-bottom:2px solid var(--border);padding-bottom:14px;margin-bottom:16px">
             <div>
-              <h2 style="margin:0;font-size:20px;font-weight:800;letter-spacing:0.5px">CENTRAL WORKSHOP &amp; FLEET MANAGEMENT</h2>
+              <h2 style="margin:0;font-size:20px;font-weight:800;letter-spacing:0.5px;color:var(--text)">CENTRAL WORKSHOP &amp; FLEET MANAGEMENT</h2>
               <div class="muted" style="font-size:12px;margin-top:2px">Authoritative Monthly Vehicle Operational &amp; Financial Costing Statement</div>
             </div>
             <div style="text-align:right">
-              <div style="font-size:14px;font-weight:700">PERIOD: ${esc(rep.month || selectedMonth)}</div>
+              <div style="font-size:14px;font-weight:700;color:var(--text)">PERIOD: ${esc(rep.month || selectedMonth)}</div>
               <div class="muted" style="font-size:11px">Generated: ${new Date().toLocaleDateString('en-GB')}</div>
             </div>
           </div>
 
           <!-- Vehicle Meta Box -->
-          <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(180px, 1fr));gap:12px;padding:12px;background:rgba(255,255,255,0.03);border-radius:6px;margin-bottom:20px">
-            <div><span class="muted" style="font-size:11px">ASSET CODE:</span><br><b>${esc(asset.code || '-')}</b></div>
-            <div><span class="muted" style="font-size:11px">REGISTRATION NO:</span><br><b>${esc(asset.registration || '-')}</b></div>
-            <div><span class="muted" style="font-size:11px">CATEGORY / MAKE:</span><br><b>${esc(asset.category || '-')}</b></div>
-            <div><span class="muted" style="font-size:11px">CURRENT METER:</span><br><b>${num(asset.current_hours || 0)} hrs / km</b></div>
-            <div><span class="muted" style="font-size:11px">ALLOCATED PROJECT:</span><br><b>${esc(asset.project_name || 'Central Workshop')}</b></div>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(180px, 1fr));gap:12px;padding:12px 14px;background:var(--surface-2);border:1px solid var(--border);border-radius:6px;margin-bottom:20px;color:var(--text)">
+            <div><span class="muted" style="font-size:11px;font-weight:600">ASSET CODE:</span><br><b>${esc(asset.code || '-')}</b></div>
+            <div><span class="muted" style="font-size:11px;font-weight:600">REGISTRATION NO:</span><br><b>${esc(asset.registration || '-')}</b></div>
+            <div><span class="muted" style="font-size:11px;font-weight:600">CATEGORY / MAKE:</span><br><b>${esc(asset.category || '-')}</b></div>
+            <div><span class="muted" style="font-size:11px;font-weight:600">CURRENT METER:</span><br><b>${num(asset.current_hours || 0)} hrs / km</b></div>
+            <div><span class="muted" style="font-size:11px;font-weight:600">ALLOCATED PROJECT:</span><br><b>${esc(asset.project_name || 'Central Workshop')}</b></div>
           </div>
 
           <!-- Financial Statement P&L Summary Table -->
-          <h3 style="margin:0 0 8px 0;font-size:15px;font-weight:700">1. Operational Contribution &amp; Net Margin Statement</h3>
-          <table class="table" style="width:100%;margin-bottom:24px;border:1px solid var(--border,#334155)">
+          <h3 style="margin:0 0 8px 0;font-size:15px;font-weight:700;color:var(--text);text-transform:none;letter-spacing:0">1. Operational Contribution &amp; Net Margin Statement</h3>
+          <table class="table" style="width:100%;margin-bottom:24px;border:1px solid var(--border)">
             <thead>
-              <tr style="background:rgba(255,255,255,0.04)">
+              <tr>
                 <th>Cost / Revenue Component</th>
                 <th>Reference Details</th>
                 <th style="text-align:right">Amount (LKR)</th>
@@ -284,19 +284,19 @@
               <tr>
                 <td><b>(−) Workshop Maintenance &amp; Spare Parts</b></td>
                 <td class="muted">Direct material issues, job card parts, filters and servicing</td>
-                <td style="text-align:right;font-weight:700;color:var(--amber,#f59e0b)">${moneyC(financial.repair_cost || 0)}</td>
+                <td style="text-align:right;font-weight:700;color:var(--cost-amber,#b45309)">${moneyC(financial.repair_cost || 0)}</td>
               </tr>
               <tr>
                 <td><b>(−) Diesel Fuel Consumption</b></td>
                 <td class="muted">Total ${num(financial.diesel_litres || 0)} Litres dispensed via Bowser/Bulk Tanks</td>
-                <td style="text-align:right;font-weight:700;color:#6366f1">${moneyC(financial.diesel_cost || 0)}</td>
+                <td style="text-align:right;font-weight:700;color:var(--cost-diesel,#4f46e5)">${moneyC(financial.diesel_cost || 0)}</td>
               </tr>
               <tr>
                 <td><b>(−) Driver Salary, Bata &amp; Other Expenses</b></td>
                 <td class="muted">Operator salaries, daily allowance/bata &amp; statutory vehicle costs</td>
-                <td style="text-align:right;font-weight:700;color:#ec4899">${moneyC(financial.driver_other_cost || 0)}</td>
+                <td style="text-align:right;font-weight:700;color:var(--cost-driver,#be185d)">${moneyC(financial.driver_other_cost || 0)}</td>
               </tr>
-              <tr style="border-top:2px solid #334155;background:rgba(255,255,255,0.03);font-size:15px">
+              <tr style="border-top:2px solid var(--border);background:var(--surface-2);color:var(--text);font-size:15px">
                 <td><b>(=) FINAL NET OPERATING PROFIT / LOSS</b></td>
                 <td class="muted">Revenue − Total Operational Costs</td>
                 <td style="text-align:right;font-weight:900;color:${profitColor}">${moneyC(profit)}</td>
@@ -305,11 +305,11 @@
           </table>
 
           <!-- 2. Itemized Workshop Issues -->
-          <h3 style="margin:0 0 8px 0;font-size:15px;font-weight:700">2. Itemized Workshop Material Issues &amp; Job Card Spares</h3>
-          <div style="overflow-x:auto;margin-bottom:24px">
+          <h3 style="margin:0 0 8px 0;font-size:15px;font-weight:700;color:var(--text);text-transform:none;letter-spacing:0">2. Itemized Workshop Material Issues &amp; Job Card Spares</h3>
+          <div style="overflow-x:auto;margin-bottom:24px;border:1px solid var(--border);border-radius:6px">
             <table class="table" style="width:100%;font-size:12px;margin:0">
               <thead>
-                <tr style="background:rgba(255,255,255,0.02)">
+                <tr>
                   <th>Date</th>
                   <th>Issue Slip</th>
                   <th>Item / Spare Part Name</th>
@@ -338,11 +338,11 @@
           </div>
 
           <!-- 3. Itemized Diesel Dispense Logs -->
-          <h3 style="margin:0 0 8px 0;font-size:15px;font-weight:700">3. Itemized Diesel Dispense &amp; Bowser Fuel Logs</h3>
-          <div style="overflow-x:auto">
+          <h3 style="margin:0 0 8px 0;font-size:15px;font-weight:700;color:var(--text);text-transform:none;letter-spacing:0">3. Itemized Diesel Dispense &amp; Bowser Fuel Logs</h3>
+          <div style="overflow-x:auto;border:1px solid var(--border);border-radius:6px">
             <table class="table" style="width:100%;font-size:12px;margin:0">
               <thead>
-                <tr style="background:rgba(255,255,255,0.02)">
+                <tr>
                   <th>Date</th>
                   <th>Slip No</th>
                   <th>Dispensing Bowser / Tank</th>
@@ -388,11 +388,12 @@
           <head>
             <title>Vehicle Costing Report - ${esc(asset.code || '')}</title>
             <style>
-              body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; color: #111; padding: 20px; line-height: 1.4; }
+              :root { --surface: #ffffff; --surface-2: #f1f5f9; --border: #cbd5e1; --text: #111827; --muted: #4b5563; --primary: #0052cc; --cost-amber: #b45309; --cost-diesel: #4f46e5; --cost-driver: #be185d; --cost-pos: #047857; --cost-neg: #dc2626; }
+              body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background: #fff; color: #111827; padding: 20px; line-height: 1.4; }
               table { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 12px; }
-              th, td { border: 1px solid #ccc; padding: 6px 10px; text-align: left; }
-              th { background: #f4f4f4; }
-              .muted { color: #666; font-size: 11px; }
+              th, td { border: 1px solid #cbd5e1; padding: 6px 10px; text-align: left; }
+              th { background: #f1f5f9; color: #334155; }
+              .muted { color: #4b5563; font-size: 11px; }
               @media print {
                 body { padding: 0; }
                 button { display: none !important; }
@@ -432,7 +433,7 @@
         <div class="card" style="padding:0;overflow-x:auto">
           <table class="table" style="width:100%;margin:0;font-size:13px">
             <thead>
-              <tr style="background:rgba(255,255,255,0.02)">
+              <tr>
                 <th>Date</th>
                 <th>Vehicle Code</th>
                 <th>Project / Hirer</th>
@@ -483,7 +484,7 @@
         <div class="card" style="padding:0;overflow-x:auto">
           <table class="table" style="width:100%;margin:0;font-size:13px">
             <thead>
-              <tr style="background:rgba(255,255,255,0.02)">
+              <tr>
                 <th>Date</th>
                 <th>Vehicle Code</th>
                 <th>Cost Category</th>
@@ -500,7 +501,7 @@
                     <td><b>${esc(r.asset_code || '-')}</b></td>
                     <td><span class="badge ${r.cost_type === 'SALARY' ? 'green' : 'amber'}">${esc(r.cost_type || 'DRIVER_EXPENSE')}</span></td>
                     <td>${esc(r.driver_name || r.payee || '-')}</td>
-                    <td style="text-align:right;font-weight:700;color:#ec4899">${moneyC(r.amount || 0)}</td>
+                    <td style="text-align:right;font-weight:700;color:var(--cost-driver,#be185d)">${moneyC(r.amount || 0)}</td>
                     <td class="muted">${esc(r.description || r.notes || '-')}</td>
                   </tr>
                 `).join('')
@@ -541,7 +542,7 @@
             </div>
             <div>
               <label class="label">Total Hiring Revenue (LKR):</label>
-              <input type="number" id="rev_total" class="input" placeholder="Auto-calculated" readonly style="background:rgba(255,255,255,0.05)">
+              <input type="number" id="rev_total" class="input" placeholder="Auto-calculated" readonly style="background:var(--surface-2);color:var(--text)">
             </div>
             <div>
               <label class="label">Notes / Client:</label>

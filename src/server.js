@@ -413,8 +413,21 @@ const publicDir = path.join(__dirname, '..', 'public');
 const BUILD = Date.now();
 const getBuildToken = () => {
   try {
-    const stat = fs.statSync(path.join(publicDir, 'app.js'));
-    return Math.floor(stat.mtimeMs);
+    let latest = BUILD;
+    const roots = [path.join(publicDir, 'app.js'), path.join(publicDir, 'styles.css')];
+    for (const sub of ['modules', 'js']) {
+      const dir = path.join(publicDir, sub);
+      if (fs.existsSync(dir)) {
+        for (const f of fs.readdirSync(dir)) {
+          if (f.endsWith('.js') || f.endsWith('.css')) roots.push(path.join(dir, f));
+        }
+      }
+    }
+    latest = 0;
+    for (const p of roots) {
+      if (fs.existsSync(p)) latest = Math.max(latest, Math.floor(fs.statSync(p).mtimeMs));
+    }
+    return latest || BUILD;
   } catch {
     return BUILD;
   }
