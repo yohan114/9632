@@ -93,6 +93,7 @@ function summary() {
   // without one means the scheduler, the disk or the database is in trouble.
   const stale = intervalMin > 0 && (!newest || newest.ageMinutes > intervalMin * 3);
   const verifyAgeDays = s.verify && s.verify.at ? (Date.now() - Date.parse(s.verify.at)) / 86400000 : null;
+  const verifyOverdue = verifyAgeDays == null || verifyAgeDays > 8;
 
   const hasUsers = Boolean((newest && newest.hasUsers) || (s.snapshot && s.snapshot.hasUsers));
 

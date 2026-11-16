@@ -14,14 +14,20 @@
 
 const crypto = require('crypto');
 const { get, all, run } = require('../db');
+const multidb = require('../db/multidb');
 
 function initDualAuthTables(dbInstance) {
   const d = dbInstance || require('../db').db;
+  const hasUsers = Boolean(d.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='users'").get());
+  const hasWorkshops = Boolean(d.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='workshops'").get());
+  const refUsersCascade = hasUsers ? ' REFERENCES users(id) ON DELETE CASCADE' : '';
+  const refUsers = hasUsers ? ' REFERENCES users(id)' : '';
+  const refWsCascade = hasWorkshops ? ' REFERENCES workshops(id) ON DELETE CASCADE' : '';
   d.exec(`
     -- 1. Multi-Workshop Cluster Assignment (SAP CDS DCL Pattern)
     CREATE TABLE IF NOT EXISTS user_workshops (
-      user_id       INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-      workshop_id   INTEGER NOT NULL REFERENCES workshops(id) ON DELETE CASCADE,
+      user_id       INTEGER NOT NULL${refUsersCascade},
+      workshop_id   INTEGER NOT NULL${refWsCascade},
       role_at_site  TEXT,
       is_primary    INTEGER NOT NULL DEFAULT 0,
       created_at    TEXT NOT NULL DEFAULT (datetime('now')),
@@ -32,7 +38,7 @@ function initDualAuthTables(dbInstance) {
 
     -- 2. Granular Financial Approval Limits
     CREATE TABLE IF NOT EXISTS user_approval_limits (
-      user_id       INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      user_id       INTEGER NOT NULL${refUsersCascade},
       category      TEXT NOT NULL, -- 'job_cards', 'mrn', 'grn', 'disposal'
       single_limit  REAL NOT NULL DEFAULT 0,
       dual_limit    REAL NOT NULL DEFAULT 0,
@@ -46,13 +52,13 @@ function initDualAuthTables(dbInstance) {
       operation_type  TEXT NOT NULL, -- 'job_reopen', 'stock_scrap', 'limit_override', 'security_escalation'
       entity_type     TEXT NOT NULL, -- 'job_card', 'tool', 'store_item', 'user', 'mrn', 'grn'
       entity_id       INTEGER NOT NULL,
-      requested_by    INTEGER NOT NULL REFERENCES users(id),
+      requested_by    INTEGER NOT NULL${refUsers},
       requested_at    TEXT NOT NULL DEFAULT (datetime('now')),
       reason          TEXT NOT NULL,
       proposed_data   TEXT NOT NULL, -- JSON snapshot of payload/changes
       financial_delta REAL NOT NULL DEFAULT 0,
       status          TEXT NOT NULL DEFAULT 'PENDING', -- 'PENDING', 'APPROVED', 'REJECTED'
-      approved_by     INTEGER REFERENCES users(id),
+      approved_by     INTEGER${refUsers},
       approved_at     TEXT,
       decision_note   TEXT
     );
@@ -253,19 +259,38 @@ function listPendingDualAuth(user) {
 // ---------------------------------------------------------------------------
 
 function workshopsForUser(userId) {
-  const rows = all(
-    `SELECT w.id, w.name, w.code, uw.is_primary, uw.role_at_site
-       FROM user_workshops uw
-       JOIN workshops w ON w.id = uw.workshop_id
-      WHERE uw.user_id = ? AND w.active = 1`,
-    userId
-  );
+  const cDb = multidb.isMultiDb() ? multidb.getCoreDb() : null;
+  const qAll = cDb ? (s, ...p) => cDb.prepare(s).all(...p) : all;
+  const qGet = cDb ? (s, ...p) => cDb.prepare(s).get(...p) : get;
+  let rows = [];
+  try {
+    rows = qAll(
+      `SELECT w.id, w.name, w.code, uw.is_primary, uw.role_at_site
+         FROM user_workshops uw
+         JOIN workshops w ON w.id = uw.workshop_id
+        WHERE uw.user_id = ? AND w.active = 1`,
+      userId
+    );
+  } catch (err) {
+    if (cDb && /no such table:\s*user_workshops/i.test(String(err.message))) {
+      initDualAuthTables(cDb);
+      rows = qAll(
+        `SELECT w.id, w.name, w.code, uw.is_primary, uw.role_at_site
+           FROM user_workshops uw
+           JOIN workshops w ON w.id = uw.workshop_id
+          WHERE uw.user_id = ? AND w.active = 1`,
+        userId
+      );
+    } else {
+      throw err;
+    }
+  }
   if (rows.length) return rows;
 
   // Fallback to single workshop_id on users table if not clustered yet
-  const u = get('SELECT workshop_id FROM users WHERE id = ?', userId);
+  const u = qGet('SELECT workshop_id FROM users WHERE id = ?', userId);
   if (u && u.workshop_id) {
-    const w = get('SELECT id, name, code FROM workshops WHERE id = ?', u.workshop_id);
+    const w = qGet('SELECT id, name, code FROM workshops WHERE id = ?', u.workshop_id);
     if (w) return [{ ...w, is_primary: 1, role_at_site: 'member' }];
   }
   return [];

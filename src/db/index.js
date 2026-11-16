@@ -68,6 +68,9 @@ function migrate() {
     approval_status   TEXT NOT NULL DEFAULT 'requested', -- requested | certified | approved | rejected
     requested_by      TEXT,
     requested_by_user INTEGER REFERENCES users(id),
+    driver_name       TEXT,
+    contact_no        TEXT,
+    meter_reading     TEXT,
     requested_sig     TEXT,
     certified_by      TEXT, certified_at TEXT, certified_sig TEXT,
     approved_by       TEXT, approved_at TEXT, approved_sig TEXT,
@@ -913,6 +916,9 @@ function migrate() {
       require('../migrate/053_mtn_store_locations').runMigration(db);
       db.prepare("INSERT INTO settings (key, value) VALUES ('migration_053_done', '1')").run();
     }
+  } catch (err) {
+    console.warn('Migration 053 MTN store locations skipped:', err.message);
+  }
 
   // CCOM Outsourced Service & Repair Requests
   try {
@@ -923,15 +929,59 @@ function migrate() {
   } catch (err) {
     console.warn('Migration 054 CCOM outsourcing skipped:', err.message);
   }
+
+  // Storekeeper Grants & Price Cascading Sync (1929 - Migration 055)
+  try {
+    if (!db.prepare("SELECT 1 FROM settings WHERE key = 'migration_1929_055_done'").get()) {
+      const m55 = require('../migrate/055_storekeeper_grants_and_price_sync').runMigration(db);
+      if (m55 && Array.isArray(m55.affectedJobIds) && m55.affectedJobIds.length) {
+        try {
+          const costing = require('../lib/costing');
+          for (const jid of m55.affectedJobIds) costing.refreshJobTotals(jid);
+        } catch {}
+      }
+      db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('migration_1929_055_done', '1')").run();
+    }
   } catch (err) {
-    console.warn('Migration 053 MTN store locations skipped:', err.message);
+    console.warn('Migration 055 Storekeeper Grants & Price Sync skipped:', err.message);
+  }
+
+  // Job Request Driver Fields & Daily Cost Overheads (1929 - Migration 056)
+  // Re-run idempotently if an older backup/restore or fuel migration stamped migration_056_done without driver/overheads schema.
+  try {
+    const hasCol = (tbl, col) => db.prepare(`PRAGMA table_info(${tbl})`).all().some((c) => c.name === col);
+    const hasTbl = (tbl) => !!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(tbl);
+    const needs1929_056 = !db.prepare("SELECT 1 FROM settings WHERE key = 'migration_1929_056_done'").get()
+      || !hasCol('job_requests', 'driver_name')
+      || !hasCol('job_cards', 'driver_name')
+      || !hasTbl('workshop_monthly_overheads');
+    if (needs1929_056) {
+      require('../migrate/056_job_request_driver_fields_and_daily_cost').runMigration(db);
+      db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('migration_1929_056_done', '1')").run();
+    }
+  } catch (err) {
+    console.warn('Migration 056 Job Request Driver Fields & Daily Cost skipped:', err.message);
+  }
+
+  // Restore Assistant Transport Manager job request & breakdown permissions (1929 - Migration 057)
+  try {
+    require('../migrate/057_assistant_transport_jobcard_permissions').runMigration(db, { settingKey: 'migration_1929_057_done' });
+  } catch (err) {
+    console.warn('Migration 057 Assistant Transport permissions skipped:', err.message);
+  }
+
+  // Grant Assistant Transport Manager asset/project management and pre-approval JR edits (1929 - Migration 058)
+  try {
+    require('../migrate/058_assistant_transport_assets_projects_jr_edit').runMigration(db);
+  } catch (err) {
+    console.warn('Migration 058 Assistant Transport asset/project/JR edit permissions skipped:', err.message);
   }
 
   // Fuel Management & Bulk Tanks (Plan V2 - Migration 055)
   try {
     if (!db.prepare("SELECT 1 FROM settings WHERE key = 'migration_055_done'").get()) {
       require('../migrate/055_fuel_core_schema').runMigration(db);
-      db.prepare("INSERT INTO settings (key, value) VALUES ('migration_055_done', '1')").run();
+      db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('migration_055_done', '1')").run();
     }
   } catch (err) {
     console.warn('Migration 055 Fuel core schema skipped:', err.message);
@@ -941,7 +991,7 @@ function migrate() {
   try {
     if (!db.prepare("SELECT 1 FROM settings WHERE key = 'migration_056_done'").get()) {
       require('../migrate/056_fleet_allocations_and_billing').runMigration(db);
-      db.prepare("INSERT INTO settings (key, value) VALUES ('migration_056_done', '1')").run();
+      db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('migration_056_done', '1')").run();
     }
   } catch (err) {
     console.warn('Migration 056 Fleet allocations and billing skipped:', err.message);
@@ -951,7 +1001,7 @@ function migrate() {
   try {
     if (!db.prepare("SELECT 1 FROM settings WHERE key = 'migration_057_done'").get()) {
       require('../migrate/057_fleet_financial_ledger').runMigration(db);
-      db.prepare("INSERT INTO settings (key, value) VALUES ('migration_057_done', '1')").run();
+      db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('migration_057_done', '1')").run();
     }
   } catch (err) {
     console.warn('Migration 057 Fleet financial ledger skipped:', err.message);

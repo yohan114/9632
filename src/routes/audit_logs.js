@@ -8,15 +8,88 @@
 
 const express = require('express');
 const { get, all } = require('../db');
-const { requireCap } = require('../lib/auth');
+const { requireCap, hasCap } = require('../lib/auth');
 const { asyncHandler, toInt } = require('../lib/http');
 const { sendXlsx } = require('../lib/export');
 
 const router = express.Router();
 
-// Strict Dual-Guard: hard-coded Admin role check + granular capability check
-const guardAuditView = [requireCap('audit.logs.view')];
-const guardAuditExport = [requireCap('audit.logs.export')];
+// Access & governance entities (viewable by access.manage even without full audit.logs.view)
+const ACCESS_ENTITIES = [
+  'user', 'role', 'role_permission', 'role_capability',
+  'user_permission', 'user_capability', 'approval_limit',
+  'sod_governance_exception', 'role_security_alert',
+  'store_location_access', 'stand_in_delegation', 'user_workshops',
+];
+
+const hasFullAudit = (user) => !!(user && ((user.roles && user.roles.includes('admin')) || hasCap(user, 'audit.logs.view')));
+const hasFullExport = (user) => !!(user && ((user.roles && user.roles.includes('admin')) || hasCap(user, 'audit.logs.export')));
+
+const guardAuditView = [requireCap('audit.logs.view', 'access.manage')];
+const guardAuditExport = [requireCap('audit.logs.export', 'access.manage')];
+
+function buildAuditWhere(q, user, forExport = false) {
+  const clauses = [];
+  const params = [];
+  const fullAllowed = forExport ? hasFullExport(user) : hasFullAudit(user);
+
+  // Access managers without full audit capability stay scoped to governance & access events
+  if (!fullAllowed) {
+    clauses.push(`a.entity IN (${ACCESS_ENTITIES.map(() => '?').join(', ')})`);
+    params.push(...ACCESS_ENTITIES);
+  } else if (q.category && q.category !== 'all') {
+    const cat = String(q.category).trim();
+    if (cat === 'access') {
+      clauses.push(`a.entity IN (${ACCESS_ENTITIES.map(() => '?').join(', ')})`);
+      params.push(...ACCESS_ENTITIES);
+    } else if (cat === 'auth') {
+      clauses.push("a.entity = 'session'");
+    } else if (cat === 'critical') {
+      clauses.push("(a.action LIKE '%delete%' OR a.action LIKE '%void%' OR a.action LIKE '%scrap%' OR a.action LIKE '%revoke%' OR a.action LIKE '%kill%' OR a.action LIKE '%deactivate%')");
+    }
+  }
+
+  if (q.userId) {
+    clauses.push('a.user_id = ?');
+    params.push(toInt(q.userId));
+  }
+
+  if (q.entity && q.entity !== 'all') {
+    const parts = String(q.entity).split(',').map((s) => s.trim()).filter(Boolean);
+    if (parts.length === 1) {
+      clauses.push('a.entity = ?');
+      params.push(parts[0]);
+    } else if (parts.length > 1) {
+      clauses.push(`a.entity IN (${parts.map(() => '?').join(', ')})`);
+      params.push(...parts);
+    }
+  }
+
+  if (q.action && q.action !== 'all') {
+    clauses.push('a.action = ?');
+    params.push(String(q.action).trim());
+  }
+
+  if (q.dateFrom) {
+    clauses.push('datetime(a.created_at) >= datetime(?)');
+    params.push(String(q.dateFrom).trim());
+  }
+  if (q.dateTo) {
+    clauses.push('datetime(a.created_at) <= datetime(?)');
+    params.push(String(q.dateTo).trim() + (q.dateTo.length === 10 ? ' 23:59:59' : ''));
+  }
+
+  if (q.search && q.search.trim()) {
+    const term = '%' + q.search.trim() + '%';
+    clauses.push('(a.reason LIKE ? OR a.entity LIKE ? OR a.action LIKE ? OR u.username LIKE ? OR u.full_name LIKE ?)');
+    params.push(term, term, term, term, term);
+  }
+
+  return {
+    whereSql: clauses.length ? 'WHERE ' + clauses.join(' AND ') : '',
+    params,
+  };
+}
 
 /**
  * Compute field-level differences between before_json and after_json.
@@ -60,46 +133,7 @@ function computeDiff(before, after) {
  * Paginated and filterable audit log stream.
  */
 router.get('/', ...guardAuditView, asyncHandler(async (req, res) => {
-  const q = req.query;
-  const clauses = [];
-  const params = [];
-
-  // Filter: user_id
-  if (q.userId) {
-    clauses.push('a.user_id = ?');
-    params.push(toInt(q.userId));
-  }
-
-  // Filter: entity (module)
-  if (q.entity && q.entity !== 'all') {
-    clauses.push('a.entity = ?');
-    params.push(String(q.entity).trim());
-  }
-
-  // Filter: action
-  if (q.action && q.action !== 'all') {
-    clauses.push('a.action = ?');
-    params.push(String(q.action).trim());
-  }
-
-  // Filter: date range
-  if (q.dateFrom) {
-    clauses.push("datetime(a.created_at) >= datetime(?)");
-    params.push(String(q.dateFrom).trim());
-  }
-  if (q.dateTo) {
-    clauses.push("datetime(a.created_at) <= datetime(?)");
-    params.push(String(q.dateTo).trim() + (q.dateTo.length === 10 ? ' 23:59:59' : ''));
-  }
-
-  // Keyword search: reason, entity, action, username, full_name
-  if (q.search && q.search.trim()) {
-    const term = '%' + q.search.trim() + '%';
-    clauses.push('(a.reason LIKE ? OR a.entity LIKE ? OR a.action LIKE ? OR u.username LIKE ? OR u.full_name LIKE ?)');
-    params.push(term, term, term, term, term);
-  }
-
-  const whereSql = clauses.length ? 'WHERE ' + clauses.join(' AND ') : '';
+  const { whereSql, params } = buildAuditWhere(req.query || {}, req.user, false);
 
   // Count total matching records for pagination
   const countRow = get(`
@@ -111,8 +145,8 @@ router.get('/', ...guardAuditView, asyncHandler(async (req, res) => {
   const total = countRow ? countRow.total : 0;
 
   // Pagination bounds
-  const limit = Math.min(Math.max(toInt(q.limit, 50), 10), 200);
-  const offset = Math.max(toInt(q.offset, 0), 0);
+  const limit = Math.min(Math.max(toInt(req.query.limit, 50), 10), 200);
+  const offset = Math.max(toInt(req.query.offset, 0), 0);
 
   // Fetch paginated logs
   const rows = all(`
@@ -157,17 +191,23 @@ router.get('/', ...guardAuditView, asyncHandler(async (req, res) => {
   });
 
   // Extract distinct entities and actions for client-side filter pickers
-  const entities = all(`SELECT DISTINCT entity FROM audit_log ORDER BY entity`).map((r) => r.entity);
-  const actions = all(`SELECT DISTINCT action FROM audit_log ORDER BY action`).map((r) => r.action);
+  const fullAllowed = hasFullAudit(req.user);
+  const scopeWhere = fullAllowed ? '' : `WHERE entity IN (${ACCESS_ENTITIES.map(() => '?').join(', ')})`;
+  const scopeParams = fullAllowed ? [] : [...ACCESS_ENTITIES];
+  const entities = all(`SELECT DISTINCT entity FROM audit_log ${scopeWhere} ORDER BY entity`, ...scopeParams).map((r) => r.entity);
+  const actions = all(`SELECT DISTINCT action FROM audit_log ${scopeWhere} ORDER BY action`, ...scopeParams).map((r) => r.action);
   const actors = all(`
     SELECT DISTINCT u.id, u.username, u.full_name
       FROM audit_log a
       JOIN users u ON u.id = a.user_id
+     ${fullAllowed ? '' : `WHERE a.entity IN (${ACCESS_ENTITIES.map(() => '?').join(', ')})`}
      ORDER BY u.username
-  `);
+  `, ...scopeParams);
 
   res.json({
     logs,
+    can_view_all: fullAllowed,
+    can_export_all: hasFullExport(req.user),
     pagination: {
       total,
       limit,
@@ -187,53 +227,60 @@ router.get('/', ...guardAuditView, asyncHandler(async (req, res) => {
  * 2. GET /api/audit-logs/stats
  * Real-time analytical KPI metrics (SAP Fiori KPI tiles).
  */
-router.get('/stats', ...guardAuditView, asyncHandler(async (_req, res) => {
-  const totalEvents = (get(`SELECT COUNT(*) as c FROM audit_log`) || {}).c || 0;
+router.get('/stats', ...guardAuditView, asyncHandler(async (req, res) => {
+  const fullAllowed = hasFullAudit(req.user);
+  const scopeClause = fullAllowed ? '' : `entity IN (${ACCESS_ENTITIES.map(() => '?').join(', ')})`;
+  const scopeParams = fullAllowed ? [] : [...ACCESS_ENTITIES];
+  const andScope = scopeClause ? ` AND ${scopeClause}` : '';
+  const whereScope = scopeClause ? `WHERE ${scopeClause}` : '';
+
+  const totalEvents = (get(`SELECT COUNT(*) as c FROM audit_log ${whereScope}`, ...scopeParams) || {}).c || 0;
 
   const todayEvents = (get(`
     SELECT COUNT(*) as c FROM audit_log
-     WHERE date(created_at) = date('now')
-  `) || {}).c || 0;
+     WHERE date(created_at) = date('now')${andScope}
+  `, ...scopeParams) || {}).c || 0;
 
   const criticalDeletes = (get(`
     SELECT COUNT(*) as c FROM audit_log
-     WHERE action LIKE '%delete%' OR action LIKE '%void%' OR action LIKE '%scrap%' OR action LIKE '%revoke%' OR action LIKE '%kill%'
-  `) || {}).c || 0;
+     WHERE (action LIKE '%delete%' OR action LIKE '%void%' OR action LIKE '%scrap%' OR action LIKE '%revoke%' OR action LIKE '%kill%' OR action LIKE '%deactivate%')${andScope}
+  `, ...scopeParams) || {}).c || 0;
 
-  const todayLogins = (get(`
+  const todayLogins = fullAllowed ? ((get(`
     SELECT COUNT(*) as c FROM audit_log
      WHERE entity = 'session' AND (action = 'login' OR action = 'login_password_ok') AND date(created_at) = date('now')
-  `) || {}).c || 0;
+  `) || {}).c || 0) : 0;
 
-  const failedLoginsToday = (get(`
+  const failedLoginsToday = fullAllowed ? ((get(`
     SELECT COUNT(*) as c FROM audit_log
      WHERE entity = 'session' AND action LIKE 'login_fail%' AND date(created_at) = date('now')
-  `) || {}).c || 0;
+  `) || {}).c || 0) : 0;
 
   const activeUsersToday = (get(`
     SELECT COUNT(DISTINCT user_id) as c FROM audit_log
-     WHERE user_id IS NOT NULL AND date(created_at) = date('now')
-  `) || {}).c || 0;
+     WHERE user_id IS NOT NULL AND date(created_at) = date('now')${andScope}
+  `, ...scopeParams) || {}).c || 0;
 
   const topEntities = all(`
     SELECT entity, COUNT(*) as count
-      FROM audit_log
+      FROM audit_log ${whereScope}
      GROUP BY entity
      ORDER BY count DESC
      LIMIT 5
-  `);
+  `, ...scopeParams);
 
   const topActorsToday = all(`
     SELECT u.username, u.full_name, COUNT(*) as count
       FROM audit_log a
       JOIN users u ON u.id = a.user_id
-     WHERE date(a.created_at) = date('now')
+     WHERE date(a.created_at) = date('now')${fullAllowed ? '' : ` AND a.entity IN (${ACCESS_ENTITIES.map(() => '?').join(', ')})`}
      GROUP BY a.user_id
      ORDER BY count DESC
      LIMIT 5
-  `);
+  `, ...scopeParams);
 
   res.json({
+    can_view_all: fullAllowed,
     totalEvents,
     todayEvents,
     criticalDeletes,
@@ -250,22 +297,7 @@ router.get('/stats', ...guardAuditView, asyncHandler(async (_req, res) => {
  * Export filtered audit log records to Excel (.xlsx).
  */
 router.get('/export.xlsx', ...guardAuditExport, asyncHandler(async (req, res) => {
-  const q = req.query;
-  const clauses = [];
-  const params = [];
-
-  if (q.userId) { clauses.push('a.user_id = ?'); params.push(toInt(q.userId)); }
-  if (q.entity && q.entity !== 'all') { clauses.push('a.entity = ?'); params.push(String(q.entity).trim()); }
-  if (q.action && q.action !== 'all') { clauses.push('a.action = ?'); params.push(String(q.action).trim()); }
-  if (q.dateFrom) { clauses.push("datetime(a.created_at) >= datetime(?)"); params.push(String(q.dateFrom).trim()); }
-  if (q.dateTo) { clauses.push("datetime(a.created_at) <= datetime(?)"); params.push(String(q.dateTo).trim() + (q.dateTo.length === 10 ? ' 23:59:59' : '')); }
-  if (q.search && q.search.trim()) {
-    const term = '%' + q.search.trim() + '%';
-    clauses.push('(a.reason LIKE ? OR a.entity LIKE ? OR a.action LIKE ? OR u.username LIKE ? OR u.full_name LIKE ?)');
-    params.push(term, term, term, term, term);
-  }
-
-  const whereSql = clauses.length ? 'WHERE ' + clauses.join(' AND ') : '';
+  const { whereSql, params } = buildAuditWhere(req.query || {}, req.user, true);
 
   const rows = all(`
     SELECT a.id, a.created_at,
@@ -340,6 +372,9 @@ router.get('/:id(\\d+)', ...guardAuditView, asyncHandler(async (req, res) => {
   `, id);
 
   if (!row) return res.status(404).json({ error: 'Audit log entry not found' });
+  if (!hasFullAudit(req.user) && !ACCESS_ENTITIES.includes(row.entity)) {
+    return res.status(403).json({ error: 'Access denied for this audit entity.' });
+  }
 
   let before = null;
   let after = null;

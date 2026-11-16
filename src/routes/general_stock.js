@@ -139,13 +139,24 @@ router.post('/items', requireCap('general.items.edit'), asyncHandler((req, res) 
 // ---- adjust stock ---------------------------------------------------------
 router.post('/items/:id/adjust', requireCap('general.stock.adjust'), asyncHandler((req, res) => {
   const id = toInt(req.params.id);
-  const item = get('SELECT id, name, balance, min_stock FROM store_items WHERE id = ? AND is_general = 1', id);
+  const item = get('SELECT id, name, balance, min_stock, unit_cost FROM store_items WHERE id = ? AND is_general = 1', id);
   if (!item) return res.status(404).json({ error: 'Item not found' });
   const b = req.body;
   const kind = ['receipt', 'issue', 'adjustment'].includes(b.txn_type) ? b.txn_type : null;
   if (!kind) return res.status(400).json({ error: 'txn_type must be receipt, issue or adjustment' });
   const qtyMag = Math.abs(toNum(b.qty, 0));
   if (kind !== 'adjustment' && !(qtyMag > 0)) return res.status(400).json({ error: 'Enter a quantity greater than 0' });
+
+  const jobId = b.job_id != null && b.job_id !== '' ? toInt(b.job_id) : null;
+  let job = null;
+  if (jobId) {
+    const refuse = scope.jobRefusal(req.user, jobId);
+    if (refuse) return res.status(refuse.status || 403).json({ error: refuse.error });
+    job = get('SELECT id, job_no, status, asset_id, partial_closed_at FROM job_cards WHERE id = ?', jobId);
+    if (!job) return res.status(400).json({ error: 'Unknown job_id' });
+    const addOk = require('../lib/jobstate').checkAdd(job, 'general', { user: req.user, allowClosed: !!b.allow_closed });
+    if (!addOk.ok) return res.status(addOk.status).json(addOk.body);
+  }
 
   // Stage 4: an adjustment sets the whole company's figure — not with several stores.
   if (kind === 'adjustment' && stores.wholeCountRefusal()) return res.status(409).json({ error: stores.wholeCountRefusal() });
@@ -157,21 +168,30 @@ router.post('/items/:id/adjust', requireCap('general.stock.adjust'), asyncHandle
   else if (kind === 'issue') { signed = -qtyMag; balanceAfter = prev - qtyMag; }
   else { balanceAfter = qtyMag; signed = qtyMag - prev; } // adjustment sets the absolute count
 
+  const explicitPrice = b.unit_price === '' || b.unit_price == null ? null : toNum(b.unit_price);
+  const txnPrice = explicitPrice != null ? explicitPrice : ((kind === 'issue' || jobId) && item.unit_cost != null ? item.unit_cost : null);
+  const assetId = toInt(b.asset_id) || (job ? job.asset_id : null);
+
   const out = tx(() => {
     const t = run(
-      `INSERT INTO general_item_txns (store_item_id, txn_type, qty, balance_after, unit_price, ref, txn_date, store_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO general_item_txns (store_item_id, txn_type, qty, balance_after, unit_price, asset_id, job_id, ref, txn_date, store_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       id, kind, signed, balanceAfter,
-      b.unit_price === '' || b.unit_price == null ? null : toNum(b.unit_price),
-      b.reason || null, b.txn_date || new Date().toISOString().slice(0, 10),
-      stores.forEntry(req.user, null, b.txn_date)   // Stage 4: the store of whoever wrote it down
+      txnPrice,
+      assetId || null,
+      jobId || null,
+      b.reason || b.ref || null, b.txn_date || new Date().toISOString().slice(0, 10),
+      stores.forEntry(req.user, jobId, b.txn_date)   // Stage 4: the store of whoever wrote it down
     ).lastInsertRowid;
     run(`UPDATE store_items SET balance = ? WHERE id = ?`, balanceAfter, id);
     // Stores plan, Part 3: on the shelf now — and an issue, once the store's rule has started, not past zero.
     require('../lib/stock_rule').check(require('../lib/stock').sync({ general_item_txns: [t] }));
+    if (jobId) {
+      try { require('../lib/costing').refreshJobTotals(jobId); } catch (_) {}
+    }
     return balanceAfter;
   });
-  audit.record({ userId: req.user.id, entity: 'store_item', entityId: id, action: 'stock_adjust', after: { kind, qty: signed, balance: out }, reason: b.reason });
+  audit.record({ userId: req.user.id, entity: 'store_item', entityId: id, action: 'stock_adjust', after: { kind, qty: signed, balance: out, job_id: jobId }, reason: b.reason });
   emitter.emit('stock_updated', { item_id: id, action: 'adjust', kind, balance: out });
   res.status(201).json(oneItem(id, req.user));
 }));
@@ -223,7 +243,61 @@ router.post('/items/:id/price', requireCap('general.items.price'), asyncHandler(
     if (price == null || !Number.isFinite(price)) return res.status(400).json({ error: 'Price must be a number' });
     if (price < 0) return res.status(400).json({ error: 'Price cannot be negative' });
   }
-  run('UPDATE store_items SET unit_cost = ? WHERE id = ?', price, id);
+  tx(() => {
+    run('UPDATE store_items SET unit_cost = ? WHERE id = ?', price, id);
+    if (price != null && price > 0) {
+      const affectedJobIds = new Set();
+
+      const gitJobs = all(
+        'SELECT DISTINCT job_id FROM general_item_txns WHERE store_item_id = ? AND (unit_price IS NULL OR unit_price <= 0) AND job_id IS NOT NULL',
+        id
+      );
+      for (const row of gitJobs) affectedJobIds.add(row.job_id);
+      run('UPDATE general_item_txns SET unit_price = ? WHERE store_item_id = ? AND (unit_price IS NULL OR unit_price <= 0)', price, id);
+
+      const unpricedIssues = all(`
+        SELECT id, job_id
+          FROM issues
+         WHERE (unit_price IS NULL OR unit_price <= 0)
+           AND (
+             store_item_id = ?
+             OR (store_item_id IS NULL AND grn_id IS NULL AND mrn_line_id IS NULL AND LOWER(TRIM(description)) = LOWER(TRIM(?)))
+           )
+      `, id, item.name);
+      for (const iss of unpricedIssues) {
+        run('UPDATE issues SET unit_price = ?, store_item_id = COALESCE(store_item_id, ?) WHERE id = ?', price, id, iss.id);
+        if (iss.job_id) affectedJobIds.add(iss.job_id);
+        run("UPDATE job_parts SET unit_price = ? WHERE source_type = 'issue' AND source_id = ? AND (unit_price IS NULL OR unit_price <= 0)", price, iss.id);
+        run('UPDATE general_item_txns SET unit_price = ? WHERE source_issue_id = ? AND (unit_price IS NULL OR unit_price <= 0)', price, iss.id);
+      }
+
+      const orphanPartJobs = all(`
+        SELECT DISTINCT job_id
+          FROM job_parts
+         WHERE mrn_line_id IS NULL
+           AND source_type IN ('issue', 'general')
+           AND (unit_price IS NULL OR unit_price <= 0)
+           AND LOWER(TRIM(description)) = LOWER(TRIM(?))
+           AND job_id IS NOT NULL
+      `, item.name);
+      for (const row of orphanPartJobs) affectedJobIds.add(row.job_id);
+      run(`
+        UPDATE job_parts
+           SET unit_price = ?
+         WHERE mrn_line_id IS NULL
+           AND source_type IN ('issue', 'general')
+           AND (unit_price IS NULL OR unit_price <= 0)
+           AND LOWER(TRIM(description)) = LOWER(TRIM(?))
+      `, price, item.name);
+
+      if (affectedJobIds.size) {
+        const costing = require('../lib/costing');
+        for (const jid of affectedJobIds) {
+          try { costing.refreshJobTotals(jid); } catch (_) {}
+        }
+      }
+    }
+  });
   audit.record({ userId: req.user.id, entity: 'store_item', entityId: id, action: 'update', before: { unit_cost: item.unit_cost }, after: { unit_cost: price } });
   try { emitter.notify('store_item', 'update', { id }); } catch (e) { /* live push best-effort */ }
   res.json({ ok: true, id, unit_cost: price });

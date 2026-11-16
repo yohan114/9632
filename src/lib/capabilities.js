@@ -39,6 +39,7 @@ const CAPABILITIES = [
   C('jobs.view', 'jobs', 'View open and closed job cards and service sheets', ALL_ROLES, null, 'jobs', '03', 'Operations'),
   C('jobs.create', 'jobs', 'Open a job card from an approved job request', ['workshop', 'manager'], 'jobs', 'jobs', '01', 'Operations'),
   C('jobs.edit', 'jobs', 'Change a job card\'s vehicle, description or type', ['workshop', 'operational_manager', 'manager'], 'jobs', 'jobs', '02', 'Operations'),
+  C('jobs.edit_closed', 'jobs', 'Change items on a CLOSED job card', ['workshop', 'storekeeper', 'operational_manager', 'manager'], 'jobs', 'jobs', '02', 'Operations'),
   C('jobs.delete', 'jobs', 'Delete or void an un-started job card', ['manager'], 'jobs', 'jobs', '06', 'Operations', true),
   C('jobs.approve_transport', 'jobs', 'Approve a job card — transport step', ['transport_manager'], 'jobs', 'jobs', '10', 'Operations'),
   C('jobs.approve_operations', 'jobs', 'Approve a job card — operations step', OPS_MANAGERS, 'jobs', 'jobs', '10', 'Operations'),
@@ -70,6 +71,7 @@ const CAPABILITIES = [
   C('jobrequests.view', 'jobrequests', 'View incoming vehicle repair requests', ALL_ROLES, null, 'jobs', '03', 'Operations'),
   C('jobrequests.create', 'jobrequests', 'Raise a job request from driver or field', ['assistant_transport_manager', 'transport_manager', 'workshop'], 'jobrequests', 'jobs', '01', 'Operations'),
   C('jobrequests.create_fabrication', 'jobrequests', 'Raise a fabrication job request', ['assistant_transport_manager', 'transport_manager', 'workshop', 'manager', 'operational_manager', 'fabrication_officer'], 'jobrequests', 'jobs', '01', 'Operations'),
+  C('jobrequests.edit', 'jobrequests', 'Edit or correct an unapproved job request', ['assistant_transport_manager', 'transport_manager', 'operational_manager', 'manager'], 'jobrequests', 'jobs', '02', 'Operations'),
   C('jobrequests.certify', 'jobrequests', 'Certify a job request (transport step)', ['transport_manager'], 'jobrequests', 'jobs', 'A1', 'Operations'),
   C('jobrequests.approve', 'jobrequests', 'Approve a job request (operations step)', OPS_MANAGERS, 'jobrequests', 'jobs', '10', 'Operations'),
   C('jobrequests.reject', 'jobrequests', 'Reject a job request at certify or approve step', ['transport_manager', 'operational_manager', 'manager'], 'jobrequests', 'jobs', '10', 'Operations'),
@@ -98,7 +100,7 @@ const CAPABILITIES = [
   C('attendance.record', 'dailywork', 'Record technician daily attendance (Present/Absent/Leave)', ['workshop', 'manager'], null, 'dailywork', '01', 'Operations'),
   C('attendance.unlock', 'dailywork', 'Unlock historical signed-off attendance day', OPS_MANAGERS, null, 'dailywork', '02', 'Operations', true),
   C('attendance.signoff', 'dailywork', 'Sign off a day\'s attendance and work tallies (locks day)', ['workshop', 'manager'], null, 'dailywork', '10', 'Operations'),
-  C('attendance.settings', 'dailywork', 'Configure overtime policy and attendance locks', ['manager'], null, 'dailywork', '02', 'Operations'),
+  C('attendance.settings', 'dailywork', 'Configure overtime policy and attendance locks', [], null, 'dailywork', '02', 'Operations'),
 
   // ---- 7. Service Records (Z_WO_SERV) --------------------------------------------------------
   C('services.view', 'services', 'View preventative maintenance records and service passports', ALL_ROLES, null, 'services', '03', 'Operations'),
@@ -122,13 +124,13 @@ const CAPABILITIES = [
 
   // ---- 9. Assets Master Register (Z_WO_ASSET) ------------------------------------------------
   C('assets.view', 'assets', 'View asset master register, specifications, and meter history', ALL_ROLES, null, 'assets', '03', 'Fleet'),
-  C('assets.create', 'assets', 'Register a new vehicle or heavy machine in the fleet', ['storekeeper', 'manager', 'transport_manager', 'operational_manager'], 'assets', 'assets', '01', 'Fleet'),
-  C('assets.edit', 'assets', 'Edit vehicle make, model, chassis, engine, and year', ['storekeeper', 'manager', 'transport_manager', 'operational_manager'], 'assets', 'assets', '02', 'Fleet'),
+  C('assets.create', 'assets', 'Register a new vehicle or heavy machine in the fleet', ['storekeeper', 'assistant_transport_manager', 'manager', 'transport_manager', 'operational_manager'], 'assets', 'assets', '01', 'Fleet'),
+  C('assets.edit', 'assets', 'Edit vehicle make, model, chassis, engine, and year', ['storekeeper', 'assistant_transport_manager', 'manager', 'transport_manager', 'operational_manager'], 'assets', 'assets', '02', 'Fleet'),
   C('assets.delete', 'assets', 'Delete an asset record from the system registry', ['manager'], 'assets', 'assets', '06', 'Fleet', true),
   C('assets.deactivate', 'assets', 'Mark machine decommissioned, scrapped, or archived', ALL_MANAGERS, 'assets', 'assets', '02', 'Fleet'),
-  C('assets.photo.upload', 'assets', 'Upload, re-order, and categorize asset gallery photos', ['storekeeper', 'workshop', 'manager', 'transport_manager'], 'assets', 'assets', '02', 'Fleet'),
+  C('assets.photo.upload', 'assets', 'Upload, re-order, and categorize asset gallery photos', ['storekeeper', 'assistant_transport_manager', 'workshop', 'manager', 'transport_manager'], 'assets', 'assets', '02', 'Fleet'),
   C('assets.repoint', 'assets', 'Repoint legacy vehicle codes to standardized numbers', ['manager'], null, 'assets', '02', 'Fleet'),
-  C('assets.move', 'assets', 'Move a machine to another project or site', ALL_MANAGERS, null, 'operations', '02', 'Fleet'),
+  C('assets.move', 'assets', 'Move a machine to another project or site', ['transport_manager', 'operational_manager', 'manager'], null, 'operations', '02', 'Fleet'),
   C('assets.export', 'assets', 'Export complete fleet register and depreciation summaries', ALL_MANAGERS, null, 'assets', '08', 'Fleet'),
 
   // ---- 10. Vehicle Statutory Documents (Z_WO_VDOC) -------------------------------------------
@@ -166,7 +168,7 @@ const CAPABILITIES = [
 
   // ---- 13. Projects & Sites (Z_WO_PRJ) -------------------------------------------------------
   C('projects.view', 'projects', 'View civil projects, road schemes, and quarry sites', ALL_ROLES, null, 'projects', '03', 'Fleet'),
-  C('projects.manage', 'projects', 'Create and edit projects and their constituent sites', OPS_MANAGERS, null, 'projects', '02', 'Fleet'),
+  C('projects.manage', 'projects', 'Create and edit projects and their constituent sites', ['assistant_transport_manager', ...OPS_MANAGERS], null, 'projects', '02', 'Fleet'),
   C('projects.close', 'projects', 'Mark civil contract completed and archive project', OPS_MANAGERS, null, 'projects', '02', 'Fleet'),
   C('projects.export', 'projects', 'Export projects master directory and active sites', OPS_MANAGERS, null, 'projects', '08', 'Fleet'),
 

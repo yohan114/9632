@@ -21,8 +21,15 @@
 //   9. Ending: ends automatically on end_date; granter, stand-in or admin can revoke early.
 // ===========================================================================
 
-const { get, all, run, tx } = require('../db');
+const dbMod = require('../db');
+const multidb = require('../db/multidb');
 const audit = require('./audit');
+
+const targetDb = () => (multidb.isMultiDb() ? multidb.getCoreDb() : dbMod.db);
+const get = (sql, ...params) => targetDb().prepare(sql).get(...params);
+const all = (sql, ...params) => targetDb().prepare(sql).all(...params);
+const run = (sql, ...params) => targetDb().prepare(sql).run(...params);
+const tx = (fn) => targetDb().transaction(fn)();
 
 const MAX_DELEGATION_DAYS = 30;
 
@@ -54,20 +61,23 @@ function isDelegatable(cap) {
 }
 
 function initTable(dbInstance) {
-  const d = dbInstance || require('../db').db;
+  const d = dbInstance || targetDb();
+  const hasUsers = Boolean(d.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='users'").get());
+  const refUsers = hasUsers ? ' REFERENCES users(id) ON DELETE CASCADE' : '';
+  const refUsersNoDel = hasUsers ? ' REFERENCES users(id)' : '';
   d.exec(`
     CREATE TABLE IF NOT EXISTS stand_in_delegations (
       id              INTEGER PRIMARY KEY AUTOINCREMENT,
-      granter_id      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-      stand_in_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      granter_id      INTEGER NOT NULL${refUsers},
+      stand_in_id     INTEGER NOT NULL${refUsers},
       start_date      TEXT NOT NULL,          -- YYYY-MM-DD
       end_date        TEXT NOT NULL,          -- YYYY-MM-DD
       reason          TEXT NOT NULL,
       active          INTEGER NOT NULL DEFAULT 1,
-      created_by      INTEGER NOT NULL REFERENCES users(id),
+      created_by      INTEGER NOT NULL${refUsersNoDel},
       created_at      TEXT NOT NULL DEFAULT (datetime('now')),
       revoked_at      TEXT,
-      revoked_by      INTEGER REFERENCES users(id),
+      revoked_by      INTEGER${refUsersNoDel},
       revoked_reason  TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_delegations_stand_in ON stand_in_delegations(stand_in_id, active, start_date, end_date);
@@ -260,7 +270,9 @@ function createDelegation(actor, { granter_id, stand_in_id, start_date, end_date
       VALUES (?, ?, ?, ?, ?, 1, ?)
     `, gId, sId, start_date, end_date, r, actor.id);
     newId = res.lastInsertRowid;
+  });
 
+  try {
     audit.record({
       userId: actor.id,
       entity: 'stand_in_delegation',
@@ -268,7 +280,7 @@ function createDelegation(actor, { granter_id, stand_in_id, start_date, end_date
       action: 'create',
       after: { granter_id: gId, stand_in_id: sId, start_date, end_date, reason: r }
     });
-  });
+  } catch {}
 
   return get('SELECT * FROM stand_in_delegations WHERE id = ?', newId);
 }
@@ -293,7 +305,9 @@ function revokeDelegation(actor, delegationId, revokeReason = 'Cancelled early')
          SET active = 0, revoked_at = datetime('now'), revoked_by = ?, revoked_reason = ?
        WHERE id = ?
     `, actor.id, String(revokeReason || '').trim() || null, id);
+  });
 
+  try {
     audit.record({
       userId: actor.id,
       entity: 'stand_in_delegation',
@@ -301,7 +315,7 @@ function revokeDelegation(actor, delegationId, revokeReason = 'Cancelled early')
       action: 'revoke',
       reason: revokeReason
     });
-  });
+  } catch {}
 
   return get('SELECT * FROM stand_in_delegations WHERE id = ?', id);
 }

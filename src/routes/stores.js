@@ -51,6 +51,19 @@ function listStoreId(req, { physical = false } = {}) {
 }
 
 /**
+ * Resolve optional store location filter for GRN / Issue list & count endpoints.
+ * Head-office users in All-Sites mode (`isAllSitesMode`) see across all stores unless
+ * they explicitly specify `x-store-location-id`, `store_location_id`, or `physical_store_id`.
+ */
+function resolveListStoreFilter(req) {
+  const explicit = toInt(
+    req.headers['x-store-location-id'] || req.query.store_location_id || req.query.physical_store_id
+  );
+  if (explicit) return explicit;
+  return req.user?.isAllSitesMode ? null : toInt(req.user?.activeStoreId);
+}
+
+/**
  * Resolve the receiving physical store ID for any GRN receipt (Step 3: Purchasing & GRN Routing).
  * Rules:
  * 1. Explicit physical_store_id or store_location_id provided -> validate and use.
@@ -102,7 +115,30 @@ function resolveGrnPhysicalStoreId(opts = {}) {
   const src = purchaseSource || null;
 
   if (src === 'head_office' && !isDirect) {
-    // Central purchases go to Central Main Store (1 / MAIN-STORES)
+    // If the request is for a specific workshop MRN, route to that workshop's physical store
+    let wsId = null;
+    try {
+      if (mrnId) {
+        const m = get('SELECT workshop_id, target_store_location_id FROM mrn WHERE id = ?', toInt(mrnId));
+        if (m && m.target_store_location_id) {
+          const loc = storeLocations.getStoreLocationById(m.target_store_location_id);
+          if (loc && loc.active) return loc.id;
+        }
+        if (m) wsId = m.workshop_id;
+      } else if (mrnLineId) {
+        const ml = get('SELECT m.workshop_id, l.target_store_location_id FROM mrn_lines l JOIN mrn m ON m.id = l.mrn_id WHERE l.id = ?', toInt(mrnLineId));
+        if (ml && ml.target_store_location_id) {
+          const loc = storeLocations.getStoreLocationById(ml.target_store_location_id);
+          if (loc && loc.active) return loc.id;
+        }
+        if (ml) wsId = ml.workshop_id;
+      }
+      if (wsId) {
+        const wsStore = storeLocations.resolvePhysicalStore(wsId);
+        if (wsStore && wsStore.active) return wsStore.id;
+      }
+    } catch {}
+    // Otherwise central purchases go to Central Main Store (1 / MAIN-STORES)
     try {
       const ms = storeLocations.getStoreLocationByCode('MAIN-STORES');
       if (ms && ms.active) return ms.id;
@@ -181,27 +217,41 @@ const ownWsCond = (user, expr) => { const s = ownWs(user, expr); return s ? s.sl
 /** Guard a record whose workshop `sql` finds by id: null when the person may reach it, else the 403 body. */
 function reachRefusal(user, what, sql, id) {
   if (!user) return null;
+  let skipWorkshopScope = false;
   try {
     const context = require('../lib/context');
     const ss = context.storeScopeFor(user);
     if (!ss.isGlobal) {
       if (what === 'receipt') {
-        const g = get('SELECT physical_store_id, store_id FROM grn WHERE id = ?', id);
+        const g = get(`
+          SELECT g.physical_store_id, g.store_id, g.purchase_source, g.purchase_source_norm, m.workshop_id
+            FROM grn g
+            LEFT JOIN mrn m ON m.id = g.mrn_id
+           WHERE g.id = ?`, id);
         const sid = (g && g.physical_store_id) || (g && g.store_id);
-        if (sid && !ss.canAccess(sid, 'view')) {
+        const isOwnWorkshop = g && g.workshop_id && user.workshop_id && g.workshop_id === user.workshop_id;
+        const isHeadOfficeGrn = g && (g.purchase_source === 'head_office' || g.purchase_source_norm === 'head_office');
+        const isCwStoreUser = user.workshop_id === 1 && (ss.canAccess(1, 'view') || ss.canAccess(2, 'view'));
+        if (isHeadOfficeGrn && isCwStoreUser) skipWorkshopScope = true;
+        if (sid && !ss.canAccess(sid, 'view') && !isOwnWorkshop && !(isHeadOfficeGrn && isCwStoreUser)) {
           return { error: `Tenancy boundary violation: ${what} #${id} belongs to a different store location.`, status: 403 };
         }
       } else if (what === 'issue') {
-        const i = get('SELECT issue_store_location_id, store_id FROM issues WHERE id = ?', id);
-        const sid = (i && i.issue_store_location_id) || (i && i.store_id);
-        if (sid && !ss.canAccess(sid, 'view')) {
+        const i = get(`
+          SELECT i.issue_store_location_id, i.physical_store_id, i.store_id, j.workshop_id
+            FROM issues i
+            LEFT JOIN job_cards j ON j.id = i.job_id
+           WHERE i.id = ?`, id);
+        const sid = (i && i.issue_store_location_id) || (i && i.physical_store_id) || (i && i.store_id);
+        const isOwnWorkshop = i && i.workshop_id && user.workshop_id && i.workshop_id === user.workshop_id;
+        if (sid && !ss.canAccess(sid, 'view') && !isOwnWorkshop) {
           return { error: `Tenancy boundary violation: ${what} #${id} belongs to a different store location.`, status: 403 };
         }
       }
     }
   } catch (_) {}
 
-  if (!scope.enabled()) return null;
+  if (skipWorkshopScope || !scope.enabled()) return null;
   const r = get(sql, id);
   if (!r) return null;
   const ws = r.ws || require('../lib/workshops').defaultId();
@@ -213,6 +263,116 @@ const issueRefusal = (user, id) => reachRefusal(user, 'issue',
   `SELECT ${ISSUE_WS} AS ws FROM issues i LEFT JOIN job_cards j ON j.id = i.job_id WHERE i.id = ?`, id);
 const lineRefusal = (user, id) => reachRefusal(user, 'request',
   'SELECT m.workshop_id AS ws FROM mrn_lines ml JOIN mrn m ON m.id = ml.mrn_id WHERE ml.id = ?', id);
+
+/**
+ * Cascade a GRN's unit price across all linked issues, job parts, general items,
+ * and refresh affected Job Cards so costs update immediately.
+ */
+function cascadeGrnPrice(grnId, unitPrice) {
+  if (unitPrice === undefined || unitPrice === '' || unitPrice === null || isNaN(Number(unitPrice))) return;
+  const price = toNum(unitPrice);
+  const grn = get('SELECT id, mrn_id, mrn_line_id, store_item_id, description, qty FROM grn WHERE id = ?', grnId);
+  if (!grn) return;
+
+  const affectedJobIds = new Set();
+
+  // 1. Update all issues linked to this GRN (by grn_id or mrn_line_id)
+  const linkedIssues = all(`
+    SELECT id, job_id, asset_id, qty, description FROM issues
+     WHERE grn_id = ?
+        OR (? IS NOT NULL AND mrn_line_id = ?)
+  `, grnId, grn.mrn_line_id, grn.mrn_line_id);
+  for (const iss of linkedIssues) {
+    run('UPDATE issues SET unit_price = ?, grn_id = COALESCE(grn_id, ?) WHERE id = ?', price, grnId, iss.id);
+    if (iss.job_id) {
+      affectedJobIds.add(iss.job_id);
+      const hasJp = get(`
+        SELECT id FROM job_parts
+         WHERE job_id = ?
+           AND (
+             (source_type = 'issue' AND source_id = ?)
+             OR (source_type = 'grn' AND source_id = ?)
+             OR (? IS NOT NULL AND mrn_line_id = ?)
+           )
+         LIMIT 1
+      `, iss.job_id, iss.id, grnId, grn.mrn_line_id, grn.mrn_line_id);
+      if (!hasJp) {
+        const hasGit = get('SELECT id FROM general_item_txns WHERE source_issue_id = ? LIMIT 1', iss.id);
+        if (!hasGit) {
+          run(
+            `INSERT INTO job_parts (job_id, mrn_line_id, description, qty, unit_price, source_type, source_id)
+             VALUES (?, ?, ?, ?, ?, 'issue', ?)`,
+            iss.job_id, grn.mrn_line_id || null, iss.description || grn.description || 'Store Issue', iss.qty || 1, price, iss.id
+          );
+        }
+      }
+    }
+
+    // Update job_parts that came from this issue
+    run("UPDATE job_parts SET unit_price = ? WHERE source_type = 'issue' AND source_id = ?", price, iss.id);
+
+    // Update general_item_txns that came from this issue
+    run('UPDATE general_item_txns SET unit_price = ? WHERE source_issue_id = ?', price, iss.id);
+  }
+
+  // 2. Update job_parts directly linked to this GRN (source_type = 'grn')
+  const grnParts = all("SELECT job_id FROM job_parts WHERE source_type = 'grn' AND source_id = ?", grnId);
+  for (const gp of grnParts) {
+    if (gp.job_id) affectedJobIds.add(gp.job_id);
+  }
+  run("UPDATE job_parts SET unit_price = ? WHERE source_type = 'grn' AND source_id = ?", price, grnId);
+
+  // 3. Update job_parts linked via mrn_line_id
+  if (grn.mrn_line_id) {
+    const mlParts = all('SELECT job_id FROM job_parts WHERE mrn_line_id = ?', grn.mrn_line_id);
+    for (const mlp of mlParts) {
+      if (mlp.job_id) affectedJobIds.add(mlp.job_id);
+    }
+    run('UPDATE job_parts SET unit_price = ? WHERE mrn_line_id = ?', price, grn.mrn_line_id);
+  }
+
+  // 4. Update store_items catalog unit_cost if store_item_id or description matches
+  let storeItemId = grn.store_item_id;
+  if (storeItemId) {
+    run('UPDATE store_items SET unit_cost = ? WHERE id = ?', price, storeItemId);
+  } else if (grn.description) {
+    const si = get('SELECT id FROM store_items WHERE LOWER(TRIM(name)) = LOWER(TRIM(?)) LIMIT 1', grn.description);
+    if (si) {
+      storeItemId = si.id;
+      run('UPDATE store_items SET unit_cost = ? WHERE id = ?', price, si.id);
+    }
+  }
+
+  // 5. Update unpriced general_item_txns and issues/job_parts for this store item
+  if (storeItemId) {
+    const gitJobs = all('SELECT DISTINCT job_id FROM general_item_txns WHERE store_item_id = ? AND (unit_price IS NULL OR unit_price <= 0) AND job_id IS NOT NULL', storeItemId);
+    for (const gj of gitJobs) {
+      if (gj.job_id) affectedJobIds.add(gj.job_id);
+    }
+    run('UPDATE general_item_txns SET unit_price = ? WHERE store_item_id = ? AND (unit_price IS NULL OR unit_price <= 0)', price, storeItemId);
+
+    const unpricedIssues = all('SELECT id, job_id FROM issues WHERE store_item_id = ? AND (unit_price IS NULL OR unit_price <= 0)', storeItemId);
+    for (const ui of unpricedIssues) {
+      run('UPDATE issues SET unit_price = ? WHERE id = ?', price, ui.id);
+      if (ui.job_id) affectedJobIds.add(ui.job_id);
+      run("UPDATE job_parts SET unit_price = ? WHERE source_type = 'issue' AND source_id = ? AND (unit_price IS NULL OR unit_price <= 0)", price, ui.id);
+    }
+  }
+
+  // 6. Check if MRN was raised for a specific job card
+  if (grn.mrn_id) {
+    const m = get('SELECT job_id FROM mrn WHERE id = ?', grn.mrn_id);
+    if (m && m.job_id) affectedJobIds.add(m.job_id);
+  }
+
+  // 7. Refresh totals on all affected Job Cards
+  const costing = require('../lib/costing');
+  for (const jid of affectedJobIds) {
+    try {
+      costing.refreshJobTotals(jid);
+    } catch (_) {}
+  }
+}
 // A receipt voucher is the workshops' whose receipts are on it: yours when any of them is.
 const VOUCHER_LINES = 'FROM grn g LEFT JOIN mrn m ON m.id = g.mrn_id WHERE (g.voucher_id = v.id OR g.grn_no = v.grn_no)';
 function voucherRefusal(user, idOrNo) {
@@ -434,18 +594,26 @@ router.post('/items/:id/txn', requireCap('stores.items.txn'), asyncHandler((req,
     const g = jobstate.checkAdd(job, 'general', { user: req.user, allowClosed: !!b.allow_closed });
     if (!g.ok) return res.status(g.status).json(g.body);
   }
+  let txnPrice = b.unit_price === undefined || b.unit_price === '' || b.unit_price === null ? null : toNum(b.unit_price);
+  if (txnPrice == null && (b.txn_type === 'issue' || toInt(b.job_id))) {
+    const si = get('SELECT unit_cost FROM store_items WHERE id = ?', itemId);
+    if (si && si.unit_cost != null && si.unit_cost > 0) txnPrice = si.unit_cost;
+  }
   const result = tx(() => {
     const info = run(
       `INSERT INTO general_item_txns (store_item_id, txn_type, qty, balance_after, asset_id, job_id, unit_price, ref, txn_date, store_id)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       itemId, b.txn_type, signedQty, balanceAfter, assetId || null, toInt(b.job_id),
-      b.unit_price === undefined || b.unit_price === '' ? null : toNum(b.unit_price), b.ref || null,
+      txnPrice, b.ref || null,
       b.txn_date || new Date().toISOString().slice(0, 10),
       // Stage 4: the job card's workshop's store, else the store of whoever wrote it down.
       stores.forEntry(req.user, toInt(b.job_id), b.txn_date)
     );
     run('UPDATE store_items SET balance = ? WHERE id = ?', balanceAfter, itemId);
     stockRule.check(stock.sync({ general_item_txns: [info.lastInsertRowid] }));      // Part 3
+    if (toInt(b.job_id)) {
+      try { require('../lib/costing').refreshJobTotals(toInt(b.job_id)); } catch (_) {}
+    }
     return get('SELECT * FROM general_item_txns WHERE id = ?', info.lastInsertRowid);
   });
   audit.record({ userId: req.user.id, entity: 'general_item_txn', entityId: result.id, action: 'create' });
@@ -1380,6 +1548,28 @@ router.get('/mrn/:id/download.pdf', asyncHandler(async (req, res) => {
   await sendPdf(res, `MRN-${mrn.mrn_no || mrn.id}.pdf`, html);
 }));
 
+// Estimated unit price of a store item, for the local-purchase limit check when the line carries
+// no price of its own. store_items has no last_price column (asking for one threw "no such column:
+// last_price" and failed the request), so this is worked out the same way the item search does:
+// newest priced GRN for the item, then the newest priced GRN whose description is the item name
+// (imported GRNs predate the catalogue), then the maintained unit cost.
+function estimatedItemPrice(storeItemId) {
+  if (!storeItemId) return 0;
+  const r = get(
+    `SELECT COALESCE(
+              (SELECT g.unit_price FROM grn g
+                WHERE g.store_item_id = s.id AND g.unit_price IS NOT NULL
+                ORDER BY g.id DESC LIMIT 1),
+              (SELECT g.unit_price FROM grn g
+                WHERE g.unit_price IS NOT NULL AND LOWER(TRIM(g.description)) = LOWER(TRIM(s.name))
+                ORDER BY g.id DESC LIMIT 1),
+              NULLIF(s.unit_cost, 0)) AS price
+       FROM store_items s WHERE s.id = ?`,
+    storeItemId
+  );
+  return (r && r.price) || 0;
+}
+
 router.post('/mrn/:id/lines', requireCap('stores.mrn.edit'), asyncHandler((req, res) => {
   { const no = scope.mrnRefusal(req.user, toInt(req.params.id)); if (no) return res.status(403).json(no); }
   const id = toInt(req.params.id);
@@ -1425,7 +1615,7 @@ router.post('/mrn/:id/lines', requireCap('stores.mrn.edit'), asyncHandler((req, 
   const qty = toNum(req.body.qty, 0);
   let route = supplyRoutes.validateRoute(req.body.supply_route) ? req.body.supply_route : 'main_store';
   if (route === 'local_purchase') {
-    const estP = line.unit_price || get('SELECT last_price FROM store_items WHERE id = ?', line.store_item_id || 0)?.last_price || 0;
+    const estP = line.unit_price || estimatedItemPrice(line.store_item_id);
     const chk = supplyRoutes.checkLocalPurchaseLimit(id, null, qty * estP);
     if (!chk.ok) return res.status(403).json({ error: chk.error });
   }
@@ -1871,7 +2061,7 @@ router.patch('/mrn/line/:id', requireCap('stores.mrn.edit'), asyncHandler((req, 
     if (!supplyRoutes.validateRoute(sr)) return res.status(400).json({ error: `Invalid supply_route. Choose: ${supplyRoutes.ROUTES.join(', ')}` });
     if (sr === 'local_purchase') {
       const q = req.body.qty !== undefined ? toNum(req.body.qty, 0) : line.qty;
-      const estP = get('SELECT last_price FROM store_items WHERE id = ?', line.store_item_id || 0)?.last_price || 0;
+      const estP = estimatedItemPrice(line.store_item_id);
       const chk = supplyRoutes.checkLocalPurchaseLimit(line.mrn_id, id, q * estP);
       if (!chk.ok) return res.status(403).json({ error: chk.error });
     }
@@ -2191,6 +2381,9 @@ router.post('/grn', requireCap('stores.grn.receive'), chainPipeline.idempotencyG
     }
     // Stores plan, Part 3: on the shelf now, not at the next rebuild.
     stock.sync({ grn: [info.lastInsertRowid] });
+    if (b.unit_price !== undefined && b.unit_price !== '' && b.unit_price !== null) {
+      cascadeGrnPrice(info.lastInsertRowid, b.unit_price);
+    }
     return info.lastInsertRowid;
   });
   audit.record({ userId: req.user.id, entity: 'grn', entityId: result, action: 'create', after: { chain_no: chainNo, physical_store_id: physStoreId, store_id: legStoreId, attachments_count: Array.isArray(b.attachments) ? b.attachments.length : 0 } });
@@ -2609,6 +2802,12 @@ router.post('/grn-vouchers', requireCap('stores.grn.receive'), chainPipeline.ide
     }
     if (allAffected.length) {
       stock.sync({ grn: allAffected });
+      for (const gid of allAffected) {
+        const row = get('SELECT unit_price FROM grn WHERE id = ?', gid);
+        if (row && row.unit_price != null && row.unit_price > 0) {
+          cascadeGrnPrice(gid, row.unit_price);
+        }
+      }
     }
     return { voucherId: vid, createdIds: newIds };
   });
@@ -3609,8 +3808,7 @@ function checkFabricationOrStoreIssueAccess(user, targetPhysStoreId, jobId) {
       const isSiteUser = user.workshop_id && user.workshop_id !== 1 && !isMainStaff;
       let hasGrant = false;
       try {
-        const access = get('SELECT can_issue FROM store_location_access WHERE user_id = ? AND store_location_id = 1', user.id);
-        hasGrant = access && access.can_issue === 1;
+        hasGrant = context.storeScopeFor(user).canAccess(1, 'issue');
       } catch {}
       if (!isMainStaff && !hasGrant) {
         const err = new Error('You do not have permission to issue materials from Central Main Stores.');
@@ -3627,8 +3825,7 @@ function checkFabricationOrStoreIssueAccess(user, targetPhysStoreId, jobId) {
     if (!isMainStaff) {
       let hasGrant = false;
       try {
-        const access = get('SELECT can_issue FROM store_location_access WHERE user_id = ? AND store_location_id = 1', user.id);
-        hasGrant = access && access.can_issue === 1;
+        hasGrant = context.storeScopeFor(user).canAccess(1, 'issue');
       } catch {}
       if (!hasGrant) {
         const err = new Error('Issues from Central Main Stores are limited to main-store staff.');
@@ -4137,6 +4334,9 @@ router.post('/grn/bulk-price', requireCap('stores.grn.edit'), asyncHandler((req,
           userId: req.user ? req.user.id : null
         });
       }
+      if (r.unit_price !== undefined && r.unit_price !== '' && r.unit_price !== null) {
+        cascadeGrnPrice(id, r.unit_price);
+      }
       touched.push(id); saved++;
     }
     if (touched.length) stock.sync({ grn: touched });      // the price and date the shelf carries
@@ -4225,7 +4425,13 @@ router.post('/grn/bulk-receive', requireCap('stores.grn.receive'), asyncHandler(
         run('UPDATE mrn SET status = ? WHERE id = ?', open === 0 ? 'received' : (any > 0 ? 'partially_received' : 'open'), mid);
       }
     }
-    if (created.length) stock.sync({ grn: created });      // Part 3: on the shelf now
+    if (created.length) {
+      stock.sync({ grn: created });      // Part 3: on the shelf now
+      for (const cid of created) {
+        const gRow = get('SELECT unit_price FROM grn WHERE id = ?', cid);
+        if (gRow && Number(gRow.unit_price) > 0) cascadeGrnPrice(cid, gRow.unit_price);
+      }
+    }
   });
   if (created.length) audit.record({ userId: req.user.id, entity: 'grn', action: 'bulk_receive', after: { count: created.length, mrns: [...mrnIds] } });
   res.json({ ok: true, received: created.length, mrns: mrnIds.size, skipped });
@@ -4305,7 +4511,13 @@ router.patch('/grn/:id', requireCap('stores.grn.edit'), guardReceipt, asyncHandl
       });
     }
   }
-  if (sets.length) tx(() => { run(`UPDATE grn SET ${sets.join(', ')} WHERE id = ?`, ...params, id); stock.sync({ grn: [id] }); });
+  if (sets.length) tx(() => {
+    run(`UPDATE grn SET ${sets.join(', ')} WHERE id = ?`, ...params, id);
+    stock.sync({ grn: [id] });
+    if (req.body.unit_price !== undefined && req.body.unit_price !== '' && req.body.unit_price !== null) {
+      cascadeGrnPrice(id, req.body.unit_price);
+    }
+  });
   const after = get('SELECT * FROM grn WHERE id = ?', id);
   after.attachments = evidencePhotos.listPhotos('grn', id);
   audit.record({ userId: req.user.id, entity: 'grn', entityId: id, action: 'update', before, after, reason: 'late pricing' });
@@ -4548,7 +4760,15 @@ router.post('/issues', requireCap('stores.issue'), chainPipeline.idempotencyGuar
   const serviceId = toInt(b.service_id) || null;
   const assetId = job.asset_id;
   const qty = toNum(b.qty, 1);
-  const unitPrice = b.unit_price === undefined || b.unit_price === '' ? null : toNum(b.unit_price);
+  let unitPrice = b.unit_price === undefined || b.unit_price === '' || b.unit_price === null ? null : toNum(b.unit_price);
+  if (unitPrice == null && toInt(b.store_item_id)) {
+    const si = get('SELECT unit_cost FROM store_items WHERE id = ?', toInt(b.store_item_id));
+    if (si && si.unit_cost != null && si.unit_cost > 0) unitPrice = si.unit_cost;
+  }
+  if (unitPrice == null && b.grn_id) {
+    const g = get('SELECT unit_price FROM grn WHERE id = ?', toInt(b.grn_id));
+    if (g && g.unit_price != null && g.unit_price > 0) unitPrice = g.unit_price;
+  }
   const issueDate = b.issue_date || new Date().toISOString().slice(0, 10);
   // Require a canonical date so the monthly rollup can't be mis-bucketed (e.g. a
   // DD-MM-YYYY value would land in a garbage year). The UI always sends YYYY-MM-DD.
@@ -5754,12 +5974,19 @@ router.get('/export/mrn.xlsx', asyncHandler(async (req, res) => {
 // Comprehensive store reorder analysis, stock health, and inter-workshop opportunities
 router.get('/rebalance/analysis', permissions.requireModule('stores', 'view'), asyncHandler((req, res) => {
   const context = require('../lib/context');
-  const physicalStoreId = req.query.physical_store_id ? toInt(req.query.physical_store_id) : (req.user.activeStoreId || null);
+  const explicitPhys = req.query.physical_store_id ? toInt(req.query.physical_store_id) : null;
+  const explicitStore = req.query.store_id ? toInt(req.query.store_id) : null;
+  const physicalStoreId = explicitPhys || (!explicitStore ? (req.user.activeStoreId || null) : null);
   if (physicalStoreId) {
     context.assertStoreAccess(req, physicalStoreId);
+  } else if (explicitStore) {
+    const resolvedCtx = reorderRebalance.resolveStoreContext(explicitStore);
+    if (resolvedCtx && resolvedCtx.physical_store_id) {
+      context.assertStoreAccess(req, resolvedCtx.physical_store_id);
+    }
   }
   const userStore = stores.homeStore(req.user) || 1;
-  const storeId = req.query.store_id ? toInt(req.query.store_id) : (!physicalStoreId ? userStore : null);
+  const storeId = explicitStore || (!physicalStoreId ? userStore : null);
   const targetStore = physicalStoreId ? { physical_store_id: physicalStoreId } : storeId;
   const section = req.query.section ? String(req.query.section).toLowerCase() : null;
   const days = req.query.days ? toInt(req.query.days) : 90;
@@ -5855,12 +6082,19 @@ router.get('/rebalance/item-history', permissions.requireModule('stores', 'view'
 // Storekeeper Workspace & Physical Store Cockpit
 router.get('/cockpit', permissions.requireModule('stores', 'view'), asyncHandler((req, res) => {
   const context = require('../lib/context');
-  const physicalStoreId = req.query.physical_store_id ? toInt(req.query.physical_store_id) : (req.user.activeStoreId || null);
+  const explicitPhys = req.query.physical_store_id ? toInt(req.query.physical_store_id) : null;
+  const explicitStore = req.query.store_id ? toInt(req.query.store_id) : null;
+  const physicalStoreId = explicitPhys || (!explicitStore ? (req.user.activeStoreId || null) : null);
   if (physicalStoreId) {
     context.assertStoreAccess(req, physicalStoreId);
+  } else if (explicitStore) {
+    const resolvedCtx = reorderRebalance.resolveStoreContext(explicitStore);
+    if (resolvedCtx && resolvedCtx.physical_store_id) {
+      context.assertStoreAccess(req, resolvedCtx.physical_store_id);
+    }
   }
   const userStore = stores.homeStore(req.user) || 1;
-  const storeId = req.query.store_id ? toInt(req.query.store_id) : (!physicalStoreId ? userStore : null);
+  const storeId = explicitStore || (!physicalStoreId ? userStore : null);
   const targetStore = physicalStoreId ? { physical_store_id: physicalStoreId } : storeId;
   const days = req.query.days ? toInt(req.query.days) : 90;
 

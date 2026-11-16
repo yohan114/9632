@@ -254,8 +254,8 @@ const FUNCTIONAL_SECTIONS = [
     presets: {
       none: { modules: { jobrequests: 'none' }, caps: [] },
       view: { modules: { jobrequests: 'view' }, caps: ['jobrequests.view'] },
-      operator: { modules: { jobrequests: 'edit' }, caps: ['jobrequests.view', 'jobrequests.create'] },
-      manager: { modules: { jobrequests: 'full' }, caps: ['jobrequests.view', 'jobrequests.create', 'jobrequests.certify', 'jobrequests.approve', 'jobrequests.reject', 'jobrequests.delete'] }
+      operator: { modules: { jobrequests: 'edit' }, caps: ['jobrequests.view', 'jobrequests.create', 'jobrequests.edit'] },
+      manager: { modules: { jobrequests: 'full' }, caps: ['jobrequests.view', 'jobrequests.create', 'jobrequests.edit', 'jobrequests.certify', 'jobrequests.approve', 'jobrequests.reject', 'jobrequests.delete'] }
     }
   },
   {
@@ -313,6 +313,17 @@ const FUNCTIONAL_SECTIONS = [
       manager: { modules: { service_plan: 'full' }, caps: ['service_plan.view', 'service_plan.manage', 'service_plan.export'] }
     }
   },
+  {
+    id: 'fabrication', name: 'Fabrication & General Works', icon: '⚙️', domain: 'Operations',
+    description: 'General fabrication requests, job cards, drawings, labour hours, and costing sheets',
+    modules: ['fabrication', 'fabrication_costing'],
+    presets: {
+      none: { modules: { fabrication: 'none', fabrication_costing: 'none' }, caps: [] },
+      view: { modules: { fabrication: 'view', fabrication_costing: 'none' }, caps: ['fabrication.view'] },
+      operator: { modules: { fabrication: 'edit', fabrication_costing: 'edit' }, caps: ['fabrication.view', 'fabrication.open_card', 'fabrication.edit', 'fabrication.dailywork', 'fabrication.parts', 'fabrication.drawings', 'fabrication.cost.view', 'fabrication.cost.edit'] },
+      manager: { modules: { fabrication: 'full', fabrication_costing: 'full' }, caps: ['fabrication.view', 'fabrication.open_card', 'fabrication.edit', 'fabrication.dailywork', 'fabrication.parts', 'fabrication.drawings', 'fabrication.cost.view', 'fabrication.cost.edit', 'fabrication.cost.approve', 'fabrication.close', 'fabrication.export', 'fabrication.settings', 'fabrication.assign_access'] }
+    }
+  },
 
   // DOMAIN 2: FLEET MANAGEMENT
   {
@@ -322,7 +333,7 @@ const FUNCTIONAL_SECTIONS = [
     presets: {
       none: { modules: { assets: 'none' }, caps: [] },
       view: { modules: { assets: 'view' }, caps: ['assets.view'] },
-      operator: { modules: { assets: 'view' }, caps: ['assets.view', 'assets.photo.upload'] },
+      operator: { modules: { assets: 'edit' }, caps: ['assets.view', 'assets.create', 'assets.edit', 'assets.photo.upload'] },
       manager: { modules: { assets: 'full' }, caps: ['assets.view', 'assets.create', 'assets.edit', 'assets.delete', 'assets.deactivate', 'assets.photo.upload', 'assets.repoint', 'assets.move', 'assets.export'] }
     }
   },
@@ -366,7 +377,7 @@ const FUNCTIONAL_SECTIONS = [
     presets: {
       none: { modules: { projects: 'none' }, caps: [] },
       view: { modules: { projects: 'view' }, caps: ['projects.view'] },
-      operator: { modules: { projects: 'view' }, caps: ['projects.view'] },
+      operator: { modules: { projects: 'edit' }, caps: ['projects.view', 'projects.manage'] },
       manager: { modules: { projects: 'full' }, caps: ['projects.view', 'projects.manage', 'projects.close', 'projects.export'] }
     }
   },
@@ -490,13 +501,13 @@ const FUNCTIONAL_SECTIONS = [
   // DOMAIN 6: GOVERNANCE & ADMINISTRATION
   {
     id: 'access', name: 'Governance, Workshops & Access', icon: '🔐', domain: 'Admin',
-    description: 'Workshop multi-tenancy locations, role capability profiles, and user accounts',
-    modules: ['workshops', 'access', 'users'],
+    description: 'Workshop multi-tenancy locations, role capability profiles, user accounts, and audit logs',
+    modules: ['workshops', 'access', 'users', 'audit_logs'],
     presets: {
-      none: { modules: { workshops: 'none', access: 'none', users: 'none' }, caps: [] },
-      view: { modules: { workshops: 'view', access: 'none', users: 'none' }, caps: ['workshops.view'] },
-      operator: { modules: { workshops: 'view', access: 'none', users: 'none' }, caps: ['workshops.view'] },
-      manager: { modules: { workshops: 'full', access: 'full', users: 'full' }, caps: ['workshops.view', 'workshops.manage', 'workshops.all', 'access.manage', 'users.manage', 'system.status', 'audit.view'] }
+      none: { modules: { workshops: 'none', access: 'none', users: 'none', audit_logs: 'none' }, caps: [] },
+      view: { modules: { workshops: 'view', access: 'none', users: 'none', audit_logs: 'none' }, caps: ['workshops.view'] },
+      operator: { modules: { workshops: 'view', access: 'none', users: 'none', audit_logs: 'none' }, caps: ['workshops.view'] },
+      manager: { modules: { workshops: 'full', access: 'full', users: 'full', audit_logs: 'full' }, caps: ['workshops.view', 'workshops.manage', 'workshops.all', 'access.manage', 'users.manage', 'system.status', 'audit.view', 'audit.logs.view', 'audit.logs.export'] }
     }
   },
 
@@ -654,11 +665,11 @@ router.post('/section-save', requireCap('access.manage'), asyncHandler((req, res
 
 // ---- Person-by-Person Access Control (WorkshopOne Plan Part B) --------------
 
-// 1. List all people with effective 28-section permissions, role, site/tank bindings, and override counts
-router.get('/people', requireCap('access.manage'), asyncHandler((_req, res) => {
+// 1. List all people with effective section permissions, role, site/tank bindings, store assignments, and override counts
+router.get('/people', requireCap('access.manage', 'users.manage'), asyncHandler((_req, res) => {
   const users = all(`
     SELECT u.id, u.username, u.full_name, u.active, u.workshop_id AS home_workshop_id,
-           u.approval_limit, u.access_until, w.name AS home_workshop_name,
+           u.approval_limit, u.access_until, u.created_at, u.mfa_enabled, w.name AS home_workshop_name,
            u.project_id, p.name AS project_name, p.code AS project_code,
            u.bulk_tank_id, t.name AS bulk_tank_name, t.code AS bulk_tank_code,
            COALESCE(u.hide_stock, 0) AS hide_stock, u.fuel_role
@@ -690,8 +701,9 @@ router.get('/people', requireCap('access.manage'), asyncHandler((_req, res) => {
 
     let primaryStoreId = null;
     let primaryStoreName = null;
+    let uStores = [];
     try {
-      const uStores = storeLocs.getUserStoreLocations(u.id) || [];
+      uStores = storeLocs.getUserStoreLocations(u.id) || [];
       if (uStores.length > 0) {
         primaryStoreId = uStores[0].store_location_id;
         primaryStoreName = uStores[0].store_name;
@@ -706,6 +718,8 @@ router.get('/people', requireCap('access.manage'), asyncHandler((_req, res) => {
       username: u.username,
       full_name: u.full_name,
       active: !!u.active,
+      mfa_enabled: !!u.mfa_enabled,
+      created_at: u.created_at,
       home_workshop_id: u.home_workshop_id,
       home_workshop_name: u.home_workshop_name,
       primary_store_id: primaryStoreId,
@@ -718,6 +732,7 @@ router.get('/people', requireCap('access.manage'), asyncHandler((_req, res) => {
       bulk_tank_code: u.bulk_tank_code,
       hide_stock: !!u.hide_stock,
       fuel_role: u.fuel_role,
+      store_locations: uStores,
       approval_limit: u.approval_limit,
       access_until: u.access_until,
       roles,
@@ -739,12 +754,12 @@ router.get('/people', requireCap('access.manage'), asyncHandler((_req, res) => {
   });
 }));
 
-// 2. Detailed 28-section view for a single user (Role base vs Personal override + Site/Tank scope)
-router.get('/people/:id', requireCap('access.manage'), asyncHandler((req, res) => {
+// 2. Detailed section view for a single user (Role base vs Personal override + Site/Tank scope)
+router.get('/people/:id', requireCap('access.manage', 'users.manage'), asyncHandler((req, res) => {
   const userId = toInt(req.params.id);
   const u = get(`
     SELECT u.id, u.username, u.full_name, u.active, u.workshop_id AS home_workshop_id,
-           u.approval_limit, u.access_until, w.name AS home_workshop_name,
+           u.approval_limit, u.access_until, u.created_at, u.mfa_enabled, w.name AS home_workshop_name,
            u.project_id, p.name AS project_name, p.code AS project_code,
            u.bulk_tank_id, t.name AS bulk_tank_name, t.code AS bulk_tank_code,
            COALESCE(u.hide_stock, 0) AS hide_stock, u.fuel_role
@@ -839,6 +854,8 @@ router.get('/people/:id', requireCap('access.manage'), asyncHandler((req, res) =
       username: u.username,
       full_name: u.full_name,
       active: !!u.active,
+      mfa_enabled: !!u.mfa_enabled,
+      created_at: u.created_at,
       home_workshop_id: u.home_workshop_id,
       home_workshop_name: u.home_workshop_name,
       primary_store_id: primaryStoreId,
@@ -1029,20 +1046,30 @@ router.post('/people/:id/save', requireCap('access.manage'), asyncHandler((req, 
       const frole = b.fuel_role === '' || b.fuel_role === null ? null : String(b.fuel_role).trim();
       sets.push('fuel_role = ?'); params.push(frole);
     }
-    if (b.store_location_id !== undefined || b.primary_store_id !== undefined || b.home_workshop_id !== undefined || b.workshop_id !== undefined) {
+    if (b.full_name !== undefined) {
+      sets.push('full_name = ?'); params.push(String(b.full_name || '').trim() || null);
+    }
+    if (b.home_workshop_id !== undefined || b.workshop_id !== undefined) {
+      const val = b.home_workshop_id !== undefined ? b.home_workshop_id : b.workshop_id;
+      const wsId = val ? toInt(val) : 1;
+      sets.push('workshop_id = ?'); params.push(wsId);
+    }
+    if (b.store_location_id !== undefined || b.primary_store_id !== undefined) {
       const storeId = b.store_location_id !== undefined ? b.store_location_id : b.primary_store_id;
       if (storeId) {
         const sid = toInt(storeId);
         try {
-          storeLocs.setUserStoreLocationAccess(userId, sid, { can_view: 1, can_receive: 1, can_issue: 1, can_count: 1, can_request: 1, can_dispatch: 1 }, req.user);
+          const existingStores = storeLocs.getUserStoreLocations(userId) || [];
+          const alreadyAssigned = existingStores.some((s) => Number(s.store_location_id) === sid);
+          if (!alreadyAssigned) {
+            storeLocs.setUserStoreLocationAccess(userId, sid, { can_view: 1, can_receive: 1, can_issue: 1, can_count: 1, can_request: 1, can_dispatch: 1 }, req.user);
+          }
         } catch (_) {}
-        const st = storeLocs.getStoreLocationById(sid);
-        const wsId = st && st.workshop_id ? st.workshop_id : 1;
-        sets.push('workshop_id = ?'); params.push(wsId);
-      } else {
-        const val = b.home_workshop_id !== undefined ? b.home_workshop_id : b.workshop_id;
-        const wsId = val ? toInt(val) : 1;
-        sets.push('workshop_id = ?'); params.push(wsId);
+        if (b.home_workshop_id === undefined && b.workshop_id === undefined) {
+          const st = storeLocs.getStoreLocationById(sid);
+          const wsId = st && st.workshop_id ? st.workshop_id : 1;
+          sets.push('workshop_id = ?'); params.push(wsId);
+        }
       }
     }
     if (sets.length > 0) {

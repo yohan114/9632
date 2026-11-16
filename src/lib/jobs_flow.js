@@ -253,14 +253,26 @@ function rowsFor(user, steps, f = {}) {
   const now = today();
   const want = (s) => steps.includes(s);
   const out = [];
-  if (sees(user, 'jobrequests')) {
+  const seesJobRequests = sees(user, 'jobrequests');
+  const canOpenFromRequest = ['jobs.create', 'fabrication.open_card', 'services.create', 'filters.edit']
+    .some((c) => hasCap(user, c));
+  if (seesJobRequests || (want('to_open') && canOpenFromRequest)) {
     // 'approved' feeds two steps — to_open while no card exists, approved once one does — so the
     // rows are filtered by the step they SHAPED to, not only by the status they were read for.
-    const st = [['requested', ['to_certify']], ['certified', ['to_approve']],
-      ['approved', ['to_open', 'approved']], ['rejected', ['rejected']]]
+    // Users who hold a card/service creation capability without general `jobrequests` view access
+    // still need the `to_open` approved queue so "Open job card from a request" can pick one.
+    const stepMap = seesJobRequests
+      ? [['requested', ['to_certify']], ['certified', ['to_approve']],
+        ['approved', ['to_open', 'approved']], ['rejected', ['rejected']]]
+      : [['approved', ['to_open']]];
+    const st = stepMap
       .filter(([, ss]) => ss.some(want)).map(([a]) => a);
     if (st.length) {
-      out.push(...requestRows(user, st, f).map((r) => shapeRequest(user, r, now)).filter((r) => want(r.step)));
+      out.push(
+        ...requestRows(user, st, f)
+          .map((r) => shapeRequest(user, r, now))
+          .filter((r) => want(r.step) && (seesJobRequests || (r.step === 'to_open' && (r.can.open_card || r.can.create_service))))
+      );
     }
   }
   if (sees(user, 'jobs')) {
