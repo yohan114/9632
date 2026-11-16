@@ -88,7 +88,7 @@ test('a session with no input for longer than the limit is ended, and removed', 
   const r = await req('GET', '/api/auth/me', { cookie: c });
   assert.strictEqual(r.status, 401);
   assert.strictEqual(r.headers['x-wo-session'], 'ended');
-  assert.match(String(r.headers['set-cookie']), /wo_session=;/, 'the browser is told to drop the dead cookie');
+  assert.match(String(r.headers['set-cookie']), new RegExp(`${auth.COOKIE}=;`), 'the browser is told to drop the dead cookie');
   assert.strictEqual(get('SELECT COUNT(*) n FROM sessions WHERE token = ?', tokenOf(c)).n, 0);
   assert.ok(get("SELECT 1 x FROM audit_log WHERE action = 'session_idle_expired'"), 'on the record');
 });

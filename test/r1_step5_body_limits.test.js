@@ -57,7 +57,7 @@ test('global request body limit is 1mb and returns 413 on non-upload routes, whi
   //    a made-up session cookie must not buy the 50 MB limit (it used to).
   const resFake = await fetch(`${base}/api/stores/grn/1/photos`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json', cookie: 'wo_session=made-up' },
+    headers: { 'content-type': 'application/json', cookie: `${auth.COOKIE}=made-up` },
     body: twoMbPayload
   });
   assert.strictEqual(resFake.status, 413, 'Upload routes must not accept a large body from someone who is not signed in');

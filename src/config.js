@@ -74,6 +74,7 @@ const config = {
   // hunting for a risk that was never there while the real one (accounts still on their demo
   // password) sat untouched. Left in place only so an existing .env does not become invalid.
   sessionSecret: process.env.SESSION_SECRET || 'unused-session-tokens-are-random',
+  sessionCookieName: (process.env.SESSION_COOKIE_NAME && process.env.SESSION_COOKIE_NAME.trim()) || 'wo_session',
   sessionTtlHours: int('SESSION_TTL_HOURS', 12),
   // Signed out after this long with no mouse, keyboard or touch input (0 = never). A PC left signed
   // in at the stores counter is the case this is for.

@@ -5,7 +5,7 @@ const bcrypt = require('bcryptjs');
 const config = require('../config');
 const { get, all, run } = require('../db');
 
-const COOKIE = 'wo_session';
+const COOKIE = config.sessionCookieName || 'wo_session';
 
 function hashPassword(pw) {
   return bcrypt.hashSync(String(pw), 10);
