@@ -313,17 +313,6 @@ const FUNCTIONAL_SECTIONS = [
       manager: { modules: { service_plan: 'full' }, caps: ['service_plan.view', 'service_plan.manage', 'service_plan.export'] }
     }
   },
-  {
-    id: 'fabrication', name: 'Fabrication & General Works', icon: '⚙️', domain: 'Operations',
-    description: 'General fabrication requests, job cards, drawings, labour hours, and costing sheets',
-    modules: ['fabrication', 'fabrication_costing'],
-    presets: {
-      none: { modules: { fabrication: 'none', fabrication_costing: 'none' }, caps: [] },
-      view: { modules: { fabrication: 'view', fabrication_costing: 'none' }, caps: ['fabrication.view'] },
-      operator: { modules: { fabrication: 'edit', fabrication_costing: 'edit' }, caps: ['fabrication.view', 'fabrication.open_card', 'fabrication.edit', 'fabrication.dailywork', 'fabrication.parts', 'fabrication.drawings', 'fabrication.cost.view', 'fabrication.cost.edit'] },
-      manager: { modules: { fabrication: 'full', fabrication_costing: 'full' }, caps: ['fabrication.view', 'fabrication.open_card', 'fabrication.edit', 'fabrication.dailywork', 'fabrication.parts', 'fabrication.drawings', 'fabrication.cost.view', 'fabrication.cost.edit', 'fabrication.cost.approve', 'fabrication.close', 'fabrication.export', 'fabrication.settings', 'fabrication.assign_access'] }
-    }
-  },
 
   // DOMAIN 2: FLEET MANAGEMENT
   {
@@ -520,7 +509,7 @@ const FUNCTIONAL_SECTIONS = [
       none: { modules: { fabrication: 'none', fabrication_costing: 'none' }, caps: [] },
       view: { modules: { fabrication: 'view', fabrication_costing: 'view' }, caps: ['fabrication.view'] },
       operator: { modules: { fabrication: 'edit', fabrication_costing: 'edit' }, caps: ['fabrication.view', 'fabrication.open_card', 'fabrication.edit', 'fabrication.dailywork', 'fabrication.parts', 'fabrication.drawings', 'fabrication.cost.view', 'fabrication.cost.edit'] },
-      manager: { modules: { fabrication: 'full', fabrication_costing: 'full' }, caps: ['fabrication.view', 'fabrication.open_card', 'fabrication.edit', 'fabrication.dailywork', 'fabrication.parts', 'fabrication.drawings', 'fabrication.cost.view', 'fabrication.cost.edit', 'fabrication.cost.approve', 'fabrication.close', 'fabrication.export', 'fabrication.settings'] }
+      manager: { modules: { fabrication: 'full', fabrication_costing: 'full' }, caps: ['fabrication.view', 'fabrication.open_card', 'fabrication.edit', 'fabrication.dailywork', 'fabrication.parts', 'fabrication.drawings', 'fabrication.cost.view', 'fabrication.cost.edit', 'fabrication.cost.approve', 'fabrication.close', 'fabrication.export', 'fabrication.settings', 'fabrication.assign_access'] }
     }
   },
   {

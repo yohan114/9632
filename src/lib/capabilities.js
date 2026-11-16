@@ -48,8 +48,6 @@ const CAPABILITIES = [
   C('jobs.complete', 'jobs', 'Mark a job card\'s physical repair work complete', ['workshop'], 'jobs', 'jobs', '02', 'Operations'),
   C('jobs.close', 'jobs', 'Close a job card and seal financial posting', ['operational_manager', 'workshop', 'manager'], 'jobs', 'jobs', '10', 'Operations'),
   C('jobs.close_on_date', 'jobs', 'Close a job card on a chosen (past) date', ['operational_manager', 'workshop', 'manager'], 'jobs', 'jobs', '02', 'Operations'),
-  // Read by jobstate.checkAdd (daily work, parts, prices, attachments, edits on a CLOSED card).
-  C('jobs.edit_closed', 'jobs', 'Change items on a CLOSED job card', ['workshop', 'storekeeper', 'manager'], 'jobs', 'jobs', '02', 'Operations'),
   C('jobs.reject', 'jobs', 'Reject a job card at an approval step', ['transport_manager', 'operational_manager', 'manager'], 'jobs', 'jobs', '10', 'Operations'),
   C('jobs.return', 'jobs', 'Send a job card back to "requested" state', ['transport_manager', 'operational_manager', 'manager'], 'jobs', 'jobs', '10', 'Operations'),
   C('jobs.reopen', 'jobs', 'Reopen a CLOSED job card for corrections', ['operational_manager', 'manager', 'workshop'], 'jobs', 'jobs', '02', 'Operations', true),
@@ -130,7 +128,7 @@ const CAPABILITIES = [
   C('assets.deactivate', 'assets', 'Mark machine decommissioned, scrapped, or archived', ALL_MANAGERS, 'assets', 'assets', '02', 'Fleet'),
   C('assets.photo.upload', 'assets', 'Upload, re-order, and categorize asset gallery photos', ['storekeeper', 'assistant_transport_manager', 'workshop', 'manager', 'transport_manager'], 'assets', 'assets', '02', 'Fleet'),
   C('assets.repoint', 'assets', 'Repoint legacy vehicle codes to standardized numbers', ['manager'], null, 'assets', '02', 'Fleet'),
-  C('assets.move', 'assets', 'Move a machine to another project or site', ['transport_manager', 'operational_manager', 'manager'], null, 'operations', '02', 'Fleet'),
+  C('assets.move', 'assets', 'Move a machine to another project or site', ALL_MANAGERS, null, 'operations', '02', 'Fleet'),
   C('assets.export', 'assets', 'Export complete fleet register and depreciation summaries', ALL_MANAGERS, null, 'assets', '08', 'Fleet'),
 
   // ---- 10. Vehicle Statutory Documents (Z_WO_VDOC) -------------------------------------------
