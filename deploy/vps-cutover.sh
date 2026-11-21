@@ -6,6 +6,7 @@
 #
 # Subcommands:
 #   preflight   Read-only inspection of live WorkshopOne, Fuel-System-V2, DNS, TLS, and Nginx
+#   setup-ssl   Zero-downtime Hostinger DNS check + Let's Encrypt certificate via certbot webroot
 #   rehearsal   Zero-downtime Phase A online snapshot merge + parity check in /tmp
 #   cutover     Guarded Phase B-C production cutover with mandatory --verify-only gate
 #   rollback    60-second Phase D emergency rollback to original WorkshopOne + Fuel-System-V2
@@ -46,6 +47,7 @@ PUBLIC_ORIGIN="${PUBLIC_ORIGIN:-https://${UNIFIED_DOMAIN}}"
 FUEL_REDIRECT_URL="${FUEL_REDIRECT_URL:-https://${UNIFIED_DOMAIN}/#/fuel}"
 ERP_SSL_CERT="${ERP_SSL_CERT:-}"
 ERP_SSL_KEY="${ERP_SSL_KEY:-}"
+CERTBOT_EMAIL="${CERTBOT_EMAIL:-}"
 NODE_BIN="${NODE_BIN:-/usr/bin/node}"
 
 AUTO_YES=0
@@ -54,6 +56,7 @@ BROADCAST_SECONDS=120
 FORCE_ENV=0
 KEEP_TMP=0
 ALLOW_HTTP=0
+SKIP_DNS_CHECK=0
 
 TMP_DIR=""
 CUTOVER_BAK=""
@@ -74,10 +77,11 @@ trap cleanup_tmp EXIT
 usage() {
   cat <<'EOF'
 Usage:
-  sudo bash deploy/vps-cutover.sh <preflight|rehearsal|cutover|rollback> [options]
+  sudo bash deploy/vps-cutover.sh <preflight|setup-ssl|rehearsal|cutover|rollback> [options]
 
 Subcommands:
   preflight   Read-only audit of live services, DB mode (single vs split), Fuel V2 DB, DNS, TLS, and Nginx.
+  setup-ssl   Zero-downtime Hostinger DNS verification & Let's Encrypt HTTPS certificate setup via certbot.
   rehearsal   Phase A (zero downtime): online sqlite3 .backup snapshots -> /tmp merge -> --verify-only.
   cutover     Phases B-C (off-peak): broadcast -> stop old apps -> cold backup -> merge -> verify gate -> switch Nginx.
   rollback    Phase D (emergency): stop unified service, restore previous Nginx configs, restart old apps.
@@ -87,6 +91,8 @@ Options:
   --skip-broadcast   Skip broadcasting 2-minute maintenance warning before stopping old apps
   --wait <seconds>   Maintenance broadcast countdown before stopping services (default: 120)
   --force-env        Overwrite /opt/workshopone-unified/app/.env cleanly from template
+  --email <addr>     Email address passed to certbot for Let's Encrypt renewal notices (setup-ssl)
+  --skip-dns-check   Skip verifying erp.edchristerp.com DNS IP matches this VPS (setup-ssl)
   --allow-http       Allow cutover over plain HTTP (:80) if erp.edchristerp.com TLS certs are not yet installed
   --keep-tmp         Keep /tmp rehearsal directory after rehearsal completes (for inspection)
   -h, --help         Show this help
@@ -156,9 +162,9 @@ detect_erp_tls() {
   fi
 
   local -a candidates=(
+    "/etc/letsencrypt/live/${UNIFIED_DOMAIN}/fullchain.pem:/etc/letsencrypt/live/${UNIFIED_DOMAIN}/privkey.pem"
     "/etc/ssl/cloudflare/${UNIFIED_DOMAIN}.pem:/etc/ssl/cloudflare/${UNIFIED_DOMAIN}.key"
     "/etc/ssl/cloudflare/erp.pem:/etc/ssl/cloudflare/erp.key"
-    "/etc/letsencrypt/live/${UNIFIED_DOMAIN}/fullchain.pem:/etc/letsencrypt/live/${UNIFIED_DOMAIN}/privkey.pem"
   )
   local pair c k
   for pair in "${candidates[@]}"; do
@@ -311,7 +317,7 @@ cmd_preflight() {
   if [ -n "$DETECTED_ERP_CERT" ]; then
     log "ERP TLS cert:           $DETECTED_ERP_CERT (key: $DETECTED_ERP_KEY)"
   else
-    log "ERP TLS cert:           MISSING (save /etc/ssl/cloudflare/${UNIFIED_DOMAIN}.pem & .key, or pass --allow-http)"
+    log "ERP TLS cert:           MISSING (run 'sudo bash $0 setup-ssl' after updating Hostinger DNS, or save Cloudflare cert)"
   fi
   log "Unified target dir:     $UNIFIED_APP (node_modules present: $([ -d "$UNIFIED_APP/node_modules" ] && echo yes || echo NO))"
   log "Unified Node binary:    $NODE_BIN ($($NODE_BIN -v 2>/dev/null || echo 'missing'))"
@@ -666,6 +672,84 @@ restore_nginx_from_backup() {
   fi
 }
 
+cmd_setup_ssl() {
+  require_root
+  require_cmd nginx
+  require_cmd curl
+
+  local resolved_ips my_ip
+  resolved_ips="$(getent ahosts "$UNIFIED_DOMAIN" 2>/dev/null | awk '{print $1}' | sort -u || true)"
+  if [ "$SKIP_DNS_CHECK" -eq 0 ]; then
+    [ -n "$resolved_ips" ] || die "$UNIFIED_DOMAIN does not resolve in DNS yet. Edit Hostinger DNS A record 'erp' -> your VPS IP, wait for propagation, and re-run (or pass --skip-dns-check)."
+    my_ip="$(curl -4 -fsS --max-time 5 https://api.ipify.org 2>/dev/null || true)"
+    if [ -n "$my_ip" ] && ! printf '%s\n' "$resolved_ips" | grep -Fxq "$my_ip"; then
+      die "$UNIFIED_DOMAIN currently resolves to [$(printf '%s' "$resolved_ips" | tr '\n' ' ')], NOT this server ($my_ip). Update your Hostinger DNS A record for 'erp' to '$my_ip' (edit the existing record rather than adding a duplicate), wait 1-5 minutes for propagation, and re-run (or pass --skip-dns-check)."
+    fi
+    log "Verified $UNIFIED_DOMAIN resolves cleanly (${my_ip:-$(printf '%s' "$resolved_ips" | tr '\n' ' ')})."
+  else
+    warn "Skipping DNS IP check (--skip-dns-check); current DNS: [$(printf '%s' "$resolved_ips" | tr '\n' ' ')]"
+  fi
+
+  if ! command -v certbot >/dev/null 2>&1; then
+    log "Installing certbot..."
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update && apt-get install -y certbot
+  fi
+
+  mkdir -p /var/www/html
+  chmod 755 /var/www/html
+
+  if [ ! -f "$NGINX_ERP" ] || ! grep -q '\.well-known/acme-challenge' "$NGINX_ERP"; then
+    log "Installing temporary :80 ACME challenge responder in $NGINX_ERP (zero impact on existing sites)..."
+    cat >"$NGINX_ERP" <<EOF
+# Temporary HTTP-01 responder for Let's Encrypt issuance ($UNIFIED_DOMAIN)
+server {
+    listen 80;
+    listen [::]:80;
+    server_name $UNIFIED_DOMAIN;
+
+    location ^~ /.well-known/acme-challenge/ {
+        root /var/www/html;
+        default_type "text/plain";
+    }
+
+    location / {
+        return 503;
+    }
+}
+EOF
+    chmod 644 "$NGINX_ERP"
+    ln -sf "$NGINX_ERP" "$NGINX_ERP_ENABLED"
+    nginx -t
+    systemctl reload nginx
+  fi
+
+  local -a email_args=()
+  if [ -n "$CERTBOT_EMAIL" ]; then
+    email_args=(--email "$CERTBOT_EMAIL")
+  else
+    email_args=(--register-unsafely-without-email)
+  fi
+
+  log "Requesting Let's Encrypt TLS certificate for $UNIFIED_DOMAIN..."
+  certbot certonly \
+    --webroot -w /var/www/html \
+    -d "$UNIFIED_DOMAIN" \
+    --non-interactive --agree-tos \
+    "${email_args[@]}"
+
+  mkdir -p /etc/letsencrypt/renewal-hooks/deploy
+  cat >/etc/letsencrypt/renewal-hooks/deploy/reload-nginx.sh <<'EOF'
+#!/usr/bin/env bash
+nginx -t && systemctl reload nginx
+EOF
+  chmod 755 /etc/letsencrypt/renewal-hooks/deploy/reload-nginx.sh
+
+  detect_erp_tls
+  [ -n "$DETECTED_ERP_CERT" ] || die "certbot succeeded but expected TLS files were not detected."
+  log "SSL SETUP COMPLETE: cert=$DETECTED_ERP_CERT key=$DETECTED_ERP_KEY"
+}
+
 cmd_cutover() {
   require_root
   require_cmd sqlite3
@@ -675,7 +759,7 @@ cmd_cutover() {
 
   detect_erp_tls
   if [ -z "$DETECTED_ERP_CERT" ] && [ "$ALLOW_HTTP" -eq 0 ]; then
-    die "No TLS certificate found for $UNIFIED_DOMAIN before stopping live services. Save Cloudflare Origin Cert to /etc/ssl/cloudflare/${UNIFIED_DOMAIN}.pem & /etc/ssl/cloudflare/${UNIFIED_DOMAIN}.key (or set ERP_SSL_CERT/ERP_SSL_KEY, or pass --allow-http for temporary plain HTTP)."
+    die "No TLS certificate found for $UNIFIED_DOMAIN before stopping live services. Run 'sudo bash $0 setup-ssl --email <you>' after updating Hostinger DNS (for Let's Encrypt), OR save Cloudflare Origin Cert to /etc/ssl/cloudflare/${UNIFIED_DOMAIN}.pem & .key, OR pass --allow-http."
   fi
 
   detect_live_sources
@@ -873,6 +957,12 @@ while [ "$#" -gt 0 ]; do
       BROADCAST_SECONDS="$1"
       ;;
     --force-env) FORCE_ENV=1 ;;
+    --email)
+      shift
+      [ "$#" -gt 0 ] || die "--email requires an email address argument"
+      CERTBOT_EMAIL="$1"
+      ;;
+    --skip-dns-check) SKIP_DNS_CHECK=1 ;;
     --allow-http) ALLOW_HTTP=1 ;;
     --keep-tmp) KEEP_TMP=1 ;;
     -h|--help) usage; exit 0 ;;
@@ -883,6 +973,7 @@ done
 
 case "$SUBCOMMAND" in
   preflight) cmd_preflight ;;
+  setup-ssl) cmd_setup_ssl ;;
   rehearsal) cmd_rehearsal ;;
   cutover)   cmd_cutover ;;
   rollback)  cmd_rollback ;;

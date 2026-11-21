@@ -280,7 +280,7 @@ test('4. Linux VPS deploy artifacts enforce LF line endings, valid ports/hostnam
   assert.match(erpNginx, /server_name\s+erp\.edchristerp\.com;/);
   assert.match(erpNginx, /proxy_pass\s+http:\/\/127\.0\.0\.1:3400;/);
   assert.match(erpNginx, /listen\s+443\s+ssl\s+http2;/);
-  assert.ok(erpNginx.includes('/etc/ssl/cloudflare/erp.edchristerp.com.pem'));
+  assert.ok(erpNginx.includes('/etc/letsencrypt/live/erp.edchristerp.com/fullchain.pem'));
   assert.match(erpNginx, /location\s+\^~\s+\/\.well-known\/acme-challenge\//);
   assert.equal(/\bhttp2\s+on;/.test(erpNginx), false, 'Avoid standalone http2 on; for nginx 1.18/1.24 compatibility');
   assert.equal(/\bdefault_server\b/.test(erpNginx), false);
@@ -311,7 +311,9 @@ test('4. Linux VPS deploy artifacts enforce LF line endings, valid ports/hostnam
   assert.ok(cutoverSh.includes('UNIFIED_DOMAIN="${UNIFIED_DOMAIN:-erp.edchristerp.com}"'));
   assert.ok(cutoverSh.includes('detect_erp_tls'));
   assert.ok(cutoverSh.includes('--allow-http'));
-  for (const cmd of ['preflight', 'rehearsal', 'cutover', 'rollback']) {
+  assert.ok(cutoverSh.includes('--email'));
+  assert.ok(cutoverSh.includes('certbot certonly'));
+  for (const cmd of ['preflight', 'setup-ssl', 'rehearsal', 'cutover', 'rollback']) {
     assert.ok(cutoverSh.includes(`${cmd})`), `Missing subcommand ${cmd}`);
   }
   assert.ok(cutoverSh.includes('--verify-only'));

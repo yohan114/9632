@@ -7,7 +7,7 @@
 - **Release Branch:** `claude/pensive-faraday-p5hklm`
 
 > **Golden Rule:** Never upload a local `.db` file onto the live VPS and overwrite live production transactions.
-> Perform a **DNS + TLS Prep → Side-by-Side Stage & Rehearsal → Freeze → Snapshot Merge → Verify → Switch Nginx** cutover using `deploy/vps-cutover.sh` and `scripts/vps_cutover_merge.js`. Both original systems (`workshopone` & `fuelsystem`) stay intact on disk so rollback takes under 60 seconds.
+> Perform a **Hostinger DNS + Let's Encrypt Prep → Side-by-Side Stage & Rehearsal → Freeze → Snapshot Merge → Verify → Switch Nginx** cutover using `deploy/vps-cutover.sh` and `scripts/vps_cutover_merge.js`. Both original systems (`workshopone` & `fuelsystem`) stay intact on disk so rollback takes under 60 seconds.
 
 ---
 
@@ -16,29 +16,28 @@
 | File | Purpose |
 |---|---|
 | `deploy/workshopone-unified.service` | Production systemd unit for `/opt/workshopone-unified/app` (`User=workshopone`, `ExecStart=/usr/bin/node src/server.js`; `HOST`/`PORT`/`DB_PATH`/`PUBLIC_ORIGIN` live in `.env`). |
-| `deploy/nginx-erp-unified.conf` | Nginx config for `erp.edchristerp.com` proxying to `http://127.0.0.1:3400` (`listen 443 ssl http2;`, Cloudflare Origin Cert, `25m` uploads, WebSocket sync, `:80` → HTTPS redirect). |
+| `deploy/nginx-erp-unified.conf` | Nginx config for `erp.edchristerp.com` proxying to `http://127.0.0.1:3400` (`listen 443 ssl http2;`, Let's Encrypt TLS by default, `25m` uploads, WebSocket sync, `:80` → HTTPS redirect). |
 | `deploy/nginx-storesdb-redirect.conf` | Post-cutover `302` redirect for `storesdb.ec-workshops.online` → `https://erp.edchristerp.com$request_uri` (preserves `cloudflare-real-ip.conf`). |
 | `deploy/nginx-fuelsystem-redirect.conf` | Post-cutover `302` redirect for `fuelsystem.ec-workshops.online` → `https://erp.edchristerp.com/#/fuel` (no `502 Bad Gateway` for old bookmarks). |
-| `deploy/vps-cutover.sh` | Guarded helper automating `preflight`, `rehearsal`, `cutover`, and `rollback` (auto-detects TLS cert, single vs split WorkshopOne DBs, and preserves legacy TLS certs on redirects). |
+| `deploy/vps-cutover.sh` | Guarded helper automating `preflight`, `setup-ssl`, `rehearsal`, `cutover`, and `rollback` (auto-detects Let's Encrypt/Cloudflare TLS certs, single vs split WorkshopOne DBs, and preserves legacy TLS certs on redirects). |
 
 ---
 
-## Step 0 — DNS & Origin Certificate for `erp.edchristerp.com` (Zero Downtime)
+## Step 0 — Hostinger DNS + Free Let's Encrypt TLS (`erp.edchristerp.com`)
 
-Before switching live traffic to `erp.edchristerp.com`:
+Because `edchristerp.com` uses **Hostinger DNS directly** (not Cloudflare Proxy), visitors connect directly to your VPS Nginx, so **use an auto-renewing Let's Encrypt certificate** (a Cloudflare Origin Certificate would fail browser trust without Cloudflare proxy!).
 
-1. **Cloudflare DNS (`edchristerp.com`):** Add an `A` record pointing the `erp` subdomain to your VPS:
-   ```
-   A    erp    20.204.51.43    Proxied (orange cloud)
-   ```
-2. **Cloudflare SSL/TLS:** Under `edchristerp.com` → **SSL/TLS → Overview**, set encryption mode to **Full (Strict)**, then **SSL/TLS → Origin Server → Create Certificate** (covering `erp.edchristerp.com`, 15 years) and save both halves on the VPS:
+1. In **Hostinger hPanel → Domains → `edchristerp.com` → DNS / Nameservers**:
+   - **Edit the existing `A` record for `erp`** (do **not** add a second duplicate `A | erp` record!) from its previous IP to **`20.204.51.43`** (TTL `1800` or `300`, once nothing live relies on the old IP).
+   - Verify DNS propagation shows `20.204.51.43`:
+     ```bash
+     nslookup erp.edchristerp.com
+     ```
+2. On the VPS (after cloning `/opt/workshopone-unified/app` in Step 1 below), issue the free auto-renewing Let's Encrypt certificate with **zero downtime** to `storesdb` or `fuelsystem`:
    ```bash
-   sudo mkdir -p /etc/ssl/cloudflare
-   sudo nano /etc/ssl/cloudflare/erp.edchristerp.com.pem   # paste origin certificate
-   sudo nano /etc/ssl/cloudflare/erp.edchristerp.com.key   # paste private key
-   sudo chmod 600 /etc/ssl/cloudflare/erp.edchristerp.com.key
+   sudo bash /opt/workshopone-unified/app/deploy/vps-cutover.sh setup-ssl --email your-email@domain.com
    ```
-   *(Using Let's Encrypt instead of Cloudflare proxy? Keep Cloudflare grey-cloud / DNS-only, pass `--allow-http` on initial cutover if needed, issue `/etc/letsencrypt/live/erp.edchristerp.com/`, then re-run `cutover` or update `/etc/nginx/sites-available/erp`.)*
+   *(Optional future note: If you ever move `edchristerp.com` onto Cloudflare DNS + orange-cloud proxy, save a Cloudflare Origin Certificate to `/etc/ssl/cloudflare/erp.edchristerp.com.pem` & `.key` instead and switch Cloudflare SSL/TLS to Full Strict.)*
 
 ---
 
@@ -59,16 +58,15 @@ fi
 sudo -u workshopone bash -c 'cd /opt/workshopone-unified/app && npm ci --omit=dev'
 ```
 
-### Step 2 — Phase A: Live Preflight & Zero-Downtime Rehearsal
+### Step 2 — Phase A: SSL Setup, Live Preflight & Zero-Downtime Rehearsal
 
 Run during normal business hours while `storesdb.ec-workshops.online` and `fuelsystem.ec-workshops.online` stay live:
 
 ```bash
+sudo bash /opt/workshopone-unified/app/deploy/vps-cutover.sh setup-ssl --email your-email@domain.com
 sudo bash /opt/workshopone-unified/app/deploy/vps-cutover.sh preflight
 sudo bash /opt/workshopone-unified/app/deploy/vps-cutover.sh rehearsal --force-env
 ```
-
-*(Note: `--force-env` only affects `rehearsal`/`cutover` if writing `.env`; on a first stage, `rehearsal` creates `/opt/workshopone-unified/app/.env` automatically with `PUBLIC_ORIGIN=https://erp.edchristerp.com`. If you staged earlier with `storesdb`, run `rehearsal --force-env` to refresh `.env` cleanly.)*
 
 Confirm `rehearsal` prints:
 - `readyForCutover: true`
@@ -116,7 +114,8 @@ BACKUP_INTERVAL_MINUTES=30
 BACKUP_RETENTION=96
 EOF
 
-# Install Nginx configs manually after merge & --verify-only pass
+# Issue Let's Encrypt cert & install Nginx configs manually after merge & --verify-only pass
+sudo certbot certonly --webroot -w /var/www/html -d erp.edchristerp.com
 sudo cp /opt/workshopone-unified/app/deploy/nginx-erp-unified.conf /etc/nginx/sites-available/erp
 sudo ln -sf /etc/nginx/sites-available/erp /etc/nginx/sites-enabled/erp
 sudo cp /opt/workshopone-unified/app/deploy/nginx-storesdb-redirect.conf /etc/nginx/sites-available/storesdb
