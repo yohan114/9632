@@ -23,6 +23,10 @@ function clean(s) {
   return typeof s === 'string' ? s.trim() : '';
 }
 
+function hasTable(name) {
+  return !!get("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", name);
+}
+
 // -----------------------------------------------------------------------------
 // 0. LIVE METER CHECK (Used by Daily Pump Readings modal)
 // -----------------------------------------------------------------------------
@@ -239,8 +243,25 @@ router.get(
     const condSql = date ? 'WHERE substr(c.condition_date, 1, 10) = ?' : '';
     const params = date ? [date] : [];
 
-    const rows = all(`
-      SELECT * FROM (
+    const hasLegacyDc = hasTable('daily_conditions');
+    const fuelDcSql = `
+        SELECT fdc.id AS id,
+               fdc.asset_id,
+               COALESCE(a.code, a.ec_code, fdc.asset_code) AS asset_code,
+               a.registration AS asset_reg,
+               a.category AS asset_category,
+               substr(fdc.condition_date, 1, 10) AS condition_date,
+               fdc.working_status AS state,
+               0 AS hours_worked,
+               fdc.location AS project_name,
+               COALESCE(u.full_name, u.username, 'Site Operator') AS recorded_by_name,
+               fdc.breakdown_reason AS notes
+          FROM fuel_daily_conditions fdc
+          LEFT JOIN assets a ON a.id = fdc.asset_id
+          LEFT JOIN users u ON u.id = fdc.recorded_by
+    `;
+    const unionSql = hasLegacyDc
+      ? `
         SELECT CAST(dc.id AS TEXT) AS id,
                dc.asset_id,
                COALESCE(a.code, a.ec_code) AS asset_code,
@@ -257,20 +278,13 @@ router.get(
           LEFT JOIN projects p ON p.id = dc.project_id
           LEFT JOIN users u ON u.id = dc.recorded_by
         UNION ALL
-        SELECT fdc.id AS id,
-               fdc.asset_id,
-               COALESCE(a.code, a.ec_code, fdc.asset_code) AS asset_code,
-               a.registration AS asset_reg,
-               a.category AS asset_category,
-               substr(fdc.condition_date, 1, 10) AS condition_date,
-               fdc.working_status AS state,
-               0 AS hours_worked,
-               fdc.location AS project_name,
-               COALESCE(u.full_name, u.username, 'Site Operator') AS recorded_by_name,
-               fdc.breakdown_reason AS notes
-          FROM fuel_daily_conditions fdc
-          LEFT JOIN assets a ON a.id = fdc.asset_id
-          LEFT JOIN users u ON u.id = fdc.recorded_by
+        ${fuelDcSql}
+      `
+      : fuelDcSql;
+
+    const rows = all(`
+      SELECT * FROM (
+        ${unionSql}
       ) c
       ${condSql}
       ORDER BY c.condition_date DESC, c.asset_code ASC
@@ -300,23 +314,27 @@ router.post(
     const projectId = toInt(req.body.project_id);
     const notes = clean(req.body.notes || req.body.breakdown_reason);
     const actorId = req.user ? req.user.id : 1;
+    const hasLegacyDc = hasTable('daily_conditions');
+    const proj = projectId ? get('SELECT name FROM projects WHERE id = ?', projectId) : null;
 
     tx(() => {
-      run(`
-        INSERT INTO daily_conditions (asset_id, condition_date, project_id, state, hours_worked, recorded_by, notes)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(asset_id, condition_date) DO UPDATE SET
-          state = excluded.state,
-          hours_worked = excluded.hours_worked,
-          project_id = excluded.project_id,
-          notes = excluded.notes,
-          recorded_by = excluded.recorded_by
-      `, asset.id, conditionDate, projectId, state, hoursWorked, actorId, notes);
+      if (hasLegacyDc) {
+        run(`
+          INSERT INTO daily_conditions (asset_id, condition_date, project_id, state, hours_worked, recorded_by, notes)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(asset_id, condition_date) DO UPDATE SET
+            state = excluded.state,
+            hours_worked = excluded.hours_worked,
+            project_id = excluded.project_id,
+            notes = excluded.notes,
+            recorded_by = excluded.recorded_by
+        `, asset.id, conditionDate, projectId, state, hoursWorked, actorId, notes);
+      }
 
       run(`
-        INSERT OR REPLACE INTO fuel_daily_conditions (id, asset_id, asset_code, condition_date, working_status, breakdown_reason, recorded_by)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-      `, `fdc-${asset.id}-${conditionDate}`, asset.id, asset.code || asset.ec_code, conditionDate, state, notes || null, actorId);
+        INSERT OR REPLACE INTO fuel_daily_conditions (id, asset_id, asset_code, condition_date, working_status, breakdown_reason, location, recorded_by)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `, `fdc-${asset.id}-${conditionDate}`, asset.id, asset.code || asset.ec_code, conditionDate, state, notes || null, proj ? proj.name : null, actorId);
     });
 
     audit.record({

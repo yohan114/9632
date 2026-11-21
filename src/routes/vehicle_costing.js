@@ -22,6 +22,32 @@ function clean(s) {
   return typeof s === 'string' ? s.trim() : '';
 }
 
+function hasTable(name) {
+  return !!get("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", name);
+}
+
+function hasColumn(table, col) {
+  if (!hasTable(table)) return false;
+  return all(`PRAGMA table_info(${table})`).some((c) => c.name === col);
+}
+
+const FUEL_UNIT_PRICE_EXPR = `
+  CASE
+    WHEN COALESCE(fi.fuel_price_cents, 0) > 0 THEN ROUND(fi.fuel_price_cents / 100.0, 2)
+    WHEN COALESCE(fi.price_per_litre_cents, 0) > 0 THEN ROUND(fi.price_per_litre_cents / 100.0, 2)
+    ELSE COALESCE(fi.unit_price, 0)
+  END
+`;
+
+const FUEL_TOTAL_COST_EXPR = `
+  CASE
+    WHEN COALESCE(fi.total_cost_cents, 0) > 0 THEN ROUND(fi.total_cost_cents / 100.0, 2)
+    WHEN COALESCE(fi.cost_cents, 0) > 0 THEN ROUND(fi.cost_cents / 100.0, 2)
+    WHEN COALESCE(fi.total_price, 0) > 0 THEN fi.total_price
+    ELSE ROUND(COALESCE(fi.litres, 0) * COALESCE(NULLIF(fi.fuel_price_cents, 0), NULLIF(fi.price_per_litre_cents, 0), 0) / 100.0, 2)
+  END
+`;
+
 function resolveAssetId(raw) {
   if (!raw) return null;
   const asNum = toInt(raw);
@@ -87,7 +113,8 @@ const handleSingleVehicleReport = asyncHandler((req, res) => {
      WHERE asset_id = ? AND period_key = ? AND status != 'VOID'
   `, assetId, month);
 
-  const legacyBillingLines = fleetBillLines.length ? [] : all(`
+  const hasLegacyBills = hasTable('bill_line_items') && hasTable('bills');
+  const legacyBillingLines = (fleetBillLines.length || !hasLegacyBills) ? [] : all(`
     SELECT bli.*, b.bill_no, b.period_start, b.period_end, p.name project_name
       FROM bill_line_items bli
       JOIN bills b ON b.id = bli.bill_id
@@ -103,14 +130,21 @@ const handleSingleVehicleReport = asyncHandler((req, res) => {
 
   // B. MONTHLY VEHICLE REPAIR COST (Directly from 9632 Stores, Job Cards, Service Maintenance)
   // 1. Store Material Issues to this vehicle
+  const issueRecipientExpr = hasColumn('issues', 'recipient_name')
+    ? "COALESCE(i.recipient_name, i.issued_by, '')"
+    : "COALESCE(i.issued_by, '')";
   const storeIssues = all(`
     SELECT i.id, i.min_no, i.min_no AS slip_no, i.issue_date, i.issue_date AS date,
            i.description, i.description AS item_name, i.qty, i.qty AS quantity, i.unit,
            COALESCE(i.unit_price, 0) unit_price,
            ROUND(i.qty * COALESCE(i.unit_price, 0), 2) total_cost,
-           i.recipient_name, i.recipient_name AS recipient, i.purpose, i.issued_by
+           ${issueRecipientExpr} AS recipient_name,
+           ${issueRecipientExpr} AS recipient,
+           i.purpose, i.issued_by
       FROM issues i
-     WHERE i.asset_id = ? AND strftime('%Y-%m', i.issue_date) = ?
+     WHERE i.asset_id = ?
+       AND strftime('%Y-%m', i.issue_date) = ?
+       AND COALESCE(i.voided, 0) = 0
      ORDER BY i.issue_date DESC, i.id DESC
   `, assetId, month);
 
@@ -163,21 +197,28 @@ const handleSingleVehicleReport = asyncHandler((req, res) => {
   const totalRepairCost = Math.round((storeIssuesTotal + jobPartsTotal + jobLabourTotal + serviceMaintenanceTotal) * 100) / 100;
 
   // C. MONTHLY DIESEL / FUEL COST (Directly from Fuel-System-V2 fuel_issues)
+  const hasBulkTanks = hasTable('bulk_tanks');
+  const tankNameExpr = hasBulkTanks
+    ? "COALESCE(ft.name, bt.name, fi.station_name, 'Bowser')"
+    : "COALESCE(ft.name, fi.station_name, 'Bowser')";
+  const bulkTanksJoin = hasBulkTanks
+    ? 'LEFT JOIN bulk_tanks bt ON CAST(bt.id AS TEXT) = CAST(fi.bulk_tank_id AS TEXT)'
+    : '';
   const fuelIssues = all(`
     SELECT fi.id, fi.issue_no, fi.issue_date,
            COALESCE(fi.fuel_type, fi.fuel_kind, 'AUTO_DIESEL') AS fuel_kind,
            fi.litres,
-           COALESCE(ROUND(fi.fuel_price_cents / 100.0, 2), fi.unit_price, 0) AS unit_price,
-           COALESCE(ROUND(fi.total_cost_cents / 100.0, 2), fi.total_price, 0) AS total_price,
+           ${FUEL_UNIT_PRICE_EXPR} AS unit_price,
+           ${FUEL_TOTAL_COST_EXPR} AS total_price,
            fi.meter_reading,
            COALESCE(fi.driver_name, fi.recipient_name) AS recipient_name,
            COALESCE(fi.station_name, fi.source, 'Bowser') AS source,
-           COALESCE(ft.name, bt.name, fi.station_name, 'Bowser') AS tank_name,
-           COALESCE(ft.name, bt.name, fi.station_name, 'Bowser') AS bulk_tank_name,
+           ${tankNameExpr} AS tank_name,
+           ${tankNameExpr} AS bulk_tank_name,
            u.full_name issued_by_name
       FROM fuel_issues fi
-      LEFT JOIN fuel_tanks ft ON ft.id = fi.source_tank_id
-      LEFT JOIN bulk_tanks bt ON CAST(bt.id AS TEXT) = CAST(fi.bulk_tank_id AS TEXT)
+      LEFT JOIN fuel_tanks ft ON CAST(ft.id AS TEXT) = CAST(COALESCE(fi.source_tank_id, fi.bulk_tank_id) AS TEXT)
+      ${bulkTanksJoin}
       LEFT JOIN users u ON u.id = fi.issued_by
      WHERE fi.asset_id = ?
        AND strftime('%Y-%m', fi.issue_date) = ?
@@ -304,13 +345,16 @@ router.get('/fleet-summary', requireAuth, requireModule('costing'), asyncHandler
     all(`SELECT asset_id, ROUND(COALESCE(SUM(rental_amount_cents), 0) / 100.0, 2) AS r FROM fleet_bills WHERE period_key = ? AND status != 'VOID' GROUP BY asset_id`, month)
       .map(x => [x.asset_id, x.r])
   );
-  const legacyBillRevMap = new Map(
-    all(`SELECT bli.asset_id, COALESCE(SUM(bli.net_amount), 0) AS r FROM bill_line_items bli JOIN bills b ON b.id = bli.bill_id WHERE strftime('%Y-%m', b.period_start) = ? GROUP BY bli.asset_id`, month)
-      .map(x => [x.asset_id, x.r])
-  );
+  const hasLegacyBills = hasTable('bill_line_items') && hasTable('bills');
+  const legacyBillRevMap = hasLegacyBills
+    ? new Map(
+        all(`SELECT bli.asset_id, COALESCE(SUM(bli.net_amount), 0) AS r FROM bill_line_items bli JOIN bills b ON b.id = bli.bill_id WHERE strftime('%Y-%m', b.period_start) = ? GROUP BY bli.asset_id`, month)
+          .map(x => [x.asset_id, x.r])
+      )
+    : new Map();
 
   const issuesCostMap = new Map(
-    all(`SELECT asset_id, COALESCE(SUM(qty * COALESCE(unit_price, 0)), 0) AS c FROM issues WHERE strftime('%Y-%m', issue_date) = ? GROUP BY asset_id`, month)
+    all(`SELECT asset_id, COALESCE(SUM(qty * COALESCE(unit_price, 0)), 0) AS c FROM issues WHERE strftime('%Y-%m', issue_date) = ? AND COALESCE(voided, 0) = 0 GROUP BY asset_id`, month)
       .map(x => [x.asset_id, x.c])
   );
   const jobPartsCostMap = new Map(
@@ -324,12 +368,12 @@ router.get('/fleet-summary', requireAuth, requireModule('costing'), asyncHandler
 
   const fuelCostMap = new Map(
     all(`
-      SELECT asset_id,
-             COALESCE(SUM(litres), 0) AS litres,
-             COALESCE(SUM(COALESCE(ROUND(total_cost_cents / 100.0, 2), total_price, 0)), 0) AS cost
-        FROM fuel_issues
-       WHERE strftime('%Y-%m', issue_date) = ? AND COALESCE(is_voided, voided, 0) = 0
-       GROUP BY asset_id
+      SELECT fi.asset_id,
+             COALESCE(SUM(fi.litres), 0) AS litres,
+             COALESCE(SUM(${FUEL_TOTAL_COST_EXPR}), 0) AS cost
+        FROM fuel_issues fi
+       WHERE strftime('%Y-%m', fi.issue_date) = ? AND COALESCE(fi.is_voided, fi.voided, 0) = 0
+       GROUP BY fi.asset_id
     `, month).map(x => [x.asset_id, x])
   );
 
