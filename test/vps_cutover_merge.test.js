@@ -324,3 +324,38 @@ test('4. Linux VPS deploy artifacts enforce LF line endings, valid ports/hostnam
   assert.ok(cutoverSh.includes('FUEL_PM2_MODE'));
   assert.equal(/systemctl\s+(stop|disable).*pm2-root/.test(cutoverSh), false, 'Must NEVER stop or disable pm2-root.service (sibling apps share it)');
 });
+
+test('5. --build-fresh heals legacy WorkshopOne DBs that pre-stamped migration_055_done..058_done without Fuel tables', async () => {
+  const legacyWoPath = path.join(TMP, 'legacy_wo_with_055_058.db');
+  const legacyTargetPath = path.join(TMP, 'legacy_wo_merged.db');
+
+  const src = new Database(woPath, { readonly: true });
+  await src.backup(legacyWoPath);
+  src.close();
+
+  const ldb = new Database(legacyWoPath);
+  ldb.pragma('foreign_keys = OFF');
+  const dropTables = ldb.prepare("SELECT name FROM sqlite_master WHERE type='table' AND (name LIKE 'fuel_%' OR name LIKE 'fleet_%' OR name = 'site_fuel_budgets')").all().map((r) => r.name);
+  for (const t of dropTables) {
+    ldb.exec(`DROP TABLE IF EXISTS "${t}"`);
+  }
+  ldb.prepare("DELETE FROM settings WHERE key LIKE 'migration_fuel_%' OR key IN ('migration_059_done', 'migration_060_done', 'migration_061_done', 'migration_062_done', 'migration_063_done', 'migration_064_done', 'migration_065_done', 'migration_066_done')").run();
+  for (const k of ['migration_055_done', 'migration_056_done', 'migration_057_done', 'migration_058_done']) {
+    ldb.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run(k, '1');
+  }
+  ldb.close();
+
+  const res = await mergeVpsLiveData({
+    buildFresh: true,
+    woPath: legacyWoPath,
+    fuelPath,
+    targetPath: legacyTargetPath,
+    quiet: true,
+  });
+
+  assert.equal(res.rollups.integrityCheck, 'ok');
+  assert.equal(res.parity.readyForCutover, true);
+  assert.equal(res.parity.woRealMissingTotal, 0);
+  assert.equal(res.parity.fuelMissingTotal, 0);
+  assert.equal(res.parity.fuelValueMismatchTotal, 0);
+});

@@ -986,8 +986,13 @@ function migrate() {
 
   // Fuel Management & Bulk Tanks (Plan V2 - Migration 055)
   try {
-    if (!db.prepare("SELECT 1 FROM settings WHERE key = 'migration_055_done'").get()) {
+    const hasTbl = (tbl) => !!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(tbl);
+    const needsFuel055 = !db.prepare("SELECT 1 FROM settings WHERE key = 'migration_fuel_055_done'").get()
+      || !hasTbl('fuel_tanks')
+      || !hasTbl('fuel_issues');
+    if (needsFuel055) {
       require('../migrate/055_fuel_core_schema').runMigration(db);
+      db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('migration_fuel_055_done', '1')").run();
       db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('migration_055_done', '1')").run();
     }
   } catch (err) {
@@ -996,8 +1001,13 @@ function migrate() {
 
   // Fleet Allocations & Rental Billing (Plan V2 - Migration 056)
   try {
-    if (!db.prepare("SELECT 1 FROM settings WHERE key = 'migration_056_done'").get()) {
+    const hasTbl = (tbl) => !!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(tbl);
+    const needsFuel056 = !db.prepare("SELECT 1 FROM settings WHERE key = 'migration_fuel_056_done'").get()
+      || !hasTbl('fleet_rental_rates')
+      || !hasTbl('fleet_bills');
+    if (needsFuel056) {
       require('../migrate/056_fleet_allocations_and_billing').runMigration(db);
+      db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('migration_fuel_056_done', '1')").run();
       db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('migration_056_done', '1')").run();
     }
   } catch (err) {
@@ -1006,8 +1016,13 @@ function migrate() {
 
   // Fleet Financial Ledger & Identity Mapping (Plan V2 - Migration 057)
   try {
-    if (!db.prepare("SELECT 1 FROM settings WHERE key = 'migration_057_done'").get()) {
+    const hasTbl = (tbl) => !!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(tbl);
+    const needsFuel057 = !db.prepare("SELECT 1 FROM settings WHERE key = 'migration_fuel_057_done'").get()
+      || !hasTbl('fleet_financial_events')
+      || !hasTbl('fleet_identity_mappings');
+    if (needsFuel057) {
       require('../migrate/057_fleet_financial_ledger').runMigration(db);
+      db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('migration_fuel_057_done', '1')").run();
       db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('migration_057_done', '1')").run();
     }
   } catch (err) {
