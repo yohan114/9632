@@ -16,6 +16,13 @@
 const { get, all, run, tx } = require('../../db');
 const { deductStock, restoreStock } = require('./stock');
 const fuelIssue = require('./issue');
+const fuelScope = require('./scope');
+const { hasCap } = require('../auth');
+
+function currentMonthStr() {
+  const d = new Date();
+  return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 7);
+}
 
 // Normalize vehicle code / registration for fuzzy matching ("ZA 2609" === "ZA-2609")
 function squashCode(s) {
@@ -46,11 +53,16 @@ function resolveVehicle(codeOrId) {
 function inferMeterType(asset, rateCard) {
   if (rateCard && rateCard.fuel_cons_basis === 'km') return 'KM';
   if (rateCard && rateCard.fuel_cons_basis === 'hr') return 'HOURS';
-  const cat = String((asset && (asset.category || asset.type)) || '').toUpperCase();
+  if (rateCard && rateCard.rate_basis === 'KM') return 'KM';
+  const cat = String((asset && (asset.category || asset.type || asset.category_name)) || '').toUpperCase();
   const code = String((asset && (asset.code || asset.ec_code)) || '').toUpperCase();
+  // Exclude hour-metered machinery/trucks before road-vehicle match
+  if (/EXCAVATOR|LOADER|BACKHOE|GRADER|ROLLER|CRANE|FORKLIFT|GENERATOR|MIXER|BOWSER|BOOM|PUMP\s*TRUCK|TRACTOR/.test(cat)) {
+    return 'HOURS';
+  }
   if (
-    /DUMP|TRUCK|CAB|BUS|BOWSER|LORRY|VAN|CAR|BIKE|MIXER|MOVER/.test(cat) ||
-    /^(DT|DC|SC|HCC|TM|BD|DB|WB|BS|PV|BM|MB)-/.test(code)
+    /DUMP|TIPPER|DOUBLE\s*CAB|SINGLE\s*CAB|CREW\s*CAB|PICKUP|LORRY\s*TRAILER|TRAILER|VAN|PRIME\s*MOVER|\bBED\b|BICYCLE|BIKE|BOLERO/.test(cat) ||
+    /^(DT|DC|SC|HCC|BD|MB|VN|LT|TR|PM)-/.test(code)
   ) {
     return 'KM';
   }
@@ -60,6 +72,12 @@ function inferMeterType(asset, rateCard) {
 function toDisplayRate(storageRate, basis) {
   if (storageRate == null || !Number.isFinite(storageRate) || storageRate <= 0) return null;
   return basis === 'km' ? 1 / storageRate : storageRate;
+}
+
+function fromDisplayRate(displayRate, basis) {
+  const n = Number(displayRate);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return basis === 'km' ? 1 / n : n;
 }
 
 function classifyConsumption(actualStorageRate, econ, typ, heavy) {
@@ -74,8 +92,14 @@ function classifyConsumption(actualStorageRate, econ, typ, heavy) {
 // ---------------------------------------------------------------------------
 // 1. Live Meter Guard
 // ---------------------------------------------------------------------------
-function checkMeterReading({ assetCode, assetId, vehicleCode, meterReading, meter, reading, issueDate, date } = {}) {
-  const asset = resolveVehicle(assetCode || assetId || vehicleCode);
+function checkMeterReading({
+  assetCode, asset_code,
+  assetId, asset_id,
+  vehicleCode, vehicle_code,
+  meterReading, meter_reading, meter, reading,
+  issueDate, issue_date, date,
+} = {}) {
+  const asset = resolveVehicle(assetCode || asset_code || assetId || asset_id || vehicleCode || vehicle_code);
   if (!asset) {
     return {
       found: false,
@@ -90,7 +114,7 @@ function checkMeterReading({ assetCode, assetId, vehicleCode, meterReading, mete
 
   const rateCard = get('SELECT * FROM fleet_rental_rates WHERE asset_id = ? LIMIT 1', asset.id);
   const meterType = inferMeterType(asset, rateCard);
-  const rawDate = issueDate || date;
+  const rawDate = issueDate || issue_date || date;
   const targetDate = rawDate ? String(rawDate).slice(0, 19).replace('T', ' ') : '9999-12-31 23:59:59';
 
   // Most recent fuel-issue reading on or before targetDate
@@ -111,7 +135,7 @@ function checkMeterReading({ assetCode, assetId, vehicleCode, meterReading, mete
   `, asset.id, targetDate.slice(0, 10));
 
   const previous = prevIssue || prevLog || null;
-  const rawReading = meterReading !== undefined ? meterReading : (meter !== undefined ? meter : reading);
+  const rawReading = meterReading !== undefined ? meterReading : (meter_reading !== undefined ? meter_reading : (meter !== undefined ? meter : reading));
   const val = rawReading != null && rawReading !== '' ? Number(rawReading) : null;
 
   const basis = (rateCard && rateCard.fuel_cons_basis) || (meterType === 'KM' ? 'km' : 'hr');
@@ -180,9 +204,48 @@ function checkMeterReading({ assetCode, assetId, vehicleCode, meterReading, mete
 // ---------------------------------------------------------------------------
 // 2. Fuel Issue Corrections / Adjustments Workflow
 // ---------------------------------------------------------------------------
-function listCorrections({ status = 'ALL', site = 'ALL', search = '' } = {}) {
-  const conds = [];
-  const params = [];
+function listCorrections({
+  status = 'ALL',
+  site = 'ALL',
+  search = '',
+  allowedTankIds = null,
+  scopedProjectId = null,
+  requestedBy = null,
+} = {}) {
+  const scopeConds = [];
+  const scopeParams = [];
+
+  if (Array.isArray(allowedTankIds)) {
+    if (allowedTankIds.length > 0) {
+      const marks = allowedTankIds.map(() => '?').join(',');
+      if (requestedBy != null) {
+        scopeConds.push(`(fi.source_tank_id IN (${marks}) OR fi.bulk_tank_id IN (${marks}) OR c.requested_by = ?)`);
+        scopeParams.push(...allowedTankIds, ...allowedTankIds, Number(requestedBy));
+      } else {
+        scopeConds.push(`(fi.source_tank_id IN (${marks}) OR fi.bulk_tank_id IN (${marks}))`);
+        scopeParams.push(...allowedTankIds, ...allowedTankIds);
+      }
+    } else if (scopedProjectId != null) {
+      if (requestedBy != null) {
+        scopeConds.push('(COALESCE(c.project_id, fi.target_project_id, fi.project_id) = ? OR c.requested_by = ?)');
+        scopeParams.push(Number(scopedProjectId), Number(requestedBy));
+      } else {
+        scopeConds.push('COALESCE(c.project_id, fi.target_project_id, fi.project_id) = ?');
+        scopeParams.push(Number(scopedProjectId));
+      }
+    } else if (requestedBy != null) {
+      scopeConds.push('c.requested_by = ?');
+      scopeParams.push(Number(requestedBy));
+    } else {
+      scopeConds.push('1 = 0');
+    }
+  } else if (scopedProjectId != null) {
+    scopeConds.push('COALESCE(c.project_id, fi.target_project_id, fi.project_id) = ?');
+    scopeParams.push(Number(scopedProjectId));
+  }
+
+  const conds = [...scopeConds];
+  const params = [...scopeParams];
 
   if (status && status !== 'ALL') {
     conds.push('UPPER(c.status) = UPPER(?)');
@@ -198,6 +261,7 @@ function listCorrections({ status = 'ALL', site = 'ALL', search = '' } = {}) {
   }
 
   const where = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
+  const scopeWhere = scopeConds.length ? `WHERE ${scopeConds.join(' AND ')}` : '';
 
   const rows = all(`
     SELECT c.*,
@@ -228,15 +292,21 @@ function listCorrections({ status = 'ALL', site = 'ALL', search = '' } = {}) {
       FROM fuel_corrections c
       LEFT JOIN fuel_issues fi ON fi.id = c.fuel_issue_id
       LEFT JOIN projects p ON p.id = COALESCE(c.project_id, fi.target_project_id, fi.project_id)
-     WHERE COALESCE(c.project_name, p.name) IS NOT NULL
-  `);
+     ${scopeWhere ? `${scopeWhere} AND` : 'WHERE'} COALESCE(c.project_name, p.name) IS NOT NULL
+  `, ...scopeParams);
 
-  const counts = {
-    PENDING: (get("SELECT COUNT(*) n FROM fuel_corrections WHERE status = 'PENDING'") || {}).n || 0,
-    APPROVED: (get("SELECT COUNT(*) n FROM fuel_corrections WHERE status = 'APPROVED'") || {}).n || 0,
-    REJECTED: (get("SELECT COUNT(*) n FROM fuel_corrections WHERE status = 'REJECTED'") || {}).n || 0,
-    ALL: (get('SELECT COUNT(*) n FROM fuel_corrections') || {}).n || 0,
-  };
+  const countRows = all(`
+    SELECT UPPER(c.status) AS st, COUNT(*) AS n
+      FROM fuel_corrections c
+      LEFT JOIN fuel_issues fi ON fi.id = c.fuel_issue_id
+     ${scopeWhere}
+     GROUP BY UPPER(c.status)
+  `, ...scopeParams);
+  const counts = { PENDING: 0, APPROVED: 0, REJECTED: 0, ALL: 0 };
+  for (const cr of countRows) {
+    if (cr.st in counts) counts[cr.st] = cr.n;
+    counts.ALL += cr.n;
+  }
 
   return { rows, corrections: rows, sites, counts };
 }
@@ -249,6 +319,8 @@ function createCorrection(payload, actorId = 1) {
     newLitres = null,
     afterMeter = null,
     newMeter = null,
+    afterPriceCents = null,
+    newPricePerLitre = null,
     newFuelKind = null,
     newIssueDate = null,
     reason,
@@ -257,23 +329,71 @@ function createCorrection(payload, actorId = 1) {
     autoApprove = false,
   } = payload;
 
-  if (!fuelIssueId) throw new Error('fuelIssueId is required');
-  if (!reason || !String(reason).trim()) throw new Error('A documented reason is required for fuel adjustment');
+  if (!fuelIssueId) {
+    const e = new Error('fuelIssueId is required');
+    e.status = 400;
+    throw e;
+  }
+  if (!reason || !String(reason).trim()) {
+    const e = new Error('A documented reason is required for fuel adjustment');
+    e.status = 400;
+    throw e;
+  }
 
   const issue = get('SELECT * FROM fuel_issues WHERE id = ?', String(fuelIssueId));
-  if (!issue) throw new Error('Fuel issue not found');
+  if (!issue) {
+    const e = new Error('Fuel issue not found');
+    e.status = 404;
+    throw e;
+  }
+  if (issue.is_voided) {
+    const e = new Error('Cannot adjust an already voided fuel issue');
+    e.status = 409;
+    throw e;
+  }
+  const existingPending = get(
+    "SELECT id FROM fuel_corrections WHERE fuel_issue_id = ? AND status = 'PENDING' LIMIT 1",
+    String(fuelIssueId)
+  );
+  if (existingPending) {
+    const e = new Error('A pending change request already exists for this fuel issue. Wait for Administrator review.');
+    e.status = 409;
+    throw e;
+  }
 
   const beforeLitres = Number(issue.litres) || 0;
   const beforeMeter = issue.meter_reading != null ? Number(issue.meter_reading) : null;
+  const origKind = issue.fuel_type || issue.fuel_kind || 'AUTO_DIESEL';
+  const beforePriceCents = Number(issue.fuel_price_cents || issue.price_per_litre_cents || 0)
+    || (issue.unit_price ? Math.round(Number(issue.unit_price) * 100) : 0)
+    || fuelIssue.getCurrentPrice(origKind, issue.issue_date);
+
   const effLitres = afterLitres !== null && afterLitres !== undefined ? afterLitres : newLitres;
   const effMeter = afterMeter !== null && afterMeter !== undefined ? afterMeter : newMeter;
   const parsedAfterLitres = effLitres !== null && effLitres !== '' && effLitres !== undefined ? Number(effLitres) : beforeLitres;
   const parsedAfterMeter = effMeter !== null && effMeter !== '' && effMeter !== undefined ? Number(effMeter) : beforeMeter;
 
+  const effFuelKind = newFuelKind ? String(newFuelKind).trim().toUpperCase() : origKind;
+  const origDateDay = String(issue.issue_date || '').slice(0, 10);
+  const nextDateDay = newIssueDate ? String(newIssueDate).slice(0, 10) : origDateDay;
+
+  let parsedAfterPriceCents = beforePriceCents;
+  if (afterPriceCents !== null && afterPriceCents !== '' && afterPriceCents !== undefined) {
+    parsedAfterPriceCents = Math.round(Number(afterPriceCents));
+  } else if (newPricePerLitre !== null && newPricePerLitre !== '' && newPricePerLitre !== undefined) {
+    parsedAfterPriceCents = Math.round(Number(newPricePerLitre) * 100);
+  } else if (effFuelKind !== origKind || (nextDateDay && nextDateDay !== origDateDay)) {
+    parsedAfterPriceCents = fuelIssue.getCurrentPrice(effFuelKind, nextDateDay);
+  }
+  if (!Number.isFinite(parsedAfterPriceCents) || parsedAfterPriceCents <= 0) {
+    throw new Error('Corrected fuel rate must be greater than 0');
+  }
+
   const isVoid = String(correctionType).toUpperCase() === 'VOID';
   const stockDeltaLitres = isVoid ? beforeLitres : (beforeLitres - parsedAfterLitres);
-  const unitCents = Number(issue.fuel_price_cents || issue.price_per_litre_cents || 34100);
-  const financialDeltaCents = Math.round(-stockDeltaLitres * unitCents);
+  const beforeTotalCents = Number(issue.total_cost_cents || issue.cost_cents || Math.round(beforeLitres * beforePriceCents));
+  const afterTotalCents = isVoid ? 0 : Math.round(parsedAfterLitres * parsedAfterPriceCents);
+  const financialDeltaCents = afterTotalCents - beforeTotalCents;
 
   const projId = issue.target_project_id || issue.project_id || issue.source_project_id || null;
   const proj = projId ? get('SELECT id, code, name FROM projects WHERE id = ?', projId) : null;
@@ -284,23 +404,26 @@ function createCorrection(payload, actorId = 1) {
     run(`
       INSERT INTO fuel_corrections (
         id, fuel_issue_id, correction_type, before_litres, after_litres,
-        before_meter, after_meter, stock_delta_litres, financial_delta_cents,
+        before_meter, after_meter, before_price_cents, after_price_cents,
+        stock_delta_litres, financial_delta_cents,
         reason, evidence_file, status, requested_by, requested_at, notes,
         asset_id, asset_code, project_id, project_code, project_name,
         orig_fuel_kind, new_fuel_kind, orig_issue_date, new_issue_date
       ) VALUES (
         ?, ?, ?, ?, ?,
         ?, ?, ?, ?,
+        ?, ?,
         ?, ?, 'PENDING', ?, datetime('now'), ?,
         ?, ?, ?, ?, ?,
         ?, ?, ?, ?
       )
     `, corrId, String(fuelIssueId), String(correctionType).toUpperCase(),
        beforeLitres, isVoid ? 0 : parsedAfterLitres,
-       beforeMeter, parsedAfterMeter, stockDeltaLitres, financialDeltaCents,
+       beforeMeter, parsedAfterMeter, beforePriceCents, isVoid ? beforePriceCents : parsedAfterPriceCents,
+       stockDeltaLitres, financialDeltaCents,
        String(reason).trim(), evidenceFile || 'Running-Chart-Verified', actorId, notes || null,
        issue.asset_id, issue.asset_code, proj ? proj.id : projId, proj ? proj.code : null, proj ? proj.name : null,
-       issue.fuel_type || issue.fuel_kind || 'AUTO_DIESEL', newFuelKind || null,
+       origKind, newFuelKind ? effFuelKind : null,
        issue.issue_date, newIssueDate || null);
   });
 
@@ -348,8 +471,26 @@ function reviewCorrection(correctionId, { action, reviewNote }, actorId = 1) {
         const newMeter = corr.after_meter != null ? Number(corr.after_meter) : issue.meter_reading;
         const newFuel = corr.new_fuel_kind || issue.fuel_type || 'AUTO_DIESEL';
         const newDate = corr.new_issue_date || issue.issue_date;
-        const unitPrice = Number(issue.fuel_price_cents || issue.price_per_litre_cents || 34100);
+        const unitPrice = Number(corr.after_price_cents || issue.fuel_price_cents || issue.price_per_litre_cents || 0)
+          || fuelIssue.getCurrentPrice(newFuel, newDate);
         const newTotalCents = Math.round(newLitres * unitPrice);
+
+        let cc = null;
+        if (issue.fuel_request_id) {
+          const fr = get('SELECT * FROM fuel_requests WHERE id = ?', issue.fuel_request_id);
+          if (fr) {
+            const transportRequests = require('./transport_requests');
+            cc = transportRequests.computeCrossCheck({
+              actualLitres: newLitres,
+              recommendedLitres: fr.recommended_litres,
+              tripTotalFuel: fr.trip_total_fuel,
+              requestedLitres: fr.requested_litres,
+              isFullTank: !!fr.is_full_tank,
+              prevMeterReading: fr.prev_meter_reading,
+              issueMeterReading: newMeter != null ? newMeter : fr.meter_reading,
+            });
+          }
+        }
 
         run(`
           UPDATE fuel_issues
@@ -358,12 +499,44 @@ function reviewCorrection(correctionId, { action, reviewNote }, actorId = 1) {
                  fuel_type = ?,
                  fuel_kind = ?,
                  issue_date = ?,
+                 fuel_price_cents = ?,
+                 price_per_litre_cents = ?,
+                 unit_price = ?,
                  total_cost_cents = ?,
                  cost_cents = ?,
                  total_price = ?,
+                 variance_litres = COALESCE(?, variance_litres),
+                 variance_pct = COALESCE(?, variance_pct),
+                 trip_variance_litres = COALESCE(?, trip_variance_litres),
+                 cross_check_status = COALESCE(?, cross_check_status),
                  updated_at = datetime('now')
            WHERE id = ?
-        `, newLitres, newMeter, newFuel, newFuel, newDate, newTotalCents, newTotalCents, newTotalCents / 100, issue.id);
+        `, newLitres, newMeter, newFuel, newFuel, newDate,
+           unitPrice, unitPrice, unitPrice / 100,
+           newTotalCents, newTotalCents, newTotalCents / 100,
+           cc ? cc.varianceLitres : null,
+           cc ? cc.variancePct : null,
+           cc ? cc.tripVarianceLitres : null,
+           cc ? cc.crossCheckStatus : null,
+           issue.id);
+
+        if (issue.fuel_request_id) {
+          run(`
+            UPDATE fuel_requests
+               SET actual_issued_litres = ?
+             WHERE id = ? AND status = 'FULFILLED'
+          `, newLitres, issue.fuel_request_id);
+        }
+
+        try {
+          run(`
+            UPDATE fleet_financial_events
+               SET amount_cents = ?,
+                   quantity = ?,
+                   business_date = ?
+             WHERE event_key = ? AND is_reversal = 0
+          `, newTotalCents, newLitres, String(newDate).slice(0, 10), `FIN-FUEL-${issue.id}`);
+        } catch (_) {}
 
         // Adjust tank stock by stock_delta_litres (before - after)
         const tankId = issue.source_tank_id || issue.bulk_tank_id;
@@ -377,8 +550,19 @@ function reviewCorrection(correctionId, { action, reviewNote }, actorId = 1) {
         if (newMeter && newMeter > 0 && issue.asset_id) {
           run(`
             INSERT INTO fuel_meter_readings (id, asset_id, asset_code, meter_reading, meter_type, reading_date, source, recorded_by)
-            VALUES (?, ?, ?, ?, ?, ?, 'FUEL_CORRECTION', ?)
-          `, `mr-corr-${Date.now()}`, issue.asset_id, issue.asset_code, newMeter, issue.meter_type || 'HOURS', newDate, actorId);
+            VALUES (?, ?, ?, ?, ?, ?, 'FUEL_ISSUE', ?)
+          `, `mr-corr-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, issue.asset_id, issue.asset_code, newMeter, issue.meter_type || 'HOURS', newDate, actorId);
+        }
+
+        // Recompute monthly fuel cost for both old and new month buckets
+        if (issue.asset_id) {
+          try {
+            const costing = require('../costing');
+            if (issue.issue_date) costing.recalcFuelVehicleMonth(issue.asset_id, issue.issue_date);
+            if (newDate && String(newDate).slice(0, 7) !== String(issue.issue_date || '').slice(0, 7)) {
+              costing.recalcFuelVehicleMonth(issue.asset_id, newDate);
+            }
+          } catch (_) {}
         }
       }
     }
@@ -400,26 +584,48 @@ function reviewCorrection(correctionId, { action, reviewNote }, actorId = 1) {
 // 3. Site Fuel Operators Console & Site Fuel Overview
 // ---------------------------------------------------------------------------
 function getSiteConsoleData(user, query = {}) {
-  const userRow = user && user.id ? get('SELECT * FROM users WHERE id = ?', user.id) : null;
-  const allTanks = all(`
-    SELECT t.*, p.name AS project_name, p.code AS project_code
+  const scope = fuelScope.getFuelScope(user);
+  const rawTanks = all(`
+    SELECT t.*, p.name AS project_name, p.code AS project_code,
+           (SELECT COUNT(*) FROM fuel_requests r WHERE r.target_tank_id = t.id AND r.status = 'APPROVED') AS pending_request_count
       FROM fuel_tanks t
       LEFT JOIN projects p ON p.id = t.project_id
      WHERE t.active = 1
      ORDER BY t.name ASC
   `);
+  const rawProjects = all('SELECT id, code, name, location FROM projects WHERE COALESCE(active, 1) = 1 ORDER BY name ASC');
 
-  const requestedTankId = query.tankId || (userRow && userRow.bulk_tank_id) || (allTanks[0] && allTanks[0].id);
-  const selectedTank = allTanks.find((t) => String(t.id) === String(requestedTankId)) || allTanks[0] || null;
-  const selectedProjectId = query.projectId
-    ? Number(query.projectId)
-    : (selectedTank && selectedTank.project_id) || (userRow && userRow.project_id) || null;
+  const scopedTanks = scope.scoped
+    ? rawTanks.filter((t) => scope.allowedTankIds && scope.allowedTankIds.includes(String(t.id)))
+    : rawTanks;
+
+  const requestedTankId = scope.scoped
+    ? ((query.tankId && scope.allowedTankIds && scope.allowedTankIds.includes(String(query.tankId)))
+      ? String(query.tankId)
+      : (scope.tankId || (scopedTanks[0] && scopedTanks[0].id) || null))
+    : (query.tankId || scope.tankId || (scopedTanks[0] && scopedTanks[0].id) || null);
+
+  const selectedTankRaw = scopedTanks.find((t) => String(t.id) === String(requestedTankId)) || scopedTanks[0] || null;
+
+  const selectedProjectId = scope.scoped
+    ? ((selectedTankRaw && selectedTankRaw.project_id) || scope.projectId || null)
+    : (query.projectId
+      ? Number(query.projectId)
+      : ((selectedTankRaw && selectedTankRaw.project_id) || scope.projectId || null));
 
   const project = selectedProjectId ? get('SELECT * FROM projects WHERE id = ?', selectedProjectId) : null;
-  const hideStock = !!(userRow && userRow.hide_stock && !(user.roles || []).includes('admin'));
+  const hideStock = scope.hideStock;
+
+  const allTanks = scopedTanks.map((t) => fuelScope.maskTankForUser(t, scope));
+  const restrictProjects = scope.scoped && (scope.isPumpOnly || !hasCap(user, 'fuel.transfer'));
+  const allProjects = restrictProjects
+    ? (selectedProjectId != null ? rawProjects.filter((p) => Number(p.id) === Number(selectedProjectId)) : [])
+    : rawProjects;
+
+  const selTankId = selectedTankRaw ? String(selectedTankRaw.id) : null;
 
   // Vehicles deployed to this site
-  const siteVehicles = selectedProjectId ? all(`
+  const siteVehicles = (!scope.unassigned && selectedProjectId) ? all(`
     SELECT DISTINCT a.id, COALESCE(a.code, a.ec_code) AS code, a.registration, a.category, a.current_hours,
            fa.driver_name, fa.billing_type, fa.start_date
       FROM fleet_asset_assignments fa
@@ -428,32 +634,119 @@ function getSiteConsoleData(user, query = {}) {
      ORDER BY a.code ASC
   `, selectedProjectId) : [];
 
-  // Recent issues from this tank or project
-  const recentIssues = selectedTank ? all(`
-    SELECT fi.*, COALESCE(u.full_name, u.username, fi.driver_name) AS issuer_name,
-           (SELECT status FROM fuel_corrections fc WHERE fc.fuel_issue_id = fi.id ORDER BY fc.requested_at DESC LIMIT 1) AS correction_status
-      FROM fuel_issues fi
-      LEFT JOIN users u ON u.id = fi.issued_by
-     WHERE (fi.source_tank_id = ? OR fi.bulk_tank_id = ? OR (? IS NOT NULL AND COALESCE(fi.target_project_id, fi.project_id) = ?))
-     ORDER BY fi.issue_date DESC
-     LIMIT 60
-  `, String(selectedTank.id), String(selectedTank.id), selectedProjectId, selectedProjectId) : [];
+  // Approved Transport Fuel Requests awaiting pump dispatch for this tank / site
+  const pendingPumpRequests = scope.unassigned ? [] : all(`
+    SELECT fr.*,
+           COALESCE(p.name, tp.name, 'Central') AS project_name,
+           t.name AS target_tank_name,
+           t.code AS target_tank_code,
+           COALESCE(u1.full_name, u1.username) AS requester_name,
+           COALESCE(u2.full_name, u2.username) AS approver_name
+      FROM fuel_requests fr
+      LEFT JOIN fuel_tanks t ON t.id = fr.target_tank_id
+      LEFT JOIN projects p ON p.id = fr.project_id
+      LEFT JOIN projects tp ON tp.id = t.project_id
+      LEFT JOIN users u1 ON u1.id = fr.requested_by
+      LEFT JOIN users u2 ON u2.id = fr.approved_by
+     WHERE fr.status = 'APPROVED'
+       AND (
+         (? IS NOT NULL AND fr.target_tank_id = ?)
+         OR (fr.target_tank_id IS NULL AND COALESCE(fr.source_mode, 'TANK') = 'TANK' AND ? IS NOT NULL AND COALESCE(fr.project_id, 0) = ?)
+         OR (? IS NULL AND ? IS NULL AND ? = 0)
+       )
+     ORDER BY fr.requested_at ASC
+  `, selTankId, selTankId, selectedProjectId, selectedProjectId, selTankId, selectedProjectId, scope.scoped ? 1 : 0);
 
-  // Recent bulk deliveries into this tank
-  const recentDeliveries = selectedTank ? all(`
+  // Recent issues from this tank (strictly own tank for scoped pump operators)
+  let recentIssues = [];
+  if (!scope.unassigned) {
+    if (selectedTankRaw && scope.scoped) {
+      recentIssues = all(`
+        SELECT fi.*, COALESCE(u.full_name, u.username, fi.driver_name) AS issuer_name,
+               fr.request_no,
+               (SELECT status FROM fuel_corrections fc WHERE fc.fuel_issue_id = fi.id ORDER BY fc.requested_at DESC LIMIT 1) AS correction_status
+          FROM fuel_issues fi
+          LEFT JOIN fuel_requests fr ON fr.id = fi.fuel_request_id
+          LEFT JOIN users u ON u.id = fi.issued_by
+         WHERE (fi.source_tank_id = ? OR fi.bulk_tank_id = ?)
+         ORDER BY fi.issue_date DESC, fi.created_at DESC
+         LIMIT 80
+      `, selTankId, selTankId);
+    } else if (selectedTankRaw) {
+      recentIssues = all(`
+        SELECT fi.*, COALESCE(u.full_name, u.username, fi.driver_name) AS issuer_name,
+               fr.request_no,
+               (SELECT status FROM fuel_corrections fc WHERE fc.fuel_issue_id = fi.id ORDER BY fc.requested_at DESC LIMIT 1) AS correction_status
+          FROM fuel_issues fi
+          LEFT JOIN fuel_requests fr ON fr.id = fi.fuel_request_id
+          LEFT JOIN users u ON u.id = fi.issued_by
+         WHERE (fi.source_tank_id = ? OR fi.bulk_tank_id = ? OR (? IS NOT NULL AND COALESCE(fi.target_project_id, fi.project_id) = ?))
+         ORDER BY fi.issue_date DESC, fi.created_at DESC
+         LIMIT 80
+      `, selTankId, selTankId, selectedProjectId, selectedProjectId);
+    } else if (selectedProjectId) {
+      recentIssues = all(`
+        SELECT fi.*, COALESCE(u.full_name, u.username, fi.driver_name) AS issuer_name,
+               fr.request_no,
+               (SELECT status FROM fuel_corrections fc WHERE fc.fuel_issue_id = fi.id ORDER BY fc.requested_at DESC LIMIT 1) AS correction_status
+          FROM fuel_issues fi
+          LEFT JOIN fuel_requests fr ON fr.id = fi.fuel_request_id
+          LEFT JOIN users u ON u.id = fi.issued_by
+         WHERE COALESCE(fi.target_project_id, fi.project_id, fi.source_project_id) = ?
+         ORDER BY fi.issue_date DESC, fi.created_at DESC
+         LIMIT 80
+      `, selectedProjectId);
+    }
+  }
+
+  // Recent bulk deliveries into this tank (Fuel Add History)
+  const recentDeliveries = (!scope.unassigned && selectedTankRaw) ? all(`
     SELECT fd.*, COALESCE(u.full_name, u.username) AS receiver_name
       FROM fuel_bulk_deliveries fd
       LEFT JOIN users u ON u.id = fd.received_by
      WHERE fd.tank_id = ?
-     ORDER BY fd.delivery_date DESC
-     LIMIT 25
-  `, String(selectedTank.id)) : [];
+     ORDER BY fd.delivery_date DESC, fd.created_at DESC
+     LIMIT 50
+  `, selTankId) : [];
 
-  const tankObj = selectedTank ? {
-    ...selectedTank,
-    current_litres: hideStock ? null : selectedTank.current_litres,
-    hide_stock: hideStock,
-  } : null;
+  // Change / Correction requests submitted for this tank / by this operator (sent to Admin for review)
+  const actorId = user && user.id ? Number(user.id) : null;
+  let myCorrections = [];
+  if (!scope.unassigned) {
+    if (selectedTankRaw) {
+      myCorrections = all(`
+        SELECT c.*,
+               fi.issue_no,
+               COALESCE(c.asset_code, fi.asset_code) AS asset_code,
+               COALESCE(u1.full_name, u1.username, 'Operator') AS requester_name,
+               COALESCE(u2.full_name, u2.username) AS approver_name
+          FROM fuel_corrections c
+          LEFT JOIN fuel_issues fi ON fi.id = c.fuel_issue_id
+          LEFT JOIN users u1 ON u1.id = c.requested_by
+          LEFT JOIN users u2 ON u2.id = c.approved_by
+         WHERE (fi.source_tank_id = ? OR fi.bulk_tank_id = ? OR (? IS NOT NULL AND c.requested_by = ?))
+         ORDER BY CASE WHEN c.status = 'PENDING' THEN 0 ELSE 1 END, c.requested_at DESC
+         LIMIT 30
+      `, selTankId, selTankId, actorId, actorId);
+    } else if (selectedProjectId) {
+      myCorrections = all(`
+        SELECT c.*,
+               fi.issue_no,
+               COALESCE(c.asset_code, fi.asset_code) AS asset_code,
+               COALESCE(u1.full_name, u1.username, 'Operator') AS requester_name,
+               COALESCE(u2.full_name, u2.username) AS approver_name
+          FROM fuel_corrections c
+          LEFT JOIN fuel_issues fi ON fi.id = c.fuel_issue_id
+          LEFT JOIN users u1 ON u1.id = c.requested_by
+          LEFT JOIN users u2 ON u2.id = c.approved_by
+         WHERE (COALESCE(c.project_id, fi.target_project_id, fi.project_id) = ? OR (? IS NOT NULL AND c.requested_by = ?))
+         ORDER BY CASE WHEN c.status = 'PENDING' THEN 0 ELSE 1 END, c.requested_at DESC
+         LIMIT 30
+      `, selectedProjectId, actorId, actorId);
+    }
+  }
+
+  const tankObj = fuelScope.maskTankForUser(selectedTankRaw, scope);
 
   return {
     tank: tankObj,
@@ -461,16 +754,24 @@ function getSiteConsoleData(user, query = {}) {
     project,
     activeProject: project,
     hideStock,
+    fuelScope: scope,
     allTanks,
     tanks: allTanks,
+    allProjects,
     siteVehicles,
+    pendingPumpRequests: pendingPumpRequests.map((r) => ({
+      ...r,
+      is_full_tank: !!r.is_full_tank,
+      needs_approval: !!r.needs_approval,
+    })),
     recentIssues,
     recentDeliveries,
+    myCorrections,
   };
 }
 
 function getSitesOverview({ month } = {}) {
-  const targetMonth = month || '2026-08';
+  const targetMonth = month || currentMonthStr();
   const [yrStr, moStr] = targetMonth.split('-');
   const yr = Number(yrStr);
   const mo = Number(moStr);
@@ -606,7 +907,7 @@ function getSitesOverview({ month } = {}) {
 }
 
 function getSiteMonthlySheet(projectId, month) {
-  const targetMonth = month || '2026-08';
+  const targetMonth = month || currentMonthStr();
   const pid = Number(projectId || 0);
   const project = pid > 0 ? get('SELECT * FROM projects WHERE id = ?', pid) : { id: 0, code: 'CW', name: 'Central Workshop / Unallocated' };
 
@@ -1117,7 +1418,7 @@ function getFleetServicePlanner({ statusFilter = '', search = '', projectId = nu
 // 6. Interactive Fuel Consumption Graphs & Health Analytics
 // ---------------------------------------------------------------------------
 function getConsumptionAnalytics({ fromDate, toDate, projectId, month } = {}) {
-  const targetMonth = month || (fromDate ? String(fromDate).slice(0, 7) : '2026-08');
+  const targetMonth = month || (fromDate ? String(fromDate).slice(0, 7) : currentMonthStr());
   const start = fromDate || `${targetMonth}-01`;
   const end = (toDate || `${targetMonth}-31`) + ' 23:59:59';
   const pid = projectId ? Number(projectId) : null;
@@ -1293,6 +1594,10 @@ module.exports = {
   squashCode,
   resolveVehicle,
   inferMeterType,
+  toDisplayRate,
+  fromDisplayRate,
+  classifyConsumption,
+  classifyBand: classifyConsumption,
   checkMeterReading,
   listCorrections,
   createCorrection,

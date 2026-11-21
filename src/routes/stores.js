@@ -275,15 +275,30 @@ function cascadeGrnPrice(grnId, unitPrice) {
   if (!grn) return;
 
   const affectedJobIds = new Set();
+  const buckets = new Map();
+  const trackBucket = (assetId, dateStr) => {
+    if (!assetId || !dateStr) return;
+    const ym = String(dateStr).slice(0, 7);
+    if (!/^\d{4}-\d{2}$/.test(ym)) return;
+    const [year, month] = ym.split('-').map(Number);
+    if (year && month) buckets.set(`${assetId}:${ym}`, { assetId, year, month });
+  };
+
+  run("UPDATE stock_moves SET unit_price = ? WHERE source_table = 'grn' AND source_id = ?", price, grnId);
 
   // 1. Update all issues linked to this GRN (by grn_id or mrn_line_id)
   const linkedIssues = all(`
-    SELECT id, job_id, asset_id, qty, description FROM issues
+    SELECT id, job_id, asset_id, issue_date, qty, description FROM issues
      WHERE grn_id = ?
         OR (? IS NOT NULL AND mrn_line_id = ?)
   `, grnId, grn.mrn_line_id, grn.mrn_line_id);
   for (const iss of linkedIssues) {
-    run('UPDATE issues SET unit_price = ?, grn_id = COALESCE(grn_id, ?) WHERE id = ?', price, grnId, iss.id);
+    run(
+      'UPDATE issues SET unit_price = ?, grn_id = COALESCE(grn_id, ?) WHERE id = ?',
+      price, grnId, iss.id
+    );
+    run("UPDATE stock_moves SET unit_price = ? WHERE source_table = 'issues' AND source_id = ?", price, iss.id);
+    trackBucket(iss.asset_id, iss.issue_date);
     if (iss.job_id) {
       affectedJobIds.add(iss.job_id);
       const hasJp = get(`
@@ -351,9 +366,11 @@ function cascadeGrnPrice(grnId, unitPrice) {
     }
     run('UPDATE general_item_txns SET unit_price = ? WHERE store_item_id = ? AND (unit_price IS NULL OR unit_price <= 0)', price, storeItemId);
 
-    const unpricedIssues = all('SELECT id, job_id FROM issues WHERE store_item_id = ? AND (unit_price IS NULL OR unit_price <= 0)', storeItemId);
+    const unpricedIssues = all('SELECT id, job_id, asset_id, issue_date FROM issues WHERE store_item_id = ? AND (unit_price IS NULL OR unit_price <= 0)', storeItemId);
     for (const ui of unpricedIssues) {
       run('UPDATE issues SET unit_price = ? WHERE id = ?', price, ui.id);
+      run("UPDATE stock_moves SET unit_price = ? WHERE source_table = 'issues' AND source_id = ?", price, ui.id);
+      trackBucket(ui.asset_id, ui.issue_date);
       if (ui.job_id) affectedJobIds.add(ui.job_id);
       run("UPDATE job_parts SET unit_price = ? WHERE source_type = 'issue' AND source_id = ? AND (unit_price IS NULL OR unit_price <= 0)", price, ui.id);
     }
@@ -365,11 +382,16 @@ function cascadeGrnPrice(grnId, unitPrice) {
     if (m && m.job_id) affectedJobIds.add(m.job_id);
   }
 
-  // 7. Refresh totals on all affected Job Cards
+  // 7. Refresh totals on all affected Job Cards and monthly vehicle rollups
   const costing = require('../lib/costing');
   for (const jid of affectedJobIds) {
     try {
       costing.refreshJobTotals(jid);
+    } catch (_) {}
+  }
+  for (const b of buckets.values()) {
+    try {
+      costing.recalcVehicleMonth(b.assetId, b.year, b.month);
     } catch (_) {}
   }
 }

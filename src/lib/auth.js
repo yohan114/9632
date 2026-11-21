@@ -165,7 +165,12 @@ function authenticate(req, res, next) {
     } else {
       touchSession(sess, req);
       const roles = rolesForUser(sess.user_id);
-      const userExtra = get('SELECT access_until, approval_limit, workshop_id FROM users WHERE id = ?', sess.user_id) || {};
+      let userExtra = {};
+      try {
+        userExtra = get('SELECT access_until, approval_limit, workshop_id, project_id, bulk_tank_id, hide_stock, fuel_role FROM users WHERE id = ?', sess.user_id) || {};
+      } catch {
+        userExtra = get('SELECT access_until, approval_limit, workshop_id FROM users WHERE id = ?', sess.user_id) || {};
+      }
       const uBase = {
         id: sess.user_id,
         username: sess.username,
@@ -174,6 +179,10 @@ function authenticate(req, res, next) {
         access_until: userExtra.access_until || null,
         approval_limit: userExtra.approval_limit != null ? userExtra.approval_limit : null,
         workshop_id: userExtra.workshop_id || null,
+        project_id: userExtra.project_id != null ? userExtra.project_id : null,
+        bulk_tank_id: userExtra.bulk_tank_id != null ? userExtra.bulk_tank_id : null,
+        hide_stock: !!userExtra.hide_stock,
+        fuel_role: userExtra.fuel_role || null,
       };
       req.user = {
         ...uBase,

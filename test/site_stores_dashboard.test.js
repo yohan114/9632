@@ -1,9 +1,20 @@
 'use strict';
 
+const os = require('os');
+const path = require('path');
+const fs = require('fs');
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { db, get, all, run } = require('../src/db');
+const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'wo-site-stores-'));
+process.env.DB_PATH = path.join(TMP, 'site-stores.db');
+process.env.MULTIDB = '0';
+process.env.BACKUP_DIR = path.join(TMP, 'backups');
+process.env.BACKUP_INTERVAL_MINUTES = '0';
+process.env.NO_PORT = '1';
+
+const { db, get, all, run, migrate } = require('../src/db');
+migrate();
 const auth = require('../src/lib/auth');
 const storeLocations = require('../src/lib/store_locations');
 const app = require('../src/server');
@@ -31,6 +42,8 @@ test('Site Stores Controls Dashboard & MTN Tenancy Boundaries Suite', async (t) 
 
   t.after(async () => {
     if (server) await new Promise((res) => server.close(res));
+    try { db.close(); } catch {}
+    try { fs.rmSync(TMP, { recursive: true, force: true }); } catch {}
   });
 
   const pwHash = auth.hashPassword('SiteSecret123!');

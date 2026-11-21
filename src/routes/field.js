@@ -26,6 +26,7 @@ const permissions = require('../lib/permissions');
 const scope = require('../lib/scope');
 const field = require('../lib/field');
 const emitter = require('../lib/emitter');
+const audit = require('../lib/audit');
 
 const router = express.Router();
 
@@ -50,10 +51,15 @@ router.get('/month', asyncHandler((req, res) => {
 router.get('/places', asyncHandler((_req, res) => res.json(require('../lib/places').list().filter((p) => p.kind !== 'workshop'))));
 
 router.get('/settings', asyncHandler((_req, res) => res.json(field.settings())));
-router.put('/settings', requireCap('jobs.settings'), asyncHandler((req, res) => res.json(field.saveSettings(req.user, req.body || {}))));
+router.put('/settings', requireCap('jobs.settings'), asyncHandler((req, res) => {
+  const out = field.saveSettings(req.user, req.body || {});
+  audit.record({ userId: req.user && req.user.id, entity: 'field_settings', action: 'update', after: out });
+  res.json(out);
+}));
 
 router.post('/breakdown', requireCap('jobs.breakdown'), asyncHandler((req, res) => {
   const job = field.reportBreakdown(req.user, req.body || {});
+  audit.record({ userId: req.user && req.user.id, entity: 'field_breakdown', entityId: job.id, action: 'create', after: { job_no: job.job_no, asset_id: job.asset_id } });
   emitter.emit('job_updated', { job_id: job.id, action: 'create' });
   emitter.emit('dashboard_refresh', { reason: 'breakdown' });
   res.status(201).json({ job, field: field.view(job) });
@@ -66,14 +72,18 @@ router.get('/jobs/:id', asyncHandler((req, res) => {
 }));
 
 router.patch('/jobs/:id', requireCap('jobs.field'), asyncHandler((req, res) => {
-  const out = field.update(req.user, toInt(req.params.id), req.body || {});
-  emitter.emit('job_updated', { job_id: toInt(req.params.id), action: 'field' });
+  const jid = toInt(req.params.id);
+  const out = field.update(req.user, jid, req.body || {});
+  audit.record({ userId: req.user && req.user.id, entity: 'field_job', entityId: jid, action: 'update', after: req.body || {} });
+  emitter.emit('job_updated', { job_id: jid, action: 'field' });
   res.json(out);
 }));
 
 router.post('/jobs/:id/:step(arrived|working)', requireCap('jobs.field'), asyncHandler((req, res) => {
-  const out = field.stamp(req.user, toInt(req.params.id), req.params.step);
-  emitter.emit('job_updated', { job_id: toInt(req.params.id), action: 'field' });
+  const jid = toInt(req.params.id);
+  const out = field.stamp(req.user, jid, req.params.step);
+  audit.record({ userId: req.user && req.user.id, entity: 'field_job', entityId: jid, action: `stamp_${req.params.step}`, after: out });
+  emitter.emit('job_updated', { job_id: jid, action: 'field' });
   emitter.emit('dashboard_refresh', { reason: 'field' });
   res.json(out);
 }));

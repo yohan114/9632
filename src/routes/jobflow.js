@@ -11,6 +11,7 @@ const { requireCap } = require('../lib/auth');
 const scope = require('../lib/scope');
 const { sendXlsx } = require('../lib/export');
 const flow = require('../lib/jobs_flow');
+const audit = require('../lib/audit');
 
 const router = express.Router();
 
@@ -29,6 +30,7 @@ router.post('/jobs/:id/reason', cardsOnly, requireCap('jobs.reason'), asyncHandl
   const no = scope.jobRefusal(req.user, id);
   if (no) return res.status(403).json(no);
   flow.setReason(req.user, id, req.body || {});
+  audit.record({ userId: req.user && req.user.id, entity: 'job_hold_reason', entityId: id, action: 'set_reason', after: req.body || {} });
   res.status(201).json(flow.attendanceOf(req.user, id));
 }));
 

@@ -62,11 +62,20 @@ function workshopFields(user) {
 
   const context = require('../lib/context');
   const isMainStore = context.isMainStoreUser(user);
+  let fuelScope = null;
+  try {
+    fuelScope = require('../lib/fuel/scope').getFuelScope(user);
+  } catch (_) {}
   return {
     isMainStore,
     storeType: primaryStore ? primaryStore.store_type : null,
     activeWorkshopId: primaryStore ? primaryStore.workshop_id : (home ? home.id : null),
-    activeProjectId: primaryStore ? primaryStore.project_id : null,
+    activeProjectId: user.project_id != null ? user.project_id : (primaryStore ? primaryStore.project_id : null),
+    assignedProjectId: user.project_id != null ? user.project_id : null,
+    assignedTankId: user.bulk_tank_id != null ? user.bulk_tank_id : null,
+    hideStock: !!user.hide_stock,
+    fuelRole: user.fuel_role || null,
+    fuelScope,
     workshop: home ? { id: home.id, code: home.code, name: home.name } : null,
     workshopsMulti: ws.isMulti(),
     storeLocations: userStores,
@@ -93,7 +102,17 @@ function startSession(req, res, user, { mfaVerified = false, method = 'password'
     expires: new Date(expires),
   });
   const roles = auth.rolesForUser(user.id);
-  const uObj = { id: user.id, roles, access_until: user.access_until, approval_limit: user.approval_limit, workshop_id: user.workshop_id };
+  const uObj = {
+    id: user.id,
+    roles,
+    access_until: user.access_until,
+    approval_limit: user.approval_limit,
+    workshop_id: user.workshop_id,
+    project_id: user.project_id != null ? user.project_id : null,
+    bulk_tank_id: user.bulk_tank_id != null ? user.bulk_tank_id : null,
+    hide_stock: !!user.hide_stock,
+    fuel_role: user.fuel_role || null,
+  };
   const caps = capabilities.effectiveCaps(uObj);
   const st = mfa.status(user.id, roles);
   return res.json({

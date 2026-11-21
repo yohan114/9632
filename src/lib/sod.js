@@ -59,6 +59,20 @@ const SOD_RULES = [
     caps: ['fabrication.cost.edit', 'fabrication.cost.approve'],
     severity: 'CRITICAL',
     description: 'The officer preparing the fabrication costing sheet cannot approve it for financial posting.'
+  },
+  {
+    code: 'SOD-FUEL-01',
+    title: 'Fuel Request Creation & Pump Fuel Dispensing',
+    caps: ['fuel.transport.request', 'fuel.issue'],
+    severity: 'CRITICAL',
+    description: 'The person raising a vehicle fuel request cannot also dispense fuel at the pump without an authorized governance exception.'
+  },
+  {
+    code: 'SOD-FUEL-02',
+    title: 'Fuel Dispensing & Issue Change/Adjustment Approval',
+    caps: ['fuel.issue', 'fuel.approve_correction'],
+    severity: 'CRITICAL',
+    description: 'A pump operator dispensing fuel cannot approve edits, corrections, or voids to fuel issues; changes must be approved by an Administrator.'
   }
 ];
 
@@ -69,6 +83,9 @@ const SENSITIVE_CAPABILITIES = [
   'stores.count.approve',
   'stores.disposal.approve',
   'purchasing.po.approve',
+  'fuel.approve_correction',
+  'fuel.void',
+  'fuel.prices.manage',
   'audit.logs.view',
   'audit.logs.export'
 ];

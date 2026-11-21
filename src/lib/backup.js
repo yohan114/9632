@@ -229,34 +229,168 @@ async function snapshot() {
   }
 }
 
-function prune(dir) {
+function dirSizeBytes(dirPath) {
+  let total = 0;
   try {
-    if (!fs.existsSync(dir)) return;
+    for (const entry of fs.readdirSync(dirPath, { withFileTypes: true })) {
+      const full = path.join(dirPath, entry.name);
+      if (entry.isDirectory()) total += dirSizeBytes(full);
+      else if (entry.isFile()) total += fs.statSync(full).size;
+    }
+  } catch (_) {}
+  return total;
+}
+
+function listBackups(dir = config.backupDir) {
+  if (!dir || !fs.existsSync(dir)) {
+    return {
+      dir,
+      retention: config.backupRetention || 10,
+      intervalMinutes: config.backupIntervalMinutes || 0,
+      totalBytes: 0,
+      totalMB: 0,
+      autoCount: 0,
+      manualCount: 0,
+      sidecarCount: 0,
+      files: [],
+    };
+  }
+
+  let totalBytes = 0;
+  let autoCount = 0;
+  let manualCount = 0;
+  let sidecarCount = 0;
+  const items = [];
+
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (entry.name.endsWith('.db-shm') || entry.name.endsWith('.db-wal')) {
+      sidecarCount++;
+    }
+    if (entry.isDirectory()) {
+      const bytes = dirSizeBytes(full);
+      totalBytes += bytes;
+      if (entry.name.startsWith(PREFIX)) autoCount++;
+      else manualCount++;
+      const st = fs.statSync(full);
+      items.push({
+        name: entry.name,
+        kind: entry.name.startsWith(PREFIX) ? 'auto_bundle' : 'manual_bundle',
+        bytes,
+        mb: +(bytes / (1024 * 1024)).toFixed(2),
+        mtime: st.mtime.toISOString(),
+      });
+    } else if (entry.isFile()) {
+      const st = fs.statSync(full);
+      totalBytes += st.size;
+      if (entry.name.startsWith(PREFIX) && entry.name.endsWith('.db')) {
+        autoCount++;
+        items.push({
+          name: entry.name,
+          kind: 'auto',
+          bytes: st.size,
+          mb: +(st.size / (1024 * 1024)).toFixed(2),
+          mtime: st.mtime.toISOString(),
+        });
+      } else if (entry.name.endsWith('.db')) {
+        manualCount++;
+        items.push({
+          name: entry.name,
+          kind: 'manual',
+          bytes: st.size,
+          mb: +(st.size / (1024 * 1024)).toFixed(2),
+          mtime: st.mtime.toISOString(),
+        });
+      }
+    }
+  }
+
+  items.sort((a, b) => b.mtime.localeCompare(a.mtime));
+
+  return {
+    dir,
+    retention: config.backupRetention || 10,
+    intervalMinutes: config.backupIntervalMinutes || 0,
+    totalBytes,
+    totalMB: +(totalBytes / (1024 * 1024)).toFixed(2),
+    autoCount,
+    manualCount,
+    sidecarCount,
+    files: items.slice(0, 50),
+  };
+}
+
+function prune(dir = config.backupDir, maxKeepOverride = null) {
+  const keep = Number.isInteger(maxKeepOverride) && maxKeepOverride >= 1
+    ? maxKeepOverride
+    : (config.backupRetention || 10);
+  let snapshotsDeleted = 0;
+  let sidecarsRemoved = 0;
+  let freedBytes = 0;
+  let remainingAutoCount = 0;
+
+  try {
+    if (!dir || !fs.existsSync(dir)) {
+      return { deletedCount: 0, snapshotsDeleted: 0, sidecarsRemoved: 0, freedBytes: 0, freedMB: 0, remainingAutoCount: 0, keep };
+    }
     const entries = fs.readdirSync(dir, { withFileTypes: true });
 
-    // Collect snapshot items (directories like workshopone-2026... or files like workshopone-2026...db)
+    // 1. Clean orphan SQLite -shm / -wal sidecars left by interrupted copies/processes
+    for (const entry of entries) {
+      if (entry.isFile() && (entry.name.endsWith('.db-shm') || entry.name.endsWith('.db-wal'))) {
+        const target = path.join(dir, entry.name);
+        try {
+          const sz = fs.statSync(target).size;
+          fs.unlinkSync(target);
+          sidecarsRemoved++;
+          freedBytes += sz;
+        } catch (_) {}
+      }
+    }
+
+    // 2. Prune automatic `workshopone-*` snapshots beyond retention count (never delete manual backups)
     const snapshots = entries
-      .filter((e) => e.name.startsWith(PREFIX) && !e.name.endsWith('.manifest.json') && !e.name.endsWith('.tmp'))
+      .filter((e) => e.name.startsWith(PREFIX) && !e.name.endsWith('.manifest.json') && !e.name.endsWith('.tmp') && !e.name.endsWith('.db-shm') && !e.name.endsWith('.db-wal'))
       .map((e) => e.name)
       .sort();
 
-    const excess = snapshots.length - (config.backupRetention || 96);
+    const excess = Math.max(0, snapshots.length - keep);
+    remainingAutoCount = snapshots.length - excess;
+
     for (let i = 0; i < excess; i++) {
       const target = path.join(dir, snapshots[i]);
       try {
         const stat = fs.statSync(target);
         if (stat.isDirectory()) {
+          const sz = dirSizeBytes(target);
           fs.rmSync(target, { recursive: true, force: true });
+          snapshotsDeleted++;
+          freedBytes += sz;
         } else {
+          freedBytes += stat.size;
           fs.unlinkSync(target);
+          snapshotsDeleted++;
           const manifestTarget = path.join(dir, snapshots[i].replace(/\.db$/, '.manifest.json'));
-          if (fs.existsSync(manifestTarget)) fs.unlinkSync(manifestTarget);
+          if (fs.existsSync(manifestTarget)) {
+            freedBytes += fs.statSync(manifestTarget).size;
+            fs.unlinkSync(manifestTarget);
+          }
         }
       } catch (_) {}
     }
   } catch (err) {
     console.warn('Backup pruning warning:', err.message);
   }
+
+  return {
+    deletedCount: snapshotsDeleted + sidecarsRemoved,
+    snapshotsDeleted,
+    sidecarsRemoved,
+    freedBytes,
+    freedMB: +(freedBytes / (1024 * 1024)).toFixed(2),
+    remainingAutoCount,
+    keep,
+  };
 }
 
 function startScheduler() {
@@ -269,4 +403,4 @@ function startScheduler() {
   return timer;
 }
 
-module.exports = { snapshot, startScheduler, prune, PREFIX };
+module.exports = { snapshot, startScheduler, prune, listBackups, PREFIX };

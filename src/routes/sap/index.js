@@ -7,7 +7,7 @@ const { getOpenApiSpec } = require('./spec');
 const { requireSapAuth } = require('./auth');
 
 // 1. Gateway Information & Health
-router.get('/', (req, res) => {
+router.get('/', requireSapAuth(), (req, res) => {
   res.json({
     service: 'WorkshopOne SAP Integration Gateway',
     version: '1.0.0',
@@ -33,7 +33,7 @@ router.get('/healthz', (req, res) => {
 });
 
 // 2. OpenAPI 3.0 Specification
-router.get('/openapi.json', (req, res) => {
+router.get('/openapi.json', requireSapAuth(), (req, res) => {
   res.json(getOpenApiSpec());
 });
 

@@ -19,6 +19,8 @@ const router = express.Router();
 const jobstate = require('../lib/jobstate');
 const workshops = require('../lib/workshops');
 const scope = require('../lib/scope');
+const { isAdmin } = require('../lib/access_rules');
+const adminInterchange = require('../lib/admin_interchange');
 
 // Daily work on a card follows the same rule as the job card's own Daily Work section
 // (jobstate.checkAdd 'daily_work'): a CLOSED card needs "Change items on a CLOSED job card".
@@ -1381,64 +1383,108 @@ router.post('/bulk-log', requireCap('dailywork.bulk_log', 'dailywork.edit'), asy
 }));
 
 // Edit a daily-work line (hours, and optionally the mechanic string).
+// System Admin may also reassign `job_id` directly here.
 router.patch('/:id', requireCap('dailywork.edit'), asyncHandler((req, res) => {
   const id = toInt(req.params.id);
   const w = get('SELECT * FROM job_daily_work WHERE id = ?', id);
   if (!w) return res.status(404).json({ error: 'Entry not found' });
-  // Moving a line to another day touches both days.
-  assertDailyWorkAllowed(w.job_id, req.user, [w.work_date, req.body.work_date !== undefined ? String(req.body.work_date).slice(0, 10) : null]);
+
+  let targetJobId = null;
+  if (req.body.job_id !== undefined) {
+    if (!isAdmin(req.user)) {
+      return res.status(403).json({ error: 'Only System Admin can change the assigned job card of a daily work entry' });
+    }
+    targetJobId = toInt(req.body.job_id);
+    if (!targetJobId) return res.status(400).json({ error: 'Select a valid job card' });
+  }
 
   const sets = [];
   const params = [];
   const put = (col, v) => { sets.push(col + ' = ?'); params.push(v); };
-  if (req.body.service_id !== undefined) put('service_id', toInt(req.body.service_id) || null);
+  if (req.body.service_id !== undefined && (toInt(req.body.service_id) || null) !== (w.service_id || null)) {
+    put('service_id', toInt(req.body.service_id) || null);
+  }
   if (req.body.work_type !== undefined) {
     const wt = req.body.work_type;
-    put('work_type', (wt === 'service' || wt === 'fabrication') ? wt : 'repair');
+    const normWt = (wt === 'service' || wt === 'fabrication') ? wt : 'repair';
+    if (normWt !== (w.work_type || 'repair')) put('work_type', normWt);
   }
-  if (req.body.hours !== undefined) put('hours', toNum(req.body.hours, 0));
-  if (req.body.mechanic !== undefined) put('mechanic', String(req.body.mechanic).trim() || null);
-  if (req.body.description !== undefined) put('description', String(req.body.description).trim() || null);
+  if (req.body.hours !== undefined && toNum(req.body.hours, 0) !== Number(w.hours || 0)) {
+    put('hours', toNum(req.body.hours, 0));
+  }
+  if (req.body.mechanic !== undefined && (String(req.body.mechanic).trim() || null) !== (w.mechanic || null)) {
+    put('mechanic', String(req.body.mechanic).trim() || null);
+  }
+  if (req.body.description !== undefined && (String(req.body.description).trim() || null) !== (w.description || null)) {
+    put('description', String(req.body.description).trim() || null);
+  }
   // Stage 6: mark (or unmark) a line as travel to a field job.
-  if (req.body.travel !== undefined) put('travel', req.body.travel && !w.is_external ? 1 : 0);
+  if (req.body.travel !== undefined) {
+    const trv = req.body.travel && !w.is_external ? 1 : 0;
+    if (trv !== Number(w.travel || 0)) put('travel', trv);
+  }
   // Blank clears the outside labor value; a number sets it.
   if (req.body.outside_labour !== undefined) {
     const v = req.body.outside_labour;
-    put('outside_labour', (v === null || v === '') ? null : toNum(v, 0));
+    const normOut = (v === null || v === '') ? null : toNum(v, 0);
+    if (normOut !== (w.outside_labour ?? null)) put('outside_labour', normOut);
   }
   if (req.body.work_date !== undefined) {
     const d = String(req.body.work_date).slice(0, 10);
     if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return res.status(400).json({ error: 'A valid work date (YYYY-MM-DD) is required' });
-    put('work_date', d);
+    if (d !== String(w.work_date || '').slice(0, 10)) put('work_date', d);
   }
   // Naming the machine on an existing line. This is how the unassigned pool improves: somebody who
   // recognises "Compressor clean and repair" says which compressor, and it is recorded from then on.
   // Blank clears it back to unknown, which is honest — better than a wrong vehicle.
   if (req.body.asset_id !== undefined) {
     const v = req.body.asset_id;
-    if (v === null || v === '') put('asset_id', null);
-    else {
+    if (v === null || v === '') {
+      if (w.asset_id !== null) put('asset_id', null);
+    } else {
       const a = toInt(v);
       if (!a || !get('SELECT id FROM assets WHERE id = ?', a)) return res.status(400).json({ error: 'Unknown vehicle' });
-      put('asset_id', a);
+      if (a !== w.asset_id) put('asset_id', a);
     }
   }
-  if (!sets.length) return res.status(400).json({ error: 'Nothing to update' });
 
-  run(`UPDATE job_daily_work SET ${sets.join(', ')} WHERE id = ?`, ...params, id);
+  const jobChanged = targetJobId && targetJobId !== w.job_id;
+  if (!sets.length && !jobChanged) return res.status(400).json({ error: 'Nothing to update' });
 
-  // Recompute the job total after a daily-programme edit. Reconstructed jobs (recorded_cost 0)
-  // let the edit drive their total via historicalTotal; jobs with a real recorded_cost stay
-  // frozen inside refreshJobTotals — so this is safe to run for every job.
-  const job = get('SELECT id FROM job_cards WHERE id = ?', w.job_id);
-  if (job) costing.refreshJobTotals(job.id);
-  // Moving an entry across months has to re-cost BOTH months' labour.
-  const months = new Set([w.work_date, req.body.work_date].filter(Boolean).map((d) => String(d).slice(0, 7)));
-  for (const m of months) mechanics.syncJobLabourForMonth(m);
+  // Only enforce closed-card / signed-off-day lock on regular field edits (not pure admin job_id reassignment).
+  if (sets.length) {
+    assertDailyWorkAllowed(jobChanged ? targetJobId : w.job_id, req.user, [w.work_date, req.body.work_date !== undefined ? String(req.body.work_date).slice(0, 10) : null]);
+  }
 
-  audit.record({ userId: req.user.id, entity: 'job_daily_work', entityId: id, action: 'edit',
-    before: { hours: w.hours, mechanic: w.mechanic, description: w.description, work_date: w.work_date, outside_labour: w.outside_labour },
-    after: req.body });
+  if (jobChanged) {
+    try {
+      adminInterchange.moveItemsToJob(req.user, {
+        targetJobId,
+        items: { daily_work: [id] },
+        reason: req.body.reason || 'Admin changed job card in Daily Work',
+      });
+    } catch (e) {
+      if (e.status) return res.status(e.status).json({ error: e.message });
+      throw e;
+    }
+  }
+
+  if (sets.length) {
+    run(`UPDATE job_daily_work SET ${sets.join(', ')} WHERE id = ?`, ...params, id);
+
+    const activeJobId = jobChanged ? targetJobId : w.job_id;
+    const job = get('SELECT id, status FROM job_cards WHERE id = ?', activeJobId);
+    if (job) {
+      if (job.status === 'CLOSED') costing.snapshotJobCost(job.id);
+      else costing.refreshJobTotals(job.id);
+    }
+    const months = new Set([w.work_date, req.body.work_date].filter(Boolean).map((d) => String(d).slice(0, 7)));
+    for (const m of months) mechanics.syncJobLabourForMonth(m);
+
+    audit.record({ userId: req.user.id, entity: 'job_daily_work', entityId: id, action: 'edit',
+      before: { hours: w.hours, mechanic: w.mechanic, description: w.description, work_date: w.work_date, outside_labour: w.outside_labour },
+      after: req.body });
+  }
 
   const updated = get('SELECT * FROM job_daily_work WHERE id = ?', id);
   rateCache.clear();

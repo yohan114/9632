@@ -89,15 +89,40 @@ function recordBulkDelivery({ tankId, litres, fuelType, supplier, invoiceNumber,
   if (isNaN(vol) || vol <= 0) throw new Error('Delivery volume must be greater than 0 litres');
 
   const deliveryId = `deliv-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+  const effFuelType = String(fuelType || tank.fuel_type || 'AUTO_DIESEL').trim().toUpperCase();
+  const effDate = deliveryDate ? String(deliveryDate).trim().slice(0, 10) : new Date().toISOString().slice(0, 10);
+
+  let resolvedCostCents = Number(costCents) > 0 ? Math.round(Number(costCents)) : 0;
+  if (!resolvedCostCents) {
+    let unitCents = 0;
+    try {
+      const issueMod = require('./issue');
+      if (typeof issueMod.getCurrentPrice === 'function') {
+        unitCents = Number(issueMod.getCurrentPrice(effFuelType, effDate)) || 0;
+      }
+    } catch (_) {}
+    if (!unitCents) {
+      const row = get(
+        `SELECT price_per_litre_cents FROM fuel_prices
+          WHERE UPPER(COALESCE(fuel_type, fuel_kind)) = ?
+          ORDER BY (CASE WHEN effective_date <= ? THEN 0 ELSE 1 END) ASC, effective_date DESC, id DESC LIMIT 1`,
+        effFuelType, effDate
+      );
+      unitCents = Number(row && row.price_per_litre_cents) || 0;
+    }
+    if (unitCents > 0) {
+      resolvedCostCents = Math.round(vol * unitCents);
+    }
+  }
 
   return tx(() => {
     run(`
       INSERT INTO fuel_bulk_deliveries (
         id, tank_id, litres, fuel_type, supplier, invoice_number, cost_cents, delivery_date, status, received_by, note
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'DELIVERED', ?, ?)
-    `, deliveryId, String(tankId), vol, fuelType || tank.fuel_type || 'AUTO_DIESEL',
+    `, deliveryId, String(tankId), vol, effFuelType,
        supplier || 'Ceylon Petroleum Corporation (Ceypetco)', invoiceNumber || null,
-       costCents || 0, deliveryDate || new Date().toISOString().slice(0, 10),
+       resolvedCostCents, effDate,
        receivedBy || 1, note || null);
 
     restoreStock(tankId, vol);
@@ -106,6 +131,7 @@ function recordBulkDelivery({ tankId, litres, fuelType, supplier, invoiceNumber,
       id: deliveryId,
       tank_id: tankId,
       litres: vol,
+      cost_cents: resolvedCostCents,
       new_balance: (Number(tank.current_litres) || 0) + vol,
     };
   });

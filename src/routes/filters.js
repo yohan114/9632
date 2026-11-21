@@ -7,7 +7,7 @@
 const express = require('express');
 const { get, all, run, tx } = require('../db');
 const { asyncHandler, require_, toInt, toNum } = require('../lib/http');
-const { requireCap } = require('../lib/auth');
+const { requireCap, hasCap } = require('../lib/auth');
 const audit = require('../lib/audit');
 const aliases = require('../lib/aliases');
 const servicePlan = require('../lib/service_plan');
@@ -731,100 +731,549 @@ router.put('/services/:id', asyncHandler((req, res) => {
   res.json({ service: get('SELECT * FROM service_jobs WHERE id = ?', id), stock_moves: out.moves });
 }));
 
-// ---- service & filter plan -------------------------------------------------
-// Which machines are candidates for service in a month, and the filters each would need.
-// Read-only; the maths and its limits live in src/lib/service_plan.js.
-router.get('/service-plan', asyncHandler(async (req, res) => {
-  const opts = { month: req.query.month, includeLongOverdue: req.query.include_long_overdue === '1' };
-  // The Service Planner decides WHICH machines are due — it measures what each has actually
-  // run. `local=1` asks for this system's own date estimate instead, for comparison.
+// ---- service & filter plan (4-Stage Selective Lifecycle) ---------------------
+// 1. All-site fuel issues -> 2. Unified month breakdowns -> 3. True service timing -> 4. Selective filters.
+// Read-only planning live in src/lib/service_plan_engine.js; explicit overrides/requests below are audited.
+function tableHas(name) {
+  return !!get("SELECT 1 v FROM sqlite_master WHERE type = 'table' AND name = ?", name);
+}
+
+function nextJrNumber() {
+  let max = 0;
+  for (const r of all("SELECT jr_no FROM job_requests WHERE jr_no LIKE 'JR-%'")) {
+    const m = String(r.jr_no).match(/(\d+)\s*$/);
+    if (m) {
+      const n = parseInt(m[1], 10);
+      if (Number.isFinite(n) && n > max) max = n;
+    }
+  }
+  return 'JR-' + String(max + 1).padStart(4, '0');
+}
+
+function resolveAssetParam(rawParam) {
+  const numId = toInt(rawParam);
+  if (numId) return get('SELECT * FROM assets WHERE id = ?', numId);
+  const k = String(rawParam || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  if (!k) return null;
+  return all('SELECT * FROM assets').find((a) => {
+    const ck = (s) => String(s || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+    return a.code_norm === k || ck(a.ec_code) === k || ck(a.registration) === k;
+  }) || null;
+}
+
+router.get('/service-plan', requireCap('service_plan.view'), asyncHandler(async (req, res) => {
+  if (req.query.format === 'xlsx' && !hasCap(req.user, 'service_plan.export')) {
+    return res.status(403).json({
+      error: 'Your role does not allow exporting the Service & Filter Plan',
+      need: ['service_plan.export'],
+    });
+  }
+
+  const opts = {
+    month: req.query.month,
+    includeLongOverdue: req.query.include_long_overdue === '1',
+    includeOk: req.query.include_ok === '1',
+    site: req.query.site || '',
+    search: req.query.search || req.query.q || '',
+  };
+
   const plan = req.query.local === '1'
     ? servicePlan.buildServicePlan(opts)
-    : await servicePlan.buildServicePlanLinked(opts);
+    : servicePlan.buildAdvancedServicePlan(opts);
+
   if (req.query.format !== 'xlsx') {
     if (req.query.never_serviced === '1') plan.never_serviced = servicePlan.neverServiced();
     return res.json(plan);
   }
 
-  // One row per machine-and-category, so the sheet pivots and filters like the office expects,
-  // and the two lists sit on their own tabs — overdue is what gets worked, due-soon is what
-  // gets prepared for.
-  const linked = plan.source === 'service planner';
-  const rowsFor = (list) => {
+  if (req.query.local === '1') {
+    const localCols = [
+      { header: 'Machine', key: 'asset', width: 14 }, { header: 'Registration', key: 'reg', width: 14 },
+      { header: 'Site', key: 'site', width: 18 }, { header: 'Last service', key: 'last_service', width: 13 },
+      { header: 'Projected due', key: 'projected_due', width: 13 },
+      { header: 'Filter', key: 'category', width: 24 }, { header: 'Suggested part', key: 'part', width: 24 },
+    ];
+    const localRows = (list) => list.flatMap((v) => (v.core && v.core.length ? v.core : [{ category: '(no history)' }]).map((c) => ({
+      asset: v.asset_code, reg: v.asset_reg, site: v.site, last_service: v.last_service, projected_due: v.due_date,
+      category: c.category, part: c.part || '',
+    })));
+    return sendXlsx(res, `service-filter-plan-${plan.month}-local.xlsx`, [
+      { name: 'Overdue', columns: localCols, rows: localRows(plan.carry || []) },
+      { name: 'Due Soon', columns: localCols, rows: localRows(plan.due || []) },
+    ]);
+  }
+
+  const wantedRowsFor = (list) => {
     const out = [];
-    for (const v of list) {
-      const p = v.planner || {};
+    for (const v of list || []) {
+      const t = v.timing || {};
+      const f = v.fuel || {};
+      const bd = v.breakdowns || {};
       const base = {
-        asset: v.asset_code, reg: v.asset_reg, ec: v.asset_ec, site: v.site,
-        basis: p.basis || null,
-        interval: p.interval != null ? p.interval : null,
-        used: p.usedSince != null ? Math.round(p.usedSince) : null,
-        // Negative "remaining" is how far past due it already is — spell that out.
-        over_by: p.remaining != null && p.remaining < 0 ? Math.round(-p.remaining) : null,
-        left: p.remaining != null && p.remaining >= 0 ? Math.round(p.remaining) : null,
-        last_service: v.last_service || p.lastServiceDate || null,
-        projected_due: p.projectedDueDate || v.due_date || null,
-        services: v.visits || 0,
-        meter: v.meter_broken ? 'meter not working' : (v.meter || null),
+        asset: v.asset_code,
+        reg: v.asset_reg || '',
+        ec: v.asset_ec || '',
+        category_name: v.category || '',
+        site: v.site || '',
+        fuel_sites: (f.sites_since || []).map((s) => `${s.site_name} (${s.litres}L)`).join(', '),
+        litres_since: f.litres_since_service ?? 0,
+        bd_days_month: bd.breakdown_days_in_month ?? 0,
+        active_rate: t.active_rate_per_day ?? '',
+        basis: v.meter_type || 'HOURS',
+        interval: v.interval,
+        used: t.used_since != null ? Math.round(t.used_since * 10) / 10 : 0,
+        used_source: t.used_source || '',
+        over_by: t.remaining_units != null && t.remaining_units < 0 ? Math.round(-t.remaining_units * 10) / 10 : null,
+        left: t.remaining_units != null && t.remaining_units >= 0 ? Math.round(t.remaining_units * 10) / 10 : null,
+        last_service: v.last_service || '',
+        next_seq: `#${v.next_service_seq || 1} (${v.next_milestone_units || v.interval} ${v.unit || 'hr'})`,
+        projected_due: t.projected_due_date || '',
+        skipped_note: `${(v.clean_filters || []).length} clean, ${(v.skipped_filters || []).length} skipped`,
       };
-      if (!v.core || !v.core.length) { out.push({ ...base, category: '(no filter history in WorkshopOne)' }); continue; }
-      for (const c of v.core) {
-        out.push({ ...base,
-          category: c.category, part: c.part || '(no number in this machine’s history)',
-          last_fitted: c.last_fitted, times_used: c.times_used, different_numbers: c.distinct_numbers,
-          alternates: c.alternates.join(', '), confirm: c.confirm ? 'confirm at the machine' : '' });
+      const wanted = v.wanted_filters || [];
+      if (!wanted.length) {
+        out.push({ ...base, category: '(no filters due to change)', part: '', qty: 0, cycle: '', reason: '' });
+        continue;
+      }
+      for (const wf of wanted) {
+        out.push({
+          ...base,
+          category: wf.category,
+          part: wf.part_no || '(confirm at machine)',
+          qty: wf.qty || 1,
+          cycle: `Every ${wf.every_n_services}x`,
+          reason: wf.reason || '',
+        });
       }
     }
     return out;
   };
 
   const machineCols = [
-    { header: 'Machine', key: 'asset', width: 14 }, { header: 'Registration', key: 'reg', width: 14 },
-    { header: 'E&C', key: 'ec', width: 12 }, { header: 'Site', key: 'site', width: 18 },
-    { header: 'Basis', key: 'basis', width: 8 }, { header: 'Service every', key: 'interval', width: 13 },
-    { header: 'Run since service', key: 'used', width: 17 },
-    { header: 'Over by', key: 'over_by', width: 10 }, { header: 'Still to run', key: 'left', width: 12 },
-    { header: 'Last service', key: 'last_service', width: 13 },
-    { header: 'Projected due', key: 'projected_due', width: 13 },
-    { header: 'Services on record', key: 'services', width: 17 },
-    { header: 'Meter', key: 'meter', width: 15 },
-    { header: 'Filter', key: 'category', width: 24 }, { header: 'Suggested part', key: 'part', width: 24 },
-    { header: 'Last fitted', key: 'last_fitted', width: 12 }, { header: 'Times used', key: 'times_used', width: 11 },
-    { header: 'Different numbers', key: 'different_numbers', width: 17 },
-    { header: 'Alternates', key: 'alternates', width: 38 }, { header: 'Check', key: 'confirm', width: 22 },
+    { header: 'Machine', key: 'asset', width: 13 },
+    { header: 'Registration', key: 'reg', width: 13 },
+    { header: 'E&C', key: 'ec', width: 12 },
+    { header: 'Type', key: 'category_name', width: 16 },
+    { header: 'Site', key: 'site', width: 18 },
+    { header: 'All-Site Fuel Since Service', key: 'fuel_sites', width: 32 },
+    { header: 'Total Fuel (L)', key: 'litres_since', width: 13 },
+    { header: 'Month BD Days', key: 'bd_days_month', width: 13 },
+    { header: 'Active Rate/Day', key: 'active_rate', width: 14 },
+    { header: 'Basis', key: 'basis', width: 8 },
+    { header: 'Interval', key: 'interval', width: 10 },
+    { header: 'Used Since', key: 'used', width: 11 },
+    { header: 'Source', key: 'used_source', width: 14 },
+    { header: 'Over By', key: 'over_by', width: 10 },
+    { header: 'Remaining', key: 'left', width: 10 },
+    { header: 'Last Service', key: 'last_service', width: 12 },
+    { header: 'Next Milestone', key: 'next_seq', width: 16 },
+    { header: 'Projected Due', key: 'projected_due', width: 13 },
+    { header: 'Filter To Change (X)', key: 'category', width: 22 },
+    { header: 'Part Number', key: 'part', width: 20 },
+    { header: 'Qty', key: 'qty', width: 7 },
+    { header: 'Cycle', key: 'cycle', width: 10 },
+    { header: 'Clean / Skip Summary', key: 'skipped_note', width: 20 },
+    { header: 'Reason', key: 'reason', width: 34 },
   ];
 
+  const allTrackedVehicles = [
+    ...(plan.breakdown_opportunities || []),
+    ...(plan.carry || []),
+    ...(plan.due || []),
+    ...(plan.on_breakdown || []),
+  ];
+
+  const fuelTraceRows = [];
+  const monthBdRows = [];
+  const matrixRows = [];
+  for (const v of allTrackedVehicles) {
+    for (const s of (v.fuel && v.fuel.sites_since) || []) {
+      fuelTraceRows.push({
+        asset: v.asset_code,
+        reg: v.asset_reg || '',
+        status: v.state,
+        site: s.site_name,
+        tanks: (s.tanks || []).join(', '),
+        issues: s.issues,
+        litres: s.litres,
+        first_day: s.first_date,
+        last_day: s.last_date,
+      });
+    }
+    for (const b of (v.breakdowns && v.breakdowns.episodes_in_month) || []) {
+      monthBdRows.push({
+        asset: v.asset_code,
+        reg: v.asset_reg || '',
+        plan_status: v.state,
+        start: b.start,
+        end: b.end,
+        days_in_month: b.days_in_month,
+        site: b.site || '',
+        source: b.source || '',
+        job_no: b.job_no || '',
+        jr_no: b.jr_no || '',
+        bd_status: b.status || '',
+        reason: b.reason || '',
+      });
+    }
+    for (const m of v.filter_matrix || []) {
+      matrixRows.push({
+        asset: v.asset_code,
+        status: v.state,
+        seq: v.next_service_seq,
+        category: m.category,
+        decision: m.decision,
+        action: m.action,
+        cycle: `Every ${m.every_n_services}x`,
+        part: m.part_no || '',
+        qty: m.qty,
+        last_date: m.last_replaced_date || '',
+        on_hand: m.in_stock ?? m.on_hand ?? 0,
+        equivalents: (m.equivalents_in_stock || []).map((e) => `${e.part_no} (${e.in_stock})`).join(', '),
+        reason: m.reason || '',
+      });
+    }
+  }
+
   await sendXlsx(res, `service-filter-plan-${plan.month}.xlsx`, [
-    { name: 'Overdue', columns: machineCols, rows: rowsFor(plan.carry) },
-    { name: 'Due Soon', columns: machineCols, rows: rowsFor(plan.due) },
-    { name: 'Order by Category',
+    { name: 'Breakdown Opportunities', columns: machineCols, rows: wantedRowsFor(plan.breakdown_opportunities) },
+    { name: 'Overdue', columns: machineCols, rows: wantedRowsFor(plan.carry) },
+    { name: 'Due This Month', columns: machineCols, rows: wantedRowsFor(plan.due) },
+    {
+      name: 'All-Site Fuel Trace',
       columns: [
-        { header: 'Category', key: 'category', width: 28 }, { header: 'Qty needed', key: 'qty', width: 12 },
-        { header: 'Vehicles', key: 'vehicles', width: 10 }, { header: 'On hand', key: 'on_hand', width: 10 },
-        { header: 'Shortfall', key: 'shortfall', width: 11 }],
-      rows: plan.categories },
-    { name: 'Order by Part',
+        { header: 'Machine', key: 'asset', width: 13 }, { header: 'Reg', key: 'reg', width: 13 },
+        { header: 'Plan Status', key: 'status', width: 18 }, { header: 'Fuel Site', key: 'site', width: 22 },
+        { header: 'Tank / Station', key: 'tanks', width: 22 }, { header: 'Issues', key: 'issues', width: 9 },
+        { header: 'Litres', key: 'litres', width: 11 }, { header: 'First Day', key: 'first_day', width: 12 },
+        { header: 'Last Day', key: 'last_day', width: 12 },
+      ],
+      rows: fuelTraceRows,
+    },
+    {
+      name: 'Month Breakdowns',
       columns: [
-        { header: 'Part number', key: 'part', width: 24 }, { header: 'Category', key: 'category', width: 26 },
-        { header: 'Vehicles', key: 'vehicles', width: 10 }, { header: 'Qty needed', key: 'qty', width: 12 },
-        { header: 'On hand', key: 'on_hand', width: 10 }, { header: 'To buy', key: 'to_buy', width: 10 },
-        { header: 'Unit price', key: 'unit_price', width: 12 }, { header: 'Value', key: 'value', width: 14 },
-        { header: 'Not on the stock sheet', key: 'no_stock_row', width: 22 }],
-      rows: plan.parts.map((p) => ({ ...p, no_stock_row: p.no_stock_row ? 'yes' : '' })) },
-    { name: 'How this was worked out',
+        { header: 'Machine', key: 'asset', width: 13 }, { header: 'Reg', key: 'reg', width: 13 },
+        { header: 'Plan Status', key: 'plan_status', width: 18 }, { header: 'Start', key: 'start', width: 12 },
+        { header: 'End', key: 'end', width: 12 }, { header: 'Days in Month', key: 'days_in_month', width: 14 },
+        { header: 'Site', key: 'site', width: 20 }, { header: 'Source', key: 'source', width: 14 },
+        { header: 'Job Card', key: 'job_no', width: 14 }, { header: 'Job Req', key: 'jr_no', width: 12 },
+        { header: 'BD Status', key: 'bd_status', width: 14 }, { header: 'Reason / Defect', key: 'reason', width: 34 },
+      ],
+      rows: monthBdRows,
+    },
+    {
+      name: 'Vehicle Filter Matrix',
+      columns: [
+        { header: 'Machine', key: 'asset', width: 13 }, { header: 'Plan Status', key: 'status', width: 18 },
+        { header: 'Svc Seq', key: 'seq', width: 9 }, { header: 'Category', key: 'category', width: 22 },
+        { header: 'Decision', key: 'decision', width: 10 }, { header: 'Code', key: 'action', width: 8 },
+        { header: 'Cycle', key: 'cycle', width: 10 }, { header: 'Part No', key: 'part', width: 20 },
+        { header: 'Qty', key: 'qty', width: 7 }, { header: 'Last Replaced', key: 'last_date', width: 13 },
+        { header: 'On Hand', key: 'on_hand', width: 9 }, { header: 'Equivalents', key: 'equivalents', width: 22 },
+        { header: 'Reason', key: 'reason', width: 36 },
+      ],
+      rows: matrixRows,
+    },
+    {
+      name: 'Order by Category',
+      columns: [
+        { header: 'Category', key: 'category', width: 26 }, { header: 'Qty Needed (Change Only)', key: 'qty', width: 20 },
+        { header: 'Vehicles', key: 'vehicles', width: 10 }, { header: 'On Hand', key: 'on_hand', width: 10 },
+        { header: 'Shortfall', key: 'shortfall', width: 11 },
+      ],
+      rows: plan.categories || [],
+    },
+    {
+      name: 'Order by Part',
+      columns: [
+        { header: 'Part Number', key: 'part', width: 22 }, { header: 'Category', key: 'category', width: 24 },
+        { header: 'Vehicles', key: 'vehicles', width: 10 }, { header: 'Qty Needed', key: 'qty', width: 12 },
+        { header: 'On Hand', key: 'on_hand', width: 10 }, { header: 'To Buy', key: 'to_buy', width: 10 },
+        { header: 'Unit Price', key: 'unit_price', width: 12 }, { header: 'Value', key: 'value', width: 14 },
+        { header: 'Equivalents in Stock', key: 'equivs', width: 28 },
+        { header: 'Not on Stock Sheet', key: 'no_stock_row', width: 18 },
+      ],
+      rows: (plan.parts || []).map((p) => ({
+        ...p,
+        equivs: (p.equivalents_in_stock || []).map((e) => `${e.part_no} (${e.in_stock})`).join(', '),
+        no_stock_row: p.no_stock_row ? 'yes' : '',
+      })),
+    },
+    {
+      name: 'How this was worked out',
       columns: [{ header: 'Note', key: 'note', width: 120 }],
       rows: [
-        { note: linked
-          ? `Month ${plan.month} · the Service Planner decided which machines are due, as at ${plan.planner_as_of} — it measures meter growth and fuel-derived running (machinery 500 hr, road 5,000 km).`
-          : `Month ${plan.month} · measured as at ${plan.as_of} · WorkshopOne's OWN date estimate — the Service Planner was not used (${plan.planner_error || 'unavailable'}). This system holds no meter or fuel data, so a machine that has barely run can read as overdue.` },
-        { note: linked
-          ? `Fleet: ${plan.fleet.overdue} overdue · ${plan.fleet.due_soon} due soon · ${plan.fleet.ok} OK · ${plan.fleet.unknown} unknown, of ${plan.fleet.tracked} tracked. This workbook lists the overdue and due-soon machines only.`
-          : `Rule ${plan.rule_version} · fleet prior ${plan.fleet_prior} days from ${plan.fleet_gaps} intervals.` },
-        { note: 'The filters come from WorkshopOne: what each machine actually took at its own past services.' },
-        // plan.warnings already names the unmatched machines — don't say it twice.
-        ...plan.warnings.map((w) => ({ note: w })),
-      ] },
+        { note: `Month ${plan.month} (${plan.month_start} to ${plan.month_end}, evaluated as at ${plan.as_of} Asia/Colombo +05:30). Rule version ${plan.rule_version}.` },
+        { note: 'Stage 1: Every non-voided fuel issue across ALL sites, bowsers, and external stations is aggregated per canonical vehicle.' },
+        { note: 'Stage 2: Unified breakdown episodes in the month are subtracted from elapsed days so active working burn rate reflects actual running days.' },
+        { note: 'Stage 3: Governing running = MAX(trusted meter growth, fuel-derived running). Vehicles currently on breakdown within <= 20% of service are flagged SERVICE_ON_BREAKDOWN to combine repair + service.' },
+        { note: 'Stage 4: Every filter in the kit is classified CHANGE (X), CLEAN/INSPECT (E), or SKIP (OK) by its cycle (1x/2x/4x) + breakdown risk + recent repair issues. Store picklists order ONLY CHANGE (X) items.' },
+        { note: `Fleet summary: ${plan.totals.service_on_breakdown} breakdown opportunities · ${plan.totals.overdue} overdue · ${plan.totals.due_in_month} due this month · ${plan.totals.on_breakdown} on breakdown · ${plan.totals.filters_saved_by_plan} filter changes saved by selective lifecycle.` },
+      ],
+    },
   ]);
+}));
+
+router.get('/service-plan/vehicle/:assetId', requireCap('service_plan.view'), asyncHandler((req, res) => {
+  const detail = servicePlan.getVehicleServicePlanDetail(req.params.assetId, { month: req.query.month });
+  if (!detail) return res.status(404).json({ error: 'Vehicle not found in Service & Filter Plan' });
+  res.json(detail);
+}));
+
+router.get('/service-plan/category-rules', requireCap('service_plan.view'), asyncHandler((_req, res) => {
+  if (!tableHas('filter_category_rules')) return res.json({ rules: [] });
+  const rules = all('SELECT * FROM filter_category_rules ORDER BY every_n_services ASC, category ASC');
+  res.json({ rules });
+}));
+
+router.put('/service-plan/category-rules', requireCap('service_plan.override_interval'), asyncHandler((req, res) => {
+  if (!tableHas('filter_category_rules')) {
+    return res.status(503).json({ error: 'filter_category_rules table not initialized' });
+  }
+  const items = Array.isArray(req.body.rules) ? req.body.rules : [req.body];
+  if (!items.length) return res.status(400).json({ error: 'No category rules supplied' });
+
+  const actorName = (req.user && (req.user.username || req.user.full_name)) || 'system';
+  const before = all('SELECT * FROM filter_category_rules');
+
+  tx(() => {
+    for (const item of items) {
+      const category = String(item.category || '').trim();
+      if (!category) throw Object.assign(new Error('category is required'), { status: 400 });
+      const everyN = toInt(item.every_n_services);
+      if (!everyN || everyN < 1 || everyN > 20) {
+        throw Object.assign(new Error(`Invalid every_n_services for ${category} (must be 1..20)`), { status: 400 });
+      }
+      const between = String(item.between_action || 'SKIP').toUpperCase() === 'E' ? 'E' : 'SKIP';
+      const defH = item.default_hours != null && item.default_hours !== '' ? toNum(item.default_hours) : null;
+      const defK = item.default_km != null && item.default_km !== '' ? toNum(item.default_km) : null;
+      const notes = clean(item.notes);
+
+      run(`
+        INSERT INTO filter_category_rules (
+          category, every_n_services, default_hours, default_km, between_action, notes, updated_by, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+        ON CONFLICT(category) DO UPDATE SET
+          every_n_services = excluded.every_n_services,
+          default_hours = excluded.default_hours,
+          default_km = excluded.default_km,
+          between_action = excluded.between_action,
+          notes = excluded.notes,
+          updated_by = excluded.updated_by,
+          updated_at = datetime('now')
+      `, category, everyN, defH, defK, between, notes, actorName);
+    }
+  });
+
+  const after = all('SELECT * FROM filter_category_rules ORDER BY every_n_services ASC, category ASC');
+  audit.record({
+    userId: req.user.id,
+    entity: 'filter_category_rules',
+    entityId: 0,
+    action: 'update',
+    before: { count: before.length },
+    after: { updated: items.map((i) => i.category) },
+  });
+  res.json({ ok: true, rules: after });
+}));
+
+router.put('/service-plan/vehicle/:assetId/filter-schedule', requireCap('service_plan.override_interval'), asyncHandler((req, res) => {
+  const asset = resolveAssetParam(req.params.assetId);
+  if (!asset) return res.status(404).json({ error: 'Vehicle not found' });
+  if (!tableHas('vehicle_filter_schedules')) {
+    return res.status(503).json({ error: 'vehicle_filter_schedules table not initialized' });
+  }
+
+  const b = req.body || {};
+  const actorName = (req.user && (req.user.username || req.user.full_name)) || 'system';
+  const beforeSchedules = all('SELECT * FROM vehicle_filter_schedules WHERE asset_id = ?', asset.id);
+  const beforeOverride = tableHas('service_interval_overrides')
+    ? get('SELECT * FROM service_interval_overrides WHERE asset_id = ?', asset.id)
+    : null;
+
+  tx(() => {
+    if (b.interval_override && tableHas('service_interval_overrides')) {
+      const ov = b.interval_override;
+      if (ov.clear) {
+        run('DELETE FROM service_interval_overrides WHERE asset_id = ?', asset.id);
+      } else if (ov.interval_value != null && ov.interval_value !== '') {
+        const invVal = toNum(ov.interval_value);
+        if (!invVal || invVal <= 0) {
+          throw Object.assign(new Error('interval_value must be greater than 0'), { status: 400 });
+        }
+        const basis = ov.basis && ['HOURS', 'KM'].includes(String(ov.basis).toUpperCase())
+          ? String(ov.basis).toUpperCase()
+          : null;
+        const warnVal = ov.warn_threshold != null && ov.warn_threshold !== '' ? toNum(ov.warn_threshold) : null;
+        const combinePct = ov.combine_pct != null && ov.combine_pct !== '' ? Math.max(0, Math.min(0.9, Number(ov.combine_pct))) : 0.2;
+        run(`
+          INSERT INTO service_interval_overrides (
+            asset_id, basis, interval_value, warn_threshold, combine_pct, notes, updated_by, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+          ON CONFLICT(asset_id) DO UPDATE SET
+            basis = excluded.basis,
+            interval_value = excluded.interval_value,
+            warn_threshold = excluded.warn_threshold,
+            combine_pct = excluded.combine_pct,
+            notes = excluded.notes,
+            updated_by = excluded.updated_by,
+            updated_at = datetime('now')
+        `, asset.id, basis, invVal, warnVal, combinePct, clean(ov.notes), actorName);
+      }
+    }
+
+    const list = Array.isArray(b.schedules)
+      ? b.schedules
+      : (b.category ? [b] : []);
+
+    for (const s of list) {
+      const category = String(s.category || '').trim();
+      if (!category) throw Object.assign(new Error('Schedule category is required'), { status: 400 });
+      const everyN = toInt(s.every_n_services);
+      if (!everyN || everyN < 1 || everyN > 20) {
+        throw Object.assign(new Error(`Invalid every_n_services for ${category} (must be 1..20)`), { status: 400 });
+      }
+      const between = String(s.between_action || 'SKIP').toUpperCase() === 'E' ? 'E' : 'SKIP';
+      const partNo = clean(s.part_no);
+      const partNorm = partNo ? normF(partNo.split('&')[0].trim()) : null;
+      const qty = s.qty != null && Number(s.qty) > 0 ? Number(s.qty) : 1;
+      const intervalUnits = s.interval_units != null && s.interval_units !== '' && Number(s.interval_units) > 0
+        ? Number(s.interval_units)
+        : null;
+      const active = s.active === 0 || s.active === false ? 0 : 1;
+      const locked = s.locked === 0 || s.locked === false ? 0 : 1;
+
+      run(`
+        INSERT INTO vehicle_filter_schedules (
+          asset_id, category, part_no, part_no_norm, qty, every_n_services, interval_units,
+          between_action, active, source, locked, notes, updated_by, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual', ?, ?, ?, datetime('now'))
+        ON CONFLICT(asset_id, category) DO UPDATE SET
+          part_no = COALESCE(excluded.part_no, vehicle_filter_schedules.part_no),
+          part_no_norm = COALESCE(excluded.part_no_norm, vehicle_filter_schedules.part_no_norm),
+          qty = excluded.qty,
+          every_n_services = excluded.every_n_services,
+          interval_units = excluded.interval_units,
+          between_action = excluded.between_action,
+          active = excluded.active,
+          source = 'manual',
+          locked = excluded.locked,
+          notes = excluded.notes,
+          updated_by = excluded.updated_by,
+          updated_at = datetime('now')
+      `, asset.id, category, partNo, partNorm, qty, everyN, intervalUnits, between, active, locked, clean(s.notes), actorName);
+    }
+  });
+
+  const detail = servicePlan.getVehicleServicePlanDetail(asset.id, { month: b.month || req.query.month });
+  audit.record({
+    userId: req.user.id,
+    entity: 'vehicle_filter_schedule',
+    entityId: asset.id,
+    action: 'update',
+    before: { schedules: beforeSchedules.length, interval_override: beforeOverride },
+    after: {
+      schedules_updated: Array.isArray(b.schedules) ? b.schedules.map((x) => x.category) : (b.category ? [b.category] : []),
+      interval_override: b.interval_override || null,
+    },
+  });
+
+  res.json({ ok: true, detail });
+}));
+
+router.post('/service-plan/vehicle/:assetId/create-service-request', requireCap('service_plan.manage', 'jobrequests.create'), asyncHandler((req, res) => {
+  const b = req.body || {};
+  const detail = servicePlan.getVehicleServicePlanDetail(req.params.assetId, { month: b.month || req.query.month });
+  if (!detail || !detail.vehicle) return res.status(404).json({ error: 'Vehicle not found' });
+
+  const v = detail.vehicle;
+  const selectedCats = Array.isArray(b.selected_categories)
+    ? new Set(b.selected_categories.map((c) => String(c || '').trim()))
+    : null;
+  const changeFilters = (v.wanted_filters || []).filter((f) => !selectedCats || selectedCats.has(f.category));
+  const cleanFilters = b.include_clean === false ? [] : (v.clean_filters || []);
+  const skippedFilters = v.skipped_filters || [];
+
+  const changeText = changeFilters.length
+    ? changeFilters.map((f) => `${f.category}${f.part_no ? ` (${f.part_no})` : ''} x${f.qty || 1}`).join(', ')
+    : 'None (inspect oil/fluids)';
+  const cleanText = cleanFilters.length
+    ? cleanFilters.map((f) => `${f.category}${f.part_no ? ` (${f.part_no})` : ''}`).join(', ')
+    : '';
+  const skipText = skippedFilters.length
+    ? skippedFilters.map((f) => `${f.category} (${f.reason})`).join(', ')
+    : '';
+
+  const serviceType = clean(b.service_type)
+    || `${v.interval || 500}${v.unit === 'KM' ? 'KM' : 'HR'} Service (#${v.next_service_seq || 1})`;
+
+  const lines = [
+    `Planned Service #${v.next_service_seq || 1} (${v.next_milestone_units || v.interval} ${v.unit || 'hr'} milestone) — Status: ${v.state}.`,
+    `CHANGE (X): ${changeText}.`,
+  ];
+  if (cleanText) lines.push(`CLEAN / INSPECT (E): ${cleanText}.`);
+  if (skipText) lines.push(`SKIPPED (not due this cycle): ${skipText}.`);
+  if (v.breakdowns && v.breakdowns.combine_on_breakdown && v.breakdowns.open_breakdown) {
+    lines.push(`Bundle with ongoing breakdown (${v.breakdowns.open_breakdown.job_no || v.breakdowns.open_breakdown.jr_no || 'open fault'}).`);
+  }
+  if (clean(b.notes)) lines.push(`Note: ${clean(b.notes)}`);
+  const description = lines.join('\n');
+
+  const assetRow = get('SELECT id, current_project_id, home_project_id FROM assets WHERE id = ?', v.asset_id);
+  const projectId = toInt(b.project_id) || (assetRow ? (assetRow.current_project_id || assetRow.home_project_id) : null) || null;
+  const workshopId = workshops.forNew(req.user, b.workshop_id);
+  const ru = get('SELECT full_name, username, signature FROM users WHERE id = ?', req.user.id);
+  const reqBy = clean(b.requested_by) || (ru ? (ru.full_name || ru.username) : 'Service Planner');
+  const reqDate = clean(b.req_date) || new Date().toISOString().slice(0, 10);
+  const requiredDate = clean(b.required_date) || (v.timing && v.timing.projected_due_date) || reqDate;
+  const priority = clean(b.priority) || (v.state === 'OVERDUE' || v.state === 'SERVICE_ON_BREAKDOWN' ? 'urgent' : 'normal');
+  const meterReading = clean(b.meter_reading)
+    || (v.timing && v.timing.current_meter != null ? String(Math.round(v.timing.current_meter)) : null);
+
+  const jrCols = new Set(all('PRAGMA table_info(job_requests)').map((c) => c.name));
+  let created = null;
+
+  tx(() => {
+    const jrNo = clean(b.jr_no) || nextJrNumber();
+    if (get('SELECT id FROM job_requests WHERE jr_no = ?', jrNo)) {
+      throw Object.assign(new Error(`Job request number ${jrNo} already exists`), { status: 409 });
+    }
+    const cols = ['jr_no', 'req_date', 'asset_id', 'project_id', 'type', 'priority', 'description', 'required_date', 'requested_by', 'requested_by_user', 'requested_sig', 'workshop_id', 'meter_reading'];
+    const vals = [jrNo, reqDate, v.asset_id, projectId, 'service', priority, description, requiredDate, reqBy, req.user.id, ru ? ru.signature : null, workshopId, meterReading];
+    if (jrCols.has('service_type')) {
+      cols.push('service_type');
+      vals.push(serviceType);
+    }
+    const placeholders = cols.map(() => '?').join(', ');
+    const info = run(`INSERT INTO job_requests (${cols.join(', ')}) VALUES (${placeholders})`, ...vals);
+    created = get('SELECT * FROM job_requests WHERE id = ?', info.lastInsertRowid);
+  });
+
+  audit.record({
+    userId: req.user.id,
+    entity: 'job_request',
+    entityId: created.id,
+    action: 'create_from_service_plan',
+    after: {
+      jr_no: created.jr_no,
+      asset_id: v.asset_id,
+      asset_code: v.asset_code,
+      next_service_seq: v.next_service_seq,
+      change_count: changeFilters.length,
+      clean_count: cleanFilters.length,
+      skipped_count: skippedFilters.length,
+    },
+  });
+
+  res.status(201).json({
+    ok: true,
+    jr_no: created.jr_no,
+    request: created,
+    change_filters: changeFilters,
+    clean_filters: cleanFilters,
+    skipped_filters: skippedFilters,
+  });
 }));
 
 router.get('/services/:id', asyncHandler((req, res) => {

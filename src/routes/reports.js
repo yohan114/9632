@@ -13,6 +13,7 @@ const monthlyReport = require('../lib/monthly_cost_report');
 const mechanics = require('../lib/mechanics');
 const lubricants = require('../lib/lubricants');
 const scope = require('../lib/scope');
+const audit = require('../lib/audit');
 
 const { requireModule, requireView } = require('../lib/permissions');
 
@@ -1530,6 +1531,12 @@ router.post('/monthly-inputs', requireAuth, canEditMonthlyInputs, asyncHandler((
         toNum(ln.amount1) || 0, toNum(ln.amount2) || 0, toNum(ln.amount3) || 0, s(ln.note));
     }
   });
+  audit.record({
+    userId: req.user && req.user.id,
+    entity: 'monthly_report_inputs',
+    action: 'replace',
+    after: { year, month, sheet, workshop_id: target, saved: lines.length },
+  });
   res.json({ ok: true, sheet, saved: lines.length, workshop_id: target });
 }));
 
@@ -1551,6 +1558,7 @@ router.post('/service-outside', requireAuth, canEditServiceOutside, asyncHandler
       saved++;
     }
   });
+  audit.record({ userId: req.user && req.user.id, entity: 'service_outside', action: 'update', after: { saved } });
   res.json({ ok: true, saved });
 }));
 
@@ -1773,6 +1781,7 @@ router.post('/repair-sections/sync-labour', requireCap('reports.repair_sections.
   if (!validPeriod(year, month)) return res.status(400).json({ error: 'year (YYYY) and month (1-12) are required' });
   const ym = `${year}-${String(month).padStart(2, '0')}`;
   mechanics.syncJobLabourForMonth(ym);
+  audit.record({ userId: req.user && req.user.id, entity: 'job_labour', action: 'sync_month', after: { ym } });
   res.json({ ok: true, message: `Re-synchronized labour for ${ym}` });
 }));
 
@@ -1828,7 +1837,9 @@ router.post('/daily/:kind/save', requireAuth, asyncHandler((req, res) => {
   const kind = kindOf(req.params.kind);
   if (!kind) return res.status(404).json({ error: 'Unknown report' });
   if (!mayReadKind(req, res, kind)) return;
-  const snap = daily.snapshot(kind, { asOf: req.body && req.body.date, userId: req.user.id, ws: reportWs(req) });
+  const ws = reportWs(req);
+  const snap = daily.snapshot(kind, { asOf: req.body && req.body.date, userId: req.user.id, ws });
+  audit.record({ userId: req.user.id, entity: 'daily_report_snapshots', action: 'save', after: { kind, as_of: snap && snap.as_of, ws } });
   res.json({ ok: true, ...snap });
 }));
 
@@ -1875,7 +1886,9 @@ router.put('/daily/job-summary/notes/:jobId', requireAuth,
            job_status = excluded.job_status, spare_parts = excluded.spare_parts,
            updated_at = datetime('now'), updated_by = excluded.updated_by`,
       id, clean(b.completed_repairs), clean(b.pending_repairs), clean(b.job_status), clean(b.spare_parts), req.user.id);
-    res.json({ ok: true, notes: get('SELECT * FROM job_summary_notes WHERE job_id = ?', id) });
+    const saved = get('SELECT * FROM job_summary_notes WHERE job_id = ?', id);
+    audit.record({ userId: req.user.id, entity: 'job_summary_notes', entityId: id, action: 'upsert', after: saved });
+    res.json({ ok: true, notes: saved });
   }));
 
 router.put('/daily/pending-parts/notes/:lineId', requireAuth,
@@ -1889,6 +1902,7 @@ router.put('/daily/pending-parts/notes/:lineId', requireAuth,
     run(`INSERT INTO pending_part_notes (mrn_line_id, remarks, updated_by) VALUES (?, ?, ?)
          ON CONFLICT(mrn_line_id) DO UPDATE SET remarks = excluded.remarks,
            updated_at = datetime('now'), updated_by = excluded.updated_by`, id, remarks, req.user.id);
+    audit.record({ userId: req.user.id, entity: 'pending_part_notes', entityId: id, action: 'upsert', after: { remarks } });
     res.json({ ok: true });
   }));
 
@@ -1908,6 +1922,7 @@ router.put('/daily/pending-price/notes/:grnId', requireAuth,
     run(`INSERT INTO receipt_price_notes (grn_id, remarks, updated_by) VALUES (?, ?, ?)
          ON CONFLICT(grn_id) DO UPDATE SET remarks = excluded.remarks,
            updated_at = datetime('now'), updated_by = excluded.updated_by`, id, remarks, req.user.id);
+    audit.record({ userId: req.user.id, entity: 'receipt_price_notes', entityId: id, action: 'upsert', after: { remarks } });
     res.json({ ok: true });
   }));
 
@@ -1978,5 +1993,6 @@ router.post('/overheads', requireAuth, asyncHandler((req, res) => {
   const ws = toInt(req.body.workshop_id) || reportWs(req) || 1;
   const ym = String(req.body.year_month || '').slice(0, 7);
   const updated = require('../lib/daily_cost').saveOverheads(ws, ym, req.body, req.user.id);
+  audit.record({ userId: req.user.id, entity: 'workshop_monthly_overheads', action: 'upsert', after: { workshop_id: ws, year_month: ym } });
   res.json({ ok: true, overheads: updated });
 }));

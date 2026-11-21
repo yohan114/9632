@@ -25,8 +25,9 @@ function checkAdminPassword(pw, username) {
 const router = express.Router();
 
 function userWithRoles(id) {
-  const u = get('SELECT id, username, full_name, active, created_at, workshop_id, access_until, approval_limit FROM users WHERE id = ?', id);
+  const u = get('SELECT id, username, full_name, active, created_at, workshop_id, access_until, approval_limit, project_id, bulk_tank_id, COALESCE(hide_stock, 0) AS hide_stock, fuel_role FROM users WHERE id = ?', id);
   if (!u) return null;
+  u.hide_stock = !!u.hide_stock;
   u.roles = auth.rolesForUser(id);
   u.permissions = permissions.effectiveUserPermissions(u);
   u.caps = capabilities.effectiveCaps(u);
@@ -65,8 +66,9 @@ router.get('/roles', requireAuth, asyncHandler((_req, res) => res.json(
   all('SELECT id, name, label, description FROM roles WHERE COALESCE(active, 1) = 1 ORDER BY id'))));
 
 router.get('/', requireCap('users.manage'), asyncHandler((_req, res) => {
-  const users = all('SELECT id, username, full_name, active, created_at, mfa_enabled, workshop_id, access_until FROM users ORDER BY username');
+  const users = all('SELECT id, username, full_name, active, created_at, mfa_enabled, workshop_id, access_until, project_id, bulk_tank_id, COALESCE(hide_stock, 0) AS hide_stock, fuel_role FROM users ORDER BY username');
   for (const u of users) {
+    u.hide_stock = !!u.hide_stock;
     u.roles = auth.rolesForUser(u.id);
     try {
       u.store_locations = storeLocs.getUserStoreLocations(u.id);
@@ -143,9 +145,17 @@ router.post('/', requireCap('users.manage'), asyncHandler((req, res) => {
     workshopId = workshops.forNew(null, b.workshop_id);
   }
 
+  const projectId = b.project_id === '' || b.project_id === null || b.project_id === undefined ? null : toInt(b.project_id);
+  const bulkTankId = b.bulk_tank_id === '' || b.bulk_tank_id === null || b.bulk_tank_id === undefined ? null : String(b.bulk_tank_id).trim();
+  const hideStock = b.hide_stock ? 1 : 0;
+  const fuelRole = b.fuel_role === '' || b.fuel_role === null || b.fuel_role === undefined ? null : String(b.fuel_role).trim();
+
   const id = tx(() => {
-    const info = run('INSERT INTO users (username, password_hash, full_name, active, must_change_password, workshop_id, access_until) VALUES (?, ?, ?, 1, 1, ?, ?)',
-      b.username, auth.hashPassword(b.password), b.full_name || null, workshopId, accessUntil);
+    const info = run(
+      'INSERT INTO users (username, password_hash, full_name, active, must_change_password, workshop_id, access_until, project_id, bulk_tank_id, hide_stock, fuel_role) VALUES (?, ?, ?, 1, 1, ?, ?, ?, ?, ?, ?)',
+      b.username, auth.hashPassword(b.password), b.full_name || null, workshopId, accessUntil,
+      projectId, bulkTankId, hideStock, fuelRole
+    );
     const userId = info.lastInsertRowid;
     setRoles(userId, roles);
 
@@ -221,6 +231,22 @@ router.patch('/:id', requireCap('users.manage'), asyncHandler((req, res) => {
   if (b.access_until !== undefined) {
     sets.push('access_until = ?');
     params.push(b.access_until ? new Date(b.access_until).toISOString() : null);
+  }
+  if (b.project_id !== undefined) {
+    sets.push('project_id = ?');
+    params.push(b.project_id === '' || b.project_id === null ? null : toInt(b.project_id));
+  }
+  if (b.bulk_tank_id !== undefined) {
+    sets.push('bulk_tank_id = ?');
+    params.push(b.bulk_tank_id === '' || b.bulk_tank_id === null ? null : String(b.bulk_tank_id).trim());
+  }
+  if (b.hide_stock !== undefined) {
+    sets.push('hide_stock = ?');
+    params.push(b.hide_stock ? 1 : 0);
+  }
+  if (b.fuel_role !== undefined) {
+    sets.push('fuel_role = ?');
+    params.push(b.fuel_role === '' || b.fuel_role === null ? null : String(b.fuel_role).trim());
   }
   if (b.password) {
     checkAdminPassword(b.password, before.username);

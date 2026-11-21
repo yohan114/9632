@@ -21,6 +21,8 @@ const jobstate = require('./jobstate');
 const jobClose = require('./job_close');
 const jobsFlow = require('./jobs_flow');
 const purchasingFlow = require('./purchasing_flow');
+const intelligence = require('./intelligence');
+const fuelScope = require('./fuel/scope');
 
 function ensureNotificationTable() {
   try {
@@ -809,8 +811,88 @@ function markAllRead(user) {
   return markRead(user.id, keys);
 }
 
+const _serviceDueBadgeCache = { key: '', time: 0, count: 0 };
+
+function cachedServiceDueCount() {
+  const key = String(process.env.DB_PATH || 'default');
+  const now = Date.now();
+  if (_serviceDueBadgeCache.key === key && now - _serviceDueBadgeCache.time < 15000) {
+    return _serviceDueBadgeCache.count;
+  }
+  let count = 0;
+  try {
+    count = intelligence.serviceDue().filter((s) => s.due).length;
+  } catch (_) {}
+  _serviceDueBadgeCache.key = key;
+  _serviceDueBadgeCache.time = now;
+  _serviceDueBadgeCache.count = count;
+  return count;
+}
+
+/**
+ * Lightweight, RBAC-scoped operational badge counts for the sidebar navigation.
+ */
+function getNavBadgesForUser(user) {
+  const badges = {};
+  if (!user || !user.id) return { badges };
+
+  const isAdminUser = !!(user.roles && user.roles.includes('admin'));
+
+  // 1. Alias Queue (unresolved vehicle/plant aliases)
+  if (isAdminUser || permissions.reaches(user, ['aliases'], 'view') || hasCap(user, 'aliases.view')) {
+    let count = 0;
+    try {
+      const r = get('SELECT COUNT(*) AS c FROM asset_aliases WHERE resolved = 0');
+      count = r ? Number(r.c) || 0 : 0;
+    } catch (_) {}
+    badges.aliases = { count, tone: 'amber' };
+  }
+
+  // 2. Fuel Discrepancy Alerts (low stock tanks, pending corrections, high-variance dips)
+  const canFuelAlerts = isAdminUser
+    || (permissions.meets(fuelScope.effectiveFuelSectionLevel(user, 'fuel_alerts'), 'view') && hasCap(user, 'fuel.alerts.view'));
+  if (canFuelAlerts) {
+    let count = 0;
+    try {
+      const low = get(
+        'SELECT COUNT(*) AS c FROM fuel_tanks WHERE active = 1 AND capacity_litres > 0 AND (current_litres * 1.0 / capacity_litres) < 0.15'
+      );
+      count += low ? Number(low.c) || 0 : 0;
+    } catch (_) {}
+    try {
+      const corr = get("SELECT COUNT(*) AS c FROM fuel_corrections WHERE status = 'PENDING'");
+      count += corr ? Number(corr.c) || 0 : 0;
+    } catch (_) {}
+    try {
+      const dips = get(
+        "SELECT COUNT(*) AS c FROM fuel_tank_dips WHERE ABS(COALESCE(variance_litres, 0)) > 50 AND dip_date >= date('now', '-7 days')"
+      );
+      count += dips ? Number(dips.c) || 0 : 0;
+    } catch (_) {}
+    badges['fuel-alerts'] = { count, tone: 'red' };
+  }
+
+  // 3. Needs Attention (service due / overdue + overdue open MRNs > 30 days)
+  if (isAdminUser || permissions.reaches(user, ['attention'], 'view')) {
+    let count = 0;
+    if (isAdminUser || permissions.reaches(user, ['service_plan'], 'view')) {
+      count += cachedServiceDueCount();
+    }
+    try {
+      const mrnRow = get(
+        "SELECT COUNT(*) AS c FROM mrn WHERE status IN ('open','pending','approved','ordered') AND req_date < date('now', '-30 days')"
+      );
+      count += mrnRow ? Number(mrnRow.c) || 0 : 0;
+    } catch (_) {}
+    badges.attention = { count, tone: 'amber' };
+  }
+
+  return { badges };
+}
+
 module.exports = {
   getNotificationsForUser,
+  getNavBadgesForUser,
   markRead,
   markAllRead,
 };

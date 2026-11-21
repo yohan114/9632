@@ -8,7 +8,9 @@
 const express = require('express');
 const { get, all, run, tx } = require('../db');
 const { requireAuth } = require('../lib/auth');
+const { requireModule } = require('../lib/permissions');
 const { asyncHandler, toInt, toNum } = require('../lib/http');
+const audit = require('../lib/audit');
 
 const router = express.Router();
 const scope = require('../lib/scope');
@@ -133,7 +135,7 @@ router.get('/issues', requireAuth, asyncHandler((req, res) => {
 
 // Save category prices (bulk upsert). Body: { kind, prices: [{ category_norm, category?, unit_price }] }.
 // Changes the prices: needs edit on the ledger (a POST alone asks add).
-router.post('/prices', requireAuth, require('../lib/permissions').requireModule('tyrebattery', 'edit'), asyncHandler((req, res) => {
+router.post('/prices', requireAuth, requireModule('tb_reports', 'edit'), asyncHandler((req, res) => {
   const b = req.body || {};
   const kind = reqKind(b.kind);
   if (!kind) return res.status(400).json({ error: 'kind must be tyre or battery' });
@@ -156,19 +158,33 @@ router.post('/prices', requireAuth, require('../lib/permissions').requireModule(
       saved++;
     }
   });
+  audit.record({
+    userId: req.user ? req.user.id : null,
+    entity: 'tyre_battery_prices',
+    action: 'update',
+    after: { kind, saved },
+  });
   res.json({ ok: true, kind, saved });
 }));
 
 // Per-issue price override. Body: { unit_price } — null/'' clears it (falls back to category price).
-router.patch('/issues/:id', requireAuth, asyncHandler((req, res) => {
+router.patch('/issues/:id', requireAuth, requireModule('tb_reports', 'edit'), asyncHandler((req, res) => {
   const id = toInt(req.params.id);
-  const row = get('SELECT id, store_id FROM tyre_battery_issues WHERE id = ?', id);
+  const row = get('SELECT id, store_id, kind, unit_price FROM tyre_battery_issues WHERE id = ?', id);
   if (!row) return res.status(404).json({ error: 'Issue not found' });
   { const no = scope.storeRefusal(req.user, 'issue', row.store_id); if (no) return res.status(403).json(no); }
   const raw = (req.body || {}).unit_price;
   const n = toNum(raw);
   const price = (raw == null || raw === '' || !(n >= 0)) ? null : n; // negatives are invalid → clear the override
   run('UPDATE tyre_battery_issues SET unit_price = ? WHERE id = ?', price, id);
+  audit.record({
+    userId: req.user ? req.user.id : null,
+    entity: 'tyre_battery_issues',
+    entityId: id,
+    action: 'price_override',
+    before: { unit_price: row.unit_price },
+    after: { unit_price: price },
+  });
   res.json({ ok: true, id, unit_price: price });
 }));
 

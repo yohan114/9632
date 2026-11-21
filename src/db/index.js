@@ -855,7 +855,10 @@ function migrate() {
   }
   // General Item Issues reconciliation & Store Items balance sync
   try {
-    require('../migrate/046_fix_general_item_issues').runMigration(db);
+    if (!db.prepare("SELECT 1 FROM settings WHERE key = 'migration_046_done'").get()) {
+      require('../migrate/046_fix_general_item_issues').runMigration(db);
+      db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('migration_046_done', '1')").run();
+    }
   } catch (err) {
     console.warn('Migration 046 auto-sync skipped:', err.message);
   }
@@ -870,7 +873,11 @@ function migrate() {
   }
   // Service Job Requests, Service Records Linking & Daily Work Service Tracking
   try {
-    require('../migrate/048_service_requests_and_dailywork').runMigration(db);
+    const dwHasSvc = db.prepare('PRAGMA table_info(job_daily_work)').all().some((c) => c.name === 'service_id');
+    if (!db.prepare("SELECT 1 FROM settings WHERE key = 'migration_048_done'").get() || !dwHasSvc) {
+      require('../migrate/048_service_requests_and_dailywork').runMigration(db);
+      db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('migration_048_done', '1')").run();
+    }
   } catch (err) {
     console.warn('Migration 048 service requests skipped:', err.message);
   }
@@ -1005,6 +1012,130 @@ function migrate() {
     }
   } catch (err) {
     console.warn('Migration 057 Fleet financial ledger skipped:', err.message);
+  }
+
+  // Fleet Breakdowns Monitoring, Site Allocator Ranges & Rate Schema Fixes (Migration 059)
+  try {
+    const hasBreakdowns = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='fleet_breakdowns'").get();
+    const hasBudgets = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='site_fuel_budgets'").get();
+    const hasMeterReadings = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='meter_readings'").get();
+    const assignRow = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='fleet_asset_assignments'").get();
+    const corrRow = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='fuel_corrections'").get();
+    const mrRow = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='fuel_meter_readings'").get();
+    const allocCols = db.prepare('PRAGMA table_info(fleet_vehicle_allocations)').all().map((c) => c.name);
+    const corrCols = db.prepare('PRAGMA table_info(fuel_corrections)').all().map((c) => c.name);
+    const fuelIssueCols = db.prepare('PRAGMA table_info(fuel_issues)').all().map((c) => c.name);
+    const fuelPriceCols = db.prepare('PRAGMA table_info(fuel_prices)').all().map((c) => c.name);
+    const needs059 = !db.prepare("SELECT 1 FROM settings WHERE key = 'migration_059_done'").get()
+      || !hasBreakdowns
+      || !hasBudgets
+      || !hasMeterReadings
+      || (allocCols.length > 0 && !allocCols.includes('date_from'))
+      || (corrCols.length > 0 && !corrCols.includes('after_price_cents'))
+      || (fuelIssueCols.length > 0 && !fuelIssueCols.includes('cost_cents'))
+      || (fuelPriceCols.length > 0 && !fuelPriceCols.includes('fuel_kind'))
+      || (corrRow && !/'EDIT'/.test(corrRow.sql))
+      || (mrRow && !/'FUEL_CORRECTION'/.test(mrRow.sql))
+      || (assignRow && !/'DRY_WITH_DRIVER'/.test(assignRow.sql));
+    if (needs059) {
+      require('../migrate/059_fleet_breakdowns_and_hire_fixes').runMigration(db);
+      db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('migration_059_done', '1')").run();
+    }
+  } catch (err) {
+    console.warn('Migration 059 Fleet breakdowns & hire fixes skipped:', err.message);
+  }
+
+  // Advanced Service & Filter Plan Schema & History Seeding (Migration 060)
+  try {
+    const hasRules = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='filter_category_rules'").get();
+    const hasSchedules = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='vehicle_filter_schedules'").get();
+    const needs060 = !db.prepare("SELECT 1 FROM settings WHERE key = 'migration_060_done'").get()
+      || !hasRules
+      || !hasSchedules;
+    if (needs060) {
+      require('../migrate/060_service_filter_plan').runMigration(db);
+      db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('migration_060_done', '1')").run();
+    }
+  } catch (err) {
+    console.warn('Migration 060 Service & Filter Plan skipped:', err.message);
+  }
+
+  // Rate Cards Unit Separation: L/hr (Hourly Rate) vs km/L (Per-KM Rate) (Migration 061)
+  try {
+    const hasRates = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='fleet_rental_rates'").get();
+    const rateCols = hasRates ? db.prepare('PRAGMA table_info(fleet_rental_rates)').all().map((c) => c.name) : [];
+    const needs061 = !db.prepare("SELECT 1 FROM settings WHERE key = 'migration_061_done'").get()
+      || (hasRates && !rateCols.includes('km_dry_cents'));
+    if (needs061) {
+      require('../migrate/061_rate_cards_unit_separation').runMigration(db);
+      db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('migration_061_done', '1')").run();
+    }
+  } catch (err) {
+    console.warn('Migration 061 Rate cards unit separation skipped:', err.message);
+  }
+
+  // Transport Fuel & Running Chart + "No Request, No Issue" Cross-Check (Migration 062)
+  try {
+    const hasReq = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='fuel_requests'").get();
+    const reqCols = hasReq ? db.prepare('PRAGMA table_info(fuel_requests)').all().map((c) => c.name) : [];
+    const needs062 = !db.prepare("SELECT 1 FROM settings WHERE key = 'migration_062_done'").get()
+      || (hasReq && !reqCols.includes('running_chart_no'));
+    if (needs062) {
+      require('../migrate/062_transport_fuel_running_chart').runMigration(db);
+      db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('migration_062_done', '1')").run();
+    }
+  } catch (err) {
+    console.warn('Migration 062 Transport fuel running chart skipped:', err.message);
+  }
+
+  // Fuel Site RBAC Roles, Tank Deduplication & Site Project Activation (Migration 063)
+  try {
+    const needs063 = !db.prepare("SELECT 1 FROM settings WHERE key = 'migration_063_done'").get();
+    if (needs063) {
+      require('../migrate/063_fuel_site_rbac_and_tank_cleanup').runMigration(db);
+      db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('migration_063_done', '1')").run();
+    }
+  } catch (err) {
+    console.warn('Migration 063 Fuel site RBAC & tank cleanup skipped:', err.message);
+  }
+
+  // Data Hygiene, Performance Indexes & Vehicle Fuel Cost Backfill (Migration 064)
+  try {
+    const needs064 = !db.prepare("SELECT 1 FROM settings WHERE key = 'migration_064_done'").get();
+    if (needs064) {
+      require('../migrate/064_p0_hygiene_indexes_and_fuel_cost_backfill').runMigration(db);
+      db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('migration_064_done', '1')").run();
+    }
+  } catch (err) {
+    console.warn('Migration 064 Hygiene & Fuel Backfill skipped:', err.message);
+  }
+
+  // Phase 3 Tank Project Links, Allocation Current-Flag & Delivery Pricing Backfill (Migration 065)
+  try {
+    const needs065 = !db.prepare("SELECT 1 FROM settings WHERE key = 'migration_065_done'").get();
+    if (needs065) {
+      const r065 = require('../migrate/065_phase3_tanks_allocations_and_delivery_prices').runMigration(db);
+      db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('migration_065_done', '1')").run();
+      if (r065 && (r065.tanksLinked || r065.allocationsMarkedCurrent || r065.deliveriesPriced)) {
+        console.log('=== Migration 065 Completed:', JSON.stringify(r065), '===');
+      }
+    }
+  } catch (err) {
+    console.warn('Migration 065 Phase 3 backfill skipped:', err.message);
+  }
+
+  // Phase 5A Production Operations & Safe Data Hygiene (Migration 066)
+  try {
+    const needs066 = !db.prepare("SELECT 1 FROM settings WHERE key = 'migration_066_done'").get();
+    if (needs066) {
+      const r066 = require('../migrate/066_phase5_ops_and_data_hygiene').runMigration(db);
+      db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('migration_066_done', '1')").run();
+      if (r066 && (r066.testAccountsDeactivated || r066.aliasesAutoLinked || r066.issuesPriced || r066.zeroQtyMrnsClosed)) {
+        console.log('=== Migration 066 Completed:', JSON.stringify(r066), '===');
+      }
+    }
+  } catch (err) {
+    console.warn('Migration 066 Ops & Data Hygiene skipped:', err.message);
   }
 
   return db;

@@ -6,6 +6,7 @@ const { requireAuth } = require('../lib/auth');
 const { requireModule } = require('../lib/permissions');
 const { asyncHandler } = require('../lib/http');
 const emitter = require('../lib/emitter');
+const audit = require('../lib/audit');
 
 const router = express.Router();
 
@@ -514,16 +515,30 @@ const handlePostHiringRevenue = asyncHandler((req, res) => {
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `, assetId, date, month, projectId, hireType, quantity, hireRate, totalRevenue, invoiceNo, notes, req.user.id);
 
+  audit.record({
+    userId: req.user.id,
+    entity: 'vehicle_hiring_revenue',
+    entityId: Number(info.lastInsertRowid),
+    action: 'create',
+    after: { asset_id: assetId, month, hire_type: hireType, total_revenue: totalRevenue, invoice_no: invoiceNo },
+  });
   emitter.emit('data_changed', { type: 'vehicle_revenue', asset_id: assetId, month });
   res.json({ ok: true, id: info.lastInsertRowid, total_revenue: totalRevenue });
 });
 
 const handleDeleteHiringRevenue = asyncHandler((req, res) => {
   const id = toInt(req.params.id);
-  const row = get('SELECT id, asset_id, month FROM vehicle_hiring_revenue WHERE id = ?', id);
+  const row = get('SELECT id, asset_id, month, total_revenue, invoice_no FROM vehicle_hiring_revenue WHERE id = ?', id);
   if (!row) return res.status(404).json({ error: 'Record not found' });
 
   run('DELETE FROM vehicle_hiring_revenue WHERE id = ?', id);
+  audit.record({
+    userId: req.user.id,
+    entity: 'vehicle_hiring_revenue',
+    entityId: id,
+    action: 'delete',
+    before: row,
+  });
   emitter.emit('data_changed', { type: 'vehicle_revenue', asset_id: row.asset_id, month: row.month });
   res.json({ ok: true, id });
 });
@@ -595,16 +610,30 @@ router.post('/driver-costs', requireAuth, requireModule('costing', 'add'), async
   `, assetId, date, month, projectId, costType, driverName,
      driverSalary, bataOt, otherExpenses, amount, description, req.user.id);
 
+  audit.record({
+    userId: req.user.id,
+    entity: 'vehicle_driver_other_costs',
+    entityId: Number(info.lastInsertRowid),
+    action: 'create',
+    after: { asset_id: assetId, month, cost_type: costType, amount, driver_name: driverName },
+  });
   emitter.emit('data_changed', { type: 'vehicle_driver_cost', asset_id: assetId, month });
   res.json({ ok: true, id: info.lastInsertRowid, amount });
 }));
 
 router.delete('/driver-costs/:id', requireAuth, requireModule('costing', 'edit'), asyncHandler((req, res) => {
   const id = toInt(req.params.id);
-  const row = get('SELECT id, asset_id, month FROM vehicle_driver_other_costs WHERE id = ?', id);
+  const row = get('SELECT id, asset_id, month, cost_type, amount FROM vehicle_driver_other_costs WHERE id = ?', id);
   if (!row) return res.status(404).json({ error: 'Record not found' });
 
   run('DELETE FROM vehicle_driver_other_costs WHERE id = ?', id);
+  audit.record({
+    userId: req.user.id,
+    entity: 'vehicle_driver_other_costs',
+    entityId: id,
+    action: 'delete',
+    before: row,
+  });
   emitter.emit('data_changed', { type: 'vehicle_driver_cost', asset_id: row.asset_id, month: row.month });
   res.json({ ok: true, id });
 }));

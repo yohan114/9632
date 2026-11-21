@@ -21,6 +21,7 @@ const permissions = require('../lib/permissions');
 const scope = require('../lib/scope');
 const ops = require('../lib/operations');
 const emitter = require('../lib/emitter');
+const audit = require('../lib/audit');
 
 const router = express.Router();
 
@@ -45,7 +46,9 @@ router.get('/places', sees('assets'), asyncHandler((_req, res) => res.json(requi
 router.get('/machines/:id/moves', sees('assets'), asyncHandler((req, res) => res.json(ops.history(toInt(req.params.id)))));
 
 router.post('/machines/:id/move', requireCap('assets.move'), asyncHandler((req, res) => {
-  const out = ops.moveMachine(req.user, toInt(req.params.id), req.body || {});
+  const aid = toInt(req.params.id);
+  const out = ops.moveMachine(req.user, aid, req.body || {});
+  audit.record({ userId: req.user && req.user.id, entity: 'asset_move', entityId: aid, action: 'move', after: req.body || {} });
   emitter.emit('dashboard_refresh', { reason: 'machine_move' });
   res.status(201).json(out);
 }));

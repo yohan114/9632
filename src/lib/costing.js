@@ -433,7 +433,7 @@ function recalcVehicleMonth(assetId, year, month) {
     `SELECT COALESCE(SUM(i.qty * COALESCE(i.unit_price, 0)), 0) v
        FROM issues i
       WHERE i.asset_id = ? AND substr(i.issue_date,1,7) = ?
-        AND (LOWER(i.category) LIKE '%lubric%' OR LOWER(i.category) LIKE '%oil%')
+        AND (LOWER(COALESCE(i.category,'')) LIKE '%lubric%' OR LOWER(COALESCE(i.category,'')) LIKE '%oil%')
         AND NOT EXISTS (SELECT 1 FROM stock_ledger sl WHERE sl.source_issue_id = i.id)`, assetId, ym).v;
 
   const oil = round2(slOil + issuesOil);
@@ -444,20 +444,54 @@ function recalcVehicleMonth(assetId, year, month) {
           - COALESCE((SELECT SUM(r.qty * COALESCE(ir.unit_price,0)) FROM issue_returns r JOIN issues ir ON ir.id = r.issue_id
                        WHERE ir.asset_id = ? AND substr(ir.issue_date,1,7) = ?), 0) v
        FROM issues WHERE asset_id = ? AND substr(issue_date,1,7) = ?
-        AND LOWER(category) NOT LIKE '%lubric%' AND LOWER(category) NOT LIKE '%oil%'`, assetId, ym, assetId, ym).v);
+        AND COALESCE(LOWER(category), '') NOT LIKE '%lubric%' AND COALESCE(LOWER(category), '') NOT LIKE '%oil%'`, assetId, ym, assetId, ym).v);
 
   const row = get('SELECT * FROM vehicle_monthly_costs WHERE asset_id = ? AND year = ? AND month = ?', assetId, year, month);
-  if (!row) {
-    if (!labour && !parts && !oil) return null;               // nothing to record
-    run(`INSERT INTO vehicle_monthly_costs (asset_id, year, month, labour_cost, parts_cost, oil_cost, total_cost, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))`, assetId, year, month, labour, parts, oil, round2(labour + parts + oil));
-    return { labour, parts };
+
+  let fuel = row ? Number(row.fuel_cost || 0) : 0;
+  try {
+    const fi = get(
+      `SELECT COALESCE(SUM(
+         CASE
+           WHEN COALESCE(total_cost_cents, 0) > 0 THEN total_cost_cents / 100.0
+           WHEN COALESCE(cost_cents, 0) > 0 THEN cost_cents / 100.0
+           WHEN COALESCE(total_price, 0) > 0 THEN total_price
+           WHEN COALESCE(fuel_price_cents, price_per_litre_cents, 0) > 0 THEN (COALESCE(litres, 0) * COALESCE(fuel_price_cents, price_per_litre_cents)) / 100.0
+           ELSE COALESCE(litres, 0) * COALESCE(unit_price, 0)
+         END
+       ), 0) AS v
+         FROM fuel_issues
+        WHERE asset_id = ?
+          AND substr(issue_date, 1, 7) = ?
+          AND COALESCE(is_voided, voided, 0) = 0`,
+      assetId, ym
+    );
+    fuel = round2(fi ? fi.v : 0);
+  } catch (_) {
+    // Stripped unit-test schemas without fuel_issues keep existing row.fuel_cost safely.
   }
-  const others = ['fuel_cost', 'filter_cost', 'battery_cost'].reduce((s, c) => s + (row[c] || 0), 0);
+
+  if (!row) {
+    if (!labour && !parts && !oil && !fuel) return null;               // nothing to record
+    run(`INSERT INTO vehicle_monthly_costs (asset_id, year, month, fuel_cost, labour_cost, parts_cost, oil_cost, total_cost, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
+        assetId, year, month, fuel, labour, parts, oil, round2(fuel + labour + parts + oil));
+    return { labour, parts, oil, fuel };
+  }
+  const others = ['filter_cost', 'battery_cost'].reduce((s, c) => s + (row[c] || 0), 0);
   run(`UPDATE vehicle_monthly_costs
-          SET labour_cost = ?, parts_cost = ?, oil_cost = ?, total_cost = ?, updated_at = datetime('now')
-        WHERE id = ?`, labour, parts, oil, round2(others + labour + parts + oil), row.id);
-  return { labour, parts };
+          SET fuel_cost = ?, labour_cost = ?, parts_cost = ?, oil_cost = ?, total_cost = ?, updated_at = datetime('now')
+        WHERE id = ?`, fuel, labour, parts, oil, round2(others + fuel + labour + parts + oil), row.id);
+  return { labour, parts, oil, fuel };
+}
+
+function recalcFuelVehicleMonth(assetId, issueDate) {
+  if (!assetId || !issueDate) return null;
+  const ym = String(issueDate).trim().slice(0, 7);
+  if (!/^\d{4}-\d{2}$/.test(ym)) return null;
+  const [yr, mo] = ym.split('-').map(Number);
+  if (!yr || !mo) return null;
+  return recalcVehicleMonth(assetId, yr, mo);
 }
 
 /** Every (asset, year, month) a job's costs touch — the buckets to refresh when it moves. */
@@ -535,6 +569,7 @@ module.exports = {
   refreshJobTotals,
   snapshotJobCost,
   recalcVehicleMonth,
+  recalcFuelVehicleMonth,
   vehicleMonthsForJob,
   projectCost,
   projectsCostSummary,

@@ -20,6 +20,7 @@ const workshops = require('../lib/workshops');
 const scope = require('../lib/scope');
 const emitter = require('../lib/emitter');
 const standIn = require('../lib/stand_in');
+const adminInterchange = require('../lib/admin_interchange');
 
 const router = express.Router();
 
@@ -457,6 +458,90 @@ router.get(
   })
 );
 
+// ---- System Admin: reassign & interchange daily work / materials ----------
+
+router.get(
+  '/admin/candidates',
+  requireAuth,
+  asyncHandler((req, res) => {
+    adminInterchange.assertAdmin(req.user);
+    const assetId = toInt(req.query.asset_id) || null;
+    const excludeJobId = toInt(req.query.exclude_job_id) || null;
+    const limit = Math.min(toInt(req.query.limit, 200), 500);
+    const clauses = [];
+    const params = [];
+    if (excludeJobId) {
+      clauses.push('j.id <> ?');
+      params.push(excludeJobId);
+    }
+    if (req.query.q && String(req.query.q).trim()) {
+      const raw = String(req.query.q).trim();
+      const esc = (t) => t.replace(/[\\%_]/g, (c) => '\\' + c);
+      const like = '%' + esc(raw) + '%';
+      clauses.push(`(j.job_no LIKE ? ESCAPE '\\' OR j.description LIKE ? ESCAPE '\\' OR a.code LIKE ? ESCAPE '\\' OR a.registration LIKE ? ESCAPE '\\' OR a.ec_code LIKE ? ESCAPE '\\')`);
+      params.push(like, like, like, like, like);
+    }
+    const where = clauses.length ? 'WHERE ' + clauses.join(' AND ') : '';
+    const rows = all(
+      `SELECT j.id, j.job_no, j.type, j.status, j.description, j.asset_id, j.workshop_id,
+              j.requested_at, j.completed_at, j.closed_at, j.total_cost, j.legacy_ref,
+              a.code AS asset_code, a.registration AS asset_reg, a.ec_code AS asset_ec,
+              w.code AS workshop_code, w.name AS workshop_name, p.name AS project_name
+         FROM job_cards j
+         LEFT JOIN assets a ON a.id = j.asset_id
+         LEFT JOIN workshops w ON w.id = j.workshop_id
+         LEFT JOIN projects p ON p.id = j.project_id
+        ${where}
+        ORDER BY (CASE WHEN ? IS NOT NULL AND j.asset_id = ? THEN 0 ELSE 1 END) ASC,
+                 (CASE WHEN COALESCE(j.legacy_ref, '') = 'general-workshop' THEN 1 ELSE 0 END) ASC,
+                 ${JOB_NO_ORDER}
+        LIMIT ?`,
+      ...params, assetId, assetId, limit
+    );
+    res.json(rows.map((r) => ({ ...r, same_vehicle: assetId && r.asset_id === assetId ? 1 : 0 })));
+  })
+);
+
+router.post(
+  '/admin/reassign',
+  requireAuth,
+  asyncHandler((req, res) => {
+    const b = req.body || {};
+    try {
+      const out = adminInterchange.moveItemsToJob(req.user, {
+        targetJobId: b.target_job_id !== undefined ? b.target_job_id : b.targetJobId,
+        items: b.items || {},
+        reason: b.reason || null,
+      });
+      res.json(out);
+    } catch (e) {
+      if (e.status) return res.status(e.status).json({ error: e.message });
+      throw e;
+    }
+  })
+);
+
+router.post(
+  '/admin/interchange',
+  requireAuth,
+  asyncHandler((req, res) => {
+    const b = req.body || {};
+    try {
+      const out = adminInterchange.interchangeBetweenJobs(req.user, {
+        jobAId: b.job_a_id !== undefined ? b.job_a_id : b.jobAId,
+        jobBId: b.job_b_id !== undefined ? b.job_b_id : b.jobBId,
+        moveAToB: b.move_a_to_b !== undefined ? b.move_a_to_b : b.moveAToB,
+        moveBToA: b.move_b_to_a !== undefined ? b.move_b_to_a : b.moveBToA,
+        reason: b.reason || null,
+      });
+      res.json(out);
+    } catch (e) {
+      if (e.status) return res.status(e.status).json({ error: e.message });
+      throw e;
+    }
+  })
+);
+
 // ---- detail ---------------------------------------------------------------
 
 router.get(
@@ -471,7 +556,7 @@ router.get(
     const dailyWork = all('SELECT * FROM job_daily_work WHERE job_id = ? ORDER BY work_date, id', id);
     const parts = all('SELECT * FROM job_parts WHERE job_id = ? ORDER BY id', id);
     // MRN request lines behind this job (requested, on order, or received), linked by
-    // job_id, job_parts attachment, or vehicle date window [job start - 7d ... job close + 7d].
+    // job_id, job_parts attachment, or unlinked vehicle date window [job start - 7d ... job close + 7d].
     const mrnItems = all(
       `SELECT m.id AS mrn_id, m.mrn_no, m.req_date, m.approval_status,
               ml.id AS mrn_line_id, ml.description, ml.category, ml.qty, ml.qty_received,
@@ -479,15 +564,52 @@ router.get(
               ml.purchase_source, ml.purchased_at,
               g.id AS grn_id, g.grn_no, g.delivery_date, g.unit_price,
               ROUND((COALESCE((SELECT SUM(i.qty) FROM issues i WHERE i.grn_id = g.id), 0) - COALESCE((SELECT SUM(r.qty) FROM issue_returns r JOIN issues ir ON ir.id = r.issue_id WHERE ir.grn_id = g.id), 0)), 2) AS qty_issued,
-              ROUND(MAX(0, COALESCE(g.qty, ml.qty_received, 0) - (COALESCE((SELECT SUM(i.qty) FROM issues i WHERE i.grn_id = g.id), 0) - COALESCE((SELECT SUM(r.qty) FROM issue_returns r JOIN issues ir ON ir.id = r.issue_id WHERE ir.grn_id = g.id), 0))), 2) AS remaining_in_store
+              ROUND(MAX(0, COALESCE(g.qty, ml.qty_received, 0) - (COALESCE((SELECT SUM(i.qty) FROM issues i WHERE i.grn_id = g.id), 0) - COALESCE((SELECT SUM(r.qty) FROM issue_returns r JOIN issues ir ON ir.id = r.issue_id WHERE ir.grn_id = g.id), 0))), 2) AS remaining_in_store,
+              EXISTS (
+                SELECT 1 FROM job_parts jp
+                 WHERE jp.job_id = j.id
+                   AND (jp.mrn_line_id = ml.id
+                        OR (jp.source_type = 'issue' AND g.id IS NOT NULL AND EXISTS (
+                          SELECT 1 FROM issues ix WHERE ix.id = jp.source_id AND ix.grn_id = g.id
+                        )))
+              ) AS attached_this_job,
+              (SELECT jp.id FROM job_parts jp
+                 JOIN job_cards jc ON jc.id = jp.job_id
+                WHERE COALESCE(jc.legacy_ref, '') = 'general-workshop'
+                  AND (jp.mrn_line_id = ml.id
+                       OR (jp.source_type = 'issue' AND g.id IS NOT NULL AND EXISTS (
+                         SELECT 1 FROM issues ix WHERE ix.id = jp.source_id AND ix.grn_id = g.id
+                       )))
+                ORDER BY jp.id LIMIT 1) AS general_ws_part_id,
+              (SELECT i.min_no FROM job_parts jp
+                 JOIN job_cards jc ON jc.id = jp.job_id
+                 JOIN issues i ON jp.source_type = 'issue' AND i.id = jp.source_id
+                WHERE COALESCE(jc.legacy_ref, '') = 'general-workshop'
+                  AND (jp.mrn_line_id = ml.id OR (g.id IS NOT NULL AND i.grn_id = g.id))
+                ORDER BY jp.id LIMIT 1) AS general_ws_min_no
          FROM mrn_lines ml
          JOIN mrn m ON m.id = ml.mrn_id
          LEFT JOIN grn g ON (g.mrn_line_id = ml.id OR (g.mrn_line_id IS NULL AND g.mrn_id = ml.mrn_id))
          JOIN job_cards j ON j.id = ?
-        WHERE m.job_id = j.id
+        WHERE (m.job_id = j.id
+               AND NOT EXISTS (
+                 SELECT 1 FROM job_parts jp
+                   JOIN job_cards jc ON jc.id = jp.job_id
+                  WHERE jp.mrn_line_id = ml.id
+                    AND jp.job_id <> j.id
+                    AND COALESCE(jc.legacy_ref, '') <> 'general-workshop'
+               ))
            OR ml.id IN (SELECT mrn_line_id FROM job_parts WHERE job_id = j.id AND mrn_line_id IS NOT NULL)
-           OR (m.asset_id = j.asset_id AND date(m.req_date) BETWEEN date(j.requested_at, '-7 days')
-                                                               AND date(COALESCE(j.closed_at, j.completed_at, date('now')), '+7 days'))
+           OR (m.job_id IS NULL
+               AND NOT EXISTS (
+                 SELECT 1 FROM job_parts jp
+                   JOIN job_cards jc ON jc.id = jp.job_id
+                  WHERE jp.mrn_line_id = ml.id
+                    AND COALESCE(jc.legacy_ref, '') <> 'general-workshop'
+               )
+               AND m.asset_id = j.asset_id
+               AND date(m.req_date) BETWEEN date(j.requested_at, '-7 days')
+                                        AND date(COALESCE(j.closed_at, j.completed_at, date('now')), '+7 days'))
         ORDER BY m.id DESC, ml.id`,
       id
     );
@@ -1213,14 +1335,31 @@ router.get('/unassigned/parts', requireAuth, asyncHandler((req, res) => {
   if (gid) {
     const pParams = [gid];
     let pWhere = 'p.job_id = ?';
-    if (q) { pWhere += ` AND p.description LIKE ? ESCAPE '\\'`; pParams.push(q); }
+    if (q) {
+      pWhere += ` AND (p.description LIKE ? ESCAPE '\\' OR i.min_no LIKE ? ESCAPE '\\' OR m.mrn_no LIKE ? ESCAPE '\\' OR g.grn_no LIKE ? ESCAPE '\\' OR g2.grn_no LIKE ? ESCAPE '\\' OR a.code LIKE ? ESCAPE '\\' OR a.registration LIKE ? ESCAPE '\\' OR a.ec_code LIKE ? ESCAPE '\\')`;
+      pParams.push(q, q, q, q, q, q, q, q);
+    }
     parts = all(
-      `SELECT 'part' AS kind, p.id AS id, NULL AS grn_no, NULL AS mrn_no, NULL AS asset_id,
-              NULL AS asset_code, NULL AS asset_reg, p.description, p.qty, p.unit_price,
+      `SELECT 'part' AS kind, p.id AS id,
+              COALESCE(g.grn_no, g2.grn_no) AS grn_no,
+              COALESCE(i.mrn_no, m.mrn_no) AS mrn_no,
+              i.min_no,
+              COALESCE(i.asset_id, m.asset_id) AS asset_id,
+              a.code AS asset_code, a.registration AS asset_reg,
+              p.description, p.qty, p.unit_price,
               ROUND(p.qty * COALESCE(p.unit_price, 0), 2) AS value,
-              date(p.created_at) AS on_date, NULL AS category, p.mrn_line_id
-         FROM job_parts p WHERE ${pWhere}
-        ORDER BY p.id DESC LIMIT ${limit}`, ...pParams);
+              COALESCE(date(NULLIF(i.issue_date, '')), date(p.created_at)) AS on_date,
+              COALESCE(i.category, ml.category) AS category, p.mrn_line_id
+         FROM job_parts p
+         LEFT JOIN issues i ON (p.source_type = 'issue' AND i.id = p.source_id)
+         LEFT JOIN mrn_lines ml ON ml.id = COALESCE(p.mrn_line_id, i.mrn_line_id)
+         LEFT JOIN mrn m ON m.id = ml.mrn_id
+         LEFT JOIN grn g ON g.id = i.grn_id
+         LEFT JOIN grn g2 ON (p.source_type = 'grn' AND g2.id = p.source_id)
+         LEFT JOIN assets a ON a.id = COALESCE(i.asset_id, m.asset_id)
+        WHERE ${pWhere}
+        ORDER BY (COALESCE(i.asset_id, m.asset_id) IS NOT NULL AND COALESCE(i.asset_id, m.asset_id) = ?) DESC, p.id DESC
+        LIMIT ${limit}`, ...pParams, assetId || 0);
   }
   res.json({ receipts, parts, for_asset_id: assetId || null });
 }));
@@ -1295,6 +1434,7 @@ router.post('/:id/parts/attach', requireAuth, requireCap('jobs.parts'), mustOwn,
     return res.status(409).json({ error: 'Some of those items are already on a job card — reload and try again' });
   }
 
+  const attachCtx = { affectedJobs: new Set(), capturedJobs: new Set(), buckets: new Map(), workMonths: new Set() };
   tx(() => {
     for (const r of receipts) {
       // mrn_line_id is what keeps this receipt out of the unassigned list next time.
@@ -1302,9 +1442,15 @@ router.post('/:id/parts/attach', requireAuth, requireCap('jobs.parts'), mustOwn,
            VALUES (?, 'grn', ?, ?, ?, ?, 0, ?)`,
       id, r.id, r.description, r.qty, r.unit_price, r.mrn_line_id);
     }
-    for (const p of parts) run('UPDATE job_parts SET job_id = ? WHERE id = ?', id, p.id);
+    for (const p of parts) {
+      run('UPDATE job_parts SET job_id = ? WHERE id = ?', id, p.id);
+      adminInterchange.syncAttachedIssuePart(p, job, gid, attachCtx);
+    }
   });
   settleAfterMove(parts.length ? gid : null, id, job.asset_id);
+  for (const b of attachCtx.buckets.values()) {
+    costing.recalcVehicleMonth(b.assetId, b.year, b.month);
+  }
   audit.record({ userId: req.user.id, entity: 'job_parts', entityId: id, action: 'attach',
     after: { receipts: receipts.length, moved: parts.length } });
   res.json({ attached: receipts.length + parts.length,

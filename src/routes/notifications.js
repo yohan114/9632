@@ -19,6 +19,11 @@ router.get('/', asyncHandler((req, res) => {
   res.json(data);
 }));
 
+// GET /api/notifications/nav-badges — lightweight RBAC-scoped operational badge counts for sidebar
+router.get('/nav-badges', asyncHandler((req, res) => {
+  res.json(notifications.getNavBadgesForUser(req.user));
+}));
+
 // POST /api/notifications/read — mark one or more notification keys as read
 router.post('/read', asyncHandler((req, res) => {
   const keys = Array.isArray(req.body.keys)

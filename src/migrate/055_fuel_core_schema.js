@@ -218,23 +218,23 @@ function runMigration(targetDb) {
     CREATE INDEX IF NOT EXISTS idx_fuel_readings_asset_date ON fuel_meter_readings(asset_id, reading_date DESC);
   `);
 
-  // Seed Fuel Role Capabilities if role_capabilities table exists
+  // Seed Fuel Role Capabilities if role_capabilities table exists (aligned with src/lib/capabilities.js)
   const hasRoleCaps = targetDb.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='role_capabilities'").get();
   if (hasRoleCaps) {
     const fuelCapabilities = [
-      { key: 'fuel.view', roles: ['admin', 'manager', 'operational_manager', 'transport_manager', 'assistant_transport_manager', 'workshop', 'site_storekeeper', 'storekeeper', 'viewer'] },
-      { key: 'fuel.request', roles: ['admin', 'manager', 'operational_manager', 'transport_manager', 'workshop', 'site_storekeeper'] },
-      { key: 'fuel.issue', roles: ['admin', 'manager', 'operational_manager', 'workshop', 'site_storekeeper', 'storekeeper'] },
+      { key: 'fuel.view', roles: ['admin', 'manager', 'operational_manager', 'transport_manager', 'assistant_transport_manager', 'workshop', 'site_storekeeper', 'storekeeper', 'main_storekeeper', 'viewer', 'fuel_officer', 'accountant'] },
+      { key: 'fuel.request', roles: ['admin', 'manager', 'operational_manager', 'transport_manager', 'assistant_transport_manager', 'workshop', 'site_storekeeper', 'storekeeper', 'fuel_requester'] },
+      { key: 'fuel.issue', roles: ['admin', 'pump_operator', 'fuel_officer'] },
       { key: 'fuel.approve', roles: ['admin', 'manager', 'operational_manager', 'transport_manager'] },
-      { key: 'fuel.correct', roles: ['admin', 'manager', 'operational_manager'] },
-      { key: 'fuel.void', roles: ['admin', 'manager'] },
-      { key: 'fuel.export', roles: ['admin', 'manager', 'operational_manager', 'transport_manager'] },
-      { key: 'fuel.tanks.view', roles: ['admin', 'manager', 'operational_manager', 'transport_manager', 'workshop', 'site_storekeeper', 'storekeeper', 'viewer'] },
-      { key: 'fuel.tanks.manage', roles: ['admin', 'manager', 'operational_manager'] },
-      { key: 'fuel.tanks.dip', roles: ['admin', 'manager', 'operational_manager', 'workshop', 'site_storekeeper', 'storekeeper'] },
-      { key: 'fuel.tanks.refill', roles: ['admin', 'manager', 'operational_manager', 'workshop', 'site_storekeeper'] },
-      { key: 'fuel.prices.view', roles: ['admin', 'manager', 'operational_manager', 'transport_manager', 'viewer'] },
-      { key: 'fuel.prices.manage', roles: ['admin', 'manager', 'operational_manager'] },
+      { key: 'fuel.correct', roles: ['admin'] },
+      { key: 'fuel.void', roles: ['admin'] },
+      { key: 'fuel.export', roles: ['admin', 'manager', 'operational_manager', 'transport_manager', 'fuel_officer', 'accountant'] },
+      { key: 'fuel.tanks.view', roles: ['admin', 'manager', 'operational_manager', 'transport_manager', 'assistant_transport_manager', 'workshop', 'site_storekeeper', 'storekeeper', 'main_storekeeper', 'viewer', 'fuel_officer', 'accountant'] },
+      { key: 'fuel.tanks.manage', roles: ['admin', 'manager', 'operational_manager', 'fuel_officer'] },
+      { key: 'fuel.tanks.dip', roles: ['admin', 'manager', 'operational_manager', 'fuel_officer'] },
+      { key: 'fuel.tanks.refill', roles: ['admin', 'manager', 'operational_manager', 'pump_operator', 'fuel_officer'] },
+      { key: 'fuel.prices.view', roles: ['admin', 'manager', 'operational_manager', 'transport_manager', 'fuel_officer', 'accountant'] },
+      { key: 'fuel.prices.manage', roles: ['admin', 'manager', 'operational_manager', 'accountant'] },
     ];
 
     const insertStmt = targetDb.prepare(`

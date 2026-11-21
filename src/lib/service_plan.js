@@ -28,6 +28,7 @@
 const { all, get } = require('../db');
 const { normF } = require('./filter_no');
 const planner = require('./service_planner_client');
+const engine = require('./service_plan_engine');
 
 const RULE_VERSION = '2026-08-17.1';
 // Machines with a thin history are pulled toward the fleet's own median gap. Weight 3 was
@@ -434,7 +435,12 @@ function neverServiced() {
  * If the planner cannot be reached the date-based plan is returned untouched, flagged so the
  * screen can say the numbers are WorkshopOne's estimate rather than the planner's answer.
  */
-async function buildServicePlanLinked({ month, includeLongOverdue = false } = {}) {
+async function buildServicePlanLinked({ month, includeLongOverdue = false, includeOk = false, site = '', search = '', assetId = null } = {}) {
+  const hasUnifiedFuel = !!get("SELECT 1 v FROM sqlite_master WHERE type = 'table' AND name = 'fuel_issues'");
+  if (hasUnifiedFuel) {
+    return engine.buildAdvancedServicePlan({ month, includeLongOverdue, includeOk, site, search, assetId });
+  }
+
   const local = buildServicePlan({ month, includeLongOverdue });
   const res = await planner.fetchServiceStatus({ asOf: local.as_of });
   if (!res.ok) {
@@ -464,8 +470,20 @@ async function buildServicePlanLinked({ month, includeLongOverdue = false } = {}
     if (m.state !== 'OVERDUE' && m.state !== 'DUE_SOON') continue;
     const row = byCode.get(m.code_key);
     if (row) {
-      // Keep this system's filter knowledge; take the planner's verdict and its running figures.
-      const merged = { ...row, state: m.state === 'OVERDUE' ? 'overdue' : 'due_soon', planner: m };
+      const detail = engine.getVehicleServicePlanDetail ? engine.getVehicleServicePlanDetail(row.asset_id, { month }) : null;
+      const dv = detail && detail.vehicle;
+      const merged = {
+        ...row,
+        state: m.state === 'OVERDUE' ? 'overdue' : 'due_soon',
+        planner: m,
+        ...(dv ? {
+          filter_matrix: dv.filter_matrix,
+          wanted_filters: dv.wanted_filters,
+          clean_filters: dv.clean_filters,
+          skipped_filters: dv.skipped_filters,
+          core: dv.core,
+        } : {}),
+      };
       (m.state === 'OVERDUE' ? overdue : due).push(merged);
       continue;
     }
@@ -515,4 +533,12 @@ async function buildServicePlanLinked({ month, includeLongOverdue = false } = {}
   };
 }
 
-module.exports = { buildServicePlan, buildServicePlanLinked, neverServiced, RULE_VERSION };
+module.exports = {
+  buildServicePlan,
+  buildServicePlanLinked,
+  buildAdvancedServicePlan: engine.buildAdvancedServicePlan,
+  getVehicleServicePlanDetail: engine.getVehicleServicePlanDetail,
+  engine,
+  neverServiced,
+  RULE_VERSION,
+};

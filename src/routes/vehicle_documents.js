@@ -16,6 +16,9 @@
 
 const express = require('express');
 const fs = require('fs');
+const { get, all, run } = require('../db');
+const audit = require('../lib/audit');
+const aliases = require('../lib/aliases');
 const vdocs = require('../lib/vehicle_documents');
 const { requireCap, hasCap } = require('../lib/auth');
 const { asyncHandler, toInt } = require('../lib/http');
@@ -209,6 +212,155 @@ router.get('/assets/:assetId/erl-checklist', requireCap('vehicle_docs.view'), as
 }));
 
 // ---------------------------------------------------------------------------
+// 3b. Bulk Statutory Expiry Import
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve an asset strictly against existing assets and already-resolved aliases
+ * without queuing pending alias noise on typos.
+ */
+function lookupAssetForDocImport(row) {
+  if (row.asset_id) {
+    const byId = get('SELECT id, code, registration FROM assets WHERE id = ?', toInt(row.asset_id));
+    if (byId) return byId;
+  }
+  const raw = String(row.vehicle || row.code || row.registration || '').trim();
+  if (!raw) return null;
+  const norm = aliases.normalize(raw);
+  if (!norm) return null;
+
+  let asset = get('SELECT id, code, registration FROM assets WHERE code_norm = ?', norm);
+  if (asset) return asset;
+
+  asset = get(
+    "SELECT id, code, registration FROM assets WHERE UPPER(REPLACE(REPLACE(COALESCE(registration, ''), '-', ''), ' ', '')) = ?",
+    norm
+  );
+  if (asset) return asset;
+
+  const knownAlias = get(
+    'SELECT a.id, a.code, a.registration FROM asset_aliases al JOIN assets a ON a.id = al.asset_id WHERE al.raw_norm = ? AND al.resolved = 1 LIMIT 1',
+    norm
+  );
+  return knownAlias || null;
+}
+
+/**
+ * POST /bulk-import
+ * Bulk-import expiry dates and certificate numbers across vehicles.
+ */
+router.post('/bulk-import', requireCap('vehicle_docs.renew', 'vehicle_docs.edit'), asyncHandler((req, res) => {
+  const body = req.body || {};
+  const rows = Array.isArray(body.rows) ? body.rows : null;
+  if (!rows || !rows.length) {
+    return res.status(400).json({ error: 'rows must be a non-empty array' });
+  }
+  if (rows.length > 500) {
+    return res.status(400).json({ error: 'Cannot bulk-import more than 500 rows per request' });
+  }
+
+  const autoVerifyDefault = Boolean(body.auto_verify);
+  const canVerify = hasCap(req.user, 'vehicle_docs.verify');
+  const docTypes = vdocs.listDocTypes();
+  const findDocType = (raw) => {
+    const k = String(raw || '').trim().toLowerCase();
+    if (!k) return null;
+    return docTypes.find((t) => String(t.code).toLowerCase() === k || String(t.name).toLowerCase() === k) || null;
+  };
+
+  const imported = [];
+  const skipped = [];
+
+  for (let idx = 0; idx < rows.length; idx++) {
+    const r = rows[idx] || {};
+    const asset = lookupAssetForDocImport(r);
+    if (!asset) {
+      skipped.push({ index: idx, reason: 'vehicle_not_found', input: r.vehicle || r.code || r.registration || r.asset_id || null });
+      continue;
+    }
+
+    const docType = findDocType(r.doc_type || r.doc_type_code);
+    if (!docType) {
+      skipped.push({ index: idx, asset_id: asset.id, reason: 'invalid_doc_type', input: r.doc_type || r.doc_type_code || null });
+      continue;
+    }
+
+    const validUntil = r.valid_until ? String(r.valid_until).trim().slice(0, 10) : '';
+    if (validUntil && !/^\d{4}-\d{2}-\d{2}$/.test(validUntil)) {
+      skipped.push({ index: idx, asset_id: asset.id, doc_type: docType.code, reason: 'invalid_valid_until_date' });
+      continue;
+    }
+    if (docType.is_renewable && !validUntil) {
+      skipped.push({ index: idx, asset_id: asset.id, doc_type: docType.code, reason: 'valid_until_required' });
+      continue;
+    }
+
+    const docNumber = String(r.doc_number || '').trim()
+      || (validUntil ? `BULK-${String(docType.code).toUpperCase()}-${validUntil}` : `BULK-${String(docType.code).toUpperCase()}-${asset.id}`);
+    const validFrom = r.valid_from ? String(r.valid_from).trim().slice(0, 10) : undefined;
+    const issueDate = r.issue_date ? String(r.issue_date).trim().slice(0, 10) : undefined;
+
+    vdocs.ensureVehicleDocuments(asset.id);
+    const container = get(
+      'SELECT id FROM vehicle_documents WHERE asset_id = ? AND doc_type_id = ?',
+      asset.id, docType.id
+    );
+    if (!container) {
+      skipped.push({ index: idx, asset_id: asset.id, doc_type: docType.code, reason: 'document_container_missing' });
+      continue;
+    }
+
+    const ver = vdocs.createDraftVersion(container.id, {
+      doc_number: docNumber,
+      issuer_name: r.issuer_name || null,
+      issue_date: issueDate,
+      valid_from: validFrom,
+      valid_until: validUntil || undefined,
+      cost_amount: r.cost_amount != null ? Number(r.cost_amount) : 0,
+      notes: r.notes || null,
+      status: 'pending_verification',
+    }, req.user);
+
+    let finalVer = ver;
+    const shouldVerify = r.verify !== undefined ? Boolean(r.verify) : autoVerifyDefault;
+    if (shouldVerify && canVerify) {
+      finalVer = vdocs.verifyVersion(ver.id, {
+        decision: 'approve',
+        notes: 'Bulk import verified',
+        today: r.today ? String(r.today).trim().slice(0, 10) : undefined,
+      }, req.user);
+    }
+
+    imported.push({
+      index: idx,
+      asset_id: asset.id,
+      asset_code: asset.code,
+      document_id: container.id,
+      version_id: finalVer.id,
+      doc_type: docType.code,
+      doc_number: finalVer.doc_number,
+      valid_until: finalVer.valid_until,
+      status: finalVer.status,
+    });
+  }
+
+  audit.record({
+    userId: req.user ? req.user.id : null,
+    entity: 'vehicle_document',
+    action: 'bulk_import',
+    after: { imported_count: imported.length, skipped_count: skipped.length },
+  });
+
+  res.status(201).json({
+    ok: true,
+    imported_count: imported.length,
+    skipped_count: skipped.length,
+    imported,
+    skipped,
+  });
+}));
+
+// ---------------------------------------------------------------------------
 // 4. Document Container & Exemption
 // ---------------------------------------------------------------------------
 
@@ -392,7 +544,7 @@ router.delete('/:documentId', requireCap('vehicle_docs.delete'), asyncHandler((r
   const docId = toInt(req.params.documentId);
   const doc = get('SELECT * FROM vehicle_documents WHERE id = ?', docId);
   if (!doc) return res.status(404).json({ error: 'Vehicle document not found' });
-  run('UPDATE vehicle_documents SET active = 0, updated_at = datetime("now") WHERE id = ?', docId);
+  run("UPDATE vehicle_documents SET is_required = 0, updated_at = datetime('now') WHERE id = ?", docId);
   audit.record({ userId: req.user.id, entity: 'vehicle_document', entityId: docId, action: 'delete', before: doc });
   res.json({ ok: true, deleted: true });
 }));

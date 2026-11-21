@@ -44,6 +44,7 @@ app.set('trust proxy', process.env.TRUST_PROXY || 'loopback');
 // "X-Powered-By: Express" tells a scanner which exploits to try first, and tells a user nothing.
 app.disable('x-powered-by');
 app.use(securityHeaders);
+app.use(require('./lib/compress')());
 // Browsers report what the Content-Security-Policy blocked. Outside /api (no CSRF check: the
 // browser posts these itself) and before sign-in, with its own small body limit.
 app.post(CSP_REPORT_PATH, cspReport());
@@ -305,9 +306,16 @@ app.use('/api/stores', storesGate, require('./routes/stores'));
 app.use('/api/store-locations', require('./routes/store_locations'));
 app.use('/api/stores/locations', require('./routes/store_locations'));
 app.use('/api/general-stock', requireModule('stores'), require('./routes/general_stock'));
+const requireServicePlanModule = requireModule('service_plan');
+const requireFiltersModule = requireModule('filters');
+const filtersGate = (req, res, next) => (
+  req.path === '/service-plan' || req.path.startsWith('/service-plan/')
+    ? requireServicePlanModule(req, res, next)
+    : requireFiltersModule(req, res, next)
+);
 app.use('/api/oil', requireModule('oil'), require('./routes/oil'));
 app.use('/api/batteries', requireModule('batteries'), require('./routes/batteries'));
-app.use('/api/filters', requireModule('filters'), require('./routes/filters'));
+app.use('/api/filters', filtersGate, require('./routes/filters'));
 app.use('/api/filter-stock', requireModule('filters'), require('./routes/filter_stock'));
 app.use('/api/tools', require('./routes/tools'));
 // The stock cockpit reads the whole stores position, so it needs Stores clearance. This branch
@@ -316,14 +324,14 @@ app.use('/api/tools', require('./routes/tools'));
 // gate is kept, in this branch's vocabulary.
 app.use('/api/stock-cockpit', requireModule('stores'), require('./routes/stock_cockpit'));
 const jobsGate = (req, res, next) => {
-  if (req.user && (hasCap(req.user, 'fabrication.open_card') || (req.user.roles && req.user.roles.includes('fabrication_officer')))) {
+  if (req.user && hasCap(req.user, 'fabrication.open_card')) {
     return next();
   }
   return requireModule('jobs')(req, res, next);
 };
 app.use('/api/jobs', jobsGate, require('./routes/jobcards'));
 const jobRequestsGate = (req, res, next) => {
-  if (req.user && (hasCap(req.user, 'jobrequests.create_fabrication') || (req.user.roles && req.user.roles.includes('fabrication_officer')))) {
+  if (req.user && hasCap(req.user, 'jobrequests.create_fabrication')) {
     return next();
   }
   return requireModule('jobrequests')(req, res, next);
@@ -578,7 +586,11 @@ if (require.main === module) {
   // code 1 instead of carrying on half-broken (src/lib/lifecycle.js).
   const lifecycle = require('./lib/lifecycle').install({
     file: config.crashLog,
-    onStop: () => require('./db').db.close(),
+    onStop: () => {
+      try { httpServer.close(); } catch (_) {}
+      try { require('./db').db.pragma('wal_checkpoint(TRUNCATE)'); } catch (_) {}
+      require('./db').db.close();
+    },
   });
 
   // A PORT SOMETHING ELSE ALREADY HOLDS is the startup failure an office PC actually hits, and as
@@ -601,6 +613,14 @@ if (require.main === module) {
   dailyReports.startScheduler();
   // Periodic statutory compliance checks, reminder logs, and future version promotion.
   vehicleDocuments.startScheduler();
+  const pruneExpiredSessions = () => {
+    try {
+      const { run } = require('./db');
+      run("DELETE FROM sessions WHERE expires_at < datetime('now')");
+    } catch (_) {}
+  };
+  pruneExpiredSessions();
+  setInterval(pruneExpiredSessions, 60 * 60 * 1000).unref();
   httpServer.listen(config.port, config.host, () => {
     console.log(`WorkshopOne listening on ${config.host}:${config.port}`);
     console.log('Real-time (socket.io) enabled');

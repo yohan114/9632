@@ -299,7 +299,7 @@ const FUNCTIONAL_SECTIONS = [
       none: { modules: { services: 'none' }, caps: [] },
       view: { modules: { services: 'view' }, caps: ['services.view'] },
       operator: { modules: { services: 'edit' }, caps: ['services.view', 'services.create', 'services.edit', 'services.attachments'] },
-      manager: { modules: { services: 'full' }, caps: ['services.view', 'services.create', 'services.edit', 'services.certify', 'services.delete', 'services.attachments', 'services.export'] }
+      manager: { modules: { services: 'full' }, caps: ['services.view', 'services.create', 'services.edit', 'services.checklist.verify', 'services.delete', 'services.attachments', 'services.export'] }
     }
   },
   {
@@ -423,8 +423,8 @@ const FUNCTIONAL_SECTIONS = [
     presets: {
       none: { modules: { batteries: 'none' }, caps: [] },
       view: { modules: { batteries: 'view' }, caps: ['batteries.view'] },
-      operator: { modules: { batteries: 'edit' }, caps: ['batteries.view', 'batteries.register', 'batteries.photos', 'batteries.event', 'batteries.swap'] },
-      manager: { modules: { batteries: 'full' }, caps: ['batteries.view', 'batteries.register', 'batteries.photos', 'batteries.event', 'batteries.swap', 'batteries.warranty.claim', 'batteries.scrap.approve', 'batteries.export'] }
+      operator: { modules: { batteries: 'edit' }, caps: ['batteries.view', 'batteries.register', 'batteries.photos', 'batteries.event'] },
+      manager: { modules: { batteries: 'full' }, caps: ['batteries.view', 'batteries.register', 'batteries.photos', 'batteries.event', 'batteries.scrap', 'batteries.export'] }
     }
   },
   {
@@ -435,7 +435,7 @@ const FUNCTIONAL_SECTIONS = [
       none: { modules: { filters: 'none' }, caps: [] },
       view: { modules: { filters: 'view' }, caps: ['filters.view'] },
       operator: { modules: { filters: 'edit' }, caps: ['filters.view', 'filters.stock.receive', 'filters.stock.issue'] },
-      manager: { modules: { filters: 'full' }, caps: ['filters.view', 'filters.items.manage', 'filters.prices.edit', 'filters.stock.edit', 'filters.stock.receive', 'filters.stock.issue', 'filters.export'] }
+      manager: { modules: { filters: 'full' }, caps: ['filters.view', 'filters.prices.edit', 'filters.stock.edit', 'filters.stock.receive', 'filters.stock.issue', 'filters.export'] }
     }
   },
 
@@ -457,9 +457,9 @@ const FUNCTIONAL_SECTIONS = [
     modules: ['tb_requests'],
     presets: {
       none: { modules: { tb_requests: 'none' }, caps: [] },
-      view: { modules: { tb_requests: 'view' }, caps: ['tb_requests.view'] },
-      operator: { modules: { tb_requests: 'edit' }, caps: ['tb_requests.view', 'tb_requests.create', 'tb_requests.purchase', 'tb_requests.receive', 'tb_requests.issue'] },
-      manager: { modules: { tb_requests: 'full' }, caps: ['tb_requests.view', 'tb_requests.create', 'tb_requests.purchase', 'tb_requests.receive', 'tb_requests.issue', 'tb_requests.approve', 'tb.specs.edit'] }
+      view: { modules: { tb_requests: 'view' }, caps: ['tb.request.view'] },
+      operator: { modules: { tb_requests: 'edit' }, caps: ['tb.request.view', 'tb.request.create', 'tb.purchase.send', 'tb.grn.receive', 'tb.issue.post'] },
+      manager: { modules: { tb_requests: 'full' }, caps: ['tb.request.view', 'tb.request.create', 'tb.request.certify', 'tb.purchase.send', 'tb.grn.receive', 'tb.issue.post', 'tb.request.approve', 'tb.specs.edit'] }
     }
   },
 
@@ -470,9 +470,9 @@ const FUNCTIONAL_SECTIONS = [
     modules: ['tb_reports'],
     presets: {
       none: { modules: { tb_reports: 'none' }, caps: [] },
-      view: { modules: { tb_reports: 'view' }, caps: ['tb_reports.view'] },
-      operator: { modules: { tb_reports: 'view' }, caps: ['tb_reports.view'] },
-      manager: { modules: { tb_reports: 'full' }, caps: ['tb_reports.view', 'tb_reports.export'] }
+      view: { modules: { tb_reports: 'view' }, caps: ['tb.reports.view'] },
+      operator: { modules: { tb_reports: 'view' }, caps: ['tb.reports.view', 'tb.inspection.record'] },
+      manager: { modules: { tb_reports: 'full' }, caps: ['tb.reports.view', 'tb.inspection.record', 'tb.scrap.approve', 'tb.reports.export'] }
     }
   },
   {
@@ -483,7 +483,7 @@ const FUNCTIONAL_SECTIONS = [
       none: { modules: { attention: 'none', daily_progress: 'none', cost_teardown: 'none', reports: 'none' }, caps: [] },
       view: { modules: { attention: 'view', daily_progress: 'view', cost_teardown: 'view', reports: 'view' }, caps: ['attention.view', 'daily_progress.view', 'cost_teardown.view', 'reports.view'] },
       operator: { modules: { attention: 'view', daily_progress: 'view', cost_teardown: 'view', reports: 'view' }, caps: ['attention.view', 'daily_progress.view', 'cost_teardown.view', 'reports.view', 'reports.daily.notes'] },
-      manager: { modules: { attention: 'full', daily_progress: 'full', cost_teardown: 'full', reports: 'full' }, caps: ['attention.view', 'attention.override', 'daily_progress.view', 'daily_progress.export', 'cost_teardown.view', 'cost_teardown.unmask', 'cost_teardown.export', 'reports.view', 'reports.daily.notes', 'reports.export', 'reports.repair_sections.sync'] }
+      manager: { modules: { attention: 'full', daily_progress: 'full', cost_teardown: 'full', reports: 'full' }, caps: ['attention.view', 'attention.dismiss', 'daily_progress.view', 'daily_progress.export', 'cost_teardown.view', 'cost_teardown.drilldown', 'cost_teardown.export', 'reports.view', 'reports.daily.notes', 'reports.export_excel', 'reports.export_pdf', 'reports.repair_sections.sync'] }
     }
   },
 
@@ -496,7 +496,7 @@ const FUNCTIONAL_SECTIONS = [
       none: { modules: { workshops: 'none', access: 'none', users: 'none', audit_logs: 'none' }, caps: [] },
       view: { modules: { workshops: 'view', access: 'none', users: 'none', audit_logs: 'none' }, caps: ['workshops.view'] },
       operator: { modules: { workshops: 'view', access: 'none', users: 'none', audit_logs: 'none' }, caps: ['workshops.view'] },
-      manager: { modules: { workshops: 'full', access: 'full', users: 'full', audit_logs: 'full' }, caps: ['workshops.view', 'workshops.manage', 'workshops.all', 'access.manage', 'users.manage', 'system.status', 'audit.view', 'audit.logs.view', 'audit.logs.export'] }
+      manager: { modules: { workshops: 'full', access: 'full', users: 'full', audit_logs: 'full' }, caps: ['workshops.view', 'workshops.manage', 'workshops.all', 'access.manage', 'users.manage', 'system.status', 'audit.log.view', 'audit.logs.view', 'audit.logs.export'] }
     }
   },
 
@@ -536,13 +536,13 @@ const FUNCTIONAL_SECTIONS = [
   },
   {
     id: 'fuel', name: 'Fuel System, Bowsers & Site Console', icon: '⛽', domain: 'Operations',
-    description: 'Fuel dispensing, site operator console, adjustments, meter readings, bulk tanks, Ceypetco prices, and consumption analytics',
-    modules: ['fuel', 'fuel_tanks', 'fuel_readings', 'fuel_prices', 'fuel_reports', 'fuel_alerts'],
+    description: 'Transport fuel requests, site pump dispensing, tank deliveries, issue change requests, meter readings, prices, and consumption analytics',
+    modules: ['fuel', 'fuel_transport', 'fuel_tanks', 'fuel_readings', 'fuel_prices', 'fuel_reports', 'fuel_alerts'],
     presets: {
-      none: { modules: { fuel: 'none', fuel_tanks: 'none', fuel_readings: 'none', fuel_prices: 'none', fuel_reports: 'none', fuel_alerts: 'none' }, caps: [] },
-      view: { modules: { fuel: 'view', fuel_tanks: 'view', fuel_readings: 'view', fuel_prices: 'view', fuel_reports: 'view', fuel_alerts: 'view' }, caps: ['fuel.view', 'fuel.tanks.view', 'fuel.readings.view', 'fuel.prices.view', 'fuel.reports.view', 'fuel.alerts.view'] },
-      operator: { modules: { fuel: 'edit', fuel_tanks: 'edit', fuel_readings: 'edit', fuel_prices: 'view', fuel_reports: 'view', fuel_alerts: 'view' }, caps: ['fuel.view', 'fuel.request', 'fuel.issue', 'fuel.tanks.view', 'fuel.tanks.dip', 'fuel.tanks.refill', 'fuel.readings.view', 'fuel.readings.record', 'fuel.prices.view', 'fuel.reports.view', 'fuel.alerts.view'] },
-      manager: { modules: { fuel: 'full', fuel_tanks: 'full', fuel_readings: 'full', fuel_prices: 'full', fuel_reports: 'full', fuel_alerts: 'full' }, caps: ['fuel.view', 'fuel.request', 'fuel.issue', 'fuel.approve', 'fuel.approve_request', 'fuel.correct', 'fuel.approve_correction', 'fuel.void', 'fuel.export', 'fuel.tanks.view', 'fuel.tanks.manage', 'fuel.tanks.dip', 'fuel.tanks.refill', 'fuel.readings.view', 'fuel.readings.record', 'fuel.prices.view', 'fuel.prices.manage', 'fuel.reports.view', 'fuel.alerts.view'] }
+      none: { modules: { fuel: 'none', fuel_transport: 'none', fuel_tanks: 'none', fuel_readings: 'none', fuel_prices: 'none', fuel_reports: 'none', fuel_alerts: 'none' }, caps: [] },
+      view: { modules: { fuel: 'view', fuel_transport: 'view', fuel_tanks: 'view', fuel_readings: 'view', fuel_prices: 'view', fuel_reports: 'view', fuel_alerts: 'view' }, caps: ['fuel.view', 'fuel.transport.view', 'fuel.tanks.view', 'fuel.readings.view', 'fuel.prices.view', 'fuel.reports.view', 'fuel.alerts.view'] },
+      operator: { modules: { fuel: 'add', fuel_transport: 'none', fuel_tanks: 'add', fuel_readings: 'none', fuel_prices: 'none', fuel_reports: 'none', fuel_alerts: 'none' }, caps: ['fuel.console.view', 'fuel.issue', 'fuel.tanks.refill', 'fuel.correction.request'] },
+      manager: { modules: { fuel: 'full', fuel_transport: 'full', fuel_tanks: 'full', fuel_readings: 'full', fuel_prices: 'full', fuel_reports: 'full', fuel_alerts: 'full' }, caps: ['fuel.view', 'fuel.console.view', 'fuel.all_sites', 'fuel.request', 'fuel.transport.view', 'fuel.transport.request', 'fuel.transport.crosscheck', 'fuel.approve', 'fuel.approve_request', 'fuel.transfer', 'fuel.correction.request', 'fuel.export', 'fuel.tanks.view', 'fuel.tanks.manage', 'fuel.tanks.dip', 'fuel.tanks.refill', 'fuel.readings.view', 'fuel.readings.record', 'fuel.prices.view', 'fuel.prices.manage', 'fuel.reports.view', 'fuel.alerts.view'] }
     }
   },
   {
@@ -800,7 +800,22 @@ router.get('/people/:id', requireCap('access.manage', 'users.manage'), asyncHand
     const overrideLevel = userPermMap[s.key] !== undefined ? userPermMap[s.key] : null;
     const effectiveLvl = permissions.effectiveLevel(userObj, s.key);
 
-    const sectionCaps = capabilities.CAPABILITIES.filter((c) => (c.section || c.module) === s.key).map((c) => {
+    // Include capabilities belonging to this section AND any of its sub-parts (e.g. fuel_tanks, fuel_transport, oil, filters, vehicle_docs, audit_logs)
+    const partList = (s.parts || []).map((p) => {
+      const pRoleLevel = roleNames.includes('admin') ? 'full' : permissions.levelForRoles(roleNames, p.key);
+      const pOverride = userPermMap[p.key] !== undefined ? userPermMap[p.key] : null;
+      const pEffective = permissions.effectiveLevel(userObj, p.key);
+      return {
+        key: p.key,
+        label: p.label,
+        role_level: pRoleLevel,
+        override_level: pOverride,
+        effective_level: pEffective,
+        is_override: pOverride !== null && pOverride !== pRoleLevel,
+      };
+    });
+    const sectionKeySet = new Set([s.key, ...partList.map((p) => p.key)]);
+    const sectionCaps = capabilities.CAPABILITIES.filter((c) => sectionKeySet.has(c.section || c.module)).map((c) => {
       const roleGranted = roleNames.includes('admin') || roleCaps.has(c.key);
       const overrideGranted = userCapMap[c.key] !== undefined ? userCapMap[c.key] : null;
       let effectiveGranted = roleGranted;
@@ -811,6 +826,7 @@ router.get('/people/:id', requireCap('access.manage', 'users.manage'), asyncHand
         key: c.key,
         label: c.label,
         needs: c.needs,
+        part: (c.section || c.module) !== s.key ? (c.section || c.module) : null,
         actvt: c.actvt || '02',
         domain: c.domain || 'Operations',
         dualAuth: !!c.dualAuth,
@@ -833,6 +849,7 @@ router.get('/people/:id', requireCap('access.manage', 'users.manage'), asyncHand
       origin: overrideLevel !== null ? 'custom' : 'role',
       has_override: overrideLevel !== null,
       is_override: overrideLevel !== null && overrideLevel !== roleLevel,
+      parts: partList,
       capabilities: sectionCaps,
     };
   });
@@ -1084,10 +1101,25 @@ router.post('/people/bulk-save', requireCap('access.manage'), asyncHandler((req,
   const ids = Array.isArray(userIds) ? userIds.map((id) => toInt(id)).filter(Boolean) : [];
   if (!ids.length) return res.status(400).json({ error: 'At least one user must be selected' });
 
-  for (const [, lvl] of Object.entries(sections)) {
-    if (lvl !== null && lvl !== '' && !permissions.LEVELS.includes(lvl)) {
-      return res.status(400).json({ error: `Invalid level ${lvl}` });
+  for (const [secKey, lvl] of Object.entries(sections)) {
+    if (lvl !== null && lvl !== '' && lvl !== 'inherit') {
+      if (!permissions.LEVELS.includes(lvl)) {
+        return res.status(400).json({ error: `Invalid level ${lvl}` });
+      }
+      rules.assertCanSetLevel(req.user, secKey, lvl);
     }
+  }
+  if (presetDomain && presetLevel && presetLevel !== 'inherit') {
+    if (!permissions.LEVELS.includes(presetLevel)) return res.status(400).json({ error: `Invalid level ${presetLevel}` });
+    const domainSections = permissions.SECTIONS.filter((s) => presetDomain === 'ALL' || s.group === presetDomain);
+    for (const ds of domainSections) rules.assertCanSetLevel(req.user, ds.key, presetLevel);
+  }
+  if (addRole) {
+    rules.assertCanAssignRoles(req.user, [String(addRole)]);
+  }
+  for (const uid of ids) {
+    rules.assertNotSelf(req.user, uid);
+    rules.assertCanManageUser(req.user, uid);
   }
 
   let updated = 0;

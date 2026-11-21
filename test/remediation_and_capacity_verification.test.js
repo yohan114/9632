@@ -19,10 +19,18 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
 const http = require('http');
 
+const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'wo-remed-verify-'));
+process.env.DB_PATH = path.join(TMP, 'remed.db');
+process.env.UPLOAD_DIR = path.join(TMP, 'uploads');
+process.env.BACKUP_DIR = path.join(TMP, 'backups');
+process.env.BACKUP_INTERVAL_MINUTES = '0';
+delete process.env.MULTIDB;
+
 const app = require('../src/server');
-const { get, all, run, tx } = require('../src/db');
+const { rawDb, get, all, run, tx } = require('../src/db');
 const auth = require('../src/lib/auth');
 const backup = require('../src/lib/backup');
 const backupStatus = require('../src/lib/backup_status');
@@ -52,6 +60,8 @@ test('WorkshopOne Final Remediation & Security Hardening Suite', async (t) => {
 
   t.after(async () => {
     if (server) await new Promise((res) => server.close(res));
+    try { rawDb.close(); } catch {}
+    try { fs.rmSync(TMP, { recursive: true, force: true }); } catch {}
   });
 
   const pwHash = auth.hashPassword('SiteSecret123!');
