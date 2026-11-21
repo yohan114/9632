@@ -29,11 +29,13 @@ OLD_WO_APP="${OLD_WO_APP:-$OLD_WO_ROOT/app}"
 OLD_WO_SERVICE="${OLD_WO_SERVICE:-workshopone}"
 
 OLD_FUEL_ROOT="${OLD_FUEL_ROOT:-/var/www/fuelsystem}"
-OLD_FUEL_DB="${OLD_FUEL_DB:-$OLD_FUEL_ROOT/data/app.db}"
+OLD_FUEL_DB="${OLD_FUEL_DB:-}"
 OLD_FUEL_USER="${OLD_FUEL_USER:-fuelapp}"
 OLD_FUEL_PM2_HOME="${OLD_FUEL_PM2_HOME:-/home/fuelapp/.pm2}"
 OLD_FUEL_NPX="${OLD_FUEL_NPX:-/opt/node-24/bin/npx}"
 OLD_FUEL_PM2_SERVICE="${OLD_FUEL_PM2_SERVICE:-pm2-fuelapp}"
+PM2_BIN="${PM2_BIN:-}"
+ACME_WEBROOT="${ACME_WEBROOT:-}"
 
 NGINX_STORESDB="${NGINX_STORESDB:-/etc/nginx/sites-available/storesdb}"
 NGINX_STORESDB_ENABLED="${NGINX_STORESDB_ENABLED:-/etc/nginx/sites-enabled/storesdb}"
@@ -62,6 +64,8 @@ TMP_DIR=""
 CUTOVER_BAK=""
 DETECTED_ERP_CERT=""
 DETECTED_ERP_KEY=""
+FUEL_PM2_MODE="none"
+OLD_MFA_KEY=""
 
 log()  { printf '[cutover] %s\n' "$*"; }
 warn() { printf '[cutover][WARN] %s\n' "$*" >&2; }
@@ -179,10 +183,46 @@ detect_erp_tls() {
   return 0
 }
 
+# Detect ACME HTTP-01 webroot (/var/www/certbot if present, else /var/www/html)
+detect_acme_webroot() {
+  if [ -n "${ACME_WEBROOT:-}" ]; then
+    return 0
+  fi
+  if [ -d /var/www/certbot ]; then
+    ACME_WEBROOT="/var/www/certbot"
+  else
+    ACME_WEBROOT="/var/www/html"
+  fi
+}
+
+# Safe PM2 mode detection: isolated fuelapp PM2 vs root PM2 (which may host sibling apps like hydraulic-system)
+detect_fuel_pm2() {
+  FUEL_PM2_MODE="none"
+  if [ -z "$PM2_BIN" ]; then
+    if command -v pm2 >/dev/null 2>&1; then
+      PM2_BIN="$(command -v pm2)"
+    elif [ -x /usr/bin/pm2 ]; then
+      PM2_BIN="/usr/bin/pm2"
+    elif [ -x /usr/local/bin/pm2 ]; then
+      PM2_BIN="/usr/local/bin/pm2"
+    fi
+  fi
+
+  if id -u "$OLD_FUEL_USER" >/dev/null 2>&1 && [ -d "$OLD_FUEL_PM2_HOME" ]; then
+    FUEL_PM2_MODE="fuelapp"
+  elif [ -n "$PM2_BIN" ] && [ -x "$PM2_BIN" ]; then
+    FUEL_PM2_MODE="root"
+  fi
+}
+
 # Populates globals:
 #   WO_DB_MODE ("single"|"split"), WO_SINGLE_DB, WO_CORE_DB, WO_CW_DB, WO_MTR_DB,
-#   OLD_WO_PORT, OLD_WO_UPLOADS, OLD_WO_OUTSOURCING
+#   OLD_WO_PORT, OLD_WO_UPLOADS, OLD_WO_OUTSOURCING, OLD_FUEL_DB, OLD_MFA_KEY,
+#   ACME_WEBROOT, FUEL_PM2_MODE
 detect_live_sources() {
+  detect_acme_webroot
+  detect_fuel_pm2
+
   local env_file="$OLD_WO_APP/.env"
   local env_db=""
   local env_multi=""
@@ -248,6 +288,41 @@ detect_live_sources() {
   else
     OLD_WO_OUTSOURCING=""
   fi
+
+  # Detect WorkshopOne mfa.key alongside live DB
+  if [ "$WO_DB_MODE" = "single" ] && [ -f "$(dirname "$WO_SINGLE_DB")/mfa.key" ]; then
+    OLD_MFA_KEY="$(dirname "$WO_SINGLE_DB")/mfa.key"
+  elif [ -f "$OLD_WO_ROOT/data/mfa.key" ]; then
+    OLD_MFA_KEY="$OLD_WO_ROOT/data/mfa.key"
+  else
+    OLD_MFA_KEY=""
+  fi
+
+  # Auto-detect Fuel-System-V2 SQLite DB from .env DATABASE_URL or known paths
+  if [ -z "$OLD_FUEL_DB" ] && [ -r "$OLD_FUEL_ROOT/.env" ]; then
+    local raw_db_url
+    raw_db_url="$(read_env_val "$OLD_FUEL_ROOT/.env" "DATABASE_URL")"
+    if [ -n "$raw_db_url" ]; then
+      raw_db_url="${raw_db_url#file:}"
+      raw_db_url="${raw_db_url%%\?*}"
+      if [[ "$raw_db_url" == /* ]]; then
+        OLD_FUEL_DB="$raw_db_url"
+      elif [ -f "$OLD_FUEL_ROOT/prisma/$raw_db_url" ]; then
+        OLD_FUEL_DB="$OLD_FUEL_ROOT/prisma/$raw_db_url"
+      else
+        OLD_FUEL_DB="$(resolve_rel_path "$OLD_FUEL_ROOT" "$raw_db_url")"
+      fi
+    fi
+  fi
+  if [ -z "$OLD_FUEL_DB" ] || [ ! -f "$OLD_FUEL_DB" ]; then
+    if [ -f /var/lib/fuel-system/app.db ]; then
+      OLD_FUEL_DB="/var/lib/fuel-system/app.db"
+    elif [ -f "$OLD_FUEL_ROOT/data/app.db" ]; then
+      OLD_FUEL_DB="$OLD_FUEL_ROOT/data/app.db"
+    elif [ -z "$OLD_FUEL_DB" ]; then
+      OLD_FUEL_DB="/var/lib/fuel-system/app.db"
+    fi
+  fi
 }
 
 ensure_unified_dirs_and_env() {
@@ -294,9 +369,9 @@ EOF
 }
 
 check_unified_dependencies() {
-  [ -d "$UNIFIED_APP/node_modules/better-sqlite3" ] || die "Unified dependencies not installed. Run: sudo -u $SERVICE_USER bash -c 'cd $UNIFIED_APP && npm ci --omit=dev'"
+  [ -d "$UNIFIED_APP/node_modules/better-sqlite3" ] || die "Unified dependencies not installed. Run: sudo -u $SERVICE_USER env PATH=/usr/bin:/bin bash -c 'cd $UNIFIED_APP && /usr/bin/npm ci --omit=dev'"
   sudo -u "$SERVICE_USER" "$NODE_BIN" -e 'require("'"$UNIFIED_APP"'/node_modules/better-sqlite3");' >/dev/null 2>&1 \
-    || die "better-sqlite3 failed to load under $NODE_BIN (ABI mismatch). Re-run: sudo -u $SERVICE_USER bash -c 'cd $UNIFIED_APP && npm ci --omit=dev'"
+    || die "better-sqlite3 failed to load under $NODE_BIN (ABI mismatch). Re-run: sudo -u $SERVICE_USER env PATH=/usr/bin:/bin bash -c 'cd $UNIFIED_APP && /usr/bin/npm ci --omit=dev'"
 }
 
 human_size() {
@@ -331,14 +406,21 @@ cmd_preflight() {
   fi
   log "  WO uploads dir:       ${OLD_WO_UPLOADS:-<none>}"
   log "  WO outsourcing dir:   ${OLD_WO_OUTSOURCING:-<none>}"
+  log "  WO MFA key:           ${OLD_MFA_KEY:-<none>}"
   log "Fuel-System-V2 DB:      $OLD_FUEL_DB ($(human_size "$OLD_FUEL_DB"))"
+  log "Fuel PM2 mode:          $FUEL_PM2_MODE"
+  log "ACME webroot:           $ACME_WEBROOT"
   log "Systemd status:"
   systemctl is-active "$OLD_WO_SERVICE" >/dev/null 2>&1 && log "  $OLD_WO_SERVICE: active" || log "  $OLD_WO_SERVICE: inactive"
   systemctl is-active "$OLD_FUEL_PM2_SERVICE" >/dev/null 2>&1 && log "  $OLD_FUEL_PM2_SERVICE: active" || log "  $OLD_FUEL_PM2_SERVICE: inactive"
+  systemctl is-active pm2-root.service >/dev/null 2>&1 && log "  pm2-root.service: active (kept running for sibling PM2 apps)" || log "  pm2-root.service: inactive"
   systemctl is-active "$UNIFIED_SERVICE" >/dev/null 2>&1 && log "  $UNIFIED_SERVICE: active" || log "  $UNIFIED_SERVICE: inactive"
-  if id -u "$OLD_FUEL_USER" >/dev/null 2>&1 && [ -x "$OLD_FUEL_NPX" ]; then
+  if [ "$FUEL_PM2_MODE" = "fuelapp" ]; then
     log "Fuel PM2 status (PM2_HOME=$OLD_FUEL_PM2_HOME):"
     sudo -u "$OLD_FUEL_USER" PM2_HOME="$OLD_FUEL_PM2_HOME" "$OLD_FUEL_NPX" pm2 status 2>/dev/null || warn "Could not query PM2 under $OLD_FUEL_USER"
+  elif [ "$FUEL_PM2_MODE" = "root" ]; then
+    log "Root PM2 process status:"
+    "$PM2_BIN" status 2>/dev/null || warn "Could not query root PM2"
   fi
   log "Nginx site files:"
   log "  erp:        $NGINX_ERP ($([ -f "$NGINX_ERP" ] && echo present || echo MISSING))"
@@ -427,6 +509,8 @@ confirm_phrase() {
 }
 
 stop_old_services() {
+  detect_fuel_pm2
+
   if systemctl is-active "$OLD_WO_SERVICE" >/dev/null 2>&1; then
     log "Stopping $OLD_WO_SERVICE (clean WAL checkpoint)..."
     systemctl stop "$OLD_WO_SERVICE"
@@ -434,21 +518,28 @@ stop_old_services() {
     log "$OLD_WO_SERVICE is already stopped."
   fi
 
-  if id -u "$OLD_FUEL_USER" >/dev/null 2>&1 && [ -x "$OLD_FUEL_NPX" ]; then
+  if [ "$FUEL_PM2_MODE" = "fuelapp" ]; then
     log "Stopping Fuel-System-V2 via PM2 (user=$OLD_FUEL_USER, PM2_HOME=$OLD_FUEL_PM2_HOME)..."
     sudo -u "$OLD_FUEL_USER" PM2_HOME="$OLD_FUEL_PM2_HOME" "$OLD_FUEL_NPX" pm2 stop fuelsystem || warn "PM2 stop returned non-zero (process may already be stopped)"
-  fi
-  if systemctl is-active "$OLD_FUEL_PM2_SERVICE" >/dev/null 2>&1; then
-    log "Stopping systemd unit $OLD_FUEL_PM2_SERVICE..."
-    systemctl stop "$OLD_FUEL_PM2_SERVICE"
+    if systemctl is-active "$OLD_FUEL_PM2_SERVICE" >/dev/null 2>&1; then
+      log "Stopping systemd unit $OLD_FUEL_PM2_SERVICE..."
+      systemctl stop "$OLD_FUEL_PM2_SERVICE"
+    fi
+  elif [ "$FUEL_PM2_MODE" = "root" ]; then
+    log "Stopping ONLY PM2 app 'fuelsystem' under root PM2 (leaving pm2-root.service running for sibling apps like hydraulic-system)..."
+    "$PM2_BIN" stop fuelsystem || warn "PM2 stop fuelsystem returned non-zero (process may already be stopped)"
+    "$PM2_BIN" save || warn "PM2 save returned non-zero"
+  else
+    warn "No PM2 installation detected; assuming Fuel-System-V2 is stopped externally."
   fi
 }
 
 write_erp_unified_nginx() {
+  detect_acme_webroot
   local tmp_out
   tmp_out="$(mktemp)"
   local realip_line=""
-  if [ -f /etc/nginx/cloudflare-real-ip.conf ]; then
+  if [[ "$DETECTED_ERP_CERT" == /etc/ssl/cloudflare/* ]] && [ -f /etc/nginx/cloudflare-real-ip.conf ]; then
     realip_line="    include /etc/nginx/cloudflare-real-ip.conf;"
   fi
 
@@ -489,7 +580,7 @@ server {
     server_name $UNIFIED_DOMAIN;
 
     location ^~ /.well-known/acme-challenge/ {
-        root /var/www/html;
+        root $ACME_WEBROOT;
         default_type "text/plain";
     }
 
@@ -509,7 +600,7 @@ server {
 
 $realip_line
     location ^~ /.well-known/acme-challenge/ {
-        root /var/www/html;
+        root $ACME_WEBROOT;
         default_type "text/plain";
     }
 
@@ -538,6 +629,7 @@ EOF
 }
 
 write_storesdb_redirect_nginx() {
+  detect_acme_webroot
   local src_conf="$NGINX_STORESDB"
   local tmp_out
   tmp_out="$(mktemp)"
@@ -551,6 +643,12 @@ write_storesdb_redirect_nginx() {
     ssl_cert="$(awk '/^[[:space:]]*ssl_certificate[[:space:]]+/{sub(/;/,"",$2); print $2; exit}' "$src_conf" || true)"
     ssl_key="$(awk '/^[[:space:]]*ssl_certificate_key[[:space:]]+/{sub(/;/,"",$2); print $2; exit}' "$src_conf" || true)"
 
+    local ssl_def="" ssl6_def="" http_def="" http6_def=""
+    grep -Eq 'listen[[:space:]]+443[^;]*default_server' "$src_conf" && ssl_def=" default_server"
+    grep -Eq 'listen[[:space:]]+\[::\]:443[^;]*default_server' "$src_conf" && ssl6_def=" default_server"
+    grep -Eq 'listen[[:space:]]+80[^;]*default_server' "$src_conf" && http_def=" default_server"
+    grep -Eq 'listen[[:space:]]+\[::\]:80[^;]*default_server' "$src_conf" && http6_def=" default_server"
+
     {
       echo "# storesdb.ec-workshops.online -> redirect to Unified ERP (https://$UNIFIED_DOMAIN)"
       [ -n "$top_realip" ] && echo "$top_realip"
@@ -558,8 +656,8 @@ write_storesdb_redirect_nginx() {
         cat <<EOF
 
 server {
-    listen 443 ssl http2;
-    listen [::]:443 ssl http2;
+    listen 443 ssl http2${ssl_def};
+    listen [::]:443 ssl http2${ssl6_def};
     server_name storesdb.ec-workshops.online;
 
     ssl_certificate     $ssl_cert;
@@ -575,12 +673,12 @@ EOF
       cat <<EOF
 
 server {
-    listen 80;
-    listen [::]:80;
-    server_name storesdb.ec-workshops.online 20.204.51.43 _;
+    listen 80${http_def};
+    listen [::]:80${http6_def};
+    server_name storesdb.ec-workshops.online 167.71.206.10 _;
 
     location ^~ /.well-known/acme-challenge/ {
-        root /var/www/html;
+        root $ACME_WEBROOT;
         default_type "text/plain";
     }
 
@@ -603,6 +701,7 @@ EOF
 }
 
 write_fuelsystem_redirect_nginx() {
+  detect_acme_webroot
   local src_conf="$NGINX_FUELSYSTEM"
   local tmp_out
   tmp_out="$(mktemp)"
@@ -622,7 +721,7 @@ server {
     server_name fuelsystem.ec-workshops.online;
 
     location ^~ /.well-known/acme-challenge/ {
-        root /var/www/html;
+        root $ACME_WEBROOT;
         default_type "text/plain";
     }
 
@@ -652,9 +751,25 @@ EOF
     fi
   fi
 
+  cat >"$tmp_out" <<EOF
+# fuelsystem.ec-workshops.online -> Unified Fuel Operations redirect (HTTP)
+server {
+    listen 80;
+    listen [::]:80;
+    server_name fuelsystem.ec-workshops.online;
+
+    location ^~ /.well-known/acme-challenge/ {
+        root $ACME_WEBROOT;
+        default_type "text/plain";
+    }
+
+    location / {
+        return 302 $FUEL_REDIRECT_URL;
+    }
+}
+EOF
+  install -m 644 "$tmp_out" "$NGINX_FUELSYSTEM"
   rm -f "$tmp_out"
-  cp "$UNIFIED_APP/deploy/nginx-fuelsystem-redirect.conf" "$NGINX_FUELSYSTEM"
-  chmod 644 "$NGINX_FUELSYSTEM"
   ln -sf "$NGINX_FUELSYSTEM" "$NGINX_FUELSYSTEM_ENABLED"
 }
 
@@ -676,6 +791,7 @@ cmd_setup_ssl() {
   require_root
   require_cmd nginx
   require_cmd curl
+  detect_acme_webroot
 
   local resolved_ips my_ip
   resolved_ips="$(getent ahosts "$UNIFIED_DOMAIN" 2>/dev/null | awk '{print $1}' | sort -u || true)"
@@ -696,11 +812,11 @@ cmd_setup_ssl() {
     apt-get update && apt-get install -y certbot
   fi
 
-  mkdir -p /var/www/html
-  chmod 755 /var/www/html
+  mkdir -p "$ACME_WEBROOT"
+  chmod 755 "$ACME_WEBROOT"
 
   if [ ! -f "$NGINX_ERP" ] || ! grep -q '\.well-known/acme-challenge' "$NGINX_ERP"; then
-    log "Installing temporary :80 ACME challenge responder in $NGINX_ERP (zero impact on existing sites)..."
+    log "Installing temporary :80 ACME challenge responder in $NGINX_ERP (webroot=$ACME_WEBROOT, zero impact on existing sites)..."
     cat >"$NGINX_ERP" <<EOF
 # Temporary HTTP-01 responder for Let's Encrypt issuance ($UNIFIED_DOMAIN)
 server {
@@ -709,7 +825,7 @@ server {
     server_name $UNIFIED_DOMAIN;
 
     location ^~ /.well-known/acme-challenge/ {
-        root /var/www/html;
+        root $ACME_WEBROOT;
         default_type "text/plain";
     }
 
@@ -731,9 +847,9 @@ EOF
     email_args=(--register-unsafely-without-email)
   fi
 
-  log "Requesting Let's Encrypt TLS certificate for $UNIFIED_DOMAIN..."
+  log "Requesting Let's Encrypt TLS certificate for $UNIFIED_DOMAIN (webroot=$ACME_WEBROOT)..."
   certbot certonly \
-    --webroot -w /var/www/html \
+    --webroot -w "$ACME_WEBROOT" \
     -d "$UNIFIED_DOMAIN" \
     --non-interactive --agree-tos \
     "${email_args[@]}"
@@ -826,6 +942,16 @@ cmd_cutover() {
     touch "$CUTOVER_BAK/nginx/erp.absent"
   fi
 
+  if [ -n "$OLD_MFA_KEY" ] && [ -f "$OLD_MFA_KEY" ]; then
+    install -m 0600 "$OLD_MFA_KEY" "$CUTOVER_BAK/mfa.key"
+    local target_mfa_key
+    target_mfa_key="$(dirname "$UNIFIED_DB")/mfa.key"
+    if [ ! -f "$target_mfa_key" ]; then
+      install -m 0600 -o "$SERVICE_USER" -g "$SERVICE_GROUP" "$OLD_MFA_KEY" "$target_mfa_key"
+      log "Preserved 2FA key -> $target_mfa_key"
+    fi
+  fi
+
   # Step 4: Execute final production merge & attachment sync
   local -a file_args=()
   if [ -n "$OLD_WO_UPLOADS" ] && [ -d "$OLD_WO_UPLOADS" ]; then
@@ -889,9 +1015,13 @@ cmd_cutover() {
   fi
   systemctl reload nginx
 
-  # Step 8: Disable old auto-start services while keeping files cold on disk
+  # Step 8: Disable old auto-start services while keeping files cold and leaving sibling apps online
   systemctl disable "$OLD_WO_SERVICE" 2>/dev/null || true
-  systemctl disable "$OLD_FUEL_PM2_SERVICE" 2>/dev/null || true
+  if [ "$FUEL_PM2_MODE" = "fuelapp" ]; then
+    systemctl disable "$OLD_FUEL_PM2_SERVICE" 2>/dev/null || true
+  elif [ "$FUEL_PM2_MODE" = "root" ]; then
+    log "Keeping pm2-root.service active for sibling PM2 apps (hydraulic-system); 'fuelsystem' remains stopped and saved."
+  fi
 
   # Step 9: Smoke checks
   log "Running final local & Host-header smoke checks..."
@@ -927,12 +1057,17 @@ cmd_rollback() {
   log "Re-enabling and starting $OLD_WO_SERVICE..."
   systemctl enable --now "$OLD_WO_SERVICE"
 
-  if systemctl list-unit-files | grep -q "^${OLD_FUEL_PM2_SERVICE}.service"; then
-    systemctl enable --now "$OLD_FUEL_PM2_SERVICE" || true
-  fi
-  if id -u "$OLD_FUEL_USER" >/dev/null 2>&1 && [ -x "$OLD_FUEL_NPX" ]; then
+  detect_fuel_pm2
+  if [ "$FUEL_PM2_MODE" = "fuelapp" ]; then
+    if systemctl list-unit-files | grep -q "^${OLD_FUEL_PM2_SERVICE}.service"; then
+      systemctl enable --now "$OLD_FUEL_PM2_SERVICE" || true
+    fi
     log "Starting Fuel-System-V2 via PM2 under $OLD_FUEL_USER..."
     sudo -u "$OLD_FUEL_USER" PM2_HOME="$OLD_FUEL_PM2_HOME" "$OLD_FUEL_NPX" pm2 start fuelsystem || warn "PM2 start returned non-zero"
+  elif [ "$FUEL_PM2_MODE" = "root" ]; then
+    log "Starting Fuel-System-V2 via root PM2..."
+    "$PM2_BIN" start fuelsystem || warn "PM2 start returned non-zero"
+    "$PM2_BIN" save || warn "PM2 save returned non-zero"
   fi
 
   log "ROLLBACK COMPLETE."
