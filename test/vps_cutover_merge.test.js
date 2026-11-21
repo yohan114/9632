@@ -253,3 +253,48 @@ test('3. Merge is idempotent and syncs missing uploads/outsourcing attachments w
   const ver = getVpsCutoverParityReport({ woPath, fuelPath, targetPath });
   assert.equal(ver.readyForCutover, true);
 });
+
+test('4. Linux VPS deploy artifacts enforce LF line endings, valid ports/hostnames, and safe Nginx/systemd rules', () => {
+  const linuxArtifacts = [
+    path.join(ROOT_DIR, '.gitattributes'),
+    path.join(ROOT_DIR, 'deploy', 'workshopone-unified.service'),
+    path.join(ROOT_DIR, 'deploy', 'nginx-storesdb-unified.conf'),
+    path.join(ROOT_DIR, 'deploy', 'nginx-fuelsystem-redirect.conf'),
+    path.join(ROOT_DIR, 'deploy', 'vps-cutover.sh'),
+  ];
+  for (const filePath of linuxArtifacts) {
+    assert.ok(fs.existsSync(filePath), `Missing deploy file: ${filePath}`);
+    const raw = fs.readFileSync(filePath, 'utf8');
+    assert.equal(raw.includes('\r'), false, `${path.basename(filePath)} must use Unix LF only (found CR)`);
+  }
+
+  const serviceTxt = fs.readFileSync(path.join(ROOT_DIR, 'deploy', 'workshopone-unified.service'), 'utf8');
+  assert.match(serviceTxt, /^User=workshopone$/m);
+  assert.match(serviceTxt, /^WorkingDirectory=\/opt\/workshopone-unified\/app$/m);
+  assert.match(serviceTxt, /^ExecStart=\/usr\/bin\/node src\/server\.js$/m);
+  assert.equal(/Environment=(HOST|PORT|DB_PATH)=/.test(serviceTxt), false, 'HOST/PORT/DB_PATH must live in .env, not systemd unit');
+
+  const storesNginx = fs.readFileSync(path.join(ROOT_DIR, 'deploy', 'nginx-storesdb-unified.conf'), 'utf8');
+  assert.match(storesNginx, /server_name\s+storesdb\.ec-workshops\.online;/);
+  assert.match(storesNginx, /proxy_pass\s+http:\/\/127\.0\.0\.1:3400;/);
+  assert.match(storesNginx, /listen\s+443\s+ssl\s+http2;/);
+  assert.equal(/\bhttp2\s+on;/.test(storesNginx), false, 'Avoid standalone http2 on; for nginx 1.18/1.24 compatibility');
+
+  const fuelNginx = fs.readFileSync(path.join(ROOT_DIR, 'deploy', 'nginx-fuelsystem-redirect.conf'), 'utf8');
+  assert.match(fuelNginx, /server_name\s+fuelsystem\.ec-workshops\.online;/);
+  assert.match(fuelNginx, /return\s+302\s+https:\/\/storesdb\.ec-workshops\.online\/#\/fuel;/);
+  assert.match(fuelNginx, /location\s+\^~\s+\/\.well-known\/acme-challenge\//);
+  assert.equal(/\bdefault_server\b/.test(fuelNginx), false);
+  assert.equal(/\bhttp2\s+on;/.test(fuelNginx), false);
+  assert.equal(/cloudflare-realip\.conf/.test(fuelNginx), false);
+  assert.equal(/map\s+\$connection_upgrade/.test(fuelNginx), false);
+
+  const cutoverSh = fs.readFileSync(path.join(ROOT_DIR, 'deploy', 'vps-cutover.sh'), 'utf8');
+  assert.ok(cutoverSh.startsWith('#!/usr/bin/env bash\n'));
+  assert.match(cutoverSh, /^set -Eeuo pipefail$/m);
+  for (const cmd of ['preflight', 'rehearsal', 'cutover', 'rollback']) {
+    assert.ok(cutoverSh.includes(`${cmd})`), `Missing subcommand ${cmd}`);
+  }
+  assert.ok(cutoverSh.includes('--verify-only'));
+  assert.ok(cutoverSh.includes('PM2_HOME=/home/fuelapp/.pm2') || cutoverSh.includes('OLD_FUEL_PM2_HOME="${OLD_FUEL_PM2_HOME:-/home/fuelapp/.pm2}"'));
+});

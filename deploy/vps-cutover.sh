@@ -1,0 +1,658 @@
+#!/usr/bin/env bash
+# =============================================================================
+# WorkshopOne Unified VPS Cutover & Rehearsal Helper
+# Subcommands:
+#   preflight   Read-only inspection of live WorkshopOne, Fuel-System-V2, Nginx, and paths
+#   rehearsal   Zero-downtime Phase A online snapshot merge + parity check in /tmp
+#   cutover     Guarded Phase B-C production cutover with mandatory --verify-only gate
+#   rollback    60-second Phase D emergency rollback to original WorkshopOne + Fuel-System-V2
+# =============================================================================
+set -Eeuo pipefail
+
+UNIFIED_ROOT="${UNIFIED_ROOT:-/opt/workshopone-unified}"
+UNIFIED_APP="${UNIFIED_APP:-$UNIFIED_ROOT/app}"
+UNIFIED_PORT="${UNIFIED_PORT:-3400}"
+UNIFIED_DB="${UNIFIED_DB:-$UNIFIED_ROOT/data/workshopone_merged.db}"
+UNIFIED_UPLOADS="${UNIFIED_UPLOADS:-$UNIFIED_ROOT/uploads}"
+UNIFIED_BACKUPS="${UNIFIED_BACKUPS:-$UNIFIED_ROOT/backups}"
+UNIFIED_OUTSOURCING="${UNIFIED_OUTSOURCING:-$UNIFIED_APP/data/outsourcing}"
+UNIFIED_SERVICE="${UNIFIED_SERVICE:-workshopone-unified}"
+SERVICE_USER="${SERVICE_USER:-workshopone}"
+SERVICE_GROUP="${SERVICE_GROUP:-workshopone}"
+
+OLD_WO_ROOT="${OLD_WO_ROOT:-/opt/workshopone}"
+OLD_WO_APP="${OLD_WO_APP:-$OLD_WO_ROOT/app}"
+OLD_WO_SERVICE="${OLD_WO_SERVICE:-workshopone}"
+
+OLD_FUEL_ROOT="${OLD_FUEL_ROOT:-/var/www/fuelsystem}"
+OLD_FUEL_DB="${OLD_FUEL_DB:-$OLD_FUEL_ROOT/data/app.db}"
+OLD_FUEL_USER="${OLD_FUEL_USER:-fuelapp}"
+OLD_FUEL_PM2_HOME="${OLD_FUEL_PM2_HOME:-/home/fuelapp/.pm2}"
+OLD_FUEL_NPX="${OLD_FUEL_NPX:-/opt/node-24/bin/npx}"
+OLD_FUEL_PM2_SERVICE="${OLD_FUEL_PM2_SERVICE:-pm2-fuelapp}"
+
+NGINX_STORESDB="${NGINX_STORESDB:-/etc/nginx/sites-available/storesdb}"
+NGINX_STORESDB_ENABLED="${NGINX_STORESDB_ENABLED:-/etc/nginx/sites-enabled/storesdb}"
+NGINX_FUELSYSTEM="${NGINX_FUELSYSTEM:-/etc/nginx/sites-available/fuelsystem}"
+NGINX_FUELSYSTEM_ENABLED="${NGINX_FUELSYSTEM_ENABLED:-/etc/nginx/sites-enabled/fuelsystem}"
+
+PUBLIC_ORIGIN="${PUBLIC_ORIGIN:-https://storesdb.ec-workshops.online}"
+FUEL_REDIRECT_URL="${FUEL_REDIRECT_URL:-https://storesdb.ec-workshops.online/#/fuel}"
+NODE_BIN="${NODE_BIN:-/usr/bin/node}"
+
+AUTO_YES=0
+SKIP_BROADCAST=0
+BROADCAST_SECONDS=120
+FORCE_ENV=0
+KEEP_TMP=0
+
+TMP_DIR=""
+CUTOVER_BAK=""
+
+log()  { printf '[cutover] %s\n' "$*"; }
+warn() { printf '[cutover][WARN] %s\n' "$*" >&2; }
+die()  { printf '[cutover][ERROR] %s\n' "$*" >&2; exit 1; }
+
+cleanup_tmp() {
+  if [ -n "$TMP_DIR" ] && [ -d "$TMP_DIR" ] && [ "$KEEP_TMP" -eq 0 ]; then
+    rm -rf "$TMP_DIR" || true
+  fi
+}
+trap cleanup_tmp EXIT
+
+usage() {
+  cat <<'EOF'
+Usage:
+  sudo bash deploy/vps-cutover.sh <preflight|rehearsal|cutover|rollback> [options]
+
+Subcommands:
+  preflight   Read-only audit of live services, DB mode (single vs split), Fuel V2 DB, and Nginx.
+  rehearsal   Phase A (zero downtime): online sqlite3 .backup snapshots -> /tmp merge -> --verify-only.
+  cutover     Phases B-C (off-peak): broadcast -> stop old apps -> cold backup -> merge -> verify gate -> switch Nginx.
+  rollback    Phase D (emergency): stop unified service, restore previous Nginx configs, restart old apps.
+
+Options:
+  --yes              Skip interactive CUTOVER / ROLLBACK confirmation prompts
+  --skip-broadcast   Skip broadcasting 2-minute maintenance warning before stopping old apps
+  --wait <seconds>   Maintenance broadcast countdown before stopping services (default: 120)
+  --force-env        Overwrite /opt/workshopone-unified/app/.env cleanly from template
+  --keep-tmp         Keep /tmp rehearsal directory after rehearsal completes (for inspection)
+  -h, --help         Show this help
+EOF
+}
+
+require_root() {
+  if [ "${EUID:-$(id -u)}" -ne 0 ]; then
+    die "This command must run as root (use: sudo bash $0 ...)"
+  fi
+}
+
+require_cmd() {
+  local cmd="$1"
+  command -v "$cmd" >/dev/null 2>&1 || die "Required command '$cmd' not found on PATH."
+}
+
+# Safe .env value reader matching src/config.js (last occurrence wins, strips quotes & unquoted # comments)
+read_env_val() {
+  local file="$1"
+  local target_key="$2"
+  [ -r "$file" ] || return 0
+  awk -v k="$target_key" '
+    BEGIN { found = "" }
+    /^[[:space:]]*$/ || /^[[:space:]]*#/ { next }
+    {
+      idx = index($0, "=")
+      if (idx == 0) next
+      key = substr($0, 1, idx - 1)
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", key)
+      if (key != k) next
+      val = substr($0, idx + 1)
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", val)
+      first = substr(val, 1, 1)
+      last  = substr(val, length(val), 1)
+      if ((first == "\"" && last == "\"") || (first == "\x27" && last == "\x27")) {
+        val = substr(val, 2, length(val) - 2)
+      } else {
+        sub(/[[:space:]]+#.*/, "", val)
+        gsub(/[[:space:]]+$/, "", val)
+      }
+      found = val
+    }
+    END { printf "%s", found }
+  ' "$file"
+}
+
+resolve_rel_path() {
+  local base_dir="$1"
+  local raw_path="$2"
+  if [[ "$raw_path" == /* ]]; then
+    printf '%s' "$raw_path"
+  else
+    printf '%s' "$base_dir/$raw_path"
+  fi
+}
+
+# Populates globals:
+#   WO_DB_MODE ("single"|"split"), WO_SINGLE_DB, WO_CORE_DB, WO_CW_DB, WO_MTR_DB,
+#   OLD_WO_PORT, OLD_WO_UPLOADS, OLD_WO_OUTSOURCING
+detect_live_sources() {
+  local env_file="$OLD_WO_APP/.env"
+  local env_db=""
+  local env_multi=""
+  local env_up=""
+  local env_port=""
+
+  if [ -r "$env_file" ]; then
+    env_port="$(read_env_val "$env_file" "PORT")"
+    env_db="$(read_env_val "$env_file" "DB_PATH")"
+    env_multi="$(read_env_val "$env_file" "MULTIDB")"
+    env_up="$(read_env_val "$env_file" "UPLOAD_DIR")"
+  fi
+
+  OLD_WO_PORT="${env_port:-3000}"
+
+  local single_candidate="$OLD_WO_ROOT/data/workshopone.db"
+  if [ -n "$env_db" ]; then
+    single_candidate="$(resolve_rel_path "$OLD_WO_APP" "$env_db")"
+  fi
+
+  local data_dir
+  data_dir="$(dirname "$single_candidate")"
+  if [ ! -d "$data_dir" ] && [ -d "$OLD_WO_ROOT/data" ]; then
+    data_dir="$OLD_WO_ROOT/data"
+  fi
+
+  local core_candidate="$data_dir/core.db"
+  local cw_candidate="$data_dir/workshops/CW.db"
+  local mtr_candidate="$data_dir/workshops/MTR.db"
+
+  if [ "$env_multi" = "1" ] || { [ ! -f "$single_candidate" ] && [ -f "$core_candidate" ] && [ -f "$cw_candidate" ]; }; then
+    WO_DB_MODE="split"
+    WO_SINGLE_DB=""
+    WO_CORE_DB="$core_candidate"
+    WO_CW_DB="$cw_candidate"
+    if [ -f "$mtr_candidate" ]; then
+      WO_MTR_DB="$mtr_candidate"
+    else
+      WO_MTR_DB=""
+    fi
+  else
+    WO_DB_MODE="single"
+    WO_SINGLE_DB="$single_candidate"
+    WO_CORE_DB=""
+    WO_CW_DB=""
+    WO_MTR_DB=""
+  fi
+
+  if [ -n "$env_up" ]; then
+    OLD_WO_UPLOADS="$(resolve_rel_path "$OLD_WO_APP" "$env_up")"
+  elif [ -d "$OLD_WO_APP/uploads" ]; then
+    OLD_WO_UPLOADS="$OLD_WO_APP/uploads"
+  elif [ -d "$OLD_WO_ROOT/uploads" ]; then
+    OLD_WO_UPLOADS="$OLD_WO_ROOT/uploads"
+  else
+    OLD_WO_UPLOADS=""
+  fi
+
+  if [ -d "$OLD_WO_APP/data/outsourcing" ]; then
+    OLD_WO_OUTSOURCING="$OLD_WO_APP/data/outsourcing"
+  elif [ -d "$OLD_WO_ROOT/data/outsourcing" ]; then
+    OLD_WO_OUTSOURCING="$OLD_WO_ROOT/data/outsourcing"
+  else
+    OLD_WO_OUTSOURCING=""
+  fi
+}
+
+ensure_unified_dirs_and_env() {
+  id -u "$SERVICE_USER" >/dev/null 2>&1 || die "Service user '$SERVICE_USER' does not exist."
+  [ -d "$UNIFIED_APP" ] || die "Unified app directory missing: $UNIFIED_APP"
+  [ -x "$NODE_BIN" ] || die "Node binary missing or not executable: $NODE_BIN"
+
+  mkdir -p "$UNIFIED_ROOT/data" "$UNIFIED_BACKUPS" "$UNIFIED_UPLOADS" "$UNIFIED_OUTSOURCING"
+  chown -R "$SERVICE_USER:$SERVICE_GROUP" "$UNIFIED_ROOT"
+
+  if [ ! -f "$UNIFIED_APP/.env" ] || [ "$FORCE_ENV" -eq 1 ]; then
+    log "Writing clean $UNIFIED_APP/.env (PORT=$UNIFIED_PORT, DB_PATH=$UNIFIED_DB)"
+    sudo -u "$SERVICE_USER" tee "$UNIFIED_APP/.env" >/dev/null <<EOF
+PORT=$UNIFIED_PORT
+HOST=127.0.0.1
+NODE_ENV=production
+PUBLIC_ORIGIN=$PUBLIC_ORIGIN
+MULTIDB=0
+DB_PATH=$UNIFIED_DB
+UPLOAD_DIR=$UNIFIED_UPLOADS
+BACKUP_DIR=$UNIFIED_BACKUPS
+BACKUP_INTERVAL_MINUTES=30
+BACKUP_RETENTION=96
+EOF
+  fi
+
+  local resolved
+  resolved="$(sudo -u "$SERVICE_USER" "$NODE_BIN" -e 'const c=require("'"$UNIFIED_APP"'/src/config"); console.log(c.host + "|" + c.port + "|" + c.dbPath + "|" + c.uploadDir + "|" + c.backupDir);')"
+  local r_host r_port r_db
+  IFS='|' read -r r_host r_port r_db _ _ <<< "$resolved"
+  if [ "$r_host" != "127.0.0.1" ] || [ "$r_port" != "$UNIFIED_PORT" ] || [ "$r_db" != "$UNIFIED_DB" ]; then
+    die "Resolved .env mismatch ($resolved). Expected host=127.0.0.1, port=$UNIFIED_PORT, dbPath=$UNIFIED_DB. Re-run with --force-env."
+  fi
+  log "Verified unified .env resolution: $resolved"
+}
+
+check_unified_dependencies() {
+  [ -d "$UNIFIED_APP/node_modules/better-sqlite3" ] || die "Unified dependencies not installed. Run: sudo -u $SERVICE_USER bash -c 'cd $UNIFIED_APP && npm ci --omit=dev'"
+  sudo -u "$SERVICE_USER" "$NODE_BIN" -e 'require("'"$UNIFIED_APP"'/node_modules/better-sqlite3");' >/dev/null 2>&1 \
+    || die "better-sqlite3 failed to load under $NODE_BIN (ABI mismatch). Re-run: sudo -u $SERVICE_USER bash -c 'cd $UNIFIED_APP && npm ci --omit=dev'"
+}
+
+human_size() {
+  local f="$1"
+  if [ -f "$f" ]; then
+    du -h "$f" 2>/dev/null | cut -f1
+  else
+    printf 'MISSING'
+  fi
+}
+
+cmd_preflight() {
+  detect_live_sources
+  log "=== WorkshopOne Unified VPS Preflight Report ==="
+  log "Unified target dir:     $UNIFIED_APP (node_modules present: $([ -d "$UNIFIED_APP/node_modules" ] && echo yes || echo NO))"
+  log "Unified Node binary:    $NODE_BIN ($($NODE_BIN -v 2>/dev/null || echo 'missing'))"
+  log "WorkshopOne DB mode:    $WO_DB_MODE (live port=$OLD_WO_PORT)"
+  if [ "$WO_DB_MODE" = "single" ]; then
+    log "  WO single DB:         $WO_SINGLE_DB ($(human_size "$WO_SINGLE_DB"))"
+  else
+    log "  WO core DB:           $WO_CORE_DB ($(human_size "$WO_CORE_DB"))"
+    log "  WO CW DB:             $WO_CW_DB ($(human_size "$WO_CW_DB"))"
+    [ -n "$WO_MTR_DB" ] && log "  WO MTR DB:            $WO_MTR_DB ($(human_size "$WO_MTR_DB"))"
+  fi
+  log "  WO uploads dir:       ${OLD_WO_UPLOADS:-<none>}"
+  log "  WO outsourcing dir:   ${OLD_WO_OUTSOURCING:-<none>}"
+  log "Fuel-System-V2 DB:      $OLD_FUEL_DB ($(human_size "$OLD_FUEL_DB"))"
+  log "Systemd status:"
+  systemctl is-active "$OLD_WO_SERVICE" >/dev/null 2>&1 && log "  $OLD_WO_SERVICE: active" || log "  $OLD_WO_SERVICE: inactive"
+  systemctl is-active "$OLD_FUEL_PM2_SERVICE" >/dev/null 2>&1 && log "  $OLD_FUEL_PM2_SERVICE: active" || log "  $OLD_FUEL_PM2_SERVICE: inactive"
+  systemctl is-active "$UNIFIED_SERVICE" >/dev/null 2>&1 && log "  $UNIFIED_SERVICE: active" || log "  $UNIFIED_SERVICE: inactive"
+  if id -u "$OLD_FUEL_USER" >/dev/null 2>&1 && [ -x "$OLD_FUEL_NPX" ]; then
+    log "Fuel PM2 status (PM2_HOME=$OLD_FUEL_PM2_HOME):"
+    sudo -u "$OLD_FUEL_USER" PM2_HOME="$OLD_FUEL_PM2_HOME" "$OLD_FUEL_NPX" pm2 status 2>/dev/null || warn "Could not query PM2 under $OLD_FUEL_USER"
+  fi
+  log "Nginx site files:"
+  log "  storesdb:   $NGINX_STORESDB ($([ -f "$NGINX_STORESDB" ] && echo present || echo MISSING))"
+  log "  fuelsystem: $NGINX_FUELSYSTEM ($([ -f "$NGINX_FUELSYSTEM" ] && echo present || echo MISSING))"
+  log "Tools: sqlite3=$(command -v sqlite3 || echo MISSING), nginx=$(command -v nginx || echo MISSING)"
+  df -h /opt /var/www "$UNIFIED_ROOT" 2>/dev/null || df -h /opt
+}
+
+backup_sqlite_safe() {
+  local src="$1"
+  local dst="$2"
+  [ -f "$src" ] || die "Source SQLite DB not found: $src"
+  rm -f "$dst" "${dst}-wal" "${dst}-shm"
+  sqlite3 "$src" ".timeout 10000" ".backup $dst"
+  [ -f "$dst" ] || die "Failed to snapshot SQLite DB: $src -> $dst"
+}
+
+cmd_rehearsal() {
+  require_root
+  require_cmd sqlite3
+  require_cmd "$NODE_BIN"
+  detect_live_sources
+  ensure_unified_dirs_and_env
+  check_unified_dependencies
+
+  [ -f "$OLD_FUEL_DB" ] || die "Fuel V2 DB not found: $OLD_FUEL_DB"
+
+  TMP_DIR="$(mktemp -d /tmp/wo-rehearsal-XXXXXX)"
+  chmod 755 "$TMP_DIR"
+  log "Created isolated zero-downtime rehearsal workspace: $TMP_DIR"
+
+  local r_fuel="$TMP_DIR/rehearsal_fuel.db"
+  local r_merged="$TMP_DIR/rehearsal_merged.db"
+  local -a src_args=()
+
+  log "Taking safe online SQLite .backup snapshot of Fuel-System-V2..."
+  backup_sqlite_safe "$OLD_FUEL_DB" "$r_fuel"
+
+  if [ "$WO_DB_MODE" = "single" ]; then
+    local r_wo="$TMP_DIR/rehearsal_wo.db"
+    log "Taking safe online SQLite .backup snapshot of WorkshopOne ($WO_SINGLE_DB)..."
+    backup_sqlite_safe "$WO_SINGLE_DB" "$r_wo"
+    src_args+=(--wo-db "$r_wo")
+  else
+    local r_core="$TMP_DIR/rehearsal_core.db"
+    local r_cw="$TMP_DIR/rehearsal_cw.db"
+    log "Taking safe online SQLite .backup snapshots of split WorkshopOne DBs..."
+    backup_sqlite_safe "$WO_CORE_DB" "$r_core"
+    backup_sqlite_safe "$WO_CW_DB" "$r_cw"
+    src_args+=(--core-db "$r_core" --cw-db "$r_cw")
+    if [ -n "$WO_MTR_DB" ]; then
+      local r_mtr="$TMP_DIR/rehearsal_mtr.db"
+      backup_sqlite_safe "$WO_MTR_DB" "$r_mtr"
+      src_args+=(--mtr-db "$r_mtr")
+    fi
+  fi
+  src_args+=(--fuel-db "$r_fuel")
+
+  log "Running rehearsal --build-fresh merge in $TMP_DIR..."
+  "$NODE_BIN" "$UNIFIED_APP/scripts/vps_cutover_merge.js" \
+    --build-fresh \
+    "${src_args[@]}" \
+    --target-db "$r_merged"
+
+  log "Running mandatory --verify-only parity check on rehearsal DB..."
+  "$NODE_BIN" "$UNIFIED_APP/scripts/vps_cutover_merge.js" \
+    --verify-only \
+    "${src_args[@]}" \
+    --target-db "$r_merged"
+
+  log "REHEARSAL PASSED: readyForCutover=true with zero impact on live services."
+}
+
+confirm_phrase() {
+  local phrase="$1"
+  local label="$2"
+  if [ "$AUTO_YES" -eq 1 ]; then
+    return 0
+  fi
+  printf '\n[cutover] About to run: %s\n' "$label"
+  printf '[cutover] Type %s to continue: ' "$phrase"
+  local reply=""
+  read -r reply
+  [ "$reply" = "$phrase" ] || die "Confirmation aborted."
+}
+
+stop_old_services() {
+  if systemctl is-active "$OLD_WO_SERVICE" >/dev/null 2>&1; then
+    log "Stopping $OLD_WO_SERVICE (clean WAL checkpoint)..."
+    systemctl stop "$OLD_WO_SERVICE"
+  else
+    log "$OLD_WO_SERVICE is already stopped."
+  fi
+
+  if id -u "$OLD_FUEL_USER" >/dev/null 2>&1 && [ -x "$OLD_FUEL_NPX" ]; then
+    log "Stopping Fuel-System-V2 via PM2 (user=$OLD_FUEL_USER, PM2_HOME=$OLD_FUEL_PM2_HOME)..."
+    sudo -u "$OLD_FUEL_USER" PM2_HOME="$OLD_FUEL_PM2_HOME" "$OLD_FUEL_NPX" pm2 stop fuelsystem || warn "PM2 stop returned non-zero (process may already be stopped)"
+  fi
+  if systemctl is-active "$OLD_FUEL_PM2_SERVICE" >/dev/null 2>&1; then
+    log "Stopping systemd unit $OLD_FUEL_PM2_SERVICE..."
+    systemctl stop "$OLD_FUEL_PM2_SERVICE"
+  fi
+}
+
+write_fuelsystem_redirect_nginx() {
+  local src_conf="$NGINX_FUELSYSTEM"
+  local tmp_out
+  tmp_out="$(mktemp)"
+
+  if [ -f "$src_conf" ]; then
+    local ssl_cert ssl_key
+    ssl_cert="$(awk '/^[[:space:]]*ssl_certificate[[:space:]]+/{sub(/;/,"",$2); print $2; exit}' "$src_conf" || true)"
+    ssl_key="$(awk '/^[[:space:]]*ssl_certificate_key[[:space:]]+/{sub(/;/,"",$2); print $2; exit}' "$src_conf" || true)"
+
+    if [ -n "$ssl_cert" ] && [ -n "$ssl_key" ] && [ -f "$ssl_cert" ] && [ -f "$ssl_key" ]; then
+      log "Preserving active origin TLS certs in $NGINX_FUELSYSTEM redirect ($ssl_cert)"
+      cat >"$tmp_out" <<EOF
+# fuelsystem.ec-workshops.online -> Unified Fuel Operations redirect (HTTP + HTTPS)
+server {
+    listen 80;
+    listen [::]:80;
+    server_name fuelsystem.ec-workshops.online;
+
+    location ^~ /.well-known/acme-challenge/ {
+        root /var/www/html;
+        default_type "text/plain";
+    }
+
+    location / {
+        return 302 $FUEL_REDIRECT_URL;
+    }
+}
+
+server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name fuelsystem.ec-workshops.online;
+
+    ssl_certificate     $ssl_cert;
+    ssl_certificate_key $ssl_key;
+    ssl_protocols TLSv1.2 TLSv1.3;
+
+    location / {
+        return 302 $FUEL_REDIRECT_URL;
+    }
+}
+EOF
+      install -m 644 "$tmp_out" "$NGINX_FUELSYSTEM"
+      rm -f "$tmp_out"
+      ln -sf "$NGINX_FUELSYSTEM" "$NGINX_FUELSYSTEM_ENABLED"
+      return 0
+    fi
+  fi
+
+  rm -f "$tmp_out"
+  cp "$UNIFIED_APP/deploy/nginx-fuelsystem-redirect.conf" "$NGINX_FUELSYSTEM"
+  chmod 644 "$NGINX_FUELSYSTEM"
+  ln -sf "$NGINX_FUELSYSTEM" "$NGINX_FUELSYSTEM_ENABLED"
+}
+
+restore_nginx_from_backup() {
+  local bak_nginx="$1"
+  [ -d "$bak_nginx" ] || return 0
+  log "Restoring Nginx site configs from $bak_nginx..."
+  [ -f "$bak_nginx/storesdb" ] && cp "$bak_nginx/storesdb" "$NGINX_STORESDB"
+  [ -f "$bak_nginx/fuelsystem" ] && cp "$bak_nginx/fuelsystem" "$NGINX_FUELSYSTEM"
+}
+
+cmd_cutover() {
+  require_root
+  require_cmd sqlite3
+  require_cmd nginx
+  require_cmd curl
+  require_cmd "$NODE_BIN"
+
+  detect_live_sources
+  ensure_unified_dirs_and_env
+  check_unified_dependencies
+  [ -f "$OLD_FUEL_DB" ] || die "Fuel V2 DB not found: $OLD_FUEL_DB"
+
+  confirm_phrase "CUTOVER" "Stop old WorkshopOne ($OLD_WO_SERVICE) + Fuel V2 (PM2), archive cold snapshots, merge into $UNIFIED_DB, verify parity, and switch live Nginx traffic to :$UNIFIED_PORT"
+
+  # Step 1: Optional maintenance broadcast
+  if [ "$SKIP_BROADCAST" -eq 0 ]; then
+    local bscript=""
+    if [ -f "$OLD_WO_APP/scripts/broadcast_maintenance.js" ]; then
+      bscript="$OLD_WO_APP/scripts/broadcast_maintenance.js"
+    elif [ -f "$UNIFIED_APP/scripts/broadcast_maintenance.js" ]; then
+      bscript="$UNIFIED_APP/scripts/broadcast_maintenance.js"
+    fi
+    if [ -n "$bscript" ] && systemctl is-active "$OLD_WO_SERVICE" >/dev/null 2>&1; then
+      log "Broadcasting ${BROADCAST_SECONDS}s maintenance notice on 127.0.0.1:$OLD_WO_PORT..."
+      PORT="$OLD_WO_PORT" "$NODE_BIN" "$bscript" "$BROADCAST_SECONDS" \
+        "System upgrading to unified WorkshopOne + Fuel Suite. Please save and finish your entry now." --no-wait \
+        || warn "Maintenance broadcast endpoint unavailable on :$OLD_WO_PORT; waiting manually..."
+      sleep "$BROADCAST_SECONDS"
+    fi
+  fi
+
+  # Step 2: Stop both old services cleanly so WAL logs flush completely
+  stop_old_services
+
+  # Step 3: Archive frozen pre-cutover cold snapshots + Nginx backups
+  local stamp
+  stamp="$(date +%Y%m%d-%H%M%S)"
+  CUTOVER_BAK="/opt/backups/pre-cutover-$stamp"
+  mkdir -p /opt/backups && chmod 0755 /opt/backups
+  mkdir -p "$CUTOVER_BAK/nginx"
+  ln -sfn "$CUTOVER_BAK" /opt/backups/pre-cutover-latest
+
+  log "Archiving frozen cold SQLite snapshots into $CUTOVER_BAK..."
+  chown "root:$SERVICE_GROUP" "$CUTOVER_BAK"
+  chmod 0750 "$CUTOVER_BAK"
+  backup_sqlite_safe "$OLD_FUEL_DB" "$CUTOVER_BAK/fuelsystem_app.db"
+  local -a merge_args=()
+  if [ "$WO_DB_MODE" = "single" ]; then
+    backup_sqlite_safe "$WO_SINGLE_DB" "$CUTOVER_BAK/workshopone.db"
+    merge_args+=(--wo-db "$CUTOVER_BAK/workshopone.db")
+  else
+    backup_sqlite_safe "$WO_CORE_DB" "$CUTOVER_BAK/core.db"
+    backup_sqlite_safe "$WO_CW_DB" "$CUTOVER_BAK/CW.db"
+    merge_args+=(--core-db "$CUTOVER_BAK/core.db" --cw-db "$CUTOVER_BAK/CW.db")
+    if [ -n "$WO_MTR_DB" ]; then
+      backup_sqlite_safe "$WO_MTR_DB" "$CUTOVER_BAK/MTR.db"
+      merge_args+=(--mtr-db "$CUTOVER_BAK/MTR.db")
+    fi
+  fi
+  chown "root:$SERVICE_GROUP" "$CUTOVER_BAK"/*.db
+  chmod 0640 "$CUTOVER_BAK"/*.db
+  merge_args+=(--fuel-db "$CUTOVER_BAK/fuelsystem_app.db")
+
+  [ -f "$NGINX_STORESDB" ] && cp "$NGINX_STORESDB" "$CUTOVER_BAK/nginx/storesdb"
+  [ -f "$NGINX_FUELSYSTEM" ] && cp "$NGINX_FUELSYSTEM" "$CUTOVER_BAK/nginx/fuelsystem"
+
+  # Step 4: Execute final production merge & attachment sync
+  local -a file_args=()
+  if [ -n "$OLD_WO_UPLOADS" ] && [ -d "$OLD_WO_UPLOADS" ]; then
+    file_args+=(--wo-uploads "$OLD_WO_UPLOADS" --target-uploads "$UNIFIED_UPLOADS")
+  fi
+  if [ -n "$OLD_WO_OUTSOURCING" ] && [ -d "$OLD_WO_OUTSOURCING" ]; then
+    file_args+=(--wo-outsourcing "$OLD_WO_OUTSOURCING" --target-outsourcing "$UNIFIED_OUTSOURCING")
+  fi
+
+  log "Running final production --build-fresh merge into $UNIFIED_DB..."
+  sudo -u "$SERVICE_USER" "$NODE_BIN" "$UNIFIED_APP/scripts/vps_cutover_merge.js" \
+    --build-fresh \
+    "${merge_args[@]}" \
+    --target-db "$UNIFIED_DB" \
+    "${file_args[@]}"
+
+  # Step 5: Mandatory parity gate before touching services or Nginx
+  log "Enforcing mandatory --verify-only parity check..."
+  if ! sudo -u "$SERVICE_USER" "$NODE_BIN" "$UNIFIED_APP/scripts/vps_cutover_merge.js" \
+    --verify-only \
+    "${merge_args[@]}" \
+    --target-db "$UNIFIED_DB"; then
+    die "Parity check failed! Unified service and Nginx were NOT switched. Run 'sudo bash $0 rollback' to restore old services."
+  fi
+
+  # Step 6: Install & start unified systemd service and wait for /api/health
+  log "Installing $UNIFIED_SERVICE systemd unit and starting server on 127.0.0.1:$UNIFIED_PORT..."
+  cp "$UNIFIED_APP/deploy/workshopone-unified.service" "/etc/systemd/system/${UNIFIED_SERVICE}.service"
+  chmod 644 "/etc/systemd/system/${UNIFIED_SERVICE}.service"
+  systemctl daemon-reload
+  systemctl enable --now "$UNIFIED_SERVICE"
+
+  local healthy=0
+  for _ in $(seq 1 30); do
+    if curl -fsS "http://127.0.0.1:$UNIFIED_PORT/api/health" >/dev/null 2>&1; then
+      healthy=1
+      break
+    fi
+    sleep 1
+  done
+  if [ "$healthy" -ne 1 ]; then
+    journalctl -u "$UNIFIED_SERVICE" -n 40 --no-pager >&2 || true
+    die "Unified service failed health check on http://127.0.0.1:$UNIFIED_PORT/api/health. Nginx NOT modified."
+  fi
+  log "Unified health check passed on http://127.0.0.1:$UNIFIED_PORT/api/health"
+
+  # Step 7: Switch Nginx traffic safely (with automatic backup restore if nginx -t fails)
+  if [ -f "$NGINX_STORESDB" ] && grep -Eq '127\.0\.0\.1:(3000|1929)' "$NGINX_STORESDB"; then
+    log "Updating $NGINX_STORESDB proxy_pass to 127.0.0.1:$UNIFIED_PORT..."
+    sed -E -i "s|127\.0\.0\.1:(3000|1929)|127.0.0.1:$UNIFIED_PORT|g" "$NGINX_STORESDB"
+  else
+    log "Installing $UNIFIED_APP/deploy/nginx-storesdb-unified.conf to $NGINX_STORESDB..."
+    cp "$UNIFIED_APP/deploy/nginx-storesdb-unified.conf" "$NGINX_STORESDB"
+    chmod 644 "$NGINX_STORESDB"
+    ln -sf "$NGINX_STORESDB" "$NGINX_STORESDB_ENABLED"
+  fi
+
+  log "Configuring $NGINX_FUELSYSTEM temporary 302 redirect to $FUEL_REDIRECT_URL..."
+  write_fuelsystem_redirect_nginx
+
+  if ! nginx -t; then
+    warn "nginx -t failed! Restoring previous Nginx site configs..."
+    restore_nginx_from_backup "$CUTOVER_BAK/nginx"
+    die "Nginx configuration test failed; previous Nginx configs restored."
+  fi
+  systemctl reload nginx
+
+  # Step 8: Disable old auto-start services while keeping files cold on disk
+  systemctl disable "$OLD_WO_SERVICE" 2>/dev/null || true
+  systemctl disable "$OLD_FUEL_PM2_SERVICE" 2>/dev/null || true
+
+  # Step 9: Smoke checks
+  log "Running final local & Host-header smoke checks..."
+  curl -fsS "http://127.0.0.1:$UNIFIED_PORT/api/health" && echo ""
+  curl -sI -H "Host: fuelsystem.ec-workshops.online" http://127.0.0.1/ | head -n 5 || true
+  log "CUTOVER COMPLETE! Cold backups preserved at: $CUTOVER_BAK"
+}
+
+cmd_rollback() {
+  require_root
+  require_cmd nginx
+
+  local bak_dir="/opt/backups/pre-cutover-latest"
+  if [ ! -d "$bak_dir" ]; then
+    bak_dir="$(find /opt/backups -maxdepth 1 -type d -name 'pre-cutover-*' | sort | tail -n 1 || true)"
+  fi
+
+  confirm_phrase "ROLLBACK" "Stop $UNIFIED_SERVICE, restore Nginx site configs from ${bak_dir:-<none>}, and restart $OLD_WO_SERVICE + Fuel-System-V2"
+
+  log "Stopping and disabling $UNIFIED_SERVICE..."
+  systemctl stop "$UNIFIED_SERVICE" 2>/dev/null || true
+  systemctl disable "$UNIFIED_SERVICE" 2>/dev/null || true
+
+  if [ -n "$bak_dir" ] && [ -d "$bak_dir/nginx" ]; then
+    restore_nginx_from_backup "$bak_dir/nginx"
+    nginx -t && systemctl reload nginx
+  else
+    warn "No saved Nginx backup directory found; verify $NGINX_STORESDB and $NGINX_FUELSYSTEM manually."
+  fi
+
+  log "Re-enabling and starting $OLD_WO_SERVICE..."
+  systemctl enable --now "$OLD_WO_SERVICE"
+
+  if systemctl list-unit-files | grep -q "^${OLD_FUEL_PM2_SERVICE}.service"; then
+    systemctl enable --now "$OLD_FUEL_PM2_SERVICE" || true
+  fi
+  if id -u "$OLD_FUEL_USER" >/dev/null 2>&1 && [ -x "$OLD_FUEL_NPX" ]; then
+    log "Starting Fuel-System-V2 via PM2 under $OLD_FUEL_USER..."
+    sudo -u "$OLD_FUEL_USER" PM2_HOME="$OLD_FUEL_PM2_HOME" "$OLD_FUEL_NPX" pm2 start fuelsystem || warn "PM2 start returned non-zero"
+  fi
+
+  log "ROLLBACK COMPLETE."
+}
+
+# Parse CLI arguments
+SUBCOMMAND="${1:-}"
+[ -n "$SUBCOMMAND" ] || { usage; exit 1; }
+if [ "$SUBCOMMAND" = "-h" ] || [ "$SUBCOMMAND" = "--help" ]; then
+  usage
+  exit 0
+fi
+shift
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --yes) AUTO_YES=1 ;;
+    --skip-broadcast) SKIP_BROADCAST=1 ;;
+    --wait)
+      shift
+      [ "$#" -gt 0 ] || die "--wait requires seconds argument"
+      BROADCAST_SECONDS="$1"
+      ;;
+    --force-env) FORCE_ENV=1 ;;
+    --keep-tmp) KEEP_TMP=1 ;;
+    -h|--help) usage; exit 0 ;;
+    *) die "Unknown option: $1" ;;
+  esac
+  shift
+done
+
+case "$SUBCOMMAND" in
+  preflight) cmd_preflight ;;
+  rehearsal) cmd_rehearsal ;;
+  cutover)   cmd_cutover ;;
+  rollback)  cmd_rollback ;;
+  *) usage; die "Unknown subcommand: $SUBCOMMAND" ;;
+esac

@@ -1,0 +1,35 @@
+# systemd unit for WorkshopOne Unified (Workshop, Stores, Fuel & Fleet Master System)
+# Install:
+#   sudo cp /opt/workshopone-unified/app/deploy/workshopone-unified.service /etc/systemd/system/workshopone-unified.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now workshopone-unified
+# Inspect:
+#   sudo systemctl status workshopone-unified
+#   sudo journalctl -u workshopone-unified -f
+
+[Unit]
+Description=WorkshopOne Unified — Workshop, Stores, Fuel & Fleet Master System
+After=network.target
+
+[Service]
+Type=simple
+User=workshopone
+Group=workshopone
+WorkingDirectory=/opt/workshopone-unified/app
+ExecStart=/usr/bin/node src/server.js
+Restart=always
+RestartSec=3
+Environment=NODE_ENV=production
+Environment=TZ=Asia/Colombo
+
+# IMPORTANT:
+# 1. Do NOT define HOST, PORT, or DB_PATH in this systemd unit.
+#    /opt/workshopone-unified/app/.env owns HOST=127.0.0.1, PORT=3400, MULTIDB=0,
+#    DB_PATH=/opt/workshopone-unified/data/workshopone_merged.db, UPLOAD_DIR,
+#    BACKUP_DIR, and PUBLIC_ORIGIN=https://storesdb.ec-workshops.online.
+#    Process environment variables override .env in src/config.js.
+# 2. ExecStart must use the same Node.js binary used during `npm ci --omit=dev`
+#    so the compiled better-sqlite3 native module ABI matches.
+
+[Install]
+WantedBy=multi-user.target
