@@ -119,7 +119,11 @@ function sessionEnded(message, { logout = false } = {}) {
   if (_sessionEnding) return;
   _sessionEnding = true;
   const w = document.getElementById('idle-warn'); if (w) w.remove();
-  const done = () => { live('disconnect'); ME = null; location.hash = ''; _sessionEnding = false; renderLogin(message); };
+  const done = () => {
+    live('disconnect'); ME = null; location.hash = ''; _sessionEnding = false;
+    if (window.WONav && typeof window.WONav.resetShell === 'function') window.WONav.resetShell();
+    renderLogin(message);
+  };
   if (!logout) return done();
   const base = (window.WORKSHOPONE_API_BASE || '').replace(/\/+$/, '');
   fetch(base + '/api/auth/logout', { method: 'POST', credentials: 'include' }).catch(() => {}).finally(done);
@@ -654,11 +658,50 @@ const LIVE_ENTITY_ROUTES = {
 };
 const LIVE_AGG_ROUTES = ['dashboard', 'attention']; // aggregate views refresh on ANY change
 let _liveWired = false;
+let _pendingLiveRefresh = false;
+let _deferredLiveTimer = null;
+let _modalOpening = 0;
+function isLiveRefreshBlocked() {
+  if (_modalOpening > 0 || document.querySelector('.modal-bg')) return true;
+  if (/^#\/(?:services|filters)\/(?:new|\d+\/edit)\b/.test(location.hash)) return true;
+  const ae = document.activeElement;
+  const content = qs('#content');
+  if (ae && content && content.contains(ae) && typeof ae.matches === 'function'
+      && ae.matches('input, textarea, select, [contenteditable="true"]')) {
+    return true;
+  }
+  return false;
+}
+function scheduleDeferredLiveRefresh() {
+  if (!_pendingLiveRefresh) return;
+  clearTimeout(_deferredLiveTimer);
+  _deferredLiveTimer = setTimeout(() => {
+    if (!_pendingLiveRefresh || !ME || isScreenLocked || isLiveRefreshBlocked()) return;
+    _pendingLiveRefresh = false;
+    render();
+  }, 120);
+}
+async function withModalOpening(fn) {
+  _modalOpening++;
+  try { return await fn(); }
+  finally { _modalOpening = Math.max(0, _modalOpening - 1); }
+}
 function wireLiveUpdates() {
   if (_liveWired || !window.LiveERP) return;
   _liveWired = true;
   let deb;
-  const refresh = () => { clearTimeout(deb); deb = setTimeout(() => { if (ME) render(); }, 300); };
+  const refresh = () => {
+    clearTimeout(deb);
+    deb = setTimeout(() => {
+      if (!ME || isScreenLocked) return;
+      if (isLiveRefreshBlocked()) {
+        _pendingLiveRefresh = true;
+        return;
+      }
+      _pendingLiveRefresh = false;
+      render();
+    }, 300);
+  };
   const curRoute = () => location.hash.replace('#/', '').split('?')[0].split('/')[0] || 'dashboard';
   LiveERP.on('data_changed', (p) => {
     const cur = curRoute();
@@ -667,7 +710,7 @@ function wireLiveUpdates() {
   LiveERP.on('maintenance_alert', (d) => {
     showMaintenanceBanner(d);
   });
-  LiveERP.on('connect', () => { if (ME) render(); }); // reconnect catch-up — never leave a stale view
+  LiveERP.on('connect', () => { if (ME) refresh(); }); // reconnect catch-up — never leave a stale view
 }
 
 function showMaintenanceBanner(d) {
@@ -973,7 +1016,7 @@ function modal(title, bodyHtml, onMount, opts = {}) {
     ? ''
     : '<button type="button" class="sm modal-x" aria-label="Close" title="Close" style="font-size:14px;line-height:1;padding:3px 8px">✕</button>';
   bg.innerHTML = `<div class="modal${opts.wide ? ' wide' : ''}"><h2 style="display:flex;align-items:center;justify-content:space-between;gap:10px"><span>${esc(title)}</span>${closeBtn}</h2><div class="mbody">${bodyHtml}</div></div>`;
-  const close = () => bg.remove();
+  const close = () => { bg.remove(); scheduleDeferredLiveRefresh(); };
   if (!opts.persistent) {
     bg.addEventListener('click', (e) => { if (e.target === bg) close(); });
     const xBtn = qs('.modal-x', bg);
@@ -1034,6 +1077,7 @@ function formData(root) {
 const NAV = [
   ['master-dashboard', '⚡', 'Master Cockpit'],
   ['dashboard', '📊', 'Dashboard'],
+  ['transport-fuel', '🚛', 'Transport Fuel & Chart'],
   ['fuel', '⛽', 'Fuel Operations'],
   ['vehicle-costing', '💰', 'Final Vehicle Costing P&L'],
   ['jobs', '🔧', 'Job Cards'],
@@ -1070,7 +1114,7 @@ const NAV = [
 // Which permission module governs each nav item's visibility (dashboard always on).
 const NAV_MODULE = {
   'master-dashboard': 'master_dashboard',
-  fuel: 'fuel', 'fuel-tanks': 'fuel_tanks', 'fuel-readings': 'fuel_readings', 'fuel-prices': 'fuel_prices', 'fuel-reports': 'fuel_reports', 'fuel-alerts': 'fuel_alerts',
+  'transport-fuel': 'fuel_transport', fuel: 'fuel', 'fuel-tanks': 'fuel_tanks', 'fuel-readings': 'fuel_readings', 'fuel-prices': 'fuel_prices', 'fuel-reports': 'fuel_reports', 'fuel-alerts': 'fuel_alerts',
   'vehicle-costing': 'costing', 'hire-billing': 'hire', 'fleet-profitability': 'finance',
   assets: 'assets', vehicledocuments: 'vehicle_docs', jobs: 'jobs', jobrequests: 'jobrequests', field: 'field', operations: 'operations', dailywork: 'dailywork', 'mechanics-kpi': 'dailywork', services: 'filters', lubecapacities: 'lubricants',
   labour: 'labour', stores: 'stores', tools: 'tools', stocktake: 'stores', stockcockpit: 'stores', generalstock: 'stores', oil: 'oil', batteries: 'batteries', filters: 'filters', filterstock: 'filters',
@@ -1084,15 +1128,16 @@ const NAV_MODULE = {
 };
 function navVisible(n) {
   if (n[3] === 'admin') return canDo('access.manage', 'users.manage', 'audit.logs.view');
-  if (n[0] === 'dashboard') return true;
+  if (n[0] === 'dashboard') return isAdmin() || canView('dashboard') || canDo('dashboard.view');
   if (n[0] === 'master-dashboard') return isAdmin() || canView('master_dashboard') || canDo('master_dashboard.view');
   if (n[0] === 'vehicle-costing') return isAdmin() || canView('costing') || canDo('costing.view');
-  if (n[0] === 'fuel') return isAdmin() || canView('fuel') || canDo('fuel.view');
-  if (n[0] === 'fuel-tanks') return isAdmin() || canView('fuel_tanks') || canView('fuel') || canDo('fuel.tanks.view');
-  if (n[0] === 'fuel-readings') return isAdmin() || canView('fuel_readings') || canView('fuel') || canDo('fuel.readings.view');
-  if (n[0] === 'fuel-prices') return isAdmin() || canView('fuel_prices') || canView('fuel') || canDo('fuel.prices.view');
-  if (n[0] === 'fuel-reports') return isAdmin() || canView('fuel_reports') || canView('fuel') || canDo('fuel.reports.view');
-  if (n[0] === 'fuel-alerts') return isAdmin() || canView('fuel_alerts') || canView('fuel') || canDo('fuel.alerts.view');
+  if (n[0] === 'transport-fuel') return isAdmin() || (canView('fuel_transport') && canDo('fuel.transport.view', 'fuel.transport.request'));
+  if (n[0] === 'fuel') return isAdmin() || (canView('fuel') && canDo('fuel.view', 'fuel.console.view', 'fuel.issue'));
+  if (n[0] === 'fuel-tanks') return isAdmin() || (canView('fuel_tanks') && canDo('fuel.tanks.view', 'fuel.tanks.manage'));
+  if (n[0] === 'fuel-readings') return isAdmin() || (canView('fuel_readings') && canDo('fuel.readings.view', 'fuel.readings.record'));
+  if (n[0] === 'fuel-prices') return isAdmin() || (canView('fuel_prices') && canDo('fuel.prices.view', 'fuel.prices.manage'));
+  if (n[0] === 'fuel-reports') return isAdmin() || (canView('fuel_reports') && canDo('fuel.reports.view'));
+  if (n[0] === 'fuel-alerts') return isAdmin() || (canView('fuel_alerts') && canDo('fuel.alerts.view'));
   if (n[0] === 'hire-billing') return isAdmin() || canView('hire') || canDo('hire.billing.view');
   if (n[0] === 'fleet-profitability') return isAdmin() || canView('finance') || canView('costing') || canDo('fleet.profitability.view');
   if (n[0] === 'mechanics-kpi') return canView('dailywork') || canView('labour') || canView('reports');
@@ -1105,16 +1150,44 @@ function navVisible(n) {
   return !m || canView(m);
 }
 
-// Sidebar grouping — headings shown above each cluster (a group with no visible item is hidden).
-const NAV_GROUP_ORDER = ['Operations', 'Inventory', 'Procurement', 'Fleet', 'Analysis', 'Admin'];
+function defaultHomeHash() {
+  if (ME && ME.fuelScope && ME.fuelScope.isPumpOnly) return '#/fuel?tab=site-console';
+  if (ME && ME.fuelScope && ME.fuelScope.isRequesterOnly) return '#/transport-fuel';
+  const dashNav = NAV.find((x) => x[0] === 'dashboard');
+  if (dashNav && navVisible(dashNav)) return '#/dashboard';
+  const first = NAV.find((x) => navVisible(x));
+  return first ? `#/${first[0]}` : '#/dashboard';
+}
+
+// Sidebar grouping — domain-aligned collapsible clusters (groups with no visible items are hidden).
+const NAV_GROUP_ORDER = [
+  'Overview',
+  'Workshop & Maintenance',
+  'Fuel Management',
+  'Stores & Procurement',
+  'Fleet & Master Data',
+  'Finance & Costing',
+  'Reports & Hygiene',
+  'Administration',
+];
 const NAV_GROUP = {
-  'master-dashboard': 'Operations', dashboard: 'Operations', fuel: 'Operations', 'fuel-readings': 'Operations', jobs: 'Operations', jobrequests: 'Operations', field: 'Operations', operations: 'Operations', dailywork: 'Operations', 'mechanics-kpi': 'Operations', services: 'Operations', lubecapacities: 'Operations',
-  stores: 'Inventory', 'fuel-tanks': 'Inventory', 'fuel-prices': 'Inventory', tools: 'Inventory', stocktake: 'Inventory',
-  purchasing: 'Procurement', tbrequests: 'Procurement',
-  assets: 'Fleet', 'vehicle-costing': 'Fleet', 'hire-billing': 'Fleet', vehicledocuments: 'Fleet', serviceplan: 'Fleet',
-  reports: 'Analysis', 'fuel-reports': 'Analysis', 'fuel-alerts': 'Analysis', 'fleet-profitability': 'Analysis', attention: 'Analysis', progress: 'Analysis', teardown: 'Analysis', tyrebattery: 'Analysis', aliases: 'Analysis', projects: 'Analysis', labour: 'Analysis',
-  access: 'Admin',
+  'master-dashboard': 'Overview', dashboard: 'Overview', attention: 'Overview', progress: 'Overview',
+  jobs: 'Workshop & Maintenance', jobrequests: 'Workshop & Maintenance', field: 'Workshop & Maintenance', operations: 'Workshop & Maintenance', dailywork: 'Workshop & Maintenance', 'mechanics-kpi': 'Workshop & Maintenance', mechanicskpi: 'Workshop & Maintenance', jobreview: 'Workshop & Maintenance', serviceplan: 'Workshop & Maintenance', services: 'Workshop & Maintenance', lubecapacities: 'Workshop & Maintenance',
+  fuel: 'Fuel Management', 'transport-fuel': 'Fuel Management', 'fuel-readings': 'Fuel Management', 'fuel-tanks': 'Fuel Management', 'fuel-prices': 'Fuel Management', 'fuel-reports': 'Fuel Management', 'fuel-alerts': 'Fuel Management',
+  stores: 'Stores & Procurement', tools: 'Stores & Procurement', stocktake: 'Stores & Procurement', stockcockpit: 'Stores & Procurement', generalstock: 'Stores & Procurement', oil: 'Stores & Procurement', batteries: 'Stores & Procurement', filters: 'Stores & Procurement', filterstock: 'Stores & Procurement', stockissues: 'Stores & Procurement', matreq: 'Stores & Procurement', purchasing: 'Stores & Procurement', tbrequests: 'Stores & Procurement', tyrebattery: 'Stores & Procurement',
+  assets: 'Fleet & Master Data', vehicledocuments: 'Fleet & Master Data', projects: 'Fleet & Master Data', labour: 'Fleet & Master Data',
+  'fleet-profitability': 'Finance & Costing', 'vehicle-costing': 'Finance & Costing', 'hire-billing': 'Finance & Costing', hire: 'Finance & Costing', teardown: 'Finance & Costing',
+  reports: 'Reports & Hygiene', aliases: 'Reports & Hygiene',
+  access: 'Administration', auditlogs: 'Administration', users: 'Administration', workshops: 'Administration',
 };
+if (typeof window !== 'undefined') {
+  window.NAV = NAV;
+  window.NAV_MODULE = NAV_MODULE;
+  window.NAV_GROUP_ORDER = NAV_GROUP_ORDER;
+  window.NAV_GROUP = NAV_GROUP;
+  window.navVisible = navVisible;
+  window.defaultHomeHash = defaultHomeHash;
+}
 
 async function renderStandInBanner() {
   const el = qs('#standin-banner');
@@ -1459,6 +1532,7 @@ async function openStoreLocationSwitcherModal() {
           try { localStorage.setItem('wo_active_store_id', String(sid)); } catch (_) {}
           const topbarBadgeText = qs('#topbar_site_name');
           if (topbarBadgeText) topbarBadgeText.textContent = sname;
+          if (window.WONav && typeof window.WONav.syncStoreLabel === 'function') window.WONav.syncStoreLabel(sname);
           toast(`Active store context switched to ${sname}`);
           close();
           render();
@@ -1470,12 +1544,32 @@ async function openStoreLocationSwitcherModal() {
   });
 }
 
-function renderShell() {
-  const route = (location.hash.replace('#/', '').split('?')[0].split('/')[0]) || 'dashboard';
+function changePasswordModal() {
+  modal('Change password', `
+    <p class="muted">${esc(passwordHint())} Other devices signed in to your account will be signed out.</p>
+    ${field('Current password', 'current_password', { type: 'password' })}
+    ${field('New password', 'new_password', { type: 'password' })}
+    <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Update</button></div>`,
+    (body, close) => {
+      qs('#s', body).onclick = async () => {
+        try { await api('/auth/change-password', { method: 'POST', body: formData(body) }); toast('Password updated'); close(); }
+        catch (e) { toast(e.message, 'err'); }
+      };
+    });
+}
+
+function renderShell(routeOverride, rawHashOverride, detailPartsOverride) {
+  const rawHash = rawHashOverride || location.hash || '';
+  const parts = rawHash.replace('#/', '').split('?')[0].split('/');
+  const route = routeOverride || parts[0] || 'dashboard';
+  if (window.WONav && typeof window.WONav.syncShell === 'function') {
+    window.WONav.syncShell(route, rawHash, detailPartsOverride || parts.slice(1));
+    return;
+  }
   const link = (n, i) => `<a href="${n[4] || '#/' + n[0]}" class="${!n[4] && route === n[0] ? 'active' : ''}"><span class="ico">${n[1]}</span>${n[2]}</a>`;
   let i = 0;
   const nav = NAV_GROUP_ORDER.map((g) => {
-    const items = NAV.filter((n) => (NAV_GROUP[n[0]] || 'Analysis') === g && navVisible(n));
+    const items = NAV.filter((n) => (NAV_GROUP[n[0]] || 'Reports & Hygiene') === g && navVisible(n));
     return items.length ? `<div class="nav-group">${esc(g)}</div>` + items.map((n) => link(n, i++)).join('') : '';
   }).join('');
 
@@ -1611,12 +1705,7 @@ function renderShell() {
   if (btnPw) {
     btnPw.onclick = () => {
       if (pop) pop.style.display = 'none';
-      modal('Change password', `
-        <p class="muted">${esc(passwordHint())} Other devices signed in to your account will be signed out.</p>
-        ${field('Current password', 'current_password', { type: 'password' })}
-        ${field('New password', 'new_password', { type: 'password' })}
-        <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Update</button></div>`,
-        (body, close) => { qs('#s', body).onclick = async () => { try { await api('/auth/change-password', { method: 'POST', body: formData(body) }); toast('Password updated'); close(); } catch (e) { toast(e.message, 'err'); } }; });
+      changePasswordModal();
     };
   }
   const btnSig = qs('#pop_sig');
@@ -1870,6 +1959,9 @@ function setupLiveNotifications() {
     clearTimeout(_notifState.refreshTimer);
     _notifState.refreshTimer = setTimeout(() => {
       refreshNotifications({ showToastOnNew: true });
+      if (window.WONav && typeof window.WONav.scheduleBadgeRefresh === 'function') {
+        window.WONav.scheduleBadgeRefresh();
+      }
     }, 650);
   };
 
@@ -1885,6 +1977,36 @@ function setupLiveNotifications() {
   }, 45000);
 }
 
+if (typeof window !== 'undefined') {
+  window.woShellBridge = {
+    getMe: () => ME,
+    setMe: (val) => { ME = val; },
+    isScreenLocked: () => isScreenLocked,
+    setScreenLocked: (v) => { isScreenLocked = !!v; },
+    clearSessionStorage: () => {
+      try {
+        localStorage.removeItem(SCREEN_LOCKED_KEY);
+        localStorage.removeItem(ACTIVITY_KEY);
+        localStorage.removeItem('wo_last_user');
+      } catch {}
+    },
+    openStoreSwitcher: () => openStoreLocationSwitcherModal(),
+    renderStandInBanner: () => renderStandInBanner(),
+    openSignatureModal: () => mySignatureModal(),
+    openPasswordModal: () => changePasswordModal(),
+    openSecurityModal: () => securityModal(),
+    get notifState() { return _notifState; },
+    renderNotifPopover: () => renderNotifPopover(),
+    refreshNotifications: (opts) => refreshNotifications(opts),
+    setupLiveNotifications: () => setupLiveNotifications(),
+    removeIdleLockOverlay: () => removeIdleLockOverlay(),
+    render: () => render(),
+    boot: () => boot(),
+    live: (m) => live(m),
+    slNowTime: () => slNowTime(),
+  };
+}
+
 // ---------------------------------------------------------------- router
 const routes = window.routes = window.routes || {};
 async function render() {
@@ -1893,11 +2015,36 @@ async function render() {
     showIdleLockScreen();
     return;
   }
+  _pendingLiveRefresh = false;
+  clearTimeout(_deferredLiveTimer);
   qsa('.modal-bg').forEach((el) => { if (el.dataset.persistent !== '1') el.remove(); });
-  renderShell();
-  const parts = location.hash.replace('#/', '').split('?')[0].split('/');
+  if (!location.hash || location.hash === '#' || location.hash === '#/') {
+    location.hash = defaultHomeHash();
+    return;
+  }
+  const rawHash = location.hash;
+  const parts = rawHash.replace('#/', '').split('?')[0].split('/');
   const page = parts[0] || 'dashboard';
+  renderShell(page, rawHash, parts.slice(1));
   const content = qs('#content');
+
+  // Enforce route-level visibility guard so typing an unauthorized #/route directly cannot leak views
+  const navEntry = NAV.find((x) => x[0] === page);
+  if (navEntry && !navVisible(navEntry)) {
+    const home = defaultHomeHash();
+    if (page === 'dashboard' && home !== '#/dashboard') {
+      location.hash = home;
+      return;
+    }
+    content.innerHTML = `<div class="card" style="max-width:560px;margin:28px auto;padding:24px;text-align:center">
+      <div style="font-size:32px;margin-bottom:8px">🔒</div>
+      <h2 style="margin:0 0 8px">Access Restricted</h2>
+      <p class="muted" style="margin:0 0 16px">Your account does not have permission to open <b>${esc(navEntry[2])}</b>.</p>
+      <a class="btn primary" href="${esc(home)}">Go to My Workspace</a>
+    </div>`;
+    return;
+  }
+
   const fn = routes[page] || routes.dashboard;
   try {
     await fn(content, parts.slice(1));
@@ -3287,663 +3434,7 @@ async function editAssetModal(asset) {
   });
 }
 
-// ===========================================================================
-// ---- Vehicle Documents & Statutory Compliance (Phase 4)
-// ===========================================================================
-routes.vehicledocuments = async (c, parts = []) => {
-  const sp = new URLSearchParams(location.hash.split('?')[1] || '');
-  const tab = sp.get('tab') || 'compliance';
-  const TABS = [
-    ['compliance', '📊 Fleet Compliance'],
-    ['upcoming', '⏳ Upcoming Expirations'],
-    ['tasks', '📋 Renewal Tasks']
-  ];
-
-  const tabToolbar = `<div class="toolbar" style="margin-bottom:12px">${TABS
-    .map(([t, l]) => `<button class="sm ${t === tab ? 'primary' : ''}" data-nav="#/vehicledocuments?tab=${t}">${l}</button>`).join('')}</div>`;
-
-  c.innerHTML = pageHeader('Vehicle Documents & Statutory Compliance') + tabToolbar + '<div id="vdocbody" class="muted">Loading…</div>';
-  const body = qs('#vdocbody', c);
-
-  if (tab === 'compliance') {
-    return renderVdocCompliance(body, sp);
-  } else if (tab === 'upcoming') {
-    return renderVdocUpcoming(body, sp);
-  } else if (tab === 'tasks') {
-    return renderVdocTasks(body, sp);
-  }
-};
-
-async function renderVdocCompliance(body, sp) {
-  let sum;
-  try {
-    sum = await api('/vehicle-documents/compliance-summary');
-  } catch (e) {
-    body.innerHTML = `<div class="card err">${esc(e.message)}</div>`;
-    return;
-  }
-
-  const kp = sum.kpis || {};
-  const tb = sum.type_breakdown || {};
-  const vehicles = sum.vehicles || [];
-
-  // Traffic-light KPI Ribbon
-  const pctColor = kp.compliance_percentage >= 90 ? 'var(--green)' : (kp.compliance_percentage >= 70 ? 'var(--amber)' : 'var(--red)');
-  const kpiCards = `
-    <div class="grid section" style="grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-bottom:14px">
-      <div class="card stat"><span class="n">${kp.total_vehicles ?? 0}</span><span class="l">Registered Fleet</span></div>
-      <div class="card stat"><span class="n" style="color:${pctColor}">${kp.compliance_percentage ?? 100}%</span><span class="l">Compliance Rate</span></div>
-      <div class="card stat"><span class="n" style="color:var(--green)">${kp.fully_compliant ?? 0}</span><span class="l">Fully Compliant</span></div>
-      <div class="card stat"><span class="n" style="color:var(--red)">${kp.critical_count ?? 0}</span><span class="l">Critical (≤7d)</span></div>
-      <div class="card stat"><span class="n" style="color:var(--amber)">${kp.warning_count ?? 0}</span><span class="l">Expiring Soon (8-30d)</span></div>
-      <div class="card stat"><span class="n" style="color:var(--red)">${kp.expired_count ?? 0}</span><span class="l">Expired / Overdue</span></div>
-      <div class="card stat"><span class="n">${kp.exempt_count ?? 0}</span><span class="l">Laid-up / Exempt</span></div>
-    </div>`;
-
-  // Category summary pills
-  const typeChips = [
-    { label: 'Revenue Licence (eRL)', key: 'revenue_licence', icon: '🏛️' },
-    { label: 'Vehicle Insurance', key: 'insurance', icon: '🛡️' },
-    { label: 'Emission Test (VET)', key: 'emission', icon: '💨' },
-    { label: 'Fitness Certificate', key: 'fitness', icon: '🩺' },
-  ].map((tc) => {
-    const s = tb[tc.key] || { valid: 0, critical: 0, warning: 0, expired: 0, exempt: 0 };
-    const issueCount = (s.critical || 0) + (s.expired || 0);
-    return `<div class="card" style="padding:10px 14px;display:flex;align-items:center;justify-content:space-between;gap:10px">
-      <div style="font-weight:600">${tc.icon} ${tc.label}</div>
-      <div style="display:flex;gap:6px;font-size:12px">
-        <span class="badge green" title="Valid">${s.valid || 0} valid</span>
-        ${s.warning ? `<span class="badge amber" title="Expiring Soon">${s.warning} soon</span>` : ''}
-        ${issueCount ? `<span class="badge red" title="Critical or Expired">${issueCount} alert</span>` : ''}
-        ${s.exempt ? `<span class="badge" title="Exempt">${s.exempt} exempt</span>` : ''}
-      </div>
-    </div>`;
-  }).join('');
-
-  const typeGrid = `<div class="grid section" style="grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:10px;margin-bottom:14px">${typeChips}</div>`;
-
-  // Filter toolbar
-  const filterToolbar = `
-    <div class="toolbar" style="margin-bottom:10px">
-      <input type="search" id="vdoc-q" placeholder="Search vehicle code / registration / type…" style="max-width:280px">
-      <select id="vdoc-status-filter" style="max-width:200px">
-        <option value="">All Compliance Statuses</option>
-        <option value="compliant">Fully Compliant</option>
-        <option value="critical">Critical (≤7 days)</option>
-        <option value="warning">Expiring Soon (8–30 days)</option>
-        <option value="expired">Expired</option>
-        <option value="missing">Missing Documents</option>
-        <option value="exempt">Laid-up / Exempt</option>
-      </select>
-      <div class="spacer"></div>
-      <a href="/api/vehicle-documents/export.xlsx" class="btn sm" style="text-decoration:none">📊 Export Excel</a>
-      <span class="muted" id="vdoc-count" style="font-size:12px">${vehicles.length} vehicles</span>
-    </div>`;
-
-  body.innerHTML = kpiCards + typeGrid + filterToolbar + '<div id="vdoc-table-container"></div>';
-
-  const container = qs('#vdoc-table-container', body);
-
-  function renderRows() {
-    const q = (qs('#vdoc-q', body).value || '').trim().toLowerCase();
-    const st = qs('#vdoc-status-filter', body).value;
-
-    const filtered = vehicles.filter((v) => {
-      if (st && v.overall_status !== st) return false;
-      if (q) {
-        const text = `${v.code || ''} ${v.registration || ''} ${v.type || ''}`.toLowerCase();
-        if (!text.includes(q)) return false;
-      }
-      return true;
-    });
-
-    qs('#vdoc-count', body).textContent = `${filtered.length} of ${vehicles.length} vehicles`;
-
-    const rows = filtered.map((v) => {
-      const stBadge = v.overall_status === 'compliant'
-        ? '<span class="badge green">Compliant</span>'
-        : (v.overall_status === 'warning'
-            ? '<span class="badge amber">Expiring Soon</span>'
-            : (v.overall_status === 'critical'
-                ? '<span class="badge red">Critical</span>'
-                : (v.overall_status === 'expired'
-                    ? '<span class="badge red">Expired</span>'
-                    : (v.overall_status === 'missing'
-                        ? '<span class="badge red">Missing Docs</span>'
-                        : '<span class="badge">Exempt</span>'))));
-
-      // Mini document chips
-      const docChips = (v.documents || []).filter((d) => ['cr', 'revenue_licence', 'insurance', 'emission', 'fitness'].includes(d.doc_type_code)).map((d) => {
-        const ev = d.evaluation || {};
-        const b = ev.badge || { text: '—', color: 'gray' };
-        const color = b.color === 'green' ? 'green' : (b.color === 'red' ? 'red' : (b.color === 'amber' ? 'amber' : ''));
-        const shortName = d.doc_type_code === 'revenue_licence' ? 'eRL' : (d.doc_type_code === 'insurance' ? 'INS' : (d.doc_type_code === 'emission' ? 'VET' : (d.doc_type_code === 'fitness' ? 'VCR' : 'CR')));
-        return `<span class="badge ${color}" style="font-size:10px;padding:1px 5px" title="${esc(d.doc_type_name)}: ${esc(b.text)}">${shortName}: ${esc(b.text)}</span>`;
-      }).join(' ');
-
-      return `<tr>
-        <td>
-          <a href="#/assets/${v.asset_id}" style="font-weight:700;text-decoration:none">🚜 ${esc(v.code)}</a>
-          ${v.registration ? `<span style="margin-left:6px;font-size:12px;color:var(--text)">[${esc(v.registration)}]</span>` : ''}
-          <div class="muted" style="font-size:11px">${esc(v.type || '—')}</div>
-        </td>
-        <td>${stBadge}</td>
-        <td><div style="display:flex;gap:4px;flex-wrap:wrap">${docChips}</div></td>
-        <td style="white-space:nowrap;text-align:right">
-          <a href="#/assets/${v.asset_id}" class="btn sm" style="text-decoration:none;padding:2px 8px;font-size:11px">Inspect Asset</a>
-          <button class="sm btn-vdoc-erl" data-id="${v.asset_id}" data-name="${esc(v.registration || v.code)}" style="padding:2px 8px;font-size:11px">📋 eRL Check</button>
-        </td>
-      </tr>`;
-    });
-
-    container.innerHTML = tableWrap(
-      [{ label: 'Vehicle / Asset' }, { label: 'Compliance Status' }, { label: 'Statutory Certificates' }, { label: 'Actions', cls: 'num' }],
-      rows,
-      { scroll: true }
-    );
-
-    qsa('.btn-vdoc-erl', container).forEach((btn) => {
-      btn.onclick = () => showErlChecklistModal(btn.dataset.id, btn.dataset.name);
-    });
-  }
-
-  qs('#vdoc-q', body).oninput = renderRows;
-  qs('#vdoc-status-filter', body).onchange = renderRows;
-  renderRows();
-}
-
-async function renderVdocUpcoming(body, sp) {
-  const days = Number(sp.get('days')) || 30;
-  let upcoming;
-  try {
-    upcoming = await api(`/vehicle-documents/upcoming-expirations?daysAhead=${days}`);
-  } catch (e) {
-    body.innerHTML = `<div class="card err">${esc(e.message)}</div>`;
-    return;
-  }
-
-  const horizons = [14, 30, 60, 90];
-  const horizonButtons = horizons.map((h) => `
-    <button class="sm ${h === days ? 'primary' : ''}" data-nav="#/vehicledocuments?tab=upcoming&days=${h}">${h} Days</button>
-  `).join('');
-
-  const toolbar = `
-    <div class="toolbar" style="margin-bottom:12px">
-      <span style="font-size:13px;font-weight:600;margin-right:8px">Horizon:</span>
-      ${horizonButtons}
-      <div class="spacer"></div>
-      <a href="/api/vehicle-documents/export.xlsx" class="btn sm" style="text-decoration:none">📊 Export Excel</a>
-      <span class="muted" style="font-size:12px">${upcoming.length} certificates expiring within ${days} days</span>
-    </div>`;
-
-  const rows = upcoming.map((u) => {
-    const badgeColor = u.badge && u.badge.color;
-    const badgeCls = badgeColor === 'green' ? 'green' : (badgeColor === 'red' ? 'red' : (badgeColor === 'amber' ? 'amber' : 'blue'));
-    const attLink = u.version_id
-      ? `<button class="sm btn-up-hist" data-id="${u.document_id}" data-name="${esc(u.doc_type_name)}" style="padding:2px 8px;font-size:11px">History / Scans</button>`
-      : '<span class="muted">—</span>';
-
-    return `<tr>
-      <td>
-        <a href="#/assets/${u.asset_id}" style="font-weight:700;text-decoration:none">🚜 ${esc(u.asset_code)}</a>
-        ${u.registration ? `<span style="margin-left:6px;font-size:12px;color:var(--text)">[${esc(u.registration)}]</span>` : ''}
-        <div class="muted" style="font-size:11px">${esc(u.asset_type || '')}</div>
-      </td>
-      <td><b>${esc(u.doc_type_name)}</b></td>
-      <td><code>${esc(u.doc_number || '—')}</code></td>
-      <td><b>${esc(u.valid_until)}</b></td>
-      <td><span class="badge ${badgeCls}">${esc((u.badge && u.badge.text) || u.days_remaining + 'd')}</span></td>
-      <td>${attLink}</td>
-      <td style="white-space:nowrap;text-align:right">
-        ${canDo('vehicle_docs.renew') ? `<button class="sm btn-up-renew" data-id="${u.document_id}" data-name="${esc(u.doc_type_name)}" style="padding:2px 8px;font-size:11px">+ Renew</button>` : ''}
-        <a href="#/assets/${u.asset_id}" class="btn sm" style="text-decoration:none;padding:2px 8px;font-size:11px">Inspect Asset</a>
-      </td>
-    </tr>`;
-  });
-
-  body.innerHTML = toolbar + tableWrap(
-    [{ label: 'Vehicle' }, { label: 'Document Type' }, { label: 'Certificate No' }, { label: 'Valid Until' }, { label: 'Countdown' }, { label: 'Files' }, { label: 'Actions', cls: 'num' }],
-    rows,
-    { scroll: true }
-  );
-
-  qsa('.btn-up-renew', body).forEach((btn) => {
-    btn.onclick = () => showRenewDocumentModal(btn.dataset.id, btn.dataset.name, () => renderVdocUpcoming(body, sp));
-  });
-  qsa('.btn-up-hist', body).forEach((btn) => {
-    btn.onclick = () => showDocumentHistoryModal(btn.dataset.id, btn.dataset.name);
-  });
-}
-
-async function renderVdocTasks(body, sp) {
-  const activeOnly = sp.get('active_only') !== '0';
-  const stage = sp.get('stage') || '';
-
-  let tasks;
-  try {
-    const qParts = [];
-    if (activeOnly) qParts.push('active_only=1');
-    if (stage) qParts.push('stage=' + encodeURIComponent(stage));
-    tasks = await api('/vehicle-documents/tasks' + (qParts.length ? '?' + qParts.join('&') : ''));
-  } catch (e) {
-    body.innerHTML = `<div class="card err">${esc(e.message)}</div>`;
-    return;
-  }
-
-  const STAGES = [
-    { value: '', label: 'All Stages' },
-    { value: 'assigned', label: 'Assigned' },
-    { value: 'application_submitted', label: 'Application Submitted' },
-    { value: 'pending_verification', label: 'Pending Verification' },
-    { value: 'completed', label: 'Completed' },
-  ];
-
-  const stageOpts = STAGES.map((s) => `<option value="${s.value}" ${s.value === stage ? 'selected' : ''}>${esc(s.label)}</option>`).join('');
-
-  const toolbar = `
-    <div class="toolbar" style="margin-bottom:12px">
-      <label style="display:flex;align-items:center;gap:6px;flex-direction:row;font-size:13px;width:auto">
-        <input type="checkbox" id="task-active-only" ${activeOnly ? 'checked' : ''} style="width:auto"> Active tasks only
-      </label>
-      <select id="task-stage-filter" style="max-width:200px">${stageOpts}</select>
-      <div class="spacer"></div>
-      <span class="muted" style="font-size:12px">${tasks.length} tasks</span>
-    </div>`;
-
-  const rows = tasks.map((t) => {
-    const stageBadge = t.stage === 'completed'
-      ? '<span class="badge green">Completed</span>'
-      : (t.stage === 'application_submitted' || t.stage === 'pending_verification'
-          ? '<span class="badge amber">' + esc(t.stage) + '</span>'
-          : '<span class="badge blue">' + esc(t.stage) + '</span>');
-
-    const costStr = t.actual_cost != null ? money(t.actual_cost) : (t.estimated_cost != null ? money(t.estimated_cost) + ' (est)' : '—');
-
-    return `<tr>
-      <td>#${t.id} <div class="muted" style="font-size:11px">${String(t.created_at || '').slice(0, 10)}</div></td>
-      <td>
-        <a href="#/assets/${t.asset_id}" style="font-weight:700;text-decoration:none">🚜 ${esc(t.asset_code)}</a>
-        ${t.registration ? `<span style="margin-left:6px;font-size:12px;color:var(--text)">[${esc(t.registration)}]</span>` : ''}
-      </td>
-      <td><b>${esc(t.doc_type_name)}</b></td>
-      <td>${stageBadge}${inlineDelayBadgeHtml(m.req_date, l.last_received, remaining > 0 && !l.is_cancelled && m.approval_status !== 'rejected')}</td>
-      <td>${esc(t.target_date || '—')}</td>
-      <td>${costStr}</td>
-      <td>${esc(t.assigned_to_name || '—')}</td>
-      <td>${t.temporary_receipt_no ? `<span class="badge" style="font-size:10px">RCP: ${esc(t.temporary_receipt_no)}</span> ` : ''}${esc(t.notes || '—')}</td>
-      <td style="white-space:nowrap;text-align:right">
-        ${canDo('vehicle_docs.renew') ? `<button class="sm btn-task-edit" data-id="${t.id}" style="padding:2px 8px;font-size:11px">Update</button>` : ''}
-        <button class="sm btn-task-hist" data-id="${t.document_id}" data-name="${esc(t.doc_type_name)}" style="padding:2px 8px;font-size:11px">Doc</button>
-      </td>
-    </tr>`;
-  });
-
-  body.innerHTML = toolbar + tableWrap(
-    [{ label: 'Task' }, { label: 'Vehicle' }, { label: 'Document Type' }, { label: 'Stage' }, { label: 'Target Date' }, { label: 'Fee / Cost' }, { label: 'Assigned To' }, { label: 'Notes / Receipt' }, { label: 'Actions', cls: 'num' }],
-    rows,
-    { scroll: true }
-  );
-
-  qs('#task-active-only', body).onchange = (e) => {
-    location.hash = `#/vehicledocuments?tab=tasks&active_only=${e.target.checked ? '1' : '0'}&stage=${encodeURIComponent(qs('#task-stage-filter', body).value)}`;
-  };
-  qs('#task-stage-filter', body).onchange = (e) => {
-    location.hash = `#/vehicledocuments?tab=tasks&active_only=${qs('#task-active-only', body).checked ? '1' : '0'}&stage=${encodeURIComponent(e.target.value)}`;
-  };
-
-  qsa('.btn-task-edit', body).forEach((btn) => {
-    btn.onclick = () => showUpdateRenewalTaskModal(btn.dataset.id, () => renderVdocTasks(body, sp));
-  });
-  qsa('.btn-task-hist', body).forEach((btn) => {
-    btn.onclick = () => showDocumentHistoryModal(btn.dataset.id, btn.dataset.name);
-  });
-}
-
-async function showErlChecklistModal(assetId, assetName) {
-  let erl;
-  try {
-    erl = await api('/assets/' + assetId + '/erl-checklist');
-  } catch (e) {
-    return toast(e.message, 'err');
-  }
-
-  const alertBox = erl.ready_for_renewal
-    ? `<div style="padding:12px 16px;background:rgba(46,125,50,0.12);border:1px solid var(--green);border-radius:6px;color:var(--green);font-weight:600;margin-bottom:14px">
-        ✅ All prerequisite documents verified! Eligible for DMT Electronic Revenue Licence (eRL) online renewal.
-       </div>`
-    : `<div style="padding:12px 16px;background:rgba(198,40,40,0.1);border:1px solid var(--red);border-radius:6px;color:var(--red);margin-bottom:14px">
-        <div style="font-weight:700">⚠️ eRL Online Renewal Prerequisites Incomplete:</div>
-        <ul style="margin:6px 0 0 18px;font-size:13px">${(erl.blockers || []).map((b) => `<li>${esc(b)}</li>`).join('')}</ul>
-       </div>`;
-
-  const windowBox = `
-    <div class="card" style="margin-bottom:14px;padding:12px 14px;background:var(--surface)">
-      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
-        <div>
-          <b>1-Calendar-Month Renewal Window</b>
-          <div class="muted" style="font-size:12px">Motor Traffic Act: Annual Revenue Licence can only be renewed within one calendar month of expiration.</div>
-        </div>
-        <div>
-          <span class="badge blue">Target Date: ${esc(String(erl.evaluated_at || '').slice(0, 10))}</span>
-        </div>
-      </div>
-    </div>`;
-
-  const rows = (erl.items || []).map((it) => {
-    const badge = it.passed
-      ? '<span class="badge green">Pass</span>'
-      : (it.required ? '<span class="badge red">Action Required</span>' : '<span class="badge">Optional</span>');
-
-    return `<tr>
-      <td><b>${esc(it.label)}</b> ${it.required ? '<span class="badge blue" style="font-size:10px;margin-left:4px">Mandatory</span>' : '<span class="muted" style="font-size:10px">Optional</span>'}</td>
-      <td>${badge}</td>
-      <td style="font-size:13px">${esc(it.details || '—')}</td>
-    </tr>`;
-  });
-
-  const bodyHtml = alertBox + windowBox + tableWrap(
-    [{ label: 'Prerequisite Requirement' }, { label: 'Status' }, { label: 'Verification Details' }],
-    rows,
-    { scroll: true }
-  ) + `<div style="margin-top:16px;text-align:right"><button class="primary" id="btn-erl-close">Close</button></div>`;
-
-  modal(`eRL Renewal Readiness · ${assetName || ('Asset #' + assetId)}`, bodyHtml, (body, close) => {
-    qs('#btn-erl-close', body).onclick = close;
-  }, { wide: true });
-}
-
-async function showRenewDocumentModal(docId, docName, onDone) {
-  let doc;
-  try {
-    doc = await api('/vehicle-documents/' + docId);
-  } catch (e) {
-    return toast(e.message, 'err');
-  }
-
-  const todayStr = new Date().toISOString().slice(0, 10);
-  const nextYear = new Date();
-  nextYear.setFullYear(nextYear.getFullYear() + 1);
-  const nextYearStr = nextYear.toISOString().slice(0, 10);
-
-  const bodyHtml = `
-    <p class="muted" style="margin-top:0">Vehicle: <b>${esc(doc.asset_code || '')}</b> ${doc.registration ? `[${esc(doc.registration)}]` : ''} · Category: <b>${esc(doc.doc_type_category || '')}</b></p>
-    <div class="row">
-      ${field('Document / Certificate No *', 'doc_number', { placeholder: 'e.g. RL-2026-992 or POL-88123' })}
-      ${field('Issuing Authority / Company', 'issuer_name', { placeholder: 'e.g. DMT Western Province / SLIC / DriveGreen' })}
-    </div>
-    <div class="row">
-      ${field('Issue Date', 'issue_date', { type: 'date', value: todayStr })}
-      ${field('Valid From', 'valid_from', { type: 'date', value: todayStr })}
-    </div>
-    <div class="row">
-      ${field('Valid Until *', 'valid_until', { type: 'date', value: nextYearStr })}
-      ${field('Cost / Fee (LKR)', 'cost_amount', { type: 'number', placeholder: '0' })}
-    </div>
-    ${field('Notes / Policy Details', 'notes', { type: 'textarea', placeholder: 'e.g. Annual renewal cover note' })}
-    <div style="margin-top:10px">
-      <label>Certificate / Cover Note Scan (PDF, Image)</label>
-      <input type="file" id="renewal_scan_file" accept=".pdf,image/*" style="margin-top:4px">
-      <div class="muted" style="font-size:11px;margin-top:2px">Supported: PDF, JPG, PNG (Max 15 MB)</div>
-    </div>
-    ${canDo('vehicle_docs.verify') ? `
-      <div style="margin-top:12px;padding:8px 12px;background:rgba(46,125,50,0.08);border-radius:6px">
-        <label style="display:flex;align-items:center;gap:8px;flex-direction:row;font-size:13px;width:auto;cursor:pointer">
-          <input type="checkbox" name="fast_track" checked style="width:auto"> ⚡ Fast-track Manager Verification (immediately promote to active coverage)
-        </label>
-      </div>` : ''}
-    <div style="margin-top:16px;text-align:right">
-      <button class="primary" id="btn-submit-renewal">Submit Renewal</button>
-    </div>`;
-
-  modal(`Submit Renewal · ${docName}`, bodyHtml, (body, close) => {
-    qs('#btn-submit-renewal', body).onclick = async () => {
-      const f = formData(body);
-      if (!f.doc_number || !f.doc_number.trim()) return toast('Document / Certificate number is required', 'err');
-      if (!f.valid_until) return toast('Valid until expiration date is required', 'err');
-
-      const fileInput = qs('#renewal_scan_file', body);
-      const file = fileInput && fileInput.files && fileInput.files[0];
-
-      let filePayload = null;
-      if (file) {
-        if (file.size > 15 * 1024 * 1024) return toast('File size exceeds 15 MB limit', 'err');
-        try {
-          filePayload = await new Promise((res, rej) => {
-            const reader = new FileReader();
-            reader.onload = () => res({ dataUrl: reader.result, originalFilename: file.name, mimeType: file.type });
-            reader.onerror = rej;
-            reader.readAsDataURL(file);
-          });
-        } catch (e) {
-          return toast('Could not read scan file: ' + e.message, 'err');
-        }
-      }
-
-      const payload = {
-        doc_number: f.doc_number.trim(),
-        issuer_name: f.issuer_name ? f.issuer_name.trim() : null,
-        issue_date: f.issue_date || todayStr,
-        valid_from: f.valid_from || todayStr,
-        valid_until: f.valid_until,
-        cost_amount: f.cost_amount ? Number(f.cost_amount) : 0,
-        notes: f.notes ? f.notes.trim() : null,
-      };
-
-      try {
-        const ver = await api(`/vehicle-documents/${docId}/versions`, { method: 'POST', body: payload });
-        if (filePayload && ver && ver.id) {
-          await api(`/vehicle-documents/versions/${ver.id}/attachments`, {
-            method: 'POST',
-            body: {
-              dataUrl: filePayload.dataUrl,
-              originalFilename: filePayload.originalFilename,
-              mimeType: filePayload.mimeType,
-              kind: 'certificate'
-            }
-          });
-        }
-        if (f.fast_track && canDo('vehicle_docs.verify') && ver && ver.id) {
-          await api(`/vehicle-documents/versions/${ver.id}/verify`, {
-            method: 'POST',
-            body: { decision: 'approve', notes: 'Fast-track verification on renewal submission' }
-          });
-        }
-        toast('Renewal version submitted successfully');
-        close();
-        if (onDone) onDone();
-      } catch (err) {
-        toast(err.message, 'err');
-      }
-    };
-  });
-}
-
-async function showDocumentHistoryModal(docId, docName) {
-  let doc, history;
-  try {
-    [doc, history] = await Promise.all([
-      api('/vehicle-documents/' + docId),
-      api('/vehicle-documents/' + docId + '/history'),
-    ]);
-  } catch (e) {
-    return toast(e.message, 'err');
-  }
-
-  const containerInfo = `
-    <div style="margin-bottom:14px;padding:10px 14px;background:var(--surface);border-radius:6px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
-      <div>
-        <b>${esc(doc.doc_type_name || docName)}</b> · Vehicle: <b>${esc(doc.asset_code || '')}</b> ${doc.registration ? `[${esc(doc.registration)}]` : ''}
-        <div class="muted" style="font-size:12px">Category: ${esc(doc.doc_type_category || '')} · Mandatory: ${doc.is_required ? 'Yes' : 'No'}</div>
-      </div>
-      <div>
-        ${doc.is_exempt ? `<span class="badge" style="background:var(--border)">Exempt: ${esc(doc.exemption_reason || 'Off-road / Laid up')}</span>` : '<span class="badge green">Active Tracking</span>'}
-      </div>
-    </div>`;
-
-  const rows = (history || []).map((v) => {
-    const isCurrent = doc.current_version_id === v.id;
-    const stBadge = v.status === 'verified'
-      ? `<span class="badge green">Verified${isCurrent ? ' (Active)' : ''}</span>`
-      : (v.status === 'pending_verification'
-          ? '<span class="badge amber">Pending Verification</span>'
-          : (v.status === 'superseded' ? '<span class="badge">Superseded</span>' : '<span class="badge">' + esc(v.status) + '</span>'));
-
-    const attList = (v.attachments || []).map((att) => `
-      <a href="/api/vehicle-documents/attachments/${att.id}/download" target="_blank" class="btn sm" style="text-decoration:none;padding:2px 8px;font-size:11px;margin:2px" title="SHA-256: ${esc(att.sha256 || '')}">
-        📄 ${esc(att.original_filename)} (${Math.round(att.file_size / 1024)} KB)
-      </a>
-    `).join(' ');
-
-    const verifyActions = (v.status === 'pending_verification' && canDo('vehicle_docs.verify')) ? `
-      <div style="margin-top:4px">
-        <button class="sm green btn-ver-approve" data-id="${v.id}" style="padding:2px 8px;font-size:11px">Approve</button>
-        <button class="sm red btn-ver-reject" data-id="${v.id}" style="padding:2px 8px;font-size:11px">Reject</button>
-      </div>` : '';
-
-    return `<tr>
-      <td><b>v${v.version_no}</b></td>
-      <td><code>${esc(v.doc_number)}</code></td>
-      <td>${esc(v.valid_from || '—')} → <b>${esc(v.valid_until)}</b></td>
-      <td>${esc(v.issuer_name || '—')}</td>
-      <td>
-        ${stBadge}
-        ${v.verified_by_name ? `<div class="muted" style="font-size:11px">By ${esc(v.verified_by_name)} on ${String(v.verified_at || '').slice(0, 10)}</div>` : ''}
-        ${v.verification_notes ? `<div class="muted" style="font-size:11px">Note: ${esc(v.verification_notes)}</div>` : ''}
-        ${verifyActions}
-      </td>
-      <td>${attList || '<span class="muted" style="font-size:11px">No scans attached</span>'}</td>
-      <td>${v.cost_amount ? money(v.cost_amount) : '—'}</td>
-    </tr>`;
-  });
-
-  const bodyHtml = containerInfo + tableWrap(
-    [{ label: 'Ver' }, { label: 'Certificate No' }, { label: 'Validity Period' }, { label: 'Issuer' }, { label: 'Verification Status' }, { label: 'Attached Scans' }, { label: 'Cost' }],
-    rows,
-    { scroll: true }
-  ) + `<div style="margin-top:14px;text-align:right"><button class="primary" id="btn-hist-close">Close</button></div>`;
-
-  modal(`Version History & Audits · ${docName}`, bodyHtml, (body, close) => {
-    qs('#btn-hist-close', body).onclick = close;
-
-    qsa('.btn-ver-approve', body).forEach((btn) => {
-      btn.onclick = async () => {
-        try {
-          await api(`/vehicle-documents/versions/${btn.dataset.id}/verify`, { method: 'POST', body: { decision: 'approve', notes: 'Approved by Manager' } });
-          toast('Version verified and promoted');
-          close();
-          showDocumentHistoryModal(docId, docName);
-        } catch (e) { toast(e.message, 'err'); }
-      };
-    });
-
-    qsa('.btn-ver-reject', body).forEach((btn) => {
-      btn.onclick = async () => {
-        const reason = prompt('Reason for rejection:');
-        if (reason === null) return;
-        try {
-          await api(`/vehicle-documents/versions/${btn.dataset.id}/verify`, { method: 'POST', body: { decision: 'reject', notes: reason } });
-          toast('Version rejected');
-          close();
-          showDocumentHistoryModal(docId, docName);
-        } catch (e) { toast(e.message, 'err'); }
-      };
-    });
-  }, { wide: true });
-}
-
-function showDocumentExemptionModal(docId, docName, isCurrentlyExempt, onDone) {
-  if (isCurrentlyExempt) {
-    modal(`Re-activate Statutory Monitoring · ${docName}`, `
-      <p>This statutory requirement is currently marked <b>EXEMPT</b> (laid-up / off-road fleet).</p>
-      <p>Re-activating will restore statutory compliance tracking, expiration countdowns, and renewal reminders.</p>
-      <div style="margin-top:16px;text-align:right">
-        <button class="primary" id="btn-confirm-unexempt">Confirm Re-activation</button>
-      </div>`, (body, close) => {
-      qs('#btn-confirm-unexempt', body).onclick = async () => {
-        try {
-          await api(`/vehicle-documents/${docId}/exemption`, { method: 'PUT', body: { isExempt: false } });
-          toast('Statutory monitoring re-activated');
-          close();
-          if (onDone) onDone();
-        } catch (e) { toast(e.message, 'err'); }
-      };
-    });
-  } else {
-    modal(`Exempt Statutory Requirement · ${docName}`, `
-      <p class="muted" style="margin-top:0">Exempting this requirement indicates the vehicle is formally laid up in the workshop for major overhaul or operated strictly off-road. Expiration alerts will be paused.</p>
-      ${field('Reason for Exemption *', 'reason', { placeholder: 'e.g. Laid up in workshop for major engine overhaul' })}
-      <div style="margin-top:16px;text-align:right">
-        <button class="primary" id="btn-confirm-exempt">Confirm Exemption</button>
-      </div>`, (body, close) => {
-      qs('#btn-confirm-exempt', body).onclick = async () => {
-        const r = (formData(body).reason || '').trim();
-        if (!r) return toast('Please specify an exemption reason', 'err');
-        try {
-          await api(`/vehicle-documents/${docId}/exemption`, { method: 'PUT', body: { isExempt: true, reason: r } });
-          toast('Vehicle document requirement marked exempt');
-          close();
-          if (onDone) onDone();
-        } catch (e) { toast(e.message, 'err'); }
-      };
-    });
-  }
-}
-
-async function showUpdateRenewalTaskModal(taskId, onDone) {
-  let tasks;
-  try {
-    tasks = await api('/vehicle-documents/tasks');
-  } catch (e) {
-    return toast(e.message, 'err');
-  }
-  const task = tasks.find((t) => String(t.id) === String(taskId));
-  if (!task) return toast('Task not found', 'err');
-
-  const STAGES = [
-    { value: 'assigned', label: 'Assigned' },
-    { value: 'application_submitted', label: 'Application Submitted' },
-    { value: 'pending_verification', label: 'Pending Verification' },
-    { value: 'completed', label: 'Completed' },
-  ];
-
-  const bodyHtml = `
-    <p class="muted" style="margin-top:0">Vehicle: <b>${esc(task.asset_code)}</b> ${task.registration ? `[${esc(task.registration)}]` : ''} · <b>${esc(task.doc_type_name)}</b></p>
-    <div class="row">
-      ${field('Workflow Stage', 'stage', { type: 'select', options: STAGES, value: task.stage })}
-      ${field('Target Completion Date', 'target_date', { type: 'date', value: task.target_date || '' })}
-    </div>
-    <div class="row">
-      ${field('Estimated Cost (LKR)', 'estimated_cost', { type: 'number', value: task.estimated_cost || '' })}
-      ${field('Actual Cost (LKR)', 'actual_cost', { type: 'number', value: task.actual_cost || '' })}
-    </div>
-    ${field('Temporary Receipt No', 'temporary_receipt_no', { placeholder: 'e.g. RCP-DMT-12345', value: task.temporary_receipt_no || '' })}
-    ${field('Notes', 'notes', { type: 'textarea', value: task.notes || '' })}
-    <div style="margin-top:16px;text-align:right">
-      <button class="primary" id="btn-save-task">Update Task</button>
-    </div>`;
-
-  modal(`Update Renewal Task #${taskId}`, bodyHtml, (body, close) => {
-    qs('#btn-save-task', body).onclick = async () => {
-      const f = formData(body);
-      try {
-        await api(`/vehicle-documents/tasks/${taskId}`, {
-          method: 'PUT',
-          body: {
-            stage: f.stage,
-            target_date: f.target_date || null,
-            estimated_cost: f.estimated_cost ? Number(f.estimated_cost) : null,
-            actual_cost: f.actual_cost ? Number(f.actual_cost) : null,
-            temporary_receipt_no: f.temporary_receipt_no ? f.temporary_receipt_no.trim() : null,
-            notes: f.notes ? f.notes.trim() : null,
-          }
-        });
-        toast('Renewal task updated');
-        close();
-        if (onDone) onDone();
-      } catch (e) { toast(e.message, 'err'); }
-    };
-  });
-}
+// Extracted to public/modules/vehicle_documents.js
 
 // ---- Job Cards
 const JOB_STATUSES = ['REQUESTED', 'APPROVED_TRANSPORT', 'APPROVED_OPERATIONS', 'IN_WORKSHOP', 'IN_PROGRESS', 'WORK_COMPLETE', 'PARTIALLY_CLOSED', 'CLOSED', 'REJECTED'];
@@ -4125,7 +3616,9 @@ async function jobsRequests(body, sp) {
             ok += res.success_count; bad.push(...(res.failed || []).map((f) => `${f.job_no || f.id}: ${f.error}`));
           } catch (e) { bad.push(e.message); }
         }
-        if (bad.length) alert(`${ok} approved. Not approved:\n${bad.slice(0, 8).join('\n')}`); else toast(`${ok} approved`);
+        if (bad.length) {
+          modal('Partial Bulk Approval', `<p class="muted" style="margin-top:0">${ok} approved. ${bad.length} request(s) could not be approved:</p><ul style="margin:6px 0 0 18px;font-size:12.5px">${bad.slice(0, 10).map((msg) => `<li>${esc(msg)}</li>`).join('')}</ul><div style="margin-top:12px;text-align:right"><button type="button" class="primary" id="ba-ok">OK</button></div>`, (mb, mClose) => { qs('#ba-ok', mb).onclick = mClose; });
+        } else toast(`${ok} approved`);
         load();
       };
     };
@@ -4350,7 +3843,9 @@ async function jobsReady(body, sp) {
       : `<div class="card"><p class="muted">No card is ready to close. <a href="#/jobs?tab=finishing">See what is still missing →</a></p></div>`;
     const report = (res) => {
       const bad = (res.failed || []).map((f) => `${f.job_no || f.id}: ${f.error}`);
-      if (bad.length) alert(`${res.success_count} closed. Not closed:\n${bad.slice(0, 8).join('\n')}`); else toast(`✓ ${plural(res.success_count, 'card')} closed`);
+      if (bad.length) {
+        modal('Partial Bulk Closure', `<p class="muted" style="margin-top:0">${res.success_count} closed. ${bad.length} card(s) could not be closed:</p><ul style="margin:6px 0 0 18px;font-size:12.5px">${bad.slice(0, 10).map((msg) => `<li>${esc(msg)}</li>`).join('')}</ul><div style="margin-top:12px;text-align:right"><button type="button" class="primary" id="bc-ok">OK</button></div>`, (mb, mClose) => { qs('#bc-ok', mb).onclick = mClose; });
+      } else toast(`✓ ${plural(res.success_count, 'card')} closed`);
     };
     qsa('[data-close]', body).forEach((b) => { b.onclick = async () => {
       const r = byId.get(b.dataset.close);
@@ -4586,8 +4081,8 @@ async function jobsAllCards(c, sp) {
       if (res.fail_count === 0) {
         toast(`✓ Transitioned ${res.success_count} job card(s) to ${targetStatus}`, 'ok');
       } else {
-        const failMsgs = (res.failed || []).map((f) => `Job #${f.id}: ${f.error}`).slice(0, 5).join('\n');
-        alert(`Bulk update summary:\n✓ ${res.success_count} updated\n✕ ${res.fail_count} skipped/failed:\n\n${failMsgs}${res.fail_count > 5 ? '\n...' : ''}`);
+        const failList = (res.failed || []).map((f) => `Job #${f.id}: ${f.error}`).slice(0, 10);
+        modal('Bulk Transition Summary', `<p style="margin-top:0"><b>✓ ${res.success_count} updated</b> · <span class="err">✕ ${res.fail_count} skipped/failed</span></p><ul style="margin:6px 0 0 18px;font-size:12.5px">${failList.map((msg) => `<li>${esc(msg)}</li>`).join('')}</ul><div style="margin-top:12px;text-align:right"><button type="button" class="primary" id="bt-ok">OK</button></div>`, (mb, mClose) => { qs('#bt-ok', mb).onclick = mClose; });
       }
       await load();
     } catch (err) {
@@ -4818,12 +4313,13 @@ routes.dailywork = async (c) => {
         const outsideCell = canEdit
           ? `<input type="number" step="0.01" min="0" value="${e.outside_labour == null ? '' : e.outside_labour}" data-mout="${e.id}" data-orig="${e.outside_labour == null ? '' : e.outside_labour}" class="dw-outside-input" placeholder="—" style="width:96px;text-align:right">`
           : (e.outside_labour == null ? '—' : money(e.outside_labour));
+        const adminMoveBtn = isAdmin() ? ` <button class="sm" data-admin-dw-job="${e.id}" title="Admin: Reassign Job Card" style="padding:1px 5px;font-size:11px;border-color:#7c3aed;color:#7c3aed">⇄</button>` : '';
         // No inline nowrap here. It beat every stylesheet rule, so a four-name crew could not wrap
         // inside its column and ran across the Description beside it. Let the stylesheet decide.
         return `<tr>
         <td>${esc(e.work_date || '—')}</td>
         <td>${esc(idLabel(e) || '—')}</td>
-        <td><a href="#/jobs/${e.job_id}">${esc(e.job_no)}</a></td>
+        <td><a href="#/jobs/${e.job_id}">${esc(e.job_no)}</a>${adminMoveBtn}</td>
         <td><b>${esc(e.mechanic || '—')}</b></td>
         <td class="desc-col">${esc(e.description || '')}</td>
         <td class="num">${hoursCell}</td>
@@ -4910,6 +4406,25 @@ routes.dailywork = async (c) => {
           };
         }
       }
+      if (isAdmin()) {
+        const mById = new Map(data.entries.map((x) => [String(x.id), x]));
+        qsa('[data-admin-dw-job]', tableEl).forEach((btn) => {
+          btn.onclick = () => {
+            const e = mById.get(btn.dataset.adminDwJob);
+            if (!e) return;
+            adminReassignItemModal({
+              kind: 'daily_work',
+              itemId: e.id,
+              label: `${e.work_date || ''} · ${e.mechanic || '—'} · ${e.description || ''}`,
+              currentJobId: e.job_id,
+              currentJobNo: e.job_no,
+              assetId: e.asset_id,
+              assetLabel: idLabel(e),
+              onDone: () => { loadMonthEntries(m); load(qs('#ddate').value); loadMonthly(m); },
+            });
+          };
+        });
+      }
     } catch (e) {
       tableEl.innerHTML = `<p class="err">${esc(e.message)}</p>`;
     }
@@ -4979,6 +4494,7 @@ routes.dailywork = async (c) => {
       const jobLink = isSvc
         ? (e.service_id ? `<a href="#/services/${e.service_id}"><b>${esc(e.service_job_no || 'SR #' + e.service_id)}</b></a>` : `<b>${esc(e.job_no)}</b>`)
         : `<a href="#/jobs/${e.job_id}"><b>${esc(e.job_no)}</b></a>`;
+      const admMove = isAdmin() ? ` <button class="sm" data-admin-dw-day="${e.id}" title="Admin: Reassign Job Card" style="border-color:#7c3aed;color:#7c3aed">⇄</button>` : '';
       return `<tr>
       <td>${esc(idLabel(e) || '—')}</td>
       <td>${typeBadge} ${jobLink}</td>
@@ -4987,11 +4503,11 @@ routes.dailywork = async (c) => {
       <td class="num">${hoursCell}</td>
       <td class="num">${costCell}</td>
       <td class="num">${e.outside_labour ? money(e.outside_labour) : '<span class="muted">—</span>'}</td>
-      <td>${canEdit ? `<button class="sm" data-edit="${e.id}" title="Edit this entry">✎</button> <button class="sm danger" data-del="${e.id}" title="Delete this entry">✕</button>` : ''}</td></tr>`;
+      <td>${canEdit ? `<button class="sm" data-edit="${e.id}" title="Edit this entry">✎</button> <button class="sm danger" data-del="${e.id}" title="Delete this entry">✕</button>` : ''}${admMove}</td></tr>`;
     });
     qs('#dsum').textContent = `${data.locked ? '🔒 Signed off — locked · ' : ''}${data.count} entr${data.count === 1 ? 'y' : 'ies'} · ${data.total_hours || 0} hrs · ${money(data.total_labour || 0)} labour`;
     qs('#dtable').innerHTML = data.entries.length
-      ? tableWrap([{ label: 'Vehicle' }, { label: 'Job No' }, { label: 'Mechanic' }, { label: 'Description', cls: 'desc-col' }, { label: 'Hours', num: true }, { label: 'Labour (Rs)', num: true }, { label: 'Outside Labor', num: true }, { label: '', width: '78px' }], rows, { scroll: true, fit: true, noHScroll: true })
+      ? tableWrap([{ label: 'Vehicle' }, { label: 'Job No' }, { label: 'Mechanic' }, { label: 'Description', cls: 'desc-col' }, { label: 'Hours', num: true }, { label: 'Labour (Rs)', num: true }, { label: 'Outside Labor', num: true }, { label: '', width: isAdmin() ? '108px' : '78px' }], rows, { scroll: true, fit: true, noHScroll: true })
       : '<div class="card"><p class="muted">No daily work logged on this day.</p></div>';
 
     // After any change, repaint the day AND the month tables so every total agrees.
@@ -5017,6 +4533,25 @@ routes.dailywork = async (c) => {
           if (!confirm(`Delete this entry?\n\n${e.work_date} · ${idLabel(e) || 'no vehicle'} · ${e.mechanic || 'no mechanic'}\n${e.description || ''}\n${e.hours || 0} hrs\n\nThe job total and the month's labour are recalculated.`)) return;
           try { await api('/daily-work/' + b.dataset.del, { method: 'DELETE' }); toast('Entry deleted'); refreshAll(); }
           catch (err) { toast(err.message, 'err'); }
+        };
+      });
+    }
+    if (isAdmin()) {
+      const dById = new Map(data.entries.map((e) => [String(e.id), e]));
+      qsa('[data-admin-dw-day]', qs('#dtable')).forEach((b) => {
+        b.onclick = () => {
+          const e = dById.get(b.dataset.adminDwDay);
+          if (!e) return;
+          adminReassignItemModal({
+            kind: 'daily_work',
+            itemId: e.id,
+            label: `${e.work_date || ''} · ${e.mechanic || '—'} · ${e.description || ''}`,
+            currentJobId: e.job_id,
+            currentJobNo: e.job_no,
+            assetId: e.asset_id,
+            assetLabel: idLabel(e),
+            onDone: refreshAll,
+          });
         };
       });
     }
@@ -5660,7 +5195,13 @@ async function editWorkDoneModal(entry, onDone) {
   if (!entry) return toast('Entry not found — refresh the day', 'err');
   const curDate = String(entry.work_date || '').slice(0, 10) || today();
   let mechs = [];
-  try { mechs = await api('/mechanics?active=1&date=' + encodeURIComponent(curDate)); } catch (e) { /* falls back to typing names */ }
+  let adminCandidates = [];
+  await withModalOpening(async () => {
+    try { mechs = await api('/mechanics?active=1&date=' + encodeURIComponent(curDate)); } catch (e) { /* falls back to typing names */ }
+    if (isAdmin()) {
+      try { adminCandidates = await api('/jobs/admin/candidates?asset_id=' + encodeURIComponent(entry.asset_id || '') + '&limit=200'); } catch (e) { /* optional */ }
+    }
+  });
   const existingCrew = String(entry.mechanic || '').split(/\s*(?:,|&|\+|\band\b)\s*/i).map((s) => s.trim()).filter(Boolean);
   for (const n of existingCrew) {
     if (!mechs.some((m) => m.name.toLowerCase() === n.toLowerCase())) {
@@ -5668,8 +5209,17 @@ async function editWorkDoneModal(entry, onDone) {
     }
   }
   const mechOpts = mechs.map((m) => `<option value="${esc(m.name)}">${esc(m.name)}${m.rate != null ? ' · Rs ' + m.rate + '/h' : ' · no rate'}${m.status === 'resigned' || !m.active ? ' (Resigned)' : (m.workshop_code ? ' [' + esc(m.workshop_code) + ']' : '')}</option>`).join('');
+  const adminJobSelect = isAdmin() ? `
+    <div style="margin-bottom:8px;padding:8px 10px;border:1px solid #ddd6fe;background:#faf5ff;border-radius:6px">
+      <label style="color:#6d28d9">Assigned Job Card (System Admin)</label>
+      <select name="job_id" id="ewjob">
+        ${!adminCandidates.some((j) => Number(j.id) === Number(entry.job_id)) && entry.job_id ? `<option value="${entry.job_id}" selected>${esc(entry.job_no || ('Job #' + entry.job_id))} (Current)</option>` : ''}
+        ${buildAdminJobCandidateOptions(adminCandidates, entry.job_id)}
+      </select>
+    </div>` : '';
   modal('Edit Work Done', `
     <p class="muted" style="margin-top:0;font-size:12px">Job <b>${esc(entry.job_no || '—')}</b> · ${esc(idLabel(entry) || 'no vehicle')}</p>
+    ${adminJobSelect}
     ${field('Date', 'work_date', { type: 'date', value: String(entry.work_date || '').slice(0, 10) })}
     ${field('Description of work', 'description', { value: entry.description || '' })}
     <label>Mechanic(s)</label>
@@ -5702,12 +5252,14 @@ async function editWorkDoneModal(entry, onDone) {
     qs('#s', body).onclick = async () => {
       const f = formData(body);
       try {
-        await api('/daily-work/' + entry.id, {
-          method: 'PATCH', body: {
-            work_date: f.work_date, description: f.description, mechanic: hidden.value,
-            hours: f.hours, outside_labour: f.outside_labour === '' ? null : f.outside_labour,
-          }
-        });
+        const bodyPayload = {
+          work_date: f.work_date, description: f.description, mechanic: hidden.value,
+          hours: f.hours, outside_labour: f.outside_labour === '' ? null : f.outside_labour,
+        };
+        if (isAdmin() && f.job_id && Number(f.job_id) !== Number(entry.job_id)) {
+          bodyPayload.job_id = Number(f.job_id);
+        }
+        await api('/daily-work/' + entry.id, { method: 'PATCH', body: bodyPayload });
         toast('Entry updated'); close(); if (onDone) onDone();
       } catch (e) { toast(e.message, 'err'); }
     };
@@ -7296,7 +6848,8 @@ async function jobDetail(c, id) {
           ${!isClosed && !isPartial && canDo('stores.mrn.create') ? '<button class="sm" id="jobreqmrn">+ Request Parts</button>' : ''}
           ${!isClosed && !isPartial && canDo('stores.stock_issue') ? '<button class="sm primary" id="jobissue">⚡ Issue to Job</button>' : ''}
         </div>
-        <div style="display:flex;gap:6px">
+        <div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end">
+          ${isAdmin() ? '<button class="sm" id="admin-interchange" title="System Admin: move or swap daily work & materials with another job card" style="border-color:#c4b5fd;color:#6d28d9">⇄ Admin: Move / Interchange</button>' : ''}
           ${canDo('jobs.edit') && !isPartial ? '<button class="sm" id="editjob">✎ Edit</button>' : ''}
           ${!fld.field && canField && !isPartial ? '<button class="sm" id="fldmark">📍 In field…</button>' : ''}
           <a class="btn primary sm" href="/api/reports/job/${job.id}/report.html" target="_blank">📋 Job Report</a>
@@ -7386,12 +6939,14 @@ async function jobDetail(c, id) {
       const rows = [];
       let labourTotal = 0;
       for (const w of j.dailyWork) {
+        const mvDw = isAdmin() ? `<button class="sm" data-admin-move-dw="${w.id}" title="System Admin: move this daily work entry to another job card">⇄ Job</button>` : '';
         const del = canDel ? `<button class="sm" data-del-daily="${w.id}" title="Take off this job — the entry goes back to unassigned daily work, it is not deleted">✕</button>` : '';
+        const actCell = [mvDw, del].filter(Boolean).join(' ');
         const date = esc((w.work_date || '').slice(0, 10));
-        if (w.is_external) { rows.push(`<tr><td>${date}</td><td>(external)</td><td>${esc(w.description || '')}</td><td class="num">—</td><td class="num">—</td><td class="num">${money(w.external_value)}</td><td>${del}</td></tr>`); continue; }
+        if (w.is_external) { rows.push(`<tr><td>${date}</td><td>(external)</td><td>${esc(w.description || '')}</td><td class="num">—</td><td class="num">—</td><td class="num">${money(w.external_value)}</td><td style="white-space:nowrap">${actCell}</td></tr>`); continue; }
         const names = splitMechs(w.mechanic);
         const hrs = Number(w.hours) || 0;
-        if (!names.length) { rows.push(`<tr><td>${date}</td><td>—</td><td>${esc(w.description || '')}</td><td class="num">${num(hrs)}</td><td class="num">—</td><td class="num">${money(0)}</td><td>${del}</td></tr>`); continue; }
+        if (!names.length) { rows.push(`<tr><td>${date}</td><td>—</td><td>${esc(w.description || '')}</td><td class="num">${num(hrs)}</td><td class="num">—</td><td class="num">${money(0)}</td><td style="white-space:nowrap">${actCell}</td></tr>`); continue; }
         names.forEach((nm, i) => {
           const rate = rateOf[nm];
           const amount = rate != null ? hrs * rate : 0;
@@ -7403,7 +6958,7 @@ async function jobDetail(c, id) {
               <td class="num">${num(hrs)}</td>
               <td class="num">${rate == null ? '<span class="badge amber">no rate</span>' : money(rate)}</td>
               <td class="num">${money(amount)}</td>
-              <td>${i === 0 ? del : ''}</td></tr>`);
+              <td style="white-space:nowrap">${i === 0 ? actCell : ''}</td></tr>`);
         });
       }
       if (j.dailyWork.length) rows.push(`<tr><td colspan="5" class="num"><b>Labour total</b></td><td class="num"><b>${money(labourTotal)}</b></td><td></td></tr>`);
@@ -7416,7 +6971,7 @@ async function jobDetail(c, id) {
           <td class="num">${num(p.qty)}</td>
           <td class="num">${p.unit_price == null ? '<span class="badge amber">awaiting</span>' : money(p.unit_price)}</td>
           <td class="num">${p.unit_price == null ? '—' : money(p.qty * p.unit_price)}</td>
-          <td>${canDo('jobs.parts') ? `<button class="sm" data-price="${p.id}">Price</button>${isPartial ? '' : ` <button class="sm" data-del-part="${p.id}" title="Take off this job — the item goes back to unassigned parts, it is not deleted">✕</button>`}` : ''}</td></tr>`))}
+          <td style="white-space:nowrap">${canDo('jobs.parts') ? `<button class="sm" data-price="${p.id}">Price</button>${isPartial ? '' : ` <button class="sm" data-del-part="${p.id}" title="Take off this job — the item goes back to unassigned parts, it is not deleted">✕</button>`}` : ''}${isAdmin() ? ` <button class="sm" data-admin-move-part="${p.id}" title="System Admin: move this part / external item to another job card">⇄ Job</button>` : ''}</td></tr>`))}
     </div>
     ${j.mrnItems && j.mrnItems.length ? `<div class="card section"><h3>MRN Items <span class="muted">— requested materials (${j.mrnItems.length})</span></h3>
       ${tableWrap([{ label: 'Priority' }, { label: 'MRN No' }, { label: 'Date' }, { label: 'Item & Urgency Note' }, { label: 'Category' }, { label: 'Qty Req', num: true }, { label: 'Qty Recd', num: true }, { label: 'GRN Price', num: true }, { label: 'Shelf Status' }, { label: 'Action' }],
@@ -7425,12 +6980,17 @@ async function jobDetail(c, id) {
           const recd = Number(m.qty_received) || 0;
           const req = Number(m.qty) || 0;
           let statusBadgeHtml = '';
+          const onGeneralWs = !m.attached_this_job && m.general_ws_part_id;
           if (avail > 0) statusBadgeHtml = `<span class="pipe-badge avail">● ${num(avail)} ready on shelf</span>`;
+          else if (onGeneralWs) statusBadgeHtml = `<span class="badge amber" title="This item was issued onto GENERAL-WS without linking this job card, so its cost is not in Cost Breakdown yet.">⚠ On GENERAL-WS${m.general_ws_min_no ? ' (' + esc(m.general_ws_min_no) + ')' : ''} — not in cost</span>`;
           else if (recd >= req && req > 0) statusBadgeHtml = `<span class="badge green">Fully issued</span>`;
           else if (recd > 0) statusBadgeHtml = `<span class="badge blue">Partial (${num(recd)}/${num(req)})</span>`;
           else statusBadgeHtml = `<span class="pipe-badge pend">Awaiting delivery</span>`;
 
           const btns = [];
+          if (onGeneralWs && !isClosed && !isPartial && canDo('jobs.parts')) {
+            btns.push(`<button class="sm primary" data-claim-gws-part="${m.general_ws_part_id}" title="Claim this GENERAL-WS issued item onto ${esc(job.job_no)} so its price shows in Parts &amp; Cost Breakdown">+ Claim to Job</button>`);
+          }
           if (avail > 0 && !isClosed && canDo('stores.stock_issue')) {
             btns.push(`<button class="sm primary issue-mrn-btn" data-mrn-item='${esc(JSON.stringify({
               job_id: job.id, job_no: job.job_no, asset_id: job.asset_id,
@@ -7440,6 +7000,9 @@ async function jobDetail(c, id) {
           }
           if (!isClosed && recd < req) {
             btns.push(`<button class="sm" data-jc-prio="${m.mrn_line_id}" data-prio-val="${esc(m.buying_priority || 'P3_ROUTINE')}" data-prio-note="${esc(m.priority_note || '')}" title="Adjust daily workshop priority">⚡ Urgency</button>`);
+          }
+          if (isAdmin()) {
+            btns.push(`<button class="sm" data-admin-move-mrn="${m.mrn_id}" data-mrn-line="${m.mrn_line_id}" title="System Admin: move MRN / item to another job card">⇄ Job</button>`);
           }
 
           return `<tr>
@@ -7454,11 +7017,11 @@ async function jobDetail(c, id) {
             <td>${statusBadgeHtml}</td>
             <td><div style="display:flex;gap:4px;flex-wrap:wrap">${btns.length ? btns.join(' ') : '—'}</div></td></tr>`;
         }), { scroll: true })}</div>` : ''}
-    ${j.oilIssues.length ? `<div class="card section"><h3>Oil / Lubricant Issued</h3>${tableWrap([{ label: 'Product' }, { label: 'Qty', num: true }, { label: 'Unit Price', num: true }], j.oilIssues.map((o) => `<tr><td>${esc(o.product_name)}</td><td class="num">${num(Math.abs(o.qty))} ${esc(o.unit)}</td><td class="num">${money(o.unit_price)}</td></tr>`))}</div>` : ''}
+    ${j.oilIssues.length ? `<div class="card section"><h3>Oil / Lubricant Issued</h3>${tableWrap([{ label: 'Product' }, { label: 'Qty', num: true }, { label: 'Unit Price', num: true }].concat(isAdmin() ? [{ label: '' }] : []), j.oilIssues.map((o) => `<tr><td>${esc(o.product_name)}</td><td class="num">${num(Math.abs(o.qty))} ${esc(o.unit)}</td><td class="num">${money(o.unit_price)}</td>${isAdmin() ? `<td class="num"><button class="sm" data-admin-move-oil="${o.id}" title="System Admin: move oil issue to another job card">⇄ Job</button></td>` : ''}</tr>`))}</div>` : ''}
     ${renderOutsourcingJobSectionHtml(job, j.outsourcingRequests || [])}
     ${j.generalIssues && j.generalIssues.length ? `<div class="card section"><h3>General Items Issued <span class="muted">(${j.generalIssues.length})</span></h3>
-      ${tableWrap([{ label: 'Date' }, { label: 'Item' }, { label: 'Qty', num: true }, { label: 'Unit Price', num: true }, { label: 'Amount', num: true }, { label: 'Ref / MR' }],
-          j.generalIssues.map((g) => `<tr><td>${esc((g.txn_date || '').slice(0, 10))}</td><td>${esc(g.item_name || '')}</td><td class="num">${num(Math.abs(g.qty))}</td><td class="num">${g.unit_price != null ? money(g.unit_price) : '—'}</td><td class="num">${g.unit_price != null ? money(Math.abs(g.qty) * g.unit_price) : '—'}</td><td>${esc(g.ref || '')}</td></tr>`), { scroll: true })}</div>` : ''}`;
+      ${tableWrap([{ label: 'Date' }, { label: 'Item' }, { label: 'Qty', num: true }, { label: 'Unit Price', num: true }, { label: 'Amount', num: true }, { label: 'Ref / MR' }].concat(isAdmin() ? [{ label: '' }] : []),
+          j.generalIssues.map((g) => `<tr><td>${esc((g.txn_date || '').slice(0, 10))}</td><td>${esc(g.item_name || '')}</td><td class="num">${num(Math.abs(g.qty))}</td><td class="num">${g.unit_price != null ? money(g.unit_price) : '—'}</td><td class="num">${g.unit_price != null ? money(Math.abs(g.qty) * g.unit_price) : '—'}</td><td>${esc(g.ref || '')}</td>${isAdmin() ? `<td class="num"><button class="sm" data-admin-move-gen="${g.id}" title="System Admin: move general item issue to another job card">⇄ Job</button></td>` : ''}</tr>`), { scroll: true })}</div>` : ''}`;
 
   // wire actions
   qsa('#transitions button[data-to]').forEach((b) => b.onclick = () => doTransition(job.id, b.dataset.to, job.status));
@@ -7539,6 +7102,64 @@ async function jobDetail(c, id) {
       qs('#s', body).onclick = async () => { await api(`/jobs/${job.id}/parts/${b.dataset.price}`, { method: 'PATCH', body: formData(body) }); close(); render(); };
     });
   });
+  qsa('[data-claim-gws-part]').forEach((b) => b.onclick = async () => {
+    b.disabled = true;
+    try {
+      const res = await api(`/jobs/${job.id}/parts/attach`, { method: 'POST', body: { parts: [Number(b.dataset.claimGwsPart)] } });
+      toast(`✓ Claimed onto ${job.job_no}${res.value ? ' · ' + money(res.value) : ''}`);
+      render();
+    } catch (e) {
+      b.disabled = false;
+      toast(e.message, 'err');
+    }
+  });
+  if (isAdmin()) {
+    if (qs('#admin-interchange')) qs('#admin-interchange').onclick = () => adminInterchangeModal(job, j, render);
+    qsa('[data-admin-move-dw]').forEach((b) => b.onclick = () => {
+      const w = (j.dailyWork || []).find((x) => String(x.id) === b.dataset.adminMoveDw);
+      if (!w) return;
+      adminReassignItemModal({
+        kind: 'daily_work', itemId: w.id,
+        label: `${String(w.work_date || '').slice(0, 10)} · ${w.is_external ? '(external)' : (w.mechanic || '—')} — ${w.description || ''}`,
+        currentJobId: job.id, currentJobNo: job.job_no, assetId: job.asset_id, assetLabel: idLabel(job), onDone: render,
+      });
+    });
+    qsa('[data-admin-move-part]').forEach((b) => b.onclick = () => {
+      const p = (j.parts || []).find((x) => String(x.id) === b.dataset.adminMovePart);
+      if (!p) return;
+      adminReassignItemModal({
+        kind: 'parts', itemId: p.id,
+        label: `${p.description || 'Part #' + p.id} (Qty ${num(p.qty)})`,
+        currentJobId: job.id, currentJobNo: job.job_no, assetId: job.asset_id, assetLabel: idLabel(job), onDone: render,
+      });
+    });
+    qsa('[data-admin-move-mrn]').forEach((b) => b.onclick = () => {
+      const m = (j.mrnItems || []).find((x) => String(x.mrn_line_id) === b.dataset.mrnLine)
+        || (j.mrnItems || []).find((x) => String(x.mrn_id) === b.dataset.adminMoveMrn);
+      adminReassignItemModal({
+        kind: 'mrns', itemId: Number(b.dataset.adminMoveMrn),
+        mrnLineId: b.dataset.mrnLine ? Number(b.dataset.mrnLine) : null,
+        label: m ? `${m.mrn_no} · ${m.description || ''}` : `MRN #${b.dataset.adminMoveMrn}`,
+        currentJobId: job.id, currentJobNo: job.job_no, assetId: job.asset_id, assetLabel: idLabel(job), onDone: render,
+      });
+    });
+    qsa('[data-admin-move-oil]').forEach((b) => b.onclick = () => {
+      const o = (j.oilIssues || []).find((x) => String(x.id) === b.dataset.adminMoveOil);
+      adminReassignItemModal({
+        kind: 'oil_issues', itemId: Number(b.dataset.adminMoveOil),
+        label: o ? `${o.product_name || 'Oil'} · ${num(Math.abs(o.qty))} ${o.unit || ''}` : `Oil Issue #${b.dataset.adminMoveOil}`,
+        currentJobId: job.id, currentJobNo: job.job_no, assetId: job.asset_id, assetLabel: idLabel(job), onDone: render,
+      });
+    });
+    qsa('[data-admin-move-gen]').forEach((b) => b.onclick = () => {
+      const g = (j.generalIssues || []).find((x) => String(x.id) === b.dataset.adminMoveGen);
+      adminReassignItemModal({
+        kind: 'general_issues', itemId: Number(b.dataset.adminMoveGen),
+        label: g ? `${g.item_name || 'General Item'} · Qty ${num(Math.abs(g.qty))}` : `General Issue #${b.dataset.adminMoveGen}`,
+        currentJobId: job.id, currentJobNo: job.job_no, assetId: job.asset_id, assetLabel: idLabel(job), onDone: render,
+      });
+    });
+  }
 }
 
 async function doTransition(jobId, to, current) {
@@ -7611,6 +7232,331 @@ async function editJobModal(job, onDone) {
       } catch (e) {
         if (e.data && e.data.blocking_job) toast(`Blocked — ${e.data.blocking_job.job_no} is already open for that vehicle`, 'err');
         else toast(e.message, 'err');
+      }
+    };
+  }, { wide: true });
+}
+
+// System Admin: build grouped <option> tags for job card reassignment/interchange selectors.
+function buildAdminJobCandidateOptions(jobs, currentJobId, opts = {}) {
+  const excludeId = opts.excludeId != null ? Number(opts.excludeId) : null;
+  const curId = currentJobId != null ? Number(currentJobId) : null;
+  const list = (jobs || []).filter((j) => excludeId == null || Number(j.id) !== excludeId);
+  const fmt = (j) => {
+    const asset = j.asset_reg || j.asset_code || j.asset_ec || 'General';
+    const dt = String(j.requested_at || '').slice(0, 10);
+    const desc = String(j.description || '').trim().slice(0, 42);
+    return `${j.job_no} [${j.status}] · ${asset}${dt ? ' · ' + dt : ''}${desc ? ' — ' + desc : ''}`;
+  };
+  const optHtml = (j) => `<option value="${j.id}"${curId === Number(j.id) ? ' selected' : ''}>${esc(fmt(j))}</option>`;
+  const same = list.filter((j) => Number(j.same_vehicle) === 1);
+  const other = list.filter((j) => Number(j.same_vehicle) !== 1);
+  const parts = [];
+  if (opts.placeholder) parts.push(`<option value="">${esc(opts.placeholder)}</option>`);
+  if (same.length) parts.push(`<optgroup label="Same Machine Job Cards">${same.map(optHtml).join('')}</optgroup>`);
+  if (other.length) parts.push(`<optgroup label="${same.length ? 'Other Job Cards' : 'Job Cards'}">${other.map(optHtml).join('')}</optgroup>`);
+  return parts.join('');
+}
+
+// System Admin: move one daily-work row, part, MRN / MRN line, issue, oil issue, or general issue to another job card.
+async function adminReassignItemModal({ kind, itemId, mrnLineId = null, label = '', currentJobId = null, currentJobNo = '', assetId = null, assetLabel = '', onDone = null }) {
+  if (!isAdmin()) return;
+  const KIND_LABEL = {
+    daily_work: 'Daily Work Entry',
+    parts: 'Part / External Line',
+    mrns: 'Material Request (MRN)',
+    mrn_lines: 'MRN Item Line',
+    issues: 'Store Issue (MIN)',
+    oil_issues: 'Oil / Lubricant Issue',
+    general_issues: 'General Item Issue',
+  };
+  let candidates = [];
+  const loadCandidates = async (q = '') => {
+    const qsParams = new URLSearchParams({
+      asset_id: assetId || '',
+      exclude_job_id: currentJobId || '',
+      limit: '200',
+    });
+    if (q && q.trim()) qsParams.set('q', q.trim());
+    return api('/jobs/admin/candidates?' + qsParams.toString());
+  };
+  try { candidates = await withModalOpening(() => loadCandidates('')); } catch (e) { return toast(e.message, 'err'); }
+
+  const canChooseWholeMrn = kind === 'mrns' && mrnLineId;
+  modal(`Admin: Move ${KIND_LABEL[kind] || 'Item'}`, `
+    <div style="padding:10px 12px;border:1px solid #ddd6fe;background:#faf5ff;border-radius:6px;margin-bottom:10px">
+      <div style="font-size:12px;color:#6d28d9;font-weight:600">System Admin Reassignment</div>
+      <div style="margin-top:4px"><b>${esc(label || (KIND_LABEL[kind] || 'Item'))}</b></div>
+      <div class="muted" style="font-size:12px;margin-top:2px">
+        Currently on: <b>${esc(currentJobNo || (currentJobId ? 'Job #' + currentJobId : 'Unlinked'))}</b>
+        ${assetLabel ? ' · Machine: <b>' + esc(assetLabel) + '</b>' : ''}
+      </div>
+    </div>
+    <p class="muted" style="font-size:12px;margin:0 0 8px">Reassigning updates linked job costs, closed snapshots, and vehicle monthly costs automatically (works across Open, Partly Closed, and Closed job cards).</p>
+    ${canChooseWholeMrn ? `
+      <label style="display:flex;align-items:center;gap:6px;margin:0 0 10px;font-weight:normal;cursor:pointer">
+        <input type="checkbox" id="ar-whole-mrn" checked style="width:auto">
+        <span>Move the entire MRN and all of its requested lines/GRNs (uncheck to move only this line)</span>
+      </label>` : ''}
+    <label>Search Job Cards (job no, machine, or description)</label>
+    <input type="search" id="ar-q" placeholder="Filter job cards..." style="margin-bottom:8px">
+    <label>Target Job Card *</label>
+    <select id="ar-target">${buildAdminJobCandidateOptions(candidates, null, { excludeId: currentJobId, placeholder: '— select target job card —' })}</select>
+    <label style="margin-top:8px">Audit Reason (optional)</label>
+    <input id="ar-reason" placeholder="e.g. Wrongly linked to earlier closed job card on same machine">
+    <div style="margin-top:14px;text-align:right;display:flex;justify-content:flex-end;gap:8px">
+      <button type="button" id="ar-cancel">Cancel</button>
+      <button type="button" class="primary" id="ar-submit">⇄ Move to Selected Job Card</button>
+    </div>`, (body, close) => {
+    const sel = qs('#ar-target', body);
+    const qInput = qs('#ar-q', body);
+    let deb;
+    qInput.oninput = () => {
+      clearTimeout(deb);
+      deb = setTimeout(async () => {
+        try {
+          const rows = await loadCandidates(qInput.value);
+          const prev = sel.value;
+          sel.innerHTML = buildAdminJobCandidateOptions(rows, prev || null, { excludeId: currentJobId, placeholder: '— select target job card —' });
+        } catch (e) { toast(e.message, 'err'); }
+      }, 250);
+    };
+    qs('#ar-cancel', body).onclick = close;
+    qs('#ar-submit', body).onclick = async () => {
+      const targetId = Number(sel.value);
+      if (!targetId) return toast('Please select a target job card', 'err');
+      const wholeMrnEl = qs('#ar-whole-mrn', body);
+      const effectiveKind = (canChooseWholeMrn && wholeMrnEl && !wholeMrnEl.checked) ? 'mrn_lines' : kind;
+      const effectiveId = effectiveKind === 'mrn_lines' ? Number(mrnLineId) : Number(itemId);
+      const reason = (qs('#ar-reason', body).value || '').trim() || null;
+      const btn = qs('#ar-submit', body);
+      btn.disabled = true;
+      try {
+        await api('/jobs/admin/reassign', {
+          method: 'POST',
+          body: { target_job_id: targetId, items: { [effectiveKind]: [effectiveId] }, reason },
+        });
+        toast('✓ Reassigned to target job card');
+        close();
+        if (onDone) onDone();
+      } catch (e) {
+        btn.disabled = false;
+        toast(e.message, 'err');
+      }
+    };
+  });
+}
+
+// System Admin: two-way move & swap (interchange) of daily work and materials between two job cards.
+async function adminInterchangeModal(job, detail, onDone) {
+  if (!isAdmin()) return;
+  let candidates = [];
+  const loadCandidates = async (q = '') => {
+    const qsParams = new URLSearchParams({
+      asset_id: job.asset_id || '',
+      exclude_job_id: job.id,
+      limit: '200',
+    });
+    if (q && q.trim()) qsParams.set('q', q.trim());
+    return api('/jobs/admin/candidates?' + qsParams.toString());
+  };
+  try { candidates = await withModalOpening(() => loadCandidates('')); } catch (e) { return toast(e.message, 'err'); }
+  if (!candidates.length) return toast('No other job cards found to interchange with', 'err');
+
+  const sameFirst = candidates.find((c) => Number(c.same_vehicle) === 1) || candidates[0];
+  let partnerDetail = null;
+
+  const groupMrns = (mrnItems) => {
+    const map = new Map();
+    for (const m of (mrnItems || [])) {
+      if (!m.mrn_id) continue;
+      if (!map.has(m.mrn_id)) map.set(m.mrn_id, { mrn_id: m.mrn_id, mrn_no: m.mrn_no, req_date: m.req_date, items: [] });
+      map.get(m.mrn_id).items.push(m.description || '');
+    }
+    return [...map.values()];
+  };
+
+  const renderChecklist = (sidePrefix, d) => {
+    if (!d) return '<p class="muted" style="font-size:12px">Select a partner job card above.</p>';
+    const sections = [];
+    const checkRow = (key, id, main, sub) => `
+      <label style="display:flex;align-items:flex-start;gap:6px;padding:4px 6px;border-bottom:1px solid var(--border);font-weight:normal;margin:0;cursor:pointer;font-size:12px">
+        <input type="checkbox" data-ic-side="${sidePrefix}" data-ic-key="${key}" value="${id}" style="width:auto;margin-top:2px">
+        <span><b>${esc(main)}</b>${sub ? `<br><span class="muted" style="font-size:11px">${esc(sub)}</span>` : ''}</span>
+      </label>`;
+
+    if (d.dailyWork && d.dailyWork.length) {
+      sections.push(`<div style="margin-bottom:8px"><div style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;margin-bottom:3px">Daily Work (${d.dailyWork.length})</div>
+        <div style="border:1px solid var(--border);border-radius:4px;background:var(--card)">
+          ${d.dailyWork.map((w) => checkRow('daily_work', w.id, `${String(w.work_date || '').slice(0, 10)} · ${w.is_external ? '(external)' : (w.mechanic || '—')}`, `${w.description || ''}${!w.is_external ? ` (${num(w.hours)}h)` : ` (${money(w.external_value)})`}`)).join('')}
+        </div></div>`);
+    }
+    if (d.parts && d.parts.length) {
+      sections.push(`<div style="margin-bottom:8px"><div style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;margin-bottom:3px">Parts &amp; External (${d.parts.length})</div>
+        <div style="border:1px solid var(--border);border-radius:4px;background:var(--card)">
+          ${d.parts.map((p) => checkRow('parts', p.id, p.description || 'Part #' + p.id, `${p.source_type} · Qty ${num(p.qty)}${p.unit_price != null ? ' · ' + money(p.qty * p.unit_price) : ''}`)).join('')}
+        </div></div>`);
+    }
+    const mrns = groupMrns(d.mrnItems);
+    if (mrns.length) {
+      sections.push(`<div style="margin-bottom:8px"><div style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;margin-bottom:3px">MRNs (${mrns.length})</div>
+        <div style="border:1px solid var(--border);border-radius:4px;background:var(--card)">
+          ${mrns.map((m) => checkRow('mrns', m.mrn_id, `${m.mrn_no} (${String(m.req_date || '').slice(0, 10)})`, m.items.filter(Boolean).join(', '))).join('')}
+        </div></div>`);
+    }
+    if (d.oilIssues && d.oilIssues.length) {
+      sections.push(`<div style="margin-bottom:8px"><div style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;margin-bottom:3px">Oil / Lubricants (${d.oilIssues.length})</div>
+        <div style="border:1px solid var(--border);border-radius:4px;background:var(--card)">
+          ${d.oilIssues.map((o) => checkRow('oil_issues', o.id, o.product_name || 'Oil #' + o.id, `${num(Math.abs(o.qty))} ${o.unit || ''} · ${money(o.unit_price)}`)).join('')}
+        </div></div>`);
+    }
+    if (d.generalIssues && d.generalIssues.length) {
+      sections.push(`<div style="margin-bottom:8px"><div style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;margin-bottom:3px">General Items (${d.generalIssues.length})</div>
+        <div style="border:1px solid var(--border);border-radius:4px;background:var(--card)">
+          ${d.generalIssues.map((g) => checkRow('general_issues', g.id, g.item_name || 'Item #' + g.id, `${String(g.txn_date || '').slice(0, 10)} · Qty ${num(Math.abs(g.qty))}${g.ref ? ' · ' + g.ref : ''}`)).join('')}
+        </div></div>`);
+    }
+    return sections.length ? sections.join('') : '<p class="muted" style="font-size:12px">No daily work or materials on this job card.</p>';
+  };
+
+  const collectSide = (body, sidePrefix) => {
+    const out = { daily_work: [], parts: [], mrns: [], oil_issues: [], general_issues: [] };
+    qsa(`input[type=checkbox][data-ic-side="${sidePrefix}"]:checked`, body).forEach((cb) => {
+      const k = cb.dataset.icKey;
+      const val = Number(cb.value);
+      if (out[k] && val && !out[k].includes(val)) out[k].push(val);
+    });
+    return out;
+  };
+
+  modal(`Admin: Interchange / Move Items — ${esc(job.job_no)}`, `
+    <div style="padding:10px 12px;border:1px solid #ddd6fe;background:#faf5ff;border-radius:6px;margin-bottom:10px">
+      <div style="font-size:12px;color:#6d28d9;font-weight:600">System Admin Interchange (Works Across Closed &amp; Open Job Cards)</div>
+      <div class="muted" style="font-size:12px;margin-top:2px">Move items from <b>${esc(job.job_no)}</b> [${esc(job.status)}] to a partner card, pull items from the partner back into <b>${esc(job.job_no)}</b>, or swap both ways in one transaction.</div>
+    </div>
+    <div class="row" style="margin-bottom:10px">
+      <div>
+        <label>Filter Partner Job Cards</label>
+        <input type="search" id="ai-q" placeholder="Search job no, vehicle, description...">
+      </div>
+      <div>
+        <label>Partner Job Card (B) *</label>
+        <select id="ai-partner">${buildAdminJobCandidateOptions(candidates, sameFirst ? sameFirst.id : null, { excludeId: job.id })}</select>
+      </div>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px;align-items:start">
+      <div style="border:1px solid var(--border);border-radius:6px;padding:10px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+          <b style="font-size:13px">Move ${esc(job.job_no)} → <span id="ai-b-lbl-a">Partner</span></b>
+          <span style="display:flex;gap:4px"><button type="button" class="sm" id="ai-all-a">All</button><button type="button" class="sm" id="ai-clr-a">Clear</button></span>
+        </div>
+        <div id="ai-list-a" style="max-height:320px;overflow-y:auto">${renderChecklist('a', detail)}</div>
+      </div>
+      <div style="border:1px solid var(--border);border-radius:6px;padding:10px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+          <b style="font-size:13px">Move <span id="ai-b-lbl-b">Partner</span> → ${esc(job.job_no)}</b>
+          <span style="display:flex;gap:4px"><button type="button" class="sm" id="ai-all-b">All</button><button type="button" class="sm" id="ai-clr-b">Clear</button></span>
+        </div>
+        <div id="ai-list-b" style="max-height:320px;overflow-y:auto"><p class="muted" style="font-size:12px">Loading partner job card...</p></div>
+      </div>
+    </div>
+    <div style="margin-top:10px">
+      <label>Audit Reason (optional)</label>
+      <input id="ai-reason" placeholder="e.g. Swap wrongly linked early job card materials with current repair job card">
+    </div>
+    <div style="margin-top:12px;display:flex;justify-content:space-between;align-items:center;gap:8px">
+      <span id="ai-summary" class="muted" style="font-size:12px">Select items on either side to move or swap.</span>
+      <div style="display:flex;gap:8px">
+        <button type="button" id="ai-cancel">Cancel</button>
+        <button type="button" class="primary" id="ai-submit">⇄ Apply Interchange</button>
+      </div>
+    </div>`, (body, close) => {
+    const partnerSel = qs('#ai-partner', body);
+    const qInput = qs('#ai-q', body);
+    const listBEl = qs('#ai-list-b', body);
+    const summaryEl = qs('#ai-summary', body);
+
+    const updateSummary = () => {
+      const a = collectSide(body, 'a');
+      const b = collectSide(body, 'b');
+      const cntA = Object.values(a).reduce((s, arr) => s + arr.length, 0);
+      const cntB = Object.values(b).reduce((s, arr) => s + arr.length, 0);
+      summaryEl.textContent = (cntA || cntB)
+        ? `${cntA} item(s) ${job.job_no} → Partner · ${cntB} item(s) Partner → ${job.job_no}`
+        : 'Select items on either side to move or swap.';
+    };
+    body.addEventListener('change', (e) => { if (e.target && e.target.dataset && e.target.dataset.icSide) updateSummary(); });
+
+    const toggleSide = (side, checked) => {
+      qsa(`input[type=checkbox][data-ic-side="${side}"]`, body).forEach((cb) => { cb.checked = checked; });
+      updateSummary();
+    };
+    qs('#ai-all-a', body).onclick = () => toggleSide('a', true);
+    qs('#ai-clr-a', body).onclick = () => toggleSide('a', false);
+    qs('#ai-all-b', body).onclick = () => toggleSide('b', true);
+    qs('#ai-clr-b', body).onclick = () => toggleSide('b', false);
+
+    const loadPartner = async () => {
+      const pid = Number(partnerSel.value);
+      if (!pid) {
+        partnerDetail = null;
+        qs('#ai-b-lbl-a', body).textContent = 'Partner';
+        qs('#ai-b-lbl-b', body).textContent = 'Partner';
+        listBEl.innerHTML = '<p class="muted" style="font-size:12px">Select a partner job card.</p>';
+        updateSummary();
+        return;
+      }
+      listBEl.innerHTML = '<p class="muted" style="font-size:12px">Loading partner job card...</p>';
+      try {
+        partnerDetail = await api('/jobs/' + pid);
+        const pJobNo = partnerDetail.job ? partnerDetail.job.job_no : ('Job #' + pid);
+        qs('#ai-b-lbl-a', body).textContent = pJobNo;
+        qs('#ai-b-lbl-b', body).textContent = pJobNo;
+        listBEl.innerHTML = renderChecklist('b', partnerDetail);
+        updateSummary();
+      } catch (e) {
+        listBEl.innerHTML = `<p class="muted" style="font-size:12px">${esc(e.message)}</p>`;
+      }
+    };
+    partnerSel.onchange = loadPartner;
+    loadPartner();
+
+    let deb;
+    qInput.oninput = () => {
+      clearTimeout(deb);
+      deb = setTimeout(async () => {
+        try {
+          const rows = await loadCandidates(qInput.value);
+          const prev = partnerSel.value;
+          partnerSel.innerHTML = buildAdminJobCandidateOptions(rows, prev || null, { excludeId: job.id, placeholder: rows.length ? '' : '— no matching job cards —' });
+          if (partnerSel.value !== prev) loadPartner();
+        } catch (e) { toast(e.message, 'err'); }
+      }, 250);
+    };
+
+    qs('#ai-cancel', body).onclick = close;
+    qs('#ai-submit', body).onclick = async () => {
+      const pid = Number(partnerSel.value);
+      if (!pid) return toast('Please select a partner job card', 'err');
+      const moveAToB = collectSide(body, 'a');
+      const moveBToA = collectSide(body, 'b');
+      const total = Object.values(moveAToB).reduce((s, arr) => s + arr.length, 0)
+        + Object.values(moveBToA).reduce((s, arr) => s + arr.length, 0);
+      if (!total) return toast('Select at least one item to move or swap', 'err');
+      const reason = (qs('#ai-reason', body).value || '').trim() || null;
+      const btn = qs('#ai-submit', body);
+      btn.disabled = true;
+      try {
+        await api('/jobs/admin/interchange', {
+          method: 'POST',
+          body: { job_a_id: job.id, job_b_id: pid, move_a_to_b: moveAToB, move_b_to_a: moveBToA, reason },
+        });
+        toast('✓ Interchange applied');
+        close();
+        if (onDone) onDone();
+      } catch (e) {
+        btn.disabled = false;
+        toast(e.message, 'err');
       }
     };
   }, { wide: true });
@@ -7913,7 +7859,7 @@ async function addPartModal(jobId, assetId) {
             <td class="desc-col">${esc(r.description || '')}</td>
             <td class="num">${num(r.qty)}</td>
             <td class="num">${r.value ? money(r.value) : '<span class="muted">unpriced</span>'}</td>
-            <td>${r.kind === 'receipt' ? `<span class="muted">${esc(r.mrn_no || r.grn_no || '')}</span>` : '<span class="badge">general w/s</span>'}</td></tr>`;
+            <td>${r.kind === 'receipt' ? `<span class="muted">${esc(r.mrn_no || r.grn_no || '')}</span>` : `${[r.min_no, r.mrn_no, r.grn_no].filter(Boolean).length ? `<span class="muted">${esc([r.min_no, r.mrn_no || r.grn_no].filter(Boolean).join(' · '))}</span> ` : ''}<span class="badge">general w/s</span>`}</td></tr>`;
         }), { scroll: true })
         : '<div class="card"><p class="muted">Nothing unassigned — every receipt is already on a job card.</p></div>';
       qsa('[data-pt]', body).forEach((cb) => {
@@ -8860,6 +8806,9 @@ routes.stores = async (c, parts = []) => {
           if (canReturn && !i.voided && i.qty - (i.returned || 0) > 0.001) {
             minBtns += `<button class="sm" data-ret="${i.id}" data-left="${i.qty - (i.returned || 0)}" data-desc="${esc(i.description)}" title="Parts brought back unused go back into the store">↩ Return</button> `;
           }
+          if (isAdmin()) {
+            minBtns += `<button class="sm" data-admin-issue-job="${i.id}" title="System Admin: reassign this store issue to another job card">⇄ Job</button> `;
+          }
           minBtns += `<button class="sm" data-min-detail="${i.min_id || i.id}">Details</button>`;
 
           return `<tr>
@@ -8898,6 +8847,22 @@ routes.stores = async (c, parts = []) => {
       qsa('[data-min-app]', qs('#itable', body)).forEach((btn) => btn.onclick = () => minSignModal(list.find((x) => String(x.min_id || x.id) === btn.dataset.minApp), 'approve', load));
       qsa('[data-min-rej]', qs('#itable', body)).forEach((btn) => btn.onclick = () => minSignModal(list.find((x) => String(x.min_id || x.id) === btn.dataset.minRej), 'reject', load));
       qsa('[data-min-rec]', qs('#itable', body)).forEach((btn) => btn.onclick = () => minSignModal(list.find((x) => String(x.min_id || x.id) === btn.dataset.minRec), 'receive', load));
+      if (isAdmin()) {
+        qsa('[data-admin-issue-job]', qs('#itable', body)).forEach((btn) => btn.onclick = () => {
+          const row = list.find((x) => String(x.id) === btn.dataset.adminIssueJob);
+          if (!row) return;
+          adminReassignItemModal({
+            kind: 'issues',
+            itemId: row.id,
+            label: `${row.min_no || ('MIN-' + String(row.id).padStart(4, '0'))} · ${row.description || ''} (Qty ${num(row.qty)})`,
+            currentJobId: row.job_id,
+            currentJobNo: row.job_no,
+            assetId: row.asset_id,
+            assetLabel: idLabel(row) || row.asset_code || '',
+            onDone: load,
+          });
+        });
+      }
     };
     let ideb; qs('#iq', body).oninput = () => { clearTimeout(ideb); ideb = setTimeout(load, 250); };
     qsa('[data-istep]', body).forEach((b) => {
@@ -11384,7 +11349,7 @@ function openPhotoLightbox(photoUrl, title = 'Photo Evidence') {
       </div>
     </div>
   `;
-  bg.onclick = (e) => { if (e.target === bg || e.target.id === 'lightbox-close') bg.remove(); };
+  bg.onclick = (e) => { if (e.target === bg || e.target.id === 'lightbox-close') { bg.remove(); scheduleDeferredLiveRefresh(); } };
   document.body.appendChild(bg);
 }
 
@@ -13433,6 +13398,7 @@ async function mrnDetail(body, id) {
         <div class="spacer"></div>
         ${canEditReq ? '<button class="sm" id="medit">✎ Edit request</button> <button class="sm" id="maddline">+ Add item</button>' : ''}
         ${adminAmend ? '<button class="sm danger" id="maddline" title="Admin only — the approval stands, and the item is marked as added after it">+ Add item (after approval)</button>' : ''}
+        ${isAdmin() ? '<button class="sm" id="madminjob" title="System Admin: reassign this MRN to another job card" style="border-color:#c4b5fd;color:#6d28d9">⇄ Job Card</button>' : ''}
       </div>
       <p class="muted">Date ${esc((m.req_date || '').slice(0, 10))}${wsMulti() && m.workshop_name ? ` · Workshop ${esc(m.workshop_name)}` : ''} · Vehicle ${esc(idLabel(m) || '—')} · Job ${m.job_no ? `<a href="#/jobs/${m.job_id}">${esc(m.job_no)}</a> <span class="badge ${STATUS_CLASS[m.job_status] || ''}">${esc(m.job_status || '')}</span>` : 'not linked'} · Source ${esc(sourceLabel(m.purchase_source))}${m.purpose ? ' · ' + esc(m.purpose) : ''}${m.requested_by ? ' · by ' + esc(m.requested_by) : ''}</p>
       ${m.status === 'closed' ? `
@@ -13494,6 +13460,16 @@ async function mrnDetail(body, id) {
   const told = (r) => { if (r && r.recertification_required) toast('Saved — certification withdrawn, the Workshop Engineer must certify it again', 'err'); else toast('Saved'); };
 
   if (qs('#medit')) qs('#medit').onclick = () => mrnEditModal(m, reload, told);
+  if (isAdmin() && qs('#madminjob')) qs('#madminjob').onclick = () => adminReassignItemModal({
+    kind: 'mrns',
+    itemId: m.id,
+    label: `MRN ${m.mrn_no}${m.purpose ? ' · ' + m.purpose : ''}`,
+    currentJobId: m.job_id,
+    currentJobNo: m.job_no,
+    assetId: m.asset_id,
+    assetLabel: idLabel(m),
+    onDone: reload,
+  });
   if (qs('#maddline')) qs('#maddline').onclick = () => mrnLineModal(null, m, reload, told);
   qsa('[data-ledit]').forEach((b) => { b.onclick = () => mrnLineModal(d.lines.find((x) => String(x.id) === b.dataset.ledit), m, reload, told); });
   qsa('[data-ldel]').forEach((b) => {
@@ -13659,8 +13635,27 @@ function mrnEditModal(m, onDone, told) {
     type: 'select', value: m.purchase_source || '',
     options: [{ value: '', label: '—' }, { value: 'head_office', label: 'Head Office' }, { value: 'local_purchase', label: 'Local Purchase' }]
   })}
-    <p class="muted" style="font-size:12px;margin:6px 0 0">The machine and job this request is for are set when it is raised — reject and re-raise if those are wrong.</p>
+    ${isAdmin() ? `
+      <div style="margin-top:8px;padding:8px 10px;border:1px solid #ddd6fe;background:#faf5ff;border-radius:6px;display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
+        <span style="font-size:12px;color:#6d28d9">Assigned job: <b>${esc(m.job_no || 'Not linked')}</b></span>
+        <button type="button" class="sm" id="medit-admin-job" style="border-color:#c4b5fd;color:#6d28d9">⇄ Change Assigned Job Card (Admin)</button>
+      </div>` : '<p class="muted" style="font-size:12px;margin:6px 0 0">The machine and job this request is for are set when it is raised — reject and re-raise if those are wrong.</p>'}
     <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Save changes</button></div>`, (b, close) => {
+    if (isAdmin() && qs('#medit-admin-job', b)) {
+      qs('#medit-admin-job', b).onclick = () => {
+        close();
+        adminReassignItemModal({
+          kind: 'mrns',
+          itemId: m.id,
+          label: `MRN ${m.mrn_no}${m.purpose ? ' · ' + m.purpose : ''}`,
+          currentJobId: m.job_id,
+          currentJobNo: m.job_no,
+          assetId: m.asset_id,
+          assetLabel: idLabel(m),
+          onDone,
+        });
+      };
+    }
     qs('#s', b).onclick = async () => {
       const f = formData(b);
       try {
@@ -16755,9 +16750,11 @@ function jobRequestSignModal(jr, action, onDone) {
 
 async function newJobRequestModal() {
   let nextNo = '';
-  try { nextNo = (await api('/job-requests/numbers')).next_jr; } catch (e) { /* leave blank -> auto */ }
   let projects = [];
-  try { projects = await api('/projects'); } catch (e) { /* optional */ }
+  await withModalOpening(async () => {
+    try { nextNo = (await api('/job-requests/numbers')).next_jr; } catch (e) { /* leave blank -> auto */ }
+    try { projects = await api('/projects'); } catch (e) { /* optional */ }
+  });
   const projOpts = [{ value: '', label: '—' }].concat(projects.map((p) => ({ value: p.id, label: p.name })));
   modal('New Job Request', `
     <div class="row">${field('JR Number (edit to override)', 'jr_no', { value: nextNo })}${field('Date', 'req_date', { type: 'date', value: new Date().toISOString().slice(0, 10) })}</div>
@@ -18508,7 +18505,7 @@ const fileSize = (n) => {
 };
 
 async function editJobRequestModal(r, onDone) {
-  const projects = await api('/projects').catch(() => []);
+  const projects = await withModalOpening(() => api('/projects').catch(() => []));
   const popts = [{ value: '', label: '—' }, ...projects.map((p) => ({ value: p.id, label: p.name }))];
   const typeOpts = [
     { value: 'repair', label: 'Repair' },
@@ -18686,651 +18683,7 @@ routes.projects = async (c, params) => {
   }
 };
 
-// ---- Alias queue (assets + mechanics) with Section Division & Missing Vehicle Allocation
-routes.aliases = async (c) => {
-  const [pending, all, assets, mPending, mechs, audit] = await Promise.all([
-    api('/aliases?resolved=0'),
-    api('/aliases?resolved=1&limit=500'),
-    api('/assets?limit=10000'),
-    api('/mechanics/aliases?resolved=0'),
-    api('/mechanics'),
-    api('/aliases/sections-audit').catch(() => ({ missingJobs: [], missingJobRequests: [], missingServices: [], missingIssues: [], missingMrn: [], counts: { jobs: 0, jobRequests: 0, services: 0, issues: 0, mrn: 0, totalMissing: 0 } })),
-  ]);
-
-  const aopts = assets.map((a) => {
-    const regPart = (a.registration && a.registration !== a.code) ? ` (${a.registration})` : '';
-    const descPart = [a.brand, a.type].filter(Boolean).join(' ');
-    return `<option value="${a.id}">${esc(a.code)}${esc(regPart)}${descPart ? ' — ' + esc(descPart) : ''}</option>`;
-  }).join('');
-  const mopts = mechs.map((m) => `<option value="${m.id}">${esc(m.name)}${m.rate ? ' (Rs ' + m.rate + '/h)' : ''}</option>`).join('');
-
-  // Local state
-  let pendingList = [...pending];
-  let missingJobs = [...(audit.missingJobs || [])];
-  let missingJobRequests = [...(audit.missingJobRequests || [])];
-  let missingServices = [...(audit.missingServices || [])];
-  let missingIssues = [...(audit.missingIssues || [])];
-  let missingMrn = [...(audit.missingMrn || [])];
-
-  let currentMainTab = 'aliases';
-  let currentSecFilter = 'all';
-  let currentAllocTab = 'jobs';
-  let vehSearchQuery = '';
-  let allocSearchQuery = '';
-
-  const secMeta = {
-    oilbook: { label: 'Oil & Fuel', icon: '🛢️', badgeCls: 'blue' },
-    stores: { label: 'Stores & Requisitions', icon: '📦', badgeCls: 'green' },
-    battery: { label: 'Tyres & Batteries', icon: '🔋', badgeCls: 'amber' },
-    daily_work: { label: 'Daily Work', icon: '🚜', badgeCls: 'violet' },
-    fleet: { label: 'Fleet Register', icon: '🚚', badgeCls: '' },
-    general: { label: 'General / Other', icon: '🏷️', badgeCls: '' },
-  };
-  const getSecBadge = (s) => {
-    const meta = secMeta[s] || secMeta.general;
-    return `<span class="badge ${meta.badgeCls}">${meta.icon} ${esc(meta.label)}</span>`;
-  };
-
-  const getSecCounts = () => {
-    const counts = { all: pendingList.length, oilbook: 0, stores: 0, battery: 0, daily_work: 0, other: 0 };
-    for (const item of pendingList) {
-      if (item.source === 'oilbook') counts.oilbook++;
-      else if (item.source === 'stores') counts.stores++;
-      else if (item.source === 'battery') counts.battery++;
-      else if (item.source === 'daily_work') counts.daily_work++;
-      else counts.other++;
-    }
-    return counts;
-  };
-  const getTotalMissing = () => missingJobs.length + missingJobRequests.length + missingServices.length + missingIssues.length + missingMrn.length;
-
-  const updateHeaderCounters = () => {
-    const sc = getSecCounts();
-    const totMis = getTotalMissing();
-    const valAliases = qs('#kpi-val-aliases', c); if (valAliases) valAliases.textContent = pendingList.length;
-    const subAliases = qs('#kpi-sub-aliases', c); if (subAliases) subAliases.textContent = `Oil ${sc.oilbook} · Stores ${sc.stores} · Tyre ${sc.battery} · Daily ${sc.daily_work}`;
-    const valJobs = qs('#kpi-val-jobs', c); if (valJobs) valJobs.textContent = missingJobs.length;
-    const valJR = qs('#kpi-val-jobrequests', c); if (valJR) valJR.textContent = missingJobRequests.length;
-    const valSvc = qs('#kpi-val-services', c); if (valSvc) valSvc.textContent = missingServices.length;
-    const valIss = qs('#kpi-val-issues', c); if (valIss) valIss.textContent = missingIssues.length;
-    const valMrn = qs('#kpi-val-mrn', c); if (valMrn) valMrn.textContent = missingMrn.length;
-
-    const tabAliases = qs('#tab-cnt-aliases', c); if (tabAliases) tabAliases.textContent = pendingList.length;
-    const tabMissing = qs('#tab-cnt-missing', c); if (tabMissing) tabMissing.textContent = totMis;
-
-    const cntSecAll = qs('#cnt-sec-all', c); if (cntSecAll) cntSecAll.textContent = sc.all;
-    const cntSecOil = qs('#cnt-sec-oilbook', c); if (cntSecOil) cntSecOil.textContent = sc.oilbook;
-    const cntSecSto = qs('#cnt-sec-stores', c); if (cntSecSto) cntSecSto.textContent = sc.stores;
-    const cntSecBat = qs('#cnt-sec-battery', c); if (cntSecBat) cntSecBat.textContent = sc.battery;
-    const cntSecDai = qs('#cnt-sec-daily', c); if (cntSecDai) cntSecDai.textContent = sc.daily_work;
-    const cntSecOth = qs('#cnt-sec-other', c); if (cntSecOth) cntSecOth.textContent = sc.other;
-
-    const cntAlJobs = qs('#cnt-alloc-jobs', c); if (cntAlJobs) cntAlJobs.textContent = missingJobs.length;
-    const cntAlJR = qs('#cnt-alloc-jobrequests', c); if (cntAlJR) cntAlJR.textContent = missingJobRequests.length;
-    const cntAlSvc = qs('#cnt-alloc-services', c); if (cntAlSvc) cntAlSvc.textContent = missingServices.length;
-    const cntAlIss = qs('#cnt-alloc-issues', c); if (cntAlIss) cntAlIss.textContent = missingIssues.length;
-    const cntAlMrn = qs('#cnt-alloc-mrn', c); if (cntAlMrn) cntAlMrn.textContent = missingMrn.length;
-  };
-
-  const sc = getSecCounts();
-  const totMis = getTotalMissing();
-
-  c.innerHTML = `${pageHeader('Resolver Queues & Vehicle Allocation', 'Divided by section: unrecognised vehicle & mechanic text, plus missing vehicle allocations across jobs, job requests, services, issues, and stores.')}
-    <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(180px, 1fr));gap:10px;margin-bottom:14px">
-      <div class="card" id="kpi-aliases" style="cursor:pointer;padding:12px;border-left:4px solid var(--primary);transition:transform .15s">
-        <div class="muted" style="font-size:11px;text-transform:uppercase;font-weight:600">Pending Vehicle Aliases</div>
-        <div style="font-size:22px;font-weight:700;margin:4px 0" id="kpi-val-aliases">${pendingList.length}</div>
-        <div class="muted" style="font-size:11px" id="kpi-sub-aliases">Oil ${sc.oilbook} · Stores ${sc.stores} · Tyre ${sc.battery} · Daily ${sc.daily_work}</div>
-      </div>
-      <div class="card" id="kpi-jobs" style="cursor:pointer;padding:12px;border-left:4px solid ${missingJobs.length ? 'var(--amber,#f2a900)' : 'var(--green,#3c7d5a)'}">
-        <div class="muted" style="font-size:11px;text-transform:uppercase;font-weight:600">Job Cards Missing Vehicle</div>
-        <div style="font-size:22px;font-weight:700;margin:4px 0;color:${missingJobs.length ? 'var(--amber,#d9822b)' : 'inherit'}" id="kpi-val-jobs">${missingJobs.length}</div>
-        <div class="muted" style="font-size:11px">${missingJobs.length ? 'Needs vehicle allocation' : 'All jobs allocated'}</div>
-      </div>
-      <div class="card" id="kpi-jobrequests" style="cursor:pointer;padding:12px;border-left:4px solid ${missingJobRequests.length ? 'var(--amber,#f2a900)' : 'var(--green,#3c7d5a)'}">
-        <div class="muted" style="font-size:11px;text-transform:uppercase;font-weight:600">Job Requests Missing Vehicle</div>
-        <div style="font-size:22px;font-weight:700;margin:4px 0;color:${missingJobRequests.length ? 'var(--amber,#d9822b)' : 'inherit'}" id="kpi-val-jobrequests">${missingJobRequests.length}</div>
-        <div class="muted" style="font-size:11px">${missingJobRequests.length ? 'Needs vehicle allocation' : 'All requests allocated'}</div>
-      </div>
-      <div class="card" id="kpi-services" style="cursor:pointer;padding:12px;border-left:4px solid ${missingServices.length ? 'var(--amber,#f2a900)' : 'var(--green,#3c7d5a)'}">
-        <div class="muted" style="font-size:11px;text-transform:uppercase;font-weight:600">Services Missing Vehicle</div>
-        <div style="font-size:22px;font-weight:700;margin:4px 0;color:${missingServices.length ? 'var(--amber,#d9822b)' : 'inherit'}" id="kpi-val-services">${missingServices.length}</div>
-        <div class="muted" style="font-size:11px">${missingServices.length ? 'Needs vehicle allocation' : 'All services allocated'}</div>
-      </div>
-      <div class="card" id="kpi-issues" style="cursor:pointer;padding:12px;border-left:4px solid ${missingIssues.length ? 'var(--amber,#f2a900)' : 'var(--green,#3c7d5a)'}">
-        <div class="muted" style="font-size:11px;text-transform:uppercase;font-weight:600">Store Issues Missing Vehicle</div>
-        <div style="font-size:22px;font-weight:700;margin:4px 0;color:${missingIssues.length ? 'var(--amber,#d9822b)' : 'inherit'}" id="kpi-val-issues">${missingIssues.length}</div>
-        <div class="muted" style="font-size:11px">${missingIssues.length ? 'Unassigned issue lines' : 'All issues allocated'}</div>
-      </div>
-      <div class="card" id="kpi-mrn" style="cursor:pointer;padding:12px;border-left:4px solid ${missingMrn.length ? 'var(--primary)' : 'var(--green,#3c7d5a)'}">
-        <div class="muted" style="font-size:11px;text-transform:uppercase;font-weight:600">MRN Requisitions</div>
-        <div style="font-size:22px;font-weight:700;margin:4px 0" id="kpi-val-mrn">${missingMrn.length}</div>
-        <div class="muted" style="font-size:11px">${missingMrn.length ? 'General / unassigned vehicle' : 'All MRNs assigned'}</div>
-      </div>
-    </div>
-
-    <div class="toolbar" style="margin:0 0 12px;gap:8px;flex-wrap:wrap">
-      <div class="pill-row" id="alias_main_tabs" style="margin:0">
-        <button class="sm primary" data-tab="aliases">🏷️ Pending Aliases (<span id="tab-cnt-aliases">${pendingList.length}</span>)</button>
-        <button class="sm" data-tab="missing">⚠️ Missing Vehicle Allocations (<span id="tab-cnt-missing">${totMis}</span>)</button>
-        <button class="sm" data-tab="mechanics">👨‍🔧 Mechanic Names (${mPending.length})</button>
-        <button class="sm" data-tab="resolved">📜 Resolved History &amp; Rates</button>
-      </div>
-    </div>
-
-    <!-- Tab 1: Pending Vehicle Aliases Divided by Section -->
-    <div id="pane_aliases" class="card section">
-      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:10px">
-        <div class="pill-row" id="alias_sec_filters" style="margin:0">
-          <button class="sm primary" data-sec="all">All Sections (<span id="cnt-sec-all">${sc.all}</span>)</button>
-          <button class="sm" data-sec="oilbook">🛢️ Oil &amp; Fuel (<span id="cnt-sec-oilbook">${sc.oilbook}</span>)</button>
-          <button class="sm" data-sec="stores">📦 Stores (<span id="cnt-sec-stores">${sc.stores}</span>)</button>
-          <button class="sm" data-sec="battery">🔋 Tyres &amp; Battery (<span id="cnt-sec-battery">${sc.battery}</span>)</button>
-          <button class="sm" data-sec="daily_work">🚜 Daily Work (<span id="cnt-sec-daily">${sc.daily_work}</span>)</button>
-          ${sc.other ? `<button class="sm" data-sec="other">Other (<span id="cnt-sec-other">${sc.other}</span>)</button>` : ''}
-        </div>
-        <input id="alias_veh_filter" type="search" placeholder="Search text or section…" style="max-width:240px;margin:0;font-size:12px;padding:4px 8px">
-      </div>
-      <div id="alias_veh_table_wrap"></div>
-    </div>
-
-    <!-- Tab 2: Missing Vehicle Allocations Across Sections -->
-    <div id="pane_missing" class="card section" style="display:none">
-      <p class="muted" style="margin-top:0;font-size:12px">Records where vehicle was not specified upon entry. Assigning a vehicle here directly links costs, stock moves, and workshop logs to the selected vehicle register.</p>
-      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:10px">
-        <div class="pill-row" id="alloc_sub_tabs" style="margin:0">
-          <button class="sm primary" data-alloc="jobs">🔧 Job Cards (<span id="cnt-alloc-jobs">${missingJobs.length}</span>)</button>
-          <button class="sm" data-alloc="jobrequests">📋 Job Requests (<span id="cnt-alloc-jobrequests">${missingJobRequests.length}</span>)</button>
-          <button class="sm" data-alloc="services">⚙️ Service Records (<span id="cnt-alloc-services">${missingServices.length}</span>)</button>
-          <button class="sm" data-alloc="issues">📦 Store Issues (<span id="cnt-alloc-issues">${missingIssues.length}</span>)</button>
-          <button class="sm" data-alloc="mrn">📄 Material Requisitions (<span id="cnt-alloc-mrn">${missingMrn.length}</span>)</button>
-        </div>
-        <input id="alloc_filter" type="search" placeholder="Search records…" style="max-width:240px;margin:0;font-size:12px;padding:4px 8px">
-      </div>
-      <div id="alloc_table_wrap"></div>
-    </div>
-
-    <!-- Tab 3: Mechanic Aliases -->
-    <div id="pane_mechanics" class="card section" style="display:none">
-      <h3 style="margin-top:0">Mechanic names — pending link (${mPending.length})</h3>
-      ${mPending.length ? tableWrap([
-        { label: 'Raw Text' },
-        { label: 'Hits', num: true, width: '70px' },
-        { label: 'Source', width: '110px' },
-        { label: 'Link to Mechanic', width: '340px' }
-      ],
-      mPending.map((a) => `<tr><td>${esc(a.raw_text)}</td><td class="num">${a.hit_count}</td><td>${esc(a.source || '')}</td>
-          <td style="white-space:nowrap">${(canDo('aliases.mechanic.resolve') || isAdmin()) ? `<select data-malias="${a.id}" style="width:auto;display:inline-block;max-width:260px"><option value="">— pick —</option>${mopts}</select> <button class="sm primary" data-mlink="${a.id}" style="margin-left:6px">Link</button>` : '<span class="muted">read-only</span>'}</td></tr>`), { fit: true }) : '<span class="muted">Queue empty — every mechanic name resolves.</span>'}
-    </div>
-
-    <!-- Tab 4: Resolved History & Rates -->
-    <div id="pane_resolved" style="display:none">
-      <div class="grid">
-        <div class="card"><h3>Resolved vehicle aliases (${all.length})</h3>
-          ${tableWrap([{ label: 'Raw Text' }, { label: 'Asset' }, { label: 'Hits', num: true }], all.map((a) => `<tr><td>${esc(a.raw_text)}</td><td>${esc(a.asset_code || '')}</td><td class="num">${a.hit_count}</td></tr>`), { scroll: true })}</div>
-        <div class="card"><h3>Mechanics &amp; rates</h3>
-          ${tableWrap([{ label: 'Mechanic' }, { label: 'Rate/h', num: true }], mechs.map((m) => `<tr><td>${esc(m.name)}</td><td class="num">${m.rate == null ? '<span class="badge amber">no rate</span>' : money(m.rate)}</td></tr>`), { scroll: true })}</div>
-      </div>
-    </div>`;
-
-  const canResolve = canDo('aliases.vehicle.resolve') || isAdmin();
-
-  const renderAliasesTable = () => {
-    const wrap = qs('#alias_veh_table_wrap', c);
-    if (!wrap) return;
-    let filtered = pendingList;
-    if (currentSecFilter !== 'all') {
-      if (currentSecFilter === 'other') {
-        filtered = filtered.filter((a) => !['oilbook', 'stores', 'battery', 'daily_work'].includes(a.source));
-      } else {
-        filtered = filtered.filter((a) => a.source === currentSecFilter);
-      }
-    }
-    if (vehSearchQuery) {
-      filtered = filtered.filter((a) =>
-        (a.raw_text && a.raw_text.toLowerCase().includes(vehSearchQuery)) ||
-        (a.source && a.source.toLowerCase().includes(vehSearchQuery))
-      );
-    }
-
-    if (!filtered.length) {
-      wrap.innerHTML = `<div class="muted" style="text-align:center;padding:24px">No pending aliases found${currentSecFilter !== 'all' ? ' for ' + esc(secMeta[currentSecFilter]?.label || currentSecFilter) : ''}.</div>`;
-      return;
-    }
-
-    wrap.innerHTML = tableWrap([
-      { label: 'Raw Unrecognised Text', cls: 'desc-col', width: '220px' },
-      { label: 'Link to Registered Asset', width: '290px' },
-      { label: 'Section / Source', width: '150px' },
-      { label: 'Hits', num: true, width: '70px' }
-    ],
-    filtered.map((a) => `<tr data-alias-row="${a.id}">
-      <td class="desc-col"><b>${esc(a.raw_text)}</b></td>
-      <td style="white-space:nowrap">
-        ${canResolve ? `
-          <div style="display:flex;align-items:center;gap:6px">
-            <select data-alias="${a.id}" style="width:190px;max-width:210px;font-size:12px;padding:3px 6px;margin:0">
-              <option value="">— pick asset —</option>${aopts}
-            </select>
-            <button class="sm primary" data-link="${a.id}" style="padding:3px 10px;font-size:12px;flex-shrink:0">Link</button>
-            ${isAdmin() ? `<button class="sm" data-del-alias="${a.id}" style="padding:3px 6px;font-size:12px;flex-shrink:0" title="Ignore / Delete raw alias">✕</button>` : ''}
-          </div>
-        ` : '<span class="muted">read-only</span>'}
-      </td>
-      <td>${getSecBadge(a.source)}</td>
-      <td class="num">${a.hit_count}</td>
-    </tr>`), { fit: true, scroll: true });
-
-    qsa('[data-link]', wrap).forEach((b) => {
-      b.onclick = async () => {
-        const id = b.dataset.link;
-        const sel = qs(`[data-alias="${id}"]`, wrap);
-        if (!sel || !sel.value) return toast('Pick an asset first', 'err');
-        try {
-          await api(`/aliases/${id}/link`, { method: 'POST', body: { asset_id: sel.value } });
-          toast('Linked asset & cascaded to matching records', 'ok');
-          pendingList = pendingList.filter((x) => String(x.id) !== String(id));
-          updateHeaderCounters();
-          renderAliasesTable();
-        } catch (e) { toast(e.message, 'err'); }
-      };
-    });
-
-    qsa('[data-del-alias]', wrap).forEach((b) => {
-      b.onclick = async () => {
-        const id = b.dataset.delAlias;
-        if (!confirm('Remove this unrecognized text entry from the alias queue?')) return;
-        try {
-          await api(`/aliases/${id}`, { method: 'DELETE' });
-          toast('Alias removed', 'ok');
-          pendingList = pendingList.filter((x) => String(x.id) !== String(id));
-          updateHeaderCounters();
-          renderAliasesTable();
-        } catch (e) { toast(e.message, 'err'); }
-      };
-    });
-  };
-
-  const renderAllocTable = () => {
-    const wrap = qs('#alloc_table_wrap', c);
-    if (!wrap) return;
-
-    if (currentAllocTab === 'jobs') {
-      let list = missingJobs;
-      if (allocSearchQuery) {
-        list = list.filter((j) =>
-          (j.job_no && j.job_no.toLowerCase().includes(allocSearchQuery)) ||
-          (j.description && j.description.toLowerCase().includes(allocSearchQuery)) ||
-          (j.workshop_name && j.workshop_name.toLowerCase().includes(allocSearchQuery))
-        );
-      }
-      if (!list.length) {
-        wrap.innerHTML = '<div class="muted" style="text-align:center;padding:24px">All job cards have vehicles allocated! No unassigned jobs found.</div>';
-        return;
-      }
-      wrap.innerHTML = tableWrap([
-        { label: 'Job Card', width: '130px' },
-        { label: 'Allocate Vehicle', width: '280px' },
-        { label: 'Date', width: '95px' },
-        { label: 'Workshop', width: '150px' },
-        { label: 'Type', width: '80px' },
-        { label: 'Description / Task', cls: 'desc-col' }
-      ],
-      list.map((j) => `<tr data-job-row="${j.id}">
-        <td><a href="#/jobs/${j.id}"><b>${esc(j.job_no)}</b></a></td>
-        <td style="white-space:nowrap">
-          ${canResolve ? `
-            <div style="display:flex;align-items:center;gap:6px">
-              <select data-job-sel="${j.id}" style="width:190px;max-width:210px;font-size:12px;padding:3px 6px;margin:0">
-                <option value="">— pick vehicle —</option>${aopts}
-              </select>
-              <button class="sm primary" data-job-btn="${j.id}" style="padding:3px 10px;font-size:12px;flex-shrink:0">Allocate</button>
-            </div>
-          ` : '<span class="muted">read-only</span>'}
-        </td>
-        <td>${esc(j.requested_at ? j.requested_at.slice(0, 10) : '-')}</td>
-        <td style="font-size:12px;white-space:normal;max-width:150px;line-height:1.3">${esc(j.workshop_name)}</td>
-        <td><span class="badge ${j.type === 'repair' ? 'amber' : 'blue'}">${esc(j.type || 'job')}</span></td>
-        <td class="desc-col">${esc(j.description || '-')}</td>
-      </tr>`), { fit: true, scroll: true });
-
-      qsa('[data-job-btn]', wrap).forEach((btn) => {
-        btn.onclick = async () => {
-          const id = btn.dataset.jobBtn;
-          const sel = qs(`[data-job-sel="${id}"]`, wrap);
-          if (!sel || !sel.value) return toast('Pick an asset first', 'err');
-          try {
-            await api('/aliases/allocate-job', { method: 'POST', body: { job_id: id, asset_id: sel.value } });
-            toast('Vehicle allocated to Job Card', 'ok');
-            missingJobs = missingJobs.filter((x) => String(x.id) !== String(id));
-            updateHeaderCounters();
-            renderAllocTable();
-          } catch (e) { toast(e.message, 'err'); }
-        };
-      });
-
-    } else if (currentAllocTab === 'jobrequests') {
-      let list = missingJobRequests;
-      if (allocSearchQuery) {
-        list = list.filter((r) =>
-          (r.jr_no && r.jr_no.toLowerCase().includes(allocSearchQuery)) ||
-          (r.description && r.description.toLowerCase().includes(allocSearchQuery)) ||
-          (r.requested_by && r.requested_by.toLowerCase().includes(allocSearchQuery)) ||
-          (r.workshop_name && r.workshop_name.toLowerCase().includes(allocSearchQuery))
-        );
-      }
-      if (!list.length) {
-        wrap.innerHTML = '<div class="muted" style="text-align:center;padding:24px">All job requests have vehicles allocated! No unassigned job requests found.</div>';
-        return;
-      }
-      wrap.innerHTML = tableWrap([
-        { label: 'Job Request', width: '130px' },
-        { label: 'Allocate Vehicle', width: '280px' },
-        { label: 'Date', width: '95px' },
-        { label: 'Workshop', width: '150px' },
-        { label: 'Status', width: '90px' },
-        { label: 'Requested By', width: '120px' },
-        { label: 'Work Description', cls: 'desc-col' }
-      ],
-      list.map((r) => `<tr data-jr-row="${r.id}">
-        <td><a href="#/jobrequests/${r.id}"><b>${esc(r.jr_no)}</b></a></td>
-        <td style="white-space:nowrap">
-          ${canResolve ? `
-            <div style="display:flex;align-items:center;gap:6px">
-              <select data-jr-sel="${r.id}" style="width:190px;max-width:210px;font-size:12px;padding:3px 6px;margin:0">
-                <option value="">— pick vehicle —</option>${aopts}
-              </select>
-              <button class="sm primary" data-jr-btn="${r.id}" style="padding:3px 10px;font-size:12px;flex-shrink:0">Allocate</button>
-            </div>
-          ` : '<span class="muted">read-only</span>'}
-        </td>
-        <td>${esc(r.req_date ? r.req_date.slice(0, 10) : '-')}</td>
-        <td style="font-size:12px;white-space:normal;max-width:150px;line-height:1.3">${esc(r.workshop_name)}</td>
-        <td><span class="badge ${r.approval_status === 'approved' ? 'green' : (r.approval_status === 'rejected' ? 'red' : 'amber')}">${esc(r.approval_status || 'requested')}</span></td>
-        <td>${esc(r.requested_by || '-')}</td>
-        <td class="desc-col">${esc(r.description || '-')}</td>
-      </tr>`), { fit: true, scroll: true });
-
-      qsa('[data-jr-btn]', wrap).forEach((btn) => {
-        btn.onclick = async () => {
-          const id = btn.dataset.jrBtn;
-          const sel = qs(`[data-jr-sel="${id}"]`, wrap);
-          if (!sel || !sel.value) return toast('Pick an asset first', 'err');
-          try {
-            await api('/aliases/allocate-job-request', { method: 'POST', body: { job_request_id: id, asset_id: sel.value } });
-            toast('Vehicle allocated to Job Request', 'ok');
-            missingJobRequests = missingJobRequests.filter((x) => String(x.id) !== String(id));
-            updateHeaderCounters();
-            renderAllocTable();
-          } catch (e) { toast(e.message, 'err'); }
-        };
-      });
-
-    } else if (currentAllocTab === 'services') {
-      let list = missingServices;
-      if (allocSearchQuery) {
-        list = list.filter((s) =>
-          (s.vehicle_label && s.vehicle_label.toLowerCase().includes(allocSearchQuery)) ||
-          (s.repair_details && s.repair_details.toLowerCase().includes(allocSearchQuery)) ||
-          (s.site_location && s.site_location.toLowerCase().includes(allocSearchQuery))
-        );
-      }
-      if (!list.length) {
-        wrap.innerHTML = '<div class="muted" style="text-align:center;padding:24px">All service records have vehicles allocated! No unassigned services found.</div>';
-        return;
-      }
-      wrap.innerHTML = tableWrap([
-        { label: 'Service Date', width: '100px' },
-        { label: 'Allocate Vehicle', width: '280px' },
-        { label: 'Recorded Label', width: '120px' },
-        { label: 'Site / Location', width: '130px' },
-        { label: 'Repair Details', cls: 'desc-col' },
-        { label: 'Total (Rs)', num: true, width: '100px' }
-      ],
-      list.map((s) => `<tr data-svc-row="${s.id}">
-        <td>${esc(s.service_date || '-')}</td>
-        <td style="white-space:nowrap">
-          ${canResolve ? `
-            <div style="display:flex;align-items:center;gap:6px">
-              <select data-svc-sel="${s.id}" style="width:190px;max-width:210px;font-size:12px;padding:3px 6px;margin:0">
-                <option value="">— pick vehicle —</option>${aopts}
-              </select>
-              <button class="sm primary" data-svc-btn="${s.id}" style="padding:3px 10px;font-size:12px;flex-shrink:0">Allocate</button>
-            </div>
-          ` : '<span class="muted">read-only</span>'}
-        </td>
-        <td><code>${esc(s.vehicle_label || '(blank)')}</code></td>
-        <td style="font-size:12px;white-space:normal;max-width:130px">${esc(s.site_location || '-')}</td>
-        <td class="desc-col">${esc(s.repair_details || '-')}</td>
-        <td class="num">${money(s.grand_total || 0)}</td>
-      </tr>`), { fit: true, scroll: true });
-
-      qsa('[data-svc-btn]', wrap).forEach((btn) => {
-        btn.onclick = async () => {
-          const id = btn.dataset.svcBtn;
-          const sel = qs(`[data-svc-sel="${id}"]`, wrap);
-          if (!sel || !sel.value) return toast('Pick an asset first', 'err');
-          try {
-            await api('/aliases/allocate-service', { method: 'POST', body: { service_id: id, asset_id: sel.value } });
-            toast('Vehicle allocated to Service record', 'ok');
-            missingServices = missingServices.filter((x) => String(x.id) !== String(id));
-            updateHeaderCounters();
-            renderAllocTable();
-          } catch (e) { toast(e.message, 'err'); }
-        };
-      });
-
-    } else if (currentAllocTab === 'issues') {
-      let list = missingIssues;
-      if (allocSearchQuery) {
-        list = list.filter((i) =>
-          (i.min_no && i.min_no.toLowerCase().includes(allocSearchQuery)) ||
-          (i.description && i.description.toLowerCase().includes(allocSearchQuery)) ||
-          (i.purpose && i.purpose.toLowerCase().includes(allocSearchQuery))
-        );
-      }
-      if (!list.length) {
-        wrap.innerHTML = '<div class="muted" style="text-align:center;padding:24px">All store issues have vehicles allocated! No unassigned issue lines found.</div>';
-        return;
-      }
-      wrap.innerHTML = tableWrap([
-        { label: 'Issue Date', width: '100px' },
-        { label: 'MIN No', width: '130px' },
-        { label: 'Allocate Vehicle', width: '280px' },
-        { label: 'Item / Spares Description', cls: 'desc-col' },
-        { label: 'Qty', num: true, width: '70px' },
-        { label: 'Purpose / Job', cls: 'desc-col' },
-        { label: 'Store', width: '140px' }
-      ],
-      list.map((i) => `<tr data-issue-row="${i.id}">
-        <td>${esc(i.issue_date || '-')}</td>
-        <td><b>${esc(i.min_no || '-')}</b></td>
-        <td style="white-space:nowrap">
-          ${canResolve ? `
-            <div style="display:flex;align-items:center;gap:6px">
-              <select data-issue-sel="${i.id}" style="width:190px;max-width:210px;font-size:12px;padding:3px 6px;margin:0">
-                <option value="">— pick vehicle —</option>${aopts}
-              </select>
-              <button class="sm primary" data-issue-btn="${i.id}" style="padding:3px 10px;font-size:12px;flex-shrink:0">Allocate</button>
-            </div>
-          ` : '<span class="muted">read-only</span>'}
-        </td>
-        <td class="desc-col">${esc(i.description || '-')}</td>
-        <td class="num">${i.qty} ${esc(i.unit || '')}</td>
-        <td class="desc-col">${esc(i.purpose || '-')}</td>
-        <td style="font-size:12px;white-space:normal;max-width:140px">${esc(i.store_name)}</td>
-      </tr>`), { fit: true, scroll: true });
-
-      qsa('[data-issue-btn]', wrap).forEach((btn) => {
-        btn.onclick = async () => {
-          const id = btn.dataset.issueBtn;
-          const sel = qs(`[data-issue-sel="${id}"]`, wrap);
-          if (!sel || !sel.value) return toast('Pick an asset first', 'err');
-          try {
-            await api('/aliases/allocate-issue', { method: 'POST', body: { issue_id: id, asset_id: sel.value } });
-            toast('Vehicle allocated to Store Issue', 'ok');
-            missingIssues = missingIssues.filter((x) => String(x.id) !== String(id));
-            updateHeaderCounters();
-            renderAllocTable();
-          } catch (e) { toast(e.message, 'err'); }
-        };
-      });
-
-    } else if (currentAllocTab === 'mrn') {
-      let list = missingMrn;
-      if (allocSearchQuery) {
-        list = list.filter((m) =>
-          (m.mrn_no && m.mrn_no.toLowerCase().includes(allocSearchQuery)) ||
-          (m.purpose && m.purpose.toLowerCase().includes(allocSearchQuery)) ||
-          (m.requested_by && m.requested_by.toLowerCase().includes(allocSearchQuery))
-        );
-      }
-      if (!list.length) {
-        wrap.innerHTML = '<div class="muted" style="text-align:center;padding:24px">All MRNs have vehicles allocated!</div>';
-        return;
-      }
-      wrap.innerHTML = tableWrap([
-        { label: 'MRN No', width: '110px' },
-        { label: 'Allocate Vehicle', width: '280px' },
-        { label: 'Date', width: '95px' },
-        { label: 'Requested By', width: '120px' },
-        { label: 'Purpose / Notes', cls: 'desc-col' },
-        { label: 'Workshop', width: '150px' },
-        { label: 'Status', width: '80px' }
-      ],
-      list.map((m) => `<tr data-mrn-row="${m.id}">
-        <td><a href="#/stores/mrn/${m.id}"><b>${esc(m.mrn_no || m.id)}</b></a></td>
-        <td style="white-space:nowrap">
-          ${canResolve ? `
-            <div style="display:flex;align-items:center;gap:6px">
-              <select data-mrn-sel="${m.id}" style="width:190px;max-width:210px;font-size:12px;padding:3px 6px;margin:0">
-                <option value="">— pick vehicle —</option>${aopts}
-              </select>
-              <button class="sm primary" data-mrn-btn="${m.id}" style="padding:3px 10px;font-size:12px;flex-shrink:0">Allocate</button>
-            </div>
-          ` : '<span class="muted">read-only</span>'}
-        </td>
-        <td>${esc(m.req_date || '-')}</td>
-        <td>${esc(m.requested_by || '-')}</td>
-        <td class="desc-col">${esc(m.purpose || '-')}</td>
-        <td style="font-size:12px;white-space:normal;max-width:150px">${esc(m.workshop_name)}</td>
-        <td><span class="badge ${m.status === 'open' ? 'blue' : ''}">${esc(m.status || '')}</span></td>
-      </tr>`), { fit: true, scroll: true });
-
-      qsa('[data-mrn-btn]', wrap).forEach((btn) => {
-        btn.onclick = async () => {
-          const id = btn.dataset.mrnBtn;
-          const sel = qs(`[data-mrn-sel="${id}"]`, wrap);
-          if (!sel || !sel.value) return toast('Pick an asset first', 'err');
-          try {
-            await api('/aliases/allocate-mrn', { method: 'POST', body: { mrn_id: id, asset_id: sel.value } });
-            toast('Vehicle allocated to MRN', 'ok');
-            missingMrn = missingMrn.filter((x) => String(x.id) !== String(id));
-            updateHeaderCounters();
-            renderAllocTable();
-          } catch (e) { toast(e.message, 'err'); }
-        };
-      });
-    }
-  };
-
-  const switchMainTab = (tab) => {
-    currentMainTab = tab;
-    qsa('#alias_main_tabs button', c).forEach((b) => b.classList.toggle('primary', b.dataset.tab === tab));
-    const pAliases = qs('#pane_aliases', c); if (pAliases) pAliases.style.display = tab === 'aliases' ? '' : 'none';
-    const pMissing = qs('#pane_missing', c); if (pMissing) pMissing.style.display = tab === 'missing' ? '' : 'none';
-    const pMechs = qs('#pane_mechanics', c); if (pMechs) pMechs.style.display = tab === 'mechanics' ? '' : 'none';
-    const pResolved = qs('#pane_resolved', c); if (pResolved) pResolved.style.display = tab === 'resolved' ? '' : 'none';
-    if (tab === 'aliases') renderAliasesTable();
-    if (tab === 'missing') renderAllocTable();
-  };
-
-  qsa('#alias_main_tabs button', c).forEach((b) => {
-    b.onclick = () => switchMainTab(b.dataset.tab);
-  });
-
-  const kpiAliases = qs('#kpi-aliases', c);
-  if (kpiAliases) kpiAliases.onclick = () => switchMainTab('aliases');
-  const kpiJobs = qs('#kpi-jobs', c);
-  if (kpiJobs) kpiJobs.onclick = () => {
-    switchMainTab('missing');
-    currentAllocTab = 'jobs';
-    qsa('#alloc_sub_tabs button', c).forEach((b) => b.classList.toggle('primary', b.dataset.alloc === 'jobs'));
-    renderAllocTable();
-  };
-  const kpiJR = qs('#kpi-jobrequests', c);
-  if (kpiJR) kpiJR.onclick = () => {
-    switchMainTab('missing');
-    currentAllocTab = 'jobrequests';
-    qsa('#alloc_sub_tabs button', c).forEach((b) => b.classList.toggle('primary', b.dataset.alloc === 'jobrequests'));
-    renderAllocTable();
-  };
-  const kpiSvc = qs('#kpi-services', c);
-  if (kpiSvc) kpiSvc.onclick = () => {
-    switchMainTab('missing');
-    currentAllocTab = 'services';
-    qsa('#alloc_sub_tabs button', c).forEach((b) => b.classList.toggle('primary', b.dataset.alloc === 'services'));
-    renderAllocTable();
-  };
-  const kpiIss = qs('#kpi-issues', c);
-  if (kpiIss) kpiIss.onclick = () => {
-    switchMainTab('missing');
-    currentAllocTab = 'issues';
-    qsa('#alloc_sub_tabs button', c).forEach((b) => b.classList.toggle('primary', b.dataset.alloc === 'issues'));
-    renderAllocTable();
-  };
-  const kpiMrn = qs('#kpi-mrn', c);
-  if (kpiMrn) kpiMrn.onclick = () => {
-    switchMainTab('missing');
-    currentAllocTab = 'mrn';
-    qsa('#alloc_sub_tabs button', c).forEach((b) => b.classList.toggle('primary', b.dataset.alloc === 'mrn'));
-    renderAllocTable();
-  };
-
-  qsa('#alias_sec_filters button', c).forEach((b) => {
-    b.onclick = () => {
-      currentSecFilter = b.dataset.sec;
-      qsa('#alias_sec_filters button', c).forEach((btn) => btn.classList.toggle('primary', btn.dataset.sec === currentSecFilter));
-      renderAliasesTable();
-    };
-  });
-
-  qsa('#alloc_sub_tabs button', c).forEach((b) => {
-    b.onclick = () => {
-      currentAllocTab = b.dataset.alloc;
-      qsa('#alloc_sub_tabs button', c).forEach((btn) => btn.classList.toggle('primary', btn.dataset.alloc === currentAllocTab));
-      renderAllocTable();
-    };
-  });
-
-  const vehFilterInp = qs('#alias_veh_filter', c);
-  if (vehFilterInp) {
-    vehFilterInp.oninput = (e) => {
-      vehSearchQuery = e.target.value.toLowerCase().trim();
-      renderAliasesTable();
-    };
-  }
-  const allocFilterInp = qs('#alloc_filter', c);
-  if (allocFilterInp) {
-    allocFilterInp.oninput = (e) => {
-      allocSearchQuery = e.target.value.toLowerCase().trim();
-      renderAllocTable();
-    };
-  }
-
-  qsa('[data-mlink]', c).forEach((b) => b.onclick = async () => {
-    const sel = qs(`[data-malias="${b.dataset.mlink}"]`, c);
-    if (!sel || !sel.value) return toast('Pick a mechanic', 'err');
-    try {
-      await api(`/mechanics/aliases/${b.dataset.mlink}/link`, { method: 'POST', body: { mechanic_id: sel.value } });
-      toast('Linked mechanic', 'ok');
-      routes.aliases(c);
-    } catch (e) { toast(e.message, 'err'); }
-  });
-
-  renderAliasesTable();
-  renderAllocTable();
-};
+// Extracted to public/modules/asset_aliases.js
 
 // ---- Reports
 // ---- Monthly Cost Report — manual inputs editor (Tyre/Battery/Fuel/Other/Staff salaries)
@@ -19375,7 +18728,7 @@ async function openMonthlyInputs(year, month, onSaved) {
       <button class="primary sm" id="mri-save">Save all &amp; close</button>
     </div>`, (body) => {
     const grid = qs('#mri-grid', body);
-    const close = () => bg.remove();
+    const close = () => { bg.remove(); scheduleDeferredLiveRefresh(); };
     const paintTabs = () => qsa('#mri-tabs button', body).forEach((b) => b.classList.toggle('primary', b.dataset.k === active));
     const cellHtml = (r, cd) => {
       if (cd[2] === 'ro') return `<td style="padding:3px 6px;color:#555;white-space:nowrap">${esc(r[cd[0]] ?? '')}</td>`;
@@ -21740,3211 +21093,7 @@ routes.access = async (c) => {
 };
 routes.users = async () => { location.hash = '#/access?tab=people'; };
 
-async function renderGovernanceTab(c, sp, defaultView = '') {
-  const canAuditSections = canDo('access.manage');
-  const views = [];
-  if (canAuditSections) views.push(['sections', '🔐 Who Has Access? (Sections & Stores)']);
-  views.push(['stand_ins', '🤝 Stand-in Hand-overs']);
-
-  const candidate = defaultView || (sp && sp.get('view')) || '';
-  const activeView = views.some((v) => v[0] === candidate) ? candidate : views[0][0];
-
-  c.innerHTML = `
-    <div class="card" style="padding:10px 14px;margin-bottom:12px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
-      <div class="pill-row">
-        ${views.map(([k, lbl]) => `<button class="btn sm ${activeView === k ? 'primary' : ''}" data-gov-view="${k}">${esc(lbl)}</button>`).join('')}
-      </div>
-      <div class="muted" style="font-size:12px">
-        ${activeView === 'sections' ? 'Audit effective clearances by system section or physical store location' : 'Temporary approval hand-overs during leave or absence'}
-      </div>
-    </div>
-    <div id="gov-sub-pane"><div class="muted">Loading…</div></div>
-  `;
-
-  qsa('[data-gov-view]', c).forEach((b) => {
-    b.onclick = () => { location.hash = '#/access?tab=governance&view=' + b.dataset.govView; };
-  });
-
-  const subPane = qs('#gov-sub-pane', c);
-  if (activeView === 'sections') {
-    await renderSectionsAudit(subPane, sp ? sp.get('section') : null, sp ? sp.get('store') : null);
-  } else {
-    await renderStandIns(subPane);
-  }
-}
-
-// Approval limits: the most money each role may sign off on its own. Empty = no limit, which is
-// how every role starts, so nothing changes until an amount is typed in. Saved on leaving the box.
-async function renderApprovalLimits(c) {
-  const d = await api('/access/approval-limits');
-  const mine = new Set(ME.roles || []);
-  const cell = (r, k) => {
-    if (!r.gives[k.key] && r.limits[k.key] == null) return '<td class="muted">—</td>';
-    const v = r.limits[k.key];
-    const locked = !isAdmin() && mine.has(r.name);
-    return `<td><input type="number" min="0" step="1" style="max-width:160px" placeholder="No limit" data-lrole="${esc(r.name)}" data-lkind="${esc(k.key)}"
-      value="${v == null ? '' : esc(v)}" data-was="${v == null ? '' : esc(v)}" ${locked ? 'disabled title="Your own role — ask an admin"' : ''}></td>`;
-  };
-  c.innerHTML = `<div class="card">
-    <h3 style="margin:0 0 6px">Approval limits</h3>
-    <p class="muted" style="margin:0 0 10px">The most money (Rs) a role may sign off on its own. Leave a box empty for <b>no limit</b>.
-      Above the limit, the approval waits for someone with a higher limit. Admin never has a limit.
-      A person with two roles gets the higher limit.</p>
-    ${d.roles.length ? tableWrap([{ label: 'Role' }].concat(d.kinds.map((k) => ({ label: k.label }))),
-      d.roles.map((r) => `<tr><td><b>${esc(r.label)}</b>${r.active ? '' : ' <span class="badge">retired</span>'}</td>${d.kinds.map((k) => cell(r, k)).join('')}</tr>`))
-      : '<p class="muted">No role gives these approvals yet.</p>'}
-    <ul class="muted" style="font-size:12px;margin:10px 0 0">${d.kinds.map((k) => `<li><b>${esc(k.label)}</b> — ${esc(k.measure)}.</li>`).join('')}
-      <li>Job cards and job requests have no amount when they are approved, so the limit for a job is checked when it is closed fully.</li></ul>
-  </div>`;
-  qsa('[data-lrole]', c).forEach((inp) => {
-    inp.onchange = async () => {
-      const val = inp.value.trim();
-      if (val === inp.dataset.was) return;
-      try {
-        await api('/access/approval-limits', { method: 'PUT', body: { role: inp.dataset.lrole, kind: inp.dataset.lkind, max_amount: val === '' ? null : val } });
-        inp.dataset.was = val;
-        toast(val === '' ? 'No limit' : `Limit saved: ${money(val)}`);
-      } catch (e) { inp.value = inp.dataset.was; toast(e.message, 'err'); }
-    };
-  });
-}
-
-// Stand-in Approvals (Step 3b, Decision D9)
-async function renderStandIns(c) {
-  const [data, usersResp] = await Promise.all([
-    api('/access/stand-ins'),
-    api('/access/report').catch(() => ({ users: [] }))
-  ]);
-  const delegations = (data && data.delegations) || [];
-  const activeUsers = (usersResp && (usersResp.users || usersResp.people)) || [];
-  const today = new Date().toISOString().slice(0, 10);
-
-  c.innerHTML = `<div class="card">
-    <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:10px;flex-wrap:wrap">
-      <div>
-        <h3 style="margin:0 0 4px">Stand-in Approvals (Hand-overs)</h3>
-        <p class="muted" style="margin:0">When away or on leave, delegate approval authority to a stand-in for up to 30 days (Decision D9). Only certify and approve capabilities pass.</p>
-      </div>
-      <button class="btn sm primary" id="btn-new-standin">+ Hand over approvals</button>
-    </div>
-
-    <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:6px;padding:12px;margin-bottom:14px;font-size:12px;line-height:1.5" class="muted">
-      <b>Delegation rules (Decision D9):</b>
-      • The manager keeps their own signing rights during the hand-over.
-      • The manager's approval limit applies to the stand-in.
-      • Maximum duration is strictly 30 days. No delegation chains (a stand-in cannot re-delegate).
-      • Normal segregation of duties applies: a stand-in cannot approve their own requests or both certify and approve.
-      • All records, approvals and printed forms show both names (e.g. <i>"Ruwan for Nimal"</i>).
-    </div>
-
-    ${tableWrap([
-      { label: 'Granter (Manager)' },
-      { label: 'Stand-in' },
-      { label: 'Period' },
-      { label: 'Reason' },
-      { label: 'Status' },
-      { label: 'Set up by' },
-      { label: 'Actions' }
-    ], delegations.map(d => {
-      const isPast = d.end_date < today;
-      const isFuture = d.start_date > today;
-      const isRevoked = !d.active || !!d.revoked_at;
-      let badge = '<span class="badge" style="background:#dcfce7;color:#166534">Active</span>';
-      if (isRevoked) badge = '<span class="badge" style="background:#fee2e2;color:#991b1b">Revoked</span>';
-      else if (isPast) badge = '<span class="badge" style="background:#f1f5f9;color:#475569">Expired</span>';
-      else if (isFuture) badge = '<span class="badge" style="background:#e0f2fe;color:#075985">Upcoming</span>';
-
-      const canRevoke = !isRevoked && !isPast && (isAdmin() || d.granter_id === ME.id || d.stand_in_id === ME.id);
-      const revokeBtn = canRevoke
-        ? `<button class="btn sm danger" data-revoke="${d.id}" style="padding:2px 6px;font-size:11px">End early</button>`
-        : '<span class="muted">—</span>';
-
-      return `<tr>
-        <td><b>${esc(d.granter_full_name || d.granter_username)}</b></td>
-        <td><b>${esc(d.stand_in_full_name || d.stand_in_username)}</b></td>
-        <td><code>${esc(d.start_date)}</code> to <code>${esc(d.end_date)}</code></td>
-        <td>${esc(d.reason || '')}</td>
-        <td>${badge}</td>
-        <td class="muted" style="font-size:11px">${esc(d.created_by_full_name || d.created_by_username || '')}</td>
-        <td>${revokeBtn}</td>
-      </tr>`;
-    }))}
-  </div>`;
-
-  // Bind revoke buttons
-  qsa('[data-revoke]', c).forEach(btn => {
-    btn.onclick = () => {
-      const id = btn.dataset.revoke;
-      modal('End Hand-over Early', `
-        <p>Are you sure you want to revoke this delegation early?</p>
-        ${field('Reason for ending early', 'revoke_reason', { placeholder: 'e.g. Returned from leave early' })}
-        <div style="margin-top:12px;text-align:right"><button class="btn danger" id="btn-confirm-revoke">End delegation</button></div>
-      `, (body, close) => {
-        qs('#btn-confirm-revoke', body).onclick = async () => {
-          try {
-            const reason = qs('[name="revoke_reason"]', body).value.trim();
-            await api('/access/stand-ins/' + id + '/revoke', { method: 'POST', body: { reason } });
-            toast('Delegation ended');
-            close();
-            renderStandIns(c);
-            renderStandInBanner();
-          } catch (e) {
-            toast(e.message, 'err');
-          }
-        };
-      });
-    };
-  });
-
-  // Bind new delegation button
-  const newBtn = qs('#btn-new-standin', c);
-  if (newBtn) {
-    newBtn.onclick = () => {
-      const isAdm = isAdmin();
-      const granterOpts = activeUsers.map(u =>
-        `<option value="${u.id}" ${u.id === ME.id ? 'selected' : ''}>${esc(u.full_name || u.username)} (${esc(u.roles || '')})</option>`
-      ).join('');
-
-      const standInOpts = activeUsers.filter(u => u.id !== ME.id).map(u =>
-        `<option value="${u.id}">${esc(u.full_name || u.username)} (${esc(u.roles || '')})</option>`
-      ).join('');
-
-      const defaultEnd = new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10);
-
-      modal('Hand Over Approvals to Stand-in', `
-        <p class="muted" style="font-size:12px">Delegate your certifying and approving authority while away (maximum 30 days).</p>
-        ${isAdm ? `<div class="field"><label>Manager (Granter)</label><select name="granter_id" class="input">${granterOpts}</select></div>` : `<input type="hidden" name="granter_id" value="${ME.id}">`}
-        <div class="field"><label>Stand-in Person</label><select name="stand_in_id" class="input">${standInOpts}</select></div>
-        <div class="row" style="display:flex;gap:10px">
-          <div style="flex:1">${field('Start Date', 'start_date', { type: 'date', value: today })}</div>
-          <div style="flex:1">${field('End Date', 'end_date', { type: 'date', value: defaultEnd })}</div>
-        </div>
-        ${field('Reason', 'reason', { placeholder: 'e.g. Annual leave, Medical leave, Site visit' })}
-        <div style="margin-top:14px;text-align:right"><button class="btn primary" id="btn-save-standin">Create Hand-over</button></div>
-      `, (body, close) => {
-        qs('#btn-save-standin', body).onclick = async () => {
-          try {
-            const granter_id = isAdm ? qs('[name="granter_id"]', body).value : ME.id;
-            const stand_in_id = qs('[name="stand_in_id"]', body).value;
-            const start_date = qs('[name="start_date"]', body).value;
-            const end_date = qs('[name="end_date"]', body).value;
-            const reason = qs('[name="reason"]', body).value.trim();
-
-            await api('/access/stand-ins', {
-              method: 'POST',
-              body: { granter_id, stand_in_id, start_date, end_date, reason }
-            });
-            toast('Approvals handed over successfully');
-            close();
-            renderStandIns(c);
-            renderStandInBanner();
-          } catch (e) {
-            toast(e.message, 'err');
-          }
-        };
-      });
-    };
-  }
-}
-
-const lvlChip = (lvl) => {
-  const cls = lvl === 'full' ? 'amber' : lvl === 'edit' ? 'green' : lvl === 'add' ? 'blue' : '';
-  const txt = lvl === 'none' ? '—' : String(lvl).toUpperCase();
-  return `<span class="badge ${cls}"${lvl === 'none' ? ' style="opacity:.4"' : ''}>${txt}</span>`;
-};
-
-// ---- Tab 1: People & Overrides ------------------------------------------------
-async function renderPeopleAccess(c, wantedUserId) {
-  const canManageAccess = canDo('access.manage');
-  const canManageUsers = canDo('users.manage');
-
-  const [data, rolesList, storeLocsRes, wsd] = await Promise.all([
-    api('/access/people'),
-    canManageUsers ? api('/users/roles').catch(() => []) : Promise.resolve([]),
-    api('/store-locations').catch(() => []),
-    workshopsData(true).catch(() => ({ workshops: [], multi: false })),
-  ]);
-
-  const people = data.people || [];
-  const allStoreLocations = Array.isArray(storeLocsRes) ? storeLocsRes : (storeLocsRes && storeLocsRes.stores) || [];
-  const storeOptions = [{ value: '', label: '— No specific store (Workshop / Fleet / General) —' }]
-    .concat(allStoreLocations.filter((s) => s.active !== 0).map((s) => {
-      const icon = s.store_type === 'MAIN_STORE' ? '🏛️' : (s.store_type === 'MAIN_WORKSHOP_STORE' ? '🔧' : '📦');
-      return { value: String(s.id), label: `${icon} ${s.name} (${s.code})` };
-    }));
-
-  if (!people.length) {
-    c.innerHTML = `<div class="card">
-      <div class="toolbar">
-        <span class="muted">No users found.</span>
-        <div class="spacer"></div>
-        ${canManageUsers ? '<button class="primary sm" id="btn-people-new-user">+ New User</button>' : ''}
-      </div>
-    </div>`;
-    const emptyNewBtn = qs('#btn-people-new-user', c);
-    if (emptyNewBtn) {
-      emptyNewBtn.onclick = () => openNewUserWizard(rolesList, allStoreLocations, storeOptions, wsd, (created) => renderPeopleAccess(c, created && created.id));
-    }
-    return;
-  }
-
-  const sel = people.find((u) => u.id == wantedUserId) || people[0];
-  const details = await api('/access/people/' + sel.id);
-  const u = details.user;
-  const sections = details.sections || [];
-  const uRoleNames = (u.roles || []).map((r) => r.name);
-  const allRoles = details.all_roles || data.all_roles || [];
-  const allProjects = details.all_projects || data.all_projects || [];
-  const allTanks = details.all_tanks || data.all_tanks || [];
-
-  // Local state for unsaved override edits & directory filters
-  const sectionEdits = {};
-  const capEdits = {};
-  const selectedRolesSet = new Set(uRoleNames);
-  let rolesChanged = false;
-  let statusFilter = 'all';
-
-  const canEditTarget = !(!isAdmin() && uRoleNames.includes('admin'));
-  const isSelf = ME && ME.id == u.id;
-  const canEditScope = canEditTarget && (!isSelf || isAdmin());
-
-  const renderDirectoryRows = () => {
-    const q = (qs('#person-search', c) ? qs('#person-search', c).value : '').toLowerCase().trim();
-    const filtered = people.filter((p) => {
-      if (statusFilter === 'active' && !p.active) return false;
-      if (statusFilter === 'inactive' && p.active) return false;
-      if (!q) return true;
-      const storeMatch = (p.store_locations || []).some((sl) => (sl.store_name || '').toLowerCase().includes(q) || (sl.store_code || '').toLowerCase().includes(q));
-      return (p.full_name || '').toLowerCase().includes(q) ||
-             (p.username || '').toLowerCase().includes(q) ||
-             (p.project_name || '').toLowerCase().includes(q) ||
-             (p.bulk_tank_name || '').toLowerCase().includes(q) ||
-             storeMatch ||
-             p.roles.some((r) => (r.label || r.name).toLowerCase().includes(q));
-    });
-
-    const listHtml = filtered.map((p) => {
-      const isSel = p.id == u.id;
-      const roleStr = p.roles.map((r) => r.label || r.name).join(', ') || 'No roles';
-      const siteTag = p.project_name ? ` · <span style="color:#0284c7">🏗️ ${esc(p.project_name)}</span>` : '';
-      const tankTag = p.bulk_tank_name ? ` · <span style="color:#d97706">⛽ ${esc(p.bulk_tank_name)}</span>` : '';
-      const pStores = p.store_locations || [];
-      const storeLabel = pStores.length > 0
-        ? (pStores[0].store_name || pStores[0].store_code) + (pStores.length > 1 ? ` +${pStores.length - 1}` : '')
-        : (p.primary_store_name || '');
-      return `<tr data-pick-user="${p.id}" style="cursor:pointer;${isSel ? 'background:var(--bg-active, #eef2ff);font-weight:600;' : ''}${p.active ? '' : 'opacity:.55;'}">
-        <td>
-          <div style="display:flex;align-items:center;justify-content:space-between;gap:6px">
-            <span>${esc(p.full_name || p.username)}</span>
-            <span style="display:flex;gap:4px;align-items:center">
-              ${p.mfa_enabled ? '<span class="badge green" style="font-size:9px" title="2FA Enabled">2FA</span>' : ''}
-              ${p.overrides_count > 0 ? `<span class="badge amber" style="font-size:10px" title="${p.overrides_count} custom overrides">${p.overrides_count} custom</span>` : ''}
-            </span>
-          </div>
-          <div class="muted" style="font-size:11px;font-weight:normal">${esc(p.username)} · ${esc(roleStr)}${storeLabel ? ` · <span style="color:var(--primary,#0066ff)">📍 ${esc(storeLabel)}</span>` : ''}${siteTag}${tankTag}${p.active ? '' : ' · <span style="color:#dc2626">Inactive</span>'}</div>
-        </td>
-      </tr>`;
-    }).join('') || '<tr><td class="muted" style="text-align:center">No matching people</td></tr>';
-
-    const tbody = qs('#person-list-tbody', c);
-    if (tbody) {
-      tbody.innerHTML = listHtml;
-      qsa('[data-pick-user]', tbody).forEach((tr) => {
-        tr.onclick = async () => {
-          const uid = tr.dataset.pickUser;
-          await renderPeopleAccess(c, uid);
-        };
-      });
-    }
-  };
-
-  const renderAll = () => {
-    const GROUPS = [
-      { id: 'Operations', name: 'Operations & Execution', icon: '⚙️' },
-      { id: 'Fleet', name: 'Fleet, Fuel & Hire Management', icon: '🚛' },
-      { id: 'Inventory', name: 'Inventory & Warehousing', icon: '📦' },
-      { id: 'Procurement', name: 'Procurement & Purchasing', icon: '🛒' },
-      { id: 'Analysis', name: 'Analysis, Costing & Intelligence', icon: '📊' },
-      { id: 'Admin', name: 'Governance & Administration', icon: '🛡️' },
-    ];
-
-    const ACTVT_MAP = {
-      '01': { label: '01 · Create', cls: 'badge teal' },
-      '02': { label: '02 · Change', cls: 'badge blue' },
-      '03': { label: '03 · Display', cls: 'badge' },
-      '06': { label: '06 · Delete', cls: 'badge red' },
-      '08': { label: '08 · Export', cls: 'badge purple' },
-      '10': { label: '10 · Approve', cls: 'badge green' },
-      'A1': { label: 'A1 · Certify', cls: 'badge amber' },
-    };
-
-    const LV_BTN = [
-      { key: 'none', label: 'None' },
-      { key: 'view', label: 'View' },
-      { key: 'add', label: 'Add' },
-      { key: 'edit', label: 'Edit' },
-      { key: 'full', label: 'Full' },
-    ];
-
-    const groupCards = canManageAccess ? GROUPS.map((grp) => {
-      const grpSections = sections.filter((s) => (s.group || '').toLowerCase() === grp.id.toLowerCase());
-      if (!grpSections.length) return '';
-
-      const secHtml = grpSections.map((sec) => {
-        const curLevel = sectionEdits[sec.key] !== undefined ? sectionEdits[sec.key] : (sec.override_level !== null ? sec.override_level : sec.role_level);
-        const isCustom = sectionEdits[sec.key] !== undefined ? (sectionEdits[sec.key] !== sec.role_level) : (sec.override_level !== null && sec.override_level !== sec.role_level);
-
-        const lvlButtons = LV_BTN.map((b) => {
-          const isSelected = curLevel === b.key;
-          const cls = isSelected
-            ? (b.key === 'full' ? 'primary' : (b.key === 'edit' ? 'badge green' : (b.key === 'add' ? 'badge blue' : (b.key === 'view' ? 'badge' : 'badge amber'))))
-            : 'btn sm';
-          const style = isSelected ? 'font-weight:bold;padding:4px 10px;font-size:12px' : 'opacity:.7;padding:4px 10px;font-size:12px';
-          const disabled = isSelf || !canEditTarget ? 'disabled' : '';
-          return `<button class="${cls}" style="${style}" data-sec-lvl="${esc(sec.key)}:${b.key}" ${disabled}>${b.label}</button>`;
-        }).join(' ');
-
-        let capsHtml = '';
-        if (sec.capabilities && sec.capabilities.length > 0) {
-          const capItems = sec.capabilities.map((cap) => {
-            const hasCap = capEdits[cap.key] !== undefined ? capEdits[cap.key] : cap.effective_granted;
-            const isCapOverridden = capEdits[cap.key] !== undefined ? (capEdits[cap.key] !== cap.role_granted) : cap.is_override;
-            const disabled = isSelf || !canEditTarget ? 'disabled' : '';
-            const actvt = ACTVT_MAP[cap.actvt] || { label: cap.actvt || '02', cls: 'badge' };
-            const dualBadge = cap.dualAuth ? `<span class="badge amber" style="font-size:9px;font-weight:600" title="Mandatory 4-Eyes Dual Authorization">👥 4-Eyes Dual Auth</span> ` : '';
-            return `<label style="display:flex;align-items:flex-start;gap:8px;margin:5px 0;font-weight:normal;font-size:12px">
-              <input type="checkbox" style="width:auto;margin-top:2px" data-pcap="${esc(cap.key)}" ${hasCap ? 'checked' : ''} ${disabled}>
-              <div>
-                <div style="display:flex;align-items:center;gap:4px;flex-wrap:wrap">
-                  <span class="${actvt.cls}" style="font-size:9px;font-family:monospace">${actvt.label}</span>
-                  ${dualBadge}
-                  <span style="font-weight:500">${esc(cap.label)}</span>
-                  ${isCapOverridden ? `<span class="badge amber" style="font-size:9px;margin-left:4px">Custom override</span>` : `<span class="muted" style="font-size:10px;margin-left:4px">(${cap.role_granted ? 'Granted by role' : 'Not in role'})</span>`}
-                </div>
-                <div class="muted" style="font-size:10px;font-family:monospace">${esc(cap.key)}</div>
-              </div>
-            </label>`;
-          }).join('');
-
-          capsHtml = `<details style="margin-top:8px;border-top:1px dashed var(--border-light, #eee);padding-top:6px">
-            <summary style="cursor:pointer;font-size:11px;font-weight:600;color:var(--text-muted, #666)">
-              Special Capabilities & Approvals (${sec.capabilities.length})
-            </summary>
-            <div style="margin-top:6px;padding-left:4px">
-              ${capItems}
-            </div>
-          </details>`;
-        }
-
-        return `<div class="card" style="margin-bottom:10px;padding:12px;background:var(--card-sub-bg, #fff);border:1px solid var(--border-light, #e2e8f0);border-radius:6px">
-          <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:8px">
-            <div style="display:flex;align-items:center;gap:8px">
-              <span style="font-size:18px">${sec.icon}</span>
-              <div>
-                <b style="font-size:14px">${esc(sec.label)}</b>
-                <div class="muted" style="font-size:11px">${esc(sec.description || '')}</div>
-              </div>
-            </div>
-            <div style="display:flex;align-items:center;gap:6px">
-              ${isCustom
-                ? `<span class="badge amber" style="font-weight:600">⚡ Custom Override</span> <button class="btn sm" style="font-size:10px;padding:2px 6px" data-reset-sec="${esc(sec.key)}" title="Revert this section to role template">Reset</button>`
-                : `<span class="badge blue" style="font-weight:500">Role Default (${sec.role_level.toUpperCase()})</span>`}
-            </div>
-          </div>
-          <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;background:var(--bg-muted, #f8fafc);padding:6px 10px;border-radius:6px">
-            <span class="muted" style="font-size:11px;font-weight:600;text-transform:uppercase">Clearance:</span>
-            <div style="display:flex;gap:4px;flex-wrap:wrap">${lvlButtons}</div>
-          </div>
-          ${capsHtml}
-        </div>`;
-      }).join('');
-
-      return `<div style="margin-bottom:18px">
-        <div style="display:flex;align-items:center;justify-content:space-between;margin:0 0 8px">
-          <h3 style="margin:0;font-size:14px;color:var(--text-muted, #475569);display:flex;align-items:center;gap:6px">
-            <span>${grp.icon}</span> <span>${esc(grp.name)}</span>
-          </h3>
-          ${!isSelf && canEditTarget ? `<div style="display:flex;gap:4px">
-            <button class="btn sm" style="font-size:10px;padding:2px 6px" data-grp-set="${grp.id}:view">All View</button>
-            <button class="btn sm" style="font-size:10px;padding:2px 6px" data-grp-set="${grp.id}:edit">All Edit</button>
-            <button class="btn sm" style="font-size:10px;padding:2px 6px" data-grp-set="${grp.id}:full">All Full</button>
-          </div>` : ''}
-        </div>
-        ${secHtml}
-      </div>`;
-    }).join('') : `<div class="card muted" style="font-size:12px">Section and capability override editing requires the <code>access.manage</code> capability. Use the Account & Security controls above to manage roles, passwords, store locations, 2FA, and sessions.</div>`;
-
-    const storeBadgesHtml = (u.store_locations && u.store_locations.length)
-      ? u.store_locations.map((sl) => {
-          const icon = sl.store_type === 'MAIN_STORE' ? '🏛️' : (sl.store_type === 'MAIN_WORKSHOP_STORE' ? '🔧' : '📦');
-          const cls = sl.store_type === 'MAIN_STORE' ? 'blue' : (sl.store_type === 'MAIN_WORKSHOP_STORE' ? 'amber' : 'green');
-          const actions = [
-            sl.can_view ? 'View' : '',
-            sl.can_receive ? 'Rec' : '',
-            sl.can_issue ? 'Iss' : '',
-            sl.can_count ? 'Cnt' : '',
-            sl.can_request ? 'Req' : '',
-            sl.can_dispatch ? 'Disp' : '',
-          ].filter(Boolean).join('·');
-          return `<span class="badge ${cls}" style="font-size:11px;display:inline-flex;align-items:center;gap:4px;margin:2px 4px 2px 0" title="${esc(sl.store_name)}: ${actions || 'Assigned'}">${icon} <b>${esc(sl.store_name || sl.store_code)}</b>${actions ? ` <span style="opacity:.75;font-size:10px">(${actions})</span>` : ''}</span>`;
-        }).join('')
-      : '<span class="muted" style="font-size:11.5px">All workshops / unassigned store scope</span>';
-
-    const curProjVal = qs('#user-project-id', c) ? qs('#user-project-id', c).value : String(u.project_id || '');
-    const curTankVal = qs('#user-bulk-tank-id', c) ? qs('#user-bulk-tank-id', c).value : String(u.bulk_tank_id || '');
-    const curFuelRoleVal = qs('#user-fuel-role', c) ? qs('#user-fuel-role', c).value : String(u.fuel_role || '');
-    const curHideStockVal = qs('#user-hide-stock', c) ? qs('#user-hide-stock', c).checked : !!u.hide_stock;
-    const rolesChipsHtml = allRoles.map((r) => {
-      const hasRole = selectedRolesSet.has(r.name);
-      const dis = (isSelf || !canEditTarget || (r.name === 'admin' && !isAdmin())) ? 'disabled' : '';
-      return `<label style="display:inline-flex;align-items:center;gap:5px;padding:4px 9px;border-radius:16px;border:1px solid ${hasRole ? '#2563eb' : '#cbd5e1'};background:${hasRole ? '#eff6ff' : '#fff'};font-size:11.5px;font-weight:${hasRole ? '600' : '400'};cursor:${dis ? 'not-allowed' : 'pointer'}">
-        <input type="checkbox" style="width:auto;margin:0" data-person-role="${esc(r.name)}" ${hasRole ? 'checked' : ''} ${dis}>
-        <span>${esc(r.label || r.name)}</span>
-      </label>`;
-    }).join(' ');
-    const prevQ = qs('#person-search', c) ? qs('#person-search', c).value : '';
-
-    c.innerHTML = `<div style="display:grid;grid-template-columns:minmax(250px,320px) 1fr;gap:14px;align-items:start">
-      <div class="card" style="padding:12px">
-        <div class="toolbar" style="margin:0 0 8px">
-          <h3 style="margin:0;font-size:14px">Users (${people.length})</h3>
-          <div class="spacer"></div>
-          ${canManageUsers ? '<button class="primary sm" id="btn-people-new-user">+ New User</button>' : ''}
-        </div>
-        <div style="margin-bottom:6px">
-          <input type="text" id="person-search" placeholder="Search user, role, store, site, tank..." value="${esc(prevQ)}" style="width:100%;box-sizing:border-box">
-        </div>
-        <div class="pill-row" style="margin-bottom:8px;gap:4px">
-          <button class="btn sm ${statusFilter === 'all' ? 'primary' : ''}" data-pfilter="all" style="font-size:11px;padding:2px 8px">All</button>
-          <button class="btn sm ${statusFilter === 'active' ? 'primary' : ''}" data-pfilter="active" style="font-size:11px;padding:2px 8px">Active</button>
-          <button class="btn sm ${statusFilter === 'inactive' ? 'primary' : ''}" data-pfilter="inactive" style="font-size:11px;padding:2px 8px">Inactive</button>
-        </div>
-        <div class="table-wrap scroll" style="max-height:calc(100vh - 280px)">
-          <table><tbody id="person-list-tbody"></tbody></table>
-        </div>
-      </div>
-
-      <div>
-        <div class="card" style="margin-bottom:12px;border-top:3px solid var(--accent, #2563eb)">
-          <div style="display:flex;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;gap:12px;margin-bottom:10px">
-            <div>
-              <h2 style="margin:0;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-                <span>${esc(u.full_name || u.username)}</span>
-                ${u.active ? '<span class="badge green">Active</span>' : '<span class="badge red">Inactive</span>'}
-                ${u.mfa_enabled ? '<span class="badge green" title="Two-Factor Sign-in enabled">🔒 2FA On</span>' : '<span class="badge" title="Two-Factor Sign-in not set up">2FA Off</span>'}
-              </h2>
-              <div class="muted" style="font-size:12px;margin-top:4px;display:flex;align-items:center;gap:6px;flex-wrap:wrap">
-                <span>Username: <code>${esc(u.username)}</code></span>
-                <span>·</span>
-                <span>🏠 ${esc(u.home_workshop_name || 'Main Workshop')}</span>
-                <span>·</span>
-                <span>Roles: ${u.roles.map((r) => `<span class="badge blue">${esc(r.label || r.name)}</span>`).join(' ') || '<span class="muted">None</span>'}</span>
-                ${u.project_name ? `<span>·</span><span>Site: <span class="badge blue">🏗️ ${esc(u.project_name)}</span></span>` : ''}
-                ${u.bulk_tank_name ? `<span>·</span><span>Bowser: <span class="badge amber">⛽ ${esc(u.bulk_tank_name)}</span></span>` : ''}
-              </div>
-            </div>
-            ${canManageAccess ? `<div style="display:flex;gap:6px;flex-wrap:wrap">
-              <button class="btn sm" id="btn-compare" title="Compare this person's access with another person or role">🔍 Compare</button>
-              <button class="btn sm" id="btn-copy-from" ${isSelf || !canEditTarget ? 'disabled' : ''} title="Copy all overrides from another person">📋 Copy From...</button>
-              <button class="btn sm" id="btn-reset-user" ${isSelf || !canEditTarget ? 'disabled' : ''} title="Remove all personal overrides and revert to role template">↺ Reset to Role</button>
-              <button class="primary sm" id="btn-save-access" ${!canEditScope ? 'disabled' : ''}>💾 Save Access & Scope</button>
-            </div>` : ''}
-          </div>
-
-          ${canManageUsers ? `<div style="display:flex;gap:6px;flex-wrap:wrap;padding:8px 10px;background:var(--bg-muted, #f8fafc);border:1px solid var(--border-light, #e2e8f0);border-radius:6px;margin-bottom:10px;align-items:center">
-            <span class="muted" style="font-size:11px;font-weight:700;text-transform:uppercase;margin-right:4px">Account &amp; Security:</span>
-            <button class="btn sm" id="btn-user-roles" ${!canEditTarget ? 'disabled' : ''}>🎭 Roles</button>
-            <button class="btn sm" id="btn-user-workshop" ${!canEditTarget ? 'disabled' : ''}>🏠 Home Workshop</button>
-            <button class="btn sm" id="btn-user-store-perms" ${!canEditTarget ? 'disabled' : ''}>🏪 Store Permissions</button>
-            <button class="btn sm" id="btn-user-reset-pw" ${!canEditTarget ? 'disabled' : ''}>🔑 Reset Password</button>
-            ${u.mfa_enabled ? `<button class="btn sm" id="btn-user-reset-2fa" ${!canEditTarget ? 'disabled' : ''} title="Lost or new phone">📱 Reset 2FA</button>` : ''}
-            <button class="btn sm" id="btn-user-sessions">💻 Sessions</button>
-            <div class="spacer"></div>
-            <button class="btn sm ${u.active ? 'danger' : ''}" id="btn-user-toggle-active" ${isSelf || !canEditTarget ? 'disabled' : ''}>${u.active ? '⛔ Deactivate' : '✅ Activate'}</button>
-          </div>` : ''}
-
-          ${isSelf ? '<div class="card" style="background:#fffbeb;border-left:4px solid #f59e0b;padding:8px 12px;margin-bottom:10px;font-size:12px">⚠️ <b>Safety Rule:</b> You cannot modify your own access permissions or deactivate yourself.</div>' : ''}
-          ${!canEditTarget ? '<div class="card err" style="padding:8px 12px;margin-bottom:10px;font-size:12px">⛔ Only an administrator can modify an administrator account.</div>' : ''}
-
-          ${canManageAccess && allRoles.length ? `<div style="background:#f8fafc;border:1px solid #e2e8f0;padding:10px 12px;border-radius:6px;margin-bottom:10px">
-            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;flex-wrap:wrap;gap:6px">
-              <label style="font-size:11.5px;font-weight:700;color:#1e293b;margin:0">🎭 Assigned Roles (Click to toggle roles for this person):</label>
-              ${rolesChanged ? '<span class="badge amber">Unsaved role changes — click Save Access & Scope</span>' : ''}
-            </div>
-            <div style="display:flex;gap:6px;flex-wrap:wrap">${rolesChipsHtml}</div>
-          </div>` : ''}
-
-          <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(195px, 1fr));gap:10px;background:var(--bg-muted, #f8fafc);padding:10px;border-radius:6px;margin-bottom:10px">
-            <div>
-              <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
-                <label style="font-size:11px;font-weight:600;margin:0">Assigned Store Permissions:</label>
-                ${!canManageUsers ? `<button class="btn sm" id="btn-user-store-perms" type="button" style="padding:2px 7px;font-size:11px">🏪 Manage</button>` : ''}
-              </div>
-              <div style="min-height:28px;padding:4px 6px;background:var(--card-sub-bg, #fff);border:1px solid var(--border-light, #e2e8f0);border-radius:5px">
-                ${storeBadgesHtml}
-              </div>
-            </div>
-            ${canManageAccess ? `<div>
-              <label style="font-size:11px;font-weight:600;margin-bottom:4px;display:block">🏗️ Assigned Project Site (Fuel/Site Scope):</label>
-              <select id="user-project-id" style="width:100%" ${!canEditScope ? 'disabled' : ''}>
-                <option value="">— All Projects / Head Office —</option>
-                ${allProjects.map((p) => `<option value="${p.id}" ${curProjVal === String(p.id) ? 'selected' : ''}>${esc(p.name)} (${esc(p.code || p.id)})</option>`).join('')}
-              </select>
-            </div>
-            <div>
-              <label style="font-size:11px;font-weight:600;margin-bottom:4px;display:block">⛽ Assigned Site Bowser / Bulk Tank:</label>
-              <select id="user-bulk-tank-id" style="width:100%" ${!canEditScope ? 'disabled' : ''}>
-                <option value="">— Any / Workshop Pump —</option>
-                ${allTanks.map((t) => `<option value="${esc(t.id)}" ${curTankVal === String(t.id) ? 'selected' : ''}>${esc(t.name)} (${esc(t.code || t.id)})</option>`).join('')}
-              </select>
-            </div>
-            <div>
-              <label style="font-size:11px;font-weight:600;margin-bottom:4px;display:block">🛢️ Fuel Console Role & Blind Stock:</label>
-              <div style="display:flex;gap:6px;align-items:center">
-                <select id="user-fuel-role" style="flex:1" ${!canEditScope ? 'disabled' : ''}>
-                  <option value="">— Auto from Role —</option>
-                  <option value="SITE_OPERATOR" ${curFuelRoleVal === 'SITE_OPERATOR' ? 'selected' : ''}>Site Fuel Operator</option>
-                  <option value="WORKSHOP_FUEL" ${curFuelRoleVal === 'WORKSHOP_FUEL' ? 'selected' : ''}>Workshop Fuel Attendant</option>
-                  <option value="FUEL_MANAGER" ${curFuelRoleVal === 'FUEL_MANAGER' ? 'selected' : ''}>Fuel Manager</option>
-                  <option value="APPROVER" ${curFuelRoleVal === 'APPROVER' ? 'selected' : ''}>Fuel Approver</option>
-                  <option value="VIEWER" ${curFuelRoleVal === 'VIEWER' ? 'selected' : ''}>Fuel Viewer</option>
-                </select>
-                <label style="display:flex;align-items:center;gap:4px;font-size:11px;white-space:nowrap;margin:0" title="Hide running tank balance from this Site Fuel Operator">
-                  <input type="checkbox" id="user-hide-stock" style="width:auto;margin:0" ${curHideStockVal ? 'checked' : ''} ${!canEditScope ? 'disabled' : ''}>
-                  Hide Stock
-                </label>
-              </div>
-            </div>
-            <div>
-              <label style="font-size:11px;font-weight:600;margin-bottom:4px;display:block">Personal Approval Limit (Rs):</label>
-              <input type="number" id="user-limit" placeholder="Role template default" value="${u.approval_limit != null ? esc(u.approval_limit) : ''}" style="width:100%" ${!canEditScope ? 'disabled' : ''}>
-            </div>
-            <div>
-              <label style="font-size:11px;font-weight:600;margin-bottom:4px;display:block">Temporary Access Until (Date):</label>
-              <input type="date" id="user-until" value="${u.access_until ? esc(u.access_until.slice(0, 10)) : ''}" style="width:100%" ${!canEditScope ? 'disabled' : ''}>
-            </div>` : ''}
-          </div>
-          ${canManageAccess && !isSelf && canEditTarget ? `<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding-top:6px">
-            <span class="muted" style="font-size:11px;font-weight:600">⚡ Quick Presets:</span>
-            <button class="btn sm" style="font-size:11px" data-quick-preset="all_full">Grant All 28 Full</button>
-            <button class="btn sm" style="font-size:11px" data-quick-preset="all_view">Grant All 28 View</button>
-            <button class="btn sm" style="font-size:11px" data-quick-preset="fuel_suite">⛽ Fuel, Meters & Hire Full</button>
-            <button class="btn sm" style="font-size:11px" data-quick-preset="workshop_suite">🔧 Workshop & Stores Full</button>
-            <button class="btn sm" style="font-size:11px" data-quick-preset="costing_suite">📊 Costing, KPI & Reports Full</button>
-          </div>` : ''}
-          ${canManageAccess ? `<div style="margin-top:8px;padding:8px 10px;background:#f8fafc;border-radius:6px;border:1px dashed var(--border, #cbd5e1)">
-            <label style="font-size:11px;font-weight:600;margin-bottom:4px;display:flex;align-items:center;gap:6px">
-              <span>🛡️ Emergency Dual Clearance / SoD Justification (optional):</span>
-              <span class="muted" style="font-weight:normal">(min 10 chars, required only when authorizing toxic combinations)</span>
-            </label>
-            <input type="text" id="user-sod-reason" placeholder="e.g. Approved temporary dual clearance during stockkeeper leave (Ref: SEC-2026-01)" style="width:100%;font-size:12px;box-sizing:border-box" ${isSelf || !canEditTarget ? 'disabled' : ''}>
-          </div>` : ''}
-        </div>
-
-        ${groupCards}
-      </div>
-    </div>`;
-
-    renderDirectoryRows();
-
-    const searchInp = qs('#person-search', c);
-    if (searchInp) {
-      searchInp.oninput = () => renderDirectoryRows();
-    }
-    qsa('[data-pfilter]', c).forEach((btn) => {
-      btn.onclick = () => {
-        statusFilter = btn.dataset.pfilter;
-        qsa('[data-pfilter]', c).forEach((b) => b.classList.toggle('primary', b.dataset.pfilter === statusFilter));
-        renderDirectoryRows();
-      };
-    });
-
-    qsa('[data-person-role]', c).forEach((chk) => {
-      chk.onchange = () => {
-        const rName = chk.dataset.personRole;
-        if (chk.checked) selectedRolesSet.add(rName);
-        else selectedRolesSet.delete(rName);
-        rolesChanged = true;
-        renderAll();
-      };
-    });
-
-    qsa('[data-grp-set]', c).forEach((btn) => {
-      btn.onclick = () => {
-        const [grpId, lvl] = btn.dataset.grpSet.split(':');
-        sections.filter((s) => (s.group || '').toLowerCase() === grpId.toLowerCase()).forEach((s) => {
-          sectionEdits[s.key] = lvl;
-        });
-        renderAll();
-      };
-    });
-
-    qsa('[data-quick-preset]', c).forEach((btn) => {
-      btn.onclick = () => {
-        const p = btn.dataset.quickPreset;
-        if (p === 'all_full') sections.forEach((s) => { sectionEdits[s.key] = 'full'; });
-        else if (p === 'all_view') sections.forEach((s) => { sectionEdits[s.key] = 'view'; });
-        else if (p === 'fuel_suite') ['fuel', 'meters', 'hire', 'assets', 'services', 'filters', 'oil'].forEach((k) => { sectionEdits[k] = 'full'; });
-        else if (p === 'workshop_suite') ['jobrequests', 'jobs', 'fabrication', 'outsourcing', 'services', 'stores', 'mrn', 'grn', 'issues'].forEach((k) => { sectionEdits[k] = 'full'; });
-        else if (p === 'costing_suite') ['dashboard', 'master_dashboard', 'costing', 'finance', 'hire', 'kpi', 'reports'].forEach((k) => { sectionEdits[k] = 'full'; });
-        toast('Preset staged — click Save Access & Scope to apply');
-        renderAll();
-      };
-    });
-
-    const newUserBtn = qs('#btn-people-new-user', c);
-    if (newUserBtn) {
-      newUserBtn.onclick = () => openNewUserWizard(rolesList, allStoreLocations, storeOptions, wsd, (created) => {
-        renderPeopleAccess(c, created && created.id ? created.id : u.id);
-      });
-    }
-
-    // Account lifecycle handlers
-    const rolesBtn = qs('#btn-user-roles', c);
-    if (rolesBtn) {
-      rolesBtn.onclick = () => {
-        const roleBoxes = rolesList.map((r) => `<label style="flex-direction:row;display:flex;gap:6px;align-items:flex-start;font-weight:normal;margin:6px 0">
-          <input type="checkbox" style="width:auto;margin-top:3px" data-urole="${esc(r.name)}" ${uRoleNames.includes(r.name) ? 'checked' : ''}>
-          <span><b>${esc(r.label || r.name)}</b>${r.description ? `<br><span class="muted" style="font-size:11px">${esc(r.description)}</span>` : ''}</span>
-        </label>`).join('');
-        modal(`Roles for ${esc(u.username)}`, roleBoxes + '<div style="margin-top:12px;text-align:right"><button class="primary" id="s">Save Roles</button></div>',
-          (body, close) => {
-            qs('#s', body).onclick = async () => {
-              const pickedRoles = qsa('[data-urole]', body).filter((x) => x.checked).map((x) => x.dataset.urole);
-              try {
-                await api(`/users/${u.id}/roles`, { method: 'POST', body: { roles: pickedRoles } });
-                close();
-                toast('Roles saved');
-                await renderPeopleAccess(c, u.id);
-              } catch (e) { toast(e.message, 'err'); }
-            };
-          }
-        );
-      };
-    }
-
-    const wsBtn = qs('#btn-user-workshop', c);
-    if (wsBtn) {
-      wsBtn.onclick = () => {
-        modal(`Home workshop — ${esc(u.username)}`, `${field('Workshop', 'workshop_id', { type: 'select', options: wsOptions(wsd), value: u.home_workshop_id || 1 })}
-          <p class="muted">New job cards and requests raised by this user default to their home workshop.</p>
-          <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Save</button></div>`,
-          (body, close) => {
-            qs('#s', body).onclick = async () => {
-              try {
-                await api(`/users/${u.id}`, { method: 'PATCH', body: { workshop_id: formData(body).workshop_id } });
-                close();
-                toast('Home workshop updated');
-                await renderPeopleAccess(c, u.id);
-              } catch (e) { toast(e.message, 'err'); }
-            };
-          }
-        );
-      };
-    }
-
-    const resetPwBtn = qs('#btn-user-reset-pw', c);
-    if (resetPwBtn) {
-      resetPwBtn.onclick = () => {
-        modal(`Reset password — ${esc(u.username)}`, `${field('Temporary password *', 'password', { type: 'password' })}
-          <p class="muted">${esc(passwordHint())} ${esc(u.username)} is signed out everywhere and must choose a new password at next sign-in.</p>
-          <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Reset Password</button></div>`,
-          (body, close) => {
-            qs('#s', body).onclick = async () => {
-              try {
-                await api(`/users/${u.id}`, { method: 'PATCH', body: { password: formData(body).password } });
-                close();
-                toast('Password reset');
-              } catch (e) { toast(e.message, 'err'); }
-            };
-          }
-        );
-      };
-    }
-
-    const reset2faBtn = qs('#btn-user-reset-2fa', c);
-    if (reset2faBtn) {
-      reset2faBtn.onclick = async () => {
-        if (!confirm(`Reset two-factor sign-in for ${u.username}? They are signed out, and set it up again with their new phone at next sign-in (if their role requires it).`)) return;
-        try {
-          await api(`/users/${u.id}/mfa-reset`, { method: 'POST' });
-          toast('Two-factor sign-in reset');
-          await renderPeopleAccess(c, u.id);
-        } catch (e) { toast(e.message, 'err'); }
-      };
-    }
-
-    const sessBtn = qs('#btn-user-sessions', c);
-    if (sessBtn) {
-      sessBtn.onclick = () => userSessionsModal(u);
-    }
-
-    const toggleActiveBtn = qs('#btn-user-toggle-active', c);
-    if (toggleActiveBtn) {
-      toggleActiveBtn.onclick = async () => {
-        if (u.active && !confirm(`Deactivate ${u.username}? They are signed out at once and cannot sign in again until reactivated.`)) return;
-        try {
-          await api(`/users/${u.id}`, { method: 'PATCH', body: { active: !u.active } });
-          toast(u.active ? 'User deactivated' : 'User activated');
-          await renderPeopleAccess(c, u.id);
-        } catch (e) { toast(e.message, 'err'); }
-      };
-    }
-
-    const btnStorePerms = qs('#btn-user-store-perms', c);
-    if (btnStorePerms) {
-      btnStorePerms.onclick = () => {
-        userStoreAccessModal(u, async () => {
-          await renderPeopleAccess(c, u.id);
-        });
-      };
-    }
-
-    qsa('[data-sec-lvl]', c).forEach((btn) => {
-      btn.onclick = () => {
-        const [secKey, lvl] = btn.dataset.secLvl.split(':');
-        sectionEdits[secKey] = lvl;
-        renderAll();
-      };
-    });
-
-    qsa('[data-reset-sec]', c).forEach((btn) => {
-      btn.onclick = () => {
-        const secKey = btn.dataset.resetSec;
-        sectionEdits[secKey] = null;
-        renderAll();
-      };
-    });
-
-    qsa('[data-pcap]', c).forEach((box) => {
-      box.onchange = () => {
-        capEdits[box.dataset.pcap] = box.checked;
-        renderAll();
-      };
-    });
-
-    const saveBtn = qs('#btn-save-access', c);
-    if (saveBtn) {
-      saveBtn.onclick = async () => {
-        const projVal = qs('#user-project-id', c) ? qs('#user-project-id', c).value : '';
-        const tankVal = qs('#user-bulk-tank-id', c) ? qs('#user-bulk-tank-id', c).value : '';
-        const fuelRoleVal = qs('#user-fuel-role', c) ? qs('#user-fuel-role', c).value : '';
-        const hideStockVal = qs('#user-hide-stock', c) ? qs('#user-hide-stock', c).checked : false;
-        const limitVal = qs('#user-limit', c).value.trim();
-        const untilVal = qs('#user-until', c).value.trim();
-        const sodReasonVal = qs('#user-sod-reason', c) ? qs('#user-sod-reason', c).value.trim() : '';
-
-        const payload = {
-          sections: sectionEdits,
-          capabilities: capEdits,
-          roles: rolesChanged ? Array.from(selectedRolesSet) : undefined,
-          project_id: projVal || null,
-          bulk_tank_id: tankVal || null,
-          fuel_role: fuelRoleVal || null,
-          hide_stock: hideStockVal,
-          approval_limit: limitVal === '' ? null : Number(limitVal),
-          access_until: untilVal || null,
-          override_reason: sodReasonVal || null,
-        };
-
-        const executeSave = async (extraPayload = {}) => {
-          try {
-            saveBtn.disabled = true;
-            saveBtn.innerText = 'Saving…';
-            await api('/access/people/' + u.id + '/save', { method: 'POST', body: { ...payload, ...extraPayload } });
-            toast(`Access & operational scope saved for ${u.full_name || u.username}`);
-            await renderPeopleAccess(c, u.id);
-          } catch (e) {
-            saveBtn.disabled = false;
-            saveBtn.innerText = '💾 Save Access & Scope';
-            if (e.message && (e.message.includes('Segregation of Duties') || e.message.includes('SoD Conflict') || e.message.includes('SOD-'))) {
-              modal('Emergency Dual Clearance Authorization', `
-                <div style="margin-bottom:12px;padding:10px;background:#fef2f2;border:1px solid #fecaca;border-radius:6px;color:#991b1b;font-size:13px">
-                  <b>⚠️ Segregation of Duties (SoD) Conflict Detected:</b>
-                  <p style="margin:6px 0 0;font-size:12px;white-space:pre-wrap">${esc(e.message)}</p>
-                </div>
-                <p style="font-size:13px;margin:0 0 8px">To authorize emergency dual clearance under SOX/GRC compliance, please provide an approved justification reason (minimum 10 characters):</p>
-                <div style="margin-bottom:12px">
-                  <textarea id="modal-sod-justification" rows="3" style="width:100%;box-sizing:border-box" placeholder="e.g. Approved temporary dual clearance during stockkeeper leave by Operations Manager (Ref: SEC-2026-42)"></textarea>
-                </div>
-                <div style="display:flex;justify-content:flex-end;gap:8px">
-                  <button class="btn" id="modal-sod-cancel">Cancel</button>
-                  <button class="primary" id="modal-sod-submit">Authorize &amp; Save</button>
-                </div>`,
-                (mbody, close) => {
-                  qs('#modal-sod-cancel', mbody).onclick = close;
-                  qs('#modal-sod-submit', mbody).onclick = async () => {
-                    const reason = (qs('#modal-sod-justification', mbody).value || '').trim();
-                    if (reason.length < 10) {
-                      return toast('Justification reason must be at least 10 characters', 'err');
-                    }
-                    close();
-                    await executeSave({ override_reason: reason });
-                  };
-                }
-              );
-            } else {
-              toast(e.message, 'err');
-            }
-          }
-        };
-
-        await executeSave();
-      };
-    }
-
-    const resetBtn = qs('#btn-reset-user', c);
-    if (resetBtn) {
-      resetBtn.onclick = async () => {
-        if (!confirm(`Reset all personal overrides for ${u.full_name || u.username} back to their role template defaults?`)) return;
-        try {
-          await api('/access/people/' + u.id + '/reset', { method: 'POST' });
-          toast(`Reset ${u.username} to role template.`);
-          await renderPeopleAccess(c, u.id);
-        } catch (e) { toast(e.message, 'err'); }
-      };
-    }
-
-    const copyBtn = qs('#btn-copy-from', c);
-    if (copyBtn) {
-      copyBtn.onclick = () => {
-        const others = people.filter((p) => p.id != u.id && p.active);
-        modal('Copy Access Overrides', `
-          <p class="muted" style="margin-top:0">Copy all section clearance and capability overrides from another person to <b>${esc(u.full_name || u.username)}</b>.</p>
-          <div style="margin-bottom:12px">
-            <label style="font-size:12px;font-weight:600;display:block;margin-bottom:4px">Copy From Person:</label>
-            <select id="source-user-select" style="width:100%">
-              ${others.map((p) => `<option value="${p.id}">${esc(p.full_name || p.username)} (${esc(p.username)}) — ${p.overrides_count} override(s)</option>`).join('')}
-            </select>
-          </div>
-          <div style="text-align:right">
-            <button class="primary" id="btn-do-copy">Copy Overrides</button>
-          </div>`,
-          (body, close) => {
-            qs('#btn-do-copy', body).onclick = async () => {
-              const srcId = qs('#source-user-select', body).value;
-              try {
-                await api('/access/people/' + u.id + '/copy-from', {
-                  method: 'POST',
-                  body: { source_user_id: srcId },
-                });
-                close();
-                toast('Access overrides copied');
-                await renderPeopleAccess(c, u.id);
-              } catch (e) { toast(e.message, 'err'); }
-            };
-          }
-        );
-      };
-    }
-
-    const compareBtn = qs('#btn-compare', c);
-    if (compareBtn) {
-      compareBtn.onclick = () => openCompareModal(u, people);
-    }
-  };
-
-  renderAll();
-}
-
-// ---- Tab 1b: All-Persons Access Matrix (Quick Grid across all 31 users × 28 sections) ----
-async function renderAllPersonsMatrix(c) {
-  const data = await api('/access/people');
-  const people = data.people || [];
-  const sections = data.sections || [];
-  const allRoles = data.all_roles || [];
-  const allProjects = data.all_projects || [];
-  const allTanks = data.all_tanks || [];
-  const selectedIds = new Set();
-
-  let searchQ = '';
-  let roleFilter = '';
-  let domainFilter = 'ALL';
-
-  const NEXT_LVL = { none: 'view', view: 'add', add: 'edit', edit: 'full', full: 'none' };
-
-  const draw = () => {
-    const filteredPeople = people.filter((p) => {
-      if (roleFilter && !p.roles.some((r) => r.name === roleFilter)) return false;
-      if (searchQ) {
-        const hay = `${p.full_name || ''} ${p.username || ''} ${p.project_name || ''} ${p.bulk_tank_name || ''} ${p.roles.map((r) => r.label || r.name).join(' ')}`.toLowerCase();
-        if (!hay.includes(searchQ)) return false;
-      }
-      return true;
-    });
-
-    const visibleSections = domainFilter === 'ALL'
-      ? sections
-      : sections.filter((s) => (s.group || '').toLowerCase() === domainFilter.toLowerCase());
-
-    const rowsHtml = filteredPeople.map((p) => {
-      const isSelf = ME && ME.id == p.id;
-      const isTargetAdmin = p.roles.some((r) => r.name === 'admin');
-      const canModify = (!isSelf && (isAdmin() || !isTargetAdmin));
-      const checked = selectedIds.has(p.id) ? 'checked' : '';
-      const roleBadges = p.roles.map((r) => `<span class="badge blue" style="font-size:9.5px">${esc(r.label || r.name)}</span>`).join(' ');
-      const scopeBadges = [
-        p.project_name ? `<span class="badge" style="font-size:9.5px;background:#e0f2fe;color:#0369a1">🏗️ ${esc(p.project_name)}</span>` : '',
-        p.bulk_tank_name ? `<span class="badge amber" style="font-size:9.5px">⛽ ${esc(p.bulk_tank_name)}</span>` : '',
-        p.hide_stock ? `<span class="badge red" style="font-size:9px">🙈 Blind Stock</span>` : ''
-      ].filter(Boolean).join(' ');
-
-      const cells = visibleSections.map((s) => {
-        const eff = (p.permissions && p.permissions[s.key]) || 'none';
-        const isOv = p.user_overrides && p.user_overrides[s.key] !== undefined;
-        return `<td style="text-align:center;padding:4px 3px;cursor:${canModify ? 'pointer' : 'not-allowed'};${isOv ? 'background:rgba(245,158,11,0.09);' : ''}"
-          data-mcell="${p.id}:${esc(s.key)}:${eff}" title="${esc(p.full_name || p.username)} · ${esc(s.label)}: ${eff.toUpperCase()}${isOv ? ' (Custom Override)' : ' (Role Default)'} — Click to cycle">
-          ${lvlChip(eff)}${isOv ? '<sup style="color:#d97706;font-weight:bold">*</sup>' : ''}
-        </td>`;
-      }).join('');
-
-      return `<tr style="${p.active ? '' : 'opacity:.55'}">
-        <td style="text-align:center"><input type="checkbox" style="width:auto" data-msel="${p.id}" ${checked} ${canModify ? '' : 'disabled'}></td>
-        <td style="position:sticky;left:0;background:var(--surface,#fff);z-index:2;min-width:210px;border-right:2px solid var(--border,#e2e8f0)">
-          <div style="display:flex;align-items:center;justify-content:space-between;gap:4px">
-            <a href="#/access?tab=people&user=${p.id}" style="font-weight:600;text-decoration:none">${esc(p.full_name || p.username)}</a>
-            <span class="muted" style="font-size:10px">${esc(p.username)}</span>
-          </div>
-          <div style="margin-top:2px;display:flex;gap:3px;flex-wrap:wrap">${roleBadges} ${scopeBadges}</div>
-        </td>
-        ${cells}
-      </tr>`;
-    }).join('');
-
-    c.innerHTML = `
-      <div class="card" style="margin-bottom:12px">
-        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:10px">
-          <div>
-            <h3 style="margin:0">👥 All-Persons Access Matrix (${filteredPeople.length} of ${people.length} People × ${visibleSections.length} Sections)</h3>
-            <p class="muted" style="margin:2px 0 0;font-size:12px">Click any cell to cycle clearance (<b>None → View → Add → Edit → Full</b>), or select multiple people below to bulk-assign Roles, Project Sites, Bowsers, or Domain clearances.</p>
-          </div>
-          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-            <input type="search" id="mat-search" placeholder="Search person, role, site..." value="${esc(searchQ)}" style="width:200px">
-            <select id="mat-role">
-              <option value="">All Roles</option>
-              ${allRoles.map((r) => `<option value="${esc(r.name)}" ${roleFilter === r.name ? 'selected' : ''}>${esc(r.label || r.name)}</option>`).join('')}
-            </select>
-            <select id="mat-domain">
-              <option value="ALL" ${domainFilter === 'ALL' ? 'selected' : ''}>All 28 Sections</option>
-              <option value="Operations" ${domainFilter === 'Operations' ? 'selected' : ''}>⚙️ Operations</option>
-              <option value="Fleet" ${domainFilter === 'Fleet' ? 'selected' : ''}>🚛 Fleet, Fuel & Hire</option>
-              <option value="Inventory" ${domainFilter === 'Inventory' ? 'selected' : ''}>📦 Inventory & Stores</option>
-              <option value="Procurement" ${domainFilter === 'Procurement' ? 'selected' : ''}>🛒 Procurement</option>
-              <option value="Analysis" ${domainFilter === 'Analysis' ? 'selected' : ''}>📊 Analysis & Costing</option>
-              <option value="Admin" ${domainFilter === 'Admin' ? 'selected' : ''}>🛡️ Admin</option>
-            </select>
-          </div>
-        </div>
-
-        <!-- Bulk Action Toolbar -->
-        <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:6px;padding:10px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-          <span style="font-size:12px;font-weight:700;color:#1e293b">☑️ Selected (${selectedIds.size}):</span>
-          <select id="bulk-add-role" style="font-size:12px">
-            <option value="">+ Add Role…</option>
-            ${allRoles.map((r) => `<option value="${esc(r.name)}">+ ${esc(r.label || r.name)}</option>`).join('')}
-          </select>
-          <select id="bulk-project" style="font-size:12px">
-            <option value="__KEEP__">🏗️ Project Site (No change)</option>
-            <option value="">— Clear Project Site —</option>
-            ${allProjects.map((p) => `<option value="${p.id}">🏗️ ${esc(p.name)}</option>`).join('')}
-          </select>
-          <select id="bulk-tank" style="font-size:12px">
-            <option value="__KEEP__">⛽ Site Bowser (No change)</option>
-            <option value="">— Clear Bowser —</option>
-            ${allTanks.map((t) => `<option value="${esc(t.id)}">⛽ ${esc(t.name)}</option>`).join('')}
-          </select>
-          <select id="bulk-domain" style="font-size:12px">
-            <option value="">📂 Domain Preset…</option>
-            <option value="ALL">All 28 Sections</option>
-            <option value="Operations">⚙️ Operations</option>
-            <option value="Fleet">🚛 Fleet, Fuel & Hire</option>
-            <option value="Inventory">📦 Inventory & Stores</option>
-            <option value="Procurement">🛒 Procurement</option>
-            <option value="Analysis">📊 Analysis & Costing</option>
-          </select>
-          <select id="bulk-level" style="font-size:12px">
-            <option value="">Level…</option>
-            <option value="full">FULL</option>
-            <option value="edit">EDIT</option>
-            <option value="add">ADD</option>
-            <option value="view">VIEW</option>
-            <option value="none">NONE</option>
-          </select>
-          <button class="primary sm" id="btn-bulk-apply" ${selectedIds.size === 0 ? 'disabled' : ''}>⚡ Apply to ${selectedIds.size} Selected</button>
-        </div>
-      </div>
-
-      <div class="card" style="padding:0;overflow:hidden">
-        <div class="table-wrap scroll" style="max-height:calc(100vh - 280px)">
-          <table style="font-size:11.5px">
-            <thead>
-              <tr>
-                <th style="width:32px;text-align:center"><input type="checkbox" id="mat-sel-all" style="width:auto"></th>
-                <th style="position:sticky;left:0;background:var(--surface,#f8fafc);z-index:3;min-width:210px;border-right:2px solid var(--border,#e2e8f0)">Person / Roles / Site Scope</th>
-                ${visibleSections.map((s) => `<th style="text-align:center;min-width:68px;white-space:nowrap" title="${esc(s.description || s.label)}"><div>${s.icon}</div><div style="font-size:10px">${esc(s.label)}</div></th>`).join('')}
-              </tr>
-            </thead>
-            <tbody>${rowsHtml}</tbody>
-          </table>
-        </div>
-      </div>
-    `;
-
-    qs('#mat-search', c).oninput = (e) => { searchQ = e.target.value.toLowerCase().trim(); draw(); };
-    qs('#mat-role', c).onchange = (e) => { roleFilter = e.target.value; draw(); };
-    qs('#mat-domain', c).onchange = (e) => { domainFilter = e.target.value; draw(); };
-
-    const selAll = qs('#mat-sel-all', c);
-    if (selAll) {
-      selAll.onchange = () => {
-        filteredPeople.forEach((p) => {
-          const isSelf = ME && ME.id == p.id;
-          const isTargetAdmin = p.roles.some((r) => r.name === 'admin');
-          if (!isSelf && (isAdmin() || !isTargetAdmin)) {
-            if (selAll.checked) selectedIds.add(p.id);
-            else selectedIds.delete(p.id);
-          }
-        });
-        draw();
-      };
-    }
-
-    qsa('[data-msel]', c).forEach((chk) => {
-      chk.onchange = () => {
-        const uid = Number(chk.dataset.msel);
-        if (chk.checked) selectedIds.add(uid);
-        else selectedIds.delete(uid);
-        draw();
-      };
-    });
-
-    qsa('[data-mcell]', c).forEach((td) => {
-      td.onclick = async () => {
-        const [uidStr, secKey, curLvl] = td.dataset.mcell.split(':');
-        const uid = Number(uidStr);
-        const p = people.find((x) => x.id === uid);
-        if (!p) return;
-        const isSelf = ME && ME.id == p.id;
-        const isTargetAdmin = p.roles.some((r) => r.name === 'admin');
-        if (isSelf || (!isAdmin() && isTargetAdmin)) return toast('Cannot modify this account directly', 'err');
-
-        const nextLvl = NEXT_LVL[curLvl] || 'view';
-        try {
-          await api('/access/people/' + uid + '/save', {
-            method: 'POST',
-            body: { sections: { [secKey]: nextLvl } }
-          });
-          p.permissions[secKey] = nextLvl;
-          if (!p.user_overrides) p.user_overrides = {};
-          p.user_overrides[secKey] = nextLvl;
-          toast(`${p.username} · ${secKey} → ${nextLvl.toUpperCase()}`);
-          draw();
-        } catch (e) {
-          toast(e.message, 'err');
-        }
-      };
-    });
-
-    const applyBtn = qs('#btn-bulk-apply', c);
-    if (applyBtn) {
-      applyBtn.onclick = async () => {
-        const addRole = qs('#bulk-add-role', c).value;
-        const projVal = qs('#bulk-project', c).value;
-        const tankVal = qs('#bulk-tank', c).value;
-        const presetDom = qs('#bulk-domain', c).value;
-        const presetLvl = qs('#bulk-level', c).value;
-
-        const body = { userIds: Array.from(selectedIds) };
-        if (addRole) body.addRole = addRole;
-        if (projVal !== '__KEEP__') body.projectId = projVal;
-        if (tankVal !== '__KEEP__') body.bulkTankId = tankVal;
-        if (presetDom && presetLvl) {
-          body.presetDomain = presetDom;
-          body.presetLevel = presetLvl;
-        }
-
-        try {
-          applyBtn.disabled = true;
-          applyBtn.innerText = 'Applying…';
-          const res = await api('/access/people/bulk-save', { method: 'POST', body });
-          toast(`Updated ${res.updated_count} person(s)`);
-          await renderAllPersonsMatrix(c);
-        } catch (e) {
-          toast(e.message, 'err');
-          applyBtn.disabled = false;
-        }
-      };
-    }
-  };
-
-  draw();
-}
-
-function openCompareModal(u, people) {
-  modal(`Compare Access: ${esc(u.full_name || u.username)}`, `
-    <div style="display:flex;gap:10px;margin-bottom:12px;align-items:center;flex-wrap:wrap">
-      <label style="margin:0;font-weight:600;font-size:12px">Compare with:</label>
-      <select id="cmp-target-type" style="padding:4px 8px">
-        <option value="user">Another Person</option>
-        <option value="role">A Role Template</option>
-      </select>
-      <select id="cmp-target-val" style="flex:1;min-width:180px;padding:4px 8px"></select>
-      <button class="primary sm" id="btn-run-cmp">Compare</button>
-    </div>
-    <div id="cmp-result"><div class="muted">Select comparison target and click Compare.</div></div>`,
-    async (body) => {
-      const typeSel = qs('#cmp-target-type', body);
-      const valSel = qs('#cmp-target-val', body);
-      const resDiv = qs('#cmp-result', body);
-
-      const updateTargetOptions = async () => {
-        if (typeSel.value === 'user') {
-          valSel.innerHTML = people.filter((p) => p.id != u.id)
-            .map((p) => `<option value="${p.id}">${esc(p.full_name || p.username)} (${esc(p.username)})</option>`).join('');
-        } else {
-          const rData = await api('/access/roles');
-          valSel.innerHTML = rData.roles.map((r) => `<option value="${esc(r.name)}">${esc(r.label || r.name)}</option>`).join('');
-        }
-      };
-
-      typeSel.onchange = updateTargetOptions;
-      await updateTargetOptions();
-
-      qs('#btn-run-cmp', body).onclick = async () => {
-        try {
-          resDiv.innerHTML = '<div class="muted">Comparing…</div>';
-          const query = typeSel.value === 'user' ? `user1=${u.id}&user2=${valSel.value}` : `user1=${u.id}&role=${encodeURIComponent(valSel.value)}`;
-          const res = await api('/access/compare?' + query);
-
-          const targetTitle = res.target.type === 'user' ? (res.target.full_name || res.target.username) : res.target.label;
-
-          const diffSections = res.sections.filter((s) => s.diff);
-
-          const secRows = res.sections.map((s) => `
-            <tr style="${s.diff ? 'background:#fffbeb;' : ''}">
-              <td>${s.icon} <b>${esc(s.label)}</b></td>
-              <td>${lvlChip(s.user1_level)}</td>
-              <td>${lvlChip(s.target_level)}</td>
-              <td>${s.diff ? '<span class="badge amber">Different</span>' : '<span class="muted">Same</span>'}</td>
-            </tr>
-          `).join('');
-
-          const capRows = res.capabilities.map((c) => `
-            <tr>
-              <td><b>${esc(c.label)}</b><br><span class="muted" style="font-size:10px">${esc(c.key)}</span></td>
-              <td>${c.user1_has ? '<span class="badge green">YES</span>' : '<span class="muted">NO</span>'}</td>
-              <td>${c.target_has ? '<span class="badge green">YES</span>' : '<span class="muted">NO</span>'}</td>
-            </tr>
-          `).join('') || '<tr><td colspan="3" class="muted" style="text-align:center">No capability differences</td></tr>';
-
-          resDiv.innerHTML = `
-            <div style="margin-bottom:10px;padding:8px 12px;background:var(--bg-muted, #f8fafc);border-radius:6px;font-size:12px">
-              Comparing <b>${esc(u.full_name || u.username)}</b> vs <b>${esc(targetTitle)}</b>:
-              <b>${diffSections.length}</b> section(s) differ, <b>${res.capabilities.length}</b> special capability difference(s).
-            </div>
-            <h4 style="margin:10px 0 4px">23 Canonical Sections</h4>
-            <div class="table-wrap scroll" style="max-height:220px">
-              <table>
-                <thead><tr><th>Section</th><th>${esc(u.username)}</th><th>${esc(targetTitle)}</th><th>Status</th></tr></thead>
-                <tbody>${secRows}</tbody>
-              </table>
-            </div>
-            <h4 style="margin:14px 0 4px">Capability Differences (${res.capabilities.length})</h4>
-            <div class="table-wrap scroll" style="max-height:180px">
-              <table>
-                <thead><tr><th>Capability</th><th>${esc(u.username)}</th><th>${esc(targetTitle)}</th></tr></thead>
-                <tbody>${capRows}</tbody>
-              </table>
-            </div>
-          `;
-        } catch (e) { resDiv.innerHTML = `<div class="err">${esc(e.message)}</div>`; }
-      };
-    }
-  );
-}
-
-// ---- Tab 3 Sub-view: Access Inspector (Sections & Stores) ---------------------
-async function renderSectionsAudit(c, wantedSection, wantedStoreId) {
-  const [matrixData, storeLocsRes] = await Promise.all([
-    api('/access/section-matrix'),
-    api('/store-locations').catch(() => [])
-  ]);
-  const allSections = (matrixData.matrix && matrixData.matrix.sections) || [];
-  const allStores = Array.isArray(storeLocsRes) ? storeLocsRes : (storeLocsRes && storeLocsRes.stores) || [];
-  const defSec = wantedSection || (allSections[0] ? allSections[0].key : 'dashboard');
-  const defStore = wantedStoreId || (allStores[0] ? String(allStores[0].id) : '');
-  let inspectorMode = wantedStoreId ? 'store' : 'section';
-
-  const renderHeader = () => {
-    c.innerHTML = `
-      <div class="card" style="margin-bottom:12px">
-        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px">
-          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-            <div class="pill-row">
-              <button class="btn sm ${inspectorMode === 'section' ? 'primary' : ''}" data-insp-mode="section">📂 By System Section (${allSections.length})</button>
-              <button class="btn sm ${inspectorMode === 'store' ? 'primary' : ''}" data-insp-mode="store">🏪 By Store Location (${allStores.length})</button>
-            </div>
-            <p class="muted" style="margin:0;font-size:12px">
-              ${inspectorMode === 'section' ? 'Instant answer to: Who can view, edit, or approve each system section?' : 'Instant answer to: Who can view, receive, issue, dispatch, or count in each physical store?'}
-            </p>
-          </div>
-          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-            ${inspectorMode === 'section'
-              ? `<label style="font-weight:600;font-size:12px;margin:0">Section:</label>
-                 <select id="sec-audit-select" style="padding:4px 10px;font-size:13px;font-weight:bold">
-                   ${allSections.map((s) => `<option value="${s.key}" ${s.key === defSec ? 'selected' : ''}>${s.icon} ${esc(s.label)}</option>`).join('')}
-                 </select>`
-              : `<label style="font-weight:600;font-size:12px;margin:0">Store Location:</label>
-                 <select id="store-audit-select" style="padding:4px 10px;font-size:13px;font-weight:bold">
-                   ${allStores.map((st) => `<option value="${st.id}" ${String(st.id) === String(defStore) ? 'selected' : ''}>${esc(st.name)} (${esc(st.code)})</option>`).join('') || '<option value="">No stores configured</option>'}
-                 </select>`}
-          </div>
-        </div>
-      </div>
-      <div id="sec-audit-content"><div class="muted">Loading inspector data…</div></div>
-    `;
-
-    qsa('[data-insp-mode]', c).forEach((b) => {
-      b.onclick = () => {
-        inspectorMode = b.dataset.inspMode;
-        renderHeader();
-        if (inspectorMode === 'section') loadSection(qs('#sec-audit-select', c).value);
-        else loadStoreAudit(qs('#store-audit-select', c).value);
-      };
-    });
-    const secSel = qs('#sec-audit-select', c);
-    if (secSel) secSel.onchange = () => loadSection(secSel.value);
-    const stSel = qs('#store-audit-select', c);
-    if (stSel) stSel.onchange = () => loadStoreAudit(stSel.value);
-  };
-
-  const loadSection = async (secKey) => {
-    const contentDiv = qs('#sec-audit-content', c);
-    try {
-      contentDiv.innerHTML = '<div class="muted">Loading section audit data…</div>';
-      const data = await api('/access/sections/' + encodeURIComponent(secKey));
-      const s = data.section;
-      const people = data.people || [];
-
-      const counts = { full: 0, edit: 0, add: 0, view: 0, none: 0 };
-      people.forEach((p) => { counts[p.effective_level] = (counts[p.effective_level] || 0) + 1; });
-
-      const rows = people.map((p) => {
-        const roleStr = p.roles.map((r) => r.label || r.name).join(', ') || 'None';
-        const isCustom = p.is_override;
-        const capsBadges = (p.granted_caps || []).map((cap) => `<span class="badge" style="font-size:10px">${esc(cap)}</span>`).join(' ') || '<span class="muted">—</span>';
-        return `
-          <tr style="${p.effective_level === 'none' ? 'opacity:.5;' : ''}">
-            <td><b>${esc(p.full_name || p.username)}</b><br><span class="muted" style="font-size:11px">${esc(p.username)}</span></td>
-            <td><span class="muted">${esc(roleStr)}</span></td>
-            <td>${esc(p.workshop || '—')}</td>
-            <td>${lvlChip(p.effective_level)}</td>
-            <td>${isCustom ? '<span class="badge amber">Custom Override</span>' : '<span class="muted">Role Default</span>'}</td>
-            <td>${capsBadges}</td>
-            <td>
-              <button class="btn sm" data-manage-user="${p.id}" title="Open in Users & Access">Manage</button>
-            </td>
-          </tr>
-        `;
-      }).join('');
-
-      contentDiv.innerHTML = `
-        <div class="card" style="margin-bottom:12px;border-left:4px solid var(--accent, #2563eb)">
-          <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
-            <div>
-              <h2 style="margin:0;display:flex;align-items:center;gap:6px">
-                <span>${s.icon}</span> <span>${esc(s.label)}</span>
-              </h2>
-              <p class="muted" style="margin:2px 0 0;font-size:12px">${esc(s.description || '')}</p>
-            </div>
-            <div class="pill-row">
-              <span class="badge amber">Full: ${counts.full || 0}</span>
-              <span class="badge green">Edit: ${counts.edit || 0}</span>
-              <span class="badge blue">Add: ${counts.add || 0}</span>
-              <span class="badge">View: ${counts.view || 0}</span>
-              <span class="muted" style="font-size:11px">No access: ${counts.none || 0}</span>
-            </div>
-          </div>
-        </div>
-
-        <div class="card">
-          <div class="table-wrap scroll">
-            <table>
-              <thead>
-                <tr>
-                  <th>Person</th>
-                  <th>Roles</th>
-                  <th>Workshop</th>
-                  <th>Effective Level</th>
-                  <th>Origin</th>
-                  <th>Special Capabilities</th>
-                  <th>Action</th>
-                </tr>
-              </thead>
-              <tbody>${rows}</tbody>
-            </table>
-          </div>
-        </div>
-      `;
-
-      qsa('[data-manage-user]', contentDiv).forEach((b) => {
-        b.onclick = () => {
-          location.hash = '#/access?tab=people&user=' + b.dataset.manageUser;
-        };
-      });
-    } catch (e) {
-      contentDiv.innerHTML = `<div class="card err">${esc(e.message)}</div>`;
-    }
-  };
-
-  const loadStoreAudit = async (storeId) => {
-    const contentDiv = qs('#sec-audit-content', c);
-    if (!storeId) {
-      contentDiv.innerHTML = '<div class="card muted">No store locations found.</div>';
-      return;
-    }
-    const store = allStores.find((s) => String(s.id) === String(storeId));
-    try {
-      contentDiv.innerHTML = '<div class="muted">Loading store permissions…</div>';
-      const accessList = await api(`/store-locations/${storeId}/access`).catch(() => []);
-      const rows = (Array.isArray(accessList) ? accessList : []).map((a) => `
-        <tr>
-          <td><b>${esc(a.full_name || a.username)}</b> <span class="muted" style="font-size:11px">(@${esc(a.username)})</span></td>
-          <td style="text-align:center">${a.can_view ? '✅' : '<span class="muted">—</span>'}</td>
-          <td style="text-align:center">${a.can_receive ? '✅' : '<span class="muted">—</span>'}</td>
-          <td style="text-align:center">${a.can_issue ? '✅' : '<span class="muted">—</span>'}</td>
-          <td style="text-align:center">${a.can_dispatch ? '✅' : '<span class="muted">—</span>'}</td>
-          <td style="text-align:center">${a.can_count ? '✅' : '<span class="muted">—</span>'}</td>
-          <td style="text-align:center">${a.can_request ? '✅' : '<span class="muted">—</span>'}</td>
-          <td style="text-align:right">
-            <button class="btn sm" data-manage-user="${a.user_id}">Manage User</button>
-          </td>
-        </tr>
-      `).join('') || '<tr><td colspan="8" class="muted" style="text-align:center;padding:16px">No explicit user restrictions assigned to this store yet.</td></tr>';
-
-      contentDiv.innerHTML = `
-        <div class="card" style="margin-bottom:12px;border-left:4px solid var(--accent, #2563eb)">
-          <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
-            <div>
-              <h2 style="margin:0;display:flex;align-items:center;gap:6px">
-                <span>🏪</span> <span>${esc(store ? store.name : 'Store')}</span>
-                ${store ? `<span class="badge">${esc(store.store_type || '')}</span>` : ''}
-              </h2>
-              <p class="muted" style="margin:2px 0 0;font-size:12px">Code: <code>${esc(store ? store.code : storeId)}</code> · ${(accessList || []).length} user(s) explicitly assigned</p>
-            </div>
-            <div>
-              ${canDo('stores.locations.access') ? `<button class="primary sm" id="btn-edit-store-matrix">🔑 Edit Store Matrix</button>` : ''}
-            </div>
-          </div>
-        </div>
-        <div class="card">
-          <div class="table-wrap scroll">
-            <table>
-              <thead>
-                <tr>
-                  <th>User</th>
-                  <th style="text-align:center">View</th>
-                  <th style="text-align:center">Receive</th>
-                  <th style="text-align:center">Issue</th>
-                  <th style="text-align:center">Dispatch</th>
-                  <th style="text-align:center">Count</th>
-                  <th style="text-align:center">Request</th>
-                  <th style="text-align:right">Action</th>
-                </tr>
-              </thead>
-              <tbody>${rows}</tbody>
-            </table>
-          </div>
-        </div>
-      `;
-
-      const editBtn = qs('#btn-edit-store-matrix', contentDiv);
-      if (editBtn && typeof showStoreLocationAccessModal === 'function') {
-        editBtn.onclick = () => showStoreLocationAccessModal(Number(storeId));
-      }
-      qsa('[data-manage-user]', contentDiv).forEach((b) => {
-        b.onclick = () => {
-          location.hash = '#/access?tab=people&user=' + b.dataset.manageUser;
-        };
-      });
-    } catch (e) {
-      contentDiv.innerHTML = `<div class="card err">${esc(e.message)}</div>`;
-    }
-  };
-
-  renderHeader();
-  if (inspectorMode === 'store') await loadStoreAudit(defStore);
-  else await loadSection(defSec);
-}
-
-// ===========================================================================
-// SAP Enterprise User Activity Logs & Security Audit Trail (Z_WO_AUDIT)
-// Standard: SAP NetWeaver Security Audit (SM20) & Application Log (SLG1)
-// ===========================================================================
-
-routes.auditlogs = async () => { location.hash = '#/access?tab=auditlogs'; };
-
-async function openAuditDiffModal(id) {
-  try {
-    const d = await api(`/audit-logs/${id}`);
-    const dateFormatted = d.created_at ? slDateTime(d.created_at, { seconds: true }) + ' (SLST)' : '—';
-    const initials = (d.full_name || d.username || 'SY').split(' ').map((p) => p[0]).slice(0, 2).join('').toUpperCase();
-
-    const diff = d.diff || { changed: {}, added: {}, removed: {}, unchanged: {} };
-    const changedKeys = Object.keys(diff.changed);
-    const addedKeys = Object.keys(diff.added);
-    const removedKeys = Object.keys(diff.removed);
-    const hasDiff = changedKeys.length > 0 || addedKeys.length > 0 || removedKeys.length > 0;
-
-    let deltaTableRows = '';
-
-    // 1. Changed fields (Yellow)
-    for (const k of changedKeys) {
-      const bVal = JSON.stringify(diff.changed[k].before);
-      const aVal = JSON.stringify(diff.changed[k].after);
-      deltaTableRows += `
-        <tr style="background:#fefce8">
-          <td style="font-weight:700;font-family:monospace;font-size:12px">${esc(k)}</td>
-          <td style="color:#b91c1c;text-decoration:line-through;word-break:break-all;font-size:12px;font-family:monospace">${esc(bVal)}</td>
-          <td style="color:#15803d;font-weight:600;word-break:break-all;font-size:12px;font-family:monospace">${esc(aVal)}</td>
-          <td><span class="badge blue">Modified</span></td>
-        </tr>`;
-    }
-
-    // 2. Added fields (Green)
-    for (const k of addedKeys) {
-      const aVal = JSON.stringify(diff.added[k]);
-      deltaTableRows += `
-        <tr style="background:#f0fdf4">
-          <td style="font-weight:700;font-family:monospace;font-size:12px">${esc(k)}</td>
-          <td class="muted" style="font-size:12px">—</td>
-          <td style="color:#15803d;font-weight:600;word-break:break-all;font-size:12px;font-family:monospace">${esc(aVal)}</td>
-          <td><span class="badge green">Added</span></td>
-        </tr>`;
-    }
-
-    // 3. Removed fields (Red)
-    for (const k of removedKeys) {
-      const bVal = JSON.stringify(diff.removed[k]);
-      deltaTableRows += `
-        <tr style="background:#fef2f2">
-          <td style="font-weight:700;font-family:monospace;font-size:12px">${esc(k)}</td>
-          <td style="color:#b91c1c;text-decoration:line-through;word-break:break-all;font-size:12px;font-family:monospace">${esc(bVal)}</td>
-          <td class="muted" style="font-size:12px">—</td>
-          <td><span class="badge red">Removed</span></td>
-        </tr>`;
-    }
-
-    const modalHtml = `
-      <div style="font-size:13px">
-        <!-- Event Meta Header -->
-        <div style="display:flex;align-items:center;justify-content:space-between;background:rgba(0,0,0,0.02);border:1px solid var(--border);border-radius:8px;padding:12px 16px;margin-bottom:14px;flex-wrap:wrap;gap:10px">
-          <div style="display:flex;align-items:center;gap:12px">
-            <div style="width:36px;height:36px;border-radius:50%;background:#e0e7ff;color:#3730a3;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:13px">
-              ${esc(initials)}
-            </div>
-            <div>
-              <div style="font-weight:700;color:var(--text)">${esc(d.full_name || d.username)} <span class="muted" style="font-size:11px">(@${esc(d.username)})</span></div>
-              <div class="muted" style="font-size:11px">Event ID: <b>#${d.id}</b> · Location: ${esc(d.workshop_name || 'All Sites / Central')}</div>
-            </div>
-          </div>
-          <div style="text-align:right">
-            <div><span class="badge blue">${esc(d.entity)}</span> <span class="badge green">${esc(d.action)}</span> ${d.entity_id ? `<span class="badge" style="background:#f1f5f9">ID: ${esc(d.entity_id)}</span>` : ''}</div>
-            <div class="muted" style="font-size:11px;margin-top:4px">📅 ${esc(dateFormatted)}</div>
-          </div>
-        </div>
-
-        ${d.reason ? `<div style="background:#eff6ff;border-left:4px solid #3b82f6;padding:10px 14px;border-radius:4px;margin-bottom:14px;font-size:12px"><b>Reason / Justification:</b> <i>${esc(d.reason)}</i></div>` : ''}
-
-        <!-- Tab switches: Visual Delta vs Raw JSON -->
-        <div style="display:flex;gap:8px;border-bottom:1px solid var(--border);margin-bottom:12px">
-          <button class="btn sm primary" id="tab-btn-visual-diff">Visual Field Delta</button>
-          <button class="btn sm" id="tab-btn-raw-before">Before State (JSON)</button>
-          <button class="btn sm" id="tab-btn-raw-after">After State (JSON)</button>
-        </div>
-
-        <!-- 1. Visual Delta View -->
-        <div id="diff-pane-visual">
-          ${hasDiff ? `
-            <div class="table-wrap scroll" style="max-height:360px">
-              <table>
-                <thead>
-                  <tr>
-                    <th style="width:25%">Property / Column</th>
-                    <th style="width:35%">Previous Value (Before)</th>
-                    <th style="width:35%">New Value (After)</th>
-                    <th style="width:10%">Delta</th>
-                  </tr>
-                </thead>
-                <tbody>${deltaTableRows}</tbody>
-              </table>
-            </div>
-          ` : `
-            <div class="card" style="text-align:center;padding:24px;background:#f8fafc">
-              <div style="font-size:24px;margin-bottom:6px">ℹ️</div>
-              <p class="muted" style="margin:0">No field mutations recorded for this event (e.g. read event, initial authentication, or raw event log).</p>
-            </div>
-          `}
-        </div>
-
-        <!-- 2. Raw JSON Before -->
-        <div id="diff-pane-before" style="display:none">
-          <pre style="background:#0f172a;color:#e2e8f0;padding:14px;border-radius:6px;max-height:360px;overflow:auto;font-size:11px;font-family:monospace">${esc(JSON.stringify(d.before, null, 2) || 'null')}</pre>
-        </div>
-
-        <!-- 3. Raw JSON After -->
-        <div id="diff-pane-after" style="display:none">
-          <pre style="background:#0f172a;color:#e2e8f0;padding:14px;border-radius:6px;max-height:360px;overflow:auto;font-size:11px;font-family:monospace">${esc(JSON.stringify(d.after, null, 2) || 'null')}</pre>
-        </div>
-      </div>
-    `;
-
-    modal(`Audit Event #${d.id} · ${d.entity} (${d.action})`, modalHtml, (body) => {
-      const pVisual = qs('#diff-pane-visual', body);
-      const pBefore = qs('#diff-pane-before', body);
-      const pAfter = qs('#diff-pane-after', body);
-      const bVisual = qs('#tab-btn-visual-diff', body);
-      const bBefore = qs('#tab-btn-raw-before', body);
-      const bAfter = qs('#tab-btn-raw-after', body);
-
-      const selectTab = (activeBtn, activePane) => {
-        [bVisual, bBefore, bAfter].forEach((b) => b.classList.remove('primary'));
-        [pVisual, pBefore, pAfter].forEach((p) => { p.style.display = 'none'; });
-        activeBtn.classList.add('primary');
-        activePane.style.display = 'block';
-      };
-
-      bVisual.onclick = () => selectTab(bVisual, pVisual);
-      bBefore.onclick = () => selectTab(bBefore, pBefore);
-      bAfter.onclick = () => selectTab(bAfter, pAfter);
-    }, { wide: true });
-  } catch (err) {
-    toast(err.message, 'err');
-  }
-}
-
-async function renderAuditLogs(c, opts = {}) {
-  const canViewAll = isAdmin() || canDo('audit.logs.view');
-  const canViewAccessOnly = !canViewAll && canDo('access.manage');
-  if (!canViewAll && !canViewAccessOnly) {
-    c.innerHTML = `
-      <div class="card" style="margin:24px;max-width:600px;border-left:4px solid #ef4444">
-        <h3 style="color:#ef4444;margin:0 0 8px">🔒 Access Denied · Restricted Security Ledger</h3>
-        <p class="muted" style="margin:0 0 16px">You do not have permission to view Security Audit Trail &amp; Activity Logs.</p>
-        <a class="btn sm" href="#/dashboard">Return to Dashboard</a>
-      </div>
-    `;
-    return;
-  }
-
-  const defaultCategory = !canViewAll ? 'access' : (opts.preset || 'all');
-  const filters = {
-    category: defaultCategory,
-    userId: '',
-    entity: 'all',
-    action: 'all',
-    dateFrom: '',
-    dateTo: '',
-    search: '',
-    limit: 50,
-    offset: 0,
-  };
-
-  let filterOptionsLoaded = false;
-  let searchDebounceTimer = null;
-
-  const presetButtonsHtml = canViewAll ? `
-    <div class="pill-row">
-      <button class="btn sm ${filters.category === 'all' ? 'primary' : ''}" data-audit-cat="all">All System Activity</button>
-      <button class="btn sm ${filters.category === 'access' ? 'primary' : ''}" data-audit-cat="access">🔐 Access &amp; Role Changes</button>
-      <button class="btn sm ${filters.category === 'auth' ? 'primary' : ''}" data-audit-cat="auth">🔑 Sign-ins &amp; Sessions</button>
-      <button class="btn sm ${filters.category === 'critical' ? 'primary' : ''}" data-audit-cat="critical">🗑️ Critical Deletions</button>
-    </div>` : `<div class="pill-row"><span class="badge blue">🔐 Scoped to Access, Roles &amp; Governance Events</span></div>`;
-
-  const topHeaderHtml = opts.embedded ? `
-    <div class="card" style="padding:10px 14px;margin-bottom:14px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">
-      ${presetButtonsHtml}
-      <div style="display:flex;gap:8px">
-        <button class="btn sm" id="btn-export-audit" title="Download Excel audit report">📥 Export to Excel</button>
-        <button class="btn sm primary" id="btn-refresh-audit">🔄 Refresh</button>
-      </div>
-    </div>` : `
-    <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:14px;flex-wrap:wrap;gap:12px">
-      <div>
-        <div class="crumb">Admin / Governance</div>
-        <h1 style="margin:0;display:flex;align-items:center;gap:8px">
-          <span>🛡️</span> User Activity Logs &amp; Security Audit Trail
-        </h1>
-        <div class="muted" style="font-size:12px;margin-top:4px">
-          SAP NetWeaver Security Audit (SM20) &amp; Application Log (SLG1) compliant immutable audit ledger
-        </div>
-      </div>
-      <div style="display:flex;gap:8px">
-        <button class="btn sm" id="btn-export-audit" title="Download Excel audit report">📥 Export to Excel</button>
-        <button class="btn sm primary" id="btn-refresh-audit">🔄 Refresh</button>
-      </div>
-    </div>
-    <div style="margin-bottom:14px">${presetButtonsHtml}</div>`;
-
-  c.innerHTML = `
-    ${topHeaderHtml}
-
-    <!-- 1. SAP Fiori Analytical KPI Cards -->
-    <div id="audit-kpi-container" style="display:grid;grid-template-columns:repeat(auto-fit, minmax(180px, 1fr));gap:12px;margin-bottom:16px">
-      <div class="card" style="padding:14px;border-left:4px solid #3b82f6">
-        <div class="muted" style="font-size:11px;text-transform:uppercase;font-weight:700">${canViewAll ? 'Total System Events' : 'Access & Role Events'}</div>
-        <div id="kpi-total" style="font-size:24px;font-weight:700;color:var(--text);margin:4px 0">...</div>
-        <div class="muted" style="font-size:11px">All time recorded</div>
-      </div>
-      <div class="card" style="padding:14px;border-left:4px solid #10b981">
-        <div class="muted" style="font-size:11px;text-transform:uppercase;font-weight:700">Events Today</div>
-        <div id="kpi-today" style="font-size:24px;font-weight:700;color:#059669;margin:4px 0">...</div>
-        <div class="muted" style="font-size:11px">Daily volume</div>
-      </div>
-      <div class="card" style="padding:14px;border-left:4px solid #ef4444">
-        <div class="muted" style="font-size:11px;text-transform:uppercase;font-weight:700">Critical Mutations / Revokes</div>
-        <div id="kpi-deletes" style="font-size:24px;font-weight:700;color:#dc2626;margin:4px 0">...</div>
-        <div class="muted" style="font-size:11px">Void, revoke, deactivate &amp; delete</div>
-      </div>
-      ${canViewAll ? `<div class="card" style="padding:14px;border-left:4px solid #f59e0b">
-        <div class="muted" style="font-size:11px;text-transform:uppercase;font-weight:700">Sign-Ins Today</div>
-        <div id="kpi-logins" style="font-size:24px;font-weight:700;color:#d97706;margin:4px 0">...</div>
-        <div class="muted" style="font-size:11px"><span id="kpi-failed-logins" style="color:#ef4444">0</span> failed attempts</div>
-      </div>` : ''}
-      <div class="card" style="padding:14px;border-left:4px solid #8b5cf6">
-        <div class="muted" style="font-size:11px;text-transform:uppercase;font-weight:700">Active Actors Today</div>
-        <div id="kpi-active-users" style="font-size:24px;font-weight:700;color:#7c3aed;margin:4px 0">...</div>
-        <div class="muted" style="font-size:11px">Unique users performing actions</div>
-      </div>
-    </div>
-
-    <!-- 2. SAP Fiori Smart Filter Bar -->
-    <div class="card" style="padding:16px;margin-bottom:16px;background:var(--surface,#fff)">
-      <div style="font-weight:700;font-size:13px;margin-bottom:12px;display:flex;align-items:center;gap:6px">
-        <span>🔍</span> Smart Filter Bar
-      </div>
-      <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(180px, 1fr));gap:12px;align-items:end">
-        <div>
-          <label style="font-size:11px;font-weight:600;display:block;margin-bottom:4px">Actor / User</label>
-          <select id="flt-audit-user" style="width:100%;font-size:12px;padding:6px 8px;border-radius:6px;border:1px solid var(--border)">
-            <option value="">All Actors</option>
-          </select>
-        </div>
-        <div>
-          <label style="font-size:11px;font-weight:600;display:block;margin-bottom:4px">Module / Entity</label>
-          <select id="flt-audit-entity" style="width:100%;font-size:12px;padding:6px 8px;border-radius:6px;border:1px solid var(--border)">
-            <option value="all">All Modules</option>
-          </select>
-        </div>
-        <div>
-          <label style="font-size:11px;font-weight:600;display:block;margin-bottom:4px">Action Type</label>
-          <select id="flt-audit-action" style="width:100%;font-size:12px;padding:6px 8px;border-radius:6px;border:1px solid var(--border)">
-            <option value="all">All Actions</option>
-          </select>
-        </div>
-        <div>
-          <label style="font-size:11px;font-weight:600;display:block;margin-bottom:4px">Date Range Preset</label>
-          <select id="flt-audit-preset" style="width:100%;font-size:12px;padding:6px 8px;border-radius:6px;border:1px solid var(--border)">
-            <option value="all">All Time</option>
-            <option value="today">Today</option>
-            <option value="yesterday">Yesterday</option>
-            <option value="7days">Last 7 Days</option>
-            <option value="30days">Last 30 Days</option>
-            <option value="custom">Custom Dates</option>
-          </select>
-        </div>
-        <div id="flt-custom-date-wrap" style="display:none;grid-column:span 2;gap:8px">
-          <div style="flex:1">
-            <label style="font-size:11px;font-weight:600;display:block;margin-bottom:4px">From Date</label>
-            <input type="date" id="flt-audit-date-from" style="width:100%;font-size:12px;padding:5px 8px;border-radius:6px;border:1px solid var(--border)">
-          </div>
-          <div style="flex:1">
-            <label style="font-size:11px;font-weight:600;display:block;margin-bottom:4px">To Date</label>
-            <input type="date" id="flt-audit-date-to" style="width:100%;font-size:12px;padding:5px 8px;border-radius:6px;border:1px solid var(--border)">
-          </div>
-        </div>
-        <div>
-          <label style="font-size:11px;font-weight:600;display:block;margin-bottom:4px">Search Reason / Notes / Keyword</label>
-          <input type="search" id="flt-audit-search" placeholder="Type keyword..." style="width:100%;font-size:12px;padding:6px 8px;border-radius:6px;border:1px solid var(--border)">
-        </div>
-        <div style="display:flex;gap:6px">
-          <button class="btn sm" id="btn-reset-filters" style="width:100%">Clear Filters</button>
-        </div>
-      </div>
-    </div>
-
-    <!-- 3. Table & Pagination Container -->
-    <div class="card" style="padding:0;overflow:hidden">
-      <div style="padding:12px 16px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;background:rgba(0,0,0,0.02)">
-        <div id="audit-table-count" style="font-size:13px;font-weight:600;color:var(--text)">
-          Loading records...
-        </div>
-        <div style="display:flex;align-items:center;gap:8px;font-size:12px">
-          <span class="muted">Per page:</span>
-          <select id="sel-audit-limit" style="font-size:12px;padding:2px 6px;border-radius:4px;border:1px solid var(--border)">
-            <option value="50">50</option>
-            <option value="100">100</option>
-            <option value="200">200</option>
-          </select>
-        </div>
-      </div>
-
-      <div id="audit-table-wrap">
-        <div class="muted" style="padding:32px;text-align:center">Fetching security audit events...</div>
-      </div>
-
-      <div id="audit-pagination-bar" style="padding:10px 16px;border-top:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;background:rgba(0,0,0,0.01);font-size:12px">
-      </div>
-    </div>
-  `;
-
-  async function loadStats() {
-    try {
-      const s = await api('/audit-logs/stats');
-      if (qs('#kpi-total', c)) qs('#kpi-total', c).innerText = (s.totalEvents || 0).toLocaleString();
-      if (qs('#kpi-today', c)) qs('#kpi-today', c).innerText = (s.todayEvents || 0).toLocaleString();
-      if (qs('#kpi-deletes', c)) qs('#kpi-deletes', c).innerText = (s.criticalDeletes || 0).toLocaleString();
-      if (qs('#kpi-logins', c)) qs('#kpi-logins', c).innerText = (s.todayLogins || 0).toLocaleString();
-      if (qs('#kpi-failed-logins', c)) qs('#kpi-failed-logins', c).innerText = s.failedLoginsToday || 0;
-      if (qs('#kpi-active-users', c)) qs('#kpi-active-users', c).innerText = (s.activeUsersToday || 0).toLocaleString();
-    } catch {}
-  }
-
-  async function loadLogs() {
-    const wrap = qs('#audit-table-wrap', c);
-    const countEl = qs('#audit-table-count', c);
-    const pageBar = qs('#audit-pagination-bar', c);
-
-    wrap.innerHTML = '<div class="muted" style="padding:32px;text-align:center">Loading security audit records...</div>';
-
-    const p = new URLSearchParams();
-    if (filters.category && filters.category !== 'all') p.set('category', filters.category);
-    if (filters.userId) p.set('userId', filters.userId);
-    if (filters.entity && filters.entity !== 'all') p.set('entity', filters.entity);
-    if (filters.action && filters.action !== 'all') p.set('action', filters.action);
-    if (filters.dateFrom) p.set('dateFrom', filters.dateFrom);
-    if (filters.dateTo) p.set('dateTo', filters.dateTo);
-    if (filters.search) p.set('search', filters.search);
-    p.set('limit', filters.limit);
-    p.set('offset', filters.offset);
-
-    try {
-      const data = await api(`/audit-logs?${p.toString()}`);
-
-      // Populate filter options if not loaded yet
-      if (!filterOptionsLoaded && data.filterOptions) {
-        filterOptionsLoaded = true;
-        const uSel = qs('#flt-audit-user', c);
-        const eSel = qs('#flt-audit-entity', c);
-        const aSel = qs('#flt-audit-action', c);
-
-        if (data.filterOptions.actors) {
-          data.filterOptions.actors.forEach((a) => {
-            const opt = document.createElement('option');
-            opt.value = a.id;
-            opt.innerText = `${a.full_name || a.username} (@${a.username})`;
-            uSel.appendChild(opt);
-          });
-        }
-        if (data.filterOptions.entities) {
-          data.filterOptions.entities.forEach((ent) => {
-            const opt = document.createElement('option');
-            opt.value = ent;
-            opt.innerText = ent;
-            eSel.appendChild(opt);
-          });
-        }
-        if (data.filterOptions.actions) {
-          data.filterOptions.actions.forEach((act) => {
-            const opt = document.createElement('option');
-            opt.value = act;
-            opt.innerText = act;
-            aSel.appendChild(opt);
-          });
-        }
-      }
-
-      const total = data.pagination.total || 0;
-      const startIdx = total === 0 ? 0 : filters.offset + 1;
-      const endIdx = Math.min(filters.offset + (data.logs || []).length, total);
-
-      countEl.innerHTML = `Showing <b>${startIdx} - ${endIdx}</b> of <b>${total.toLocaleString()}</b> events`;
-
-      if (!data.logs || !data.logs.length) {
-        wrap.innerHTML = '<div class="muted" style="padding:32px;text-align:center">No audit log records match the current filter criteria.</div>';
-        pageBar.innerHTML = '';
-        return;
-      }
-
-      // Render table rows
-      const rowsHtml = data.logs.map((r) => {
-        const timeStr = slDateTime(r.created_at, { seconds: true });
-        const initials = (r.full_name || r.username || 'SY').split(' ').map((x) => x[0]).slice(0, 2).join('').toUpperCase();
-
-        // Entity badge style
-        let entColor = 'blue';
-        if (r.entity === 'session' || r.entity === 'user') entColor = 'amber';
-        else if (r.entity.includes('job')) entColor = 'blue';
-        else if (r.entity.includes('store') || r.entity === 'mrn' || r.entity === 'issues') entColor = 'green';
-        else if (r.entity.includes('tool') || r.entity === 'vehicle_documents') entColor = 'purple';
-
-        // Action badge style
-        let actClass = 'badge';
-        let actStyle = 'background:#f1f5f9;color:#334155';
-        if (/delete|void|scrap|revoke|lock/i.test(r.action)) {
-          actStyle = 'background:#fee2e2;color:#991b1b;font-weight:600';
-        } else if (/create|issue|receive|add/i.test(r.action)) {
-          actStyle = 'background:#dcfce7;color:#166534;font-weight:600';
-        } else if (/approve|sign|close/i.test(r.action)) {
-          actStyle = 'background:#f3e8ff;color:#6b21a8;font-weight:600';
-        } else if (/edit|update|move/i.test(r.action)) {
-          actStyle = 'background:#e0f2fe;color:#0369a1;font-weight:600';
-        }
-
-        return `
-          <tr>
-            <td style="white-space:nowrap;font-size:11px;font-family:monospace;color:var(--text)">
-              ${esc(timeStr)}
-            </td>
-            <td>
-              <div style="display:flex;align-items:center;gap:8px">
-                <div style="width:24px;height:24px;border-radius:50%;background:#e2e8f0;font-size:10px;font-weight:700;display:flex;align-items:center;justify-content:center;color:#475569">
-                  ${esc(initials)}
-                </div>
-                <div>
-                  <div style="font-weight:600;font-size:12px;color:var(--text)">${esc(r.username)}</div>
-                  ${r.full_name && r.full_name !== r.username ? `<div class="muted" style="font-size:10px">${esc(r.full_name)}</div>` : ''}
-                </div>
-              </div>
-            </td>
-            <td style="font-size:11px">
-              ${r.workshop_name ? `<span class="badge" style="background:#f8fafc;border:1px solid #cbd5e1">${esc(r.workshop_name)}</span>` : '<span class="muted">—</span>'}
-            </td>
-            <td>
-              <span class="badge ${entColor}">${esc(r.entity)}</span>
-              ${r.entity_id ? `<span class="muted" style="font-size:11px;margin-left:4px">#${esc(r.entity_id)}</span>` : ''}
-            </td>
-            <td>
-              <span class="${actClass}" style="${actStyle}">${esc(r.action)}</span>
-            </td>
-            <td style="max-width:260px;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(r.reason || '')}">
-              ${r.reason ? esc(r.reason) : '<span class="muted">—</span>'}
-            </td>
-            <td>
-              ${r.has_changes ? `<span class="badge" style="background:#f1f5f9;font-size:10px" title="${esc(r.changes_summary)}">Delta recorded</span>` : '<span class="muted" style="font-size:10px">—</span>'}
-            </td>
-            <td style="text-align:right">
-              <button class="btn sm btn-view-diff" data-id="${r.id}" style="padding:2px 8px;font-size:11px">🔍 View Diff</button>
-            </td>
-          </tr>
-        `;
-      }).join('');
-
-      wrap.innerHTML = `
-        <div class="table-wrap scroll" style="max-height:calc(100vh - 360px)">
-          <table>
-            <thead>
-              <tr>
-                <th style="width:14%">Timestamp</th>
-                <th style="width:18%">Actor</th>
-                <th style="width:12%">Location</th>
-                <th style="width:15%">Entity</th>
-                <th style="width:12%">Action</th>
-                <th style="width:15%">Reason / Note</th>
-                <th style="width:10%">Changes</th>
-                <th style="width:8%;text-align:right">Details</th>
-              </tr>
-            </thead>
-            <tbody>${rowsHtml}</tbody>
-          </table>
-        </div>
-      `;
-
-      // Bind diff buttons
-      qsa('.btn-view-diff', wrap).forEach((btn) => {
-        btn.onclick = () => openAuditDiffModal(btn.dataset.id);
-      });
-
-      // Pagination controls
-      const curPage = data.pagination.currentPage || 1;
-      const totalPages = data.pagination.pages || 1;
-
-      pageBar.innerHTML = `
-        <div class="muted">Page <b>${curPage}</b> of <b>${totalPages}</b></div>
-        <div style="display:flex;gap:6px">
-          <button class="btn sm" id="btn-page-first" ${curPage <= 1 ? 'disabled' : ''}>« First</button>
-          <button class="btn sm" id="btn-page-prev" ${curPage <= 1 ? 'disabled' : ''}>‹ Prev</button>
-          <button class="btn sm" id="btn-page-next" ${curPage >= totalPages ? 'disabled' : ''}>Next ›</button>
-          <button class="btn sm" id="btn-page-last" ${curPage >= totalPages ? 'disabled' : ''}>Last »</button>
-        </div>
-      `;
-
-      const btnFirst = qs('#btn-page-first', pageBar);
-      const btnPrev = qs('#btn-page-prev', pageBar);
-      const btnNext = qs('#btn-page-next', pageBar);
-      const btnLast = qs('#btn-page-last', pageBar);
-
-      if (btnFirst) btnFirst.onclick = () => { filters.offset = 0; loadLogs(); };
-      if (btnPrev) btnPrev.onclick = () => { filters.offset = Math.max(0, filters.offset - filters.limit); loadLogs(); };
-      if (btnNext) btnNext.onclick = () => { filters.offset = filters.offset + filters.limit; loadLogs(); };
-      if (btnLast) btnLast.onclick = () => { filters.offset = (totalPages - 1) * filters.limit; loadLogs(); };
-
-    } catch (err) {
-      wrap.innerHTML = `<div class="card err" style="margin:16px">Failed to load audit logs: ${esc(err.message)}</div>`;
-    }
-  }
-
-  // Bind preset category pills & top level buttons
-  qsa('[data-audit-cat]', c).forEach((btn) => {
-    btn.onclick = () => {
-      filters.category = btn.dataset.auditCat;
-      filters.offset = 0;
-      qsa('[data-audit-cat]', c).forEach((b) => b.classList.toggle('primary', b.dataset.auditCat === filters.category));
-      loadLogs();
-    };
-  });
-  qs('#btn-refresh-audit', c).onclick = () => { loadStats(); loadLogs(); };
-  qs('#btn-export-audit', c).onclick = () => {
-    const p = new URLSearchParams();
-    if (filters.category && filters.category !== 'all') p.set('category', filters.category);
-    if (filters.userId) p.set('userId', filters.userId);
-    if (filters.entity && filters.entity !== 'all') p.set('entity', filters.entity);
-    if (filters.action && filters.action !== 'all') p.set('action', filters.action);
-    if (filters.dateFrom) p.set('dateFrom', filters.dateFrom);
-    if (filters.dateTo) p.set('dateTo', filters.dateTo);
-    if (filters.search) p.set('search', filters.search);
-    window.open(`/api/audit-logs/export.xlsx?${p.toString()}`, '_blank');
-  };
-
-  // Bind filters
-  qs('#flt-audit-user', c).onchange = (e) => { filters.userId = e.target.value; filters.offset = 0; loadLogs(); };
-  qs('#flt-audit-entity', c).onchange = (e) => { filters.entity = e.target.value; filters.offset = 0; loadLogs(); };
-  qs('#flt-audit-action', c).onchange = (e) => { filters.action = e.target.value; filters.offset = 0; loadLogs(); };
-
-  qs('#sel-audit-limit', c).onchange = (e) => {
-    filters.limit = Number(e.target.value) || 50;
-    filters.offset = 0;
-    loadLogs();
-  };
-
-  qs('#flt-audit-preset', c).onchange = (e) => {
-    const v = e.target.value;
-    const cWrap = qs('#flt-custom-date-wrap', c);
-    const now = new Date();
-    const todayStr = now.toISOString().slice(0, 10);
-
-    if (v === 'today') {
-      cWrap.style.display = 'none';
-      filters.dateFrom = todayStr;
-      filters.dateTo = todayStr;
-    } else if (v === 'yesterday') {
-      cWrap.style.display = 'none';
-      const y = new Date(now.getTime() - 86400000).toISOString().slice(0, 10);
-      filters.dateFrom = y;
-      filters.dateTo = y;
-    } else if (v === '7days') {
-      cWrap.style.display = 'none';
-      const d7 = new Date(now.getTime() - 7 * 86400000).toISOString().slice(0, 10);
-      filters.dateFrom = d7;
-      filters.dateTo = todayStr;
-    } else if (v === '30days') {
-      cWrap.style.display = 'none';
-      const d30 = new Date(now.getTime() - 30 * 86400000).toISOString().slice(0, 10);
-      filters.dateFrom = d30;
-      filters.dateTo = todayStr;
-    } else if (v === 'custom') {
-      cWrap.style.display = 'flex';
-      return;
-    } else {
-      cWrap.style.display = 'none';
-      filters.dateFrom = '';
-      filters.dateTo = '';
-    }
-    filters.offset = 0;
-    loadLogs();
-  };
-
-  qs('#flt-audit-date-from', c).onchange = (e) => { filters.dateFrom = e.target.value; filters.offset = 0; loadLogs(); };
-  qs('#flt-audit-date-to', c).onchange = (e) => { filters.dateTo = e.target.value; filters.offset = 0; loadLogs(); };
-
-  qs('#flt-audit-search', c).oninput = (e) => {
-    clearTimeout(searchDebounceTimer);
-    searchDebounceTimer = setTimeout(() => {
-      filters.search = e.target.value.trim();
-      filters.offset = 0;
-      loadLogs();
-    }, 300);
-  };
-
-  qs('#btn-reset-filters', c).onclick = () => {
-    filters.category = defaultCategory;
-    filters.userId = '';
-    filters.entity = 'all';
-    filters.action = 'all';
-    filters.dateFrom = '';
-    filters.dateTo = '';
-    filters.search = '';
-    filters.offset = 0;
-
-    qsa('[data-audit-cat]', c).forEach((b) => b.classList.toggle('primary', b.dataset.auditCat === defaultCategory));
-    qs('#flt-audit-user', c).value = '';
-    qs('#flt-audit-entity', c).value = 'all';
-    qs('#flt-audit-action', c).value = 'all';
-    qs('#flt-audit-preset', c).value = 'all';
-    qs('#flt-custom-date-wrap', c).style.display = 'none';
-    qs('#flt-audit-date-from', c).value = '';
-    qs('#flt-audit-date-to', c).value = '';
-    qs('#flt-audit-search', c).value = '';
-
-    loadLogs();
-  };
-
-  // Initial load
-  loadStats();
-  loadLogs();
-}
-
-async function renderRolesManager(c, wanted, mode = 'editor') {
-  const viewMode = (mode === 'board' || mode === 'limits') ? 'board' : 'editor';
-
-  const modeBarHtml = `
-    <div class="card" style="padding:10px 14px;margin-bottom:12px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
-      <div class="pill-row">
-        <button class="btn sm ${viewMode === 'editor' ? 'primary' : ''}" data-rmode="editor">🛡️ Role Profile Editor</button>
-        <button class="btn sm ${viewMode === 'board' ? 'primary' : ''}" data-rmode="board">📊 Compact Clearance Matrix &amp; Limits</button>
-      </div>
-      <div class="muted" style="font-size:12px">
-        ${viewMode === 'editor' ? 'Configure section clearance, 2FA, approval limits &amp; granular capabilities per role' : 'Cross-role clearance grid and financial approval caps in one view'}
-      </div>
-    </div>
-  `;
-
-  if (viewMode === 'board') {
-    c.innerHTML = `${modeBarHtml}<div id="role-board-wrap"></div><div id="role-limits-wrap" style="margin-top:14px"></div>`;
-    qsa('[data-rmode]', c).forEach((b) => {
-      b.onclick = () => {
-        const spNow = new URLSearchParams(location.hash.split('?')[1] || '');
-        const rParam = wanted || spNow.get('role') || '';
-        location.hash = '#/access?tab=roles' + (rParam ? '&role=' + encodeURIComponent(rParam) : '') + '&mode=' + b.dataset.rmode;
-      };
-    });
-    await Promise.all([
-      renderClearanceBoard(qs('#role-board-wrap', c)),
-      renderApprovalLimits(qs('#role-limits-wrap', c)),
-    ]);
-    return;
-  }
-
-  const [sm, limitsData] = await Promise.all([
-    api('/access/section-matrix').catch(async () => {
-      const [cat, board] = await Promise.all([api('/access/capabilities'), api('/access/matrix')]);
-      return { domains: [], sections: [], capabilities: cat.capabilities, modules: cat.modules, roles: cat.roles, matrix: board };
-    }),
-    api('/access/approval-limits').catch(() => null),
-  ]);
-  const roles = sm.roles;
-  const sel = roles.find((r) => r.name === wanted) || roles.find((r) => r.active && !r.locked) || roles[0];
-  const board = sm.matrix;
-  const modLabel = Object.fromEntries(sm.modules.map((m) => [m.key, m.label]));
-  modLabel.users = 'Users & Access';
-  const levelOf = (role, m) => (board.grid[role] && board.grid[role][m]) || 'none';
-  const held = new Set(sel.caps);
-  const mine = new Set(ME.caps || []);
-  const editable = !sel.locked && sel.active;
-  const totalCapsCount = sm.capabilities.length || 248;
-
-  const roleList = roles.map((r) => `<tr data-pick="${esc(r.name)}" style="cursor:pointer;${r.name === sel.name ? 'background:#eef2ff;' : ''}${r.active ? '' : 'opacity:.55;'}">
-    <td><b>${esc(r.label || r.name)}</b>${r.locked ? ' <span class="badge amber">everything</span>' : ''}${r.is_system ? '' : ' <span class="badge blue">custom</span>'}${r.active ? '' : ' <span class="badge">retired</span>'}${r.incomplete ? ' <span class="badge red" style="background:#fee2e2;color:#991b1b;border:1px solid #f87171" title="' + esc(r.incomplete_reason || 'Incomplete role: no actions granted') + '">⚠️ incomplete</span>' : ''}
-    <br><span class="muted" style="font-size:11px">${r.users} user(s) · ${r.locked ? `all (${totalCapsCount})` : r.caps.length} permission(s)</span></td></tr>`).join('');
-
-  // 6 SAP Operational Domains
-  const domains = (sm.domains && sm.domains.length) ? sm.domains : [
-    { id: 'Operations', name: 'Operations & Execution', icon: '⚙️', description: 'Workshop floor execution, job cards, breakdowns, field work, and daily technician labor' },
-    { id: 'Fleet', name: 'Fleet Management', icon: '🚛', description: 'Equipment registry, statutory compliance, lubricant capacities, mechanic trades, and sites' },
-    { id: 'Inventory', name: 'Inventory & Warehousing', icon: '📦', description: 'Central & site stores, MRN demands, tool control, bulk oils, and parts catalogue' },
-    { id: 'Procurement', name: 'Procurement & Purchasing', icon: '🛒', description: 'Purchase requisitions, supplier orders, Tyre & Battery workflows' },
-    { id: 'Analysis', name: 'Analysis & Intelligence', icon: '📊', description: 'Attention cockpit, daily progress, cost teardowns, and executive fleet analytics' },
-    { id: 'Admin', name: 'Governance & Administration', icon: '🛡️', description: 'Workshop tenancies, access control profiles, and user credential management' }
-  ];
-
-  const sections = (sm.sections && sm.sections.length) ? sm.sections : [];
-
-  const LVLS = ['none', 'view', 'add', 'edit', 'full'];
-  const LV_LABEL = { none: 'None', view: 'View', add: 'Add', edit: 'Edit', full: 'Full' };
-
-  const ACTVT_MAP = {
-    '01': { label: '01 · Create', cls: 'badge teal' },
-    '02': { label: '02 · Change', cls: 'badge blue' },
-    '03': { label: '03 · Display', cls: 'badge' },
-    '06': { label: '06 · Delete', cls: 'badge red' },
-    '08': { label: '08 · Export', cls: 'badge purple' },
-    '10': { label: '10 · Approve', cls: 'badge green' },
-    'A1': { label: 'A1 · Certify', cls: 'badge amber' },
-  };
-
-  const heldCapsCount = sel.locked ? totalCapsCount : sel.caps.length;
-  const heldPct = Math.round((heldCapsCount / totalCapsCount) * 100);
-
-  // Group sections by domain
-  const domainSectionsHtml = domains.map((dom) => {
-    const domSections = sections.filter((s) => (s.domain || '').toLowerCase() === dom.id.toLowerCase());
-    if (!domSections.length) return '';
-
-    // Count capabilities in this domain
-    const domCaps = sm.capabilities.filter((c) => (c.domain || '').toLowerCase() === dom.id.toLowerCase());
-    const domHeld = domCaps.filter((c) => sel.locked || held.has(c.key)).length;
-
-    const sectionsHtml = domSections.map((sec) => {
-      const secCaps = sm.capabilities.filter((cap) => (cap.section === sec.id || (sec.modules || []).includes(cap.module) || cap.module === sec.id));
-      const secHeld = secCaps.filter((c) => sel.locked || held.has(c.key)).length;
-
-      // Module Clearance Control
-      const modClearanceHtml = (sec.modules || []).map((m) => {
-        const curLvl = levelOf(sel.name, m);
-        const isLocked = sel.locked || !editable;
-        const pills = LVLS.map((lvl) => {
-          const isCurrent = (sel.locked && lvl === 'full') || (!sel.locked && curLvl === lvl);
-          const cls = isCurrent ? (lvl === 'full' ? 'primary' : (lvl === 'edit' ? 'badge green' : (lvl === 'add' ? 'badge teal' : (lvl === 'view' ? 'badge blue' : 'badge amber')))) : 'btn sm';
-          const style = isCurrent ? 'font-weight:bold;' : 'opacity:.7;';
-          return `<button class="${cls}" style="${style}padding:2px 8px;font-size:11px" data-setlvl="${esc(m)}:${lvl}" ${isLocked ? 'disabled' : ''}>${LV_LABEL[lvl]}</button>`;
-        }).join(' ');
-        return `<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:3px 0">
-          <span style="font-size:12px;font-weight:600">${esc(modLabel[m] || m)}:</span>
-          <div style="display:flex;gap:4px">${pills}</div>
-        </div>`;
-      }).join('');
-
-      // Preset Buttons
-      const presetsHtml = (sec.presets && editable) ? `
-        <div style="display:flex;align-items:center;gap:6px;margin:6px 0 8px;padding:4px 8px;background:var(--bg-muted, #f8f9fa);border-radius:4px;flex-wrap:wrap">
-          <span class="muted" style="font-size:11px;font-weight:600">Quick Presets:</span>
-          <button class="btn sm" data-preset="${esc(sec.id)}:none" title="Remove all access">❌ None</button>
-          <button class="btn sm" data-preset="${esc(sec.id)}:view" title="Read-only clearance">👁️ Read-Only</button>
-          <button class="btn sm" data-preset="${esc(sec.id)}:operator" title="Standard operator clearance">⚙️ Operator</button>
-          <button class="btn sm" data-preset="${esc(sec.id)}:manager" title="Full clearance and manager capabilities">👑 Full Manager</button>
-        </div>` : '';
-
-      // Bulk section actions
-      const bulkActionsHtml = editable ? `
-        <div style="display:flex;gap:6px;align-items:center;margin:6px 0 8px">
-          <button class="btn sm" data-bulk-cap="${esc(sec.id)}:grant" title="Grant all capabilities in this section" style="font-size:11px">+ Grant All (${secCaps.length})</button>
-          <button class="btn sm" data-bulk-cap="${esc(sec.id)}:view" title="Grant view capability only" style="font-size:11px">👁️ View Only</button>
-          <button class="btn sm danger" data-bulk-cap="${esc(sec.id)}:revoke" title="Revoke all capabilities in this section" style="font-size:11px">– Revoke All</button>
-        </div>` : '';
-
-      // Capabilities checkboxes
-      const capListHtml = secCaps.map((cap) => {
-        const has = sel.locked || held.has(cap.key);
-        const canTick = editable && (has || isAdmin() || mine.has(cap.key));
-        const needsMod = cap.needs;
-        const currentModLvl = needsMod ? levelOf(sel.name, needsMod) : 'full';
-        const short = (needsMod && !sel.locked && rankL(currentModLvl) < 2)
-          ? ` <span class="badge amber" style="font-size:9px" title="Ticking this will auto-elevate ${esc(modLabel[needsMod] || needsMod)} to EDIT">auto-elevates ${esc(modLabel[needsMod] || needsMod)} to EDIT</span>` : '';
-        const actvt = ACTVT_MAP[cap.actvt] || { label: cap.actvt || '02', cls: 'badge' };
-        const dualAuthBadge = cap.dualAuth ? `<span class="badge amber" style="font-size:9px;font-weight:600" title="Mandatory 4-Eyes Dual Authorization Required">👥 4-Eyes Dual Auth</span> ` : '';
-
-        return `<div class="cap-row" data-cap-key="${esc(cap.key)}" data-actvt="${esc(cap.actvt || '02')}" data-dual="${cap.dualAuth ? '1' : '0'}" style="display:flex;align-items:flex-start;gap:8px;padding:4px 0;border-bottom:1px solid var(--border-light, #f1f5f9)">
-          <input type="checkbox" style="width:auto;margin-top:3px" data-cap="${esc(cap.key)}" data-needs="${esc(cap.needs || '')}" ${has ? 'checked' : ''} ${canTick ? '' : 'disabled'}>
-          <div style="flex:1">
-            <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
-              <span class="${actvt.cls}" style="font-size:10px;font-family:monospace">${actvt.label}</span>
-              ${dualAuthBadge}
-              <span style="font-size:13px;font-weight:500">${esc(cap.label)}</span>
-              ${short}
-            </div>
-            <div style="font-size:11px;color:var(--text-muted, #64748b);font-family:monospace;margin-top:1px">${esc(cap.key)}</div>
-          </div>
-        </div>`;
-      }).join('');
-
-      return `
-        <div class="card section-card" data-section-id="${esc(sec.id)}" style="margin-bottom:10px;background:var(--card-sub-bg, #fff);border:1px solid var(--border-light, #e2e8f0);border-radius:6px;padding:12px">
-          <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px">
-            <div style="display:flex;align-items:center;gap:8px">
-              <span style="font-size:18px">${sec.icon || '📁'}</span>
-              <div>
-                <b style="font-size:14px">${esc(sec.name)}</b>
-                <div class="muted" style="font-size:11px">${esc(sec.description || '')}</div>
-              </div>
-            </div>
-            <span class="badge blue" style="font-size:11px">${secHeld} / ${secCaps.length} granted</span>
-          </div>
-
-          ${modClearanceHtml ? `
-          <div style="background:var(--bg-muted, #f8fafc);border:1px solid var(--border-light, #eee);border-radius:6px;padding:6px 10px;margin-bottom:8px">
-            <div class="muted" style="font-size:10px;font-weight:600;margin-bottom:2px;text-transform:uppercase">Section Clearance:</div>
-            ${modClearanceHtml}
-          </div>` : ''}
-
-          ${presetsHtml}
-          ${bulkActionsHtml}
-
-          <div style="margin-top:8px">
-            <div class="muted" style="font-size:10px;font-weight:600;margin-bottom:4px;text-transform:uppercase">Granular Capabilities (${secCaps.length}):</div>
-            <div class="caps-list" style="max-height:280px;overflow-y:auto;padding-right:4px">
-              ${capListHtml || '<span class="muted" style="font-size:12px">No capabilities configured</span>'}
-            </div>
-          </div>
-        </div>`;
-    }).join('');
-
-    return `
-      <details open class="domain-accordion card" data-domain-id="${esc(dom.id)}" style="margin-bottom:14px;border:1px solid var(--border-light, #cbd5e1);border-radius:8px;padding:0;overflow:hidden">
-        <summary style="cursor:pointer;padding:12px 16px;background:var(--bg-muted, #f1f5f9);display:flex;align-items:center;justify-content:space-between;user-select:none;font-weight:600">
-          <div style="display:flex;align-items:center;gap:10px">
-            <span style="font-size:20px">${dom.icon}</span>
-            <div>
-              <span style="font-size:15px;color:var(--text-normal, #1e293b)">${esc(dom.name)}</span>
-              <div class="muted" style="font-size:11px;font-weight:normal">${esc(dom.description || '')}</div>
-            </div>
-          </div>
-          <div style="display:flex;align-items:center;gap:8px">
-            <span class="badge ${domHeld > 0 ? 'green' : ''}" style="font-size:12px">${domHeld} / ${domCaps.length} granted</span>
-            <span class="muted" style="font-size:12px">▾</span>
-          </div>
-        </summary>
-        <div style="padding:14px">
-          ${sectionsHtml}
-        </div>
-      </details>`;
-  }).join('');
-
-  const selLimitRole = (limitsData && limitsData.roles || []).find((lr) => lr.name === sel.name);
-  const limitKinds = (limitsData && limitsData.kinds) || [];
-  const mineRoles = new Set(ME.roles || []);
-  const limitLockedForSelf = !isAdmin() && mineRoles.has(sel.name);
-  const activeLimitKinds = selLimitRole
-    ? limitKinds.filter((k) => selLimitRole.gives[k.key] || selLimitRole.limits[k.key] != null)
-    : [];
-  const inlineLimitsHtml = (!sel.locked && limitsData) ? (activeLimitKinds.length
-    ? `<div style="margin-top:10px;padding:8px 10px;background:var(--bg-muted, #f8fafc);border:1px solid var(--border-light, #e2e8f0);border-radius:6px">
-        <div style="font-size:11px;font-weight:700;text-transform:uppercase;color:var(--text-muted, #475569);margin-bottom:6px">💰 Role Financial Approval Limits (Rs) <span class="muted" style="font-weight:normal;text-transform:none">(Leave empty = no limit; checked on sign-off)</span></div>
-        <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:center">
-          ${activeLimitKinds.map((k) => {
-            const v = selLimitRole.limits[k.key];
-            return `<label style="display:flex;align-items:center;gap:6px;margin:0;font-size:12px;font-weight:500">
-              <span>${esc(k.label)}:</span>
-              <input type="number" min="0" step="1" style="max-width:140px" placeholder="No limit" data-inline-limit-kind="${esc(k.key)}" value="${v == null ? '' : esc(v)}" data-was="${v == null ? '' : esc(v)}" ${limitLockedForSelf ? 'disabled title="Your own role — ask an admin"' : ''}>
-            </label>`;
-          }).join('')}
-        </div>
-      </div>`
-    : `<div class="muted" style="font-size:11px;margin-top:6px">💰 Financial approval limits: No MRN approve or job close capabilities granted on this role yet.</div>`) : '';
-
-  c.innerHTML = `${modeBarHtml}<div style="display:grid;grid-template-columns:minmax(220px,300px) 1fr;gap:14px;align-items:start">
-    <div class="card">
-      <div class="toolbar" style="margin:0 0 8px">
-        <h3 style="margin:0">Roles</h3><div class="spacer"></div>
-        <button class="primary sm" id="newrole">+ New Role</button>
-      </div>
-      <div style="margin-bottom:8px">
-        <input type="text" id="role-search" placeholder="Search roles..." class="input sm" style="width:100%;box-sizing:border-box">
-      </div>
-      <div class="table-wrap scroll" style="max-height:calc(100vh - 260px)">
-        <table id="role-table"><tbody>${roleList}</tbody></table>
-      </div>
-    </div>
-
-    <div>
-      <div class="card" style="margin-bottom:12px;border-top:3px solid var(--accent, #2563eb)">
-        <div class="toolbar" style="margin:0">
-          <div>
-            <h2 style="margin:0;display:flex;align-items:center;gap:8px">
-              <span>${esc(sel.label || sel.name)}</span>
-              ${sel.locked ? '<span class="badge amber">System Admin</span>' : (sel.is_system ? '<span class="badge blue">Standard Role</span>' : '<span class="badge purple">Custom Role</span>')}
-              ${sel.active ? '' : '<span class="badge red">Retired</span>'}
-            </h2>
-          </div>
-          <div class="spacer"></div>
-          ${sel.locked ? '' : `<button class="sm" id="editrole">✎ Rename / describe</button>
-          ${sel.active ? '<button class="sm danger" id="retirerole">Retire</button>' : '<button class="sm" id="reinstaterole">Reinstate</button>'}`}
-        </div>
-
-        <div style="display:flex;align-items:center;gap:12px;margin:10px 0 8px;flex-wrap:wrap">
-          <div style="flex:1;min-width:200px">
-            <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:4px">
-              <b>Granular Capabilities Coverage:</b>
-              <span><b>${heldCapsCount}</b> / ${totalCapsCount} (${heldPct}%)</span>
-            </div>
-            <div style="height:8px;background:var(--border-light, #e2e8f0);border-radius:4px;overflow:hidden">
-              <div style="height:100%;width:${heldPct}%;background:var(--accent, #2563eb);transition:width .3s ease"></div>
-            </div>
-          </div>
-        </div>
-
-        <label style="flex-direction:row;display:flex;gap:6px;align-items:center;margin:8px 0 0;font-weight:normal">
-          <input type="checkbox" id="rolemfa" style="width:auto" ${sel.require_mfa ? 'checked' : ''} ${sel.active && (!sel.locked || isAdmin()) ? '' : 'disabled'}>
-          Require two-factor sign-in for everyone with this role <span class="muted" style="font-size:12px">— recommended for approvers and financial roles</span>
-        </label>
-        ${inlineLimitsHtml}
-        <p class="muted" style="margin:8px 0 0">${esc(sel.description || '')}${sel.description ? '<br>' : ''}Key <code>${esc(sel.name)}</code> · held by ${sel.users} active user(s).
-          ${sel.locked ? ' System Administrator always holds every capability and cannot be altered.' : ''}
-          ${editable ? ' Single-point SAP Fiori Access: configure section clearance and granular action permissions across the 6 Operational Domains below.' : ''}</p>
-      </div>
-
-      <!-- SAP Capability Search & Filter Bar -->
-      <div class="card" style="margin-bottom:12px;padding:10px 14px;background:var(--card-sub-bg, #f8fafc)">
-        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-          <input type="search" id="cap-filter-input" placeholder="🔍 Filter ${totalCapsCount} capabilities (e.g. scrap, delete, wage, mrn, asset, actvt 06)..." style="flex:1;min-width:220px;padding:6px 12px;border:1px solid var(--border-light, #cbd5e1);border-radius:6px">
-          <div style="display:flex;gap:4px;flex-wrap:wrap" id="actvt-filter-bar">
-            <button class="btn sm active" data-actvt-filter="all">All</button>
-            <button class="btn sm" data-actvt-filter="01">01 Create</button>
-            <button class="btn sm" data-actvt-filter="02">02 Change</button>
-            <button class="btn sm" data-actvt-filter="03">03 View</button>
-            <button class="btn sm" data-actvt-filter="06">06 Delete</button>
-            <button class="btn sm" data-actvt-filter="08">08 Export</button>
-            <button class="btn sm" data-actvt-filter="10">10 Approve</button>
-            <button class="btn sm" data-actvt-filter="dual">👥 Dual Auth</button>
-          </div>
-        </div>
-      </div>
-
-      <div id="domains-container">
-        ${domainSectionsHtml}
-      </div>
-    </div>
-  </div>`;
-
-  qsa('[data-rmode]', c).forEach((b) => {
-    b.onclick = () => {
-      location.hash = '#/access?tab=roles&role=' + encodeURIComponent(sel.name) + '&mode=' + b.dataset.rmode;
-    };
-  });
-
-  qsa('[data-inline-limit-kind]', c).forEach((inp) => {
-    inp.onchange = async () => {
-      const val = inp.value.trim();
-      if (val === inp.dataset.was) return;
-      try {
-        await api('/access/approval-limits', { method: 'PUT', body: { role: sel.name, kind: inp.dataset.inlineLimitKind, max_amount: val === '' ? null : val } });
-        inp.dataset.was = val;
-        toast(val === '' ? 'No limit' : `Limit saved: ${money(val)}`);
-      } catch (e) { inp.value = inp.dataset.was; toast(e.message, 'err'); }
-    };
-  });
-
-  const reload = (name) => { location.hash = '#/access?tab=roles&role=' + encodeURIComponent(name || sel.name) + '&mode=' + viewMode; };
-  qsa('[data-pick]', c).forEach((tr) => { tr.onclick = () => reload(tr.dataset.pick); });
-
-  if (qs('#role-search', c)) {
-    qs('#role-search', c).oninput = (e) => {
-      const q = e.target.value.toLowerCase().trim();
-      qsa('#role-table tr', c).forEach((tr) => {
-        tr.style.display = (!q || tr.textContent.toLowerCase().includes(q)) ? '' : 'none';
-      });
-    };
-  }
-
-  // Capability search and activity badge filter
-  const filterCaps = () => {
-    const q = (qs('#cap-filter-input', c)?.value || '').toLowerCase().trim();
-    const actvt = qs('#actvt-filter-bar .active', c)?.dataset.actvtFilter || 'all';
-
-    qsa('.domain-accordion', c).forEach((domEl) => {
-      let domVisibleCount = 0;
-      qsa('.section-card', domEl).forEach((secEl) => {
-        let secVisibleCount = 0;
-        qsa('.cap-row', secEl).forEach((row) => {
-          const text = row.textContent.toLowerCase();
-          const rowActvt = row.dataset.actvt;
-          const isDual = row.dataset.dual === '1';
-
-          let matchesQ = !q || text.includes(q);
-          let matchesActvt = actvt === 'all' ||
-            (actvt === 'dual' ? isDual : rowActvt === actvt);
-
-          const visible = matchesQ && matchesActvt;
-          row.style.display = visible ? 'flex' : 'none';
-          if (visible) secVisibleCount++;
-        });
-
-        secEl.style.display = (secVisibleCount > 0 || (!q && actvt === 'all')) ? '' : 'none';
-        if (secVisibleCount > 0) domVisibleCount += secVisibleCount;
-      });
-
-      domEl.style.display = (domVisibleCount > 0 || (!q && actvt === 'all')) ? '' : 'none';
-      if (q || actvt !== 'all') domEl.open = true;
-    });
-  };
-
-  if (qs('#cap-filter-input', c)) qs('#cap-filter-input', c).oninput = filterCaps;
-
-  qsa('#actvt-filter-bar button', c).forEach((btn) => {
-    btn.onclick = () => {
-      qsa('#actvt-filter-bar button', c).forEach((b) => b.classList.remove('active'));
-      btn.classList.add('active');
-      filterCaps();
-    };
-  });
-
-  // Role 2FA toggle
-  if (qs('#rolemfa', c)) {
-    qs('#rolemfa', c).onchange = async (e) => {
-      const on = e.target.checked;
-      if (on && !confirm(`Everyone with "${sel.label || sel.name}" will have to set up two-factor sign-in before they can use the system. Continue?`)) { e.target.checked = false; return; }
-      try { await api('/access/roles/' + encodeURIComponent(sel.name), { method: 'PATCH', body: { require_mfa: on } }); toast(on ? 'Two-factor sign-in required for this role' : 'No longer required'); reload(); }
-      catch (err) { e.target.checked = !on; toast(err.message, 'err'); }
-    };
-  }
-
-  // Direct section clearance level buttons
-  qsa('[data-setlvl]', c).forEach((btn) => {
-    btn.onclick = async () => {
-      const [mod, lvl] = btn.dataset.setlvl.split(':');
-      try {
-        await api('/access/section-save', {
-          method: 'POST',
-          body: { role: sel.name, modules: { [mod]: lvl } }
-        });
-        toast(`${modLabel[mod] || mod} clearance set to ${lvl.toUpperCase()}`);
-        await renderRolesManager(c, sel.name);
-      } catch (err) { toast(err.message, 'err'); }
-    };
-  });
-
-  // Section quick presets
-  qsa('[data-preset]', c).forEach((btn) => {
-    btn.onclick = async () => {
-      const [secId, presetKey] = btn.dataset.preset.split(':');
-      const sec = sections.find((s) => s.id === secId);
-      if (!sec || !sec.presets || !sec.presets[presetKey]) return;
-      const p = sec.presets[presetKey];
-      const secCaps = sm.capabilities.filter((cap) => (cap.section === sec.id || (sec.modules || []).includes(cap.module) || cap.module === sec.id));
-      const capUpdates = {};
-      for (const cap of secCaps) {
-        capUpdates[cap.key] = p.caps.includes(cap.key);
-      }
-      try {
-        await api('/access/section-save', {
-          method: 'POST',
-          body: { role: sel.name, modules: p.modules, capabilities: capUpdates }
-        });
-        toast(`Applied ${presetKey.toUpperCase()} preset to ${sec.name}`);
-        await renderRolesManager(c, sel.name);
-      } catch (err) { toast(err.message, 'err'); }
-    };
-  });
-
-  // Bulk section action buttons
-  qsa('[data-bulk-cap]', c).forEach((btn) => {
-    btn.onclick = async () => {
-      const [secId, action] = btn.dataset.bulkCap.split(':');
-      const sec = sections.find((s) => s.id === secId);
-      if (!sec) return;
-      const secCaps = sm.capabilities.filter((cap) => (cap.section === sec.id || (sec.modules || []).includes(cap.module) || cap.module === sec.id));
-      const capUpdates = {};
-      const modUpdates = {};
-
-      if (action === 'grant') {
-        for (const cap of secCaps) {
-          capUpdates[cap.key] = true;
-          if (cap.needs) modUpdates[cap.needs] = 'edit';
-        }
-      } else if (action === 'revoke') {
-        for (const cap of secCaps) capUpdates[cap.key] = false;
-      } else if (action === 'view') {
-        for (const cap of secCaps) {
-          capUpdates[cap.key] = cap.actvt === '03' || cap.key.endsWith('.view');
-        }
-        for (const m of (sec.modules || [])) modUpdates[m] = 'view';
-      }
-
-      try {
-        await api('/access/section-save', {
-          method: 'POST',
-          body: { role: sel.name, modules: modUpdates, capabilities: capUpdates }
-        });
-        toast(`Updated capabilities for ${sec.name}`);
-        await renderRolesManager(c, sel.name);
-      } catch (err) { toast(err.message, 'err'); }
-    };
-  });
-
-  // Checkbox toggling with auto-elevation if required
-  qsa('[data-cap]', c).forEach((box) => {
-    box.onchange = async () => {
-      const capKey = box.dataset.cap;
-      const needs = box.dataset.needs;
-      const willGrant = box.checked;
-      const modUpdates = {};
-      if (willGrant && needs && rankL(levelOf(sel.name, needs)) < 2) {
-        modUpdates[needs] = 'edit';
-      }
-      try {
-        if (Object.keys(modUpdates).length) {
-          await api('/access/section-save', {
-            method: 'POST',
-            body: { role: sel.name, modules: modUpdates, capabilities: { [capKey]: willGrant } }
-          });
-          toast(`Granted ${capKey} and elevated ${modLabel[needs] || needs} to EDIT`);
-        } else {
-          await api('/access/section-save', {
-            method: 'POST',
-            body: { role: sel.name, capabilities: { [capKey]: willGrant } }
-          });
-          toast(willGrant ? `Granted ${capKey}` : `Revoked ${capKey}`);
-        }
-        await renderRolesManager(c, sel.name);
-      } catch (e) { box.checked = !box.checked; toast(e.message, 'err'); }
-    };
-  });
-
-  if (qs('#newrole', c)) qs('#newrole', c).onclick = () => modal('New role', `
-    ${field('Name *', 'label', { placeholder: 'e.g. Site Storekeeper' })}
-    ${field('What this role is for', 'description', { type: 'textarea' })}
-    ${field('Start from', 'clone_from', { type: 'select', options: [{ value: '', label: '— no permissions (tick them after) —' }]
-      .concat(roles.filter((r) => !r.locked && r.active).map((r) => ({ value: r.name, label: 'a copy of ' + (r.label || r.name) }))) })}
-    <p class="muted">A copy takes the other role's permissions and section clearance. You can then change either.</p>
-    <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Create</button></div>`,
-    (body, close) => {
-      qs('#s', body).onclick = async () => {
-        const d = formData(body);
-        try { const r = await api('/access/roles', { method: 'POST', body: d }); close(); toast('Role created'); reload(r.name); }
-        catch (e) { toast(e.message, 'err'); }
-      };
-    });
-
-  if (qs('#editrole', c)) qs('#editrole', c).onclick = () => modal('Rename / describe', `
-    ${field('Name *', 'label', { value: sel.label || '' })}
-    ${field('What this role is for', 'description', { type: 'textarea', value: sel.description || '' })}
-    <div style="margin-top:12px;text-align:right"><button class="primary" id="s">Save</button></div>`,
-    (body, close) => {
-      qs('#s', body).onclick = async () => {
-        try { await api('/access/roles/' + encodeURIComponent(sel.name), { method: 'PATCH', body: formData(body) }); close(); reload(); }
-        catch (e) { toast(e.message, 'err'); }
-      };
-    });
-
-  const setActive = async (active) => {
-    try { await api('/access/roles/' + encodeURIComponent(sel.name), { method: 'PATCH', body: { active } }); toast(active ? 'Role reinstated' : 'Role retired'); reload(); }
-    catch (e) { toast(e.message, 'err'); }
-  };
-  if (qs('#retirerole', c)) qs('#retirerole', c).onclick = () => { if (confirm(`Retire "${sel.label || sel.name}"? It will grant nothing until reinstated.`)) setActive(false); };
-  if (qs('#reinstaterole', c)) qs('#reinstaterole', c).onclick = () => setActive(true);
-}
-
-async function renderClearanceBoard(c) {
-  const m = await api('/access/matrix');
-  const LV = m.levels;
-  const headCols = m.modules.map((mod) => `<th style="text-align:center">${esc(mod.label)}${mod.enforce ? '' : ' <span class="muted" title="Hidden in the sidebar but not API-blocked (reference/analytics)">*</span>'}</th>`).join('');
-  const rows = m.roles.map((r) => `<tr${r.active ? '' : ' style="opacity:.5"'}><td><b>${esc(r.label || r.name)}</b>${r.active ? '' : ' <span class="badge">retired</span>'}<br><span class="muted" style="font-size:11px">${esc(r.name)}</span></td>${m.modules.map((mod) => {
-    const lvl = m.grid[r.name][mod.key];
-    const locked = r.name === 'admin';
-    return `<td style="text-align:center;cursor:${locked ? 'default' : 'pointer'}"${locked ? '' : ` data-cell="${esc(r.name)}:${mod.key}" data-lvl="${lvl}" title="click to change"`}>${lvlChip(lvl)}</td>`;
-  }).join('')}</tr>`).join('');
-  c.innerHTML = `<div class="card">
-    <h3 style="margin:0 0 6px">Compact Clearance Matrix</h3>
-    <p class="muted" style="margin-top:0">Section clearance opens a whole section; permissions in the <b>Role Profile Editor</b> decide individual actions inside it. Click any cell to cycle: — → VIEW → ADD → EDIT → FULL. <b>Admin</b> is always full. <span title="nav-level only">*</span> = hidden in the sidebar but not blocked (reference data used by other screens).</p>
-    <div class="table-wrap scroll"><table><thead><tr><th>Role</th>${headCols}</tr></thead><tbody>${rows}</tbody></table></div>
-    <div class="pill-row" style="margin-top:12px"><span class="muted">Legend:</span> ${lvlChip('full')} manage ${lvlChip('edit')} modify ${lvlChip('add')} add/submit ${lvlChip('view')} read-only ${lvlChip('none')} no access</div>
-  </div>`;
-  qsa('[data-cell]', c).forEach((td) => td.onclick = async () => {
-    const [role, mod] = td.dataset.cell.split(':');
-    const next = LV[(LV.indexOf(td.dataset.lvl) + 1) % LV.length];
-    try { await api('/access/matrix', { method: 'POST', body: { role, module: mod, level: next } }); renderClearanceBoard(c); }
-    catch (e) { toast(e.message, 'err'); }
-  });
-}
-
-async function userStoreAccessModal(u, onSave) {
-  modal(`Store & Site Store Access — ${esc(u.username)}`, '<div class="muted" style="padding:20px">Loading user store access…</div>', async (mBody, close) => {
-    try {
-      const res = await api(`/users/${u.id}/stores`);
-      const stores = res.stores || [];
-      const render = () => {
-        mBody.innerHTML = `
-          <div style="font-size:13px">
-            <div style="background:var(--subtle,#f8fafc);border:1px solid var(--border,#e2e8f0);border-radius:8px;padding:12px 14px;margin-bottom:14px">
-              <div style="font-weight:700;font-size:14px">${esc(u.full_name || u.username)} <span class="muted" style="font-size:12px;font-weight:normal">(@${esc(u.username)})</span></div>
-              <div class="muted" style="font-size:11.5px;margin-top:2px">Configure which Central Main Stores, Workshop Stores, and Project Site Stores this user can operate.</div>
-            </div>
-            <div style="overflow-x:auto;max-height:420px;border:1px solid var(--border,#e5e7eb);border-radius:6px;margin-bottom:14px">
-              <table class="table" style="width:100%;margin:0;font-size:12px">
-                <thead>
-                  <tr style="background:var(--subtle,#f9fafb);border-bottom:1px solid var(--border,#e5e7eb);text-align:left">
-                    <th style="padding:8px 10px">Physical Store Location</th>
-                    <th style="padding:8px 10px;text-align:center" title="Grant access to this store">Access</th>
-                    <th style="padding:8px 10px;text-align:center" title="Can view on-hand stock and bin cards">View</th>
-                    <th style="padding:8px 10px;text-align:center" title="Can receive goods (GRN / inbound MTN)">Receive</th>
-                    <th style="padding:8px 10px;text-align:center" title="Can issue parts to Job Cards / Vehicles (MIN)">Issue</th>
-                    <th style="padding:8px 10px;text-align:center" title="Can dispatch outbound MTNs to other stores">Dispatch</th>
-                    <th style="padding:8px 10px;text-align:center" title="Can perform physical stock counts">Count</th>
-                    <th style="padding:8px 10px;text-align:center" title="Can raise MRN replenishment requests">Request</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  ${stores.map((s) => {
-                    const icon = s.store_type === 'MAIN_STORE' ? '🏛️' : (s.store_type === 'MAIN_WORKSHOP_STORE' ? '🔧' : '📦');
-                    const badgeCls = s.store_type === 'MAIN_STORE' ? 'blue' : (s.store_type === 'MAIN_WORKSHOP_STORE' ? 'amber' : 'green');
-                    return `
-                      <tr style="border-bottom:1px solid var(--border,#f1f5f9)" data-store-row="${s.store_id}">
-                        <td style="padding:8px 10px">
-                          <span style="font-size:14px;margin-right:4px">${icon}</span>
-                          <b>${esc(s.store_name)}</b> <span class="code" style="font-size:10px">(${esc(s.store_code)})</span>
-                          <br><span class="badge ${badgeCls} sm" style="font-size:10px">${esc(s.store_type)}</span>
-                        </td>
-                        <td style="padding:8px 10px;text-align:center">
-                          <input type="checkbox" class="chk-has-access" data-sid="${s.store_id}" ${s.has_access ? 'checked' : ''} />
-                        </td>
-                        <td style="padding:8px 10px;text-align:center">
-                          <input type="checkbox" data-sid="${s.store_id}" data-perm="can_view" ${s.can_view ? 'checked' : ''} ${!s.has_access ? 'disabled' : ''} />
-                        </td>
-                        <td style="padding:8px 10px;text-align:center">
-                          <input type="checkbox" data-sid="${s.store_id}" data-perm="can_receive" ${s.can_receive ? 'checked' : ''} ${!s.has_access ? 'disabled' : ''} />
-                        </td>
-                        <td style="padding:8px 10px;text-align:center">
-                          <input type="checkbox" data-sid="${s.store_id}" data-perm="can_issue" ${s.can_issue ? 'checked' : ''} ${!s.has_access ? 'disabled' : ''} />
-                        </td>
-                        <td style="padding:8px 10px;text-align:center">
-                          <input type="checkbox" data-sid="${s.store_id}" data-perm="can_dispatch" ${s.can_dispatch ? 'checked' : ''} ${!s.has_access ? 'disabled' : ''} />
-                        </td>
-                        <td style="padding:8px 10px;text-align:center">
-                          <input type="checkbox" data-sid="${s.store_id}" data-perm="can_count" ${s.can_count ? 'checked' : ''} ${!s.has_access ? 'disabled' : ''} />
-                        </td>
-                        <td style="padding:8px 10px;text-align:center">
-                          <input type="checkbox" data-sid="${s.store_id}" data-perm="can_request" ${s.can_request ? 'checked' : ''} ${!s.has_access ? 'disabled' : ''} />
-                        </td>
-                      </tr>`;
-                  }).join('')}
-                </tbody>
-              </table>
-            </div>
-            <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
-              <span class="muted" style="font-size:11.5px">Changes take effect immediately for stock visibility and transactions.</span>
-              <div style="display:flex;gap:6px">
-                <button type="button" class="btn sm" id="btn_cancel_store_access">Cancel</button>
-                <button type="button" class="btn sm primary" id="btn_save_store_access">Save Store Access</button>
-              </div>
-            </div>
-          </div>
-        `;
-
-        qsa('.chk-has-access', mBody).forEach((ch) => {
-          ch.onchange = () => {
-            const sid = ch.dataset.sid;
-            const checked = ch.checked;
-            const row = qs(`[data-store-row="${sid}"]`, mBody);
-            if (row) {
-              qsa('[data-perm]', row).forEach((p) => {
-                p.disabled = !checked;
-                if (checked) p.checked = true;
-              });
-            }
-          };
-        });
-
-        qs('#btn_cancel_store_access', mBody).onclick = close;
-        qs('#btn_save_store_access', mBody).onclick = async () => {
-          const payload = [];
-          stores.forEach((s) => {
-            const sid = s.store_id;
-            const row = qs(`[data-store-row="${sid}"]`, mBody);
-            if (!row) return;
-            const hasAccess = qs('.chk-has-access', row).checked;
-            const getVal = (perm) => {
-              const el = qs(`[data-perm="${perm}"]`, row);
-              return el && el.checked ? 1 : 0;
-            };
-            payload.push({
-              store_id: sid,
-              has_access: hasAccess,
-              can_view: hasAccess ? getVal('can_view') : 0,
-              can_receive: hasAccess ? getVal('can_receive') : 0,
-              can_issue: hasAccess ? getVal('can_issue') : 0,
-              can_dispatch: hasAccess ? getVal('can_dispatch') : 0,
-              can_count: hasAccess ? getVal('can_count') : 0,
-              can_request: hasAccess ? getVal('can_request') : 0
-            });
-          });
-
-          try {
-            await api(`/users/${u.id}/stores`, { method: 'POST', body: { stores: payload } });
-            close();
-            toast('Store permissions saved');
-            if (typeof onSave === 'function') onSave();
-          } catch (e) {
-            toast(e.message, 'err');
-          }
-        };
-      };
-
-      render();
-    } catch (err) {
-      mBody.innerHTML = `<div class="card alert red">Error loading store permissions: ${esc(err.message)}</div>`;
-    }
-  }, { wide: true });
-}
-
-
-// ===========================================================================
-// Multi-Step New User Provisioning & Granular Clearance Wizard (Plan Phase 2)
-// 1. Account credentials & Role Template
-// 2. Physical Store & Site Scope + Expiry (access_until)
-// 3. Action Checklist grouped by section, prefilled from template, "custom" tag
-// ===========================================================================
-async function openNewUserWizard(roles, allStoreLocations, storeOptions, wsd, onComplete) {
-  let sm = null;
-  try {
-    sm = await api('/access/section-matrix');
-  } catch (err) {
-    try {
-      sm = await api('/access/capabilities');
-    } catch (_) {}
-  }
-
-  const defaultRole = roles.find(r => r.name === 'site_storekeeper') || roles.find(r => r.name === 'storekeeper') || roles[0] || { name: 'site_storekeeper', label: 'Site Storekeeper' };
-  // Home workshop picker (step 2) is shown once there is more than one workshop. `multi` lives in
-  // renderUsersManager, not here: reading it unbound threw "multi is not defined" the moment step 1's
-  // Next was pressed, so no new user could be created at all.
-  const multi = Boolean(wsd && wsd.multi);
-
-  const state = {
-    step: 1,
-    username: '',
-    password: '',
-    full_name: '',
-    selectedRole: defaultRole.name,
-    workshop_id: '1',
-    store_location_id: '',
-    access_until: '',
-    override_reason: '',
-    sectionEdits: {},
-    capEdits: {},
-  };
-
-  const pickDefaultStore = (roleName) => {
-    if (roleName === 'main_storekeeper') {
-      const ms = allStoreLocations.find(s => s.store_type === 'MAIN_STORE');
-      if (ms) return String(ms.id);
-    } else if (roleName === 'site_storekeeper') {
-      const ss = allStoreLocations.find(s => s.store_type === 'SITE_STORE' || s.store_type === 'MAIN_WORKSHOP_STORE');
-      if (ss) return String(ss.id);
-    }
-    return '';
-  };
-  state.store_location_id = pickDefaultStore(state.selectedRole);
-
-  const getRoleTemplateDefaults = (roleName) => {
-    const levels = {};
-    const caps = new Set();
-    if (sm && sm.matrix && sm.matrix.grid && sm.matrix.grid[roleName]) {
-      Object.assign(levels, sm.matrix.grid[roleName]);
-    }
-    if (sm && sm.capabilities) {
-      for (const c of sm.capabilities) {
-        if (roleName === 'admin' || (c.legacy && c.legacy.includes(roleName))) {
-          caps.add(c.key);
-        }
-      }
-    }
-    return { levels, caps };
-  };
-
-  modal('New User Provisioning & Access Clearance', '<div id="nu-wizard-container"></div>', (body, close) => {
-    const container = qs('#nu-wizard-container', body);
-
-    const render = () => {
-      const roleDef = roles.find(r => r.name === state.selectedRole) || { name: state.selectedRole, label: state.selectedRole };
-      const template = getRoleTemplateDefaults(state.selectedRole);
-
-      let overrideCount = 0;
-      for (const [sKey, lvl] of Object.entries(state.sectionEdits)) {
-        if (lvl && lvl !== (template.levels[sKey] || 'none')) overrideCount++;
-      }
-      for (const [cKey, val] of Object.entries(state.capEdits)) {
-        if (val !== undefined && val !== template.caps.has(cKey)) overrideCount++;
-      }
-
-      const steps = [
-        { num: 1, title: 'Account & Role Template' },
-        { num: 2, title: 'Store & Site Scope' },
-        { num: 3, title: 'Action Checklist & Clearance' },
-      ];
-      const stepperHtml = `
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;padding:8px 12px;background:var(--bg-muted, #f1f5f9);border-radius:8px">
-          ${steps.map(s => {
-            const isCur = state.step === s.num;
-            const isDone = state.step > s.num;
-            const bg = isCur ? 'var(--primary, #0066ff)' : (isDone ? '#10b981' : '#cbd5e1');
-            const color = isCur || isDone ? '#fff' : '#64748b';
-            return `
-              <div style="display:flex;align-items:center;gap:8px;font-size:12.5px;font-weight:${isCur ? '700' : '500'}">
-                <span style="display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:50%;background:${bg};color:${color};font-size:11px">
-                  ${isDone ? '✓' : s.num}
-                </span>
-                <span style="${isCur ? 'color:var(--primary, #0066ff);' : (isDone ? 'color:#10b981;' : 'color:#64748b;')}">${s.title}</span>
-              </div>
-            `;
-          }).join('<span class="muted" style="margin:0 4px">→</span>')}
-        </div>
-      `;
-
-      let contentHtml = '';
-
-      if (state.step === 1) {
-        contentHtml = `
-          ${stepperHtml}
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
-            <div>
-              <label style="display:block;font-weight:600;font-size:12px;margin-bottom:4px">Username *</label>
-              <input class="input" style="width:100%" id="nu_username" value="${esc(state.username)}" placeholder="e.g. saman_p" />
-            </div>
-            <div>
-              <label style="display:block;font-weight:600;font-size:12px;margin-bottom:4px">Full Name</label>
-              <input class="input" style="width:100%" id="nu_fullname" value="${esc(state.full_name)}" placeholder="e.g. Saman Perera" />
-            </div>
-          </div>
-          <div style="margin-bottom:14px">
-            <label style="display:block;font-weight:600;font-size:12px;margin-bottom:4px">Temporary Password *</label>
-            <input class="input" style="width:100%" type="password" id="nu_password" value="${esc(state.password)}" placeholder="Must be at least 10 characters" />
-            <p class="muted" style="font-size:11.5px;margin:3px 0 0">${esc(passwordHint())} They must choose their own at first sign-in.</p>
-          </div>
-
-          <div style="margin-bottom:14px">
-            <label style="display:block;font-weight:700;font-size:13px;margin-bottom:6px">Select Primary Role Template *</label>
-            <p class="muted" style="font-size:11.5px;margin:0 0 8px">The starting baseline for what this person can do. You can fine-tune specific actions in Step 3.</p>
-            <div style="display:grid;grid-template-columns:repeat(auto-fill, minmax(280px, 1fr));gap:8px;max-height:220px;overflow-y:auto;padding:4px;border:1px solid var(--border,#e2e8f0);border-radius:8px;background:var(--card,#fff)">
-              ${roles.map(r => {
-                const checked = state.selectedRole === r.name;
-                const isSiteSk = r.name === 'site_storekeeper';
-                return `
-                  <label style="display:flex;align-items:flex-start;gap:8px;padding:8px 10px;border-radius:6px;border:1px solid ${checked ? 'var(--primary,#0066ff)' : 'transparent'};background:${checked ? '#eff6ff' : 'transparent'};cursor:pointer">
-                    <input type="radio" name="nu_role" value="${esc(r.name)}" ${checked ? 'checked' : ''} style="margin-top:3px" />
-                    <div>
-                      <div style="font-weight:600;font-size:12.5px;color:${checked ? 'var(--primary,#0066ff)' : 'inherit'}">
-                        ${esc(r.label || r.name)}
-                        ${isSiteSk ? '<span class="badge green" style="font-size:9.5px;margin-left:4px">Recommended for Sites</span>' : ''}
-                      </div>
-                      <div class="muted" style="font-size:11px">${esc(r.description || 'Standard role template')}</div>
-                    </div>
-                  </label>
-                `;
-              }).join('')}
-            </div>
-          </div>
-
-          <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px">
-            <button class="btn" id="nu_cancel">Cancel</button>
-            <button class="primary" id="nu_step1_next">Next: Store & Site Scope →</button>
-          </div>
-        `;
-      } else if (state.step === 2) {
-        contentHtml = `
-          ${stepperHtml}
-          <div class="card" style="padding:10px 14px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;margin-bottom:14px">
-            <span class="muted" style="font-size:11.5px">Configuring for:</span> <b>${esc(state.full_name || state.username)}</b>
-            <span class="muted" style="font-size:11.5px;margin-left:12px">Role Template:</span> <span class="badge blue">${esc(roleDef.label || roleDef.name)}</span>
-          </div>
-
-          <div style="margin-bottom:14px">
-            <label style="display:block;font-weight:600;font-size:12.5px;margin-bottom:4px">Physical Store & Site Location Assignment</label>
-            <select class="input" id="nu_store_select" style="width:100%">
-              ${storeOptions.map(o => `<option value="${esc(o.value)}" ${String(state.store_location_id) === String(o.value) ? 'selected' : ''}>${esc(o.label)}</option>`).join('')}
-            </select>
-            <p class="muted" style="font-size:11.5px;margin:4px 0 0">
-              ${state.selectedRole === 'site_storekeeper'
-                ? '⭐ <b>Site Storekeeper selected:</b> Assign to their project site store (e.g. Galagedara Site Store). Transactions (MRN, issues, receipts) will be scoped to this store location.'
-                : (state.selectedRole === 'main_storekeeper'
-                  ? '🏛️ <b>Main Storekeeper selected:</b> Assign to Central Main Stores for company-wide store oversight.'
-                  : 'Assigning a physical store isolates stock balances and requisitions for this user.')}
-            </p>
-          </div>
-
-          ${multi ? `
-          <div style="margin-bottom:14px">
-            <label style="display:block;font-weight:600;font-size:12.5px;margin-bottom:4px">Home Workshop Branch</label>
-            <select class="input" id="nu_workshop_select" style="width:100%">
-              ${wsOptions(wsd).map(o => `<option value="${esc(o.value)}" ${String(state.workshop_id) === String(o.value) ? 'selected' : ''}>${esc(o.label)}</option>`).join('')}
-            </select>
-            <p class="muted" style="font-size:11.5px;margin:4px 0 0">New job cards and requests they raise originate from this workshop.</p>
-          </div>` : ''}
-
-          <div style="margin-bottom:14px;background:#fefce8;border:1px solid #fef08a;border-radius:8px;padding:12px">
-            <label style="display:block;font-weight:600;font-size:12.5px;color:#854d0e;margin-bottom:4px">⏱️ Temporary Access Expiry (Optional)</label>
-            <input class="input" type="datetime-local" id="nu_access_until" value="${esc(state.access_until ? state.access_until.slice(0, 16) : '')}" style="width:260px" />
-            <p class="muted" style="font-size:11.5px;margin:4px 0 0">
-              Leave blank for standard permanent access. Set an expiry date/time for relief cover, temporary contractors, or audited probationary access. Once expired, all actions are automatically revoked.
-            </p>
-          </div>
-
-          <div style="display:flex;justify-content:space-between;margin-top:16px">
-            <button class="btn" id="nu_step2_back">← Back</button>
-            <button class="primary" id="nu_step2_next">Next: Review & Customize Actions →</button>
-          </div>
-        `;
-      } else if (state.step === 3) {
-        const GROUPS = [
-          { id: 'Operations', name: 'Operations & Execution', icon: '⚙️' },
-          { id: 'Fleet', name: 'Fleet Management', icon: '🚛' },
-          { id: 'Inventory', name: 'Inventory & Warehousing', icon: '📦' },
-          { id: 'Procurement', name: 'Procurement & Purchasing', icon: '🛒' },
-          { id: 'Analysis', name: 'Analysis & Intelligence', icon: '📊' },
-          { id: 'Admin', name: 'Governance & Administration', icon: '🛡️' },
-        ];
-
-        const ACTVT_MAP = {
-          '01': { label: '01 · Create', cls: 'badge teal' },
-          '02': { label: '02 · Change', cls: 'badge blue' },
-          '03': { label: '03 · Display', cls: 'badge' },
-          '06': { label: '06 · Delete', cls: 'badge red' },
-          '08': { label: '08 · Export', cls: 'badge purple' },
-          '10': { label: '10 · Approve', cls: 'badge green' },
-          'A1': { label: 'A1 · Certify', cls: 'badge amber' },
-        };
-
-        const LV_BTN = [
-          { key: 'none', label: 'None' },
-          { key: 'view', label: 'View' },
-          { key: 'add', label: 'Add' },
-          { key: 'edit', label: 'Edit' },
-          { key: 'full', label: 'Full' },
-        ];
-
-        const allSections = (sm && sm.sections) || [];
-        const allCapabilities = (sm && sm.capabilities) || [];
-
-        const groupsHtml = GROUPS.map(grp => {
-          const grpSections = allSections.filter(s => (s.domain || s.group || '').toLowerCase() === grp.id.toLowerCase());
-          if (!grpSections.length) return '';
-
-          const sectionsHtml = grpSections.map(sec => {
-            const roleLvl = template.levels[sec.id || sec.key] || 'none';
-            const curLvl = state.sectionEdits[sec.id || sec.key] !== undefined ? state.sectionEdits[sec.id || sec.key] : roleLvl;
-            const isLvlCustom = curLvl !== roleLvl;
-
-            const lvlButtons = LV_BTN.map(b => {
-              const isSel = curLvl === b.key;
-              const cls = isSel ? 'primary' : 'btn sm';
-              const style = isSel ? 'font-weight:700;padding:2px 8px;font-size:11px' : 'opacity:.7;padding:2px 8px;font-size:11px';
-              return `<button type="button" class="${cls}" style="${style}" data-wizard-sec="${esc(sec.id || sec.key)}" data-lvl="${b.key}">${b.label}</button>`;
-            }).join(' ');
-
-            const secCaps = allCapabilities.filter(c => (c.section || c.module) === (sec.id || sec.key));
-            let capsHtml = '';
-            if (secCaps.length > 0) {
-              const capItems = secCaps.map(c => {
-                const roleGranted = template.caps.has(c.key);
-                const isChecked = state.capEdits[c.key] !== undefined ? state.capEdits[c.key] : roleGranted;
-                const isCapCustom = isChecked !== roleGranted;
-                const actvt = ACTVT_MAP[c.actvt] || { label: c.actvt || '02', cls: 'badge' };
-                const dualBadge = c.dualAuth ? `<span class="badge amber" style="font-size:9px">👥 4-Eyes</span> ` : '';
-
-                return `
-                  <label style="display:flex;align-items:flex-start;gap:8px;margin:4px 0;font-size:12px;font-weight:normal">
-                    <input type="checkbox" data-wizard-cap="${esc(c.key)}" ${isChecked ? 'checked' : ''} style="margin-top:2px" />
-                    <div>
-                      <div style="display:flex;align-items:center;gap:4px;flex-wrap:wrap">
-                        <span class="${actvt.cls}" style="font-size:9px;font-family:monospace">${actvt.label}</span>
-                        ${dualBadge}
-                        <span style="font-weight:${isChecked ? '600' : '400'}">${esc(c.label)}</span>
-                        ${isCapCustom ? '<span class="badge amber" style="font-size:9px">⚡ Custom Override</span>' : ''}
-                      </div>
-                      <div class="muted" style="font-size:10px;font-family:monospace">${esc(c.key)}</div>
-                    </div>
-                  </label>
-                `;
-              }).join('');
-
-              capsHtml = `
-                <details style="margin-top:6px;border-top:1px dashed #e2e8f0;padding-top:4px">
-                  <summary style="cursor:pointer;font-size:11px;font-weight:600;color:var(--text-muted, #64748b)">
-                    Individual Action Capabilities (${secCaps.length})
-                  </summary>
-                  <div style="margin-top:4px;padding-left:6px">${capItems}</div>
-                </details>
-              `;
-            }
-
-            return `
-              <div class="card" style="padding:10px;margin-bottom:8px;border:1px solid #e2e8f0;border-radius:6px;background:#fff">
-                <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
-                  <div style="display:flex;align-items:center;gap:6px">
-                    <span style="font-size:16px">${sec.icon || '📦'}</span>
-                    <div>
-                      <b style="font-size:13px">${esc(sec.name || sec.label)}</b>
-                      <div class="muted" style="font-size:11px">${esc(sec.description || '')}</div>
-                    </div>
-                  </div>
-                  <div>
-                    ${isLvlCustom ? '<span class="badge amber" style="font-size:10px">⚡ Custom Clearance</span>' : `<span class="badge blue" style="font-size:10px">Template (${roleLvl.toUpperCase()})</span>`}
-                  </div>
-                </div>
-                <div style="display:flex;align-items:center;justify-content:space-between;background:#f8fafc;padding:4px 8px;border-radius:4px">
-                  <span class="muted" style="font-size:10.5px;font-weight:600">SECTION CLEARANCE:</span>
-                  <div style="display:flex;gap:3px">${lvlButtons}</div>
-                </div>
-                ${capsHtml}
-              </div>
-            `;
-          }).join('');
-
-          return `
-            <div style="margin-bottom:14px">
-              <div style="font-weight:700;font-size:13px;color:#1e293b;margin-bottom:6px;display:flex;align-items:center;gap:6px">
-                <span>${grp.icon}</span> <span>${grp.name}</span>
-              </div>
-              ${sectionsHtml}
-            </div>
-          `;
-        }).join('');
-
-        contentHtml = `
-          ${stepperHtml}
-          <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;padding:10px 14px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;margin-bottom:12px">
-            <div style="font-size:12.5px">
-              User: <b>${esc(state.username)}</b> (${esc(state.full_name || '—')}) |
-              Template: <span class="badge blue">${esc(roleDef.label || roleDef.name)}</span> |
-              Overrides: <span class="badge ${overrideCount > 0 ? 'amber' : 'green'}">${overrideCount > 0 ? `${overrideCount} custom` : '0 (Template default)'}</span>
-            </div>
-            <div>
-              <button class="btn sm" id="nu_reset_template" title="Discard customizations and revert to role template">↺ Reset to Role Template</button>
-            </div>
-          </div>
-
-          ${overrideCount > 0 ? `
-          <div style="margin-bottom:12px;background:#fffbeb;border:1px solid #fde68a;border-radius:6px;padding:8px 12px">
-            <label style="display:block;font-weight:600;font-size:12px;color:#92400e;margin-bottom:4px">
-              📝 Audit Justification for Custom Overrides (Recorded in Security Log)
-            </label>
-            <input class="input" id="nu_override_reason" value="${esc(state.override_reason)}" placeholder="e.g. Authorized stand-in for store manager during audit" style="width:100%;font-size:12px" />
-          </div>` : ''}
-
-          <div style="margin-bottom:10px">
-            <input class="input" id="nu_action_search" placeholder="🔍 Filter sections and actions (e.g. issue, mrn, price, grn)..." style="width:100%;font-size:12px" />
-          </div>
-
-          <div id="nu_actions_scroll" style="max-height:360px;overflow-y:auto;padding-right:4px">
-            ${groupsHtml}
-          </div>
-
-          <div style="display:flex;justify-content:space-between;margin-top:16px">
-            <button class="btn" id="nu_step3_back">← Back to Scope</button>
-            <button class="primary" id="nu_submit_create">Create User & Provision Access</button>
-          </div>
-        `;
-      }
-
-      container.innerHTML = contentHtml;
-
-      if (state.step === 1) {
-        qs('#nu_cancel', container).onclick = () => close();
-        qsa('input[name="nu_role"]', container).forEach(r => {
-          r.onchange = () => {
-            state.selectedRole = r.value;
-            state.store_location_id = pickDefaultStore(r.value);
-            render();
-          };
-        });
-        qs('#nu_step1_next', container).onclick = () => {
-          state.username = qs('#nu_username', container).value.trim();
-          state.full_name = qs('#nu_fullname', container).value.trim();
-          state.password = qs('#nu_password', container).value;
-          if (!state.username) return toast('Username is required', 'err');
-          if (!state.password || state.password.length < passwordMinLength()) return toast(passwordHint(), 'err');
-          state.step = 2;
-          render();
-        };
-      } else if (state.step === 2) {
-        qs('#nu_step2_back', container).onclick = () => { state.step = 1; render(); };
-        qs('#nu_step2_next', container).onclick = () => {
-          state.store_location_id = qs('#nu_store_select', container).value;
-          if (qs('#nu_workshop_select', container)) state.workshop_id = qs('#nu_workshop_select', container).value;
-          state.access_until = qs('#nu_access_until', container).value;
-          state.step = 3;
-          render();
-        };
-      } else if (state.step === 3) {
-        qs('#nu_step3_back', container).onclick = () => { state.step = 2; render(); };
-
-        const searchInput = qs('#nu_action_search', container);
-        if (searchInput) {
-          searchInput.oninput = () => {
-            const term = searchInput.value.toLowerCase().trim();
-            qsa('#nu_actions_scroll .card', container).forEach(card => {
-              const text = card.textContent.toLowerCase();
-              card.style.display = (!term || text.includes(term)) ? '' : 'none';
-              const details = qs('details', card);
-              if (details && term && text.includes(term)) details.open = true;
-            });
-          };
-        }
-
-        qsa('[data-wizard-sec]', container).forEach(btn => {
-          btn.onclick = () => {
-            const secKey = btn.dataset.wizardSec;
-            const lvl = btn.dataset.lvl;
-            state.sectionEdits[secKey] = lvl;
-            render();
-          };
-        });
-
-        qsa('[data-wizard-cap]', container).forEach(cb => {
-          cb.onchange = () => {
-            const capKey = cb.dataset.wizardCap;
-            state.capEdits[capKey] = cb.checked;
-            render();
-          };
-        });
-
-        const resetBtn = qs('#nu_reset_template', container);
-        if (resetBtn) {
-          resetBtn.onclick = () => {
-            state.sectionEdits = {};
-            state.capEdits = {};
-            state.override_reason = '';
-            toast('Reverted all actions to role template defaults');
-            render();
-          };
-        }
-
-        qs('#nu_submit_create', container).onclick = async () => {
-          const reasonInput = qs('#nu_override_reason', container);
-          if (reasonInput) state.override_reason = reasonInput.value.trim();
-
-          const template = getRoleTemplateDefaults(state.selectedRole);
-
-          const sectionsPayload = {};
-          for (const [secKey, lvl] of Object.entries(state.sectionEdits)) {
-            if (lvl && lvl !== (template.levels[secKey] || 'none')) {
-              sectionsPayload[secKey] = lvl;
-            }
-          }
-
-          const capsPayload = {};
-          for (const [capKey, val] of Object.entries(state.capEdits)) {
-            if (val !== undefined && val !== template.caps.has(capKey)) {
-              capsPayload[capKey] = val;
-            }
-          }
-
-          const payload = {
-            username: state.username,
-            password: state.password,
-            full_name: state.full_name || null,
-            roles: [state.selectedRole],
-            workshop_id: state.workshop_id ? Number(state.workshop_id) : 1,
-            store_location_id: state.store_location_id ? Number(state.store_location_id) : null,
-            access_until: state.access_until ? new Date(state.access_until).toISOString() : null,
-            sections: sectionsPayload,
-            capabilities: capsPayload,
-            override_reason: state.override_reason || null,
-          };
-
-          try {
-            const created = await api('/users', { method: 'POST', body: payload });
-            close();
-            toast(`User ${state.username} created successfully with customized clearance`);
-            if (onComplete) onComplete(created);
-          } catch (err) {
-            toast(err.message, 'err');
-          }
-        };
-      }
-    };
-
-    render();
-  }, { wide: true });
-}
+// Extracted to public/modules/access_control.js
 
 // generic create modal for simple flat forms
 // A field tuple of ['Label', 'name', 'category'] renders the Category → Sub-category
@@ -26769,7 +22918,10 @@ function countAddModal(d, reload) {
 // as a shortlist to tick through: the underlying prediction is about 70 days out on average,
 // and roughly 150 machines qualify in a month that will really see 26–49 services.
 routes.serviceplan = async (c) => {
-  if (!canView('filters')) { c.innerHTML = `<div class="card"><p class="err">You do not have access to Filters.</p></div>`; return; }
+  if (!canView('service_plan') && !canView('filters')) { c.innerHTML = `<div class="card"><p class="err">You do not have access to Service &amp; Filter Plan.</p></div>`; return; }
+  if (window.ServicePlanUI && typeof window.ServicePlanUI.render === 'function') {
+    return window.ServicePlanUI.render(c);
+  }
   const sp = new URLSearchParams(location.hash.split('?')[1] || '');
   const month = /^\d{4}-\d{2}$/.test(sp.get('month') || '') ? sp.get('month') : new Date().toISOString().slice(0, 7);
 
@@ -27089,7 +23241,7 @@ function afterSignIn() {
   noteActivity();
   setupIdleLock();
   live('connect');   // the socket is refused until a session exists
-  location.hash = '#/dashboard'; render();
+  location.hash = defaultHomeHash(); render();
   if (ME.mustChangePassword) forceChangePassword();
   else if (ME.mfaSetupRequired) forceMfaSetup();
 }
@@ -27267,6 +23419,8 @@ function renderLogin(err) {
   qsa('.modal-bg').forEach((el) => el.remove());
   removeIdleLockOverlay();
   isScreenLocked = false;
+  if (window.WONav && typeof window.WONav.resetShell === 'function') window.WONav.resetShell();
+  if (typeof window.refreshMobileNav === 'function') window.refreshMobileNav();
   const currentServer = window.WORKSHOPONE_API_BASE || window.location.origin;
   qs('#app').innerHTML = `<div class="login-wrap"><div class="card login-card">
     <div class="brand">Workshop<span style="color:var(--primary)">One</span></div>
@@ -27302,1239 +23456,7 @@ function renderLogin(err) {
 }
 
 
-// ===========================================================================
-// CCOM Outsourced Service & Repair Requests UI Subsystem
-// ===========================================================================
-
-function outsourcingStatusBadge(s) {
-  const map = {
-    draft: ['Draft', ''],
-    pending_approval: ['Pending Review', 'amber'],
-    returned: ['Returned for Correction', 'red'],
-    approved: ['Approved & Signed', 'green'],
-    sent: ['Sent to C.COM', 'blue'],
-    acknowledged: ['Acknowledged by C.COM', 'blue'],
-    in_progress: ['Work in Progress', 'violet'],
-    completed: ['Work Verified', 'green'],
-    closed: ['Closed (Cost Posted)', 'teal'],
-    cancelled: ['Cancelled', '']
-  };
-  const [label, color] = map[s] || [s || '—', ''];
-  return `<span class="badge ${color}">${esc(label)}</span>`;
-}
-
-function renderOutsourcingJobSectionHtml(job, reqs = []) {
-  const isClosed = job.status === 'CLOSED';
-  const canCreate = canDo('outsourcing.create') && !isClosed;
-  const count = reqs.length;
-
-  return `
-    <div class="card section" id="outsourcing-section" style="border-left:4px solid var(--blue, #2563eb)">
-      <div class="toolbar" style="margin:0 0 8px">
-        <div style="display:flex;align-items:center;gap:8px">
-          <h3 style="margin:0">⚙️ C.COM Outsourced Service &amp; Repairs</h3>
-          <span class="badge ${count > 0 ? 'blue' : ''}">${count}</span>
-        </div>
-        <div class="spacer"></div>
-        ${canCreate ? '<button class="sm primary" id="btn-new-ccom-req">+ New C.COM Request</button>' : ''}
-      </div>
-      <p class="muted" style="margin:0 0 12px;font-size:12.5px">
-        Authorised equipment repairs and component overhauls sent to <b>C.COM</b> with dual electronic signatures (Storekeeper + Mechanical Engineer) and PDF generation.
-        Verified invoice cost posts directly to <b>External Cost</b> upon completion.
-      </p>
-      ${!reqs.length ? `
-        <div style="text-align:center;padding:16px;background:rgba(0,0,0,0.02);border:1px dashed var(--border);border-radius:8px" class="muted">
-          No external C.COM requests attached to this job card yet.
-          ${canCreate ? '<div style="margin-top:6px"><button class="sm" id="btn-new-ccom-req-empty">+ Raise C.COM Request</button></div>' : ''}
-        </div>
-      ` : tableWrap([
-        { label: 'Ref / Rev' },
-        { label: 'Type & Priority' },
-        { label: 'Work Items / Contact' },
-        { label: 'Engineer' },
-        { label: 'Status' },
-        { label: 'Cost Status', num: true },
-        { label: 'Actions' }
-      ], reqs.map((r) => {
-        const canApprove = (canDo('outsourcing.approve') || isAdmin()) && r.status === 'pending_approval' && r.created_by !== (ME && ME.id);
-        const canEditDraft = (canDo('outsourcing.edit_draft') || isAdmin()) && ['draft', 'returned'].includes(r.status);
-        const canSubmit = (canDo('outsourcing.create') || canDo('outsourcing.edit_draft') || isAdmin()) && ['draft', 'returned'].includes(r.status);
-        const canSend = (canDo('outsourcing.send') || isAdmin()) && ['approved', 'sent'].includes(r.status);
-        const canVerify = (canDo('outsourcing.verify_completion') || canDo('outsourcing.approve') || isAdmin()) && ['sent', 'acknowledged', 'in_progress'].includes(r.status);
-        const canPostCost = (canDo('outsourcing.cost.post') || isAdmin()) && ['approved', 'sent', 'acknowledged', 'in_progress', 'completed'].includes(r.status) && r.status !== 'closed';
-        const canCancel = (canDo('outsourcing.cancel') || isAdmin()) && !['closed', 'cancelled'].includes(r.status);
-        const isApprovedOrPast = ['approved', 'sent', 'acknowledged', 'in_progress', 'completed', 'closed'].includes(r.status);
-
-        const actions = [];
-        actions.push(`<button class="sm" data-os-view="${r.id}" title="View details">👁️ View</button>`);
-        if (canEditDraft) {
-          actions.push(`<button class="sm" data-os-edit="${r.id}" title="Edit request">✏️ Edit</button>`);
-        }
-        if (canSubmit) {
-          actions.push(`<button class="sm primary" data-os-submit="${r.id}" title="Submit to Engineer">📤 Submit</button>`);
-        }
-        actions.push(`<button class="sm" data-os-preview="${r.id}" title="Preview Letterhead">📄 Preview</button>`);
-        if (isApprovedOrPast) {
-          actions.push(`<a class="btn sm" href="/api/outsourcing/requests/${r.id}/pdf" target="_blank" title="Download official signed PDF">⬇️ PDF</a>`);
-        }
-        if (canApprove) {
-          actions.push(`<button class="sm primary" data-os-review="${r.id}" style="background:#059669;border-color:#059669" title="Engineer review & e-sign">✍️ E-Sign</button>`);
-        }
-        if (canSend) {
-          actions.push(`<button class="sm" data-os-email="${r.id}" title="Email to C.COM">✉️ Email</button>`);
-        }
-        if (['sent', 'acknowledged', 'in_progress'].includes(r.status)) {
-          actions.push(`<button class="sm" data-os-progress="${r.id}" title="Update progress">🔄 Progress</button>`);
-        }
-        if (canVerify) {
-          actions.push(`<button class="sm" data-os-verify="${r.id}" style="color:#059669" title="Verify completed work">✅ Verify</button>`);
-        }
-        if (canPostCost) {
-          actions.push(`<button class="sm primary" data-os-cost="${r.id}" style="background:#7c3aed;border-color:#7c3aed" title="Post actual invoice cost">💰 Post Cost</button>`);
-        }
-        if (canCancel) {
-          actions.push(`<button class="sm danger" data-os-cancel="${r.id}" title="Cancel request">✕</button>`);
-        }
-
-        const prioBadge = r.priority === 'critical' ? '<span class="badge red">Critical</span>' : (r.priority === 'high' ? '<span class="badge amber">High</span>' : '<span class="badge">Routine</span>');
-        const costHtml = r.posted_invoice_amount
-          ? `<b style="color:var(--green)">${money(r.posted_invoice_amount)}</b><div class="muted" style="font-size:11px">Inv: ${esc(r.posted_invoice_no || '—')}</div>`
-          : `<span class="muted" style="font-size:12px">Rs 0.00 (Pending)</span>`;
-
-        return `<tr>
-          <td>
-            <b>${esc(r.ref_no || '(Draft)')}</b>
-            <div class="muted" style="font-size:11px">Rev ${r.version || 1} · ${esc((r.created_at || '').slice(0, 10))}</div>
-          </td>
-          <td>
-            <span class="badge" style="text-transform:capitalize">${esc((r.request_type || 'repair').replace(/_/g, ' '))}</span>
-            <div style="margin-top:2px">${prioBadge}</div>
-          </td>
-          <td>
-            <b>${esc(r.contact_name || 'C.COM')}</b>
-            <div class="muted" style="font-size:11px">${esc(r.informed_by ? 'Informed by ' + r.informed_by : '')}</div>
-          </td>
-          <td>
-            ${esc(r.assigned_engineer_name || 'Unassigned')}
-          </td>
-          <td>
-            ${outsourcingStatusBadge(r.status)}
-            ${r.status === 'returned' ? '<div style="font-size:11px;color:var(--red);margin-top:2px">Needs revision</div>' : ''}
-          </td>
-          <td class="num">
-            ${costHtml}
-          </td>
-          <td>
-            <div style="display:flex;gap:4px;flex-wrap:wrap">
-              ${actions.join('')}
-            </div>
-          </td>
-        </tr>`;
-      }), { scroll: true })}
-    </div>
-  `;
-}
-
-function renderOutsourcingServiceSectionHtml(service, reqs = []) {
-  const count = reqs.length;
-  const canCreate = canDo('outsourcing.create');
-
-  return `
-    <div class="card section" id="outsourcing-section" style="border-left:4px solid var(--blue, #2563eb)">
-      <div class="toolbar" style="margin:0 0 8px">
-        <div style="display:flex;align-items:center;gap:8px">
-          <h3 style="margin:0">⚙️ C.COM Outsourced Service &amp; Specialist Work</h3>
-          <span class="badge ${count > 0 ? 'blue' : ''}">${count}</span>
-        </div>
-        <div class="spacer"></div>
-        ${canCreate ? '<button class="sm primary" id="btn-new-ccom-req">+ New C.COM Request</button>' : ''}
-      </div>
-      <p class="muted" style="margin:0 0 12px;font-size:12.5px">
-        Official C.COM equipment repairs and periodic service requests linked to this Service Record.
-        Verified invoice cost posts directly to <b>Outside Estimate / Grand Total</b> upon completion.
-      </p>
-      ${!reqs.length ? `
-        <div style="text-align:center;padding:16px;background:rgba(0,0,0,0.02);border:1px dashed var(--border);border-radius:8px" class="muted">
-          No external C.COM requests attached to this service record yet.
-          ${canCreate ? '<div style="margin-top:6px"><button class="sm" id="btn-new-ccom-req-empty">+ Raise C.COM Request</button></div>' : ''}
-        </div>
-      ` : tableWrap([
-        { label: 'Ref / Rev' },
-        { label: 'Type & Priority' },
-        { label: 'Contact' },
-        { label: 'Engineer' },
-        { label: 'Status' },
-        { label: 'Cost Status', num: true },
-        { label: 'Actions' }
-      ], reqs.map((r) => {
-        const canApprove = (canDo('outsourcing.approve') || isAdmin()) && r.status === 'pending_approval' && r.created_by !== (ME && ME.id);
-        const canEditDraft = (canDo('outsourcing.edit_draft') || isAdmin()) && ['draft', 'returned'].includes(r.status);
-        const canSubmit = (canDo('outsourcing.create') || canDo('outsourcing.edit_draft') || isAdmin()) && ['draft', 'returned'].includes(r.status);
-        const canSend = (canDo('outsourcing.send') || isAdmin()) && ['approved', 'sent'].includes(r.status);
-        const canVerify = (canDo('outsourcing.verify_completion') || canDo('outsourcing.approve') || isAdmin()) && ['sent', 'acknowledged', 'in_progress'].includes(r.status);
-        const canPostCost = (canDo('outsourcing.cost.post') || isAdmin()) && ['approved', 'sent', 'acknowledged', 'in_progress', 'completed'].includes(r.status) && r.status !== 'closed';
-        const canCancel = (canDo('outsourcing.cancel') || isAdmin()) && !['closed', 'cancelled'].includes(r.status);
-        const isApprovedOrPast = ['approved', 'sent', 'acknowledged', 'in_progress', 'completed', 'closed'].includes(r.status);
-
-        const actions = [];
-        actions.push(`<button class="sm" data-os-view="${r.id}" title="View details">👁️ View</button>`);
-        if (canEditDraft) {
-          actions.push(`<button class="sm" data-os-edit="${r.id}" title="Edit request">✏️ Edit</button>`);
-        }
-        if (canSubmit) {
-          actions.push(`<button class="sm primary" data-os-submit="${r.id}" title="Submit to Engineer">📤 Submit</button>`);
-        }
-        actions.push(`<button class="sm" data-os-preview="${r.id}" title="Preview Letterhead">📄 Preview</button>`);
-        if (isApprovedOrPast) {
-          actions.push(`<a class="btn sm" href="/api/outsourcing/requests/${r.id}/pdf" target="_blank" title="Download official signed PDF">⬇️ PDF</a>`);
-        }
-        if (canApprove) {
-          actions.push(`<button class="sm primary" data-os-review="${r.id}" style="background:#059669;border-color:#059669" title="Engineer review & e-sign">✍️ E-Sign</button>`);
-        }
-        if (canSend) {
-          actions.push(`<button class="sm" data-os-email="${r.id}" title="Email to C.COM">✉️ Email</button>`);
-        }
-        if (['sent', 'acknowledged', 'in_progress'].includes(r.status)) {
-          actions.push(`<button class="sm" data-os-progress="${r.id}" title="Update progress">🔄 Progress</button>`);
-        }
-        if (canVerify) {
-          actions.push(`<button class="sm" data-os-verify="${r.id}" style="color:#059669" title="Verify completed work">✅ Verify</button>`);
-        }
-        if (canPostCost) {
-          actions.push(`<button class="sm primary" data-os-cost="${r.id}" style="background:#7c3aed;border-color:#7c3aed" title="Post actual invoice cost">💰 Post Cost</button>`);
-        }
-        if (canCancel) {
-          actions.push(`<button class="sm danger" data-os-cancel="${r.id}" title="Cancel request">✕</button>`);
-        }
-
-        const prioBadge = r.priority === 'critical' ? '<span class="badge red">Critical</span>' : (r.priority === 'high' ? '<span class="badge amber">High</span>' : '<span class="badge">Routine</span>');
-        const costHtml = r.posted_invoice_amount
-          ? `<b style="color:var(--green)">${money(r.posted_invoice_amount)}</b><div class="muted" style="font-size:11px">Inv: ${esc(r.posted_invoice_no || '—')}</div>`
-          : `<span class="muted" style="font-size:12px">Rs 0.00 (Pending)</span>`;
-
-        return `<tr>
-          <td>
-            <b>${esc(r.ref_no || '(Draft)')}</b>
-            <div class="muted" style="font-size:11px">Rev ${r.version || 1} · ${esc((r.created_at || '').slice(0, 10))}</div>
-          </td>
-          <td>
-            <span class="badge" style="text-transform:capitalize">${esc((r.request_type || 'repair').replace(/_/g, ' '))}</span>
-            <div style="margin-top:2px">${prioBadge}</div>
-          </td>
-          <td>
-            <b>${esc(r.contact_name || 'C.COM')}</b>
-          </td>
-          <td>
-            ${esc(r.assigned_engineer_name || 'Unassigned')}
-          </td>
-          <td>
-            ${outsourcingStatusBadge(r.status)}
-            ${r.status === 'returned' ? '<div style="font-size:11px;color:var(--red);margin-top:2px">Needs revision</div>' : ''}
-          </td>
-          <td class="num">
-            ${costHtml}
-          </td>
-          <td>
-            <div style="display:flex;gap:4px;flex-wrap:wrap">
-              ${actions.join('')}
-            </div>
-          </td>
-        </tr>`;
-      }), { scroll: true })}
-    </div>
-  `;
-}
-
-function wireOutsourcingSection(c, ctx) {
-  const root = qs('#outsourcing-section', c) || c;
-  const onNew = () => openNewOutsourcingModal(ctx, ctx.onRefresh);
-
-  if (qs('#btn-new-ccom-req', root)) qs('#btn-new-ccom-req', root).onclick = onNew;
-  if (qs('#btn-new-ccom-req-empty', root)) qs('#btn-new-ccom-req-empty', root).onclick = onNew;
-
-  qsa('[data-os-view]', root).forEach((b) => b.onclick = () => openOutsourcingDetailModal(b.dataset.osView, ctx.onRefresh));
-  qsa('[data-os-edit]', root).forEach((b) => b.onclick = () => openEditOutsourcingModal(b.dataset.osEdit, ctx.onRefresh));
-  qsa('[data-os-submit]', root).forEach((b) => b.onclick = async () => {
-    if (!confirm('Submit this C.COM request to the assigned Mechanical Engineer for review & approval?')) return;
-    try {
-      const res = await api(`/outsourcing/requests/${b.dataset.osSubmit}/submit`, { method: 'POST' });
-      toast(`✓ Submitted! Allocated Reference ${res.ref_no}`);
-      if (ctx.onRefresh) ctx.onRefresh();
-    } catch (e) {
-      toast(e.message, 'err');
-    }
-  });
-  qsa('[data-os-preview]', root).forEach((b) => b.onclick = () => openOutsourcingPreviewModal(b.dataset.osPreview));
-  qsa('[data-os-review]', root).forEach((b) => b.onclick = () => openOutsourcingReviewModal(b.dataset.osReview, ctx.onRefresh));
-  qsa('[data-os-email]', root).forEach((b) => b.onclick = () => openOutsourcingEmailModal(b.dataset.osEmail, ctx.onRefresh));
-  qsa('[data-os-progress]', root).forEach((b) => b.onclick = () => openOutsourcingProgressModal(b.dataset.osProgress, ctx.onRefresh));
-  qsa('[data-os-verify]', root).forEach((b) => b.onclick = async () => {
-    const notes = prompt('Enter engineer verification note (or press OK to verify completion):', 'Work completed by C.COM and inspected satisfactorily.');
-    if (notes == null) return;
-    try {
-      await api(`/outsourcing/requests/${b.dataset.osVerify}/verify-completion`, { method: 'POST', body: { notes } });
-      toast('✓ Work completion verified!');
-      if (ctx.onRefresh) ctx.onRefresh();
-    } catch (e) {
-      toast(e.message, 'err');
-    }
-  });
-  qsa('[data-os-cost]', root).forEach((b) => b.onclick = () => openOutsourcingCostModal(b.dataset.osCost, ctx.onRefresh));
-  qsa('[data-os-cancel]', root).forEach((b) => b.onclick = () => openOutsourcingCancelModal(b.dataset.osCancel, ctx.onRefresh));
-}
-
-async function jobsOutsourcing(body, sp) {
-  let reqs = [];
-  try {
-    const res = await api('/outsourcing/requests');
-    reqs = res.requests || [];
-  } catch (err) {
-    body.innerHTML = `<div class="card err">${esc(err.message)}</div>`;
-    return;
-  }
-
-  const curStatus = sp.get('status') || 'all';
-  const filtered = curStatus === 'all' ? reqs : reqs.filter((r) => r.status === curStatus);
-
-  const pendingCount = reqs.filter((r) => r.status === 'pending_approval').length;
-  const sentCount = reqs.filter((r) => ['sent', 'acknowledged', 'in_progress'].includes(r.status)).length;
-  const completedCount = reqs.filter((r) => r.status === 'completed').length;
-  const closedCount = reqs.filter((r) => r.status === 'closed').length;
-
-  body.innerHTML = `
-    <div class="grid" style="grid-template-columns:repeat(auto-fit, minmax(200px, 1fr));gap:12px;margin-bottom:14px">
-      <a class="card stat" href="#/jobs?tab=outsourcing&status=all" style="text-decoration:none">
-        <span class="n">${reqs.length}</span>
-        <span class="l">All Requests</span>
-      </a>
-      <a class="card stat" href="#/jobs?tab=outsourcing&status=pending_approval" style="text-decoration:none">
-        <span class="n" style="color:var(--amber)">${pendingCount}</span>
-        <span class="l">Pending Engineer Review</span>
-      </a>
-      <a class="card stat" href="#/jobs?tab=outsourcing&status=in_progress" style="text-decoration:none">
-        <span class="n" style="color:var(--blue)">${sentCount}</span>
-        <span class="l">At C.COM / In Progress</span>
-      </a>
-      <a class="card stat" href="#/jobs?tab=outsourcing&status=completed" style="text-decoration:none">
-        <span class="n" style="color:var(--green)">${completedCount}</span>
-        <span class="l">Work Verified (Awaiting Invoice)</span>
-      </a>
-    </div>
-
-    <div class="card section">
-      <div class="toolbar" style="margin:0 0 10px">
-        <h3 style="margin:0">C.COM Equipment Outsourcing Register</h3>
-        <div class="spacer"></div>
-        <div class="pill-row">
-          <a class="btn sm ${curStatus === 'all' ? 'primary' : ''}" href="#/jobs?tab=outsourcing&status=all">All (${reqs.length})</a>
-          <a class="btn sm ${curStatus === 'pending_approval' ? 'primary' : ''}" href="#/jobs?tab=outsourcing&status=pending_approval">Pending Engineer (${pendingCount})</a>
-          <a class="btn sm ${curStatus === 'in_progress' ? 'primary' : ''}" href="#/jobs?tab=outsourcing&status=in_progress">Active at C.COM (${sentCount})</a>
-          <a class="btn sm ${curStatus === 'completed' ? 'primary' : ''}" href="#/jobs?tab=outsourcing&status=completed">Verified (${completedCount})</a>
-          <a class="btn sm ${curStatus === 'closed' ? 'primary' : ''}" href="#/jobs?tab=outsourcing&status=closed">Closed (${closedCount})</a>
-        </div>
-      </div>
-
-      <div id="outsourcing-table-wrap">
-        ${renderOutsourcingJobSectionHtml({ status: 'OPEN' }, filtered)}
-      </div>
-    </div>
-  `;
-
-  wireOutsourcingSection(body, { onRefresh: () => jobsOutsourcing(body, sp) });
-}
-
-async function openNewOutsourcingModal(ctx, onDone) {
-  let vData = { vendors: [] };
-  let users = [];
-  let openJobs = [];
-  try {
-    vData = await api('/outsourcing/vendors');
-    users = await api('/users').catch(() => []);
-    if (!ctx.repairJobId && !ctx.serviceRecordId) {
-      const jRes = await api('/jobs?open=1&limit=50').catch(() => []);
-      openJobs = Array.isArray(jRes) ? jRes : (jRes.jobs || []);
-    }
-  } catch (err) {
-    console.error(err);
-  }
-
-  const vendors = vData.vendors || [];
-  const ccom = vendors.find((v) => v.code === 'CCOM') || vendors[0] || { id: 1, name: 'C.COM Engineering (Pvt) Ltd', contacts: [] };
-  const contacts = ccom.contacts || [];
-
-  const engineers = users.filter((u) => u.active !== 0 && (
-    (u.roles || []).some((r) => ['mechanical_engineer', 'engineer', 'workshop', 'operational_manager', 'manager', 'admin'].includes(r))
-    || (u.role && ['mechanical_engineer', 'engineer', 'workshop', 'operational_manager', 'manager', 'admin'].includes(u.role))
-  ));
-
-  const engineerOptions = engineers.map((u) => ({
-    value: u.id,
-    label: `${u.full_name || u.username} (${(u.roles || [u.role || '']).join(', ')})`
-  }));
-
-  const vendorOptions = vendors.map((v) => ({ value: v.id, label: `${v.code} — ${v.name}` }));
-  const contactOptions = contacts.map((c) => ({ value: c.id, label: `${c.contact_name} (${c.email || c.phone || 'Service'})` }));
-
-  const defaultDate = new Date(Date.now() + 3 * 86400000).toISOString().slice(0, 10);
-
-  const parentJobHtml = (!ctx.repairJobId && !ctx.serviceRecordId) ? `
-    <div class="field" style="margin-bottom:12px">
-      ${field('Parent Repair Job Card *', 'repair_job_id', {
-        type: 'select',
-        options: [
-          { value: '', label: '— Select Active Job Card —' },
-          ...openJobs.map((j) => ({
-            value: j.id,
-            label: `${j.job_no} — ${j.asset_reg || j.asset_code || ('Asset #' + j.asset_id)} (${j.status || 'OPEN'})`
-          }))
-        ]
-      })}
-    </div>
-  ` : '';
-
-  const html = `
-    ${parentJobHtml}
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
-      <div class="field">
-        ${field('Vendor', 'vendor_id', { type: 'select', options: vendorOptions, value: ccom.id })}
-      </div>
-      <div class="field">
-        ${field('Vendor Contact', 'vendor_contact_id', { type: 'select', options: contactOptions, value: contacts[0]?.id })}
-      </div>
-    </div>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:6px">
-      <div class="field">
-        ${field('Assigned Mechanical Engineer *', 'assigned_engineer_id', { type: 'select', options: [{ value: '', label: '— Select Engineer —' }, ...engineerOptions] })}
-      </div>
-      <div class="field">
-        ${field('Request Type', 'request_type', {
-          type: 'select',
-          options: [
-            { value: 'repair', label: 'Equipment Repair' },
-            { value: 'periodic_service', label: 'Periodic Service' },
-            { value: 'overhaul', label: 'Component Overhaul' },
-            { value: 'inspection', label: 'Technical Inspection / Assessment' }
-          ]
-        })}
-      </div>
-    </div>
-    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-top:6px">
-      <div class="field">
-        ${field('Priority', 'priority', {
-          type: 'select',
-          options: [
-            { value: 'routine', label: 'Routine' },
-            { value: 'high', label: 'High' },
-            { value: 'critical', label: 'Critical / Breakdown' }
-          ],
-          value: 'high'
-        })}
-      </div>
-      <div class="field">
-        ${field('Required Date', 'required_date', { type: 'date', value: defaultDate })}
-      </div>
-      <div class="field">
-        <label>Meter Reading &amp; Unit</label>
-        <div style="display:flex;gap:4px">
-          <input type="number" step="0.1" name="meter_reading" placeholder="e.g. 1250.0" style="flex:2">
-          <select name="meter_unit" style="flex:1">
-            <option value="hours">Hours</option>
-            <option value="km">km</option>
-          </select>
-        </div>
-      </div>
-    </div>
-    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-top:6px">
-      <div class="field">
-        ${field('Site Contact Person', 'contact_name', { value: 'W.R. Malinga Livera' })}
-      </div>
-      <div class="field">
-        ${field('Site Contact Phone', 'contact_number', { value: '075-2303039' })}
-      </div>
-      <div class="field">
-        ${field('Informed By', 'informed_by', { placeholder: 'e.g. Driver / Site Foreman' })}
-      </div>
-    </div>
-
-    <div style="margin-top:14px">
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
-        <label style="font-weight:700;margin:0">Scope of Work / Defect Items *</label>
-        <button type="button" class="sm" id="btn-add-line">+ Add Item</button>
-      </div>
-      <table style="width:100%;font-size:13px;border-collapse:collapse" id="tbl-lines">
-        <thead>
-          <tr style="background:var(--surface);border-bottom:1px solid var(--border)">
-            <th style="width:36px;text-align:center">#</th>
-            <th>Description of Work Required *</th>
-            <th style="width:180px">Location on Machine</th>
-            <th style="width:180px">Remarks</th>
-            <th style="width:40px"></th>
-          </tr>
-        </thead>
-        <tbody id="tbl-lines-body">
-          <tr>
-            <td style="text-align:center;color:var(--muted)">1</td>
-            <td><input type="text" class="line-desc" placeholder="Specific component defect or service task" style="width:100%"></td>
-            <td><input type="text" class="line-loc" placeholder="e.g. Workshop Bay 2" style="width:100%"></td>
-            <td><input type="text" class="line-rem" placeholder="e.g. Pressure test required" style="width:100%"></td>
-            <td style="text-align:center"><button type="button" class="sm btn-del-line" title="Remove">✕</button></td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
-
-    <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:18px">
-      <button type="button" class="btn" id="btn-cancel">Cancel</button>
-      <button type="button" class="btn" id="btn-save-draft">Save as Draft</button>
-      <button type="button" class="primary" id="btn-save-submit">Save &amp; Submit for Approval</button>
-    </div>
-  `;
-
-  modal('New C.COM Outsourced Request', html, (body, close) => {
-    const linesBody = qs('#tbl-lines-body', body);
-
-    const reindex = () => {
-      qsa('tr', linesBody).forEach((tr, i) => {
-        const cell = tr.children[0];
-        if (cell) cell.textContent = String(i + 1);
-      });
-    };
-
-    qs('#btn-add-line', body).onclick = () => {
-      const idx = qsa('tr', linesBody).length + 1;
-      const tr = document.createElement('tr');
-      tr.innerHTML = `
-        <td style="text-align:center;color:var(--muted)">${idx}</td>
-        <td><input type="text" class="line-desc" placeholder="Specific component defect or service task" style="width:100%"></td>
-        <td><input type="text" class="line-loc" placeholder="e.g. Workshop Bay 2" style="width:100%"></td>
-        <td><input type="text" class="line-rem" placeholder="e.g. Pressure test required" style="width:100%"></td>
-        <td style="text-align:center"><button type="button" class="sm btn-del-line" title="Remove">✕</button></td>
-      `;
-      linesBody.appendChild(tr);
-      qs('.btn-del-line', tr).onclick = () => { tr.remove(); reindex(); };
-    };
-
-    qsa('.btn-del-line', linesBody).forEach((b) => {
-      b.onclick = (e) => {
-        if (qsa('tr', linesBody).length <= 1) return toast('At least one item is required', 'err');
-        e.target.closest('tr').remove();
-        reindex();
-      };
-    });
-
-    qs('#btn-cancel', body).onclick = close;
-
-    const collectData = () => {
-      const form = formData(body);
-      const lines = [];
-      qsa('tr', linesBody).forEach((tr) => {
-        const desc = qs('.line-desc', tr)?.value?.trim();
-        const loc = qs('.line-loc', tr)?.value?.trim();
-        const rem = qs('.line-rem', tr)?.value?.trim();
-        if (desc) {
-          lines.push({ description: desc, location: loc || null, remarks: rem || null });
-        }
-      });
-
-      if (!form.assigned_engineer_id) {
-        toast('Please select an assigned Mechanical Engineer', 'err');
-        return null;
-      }
-      if (!lines.length) {
-        toast('Please enter at least one work item description', 'err');
-        return null;
-      }
-
-      const payload = {
-        vendor_id: Number(form.vendor_id),
-        vendor_contact_id: Number(form.vendor_contact_id) || null,
-        assigned_engineer_id: Number(form.assigned_engineer_id),
-        request_type: form.request_type,
-        priority: form.priority,
-        required_date: form.required_date,
-        meter_reading: form.meter_reading ? Number(form.meter_reading) : null,
-        meter_unit: form.meter_unit || 'hours',
-        contact_name: form.contact_name,
-        contact_number: form.contact_number,
-        informed_by: form.informed_by,
-        lines
-      };
-
-      if (ctx.repairJobId) payload.repair_job_id = Number(ctx.repairJobId);
-      else if (form.repair_job_id) payload.repair_job_id = Number(form.repair_job_id);
-
-      if (ctx.serviceRecordId) payload.service_record_id = Number(ctx.serviceRecordId);
-      else if (form.service_record_id) payload.service_record_id = Number(form.service_record_id);
-
-      if (!payload.repair_job_id && !payload.service_record_id) {
-        toast('Please select an active Job Card to link this C.COM request to', 'err');
-        return null;
-      }
-
-      return payload;
-    };
-
-    qs('#btn-save-draft', body).onclick = async () => {
-      const payload = collectData();
-      if (!payload) return;
-      try {
-        await api('/outsourcing/requests', { method: 'POST', body: payload });
-        toast('✓ Draft request saved');
-        close();
-        if (onDone) onDone();
-      } catch (err) {
-        toast(err.message, 'err');
-      }
-    };
-
-    qs('#btn-save-submit', body).onclick = async () => {
-      const payload = collectData();
-      if (!payload) return;
-      try {
-        const created = await api('/outsourcing/requests', { method: 'POST', body: payload });
-        const sub = await api(`/outsourcing/requests/${created.id}/submit`, { method: 'POST' });
-        toast(`✓ Submitted to Engineer! Allocated ${sub.ref_no}`);
-        close();
-        if (onDone) onDone();
-      } catch (err) {
-        toast(err.message, 'err');
-      }
-    };
-  }, { wide: true });
-}
-
-async function openEditOutsourcingModal(requestId, onDone) {
-  let r = null;
-  let vData = { vendors: [] };
-  let users = [];
-  try {
-    r = await api(`/outsourcing/requests/${requestId}`);
-    vData = await api('/outsourcing/vendors');
-    users = await api('/users').catch(() => []);
-  } catch (err) {
-    return toast(err.message, 'err');
-  }
-
-  const vendors = vData.vendors || [];
-  const ccom = vendors.find((v) => v.id === r.vendor_id) || vendors[0] || { id: 1, name: 'C.COM', contacts: [] };
-  const contacts = ccom.contacts || [];
-
-  const engineers = users.filter((u) => u.active !== 0 && (
-    (u.roles || []).some((role) => ['mechanical_engineer', 'engineer', 'workshop', 'operational_manager', 'manager', 'admin'].includes(role))
-    || (u.role && ['mechanical_engineer', 'engineer', 'workshop', 'operational_manager', 'manager', 'admin'].includes(u.role))
-  ));
-
-  const engineerOptions = engineers.map((u) => ({
-    value: u.id,
-    label: `${u.full_name || u.username} (${(u.roles || [u.role || '']).join(', ')})`
-  }));
-
-  const vendorOptions = vendors.map((v) => ({ value: v.id, label: `${v.code} — ${v.name}` }));
-  const contactOptions = contacts.map((c) => ({ value: c.id, label: `${c.contact_name} (${c.email || c.phone || 'Service'})` }));
-
-  const html = `
-    ${r.status === 'returned' ? `
-      <div style="padding:10px 14px;background:#fee2e2;border:1px solid #fca5a5;border-radius:6px;margin-bottom:12px;color:#991b1b">
-        <b>Returned for Correction:</b> ${esc(r.approval_note || 'Please amend work items or details.')}
-      </div>
-    ` : ''}
-
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
-      <div class="field">
-        ${field('Vendor', 'vendor_id', { type: 'select', options: vendorOptions, value: r.vendor_id })}
-      </div>
-      <div class="field">
-        ${field('Vendor Contact', 'vendor_contact_id', { type: 'select', options: contactOptions, value: r.vendor_contact_id })}
-      </div>
-    </div>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:6px">
-      <div class="field">
-        ${field('Assigned Mechanical Engineer *', 'assigned_engineer_id', { type: 'select', options: [{ value: '', label: '— Select Engineer —' }, ...engineerOptions], value: r.assigned_engineer_id })}
-      </div>
-      <div class="field">
-        ${field('Request Type', 'request_type', {
-          type: 'select',
-          options: [
-            { value: 'repair', label: 'Equipment Repair' },
-            { value: 'periodic_service', label: 'Periodic Service' },
-            { value: 'overhaul', label: 'Component Overhaul' },
-            { value: 'inspection', label: 'Technical Inspection / Assessment' }
-          ],
-          value: r.request_type
-        })}
-      </div>
-    </div>
-    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-top:6px">
-      <div class="field">
-        ${field('Priority', 'priority', {
-          type: 'select',
-          options: [
-            { value: 'routine', label: 'Routine' },
-            { value: 'high', label: 'High' },
-            { value: 'critical', label: 'Critical / Breakdown' }
-          ],
-          value: r.priority
-        })}
-      </div>
-      <div class="field">
-        ${field('Required Date', 'required_date', { type: 'date', value: r.required_date || '' })}
-      </div>
-      <div class="field">
-        <label>Meter Reading &amp; Unit</label>
-        <div style="display:flex;gap:4px">
-          <input type="number" step="0.1" name="meter_reading" value="${r.meter_reading ?? ''}" style="flex:2">
-          <select name="meter_unit" style="flex:1">
-            <option value="hours" ${r.meter_unit === 'hours' ? 'selected' : ''}>Hours</option>
-            <option value="km" ${r.meter_unit === 'km' ? 'selected' : ''}>km</option>
-          </select>
-        </div>
-      </div>
-    </div>
-    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-top:6px">
-      <div class="field">
-        ${field('Site Contact Person', 'contact_name', { value: r.contact_name || '' })}
-      </div>
-      <div class="field">
-        ${field('Site Contact Phone', 'contact_number', { value: r.contact_number || '' })}
-      </div>
-      <div class="field">
-        ${field('Informed By', 'informed_by', { value: r.informed_by || '' })}
-      </div>
-    </div>
-
-    <div style="margin-top:14px">
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
-        <label style="font-weight:700;margin:0">Scope of Work / Defect Items *</label>
-        <button type="button" class="sm" id="btn-add-line">+ Add Item</button>
-      </div>
-      <table style="width:100%;font-size:13px;border-collapse:collapse" id="tbl-lines">
-        <thead>
-          <tr style="background:var(--surface);border-bottom:1px solid var(--border)">
-            <th style="width:36px;text-align:center">#</th>
-            <th>Description of Work Required *</th>
-            <th style="width:180px">Location on Machine</th>
-            <th style="width:180px">Remarks</th>
-            <th style="width:40px"></th>
-          </tr>
-        </thead>
-        <tbody id="tbl-lines-body">
-          ${(r.lines || [{ description: '' }]).map((l, i) => `
-            <tr>
-              <td style="text-align:center;color:var(--muted)">${i + 1}</td>
-              <td><input type="text" class="line-desc" value="${esc(l.description || '')}" placeholder="Specific component defect or service task" style="width:100%"></td>
-              <td><input type="text" class="line-loc" value="${esc(l.location || '')}" placeholder="e.g. Workshop Bay 2" style="width:100%"></td>
-              <td><input type="text" class="line-rem" value="${esc(l.remarks || '')}" placeholder="e.g. Pressure test required" style="width:100%"></td>
-              <td style="text-align:center"><button type="button" class="sm btn-del-line" title="Remove">✕</button></td>
-            </tr>
-          `).join('')}
-        </tbody>
-      </table>
-    </div>
-
-    <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:18px">
-      <button type="button" class="btn" id="btn-cancel">Cancel</button>
-      <button type="button" class="btn" id="btn-save-draft">Save Changes</button>
-      <button type="button" class="primary" id="btn-save-submit">Save &amp; Submit for Approval</button>
-    </div>
-  `;
-
-  modal('Edit C.COM Request: ' + (r.ref_no || `REQ-${r.id}`), html, (body, close) => {
-    const linesBody = qs('#tbl-lines-body', body);
-
-    const reindex = () => {
-      qsa('tr', linesBody).forEach((tr, i) => {
-        const cell = tr.children[0];
-        if (cell) cell.textContent = String(i + 1);
-      });
-    };
-
-    qs('#btn-add-line', body).onclick = () => {
-      const idx = qsa('tr', linesBody).length + 1;
-      const tr = document.createElement('tr');
-      tr.innerHTML = `
-        <td style="text-align:center;color:var(--muted)">${idx}</td>
-        <td><input type="text" class="line-desc" placeholder="Specific component defect or service task" style="width:100%"></td>
-        <td><input type="text" class="line-loc" placeholder="e.g. Workshop Bay 2" style="width:100%"></td>
-        <td><input type="text" class="line-rem" placeholder="e.g. Pressure test required" style="width:100%"></td>
-        <td style="text-align:center"><button type="button" class="sm btn-del-line" title="Remove">✕</button></td>
-      `;
-      linesBody.appendChild(tr);
-      qs('.btn-del-line', tr).onclick = () => { tr.remove(); reindex(); };
-    };
-
-    qsa('.btn-del-line', linesBody).forEach((b) => {
-      b.onclick = (e) => {
-        if (qsa('tr', linesBody).length <= 1) return toast('At least one item is required', 'err');
-        e.target.closest('tr').remove();
-        reindex();
-      };
-    });
-
-    qs('#btn-cancel', body).onclick = close;
-
-    const collectData = () => {
-      const form = formData(body);
-      const lines = [];
-      qsa('tr', linesBody).forEach((tr) => {
-        const desc = qs('.line-desc', tr)?.value?.trim();
-        const loc = qs('.line-loc', tr)?.value?.trim();
-        const rem = qs('.line-rem', tr)?.value?.trim();
-        if (desc) {
-          lines.push({ description: desc, location: loc || null, remarks: rem || null });
-        }
-      });
-
-      if (!form.assigned_engineer_id) {
-        toast('Please select an assigned Mechanical Engineer', 'err');
-        return null;
-      }
-      if (!lines.length) {
-        toast('Please enter at least one work item description', 'err');
-        return null;
-      }
-
-      return {
-        vendor_id: Number(form.vendor_id),
-        vendor_contact_id: Number(form.vendor_contact_id) || null,
-        assigned_engineer_id: Number(form.assigned_engineer_id),
-        request_type: form.request_type,
-        priority: form.priority,
-        required_date: form.required_date,
-        meter_reading: form.meter_reading ? Number(form.meter_reading) : null,
-        meter_unit: form.meter_unit || 'hours',
-        contact_name: form.contact_name,
-        contact_number: form.contact_number,
-        informed_by: form.informed_by,
-        lines
-      };
-    };
-
-    qs('#btn-save-draft', body).onclick = async () => {
-      const payload = collectData();
-      if (!payload) return;
-      try {
-        await api(`/outsourcing/requests/${r.id}`, { method: 'PATCH', body: payload });
-        toast('✓ Changes saved');
-        close();
-        if (onDone) onDone();
-      } catch (err) {
-        toast(err.message, 'err');
-      }
-    };
-
-    qs('#btn-save-submit', body).onclick = async () => {
-      const payload = collectData();
-      if (!payload) return;
-      try {
-        await api(`/outsourcing/requests/${r.id}`, { method: 'PATCH', body: payload });
-        const sub = await api(`/outsourcing/requests/${r.id}/submit`, { method: 'POST' });
-        toast(`✓ Submitted to Engineer! Allocated ${sub.ref_no}`);
-        close();
-        if (onDone) onDone();
-      } catch (err) {
-        toast(err.message, 'err');
-      }
-    };
-  }, { wide: true });
-}
-
-async function openOutsourcingDetailModal(requestId, onDone) {
-  let r = null;
-  try {
-    r = await api(`/outsourcing/requests/${requestId}`);
-  } catch (err) {
-    return toast(err.message, 'err');
-  }
-
-  const lines = r.lines || [];
-  const costLinks = r.cost_links || [];
-
-  const html = `
-    <div style="display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--border);padding-bottom:10px;margin-bottom:12px">
-      <div>
-        <h3 style="margin:0">${esc(r.ref_no || `(Draft #${r.id})`)}</h3>
-        <span class="muted" style="font-size:12px">Version ${r.version || 1} · Created ${esc(String(r.created_at || '').slice(0, 16))} by ${esc(r.created_by_name || 'Storekeeper')}</span>
-      </div>
-      <div>
-        ${outsourcingStatusBadge(r.status)}
-      </div>
-    </div>
-
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px;font-size:13px">
-      <div class="card" style="margin:0;padding:10px">
-        <b>Machine / Vehicle Details:</b>
-        <div>Reg / Code: <b>${esc(r.asset_reg || r.asset_code || '—')}</b></div>
-        <div>Brand / Model: ${esc(r.asset_brand || '—')} ${esc(r.asset_model || '')}</div>
-        <div>Chassis: ${esc(r.asset_chassis || '—')} · Engine: ${esc(r.asset_engine || '—')}</div>
-        <div>Meter: <b>${r.meter_reading != null ? `${num(r.meter_reading)} ${esc(r.meter_unit || 'hours')}` : '—'}</b></div>
-      </div>
-      <div class="card" style="margin:0;padding:10px">
-        <b>Vendor &amp; Attendance Details:</b>
-        <div>Vendor: <b>${esc(r.vendor_name || 'C.COM')}</b></div>
-        <div>Site Contact: <b>${esc(r.contact_name || '—')}</b> (${esc(r.contact_number || '—')})</div>
-        <div>Assigned Engineer: <b>${esc(r.assigned_engineer_name || '—')}</b></div>
-        <div>Informed By: ${esc(r.informed_by || '—')}</div>
-      </div>
-    </div>
-
-    <h4>Scope of Work Items (${lines.length})</h4>
-    ${tableWrap([
-      { label: '#' },
-      { label: 'Description' },
-      { label: 'Location on Machine' },
-      { label: 'Remarks' }
-    ], lines.map((l, i) => `<tr>
-      <td>${i + 1}</td>
-      <td><b>${esc(l.description)}</b></td>
-      <td>${esc(l.location || '—')}</td>
-      <td>${esc(l.remarks || '—')}</td>
-    </tr>`))}
-
-    ${costLinks.length ? `
-      <div class="card section" style="background:#f0fdf4;border:1px solid #86efac;margin-top:14px">
-        <h4 style="margin:0 0 6px;color:#166534">💰 Posted Actual Invoice Cost</h4>
-        ${tableWrap([
-          { label: 'Invoice No' },
-          { label: 'Invoice Date' },
-          { label: 'Amount (Rs)', num: true },
-          { label: 'Posted By' },
-          { label: 'Posted At' }
-        ], costLinks.map((c) => `<tr>
-          <td><b>${esc(c.invoice_no)}</b></td>
-          <td>${esc((c.invoice_date || '').slice(0, 10))}</td>
-          <td class="num"><b>${money(c.amount)}</b></td>
-          <td>${esc(c.posted_by_name || 'User')}</td>
-          <td>${esc((c.posted_at || '').slice(0, 16))}</td>
-        </tr>`))}
-      </div>
-    ` : ''}
-
-    <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px">
-      <button type="button" class="btn" id="btn-detail-close">Close</button>
-      <a class="btn primary sm" href="/api/outsourcing/requests/${r.id}/preview" target="_blank">📄 Official Letterhead</a>
-    </div>
-  `;
-
-  modal('Outsourced Request Details: ' + (r.ref_no || `REQ-${r.id}`), html, (body, close) => {
-    qs('#btn-detail-close', body).onclick = close;
-  }, { wide: true });
-}
-
-async function openOutsourcingReviewModal(requestId, onDone) {
-  let r = null;
-  try {
-    r = await api(`/outsourcing/requests/${requestId}`);
-  } catch (err) {
-    return toast(err.message, 'err');
-  }
-
-  const html = `
-    <div style="background:#f8fafc;padding:12px;border-radius:8px;border:1px solid #e2e8f0;margin-bottom:14px">
-      <div style="display:flex;align-items:center;justify-content:space-between">
-        <div>
-          <b style="font-size:16px">${esc(r.ref_no || `REQ-${r.id}`)}</b>
-          <span class="badge ${r.priority === 'critical' ? 'red' : (r.priority === 'high' ? 'amber' : '')}">${esc(r.priority)}</span>
-          <span class="badge">${esc(r.request_type)}</span>
-        </div>
-        <div>${outsourcingStatusBadge(r.status)}</div>
-      </div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px;font-size:13px">
-        <div><b>Vehicle / Plant:</b> ${esc(r.asset_reg || r.asset_code || '—')} (${esc(r.asset_brand || '')} ${esc(r.asset_model || '')})</div>
-        <div><b>Site Contact:</b> ${esc(r.contact_name || '—')} (${esc(r.contact_number || '—')})</div>
-        <div><b>Requested By:</b> ${esc(r.created_by_name || 'Storekeeper')}</div>
-        <div><b>Required Date:</b> ${esc(r.required_date || '—')}</div>
-      </div>
-      <div style="margin-top:8px">
-        <a class="btn sm" href="/api/outsourcing/requests/${r.id}/preview" target="_blank">📄 View Official Letterhead Preview in New Window</a>
-      </div>
-    </div>
-
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
-      <div class="card" style="border-left:4px solid var(--red);margin:0">
-        <h4 style="margin:0 0 6px;color:var(--red)">↩ Return for Correction</h4>
-        <p class="muted" style="font-size:12px;margin:0 0 8px">
-          If scope of work, meter reading, or details need amendment, specify the required changes and return to the storekeeper.
-        </p>
-        <textarea id="txt-return-reason" rows="3" placeholder="Explain the reason for returning this request..." style="width:100%"></textarea>
-        <div style="margin-top:8px;text-align:right">
-          <button type="button" class="danger sm" id="btn-do-return">Return Request</button>
-        </div>
-      </div>
-
-      <div class="card" style="border-left:4px solid var(--green);margin:0">
-        <h4 style="margin:0 0 6px;color:var(--green)">✓ Approve &amp; Electronically Sign</h4>
-        <p class="muted" style="font-size:12px;margin:0 0 8px">
-          Approve request for C.COM. In accordance with policy, re-enter your password to apply your electronic signature.
-        </p>
-        <div style="margin-bottom:8px">
-          <label style="font-size:12px">Approval Note (Optional)</label>
-          <input type="text" id="txt-app-note" value="Approved for C.COM inspection &amp; repair" style="width:100%">
-        </div>
-        <div style="margin-bottom:8px">
-          <label style="font-size:12px;font-weight:700">Account Password (E-Sign Verification) *</label>
-          <input type="password" id="txt-app-pw" placeholder="Enter your login password" autocomplete="current-password" style="width:100%">
-        </div>
-        <div style="margin-top:8px;text-align:right">
-          <button type="button" class="primary sm" id="btn-do-approve" style="background:#059669;border-color:#059669">Approve &amp; Sign PDF</button>
-        </div>
-      </div>
-    </div>
-  `;
-
-  modal('Review & Electronic Sign-off: ' + (r.ref_no || `REQ-${r.id}`), html, (body, close) => {
-    qs('#btn-do-return', body).onclick = async () => {
-      const reason = qs('#txt-return-reason', body).value.trim();
-      if (!reason) return toast('A clear reason is required when returning a request', 'err');
-      try {
-        await api(`/outsourcing/requests/${r.id}/return`, { method: 'POST', body: { reason } });
-        toast('Request returned for correction');
-        close();
-        if (onDone) onDone();
-      } catch (err) {
-        toast(err.message, 'err');
-      }
-    };
-
-    qs('#btn-do-approve', body).onclick = async () => {
-      const password = qs('#txt-app-pw', body).value;
-      const approval_note = qs('#txt-app-note', body).value.trim();
-      if (!password) return toast('Password is required to electronically sign', 'err');
-      try {
-        await api(`/outsourcing/requests/${r.id}/approve`, { method: 'POST', body: { password, approval_note } });
-        toast('✓ Approved and electronically signed! PDF generated.');
-        close();
-        if (onDone) onDone();
-      } catch (err) {
-        toast(err.message, 'err');
-      }
-    };
-  }, { wide: true });
-}
-
-async function openOutsourcingEmailModal(requestId, onDone) {
-  let r = null;
-  try {
-    r = await api(`/outsourcing/requests/${requestId}`);
-  } catch (err) {
-    return toast(err.message, 'err');
-  }
-
-  const assetLabel = r.asset_reg || r.asset_code || 'Equipment';
-  const defaultSubject = `[C.COM REQUEST FOR REPAIR] Ref: ${r.ref_no} — Vehicle: ${assetLabel}`;
-  const defaultBody = `Dear C.COM Service Team,
-
-Please find attached our official approved Request for Repair (${r.ref_no}) for ${assetLabel}.
-
-Details:
-- Reference No: ${r.ref_no}
-- Site Location: ${r.site_name || 'Central Workshop Badalgama'}
-- Site Contact: ${r.contact_name || 'W.R. Malinga Livera'} (${r.contact_number || '075-2303039'})
-- Required Date: ${r.required_date || 'Earliest convenience'}
-
-Please arrange technical inspection and provide your quotation and estimated turnaround time.
-
-Thank you,
-Edward & Christie Central Workshop Administration`;
-
-  const html = `
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
-      <div class="field">
-        <label>To (C.COM Service Contact) *</label>
-        <input type="email" id="txt-email-to" value="${esc(r.vendor_contact_email || 'service@ccom.lk')}" style="width:100%">
-      </div>
-      <div class="field">
-        <label>CC (Internal / Workshop Notification)</label>
-        <input type="text" id="txt-email-cc" placeholder="e.g. workshop@edwardchristie.com" style="width:100%">
-      </div>
-    </div>
-    <div style="margin-top:8px">
-      <label>Email Subject *</label>
-      <input type="text" id="txt-email-subject" value="${esc(defaultSubject)}" style="width:100%">
-    </div>
-    <div style="margin-top:8px">
-      <label>Email Message Body *</label>
-      <textarea id="txt-email-body" rows="7" style="width:100%">${esc(defaultBody)}</textarea>
-    </div>
-    <div style="margin-top:10px;padding:8px 12px;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:6px;display:flex;align-items:center;gap:8px">
-      <span style="font-size:18px">📎</span>
-      <div>
-        <b>Official PDF Attachment:</b>
-        <a href="/api/outsourcing/requests/${r.id}/pdf" target="_blank">${esc(r.ref_no || `REQ-${r.id}`)}.pdf</a>
-        <span class="muted" style="font-size:11px">(Dual signed with SHA256 integrity hash)</span>
-      </div>
-    </div>
-    <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px">
-      <button type="button" class="btn" id="btn-email-cancel">Cancel</button>
-      <button type="button" class="primary" id="btn-email-send">📤 Send Email to C.COM</button>
-    </div>
-  `;
-
-  modal('Email Official Request to C.COM: ' + r.ref_no, html, (body, close) => {
-    qs('#btn-email-cancel', body).onclick = close;
-    qs('#btn-email-send', body).onclick = async () => {
-      const toVal = qs('#txt-email-to', body).value.trim();
-      const ccVal = qs('#txt-email-cc', body).value.trim();
-      const subject = qs('#txt-email-subject', body).value.trim();
-      const bodyText = qs('#txt-email-body', body).value.trim();
-
-      if (!toVal) return toast('Recipient email is required', 'err');
-      if (!subject) return toast('Subject is required', 'err');
-      if (!bodyText) return toast('Body is required', 'err');
-
-      const toList = toVal.split(/[,;]+/).map((s) => s.trim()).filter(Boolean);
-      const ccList = ccVal ? ccVal.split(/[,;]+/).map((s) => s.trim()).filter(Boolean) : [];
-
-      try {
-        await api(`/outsourcing/requests/${r.id}/send`, {
-          method: 'POST',
-          body: { to: toList, cc: ccList, subject, body: bodyText }
-        });
-        toast('✓ Email queued and dispatched to C.COM!');
-        close();
-        if (onDone) onDone();
-      } catch (err) {
-        toast(err.message, 'err');
-      }
-    };
-  }, { wide: true });
-}
-
-async function openOutsourcingProgressModal(requestId, onDone) {
-  let r = null;
-  try {
-    r = await api(`/outsourcing/requests/${requestId}`);
-  } catch (err) {
-    return toast(err.message, 'err');
-  }
-
-  const html = `
-    <div style="margin-bottom:12px">
-      <label>Update Repair Progress Status *</label>
-      <select id="sel-progress-status" style="width:100%">
-        <option value="acknowledged" ${r.status === 'acknowledged' ? 'selected' : ''}>Acknowledged by C.COM / Technician Scheduled</option>
-        <option value="in_progress" ${r.status === 'in_progress' ? 'selected' : ''}>Work In Progress / Components Stripped &amp; Tested</option>
-        <option value="completed" ${r.status === 'completed' ? 'selected' : ''}>Work Finished by C.COM (Awaiting Inspection)</option>
-      </select>
-    </div>
-    <div style="margin-bottom:12px">
-      <label>Progress Notes / Workshop Log</label>
-      <textarea id="txt-progress-notes" rows="3" placeholder="Enter status update notes from C.COM technician or driver..." style="width:100%"></textarea>
-    </div>
-    <div style="display:flex;justify-content:flex-end;gap:8px">
-      <button type="button" class="btn" id="btn-prog-cancel">Cancel</button>
-      <button type="button" class="primary" id="btn-prog-save">Update Status</button>
-    </div>
-  `;
-
-  modal('C.COM Progress Tracking: ' + (r.ref_no || `REQ-${r.id}`), html, (body, close) => {
-    qs('#btn-prog-cancel', body).onclick = close;
-    qs('#btn-prog-save', body).onclick = async () => {
-      const status = qs('#sel-progress-status', body).value;
-      const notes = qs('#txt-progress-notes', body).value.trim();
-      try {
-        await api(`/outsourcing/requests/${r.id}/progress`, { method: 'POST', body: { status, notes } });
-        toast('✓ Status updated to ' + status);
-        close();
-        if (onDone) onDone();
-      } catch (err) {
-        toast(err.message, 'err');
-      }
-    };
-  });
-}
-
-async function openOutsourcingCostModal(requestId, onDone) {
-  let r = null;
-  try {
-    r = await api(`/outsourcing/requests/${requestId}`);
-  } catch (err) {
-    return toast(err.message, 'err');
-  }
-
-  const isRepair = !!r.repair_job_id;
-  const targetLabel = isRepair ? 'Repair Job Card (External Cost)' : 'Service Record (Outside Estimate)';
-  const today = new Date().toISOString().slice(0, 10);
-
-  const html = `
-    <div style="padding:10px 14px;background:#fef3c7;border:1px solid #fde68a;border-radius:6px;margin-bottom:14px;color:#92400e;font-size:13px">
-      <b>⚠️ Authoritative Cost Posting:</b><br>
-      Recording this C.COM vendor invoice will post the verified cost directly into the parent <b>${esc(targetLabel)}</b>.
-      The request will transition to <b>Closed</b>.
-    </div>
-
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
-      <div class="field">
-        <label>Invoice Number *</label>
-        <input type="text" id="txt-inv-no" placeholder="e.g. CCOM-INV-2026-089" style="width:100%">
-      </div>
-      <div class="field">
-        <label>Invoice Date *</label>
-        <input type="date" id="txt-inv-date" value="${today}" style="width:100%">
-      </div>
-    </div>
-    <div style="margin-top:8px">
-      <label>Invoice Amount (Rs.) *</label>
-      <input type="number" step="0.01" id="txt-inv-amount" placeholder="0.00" style="width:100%;font-size:16px;font-weight:700">
-    </div>
-    <div style="margin-top:8px">
-      <label>Notes / Voucher Details</label>
-      <input type="text" id="txt-inv-notes" placeholder="Optional invoice notes or payment voucher reference" style="width:100%">
-    </div>
-
-    <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px">
-      <button type="button" class="btn" id="btn-cost-cancel">Cancel</button>
-      <button type="button" class="primary" id="btn-cost-save" style="background:#7c3aed;border-color:#7c3aed">Post Cost &amp; Close Request</button>
-    </div>
-  `;
-
-  modal('Post C.COM Invoice Cost: ' + (r.ref_no || `REQ-${r.id}`), html, (body, close) => {
-    qs('#btn-cost-cancel', body).onclick = close;
-    qs('#btn-cost-save', body).onclick = async () => {
-      const invoice_no = qs('#txt-inv-no', body).value.trim();
-      const invoice_date = qs('#txt-inv-date', body).value;
-      const amount = Number(qs('#txt-inv-amount', body).value);
-      const notes = qs('#txt-inv-notes', body).value.trim() || undefined;
-
-      if (!invoice_no) return toast('Invoice number is required', 'err');
-      if (!amount || amount <= 0) return toast('Invoice amount must be greater than 0', 'err');
-
-      try {
-        await api(`/outsourcing/requests/${r.id}/post-cost`, {
-          method: 'POST',
-          body: { invoice_no, invoice_date, amount, notes }
-        });
-        toast('✓ Invoice cost successfully posted to parent job!');
-        close();
-        if (onDone) onDone();
-      } catch (err) {
-        toast(err.message, 'err');
-      }
-    };
-  });
-}
-
-async function openOutsourcingCancelModal(requestId, onDone) {
-  const reason = prompt('Please enter the reason for cancelling this C.COM request:');
-  if (reason == null) return;
-  if (!reason.trim()) return toast('A cancellation reason is required', 'err');
-  try {
-    await api(`/outsourcing/requests/${requestId}/cancel`, { method: 'POST', body: { reason: reason.trim() } });
-    toast('Request cancelled');
-    if (onDone) onDone();
-  } catch (err) {
-    toast(err.message, 'err');
-  }
-}
-
-function openOutsourcingPreviewModal(requestId) {
-  modal('C.COM Request Letterhead Preview', `
-    <div style="margin-bottom:8px;display:flex;justify-content:flex-end;gap:6px">
-      <a class="btn sm" href="/api/outsourcing/requests/${requestId}/pdf" target="_blank">⬇️ Download PDF</a>
-      <a class="btn sm" href="/api/outsourcing/requests/${requestId}/preview" target="_blank">🗗 Open in New Tab</a>
-    </div>
-    <iframe src="/api/outsourcing/requests/${requestId}/preview" style="width:100%;height:680px;border:1px solid #cbd5e1;border-radius:6px;background:#ffffff"></iframe>
-  `, null, { wide: true });
-}
+// Extracted to public/modules/outsourcing_ccom.js
 
 async function boot() {
   try {
@@ -28542,7 +23464,7 @@ async function boot() {
     try { if (ME && ME.username) localStorage.setItem('wo_last_user', ME.username); } catch {}
     live('connect');   // an existing session — open the live socket
     setupIdleLock();
-    if (!location.hash) location.hash = '#/dashboard';
+    if (!location.hash) location.hash = defaultHomeHash();
     render();
     if (ME.mustChangePassword) forceChangePassword();
     else if (ME.mfaSetupRequired) forceMfaSetup();

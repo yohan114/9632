@@ -12,9 +12,14 @@
  */
 
 (function () {
+  function notify(msg, kind = 'err') {
+    if (typeof toast === 'function') toast(msg, kind);
+    else console[kind === 'err' ? 'error' : 'log'](msg);
+  }
+
   async function renderVehicleCosting(content) {
     const today = new Date().toISOString().slice(0, 7);
-    let selectedMonth = '2026-08'; // Default to peak operational data month or current
+    let selectedMonth = today;
     let currentTab = 'fleet-summary';
     let fleetSummaryData = null;
     let selectedVehicleId = null;
@@ -82,7 +87,7 @@
           toast(`Synced ${r.generatedBills} new rental bills (${r.totalMonthBills} active for ${selectedMonth})!`);
           renderCurrentTab();
         } catch (err) {
-          alert('Sync error: ' + err.message);
+          notify('Sync error: ' + err.message, 'err');
         }
       };
     }
@@ -575,7 +580,7 @@
         const notes = modal.querySelector('#rev_notes').value;
 
         if (!assetId || total <= 0) {
-          alert('Please enter valid vehicle and revenue amounts.');
+          notify('Please enter valid vehicle and revenue amounts.', 'err');
           return;
         }
 
@@ -587,7 +592,7 @@
           modal.remove();
           renderCurrentTab();
         } catch (e) {
-          alert('Failed to save revenue: ' + e.message);
+          notify('Failed to save revenue: ' + e.message, 'err');
         }
       };
     }
@@ -650,7 +655,7 @@
         const notes = modal.querySelector('#dc_notes').value;
 
         if (!assetId || amount <= 0) {
-          alert('Please enter valid vehicle and cost amount.');
+          notify('Please enter valid vehicle and cost amount.', 'err');
           return;
         }
 
@@ -662,7 +667,7 @@
           modal.remove();
           renderCurrentTab();
         } catch (e) {
-          alert('Failed to save cost: ' + e.message);
+          notify('Failed to save cost: ' + e.message, 'err');
         }
       };
     }

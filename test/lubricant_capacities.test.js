@@ -187,9 +187,9 @@ test('Evidence and Other Equipment endpoints are removed (HTTP 404)', async () =
   assert.strictEqual(eqRes.status, 404);
 });
 
-test('Frontend app.js registers lubecapacities under Operations in NAV and NAV_GROUP', () => {
+test('Frontend app.js registers lubecapacities under Workshop & Maintenance in NAV and NAV_GROUP', () => {
   const appJs = fs.readFileSync(path.join(__dirname, '../public/app.js'), 'utf8');
   assert.ok(appJs.includes("['lubecapacities', '🛢️', 'Lubricant Capacities']"), 'NAV must have lubecapacities entry');
-  assert.ok(appJs.includes("lubecapacities: 'Operations'"), 'NAV_GROUP must map lubecapacities to Operations');
+  assert.ok(appJs.includes("lubecapacities: 'Workshop & Maintenance'"), 'NAV_GROUP must map lubecapacities to Workshop & Maintenance');
   assert.ok(appJs.includes("routes.lubecapacities = async"), 'routes.lubecapacities must be defined');
 });

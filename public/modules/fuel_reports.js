@@ -25,7 +25,8 @@
     const hashParts = (location.hash || '').split('?');
     const qParams = new URLSearchParams(hashParts[1] || '');
     let activeTab = qParams.get('tab') || 'graphs';
-    let selectedMonth = qParams.get('month') || '2026-08';
+    const todayYm = new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 7);
+    let selectedMonth = qParams.get('month') || todayYm;
 
     content.innerHTML = `
       <div class="crumb"><a href="#/dashboard">Dashboard</a> / <a href="#/fuel">Fuel System</a> / Consumption Graphs, Band Health &amp; Service Plan</div>
@@ -396,6 +397,7 @@
             <!-- Status Filter Pills -->
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:10px">
               <div style="display:flex;gap:6px;flex-wrap:wrap" id="sp_pills">
+                <a class="btn sm primary" href="#/serviceplan">Open Full Service &amp; Filter Plan</a>
                 <button class="btn sm ${curFilter === '' ? 'primary' : ''}" data-st="">All Fleet (${counts.ALL || 0})</button>
                 <button class="btn sm ${curFilter === 'OVERDUE' ? 'primary' : ''}" data-st="OVERDUE" style="border-color:#dc2626;color:${curFilter === 'OVERDUE' ? '#fff' : '#dc2626'}">🔴 Overdue (${counts.OVERDUE || 0})</button>
                 <button class="btn sm ${curFilter === 'DUE_SOON' ? 'primary' : ''}" data-st="DUE_SOON" style="border-color:#d97706;color:${curFilter === 'DUE_SOON' ? '#fff' : '#d97706'}">🟠 Due Soon (${counts.DUE_SOON || 0})</button>
@@ -495,7 +497,7 @@
               toast('Preventive maintenance service logged and countdown reset!');
               loadPlanner();
             } catch (err) {
-              alert(err.message);
+              if (typeof toast === 'function') toast(err.message, 'err');
             }
           };
         } catch (err) {

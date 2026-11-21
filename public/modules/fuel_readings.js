@@ -18,6 +18,7 @@
 
   async function renderFuelReadings(content) {
     let activeTab = 'meters';
+    const canRecord = (typeof isAdmin === 'function' && isAdmin()) || (typeof canDo === 'function' && canDo('fuel.readings.record'));
 
     content.innerHTML = `
       <div class="crumb"><a href="#/dashboard">Dashboard</a> / <a href="#/fuel">Fuel System</a> / Smart Meter Readings &amp; Daily Condition</div>
@@ -27,8 +28,8 @@
           <p class="muted" style="margin:4px 0 0 0">Unified odometer/hour-meter ledger with Live Meter Guard coherence check and daily Working/Breakdown log</p>
         </div>
         <div style="display:flex;gap:8px;flex-wrap:wrap">
-          <button class="btn primary" id="btn_new_reading">📟 + Enter Meter Reading</button>
-          <button class="btn" id="btn_new_condition">🛠️ + Log Breakdown / Condition</button>
+          ${canRecord ? '<button class="btn primary" id="btn_new_reading">📟 + Enter Meter Reading</button>' : ''}
+          ${canRecord ? '<button class="btn" id="btn_new_condition">🛠️ + Log Breakdown / Condition</button>' : ''}
           <a href="#/fuel?tab=vehicle-360" class="btn">🚗 Vehicle 360° View</a>
         </div>
       </div>
@@ -54,7 +55,8 @@
     });
 
     // Smart Meter Entry Modal with Live Meter Guard
-    qs('#btn_new_reading').onclick = () => {
+    const newReadingBtn = qs('#btn_new_reading');
+    if (newReadingBtn) newReadingBtn.onclick = () => {
       const modal = document.createElement('div');
       modal.className = 'modal-bg modal-backdrop';
       modal.innerHTML = `
@@ -162,6 +164,7 @@
               meter_type: modal.querySelector('#nr_type').value,
               reading_date: modal.querySelector('#nr_date').value,
               notes: modal.querySelector('#nr_notes').value.trim(),
+              forceOverride: modal.querySelector('#nr_override').checked,
               ignore_warning: modal.querySelector('#nr_override').checked,
             },
           });
@@ -169,13 +172,14 @@
           modal.remove();
           switchTab('meters');
         } catch (err) {
-          alert('Meter Guard: ' + err.message);
+          if (typeof toast === 'function') toast('Meter Guard: ' + err.message, 'err');
         }
       };
     };
 
     // Log Daily Working / Breakdown Condition Modal
-    qs('#btn_new_condition').onclick = () => {
+    const newCondBtn = qs('#btn_new_condition');
+    if (newCondBtn) newCondBtn.onclick = () => {
       const modal = document.createElement('div');
       modal.className = 'modal-bg modal-backdrop';
       modal.innerHTML = `
@@ -224,17 +228,17 @@
             method: 'POST',
             body: {
               asset_code: modal.querySelector('#cd_code').value.trim(),
-              date: modal.querySelector('#cd_date').value,
-              status: modal.querySelector('#cd_status').value,
-              reason: modal.querySelector('#cd_reason').value.trim(),
-              notes: modal.querySelector('#cd_notes').value.trim(),
+              condition_date: modal.querySelector('#cd_date').value,
+              state: modal.querySelector('#cd_status').value,
+              breakdown_reason: modal.querySelector('#cd_reason').value.trim(),
+              notes: [modal.querySelector('#cd_reason').value.trim(), modal.querySelector('#cd_notes').value.trim()].filter(Boolean).join(' — '),
             },
           });
           toast('Daily condition logged!');
           modal.remove();
           switchTab('conditions');
         } catch (err) {
-          alert(err.message);
+          if (typeof toast === 'function') toast(err.message, 'err');
         }
       };
     };

@@ -13,6 +13,11 @@
  */
 
 (function () {
+  function notify(msg, kind = 'err') {
+    if (typeof toast === 'function') toast(msg, kind);
+    else console[kind === 'err' ? 'error' : 'log'](msg);
+  }
+
   const FUEL_LABELS = {
     AUTO_DIESEL: 'Auto Diesel',
     SUPER_DIESEL: 'Super Diesel',
@@ -28,6 +33,28 @@
   function fmtNum(val, dec = 1) {
     if (val === null || val === undefined || isNaN(Number(val))) return '—';
     return Number(val).toLocaleString(undefined, { minimumFractionDigits: dec, maximumFractionDigits: dec });
+  }
+
+  function localTodayStr() {
+    if (typeof slToday === 'function') return slToday();
+    return new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+  }
+
+  function effectiveFuelRateCents(row) {
+    if (!row) return 0;
+    const direct = Number(row.effective_price_cents || row.fuel_price_cents || row.price_per_litre_cents || 0);
+    if (direct > 0) return direct;
+    if (row.unit_price && Number(row.unit_price) > 0) return Math.round(Number(row.unit_price) * 100);
+    const litres = Number(row.litres || 0);
+    const costCents = Number(row.total_cost_cents || row.cost_cents || (row.total_price ? Number(row.total_price) * 100 : 0) || 0);
+    if (litres > 0 && costCents > 0) return Math.round(costCents / litres);
+    return 0;
+  }
+
+  function fmtRateRs(cents) {
+    const n = Number(cents || 0);
+    if (n <= 0) return '—';
+    return 'Rs ' + (n / 100).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + '/L';
   }
 
   function verdictBadge(v) {
@@ -50,16 +77,20 @@
     const curMeter = issue.meter_reading != null ? Number(issue.meter_reading) : '';
     const curDate = String(issue.issue_date || '').slice(0, 10);
     const curKind = issue.fuel_type || issue.fuel_kind || 'AUTO_DIESEL';
+    const curRateCents = effectiveFuelRateCents(issue);
+    const curRateRs = curRateCents > 0 ? (curRateCents / 100).toFixed(2) : '';
+    const canAutoApprove = typeof isAdmin === 'function' && isAdmin();
 
     modal.innerHTML = `
-      <div class="modal" style="max-width:540px;padding:24px">
+      <div class="modal" style="max-width:560px;padding:24px">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-          <h2 style="margin:0;font-size:18px">✏️ Adjust / Correct Fuel Issue</h2>
+          <h2 style="margin:0;font-size:18px">${canAutoApprove ? '✏️ Adjust / Correct Fuel Issue' : '📩 Request Issue Change to Admin'}</h2>
           <span class="badge">${esc(issue.issue_no || issue.id)}</span>
         </div>
         <div class="card" style="padding:10px 12px;margin-bottom:14px;background:rgba(37,99,235,0.06);font-size:12px">
           <b>Vehicle:</b> ${esc(issue.asset_code || '—')} &nbsp;|&nbsp;
           <b>Current Litres:</b> ${curLitres} L &nbsp;|&nbsp;
+          <b>Rate:</b> ${fmtRateRs(curRateCents)} &nbsp;|&nbsp;
           <b>Meter:</b> ${curMeter !== '' ? curMeter : '—'} &nbsp;|&nbsp;
           <b>Date:</b> ${esc(curDate)}
         </div>
@@ -67,7 +98,7 @@
           <div>
             <label style="font-size:12px;font-weight:600">Adjustment Type *</label>
             <select id="fc_type" class="input" style="width:100%">
-              <option value="EDIT">Full Edit (Litres / Meter / Date / Fuel Type)</option>
+              <option value="EDIT">Full Edit (Litres / Rate / Meter / Date / Fuel Type)</option>
               <option value="LITRES">Litres Correction Only</option>
               <option value="METER">Meter Reading Correction Only</option>
               <option value="VOID">Request Void / Cancellation</option>
@@ -77,6 +108,10 @@
             <div>
               <label style="font-size:12px;font-weight:600">Corrected Litres</label>
               <input type="number" step="0.1" id="fc_litres" class="input" value="${curLitres}" style="width:100%">
+            </div>
+            <div>
+              <label style="font-size:12px;font-weight:600">Corrected Fuel Rate (Rs/L)</label>
+              <input type="number" step="0.01" min="0" id="fc_price_rs" class="input" value="${curRateRs}" placeholder="Auto by date tariff" style="width:100%">
             </div>
             <div>
               <label style="font-size:12px;font-weight:600">Corrected Meter Reading</label>
@@ -92,18 +127,26 @@
                 ${Object.entries(FUEL_LABELS).map(([k, lbl]) => `<option value="${k}" ${k === curKind ? 'selected' : ''}>${lbl}</option>`).join('')}
               </select>
             </div>
+            <div style="display:flex;flex-direction:column;justify-content:flex-end">
+              <div class="muted" style="font-size:11px;margin-bottom:4px">Projected Total Cost</div>
+              <div id="fc_cost_preview" style="padding:7px 10px;border-radius:6px;background:rgba(15,23,42,0.04);font-weight:700;font-size:13px">—</div>
+            </div>
           </div>
           <div>
-            <label style="font-size:12px;font-weight:600">Documented Reason for Adjustment *</label>
-            <textarea id="fc_reason" required rows="2" class="input" placeholder="Explain why this slip is being adjusted (e.g. typo on running chart, wrong meter digit)..." style="width:100%"></textarea>
+            <label style="font-size:12px;font-weight:600">Documented Reason for Change Request *</label>
+            <textarea id="fc_reason" required rows="2" class="input" placeholder="Explain why this slip needs changing (e.g. typo on running chart, wrong meter digit, duplicate entry)..." style="width:100%"></textarea>
           </div>
+          ${canAutoApprove ? `
           <label style="font-size:12px;display:flex;align-items:center;gap:6px;cursor:pointer">
             <input type="checkbox" id="fc_auto_approve" checked>
-            <span>Apply immediately if my account holds approval rights (Admin / Fuel Officer)</span>
-          </label>
+            <span>Apply immediately (Administrator privilege)</span>
+          </label>` : `
+          <div style="padding:8px 10px;border-radius:6px;background:rgba(245,158,11,0.1);border:1px solid rgba(245,158,11,0.35);font-size:12px;color:#92400e">
+            🛡️ <b>Admin Approval Required:</b> This request will be sent to an Administrator for review before any issue record or tank stock is changed.
+          </div>`}
           <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:8px">
             <button type="button" class="btn" id="btn_fc_cancel">Cancel</button>
-            <button type="submit" class="btn primary" id="btn_fc_submit">Submit Adjustment</button>
+            <button type="submit" class="btn primary" id="btn_fc_submit">${canAutoApprove ? 'Submit Adjustment' : '📩 Send Change Request to Admin'}</button>
           </div>
         </form>
       </div>
@@ -111,6 +154,38 @@
     document.body.appendChild(modal);
 
     const typeSel = modal.querySelector('#fc_type');
+    const fcLitresInp = modal.querySelector('#fc_litres');
+    const fcPriceInp = modal.querySelector('#fc_price_rs');
+    const fcDateInp = modal.querySelector('#fc_date');
+    const fcKindSel = modal.querySelector('#fc_kind');
+    const fcCostPrev = modal.querySelector('#fc_cost_preview');
+    let fcPriceEdited = false;
+
+    function updateFcCostPreview() {
+      const l = Number(fcLitresInp.value || 0);
+      const r = Number(fcPriceInp.value || 0);
+      fcCostPrev.textContent = (l > 0 && r > 0) ? fmtLkr(l * r) : '—';
+    }
+    updateFcCostPreview();
+
+    async function refreshFcTariff() {
+      if (fcPriceEdited) return;
+      try {
+        const q = new URLSearchParams({ fuelType: fcKindSel.value || curKind });
+        if (fcDateInp.value) q.set('date', fcDateInp.value);
+        const res = await api(`/fuel/prices/lookup?${q.toString()}`);
+        if (!fcPriceEdited && res && res.pricePerLitreCents > 0) {
+          fcPriceInp.value = (res.pricePerLitreCents / 100).toFixed(2);
+          updateFcCostPreview();
+        }
+      } catch (_) {}
+    }
+
+    fcLitresInp.oninput = updateFcCostPreview;
+    fcPriceInp.oninput = () => { fcPriceEdited = true; updateFcCostPreview(); };
+    fcKindSel.onchange = refreshFcTariff;
+    fcDateInp.onchange = refreshFcTariff;
+
     typeSel.onchange = () => {
       modal.querySelector('#fc_fields_wrap').style.display = typeSel.value === 'VOID' ? 'none' : 'grid';
     };
@@ -123,50 +198,68 @@
       btn.disabled = true;
       btn.textContent = 'Submitting...';
       try {
+        const rawRate = fcPriceInp.value.trim();
+        const autoBox = modal.querySelector('#fc_auto_approve');
         const res = await api('/fuel/corrections', {
           method: 'POST',
           body: {
             fuelIssueId: issue.id,
             correctionType: typeSel.value,
-            newLitres: modal.querySelector('#fc_litres').value ? Number(modal.querySelector('#fc_litres').value) : curLitres,
+            newLitres: fcLitresInp.value ? Number(fcLitresInp.value) : curLitres,
+            newPricePerLitre: rawRate !== '' ? Number(rawRate) : null,
             newMeter: modal.querySelector('#fc_meter').value !== '' ? Number(modal.querySelector('#fc_meter').value) : null,
-            newIssueDate: modal.querySelector('#fc_date').value || curDate,
-            newFuelKind: modal.querySelector('#fc_kind').value || curKind,
+            newIssueDate: fcDateInp.value || curDate,
+            newFuelKind: fcKindSel.value || curKind,
             reason: modal.querySelector('#fc_reason').value.trim(),
-            autoApprove: modal.querySelector('#fc_auto_approve').checked,
+            autoApprove: canAutoApprove && !!(autoBox && autoBox.checked),
           },
         });
-        toast(res.status === 'APPROVED' ? 'Fuel issue adjustment applied & stock updated!' : 'Fuel adjustment submitted for approval.');
+        toast(res.status === 'APPROVED' ? 'Fuel issue adjustment applied & stock updated!' : 'Change request submitted to Administrator for approval.');
         modal.remove();
         if (typeof onDone === 'function') onDone(res);
       } catch (err) {
-        alert('Adjustment error: ' + err.message);
+        notify('Adjustment error: ' + err.message);
         btn.disabled = false;
-        btn.textContent = 'Submit Adjustment';
+        btn.textContent = canAutoApprove ? 'Submit Adjustment' : '📩 Send Change Request to Admin';
       }
     };
   };
 
-  // Shared Issue Fuel Modal with Live Meter Guard
+  // Shared Issue Fuel Modal with Live Meter Guard & "No Request, No Issue" Gate
   window.openIssueFuelModal = async function (defaults = {}, onDone) {
     let tanks = [];
     let projects = [];
+    let approvedReqs = [];
     try {
-      const [tRes, pRes] = await Promise.all([
+      const [tRes, pRes, rRes] = await Promise.all([
         api('/fuel/tanks').catch(() => ({ tanks: [] })),
         api('/projects').catch(() => []),
+        api('/fuel/requests?status=APPROVED&limit=200').catch(() => ({ requests: [] })),
       ]);
       tanks = tRes.tanks || [];
       projects = Array.isArray(pRes) ? pRes : (pRes.projects || []);
+      approvedReqs = rRes.requests || [];
     } catch (_) {}
 
     const modal = document.createElement('div');
     modal.className = 'modal-bg modal-backdrop';
     modal.innerHTML = `
-      <div class="modal" style="max-width:580px;padding:24px">
-        <h2 style="margin-top:0;margin-bottom:4px">⛽ Dispense & Record Fuel Issue</h2>
-        <p class="muted" style="margin:0 0 14px 0;font-size:12px">Includes Live Meter Guard, Bowser vs Station/Direct options, and automatic tank stock deduction</p>
+      <div class="modal" style="max-width:600px;padding:24px">
+        <h2 style="margin-top:0;margin-bottom:4px">⛽ Dispense &amp; Record Fuel Issue</h2>
+        <p class="muted" style="margin:0 0 12px 0;font-size:12px"><b>No Request, No Issue:</b> Select an approved Transport Fuel Request first (Full Tank requests allow entering exact litres after filling).</p>
         <form id="form_fuel_issue" style="display:flex;flex-direction:column;gap:12px">
+          <div style="padding:10px;border-radius:8px;background:rgba(37,99,235,0.06);border:1px solid rgba(37,99,235,0.22)">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+              <label style="font-size:12px;font-weight:700;color:#1d4ed8">Approved Transport Fuel Request *</label>
+              <a href="#/transport-fuel" id="fi_go_transport" style="font-size:11.5px;font-weight:600">+ Raise New Request →</a>
+            </div>
+            <select id="fi_request_id" class="input" style="width:100%">
+              <option value="">-- Select Approved Request (${approvedReqs.length} awaiting pump) --</option>
+              ${approvedReqs.map((r) => `<option value="${esc(r.id)}" ${defaults.requestId === r.id ? 'selected' : ''}>${esc(r.request_no)} · ${esc(r.asset_code)} · RC:${esc(r.running_chart_no || '—')} · ${r.is_full_tank ? 'FULL TANK' : fmtNum(r.requested_litres, 1) + 'L'} (${esc(r.project_name || 'Central')})</option>`).join('')}
+            </select>
+            <div id="fi_req_meta" class="muted" style="font-size:11.5px;margin-top:5px"></div>
+          </div>
+
           <div style="display:grid;grid-template-columns:1.3fr 1fr;gap:10px">
             <div>
               <label style="font-size:12px;font-weight:600">Vehicle / Machine Code or Reg *</label>
@@ -202,6 +295,19 @@
             <div>
               <label style="font-size:12px;font-weight:600">Issue Date & Time</label>
               <input type="datetime-local" id="fi_date" class="input" style="width:100%">
+            </div>
+          </div>
+
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;padding:10px;border-radius:8px;background:rgba(15,23,42,0.03);border:1px solid var(--border)">
+            <div>
+              <label style="font-size:12px;font-weight:600">Fuel Rate (Rs / L)</label>
+              <input type="number" step="0.01" min="0" id="fi_price_rs" class="input" placeholder="Auto from Ceypetco tariff" style="width:100%">
+              <div class="muted" id="fi_price_meta" style="font-size:11px;margin-top:3px">Loading active tariff...</div>
+            </div>
+            <div style="display:flex;flex-direction:column;justify-content:center">
+              <div class="muted" style="font-size:11px;font-weight:600">ESTIMATED TOTAL COST</div>
+              <div id="fi_est_cost" style="font-size:18px;font-weight:800;color:var(--primary,#0066ff);margin-top:2px">Rs 0.00</div>
+              <div class="muted" style="font-size:10.5px">Auto-updates from date tariff unless overridden</div>
             </div>
           </div>
 
@@ -285,6 +391,63 @@
       if (!isBowser) modal.querySelector('#fi_source_tank').value = '';
     };
 
+    const litresInp = modal.querySelector('#fi_litres');
+    const fuelTypeSel = modal.querySelector('#fi_fuel_type');
+    const issueDateInp = modal.querySelector('#fi_date');
+    const sourceTankSel = modal.querySelector('#fi_source_tank');
+    const priceRsInp = modal.querySelector('#fi_price_rs');
+    const priceMetaEl = modal.querySelector('#fi_price_meta');
+    const estCostEl = modal.querySelector('#fi_est_cost');
+    let priceOverridden = false;
+
+    function updateEstCost() {
+      const l = Number(litresInp.value || 0);
+      const r = Number(priceRsInp.value || 0);
+      estCostEl.textContent = fmtLkr(l > 0 && r > 0 ? l * r : 0);
+    }
+
+    async function syncIssueTariff() {
+      if (priceOverridden) return;
+      const ft = fuelTypeSel.value || 'AUTO_DIESEL';
+      const dt = String(issueDateInp.value || localTodayStr()).slice(0, 10);
+      try {
+        const res = await api(`/fuel/prices/lookup?fuelType=${encodeURIComponent(ft)}&date=${encodeURIComponent(dt)}`);
+        if (!priceOverridden && res && res.pricePerLitreCents > 0) {
+          priceRsInp.value = (res.pricePerLitreCents / 100).toFixed(2);
+          priceMetaEl.textContent = res.isFallback
+            ? `Default reference tariff (no entry on/before ${dt})`
+            : `Tariff ${res.effectiveDate} · ${res.source || 'CEYPETCO'}`;
+          updateEstCost();
+        }
+      } catch (_) {}
+    }
+
+    litresInp.oninput = updateEstCost;
+    priceRsInp.oninput = () => {
+      priceOverridden = priceRsInp.value.trim() !== '';
+      priceMetaEl.textContent = priceOverridden
+        ? 'Custom slip rate override applied'
+        : 'Using date-effective tariff';
+      updateEstCost();
+      if (!priceOverridden) syncIssueTariff();
+    };
+    fuelTypeSel.onchange = () => { syncIssueTariff(); };
+    issueDateInp.onchange = () => { syncIssueTariff(); };
+    sourceTankSel.onchange = () => {
+      const selTank = tanks.find((t) => String(t.id) === String(sourceTankSel.value));
+      if (selTank && selTank.fuel_type && FUEL_LABELS[selTank.fuel_type]) {
+        fuelTypeSel.value = selTank.fuel_type;
+        syncIssueTariff();
+      }
+    };
+    if (defaults.tankId) {
+      const defTank = tanks.find((t) => String(t.id) === String(defaults.tankId));
+      if (defTank && defTank.fuel_type && FUEL_LABELS[defTank.fuel_type]) {
+        fuelTypeSel.value = defTank.fuel_type;
+      }
+    }
+    syncIssueTariff();
+
     const banner = modal.querySelector('#fi_meter_guard_banner');
     const overrideWrap = modal.querySelector('#fi_override_wrap');
     let checkTimer = null;
@@ -349,11 +512,63 @@
     };
     if (defaults.assetCode) runLiveMeterCheck();
 
+    modal.querySelector('#fi_go_transport').onclick = () => { modal.remove(); };
+    const reqSel = modal.querySelector('#fi_request_id');
+    const reqMeta = modal.querySelector('#fi_req_meta');
+
+    function applySelectedRequest() {
+      const r = approvedReqs.find((x) => x.id === reqSel.value);
+      if (!r) {
+        reqMeta.innerHTML = approvedReqs.length
+          ? 'Pick an approved Transport Fuel Request above (required for all vehicle fuel issues).'
+          : '<span style="color:#b91c1c;font-weight:600">No approved requests ready — raise one in Transport Fuel &amp; Chart first.</span>';
+        return;
+      }
+      modal.querySelector('#fi_asset_code').value = r.asset_code || '';
+      if (r.meter_reading != null) modal.querySelector('#fi_meter').value = r.meter_reading;
+      if (r.meter_type) modal.querySelector('#fi_meter_type').value = r.meter_type;
+      if (r.driver_name) modal.querySelector('#fi_driver').value = r.driver_name;
+      if (r.project_id) modal.querySelector('#fi_project_id').value = String(r.project_id);
+      if (r.source_mode === 'STATION') {
+        srcMode.value = 'STATION';
+        srcMode.dispatchEvent(new Event('change'));
+        if (r.station_name) modal.querySelector('#fi_station_name').value = r.station_name;
+      } else {
+        srcMode.value = 'BOWSER';
+        srcMode.dispatchEvent(new Event('change'));
+        if (r.target_tank_id) sourceTankSel.value = r.target_tank_id;
+      }
+      if (r.fuel_type && FUEL_LABELS[r.fuel_type]) fuelTypeSel.value = r.fuel_type;
+      if (r.is_full_tank) {
+        litresInp.value = '';
+        litresInp.placeholder = 'Enter actual L after full';
+        reqMeta.innerHTML = `🟣 <b>FULL TANK MODE:</b> Recommended <b>${r.recommended_litres != null ? fmtNum(r.recommended_litres, 1) + ' L' : 'N/A'}</b> · Fill tank completely first, then enter actual dispensed litres above.`;
+      } else {
+        litresInp.value = r.trip_total_fuel || r.requested_litres || '';
+        reqMeta.innerHTML = `✅ Linked <b>${esc(r.request_no)}</b> · Recommended: <b>${r.recommended_litres != null ? fmtNum(r.recommended_litres, 1) + ' L' : '—'}</b> · Requested: <b>${fmtNum(r.requested_litres, 1)} L</b>`;
+      }
+      updateEstCost();
+      syncIssueTariff();
+      runLiveMeterCheck();
+    }
+    reqSel.onchange = applySelectedRequest;
+    if (!defaults.requestId && defaults.assetCode) {
+      const match = approvedReqs.find((x) => String(x.asset_code || '').toUpperCase() === String(defaults.assetCode).toUpperCase());
+      if (match) reqSel.value = match.id;
+    }
+    applySelectedRequest();
+
     modal.querySelector('#btn_cancel_fi').onclick = () => modal.remove();
     modal.onclick = (e) => { if (e.target === modal) modal.remove(); };
 
     modal.querySelector('#form_fuel_issue').onsubmit = async (e) => {
       e.preventDefault();
+      const chosenReqId = reqSel.value || null;
+      const enteredCode = modal.querySelector('#fi_asset_code').value.trim().toUpperCase();
+      if (!chosenReqId && !enteredCode.startsWith('SITE-')) {
+        notify('No Request, No Issue: Select an Approved Transport Fuel Request before dispensing fuel.');
+        return;
+      }
       const saveBtn = modal.querySelector('#btn_save_fi');
       saveBtn.disabled = true;
       saveBtn.textContent = 'Saving...';
@@ -365,12 +580,16 @@
         : null;
 
       try {
+        const rawRateRs = priceRsInp.value.trim();
+        const fuelPriceCents = rawRateRs !== '' && Number(rawRateRs) > 0 ? Math.round(Number(rawRateRs) * 100) : null;
         const created = await api('/fuel/issues', {
           method: 'POST',
           body: {
+            fuelRequestId: chosenReqId,
             assetCode: modal.querySelector('#fi_asset_code').value.trim(),
-            litres: Number(modal.querySelector('#fi_litres').value),
-            fuelType: modal.querySelector('#fi_fuel_type').value,
+            litres: Number(litresInp.value),
+            fuelType: fuelTypeSel.value,
+            fuelPriceCents,
             meterReading: modal.querySelector('#fi_meter').value !== '' ? Number(modal.querySelector('#fi_meter').value) : null,
             meterType: modal.querySelector('#fi_meter_type').value,
             sourceTankId,
@@ -379,7 +598,7 @@
             stationReceiptNo: modal.querySelector('#fi_receipt_no').value.trim() || null,
             driverName: modal.querySelector('#fi_driver').value.trim() || null,
             remarks: modal.querySelector('#fi_remarks').value.trim() || null,
-            issueDate: modal.querySelector('#fi_date').value ? modal.querySelector('#fi_date').value.replace('T', ' ') : null,
+            issueDate: issueDateInp.value ? issueDateInp.value.replace('T', ' ') : null,
             ignoreMeterWarning: modal.querySelector('#fi_override_meter').checked,
           },
         });
@@ -387,7 +606,7 @@
         modal.remove();
         if (typeof onDone === 'function') onDone(created);
       } catch (err) {
-        alert('Error recording fuel issue: ' + err.message);
+        notify('Error recording fuel issue: ' + err.message);
         saveBtn.disabled = false;
         saveBtn.textContent = '⛽ Save & Dispense Fuel';
       }
@@ -398,74 +617,132 @@
   async function renderFuelOperations(content) {
     const hashParts = (location.hash || '').split('?');
     const queryParams = new URLSearchParams(hashParts[1] || '');
-    let activeTab = queryParams.get('tab') || 'issues';
+    const fuelScope = (typeof ME === 'object' && ME && ME.fuelScope) ? ME.fuelScope : {};
+    const isPumpOnly = !!fuelScope.isPumpOnly;
+    const isAdm = typeof isAdmin === 'function' && isAdmin();
+
+    const canIssueFuel = isAdm || (typeof canDo === 'function' && canDo('fuel.issue'));
+    const canRefillTank = isAdm || (typeof canDo === 'function' && canDo('fuel.tanks.refill'));
+    const canRaiseReq = isAdm || (typeof canDo === 'function' && canDo('fuel.transport.request', 'fuel.request'));
+    const canVoidIssue = isAdm || (typeof canDo === 'function' && canDo('fuel.void'));
+    const canReqCorr = isAdm || (typeof canDo === 'function' && canDo('fuel.correction.request', 'fuel.issue', 'fuel.correct'));
+    const canApproveCorr = isAdm || (typeof canDo === 'function' && canDo('fuel.approve_correction', 'fuel.correct'));
+    const canManagePrices = isAdm || (typeof canDo === 'function' && canDo('fuel.prices.manage'));
+    const canViewPrices = isAdm || (typeof canView === 'function' && canView('fuel_prices') && typeof canDo === 'function' && canDo('fuel.prices.view', 'fuel.prices.manage'));
+    const canViewReports = isAdm || (typeof canView === 'function' && canView('fuel_reports') && typeof canDo === 'function' && canDo('fuel.reports.view'));
+    const canViewReadings = isAdm || (typeof canView === 'function' && canView('fuel_readings') && typeof canDo === 'function' && canDo('fuel.readings.view', 'fuel.readings.record'));
+    const canViewTransport = isAdm || (typeof canView === 'function' && canView('fuel_transport') && typeof canDo === 'function' && canDo('fuel.transport.view', 'fuel.transport.request'));
+    const canViewHire = isAdm || (typeof canView === 'function' && canView('hire'));
+    const canViewDash = isAdm || (typeof canView === 'function' && canView('dashboard'));
+    const canViewOverview = isAdm || canViewReports || (typeof canDo === 'function' && canDo('fuel.all_sites'));
+    const canViewRegister = !isPumpOnly && (isAdm || (typeof canDo === 'function' && canDo('fuel.view')));
+    const canViewConsole = isAdm || isPumpOnly || canIssueFuel || canRefillTank || (typeof canDo === 'function' && canDo('fuel.console.view', 'fuel.view'));
+
+    const allowedTabs = [];
+    if (isPumpOnly) {
+      allowedTabs.push('site-console');
+    } else {
+      if (canViewRegister) allowedTabs.push('issues');
+      if (canViewRegister || canReqCorr || canApproveCorr) allowedTabs.push('corrections');
+      if (canViewConsole) allowedTabs.push('site-console');
+      if (canViewOverview) allowedTabs.push('sites-overview');
+      if (canViewOverview || canViewTransport) allowedTabs.push('vehicle-360');
+      if (canViewTransport || canApproveCorr) allowedTabs.push('requests');
+    }
+
+    let activeTab = queryParams.get('tab') || (isPumpOnly ? 'site-console' : (allowedTabs[0] || 'site-console'));
+    if (!allowedTabs.includes(activeTab)) activeTab = allowedTabs[0] || 'site-console';
     let selectedVehicleCode = queryParams.get('vehicle') || '';
 
-    content.innerHTML = `
-      <div class="crumb"><a href="#/dashboard">Dashboard</a> / Fuel System V2 Command Center</div>
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:12px">
-        <div>
-          <h1 style="margin:0;font-size:24px;font-weight:800">⛽ Fuel System Command Center</h1>
-          <p class="muted" style="margin:4px 0 0 0">Issues Register, 4-Eyes Adjustments, Site Fuel Operators Console, Site Budgets, and Vehicle 360° Fuel & Meter Profiles</p>
+    if (isPumpOnly) {
+      content.innerHTML = `
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:12px">
+          <div>
+            <h1 style="margin:0;font-size:22px;font-weight:800">⛽ Site Pump Operator Console</h1>
+            <p class="muted" style="margin:4px 0 0 0;font-size:12.5px">
+              <b>4 Authorized Sections:</b> 1) Fuel Issue (Approved Queue) · 2) Fuel Issue History &amp; Admin Change Requests · 3) Fuel Add to Tank · 4) Fuel Add History
+            </p>
+          </div>
+          <span class="badge blue" style="font-size:12px;padding:5px 10px">🔒 Site-Locked Pump Operator</span>
         </div>
-        <div style="display:flex;gap:8px;flex-wrap:wrap">
-          <button class="btn primary" id="btn_top_issue_fuel">⛽ Issue Fuel</button>
-          <a href="#/fuel-readings" class="btn">📟 Meter Readings</a>
-          <a href="#/fuel-reports" class="btn">📊 Consumption Graphs & PM Plan</a>
-          <a href="#/hire" class="btn">🏷️ Costing & Rate Cards</a>
+        <div id="fuel_tab_container"></div>
+      `;
+    } else {
+      content.innerHTML = `
+        ${canViewDash ? '<div class="crumb"><a href="#/dashboard">Dashboard</a> / Fuel System V2 Command Center</div>' : ''}
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:12px">
+          <div>
+            <h1 style="margin:0;font-size:24px;font-weight:800">⛽ Fuel System Command Center</h1>
+            <p class="muted" style="margin:4px 0 0 0">Issues Register, 4-Eyes Adjustments, Site Fuel Operators Console, Site Budgets, and Vehicle 360° Fuel & Meter Profiles</p>
+          </div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            ${canIssueFuel ? '<button class="btn primary" id="btn_top_issue_fuel">⛽ Issue Fuel</button>' : ''}
+            ${canViewReadings ? '<a href="#/fuel-readings" class="btn">📟 Meter Readings</a>' : ''}
+            ${canViewReports ? '<a href="#/fuel-reports" class="btn">📊 Consumption Graphs & PM Plan</a>' : ''}
+            ${canViewHire ? '<a href="#/hire-billing" class="btn">🏷️ Costing & Rate Cards</a>' : ''}
+          </div>
         </div>
-      </div>
 
-      <!-- Top KPI Strip -->
-      <div class="kpi-grid" style="display:grid;grid-template-columns:repeat(auto-fit, minmax(185px, 1fr));gap:10px;margin-bottom:14px">
-        <div class="card" style="padding:12px 14px">
-          <div class="muted" style="font-size:11px;font-weight:700">PEAK / MONTH CONSUMPTION</div>
-          <div style="font-size:20px;font-weight:800;margin-top:3px;color:var(--primary,#0066ff)" id="kpi_month_litres">... L</div>
-          <div class="muted" style="font-size:11px" id="kpi_month_cost">Rs ...</div>
+        <!-- Top KPI Strip -->
+        <div class="kpi-grid" style="display:grid;grid-template-columns:repeat(auto-fit, minmax(185px, 1fr));gap:10px;margin-bottom:14px">
+          <div class="card" style="padding:12px 14px">
+            <div class="muted" style="font-size:11px;font-weight:700">PEAK / MONTH CONSUMPTION</div>
+            <div style="font-size:20px;font-weight:800;margin-top:3px;color:var(--primary,#0066ff)" id="kpi_month_litres">... L</div>
+            <div class="muted" style="font-size:11px" id="kpi_month_cost">Rs ...</div>
+          </div>
+          <div class="card" style="padding:12px 14px">
+            <div class="muted" style="font-size:11px;font-weight:700">BULK TANK & BOWSER STOCK</div>
+            <div style="font-size:20px;font-weight:800;margin-top:3px;color:#10b981" id="kpi_tank_stock">... L</div>
+            <div class="muted" style="font-size:11px" id="kpi_tank_count">Across ... tanks</div>
+          </div>
+          <div class="card" style="padding:12px 14px;cursor:pointer" id="card_kpi_corrections">
+            <div class="muted" style="font-size:11px;font-weight:700">PENDING ADJUSTMENTS</div>
+            <div style="font-size:20px;font-weight:800;margin-top:3px;color:#d97706" id="kpi_pending_corr">0</div>
+            <div class="muted" style="font-size:11px">Click to review corrections</div>
+          </div>
+          ${canViewTransport ? `<div class="card" style="padding:12px 14px;cursor:pointer" id="card_kpi_requests">
+            <div class="muted" style="font-size:11px;font-weight:700">FUEL REQUESTS QUEUE</div>
+            <div style="font-size:20px;font-weight:800;margin-top:3px;color:#7c3aed" id="kpi_pending_req">0</div>
+            <div class="muted" style="font-size:11px">Pending requisitions</div>
+          </div>` : ''}
+          ${canViewPrices ? `<div class="card" style="padding:12px 14px">
+            <div class="muted" style="font-size:11px;font-weight:700">CEYPETCO AUTO DIESEL</div>
+            <div style="font-size:20px;font-weight:800;margin-top:3px" id="kpi_diesel_rate">Rs ... / L</div>
+            <div class="muted" style="font-size:11px" id="kpi_diesel_eff">Effective —</div>
+            <div style="margin-top:6px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+              <a href="#/fuel-prices" style="font-size:11px">Tariffs →</a>
+              ${canManagePrices ? '<button type="button" class="btn sm" id="btn_quick_fuel_rate" style="padding:2px 8px;font-size:11px">+ Update Rate</button>' : ''}
+            </div>
+          </div>` : ''}
         </div>
-        <div class="card" style="padding:12px 14px">
-          <div class="muted" style="font-size:11px;font-weight:700">BULK TANK & BOWSER STOCK</div>
-          <div style="font-size:20px;font-weight:800;margin-top:3px;color:#10b981" id="kpi_tank_stock">... L</div>
-          <div class="muted" style="font-size:11px" id="kpi_tank_count">Across ... tanks</div>
-        </div>
-        <div class="card" style="padding:12px 14px;cursor:pointer" id="card_kpi_corrections">
-          <div class="muted" style="font-size:11px;font-weight:700">PENDING ADJUSTMENTS</div>
-          <div style="font-size:20px;font-weight:800;margin-top:3px;color:#d97706" id="kpi_pending_corr">0</div>
-          <div class="muted" style="font-size:11px">Click to review corrections</div>
-        </div>
-        <div class="card" style="padding:12px 14px;cursor:pointer" id="card_kpi_requests">
-          <div class="muted" style="font-size:11px;font-weight:700">FUEL REQUESTS QUEUE</div>
-          <div style="font-size:20px;font-weight:800;margin-top:3px;color:#7c3aed" id="kpi_pending_req">0</div>
-          <div class="muted" style="font-size:11px">Pending requisitions</div>
-        </div>
-        <div class="card" style="padding:12px 14px">
-          <div class="muted" style="font-size:11px;font-weight:700">CEYPETCO AUTO DIESEL</div>
-          <div style="font-size:20px;font-weight:800;margin-top:3px" id="kpi_diesel_rate">Rs ... / L</div>
-          <div class="muted" style="font-size:11px"><a href="#/fuel-prices">Manage Fuel Tariffs →</a></div>
-        </div>
-      </div>
 
-      <!-- 6-Tab Navigation Bar -->
-      <div class="tabs" id="fuel_main_tabs" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:16px;border-bottom:2px solid var(--border);padding-bottom:8px">
-        <button class="btn sm" data-tab="issues">⛽ Fuel Issues Register</button>
-        <button class="btn sm" data-tab="corrections">🔧 Fuel Adjustments <span id="tab_badge_corr" class="badge warn" style="display:none;margin-left:4px">0</span></button>
-        <button class="btn sm" data-tab="site-console">🏗️ Site Fuel Operators Console</button>
-        <button class="btn sm" data-tab="sites-overview">🗺️ Site Fuel Overview & Budgets</button>
-        <button class="btn sm" data-tab="vehicle-360">🚗 Vehicle-Wise Fuel & Meter 360°</button>
-        <button class="btn sm" data-tab="requests">📩 Fuel Requests</button>
-      </div>
+        <!-- Tab Navigation Bar (Capability Gated) -->
+        <div class="tabs" id="fuel_main_tabs" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:16px;border-bottom:2px solid var(--border);padding-bottom:8px">
+          ${allowedTabs.includes('issues') ? '<button class="btn sm" data-tab="issues">⛽ Fuel Issues Register</button>' : ''}
+          ${allowedTabs.includes('corrections') ? '<button class="btn sm" data-tab="corrections">🔧 Fuel Adjustments <span id="tab_badge_corr" class="badge warn" style="display:none;margin-left:4px">0</span></button>' : ''}
+          ${allowedTabs.includes('site-console') ? '<button class="btn sm" data-tab="site-console">🏗️ Site Fuel Operators Console</button>' : ''}
+          ${allowedTabs.includes('sites-overview') ? '<button class="btn sm" data-tab="sites-overview">🗺️ Site Fuel Overview & Budgets</button>' : ''}
+          ${allowedTabs.includes('vehicle-360') ? '<button class="btn sm" data-tab="vehicle-360">🚗 Vehicle-Wise Fuel & Meter 360°</button>' : ''}
+          ${allowedTabs.includes('requests') ? '<button class="btn sm" data-tab="requests">📩 Fuel Requests</button>' : ''}
+        </div>
 
-      <div id="fuel_tab_container"></div>
-    `;
+        <div id="fuel_tab_container"></div>
+      `;
+    }
+
+    let latestFuelStats = null;
 
     async function refreshKpis() {
+      if (isPumpOnly) return;
       try {
         const stats = await api('/fuel/stats');
+        latestFuelStats = stats;
         if (qs('#kpi_month_litres')) qs('#kpi_month_litres').textContent = `${fmtNum(stats.month.total_litres, 1)} L`;
         if (qs('#kpi_month_cost')) qs('#kpi_month_cost').textContent = `${fmtLkr(Number(stats.month.total_cost_cents || 0) / 100)} (${stats.month.issues_count || 0} slips)`;
-        if (qs('#kpi_tank_stock')) qs('#kpi_tank_stock').textContent = `${fmtNum(stats.tanks.total_stock_litres, 0)} L`;
+        if (qs('#kpi_tank_stock')) qs('#kpi_tank_stock').textContent = stats.tanks.hide_stock || stats.tanks.total_stock_litres == null ? 'Hidden' : `${fmtNum(stats.tanks.total_stock_litres, 0)} L`;
         if (qs('#kpi_tank_count')) qs('#kpi_tank_count').textContent = `Across ${stats.tanks.total_tanks} active tanks/bowsers`;
-        if (qs('#kpi_diesel_rate')) qs('#kpi_diesel_rate').textContent = `Rs ${(Number(stats.currentDieselCents || 34100) / 100).toFixed(2)} / L`;
+        if (qs('#kpi_diesel_rate')) qs('#kpi_diesel_rate').textContent = `Rs ${(Number(stats.currentDieselCents || 38200) / 100).toFixed(2)} / L`;
+        if (qs('#kpi_diesel_eff')) qs('#kpi_diesel_eff').textContent = stats.currentDieselEffectiveDate ? `Effective ${stats.currentDieselEffectiveDate}` : 'Reference tariff';
         if (qs('#kpi_pending_corr')) qs('#kpi_pending_corr').textContent = String(stats.pendingCorrections || 0);
         if (qs('#kpi_pending_req')) qs('#kpi_pending_req').textContent = String(stats.pendingRequests || 0);
         const bCorr = qs('#tab_badge_corr');
@@ -476,16 +753,99 @@
       } catch (_) {}
     }
 
-    qs('#btn_top_issue_fuel').onclick = () => {
-      window.openIssueFuelModal({ assetCode: selectedVehicleCode }, () => {
-        refreshKpis();
-        switchTab(activeTab);
-      });
-    };
-    qs('#card_kpi_corrections').onclick = () => switchTab('corrections');
-    qs('#card_kpi_requests').onclick = () => switchTab('requests');
+    function openQuickFuelRateModal() {
+      const activePrices = (latestFuelStats && latestFuelStats.activePrices) || {};
+      const m = document.createElement('div');
+      m.className = 'modal-bg modal-backdrop';
+      const defCents = (activePrices.AUTO_DIESEL && activePrices.AUTO_DIESEL.pricePerLitreCents) || (latestFuelStats && latestFuelStats.currentDieselCents) || 38200;
+      m.innerHTML = `
+        <div class="modal" style="max-width:460px;padding:22px">
+          <h2 style="margin:0 0 6px 0;font-size:18px">⛽ Publish Timely Fuel Rate</h2>
+          <p class="muted" style="margin:0 0 14px 0;font-size:12px">Applies automatically to fuel issues & billing from the chosen effective date onward. Earlier slips keep their historical rate.</p>
+          <form id="form_quick_fuel_rate" style="display:flex;flex-direction:column;gap:12px">
+            <div>
+              <label style="font-size:12px;font-weight:600">Fuel Kind *</label>
+              <select id="qfr_kind" class="input" style="width:100%">
+                ${Object.entries(FUEL_LABELS).map(([k, lbl]) => `<option value="${k}">${lbl}</option>`).join('')}
+              </select>
+            </div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+              <div>
+                <label style="font-size:12px;font-weight:600">New Rate (LKR / L) *</label>
+                <input type="number" step="0.01" min="1" required id="qfr_rs" class="input" value="${(defCents / 100).toFixed(2)}" style="width:100%">
+              </div>
+              <div>
+                <label style="font-size:12px;font-weight:600">Effective Date *</label>
+                <input type="date" required id="qfr_date" class="input" value="${localTodayStr()}" style="width:100%">
+              </div>
+            </div>
+            <div>
+              <label style="font-size:12px;font-weight:600">Revision Notes / Circular Ref</label>
+              <input type="text" id="qfr_notes" class="input" placeholder="e.g. Ceypetco monthly price revision" style="width:100%">
+            </div>
+            <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:6px">
+              <button type="button" class="btn" id="btn_qfr_cancel">Cancel</button>
+              <button type="submit" class="btn primary" id="btn_qfr_save">Save Fuel Tariff</button>
+            </div>
+          </form>
+        </div>
+      `;
+      document.body.appendChild(m);
+      const kindSel = m.querySelector('#qfr_kind');
+      const rsInp = m.querySelector('#qfr_rs');
+      kindSel.onchange = () => {
+        const entry = activePrices[kindSel.value];
+        if (entry && entry.pricePerLitreCents) {
+          rsInp.value = (entry.pricePerLitreCents / 100).toFixed(2);
+        }
+      };
+      m.querySelector('#btn_qfr_cancel').onclick = () => m.remove();
+      m.onclick = (e) => { if (e.target === m) m.remove(); };
+      m.querySelector('#form_quick_fuel_rate').onsubmit = async (e) => {
+        e.preventDefault();
+        const btn = m.querySelector('#btn_qfr_save');
+        btn.disabled = true;
+        btn.textContent = 'Saving...';
+        try {
+          await api('/fuel/prices', {
+            method: 'POST',
+            body: {
+              fuelType: kindSel.value,
+              pricePerLitre: Number(rsInp.value),
+              effectiveDate: m.querySelector('#qfr_date').value,
+              notes: m.querySelector('#qfr_notes').value.trim(),
+              source: 'CEYPETCO',
+            },
+          });
+          toast(`${FUEL_LABELS[kindSel.value] || kindSel.value} rate updated to Rs ${Number(rsInp.value).toFixed(2)} / L`);
+          m.remove();
+          await refreshKpis();
+          switchTab(activeTab);
+        } catch (err) {
+          notify('Failed to update fuel tariff: ' + err.message);
+          btn.disabled = false;
+          btn.textContent = 'Save Fuel Tariff';
+        }
+      };
+    }
+
+    if (qs('#btn_quick_fuel_rate')) {
+      qs('#btn_quick_fuel_rate').onclick = openQuickFuelRateModal;
+    }
+
+    if (qs('#btn_top_issue_fuel')) {
+      qs('#btn_top_issue_fuel').onclick = () => {
+        window.openIssueFuelModal({ assetCode: selectedVehicleCode }, () => {
+          refreshKpis();
+          switchTab(activeTab);
+        });
+      };
+    }
+    if (qs('#card_kpi_corrections')) qs('#card_kpi_corrections').onclick = () => switchTab('corrections');
+    if (qs('#card_kpi_requests')) qs('#card_kpi_requests').onclick = () => switchTab('requests');
 
     function switchTab(tabKey, extraVehicle) {
+      if (!allowedTabs.includes(tabKey)) tabKey = allowedTabs[0] || 'site-console';
       activeTab = tabKey;
       if (extraVehicle !== undefined) selectedVehicleCode = extraVehicle;
       qsa('#fuel_main_tabs button').forEach((b) => {
@@ -557,6 +917,7 @@
                   <th style="padding:10px 12px">Vehicle (360° Link)</th>
                   <th style="padding:10px 12px">Fuel Kind</th>
                   <th style="padding:10px 12px;text-align:right">Litres</th>
+                  <th style="padding:10px 12px;text-align:right">Fuel Rate (Rs/L)</th>
                   <th style="padding:10px 12px;text-align:right">Total Cost</th>
                   <th style="padding:10px 12px">Meter Reading</th>
                   <th style="padding:10px 12px">Source / Bowser</th>
@@ -566,7 +927,7 @@
                 </tr>
               </thead>
               <tbody id="fi_tbody">
-                <tr><td colspan="11" style="padding:24px;text-align:center" class="muted">Loading fuel issues...</td></tr>
+                <tr><td colspan="12" style="padding:24px;text-align:center" class="muted">Loading fuel issues...</td></tr>
               </tbody>
             </table>
           </div>
@@ -615,13 +976,13 @@
         if (vd) params.set('showVoided', 'true');
 
         const tbody = qs('#fi_tbody', box);
-        tbody.innerHTML = '<tr><td colspan="11" style="padding:20px;text-align:center" class="muted">Loading...</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="12" style="padding:20px;text-align:center" class="muted">Loading...</td></tr>';
 
         try {
           const res = await api(`/fuel/issues?${params.toString()}`);
           currentRows = res.rows || [];
           if (!currentRows.length) {
-            tbody.innerHTML = '<tr><td colspan="11" style="padding:24px;text-align:center" class="muted">No matching fuel issues found.</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="12" style="padding:24px;text-align:center" class="muted">No matching fuel issues found.</td></tr>';
             qs('#fi_page_info', box).textContent = '0 records';
             return;
           }
@@ -646,14 +1007,15 @@
                 </td>
                 <td style="padding:9px 12px">${esc(FUEL_LABELS[r.fuel_type] || r.fuel_type || 'Auto Diesel')}</td>
                 <td style="padding:9px 12px;text-align:right;font-weight:800">${fmtNum(r.litres, 1)} L</td>
+                <td style="padding:9px 12px;text-align:right;white-space:nowrap;font-weight:600;color:#475569">${fmtRateRs(effectiveFuelRateCents(r))}</td>
                 <td style="padding:9px 12px;text-align:right;font-weight:600">${fmtLkr(Number(r.total_cost_cents || r.cost_cents || 0) / 100)}</td>
                 <td style="padding:9px 12px">${r.meter_reading ? `<b>${fmtNum(r.meter_reading, 1)}</b> <span class="muted" style="font-size:11px">${esc(r.meter_type || 'HRS')}</span>` : '<span class="muted">—</span>'}</td>
                 <td style="padding:9px 12px">${srcBadge}</td>
                 <td style="padding:9px 12px">${esc(r.target_project_name || '—')}</td>
                 <td style="padding:9px 12px">${esc(r.driver_name || '—')}</td>
                 <td style="padding:9px 12px;text-align:center;white-space:nowrap">
-                  ${!isVoid ? `<button class="btn sm btn-adj-issue" data-idx="${idx}" title="Adjust / Correct Litres, Meter or Date">✏️ Adjust</button>` : ''}
-                  ${!isVoid ? `<button class="btn sm danger btn-void-issue" data-id="${esc(r.id)}" data-no="${esc(r.issue_no || r.id)}" style="margin-left:4px">Void</button>` : ''}
+                  ${!isVoid && canReqCorr ? `<button class="btn sm btn-adj-issue" data-idx="${idx}" title="${isAdm ? 'Adjust / Correct Litres, Meter or Date' : 'Request Issue Change to Admin'}">✏️ ${isAdm ? 'Adjust' : 'Req Change'}</button>` : ''}
+                  ${!isVoid && canVoidIssue ? `<button class="btn sm danger btn-void-issue" data-id="${esc(r.id)}" data-no="${esc(r.issue_no || r.id)}" style="margin-left:4px">Void</button>` : ''}
                 </td>
               </tr>
             `;
@@ -684,12 +1046,12 @@
                 loadIssues();
                 refreshKpis();
               } catch (e) {
-                alert('Void error: ' + e.message);
+                notify('Void error: ' + e.message);
               }
             };
           });
         } catch (err) {
-          tbody.innerHTML = `<tr><td colspan="11" style="padding:24px;text-align:center" class="err">${esc(err.message)}</td></tr>`;
+          tbody.innerHTML = `<tr><td colspan="12" style="padding:24px;text-align:center" class="err">${esc(err.message)}</td></tr>`;
         }
       }
 
@@ -778,7 +1140,10 @@
                   ${c.before_meter != null ? fmtNum(c.before_meter, 1) : '—'} → <b>${c.after_meter != null ? fmtNum(c.after_meter, 1) : '—'}</b>
                 </td>
                 <td style="padding:10px 12px;color:${deltaColor};font-weight:700">
-                  ${deltaL >= 0 ? '+' : ''}${fmtNum(deltaL, 1)} L
+                  <div>${deltaL >= 0 ? '+' : ''}${fmtNum(deltaL, 1)} L</div>
+                  ${(c.before_price_cents && c.after_price_cents && Number(c.before_price_cents) !== Number(c.after_price_cents))
+                    ? `<div class="muted" style="font-size:11px">Rate: ${fmtRateRs(c.before_price_cents)} → <b>${fmtRateRs(c.after_price_cents)}</b></div>`
+                    : ''}
                 </td>
                 <td style="padding:10px 12px;max-width:260px">
                   <div>${esc(c.reason || '—')}</div>
@@ -786,10 +1151,10 @@
                 </td>
                 <td style="padding:10px 12px">${stBadge}</td>
                 <td style="padding:10px 12px;text-align:center;white-space:nowrap">
-                  ${c.status === 'PENDING' ? `
+                  ${c.status === 'PENDING' && canApproveCorr && (isAdm || Number(c.requested_by) !== Number(ME && ME.id)) ? `
                     <button class="btn sm primary btn-corr-act" data-id="${esc(c.id)}" data-act="APPROVE">✅ Approve</button>
                     <button class="btn sm danger btn-corr-act" data-id="${esc(c.id)}" data-act="REJECT" style="margin-left:4px">❌ Reject</button>
-                  ` : `<span class="muted" style="font-size:11px">${esc(String(c.approved_at || '').slice(0, 10))}</span>`}
+                  ` : `<span class="muted" style="font-size:11px">${c.status === 'PENDING' ? 'Awaiting Admin' : esc(String(c.approved_at || '').slice(0, 10))}</span>`}
                 </td>
               </tr>
             `;
@@ -813,7 +1178,7 @@
                 loadCorrections();
                 refreshKpis();
               } catch (err) {
-                alert('Review error: ' + err.message);
+                notify('Review error: ' + err.message);
               }
             };
           });
@@ -836,7 +1201,7 @@
     }
 
     // =========================================================================
-    // TAB 3: SITE FUEL OPERATORS CONSOLE
+    // TAB 3: SITE FUEL OPERATORS CONSOLE (4 Dedicated Sections for Pump Operator)
     // =========================================================================
     async function renderSiteConsoleTab(box) {
       box.innerHTML = `<div class="card" style="padding:24px;text-align:center" class="muted">Loading Site Fuel Operator Console...</div>`;
@@ -848,30 +1213,59 @@
           const q = new URLSearchParams();
           if (selectedTankId) q.set('tankId', selectedTankId);
           if (selectedProjectId) q.set('projectId', selectedProjectId);
-          const data = await api(`/fuel/site-console?${q.toString()}`);
+          const [data, priceData] = await Promise.all([
+            api(`/fuel/site-console?${q.toString()}`),
+            api('/fuel/prices/lookup?fuelType=AUTO_DIESEL').catch(() => ({ activePrices: {} })),
+          ]);
           const activeTank = data.activeTank;
           const activeProj = data.activeProject;
           const hideStock = !!data.hideStock;
+          const scScope = data.fuelScope || fuelScope || {};
+          const activePrices = (priceData && priceData.activePrices) || (latestFuelStats && latestFuelStats.activePrices) || {};
+          const tankFuelKind = (activeTank && activeTank.fuel_type) || 'AUTO_DIESEL';
+          const defaultRateCents = (activePrices[tankFuelKind] && activePrices[tankFuelKind].pricePerLitreCents)
+            || (activePrices.AUTO_DIESEL && activePrices.AUTO_DIESEL.pricePerLitreCents)
+            || (priceData && priceData.pricePerLitreCents)
+            || (latestFuelStats && latestFuelStats.currentDieselCents)
+            || 38200;
+          const defaultRateRs = (defaultRateCents / 100).toFixed(2);
+          const todayStr = localTodayStr();
 
-          const stockPct = activeTank && activeTank.capacity_litres > 0
+          if (scScope.unassigned) {
+            box.innerHTML = `<div class="card" style="padding:24px;text-align:center;border:1px solid #f59e0b;background:#fffbeb">
+              <div style="font-size:28px;margin-bottom:6px">⚠️</div>
+              <h3 style="margin:0 0 6px 0">No Site or Bulk Tank Assigned</h3>
+              <p class="muted" style="margin:0">Your account is site-scoped, but no project site or bulk tank has been assigned yet. Please ask an Administrator to assign your site tank in Access Control.</p>
+            </div>`;
+            return;
+          }
+
+          const stockPct = !hideStock && activeTank && activeTank.capacity_litres > 0 && activeTank.current_litres != null
             ? Math.min(100, Math.round((activeTank.current_litres / activeTank.capacity_litres) * 100))
             : 0;
+          const lockTankPicker = !!(scScope.scoped && (data.allTanks || []).length <= 1);
+          const myCorrs = data.myCorrections || [];
+          const deliveries = data.recentDeliveries || [];
 
           box.innerHTML = `
-            <!-- Site & Bowser Selector Bar -->
+            <!-- Site & Bowser Header Bar -->
             <div class="card" style="padding:14px;margin-bottom:14px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;background:linear-gradient(90deg, rgba(16,185,129,0.08), rgba(37,99,235,0.05))">
               <div>
-                <div style="font-size:11px;font-weight:700;color:#047857;text-transform:uppercase">🏗️ Active Site Bowser / Bulk Tank Console</div>
+                <div style="font-size:11px;font-weight:700;color:#047857;text-transform:uppercase">🏗️ Active Site Tank / Pump</div>
                 <div style="font-size:18px;font-weight:800;margin-top:2px">
-                  ${activeTank ? `${esc(activeTank.name)} (${esc(activeTank.code)})` : 'Select a Bulk Tank'}
+                  ${activeTank ? `${esc(activeTank.name)} (${esc(activeTank.code)})` : 'No Active Tank Selected'}
                   ${activeProj ? ` · <span style="color:var(--primary,#0066ff)">${esc(activeProj.name)}</span>` : ''}
                 </div>
               </div>
               <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-                <select id="sc_tank_select" class="input sm" style="min-width:240px">
-                  ${(data.allTanks || []).map((t) => `<option value="${esc(t.id)}" ${activeTank && activeTank.id === t.id ? 'selected' : ''}>🛢️ ${esc(t.name)} (${esc(t.project_name || t.code)})</option>`).join('')}
-                </select>
-                ${!hideStock && activeTank ? `
+                ${lockTankPicker ? `
+                  <span class="badge blue" style="font-size:12px;padding:6px 10px">🛢️ Locked Tank: ${esc(activeTank ? activeTank.name : '—')}</span>
+                ` : `
+                  <select id="sc_tank_select" class="input sm" style="min-width:250px">
+                    ${(data.allTanks || []).map((t) => `<option value="${esc(t.id)}" ${activeTank && activeTank.id === t.id ? 'selected' : ''}>🛢️ ${esc(t.name)} (${esc(t.project_name || t.code)})${t.pending_request_count ? ` · ${t.pending_request_count} awaiting` : ''}</option>`).join('')}
+                  </select>
+                `}
+                ${!hideStock && activeTank && activeTank.current_litres != null ? `
                   <div class="card" style="padding:6px 12px;margin:0;background:#fff;border:1px solid #10b981">
                     <span class="muted" style="font-size:11px">Current Tank Stock:</span>
                     <b style="font-size:15px;color:#047857;margin-left:6px">${fmtNum(activeTank.current_litres, 1)} L</b>
@@ -881,56 +1275,70 @@
               </div>
             </div>
 
-            <!-- Two-Column Operator Action Forms: Dispense Fuel & Receive Tank Delivery -->
-            <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(360px, 1fr));gap:14px;margin-bottom:16px">
-              <!-- 1. Dispense Site Fuel -->
+            <!-- TOP ROW: Section 1 (Fuel Issue) & Section 2 (Fuel Add to Tank) -->
+            <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(380px, 1fr));gap:14px;margin-bottom:16px">
+              <!-- SECTION 1: Fuel Issue (Approved Requests Queue — No Request, No Issue) -->
               <div class="card" style="padding:16px">
-                <h3 style="margin:0 0 10px 0;font-size:15px">⛽ 1. Dispense Fuel from ${esc(activeTank ? activeTank.name : 'Site Bowser')}</h3>
-                <form id="sc_form_issue" style="display:flex;flex-direction:column;gap:10px">
-                  <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
-                    <div>
-                      <label style="font-size:11px;font-weight:600">Vehicle Code / Reg *</label>
-                      <input type="text" id="sc_asset" required list="sc_veh_list" class="input sm" placeholder="e.g. LB-22, EX-04" style="width:100%">
-                      <datalist id="sc_veh_list">
-                        ${(data.siteVehicles || []).map((v) => `<option value="${esc(v.code)}">${esc(v.registration || '')} · ${esc(v.category || '')}</option>`).join('')}
-                      </datalist>
-                    </div>
-                    <div>
-                      <label style="font-size:11px;font-weight:600">Litres Issued *</label>
-                      <input type="number" step="0.1" id="sc_litres" required class="input sm" placeholder="0.0" style="width:100%">
-                    </div>
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;gap:8px;flex-wrap:wrap">
+                  <div>
+                    <h3 style="margin:0;font-size:15px">⛽ 1. Fuel Issue Section — Approved Queue (${(data.pendingPumpRequests || []).length})</h3>
+                    <div class="muted" style="font-size:11px">No Request, No Issue · Dispense fuel only against approved requests for this tank</div>
                   </div>
-                  <div id="sc_meter_preview" style="display:none;padding:6px 10px;border-radius:6px;font-size:11.5px"></div>
-                  <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px">
-                    <div>
-                      <label style="font-size:11px;font-weight:600">Meter Reading</label>
-                      <input type="number" step="0.1" id="sc_meter" class="input sm" placeholder="KM / HRS" style="width:100%">
+                  ${canRaiseReq ? '<a href="#/transport-fuel" class="btn sm primary">+ Raise Fuel Request</a>' : ''}
+                </div>
+                <div style="max-height:300px;overflow-y:auto">
+                  ${(data.pendingPumpRequests || []).length ? `
+                    <table class="table" style="width:100%;font-size:12px">
+                      <thead>
+                        <tr><th>Req #</th><th>Vehicle / Chart</th><th style="text-align:right">Rec / Req</th><th></th></tr>
+                      </thead>
+                      <tbody>
+                        ${(data.pendingPumpRequests || []).map((reqItem) => `
+                          <tr>
+                            <td>
+                              <div style="font-family:monospace;font-weight:700">${esc(reqItem.request_no)}</div>
+                              <div class="muted" style="font-size:10.5px">${esc(reqItem.driver_name || '—')}</div>
+                            </td>
+                            <td>
+                              <div><b>${esc(reqItem.asset_code)}</b></div>
+                              <div class="muted" style="font-size:10.5px">RC:${esc(reqItem.running_chart_no || '—')} · ${reqItem.meter_reading ? fmtNum(reqItem.meter_reading, 1) : '—'}</div>
+                            </td>
+                            <td style="text-align:right">
+                              <div style="color:#0369a1;font-weight:700">${reqItem.recommended_litres != null ? fmtNum(reqItem.recommended_litres, 1) + 'L rec' : 'No norm'}</div>
+                              <div>${reqItem.is_full_tank ? '<span class="badge" style="background:#7c3aed;color:#fff;font-size:10px">FULL TANK</span>' : `<b>${fmtNum(reqItem.requested_litres, 1)} L req</b>`}</div>
+                            </td>
+                            <td style="text-align:right">
+                              ${canIssueFuel ? `<button class="btn sm primary sc-pump-dispense" data-req-id="${esc(reqItem.id)}">⛽ ${reqItem.is_full_tank ? 'Full Tank Qty' : 'Dispense'}</button>` : ''}
+                            </td>
+                          </tr>
+                        `).join('')}
+                      </tbody>
+                    </table>
+                  ` : `
+                    <div class="muted" style="padding:20px;text-align:center;border:1px dashed var(--border);border-radius:8px">
+                      No approved Fuel Requests awaiting pump dispatch for <b>${esc(activeTank ? activeTank.name : 'this pump')}</b>.<br>
+                      ${canRaiseReq
+                        ? '<a href="#/transport-fuel" style="font-weight:600">Create a Transport Fuel &amp; Running Chart Request →</a>'
+                        : '<span style="font-size:11.5px">Ask your Site Fuel Requester to raise a fuel request first.</span>'}
                     </div>
-                    <div>
-                      <label style="font-size:11px;font-weight:600">Driver / Operator</label>
-                      <input type="text" id="sc_driver" class="input sm" placeholder="Operator" style="width:100%">
-                    </div>
-                    <div>
-                      <label style="font-size:11px;font-weight:600">Date (14d Max Backdate)</label>
-                      <input type="date" id="sc_date" class="input sm" value="${new Date().toISOString().slice(0, 10)}" style="width:100%">
-                    </div>
-                  </div>
-                  <button type="submit" class="btn primary sm" style="align-self:flex-start">⛽ Record Site Bowser Issue</button>
-                </form>
+                  `}
+                </div>
               </div>
 
-              <!-- 2. Log Bulk Tank Refuel Delivery -->
+              <!-- SECTION 2: Fuel Add Section (Receive Bulk Fuel into Tank) -->
               <div class="card" style="padding:16px">
-                <h3 style="margin:0 0 10px 0;font-size:15px">🚛 2. Receive Bulk Fuel Delivery into Tank</h3>
+                <h3 style="margin:0 0 4px 0;font-size:15px">🚛 2. Fuel Add Section — Receive Fuel into Tank</h3>
+                <div class="muted" style="font-size:11px;margin-bottom:10px">Add received bulk fuel deliveries into <b>${esc(activeTank ? activeTank.name : 'assigned tank')}</b></div>
+                ${canRefillTank ? `
                 <form id="sc_form_refuel" style="display:flex;flex-direction:column;gap:10px">
                   <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
                     <div>
-                      <label style="font-size:11px;font-weight:600">Litres Delivered *</label>
-                      <input type="number" step="1" id="sc_del_litres" required class="input sm" placeholder="e.g. 6600" style="width:100%">
+                      <label style="font-size:11px;font-weight:600">Litres Received *</label>
+                      <input type="number" step="1" min="1" id="sc_del_litres" required class="input sm" placeholder="e.g. 6600" style="width:100%">
                     </div>
                     <div>
-                      <label style="font-size:11px;font-weight:600">Price / L (Rs)</label>
-                      <input type="number" step="0.01" id="sc_del_price" class="input sm" value="341.00" style="width:100%">
+                      <label style="font-size:11px;font-weight:600">Rate / L (Rs)</label>
+                      <input type="number" step="0.01" min="1" id="sc_del_price" class="input sm" value="${defaultRateRs}" style="width:100%">
                     </div>
                   </div>
                   <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px">
@@ -944,74 +1352,177 @@
                     </div>
                     <div>
                       <label style="font-size:11px;font-weight:600">Delivery Date</label>
-                      <input type="date" id="sc_del_date" class="input sm" value="${new Date().toISOString().slice(0, 10)}" style="width:100%">
+                      <input type="date" id="sc_del_date" class="input sm" value="${todayStr}" style="width:100%">
                     </div>
                   </div>
-                  <button type="submit" class="btn sm" style="align-self:flex-start;background:#059669;color:#fff;border-color:#059669">📥 Log Tank Delivery & Add Stock</button>
-                </form>
+                  <div>
+                    <label style="font-size:11px;font-weight:600">Remarks / Bowser Seal Note (optional)</label>
+                    <input type="text" id="sc_del_note" class="input sm" placeholder="e.g. Verified seal & dip before offload" style="width:100%">
+                  </div>
+                  <button type="submit" class="btn sm" style="align-self:flex-start;background:#059669;color:#fff;border-color:#059669">📥 Add Received Fuel to Tank</button>
+                </form>` : `<div class="muted" style="padding:16px">Your account does not have permission to add bulk fuel deliveries.</div>`}
               </div>
             </div>
 
-            <!-- Assigned Site Fleet + Recent Site Issues -->
-            <div style="display:grid;grid-template-columns:1fr 1.6fr;gap:14px">
+            <!-- BOTTOM ROW: Section 3 (Fuel Issue History + Admin Change Requests) & Section 4 (Fuel Add History) -->
+            <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(420px, 1fr));gap:14px;margin-bottom:16px">
+              <!-- SECTION 3: Fuel Issue History -->
               <div class="card" style="padding:14px">
-                <h3 style="margin:0 0 8px 0;font-size:14px">🚜 Vehicles Assigned to Site (${(data.siteVehicles || []).length})</h3>
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;flex-wrap:wrap;gap:6px">
+                  <div>
+                    <h3 style="margin:0;font-size:14.5px">📋 3. Fuel Issue History (${(data.recentIssues || []).length})</h3>
+                    <div class="muted" style="font-size:11px">Need to change or cancel a past issue? Click <b>Request Change</b> to notify Admin.</div>
+                  </div>
+                </div>
                 <div style="max-height:360px;overflow-y:auto">
                   <table class="table" style="width:100%;font-size:12px">
                     <thead>
-                      <tr><th>Code</th><th>Reg</th><th>Category</th><th>Hours/KM</th><th></th></tr>
+                      <tr><th>Date</th><th>Slip / Req</th><th>Vehicle</th><th style="text-align:right">Litres</th><th style="text-align:right">Cost</th><th>Meter</th><th>Driver</th><th></th></tr>
                     </thead>
                     <tbody>
-                      ${(data.siteVehicles || []).length ? data.siteVehicles.map((v) => `
+                      ${(data.recentIssues || []).length ? data.recentIssues.map((r, idx) => {
+                        const isVoid = r.is_voided === 1;
+                        const corrTag = r.correction_status === 'PENDING'
+                          ? '<span class="badge warn" style="font-size:9.5px;margin-left:3px">⏳ Admin Review</span>'
+                          : (r.correction_status === 'APPROVED' ? '<span class="badge ok" style="font-size:9.5px;margin-left:3px">✓ Changed</span>' : '');
+                        const vehHtml = (!isPumpOnly && canViewReports)
+                          ? `<a href="#" data-nolink class="sc-veh-360" data-code="${esc(r.asset_code)}" style="font-weight:700">${esc(r.asset_code)}</a>`
+                          : `<b>${esc(r.asset_code)}</b>`;
+                        return `
+                          <tr style="${isVoid ? 'opacity:0.55;background:rgba(239,68,68,0.05)' : ''}">
+                            <td style="white-space:nowrap">${esc(String(r.issue_date || '').slice(0, 10))}</td>
+                            <td style="font-family:monospace;font-size:11px">
+                              <div>${esc(r.issue_no || r.id.slice(0, 8))}</div>
+                              ${r.request_no ? `<div class="muted" style="font-size:10px">${esc(r.request_no)}</div>` : ''}
+                            </td>
+                            <td>${vehHtml}${isVoid ? ' <span class="badge danger" style="font-size:9.5px">VOID</span>' : ''}${corrTag}</td>
+                            <td style="text-align:right;font-weight:700;white-space:nowrap">${fmtNum(r.litres, 1)} L</td>
+                            <td style="text-align:right;white-space:nowrap">${fmtLkr(Number(r.total_cost_cents || r.cost_cents || 0) / 100)}</td>
+                            <td>${r.meter_reading ? fmtNum(r.meter_reading, 1) : '—'}</td>
+                            <td>${esc(r.driver_name || '—')}</td>
+                            <td style="white-space:nowrap">
+                              ${!isVoid && canReqCorr && r.correction_status !== 'PENDING'
+                                ? `<button class="btn sm sc-adj-btn" data-idx="${idx}" style="padding:2px 7px;font-size:11px">✏️ ${isAdm ? 'Adjust' : 'Req Change'}</button>`
+                                : (r.correction_status === 'PENDING' ? '<span class="muted" style="font-size:10.5px">Pending</span>' : '')}
+                            </td>
+                          </tr>
+                        `;
+                      }).join('') : '<tr><td colspan="8" class="muted" style="text-align:center;padding:18px">No fuel issues recorded on this tank yet</td></tr>'}
+                    </tbody>
+                  </table>
+                </div>
+
+                ${myCorrs.length ? `
+                  <div style="margin-top:12px;padding-top:10px;border-top:1px dashed var(--border)">
+                    <div style="font-size:12px;font-weight:700;margin-bottom:6px">📩 Issue Change Requests Sent to Admin (${myCorrs.length})</div>
+                    <div style="max-height:190px;overflow-y:auto">
+                      <table class="table" style="width:100%;font-size:11.5px">
+                        <thead>
+                          <tr><th>Date</th><th>Vehicle / Slip</th><th>Change</th><th>Reason / Admin Note</th><th>Status</th></tr>
+                        </thead>
+                        <tbody>
+                          ${myCorrs.map((mc) => {
+                            const st = mc.status === 'APPROVED'
+                              ? '<span class="badge ok">APPROVED</span>'
+                              : (mc.status === 'REJECTED' ? '<span class="badge danger">REJECTED</span>' : '<span class="badge warn">PENDING ADMIN</span>');
+                            return `
+                              <tr>
+                                <td style="white-space:nowrap">${esc(String(mc.requested_at || '').slice(0, 10))}</td>
+                                <td><b>${esc(mc.asset_code || '—')}</b><div class="muted" style="font-size:10px">${esc(mc.issue_no || '')}</div></td>
+                                <td><span class="badge" style="font-size:10px">${esc(mc.correction_type || 'EDIT')}</span> ${fmtNum(mc.before_litres, 1)}→<b>${fmtNum(mc.after_litres, 1)}L</b></td>
+                                <td><div>${esc(mc.reason || '—')}</div>${mc.review_note ? `<div class="muted" style="font-size:10px">Admin: ${esc(mc.review_note)}</div>` : ''}</td>
+                                <td>${st}</td>
+                              </tr>
+                            `;
+                          }).join('')}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                ` : ''}
+              </div>
+
+              <!-- SECTION 4: Fuel Add History (Tank Deliveries) -->
+              <div class="card" style="padding:14px">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+                  <div>
+                    <h3 style="margin:0;font-size:14.5px">📜 4. Fuel Add History — Tank Deliveries (${deliveries.length})</h3>
+                    <div class="muted" style="font-size:11px">Received bulk fuel stock added into <b>${esc(activeTank ? activeTank.name : 'this tank')}</b></div>
+                  </div>
+                </div>
+                <div style="max-height:360px;overflow-y:auto">
+                  <table class="table" style="width:100%;font-size:12px">
+                    <thead>
+                      <tr><th>Date</th><th style="text-align:right">Litres Added</th><th>Fuel</th><th>Supplier / Invoice</th><th style="text-align:right">Total Cost</th><th>Received By</th></tr>
+                    </thead>
+                    <tbody>
+                      ${deliveries.length ? deliveries.map((d) => `
                         <tr>
-                          <td><a href="#" data-nolink class="sc-veh-360" data-code="${esc(v.code)}" style="font-weight:700">${esc(v.code)}</a></td>
-                          <td>${esc(v.registration || '—')}</td>
-                          <td>${esc(v.category || '—')}</td>
-                          <td>${v.current_hours ? fmtNum(v.current_hours, 0) : '—'}</td>
-                          <td><button class="btn sm sc-quick-pick" data-code="${esc(v.code)}" style="padding:2px 6px;font-size:11px">Select</button></td>
+                          <td style="white-space:nowrap">${esc(String(d.delivery_date || '').slice(0, 10))}</td>
+                          <td style="text-align:right;font-weight:800;color:#059669;white-space:nowrap">+${fmtNum(d.litres, 1)} L</td>
+                          <td>${esc(FUEL_LABELS[d.fuel_type] || d.fuel_type || 'Auto Diesel')}</td>
+                          <td>
+                            <div style="font-weight:600">${esc(d.supplier || 'Bulk Delivery')}</div>
+                            ${d.invoice_number ? `<div class="muted" style="font-size:10.5px;font-family:monospace">${esc(d.invoice_number)}</div>` : ''}
+                            ${d.notes ? `<div class="muted" style="font-size:10.5px">${esc(d.notes)}</div>` : ''}
+                          </td>
+                          <td style="text-align:right;white-space:nowrap">${d.cost_cents ? fmtLkr(Number(d.cost_cents) / 100) : '—'}</td>
+                          <td>${esc(d.receiver_name || 'Operator')}</td>
                         </tr>
-                      `).join('') : '<tr><td colspan="5" class="muted" style="text-align:center;padding:16px">No vehicles currently allocated to this site</td></tr>'}
+                      `).join('') : '<tr><td colspan="6" class="muted" style="text-align:center;padding:18px">No bulk fuel deliveries logged for this tank yet</td></tr>'}
                     </tbody>
                   </table>
                 </div>
               </div>
-
-              <div class="card" style="padding:14px">
-                <h3 style="margin:0 0 8px 0;font-size:14px">📋 Recent Site Bowser Issues (${(data.recentIssues || []).length})</h3>
-                <div style="max-height:360px;overflow-y:auto">
-                  <table class="table" style="width:100%;font-size:12px">
-                    <thead>
-                      <tr><th>Date</th><th>Vehicle</th><th style="text-align:right">Litres</th><th>Meter</th><th>Driver</th><th></th></tr>
-                    </thead>
-                    <tbody>
-                      ${(data.recentIssues || []).length ? data.recentIssues.map((r, idx) => `
-                        <tr>
-                          <td>${esc(String(r.issue_date || '').slice(0, 10))}</td>
-                          <td><a href="#" data-nolink class="sc-veh-360" data-code="${esc(r.asset_code)}" style="font-weight:700">${esc(r.asset_code)}</a></td>
-                          <td style="text-align:right;font-weight:700">${fmtNum(r.litres, 1)} L</td>
-                          <td>${r.meter_reading ? fmtNum(r.meter_reading, 1) : '—'}</td>
-                          <td>${esc(r.driver_name || '—')}</td>
-                          <td><button class="btn sm sc-adj-btn" data-idx="${idx}" style="padding:2px 6px;font-size:11px">✏️ Adjust</button></td>
-                        </tr>
-                      `).join('') : '<tr><td colspan="6" class="muted" style="text-align:center;padding:16px">No recent issues recorded on this tank</td></tr>'}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
             </div>
+
+            ${!isPumpOnly ? `
+            <!-- Vehicles Assigned to Site (for Fuel Officers / Managers / Admins) -->
+            <div class="card" style="padding:14px">
+              <h3 style="margin:0 0 8px 0;font-size:14px">🚜 Vehicles Assigned to Site (${(data.siteVehicles || []).length})</h3>
+              <div style="max-height:260px;overflow-y:auto">
+                <table class="table" style="width:100%;font-size:12px">
+                  <thead>
+                    <tr><th>Code</th><th>Reg</th><th>Category</th><th>Hours/KM</th><th></th></tr>
+                  </thead>
+                  <tbody>
+                    ${(data.siteVehicles || []).length ? data.siteVehicles.map((v) => `
+                      <tr>
+                        <td><a href="#" data-nolink class="sc-veh-360" data-code="${esc(v.code)}" style="font-weight:700">${esc(v.code)}</a></td>
+                        <td>${esc(v.registration || '—')}</td>
+                        <td>${esc(v.category || '—')}</td>
+                        <td>${v.current_hours ? fmtNum(v.current_hours, 0) : '—'}</td>
+                        <td>${canRaiseReq ? `<button class="btn sm sc-quick-pick" data-code="${esc(v.code)}" style="padding:2px 6px;font-size:11px">Request Fuel</button>` : ''}</td>
+                      </tr>
+                    `).join('') : '<tr><td colspan="5" class="muted" style="text-align:center;padding:16px">No vehicles currently allocated to this site</td></tr>'}
+                  </tbody>
+                </table>
+              </div>
+            </div>` : ''}
           `;
 
-          qs('#sc_tank_select', box).onchange = (e) => {
-            selectedTankId = e.target.value;
-            loadConsole();
-          };
+          const tankSelectEl = qs('#sc_tank_select', box);
+          if (tankSelectEl) {
+            tankSelectEl.onchange = (e) => {
+              selectedTankId = e.target.value;
+              loadConsole();
+            };
+          }
 
           qsa('.sc-quick-pick', box).forEach((b) => {
             b.onclick = () => {
-              const inp = qs('#sc_asset', box);
-              inp.value = b.getAttribute('data-code');
-              inp.dispatchEvent(new Event('input'));
-              qs('#sc_litres', box).focus();
+              location.hash = `#/transport-fuel?tab=request`;
+            };
+          });
+          qsa('.sc-pump-dispense', box).forEach((b) => {
+            b.onclick = () => {
+              const reqObj = (data.pendingPumpRequests || []).find((x) => x.id === b.getAttribute('data-req-id'));
+              if (reqObj) {
+                window.openPumpDispatchModal(reqObj, () => {
+                  loadConsole();
+                  refreshKpis();
+                });
+              }
             };
           });
           qsa('.sc-veh-360', box).forEach((a) => {
@@ -1024,76 +1535,32 @@
             };
           });
 
-          // Live meter check inside Site Console
-          const scAsset = qs('#sc_asset', box);
-          const scMeter = qs('#sc_meter', box);
-          const scPrev = qs('#sc_meter_preview', box);
-          async function checkSiteMeter() {
-            const c = scAsset.value.trim();
-            if (!c) { scPrev.style.display = 'none'; return; }
-            try {
-              const res = await api(`/fuel/meter-check?assetCode=${encodeURIComponent(c)}&meter=${encodeURIComponent(scMeter.value)}`);
-              scPrev.style.display = 'block';
-              if (!res.found) {
-                scPrev.style.background = 'rgba(239,68,68,0.1)';
-                scPrev.innerHTML = `⚠️ Vehicle "${esc(c)}" not found in master register`;
-              } else if (!res.ok) {
-                scPrev.style.background = 'rgba(220,38,38,0.15)';
-                scPrev.innerHTML = `🛑 ${esc(res.warning)}`;
-              } else {
-                scPrev.style.background = 'rgba(16,185,129,0.1)';
-                scPrev.innerHTML = `✅ <b>${esc(res.asset.code)}</b> (${esc(res.asset.registration || res.asset.category || '')}) · Previous Meter: <b>${res.previous ? fmtNum(res.previous.reading, 1) : 'None'}</b>${res.delta != null ? ` · Delta: <b>+${fmtNum(res.delta, 1)}</b>` : ''}`;
+          const refuelForm = qs('#sc_form_refuel', box);
+          if (refuelForm) {
+            refuelForm.onsubmit = async (e) => {
+              e.preventDefault();
+              if (!activeTank) return notify('Select a tank first');
+              try {
+                await api('/fuel/site-console/refuel', {
+                  method: 'POST',
+                  body: {
+                    tankId: activeTank.id,
+                    litresDelivered: Number(qs('#sc_del_litres', box).value),
+                    pricePerLitreCents: Math.round(Number(qs('#sc_del_price', box).value || defaultRateRs) * 100),
+                    supplierName: qs('#sc_del_sup', box).value.trim(),
+                    invoiceNo: qs('#sc_del_inv', box).value.trim(),
+                    deliveryDate: qs('#sc_del_date', box).value,
+                    note: (qs('#sc_del_note', box) && qs('#sc_del_note', box).value.trim()) || undefined,
+                  },
+                });
+                toast('Received fuel added to tank & logged in Fuel Add History!');
+                loadConsole();
+                refreshKpis();
+              } catch (err) {
+                notify('Delivery error: ' + err.message);
               }
-            } catch (_) {}
+            };
           }
-          scAsset.oninput = checkSiteMeter;
-          scMeter.oninput = checkSiteMeter;
-
-          qs('#sc_form_issue', box).onsubmit = async (e) => {
-            e.preventDefault();
-            try {
-              await api('/fuel/site-console/issue', {
-                method: 'POST',
-                body: {
-                  assetCode: scAsset.value.trim(),
-                  litres: Number(qs('#sc_litres', box).value),
-                  meterReading: scMeter.value !== '' ? Number(scMeter.value) : null,
-                  driverName: qs('#sc_driver', box).value.trim() || null,
-                  issueDate: qs('#sc_date', box).value,
-                  sourceTankId: activeTank ? activeTank.id : null,
-                  targetProjectId: activeProj ? activeProj.id : (activeTank ? activeTank.project_id : null),
-                },
-              });
-              toast('Site fuel issue recorded & deducted from bowser!');
-              loadConsole();
-              refreshKpis();
-            } catch (err) {
-              alert('Site issue error: ' + err.message);
-            }
-          };
-
-          qs('#sc_form_refuel', box).onsubmit = async (e) => {
-            e.preventDefault();
-            if (!activeTank) return alert('Select a tank first');
-            try {
-              await api('/fuel/site-console/refuel', {
-                method: 'POST',
-                body: {
-                  tankId: activeTank.id,
-                  litresDelivered: Number(qs('#sc_del_litres', box).value),
-                  pricePerLitreCents: Math.round(Number(qs('#sc_del_price', box).value || 341) * 100),
-                  supplierName: qs('#sc_del_sup', box).value.trim(),
-                  invoiceNo: qs('#sc_del_inv', box).value.trim(),
-                  deliveryDate: qs('#sc_del_date', box).value,
-                },
-              });
-              toast('Tank delivery logged & stock incremented!');
-              loadConsole();
-              refreshKpis();
-            } catch (err) {
-              alert('Delivery error: ' + err.message);
-            }
-          };
         } catch (err) {
           box.innerHTML = `<div class="card err" style="padding:24px">${esc(err.message)}</div>`;
         }
@@ -1106,7 +1573,7 @@
     // TAB 4: SITE FUEL OVERVIEW, SPARKLINES & BUDGETS
     // =========================================================================
     async function renderSitesOverviewTab(box) {
-      let curMonth = '2026-08';
+      let curMonth = localTodayStr().slice(0, 7);
 
       async function loadOverview() {
         box.innerHTML = `<div class="card muted" style="padding:24px;text-align:center">Loading Site Fuel Overview & Budgets...</div>`;
@@ -1214,7 +1681,7 @@
                 toast(`Updated monthly fuel budget for ${name}`);
                 loadOverview();
               } catch (err) {
-                alert('Budget error: ' + err.message);
+                notify('Budget error: ' + err.message);
               }
             };
           });
@@ -1269,7 +1736,7 @@
             <div style="max-height:300px;overflow-y:auto">
               <table class="table" style="width:100%;font-size:12px">
                 <thead>
-                  <tr><th>Date</th><th>Slip #</th><th>Vehicle</th><th style="text-align:right">Litres</th><th style="text-align:right">Cost</th><th>Meter</th><th>Tank / Source</th><th>Driver</th></tr>
+                  <tr><th>Date</th><th>Slip #</th><th>Vehicle</th><th style="text-align:right">Litres</th><th style="text-align:right">Rate (Rs/L)</th><th style="text-align:right">Cost</th><th>Meter</th><th>Tank / Source</th><th>Driver</th></tr>
                 </thead>
                 <tbody>
                   ${(res.issues || []).map((i) => `
@@ -1278,6 +1745,7 @@
                       <td>${esc(i.issue_no || i.id.slice(0, 8))}</td>
                       <td><b>${esc(i.asset_code)}</b></td>
                       <td style="text-align:right;font-weight:700">${fmtNum(i.litres, 1)} L</td>
+                      <td style="text-align:right;white-space:nowrap">${fmtRateRs(effectiveFuelRateCents(i))}</td>
                       <td style="text-align:right">${fmtLkr(Number(i.total_cost_cents || i.cost_cents || 0) / 100)}</td>
                       <td>${i.meter_reading ? fmtNum(i.meter_reading, 1) : '—'}</td>
                       <td>${esc(i.tank_name || i.station_name || 'Direct')}</td>
@@ -1558,7 +2026,7 @@
               <div style="max-height:360px;overflow-y:auto">
                 <table class="table" style="width:100%;font-size:12px">
                   <thead>
-                    <tr><th>Date</th><th>Slip #</th><th style="text-align:right">Litres</th><th style="text-align:right">Cost</th><th>Meter</th><th>Tank / Source</th><th>Site</th><th>Driver</th><th>Action</th></tr>
+                    <tr><th>Date</th><th>Slip #</th><th style="text-align:right">Litres</th><th style="text-align:right">Rate (Rs/L)</th><th style="text-align:right">Cost</th><th>Meter</th><th>Tank / Source</th><th>Site</th><th>Driver</th><th>Action</th></tr>
                   </thead>
                   <tbody>
                     ${(p.issues || []).map((r, idx) => `
@@ -1566,6 +2034,7 @@
                         <td>${esc(String(r.issue_date || '').slice(0, 16))}</td>
                         <td>${esc(r.issue_no || r.id.slice(0, 8))}</td>
                         <td style="text-align:right;font-weight:700">${fmtNum(r.litres, 1)} L</td>
+                        <td style="text-align:right;white-space:nowrap">${fmtRateRs(effectiveFuelRateCents(r))}</td>
                         <td style="text-align:right">${fmtLkr(Number(r.total_cost_cents || r.cost_cents || 0) / 100)}</td>
                         <td>${r.meter_reading ? fmtNum(r.meter_reading, 1) : '—'}</td>
                         <td>${esc(r.tank_name || r.station_name || 'Direct')}</td>
@@ -1621,27 +2090,58 @@
     // TAB 6: FUEL REQUESTS QUEUE
     // =========================================================================
     async function renderRequestsTab(box) {
+      let tanks = [];
+      try {
+        const tRes = await api('/fuel/tanks').catch(() => ({ tanks: [] }));
+        tanks = (tRes.tanks || []).filter((t) => t.active !== 0);
+      } catch (_) {}
+
       box.innerHTML = `
+        <div class="card" style="padding:12px 16px;margin-bottom:14px;background:rgba(37,99,235,0.06);border:1px solid rgba(37,99,235,0.2);display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+          <div style="font-size:12.5px"><b>Full Running Chart, Recommended Fuel &amp; Cross-Check Workspace:</b> Use the dedicated Transport Fuel section for live norm calculation, Full Tank issues &amp; Excel cross-check reports.</div>
+          <a href="#/transport-fuel" class="btn sm primary">🚛 Open Transport Fuel &amp; Chart →</a>
+        </div>
         <div style="display:grid;grid-template-columns:1fr 2fr;gap:14px">
           <div class="card" style="padding:16px">
-            <h3 style="margin:0 0 10px 0;font-size:15px">📩 Raise Fuel Requisition</h3>
+            <h3 style="margin:0 0 10px 0;font-size:15px">📩 Quick Transport Requisition</h3>
             <form id="form_fuel_req" style="display:flex;flex-direction:column;gap:10px">
-              <div>
-                <label style="font-size:12px;font-weight:600">Vehicle Code *</label>
-                <input type="text" id="fr_code" required class="input sm" placeholder="e.g. LB-22, EX-01" style="width:100%">
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+                <div>
+                  <label style="font-size:12px;font-weight:600">Vehicle Code *</label>
+                  <input type="text" id="fr_code" required class="input sm" placeholder="e.g. LB-22, EX-01" style="width:100%">
+                </div>
+                <div>
+                  <label style="font-size:12px;font-weight:600">Running Chart # *</label>
+                  <input type="text" id="fr_chart" required class="input sm" placeholder="RC-2026-..." style="width:100%">
+                </div>
               </div>
               <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
                 <div>
-                  <label style="font-size:12px;font-weight:600">Requested Litres *</label>
-                  <input type="number" step="1" id="fr_litres" required class="input sm" placeholder="50" style="width:100%">
+                  <label style="font-size:12px;font-weight:600">Current Meter *</label>
+                  <input type="number" step="0.1" id="fr_meter" required class="input sm" placeholder="KM / HRS" style="width:100%">
                 </div>
                 <div>
-                  <label style="font-size:12px;font-weight:600">Current Meter</label>
-                  <input type="number" step="0.1" id="fr_meter" class="input sm" placeholder="KM / HRS" style="width:100%">
+                  <label style="font-size:12px;font-weight:600">Approx KM / Hrs</label>
+                  <input type="number" step="0.1" id="fr_approx" class="input sm" placeholder="Optional / auto delta" style="width:100%">
                 </div>
               </div>
               <div>
-                <label style="font-size:12px;font-weight:600">Work Purpose / Site Note</label>
+                <label style="font-size:12px;font-weight:600">Target Tank / Pump *</label>
+                <select id="fr_tank" required class="input sm" style="width:100%">
+                  <option value="">-- Select Site Pump / Tank --</option>
+                  ${tanks.map((t) => `<option value="${esc(t.id)}">${esc(t.name)} (${esc(t.project_name || t.code)})</option>`).join('')}
+                </select>
+              </div>
+              <label style="display:flex;align-items:center;gap:6px;font-size:12px;font-weight:600;color:#6d28d9;cursor:pointer">
+                <input type="checkbox" id="fr_full_tank">
+                <span>⛽ Full Tank (enter actual litres at pump after fill)</span>
+              </label>
+              <div>
+                <label style="font-size:12px;font-weight:600">Trip Total Fuel (L)</label>
+                <input type="number" step="0.1" id="fr_litres" class="input sm" placeholder="50 (optional if Full Tank)" style="width:100%">
+              </div>
+              <div>
+                <label style="font-size:12px;font-weight:600">Work Purpose / Route Note</label>
                 <input type="text" id="fr_reason" class="input sm" placeholder="Site excavation / transport duty" style="width:100%">
               </div>
               <button type="submit" class="btn primary sm">Submit Fuel Request</button>
@@ -1652,7 +2152,7 @@
             <h3 style="margin:0 0 10px 0;font-size:15px">📋 Fuel Requisitions Queue</h3>
             <table class="table" style="width:100%;font-size:12.5px">
               <thead>
-                <tr><th>Req #</th><th>Date</th><th>Vehicle</th><th style="text-align:right">Litres</th><th>Meter</th><th>Reason</th><th>Status</th><th>Action</th></tr>
+                <tr><th>Req #</th><th>Date</th><th>Vehicle / RC</th><th style="text-align:right">Rec / Req</th><th>Meter</th><th>Pump / Site</th><th>Status</th><th>Action</th></tr>
               </thead>
               <tbody id="fr_tbody">
                 <tr><td colspan="8" class="muted" style="text-align:center;padding:20px">Loading requests...</td></tr>
@@ -1674,16 +2174,18 @@
             <tr>
               <td style="font-family:monospace;font-size:11px">${esc(r.request_no || r.id.slice(0, 8))}</td>
               <td>${esc(String(r.requested_at || '').slice(0, 10))}</td>
-              <td><b>${esc(r.asset_code)}</b></td>
-              <td style="text-align:right;font-weight:700">${fmtNum(r.requested_litres, 1)} L</td>
+              <td><b>${esc(r.asset_code)}</b><div class="muted" style="font-size:10.5px">RC:${esc(r.running_chart_no || '—')}</div></td>
+              <td style="text-align:right;font-weight:700">${r.recommended_litres != null ? fmtNum(r.recommended_litres, 1) + 'L rec / ' : ''}${r.is_full_tank ? '<span class="badge" style="background:#7c3aed;color:#fff">FULL TANK</span>' : fmtNum(r.requested_litres, 1) + ' L'}</td>
               <td>${r.meter_reading ? fmtNum(r.meter_reading, 1) : '—'}</td>
-              <td>${esc(r.reason || '—')}</td>
-              <td><span class="badge ${r.status === 'APPROVED' ? 'ok' : (r.status === 'REJECTED' ? 'danger' : 'warn')}">${esc(r.status)}</span></td>
-              <td>
+              <td>${esc(r.target_tank_name || r.station_name || r.project_name || '—')}</td>
+              <td><span class="badge ${r.status === 'FULFILLED' || r.status === 'APPROVED' ? 'ok' : (r.status === 'REJECTED' ? 'danger' : 'warn')}">${esc(r.status)}</span></td>
+              <td style="white-space:nowrap">
                 ${r.status === 'PENDING' ? `
-                  <button class="btn sm primary btn-fr-act" data-id="${esc(r.id)}" data-act="APPROVE">✅ Approve & Issue</button>
+                  <button class="btn sm primary btn-fr-act" data-id="${esc(r.id)}" data-act="APPROVE">✅ Approve</button>
                   <button class="btn sm danger btn-fr-act" data-id="${esc(r.id)}" data-act="REJECT">✕</button>
-                ` : '—'}
+                ` : (r.status === 'APPROVED' ? `
+                  <button class="btn sm primary btn-fr-dispense" data-id="${esc(r.id)}">⛽ Dispense</button>
+                ` : '—')}
               </td>
             </tr>
           `).join('');
@@ -1695,13 +2197,21 @@
               try {
                 await api(`/fuel/requests/${id}/review`, {
                   method: 'POST',
-                  body: { action: act, dispenseNow: act === 'APPROVE' },
+                  body: { action: act, dispenseNow: false },
                 });
-                toast(act === 'APPROVE' ? 'Request approved and fuel dispensed!' : 'Request rejected.');
+                toast(act === 'APPROVE' ? 'Approved and moved to Pump Dispatch Queue!' : 'Request rejected.');
                 loadReqs();
                 refreshKpis();
               } catch (err) {
-                alert(err.message);
+                notify(err.message);
+              }
+            };
+          });
+          qsa('.btn-fr-dispense', tbody).forEach((b) => {
+            b.onclick = () => {
+              const reqObj = requests.find((x) => x.id === b.getAttribute('data-id'));
+              if (reqObj && window.openPumpDispatchModal) {
+                window.openPumpDispatchModal(reqObj, () => { loadReqs(); refreshKpis(); });
               }
             };
           });
@@ -1713,21 +2223,27 @@
       qs('#form_fuel_req', box).onsubmit = async (e) => {
         e.preventDefault();
         try {
+          const isFull = qs('#fr_full_tank', box).checked;
+          const rawLit = qs('#fr_litres', box).value;
           await api('/fuel/requests', {
             method: 'POST',
             body: {
               assetCode: qs('#fr_code', box).value.trim(),
-              requestedLitres: Number(qs('#fr_litres', box).value),
-              meterReading: qs('#fr_meter', box).value !== '' ? Number(qs('#fr_meter', box).value) : null,
-              reason: qs('#fr_reason', box).value.trim(),
+              runningChartNo: qs('#fr_chart', box).value.trim(),
+              meterReading: Number(qs('#fr_meter', box).value),
+              approxKm: qs('#fr_approx', box).value !== '' ? Number(qs('#fr_approx', box).value) : null,
+              targetTankId: qs('#fr_tank', box).value,
+              isFullTank: isFull,
+              tripTotalFuel: rawLit !== '' ? Number(rawLit) : null,
+              tripPurpose: qs('#fr_reason', box).value.trim() || null,
             },
           });
-          toast('Fuel request submitted!');
+          toast('Transport fuel request submitted!');
           qs('#form_fuel_req', box).reset();
           loadReqs();
           refreshKpis();
         } catch (err) {
-          alert(err.message);
+          notify(err.message);
         }
       };
 
