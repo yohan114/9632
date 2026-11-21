@@ -437,6 +437,8 @@ backup_sqlite_safe() {
   rm -f "$dst" "${dst}-wal" "${dst}-shm"
   sqlite3 "$src" ".timeout 10000" ".backup $dst"
   [ -f "$dst" ] || die "Failed to snapshot SQLite DB: $src -> $dst"
+  sqlite3 "$dst" "PRAGMA journal_mode=DELETE;" >/dev/null
+  rm -f "${dst}-wal" "${dst}-shm"
 }
 
 cmd_rehearsal() {

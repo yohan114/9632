@@ -321,6 +321,7 @@ test('4. Linux VPS deploy artifacts enforce LF line endings, valid ports/hostnam
   assert.ok(cutoverSh.includes('DATABASE_URL'));
   assert.ok(cutoverSh.includes('/var/lib/fuel-system/app.db'));
   assert.ok(cutoverSh.includes('mfa.key'));
+  assert.ok(cutoverSh.includes('PRAGMA journal_mode=DELETE;'));
   assert.ok(cutoverSh.includes('FUEL_PM2_MODE'));
   assert.equal(/systemctl\s+(stop|disable).*pm2-root/.test(cutoverSh), false, 'Must NEVER stop or disable pm2-root.service (sibling apps share it)');
 });
