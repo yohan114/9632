@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 # =============================================================================
 # WorkshopOne Unified VPS Cutover & Rehearsal Helper
+# Target Unified Domain: erp.edchristerp.com
+# Legacy Redirects:      storesdb.ec-workshops.online & fuelsystem.ec-workshops.online
+#
 # Subcommands:
-#   preflight   Read-only inspection of live WorkshopOne, Fuel-System-V2, Nginx, and paths
+#   preflight   Read-only inspection of live WorkshopOne, Fuel-System-V2, DNS, TLS, and Nginx
 #   rehearsal   Zero-downtime Phase A online snapshot merge + parity check in /tmp
 #   cutover     Guarded Phase B-C production cutover with mandatory --verify-only gate
 #   rollback    60-second Phase D emergency rollback to original WorkshopOne + Fuel-System-V2
@@ -35,9 +38,14 @@ NGINX_STORESDB="${NGINX_STORESDB:-/etc/nginx/sites-available/storesdb}"
 NGINX_STORESDB_ENABLED="${NGINX_STORESDB_ENABLED:-/etc/nginx/sites-enabled/storesdb}"
 NGINX_FUELSYSTEM="${NGINX_FUELSYSTEM:-/etc/nginx/sites-available/fuelsystem}"
 NGINX_FUELSYSTEM_ENABLED="${NGINX_FUELSYSTEM_ENABLED:-/etc/nginx/sites-enabled/fuelsystem}"
+NGINX_ERP="${NGINX_ERP:-/etc/nginx/sites-available/erp}"
+NGINX_ERP_ENABLED="${NGINX_ERP_ENABLED:-/etc/nginx/sites-enabled/erp}"
 
-PUBLIC_ORIGIN="${PUBLIC_ORIGIN:-https://storesdb.ec-workshops.online}"
-FUEL_REDIRECT_URL="${FUEL_REDIRECT_URL:-https://storesdb.ec-workshops.online/#/fuel}"
+UNIFIED_DOMAIN="${UNIFIED_DOMAIN:-erp.edchristerp.com}"
+PUBLIC_ORIGIN="${PUBLIC_ORIGIN:-https://${UNIFIED_DOMAIN}}"
+FUEL_REDIRECT_URL="${FUEL_REDIRECT_URL:-https://${UNIFIED_DOMAIN}/#/fuel}"
+ERP_SSL_CERT="${ERP_SSL_CERT:-}"
+ERP_SSL_KEY="${ERP_SSL_KEY:-}"
 NODE_BIN="${NODE_BIN:-/usr/bin/node}"
 
 AUTO_YES=0
@@ -45,9 +53,12 @@ SKIP_BROADCAST=0
 BROADCAST_SECONDS=120
 FORCE_ENV=0
 KEEP_TMP=0
+ALLOW_HTTP=0
 
 TMP_DIR=""
 CUTOVER_BAK=""
+DETECTED_ERP_CERT=""
+DETECTED_ERP_KEY=""
 
 log()  { printf '[cutover] %s\n' "$*"; }
 warn() { printf '[cutover][WARN] %s\n' "$*" >&2; }
@@ -66,7 +77,7 @@ Usage:
   sudo bash deploy/vps-cutover.sh <preflight|rehearsal|cutover|rollback> [options]
 
 Subcommands:
-  preflight   Read-only audit of live services, DB mode (single vs split), Fuel V2 DB, and Nginx.
+  preflight   Read-only audit of live services, DB mode (single vs split), Fuel V2 DB, DNS, TLS, and Nginx.
   rehearsal   Phase A (zero downtime): online sqlite3 .backup snapshots -> /tmp merge -> --verify-only.
   cutover     Phases B-C (off-peak): broadcast -> stop old apps -> cold backup -> merge -> verify gate -> switch Nginx.
   rollback    Phase D (emergency): stop unified service, restore previous Nginx configs, restart old apps.
@@ -76,6 +87,7 @@ Options:
   --skip-broadcast   Skip broadcasting 2-minute maintenance warning before stopping old apps
   --wait <seconds>   Maintenance broadcast countdown before stopping services (default: 120)
   --force-env        Overwrite /opt/workshopone-unified/app/.env cleanly from template
+  --allow-http       Allow cutover over plain HTTP (:80) if erp.edchristerp.com TLS certs are not yet installed
   --keep-tmp         Keep /tmp rehearsal directory after rehearsal completes (for inspection)
   -h, --help         Show this help
 EOF
@@ -130,6 +142,35 @@ resolve_rel_path() {
   else
     printf '%s' "$base_dir/$raw_path"
   fi
+}
+
+# Detect TLS cert & key for UNIFIED_DOMAIN (populated into DETECTED_ERP_CERT & DETECTED_ERP_KEY)
+detect_erp_tls() {
+  DETECTED_ERP_CERT=""
+  DETECTED_ERP_KEY=""
+
+  if [ -n "$ERP_SSL_CERT" ] && [ -n "$ERP_SSL_KEY" ] && [ -f "$ERP_SSL_CERT" ] && [ -f "$ERP_SSL_KEY" ]; then
+    DETECTED_ERP_CERT="$ERP_SSL_CERT"
+    DETECTED_ERP_KEY="$ERP_SSL_KEY"
+    return 0
+  fi
+
+  local -a candidates=(
+    "/etc/ssl/cloudflare/${UNIFIED_DOMAIN}.pem:/etc/ssl/cloudflare/${UNIFIED_DOMAIN}.key"
+    "/etc/ssl/cloudflare/erp.pem:/etc/ssl/cloudflare/erp.key"
+    "/etc/letsencrypt/live/${UNIFIED_DOMAIN}/fullchain.pem:/etc/letsencrypt/live/${UNIFIED_DOMAIN}/privkey.pem"
+  )
+  local pair c k
+  for pair in "${candidates[@]}"; do
+    c="${pair%%:*}"
+    k="${pair##*:}"
+    if [ -f "$c" ] && [ -f "$k" ]; then
+      DETECTED_ERP_CERT="$c"
+      DETECTED_ERP_KEY="$k"
+      return 0
+    fi
+  done
+  return 0
 }
 
 # Populates globals:
@@ -212,7 +253,7 @@ ensure_unified_dirs_and_env() {
   chown -R "$SERVICE_USER:$SERVICE_GROUP" "$UNIFIED_ROOT"
 
   if [ ! -f "$UNIFIED_APP/.env" ] || [ "$FORCE_ENV" -eq 1 ]; then
-    log "Writing clean $UNIFIED_APP/.env (PORT=$UNIFIED_PORT, DB_PATH=$UNIFIED_DB)"
+    log "Writing clean $UNIFIED_APP/.env (PORT=$UNIFIED_PORT, PUBLIC_ORIGIN=$PUBLIC_ORIGIN, DB_PATH=$UNIFIED_DB)"
     sudo -u "$SERVICE_USER" tee "$UNIFIED_APP/.env" >/dev/null <<EOF
 PORT=$UNIFIED_PORT
 HOST=127.0.0.1
@@ -225,14 +266,23 @@ BACKUP_DIR=$UNIFIED_BACKUPS
 BACKUP_INTERVAL_MINUTES=30
 BACKUP_RETENTION=96
 EOF
+  else
+    local cur_origin
+    cur_origin="$(read_env_val "$UNIFIED_APP/.env" "PUBLIC_ORIGIN")"
+    if [ "$cur_origin" != "$PUBLIC_ORIGIN" ]; then
+      warn "Existing $UNIFIED_APP/.env has PUBLIC_ORIGIN='${cur_origin}' instead of '$PUBLIC_ORIGIN'. Re-run with --force-env to update it cleanly."
+    fi
   fi
 
   local resolved
-  resolved="$(sudo -u "$SERVICE_USER" "$NODE_BIN" -e 'const c=require("'"$UNIFIED_APP"'/src/config"); console.log(c.host + "|" + c.port + "|" + c.dbPath + "|" + c.uploadDir + "|" + c.backupDir);')"
-  local r_host r_port r_db
-  IFS='|' read -r r_host r_port r_db _ _ <<< "$resolved"
+  resolved="$(sudo -u "$SERVICE_USER" "$NODE_BIN" -e 'const c=require("'"$UNIFIED_APP"'/src/config"); console.log(c.host + "|" + c.port + "|" + c.dbPath + "|" + (process.env.PUBLIC_ORIGIN || "") + "|" + c.uploadDir + "|" + c.backupDir);')"
+  local r_host r_port r_db r_origin
+  IFS='|' read -r r_host r_port r_db r_origin _ _ <<< "$resolved"
   if [ "$r_host" != "127.0.0.1" ] || [ "$r_port" != "$UNIFIED_PORT" ] || [ "$r_db" != "$UNIFIED_DB" ]; then
     die "Resolved .env mismatch ($resolved). Expected host=127.0.0.1, port=$UNIFIED_PORT, dbPath=$UNIFIED_DB. Re-run with --force-env."
+  fi
+  if [ "$r_origin" != "$PUBLIC_ORIGIN" ]; then
+    warn "Resolved PUBLIC_ORIGIN='$r_origin' differs from '$PUBLIC_ORIGIN'. Run with --force-env to update."
   fi
   log "Verified unified .env resolution: $resolved"
 }
@@ -254,7 +304,15 @@ human_size() {
 
 cmd_preflight() {
   detect_live_sources
+  detect_erp_tls
   log "=== WorkshopOne Unified VPS Preflight Report ==="
+  log "Unified domain:         $UNIFIED_DOMAIN ($PUBLIC_ORIGIN)"
+  log "DNS check ($UNIFIED_DOMAIN): $(getent ahosts "$UNIFIED_DOMAIN" 2>/dev/null | head -n 1 || echo 'UNRESOLVED')"
+  if [ -n "$DETECTED_ERP_CERT" ]; then
+    log "ERP TLS cert:           $DETECTED_ERP_CERT (key: $DETECTED_ERP_KEY)"
+  else
+    log "ERP TLS cert:           MISSING (save /etc/ssl/cloudflare/${UNIFIED_DOMAIN}.pem & .key, or pass --allow-http)"
+  fi
   log "Unified target dir:     $UNIFIED_APP (node_modules present: $([ -d "$UNIFIED_APP/node_modules" ] && echo yes || echo NO))"
   log "Unified Node binary:    $NODE_BIN ($($NODE_BIN -v 2>/dev/null || echo 'missing'))"
   log "WorkshopOne DB mode:    $WO_DB_MODE (live port=$OLD_WO_PORT)"
@@ -277,6 +335,7 @@ cmd_preflight() {
     sudo -u "$OLD_FUEL_USER" PM2_HOME="$OLD_FUEL_PM2_HOME" "$OLD_FUEL_NPX" pm2 status 2>/dev/null || warn "Could not query PM2 under $OLD_FUEL_USER"
   fi
   log "Nginx site files:"
+  log "  erp:        $NGINX_ERP ($([ -f "$NGINX_ERP" ] && echo present || echo MISSING))"
   log "  storesdb:   $NGINX_STORESDB ($([ -f "$NGINX_STORESDB" ] && echo present || echo MISSING))"
   log "  fuelsystem: $NGINX_FUELSYSTEM ($([ -f "$NGINX_FUELSYSTEM" ] && echo present || echo MISSING))"
   log "Tools: sqlite3=$(command -v sqlite3 || echo MISSING), nginx=$(command -v nginx || echo MISSING)"
@@ -379,6 +438,164 @@ stop_old_services() {
   fi
 }
 
+write_erp_unified_nginx() {
+  local tmp_out
+  tmp_out="$(mktemp)"
+  local realip_line=""
+  if [ -f /etc/nginx/cloudflare-real-ip.conf ]; then
+    realip_line="    include /etc/nginx/cloudflare-real-ip.conf;"
+  fi
+
+  if [ -n "$DETECTED_ERP_CERT" ] && [ -n "$DETECTED_ERP_KEY" ]; then
+    log "Writing HTTPS + HTTP Nginx config for $UNIFIED_DOMAIN -> 127.0.0.1:$UNIFIED_PORT ($DETECTED_ERP_CERT)"
+    cat >"$tmp_out" <<EOF
+# $UNIFIED_DOMAIN -> WorkshopOne Unified (127.0.0.1:$UNIFIED_PORT)
+server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name $UNIFIED_DOMAIN;
+
+$realip_line
+    ssl_certificate     $DETECTED_ERP_CERT;
+    ssl_certificate_key $DETECTED_ERP_KEY;
+    ssl_protocols TLSv1.2 TLSv1.3;
+
+    location / {
+        proxy_pass http://127.0.0.1:$UNIFIED_PORT;
+        proxy_http_version 1.1;
+
+        proxy_set_header Host              \$host;
+        proxy_set_header X-Real-IP         \$remote_addr;
+        proxy_set_header X-Forwarded-For   \$remote_addr;
+        proxy_set_header X-Forwarded-Proto https;
+
+        proxy_set_header Upgrade    \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_read_timeout 3600s;
+    }
+
+    client_max_body_size 25m;
+}
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name $UNIFIED_DOMAIN;
+
+    location ^~ /.well-known/acme-challenge/ {
+        root /var/www/html;
+        default_type "text/plain";
+    }
+
+    location / {
+        return 301 https://$UNIFIED_DOMAIN\$request_uri;
+    }
+}
+EOF
+  else
+    warn "No origin TLS cert found for $UNIFIED_DOMAIN (--allow-http active): configuring HTTP-only proxy on :80"
+    cat >"$tmp_out" <<EOF
+# $UNIFIED_DOMAIN -> WorkshopOne Unified (127.0.0.1:$UNIFIED_PORT, HTTP bootstrap mode)
+server {
+    listen 80;
+    listen [::]:80;
+    server_name $UNIFIED_DOMAIN;
+
+$realip_line
+    location ^~ /.well-known/acme-challenge/ {
+        root /var/www/html;
+        default_type "text/plain";
+    }
+
+    location / {
+        proxy_pass http://127.0.0.1:$UNIFIED_PORT;
+        proxy_http_version 1.1;
+
+        proxy_set_header Host              \$host;
+        proxy_set_header X-Real-IP         \$remote_addr;
+        proxy_set_header X-Forwarded-For   \$remote_addr;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+
+        proxy_set_header Upgrade    \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_read_timeout 3600s;
+    }
+
+    client_max_body_size 25m;
+}
+EOF
+  fi
+
+  install -m 644 "$tmp_out" "$NGINX_ERP"
+  rm -f "$tmp_out"
+  ln -sf "$NGINX_ERP" "$NGINX_ERP_ENABLED"
+}
+
+write_storesdb_redirect_nginx() {
+  local src_conf="$NGINX_STORESDB"
+  local tmp_out
+  tmp_out="$(mktemp)"
+
+  if [ -f "$src_conf" ]; then
+    local top_realip=""
+    if grep -Eq '^[[:space:]]*include[[:space:]]+/etc/nginx/cloudflare-real-ip\.conf;' "$src_conf"; then
+      top_realip="include /etc/nginx/cloudflare-real-ip.conf;"
+    fi
+    local ssl_cert ssl_key
+    ssl_cert="$(awk '/^[[:space:]]*ssl_certificate[[:space:]]+/{sub(/;/,"",$2); print $2; exit}' "$src_conf" || true)"
+    ssl_key="$(awk '/^[[:space:]]*ssl_certificate_key[[:space:]]+/{sub(/;/,"",$2); print $2; exit}' "$src_conf" || true)"
+
+    {
+      echo "# storesdb.ec-workshops.online -> redirect to Unified ERP (https://$UNIFIED_DOMAIN)"
+      [ -n "$top_realip" ] && echo "$top_realip"
+      if [ -n "$ssl_cert" ] && [ -n "$ssl_key" ] && [ -f "$ssl_cert" ] && [ -f "$ssl_key" ]; then
+        cat <<EOF
+
+server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name storesdb.ec-workshops.online;
+
+    ssl_certificate     $ssl_cert;
+    ssl_certificate_key $ssl_key;
+    ssl_protocols TLSv1.2 TLSv1.3;
+
+    location / {
+        return 302 https://${UNIFIED_DOMAIN}\$request_uri;
+    }
+}
+EOF
+      fi
+      cat <<EOF
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name storesdb.ec-workshops.online 20.204.51.43 _;
+
+    location ^~ /.well-known/acme-challenge/ {
+        root /var/www/html;
+        default_type "text/plain";
+    }
+
+    location / {
+        return 302 https://${UNIFIED_DOMAIN}\$request_uri;
+    }
+}
+EOF
+    } >"$tmp_out"
+    install -m 644 "$tmp_out" "$NGINX_STORESDB"
+    rm -f "$tmp_out"
+    ln -sf "$NGINX_STORESDB" "$NGINX_STORESDB_ENABLED"
+    return 0
+  fi
+
+  rm -f "$tmp_out"
+  cp "$UNIFIED_APP/deploy/nginx-storesdb-redirect.conf" "$NGINX_STORESDB"
+  chmod 644 "$NGINX_STORESDB"
+  ln -sf "$NGINX_STORESDB" "$NGINX_STORESDB_ENABLED"
+}
+
 write_fuelsystem_redirect_nginx() {
   local src_conf="$NGINX_FUELSYSTEM"
   local tmp_out
@@ -441,6 +658,12 @@ restore_nginx_from_backup() {
   log "Restoring Nginx site configs from $bak_nginx..."
   [ -f "$bak_nginx/storesdb" ] && cp "$bak_nginx/storesdb" "$NGINX_STORESDB"
   [ -f "$bak_nginx/fuelsystem" ] && cp "$bak_nginx/fuelsystem" "$NGINX_FUELSYSTEM"
+  if [ -f "$bak_nginx/erp" ]; then
+    cp "$bak_nginx/erp" "$NGINX_ERP"
+    ln -sf "$NGINX_ERP" "$NGINX_ERP_ENABLED"
+  elif [ -f "$bak_nginx/erp.absent" ]; then
+    rm -f "$NGINX_ERP_ENABLED" "$NGINX_ERP"
+  fi
 }
 
 cmd_cutover() {
@@ -450,12 +673,17 @@ cmd_cutover() {
   require_cmd curl
   require_cmd "$NODE_BIN"
 
+  detect_erp_tls
+  if [ -z "$DETECTED_ERP_CERT" ] && [ "$ALLOW_HTTP" -eq 0 ]; then
+    die "No TLS certificate found for $UNIFIED_DOMAIN before stopping live services. Save Cloudflare Origin Cert to /etc/ssl/cloudflare/${UNIFIED_DOMAIN}.pem & /etc/ssl/cloudflare/${UNIFIED_DOMAIN}.key (or set ERP_SSL_CERT/ERP_SSL_KEY, or pass --allow-http for temporary plain HTTP)."
+  fi
+
   detect_live_sources
   ensure_unified_dirs_and_env
   check_unified_dependencies
   [ -f "$OLD_FUEL_DB" ] || die "Fuel V2 DB not found: $OLD_FUEL_DB"
 
-  confirm_phrase "CUTOVER" "Stop old WorkshopOne ($OLD_WO_SERVICE) + Fuel V2 (PM2), archive cold snapshots, merge into $UNIFIED_DB, verify parity, and switch live Nginx traffic to :$UNIFIED_PORT"
+  confirm_phrase "CUTOVER" "Stop old WorkshopOne ($OLD_WO_SERVICE) + Fuel V2 (PM2), archive cold snapshots, merge into $UNIFIED_DB, verify parity, bring up https://$UNIFIED_DOMAIN on :$UNIFIED_PORT, and redirect storesdb + fuelsystem"
 
   # Step 1: Optional maintenance broadcast
   if [ "$SKIP_BROADCAST" -eq 0 ]; then
@@ -468,7 +696,7 @@ cmd_cutover() {
     if [ -n "$bscript" ] && systemctl is-active "$OLD_WO_SERVICE" >/dev/null 2>&1; then
       log "Broadcasting ${BROADCAST_SECONDS}s maintenance notice on 127.0.0.1:$OLD_WO_PORT..."
       PORT="$OLD_WO_PORT" "$NODE_BIN" "$bscript" "$BROADCAST_SECONDS" \
-        "System upgrading to unified WorkshopOne + Fuel Suite. Please save and finish your entry now." --no-wait \
+        "System upgrading to unified ERP (https://${UNIFIED_DOMAIN}). Please save and finish your entry now." --no-wait \
         || warn "Maintenance broadcast endpoint unavailable on :$OLD_WO_PORT; waiting manually..."
       sleep "$BROADCAST_SECONDS"
     fi
@@ -508,6 +736,11 @@ cmd_cutover() {
 
   [ -f "$NGINX_STORESDB" ] && cp "$NGINX_STORESDB" "$CUTOVER_BAK/nginx/storesdb"
   [ -f "$NGINX_FUELSYSTEM" ] && cp "$NGINX_FUELSYSTEM" "$CUTOVER_BAK/nginx/fuelsystem"
+  if [ -f "$NGINX_ERP" ]; then
+    cp "$NGINX_ERP" "$CUTOVER_BAK/nginx/erp"
+  else
+    touch "$CUTOVER_BAK/nginx/erp.absent"
+  fi
 
   # Step 4: Execute final production merge & attachment sync
   local -a file_args=()
@@ -556,17 +789,13 @@ cmd_cutover() {
   log "Unified health check passed on http://127.0.0.1:$UNIFIED_PORT/api/health"
 
   # Step 7: Switch Nginx traffic safely (with automatic backup restore if nginx -t fails)
-  if [ -f "$NGINX_STORESDB" ] && grep -Eq '127\.0\.0\.1:(3000|1929)' "$NGINX_STORESDB"; then
-    log "Updating $NGINX_STORESDB proxy_pass to 127.0.0.1:$UNIFIED_PORT..."
-    sed -E -i "s|127\.0\.0\.1:(3000|1929)|127.0.0.1:$UNIFIED_PORT|g" "$NGINX_STORESDB"
-  else
-    log "Installing $UNIFIED_APP/deploy/nginx-storesdb-unified.conf to $NGINX_STORESDB..."
-    cp "$UNIFIED_APP/deploy/nginx-storesdb-unified.conf" "$NGINX_STORESDB"
-    chmod 644 "$NGINX_STORESDB"
-    ln -sf "$NGINX_STORESDB" "$NGINX_STORESDB_ENABLED"
-  fi
+  log "Configuring unified Nginx vhost ($NGINX_ERP) for $UNIFIED_DOMAIN -> 127.0.0.1:$UNIFIED_PORT..."
+  write_erp_unified_nginx
 
-  log "Configuring $NGINX_FUELSYSTEM temporary 302 redirect to $FUEL_REDIRECT_URL..."
+  log "Configuring $NGINX_STORESDB redirect to https://$UNIFIED_DOMAIN..."
+  write_storesdb_redirect_nginx
+
+  log "Configuring $NGINX_FUELSYSTEM redirect to $FUEL_REDIRECT_URL..."
   write_fuelsystem_redirect_nginx
 
   if ! nginx -t; then
@@ -583,8 +812,10 @@ cmd_cutover() {
   # Step 9: Smoke checks
   log "Running final local & Host-header smoke checks..."
   curl -fsS "http://127.0.0.1:$UNIFIED_PORT/api/health" && echo ""
+  curl -sI -H "Host: $UNIFIED_DOMAIN" http://127.0.0.1/ | head -n 5 || true
+  curl -sI -H "Host: storesdb.ec-workshops.online" http://127.0.0.1/ | head -n 5 || true
   curl -sI -H "Host: fuelsystem.ec-workshops.online" http://127.0.0.1/ | head -n 5 || true
-  log "CUTOVER COMPLETE! Cold backups preserved at: $CUTOVER_BAK"
+  log "CUTOVER COMPLETE! Live URL: $PUBLIC_ORIGIN | Cold backups preserved at: $CUTOVER_BAK"
 }
 
 cmd_rollback() {
@@ -606,7 +837,7 @@ cmd_rollback() {
     restore_nginx_from_backup "$bak_dir/nginx"
     nginx -t && systemctl reload nginx
   else
-    warn "No saved Nginx backup directory found; verify $NGINX_STORESDB and $NGINX_FUELSYSTEM manually."
+    warn "No saved Nginx backup directory found; verify $NGINX_ERP, $NGINX_STORESDB, and $NGINX_FUELSYSTEM manually."
   fi
 
   log "Re-enabling and starting $OLD_WO_SERVICE..."
@@ -642,6 +873,7 @@ while [ "$#" -gt 0 ]; do
       BROADCAST_SECONDS="$1"
       ;;
     --force-env) FORCE_ENV=1 ;;
+    --allow-http) ALLOW_HTTP=1 ;;
     --keep-tmp) KEEP_TMP=1 ;;
     -h|--help) usage; exit 0 ;;
     *) die "Unknown option: $1" ;;

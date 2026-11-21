@@ -55,7 +55,7 @@
     const current = window.WORKSHOPONE_API_BASE || '';
     const input = prompt(
       'WorkshopOne server address.\n\n' +
-      'Over the internet:  https://storesdb.ec-workshops.online\n' +
+      'Over the internet:  https://erp.edchristerp.com\n' +
       'On the workshop network:  http://192.168.8.200:3000',
       current
     );

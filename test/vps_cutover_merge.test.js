@@ -258,7 +258,8 @@ test('4. Linux VPS deploy artifacts enforce LF line endings, valid ports/hostnam
   const linuxArtifacts = [
     path.join(ROOT_DIR, '.gitattributes'),
     path.join(ROOT_DIR, 'deploy', 'workshopone-unified.service'),
-    path.join(ROOT_DIR, 'deploy', 'nginx-storesdb-unified.conf'),
+    path.join(ROOT_DIR, 'deploy', 'nginx-erp-unified.conf'),
+    path.join(ROOT_DIR, 'deploy', 'nginx-storesdb-redirect.conf'),
     path.join(ROOT_DIR, 'deploy', 'nginx-fuelsystem-redirect.conf'),
     path.join(ROOT_DIR, 'deploy', 'vps-cutover.sh'),
   ];
@@ -272,17 +273,32 @@ test('4. Linux VPS deploy artifacts enforce LF line endings, valid ports/hostnam
   assert.match(serviceTxt, /^User=workshopone$/m);
   assert.match(serviceTxt, /^WorkingDirectory=\/opt\/workshopone-unified\/app$/m);
   assert.match(serviceTxt, /^ExecStart=\/usr\/bin\/node src\/server\.js$/m);
+  assert.match(serviceTxt, /PUBLIC_ORIGIN=https:\/\/erp\.edchristerp\.com/);
   assert.equal(/Environment=(HOST|PORT|DB_PATH)=/.test(serviceTxt), false, 'HOST/PORT/DB_PATH must live in .env, not systemd unit');
 
-  const storesNginx = fs.readFileSync(path.join(ROOT_DIR, 'deploy', 'nginx-storesdb-unified.conf'), 'utf8');
-  assert.match(storesNginx, /server_name\s+storesdb\.ec-workshops\.online;/);
-  assert.match(storesNginx, /proxy_pass\s+http:\/\/127\.0\.0\.1:3400;/);
-  assert.match(storesNginx, /listen\s+443\s+ssl\s+http2;/);
-  assert.equal(/\bhttp2\s+on;/.test(storesNginx), false, 'Avoid standalone http2 on; for nginx 1.18/1.24 compatibility');
+  const erpNginx = fs.readFileSync(path.join(ROOT_DIR, 'deploy', 'nginx-erp-unified.conf'), 'utf8');
+  assert.match(erpNginx, /server_name\s+erp\.edchristerp\.com;/);
+  assert.match(erpNginx, /proxy_pass\s+http:\/\/127\.0\.0\.1:3400;/);
+  assert.match(erpNginx, /listen\s+443\s+ssl\s+http2;/);
+  assert.ok(erpNginx.includes('/etc/ssl/cloudflare/erp.edchristerp.com.pem'));
+  assert.match(erpNginx, /location\s+\^~\s+\/\.well-known\/acme-challenge\//);
+  assert.equal(/\bhttp2\s+on;/.test(erpNginx), false, 'Avoid standalone http2 on; for nginx 1.18/1.24 compatibility');
+  assert.equal(/\bdefault_server\b/.test(erpNginx), false);
+  const firstServerIdx = erpNginx.indexOf('server {');
+  assert.ok(firstServerIdx >= 0);
+  assert.equal(erpNginx.slice(0, firstServerIdx).includes('cloudflare-real-ip.conf'), false, 'No top-level cloudflare-real-ip.conf outside server {}');
+  assert.equal(/cloudflare-realip\.conf/.test(erpNginx), false);
+  assert.equal(/map\s+\$connection_upgrade/.test(erpNginx), false);
+
+  const storesRedirect = fs.readFileSync(path.join(ROOT_DIR, 'deploy', 'nginx-storesdb-redirect.conf'), 'utf8');
+  assert.match(storesRedirect, /server_name\s+storesdb\.ec-workshops\.online/);
+  assert.match(storesRedirect, /return\s+302\s+https:\/\/erp\.edchristerp\.com\$request_uri;/);
+  assert.match(storesRedirect, /listen\s+443\s+ssl\s+http2;/);
+  assert.equal(/\bhttp2\s+on;/.test(storesRedirect), false);
 
   const fuelNginx = fs.readFileSync(path.join(ROOT_DIR, 'deploy', 'nginx-fuelsystem-redirect.conf'), 'utf8');
   assert.match(fuelNginx, /server_name\s+fuelsystem\.ec-workshops\.online;/);
-  assert.match(fuelNginx, /return\s+302\s+https:\/\/storesdb\.ec-workshops\.online\/#\/fuel;/);
+  assert.match(fuelNginx, /return\s+302\s+https:\/\/erp\.edchristerp\.com\/#\/fuel;/);
   assert.match(fuelNginx, /location\s+\^~\s+\/\.well-known\/acme-challenge\//);
   assert.equal(/\bdefault_server\b/.test(fuelNginx), false);
   assert.equal(/\bhttp2\s+on;/.test(fuelNginx), false);
@@ -292,6 +308,9 @@ test('4. Linux VPS deploy artifacts enforce LF line endings, valid ports/hostnam
   const cutoverSh = fs.readFileSync(path.join(ROOT_DIR, 'deploy', 'vps-cutover.sh'), 'utf8');
   assert.ok(cutoverSh.startsWith('#!/usr/bin/env bash\n'));
   assert.match(cutoverSh, /^set -Eeuo pipefail$/m);
+  assert.ok(cutoverSh.includes('UNIFIED_DOMAIN="${UNIFIED_DOMAIN:-erp.edchristerp.com}"'));
+  assert.ok(cutoverSh.includes('detect_erp_tls'));
+  assert.ok(cutoverSh.includes('--allow-http'));
   for (const cmd of ['preflight', 'rehearsal', 'cutover', 'rollback']) {
     assert.ok(cutoverSh.includes(`${cmd})`), `Missing subcommand ${cmd}`);
   }

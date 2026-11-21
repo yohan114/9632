@@ -26,7 +26,7 @@ Environment=TZ=Asia/Colombo
 # 1. Do NOT define HOST, PORT, or DB_PATH in this systemd unit.
 #    /opt/workshopone-unified/app/.env owns HOST=127.0.0.1, PORT=3400, MULTIDB=0,
 #    DB_PATH=/opt/workshopone-unified/data/workshopone_merged.db, UPLOAD_DIR,
-#    BACKUP_DIR, and PUBLIC_ORIGIN=https://storesdb.ec-workshops.online.
+#    BACKUP_DIR, and PUBLIC_ORIGIN=https://erp.edchristerp.com.
 #    Process environment variables override .env in src/config.js.
 # 2. ExecStart must use the same Node.js binary used during `npm ci --omit=dev`
 #    so the compiled better-sqlite3 native module ABI matches.
