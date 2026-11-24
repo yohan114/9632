@@ -37,6 +37,86 @@ router.get(
 );
 
 router.get(
+  '/reconciliation',
+  requireAuth,
+  fuelScope.requireFuelAccess({
+    sections: ['fuel_tanks', 'fuel'],
+    level: 'view',
+    caps: ['fuel.tanks.view', 'fuel.tanks.dip', 'fuel.tanks.manage', 'fuel.console.view'],
+  }),
+  asyncHandler(async (req, res) => {
+    const scope = fuelScope.getFuelScope(req.user);
+    const summary = fuelStock.getReconciliationSummary({
+      allowedTankIds: scope.scoped ? scope.allowedTankIds : null,
+    });
+    if (scope.hideStock) {
+      summary.zero_stock_tanks = summary.zero_stock_tanks.map((t) => fuelScope.maskTankForUser(t, scope));
+    }
+    res.json(summary);
+  })
+);
+
+router.post(
+  '/opening-stock',
+  requireAuth,
+  fuelScope.requireFuelAccess({
+    sections: 'fuel_tanks',
+    level: 'edit',
+    caps: ['fuel.tanks.manage', 'fuel.tanks.dip'],
+  }),
+  asyncHandler(async (req, res) => {
+    const items = Array.isArray(req.body && req.body.items) ? req.body.items : [];
+    for (const it of items) {
+      const tankId = it && (it.tankId || it.tank_id);
+      if (tankId) fuelScope.assertTankInScope(req.user, tankId, 'set opening stock for this tank');
+    }
+    const actorId = req.user ? req.user.id : 1;
+    const result = fuelStock.bulkSetOpeningStock(items, actorId);
+    try {
+      audit.record({
+        userId: actorId,
+        entity: 'fuel_tank',
+        entityId: null,
+        action: 'fuel.tank.opening_stock_wizard',
+        after: { updated_count: result.updated_count },
+      });
+    } catch (_) {}
+    res.json({ ok: true, ...result });
+  })
+);
+
+router.post(
+  '/dips/:dipId/reconcile',
+  requireAuth,
+  fuelScope.requireFuelAccess({
+    sections: 'fuel_tanks',
+    level: 'add',
+    caps: ['fuel.tanks.manage', 'fuel.tanks.dip'],
+  }),
+  asyncHandler(async (req, res) => {
+    const dip = get('SELECT * FROM fuel_tank_dips WHERE id = ?', String(req.params.dipId));
+    if (!dip) return res.status(404).json({ error: 'Tank dip record not found' });
+    fuelScope.assertTankInScope(req.user, dip.tank_id, 'reconcile dip for this tank');
+    const actorId = req.user ? req.user.id : 1;
+    const updated = fuelStock.reconcileDip({
+      dipId: dip.id,
+      userId: actorId,
+      note: req.body && req.body.note,
+    });
+    try {
+      audit.record({
+        userId: actorId,
+        entity: 'fuel_tank',
+        entityId: null,
+        action: 'fuel.tank.dip_reconciled',
+        after: { dipId: dip.id, tankId: dip.tank_id, note: updated.reconciled_note },
+      });
+    } catch (_) {}
+    res.json({ ok: true, dip: updated });
+  })
+);
+
+router.get(
   '/:id',
   requireAuth,
   fuelScope.requireFuelAccess({

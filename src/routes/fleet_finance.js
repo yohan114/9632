@@ -39,7 +39,7 @@ function computeVehicleProfitability({ year, month, assetCode, projectId } = {})
 
   const assetWhere = assetConditions.length ? `WHERE ${assetConditions.join(' AND ')}` : '';
   const assets = all(`
-    SELECT a.id, a.ec_code, a.code, a.registration, a.brand, a.type, 'OWNED' AS ownership, a.home_project_id, a.current_project_id,
+    SELECT a.id, a.ec_code, a.code, a.registration, a.brand, a.type, COALESCE(a.ownership, 'OWNED') AS ownership, a.home_project_id, a.current_project_id,
            hp.name AS home_project_name, cp.name AS current_project_name
       FROM assets a
       LEFT JOIN projects hp ON hp.id = a.home_project_id

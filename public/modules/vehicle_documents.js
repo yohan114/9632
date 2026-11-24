@@ -333,18 +333,45 @@ function openVdocBulkImportModal(onDone) {
 }
 
 async function renderVdocUpcoming(body, sp) {
-  const days = Number(sp.get('days')) || 30;
+  const days = sp.has('days') ? Number(sp.get('days')) : 30;
   let upcoming;
+  let dash = null;
   try {
-    upcoming = await api(`/vehicle-documents/upcoming-expirations?daysAhead=${days}`);
+    const [upRes, dRes] = await Promise.all([
+      api(`/vehicle-documents/upcoming-expirations?daysAhead=${days}`),
+      api('/vehicle-documents/expiry-dashboard').catch(() => null),
+    ]);
+    upcoming = upRes;
+    dash = dRes;
   } catch (e) {
     body.innerHTML = `<div class="card err">${esc(e.message)}</div>`;
     return;
   }
 
-  const horizons = [14, 30, 60, 90];
-  const horizonButtons = horizons.map((h) => `
-    <button class="sm ${h === days ? 'primary' : ''}" data-nav="#/vehicledocuments?tab=upcoming&days=${h}">${h} Days</button>
+  const canRenew = canDo('vehicle_docs.renew');
+  const dc = (dash && dash.counts) || {};
+  const scorecard = dash ? `
+    <div class="grid section" style="grid-template-columns:repeat(auto-fit,minmax(145px,1fr));gap:10px;margin-bottom:12px">
+      <a class="card stat" href="#/vehicledocuments?tab=upcoming&days=0" style="text-decoration:none;border-left:4px solid var(--red)">
+        <span class="n" style="color:var(--red)">${dc.expired ?? 0}</span><span class="l">Expired / Overdue</span>
+      </a>
+      <a class="card stat" href="#/vehicledocuments?tab=upcoming&days=7" style="text-decoration:none;border-left:4px solid #dc2626">
+        <span class="n" style="color:#dc2626">${dc.critical_7d ?? 0}</span><span class="l">Critical (≤ 7 Days)</span>
+      </a>
+      <a class="card stat" href="#/vehicledocuments?tab=upcoming&days=14" style="text-decoration:none;border-left:4px solid var(--amber)">
+        <span class="n" style="color:var(--amber)">${dc.warning_14d ?? 0}</span><span class="l">Warning (8–14 Days)</span>
+      </a>
+      <a class="card stat" href="#/vehicledocuments?tab=upcoming&days=30" style="text-decoration:none;border-left:4px solid #2563eb">
+        <span class="n" style="color:#2563eb">${dc.upcoming_30d ?? 0}</span><span class="l">Upcoming (15–30 Days)</span>
+      </a>
+      <a class="card stat" href="#/vehicledocuments?tab=compliance" style="text-decoration:none">
+        <span class="n">${dc.missing_mandatory_count ?? 0}</span><span class="l">Missing Mandatory Certs</span>
+      </a>
+    </div>` : '';
+
+  const horizons = [[0, 'Expired Only'], [7, '7 Days'], [14, '14 Days'], [30, '30 Days'], [60, '60 Days'], [90, '90 Days']];
+  const horizonButtons = horizons.map(([h, lbl]) => `
+    <button class="sm ${h === days ? 'primary' : ''}" data-nav="#/vehicledocuments?tab=upcoming&days=${h}">${esc(lbl)}</button>
   `).join('');
 
   const toolbar = `
@@ -352,8 +379,9 @@ async function renderVdocUpcoming(body, sp) {
       <span style="font-size:13px;font-weight:600;margin-right:8px">Horizon:</span>
       ${horizonButtons}
       <div class="spacer"></div>
+      ${canRenew ? '<button type="button" class="sm primary" id="btn_vdoc_bulk_renew" style="display:none">⚡ Renew Selected (<span id="vdoc_sel_n">0</span>)</button>' : ''}
       <a href="/api/vehicle-documents/export.xlsx" class="btn sm" style="text-decoration:none">📊 Export Excel</a>
-      <span class="muted" style="font-size:12px">${upcoming.length} certificates expiring within ${days} days</span>
+      <span class="muted" style="font-size:12px">${upcoming.length} certificate${upcoming.length === 1 ? '' : 's'} ${days === 0 ? 'expired / due today' : `within ${days} days`}</span>
     </div>`;
 
   const rows = upcoming.map((u) => {
@@ -364,6 +392,7 @@ async function renderVdocUpcoming(body, sp) {
       : '<span class="muted">—</span>';
 
     return `<tr>
+      ${canRenew ? `<td style="text-align:center;width:34px"><input type="checkbox" class="vdoc-up-chk" data-docid="${u.document_id}" data-code="${esc(u.asset_code || '')}" data-dtype="${esc(u.doc_type_name || '')}"></td>` : ''}
       <td>
         <a href="#/assets/${u.asset_id}" style="font-weight:700;text-decoration:none">🚜 ${esc(u.asset_code)}</a>
         ${u.registration ? `<span style="margin-left:6px;font-size:12px;color:var(--text)">[${esc(u.registration)}]</span>` : ''}
@@ -375,23 +404,117 @@ async function renderVdocUpcoming(body, sp) {
       <td><span class="badge ${badgeCls}">${esc((u.badge && u.badge.text) || u.days_remaining + 'd')}</span></td>
       <td>${attLink}</td>
       <td style="white-space:nowrap;text-align:right">
-        ${canDo('vehicle_docs.renew') ? `<button class="sm btn-up-renew" data-id="${u.document_id}" data-name="${esc(u.doc_type_name)}" style="padding:2px 8px;font-size:11px">+ Renew</button>` : ''}
+        ${canRenew ? `<button class="sm btn-up-renew" data-id="${u.document_id}" data-name="${esc(u.doc_type_name)}" style="padding:2px 8px;font-size:11px">+ Renew</button>` : ''}
         <a href="#/assets/${u.asset_id}" class="btn sm" style="text-decoration:none;padding:2px 8px;font-size:11px">Inspect Asset</a>
       </td>
     </tr>`;
   });
 
-  body.innerHTML = toolbar + tableWrap(
-    [{ label: 'Vehicle' }, { label: 'Document Type' }, { label: 'Certificate No' }, { label: 'Valid Until' }, { label: 'Countdown' }, { label: 'Files' }, { label: 'Actions', cls: 'num' }],
-    rows,
-    { scroll: true }
-  );
+  const cols = (canRenew ? [{ label: '<input type="checkbox" id="vdoc-up-all" title="Select all">', html: true, width: '34px' }] : []).concat([
+    { label: 'Vehicle' }, { label: 'Document Type' }, { label: 'Certificate No' },
+    { label: 'Valid Until' }, { label: 'Countdown' }, { label: 'Files' }, { label: 'Actions', cls: 'num' },
+  ]);
+
+  body.innerHTML = scorecard + toolbar + tableWrap(cols, rows, { scroll: true });
+
+  const syncSelCount = () => {
+    const picked = qsa('.vdoc-up-chk:checked', body);
+    const btn = qs('#btn_vdoc_bulk_renew', body);
+    const numEl = qs('#vdoc_sel_n', body);
+    if (btn && numEl) {
+      numEl.textContent = String(picked.length);
+      btn.style.display = picked.length > 0 ? 'inline-flex' : 'none';
+    }
+  };
+  if (canRenew) {
+    const selAll = qs('#vdoc-up-all', body);
+    if (selAll) {
+      selAll.onchange = () => {
+        qsa('.vdoc-up-chk', body).forEach((chk) => { chk.checked = selAll.checked; });
+        syncSelCount();
+      };
+    }
+    qsa('.vdoc-up-chk', body).forEach((chk) => {
+      chk.onchange = () => {
+        if (!chk.checked && selAll) selAll.checked = false;
+        syncSelCount();
+      };
+    });
+    const bulkBtn = qs('#btn_vdoc_bulk_renew', body);
+    if (bulkBtn) {
+      bulkBtn.onclick = () => {
+        const selected = qsa('.vdoc-up-chk:checked', body).map((el) => ({
+          document_id: Number(el.dataset.docid),
+          asset_code: el.dataset.code,
+          doc_type_name: el.dataset.dtype,
+        }));
+        if (!selected.length) return;
+        openBulkRenewModal(selected, () => renderVdocUpcoming(body, sp));
+      };
+    }
+  }
 
   qsa('.btn-up-renew', body).forEach((btn) => {
     btn.onclick = () => showRenewDocumentModal(btn.dataset.id, btn.dataset.name, () => renderVdocUpcoming(body, sp));
   });
   qsa('.btn-up-hist', body).forEach((btn) => {
     btn.onclick = () => showDocumentHistoryModal(btn.dataset.id, btn.dataset.name);
+  });
+}
+
+function openBulkRenewModal(selected, onDone) {
+  const canVerify = isAdmin() || canDo('vehicle_docs.verify');
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const nextYear = new Date();
+  nextYear.setFullYear(nextYear.getFullYear() + 1);
+  const nextYearStr = nextYear.toISOString().slice(0, 10);
+
+  modal(`⚡ Bulk Renew ${selected.length} Statutory Document${selected.length === 1 ? '' : 's'}`, `
+    <p class="muted" style="margin-top:0;font-size:12px">Applies renewal validity dates to the ${selected.length} checked certificate(s).</p>
+    <div style="max-height:140px;overflow-y:auto;padding:8px;border:1px solid var(--border);border-radius:6px;margin-bottom:10px;font-size:12px">
+      ${selected.map((s) => `<div><b>${esc(s.asset_code)}</b> — ${esc(s.doc_type_name)} (#${s.document_id})</div>`).join('')}
+    </div>
+    <div class="row">
+      ${field('Valid From *', 'valid_from', { type: 'date', value: todayStr })}
+      ${field('Valid Until *', 'valid_until', { type: 'date', value: nextYearStr })}
+    </div>
+    <div class="row">
+      ${field('Issuer / Authority', 'issuer_name', { placeholder: 'e.g. DMT / SLIC / DriveGreen' })}
+      ${field('Cert No Prefix (optional)', 'doc_prefix', { placeholder: 'e.g. REN-2026' })}
+    </div>
+    ${field('Renewal Note', 'notes', { value: 'Bulk statutory renewal' })}
+    ${canVerify ? `
+      <label style="display:flex;align-items:center;gap:8px;margin-top:8px;cursor:pointer;font-weight:normal">
+        <input type="checkbox" id="vdbk-verify" checked style="width:auto"> ⚡ Auto-verify and activate renewed certificates immediately
+      </label>` : ''}
+    <div style="margin-top:14px;display:flex;justify-content:flex-end;gap:8px">
+      <button type="button" id="vdbk-cancel">Cancel</button>
+      <button type="button" class="primary" id="vdbk-submit">Submit ${selected.length} Renewal${selected.length === 1 ? '' : 's'}</button>
+    </div>`, (b, close) => {
+    qs('#vdbk-cancel', b).onclick = close;
+    qs('#vdbk-submit', b).onclick = async () => {
+      const f = formData(b);
+      if (!f.valid_until) return toast('Valid Until date is required', 'err');
+      const items = selected.map((s) => ({
+        document_id: s.document_id,
+        valid_from: f.valid_from || todayStr,
+        valid_until: f.valid_until,
+        issuer_name: f.issuer_name || null,
+        doc_number: f.doc_prefix ? `${f.doc_prefix}-${s.document_id}` : '',
+        notes: f.notes || 'Bulk statutory renewal',
+      }));
+      try {
+        const res = await api('/vehicle-documents/bulk-renew', {
+          method: 'POST',
+          body: { items, auto_verify: Boolean(qs('#vdbk-verify', b) && qs('#vdbk-verify', b).checked) },
+        });
+        toast(`Renewed ${res.renewed_count || 0} document(s)`, 'ok');
+        close();
+        if (onDone) onDone();
+      } catch (e) {
+        toast(e.message, 'err');
+      }
+    };
   });
 }
 

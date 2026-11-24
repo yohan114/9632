@@ -69,7 +69,10 @@ function renderOneSiteSection(summary, generatedAt, isLast) {
     const bdBadge = l.breakdownDays > 0
       ? `<div class="bd-tag">-${fmtN1(l.breakdownDays)}d BD excl.${l.breakdownDeductCents > 0 ? ` (-${fmtRs(l.breakdownDeductCents)})` : ''}</div>`
       : '';
-    const daysDisplay = (l.workingDaysHere != null && l.workingDaysInMonth && l.billingMode !== 'perday')
+    const staySub = l.stayDatesLabel && l.postedDays < l.daysInMonth
+      ? `<div class="sub">${esc(l.stayDatesLabel)}</div>`
+      : '';
+    const daysDisplay = (l.workingDaysHere != null && l.workingDaysInMonth)
       ? `${fmtN1(l.workingDaysHere)} / ${l.workingDaysInMonth}`
       : `${l.daysHere} / ${l.daysInMonth}`;
 
@@ -79,7 +82,7 @@ function renderOneSiteSection(summary, generatedAt, isLast) {
           <div class="mach-code">${esc(l.code)}</div>
           <div class="sub">${esc(l.regNo || '—')}</div>
         </td>
-        <td class="num c-days">${daysDisplay}${bdBadge}</td>
+        <td class="num c-days">${daysDisplay}${staySub}${bdBadge}</td>
         <td class="num c-cons"><div>${consStr}</div>${consSub}</td>
         <td class="num c-meter">${meterStr}</td>
         <td class="num c-bill"><div>${billStr}</div>${billSub}</td>
@@ -92,16 +95,6 @@ function renderOneSiteSection(summary, generatedAt, isLast) {
   }).join('');
 
   const callouts = [];
-  if (summary.breakdownAdjustments && summary.breakdownAdjustments.length) {
-    const bdDesc = summary.breakdownAdjustments
-      .map((b) => {
-        const dedPart = b.breakdownDeductCents > 0 ? `, -${fmtRs(b.breakdownDeductCents)} rental deducted` : '';
-        const wdPart = b.workingDaysHere != null ? `${fmtN1(b.workingDaysHere)}/${summary.workingDaysInMonth || 25} working d` : `${b.activeDays}d working`;
-        return `${b.code} (${b.spans}: -${fmtN1(b.breakdownDays)}d BD${dedPart}; ${wdPart} billed)`;
-      })
-      .join('; ');
-    callouts.push(`<p><strong>Breakdown period deductions (${summary.workingDaysInMonth || 25} working days/month base; breakdown dates deducted from rental cost):</strong> ${esc(bdDesc)}.</p>`);
-  }
   if (summary.noFuelHere && summary.noFuelHere.length) {
     const plural = summary.noFuelHere.length > 1;
     callouts.push(`<p>${esc(summary.noFuelHere.join(', '))} ${plural ? 'were' : 'was'} posted here this month but drew no fuel from this site&rsquo;s pumps, so nothing is charged for ${plural ? 'them' : 'it'} &mdash; the same rule the monthly invoice uses.</p>`);

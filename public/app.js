@@ -655,6 +655,11 @@ const LIVE_ENTITY_ROUTES = {
   mechanic: ['mechanics', 'labour', 'workshops'], labour_rate: ['labour', 'mechanics'], mechanic_alias: ['mechanics'],
   workshop: ['workshops', 'access', 'jobs'],
   workshop_tool: ['tools', 'stores'], tool_issue_log: ['tools', 'stores'], tool_scrap_request: ['tools'],
+  fuel_price: ['fuel', 'fuel-prices'],
+  fleet_bill: ['hire-billing'],
+  fleet_rate: ['hire-billing'],
+  fleet_rental_rate: ['hire-billing'],
+  billing_period_lock: ['hire-billing'],
 };
 const LIVE_AGG_ROUTES = ['dashboard', 'attention']; // aggregate views refresh on ANY change
 let _liveWired = false;
@@ -2799,45 +2804,7 @@ async function dashVehicleMonth(c, month, assetId) {
 }
 
 // ---- Assets
-routes.assets = async (c, params) => {
-  if (params[0]) return assetDetail(c, params[0]);
-  c.innerHTML = `${pageHeader('Assets')}
-    <div class="toolbar">
-      <input id="asearch" type="search" placeholder="Search vehicle no / E&C / brand / type…" style="max-width:280px">
-      <label style="display:flex;gap:6px;align-items:center;flex-direction:row;width:auto"><input type="checkbox" id="aregonly" checked style="width:auto"> Registered fleet only</label>
-      <div class="spacer"></div>
-      <span class="muted" id="acount"></span>
-      <a class="btn sm" href="/api/assets/export.xlsx">⬇ Excel</a>
-      ${canDo('assets.create') ? '<button class="primary" id="newasset">+ New Asset</button>' : ''}
-    </div>
-    <div id="atable"><div class="muted">Loading…</div></div>`;
-  const load = async () => {
-    const regOnly = qs('#aregonly').checked;
-    const list = await api('/assets?limit=10000' + (regOnly ? '&in_register=1' : ''));
-    const rows = list.map((a) => `<tr data-id="${a.id}" style="cursor:pointer">
-      <td><a href="#/assets/${a.id}">${esc(a.registration || a.code)}</a></td>
-      <td>${esc(a.ec_code || '—')}</td>
-      <td><span class="badge">${esc(a.asset_class)}</span></td>
-      <td>${esc([a.brand, a.type].filter(Boolean).join(' ') || '')}</td>
-      <td>${esc(a.current_project || '—')}</td>
-      <td><span class="badge ${a.status === 'active' ? 'green' : a.status === 'under_repair' ? 'amber' : ''}">${esc(a.status)}</span></td>
-      <td class="num">${a.open_jobs}</td>
-      <td class="num">${money(a.lifetime_cost)}</td></tr>`);
-    qs('#acount').textContent = `${list.length}${list.length === 10000 ? '+' : ''} asset${list.length === 1 ? '' : 's'}`;
-    qs('#atable').innerHTML = tableWrap(
-      [{ label: 'Code' }, { label: 'E&C No' }, { label: 'Class' }, { label: 'Type' }, { label: 'Project' }, { label: 'Status' }, { label: 'Open Jobs', num: true }, { label: 'Lifetime Cost', num: true }],
-      rows, { scroll: true });
-    const term = qs('#asearch').value.toLowerCase();
-    if (term) qsa('#atable tbody tr').forEach((tr) => { tr.style.display = tr.textContent.toLowerCase().includes(term) ? '' : 'none'; });
-  };
-  qs('#asearch').oninput = (e) => {
-    const v = e.target.value.toLowerCase();
-    qsa('#atable tbody tr').forEach((tr) => { tr.style.display = tr.textContent.toLowerCase().includes(v) ? '' : 'none'; });
-  };
-  qs('#aregonly').onchange = load;
-  if (qs('#newasset')) qs('#newasset').onclick = newAssetModal;
-  await load();
-};
+// routes.assets, openAssetTriageModal, openAssetMergeModal extracted to public/modules/asset_aliases.js
 
 async function newAssetModal() {
   const projects = await api('/projects');
@@ -3445,8 +3412,8 @@ const MONTHS = [['01', 'Jan'], ['02', 'Feb'], ['03', 'Mar'], ['04', 'Apr'], ['05
 // and all the cards (src/lib/jobs_flow.js). The job request list became the Requests tab; its own
 // pages (#/jobrequests/:id) stay.
 const JOB_TABS = [['monitor', '📊 MONITOR'], ['requests', '📨 REQUESTS'], ['ongoing', '🛠️ ONGOING'], ['finishing', '🧾 FINISHING'],
-  ['ready', '✅ READY TO CLOSE'], ['outsourcing', '⚙️ C.COM OUTSOURCED'], ['all', '🗂️ ALL CARDS']];
-const CARD_TABS = ['ongoing', 'finishing', 'ready', 'all'];
+  ['blockers', '🚧 CLOSURE BLOCKERS'], ['ready', '✅ READY TO CLOSE'], ['outsourcing', '⚙️ C.COM OUTSOURCED'], ['all', '🗂️ ALL CARDS']];
+const CARD_TABS = ['ongoing', 'finishing', 'blockers', 'ready', 'all'];
 routes.jobs = async (c, params) => {
   if (params[0]) return jobDetail(c, params[0]);
   const sp = new URLSearchParams(location.hash.split('?')[1] || '');
@@ -3470,6 +3437,7 @@ routes.jobs = async (c, params) => {
   else if (tab === 'all') res = await jobsAllCards(body, sp);
   else if (tab === 'ongoing') res = await jobsOngoing(body, sp);
   else if (tab === 'finishing') res = await jobsFinishing(body, sp);
+  else if (tab === 'blockers') res = await jobsBlockers(body, sp);
   else if (tab === 'ready') res = await jobsReady(body, sp);
   else if (tab === 'outsourcing') res = await jobsOutsourcing(body, sp);
   else res = await jobsMonitor(body);
@@ -3517,6 +3485,7 @@ async function jobsMonitor(body) {
       ${monCard(f.work_done, 'Work done, something missing', F('work_done'), 'amber')}
       ${monCard(f.partly_closed, 'Partly closed — waiting for prices', F('partly_closed'), 'amber')}
       ${monCard(f.ready, 'Ready to close', '#/jobs?tab=ready', 'green', 'nothing missing')}
+      ${monCard((f.work_done || 0) + (f.partly_closed || 0), 'Closure Blocker Dashboard', '#/jobs?tab=blockers', 'red', 'missing price, GRN, work, sign-off')}
     </div>` : ''}
     ${x ? `<h3 style="margin:14px 0 6px">Watch</h3><div class="grid">
       ${x.breakdowns_down != null ? monCard(x.breakdowns_down, 'Breakdowns still down', '#/field', 'red') : ''}
@@ -3879,6 +3848,161 @@ async function jobsReady(body, sp) {
   await load();
 }
 
+// ---- Job Card Closure Blockers Dashboard (Stage C — Pillar 1) ------------------------------------
+const JB_PILLS = [
+  ['all', 'All Open Cards'],
+  ['missing_part_price', 'Missing Part Price'],
+  ['pending_grn', 'Pending GRN'],
+  ['unissued_shelf', 'Unissued Shelf Parts'],
+  ['no_daily_work', 'No Daily Work'],
+  ['awaiting_signoff', 'Awaiting Sign-Off'],
+  ['missing_labour_rate', 'Missing Labour Rate'],
+  ['ready_to_close', 'Ready to Close'],
+];
+
+function blockerHref(kind, r) {
+  const q = encodeURIComponent(r.job_no || '');
+  if (kind === 'missing_part_price' && canView('stores')) return '#/stores?tab=price';
+  if (kind === 'pending_grn' && canView('stores')) return `#/stores?tab=flow&sub=lines&step=open&q=${q}`;
+  if (kind === 'unissued_shelf' && canView('stores')) return `#/stores?tab=flow&sub=lines&step=ready&q=${q}`;
+  if (kind === 'missing_labour_rate' && canView('labour')) return '#/labour';
+  if (kind === 'awaiting_signoff') return '#/jobs?tab=requests';
+  return r.link || `#/jobs/${r.id}`;
+}
+
+function blockerBadgesHtml(r, compact = false) {
+  const list = r.blockers || [];
+  if (!list.length) return '<span class="muted" style="font-size:11px">—</span>';
+  return list.map((b) => {
+    const tone = b.tone === 'red' ? 'red' : (b.tone === 'green' ? 'green' : (b.tone === 'blue' ? 'blue' : 'amber'));
+    const cnt = b.kind !== 'ready_to_close' && b.count > 1 ? ` (${b.count})` : '';
+    const href = blockerHref(b.kind, r);
+    const pad = compact ? 'font-size:10.5px;padding:1px 6px' : '';
+    return `<a href="${href}" style="text-decoration:none"><span class="badge ${tone}" style="${pad}">${esc(b.label)}${cnt}</span></a>`;
+  }).join(' ');
+}
+
+async function jobsBlockers(body, sp) {
+  const cur = {
+    blocker: sp.get('blocker') || 'all',
+    status: sp.get('status') || '',
+    type: sp.get('type') || '',
+    q: sp.get('q') || '',
+    include_historical: sp.get('include_historical') === '0' ? '0' : '1',
+  };
+  const openStatuses = ['PARTIALLY_CLOSED', 'REQUESTED', 'APPROVED_TRANSPORT', 'APPROVED_OPERATIONS', 'IN_WORKSHOP', 'IN_PROGRESS', 'WORK_COMPLETE'];
+  body.innerHTML = `
+    <div id="jb-kpis" class="grid section" style="grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;margin-bottom:12px"></div>
+    <div class="toolbar">
+      <input id="jb-q" type="search" placeholder="Search job no, vehicle, work…" value="${esc(cur.q)}" style="max-width:250px">
+      <select id="jb-status" style="max-width:190px">
+        <option value="">All Open Statuses</option>
+        ${openStatuses.map((s) => `<option value="${s}" ${cur.status === s ? 'selected' : ''}>${s}</option>`).join('')}
+      </select>
+      <select id="jb-type" style="max-width:140px">
+        <option value="">All Categories</option>
+        <option value="repair" ${cur.type === 'repair' ? 'selected' : ''}>Repair</option>
+        <option value="service" ${cur.type === 'service' ? 'selected' : ''}>Service</option>
+        <option value="fabrication" ${cur.type === 'fabrication' ? 'selected' : ''}>Fabrication</option>
+      </select>
+      <label style="display:flex;align-items:center;gap:6px;width:auto;font-size:12px;margin:0;cursor:pointer">
+        <input type="checkbox" id="jb-hist" ${cur.include_historical !== '0' ? 'checked' : ''} style="width:auto"> Include imported backlog
+      </label>
+      <div class="spacer"></div>
+      <button type="button" class="sm" id="jb-refresh">🔄 Refresh</button>
+    </div>
+    <div class="pill-row" id="jb-pills" style="margin:0 0 10px;flex-wrap:wrap;gap:6px"></div>
+    <div id="jb-table"><div class="muted">Analyzing open job cards…</div></div>`;
+
+  const load = async () => {
+    const p = new URLSearchParams({ tab: 'blockers', blocker: cur.blocker, include_historical: cur.include_historical });
+    if (cur.status) p.set('status', cur.status);
+    if (cur.type) p.set('type', cur.type);
+    if (cur.q) p.set('q', cur.q);
+    history.replaceState(null, '', '#/jobs?' + p.toString());
+    p.delete('tab');
+    let d;
+    try {
+      d = await api('/job-flow/blockers?' + p.toString());
+    } catch (e) {
+      qs('#jb-table', body).innerHTML = `<div class="card err">${esc(e.message)}</div>`;
+      return;
+    }
+
+    const cMap = d.counts || {};
+    const pcCount = (d.by_status && d.by_status.PARTIALLY_CLOSED) || 0;
+    qs('#jb-kpis', body).innerHTML = [
+      [d.total_open || 0, 'Total Open Cards', ''],
+      [pcCount, 'Partially Closed', 'amber'],
+      [cMap.missing_part_price || 0, 'Missing Part Price', 'red'],
+      [cMap.pending_grn || 0, 'Pending GRN', 'amber'],
+      [cMap.unissued_shelf || 0, 'Unissued Shelf Parts', 'amber'],
+      [cMap.no_daily_work || 0, 'No Daily Work', 'amber'],
+      [cMap.awaiting_signoff || 0, 'Awaiting Sign-Off', 'blue'],
+      [d.total_ready || 0, 'Ready to Close', 'green'],
+      [d.pending_job_requests || 0, 'Pending Requests', 'blue'],
+    ].map(([val, lbl, tone]) => `<div class="card stat"><span class="n"${tone && val ? ` style="color:var(--${tone})"` : ''}>${val}</span><span class="l">${esc(lbl)}</span></div>`).join('');
+
+    qs('#jb-pills', body).innerHTML = JB_PILLS.map(([k, l]) => {
+      const cnt = cMap[k] || 0;
+      const cls = k === cur.blocker ? 'primary' : '';
+      const badgeTone = (k === 'missing_part_price' || k === 'missing_labour_rate') && cnt ? 'red' : (k === 'ready_to_close' && cnt ? 'green' : '');
+      return `<button type="button" class="sm ${cls}" data-jb="${k}">${esc(l)} <span class="badge ${badgeTone}">${cnt}</span></button>`;
+    }).join('');
+    qsa('[data-jb]', body).forEach((btn) => {
+      btn.onclick = () => { cur.blocker = btn.dataset.jb; load(); };
+    });
+
+    const rows = d.rows || [];
+    qs('#jb-table', body).innerHTML = rows.length ? tableWrap(
+      [
+        { label: 'Job No', width: '115px' },
+        { label: 'Vehicle', width: '130px' },
+        { label: 'Status', width: '130px' },
+        { label: 'Age', width: '74px', num: true },
+        { label: 'Work', cls: 'desc-col' },
+        { label: 'Closure Blockers (click to resolve)', width: '320px' },
+        { label: '', width: '110px' },
+      ],
+      rows.map((r) => `<tr>
+        <td><a href="${r.link}"><b>${esc(r.job_no)}</b></a>${r.workshop_code ? `<br><span class="badge">${esc(r.workshop_code)}</span>` : ''}${r.is_historical ? ' <span class="badge">imported</span>' : ''}</td>
+        <td>${esc(idLabel(r) || '—')}</td>
+        <td>${statusBadge(r.status)}${r.since ? `<div class="muted" style="font-size:11px">${esc(r.since)}</div>` : ''}</td>
+        <td class="num">${r.days_open != null ? `${r.days_open}d` : '—'}</td>
+        <td class="desc-col"><span class="badge ${r.type === 'service' ? 'blue' : (r.type === 'fabrication' ? 'violet' : '')}">${esc(r.type)}</span> ${esc(String(r.description || '').slice(0, 110))}</td>
+        <td><div style="display:flex;flex-wrap:wrap;gap:4px">${blockerBadgesHtml(r)}</div></td>
+        <td style="white-space:nowrap;text-align:right">
+          ${r.can && r.can.close ? `<button type="button" class="sm primary" data-jbclose="${r.id}" data-jobno="${esc(r.job_no)}" data-cost="${r.total_cost || 0}">🔒 Close</button>` : `<a class="btn sm" href="${r.link}">Open →</a>`}
+        </td>
+      </tr>`),
+      { scroll: true, fit: true, noHScroll: true }
+    ) : '<div class="card"><p class="muted">No open job cards match the selected blocker filter.</p></div>';
+
+    qsa('[data-jbclose]', body).forEach((btn) => {
+      btn.onclick = async () => {
+        const jNo = btn.dataset.jobno;
+        const jCost = Number(btn.dataset.cost || 0);
+        if (!confirm(`Close ${jNo}?\nRecorded total: ${money(jCost)}`)) return;
+        try {
+          await api(`/jobs/${btn.dataset.jbclose}/transition`, { method: 'POST', body: { to: 'CLOSED' } });
+          toast(`✓ ${jNo} closed`);
+          load();
+        } catch (e) {
+          toast(e.message, 'err');
+        }
+      };
+    });
+  };
+
+  let deb;
+  qs('#jb-q', body).oninput = (e) => { cur.q = e.target.value.trim(); clearTimeout(deb); deb = setTimeout(load, 250); };
+  qs('#jb-status', body).onchange = (e) => { cur.status = e.target.value; load(); };
+  qs('#jb-type', body).onchange = (e) => { cur.type = e.target.value; load(); };
+  qs('#jb-hist', body).onchange = (e) => { cur.include_historical = e.target.checked ? '1' : '0'; load(); };
+  qs('#jb-refresh', body).onclick = load;
+  await load();
+}
+
 // One decision on one row: each goes to the route that already makes it.
 function jobReqAction(act, r, done) {
   if (!r) return;
@@ -3945,6 +4069,7 @@ async function jobsAllCards(c, sp) {
       ${canDo('jobs.create') ? '<button class="primary" id="newjob" title="A job card is opened against a job request that has been certified and approved">🔧 Open Job Card from a Request</button>' : ''}
       ${canDo('jobs.breakdown') ? '<button class="danger" id="newbd" title="A machine stopped at a site: open a field job card now">🚨 Report a breakdown</button>' : ''}
       ${canDo('jobs.triage') ? '<a class="btn sm" href="#/jobreview" title="REQUESTED cards that hold their vehicle but never moved">🧹 Review stuck cards</a>' : ''}
+      <a class="btn sm" href="#/jobs?tab=blockers" title="Filter open job cards by missing prices, GRNs, work, or sign-off">🚧 Closure Blockers</a>
       ${canDo('jobs.settings') ? `<button class="sm" id="jpartial" title="Partial close, full close check and reopen requests">⚙ Partial close: ${partialOn ? 'on' : 'off'}</button>` : ''}
     </div>
     <div id="jbulk-tray" class="card" style="display:none;background:#f0fdf4;border:1px solid #86efac;margin-bottom:12px;padding:10px 14px;align-items:center;gap:10px;flex-wrap:wrap">
@@ -3991,7 +4116,8 @@ async function jobsAllCards(c, sp) {
     const query = p.toString();
     // Keep the URL shareable/bookmarkable without triggering a full re-render.
     history.replaceState(null, '', '#/jobs?tab=all' + (query ? '&' + query : ''));
-    const list = await api('/jobs' + (query ? '?' + query : ''));
+    p.set('include_blockers', '1');
+    const list = await api('/jobs?' + p.toString());
     const canCloseDate = canDo('jobs.close_on_date');
     // The same permission jobstate.canReopen checks on the server.
     const canReopenJob = canDo('jobs.reopen');
@@ -4001,7 +4127,7 @@ async function jobsAllCards(c, sp) {
       <td class="desc-col">${vehText(j) ? `<span class="stamp">${esc(vehText(j))}</span>` : '—'}</td>
       <td class="desc-col" title="${esc(j.description || '')}">${esc(j.description || '')}</td>
       <td><span class="badge ${j.type === 'service' ? 'blue' : (j.type === 'fabrication' ? 'violet' : '')}">${esc(j.type)}</span>${j.fabrication_kind ? ` <span class="badge" title="Kind">${esc(j.fabrication_kind)}</span>` : ''}${j.field ? ` <span class="badge ${j.breakdown ? 'red' : 'amber'}" title="Repaired at the site">${j.breakdown ? 'Breakdown' : 'Field'}</span>` : ''}</td>
-      <td>${statusBadge(j.status)}</td>
+      <td>${statusBadge(j.status)}${(j.blockers && j.blockers.length) ? `<div style="display:flex;flex-wrap:wrap;gap:3px;margin-top:3px">${blockerBadgesHtml(j, true)}</div>` : ''}</td>
       <td class="desc-col">${esc(j.project_name || '')}</td>
       <td class="num">${j.labour_cost ? money(j.labour_cost) : '—'}</td>
       <td class="num">${j.material_cost ? money(j.material_cost) : '—'}</td>
@@ -10561,21 +10687,44 @@ function flowReceiveModal(r, onDone) {
 async function receivePriceTab(body) {
   const canRx = canDo('stores.grn.receive', 'stores.grn.edit');
   const sp = new URLSearchParams(location.hash.split('?')[1] || '');
-  let mode = sp.get('mode') === 'price' ? 'price' : 'receive';
+  let mode = sp.get('mode') === 'price' ? 'price' : (sp.get('mode') === 'jobparts' ? 'jobparts' : 'receive');
+  let hintOnly = false;
   const edits = new Map();               // row id -> { field: value }
 
   body.innerHTML = `
-    <div class="toolbar" style="margin-top:0">
+    <div id="wsPricingSummary" class="card" style="padding:10px 14px;margin-bottom:10px;display:flex;flex-wrap:wrap;gap:14px;align-items:center;font-size:12.5px">
+      <span class="muted">Loading pricing queue health…</span>
+    </div>
+    <div class="toolbar" style="margin-top:0;flex-wrap:wrap;gap:6px">
       <button class="sm" id="wsRecv">📥 To receive</button>
       <button class="sm" id="wsPrice">💰 Awaiting price</button>
-      <input id="wsq" type="search" placeholder="Search item / MRN / vehicle / supplier…" style="max-width:280px">
+      <button class="sm" id="wsJobParts">🔧 Unpriced Job Parts</button>
+      <input id="wsq" type="search" placeholder="Search item / MRN / Job / vehicle / supplier…" style="max-width:260px">
       <select id="wssrc" style="max-width:150px"><option value="">All sources</option><option value="head_office">Head Office</option><option value="local_purchase">Local Purchase</option></select>
+      <button class="sm" id="wsHintOnly" style="display:none">💡 Has Price Hint</button>
       <div class="spacer"></div>
+      ${canRx ? '<button class="sm" id="wsFillHints" style="display:none">✨ Fill Visible Hints</button>' : ''}
       ${canRx ? '<button class="primary sm" id="wsSave" disabled>💾 Save Changes</button>' : '<span class="muted">read-only</span>'}
     </div>
     <p class="muted" id="wsHint" style="margin:0 0 8px;font-size:12px"></p>
     <div id="wsTable"><div class="muted">Loading…</div></div>
     <div class="toolbar" style="margin-top:8px"><span class="muted" id="wsCount"></span></div>`;
+
+  const loadSummary = async () => {
+    const sumEl = qs('#wsPricingSummary', body);
+    if (!sumEl) return;
+    try {
+      const s = await api('/stores/pricing-queue/summary');
+      sumEl.innerHTML = `
+        <span><b>💰 Pricing Health:</b></span>
+        <span>Unpriced GRNs: <b style="color:${s.unpriced_grns > 0 ? '#b45309' : '#059669'}">${num(s.unpriced_grns)}</b> <span class="muted">(${num(s.unpriced_grns_with_hint)} with last-price hint)</span></span>
+        <span>Unpriced Job Parts: <b style="color:${s.unpriced_job_parts > 0 ? '#b45309' : '#059669'}">${num(s.unpriced_job_parts)}</b> <span class="muted">(${num(s.unpriced_job_parts_with_hint)} hinted · ${num((s.job_parts_by_source || {}).grn || 0)} GRN / ${num((s.job_parts_by_source || {}).issue || 0)} Issue)</span></span>
+        <span>Unpriced General Store Items: <b>${num(s.unpriced_store_items)}</b> <a href="#/stocktake?tab=general" style="margin-left:4px;font-size:11.5px">Open General Stock →</a></span>
+      `;
+    } catch (_) {
+      sumEl.style.display = 'none';
+    }
+  };
 
   const saveBtn = qs('#wsSave', body);
   const paintSave = () => {
@@ -10599,9 +10748,13 @@ async function receivePriceTab(body) {
       return `<td><select data-id="${id}" data-f="${field}" data-orig="${esc(v)}" style="width:100%;font-size:12px">
         ${opts.options.map((o) => `<option value="${esc(o.v)}" ${String(o.v) === String(v) ? 'selected' : ''}>${esc(o.l)}</option>`).join('')}</select></td>`;
     }
+    const hintTitle = opts.hintMeta ? `Last known ${opts.hintMeta.source || 'price'}${opts.hintMeta.date ? ' on ' + opts.hintMeta.date : ''}${opts.hintMeta.supplier ? ' (' + opts.hintMeta.supplier + ')' : ''}` : '';
+    const hintLink = (opts.hintPrice > 0 && canRx)
+      ? `<br><a href="#" class="ws-use-hint muted" data-nolink data-id="${esc(id)}" data-p="${esc(opts.hintPrice)}" title="${esc(hintTitle)}" style="font-size:11px">use ${money(opts.hintPrice)}</a>`
+      : '';
     return `<td class="${opts.num ? 'num' : ''}"><input data-id="${id}" data-f="${field}" data-orig="${esc(v)}"
       type="${opts.type || 'text'}" ${opts.step ? 'step="' + opts.step + '"' : ''} ${opts.min != null ? 'min="' + opts.min + '"' : ''}
-      value="${esc(v)}" placeholder="${esc(opts.ph || '')}" style="width:${opts.w || '92px'};${opts.num ? 'text-align:right;' : ''}font-size:12px"></td>`;
+      value="${esc(v)}" placeholder="${esc(opts.ph || '')}" style="width:${opts.w || '92px'};${opts.num ? 'text-align:right;' : ''}font-size:12px">${hintLink}</td>`;
   };
   const SRC_OPTS = [{ v: '', l: '—' }, { v: 'head_office', l: 'Head Office' }, { v: 'local_purchase', l: 'Local Purchase' }];
 
@@ -10629,18 +10782,61 @@ async function receivePriceTab(body) {
     });
   };
 
+  const wirePriceInteractions = (qtyById) => {
+    qsa('#wsTable input[data-f="unit_price"]', body).forEach((inp) => {
+      inp.addEventListener('input', () => {
+        const cellEl = qs(`[data-val="${inp.dataset.id}"]`, body);
+        if (cellEl) cellEl.textContent = inp.value ? money(Number(inp.value) * (qtyById[inp.dataset.id] || 0)) : '—';
+      });
+    });
+    qsa('.ws-use-hint', qs('#wsTable', body)).forEach((a) => {
+      a.onclick = (ev) => {
+        ev.preventDefault();
+        const inp = qs(`#wsTable input[data-f="unit_price"][data-id="${a.dataset.id}"]`, body);
+        if (inp) {
+          inp.value = a.dataset.p;
+          inp.dispatchEvent(new Event('input', { bubbles: true }));
+          inp.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+      };
+    });
+    const fillBtn = qs('#wsFillHints', body);
+    if (fillBtn) {
+      fillBtn.onclick = () => {
+        let filled = 0;
+        qsa('.ws-use-hint', qs('#wsTable', body)).forEach((a) => {
+          const inp = qs(`#wsTable input[data-f="unit_price"][data-id="${a.dataset.id}"]`, body);
+          if (inp && String(inp.value || '').trim() === '') {
+            inp.value = a.dataset.p;
+            inp.dispatchEvent(new Event('input', { bubbles: true }));
+            inp.dispatchEvent(new Event('change', { bubbles: true }));
+            filled++;
+          }
+        });
+        toast(filled ? `Pre-filled ${filled} hint(s) — review and click Save Changes` : 'No empty visible rows have price hints');
+      };
+    }
+  };
+
   const load = async () => {
     edits.clear(); paintSave();
     const q = qs('#wsq', body).value.trim(), src = qs('#wssrc', body).value;
-    const qstr = (q ? '&q=' + encodeURIComponent(q) : '') + (src ? '&source=' + src : '');
+    const qstr = (q ? '&q=' + encodeURIComponent(q) : '') + (src ? '&source=' + src : '') + (hintOnly ? '&hint=1' : '');
     qs('#wsRecv', body).classList.toggle('primary', mode === 'receive');
     qs('#wsPrice', body).classList.toggle('primary', mode === 'price');
+    qs('#wsJobParts', body).classList.toggle('primary', mode === 'jobparts');
+    qs('#wssrc', body).style.display = mode === 'jobparts' ? 'none' : '';
+    qs('#wsHintOnly', body).style.display = mode === 'receive' ? 'none' : '';
+    qs('#wsHintOnly', body).classList.toggle('primary', hintOnly);
+    const fillBtn = qs('#wsFillHints', body);
+    if (fillBtn) fillBtn.style.display = mode === 'receive' ? 'none' : '';
     history.replaceState(null, '', '#/stores?tab=workspace&mode=' + mode);
     qs('#wsTable', body).innerHTML = '<div class="muted">Loading…</div>';
+    loadSummary();
 
     if (mode === 'receive') {
       qs('#wsHint', body).textContent = 'Items requested but not fully received. Type the quantity that arrived — add the price and invoice now if you have them, or leave blank and price it later on the Awaiting-price tab.';
-      const list = await api('/stores/pending?limit=400' + qstr);
+      const list = await api('/stores/pending?limit=400' + (q ? '&q=' + encodeURIComponent(q) : '') + (src ? '&source=' + src : ''));
       qs('#wsCount', body).textContent = `${list.length}${list.length === 400 ? '+ (showing first 400)' : ''} line(s) awaiting receipt`;
       qs('#wsTable', body).innerHTML = list.length ? tableWrap(
         [{ label: 'MRN' }, { label: 'Req date' }, { label: 'Vehicle' }, { label: 'Item', cls: 'desc-col' },
@@ -10671,8 +10867,8 @@ async function receivePriceTab(body) {
           ${cell(r.id, 'invoice_no', '', { w: '96px' })}
           ${cell(r.id, 'purchase_source', r.source || '', { type: 'select', options: SRC_OPTS })}</tr>`),
         { scroll: true }) : '<div class="card"><p class="muted">Nothing outstanding — every requested item is fully received.</p></div>';
-    } else {
-      qs('#wsHint', body).textContent = 'Stock that arrived without a price. Type the unit price (and invoice details if you have them) straight down the column, then Save — these are missing from job and vehicle costs until priced.';
+    } else if (mode === 'price') {
+      qs('#wsHint', body).textContent = 'Stock that arrived without a price. Use the suggested last-known price hints or enter the invoice unit price, then click Save Changes — cascades immediately into job cards and vehicle costs.';
       const list = await api('/stores/awaiting-price?limit=400' + qstr);
       qs('#wsCount', body).textContent = `${list.length}${list.length === 400 ? '+ (showing first 400)' : ''} receipt(s) awaiting a price`;
       qs('#wsTable', body).innerHTML = list.length ? tableWrap(
@@ -10689,7 +10885,7 @@ async function receivePriceTab(body) {
           <td class="desc-col">${esc(r.description || '')}${r.received_part_no
             ? ` <span class="badge blue" title="a cross-referenced equivalent was supplied against the number requested">received as ${esc(r.received_part_no)}</span>` : ''}</td>
           <td class="num">${num(r.qty)}</td>
-          ${cell(r.id, 'unit_price', '', { type: 'number', num: true, step: '0.01', min: 0, w: '104px' })}
+          ${cell(r.id, 'unit_price', '', { type: 'number', num: true, step: '0.01', min: 0, w: '104px', ph: r.suggested_price || '', hintPrice: r.suggested_price, hintMeta: { source: r.suggested_source, date: r.suggested_date, supplier: r.suggested_supplier } })}
           <td class="num muted" data-val="${r.id}">—</td>
           ${cell(r.id, 'supplier', r.supplier || '', { w: '120px' })}
           ${cell(r.id, 'invoice_no', r.invoice_no || '', { w: '104px' })}
@@ -10699,14 +10895,31 @@ async function receivePriceTab(body) {
       qsa('[data-ws-doc]', qs('#wsTable', body)).forEach((btn) => {
         btn.onclick = () => openGrnDocumentsModal(btn.dataset.wsDoc, btn.dataset.wsGrn, load);
       });
-      // live value = qty × the price being typed
       const qtyById = Object.fromEntries(list.map((r) => [String(r.id), Number(r.qty) || 0]));
-      qsa('#wsTable input[data-f="unit_price"]', body).forEach((inp) => {
-        inp.addEventListener('input', () => {
-          const cellEl = qs(`[data-val="${inp.dataset.id}"]`, body);
-          if (cellEl) cellEl.textContent = inp.value ? money(Number(inp.value) * qtyById[inp.dataset.id]) : '—';
-        });
-      });
+      wirePriceInteractions(qtyById);
+    } else {
+      qs('#wsHint', body).textContent = 'Job card parts that have zero or missing unit price (sourced from store issues or direct GRNs). Pricing these updates the linked issue/GRN, refreshes job card totals, and recalculates monthly vehicle costing.';
+      const jpQ = '?limit=400' + (q ? '&q=' + encodeURIComponent(q) : '') + (hintOnly ? '&hint=1' : '');
+      const list = await api('/stores/unpriced-job-parts' + jpQ);
+      qs('#wsCount', body).textContent = `${list.length}${list.length === 400 ? '+ (showing first 400)' : ''} unpriced job part line(s)`;
+      qs('#wsTable', body).innerHTML = list.length ? tableWrap(
+        [{ label: 'Job No' }, { label: 'Status' }, { label: 'Vehicle' }, { label: 'Source' },
+        { label: 'Description', cls: 'desc-col' }, { label: 'Qty', num: true },
+        { label: 'Unit price', num: true }, { label: 'Value', num: true }, { label: 'Date / Ref' }],
+        list.map((r) => `<tr>
+          <td><a href="#/jobs/${r.job_id}">${esc(r.job_no || ('#' + r.job_id))}</a></td>
+          <td><span class="badge ${r.job_status === 'CLOSED' ? '' : 'amber'}">${esc(r.job_status || '—')}</span></td>
+          <td>${r.asset_code ? `<span class="stamp">${esc(r.asset_code)}</span>` : '—'}</td>
+          <td><span class="badge ${r.source_type === 'grn' ? 'blue' : ''}">${esc(String(r.source_type || 'part').toUpperCase())}</span></td>
+          <td class="desc-col">${esc(r.description || '')}</td>
+          <td class="num">${num(r.qty)}</td>
+          ${cell(r.id, 'unit_price', '', { type: 'number', num: true, step: '0.01', min: 0, w: '104px', ph: r.suggested_price || '', hintPrice: r.suggested_price, hintMeta: { source: r.suggested_source, date: r.suggested_date, supplier: r.suggested_supplier } })}
+          <td class="num muted" data-val="${r.id}">—</td>
+          <td class="muted" style="font-size:11px">${esc(String(r.issue_date || r.delivery_date || r.job_date || '').slice(0, 10))}${r.grn_no ? ' · GRN ' + esc(r.grn_no) : ''}${r.min_no ? ' · MIN ' + esc(r.min_no) : ''}</td>
+        </tr>`),
+        { scroll: true }) : '<div class="card"><p class="muted">Every job card part line is priced. 🎉</p></div>';
+      const qtyById = Object.fromEntries(list.map((r) => [String(r.id), Number(r.qty) || 0]));
+      wirePriceInteractions(qtyById);
     }
     wire();
   };
@@ -10723,9 +10936,14 @@ async function receivePriceTab(body) {
         const res = await api('/stores/grn/bulk-receive', { method: 'POST', body: { rows: payload } });
         toast(`✓ Received ${res.received} line(s) across ${res.mrns} MRN(s)` + (res.skipped && res.skipped.length ? ` · ${res.skipped.length} skipped (over-receipt)` : ''));
         if (res.skipped && res.skipped.length) res.skipped.forEach((s) => toast(`Line ${s.mrn_line_id}: ${s.reason}`, 'err'));
+      } else if (mode === 'jobparts') {
+        const payload = rows.filter((r) => r.unit_price !== undefined && String(r.unit_price).trim() !== '');
+        if (!payload.length) { toast('Enter a unit price on at least one row', 'err'); paintSave(); return; }
+        const res = await api('/stores/job-parts/bulk-price', { method: 'POST', body: { rows: payload } });
+        toast(`✓ Saved ${res.saved} job part price(s) · refreshed ${res.jobs_refreshed || 0} job card(s)`);
       } else {
         const res = await api('/stores/grn/bulk-price', { method: 'POST', body: { rows } });
-        toast(`✓ Saved ${res.saved} price update(s)`);
+        toast(`✓ Saved ${res.saved} price update(s) · refreshed ${res.jobs_refreshed || 0} job card(s)`);
       }
       await load();
     } catch (e) { toast(e.message, 'err'); paintSave(); }
@@ -10733,6 +10951,8 @@ async function receivePriceTab(body) {
 
   qs('#wsRecv', body).onclick = () => { mode = 'receive'; load(); };
   qs('#wsPrice', body).onclick = () => { mode = 'price'; load(); };
+  qs('#wsJobParts', body).onclick = () => { mode = 'jobparts'; load(); };
+  qs('#wsHintOnly', body).onclick = () => { hintOnly = !hintOnly; load(); };
   let wsdeb; qs('#wsq', body).oninput = () => { clearTimeout(wsdeb); wsdeb = setTimeout(load, 250); };
   qs('#wssrc', body).onchange = load;
   await load();
@@ -21541,6 +21761,8 @@ async function renderStockCockpitSection(c) {
   const edit = canEdit('stores');
   const canRestock = canDo('stores.reorder_mrn');
 
+  const canApproveCount = canDo('stores.count.approve');
+
   c.innerHTML = `
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:10px">
       <div>
@@ -21556,6 +21778,36 @@ async function renderStockCockpitSection(c) {
       <div class="card stat"><span class="n">…</span><span class="l">Active SKUs</span></div>
       <div class="card stat"><span class="n">…</span><span class="l">Reorder Shortfalls</span></div>
       <div class="card stat"><span class="n">…</span><span class="l">Est. Restock Budget</span></div>
+    </div>
+
+    <!-- Section 0: Negative Stock Reconciliation & Non-Negative Issue Guard -->
+    <div class="card section" id="sc-neg-card" style="border-top:3px solid #dc2626">
+      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:10px">
+        <div>
+          <h3 style="margin:0;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+            <span>⚖️ Negative Stock Reconciliation &amp; Issue Guard</span>
+            <span id="sc-neg-badge" class="badge">0</span>
+            <span id="sc-guard-badge" class="badge">Guard: …</span>
+          </h3>
+          <div class="muted" style="font-size:12px;margin-top:2px">
+            Verify physical shelf quantities for negative-balance items and post audited stock adjustments (Managers with override capability may override the non-negative issue guard with a reason).
+          </div>
+        </div>
+        <div class="pill-row" style="align-items:center;flex-wrap:wrap">
+          ${canApproveCount ? '<button type="button" class="sm" id="sc-guard-toggle">🛡️ Enable Strict Block</button>' : ''}
+          ${canApproveCount ? '<button type="button" class="sm" id="sc-oil-cache-sync" style="display:none">🔄 Sync Oil Ledger Cache (<span id="sc-oil-drift-n">0</span>)</button>' : ''}
+        </div>
+      </div>
+      <div class="pill-row" style="margin-bottom:10px;align-items:center;flex-wrap:wrap" id="sc-neg-tabs">
+        <button type="button" class="sm primary" data-negtab="general">🧰 General Items (<span id="sc-neg-gen-n">0</span>)</button>
+        <button type="button" class="sm" data-negtab="oil">🛢️ Oil &amp; Lubricants (<span id="sc-neg-oil-n">0</span>)</button>
+        <button type="button" class="sm" data-negtab="shelf">📦 Unified Shelf (<span id="sc-neg-shelf-n">0</span>)</button>
+        ${canApproveCount ? `<div class="spacer"></div>
+          <input type="text" id="sc-neg-reason" placeholder="Shared audit reason (e.g. Physical shelf verification)" style="min-width:240px;font-size:12px">
+          <button type="button" class="sm" id="sc-neg-sel-all">Select All</button>
+          <button type="button" class="primary sm" id="sc-neg-apply" disabled>⚖️ Reconcile Selected (<span id="sc-neg-sel-n">0</span>)</button>` : ''}
+      </div>
+      <div id="sc-neg-table" class="muted">Scanning negative balances…</div>
     </div>
 
     <!-- Section 1: Automated Reorder Alerts Board -->
@@ -21885,9 +22137,190 @@ async function renderStockCockpitSection(c) {
     }
   };
 
+  let negData = null;
+  let negTab = (ME && ME.ownStore) ? 'shelf' : 'general';
+  const selectedNegKeys = new Set();
+
+  const negRowKey = (type, r) => (type === 'shelf' ? `shelf|${r.section}|${r.item_key}|${r.store_id}` : `${type}|${r.id}`);
+
+  const updateNegSelBtn = () => {
+    const applyBtn = qs('#sc-neg-apply', c);
+    const cntEl = qs('#sc-neg-sel-n', c);
+    if (cntEl) cntEl.textContent = selectedNegKeys.size;
+    if (applyBtn) applyBtn.disabled = selectedNegKeys.size === 0;
+  };
+
+  const renderNegTable = () => {
+    const tblEl = qs('#sc-neg-table', c);
+    if (!tblEl || !negData) return;
+    let rows = [];
+    if (negTab === 'general') rows = negData.general_items || [];
+    else if (negTab === 'oil') rows = negData.oil_products || [];
+    else rows = negData.shelf_items || [];
+
+    if (!rows.length) {
+      tblEl.innerHTML = `<div class="muted" style="padding:10px 4px">✅ No negative balances in ${negTab === 'general' ? 'General Items' : (negTab === 'oil' ? 'Oil & Lubricants' : 'Unified Shelf')}.</div>`;
+      updateNegSelBtn();
+      return;
+    }
+
+    const type = negTab === 'general' ? 'general_item' : (negTab === 'oil' ? 'oil_product' : 'shelf');
+    const headers = [
+      ...(canApproveCount ? [{ label: '', width: '32px' }] : []),
+      { label: negTab === 'shelf' ? 'Section / Store' : 'Code', width: '130px' },
+      { label: 'Item Name', cls: 'desc-col' },
+      { label: 'Unit', width: '60px' },
+      { label: 'Book Balance', num: true, width: '110px' },
+      ...(negTab === 'oil' ? [{ label: 'Ledger Bal', num: true, width: '110px' }] : []),
+      ...(canApproveCount ? [{ label: 'Physical Count', num: true, width: '120px' }, { label: 'Audit Reason', width: '210px' }] : []),
+    ];
+
+    const body = rows.map((r) => {
+      const k = negRowKey(type, r);
+      const checked = selectedNegKeys.has(k) ? ' checked' : '';
+      const bal = negTab === 'oil' ? r.stock_qty : r.balance;
+      return `<tr style="background:rgba(220,53,69,0.04)" data-neg-row="${esc(k)}">
+        ${canApproveCount ? `<td style="text-align:center"><input type="checkbox" class="sc-neg-chk" data-k="${esc(k)}" style="margin:0"${checked}></td>` : ''}
+        <td>${negTab === 'shelf'
+          ? `<span class="badge">${esc(r.section)}</span> <span class="muted" style="font-size:11px">${esc(r.store_code || ('S#' + r.store_id))}</span>`
+          : `<b>${esc(r.item_no || r.code || ('#' + r.id))}</b>`}</td>
+        <td><b>${esc(r.name || r.item_name)}</b>${r.has_drift ? ' <span class="badge amber" title="Cached products.stock_qty differs from latest stock_ledger.balance_after">cache drift</span>' : ''}</td>
+        <td>${esc(r.unit || (negTab === 'oil' ? 'L' : 'nos'))}</td>
+        <td class="num"><b style="color:#dc2626">${num(bal)}</b></td>
+        ${negTab === 'oil' ? `<td class="num"><b style="color:${r.ledger_balance < 0 ? '#dc2626' : 'inherit'}">${num(r.ledger_balance)}</b></td>` : ''}
+        ${canApproveCount ? `<td class="num"><input type="number" min="0" step="any" class="sc-neg-qty" data-k="${esc(k)}" value="0" style="width:92px;text-align:right;font-size:12px"></td>
+          <td><input type="text" class="sc-neg-why" data-k="${esc(k)}" placeholder="Use shared or enter specific reason" style="width:100%;font-size:12px"></td>` : ''}
+      </tr>`;
+    });
+
+    tblEl.innerHTML = tableWrap(headers, body, { scroll: true });
+    qsa('.sc-neg-chk', tblEl).forEach((chk) => {
+      chk.onchange = () => {
+        if (chk.checked) selectedNegKeys.add(chk.dataset.k);
+        else selectedNegKeys.delete(chk.dataset.k);
+        updateNegSelBtn();
+      };
+    });
+    updateNegSelBtn();
+  };
+
+  const loadNegative = async () => {
+    try {
+      negData = await api('/stock-cockpit/negative-stock');
+      const s = negData.summary || {};
+      const totalNeg = (s.general_count || 0) + (s.oil_count || 0) + (s.shelf_count || 0);
+      const negBadge = qs('#sc-neg-badge', c);
+      if (negBadge) {
+        negBadge.textContent = `${num(totalNeg)} issue(s)`;
+        negBadge.className = 'badge ' + (totalNeg > 0 ? 'red' : 'green');
+      }
+      if (qs('#sc-neg-gen-n', c)) qs('#sc-neg-gen-n', c).textContent = num(s.general_count || 0);
+      if (qs('#sc-neg-oil-n', c)) qs('#sc-neg-oil-n', c).textContent = num(s.oil_count || 0);
+      if (qs('#sc-neg-shelf-n', c)) qs('#sc-neg-shelf-n', c).textContent = num(s.shelf_count || 0);
+
+      const pol = negData.policy || {};
+      const guardBadge = qs('#sc-guard-badge', c);
+      const toggleBtn = qs('#sc-guard-toggle', c);
+      if (guardBadge) {
+        guardBadge.textContent = pol.block_negative_issue ? 'Strict Block: ON' : 'Strict Block: OFF';
+        guardBadge.className = 'badge ' + (pol.block_negative_issue ? 'green' : 'amber');
+      }
+      if (toggleBtn) {
+        toggleBtn.textContent = pol.block_negative_issue ? '🔓 Disable Strict Block' : '🛡️ Enable Strict Block';
+      }
+      const syncBtn = qs('#sc-oil-cache-sync', c);
+      if (syncBtn) {
+        syncBtn.style.display = (s.oil_drift_count || 0) > 0 ? '' : 'none';
+        if (qs('#sc-oil-drift-n', c)) qs('#sc-oil-drift-n', c).textContent = num(s.oil_drift_count || 0);
+      }
+
+      selectedNegKeys.clear();
+      if (negTab === 'general' && !(negData.general_items || []).length && (negData.oil_products || []).length) negTab = 'oil';
+      qsa('#sc-neg-tabs button[data-negtab]', c).forEach((b) => b.classList.toggle('primary', b.dataset.negtab === negTab));
+      renderNegTable();
+    } catch (e) {
+      if (qs('#sc-neg-table', c)) qs('#sc-neg-table', c).innerHTML = `<div class="muted">${esc(e.message)}</div>`;
+    }
+  };
+
+  qsa('#sc-neg-tabs button[data-negtab]', c).forEach((btn) => {
+    btn.onclick = () => {
+      negTab = btn.dataset.negtab;
+      qsa('#sc-neg-tabs button[data-negtab]', c).forEach((b) => b.classList.toggle('primary', b.dataset.negtab === negTab));
+      selectedNegKeys.clear();
+      renderNegTable();
+    };
+  });
+
+  if (canApproveCount && qs('#sc-guard-toggle', c)) {
+    qs('#sc-guard-toggle', c).onclick = async () => {
+      const nextVal = !(negData && negData.policy && negData.policy.block_negative_issue);
+      try {
+        await api('/stock-cockpit/guard-policy', { method: 'POST', body: { block_negative_issue: nextVal } });
+        toast(nextVal ? '🛡️ Strict Non-Negative Stock Issue Guard ENABLED' : '🔓 Strict Non-Negative Issue Guard turned OFF');
+        await loadNegative();
+      } catch (e) { toast(e.message, 'err'); }
+    };
+  }
+  if (canApproveCount && qs('#sc-oil-cache-sync', c)) {
+    qs('#sc-oil-cache-sync', c).onclick = async () => {
+      try {
+        const res = await api('/stock-cockpit/sync-oil-cache', { method: 'POST' });
+        toast(`🔄 Synced ${res.synced || 0} oil product stock cache(s) to ledger`);
+        await Promise.all([loadNegative(), loadOverview(), loadSearch()]);
+      } catch (e) { toast(e.message, 'err'); }
+    };
+  }
+  if (canApproveCount && qs('#sc-neg-sel-all', c)) {
+    qs('#sc-neg-sel-all', c).onclick = () => {
+      qsa('.sc-neg-chk', qs('#sc-neg-table', c)).forEach((chk) => {
+        chk.checked = true;
+        selectedNegKeys.add(chk.dataset.k);
+      });
+      updateNegSelBtn();
+    };
+  }
+  if (canApproveCount && qs('#sc-neg-apply', c)) {
+    qs('#sc-neg-apply', c).onclick = async () => {
+      if (!selectedNegKeys.size || !negData) return;
+      const sharedReason = (qs('#sc-neg-reason', c) ? qs('#sc-neg-reason', c).value.trim() : '');
+      const list = negTab === 'general' ? (negData.general_items || [])
+        : (negTab === 'oil' ? (negData.oil_products || []) : (negData.shelf_items || []));
+      const type = negTab === 'general' ? 'general_item' : (negTab === 'oil' ? 'oil_product' : 'shelf');
+      const payload = [];
+      for (const r of list) {
+        const k = negRowKey(type, r);
+        if (!selectedNegKeys.has(k)) continue;
+        const qtyInp = qs(`.sc-neg-qty[data-k="${CSS.escape(k)}"]`, qs('#sc-neg-table', c));
+        const whyInp = qs(`.sc-neg-why[data-k="${CSS.escape(k)}"]`, qs('#sc-neg-table', c));
+        const reason = (whyInp && whyInp.value.trim()) || sharedReason;
+        if (!reason || reason.length < 3) {
+          toast(`Enter an audit reason (3+ chars) for "${r.name || r.item_name}" or fill the shared reason box`, 'err');
+          return;
+        }
+        const counted = Number(qtyInp ? qtyInp.value : 0);
+        if (!Number.isFinite(counted) || counted < 0) {
+          toast(`Counted quantity must be >= 0 for "${r.name || r.item_name}"`, 'err');
+          return;
+        }
+        if (type === 'shelf') {
+          payload.push({ target_type: 'shelf', section: r.section, item_key: r.item_key, store_id: r.store_id, item_name: r.item_name, counted_qty: counted, reason });
+        } else {
+          payload.push({ target_type: type, id: r.id, counted_qty: counted, reason });
+        }
+      }
+      if (!payload.length) return;
+      try {
+        const res = await api('/stock-cockpit/reconcile-negative', { method: 'POST', body: { items: payload } });
+        toast(`⚖️ Reconciled ${res.reconciled} negative stock item(s)`);
+        await Promise.all([loadNegative(), loadOverview(), loadSearch()]);
+      } catch (e) { toast(e.message, 'err'); }
+    };
+  }
+
   // Wire Top Actions
-  qs('#sc-refresh', c).onclick = () => { loadOverview(); loadSearch(); };
-  if (edit && qs('#sc-new-issue', c)) qs('#sc-new-issue', c).onclick = () => newIssueModal(loadOverview);
+  qs('#sc-refresh', c).onclick = () => { loadNegative(); loadOverview(); loadSearch(); };
+  if (edit && qs('#sc-new-issue', c)) qs('#sc-new-issue', c).onclick = () => newIssueModal(() => { loadNegative(); loadOverview(); });
 
   // Wire Reorder Actions
   qs('#sc-sel-all', c).onclick = () => {
@@ -21932,7 +22365,7 @@ async function renderStockCockpitSection(c) {
     };
   });
 
-  await Promise.all([loadOverview(), loadSearch()]);
+  await Promise.all([loadNegative(), loadOverview(), loadSearch()]);
 }
 
 routes.stockcockpit = async () => {

@@ -54,10 +54,51 @@
       UNDER_RECOMMENDED: { cls: 'warn', bg: '#d97706', txt: 'UNDER RECOMMENDED' },
       OVER_REQUESTED: { cls: 'danger', bg: '#b91c1c', txt: 'OVER REQUESTED (>10%)' },
       METER_MISMATCH: { cls: 'danger', bg: '#7f1d1d', txt: 'METER MISMATCH' },
+      METER_FAULTY: { cls: 'warn', bg: '#b45309', txt: '⚠️ METER FAULTY' },
       NO_NORM: { cls: '', bg: '#64748b', txt: 'NO RATE NORM' },
     };
     const m = map[status] || { cls: '', bg: '#64748b', txt: status || 'PENDING' };
     return `<span class="badge ${m.cls}" style="background:${m.bg};color:#fff;white-space:nowrap">${esc(m.txt)}${esc(varTxt)}</span>`;
+  }
+
+  const tfComplianceCache = new Map();
+  async function loadVehicleComplianceWarning(bannerEl, { assetId = null, assetCode = '' } = {}) {
+    if (!bannerEl) return;
+    const key = assetId ? `id:${assetId}` : `code:${String(assetCode || '').trim().toUpperCase()}`;
+    if (!assetId && !String(assetCode || '').trim()) {
+      bannerEl.style.display = 'none';
+      return;
+    }
+    try {
+      let info = tfComplianceCache.get(key);
+      if (info === undefined) {
+        const q = assetId
+          ? `asset_ids=${encodeURIComponent(assetId)}`
+          : `asset_code=${encodeURIComponent(String(assetCode).trim())}`;
+        const res = await api(`/vehicle-documents/compliance-badges?${q}`);
+        const byId = res && res.by_asset_id ? res.by_asset_id : {};
+        const byCode = res && res.by_code ? res.by_code : {};
+        const norm = String(assetCode || '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
+        info = (assetId && byId[String(assetId)])
+          || byCode[String(assetCode || '').trim().toUpperCase()]
+          || byCode[norm]
+          || Object.values(byId)[0]
+          || null;
+        tfComplianceCache.set(key, info);
+      }
+      if (!info || !info.badge) {
+        bannerEl.style.display = 'none';
+        return;
+      }
+      const isRed = info.badge.level === 'red';
+      bannerEl.style.display = 'flex';
+      bannerEl.style.background = isRed ? 'rgba(220,38,38,0.1)' : 'rgba(245,158,11,0.12)';
+      bannerEl.style.border = `1px solid ${isRed ? '#dc2626' : '#d97706'}`;
+      bannerEl.style.color = isRed ? '#991b1b' : '#92400e';
+      bannerEl.innerHTML = `<span>${isRed ? '🚨' : '⚠️'} <b>Statutory Compliance Notice (Non-Blocking):</b> ${esc(info.badge.label)}${info.badge.detail ? ` — ${esc(info.badge.detail)}` : ''}</span><a class="btn sm" href="#/assets/${info.asset_id}" style="white-space:nowrap">View Docs →</a>`;
+    } catch (_) {
+      bannerEl.style.display = 'none';
+    }
   }
 
   function statusBadge(r) {
@@ -101,12 +142,13 @@
             <div><span class="muted">Vehicle:</span><br><b>${esc(reqRow.asset_code)}</b></div>
             <div><span class="muted">Running Chart #:</span><br><b>${esc(reqRow.running_chart_no || '—')}</b></div>
             <div><span class="muted">Site / Project:</span><br><b>${esc(reqRow.project_name || 'Central')}</b></div>
-            <div><span class="muted">Req Meter / Delta:</span><br><b>${reqRow.meter_reading ? fmtNum(reqRow.meter_reading, 1) : '—'}</b> ${reqRow.approx_km ? `(${fmtNum(reqRow.approx_km, 1)} ${reqRow.meter_type === 'KM' ? 'km' : 'hr'})` : ''}</div>
+            <div><span class="muted">Req Meter / Delta:</span><br><b>${reqRow.meter_faulty ? `<span class="badge warn" title="${esc(reqRow.meter_fault_reason || '')}">⚠️ METER FAULTY</span>` : (reqRow.meter_reading ? fmtNum(reqRow.meter_reading, 1) : '—')}</b> ${reqRow.approx_km ? `(${fmtNum(reqRow.approx_km, 1)} ${reqRow.meter_type === 'KM' ? 'km' : 'hr'})` : ''}</div>
             <div><span class="muted">Recommended Norm:</span><br><b style="color:#0369a1">${recLitres != null ? fmtNum(recLitres, 1) + ' L' : 'No Norm'}</b></div>
             <div><span class="muted">Requested / Mode:</span><br>${isFullTank ? '<span class="badge" style="background:#7c3aed;color:#fff">FULL TANK (Enter After Fill)</span>' : `<b>${fmtNum(reqRow.requested_litres, 1)} L</b>`}</div>
           </div>
           ${reqRow.driver_name || reqRow.trip_purpose ? `<div style="margin-top:6px;padding-top:6px;border-top:1px dashed rgba(37,99,235,0.2)"><b>Driver:</b> ${esc(reqRow.driver_name || '—')} &nbsp;·&nbsp; <b>Trip:</b> ${esc(reqRow.trip_purpose || '—')}</div>` : ''}
         </div>
+        <div id="pd_compliance_banner" style="display:none;justify-content:space-between;align-items:center;gap:8px;padding:8px 10px;border-radius:6px;margin-bottom:10px;font-size:12px"></div>
 
         <form id="form_pump_dispatch" style="display:flex;flex-direction:column;gap:12px">
           <div style="display:grid;grid-template-columns:1.2fr 1fr 1fr;gap:10px">
@@ -140,7 +182,17 @@
             </div>
             <div>
               <label style="font-size:12px;font-weight:600">Pump Verified Meter (${esc(reqRow.meter_type || 'KM/HR')})</label>
-              <input type="number" step="0.1" id="pd_meter" class="input" value="${reqRow.meter_reading != null ? esc(reqRow.meter_reading) : ''}" style="width:100%">
+              <input type="number" step="0.1" id="pd_meter" class="input" value="${!reqRow.meter_faulty && reqRow.meter_reading != null ? esc(reqRow.meter_reading) : ''}" ${reqRow.meter_faulty ? 'disabled' : ''} placeholder="Enter meter reading" style="width:100%">
+            </div>
+          </div>
+
+          <div style="padding:8px 10px;border-radius:6px;background:rgba(245,158,11,0.08);border:1px solid rgba(245,158,11,0.28)">
+            <label style="display:flex;align-items:center;gap:6px;font-size:12px;font-weight:600;color:#92400e;cursor:pointer">
+              <input type="checkbox" id="pd_meter_faulty" ${reqRow.meter_faulty ? 'checked' : ''}>
+              <span>⚠️ Meter Faulty / Not Working (logs repair alert instead of blank reading)</span>
+            </label>
+            <div id="pd_fault_reason_wrap" style="margin-top:6px;${reqRow.meter_faulty ? '' : 'display:none'}">
+              <input type="text" id="pd_meter_fault_reason" class="input" value="${esc(reqRow.meter_fault_reason || '')}" placeholder="Fault reason * (e.g. Hour meter blank / cable snapped)" style="width:100%">
             </div>
           </div>
 
@@ -171,6 +223,10 @@
 
     const dateInp = modal.querySelector('#pd_date');
     dateInp.value = localNowInputStr();
+    loadVehicleComplianceWarning(modal.querySelector('#pd_compliance_banner'), {
+      assetId: reqRow.asset_id,
+      assetCode: reqRow.asset_code,
+    });
     const litresInp = modal.querySelector('#pd_litres');
     const priceRsInp = modal.querySelector('#pd_price_rs');
     const varBanner = modal.querySelector('#pd_variance_banner');
@@ -215,11 +271,39 @@
     litresInp.oninput = updateVariancePreview;
     updateVariancePreview();
 
+    const pdFaultyChk = modal.querySelector('#pd_meter_faulty');
+    const pdFaultWrap = modal.querySelector('#pd_fault_reason_wrap');
+    const pdFaultReasonInp = modal.querySelector('#pd_meter_fault_reason');
+    const pdMeterInp = modal.querySelector('#pd_meter');
+    if (pdFaultyChk) {
+      pdFaultyChk.onchange = () => {
+        const isFaulty = pdFaultyChk.checked;
+        if (pdFaultWrap) pdFaultWrap.style.display = isFaulty ? '' : 'none';
+        if (pdMeterInp) {
+          pdMeterInp.disabled = isFaulty;
+          if (isFaulty) pdMeterInp.value = '';
+        }
+      };
+    }
+
     modal.querySelector('#pd_cancel').onclick = () => modal.remove();
     modal.onclick = (e) => { if (e.target === modal) modal.remove(); };
 
     modal.querySelector('#form_pump_dispatch').onsubmit = async (e) => {
       e.preventDefault();
+      const isFaulty = !!(pdFaultyChk && pdFaultyChk.checked);
+      const faultReason = pdFaultReasonInp ? pdFaultReasonInp.value.trim() : '';
+      const meterVal = !isFaulty && pdMeterInp && pdMeterInp.value !== '' ? Number(pdMeterInp.value) : null;
+      if (isFaulty) {
+        if (faultReason.length < 3) {
+          notify('Enter the faulty meter reason (at least 3 characters)', 'err');
+          return;
+        }
+      } else if (!(Number.isFinite(meterVal) && meterVal > 0)) {
+        notify('Enter a valid Pump Verified Meter reading (> 0), or mark Meter Faulty', 'err');
+        return;
+      }
+
       const btn = modal.querySelector('#pd_submit');
       btn.disabled = true;
       btn.textContent = 'Recording...';
@@ -228,14 +312,15 @@
         const fuelPriceCents = rawRate !== '' && Number(rawRate) > 0 ? Math.round(Number(rawRate) * 100) : null;
         const tankSel = modal.querySelector('#pd_tank_id');
         const stInp = modal.querySelector('#pd_station');
-        const meterInp = modal.querySelector('#pd_meter');
         const body = {
           litres: Number(litresInp.value),
           fuelPriceCents,
           issueDate: dateInp.value ? dateInp.value.replace('T', ' ') : null,
           sourceTankId: tankSel ? (tankSel.value || null) : null,
           stationName: stInp ? stInp.value.trim() : null,
-          meterReading: meterInp.value !== '' ? Number(meterInp.value) : null,
+          meterReading: meterVal,
+          meterFaulty: isFaulty,
+          meterFaultReason: isFaulty ? faultReason : null,
           driverName: modal.querySelector('#pd_driver').value.trim() || null,
           notes: modal.querySelector('#pd_notes').value.trim() || null,
           ignoreMeterWarning: modal.querySelector('#pd_override_meter').checked,
@@ -437,6 +522,8 @@
                 </div>
               </div>
 
+              <div id="tfr_compliance_banner" style="display:none;justify-content:space-between;align-items:center;gap:8px;padding:8px 10px;border-radius:6px;font-size:12px"></div>
+
               <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px">
                 <div>
                   <label style="font-size:12px;font-weight:600">Running Chart No *</label>
@@ -458,8 +545,15 @@
                   <input type="number" step="0.1" id="tfr_prev_meter" class="input" placeholder="Auto loaded" style="width:100%;background:rgba(148,163,184,0.1)">
                 </div>
                 <div>
-                  <label style="font-size:12px;font-weight:600">Current Meter Reading *</label>
+                  <label style="font-size:12px;font-weight:600">Current Meter Reading <span id="tfr_meter_star">*</span></label>
                   <input type="number" step="0.1" min="0.1" id="tfr_meter" required class="input" placeholder="Running chart meter" style="width:100%">
+                  <label style="display:flex;align-items:center;gap:6px;margin-top:5px;font-size:11.5px;font-weight:600;color:#b45309;cursor:pointer">
+                    <input type="checkbox" id="tfr_meter_faulty">
+                    <span>⚠️ Meter Faulty / Not Working</span>
+                  </label>
+                  <div id="tfr_fault_wrap" style="display:none;margin-top:5px">
+                    <input type="text" id="tfr_meter_fault_reason" class="input" placeholder="Fault reason * (e.g. Hour meter blank)" style="width:100%;font-size:11.5px">
+                  </div>
                 </div>
                 <div>
                   <label style="font-size:12px;font-weight:600">Approx KM / Hours <span id="tfr_approx_src" class="muted" style="font-weight:400">(auto or manual)</span></label>
@@ -540,6 +634,9 @@
         const assetInp = qs('#tfr_asset', box);
         const prevMeterInp = qs('#tfr_prev_meter', box);
         const meterInp = qs('#tfr_meter', box);
+        const meterFaultyChk = qs('#tfr_meter_faulty', box);
+        const faultWrap = qs('#tfr_fault_wrap', box);
+        const meterFaultReasonInp = qs('#tfr_meter_fault_reason', box);
         const approxInp = qs('#tfr_approx_km', box);
         const approxSrcEl = qs('#tfr_approx_src', box);
         const calcBanner = qs('#tfr_calc_banner', box);
@@ -555,6 +652,24 @@
         let lastRecommended = null;
         let manualApproxEdited = false;
         let calcTimer = null;
+
+        function syncFaultyUi() {
+          const faulty = !!(meterFaultyChk && meterFaultyChk.checked);
+          if (qs('#tfr_meter_star', box)) qs('#tfr_meter_star', box).style.display = faulty ? 'none' : 'inline';
+          if (meterInp) {
+            meterInp.required = !faulty;
+            meterInp.disabled = faulty;
+            if (faulty) meterInp.value = '';
+          }
+          if (faultWrap) faultWrap.style.display = faulty ? '' : 'none';
+          if (meterFaultReasonInp) meterFaultReasonInp.required = faulty;
+        }
+        if (meterFaultyChk) {
+          meterFaultyChk.onchange = () => {
+            syncFaultyUi();
+            runRecommendCalc();
+          };
+        }
 
         srcModeSel.onchange = () => {
           const isSt = srcModeSel.value === 'STATION';
@@ -645,7 +760,10 @@
           prevMeterInp.value = '';
           if (!manualApproxEdited) approxInp.value = '';
           clearTimeout(calcTimer);
-          calcTimer = setTimeout(runRecommendCalc, 240);
+          calcTimer = setTimeout(() => {
+            runRecommendCalc();
+            loadVehicleComplianceWarning(qs('#tfr_compliance_banner', box), { assetCode: assetInp.value.trim() });
+          }, 240);
         };
         meterInp.oninput = () => { clearTimeout(calcTimer); calcTimer = setTimeout(runRecommendCalc, 240); };
         prevMeterInp.oninput = () => { clearTimeout(calcTimer); calcTimer = setTimeout(runRecommendCalc, 240); };
@@ -659,6 +777,18 @@
 
         form.onsubmit = async (e) => {
           e.preventDefault();
+          const faulty = !!(meterFaultyChk && meterFaultyChk.checked);
+          const faultReason = meterFaultReasonInp ? meterFaultReasonInp.value.trim() : '';
+          const mVal = !faulty && meterInp.value !== '' ? Number(meterInp.value) : null;
+          if (faulty) {
+            if (faultReason.length < 3) {
+              notify('Enter the faulty meter reason (at least 3 characters)', 'err');
+              return;
+            }
+          } else if (!(Number.isFinite(mVal) && mVal > 0)) {
+            notify('Enter Current Meter Reading (> 0) or mark Meter Faulty with a reason', 'err');
+            return;
+          }
           const btn = qs('#tfr_submit', box);
           btn.disabled = true;
           btn.textContent = 'Submitting...';
@@ -673,7 +803,9 @@
                 driverName: qs('#tfr_driver', box).value.trim() || null,
                 tripPurpose: qs('#tfr_purpose', box).value.trim() || null,
                 prevMeterReading: prevMeterInp.value !== '' ? Number(prevMeterInp.value) : null,
-                meterReading: Number(meterInp.value),
+                meterReading: faulty ? null : mVal,
+                meterFaulty: faulty,
+                meterFaultReason: faulty ? faultReason : null,
                 approxKm: approxInp.value !== '' ? Number(approxInp.value) : null,
                 sourceMode: srcModeSel.value,
                 targetTankId: isSt ? null : (tankIdSel.value || null),
@@ -687,6 +819,7 @@
               ? `${created.request_no} submitted for Manager Approval (>20% over recommended).`
               : `${created.request_no} sent straight to Pump Operator Queue!`);
             form.reset();
+            syncFaultyUi();
             manualApproxEdited = false;
             lastRecommended = null;
             approvalWarn.style.display = 'none';
@@ -813,7 +946,7 @@
                 <div class="muted" style="font-size:11px">RC: <b>${esc(r.running_chart_no || '—')}</b>${r.driver_name ? ' · ' + esc(r.driver_name) : ''}</div>
               </td>
               <td>
-                <div>${r.prev_meter_reading != null ? fmtNum(r.prev_meter_reading, 1) + ' → ' : ''}<b>${r.meter_reading != null ? fmtNum(r.meter_reading, 1) : '—'}</b></div>
+                <div>${r.meter_faulty ? `<span class="badge warn" title="${esc(r.meter_fault_reason || 'Meter Faulty')}">⚠️ FAULTY</span>` : `${r.prev_meter_reading != null ? fmtNum(r.prev_meter_reading, 1) + ' → ' : ''}<b>${r.meter_reading != null ? fmtNum(r.meter_reading, 1) : '—'}</b>`}</div>
                 <div class="muted" style="font-size:11px">Approx: <b>${r.approx_km != null ? fmtNum(r.approx_km, 1) : '—'} ${r.meter_type === 'KM' ? 'km' : 'hr'}</b></div>
               </td>
               <td style="text-align:right;font-weight:700;color:#0369a1">${r.recommended_litres != null ? fmtNum(r.recommended_litres, 1) + ' L' : '—'}</td>
@@ -912,6 +1045,7 @@
                 <option value="UNDER_RECOMMENDED">🟠 Under Recommended</option>
                 <option value="OVER_REQUESTED">🚨 Over Requested (&gt;10%)</option>
                 <option value="METER_MISMATCH">🛑 Meter Unchanged / Mismatch</option>
+                <option value="METER_FAULTY">⚠️ Meter Faulty</option>
                 <option value="OK">🟢 OK Only</option>
               </select>
               <input type="date" id="tfcc_from" class="input sm">
@@ -987,7 +1121,7 @@
                 <div><b>${esc(r.asset_code)}</b></div>
                 <div class="muted" style="font-size:11px">RC: ${esc(r.running_chart_no || '—')}${r.driver_name ? ' · ' + esc(r.driver_name) : ''}</div>
               </td>
-              <td>${r.prev_meter_reading != null ? fmtNum(r.prev_meter_reading, 1) + ' → ' : ''}${r.issue_meter_reading || r.request_meter_reading ? '<b>' + fmtNum(r.issue_meter_reading || r.request_meter_reading, 1) + '</b>' : '—'}</td>
+              <td>${r.meter_faulty ? `<span class="badge warn" title="${esc(r.meter_fault_reason || 'Meter Faulty')}">⚠️ FAULTY</span>` : (r.prev_meter_reading != null ? fmtNum(r.prev_meter_reading, 1) + ' → ' : '') + (r.issue_meter_reading || r.request_meter_reading ? '<b>' + fmtNum(r.issue_meter_reading || r.request_meter_reading, 1) + '</b>' : '—')}</td>
               <td style="text-align:right">${r.approx_km != null ? fmtNum(r.approx_km, 1) : '—'}</td>
               <td style="text-align:right;font-weight:700;color:#0369a1">${r.recommended_litres != null ? fmtNum(r.recommended_litres, 1) + ' L' : '—'}</td>
               <td style="text-align:right">${r.is_full_tank ? '<span class="badge" style="background:#7c3aed;color:#fff">FULL TANK</span>' : fmtNum(r.requested_litres, 1) + ' L'}</td>

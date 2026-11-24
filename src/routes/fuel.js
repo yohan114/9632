@@ -18,6 +18,8 @@ const fuelStock = require('../lib/fuel/stock');
 const v2Engine = require('../lib/fuel/v2_engine');
 const transportRequests = require('../lib/fuel/transport_requests');
 const fuelScope = require('../lib/fuel/scope');
+const ceypetcoSync = require('../lib/fuel/ceypetco_sync');
+const fuelReprice = require('../lib/fuel/reprice');
 const audit = require('../lib/audit');
 
 function currentMonthStr() {
@@ -130,8 +132,9 @@ router.post(
       fuelScope.assertTankInScope(req.user, targetTankId, 'issue fuel from this tank');
     }
 
-    // Enforce Meter Guard unless explicitly overridden by user with reason
-    if (req.body.meterReading && !req.body.ignoreMeterWarning) {
+    // Enforce Meter Guard unless explicitly faulty or overridden by user with reason
+    const bodyFaulty = !!(req.body.meterFaulty || req.body.meter_faulty);
+    if (!bodyFaulty && req.body.meterReading && !req.body.ignoreMeterWarning) {
       const check = v2Engine.checkMeterReading({
         assetCode: req.body.assetCode || req.body.vehicleRef,
         meterReading: req.body.meterReading,
@@ -507,6 +510,8 @@ router.post(
         fuelType: fr.fuel_type || 'AUTO_DIESEL',
         meterReading: meterReading != null ? meterReading : fr.meter_reading,
         meterType: fr.meter_type || 'HOURS',
+        meterFaulty: req.body.meterFaulty !== undefined ? !!req.body.meterFaulty : !!fr.meter_faulty,
+        meterFaultReason: req.body.meterFaultReason || fr.meter_fault_reason || null,
         sourceTankId: effTankId,
         targetProjectId: fr.project_id || null,
         driverName: fr.driver_name || null,
@@ -558,7 +563,15 @@ router.post(
     }
 
     const meterVal = body.meterReading != null && body.meterReading !== '' ? body.meterReading : fr.meter_reading;
-    if (meterVal && !body.ignoreMeterWarning) {
+    const hasExplicitFaulty = body.meterFaulty !== undefined || body.meter_faulty !== undefined;
+    const effFaulty = hasExplicitFaulty
+      ? Boolean(body.meterFaulty || body.meter_faulty)
+      : Boolean(fr.meter_faulty && !(body.meterReading != null && body.meterReading !== '' && Number(body.meterReading) > 0));
+    const effFaultReason = effFaulty
+      ? (body.meterFaultReason || body.meter_fault_reason || fr.meter_fault_reason || null)
+      : null;
+
+    if (!effFaulty && meterVal && !body.ignoreMeterWarning) {
       const check = v2Engine.checkMeterReading({
         assetCode: fr.asset_code,
         meterReading: meterVal,
@@ -575,8 +588,10 @@ router.post(
       assetCode: fr.asset_code,
       litres: qty,
       fuelType: body.fuelType || fr.fuel_type || 'AUTO_DIESEL',
-      meterReading: meterVal,
+      meterReading: effFaulty ? null : meterVal,
       meterType: body.meterType || fr.meter_type || 'HOURS',
+      meterFaulty: effFaulty,
+      meterFaultReason: effFaultReason,
       sourceTankId: effTankId,
       targetProjectId: body.targetProjectId || fr.project_id || null,
       driverName: body.driverName || fr.driver_name || null,
@@ -803,6 +818,117 @@ router.get(
   })
 );
 
+router.get(
+  '/budgets',
+  requireAuth,
+  fuelScope.requireFuelAccess({
+    sections: ['fuel_reports', 'fuel_prices', 'fuel_tanks'],
+    level: 'view',
+    caps: ['fuel.reports.view', 'fuel.prices.view', 'fuel.prices.manage', 'fuel.tanks.manage', 'fuel.tanks.view'],
+  }),
+  asyncHandler(async (req, res) => {
+    const targetMonth = /^\d{4}-\d{2}$/.test(String(req.query.month || '')) ? String(req.query.month) : currentMonthStr();
+    const [yr, mo] = targetMonth.split('-').map(Number);
+
+    const ymShift = (offset) => {
+      const d = new Date(Date.UTC(yr, mo - 1 + offset, 1));
+      return d.toISOString().slice(0, 7);
+    };
+    const prev1 = ymShift(-1);
+    const prev2 = ymShift(-2);
+    const prev3 = ymShift(-3);
+    const prevList = [prev1, prev2, prev3];
+    const allWindow = [...prevList, targetMonth];
+
+    const warnRow = get("SELECT value FROM settings WHERE key = 'fuel.budget_warn_pct'");
+    const warnPct = warnRow && Number.isFinite(Number(warnRow.value)) ? Number(warnRow.value) : 85;
+
+    const usageRows = all(
+      `SELECT COALESCE(fi.target_project_id, fi.project_id, t.project_id, 0) AS project_id,
+              substr(fi.issue_date, 1, 7) AS ym,
+              ROUND(SUM(fi.litres), 1) AS litres,
+              ROUND(SUM(COALESCE(fi.total_cost_cents, fi.cost_cents, fi.total_price * 100, 0)) / 100.0, 2) AS cost_lkr
+         FROM fuel_issues fi
+         LEFT JOIN fuel_tanks t ON t.id = COALESCE(fi.source_tank_id, fi.bulk_tank_id)
+        WHERE fi.is_voided = 0
+          AND substr(fi.issue_date, 1, 7) IN (?, ?, ?, ?)
+        GROUP BY COALESCE(fi.target_project_id, fi.project_id, t.project_id, 0), substr(fi.issue_date, 1, 7)`,
+      ...allWindow
+    );
+
+    const usageMap = new Map();
+    const activeUsagePids = new Set();
+    for (const r of usageRows) {
+      const pid = Number(r.project_id || 0);
+      if (pid > 0) activeUsagePids.add(pid);
+      let entry = usageMap.get(pid);
+      if (!entry) {
+        entry = { curLitres: 0, curCost: 0, prevLitres: 0, prev3Sum: 0 };
+        usageMap.set(pid, entry);
+      }
+      if (r.ym === targetMonth) {
+        entry.curLitres += r.litres || 0;
+        entry.curCost += r.cost_lkr || 0;
+      } else {
+        entry.prev3Sum += r.litres || 0;
+        if (r.ym === prev1) entry.prevLitres += r.litres || 0;
+      }
+    }
+
+    const projects = all('SELECT id, code, name, active FROM projects ORDER BY active DESC, name ASC');
+    const budgets = all('SELECT * FROM site_fuel_budgets WHERE year = ? AND month = ?', yr, mo);
+    const budgetMap = new Map(budgets.map((b) => [Number(b.project_id), b]));
+
+    const items = [];
+    for (const p of projects) {
+      const hasBudget = budgetMap.has(p.id);
+      if (p.active === 0 && !activeUsagePids.has(p.id) && !hasBudget) continue;
+      const u = usageMap.get(p.id) || { curLitres: 0, curCost: 0, prevLitres: 0, prev3Sum: 0 };
+      const b = budgetMap.get(p.id);
+      const budgetLitres = b && b.budget_litres != null ? Number(b.budget_litres) : null;
+      const avg3m = Math.round((u.prev3Sum / 3) * 10) / 10;
+      const suggested = avg3m > 0 ? Math.ceil((avg3m * 1.1) / 100) * 100 : null;
+      const actualLitres = Math.round(u.curLitres * 10) / 10;
+      const pct = budgetLitres && budgetLitres > 0 ? Math.round((actualLitres / budgetLitres) * 1000) / 10 : null;
+      const paceVerdict = !budgetLitres || budgetLitres <= 0
+        ? 'NO_BUDGET'
+        : (pct > 100 ? 'OVER' : (pct >= warnPct ? 'NEAR' : 'ON_TRACK'));
+
+      items.push({
+        project_id: p.id,
+        project_code: p.code || `SITE-${p.id}`,
+        project_name: p.name,
+        active: p.active !== 0,
+        year: yr,
+        month: mo,
+        budget_litres: budgetLitres,
+        budget_amount_cents: b ? b.budget_amount_cents : null,
+        note: b ? b.note : null,
+        actual_litres: actualLitres,
+        actual_cost_lkr: Math.round(u.curCost * 100) / 100,
+        prev_month_litres: Math.round(u.prevLitres * 10) / 10,
+        avg_3m_litres: avg3m,
+        suggested_budget_litres: suggested,
+        budget_pct: pct,
+        pace_verdict: paceVerdict,
+      });
+    }
+
+    items.sort((a, b) => (b.actual_litres - a.actual_litres) || (b.avg_3m_litres - a.avg_3m_litres) || a.project_name.localeCompare(b.project_name));
+
+    const summary = {
+      total_sites: items.length,
+      budgeted_sites: items.filter((i) => i.budget_litres > 0).length,
+      on_track: items.filter((i) => i.pace_verdict === 'ON_TRACK').length,
+      watch: items.filter((i) => i.pace_verdict === 'NEAR').length,
+      over_budget: items.filter((i) => i.pace_verdict === 'OVER').length,
+      unbudgeted_active: items.filter((i) => i.pace_verdict === 'NO_BUDGET' && (i.actual_litres > 0 || i.avg_3m_litres > 0)).length,
+    };
+
+    res.json({ month: targetMonth, year: yr, month_num: mo, prev_month: prev1, warn_pct: warnPct, summary, items });
+  })
+);
+
 router.post(
   '/budgets',
   requireAuth,
@@ -832,6 +958,108 @@ router.post(
     `, Number(projectId), Number(year), Number(month), litres, cents, note || null, actorId);
 
     res.json({ ok: true, projectId, year, month, budgetLitres: litres });
+  })
+);
+
+router.post(
+  '/budgets/bulk',
+  requireAuth,
+  fuelScope.requireFuelAccess({
+    sections: ['fuel_prices', 'fuel_tanks'],
+    level: 'edit',
+    caps: ['fuel.prices.manage', 'fuel.tanks.manage'],
+  }),
+  asyncHandler(async (req, res) => {
+    const body = req.body || {};
+    let yr = Number(body.year);
+    let mo = Number(body.month);
+    if ((!yr || !mo) && /^\d{4}-\d{2}$/.test(String(body.targetMonth || body.month || ''))) {
+      const parts = String(body.targetMonth || body.month).split('-').map(Number);
+      yr = parts[0];
+      mo = parts[1];
+    }
+    if (!yr || !mo || mo < 1 || mo > 12) {
+      return res.status(400).json({ error: 'Valid year and month (or targetMonth YYYY-MM) are required' });
+    }
+
+    const actorId = req.user ? req.user.id : 1;
+    const activeDieselCents = fuelIssue.getCurrentPrice('AUTO_DIESEL');
+    let savedCount = 0;
+
+    if (body.copyFromMonth) {
+      if (!/^\d{4}-\d{2}$/.test(String(body.copyFromMonth))) {
+        return res.status(400).json({ error: 'copyFromMonth must be YYYY-MM' });
+      }
+      const [srcYr, srcMo] = String(body.copyFromMonth).split('-').map(Number);
+      const srcRows = all(
+        'SELECT * FROM site_fuel_budgets WHERE year = ? AND month = ? AND budget_litres IS NOT NULL AND budget_litres > 0',
+        srcYr, srcMo
+      );
+      tx(() => {
+        for (const r of srcRows) {
+          const litres = Number(r.budget_litres);
+          const cents = Math.round(litres * activeDieselCents);
+          run(`
+            INSERT INTO site_fuel_budgets (project_id, year, month, budget_litres, budget_amount_cents, note, created_by, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+            ON CONFLICT(project_id, year, month) DO UPDATE SET
+              budget_litres = excluded.budget_litres,
+              budget_amount_cents = excluded.budget_amount_cents,
+              note = excluded.note,
+              updated_at = datetime('now')
+          `, r.project_id, yr, mo, litres, cents, r.note || `Copied from ${body.copyFromMonth}`, actorId);
+          savedCount += 1;
+        }
+      });
+    } else {
+      const items = Array.isArray(body.items) ? body.items : null;
+      if (!items || !items.length) {
+        return res.status(400).json({ error: 'items array (or copyFromMonth) is required' });
+      }
+      if (items.length > 200) {
+        return res.status(400).json({ error: 'Cannot save more than 200 site budgets at once' });
+      }
+      tx(() => {
+        for (const it of items) {
+          const pid = Number(it && (it.projectId != null ? it.projectId : it.project_id));
+          if (!pid) continue;
+          const rawVal = it.budgetLitres !== undefined ? it.budgetLitres : it.budget_litres;
+          if (rawVal === null || rawVal === '' || rawVal === undefined) {
+            run('DELETE FROM site_fuel_budgets WHERE project_id = ? AND year = ? AND month = ?', pid, yr, mo);
+            continue;
+          }
+          const litres = Number(rawVal);
+          if (!Number.isFinite(litres) || litres < 0) {
+            const err = new Error(`Invalid budget litres for project #${pid}`);
+            err.status = 400;
+            throw err;
+          }
+          const cents = Math.round(litres * activeDieselCents);
+          run(`
+            INSERT INTO site_fuel_budgets (project_id, year, month, budget_litres, budget_amount_cents, note, created_by, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+            ON CONFLICT(project_id, year, month) DO UPDATE SET
+              budget_litres = excluded.budget_litres,
+              budget_amount_cents = excluded.budget_amount_cents,
+              note = excluded.note,
+              updated_at = datetime('now')
+          `, pid, yr, mo, litres, cents, it.note || null, actorId);
+          savedCount += 1;
+        }
+      });
+    }
+
+    try {
+      audit.record({
+        userId: actorId,
+        entity: 'site_fuel_budget',
+        entityId: null,
+        action: 'bulk_save',
+        after: { year: yr, month: mo, saved_count: savedCount, copyFromMonth: body.copyFromMonth || null },
+      });
+    } catch (_) {}
+
+    res.json({ ok: true, year: yr, month: mo, saved_count: savedCount });
   })
 );
 
@@ -1069,13 +1297,22 @@ router.get(
   fuelScope.requireFuelAccess({ sections: 'fuel_prices', level: 'view', caps: ['fuel.prices.view', 'fuel.prices.manage'] }),
   asyncHandler(async (req, res) => {
     const rows = all(`
-      SELECT fp.*, COALESCE(u.full_name, u.username) AS creator_name
+      SELECT fp.*,
+             COALESCE(
+               u.full_name,
+               u.username,
+               CASE
+                 WHEN fp.source LIKE 'CEYPETCO_AUTO%' OR fp.source LIKE 'Auto-fetched%' OR fp.source LIKE 'Historical price%'
+                 THEN 'Ceypetco Auto-Sync'
+                 ELSE NULL
+               END
+             ) AS creator_name
         FROM fuel_prices fp
         LEFT JOIN users u ON u.id = fp.created_by
        ORDER BY fp.effective_date DESC, fp.id DESC, fp.fuel_type ASC
     `);
     const activePrices = fuelIssue.getActivePriceMap(req.query.date || null);
-    res.json({ prices: rows, activePrices });
+    res.json({ prices: rows, activePrices, ceypetcoSync: ceypetcoSync.getSyncStatus() });
   })
 );
 
@@ -1146,6 +1383,84 @@ router.post(
       effectiveDate: normDate,
       activePrices: fuelIssue.getActivePriceMap(),
     });
+  })
+);
+
+router.post(
+  '/prices/sync',
+  requireAuth,
+  fuelScope.requireFuelAccess({ sections: 'fuel_prices', level: 'edit', caps: ['fuel.prices.manage'] }),
+  asyncHandler(async (req, res) => {
+    try {
+      const result = await ceypetcoSync.syncCeypetcoPrices({
+        actorId: req.user ? req.user.id : null,
+        trigger: 'manual',
+      });
+      res.json({
+        success: true,
+        ...result,
+        activePrices: fuelIssue.getActivePriceMap(),
+        ceypetcoSync: ceypetcoSync.getSyncStatus(),
+      });
+    } catch (err) {
+      res.status(502).json({
+        error: (err && err.message) || 'Ceypetco sync failed',
+        ceypetcoSync: ceypetcoSync.getSyncStatus(),
+      });
+    }
+  })
+);
+
+router.post(
+  '/prices/reprice-preview',
+  requireAuth,
+  fuelScope.requireFuelAccess({ sections: 'fuel_prices', level: 'edit', caps: ['fuel.prices.manage'] }),
+  asyncHandler(async (req, res) => {
+    const {
+      fromDate,
+      toDate,
+      fuelType = 'ALL',
+      includeManual = false,
+      projectId = null,
+    } = req.body || {};
+    const preview = fuelReprice.previewFuelReprice({
+      fromDate,
+      toDate,
+      fuelType,
+      includeManual: Boolean(includeManual),
+      projectId,
+    });
+    const { _eligible, ...clean } = preview;
+    res.json(clean);
+  })
+);
+
+router.post(
+  '/prices/reprice-apply',
+  requireAuth,
+  fuelScope.requireFuelAccess({ sections: 'fuel_prices', level: 'edit', caps: ['fuel.prices.manage'] }),
+  asyncHandler(async (req, res) => {
+    const {
+      fromDate,
+      toDate,
+      fuelType = 'ALL',
+      includeManual = false,
+      projectId = null,
+      refreshDraftBills = true,
+      reason = null,
+    } = req.body || {};
+    const actorId = req.user ? req.user.id : null;
+    const result = fuelReprice.applyFuelReprice({
+      fromDate,
+      toDate,
+      fuelType,
+      includeManual: Boolean(includeManual),
+      projectId,
+      refreshDraftBills: refreshDraftBills !== false,
+      actorId,
+      reason,
+    });
+    res.json({ success: true, ...result });
   })
 );
 
@@ -1233,6 +1548,7 @@ router.get(
       currentDieselCents: activePrices.AUTO_DIESEL ? activePrices.AUTO_DIESEL.pricePerLitreCents : fuelIssue.getCurrentPrice('AUTO_DIESEL'),
       currentDieselEffectiveDate: activePrices.AUTO_DIESEL ? activePrices.AUTO_DIESEL.effectiveDate : null,
       activePrices,
+      ceypetcoSync: ceypetcoSync.getSyncStatus(),
       pendingCorrections: scope.scoped ? 0 : pendingCorrections,
       pendingRequests: scope.scoped ? 0 : pendingRequests,
     });
@@ -1339,14 +1655,18 @@ router.get(
       });
     }
 
-    // Alert 2: Tank Dip Discrepancies (> 50 L variance)
+    // Alert 2: Tank Dip Discrepancies (> threshold variance, excluding reconciled & opening stock)
+    const dipThreshold = fuelStock.getDipVarianceThreshold();
+    const dipCols = all('PRAGMA table_info("fuel_tank_dips")').map((c) => c.name);
+    const hasReconcileCols = dipCols.includes('reconciled') && dipCols.includes('dip_type');
     const highVarDips = all(`
       SELECT td.*, t.code AS tank_code, t.name AS tank_name
         FROM fuel_tank_dips td
         JOIN fuel_tanks t ON t.id = td.tank_id
-       WHERE ABS(td.variance_litres) > 50
+       WHERE ABS(td.variance_litres) > ?
+         ${hasReconcileCols ? "AND COALESCE(td.reconciled, 0) = 0 AND COALESCE(td.dip_type, 'PHYSICAL_DIP') <> 'OPENING_STOCK'" : ''}
        ORDER BY td.dip_date DESC LIMIT 10
-    `);
+    `, dipThreshold);
     for (const d of highVarDips) {
       alerts.push({
         category: 'INTEGRITY',
@@ -1354,6 +1674,7 @@ router.get(
         title: `Tank Dip Variance: ${d.tank_name}`,
         message: `Physical dip on ${d.dip_date} had a variance of ${d.variance_litres > 0 ? '+' : ''}${d.variance_litres} Litres.`,
         tank_id: d.tank_id,
+        dip_id: d.id,
       });
     }
 
@@ -1394,7 +1715,183 @@ router.get(
       });
     }
 
-    res.json({ alerts, count: alerts.length, month: targetMonth });
+    // Alert 5: Faulty Meter Repair Alerts (vehicles with faulty-meter fuel slips or open requests and no subsequent working meter issue)
+    const faultyIssues = all(`
+      SELECT UPPER(COALESCE(NULLIF(TRIM(fi.asset_code),''), fi.vehicle_ref)) AS asset_key,
+             MAX(fi.asset_code) AS asset_code,
+             MAX(fi.asset_id) AS asset_id,
+             COUNT(*) AS faulty_fills,
+             ROUND(SUM(fi.litres), 1) AS faulty_litres,
+             MAX(fi.issue_date) AS last_fault_date,
+             MAX(fi.rowid) AS max_rowid,
+             (SELECT fi2.meter_fault_reason
+                FROM fuel_issues fi2
+               WHERE fi2.is_voided = 0 AND COALESCE(fi2.meter_faulty, 0) = 1
+                 AND UPPER(COALESCE(NULLIF(TRIM(fi2.asset_code),''), fi2.vehicle_ref)) = UPPER(COALESCE(NULLIF(TRIM(fi.asset_code),''), fi.vehicle_ref))
+               ORDER BY fi2.issue_date DESC, fi2.rowid DESC LIMIT 1) AS latest_reason
+        FROM fuel_issues fi
+       WHERE fi.is_voided = 0
+         AND COALESCE(fi.meter_faulty, 0) = 1
+         AND NOT EXISTS (
+           SELECT 1 FROM fuel_issues ok
+            WHERE ok.is_voided = 0
+              AND COALESCE(ok.meter_faulty, 0) = 0
+              AND ok.meter_reading > 0
+              AND (
+                (fi.asset_id IS NOT NULL AND ok.asset_id = fi.asset_id)
+                OR UPPER(COALESCE(NULLIF(TRIM(ok.asset_code),''), ok.vehicle_ref)) = UPPER(COALESCE(NULLIF(TRIM(fi.asset_code),''), fi.vehicle_ref))
+              )
+              AND (ok.issue_date > fi.issue_date OR (ok.issue_date = fi.issue_date AND ok.rowid > fi.rowid))
+         )
+       GROUP BY asset_key
+       ORDER BY last_fault_date DESC
+       LIMIT 30
+    `);
+
+    const openFaultyReqs = all(`
+      SELECT UPPER(fr.asset_code) AS asset_key,
+             fr.asset_code,
+             fr.asset_id,
+             fr.meter_fault_reason AS latest_reason,
+             fr.requested_at AS last_fault_date
+        FROM fuel_requests fr
+       WHERE fr.status IN ('PENDING', 'APPROVED')
+         AND COALESCE(fr.meter_faulty, 0) = 1
+         AND NOT EXISTS (
+           SELECT 1 FROM fuel_issues ok
+            WHERE ok.is_voided = 0
+              AND COALESCE(ok.meter_faulty, 0) = 0
+              AND ok.meter_reading > 0
+              AND (
+                (fr.asset_id IS NOT NULL AND ok.asset_id = fr.asset_id)
+                OR UPPER(COALESCE(NULLIF(TRIM(ok.asset_code),''), ok.vehicle_ref)) = UPPER(fr.asset_code)
+              )
+              AND (ok.issue_date > fr.requested_at OR COALESCE(ok.created_at,'') > fr.requested_at)
+         )
+       ORDER BY fr.requested_at DESC
+    `);
+
+    const faultyByAsset = new Map();
+    for (const row of faultyIssues) {
+      if (!row.asset_key) continue;
+      faultyByAsset.set(row.asset_key, row);
+    }
+    for (const r of openFaultyReqs) {
+      if (!r.asset_key) continue;
+      if (!faultyByAsset.has(r.asset_key)) {
+        faultyByAsset.set(r.asset_key, {
+          asset_key: r.asset_key,
+          asset_code: r.asset_code,
+          asset_id: r.asset_id,
+          faulty_fills: 0,
+          faulty_litres: 0,
+          last_fault_date: r.last_fault_date,
+          latest_reason: r.latest_reason,
+          open_request: true,
+        });
+      }
+    }
+
+    let meterFaultyCount = 0;
+    for (const row of faultyByAsset.values()) {
+      meterFaultyCount++;
+      const reasonTxt = row.latest_reason || 'Meter reported faulty';
+      const detailTxt = row.faulty_fills > 0
+        ? `${row.faulty_fills} fuel slip(s) (${row.faulty_litres} L) recorded without working meter (latest ${String(row.last_fault_date || '').slice(0, 10)}).`
+        : `Open fuel requisition flagged faulty meter (${String(row.last_fault_date || '').slice(0, 10)}).`;
+      alerts.push({
+        category: 'METER_FAULTY',
+        severity: 'HIGH',
+        title: `Faulty Meter Repair Needed: ${row.asset_code}`,
+        message: `Reason: "${reasonTxt}". ${detailTxt}`,
+        asset_code: row.asset_code,
+        asset_id: row.asset_id,
+        fault_reason: row.latest_reason || null,
+      });
+    }
+
+    // Alert 6: Site Fuel Budget Overrun / Near-Limit Alerts
+    try {
+      const [bYr, bMo] = String(targetMonth).split('-').map(Number);
+      const warnRow = get("SELECT value FROM settings WHERE key = 'fuel.budget_warn_pct'");
+      const warnPct = warnRow && Number.isFinite(Number(warnRow.value)) ? Number(warnRow.value) : 85;
+      if (bYr && bMo) {
+        const budgetAlertRows = all(`
+          SELECT b.project_id, p.name AS project_name, p.code AS project_code, b.budget_litres,
+                 ROUND(COALESCE(u.actual_litres, 0), 1) AS actual_litres
+            FROM site_fuel_budgets b
+            JOIN projects p ON p.id = b.project_id
+            LEFT JOIN (
+              SELECT COALESCE(fi.target_project_id, fi.project_id, t.project_id, 0) AS pid,
+                     SUM(fi.litres) AS actual_litres
+                FROM fuel_issues fi
+                LEFT JOIN fuel_tanks t ON t.id = COALESCE(fi.source_tank_id, fi.bulk_tank_id)
+               WHERE fi.is_voided = 0 AND substr(fi.issue_date, 1, 7) = ?
+               GROUP BY COALESCE(fi.target_project_id, fi.project_id, t.project_id, 0)
+            ) u ON u.pid = b.project_id
+           WHERE b.year = ? AND b.month = ? AND b.budget_litres IS NOT NULL AND b.budget_litres > 0
+        `, targetMonth, bYr, bMo);
+
+        for (const r of budgetAlertRows) {
+          const pct = Math.round(((r.actual_litres || 0) / r.budget_litres) * 1000) / 10;
+          if (pct > 100) {
+            alerts.push({
+              category: 'BUDGET',
+              severity: 'HIGH',
+              title: `Site Fuel Budget Exceeded: ${r.project_name}`,
+              message: `Used ${r.actual_litres} L against ${r.budget_litres} L budget (${pct}%) in ${targetMonth}.`,
+              project_id: r.project_id,
+              budget_litres: r.budget_litres,
+              actual_litres: r.actual_litres,
+              budget_pct: pct,
+            });
+          } else if (pct >= warnPct) {
+            alerts.push({
+              category: 'BUDGET',
+              severity: 'MEDIUM',
+              title: `Site Fuel Budget Near Limit: ${r.project_name}`,
+              message: `Reached ${r.actual_litres} L of ${r.budget_litres} L budget (${pct}%) in ${targetMonth}.`,
+              project_id: r.project_id,
+              budget_litres: r.budget_litres,
+              actual_litres: r.actual_litres,
+              budget_pct: pct,
+            });
+          }
+        }
+      }
+    } catch (_) {}
+
+    // Alert 7: Statutory Document Compliance on Fueled Vehicles (Insurance / Revenue Licence Expired)
+    try {
+      const fueledIds = all(`
+        SELECT DISTINCT asset_id
+          FROM fuel_issues
+         WHERE is_voided = 0 AND substr(issue_date, 1, 7) = ? AND asset_id IS NOT NULL
+         LIMIT 500
+      `, targetMonth).map((r) => r.asset_id);
+      if (fueledIds.length) {
+        const vdocs = require('../lib/vehicle_documents');
+        const compMap = vdocs.getAssetComplianceMap({ assetIds: fueledIds });
+        for (const entry of Object.values(compMap.by_asset_id || {})) {
+          if (entry.insurance_expired || entry.rl_expired) {
+            const expNames = (entry.expired_docs || [])
+              .filter((d) => ['insurance', 'revenue_licence'].includes(d.doc_type_code))
+              .map((d) => `${d.doc_type_name} (${d.valid_until})`)
+              .join(', ');
+            alerts.push({
+              category: 'COMPLIANCE',
+              severity: 'MEDIUM',
+              title: `Expired Statutory Document on Fueled Vehicle: ${entry.asset_code}`,
+              message: `Vehicle drew fuel in ${targetMonth} with expired statutory cover: ${expNames}.`,
+              asset_id: entry.asset_id,
+              asset_code: entry.asset_code,
+            });
+          }
+        }
+      }
+    } catch (_) {}
+
+    res.json({ alerts, count: alerts.length, meter_faulty_count: meterFaultyCount, month: targetMonth });
   })
 );
 

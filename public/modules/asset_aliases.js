@@ -841,3 +841,326 @@ async function openAliasAutoSuggestionsModal(aopts, getSecBadge, onLinked) {
     };
   }, { wide: true });
 }
+
+// ---- Assets (extracted from public/app.js) --------------------------------------------------------
+routes.assets = async (c, params) => {
+  if (params[0]) return assetDetail(c, params[0]);
+  const canMerge = isAdmin() || canDo('assets.repoint');
+  const canTriage = isAdmin() || canDo('assets.edit');
+  let curFilter = 'registered';
+
+  c.innerHTML = `${pageHeader('Assets')}
+    <div id="a_hygiene_bar" class="pill-row" style="margin:0 0 10px;flex-wrap:wrap;gap:6px">
+      <button type="button" class="sm primary" data-afilter="registered">Registered Fleet <span class="badge" id="ac_reg">…</span></button>
+      <button type="button" class="sm" data-afilter="unregistered">Unregistered Review <span class="badge amber" id="ac_unreg">…</span></button>
+      <button type="button" class="sm" data-afilter="hired">Hired / Outside-Billed <span class="badge" id="ac_hired">…</span></button>
+      <button type="button" class="sm" data-afilter="missing_meter">Missing Meter Setup <span class="badge red" id="ac_meter">…</span></button>
+      <button type="button" class="sm" data-afilter="all">All Assets <span class="badge" id="ac_all">…</span></button>
+    </div>
+    <div class="toolbar">
+      <input id="asearch" type="search" placeholder="Search vehicle no / E&C / brand / type…" style="max-width:280px">
+      <div class="spacer"></div>
+      <span class="muted" id="acount"></span>
+      ${canMerge ? '<button type="button" class="sm" id="btn_merge_assets">🔀 Merge Duplicate Asset</button>' : ''}
+      <a class="btn sm" href="/api/assets/export.xlsx">⬇ Excel</a>
+      ${canDo('assets.create') ? '<button class="primary" id="newasset">+ New Asset</button>' : ''}
+    </div>
+    <div id="atable"><div class="muted">Loading…</div></div>`;
+
+  let cachedDupData = null;
+
+  const loadSummaryCounts = async () => {
+    try {
+      const res = await api('/assets/duplicate-candidates?limit=60');
+      cachedDupData = res;
+      const t = (res && res.triage) || {};
+      if (qs('#ac_reg', c)) qs('#ac_reg', c).textContent = t.registered_count ?? 0;
+      if (qs('#ac_unreg', c)) qs('#ac_unreg', c).textContent = t.unregistered_count ?? 0;
+      if (qs('#ac_hired', c)) qs('#ac_hired', c).textContent = t.hired_count ?? 0;
+      if (qs('#ac_meter', c)) qs('#ac_meter', c).textContent = t.missing_meter_count ?? 0;
+      if (qs('#ac_all', c)) qs('#ac_all', c).textContent = t.total_assets ?? 0;
+    } catch (_) {}
+  };
+
+  const load = async () => {
+    const q = new URLSearchParams({ limit: '10000' });
+    if (curFilter === 'registered') q.set('in_register', '1');
+    else if (curFilter === 'unregistered') q.set('in_register', '0');
+    else if (curFilter === 'hired') q.set('ownership', 'HIRED');
+    else if (curFilter === 'missing_meter') q.set('missing_meter', '1');
+
+    qsa('[data-afilter]', c).forEach((b) => {
+      b.classList.toggle('primary', b.dataset.afilter === curFilter);
+    });
+
+    const list = await api('/assets?' + q.toString());
+    const byId = new Map(list.map((a) => [String(a.id), a]));
+
+    const rows = list.map((a) => {
+      const isHired = String(a.ownership || 'OWNED').toUpperCase() === 'HIRED';
+      const ownBadge = `<span class="badge ${isHired ? 'amber' : 'blue'}" style="font-size:10.5px">${esc(isHired ? 'HIRED' : 'OWNED')}</span>${a.in_register ? '' : ' <span class="badge" style="font-size:10px">Unreg</span>'}`;
+      const mText = a.meter_type
+        ? `${esc(a.meter_type)}${a.current_hours > 0 ? ' · ' + num(a.current_hours) : ' · 0'}`
+        : '<span class="badge red" style="font-size:10.5px">Missing</span>';
+      return `<tr data-id="${a.id}">
+        <td><a href="#/assets/${a.id}">${esc(a.registration || a.code)}</a>${a.registration && a.code !== a.registration ? `<div class="muted" style="font-size:11px">${esc(a.code)}</div>` : ''}</td>
+        <td>${esc(a.ec_code || '—')}</td>
+        <td><span class="badge">${esc(a.asset_class)}</span></td>
+        <td>${esc([a.brand, a.type].filter(Boolean).join(' ') || '')}</td>
+        <td>${esc(a.current_project || '—')}</td>
+        <td>${ownBadge}</td>
+        <td>${mText}</td>
+        <td><span class="badge ${a.status === 'active' ? 'green' : a.status === 'under_repair' ? 'amber' : ''}">${esc(a.status)}</span></td>
+        <td class="num">${a.open_jobs}</td>
+        <td class="num">${money(a.lifetime_cost)}</td>
+        ${canTriage ? `<td style="white-space:nowrap;text-align:right"><button type="button" class="sm btn-asset-triage" data-aid="${a.id}">⚡ Triage</button></td>` : ''}
+      </tr>`;
+    });
+
+    qs('#acount', c).textContent = `${list.length}${list.length === 10000 ? '+' : ''} asset${list.length === 1 ? '' : 's'}`;
+    const cols = [
+      { label: 'Code' }, { label: 'E&C No' }, { label: 'Class' }, { label: 'Type' },
+      { label: 'Project' }, { label: 'Ownership' }, { label: 'Meter' }, { label: 'Status' },
+      { label: 'Open Jobs', num: true }, { label: 'Lifetime Cost', num: true },
+    ].concat(canTriage ? [{ label: '', width: '80px' }] : []);
+    qs('#atable', c).innerHTML = tableWrap(cols, rows, { scroll: true });
+
+    const term = qs('#asearch', c).value.toLowerCase();
+    if (term) qsa('#atable tbody tr', c).forEach((tr) => { tr.style.display = tr.textContent.toLowerCase().includes(term) ? '' : 'none'; });
+
+    if (canTriage) {
+      qsa('.btn-asset-triage', c).forEach((btn) => {
+        btn.onclick = () => openAssetTriageModal(byId.get(btn.dataset.aid), () => { load(); loadSummaryCounts(); });
+      });
+    }
+  };
+
+  qsa('[data-afilter]', c).forEach((b) => {
+    b.onclick = () => { curFilter = b.dataset.afilter; load(); };
+  });
+  qs('#asearch', c).oninput = (e) => {
+    const v = e.target.value.toLowerCase();
+    qsa('#atable tbody tr', c).forEach((tr) => { tr.style.display = tr.textContent.toLowerCase().includes(v) ? '' : 'none'; });
+  };
+  if (qs('#newasset', c)) qs('#newasset', c).onclick = newAssetModal;
+  if (qs('#btn_merge_assets', c)) {
+    qs('#btn_merge_assets', c).onclick = () => openAssetMergeModal(cachedDupData, () => { load(); loadSummaryCounts(); });
+  }
+
+  await Promise.all([loadSummaryCounts(), load()]);
+};
+
+function openAssetTriageModal(asset, onDone) {
+  if (!asset) return;
+  const curOwn = String(asset.ownership || 'OWNED').toUpperCase();
+  const curMeter = asset.meter_type ? String(asset.meter_type).toUpperCase() : '';
+  modal(`Triage Asset — ${asset.code}`, `
+    <p class="muted" style="margin-top:0;font-size:12px">Quickly classify ownership, registered fleet inclusion, and meter baseline for billing &amp; fuel validation.</p>
+    <div class="row">
+      <div>
+        <label>Ownership</label>
+        <select id="tr_own">
+          <option value="OWNED" ${curOwn === 'OWNED' ? 'selected' : ''}>OWNED (Company Fleet)</option>
+          <option value="HIRED" ${curOwn === 'HIRED' ? 'selected' : ''}>HIRED / Outside-Billed</option>
+        </select>
+      </div>
+      <div>
+        <label>Status</label>
+        <select id="tr_status">
+          <option value="active" ${asset.status === 'active' ? 'selected' : ''}>active</option>
+          <option value="idle" ${asset.status === 'idle' ? 'selected' : ''}>idle</option>
+          <option value="under_repair" ${asset.status === 'under_repair' ? 'selected' : ''}>under_repair</option>
+          <option value="decommissioned" ${asset.status === 'decommissioned' ? 'selected' : ''}>decommissioned</option>
+        </select>
+      </div>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <div>
+        <label>Meter Type</label>
+        <select id="tr_mtype">
+          <option value="" ${!curMeter ? 'selected' : ''}>— Not Set —</option>
+          <option value="KM" ${curMeter === 'KM' ? 'selected' : ''}>KM (Odometer)</option>
+          <option value="HOURS" ${curMeter === 'HOURS' ? 'selected' : ''}>HOURS (Hour Meter)</option>
+          <option value="NONE" ${curMeter === 'NONE' ? 'selected' : ''}>NONE (Unmetered)</option>
+        </select>
+      </div>
+      <div>
+        <label>Current Reading (KM / Hrs)</label>
+        <input type="number" step="0.1" min="0" id="tr_hours" value="${esc(asset.current_hours ?? 0)}">
+      </div>
+    </div>
+    <label style="display:flex;align-items:center;gap:8px;margin-top:10px;cursor:pointer;font-weight:600">
+      <input type="checkbox" id="tr_reg" ${asset.in_register ? 'checked' : ''} style="width:auto">
+      <span>Include in Registered Fleet (<code>in_register = 1</code>)</span>
+    </label>
+    <div style="margin-top:12px">
+      <label>Audit Note (optional)</label>
+      <input type="text" id="tr_reason" placeholder="e.g. Confirmed company-owned machine / hour meter baseline">
+    </div>
+    <div style="margin-top:14px;display:flex;justify-content:flex-end;gap:8px">
+      <button type="button" id="tr_cancel">Cancel</button>
+      <button type="button" class="primary" id="tr_save">Save Triage</button>
+    </div>`, (b, close) => {
+    qs('#tr_cancel', b).onclick = close;
+    qs('#tr_save', b).onclick = async () => {
+      try {
+        await api(`/assets/${asset.id}/triage`, {
+          method: 'PATCH',
+          body: {
+            ownership: qs('#tr_own', b).value,
+            status: qs('#tr_status', b).value,
+            meter_type: qs('#tr_mtype', b).value,
+            current_hours: Number(qs('#tr_hours', b).value || 0),
+            in_register: qs('#tr_reg', b).checked ? 1 : 0,
+            reason: qs('#tr_reason', b).value.trim(),
+          },
+        });
+        toast(`Updated ${asset.code}`, 'ok');
+        close();
+        if (onDone) onDone();
+      } catch (e) {
+        toast(e.message, 'err');
+      }
+    };
+  });
+}
+
+async function openAssetMergeModal(prefetched, onDone) {
+  let allAssets = [];
+  let dupRes = prefetched;
+  try {
+    const [aList, dRes] = await Promise.all([
+      api('/assets?limit=10000'),
+      dupRes ? Promise.resolve(dupRes) : api('/assets/duplicate-candidates?limit=60'),
+    ]);
+    allAssets = Array.isArray(aList) ? aList : [];
+    dupRes = dRes;
+  } catch (e) {
+    toast(e.message || 'Failed to load assets', 'err');
+    return;
+  }
+  const candidates = (dupRes && dupRes.candidates) || [];
+  const assetOptionsHtml = allAssets.map((a) => `<option value="${a.id}">${esc(a.code)}${a.registration && a.registration !== a.code ? ' · ' + esc(a.registration) : ''} [${a.in_register ? 'Reg' : 'Unreg'}] (#${a.id})</option>`).join('');
+
+  modal('Merge Duplicate Asset (Safe Atomic Fold)', `
+    <p class="muted" style="margin-top:0;font-size:12px">
+      Moves all fuel slips, hire bills, job cards, parts issues, service plans, and documents from the <b>Source (duplicate)</b> onto the <b>Target (canonical)</b>, sums overlapping monthly costs, keeps an alias for old codes, and removes the duplicate row.
+    </p>
+    ${candidates.length ? `
+      <div class="card" style="padding:10px;margin-bottom:12px;max-height:175px;overflow-y:auto;background:rgba(37,99,235,0.04)">
+        <div style="font-weight:700;font-size:12px;margin-bottom:6px">🔎 Suggested Duplicate Candidates (${candidates.length}) — click to prefill</div>
+        ${candidates.slice(0, 20).map((p, idx) => `
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:4px 0;border-bottom:1px dashed var(--border);font-size:12px">
+            <div>
+              <span class="badge ${p.confidence === 'HIGH' ? 'red' : 'amber'}" style="font-size:10px">${esc(p.confidence)}</span>
+              <b>${esc(p.source.code)}</b> (#${p.source.id}, ${p.source.in_register ? 'Reg' : 'Unreg'}, ${p.source.fuel_count} fuel / ${p.source.job_count} jobs)
+              → <b>${esc(p.target.code)}</b> (#${p.target.id}, ${p.target.in_register ? 'Reg' : 'Unreg'})
+            </div>
+            <button type="button" class="sm btn-use-pair" data-pidx="${idx}">Select →</button>
+          </div>
+        `).join('')}
+      </div>` : ''}
+    <div class="row">
+      <div>
+        <label>Source Asset (will be merged &amp; deleted) *</label>
+        <select id="am_source"><option value="">-- Select Source Asset --</option>${assetOptionsHtml}</select>
+      </div>
+      <div>
+        <label>Target Asset (canonical survivor) *</label>
+        <select id="am_target"><option value="">-- Select Target Asset --</option>${assetOptionsHtml}</select>
+      </div>
+    </div>
+    <div style="margin-top:10px;display:flex;gap:8px;align-items:center">
+      <button type="button" class="primary" id="am_preview">🔍 Preview Dry-Run</button>
+      <label style="display:flex;align-items:center;gap:6px;margin:0;cursor:pointer;font-size:12px;font-weight:normal">
+        <input type="checkbox" id="am_keep_alias" checked style="width:auto"> Save old code as resolved alias
+      </label>
+    </div>
+    <div id="am_preview_box" style="margin-top:12px"></div>
+    <div id="am_confirm_area" style="display:none;margin-top:12px;padding:10px;border:1px solid var(--border);border-radius:6px">
+      <label id="am_reg_confirm_wrap" style="display:none;align-items:center;gap:6px;margin:0 0 8px 0;color:var(--red);font-weight:700;cursor:pointer">
+        <input type="checkbox" id="am_confirm_reg" style="width:auto">
+        <span>I confirm merging an already REGISTERED (in_register = 1) source asset</span>
+      </label>
+      <label>Merge Reason (required for audit log) *</label>
+      <input type="text" id="am_reason" placeholder="e.g. Fold typo / duplicate entry into canonical vehicle">
+      <div style="margin-top:10px;display:flex;justify-content:flex-end;gap:8px">
+        <button type="button" id="am_cancel">Cancel</button>
+        <button type="button" class="danger" id="am_execute">🔀 Confirm &amp; Merge</button>
+      </div>
+    </div>`, (b, close) => {
+    const srcSel = qs('#am_source', b);
+    const tgtSel = qs('#am_target', b);
+    const prevBox = qs('#am_preview_box', b);
+    const confArea = qs('#am_confirm_area', b);
+    const regWrap = qs('#am_reg_confirm_wrap', b);
+    const regChk = qs('#am_confirm_reg', b);
+
+    const runPreview = async () => {
+      const sId = Number(srcSel.value);
+      const tId = Number(tgtSel.value);
+      if (!sId || !tId) return toast('Choose both Source and Target assets', 'err');
+      prevBox.innerHTML = '<div class="muted">Calculating dry-run impact…</div>';
+      confArea.style.display = 'none';
+      try {
+        const pv = await api('/assets/merge-preview', { method: 'POST', body: { source_id: sId, target_id: tId } });
+        const grp = pv.counts_by_group || {};
+        const warns = (pv.warnings || []).map((w) => `<div style="padding:6px 8px;margin-bottom:4px;border-radius:4px;font-size:12px;background:${w.severity === 'HIGH' ? 'rgba(220,38,38,0.1)' : 'rgba(245,158,11,0.1)'};border-left:3px solid ${w.severity === 'HIGH' ? '#dc2626' : '#d97706'}">⚠️ ${esc(w.message)}</div>`).join('');
+        const tblEntries = Object.entries(pv.counts_by_table || {});
+        prevBox.innerHTML = `
+          ${warns}
+          <div class="card" style="padding:10px;background:rgba(16,185,129,0.06)">
+            <div style="font-weight:700;margin-bottom:6px">Dry-Run Impact: ${pv.total_records} total record(s) will move from <code>${esc(pv.source.code)}</code> → <code>${esc(pv.target.code)}</code></div>
+            <div style="display:flex;gap:10px;flex-wrap:wrap;font-size:12px">
+              <span class="badge blue">Fuel: ${grp.fuel || 0}</span>
+              <span class="badge amber">Hire Billing: ${grp.billing || 0} (Draft: ${pv.bills_breakdown?.draft || 0}, Final: ${pv.bills_breakdown?.final || 0})</span>
+              <span class="badge">Workshop / Stores: ${grp.workshop || 0}</span>
+              <span class="badge">Costing &amp; Docs: ${grp.costing_docs || 0}</span>
+            </div>
+            ${tblEntries.length ? `<details style="margin-top:8px"><summary class="muted" style="cursor:pointer;font-size:11.5px">Table breakdown (${tblEntries.length} table columns)</summary><div style="font-size:11.5px;margin-top:4px">${tblEntries.map(([k, v]) => `<code>${esc(k)}</code>: <b>${v}</b>`).join(' · ')}</div></details>` : ''}
+          </div>`;
+        regWrap.style.display = pv.requires_registered_confirm ? 'flex' : 'none';
+        regChk.checked = false;
+        confArea.style.display = 'block';
+      } catch (e) {
+        prevBox.innerHTML = `<div class="card err">${esc(e.message)}</div>`;
+      }
+    };
+
+    qsa('.btn-use-pair', b).forEach((btn) => {
+      btn.onclick = () => {
+        const pair = candidates[Number(btn.dataset.pidx)];
+        if (!pair) return;
+        srcSel.value = String(pair.source.id);
+        tgtSel.value = String(pair.target.id);
+        runPreview();
+      };
+    });
+
+    qs('#am_preview', b).onclick = runPreview;
+    qs('#am_cancel', b).onclick = close;
+    qs('#am_execute', b).onclick = async () => {
+      const sId = Number(srcSel.value);
+      const tId = Number(tgtSel.value);
+      const reason = qs('#am_reason', b).value.trim();
+      if (!reason || reason.length < 3) return toast('Enter a merge reason (at least 3 chars)', 'err');
+      try {
+        const out = await api('/assets/merge', {
+          method: 'POST',
+          body: {
+            source_id: sId,
+            target_id: tId,
+            reason,
+            keep_alias: qs('#am_keep_alias', b).checked,
+            confirm_registered: regChk.checked,
+          },
+        });
+        toast(`Merged ${out.source_code} → ${out.target_code} (${out.total_repointed} records updated)`, 'ok');
+        close();
+        if (onDone) onDone();
+      } catch (e) {
+        toast(e.message, 'err');
+      }
+    };
+  }, { wide: true });
+}

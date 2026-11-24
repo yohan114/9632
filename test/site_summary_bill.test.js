@@ -190,11 +190,13 @@ test('Site Summary engine calculates consTyp, coherentMeterDelta, prorated min, 
   assert.equal(byCode['DT-15'].rateCents, 12000);
   assert.equal(byCode['DT-15'].rentalCents, 36000000);
 
-  // GE-69: portable perday -> 30 days * Rs 6,000 = 180,000
+  // GE-69: portable perday -> 25 working days/month * Rs 6,000 = 150,000 (not 30 calendar days)
   assert.ok(byCode['GE-69']);
   assert.equal(byCode['GE-69'].billingMode, 'perday');
   assert.equal(byCode['GE-69'].unit, 'days');
-  assert.equal(byCode['GE-69'].rentalCents, 18000000);
+  assert.equal(byCode['GE-69'].workingDaysHere, 25);
+  assert.equal(byCode['GE-69'].billableUnits, 25);
+  assert.equal(byCode['GE-69'].rentalCents, 15000000);
 
   // Exclusions & Callouts
   assert.deepEqual(sum.noFuelHere, ['DB-05']);
@@ -388,11 +390,14 @@ test('Sites catalog, active=0 sites, sub-site scoping, fleet_bills fallback, tan
   assert.equal(byCodeOct['DT-20'].fuelCostCents, 3820000);
   assert.equal(byCodeOct['DT-20'].hasOpenBreakdown, true);
 
-  // GE-70: 10 closed breakdown days excluded, 21 active working days billed at Rs 6,000/day
+  // GE-70: 10 closed breakdown days excluded, 25 - 10 = 15 working days billed at Rs 6,000/day
   assert.ok(byCodeOct['GE-70']);
   assert.equal(byCodeOct['GE-70'].daysHere, 21);
+  assert.equal(byCodeOct['GE-70'].workingDaysHere, 15);
+  assert.equal(byCodeOct['GE-70'].billableUnits, 15);
   assert.equal(byCodeOct['GE-70'].breakdownDays, 10);
-  assert.equal(byCodeOct['GE-70'].rentalCents, 21 * 600000);
+  assert.equal(byCodeOct['GE-70'].lostHireRevenueCents, 10 * 600000);
+  assert.equal(byCodeOct['GE-70'].rentalCents, 15 * 600000);
 
   // GE-71: full month breakdown (0 fuel, 0 active days) -> omitted from default fuel-active list; with includeZeroFuel shows Rs 0 rental
   const bgpAll = siteSummary.buildSiteSummary(120, '2026-10', { includeZeroFuel: true });
@@ -520,6 +525,9 @@ test('25-working-day breakdown deduction (120 hr Hourly & 3,000 km Per-KM) deduc
   assert.match(htmlRes.text, /Gross machine rental/);
   assert.match(htmlRes.text, /Less: Breakdown rental deduction/);
   assert.match(htmlRes.text, /SITE TOTAL \(FINAL BILL\)/);
+  assert.doesNotMatch(htmlRes.text, /Breakdown period/i);
+  assert.doesNotMatch(htmlRes.text, /COMPANY REPAIR &amp; DOWNTIME COST IMPACT/i);
+  assert.doesNotMatch(htmlRes.text, /COMPANY REPAIR & DOWNTIME COST IMPACT/i);
 
   // Persist bills and verify breakdown deduction line item + net subtotal in fleet_bills
   const genRes = await reqRaw('/api/hire/bills/site-summary/generate', {
@@ -539,6 +547,48 @@ test('25-working-day breakdown deduction (120 hr Hourly & 3,000 km Per-KM) deduc
 
   const bdLi = get("SELECT * FROM fleet_bill_line_items WHERE bill_id = ? AND item_type = 'BREAKDOWN_DEDUCT'", exBill.id);
   assert.ok(bdLi && bdLi.amount_cents === 12000000 && bdLi.is_deduction === 1);
+});
+
+test('Welding generator (WG) & Generators bill max 25 working days in 31-day months across Site Summary, site-preview, and Migration 071', async () => {
+  const mig071 = require('../src/migrate/071_cap_daily_draft_bills_25_days');
+  run("INSERT INTO assets (id, code, code_norm, type, asset_class, meter_type, status, in_register, current_project_id, created_at, updated_at) VALUES (20, 'WG-13', 'WG13', 'Welding Generator', 'generator', 'HOURS', 'active', 1, 120, datetime('now'), datetime('now'))");
+  run("INSERT INTO fleet_rental_rates (id, asset_id, category_name, rate_basis, rate_cents, dry_rate_cents, wet_rate_cents, port_dd_cents, port_dw_cents, equip_type, default_basis) VALUES ('rc-wg13', 20, 'Welding Plant', 'DAILY', 650000, 650000, 950000, 650000, 950000, 'PORTABLE', 'DRY')");
+  run("INSERT INTO fleet_asset_assignments (id, asset_id, asset_code, project_id, start_date, end_date, billing_type) VALUES ('asg-wg13', 20, 'WG-13', 120, '2026-10-01', '2026-10-31', 'DRY')");
+  run("INSERT INTO fuel_issues (id, issue_no, asset_id, asset_code, vehicle_ref, fuel_type, litres, fuel_price_cents, price_per_litre_cents, total_cost_cents, cost_cents, issue_date, target_project_id, is_voided) VALUES ('fi-wg13', 'FI-WG13', 20, 'WG-13', 'WG-13', 'AUTO_DIESEL', 25, 38200, 38200, 955000, 955000, '2026-10-03 08:00:00', 120, 0)");
+
+  const sumOct = siteSummary.buildSiteSummary(120, '2026-10');
+  const wg = sumOct.lines.find((l) => l.code === 'WG-13');
+  assert.ok(wg);
+  assert.equal(wg.workingDaysHere, 25);
+  assert.equal(wg.billableUnits, 25);
+  assert.equal(wg.rentalCents, 25 * 950000);
+
+  const prevRes = await reqRaw('/api/hire/bills/site-preview?projectId=120&month=2026-10');
+  assert.equal(prevRes.status, 200);
+  const prevJson = JSON.parse(prevRes.text);
+  const wgPrev = prevJson.items.find((it) => it.assetCode === 'WG-13');
+  assert.ok(wgPrev);
+  assert.equal(wgPrev.actualUnits, 25);
+  assert.equal(wgPrev.calculation.billableUnits, 25);
+  assert.equal(wgPrev.calculation.rentalAmountCents, 25 * 650000);
+
+  // Seed legacy 31-day DRAFT DAILY bill + 31-day FINAL DAILY bill; Migration 071 recalculates only DRAFT -> 25 days
+  run(`
+    INSERT INTO fleet_bills (
+      id, invoice_number, year, month, period_key, period_start, period_end,
+      asset_id, asset_code, project_id, billing_mode, rate_basis, rate_cents,
+      actual_units, minimum_units, billable_units, rental_amount_cents, fuel_litres, fuel_cost_cents,
+      subtotal_cents, sscl_rate, sscl_cents, vat_rate, vat_cents, grand_total_cents, status
+    ) VALUES
+      ('b-wg13-draft', NULL, 2026, 10, '2026-10', '2026-10-01', '2026-10-31', 20, 'WG-13', 120, 'DRY', 'DAILY', 650000, 31, 0, 31, 20150000, 0, 0, 20150000, 0.025, 503750, 0.18, 3717675, 24371425, 'DRAFT'),
+      ('b-wg13-final', 'INV-WG-FINAL', 2026, 10, '2026-10', '2026-10-01', '2026-10-31', 20, 'WG-13', 120, 'DRY', 'DAILY', 650000, 31, 0, 31, 20150000, 0, 0, 20150000, 0.025, 503750, 0.18, 3717675, 24371425, 'FINAL')
+  `);
+  const r071 = mig071.runMigration(rawDb);
+  assert.equal(r071.draftBillsRecalculated, 1);
+  assert.equal(get("SELECT billable_units FROM fleet_bills WHERE id = 'b-wg13-draft'").billable_units, 25);
+  assert.equal(get("SELECT rental_amount_cents FROM fleet_bills WHERE id = 'b-wg13-draft'").rental_amount_cents, 25 * 650000);
+  assert.equal(get("SELECT billable_units FROM fleet_bills WHERE id = 'b-wg13-final'").billable_units, 31);
+  assert.equal(mig071.runMigration(rawDb).draftBillsRecalculated, 0);
 });
 
 test.after(async () => {

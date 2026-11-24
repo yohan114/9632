@@ -1332,6 +1332,241 @@ function getUpcomingExpirations({ daysAhead = 30, today = getColomboToday(), pro
   });
 }
 
+/**
+ * Stage C Pillar 3: 30 / 14 / 7-day & Expired statutory dashboard buckets + missing mandatory count.
+ */
+function getExpiryDashboard({ today = getColomboToday(), projectId = null, workshopId = null } = {}) {
+  const db = getDb();
+  const rows = getUpcomingExpirations({ daysAhead: 30, today, projectId, workshopId });
+
+  const buckets = {
+    expired: [],
+    critical_7d: [],
+    warning_14d: [],
+    upcoming_30d: [],
+  };
+
+  for (const r of rows) {
+    if (r.days_remaining < 0) buckets.expired.push(r);
+    else if (r.days_remaining <= 7) buckets.critical_7d.push(r);
+    else if (r.days_remaining <= 14) buckets.warning_14d.push(r);
+    else buckets.upcoming_30d.push(r);
+  }
+
+  let assetFilter = '';
+  const mParams = [];
+  if (projectId) {
+    assetFilter = ' AND (a.current_project_id = ? OR a.home_project_id = ?)';
+    mParams.push(projectId, projectId);
+  } else if (workshopId) {
+    assetFilter = ' AND (EXISTS (SELECT 1 FROM job_cards j WHERE j.asset_id = a.id AND j.workshop_id = ?) OR EXISTS (SELECT 1 FROM service_jobs s WHERE s.asset_id = a.id AND s.workshop_id = ?))';
+    mParams.push(workshopId, workshopId);
+  }
+
+  const missingRow = db.prepare(`
+    SELECT COUNT(*) AS c
+      FROM vehicle_documents vd
+      JOIN assets a ON a.id = vd.asset_id
+      LEFT JOIN vehicle_doc_versions v ON v.id = vd.current_version_id
+     WHERE vd.is_required = 1
+       AND vd.is_exempt = 0
+       AND COALESCE(a.status, 'active') NOT IN ('scrapped', 'sold', 'decommissioned')
+       AND (v.id IS NULL OR v.status <> 'verified')
+       ${assetFilter}
+  `).get(...mParams);
+
+  const missingMandatoryCount = missingRow ? Number(missingRow.c || 0) : 0;
+  return {
+    as_of: today,
+    counts: {
+      expired: buckets.expired.length,
+      critical_7d: buckets.critical_7d.length,
+      warning_14d: buckets.warning_14d.length,
+      upcoming_30d: buckets.upcoming_30d.length,
+      total_within_30d: buckets.critical_7d.length + buckets.warning_14d.length + buckets.upcoming_30d.length,
+      missing_mandatory_count: missingMandatoryCount,
+    },
+    buckets,
+  };
+}
+
+/**
+ * Stage C Pillar 3: Non-blocking compliance map for dispatch, fuel, and allocation screens.
+ * Resolves optional `assetIds` array or `assetCode` text, or scans all assets with doc containers.
+ */
+function getAssetComplianceMap({ assetIds = null, assetCode = null, today = getColomboToday() } = {}) {
+  const db = getDb();
+  const clauses = ["COALESCE(a.status, 'active') NOT IN ('scrapped', 'sold', 'decommissioned')"];
+  const params = [];
+
+  if (Array.isArray(assetIds) && assetIds.length) {
+    const cleanIds = [...new Set(assetIds.map((x) => Number(x)).filter((n) => Number.isFinite(n) && n > 0))];
+    if (!cleanIds.length) return { as_of: today, by_asset_id: {}, by_code: {} };
+    clauses.push(`a.id IN (${cleanIds.map(() => '?').join(',')})`);
+    params.push(...cleanIds);
+  } else if (assetCode && String(assetCode).trim()) {
+    const raw = String(assetCode).trim();
+    const norm = raw.toUpperCase().replace(/[^A-Z0-9]/g, '');
+    const hasAliases = !!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'asset_aliases'").get();
+    if (hasAliases && norm) {
+      clauses.push(`(
+        a.code_norm = ?
+        OR UPPER(REPLACE(REPLACE(COALESCE(a.registration, ''), '-', ''), ' ', '')) = ?
+        OR UPPER(REPLACE(REPLACE(COALESCE(a.ec_code, ''), '-', ''), ' ', '')) = ?
+        OR a.id IN (SELECT asset_id FROM asset_aliases WHERE raw_norm = ? AND resolved = 1 AND asset_id IS NOT NULL)
+      )`);
+      params.push(norm, norm, norm, norm);
+    } else if (norm) {
+      clauses.push(`(
+        a.code_norm = ?
+        OR UPPER(REPLACE(REPLACE(COALESCE(a.registration, ''), '-', ''), ' ', '')) = ?
+        OR UPPER(REPLACE(REPLACE(COALESCE(a.ec_code, ''), '-', ''), ' ', '')) = ?
+      )`);
+      params.push(norm, norm, norm);
+    } else {
+      clauses.push('1 = 0');
+    }
+  }
+
+  const rows = db.prepare(`
+    SELECT a.id AS asset_id, a.code AS asset_code, a.code_norm, a.registration, a.ec_code,
+           vd.id AS document_id, vd.is_required, vd.is_exempt,
+           vdt.code AS doc_type_code, vdt.name AS doc_type_name,
+           v.status AS version_status, v.doc_number, v.valid_until
+      FROM assets a
+      JOIN vehicle_documents vd ON vd.asset_id = a.id
+      JOIN vehicle_doc_types vdt ON vdt.id = vd.doc_type_id
+      LEFT JOIN vehicle_doc_versions v ON v.id = vd.current_version_id
+     WHERE ${clauses.join(' AND ')}
+     ORDER BY a.id ASC, vdt.sort_order ASC
+  `).all(...params);
+
+  const grouped = new Map();
+  for (const r of rows) {
+    let entry = grouped.get(r.asset_id);
+    if (!entry) {
+      entry = {
+        asset_id: r.asset_id,
+        asset_code: r.asset_code,
+        code_norm: r.code_norm,
+        registration: r.registration,
+        ec_code: r.ec_code,
+        expired_docs: [],
+        critical_docs: [],
+        warning_docs: [],
+        missing_docs: [],
+        all_exempt: true,
+        insurance_status: 'missing',
+        rl_status: 'missing',
+        insurance_expired: false,
+        rl_expired: false,
+      };
+      grouped.set(r.asset_id, entry);
+    }
+
+    if (!r.is_required && !r.version_status) continue;
+    if (!r.is_exempt) entry.all_exempt = false;
+
+    const currentVer = r.version_status ? { status: r.version_status, valid_until: r.valid_until, doc_number: r.doc_number } : null;
+    const ev = evaluateDocStatus({ is_exempt: r.is_exempt }, currentVer, { today });
+
+    if (r.doc_type_code === 'insurance') {
+      entry.insurance_status = ev.status;
+      if (ev.status === 'expired' || ev.status === 'expires_today') entry.insurance_expired = true;
+    }
+    if (r.doc_type_code === 'revenue_licence') {
+      entry.rl_status = ev.status;
+      if (ev.status === 'expired' || ev.status === 'expires_today') entry.rl_expired = true;
+    }
+
+    const docInfo = {
+      document_id: r.document_id,
+      doc_type_code: r.doc_type_code,
+      doc_type_name: r.doc_type_name,
+      valid_until: r.valid_until || null,
+      days_remaining: ev.days_remaining,
+      status: ev.status,
+    };
+
+    if (ev.is_exempt) continue;
+    if (ev.status === 'expired' || ev.status === 'expires_today') {
+      entry.expired_docs.push(docInfo);
+    } else if (ev.status === 'critical') {
+      entry.critical_docs.push(docInfo);
+    } else if (ev.status === 'expiring_soon' || ev.status === 'due_for_renewal') {
+      entry.warning_docs.push(docInfo);
+    } else if (ev.status === 'missing' && r.is_required) {
+      entry.missing_docs.push(docInfo);
+    }
+  }
+
+  const byAssetId = {};
+  const byCode = {};
+
+  for (const e of grouped.values()) {
+    let overall = 'compliant';
+    if (e.all_exempt) overall = 'exempt';
+    else if (e.expired_docs.length) overall = 'expired';
+    else if (e.critical_docs.length) overall = 'critical';
+    else if (e.warning_docs.length) overall = 'warning';
+    else if (e.missing_docs.length) overall = 'missing';
+
+    let badge = null;
+    if (e.expired_docs.length) {
+      const names = e.expired_docs.map((d) => (d.doc_type_code === 'revenue_licence' ? 'Rev. Licence' : d.doc_type_code === 'insurance' ? 'Insurance' : d.doc_type_name)).join(', ');
+      badge = { level: 'red', label: `Expired: ${names}`, detail: e.expired_docs.map((d) => `${d.doc_type_name} (${d.valid_until})`).join('; ') };
+    } else if (e.critical_docs.length) {
+      const minD = Math.min(...e.critical_docs.map((d) => d.days_remaining ?? 7));
+      const names = e.critical_docs.map((d) => (d.doc_type_code === 'revenue_licence' ? 'Rev. Licence' : d.doc_type_code === 'insurance' ? 'Insurance' : d.doc_type_name)).join(', ');
+      badge = { level: 'red', label: `Expiring ≤${minD}d: ${names}`, detail: e.critical_docs.map((d) => `${d.doc_type_name} (${d.valid_until})`).join('; ') };
+    } else if (e.warning_docs.length) {
+      const minD = Math.min(...e.warning_docs.map((d) => d.days_remaining ?? 30));
+      const names = e.warning_docs.map((d) => (d.doc_type_code === 'revenue_licence' ? 'Rev. Licence' : d.doc_type_code === 'insurance' ? 'Insurance' : d.doc_type_name)).join(', ');
+      badge = { level: 'amber', label: `Due in ${minD}d: ${names}`, detail: e.warning_docs.map((d) => `${d.doc_type_name} (${d.valid_until})`).join('; ') };
+    }
+
+    const summary = {
+      asset_id: e.asset_id,
+      asset_code: e.asset_code,
+      registration: e.registration,
+      overall_status: overall,
+      insurance_status: e.insurance_status,
+      rl_status: e.rl_status,
+      insurance_expired: e.insurance_expired,
+      rl_expired: e.rl_expired,
+      has_statutory_expiry: e.expired_docs.length > 0,
+      has_statutory_warning: e.expired_docs.length > 0 || e.critical_docs.length > 0 || e.warning_docs.length > 0,
+      expired_docs: e.expired_docs,
+      critical_docs: e.critical_docs,
+      warning_docs: e.warning_docs,
+      missing_docs: e.missing_docs,
+      badge,
+    };
+
+    byAssetId[String(e.asset_id)] = summary;
+    for (const k of [e.asset_code, e.code_norm, e.registration, e.ec_code]) {
+      if (k) {
+        const up = String(k).trim().toUpperCase();
+        byCode[up] = summary;
+        const stripped = up.replace(/[^A-Z0-9]/g, '');
+        if (stripped) byCode[stripped] = summary;
+      }
+    }
+  }
+
+  if (assetCode && String(assetCode).trim()) {
+    const reqUp = String(assetCode).trim().toUpperCase();
+    const reqNorm = reqUp.replace(/[^A-Z0-9]/g, '');
+    const first = Object.values(byAssetId)[0] || null;
+    if (first && Object.keys(byAssetId).length === 1) {
+      byCode[reqUp] = first;
+      if (reqNorm) byCode[reqNorm] = first;
+    }
+  }
+
+  return { as_of: today, by_asset_id: byAssetId, by_code: byCode };
+}
+
 // ---------------------------------------------------------------------------
 // 11. Expiry Reminders Logging
 // ---------------------------------------------------------------------------
@@ -1536,6 +1771,8 @@ module.exports = {
   // Fleet Compliance & KPIs
   getFleetComplianceSummary,
   getUpcomingExpirations,
+  getExpiryDashboard,
+  getAssetComplianceMap,
   logReminderSent,
   getRemindersForVersion,
 

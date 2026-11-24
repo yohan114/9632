@@ -19,15 +19,15 @@
 
 const { get, all } = require('../../db');
 const breakdowns = require('./breakdowns');
+const fuelTimeline = require('./fuel_timeline');
 
 const MAX_PER_DAY = { KM: 1500, HOURS: 24 };
 const DEFAULT_SSCL_RATE = 0.025;
 const DEFAULT_VAT_RATE = 0.18;
-const DEFAULT_WORKING_DAYS_PER_MONTH = 25;
 
-const NON_MACHINE_CODE_RE = /^(TRANSFER|CORRECTION|LABORATORY|LAB|PUMP[-_ ]?ADJ|STOCK[-_ ]?ADJ)[-_ ]/i;
+const NON_MACHINE_CODE_RE = /^(TRANSFER|CORRECTION|LABORATORY|LAB|PUMP[-_ ]?ADJ|STOCK[-_ ]?ADJ)[-_ ]|^SITE[-_]|^(OTH-CEP03E|DATABASE CHANGING ERROR|ERROR CORRECTION|FIRE DRILL|GENERAL\s*\/\s*CLEANING)$/i;
 const NON_MACHINE_TEXT_RE = /\b(not a machine|transferred out|pump correction|stock adjustment|laboratory work)\b/i;
-const HIRED_DIRECT_TEXT_RE = /\(hired\)|ownership:\s*hired|\b(billed[_ ]?direct|settled direct)\b/i;
+const HIRED_DIRECT_TEXT_RE = /\(hired\)|ownership:\s*hired|\b(billed[_ ]?direct|settled direct|billed[_ ]?outside|paid outside)\b/i;
 const PORTABLE_CODE_RE = /^(WG|GE|WP|CP|CV|RM|PP|LT)-/i;
 
 function addIsoDays(day, n) {
@@ -108,7 +108,7 @@ function daysInIntervals(intervals) {
 }
 
 function dateInIntervals(dateStr, intervals) {
-  const d = String(dateStr || '').trim().slice(0, 10);
+  const d = fuelTimeline.slstDate10(dateStr) || String(dateStr || '').trim().slice(0, 10);
   if (!d) return false;
   return intervals.some((seg) => d >= seg.start && d <= seg.end);
 }
@@ -177,6 +177,7 @@ function isTransferOrAdjustmentIssue(issue, asset) {
 function isBilledDirectAsset(asset, allocBasesSet) {
   if (allocBasesSet && (allocBasesSet.has('BILLED_DIRECT') || allocBasesSet.has('FREE_OF_CHARGE'))) return true;
   if (!asset) return false;
+  if (String(asset.ownership || '').trim().toUpperCase() === 'HIRED') return true;
   const text = `${asset.type || ''} ${asset.notes || ''} ${asset.category || ''}`;
   return HIRED_DIRECT_TEXT_RE.test(text);
 }
@@ -364,6 +365,8 @@ function buildBreakdownMapForMonth(bounds, allUnifiedRecords = null) {
       isOpen: !!r.is_open,
       reason: r.reason || 'Breakdown',
       ref: r.job_no || r.jr_no || r.id,
+      hasFuelDuringRepair: !!r.has_fuel_during_repair,
+      fuelDuringRepairLitres: r.fuel_during_repair_litres || 0,
     });
   }
   return byAsset;
@@ -392,8 +395,9 @@ function buildSiteSummary(projectIdOrCode, periodKey, options = {}) {
     throw err;
   }
 
+  const costingOpts = options._preloadedCostingOptions || fuelTimeline.getCostingOptions();
   const effDaysInMonth = Math.max(1, Math.min(31, Number(options.effectiveDaysInMonth) || bounds.daysInMonth));
-  const workingDaysInMonth = Math.max(1, Math.min(31, Number(options.workingDaysInMonth) || DEFAULT_WORKING_DAYS_PER_MONTH));
+  const workingDaysInMonth = Math.max(1, Math.min(31, Number(options.workingDaysInMonth) || costingOpts.workingDaysPerMonth || 25));
   const includeZeroFuel = Boolean(options.includeZeroFuel);
   const basisMode = options.basisMode || options.basis || 'SUMMARY_WET';
   const fuelPolicy = String(options.fuelPolicy || 'ALL_SITE_PUMPS').toUpperCase();
@@ -404,89 +408,14 @@ function buildSiteSummary(projectIdOrCode, periodKey, options = {}) {
   const { ssclRate, vatRate } = readTaxRatesFromSettings();
 
   // Tank -> Project lookup (covers site-owned tanks AND Central/unlinked bowsers via target_project_id)
-  const tankProjectById = new Map();
+  const tankProjectById = options._preloadedTankProjectById || new Map();
   const siteTanks = [];
-  for (const t of all('SELECT id, code, name, project_id FROM fuel_tanks')) {
-    tankProjectById.set(String(t.id), t.project_id != null ? Number(t.project_id) : null);
-    if (Number(t.project_id) === project.id) siteTanks.push(t);
-  }
-  const siteTankIds = new Set(siteTanks.map((t) => String(t.id)));
-
-  // Collect all posted intervals per asset at this site overlapping [bounds.start .. bounds.end]
-  const stayMap = new Map();
-  const addStay = (assetId, rawStart, rawEnd, basis, driverName, siteName) => {
-    if (!assetId) return;
-    const s = clampDate(rawStart || bounds.start, bounds.start, bounds.end) || bounds.start;
-    const e = clampDate(rawEnd || bounds.end, bounds.start, bounds.end) || bounds.end;
-    if (e < s) return;
-    const cur = stayMap.get(assetId) || { assetId, intervals: [], allocBases: [], driverName: null, siteNames: [] };
-    cur.intervals.push({ start: s, end: e });
-    if (basis) cur.allocBases.push(String(basis).toUpperCase());
-    if (driverName && !cur.driverName) cur.driverName = driverName;
-    if (siteName) cur.siteNames.push(siteName);
-    stayMap.set(assetId, cur);
-  };
-
-  const allocRows = all(`
-    SELECT va.asset_id, va.basis, va.driver_name, va.is_current, va.site_name,
-           COALESCE(va.date_from, COALESCE(va.month_from, va.month) || '-01') AS eff_from,
-           COALESCE(va.date_to,
-             CASE WHEN va.is_current = 1 THEN NULL
-                  ELSE date(COALESCE(va.month_to, va.month) || '-01', '+1 month', '-1 day') END) AS eff_to
-      FROM fleet_vehicle_allocations va
-     WHERE va.project_id = ?
-       AND va.asset_id IS NOT NULL
-       AND COALESCE(va.active, 1) = 1
-       AND (
-         va.month = ?
-         OR (
-           COALESCE(va.date_from, COALESCE(va.month_from, va.month) || '-01') <= ?
-           AND (va.is_current = 1 OR COALESCE(va.date_to, date(COALESCE(va.month_to, va.month) || '-01', '+1 month', '-1 day')) >= ?)
-         )
-       )
-     ORDER BY va.is_current DESC, eff_from DESC
-  `, project.id, bounds.periodKey, bounds.end, bounds.start);
-
-  for (const r of allocRows) {
-    addStay(r.asset_id, r.eff_from, r.is_current ? bounds.end : r.eff_to, r.basis, r.driver_name, r.site_name);
-  }
-
-  const assignRows = all(`
-    SELECT fa.asset_id, fa.billing_type, fa.driver_name,
-           substr(fa.start_date, 1, 10) AS eff_from,
-           CASE WHEN fa.end_date IS NOT NULL THEN substr(fa.end_date, 1, 10) ELSE NULL END AS eff_to
-      FROM fleet_asset_assignments fa
-     WHERE fa.project_id = ?
-       AND fa.asset_id IS NOT NULL
-       AND substr(fa.start_date, 1, 10) <= ?
-       AND (fa.end_date IS NULL OR substr(fa.end_date, 1, 10) >= ?)
-     ORDER BY fa.start_date DESC
-  `, project.id, bounds.end, bounds.start);
-
-  for (const r of assignRows) {
-    addStay(r.asset_id, r.eff_from, r.eff_to || bounds.end, r.billing_type, r.driver_name, null);
-  }
-
-  // Non-voided fuel issues in this month filtered to this site's pumps or direct target_project_id
-  const monthIssues = options._preloadedMonthIssues || all(`
-    SELECT fi.*
-      FROM fuel_issues fi
-     WHERE fi.is_voided = 0
-       AND COALESCE(fi.voided, 0) = 0
-       AND substr(fi.issue_date, 1, 10) BETWEEN ? AND ?
-     ORDER BY fi.issue_date ASC
-  `, bounds.start, bounds.end);
-
-  const siteIssues = [];
-  for (const fi of monthIssues) {
-    const tankId = fi.bulk_tank_id || fi.source_tank_id;
-    const tankProjId = tankId != null ? tankProjectById.get(String(tankId)) : null;
-    const fromSiteTank = tankProjId === project.id || (tankId != null && siteTankIds.has(String(tankId)));
-    const matchesProjectDirect = Number(fi.target_project_id || fi.project_id || 0) === project.id;
-    const fromUnassignedTank = tankId == null || tankProjId == null;
-    if (fromSiteTank || (fromUnassignedTank && matchesProjectDirect) || (siteTankIds.size === 0 && Number(fi.source_project_id || 0) === project.id)) {
-      siteIssues.push(fi);
+  const rawTanks = all('SELECT id, code, name, project_id FROM fuel_tanks');
+  for (const t of rawTanks) {
+    if (!options._preloadedTankProjectById) {
+      tankProjectById.set(String(t.id), t.project_id != null ? Number(t.project_id) : null);
     }
+    if (Number(t.project_id) === project.id) siteTanks.push(t);
   }
 
   const assetsMap = options._preloadedAssetsMap || new Map(all('SELECT * FROM assets').map((a) => [a.id, a]));
@@ -504,22 +433,42 @@ function buildSiteSummary(projectIdOrCode, periodKey, options = {}) {
       }, new Map())
   );
 
-  const otherAssignedAssetSet = new Set(
-    all(`
-      SELECT DISTINCT asset_id FROM fleet_asset_assignments
-       WHERE project_id != ? AND asset_id IS NOT NULL
-         AND substr(start_date, 1, 10) <= ? AND (end_date IS NULL OR substr(end_date, 1, 10) >= ?)
-      UNION
-      SELECT DISTINCT asset_id FROM fleet_vehicle_allocations
-       WHERE project_id != ? AND asset_id IS NOT NULL AND COALESCE(active, 1) = 1
-         AND (month = ? OR (COALESCE(date_from, COALESCE(month_from, month) || '-01') <= ? AND (is_current = 1 OR COALESCE(date_to, date(COALESCE(month_to, month) || '-01', '+1 month', '-1 day')) >= ?)))
-    `, project.id, bounds.end, bounds.start, project.id, bounds.periodKey, bounds.end, bounds.start)
-      .map((r) => r.asset_id)
-  );
+  // Unified fuel-driven zero-double-billing monthly vehicle timelines
+  const sqlWinStart = addIsoDays(bounds.start, -1);
+  const sqlWinEnd = `${addIsoDays(bounds.end, 1)} 23:59:59`;
+  const rawMonthIssues = options._preloadedMonthIssues || all(`
+    SELECT fi.*
+      FROM fuel_issues fi
+     WHERE COALESCE(fi.is_voided, 0) = 0
+       AND COALESCE(fi.voided, 0) = 0
+       AND fi.issue_date >= ?
+       AND fi.issue_date <= ?
+     ORDER BY fi.issue_date ASC, fi.id ASC
+  `, sqlWinStart, sqlWinEnd);
 
+  const timelines = options._preloadedTimelines || fuelTimeline.buildMonthlyVehicleTimelines(bounds.periodKey, {
+    workingDaysPerMonth: workingDaysInMonth,
+    includeCurrentProjectZeroFuel: includeZeroFuel || bounds.periodKey === currentMonthKey(),
+    _tankProjMap: tankProjectById,
+    _assetsMap: assetsMap,
+    _rawMonthIssues: rawMonthIssues,
+  });
+
+  const siteStayMap = new Map();
+  const siteTimelineAssets = timelines.bySite.get(project.id);
+  if (siteTimelineAssets) {
+    for (const [aid, entry] of siteTimelineAssets.entries()) {
+      siteStayMap.set(aid, entry);
+    }
+  }
+
+  // Transfers & corrections excluded at this site's pumps in SLST month [bounds.start .. bounds.end]
   const transfersMap = new Map();
-  const fuelByAsset = new Map();
-  for (const fi of siteIssues) {
+  for (const fi of rawMonthIssues) {
+    const slstDay = fuelTimeline.slstDate10(fi.issue_date);
+    if (!slstDay || slstDay < bounds.start || slstDay > bounds.end) continue;
+    const pid = fuelTimeline.resolveIssueProjectId(fi, tankProjectById);
+    if (pid !== project.id) continue;
     const asset = fi.asset_id ? assetsMap.get(fi.asset_id) : null;
     if (isTransferOrAdjustmentIssue(fi, asset)) {
       const ref = String((asset && (asset.code || asset.ec_code)) || fi.asset_code || fi.vehicle_ref || 'ADJUSTMENT').trim();
@@ -533,26 +482,12 @@ function buildSiteSummary(projectIdOrCode, periodKey, options = {}) {
         litres: 0,
         amountCents: 0,
         issueCount: 0,
-        issueDate: String(fi.issue_date).slice(0, 10),
+        issueDate: slstDay,
       };
       cur.litres += litres;
       cur.amountCents += amountCents;
       cur.issueCount += 1;
       transfersMap.set(ref, cur);
-      continue;
-    }
-
-    if (fi.asset_id) {
-      if (!fuelByAsset.has(fi.asset_id)) fuelByAsset.set(fi.asset_id, []);
-      fuelByAsset.get(fi.asset_id).push(fi);
-      if (!stayMap.has(fi.asset_id)) {
-        if (otherAssignedAssetSet.has(fi.asset_id)) {
-          const d = String(fi.issue_date).slice(0, 10);
-          addStay(fi.asset_id, d, d, null, fi.driver_name, null);
-        } else {
-          addStay(fi.asset_id, bounds.start, bounds.end, null, fi.driver_name, null);
-        }
-      }
     }
   }
 
@@ -567,35 +502,25 @@ function buildSiteSummary(projectIdOrCode, periodKey, options = {}) {
     if (b.asset_id && !existingBillsByAsset.has(b.asset_id)) existingBillsByAsset.set(b.asset_id, b);
   }
 
-  // Include active stationed machines in current month (or when includeZeroFuel is set)
-  if (bounds.periodKey === currentMonthKey() || includeZeroFuel) {
-    for (const a of assetsMap.values()) {
-      if (Number(a.current_project_id) === project.id && !['decommissioned', 'DISPOSED'].includes(String(a.status || '').toLowerCase())) {
-        if (!stayMap.has(a.id) && !isTransferOrAdjustmentIssue({}, a)) {
-          addStay(a.id, bounds.start, bounds.end, null, null, null);
-        }
-      }
-    }
-  }
-
   // Optional Project Site (`sites` table) filter
   if (subSite) {
     const targetName = String(subSite.name || '').trim().toLowerCase();
-    for (const [assetId, stay] of [...stayMap.entries()]) {
+    for (const [assetId, stay] of [...siteStayMap.entries()]) {
       const a = assetsMap.get(assetId);
       const matchesSiteId = a && Number(a.current_site_id) === Number(subSite.id);
-      const matchesSiteName = stay.siteNames.some((sn) => String(sn || '').trim().toLowerCase() === targetName);
+      const matchesSiteName = (stay.siteNames || []).some((sn) => String(sn || '').trim().toLowerCase() === targetName);
       if (!matchesSiteId && !matchesSiteName) {
-        stayMap.delete(assetId);
+        siteStayMap.delete(assetId);
       }
     }
   }
 
-  // Breakdown windows for the month (computed once per call or shared in bulk calls)
+  // Breakdown windows & direct workshop repair costs for the month
   const breakdownMap = options._preloadedBreakdownMap || buildBreakdownMapForMonth(bounds);
+  const repairCostMap = options._preloadedRepairCostMap || breakdowns.getWorkshopRepairCostMap(bounds.periodKey);
 
   // Preload meter readings inside the month
-  const candidateIds = [...stayMap.keys()];
+  const candidateIds = [...siteStayMap.keys()];
   const readingsByAsset = new Map();
   if (candidateIds.length > 0) {
     const placeholders = candidateIds.map(() => '?').join(',');
@@ -621,24 +546,25 @@ function buildSiteSummary(projectIdOrCode, periodKey, options = {}) {
   const distinctFuelPrices = new Set();
   const handledAssetIds = new Set();
 
-  for (const [assetId, stay] of stayMap.entries()) {
+  for (const [assetId, stay] of siteStayMap.entries()) {
     const asset = assetsMap.get(assetId);
     if (!asset) continue;
     const code = asset.code || asset.ec_code || asset.registration || `A-${asset.id}`;
     if (isTransferOrAdjustmentIssue({}, asset)) continue;
 
-    const mergedIntervals = mergeDateIntervals(stay.intervals);
-    const postedDays = Math.min(effDaysInMonth, daysInIntervals(mergedIntervals));
-    if (!postedDays) continue;
+    const mergedIntervals = mergeDateIntervals(stay.intervals || []);
+    const postedDays = Math.min(effDaysInMonth, stay.postedDays || daysInIntervals(mergedIntervals));
+    if (!postedDays && !(stay.fuelIssues && stay.fuelIssues.length)) continue;
 
-    const allocBasesSet = new Set(stay.allocBases);
+    const allocBasesSet = new Set(stay.allocBases || []);
     if (isBilledDirectAsset(asset, allocBasesSet)) {
       handledAssetIds.add(assetId);
       billedDirect.push(code);
       continue;
     }
 
-    const assetSiteIssues = (fuelByAsset.get(assetId) || []).filter((fi) => dateInIntervals(fi.issue_date, mergedIntervals));
+    // All fuel dispensed to this vehicle at this site's pumps (never dropped!)
+    const assetSiteIssues = stay.fuelIssues || [];
     const directIssueOnly = assetSiteIssues.length > 0 && assetSiteIssues.every((fi) => Number(fi.is_direct_billed) === 1);
     if (directIssueOnly) {
       handledAssetIds.add(assetId);
@@ -670,8 +596,8 @@ function buildSiteSummary(projectIdOrCode, periodKey, options = {}) {
     handledAssetIds.add(assetId);
 
     // Compute exact breakdown period inside this site stay:
-    //   breakdown period = 0 rental cost (deducted from 25 monthly working days & monthly minimum rental)
-    //   active working period (before breakdown / outside breakdown) = costed
+    //   breakdown period = 0 rental cost (deducted from monthly working days & minimum rental)
+    //   active working days before/outside breakdown = costed
     const rawBdList = breakdownMap.get(assetId) || [];
     const bdMergedIntervals = mergeDateIntervals(
       rawBdList.map((r) => ({ start: r.start, end: r.end }))
@@ -688,10 +614,16 @@ function buildSiteSummary(projectIdOrCode, periodKey, options = {}) {
     const workingDaysHere = Math.max(0, Math.round((stayWorkingDays - breakdownDaysDeducted) * 100) / 100);
     const hasOpenBd = rawBdList.some((r) => r.isOpen && intersectDateIntervals(mergedIntervals, [{ start: r.start, end: r.end }]).length > 0);
     const bdSpans = breakdownDaysInStay > 0 ? formatIntervalSpans(bdOverlapStayIntervals) : null;
+    const hasFuelDuringRepair = rawBdList.some((r) => r.hasFuelDuringRepair && intersectDateIntervals(mergedIntervals, [{ start: r.start, end: r.end }]).length > 0);
+    const fuelDuringRepairLitres = rawBdList.reduce((acc, r) => (
+      r.hasFuelDuringRepair && intersectDateIntervals(mergedIntervals, [{ start: r.start, end: r.end }]).length > 0
+        ? Math.max(acc, r.fuelDuringRepairLitres || 0)
+        : acc
+    ), 0);
 
     const rateCard = rateCards.get(assetId) || null;
     const mode = resolveModeForAsset(asset, rateCard);
-    const hireBasis = resolveHireBasis(basisMode, stay.allocBases);
+    const hireBasis = resolveHireBasis(basisMode, stay.allocBases || []);
     const rateCents = pickRateCentsForSummary(rateCard, mode, hireBasis, mode === 'perday' ? perdayHistoryRates.get(assetId) : null);
     if (rateCents == null) unrated.push(code);
 
@@ -702,20 +634,15 @@ function buildSiteSummary(projectIdOrCode, periodKey, options = {}) {
     // Prorate minimum guarantee over 25 working days/month, deducting breakdown days:
     //   Hourly: 120 hr / 25d = 4.8 hr deducted per breakdown day
     //   Per-KM: 3000 km / 25d = 120 km deducted per breakdown day
+    //   Daily (GE/WG/portable): 25 working days/month = 1 day deducted per breakdown day
     const minimumFull = (rateCard && Number(rateCard.min_bill_hours) > 0)
       ? Number(rateCard.min_bill_hours)
-      : (mode === 'perkm' ? minKmDefault : (mode === 'perday' ? effDaysInMonth : minHoursDefault));
-    const grossMinUnits = mode === 'perday'
-      ? postedDays
-      : (minimumFull * (stayWorkingDays / workingDaysInMonth));
-    const bdDeductUnits = mode === 'perday'
-      ? breakdownDaysInStay
-      : (minimumFull * (breakdownDaysDeducted / workingDaysInMonth));
+      : (mode === 'perkm' ? minKmDefault : (mode === 'perday' ? workingDaysInMonth : minHoursDefault));
+    const grossMinUnits = minimumFull * (stayWorkingDays / workingDaysInMonth);
+    const bdDeductUnits = minimumFull * (breakdownDaysDeducted / workingDaysInMonth);
     const rawMinProrated = activeDays === 0
       ? 0
-      : (mode === 'perday'
-          ? activeDays
-          : Math.max(0, minimumFull * (workingDaysHere / workingDaysInMonth)));
+      : Math.max(0, minimumFull * (workingDaysHere / workingDaysInMonth));
 
     // Work performed during non-breakdown intervals (e.g., before breakdown started & after closed breakdown)
     const workIntervals = activeIntervals;
@@ -748,7 +675,7 @@ function buildSiteSummary(projectIdOrCode, periodKey, options = {}) {
     const actualUnits = activeDays === 0
       ? 0
       : (mode === 'perday'
-          ? activeDays
+          ? workingDaysHere
           : coherentMeterDelta(combinedReadings, asset.meter_type || (mode === 'perkm' ? 'KM' : 'HOURS')));
 
     let rawBillableUnits = activeDays === 0
@@ -803,7 +730,19 @@ function buildSiteSummary(projectIdOrCode, periodKey, options = {}) {
       if (effectiveRateCents != null && unrated.includes(code)) unrated.splice(unrated.indexOf(code), 1);
     }
 
-    if (breakdownDaysInStay > 0) {
+    // Lost hire revenue tracks lost minimum/daily capacity during any repair window (even when billed on meter/fuel)
+    const lostHireRevenueCents = (rateCents != null && breakdownDaysInStay > 0)
+      ? Math.round(effectiveBdDeductUnits * rateCents)
+      : 0;
+    const totalAssetPostedDays = (timelines.byAsset.get(assetId) && timelines.byAsset.get(assetId).totalPostedDays) || postedDays;
+    const rawAssetRepairCents = repairCostMap.get(assetId) || 0;
+    const workshopRepairCostCents = totalAssetPostedDays > 0
+      ? Math.round(rawAssetRepairCents * (postedDays / totalAssetPostedDays))
+      : rawAssetRepairCents;
+    const totalBreakdownImpactCents = workshopRepairCostCents + lostHireRevenueCents;
+    const availabilityPct = postedDays > 0 ? Math.round((activeDays / postedDays) * 1000) / 10 : 100;
+
+    if (breakdownDaysInStay > 0 || workshopRepairCostCents > 0) {
       breakdownAdjustments.push({
         assetId,
         code,
@@ -815,7 +754,13 @@ function buildSiteSummary(projectIdOrCode, periodKey, options = {}) {
         breakdownDaysDeducted,
         breakdownDeductUnits: Math.round(effectiveBdDeductUnits * 100) / 100,
         breakdownDeductCents,
-        spans: bdSpans,
+        lostHireRevenueCents,
+        workshopRepairCostCents,
+        totalBreakdownImpactCents,
+        availabilityPct,
+        hasFuelDuringRepair,
+        fuelDuringRepairLitres,
+        spans: bdSpans || (rawAssetRepairCents > 0 ? 'Workshop Cost' : ''),
         isOpen: hasOpenBd,
       });
     }
@@ -841,8 +786,10 @@ function buildSiteSummary(projectIdOrCode, periodKey, options = {}) {
       stayWorkingDays,
       workingDaysHere,
       breakdownDaysDeducted,
-      allocDateFrom: mergedIntervals[0].start,
-      allocDateTo: mergedIntervals[mergedIntervals.length - 1].end,
+      stayDatesLabel: stay.stayDatesLabel || (mergedIntervals.length ? formatIntervalSpans(mergedIntervals) : ''),
+      stayOrigin: stay.origin || 'FUEL_TIMELINE',
+      allocDateFrom: mergedIntervals.length ? mergedIntervals[0].start : bounds.start,
+      allocDateTo: mergedIntervals.length ? mergedIntervals[mergedIntervals.length - 1].end : bounds.end,
       minimumFull: Math.round(minimumFull * 100) / 100,
       grossMinimumUnits: Math.round(effectiveGrossMin * 100) / 100,
       breakdownDeductUnits: Math.round(effectiveBdDeductUnits * 100) / 100,
@@ -856,6 +803,12 @@ function buildSiteSummary(projectIdOrCode, periodKey, options = {}) {
       rateCents: effectiveRateCents,
       grossRentalCents,
       breakdownDeductCents,
+      lostHireRevenueCents,
+      workshopRepairCostCents,
+      totalBreakdownImpactCents,
+      availabilityPct,
+      hasFuelDuringRepair,
+      fuelDuringRepairLitres,
       rentalCents,
       fuelLitres,
       fuelCostCents: fuelChargedCents,
@@ -876,6 +829,11 @@ function buildSiteSummary(projectIdOrCode, periodKey, options = {}) {
       if (b.asset_id && handledAssetIds.has(b.asset_id)) continue;
       const asset = b.asset_id ? assetsMap.get(b.asset_id) : null;
       const code = (asset && (asset.code || asset.ec_code)) || b.asset_code || `BILL-${b.id}`;
+      if (asset && isBilledDirectAsset(asset, new Set())) {
+        handledAssetIds.add(asset.id);
+        if (!billedDirect.includes(code)) billedDirect.push(code);
+        continue;
+      }
       const regNo = b.asset_reg_no || (asset && asset.registration !== code ? asset.registration : null);
       const bm = String(b.billing_mode || '').toLowerCase();
       const rb = String(b.rate_basis || 'HOURLY').toUpperCase();
@@ -932,6 +890,14 @@ function buildSiteSummary(projectIdOrCode, periodKey, options = {}) {
         rateCents: b.rate_cents != null ? Number(b.rate_cents) : null,
         grossRentalCents: grossRental,
         breakdownDeductCents: bdDedCol,
+        lostHireRevenueCents: bdDedCol,
+        workshopRepairCostCents: repairCostMap.get(b.asset_id) || 0,
+        totalBreakdownImpactCents: bdDedCol + (repairCostMap.get(b.asset_id) || 0),
+        availabilityPct: effDaysInMonth > 0 ? Math.round((activeDays / effDaysInMonth) * 1000) / 10 : 100,
+        stayDatesLabel: '',
+        stayOrigin: 'BILL_FALLBACK',
+        hasFuelDuringRepair: false,
+        fuelDuringRepairLitres: 0,
         rentalCents: rentalAmt,
         fuelLitres: fuelL,
         fuelCostCents: fuelC,
@@ -970,6 +936,13 @@ function buildSiteSummary(projectIdOrCode, periodKey, options = {}) {
   const vatCents = Math.round(vatLiableCents * vatRate);
   const grandTotalCents = vatLiableCents + vatCents;
 
+  const totalLostHireRevenueCents = lines.reduce((n, l) => n + (l.lostHireRevenueCents || 0), 0);
+  const totalWorkshopRepairCostCents = lines.reduce((n, l) => n + (l.workshopRepairCostCents || 0), 0);
+  const totalBreakdownImpactCents = totalWorkshopRepairCostCents + totalLostHireRevenueCents;
+  const totalPostedDays = lines.reduce((n, l) => n + (l.postedDays || 0), 0);
+  const totalActiveDays = lines.reduce((n, l) => n + (l.daysHere || 0), 0);
+  const fleetAvailabilityPct = totalPostedDays > 0 ? Math.round((totalActiveDays / totalPostedDays) * 1000) / 10 : 100;
+
   const billedCount = lines.filter((l) => !!l.existingBill).length;
   const finalCount = lines.filter((l) => l.existingBill && (l.existingBill.status === 'FINAL' || l.existingBill.status === 'PAID')).length;
   const statusLabel = lines.length > 0 && finalCount === lines.length ? 'FINAL' : 'DRAFT';
@@ -1005,6 +978,11 @@ function buildSiteSummary(projectIdOrCode, periodKey, options = {}) {
     lines,
     grossRentalCents,
     breakdownDeductCents,
+    totalLostHireRevenueCents,
+    totalWorkshopRepairCostCents,
+    totalBreakdownImpactCents,
+    fleetAvailabilityPct,
+    costingOptions: timelines.options,
     rentalCents,
     fuelLitres,
     fuelCostCents,
@@ -1041,6 +1019,10 @@ function buildAllSiteSummaries(periodKey, options = {}) {
 
   const projectRows = all("SELECT id, code, name, active FROM projects WHERE UPPER(COALESCE(TRIM(code), '')) != 'TEST' ORDER BY name ASC");
   const preloadedAssetsMap = new Map(all('SELECT * FROM assets').map((a) => [a.id, a]));
+  const preloadedCostingOptions = fuelTimeline.getCostingOptions();
+  const workingDaysInMonth = Math.max(1, Math.min(31, Number(options.workingDaysInMonth) || preloadedCostingOptions.workingDaysPerMonth || 25));
+  const includeZeroFuel = Boolean(options.includeZeroFuel);
+  const preloadedTankProjectById = fuelTimeline.loadTankProjectMap();
   const preloadedRateCards = new Map();
   for (const rc of all('SELECT * FROM fleet_rental_rates WHERE asset_id IS NOT NULL')) {
     if (!preloadedRateCards.has(rc.asset_id)) preloadedRateCards.set(rc.asset_id, rc);
@@ -1049,23 +1031,38 @@ function buildAllSiteSummaries(periodKey, options = {}) {
   for (const fb of all("SELECT asset_id, rate_cents FROM fleet_bills WHERE asset_id IS NOT NULL AND billing_mode = 'perday' AND rate_cents > 0 AND status != 'VOID' ORDER BY period_key DESC")) {
     if (!preloadedPerdayRates.has(fb.asset_id)) preloadedPerdayRates.set(fb.asset_id, fb.rate_cents);
   }
+  const sqlWinStart = addIsoDays(bounds.start, -1);
+  const sqlWinEnd = `${addIsoDays(bounds.end, 1)} 23:59:59`;
   const preloadedMonthIssues = all(`
     SELECT fi.*
       FROM fuel_issues fi
-     WHERE fi.is_voided = 0
+     WHERE COALESCE(fi.is_voided, 0) = 0
        AND COALESCE(fi.voided, 0) = 0
-       AND substr(fi.issue_date, 1, 10) BETWEEN ? AND ?
-     ORDER BY fi.issue_date ASC
-  `, bounds.start, bounds.end);
+       AND fi.issue_date >= ?
+       AND fi.issue_date <= ?
+     ORDER BY fi.issue_date ASC, fi.id ASC
+  `, sqlWinStart, sqlWinEnd);
   const preloadedBreakdownMap = buildBreakdownMapForMonth(bounds);
+  const preloadedRepairCostMap = breakdowns.getWorkshopRepairCostMap(bounds.periodKey);
+  const preloadedTimelines = fuelTimeline.buildMonthlyVehicleTimelines(bounds.periodKey, {
+    workingDaysPerMonth: workingDaysInMonth,
+    includeCurrentProjectZeroFuel: includeZeroFuel || bounds.periodKey === currentMonthKey(),
+    _tankProjMap: preloadedTankProjectById,
+    _assetsMap: preloadedAssetsMap,
+    _rawMonthIssues: preloadedMonthIssues,
+  });
 
   const sharedOpts = {
     ...options,
+    _preloadedCostingOptions: preloadedCostingOptions,
+    _preloadedTankProjectById: preloadedTankProjectById,
     _preloadedAssetsMap: preloadedAssetsMap,
     _preloadedRateCards: preloadedRateCards,
     _preloadedPerdayRates: preloadedPerdayRates,
     _preloadedMonthIssues: preloadedMonthIssues,
     _preloadedBreakdownMap: preloadedBreakdownMap,
+    _preloadedRepairCostMap: preloadedRepairCostMap,
+    _preloadedTimelines: preloadedTimelines,
   };
 
   const summaries = [];

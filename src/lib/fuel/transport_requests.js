@@ -193,6 +193,7 @@ function computeCrossCheck({
   isFullTank = false,
   prevMeterReading = null,
   issueMeterReading = null,
+  meterFaulty = false,
 } = {}) {
   const actual = Number(actualLitres);
   const rec = recommendedLitres != null && Number(recommendedLitres) > 0 ? Number(recommendedLitres) : null;
@@ -204,7 +205,9 @@ function computeCrossCheck({
   const tripVarianceLitres = trip != null ? round1(actual - trip) : null;
 
   const flags = [];
-  if (
+  if (meterFaulty) {
+    flags.push('METER_FAULTY');
+  } else if (
     prevMeterReading != null
     && issueMeterReading != null
     && Number(prevMeterReading) > 0
@@ -227,6 +230,7 @@ function computeCrossCheck({
   if (flags.includes('METER_MISMATCH')) crossCheckStatus = 'METER_MISMATCH';
   else if (flags.includes('OVER_REQUESTED')) crossCheckStatus = 'OVER_REQUESTED';
   else if (flags.includes('OVER_RECOMMENDED')) crossCheckStatus = 'OVER_RECOMMENDED';
+  else if (flags.includes('METER_FAULTY')) crossCheckStatus = 'METER_FAULTY';
   else if (flags.includes('UNDER_RECOMMENDED')) crossCheckStatus = 'UNDER_RECOMMENDED';
   else if (flags.includes('NO_NORM')) crossCheckStatus = 'NO_NORM';
 
@@ -245,6 +249,7 @@ function hydrateRequestRow(row) {
     ...row,
     is_full_tank: !!row.is_full_tank,
     needs_approval: !!row.needs_approval,
+    meter_faulty: !!row.meter_faulty,
   };
 }
 
@@ -289,9 +294,16 @@ function createTransportRequest(payload = {}, actor = null) {
     throw httpError(400, 'Vehicle / Machine code is required');
   }
 
-  const meterVal = Number(payload.meterReading);
-  if (!Number.isFinite(meterVal) || meterVal <= 0) {
-    throw httpError(400, 'Current Running Chart meter reading (> 0) is required');
+  const meterFaulty = !!(payload.meterFaulty ?? payload.meter_faulty);
+  const meterFaultReason = String(payload.meterFaultReason ?? payload.meter_fault_reason ?? '').trim() || null;
+  const rawMeter = payload.meterReading ?? payload.meter_reading;
+  const meterVal = !meterFaulty && rawMeter != null && rawMeter !== '' ? Number(rawMeter) : null;
+  if (meterFaulty) {
+    if (!meterFaultReason || meterFaultReason.length < 3) {
+      throw httpError(400, 'Faulty meter reason (at least 3 characters) is required when Meter Faulty is marked');
+    }
+  } else if (!Number.isFinite(meterVal) || meterVal <= 0) {
+    throw httpError(400, 'Current Running Chart meter reading (> 0) is required (or mark Meter Faulty with a reason)');
   }
 
   const runningChartNo = String(payload.runningChartNo || payload.running_chart_no || '').trim();
@@ -307,13 +319,13 @@ function createTransportRequest(payload = {}, actor = null) {
   const calc = calculateRecommendedFuel({
     assetCode: payload.assetCode || payload.vehicleCode,
     assetId: payload.assetId,
-    meterReading: meterVal,
+    meterReading: meterFaulty ? null : meterVal,
     prevMeterReading: payload.prevMeterReading,
     approxKm: payload.approxKm,
     issueDate: payload.issueDate,
   });
 
-  if (!calc.ok && !payload.ignoreMeterWarning) {
+  if (!meterFaulty && !calc.ok && !payload.ignoreMeterWarning) {
     throw httpError(400, calc.warning || 'Meter reading cannot go backwards below last recorded reading', {
       meterGuardFailed: true,
       previous: calc.previous,
@@ -378,12 +390,14 @@ function createTransportRequest(payload = {}, actor = null) {
     INSERT INTO fuel_requests (
       id, request_no, asset_id, asset_code, project_id, target_tank_id, source_mode, station_name,
       fuel_type, requested_litres, meter_reading, prev_meter_reading, meter_type,
+      meter_faulty, meter_fault_reason,
       approx_km, consumption_norm, consumption_basis, recommended_litres, trip_total_fuel,
       is_full_tank, needs_approval, running_chart_no, driver_name, trip_purpose,
       reason, notes, status, requested_by, requested_at, approved_by, approved_at
     ) VALUES (
       ?, ?, ?, ?, ?, ?, ?, ?,
       ?, ?, ?, ?, ?,
+      ?, ?,
       ?, ?, ?, ?, ?,
       ?, ?, ?, ?, ?,
       ?, ?, ?, ?, datetime('now'), ?, CASE WHEN ? = 'APPROVED' THEN datetime('now') ELSE NULL END
@@ -391,7 +405,8 @@ function createTransportRequest(payload = {}, actor = null) {
   `,
     reqId, reqNo, resolvedAsset ? resolvedAsset.id : null, resolvedCode, projectId,
     targetTank ? targetTank.id : null, sourceMode, stationName,
-    fuelType, requestedLitres, meterVal, calc.prevMeter, calc.meterType,
+    fuelType, requestedLitres, meterFaulty ? null : meterVal, calc.prevMeter, calc.meterType,
+    meterFaulty ? 1 : 0, meterFaulty ? meterFaultReason : null,
     calc.approxKm || 0, calc.normRate, calc.basis, recLitres, tripFuelNum != null ? round1(tripFuelNum) : null,
     isFullTank ? 1 : 0, needsApproval, runningChartNo,
     payload.driverName ? String(payload.driverName).trim() : null,
@@ -413,6 +428,8 @@ function createTransportRequest(payload = {}, actor = null) {
         requestNo: reqNo,
         assetCode: resolvedCode,
         runningChartNo,
+        meterFaulty,
+        meterFaultReason,
         approxKm: calc.approxKm,
         recommendedLitres: recLitres,
         tripTotalFuel: tripFuelNum,
@@ -553,6 +570,7 @@ function validateRequestForIssue({
   isSiteTransfer = false,
   issueLitres,
   meterReading = null,
+  meterFaulty = undefined,
 } = {}) {
   if (isSiteTransfer && !fuelRequestId) {
     return { bypass: true, request: null, effectiveTankId: sourceTankId || null, crossCheck: null };
@@ -613,6 +631,11 @@ function validateRequestForIssue({
     );
   }
 
+  const hasExplicitFaulty = meterFaulty !== undefined;
+  const effMeterFaulty = hasExplicitFaulty
+    ? !!meterFaulty
+    : Boolean(fr.meter_faulty && !(meterReading != null && meterReading !== '' && Number(meterReading) > 0));
+
   const crossCheck = computeCrossCheck({
     actualLitres: issueLitres,
     recommendedLitres: fr.recommended_litres,
@@ -620,7 +643,8 @@ function validateRequestForIssue({
     requestedLitres: fr.requested_litres,
     isFullTank: !!fr.is_full_tank,
     prevMeterReading: fr.prev_meter_reading,
-    issueMeterReading: meterReading != null ? meterReading : fr.meter_reading,
+    issueMeterReading: effMeterFaulty ? null : (meterReading != null ? meterReading : fr.meter_reading),
+    meterFaulty: effMeterFaulty,
   });
 
   return {
@@ -676,7 +700,9 @@ function getCrossCheckReport({
   }
   if (flag && flag !== 'ALL') {
     if (flag === 'FLAGGED') {
-      conds.push("fi.cross_check_status IN ('OVER_RECOMMENDED', 'UNDER_RECOMMENDED', 'OVER_REQUESTED', 'METER_MISMATCH')");
+      conds.push("(fi.cross_check_status IN ('OVER_RECOMMENDED', 'UNDER_RECOMMENDED', 'OVER_REQUESTED', 'METER_MISMATCH', 'METER_FAULTY') OR COALESCE(fi.meter_faulty, fr.meter_faulty, 0) = 1)");
+    } else if (String(flag).toUpperCase() === 'METER_FAULTY') {
+      conds.push("(COALESCE(fi.meter_faulty, fr.meter_faulty, 0) = 1 OR fi.cross_check_status = 'METER_FAULTY')");
     } else {
       conds.push('fi.cross_check_status = ?');
       params.push(String(flag).toUpperCase());
@@ -724,6 +750,8 @@ function getCrossCheckReport({
            fr.prev_meter_reading,
            fr.meter_reading AS request_meter_reading,
            fr.meter_type,
+           fr.meter_faulty AS request_meter_faulty,
+           fr.meter_fault_reason AS request_meter_fault_reason,
            fr.approx_km,
            fr.consumption_norm,
            fr.consumption_basis,
@@ -737,6 +765,8 @@ function getCrossCheckReport({
            fi.issue_no,
            fi.litres AS actual_litres,
            fi.meter_reading AS issue_meter_reading,
+           fi.meter_faulty AS issue_meter_faulty,
+           fi.meter_fault_reason AS issue_meter_fault_reason,
            fi.issue_date,
            fi.total_cost_cents,
            fi.variance_litres,
@@ -763,6 +793,7 @@ function getCrossCheckReport({
   let flaggedCount = 0;
   let overRecommendedCount = 0;
   let meterMismatchCount = 0;
+  let meterFaultyCount = 0;
   let totalRecommendedLitres = 0;
   let totalRequestedLitres = 0;
   let totalActualLitres = 0;
@@ -774,15 +805,22 @@ function getCrossCheckReport({
     if (r.recommended_litres > 0) totalRecommendedLitres += Number(r.recommended_litres);
     if (r.requested_litres > 0) totalRequestedLitres += Number(r.requested_litres);
     if (r.actual_litres > 0) totalActualLitres += Number(r.actual_litres);
-    if (['OVER_RECOMMENDED', 'UNDER_RECOMMENDED', 'OVER_REQUESTED', 'METER_MISMATCH'].includes(r.cross_check_status)) {
+    const rowFaulty = !!(r.issue_meter_faulty || r.request_meter_faulty);
+    if (['OVER_RECOMMENDED', 'UNDER_RECOMMENDED', 'OVER_REQUESTED', 'METER_MISMATCH', 'METER_FAULTY'].includes(r.cross_check_status) || rowFaulty) {
       flaggedCount++;
     }
     if (r.cross_check_status === 'OVER_RECOMMENDED') overRecommendedCount++;
     if (r.cross_check_status === 'METER_MISMATCH') meterMismatchCount++;
+    if (rowFaulty || r.cross_check_status === 'METER_FAULTY') meterFaultyCount++;
   }
 
   return {
-    rows: rows.map((r) => ({ ...r, is_full_tank: !!r.is_full_tank })),
+    rows: rows.map((r) => ({
+      ...r,
+      is_full_tank: !!r.is_full_tank,
+      meter_faulty: !!(r.issue_meter_faulty || r.request_meter_faulty),
+      meter_fault_reason: r.issue_meter_fault_reason || r.request_meter_fault_reason || null,
+    })),
     summary: {
       totalRequests: rows.length,
       fulfilledCount,
@@ -791,6 +829,7 @@ function getCrossCheckReport({
       flaggedCount,
       overRecommendedCount,
       meterMismatchCount,
+      meterFaultyCount,
       totalRecommendedLitres: round1(totalRecommendedLitres),
       totalRequestedLitres: round1(totalRequestedLitres),
       totalActualLitres: round1(totalActualLitres),
@@ -816,6 +855,8 @@ async function buildCrossCheckWorkbook(report) {
     { header: 'Driver', key: 'driver_name', width: 18 },
     { header: 'Prev Meter', key: 'prev_meter_reading', width: 12 },
     { header: 'Req Meter', key: 'request_meter_reading', width: 12 },
+    { header: 'Meter Faulty?', key: 'meter_faulty_label', width: 13 },
+    { header: 'Fault Reason', key: 'meter_fault_reason', width: 24 },
     { header: 'Approx KM/Hr', key: 'approx_km', width: 13 },
     { header: 'Recommended (L)', key: 'recommended_litres', width: 15 },
     { header: 'Trip Requested (L)', key: 'requested_litres', width: 16 },
@@ -837,6 +878,7 @@ async function buildCrossCheckWorkbook(report) {
   for (const r of report.rows || []) {
     const row = ws.addRow({
       ...r,
+      meter_faulty_label: r.meter_faulty ? 'FAULTY' : 'OK',
       full_tank_label: r.is_full_tank ? 'FULL TANK' : 'FIXED',
       issue_or_req_date: r.issue_date || r.requested_at || '',
     });

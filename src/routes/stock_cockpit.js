@@ -9,6 +9,7 @@ const emitter = require('../lib/emitter');
 
 const router = express.Router();
 const scope = require('../lib/scope');
+const stockReconcile = require('../lib/stock_reconcile');
 
 // Improvement plan, Step 2: one store's board, for someone kept to their own store.
 const { storeOverview, storeSearch } = require('../lib/store_shelf');
@@ -401,6 +402,30 @@ router.post('/create-reorder-mrn', requireCap('stores.reorder_mrn'), asyncHandle
     mrn_no: mrn.mrn_no,
     lines_count: items.length,
   });
+}));
+
+// ---- Negative Stock Reconciliation & Issue Guard Policy -------------------
+router.get('/negative-stock', requireAuth, requireCap('stores.view'), asyncHandler((req, res) => {
+  res.json(stockReconcile.listNegativeStock(req.user));
+}));
+
+router.post('/reconcile-negative', requireAuth, requireCap('stores.count.approve'), asyncHandler((req, res) => {
+  const items = Array.isArray(req.body && req.body.items) ? req.body.items : [];
+  res.json(stockReconcile.reconcileNegativeItems(items, req.user));
+}));
+
+router.post('/sync-oil-cache', requireAuth, requireCap('stores.count.approve'), asyncHandler((req, res) => {
+  res.json(stockReconcile.syncOilStockCache(req.user));
+}));
+
+router.get('/guard-policy', requireAuth, requireCap('stores.view'), asyncHandler((_req, res) => {
+  res.json(stockReconcile.getGuardPolicy());
+}));
+
+router.post('/guard-policy', requireAuth, requireCap('stores.count.approve'), asyncHandler((req, res) => {
+  res.json(stockReconcile.setGuardPolicy({
+    blockNegativeIssue: !!(req.body && req.body.block_negative_issue),
+  }, req.user));
 }));
 
 module.exports = router;

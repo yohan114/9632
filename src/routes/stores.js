@@ -39,6 +39,7 @@ const fs = require('fs');
 const evidencePhotos = require('../lib/evidence_photos');
 const reorderRebalance = require('../lib/reorder_rebalance');
 const storeLocations = require('../lib/store_locations');
+const pricingQueue = require('../lib/pricing_queue');
 
 // The store a list is narrowed to: the one asked for (the screens send X-Store-Location-Id), else
 // the person's own store. Someone in all-sites mode (head office, the Central Main Stores) who asks
@@ -269,13 +270,17 @@ const lineRefusal = (user, id) => reachRefusal(user, 'request',
  * and refresh affected Job Cards so costs update immediately.
  */
 function cascadeGrnPrice(grnId, unitPrice) {
-  if (unitPrice === undefined || unitPrice === '' || unitPrice === null || isNaN(Number(unitPrice))) return;
+  if (unitPrice === undefined || unitPrice === '' || unitPrice === null || isNaN(Number(unitPrice))) {
+    return { issuesUpdated: 0, jobPartsUpdated: 0, jobsRefreshed: 0 };
+  }
   const price = toNum(unitPrice);
-  const grn = get('SELECT id, mrn_id, mrn_line_id, store_item_id, description, qty FROM grn WHERE id = ?', grnId);
-  if (!grn) return;
+  const grn = get('SELECT id, mrn_id, mrn_line_id, store_item_id, description, qty, delivery_date, grn_date FROM grn WHERE id = ?', grnId);
+  if (!grn) return { issuesUpdated: 0, jobPartsUpdated: 0, jobsRefreshed: 0 };
 
   const affectedJobIds = new Set();
   const buckets = new Map();
+  let issuesUpdated = 0;
+  let jobPartsUpdated = 0;
   const trackBucket = (assetId, dateStr) => {
     if (!assetId || !dateStr) return;
     const ym = String(dateStr).slice(0, 7);
@@ -297,6 +302,7 @@ function cascadeGrnPrice(grnId, unitPrice) {
       'UPDATE issues SET unit_price = ?, grn_id = COALESCE(grn_id, ?) WHERE id = ?',
       price, grnId, iss.id
     );
+    issuesUpdated++;
     run("UPDATE stock_moves SET unit_price = ? WHERE source_table = 'issues' AND source_id = ?", price, iss.id);
     trackBucket(iss.asset_id, iss.issue_date);
     if (iss.job_id) {
@@ -319,31 +325,45 @@ function cascadeGrnPrice(grnId, unitPrice) {
              VALUES (?, ?, ?, ?, ?, 'issue', ?)`,
             iss.job_id, grn.mrn_line_id || null, iss.description || grn.description || 'Store Issue', iss.qty || 1, price, iss.id
           );
+          jobPartsUpdated++;
         }
       }
     }
 
     // Update job_parts that came from this issue
-    run("UPDATE job_parts SET unit_price = ? WHERE source_type = 'issue' AND source_id = ?", price, iss.id);
+    const jpRes = run("UPDATE job_parts SET unit_price = ? WHERE source_type = 'issue' AND source_id = ?", price, iss.id);
+    jobPartsUpdated += jpRes.changes || 0;
 
     // Update general_item_txns that came from this issue
     run('UPDATE general_item_txns SET unit_price = ? WHERE source_issue_id = ?', price, iss.id);
   }
 
   // 2. Update job_parts directly linked to this GRN (source_type = 'grn')
-  const grnParts = all("SELECT job_id FROM job_parts WHERE source_type = 'grn' AND source_id = ?", grnId);
+  const grnParts = all(`
+    SELECT jp.job_id, jc.asset_id, jc.completed_at, jc.requested_at
+      FROM job_parts jp
+      LEFT JOIN job_cards jc ON jc.id = jp.job_id
+     WHERE jp.source_type = 'grn' AND jp.source_id = ?
+  `, grnId);
   for (const gp of grnParts) {
     if (gp.job_id) affectedJobIds.add(gp.job_id);
+    trackBucket(gp.asset_id, grn.delivery_date || grn.grn_date || gp.completed_at || gp.requested_at);
   }
-  run("UPDATE job_parts SET unit_price = ? WHERE source_type = 'grn' AND source_id = ?", price, grnId);
+  jobPartsUpdated += (run("UPDATE job_parts SET unit_price = ? WHERE source_type = 'grn' AND source_id = ?", price, grnId).changes || 0);
 
   // 3. Update job_parts linked via mrn_line_id
   if (grn.mrn_line_id) {
-    const mlParts = all('SELECT job_id FROM job_parts WHERE mrn_line_id = ?', grn.mrn_line_id);
+    const mlParts = all(`
+      SELECT jp.job_id, jc.asset_id, jc.completed_at, jc.requested_at
+        FROM job_parts jp
+        LEFT JOIN job_cards jc ON jc.id = jp.job_id
+       WHERE jp.mrn_line_id = ?
+    `, grn.mrn_line_id);
     for (const mlp of mlParts) {
       if (mlp.job_id) affectedJobIds.add(mlp.job_id);
+      trackBucket(mlp.asset_id, grn.delivery_date || grn.grn_date || mlp.completed_at || mlp.requested_at);
     }
-    run('UPDATE job_parts SET unit_price = ? WHERE mrn_line_id = ?', price, grn.mrn_line_id);
+    jobPartsUpdated += (run('UPDATE job_parts SET unit_price = ? WHERE mrn_line_id = ?', price, grn.mrn_line_id).changes || 0);
   }
 
   // 4. Update store_items catalog unit_cost if store_item_id or description matches
@@ -369,10 +389,11 @@ function cascadeGrnPrice(grnId, unitPrice) {
     const unpricedIssues = all('SELECT id, job_id, asset_id, issue_date FROM issues WHERE store_item_id = ? AND (unit_price IS NULL OR unit_price <= 0)', storeItemId);
     for (const ui of unpricedIssues) {
       run('UPDATE issues SET unit_price = ? WHERE id = ?', price, ui.id);
+      issuesUpdated++;
       run("UPDATE stock_moves SET unit_price = ? WHERE source_table = 'issues' AND source_id = ?", price, ui.id);
       trackBucket(ui.asset_id, ui.issue_date);
       if (ui.job_id) affectedJobIds.add(ui.job_id);
-      run("UPDATE job_parts SET unit_price = ? WHERE source_type = 'issue' AND source_id = ? AND (unit_price IS NULL OR unit_price <= 0)", price, ui.id);
+      jobPartsUpdated += (run("UPDATE job_parts SET unit_price = ? WHERE source_type = 'issue' AND source_id = ? AND (unit_price IS NULL OR unit_price <= 0)", price, ui.id).changes || 0);
     }
   }
 
@@ -394,6 +415,8 @@ function cascadeGrnPrice(grnId, unitPrice) {
       costing.recalcVehicleMonth(b.assetId, b.year, b.month);
     } catch (_) {}
   }
+
+  return { issuesUpdated, jobPartsUpdated, jobsRefreshed: affectedJobIds.size };
 }
 // A receipt voucher is the workshops' whose receipts are on it: yours when any of them is.
 const VOUCHER_LINES = 'FROM grn g LEFT JOIN mrn m ON m.id = g.mrn_id WHERE (g.voucher_id = v.id OR g.grn_no = v.grn_no)';
@@ -622,6 +645,7 @@ router.post('/items/:id/txn', requireCap('stores.items.txn'), asyncHandler((req,
     if (si && si.unit_cost != null && si.unit_cost > 0) txnPrice = si.unit_cost;
   }
   const result = tx(() => {
+    const storeId = stores.forEntry(req.user, toInt(b.job_id), b.txn_date);
     const info = run(
       `INSERT INTO general_item_txns (store_item_id, txn_type, qty, balance_after, asset_id, job_id, unit_price, ref, txn_date, store_id)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -629,10 +653,23 @@ router.post('/items/:id/txn', requireCap('stores.items.txn'), asyncHandler((req,
       txnPrice, b.ref || null,
       b.txn_date || new Date().toISOString().slice(0, 10),
       // Stage 4: the job card's workshop's store, else the store of whoever wrote it down.
-      stores.forEntry(req.user, toInt(b.job_id), b.txn_date)
+      storeId
     );
     run('UPDATE store_items SET balance = ? WHERE id = ?', balanceAfter, itemId);
-    stockRule.check(stock.sync({ general_item_txns: [info.lastInsertRowid] }));      // Part 3
+    const guardOpts = {
+      actor: req.user,
+      allowNegativeOverride: !!b.allow_negative_override,
+      overrideReason: b.override_reason,
+    };
+    if (b.txn_type === 'issue') {
+      stockRule.checkLedgerBalance({
+        name: item.name,
+        balanceAfter,
+        wanted: qtyMag,
+        storeLabel: stores.label(storeId),
+      }, guardOpts);
+    }
+    stockRule.check(stock.sync({ general_item_txns: [info.lastInsertRowid] }), guardOpts);      // Part 3
     if (toInt(b.job_id)) {
       try { require('../lib/costing').refreshJobTotals(toInt(b.job_id)); } catch (_) {}
     }
@@ -1844,7 +1881,7 @@ router.get('/pending', asyncHandler((req, res) => {
 // A GRN with no unit_price is stock that landed without its cost, so it is missing from every
 // job/vehicle total until the invoice price is keyed in.
 function awaitingPriceRows(query, user) {
-  const clauses = ['g.unit_price IS NULL'];
+  const clauses = ['(g.unit_price IS NULL OR g.unit_price <= 0)'];
   const params = [];
   { const own = ownWsCond(user, GRN_WS); if (own) clauses.push(own); }   // Step 2c
   const src = query.source;
@@ -1859,7 +1896,7 @@ function awaitingPriceRows(query, user) {
     params.push(like, like, like, like, like);
   }
   return all(
-    `SELECT g.id, g.grn_no, g.grn_date, g.description, g.received_part_no, g.qty, g.supplier, g.invoice_no, g.invoice_date, g.delivery_date,
+    `SELECT g.id, g.grn_no, g.grn_date, g.store_item_id, g.description, g.received_part_no, g.qty, g.supplier, g.invoice_no, g.invoice_date, g.delivery_date,
             COALESCE(g.purchase_source_norm, ml.purchase_source, m.purchase_source) AS source,
             COALESCE(ml.category, si.category) AS category,
             m.id AS mrn_id, m.mrn_no, m.req_date, a.code AS asset_code,
@@ -1875,13 +1912,35 @@ function awaitingPriceRows(query, user) {
       LIMIT ${toInt(query.limit, 2000)}`, ...params);
 }
 
-router.get('/awaiting-price', asyncHandler((req, res) => res.json(awaitingPriceRows(req.query, req.user))));
+router.get('/awaiting-price', asyncHandler((req, res) => {
+  const rows = awaitingPriceRows(req.query, req.user);
+  res.json(pricingQueue.enrichAwaitingPriceRows(rows, {
+    hintOnly: req.query.hint === '1',
+    year: req.query.year || null,
+  }));
+}));
 
 router.get('/awaiting-price/summary', asyncHandler((req, res) => {
   res.json(all(
     `SELECT COALESCE(g.purchase_source_norm, ml.purchase_source, m.purchase_source) AS source, COUNT(*) count, ROUND(SUM(g.qty),2) qty
        FROM grn g LEFT JOIN mrn m ON m.id = g.mrn_id LEFT JOIN mrn_lines ml ON ml.id = g.mrn_line_id
-      WHERE g.unit_price IS NULL${ownWs(req.user, GRN_WS)} GROUP BY source`));
+      WHERE (g.unit_price IS NULL OR g.unit_price <= 0)${ownWs(req.user, GRN_WS)} GROUP BY source`));
+}));
+
+router.get('/pricing-queue/summary', asyncHandler((req, res) => {
+  res.json(pricingQueue.pricingQueueSummary(req.user));
+}));
+
+router.get('/unpriced-job-parts', asyncHandler((req, res) => {
+  res.json(pricingQueue.listUnpricedJobParts(req.query, req.user));
+}));
+
+router.post('/job-parts/bulk-price', requireCap('stores.grn.edit'), asyncHandler((req, res) => {
+  const rows = Array.isArray(req.body && req.body.rows) ? req.body.rows : [];
+  const result = pricingQueue.bulkPriceJobParts(rows, req.user, {
+    cascadeGrnPriceFn: cascadeGrnPrice,
+  });
+  res.json(result);
 }));
 
 // ---- shared report plumbing for the two stores lists (pending purchase / awaiting price) ----
@@ -4209,7 +4268,11 @@ router.post('/stock-issue', requireCap('stores.stock_issue'), asyncHandler((req,
       physStoreId || get('SELECT physical_store_id FROM issues WHERE id = ?', info.lastInsertRowid).physical_store_id);
     // The one issue rule (Part 3): not more than the shelf holds.
     stockRule.check([{ section: rec.section, item_key: rec.item_key, store_id: get('SELECT store_id FROM issues WHERE id = ?', info.lastInsertRowid).store_id,
-      delta: rec.counts ? -qty : 0 }]);
+      delta: rec.counts ? -qty : 0 }], {
+      actor: req.user,
+      allowNegativeOverride: !!b.allow_negative_override,
+      overrideReason: b.override_reason,
+    });
     syncIssueToLedgers(info.lastInsertRowid);
 
     done.push({
@@ -4287,7 +4350,11 @@ router.post('/stock-issue', requireCap('stores.stock_issue'), asyncHandler((req,
       stockRule.check([{ section: item.section, item_key: item.item_key,
         store_id: legStoreId || get('SELECT store_id FROM issues WHERE id = ?', info.lastInsertRowid).store_id,
         physical_store_id: physStoreId || get('SELECT physical_store_id FROM issues WHERE id = ?', info.lastInsertRowid).physical_store_id,
-        delta: -qty }]);
+        delta: -qty }], {
+        actor: req.user,
+        allowNegativeOverride: !!b.allow_negative_override,
+        overrideReason: b.override_reason,
+      });
       syncIssueToLedgers(info.lastInsertRowid);
 
       const after = Math.round((before - qty) * 100) / 100;
@@ -4320,7 +4387,17 @@ router.post('/stock-issue', requireCap('stores.stock_issue'), asyncHandler((req,
 router.post('/grn/bulk-price', requireCap('stores.grn.edit'), asyncHandler((req, res) => {
   const rows = Array.isArray(req.body && req.body.rows) ? req.body.rows : [];
   if (!rows.length) return res.status(400).json({ error: 'Nothing to save' });
+  for (const r of rows) {
+    if (r && r.unit_price !== undefined && r.unit_price !== '' && r.unit_price !== null) {
+      const p = Number(r.unit_price);
+      if (!Number.isFinite(p) || p < 0) {
+        return res.status(400).json({ error: `Invalid unit_price for GRN #${r.id || '?'}: must be a non-negative number` });
+      }
+    }
+  }
   let saved = 0;
+  let jobsRefreshed = 0;
+  let jobPartsUpdated = 0;
   const touched = [];
   tx(() => {
     for (const r of rows) {
@@ -4357,14 +4434,18 @@ router.post('/grn/bulk-price', requireCap('stores.grn.edit'), asyncHandler((req,
         });
       }
       if (r.unit_price !== undefined && r.unit_price !== '' && r.unit_price !== null) {
-        cascadeGrnPrice(id, r.unit_price);
+        const casc = cascadeGrnPrice(id, r.unit_price);
+        if (casc) {
+          jobsRefreshed += casc.jobsRefreshed || 0;
+          jobPartsUpdated += casc.jobPartsUpdated || 0;
+        }
       }
       touched.push(id); saved++;
     }
     if (touched.length) stock.sync({ grn: touched });      // the price and date the shelf carries
   });
-  if (saved) audit.record({ userId: req.user.id, entity: 'grn', action: 'bulk_price', after: { count: saved, ids: touched.slice(0, 50) } });
-  res.json({ ok: true, saved });
+  if (saved) audit.record({ userId: req.user.id, entity: 'grn', action: 'bulk_price', after: { count: saved, jobs_refreshed: jobsRefreshed, job_parts_updated: jobPartsUpdated, ids: touched.slice(0, 50) } });
+  res.json({ ok: true, saved, jobs_refreshed: jobsRefreshed, job_parts_updated: jobPartsUpdated });
 }));
 
 // Receive many MRN lines at once (one row per line the storekeeper filled in).
@@ -4858,7 +4939,11 @@ router.post('/issues', requireCap('stores.issue'), chainPipeline.idempotencyGuar
         assetId, yr, mo, lineCost, lineCost);
     }
     // Stores plan, Part 3: off the shelf now, and — once the store's rule has started — not past zero.
-    stockRule.check(stock.sync({ issues: [info.lastInsertRowid] }));
+    stockRule.check(stock.sync({ issues: [info.lastInsertRowid] }), {
+      actor: req.user,
+      allowNegativeOverride: !!b.allow_negative_override,
+      overrideReason: b.override_reason,
+    });
     syncIssueToLedgers(info.lastInsertRowid);
     return info.lastInsertRowid;
   });
@@ -5092,7 +5177,11 @@ router.post('/min', requireCap('stores.issue'), chainPipeline.idempotencyGuard('
     }
 
     if (createdIds.length) {
-      stockRule.check(stock.sync({ issues: createdIds }));
+      stockRule.check(stock.sync({ issues: createdIds }), {
+        actor: req.user,
+        allowNegativeOverride: !!b.allow_negative_override,
+        overrideReason: b.override_reason,
+      });
       for (const cid of createdIds) syncIssueToLedgers(cid);
     }
 

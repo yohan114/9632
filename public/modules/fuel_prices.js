@@ -31,8 +31,11 @@
         <div>
           <h1 style="margin:0;font-size:24px;font-weight:700">Ceypetco Fuel Prices &amp; Tariff History</h1>
           <p class="muted" style="margin:4px 0 0 0">Official date-effective per-litre price points for Auto Diesel, Super Diesel, Petrol &amp; Kerosene</p>
+          <div class="muted" id="fp_sync_status" style="font-size:12px;margin-top:4px"></div>
         </div>
-        <div style="display:flex;gap:8px">
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          ${canManage ? '<button class="btn" id="btn_sync_ceypetco_prices">🌐 Sync from Ceypetco</button>' : ''}
+          ${canManage ? '<button class="btn" id="btn_reprice_slips">⚡ Re-Price Slips</button>' : ''}
           ${canManage ? '<button class="btn primary" id="btn_new_fuel_price">+ Update / Set Price</button>' : ''}
           <button class="btn" id="btn_reload_prices">🔄 Refresh</button>
         </div>
@@ -180,6 +183,24 @@
         latestActivePrices = res.activePrices || {};
         renderActiveCards(latestActivePrices);
 
+        const syncEl = qs('#fp_sync_status');
+        if (syncEl) {
+          const sync = res.ceypetcoSync || null;
+          if (!sync) {
+            syncEl.textContent = '';
+          } else if (sync.lastSyncStatus === 'error') {
+            syncEl.innerHTML = `<span style="color:#d97706;font-weight:600">⚠ Ceypetco auto-sync error: ${esc(sync.lastSyncError || 'Unknown error')}</span>`;
+          } else if (!sync.enabled) {
+            syncEl.textContent = 'Ceypetco auto-sync is paused';
+          } else if (sync.lastSyncAt) {
+            const whenStr = new Date(sync.lastSyncAt).toLocaleString([], { hour: '2-digit', minute: '2-digit', month: 'short', day: 'numeric' });
+            const srcTag = sync.lastSyncSource ? ` · Source: ${sync.lastSyncSource}` : '';
+            syncEl.textContent = `Auto-sync every ${sync.intervalMinutes || 30}m · Last checked ${whenStr}${srcTag}`;
+          } else {
+            syncEl.textContent = `Auto-sync every ${sync.intervalMinutes || 30}m · Pending first check`;
+          }
+        }
+
         const list = res.prices || [];
         if (list.length === 0) {
           tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;padding:20px" class="muted">No price points configured yet.</td></tr>';
@@ -218,6 +239,180 @@
 
     qs('#btn_reload_prices').onclick = loadPrices;
     if (qs('#btn_new_fuel_price')) qs('#btn_new_fuel_price').onclick = () => openPriceModal();
+    if (qs('#btn_sync_ceypetco_prices')) {
+      qs('#btn_sync_ceypetco_prices').onclick = async () => {
+        const btn = qs('#btn_sync_ceypetco_prices');
+        if (!btn) return;
+        btn.disabled = true;
+        const origLabel = btn.textContent;
+        btn.textContent = 'Syncing...';
+        try {
+          const res = await api('/fuel/prices/sync', { method: 'POST', body: {} });
+          const updCount = (res.stored ? res.stored.length : 0) + (res.updated ? res.updated.length : 0);
+          if (typeof toast === 'function') {
+            toast(updCount > 0
+              ? `Synced ${updCount} tariff change${updCount === 1 ? '' : 's'} from Ceypetco`
+              : 'Ceypetco tariffs are already up to date');
+          }
+          await loadPrices();
+        } catch (err) {
+          if (typeof toast === 'function') toast('Ceypetco sync failed: ' + err.message, 'err');
+          await loadPrices();
+        } finally {
+          btn.disabled = false;
+          btn.textContent = origLabel;
+        }
+      };
+    }
+
+    function openRepriceModal() {
+      const defFrom = (latestActivePrices.AUTO_DIESEL && latestActivePrices.AUTO_DIESEL.effectiveDate)
+        || (localTodayStr().slice(0, 7) + '-01');
+      const defTo = localTodayStr();
+
+      const modal = document.createElement('div');
+      modal.className = 'modal-bg modal-backdrop';
+      modal.innerHTML = `
+        <div class="modal card" style="max-width:680px;padding:24px">
+          <h2 style="margin:0 0 6px 0;font-size:18px">⚡ Re-Price Historical Fuel Slips to Effective Tariff</h2>
+          <p class="muted" style="margin:0 0 14px 0;font-size:12px">
+            Aligns fuel issues in the selected date window with official Ceypetco tariffs on each slip's date and updates unlocked DRAFT rental bills. FINAL/PAID bills and locked periods are never touched.
+          </p>
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:10px">
+            <div>
+              <label class="label">From Date *</label>
+              <input type="date" id="rp_from" class="input" value="${esc(defFrom)}" style="width:100%">
+            </div>
+            <div>
+              <label class="label">To Date *</label>
+              <input type="date" id="rp_to" class="input" value="${esc(defTo)}" style="width:100%">
+            </div>
+            <div>
+              <label class="label">Fuel Product</label>
+              <select id="rp_fuel_type" class="input" style="width:100%">
+                <option value="ALL">All Fuel Types</option>
+                ${FUEL_TYPES.map((ft) => `<option value="${esc(ft.key)}">${esc(ft.label)}</option>`).join('')}
+              </select>
+            </div>
+          </div>
+          <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:10px;font-size:12.5px">
+            <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
+              <input type="checkbox" id="rp_include_manual"> Include manual override slips
+            </label>
+            <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
+              <input type="checkbox" id="rp_refresh_drafts" checked> Refresh unlocked DRAFT rental bills
+            </label>
+          </div>
+          <div style="margin-bottom:12px">
+            <label class="label">Audit Reason / Note</label>
+            <input type="text" id="rp_reason" class="input" placeholder="e.g. Align Nov 2+ slips with official Ceypetco tariff revision" style="width:100%">
+          </div>
+          <div id="rp_preview_box" style="margin-bottom:14px"></div>
+          <div style="display:flex;justify-content:flex-end;gap:8px">
+            <button type="button" class="btn" id="btn_rp_cancel">Cancel</button>
+            <button type="button" class="btn" id="btn_rp_preview">🔍 Preview Impact</button>
+            <button type="button" class="btn primary" id="btn_rp_apply" disabled>⚡ Apply Re-Pricing</button>
+          </div>
+        </div>
+      `;
+      document.body.appendChild(modal);
+
+      const prevBox = modal.querySelector('#rp_preview_box');
+      const applyBtn = modal.querySelector('#btn_rp_apply');
+      const prevBtn = modal.querySelector('#btn_rp_preview');
+
+      const invalidatePreview = () => {
+        applyBtn.disabled = true;
+      };
+      ['#rp_from', '#rp_to', '#rp_fuel_type', '#rp_include_manual'].forEach((sel) => {
+        const el = modal.querySelector(sel);
+        if (el) el.addEventListener('change', invalidatePreview);
+      });
+
+      const getPayload = () => ({
+        fromDate: modal.querySelector('#rp_from').value,
+        toDate: modal.querySelector('#rp_to').value,
+        fuelType: modal.querySelector('#rp_fuel_type').value,
+        includeManual: modal.querySelector('#rp_include_manual').checked,
+        refreshDraftBills: modal.querySelector('#rp_refresh_drafts').checked,
+        reason: modal.querySelector('#rp_reason').value.trim() || null,
+      });
+
+      modal.querySelector('#btn_rp_cancel').onclick = () => modal.remove();
+      modal.onclick = (e) => { if (e.target === modal) modal.remove(); };
+
+      prevBtn.onclick = async () => {
+        const body = getPayload();
+        if (!body.fromDate || !body.toDate) {
+          if (typeof toast === 'function') toast('Please choose both From and To dates.', 'err');
+          return;
+        }
+        prevBtn.disabled = true;
+        prevBtn.textContent = 'Checking...';
+        try {
+          const p = await api('/fuel/prices/reprice-preview', { method: 'POST', body });
+          const deltaSign = p.deltaCostCents >= 0 ? '+' : '-';
+          const absDeltaRs = Math.abs(p.deltaCostCents || 0) / 100;
+          const sampleRows = (p.sample || []).slice(0, 8).map((s) => `
+            <tr>
+              <td>${esc(s.slstDate)}</td>
+              <td><b>${esc(s.assetCode || '-')}</b></td>
+              <td>${esc(s.fuelType)}</td>
+              <td style="text-align:right">${Number(s.litres || 0).toFixed(1)} L</td>
+              <td style="text-align:right">Rs ${(s.oldPriceCents / 100).toFixed(2)} → <b>Rs ${(s.newPriceCents / 100).toFixed(2)}</b></td>
+              <td style="text-align:right">${s.deltaCents >= 0 ? '+' : ''}${(s.deltaCents / 100).toFixed(2)}</td>
+            </tr>
+          `).join('');
+
+          prevBox.innerHTML = `
+            <div style="padding:12px;border-radius:8px;background:rgba(37,99,235,0.06);border:1px solid rgba(37,99,235,0.2)">
+              <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;margin-bottom:8px;font-size:12.5px">
+                <div><div class="muted" style="font-size:11px">ELIGIBLE SLIPS</div><b>${p.eligibleCount}</b> (${Number(p.totalLitres || 0).toLocaleString()} L)</div>
+                <div><div class="muted" style="font-size:11px">COST CHANGE</div><b>${deltaSign}Rs ${absDeltaRs.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</b></div>
+                <div><div class="muted" style="font-size:11px">DRAFT BILLS AFFECTED</div><b>${p.impactedDraftBillsCount || 0}</b></div>
+                <div><div class="muted" style="font-size:11px">SKIPPED (MANUAL / LOCKED)</div><b>${p.skippedManualCount || 0}</b> / <b>${p.skippedLockedCount || 0}</b></div>
+              </div>
+              ${p.impactedFinalBillsCount > 0 ? `<div class="muted" style="font-size:11.5px;margin-bottom:6px">Note: ${p.impactedFinalBillsCount} FINAL/PAID bill(s) exist in this range and will remain untouched.</div>` : ''}
+              ${sampleRows ? `
+                <div style="max-height:170px;overflow-y:auto;border:1px solid var(--border);border-radius:6px;background:var(--card)">
+                  <table class="table" style="width:100%;margin:0;font-size:11.5px">
+                    <thead><tr><th>Date</th><th>Vehicle</th><th>Fuel</th><th style="text-align:right">Litres</th><th style="text-align:right">Tariff</th><th style="text-align:right">Delta (Rs)</th></tr></thead>
+                    <tbody>${sampleRows}</tbody>
+                  </table>
+                </div>
+              ` : '<div class="muted" style="font-size:12px">All non-manual slips in this range already match the effective tariff.</div>'}
+            </div>
+          `;
+          applyBtn.disabled = !(p.eligibleCount > 0);
+        } catch (err) {
+          prevBox.innerHTML = `<div class="card err" style="padding:10px;font-size:12px">${esc(err.message)}</div>`;
+          applyBtn.disabled = true;
+        } finally {
+          prevBtn.disabled = false;
+          prevBtn.textContent = '🔍 Preview Impact';
+        }
+      };
+
+      applyBtn.onclick = async () => {
+        const body = getPayload();
+        applyBtn.disabled = true;
+        applyBtn.textContent = 'Applying...';
+        try {
+          const res = await api('/fuel/prices/reprice-apply', { method: 'POST', body });
+          if (typeof toast === 'function') {
+            toast(`Re-priced ${res.repricedCount || 0} fuel slip(s), refreshed ${res.draftBillsUpdated || 0} DRAFT bill(s).`);
+          }
+          modal.remove();
+          await loadPrices();
+        } catch (err) {
+          if (typeof toast === 'function') toast('Re-pricing failed: ' + err.message, 'err');
+          applyBtn.disabled = false;
+          applyBtn.textContent = '⚡ Apply Re-Pricing';
+        }
+      };
+    }
+
+    if (qs('#btn_reprice_slips')) qs('#btn_reprice_slips').onclick = openRepriceModal;
 
     loadPrices();
   }

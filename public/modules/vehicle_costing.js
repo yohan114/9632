@@ -143,6 +143,11 @@
             <div class="muted" style="font-size:11px;font-weight:600">NET FLEET PROFIT / LOSS</div>
             <div style="font-size:20px;font-weight:800;margin-top:4px;color:${(totals.total_net_profit || 0) >= 0 ? 'var(--cost-pos,#047857)' : 'var(--cost-neg,#dc2626)'}">${moneyC(totals.total_net_profit || 0)}</div>
           </div>
+          <div class="card" style="padding:14px;border-left:4px solid #dc2626">
+            <div class="muted" style="font-size:11px;font-weight:600">BREAKDOWN IMPACT (LESS BD = LESS COST)</div>
+            <div style="font-size:20px;font-weight:800;margin-top:4px;color:#dc2626">${moneyC(totals.total_breakdown_impact || 0)}</div>
+            <div class="muted" style="font-size:10.5px;margin-top:2px">${num(totals.total_breakdown_days || 0)} BD d · ${num(totals.fleet_availability_percent != null ? totals.fleet_availability_percent : 100)}% Avail · Lost Hire ${moneyC(totals.total_lost_hire_revenue || 0)}</div>
+          </div>
         </div>
 
         <!-- Filter and Search -->
@@ -161,6 +166,8 @@
                 <th>Category</th>
                 <th style="text-align:right">Revenue</th>
                 <th style="text-align:right">Repair Cost</th>
+                <th style="text-align:right">BD / Avail</th>
+                <th style="text-align:right">Lost Hire</th>
                 <th style="text-align:right">Diesel (L)</th>
                 <th style="text-align:right">Diesel Cost</th>
                 <th style="text-align:right">Driver/Other</th>
@@ -173,6 +180,8 @@
                 const profit = v.net_profit || 0;
                 const profitColor = profit > 0 ? 'var(--cost-pos,#047857)' : (profit < 0 ? 'var(--cost-neg,#dc2626)' : 'inherit');
                 const vId = v.id || v.asset_id;
+                const bdDays = v.breakdown_days || 0;
+                const availPct = v.availability_percent != null ? v.availability_percent : 100;
                 return `
                   <tr>
                     <td><b>${esc(v.code || '-')}</b></td>
@@ -180,6 +189,8 @@
                     <td class="muted">${esc(v.category || '-')}</td>
                     <td style="text-align:right;color:var(--primary,#0066ff)">${money(v.hiring_revenue || 0)}</td>
                     <td style="text-align:right;color:var(--cost-amber,#b45309)">${money(v.repair_cost || 0)}</td>
+                    <td style="text-align:right;white-space:nowrap">${bdDays > 0 ? `<span class="badge red" style="font-size:10.5px">${bdDays}d · ${availPct}%</span>` : `<span class="muted">${availPct}%</span>`}</td>
+                    <td style="text-align:right;color:${v.lost_hire_revenue > 0 ? '#dc2626' : 'var(--muted)'}">${money(v.lost_hire_revenue || 0)}</td>
                     <td style="text-align:right">${num(v.diesel_litres || 0)}</td>
                     <td style="text-align:right;color:var(--cost-diesel,#4f46e5)">${money(v.diesel_cost || 0)}</td>
                     <td style="text-align:right;color:var(--cost-driver,#be185d)">${money(v.driver_other_cost || 0)}</td>
@@ -268,6 +279,7 @@
             <div><span class="muted" style="font-size:11px;font-weight:600">CATEGORY / MAKE:</span><br><b>${esc(asset.category || '-')}</b></div>
             <div><span class="muted" style="font-size:11px;font-weight:600">CURRENT METER:</span><br><b>${num(asset.current_hours || 0)} hrs / km</b></div>
             <div><span class="muted" style="font-size:11px;font-weight:600">ALLOCATED PROJECT:</span><br><b>${esc(asset.project_name || 'Central Workshop')}</b></div>
+            <div><span class="muted" style="font-size:11px;font-weight:600">AVAILABILITY / REPAIR DAYS:</span><br><b>${num(financial.availability_percent != null ? financial.availability_percent : 100)}% (${num(financial.breakdown_days || 0)} BD d)</b></div>
           </div>
 
           <!-- Financial Statement P&L Summary Table -->
@@ -306,6 +318,13 @@
                 <td class="muted">Revenue − Total Operational Costs</td>
                 <td style="text-align:right;font-weight:900;color:${profitColor}">${moneyC(profit)}</td>
               </tr>
+              ${(financial.breakdown_days || 0) > 0 || (financial.repair_cost || 0) > 0 ? `
+              <tr style="background:rgba(220,38,38,0.05)">
+                <td><b style="color:#b91c1c">Company Breakdown Cost Impact (Non-Billable)</b></td>
+                <td class="muted">${num(financial.breakdown_days || 0)} BD day(s) (${num(financial.availability_percent != null ? financial.availability_percent : 100)}% Avail) · Repairs ${moneyC(financial.repair_cost || 0)} + Lost Hire ${moneyC(financial.lost_hire_revenue || 0)}</td>
+                <td style="text-align:right;font-weight:800;color:#b91c1c">${moneyC(financial.total_breakdown_impact || 0)}</td>
+              </tr>
+              ` : ''}
             </tbody>
           </table>
 

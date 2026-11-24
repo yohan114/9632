@@ -18,6 +18,7 @@ const { securityHeaders, originGuard, trustedOrigins, originAllowed, cspReport, 
 const dailyReports = require('./lib/daily_reports');
 const emitter = require('./lib/emitter');
 const vehicleDocuments = require('./lib/vehicle_documents');
+const ceypetcoSync = require('./lib/fuel/ceypetco_sync');
 
 // Apply schema on boot (idempotent).
 migrate();
@@ -269,7 +270,14 @@ app.use('/api/audit-logs', require('./routes/audit_logs'));
 // them. Without this the hard gate 403s the pickers before the route can trim them, which is the
 // shape this merge first produced: a hard gate from one lineage over a trimming route from the other.
 const PICKER_PATH = new Set(['/', '/search']);
-const assetsGate = (req, res, next) => (req.method === 'GET' && PICKER_PATH.has(req.path) ? next() : requireModule('assets')(req, res, next));
+const ASSETS_CAP_WRITE_PATH = /^\/(merge-preview|merge|\d+\/triage)$/;
+const assetsGate = (req, res, next) => {
+  if (req.method === 'GET' && PICKER_PATH.has(req.path)) return next();
+  if ((req.method === 'POST' || req.method === 'PATCH') && ASSETS_CAP_WRITE_PATH.test(req.path)) {
+    return requireModule('assets', 'view')(req, res, next);
+  }
+  return requireModule('assets')(req, res, next);
+};
 app.use('/api/assets', assetsGate, require('./routes/assets'));
 // The alias queue is a section of its own: it was reachable by any signed-in account, including a
 // role given nothing, because this lineage gated the reference routers in the nav only.
@@ -322,7 +330,12 @@ app.use('/api/tools', require('./routes/tools'));
 // mounted it bare and its own routes ask only for requireAuth, which left every signed-in account
 // -- including a role deliberately given nothing -- able to read it. main gated the mount; that
 // gate is kept, in this branch's vocabulary.
-app.use('/api/stock-cockpit', requireModule('stores'), require('./routes/stock_cockpit'));
+const STOCK_COCKPIT_APPROVAL_PATH = /^\/(reconcile-negative|sync-oil-cache|guard-policy)$/;
+const stockCockpitGate = (req, res, next) =>
+  (req.method === 'POST' && STOCK_COCKPIT_APPROVAL_PATH.test(req.path))
+    ? requireModule('stores', 'view')(req, res, next)
+    : requireModule('stores')(req, res, next);
+app.use('/api/stock-cockpit', stockCockpitGate, require('./routes/stock_cockpit'));
 const jobsGate = (req, res, next) => {
   if (req.user && hasCap(req.user, 'fabrication.open_card')) {
     return next();
@@ -587,6 +600,7 @@ if (require.main === module) {
   const lifecycle = require('./lib/lifecycle').install({
     file: config.crashLog,
     onStop: () => {
+      try { ceypetcoSync.stopScheduler(); } catch (_) {}
       try { httpServer.close(); } catch (_) {}
       try { require('./db').db.pragma('wal_checkpoint(TRUNCATE)'); } catch (_) {}
       require('./db').db.close();
@@ -613,6 +627,8 @@ if (require.main === module) {
   dailyReports.startScheduler();
   // Periodic statutory compliance checks, reminder logs, and future version promotion.
   vehicleDocuments.startScheduler();
+  // Automatic daily/periodic Ceypetco fuel price sync.
+  ceypetcoSync.startScheduler();
   const pruneExpiredSessions = () => {
     try {
       const { run } = require('./db');

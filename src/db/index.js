@@ -1153,6 +1153,178 @@ function migrate() {
     console.warn('Migration 066 Ops & Data Hygiene skipped:', err.message);
   }
 
+  // Fuel-Driven Auto-Allocation Origin & Costing Options (Migration 067)
+  try {
+    const allocCols = db.prepare('PRAGMA table_info(fleet_vehicle_allocations)').all().map((c) => c.name);
+    const missingOrigin = allocCols.length > 0 && (!allocCols.includes('origin') || !allocCols.includes('locked'));
+    const needs067 = !db.prepare("SELECT 1 FROM settings WHERE key = 'migration_067_done'").get() || missingOrigin;
+    if (needs067) {
+      const r067 = require('../migrate/067_allocation_origin_and_costing_options').runMigration(db);
+      db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('migration_067_done', '1')").run();
+      if (r067 && (r067.originAdded || r067.lockedAdded || r067.settingsSeeded)) {
+        console.log('=== Migration 067 Completed:', JSON.stringify(r067), '===');
+      }
+    }
+  } catch (err) {
+    console.warn('Migration 067 Auto-Allocation & Costing Options skipped:', err.message);
+  }
+
+  // Rate Cards km/L Sync, Misclassified Fix & Asset Rates (Migration 068)
+  try {
+    const needs068 = !db.prepare("SELECT 1 FROM settings WHERE key = 'migration_068_done'").get();
+    if (needs068) {
+      const r068 = require('../migrate/068_rate_cards_km_sync_and_asset_rates').runMigration(db);
+      db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('migration_068_done', '1')").run();
+      if (r068 && !r068.skipped) {
+        console.log('=== Migration 068 Completed:', JSON.stringify(r068), '===');
+      }
+    }
+  } catch (err) {
+    console.warn('Migration 068 Rate Cards Sync skipped:', err.message);
+  }
+
+  // Merge ZB-0050 Duplicates & Text References into TM-21 / ZA-0050 (Migration 069)
+  try {
+    const needs069 = !db.prepare("SELECT 1 FROM settings WHERE key = 'migration_069_done'").get();
+    if (needs069) {
+      const r069 = require('../migrate/069_merge_zb0050_into_za0050').runMigration(db);
+      db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('migration_069_done', '1')").run();
+      if (r069 && !r069.skipped) {
+        console.log('=== Migration 069 Completed:', JSON.stringify(r069), '===');
+      }
+    }
+  } catch (err) {
+    console.warn('Migration 069 ZB-0050 Merge skipped:', err.message);
+  }
+
+  // Mark External / Hired Vehicles (D4D-01, D4D-02, D4D-03, LO-4925, SRS-03) (Migration 070)
+  try {
+    const assetCols = db.prepare('PRAGMA table_info(assets)').all().map((c) => c.name);
+    const missingOwnership = assetCols.length > 0 && !assetCols.includes('ownership');
+    const needs070 = !db.prepare("SELECT 1 FROM settings WHERE key = 'migration_070_done'").get() || missingOwnership;
+    if (needs070) {
+      const r070 = require('../migrate/070_mark_hired_vehicles').runMigration(db);
+      db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('migration_070_done', '1')").run();
+      if (r070 && !r070.skipped) {
+        console.log('=== Migration 070 Completed:', JSON.stringify(r070), '===');
+      }
+    }
+  } catch (err) {
+    console.warn('Migration 070 Mark Hired Vehicles skipped:', err.message);
+  }
+
+  // Cap Existing DRAFT DAILY Bills to 25-Day Working Month Base (Migration 071)
+  try {
+    const needs071 = !db.prepare("SELECT 1 FROM settings WHERE key = 'migration_071_done'").get();
+    if (needs071) {
+      const r071 = require('../migrate/071_cap_daily_draft_bills_25_days').runMigration(db);
+      db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('migration_071_done', '1')").run();
+      if (r071 && !r071.skipped) {
+        console.log('=== Migration 071 Completed:', JSON.stringify(r071), '===');
+      }
+    }
+  } catch (err) {
+    console.warn('Migration 071 Cap DAILY Draft Bills skipped:', err.message);
+  }
+
+  // Exclude External / Outside-Billed Vehicles & Subcontractors (Migration 072)
+  try {
+    const needs072 = !db.prepare("SELECT 1 FROM settings WHERE key = 'migration_072_done'").get();
+    if (needs072) {
+      const r072 = require('../migrate/072_exclude_outside_billed_vehicles').runMigration(db);
+      db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('migration_072_done', '1')").run();
+      if (r072 && !r072.skipped) {
+        console.log('=== Migration 072 Completed:', JSON.stringify(r072), '===');
+      }
+    }
+  } catch (err) {
+    console.warn('Migration 072 Exclude Outside-Billed Vehicles skipped:', err.message);
+  }
+
+  // Exclude Old-Month External Vehicles, Merge Typos & Clean Transfer Allocations (Migration 073)
+  try {
+    const needs073 = !db.prepare("SELECT 1 FROM settings WHERE key = 'migration_073_done'").get();
+    if (needs073) {
+      const r073 = require('../migrate/073_exclude_old_month_external_vehicles').runMigration(db);
+      db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('migration_073_done', '1')").run();
+      if (r073 && !r073.skipped) {
+        console.log('=== Migration 073 Completed:', JSON.stringify(r073), '===');
+      }
+    }
+  } catch (err) {
+    console.warn('Migration 073 Old-Month External Cleanup skipped:', err.message);
+  }
+
+  // Restore 41-7225 as E&C Owned Double Cab with Standard Rate Card (Migration 074)
+  try {
+    const needs074 = !db.prepare("SELECT 1 FROM settings WHERE key = 'migration_074_done'").get();
+    if (needs074) {
+      const r074 = require('../migrate/074_restore_41_7225_double_cab').runMigration(db);
+      db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('migration_074_done', '1')").run();
+      if (r074 && !r074.skipped) {
+        console.log('=== Migration 074 Completed:', JSON.stringify(r074), '===');
+      }
+    }
+  } catch (err) {
+    console.warn('Migration 074 Restore 41-7225 skipped:', err.message);
+  }
+
+  // Prepare Clean Zero-Double-Billing 2026-11 Site DRAFT Bills Across All Operational Sites (Migration 075)
+  try {
+    const needs075 = !db.prepare("SELECT 1 FROM settings WHERE key = 'migration_075_done'").get();
+    if (needs075) {
+      const r075 = require('../migrate/075_prepare_nov2026_site_draft_bills').runMigration(db);
+      db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('migration_075_done', '1')").run();
+      if (r075 && !r075.skipped) {
+        console.log('=== Migration 075 Completed:', JSON.stringify(r075), '===');
+      }
+    }
+  } catch (err) {
+    console.warn('Migration 075 Prepare Nov 2026 Site Draft Bills skipped:', err.message);
+  }
+
+  // Stage A Financial Accuracy: Period Locks, Pseudo-Assets Cleanup, DAI-9758 & Nov 2+ Re-Price (Migration 076)
+  try {
+    const needs076 = !db.prepare("SELECT 1 FROM settings WHERE key = 'migration_076_done'").get();
+    if (needs076) {
+      const r076 = require('../migrate/076_stage_a_financial_accuracy').runMigration(db);
+      db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('migration_076_done', '1')").run();
+      if (r076 && !r076.skipped) {
+        console.log('=== Migration 076 Completed:', JSON.stringify(r076), '===');
+      }
+    }
+  } catch (err) {
+    console.warn('Migration 076 Stage A Financial Accuracy skipped:', err.message);
+  }
+
+  // Stage B Data & Costing Accuracy: Faulty Meter Tracking & Policy Settings (Migration 077)
+  try {
+    const needs077 = !db.prepare("SELECT 1 FROM settings WHERE key = 'migration_077_done'").get();
+    if (needs077) {
+      const r077 = require('../migrate/077_stage_b_data_costing_accuracy').runMigration(db);
+      db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('migration_077_done', '1')").run();
+      if (r077 && ((r077.addedColumns && r077.addedColumns.length) || (r077.seededSettings && r077.seededSettings.length))) {
+        console.log('=== Migration 077 Completed:', JSON.stringify(r077), '===');
+      }
+    }
+  } catch (err) {
+    console.warn('Migration 077 Stage B Data & Costing Accuracy skipped:', err.message);
+  }
+
+  // Stage C Operational Efficiency & Compliance: Dip Reconciliation & Fuel/Doc Policy Settings (Migration 078)
+  try {
+    const needs078 = !db.prepare("SELECT 1 FROM settings WHERE key = 'migration_078_done'").get();
+    if (needs078) {
+      const r078 = require('../migrate/078_stage_c_operational_compliance').runMigration(db);
+      db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('migration_078_done', '1')").run();
+      if (r078 && ((r078.addedColumns && r078.addedColumns.length) || (r078.seededSettings && r078.seededSettings.length))) {
+        console.log('=== Migration 078 Completed:', JSON.stringify(r078), '===');
+      }
+    }
+  } catch (err) {
+    console.warn('Migration 078 Stage C Operational Efficiency & Compliance skipped:', err.message);
+  }
+
   return db;
 }
 

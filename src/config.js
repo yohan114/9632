@@ -101,6 +101,8 @@ const config = {
   // Filter Plan falls back to its own date estimate and says so on screen.
   servicePlannerUrl: process.env.SERVICE_PLANNER_URL || 'http://localhost:3300',
   servicePlannerToken: process.env.SERVICE_PLANNER_TOKEN || '',
+  ceypetcoSyncEnabled: !['0', 'false', 'no', 'off'].includes(String(process.env.CEYPETCO_SYNC_ENABLED || 'true').trim().toLowerCase()),
+  ceypetcoSyncIntervalMinutes: int('CEYPETCO_SYNC_INTERVAL_MINUTES', 30),
 };
 
 function num(name, def) {

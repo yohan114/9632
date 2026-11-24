@@ -84,6 +84,34 @@ router.get('/upcoming-expirations', requireCap('vehicle_docs.view'), asyncHandle
 }));
 
 /**
+ * GET /expiry-dashboard
+ * Stage C: 30 / 14 / 7-day & Expired statutory expiry buckets.
+ */
+router.get('/expiry-dashboard', requireCap('vehicle_docs.view'), asyncHandler((req, res) => {
+  const today = req.query.today ? String(req.query.today).trim() : undefined;
+  const data = vdocs.getExpiryDashboard({
+    today,
+    projectId: (req.user && !req.user.isAllSitesMode) ? req.user.activeProjectId : null,
+    workshopId: (req.user && !req.user.isAllSitesMode) ? req.user.activeWorkshopId : null,
+  });
+  res.json(data);
+}));
+
+/**
+ * GET /compliance-badges
+ * Stage C: Non-blocking compliance badge lookup for Transport Fuel & Allocation UIs.
+ */
+router.get('/compliance-badges', requireCap('vehicle_docs.view'), asyncHandler((req, res) => {
+  const today = req.query.today ? String(req.query.today).trim() : undefined;
+  const assetIds = req.query.asset_ids
+    ? String(req.query.asset_ids).split(',').map((s) => toInt(s)).filter(Boolean)
+    : null;
+  const assetCode = req.query.asset_code ? String(req.query.asset_code).trim() : null;
+  const data = vdocs.getAssetComplianceMap({ assetIds, assetCode, today });
+  res.json(data);
+}));
+
+/**
  * GET /export.xlsx
  * Export comprehensive vehicle statutory documents compliance register to Excel.
  */
@@ -356,6 +384,95 @@ router.post('/bulk-import', requireCap('vehicle_docs.renew', 'vehicle_docs.edit'
     imported_count: imported.length,
     skipped_count: skipped.length,
     imported,
+    skipped,
+  });
+}));
+
+/**
+ * POST /bulk-renew
+ * Stage C: Bulk renew existing document containers from Upcoming Expirations table.
+ */
+router.post('/bulk-renew', requireCap('vehicle_docs.renew'), asyncHandler((req, res) => {
+  const body = req.body || {};
+  const items = Array.isArray(body.items) ? body.items : null;
+  if (!items || !items.length) {
+    return res.status(400).json({ error: 'items must be a non-empty array' });
+  }
+  if (items.length > 200) {
+    return res.status(400).json({ error: 'Cannot bulk-renew more than 200 documents per request' });
+  }
+
+  const autoVerifyDefault = Boolean(body.auto_verify);
+  const canVerify = hasCap(req.user, 'vehicle_docs.verify');
+  const renewed = [];
+  const skipped = [];
+
+  for (let idx = 0; idx < items.length; idx++) {
+    const it = items[idx] || {};
+    const docId = toInt(it.document_id);
+    if (!docId) {
+      skipped.push({ index: idx, reason: 'missing_document_id' });
+      continue;
+    }
+    const container = get('SELECT id, asset_id, doc_type_id FROM vehicle_documents WHERE id = ?', docId);
+    if (!container) {
+      skipped.push({ index: idx, document_id: docId, reason: 'document_not_found' });
+      continue;
+    }
+    const validUntil = it.valid_until ? String(it.valid_until).trim().slice(0, 10) : '';
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(validUntil)) {
+      skipped.push({ index: idx, document_id: docId, reason: 'invalid_valid_until_date' });
+      continue;
+    }
+
+    const validFrom = it.valid_from ? String(it.valid_from).trim().slice(0, 10) : vdocs.getColomboToday();
+    const issueDate = it.issue_date ? String(it.issue_date).trim().slice(0, 10) : validFrom;
+    const docNumber = String(it.doc_number || '').trim() || `REN-${docId}-${validUntil}`;
+
+    const ver = vdocs.createDraftVersion(docId, {
+      doc_number: docNumber,
+      issuer_name: it.issuer_name || null,
+      issue_date: issueDate,
+      valid_from: validFrom,
+      valid_until: validUntil,
+      cost_amount: it.cost_amount != null ? Number(it.cost_amount) : 0,
+      notes: it.notes || 'Bulk statutory renewal',
+      status: 'pending_verification',
+    }, req.user);
+
+    let finalVer = ver;
+    const shouldVerify = it.verify !== undefined ? Boolean(it.verify) : autoVerifyDefault;
+    if (shouldVerify && canVerify) {
+      finalVer = vdocs.verifyVersion(ver.id, {
+        decision: 'approve',
+        notes: 'Bulk renewal verified',
+        today: body.today ? String(body.today).trim().slice(0, 10) : undefined,
+      }, req.user);
+    }
+
+    renewed.push({
+      index: idx,
+      document_id: docId,
+      asset_id: container.asset_id,
+      version_id: finalVer.id,
+      doc_number: finalVer.doc_number,
+      valid_until: finalVer.valid_until,
+      status: finalVer.status,
+    });
+  }
+
+  audit.record({
+    userId: req.user ? req.user.id : null,
+    entity: 'vehicle_document',
+    action: 'bulk_renew',
+    after: { renewed_count: renewed.length, skipped_count: skipped.length },
+  });
+
+  res.status(201).json({
+    ok: true,
+    renewed_count: renewed.length,
+    skipped_count: skipped.length,
+    renewed,
     skipped,
   });
 }));

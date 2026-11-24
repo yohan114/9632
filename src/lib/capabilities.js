@@ -226,6 +226,7 @@ const CAPABILITIES = [
   C('stores.stock.count', 'stores', 'Open and record physical stock counts', SITE_STORE_STAFF, 'stores', 'stores', '01', 'Inventory'),
   C('stores.count', 'stores', 'Legacy alias: Open and record physical stock counts', SITE_STORE_STAFF, 'stores', 'stores', '01', 'Inventory'),
   C('stores.count.approve', 'stores', 'Approve a stock take and put its corrections into stock (HO)', OPS_MANAGERS, null, 'stores', '10', 'Inventory', true),
+  C('stores.stock.override_negative', 'stores', 'Override non-negative stock guard with a documented reason', OPS_MANAGERS, null, 'stores', '10', 'Inventory', true),
   C('stores.disposal.edit', 'stores', 'Write a disposal note (scrap and waste oil to sell)', STORE_STAFF, 'stores', 'stores', '01', 'Inventory'),
   C('stores.disposal.approve', 'stores', 'Approve a disposal note, with buyer, amount and date', OPS_MANAGERS, null, 'stores', '10', 'Inventory'),
 

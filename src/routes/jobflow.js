@@ -11,6 +11,7 @@ const { requireCap } = require('../lib/auth');
 const scope = require('../lib/scope');
 const { sendXlsx } = require('../lib/export');
 const flow = require('../lib/jobs_flow');
+const jobBlockers = require('../lib/job_blockers');
 const audit = require('../lib/audit');
 
 const router = express.Router();
@@ -39,6 +40,7 @@ router.post('/jobs/:id/reason', cardsOnly, requireCap('jobs.reason'), asyncHandl
 // which make the close check and the approval-limit check themselves.
 router.get('/finishing', cardsOnly, asyncHandler((req, res) => res.json(flow.finishing(req.user, req.query))));
 router.get('/ready', cardsOnly, asyncHandler((req, res) => res.json(flow.ready(req.user, req.query))));
+router.get('/blockers', cardsOnly, asyncHandler((req, res) => res.json(jobBlockers.getBlockerSummary(req.user, req.query))));
 
 const KIND = { jr: 'Job request', card: 'Job card', reopen: 'Reopen request' };
 router.get('/requests/export.xlsx', asyncHandler(async (req, res) => {

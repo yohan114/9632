@@ -326,6 +326,16 @@
             </div>
           </div>
 
+          <div style="padding:8px 10px;border-radius:6px;background:rgba(245,158,11,0.08);border:1px solid rgba(245,158,11,0.28)">
+            <label style="display:flex;align-items:center;gap:6px;font-size:12px;font-weight:600;color:#92400e;cursor:pointer">
+              <input type="checkbox" id="fi_meter_faulty">
+              <span>⚠️ Meter Faulty / Not Working (logs repair alert; reason required)</span>
+            </label>
+            <div id="fi_fault_reason_wrap" style="display:none;margin-top:6px">
+              <input type="text" id="fi_meter_fault_reason" class="input" placeholder="Fault reason * (e.g. Hour meter blank / cable snapped)" style="width:100%">
+            </div>
+          </div>
+
           <div id="fi_bowser_wrap" style="display:grid;grid-template-columns:1.2fr 1fr;gap:10px">
             <div>
               <label style="font-size:12px;font-weight:600">Source Storage Tank / Site Bowser</label>
@@ -515,6 +525,25 @@
     modal.querySelector('#fi_go_transport').onclick = () => { modal.remove(); };
     const reqSel = modal.querySelector('#fi_request_id');
     const reqMeta = modal.querySelector('#fi_req_meta');
+    const fiFaultChk = modal.querySelector('#fi_meter_faulty');
+    const fiFaultWrap = modal.querySelector('#fi_fault_reason_wrap');
+    const fiFaultReasonInp = modal.querySelector('#fi_meter_fault_reason');
+    const fiMeterInp = modal.querySelector('#fi_meter');
+
+    function syncFiFaultyUi() {
+      const faulty = !!(fiFaultChk && fiFaultChk.checked);
+      if (fiFaultWrap) fiFaultWrap.style.display = faulty ? '' : 'none';
+      if (fiMeterInp) {
+        fiMeterInp.disabled = faulty;
+        if (faulty) fiMeterInp.value = '';
+      }
+    }
+    if (fiFaultChk) {
+      fiFaultChk.onchange = () => {
+        syncFiFaultyUi();
+        runLiveMeterCheck();
+      };
+    }
 
     function applySelectedRequest() {
       const r = approvedReqs.find((x) => x.id === reqSel.value);
@@ -525,7 +554,10 @@
         return;
       }
       modal.querySelector('#fi_asset_code').value = r.asset_code || '';
-      if (r.meter_reading != null) modal.querySelector('#fi_meter').value = r.meter_reading;
+      if (fiFaultChk) fiFaultChk.checked = !!r.meter_faulty;
+      if (fiFaultReasonInp) fiFaultReasonInp.value = r.meter_fault_reason || '';
+      if (!r.meter_faulty && r.meter_reading != null) fiMeterInp.value = r.meter_reading;
+      syncFiFaultyUi();
       if (r.meter_type) modal.querySelector('#fi_meter_type').value = r.meter_type;
       if (r.driver_name) modal.querySelector('#fi_driver').value = r.driver_name;
       if (r.project_id) modal.querySelector('#fi_project_id').value = String(r.project_id);
@@ -565,9 +597,24 @@
       e.preventDefault();
       const chosenReqId = reqSel.value || null;
       const enteredCode = modal.querySelector('#fi_asset_code').value.trim().toUpperCase();
-      if (!chosenReqId && !enteredCode.startsWith('SITE-')) {
+      const isSiteTransfer = enteredCode.startsWith('SITE-');
+      if (!chosenReqId && !isSiteTransfer) {
         notify('No Request, No Issue: Select an Approved Transport Fuel Request before dispensing fuel.');
         return;
+      }
+      const isFaulty = !!(fiFaultChk && fiFaultChk.checked);
+      const faultReason = fiFaultReasonInp ? fiFaultReasonInp.value.trim() : '';
+      const meterVal = !isFaulty && fiMeterInp && fiMeterInp.value !== '' ? Number(fiMeterInp.value) : null;
+      if (!isSiteTransfer) {
+        if (isFaulty) {
+          if (faultReason.length < 3) {
+            notify('Faulty meter reason (at least 3 characters) is required when Meter Faulty is checked.');
+            return;
+          }
+        } else if (!(Number.isFinite(meterVal) && meterVal > 0)) {
+          notify('Enter a valid Meter Reading (> 0) or check Meter Faulty with a reason.');
+          return;
+        }
       }
       const saveBtn = modal.querySelector('#btn_save_fi');
       saveBtn.disabled = true;
@@ -590,8 +637,10 @@
             litres: Number(litresInp.value),
             fuelType: fuelTypeSel.value,
             fuelPriceCents,
-            meterReading: modal.querySelector('#fi_meter').value !== '' ? Number(modal.querySelector('#fi_meter').value) : null,
+            meterReading: meterVal,
             meterType: modal.querySelector('#fi_meter_type').value,
+            meterFaulty: isFaulty,
+            meterFaultReason: isFaulty ? faultReason : null,
             sourceTankId,
             targetProjectId: modal.querySelector('#fi_project_id').value ? Number(modal.querySelector('#fi_project_id').value) : null,
             stationName,
@@ -709,9 +758,10 @@
             <div class="muted" style="font-size:11px;font-weight:700">CEYPETCO AUTO DIESEL</div>
             <div style="font-size:20px;font-weight:800;margin-top:3px" id="kpi_diesel_rate">Rs ... / L</div>
             <div class="muted" style="font-size:11px" id="kpi_diesel_eff">Effective —</div>
+            <div class="muted" style="font-size:10.5px;margin-top:2px" id="kpi_diesel_sync"></div>
             <div style="margin-top:6px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
               <a href="#/fuel-prices" style="font-size:11px">Tariffs →</a>
-              ${canManagePrices ? '<button type="button" class="btn sm" id="btn_quick_fuel_rate" style="padding:2px 8px;font-size:11px">+ Update Rate</button>' : ''}
+              ${canManagePrices ? '<button type="button" class="btn sm" id="btn_quick_fuel_rate" style="padding:2px 8px;font-size:11px">+ Update Rate</button><button type="button" class="btn sm" id="btn_sync_ceypetco" style="padding:2px 8px;font-size:11px" title="Fetch latest prices from ceypetco.gov.lk">↻ Sync</button>' : ''}
             </div>
           </div>` : ''}
         </div>
@@ -743,6 +793,26 @@
         if (qs('#kpi_tank_count')) qs('#kpi_tank_count').textContent = `Across ${stats.tanks.total_tanks} active tanks/bowsers`;
         if (qs('#kpi_diesel_rate')) qs('#kpi_diesel_rate').textContent = `Rs ${(Number(stats.currentDieselCents || 38200) / 100).toFixed(2)} / L`;
         if (qs('#kpi_diesel_eff')) qs('#kpi_diesel_eff').textContent = stats.currentDieselEffectiveDate ? `Effective ${stats.currentDieselEffectiveDate}` : 'Reference tariff';
+        const syncEl = qs('#kpi_diesel_sync');
+        if (syncEl) {
+          const sync = stats.ceypetcoSync || null;
+          if (!sync) {
+            syncEl.textContent = '';
+          } else if (sync.lastSyncStatus === 'error') {
+            syncEl.innerHTML = '<span style="color:#d97706">⚠ Auto-sync failed (click Sync to retry)</span>';
+            syncEl.title = sync.lastSyncError || 'Sync failed';
+          } else if (!sync.enabled) {
+            syncEl.textContent = 'Auto-sync paused';
+            syncEl.title = '';
+          } else if (sync.lastSyncAt) {
+            const hhmm = new Date(sync.lastSyncAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+            syncEl.textContent = `Auto-sync · Checked ${hhmm}`;
+            syncEl.title = sync.lastSyncSource ? `Source: ${sync.lastSyncSource}` : '';
+          } else {
+            syncEl.textContent = 'Auto-sync on · Pending first check';
+            syncEl.title = '';
+          }
+        }
         if (qs('#kpi_pending_corr')) qs('#kpi_pending_corr').textContent = String(stats.pendingCorrections || 0);
         if (qs('#kpi_pending_req')) qs('#kpi_pending_req').textContent = String(stats.pendingRequests || 0);
         const bCorr = qs('#tab_badge_corr');
@@ -831,6 +901,34 @@
 
     if (qs('#btn_quick_fuel_rate')) {
       qs('#btn_quick_fuel_rate').onclick = openQuickFuelRateModal;
+    }
+
+    if (qs('#btn_sync_ceypetco')) {
+      qs('#btn_sync_ceypetco').onclick = async () => {
+        const btn = qs('#btn_sync_ceypetco');
+        if (!btn) return;
+        btn.disabled = true;
+        const origLabel = btn.textContent;
+        btn.textContent = 'Syncing...';
+        try {
+          const res = await api('/fuel/prices/sync', { method: 'POST', body: {} });
+          const updCount = (res.stored ? res.stored.length : 0) + (res.updated ? res.updated.length : 0);
+          const dieselCents = res.activePrices && res.activePrices.AUTO_DIESEL
+            ? res.activePrices.AUTO_DIESEL.pricePerLitreCents
+            : null;
+          const dieselLabel = dieselCents ? ` · Auto Diesel Rs ${(dieselCents / 100).toFixed(2)} / L` : '';
+          toast(updCount > 0
+            ? `Ceypetco synced (${updCount} tariff change${updCount === 1 ? '' : 's'})${dieselLabel}`
+            : `Ceypetco prices already up to date${dieselLabel}`);
+          await refreshKpis();
+        } catch (err) {
+          notify('Ceypetco sync failed: ' + err.message);
+          await refreshKpis();
+        } finally {
+          btn.disabled = false;
+          btn.textContent = origLabel;
+        }
+      };
     }
 
     if (qs('#btn_top_issue_fuel')) {
@@ -1009,7 +1107,7 @@
                 <td style="padding:9px 12px;text-align:right;font-weight:800">${fmtNum(r.litres, 1)} L</td>
                 <td style="padding:9px 12px;text-align:right;white-space:nowrap;font-weight:600;color:#475569">${fmtRateRs(effectiveFuelRateCents(r))}</td>
                 <td style="padding:9px 12px;text-align:right;font-weight:600">${fmtLkr(Number(r.total_cost_cents || r.cost_cents || 0) / 100)}</td>
-                <td style="padding:9px 12px">${r.meter_reading ? `<b>${fmtNum(r.meter_reading, 1)}</b> <span class="muted" style="font-size:11px">${esc(r.meter_type || 'HRS')}</span>` : '<span class="muted">—</span>'}</td>
+                <td style="padding:9px 12px">${r.meter_faulty ? `<span class="badge warn" title="${esc(r.meter_fault_reason || 'Meter Faulty')}">⚠️ FAULTY</span>` : (r.meter_reading ? `<b>${fmtNum(r.meter_reading, 1)}</b> <span class="muted" style="font-size:11px">${esc(r.meter_type || 'HRS')}</span>` : '<span class="muted">—</span>')}</td>
                 <td style="padding:9px 12px">${srcBadge}</td>
                 <td style="padding:9px 12px">${esc(r.target_project_name || '—')}</td>
                 <td style="padding:9px 12px">${esc(r.driver_name || '—')}</td>
@@ -1301,7 +1399,7 @@
                             </td>
                             <td>
                               <div><b>${esc(reqItem.asset_code)}</b></div>
-                              <div class="muted" style="font-size:10.5px">RC:${esc(reqItem.running_chart_no || '—')} · ${reqItem.meter_reading ? fmtNum(reqItem.meter_reading, 1) : '—'}</div>
+                              <div class="muted" style="font-size:10.5px">RC:${esc(reqItem.running_chart_no || '—')} · ${reqItem.meter_faulty ? `<span class="badge warn" title="${esc(reqItem.meter_fault_reason || '')}">⚠️ FAULTY</span>` : (reqItem.meter_reading ? fmtNum(reqItem.meter_reading, 1) : '—')}</div>
                             </td>
                             <td style="text-align:right">
                               <div style="color:#0369a1;font-weight:700">${reqItem.recommended_litres != null ? fmtNum(reqItem.recommended_litres, 1) + 'L rec' : 'No norm'}</div>
@@ -1398,7 +1496,7 @@
                             <td>${vehHtml}${isVoid ? ' <span class="badge danger" style="font-size:9.5px">VOID</span>' : ''}${corrTag}</td>
                             <td style="text-align:right;font-weight:700;white-space:nowrap">${fmtNum(r.litres, 1)} L</td>
                             <td style="text-align:right;white-space:nowrap">${fmtLkr(Number(r.total_cost_cents || r.cost_cents || 0) / 100)}</td>
-                            <td>${r.meter_reading ? fmtNum(r.meter_reading, 1) : '—'}</td>
+                            <td>${r.meter_faulty ? `<span class="badge warn" title="${esc(r.meter_fault_reason || 'Meter Faulty')}">⚠️ FAULTY</span>` : (r.meter_reading ? fmtNum(r.meter_reading, 1) : '—')}</td>
                             <td>${esc(r.driver_name || '—')}</td>
                             <td style="white-space:nowrap">
                               ${!isVoid && canReqCorr && r.correction_status !== 'PENDING'
@@ -1574,20 +1672,179 @@
     // =========================================================================
     async function renderSitesOverviewTab(box) {
       let curMonth = localTodayStr().slice(0, 7);
+      const canManageBudgets = (typeof isAdmin === 'function' && isAdmin()) || (typeof canDo === 'function' && canDo('fuel.prices.manage', 'fuel.tanks.manage'));
+
+      async function openSiteBudgetsModal(focusProjectId = null) {
+        const dlg = document.createElement('div');
+        dlg.className = 'modal-bg modal-backdrop';
+        dlg.innerHTML = `
+          <div class="modal" style="max-width:920px;width:96%;max-height:88vh;overflow-y:auto;padding:24px">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px">
+              <div>
+                <h2 style="margin:0">🎯 Monthly Site Fuel Budgets (${esc(curMonth)})</h2>
+                <p class="muted" style="margin:4px 0 0 0;font-size:12px">Set target monthly litre caps per site, auto-fill from 3-month rolling usage, or copy last month’s targets.</p>
+              </div>
+              <button type="button" class="btn sm" id="bdg_close">✕ Close</button>
+            </div>
+            <div id="bdg_body" class="muted" style="padding:20px;text-align:center">Loading site budget targets…</div>
+          </div>
+        `;
+        document.body.appendChild(dlg);
+        dlg.querySelector('#bdg_close').onclick = () => dlg.remove();
+        dlg.onclick = (e) => { if (e.target === dlg) dlg.remove(); };
+
+        async function loadModalData() {
+          const mBody = dlg.querySelector('#bdg_body');
+          try {
+            const res = await api(`/fuel/budgets?month=${encodeURIComponent(curMonth)}`);
+            const items = res.items || [];
+            const sm = res.summary || {};
+
+            mBody.innerHTML = `
+              <div style="text-align:left">
+                <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:10px">
+                  <div style="display:flex;gap:6px;flex-wrap:wrap;font-size:12px">
+                    <span class="badge blue">Budgeted: ${sm.budgeted_sites || 0}/${sm.total_sites || 0}</span>
+                    <span class="badge ok" style="background:#10b981;color:#fff">On Track: ${sm.on_track || 0}</span>
+                    <span class="badge warn" style="background:#d97706;color:#fff">Watch (≥${res.warn_pct || 85}%): ${sm.watch || 0}</span>
+                    <span class="badge danger" style="background:#dc2626;color:#fff">Over: ${sm.over_budget || 0}</span>
+                  </div>
+                  <div style="display:flex;gap:6px;flex-wrap:wrap">
+                    ${canManageBudgets ? '<button type="button" class="btn sm" id="bdg_fill_sug">✨ Fill Suggested Targets</button>' : ''}
+                    ${canManageBudgets ? `<button type="button" class="btn sm" id="bdg_copy_prev">📋 Copy from ${esc(res.prev_month)}</button>` : ''}
+                  </div>
+                </div>
+                <div style="max-height:380px;overflow-y:auto;border:1px solid var(--border);border-radius:6px">
+                  <table class="table" style="width:100%;font-size:12px;margin:0">
+                    <thead>
+                      <tr>
+                        <th>Site / Project</th>
+                        <th style="text-align:right">Actual (${esc(curMonth)})</th>
+                        <th style="text-align:right">3M Avg</th>
+                        <th style="text-align:right">Suggested (+10%)</th>
+                        <th>Monthly Budget (L)</th>
+                        <th>Note</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      ${items.map((it) => `
+                        <tr class="bdg-row" data-pid="${esc(it.project_id)}" data-sug="${it.suggested_budget_litres != null ? esc(it.suggested_budget_litres) : ''}" style="${focusProjectId && Number(focusProjectId) === Number(it.project_id) ? 'background:rgba(37,99,235,0.08)' : ''}">
+                          <td><b>${esc(it.project_name)}</b><div class="muted" style="font-size:10.5px">${esc(it.project_code)}</div></td>
+                          <td style="text-align:right;font-weight:700">${fmtNum(it.actual_litres, 1)} L ${it.budget_pct != null ? `<span class="badge ${it.pace_verdict === 'OVER' ? 'danger' : (it.pace_verdict === 'NEAR' ? 'warn' : '')}" style="font-size:10px">${it.budget_pct}%</span>` : ''}</td>
+                          <td style="text-align:right">${fmtNum(it.avg_3m_litres, 1)} L</td>
+                          <td style="text-align:right">${it.suggested_budget_litres != null ? fmtNum(it.suggested_budget_litres, 0) + ' L' : '—'}</td>
+                          <td><input type="number" step="10" min="0" class="input sm bdg-val" ${canManageBudgets ? '' : 'disabled'} value="${it.budget_litres != null ? esc(it.budget_litres) : ''}" placeholder="Unset" style="width:120px"></td>
+                          <td><input type="text" class="input sm bdg-note" ${canManageBudgets ? '' : 'disabled'} value="${esc(it.note || '')}" placeholder="Site note" style="width:160px"></td>
+                        </tr>
+                      `).join('')}
+                    </tbody>
+                  </table>
+                </div>
+                ${canManageBudgets ? `
+                  <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:12px">
+                    <button type="button" class="btn primary" id="bdg_save_all">💾 Save All Budgets</button>
+                  </div>` : ''}
+              </div>
+            `;
+
+            if (canManageBudgets) {
+              const fillBtn = mBody.querySelector('#bdg_fill_sug');
+              if (fillBtn) {
+                fillBtn.onclick = () => {
+                  let filled = 0;
+                  qsa('.bdg-row', mBody).forEach((r) => {
+                    const inp = r.querySelector('.bdg-val');
+                    const sug = r.dataset.sug;
+                    if (inp && !inp.value && sug) {
+                      inp.value = sug;
+                      filled += 1;
+                    }
+                  });
+                  toast(filled ? `Filled ${filled} suggested site budget(s)` : 'No empty rows with 3-month history to fill');
+                };
+              }
+
+              const copyBtn = mBody.querySelector('#bdg_copy_prev');
+              if (copyBtn) {
+                copyBtn.onclick = async () => {
+                  try {
+                    const [yr, mo] = curMonth.split('-').map(Number);
+                    const out = await api('/fuel/budgets/bulk', {
+                      method: 'POST',
+                      body: { year: yr, month: mo, copyFromMonth: res.prev_month },
+                    });
+                    toast(`Copied ${out.saved_count || 0} budget(s) from ${res.prev_month}`);
+                    loadModalData();
+                    loadOverview();
+                  } catch (err) {
+                    notify('Copy error: ' + err.message);
+                  }
+                };
+              }
+
+              const saveBtn = mBody.querySelector('#bdg_save_all');
+              if (saveBtn) {
+                saveBtn.onclick = async () => {
+                  const [yr, mo] = curMonth.split('-').map(Number);
+                  const payloadItems = [];
+                  qsa('.bdg-row', mBody).forEach((r) => {
+                    const valStr = r.querySelector('.bdg-val').value.trim();
+                    const noteStr = r.querySelector('.bdg-note').value.trim();
+                    if (valStr !== '') {
+                      payloadItems.push({
+                        projectId: Number(r.dataset.pid),
+                        budgetLitres: Number(valStr),
+                        note: noteStr || null,
+                      });
+                    }
+                  });
+                  if (!payloadItems.length) {
+                    notify('Enter at least one monthly budget in litres');
+                    return;
+                  }
+                  try {
+                    const out = await api('/fuel/budgets/bulk', {
+                      method: 'POST',
+                      body: { year: yr, month: mo, items: payloadItems },
+                    });
+                    toast(`Saved ${out.saved_count || 0} monthly site budget(s)`);
+                    dlg.remove();
+                    loadOverview();
+                  } catch (err) {
+                    notify('Budget save error: ' + err.message);
+                  }
+                };
+              }
+            }
+          } catch (err) {
+            mBody.innerHTML = `<div class="err">${esc(err.message)}</div>`;
+          }
+        }
+
+        loadModalData();
+      }
 
       async function loadOverview() {
         box.innerHTML = `<div class="card muted" style="padding:24px;text-align:center">Loading Site Fuel Overview & Budgets...</div>`;
         try {
-          const data = await api(`/fuel/sites-overview?month=${encodeURIComponent(curMonth)}`);
+          const [data, bRes] = await Promise.all([
+            api(`/fuel/sites-overview?month=${encodeURIComponent(curMonth)}`),
+            api(`/fuel/budgets?month=${encodeURIComponent(curMonth)}`).catch(() => null),
+          ]);
           const cards = data.cards || [];
+          const bSum = (bRes && bRes.summary) || {};
 
           box.innerHTML = `
             <div class="card" style="padding:12px 16px;margin-bottom:14px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">
               <div>
-                <h3 style="margin:0;font-size:16px">🗺️ Site-Wise Fuel Consumption, 6-Month Sparklines & Monthly Litre Budgets</h3>
-                <div class="muted" style="font-size:12px">Total for ${esc(data.month)}: <b>${fmtNum(data.totals.litres, 1)} L</b> (${fmtLkr(data.totals.costLkr)}) across ${cards.length} active sites</div>
+                <h3 style="margin:0;font-size:16px">🗺️ Site-Wise Fuel Consumption, 6-Month Sparklines &amp; Monthly Litre Budgets</h3>
+                <div class="muted" style="font-size:12px">
+                  Total for ${esc(data.month)}: <b>${fmtNum(data.totals.litres, 1)} L</b> (${fmtLkr(data.totals.costLkr)}) across ${cards.length} active sites
+                  ${bRes ? ` · Budgets Set: <b>${bSum.budgeted_sites || 0}/${bSum.total_sites || 0}</b>${bSum.over_budget ? ` · <span style="color:#dc2626;font-weight:700">${bSum.over_budget} Over Budget</span>` : ''}` : ''}
+                </div>
               </div>
-              <div style="display:flex;gap:8px;align-items:center">
+              <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+                ${canManageBudgets ? '<button type="button" class="btn sm primary" id="so_manage_budgets">🎯 Manage Site Budgets</button>' : ''}
                 <label style="font-size:12px;font-weight:600">Period Month:</label>
                 <input type="month" id="so_month" class="input sm" value="${esc(data.month)}">
               </div>
@@ -1665,25 +1922,13 @@
             loadOverview();
           };
 
+          const mgrBtn = qs('#so_manage_budgets', box);
+          if (mgrBtn) {
+            mgrBtn.onclick = () => openSiteBudgetsModal();
+          }
+
           qsa('.btn-edit-budget', box).forEach((b) => {
-            b.onclick = async () => {
-              const pid = Number(b.getAttribute('data-pid'));
-              const name = b.getAttribute('data-name');
-              const cur = b.getAttribute('data-bud');
-              const val = prompt(`Set monthly diesel budget (Litres) for "${name}" in ${curMonth}:`, cur || '5000');
-              if (val === null) return;
-              const [y, m] = curMonth.split('-').map(Number);
-              try {
-                await api('/fuel/budgets', {
-                  method: 'POST',
-                  body: { projectId: pid, year: y, month: m, budgetLitres: Number(val) },
-                });
-                toast(`Updated monthly fuel budget for ${name}`);
-                loadOverview();
-              } catch (err) {
-                notify('Budget error: ' + err.message);
-              }
-            };
+            b.onclick = () => openSiteBudgetsModal(Number(b.getAttribute('data-pid')));
           });
 
           qsa('.btn-site-sheet', box).forEach((b) => {
@@ -1747,7 +1992,7 @@
                       <td style="text-align:right;font-weight:700">${fmtNum(i.litres, 1)} L</td>
                       <td style="text-align:right;white-space:nowrap">${fmtRateRs(effectiveFuelRateCents(i))}</td>
                       <td style="text-align:right">${fmtLkr(Number(i.total_cost_cents || i.cost_cents || 0) / 100)}</td>
-                      <td>${i.meter_reading ? fmtNum(i.meter_reading, 1) : '—'}</td>
+                      <td>${i.meter_faulty ? `<span class="badge warn" title="${esc(i.meter_fault_reason || 'Meter Faulty')}">⚠️ FAULTY</span>` : (i.meter_reading ? fmtNum(i.meter_reading, 1) : '—')}</td>
                       <td>${esc(i.tank_name || i.station_name || 'Direct')}</td>
                       <td>${esc(i.driver_name || '—')}</td>
                     </tr>
@@ -2036,7 +2281,7 @@
                         <td style="text-align:right;font-weight:700">${fmtNum(r.litres, 1)} L</td>
                         <td style="text-align:right;white-space:nowrap">${fmtRateRs(effectiveFuelRateCents(r))}</td>
                         <td style="text-align:right">${fmtLkr(Number(r.total_cost_cents || r.cost_cents || 0) / 100)}</td>
-                        <td>${r.meter_reading ? fmtNum(r.meter_reading, 1) : '—'}</td>
+                        <td>${r.meter_faulty ? `<span class="badge warn" title="${esc(r.meter_fault_reason || 'Meter Faulty')}">⚠️ FAULTY</span>` : (r.meter_reading ? fmtNum(r.meter_reading, 1) : '—')}</td>
                         <td>${esc(r.tank_name || r.station_name || 'Direct')}</td>
                         <td>${esc(r.project_name || '—')}</td>
                         <td>${esc(r.driver_name || '—')}</td>
@@ -2117,8 +2362,15 @@
               </div>
               <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
                 <div>
-                  <label style="font-size:12px;font-weight:600">Current Meter *</label>
+                  <label style="font-size:12px;font-weight:600">Current Meter <span id="fr_meter_star">*</span></label>
                   <input type="number" step="0.1" id="fr_meter" required class="input sm" placeholder="KM / HRS" style="width:100%">
+                  <label style="display:flex;align-items:center;gap:5px;margin-top:4px;font-size:11px;font-weight:600;color:#b45309;cursor:pointer">
+                    <input type="checkbox" id="fr_meter_faulty">
+                    <span>⚠️ Meter Faulty</span>
+                  </label>
+                  <div id="fr_fault_wrap" style="display:none;margin-top:4px">
+                    <input type="text" id="fr_meter_fault_reason" class="input sm" placeholder="Fault reason *" style="width:100%">
+                  </div>
                 </div>
                 <div>
                   <label style="font-size:12px;font-weight:600">Approx KM / Hrs</label>
@@ -2176,7 +2428,7 @@
               <td>${esc(String(r.requested_at || '').slice(0, 10))}</td>
               <td><b>${esc(r.asset_code)}</b><div class="muted" style="font-size:10.5px">RC:${esc(r.running_chart_no || '—')}</div></td>
               <td style="text-align:right;font-weight:700">${r.recommended_litres != null ? fmtNum(r.recommended_litres, 1) + 'L rec / ' : ''}${r.is_full_tank ? '<span class="badge" style="background:#7c3aed;color:#fff">FULL TANK</span>' : fmtNum(r.requested_litres, 1) + ' L'}</td>
-              <td>${r.meter_reading ? fmtNum(r.meter_reading, 1) : '—'}</td>
+              <td>${r.meter_faulty ? `<span class="badge warn" title="${esc(r.meter_fault_reason || 'Meter Faulty')}">⚠️ FAULTY</span>` : (r.meter_reading ? fmtNum(r.meter_reading, 1) : '—')}</td>
               <td>${esc(r.target_tank_name || r.station_name || r.project_name || '—')}</td>
               <td><span class="badge ${r.status === 'FULFILLED' || r.status === 'APPROVED' ? 'ok' : (r.status === 'REJECTED' ? 'danger' : 'warn')}">${esc(r.status)}</span></td>
               <td style="white-space:nowrap">
@@ -2220,8 +2472,33 @@
         }
       }
 
+      const frFaultChk = qs('#fr_meter_faulty', box);
+      const frFaultWrap = qs('#fr_fault_wrap', box);
+      const frFaultReasonInp = qs('#fr_meter_fault_reason', box);
+      const frMeterInp = qs('#fr_meter', box);
+      function syncFrFaultyUi() {
+        const faulty = !!(frFaultChk && frFaultChk.checked);
+        if (qs('#fr_meter_star', box)) qs('#fr_meter_star', box).style.display = faulty ? 'none' : 'inline';
+        if (frMeterInp) {
+          frMeterInp.required = !faulty;
+          frMeterInp.disabled = faulty;
+          if (faulty) frMeterInp.value = '';
+        }
+        if (frFaultWrap) frFaultWrap.style.display = faulty ? '' : 'none';
+        if (frFaultReasonInp) frFaultReasonInp.required = faulty;
+      }
+      if (frFaultChk) frFaultChk.onchange = syncFrFaultyUi;
+
       qs('#form_fuel_req', box).onsubmit = async (e) => {
         e.preventDefault();
+        const isFaulty = !!(frFaultChk && frFaultChk.checked);
+        const faultReason = frFaultReasonInp ? frFaultReasonInp.value.trim() : '';
+        const meterVal = !isFaulty && frMeterInp && frMeterInp.value !== '' ? Number(frMeterInp.value) : null;
+        if (isFaulty) {
+          if (faultReason.length < 3) return notify('Enter faulty meter reason (at least 3 characters)');
+        } else if (!(Number.isFinite(meterVal) && meterVal > 0)) {
+          return notify('Enter a valid Meter Reading (> 0) or mark Meter Faulty');
+        }
         try {
           const isFull = qs('#fr_full_tank', box).checked;
           const rawLit = qs('#fr_litres', box).value;
@@ -2230,7 +2507,9 @@
             body: {
               assetCode: qs('#fr_code', box).value.trim(),
               runningChartNo: qs('#fr_chart', box).value.trim(),
-              meterReading: Number(qs('#fr_meter', box).value),
+              meterReading: isFaulty ? null : meterVal,
+              meterFaulty: isFaulty,
+              meterFaultReason: isFaulty ? faultReason : null,
               approxKm: qs('#fr_approx', box).value !== '' ? Number(qs('#fr_approx', box).value) : null,
               targetTankId: qs('#fr_tank', box).value,
               isFullTank: isFull,
@@ -2240,6 +2519,7 @@
           });
           toast('Transport fuel request submitted!');
           qs('#form_fuel_req', box).reset();
+          syncFrFaultyUi();
           loadReqs();
           refreshKpis();
         } catch (err) {

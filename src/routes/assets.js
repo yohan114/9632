@@ -7,20 +7,21 @@ const { requireCap } = require('../lib/auth');
 const { asyncHandler, require_, toInt, toNum } = require('../lib/http');
 const audit = require('../lib/audit');
 const aliases = require('../lib/aliases');
+const assetMerge = require('../lib/asset_merge');
 const { sendXlsx } = require('../lib/export');
 
 const router = express.Router();
 
 const MUTABLE = [
   'registration', 'ec_code', 'brand', 'type', 'model_no', 'capacity', 'yom',
-  'serial_no', 'chassis_no', 'engine_no', 'asset_class', 'home_project_id',
-  'current_project_id', 'status', 'running_hours', 'notes', 'in_register',
+  'serial_no', 'chassis_no', 'engine_no', 'asset_class', 'ownership', 'home_project_id',
+  'current_project_id', 'status', 'running_hours', 'meter_type', 'current_hours', 'notes', 'in_register',
 ];
 
 // Columns that must hold a number or nothing. An HTML <select>/<input> that the user left
 // alone posts "" — storing that in a project FK fails the foreign key ("no project 0"), and
 // in a number column it silently becomes text. "" means "not set", so it becomes NULL.
-const NUMERIC = new Set(['home_project_id', 'current_project_id', 'running_hours', 'legacy_fleet_id', 'in_register']);
+const NUMERIC = new Set(['home_project_id', 'current_project_id', 'running_hours', 'current_hours', 'legacy_fleet_id', 'in_register']);
 const cleanValue = (col, v) => {
   if (v === '' || v === null || v === undefined) return null;
   if (!NUMERIC.has(col)) return v;
@@ -65,7 +66,11 @@ function listAssets(query = {}, user = null) {
   }
   if (query.status) { clauses.push('a.status = ?'); params.push(query.status); }
   if (query.asset_class) { clauses.push('a.asset_class = ?'); params.push(query.asset_class); }
+  if (query.ownership) { clauses.push("UPPER(COALESCE(a.ownership, 'OWNED')) = UPPER(?)"); params.push(String(query.ownership).trim()); }
   if (query.in_register !== undefined) { clauses.push('a.in_register = ?'); params.push(toInt(query.in_register)); }
+  if (query.missing_meter === '1') {
+    clauses.push("a.in_register = 1 AND a.status = 'active' AND (a.meter_type IS NULL OR TRIM(a.meter_type) = '' OR COALESCE(a.current_hours, 0) <= 0)");
+  }
   const where = clauses.length ? 'WHERE ' + clauses.join(' AND ') : '';
   return all(
     `SELECT a.*, p.name AS current_project,
@@ -127,6 +132,46 @@ router.get('/search', asyncHandler((req, res) => {
   const where = clauses.length ? 'WHERE ' + clauses.join(' AND ') : '';
   const orderClause = q ? 'ORDER BY in_register DESC, code' : 'ORDER BY in_register DESC, code';
   res.json(all(`SELECT id, code, registration, asset_class FROM assets ${where} ${orderClause} LIMIT ${toInt(req.query.limit, 20)}`, ...params));
+}));
+
+// Stage C Pillar 2: Duplicate Detection, Dry-Run Preview, Safe Merge & Quick Triage
+router.get('/duplicate-candidates', requireCap('assets.view'), asyncHandler((req, res) => {
+  const limit = toInt(req.query.limit, 50);
+  res.json({
+    candidates: assetMerge.findDuplicateCandidates({ limit }),
+    triage: assetMerge.getTriageSummary(),
+  });
+}));
+
+router.post('/merge-preview', requireCap('assets.repoint'), asyncHandler((req, res) => {
+  const b = req.body || {};
+  res.json(assetMerge.previewMerge(toInt(b.source_id), toInt(b.target_id)));
+}));
+
+router.post('/merge', requireCap('assets.repoint'), asyncHandler((req, res) => {
+  const b = req.body || {};
+  try {
+    const result = assetMerge.executeMerge({
+      sourceId: toInt(b.source_id),
+      targetId: toInt(b.target_id),
+      user: req.user,
+      reason: b.reason,
+      keepAlias: b.keep_alias !== false,
+      confirmRegistered: Boolean(b.confirm_registered),
+    });
+    res.json(result);
+  } catch (err) {
+    if (err && err.status && err.extra) {
+      return res.status(err.status).json({ error: err.message, ...err.extra });
+    }
+    throw err;
+  }
+}));
+
+router.patch('/:id/triage', requireCap('assets.edit'), asyncHandler((req, res) => {
+  const id = toInt(req.params.id);
+  const updated = assetMerge.triageAsset(id, req.body || {}, req.user);
+  res.json(updated);
 }));
 
 router.get('/:id', requireCap('assets.view'), asyncHandler((req, res) => {

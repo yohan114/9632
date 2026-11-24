@@ -23,9 +23,9 @@ const DEFAULT_PRICES_CENTS = {
   KEROSENE: 28500,
 };
 
-function todayLocalStr() {
-  const d = new Date();
-  return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+function todayLocalStr(now = new Date()) {
+  // Sri Lanka Standard Time is UTC+5:30 year-round (no DST)
+  return new Date(now.getTime() + 5.5 * 60 * 60 * 1000).toISOString().slice(0, 10);
 }
 
 function normalizeFuelType(raw) {
@@ -80,6 +80,15 @@ function getActivePriceMap(date = null) {
   return out;
 }
 
+function isMeterEnforcementEnabled() {
+  try {
+    const r = get("SELECT value FROM settings WHERE key = 'fuel.require_meter_or_faulty'");
+    return !(r && r.value === '0');
+  } catch (_) {
+    return true;
+  }
+}
+
 function recordIssue({
   assetCode,
   vehicleRef,
@@ -87,6 +96,10 @@ function recordIssue({
   fuelType = null,
   meterReading = null,
   meterType = null,
+  meterFaulty = undefined,
+  meter_faulty = undefined,
+  meterFaultReason = null,
+  meter_fault_reason = null,
   issueDate = null,
   sourceTankId = null,
   sourceProjectId = null,
@@ -128,6 +141,7 @@ function recordIssue({
   return tx(() => {
     // 0. Enforce "No Request, No Issue" gate & compute cross-check against request + recommended norms
     const transportRequests = require('./transport_requests');
+    const explicitFaultyArg = meterFaulty !== undefined ? meterFaulty : meter_faulty;
     const gate = transportRequests.validateRequestForIssue({
       fuelRequestId: effectiveReqId,
       resolvedAssetId: assetId,
@@ -136,6 +150,7 @@ function recordIssue({
       isSiteTransfer,
       issueLitres: vol,
       meterReading,
+      meterFaulty: explicitFaultyArg,
     });
 
     const fr = gate.request;
@@ -145,12 +160,31 @@ function recordIssue({
     const effStationName = stationName || (fr && fr.station_name) || null;
     const effChartNo = runningChartNo || (fr && fr.running_chart_no) || null;
     const effTripPurpose = tripPurpose || (fr && fr.trip_purpose) || null;
-    const effMeter = meterReading != null && meterReading !== ''
-      ? Number(meterReading)
-      : (fr && fr.meter_reading != null ? Number(fr.meter_reading) : null);
+
+    const effMeterFaulty = explicitFaultyArg !== undefined
+      ? Boolean(explicitFaultyArg)
+      : Boolean(fr && fr.meter_faulty && !(meterReading != null && meterReading !== '' && Number(meterReading) > 0));
+    const effMeterFaultReason = effMeterFaulty
+      ? (String(meterFaultReason || meter_fault_reason || (fr && fr.meter_fault_reason) || '').trim() || null)
+      : null;
+    const effMeter = effMeterFaulty
+      ? null
+      : (meterReading != null && meterReading !== ''
+        ? Number(meterReading)
+        : (fr && fr.meter_reading != null ? Number(fr.meter_reading) : null));
     const effMeterType = meterType || (fr && fr.meter_type) || 'HOURS';
     const effNotes = notes || (fr && fr.notes) || null;
     const cc = gate.crossCheck;
+
+    if (!isSiteTransfer && isMeterEnforcementEnabled()) {
+      if (effMeterFaulty) {
+        if (!effMeterFaultReason || effMeterFaultReason.length < 3) {
+          throw errStatus(400, 'Faulty meter reason (at least 3 characters) is required when Meter Faulty is marked');
+        }
+      } else if (!(Number.isFinite(effMeter) && effMeter > 0)) {
+        throw errStatus(400, 'Meter reading (> 0) is required for vehicle/machine fuel issues, or mark Meter Faulty with a reason');
+      }
+    }
 
     let unitPrice;
     if (fuelPriceCents != null && fuelPriceCents !== '') {
@@ -174,7 +208,7 @@ function recordIssue({
       INSERT INTO fuel_issues (
         id, issue_no, asset_id, asset_code, vehicle_ref, fuel_type, fuel_kind, litres,
         fuel_price_cents, price_per_litre_cents, unit_price, total_cost_cents, cost_cents, total_price,
-        meter_reading, meter_type, issue_date,
+        meter_reading, meter_type, meter_faulty, meter_fault_reason, issue_date,
         station_name, pump_location, driver_name, recipient_name, source_tank_id, bulk_tank_id,
         source_project_id, target_project_id, project_id, issued_by, is_voided, voided,
         is_manual, is_direct_billed, source, signature_url, photo_url,
@@ -184,7 +218,7 @@ function recordIssue({
       ) VALUES (
         ?, ?, ?, ?, ?, ?, ?, ?,
         ?, ?, ?, ?, ?, ?,
-        ?, ?, ?,
+        ?, ?, ?, ?, ?,
         ?, ?, ?, ?, ?, ?,
         ?, ?, ?, ?, 0, 0,
         ?, ?, ?, ?, ?,
@@ -194,7 +228,7 @@ function recordIssue({
       )
     `, issueId, issueNo, assetId, resolvedCode, vehicleRef || resolvedCode, effFuelType, effFuelType, vol,
        unitPrice, unitPrice, unitPrice / 100, totalCost, totalCost, totalCost / 100,
-       effMeter && effMeter > 0 ? effMeter : null, effMeterType, dateStr,
+       effMeter && effMeter > 0 ? effMeter : null, effMeterType, effMeterFaulty ? 1 : 0, effMeterFaultReason, dateStr,
        effStationName, pumpLocation || null, effDriverName, effDriverName,
        effTankId || null, effTankId || null,
        sourceProjectId || projId, targetProjectId || projId, projId,
@@ -272,6 +306,11 @@ function recordIssue({
       try { require('../costing').recalcFuelVehicleMonth(assetId, dateStr); } catch (_) {}
     }
 
+    // 6. Keep monthly site auto-allocation synchronized live from fuel activity
+    if (assetId && !isSiteTransfer) {
+      try { require('../billing/fuel_timeline').syncFuelAllocationForAsset(assetId, dateStr, actorId); } catch (_) {}
+    }
+
     return {
       id: issueId,
       issue_no: issueNo,
@@ -286,6 +325,9 @@ function recordIssue({
       fuel_request_id: fr ? fr.id : null,
       request_no: fr ? fr.request_no : null,
       running_chart_no: effChartNo,
+      meter_reading: effMeter && effMeter > 0 ? effMeter : null,
+      meter_faulty: effMeterFaulty,
+      meter_fault_reason: effMeterFaultReason,
       is_full_tank: !!(fr && fr.is_full_tank),
       recommended_litres: fr ? fr.recommended_litres : null,
       variance_litres: cc ? cc.varianceLitres : null,
@@ -363,6 +405,11 @@ function voidIssue(issueId, reason, actorId = 1) {
     // 4. Recompute vehicle_monthly_costs.fuel_cost after voiding
     if (issue.asset_id) {
       try { require('../costing').recalcFuelVehicleMonth(issue.asset_id, issue.issue_date); } catch (_) {}
+    }
+
+    // 5. Re-sync monthly auto-allocation after voiding (removes AUTO_FUEL row if no fuel remains)
+    if (issue.asset_id) {
+      try { require('../billing/fuel_timeline').syncFuelAllocationForAsset(issue.asset_id, issue.issue_date, actorId); } catch (_) {}
     }
 
     return { id: issueId, is_voided: 1, void_reason: reason };

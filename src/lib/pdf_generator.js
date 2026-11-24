@@ -84,7 +84,7 @@ async function generatePdfBuffer(html) {
       '--disable-extensions',
       `--print-to-pdf=${tmpPdf}`,
       tmpHtml,
-    ], { timeout: 25000, stdio: ['ignore', 'pipe', 'pipe'] });
+    ], { timeout: Number(process.env.PDF_TIMEOUT_MS) || 60000, stdio: ['ignore', 'pipe', 'pipe'] });
 
     if (!fs.existsSync(tmpPdf)) {
       throw new Error('PDF conversion process completed without generating an output file');

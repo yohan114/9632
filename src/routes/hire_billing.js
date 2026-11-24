@@ -15,8 +15,10 @@ const { requireAuth, requireCap } = require('../lib/auth');
 const { asyncHandler } = require('../lib/http');
 const calc = require('../lib/billing/calc');
 const breakdowns = require('../lib/billing/breakdowns');
+const fuelTimeline = require('../lib/billing/fuel_timeline');
 const siteSummary = require('../lib/billing/site_summary');
 const siteSummaryDoc = require('../lib/billing/site_summary_document');
+const periodLocks = require('../lib/billing/period_locks');
 const { sendPdf } = require('../lib/pdf_generator');
 const { sendXlsx } = require('../lib/export');
 const v2Engine = require('../lib/fuel/v2_engine');
@@ -106,9 +108,36 @@ function resolveDefaultMinUnits(rateBasis, rateCard = null) {
 function pickRateForMode(rateCard, billingMode) {
   if (!rateCard) return 0;
   const b = String(billingMode || 'DRY_WITH_DRIVER').toUpperCase();
+  if (b === 'FUEL_ONLY') return 0;
+
+  const isPort =
+    String(rateCard.equip_type || '').toUpperCase() === 'PORTABLE' ||
+    String(rateCard.rate_basis || '').toUpperCase() === 'DAILY';
+  const isKm =
+    !isPort &&
+    (String(rateCard.rate_basis || '').toUpperCase() === 'KM' ||
+      (String(rateCard.fuel_cons_basis || '').toLowerCase() === 'km' &&
+        (Number(rateCard.km_wet_cents) > 0 || Number(rateCard.km_dry_cents) > 0)));
+
+  if (isPort) {
+    if (b === 'FULLY_WET' || b === 'WET') {
+      return rateCard.port_dw_cents || rateCard.wet_rate_cents || rateCard.port_dd_cents || rateCard.dry_rate_cents || rateCard.rate_cents || 0;
+    }
+    return rateCard.port_dd_cents || rateCard.dry_rate_cents || rateCard.rate_cents || rateCard.port_dw_cents || 0;
+  }
+
+  if (isKm) {
+    if (b === 'FULLY_WET') {
+      return rateCard.km_fw_cents || rateCard.fully_wet_rate_cents || rateCard.km_wet_cents || rateCard.wet_rate_cents || rateCard.km_dry_cents || rateCard.dry_rate_cents || rateCard.rate_cents || 0;
+    }
+    if (b === 'WET') {
+      return rateCard.km_wet_cents || rateCard.wet_rate_cents || rateCard.km_dry_cents || rateCard.dry_rate_cents || rateCard.rate_cents || 0;
+    }
+    return rateCard.km_dry_cents || rateCard.dry_rate_cents || rateCard.rate_cents || rateCard.km_wet_cents || 0;
+  }
+
   if (b === 'FULLY_WET') return rateCard.fully_wet_rate_cents || rateCard.wet_rate_cents || rateCard.dry_rate_cents || rateCard.rate_cents || 0;
   if (b === 'WET') return rateCard.wet_rate_cents || rateCard.dry_rate_cents || rateCard.rate_cents || 0;
-  if (b === 'FUEL_ONLY') return 0;
   return rateCard.dry_rate_cents || rateCard.rate_cents || 0;
 }
 
@@ -274,10 +303,10 @@ function insertGeneratedBill({
 }
 
 /**
- * Build a Site & Month billing plan from allocations, active assignments,
- * active site assets, and fuel/meter issues. Enforces the breakdown guard per machine.
+ * Build a Site & Month billing plan from fuel-driven monthly vehicle timelines
+ * (respecting manual allocations, tank->site links, early-month cutoff rules, and zero double-billing).
  */
-function buildSiteMonthlyPlan(projectIdRaw, periodKey) {
+function buildSiteMonthlyPlan(projectIdRaw, periodKey, opts = {}) {
   const bounds = breakdowns.monthBounds(periodKey);
   if (!bounds) {
     const err = new Error('Valid month (YYYY-MM) is required');
@@ -295,219 +324,77 @@ function buildSiteMonthlyPlan(projectIdRaw, periodKey) {
     throw err;
   }
 
-  const fromDate = bounds.start;
-  const toDateEnd = `${bounds.end} 23:59:59`;
-  const pairMap = new Map();
+  const allowOpenBreakdownDeduction = Boolean(opts.allowOpenBreakdownDeduction);
+  const costingOpts = fuelTimeline.getCostingOptions();
+  const workingDaysPerMonth = costingOpts.workingDaysPerMonth || WORKING_DAYS_PER_MONTH;
 
-  const upsertPair = (assetId, projectId, patch) => {
-    if (!assetId) return;
-    const pKey = projectId ? Number(projectId) : 0;
-    const key = `${assetId}:${pKey}`;
-    const cur = pairMap.get(key) || {
-      assetId: Number(assetId),
-      projectId: projectId ? Number(projectId) : null,
-      projectName: patch.projectName || null,
-      projectCode: patch.projectCode || null,
-      allocBasis: null,
-      allocDateFrom: null,
-      allocDateTo: null,
-      allocIsCurrent: false,
-      driverName: null,
-      fuelLitres: 0,
-      fuelCostCents: 0,
-      minMeter: null,
-      maxMeter: null,
-      sources: new Set(),
-    };
-    if (patch.projectName && !cur.projectName) cur.projectName = patch.projectName;
-    if (patch.projectCode && !cur.projectCode) cur.projectCode = patch.projectCode;
-    if (patch.allocBasis && !cur.allocBasis) cur.allocBasis = patch.allocBasis;
-    if (patch.allocDateFrom) {
-      cur.allocDateFrom = !cur.allocDateFrom || patch.allocDateFrom < cur.allocDateFrom
-        ? patch.allocDateFrom
-        : cur.allocDateFrom;
-    }
-    if (patch.allocDateTo) {
-      cur.allocDateTo = !cur.allocDateTo || patch.allocDateTo > cur.allocDateTo
-        ? patch.allocDateTo
-        : cur.allocDateTo;
-    }
-    if (patch.allocIsCurrent) cur.allocIsCurrent = true;
-    if (patch.driverName && !cur.driverName) cur.driverName = patch.driverName;
-    if (patch.fuelLitres != null) cur.fuelLitres += Number(patch.fuelLitres) || 0;
-    if (patch.fuelCostCents != null) cur.fuelCostCents += Number(patch.fuelCostCents) || 0;
-    if (patch.minMeter != null && (cur.minMeter == null || patch.minMeter < cur.minMeter)) cur.minMeter = patch.minMeter;
-    if (patch.maxMeter != null && (cur.maxMeter == null || patch.maxMeter > cur.maxMeter)) cur.maxMeter = patch.maxMeter;
-    if (patch.source) cur.sources.add(patch.source);
-    pairMap.set(key, cur);
-  };
+  const timelines = fuelTimeline.buildMonthlyVehicleTimelines(bounds.periodKey, {
+    workingDaysPerMonth,
+    includeCurrentProjectZeroFuel: true,
+  });
 
-  // 1. Overlapping Site Allocator entries for [bounds.start .. bounds.end]
-  const allocRows = all(`
-    SELECT va.asset_id, va.project_id,
-           COALESCE(p.name, va.site_name) AS project_name,
-           p.code AS project_code,
-           va.basis, va.driver_name, va.is_current,
-           COALESCE(va.date_from, COALESCE(va.month_from, va.month) || '-01') AS eff_from,
-           COALESCE(va.date_to,
-             CASE WHEN va.is_current = 1 THEN NULL
-                  ELSE date(COALESCE(va.month_to, va.month) || '-01', '+1 month', '-1 day') END) AS eff_to
-      FROM fleet_vehicle_allocations va
-      LEFT JOIN projects p ON p.id = va.project_id
-     WHERE va.asset_id IS NOT NULL
-       AND COALESCE(va.active, 1) = 1
-       ${filterProjId ? 'AND va.project_id = ?' : ''}
-       AND (
-         va.month = ?
-         OR (
-           COALESCE(va.date_from, COALESCE(va.month_from, va.month) || '-01') <= ?
-           AND (
-             va.is_current = 1
-             OR COALESCE(va.date_to, date(COALESCE(va.month_to, va.month) || '-01', '+1 month', '-1 day')) >= ?
-           )
-         )
-       )
-     ORDER BY va.is_current DESC, eff_from DESC
-  `, ...(filterProjId ? [filterProjId, bounds.periodKey, bounds.end, bounds.start] : [bounds.periodKey, bounds.end, bounds.start]));
-
-  for (const r of allocRows) {
-    upsertPair(r.asset_id, r.project_id, {
-      projectName: r.project_name,
-      projectCode: r.project_code,
-      allocBasis: r.basis,
-      allocDateFrom: r.eff_from,
-      allocDateTo: r.is_current ? null : r.eff_to,
-      allocIsCurrent: !!r.is_current,
-      driverName: r.driver_name,
-      source: 'ALLOCATION',
-    });
-  }
-
-  // 2. Active continuous assignments in fleet_asset_assignments overlapping month
-  const assignRows = all(`
-    SELECT fa.asset_id, fa.project_id, p.name AS project_name, p.code AS project_code,
-           fa.billing_type, fa.driver_name,
-           substr(fa.start_date, 1, 10) AS eff_from,
-           CASE WHEN fa.end_date IS NOT NULL THEN substr(fa.end_date, 1, 10) ELSE NULL END AS eff_to
-      FROM fleet_asset_assignments fa
-      LEFT JOIN projects p ON p.id = fa.project_id
-     WHERE fa.asset_id IS NOT NULL
-       ${filterProjId ? 'AND fa.project_id = ?' : ''}
-       AND substr(fa.start_date, 1, 10) <= ?
-       AND (fa.end_date IS NULL OR substr(fa.end_date, 1, 10) >= ?)
-     ORDER BY fa.start_date DESC
-  `, ...(filterProjId ? [filterProjId, bounds.end, bounds.start] : [bounds.end, bounds.start]));
-
-  for (const r of assignRows) {
-    upsertPair(r.asset_id, r.project_id, {
-      projectName: r.project_name,
-      projectCode: r.project_code,
-      allocBasis: r.billing_type,
-      allocDateFrom: r.eff_from,
-      allocDateTo: r.eff_to,
-      allocIsCurrent: !r.eff_to,
-      driverName: r.driver_name,
-      source: 'ASSIGNMENT',
-    });
-  }
-
-  // 3. Fuel & meter activity inside month
-  const fuelRows = all(`
-    SELECT fi.asset_id,
-           COALESCE(fi.target_project_id, fi.project_id, fi.source_project_id, a.current_project_id) AS project_id,
-           p.name AS project_name, p.code AS project_code,
-           ROUND(SUM(fi.litres), 2) AS fuel_litres,
-           ROUND(SUM(COALESCE(fi.total_cost_cents, fi.cost_cents, fi.total_price * 100, 0)), 0) AS fuel_cost_cents,
-           MIN(CASE WHEN fi.meter_reading > 0 THEN fi.meter_reading ELSE NULL END) AS min_meter,
-           MAX(CASE WHEN fi.meter_reading > 0 THEN fi.meter_reading ELSE NULL END) AS max_meter
-      FROM fuel_issues fi
-      JOIN assets a ON a.id = fi.asset_id
-      LEFT JOIN projects p ON p.id = COALESCE(fi.target_project_id, fi.project_id, fi.source_project_id, a.current_project_id)
-     WHERE fi.is_voided = 0
-       AND fi.asset_id IS NOT NULL
-       AND fi.issue_date BETWEEN ? AND ?
-       ${filterProjId ? 'AND COALESCE(fi.target_project_id, fi.project_id, fi.source_project_id, a.current_project_id) = ?' : ''}
-     GROUP BY fi.asset_id, COALESCE(fi.target_project_id, fi.project_id, fi.source_project_id, a.current_project_id)
-  `, ...(filterProjId ? [fromDate, toDateEnd, filterProjId] : [fromDate, toDateEnd]));
-
-  for (const f of fuelRows) {
-    upsertPair(f.asset_id, f.project_id, {
-      projectName: f.project_name,
-      projectCode: f.project_code,
-      fuelLitres: f.fuel_litres,
-      fuelCostCents: f.fuel_cost_cents,
-      minMeter: f.min_meter,
-      maxMeter: f.max_meter,
-      source: 'FUEL',
-    });
-  }
-
-  // 4. For a specific site in the current month, include active assets stationed there without any allocation/assignment row in this month
-  if (filterProjId && bounds.periodKey === currentMonthKey()) {
-    const curAssets = all(`
-      SELECT a.id AS asset_id
-        FROM assets a
-       WHERE a.current_project_id = ?
-         AND COALESCE(a.status, 'active') NOT IN ('decommissioned', 'DISPOSED')
-         AND NOT EXISTS (
-           SELECT 1 FROM fleet_vehicle_allocations va
-            WHERE va.asset_id = a.id
-              AND COALESCE(va.active, 1) = 1
-              AND (
-                va.month = ?
-                OR (
-                  COALESCE(va.date_from, COALESCE(va.month_from, va.month) || '-01') <= ?
-                  AND (va.is_current = 1 OR COALESCE(va.date_to, date(COALESCE(va.month_to, va.month) || '-01', '+1 month', '-1 day')) >= ?)
-                )
-              )
-         )
-         AND NOT EXISTS (
-           SELECT 1 FROM fleet_asset_assignments fa
-            WHERE fa.asset_id = a.id
-              AND substr(fa.start_date, 1, 10) <= ?
-              AND (fa.end_date IS NULL OR substr(fa.end_date, 1, 10) >= ?)
-         )
-    `, filterProjId, bounds.periodKey, bounds.end, bounds.start, bounds.end, bounds.start);
-    for (const ca of curAssets) {
-      if (!pairMap.has(`${ca.asset_id}:${filterProjId}`)) {
-        upsertPair(ca.asset_id, filterProjId, {
-          projectName: projectObj.name,
-          projectCode: projectObj.code,
-          allocDateFrom: bounds.start,
-          allocDateTo: null,
-          allocIsCurrent: true,
-          source: 'CURRENT_SITE',
-        });
-      }
-    }
-  }
-
+  const projectsMap = new Map(all('SELECT id, code, name FROM projects').map((p) => [p.id, p]));
   const rateCards = new Map();
   for (const rc of all('SELECT * FROM fleet_rental_rates WHERE asset_id IS NOT NULL')) {
     if (!rateCards.has(rc.asset_id)) rateCards.set(rc.asset_id, rc);
   }
+  const assetsMap = new Map(all('SELECT * FROM assets').map((a) => [a.id, a]));
+  const bdMap = siteSummary.buildBreakdownMapForMonth(bounds);
+  const repairCostMap = breakdowns.getWorkshopRepairCostMap(bounds.periodKey);
 
-  const assetsMap = new Map();
-  for (const a of all('SELECT * FROM assets')) {
-    assetsMap.set(a.id, a);
+  // Collect overlapping (assetId, projectId) stays from unified timelines
+  const targetEntries = [];
+  if (filterProjId) {
+    const sMap = timelines.bySite.get(filterProjId);
+    if (sMap) {
+      for (const stay of sMap.values()) targetEntries.push(stay);
+    }
+  } else {
+    for (const sMap of timelines.bySite.values()) {
+      for (const stay of sMap.values()) targetEntries.push(stay);
+    }
   }
 
   const items = [];
-  for (const entry of pairMap.values()) {
-    const asset = assetsMap.get(entry.assetId);
+  for (const stay of targetEntries) {
+    const asset = assetsMap.get(stay.assetId);
     if (!asset) continue;
-    const rateCard = rateCards.get(entry.assetId) || null;
-    const billingMode = entry.allocBasis || (rateCard && rateCard.default_basis) || 'DRY_WITH_DRIVER';
+    if (fuelTimeline.isNonMachineFuelRow({}, asset)) continue;
+    if (fuelTimeline.isHiredAsset(asset) || (stay.allocBases || []).some((b) => ['BILLED_DIRECT', 'FREE_OF_CHARGE'].includes(String(b).toUpperCase()))) {
+      continue;
+    }
+
+    // Skip zero-fuel CURRENT_SITE placeholders unless there is an explicit MANUAL allocation/assignment or fuel activity
+    if (stay.origin === 'CURRENT_SITE' && stay.fuelLitres <= 0 && stay.issueCount === 0) {
+      const hasExplicitAlloc = Boolean(get(`
+        SELECT 1 FROM fleet_vehicle_allocations
+         WHERE asset_id = ? AND project_id = ? AND COALESCE(active, 1) = 1
+           AND (month = ? OR (COALESCE(date_from, COALESCE(month_from, month) || '-01') <= ? AND (is_current = 1 OR COALESCE(date_to, date(COALESCE(month_to, month) || '-01', '+1 month', '-1 day')) >= ?)))
+         LIMIT 1
+      `, stay.assetId, stay.projectId, bounds.periodKey, bounds.end, bounds.start));
+      const hasExplicitAssign = Boolean(get(`
+        SELECT 1 FROM fleet_asset_assignments
+         WHERE asset_id = ? AND project_id = ?
+           AND substr(start_date, 1, 10) <= ? AND (end_date IS NULL OR substr(end_date, 1, 10) >= ?)
+         LIMIT 1
+      `, stay.assetId, stay.projectId, bounds.end, bounds.start));
+      if (!hasExplicitAlloc && !hasExplicitAssign && !filterProjId) continue;
+    }
+
+    const proj = projectsMap.get(stay.projectId) || { id: stay.projectId, name: 'Central', code: null };
+    const rateCard = rateCards.get(stay.assetId) || null;
+    const billingMode = (stay.allocBases && stay.allocBases[0]) || (rateCard && rateCard.default_basis) || 'DRY_WITH_DRIVER';
     const rateBasis = (rateCard && rateCard.rate_basis) || (rateCard && rateCard.fuel_cons_basis === 'km' ? 'KM' : 'HOURLY');
     const rateCents = pickRateForMode(rateCard, billingMode);
     const hasRate = rateCents > 0 || billingMode === 'FUEL_ONLY';
 
-    const effStart = entry.allocDateFrom || bounds.start;
-    const effEnd = entry.allocDateTo || bounds.end;
-    const siteOverlapDays = overlapDays(effStart, effEnd, bounds.start, bounds.end) || bounds.daysInMonth;
+    const siteOverlapDays = stay.postedDays || bounds.daysInMonth;
+    const mergedIntervals = stay.intervals && stay.intervals.length ? stay.intervals : [{ start: bounds.start, end: bounds.end }];
+    const allocDateFrom = mergedIntervals[0].start;
+    const allocDateTo = mergedIntervals[mergedIntervals.length - 1].end;
 
-    const meterSpan = (entry.maxMeter != null && entry.minMeter != null && entry.maxMeter > entry.minMeter)
-      ? Math.round((entry.maxMeter - entry.minMeter) * 10) / 10
+    const meterSpan = (stay.maxMeter != null && stay.minMeter != null && stay.maxMeter > stay.minMeter)
+      ? Math.round((stay.maxMeter - stay.minMeter) * 10) / 10
       : 0;
     const fullMinUnits = rateBasis === 'DAILY'
       ? (rateCard && Number(rateCard.min_bill_hours) > 0 ? Number(rateCard.min_bill_hours) : 0)
@@ -515,12 +402,26 @@ function buildSiteMonthlyPlan(projectIdRaw, periodKey) {
     const proratedMinUnits = (fullMinUnits > 0 && siteOverlapDays < bounds.daysInMonth)
       ? Math.round(fullMinUnits * (siteOverlapDays / bounds.daysInMonth) * 100) / 100
       : fullMinUnits;
+    const dailyStayUnits = siteOverlapDays >= bounds.daysInMonth
+      ? workingDaysPerMonth
+      : Math.min(workingDaysPerMonth, siteOverlapDays);
     const defaultDailyUnits = rateBasis === 'DAILY'
-      ? siteOverlapDays
+      ? dailyStayUnits
       : (proratedMinUnits > 0 ? proratedMinUnits : (rateBasis === 'MONTHLY' || rateBasis === 'FLAT' ? 1 : (rateBasis === 'KM' ? 3000 : 120)));
     const actualUnits = meterSpan > 0 ? meterSpan : defaultDailyUnits;
 
     const bdStatus = breakdowns.getAssetBillingBreakdownStatus(asset.id, bounds.periodKey);
+    const rawBdList = bdMap.get(asset.id) || [];
+    const bdMerged = siteSummary.mergeDateIntervals(rawBdList.map((r) => ({ start: r.start, end: r.end })));
+    const activeIntervals = siteSummary.subtractDateIntervals(mergedIntervals, bdMerged);
+    const activeDaysInStay = activeIntervals.reduce((s, seg) => s + breakdowns.daysBetweenInclusive(seg.start, seg.end), 0);
+    const bdDaysInStay = Math.max(0, siteOverlapDays - activeDaysInStay);
+    const effectiveBdDays = allowOpenBreakdownDeduction ? bdDaysInStay : bdStatus.breakdownDays;
+
+    const isBlocked = allowOpenBreakdownDeduction
+      ? (activeDaysInStay <= 0 && (bdStatus.billingBlocked || bdStatus.fullMonthDown))
+      : (bdStatus.billingBlocked || bdStatus.fullMonthDown);
+
     const existingBill = get(`
       SELECT id, invoice_number, status, grand_total_cents
         FROM fleet_bills
@@ -529,11 +430,11 @@ function buildSiteMonthlyPlan(projectIdRaw, periodKey) {
          AND status != 'VOID'
          AND (? IS NULL OR project_id IS NULL OR project_id = ?)
        LIMIT 1
-    `, asset.id, bounds.periodKey, entry.projectId, entry.projectId);
+    `, asset.id, bounds.periodKey, stay.projectId, stay.projectId);
 
     const periodFuelPriceCents = resolvePeriodFuelPriceCents({
-      litres: entry.fuelLitres,
-      totalFuelCostCents: entry.fuelCostCents,
+      litres: stay.fuelLitres,
+      totalFuelCostCents: stay.fuelCostCents,
       asOfDate: bounds.end,
     });
 
@@ -543,44 +444,59 @@ function buildSiteMonthlyPlan(projectIdRaw, periodKey) {
       rateCents,
       billingMode,
       minimumUnits: proratedMinUnits,
-      breakdownDays: bdStatus.breakdownDays,
-      workingDaysInMonth: WORKING_DAYS_PER_MONTH,
+      breakdownDays: effectiveBdDays,
+      workingDaysInMonth: workingDaysPerMonth,
       daysInMonth: bounds.daysInMonth,
-      fuelLitres: entry.fuelLitres || 0,
+      fuelLitres: stay.fuelLitres || 0,
       fuelPriceCents: periodFuelPriceCents,
     });
+
+    const totalAssetPostedDays = (timelines.byAsset.get(asset.id) && timelines.byAsset.get(asset.id).totalPostedDays) || siteOverlapDays;
+    const rawAssetRepairCents = repairCostMap.get(asset.id) || 0;
+    const workshopRepairCostCents = totalAssetPostedDays > 0
+      ? Math.round(rawAssetRepairCents * (siteOverlapDays / totalAssetPostedDays))
+      : rawAssetRepairCents;
+    const lostHireRevenueCents = calculation.breakdownDeductCents || 0;
+    const availabilityPct = siteOverlapDays > 0 ? Math.round((activeDaysInStay / siteOverlapDays) * 1000) / 10 : 100;
 
     items.push({
       assetId: asset.id,
       assetCode: asset.code || asset.ec_code || asset.registration,
       registration: asset.registration,
       assetType: asset.type || null,
-      projectId: entry.projectId,
-      projectName: entry.projectName || 'Central',
-      projectCode: entry.projectCode || null,
-      driverName: entry.driverName || null,
-      allocDateFrom: entry.allocDateFrom || bounds.start,
-      allocDateTo: entry.allocIsCurrent ? null : (entry.allocDateTo || bounds.end),
-      allocIsCurrent: entry.allocIsCurrent,
+      projectId: stay.projectId,
+      projectName: proj.name || 'Central',
+      projectCode: proj.code || null,
+      driverName: stay.driverName || null,
+      allocDateFrom,
+      allocDateTo: (bounds.periodKey === currentMonthKey() && allocDateTo === bounds.end) ? null : allocDateTo,
+      allocIsCurrent: bounds.periodKey === currentMonthKey() && allocDateTo === bounds.end,
+      stayDatesLabel: stay.stayDatesLabel || '',
+      stayOrigin: stay.origin || 'FUEL_TIMELINE',
       siteOverlapDays,
-      workingDaysInMonth: WORKING_DAYS_PER_MONTH,
-      sources: [...entry.sources],
+      activeDays: activeDaysInStay,
+      workingDaysInMonth: workingDaysPerMonth,
+      sources: [stay.origin || 'FUEL_TIMELINE'],
       billingMode,
       rateBasis,
       rateCents,
       hasRate,
-      openingMeter: entry.minMeter,
-      closingMeter: entry.maxMeter,
+      openingMeter: stay.minMeter,
+      closingMeter: stay.maxMeter,
       actualUnits,
       minBillHours: proratedMinUnits,
-      fuelLitres: Math.round((entry.fuelLitres || 0) * 100) / 100,
+      fuelLitres: Math.round((stay.fuelLitres || 0) * 100) / 100,
       fuelPriceCents: periodFuelPriceCents,
-      breakdownDays: bdStatus.breakdownDays,
-      billingBlocked: bdStatus.billingBlocked || bdStatus.fullMonthDown,
-      blockReason: bdStatus.blockReason,
+      breakdownDays: effectiveBdDays,
+      lostHireRevenueCents,
+      workshopRepairCostCents,
+      totalBreakdownImpactCents: workshopRepairCostCents + lostHireRevenueCents,
+      availabilityPct,
+      billingBlocked: isBlocked,
+      blockReason: isBlocked ? bdStatus.blockReason : (bdDaysInStay > 0 ? `Deducting ${bdDaysInStay} repair day(s) — ${activeDaysInStay} active days billable` : null),
       existingBill: existingBill || null,
       calculation,
-      eligible: !existingBill && hasRate && !(bdStatus.billingBlocked || bdStatus.fullMonthDown),
+      eligible: !existingBill && hasRate && !isBlocked,
     });
   }
 
@@ -596,6 +512,7 @@ function buildSiteMonthlyPlan(projectIdRaw, periodKey) {
     periodStart: bounds.start,
     periodEnd: bounds.end,
     daysInMonth: bounds.daysInMonth,
+    workingDaysInMonth: workingDaysPerMonth,
     project: projectObj ? { id: projectObj.id, code: projectObj.code, name: projectObj.name } : null,
     items,
     summary: {
@@ -605,9 +522,25 @@ function buildSiteMonthlyPlan(projectIdRaw, periodKey) {
       alreadyBilledCount: items.filter((x) => !!x.existingBill).length,
       missingRateCount: items.filter((x) => !x.hasRate).length,
       estimatedGrandTotalCents: items.reduce((s, x) => s + (x.calculation ? x.calculation.grandTotalCents : 0), 0),
+      totalWorkshopRepairCostCents: items.reduce((s, x) => s + (x.workshopRepairCostCents || 0), 0),
+      totalLostHireRevenueCents: items.reduce((s, x) => s + (x.lostHireRevenueCents || 0), 0),
     },
   };
 }
+
+// ---------------------------------------------------------------------------
+// 0. Costing Options & Auto-Allocation Settings
+// ---------------------------------------------------------------------------
+
+router.get('/costing-options', requireAuth, requireCap('hire.billing.view', 'hire.rates.view', 'allocations.view'), asyncHandler(async (_req, res) => {
+  res.json(fuelTimeline.getCostingOptions());
+}));
+
+router.put('/costing-options', requireAuth, requireCap('hire.rates.manage', 'costing.manage', 'hire.billing.generate'), asyncHandler(async (req, res) => {
+  const actorId = req.user ? req.user.id : null;
+  const updated = fuelTimeline.saveCostingOptions(req.body || {}, actorId);
+  res.json({ ok: true, ...updated });
+}));
 
 // ---------------------------------------------------------------------------
 // 1. Rental Bills, Auto-Prefill, Revisions & Finalisation
@@ -680,6 +613,14 @@ router.get('/bills', requireAuth, requireCap('hire.billing.view', 'costing.view'
     balance_cents: Math.max(0, (row.grand_total_cents || 0) - (row.paid_cents || 0)),
   }));
 
+  const allLocks = periodLocks.listPeriodLocks();
+  const monthLockMap = new Map();
+  const siteLockMap = new Map();
+  for (const lk of allLocks) {
+    if (lk.project_id === 0) monthLockMap.set(lk.period_key, lk);
+    else siteLockMap.set(`${lk.period_key}|${lk.project_id}`, lk);
+  }
+
   const summaryBySiteMonth = all(`
     SELECT b.period_key,
            b.year,
@@ -700,10 +641,20 @@ router.get('/bills', requireAuth, requireCap('hire.billing.view', 'costing.view'
      ${summaryWhere}
      GROUP BY b.period_key, b.year, b.month, COALESCE(b.project_id, 0), COALESCE(b.project_name, p.name, 'Central')
      ORDER BY b.period_key DESC, project_name ASC
-  `, ...summaryParams).map((s) => ({
-    ...s,
-    balance_cents: Math.max(0, (s.grand_total_cents || 0) - (s.paid_cents || 0)),
-  }));
+  `, ...summaryParams).map((s) => {
+    const lk = monthLockMap.get(s.period_key)
+      || (s.project_id != null ? siteLockMap.get(`${s.period_key}|${Number(s.project_id)}`) : null)
+      || null;
+    return {
+      ...s,
+      balance_cents: Math.max(0, (s.grand_total_cents || 0) - (s.paid_cents || 0)),
+      is_locked: Boolean(lk),
+      lock_scope: lk ? lk.scope : null,
+      locked_at: lk ? lk.locked_at : null,
+      locked_by_name: lk ? lk.locked_by_name : null,
+      lock_reason: lk ? lk.reason : null,
+    };
+  });
 
   const overallSummary = {
     totalBills: rows.length,
@@ -722,6 +673,7 @@ router.get('/bills', requireAuth, requireCap('hire.billing.view', 'costing.view'
     bills: rows,
     summaryBySiteMonth,
     overallSummary,
+    periodLocks: allLocks,
     limit: Number(limit),
     offset: Number(offset),
   });
@@ -739,7 +691,8 @@ router.get('/bills/site-preview', requireAuth, requireCap('hire.billing.view', '
       ? `${Number(req.query.year)}-${String(Number(req.query.monthNum)).padStart(2, '0')}`
       : curYm);
   const projectId = req.query.projectId || 'ALL';
-  const plan = buildSiteMonthlyPlan(projectId, month);
+  const allowOpenBreakdownDeduction = req.query.allowOpenBreakdownDeduction === '1' || req.query.allowOpenBreakdownDeduction === 'true';
+  const plan = buildSiteMonthlyPlan(projectId, month, { allowOpenBreakdownDeduction });
   res.json(plan);
 }));
 
@@ -790,6 +743,9 @@ router.get('/bills/site-summary', requireAuth, requireCap('hire.billing.view', '
       ssclCents: result.summaries.reduce((n, s) => n + s.ssclCents, 0),
       vatCents: result.summaries.reduce((n, s) => n + s.vatCents, 0),
       grandTotalCents: result.summaries.reduce((n, s) => n + s.grandTotalCents, 0),
+      totalLostHireRevenueCents: result.summaries.reduce((n, s) => n + (s.totalLostHireRevenueCents || 0), 0),
+      totalWorkshopRepairCostCents: result.summaries.reduce((n, s) => n + (s.totalWorkshopRepairCostCents || 0), 0),
+      totalBreakdownImpactCents: result.summaries.reduce((n, s) => n + (s.totalBreakdownImpactCents || 0), 0),
     };
     return res.json({ mode: 'ALL', month: result.month, summaries: result.summaries, combined });
   }
@@ -848,6 +804,10 @@ router.get('/bills/site-summary/download.xlsx', requireAuth, requireCap('hire.bi
       ssclRs: Math.round(s.ssclCents) / 100,
       vatRs: Math.round(s.vatCents) / 100,
       grandTotalRs: Math.round(s.grandTotalCents) / 100,
+      repairCostRs: Math.round(s.totalWorkshopRepairCostCents || 0) / 100,
+      lostHireRs: Math.round(s.totalLostHireRevenueCents || 0) / 100,
+      totalBdImpactRs: Math.round(s.totalBreakdownImpactCents || 0) / 100,
+      availabilityPct: s.fleetAvailabilityPct != null ? s.fleetAvailabilityPct : 100,
     });
     for (const l of s.lines) {
       lineRows.push({
@@ -855,7 +815,7 @@ router.get('/bills/site-summary/download.xlsx', requireAuth, requireCap('hire.bi
         siteName: s.siteName,
         machine: l.code,
         regNo: l.regNo || '',
-        days: l.workingDaysHere != null && l.workingDaysInMonth && l.billingMode !== 'perday'
+        days: l.workingDaysHere != null && l.workingDaysInMonth
           ? `${l.workingDaysHere} / ${l.workingDaysInMonth}`
           : `${l.daysHere} / ${l.daysInMonth}`,
         bdDays: l.breakdownDays || 0,
@@ -871,6 +831,10 @@ router.get('/bills/site-summary/download.xlsx', requireAuth, requireCap('hire.bi
         fuelLitres: l.fuelLitres,
         fuelRs: Math.round(l.fuelCostCents) / 100,
         totalRs: Math.round(l.lineTotalCents) / 100,
+        repairCostRs: Math.round(l.workshopRepairCostCents || 0) / 100,
+        lostHireRs: Math.round(l.lostHireRevenueCents || 0) / 100,
+        totalBdImpactRs: Math.round(l.totalBreakdownImpactCents || 0) / 100,
+        availabilityPct: l.availabilityPct != null ? l.availabilityPct : 100,
       });
     }
     for (const t of s.transfersExcluded || []) {
@@ -912,6 +876,10 @@ router.get('/bills/site-summary/download.xlsx', requireAuth, requireCap('hire.bi
         { header: 'SSCL 2.5% (Rs)', key: 'ssclRs', width: 15 },
         { header: 'VAT 18% (Rs)', key: 'vatRs', width: 15 },
         { header: 'Site Total (Rs)', key: 'grandTotalRs', width: 18 },
+        { header: 'Workshop Repairs (Rs)', key: 'repairCostRs', width: 18 },
+        { header: 'Lost Hire (Rs)', key: 'lostHireRs', width: 16 },
+        { header: 'Total BD Impact (Rs)', key: 'totalBdImpactRs', width: 18 },
+        { header: 'Availability %', key: 'availabilityPct', width: 13 },
       ],
       rows: siteSummaryRows,
     },
@@ -935,6 +903,10 @@ router.get('/bills/site-summary/download.xlsx', requireAuth, requireCap('hire.bi
         { header: 'Fuel (L)', key: 'fuelLitres', width: 11 },
         { header: 'Fuel (Rs)', key: 'fuelRs', width: 14 },
         { header: 'Total (Rs)', key: 'totalRs', width: 16 },
+        { header: 'Repairs (Rs)', key: 'repairCostRs', width: 14 },
+        { header: 'Lost Hire (Rs)', key: 'lostHireRs', width: 14 },
+        { header: 'BD Impact (Rs)', key: 'totalBdImpactRs', width: 15 },
+        { header: 'Avail %', key: 'availabilityPct', width: 10 },
       ],
       rows: lineRows,
     },
@@ -976,14 +948,39 @@ router.post('/bills/site-summary/generate', requireAuth, requireCap('hire.billin
     ? new Set(selectedAssetIds.map((x) => Number(x)))
     : null;
 
+  const monthLock = periodLocks.isPeriodLocked(result.month, 0);
+  if (monthLock) {
+    return res.status(409).json({
+      error: `Billing period ${result.month} is locked${monthLock.reason ? `: ${monthLock.reason}` : ''}`,
+      periodLocked: true,
+      lock: monthLock,
+    });
+  }
+  if (!result.isAll && result.summary) {
+    const siteLock = periodLocks.isPeriodLocked(result.month, result.summary.projectId || 0);
+    if (siteLock) {
+      return res.status(409).json({
+        error: `Billing period ${result.month} for ${result.summary.siteName || 'this site'} is locked${siteLock.reason ? `: ${siteLock.reason}` : ''}`,
+        periodLocked: true,
+        lock: siteLock,
+      });
+    }
+  }
+
   let generatedBills = 0;
   let skippedExisting = 0;
   let skippedUnrated = 0;
+  const skippedLocked = [];
   const skippedBreakdowns = [];
   const createdBills = [];
 
   tx(() => {
     for (const s of result.summaries) {
+      const siteLock = periodLocks.isPeriodLocked(result.month, s.projectId || 0);
+      if (siteLock) {
+        skippedLocked.push({ projectId: s.projectId, siteCode: s.siteCode, siteName: s.siteName, reason: siteLock.reason || 'Period is locked' });
+        continue;
+      }
       const proj = { id: s.projectId, name: s.siteName, code: s.siteCode };
       for (const l of s.lines) {
         if (filterSet && !filterSet.has(Number(l.assetId))) continue;
@@ -1074,6 +1071,8 @@ router.post('/bills/site-summary/generate', requireAuth, requireCap('hire.billin
     generatedBills,
     skippedExisting,
     skippedUnrated,
+    skippedLockedCount: skippedLocked.length,
+    skippedLocked,
     skippedBreakdownsCount: skippedBreakdowns.length,
     skippedBreakdowns,
     createdBills,
@@ -1098,22 +1097,77 @@ router.get('/bills/prefill', requireAuth, requireCap('hire.billing.view', 'hire.
   const targetProjId = reqProjId ? Number(reqProjId) : null;
 
   const rateCard = get('SELECT * FROM fleet_rental_rates WHERE asset_id = ? LIMIT 1', asset.id);
-  const fuelRow = get(`
-    SELECT COALESCE(SUM(litres), 0) AS litres,
-           COALESCE(SUM(COALESCE(total_cost_cents, cost_cents, total_price * 100, 0)), 0) AS fuel_cost_cents,
-           MIN(CASE WHEN meter_reading > 0 THEN meter_reading ELSE NULL END) AS min_meter,
-           MAX(CASE WHEN meter_reading > 0 THEN meter_reading ELSE NULL END) AS max_meter
-      FROM fuel_issues
-     WHERE is_voided = 0 AND asset_id = ? AND issue_date BETWEEN ? AND ?
-       ${targetProjId ? 'AND COALESCE(target_project_id, project_id, source_project_id) = ?' : ''}
-  `, ...(targetProjId ? [asset.id, fromDate, toDate, targetProjId] : [asset.id, fromDate, toDate]));
+  const tankProjMap = fuelTimeline.loadTankProjectMap();
+  const workingDaysPerMonth = fuelTimeline.getCostingOptions().workingDaysPerMonth || WORKING_DAYS_PER_MONTH;
+
+  // Query wide UTC window [-1d .. +1d] and filter by SLST date + tank->project attribution
+  const winFrom = fuelTimeline.addDays(fromDate, -1);
+  const winTo = `${fuelTimeline.addDays(monthEndDate, 1)} 23:59:59`;
+  const rawAssetFuelRows = all(`
+    SELECT fi.*
+      FROM fuel_issues fi
+     WHERE COALESCE(fi.is_voided, 0) = 0
+       AND COALESCE(fi.voided, 0) = 0
+       AND fi.asset_id = ?
+       AND fi.issue_date >= ?
+       AND fi.issue_date <= ?
+     ORDER BY fi.issue_date ASC, fi.id ASC
+  `, asset.id, winFrom, winTo);
+
+  const assetFuelInMonth = [];
+  for (const fi of rawAssetFuelRows) {
+    if (fuelTimeline.isNonMachineFuelRow(fi, asset)) continue;
+    const d = fuelTimeline.slstDate10(fi.issue_date);
+    if (!d || d < fromDate || d > monthEndDate) continue;
+    const pid = fuelTimeline.resolveIssueProjectId(fi, tankProjMap);
+    if (targetProjId && pid !== targetProjId) continue;
+    assetFuelInMonth.push(fi);
+  }
+
+  let fuelLitresSum = 0;
+  let fuelCostCentsSum = 0;
+  let minMeter = null;
+  let maxMeter = null;
+  const assetIsHired = fuelTimeline.isHiredAsset(asset);
+  for (const fi of assetFuelInMonth) {
+    if (!assetIsHired && Number(fi.is_direct_billed) !== 1) {
+      const l = Number(fi.litres) || 0;
+      const p = Number(fi.price_per_litre_cents || fi.fuel_price_cents || 0) || Math.round((Number(fi.unit_price) || 0) * 100);
+      const c = Number(fi.total_cost_cents || fi.cost_cents || 0) || Math.round(l * p);
+      fuelLitresSum += l;
+      fuelCostCentsSum += c;
+    }
+    const mr = Number(fi.meter_reading);
+    if (Number.isFinite(mr) && mr > 0) {
+      if (minMeter == null || mr < minMeter) minMeter = mr;
+      if (maxMeter == null || mr > maxMeter) maxMeter = mr;
+    }
+  }
+  const fuelRow = {
+    litres: fuelLitresSum,
+    fuel_cost_cents: fuelCostCentsSum,
+    min_meter: minMeter,
+    max_meter: maxMeter,
+  };
   const periodFuelPriceCents = resolvePeriodFuelPriceCents({
-    litres: fuelRow ? fuelRow.litres : 0,
-    totalFuelCostCents: fuelRow ? fuelRow.fuel_cost_cents : 0,
+    litres: fuelRow.litres,
+    totalFuelCostCents: fuelRow.fuel_cost_cents,
     asOfDate: monthEndDate,
   });
 
   const bdStatus = breakdowns.getAssetBillingBreakdownStatus(asset.id, periodKey);
+
+  // Pull fuel-driven / manual timeline stay for this asset in periodKey
+  let timelineStay = null;
+  try {
+    const tl = fuelTimeline.buildMonthlyVehicleTimelines(periodKey, { workingDaysPerMonth });
+    const aEntry = tl.byAsset.get(asset.id);
+    if (aEntry && aEntry.stays.length) {
+      timelineStay = targetProjId
+        ? (aEntry.stays.find((s) => s.projectId === targetProjId) || null)
+        : aEntry.stays[aEntry.stays.length - 1];
+    }
+  } catch (_) {}
 
   const alloc = get(`
     SELECT va.*, COALESCE(p.name, va.site_name) AS project_name,
@@ -1140,26 +1194,45 @@ router.get('/bills/prefill', requireAuth, requireCap('hire.billing.view', 'hire.
      ORDER BY fa.start_date DESC LIMIT 1
   `, ...(targetProjId ? [asset.id, targetProjId, monthEndDate, fromDate] : [asset.id, monthEndDate, fromDate]));
 
+  const effTlProjId = timelineStay ? timelineStay.projectId : null;
+  const tlProj = effTlProjId ? get('SELECT id, name FROM projects WHERE id = ?', effTlProjId) : null;
   const reqProj = targetProjId ? get('SELECT id, name FROM projects WHERE id = ?', targetProjId) : null;
   const currProj = asset.current_project_id ? get('SELECT id, name FROM projects WHERE id = ?', asset.current_project_id) : null;
 
-  const openingMeter = fuelRow && fuelRow.min_meter ? fuelRow.min_meter : null;
-  const closingMeter = fuelRow && fuelRow.max_meter ? fuelRow.max_meter : null;
-  const actualUnits = (openingMeter != null && closingMeter != null && closingMeter > openingMeter)
+  const prefillRateBasis = (rateCard && rateCard.rate_basis) || (rateCard && rateCard.fuel_cons_basis === 'km' ? 'KM' : 'HOURLY');
+  const openingMeter = fuelRow.min_meter ? fuelRow.min_meter : null;
+  const closingMeter = fuelRow.max_meter ? fuelRow.max_meter : null;
+  let actualUnits = (openingMeter != null && closingMeter != null && closingMeter > openingMeter)
     ? Math.round((closingMeter - openingMeter) * 10) / 10
     : 0;
 
-  const billingMode = (assign && assign.billing_type) || (alloc && alloc.basis) || (rateCard && rateCard.default_basis) || 'DRY_WITH_DRIVER';
-  const projectId = targetProjId || (assign && assign.project_id) || (alloc && alloc.project_id) || asset.current_project_id || null;
-  const projectName = (reqProj && reqProj.name) || (assign && assign.project_name) || (alloc && (alloc.project_name || alloc.site_name)) || (currProj && currProj.name) || null;
-  const allocDateFrom = (assign && assign.start_date ? String(assign.start_date).slice(0, 10) : null) || (alloc && alloc.eff_from) || null;
-  const allocDateTo = (assign ? (assign.end_date ? String(assign.end_date).slice(0, 10) : null) : (alloc ? alloc.eff_to : null));
-  const siteOverlapDays = allocDateFrom
-    ? (overlapDays(allocDateFrom, allocDateTo || monthEndDate, fromDate, monthEndDate) || lastDay)
-    : lastDay;
+  const billingMode = assetIsHired
+    ? 'BILLED_DIRECT'
+    : ((assign && assign.billing_type)
+      || (alloc && alloc.basis)
+      || (timelineStay && timelineStay.allocBases && timelineStay.allocBases[0])
+      || (rateCard && rateCard.default_basis)
+      || 'DRY_WITH_DRIVER');
+  const projectId = targetProjId || (timelineStay && timelineStay.projectId) || (assign && assign.project_id) || (alloc && alloc.project_id) || asset.current_project_id || null;
+  const projectName = (reqProj && reqProj.name) || (tlProj && tlProj.name) || (assign && assign.project_name) || (alloc && (alloc.project_name || alloc.site_name)) || (currProj && currProj.name) || null;
+  const allocDateFrom = (timelineStay && timelineStay.intervals && timelineStay.intervals.length ? timelineStay.intervals[0].start : null)
+    || (assign && assign.start_date ? String(assign.start_date).slice(0, 10) : null)
+    || (alloc && alloc.eff_from)
+    || null;
+  const allocDateTo = (timelineStay && timelineStay.intervals && timelineStay.intervals.length ? timelineStay.intervals[timelineStay.intervals.length - 1].end : null)
+    || (assign ? (assign.end_date ? String(assign.end_date).slice(0, 10) : null) : (alloc ? alloc.eff_to : null));
+  const siteOverlapDays = timelineStay
+    ? (timelineStay.postedDays || lastDay)
+    : (allocDateFrom ? (overlapDays(allocDateFrom, allocDateTo || monthEndDate, fromDate, monthEndDate) || lastDay) : lastDay);
 
-  const prefillRateBasis = (rateCard && rateCard.rate_basis) || (rateCard && rateCard.fuel_cons_basis === 'km' ? 'KM' : 'HOURLY');
-  const prefillMinUnits = resolveDefaultMinUnits(prefillRateBasis, rateCard);
+  if (prefillRateBasis === 'DAILY' && actualUnits === 0) {
+    actualUnits = siteOverlapDays >= lastDay
+      ? workingDaysPerMonth
+      : Math.min(workingDaysPerMonth, siteOverlapDays);
+  }
+  const prefillMinUnits = (prefillRateBasis === 'DAILY' && (!rateCard || !(Number(rateCard.min_bill_hours) > 0)))
+    ? actualUnits
+    : resolveDefaultMinUnits(prefillRateBasis, rateCard);
 
   res.json({
     asset: {
@@ -1170,12 +1243,13 @@ router.get('/bills/prefill', requireAuth, requireCap('hire.billing.view', 'hire.
     },
     periodKey,
     daysInMonth: lastDay,
-    workingDaysInMonth: WORKING_DAYS_PER_MONTH,
+    workingDaysInMonth: workingDaysPerMonth,
+    isHired: assetIsHired,
     rateCard: rateCard || null,
     openingMeter,
     closingMeter,
     actualUnits,
-    fuelLitres: fuelRow ? Math.round((fuelRow.litres || 0) * 100) / 100 : 0,
+    fuelLitres: Math.round((fuelRow.litres || 0) * 100) / 100,
     fuelPriceCents: periodFuelPriceCents,
     breakdownDays: bdStatus.breakdownDays,
     billingBlocked: bdStatus.billingBlocked,
@@ -1188,7 +1262,7 @@ router.get('/bills/prefill', requireAuth, requireCap('hire.billing.view', 'hire.
     allocDateFrom,
     allocDateTo,
     siteOverlapDays,
-    driverName: (assign && assign.driver_name) || (alloc && alloc.driver_name) || null,
+    driverName: (timelineStay && timelineStay.driverName) || (assign && assign.driver_name) || (alloc && alloc.driver_name) || null,
     billingMode,
     rateBasis: prefillRateBasis,
     rateCents: pickRateForMode(rateCard, billingMode),
@@ -1273,11 +1347,29 @@ router.post('/bills/generate', requireAuth, requireCap('hire.billing.generate', 
   const resolvedCode = asset ? (asset.code || asset.ec_code || asset.registration) : String(assetCode).trim();
   const assetId = asset ? asset.id : null;
 
+  if ((asset && fuelTimeline.isHiredAsset(asset)) || ['BILLED_DIRECT', 'FREE_OF_CHARGE'].includes(String(billingMode || '').trim().toUpperCase())) {
+    return res.status(409).json({
+      error: `${resolvedCode} is marked as hired/external (settled outside — neither rental nor fuel is billed to site).`,
+      billingBlocked: true,
+      hiredDirect: true,
+    });
+  }
+
   const y = Number(year);
   const m = Number(month);
   const periodKey = `${y}-${String(m).padStart(2, '0')}`;
   const period = breakdowns.monthBounds(periodKey);
   if (!period) return res.status(400).json({ error: 'Invalid year or month' });
+
+  const lockProjectId = projectId ? Number(projectId) : (asset && asset.current_project_id ? Number(asset.current_project_id) : 0);
+  const periodLock = periodLocks.isPeriodLocked(periodKey, lockProjectId || 0);
+  if (periodLock) {
+    return res.status(409).json({
+      error: `Billing period ${periodKey} is locked${periodLock.reason ? `: ${periodLock.reason}` : ''}`,
+      periodLocked: true,
+      lock: periodLock,
+    });
+  }
 
   // Enforce: "if machine breakdown we can't bill"
   let effectiveBreakdownDays = Number(breakdownDays) || 0;
@@ -1365,8 +1457,16 @@ router.post('/bills/generate', requireAuth, requireCap('hire.billing.generate', 
 }));
 
 router.post('/bills/generate-site', requireAuth, requireCap('hire.billing.generate', 'costing.manage'), asyncHandler(async (req, res) => {
-  const { projectId = 'ALL', month = currentMonthKey(), selectedAssetIds = null, finalise = false } = req.body || {};
-  const plan = buildSiteMonthlyPlan(projectId, String(month).trim().slice(0, 7));
+  const {
+    projectId = 'ALL',
+    month = currentMonthKey(),
+    selectedAssetIds = null,
+    finalise = false,
+    allowOpenBreakdownDeduction = false,
+  } = req.body || {};
+  const plan = buildSiteMonthlyPlan(projectId, String(month).trim().slice(0, 7), {
+    allowOpenBreakdownDeduction: Boolean(allowOpenBreakdownDeduction),
+  });
   const actorId = req.user ? req.user.id : 1;
   const period = breakdowns.monthBounds(plan.month);
   const targetStatus = finalise ? 'FINAL' : 'DRAFT';
@@ -1374,15 +1474,44 @@ router.post('/bills/generate-site', requireAuth, requireCap('hire.billing.genera
     ? new Set(selectedAssetIds.map((x) => Number(x)))
     : null;
 
+  const monthLock = periodLocks.isPeriodLocked(plan.month, 0);
+  if (monthLock) {
+    return res.status(409).json({
+      error: `Billing period ${plan.month} is locked${monthLock.reason ? `: ${monthLock.reason}` : ''}`,
+      periodLocked: true,
+      lock: monthLock,
+    });
+  }
+  if (plan.project) {
+    const siteLock = periodLocks.isPeriodLocked(plan.month, plan.project.id);
+    if (siteLock) {
+      return res.status(409).json({
+        error: `Billing period ${plan.month} for ${plan.project.name} is locked${siteLock.reason ? `: ${siteLock.reason}` : ''}`,
+        periodLocked: true,
+        lock: siteLock,
+      });
+    }
+  }
+
   let generatedBills = 0;
   let skippedAlreadyBilled = 0;
   let skippedMissingRate = 0;
+  const skippedLocked = [];
   const skippedBreakdowns = [];
   const createdBills = [];
 
+  const siteLockCache = new Map();
   tx(() => {
     for (const item of plan.items) {
       if (filterSet && !filterSet.has(Number(item.assetId))) continue;
+      const itemPid = item.projectId ? Number(item.projectId) : 0;
+      if (!siteLockCache.has(itemPid)) {
+        siteLockCache.set(itemPid, periodLocks.isPeriodLocked(plan.month, itemPid));
+      }
+      if (siteLockCache.get(itemPid)) {
+        skippedLocked.push({ assetId: item.assetId, assetCode: item.assetCode, projectId: itemPid, projectName: item.projectName });
+        continue;
+      }
       if (item.billingBlocked) {
         skippedBreakdowns.push({ assetId: item.assetId, assetCode: item.assetCode, projectName: item.projectName, reason: item.blockReason });
         continue;
@@ -1443,6 +1572,8 @@ router.post('/bills/generate-site', requireAuth, requireCap('hire.billing.genera
     generatedBills,
     skippedAlreadyBilled,
     skippedMissingRate,
+    skippedLockedCount: skippedLocked.length,
+    skippedLocked,
     skippedBreakdownsCount: skippedBreakdowns.length,
     skippedBreakdowns,
     bills: createdBills,
@@ -1452,6 +1583,15 @@ router.post('/bills/generate-site', requireAuth, requireCap('hire.billing.genera
 router.post('/bills/:id/revise', requireAuth, requireCap('hire.billing.generate', 'hire.billing.finalise'), asyncHandler(async (req, res) => {
   const bill = get('SELECT * FROM fleet_bills WHERE id = ?', req.params.id);
   if (!bill) return res.status(404).json({ error: 'Rental bill not found' });
+
+  const lock = periodLocks.isPeriodLocked(bill.period_key, bill.project_id || 0);
+  if (lock) {
+    return res.status(409).json({
+      error: `Billing period ${bill.period_key} is locked${lock.reason ? `: ${lock.reason}` : ''}`,
+      periodLocked: true,
+      lock,
+    });
+  }
 
   const {
     actualUnits = bill.actual_units,
@@ -1579,6 +1719,15 @@ router.post('/bills/:id/finalise', requireAuth, requireCap('hire.billing.finalis
   if (!bill) return res.status(404).json({ error: 'Rental bill not found' });
   if (bill.status === 'FINAL') return res.status(400).json({ error: 'Bill is already finalized' });
 
+  const lock = periodLocks.isPeriodLocked(bill.period_key, bill.project_id || 0);
+  if (lock) {
+    return res.status(409).json({
+      error: `Billing period ${bill.period_key} is locked${lock.reason ? `: ${lock.reason}` : ''}`,
+      periodLocked: true,
+      lock,
+    });
+  }
+
   if (bill.asset_id) {
     const bdStatus = breakdowns.getAssetBillingBreakdownStatus(bill.asset_id, bill.period_key);
     if (bdStatus.billingBlocked || bdStatus.fullMonthDown) {
@@ -1636,6 +1785,174 @@ router.post('/bills/:id/finalise', requireAuth, requireCap('hire.billing.finalis
 
   logAudit(req, 'fleet_bill', bill.asset_id, 'hire.bill.finalised', { billId: req.params.id, invoiceNo });
   res.json({ id: req.params.id, status: 'FINAL', invoice_number: invoiceNo });
+}));
+
+router.post('/bills/finalise-site', requireAuth, requireCap('hire.billing.finalise', 'costing.manage'), asyncHandler(async (req, res) => {
+  const { projectId, periodKey, month, lockAfter = false, lockReason = null } = req.body || {};
+  const pk = String(periodKey || month || '').trim().slice(0, 7);
+  if (!/^\d{4}-(?:0[1-9]|1[0-2])$/.test(pk)) {
+    return res.status(400).json({ error: 'Valid periodKey (YYYY-MM) is required' });
+  }
+
+  const isAll = projectId == null || projectId === '' || String(projectId).trim().toUpperCase() === 'ALL';
+  const pid = isAll ? 0 : Number(projectId);
+  if (!isAll && !Number.isFinite(pid)) {
+    return res.status(400).json({ error: 'Valid projectId is required' });
+  }
+
+  const existingLock = periodLocks.isPeriodLocked(pk, pid);
+  if (existingLock) {
+    return res.status(409).json({
+      error: `Billing period ${pk} is already locked${existingLock.reason ? `: ${existingLock.reason}` : ''}`,
+      periodLocked: true,
+      lock: existingLock,
+    });
+  }
+
+  const draftBills = pid > 0
+    ? all("SELECT * FROM fleet_bills WHERE period_key = ? AND project_id = ? AND status = 'DRAFT' ORDER BY asset_code ASC", pk, pid)
+    : all("SELECT * FROM fleet_bills WHERE period_key = ? AND status = 'DRAFT' ORDER BY project_name ASC, asset_code ASC", pk);
+
+  const actorId = req.user ? req.user.id : 1;
+  let finalisedCount = 0;
+  const skippedBreakdowns = [];
+  const finalisedIds = [];
+  let lockRecord = null;
+
+  tx(() => {
+    for (const bill of draftBills) {
+      if (pid === 0) {
+        const siteLock = periodLocks.isPeriodLocked(bill.period_key, bill.project_id || 0);
+        if (siteLock) continue;
+      }
+
+      if (bill.asset_id) {
+        const bdStatus = breakdowns.getAssetBillingBreakdownStatus(bill.asset_id, bill.period_key);
+        if (bdStatus.billingBlocked || bdStatus.fullMonthDown) {
+          skippedBreakdowns.push({
+            billId: bill.id,
+            assetId: bill.asset_id,
+            assetCode: bill.asset_code,
+            reason: bdStatus.blockReason,
+          });
+          continue;
+        }
+      }
+
+      let invoiceNo = bill.invoice_number;
+      if (!invoiceNo) {
+        const candidate = `INV-${bill.year}${String(bill.month).padStart(2, '0')}-P${bill.project_id || 0}-A${bill.asset_id || bill.id}`;
+        const clash = get('SELECT id FROM fleet_bills WHERE invoice_number = ? AND id != ?', candidate, bill.id);
+        invoiceNo = clash ? `${candidate}-${Math.floor(100 + Math.random() * 900)}` : candidate;
+      }
+
+      run(`
+        UPDATE fleet_bills
+           SET status = 'FINAL',
+               invoice_number = ?,
+               issued_date = date('now'),
+               approved_by = ?,
+               approved_at = datetime('now'),
+               updated_at = datetime('now')
+         WHERE id = ?
+      `, invoiceNo, actorId, bill.id);
+
+      syncBillFinalFinancialEvents({
+        billId: bill.id,
+        assetId: bill.asset_id,
+        assetCode: bill.asset_code,
+        projectId: bill.project_id,
+        periodEnd: bill.period_end,
+        year: bill.year,
+        month: bill.month,
+        calculation: {
+          rentalAmountCents: bill.rental_amount_cents || 0,
+          billableUnits: bill.billable_units || 0,
+          fuelChargedCents: bill.fuel_cost_cents || 0,
+          fuelLitres: bill.fuel_litres || 0,
+        },
+      });
+
+      finalisedCount++;
+      finalisedIds.push(bill.id);
+    }
+
+    if (lockAfter && skippedBreakdowns.length === 0) {
+      lockRecord = periodLocks.lockPeriod({
+        periodKey: pk,
+        projectId: pid,
+        userId: actorId,
+        reason: lockReason || `Finalised ${finalisedCount} bill(s) for ${pk}`,
+      });
+    }
+  });
+
+  logAudit(req, 'fleet_bill', pid || null, 'hire.bills.finalised_site', {
+    periodKey: pk,
+    projectId: pid,
+    finalisedCount,
+    skippedBreakdownsCount: skippedBreakdowns.length,
+    locked: Boolean(lockRecord),
+  });
+
+  res.json({
+    ok: true,
+    periodKey: pk,
+    projectId: pid,
+    finalisedCount,
+    finalisedIds,
+    skippedBreakdowns,
+    locked: Boolean(lockRecord),
+    lock: lockRecord,
+  });
+}));
+
+router.get('/period-locks', requireAuth, requireCap('hire.billing.view', 'costing.view'), asyncHandler(async (req, res) => {
+  const periodKey = req.query.periodKey || null;
+  res.json({ locks: periodLocks.listPeriodLocks(periodKey) });
+}));
+
+router.post('/period-locks', requireAuth, requireCap('hire.billing.finalise', 'costing.manage'), asyncHandler(async (req, res) => {
+  const { periodKey, projectId = 0, locked = true, reason = '' } = req.body || {};
+  const pk = String(periodKey || '').trim().slice(0, 7);
+  if (!/^\d{4}-(?:0[1-9]|1[0-2])$/.test(pk)) {
+    return res.status(400).json({ error: 'Valid periodKey (YYYY-MM) is required' });
+  }
+  const pid = projectId != null && Number(projectId) > 0 ? Number(projectId) : 0;
+  const actorId = req.user ? req.user.id : 1;
+  const cleanReason = String(reason || '').trim();
+
+  if (locked === false) {
+    if (!cleanReason) {
+      return res.status(400).json({ error: 'An unlock reason is required for audit compliance' });
+    }
+    const resUnlock = periodLocks.unlockPeriod({ periodKey: pk, projectId: pid });
+    logAudit(req, 'billing_period_lock', pid || null, 'hire.period.unlocked', { periodKey: pk, projectId: pid, ...resUnlock }, null, cleanReason);
+    return res.json({
+      ok: true,
+      periodKey: pk,
+      projectId: pid,
+      locked: false,
+      lock: null,
+      locks: periodLocks.listPeriodLocks(pk),
+    });
+  }
+
+  const lock = periodLocks.lockPeriod({
+    periodKey: pk,
+    projectId: pid,
+    userId: actorId,
+    reason: cleanReason || `Locked via Billing Console (${pk})`,
+  });
+  logAudit(req, 'billing_period_lock', pid || null, 'hire.period.locked', { periodKey: pk, projectId: pid, lock }, null, lock.reason);
+  res.json({
+    ok: true,
+    periodKey: pk,
+    projectId: pid,
+    locked: true,
+    lock,
+    locks: periodLocks.listPeriodLocks(pk),
+  });
 }));
 
 // ---------------------------------------------------------------------------
@@ -1784,12 +2101,25 @@ router.get('/rates-overview', requireAuth, requireCap('hire.rates.view', 'fuel.v
       ? Number(r.min_bill_hours)
       : (effRateBasis === 'KM' ? 3000 : (effRateBasis === 'HOURLY' ? 120 : 0));
 
+    const useKmCols =
+      effRateBasis === 'KM' &&
+      String(r.rate_basis || '').toUpperCase() !== 'KM' &&
+      (Number(r.km_wet_cents) > 0 || Number(r.km_dry_cents) > 0);
+    const outDry = useKmCols ? (r.km_dry_cents ?? 0) : r.dry_rate_cents;
+    const outWet = useKmCols ? (r.km_wet_cents ?? 0) : r.wet_rate_cents;
+    const outFw = useKmCols ? (r.km_fw_cents ?? 0) : r.fully_wet_rate_cents;
+    const outRate = useKmCols ? (r.km_dry_cents || r.km_wet_cents || 0) : r.rate_cents;
+
     return {
       ...r,
       cons_basis: basis,
       rate_basis: effRateBasis,
       rate_unit_label: rateUnitLabel,
       display_unit: dispUnit,
+      rate_cents: outRate,
+      dry_rate_cents: outDry,
+      wet_rate_cents: outWet,
+      fully_wet_rate_cents: outFw,
       min_bill_hours: effMinUnits,
       min_bill_units: effMinUnits,
       working_days_per_month: WORKING_DAYS_PER_MONTH,
@@ -1802,9 +2132,15 @@ router.get('/rates-overview', requireAuth, requireCap('hire.rates.view', 'fuel.v
   });
 
   const portableRates = all(`
-    SELECT * FROM fleet_rental_rates
-     WHERE equip_type = 'PORTABLE'
-     ORDER BY category_name ASC, id ASC
+    SELECT r.*,
+           COALESCE(a.code, a.ec_code) AS asset_code,
+           a.registration AS asset_reg,
+           p.name AS current_site
+      FROM fleet_rental_rates r
+      LEFT JOIN assets a ON a.id = r.asset_id
+      LEFT JOIN projects p ON p.id = a.current_project_id
+     WHERE r.equip_type = 'PORTABLE'
+     ORDER BY (r.asset_id IS NOT NULL) DESC, COALESCE(a.code, r.category_name) ASC, r.id ASC
   `);
 
   let filteredFleet = fleetRates;
@@ -2010,12 +2346,406 @@ router.post('/rates', requireAuth, requireCap('hire.rates.manage', 'costing.mana
   res.status(201).json({ id: rateId, rateBasis: normBasis, fuelConsBasis: basis, success: true });
 }));
 
+router.get('/rates-unrated', requireAuth, requireCap('hire.rates.view', 'hire.billing.view', 'costing.view'), asyncHandler(async (_req, res) => {
+  const cutoff60 = fuelTimeline.addDays(fuelTimeline.todaySlst(), -60);
+  const assetCols = new Set(all('PRAGMA table_info(assets)').map((c) => c.name));
+  const ownerFilter = assetCols.has('ownership') ? "COALESCE(a.ownership, 'OWNED') = 'OWNED'" : '1 = 1';
+  const regFilter = assetCols.has('in_register') ? 'COALESCE(a.in_register, 1) = 1' : '1 = 1';
+
+  const candidates = all(`
+    SELECT a.*, p.name AS current_site_name, p.code AS current_site_code
+      FROM assets a
+      LEFT JOIN projects p ON p.id = a.current_project_id
+     WHERE ${ownerFilter}
+       AND ${regFilter}
+       AND LOWER(COALESCE(a.status, 'active')) NOT IN ('decommissioned', 'disposed', 'scrapped')
+       AND NOT EXISTS (SELECT 1 FROM fleet_rental_rates r WHERE r.asset_id = a.id)
+     ORDER BY a.code ASC
+  `).filter((a) => !fuelTimeline.isNonMachineFuelRow({}, a));
+
+  const tankProjMap = fuelTimeline.loadTankProjectMap();
+  const projectNames = new Map(all('SELECT id, code, name FROM projects').map((p) => [Number(p.id), p.name || p.code]));
+  const hasDirectCol = all('PRAGMA table_info(fuel_issues)').some((c) => c.name === 'is_direct_billed');
+  const fuelRows = all(`
+    SELECT id, asset_id, litres, issue_date, source_tank_id, bulk_tank_id,
+           target_project_id, project_id, source_project_id
+      FROM fuel_issues
+     WHERE is_voided = 0
+       AND asset_id IS NOT NULL
+       ${hasDirectCol ? 'AND COALESCE(is_direct_billed, 0) = 0' : ''}
+     ORDER BY issue_date DESC, id DESC
+  `);
+
+  const fuelByAsset = new Map();
+  for (const fi of fuelRows) {
+    const aid = Number(fi.asset_id);
+    const day = fuelTimeline.slstDate10(fi.issue_date);
+    const litres = Number(fi.litres || 0);
+    const cur = fuelByAsset.get(aid) || {
+      totalSlips: 0,
+      totalLitres: 0,
+      recentSlips: 0,
+      recentLitres: 0,
+      lastFuelDate: null,
+      lastSiteName: null,
+    };
+    cur.totalSlips++;
+    cur.totalLitres += litres;
+    if (day && day >= cutoff60) {
+      cur.recentSlips++;
+      cur.recentLitres += litres;
+    }
+    if (!cur.lastFuelDate && day) {
+      cur.lastFuelDate = day;
+      const pid = fuelTimeline.resolveIssueProjectId(fi, tankProjMap);
+      cur.lastSiteName = pid != null ? (projectNames.get(Number(pid)) || null) : null;
+    }
+    fuelByAsset.set(aid, cur);
+  }
+
+  const unrated = candidates.map((a) => {
+    const f = fuelByAsset.get(Number(a.id)) || {
+      totalSlips: 0,
+      totalLitres: 0,
+      recentSlips: 0,
+      recentLitres: 0,
+      lastFuelDate: null,
+      lastSiteName: a.current_site_name || null,
+    };
+    return {
+      asset_id: a.id,
+      asset_code: a.code || a.ec_code || a.registration,
+      registration: a.registration || null,
+      brand: a.brand || null,
+      type: a.type || null,
+      model_no: a.model_no || null,
+      meter_type: a.meter_type || null,
+      current_site_name: f.lastSiteName || a.current_site_name || null,
+      last_fuel_date: f.lastFuelDate,
+      recent_slips: f.recentSlips,
+      recent_litres: Math.round(f.recentLitres * 10) / 10,
+      total_slips: f.totalSlips,
+      total_litres: Math.round(f.totalLitres * 10) / 10,
+    };
+  }).sort((a, b) => {
+    if (b.recent_litres !== a.recent_litres) return b.recent_litres - a.recent_litres;
+    if (b.total_litres !== a.total_litres) return b.total_litres - a.total_litres;
+    return String(a.asset_code || '').localeCompare(String(b.asset_code || ''));
+  });
+
+  // Canonical category templates (selecting modal rate tuple per category+basis)
+  const rawRates = all(`
+    SELECT r.*, COALESCE(NULLIF(TRIM(r.category_name), ''), NULLIF(TRIM(a.type), '')) AS cat_label
+      FROM fleet_rental_rates r
+      LEFT JOIN assets a ON a.id = r.asset_id
+     ORDER BY r.updated_at DESC, r.id DESC
+  `);
+  const catBuckets = new Map();
+  for (const r of rawRates) {
+    if (!r.cat_label) continue;
+    const eq = String(r.equip_type || 'FLEET').toUpperCase();
+    const rb = String(r.rate_basis || 'HOURLY').toUpperCase();
+    const key = `${r.cat_label}||${rb}||${eq}`;
+    if (!catBuckets.has(key)) catBuckets.set(key, []);
+    catBuckets.get(key).push(r);
+  }
+
+  const templates = [];
+  for (const [, rows] of catBuckets.entries()) {
+    const tupleCounts = new Map();
+    let bestRow = rows[0];
+    let bestScore = -1;
+    for (const r of rows) {
+      const tupleKey = `${r.dry_rate_cents || 0}|${r.wet_rate_cents || 0}|${r.fully_wet_rate_cents || 0}`;
+      const cnt = (tupleCounts.get(tupleKey) || 0) + 1;
+      tupleCounts.set(tupleKey, cnt);
+      if (cnt > bestScore) {
+        bestScore = cnt;
+        bestRow = r;
+      }
+    }
+    templates.push({
+      template_rate_id: bestRow.id,
+      category: bestRow.cat_label,
+      rate_basis: bestRow.rate_basis || 'HOURLY',
+      equip_type: String(bestRow.equip_type || 'FLEET').toUpperCase(),
+      dry_rate_cents: bestRow.dry_rate_cents ?? bestRow.rate_cents ?? 0,
+      wet_rate_cents: bestRow.wet_rate_cents ?? 0,
+      fully_wet_rate_cents: bestRow.fully_wet_rate_cents ?? 0,
+      fuel_cons_basis: bestRow.fuel_cons_basis || ((bestRow.rate_basis === 'KM') ? 'km' : 'hr'),
+      fuel_cons_typ: bestRow.fuel_cons_typ ?? null,
+      min_bill_hours: bestRow.min_bill_hours ?? 0,
+      count: rows.length,
+    });
+  }
+  templates.sort((a, b) => (b.count - a.count) || String(a.category).localeCompare(String(b.category)));
+
+  res.json({
+    unrated,
+    recentFueledCount: unrated.filter((u) => u.recent_litres > 0).length,
+    totalUnratedCount: unrated.length,
+    templates,
+  });
+}));
+
+router.post('/rates/assign-template', requireAuth, requireCap('hire.rates.manage', 'costing.manage'), asyncHandler(async (req, res) => {
+  const {
+    assetId,
+    templateRateId = null,
+    categoryName = null,
+    overrideDryCents = null,
+    overrideWetCents = null,
+    overrideFwCents = null,
+  } = req.body || {};
+
+  if (!assetId) return res.status(400).json({ error: 'assetId is required' });
+  const asset = get('SELECT * FROM assets WHERE id = ?', Number(assetId));
+  if (!asset) return res.status(404).json({ error: 'Asset not found' });
+
+  let template = templateRateId
+    ? get('SELECT * FROM fleet_rental_rates WHERE id = ?', String(templateRateId))
+    : null;
+  if (!template && categoryName) {
+    template = get(`
+      SELECT r.*
+        FROM fleet_rental_rates r
+        LEFT JOIN assets a ON a.id = r.asset_id
+       WHERE LOWER(COALESCE(r.category_name, a.type, '')) = LOWER(?)
+       ORDER BY r.updated_at DESC, r.id DESC
+       LIMIT 1
+    `, String(categoryName).trim());
+  }
+  if (!template) return res.status(404).json({ error: 'Rate template not found' });
+
+  const normBasis = normalizeRateBasis(template.rate_basis || 'HOURLY');
+  const normEqType = String(template.equip_type || 'FLEET').toUpperCase() === 'PORTABLE' ? 'PORTABLE' : 'FLEET';
+  const fuelBasis = template.fuel_cons_basis || (normBasis === 'KM' ? 'km' : 'hr');
+  const catLabel = String(categoryName || template.category_name || asset.type || '').trim() || null;
+
+  const dryC = overrideDryCents != null && overrideDryCents !== '' && Number.isFinite(Number(overrideDryCents))
+    ? Math.round(Number(overrideDryCents))
+    : (template.dry_rate_cents ?? template.rate_cents ?? null);
+  const wetC = overrideWetCents != null && overrideWetCents !== '' && Number.isFinite(Number(overrideWetCents))
+    ? Math.round(Number(overrideWetCents))
+    : (template.wet_rate_cents ?? null);
+  const fwC = overrideFwCents != null && overrideFwCents !== '' && Number.isFinite(Number(overrideFwCents))
+    ? Math.round(Number(overrideFwCents))
+    : (template.fully_wet_rate_cents ?? null);
+  const baseC = dryC != null ? dryC : (template.rate_cents ?? wetC ?? 0);
+
+  const rateId = `rate-asset-${asset.id}`;
+  const rateCols = new Set(all('PRAGMA table_info(fleet_rental_rates)').map((c) => c.name));
+  const assetCols = new Set(all('PRAGMA table_info(assets)').map((c) => c.name));
+
+  tx(() => {
+    run('DELETE FROM fleet_rental_rates WHERE asset_id = ?', asset.id);
+
+    if (rateCols.has('km_dry_cents')) {
+      const hrDry = normBasis === 'HOURLY' ? dryC : template.hr_dry_cents;
+      const hrWet = normBasis === 'HOURLY' ? wetC : template.hr_wet_cents;
+      const hrFw = normBasis === 'HOURLY' ? fwC : template.hr_fw_cents;
+      const dyDry = normBasis === 'DAILY' ? dryC : template.dy_dry_cents;
+      const dyWet = normBasis === 'DAILY' ? wetC : template.dy_wet_cents;
+      const dyFw = normBasis === 'DAILY' ? fwC : template.dy_fw_cents;
+      const kmDry = normBasis === 'KM' ? dryC : template.km_dry_cents;
+      const kmWet = normBasis === 'KM' ? wetC : template.km_wet_cents;
+      const kmFw = normBasis === 'KM' ? fwC : template.km_fw_cents;
+
+      run(`
+        INSERT INTO fleet_rental_rates (
+          id, asset_id, category_name, rate_basis, rate_cents,
+          dry_rate_cents, wet_rate_cents, fully_wet_rate_cents, min_bill_hours,
+          equip_type, default_basis, port_dd_cents, port_dw_cents, source_label,
+          fuel_cons_econ, fuel_cons_typ, fuel_cons_heavy, fuel_cons_basis, note,
+          hr_dry_cents, hr_wet_cents, hr_fw_cents,
+          dy_dry_cents, dy_wet_cents, dy_fw_cents,
+          km_dry_cents, km_wet_cents, km_fw_cents
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+      rateId, asset.id, catLabel, normBasis, baseC,
+      dryC, wetC, fwC, template.min_bill_hours ?? resolveDefaultMinUnits(normBasis),
+      normEqType, template.default_basis || 'WET',
+      normEqType === 'PORTABLE' ? (dryC ?? template.port_dd_cents) : template.port_dd_cents,
+      normEqType === 'PORTABLE' ? (wetC ?? template.port_dw_cents) : template.port_dw_cents,
+      template.source_label || `${catLabel || 'Template'} rate`,
+      template.fuel_cons_econ, template.fuel_cons_typ, template.fuel_cons_heavy, fuelBasis,
+      `Assigned from template ${template.id}`,
+      hrDry, hrWet, hrFw, dyDry, dyWet, dyFw, kmDry, kmWet, kmFw);
+    } else {
+      run(`
+        INSERT INTO fleet_rental_rates (
+          id, asset_id, category_name, rate_basis, rate_cents,
+          dry_rate_cents, wet_rate_cents, fully_wet_rate_cents, min_bill_hours,
+          equip_type, default_basis, port_dd_cents, port_dw_cents, source_label,
+          fuel_cons_econ, fuel_cons_typ, fuel_cons_heavy, fuel_cons_basis, note
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+      rateId, asset.id, catLabel, normBasis, baseC,
+      dryC, wetC, fwC, template.min_bill_hours ?? resolveDefaultMinUnits(normBasis),
+      normEqType, template.default_basis || 'WET',
+      normEqType === 'PORTABLE' ? (dryC ?? template.port_dd_cents) : template.port_dd_cents,
+      normEqType === 'PORTABLE' ? (wetC ?? template.port_dw_cents) : template.port_dw_cents,
+      template.source_label || `${catLabel || 'Template'} rate`,
+      template.fuel_cons_econ, template.fuel_cons_typ, template.fuel_cons_heavy, fuelBasis,
+      `Assigned from template ${template.id}`);
+    }
+
+    const updParts = [];
+    const updParams = [];
+    const curType = String(asset.type || '').trim();
+    if (catLabel && (!curType || curType === 'Other Asset' || curType === 'Quick Added')) {
+      updParts.push('type = ?');
+      updParams.push(catLabel);
+    }
+    if (assetCols.has('meter_type')) {
+      updParts.push('meter_type = ?');
+      updParams.push(normBasis === 'KM' || fuelBasis === 'km' ? 'KM' : 'HOURS');
+    }
+    if (assetCols.has('updated_at')) {
+      updParts.push("updated_at = datetime('now')");
+    }
+    if (updParts.length > 0) {
+      run(`UPDATE assets SET ${updParts.join(', ')} WHERE id = ?`, ...updParams, asset.id);
+    }
+  });
+
+  logAudit(req, 'fleet_rate', asset.id, 'hire.rate.assigned_template', {
+    rateId,
+    assetId: asset.id,
+    assetCode: asset.code,
+    templateRateId: template.id,
+    categoryName: catLabel,
+    rateBasis: normBasis,
+    dryRateCents: dryC,
+    wetRateCents: wetC,
+    fullyWetRateCents: fwC,
+  });
+
+  res.status(201).json({
+    ok: true,
+    id: rateId,
+    assetId: asset.id,
+    assetCode: asset.code,
+    categoryName: catLabel,
+    rateBasis: normBasis,
+  });
+}));
+
+router.post('/rates/mark-hired', requireAuth, requireCap('hire.rates.manage', 'costing.manage'), asyncHandler(async (req, res) => {
+  const { assetId, flagDirectBilledFuel = true, reason = 'Hired / outside-billed vehicle' } = req.body || {};
+  if (!assetId) return res.status(400).json({ error: 'assetId is required' });
+
+  const asset = get('SELECT * FROM assets WHERE id = ?', Number(assetId));
+  if (!asset) return res.status(404).json({ error: 'Asset not found' });
+
+  const cleanReason = String(reason || 'Hired / outside-billed vehicle').trim();
+  const assetCols = new Set(all('PRAGMA table_info(assets)').map((c) => c.name));
+  const fvaCols = new Set(all('PRAGMA table_info(fleet_vehicle_allocations)').map((c) => c.name));
+  const fiCols = new Set(all('PRAGMA table_info(fuel_issues)').map((c) => c.name));
+  const tankProjMap = fuelTimeline.loadTankProjectMap();
+
+  let draftsVoided = 0;
+  let skippedLockedDrafts = 0;
+  let fuelFlagged = 0;
+  let skippedLockedFuel = 0;
+
+  tx(() => {
+    const sets = [];
+    const params = [];
+    if (assetCols.has('ownership')) {
+      sets.push("ownership = 'HIRED'");
+    }
+    if (assetCols.has('in_register')) {
+      sets.push('in_register = 0');
+    }
+    if (assetCols.has('notes')) {
+      const curNote = String(asset.notes || '').trim();
+      const tag = `[outside-billed: ${cleanReason}]`;
+      const nextNote = curNote.includes('outside-billed')
+        ? curNote
+        : (curNote ? `${curNote} | ${tag}` : tag);
+      sets.push('notes = ?');
+      params.push(nextNote);
+    }
+    if (assetCols.has('updated_at')) {
+      sets.push("updated_at = datetime('now')");
+    }
+    if (sets.length > 0) {
+      run(`UPDATE assets SET ${sets.join(', ')} WHERE id = ?`, ...params, asset.id);
+    }
+
+    run('DELETE FROM fleet_rental_rates WHERE asset_id = ?', asset.id);
+
+    if (fvaCols.size > 0) {
+      const fvaSets = ['active = 0'];
+      if (fvaCols.has('updated_at')) fvaSets.push("updated_at = datetime('now')");
+      const lockedCond = fvaCols.has('locked') ? ' AND COALESCE(locked, 0) = 0' : '';
+      run(`UPDATE fleet_vehicle_allocations SET ${fvaSets.join(', ')} WHERE asset_id = ?${lockedCond}`, asset.id);
+    }
+
+    try {
+      run("UPDATE fleet_asset_assignments SET end_date = date('now') WHERE asset_id = ? AND end_date IS NULL", asset.id);
+    } catch (_) {}
+
+    const draftBills = all("SELECT id, period_key, project_id, notes FROM fleet_bills WHERE asset_id = ? AND status = 'DRAFT'", asset.id);
+    for (const b of draftBills) {
+      if (periodLocks.isPeriodLocked(b.period_key, b.project_id || 0)) {
+        skippedLockedDrafts++;
+        continue;
+      }
+      const nextBillNote = b.notes ? `${b.notes} | Voided (marked HIRED)` : 'Voided (marked HIRED)';
+      run("UPDATE fleet_bills SET status = 'VOID', notes = ?, updated_at = datetime('now') WHERE id = ?", nextBillNote, b.id);
+      draftsVoided++;
+    }
+
+    if (flagDirectBilledFuel && fiCols.has('is_direct_billed')) {
+      const assetIssues = all(`
+        SELECT id, issue_date, project_id, target_project_id, source_project_id, source_tank_id, bulk_tank_id
+          FROM fuel_issues
+         WHERE is_voided = 0
+           AND asset_id = ?
+           AND COALESCE(is_direct_billed, 0) = 0
+      `, asset.id);
+      for (const fi of assetIssues) {
+        const day = fuelTimeline.slstDate10(fi.issue_date);
+        const pk = day ? day.slice(0, 7) : null;
+        const pid = fuelTimeline.resolveIssueProjectId(fi, tankProjMap) || 0;
+        if (pk && periodLocks.isPeriodLocked(pk, pid)) {
+          skippedLockedFuel++;
+          continue;
+        }
+        run('UPDATE fuel_issues SET is_direct_billed = 1 WHERE id = ?', fi.id);
+        fuelFlagged++;
+      }
+    }
+  });
+
+  logAudit(req, 'fleet_rate', asset.id, 'hire.asset.marked_hired', {
+    assetId: asset.id,
+    assetCode: asset.code,
+    draftsVoided,
+    skippedLockedDrafts,
+    fuelFlagged,
+    skippedLockedFuel,
+  }, null, cleanReason);
+
+  res.json({
+    ok: true,
+    assetId: asset.id,
+    assetCode: asset.code,
+    draftsVoided,
+    skippedLockedDrafts,
+    fuelFlagged,
+    skippedLockedFuel,
+  });
+}));
+
 // ---------------------------------------------------------------------------
 // 4. Machine Site Allocations (Allocator Console)
 // ---------------------------------------------------------------------------
 
 router.get('/allocations', requireAuth, requireCap('allocations.view', 'hire.billing.view'), asyncHandler(async (req, res) => {
-  const { month, monthFrom, monthTo, dateFrom, dateTo, currentOnly, projectId, assetCode, basis, groupByRange = '1' } = req.query;
+  const { month, monthFrom, monthTo, dateFrom, dateTo, currentOnly, projectId, assetCode, basis, origin, groupByRange = '1' } = req.query;
   const conditions = [];
   const params = [];
   const curMonth = currentMonthKey();
@@ -2057,6 +2787,10 @@ router.get('/allocations', requireAuth, requireCap('allocations.view', 'hire.bil
     conditions.push('UPPER(COALESCE(va.basis, \'\')) = UPPER(?)');
     params.push(String(basis));
   }
+  if (origin && origin !== 'ALL') {
+    conditions.push("UPPER(COALESCE(va.origin, 'MANUAL')) = UPPER(?)");
+    params.push(String(origin));
+  }
 
   const whereClause = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
 
@@ -2066,9 +2800,12 @@ router.get('/allocations', requireAuth, requireCap('allocations.view', 'hire.bil
            p.code AS project_code,
            COALESCE(a.code, a.ec_code, va.vehicle_no) AS asset_code,
            COALESCE(a.type, va.machine_type) AS asset_type,
+           COALESCE(a.ownership, 'OWNED') AS ownership,
            a.registration,
            a.brand,
            a.model_no,
+           COALESCE(va.origin, 'MANUAL') AS origin,
+           COALESCE(va.locked, 0) AS locked,
            COALESCE(va.basis, 'DRY_WITH_DRIVER') AS assigned_basis,
            COALESCE(va.month_from, va.month) AS month_from,
            COALESCE(va.month_to, va.month) AS month_to,
@@ -2098,6 +2835,7 @@ router.get('/allocations', requireAuth, requireCap('allocations.view', 'hire.bil
         r.date_from || r.month_from || r.month,
         r.is_current ? 'CURRENT' : (r.date_to || r.month_to || r.month),
         r.assigned_basis,
+        r.origin || 'MANUAL',
       ].join('|');
       if (seen.has(rangeKey)) continue;
       seen.add(rangeKey);
@@ -2108,11 +2846,29 @@ router.get('/allocations', requireAuth, requireCap('allocations.view', 'hire.bil
   res.json({ allocations: rows, currentMonth: curMonth, today: breakdowns.todayStr() });
 }));
 
+router.post('/allocations/sync-from-fuel', requireAuth, requireCap('allocations.manage', 'hire.billing.generate'), asyncHandler(async (req, res) => {
+  const {
+    month = currentMonthKey(),
+    projectId = null,
+    assetId = null,
+    dryRun = false,
+  } = req.body || {};
+  const actorId = req.user ? req.user.id : 1;
+  const result = fuelTimeline.syncFuelAllocations({
+    periodKey: String(month).trim().slice(0, 7),
+    projectId,
+    assetId,
+    dryRun: Boolean(dryRun),
+    actorId,
+  });
+  res.json({ ok: true, ...result });
+}));
+
 router.post('/allocations', requireAuth, requireCap('allocations.manage', 'hire.billing.generate'), asyncHandler(async (req, res) => {
   const {
     assetId: reqAssetId, assetCode, projectId, siteName,
     month, monthFrom, monthTo, dateFrom, dateTo, isCurrent,
-    assignedBasis = 'DRY_WITH_DRIVER', driverName, startDate, endDate, notes
+    assignedBasis = 'DRY_WITH_DRIVER', driverName, startDate, endDate, notes, locked = false
   } = req.body;
 
   if ((!reqAssetId && !assetCode) || (!projectId && !siteName)) {
@@ -2179,7 +2935,9 @@ router.post('/allocations', requireAuth, requireCap('allocations.manage', 'hire.
   const resolvedSite = proj ? proj.name : String(siteName || '').trim();
   const resolvedCode = asset ? (asset.code || asset.ec_code || asset.registration) : String(assetCode).trim().toUpperCase();
   const machineType = asset ? (asset.type || null) : null;
-  const resolvedBasis = normalizeAllocBasis(assignedBasis, 'DRY_WITH_DRIVER');
+  const isHired = Boolean(asset && fuelTimeline.isHiredAsset(asset));
+  const ownerCode = isHired ? 'HIRED' : 'E&C';
+  const resolvedBasis = normalizeAllocBasis(assignedBasis, isHired ? 'BILLED_DIRECT' : 'DRY_WITH_DRIVER');
   const effectiveStartDate = effDateFrom;
   const effectiveEndDate = currentFlag ? null : effDateTo;
   const actorId = req.user ? req.user.id : null;
@@ -2192,15 +2950,20 @@ router.post('/allocations', requireAuth, requireCap('allocations.manage', 'hire.
     }
 
     // 2. Upsert monthly index rows across [mFrom .. mTo] while storing exact date_from & date_to
+    const isLockedFlag = locked ? 1 : 0;
     for (const m of monthsList) {
+      // Remove any AUTO_FUEL rows in this month superseded by manual allocation
+      if (asset) {
+        run("DELETE FROM fleet_vehicle_allocations WHERE asset_id = ? AND month = ? AND COALESCE(origin, 'MANUAL') = 'AUTO_FUEL' AND COALESCE(locked, 0) = 0", asset.id, m);
+      }
       const dedupeKey = `${resolvedSite}|${m}|${resolvedCode}`;
       const allocId = `valloc-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
       run(`
         INSERT INTO fleet_vehicle_allocations (
           id, dedupe_key, asset_id, vehicle_no, project_id, site_name,
           month, month_from, month_to, date_from, date_to, is_current, machine_type, owner_code,
-          basis, active, driver_name, notes, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'E&C', ?, 1, ?, ?, datetime('now'), datetime('now'))
+          basis, active, driver_name, notes, origin, locked, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, 'MANUAL', ?, datetime('now'), datetime('now'))
         ON CONFLICT(dedupe_key) DO UPDATE SET
           asset_id = COALESCE(excluded.asset_id, fleet_vehicle_allocations.asset_id),
           project_id = COALESCE(excluded.project_id, fleet_vehicle_allocations.project_id),
@@ -2211,15 +2974,18 @@ router.post('/allocations', requireAuth, requireCap('allocations.manage', 'hire.
           date_to = excluded.date_to,
           is_current = excluded.is_current,
           machine_type = COALESCE(excluded.machine_type, fleet_vehicle_allocations.machine_type),
+          owner_code = excluded.owner_code,
           basis = excluded.basis,
           active = 1,
           driver_name = COALESCE(excluded.driver_name, fleet_vehicle_allocations.driver_name),
           notes = COALESCE(excluded.notes, fleet_vehicle_allocations.notes),
+          origin = 'MANUAL',
+          locked = excluded.locked,
           updated_at = datetime('now')
       `, allocId, dedupeKey, asset ? asset.id : null, resolvedCode,
          proj ? proj.id : null, resolvedSite, m, mFrom, mTo,
-         effectiveStartDate, effectiveEndDate, currentFlag ? 1 : 0, machineType, resolvedBasis,
-         driverName || null, notes || null);
+         effectiveStartDate, effectiveEndDate, currentFlag ? 1 : 0, machineType, ownerCode, resolvedBasis,
+         driverName || null, notes || null, isLockedFlag);
       createdIds.push(allocId);
     }
 
@@ -2297,15 +3063,17 @@ router.patch('/allocations/:id', requireAuth, requireCap('allocations.manage', '
   const row = get('SELECT * FROM fleet_vehicle_allocations WHERE id = ?', req.params.id);
   if (!row) return res.status(404).json({ error: 'Allocation not found' });
 
-  const { assignedBasis, driverName, notes, monthTo, dateFrom, dateTo, isCurrent, action } = req.body || {};
+  const { assignedBasis, driverName, notes, monthTo, dateFrom, dateTo, isCurrent, locked, action } = req.body || {};
   const nextCurrent = action === 'end' ? 0 : (isCurrent !== undefined ? (isCurrent ? 1 : 0) : row.is_current);
+  const nextLocked = action === 'lock' ? 1 : (action === 'unlock' ? 0 : (locked !== undefined ? (locked ? 1 : 0) : (row.locked || 0)));
+  const nextOrigin = (action === 'lock' || nextLocked === 1) ? 'MANUAL' : (row.origin || 'MANUAL');
   const nextDateFrom = dateFrom ? (breakdowns.d10(dateFrom) || row.date_from) : row.date_from;
   let nextDateTo = row.date_to;
   if (action === 'end') {
     nextDateTo = breakdowns.todayStr();
   } else if (dateTo !== undefined) {
     nextDateTo = dateTo ? breakdowns.d10(dateTo) : null;
-  } else if (nextCurrent) {
+  } else if (nextCurrent && action !== 'lock' && action !== 'unlock') {
     nextDateTo = null;
   }
   if (nextDateFrom && nextDateTo && nextDateTo < nextDateFrom) {
@@ -2326,6 +3094,8 @@ router.patch('/allocations/:id', requireAuth, requireCap('allocations.manage', '
              month_from = COALESCE(?, month_from),
              month_to = COALESCE(?, month_to),
              is_current = ?,
+             origin = ?,
+             locked = ?,
              updated_at = datetime('now')
        WHERE id = ?
           OR (vehicle_no = ? AND COALESCE(project_id, 0) = COALESCE(?, 0) AND COALESCE(date_from, '') = COALESCE(?, '') AND COALESCE(month_from, '') = COALESCE(?, ''))
@@ -2333,6 +3103,7 @@ router.patch('/allocations/:id', requireAuth, requireCap('allocations.manage', '
        notes !== undefined ? (notes || null) : null,
        nextDateFrom || null, nextDateTo || null,
        nextMonthFrom || null, nextMonthTo || null, nextCurrent,
+       nextOrigin, nextLocked,
        row.id, row.vehicle_no, row.project_id, row.date_from, row.month_from);
 
     if (action === 'end' && row.asset_id) {
@@ -2348,11 +3119,13 @@ router.patch('/allocations/:id', requireAuth, requireCap('allocations.manage', '
     id: row.id,
     basis: nextBasis,
     isCurrent: nextCurrent,
+    locked: nextLocked,
+    origin: nextOrigin,
     dateFrom: nextDateFrom,
     dateTo: nextDateTo,
     monthTo: nextMonthTo,
   });
-  res.json({ ok: true, id: row.id, dateFrom: nextDateFrom, dateTo: nextDateTo, isCurrent: !!nextCurrent });
+  res.json({ ok: true, id: row.id, dateFrom: nextDateFrom, dateTo: nextDateTo, isCurrent: !!nextCurrent, locked: !!nextLocked, origin: nextOrigin });
 }));
 
 // ---------------------------------------------------------------------------

@@ -7,6 +7,7 @@ const { requireModule } = require('../lib/permissions');
 const { asyncHandler } = require('../lib/http');
 const emitter = require('../lib/emitter');
 const audit = require('../lib/audit');
+const breakdowns = require('../lib/billing/breakdowns');
 
 const router = express.Router();
 
@@ -244,7 +245,21 @@ const handleSingleVehicleReport = asyncHandler((req, res) => {
   const totalOtherExpenses = Math.round(driverCostLines.reduce((acc, c) => acc + (c.other_expenses || 0), 0) * 100) / 100;
   const totalDriverOtherCosts = Math.round(driverCostLines.reduce((acc, c) => acc + (c.amount || (c.driver_salary + c.bata_ot + c.other_expenses) || 0), 0) * 100) / 100;
 
-  // E. FINAL NET VEHICLE COSTING & PROFITABILITY CALCULATION
+  // E. FINAL NET VEHICLE COSTING, BREAKDOWN COST IMPACT & PROFITABILITY CALCULATION
+  let bdMetrics = null;
+  try {
+    const bdMap = breakdowns.getMonthlyBreakdownMetricsMap(month);
+    bdMetrics = bdMap.get(assetId) || null;
+  } catch (_) {}
+  const bdBounds = breakdowns.monthBounds(month);
+  const daysInMonth = bdBounds ? bdBounds.daysInMonth : 30;
+  const breakdownDays = bdMetrics ? bdMetrics.breakdownDays : 0;
+  const lostHireRevenue = bdMetrics ? Math.round(bdMetrics.lostHireRevenueCents) / 100 : 0;
+  const totalBreakdownImpact = Math.round((totalRepairCost + lostHireRevenue) * 100) / 100;
+  const availabilityPercent = daysInMonth > 0
+    ? Math.max(0, Math.round(((daysInMonth - breakdownDays) / daysInMonth) * 1000) / 10)
+    : 100;
+
   const totalExpenses = Math.round((totalRepairCost + totalDieselCost + totalDriverOtherCosts) * 100) / 100;
   const netProfit = Math.round((totalHiringRevenue - totalExpenses) * 100) / 100;
   const profitMarginPct = totalHiringRevenue > 0
@@ -280,7 +295,11 @@ const handleSingleVehicleReport = asyncHandler((req, res) => {
       net_profit: netProfit,
       final_net_profit: netProfit,
       profit_margin_percent: profitMarginPct,
-      is_profitable: netProfit >= 0
+      is_profitable: netProfit >= 0,
+      breakdown_days: breakdownDays,
+      lost_hire_revenue: lostHireRevenue,
+      total_breakdown_impact: totalBreakdownImpact,
+      availability_percent: availabilityPercent,
     },
     breakdown: {
       hiring_revenue: {
@@ -311,7 +330,15 @@ const handleSingleVehicleReport = asyncHandler((req, res) => {
         bata_ot_subtotal: totalBataOt,
         other_expenses_subtotal: totalOtherExpenses,
         lines: driverCostLines
-      }
+      },
+      downtime: {
+        breakdown_days: breakdownDays,
+        lost_hire_revenue: lostHireRevenue,
+        workshop_repair_cost: totalRepairCost,
+        total_breakdown_impact: totalBreakdownImpact,
+        availability_percent: availabilityPercent,
+        records: bdMetrics ? bdMetrics.records : [],
+      },
     }
   });
 });
@@ -386,11 +413,20 @@ router.get('/fleet-summary', requireAuth, requireModule('costing'), asyncHandler
     `, month).map(x => [x.asset_id, x.c])
   );
 
+  let bdMetricsMap = new Map();
+  try {
+    bdMetricsMap = breakdowns.getMonthlyBreakdownMetricsMap(month);
+  } catch (_) {}
+  const bdBounds = breakdowns.monthBounds(month);
+  const daysInMonth = bdBounds ? bdBounds.daysInMonth : 30;
+
   const summaryRows = [];
   let fleetRevenue = 0;
   let fleetRepair = 0;
   let fleetDiesel = 0;
   let fleetDriverOther = 0;
+  let fleetBreakdownDays = 0;
+  let fleetLostHireRevenue = 0;
 
   for (const a of assets) {
     const rev1 = directRevMap.get(a.id) || 0;
@@ -408,6 +444,14 @@ router.get('/fleet-summary', requireAuth, requireModule('costing'), asyncHandler
 
     const driverOtherCost = Math.round((driverCostMap.get(a.id) || 0) * 100) / 100;
 
+    const bdEntry = bdMetricsMap.get(a.id);
+    const breakdownDays = bdEntry ? bdEntry.breakdownDays : 0;
+    const lostHireRevenue = bdEntry ? Math.round(bdEntry.lostHireRevenueCents) / 100 : 0;
+    const totalBreakdownImpact = Math.round((repairCost + lostHireRevenue) * 100) / 100;
+    const availabilityPercent = daysInMonth > 0
+      ? Math.max(0, Math.round(((daysInMonth - breakdownDays) / daysInMonth) * 1000) / 10)
+      : 100;
+
     const totalExpenses = Math.round((repairCost + dieselCost + driverOtherCost) * 100) / 100;
     const netProfit = Math.round((hiringRevenue - totalExpenses) * 100) / 100;
     const profitMarginPct = hiringRevenue > 0
@@ -418,6 +462,8 @@ router.get('/fleet-summary', requireAuth, requireModule('costing'), asyncHandler
     fleetRepair += repairCost;
     fleetDiesel += dieselCost;
     fleetDriverOther += driverOtherCost;
+    fleetBreakdownDays += breakdownDays;
+    fleetLostHireRevenue += lostHireRevenue;
 
     summaryRows.push({
       id: a.id,
@@ -437,7 +483,11 @@ router.get('/fleet-summary', requireAuth, requireModule('costing'), asyncHandler
       total_expenses: totalExpenses,
       net_profit: netProfit,
       margin_percent: profitMarginPct,
-      profit_margin_percent: profitMarginPct
+      profit_margin_percent: profitMarginPct,
+      breakdown_days: breakdownDays,
+      lost_hire_revenue: lostHireRevenue,
+      total_breakdown_impact: totalBreakdownImpact,
+      availability_percent: availabilityPercent,
     });
   }
 
@@ -447,6 +497,12 @@ router.get('/fleet-summary', requireAuth, requireModule('costing'), asyncHandler
   const fleetNetProfit = Math.round((fleetRevenue - fleetExpenses) * 100) / 100;
   const fleetMargin = fleetRevenue > 0 ? Math.round((fleetNetProfit / fleetRevenue) * 1000) / 10 : 0;
   const fleetLitres = Math.round(summaryRows.reduce((acc, r) => acc + (r.diesel_litres || 0), 0) * 100) / 100;
+  const fleetLostHireRounded = Math.round(fleetLostHireRevenue * 100) / 100;
+  const fleetTotalBdImpact = Math.round((fleetRepair + fleetLostHireRounded) * 100) / 100;
+  const activeOpCount = summaryRows.filter((r) => r.hiring_revenue > 0 || r.diesel_litres > 0 || r.repair_cost > 0 || r.breakdown_days > 0).length;
+  const fleetAvailPct = activeOpCount > 0 && daysInMonth > 0
+    ? Math.max(0, Math.round((1 - (fleetBreakdownDays / (activeOpCount * daysInMonth))) * 1000) / 10)
+    : 100;
 
   res.json({
     month,
@@ -459,7 +515,11 @@ router.get('/fleet-summary', requireAuth, requireModule('costing'), asyncHandler
       total_driver_other_costs: Math.round(fleetDriverOther * 100) / 100,
       total_expenses: fleetExpenses,
       total_net_profit: fleetNetProfit,
-      fleet_profit_margin_percent: fleetMargin
+      fleet_profit_margin_percent: fleetMargin,
+      total_breakdown_days: fleetBreakdownDays,
+      total_lost_hire_revenue: fleetLostHireRounded,
+      total_breakdown_impact: fleetTotalBdImpact,
+      fleet_availability_percent: fleetAvailPct,
     },
     vehicles: summaryRows
   });

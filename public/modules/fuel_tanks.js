@@ -17,22 +17,41 @@
     const canRefill = isAdm || (typeof canDo === 'function' && canDo('fuel.tanks.refill'));
     const canSeeCost = isAdm || (typeof canDo === 'function' && canDo('fuel.prices.view', 'fuel.reports.view', 'fuel.tanks.manage'));
 
+    let curFilter = 'all';
+    let lastReconcile = null;
+
     content.innerHTML = `
       <div class="crumb"><a href="#/dashboard">Dashboard</a> / <a href="#/fuel">Fuel</a> / Bulk Tanks</div>
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:12px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:12px">
         <div>
           <h1 style="margin:0;font-size:24px;font-weight:700">Storage Tanks &amp; Mobile Bowsers</h1>
-          <p class="muted" style="margin:4px 0 0 0">Bulk diesel inventory, dipstick audits, delivery history, and site Bowser deployments</p>
+          <p class="muted" style="margin:4px 0 0 0">Bulk diesel inventory, dipstick reconciliation, opening-stock calibration, and site Bowser deployments</p>
         </div>
-        <div style="display:flex;gap:8px">
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          ${(canManageTanks || canDip) ? '<button class="btn" id="btn_tank_wizard">🧭 Opening Stock &amp; Dip Wizard</button>' : ''}
+          <a class="btn" href="#/fuel?tab=sites-overview">🎯 Site Fuel Budgets →</a>
           ${canManageTanks ? '<button class="btn primary" id="btn_new_tank">+ New Tank / Bowser</button>' : ''}
         </div>
+      </div>
+
+      <div id="tank_recon_strip" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;margin-bottom:12px"></div>
+
+      <div class="pill-row" id="tank_filter_pills" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px">
+        <button type="button" class="btn sm primary" data-tfilter="all">All Active Tanks</button>
+        <button type="button" class="btn sm" data-tfilter="zero">Zero Stock (0 L)</button>
+        <button type="button" class="btn sm" data-tfilter="low">Low Stock (&lt;20%)</button>
+        <button type="button" class="btn sm" data-tfilter="variance">Unresolved Dip Variance</button>
       </div>
 
       <div class="tank-grid" id="tanks_container" style="display:grid;grid-template-columns:repeat(auto-fill, minmax(320px, 1fr));gap:16px">
         <div class="card" style="padding:24px;text-align:center" class="muted">Loading storage tanks...</div>
       </div>
     `;
+
+    const wizardBtn = qs('#btn_tank_wizard', content);
+    if (wizardBtn) {
+      wizardBtn.onclick = () => openReconciliationWizard();
+    }
 
     const newTankBtn = qs('#btn_new_tank', content);
     if (newTankBtn) {
@@ -129,30 +148,209 @@
       };
     }
 
+    async function openReconciliationWizard() {
+      const dlg = document.createElement('div');
+      dlg.className = 'modal-bg modal-backdrop';
+      dlg.innerHTML = `
+        <div class="modal" style="max-width:860px;width:96%;max-height:88vh;overflow-y:auto;padding:24px">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+            <div>
+              <h2 style="margin:0">🧭 Opening Stock &amp; Tank Dip Reconciliation Wizard</h2>
+              <p class="muted" style="margin:4px 0 0 0;font-size:12px">Set opening stock calibration without triggering variance alerts, and clear historical dip discrepancies with audit notes.</p>
+            </div>
+            <button type="button" class="btn sm" id="wiz_close">✕ Close</button>
+          </div>
+          <div id="wiz_body" class="muted" style="padding:18px;text-align:center">Loading reconciliation data…</div>
+        </div>
+      `;
+      document.body.appendChild(dlg);
+      dlg.querySelector('#wiz_close').onclick = () => dlg.remove();
+      dlg.onclick = (e) => { if (e.target === dlg) dlg.remove(); };
+
+      async function paintWizard() {
+        const body = dlg.querySelector('#wiz_body');
+        try {
+          const [recon, tRes] = await Promise.all([
+            api('/fuel/tanks/reconciliation'),
+            api('/fuel/tanks'),
+          ]);
+          const allTanks = (tRes.tanks || []).filter((t) => t.active !== 0 && !t.hide_stock);
+          const unres = recon.unresolved_dips || [];
+          const sortedTanks = [...allTanks].sort((a, b) => (Number(a.current_litres) || 0) - (Number(b.current_litres) || 0));
+
+          body.innerHTML = `
+            <div style="text-align:left">
+              <h3 style="margin:0 0 6px 0;font-size:15px">1. Unresolved High-Variance Physical Dips (&gt; ${esc(recon.threshold_litres || 50)} L) — ${unres.length}</h3>
+              ${unres.length ? `
+                <div style="max-height:220px;overflow-y:auto;margin-bottom:16px;border:1px solid var(--border);border-radius:6px">
+                  <table class="table" style="width:100%;font-size:12px;margin:0">
+                    <thead><tr><th>Tank</th><th>Date</th><th style="text-align:right">Dip (L)</th><th style="text-align:right">Book (L)</th><th style="text-align:right">Variance (L)</th><th>Reconciliation Note *</th><th></th></tr></thead>
+                    <tbody>
+                      ${unres.map((d) => `
+                        <tr>
+                          <td><b>${esc(d.tank_name)}</b><div class="muted" style="font-size:10.5px">${esc(d.tank_code)}</div></td>
+                          <td style="white-space:nowrap">${esc(String(d.dip_date || '').slice(0, 16))}</td>
+                          <td style="text-align:right">${Number(d.dip_litres || 0).toLocaleString()} L</td>
+                          <td style="text-align:right">${Number(d.computed_balance || 0).toLocaleString()} L</td>
+                          <td style="text-align:right;font-weight:700;color:#dc2626">${d.variance_litres > 0 ? '+' : ''}${Number(d.variance_litres || 0).toLocaleString()} L</td>
+                          <td><input type="text" class="input sm wiz-rec-note" data-dip="${esc(d.id)}" placeholder="Reason / physical audit sign-off" style="min-width:190px"></td>
+                          <td><button type="button" class="btn sm primary wiz-rec-btn" data-dip="${esc(d.id)}">✓ Reconcile</button></td>
+                        </tr>
+                      `).join('')}
+                    </tbody>
+                  </table>
+                </div>` : '<div class="card" style="padding:10px 12px;margin-bottom:14px;border-left:3px solid #10b981;font-size:12.5px">✅ No unresolved tank dip discrepancies above threshold.</div>'}
+
+              <h3 style="margin:0 0 6px 0;font-size:15px">2. Bulk Opening Stock Calibration (${(recon.counts && recon.counts.zero_stock_count) || 0} tanks at 0 L)</h3>
+              <p class="muted" style="margin:0 0 8px 0;font-size:11.5px">Enter opening physical stock (L) for any tank you want to initialize or recalibrate. Blank rows are skipped.</p>
+              <div style="max-height:260px;overflow-y:auto;border:1px solid var(--border);border-radius:6px">
+                <table class="table" style="width:100%;font-size:12px;margin:0">
+                  <thead><tr><th>Tank</th><th>Site</th><th style="text-align:right">Current</th><th style="text-align:right">Capacity</th><th>New Opening Stock (L)</th><th>Audit Note</th></tr></thead>
+                  <tbody>
+                    ${sortedTanks.map((t) => `
+                      <tr class="wiz-os-row" data-tid="${esc(t.id)}">
+                        <td><b>${esc(t.name)}</b> <span class="badge">${esc(t.tank_type)}</span></td>
+                        <td>${esc(t.project_name || 'Central')}</td>
+                        <td style="text-align:right;font-weight:700;color:${(Number(t.current_litres) || 0) <= 0 ? '#dc2626' : 'inherit'}">${Number(t.current_litres || 0).toLocaleString()} L</td>
+                        <td style="text-align:right">${Number(t.capacity_litres || 0).toLocaleString()} L</td>
+                        <td><input type="number" step="0.1" min="0" class="input sm wiz-os-val" placeholder="Leave blank to skip" style="width:135px"></td>
+                        <td><input type="text" class="input sm wiz-os-note" placeholder="Opening physical gauge" style="width:170px"></td>
+                      </tr>
+                    `).join('')}
+                  </tbody>
+                </table>
+              </div>
+              <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:12px">
+                <button type="button" class="btn primary" id="wiz_save_os">💾 Apply Opening Stock Updates</button>
+              </div>
+            </div>
+          `;
+
+          qsa('.wiz-rec-btn', body).forEach((btn) => {
+            btn.onclick = async () => {
+              const dipId = btn.dataset.dip;
+              const noteInp = body.querySelector(`.wiz-rec-note[data-dip="${CSS.escape(dipId)}"]`);
+              const note = noteInp ? noteInp.value.trim() : '';
+              if (note.length < 3) {
+                if (typeof toast === 'function') toast('Enter a reconciliation explanation (min 3 characters)', 'err');
+                return;
+              }
+              try {
+                await api(`/fuel/tanks/dips/${encodeURIComponent(dipId)}/reconcile`, {
+                  method: 'POST',
+                  body: { note },
+                });
+                if (typeof toast === 'function') toast('Tank dip variance reconciled');
+                paintWizard();
+                loadTanks();
+              } catch (err) {
+                if (typeof toast === 'function') toast(err.message, 'err');
+              }
+            };
+          });
+
+          const saveOsBtn = body.querySelector('#wiz_save_os');
+          if (saveOsBtn) {
+            saveOsBtn.onclick = async () => {
+              const items = [];
+              qsa('.wiz-os-row', body).forEach((row) => {
+                const raw = row.querySelector('.wiz-os-val').value;
+                if (raw === '' || raw === null) return;
+                items.push({
+                  tankId: row.dataset.tid,
+                  openingLitres: Number(raw),
+                  note: row.querySelector('.wiz-os-note').value.trim() || 'Opening stock calibration',
+                });
+              });
+              if (!items.length) {
+                if (typeof toast === 'function') toast('Enter opening litres for at least one tank', 'err');
+                return;
+              }
+              try {
+                const res = await api('/fuel/tanks/opening-stock', {
+                  method: 'POST',
+                  body: { items },
+                });
+                if (typeof toast === 'function') toast(`Updated opening stock on ${res.updated_count || items.length} tank(s)`);
+                paintWizard();
+                loadTanks();
+              } catch (err) {
+                if (typeof toast === 'function') toast(err.message, 'err');
+              }
+            };
+          }
+        } catch (err) {
+          body.innerHTML = `<div class="err">${esc(err.message)}</div>`;
+        }
+      }
+
+      paintWizard();
+    }
+
     async function loadTanks() {
       const container = qs('#tanks_container');
       try {
-        const { tanks } = await api('/fuel/tanks');
-        if (!tanks || !tanks.length) {
-          container.innerHTML = '<div class="card" style="padding:24px;text-align:center" class="muted">No storage tanks configured in your scope.</div>';
+        const [{ tanks }, recon] = await Promise.all([
+          api('/fuel/tanks'),
+          api('/fuel/tanks/reconciliation').catch(() => null),
+        ]);
+        lastReconcile = recon;
+        const unresolvedTankIds = new Set((recon && recon.unresolved_dips ? recon.unresolved_dips : []).map((d) => String(d.tank_id)));
+
+        const strip = qs('#tank_recon_strip', content);
+        if (strip && recon && recon.counts) {
+          const rc = recon.counts;
+          strip.innerHTML = `
+            <div class="card kpi-card" style="padding:12px 14px"><div class="muted" style="font-size:11px;font-weight:600">ACTIVE TANKS</div><div style="font-size:22px;font-weight:800">${rc.total_tanks}</div></div>
+            <div class="card kpi-card" style="padding:12px 14px;${rc.zero_stock_count ? 'border-left:4px solid #dc2626' : ''}"><div class="muted" style="font-size:11px;font-weight:600">AT 0 L (NEEDS OPENING)</div><div style="font-size:22px;font-weight:800;color:${rc.zero_stock_count ? '#dc2626' : '#059669'}">${rc.zero_stock_count}</div></div>
+            <div class="card kpi-card" style="padding:12px 14px"><div class="muted" style="font-size:11px;font-weight:600">LOW STOCK (&lt;20%)</div><div style="font-size:22px;font-weight:800;color:${rc.low_stock_count ? '#d97706' : '#059669'}">${rc.low_stock_count}</div></div>
+            <div class="card kpi-card" style="padding:12px 14px;${rc.unresolved_dip_count ? 'border-left:4px solid #dc2626' : ''}"><div class="muted" style="font-size:11px;font-weight:600">UNRESOLVED DIP VARIANCES</div><div style="font-size:22px;font-weight:800;color:${rc.unresolved_dip_count ? '#dc2626' : '#059669'}">${rc.unresolved_dip_count}</div></div>
+          `;
+        }
+
+        qsa('[data-tfilter]', content).forEach((b) => {
+          b.classList.toggle('primary', b.dataset.tfilter === curFilter);
+          b.onclick = () => {
+            curFilter = b.dataset.tfilter;
+            loadTanks();
+          };
+        });
+
+        const visibleTanks = (tanks || []).filter((t) => {
+          const isHidden = !!t.hide_stock || t.current_litres == null;
+          if (curFilter === 'all') return true;
+          if (curFilter === 'zero') return !isHidden && (Number(t.current_litres) || 0) <= 0;
+          if (curFilter === 'low') {
+            const cap = Number(t.capacity_litres) || 0;
+            const cur = Number(t.current_litres) || 0;
+            return !isHidden && cap > 0 && cur > 0 && (cur / cap) < 0.2;
+          }
+          if (curFilter === 'variance') return unresolvedTankIds.has(String(t.id));
+          return true;
+        });
+
+        if (!visibleTanks.length) {
+          container.innerHTML = '<div class="card" style="padding:24px;text-align:center" class="muted">No storage tanks match this filter.</div>';
           return;
         }
 
-        container.innerHTML = tanks.map((t) => {
+        container.innerHTML = visibleTanks.map((t) => {
           const isHidden = !!t.hide_stock || t.current_litres == null;
           const cap = Number(t.capacity_litres) || 1;
           const curr = isHidden ? 0 : (Number(t.current_litres) || 0);
           const pct = isHidden ? 0 : Math.min(100, Math.round((curr / cap) * 100));
           const isLow = !isHidden && pct < 20;
+          const hasVar = unresolvedTankIds.has(String(t.id));
           const barColor = isLow ? '#ef4444' : (pct > 75 ? '#10b981' : '#3b82f6');
 
           return `
-            <div class="card" style="padding:18px;display:flex;flex-direction:column;justify-content:space-between">
+            <div class="card" style="padding:18px;display:flex;flex-direction:column;justify-content:space-between;${hasVar ? 'border:1px solid #ef4444' : ''}">
               <div>
                 <div style="display:flex;justify-content:space-between;align-items:flex-start">
                   <div>
                     <h3 style="margin:0 0 4px 0;font-size:16px">${esc(t.name)}</h3>
                     <span class="badge ${t.tank_type === 'BOWSER' ? 'info' : 'secondary'}">${esc(t.tank_type)}</span>
+                    ${hasVar ? '<span class="badge red" style="margin-left:4px">⚠️ Dip Variance</span>' : ''}
                     ${t.project_name ? `<span class="muted" style="font-size:11px;margin-left:6px">📍 ${esc(t.project_name)}</span>` : ''}
                   </div>
                   <span style="font-size:18px">${t.tank_type === 'BOWSER' ? '🚛' : '🛢️'}</span>
@@ -212,8 +410,8 @@
                 <h4 style="margin:6px 0">📏 Physical Dipstick Audits (${dips.length})</h4>
                 <div style="max-height:180px;overflow-y:auto">
                   <table class="table" style="width:100%;font-size:12px">
-                    <thead><tr><th>Date</th><th style="text-align:right">Dip (L)</th><th style="text-align:right">Variance (L)</th><th>Recorded By</th><th>Notes</th></tr></thead>
-                    <tbody>${dips.length ? dips.map((d) => `<tr><td>${esc(String(d.dip_date || '').slice(0, 10))}</td><td style="text-align:right">${Number(d.dip_litres || 0).toLocaleString()} L</td><td style="text-align:right;font-weight:700">${d.variance_litres > 0 ? '+' : ''}${Number(d.variance_litres || 0).toLocaleString()} L</td><td>${esc(d.recorder_name || '—')}</td><td>${esc(d.notes || '—')}</td></tr>`).join('') : '<tr><td colspan="5" class="muted" style="text-align:center">No dips recorded</td></tr>'}</tbody>
+                    <thead><tr><th>Date</th><th>Type</th><th style="text-align:right">Dip (L)</th><th style="text-align:right">Variance (L)</th><th>Status</th><th>Recorded By</th><th>Notes</th></tr></thead>
+                    <tbody>${dips.length ? dips.map((d) => `<tr><td>${esc(String(d.dip_date || '').slice(0, 10))}</td><td><span class="badge" style="font-size:10px">${esc(d.dip_type || 'PHYSICAL_DIP')}</span></td><td style="text-align:right">${Number(d.dip_litres || 0).toLocaleString()} L</td><td style="text-align:right;font-weight:700">${d.variance_litres > 0 ? '+' : ''}${Number(d.variance_litres || 0).toLocaleString()} L</td><td>${d.reconciled ? '<span class="badge green">Reconciled</span>' : (Math.abs(Number(d.variance_litres || 0)) > 50 ? '<span class="badge red">Open Variance</span>' : '<span class="badge">OK</span>')}</td><td>${esc(d.recorder_name || '—')}</td><td>${esc(d.reconciled_note || d.note || d.notes || '—')}</td></tr>`).join('') : '<tr><td colspan="7" class="muted" style="text-align:center">No dips recorded</td></tr>'}</tbody>
                   </table>
                 </div>
               `;

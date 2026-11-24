@@ -173,6 +173,7 @@ router.post('/items/:id/adjust', requireCap('general.stock.adjust'), asyncHandle
   const assetId = toInt(b.asset_id) || (job ? job.asset_id : null);
 
   const out = tx(() => {
+    const storeId = stores.forEntry(req.user, jobId, b.txn_date);   // Stage 4: the store of whoever wrote it down
     const t = run(
       `INSERT INTO general_item_txns (store_item_id, txn_type, qty, balance_after, unit_price, asset_id, job_id, ref, txn_date, store_id)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -181,11 +182,25 @@ router.post('/items/:id/adjust', requireCap('general.stock.adjust'), asyncHandle
       assetId || null,
       jobId || null,
       b.reason || b.ref || null, b.txn_date || new Date().toISOString().slice(0, 10),
-      stores.forEntry(req.user, jobId, b.txn_date)   // Stage 4: the store of whoever wrote it down
+      storeId
     ).lastInsertRowid;
     run(`UPDATE store_items SET balance = ? WHERE id = ?`, balanceAfter, id);
+    const guardOpts = {
+      actor: req.user,
+      allowNegativeOverride: !!b.allow_negative_override,
+      overrideReason: b.override_reason,
+    };
+    const stockRule = require('../lib/stock_rule');
+    if (kind === 'issue') {
+      stockRule.checkLedgerBalance({
+        name: item.name,
+        balanceAfter,
+        wanted: qtyMag,
+        storeLabel: stores.label(storeId),
+      }, guardOpts);
+    }
     // Stores plan, Part 3: on the shelf now — and an issue, once the store's rule has started, not past zero.
-    require('../lib/stock_rule').check(require('../lib/stock').sync({ general_item_txns: [t] }));
+    stockRule.check(require('../lib/stock').sync({ general_item_txns: [t] }), guardOpts);
     if (jobId) {
       try { require('../lib/costing').refreshJobTotals(jobId); } catch (_) {}
     }

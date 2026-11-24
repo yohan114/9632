@@ -85,6 +85,7 @@
     const hashParts = (location.hash || '').split('?');
     const qParams = new URLSearchParams(hashParts[1] || '');
     let activeTab = qParams.get('tab') || 'bills';
+    let initialRatesMode = qParams.get('mode') || null;
     const curYm = currentMonthStr();
     let curYear = Number(curYm.slice(0, 4));
     let curMonth = Number(curYm.slice(5, 7));
@@ -100,6 +101,7 @@
           <button class="btn primary" id="btn_site_summary_bill" style="background:#0f172a;border-color:#0f172a">🧾 Site Summary Bill</button>
           <button class="btn primary" id="btn_generate_site_bills">🏢 + Bill by Site &amp; Month</button>
           <button class="btn" id="btn_generate_bill">⚡ + Generate Single Bill</button>
+          <button class="btn" id="btn_costing_options">⚙️ Costing Options</button>
           <button class="btn" id="btn_sync_costing" style="background:#059669;color:#fff;border-color:#059669">🔄 Sync Bills to Vehicle Costing P&amp;L</button>
           <a href="#/vehicle-costing" class="btn">💰 Final Costing P&amp;L</a>
         </div>
@@ -169,8 +171,11 @@
       return parts.join('');
     }
 
-    function switchTab(t) {
+    function switchTab(t, extra = {}) {
       activeTab = t;
+      if (t === 'rates' && extra && extra.mode) {
+        initialRatesMode = extra.mode;
+      }
       qsa('#hire_tabs button').forEach((b) => b.classList.toggle('primary', b.getAttribute('data-tab') === t));
       const box = qs('#hire_tab_content');
       if (t === 'bills') renderBillsTab(box);
@@ -184,7 +189,8 @@
       b.onclick = () => switchTab(b.getAttribute('data-tab'));
     });
 
-    // Site & Month Sync to Vehicle Costing P&L Modal
+    // Site & Month Sync to Vehicle Costing P&L Modal & Costing Options
+    qs('#btn_costing_options').onclick = () => openCostingOptionsModal();
     qs('#btn_sync_costing').onclick = () => openSyncCostingModal();
     qs('#btn_site_summary_bill').onclick = () => {
       const box = qs('#hire_tab_content');
@@ -197,8 +203,91 @@
     qs('#btn_generate_site_bills').onclick = () => openGenerateSiteBillsModal({});
     qs('#btn_generate_bill').onclick = () => openGenerateBillModal(() => switchTab('bills'));
 
+    async function openCostingOptionsModal() {
+      let opts = {
+        earlyMonthCutoffDay: 10,
+        workingDaysPerMonth: 25,
+        autoAllocMinConsecutive: 2,
+        singleSiteFullMonthMode: 'EARLY_CUTOFF',
+      };
+      try {
+        opts = await api('/hire/costing-options');
+      } catch (_) {}
+
+      const modalEl = document.createElement('div');
+      modalEl.className = 'modal-bg modal-backdrop';
+      modalEl.innerHTML = `
+        <div class="modal" style="max-width:540px;padding:24px">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+            <h2 style="margin:0">⚙️ Costing &amp; Fuel Timeline Rules</h2>
+            <button type="button" class="btn sm" id="btn_co_close">✕ Close</button>
+          </div>
+          <p class="muted" style="margin:0 0 14px 0;font-size:12px">Configure how monthly working periods, early-month fuel cutoff, site transfers, and auto-allocations are calculated.</p>
+          <form id="form_costing_opts" style="display:flex;flex-direction:column;gap:12px">
+            <div>
+              <label style="font-size:11.5px;font-weight:700">Single-Site Full Month Rule</label>
+              <select id="co_mode" class="input sm" style="width:100%">
+                <option value="EARLY_CUTOFF" ${opts.singleSiteFullMonthMode === 'EARLY_CUTOFF' ? 'selected' : ''}>Full Month if fuel issued on/before Cutoff Day OR continuous from prior month (Recommended)</option>
+                <option value="ALWAYS_FULL" ${opts.singleSiteFullMonthMode === 'ALWAYS_FULL' ? 'selected' : ''}>Always Full Month whenever a site issued any fuel</option>
+                <option value="ACTUAL_FROM_FIRST_FUEL" ${opts.singleSiteFullMonthMode === 'ACTUAL_FROM_FIRST_FUEL' ? 'selected' : ''}>Always start from first fuel date in the month</option>
+              </select>
+            </div>
+            <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px">
+              <div>
+                <label style="font-size:11.5px;font-weight:700">Early-Month Cutoff Day (1–28)</label>
+                <input type="number" id="co_cutoff" min="1" max="28" required class="input sm" value="${opts.earlyMonthCutoffDay}" style="width:100%">
+              </div>
+              <div>
+                <label style="font-size:11.5px;font-weight:700">Working Days / Month (1–31)</label>
+                <input type="number" id="co_work_days" min="1" max="31" required class="input sm" value="${opts.workingDaysPerMonth}" style="width:100%">
+              </div>
+              <div>
+                <label style="font-size:11.5px;font-weight:700" title="Consecutive fuel issues required at another site before auto-allocation switches (short stops still bill separately)">Transit Auto-Alloc Issues (1–10)</label>
+                <input type="number" id="co_transit" min="1" max="10" required class="input sm" value="${opts.autoAllocMinConsecutive}" style="width:100%">
+              </div>
+            </div>
+            <div style="background:rgba(37,99,235,0.06);border:1px solid rgba(37,99,235,0.2);padding:10px;border-radius:6px;font-size:11.5px">
+              • If fuel is issued at a new site mid-month, the previous site stops the day before and the new site starts on the fuel issue date (zero double-billing).<br>
+              • Repair / breakdown periods charge <b>Rs 0</b> to the site while tracking internal Workshop Repairs + Lost Hire Revenue in Costing P&amp;L.
+            </div>
+            <div style="display:flex;justify-content:flex-end;gap:8px">
+              <button type="button" class="btn sm" id="btn_co_cancel">Cancel</button>
+              <button type="submit" class="btn sm primary">Save Rules</button>
+            </div>
+          </form>
+        </div>
+      `;
+      document.body.appendChild(modalEl);
+      const closeM = () => modalEl.remove();
+      modalEl.querySelector('#btn_co_close').onclick = closeM;
+      modalEl.querySelector('#btn_co_cancel').onclick = closeM;
+      modalEl.onclick = (e) => { if (e.target === modalEl) closeM(); };
+      modalEl.querySelector('#form_costing_opts').onsubmit = async (e) => {
+        e.preventDefault();
+        try {
+          await api('/hire/costing-options', {
+            method: 'PUT',
+            body: {
+              singleSiteFullMonthMode: modalEl.querySelector('#co_mode').value,
+              earlyMonthCutoffDay: Number(modalEl.querySelector('#co_cutoff').value),
+              workingDaysPerMonth: Number(modalEl.querySelector('#co_work_days').value),
+              autoAllocMinConsecutive: Number(modalEl.querySelector('#co_transit').value),
+            },
+          });
+          toast('Costing rules updated!');
+          closeM();
+        } catch (err) {
+          notify(err.message);
+        }
+      };
+    }
+
     async function openSiteSummaryModal({ defaultProjectId = '', defaultMonth = '' } = {}) {
-      const catalog = await loadSitesCatalog();
+      const [catalog, savedCo] = await Promise.all([
+        loadSitesCatalog(),
+        api('/hire/costing-options').catch(() => ({ workingDaysPerMonth: 25 })),
+      ]);
+      const defWorkDays = Number(savedCo && savedCo.workingDaysPerMonth) || 25;
       const projects = catalog.projects || [];
       const monthsList = catalog.availableMonths || [];
       const firstOpProj = projects.find((p) => p.hasBillingData) || projects[0];
@@ -247,7 +336,7 @@
             </div>
             <div style="width:72px">
               <label style="font-size:11px;font-weight:600" title="Monthly working days baseline for deducting breakdown dates">Work Days</label>
-              <input type="number" id="ss_work_days" class="input sm" value="25" min="1" max="31" style="width:100%">
+              <input type="number" id="ss_work_days" class="input sm" value="${defWorkDays}" min="1" max="31" style="width:100%">
             </div>
             <div style="width:72px">
               <label style="font-size:11px;font-weight:600">Min Hr</label>
@@ -332,13 +421,19 @@
           const bdTag = l.breakdownDays > 0
             ? `<div style="font-size:10px;color:#b91c1c;font-weight:700" title="${esc(l.blockReason || '')}">-${Number.isInteger(l.breakdownDays) ? l.breakdownDays : fmtNum(l.breakdownDays, 1)}d BD${l.breakdownDeductCents > 0 ? ` (-${fmtCents(l.breakdownDeductCents)})` : ''}</div>`
             : '';
-          const daysCol = (l.workingDaysHere != null && l.workingDaysInMonth && l.billingMode !== 'perday')
+          const stayTag = l.stayDatesLabel && l.postedDays < l.daysInMonth
+            ? `<div class="muted" style="font-size:10px">${esc(l.stayDatesLabel)}</div>`
+            : '';
+          const fuelWarnTag = l.hasFuelDuringRepair
+            ? `<div style="font-size:9.5px;color:#b45309;font-weight:700">⚠️ Fuel in repair (${fmtNum(l.fuelDuringRepairLitres || 0, 0)}L)</div>`
+            : '';
+          const daysCol = (l.workingDaysHere != null && l.workingDaysInMonth)
             ? `${fmtNum(l.workingDaysHere, Number.isInteger(l.workingDaysHere) ? 0 : 1)} / ${l.workingDaysInMonth}`
             : `${l.daysHere} / ${l.daysInMonth}`;
           return `
             <tr>
               <td style="padding:7px 8px"><b>${esc(l.code)}</b>${l.regNo ? `<div class="muted" style="font-size:10.5px">${esc(l.regNo)}</div>` : ''}</td>
-              <td style="padding:7px 8px;text-align:right;white-space:nowrap">${daysCol} ${billTag}${bdTag}</td>
+              <td style="padding:7px 8px;text-align:right;white-space:nowrap">${daysCol} ${billTag}${stayTag}${bdTag}${fuelWarnTag}</td>
               <td style="padding:7px 8px;text-align:right">${consHtml}</td>
               <td style="padding:7px 8px;text-align:right">${meterHtml}</td>
               <td style="padding:7px 8px;text-align:right">${billHtml}</td>
@@ -359,8 +454,7 @@
           </tr>
         `).join('');
 
-        const bdList = s.breakdownAdjustments || [];
-        const hasCallouts = bdList.length || s.noFuelHere.length || s.billedDirect.length || s.unrated.length;
+        const hasCallouts = s.noFuelHere.length || s.billedDirect.length || s.unrated.length;
 
         return `
           <div class="card" style="padding:0;margin-bottom:16px;overflow:hidden;border:1px solid var(--border)">
@@ -401,7 +495,6 @@
               <div style="flex:1;min-width:260px;display:flex;flex-direction:column;gap:8px">
                 ${hasCallouts ? `
                   <div style="padding:10px 12px;background:#fef3c7;border-left:3px solid #f59e0b;color:#92400e;font-size:11.5px;border-radius:4px">
-                    ${bdList.length ? `<div style="margin-bottom:4px"><b>Breakdown periods deducted (${s.workingDaysInMonth || 25} working d/mo base):</b> ${esc(bdList.map((b) => `${b.code} (${b.spans}: -${b.breakdownDays}d BD${b.breakdownDeductCents > 0 ? ', -' + fmtCents(b.breakdownDeductCents) : ''}, ${b.workingDaysHere ?? b.activeDays}d working)`).join('; '))}</div>` : ''}
                     ${s.noFuelHere.length ? `<div style="margin-bottom:4px"><b>No fuel from this site&rsquo;s pumps (0 charged):</b> ${esc(s.noFuelHere.join(', '))}</div>` : ''}
                     ${s.billedDirect.length ? `<div style="margin-bottom:4px"><b>Settled direct with owner (0 charged):</b> ${esc(s.billedDirect.join(', '))}</div>` : ''}
                     ${s.unrated.length ? `<div><b>No rate card (0 rental):</b> ${esc(s.unrated.join(', '))}</div>` : ''}
@@ -662,6 +755,9 @@
                 <option value="1">FINALISE &amp; Issue Invoices</option>
               </select>
             </div>
+            <label style="display:inline-flex;align-items:center;gap:5px;font-size:11.5px;cursor:pointer;padding:6px 4px" title="Deduct repair days and bill active working days even if breakdown card is still open">
+              <input type="checkbox" id="sb_allow_open_bd" checked> Deduct open repair days &amp; bill active days
+            </label>
             <button type="button" class="btn sm primary" id="btn_sb_preview">🔍 Load Site Machines</button>
           </div>
 
@@ -704,14 +800,15 @@
       async function loadPreview() {
         const projId = modalEl.querySelector('#sb_proj').value || 'ALL';
         const month = modalEl.querySelector('#sb_month').value || curYm;
+        const allowOpenBd = modalEl.querySelector('#sb_allow_open_bd') && modalEl.querySelector('#sb_allow_open_bd').checked ? '1' : '0';
         const tbody = modalEl.querySelector('#sb_tbody');
         const sumEl = modalEl.querySelector('#sb_summary');
         tbody.innerHTML = '<tr><td colspan="8" class="muted" style="padding:18px;text-align:center">Loading site machines &amp; checking breakdowns...</td></tr>';
         try {
-          const data = await api(`/hire/bills/site-preview?projectId=${encodeURIComponent(projId)}&month=${encodeURIComponent(month)}`);
+          const data = await api(`/hire/bills/site-preview?projectId=${encodeURIComponent(projId)}&month=${encodeURIComponent(month)}&allowOpenBreakdownDeduction=${allowOpenBd}`);
           currentItems = data.items || [];
           const s = data.summary || {};
-          sumEl.innerHTML = `Period <b>${esc(data.month)}</b> (${fmtDateDMY(data.periodStart)} – ${fmtDateDMY(data.periodEnd)}) · Machines: <b>${s.totalMachines || 0}</b> · Billable: <b style="color:#059669">${s.eligibleCount || 0}</b> · Blocked (Open Breakdown): <b style="color:#dc2626">${s.blockedCount || 0}</b> · Already Billed: <b>${s.alreadyBilledCount || 0}</b> · Est. Total: <b>${fmtCents(s.estimatedGrandTotalCents || 0)}</b>`;
+          sumEl.innerHTML = `Period <b>${esc(data.month)}</b> (${fmtDateDMY(data.periodStart)} – ${fmtDateDMY(data.periodEnd)}) · Machines: <b>${s.totalMachines || 0}</b> · Billable: <b style="color:#059669">${s.eligibleCount || 0}</b> · Blocked: <b style="color:#dc2626">${s.blockedCount || 0}</b> · Already Billed: <b>${s.alreadyBilledCount || 0}</b> · Est. Total: <b>${fmtCents(s.estimatedGrandTotalCents || 0)}</b>`;
           if (!currentItems.length) {
             tbody.innerHTML = '<tr><td colspan="8" class="muted" style="padding:18px;text-align:center">No machines allocated or fueled at this site for the selected month.</td></tr>';
             return;
@@ -723,13 +820,16 @@
             else if (it.existingBill) guardHtml = `<span class="badge">${esc(it.existingBill.invoice_number || it.existingBill.status)}</span>`;
             else if (!it.hasRate) guardHtml = '<span class="badge amber">No Rate Card</span>';
             else if (it.breakdownDays > 0) guardHtml = `<span class="badge amber">-${it.breakdownDays}d (${fmtCents(it.calculation.breakdownDeductCents)})</span>`;
-            const allocSpan = `${fmtDateDMY(it.allocDateFrom)} → ${it.allocIsCurrent ? 'Current' : fmtDateDMY(it.allocDateTo)}`;
+            const allocSpan = it.stayDatesLabel || `${fmtDateDMY(it.allocDateFrom)} → ${it.allocIsCurrent ? 'Current' : fmtDateDMY(it.allocDateTo)}`;
+            const originBadge = it.stayOrigin === 'MANUAL'
+              ? '<span class="badge" style="font-size:9.5px">Manual</span>'
+              : '<span class="badge blue" style="font-size:9.5px">Fuel Timeline</span>';
             return `
               <tr style="${it.billingBlocked ? 'background:rgba(220,38,38,0.04)' : ''}">
                 <td style="padding:7px 10px"><input type="checkbox" class="sb-row-chk" value="${it.assetId}" ${it.eligible ? 'checked' : ''} ${disabled ? 'disabled' : ''}></td>
                 <td style="padding:7px 10px"><b>${esc(it.assetCode)}</b><div class="muted" style="font-size:11px">${esc(it.assetType || '')}</div></td>
                 <td style="padding:7px 10px">${esc(it.projectName)}</td>
-                <td style="padding:7px 10px;white-space:nowrap">${allocSpan}</td>
+                <td style="padding:7px 10px;white-space:nowrap">${allocSpan} <div>${originBadge}</div></td>
                 <td style="padding:7px 10px"><span class="badge">${esc(basisLabelText(it.billingMode))}</span> <span class="muted">${fmtCents(it.rateCents)}/${esc(it.rateBasis)}</span></td>
                 <td style="padding:7px 10px;text-align:right">
                   <div>${fmtNum(it.actualUnits, 1)} · ${fmtNum(it.fuelLitres, 0)}L</div>
@@ -752,10 +852,14 @@
       modalEl.querySelector('#btn_sb_preview').onclick = loadPreview;
       modalEl.querySelector('#sb_proj').onchange = loadPreview;
       modalEl.querySelector('#sb_month').onchange = loadPreview;
+      if (modalEl.querySelector('#sb_allow_open_bd')) {
+        modalEl.querySelector('#sb_allow_open_bd').onchange = loadPreview;
+      }
 
       modalEl.querySelector('#btn_sb_submit').onclick = async () => {
         const selectedIds = [...modalEl.querySelectorAll('.sb-row-chk:checked')].map((c) => Number(c.value));
         if (!selectedIds.length) return notify('No eligible unblocked machines selected.');
+        const allowOpenBd = !!(modalEl.querySelector('#sb_allow_open_bd') && modalEl.querySelector('#sb_allow_open_bd').checked);
         try {
           const res = await api('/hire/bills/generate-site', {
             method: 'POST',
@@ -764,6 +868,7 @@
               month: modalEl.querySelector('#sb_month').value || curYm,
               selectedAssetIds: selectedIds,
               finalise: modalEl.querySelector('#sb_finalise').value === '1',
+              allowOpenBreakdownDeduction: allowOpenBd,
             },
           });
           const skipNote = res.skippedBreakdownsCount ? ` (${res.skippedBreakdownsCount} blocked by open breakdown)` : '';
@@ -1061,6 +1166,7 @@
         </div>
 
         <div id="bill_kpis" style="display:grid;grid-template-columns:repeat(auto-fit, minmax(165px, 1fr));gap:10px;margin-bottom:12px"></div>
+        <div id="bill_unrated_alert" style="display:none;margin-bottom:12px"></div>
 
         <div id="bill_site_summary_wrap" class="card" style="padding:0;overflow-x:auto;margin-bottom:14px;display:none">
           <div style="padding:10px 12px;background:rgba(37,99,235,0.05);border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
@@ -1147,10 +1253,19 @@
           `;
 
           if (smRows.length > 0) {
+            const canFinalise = (typeof isAdmin === 'function' && isAdmin()) ||
+              (typeof canDo === 'function' && (canDo('hire.billing.finalise') || canDo('costing.manage')));
             sumWrap.style.display = 'block';
-            sumBody.innerHTML = smRows.slice(0, 60).map((sm) => `
+            sumBody.innerHTML = smRows.slice(0, 60).map((sm) => {
+              const lockTip = sm.is_locked
+                ? `Locked (${sm.lock_scope || 'SITE'})${sm.locked_by_name ? ' by ' + sm.locked_by_name : ''}${sm.lock_reason ? ': ' + sm.lock_reason : ''}`
+                : '';
+              const lockBadge = sm.is_locked
+                ? ` <span class="badge" style="background:#334155;color:#fff;font-size:10px;margin-left:4px" title="${esc(lockTip)}">🔒 Locked</span>`
+                : '';
+              return `
               <tr>
-                <td style="padding:7px 12px;white-space:nowrap"><b>${esc(sm.period_key)}</b></td>
+                <td style="padding:7px 12px;white-space:nowrap"><b>${esc(sm.period_key)}</b>${lockBadge}</td>
                 <td style="padding:7px 12px"><b>${esc(sm.project_name)}</b>${sm.project_code ? ` <span class="muted">(${esc(sm.project_code)})</span>` : ''}</td>
                 <td style="padding:7px 12px;text-align:center"><span class="badge">${sm.bill_count}</span> <span class="muted" style="font-size:10px">(${sm.final_count}F / ${sm.draft_count}D)</span></td>
                 <td style="padding:7px 12px;text-align:right">${fmtCents(sm.rental_cents)}</td>
@@ -1162,10 +1277,13 @@
                   <button class="btn sm btn-sm-summary" data-pid="${sm.project_id || ''}" data-ym="${esc(sm.period_key)}" style="background:#0f172a;color:#fff;border-color:#0f172a">🧾 Summary</button>
                   <button class="btn sm btn-sm-pdf" data-pid="${sm.project_id || ''}" data-ym="${esc(sm.period_key)}" style="margin-left:3px;background:#b45309;color:#fff;border-color:#b45309" title="Download Site Summary PDF">📄 PDF</button>
                   <button class="btn sm btn-sm-filter" data-pid="${sm.project_id || ''}" data-y="${sm.year}" data-m="${sm.month}" style="margin-left:3px">Inspect</button>
-                  <button class="btn sm primary btn-sm-bill" data-pid="${sm.project_id || 'ALL'}" data-ym="${esc(sm.period_key)}" style="margin-left:3px">+ Bill</button>
+                  <button class="btn sm primary btn-sm-bill" data-pid="${sm.project_id || 'ALL'}" data-ym="${esc(sm.period_key)}" style="margin-left:3px" ${sm.is_locked ? 'disabled title="Period is locked"' : ''}>+ Bill</button>
+                  ${(canFinalise && sm.draft_count > 0 && !sm.is_locked) ? `<button class="btn sm btn-sm-finalise-site" data-pid="${sm.project_id || 'ALL'}" data-pname="${esc(sm.project_name)}" data-ym="${esc(sm.period_key)}" data-drafts="${sm.draft_count}" data-total="${sm.grand_total_cents || 0}" style="margin-left:3px;background:#059669;color:#fff;border-color:#059669">✓ Finalise Site</button>` : ''}
+                  ${(canFinalise && sm.project_id) ? `<button class="btn sm btn-sm-lock-site" data-pid="${sm.project_id}" data-pname="${esc(sm.project_name)}" data-ym="${esc(sm.period_key)}" data-locked="${sm.is_locked ? '1' : '0'}" data-scope="${esc(sm.lock_scope || '')}" style="margin-left:3px" title="${sm.is_locked ? 'Unlock period' : 'Lock site-month'}">${sm.is_locked ? '🔓 Unlock' : '🔒 Lock'}</button>` : ''}
                 </td>
               </tr>
-            `).join('');
+            `;
+            }).join('');
 
             qsa('.btn-sm-summary', sumBody).forEach((btn) => {
               btn.onclick = () => openSiteSummaryModal({
@@ -1217,6 +1335,127 @@
                 defaultProjectId: btn.getAttribute('data-pid') || 'ALL',
                 defaultMonth: btn.getAttribute('data-ym') || curYm,
               });
+            });
+            qsa('.btn-sm-finalise-site', sumBody).forEach((btn) => {
+              btn.onclick = () => {
+                const pid = btn.getAttribute('data-pid') || 'ALL';
+                const pname = btn.getAttribute('data-pname') || 'Site';
+                const ym = btn.getAttribute('data-ym') || curYm;
+                const drafts = Number(btn.getAttribute('data-drafts') || 0);
+                const totalCents = Number(btn.getAttribute('data-total') || 0);
+
+                const m = document.createElement('div');
+                m.className = 'modal-bg modal-backdrop';
+                m.innerHTML = `
+                  <div class="modal card" style="max-width:460px;padding:22px">
+                    <h2 style="margin:0 0 6px 0;font-size:18px">✓ Finalise Site Bills — ${esc(pname)}</h2>
+                    <p class="muted" style="margin:0 0 12px 0;font-size:12.5px">
+                      Converts <b>${drafts} DRAFT bill(s)</b> for <b>${esc(ym)}</b> (${fmtCents(totalCents)} total) to <b>FINAL</b> and posts revenue to Financial Costing.
+                    </p>
+                    <label style="display:flex;align-items:center;gap:8px;font-size:12.5px;margin-bottom:10px;cursor:pointer">
+                      <input type="checkbox" id="fs_lock_after" checked> Lock this site-month after finalising
+                    </label>
+                    <div style="margin-bottom:14px">
+                      <label style="font-size:11.5px;font-weight:600">Lock / Finalisation Note</label>
+                      <input type="text" id="fs_reason" class="input sm" value="Approved &amp; finalised for ${esc(ym)}" style="width:100%">
+                    </div>
+                    <div style="display:flex;justify-content:flex-end;gap:8px">
+                      <button type="button" class="btn sm" id="btn_fs_cancel">Cancel</button>
+                      <button type="button" class="btn sm primary" id="btn_fs_confirm" style="background:#059669;border-color:#059669">✓ Confirm Finalise Site</button>
+                    </div>
+                  </div>
+                `;
+                document.body.appendChild(m);
+                m.querySelector('#btn_fs_cancel').onclick = () => m.remove();
+                m.onclick = (e) => { if (e.target === m) m.remove(); };
+                m.querySelector('#btn_fs_confirm').onclick = async () => {
+                  const confirmBtn = m.querySelector('#btn_fs_confirm');
+                  confirmBtn.disabled = true;
+                  confirmBtn.textContent = 'Finalising...';
+                  try {
+                    const res = await api('/hire/bills/finalise-site', {
+                      method: 'POST',
+                      body: {
+                        projectId: pid === 'ALL' ? 'ALL' : Number(pid),
+                        periodKey: ym,
+                        lockAfter: m.querySelector('#fs_lock_after').checked,
+                        lockReason: m.querySelector('#fs_reason').value.trim() || null,
+                      },
+                    });
+                    const skipNote = res.skippedBreakdowns && res.skippedBreakdowns.length
+                      ? ` (${res.skippedBreakdowns.length} blocked by open breakdown)`
+                      : '';
+                    toast(`Finalised ${res.finalisedCount} bill(s) for ${pname}${res.locked ? ' & locked period' : ''}${skipNote}`);
+                    m.remove();
+                    loadBills();
+                  } catch (err) {
+                    notify(err.message);
+                    confirmBtn.disabled = false;
+                    confirmBtn.textContent = '✓ Confirm Finalise Site';
+                  }
+                };
+              };
+            });
+            qsa('.btn-sm-lock-site', sumBody).forEach((btn) => {
+              btn.onclick = () => {
+                const pid = Number(btn.getAttribute('data-pid') || 0);
+                const pname = btn.getAttribute('data-pname') || 'Site';
+                const ym = btn.getAttribute('data-ym') || curYm;
+                const isLocked = btn.getAttribute('data-locked') === '1';
+                const lockScope = btn.getAttribute('data-scope') || 'SITE';
+
+                const m = document.createElement('div');
+                m.className = 'modal-bg modal-backdrop';
+                const targetPid = isLocked && lockScope === 'MONTH' ? 0 : pid;
+                const scopeLabel = targetPid === 0 ? `ALL sites for ${ym}` : `${pname} (${ym})`;
+                m.innerHTML = `
+                  <div class="modal card" style="max-width:440px;padding:22px">
+                    <h2 style="margin:0 0 6px 0;font-size:18px">${isLocked ? '🔓 Unlock Billing Period' : '🔒 Lock Billing Period'}</h2>
+                    <p class="muted" style="margin:0 0 12px 0;font-size:12.5px">
+                      ${isLocked
+                        ? `Unlocking <b>${esc(scopeLabel)}</b> allows bill generation, revisions, and fuel re-pricing again.`
+                        : `Locking <b>${esc(scopeLabel)}</b> prevents any bill generation, edits, finalisation, or retroactive fuel re-pricing.`}
+                    </p>
+                    <div style="margin-bottom:14px">
+                      <label style="font-size:11.5px;font-weight:600">${isLocked ? 'Unlock Reason (Required for Audit) *' : 'Lock Note'}</label>
+                      <input type="text" id="pl_reason" class="input sm" placeholder="${isLocked ? 'e.g. Late site meter correction approved' : 'e.g. Closed & signed by management'}" style="width:100%">
+                    </div>
+                    <div style="display:flex;justify-content:flex-end;gap:8px">
+                      <button type="button" class="btn sm" id="btn_pl_cancel">Cancel</button>
+                      <button type="button" class="btn sm primary" id="btn_pl_confirm">${isLocked ? '🔓 Unlock Period' : '🔒 Lock Period'}</button>
+                    </div>
+                  </div>
+                `;
+                document.body.appendChild(m);
+                m.querySelector('#btn_pl_cancel').onclick = () => m.remove();
+                m.onclick = (e) => { if (e.target === m) m.remove(); };
+                m.querySelector('#btn_pl_confirm').onclick = async () => {
+                  const reasonVal = m.querySelector('#pl_reason').value.trim();
+                  if (isLocked && !reasonVal) {
+                    notify('Unlock reason is required.');
+                    return;
+                  }
+                  const confirmBtn = m.querySelector('#btn_pl_confirm');
+                  confirmBtn.disabled = true;
+                  try {
+                    await api('/hire/period-locks', {
+                      method: 'POST',
+                      body: {
+                        periodKey: ym,
+                        projectId: targetPid,
+                        locked: !isLocked,
+                        reason: reasonVal,
+                      },
+                    });
+                    toast(`${isLocked ? 'Unlocked' : 'Locked'} ${scopeLabel}`);
+                    m.remove();
+                    loadBills();
+                  } catch (err) {
+                    notify(err.message);
+                    confirmBtn.disabled = false;
+                  }
+                };
+              };
             });
           } else {
             sumWrap.style.display = 'none';
@@ -1281,6 +1520,25 @@
           tbody.innerHTML = `<tr><td colspan="13" class="err" style="padding:20px">${esc(err.message)}</td></tr>`;
         }
       }
+
+      api('/hire/rates-unrated').then((u) => {
+        const alertEl = qs('#bill_unrated_alert', box);
+        if (!alertEl || !u || !u.recentFueledCount) return;
+        const sampleCodes = (u.unrated || []).filter((x) => x.recent_litres > 0).slice(0, 6).map((x) => x.asset_code).join(', ');
+        const extra = u.recentFueledCount > 6 ? ` +${u.recentFueledCount - 6} more` : '';
+        alertEl.style.display = 'block';
+        alertEl.innerHTML = `
+          <div class="card" style="padding:10px 14px;background:rgba(217,119,6,0.08);border:1px solid rgba(217,119,6,0.35);display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
+            <div style="font-size:12.5px">
+              <b style="color:#b45309">⚠ ${u.recentFueledCount} active vehicle(s) drew fuel recently without a rate card</b>
+              <span class="muted" style="margin-left:6px">(${esc(sampleCodes)}${esc(extra)})</span>
+            </div>
+            <button type="button" class="btn sm primary" id="btn_go_unrated_rates">Review &amp; Assign Rates →</button>
+          </div>
+        `;
+        const goBtn = qs('#btn_go_unrated_rates', alertEl);
+        if (goBtn) goBtn.onclick = () => switchTab('rates', { mode: 'UNRATED' });
+      }).catch(() => {});
 
       qs('#btn_bill_filter', box).onclick = loadBills;
       qs('#bill_proj', box).onchange = loadBills;
@@ -1437,14 +1695,20 @@
     // TAB 2: RATE CARDS, PORTABLE PLANT & CONSUMPTION BANDS (L/hr Hourly vs km/L Per-KM)
     // =========================================================================
     async function renderRatesTab(box) {
-      let mode = 'HR';
+      let mode = initialRatesMode || 'HR';
+      initialRatesMode = null;
       let searchQ = '';
       let catFilter = '';
 
       box.innerHTML = `<div class="card muted" style="padding:24px;text-align:center">Loading Machinery (L/hr Hourly Rates), Road Vehicles (km/L Per-KM Rates) &amp; Standard Bands...</div>`;
 
       try {
-        const data = await api('/hire/rates-overview');
+        const [data, unratedData] = await Promise.all([
+          api('/hire/rates-overview'),
+          api('/hire/rates-unrated').catch(() => ({ unrated: [], templates: [], recentFueledCount: 0, totalUnratedCount: 0 })),
+        ]);
+        const unratedList = (unratedData && unratedData.unrated) || [];
+        const templatesList = (unratedData && unratedData.templates) || [];
         const fleet = data.fleet || [];
         const machineryHr = data.machinery_hr || fleet.filter((r) => (r.cons_basis || (r.display_unit === 'km/L' ? 'km' : 'hr')) === 'hr');
         const vehiclesKm = data.vehicles_km || fleet.filter((r) => (r.cons_basis || (r.display_unit === 'km/L' ? 'km' : 'hr')) === 'km');
@@ -1453,7 +1717,7 @@
         const catsHr = data.categories_hr || [...new Set(machineryHr.map((r) => r.category).filter(Boolean))].sort();
         const catsKm = data.categories_km || [...new Set(vehiclesKm.map((r) => r.category).filter(Boolean))].sort();
         const catsAll = data.categories || [];
-        const canManageRates = typeof canDo === 'function' && (canDo('hire.rates.manage') || canDo('costing.manage'));
+        const canManageRates = (typeof isAdmin === 'function' && isAdmin()) || (typeof canDo === 'function' && (canDo('hire.rates.manage') || canDo('costing.manage')));
 
         box.innerHTML = `
           <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px;margin-bottom:12px">
@@ -1480,6 +1744,7 @@
               <button type="button" class="btn sm" id="btn_rt_km">🚛 km/L · Per-KM Rate (${vehiclesKm.length})</button>
               <button type="button" class="btn sm" id="btn_rt_port">🧰 Portable Plant · Daily (${portable.length})</button>
               <button type="button" class="btn sm" id="btn_rt_all">📋 All Fleet (${fleet.length})</button>
+              <button type="button" class="btn sm" id="btn_rt_unrated">⚠ Unrated Active (${unratedList.length})</button>
               ${canManageRates ? '<button type="button" class="btn sm" id="btn_rt_add">+ Add Rate Card</button>' : ''}
             </div>
             <div id="rt_fleet_filters" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
@@ -1507,13 +1772,187 @@
           qs('#btn_rt_km', box).classList.toggle('primary', mode === 'KM');
           qs('#btn_rt_port', box).classList.toggle('primary', mode === 'PORTABLE');
           qs('#btn_rt_all', box).classList.toggle('primary', mode === 'ALL');
-          qs('#rt_fleet_filters', box).style.display = mode === 'PORTABLE' ? 'none' : 'flex';
+          if (qs('#btn_rt_unrated', box)) qs('#btn_rt_unrated', box).classList.toggle('primary', mode === 'UNRATED');
+          qs('#rt_fleet_filters', box).style.display = 'flex';
+          qs('#rt_cat', box).style.display = (mode === 'PORTABLE' || mode === 'UNRATED') ? 'none' : '';
           syncCategoryOptions();
 
           const noteEl = qs('#rt_section_note', box);
           const wrap = qs('#rt_table_wrap', box);
+          if (mode === 'UNRATED') {
+            noteEl.textContent = `Active owned registered machines missing a rate card (${unratedData.recentFueledCount || 0} drew fuel in the last 60 days). Assign a category template or mark hired/outside-billed vehicles.`;
+            const filteredUnrated = unratedList.filter((u) => {
+              if (!searchQ) return true;
+              const q = searchQ.toUpperCase();
+              return String(u.asset_code || '').toUpperCase().includes(q) ||
+                String(u.registration || '').toUpperCase().includes(q) ||
+                String(u.brand || '').toUpperCase().includes(q) ||
+                String(u.type || '').toUpperCase().includes(q) ||
+                String(u.current_site_name || '').toUpperCase().includes(q);
+            });
+
+            wrap.innerHTML = `
+              <div class="card" style="padding:0;overflow-x:auto">
+                <table class="table" style="width:100%;margin:0;font-size:12.5px">
+                  <thead>
+                    <tr style="background:rgba(0,0,0,0.02)">
+                      <th style="padding:10px 12px">Vehicle</th>
+                      <th style="padding:10px 12px">Brand / Type</th>
+                      <th style="padding:10px 12px">Last Site</th>
+                      <th style="padding:10px 12px;text-align:right">Recent Fuel (60d)</th>
+                      <th style="padding:10px 12px;text-align:right">All-Time Fuel</th>
+                      <th style="padding:10px 12px">Assign Category Template</th>
+                      <th style="padding:10px 12px;text-align:center">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    ${filteredUnrated.length ? filteredUnrated.map((u, idx) => {
+                      const typeLower = String(u.type || '').toLowerCase();
+                      const tplOpts = templatesList.map((t) => {
+                        const sel = typeLower && String(t.category || '').toLowerCase() === typeLower ? 'selected' : '';
+                        const unitLbl = t.rate_basis === 'KM' ? 'Rs/km' : (t.rate_basis === 'DAILY' ? 'Rs/d' : 'Rs/hr');
+                        return `<option value="${esc(t.template_rate_id)}" ${sel}>${esc(t.category)} · ${esc(t.rate_basis)} (Dry Rs ${Math.round((t.dry_rate_cents || 0) / 100)} / Wet Rs ${Math.round((t.wet_rate_cents || 0) / 100)} ${unitLbl})</option>`;
+                      }).join('');
+                      return `
+                        <tr>
+                          <td style="padding:9px 12px">
+                            <a href="#/fuel?tab=vehicle-360&vehicle=${encodeURIComponent(u.asset_code)}" style="font-weight:700">${esc(u.asset_code)}</a>
+                            ${u.registration ? `<div class="muted" style="font-size:11px">${esc(u.registration)}</div>` : ''}
+                          </td>
+                          <td style="padding:9px 12px">
+                            <div>${esc([u.brand, u.model_no].filter(Boolean).join(' ') || '—')}</div>
+                            <div class="muted" style="font-size:11px">${esc(u.type || 'Uncategorized')}</div>
+                          </td>
+                          <td style="padding:9px 12px">
+                            <div>${esc(u.current_site_name || '—')}</div>
+                            ${u.last_fuel_date ? `<div class="muted" style="font-size:11px">Last fuel ${esc(u.last_fuel_date)}</div>` : ''}
+                          </td>
+                          <td style="padding:9px 12px;text-align:right;font-weight:${u.recent_litres > 0 ? '700' : '400'};color:${u.recent_litres > 0 ? '#b45309' : 'var(--muted)'}">
+                            ${u.recent_litres > 0 ? `${fmtNum(u.recent_litres, 1)} L (${u.recent_slips})` : '0 L'}
+                          </td>
+                          <td style="padding:9px 12px;text-align:right">${u.total_litres > 0 ? `${fmtNum(u.total_litres, 1)} L (${u.total_slips})` : '—'}</td>
+                          <td style="padding:9px 12px;min-width:250px">
+                            <select class="input sm sel-unrated-tpl" data-idx="${idx}" style="width:100%">
+                              ${tplOpts || '<option value="">No templates available</option>'}
+                            </select>
+                          </td>
+                          <td style="padding:9px 12px;text-align:center;white-space:nowrap">
+                            ${canManageRates ? `
+                              <button type="button" class="btn sm primary btn-unrated-assign" data-idx="${idx}">✓ Assign</button>
+                              <button type="button" class="btn sm btn-unrated-custom" data-idx="${idx}" style="margin-left:3px">Custom</button>
+                              <button type="button" class="btn sm btn-unrated-hired" data-idx="${idx}" style="margin-left:3px" title="Mark vehicle as Hired / Outside-Billed">Hired</button>
+                            ` : '<span class="muted" style="font-size:11px">View only</span>'}
+                          </td>
+                        </tr>
+                      `;
+                    }).join('') : '<tr><td colspan="7" class="muted" style="padding:20px;text-align:center">No unrated active machines found!</td></tr>'}
+                  </tbody>
+                </table>
+              </div>
+            `;
+
+            qsa('.btn-unrated-assign', wrap).forEach((btn) => {
+              btn.onclick = async () => {
+                const idx = Number(btn.getAttribute('data-idx'));
+                const u = filteredUnrated[idx];
+                const sel = qs(`.sel-unrated-tpl[data-idx="${idx}"]`, wrap);
+                const tplId = sel ? sel.value : '';
+                if (!u || !tplId) {
+                  notify('Please choose a category template first.');
+                  return;
+                }
+                btn.disabled = true;
+                try {
+                  const res = await api('/hire/rates/assign-template', {
+                    method: 'POST',
+                    body: { assetId: u.asset_id, templateRateId: tplId },
+                  });
+                  toast(`Assigned ${res.categoryName || 'template'} rate to ${u.asset_code}`);
+                  initialRatesMode = 'UNRATED';
+                  renderRatesTab(box);
+                } catch (err) {
+                  notify(err.message);
+                  btn.disabled = false;
+                }
+              };
+            });
+
+            qsa('.btn-unrated-custom', wrap).forEach((btn) => {
+              btn.onclick = () => {
+                const u = filteredUnrated[Number(btn.getAttribute('data-idx'))];
+                if (!u) return;
+                const consHint = String(u.meter_type || '').toUpperCase() === 'KM' ? 'km' : 'hr';
+                openAddRateModal(consHint, () => {
+                  initialRatesMode = 'UNRATED';
+                  renderRatesTab(box);
+                }, { assetId: u.asset_id, assetCode: u.asset_code });
+              };
+            });
+
+            qsa('.btn-unrated-hired', wrap).forEach((btn) => {
+              btn.onclick = () => {
+                const u = filteredUnrated[Number(btn.getAttribute('data-idx'))];
+                if (!u) return;
+                const m = document.createElement('div');
+                m.className = 'modal-bg modal-backdrop';
+                m.innerHTML = `
+                  <div class="modal card" style="max-width:440px;padding:22px">
+                    <h2 style="margin:0 0 6px 0;font-size:18px">Mark ${esc(u.asset_code)} as Hired / Outside-Billed</h2>
+                    <p class="muted" style="margin:0 0 12px 0;font-size:12.5px">
+                      Removes <b>${esc(u.asset_code)}</b> from the owned rate register and voids any unlocked DRAFT rental bills for it. FINAL/PAID bills and locked periods are never modified.
+                    </p>
+                    <label style="display:flex;align-items:center;gap:8px;font-size:12.5px;margin-bottom:10px;cursor:pointer">
+                      <input type="checkbox" id="mh_flag_fuel" checked> Flag unlocked fuel slips as direct/outside-billed
+                    </label>
+                    <div style="margin-bottom:14px">
+                      <label style="font-size:11.5px;font-weight:600">Reason</label>
+                      <input type="text" id="mh_reason" class="input sm" value="Hired / outside-billed vehicle" style="width:100%">
+                    </div>
+                    <div style="display:flex;justify-content:flex-end;gap:8px">
+                      <button type="button" class="btn sm" id="btn_mh_cancel">Cancel</button>
+                      <button type="button" class="btn sm primary" id="btn_mh_confirm">Confirm Mark Hired</button>
+                    </div>
+                  </div>
+                `;
+                document.body.appendChild(m);
+                m.querySelector('#btn_mh_cancel').onclick = () => m.remove();
+                m.onclick = (e) => { if (e.target === m) m.remove(); };
+                m.querySelector('#btn_mh_confirm').onclick = async () => {
+                  const confirmBtn = m.querySelector('#btn_mh_confirm');
+                  confirmBtn.disabled = true;
+                  try {
+                    const res = await api('/hire/rates/mark-hired', {
+                      method: 'POST',
+                      body: {
+                        assetId: u.asset_id,
+                        flagDirectBilledFuel: m.querySelector('#mh_flag_fuel').checked,
+                        reason: m.querySelector('#mh_reason').value.trim() || 'Hired / outside-billed vehicle',
+                      },
+                    });
+                    toast(`Marked ${u.asset_code} HIRED (${res.draftsVoided || 0} drafts voided, ${res.fuelFlagged || 0} fuel slips flagged)`);
+                    m.remove();
+                    initialRatesMode = 'UNRATED';
+                    renderRatesTab(box);
+                  } catch (err) {
+                    notify(err.message);
+                    confirmBtn.disabled = false;
+                  }
+                };
+              };
+            });
+            return;
+          }
           if (mode === 'PORTABLE') {
             noteEl.textContent = 'Portable plant & small tools — billed per Day (Rs/day).';
+            const filteredPortable = portable.filter((p) => {
+              if (!searchQ) return true;
+              const q = searchQ.toUpperCase();
+              return String(p.asset_code || '').toUpperCase().includes(q) ||
+                String(p.category_name || '').toUpperCase().includes(q) ||
+                String(p.source_label || '').toUpperCase().includes(q) ||
+                String(p.note || '').toUpperCase().includes(q) ||
+                String(p.current_site || '').toUpperCase().includes(q);
+            });
             wrap.innerHTML = `
               <div class="card" style="padding:0;overflow-x:auto">
                 <table class="table" style="width:100%;margin:0;font-size:12.5px">
@@ -1527,15 +1966,15 @@
                     </tr>
                   </thead>
                   <tbody>
-                    ${portable.length ? portable.map((p) => `
+                    ${filteredPortable.length ? filteredPortable.map((p) => `
                       <tr>
-                        <td style="padding:9px 12px"><b>${esc(p.category_name)}</b></td>
-                        <td style="padding:9px 12px">${esc(p.source_label || p.note || '')}</td>
+                        <td style="padding:9px 12px">${p.asset_code ? `<span class="badge" style="margin-right:6px;font-weight:700">${esc(p.asset_code)}</span>` : ''}<b>${esc(p.category_name || 'Portable Plant')}</b></td>
+                        <td style="padding:9px 12px">${esc(p.source_label || p.note || '')}${p.current_site ? ` <span class="muted" style="font-size:11px">(${esc(p.current_site)})</span>` : ''}</td>
                         <td style="padding:9px 12px"><span class="badge">DAILY</span></td>
                         <td style="padding:9px 12px;text-align:right;font-weight:700">${fmtCents(p.port_dd_cents || p.dry_rate_cents)}</td>
                         <td style="padding:9px 12px;text-align:right;font-weight:700;color:#059669">${fmtCents(p.port_dw_cents || p.wet_rate_cents)}</td>
                       </tr>
-                    `).join('') : '<tr><td colspan="5" class="muted" style="padding:20px;text-align:center">No portable plant rate cards configured yet.</td></tr>'}
+                    `).join('') : '<tr><td colspan="5" class="muted" style="padding:20px;text-align:center">No portable plant rate cards match your search.</td></tr>'}
                   </tbody>
                 </table>
               </div>
@@ -1644,6 +2083,7 @@
         qs('#btn_rt_km', box).onclick = () => { mode = 'KM'; catFilter = ''; drawTable(); };
         qs('#btn_rt_port', box).onclick = () => { mode = 'PORTABLE'; drawTable(); };
         qs('#btn_rt_all', box).onclick = () => { mode = 'ALL'; catFilter = ''; drawTable(); };
+        if (qs('#btn_rt_unrated', box)) qs('#btn_rt_unrated', box).onclick = () => { mode = 'UNRATED'; catFilter = ''; drawTable(); };
         qs('#rt_search', box).oninput = (e) => { searchQ = e.target.value; drawTable(); };
         qs('#rt_cat', box).onchange = (e) => { catFilter = e.target.value; drawTable(); };
         if (qs('#btn_rt_add', box)) {
@@ -1656,7 +2096,7 @@
       }
     }
 
-    function openAddRateModal(defaultConsBasis, onDone) {
+    function openAddRateModal(defaultConsBasis, onDone, prefillAsset = null) {
       if (typeof defaultConsBasis === 'function') { onDone = defaultConsBasis; defaultConsBasis = 'hr'; }
       const initCons = defaultConsBasis === 'km' ? 'km' : 'hr';
       const modalEl = document.createElement('div');
@@ -1763,6 +2203,12 @@
       });
 
       wireAssetPicker(qs('#add_rate_picker_wrap', modalEl));
+      if (prefillAsset && prefillAsset.assetCode) {
+        const inp = qs('#add_rate_picker_wrap input[name="asset"]', modalEl);
+        const hid = qs('#add_rate_picker_wrap input[name="asset_id"]', modalEl);
+        if (inp) inp.value = prefillAsset.assetCode;
+        if (hid && prefillAsset.assetId) hid.value = String(prefillAsset.assetId);
+      }
       modalEl.querySelector('#btn_ar_cancel').onclick = () => modalEl.remove();
       modalEl.onclick = (e) => { if (e.target === modalEl) modalEl.remove(); };
       modalEl.querySelector('#form_add_rate').onsubmit = async (e) => {
@@ -1987,6 +2433,7 @@
                 <option value="WET">WET (Driver + Fuel Recharged)</option>
                 <option value="FULLY_WET">FULLY WET (Fuel Inclusive)</option>
                 <option value="FUEL_ONLY">FUEL_ONLY</option>
+                <option value="BILLED_DIRECT">BILLED DIRECT (Hired / External)</option>
               </select>
             </div>
             <div>
@@ -2014,6 +2461,7 @@
               <button type="submit" class="btn sm primary" style="width:100%">📍 Allocate Machine</button>
             </div>
           </form>
+          <div id="al_compliance_warn" style="display:none;margin-top:8px;padding:7px 10px;border-radius:6px;font-size:12px;justify-content:space-between;align-items:center;gap:8px"></div>
         </div>
 
         <div class="card" style="padding:10px 12px;margin-bottom:14px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
@@ -2029,6 +2477,12 @@
             <option value="WET">WET</option>
             <option value="FULLY_WET">FULLY WET</option>
             <option value="FUEL_ONLY">FUEL ONLY</option>
+            <option value="BILLED_DIRECT">BILLED DIRECT (Hired)</option>
+          </select>
+          <select id="al_flt_origin" class="input sm">
+            <option value="ALL">All Origins</option>
+            <option value="AUTO_FUEL">Auto (Fuel)</option>
+            <option value="MANUAL">Manual / Locked</option>
           </select>
           <label style="font-size:11px;display:flex;align-items:center;gap:4px">From <input type="date" id="al_flt_from" class="input sm"></label>
           <label style="font-size:11px;display:flex;align-items:center;gap:4px">To <input type="date" id="al_flt_to" class="input sm"></label>
@@ -2037,6 +2491,12 @@
           </label>
           <button class="btn sm primary" id="btn_al_filter">Filter</button>
           <button class="btn sm" id="btn_al_current_month">This Month (${curM})</button>
+          ${canManageAlloc ? `
+            <div style="display:flex;gap:6px;align-items:center;margin-left:auto;border-left:1px solid var(--border);padding-left:10px">
+              <input type="month" id="al_sync_month" class="input sm" value="${curM}" style="width:130px">
+              <button type="button" class="btn sm" id="btn_al_sync_fuel" style="background:#0284c7;color:#fff;border-color:#0284c7">🔄 Auto-Allocate from Fuel</button>
+            </div>
+          ` : ''}
         </div>
 
         <div class="card" style="padding:0;overflow-x:auto">
@@ -2048,18 +2508,66 @@
                 <th style="padding:10px 12px">Category</th>
                 <th style="padding:10px 12px">Assigned Site / Project</th>
                 <th style="padding:10px 12px">Billing Basis</th>
+                <th style="padding:10px 12px">Origin</th>
                 <th style="padding:10px 12px">Driver / Notes</th>
                 ${canManageAlloc ? '<th style="padding:10px 12px;text-align:center">Action</th>' : ''}
               </tr>
             </thead>
             <tbody id="alloc_tbody">
-              <tr><td colspan="${canManageAlloc ? 7 : 6}" class="muted" style="padding:20px;text-align:center">Loading allocations...</td></tr>
+              <tr><td colspan="${canManageAlloc ? 8 : 7}" class="muted" style="padding:20px;text-align:center">Loading allocations...</td></tr>
             </tbody>
           </table>
         </div>
       `;
 
-      wireAssetPicker(qs('#al_picker_wrap', box));
+      let complianceMap = {};
+      let complianceCodeMap = {};
+      api('/vehicle-documents/compliance-badges').then((res) => {
+        complianceMap = (res && res.by_asset_id) || {};
+        complianceCodeMap = (res && res.by_code) || {};
+        paintAllocComplianceBadges();
+      }).catch(() => {});
+
+      function findComplianceFor(assetId, code) {
+        if (assetId && complianceMap[String(assetId)]) return complianceMap[String(assetId)];
+        if (code) {
+          const up = String(code).trim().toUpperCase();
+          return complianceCodeMap[up] || complianceCodeMap[up.replace(/[^A-Z0-9]/g, '')] || null;
+        }
+        return null;
+      }
+
+      function paintAllocComplianceWarn(assetId, code) {
+        const warnEl = qs('#al_compliance_warn', box);
+        if (!warnEl) return;
+        const info = findComplianceFor(assetId, code);
+        if (!info || !info.badge) {
+          warnEl.style.display = 'none';
+          return;
+        }
+        const isRed = info.badge.level === 'red';
+        warnEl.style.display = 'flex';
+        warnEl.style.background = isRed ? 'rgba(220,38,38,0.1)' : 'rgba(245,158,11,0.12)';
+        warnEl.style.border = `1px solid ${isRed ? '#dc2626' : '#d97706'}`;
+        warnEl.style.color = isRed ? '#991b1b' : '#92400e';
+        warnEl.innerHTML = `<span>${isRed ? '🚨' : '⚠️'} <b>Non-Blocking Compliance Alert:</b> ${esc(info.badge.label)}${info.badge.detail ? ` (${esc(info.badge.detail)})` : ''}</span><a class="btn sm" href="#/assets/${info.asset_id}">Inspect Docs →</a>`;
+      }
+
+      function paintAllocComplianceBadges() {
+        qsa('.alloc-comp-slot', box).forEach((slot) => {
+          const info = findComplianceFor(slot.dataset.aid, slot.dataset.code);
+          if (!info || !info.badge || (!info.has_statutory_expiry && !info.critical_docs.length)) {
+            slot.innerHTML = '';
+            return;
+          }
+          const isRed = info.badge.level === 'red';
+          slot.innerHTML = `<a href="#/assets/${info.asset_id}" title="${esc(info.badge.detail || info.badge.label)}" style="text-decoration:none;margin-left:4px"><span class="badge ${isRed ? 'danger' : 'warning'}" style="font-size:10px">${esc(info.badge.label)}</span></a>`;
+        });
+      }
+
+      wireAssetPicker(qs('#al_picker_wrap', box), (assetId, code) => {
+        paintAllocComplianceWarn(assetId, code);
+      });
 
       const dateToEl = qs('#al_date_to', box);
       const isCurEl = qs('#al_is_current', box);
@@ -2076,12 +2584,14 @@
         const fCode = qs('#al_flt_code', box).value.trim();
         const fProj = qs('#al_flt_proj', box).value;
         const fBasis = qs('#al_flt_basis', box).value;
+        const fOrigin = qs('#al_flt_origin', box) ? qs('#al_flt_origin', box).value : 'ALL';
         const fFrom = qs('#al_flt_from', box).value;
         const fTo = qs('#al_flt_to', box).value;
         const fCur = qs('#al_flt_current', box).checked;
         if (fCode) q.set('assetCode', fCode);
         if (fProj) q.set('projectId', fProj);
         if (fBasis) q.set('basis', fBasis);
+        if (fOrigin && fOrigin !== 'ALL') q.set('origin', fOrigin);
         if (fFrom) q.set('dateFrom', fFrom);
         if (fTo) q.set('dateTo', fTo);
         if (fCur) q.set('currentOnly', '1');
@@ -2089,7 +2599,7 @@
         try {
           const { allocations } = await api(`/hire/allocations?${q.toString()}`);
           if (!allocations || !allocations.length) {
-            tbody.innerHTML = `<tr><td colspan="${canManageAlloc ? 7 : 6}" class="muted" style="padding:20px;text-align:center">No site allocations found.</td></tr>`;
+            tbody.innerHTML = `<tr><td colspan="${canManageAlloc ? 8 : 7}" class="muted" style="padding:20px;text-align:center">No site allocations found.</td></tr>`;
             return;
           }
           tbody.innerHTML = allocations.slice(0, 250).map((a) => {
@@ -2100,23 +2610,52 @@
               ? '<span class="badge green">Current</span>'
               : esc(rawTo ? fmtDateDMY(rawTo) : (a.month_to || a.month || '—'));
             const periodLabel = `${fromLabel} → ${toLabel}`;
+            const isAuto = String(a.origin || '').toUpperCase() === 'AUTO_FUEL';
+            const isLocked = Number(a.locked) === 1;
+            const isHired =
+              String(a.owner_code || '').toUpperCase() === 'HIRED' ||
+              String(a.ownership || '').toUpperCase() === 'HIRED' ||
+              String(a.assigned_basis || a.basis || '').toUpperCase() === 'BILLED_DIRECT';
+            const originBadge = isAuto
+              ? '<span class="badge blue">Auto (Fuel)</span>'
+              : `<span class="badge">${isLocked ? '🔒 Locked Manual' : 'Manual'}</span>`;
+            const hiredBadge = isHired ? '<span class="badge warning" style="margin-left:4px">HIRED</span>' : '';
             return `
               <tr>
                 <td style="padding:9px 12px;white-space:nowrap">${periodLabel}</td>
                 <td style="padding:9px 12px">
-                  <a href="#/fuel?tab=vehicle-360&vehicle=${encodeURIComponent(a.asset_code || a.vehicle_no)}" style="font-weight:700">${esc(a.asset_code || a.vehicle_no)}</a>
+                  <a href="#/fuel?tab=vehicle-360&vehicle=${encodeURIComponent(a.asset_code || a.vehicle_no)}" style="font-weight:700">${esc(a.asset_code || a.vehicle_no)}</a>${hiredBadge}<span class="alloc-comp-slot" data-aid="${esc(a.asset_id || '')}" data-code="${esc(a.asset_code || a.vehicle_no || '')}"></span>
                   ${a.registration ? `<div class="muted" style="font-size:11px">${esc(a.registration)}</div>` : ''}
                 </td>
                 <td style="padding:9px 12px">${esc(a.asset_type || '—')}</td>
                 <td style="padding:9px 12px"><b>${esc(a.project_name || a.site_name || '—')}</b>${a.project_code ? ` <span class="muted" style="font-size:11px">(${esc(a.project_code)})</span>` : ''}</td>
                 <td style="padding:9px 12px"><span class="badge">${esc(basisLabelText(a.assigned_basis || a.basis || 'DRY_WITH_DRIVER'))}</span></td>
+                <td style="padding:9px 12px;white-space:nowrap">${originBadge}</td>
                 <td style="padding:9px 12px" class="muted">${esc([a.driver_name, a.notes].filter(Boolean).join(' · ') || '—')}</td>
                 ${canManageAlloc ? `<td style="padding:9px 12px;text-align:center;white-space:nowrap">
-                  ${a.is_current ? `<button class="btn sm btn-end-alloc" data-id="${esc(a.id)}">End</button>` : ''}
+                  <button class="btn sm btn-lock-alloc" data-id="${esc(a.id)}" data-locked="${isLocked ? '1' : '0'}" title="${isLocked ? 'Allow auto-sync updates' : 'Lock manual allocation against auto-sync'}">${isLocked ? '🔓 Unlock' : '🔒 Lock'}</button>
+                  ${a.is_current ? `<button class="btn sm btn-end-alloc" data-id="${esc(a.id)}" style="margin-left:4px">End</button>` : ''}
                 </td>` : ''}
               </tr>
             `;
           }).join('');
+          paintAllocComplianceBadges();
+
+          qsa('.btn-lock-alloc', tbody).forEach((btn) => {
+            btn.onclick = async () => {
+              const curLocked = btn.getAttribute('data-locked') === '1';
+              try {
+                await api(`/hire/allocations/${encodeURIComponent(btn.getAttribute('data-id'))}`, {
+                  method: 'PATCH',
+                  body: { action: curLocked ? 'unlock' : 'lock' },
+                });
+                toast(curLocked ? 'Allocation unlocked' : 'Allocation locked as Manual');
+                loadAllocs();
+              } catch (err) {
+                notify(err.message);
+              }
+            };
+          });
 
           qsa('.btn-end-alloc', tbody).forEach((btn) => {
             btn.onclick = async () => {
@@ -2134,11 +2673,74 @@
             };
           });
         } catch (err) {
-          tbody.innerHTML = `<tr><td colspan="${canManageAlloc ? 7 : 6}" class="err">${esc(err.message)}</td></tr>`;
+          tbody.innerHTML = `<tr><td colspan="${canManageAlloc ? 8 : 7}" class="err">${esc(err.message)}</td></tr>`;
         }
       }
 
       qs('#btn_al_filter', box).onclick = loadAllocs;
+      if (qs('#al_flt_origin', box)) qs('#al_flt_origin', box).onchange = loadAllocs;
+      if (qs('#btn_al_sync_fuel', box)) {
+        qs('#btn_al_sync_fuel', box).onclick = async () => {
+          const syncYm = (qs('#al_sync_month', box) && qs('#al_sync_month', box).value) || curM;
+          try {
+            const preview = await api('/hire/allocations/sync-from-fuel', {
+              method: 'POST',
+              body: { month: syncYm, dryRun: true },
+            });
+            const mEl = document.createElement('div');
+            mEl.className = 'modal-bg modal-backdrop';
+            const rowsHtml = (preview.items || []).slice(0, 120).map((it) => `
+              <tr>
+                <td style="padding:6px 8px"><b>${esc(it.assetCode)}</b></td>
+                <td style="padding:6px 8px">${esc(it.siteName)}</td>
+                <td style="padding:6px 8px;white-space:nowrap">${fmtDateDMY(it.dateFrom)} → ${it.isCurrent ? 'Current' : fmtDateDMY(it.dateTo)}</td>
+                <td style="padding:6px 8px;text-align:right">${fmtNum(it.totalLitres, 1)} L (${it.issueCount}x)</td>
+                <td style="padding:6px 8px"><span class="badge ${it.action === 'CREATE' ? 'green' : (it.action === 'UPDATE' ? 'blue' : (it.action === 'SKIP_MANUAL' ? 'amber' : ''))}">${esc(it.action)}</span></td>
+              </tr>
+            `).join('');
+            mEl.innerHTML = `
+              <div class="modal" style="max-width:780px;width:95%;max-height:86vh;overflow-y:auto;padding:24px">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+                  <h2 style="margin:0">🔄 Preview Auto-Allocation from Fuel (${esc(syncYm)})</h2>
+                  <button type="button" class="btn sm" id="btn_sy_close">✕ Close</button>
+                </div>
+                <p class="muted" style="margin:0 0 10px 0;font-size:12px">
+                  Create: <b>${preview.created || 0}</b> · Update: <b>${preview.updated || 0}</b> · Remove stale: <b>${preview.removed || 0}</b> · Skip Manual/Locked: <b>${preview.skippedManual || 0}</b> · Unchanged: <b>${preview.unchanged || 0}</b>
+                </p>
+                <div class="card" style="padding:0;overflow-x:auto;margin-bottom:14px">
+                  <table class="table" style="width:100%;margin:0;font-size:12px">
+                    <thead><tr><th style="padding:7px 8px">Vehicle</th><th style="padding:7px 8px">Allocated Site</th><th style="padding:7px 8px">Period</th><th style="padding:7px 8px;text-align:right">Site Fuel</th><th style="padding:7px 8px">Action</th></tr></thead>
+                    <tbody>${rowsHtml || '<tr><td colspan="5" class="muted" style="padding:16px;text-align:center">No fuel issues found for this month.</td></tr>'}</tbody>
+                  </table>
+                </div>
+                <div style="display:flex;justify-content:flex-end;gap:8px">
+                  <button type="button" class="btn sm" id="btn_sy_cancel">Cancel</button>
+                  <button type="button" class="btn sm primary" id="btn_sy_apply">Apply Auto-Allocations</button>
+                </div>
+              </div>
+            `;
+            document.body.appendChild(mEl);
+            mEl.querySelector('#btn_sy_close').onclick = () => mEl.remove();
+            mEl.querySelector('#btn_sy_cancel').onclick = () => mEl.remove();
+            mEl.onclick = (e) => { if (e.target === mEl) mEl.remove(); };
+            mEl.querySelector('#btn_sy_apply').onclick = async () => {
+              try {
+                const res = await api('/hire/allocations/sync-from-fuel', {
+                  method: 'POST',
+                  body: { month: syncYm, dryRun: false },
+                });
+                toast(`Synced ${res.created || 0} created, ${res.updated || 0} updated, ${res.removed || 0} removed for ${res.periodKey}!`);
+                mEl.remove();
+                loadAllocs();
+              } catch (err) {
+                notify(err.message);
+              }
+            };
+          } catch (err) {
+            notify(err.message);
+          }
+        };
+      }
       qs('#btn_al_current_month', box).onclick = () => {
         qs('#al_flt_from', box).value = `${curM}-01`;
         qs('#al_flt_to', box).value = lastDayOfMonthStr(curM);
@@ -2210,11 +2812,13 @@
           </div>
         </div>
 
-        <div id="bd_kpis" style="display:grid;grid-template-columns:repeat(auto-fit, minmax(190px, 1fr));gap:10px;margin-bottom:14px">
-          <div class="card" style="padding:12px;border-left:4px solid #dc2626"><div class="muted" style="font-size:11px;font-weight:700">🚫 OPEN / BILLING BLOCKED</div><div id="kpi_open" style="font-size:22px;font-weight:800;color:#dc2626;margin-top:4px">—</div></div>
-          <div class="card" style="padding:12px;border-left:4px solid #f59e0b"><div class="muted" style="font-size:11px;font-weight:700">📅 BREAKDOWN DAYS</div><div id="kpi_days" style="font-size:22px;font-weight:800;margin-top:4px">—</div></div>
-          <div class="card" style="padding:12px;border-left:4px solid #3b82f6"><div class="muted" style="font-size:11px;font-weight:700">🏗️ SITES AFFECTED</div><div id="kpi_sites" style="font-size:22px;font-weight:800;margin-top:4px">—</div></div>
-          <div class="card" style="padding:12px;border-left:4px solid #7c3aed"><div class="muted" style="font-size:11px;font-weight:700">💸 EST. UNBILLABLE RENTAL</div><div id="kpi_loss" style="font-size:22px;font-weight:800;margin-top:4px">—</div></div>
+        <div id="bd_kpis" style="display:grid;grid-template-columns:repeat(auto-fit, minmax(175px, 1fr));gap:10px;margin-bottom:14px">
+          <div class="card" style="padding:12px;border-left:4px solid #dc2626"><div class="muted" style="font-size:11px;font-weight:700">🚫 OPEN / REPAIR ACTIVE</div><div id="kpi_open" style="font-size:20px;font-weight:800;color:#dc2626;margin-top:4px">—</div></div>
+          <div class="card" style="padding:12px;border-left:4px solid #f59e0b"><div class="muted" style="font-size:11px;font-weight:700">📅 REPAIR DOWNTIME DAYS</div><div id="kpi_days" style="font-size:20px;font-weight:800;margin-top:4px">—</div></div>
+          <div class="card" style="padding:12px;border-left:4px solid #b45309"><div class="muted" style="font-size:11px;font-weight:700">🔧 WORKSHOP REPAIRS</div><div id="kpi_repair" style="font-size:20px;font-weight:800;color:#b45309;margin-top:4px">—</div></div>
+          <div class="card" style="padding:12px;border-left:4px solid #7c3aed"><div class="muted" style="font-size:11px;font-weight:700">💸 LOST HIRE REVENUE</div><div id="kpi_loss" style="font-size:20px;font-weight:800;margin-top:4px">—</div></div>
+          <div class="card" style="padding:12px;border-left:4px solid #991b1b"><div class="muted" style="font-size:11px;font-weight:700">🔥 TOTAL BD IMPACT</div><div id="kpi_impact" style="font-size:20px;font-weight:800;color:#991b1b;margin-top:4px">—</div></div>
+          <div class="card" style="padding:12px;border-left:4px solid #3b82f6"><div class="muted" style="font-size:11px;font-weight:700">🏗️ SITES AFFECTED</div><div id="kpi_sites" style="font-size:20px;font-weight:800;margin-top:4px">—</div></div>
         </div>
 
         <div class="card" style="padding:12px;margin-bottom:14px">
@@ -2322,8 +2926,10 @@
 
           qs('#kpi_open', box).textContent = `${sum.openCount || 0} (${sum.blockedAssetsCount || 0} units)`;
           qs('#kpi_days', box).textContent = `${sum.totalBreakdownDays || 0} d`;
+          if (qs('#kpi_repair', box)) qs('#kpi_repair', box).textContent = fmtCents(sum.workshopRepairCostCents || 0);
           qs('#kpi_sites', box).textContent = `${sum.sitesAffected || 0}`;
           qs('#kpi_loss', box).textContent = fmtCents(sum.estimatedUnbillableCents || 0);
+          if (qs('#kpi_impact', box)) qs('#kpi_impact', box).textContent = fmtCents(sum.totalBreakdownImpactCents || sum.estimatedUnbillableCents || 0);
 
           if (!list.length) {
             tbody.innerHTML = `<tr><td colspan="${adminCanAdjust ? 9 : 8}" class="muted" style="padding:20px;text-align:center">No breakdowns found for this filter.</td></tr>`;
@@ -2349,9 +2955,15 @@
             if (b.status === 'WAIVED') {
               billingBadge = '<span class="badge">Waived (Billable)</span>';
             } else if (b.is_open) {
-              billingBadge = '<span class="badge red">🚫 BILLING BLOCKED</span>';
+              billingBadge = '<span class="badge red">🚫 OPEN REPAIR (ACTIVE DAYS BILLABLE)</span>';
             } else {
-              billingBadge = `<span class="badge amber">⚠️ Deducted (${b.period_days || b.total_days || 0}d)</span>${b.estimated_unbillable_cents ? `<div class="muted" style="font-size:10px">${fmtCents(b.estimated_unbillable_cents)}</div>` : ''}`;
+              billingBadge = `<span class="badge amber">⚠️ Deducted (${b.period_days || b.total_days || 0}d)</span>${b.estimated_unbillable_cents ? `<div class="muted" style="font-size:10px">Lost Hire: ${fmtCents(b.estimated_unbillable_cents)}</div>` : ''}`;
+            }
+            if ((b.workshop_repair_cost_cents || 0) > 0) {
+              billingBadge += `<div class="muted" style="font-size:10px">Repairs: ${fmtCents(b.workshop_repair_cost_cents)}</div>`;
+            }
+            if (b.has_fuel_during_repair) {
+              billingBadge += `<div style="margin-top:2px"><span class="badge amber" style="font-size:9.5px" title="Site fuel dispensed during repair window (${esc((b.fuel_during_repair_dates || []).join(', '))}) — verify if machine actually worked &amp; adjust dates or waive">⚠️ Fuel logged in repair (${fmtNum(b.fuel_during_repair_litres || 0, 0)} L / ${b.fuel_during_repair_days || 0}d)</span></div>`;
             }
 
             return `

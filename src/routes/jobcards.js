@@ -206,6 +206,9 @@ router.get(
         delete r.cost_centre;
       }
     }
+    if (req.query.include_blockers === '1') {
+      require('../lib/job_blockers').attachBlockersToCards(rows);
+    }
     res.json(rows);
   })
 );

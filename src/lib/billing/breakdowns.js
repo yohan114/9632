@@ -16,9 +16,19 @@
 
 const { get, all, run } = require('../../db');
 const audit = require('../audit');
+const fuelTimeline = require('./fuel_timeline');
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const COMPLETE_STATUSES = new Set(['WORK_COMPLETE', 'PARTIALLY_CLOSED', 'CLOSED']);
+
+function hasTable(name) {
+  return Boolean(get("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", name));
+}
+
+function hasColumn(table, col) {
+  if (!hasTable(table)) return false;
+  return all(`PRAGMA table_info(${table})`).some((c) => c.name === col);
+}
 
 function todayStr() {
   const d = new Date();
@@ -79,17 +89,147 @@ function cleanJobDescription(jrDesc, jcDesc) {
   return jc.split(/\n\nWorkshop note:/i)[0].trim() || jc;
 }
 
-function estimateDailyUnbillableCents(rateCard, daysInMonth = 30) {
+function estimateDailyUnbillableCents(rateCard, workingDaysPerMonth = 25) {
   if (!rateCard) return 0;
   const rate = Number(rateCard.dry_rate_cents || rateCard.rate_cents || rateCard.wet_rate_cents || 0);
   if (!rate || rate <= 0) return 0;
+  const wd = Math.max(1, Number(workingDaysPerMonth) || 25);
   const basis = String(rateCard.rate_basis || 'HOURLY').toUpperCase();
   if (basis === 'DAILY') return rate;
-  if (basis === 'MONTHLY' || basis === 'FLAT') return Math.round(rate / Math.max(1, daysInMonth));
+  if (basis === 'MONTHLY' || basis === 'FLAT') return Math.round(rate / wd);
   const minUnits = Number(rateCard.min_bill_hours) > 0
     ? Number(rateCard.min_bill_hours)
-    : (basis === 'KM' ? 1000 : 100);
-  return Math.round((rate * minUnits) / Math.max(1, daysInMonth));
+    : (basis === 'KM' ? 3000 : 120);
+  return Math.round((rate * minUnits) / wd);
+}
+
+/**
+ * Sum direct workshop repair costs (in cents) per asset for a YYYY-MM period across
+ * store issues, job parts, job labour, and scheduled service oils/filters.
+ */
+function getWorkshopRepairCostMap(periodKey, assetId = null) {
+  const map = new Map();
+  if (!periodKey || !monthBounds(periodKey)) return map;
+  const addCents = (aid, lkr) => {
+    if (!aid) return;
+    const c = Math.round((Number(lkr) || 0) * 100);
+    if (c <= 0) return;
+    map.set(Number(aid), (map.get(Number(aid)) || 0) + c);
+  };
+
+  if (hasTable('issues')) {
+    const voidClause = hasColumn('issues', 'voided') ? 'AND COALESCE(i.voided, 0) = 0' : '';
+    const rows = all(`
+      SELECT i.asset_id, COALESCE(SUM(i.qty * COALESCE(i.unit_price, 0)), 0) AS cost
+        FROM issues i
+       WHERE i.asset_id IS NOT NULL
+         AND strftime('%Y-%m', i.issue_date) = ?
+         ${voidClause}
+         ${assetId ? 'AND i.asset_id = ?' : ''}
+       GROUP BY i.asset_id
+    `, ...(assetId ? [periodKey, Number(assetId)] : [periodKey]));
+    for (const r of rows) addCents(r.asset_id, r.cost);
+  }
+
+  if (hasTable('job_parts') && hasTable('job_cards')) {
+    const rows = all(`
+      SELECT jc.asset_id, COALESCE(SUM(jp.qty * COALESCE(jp.unit_price, 0)), 0) AS cost
+        FROM job_parts jp
+        JOIN job_cards jc ON jc.id = jp.job_id
+       WHERE jc.asset_id IS NOT NULL
+         AND strftime('%Y-%m', COALESCE(jc.completed_at, jc.started_at, jc.closed_at, jc.requested_at, jc.created_at)) = ?
+         ${assetId ? 'AND jc.asset_id = ?' : ''}
+       GROUP BY jc.asset_id
+    `, ...(assetId ? [periodKey, Number(assetId)] : [periodKey]));
+    for (const r of rows) addCents(r.asset_id, r.cost);
+  }
+
+  if (hasTable('job_labour') && hasTable('job_cards')) {
+    const rows = all(`
+      SELECT jc.asset_id, COALESCE(SUM(COALESCE(jl.amount, jl.hours * COALESCE(jl.rate, 0))), 0) AS cost
+        FROM job_labour jl
+        JOIN job_cards jc ON jc.id = jl.job_id
+       WHERE jc.asset_id IS NOT NULL
+         AND strftime('%Y-%m', COALESCE(jl.work_date, jc.completed_at, jc.started_at, jc.closed_at, jc.requested_at, jc.created_at)) = ?
+         ${assetId ? 'AND jc.asset_id = ?' : ''}
+       GROUP BY jc.asset_id
+    `, ...(assetId ? [periodKey, Number(assetId)] : [periodKey]));
+    for (const r of rows) addCents(r.asset_id, r.cost);
+  }
+
+  if (hasTable('service_jobs')) {
+    if (hasTable('service_oils')) {
+      const rows = all(`
+        SELECT sj.asset_id, COALESCE(SUM(so.qty * COALESCE(so.price, 0)), 0) AS cost
+          FROM service_oils so
+          JOIN service_jobs sj ON sj.id = so.service_id
+         WHERE sj.asset_id IS NOT NULL
+           AND strftime('%Y-%m', sj.service_date) = ?
+           ${assetId ? 'AND sj.asset_id = ?' : ''}
+         GROUP BY sj.asset_id
+      `, ...(assetId ? [periodKey, Number(assetId)] : [periodKey]));
+      for (const r of rows) addCents(r.asset_id, r.cost);
+    }
+    if (hasTable('service_filters')) {
+      const rows = all(`
+        SELECT sj.asset_id, COALESCE(SUM(sf.qty * COALESCE(sf.price, 0)), 0) AS cost
+          FROM service_filters sf
+          JOIN service_jobs sj ON sj.id = sf.service_id
+         WHERE sj.asset_id IS NOT NULL
+           AND strftime('%Y-%m', sj.service_date) = ?
+           ${assetId ? 'AND sj.asset_id = ?' : ''}
+         GROUP BY sj.asset_id
+      `, ...(assetId ? [periodKey, Number(assetId)] : [periodKey]));
+      for (const r of rows) addCents(r.asset_id, r.cost);
+    }
+  }
+
+  return map;
+}
+
+function loadFuelDatesByAsset(assetId = null) {
+  const byAsset = new Map();
+  if (!hasTable('fuel_issues')) return byAsset;
+  const rows = all(`
+    SELECT fi.asset_id, fi.asset_code, fi.vehicle_ref, fi.litres, fi.notes, fi.issue_date
+      FROM fuel_issues fi
+     WHERE COALESCE(fi.is_voided, 0) = 0
+       AND COALESCE(fi.voided, 0) = 0
+       AND fi.asset_id IS NOT NULL
+       AND COALESCE(fi.litres, 0) > 0
+       ${assetId ? 'AND fi.asset_id = ?' : ''}
+  `, ...(assetId ? [Number(assetId)] : []));
+  for (const r of rows) {
+    if (fuelTimeline.isNonMachineFuelRow(r, null)) continue;
+    const day = fuelTimeline.slstDate10(r.issue_date);
+    if (!day) continue;
+    if (!byAsset.has(r.asset_id)) byAsset.set(r.asset_id, new Map());
+    const dMap = byAsset.get(r.asset_id);
+    dMap.set(day, (dMap.get(day) || 0) + (Number(r.litres) || 0));
+  }
+  return byAsset;
+}
+
+function computeFuelOverlapForWindow(fuelDatesByAsset, assetId, startDay, endDay) {
+  if (!assetId || !startDay || !endDay || endDay < startDay) {
+    return { days: 0, litres: 0, dates: [] };
+  }
+  const dMap = fuelDatesByAsset.get(Number(assetId));
+  if (!dMap || !dMap.size) return { days: 0, litres: 0, dates: [] };
+  let litres = 0;
+  const dates = [];
+  for (const [d, l] of dMap.entries()) {
+    if (d >= startDay && d <= endDay) {
+      dates.push(d);
+      litres += l;
+    }
+  }
+  dates.sort();
+  return {
+    days: dates.length,
+    litres: Math.round(litres * 100) / 100,
+    dates,
+  };
 }
 
 function loadRateCardMap() {
@@ -188,7 +328,10 @@ function buildUnifiedRecords({ assetId = null, scopeMode = 'all' } = {}) {
       continue;
     }
 
-    const origStart = d10(j.reported_at) || d10(j.jr_req_date) || d10(j.started_at) || d10(j.requested_at) || nowDay;
+    const isFlagged = Boolean(j.is_breakdown_flag) || Boolean(j.is_field_flag);
+    const origStart = isFlagged
+      ? (d10(j.reported_at) || d10(j.jr_req_date) || d10(j.started_at) || d10(j.requested_at) || nowDay)
+      : (d10(j.started_at) || d10(j.reported_at) || d10(j.requested_at) || d10(j.jr_req_date) || nowDay);
     let origEnd = null;
     if (j.is_field_flag) {
       origEnd = d10(j.working_at) || (COMPLETE_STATUSES.has(j.job_status) ? (d10(j.completed_at) || d10(j.closed_at) || d10(j.partial_closed_at)) : null);
@@ -289,12 +432,13 @@ function buildUnifiedRecords({ assetId = null, scopeMode = 'all' } = {}) {
 
   for (const jr of unlinkedJrs) {
     if (coveredJobReqIds.has(Number(jr.job_request_id))) continue;
-    if (scopeMode === 'flagged' && !['urgent', 'breakdown'].includes(String(jr.priority || '').toLowerCase())) {
+    const ov = fbByJobReq.get(Number(jr.job_request_id));
+    const isUrgentOrBd = ['urgent', 'breakdown'].includes(String(jr.priority || '').toLowerCase());
+    if (!isUrgentOrBd && !ov && scopeMode !== 'include_routine_jr') {
       continue;
     }
 
     const origStart = d10(jr.req_date) || d10(jr.created_at) || nowDay;
-    const ov = fbByJobReq.get(Number(jr.job_request_id));
     const start = (ov && d10(ov.breakdown_start)) || origStart;
     let end = null;
     let status = 'OPEN';
@@ -464,6 +608,24 @@ function buildUnifiedRecords({ assetId = null, scopeMode = 'all' } = {}) {
     });
   }
 
+  // Annotate every non-waived record with whether fuel was dispensed during the repair window
+  const fuelDatesByAsset = loadFuelDatesByAsset(assetId);
+  for (const r of records) {
+    if (r.status === 'WAIVED' || !r.asset_id) {
+      r.fuel_during_repair_days = 0;
+      r.fuel_during_repair_litres = 0;
+      r.fuel_during_repair_dates = [];
+      r.has_fuel_during_repair = false;
+      continue;
+    }
+    const effEnd = r.breakdown_end || (r.breakdown_start <= nowDay ? nowDay : r.breakdown_start);
+    const ovFuel = computeFuelOverlapForWindow(fuelDatesByAsset, r.asset_id, r.breakdown_start, effEnd);
+    r.fuel_during_repair_days = ovFuel.days;
+    r.fuel_during_repair_litres = ovFuel.litres;
+    r.fuel_during_repair_dates = ovFuel.dates;
+    r.has_fuel_during_repair = ovFuel.days > 0;
+  }
+
   return records;
 }
 
@@ -482,6 +644,8 @@ function listBreakdowns(filters = {}) {
   const nowDay = todayStr();
   const rateCards = loadRateCardMap();
   const billedAssets = loadActiveBillAssetSet(bounds ? bounds.periodKey : null);
+  const repairCostMap = bounds ? getWorkshopRepairCostMap(bounds.periodKey) : new Map();
+  const workingDaysPerMonth = fuelTimeline.getCostingOptions().workingDaysPerMonth || 25;
 
   const allRecords = buildUnifiedRecords({ scopeMode });
 
@@ -532,8 +696,9 @@ function listBreakdowns(filters = {}) {
     }
 
     const rc = r.asset_id ? rateCards.get(r.asset_id) : null;
-    const dailyEstCents = estimateDailyUnbillableCents(rc, bounds ? bounds.daysInMonth : 30);
+    const dailyEstCents = estimateDailyUnbillableCents(rc, workingDaysPerMonth);
     const estUnbillableCents = r.status === 'WAIVED' ? 0 : Math.round(dailyEstCents * (periodDays || 0));
+    const workshopRepairCostCents = r.asset_id ? (repairCostMap.get(r.asset_id) || 0) : 0;
 
     filtered.push({
       ...r,
@@ -541,6 +706,7 @@ function listBreakdowns(filters = {}) {
       billing_blocked: r.is_open,
       has_active_bill_in_period: r.asset_id ? billedAssets.has(r.asset_id) : false,
       estimated_unbillable_cents: estUnbillableCents,
+      workshop_repair_cost_cents: workshopRepairCostCents,
     });
   }
 
@@ -552,14 +718,20 @@ function listBreakdowns(filters = {}) {
 
   // Deduplicated downtime day count across filtered records
   const daySetsByAsset = new Map();
+  const repairCostBySeenAsset = new Map();
   const blockedAssets = new Set();
   const sitesSet = new Set();
   let estTotalCents = 0;
+  let fuelDuringRepairCount = 0;
 
   for (const r of filtered) {
     if (r.is_open && r.asset_id) blockedAssets.add(r.asset_id);
     if (r.project_name) sitesSet.add(r.project_name);
+    if (r.has_fuel_during_repair) fuelDuringRepairCount++;
     estTotalCents += r.estimated_unbillable_cents || 0;
+    if (r.asset_id && !repairCostBySeenAsset.has(r.asset_id)) {
+      repairCostBySeenAsset.set(r.asset_id, r.workshop_repair_cost_cents || 0);
+    }
 
     if (r.status === 'WAIVED' || !r.asset_id) continue;
     const wStart = bounds ? (r.breakdown_start < bounds.start ? bounds.start : r.breakdown_start) : r.breakdown_start;
@@ -579,6 +751,8 @@ function listBreakdowns(filters = {}) {
 
   let totalUniqueDays = 0;
   for (const set of daySetsByAsset.values()) totalUniqueDays += set.size;
+  let totalWorkshopRepairCostCents = 0;
+  for (const c of repairCostBySeenAsset.values()) totalWorkshopRepairCostCents += c;
 
   return {
     breakdowns: filtered,
@@ -589,6 +763,9 @@ function listBreakdowns(filters = {}) {
       totalBreakdownDays: totalUniqueDays,
       sitesAffected: sitesSet.size,
       estimatedUnbillableCents: estTotalCents,
+      workshopRepairCostCents: totalWorkshopRepairCostCents,
+      totalBreakdownImpactCents: totalWorkshopRepairCostCents + estTotalCents,
+      fuelDuringRepairCount,
     },
     sites: [...siteMap.values()].sort((a, b) => String(a.name).localeCompare(String(b.name))),
   };
@@ -877,6 +1054,78 @@ function adjustBreakdownRecord(actor, idOrKey, body = {}) {
   };
 }
 
+/**
+ * Fleet-wide per-asset breakdown downtime & lost-hire-revenue metrics for a billing month ('YYYY-MM').
+ * Clean-DB safe (guards optional tables) for fast O(N) lookups in Vehicle Costing P&L.
+ */
+function getMonthlyBreakdownMetricsMap(periodKey, opts = {}) {
+  const out = new Map();
+  const bounds = monthBounds(periodKey);
+  if (!bounds) return out;
+  if (!hasTable('job_cards') || !hasTable('job_requests')) return out;
+
+  const nowDay = todayStr();
+  const workingDaysPerMonth = opts.workingDaysPerMonth || fuelTimeline.getCostingOptions().workingDaysPerMonth || 25;
+  const rateCards = hasTable('fleet_rental_rates') ? loadRateCardMap() : new Map();
+  const records = buildUnifiedRecords({ scopeMode: opts.scopeMode || 'all' });
+
+  const grouped = new Map();
+  for (const r of records) {
+    if (!r.asset_id || r.status === 'WAIVED') continue;
+    const rawStart = d10(r.breakdown_start);
+    if (!rawStart || rawStart > bounds.end) continue;
+    const rawEnd = r.is_open
+      ? (opts.fullMonthProjection ? bounds.end : (bounds.end < nowDay ? bounds.end : (rawStart > nowDay ? rawStart : nowDay)))
+      : (d10(r.breakdown_end) || rawStart);
+    if (rawEnd < bounds.start) continue;
+
+    const s = rawStart < bounds.start ? bounds.start : rawStart;
+    const e = rawEnd > bounds.end ? bounds.end : rawEnd;
+    if (e < s) continue;
+
+    let entry = grouped.get(r.asset_id);
+    if (!entry) {
+      entry = {
+        assetId: r.asset_id,
+        daySet: new Set(),
+        openCount: 0,
+        closedCount: 0,
+        hasFuelDuringRepair: false,
+        records: [],
+      };
+      grouped.set(r.asset_id, entry);
+    }
+    if (r.is_open) entry.openCount++;
+    else entry.closedCount++;
+    if (r.has_fuel_during_repair) entry.hasFuelDuringRepair = true;
+    entry.records.push(r);
+
+    let cur = s;
+    for (let i = 0; i < 32 && cur <= e; i++) {
+      entry.daySet.add(cur);
+      cur = addDays(cur, 1);
+    }
+  }
+
+  for (const [aid, entry] of grouped.entries()) {
+    const breakdownDays = Math.min(bounds.daysInMonth, entry.daySet.size);
+    const rc = rateCards.get(aid) || null;
+    const dailyEstCents = estimateDailyUnbillableCents(rc, workingDaysPerMonth);
+    const lostHireRevenueCents = Math.round(dailyEstCents * Math.min(workingDaysPerMonth, breakdownDays));
+    out.set(aid, {
+      assetId: aid,
+      breakdownDays,
+      lostHireRevenueCents,
+      openCount: entry.openCount,
+      closedCount: entry.closedCount,
+      hasFuelDuringRepair: entry.hasFuelDuringRepair,
+      records: entry.records,
+    });
+  }
+
+  return out;
+}
+
 module.exports = {
   todayStr,
   d10,
@@ -885,5 +1134,7 @@ module.exports = {
   buildUnifiedRecords,
   listBreakdowns,
   getAssetBillingBreakdownStatus,
+  getWorkshopRepairCostMap,
+  getMonthlyBreakdownMetricsMap,
   adjustBreakdownRecord,
 };
