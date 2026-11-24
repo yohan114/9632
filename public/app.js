@@ -21262,6 +21262,7 @@ routes.access = async (c) => {
   if (canDo('access.manage')) tabs.push(['roles', '🛡️ Roles, Matrix & Limits']);
   tabs.push(['governance', '🔍 Inspector & Hand-overs']);
   if (isAdmin() || canDo('audit.logs.view', 'access.manage')) tabs.push(['auditlogs', '📜 Security & Audit Trail']);
+  if (canDo('access.manage', 'users.manage')) tabs.push(['security', '🔒 Security & Hardening']);
 
   const tabAlias = {
     users: 'people',
@@ -21310,6 +21311,7 @@ routes.access = async (c) => {
   else if (tab === 'roles') await renderRolesManager(pane, sp.get('role'), rolesMode);
   else if (tab === 'governance') await renderGovernanceTab(pane, sp, govView);
   else if (tab === 'auditlogs') await renderAuditLogs(pane, { embedded: true, preset: auditPreset });
+  else if (tab === 'security') await renderSecurityHardeningTab(pane);
 };
 routes.users = async () => { location.hash = '#/access?tab=people'; };
 

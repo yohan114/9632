@@ -25,6 +25,7 @@ const rules = require('../lib/access_rules');
 const audit = require('../lib/audit');
 const storeLocs = require('../lib/store_locations');
 const sod = require('../lib/sod');
+const securityAudit = require('../lib/security_audit');
 
 const router = express.Router();
 
@@ -1583,6 +1584,36 @@ router.post('/stand-ins/:id/revoke', asyncHandler((req, res) => {
   } catch (err) {
     res.status(err.status || 400).json({ error: err.message });
   }
+}));
+
+// ---- security & release hardening posture (Stage D) -----------------------------------------
+router.get('/security-posture', requireCap('access.manage', 'users.manage'), asyncHandler((req, res) => {
+  res.json(securityAudit.getSecurityPosture(req.user));
+}));
+
+router.post('/security-posture/mfa-policy', requireCap('access.manage'), asyncHandler((req, res) => {
+  const rolesList = Array.isArray(req.body && req.body.roles) ? req.body.roles : [];
+  try {
+    const out = securityAudit.setRolesMfaPolicy(req.user, rolesList, !!(req.body && req.body.require_mfa), {
+      confirmSelfUnenrolled: !!(req.body && req.body.confirm_self_unenrolled),
+    });
+    res.json(out);
+  } catch (err) {
+    if (err.status && err.extra) {
+      return res.status(err.status).json({ error: err.message, ...err.extra });
+    }
+    throw err;
+  }
+}));
+
+router.post('/security-posture/deactivate-users', requireCap('users.manage'), asyncHandler((req, res) => {
+  const userIds = Array.isArray(req.body && req.body.user_ids) ? req.body.user_ids : [];
+  const reason = req.body && req.body.reason;
+  res.json(securityAudit.bulkDeactivateUsers(req.user, userIds, reason));
+}));
+
+router.post('/security-posture/backup-verify', requireCap('access.manage'), asyncHandler(async (req, res) => {
+  res.json(await securityAudit.runVerifiedColdBackup(req.user));
 }));
 
 module.exports = router;

@@ -3293,3 +3293,390 @@ async function openNewUserWizard(roles, allStoreLocations, storeOptions, wsd, on
     render();
   }, { wide: true });
 }
+
+// ---- Stage D: Security & Hardening Cockpit (#/access?tab=security) -------------------------
+async function renderSecurityHardeningTab(c) {
+  const canManageAccess = canDo('access.manage');
+  const canManageUsers = canDo('users.manage');
+  let userFilter = 'active';
+  let showAllRoles = false;
+  const selectedUserIds = new Set();
+
+  let posture = await api('/access/security-posture');
+
+  const applyMfaPolicy = async (roleNames, requireMfa) => {
+    const send = async (confirmSelf = false) => {
+      try {
+        const res = await api('/access/security-posture/mfa-policy', {
+          method: 'POST',
+          body: { roles: roleNames, require_mfa: !!requireMfa, confirm_self_unenrolled: confirmSelf },
+        });
+        posture = res.posture;
+        toast(requireMfa
+          ? `2FA enforced on ${roleNames.join(', ')}`
+          : `2FA policy relaxed on ${roleNames.join(', ')}`, 'ok');
+        draw();
+      } catch (e) {
+        if (e && e.status === 409 && e.data && e.data.requires_self_mfa_confirm) {
+          const affected = (e.data.affected_self_roles || []).join(', ');
+          modal('Confirm Enforcing 2FA on Your Own Role', `
+            <div style="padding:10px 12px;border-radius:6px;background:#fffbeb;border:1px solid #fde68a;color:#92400e;margin-bottom:12px;font-size:13px">
+              <b>⚠️ Heads up:</b> Your own account holds <b>${esc(affected)}</b> and does not have an authenticator app enrolled yet.
+            </div>
+            <p style="font-size:13px;margin:0 0 8px">
+              If you enforce 2FA now, your next sign-in will prompt you to scan the TOTP setup key with Google/Microsoft Authenticator before opening any screen.
+            </p>
+            <p class="muted" style="font-size:12px;margin:0 0 14px">
+              Tip: You can cancel here and click <b>Set up My 2FA Now</b> first, or confirm to enforce immediately (CLI recovery: <code>node scripts/admin.js reset-mfa &lt;username&gt;</code>).
+            </p>
+            <div style="display:flex;justify-content:flex-end;gap:8px">
+              <button type="button" class="btn" id="sec-mfa-cancel">Cancel</button>
+              <button type="button" class="primary" id="sec-mfa-confirm">Enforce 2FA Anyway</button>
+            </div>`,
+            (body, close) => {
+              qs('#sec-mfa-cancel', body).onclick = close;
+              qs('#sec-mfa-confirm', body).onclick = async () => {
+                close();
+                await send(true);
+              };
+            }
+          );
+          return;
+        }
+        toast(e.message || 'Failed to update 2FA policy', 'err');
+      }
+    };
+    await send(false);
+  };
+
+  const draw = () => {
+    const s = posture.summary || {};
+    const roles = posture.roles || [];
+    const users = posture.users || [];
+    const b = posture.backup || {};
+    const rt = posture.runtime || {};
+
+    const visibleRoles = showAllRoles ? roles : roles.filter((r) => r.is_privileged);
+    const privRolesUnforced = roles.filter((r) => r.active && r.is_privileged && !r.require_mfa).map((r) => r.name);
+
+    const activeUsers = users.filter((u) => u.active);
+    const filterCounts = {
+      active: activeUsers.length,
+      pending_pw: activeUsers.filter((u) => u.must_change_password).length,
+      dormant: activeUsers.filter((u) => u.is_dormant || u.is_default_seed).length,
+      priv_no_mfa: activeUsers.filter((u) => u.is_privileged && !u.mfa_enabled).length,
+      inactive: users.filter((u) => !u.active).length,
+    };
+
+    const filteredUsers = users.filter((u) => {
+      if (userFilter === 'active') return u.active;
+      if (userFilter === 'pending_pw') return u.active && u.must_change_password;
+      if (userFilter === 'dormant') return u.active && (u.is_dormant || u.is_default_seed);
+      if (userFilter === 'priv_no_mfa') return u.active && u.is_privileged && !u.mfa_enabled;
+      if (userFilter === 'inactive') return !u.active;
+      return true;
+    });
+
+    for (const id of [...selectedUserIds]) {
+      const hit = users.find((u) => u.id === id);
+      if (!hit || !hit.can_deactivate) selectedUserIds.delete(id);
+    }
+
+    const newest = b.newest_snapshot || null;
+    const lastVerify = b.last_verify || null;
+    const backupMb = newest && newest.bytes != null ? (newest.bytes / (1024 * 1024)).toFixed(2) : null;
+
+    const roleRowsHtml = visibleRoles.map((r) => {
+      const mfaBadge = r.require_mfa
+        ? '<span class="badge green">Required</span>'
+        : '<span class="badge">Optional</span>';
+      const privBadge = r.is_privileged
+        ? '<span class="badge amber" style="font-size:10px">Privileged</span>'
+        : '<span class="badge" style="font-size:10px">Standard</span>';
+      let actionHtml = '<span class="muted">—</span>';
+      if (canManageAccess && r.active) {
+        if (!r.require_mfa) {
+          actionHtml = (r.name === 'admin' && !isAdmin())
+            ? '<span class="muted" style="font-size:11px">Admin only</span>'
+            : `<button type="button" class="btn sm primary" data-sec-mfa-role="${esc(r.name)}" data-sec-mfa-val="1">Enforce 2FA</button>`;
+        } else {
+          actionHtml = isAdmin()
+            ? `<button type="button" class="btn sm" data-sec-mfa-role="${esc(r.name)}" data-sec-mfa-val="0">Relax 2FA</button>`
+            : '<span class="muted" style="font-size:11px">Admin to relax</span>';
+        }
+      }
+      return `<tr>
+        <td><b>${esc(r.label)}</b><br><code style="font-size:11px">${esc(r.name)}</code></td>
+        <td>${privBadge}${r.active ? '' : ' <span class="badge red">Retired</span>'}</td>
+        <td class="num">${r.active_holders}</td>
+        <td class="num">${r.mfa_enrolled_holders} / ${r.active_holders}</td>
+        <td>${mfaBadge}</td>
+        <td style="text-align:right">${actionHtml}</td>
+      </tr>`;
+    });
+
+    const userRowsHtml = filteredUsers.map((u) => {
+      const roleBadges = (u.role_labels || u.roles || []).map((rn) => `<span class="badge blue" style="font-size:10px">${esc(rn)}</span>`).join(' ');
+      const mfaCol = u.mfa_enabled
+        ? '<span class="badge green">2FA On</span>'
+        : (u.mfa_required_by_role
+          ? '<span class="badge amber">Setup Due</span>'
+          : (u.is_privileged ? '<span class="badge red">Privileged Off</span>' : '<span class="muted">Off</span>'));
+      const pwCol = u.must_change_password
+        ? '<span class="badge amber">Temp Password</span>'
+        : '<span class="badge green">Set</span>';
+      const actCol = u.last_activity_at
+        ? `<span style="font-size:11.5px">${esc(String(u.last_activity_at).slice(0, 16).replace('T', ' '))}</span><div class="muted" style="font-size:10.5px">${u.audit_count} audit event(s)</div>`
+        : '<span class="badge amber" style="font-size:10.5px">Dormant (0 events)</span>';
+      const statusCol = u.active
+        ? (u.is_expired_access ? '<span class="badge red">Access Expired</span>' : '<span class="badge green">Active</span>')
+        : '<span class="badge">Inactive</span>';
+      const canSel = canManageUsers && u.can_deactivate;
+      return `<tr style="${u.active ? '' : 'opacity:.6'}">
+        <td style="text-align:center"><input type="checkbox" style="width:auto" data-sec-uid="${u.id}" ${selectedUserIds.has(u.id) ? 'checked' : ''} ${canSel ? '' : 'disabled'}></td>
+        <td>
+          <a href="#/access?tab=people&amp;user=${u.id}" style="font-weight:600;text-decoration:none">${esc(u.full_name || u.username)}</a>
+          <div class="muted" style="font-size:11px"><code>${esc(u.username)}</code>${u.is_default_seed ? ' · <span class="badge amber" style="font-size:9.5px">Default Seed</span>' : ''}</div>
+        </td>
+        <td>${roleBadges || '<span class="muted">No roles</span>'}</td>
+        <td>${mfaCol}</td>
+        <td>${pwCol}</td>
+        <td>${actCol}</td>
+        <td class="num">${u.active_sessions}</td>
+        <td>${statusCol}</td>
+      </tr>`;
+    });
+
+    c.innerHTML = `
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(175px,1fr));gap:10px;margin-bottom:12px">
+        <div class="card" style="padding:12px">
+          <div class="muted" style="font-size:11px;font-weight:600">2FA ENROLLED USERS</div>
+          <div style="font-size:22px;font-weight:700;margin-top:4px">${s.mfa_enrolled_users || 0} / ${s.active_users || 0}</div>
+          <div class="muted" style="font-size:11.5px">${s.mfa_enrolled_pct || 0}% of active accounts</div>
+        </div>
+        <div class="card" style="padding:12px">
+          <div class="muted" style="font-size:11px;font-weight:600">PRIVILEGED ROLES 2FA</div>
+          <div style="font-size:22px;font-weight:700;margin-top:4px">${s.privileged_roles_enforced || 0} / ${s.privileged_roles_total || 0}</div>
+          <div class="muted" style="font-size:11.5px">${s.privileged_mfa_enrolled || 0}/${s.privileged_active_users || 0} holders enrolled</div>
+        </div>
+        <div class="card" style="padding:12px">
+          <div class="muted" style="font-size:11px;font-weight:600">TEMP PASSWORDS DUE</div>
+          <div style="font-size:22px;font-weight:700;margin-top:4px">${s.must_change_password_count || 0}</div>
+          <div class="muted" style="font-size:11.5px">${s.default_seed_active_count || 0} default/seed still active</div>
+        </div>
+        <div class="card" style="padding:12px">
+          <div class="muted" style="font-size:11px;font-weight:600">DORMANT ACTIVE ACCOUNTS</div>
+          <div style="font-size:22px;font-weight:700;margin-top:4px">${s.dormant_accounts_count || 0}</div>
+          <div class="muted" style="font-size:11.5px">${s.active_sessions_total || 0} active session(s) live</div>
+        </div>
+        <div class="card" style="padding:12px;border-left:4px solid ${b.ok ? '#16a34a' : '#d97706'}">
+          <div class="muted" style="font-size:11px;font-weight:600">COLD BACKUP &amp; VERIFY</div>
+          <div style="font-size:18px;font-weight:700;margin-top:4px;color:${b.ok ? '#166534' : '#92400e'}">${b.ok ? 'VERIFIED OK' : 'CHECK NEEDED'}</div>
+          <div class="muted" style="font-size:11.5px">${b.snapshot_count || 0} snapshot(s) on disk</div>
+        </div>
+      </div>
+
+      ${!s.actor_mfa_enabled ? `
+        <div class="card" style="border-left:4px solid #d97706;background:#fffbeb;margin-bottom:12px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px">
+          <div style="font-size:12.5px">
+            <b>⚠️ Enroll your own authenticator before enforcing mandatory 2FA:</b>
+            <span class="muted">If you turn on 2FA for your role first, your next login will ask you to scan a TOTP code before opening WorkshopOne.</span>
+          </div>
+          <button type="button" class="btn sm primary" id="btn-sec-enroll-self">🔐 Set up My 2FA Now</button>
+        </div>` : ''}
+
+      <div class="card" style="margin-bottom:12px">
+        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:10px">
+          <div>
+            <h3 style="margin:0">🛡️ Two-Factor Authentication (2FA) Policy</h3>
+            <p class="muted" style="margin:2px 0 0;font-size:12px">Enforce TOTP authenticator sign-in across Admin, Manager, Operational Manager, and Cost Accountant roles.</p>
+          </div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <button type="button" class="btn sm" id="btn-sec-toggle-roles">${showAllRoles ? 'Show Privileged Only' : 'Show All Roles'}</button>
+            ${canManageAccess && privRolesUnforced.length ? '<button type="button" class="btn sm primary" id="btn-sec-enforce-priv">🔒 Enforce 2FA on Privileged Roles</button>' : ''}
+          </div>
+        </div>
+        ${tableWrap([
+          { label: 'Role' },
+          { label: 'Tier' },
+          { label: 'Active Users', num: true },
+          { label: '2FA Enrolled', num: true },
+          { label: 'Policy' },
+          { label: '' },
+        ], roleRowsHtml, { scroll: true })}
+      </div>
+
+      <div class="card" style="margin-bottom:12px">
+        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:10px">
+          <div>
+            <h3 style="margin:0">👤 Account Hygiene &amp; Dormant / Seed Review</h3>
+            <p class="muted" style="margin:2px 0 0;font-size:12px">Review pending password resets, default seed accounts, and zero-activity users. Deactivating revokes all active sessions cleanly.</p>
+          </div>
+          ${canManageUsers ? `<button type="button" class="btn sm danger" id="btn-sec-deactivate-sel" ${selectedUserIds.size ? '' : 'disabled'}>🚫 Deactivate Selected (${selectedUserIds.size})</button>` : ''}
+        </div>
+        <div class="pill-row" style="margin-bottom:10px;flex-wrap:wrap;gap:6px">
+          <button type="button" class="btn sm ${userFilter === 'active' ? 'primary' : ''}" data-sec-ufilter="active">All Active (${filterCounts.active})</button>
+          <button type="button" class="btn sm ${userFilter === 'pending_pw' ? 'primary' : ''}" data-sec-ufilter="pending_pw">Temp Password (${filterCounts.pending_pw})</button>
+          <button type="button" class="btn sm ${userFilter === 'dormant' ? 'primary' : ''}" data-sec-ufilter="dormant">Dormant / Seed (${filterCounts.dormant})</button>
+          <button type="button" class="btn sm ${userFilter === 'priv_no_mfa' ? 'primary' : ''}" data-sec-ufilter="priv_no_mfa">Privileged No-2FA (${filterCounts.priv_no_mfa})</button>
+          <button type="button" class="btn sm ${userFilter === 'inactive' ? 'primary' : ''}" data-sec-ufilter="inactive">Inactive (${filterCounts.inactive})</button>
+        </div>
+        ${userRowsHtml.length
+          ? tableWrap([
+            { label: '' },
+            { label: 'Account' },
+            { label: 'Roles' },
+            { label: '2FA' },
+            { label: 'Password' },
+            { label: 'Last Activity' },
+            { label: 'Sessions', num: true },
+            { label: 'Status' },
+          ], userRowsHtml, { scroll: true })
+          : '<div class="muted" style="padding:10px 0">No accounts match this filter.</div>'}
+      </div>
+
+      <div class="card">
+        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:10px">
+          <div>
+            <h3 style="margin:0">💾 Cold Backup, Restore Verify &amp; Release Readiness</h3>
+            <p class="muted" style="margin:2px 0 0;font-size:12px">Takes an online SQLite snapshot and runs read-only <code>PRAGMA integrity_check</code> without interrupting live users.</p>
+          </div>
+          ${canManageAccess ? '<button type="button" class="btn sm primary" id="btn-sec-backup-now">🛡️ Take Cold Backup &amp; Verify Now</button>' : ''}
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;font-size:12px">
+          <span class="badge">Node ${esc(rt.node_version || '—')}</span>
+          <span class="badge">Env: ${esc(rt.node_env || 'development')}</span>
+          <span class="badge">Bind: ${esc(rt.host || '—')}:${esc(rt.port || '—')}</span>
+          <span class="badge">DB: ${esc(rt.db_file || '—')} (${rt.multidb ? 'MultiDB' : 'Single DB'})</span>
+          <span class="badge">Retention: ${b.retention || 10} · Schedule: ${b.interval_minutes || 0} min</span>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:10px;font-size:12.5px">
+          <div style="padding:10px;border:1px solid var(--border,#e2e8f0);border-radius:6px">
+            <div class="muted" style="font-size:11px;font-weight:600">LATEST SNAPSHOT ON DISK</div>
+            ${newest ? `
+              <div style="margin-top:4px"><code>${esc(newest.name)}</code></div>
+              <div class="muted" style="font-size:11.5px;margin-top:2px">${backupMb || '0.00'} MB · ${newest.ageMinutes} min ago · Users table: ${newest.hasUsers ? 'Present' : 'Missing'}</div>
+            ` : '<div class="muted" style="margin-top:4px">No snapshot created yet in configured backup directory.</div>'}
+          </div>
+          <div style="padding:10px;border:1px solid var(--border,#e2e8f0);border-radius:6px">
+            <div class="muted" style="font-size:11px;font-weight:600">LAST INTEGRITY VERIFICATION</div>
+            ${lastVerify ? `
+              <div style="margin-top:4px">
+                <span class="badge ${lastVerify.ok ? 'green' : 'red'}">${lastVerify.ok ? 'PASSED (integrity_check = ok)' : 'FAILED'}</span>
+              </div>
+              <div class="muted" style="font-size:11.5px;margin-top:2px">${esc(lastVerify.snapshot || '')} · ${esc(String(lastVerify.at || '').slice(0, 19).replace('T', ' '))} UTC</div>
+            ` : '<div class="muted" style="margin-top:4px">No restore verification recorded yet. Click Verify Now above.</div>'}
+          </div>
+        </div>
+        <details style="margin-top:12px">
+          <summary class="muted" style="cursor:pointer;font-size:12px;font-weight:600">Operator Break-Glass &amp; VPS Deployment Reference</summary>
+          <div style="margin-top:8px;padding:10px;background:#f8fafc;border-radius:6px;font-size:12px;line-height:1.7">
+            <div>Reset lost 2FA from server CLI: <code>node scripts/admin.js reset-mfa &lt;username&gt;</code></div>
+            <div>Cold backup + non-destructive restore check: <code>npm run backup &amp;&amp; npm run restore -- --verify --latest</code></div>
+            <div>Login/DB/network health diagnosis: <code>node scripts/doctor.js</code></div>
+            <div>Controlled VPS deploy (auto-detects unified/legacy unit + verifies backup + auto-rollback): <code>sudo bash /opt/workshopone-unified/app/deploy/update.sh</code></div>
+          </div>
+        </details>
+      </div>`;
+
+    const enrollSelfBtn = qs('#btn-sec-enroll-self', c);
+    if (enrollSelfBtn) {
+      enrollSelfBtn.onclick = () => {
+        if (typeof runMfaSetup === 'function') {
+          runMfaSetup({ onDone: () => renderSecurityHardeningTab(c) });
+        } else if (typeof mfaSettingsModal === 'function') {
+          mfaSettingsModal();
+        }
+      };
+    }
+
+    const toggleRolesBtn = qs('#btn-sec-toggle-roles', c);
+    if (toggleRolesBtn) {
+      toggleRolesBtn.onclick = () => { showAllRoles = !showAllRoles; draw(); };
+    }
+
+    const enforcePrivBtn = qs('#btn-sec-enforce-priv', c);
+    if (enforcePrivBtn) {
+      enforcePrivBtn.onclick = () => applyMfaPolicy(privRolesUnforced, true);
+    }
+
+    qsa('[data-sec-mfa-role]', c).forEach((btn) => {
+      btn.onclick = () => applyMfaPolicy([btn.dataset.secMfaRole], btn.dataset.secMfaVal === '1');
+    });
+
+    qsa('[data-sec-ufilter]', c).forEach((btn) => {
+      btn.onclick = () => { userFilter = btn.dataset.secUfilter; draw(); };
+    });
+
+    qsa('[data-sec-uid]', c).forEach((chk) => {
+      chk.onchange = () => {
+        const uid = Number(chk.dataset.secUid);
+        if (chk.checked) selectedUserIds.add(uid);
+        else selectedUserIds.delete(uid);
+        draw();
+      };
+    });
+
+    const deactBtn = qs('#btn-sec-deactivate-sel', c);
+    if (deactBtn) {
+      deactBtn.onclick = () => {
+        const picked = users.filter((u) => selectedUserIds.has(u.id));
+        if (!picked.length) return;
+        modal(`Deactivate ${picked.length} Selected Account(s)`, `
+          <p style="font-size:13px;margin-top:0">
+            The following accounts will be marked <b>inactive</b> and signed out everywhere immediately:
+          </p>
+          <div style="margin-bottom:10px;padding:8px 10px;background:#f8fafc;border-radius:6px;font-size:12px">
+            ${picked.map((u) => `<code>${esc(u.username)}</code> (${esc(u.full_name || '—')})`).join(', ')}
+          </div>
+          <label style="font-size:12px;font-weight:600">Audit Reason (required) *</label>
+          <input type="text" id="sec-deact-reason" placeholder="e.g. Unused default/seed account retired in Stage D security audit" style="width:100%">
+          <div style="margin-top:12px;display:flex;justify-content:flex-end;gap:8px">
+            <button type="button" class="btn" id="sec-deact-cancel">Cancel</button>
+            <button type="button" class="btn danger" id="sec-deact-go">Confirm Deactivation</button>
+          </div>`,
+          (body, close) => {
+            qs('#sec-deact-cancel', body).onclick = close;
+            qs('#sec-deact-go', body).onclick = async () => {
+              const reason = (qs('#sec-deact-reason', body).value || '').trim();
+              if (reason.length < 3) return toast('Enter an audit reason (min 3 characters)', 'err');
+              try {
+                const res = await api('/access/security-posture/deactivate-users', {
+                  method: 'POST',
+                  body: { user_ids: picked.map((u) => u.id), reason },
+                });
+                selectedUserIds.clear();
+                posture = res.posture;
+                close();
+                toast(`Deactivated ${(res.deactivated || []).length} account(s)`, 'ok');
+                draw();
+              } catch (e) {
+                toast(e.message || 'Failed to deactivate accounts', 'err');
+              }
+            };
+          }
+        );
+      };
+    }
+
+    const backupBtn = qs('#btn-sec-backup-now', c);
+    if (backupBtn) {
+      backupBtn.onclick = async () => {
+        backupBtn.disabled = true;
+        backupBtn.textContent = 'Running snapshot & integrity check…';
+        try {
+          const res = await api('/access/security-posture/backup-verify', { method: 'POST' });
+          toast(`Backup verified OK: ${res.snapshot} (${res.verify?.tables || 0} tables, ${res.verify?.users || 0} users)`, 'ok');
+          posture = await api('/access/security-posture');
+          draw();
+        } catch (e) {
+          toast(e.message || 'Cold backup verification failed', 'err');
+          backupBtn.disabled = false;
+          backupBtn.textContent = '🛡️ Take Cold Backup & Verify Now';
+        }
+      };
+    }
+  };
+
+  draw();
+}
