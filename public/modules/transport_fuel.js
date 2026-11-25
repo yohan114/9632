@@ -623,6 +623,7 @@
         <button class="btn tf-tab ${activeTab === 'request' ? 'primary' : ''}" data-tab="request">📝 1. Request &amp; Running Chart</button>
         <button class="btn tf-tab ${activeTab === 'queue' ? 'primary' : ''}" data-tab="queue">⛽ 2. Pump Dispatch &amp; Requests Queue <span id="tf_queue_badge" class="badge" style="margin-left:4px">0</span></button>
         ${canAudit ? `<button class="btn tf-tab ${activeTab === 'crosscheck' ? 'primary' : ''}" data-tab="crosscheck">🔍 3. Cross-Check &amp; Variance Audit</button>` : ''}
+        <button class="btn tf-tab ${activeTab === 'transfers' ? 'primary' : ''}" data-tab="transfers">🔄 4. Tank Transfers <span id="tf_transfers_badge" class="badge" style="margin-left:4px">0</span></button>
       </div>
 
       <div id="tf_tab_body"></div>
@@ -637,9 +638,10 @@
         const q = new URLSearchParams();
         if (siteSel.value && siteSel.value !== 'ALL') q.set('projectId', siteSel.value);
         if (tankSel.value && tankSel.value !== 'ALL') q.set('tankId', tankSel.value);
-        const [reqRes, ccRes] = await Promise.all([
+        const [reqRes, ccRes, ttRes] = await Promise.all([
           api(`/fuel/requests?${q.toString()}`),
           canAudit ? api(`/fuel/cross-check?${q.toString()}`).catch(() => ({ summary: {} })) : Promise.resolve({ summary: null }),
+          api(`/fuel/tank-transfers?status=OPEN&limit=1&${q.toString()}`).catch(() => ({ summary: {} })),
         ]);
         const reqs = reqRes.requests || [];
         const readyPump = reqs.filter((r) => r.status === 'APPROVED').length;
@@ -652,6 +654,8 @@
         };
         const qBadge = qs('#tf_queue_badge', content);
         if (qBadge) qBadge.textContent = String(readyPump + needMgr);
+        const tBadge = qs('#tf_transfers_badge', content);
+        if (tBadge && ttRes && ttRes.summary) tBadge.textContent = String(ttRes.summary.openTotal || 0);
 
         strip.innerHTML = `
           <div class="card kpi-card" style="padding:12px 14px">
@@ -709,6 +713,13 @@
       if (activeTab === 'request') await renderRequestTab(box);
       else if (activeTab === 'queue') await renderQueueTab(box);
       else if (activeTab === 'crosscheck') await renderCrossCheckTab(box);
+      else if (activeTab === 'transfers' && typeof window.renderTankTransfersPanel === 'function') {
+        await window.renderTankTransfersPanel(box, {
+          projectId: siteSel.value,
+          tankId: tankSel.value,
+          onChanged: refreshSummary,
+        });
+      }
     }
 
     // -----------------------------------------------------------------------
@@ -1381,11 +1392,12 @@
         rtTimer = setTimeout(() => {
           if (!document.body.contains(content)) return;
           refreshSummary();
-          if (activeTab === 'queue' || activeTab === 'request') renderActiveTab();
+          if (activeTab === 'queue' || activeTab === 'request' || activeTab === 'transfers') renderActiveTab();
         }, 350);
       };
       window.LiveERP.on('fuel_request_updated', onLiveFuel);
       window.LiveERP.on('fuel_issue_updated', onLiveFuel);
+      window.LiveERP.on('fuel_tank_transfer_updated', onLiveFuel);
     }
   }
 

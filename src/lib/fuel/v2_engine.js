@@ -825,6 +825,25 @@ function getSiteConsoleData(user, query = {}) {
   }
 
   const tankObj = fuelScope.maskTankForUser(selectedTankRaw, scope);
+  const allSourceTanks = rawTanks.map((t) => fuelScope.maskTankForUser(t, scope));
+
+  let incomingTankTransfers = [];
+  let outgoingTankTransfers = [];
+  if (!scope.unassigned && selTankId) {
+    try {
+      const tankTransfers = require('./tank_transfers');
+      const openTransfers = tankTransfers.listTransfers({
+        status: 'OPEN',
+        tankId: selTankId,
+        allowedTankIds: scope.scoped ? scope.allowedTankIds : null,
+        scopedProjectId: scope.scoped ? scope.projectId : null,
+        limit: 50,
+        hideStock,
+      });
+      incomingTankTransfers = openTransfers.filter((t) => String(t.dest_tank_id) === selTankId);
+      outgoingTankTransfers = openTransfers.filter((t) => String(t.source_tank_id) === selTankId);
+    } catch (_) {}
+  }
 
   return {
     tank: tankObj,
@@ -835,6 +854,7 @@ function getSiteConsoleData(user, query = {}) {
     fuelScope: scope,
     allTanks,
     tanks: allTanks,
+    allSourceTanks,
     allProjects,
     siteVehicles,
     pendingPumpRequests: pendingPumpRequests.map((r) => attachVehicleLabels({
@@ -843,6 +863,8 @@ function getSiteConsoleData(user, query = {}) {
       needs_approval: !!r.needs_approval,
       exceeds_norm: !!r.exceeds_norm,
     })),
+    incomingTankTransfers,
+    outgoingTankTransfers,
     recentIssues: recentIssues.map(attachVehicleLabels),
     recentDeliveries,
     myCorrections: myCorrections.map(attachVehicleLabels),

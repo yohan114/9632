@@ -1341,6 +1341,18 @@ function migrate() {
     console.warn('Migration 079 Transport Fuel Approval & Dual Vehicle skipped:', err.message);
   }
 
+  // Bulk Tank-to-Tank Fuel Transfer Request Workflow (Migration 080)
+  try {
+    const hasFtt = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'fuel_tank_transfers'").get();
+    const needs080 = !db.prepare("SELECT 1 FROM settings WHERE key = 'migration_080_done'").get() || !hasFtt;
+    if (needs080) {
+      require('../migrate/080_fuel_tank_transfers').runMigration(db);
+      db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('migration_080_done', '1')").run();
+    }
+  } catch (err) {
+    console.warn('Migration 080 Bulk Tank Transfers skipped:', err.message);
+  }
+
   return db;
 }
 

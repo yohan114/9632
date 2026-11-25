@@ -29,6 +29,7 @@
         </div>
         <div style="display:flex;gap:8px;flex-wrap:wrap">
           ${(canManageTanks || canDip) ? '<button class="btn" id="btn_tank_wizard">🧭 Opening Stock &amp; Dip Wizard</button>' : ''}
+          ${(canRefill || canManageTanks || canDip) ? '<button class="btn" id="btn_tank_transfer">🔄 Tank-to-Tank Transfer</button>' : ''}
           <a class="btn" href="#/fuel?tab=sites-overview">🎯 Site Fuel Budgets →</a>
           ${canManageTanks ? '<button class="btn primary" id="btn_new_tank">+ New Tank / Bowser</button>' : ''}
         </div>
@@ -51,6 +52,15 @@
     const wizardBtn = qs('#btn_tank_wizard', content);
     if (wizardBtn) {
       wizardBtn.onclick = () => openReconciliationWizard();
+    }
+
+    const transferBtn = qs('#btn_tank_transfer', content);
+    if (transferBtn) {
+      transferBtn.onclick = () => {
+        if (typeof window.openTankTransferRequestModal === 'function') {
+          window.openTankTransferRequestModal({}, () => loadTanks());
+        }
+      };
     }
 
     const newTankBtn = qs('#btn_new_tank', content);
@@ -378,13 +388,24 @@
               <div style="display:flex;gap:6px;border-top:1px solid var(--border);padding-top:12px;margin-top:8px">
                 ${canDip ? `<button class="btn sm primary btn-dip" data-id="${esc(t.id)}" data-name="${esc(t.name)}" style="flex:1">📏 Dip</button>` : ''}
                 ${canRefill ? `<button class="btn sm btn-refill" data-id="${esc(t.id)}" data-name="${esc(t.name)}" style="flex:1">📥 Refill</button>` : ''}
+                ${(canRefill || canManageTanks) ? `<button class="btn sm btn-transfer" data-id="${esc(t.id)}" data-name="${esc(t.name)}" style="flex:1">🔄 Transfer</button>` : ''}
                 <button class="btn sm btn-history" data-id="${esc(t.id)}" data-name="${esc(t.name)}" style="flex:1">📜 History</button>
               </div>
             </div>
           `;
         }).join('');
 
-        // Wire History buttons (Deliveries + Dips)
+        // Wire Transfer & History buttons (Deliveries + Dips)
+        qsa('.btn-transfer', container).forEach((btn) => {
+          btn.onclick = () => {
+            const tankId = btn.getAttribute('data-id');
+            if (typeof window.openTankTransferRequestModal === 'function') {
+              const defs = (canManageTanks || isAdm) ? { sourceTankId: tankId } : { destTankId: tankId };
+              window.openTankTransferRequestModal(defs, () => loadTanks());
+            }
+          };
+        });
+
         qsa('.btn-history', container).forEach((btn) => {
           btn.onclick = async () => {
             const tankId = btn.getAttribute('data-id');
@@ -561,6 +582,19 @@
       } catch (err) {
         container.innerHTML = `<div class="card" style="padding:24px;text-align:center" class="err">Error loading tanks: ${esc(err.message)}</div>`;
       }
+    }
+
+    if (window.LiveERP && typeof window.LiveERP.on === 'function') {
+      let rtTankTimer = null;
+      const onLiveTank = () => {
+        if (!document.body.contains(content)) return;
+        clearTimeout(rtTankTimer);
+        rtTankTimer = setTimeout(() => {
+          if (document.body.contains(content)) loadTanks();
+        }, 380);
+      };
+      window.LiveERP.on('fuel_tank_transfer_updated', onLiveTank);
+      window.LiveERP.on('fuel_stock_updated', onLiveTank);
     }
 
     loadTanks();

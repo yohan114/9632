@@ -17,6 +17,7 @@ const fuelIssue = require('../lib/fuel/issue');
 const fuelStock = require('../lib/fuel/stock');
 const v2Engine = require('../lib/fuel/v2_engine');
 const transportRequests = require('../lib/fuel/transport_requests');
+const tankTransfers = require('../lib/fuel/tank_transfers');
 const fuelScope = require('../lib/fuel/scope');
 const ceypetcoSync = require('../lib/fuel/ceypetco_sync');
 const fuelReprice = require('../lib/fuel/reprice');
@@ -887,6 +888,221 @@ router.post(
     } else {
       res.status(201).json(result);
     }
+  })
+);
+
+// ---------------------------------------------------------------------------
+// 5b. Bulk Tank-to-Tank Fuel Transfers (e.g. Badalgama -> Wadakada / Galagedara)
+// ---------------------------------------------------------------------------
+
+router.get(
+  '/tank-transfers/bootstrap',
+  requireAuth,
+  fuelScope.requireFuelAccess({
+    sections: ['fuel_transport', 'fuel', 'fuel_tanks'],
+    level: 'view',
+    caps: ['fuel.transport.view', 'fuel.transport.request', 'fuel.view', 'fuel.console.view', 'fuel.tanks.view', 'fuel.transfer'],
+  }),
+  asyncHandler(async (req, res) => {
+    const scope = fuelScope.getFuelScope(req.user);
+    const rawTanks = all(`
+      SELECT t.id, t.code, t.name, t.tank_type, t.fuel_type, t.capacity_litres, t.current_litres,
+             t.project_id, p.name AS project_name, p.code AS project_code
+        FROM fuel_tanks t
+        LEFT JOIN projects p ON p.id = t.project_id
+       WHERE t.active = 1
+       ORDER BY t.name ASC
+    `);
+    const sourceTanks = rawTanks.map((t) => fuelScope.maskTankForUser(t, scope));
+    const destTanks = (scope.scoped
+      ? rawTanks.filter((t) => scope.allowedTankIds && scope.allowedTankIds.includes(String(t.id)))
+      : rawTanks
+    ).map((t) => fuelScope.maskTankForUser(t, scope));
+
+    const rawBowsers = all(`
+      SELECT a.id, COALESCE(a.code, a.ec_code) AS code, a.ec_code, a.registration, a.category, a.type,
+             a.current_project_id, COALESCE(p.name, 'Central') AS current_site
+        FROM assets a
+        LEFT JOIN projects p ON p.id = a.current_project_id
+       WHERE a.status != 'DISPOSED'
+         AND (
+           UPPER(COALESCE(a.category, '')) LIKE '%BOWSER%'
+           OR UPPER(COALESCE(a.type, '')) LIKE '%BOWSER%'
+           OR UPPER(COALESCE(a.code, '')) LIKE 'DB-%'
+           OR UPPER(COALESCE(a.code, '')) LIKE 'TB-%'
+           OR UPPER(COALESCE(a.code, '')) LIKE 'WB-%'
+           OR UPPER(COALESCE(a.ec_code, '')) LIKE 'DB-%'
+         )
+       ORDER BY a.code ASC
+       LIMIT 200
+    `);
+    const bowsers = rawBowsers.map((v) => {
+      const id = resolveVehicleIdentity(v);
+      return {
+        ...v,
+        ec_code: id.ec_code,
+        registration: id.registration || v.registration,
+        display: id.display,
+      };
+    });
+
+    res.json({ sourceTanks, destTanks, bowsers, fuelScope: scope });
+  })
+);
+
+router.get(
+  '/tank-transfers',
+  requireAuth,
+  fuelScope.requireFuelAccess({
+    sections: ['fuel_transport', 'fuel', 'fuel_tanks'],
+    level: 'view',
+    caps: ['fuel.transport.view', 'fuel.transport.request', 'fuel.view', 'fuel.console.view', 'fuel.tanks.view', 'fuel.transfer'],
+  }),
+  asyncHandler(async (req, res) => {
+    const scope = fuelScope.getFuelScope(req.user);
+    const allowedTankIds = scope.scoped ? (scope.allowedTankIds || []) : null;
+    const scopedProjectId = scope.scoped ? scope.projectId : null;
+    const transfers = tankTransfers.listTransfers({
+      status: req.query.status || 'ALL',
+      sourceTankId: req.query.sourceTankId || null,
+      destTankId: req.query.destTankId || null,
+      tankId: req.query.tankId || null,
+      projectId: req.query.projectId || null,
+      allowedTankIds,
+      scopedProjectId,
+      search: req.query.search || null,
+      limit: req.query.limit ? Number(req.query.limit) : 200,
+      hideStock: scope.hideStock,
+    });
+    const summary = tankTransfers.getTransferSummary({ allowedTankIds, scopedProjectId });
+    res.json({ transfers, summary, fuelScope: scope });
+  })
+);
+
+router.post(
+  '/tank-transfers',
+  requireAuth,
+  fuelScope.requireFuelAccess({
+    sections: ['fuel_transport', 'fuel', 'fuel_tanks'],
+    level: 'add',
+    caps: ['fuel.transport.request', 'fuel.request', 'fuel.transfer', 'fuel.tanks.refill', 'fuel.issue'],
+  }),
+  asyncHandler(async (req, res) => {
+    const created = tankTransfers.createTransferRequest(req.body || {}, req.user);
+    emitter.emit('fuel_tank_transfer_updated', {
+      action: 'created',
+      transferId: created.id,
+      transferNo: created.transfer_no,
+      status: created.status,
+      sourceTankId: created.source_tank_id,
+      destTankId: created.dest_tank_id,
+    });
+    res.status(201).json(created);
+  })
+);
+
+router.post(
+  '/tank-transfers/:id/review',
+  requireAuth,
+  fuelScope.requireFuelAccess({
+    sections: ['fuel_transport', 'fuel', 'fuel_tanks'],
+    level: 'edit',
+    caps: ['fuel.approve_request', 'fuel.approve', 'fuel.tanks.manage', 'fuel.transfer'],
+  }),
+  asyncHandler(async (req, res) => {
+    const updated = tankTransfers.reviewTransferRequest(req.params.id, req.body || {}, req.user);
+    emitter.emit('fuel_tank_transfer_updated', {
+      action: 'reviewed',
+      transferId: updated.id,
+      transferNo: updated.transfer_no,
+      status: updated.status,
+      sourceTankId: updated.source_tank_id,
+      destTankId: updated.dest_tank_id,
+    });
+    res.json(updated);
+  })
+);
+
+router.post(
+  '/tank-transfers/:id/dispatch',
+  requireAuth,
+  fuelScope.requireFuelAccess({
+    sections: ['fuel', 'fuel_tanks', 'fuel_transport'],
+    level: 'add',
+    caps: ['fuel.issue', 'fuel.transfer', 'fuel.tanks.refill', 'fuel.tanks.manage'],
+  }),
+  asyncHandler(async (req, res) => {
+    const updated = tankTransfers.dispatchTransfer(req.params.id, req.body || {}, req.user);
+    emitter.emit('fuel_tank_transfer_updated', {
+      action: 'dispatched',
+      transferId: updated.id,
+      transferNo: updated.transfer_no,
+      status: updated.status,
+      sourceTankId: updated.source_tank_id,
+      destTankId: updated.dest_tank_id,
+    });
+    emitter.emit('fuel_stock_updated', {
+      tankId: updated.source_tank_id,
+      reason: 'tank_transfer_dispatch',
+      transferNo: updated.transfer_no,
+    });
+    res.json(updated);
+  })
+);
+
+router.post(
+  '/tank-transfers/:id/receive',
+  requireAuth,
+  fuelScope.requireFuelAccess({
+    sections: ['fuel', 'fuel_tanks', 'fuel_transport'],
+    level: 'add',
+    caps: ['fuel.tanks.refill', 'fuel.issue', 'fuel.transfer', 'fuel.tanks.manage'],
+  }),
+  asyncHandler(async (req, res) => {
+    const updated = tankTransfers.receiveTransfer(req.params.id, req.body || {}, req.user);
+    emitter.emit('fuel_tank_transfer_updated', {
+      action: 'received',
+      transferId: updated.id,
+      transferNo: updated.transfer_no,
+      status: updated.status,
+      sourceTankId: updated.source_tank_id,
+      destTankId: updated.dest_tank_id,
+    });
+    emitter.emit('fuel_stock_updated', {
+      tankId: updated.dest_tank_id,
+      reason: 'tank_transfer_receive',
+      transferNo: updated.transfer_no,
+    });
+    res.json(updated);
+  })
+);
+
+router.post(
+  '/tank-transfers/:id/cancel',
+  requireAuth,
+  fuelScope.requireFuelAccess({
+    sections: ['fuel_transport', 'fuel', 'fuel_tanks'],
+    level: 'add',
+    caps: ['fuel.transport.request', 'fuel.request', 'fuel.approve_request', 'fuel.approve', 'fuel.transfer', 'fuel.void', 'fuel.issue', 'fuel.tanks.refill'],
+  }),
+  asyncHandler(async (req, res) => {
+    const updated = tankTransfers.cancelTransfer(req.params.id, req.body || {}, req.user);
+    emitter.emit('fuel_tank_transfer_updated', {
+      action: 'cancelled',
+      transferId: updated.id,
+      transferNo: updated.transfer_no,
+      status: updated.status,
+      sourceTankId: updated.source_tank_id,
+      destTankId: updated.dest_tank_id,
+    });
+    if (updated.restored_stock_litres) {
+      emitter.emit('fuel_stock_updated', {
+        tankId: updated.source_tank_id,
+        reason: 'tank_transfer_cancelled',
+        transferNo: updated.transfer_no,
+      });
+    }
+    res.json(updated);
   })
 );
 
@@ -1991,6 +2207,41 @@ router.get(
             });
           }
         }
+      }
+    } catch (_) {}
+
+    // Alert 8: Bulk Tank-to-Tank Transfer Transit Variance (shortage / overage >= 25 L or >= 2%)
+    try {
+      const varRows = all(`
+        SELECT ft.id, ft.transfer_no, ft.dispatched_litres, ft.received_litres, ft.variance_litres,
+               ft.bowser_code, ft.received_at,
+               st.name AS source_tank_name, dt.name AS dest_tank_name
+          FROM fuel_tank_transfers ft
+          LEFT JOIN fuel_tanks st ON st.id = ft.source_tank_id
+          LEFT JOIN fuel_tanks dt ON dt.id = ft.dest_tank_id
+         WHERE ft.status = 'RECEIVED'
+           AND substr(COALESCE(ft.received_at, ft.updated_at), 1, 7) = ?
+           AND ft.dispatched_litres > 0
+           AND (
+             ABS(COALESCE(ft.variance_litres, 0)) >= 25
+             OR ABS(COALESCE(ft.variance_litres, 0)) >= (ft.dispatched_litres * 0.02)
+           )
+         ORDER BY ABS(COALESCE(ft.variance_litres, 0)) DESC
+         LIMIT 50
+      `, targetMonth);
+      for (const vr of varRows) {
+        const diff = Number(vr.variance_litres || 0);
+        const absDiff = Math.abs(diff);
+        alerts.push({
+          category: 'TANK_TRANSFER',
+          severity: absDiff >= 50 || (vr.dispatched_litres > 0 && absDiff / vr.dispatched_litres >= 0.05) ? 'HIGH' : 'MEDIUM',
+          title: `Tank Transfer Transit Variance: ${vr.transfer_no}`,
+          message: `${vr.source_tank_name || 'Source'} → ${vr.dest_tank_name || 'Dest'} (${vr.bowser_code || 'No bowser'}): dispatched ${Number(vr.dispatched_litres || 0).toFixed(1)} L, received ${Number(vr.received_litres || 0).toFixed(1)} L (${diff > 0 ? '+' : ''}${diff.toFixed(1)} L variance).`,
+          transfer_id: vr.id,
+          transfer_no: vr.transfer_no,
+          bowser_code: vr.bowser_code,
+          variance_litres: diff,
+        });
       }
     } catch (_) {}
 

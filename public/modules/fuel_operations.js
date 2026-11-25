@@ -1365,6 +1365,10 @@
           const lockTankPicker = !!(scScope.scoped && (data.allTanks || []).length <= 1);
           const myCorrs = data.myCorrections || [];
           const deliveries = data.recentDeliveries || [];
+          const incomingTransfers = data.incomingTankTransfers || [];
+          const outgoingTransfers = data.outgoingTankTransfers || [];
+          const allOpenTransfers = [...incomingTransfers, ...outgoingTransfers];
+          const canRevTt = isAdm || (typeof canDo === 'function' && canDo('fuel.approve_request', 'fuel.approve', 'fuel.transfer', 'fuel.tanks.manage'));
 
           box.innerHTML = `
             <!-- Site & Bowser Header Bar -->
@@ -1393,6 +1397,52 @@
                 ` : (hideStock ? `<span class="badge warn">🔒 Tank Stock Hidden by Admin Policy</span>` : '')}
               </div>
             </div>
+
+            ${allOpenTransfers.length ? `
+              <div class="card" style="padding:14px;margin-bottom:14px;border:1px solid rgba(124,58,237,0.3);background:rgba(124,58,237,0.03)">
+                <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:10px">
+                  <div>
+                    <h3 style="margin:0;font-size:15px">🔄 Bulk Tank-to-Tank Transfers (${allOpenTransfers.length} open)</h3>
+                    <div class="muted" style="font-size:11px">Incoming bulk loads to offload into <b>${esc(activeTank ? activeTank.name : 'this tank')}</b> &amp; outgoing loads to dispatch</div>
+                  </div>
+                  <a href="#/transport-fuel?tab=transfers" class="btn sm">Open Full Transfer Console →</a>
+                </div>
+                <div style="overflow-x:auto">
+                  <table class="table" style="width:100%;font-size:12px">
+                    <thead>
+                      <tr><th>Transfer #</th><th>Direction</th><th>From → To Tank</th><th>Bowser / Seal</th><th style="text-align:right">Qty (L)</th><th>Status</th><th></th></tr>
+                    </thead>
+                    <tbody>
+                      ${allOpenTransfers.map((tr) => {
+                        const isIncoming = activeTank && String(tr.dest_tank_id) === String(activeTank.id);
+                        const qty = tr.dispatched_litres || tr.approved_litres || tr.requested_litres || 0;
+                        const stMap = {
+                          PENDING: '<span class="badge warn">AWAITING TRANSPORT</span>',
+                          APPROVED: '<span class="badge blue">READY TO DISPATCH</span>',
+                          IN_TRANSIT: '<span class="badge" style="background:#7c3aed;color:#fff">🚚 IN TRANSIT</span>',
+                        };
+                        return `
+                          <tr>
+                            <td><div style="font-family:monospace;font-weight:700">${esc(tr.transfer_no)}</div></td>
+                            <td>${isIncoming ? '<span class="badge ok">📥 INCOMING</span>' : '<span class="badge warn">🚚 OUTGOING</span>'}</td>
+                            <td><b>${esc(tr.source_tank_name)}</b> → <b>${esc(tr.dest_tank_name)}</b></td>
+                            <td>${(tr.bowser_code || tr.bowser_display) ? vehBadge({ code: tr.bowser_code, ec_code: tr.bowser_ec_code, registration: tr.bowser_registration, asset_display: tr.bowser_display }) : '<span class="muted">Pending Transport</span>'}${tr.seal_no ? `<div class="muted" style="font-size:10.5px">Seal: ${esc(tr.seal_no)}</div>` : ''}</td>
+                            <td style="text-align:right;font-weight:700">${fmtNum(qty, 1)} L</td>
+                            <td>${stMap[tr.status] || `<span class="badge">${esc(tr.status)}</span>`}</td>
+                            <td style="white-space:nowrap;text-align:right">
+                              ${tr.status === 'PENDING' && canRevTt ? `<button class="btn sm primary sc-tt-review" data-id="${esc(tr.id)}">🛡️ Review</button>` : ''}
+                              ${!isIncoming && tr.status === 'APPROVED' && (canIssueFuel || canRefillTank || isAdm) ? `<button class="btn sm primary sc-tt-dispatch" data-id="${esc(tr.id)}">🚚 Dispatch</button>` : ''}
+                              ${isIncoming && tr.status === 'IN_TRANSIT' && (canRefillTank || canIssueFuel || isAdm) ? `<button class="btn sm sc-tt-receive" data-id="${esc(tr.id)}" style="background:#059669;color:#fff;border-color:#059669">📥 Confirm Receipt</button>` : ''}
+                              ${(tr.status === 'PENDING' || tr.status === 'APPROVED' || (tr.status === 'IN_TRANSIT' && isAdm)) ? `<button class="btn sm sc-tt-cancel" data-id="${esc(tr.id)}">Cancel</button>` : ''}
+                            </td>
+                          </tr>
+                        `;
+                      }).join('')}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            ` : ''}
 
             <!-- TOP ROW: Section 1 (Fuel Issue) & Section 2 (Fuel Add to Tank) -->
             <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(380px, 1fr));gap:14px;margin-bottom:16px">
@@ -1446,8 +1496,13 @@
 
               <!-- SECTION 2: Fuel Add Section (Receive Bulk Fuel into Tank) -->
               <div class="card" style="padding:16px">
-                <h3 style="margin:0 0 4px 0;font-size:15px">🚛 2. Fuel Add Section — Receive Fuel into Tank</h3>
-                <div class="muted" style="font-size:11px;margin-bottom:10px">Add received bulk fuel deliveries into <b>${esc(activeTank ? activeTank.name : 'assigned tank')}</b></div>
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;gap:8px;flex-wrap:wrap">
+                  <div>
+                    <h3 style="margin:0 0 2px 0;font-size:15px">🚛 2. Fuel Add Section — Receive Fuel into Tank</h3>
+                    <div class="muted" style="font-size:11px">Add received bulk fuel deliveries into <b>${esc(activeTank ? activeTank.name : 'assigned tank')}</b></div>
+                  </div>
+                  ${(canRefillTank || canRaiseReq || isAdm) ? '<button type="button" class="btn sm" id="sc_btn_req_transfer">🔄 Request Bulk Fuel from Tank</button>' : ''}
+                </div>
                 ${canRefillTank ? `
                 <form id="sc_form_refuel" style="display:flex;flex-direction:column;gap:10px">
                   <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
@@ -1644,6 +1699,49 @@
                   loadConsole();
                   refreshKpis();
                 });
+              }
+            };
+          });
+          const reqTtBtn = qs('#sc_btn_req_transfer', box);
+          if (reqTtBtn) {
+            reqTtBtn.onclick = () => {
+              if (typeof window.openTankTransferRequestModal === 'function') {
+                window.openTankTransferRequestModal({ destTankId: activeTank ? activeTank.id : undefined }, () => {
+                  loadConsole();
+                  refreshKpis();
+                });
+              }
+            };
+          }
+          qsa('.sc-tt-review', box).forEach((b) => {
+            b.onclick = () => {
+              const tr = allOpenTransfers.find((x) => x.id === b.getAttribute('data-id'));
+              if (tr && typeof window.openTankTransferReviewModal === 'function') {
+                window.openTankTransferReviewModal(tr, null, () => { loadConsole(); refreshKpis(); });
+              }
+            };
+          });
+          qsa('.sc-tt-dispatch', box).forEach((b) => {
+            b.onclick = () => {
+              const tr = allOpenTransfers.find((x) => x.id === b.getAttribute('data-id'));
+              if (tr && typeof window.openTankTransferDispatchModal === 'function') {
+                window.openTankTransferDispatchModal(tr, null, () => { loadConsole(); refreshKpis(); });
+              }
+            };
+          });
+          qsa('.sc-tt-receive', box).forEach((b) => {
+            b.onclick = () => {
+              const tr = allOpenTransfers.find((x) => x.id === b.getAttribute('data-id'));
+              if (tr && typeof window.openTankTransferReceiveModal === 'function') {
+                window.openTankTransferReceiveModal(tr, () => { loadConsole(); refreshKpis(); });
+              }
+            };
+          });
+          qsa('.sc-tt-cancel', box).forEach((b) => {
+            b.onclick = () => {
+              const tr = allOpenTransfers.find((x) => x.id === b.getAttribute('data-id'));
+              if (tr && typeof window.openTankTransferCancelModal === 'function') {
+                window.openTankTransferCancelModal(tr, () => { loadConsole(); refreshKpis(); });
               }
             };
           });
@@ -2559,6 +2657,7 @@
       };
       window.LiveERP.on('fuel_request_updated', onLiveFuelOp);
       window.LiveERP.on('fuel_issue_updated', onLiveFuelOp);
+      window.LiveERP.on('fuel_tank_transfer_updated', onLiveFuelOp);
     }
   }
 
