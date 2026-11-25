@@ -137,11 +137,11 @@
             overWrap.style.display = 'flex';
           } else if (res.warning) {
             guardBox.style.background = 'rgba(245,158,11,0.12)';
-            guardBox.innerHTML = `⚠️ <b>${esc(res.warning)}</b><br><span>✅ <b>${esc(res.asset.code)}</b> (${esc(res.asset.registration || '')}) · ${prevStr}${deltaStr}</span>`;
+            guardBox.innerHTML = `⚠️ <b>${esc(res.warning)}</b><br><span>✅ ${typeof fmtVehicleBadge === 'function' ? fmtVehicleBadge(res.asset) : `<b>${esc(res.asset.code)}</b> (${esc(res.asset.registration || '')})`} · ${prevStr}${deltaStr}</span>`;
             overWrap.style.display = 'none';
           } else {
             guardBox.style.background = 'rgba(16,185,129,0.1)';
-            guardBox.innerHTML = `✅ <b>${esc(res.asset.code)}</b> (${esc(res.asset.registration || 'No Reg')} · ${esc(res.asset.category || '')})<br>${prevStr}${deltaStr}`;
+            guardBox.innerHTML = `✅ ${typeof fmtVehicleBadge === 'function' ? fmtVehicleBadge(res.asset) : `<b>${esc(res.asset.code)}</b> (${esc(res.asset.registration || 'No Reg')})`} <span class="muted">(${esc(res.asset.category || '')})</span><br>${prevStr}${deltaStr}`;
             overWrap.style.display = 'none';
           }
         } catch (_) {}
@@ -262,7 +262,7 @@
             <thead>
               <tr style="background:rgba(0,0,0,0.02)">
                 <th style="padding:10px 12px">Date</th>
-                <th style="padding:10px 12px">Vehicle (360° Link)</th>
+                <th style="padding:10px 12px">Vehicle · E&amp;C &amp; Reg (360° Link)</th>
                 <th style="padding:10px 12px">Registration</th>
                 <th style="padding:10px 12px">Category</th>
                 <th style="padding:10px 12px">Unit</th>
@@ -294,7 +294,7 @@
             <tr>
               <td style="padding:9px 12px;white-space:nowrap">${esc(String(r.reading_date || '').slice(0, 10))}</td>
               <td style="padding:9px 12px">
-                <a href="#/fuel?tab=vehicle-360&vehicle=${encodeURIComponent(r.asset_code || '')}" style="font-weight:700;color:var(--primary,#0066ff);text-decoration:underline">${esc(r.asset_code || '—')}</a>
+                <a href="#/fuel?tab=vehicle-360&vehicle=${encodeURIComponent(r.asset_code || '')}" style="font-weight:700;color:var(--primary,#0066ff);text-decoration:underline">${typeof fmtVehicleBadge === 'function' ? fmtVehicleBadge({ asset_code: r.asset_code, ec_code: r.asset_ec_code, registration: r.asset_reg }) : esc(r.asset_code || '—')}</a>
               </td>
               <td style="padding:9px 12px">${esc(r.asset_reg || '—')}</td>
               <td style="padding:9px 12px" class="muted">${esc(r.asset_category || '—')}</td>

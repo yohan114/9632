@@ -159,6 +159,28 @@ const DEFAULT_MATRIX = {
     fuel: 'edit', fuel_transport: 'edit', fuel_tanks: 'view', fuel_readings: 'view', fuel_prices: 'view', fuel_reports: 'view', fuel_alerts: 'view',
     hire: 'view', costing: 'none', finance: 'none'
   },
+  transport_assistant_manager: {
+    dashboard: 'view', master_dashboard: 'none', jobs: 'view', jobrequests: 'edit', field: 'view', operations: 'view',
+    dailywork: 'view', services: 'view', lubricants: 'view', assets: 'edit', vehicle_docs: 'edit', labour: 'none',
+    stores: 'none', oil: 'none', batteries: 'view', filters: 'view', tools: 'none', service_plan: 'view',
+    projects: 'edit', aliases: 'none', attention: 'view', daily_progress: 'view', cost_teardown: 'view',
+    purchasing: 'none', tb_requests: 'view', tb_request: 'view', tb_purchase: 'none', tb_grn: 'none', tb_issue: 'none',
+    tb_reports: 'view', reports: 'view', workshops: 'none', access: 'none', users: 'none',
+    fabrication: 'none', fabrication_costing: 'none',
+    fuel: 'edit', fuel_transport: 'edit', fuel_tanks: 'view', fuel_readings: 'view', fuel_prices: 'view', fuel_reports: 'view', fuel_alerts: 'view',
+    hire: 'view', costing: 'none', finance: 'none'
+  },
+  transport_assistant: {
+    dashboard: 'view', master_dashboard: 'none', jobs: 'view', jobrequests: 'view', field: 'view', operations: 'view',
+    dailywork: 'view', services: 'view', lubricants: 'view', assets: 'view', vehicle_docs: 'view', labour: 'none',
+    stores: 'none', oil: 'none', batteries: 'none', filters: 'none', tools: 'none', service_plan: 'view',
+    projects: 'view', aliases: 'none', attention: 'view', daily_progress: 'view', cost_teardown: 'none',
+    purchasing: 'none', tb_requests: 'none', tb_request: 'none', tb_purchase: 'none', tb_grn: 'none', tb_issue: 'none',
+    tb_reports: 'none', reports: 'view', workshops: 'none', access: 'none', users: 'none',
+    fabrication: 'none', fabrication_costing: 'none',
+    fuel: 'edit', fuel_transport: 'edit', fuel_tanks: 'view', fuel_readings: 'view', fuel_prices: 'view', fuel_reports: 'view', fuel_alerts: 'view',
+    hire: 'none', costing: 'none', finance: 'none'
+  },
   operational_manager: {
     dashboard: 'view', master_dashboard: 'full', jobs: 'edit', jobrequests: 'edit', field: 'edit', operations: 'edit',
     dailywork: 'view', services: 'edit', lubricants: 'edit', assets: 'edit', vehicle_docs: 'full', labour: 'view',

@@ -101,13 +101,217 @@
     }
   }
 
+  function vehBadge(r, opts) {
+    if (typeof window.fmtVehicleBadge === 'function') return window.fmtVehicleBadge(r, opts);
+    return `<b>${esc((r && (r.asset_display || r.asset_code || r.code)) || '—')}</b>`;
+  }
+
+  function vehText(r) {
+    if (typeof window.fmtVehicleText === 'function') return window.fmtVehicleText(r);
+    return (r && (r.asset_display || r.asset_code || r.code)) || '—';
+  }
+
+  function canApproveReq(r) {
+    if (typeof isAdmin === 'function' && isAdmin()) return true;
+    const overOk = typeof canDo === 'function' && canDo('fuel.approve_request', 'fuel.approve');
+    if (r && r.exceeds_norm) return overOk;
+    return overOk || (typeof canDo === 'function' && canDo('fuel.approve_site_request'));
+  }
+
   function statusBadge(r) {
     if (r.status === 'FULFILLED') return '<span class="badge ok" style="background:#059669;color:#fff">FULFILLED</span>';
     if (r.status === 'APPROVED') return '<span class="badge" style="background:#2563eb;color:#fff">READY AT PUMP</span>';
-    if (r.status === 'PENDING') return '<span class="badge warn" style="background:#d97706;color:#fff">NEEDS APPROVAL (&gt;20%)</span>';
+    if (r.status === 'PENDING') {
+      if (r.exceeds_norm) return '<span class="badge warn" style="background:#b91c1c;color:#fff">NEEDS MGR APPROVAL (&gt;20%)</span>';
+      return '<span class="badge warn" style="background:#d97706;color:#fff">AWAITING TRANSPORT</span>';
+    }
     if (r.status === 'REJECTED') return '<span class="badge danger" style="background:#dc2626;color:#fff">REJECTED</span>';
     if (r.status === 'CANCELLED') return '<span class="badge" style="background:#64748b;color:#fff">CANCELLED</span>';
     return `<span class="badge">${esc(r.status)}</span>`;
+  }
+
+  // Shared Transport Section Review Modal (Approve / Adjust Litres / Reassign Tank / Reject)
+  window.openTransportReviewModal = async function (reqRow, tanksArg, onDone) {
+    let tanks = Array.isArray(tanksArg) ? tanksArg.filter((t) => t.active !== 0) : [];
+    if (!tanks.length) {
+      try {
+        const tRes = await api('/fuel/tanks').catch(() => ({ tanks: [] }));
+        tanks = (tRes.tanks || []).filter((t) => t.active !== 0);
+      } catch (_) {}
+    }
+
+    const modal = document.createElement('div');
+    modal.className = 'modal-bg modal-backdrop';
+    const isFull = !!reqRow.is_full_tank;
+    const recL = reqRow.recommended_litres != null ? Number(reqRow.recommended_litres) : null;
+    const reqL = reqRow.trip_total_fuel || reqRow.requested_litres || '';
+    const appL = reqRow.approved_litres != null ? reqRow.approved_litres : reqL;
+
+    modal.innerHTML = `
+      <div class="modal" style="max-width:610px;padding:24px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+          <h2 style="margin:0;font-size:18px">🛡️ Transport Section Fuel Review</h2>
+          <span class="badge" style="font-family:monospace">${esc(reqRow.request_no || reqRow.id)}</span>
+        </div>
+        <p class="muted" style="margin:0 0 12px 0;font-size:12px">
+          Review site demand against vehicle consumption norm. You can approve as requested, cap/adjust approved litres, reassign the dispensing tank/station, or reject with reason.
+        </p>
+
+        <div class="card" style="padding:12px;margin-bottom:14px;background:rgba(37,99,235,0.06);border:1px solid rgba(37,99,235,0.2);font-size:12px">
+          <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px">
+            <div><span class="muted">Vehicle (E&amp;C · Reg):</span><br>${vehBadge(reqRow)}</div>
+            <div><span class="muted">Site / Requested By:</span><br><b>${esc(reqRow.project_name || 'Central')}</b><br><span class="muted">${esc(reqRow.requester_name || 'Site')} (${esc(reqRow.requested_channel || 'SITE')})</span></div>
+            <div><span class="muted">Chart / Machine Log #:</span><br><b>${esc(reqRow.running_chart_no || 'Site Log')}</b></div>
+            <div><span class="muted">Meter / Approx Run:</span><br><b>${reqRow.meter_faulty ? '<span class="badge warn">⚠️ FAULTY</span>' : (reqRow.meter_reading ? fmtNum(reqRow.meter_reading, 1) : '—')}</b> ${reqRow.approx_km ? `(${fmtNum(reqRow.approx_km, 1)} ${reqRow.meter_type === 'KM' ? 'km' : 'hr'})` : ''}</div>
+            <div><span class="muted">Recommended Norm:</span><br><b style="color:#0369a1">${recL != null ? fmtNum(recL, 1) + ' L' : 'No Norm'}</b></div>
+            <div><span class="muted">Site Requested:</span><br>${isFull ? '<span class="badge" style="background:#7c3aed;color:#fff">FULL TANK</span>' : `<b>${fmtNum(reqRow.requested_litres, 1)} L</b>`}${reqRow.exceeds_norm ? ' <span class="badge danger" style="font-size:10px">&gt;20% OVER</span>' : ''}</div>
+          </div>
+          ${reqRow.driver_name || reqRow.trip_purpose ? `<div style="margin-top:6px;padding-top:6px;border-top:1px dashed rgba(37,99,235,0.2)"><b>Driver:</b> ${esc(reqRow.driver_name || '—')} &nbsp;·&nbsp; <b>Purpose:</b> ${esc(reqRow.trip_purpose || '—')}</div>` : ''}
+        </div>
+
+        <form id="form_tr_review" style="display:flex;flex-direction:column;gap:12px">
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+            <div>
+              <label style="font-size:12px;font-weight:600">${isFull ? 'Approved Max Estimate (Optional L)' : 'Approved Litres (Cap / Adjust) *'}</label>
+              <input type="number" step="0.1" min="0.1" id="trv_approved_litres" ${isFull ? '' : 'required'} class="input" value="${esc(appL)}" placeholder="${isFull ? 'Full Tank (entered at pump)' : 'Litres'}" style="width:100%;font-weight:700">
+            </div>
+            <div>
+              <label style="font-size:12px;font-weight:600">Fuel Source *</label>
+              <select id="trv_source_mode" class="input" style="width:100%">
+                <option value="TANK" ${reqRow.source_mode !== 'STATION' ? 'selected' : ''}>Site Pump / Bulk Tank</option>
+                <option value="STATION" ${reqRow.source_mode === 'STATION' ? 'selected' : ''}>External Filling Station</option>
+              </select>
+            </div>
+          </div>
+
+          <div id="trv_tank_wrap" style="${reqRow.source_mode === 'STATION' ? 'display:none' : ''}">
+            <label style="font-size:12px;font-weight:600">Assigned Pump / Bulk Tank *</label>
+            <select id="trv_tank_id" class="input" style="width:100%">
+              <option value="">-- Select Tank / Bowser --</option>
+              ${tanks.map((t) => `<option value="${esc(t.id)}" ${String(reqRow.target_tank_id || '') === String(t.id) ? 'selected' : ''}>${esc(t.name)} (${esc(t.project_name || t.code)})${t.current_litres != null ? ' — Stock: ' + fmtNum(t.current_litres, 0) + 'L' : ''}</option>`).join('')}
+            </select>
+          </div>
+          <div id="trv_station_wrap" style="${reqRow.source_mode === 'STATION' ? '' : 'display:none'}">
+            <label style="font-size:12px;font-weight:600">External Filling Station Name *</label>
+            <input type="text" id="trv_station_name" class="input" value="${esc(reqRow.station_name || '')}" placeholder="e.g. Ceypetco Divulapitiya" style="width:100%">
+          </div>
+
+          <div>
+            <label style="font-size:12px;font-weight:600">Transport Remarks / Rejection Reason</label>
+            <textarea id="trv_note" rows="2" class="input" placeholder="Approval note or mandatory reason if rejecting..." style="width:100%">${esc(reqRow.review_note || '')}</textarea>
+          </div>
+
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-top:4px;flex-wrap:wrap">
+            <button type="button" class="btn danger" id="trv_reject">✕ Reject Request</button>
+            <div style="display:flex;gap:8px">
+              <button type="button" class="btn" id="trv_cancel">Cancel</button>
+              <button type="submit" class="btn primary" id="trv_approve">✅ Approve to Pump Queue</button>
+            </div>
+          </div>
+        </form>
+      </div>
+    `;
+    document.body.appendChild(modal);
+
+    const srcSel = modal.querySelector('#trv_source_mode');
+    const tankWrap = modal.querySelector('#trv_tank_wrap');
+    const stWrap = modal.querySelector('#trv_station_wrap');
+    srcSel.onchange = () => {
+      const isSt = srcSel.value === 'STATION';
+      tankWrap.style.display = isSt ? 'none' : 'block';
+      stWrap.style.display = isSt ? 'block' : 'none';
+    };
+
+    modal.querySelector('#trv_cancel').onclick = () => modal.remove();
+    modal.onclick = (e) => { if (e.target === modal) modal.remove(); };
+
+    modal.querySelector('#trv_reject').onclick = async () => {
+      const reason = modal.querySelector('#trv_note').value.trim();
+      if (reason.length < 3) {
+        notify('Please enter a rejection reason (at least 3 characters)', 'err');
+        modal.querySelector('#trv_note').focus();
+        return;
+      }
+      const btn = modal.querySelector('#trv_reject');
+      btn.disabled = true;
+      try {
+        const res = await api(`/fuel/requests/${encodeURIComponent(reqRow.id)}/review`, {
+          method: 'POST',
+          body: { action: 'REJECT', rejectionReason: reason, reviewNote: reason },
+        });
+        toast('Fuel request rejected.');
+        modal.remove();
+        if (typeof onDone === 'function') onDone(res);
+      } catch (err) {
+        notify(err.message || 'Reject failed', 'err');
+        btn.disabled = false;
+      }
+    };
+
+    modal.querySelector('#form_tr_review').onsubmit = async (e) => {
+      e.preventDefault();
+      const btn = modal.querySelector('#trv_approve');
+      btn.disabled = true;
+      btn.textContent = 'Approving...';
+      try {
+        const rawL = modal.querySelector('#trv_approved_litres').value;
+        const isSt = srcSel.value === 'STATION';
+        const res = await api(`/fuel/requests/${encodeURIComponent(reqRow.id)}/review`, {
+          method: 'POST',
+          body: {
+            action: 'APPROVE',
+            approvedLitres: rawL !== '' ? Number(rawL) : null,
+            sourceMode: srcSel.value,
+            targetTankId: isSt ? null : (modal.querySelector('#trv_tank_id').value || null),
+            stationName: isSt ? modal.querySelector('#trv_station_name').value.trim() : null,
+            reviewNote: modal.querySelector('#trv_note').value.trim() || null,
+            dispenseNow: false,
+          },
+        });
+        toast('Approved! Request is now in Site Pump Operator queue.');
+        modal.remove();
+        if (typeof onDone === 'function') onDone(res);
+      } catch (err) {
+        notify(err.message || 'Approval failed', 'err');
+        btn.disabled = false;
+        btn.textContent = '✅ Approve to Pump Queue';
+      }
+    };
+  };
+
+  function openCancelRequestModal(reqRow, onDone) {
+    const modal = document.createElement('div');
+    modal.className = 'modal-bg modal-backdrop';
+    modal.innerHTML = `
+      <div class="modal" style="max-width:440px;padding:22px">
+        <h3 style="margin:0 0 6px 0">Cancel Request ${esc(reqRow.request_no || '')}</h3>
+        <div class="muted" style="font-size:12px;margin-bottom:10px">${vehBadge(reqRow)} · ${esc(reqRow.project_name || '')}</div>
+        <form id="form_tr_cancel" style="display:flex;flex-direction:column;gap:10px">
+          <input type="text" id="trc_reason" required class="input" placeholder="Reason for cancelling..." style="width:100%">
+          <div style="display:flex;justify-content:flex-end;gap:8px">
+            <button type="button" class="btn" id="trc_close">Back</button>
+            <button type="submit" class="btn danger" id="trc_submit">Confirm Cancel</button>
+          </div>
+        </form>
+      </div>
+    `;
+    document.body.appendChild(modal);
+    modal.querySelector('#trc_close').onclick = () => modal.remove();
+    modal.onclick = (e) => { if (e.target === modal) modal.remove(); };
+    modal.querySelector('#form_tr_cancel').onsubmit = async (e) => {
+      e.preventDefault();
+      try {
+        await api(`/fuel/requests/${encodeURIComponent(reqRow.id)}/cancel`, {
+          method: 'POST',
+          body: { reason: modal.querySelector('#trc_reason').value.trim() || 'Cancelled' },
+        });
+        toast('Request cancelled');
+        modal.remove();
+        if (typeof onDone === 'function') onDone();
+      } catch (err) {
+        notify(err.message || 'Cancel failed', 'err');
+      }
+    };
   }
 
   // Shared Pump Operator Dispatch Modal (supports both Fixed & Full Tank post-fill quantity entry)
@@ -123,7 +327,7 @@
     const isFullTank = !!reqRow.is_full_tank;
     const isStation = reqRow.source_mode === 'STATION';
     const recLitres = reqRow.recommended_litres != null ? Number(reqRow.recommended_litres) : null;
-    const defaultLitres = isFullTank ? '' : (reqRow.trip_total_fuel || reqRow.requested_litres || '');
+    const defaultLitres = isFullTank ? '' : (reqRow.approved_litres || reqRow.trip_total_fuel || reqRow.requested_litres || '');
 
     modal.innerHTML = `
       <div class="modal" style="max-width:600px;padding:24px">
@@ -139,12 +343,12 @@
 
         <div class="card" style="padding:12px;margin-bottom:14px;background:rgba(37,99,235,0.06);border:1px solid rgba(37,99,235,0.2);font-size:12px">
           <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px">
-            <div><span class="muted">Vehicle:</span><br><b>${esc(reqRow.asset_code)}</b></div>
-            <div><span class="muted">Running Chart #:</span><br><b>${esc(reqRow.running_chart_no || '—')}</b></div>
+            <div><span class="muted">Vehicle (E&amp;C · Reg):</span><br>${vehBadge(reqRow)}</div>
+            <div><span class="muted">Running Chart #:</span><br><b>${esc(reqRow.running_chart_no || 'Site Log')}</b></div>
             <div><span class="muted">Site / Project:</span><br><b>${esc(reqRow.project_name || 'Central')}</b></div>
             <div><span class="muted">Req Meter / Delta:</span><br><b>${reqRow.meter_faulty ? `<span class="badge warn" title="${esc(reqRow.meter_fault_reason || '')}">⚠️ METER FAULTY</span>` : (reqRow.meter_reading ? fmtNum(reqRow.meter_reading, 1) : '—')}</b> ${reqRow.approx_km ? `(${fmtNum(reqRow.approx_km, 1)} ${reqRow.meter_type === 'KM' ? 'km' : 'hr'})` : ''}</div>
             <div><span class="muted">Recommended Norm:</span><br><b style="color:#0369a1">${recLitres != null ? fmtNum(recLitres, 1) + ' L' : 'No Norm'}</b></div>
-            <div><span class="muted">Requested / Mode:</span><br>${isFullTank ? '<span class="badge" style="background:#7c3aed;color:#fff">FULL TANK (Enter After Fill)</span>' : `<b>${fmtNum(reqRow.requested_litres, 1)} L</b>`}</div>
+            <div><span class="muted">Approved / Requested:</span><br>${isFullTank ? '<span class="badge" style="background:#7c3aed;color:#fff">FULL TANK (Enter After Fill)</span>' : (reqRow.approved_litres != null && Number(reqRow.approved_litres) !== Number(reqRow.requested_litres) ? `<b style="color:#15803d">${fmtNum(reqRow.approved_litres, 1)} L</b> <span class="muted">(Req: ${fmtNum(reqRow.requested_litres, 1)}L)</span>` : `<b>${fmtNum(reqRow.requested_litres, 1)} L</b>`)}</div>
           </div>
           ${reqRow.driver_name || reqRow.trip_purpose ? `<div style="margin-top:6px;padding-top:6px;border-top:1px dashed rgba(37,99,235,0.2)"><b>Driver:</b> ${esc(reqRow.driver_name || '—')} &nbsp;·&nbsp; <b>Trip:</b> ${esc(reqRow.trip_purpose || '—')}</div>` : ''}
         </div>
@@ -347,7 +551,7 @@
     let activeTab = queryParams.get('tab') || 'request';
 
     const canReq = isAdmin() || canDo('fuel.transport.request', 'fuel.request');
-    const canApprove = isAdmin() || canDo('fuel.approve_request', 'fuel.approve');
+    const canApprove = isAdmin() || canDo('fuel.approve_request', 'fuel.approve', 'fuel.approve_site_request');
     const canIssue = isAdmin() || canDo('fuel.issue');
     const canAudit = isAdmin() || canDo('fuel.transport.crosscheck', 'fuel.reports.view');
 
@@ -361,6 +565,25 @@
         if (tbRes.fuelScope) bootstrap.fuelScope = tbRes.fuelScope;
       }
     } catch (_) {}
+
+    // Lookup map so typing either E&C No, Vehicle Reg, or "DT-15 (LM-5722)" resolves cleanly
+    const vehicleLookup = new Map();
+    const squashStr = (s) => String(s || '').trim().toUpperCase().replace(/[-\s/().]/g, '');
+    for (const v of bootstrap.vehicles || []) {
+      const keys = [
+        v.display, v.code, v.ec_code, v.registration,
+        squashStr(v.display), squashStr(v.code), squashStr(v.ec_code), squashStr(v.registration),
+      ].filter(Boolean);
+      for (const k of keys) {
+        const up = String(k).trim().toUpperCase();
+        if (!vehicleLookup.has(up)) vehicleLookup.set(up, v);
+      }
+    }
+    function resolvePickedVehicle(raw) {
+      const s = String(raw || '').trim();
+      if (!s) return null;
+      return vehicleLookup.get(s.toUpperCase()) || vehicleLookup.get(squashStr(s)) || null;
+    }
 
     const tfScope = bootstrap.fuelScope || (ME && ME.fuelScope) || {};
     const isScopedSite = !!tfScope.scoped;
@@ -434,7 +657,7 @@
           <div class="card kpi-card" style="padding:12px 14px">
             <div class="muted" style="font-size:11px;font-weight:600">READY AT PUMP (APPROVED)</div>
             <div style="font-size:22px;font-weight:800;color:#2563eb">${readyPump}</div>
-            <div class="muted" style="font-size:11px">${needMgr} pending manager (&gt;20%)</div>
+            <div class="muted" style="font-size:11px">${needMgr} awaiting Transport review</div>
           </div>
           <div class="card kpi-card" style="padding:12px 14px">
             <div class="muted" style="font-size:11px;font-weight:600">FULFILLED AT PUMP</div>
@@ -504,13 +727,14 @@
               <span class="badge" style="background:#0f172a;color:#fff">Auto Recommended Fuel</span>
             </div>
             ${!canReq ? `<div class="card" style="padding:12px;background:rgba(245,158,11,0.1);border:1px solid #d97706">You have view-only access to Transport Fuel.</div>` : `
+            ${isScopedSite ? `<div style="padding:8px 10px;margin-bottom:10px;border-radius:6px;background:rgba(37,99,235,0.08);border:1px solid rgba(37,99,235,0.25);font-size:12px;color:#1e40af">ℹ️ <b>Site Fuel Workflow:</b> Site requests are routed to the <b>Transport Section</b> for approval before appearing in your Site Pump Operator’s queue.</div>` : ''}
             <form id="tf_form_request" style="display:flex;flex-direction:column;gap:12px">
               <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
                 <div>
-                  <label style="font-size:12px;font-weight:600">Vehicle / Machine Code *</label>
-                  <input type="text" id="tfr_asset" required list="tfr_veh_list" class="input" placeholder="e.g. DC-25, LB-22, EX-01" style="width:100%">
+                  <label style="font-size:12px;font-weight:600">Vehicle / Machine (E&amp;C No or Reg No) *</label>
+                  <input type="text" id="tfr_asset" required list="tfr_veh_list" class="input" placeholder="Type E&C (DT-15, WB-04) or Reg (LM-5722)..." style="width:100%">
                   <datalist id="tfr_veh_list">
-                    ${bootstrap.vehicles.map((v) => `<option value="${esc(v.code)}">${esc(v.registration || '')} · ${esc(v.category || '')} · ${esc(v.current_site || '')}</option>`).join('')}
+                    ${bootstrap.vehicles.map((v) => `<option value="${esc(v.display || vehText(v))}">${esc(v.code || '')} · ${esc(v.registration || 'No Reg')} · ${esc(v.category || '')} · ${esc(v.current_site || '')}</option>`).join('')}
                   </datalist>
                 </div>
                 <div>
@@ -526,7 +750,7 @@
 
               <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px">
                 <div>
-                  <label style="font-size:12px;font-weight:600">Running Chart No *</label>
+                  <label id="tfr_chart_label" style="font-size:12px;font-weight:600">Running Chart No <span id="tfr_chart_star">*</span></label>
                   <input type="text" id="tfr_chart_no" required class="input" placeholder="e.g. RC-2026-1042" style="width:100%">
                 </div>
                 <div>
@@ -705,14 +929,29 @@
         };
 
         async function runRecommendCalc() {
-          const code = assetInp.value.trim();
-          if (!code) return;
+          const rawVal = assetInp.value.trim();
+          if (!rawVal) return;
+          const matchedVeh = resolvePickedVehicle(rawVal);
           try {
-            const q = new URLSearchParams({ assetCode: code });
+            const q = new URLSearchParams();
+            if (matchedVeh && matchedVeh.id) q.set('assetId', matchedVeh.id);
+            else q.set('assetCode', rawVal);
             if (meterInp.value !== '') q.set('meterReading', meterInp.value);
             if (prevMeterInp.value !== '') q.set('prevMeterReading', prevMeterInp.value);
             if (manualApproxEdited && approxInp.value !== '') q.set('approxKm', approxInp.value);
             const res = await api(`/fuel/recommend-calc?${q.toString()}`);
+
+            // Toggle Running Chart requirement for site HOURS machines vs road KM vehicles
+            const chartInp = qs('#tfr_chart_no', box);
+            const chartLbl = qs('#tfr_chart_label', box);
+            if (chartInp && chartLbl) {
+              const isHr = res.meterType === 'HOURS';
+              chartInp.required = !isHr;
+              chartInp.placeholder = isHr ? 'Optional Site Log / Work Sheet #' : 'e.g. RC-2026-1042';
+              chartLbl.innerHTML = isHr
+                ? 'Running Chart / Machine Log # <span class="muted">(Optional for Hr)</span>'
+                : 'Running Chart No <span id="tfr_chart_star">*</span>';
+            }
 
             if (res.prevMeter != null && !prevMeterInp.matches(':focus') && prevMeterInp.value === '') {
               prevMeterInp.value = res.prevMeter;
@@ -726,7 +965,7 @@
             if (!res.found) {
               calcBanner.style.background = 'rgba(245,158,11,0.1)';
               calcBanner.style.borderColor = '#d97706';
-              calcBanner.innerHTML = `⚠️ Vehicle <b>${esc(code)}</b> not in master register — norm lookup unavailable.`;
+              calcBanner.innerHTML = `⚠️ Vehicle <b>${esc(rawVal)}</b> not in master register — norm lookup unavailable.`;
             } else if (!res.ok) {
               calcBanner.style.background = 'rgba(220,38,38,0.12)';
               calcBanner.style.borderColor = '#dc2626';
@@ -742,7 +981,7 @@
                 ? ` <span class="muted">(Range: ${fmtNum(res.recommendedBand.econ, 1)} – ${fmtNum(res.recommendedBand.heavy, 1)} L)</span>`
                 : '';
               calcBanner.innerHTML = `
-                ✅ <b>${esc(res.asset.code)}</b> (${esc(res.asset.category || 'Vehicle')} · ${esc(res.meterType)})
+                ✅ ${vehBadge(res.asset)} <span class="muted">(${esc(res.asset.category || 'Vehicle')} · ${esc(res.meterType)})</span>
                 &nbsp;|&nbsp; Norm: <b>${esc(normTxt)}</b>
                 <div style="margin-top:4px">
                   💡 <b>Recommended Fuel Quantity</b> for <b>${fmtNum(res.approxKm || 0, 1)} ${res.basis === 'hr' ? 'hrs' : 'km'}</b>: ${recTxt}${bandDetail}
@@ -762,7 +1001,8 @@
           clearTimeout(calcTimer);
           calcTimer = setTimeout(() => {
             runRecommendCalc();
-            loadVehicleComplianceWarning(qs('#tfr_compliance_banner', box), { assetCode: assetInp.value.trim() });
+            const mv = resolvePickedVehicle(assetInp.value.trim());
+            loadVehicleComplianceWarning(qs('#tfr_compliance_banner', box), mv ? { assetId: mv.id, assetCode: mv.code } : { assetCode: assetInp.value.trim() });
           }, 240);
         };
         meterInp.oninput = () => { clearTimeout(calcTimer); calcTimer = setTimeout(runRecommendCalc, 240); };
@@ -801,12 +1041,14 @@
           btn.textContent = 'Submitting...';
           try {
             const isSt = srcModeSel.value === 'STATION';
+            const pickedVeh = resolvePickedVehicle(assetInp.value.trim());
             const created = await api('/fuel/requests', {
               method: 'POST',
               body: {
-                assetCode: assetInp.value.trim(),
+                assetId: pickedVeh ? pickedVeh.id : undefined,
+                assetCode: pickedVeh ? (pickedVeh.code || pickedVeh.ec_code || pickedVeh.registration) : assetInp.value.trim(),
                 projectId: projectSel.value ? Number(projectSel.value) : null,
-                runningChartNo: qs('#tfr_chart_no', box).value.trim(),
+                runningChartNo: qs('#tfr_chart_no', box).value.trim() || null,
                 driverName: qs('#tfr_driver', box).value.trim() || null,
                 tripPurpose: qs('#tfr_purpose', box).value.trim() || null,
                 prevMeterReading: prevMeterInp.value !== '' ? Number(prevMeterInp.value) : null,
@@ -823,7 +1065,9 @@
               },
             });
             toast(created.status === 'PENDING'
-              ? `${created.request_no} submitted for Manager Approval (>20% over recommended).`
+              ? (created.exceeds_norm
+                ? `${created.request_no} submitted for Manager Approval (>20% over recommended).`
+                : `${created.request_no} submitted for Transport Section Approval.`)
               : `${created.request_no} sent straight to Pump Operator Queue!`);
             form.reset();
             syncFaultyUi();
@@ -854,8 +1098,8 @@
           el.innerHTML = requests.map((r) => `
             <div style="padding:9px 10px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;gap:8px;align-items:center">
               <div>
-                <div><b style="font-family:monospace">${esc(r.request_no)}</b> · <b>${esc(r.asset_code)}</b> ${r.running_chart_no ? `<span class="muted">RC:${esc(r.running_chart_no)}</span>` : ''}</div>
-                <div class="muted" style="font-size:11.5px">${esc(r.project_name)} · ${esc(r.target_tank_name || r.station_name || '—')} · Rec: <b>${r.recommended_litres != null ? fmtNum(r.recommended_litres, 1) + 'L' : '—'}</b> · ${r.is_full_tank ? 'Full Tank' : 'Req: ' + fmtNum(r.requested_litres, 1) + 'L'}</div>
+                <div><b style="font-family:monospace">${esc(r.request_no)}</b> · ${vehBadge(r)} ${r.running_chart_no ? `<span class="muted">RC:${esc(r.running_chart_no)}</span>` : ''}</div>
+                <div class="muted" style="font-size:11.5px">${esc(r.project_name)} · ${esc(r.target_tank_name || r.station_name || '—')} · Rec: <b>${r.recommended_litres != null ? fmtNum(r.recommended_litres, 1) + 'L' : '—'}</b> · ${r.is_full_tank ? 'Full Tank' : (r.approved_litres != null && Number(r.approved_litres) !== Number(r.requested_litres) ? 'App: <b>' + fmtNum(r.approved_litres, 1) + 'L</b> (Req ' + fmtNum(r.requested_litres, 1) + 'L)' : 'Req: ' + fmtNum(r.requested_litres, 1) + 'L')}</div>
               </div>
               <div style="text-align:right">
                 ${statusBadge(r)}
@@ -886,9 +1130,9 @@
             <h3 style="margin:0;font-size:16px">⛽ Pump Operator Queue &amp; Manager Approvals</h3>
             <div style="display:flex;gap:8px;flex-wrap:wrap">
               <select id="tfq_status" class="input sm">
-                <option value="OPEN">Open Queue (Ready at Pump + Pending Approval)</option>
+                <option value="OPEN">Open Queue (Ready at Pump + Awaiting Transport)</option>
+                <option value="PENDING">Awaiting Transport / Manager Approval</option>
                 <option value="APPROVED">Ready at Pump Operator Only</option>
-                <option value="PENDING">Pending Manager Approval (&gt;20%)</option>
                 <option value="FULFILLED">Fulfilled</option>
                 <option value="REJECTED">Rejected</option>
                 <option value="ALL">All Statuses</option>
@@ -949,8 +1193,8 @@
                 <div class="muted" style="font-size:11px">${r.source_mode === 'STATION' ? '⛽ ' + esc(r.station_name || 'External Station') : '🛢️ ' + esc(r.target_tank_name || 'Unassigned Tank')}</div>
               </td>
               <td>
-                <div><b>${esc(r.asset_code)}</b></div>
-                <div class="muted" style="font-size:11px">RC: <b>${esc(r.running_chart_no || '—')}</b>${r.driver_name ? ' · ' + esc(r.driver_name) : ''}</div>
+                ${vehBadge(r, { stacked: true })}
+                <div class="muted" style="font-size:11px;margin-top:2px">RC: <b>${esc(r.running_chart_no || 'Site Log')}</b>${r.driver_name ? ' · ' + esc(r.driver_name) : ''}</div>
               </td>
               <td>
                 <div>${r.meter_faulty ? `<span class="badge warn" title="${esc(r.meter_fault_reason || 'Meter Faulty')}">⚠️ FAULTY</span>` : `${r.prev_meter_reading != null ? fmtNum(r.prev_meter_reading, 1) + ' → ' : ''}<b>${r.meter_reading != null ? fmtNum(r.meter_reading, 1) : '—'}</b>`}</div>
@@ -958,18 +1202,19 @@
               </td>
               <td style="text-align:right;font-weight:700;color:#0369a1">${r.recommended_litres != null ? fmtNum(r.recommended_litres, 1) + ' L' : '—'}</td>
               <td style="text-align:right">
-                ${r.is_full_tank ? '<span class="badge" style="background:#7c3aed;color:#fff">FULL TANK</span>' : `<b>${fmtNum(r.requested_litres, 1)} L</b>`}
+                ${r.is_full_tank ? '<span class="badge" style="background:#7c3aed;color:#fff">FULL TANK</span>' : `<b>${fmtNum(r.approved_litres != null ? r.approved_litres : r.requested_litres, 1)} L</b>${r.approved_litres != null && Number(r.approved_litres) !== Number(r.requested_litres) ? `<div class="muted" style="font-size:10.5px">Req: ${fmtNum(r.requested_litres, 1)} L</div>` : ''}`}
               </td>
               <td style="text-align:right;font-weight:700">${r.actual_issued_litres != null ? fmtNum(r.actual_issued_litres, 1) + ' L' : '—'}</td>
               <td>
                 <div>${statusBadge(r)}</div>
                 ${r.linked_cross_check_status ? `<div style="margin-top:4px">${crossCheckBadge(r.linked_cross_check_status, r.linked_variance_litres, r.linked_variance_pct)}</div>` : ''}
+                ${r.review_note ? `<div class="muted" style="font-size:10.5px;margin-top:2px">${esc(r.review_note)}</div>` : ''}
               </td>
               <td style="white-space:nowrap">
-                ${r.status === 'PENDING' && canApprove ? `
-                  <button class="btn sm primary tfq-act" data-id="${esc(r.id)}" data-act="APPROVE">✅ Approve</button>
-                  <button class="btn sm danger tfq-act" data-id="${esc(r.id)}" data-act="REJECT">✕ Reject</button>
+                ${r.status === 'PENDING' && canApproveReq(r) ? `
+                  <button class="btn sm primary tfq-review" data-id="${esc(r.id)}">🛡️ Review / Approve</button>
                 ` : ''}
+                ${r.status === 'PENDING' && !canApproveReq(r) && canApprove ? '<span class="badge warn" style="font-size:10px">Manager Approval (&gt;20%)</span>' : ''}
                 ${r.status === 'APPROVED' && canIssue ? `
                   <button class="btn sm primary tfq-dispense" data-id="${esc(r.id)}">⛽ ${r.is_full_tank ? 'Full Tank · Enter Qty' : 'Dispense at Pump'}</button>
                 ` : ''}
@@ -980,25 +1225,10 @@
             </tr>
           `).join('');
 
-          qsa('.tfq-act', tbody).forEach((b) => {
-            b.onclick = async () => {
-              const id = b.getAttribute('data-id');
-              const act = b.getAttribute('data-act');
-              let rejectionReason = null;
-              if (act === 'REJECT') {
-                rejectionReason = prompt('Reason for rejecting this fuel request:');
-                if (rejectionReason === null) return;
-              }
-              try {
-                await api(`/fuel/requests/${encodeURIComponent(id)}/review`, {
-                  method: 'POST',
-                  body: { action: act, rejectionReason },
-                });
-                toast(act === 'APPROVE' ? 'Approved! Request is now in Pump Operator queue.' : 'Request rejected.');
-                await Promise.all([refreshSummary(), loadQueue()]);
-              } catch (err) {
-                notify(err.message || 'Action failed', 'err');
-              }
+          qsa('.tfq-review', tbody).forEach((b) => {
+            b.onclick = () => {
+              const r = requests.find((x) => x.id === b.getAttribute('data-id'));
+              if (r) window.openTransportReviewModal(r, bootstrap.tanks, () => { refreshSummary(); loadQueue(); });
             };
           });
 
@@ -1010,19 +1240,9 @@
           });
 
           qsa('.tfq-cancel', tbody).forEach((b) => {
-            b.onclick = async () => {
-              const reason = prompt('Reason for cancelling request:');
-              if (reason === null) return;
-              try {
-                await api(`/fuel/requests/${encodeURIComponent(b.getAttribute('data-id'))}/cancel`, {
-                  method: 'POST',
-                  body: { reason: reason || 'Cancelled' },
-                });
-                toast('Request cancelled');
-                await Promise.all([refreshSummary(), loadQueue()]);
-              } catch (err) {
-                notify(err.message || 'Cancel failed', 'err');
-              }
+            b.onclick = () => {
+              const r = requests.find((x) => x.id === b.getAttribute('data-id'));
+              if (r) openCancelRequestModal(r, () => { refreshSummary(); loadQueue(); });
             };
           });
         } catch (err) {
@@ -1125,8 +1345,8 @@
                 <div class="muted" style="font-size:11px">${esc(r.pump_or_station)}</div>
               </td>
               <td>
-                <div><b>${esc(r.asset_code)}</b></div>
-                <div class="muted" style="font-size:11px">RC: ${esc(r.running_chart_no || '—')}${r.driver_name ? ' · ' + esc(r.driver_name) : ''}</div>
+                ${vehBadge(r, { stacked: true })}
+                <div class="muted" style="font-size:11px;margin-top:2px">RC: ${esc(r.running_chart_no || 'Site Log')}${r.driver_name ? ' · ' + esc(r.driver_name) : ''}</div>
               </td>
               <td>${r.meter_faulty ? `<span class="badge warn" title="${esc(r.meter_fault_reason || 'Meter Faulty')}">⚠️ FAULTY</span>` : (r.prev_meter_reading != null ? fmtNum(r.prev_meter_reading, 1) + ' → ' : '') + (r.issue_meter_reading || r.request_meter_reading ? '<b>' + fmtNum(r.issue_meter_reading || r.request_meter_reading, 1) + '</b>' : '—')}</td>
               <td style="text-align:right">${r.approx_km != null ? fmtNum(r.approx_km, 1) : '—'}</td>
@@ -1152,6 +1372,21 @@
 
     await refreshSummary();
     await renderActiveTab();
+
+    if (window.LiveERP && typeof window.LiveERP.on === 'function') {
+      let rtTimer = null;
+      const onLiveFuel = () => {
+        if (!document.body.contains(content)) return;
+        clearTimeout(rtTimer);
+        rtTimer = setTimeout(() => {
+          if (!document.body.contains(content)) return;
+          refreshSummary();
+          if (activeTab === 'queue' || activeTab === 'request') renderActiveTab();
+        }, 350);
+      };
+      window.LiveERP.on('fuel_request_updated', onLiveFuel);
+      window.LiveERP.on('fuel_issue_updated', onLiveFuel);
+    }
   }
 
   if (typeof window !== 'undefined') {

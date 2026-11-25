@@ -119,7 +119,7 @@ function getFuelScope(user) {
   const canIssueOrRefill = hasCap(user, 'fuel.issue', 'fuel.tanks.refill');
   const canRequest = hasCap(user, 'fuel.transport.request', 'fuel.request');
   const hasAnalyticsOrAdmin = hasAllSitesCap
-    || hasCap(user, 'fuel.reports.view', 'fuel.prices.view', 'fuel.alerts.view', 'fuel.approve_request', 'fuel.approve_correction', 'fuel.tanks.manage');
+    || hasCap(user, 'fuel.reports.view', 'fuel.prices.view', 'fuel.alerts.view', 'fuel.approve_request', 'fuel.approve_site_request', 'fuel.approve_correction', 'fuel.tanks.manage');
 
   const isPumpOnly = (roles.includes('pump_operator') && !hasAllSitesCap)
     || fuelRole === 'SITE_OPERATOR'

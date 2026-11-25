@@ -574,7 +574,7 @@ function sweepSockets() {
 emitter.on('sessions_changed', () => setImmediate(sweepSockets));
 setInterval(sweepSockets, 60 * 1000).unref();
 
-const LIVE_EVENTS = ['stock_updated', 'oil_updated', 'filter_updated', 'job_updated', 'request_updated', 'dashboard_refresh', 'data_changed', 'maintenance_alert'];
+const LIVE_EVENTS = ['stock_updated', 'oil_updated', 'filter_updated', 'job_updated', 'request_updated', 'fuel_request_updated', 'fuel_issue_updated', 'dashboard_refresh', 'data_changed', 'maintenance_alert'];
 for (const event of LIVE_EVENTS) {
   emitter.on(event, (data) => io.emit(event, data));
 }

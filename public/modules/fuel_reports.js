@@ -161,8 +161,8 @@
                     <div>
                       <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:2px">
                         <span>
-                          <a href="#/fuel?tab=vehicle-360&vehicle=${encodeURIComponent(v.code)}" style="font-weight:700;color:var(--primary,#0066ff)">${esc(v.code)}</a>
-                          <span class="muted">(${esc(v.category || v.registration || '')})</span>
+                          <a href="#/fuel?tab=vehicle-360&vehicle=${encodeURIComponent(v.code)}" style="font-weight:700;color:var(--primary,#0066ff)">${typeof fmtVehicleText === 'function' ? esc(fmtVehicleText(v)) : esc(v.code)}</a>
+                          <span class="muted">(${esc(v.category || '')})</span>
                         </span>
                         <span><b>${fmtNum(v.litres, 1)} L</b> · <span class="muted">${fmtLkr(v.costLkr)}</span></span>
                       </div>
@@ -220,7 +220,9 @@
             if (activeVerdict !== 'ALL' && r.verdict !== activeVerdict) return false;
             if (searchQ) {
               const q = searchQ.toUpperCase();
-              return String(r.code || '').toUpperCase().includes(q) ||
+              return (typeof vehicleSearchBlob === 'function' && vehicleSearchBlob(r).includes(q)) ||
+                     String(r.code || '').toUpperCase().includes(q) ||
+                     String(r.ec_code || '').toUpperCase().includes(q) ||
                      String(r.registration || '').toUpperCase().includes(q) ||
                      String(r.category || '').toUpperCase().includes(q);
             }
@@ -291,8 +293,7 @@
                     return `
                       <tr>
                         <td style="padding:9px 12px">
-                          <a href="#/fuel?tab=vehicle-360&vehicle=${encodeURIComponent(r.code)}" style="font-weight:800;color:var(--primary,#0066ff);text-decoration:underline">${esc(r.code)}</a>
-                          <div class="muted" style="font-size:11px">${esc(r.registration || '—')}</div>
+                          <a href="#/fuel?tab=vehicle-360&vehicle=${encodeURIComponent(r.code)}" style="font-weight:800;color:var(--primary,#0066ff);text-decoration:underline">${typeof fmtVehicleBadge === 'function' ? fmtVehicleBadge(r, { stacked: true }) : esc(r.code)}</a>
                         </td>
                         <td style="padding:9px 12px">
                           <div>${esc(r.category || '—')}</div>
@@ -438,8 +439,7 @@
                   ${rows.slice(0, 200).map((r) => `
                     <tr>
                       <td style="padding:9px 12px">
-                        <a href="#/fuel?tab=vehicle-360&vehicle=${encodeURIComponent(r.code)}" style="font-weight:800;color:var(--primary,#0066ff)">${esc(r.code)}</a>
-                        <div class="muted" style="font-size:11px">${esc(r.registration || '—')}</div>
+                        <a href="#/fuel?tab=vehicle-360&vehicle=${encodeURIComponent(r.code)}" style="font-weight:800;color:var(--primary,#0066ff)">${typeof fmtVehicleBadge === 'function' ? fmtVehicleBadge(r, { stacked: true }) : esc(r.code)}</a>
                       </td>
                       <td style="padding:9px 12px">
                         <div>${esc(r.category || '—')}</div>
@@ -558,20 +558,22 @@
             <h2 style="font-size:16px;font-weight:700;margin:0 0 10px 0">2. Vehicle-Wise Fuel Consumption &amp; Efficiency Statement (${esc(selectedMonth)})</h2>
             <table class="table" style="width:100%;font-size:12.5px">
               <thead>
-                <tr><th>Vehicle</th><th>Reg</th><th>Category</th><th style="text-align:right">Litres</th><th style="text-align:right">Cost (LKR)</th><th style="text-align:right">Meter Units Run</th><th style="text-align:right">L / Unit</th></tr>
+                <tr><th>E&amp;C / Vehicle</th><th>Vehicle Reg No</th><th>Category</th><th style="text-align:right">Litres</th><th style="text-align:right">Cost (LKR)</th><th style="text-align:right">Meter Units Run</th><th style="text-align:right">L / Unit</th></tr>
               </thead>
               <tbody>
-                ${vehicles.map((v) => `
+                ${vehicles.map((v) => {
+                  const vid = typeof resolveVehicleIdentity === 'function' ? resolveVehicleIdentity(v) : { ec_code: v.asset_code, registration: v.registration };
+                  return `
                   <tr>
-                    <td><a href="#/fuel?tab=vehicle-360&vehicle=${encodeURIComponent(v.asset_code)}" style="font-weight:700">${esc(v.asset_code)}</a></td>
-                    <td>${esc(v.registration || '—')}</td>
+                    <td><a href="#/fuel?tab=vehicle-360&vehicle=${encodeURIComponent(v.asset_code)}" style="font-weight:700">${esc(vid.ec_code || v.asset_code)}</a></td>
+                    <td>${esc(vid.registration || v.registration || '—')}</td>
                     <td>${esc(v.category || '—')}</td>
                     <td style="text-align:right;font-weight:700">${fmtNum(v.total_litres, 1)} L</td>
                     <td style="text-align:right">${fmtLkr(v.total_cost)}</td>
                     <td style="text-align:right">${fmtNum(v.meter_units_run, 1)}</td>
                     <td style="text-align:right;font-weight:700">${v.litres_per_unit > 0 ? v.litres_per_unit : '—'}</td>
                   </tr>
-                `).join('')}
+                `; }).join('')}
               </tbody>
             </table>
           </div>

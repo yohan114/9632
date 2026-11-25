@@ -255,7 +255,7 @@ test('Site Fuel Requester raises own-site requests, blocked from other sites & p
   assert.equal(boot.body.projects.length, 1);
   assert.equal(boot.body.projects[0].id, 21);
 
-  // Can raise normal within-band request for CEP-03 (10 hrs * 7 L/hr = 70 L recommended, req 70 L -> APPROVED)
+  // Site-raised within-band request MUST now route through Transport Section approval first (PENDING, SITE channel)
   const cepReq = await reqJson('/api/fuel/requests', {
     method: 'POST',
     cookie: cookies.reqCep,
@@ -273,8 +273,27 @@ test('Site Fuel Requester raises own-site requests, blocked from other sites & p
     },
   });
   assert.equal(cepReq.status, 201, JSON.stringify(cepReq.body));
-  assert.equal(cepReq.body.status, 'APPROVED');
+  assert.equal(cepReq.body.status, 'PENDING');
+  assert.equal(cepReq.body.requested_channel, 'SITE');
+  assert.equal(cepReq.body.exceeds_norm, false);
   cepReqId = cepReq.body.id;
+
+  // Pump cannot dispense before Transport approves it (409)
+  const preApproveIssue = await reqJson(`/api/fuel/requests/${cepReqId}/issue`, {
+    method: 'POST',
+    cookie: cookies.pumpCep,
+    body: { litres: 70, sourceTankId: 'tk-cep' },
+  });
+  assert.equal(preApproveIssue.status, 409);
+
+  // Transport/Admin approves standard site request -> moves to APPROVED at CEP-03 pump
+  const appRes = await reqJson(`/api/fuel/requests/${cepReqId}/review`, {
+    method: 'POST',
+    cookie: cookies.admin,
+    body: { action: 'APPROVE', dispenseNow: false },
+  });
+  assert.equal(appRes.status, 200, JSON.stringify(appRes.body));
+  assert.equal(appRes.body.request.status, 'APPROVED');
 
   // Can raise >20% excess request -> PENDING manager approval
   const cepExcess = await reqJson('/api/fuel/requests', {

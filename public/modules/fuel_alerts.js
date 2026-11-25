@@ -55,6 +55,7 @@
                 </div>
                 <div style="font-size:15px;font-weight:700">${esc(a.title)}</div>
                 <div class="muted" style="font-size:13px;margin-top:2px">${esc(a.message)}</div>
+                ${a.asset_code ? `<div style="margin-top:6px;font-size:12px">Vehicle: ${typeof fmtVehicleBadge === 'function' ? fmtVehicleBadge(a) : `<b>${esc(a.asset_display || a.asset_code)}</b>`}</div>` : ''}
               </div>
               <div style="display:flex;gap:6px;flex-wrap:wrap">
                 ${a.tank_id ? `<a class="btn sm" href="#/fuel-tanks">${a.dip_id ? 'Reconcile Dip →' : 'Inspect Tank →'}</a>` : ''}

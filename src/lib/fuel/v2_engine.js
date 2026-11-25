@@ -18,6 +18,7 @@ const { deductStock, restoreStock } = require('./stock');
 const fuelIssue = require('./issue');
 const fuelScope = require('./scope');
 const { hasCap } = require('../auth');
+const { attachVehicleLabels, resolveVehicleIdentity } = require('../vehicle_label');
 
 function currentMonthStr() {
   const d = new Date();
@@ -159,11 +160,22 @@ function checkMeterReading({
     heavyDisplay: heavyDisp,
   } : null;
 
+  const assetIdentity = resolveVehicleIdentity(asset);
+  const assetOut = {
+    id: asset.id,
+    code: asset.code || asset.ec_code,
+    ec_code: assetIdentity.ec_code,
+    registration: assetIdentity.registration || asset.registration,
+    display: assetIdentity.display,
+    category: asset.category,
+    meter_type: meterType,
+  };
+
   if (val == null || isNaN(val) || val <= 0) {
     return {
       found: true,
       ok: true,
-      asset: { id: asset.id, code: asset.code || asset.ec_code, registration: asset.registration, category: asset.category, meter_type: meterType },
+      asset: assetOut,
       previous,
       band,
       consumptionBand: band,
@@ -194,7 +206,7 @@ function checkMeterReading({
     ok,
     warning,
     delta,
-    asset: { id: asset.id, code: asset.code || asset.ec_code, registration: asset.registration, category: asset.category, meter_type: meterType },
+    asset: assetOut,
     previous,
     band,
     consumptionBand: band,
@@ -256,8 +268,9 @@ function listCorrections({
     params.push(site, site);
   }
   if (search) {
-    conds.push('(c.asset_code LIKE ? OR c.reason LIKE ? OR c.project_name LIKE ?)');
-    params.push(`%${search}%`, `%${search}%`, `%${search}%`);
+    const q = `%${search}%`;
+    conds.push("(c.asset_code LIKE ? OR c.reason LIKE ? OR c.project_name LIKE ? OR COALESCE(a.ec_code, '') LIKE ? OR COALESCE(a.registration, '') LIKE ?)");
+    params.push(q, q, q, q, q);
   }
 
   const where = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
@@ -268,6 +281,9 @@ function listCorrections({
            fi.issue_no,
            COALESCE(c.asset_code, fi.asset_code) AS vehicle_code,
            COALESCE(c.asset_code, fi.asset_code) AS asset_code,
+           a.code AS asset_master_code,
+           a.ec_code AS asset_ec_code,
+           a.registration AS asset_registration,
            COALESCE(c.orig_issue_date, fi.issue_date) AS issue_date,
            COALESCE(c.orig_fuel_kind, fi.fuel_type, 'AUTO_DIESEL') AS fuel_kind,
            COALESCE(c.project_name, p.name, 'Central Workshop') AS site_name,
@@ -279,12 +295,20 @@ function listCorrections({
            COALESCE(u2.full_name, u2.username) AS approver_name
       FROM fuel_corrections c
       LEFT JOIN fuel_issues fi ON fi.id = c.fuel_issue_id
+      LEFT JOIN assets a ON a.id = COALESCE(
+        fi.asset_id,
+        (SELECT id FROM assets
+          WHERE UPPER(code) = UPPER(COALESCE(c.asset_code, fi.asset_code))
+             OR UPPER(ec_code) = UPPER(COALESCE(c.asset_code, fi.asset_code))
+             OR UPPER(registration) = UPPER(COALESCE(c.asset_code, fi.asset_code))
+          LIMIT 1)
+      )
       LEFT JOIN projects p ON p.id = COALESCE(c.project_id, fi.target_project_id, fi.project_id)
       LEFT JOIN users u1 ON u1.id = c.requested_by
       LEFT JOIN users u2 ON u2.id = c.approved_by
      ${where}
      ORDER BY CASE WHEN c.status = 'PENDING' THEN 0 ELSE 1 END, c.requested_at DESC
-  `, ...params);
+  `, ...params).map(attachVehicleLabels);
 
   const sites = all(`
     SELECT DISTINCT COALESCE(c.project_code, p.code, CAST(p.id AS TEXT)) AS code,
@@ -626,13 +650,16 @@ function getSiteConsoleData(user, query = {}) {
 
   // Vehicles deployed to this site
   const siteVehicles = (!scope.unassigned && selectedProjectId) ? all(`
-    SELECT DISTINCT a.id, COALESCE(a.code, a.ec_code) AS code, a.registration, a.category, a.current_hours,
+    SELECT DISTINCT a.id, COALESCE(a.code, a.ec_code) AS code, a.ec_code, a.registration, a.category, a.current_hours,
            fa.driver_name, fa.billing_type, fa.start_date
       FROM fleet_asset_assignments fa
       JOIN assets a ON a.id = fa.asset_id
      WHERE fa.project_id = ? AND (fa.end_date IS NULL OR fa.end_date >= date('now', '-60 days'))
      ORDER BY a.code ASC
-  `, selectedProjectId) : [];
+  `, selectedProjectId).map((v) => {
+    const id = resolveVehicleIdentity(v);
+    return { ...v, ec_code: id.ec_code, registration: id.registration || v.registration, display: id.display };
+  }) : [];
 
   // Approved Transport Fuel Requests awaiting pump dispatch for this tank / site
   const pendingPumpRequests = scope.unassigned ? [] : all(`
@@ -640,12 +667,23 @@ function getSiteConsoleData(user, query = {}) {
            COALESCE(p.name, tp.name, 'Central') AS project_name,
            t.name AS target_tank_name,
            t.code AS target_tank_code,
+           a.code AS asset_master_code,
+           a.ec_code AS asset_ec_code,
+           a.registration AS asset_registration,
            COALESCE(u1.full_name, u1.username) AS requester_name,
            COALESCE(u2.full_name, u2.username) AS approver_name
       FROM fuel_requests fr
       LEFT JOIN fuel_tanks t ON t.id = fr.target_tank_id
       LEFT JOIN projects p ON p.id = fr.project_id
       LEFT JOIN projects tp ON tp.id = t.project_id
+      LEFT JOIN assets a ON a.id = COALESCE(
+        fr.asset_id,
+        (SELECT id FROM assets
+          WHERE UPPER(code) = UPPER(fr.asset_code)
+             OR UPPER(ec_code) = UPPER(fr.asset_code)
+             OR UPPER(registration) = UPPER(fr.asset_code)
+          LIMIT 1)
+      )
       LEFT JOIN users u1 ON u1.id = fr.requested_by
       LEFT JOIN users u2 ON u2.id = fr.approved_by
      WHERE fr.status = 'APPROVED'
@@ -660,12 +698,26 @@ function getSiteConsoleData(user, query = {}) {
   // Recent issues from this tank (strictly own tank for scoped pump operators)
   let recentIssues = [];
   if (!scope.unassigned) {
+    const issueAssetJoin = `
+      LEFT JOIN assets a ON a.id = COALESCE(
+        fi.asset_id,
+        (SELECT id FROM assets
+          WHERE UPPER(code) = UPPER(fi.asset_code)
+             OR UPPER(ec_code) = UPPER(fi.asset_code)
+             OR UPPER(registration) = UPPER(fi.asset_code)
+          LIMIT 1)
+      )
+    `;
     if (selectedTankRaw && scope.scoped) {
       recentIssues = all(`
         SELECT fi.*, COALESCE(u.full_name, u.username, fi.driver_name) AS issuer_name,
                fr.request_no,
+               a.code AS asset_master_code,
+               a.ec_code AS asset_ec_code,
+               a.registration AS asset_registration,
                (SELECT status FROM fuel_corrections fc WHERE fc.fuel_issue_id = fi.id ORDER BY fc.requested_at DESC LIMIT 1) AS correction_status
           FROM fuel_issues fi
+          ${issueAssetJoin}
           LEFT JOIN fuel_requests fr ON fr.id = fi.fuel_request_id
           LEFT JOIN users u ON u.id = fi.issued_by
          WHERE (fi.source_tank_id = ? OR fi.bulk_tank_id = ?)
@@ -676,8 +728,12 @@ function getSiteConsoleData(user, query = {}) {
       recentIssues = all(`
         SELECT fi.*, COALESCE(u.full_name, u.username, fi.driver_name) AS issuer_name,
                fr.request_no,
+               a.code AS asset_master_code,
+               a.ec_code AS asset_ec_code,
+               a.registration AS asset_registration,
                (SELECT status FROM fuel_corrections fc WHERE fc.fuel_issue_id = fi.id ORDER BY fc.requested_at DESC LIMIT 1) AS correction_status
           FROM fuel_issues fi
+          ${issueAssetJoin}
           LEFT JOIN fuel_requests fr ON fr.id = fi.fuel_request_id
           LEFT JOIN users u ON u.id = fi.issued_by
          WHERE (fi.source_tank_id = ? OR fi.bulk_tank_id = ? OR (? IS NOT NULL AND COALESCE(fi.target_project_id, fi.project_id) = ?))
@@ -688,8 +744,12 @@ function getSiteConsoleData(user, query = {}) {
       recentIssues = all(`
         SELECT fi.*, COALESCE(u.full_name, u.username, fi.driver_name) AS issuer_name,
                fr.request_no,
+               a.code AS asset_master_code,
+               a.ec_code AS asset_ec_code,
+               a.registration AS asset_registration,
                (SELECT status FROM fuel_corrections fc WHERE fc.fuel_issue_id = fi.id ORDER BY fc.requested_at DESC LIMIT 1) AS correction_status
           FROM fuel_issues fi
+          ${issueAssetJoin}
           LEFT JOIN fuel_requests fr ON fr.id = fi.fuel_request_id
           LEFT JOIN users u ON u.id = fi.issued_by
          WHERE COALESCE(fi.target_project_id, fi.project_id, fi.source_project_id) = ?
@@ -713,15 +773,29 @@ function getSiteConsoleData(user, query = {}) {
   const actorId = user && user.id ? Number(user.id) : null;
   let myCorrections = [];
   if (!scope.unassigned) {
+    const corrAssetJoin = `
+      LEFT JOIN assets a ON a.id = COALESCE(
+        fi.asset_id,
+        (SELECT id FROM assets
+          WHERE UPPER(code) = UPPER(COALESCE(c.asset_code, fi.asset_code))
+             OR UPPER(ec_code) = UPPER(COALESCE(c.asset_code, fi.asset_code))
+             OR UPPER(registration) = UPPER(COALESCE(c.asset_code, fi.asset_code))
+          LIMIT 1)
+      )
+    `;
     if (selectedTankRaw) {
       myCorrections = all(`
         SELECT c.*,
                fi.issue_no,
                COALESCE(c.asset_code, fi.asset_code) AS asset_code,
+               a.code AS asset_master_code,
+               a.ec_code AS asset_ec_code,
+               a.registration AS asset_registration,
                COALESCE(u1.full_name, u1.username, 'Operator') AS requester_name,
                COALESCE(u2.full_name, u2.username) AS approver_name
           FROM fuel_corrections c
           LEFT JOIN fuel_issues fi ON fi.id = c.fuel_issue_id
+          ${corrAssetJoin}
           LEFT JOIN users u1 ON u1.id = c.requested_by
           LEFT JOIN users u2 ON u2.id = c.approved_by
          WHERE (fi.source_tank_id = ? OR fi.bulk_tank_id = ? OR (? IS NOT NULL AND c.requested_by = ?))
@@ -733,10 +807,14 @@ function getSiteConsoleData(user, query = {}) {
         SELECT c.*,
                fi.issue_no,
                COALESCE(c.asset_code, fi.asset_code) AS asset_code,
+               a.code AS asset_master_code,
+               a.ec_code AS asset_ec_code,
+               a.registration AS asset_registration,
                COALESCE(u1.full_name, u1.username, 'Operator') AS requester_name,
                COALESCE(u2.full_name, u2.username) AS approver_name
           FROM fuel_corrections c
           LEFT JOIN fuel_issues fi ON fi.id = c.fuel_issue_id
+          ${corrAssetJoin}
           LEFT JOIN users u1 ON u1.id = c.requested_by
           LEFT JOIN users u2 ON u2.id = c.approved_by
          WHERE (COALESCE(c.project_id, fi.target_project_id, fi.project_id) = ? OR (? IS NOT NULL AND c.requested_by = ?))
@@ -759,14 +837,15 @@ function getSiteConsoleData(user, query = {}) {
     tanks: allTanks,
     allProjects,
     siteVehicles,
-    pendingPumpRequests: pendingPumpRequests.map((r) => ({
+    pendingPumpRequests: pendingPumpRequests.map((r) => attachVehicleLabels({
       ...r,
       is_full_tank: !!r.is_full_tank,
       needs_approval: !!r.needs_approval,
+      exceeds_norm: !!r.exceeds_norm,
     })),
-    recentIssues,
+    recentIssues: recentIssues.map(attachVehicleLabels),
     recentDeliveries,
-    myCorrections,
+    myCorrections: myCorrections.map(attachVehicleLabels),
   };
 }
 
@@ -912,7 +991,8 @@ function getSiteMonthlySheet(projectId, month) {
   const project = pid > 0 ? get('SELECT * FROM projects WHERE id = ?', pid) : { id: 0, code: 'CW', name: 'Central Workshop / Unallocated' };
 
   const issues = all(`
-    SELECT fi.*, COALESCE(a.code, fi.asset_code) AS vehicle_code, a.registration, a.category,
+    SELECT fi.*, COALESCE(a.code, fi.asset_code) AS vehicle_code,
+           a.code AS asset_master_code, a.ec_code AS asset_ec_code, a.registration, a.category,
            t.name AS tank_name
       FROM fuel_issues fi
       LEFT JOIN assets a ON a.id = fi.asset_id
@@ -921,7 +1001,7 @@ function getSiteMonthlySheet(projectId, month) {
        AND substr(fi.issue_date, 1, 7) = ?
        AND COALESCE(fi.target_project_id, fi.project_id, t.project_id, 0) = ?
      ORDER BY fi.asset_code ASC, fi.issue_date ASC
-  `, targetMonth, pid);
+  `, targetMonth, pid).map(attachVehicleLabels);
 
   const byVehicle = new Map();
   for (const i of issues) {
@@ -931,7 +1011,9 @@ function getSiteMonthlySheet(projectId, month) {
         asset_id: i.asset_id,
         asset_code: key,
         code: key,
-        registration: i.registration || i.vehicle_ref || '-',
+        ec_code: i.asset_ec_code || null,
+        registration: i.asset_registration || i.registration || i.vehicle_ref || '-',
+        display: i.asset_display || key,
         category: i.category || '-',
         issue_count: 0,
         total_litres: 0,
@@ -1179,10 +1261,14 @@ function getVehicle360Profile(codeOrId) {
     meterVariance,
   };
 
+  const assetIdentity360 = resolveVehicleIdentity(asset);
   return {
     asset: {
       ...asset,
       code: asset.code || asset.ec_code,
+      ec_code: assetIdentity360.ec_code,
+      registration: assetIdentity360.registration || asset.registration,
+      display: assetIdentity360.display,
       meter_type: meterType,
       current_site: assignment ? (assignment.project_name || assignment.project_code) : (asset.current_site || 'Central Workshop'),
       assignment,
@@ -1480,6 +1566,7 @@ function getConsumptionAnalytics({ fromDate, toDate, projectId, month } = {}) {
   const vehicleAgg = all(`
     SELECT fi.asset_id,
            COALESCE(a.code, a.ec_code, fi.asset_code) AS code,
+           a.ec_code,
            a.registration,
            a.category,
            COALESCE(p.name, 'Central') AS project_name,
@@ -1506,6 +1593,7 @@ function getConsumptionAnalytics({ fromDate, toDate, projectId, month } = {}) {
   const healthRows = [];
 
   for (const v of vehicleAgg) {
+    const vid = resolveVehicleIdentity(v);
     const meterType = inferMeterType(v, v);
     const basis = v.fuel_cons_basis || (meterType === 'KM' ? 'km' : 'hr');
     const displayUnit = basis === 'km' ? 'km/L' : 'L/hr';
@@ -1526,7 +1614,9 @@ function getConsumptionAnalytics({ fromDate, toDate, projectId, month } = {}) {
     healthRows.push({
       asset_id: v.asset_id,
       code: v.code,
-      registration: v.registration,
+      ec_code: vid.ec_code,
+      registration: vid.registration || v.registration,
+      display: vid.display,
       category: v.category || 'Fleet',
       project_name: v.project_name,
       site: v.project_name,

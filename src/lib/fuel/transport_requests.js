@@ -14,11 +14,42 @@
 
 const { get, all, run } = require('../../db');
 const audit = require('../audit');
+const { hasCap } = require('../auth');
+const { attachVehicleLabels, resolveVehicleIdentity } = require('../vehicle_label');
+const fuelScope = require('./scope');
 const v2Engine = require('./v2_engine');
 
 const APPROVAL_OVER_PCT = 0.20;
 const CROSS_CHECK_OVER_PCT = 0.15;
 const CROSS_CHECK_UNDER_PCT = 0.35;
+
+const ASSET_FALLBACK_JOIN = `
+  LEFT JOIN assets a ON a.id = COALESCE(
+    fr.asset_id,
+    (SELECT id FROM assets
+      WHERE UPPER(code) = UPPER(fr.asset_code)
+         OR UPPER(ec_code) = UPPER(fr.asset_code)
+         OR UPPER(registration) = UPPER(fr.asset_code)
+      LIMIT 1)
+  )
+`;
+
+function getApprovalPolicy() {
+  try {
+    const row = get("SELECT value FROM settings WHERE key = 'fuel.require_transport_approval'");
+    const val = String((row && row.value) || 'SITE_ALL').trim().toUpperCase();
+    if (['SITE_ALL', 'ALL', 'OVER_20_PCT'].includes(val)) return val;
+  } catch (_) {}
+  return 'SITE_ALL';
+}
+
+function isTransportActor(actor) {
+  if (!actor) return false;
+  if (Array.isArray(actor.roles) && actor.roles.includes('admin')) return true;
+  const scope = fuelScope.getFuelScope(actor);
+  if (scope.scoped) return false;
+  return hasCap(actor, 'fuel.approve_request', 'fuel.approve', 'fuel.approve_site_request', 'fuel.all_sites');
+}
 
 function httpError(status, message, data = null) {
   const err = new Error(message);
@@ -161,10 +192,16 @@ function calculateRecommendedFuel({
     found: !!resolvedAsset,
     ok: meterOk,
     warning: meterWarning,
-    asset: meterCheck.asset || (resolvedAsset ? {
+    asset: meterCheck.asset ? {
+      ...meterCheck.asset,
+      ec_code: (resolvedAsset && resolvedAsset.ec_code) || meterCheck.asset.ec_code || null,
+      display: resolveVehicleIdentity(resolvedAsset || meterCheck.asset).display,
+    } : (resolvedAsset ? {
       id: resolvedAsset.id,
       code: resolvedAsset.code || resolvedAsset.ec_code,
+      ec_code: resolvedAsset.ec_code || null,
       registration: resolvedAsset.registration,
+      display: resolveVehicleIdentity(resolvedAsset).display,
       category: resolvedAsset.category,
       meter_type: meterType,
     } : null),
@@ -245,12 +282,13 @@ function computeCrossCheck({
 
 function hydrateRequestRow(row) {
   if (!row) return null;
-  return {
+  return attachVehicleLabels({
     ...row,
     is_full_tank: !!row.is_full_tank,
     needs_approval: !!row.needs_approval,
+    exceeds_norm: !!row.exceeds_norm,
     meter_faulty: !!row.meter_faulty,
-  };
+  });
 }
 
 function getRequestById(id) {
@@ -272,12 +310,14 @@ function getRequestById(id) {
            fi.cross_check_status AS linked_cross_check_status,
            fi.total_cost_cents AS linked_total_cost_cents,
            a.category AS asset_category,
+           a.code AS asset_master_code,
+           a.ec_code AS asset_ec_code,
            a.registration AS asset_registration
       FROM fuel_requests fr
       LEFT JOIN fuel_tanks t ON t.id = fr.target_tank_id
       LEFT JOIN projects p ON p.id = fr.project_id
       LEFT JOIN projects tp ON tp.id = t.project_id
-      LEFT JOIN assets a ON a.id = fr.asset_id
+      ${ASSET_FALLBACK_JOIN}
       LEFT JOIN users u1 ON u1.id = fr.requested_by
       LEFT JOIN users u2 ON u2.id = fr.approved_by
       LEFT JOIN users u3 ON u3.id = fr.fulfilled_by
@@ -306,11 +346,6 @@ function createTransportRequest(payload = {}, actor = null) {
     throw httpError(400, 'Current Running Chart meter reading (> 0) is required (or mark Meter Faulty with a reason)');
   }
 
-  const runningChartNo = String(payload.runningChartNo || payload.running_chart_no || '').trim();
-  if (!runningChartNo) {
-    throw httpError(400, 'Running Chart No is required');
-  }
-
   const isFullTank = !!(payload.isFullTank ?? payload.is_full_tank);
   const sourceMode = String(payload.sourceMode || payload.source_mode || 'TANK').toUpperCase() === 'STATION'
     ? 'STATION'
@@ -324,6 +359,13 @@ function createTransportRequest(payload = {}, actor = null) {
     approxKm: payload.approxKm,
     issueDate: payload.issueDate,
   });
+
+  // Road vehicles (KM) require a Running Chart No; heavy site machines (HOURS) allow optional Running Chart / Machine Log #
+  const rawRc = String(payload.runningChartNo || payload.running_chart_no || '').trim();
+  if (!rawRc && calc.meterType !== 'HOURS') {
+    throw httpError(400, 'Running Chart No is required for road vehicles');
+  }
+  const runningChartNo = rawRc || null;
 
   if (!meterFaulty && !calc.ok && !payload.ignoreMeterWarning) {
     throw httpError(400, calc.warning || 'Meter reading cannot go backwards below last recorded reading', {
@@ -375,9 +417,13 @@ function createTransportRequest(payload = {}, actor = null) {
 
   const recLitres = calc.recommendedLitres;
   const exceedsBand = recLitres != null && recLitres > 0 && tripFuelNum != null && tripFuelNum > recLitres * (1 + APPROVAL_OVER_PCT);
-  const needsApproval = exceedsBand ? 1 : 0;
-  // Normal requests (or Full Tank requests without >20% trip override) route straight to Pump Operator queue (APPROVED)
+  const transportActor = isTransportActor(actor);
+  const requestedChannel = transportActor ? 'TRANSPORT' : 'SITE';
+  const policy = getApprovalPolicy();
+  const requiresTransportGate = (policy === 'ALL') || (policy === 'SITE_ALL' && requestedChannel === 'SITE');
+  const needsApproval = (exceedsBand || requiresTransportGate) ? 1 : 0;
   const initialStatus = needsApproval ? 'PENDING' : 'APPROVED';
+  const initialApprovedLitres = initialStatus === 'APPROVED' && !isFullTank && requestedLitres > 0 ? requestedLitres : null;
 
   const reqId = `freq-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
   const reqNo = `FR-${new Date().getFullYear()}-${Math.floor(10000 + Math.random() * 90000)}`;
@@ -389,29 +435,29 @@ function createTransportRequest(payload = {}, actor = null) {
   run(`
     INSERT INTO fuel_requests (
       id, request_no, asset_id, asset_code, project_id, target_tank_id, source_mode, station_name,
-      fuel_type, requested_litres, meter_reading, prev_meter_reading, meter_type,
+      fuel_type, requested_litres, approved_litres, meter_reading, prev_meter_reading, meter_type,
       meter_faulty, meter_fault_reason,
       approx_km, consumption_norm, consumption_basis, recommended_litres, trip_total_fuel,
-      is_full_tank, needs_approval, running_chart_no, driver_name, trip_purpose,
+      is_full_tank, needs_approval, exceeds_norm, requested_channel, running_chart_no, driver_name, trip_purpose,
       reason, notes, status, requested_by, requested_at, approved_by, approved_at
     ) VALUES (
       ?, ?, ?, ?, ?, ?, ?, ?,
-      ?, ?, ?, ?, ?,
+      ?, ?, ?, ?, ?, ?,
       ?, ?,
       ?, ?, ?, ?, ?,
-      ?, ?, ?, ?, ?,
+      ?, ?, ?, ?, ?, ?, ?,
       ?, ?, ?, ?, datetime('now'), ?, CASE WHEN ? = 'APPROVED' THEN datetime('now') ELSE NULL END
     )
   `,
     reqId, reqNo, resolvedAsset ? resolvedAsset.id : null, resolvedCode, projectId,
     targetTank ? targetTank.id : null, sourceMode, stationName,
-    fuelType, requestedLitres, meterFaulty ? null : meterVal, calc.prevMeter, calc.meterType,
+    fuelType, requestedLitres, initialApprovedLitres, meterFaulty ? null : meterVal, calc.prevMeter, calc.meterType,
     meterFaulty ? 1 : 0, meterFaulty ? meterFaultReason : null,
     calc.approxKm || 0, calc.normRate, calc.basis, recLitres, tripFuelNum != null ? round1(tripFuelNum) : null,
-    isFullTank ? 1 : 0, needsApproval, runningChartNo,
+    isFullTank ? 1 : 0, needsApproval, exceedsBand ? 1 : 0, requestedChannel, runningChartNo,
     payload.driverName ? String(payload.driverName).trim() : null,
     payload.tripPurpose ? String(payload.tripPurpose).trim() : null,
-    payload.reason || payload.tripPurpose || `Running Chart ${runningChartNo}`,
+    payload.reason || payload.tripPurpose || (runningChartNo ? `Running Chart ${runningChartNo}` : 'Site Machine Fuel Request'),
     payload.notes ? String(payload.notes).trim() : null,
     initialStatus, actorId,
     initialStatus === 'APPROVED' ? actorId : null,
@@ -428,6 +474,8 @@ function createTransportRequest(payload = {}, actor = null) {
         requestNo: reqNo,
         assetCode: resolvedCode,
         runningChartNo,
+        requestedChannel,
+        exceedsNorm: exceedsBand,
         meterFaulty,
         meterFaultReason,
         approxKm: calc.approxKm,
@@ -441,6 +489,136 @@ function createTransportRequest(payload = {}, actor = null) {
   } catch (_) {}
 
   return getRequestById(reqId);
+}
+
+function reviewTransportRequest(requestId, payload = {}, actor = null) {
+  const actorId = actor && actor.id ? actor.id : 1;
+  const isAdmin = Boolean(actor && Array.isArray(actor.roles) && actor.roles.includes('admin'));
+  const fr = get('SELECT * FROM fuel_requests WHERE id = ?', String(requestId));
+  if (!fr) throw httpError(404, 'Fuel request not found');
+
+  const isApprove = String(payload.action || '').toUpperCase().startsWith('APPROV');
+  const canApproveOver = isAdmin || hasCap(actor, 'fuel.approve_request', 'fuel.approve');
+  const canApproveSite = canApproveOver || hasCap(actor, 'fuel.approve_site_request');
+  if (!canApproveSite) {
+    throw httpError(403, 'You do not have permission to review Transport fuel requests.');
+  }
+
+  if (!isApprove) {
+    if (fr.status === 'FULFILLED') {
+      throw httpError(409, 'Cannot reject a request that has already been fulfilled at the pump');
+    }
+    const rejectionReason = String(payload.rejectionReason ?? payload.reviewNote ?? payload.review_note ?? '').trim() || 'Rejected';
+    run(`
+      UPDATE fuel_requests
+         SET status = 'REJECTED',
+             approved_by = ?,
+             approved_at = datetime('now'),
+             rejection_reason = ?,
+             review_note = ?
+       WHERE id = ?
+    `, actorId, rejectionReason, rejectionReason, fr.id);
+    try {
+      audit.record({ userId: actorId, entity: 'fuel_request', entityId: fr.id, action: 'fuel.request.rejected', reason: rejectionReason });
+    } catch (_) {}
+    return getRequestById(fr.id);
+  }
+
+  if (fr.status === 'FULFILLED') {
+    throw httpError(409, 'This fuel request is already fulfilled');
+  }
+  if (fr.status === 'CANCELLED' || fr.status === 'REJECTED') {
+    throw httpError(409, `Cannot approve a request in status '${fr.status}'`);
+  }
+
+  const exceedsNorm = Boolean(fr.exceeds_norm);
+  if (exceedsNorm && !canApproveOver) {
+    throw httpError(403, 'Over-norm (>20%) requests require Transport Manager, Assistant Transport Manager, or Operations Manager approval.');
+  }
+  if (!isAdmin && Number(fr.requested_by) === Number(actorId) && (exceedsNorm || fr.requested_channel === 'SITE')) {
+    throw httpError(403, 'Segregation of Duties: You cannot self-approve this fuel request.');
+  }
+
+  const rawApproved = payload.approvedLitres ?? payload.approved_litres;
+  let approvedLitres = fr.approved_litres;
+  if (rawApproved !== undefined && rawApproved !== null && rawApproved !== '') {
+    const num = Number(rawApproved);
+    if (!Number.isFinite(num) || num <= 0) {
+      throw httpError(400, 'Approved Litres must be greater than 0');
+    }
+    approvedLitres = round1(num);
+  } else if (!fr.is_full_tank && fr.requested_litres > 0) {
+    approvedLitres = fr.approved_litres || fr.requested_litres;
+  }
+
+  let sourceMode = fr.source_mode || 'TANK';
+  if (payload.sourceMode || payload.source_mode) {
+    sourceMode = String(payload.sourceMode || payload.source_mode).toUpperCase() === 'STATION' ? 'STATION' : 'TANK';
+  }
+
+  let targetTankId = fr.target_tank_id;
+  let stationName = fr.station_name;
+  let projectId = fr.project_id;
+
+  if (sourceMode === 'TANK') {
+    const reqTankId = payload.targetTankId !== undefined ? payload.targetTankId : (payload.sourceTankId !== undefined ? payload.sourceTankId : fr.target_tank_id);
+    if (!reqTankId) {
+      throw httpError(400, 'Target Site Pump / Tank must be selected for TANK source');
+    }
+    const tank = get('SELECT * FROM fuel_tanks WHERE id = ? AND active = 1', String(reqTankId));
+    if (!tank) {
+      throw httpError(404, `Selected fuel tank/pump not found or inactive: ${reqTankId}`);
+    }
+    targetTankId = tank.id;
+    stationName = null;
+    if (payload.targetTankId && String(payload.targetTankId) !== String(fr.target_tank_id || '') && tank.project_id) {
+      projectId = tank.project_id;
+    }
+  } else {
+    const reqStation = String(payload.stationName ?? fr.station_name ?? '').trim();
+    if (!reqStation) {
+      throw httpError(400, 'Filling Station name is required when reassigning to External Filling Station');
+    }
+    stationName = reqStation;
+    targetTankId = null;
+  }
+
+  const reviewNote = payload.reviewNote !== undefined || payload.review_note !== undefined
+    ? (String(payload.reviewNote ?? payload.review_note ?? '').trim() || null)
+    : fr.review_note;
+
+  run(`
+    UPDATE fuel_requests
+       SET status = 'APPROVED',
+           approved_by = ?,
+           approved_at = datetime('now'),
+           approved_litres = ?,
+           source_mode = ?,
+           target_tank_id = ?,
+           station_name = ?,
+           project_id = ?,
+           review_note = ?
+     WHERE id = ?
+  `, actorId, approvedLitres, sourceMode, targetTankId, stationName, projectId, reviewNote, fr.id);
+
+  try {
+    audit.record({
+      userId: actorId,
+      entity: 'fuel_request',
+      entityId: fr.id,
+      action: 'fuel.request.approved',
+      after: {
+        approvedLitres,
+        requestedLitres: fr.requested_litres,
+        sourceMode,
+        targetTankId,
+        stationName,
+        reviewNote,
+      },
+    });
+  } catch (_) {}
+
+  return getRequestById(fr.id);
 }
 
 function listTransportRequests({
@@ -498,19 +676,28 @@ function listTransportRequests({
     params.push(String(tankId));
   }
   if (assetCode) {
-    conds.push('UPPER(fr.asset_code) LIKE UPPER(?)');
-    params.push(`%${String(assetCode).trim()}%`);
+    const q = `%${String(assetCode).trim()}%`;
+    conds.push(`(
+      UPPER(fr.asset_code) LIKE UPPER(?)
+      OR UPPER(COALESCE(a.code, '')) LIKE UPPER(?)
+      OR UPPER(COALESCE(a.ec_code, '')) LIKE UPPER(?)
+      OR UPPER(COALESCE(a.registration, '')) LIKE UPPER(?)
+    )`);
+    params.push(q, q, q, q);
   }
   if (search) {
     const q = `%${String(search).trim()}%`;
     conds.push(`(
       UPPER(fr.request_no) LIKE UPPER(?)
       OR UPPER(fr.asset_code) LIKE UPPER(?)
+      OR UPPER(COALESCE(a.code, '')) LIKE UPPER(?)
+      OR UPPER(COALESCE(a.ec_code, '')) LIKE UPPER(?)
+      OR UPPER(COALESCE(a.registration, '')) LIKE UPPER(?)
       OR UPPER(COALESCE(fr.running_chart_no, '')) LIKE UPPER(?)
       OR UPPER(COALESCE(fr.driver_name, '')) LIKE UPPER(?)
       OR UPPER(COALESCE(fr.trip_purpose, '')) LIKE UPPER(?)
     )`);
-    params.push(q, q, q, q, q);
+    params.push(q, q, q, q, q, q, q, q);
   }
 
   const where = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
@@ -534,12 +721,14 @@ function listTransportRequests({
            fi.cross_check_status AS linked_cross_check_status,
            fi.total_cost_cents AS linked_total_cost_cents,
            a.category AS asset_category,
+           a.code AS asset_master_code,
+           a.ec_code AS asset_ec_code,
            a.registration AS asset_registration
       FROM fuel_requests fr
       LEFT JOIN fuel_tanks t ON t.id = fr.target_tank_id
       LEFT JOIN projects p ON p.id = fr.project_id
       LEFT JOIN projects tp ON tp.id = t.project_id
-      LEFT JOIN assets a ON a.id = fr.asset_id
+      ${ASSET_FALLBACK_JOIN}
       LEFT JOIN users u1 ON u1.id = fr.requested_by
       LEFT JOIN users u2 ON u2.id = fr.approved_by
       LEFT JOIN users u3 ON u3.id = fr.fulfilled_by
@@ -589,7 +778,12 @@ function validateRequestForIssue({
   }
 
   if (fr.status === 'PENDING') {
-    throw httpError(409, `Request ${fr.request_no} is waiting for Manager approval before pump dispatch.`);
+    throw httpError(
+      409,
+      fr.exceeds_norm
+        ? `Request ${fr.request_no} is waiting for Transport/Ops Manager approval (>20% over norm) before pump dispatch.`
+        : `Request ${fr.request_no} is awaiting Transport Section approval before pump dispatch.`
+    );
   }
   if (fr.status === 'REJECTED' || fr.status === 'CANCELLED') {
     throw httpError(409, `Request ${fr.request_no} was ${fr.status.toLowerCase()} and cannot be issued.`);
@@ -639,8 +833,8 @@ function validateRequestForIssue({
   const crossCheck = computeCrossCheck({
     actualLitres: issueLitres,
     recommendedLitres: fr.recommended_litres,
-    tripTotalFuel: fr.trip_total_fuel,
-    requestedLitres: fr.requested_litres,
+    tripTotalFuel: fr.approved_litres || fr.trip_total_fuel,
+    requestedLitres: fr.approved_litres || fr.requested_litres,
     isFullTank: !!fr.is_full_tank,
     prevMeterReading: fr.prev_meter_reading,
     issueMeterReading: effMeterFaulty ? null : (meterReading != null ? meterReading : fr.meter_reading),
@@ -721,11 +915,14 @@ function getCrossCheckReport({
     conds.push(`(
       UPPER(fr.request_no) LIKE UPPER(?)
       OR UPPER(fr.asset_code) LIKE UPPER(?)
+      OR UPPER(COALESCE(a.code, '')) LIKE UPPER(?)
+      OR UPPER(COALESCE(a.ec_code, '')) LIKE UPPER(?)
+      OR UPPER(COALESCE(a.registration, '')) LIKE UPPER(?)
       OR UPPER(COALESCE(fr.running_chart_no, '')) LIKE UPPER(?)
       OR UPPER(COALESCE(fi.issue_no, '')) LIKE UPPER(?)
       OR UPPER(COALESCE(fr.driver_name, '')) LIKE UPPER(?)
     )`);
-    params.push(q, q, q, q, q);
+    params.push(q, q, q, q, q, q, q, q);
   }
 
   const where = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
@@ -735,9 +932,13 @@ function getCrossCheckReport({
     SELECT fr.id AS request_id,
            fr.request_no,
            fr.status AS request_status,
+           fr.requested_channel,
+           fr.exceeds_norm,
            fr.asset_id,
            fr.asset_code,
            a.category AS asset_category,
+           a.code AS asset_master_code,
+           a.ec_code AS asset_ec_code,
            a.registration AS asset_registration,
            COALESCE(p.name, tp.name, 'Central') AS project_name,
            COALESCE(fr.project_id, t.project_id) AS project_id,
@@ -758,6 +959,8 @@ function getCrossCheckReport({
            fr.recommended_litres,
            fr.trip_total_fuel,
            fr.requested_litres,
+           fr.approved_litres,
+           fr.review_note,
            fr.is_full_tank,
            fr.requested_at,
            COALESCE(u1.full_name, u1.username) AS requester_name,
@@ -779,7 +982,7 @@ function getCrossCheckReport({
       LEFT JOIN fuel_tanks t ON t.id = COALESCE(fi.source_tank_id, fr.target_tank_id)
       LEFT JOIN projects p ON p.id = fr.project_id
       LEFT JOIN projects tp ON tp.id = t.project_id
-      LEFT JOIN assets a ON a.id = fr.asset_id
+      ${ASSET_FALLBACK_JOIN}
       LEFT JOIN users u1 ON u1.id = fr.requested_by
       LEFT JOIN users u2 ON u2.id = fi.issued_by
      ${where}
@@ -815,9 +1018,10 @@ function getCrossCheckReport({
   }
 
   return {
-    rows: rows.map((r) => ({
+    rows: rows.map((r) => attachVehicleLabels({
       ...r,
       is_full_tank: !!r.is_full_tank,
+      exceeds_norm: !!r.exceeds_norm,
       meter_faulty: !!(r.issue_meter_faulty || r.request_meter_faulty),
       meter_fault_reason: r.issue_meter_fault_reason || r.request_meter_fault_reason || null,
     })),
@@ -850,7 +1054,9 @@ async function buildCrossCheckWorkbook(report) {
     { header: 'Status', key: 'request_status', width: 13 },
     { header: 'Site / Project', key: 'project_name', width: 22 },
     { header: 'Pump / Station', key: 'pump_or_station', width: 22 },
-    { header: 'Vehicle / Machine', key: 'asset_code', width: 16 },
+    { header: 'E&C No', key: 'asset_ec_code', width: 14 },
+    { header: 'Vehicle Reg No', key: 'asset_registration', width: 16 },
+    { header: 'Vehicle Display', key: 'asset_display', width: 22 },
     { header: 'Running Chart No', key: 'running_chart_no', width: 18 },
     { header: 'Driver', key: 'driver_name', width: 18 },
     { header: 'Prev Meter', key: 'prev_meter_reading', width: 12 },
@@ -860,6 +1066,7 @@ async function buildCrossCheckWorkbook(report) {
     { header: 'Approx KM/Hr', key: 'approx_km', width: 13 },
     { header: 'Recommended (L)', key: 'recommended_litres', width: 15 },
     { header: 'Trip Requested (L)', key: 'requested_litres', width: 16 },
+    { header: 'Approved (L)', key: 'approved_litres', width: 14 },
     { header: 'Full Tank?', key: 'full_tank_label', width: 11 },
     { header: 'Issue No', key: 'issue_no', width: 16 },
     { header: 'Actual Issued (L)', key: 'actual_litres', width: 16 },
@@ -876,8 +1083,9 @@ async function buildCrossCheckWorkbook(report) {
   headerRow.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF0F172A' } };
 
   for (const r of report.rows || []) {
+    const labeled = attachVehicleLabels(r);
     const row = ws.addRow({
-      ...r,
+      ...labeled,
       meter_faulty_label: r.meter_faulty ? 'FAULTY' : 'OK',
       full_tank_label: r.is_full_tank ? 'FULL TANK' : 'FIXED',
       issue_or_req_date: r.issue_date || r.requested_at || '',
@@ -902,6 +1110,7 @@ module.exports = {
   calculateRecommendedFuel,
   computeCrossCheck,
   createTransportRequest,
+  reviewTransportRequest,
   listTransportRequests,
   getRequestById,
   validateRequestForIssue,

@@ -21,6 +21,8 @@ const fuelScope = require('../lib/fuel/scope');
 const ceypetcoSync = require('../lib/fuel/ceypetco_sync');
 const fuelReprice = require('../lib/fuel/reprice');
 const audit = require('../lib/audit');
+const emitter = require('../lib/emitter');
+const { attachVehicleLabels, resolveVehicleIdentity } = require('../lib/vehicle_label');
 
 function currentMonthStr() {
   const d = new Date();
@@ -80,22 +82,25 @@ router.get(
   requireAuth,
   fuelScope.requireFuelAccess({ sections: 'fuel', level: 'view', caps: ['fuel.view', 'fuel.console.view', 'fuel.issue'] }),
   asyncHandler(async (req, res) => {
-    const issue = get(`
+    const rawIssue = get(`
       SELECT fi.*, t.name AS tank_name, sp.name AS source_project_name,
              COALESCE(tp.name, p.name) AS target_project_name,
+             a.code AS asset_master_code, a.ec_code AS asset_ec_code, a.registration AS asset_registration,
              COALESCE(u.full_name, u.username) AS issuer_name, COALESCE(vu.full_name, vu.username) AS voider_name
         FROM fuel_issues fi
         LEFT JOIN fuel_tanks t ON t.id = COALESCE(fi.source_tank_id, fi.bulk_tank_id)
         LEFT JOIN projects sp ON sp.id = fi.source_project_id
         LEFT JOIN projects tp ON tp.id = fi.target_project_id
         LEFT JOIN projects p ON p.id = COALESCE(fi.project_id, t.project_id)
+        LEFT JOIN assets a ON a.id = fi.asset_id
         LEFT JOIN users u ON u.id = fi.issued_by
         LEFT JOIN users vu ON vu.id = fi.voided_by
        WHERE fi.id = ?
     `, req.params.id);
 
-    if (!issue) return res.status(404).json({ error: 'Fuel issue not found' });
-    fuelScope.assertIssueInScope(req.user, issue, 'view this fuel issue');
+    if (!rawIssue) return res.status(404).json({ error: 'Fuel issue not found' });
+    fuelScope.assertIssueInScope(req.user, rawIssue, 'view this fuel issue');
+    const issue = attachVehicleLabels(rawIssue);
 
     const corrections = all(`
       SELECT c.*, COALESCE(req.full_name, req.username) AS requester_name, COALESCE(app.full_name, app.username) AS approver_name
@@ -170,6 +175,12 @@ router.post(
     } catch (_) {}
 
     res.status(201).json(issue);
+    try {
+      emitter.emit('fuel_issue_updated', { action: 'created', id: issue.id, tankId: targetTankId });
+      if (issue.fuel_request_id) {
+        emitter.emit('fuel_request_updated', { action: 'fulfilled', id: issue.fuel_request_id, status: 'FULFILLED', targetTankId });
+      }
+    } catch (_) {}
   })
 );
 
@@ -202,6 +213,12 @@ router.post(
     } catch (_) {}
 
     res.json(result);
+    try {
+      emitter.emit('fuel_issue_updated', { action: 'voided', id: req.params.id });
+      if (existing.fuel_request_id) {
+        emitter.emit('fuel_request_updated', { action: 'reopened', id: existing.fuel_request_id, status: 'APPROVED' });
+      }
+    } catch (_) {}
   })
 );
 
@@ -340,17 +357,70 @@ router.get(
       ? (scope.projectId != null ? rawProjects.filter((p) => Number(p.id) === Number(scope.projectId)) : [])
       : rawProjects;
 
-    const vehicles = all(`
-      SELECT a.id, COALESCE(a.code, a.ec_code) AS code, a.registration, a.category, a.type,
+    const rawVehicles = all(`
+      SELECT a.id, COALESCE(a.code, a.ec_code) AS code, a.ec_code, a.registration, a.category, a.type,
              a.current_hours, a.current_project_id, COALESCE(p.name, 'Central') AS current_site
         FROM assets a
         LEFT JOIN projects p ON p.id = a.current_project_id
        WHERE a.status != 'DISPOSED'
        ORDER BY a.code ASC
-       LIMIT 1000
+       LIMIT 3000
     `);
+    const vehicles = rawVehicles.map((v) => {
+      const id = resolveVehicleIdentity(v);
+      return {
+        ...v,
+        ec_code: id.ec_code,
+        registration: id.registration || v.registration,
+        display: id.display,
+      };
+    });
 
     res.json({ tanks, projects, vehicles, fuelScope: scope });
+  })
+);
+
+router.get(
+  '/requests/pending-counts',
+  requireAuth,
+  fuelScope.requireFuelAccess({
+    sections: ['fuel_transport', 'fuel'],
+    level: 'view',
+    caps: ['fuel.transport.view', 'fuel.transport.request', 'fuel.view', 'fuel.console.view', 'fuel.issue'],
+  }),
+  asyncHandler(async (req, res) => {
+    const scope = fuelScope.getFuelScope(req.user);
+    let condSql = '';
+    const params = [];
+    if (scope.scoped) {
+      if (Array.isArray(scope.allowedTankIds) && scope.allowedTankIds.length > 0 && scope.projectId != null) {
+        const marks = scope.allowedTankIds.map(() => '?').join(',');
+        condSql = `AND (target_tank_id IN (${marks}) OR (target_tank_id IS NULL AND project_id = ?))`;
+        params.push(...scope.allowedTankIds, Number(scope.projectId));
+      } else if (Array.isArray(scope.allowedTankIds) && scope.allowedTankIds.length > 0) {
+        const marks = scope.allowedTankIds.map(() => '?').join(',');
+        condSql = `AND target_tank_id IN (${marks})`;
+        params.push(...scope.allowedTankIds);
+      } else if (scope.projectId != null) {
+        condSql = 'AND project_id = ?';
+        params.push(Number(scope.projectId));
+      } else {
+        return res.json({ pendingTransport: 0, pendingOverNorm: 0, approvedPump: 0 });
+      }
+    }
+    const row = get(`
+      SELECT
+        SUM(CASE WHEN status = 'PENDING' THEN 1 ELSE 0 END) AS pendingTransport,
+        SUM(CASE WHEN status = 'PENDING' AND COALESCE(exceeds_norm, 0) = 1 THEN 1 ELSE 0 END) AS pendingOverNorm,
+        SUM(CASE WHEN status = 'APPROVED' THEN 1 ELSE 0 END) AS approvedPump
+      FROM fuel_requests
+      WHERE 1 = 1 ${condSql}
+    `, ...params) || {};
+    res.json({
+      pendingTransport: Number(row.pendingTransport || 0),
+      pendingOverNorm: Number(row.pendingOverNorm || 0),
+      approvedPump: Number(row.approvedPump || 0),
+    });
   })
 );
 
@@ -436,6 +506,17 @@ router.post(
 
     const created = transportRequests.createTransportRequest(body, req.user);
     res.status(201).json(created);
+    try {
+      emitter.emit('fuel_request_updated', {
+        action: 'created',
+        id: created.id,
+        requestNo: created.request_no,
+        status: created.status,
+        projectId: created.project_id,
+        targetTankId: created.target_tank_id,
+        requestedChannel: created.requested_channel,
+      });
+    } catch (_) {}
   })
 );
 
@@ -445,10 +526,10 @@ router.post(
   fuelScope.requireFuelAccess({
     sections: ['fuel_transport', 'fuel'],
     level: 'edit',
-    caps: ['fuel.approve_request', 'fuel.approve'],
+    caps: ['fuel.approve_request', 'fuel.approve_site_request', 'fuel.approve'],
   }),
   asyncHandler(async (req, res) => {
-    const { action, rejectionReason, sourceTankId, dispenseNow, litres, meterReading, pumpLocation, issueDate } = req.body;
+    const { action, sourceTankId, targetTankId, dispenseNow, litres, meterReading, pumpLocation, issueDate } = req.body;
     const fr = get('SELECT * FROM fuel_requests WHERE id = ?', req.params.id);
     if (!fr) return res.status(404).json({ error: 'Fuel request not found' });
 
@@ -461,68 +542,65 @@ router.post(
     const isAdmin = req.user && (req.user.roles || []).includes('admin');
     const isApprove = String(action || '').toUpperCase().startsWith('APPROV');
 
+    const updatedReq = transportRequests.reviewTransportRequest(fr.id, req.body, req.user);
     if (!isApprove) {
-      if (fr.status === 'FULFILLED') {
-        return res.status(409).json({ error: 'Cannot reject a request that has already been fulfilled at the pump' });
-      }
-      run(`
-        UPDATE fuel_requests
-           SET status = 'REJECTED', approved_by = ?, approved_at = datetime('now'), rejection_reason = ?
-         WHERE id = ?
-      `, actorId, rejectionReason || 'Rejected', fr.id);
+      res.json(updatedReq);
       try {
-        audit.record({ userId: actorId, entity: 'fuel_request', entityId: fr.id, action: 'fuel.request.rejected', reason: rejectionReason || 'Rejected' });
+        emitter.emit('fuel_request_updated', {
+          action: 'rejected',
+          id: fr.id,
+          status: updatedReq.status,
+          projectId: updatedReq.project_id,
+          targetTankId: updatedReq.target_tank_id,
+        });
       } catch (_) {}
-      return res.json(transportRequests.getRequestById(fr.id));
+      return;
     }
-
-    if (fr.status === 'FULFILLED') {
-      return res.status(409).json({ error: 'This fuel request is already fulfilled' });
-    }
-
-    run(`
-      UPDATE fuel_requests
-         SET status = 'APPROVED', approved_by = ?, approved_at = datetime('now')
-       WHERE id = ?
-    `, actorId, fr.id);
-
-    try {
-      audit.record({ userId: actorId, entity: 'fuel_request', entityId: fr.id, action: 'fuel.request.approved' });
-    } catch (_) {}
 
     let issued = null;
     if (dispenseNow) {
       if (!isAdmin && !hasCap(req.user, 'fuel.issue')) {
         return res.status(403).json({ error: 'Your role can approve requests to the pump queue, but cannot dispense fuel directly.' });
       }
-      const qty = Number(litres != null ? litres : fr.requested_litres);
+      const qty = Number(litres != null ? litres : (updatedReq.approved_litres || updatedReq.requested_litres));
       if (!Number.isFinite(qty) || qty <= 0) {
         return res.status(400).json({ error: 'Actual dispensed litres (> 0) is required to dispense immediately (or approve to pump queue first)' });
       }
-      const effTankId = sourceTankId || (fr.source_mode === 'TANK' ? fr.target_tank_id : null);
+      const effTankId = sourceTankId || targetTankId || (updatedReq.source_mode === 'TANK' ? updatedReq.target_tank_id : null);
       if (scope.scoped) {
         fuelScope.assertTankInScope(req.user, effTankId, 'dispense fuel from this tank');
       }
       issued = fuelIssue.recordIssue({
-        fuelRequestId: fr.id,
-        assetCode: fr.asset_code,
+        fuelRequestId: updatedReq.id,
+        assetCode: updatedReq.asset_code,
         litres: qty,
-        fuelType: fr.fuel_type || 'AUTO_DIESEL',
-        meterReading: meterReading != null ? meterReading : fr.meter_reading,
-        meterType: fr.meter_type || 'HOURS',
-        meterFaulty: req.body.meterFaulty !== undefined ? !!req.body.meterFaulty : !!fr.meter_faulty,
-        meterFaultReason: req.body.meterFaultReason || fr.meter_fault_reason || null,
+        fuelType: updatedReq.fuel_type || 'AUTO_DIESEL',
+        meterReading: meterReading != null ? meterReading : updatedReq.meter_reading,
+        meterType: updatedReq.meter_type || 'HOURS',
+        meterFaulty: req.body.meterFaulty !== undefined ? !!req.body.meterFaulty : !!updatedReq.meter_faulty,
+        meterFaultReason: req.body.meterFaultReason || updatedReq.meter_fault_reason || null,
         sourceTankId: effTankId,
-        targetProjectId: fr.project_id || null,
-        driverName: fr.driver_name || null,
-        stationName: fr.station_name || null,
+        targetProjectId: updatedReq.project_id || null,
+        driverName: updatedReq.driver_name || null,
+        stationName: updatedReq.station_name || null,
         pumpLocation: pumpLocation || null,
         issueDate: issueDate || null,
         allowSiteTransfer: isAdmin || hasCap(req.user, 'fuel.transfer'),
       }, actorId);
     }
 
-    res.json({ request: transportRequests.getRequestById(fr.id), issued });
+    const finalReq = transportRequests.getRequestById(fr.id);
+    res.json({ request: finalReq, issued });
+    try {
+      emitter.emit('fuel_request_updated', {
+        action: issued ? 'fulfilled' : 'approved',
+        id: fr.id,
+        status: finalReq.status,
+        projectId: finalReq.project_id,
+        targetTankId: finalReq.target_tank_id,
+      });
+      if (issued) emitter.emit('fuel_issue_updated', { action: 'created', id: issued.id, tankId: issued.source_tank_id });
+    } catch (_) {}
   })
 );
 
@@ -549,7 +627,7 @@ router.post(
       fuelScope.assertTankInScope(req.user, effTankId, 'dispense fuel from this tank');
     }
 
-    const qty = Number(body.litres != null ? body.litres : (!fr.is_full_tank ? fr.requested_litres : 0));
+    const qty = Number(body.litres != null ? body.litres : (!fr.is_full_tank ? (fr.approved_litres || fr.requested_litres) : 0));
     if (!Number.isFinite(qty) || qty <= 0) {
       return res.status(400).json({ error: 'Actual dispensed fuel quantity (litres > 0) must be entered after filling' });
     }
@@ -613,6 +691,10 @@ router.post(
       issue,
       request: transportRequests.getRequestById(fr.id),
     });
+    try {
+      emitter.emit('fuel_request_updated', { action: 'fulfilled', id: fr.id, status: 'FULFILLED', targetTankId: effTankId, projectId: fr.project_id });
+      emitter.emit('fuel_issue_updated', { action: 'created', id: issue.id, tankId: effTankId });
+    } catch (_) {}
   })
 );
 
@@ -622,7 +704,7 @@ router.post(
   fuelScope.requireFuelAccess({
     sections: ['fuel_transport', 'fuel'],
     level: 'edit',
-    caps: ['fuel.transport.request', 'fuel.request', 'fuel.approve_request'],
+    caps: ['fuel.transport.request', 'fuel.request', 'fuel.approve_request', 'fuel.approve_site_request'],
   }),
   asyncHandler(async (req, res) => {
     const fr = get('SELECT * FROM fuel_requests WHERE id = ?', req.params.id);
@@ -644,7 +726,11 @@ router.post(
     try {
       audit.record({ userId: actorId, entity: 'fuel_request', entityId: fr.id, action: 'fuel.request.cancelled', reason: (req.body && req.body.reason) || 'Cancelled' });
     } catch (_) {}
-    res.json(transportRequests.getRequestById(fr.id));
+    const cancelled = transportRequests.getRequestById(fr.id);
+    res.json(cancelled);
+    try {
+      emitter.emit('fuel_request_updated', { action: 'cancelled', id: fr.id, status: 'CANCELLED', projectId: fr.project_id, targetTankId: fr.target_tank_id });
+    } catch (_) {}
   })
 );
 
@@ -749,6 +835,12 @@ router.post(
       allowSiteTransfer: isAdmin || hasCap(req.user, 'fuel.transfer'),
     }, actorId);
     res.status(201).json(issue);
+    try {
+      emitter.emit('fuel_issue_updated', { action: 'created', id: issue.id, tankId: targetTankId });
+      if (issue.fuel_request_id) {
+        emitter.emit('fuel_request_updated', { action: 'fulfilled', id: issue.fuel_request_id, status: 'FULFILLED', targetTankId });
+      }
+    } catch (_) {}
   })
 );
 
@@ -1078,7 +1170,7 @@ router.get(
   asyncHandler(async (req, res) => {
     const { search = '', category = '', site = '' } = req.query;
     const rows = all(`
-      SELECT a.id, COALESCE(a.code, a.ec_code) AS code, a.registration, a.category, a.type, a.status,
+      SELECT a.id, COALESCE(a.code, a.ec_code) AS code, a.ec_code, a.registration, a.category, a.type, a.status,
              a.current_hours, COALESCE(p.name, 'Central') AS current_site,
              r.fuel_cons_econ, r.fuel_cons_typ, r.fuel_cons_heavy, r.fuel_cons_basis,
              r.dry_rate_cents, r.wet_rate_cents, r.default_basis,
@@ -1103,13 +1195,22 @@ router.get(
         ) f ON f.asset_id = a.id
        WHERE a.status != 'DISPOSED'
        ORDER BY COALESCE(f.total_litres, 0) DESC, a.code ASC
-    `);
+    `).map((v) => {
+      const id = resolveVehicleIdentity(v);
+      return {
+        ...v,
+        ec_code: id.ec_code,
+        registration: id.registration || v.registration,
+        display: id.display,
+      };
+    });
 
     let filtered = rows;
     if (search) {
       const q = v2Engine.squashCode(search);
       filtered = filtered.filter((r) =>
         v2Engine.squashCode(r.code).includes(q) ||
+        v2Engine.squashCode(r.ec_code).includes(q) ||
         v2Engine.squashCode(r.registration).includes(q) ||
         String(r.category || '').toUpperCase().includes(q)
       );
@@ -1571,6 +1672,8 @@ router.get(
     const vehicleStats = all(`
       SELECT fi.asset_id,
              COALESCE(a.code, fi.asset_code) AS asset_code,
+             a.code AS asset_master_code,
+             a.ec_code AS asset_ec_code,
              a.registration,
              a.category,
              COUNT(*) AS slip_count,
@@ -1595,7 +1698,7 @@ router.get(
        WHERE fi.is_voided = 0 AND fi.issue_date BETWEEN ? AND ?
        GROUP BY fi.asset_id, COALESCE(a.code, fi.asset_code)
        ORDER BY total_litres DESC
-    `, fromDate, toDate);
+    `, fromDate, toDate).map(attachVehicleLabels);
 
     const siteStats = all(`
       SELECT COALESCE(p.id, 0) AS project_id,
@@ -1886,6 +1989,32 @@ router.get(
               asset_id: entry.asset_id,
               asset_code: entry.asset_code,
             });
+          }
+        }
+      }
+    } catch (_) {}
+
+    // Enrich vehicle alerts with dual E&C + Vehicle Reg labels
+    try {
+      const assetRows = all('SELECT id, code, ec_code, registration FROM assets WHERE status != ?', 'DISPOSED');
+      const byId = new Map();
+      const byKey = new Map();
+      for (const a of assetRows) {
+        const info = { ...a, ...resolveVehicleIdentity(a) };
+        byId.set(Number(a.id), info);
+        for (const k of [a.code, a.ec_code, a.registration]) {
+          if (k) byKey.set(String(k).trim().toUpperCase(), info);
+        }
+      }
+      for (const al of alerts) {
+        const match = (al.asset_id && byId.get(Number(al.asset_id)))
+          || (al.asset_code && byKey.get(String(al.asset_code).trim().toUpperCase()));
+        if (match) {
+          al.asset_ec_code = match.ec_code;
+          al.asset_registration = match.registration;
+          al.asset_display = match.display;
+          if (al.asset_code && al.title && al.asset_display && al.asset_display !== al.asset_code) {
+            al.title = al.title.replace(al.asset_code, al.asset_display);
           }
         }
       }

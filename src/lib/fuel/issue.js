@@ -13,6 +13,7 @@
 
 const { get, all, run, tx } = require('../../db');
 const { deductStock, restoreStock } = require('./stock');
+const { attachVehicleLabels } = require('../vehicle_label');
 const identity = require('../fleet_identity');
 
 const DEFAULT_PRICES_CENTS = {
@@ -455,8 +456,14 @@ function listIssues({
   }
 
   if (assetCode) {
-    conditions.push('(UPPER(fi.asset_code) LIKE UPPER(?) OR UPPER(fi.vehicle_ref) LIKE UPPER(?))');
-    params.push(`%${assetCode}%`, `%${assetCode}%`);
+    conditions.push(`(
+      UPPER(fi.asset_code) LIKE UPPER(?)
+      OR UPPER(COALESCE(fi.vehicle_ref, '')) LIKE UPPER(?)
+      OR UPPER(COALESCE(a.code, '')) LIKE UPPER(?)
+      OR UPPER(COALESCE(a.ec_code, '')) LIKE UPPER(?)
+      OR UPPER(COALESCE(a.registration, '')) LIKE UPPER(?)
+    )`);
+    params.push(`%${assetCode}%`, `%${assetCode}%`, `%${assetCode}%`, `%${assetCode}%`, `%${assetCode}%`);
   }
 
   if (tankId) {
@@ -497,13 +504,41 @@ function listIssues({
   }
 
   if (search) {
-    conditions.push('(fi.issue_no LIKE ? OR fi.driver_name LIKE ? OR fi.asset_code LIKE ? OR fi.vehicle_ref LIKE ? OR fi.station_name LIKE ?)');
-    params.push(`%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`);
+    conditions.push(`(
+      fi.issue_no LIKE ?
+      OR fi.driver_name LIKE ?
+      OR fi.asset_code LIKE ?
+      OR fi.vehicle_ref LIKE ?
+      OR fi.station_name LIKE ?
+      OR UPPER(COALESCE(a.code, '')) LIKE UPPER(?)
+      OR UPPER(COALESCE(a.ec_code, '')) LIKE UPPER(?)
+      OR UPPER(COALESCE(a.registration, '')) LIKE UPPER(?)
+    )`);
+    params.push(
+      `%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`,
+      `%${search}%`, `%${search}%`, `%${search}%`
+    );
   }
+
+  const assetJoinSql = `
+    LEFT JOIN assets a ON a.id = COALESCE(
+      fi.asset_id,
+      (SELECT id FROM assets
+        WHERE UPPER(code) = UPPER(fi.asset_code)
+           OR UPPER(ec_code) = UPPER(fi.asset_code)
+           OR UPPER(registration) = UPPER(fi.asset_code)
+        LIMIT 1)
+    )
+  `;
 
   const whereClause = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
 
-  const countRow = get(`SELECT COUNT(*) AS total FROM fuel_issues fi ${whereClause}`, ...params);
+  const countRow = get(`
+    SELECT COUNT(*) AS total
+      FROM fuel_issues fi
+      ${assetJoinSql}
+     ${whereClause}
+  `, ...params);
   const total = countRow ? countRow.total : 0;
 
   const rows = all(`
@@ -520,8 +555,12 @@ function listIssues({
            fr.request_no,
            sp.name AS source_project_name,
            COALESCE(tp.name, p.name, sp.name) AS target_project_name,
+           a.code AS asset_master_code,
+           a.ec_code AS asset_ec_code,
+           a.registration AS asset_registration,
            (SELECT status FROM fuel_corrections fc WHERE fc.fuel_issue_id = fi.id ORDER BY fc.requested_at DESC LIMIT 1) AS correction_status
       FROM fuel_issues fi
+      ${assetJoinSql}
       LEFT JOIN fuel_requests fr ON fr.id = fi.fuel_request_id
       LEFT JOIN fuel_tanks t ON t.id = COALESCE(fi.source_tank_id, fi.bulk_tank_id)
       LEFT JOIN projects sp ON sp.id = fi.source_project_id
@@ -532,7 +571,7 @@ function listIssues({
      LIMIT ? OFFSET ?
   `, ...params, Number(limit), Number(offset));
 
-  return { total, rows, limit: Number(limit), offset: Number(offset) };
+  return { total, rows: rows.map(attachVehicleLabels), limit: Number(limit), offset: Number(offset) };
 }
 
 module.exports = {

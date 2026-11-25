@@ -1325,6 +1325,22 @@ function migrate() {
     console.warn('Migration 078 Stage C Operational Efficiency & Compliance skipped:', err.message);
   }
 
+  // Site-to-Transport Fuel Approval Gate, Tiered Transport Roles & Dual Vehicle Hygiene (Migration 079)
+  try {
+    const reqCols = db.prepare('PRAGMA table_info(fuel_requests)').all().map((c) => c.name);
+    const missingApprovedLitres = reqCols.length > 0 && !reqCols.includes('approved_litres');
+    const needs079 = !db.prepare("SELECT 1 FROM settings WHERE key = 'migration_079_done'").get() || missingApprovedLitres;
+    if (needs079) {
+      const r079 = require('../migrate/079_transport_fuel_approval_and_dual_vehicle').runMigration(db);
+      db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('migration_079_done', '1')").run();
+      if (r079 && ((r079.addedColumns && r079.addedColumns.length) || r079.assetFixed || r079.capsGranted || r079.permsGranted)) {
+        console.log('=== Migration 079 Completed:', JSON.stringify(r079), '===');
+      }
+    }
+  } catch (err) {
+    console.warn('Migration 079 Transport Fuel Approval & Dual Vehicle skipped:', err.message);
+  }
+
   return db;
 }
 

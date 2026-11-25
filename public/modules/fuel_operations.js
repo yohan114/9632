@@ -69,6 +69,23 @@
     return map[v] || `<span class="badge">${esc(v || '—')}</span>`;
   }
 
+  function vehBadge(r, opts) {
+    if (typeof window.fmtVehicleBadge === 'function') return window.fmtVehicleBadge(r, opts);
+    return `<b>${esc((r && (r.asset_display || r.asset_code || r.code)) || '—')}</b>`;
+  }
+
+  function vehText(r) {
+    if (typeof window.fmtVehicleText === 'function') return window.fmtVehicleText(r);
+    return (r && (r.asset_display || r.asset_code || r.code)) || '—';
+  }
+
+  function canApproveFuelReq(r) {
+    if (typeof isAdmin === 'function' && isAdmin()) return true;
+    const overOk = typeof canDo === 'function' && canDo('fuel.approve_request', 'fuel.approve');
+    if (r && r.exceeds_norm) return overOk;
+    return overOk || (typeof canDo === 'function' && canDo('fuel.approve_site_request'));
+  }
+
   // Shared modal to submit a Fuel Issue Adjustment / Correction
   window.openFuelCorrectionModal = function (issue, onDone) {
     const modal = document.createElement('div');
@@ -88,7 +105,7 @@
           <span class="badge">${esc(issue.issue_no || issue.id)}</span>
         </div>
         <div class="card" style="padding:10px 12px;margin-bottom:14px;background:rgba(37,99,235,0.06);font-size:12px">
-          <b>Vehicle:</b> ${esc(issue.asset_code || '—')} &nbsp;|&nbsp;
+          <b>Vehicle (E&amp;C · Reg):</b> ${vehBadge(issue)} &nbsp;|&nbsp;
           <b>Current Litres:</b> ${curLitres} L &nbsp;|&nbsp;
           <b>Rate:</b> ${fmtRateRs(curRateCents)} &nbsp;|&nbsp;
           <b>Meter:</b> ${curMeter !== '' ? curMeter : '—'} &nbsp;|&nbsp;
@@ -255,7 +272,7 @@
             </div>
             <select id="fi_request_id" class="input" style="width:100%">
               <option value="">-- Select Approved Request (${approvedReqs.length} awaiting pump) --</option>
-              ${approvedReqs.map((r) => `<option value="${esc(r.id)}" ${defaults.requestId === r.id ? 'selected' : ''}>${esc(r.request_no)} · ${esc(r.asset_code)} · RC:${esc(r.running_chart_no || '—')} · ${r.is_full_tank ? 'FULL TANK' : fmtNum(r.requested_litres, 1) + 'L'} (${esc(r.project_name || 'Central')})</option>`).join('')}
+              ${approvedReqs.map((r) => `<option value="${esc(r.id)}" ${defaults.requestId === r.id ? 'selected' : ''}>${esc(r.request_no)} · ${esc(vehText(r))} · RC:${esc(r.running_chart_no || 'Site Log')} · ${r.is_full_tank ? 'FULL TANK' : fmtNum(r.approved_litres || r.requested_litres, 1) + 'L'} (${esc(r.project_name || 'Central')})</option>`).join('')}
             </select>
             <div id="fi_req_meta" class="muted" style="font-size:11.5px;margin-top:5px"></div>
           </div>
@@ -501,12 +518,12 @@
         } else if (res.warning) {
           banner.style.background = 'rgba(245,158,11,0.12)';
           banner.style.border = '1px solid #d97706';
-          banner.innerHTML = `⚠️ <b>Meter Spike Notice:</b> ${esc(res.warning)}<br><span>✅ <b>${esc(res.asset.code)}</b> (${esc(res.asset.registration || res.asset.category || '')}) · ${prevTxt}${deltaTxt}${bandTxt}</span>`;
+          banner.innerHTML = `⚠️ <b>Meter Spike Notice:</b> ${esc(res.warning)}<br><span>✅ ${vehBadge(res.asset)} <span class="muted">(${esc(res.asset.category || '')})</span> · ${prevTxt}${deltaTxt}${bandTxt}</span>`;
           overrideWrap.style.display = 'none';
         } else {
           banner.style.background = 'rgba(16,185,129,0.1)';
           banner.style.border = '1px solid rgba(16,185,129,0.35)';
-          banner.innerHTML = `✅ <b>${esc(res.asset.code)}</b> (${esc(res.asset.registration || 'No Reg')} · ${esc(res.asset.category || '')}) &nbsp;|&nbsp; ${prevTxt}${deltaTxt}${bandTxt}`;
+          banner.innerHTML = `✅ ${vehBadge(res.asset)} <span class="muted">(${esc(res.asset.category || '')})</span> &nbsp;|&nbsp; ${prevTxt}${deltaTxt}${bandTxt}`;
           overrideWrap.style.display = 'none';
         }
       } catch (_) {}
@@ -576,8 +593,9 @@
         litresInp.placeholder = 'Enter actual L after full';
         reqMeta.innerHTML = `🟣 <b>FULL TANK MODE:</b> Recommended <b>${r.recommended_litres != null ? fmtNum(r.recommended_litres, 1) + ' L' : 'N/A'}</b> · Fill tank completely first, then enter actual dispensed litres above.`;
       } else {
-        litresInp.value = r.trip_total_fuel || r.requested_litres || '';
-        reqMeta.innerHTML = `✅ Linked <b>${esc(r.request_no)}</b> · Recommended: <b>${r.recommended_litres != null ? fmtNum(r.recommended_litres, 1) + ' L' : '—'}</b> · Requested: <b>${fmtNum(r.requested_litres, 1)} L</b>`;
+        const effApp = r.approved_litres || r.trip_total_fuel || r.requested_litres || '';
+        litresInp.value = effApp;
+        reqMeta.innerHTML = `✅ Linked <b>${esc(r.request_no)}</b> · Recommended: <b>${r.recommended_litres != null ? fmtNum(r.recommended_litres, 1) + ' L' : '—'}</b> · Approved: <b>${fmtNum(effApp || r.requested_litres, 1)} L</b>`;
       }
       updateEstCost();
       syncIssueTariff();
@@ -585,7 +603,10 @@
     }
     reqSel.onchange = applySelectedRequest;
     if (!defaults.requestId && defaults.assetCode) {
-      const match = approvedReqs.find((x) => String(x.asset_code || '').toUpperCase() === String(defaults.assetCode).toUpperCase());
+      const targetDef = String(defaults.assetCode).trim().toUpperCase();
+      const match = approvedReqs.find((x) =>
+        [x.asset_code, x.asset_ec_code, x.asset_registration].some((k) => k && String(k).trim().toUpperCase() === targetDef)
+      );
       if (match) reqSel.value = match.id;
     }
     applySelectedRequest();
@@ -1099,7 +1120,7 @@
                 <td style="padding:9px 12px;white-space:nowrap">${esc(String(r.issue_date || '').slice(0, 16))}</td>
                 <td style="padding:9px 12px;font-family:monospace;font-size:11.5px">${esc(r.issue_no || r.id.slice(0, 10))}</td>
                 <td style="padding:9px 12px">
-                  <a href="#" data-nolink class="btn-veh-360" data-code="${esc(r.asset_code)}" style="font-weight:700;color:var(--primary,#0066ff);text-decoration:underline">${esc(r.asset_code)}</a>
+                  <a href="#" data-nolink class="btn-veh-360" data-code="${esc(r.asset_code)}" style="font-weight:700;color:var(--primary,#0066ff);text-decoration:underline">${vehBadge(r, { stacked: true })}</a>
                   ${isVoid ? '<span class="badge danger" style="margin-left:4px">VOID</span>' : ''}
                   ${corrBadge}
                 </td>
@@ -1227,7 +1248,7 @@
               <tr>
                 <td style="padding:10px 12px;white-space:nowrap">${esc(String(c.requested_at || '').slice(0, 16))}</td>
                 <td style="padding:10px 12px">
-                  <a href="#" data-nolink class="btn-corr-veh" data-code="${esc(c.asset_code || '')}" style="font-weight:700">${esc(c.asset_code || '—')}</a>
+                  <a href="#" data-nolink class="btn-corr-veh" data-code="${esc(c.asset_code || '')}" style="font-weight:700">${vehBadge(c, { stacked: true })}</a>
                   <div class="muted" style="font-size:11px">${esc(c.project_name || c.tank_name || 'Central')}</div>
                 </td>
                 <td style="padding:10px 12px"><span class="badge">${esc(c.correction_type || 'EDIT')}</span></td>
@@ -1398,12 +1419,12 @@
                               <div class="muted" style="font-size:10.5px">${esc(reqItem.driver_name || '—')}</div>
                             </td>
                             <td>
-                              <div><b>${esc(reqItem.asset_code)}</b></div>
-                              <div class="muted" style="font-size:10.5px">RC:${esc(reqItem.running_chart_no || '—')} · ${reqItem.meter_faulty ? `<span class="badge warn" title="${esc(reqItem.meter_fault_reason || '')}">⚠️ FAULTY</span>` : (reqItem.meter_reading ? fmtNum(reqItem.meter_reading, 1) : '—')}</div>
+                              ${vehBadge(reqItem, { stacked: true })}
+                              <div class="muted" style="font-size:10.5px;margin-top:2px">RC:${esc(reqItem.running_chart_no || 'Site Log')} · ${reqItem.meter_faulty ? `<span class="badge warn" title="${esc(reqItem.meter_fault_reason || '')}">⚠️ FAULTY</span>` : (reqItem.meter_reading ? fmtNum(reqItem.meter_reading, 1) : '—')}</div>
                             </td>
                             <td style="text-align:right">
                               <div style="color:#0369a1;font-weight:700">${reqItem.recommended_litres != null ? fmtNum(reqItem.recommended_litres, 1) + 'L rec' : 'No norm'}</div>
-                              <div>${reqItem.is_full_tank ? '<span class="badge" style="background:#7c3aed;color:#fff;font-size:10px">FULL TANK</span>' : `<b>${fmtNum(reqItem.requested_litres, 1)} L req</b>`}</div>
+                              <div>${reqItem.is_full_tank ? '<span class="badge" style="background:#7c3aed;color:#fff;font-size:10px">FULL TANK</span>' : `<b>${fmtNum(reqItem.approved_litres || reqItem.requested_litres, 1)} L app</b>`}</div>
                             </td>
                             <td style="text-align:right">
                               ${canIssueFuel ? `<button class="btn sm primary sc-pump-dispense" data-req-id="${esc(reqItem.id)}">⛽ ${reqItem.is_full_tank ? 'Full Tank Qty' : 'Dispense'}</button>` : ''}
@@ -1484,8 +1505,8 @@
                           ? '<span class="badge warn" style="font-size:9.5px;margin-left:3px">⏳ Admin Review</span>'
                           : (r.correction_status === 'APPROVED' ? '<span class="badge ok" style="font-size:9.5px;margin-left:3px">✓ Changed</span>' : '');
                         const vehHtml = (!isPumpOnly && canViewReports)
-                          ? `<a href="#" data-nolink class="sc-veh-360" data-code="${esc(r.asset_code)}" style="font-weight:700">${esc(r.asset_code)}</a>`
-                          : `<b>${esc(r.asset_code)}</b>`;
+                          ? `<a href="#" data-nolink class="sc-veh-360" data-code="${esc(r.asset_code)}" style="font-weight:700">${vehBadge(r, { stacked: true })}</a>`
+                          : vehBadge(r, { stacked: true });
                         return `
                           <tr style="${isVoid ? 'opacity:0.55;background:rgba(239,68,68,0.05)' : ''}">
                             <td style="white-space:nowrap">${esc(String(r.issue_date || '').slice(0, 10))}</td>
@@ -1526,7 +1547,7 @@
                             return `
                               <tr>
                                 <td style="white-space:nowrap">${esc(String(mc.requested_at || '').slice(0, 10))}</td>
-                                <td><b>${esc(mc.asset_code || '—')}</b><div class="muted" style="font-size:10px">${esc(mc.issue_no || '')}</div></td>
+                                <td>${vehBadge(mc, { stacked: true })}<div class="muted" style="font-size:10px">${esc(mc.issue_no || '')}</div></td>
                                 <td><span class="badge" style="font-size:10px">${esc(mc.correction_type || 'EDIT')}</span> ${fmtNum(mc.before_litres, 1)}→<b>${fmtNum(mc.after_litres, 1)}L</b></td>
                                 <td><div>${esc(mc.reason || '—')}</div>${mc.review_note ? `<div class="muted" style="font-size:10px">Admin: ${esc(mc.review_note)}</div>` : ''}</td>
                                 <td>${st}</td>
@@ -1581,18 +1602,20 @@
               <div style="max-height:260px;overflow-y:auto">
                 <table class="table" style="width:100%;font-size:12px">
                   <thead>
-                    <tr><th>Code</th><th>Reg</th><th>Category</th><th>Hours/KM</th><th></th></tr>
+                    <tr><th>E&amp;C No</th><th>Vehicle Reg No</th><th>Category</th><th>Hours/KM</th><th></th></tr>
                   </thead>
                   <tbody>
-                    ${(data.siteVehicles || []).length ? data.siteVehicles.map((v) => `
+                    ${(data.siteVehicles || []).length ? data.siteVehicles.map((v) => {
+                      const vid = typeof window.resolveVehicleIdentity === 'function' ? window.resolveVehicleIdentity(v) : { ec_code: v.code, registration: v.registration };
+                      return `
                       <tr>
-                        <td><a href="#" data-nolink class="sc-veh-360" data-code="${esc(v.code)}" style="font-weight:700">${esc(v.code)}</a></td>
-                        <td>${esc(v.registration || '—')}</td>
+                        <td><a href="#" data-nolink class="sc-veh-360" data-code="${esc(v.code)}" style="font-weight:700">${esc(vid.ec_code || v.code)}</a></td>
+                        <td>${esc(vid.registration || v.registration || '—')}</td>
                         <td>${esc(v.category || '—')}</td>
                         <td>${v.current_hours ? fmtNum(v.current_hours, 0) : '—'}</td>
                         <td>${canRaiseReq ? `<button class="btn sm sc-quick-pick" data-code="${esc(v.code)}" style="padding:2px 6px;font-size:11px">Request Fuel</button>` : ''}</td>
                       </tr>
-                    `).join('') : '<tr><td colspan="5" class="muted" style="text-align:center;padding:16px">No vehicles currently allocated to this site</td></tr>'}
+                    `; }).join('') : '<tr><td colspan="5" class="muted" style="text-align:center;padding:16px">No vehicles currently allocated to this site</td></tr>'}
                   </tbody>
                 </table>
               </div>
@@ -1960,12 +1983,12 @@
             <h3 style="font-size:14px;margin:12px 0 6px 0">1. Vehicle-Wise Summary at ${esc(res.project.name)}</h3>
             <table class="table" style="width:100%;font-size:12px;margin-bottom:16px">
               <thead>
-                <tr><th>Vehicle</th><th>Reg</th><th>Category</th><th style="text-align:right">Fills</th><th style="text-align:right">Litres</th><th style="text-align:right">Cost</th><th>Meter Span</th><th>Measured Rate</th></tr>
+                <tr><th>E&amp;C No</th><th>Vehicle Reg No</th><th>Category</th><th style="text-align:right">Fills</th><th style="text-align:right">Litres</th><th style="text-align:right">Cost</th><th>Meter Span</th><th>Measured Rate</th></tr>
               </thead>
               <tbody>
                 ${(res.vehicles || []).map((v) => `
                   <tr>
-                    <td><b>${esc(v.code)}</b></td>
+                    <td><b>${esc(v.ec_code || v.code)}</b></td>
                     <td>${esc(v.registration || '—')}</td>
                     <td>${esc(v.category || '—')}</td>
                     <td style="text-align:right">${v.fills}</td>
@@ -1982,14 +2005,14 @@
             <div style="max-height:300px;overflow-y:auto">
               <table class="table" style="width:100%;font-size:12px">
                 <thead>
-                  <tr><th>Date</th><th>Slip #</th><th>Vehicle</th><th style="text-align:right">Litres</th><th style="text-align:right">Rate (Rs/L)</th><th style="text-align:right">Cost</th><th>Meter</th><th>Tank / Source</th><th>Driver</th></tr>
+                  <tr><th>Date</th><th>Slip #</th><th>Vehicle (E&amp;C · Reg)</th><th style="text-align:right">Litres</th><th style="text-align:right">Rate (Rs/L)</th><th style="text-align:right">Cost</th><th>Meter</th><th>Tank / Source</th><th>Driver</th></tr>
                 </thead>
                 <tbody>
                   ${(res.issues || []).map((i) => `
                     <tr>
                       <td>${esc(String(i.issue_date || '').slice(0, 10))}</td>
                       <td>${esc(i.issue_no || i.id.slice(0, 8))}</td>
-                      <td><b>${esc(i.asset_code)}</b></td>
+                      <td>${vehBadge(i, { stacked: true })}</td>
                       <td style="text-align:right;font-weight:700">${fmtNum(i.litres, 1)} L</td>
                       <td style="text-align:right;white-space:nowrap">${fmtRateRs(effectiveFuelRateCents(i))}</td>
                       <td style="text-align:right">${fmtLkr(Number(i.total_cost_cents || i.cost_cents || 0) / 100)}</td>
@@ -2051,8 +2074,8 @@
                 <table class="table" style="width:100%;margin:0;font-size:12.5px">
                   <thead>
                     <tr style="background:rgba(0,0,0,0.02)">
-                      <th style="padding:10px 12px">Vehicle Code</th>
-                      <th style="padding:10px 12px">Registration</th>
+                      <th style="padding:10px 12px">E&amp;C No</th>
+                      <th style="padding:10px 12px">Vehicle Reg No</th>
                       <th style="padding:10px 12px">Category</th>
                       <th style="padding:10px 12px">Current Site</th>
                       <th style="padding:10px 12px;text-align:right">Total Issues</th>
@@ -2070,7 +2093,7 @@
                       const typ = v.fuel_cons_typ ? (basis === 'km' ? (1 / v.fuel_cons_typ).toFixed(1) : Number(v.fuel_cons_typ).toFixed(1)) : null;
                       return `
                         <tr>
-                          <td style="padding:9px 12px"><b style="color:var(--primary,#0066ff)">${esc(v.code)}</b></td>
+                          <td style="padding:9px 12px"><b style="color:var(--primary,#0066ff)">${esc(v.ec_code || v.code)}</b></td>
                           <td style="padding:9px 12px">${esc(v.registration || '—')}</td>
                           <td style="padding:9px 12px">${esc(v.category || '—')}</td>
                           <td style="padding:9px 12px">${esc(v.current_site || 'Central')}</td>
@@ -2162,8 +2185,7 @@
               <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:12px">
                 <div>
                   <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-                    <h2 style="margin:0;font-size:22px;font-weight:800">${esc(a.code)}</h2>
-                    <span class="badge">${esc(a.registration || 'No Plate')}</span>
+                    <h2 style="margin:0;font-size:22px;font-weight:800">${vehBadge(a)}</h2>
                     <span class="badge">${esc(a.category || a.type || 'Machine')}</span>
                     ${verdictBadge(cb.verdict)}
                   </div>
@@ -2353,12 +2375,12 @@
             <form id="form_fuel_req" style="display:flex;flex-direction:column;gap:10px">
               <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
                 <div>
-                  <label style="font-size:12px;font-weight:600">Vehicle Code *</label>
-                  <input type="text" id="fr_code" required class="input sm" placeholder="e.g. LB-22, EX-01" style="width:100%">
+                  <label style="font-size:12px;font-weight:600">Vehicle E&amp;C No or Reg *</label>
+                  <input type="text" id="fr_code" required class="input sm" placeholder="e.g. DT-15, LM-5722, EX-01" style="width:100%">
                 </div>
                 <div>
-                  <label style="font-size:12px;font-weight:600">Running Chart # *</label>
-                  <input type="text" id="fr_chart" required class="input sm" placeholder="RC-2026-..." style="width:100%">
+                  <label style="font-size:12px;font-weight:600">Running Chart / Log # <span class="muted">(Opt. for Hr)</span></label>
+                  <input type="text" id="fr_chart" class="input sm" placeholder="RC-2026-... or Site Log" style="width:100%">
                 </div>
               </div>
               <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
@@ -2427,36 +2449,27 @@
             <tr>
               <td style="font-family:monospace;font-size:11px">${esc(r.request_no || r.id.slice(0, 8))}</td>
               <td>${esc(String(r.requested_at || '').slice(0, 10))}</td>
-              <td><b>${esc(r.asset_code)}</b><div class="muted" style="font-size:10.5px">RC:${esc(r.running_chart_no || '—')}</div></td>
-              <td style="text-align:right;font-weight:700">${r.recommended_litres != null ? fmtNum(r.recommended_litres, 1) + 'L rec / ' : ''}${r.is_full_tank ? '<span class="badge" style="background:#7c3aed;color:#fff">FULL TANK</span>' : fmtNum(r.requested_litres, 1) + ' L'}</td>
+              <td>${vehBadge(r, { stacked: true })}<div class="muted" style="font-size:10.5px;margin-top:2px">RC:${esc(r.running_chart_no || 'Site Log')}</div></td>
+              <td style="text-align:right;font-weight:700">${r.recommended_litres != null ? fmtNum(r.recommended_litres, 1) + 'L rec / ' : ''}${r.is_full_tank ? '<span class="badge" style="background:#7c3aed;color:#fff">FULL TANK</span>' : fmtNum(r.approved_litres || r.requested_litres, 1) + ' L'}</td>
               <td>${r.meter_faulty ? `<span class="badge warn" title="${esc(r.meter_fault_reason || 'Meter Faulty')}">⚠️ FAULTY</span>` : (r.meter_reading ? fmtNum(r.meter_reading, 1) : '—')}</td>
               <td>${esc(r.target_tank_name || r.station_name || r.project_name || '—')}</td>
-              <td><span class="badge ${r.status === 'FULFILLED' || r.status === 'APPROVED' ? 'ok' : (r.status === 'REJECTED' ? 'danger' : 'warn')}">${esc(r.status)}</span></td>
+              <td><span class="badge ${r.status === 'FULFILLED' || r.status === 'APPROVED' ? 'ok' : (r.status === 'REJECTED' ? 'danger' : 'warn')}">${r.status === 'PENDING' ? (r.exceeds_norm ? 'NEEDS MGR (>20%)' : 'AWAITING TRANSPORT') : (r.status === 'APPROVED' ? 'READY AT PUMP' : esc(r.status))}</span></td>
               <td style="white-space:nowrap">
-                ${r.status === 'PENDING' ? `
-                  <button class="btn sm primary btn-fr-act" data-id="${esc(r.id)}" data-act="APPROVE">✅ Approve</button>
-                  <button class="btn sm danger btn-fr-act" data-id="${esc(r.id)}" data-act="REJECT">✕</button>
-                ` : (r.status === 'APPROVED' ? `
+                ${r.status === 'PENDING' && canApproveFuelReq(r) ? `
+                  <button class="btn sm primary btn-fr-review" data-id="${esc(r.id)}">🛡️ Review</button>
+                ` : (r.status === 'APPROVED' && canIssueFuel ? `
                   <button class="btn sm primary btn-fr-dispense" data-id="${esc(r.id)}">⛽ Dispense</button>
                 ` : '—')}
               </td>
             </tr>
           `).join('');
 
-          qsa('.btn-fr-act', tbody).forEach((b) => {
-            b.onclick = async () => {
-              const id = b.getAttribute('data-id');
-              const act = b.getAttribute('data-act');
-              try {
-                await api(`/fuel/requests/${id}/review`, {
-                  method: 'POST',
-                  body: { action: act, dispenseNow: false },
-                });
-                toast(act === 'APPROVE' ? 'Approved and moved to Pump Dispatch Queue!' : 'Request rejected.');
-                loadReqs();
-                refreshKpis();
-              } catch (err) {
-                notify(err.message);
+          qsa('.btn-fr-review', tbody).forEach((b) => {
+            b.onclick = () => {
+              const reqObj = requests.find((x) => x.id === b.getAttribute('data-id'));
+              if (!reqObj) return;
+              if (typeof window.openTransportReviewModal === 'function') {
+                window.openTransportReviewModal(reqObj, tanks, () => { loadReqs(); refreshKpis(); });
               }
             };
           });
@@ -2507,7 +2520,7 @@
             method: 'POST',
             body: {
               assetCode: qs('#fr_code', box).value.trim(),
-              runningChartNo: qs('#fr_chart', box).value.trim(),
+              runningChartNo: qs('#fr_chart', box).value.trim() || null,
               meterReading: isFaulty ? null : meterVal,
               meterFaulty: isFaulty,
               meterFaultReason: isFaulty ? faultReason : null,
@@ -2529,6 +2542,23 @@
       };
 
       loadReqs();
+    }
+
+    if (window.LiveERP && typeof window.LiveERP.on === 'function') {
+      let rtFuelTimer = null;
+      const onLiveFuelOp = () => {
+        if (!document.body.contains(content)) return;
+        clearTimeout(rtFuelTimer);
+        rtFuelTimer = setTimeout(() => {
+          if (!document.body.contains(content)) return;
+          refreshKpis();
+          if (['site-console', 'requests', 'issues', 'corrections'].includes(activeTab)) {
+            switchTab(activeTab, selectedVehicleCode);
+          }
+        }, 380);
+      };
+      window.LiveERP.on('fuel_request_updated', onLiveFuelOp);
+      window.LiveERP.on('fuel_issue_updated', onLiveFuelOp);
     }
   }
 
