@@ -302,6 +302,134 @@ function insertGeneratedBill({
   }
 }
 
+function updateExistingDraftBill({
+  bill,
+  status = 'DRAFT',
+  invoiceNumber = null,
+  period,
+  asset,
+  assetCode,
+  project,
+  driverName = null,
+  billingMode,
+  rateBasis,
+  rateCents,
+  openingMeter = null,
+  closingMeter = null,
+  calculation,
+  fuelPriceCents = null,
+  notes = null,
+  actorId = 1,
+  reason = 'Refreshed DRAFT bill from live site fuel & meter ledger',
+}) {
+  if (!bill || bill.status !== 'DRAFT') {
+    throw new Error('Only DRAFT bills can be refreshed');
+  }
+
+  const assetId = asset ? asset.id : bill.asset_id;
+  const effCode = assetCode || bill.asset_code;
+  const issuedDate = status === 'FINAL' ? breakdowns.todayStr() : null;
+  const resolvedFuelPriceCents = fuelPriceCents != null && Number(fuelPriceCents) > 0
+    ? Number(fuelPriceCents)
+    : resolvePeriodFuelPriceCents({ asOfDate: period && period.end });
+
+  const existingFuelLine = get(
+    "SELECT unit_price_cents FROM fleet_bill_line_items WHERE bill_id = ? AND item_type = 'FUEL' LIMIT 1",
+    bill.id
+  );
+  const maxRev = (get('SELECT MAX(revision_number) AS m FROM fleet_bill_revisions WHERE bill_id = ?', bill.id) || {}).m || 0;
+  const revNo = maxRev + 1;
+  const revId = `brev-${bill.id}-${revNo}`;
+
+  run(`
+    INSERT INTO fleet_bill_revisions (
+      id, bill_id, revision_number, change_summary, snapshot_json, grand_total_cents, created_by, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+  `, revId, bill.id, revNo, String(reason), JSON.stringify({
+    before: {
+      actual_units: bill.actual_units,
+      billable_units: bill.billable_units,
+      rate_cents: bill.rate_cents,
+      billing_mode: bill.billing_mode,
+      fuel_litres: bill.fuel_litres,
+      fuel_cost_cents: bill.fuel_cost_cents,
+      fuel_price_cents: existingFuelLine ? existingFuelLine.unit_price_cents : null,
+      breakdown_days: bill.breakdown_days,
+      breakdown_deduct_cents: bill.breakdown_deduct_cents,
+      grand_total_cents: bill.grand_total_cents,
+    },
+    after: { ...calculation, billingMode, rateCents: Number(rateCents) || 0, fuelPriceCents: resolvedFuelPriceCents },
+  }), calculation.grandTotalCents, actorId);
+
+  run(`
+    UPDATE fleet_bills
+       SET invoice_number = COALESCE(?, invoice_number),
+           asset_reg_no = COALESCE(?, asset_reg_no),
+           driver_name = ?,
+           project_id = ?,
+           project_name = ?,
+           project_code = ?,
+           billing_mode = ?,
+           rate_basis = ?,
+           rate_cents = ?,
+           opening_meter = ?,
+           closing_meter = ?,
+           actual_units = ?,
+           minimum_units = ?,
+           billable_units = ?,
+           rental_amount_cents = ?,
+           fuel_litres = ?,
+           fuel_cost_cents = ?,
+           breakdown_days = ?,
+           breakdown_deduct_cents = ?,
+           subtotal_cents = ?,
+           sscl_rate = ?,
+           sscl_cents = ?,
+           vat_rate = ?,
+           vat_cents = ?,
+           grand_total_cents = ?,
+           status = ?,
+           issued_date = CASE WHEN ? = 'FINAL' THEN ? ELSE issued_date END,
+           approved_by = CASE WHEN ? = 'FINAL' THEN ? ELSE approved_by END,
+           approved_at = CASE WHEN ? = 'FINAL' THEN datetime('now') ELSE approved_at END,
+           notes = ?,
+           updated_at = datetime('now')
+     WHERE id = ? AND status = 'DRAFT'
+  `, invoiceNumber || null, asset ? asset.registration : null, driverName || null,
+     project ? project.id : null, project ? project.name : null, project ? project.code : null,
+     billingMode, rateBasis, Number(rateCents) || 0,
+     openingMeter != null ? Number(openingMeter) : null, closingMeter != null ? Number(closingMeter) : null,
+     calculation.actualUnits, calculation.minimumUnits, calculation.billableUnits, calculation.rentalAmountCents,
+     calculation.fuelLitres, calculation.fuelChargedCents,
+     calculation.breakdownDays, calculation.breakdownDeductCents,
+     calculation.subtotalCents, calculation.ssclRate, calculation.ssclCents,
+     calculation.vatRate, calculation.vatCents, calculation.grandTotalCents,
+     status, status, issuedDate, status, actorId, status,
+     notes || bill.notes || null, bill.id);
+
+  syncBillCoreLineItems({
+    billId: bill.id,
+    billingMode,
+    rateBasis,
+    rateCents,
+    calculation,
+    fuelPriceCents: resolvedFuelPriceCents,
+  });
+
+  if (status === 'FINAL') {
+    syncBillFinalFinancialEvents({
+      billId: bill.id,
+      assetId,
+      assetCode: effCode,
+      projectId: project ? project.id : null,
+      periodEnd: period.end,
+      year: period.year,
+      month: period.month,
+      calculation,
+    });
+  }
+}
+
 /**
  * Build a Site & Month billing plan from fuel-driven monthly vehicle timelines
  * (respecting manual allocations, tank->site links, early-month cutoff rules, and zero double-billing).
@@ -325,12 +453,15 @@ function buildSiteMonthlyPlan(projectIdRaw, periodKey, opts = {}) {
   }
 
   const allowOpenBreakdownDeduction = Boolean(opts.allowOpenBreakdownDeduction);
+  const refreshDrafts = Boolean(opts.refreshDrafts);
+  const includeZeroFuel = Boolean(opts.includeZeroFuel);
+  const isCurMonth = bounds.periodKey === currentMonthKey();
   const costingOpts = fuelTimeline.getCostingOptions();
   const workingDaysPerMonth = costingOpts.workingDaysPerMonth || WORKING_DAYS_PER_MONTH;
 
   const timelines = fuelTimeline.buildMonthlyVehicleTimelines(bounds.periodKey, {
     workingDaysPerMonth,
-    includeCurrentProjectZeroFuel: true,
+    includeCurrentProjectZeroFuel: includeZeroFuel || isCurMonth,
   });
 
   const projectsMap = new Map(all('SELECT id, code, name FROM projects').map((p) => [p.id, p]));
@@ -378,7 +509,7 @@ function buildSiteMonthlyPlan(projectIdRaw, periodKey, opts = {}) {
            AND substr(start_date, 1, 10) <= ? AND (end_date IS NULL OR substr(end_date, 1, 10) >= ?)
          LIMIT 1
       `, stay.assetId, stay.projectId, bounds.end, bounds.start));
-      if (!hasExplicitAlloc && !hasExplicitAssign && !filterProjId) continue;
+      if (!includeZeroFuel && !hasExplicitAlloc && !hasExplicitAssign && !(filterProjId && isCurMonth)) continue;
     }
 
     const proj = projectsMap.get(stay.projectId) || { id: stay.projectId, name: 'Central', code: null };
@@ -423,7 +554,8 @@ function buildSiteMonthlyPlan(projectIdRaw, periodKey, opts = {}) {
       : (bdStatus.billingBlocked || bdStatus.fullMonthDown);
 
     const existingBill = get(`
-      SELECT id, invoice_number, status, grand_total_cents
+      SELECT id, invoice_number, status, grand_total_cents, rental_amount_cents,
+             breakdown_deduct_cents, fuel_litres, fuel_cost_cents, billable_units
         FROM fleet_bills
        WHERE asset_id = ?
          AND period_key = ?
@@ -495,8 +627,12 @@ function buildSiteMonthlyPlan(projectIdRaw, periodKey, opts = {}) {
       billingBlocked: isBlocked,
       blockReason: isBlocked ? bdStatus.blockReason : (bdDaysInStay > 0 ? `Deducting ${bdDaysInStay} repair day(s) — ${activeDaysInStay} active days billable` : null),
       existingBill: existingBill || null,
+      canRefreshDraft: Boolean(existingBill && existingBill.status === 'DRAFT' && hasRate && !isBlocked),
+      draftDeltaCents: (existingBill && existingBill.status === 'DRAFT' && calculation)
+        ? (calculation.grandTotalCents - (existingBill.grand_total_cents || 0))
+        : 0,
       calculation,
-      eligible: !existingBill && hasRate && !isBlocked,
+      eligible: (!existingBill || (refreshDrafts && existingBill.status === 'DRAFT')) && hasRate && !isBlocked,
     });
   }
 
@@ -520,6 +656,7 @@ function buildSiteMonthlyPlan(projectIdRaw, periodKey, opts = {}) {
       eligibleCount: items.filter((x) => x.eligible).length,
       blockedCount: items.filter((x) => x.billingBlocked).length,
       alreadyBilledCount: items.filter((x) => !!x.existingBill).length,
+      refreshableDraftCount: items.filter((x) => x.canRefreshDraft).length,
       missingRateCount: items.filter((x) => !x.hasRate).length,
       estimatedGrandTotalCents: items.reduce((s, x) => s + (x.calculation ? x.calculation.grandTotalCents : 0), 0),
       totalWorkshopRepairCostCents: items.reduce((s, x) => s + (x.workshopRepairCostCents || 0), 0),
@@ -692,7 +829,9 @@ router.get('/bills/site-preview', requireAuth, requireCap('hire.billing.view', '
       : curYm);
   const projectId = req.query.projectId || 'ALL';
   const allowOpenBreakdownDeduction = req.query.allowOpenBreakdownDeduction === '1' || req.query.allowOpenBreakdownDeduction === 'true';
-  const plan = buildSiteMonthlyPlan(projectId, month, { allowOpenBreakdownDeduction });
+  const refreshDrafts = req.query.refreshDrafts === '1' || req.query.refreshDrafts === 'true';
+  const includeZeroFuel = req.query.includeZeroFuel === '1' || req.query.includeZeroFuel === 'true';
+  const plan = buildSiteMonthlyPlan(projectId, month, { allowOpenBreakdownDeduction, refreshDrafts, includeZeroFuel });
   res.json(plan);
 }));
 
@@ -939,11 +1078,13 @@ router.post('/bills/site-summary/generate', requireAuth, requireCap('hire.billin
     minKm = undefined,
     minDays = undefined,
     selectedAssetIds = null,
+    refreshDrafts = false,
   } = req.body || {};
   const result = resolveSiteSummaryQuery({ projectId, siteId, month, basisMode, fuelPolicy, includeZeroFuel, workingDaysInMonth, minHours, minKm, minDays });
   const actorId = req.user ? req.user.id : 1;
   const period = breakdowns.monthBounds(result.month);
   const targetStatus = finalise ? 'FINAL' : 'DRAFT';
+  const shouldRefreshDrafts = Boolean(refreshDrafts);
   const filterSet = Array.isArray(selectedAssetIds) && selectedAssetIds.length
     ? new Set(selectedAssetIds.map((x) => Number(x)))
     : null;
@@ -968,11 +1109,13 @@ router.post('/bills/site-summary/generate', requireAuth, requireCap('hire.billin
   }
 
   let generatedBills = 0;
+  let refreshedBills = 0;
   let skippedExisting = 0;
   let skippedUnrated = 0;
   const skippedLocked = [];
   const skippedBreakdowns = [];
   const createdBills = [];
+  const updatedBills = [];
 
   tx(() => {
     for (const s of result.summaries) {
@@ -984,7 +1127,8 @@ router.post('/bills/site-summary/generate', requireAuth, requireCap('hire.billin
       const proj = { id: s.projectId, name: s.siteName, code: s.siteCode };
       for (const l of s.lines) {
         if (filterSet && !filterSet.has(Number(l.assetId))) continue;
-        if (l.existingBill) {
+        const canRefreshThisDraft = Boolean(shouldRefreshDrafts && l.existingBill && l.existingBill.status === 'DRAFT');
+        if (l.existingBill && !canRefreshThisDraft) {
           skippedExisting++;
           continue;
         }
@@ -1025,13 +1169,46 @@ router.post('/bills/site-summary/generate', requireAuth, requireCap('hire.billin
           grandTotalCents: subtotalCents + ssclCents + vatCents,
         };
 
-        const billId = `bill-sum-${result.month}-p${s.projectId}-a${l.assetId}-${Math.random().toString(36).slice(2, 5)}`;
         const invoiceNumber = targetStatus === 'FINAL'
           ? `INV-${period.year}${String(period.month).padStart(2, '0')}-P${s.projectId}-A${l.assetId}`
           : null;
         const asset = get('SELECT id, registration FROM assets WHERE id = ?', l.assetId) || { id: l.assetId, registration: l.regNo };
         const bdNote = l.breakdownDays > 0 ? `; ${l.breakdownDays}d BD excluded (${l.breakdownSpans})` : '';
 
+        if (canRefreshThisDraft) {
+          const existingRow = get('SELECT * FROM fleet_bills WHERE id = ?', l.existingBill.id);
+          if (existingRow && existingRow.status === 'DRAFT') {
+            updateExistingDraftBill({
+              bill: existingRow,
+              status: targetStatus,
+              invoiceNumber,
+              period,
+              asset,
+              assetCode: l.code,
+              project: proj,
+              driverName: l.driverName,
+              billingMode: l.billingModeCode,
+              rateBasis: l.rateBasis,
+              rateCents: l.rateCents || 0,
+              calculation,
+              fuelPriceCents: lineFuelPriceCents,
+              notes: `Site Summary Bill (${l.billedOn}${bdNote}) — ${s.siteName} (${result.month})`,
+              actorId,
+              reason: `Refreshed DRAFT bill via site summary generator (${result.month})`,
+            });
+            refreshedBills++;
+            updatedBills.push({
+              id: existingRow.id,
+              assetCode: l.code,
+              siteCode: s.siteCode,
+              previousGrandTotalCents: existingRow.grand_total_cents,
+              grandTotalCents: calculation.grandTotalCents,
+            });
+            continue;
+          }
+        }
+
+        const billId = `bill-sum-${result.month}-p${s.projectId}-a${l.assetId}-${Math.random().toString(36).slice(2, 5)}`;
         insertGeneratedBill({
           billId,
           invoiceNumber,
@@ -1060,6 +1237,7 @@ router.post('/bills/site-summary/generate', requireAuth, requireCap('hire.billin
     month: result.month,
     projectId: result.projectId,
     generatedBills,
+    refreshedBills,
     skippedBreakdownsCount: skippedBreakdowns.length,
     status: targetStatus,
   });
@@ -1069,6 +1247,7 @@ router.post('/bills/site-summary/generate', requireAuth, requireCap('hire.billin
     month: result.month,
     projectId: result.projectId,
     generatedBills,
+    refreshedBills,
     skippedExisting,
     skippedUnrated,
     skippedLockedCount: skippedLocked.length,
@@ -1076,6 +1255,7 @@ router.post('/bills/site-summary/generate', requireAuth, requireCap('hire.billin
     skippedBreakdownsCount: skippedBreakdowns.length,
     skippedBreakdowns,
     createdBills,
+    updatedBills,
   });
 }));
 
@@ -1463,9 +1643,14 @@ router.post('/bills/generate-site', requireAuth, requireCap('hire.billing.genera
     selectedAssetIds = null,
     finalise = false,
     allowOpenBreakdownDeduction = false,
+    refreshDrafts = false,
+    includeZeroFuel = false,
   } = req.body || {};
+  const shouldRefreshDrafts = Boolean(refreshDrafts);
   const plan = buildSiteMonthlyPlan(projectId, String(month).trim().slice(0, 7), {
     allowOpenBreakdownDeduction: Boolean(allowOpenBreakdownDeduction),
+    refreshDrafts: shouldRefreshDrafts,
+    includeZeroFuel: Boolean(includeZeroFuel),
   });
   const actorId = req.user ? req.user.id : 1;
   const period = breakdowns.monthBounds(plan.month);
@@ -1494,11 +1679,13 @@ router.post('/bills/generate-site', requireAuth, requireCap('hire.billing.genera
   }
 
   let generatedBills = 0;
+  let refreshedBills = 0;
   let skippedAlreadyBilled = 0;
   let skippedMissingRate = 0;
   const skippedLocked = [];
   const skippedBreakdowns = [];
   const createdBills = [];
+  const updatedBills = [];
 
   const siteLockCache = new Map();
   tx(() => {
@@ -1517,6 +1704,49 @@ router.post('/bills/generate-site', requireAuth, requireCap('hire.billing.genera
         continue;
       }
       if (item.existingBill) {
+        if (shouldRefreshDrafts && item.existingBill.status === 'DRAFT') {
+          if (!item.hasRate) {
+            skippedMissingRate++;
+            continue;
+          }
+          const existingRow = get('SELECT * FROM fleet_bills WHERE id = ?', item.existingBill.id);
+          if (existingRow && existingRow.status === 'DRAFT') {
+            const invoiceNumber = targetStatus === 'FINAL'
+              ? `INV-${plan.year}${String(plan.monthNum).padStart(2, '0')}-P${item.projectId || 0}-A${item.assetId}`
+              : null;
+            const proj = item.projectId ? { id: item.projectId, name: item.projectName, code: item.projectCode } : null;
+            const asset = { id: item.assetId, registration: item.registration };
+            updateExistingDraftBill({
+              bill: existingRow,
+              status: targetStatus,
+              invoiceNumber,
+              period,
+              asset,
+              assetCode: item.assetCode,
+              project: proj,
+              driverName: item.driverName,
+              billingMode: item.billingMode,
+              rateBasis: item.rateBasis,
+              rateCents: item.rateCents,
+              openingMeter: item.openingMeter,
+              closingMeter: item.closingMeter,
+              calculation: item.calculation,
+              fuelPriceCents: item.fuelPriceCents,
+              notes: `Site monthly billing — ${item.projectName} (${plan.month})`,
+              actorId,
+              reason: `Refreshed DRAFT bill via site batch generator (${plan.month})`,
+            });
+            refreshedBills++;
+            updatedBills.push({
+              id: existingRow.id,
+              assetCode: item.assetCode,
+              projectName: item.projectName,
+              previousGrandTotalCents: existingRow.grand_total_cents,
+              grandTotalCents: item.calculation.grandTotalCents,
+            });
+            continue;
+          }
+        }
         skippedAlreadyBilled++;
         continue;
       }
@@ -1561,6 +1791,7 @@ router.post('/bills/generate-site', requireAuth, requireCap('hire.billing.genera
     month: plan.month,
     projectId: plan.project ? plan.project.id : 'ALL',
     generatedBills,
+    refreshedBills,
     skippedBreakdownsCount: skippedBreakdowns.length,
   });
 
@@ -1570,6 +1801,7 @@ router.post('/bills/generate-site', requireAuth, requireCap('hire.billing.genera
     projectId: plan.project ? plan.project.id : 'ALL',
     projectName: plan.project ? plan.project.name : 'All Sites',
     generatedBills,
+    refreshedBills,
     skippedAlreadyBilled,
     skippedMissingRate,
     skippedLockedCount: skippedLocked.length,
@@ -1577,6 +1809,7 @@ router.post('/bills/generate-site', requireAuth, requireCap('hire.billing.genera
     skippedBreakdownsCount: skippedBreakdowns.length,
     skippedBreakdowns,
     bills: createdBills,
+    updatedBills,
   });
 }));
 

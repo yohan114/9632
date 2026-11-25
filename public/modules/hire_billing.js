@@ -366,6 +366,9 @@
               <button type="button" class="btn sm" id="btn_ss_xlsx" style="background:#059669;color:#fff;border-color:#059669">📊 Export Excel</button>
             </div>
             <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+              <label style="display:inline-flex;align-items:center;gap:5px;font-size:11.5px;cursor:pointer" title="Recalculate existing DRAFT bills from live site fuel &amp; meters (FINAL bills are untouched)">
+                <input type="checkbox" id="ss_refresh_drafts"> Refresh DRAFTs
+              </label>
               <select id="ss_gen_finalise" class="input sm">
                 <option value="0">Bill Status: DRAFT</option>
                 <option value="1">Bill Status: FINAL</option>
@@ -645,6 +648,7 @@
       };
       modalEl.querySelector('#btn_ss_generate').onclick = async () => {
         if (!ensureExportableOrWarn()) return;
+        const refreshDrafts = !!(modalEl.querySelector('#ss_refresh_drafts') && modalEl.querySelector('#ss_refresh_drafts').checked);
         try {
           const res = await api('/hire/bills/site-summary/generate', {
             method: 'POST',
@@ -658,10 +662,14 @@
               minHours: Number(modalEl.querySelector('#ss_min_hr').value || 120),
               minKm: Number(modalEl.querySelector('#ss_min_km').value || 3000),
               finalise: modalEl.querySelector('#ss_gen_finalise').value === '1',
+              refreshDrafts,
             },
           });
           const bdNote = res.skippedBreakdownsCount ? ` (${res.skippedBreakdownsCount} full-month breakdown skipped)` : '';
-          toast(`Created ${res.generatedBills} site bill(s) for ${res.month}${bdNote}!`);
+          const msg = res.refreshedBills > 0
+            ? `Created ${res.generatedBills} & refreshed ${res.refreshedBills} site bill(s) for ${res.month}${bdNote}!`
+            : `Created ${res.generatedBills} site bill(s) for ${res.month}${bdNote}!`;
+          toast(msg);
           loadSummary();
           if (activeTab === 'bills') switchTab('bills');
         } catch (err) {
@@ -723,7 +731,7 @@
       };
     }
 
-    async function openGenerateSiteBillsModal({ defaultProjectId = '', defaultMonth = curYm } = {}) {
+    async function openGenerateSiteBillsModal({ defaultProjectId = '', defaultMonth = curYm, defaultRefreshDrafts = false } = {}) {
       const catalog = await loadSitesCatalog();
       const modalEl = document.createElement('div');
       modalEl.className = 'modal-bg modal-backdrop';
@@ -757,6 +765,9 @@
             </div>
             <label style="display:inline-flex;align-items:center;gap:5px;font-size:11.5px;cursor:pointer;padding:6px 4px" title="Deduct repair days and bill active working days even if breakdown card is still open">
               <input type="checkbox" id="sb_allow_open_bd" checked> Deduct open repair days &amp; bill active days
+            </label>
+            <label style="display:inline-flex;align-items:center;gap:5px;font-size:11.5px;cursor:pointer;padding:6px 4px" title="Recalculate existing DRAFT bills from latest fuel, meter readings &amp; rate cards (FINAL and PAID bills are never modified)">
+              <input type="checkbox" id="sb_refresh_drafts" ${defaultRefreshDrafts ? 'checked' : ''}> Refresh existing DRAFT bills
             </label>
             <button type="button" class="btn sm primary" id="btn_sb_preview">🔍 Load Site Machines</button>
           </div>
@@ -801,14 +812,22 @@
         const projId = modalEl.querySelector('#sb_proj').value || 'ALL';
         const month = modalEl.querySelector('#sb_month').value || curYm;
         const allowOpenBd = modalEl.querySelector('#sb_allow_open_bd') && modalEl.querySelector('#sb_allow_open_bd').checked ? '1' : '0';
+        const refreshDrafts = !!(modalEl.querySelector('#sb_refresh_drafts') && modalEl.querySelector('#sb_refresh_drafts').checked);
+        const submitBtn = modalEl.querySelector('#btn_sb_submit');
+        if (submitBtn) {
+          submitBtn.textContent = refreshDrafts ? '🔄 Generate & Refresh Selected Bills' : '🏢 Generate Selected Site Bills';
+        }
         const tbody = modalEl.querySelector('#sb_tbody');
         const sumEl = modalEl.querySelector('#sb_summary');
         tbody.innerHTML = '<tr><td colspan="8" class="muted" style="padding:18px;text-align:center">Loading site machines &amp; checking breakdowns...</td></tr>';
         try {
-          const data = await api(`/hire/bills/site-preview?projectId=${encodeURIComponent(projId)}&month=${encodeURIComponent(month)}&allowOpenBreakdownDeduction=${allowOpenBd}`);
+          const data = await api(`/hire/bills/site-preview?projectId=${encodeURIComponent(projId)}&month=${encodeURIComponent(month)}&allowOpenBreakdownDeduction=${allowOpenBd}&refreshDrafts=${refreshDrafts ? '1' : '0'}`);
           currentItems = data.items || [];
           const s = data.summary || {};
-          sumEl.innerHTML = `Period <b>${esc(data.month)}</b> (${fmtDateDMY(data.periodStart)} – ${fmtDateDMY(data.periodEnd)}) · Machines: <b>${s.totalMachines || 0}</b> · Billable: <b style="color:#059669">${s.eligibleCount || 0}</b> · Blocked: <b style="color:#dc2626">${s.blockedCount || 0}</b> · Already Billed: <b>${s.alreadyBilledCount || 0}</b> · Est. Total: <b>${fmtCents(s.estimatedGrandTotalCents || 0)}</b>`;
+          const refreshSummaryHtml = s.refreshableDraftCount > 0
+            ? ` · Refreshable Drafts: <b style="color:#2563eb">${s.refreshableDraftCount}</b>`
+            : '';
+          sumEl.innerHTML = `Period <b>${esc(data.month)}</b> (${fmtDateDMY(data.periodStart)} – ${fmtDateDMY(data.periodEnd)}) · Machines: <b>${s.totalMachines || 0}</b> · Billable: <b style="color:#059669">${s.eligibleCount || 0}</b> · Blocked: <b style="color:#dc2626">${s.blockedCount || 0}</b> · Already Billed: <b>${s.alreadyBilledCount || 0}</b>${refreshSummaryHtml} · Est. Total: <b>${fmtCents(s.estimatedGrandTotalCents || 0)}</b>`;
           if (!currentItems.length) {
             tbody.innerHTML = '<tr><td colspan="8" class="muted" style="padding:18px;text-align:center">No machines allocated or fueled at this site for the selected month.</td></tr>';
             return;
@@ -817,7 +836,13 @@
             const disabled = !it.eligible;
             let guardHtml = '<span class="badge green">✅ Clear</span>';
             if (it.billingBlocked) guardHtml = `<span class="badge red" title="${esc(it.blockReason || '')}">🚫 Blocked</span>`;
-            else if (it.existingBill) guardHtml = `<span class="badge">${esc(it.existingBill.invoice_number || it.existingBill.status)}</span>`;
+            else if (it.existingBill && it.existingBill.status === 'DRAFT' && refreshDrafts && it.hasRate) {
+              const delta = Number(it.draftDeltaCents || 0);
+              const deltaTxt = delta === 0
+                ? '<div class="muted" style="font-size:10px">Up to date</div>'
+                : `<div style="font-size:10.5px;font-weight:700;color:${delta > 0 ? '#059669' : '#dc2626'}">${delta > 0 ? '+' : '-'}${fmtCents(Math.abs(delta))}</div>`;
+              guardHtml = `<span class="badge blue" title="Will recalculate existing DRAFT bill">🔄 Refresh DRAFT</span>${deltaTxt}`;
+            } else if (it.existingBill) guardHtml = `<span class="badge">${esc(it.existingBill.invoice_number || it.existingBill.status)}</span>`;
             else if (!it.hasRate) guardHtml = '<span class="badge amber">No Rate Card</span>';
             else if (it.breakdownDays > 0) guardHtml = `<span class="badge amber">-${it.breakdownDays}d (${fmtCents(it.calculation.breakdownDeductCents)})</span>`;
             const allocSpan = it.stayDatesLabel || `${fmtDateDMY(it.allocDateFrom)} → ${it.allocIsCurrent ? 'Current' : fmtDateDMY(it.allocDateTo)}`;
@@ -855,11 +880,15 @@
       if (modalEl.querySelector('#sb_allow_open_bd')) {
         modalEl.querySelector('#sb_allow_open_bd').onchange = loadPreview;
       }
+      if (modalEl.querySelector('#sb_refresh_drafts')) {
+        modalEl.querySelector('#sb_refresh_drafts').onchange = loadPreview;
+      }
 
       modalEl.querySelector('#btn_sb_submit').onclick = async () => {
         const selectedIds = [...modalEl.querySelectorAll('.sb-row-chk:checked')].map((c) => Number(c.value));
         if (!selectedIds.length) return notify('No eligible unblocked machines selected.');
         const allowOpenBd = !!(modalEl.querySelector('#sb_allow_open_bd') && modalEl.querySelector('#sb_allow_open_bd').checked);
+        const refreshDrafts = !!(modalEl.querySelector('#sb_refresh_drafts') && modalEl.querySelector('#sb_refresh_drafts').checked);
         try {
           const res = await api('/hire/bills/generate-site', {
             method: 'POST',
@@ -869,10 +898,14 @@
               selectedAssetIds: selectedIds,
               finalise: modalEl.querySelector('#sb_finalise').value === '1',
               allowOpenBreakdownDeduction: allowOpenBd,
+              refreshDrafts,
             },
           });
           const skipNote = res.skippedBreakdownsCount ? ` (${res.skippedBreakdownsCount} blocked by open breakdown)` : '';
-          toast(`Generated ${res.generatedBills} site bill(s) for ${res.projectName} · ${res.month}${skipNote}!`);
+          const msg = res.refreshedBills > 0
+            ? `Generated ${res.generatedBills} new & refreshed ${res.refreshedBills} DRAFT bill(s) for ${res.projectName} · ${res.month}${skipNote}!`
+            : `Generated ${res.generatedBills} site bill(s) for ${res.projectName} · ${res.month}${skipNote}!`;
+          toast(msg);
           closeModal();
           switchTab('bills');
         } catch (err) {
@@ -1278,6 +1311,7 @@
                   <button class="btn sm btn-sm-pdf" data-pid="${sm.project_id || ''}" data-ym="${esc(sm.period_key)}" style="margin-left:3px;background:#b45309;color:#fff;border-color:#b45309" title="Download Site Summary PDF">📄 PDF</button>
                   <button class="btn sm btn-sm-filter" data-pid="${sm.project_id || ''}" data-y="${sm.year}" data-m="${sm.month}" style="margin-left:3px">Inspect</button>
                   <button class="btn sm primary btn-sm-bill" data-pid="${sm.project_id || 'ALL'}" data-ym="${esc(sm.period_key)}" style="margin-left:3px" ${sm.is_locked ? 'disabled title="Period is locked"' : ''}>+ Bill</button>
+                  ${(sm.draft_count > 0 && !sm.is_locked) ? `<button class="btn sm btn-sm-refresh-drafts" data-pid="${sm.project_id || 'ALL'}" data-ym="${esc(sm.period_key)}" style="margin-left:3px;background:#2563eb;color:#fff;border-color:#2563eb" title="Recalculate existing DRAFT bills from latest fuel &amp; meters">🔄 Refresh Drafts</button>` : ''}
                   ${(canFinalise && sm.draft_count > 0 && !sm.is_locked) ? `<button class="btn sm btn-sm-finalise-site" data-pid="${sm.project_id || 'ALL'}" data-pname="${esc(sm.project_name)}" data-ym="${esc(sm.period_key)}" data-drafts="${sm.draft_count}" data-total="${sm.grand_total_cents || 0}" style="margin-left:3px;background:#059669;color:#fff;border-color:#059669">✓ Finalise Site</button>` : ''}
                   ${(canFinalise && sm.project_id) ? `<button class="btn sm btn-sm-lock-site" data-pid="${sm.project_id}" data-pname="${esc(sm.project_name)}" data-ym="${esc(sm.period_key)}" data-locked="${sm.is_locked ? '1' : '0'}" data-scope="${esc(sm.lock_scope || '')}" style="margin-left:3px" title="${sm.is_locked ? 'Unlock period' : 'Lock site-month'}">${sm.is_locked ? '🔓 Unlock' : '🔒 Lock'}</button>` : ''}
                 </td>
@@ -1334,6 +1368,13 @@
               btn.onclick = () => openGenerateSiteBillsModal({
                 defaultProjectId: btn.getAttribute('data-pid') || 'ALL',
                 defaultMonth: btn.getAttribute('data-ym') || curYm,
+              });
+            });
+            qsa('.btn-sm-refresh-drafts', sumBody).forEach((btn) => {
+              btn.onclick = () => openGenerateSiteBillsModal({
+                defaultProjectId: btn.getAttribute('data-pid') || 'ALL',
+                defaultMonth: btn.getAttribute('data-ym') || curYm,
+                defaultRefreshDrafts: true,
               });
             });
             qsa('.btn-sm-finalise-site', sumBody).forEach((btn) => {
