@@ -69,14 +69,16 @@ test('imports 47 Galagedara Sep & Oct 2026 breakdown job cards idempotently with
   assert.strictEqual(second.skipped, 47);
 
   // Check exact DOB downtime hours on sample jobs
-  const hex28 = get("SELECT * FROM job_cards WHERE ref = 'GAL-BD-2026-09-#1'");
-  assert.strictEqual(hex28.status, 'PARTIALLY_CLOSED');
-  assert.strictEqual(hex28.workshop_id, 2);
-  assert.strictEqual(hex28.project_id, 38);
-  assert.strictEqual(hex28.breakdown, 1);
-  assert.strictEqual(hex28.field, 1);
-  assert.match(hex28.job_no, /^2026\/9\/R\/\d+$/);
-  assert.strictEqual(field.view(hex28).downtime_hours, 27.75);
+  const hex23Asset = get("SELECT id FROM assets WHERE code = 'HEX-23'");
+  const sep1 = get("SELECT * FROM job_cards WHERE ref = 'GAL-BD-2026-09-#1'");
+  assert.strictEqual(sep1.asset_id, hex23Asset.id);
+  assert.strictEqual(sep1.status, 'PARTIALLY_CLOSED');
+  assert.strictEqual(sep1.workshop_id, 2);
+  assert.strictEqual(sep1.project_id, 38);
+  assert.strictEqual(sep1.breakdown, 1);
+  assert.strictEqual(sep1.field, 1);
+  assert.match(sep1.job_no, /^2026\/9\/R\/\d+$/);
+  assert.strictEqual(field.view(sep1).downtime_hours, 27.75);
 
   const sep7 = get("SELECT * FROM job_cards WHERE ref = 'GAL-BD-2026-09-#7'");
   assert.strictEqual(sep7.reported_at, '2026-09-04 11:00');

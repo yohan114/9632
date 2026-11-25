@@ -19,7 +19,7 @@ const audit = require('../src/lib/audit');
 // Format: [ym, sheetNo, startStamp, vehRef, endStamp, dhmLabel, totalHoursLabel, description, waiveBilling]
 const BREAKDOWN_ROWS = [
   // ---- September 2026 (25 rows) ----
-  ['2026-09', 1,  '2026-09-01 09:00', 'HEX-28',   '2026-09-02 12:45', '1d 3h 45m',  '27h 45m',  'Arm welding work (written: "Arame Welding work")', false],
+  ['2026-09', 1,  '2026-09-01 09:00', 'HEX-23',   '2026-09-02 12:45', '1d 3h 45m',  '27h 45m',  'Arm welding work (written: "Arame Welding work")', false],
   ['2026-09', 2,  '2026-09-01 11:30', 'MG-07',    '2026-09-01 13:15', '0d 1h 45m',  '1h 45m',   'Fuel repair', false],
   ['2026-09', 3,  '2026-09-01 14:10', 'SR-12',    '2026-09-01 15:40', '0d 1h 30m',  '1h 30m',   'Fuel and vibration motor repair', false],
   ['2026-09', 4,  '2026-09-01 15:30', 'LB-25',    '2026-09-26 15:30', '25d 0h 00m', '600h 00m', 'Engine sump repair', false],
