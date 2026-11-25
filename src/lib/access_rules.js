@@ -28,7 +28,7 @@ const fail = (status, msg) => { const e = new Error(msg); e.status = status; thr
 
 function capsOf(user) {
   if (!user) return [];
-  return Array.isArray(user.caps) ? user.caps : capabilities.capsForRoles(user.roles || []);
+  return Array.isArray(user.caps) ? user.caps : capabilities.effectiveCaps(user);
 }
 
 /** Safety Rule (Plan §B.4): nobody can change their own access. */
@@ -68,7 +68,7 @@ function assertCanAssignRoles(actor, roleNames) {
     if (missing.length) fail(403, `You cannot give the role "${role}": it has permissions you do not hold (${missing.length}).`);
     for (const m of permissions.MODULE_KEYS) {
       const need = permissions.levelForRoles([role], m);
-      const have = permissions.levelForRoles(actor.roles || [], m);
+      const have = permissions.effectiveLevel(actor, m);
       if (permissions.rank(need) > permissions.rank(have)) {
         fail(403, `You cannot give the role "${role}": it has more ${m} clearance than you (${need}).`);
       }
@@ -88,7 +88,7 @@ function userIsAdmin(userId) {
  * A non-admin may only manage someone whose access is entirely within their own. Otherwise
  * "reset password" is a way in: reset the password of someone with more permissions, sign in as
  * them, and every rule above has been stepped around. So an admin account is off limits, and so is
- * any account holding a role the actor could not have given.
+ * any account holding a role or override the actor could not have given.
  */
 function assertCanManageUser(actor, targetUserId) {
   if (isAdmin(actor)) return;
@@ -97,6 +97,12 @@ function assertCanManageUser(actor, targetUserId) {
                            WHERE ur.user_id = ?`, targetUserId).map((r) => r.name);
   try {
     assertCanAssignRoles(actor, theirRoles);
+    const mine = new Set(capsOf(actor));
+    const targetUserRow = get('SELECT access_until FROM users WHERE id = ?', targetUserId) || {};
+    const targetCaps = capabilities.effectiveCaps({ id: Number(targetUserId), roles: theirRoles, access_until: targetUserRow.access_until, skipDelegations: true });
+    if (targetCaps.some((c) => !mine.has(c))) {
+      fail(403, 'Target holds capabilities outside your own');
+    }
   } catch (e) {
     fail(403, 'You can only change accounts whose access is within your own. Ask an admin.');
   }

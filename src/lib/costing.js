@@ -155,16 +155,29 @@ function computeJobCost(jobId) {
   const field = job.field && job.field_km > 0 && job.field_km_rate != null ? job.field_km * job.field_km_rate : 0;
   const travel = labourLines.filter((l) => l.travel);
 
-  // The external WORK value is deliberately EXCLUDED (owner's personal value): not added to the total,
-  // external_cost stays 0. External REPAIR charges DO count (they sit inside material).
-  const total = labour + material + oil + general + field;
+  // --- posted CCOM outsourcing invoices (vendor invoices linked via outsourcing_cost_links) ---
+  let ccomCost = 0;
+  try {
+    const ccomRow = get(
+      `SELECT COALESCE(SUM(ocl.amount), 0) AS ccom_cost
+         FROM outsourcing_cost_links ocl
+         JOIN outsourcing_requests orq ON orq.id = ocl.request_id
+        WHERE orq.repair_job_id = ? AND ocl.posted_to_parent = 1`,
+      jobId
+    );
+    ccomCost = Number(ccomRow && ccomRow.ccom_cost) || 0;
+  } catch (_) {}
+
+  // The external WORK value is deliberately EXCLUDED (owner's personal value): not added to the total.
+  // External REPAIR charges sit inside material; posted CCOM outsourcing invoices sit inside external_cost.
+  const total = labour + material + oil + general + field + ccomCost;
   return {
     labour_cost: round2(labour),
     material_cost: round2(material),
     outside_cost: round2(outside),
     oil_cost: round2(oil),
     general_cost: round2(general),
-    external_cost: 0,
+    external_cost: round2(ccomCost),
     field_cost: round2(field),
     // Hours of the travel LINES (a crew of two travelling 2 h is 2 h on the road, charged twice).
     travel_hours: round2((get('SELECT COALESCE(SUM(hours),0) h FROM job_daily_work WHERE job_id = ? AND travel = 1 AND is_external = 0', jobId) || {}).h),

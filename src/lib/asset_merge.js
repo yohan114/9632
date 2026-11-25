@@ -481,10 +481,13 @@ function findDuplicateCandidates({ limit = 50 } = {}) {
   const assets = all(`
     SELECT a.id, a.code, a.code_norm, a.registration, a.ec_code, a.brand, a.type, a.category,
            a.in_register, a.ownership, a.status, a.meter_type, a.current_hours,
-           (SELECT COUNT(*) FROM fuel_issues fi WHERE fi.asset_id = a.id AND fi.is_voided = 0) AS fuel_count,
-           (SELECT COUNT(*) FROM job_cards j WHERE j.asset_id = a.id) AS job_count,
-           (SELECT COUNT(*) FROM fleet_bills fb WHERE fb.asset_id = a.id) AS bill_count
+           COALESCE(fc.cnt, 0) AS fuel_count,
+           COALESCE(jc.cnt, 0) AS job_count,
+           COALESCE(bc.cnt, 0) AS bill_count
       FROM assets a
+      LEFT JOIN (SELECT asset_id, COUNT(*) AS cnt FROM fuel_issues WHERE is_voided = 0 GROUP BY asset_id) fc ON fc.asset_id = a.id
+      LEFT JOIN (SELECT asset_id, COUNT(*) AS cnt FROM job_cards GROUP BY asset_id) jc ON jc.asset_id = a.id
+      LEFT JOIN (SELECT asset_id, COUNT(*) AS cnt FROM fleet_bills GROUP BY asset_id) bc ON bc.asset_id = a.id
      ORDER BY a.in_register DESC, a.id ASC
   `);
 

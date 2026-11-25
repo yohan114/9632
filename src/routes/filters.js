@@ -598,6 +598,10 @@ function writeServiceLines(sid, p, opts = {}) {
 
 router.post('/services', asyncHandler((req, res) => {
   const b = req.body;
+  const explicitWs = b.workshop_id ? toInt(b.workshop_id) : null;
+  if (explicitWs && !scope.mayReach(req.user, explicitWs)) {
+    return res.status(403).json({ error: 'You cannot record a service in another workshop.' });
+  }
   const p = readServicePayload(b, req.user);
   const { assetId, vehicleLabel, oils, labourRate, sundryRate,
     partsSubtotal, labourCharge, sundryAmount, grandTotal, date } = p;

@@ -767,6 +767,13 @@
         };
         meterInp.oninput = () => { clearTimeout(calcTimer); calcTimer = setTimeout(runRecommendCalc, 240); };
         prevMeterInp.oninput = () => { clearTimeout(calcTimer); calcTimer = setTimeout(runRecommendCalc, 240); };
+
+        const prefillVeh = (queryParams.get('vehicle') || '').trim();
+        if (prefillVeh && assetInp && !assetInp.value) {
+          assetInp.value = prefillVeh;
+          runRecommendCalc();
+          loadVehicleComplianceWarning(qs('#tfr_compliance_banner', box), { assetCode: prefillVeh });
+        }
         approxInp.oninput = () => {
           manualApproxEdited = approxInp.value.trim() !== '';
           approxSrcEl.textContent = manualApproxEdited ? '(manual entry)' : '(auto from delta)';

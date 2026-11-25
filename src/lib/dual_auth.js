@@ -241,16 +241,24 @@ function rejectDualAuthRequest(requestId, rejectedBy, note = '') {
 
 function listPendingDualAuth(user) {
   const currentUserId = user && user.id ? user.id : 0;
-  // User cannot approve their own requests, but we return all for dashboard counting, marking can_approve
+  const { hasCap } = require('./auth');
+  const isApproverOrAdmin = user && (
+    (Array.isArray(user.roles) && user.roles.includes('admin')) ||
+    hasCap(user, 'dual_auth.override') ||
+    hasCap(user, 'access.manage') ||
+    hasCap(user, 'system.status')
+  );
+  const scopeFilter = isApproverOrAdmin ? '' : ' AND d.requested_by = ?';
+  const params = isApproverOrAdmin ? [currentUserId] : [currentUserId, currentUserId];
   return all(
     `SELECT d.*,
             u1.full_name AS requester_name, u1.username AS requester_username,
             (d.requested_by != ?) AS can_approve
        FROM dual_auth_requests d
        JOIN users u1 ON u1.id = d.requested_by
-      WHERE d.status = 'PENDING'
+      WHERE d.status = 'PENDING'${scopeFilter}
       ORDER BY d.requested_at DESC`,
-    currentUserId
+    ...params
   );
 }
 

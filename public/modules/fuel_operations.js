@@ -1609,7 +1609,8 @@
 
           qsa('.sc-quick-pick', box).forEach((b) => {
             b.onclick = () => {
-              location.hash = `#/transport-fuel?tab=request`;
+              const code = b.getAttribute('data-code') || '';
+              location.hash = `#/transport-fuel?tab=request${code ? '&vehicle=' + encodeURIComponent(code) : ''}`;
             };
           });
           qsa('.sc-pump-dispense', box).forEach((b) => {

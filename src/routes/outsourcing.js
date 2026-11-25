@@ -731,7 +731,7 @@ router.post('/requests/:id/post-cost', requireCap('outsourcing.cost.post'), asyn
   tx(() => {
     if (r.repair_job_id) {
       costType = 'job_cards_external_cost';
-      // Post to job_cards.external_cost and refresh totals
+      // Post to job_cards.external_cost and total_cost; costing.js computeJobCost sums outsourcing_cost_links on subsequent refreshes
       const job = get('SELECT external_cost, total_cost FROM job_cards WHERE id = ?', r.repair_job_id);
       if (job) {
         const newExt = Math.round(((job.external_cost || 0) + amount) * 100) / 100;

@@ -316,15 +316,20 @@ function effectiveLevel(user, sectionKey) {
   if (roles.includes('admin')) return 'full';
 
   if (isAccessExpired(user)) {
-    let hasOverrides = false;
+    let hasPositiveElevation = false;
+    const baseLevel = levelForRoles(roles, sectionKey);
     if (user.id) {
       try {
-        const rowP = get('SELECT 1 FROM user_permissions WHERE user_id = ? LIMIT 1', user.id);
-        const rowC = get('SELECT 1 FROM user_capabilities WHERE user_id = ? LIMIT 1', user.id);
-        hasOverrides = !!(rowP || rowC);
+        const posCap = get('SELECT 1 FROM user_capabilities WHERE user_id = ? AND granted = 1 LIMIT 1', user.id);
+        const permRows = all('SELECT section, level FROM user_permissions WHERE user_id = ?', user.id);
+        hasPositiveElevation = !!posCap || permRows.some((r) => rank(r.level) > rank(levelForRoles(roles, r.section)));
+        if (!hasPositiveElevation) return 'none';
+        const row = permRows.find((r) => r.section === sectionKey);
+        if (row && LEVELS.includes(row.level) && rank(row.level) < rank(baseLevel)) {
+          return row.level;
+        }
+        return baseLevel;
       } catch (_) {}
-      if (!hasOverrides) return 'none';
-      return levelForRoles(roles, sectionKey);
     }
     return 'none';
   }

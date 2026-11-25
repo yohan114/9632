@@ -71,6 +71,7 @@ async function generatePdfBuffer(html) {
     execFileSync(browserPath, [
       '--headless',
       '--disable-gpu',
+      '--disable-javascript',
       '--run-all-compositor-stages-before-draw',
       '--no-pdf-header-footer',
       `--user-data-dir=${tmpProfile}`,
@@ -102,10 +103,11 @@ async function generatePdfBuffer(html) {
  * Express middleware helper to stream HTML as a downloadable PDF attachment.
  */
 async function sendPdf(res, filename, html) {
+  const safeName = String(filename || 'document.pdf').replace(/[\r\n"\\]/g, '_');
   try {
     const buf = await generatePdfBuffer(html);
     res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.setHeader('Content-Disposition', `attachment; filename="${safeName}"`);
     res.setHeader('Content-Length', buf.length);
     res.end(buf);
   } catch (err) {
@@ -113,6 +115,7 @@ async function sendPdf(res, filename, html) {
     // with a header note so the user is never blocked from printing/saving.
     console.warn('PDF generator fallback to HTML print:', err.message);
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.setHeader('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:;");
     res.send(html);
   }
 }

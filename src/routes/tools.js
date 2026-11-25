@@ -771,12 +771,9 @@ router.get('/scrap-requests/:id/download.pdf', requireCap('tools.view', 'tools.s
   if (!sr) return res.status(404).json({ error: 'Scrap request not found' });
 
   try {
-    const { htmlToPdfBuffer } = require('../lib/pdf_generator');
+    const { sendPdf } = require('../lib/pdf_generator');
     const html = renderScrapCertificateHtml(sr, true);
-    const pdfBuf = await htmlToPdfBuffer(html);
-    res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `attachment; filename="${sr.request_no}_Scrap_Certificate.pdf"`);
-    res.send(pdfBuf);
+    return await sendPdf(res, `${sr.request_no}_Scrap_Certificate.pdf`, html);
   } catch (err) {
     res.status(500).json({ error: 'PDF generation failed: ' + err.message });
   }

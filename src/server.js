@@ -145,7 +145,7 @@ app.get('/uploads/*', requireAuth, asyncHandler(async (req, res) => {
   }
   // 2. Technical and fabrication drawings
   else if (normalized.startsWith('drawings/')) {
-    if (!hasCap(user, 'fabrication.view') && !hasCap(user, 'jobs.view')) {
+    if (!hasCap(user, 'fabrication.view') && !hasCap(user, 'fabrication.drawings')) {
       return res.status(403).json({ error: 'Forbidden: Insufficient capability to view technical drawings' });
     }
   }
@@ -159,6 +159,12 @@ app.get('/uploads/*', requireAuth, asyncHandler(async (req, res) => {
   else if (normalized.startsWith('outsourcing/')) {
     if (!hasCap(user, 'outsourcing.view')) {
       return res.status(403).json({ error: 'Forbidden: Insufficient capability outsourcing.view' });
+    }
+  }
+  // 5. Default-closed gate for any other subfolder under /uploads/
+  else {
+    if (!hasCap(user, 'stores.view') && !hasCap(user, 'jobs.view') && !hasCap(user, 'fuel.view') && !hasCap(user, 'assets.view') && !hasCap(user, 'fabrication.view')) {
+      return res.status(403).json({ error: 'Forbidden: Insufficient capability to view uploaded file' });
     }
   }
 

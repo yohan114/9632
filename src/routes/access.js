@@ -937,8 +937,20 @@ router.post('/people/:id/save', requireCap('access.manage'), asyncHandler((req, 
     }
   }
 
+  // Normalize capability updates so string/numeric truthy values ("1", "true", 1) cannot bypass grant & SoD checks
+  const normalizedCapUpdates = {};
+  for (const [k, val] of Object.entries(capUpdates)) {
+    if (val === null || val === undefined || val === '') {
+      normalizedCapUpdates[k] = null;
+    } else if (val === false || val === 0 || val === '0' || val === 'false') {
+      normalizedCapUpdates[k] = false;
+    } else {
+      normalizedCapUpdates[k] = true;
+    }
+  }
+
   // Check capability limits
-  const capsToGrant = Object.entries(capUpdates)
+  const capsToGrant = Object.entries(normalizedCapUpdates)
     .filter(([, val]) => val === true)
     .map(([k]) => k);
   if (capsToGrant.length > 0) {
@@ -949,15 +961,19 @@ router.post('/people/:id/save', requireCap('access.manage'), asyncHandler((req, 
   let newRoleRows = null;
   if (Array.isArray(b.roles)) {
     const cleanRoles = b.roles.map((r) => (typeof r === 'object' ? (r.name || r.id) : r)).filter(Boolean);
-    newRoleRows = cleanRoles.map((r) => {
-      return typeof r === 'number' || /^\d+$/.test(String(r))
-        ? get('SELECT id, name FROM roles WHERE id = ?', Number(r))
-        : get('SELECT id, name FROM roles WHERE name = ?', String(r));
-    }).filter(Boolean);
+    newRoleRows = [];
+    for (const r of cleanRoles) {
+      const row = (typeof r === 'number' || /^\d+$/.test(String(r)))
+        ? get('SELECT id, name FROM roles WHERE id = ? AND COALESCE(active, 1) = 1', Number(r))
+        : get('SELECT id, name FROM roles WHERE name = ? AND COALESCE(active, 1) = 1', String(r));
+      if (!row) return res.status(400).json({ error: `Role not found or inactive: ${r}` });
+      newRoleRows.push(row);
+    }
 
     if (newRoleRows.some((r) => r.name === 'admin') && !isAdminActor) {
       return res.status(403).json({ error: 'Only an Administrator can grant the admin role.' });
     }
+    rules.assertCanAssignRoles(req.user, newRoleRows.map((r) => r.name));
   }
 
   // Check Segregation of Duties (SoD) conflict rules unless target user has admin role
@@ -971,12 +987,12 @@ router.post('/people/:id/save', requireCap('access.manage'), asyncHandler((req, 
       if (eo.granted) prospectiveCaps.add(eo.capability);
       else prospectiveCaps.delete(eo.capability);
     }
-    for (const [k, val] of Object.entries(capUpdates)) {
-      if (val === true || val === 1) {
+    for (const [k, val] of Object.entries(normalizedCapUpdates)) {
+      if (val === true) {
         prospectiveCaps.add(k);
-      } else if (val === false || val === 0) {
+      } else if (val === false) {
         prospectiveCaps.delete(k);
-      } else if (val === null || val === undefined || val === '') {
+      } else if (val === null) {
         if (baseCaps.includes(k)) prospectiveCaps.add(k);
         else prospectiveCaps.delete(k);
       }
@@ -1019,11 +1035,11 @@ router.post('/people/:id/save', requireCap('access.manage'), asyncHandler((req, 
     }
 
     // 2. Save capability overrides
-    for (const [capKey, granted] of Object.entries(capUpdates)) {
-      if (granted === null || granted === undefined || granted === '') {
+    for (const [capKey, grantVal] of Object.entries(normalizedCapUpdates)) {
+      if (grantVal === null) {
         capabilities.removeUserCapability(userId, capKey);
       } else {
-        capabilities.setUserCapability(userId, capKey, !!granted, req.user.id);
+        capabilities.setUserCapability(userId, capKey, grantVal, req.user.id);
       }
     }
 

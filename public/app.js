@@ -328,7 +328,7 @@ function wireSignaturePad(root, id, savedUrl) {
 // data URL (kept small so it stores in the DB alongside the record), show a preview.
 function imageUploadHtml(id, existing) {
   return `<div class="imgup" id="${id}">
-    <div class="imgup-preview" style="margin:6px 0">${existing ? `<img src="${existing}" style="max-height:150px;max-width:100%;border:1px solid var(--border);border-radius:6px">` : '<span class="muted">No photo</span>'}</div>
+    <div class="imgup-preview" style="margin:6px 0">${existing ? `<img src="${esc(existing)}" style="max-height:150px;max-width:100%;border:1px solid var(--border);border-radius:6px">` : '<span class="muted">No photo</span>'}</div>
     <label class="btn sm" style="cursor:pointer;margin:0">📷 Choose photo<input type="file" accept="image/png,image/jpeg,image/webp" style="display:none"></label>
     <button type="button" class="btn sm" data-imgclear style="margin-left:6px">Remove</button>
   </div>`;
@@ -338,7 +338,7 @@ function wireImageUpload(root, id, existing) {
   const preview = qs('.imgup-preview', box);
   const fileInput = qs('input[type=file]', box);
   let dataUrl = existing || null;
-  const setPreview = () => { preview.innerHTML = dataUrl ? `<img src="${dataUrl}" style="max-height:150px;max-width:100%;border:1px solid var(--border);border-radius:6px">` : '<span class="muted">No photo</span>'; };
+  const setPreview = () => { preview.innerHTML = dataUrl ? `<img src="${esc(dataUrl)}" style="max-height:150px;max-width:100%;border:1px solid var(--border);border-radius:6px">` : '<span class="muted">No photo</span>'; };
   fileInput.onchange = (e) => {
     const file = e.target.files[0]; if (!file) return;
     const fr = new FileReader();
@@ -401,7 +401,7 @@ function wireMultiImage(root, id, existing) {
   const shots = (existing || []).slice(0, max);
   const draw = () => {
     grid.innerHTML = shots.length ? shots.map((p, i) => `<div style="position:relative">
-        <img src="${p}" style="height:88px;width:88px;object-fit:cover;border:1px solid var(--border);border-radius:6px">
+        <img src="${esc(p)}" style="height:88px;width:88px;object-fit:cover;border:1px solid var(--border);border-radius:6px">
         <button type="button" class="btn sm danger" data-rm="${i}" title="Remove this photo"
           style="position:absolute;top:-6px;right:-6px;padding:0 6px;line-height:18px">✕</button>
       </div>`).join('') : '<span class="muted">No photos yet</span>';
@@ -23861,8 +23861,8 @@ function renderLogin(err) {
     <div class="brand">Workshop<span style="color:var(--primary)">One</span></div>
     <div class="sub">Central Workshop Master System<br>Edward &amp; Christie · Badalgama</div>
     ${err ? `<p class="err">${esc(err)}</p>` : ''}
-    <label>Username</label><input id="u" autofocus>
-    <label>Password</label><input id="p" type="password">
+    <label>Username</label><input id="u" autocomplete="username" autofocus>
+    <label>Password</label><input id="p" type="password" autocomplete="current-password">
     <button class="primary" id="login" style="width:100%;margin-top:14px">Sign In</button>
     ${window.WORKSHOPONE_IS_PACKAGED_APP
       // Only the packaged app needs a server address — it is loaded off the device and has no

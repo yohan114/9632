@@ -24,9 +24,15 @@ function parseODataParams(query, defaultTop = 50, maxTop = 500) {
   return { top, skip, count, select, filter, orderby };
 }
 
+// Helper to build safe @odata.context baseUrl
+function safeODataBase(req) {
+  const safeHost = String(req.get('host') || 'localhost').replace(/[^a-zA-Z0-9.:[\]-]/g, '');
+  return `${req.protocol}://${safeHost}${req.baseUrl}`;
+}
+
 // 1. OData v4 Service Document
-router.get('/', (req, res) => {
-  const baseUrl = `${req.protocol}://${req.get('host')}${req.baseUrl}`;
+router.get('/', requireSapAuth(), (req, res) => {
+  const baseUrl = safeODataBase(req);
   res.json({
     '@odata.context': `${baseUrl}/$metadata`,
     value: [
@@ -39,7 +45,7 @@ router.get('/', (req, res) => {
 });
 
 // 2. OData v4 Metadata Document ($metadata)
-router.get('/\\$metadata', (req, res) => {
+router.get('/\\$metadata', requireSapAuth(), (req, res) => {
   res.set('Content-Type', 'application/xml; charset=utf-8');
   const xml = `<?xml version="1.0" encoding="utf-8"?>
 <edmx:Edmx Version="4.0" xmlns:edmx="http://docs.oasis-open.org/odata/ns/edmx">
@@ -142,8 +148,13 @@ router.get('/Equipments', requireSapAuth('EAM_Tech'), (req, res) => {
 // 4. MaintenanceOrders Entity Set (SAP PM Maintenance Orders / IW31)
 router.get('/MaintenanceOrders', requireSapAuth('EAM_Tech'), (req, res) => {
   const { top, skip, count } = parseODataParams(req.query);
+  const scope = require('../../lib/scope');
+  const isUserSession = !!(req.user && (!req.sapClient || req.sapClient.id !== 'sap-integration-gateway'));
+  const wsFilter = isUserSession ? scope.wsSql('j.workshop_id', scope.reach(req.user)) : '';
+  const fabFilter = isUserSession ? scope.fabricationFilter(req.user, 'j') : '';
+  const whereSql = `WHERE 1=1${wsFilter}${fabFilter}`;
 
-  const total = count ? (get('SELECT COUNT(*) as cnt FROM job_cards') || {}).cnt || 0 : undefined;
+  const total = count ? (get(`SELECT COUNT(*) as cnt FROM job_cards j ${whereSql}`) || {}).cnt || 0 : undefined;
   const rows = all(`
     SELECT j.id AS OrderId,
            j.job_no AS OrderNumber,
@@ -156,11 +167,12 @@ router.get('/MaintenanceOrders', requireSapAuth('EAM_Tech'), (req, res) => {
            COALESCE(w.name, 'Central Workshop') AS Workshop
       FROM job_cards j
       LEFT JOIN workshops w ON w.id = j.workshop_id
+      ${whereSql}
      ORDER BY j.id DESC
      LIMIT ? OFFSET ?
   `, top, skip);
 
-  const baseUrl = `${req.protocol}://${req.get('host')}${req.baseUrl}`;
+  const baseUrl = safeODataBase(req);
   const response = {
     '@odata.context': `${baseUrl}/$metadata#MaintenanceOrders`,
     value: rows

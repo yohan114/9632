@@ -81,7 +81,7 @@ function listAssets(query = {}, user = null) {
        LEFT JOIN projects p ON p.id = a.current_project_id
        ${where}
       ORDER BY a.code
-      LIMIT ${toInt(query.limit, 200)}`,
+      LIMIT ${Math.max(1, Math.min(100000, toInt(query.limit, 200)))}`,
     ...params
   );
 }
@@ -131,7 +131,7 @@ router.get('/search', asyncHandler((req, res) => {
   }
   const where = clauses.length ? 'WHERE ' + clauses.join(' AND ') : '';
   const orderClause = q ? 'ORDER BY in_register DESC, code' : 'ORDER BY in_register DESC, code';
-  res.json(all(`SELECT id, code, registration, asset_class FROM assets ${where} ${orderClause} LIMIT ${toInt(req.query.limit, 20)}`, ...params));
+  res.json(all(`SELECT id, code, registration, asset_class FROM assets ${where} ${orderClause} LIMIT ${Math.max(1, Math.min(1000, toInt(req.query.limit, 20)))}`, ...params));
 }));
 
 // Stage C Pillar 2: Duplicate Detection, Dry-Run Preview, Safe Merge & Quick Triage

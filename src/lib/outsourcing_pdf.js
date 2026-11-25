@@ -68,8 +68,10 @@ function buildHtml(request, lines, approval = null, isDraft = true) {
   // Electronic Signature / Stamp for Approved by
   let signatureBlock = '';
   if (isApproved && approval) {
-    if (approval.signature_data && approval.signature_data.startsWith('data:image')) {
-      signatureBlock = `<img src="${approval.signature_data}" style="max-height: 48px; max-width: 180px; display: block; margin-bottom: 4px;" alt="Signature" />`;
+    const sigRaw = approval.signature_data ? String(approval.signature_data).trim() : '';
+    const validSigData = /^data:image\/(?:png|jpeg|jpg|webp|gif);base64,[A-Za-z0-9+/=\s]+$/i.test(sigRaw);
+    if (validSigData) {
+      signatureBlock = `<img src="${esc(sigRaw)}" style="max-height: 48px; max-width: 180px; display: block; margin-bottom: 4px;" alt="Signature" />`;
     } else {
       signatureBlock = `
         <div class="e-signature-badge">

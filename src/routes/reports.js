@@ -457,6 +457,232 @@ ${s.general.length ? sect(5, 'General / store items issued',
 // received, and the work done. ?detail=0 gives the one-line-per-job summary only.
 // Current-era jobs (2026 onward — the older imported history is excluded), newest attended
 // first. `from` is optional: give one to show only jobs touched on/after that date.
+function batchJobReports(rows) {
+  if (!rows.length) return [];
+  const idsJson = JSON.stringify(rows.map((r) => r.id));
+  const byJob = (arr) => {
+    const m = new Map();
+    for (const x of arr) {
+      let list = m.get(x.job_id);
+      if (!list) { list = []; m.set(x.job_id, list); }
+      list.push(x);
+    }
+    return m;
+  };
+
+  const dailyAll = all(
+    `SELECT job_id, work_date, mechanic, description, hours, is_external, external_value, outside_labour, travel
+       FROM job_daily_work
+      WHERE job_id IN (SELECT value FROM json_each(?))
+      ORDER BY work_date, id`,
+    idsJson
+  );
+  const partsAll = all(
+    `SELECT * FROM job_parts WHERE job_id IN (SELECT value FROM json_each(?))`,
+    idsJson
+  );
+  const oilAll = all(
+    `SELECT sl.job_id, sl.product_id, sl.txn_date, sl.qty, sl.unit_price, sl.voided, pr.name AS product_name, pr.unit
+       FROM stock_ledger sl JOIN products pr ON pr.id = sl.product_id
+      WHERE sl.job_id IN (SELECT value FROM json_each(?)) AND sl.kind = 'issue'
+      ORDER BY sl.txn_date`,
+    idsJson
+  );
+  const genAll = all(
+    `SELECT t.job_id, t.txn_date, t.qty, t.unit_price, t.source_issue_id, si.name AS item_name, si.unit_cost
+       FROM general_item_txns t LEFT JOIN store_items si ON si.id = t.store_item_id
+      WHERE t.job_id IN (SELECT value FROM json_each(?)) AND t.txn_type = 'issue'
+      ORDER BY t.txn_date`,
+    idsJson
+  );
+  const requestedAll = all(
+    `SELECT DISTINCT sub.job_id, ml.id, m.mrn_no, m.req_date, ml.description, ml.category, ml.qty,
+            COALESCE(ml.qty_received,0) AS qty_received, (ml.qty - COALESCE(ml.qty_received,0)) AS pending,
+            COALESCE(ml.purchase_source, m.purchase_source,
+                     (SELECT g.purchase_source_norm FROM grn g
+                       WHERE g.mrn_line_id = ml.id AND g.purchase_source_norm IS NOT NULL LIMIT 1)) AS source
+       FROM (
+         SELECT m.job_id AS job_id, ml.id AS ml_id
+           FROM mrn_lines ml JOIN mrn m ON m.id = ml.mrn_id
+          WHERE m.job_id IN (SELECT value FROM json_each(?))
+         UNION
+         SELECT jp.job_id AS job_id, jp.mrn_line_id AS ml_id
+           FROM job_parts jp
+          WHERE jp.job_id IN (SELECT value FROM json_each(?)) AND jp.mrn_line_id IS NOT NULL
+       ) sub
+       JOIN mrn_lines ml ON ml.id = sub.ml_id
+       JOIN mrn m ON m.id = ml.mrn_id
+      ORDER BY m.req_date, m.mrn_no, ml.id`,
+    idsJson, idsJson
+  );
+  const receivedAll = all(
+    `SELECT DISTINCT sub.job_id, g.id, g.grn_no, g.description, g.qty, g.unit_price, g.supplier, g.invoice_no,
+            g.delivery_date, COALESCE(g.purchase_source_norm, ml.purchase_source, m.purchase_source) AS source,
+            m.mrn_no
+       FROM (
+         SELECT m.job_id AS job_id, g.id AS g_id
+           FROM grn g JOIN mrn m ON m.id = g.mrn_id
+          WHERE m.job_id IN (SELECT value FROM json_each(?))
+         UNION
+         SELECT jp.job_id AS job_id, jp.source_id AS g_id
+           FROM job_parts jp
+          WHERE jp.job_id IN (SELECT value FROM json_each(?)) AND jp.source_type = 'grn' AND jp.source_id IS NOT NULL
+       ) sub
+       JOIN grn g ON g.id = sub.g_id
+       LEFT JOIN mrn m ON m.id = g.mrn_id
+       LEFT JOIN mrn_lines ml ON ml.id = g.mrn_line_id
+      ORDER BY g.delivery_date, g.id`,
+    idsJson, idsJson
+  );
+
+  const ccomMap = new Map();
+  try {
+    for (const c of all(
+      `SELECT orq.repair_job_id AS job_id, COALESCE(SUM(ocl.amount), 0) AS ccom_cost
+         FROM outsourcing_cost_links ocl
+         JOIN outsourcing_requests orq ON orq.id = ocl.request_id
+        WHERE orq.repair_job_id IN (SELECT value FROM json_each(?)) AND ocl.posted_to_parent = 1
+        GROUP BY orq.repair_job_id`,
+      idsJson
+    )) {
+      ccomMap.set(c.job_id, Number(c.ccom_cost) || 0);
+    }
+  } catch (_) {}
+
+  const dailyMap = byJob(dailyAll);
+  const partsMap = byJob(partsAll);
+  const oilMap = byJob(oilAll);
+  const genMap = byJob(genAll);
+  const reqMap = byJob(requestedAll);
+  const recvMap = byJob(receivedAll);
+
+  const rateMemo = new Map();
+  const prodPriceMemo = new Map();
+  const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+  const today = new Date().toISOString().slice(0, 10);
+
+  return rows.map((j) => {
+    const requested = reqMap.get(j.id) || [];
+    const received = recvMap.get(j.id) || [];
+    const dailyWork = dailyMap.get(j.id) || [];
+    const parts = partsMap.get(j.id) || [];
+    const oilRaw = oilMap.get(j.id) || [];
+    const oil = oilRaw.filter((sl) => !sl.voided);
+    const general = genMap.get(j.id) || [];
+
+    let cost;
+    if (j.type === 'fabrication') {
+      cost = costing.reconciledCost(j.id);
+    } else {
+      const jobDate = (j.requested_at || today).slice(0, 10);
+      const labourLines = [];
+      let labour = 0;
+      if (j.type === 'service') {
+        labour = j.flat_labour != null ? j.flat_labour : 0;
+        if (j.flat_labour != null) {
+          labourLines.push({ mechanic: '(service flat charge)', hours: 0, rate: null, amount: j.flat_labour, work_date: jobDate, flat: true });
+        }
+      } else {
+        for (const w of dailyWork) {
+          if (w.is_external) continue;
+          const wd = (w.work_date || jobDate).slice(0, 10);
+          const hrs = w.hours || 0;
+          const names = mechanics.splitMechanics(w.mechanic);
+          if (!names.length) { labourLines.push({ mechanic: w.mechanic, hours: hrs, rate: null, amount: 0, work_date: w.work_date }); continue; }
+          for (const nm of names) {
+            const rk = `${nm}|${wd}`;
+            let rate = rateMemo.get(rk);
+            if (rate === undefined) {
+              rate = costing.labourRateFor(nm, wd);
+              rateMemo.set(rk, rate);
+            }
+            const amount = rate != null ? hrs * rate : 0;
+            labour += amount;
+            labourLines.push({ mechanic: nm, hours: hrs, rate, amount, work_date: w.work_date, travel: !!w.travel });
+          }
+        }
+      }
+
+      let material = 0;
+      let outside = 0;
+      const lubeParts = [];
+      const issuePartIds = new Set();
+      for (const p of parts) {
+        if (p.source_type === 'issue' && p.source_id != null) issuePartIds.add(p.source_id);
+        if (p.unit_price == null) continue;
+        if (lubricants.isLubricant(p.description, (p.created_at || jobDate || '').slice(0, 10))) { lubeParts.push(p); continue; }
+        material += (p.qty || 0) * p.unit_price;
+        if (p.is_external_repair || p.source_type === 'external') outside += (p.qty || 0) * p.unit_price;
+      }
+
+      let oilCost = 0;
+      for (const p of lubeParts) oilCost += (p.qty || 0) * p.unit_price;
+      for (const l of oilRaw) {
+        const qty = Math.abs(l.qty || 0);
+        let price = l.unit_price;
+        if (price == null) {
+          const od = (l.txn_date || jobDate).slice(0, 10);
+          const pk = `${l.product_id}|${od}`;
+          price = prodPriceMemo.get(pk);
+          if (price === undefined) {
+            price = costing.productPriceOn(l.product_id, od);
+            prodPriceMemo.set(pk, price);
+          }
+        }
+        if (price != null) oilCost += qty * price;
+      }
+
+      let generalCost = 0;
+      for (const g of general) {
+        if (g.source_issue_id != null && issuePartIds.has(g.source_issue_id)) continue;
+        const price = (g.unit_price != null && g.unit_price > 0) ? g.unit_price : (g.unit_cost || 0);
+        generalCost += Math.abs(g.qty || 0) * price;
+      }
+
+      const fieldCost = j.field && j.field_km > 0 && j.field_km_rate != null ? j.field_km * j.field_km_rate : 0;
+      const ccomCost = ccomMap.get(j.id) || 0;
+      const computedTotal = round2(labour + material + oilCost + generalCost + fieldCost + ccomCost);
+
+      let storedTotal = computedTotal;
+      if (j.is_historical) {
+        if (j.recorded_cost != null && j.recorded_cost > 0) storedTotal = j.recorded_cost;
+        else storedTotal = computedTotal > 0 ? computedTotal : (j.total_cost || 0);
+      }
+
+      const travel = labourLines.filter((l) => l.travel);
+      const travelHours = round2(dailyWork.reduce((s, w) => s + (!w.is_external && w.travel ? (w.hours || 0) : 0), 0));
+      const otherCost = round2(storedTotal - (computedTotal - fieldCost));
+      cost = {
+        labour_cost: round2(labour),
+        material_cost: round2(material),
+        outside_cost: round2(outside),
+        oil_cost: round2(oilCost),
+        general_cost: round2(generalCost),
+        external_cost: round2(ccomCost),
+        field_cost: round2(fieldCost),
+        travel_hours: travelHours,
+        travel_cost: round2(travel.reduce((t, l) => t + (l.amount || 0), 0)),
+        other_cost: otherCost,
+        total_cost: storedTotal,
+        labourLines,
+      };
+    }
+
+    const totals = {
+      ...cost,
+      hours: r2(dailyWork.reduce((s, w) => s + (Number(w.hours) || 0), 0)),
+      requested_lines: requested.length,
+      requested_qty: r2(requested.reduce((s, r) => s + (Number(r.qty) || 0), 0)),
+      received_qty: r2(requested.reduce((s, r) => s + (Number(r.qty_received) || 0), 0)),
+      pending_qty: r2(requested.reduce((s, r) => s + Math.max(0, Number(r.pending) || 0), 0)),
+      received_value: r2(received.reduce((s, g) => s + (Number(g.qty) || 0) * (Number(g.unit_price) || 0), 0)),
+      unpriced: received.filter((g) => g.unit_price == null).length,
+      outside_labour: r2(dailyWork.reduce((s, w) => s + (Number(w.outside_labour) || 0), 0)),
+    };
+    return { ...j, detail: { job: j, requested, received, dailyWork, parts, oil, general, totals } };
+  });
+}
+
 function jobsAttended(from, to, ws = null) {
   const params = [];
   let window = '';
@@ -471,6 +697,7 @@ function jobsAttended(from, to, ws = null) {
 
   const rows = all(
     `SELECT j.id, j.job_no, j.status, j.type, j.description, j.requested_at, j.completed_at,
+            j.flat_labour, j.field, j.field_km, j.field_km_rate, j.is_historical, j.recorded_cost, j.total_cost,
             a.registration AS asset_reg, a.code AS asset_code, a.ec_code AS asset_ec, a.type AS asset_type,
             p.name AS project_name,
             (SELECT MAX(w.work_date) FROM job_daily_work w WHERE w.job_id = j.id) AS last_work
@@ -482,7 +709,7 @@ function jobsAttended(from, to, ws = null) {
                last_work DESC,                                        -- …newest attended at the top
                substr(COALESCE(j.completed_at, j.requested_at, j.created_at),1,10) DESC,
                j.id DESC`, ...params);
-  return rows.map((r) => ({ ...r, detail: jobReport(r.id) }));
+  return batchJobReports(rows);
 }
 
 // ---- Ongoing jobs watchlist (delay points) ---------------------------------

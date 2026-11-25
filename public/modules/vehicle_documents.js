@@ -569,7 +569,9 @@ async function renderVdocTasks(body, sp) {
         ${t.registration ? `<span style="margin-left:6px;font-size:12px;color:var(--text)">[${esc(t.registration)}]</span>` : ''}
       </td>
       <td><b>${esc(t.doc_type_name)}</b></td>
-      <td>${stageBadge}${inlineDelayBadgeHtml(m.req_date, l.last_received, remaining > 0 && !l.is_cancelled && m.approval_status !== 'rejected')}</td>
+      <td>${stageBadge}${t.target_date && t.stage !== 'completed' && String(t.target_date).slice(0, 10) < new Date().toISOString().slice(0, 10)
+        ? `<span class="badge red" style="margin-left:4px;font-size:10px">Overdue (${Math.max(1, Math.floor((Date.now() - new Date(String(t.target_date).slice(0, 10) + 'T00:00:00Z').getTime()) / 86400000))}d)</span>`
+        : ''}</td>
       <td>${esc(t.target_date || '—')}</td>
       <td>${costStr}</td>
       <td>${esc(t.assigned_to_name || '—')}</td>

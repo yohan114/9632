@@ -103,6 +103,9 @@ router.get('/users/:userId/workshops', requireCap('users.manage', 'access.manage
 
 router.post('/users/:userId/workshops', requireCap('users.manage', 'access.manage'), asyncHandler((req, res) => {
   const userId = toInt(req.params.userId);
+  const rules = require('../lib/access_rules');
+  rules.assertNotSelf(req.user, userId);
+  rules.assertCanManageUser(req.user, userId);
   const workshopIds = Array.isArray(req.body.workshop_ids) ? req.body.workshop_ids.map(Number).filter(Boolean) : [];
   const primaryId = toInt(req.body.primary_workshop_id) || (workshopIds[0] || null);
 

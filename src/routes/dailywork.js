@@ -1217,62 +1217,67 @@ router.post('/', requireCap('dailywork.add'), asyncHandler((req, res) => {
     svc = get('SELECT id, asset_id, service_date, job_no FROM service_jobs WHERE id = ?', serviceId);
   }
 
-  if (serviceId && svc) {
-    let assetId = toInt(b.asset_id) || svc.asset_id || null;
-    if (assetId) {
-      const job = jobForEntry(assetId, date);
-      jobId = job ? job.id : forVehicle(assetId);
+  const txOut = tx(() => {
+    if (serviceId && svc) {
+      let assetId = toInt(b.asset_id) || svc.asset_id || null;
+      if (assetId) {
+        const jobRow = jobForEntry(assetId, date);
+        jobId = jobRow ? jobRow.id : forVehicle(assetId);
+      } else {
+        jobId = generalWorkshopJob(workshops.homeOf(req.user));
+      }
+    } else if (b.request_type === 'general') {
+      // General workshop work. Naming a vehicle books the cost to THAT vehicle for the month:
+      // it goes on the vehicle's open card, or on a card created and closed on this work date —
+      // so it reports under the vehicle instead of the shared workshop container.
+      let assetId = toInt(b.asset_id);
+      if (!assetId && rawVeh) {
+        const r = aliases.resolveAsset(rawVeh, { source: 'daily_work' });
+        assetId = r.assetId; if (!r.resolved) unresolved = { raw: rawVeh };
+      }
+      if (assetId) {
+        jobId = forVehicle(assetId);
+      } else {
+        jobId = generalWorkshopJob(workshops.homeOf(req.user));   // no vehicle named (or not recognised yet)
+        // Keep an unrecognised vehicle name on the line so the work isn't lost to the container.
+        if (rawVeh) description = description ? `${rawVeh} — ${description}` : rawVeh;
+      }
+    } else if (toInt(b.job_id)) {
+      jobId = toInt(b.job_id);                     // machine/vehicle → the picked job card
     } else {
-      jobId = generalWorkshopJob(workshops.homeOf(req.user));
+      let assetId = toInt(b.asset_id);
+      if (!assetId && rawVeh) {
+        const r = aliases.resolveAsset(rawVeh, { source: 'daily_work' });
+        assetId = r.assetId; if (!r.resolved) unresolved = { raw: rawVeh };
+      }
+      if (!assetId) return { earlyStatus: 422, earlyBody: { error: 'Choose General, or pick the machine/vehicle job card.' } };
+      const jobRow = jobForEntry(assetId, date);
+      jobId = jobRow ? jobRow.id : forVehicle(assetId);  // no card at all → create one, closed on this date
     }
-  } else if (b.request_type === 'general') {
-    // General workshop work. Naming a vehicle books the cost to THAT vehicle for the month:
-    // it goes on the vehicle's open card, or on a card created and closed on this work date —
-    // so it reports under the vehicle instead of the shared workshop container.
-    let assetId = toInt(b.asset_id);
-    if (!assetId && rawVeh) {
-      const r = aliases.resolveAsset(rawVeh, { source: 'daily_work' });
-      assetId = r.assetId; if (!r.resolved) unresolved = { raw: rawVeh };
-    }
-    if (assetId) {
-      jobId = forVehicle(assetId);
-    } else {
-      jobId = generalWorkshopJob(workshops.homeOf(req.user));   // no vehicle named (or not recognised yet)
-      // Keep an unrecognised vehicle name on the line so the work isn't lost to the container.
-      if (rawVeh) description = description ? `${rawVeh} — ${description}` : rawVeh;
-    }
-  } else if (toInt(b.job_id)) {
-    jobId = toInt(b.job_id);                     // machine/vehicle → the picked job card
-  } else {
-    let assetId = toInt(b.asset_id);
-    if (!assetId && rawVeh) {
-      const r = aliases.resolveAsset(rawVeh, { source: 'daily_work' });
-      assetId = r.assetId; if (!r.resolved) unresolved = { raw: rawVeh };
-    }
-    if (!assetId) return res.status(422).json({ error: 'Choose General, or pick the machine/vehicle job card.' });
-    const job = jobForEntry(assetId, date);
-    jobId = job ? job.id : forVehicle(assetId);  // no card at all → create one, closed on this date
-  }
-  const job = get('SELECT * FROM job_cards WHERE id = ?', jobId);
-  if (!job) return res.status(404).json({ error: 'Job not found' });
-  if (job && job.type === 'fabrication') workType = 'fabrication';
-  assertDailyWorkAllowed(job.id, req.user, [date]);
+    const job = get('SELECT * FROM job_cards WHERE id = ?', jobId);
+    if (!job) return { earlyStatus: 404, earlyBody: { error: 'Job not found' } };
+    if (job && job.type === 'fabrication') workType = 'fabrication';
+    assertDailyWorkAllowed(job.id, req.user, [date]);
 
-  // The machine goes ON THE LINE now, not just into the choice of job card. This route already
-  // worked the asset out — to find or create the card — and then threw it away, which is why the
-  // GENERAL-WS pool has 159 rows whose vehicle is knowable only from the prose someone typed.
-  const lineAsset = toInt(b.asset_id) || job.asset_id || null;
-  const outsideLabour = b.outside_labour !== undefined && b.outside_labour !== null && b.outside_labour !== ''
-    ? Math.max(0, toNum(b.outside_labour, 0))
-    : null;
+    // The machine goes ON THE LINE now, not just into the choice of job card. This route already
+    // worked the asset out — to find or create the card — and then threw it away, which is why the
+    // GENERAL-WS pool has 159 rows whose vehicle is knowable only from the prose someone typed.
+    const lineAsset = toInt(b.asset_id) || job.asset_id || null;
+    const outsideLabour = b.outside_labour !== undefined && b.outside_labour !== null && b.outside_labour !== ''
+      ? Math.max(0, toNum(b.outside_labour, 0))
+      : null;
 
-  const info = run(
-    `INSERT INTO job_daily_work (job_id, work_date, mechanic, description, hours, is_external, external_value, outside_labour, asset_id, travel, service_id, work_type)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    jobId, date, mechanic, description, hours, isExternal, isExternal ? toNum(b.external_value, 0) : 0, outsideLabour, lineAsset,
-    b.travel && !isExternal ? 1 : 0, serviceId, workType
-  );
-  costing.refreshJobTotals(jobId);
+    const info = run(
+      `INSERT INTO job_daily_work (job_id, work_date, mechanic, description, hours, is_external, external_value, outside_labour, asset_id, travel, service_id, work_type)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      jobId, date, mechanic, description, hours, isExternal, isExternal ? toNum(b.external_value, 0) : 0, outsideLabour, lineAsset,
+      b.travel && !isExternal ? 1 : 0, serviceId, workType
+    );
+    costing.refreshJobTotals(jobId);
+    return { job, info, outsideLabour };
+  });
+  if (txOut.earlyStatus) return res.status(txOut.earlyStatus).json(txOut.earlyBody);
+  const { job, info, outsideLabour } = txOut;
   mechanics.syncJobLabourForMonth(date.slice(0, 7));
   audit.record({ userId: req.user.id, entity: 'job_daily_work', entityId: info.lastInsertRowid, action: 'create', after: { job_no: job.job_no, date, auto_created: autoCreated, outside_labour: outsideLabour } });
   rateCache.clear();

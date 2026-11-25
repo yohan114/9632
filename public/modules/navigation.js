@@ -708,7 +708,7 @@
       }
       if (admin || canViewSec('jobs')) {
         tasks.push(
-          callApi(`/jobcards?limit=5&q=${encodeURIComponent(trimmed)}`)
+          callApi(`/jobs?limit=5&q=${encodeURIComponent(trimmed)}`)
             .then((rows) => (Array.isArray(rows) ? rows : []).map((j) => ({
               kind: 'job',
               category: 'Job Cards',

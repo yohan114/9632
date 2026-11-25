@@ -406,6 +406,10 @@
       qs('#btn_print_costing_sheet').onclick = () => {
         const printContent = qs('#printable_costing_card').innerHTML;
         const printWin = window.open('', '_blank', 'width=900,height=750');
+        if (!printWin) {
+          notify('Pop-up blocked — allow pop-ups to print this report.');
+          return;
+        }
         printWin.document.write(`
           <!DOCTYPE html>
           <html>

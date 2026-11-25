@@ -490,37 +490,47 @@ function effectiveCaps(user) {
   if (roles.includes('admin')) return CAP_KEYS.slice();
 
   // Temporary access / elevation check
+  let expiredElevationOnly = false;
   if (user.access_until) {
     const until = new Date(user.access_until);
     if (!isNaN(until.getTime()) && until < new Date()) {
-      let hasOverrides = false;
+      let hasPositiveElevation = false;
       if (user.id) {
         try {
-          const rowC = get('SELECT 1 FROM user_capabilities WHERE user_id = ? LIMIT 1', user.id);
-          const rowP = get('SELECT 1 FROM user_permissions WHERE user_id = ? LIMIT 1', user.id);
-          hasOverrides = !!(rowC || rowP);
+          const posCap = get('SELECT 1 FROM user_capabilities WHERE user_id = ? AND granted = 1 LIMIT 1', user.id);
+          if (posCap) {
+            hasPositiveElevation = true;
+          } else {
+            const permissions = require('./permissions');
+            const permRows = all('SELECT section, level FROM user_permissions WHERE user_id = ?', user.id);
+            hasPositiveElevation = permRows.some((r) => permissions.rank(r.level) > permissions.rank(permissions.levelForRoles(roles, r.section)));
+          }
         } catch (_) {}
       }
-      if (!hasOverrides) return [];
-      return capsForRoles(roles);
+      if (!hasPositiveElevation) return [];
+      expiredElevationOnly = true;
     }
   }
 
   // Start with role capabilities (baseline template)
   const set = new Set(capsForRoles(roles));
 
-  // If elevation has NOT expired, apply user-level capability overrides
+  // Apply user-level capability overrides:
+  // If elevation expired, drop positive grants (granted = 1) while still enforcing revocations (granted = 0).
   if (user.id) {
     const userCaps = all('SELECT capability, granted FROM user_capabilities WHERE user_id = ?', user.id);
     for (const uc of userCaps) {
       if (isCapability(uc.capability)) {
-        if (uc.granted) set.add(uc.capability);
-        else set.delete(uc.capability);
+        if (uc.granted) {
+          if (!expiredElevationOnly) set.add(uc.capability);
+        } else {
+          set.delete(uc.capability);
+        }
       }
     }
 
-    // Step 3b: stand-in delegated approval capabilities (plan §4.2)
-    if (!user.skipDelegations) {
+    // Step 3b: stand-in delegated approval capabilities (plan §4.2, skipped if expired)
+    if (!expiredElevationOnly && !user.skipDelegations) {
       try {
         const standIn = require('./stand_in');
         const dCaps = standIn.delegatedCapsFor(user.id);

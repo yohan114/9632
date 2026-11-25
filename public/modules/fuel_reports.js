@@ -342,7 +342,16 @@
           });
           qs('#btn_bh_all', box).onclick = () => { activeVerdict = 'ALL'; renderView(); };
           const sInp = qs('#bh_search', box);
-          sInp.oninput = (e) => { searchQ = e.target.value; renderView(); sInp.focus(); };
+          sInp.oninput = (e) => {
+            searchQ = e.target.value;
+            const pos = e.target.selectionStart != null ? e.target.selectionStart : searchQ.length;
+            renderView();
+            const nextInp = qs('#bh_search', box);
+            if (nextInp) {
+              nextInp.focus();
+              try { nextInp.setSelectionRange(pos, pos); } catch (_) {}
+            }
+          };
         }
 
         renderView();

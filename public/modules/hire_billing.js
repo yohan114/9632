@@ -1329,15 +1329,27 @@
               btn.onclick = async () => {
                 const pid = btn.getAttribute('data-pid') || 'ALL';
                 const ym = btn.getAttribute('data-ym') || curYm;
-                const url = `/api/hire/bills/site-summary/download.pdf?projectId=${encodeURIComponent(pid)}&month=${encodeURIComponent(ym)}`;
+                const url = `${window.WORKSHOPONE_API_BASE || ''}/api/hire/bills/site-summary/download.pdf?projectId=${encodeURIComponent(pid)}&month=${encodeURIComponent(ym)}`;
                 const prevText = btn.textContent;
                 btn.disabled = true;
                 btn.textContent = 'PDF...';
                 try {
-                  const res = await fetch(url);
+                  const res = await fetch(url, { credentials: 'same-origin' });
                   if (!res.ok) {
                     const errBody = await res.json().catch(() => ({}));
                     throw new Error(errBody.error || `PDF download failed (HTTP ${res.status})`);
+                  }
+                  const ct = res.headers.get('content-type') || '';
+                  if (ct.includes('text/html')) {
+                    const htmlText = await res.text();
+                    const w = window.open('', '_blank');
+                    if (w) {
+                      w.document.write(htmlText);
+                      w.document.close();
+                    } else {
+                      notify('Pop-up blocked — allow pop-ups to print summary.');
+                    }
+                    return;
                   }
                   const blob = await res.blob();
                   const blobUrl = URL.createObjectURL(blob);

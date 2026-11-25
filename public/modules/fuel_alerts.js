@@ -58,7 +58,7 @@
               </div>
               <div style="display:flex;gap:6px;flex-wrap:wrap">
                 ${a.tank_id ? `<a class="btn sm" href="#/fuel-tanks">${a.dip_id ? 'Reconcile Dip →' : 'Inspect Tank →'}</a>` : ''}
-                ${a.asset_code ? `<a class="btn sm" href="#/fuel?tab=vehicles&code=${encodeURIComponent(a.asset_code)}">Inspect Vehicle →</a>` : ''}
+                ${a.asset_code ? `<a class="btn sm" href="#/fuel?tab=vehicle-360&vehicle=${encodeURIComponent(a.asset_code)}">Inspect Vehicle →</a>` : ''}
                 ${a.category === 'METER_FAULTY' ? `<a class="btn sm primary" href="#/jobrequests">Raise Meter Repair →</a>` : ''}
                 ${a.category === 'BUDGET' ? `<a class="btn sm primary" href="#/fuel?tab=sites-overview">Manage Site Budgets →</a>` : ''}
                 ${a.category === 'COMPLIANCE' ? `<a class="btn sm primary" href="#/vehicledocuments?tab=upcoming">Vehicle Documents →</a>` : ''}

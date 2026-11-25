@@ -262,7 +262,7 @@
           <div style="background:#fef2f2;border:1px solid #fecaca;border-left:4px solid #ef4444;color:#991b1b;padding:12px 16px;border-radius:8px;margin-bottom:16px;display:flex;justify-content:space-between;align-items:center">
             <div>
               <b>⚠️ LOW FUEL WARNING:</b> ${data.fuel.lowStockTanks.length} bulk storage tanks are below 20% capacity!
-              (${data.fuel.lowStockTanks.map(t => `${t.name}: ${t.pct_full}%`).join(', ')})
+              (${data.fuel.lowStockTanks.map(t => `${esc(t.name)}: ${esc(t.pct_full)}%`).join(', ')})
             </div>
             <a href="#/fuel-tanks" class="btn sm danger" style="white-space:nowrap">Refill Now</a>
           </div>
